@@ -18,6 +18,9 @@ _Added by the 2026-08-09 handover audit (FIX 10 — the campaign's one BLOCKS-TA
 - `C12-37` **P1 — Moon/globe physical depth ordering (`NEW-MOON-GLOBE-DEPTH-OCCLUSION`) — COMPLETE / EDGE VERIFIED 2026-08-12; landed as `6d4a2376fc`.** Before this fix, both backends intentionally rendered the Moon as always-background, so Earth overwrote it even when the Moon was physically nearer. The recorded report is `view=-87.32540380650026%2C25.959575250510497%2C337256333.87659246%2C359.99999999999997%2C-89.93123587136975%2C0`, clock approximately `2026-08-10T15:45:30Z`; **current-HEAD f64 preflight classifies that exact record STRUCTURAL / REPORTED-REPRO-INVALID** because the Moon is wholly behind the camera (ICRF angular offset 132.8293°, TEME fallback 136.5323°). Preserve it as the first negative-control lane, but derive deterministic Moon-near and Earth-near overlap fixtures from the true ephemeris rather than blessing a stale/misidentified picture. **Required architecture:** keep the byte-identical environment route for ordinary Earth-near views; when a backend-neutral f64/hysteretic Moon-near versus Earth-far test says physical overlap ordering is possible, suppress that duplicate and emit one bounded RTE/log-depth, depth-writing lunar command through normal frustum binning while excluding it from the Earth octree and conservatively from Hi-Z. Under the default `clearGlobeDepth` contract, that command must execute in `Pass.OPAQUE`: native depth composes it with tiles/models/voxels, while a shader compare against the already-published current-frustum packed globe depth restores the terrain ordering erased before OPAQUE. Never always draw Moon on top, never make the ordinary near-Earth path permanently opaque, never disable globe depth, and never remove either feature. **Acceptance:** establish f64 camera-to-visible-surface ordering for overlap pixels; prove Moon-over-Earth when Moon is nearer and the inverse control when Earth is nearer; run WebGL and WebGPU with multi-frustum, HDR/bloom, and moving approach/crossing controls; require no pop, halo seam, PVS regression, or regression to ordinary Earth-near Moon-behind-globe occlusion. Canonical deferred record: `NEW-MOON-GLOBE-DEPTH-OCCLUSION`.
   **ATTRIBUTION UPDATE 2026-08-09 — CAUSE CONFIRMED ON BOTH BACKENDS.** WebGL disables Moon depth testing and draws it in the environment stage before the multi-frustum/globe loop. WebGPU disables Moon depth writes, forces far-plane depth, carries an explicit “always behind scene” encode, and also renders it before globe. Use a backend-neutral f64/hysteretic physical-depth demand: retain today's byte-identical environment path near Earth, but when Moon-near can precede Earth-far suppress that duplicate and emit a real RTE/log-depth, depth-writing, physically bounded `Pass.OPAQUE` lunar command into normal frustum binning. Keep it out of the Earth-centric octree and conservatively out of Hi-Z. Always-opaque is rejected because it would widen ordinary Earth-near PVS/frusta; always-on-top is physically wrong.
   **LOCAL BROWSER-GATE UPDATE 2026-08-10.** The first fresh run was correctly RED: WebGL's Moon-near HDR lanes had mismatch/halo p95 **149/184** despite near-perfect winner fractions, and WebGPU reported TAA reset count **0**. The WebGL source defect was real: only the physical Moon route received HDR derivation, while the byte-identical legacy environment route never does; its skip marker was lost by `DrawCommand.shallowClone` on the log-depth clone and is now explicitly propagated before recursive HDR derivation. The WebGPU red was a probe defect: TAA is lazy, so the probe now establishes the effect/baseline before counting route flips. The corrected fresh run exits **0** with `failures=[]`: both backends score **10/10 overlap lanes**, minimum winner fraction **1.0**, maximum winner mismatch/halo p95 **0**, and zero console errors; forced inside-Moon coverage reports `activeFrusta=4` and `physicalExec=3` on each backend; WebGL physical/legacy HDR continuity is exact with p95 **0**; WebGPU reports `taaEffectAvailable=true` and `taaResetCount=2`. This intermediate result is superseded by the current-source lifecycle-v5 closure below.
+  **RUN-LEDGER COMPLETION 2026-08-14 (fix SOL-11 of [SOL_WEEK_AUDIT_2026-08-14.md](SOL_WEEK_AUDIT_2026-08-14.md), finding S8).** Four C12-37 runs are banked in the external evidence library; this row narrated only two of the three FAILs, so the two paragraphs below are added. Nothing about the closure changes — the omission was narrative curation, not a fabricated claim, and every omitted run is banked and independently recomputable. The full banked set is **3 FAIL / 1 PASS**, in publication order `2cd2e595` → `5557e434` → `bca0fd5b` → `1f437ee9`. Do not read the closure as a first-run pass.
+  **HISTORICAL PRE-FIX PRODUCT FAIL 2026-08-12 (added 2026-08-14; the run that motivated the physical route).** Run `2cd2e595-af8f-4e7b-9250-53fe04ab7704`, producer `c12-37-moon-globe-depth`, published `2026-08-12T17:59:11Z` at source HEAD `f38acf65f6`, is FAIL / exit **1**, `certificationEligible=false`. Unlike the two harness FAILs, this one **carries a real product verdict** and its five failures are all WebGPU: `inside-Moon center pixel does not match the visible Moon exit surface`, plus `entryFirstFrame` / `entryStableRoute` / `exitFirstFrame` / `exitStableRoute` route transitions each `popped or haloed`. The publication is a single 84,518-byte report, SHA-256 `5676ECE3CE46A4E77A030AFBC45F8CED77A4CE34D10A2BC335973B34D95E963C`, manifest SHA-256 `C2C3D14EDC854A929FAE59996BAF34A8A24B44E8ABE6E0206943B623D75A1CE8` — **no PNGs were retained**, which is itself the reason this red is thin evidence and why the later runs bank continuity images. This is the honest baseline the landed route was built against.
+  **HISTORICAL HARNESS FAIL 2026-08-12 (added 2026-08-14; the instrumentation red between the product red and the closure).** Run `5557e434-7617-4c53-9504-38e0b99b0a92`, producer `c12-37-moon-globe-depth-occlusion`, published `2026-08-12T20:49:28Z` at the same source HEAD `f38acf65f6`, is FAIL / exit **1** with **27** failures and **no product verdict**. They decompose into three instrumentation defects, not three engine defects: (a) 14 route-preserving-control failures, seven per backend — five `moon-near` log/HDR/bloom lanes plus the dual-body and multi-frustum lanes — all reading `execution-filtered Moon control lost its emitted or visible command route`; (b) one TAA accounting red, `expected 6 automatic, 6 manual, 3 enable, and 15 total TAA resets; observed 0/6/0/6`; (c) 12 WebGPU continuity comparisons in which the `analytic/visible union silhouette mask is vacuous` and the comparison route `did not emit exactly one valid Moon route`. A vacuous silhouette mask cannot score anything, so these carry no verdict in either direction. The publication is 73 files — a 474,425-byte report, SHA-256 `461E175EBC7827A54A4D40A319A79FA8A378EB13525F05D51CF914323F3C6D56`, plus 72 UUID-bound PNGs — manifest SHA-256 `94235790D31ECDEABF23A1B5A28CEACF3E33D93BC9FFA356C33E1891B2DEB179`. Its disposition in [FINDING_DISPOSITIONS_2026-08-13.json](FINDING_DISPOSITIONS_2026-08-13.json) is `closed-by-certifying-pass`, category `harness`.
   **HISTORICAL CURRENT-SOURCE RECERTIFICATION 2026-08-12 — SUPERSEDED HARNESS FAIL, NO PRODUCT VERDICT.** The revised route-preserving-control run `bca0fd5b-901e-426c-902e-4c83fbdcaff5` exited **1** and remains preserved with its 36 diagnostic PNGs (immutable report SHA-256 `6025C2388F1386780FE54356438D2F478CFFB8EC636FCF6E319A19BD9E2D97CA`). Its engine-facing gates were green: Node **26/26**, Edge/Karma Moon route **4/4**, WebGPU physical-pipeline routing **1/1**, and conservative shadow/PVS filtering **13/13**. The red was confined to the control harness; it triggered the independently reviewed repair and final run below and carries no product verdict.
   **FINAL CLOSURE UPDATE 2026-08-12:** landing-equivalent run `1f437ee9-37e5-4d17-94a1-a269e81679ab` is independently audited **PASS / exit 0** with `failures=[]`, exact immutable/latest identity at **586,475 bytes** and SHA-256 `921A75ED6624326930D2B9BCC1D191819F709AAB96DC9AFD1B676A729166595E`. WebGL and WebGPU each pass 10 overlap lanes at winner fraction **1.0** and winner p95 **0**; the four-frustum and 24 continuity comparisons are non-vacuous, with worst WebGPU continuity p95 **9** against the frozen **16** limit. All 72 UUID-bound 193×193 RGBA PNGs pass framing, CRC, zlib, dimension, and hash verification. Source/build/served/GPU/cleanup provenance is exact, and the report plus PNGs are preserved in the shared immutable visual library under manifest `33CEE1FB9E1304234DA8743D952D34204FCFE2621885C0383FBAABA6E9113F17`. The 15-path product/tool packet landed as `6d4a2376fc`; C12-37 is discharged.
 - `C12-29` **NEW-ECLIPSE-OCCLUSION-EFFECTS — the campaign's exit gate is MAXIMAL by ruling `R-2026-08-10-1`: C12 stays open until every slice lands.** Slice state: **S1/S2 landed**; **S6 landed**; **S3 COMPLETE through its canonical owner `C13-41`**; **S4 COMPLETE / EDGE VERIFIED**; **S5** integrated with targeted gates passing, **final seven-lane certification matrix still open** (NASA-SVS geospatial comparison, isolated active/inactive lanes). Acceptance = the S5 matrix plus every slice's own recorded criterion.
@@ -43,6 +46,109 @@ _Added by the 2026-08-09 handover audit (FIX 10 — the campaign's one BLOCKS-TA
 **OWED (machine lane, in order):** (1) `probe-celestial-gates.mjs --g3` re-run **after** the 4096 re-bake — pre-registration: the angular arms clear, chroma/dust remain the open question, and if twinkle still triggers the asset variable is eliminated and the **DR-01 revisit becomes a clean single-variable question — DR-01 is NOT decided until then**; (2) `C12-33`'s calibrated moving Edge lane (≥5 paired repetitions + PNG review); (3) `probe-stars-catalog.mjs` Edge run (`C12-11`); (4) the `C12-31` full acceptance sweep; (5) the `C12-G1F2` re-measure; (6) `C12-12` default-sky identity run.
 
 **Recently discharged (so a successor does not re-open them):** G4 CLOSED B984 (`943e13b571`); `C12-19`'s Edge-delta obligation, open since B947, **DISCHARGED at B994** (`0697b93a5b`) — second delta-probe run, exit 0 on both backends, NO-EXCESS confirmed on live captures; `C12-34` mirror landed B967 (`68bf6e78d4`) and certified at the G4 close; `C12-18` landed B906 (`ca964bc1da`).
+
+### 2026-08-14 LEDGER STAMP — the un-stamped 2026-08-12 → 2026-08-14 C12 landings (fix SOL-1)
+
+_Added 2026-08-14 by the fix queue of
+[SOL_WEEK_AUDIT_2026-08-14.md](SOL_WEEK_AUDIT_2026-08-14.md) (finding S10 / fix SOL-1).
+This queue stopped being stamped after 2026-08-12 22:31 while 36 C12-owned commits
+landed, including the entire C12-29 S5 lane. **This stamp records what landed and its
+hashes. It closes nothing and grants no verdict.** Every hash below was verified with
+`git log --no-walk <hash>` at the time of writing._
+
+**Three things a reader must carry into every row below.**
+
+1. **Every commit body in `cff0b76a2f..034c7f74d0` is empty** — re-verified 98/98 at
+   this stamp, with 0/98 carrying a co-author trailer. The commit subjects are the only
+   in-git claim carriers, and several are overstated relative to their diffs. **The
+   audit document is the evidence authority for this range**, not the commit log.
+2. **Batch numbering stopped after Batch 1027 (`e19829c9e8`).** The fork convention is
+   to order stamps by batch number; 88 commits in this range have none. This stamp is
+   therefore ordered by **commit time**, which is the only ordering the range supports.
+   Do not read the ordering as batch order.
+3. **The three tip commits (`795e6267bc`, `be8644f0cb`, `034c7f74d0`, 18:45–18:47) are
+   recorded as landed, NOT as validated** — audit finding S7: the build was deleted at
+   18:26, so nothing could have executed against them, and the custom-ellipsoid spec
+   measures 201/204 in the main tree. Findings S1 (G3) and S14 (moon-mip) are open
+   against two of the three.
+
+**`C12-29` S4 — the gate packet (already recorded COMPLETE / EDGE VERIFIED above; the
+hash was missing).**
+
+- `ddd723d794` — Add C12-29 S4 orbital sunrise evidence gate.
+- `38d27461a3` — Refresh S3 and S4 campaign mirrors (doc-only).
+
+**`C12-29` S3 / `C13-41` reconciliation (doc-only; the C13 queue still owes the same
+citation — not stamped here because it is another lane's file).**
+
+- `050c50a8df` — Reconcile C13-41 and C12-29 S3 closure.
+
+**NASA SVS 5073 fixture cluster.** Provenanced and byte-exact per the audit's
+countervailing list; `8bc01a70ef` is the checkout-line-ending repair whose
+`.gitattributes` half is finding S21 and is completed by fix SOL-12.
+
+- `7c8a9d6396` — Add pinned NASA SVS 5073 umbra fixture.
+- `9bfb403b71` — Place NASA S5 status under its owning row (doc-only).
+- `ae37cea5c7` — Add NASA SVS eclipse footprint evidence.
+- `23919f0414` — Harden NASA eclipse footprint evidence.
+- `8bc01a70ef` — Preserve NASA fixture byte identities.
+
+**`C12-29` S5 lane — 27 commits, 2026-08-12 21:46 → 2026-08-14 18:47, and NONE of them
+was cited in this queue.** Twenty-four are cited in **no** tracked document at all;
+`e28caf04a8` and `cd656255e9` are cited only in `DEFERRED_WORK.md` /
+`FEATURE_INVENTORY.md`, and `034c7f74d0` only in `README.md`. (The audit's synthesis
+says "the 23-commit S5 lane"; this enumeration is derived from the range itself and is
+the count to use.) The three NASA members of the lane — `ae37cea5c7`, `23919f0414`,
+`8bc01a70ef` — are listed in the fixture cluster above and are **not repeated** in the
+24 below; 24 + 3 = 27.
+
+- Terrain-selection sub-lane (10): `5312ebe95f`, `1a35d7f2d6`, `78450891a4`,
+  `32acf69dd1`, `e677612f82`, `9e576b0a42`, `2d211e34ca`, `fb8a4b6f1b`, `53a9f4b52d`,
+  `84ca631ed6`.
+- Dense active/inactive cost sub-lane (2): `44b63910e9`, `1add9928a4`.
+- Custom-ellipsoid sub-lane (8): `99abefdc26`, `8187671047`, `a791ee5a18`, `92b34e93c9`,
+  `faa36a5376`, `55b67a169b`, `5fb5e5c3fa`, `034c7f74d0`.
+- Replacement-device sub-lane (1): `39cdab4c2e`. Multiview sub-lane (1): `e28caf04a8`.
+- Shared evidence/ephemeris binding (1): `cd656255e9`. Status reconciliation, doc-only
+  (1): `314cbd7140`.
+- Engine fix surfaced by the terrain sub-lane, counted under `DEFERRED_WORK.md` rather
+  than in the 27: `820bff13af` (synchronous heightmap vertex count).
+
+**S5 honest status: the seven-lane certification matrix is OPEN and is the campaign's
+critical path.** Fifteen S5 runs are banked in the external evidence library and
+**exactly one is a PASS**:
+
+| S5 lane | Banked runs | Outcome |
+| --- | ---: | --- |
+| terrain-selection | 12 | **1 PASS** (`83aea7d0-7c8e-4543-8818-7cc459cb01c3`, exit 0), 4 STRUCTURAL/exit 3, 7 ERROR/exit 2 |
+| custom-ellipsoid | 2 | 0 PASS — both ERROR/exit 2 (`2a07800f`, `590f0e27`) |
+| svs-footprint (NASA) | 1 | 0 PASS — ERROR/exit 2 (`41264078`) |
+| dense-cost, multiview, replacement-device | 0 | never executed in a browser |
+
+Totals: **15 banked / 1 PASS / 4 STRUCTURAL / 10 ERROR.** Landed gate libraries and
+static GO are not browser certification. Three of these lanes have a landed gate and no
+run at all, and per audit findings S4/S5 the S5 probe fleet currently **fails the
+fleet contract** (no terminating watchdogs, browser leaks, and all exit semantics living
+in `lib/*-gate.mjs`, which the contract does not scan) — so a green S5 run at HEAD would
+not yet be trustworthy. Fix SOL-5 owns that repair.
+
+**`C12-37` close (the implementation hash `6d4a2376fc` was already cited; the closing
+commit was not).**
+
+- `4d43ee6015` — Close C12-37 after Moon depth certification. See the run-ledger
+  completion added to the `C12-37` row above (fix SOL-11): the banked set is 3 FAIL /
+  1 PASS, not 1 + 1.
+
+**`C12-33` and G3 tips — landed, unvalidated, and under open findings.**
+
+- `795e6267bc` — Harden G3 celestial certification. **Audit S1 (CRIT):** this converts
+  the standing evidenced G3 RED of Batch 934 into SUBJECT-ABSENT via an `=== 4096` asset
+  gate against a ratified `>= 2700` bar, with no 4096 faces bundled. The G3 gate above
+  stays RED; fix SOL-2 owns the reversal or re-derivation.
+- `be8644f0cb` — Certify moon mip motion evidence (`C12-33` contract/finalizer).
+  **Audit S14 (MED):** unsound as titled — nothing samples mip level across motion, and
+  the calibrated axis cannot fail by construction. `C12-33` stays
+  ACCEPTANCE-NEVER-EXECUTED above; fix SOL-10 owns the re-scope.
 
 ---
 

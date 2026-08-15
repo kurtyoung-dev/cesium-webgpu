@@ -1073,6 +1073,94 @@ These five carry campaign acceptance and were absent from this guide entirely �
 | [webgpu-sun-bloom-mirror.spec.mjs](../Tools/visual-regression/webgpu-sun-bloom-mirror.spec.mjs) | `C12-34`'s mirror — the WebGPU bright-pass bloom pinned to the shipped WebGL text (both shader bodies executed as JavaScript and required to agree to 1e-15, naga on both WGSL files, off-is-off, two mutants). |
 | [ground-fog-band.spec.mjs](../Tools/visual-regression/ground-fog-band.spec.mjs) | The ground-fog band's offline contract. ⚠ Also the file where `C16-07`'s widened anchor sweep found **two live spec anchors into comment text**, one of them an `indexOf` used as a block locator — read it before rewriting comments in the fog path. |
 
+### Inventory backfill 2026-08-14 — the Sol 5.6 week (fix SOL-12; audit finding S22)
+
+**48 new instruments landed in `cff0b76a2f..034c7f74d0` and NONE of them were entered in this guide** — the same standing-rule breach the 2026-08-07 backfill above records, at four times the size. They are listed here as one contiguous block; **move each row up into its subject table when you next touch that section.** Counts are census-derived: `git diff cff0b76a2f..034c7f74d0 --diff-filter=A --name-only -- Tools/visual-regression` yields 15 new `probe-*.mjs` and 33 new `*.spec.mjs` (plus harnesses, 18 `lib/` modules, the NASA fixture directory, and two JSON workload/provenance files that are data, not instruments). Re-derive rather than trusting these numbers.
+
+⚠ **READ BEFORE RUNNING ANY OF THE S5 PROBES.** Per audit findings S4 and S5 of [SOL_WEEK_AUDIT_2026-08-14.md](SOL_WEEK_AUDIT_2026-08-14.md), the **fleet-contract gate is RED at HEAD and structurally dark**:
+
+- All six `probe-c12-29-s5-*.mjs` probes carry **reject-only timers, not terminating watchdogs** — `process.exitCode` cannot force exit on a wedged loop — and they **leak the browser** (no close, or a close outside `finally`). They are not allowlisted; they were left failing, so `probe-fleet-contract.spec.mjs` can no longer catch the NEXT violation. Two pre-existing probes also regressed.
+- The S5 architecture is **thin-probe / fat-lib**: every exit semantic lives in `lib/*-gate.mjs`, which the fleet contract **never scans**. Demonstrated consequence: `lib/c12-29-s5-custom-ellipsoid-gate.mjs` routes STRUCTURAL to **exit 2**, which is crash-indistinguishable and violates the 0/1/2/3 doctrine.
+- Capture doctrine is in conflict in-repo (finding S15): **zero of the eight new browser probes use Playwright element screenshots**, five bypass the shared capture home, and `probe-moon-globe-depth-occlusion.mjs` uses the deprecated `drawImage`→`getImageData` reader on WebGPU (mitigated only in that its banked run is demonstrably non-vacuous). Reconcile [ORCHESTRATION_HANDBOOK.md](ORCHESTRATION_HANDBOOK.md) §7 against `lib/same-task-capture.mjs` **first** — fix SOL-9 — then re-judge these probes.
+
+Fix SOL-5 owns the watchdog/close repair and extending the contract to `lib/*-gate.mjs`. Until it lands, treat a green run from these probes as unverified.
+
+**New browser probes (15).**
+
+| Probe | What it covers |
+| --- | --- |
+| `probe-c11-13-voxel-inside-camera.mjs` | `C11-13` inside-the-proxy voxel rendering. Thin entry point over `lib/c11-13-voxel-inside-camera-probe.mjs`; asserts its outer watchdog loses to the artifact watchdog. **Closure band is loose — audit S17: IoU ≥ 0.6 against an observed 0.994, and the banked PNGs show a real cross-backend stipple artifact (WebGPU dithered corner vs uniform WebGL fill) that a mean metric with 150× headroom cannot flag.** |
+| `probe-c11-168-direct-model-ablation.mjs` | `C11-168` fresh-process direct-model causal discriminator. Two reverse-order quartets; every leg spawns its own Node runner and its own fresh Edge, 600-frame resident route, API instrumentation and GPU timestamps OFF. |
+| `probe-c11-169-primitive-breakdown.mjs` | `C11-169` Tools-only nested primitive-traversal CPU discriminator. Nests four instance-local timers inside the coarse 11-phase schema (`primitiveTraversal` = ground + ordinary + globe render + residual). Wrappers live only in the probe and are restored exactly; **diagnostic, not a performance verdict.** |
+| `probe-c11-193b-shared-submit.mjs` | `C11-193B` dynamic-IBL frame-encoder / shared-submit acceptance. Observation-only wrappers installed at native WebGPU boundaries **before** the viewer boots; three lanes (no-refresh control, two same-topology refreshes in one frame, one accepted topology replacement plus its follow-up frame). |
+| `probe-c11-193c-demand-priority.mjs` | `C11-193C` same-frame demand priority and bounded drain. Proves HIGH-before-NORMAL admission, lossless bounded deferral, MANDATORY-plus-one-deferrable budget semantics, late split-2D promotion on the continuation encoder. **Not a timing probe** — it observes pass/encoder/command-buffer/submit shapes. |
+| `probe-c11-209-effects-placeholder-startup.mjs` | `C11-209` startup acceptance for the effects depth placeholders. Native wrappers installed before Cesium requests a device; attributes only the exact initialization encoder/command buffer. Needs the dev server already on `:8080`. |
+| `probe-c11-90-primitive-restart-split.mjs` | `C11-90` historical entry point retained for evidence continuity only. The Split UI is not an authority on Sandcastle standalone routes, so the real work moved into `lib/c11-90-primitive-restart-probe.mjs` driving strict WebGL2 and WebGPU pages in a Tools-only harness. |
+| `probe-c12-29-s4-orbital-sunrise.mjs` | `C12-29` **S4** orbital-sunrise acceptance (COMPLETE / EDGE VERIFIED, run `6a3eac44`). Two fresh contexts over a 400 km circular-orbit sunrise; the certifying blend-neutral lane holds atmosphere radiance below one output code so `Sun.js` still computes extinction while every other destination contribution is hidden. 181 one-second samples; render and `toDataURL` in **one page task**, no canvas-copy path. |
+| `probe-c12-29-s5-custom-ellipsoid.mjs` | **S5** custom-oblate-ellipsoid runtime certification. Serial fresh WebGL then WebGPU; write-once artifacts, mutable latest replaced only under byte-exact RUNNING authority. ⚠ **Fleet-contract RED. Two banked runs, both ERROR/exit 2, zero PASS.** Its gate lib routes STRUCTURAL to exit 2 (S5) and its spec reports build-absence as a product FAIL rather than STRUCTURAL (S22); audit S11 records three undeclared loosenings in the v7 hardening. |
+| `probe-c12-29-s5-dense-cost.mjs` | **S5** dense ACTIVE/INACTIVE cost characterization. Coordinator spawns 24 child Node processes in frozen order, one fresh Edge and one 600-frame condition each. Requires certified terrain-v10 + NASA-SVS-v4 manifests, a current `Build/CesiumUnminified`, and a running loopback server; builds nothing. The dense-cost gate is a **real timing instrument** (audit countervailing: no count-for-timing). ⚠ **Fleet-contract RED; never executed in a browser — zero banked runs.** |
+| `probe-c12-29-s5-multiview.mjs` | **S5** same-context logical-View / stereo policy certification. The A→B→A lane is deliberately Tools-owned — production `Scene.render` restores `_defaultView`, and the probe does not pretend Cesium has an arbitrary-View scheduler. Also exercises the real offscreen ray View, WebGL's two-eye VR executor, and WebGPU's synchronous unsupported-path rejection. ⚠ **Fleet-contract RED; zero banked runs.** |
+| `probe-c12-29-s5-replacement-device.mjs` | **S5** replacement-device recovery. The only loss trigger is Chromium's normal GPU-process termination hook via `--enable-gpu-benchmarking`; it never calls `GPUDevice.destroy` and never invokes a crash hook, and a loss whose reason is `destroyed` is archived STRUCTURAL, never counted as recovery. ⚠ **Fleet-contract RED; zero banked runs.** |
+| `probe-c12-29-s5-svs-footprint.mjs` | **S5** absolute NASA-SVS 5073 geospatial-footprint acceptance against the vendored four-row fixture + local QuantizedMesh. Never fetches the network, recentres a result, builds, or starts a server. ⚠ **Fleet-contract RED. One banked run, ERROR/exit 2, zero PASS.** Its spec takes **27.6 min** to run (S22), and the v5 repair in the working tree is **paused and independently REJECTED** (handoff §4) — do not run or freeze it without the re-review. |
+| `probe-c12-29-s5-terrain-selection.mjs` | **S5** real-terrain/selection acceptance over the local QuantizedMesh fixture. Per session: ellipsoid control, first-`beginFrame` provider reset, a genuine single-held-request `TerrainFillMesh`, fill-to-real transition, exact ×2 radius law, real awaited async picking, fresh-provider reset; WebGPU additionally drives retained six-face capture through a Model's normal `DynamicEnvironmentMapManager` update (WebGL records N/A). **The only S5 lane with a PASS** — run `83aea7d0-7c8e-4543-8818-7cc459cb01c3`, 1 of its 12 banked runs. ⚠ Fleet-contract RED. |
+| `probe-moon-globe-depth-occlusion.mjs` | `C12-37` Moon/globe physical-depth oracle. Deliberately does **not** trust the supplied screenshot as geometry — that saved view runs first and MUST classify STRUCTURAL (the Moon is wholly behind the camera at the recorded clock). Certifying lanes are derived from the live ICRF Moon centre: `moon-near`, `earth-near`, `crossing`. ⚠ Uses the deprecated `drawImage`→`getImageData` reader on WebGPU (S15); its banked run is non-vacuous, but do not copy the reader. |
+
+**New offline specs (33, `node --test`).** Test counts are as measured at this backfill; re-derive rather than citing them.
+
+| Spec | What it pins |
+| --- | --- |
+| `c11-13-public-voxel-pick-convergence.spec.mjs` (3) | Public voxel pick convergence contract for `C11-13`. |
+| `c11-13-voxel-inside-camera-probe.spec.mjs` (13) | Structure of the inside-camera probe itself — watchdog ordering, artifact shape. |
+| `c11-13-voxel-pick-pipeline-name.spec.mjs` (5) | The voxel pick pipeline-name binding (the aliasing hazard `CLAUDE.md` warns about). |
+| `c11-146-route-evidence.spec.mjs` (12) | `C11-146` fail-closed route assessor (Batch 1027) — pairs with `assess-c11-146-route.mjs`. |
+| `c11-168-direct-model-ablation-policy.spec.mjs` (14) | Ablation-discriminator policy: quartet ordering, fresh-process isolation, instrumentation-off invariants. |
+| `c11-205-owner-attribution-policy.spec.mjs` (16) | Resident-owner attribution policy for the campaign runner. |
+| `c11-209-effects-placeholder-provenance.spec.mjs` (7) | Browser-provenance binding for the effects placeholder startup packet. |
+| `c11-90-primitive-restart-harness.spec.mjs` (12) | The Tools-only primitive-restart harness contract (offline; the demo is pinned offline by `51b2c34eab`). |
+| `c12-29-s4-orbital-sunrise-gate.spec.mjs` (32) | S4 gate library. ⚠ **S22: does build I/O at import time, so a missing build fails the whole file rather than one test.** Move that into the test body. |
+| `c12-29-s5-custom-ellipsoid-gate.spec.mjs` (102) | S5 CUSTOM v7 gate library — the largest new spec (5,958 lines). ⚠ **201/204 in the main tree** (build absent, reported as product FAILs — S22); one deterministic failure (watchdog cleanup does not throw) corroborates S4. |
+| `c12-29-s5-dense-cost-gate.spec.mjs` (40) | S5 dense-cost gate library, incl. the budget function that throws if a frozen input widens. |
+| `c12-29-s5-multiview-gate.spec.mjs` (44) | S5 multiview/stereo gate library. |
+| `c12-29-s5-replacement-device-gate.spec.mjs` (19) | S5 replacement-device gate library; STRUCTURAL classification of `destroyed` losses. |
+| `c12-29-s5-svs-footprint-gate.spec.mjs` (57) | S5 NASA-SVS gate library. ⚠ **Runs 27.6 minutes** — do not put it in an inner loop. |
+| `c12-29-s5-terrain-selection-gate.spec.mjs` (41) | S5 terrain-selection gate library (6,207 lines); the lifecycle authority the one PASS ran under. |
+| `cpu-frame-accounting.spec.mjs` (16) | Whole-scene CPU accounting contract (`c404c3de04`). |
+| `cpu-primitive-breakdown-policy.spec.mjs` (17) | Nested primitive-breakdown policy for `probe-c11-169-primitive-breakdown.mjs`. |
+| `cpu-scene-phase-integration.spec.mjs` (5) | Scene-phase integration of the CPU accounting seam. |
+| `eclipse-high-precision-dependency.spec.mjs` (8) | The pinned high-precision ephemeris dependency (`9def755e43`) and its lazy-import module edge (`bc438639ad`). |
+| `eclipse-sandcastle.spec.mjs` (10) | The Sandcastle2 Eclipse Explorer demo (`3664031397`, `b31529a0c0`). ⚠ **S22: `Cesium.EclipseDiscGeometry` is exported unusable — the factory and enum are not in the barrel.** |
+| `environment-refresh-priority.spec.mjs` (10) | `C11-193C` demand-priority/bounded-drain policy. ⚠ **S22: env-map ticks are droppable when the drain is skipped.** |
+| `model-primitive-topology-sandcastle.spec.mjs` (3) | Primitive-restart demo topology + its offline pin. |
+| `moon-globe-depth-routing.spec.mjs` (32) | `C12-37` physical-route selection, `Pass.OPAQUE` participation, octree/Hi-Z exclusion, legacy-route byte identity. |
+| `moon-mip-motion-certification.spec.mjs` (15) | `C12-33` contract/finalizer. ⚠ **Audit S14 (MED): UNSOUND AS TITLED** — nothing measures mip level across motion, the calibrated gate cannot fail (its thresholds are min/max envelopes of the same five runs they judge; a 4.5× injected outlier simply widened its own bar), and sensitivity has no minimum effect size (1e-15 passes). Fix SOL-10 owns the re-scope. |
+| `nasa-svs-5073-umbra-fixture.spec.mjs` (7) | Deterministic shapefile reconstruction/parse of the vendored four-record `umbra_lo` subset — 7/7 over 687 stored / 683 non-closing vertices. Pairs with `.gitattributes` (finding S21). |
+| `visual-evidence-library.spec.mjs` (35) | The immutable publication library's contract. ⚠ **S19 / maintainer ask R-e: `lib/visual-evidence-library.mjs` (3,252 lines) imports zero project modules and nothing in the pipeline consumes it** — a parallel evidence stack sharing a wire format by duplicated string literal. Adopt-or-remove is a maintainer call. |
+| `voxel-inside-camera-policy.spec.mjs` (6) | Inside-camera voxel rendering policy. |
+| `voxel-megatexture-reupload-policy.spec.mjs` (8) | The megatexture re-upload oracle (`f54d58cdd4`) as policy. |
+| `webgpu-cloud-shadow-bind-group-cache.spec.mjs` (3) | `C11-60` cloud-shadow bind-group caching (Batch 1019). |
+| `webgpu-frame-accounting-policy.spec.mjs` (10) | WebGPU frame-accounting policy for the CPU lane. |
+| `webgpu-pick-center-identity.spec.mjs` (9) | Center-pixel pick identity. ⚠ **S13: readback starvation is REAL and unfixed — only the last-armed request per frame can publish, so multi-property `pickMetadata` in one task returns `undefined` forever for all but the last.** |
+| `webgpu-pick-miniframe-clear-guard.spec.mjs` (3) | The standalone-pick-frame clear-budget reset (`8a9178d99c`). |
+| `webgpu-voxel-resource-lifecycle.spec.mjs` (12) | `WebGPUVoxelResourceLifecycle`. ⚠ **S6(c): a failed voxel root upload THROWS out of `Scene.render` on WebGPU where WebGL raises `tileFailed` and keeps rendering** — an error-path parity inversion, open under fix SOL-6. |
+
+**Uncommitted at the time of this backfill (11).** These existed only in the working tree when the audit ran (Lane F); three of them are the **HOLD-FOR-SOL** paused packets and must not be run, reviewed, or landed as if frozen — see [HANDOFF_2026-08-14_CODEX_PAUSE.md](HANDOFF_2026-08-14_CODEX_PAUSE.md) §4–6.
+
+| Instrument | Status |
+| --- | --- |
+| `c12-11-star-catalog-gate.spec.mjs` (28) | **HOLD-FOR-SOL.** `C12-11` star-catalog certification; independent review is **NO-GO** on ten findings, no repair write landed. Gated behind a future eligible G3 PASS that does not exist. |
+| `c12-31-aureole-gate.spec.mjs` (22) | **HOLD-FOR-SOL.** `C12-31` L1–L4 aureole core; independent review **NO-GO** on eight findings; only the gate lib was mid-repair at the pause, so the tuple is mixed and must not be tested as the earlier freeze. |
+| `cloud-morphology-composition.spec.mjs` (14) | Cloud morphology/composition offline contract (C13 lane). |
+| `cloud-u2-perf-evidence.spec.mjs` (16) | `C13-16` U2 cross-bundle GPU-timestamp evidence contract. |
+| `finding-ownership-audit.spec.mjs` (9) | Audits that every banked non-PASS finding has a declared owner — the offline half of [FINDING_DISPOSITIONS_2026-08-13.json](FINDING_DISPOSITIONS_2026-08-13.json). |
+| `model-lazy-pick-demand.spec.mjs` (13) | `C11-196` lazy model pick-resource realization. |
+| `pointcloud-voxel-public-correctness.spec.mjs` (26) | Public point-cloud/voxel correctness surface (C18 lane). |
+| `probe-c11-196-lazy-pick-demand.mjs` | Browser discriminator: model pick resources stay cold during colour rendering, realize synchronously on first pick demand, stay stable. |
+| `probe-c11-202-batchtexture-pick-demand.mjs` | Ordinary native model picking must not realize the legacy `BatchTexture` pick registry/texture first; WebGL authoritative. |
+| `probe-c11-210-compute-command-list.mjs` | `C11-210` — builds the real native command through the context-private `_computeCommandClass` factory and lets a custom primitive append it to the Scene command list. |
+| `probe-cloud-u2-perf.mjs` | `C13-16` U2 cross-bundle GPU-timestamp no-regression gate (baked march, LIVE escape, single + cascaded cloud shadow maps, environment/IBL leg). |
+
+**Supporting files that are not instruments** and are listed so nobody hunts for them as probes: `assess-c11-146-route.mjs`; the harnesses `c11-13-voxel-inside-camera-harness.{html,mjs}`, `c11-90-primitive-restart-harness.{html,mjs}`, `c12-29-s5-custom-ellipsoid-harness.html`; 18 new `lib/*.mjs` gate/probe libraries (**the fleet contract does not scan these — finding S5**); `fixtures/nasa-svs-5073/` (four vendored shapefile members + `manifest.json` + `NOTICE.md` + two `.mjs` tools); `fixtures/astronomy-engine-2.1.19-provenance.json`; `performance-workloads-s5-dense-cost.json`; and `visual-evidence-library.mjs`.
+
 ### Instrument doctrine
 
 The verification and instrument rules earned on 2026-07-25 and 2026-08-08 — same-task capture, canvas-element PNGs, pinned clocks, helpers inside `page.evaluate`, interleaved A/B for GPU timing, reference-disagreement = STRUCTURAL, and the WebGPU-canvas capture rule (Playwright element screenshots ONLY; in-page `drawImage` reads transparent even in the same task) — are banked in **[ORCHESTRATION_HANDBOOK.md](ORCHESTRATION_HANDBOOK.md) §7 (Verification and instrument doctrine)**. That is the authority; this guide covers tools and procedures, the handbook covers method. Read it before building any new probe.

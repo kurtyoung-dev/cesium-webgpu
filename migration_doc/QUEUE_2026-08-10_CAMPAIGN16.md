@@ -15,6 +15,27 @@ lint-guard green on touched files; `npm run build-docs` clean when exported
 API is touched; prettier/eslint; knowledge extraction to
 `DEV_NOTES_<subsystem>.md` lands IN THE SAME BATCH as the rewrite it covers.
 
+## 2026-08-14 HASH STAMP — un-cited C16 landing in `cff0b76a2f..034c7f74d0` (fix SOL-1)
+
+_Added 2026-08-14 by the fix queue of
+[SOL_WEEK_AUDIT_2026-08-14.md](SOL_WEEK_AUDIT_2026-08-14.md) (finding S10 / fix SOL-1).
+One C16-owned commit landed in that range and was cited in no tracked document. Verified
+with `git log --no-walk`. **All 98 commit bodies in the range are empty and 0/98 carry a
+co-author trailer, so the audit document — not the commit log — is the evidence authority
+for it.** This stamp cites; it changes no row status._
+
+- **Batch 1020 — `c9016efdd5`, "maintain C16-03 weather semantics contract."** Tools-only,
+  4 insertions / 2 deletions in `Tools/visual-regression/weather-field-bounds.spec.mjs`.
+  It maintains the spec against the landed `C16-03` rewrite; it is **not** a new shard and
+  does not advance the `C16-09..12` tail.
+
+**Open against C16 from the same audit (not fixed by this stamp):** finding S9 — eight
+`[campaign-row-id]` **ERRORS** from the C16-00 marker guard on clean-listed
+`Moon.js` / `Moon.wgsl` / `WebGPUEnvironmentRenderer.js`, plus roughly 25 warn-tier marker
+additions. The guard verifiably exits 1 and is wired into lint-staged, so the C12-37
+commit must have used `--no-verify`. Fix SOL-7 owns the strip, the warn-tier triage, and
+the bypass investigation; the guard is **not** green at HEAD.
+
 ## Rows
 
 | ID | Work | Size | Status |

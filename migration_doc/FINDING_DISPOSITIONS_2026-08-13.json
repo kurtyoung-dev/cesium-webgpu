@@ -1,0 +1,253 @@
+{
+  "schema": "cesium-finding-dispositions/v1",
+  "asOf": "2026-08-13",
+  "source": {
+    "kind": "cesium-visual-evidence-publication/v2",
+    "archivedNonPassCount": 23
+  },
+  "owners": {
+    "C12-29-S4": {
+      "document": "QUEUE_2026-07-19_CAMPAIGN12.md",
+      "reference": "S4 COMPLETE / EDGE VERIFIED 2026-08-12",
+      "state": "closed",
+      "closureRunId": "6a3eac44-f4b8-477d-b21b-6062de6aaf19"
+    },
+    "C12-29-S5-CUSTOM-ELLIPSOID": {
+      "document": "QUEUE_2026-07-19_CAMPAIGN12.md",
+      "reference": "custom-ellipsoid runtime",
+      "state": "active"
+    },
+    "C12-29-S5-NASA-SVS": {
+      "document": "QUEUE_2026-07-19_CAMPAIGN12.md",
+      "reference": "NASA-SVS geospatial comparison",
+      "state": "active"
+    },
+    "C12-29-S5-TERRAIN-SELECTION": {
+      "document": "QUEUE_2026-07-19_CAMPAIGN12.md",
+      "reference": "real terrain/exaggeration/fill/provider",
+      "state": "closed",
+      "closureRunId": "83aea7d0-7c8e-4543-8818-7cc459cb01c3"
+    },
+    "C12-37": {
+      "document": "QUEUE_2026-07-19_CAMPAIGN12.md",
+      "reference": "C12-37",
+      "state": "closed",
+      "closureRunId": "1f437ee9-37e5-4d17-94a1-a269e81679ab"
+    },
+    "C13-41": {
+      "document": "QUEUE_2026-07-23_CAMPAIGN13.md",
+      "reference": "C13-41 ACCEPTANCE + LANDING RECONCILIATION",
+      "state": "closed",
+      "closureRunId": "b5e3f63c-94c6-4204-8706-dd30eabd2eaf"
+    }
+  },
+  "entries": [
+    {
+      "producer": "c12-29-s4-orbital-sunrise",
+      "runId": "08534fc2-aa70-49ad-82de-8dd32f85469c",
+      "status": "ERROR",
+      "category": "operational",
+      "disposition": "closed-by-certifying-pass",
+      "owner": "C12-29-S4",
+      "summary": "The page failed to fetch a required resource before any product verdict; the repaired S4 lane later certified PASS."
+    },
+    {
+      "producer": "c12-29-s4-orbital-sunrise",
+      "runId": "358c31e8-b2d5-49f5-937d-ae2c26ea1f77",
+      "status": "STRUCTURAL",
+      "category": "harness",
+      "disposition": "closed-by-certifying-pass",
+      "owner": "C12-29-S4",
+      "summary": "Runtime-route provenance, the blend-neutral contract, and review anchors were incomplete; no product predicate failed."
+    },
+    {
+      "producer": "c12-29-s4-orbital-sunrise",
+      "runId": "5cec561b-0810-4eda-bfed-53ca6f46f3ac",
+      "status": "STRUCTURAL",
+      "category": "harness",
+      "disposition": "closed-by-certifying-pass",
+      "owner": "C12-29-S4",
+      "summary": "The WebGL executed-route provenance closure was incomplete; no product predicate failed."
+    },
+    {
+      "producer": "c12-29-s4-orbital-sunrise",
+      "runId": "c5cc15dd-4add-4607-b8b3-7bc6a2c11884",
+      "status": "ERROR",
+      "category": "operational",
+      "disposition": "closed-by-certifying-pass",
+      "owner": "C12-29-S4",
+      "summary": "The page failed to fetch a required resource before any product verdict; the repaired S4 lane later certified PASS."
+    },
+    {
+      "producer": "c12-29-s5-custom-ellipsoid",
+      "runId": "2a07800f-94cf-4983-81bb-bd6d64843d6f",
+      "status": "ERROR",
+      "category": "harness",
+      "disposition": "active-repair",
+      "owner": "C12-29-S5-CUSTOM-ELLIPSOID",
+      "summary": "A raw browser module path exposed the unresolved bare mersenne-twister specifier; the served-bundle repair is implemented, but the custom lane still lacks a certifying PASS."
+    },
+    {
+      "producer": "c12-29-s5-custom-ellipsoid",
+      "runId": "590f0e27-1e3c-4b7a-9262-1082ca86b3f4",
+      "status": "ERROR",
+      "category": "harness",
+      "disposition": "active-repair",
+      "owner": "C12-29-S5-CUSTOM-ELLIPSOID",
+      "summary": "The probe acquired the wrong WebGPU eclipse-manager seam and reported it unavailable; the v4 repair remains awaiting independent certification."
+    },
+    {
+      "producer": "c12-29-s5-svs-footprint",
+      "runId": "41264078-e94c-49cd-b607-e3834fd7f178",
+      "status": "ERROR",
+      "category": "harness",
+      "disposition": "active-repair",
+      "owner": "C12-29-S5-NASA-SVS",
+      "summary": "An empty measured eclipse classification became a NaN centroid and threw inside EllipsoidGeodesic instead of producing a retained product FAIL; NASA-SVS v3 repair remains active."
+    },
+    {
+      "producer": "c12-29-s5-terrain-selection",
+      "runId": "05536b7a-e07d-4c5f-8ade-464d21d9f809",
+      "status": "ERROR",
+      "category": "mixed",
+      "disposition": "closed-by-certifying-pass",
+      "owner": "C12-29-S5-TERRAIN-SELECTION",
+      "summary": "The run exposed the synchronous HeightmapTerrainData NaN vertex-count defect plus an over-strict post-endUpdate terrain-state assumption; the engine fix landed as 820bff13af and terrain v10 later certified PASS."
+    },
+    {
+      "producer": "c12-29-s5-terrain-selection",
+      "runId": "21c15a77-e32c-401e-97c4-68fbec984f83",
+      "status": "ERROR",
+      "category": "harness",
+      "disposition": "closed-by-certifying-pass",
+      "owner": "C12-29-S5-TERRAIN-SELECTION",
+      "summary": "The v6 first-reveal harness rejected the real held-fill transition before retaining sufficient diagnostics; later versions repaired and certified the lane."
+    },
+    {
+      "producer": "c12-29-s5-terrain-selection",
+      "runId": "2df35ac1-db84-477b-bf63-d5230c944d37",
+      "status": "STRUCTURAL",
+      "category": "harness",
+      "disposition": "closed-by-certifying-pass",
+      "owner": "C12-29-S5-TERRAIN-SELECTION",
+      "summary": "The v4 hold-target/fill and WebGPU prewarm evidence was structurally incomplete, so no product verdict was emitted."
+    },
+    {
+      "producer": "c12-29-s5-terrain-selection",
+      "runId": "3de051b2-22b8-4dba-af43-c4159527575f",
+      "status": "STRUCTURAL",
+      "category": "mixed",
+      "disposition": "closed-by-certifying-pass",
+      "owner": "C12-29-S5-TERRAIN-SELECTION",
+      "summary": "The v2 hold-target evidence was structurally blind while reset and image predicates were red; successor contracts separated structural evidence from product scoring and later certified PASS."
+    },
+    {
+      "producer": "c12-29-s5-terrain-selection",
+      "runId": "71b315c5-9fa6-4f8a-bfee-204619dc4ebf",
+      "status": "STRUCTURAL",
+      "category": "harness",
+      "disposition": "closed-by-certifying-pass",
+      "owner": "C12-29-S5-TERRAIN-SELECTION",
+      "summary": "The v9 final-report array contract omitted the real deviceGate.gpuErrors path; v10 closed the shape gap and certified the unchanged product report."
+    },
+    {
+      "producer": "c12-29-s5-terrain-selection",
+      "runId": "730e09e9-6728-4258-bddb-72905c420d8c",
+      "status": "ERROR",
+      "category": "operational",
+      "disposition": "closed-by-certifying-pass",
+      "owner": "C12-29-S5-TERRAIN-SELECTION",
+      "summary": "The initial WebGL page timed out before a product verdict; bounded lifecycle and diagnostic repairs superseded the run."
+    },
+    {
+      "producer": "c12-29-s5-terrain-selection",
+      "runId": "858fa49d-5c0f-47ca-9e42-55716b626261",
+      "status": "STRUCTURAL",
+      "category": "mixed",
+      "disposition": "closed-by-certifying-pass",
+      "owner": "C12-29-S5-TERRAIN-SELECTION",
+      "summary": "The v1 run lacked non-vacuous real fill/decoded-terrain evidence and therefore certified no matrix cell; later terrain contracts and product repairs closed the lane."
+    },
+    {
+      "producer": "c12-29-s5-terrain-selection",
+      "runId": "cfa95dae-f66a-4445-b4df-31e9ae50b382",
+      "status": "ERROR",
+      "category": "harness",
+      "disposition": "closed-by-certifying-pass",
+      "owner": "C12-29-S5-TERRAIN-SELECTION",
+      "summary": "The v3 narrow-FOV warmup could not prove an unloaded hold target; the deterministic frontier/visibility harness superseded it."
+    },
+    {
+      "producer": "c12-29-s5-terrain-selection",
+      "runId": "d866b68d-3bf4-46ba-a0c8-4938bba91aa2",
+      "status": "ERROR",
+      "category": "harness",
+      "disposition": "closed-by-certifying-pass",
+      "owner": "C12-29-S5-TERRAIN-SELECTION",
+      "summary": "The v7 first-reveal harness rejected the held-fill transition; later diagnostic and lifecycle contracts retained the cause and certified v10."
+    },
+    {
+      "producer": "c12-29-s5-terrain-selection",
+      "runId": "e685c220-0b0d-4157-b861-badaa90cea83",
+      "status": "ERROR",
+      "category": "harness",
+      "disposition": "closed-by-certifying-pass",
+      "owner": "C12-29-S5-TERRAIN-SELECTION",
+      "summary": "The v5 reveal-warm frontier search found no eligible level-one target; successor targeting and diagnostics superseded it."
+    },
+    {
+      "producer": "c12-29-s5-terrain-selection",
+      "runId": "f03065c0-da60-4ec0-8028-87cc82839093",
+      "status": "ERROR",
+      "category": "operational",
+      "disposition": "closed-by-certifying-pass",
+      "owner": "C12-29-S5-TERRAIN-SELECTION",
+      "summary": "The probe hit connection refused before page execution; the owned-server protocol superseded this operational run."
+    },
+    {
+      "producer": "c12-37-moon-globe-depth",
+      "runId": "2cd2e595-af8f-4e7b-9250-53fe04ab7704",
+      "status": "FAIL",
+      "category": "product",
+      "disposition": "closed-by-certifying-pass",
+      "owner": "C12-37",
+      "summary": "WebGPU failed the visible Moon exit-surface and moving entry/exit continuity predicates; C12-37 implemented the physical route and later certified both backends."
+    },
+    {
+      "producer": "c12-37-moon-globe-depth-occlusion",
+      "runId": "5557e434-7617-4c53-9504-38e0b99b0a92",
+      "status": "FAIL",
+      "category": "harness",
+      "disposition": "closed-by-certifying-pass",
+      "owner": "C12-37",
+      "summary": "Route-control, lazy-TAA accounting, and continuity instrumentation were not truthful enough to score the repaired product; lifecycle-v5 later certified the lane."
+    },
+    {
+      "producer": "c12-37-moon-globe-depth-occlusion",
+      "runId": "bca0fd5b-901e-426c-902e-4c83fbdcaff5",
+      "status": "FAIL",
+      "category": "harness",
+      "disposition": "closed-by-certifying-pass",
+      "owner": "C12-37",
+      "summary": "The queue classifies this as a superseded harness FAIL with no product verdict: served provenance, route controls, and clipping-plane cleanup were red."
+    },
+    {
+      "producer": "c13-41-eclipse-cloud-response",
+      "runId": "72e317ba-f910-4cf0-a8d5-eedb069e282e",
+      "status": "FAIL",
+      "category": "product",
+      "disposition": "closed-by-certifying-pass",
+      "owner": "C13-41",
+      "summary": "The non-vacuous shadowContrastInvariant failed and produced the C13-41 shadow-contrast finding; the corrected invariant and implementation later certified PASS."
+    },
+    {
+      "producer": "c13-41-eclipse-cloud-response",
+      "runId": "bef98b53-6123-4bd4-a8aa-e7336c05dba6",
+      "status": "FAIL",
+      "category": "mixed",
+      "disposition": "closed-by-certifying-pass",
+      "owner": "C13-41",
+      "summary": "The shadow-contrast predicate failed while the directional-light control was structurally mis-modelled; both the product finding and control model were carried through the C13-41 closure."
+    }
+  ]
+}

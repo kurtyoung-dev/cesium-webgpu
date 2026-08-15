@@ -176,6 +176,90 @@ and remain open.
 
 This overlay supersedes both older C11-212 rows that call the WebGPU snap tier
 complete or imply a generic one-frame-stale contract. The 2026-08-02
+### 2026-08-14 HASH STAMP — un-cited C11 landings in `cff0b76a2f..034c7f74d0` (fix SOL-1)
+
+_Added 2026-08-14 by the fix queue of
+[SOL_WEEK_AUDIT_2026-08-14.md](SOL_WEEK_AUDIT_2026-08-14.md) (finding S10 / fix SOL-1).
+Of the 98 commits in that range only **32** were cited anywhere in a tracked document —
+the audit's Lane A counts 31 because it scoped to `migration_doc/**`, and the one it
+misses (`034c7f74d0`) is cited only in `README.md`. The C11-owned landings below carried
+**no hash citation in any tracked file at all**. Every hash was
+verified with `git log --no-walk <hash>`. **This stamp cites; it closes no row and earns
+no verdict** — the canonical rows and the §0 RESUME HERE block above remain the status
+authority._
+
+**Read every line below against two range-wide facts.** (1) **All 98 commit bodies in
+the range are empty** (re-verified 98/98 at this stamp) and 0/98 carry a co-author
+trailer, so the subject line is the only in-git claim carrier and
+`SOL_WEEK_AUDIT_2026-08-14.md` is the evidence authority for the range. (2) **Batch
+numbering stopped after Batch 1027** — the first ten rows below still carry batch numbers
+and are in batch order; the remainder have none and are therefore in commit-time order,
+which is the only ordering the range supports.
+
+| Batch | Commit | Subject | Note |
+| --- | --- | --- | --- |
+| 1018 | `5d148bf07b` | C11-133 fail-closed Karma completion and Edge profile cleanup | |
+| 1019 | `19bd4ac340` | C11-60 cache cloud-shadow bind groups | |
+| 1021 | `aaf9cbe00f` | close render-pipeline variant semantic keying | Also edits `DEFERRED_WORK.md` + `DEBUGGING_GUIDE.md`; see the CLAUDE.md pipeline-key section. |
+| 1022 | `0d87eabf8e` | stabilize IBL generation recovery | |
+| 1023 | `3a930c6716` | make primitive restart demo transform-safe | `C11-90`. |
+| 1024 | `d1cfadeb6c` | define 3D Tiles patch and invalidation extension | Design doc only (`3D_TILES_PATCH_EXTENSION_DESIGN_2026-08-11.md`), no code. |
+| 1025 | `bb524f8a07` | bind C11-209 browser provenance | |
+| 1026 | `37eaf017e6` | consolidate effects placeholder initialization | `C11-209`. |
+| 1027 | `e19829c9e8` | add fail-closed C11-146 route assessor | **Last batch-numbered commit in the fork.** |
+| — | `739a04cf19` | Fix WebGPU voxel readiness and pick lifecycle | Engine + `C18` queue edit; the engine half is stamped in `DEFERRED_WORK.md`. Audit S6(b)/S13 are open against this area. |
+| — | `5d324d08fc` | Record offline isolation machine evidence | Doc-only, this file. `C11-134`. |
+| — | `51b2c34eab` | Keep primitive restart demo offline | `C11-90`. |
+| — | `360d26f0a5` | Record C11-134 online environment red | Doc-only, this file. |
+| — | `8d148a80b6` | Add feature-priority campaign portfolio queue | Creates `CAMPAIGN_PORTFOLIO_QUEUE.md` (408 lines) — grouping only, not a status authority. |
+| — | `4c34d3e9f6` | Refresh campaign attribution frontier | Doc-only, `CAMPAIGN_PORTFOLIO_QUEUE.md`. |
+| — | `47a2fd475d` | Type metadata layouts across the WebGPU model seam | Also stamped in `DEFERRED_WORK.md`. |
+| — | `4ecc17cb46` | Close C11-13 voxel inside-camera acceptance | Doc-only. **Audit S17: the closure band is IoU ≥ 0.6 against an observed 0.994, and the banked PNGs show a real cross-backend stipple artifact a mean metric with 150× headroom cannot flag.** Treat the row as closed-with-a-known-loose-band. |
+| — | `4877bc62a7` | Add C11-168 direct-model ablation discriminator | Tools only. |
+| — | `a2f8098e44` | Record C11-193 environment scheduler landing | Doc-only across four files. |
+| — | `e14432d362` | Add immutable visual evidence library | Tools only, 5,351 lines. **Audit S19 / ruling ask (R-e): `lib/visual-evidence-library.mjs` is a 3,252-line parallel evidence stack that imports zero project modules and that nothing in the pipeline consumes.** Adopt-or-remove is a maintainer call; do not treat its presence as adoption. |
+
+### 2026-08-09 Codex source/status audit — current work order and ledger corrections
+
+This source-verified audit supersedes stale range labels and the older row text
+where they disagree:
+
+- `C11-100` is **PARTIAL**, not NOT STARTED. Static depth-3 traversal (585
+  slots), dynamic level-2 residency/LRU, and their probe exist. The genuine
+  remainder is levels beyond 3/general page-table traversal, level-3 paging/LRU,
+  and the re-upload pixel-drift triage coordinated with `C18-A2/A6`.
+- `C11-195`'s source architecture is substantially complete. The arena is
+  context-owned, exact device/resource-generation invalidation exists, and the
+  per-acquire string/short-array churn is closed. The row remains **PARTIAL for
+  certification only**: moving allocation/GC plus multi-view, shadow, capture,
+  and replacement-device browser evidence.
+- `C11-60` and `C11-76` are **PARTIAL**, not NOT STARTED. Their landed/local
+  narrow slices do not close the remaining stage churn/private submitters.
+- `C11-181` and `C11-208` have no named technical or acceptance remainder and
+  are administratively **COMPLETE** in this audit. Landing is not generally
+  completion; these two close because their recorded gates are all green.
+- `C11-178`, `C11-149`, and `C11-201` are administrative close candidates, not
+  fresh implementation projects. They are not self-promoted here until their
+  alias/evidence-freshness records are reconciled.
+- After the current point-cloud/voxel/cloud source freeze, the ordered next
+  work is: `C11-213` compatibility-mode safety; `C11-205` lifecycle/resident
+  browser certification; `C11-140` probe/artifact landing; then instrumented
+  `C11-214` diagnosis and the focused `C11-186` fresh-imagery red. **Standards
+  correction 2026-08-09:** the current WebGPU limits table guarantees 8
+  fragment-stage storage buffers for core and 4 for compatibility mode; the
+  zero compatibility limit applies to the vertex stage, not the fragment
+  stage. `C11-213` consumes one fragment read-only-storage binding, so the
+  existing globe layout fits both conforming profiles. The per-stage accessors
+  are temporarily optional in `@webgpu/types` during browser rollout; absence
+  is not zero and must use the legacy `maxStorageBuffersPerShaderStage` value
+  for diagnostics. `core-features-and-limits` is already requested when
+  exposed. Therefore no higher-limit request, sampled-texture fallback,
+  imagery-slot reduction, layout fork, or feature removal is a prerequisite
+  for closing the row. Close on a true Edge compatibility-profile gate with
+  the effective fragment limit recorded, zero validation/device errors, and
+  draping/reduced-imagery lifecycle pixels green; a numeric value below 1 is
+  legacy/non-conformance evidence for a separate shim.
+
 continuation — reviewed while unstaged, **LANDED at Batch 819** — fixes the
 previously audited **copy old texture → render new snap
 payload** ordering: sync and async copies are now appended to the active pick

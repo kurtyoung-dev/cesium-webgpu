@@ -34,6 +34,87 @@ to enumerate entry IDs; then (c) grep each candidate id across `migration_doc/**
 for a closure stamp. **If you build a generated index, generate it — do not
 hand-maintain it.**
 
+## 2026-08-14 HASH STAMP — un-cited mechanism landings in `cff0b76a2f..034c7f74d0` (fix SOL-1)
+
+_Added 2026-08-14 by the fix queue of
+[SOL_WEEK_AUDIT_2026-08-14.md](SOL_WEEK_AUDIT_2026-08-14.md) (finding S10 / fix SOL-1).
+Only **32** of that range's 98 commits were cited anywhere in a tracked document (the
+audit's Lane A counts 31, having scoped to `migration_doc/**`; the one it misses,
+`034c7f74d0`, is cited only in `README.md`). The
+landings below have their mechanism record here rather than in a campaign row, and none
+of them carried a hash citation. Every hash was verified with `git log --no-walk <hash>`.
+Per convention 3 above this stamp is **not** a status authority — it records that the
+work exists and where the mechanism lives._
+
+**Two range-wide facts bind every line below.** (1) **All 98 commit bodies in the range
+are empty** — re-verified 98/98 at this stamp — and 0/98 carry a co-author trailer, so
+the subject line is the sole in-git claim carrier and **the audit document is the evidence
+authority for this range**. (2) **Batch numbering stopped after Batch 1027**
+(`e19829c9e8`), so convention 2's batch ordering is unavailable for 88 of the 98; these
+are in commit-time order, which is the only ordering the range supports.
+
+**Engine landings (mechanism records live in this file).**
+
+- `739a04cf19` — Fix WebGPU voxel readiness and pick lifecycle. Adds
+  `WebGPUVoxelResourceLifecycle`, reworks `WebGPUPickFramebuffer` /
+  `WebGPUVoxelDataUpload` / `WebGPUVoxelRenderer`, and touches `Picking.js`, `Scene.js`,
+  `VoxelPrimitive.js`. ⚠ **Audit findings S6(b) and S13 are OPEN against this area** —
+  synchronous picking returns `[]` for the whole duration of camera motion on WebGPU
+  (the exact-provenance cache gate made the motion-tolerant path unreachable, and its
+  docstring now describes behaviour it no longer has), and center-pixel readback
+  starvation means only the last-armed request per frame can publish. Fix SOL-6 owns
+  both; **do not read this landing as closing them.**
+- `820bff13af` — Fix synchronous heightmap vertex count. The real engine defect surfaced
+  by the C12-29 S5 terrain-selection lane (a NaN vertex count out of synchronous
+  `HeightmapTerrainData`).
+- `3cbb82885f` — Restore viewport state after render failures. Transactional
+  viewport/camera/frustum/uniform restoration after 2D/WebVR render failures, including
+  the nested/reentrant case.
+- `a03370f19a` — Refresh WebGPU dependent render targets on HDR/MSAA tuple change.
+- `b7d65fbab9` — Keep temporal history out of public barrels. Private named-only
+  `ViewTemporalHistory` excluded from the generated public default-export barrels;
+  restores a clean build without inventing a public API.
+- `47a2fd475d` — Type metadata layouts across the WebGPU model seam
+  (`WebGPUModelRenderer.ts`, 12 insertions).
+- `bc5aa1fda4` — Make temporal history view-owned. *(Cited here and in
+  `FEATURE_INVENTORY.md`; listed for completeness of the sequence.)*
+
+**Build / tooling landings.**
+
+- `fb9db09ca3` — Preserve shader source escapes in generated modules (`scripts/build.js`
+  plus `scripts/__tests__/shaderSourceToJavaScript.spec.mjs`).
+- `aaf9cbe00f` — Batch 1021, close render-pipeline variant semantic keying
+  (`WebGPURenderPipelineCache.ts` + `pipeline-key-aliasing.spec.mjs`); it also edited this
+  file and `DEBUGGING_GUIDE.md` without citing itself.
+- `e14432d362` — Add immutable visual evidence library (Tools only, 5,351 lines).
+  ⚠ **Audit S19 and maintainer ask R-e are open against it:**
+  `Tools/visual-regression/lib/visual-evidence-library.mjs` is a 3,252-line parallel
+  evidence stack that imports zero project modules and that nothing in the pipeline
+  consumes — it shares a wire format with the real pipeline only by duplicated string
+  literal. Adopt-or-remove is a maintainer call. Per Principle 7 it stays in place until
+  that call is made; per Principle 7 it is also **not** exempt from the call.
+
+**Eclipse / ephemeris / CPU-accounting landings and their doc reconciliations.**
+
+- `b2db059ea4` — Harden C13-41 fresh-context eclipse control. `f38acf65f6` — Harden
+  C13-41 fresh eclipse attribution. Both are C13-41 owned; the **C13 queue still owes
+  these two citations** (not stamped there by this fix — that file is another lane's).
+  ⚠ Audit S2/S3 are open against the C13-41 eclipse-cloud gate demotions and the
+  unrecoverable 7.749/1.607 ms refresh-cost artifact; fixes SOL-3 and SOL-4 own them.
+- `cc2a938f19` — Reconcile eclipse deferred work (doc-only, this file).
+- `545e13b409` — Reconcile landed ephemeris and CPU accounting status (doc-only).
+- `b31529a0c0` — Use shared high-precision ephemeris in Eclipse Explorer.
+- `bc438639ad` — Validate Astronomy Engine lazy import by module edge.
+- `6b4ea1464e` — Assign eclipse space-weather queue owners. `0670179b7e` — Assign Aurora
+  and space-weather follow-up owners. Both doc-only owner assignments; neither is a
+  maintainer launch ruling for the held `C15-01..08` aurora rows.
+- ⚠ **Audit S20 is open across this cluster:** the eclipse solver reproduces real
+  Erie-2024 contact times but is effectively **ungated** — the only physical assertion
+  permits 99.6% error on a 226 s totality, the contact-residual audit is ~250× looser
+  than the physics, the `UT1 ≡ UTC` policy caps accuracy ~60× above the advertised
+  tolerance, and the astronomy-engine Moon leg is geometric while the Sun leg is apparent
+  (~1.4 s). Fix SOL-12 owns pinning C1–C4 against canon at ±5 s.
+
 ## NEW-PROBE-SCENE-TO-SANDCASTLE-DEMO-PIPELINE
 
 **Standing pipeline, opened 2026-08-07 (demo wave 1, maintainer-approved).** Every

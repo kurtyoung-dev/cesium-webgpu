@@ -97,6 +97,37 @@ Use git-stash usage conventions when labeling refs (timestamped, descriptive).
 > `git show HEAD:<file>` or a worktree over stashing for comparisons; never drop unlabeled
 > stashes without maintainer confirmation.
 
+### 3a. Declared out-of-repo worktrees and evidence paths (added 2026-08-14, fix SOL-12)
+
+_Added by the fix queue of [`SOL_WEEK_AUDIT_2026-08-14.md`](SOL_WEEK_AUDIT_2026-08-14.md).
+Rule 2 of §3 requires every worktree to be surfaced when it is created. Three sibling
+worktrees and one out-of-repo evidence library accumulated across the 2026-08-11 → 08-14
+range **without ever being declared in a tracked file**, so a successor reading only this
+repository would not know they exist — and would not know that the load-bearing visual
+evidence for C12-29 S5, C12-37 and C13-41 lives outside it. Declaring them here is a
+statement of fact, **not** an approval to keep them; §3 rule 4 still requires an explicit
+delete-or-keep decision at the end of the work package._
+
+| Path | Kind | State at 2026-08-14 | Disposition |
+| --- | --- | --- | --- |
+| `F:\Dev\GH\cesium-webgpu` | primary worktree | branch `main` | keep |
+| `F:\Dev\GH\cesium-webgpu-cert-s5-3cbb82885fc7` | git worktree, **detached** at `034c7f74d0` | The clean certification tree. Its directory name pins `3cbb82885f` but its HEAD was advanced to `034c7f74d0`; the name is stale, the HEAD is authoritative. Reported tracked-clean at the pause. | Decision owed. Keep only while the C12 certification tail is live. |
+| `F:\Dev\GH\cesium-webgpu-evidence` | git worktree, **detached** at `f38acf65f6` | The evidence-publication tree. Every C12-37 and early-S5 publication in the library records `worktreeLabel: "cesium-webgpu-evidence"` and `dirty: true` — see finding S18: **all 30 banked publications were produced from dirty worktrees**, so "landing-equivalent" rests entirely on per-file source hashes, which are enforced by nothing. | Decision owed. |
+| `F:\Dev\GH\cesium-webgpu-evidence-v9` | git worktree, **detached** at `99abefdc26` | The later S5 evidence tree (custom-ellipsoid v9 era). | Decision owed. |
+| `F:\Dev\GH\cesium-webgpu-visual-evidence` | **not a git repository** — an append-only content-addressed library (`runs/`, `objects/`, `legacy/`, `.claims/`, `.incoming/`) | Holds the immutable publications the queues cite by manifest SHA-256: 15 C12-29 S5 runs (1 PASS), 4 C12-37 runs (3 FAIL / 1 PASS), the C13-41 and C11-13 runs. **It is outside version control entirely.** | Keep. It is load-bearing evidence; back it up rather than deleting it, and note that nothing in git guarantees its contents. |
+| `F:\Dev\GH\cesium-webgpu-backups` | plain directory, not a worktree | Pre-existing. | Out of scope of this stamp. |
+| `.claude/worktrees/agent-*` | three locked agent worktrees on `worktree-agent-*` branches | Harness-created, inside the repo and gitignored. | Transient; they should not outlive their agents. |
+
+Also undeclared and worth stating: the exported landing patches and per-run server logs
+under `/.tmp/` (now gitignored, fix SOL-12) are **not** a backup of anything — they
+duplicate commits already on `main` and will drift.
+
+⚠ Open from the same audit and **not** resolved by this stamp: the 2026-08-02 stash
+decision, and maintainer ask **R-d** — the disposition of the range's quiet-hours,
+co-author-trailer and batch-numbering breaches (24/98 commits landed inside the weekday
+window, 0/98 carry the trailer, and numbering stopped after Batch 1027). The compliance
+mechanism was this very file, in-repo and current throughout.
+
 ---
 
 ## 4. Close-out mode pointer

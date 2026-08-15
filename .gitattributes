@@ -1,5 +1,36 @@
 # Auto detect text files and perform LF normalization
 * text=auto
 package.json text eol=lf
+
+# --- NASA SVS 5073 eclipse fixture (C12-29 S5) ---------------------------------
+# Every member of this directory is pinned by SHA-256 in the fixture manifest and
+# in the queue stamps, so a checkout that rewrites even one byte invalidates the
+# provenance chain rather than producing a diff someone would notice.
+#
+# Correction 2026-08-14 (fix SOL-12; audit finding S21 of
+# SOL_WEEK_AUDIT_2026-08-14.md, corroborated independently by three lanes): before
+# this block the three binary members were covered only by git's own binary
+# heuristic and the `.prj` was left under `* text=auto`. With `core.autocrlf=true`
+# on Windows -- this repository's normal configuration -- that made the byte-identity
+# claim true only by accident: the `.prj` happens to contain NO CR and NO LF byte
+# (verified: 143 bytes, 0x0D x0, 0x0A x0), so normalization had nothing to rewrite.
+# The other three DO carry EOL bytes inside binary records (.dbf 1 CR / 2 LF,
+# .shp 15 CR / 10 LF, .shx 0 CR / 1 LF) and would be silently corrupted if the
+# heuristic ever guessed "text". Declare every member explicitly instead of relying
+# on either accident.
+#
+# `-text` disables all EOL conversion in both directions; `binary` is the shorthand
+# for `-text -diff` and additionally stops git from attempting a textual diff.
+Tools/visual-regression/fixtures/nasa-svs-5073/*.shp binary
+Tools/visual-regression/fixtures/nasa-svs-5073/*.shx binary
+Tools/visual-regression/fixtures/nasa-svs-5073/*.dbf binary
+# The projection file is human-readable WKT but is hashed byte-for-byte alongside
+# the binaries, so it is pinned with `-text` rather than `eol=lf`: `-text` cannot be
+# defeated by a future editor writing CRLF into the working tree, whereas `eol=lf`
+# only normalizes on the way in.
+Tools/visual-regression/fixtures/nasa-svs-5073/*.prj -text
+# Tooling and metadata are ordinary text and are normalized to LF so they are
+# stable across platforms.
 Tools/visual-regression/fixtures/nasa-svs-5073/manifest.json text eol=lf
+Tools/visual-regression/fixtures/nasa-svs-5073/NOTICE.md text eol=lf
 Tools/visual-regression/fixtures/nasa-svs-5073/*.mjs text eol=lf
