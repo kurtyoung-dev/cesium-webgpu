@@ -516,7 +516,12 @@ test("E3: the C11-176 orbital regression is closed at the source", () => {
 });
 
 test("E3: Scene publishes current-frame moon brightness before star consumers", () => {
-  const moonUpdate = sceneJs.indexOf("? this.moon.update(frameState)");
+  // C12-37 adds the depth-route state as a second argument. Match the call's
+  // semantic boundary instead of pinning the obsolete one-argument spelling;
+  // the strict ordering assertion below remains unchanged.
+  const moonUpdate = sceneJs.search(
+    /\?\s*this\.moon\.update\(\s*frameState(?:,\s*environmentState\.moonDepthRouteState)?\s*\)/,
+  );
   const brightness = sceneJs.indexOf(
     "frameState.skyBrightness =\n        computeSkyBrightness(",
   );
