@@ -277,6 +277,8 @@ CesiumDebug.logImageryProbe();     // dumps next 4 tile updates to console
 
 ## Probe inventory (`Tools/visual-regression/`)
 
+**Two views, one fleet.** This inventory is the *curated* view — the first probe to run for a given subsystem question, plus the capture templates and the standing gates. It is deliberately small and hand-maintained. The *everything* view is **[TOOLING_CATALOG.md](TOOLING_CATALOG.md)**: a generated census of all 1,012 `.mjs` files under `Tools/` and `scripts/`, each with its class (probe / spec / gate-lib / lib / runner / bake-tool / fixture / scratch) and its status (`ACTIVE`, `INVESTIGATION_ARTIFACT`, `LIKELY_SUPERSEDED`, `BROKEN_STALE`, `HELD_FOR_D8`, `DELIBERATE_RED_FLAG`, `UNKNOWN`). Use this guide for "what do I run first"; use the catalog for "does an instrument for X already exist" and "is the file I just found still in service". The split is deliberate — the catalog absorbs per-batch churn so this guide's must-stay-synced rule stays honorable.
+
 **The count is CENSUS-DERIVED, not typed by hand** *(corrected 2026-08-09, handover audit FIX 36 — this line read "260+" against a disk reality more than twice that, which invited a successor to conclude the fleet was small enough to read).* Re-derive it, never copy it:
 
 ```bash
@@ -289,6 +291,27 @@ node --test Tools/visual-regression/probe-fleet-contract.spec.mjs
 The curated table below is **not exhaustive** — many probes are finer-grained bisection variants of the documented gates. Use it to find an existing probe before writing a new one; most "I need to test X" cases have a template.
 
 > **PROBE_BASE gotcha:** most probes default to `http://localhost:8080`, but `probe-collections-regression.mjs` and `probe-pick-basic.mjs` default `PROBE_BASE` to `:8134`. Against the standard dev server, run them with `PROBE_BASE=http://localhost:8080` or they fail on connection, not on rendering (this bit the 2026-07-03 campaign audit sweep — both pass at `:8080`).
+
+### The spec fleet — the durable-contract layer
+
+Probes are instruments; the `*.spec.mjs` fleet is the **contract** layer, and it is where a finding goes to become permanent. Specs run under Node's own test runner, one file at a time:
+
+```bash
+node --test Tools/visual-regression/<name>.spec.mjs
+```
+
+They are **browser-free unless the file says otherwise** — a spec asserts over pure functions, gate libraries, manifests and recorded artifacts, so it needs no dev server, no Edge and no GPU. That is also why the retirement ritual for an investigation probe is "bank the conclusion, then promote or archive": a probe proves something once, a spec keeps proving it. The census counts ~172 specs; this guide names only the ones you are likely to run by hand.
+
+**Exit codes are frozen fleet-wide, not per-probe convention.** Probes and gate libraries resolve their verdict through [lib/verdict-exit-gate.mjs](../Tools/visual-regression/lib/verdict-exit-gate.mjs), whose table is the single authority:
+
+| Exit | Verdict | Meaning |
+| --- | --- | --- |
+| `0` | `PASS` | The lane saw its subject and the subject met the bar. |
+| `1` | `FAIL` | The lane saw its subject and the subject missed the bar. |
+| `2` | `ERROR` | The harness broke — exception, timeout, wedged page. |
+| `3` | `STRUCTURAL` | The lane could not see its subject at all, so it has no standing to report either a pass or a fail. |
+
+Read exit 3 as "this run proves nothing", never as a soft fail — that distinction is why the table was centralized at all (six sibling copies, five agreeing; the sixth routed `STRUCTURAL` to `2` and made a blind lane indistinguishable from a crashed one). `probe-fleet-contract.spec.mjs` enforces verdict-vs-exit-code agreement across the fleet.
 
 ### Templates / starting points
 
@@ -1164,6 +1187,26 @@ Fix SOL-5 owns the watchdog/close repair and extending the contract to `lib/*-ga
 ### Instrument doctrine
 
 The verification and instrument rules earned on 2026-07-25 and 2026-08-08 — same-task capture, canvas-element PNGs, pinned clocks, helpers inside `page.evaluate`, interleaved A/B for GPU timing, reference-disagreement = STRUCTURAL, and the WebGPU-canvas capture rule (Playwright element screenshots ONLY; in-page `drawImage` reads transparent even in the same task) — are banked in **[ORCHESTRATION_HANDBOOK.md](ORCHESTRATION_HANDBOOK.md) §7 (Verification and instrument doctrine)**. That is the authority; this guide covers tools and procedures, the handbook covers method. Read it before building any new probe.
+
+### Instrument-defect case files
+
+Two investigations are kept as *case files* rather than as runnable gates. Both times a capture artifact was mistaken for a render bug; both times the discriminating test cost less than the fix that was about to be written. The files themselves are historical artifacts and may move under `archive/` — the lesson is the part that has to survive.
+
+**Far-camera "cage" / "ring" — [probe-farcam-isolation.mjs](../Tools/visual-regression/probe-farcam-isolation.mjs)**
+
+- *Symptom:* at 12/20/35/50 Mm, WebGPU showed dark radial wedge-gaps and ring bands across the globe disc that WebGL did not — captured while `scene.globe.tilesLoaded` was already true and coverage was past 25%.
+- *False conclusion invited:* an RTE/precision defect at far camera distances — plausible because the genuine far-camera mesh tear (a real precision bug, fixed by the RTC switch) sat in the very same sweep.
+- *Discriminating test:* re-run one view at a time with a **long fixed settle and no early break** (600 warm-up frames, then 400 per view) on both backends, so every capture is taken at full materialization, then compare only fully-materialized frames.
+- *Result:* the cage rendered clean. It was a partially-materialized capture — WebGPU pipelines were still compiling behind a readiness signal that had already flipped true.
+- *Doctrine:* **a readiness flag is not a readiness proof.** Settle on a measured property of the thing you are about to photograph, and when two artifacts share one sweep, isolate before attributing.
+
+**12 Mm coarse-LOD gaps — [probe-h12-longsettle.mjs](../Tools/visual-regression/probe-h12-longsettle.mjs)**
+
+- *Symptom:* the same 12 Mm cage, reproduced on WebGPU alone at the exact saved view.
+- *False conclusion invited:* level-0/1 tiles whose shared edges disagree — i.e. a real geometry/skirt defect in the WebGPU terrain path.
+- *Discriminating test:* one page, one view, two settles differing in exactly one variable — short (60 frames, mimicking the original probe's early break) and long (600 frames) — capturing after each while logging the **rendered tile-level histogram** at frames 30/100/250/last, so the LOD state is measured instead of assumed.
+- *Result:* the histogram shifted to finer levels and the gaps filled in; `tilesLoaded` had gone vacuously true on WebGPU long before refinement finished.
+- *Doctrine:* **instrument the state your hypothesis is about.** A probe that photographs the scene without recording the scene's own LOD/pipeline state cannot separate a render bug from a timing bug.
 
 ---
 
