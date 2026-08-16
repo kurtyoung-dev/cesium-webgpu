@@ -1,4 +1,6 @@
 // SAME-TASK CAPTURE — the fused render-and-read primitives, in one place.
+// @purpose Canonical capture primitives that keep render+readback in one task (WebGL clears, WebGPU invalidates after present), plus embed-drift validators.
+// @status ACTIVE
 //
 // ★ WHAT THIS PREVENTS. A probe that renders, yields to the browser, and THEN
 // reads the canvas is reading a buffer neither backend guarantees still exists.

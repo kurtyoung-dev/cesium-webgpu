@@ -3,6 +3,8 @@
 // on both backends and compare row-by-row. If they differ, the polar
 // reprojection diff has a SOURCE-side cause (upload convention, color
 // space, precision) — not a reprojection-algorithm cause.
+// @purpose Compares SOURCE Mercator imagery-texture pixels row-by-row across backends to attribute the polar reprojection diff to upload vs algorithm.
+// @status INVESTIGATION
 //
 // WebGL:  imagery.textureWebMercator   (Cesium Texture, uploaded via
 //         `new Texture({source: image})` with UNPACK_FLIP_Y_WEBGL=true)

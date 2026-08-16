@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // Batch 62 — for polar tiles (south < -85°), dump per-tile imagery
 // state on both WebGL and WebGPU.
+// @purpose Diagnostic: dumps per-tile imagery state machine (skeletons, readyImagery, textures) for polar tiles on both backends re layerCount=0
+// @status INVESTIGATION
 //
 // Hypothesis under test: on WebGPU, `layerCount=0` for polar tiles
 // because either (a) no TileImagery skeletons exist, (b) readyImagery

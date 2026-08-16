@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // Probe the REALIZED WebGPU imagery texture for a loaded globe tile.
+// @purpose Asserts a loaded tile has a REALIZED WebGPU imagery GPUTexture via the per-imagery dual-texture fields and the renderer's _imageryTextureCache
+// @status ACTIVE
 //
 // C9-AUDIT-P1-SWEEP (Batch 684): the old probe read imagery._webgpuTexture /
 // imagery._webgpuTextureView — fields that DO NOT EXIST on the imagery object,

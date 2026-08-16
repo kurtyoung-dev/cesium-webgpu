@@ -2,6 +2,8 @@
 // Captures the WebGPU globe at orbit with `globe.showGroundAtmosphere`
 // toggled ON and OFF. After the Batch 56 per-fragment ground atmosphere
 // fix we want to be sure:
+// @purpose Captures both backends with showGroundAtmosphere ON and OFF (4 PNGs) to confirm the per-fragment drape path and a clean OFF state.
+// @status ACTIVE
 //
 //   1. With atmosphere ON: limb glow is visible, no mesh-pattern,
 //      imagery is recognizable. (The path the Batch 56 fix touches.)

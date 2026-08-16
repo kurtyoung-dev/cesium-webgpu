@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * HDR + TAA interaction check.
+ * @purpose HDR+TAA interaction matrix: initial-mount both-on, each toggle order, round-trip off; fails on GPU validation errors or empty renders.
+ * @status ACTIVE
  *
  * Tests four scenarios:
  *   1. Initial mount with HDR=true + TAA=true (both on from frame 1)

@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // pre-push-guard.mjs — the git-aware driver behind .husky/pre-push.
+// @purpose Git-aware driver behind .husky/pre-push: enforces batch-prefix/body/trailer/quiet-hours on every outgoing agent commit; fail-closed, no bypass flag.
+// @status ACTIVE
 //
 // Ruling: migration_doc/MAINTAINER_RULINGS_2026-08-14.md R-2026-08-14-4
 // Rules:  Tools/landing-rules.mjs (pure predicates, specs in landing-rules.spec.mjs)

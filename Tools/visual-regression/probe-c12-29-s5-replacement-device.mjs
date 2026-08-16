@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * Genuine C12-29 S5 replacement-device recovery certification.
+ * @purpose Genuine device-loss recovery certification via Chromium GPU-process termination (never destroy()); 'destroyed' losses archived STRUCTURAL not recovery
+ * @status ACTIVE
  *
  * The only loss trigger in this probe is Chromium's normal GPU-process
  * termination hook, exposed by exactly --enable-gpu-benchmarking.  The probe

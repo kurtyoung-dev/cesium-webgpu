@@ -1,4 +1,6 @@
 // Classifier scene-mode probe (NEW-CLASSIFIER-2D-CV-MORPH verification).
+// @purpose Regression guard: flat-color GroundPrimitive classification renders in SCENE3D/SCENE2D/COLUMBUS_VIEW with enforced coverage and zero device errors
+// @status ACTIVE
 //
 // Verifies a flat-color GroundPrimitive (the commonly-used classification
 // primitive — ground-clamped polygon) on the WebGPU backend across SCENE3D,

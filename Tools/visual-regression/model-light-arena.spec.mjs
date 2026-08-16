@@ -1,6 +1,8 @@
 // C11-195 (light slice) — pure-Node contracts for the model/view LIGHT half of
 // the WebGPU group-0 dynamic-offset arena. Sibling of
 // model-camera-arena.spec.mjs, same two halves:
+// @purpose Light-slice sibling of the camera-arena spec: pack-once-per-model-per-view light block, removal from per-primitive group-1, WGSL binding move.
+// @status ACTIVE
 //
 //   1. BEHAVIORAL. The real `WebGPUModelCameraArena` is bundled with esbuild
 //      and driven by fake GPUDevice / ring-allocator doubles, so the

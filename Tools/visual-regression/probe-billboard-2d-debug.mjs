@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 // Diagnostic (Bug 5 — collections render nothing in 2D/CV on WebGPU).
+// @purpose Raw introspection of one billboard in SCENE2D: actual position, command BV, frustum-bin survival, manual clip position from packed matrices.
+// @status INVESTIGATION
+//
 // Introspects, in SCENE2D, a single billboard's actual-position, its WebGPU
 // draw-command bounding volume, whether the command survives frustum binning
 // (scene.isVisible), and the manually-computed clip position from the packed

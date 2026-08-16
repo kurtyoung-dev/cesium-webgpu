@@ -1,5 +1,8 @@
 // spec-cesium-viewer-loading-parity.spec.mjs — the loading presentation must
 // be upstream's, on every backend.
+// @purpose Loading-presentation parity: the async WebGPU viewer path adds no chrome of its own; the page indicator hides at first rendered frame on both.
+// @status ACTIVE
+//
 // Pure Node: no browser, no network, no GPU.
 //
 // WHAT IS BEING PINNED. A viewer started on WebGPU cannot be constructed

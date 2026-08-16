@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // probe-metadata-table-instance — PARITY-METADATA-TABLE-INSTANCE-SOURCE probe.
+// @purpose Property tables keyed by instance feature IDs on WebGPU: 4-instance debug-paint palette, WGSL path asserts, off-gate, WebGL reference.
+// @status ACTIVE
 //
 // Property tables keyed by INSTANCE-sourced feature IDs on WebGPU
 // (EXT_mesh_gpu_instancing + EXT_instance_features). Previously only

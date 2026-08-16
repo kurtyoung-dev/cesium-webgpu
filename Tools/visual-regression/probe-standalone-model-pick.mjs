@@ -4,6 +4,8 @@
 // ModelGraphics) must return a defined pick whose .primitive === the model
 // (or .detail.model === the model) on BOTH WebGL and WebGPU. A pick OFF the
 // model must return undefined on both.
+// @purpose Parity gate: scene.pick over a Model added directly to scene.primitives returns the model on both backends; off-model pick undefined.
+// @status ACTIVE
 //
 // Background: webgpu-model-pick demo picks entity.model successfully, but the
 // direct-scene.primitives path was reported to return undefined on WebGPU

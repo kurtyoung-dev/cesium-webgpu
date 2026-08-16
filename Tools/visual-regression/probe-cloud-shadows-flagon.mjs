@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * CLOUD-SHADOWS flag-ON probe (Batch 437 — 4.1 CLOUD-SHADOWS).
+ * @purpose Cloud cast-shadow ON/OFF capture over lit terrain, plus a C13-16 U2 CIRRUS acceptance mode with pinned clock/wind.
+ * @status ACTIVE
  *
  * Procedural clouds ON + globe.defaultCloudCollection.volumetric.cloudCastShadows=true over lit terrain. Captures
  * the canvas so the cloud-shaped ground shadows can be eyeballed against the cloud

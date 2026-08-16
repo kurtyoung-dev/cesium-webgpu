@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // verify-packaged-notices.mjs — does the notice reach the artifact?
+// @purpose Verifies every third-party license notice actually reaches each published artifact (root/engine/widgets LICENSE.md, ThirdParty.json, release zip).
+// @status ACTIVE
 //
 // Determinations: migration_doc/LICENSE_DETERMINATIONS_2026-08-10.md
 // Standard:       Documentation/Contributors/CodingGuide/ForkCommentStandard.md §6.2

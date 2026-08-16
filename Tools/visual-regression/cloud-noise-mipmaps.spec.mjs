@@ -1,3 +1,6 @@
+// @purpose Pins WebGPUCloudNoiseResources + CloudNoiseMipmap.wgsl mip-chain agreement, with a loud guard on the halve-to-1 loop's integer precondition.
+// @status ACTIVE
+
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";

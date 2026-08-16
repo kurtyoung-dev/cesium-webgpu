@@ -1,6 +1,8 @@
 /**
  * Pure policy and independent numeric oracle for the C12-29 S5 custom-
  * ellipsoid runtime certification shard.
+ * @purpose Frozen v7 contract plus independent f64/stepwise-f32 eclipse oracle for the S5 custom-ellipsoid certification; refuses self-attested evidence.
+ * @status ACTIVE
  *
  * This module is deliberately browser-free.  The probe owns acquisition;
  * this file owns the frozen contract and refuses incomplete or self-attested

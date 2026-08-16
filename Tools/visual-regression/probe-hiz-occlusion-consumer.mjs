@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // Probe: HIZ-OCCLUSION-CONSUMER (NEW-HIZ-CONSUME, Batch 210)
+// @purpose Dense 3600-box scene crossing the Hi-Z gate: polls highDensityCull() for activation/dispatch/filtering and captures both backends for over-cull
+// @status ACTIVE
 //
 // Verifies the Hi-Z occlusion-culling consumer on WebGPU:
 //   1. Builds a DENSE scene (thousands of individual box primitives) so the

@@ -1,6 +1,9 @@
 // Scan a list of demos for any "Attachment state of [RenderPipeline ...]"
 // validation warnings — they indicate format/sample-count drift between a
 // cached pipeline and the render pass it's bound against.
+// @purpose Scans demos for 'Attachment state of [RenderPipeline]' warnings — detects format/sample-count drift between cached pipelines and passes.
+// @status ACTIVE
+//
 import { chromium } from "playwright";
 
 const RENDERER_OVERRIDE_SHIM = `

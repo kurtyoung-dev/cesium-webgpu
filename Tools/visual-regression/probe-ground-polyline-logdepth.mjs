@@ -2,6 +2,8 @@
 /**
  * Probe: GroundPolylinePrimitive classifier LOG-DEPTH reverse
  * (Q18-LOGDEPTH-CONSUMERS / NEW-LOG-DEPTH-REMAINING-CONSUMERS).
+ * @purpose Gates the GroundPolyline classifier's log-depth reversal: magenta draped line at a far camera must match WebGL within 25% with the FR cache built
+ * @status ACTIVE
  *
  * WHAT THIS FIXES: the WebGPU GroundPolyline classifier FS reconstructs the
  * terrain fragment's eye-space position from the sampled globe-depth texture

@@ -3,6 +3,8 @@
 // premultiplied-alpha output at the midlat-mid view. We want to
 // identify exactly which pixels diverge and infer what input state is
 // triggering the divergence.
+// @purpose Offline diff of pre-captured OLD straight-mix vs NEW premultiplied WGSL captures vs WebGL: per-row mismatch and where the math fix helps.
+// @status INVESTIGATION
 //
 // Inputs (assumed pre-captured):
 //   Tools/visual-regression/output/bisect-midlat-OLD-wgsl-mix.png

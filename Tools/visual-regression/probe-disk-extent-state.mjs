@@ -1,4 +1,7 @@
 // NEW-VR2-3c forensics — dump camera/canvas/projection state.
+// @purpose Dumps camera/canvas/projection state on both backends for the disk-extent forensics of the wash-out investigation.
+// @status INVESTIGATION
+//
 import { chromium } from "playwright";
 
 const RENDERER_OVERRIDE_SHIM = `

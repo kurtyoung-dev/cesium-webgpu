@@ -1,5 +1,7 @@
 // celestial-capture-harness.spec.mjs — browser-free guard for the shared
 // page/settle/capture recipe in `lib/celestial-capture-harness.mjs`.
+// @purpose Mutation-checked guard for lib/celestial-capture-harness.mjs, the shared page/settle/capture recipe the celestial gate probes import.
+// @status ACTIVE
 //
 // WHY THIS SPEC EXISTS. The recipe it guards used to live inside
 // `probe-celestial-gates.mjs`, where three separate gate specs pinned pieces of

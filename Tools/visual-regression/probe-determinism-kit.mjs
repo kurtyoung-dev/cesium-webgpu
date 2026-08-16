@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // Acceptance probe for Q7-PROBE-DETERMINISM.
+// @purpose Acceptance for lib/determinism-kit.mjs: pinned-clock recipe makes globe captures reproducible run-to-run (<0.05%) while the legacy recipe drifts.
+// @status ACTIVE
 //
 // Proves the determinism kit (Tools/visual-regression/lib/determinism-kit.mjs)
 // makes a sky-visible globe probe REPRODUCIBLE run-to-run, killing the drift

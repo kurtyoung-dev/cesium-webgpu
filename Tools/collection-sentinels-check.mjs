@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 // NEW-COLLECTIONS-ERROR-SENTINELS — standalone node verification of the three
 // PERMANENT (non-pragma) fault detectors in WebGPUCollectionRendererBase.ts:
+// @purpose Fast no-GPU smoke check of the three permanent fault sentinels in WebGPUCollectionRendererBase via in-memory esbuild transpile; <1s local run.
+// @status ACTIVE
+//
 //   1. Re-entry / infinite-loop guard  (beginCollectionFrame/endCollectionFrame)
 //   2. Null-target guard                (validateInstanceSyncResult / validateDrawTargets)
 //   3. Size-validation / overflow guard (validateInstancedDrawBuffer / writePickInstances)

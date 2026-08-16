@@ -1,5 +1,7 @@
 /**
  * NEW-MODEL-IBL-BRDF-LUT + NEW-MODEL-IBL-REFERENCE-FRAME verification.
+ * @purpose Model IBL parity: split-sum BRDF LUT consumption + world-anchored reflection frame at two camera headings, with a specular liveness control.
+ * @status ACTIVE
  *
  * Renders a metallic/specular glTF model lit ONLY by image-based lighting
  * (the per-model procedural DynamicEnvironmentMapManager sky cubemap — a

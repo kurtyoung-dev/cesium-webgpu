@@ -4,6 +4,9 @@
 // the textured region. Mip-0-locked sampling of a minified texture injects
 // aliasing high-frequency detail (shimmer); trilinear from the correct mip is
 // smooth. So a mip-0 WebGPU render shows HIGHER HF energy than WebGL trilinear;
+// @purpose C10-05 pre/post evidence: high-frequency energy over a minified model texture per backend — mip-0 aliasing shimmer vs trilinear smoothness.
+// @status INVESTIGATION
+//
 // the C10-05 fix drops WebGPU HF toward WebGL's. Also saves still PNGs for the
 // eyeball read (CLAUDE.md Principle 8) and a cross-backend HF ratio.
 //

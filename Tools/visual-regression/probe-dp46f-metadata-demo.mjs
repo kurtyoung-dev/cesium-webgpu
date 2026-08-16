@@ -1,4 +1,6 @@
 // probe-dp46f-metadata-demo — DP-H46 epic closeout verification.
+// @purpose DP-H46 closeout: the webgpu-structural-metadata-pick demo's asset serves, renders on WebGPU, and its pick path decodes values in dp46e ranges.
+// @status ACTIVE
 //
 // Verifies the `webgpu-structural-metadata-pick` Sandcastle demo end-to-end on
 // the WebGPU backend:

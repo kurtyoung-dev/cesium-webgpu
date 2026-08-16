@@ -3,6 +3,8 @@
 // distances. Captures both backends at each distance, decodes the
 // PNG inside the page to compute mean RGB across the visible globe
 // area, and reports the per-distance ratio.
+// @purpose Standing per-globe-pixel WebGL/WebGPU mean-RGB brightness ratio at 5 camera distances; RED outside [0.5,2.0]; JSON report for trends.
+// @status ACTIVE
 //
 // Baseline measurement for the pre-existing "globe ~4x darker on
 // WebGPU" issue. Re-run after any tonemap / drape / atmosphere

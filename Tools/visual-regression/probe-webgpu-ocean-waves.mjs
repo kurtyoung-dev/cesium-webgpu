@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 // ACCEPTANCE / REGRESSION probe for NS-WEBGPU-OCEAN-BRIGHT-NO-WAVES.
+// @purpose Acceptance for the WebGPU bright/flat ocean bug: ocean brightness and spatial wave variance vs WebGL at a low-oblique daytime coastal view.
+// @status ACTIVE
+//
 // User-reported (2026-07-06) split-screen bug: at a low-oblique DAYTIME
 // coastal view the WebGPU ocean renders TOO BRIGHT (flat washed-out cyan)
 // AND LACKS the animated wave-noise/foam swirls that WebGL shows.

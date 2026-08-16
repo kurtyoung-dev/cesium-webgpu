@@ -5,6 +5,8 @@
 // WebGPU library twin, matching WebGL — not fall back to the black/0.25
 // defaults (the pre-fix bug where the outer composite's undefined uniforms
 // alias reached packEdgeUniforms).
+// @purpose Gate: array form of createSilhouetteStage carries the inner edge stage's custom color/length to the WebGPU twin; single form unchanged
+// @status ACTIVE
 //
 // Deterministic scene (globe + two boxes → strong depth discontinuities so
 // the silhouette produces visible edges). On BOTH backends:

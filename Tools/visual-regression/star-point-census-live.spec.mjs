@@ -1,4 +1,6 @@
 // star-point-census-live.spec.mjs — C12-STAR-POINT-CENSUS-LIVE-CALIBRATION.
+// @purpose Standing discriminator: the star point census was mis-calibrated for live frames (strict local-max tie at the NDC-origin pixel corner).
+// @status ACTIVE
 //
 // The DISCRIMINATOR the DEFERRED_WORK entry specified, kept as a standing spec.
 //

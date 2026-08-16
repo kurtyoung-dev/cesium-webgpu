@@ -131,6 +131,48 @@ prior fleet maximum, the design is wrong — usually hand-rolled validation that
 belongs in a shared schema helper. Stop and restructure rather than continuing
 to type. *(Finding F7/Lane C.)*
 
+3.6 **[STANDING] Self-registration, and the retirement ritual — an
+investigation probe has an END.** *(Maintainer rulings M2 and M4 of the .mjs
+library audit; see `TOOLING_CATALOG.md`.)*
+
+Every `Tools/visual-regression/probe-*.mjs` and `lib/*-gate.mjs` carries, in its
+header block:
+
+```js
+// @purpose <one sentence: what this file establishes>
+// @status  ACTIVE | INVESTIGATION | ARCHIVED-CANDIDATE
+```
+
+`purpose-header-contract.spec.mjs` enforces it (files that predate the rule sit
+on a named, shrink-only allowlist), and `node Tools/generate-tooling-catalog.mjs`
+regenerates the catalog's census from those headers — so a new probe is
+catalog-visible on the next regeneration with zero manual doc work, and drift is
+a contract failure rather than a documentation failure.
+
+**A probe written at `@status INVESTIGATION` is not finished when it answers its
+question. It is finished when it has been retired, and retirement happens in the
+SAME COMMIT as the fix the probe informed:**
+
+1. **Bank the conclusion first, always.** The root cause, the measurement, and
+   the probe's own name go into `WEBGPU_DEBUGGING_LOG.md`. The artifact is the
+   evidence; the conclusion is the product. A probe deleted before its finding
+   was written down destroys the finding, and this repository has re-derived the
+   same instrument-defect lessons at least three times for exactly that reason.
+2. **Then take one of the two exits — never neither:**
+   - **PROMOTE.** The check is worth running forever: turn it into a spec or a
+     standing gate, flip `@status ACTIVE`, and wire it where the gates already
+     run.
+   - **ARCHIVE.** The question is closed: move the file to the archive
+     directory, flip `@status ARCHIVED-CANDIDATE`, and delete its allowlist row
+     and any runbook reference **in the same commit** (a stale allowlist row
+     fails the contract, which is the mechanism that makes this non-optional).
+
+The third state — "done with it, left it where it was" — is the one that is
+banned. It is not neutral: 380 of 642 probes reached it, `DEBUGGING_GUIDE.md`
+ended up documenting four probes that no longer existed, and a successor reading
+the directory cannot tell a live gate from an answered question. Campaign
+close-out re-audits this (`ORCHESTRATION_HANDBOOK.md` §5).
+
 ## 4. Capacity and the pause protocol
 
 4.1 **[STANDING] Pause EARLY, not at collapse.** The observable signature of a

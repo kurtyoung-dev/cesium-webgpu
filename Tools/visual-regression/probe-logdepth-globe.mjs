@@ -1,4 +1,7 @@
 // Slice 2a verification — globe log-depth producer.
+// @purpose Globe log-depth producer check: _logDepthWriteEnabled off is inert, on recompiles the LOG_DEPTH variant and still renders with zero device errors
+// @status ACTIVE
+//
 // Renders the WebGPU globe with _logDepthWriteEnabled OFF (default, must be
 // inert) then flips it ON (must recompile the LOG_DEPTH shader variant + still
 // render the globe). Confirms: flag-off identical, flag-on 0 device errors +

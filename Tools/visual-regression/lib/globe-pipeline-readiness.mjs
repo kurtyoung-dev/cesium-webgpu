@@ -1,5 +1,7 @@
 // globe-pipeline-readiness.mjs — the pure logic behind
 // `probe-globe-pipeline-readiness.mjs`.
+// @purpose Pure scoring for the pipeline-readiness probe: snapshot summary, coverage-divergence scoring, non-vacuity; keys decoded via canonical parser.
+// @status ACTIVE
 //
 // WHY THIS IS ITS OWN MODULE. Everything here is a total function over data:
 // summarising a snapshot of the renderer's entry map, scoring a frame series for

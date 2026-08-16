@@ -1,4 +1,6 @@
 // verify-landing-compliance.spec.mjs — contract for the bypass detector.
+// @purpose Contract for the bypass detector against immutable history: known-bad C12-37 landing must red, known-good B1041-1043 landing must pass.
+// @status ACTIVE
 //
 // Run: node --test Tools/verify-landing-compliance.spec.mjs
 //

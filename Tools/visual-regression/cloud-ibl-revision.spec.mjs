@@ -1,3 +1,6 @@
+// @purpose Source-anchored guard that WebGPUDynamicEnvironmentMapManager and the procedural cloud renderer keep the IBL revision handshake wired (CRLF-safe).
+// @status ACTIVE
+
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";

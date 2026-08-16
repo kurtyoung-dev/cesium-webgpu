@@ -1,5 +1,7 @@
 // celestial-source-split.mjs — POST-DR-01 metrics for G1 Lane A's three
 // source-split modes (`PROBE-CELESTIAL-GATES-PRE-DR01-STAR-THRESHOLDS`).
+// @purpose Post-DR-01 G1 lane-A metrics: cube-map zero-resolved-source seam assertions plus sprite extent/agreement/chroma, zeros backed by controls.
+// @status ACTIVE
 //
 // WHY THIS FILE EXISTS
 // --------------------

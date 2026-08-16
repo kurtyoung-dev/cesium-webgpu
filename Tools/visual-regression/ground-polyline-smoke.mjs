@@ -2,6 +2,8 @@
 /**
  * Smoke test for Migration Session 4b — WebGPU GroundPolylinePrimitive
  * classifier.
+ * @purpose Early smoke probe loading the WebGPU viewer and checking GroundPolylinePrimitive classifier presence plus console health.
+ * @status ACTIVE
  *
  * Usage:
  *   node Tools/visual-regression/ground-polyline-smoke.mjs

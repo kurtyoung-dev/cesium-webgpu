@@ -3,6 +3,8 @@
 // position and movement of the moon") as executable gates over the harmonic
 // tide engine: `Core/TidalArguments.js`, `Core/TidalConstituents.js`,
 // `Core/HarmonicTideModel.js`, `Core/TideConstituentGrid.js`.
+// @purpose Executable tide gates: Doodson arguments vs published elements, UT1/TT bridge, spring/neap on syzygy, sub-lunar bulge, atlas round-trip.
+// @status ACTIVE
 //
 // These tests fail if:
 //   - the Doodson/Cartwright fundamental arguments stop reproducing published

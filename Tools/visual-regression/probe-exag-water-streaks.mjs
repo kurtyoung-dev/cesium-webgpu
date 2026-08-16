@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // Regression probe for Q12-EXAG-WATER-STREAKS (NEW-WEBGPU-EXAG-WATER-STREAKS).
+// @purpose Regression lock: no saturated blue water streaks at EXAG=10 Himalaya with atmosphere off, plus cross-backend water color parity with it on.
+// @status ACTIVE
 //
 // PREMISE (now stale/RESOLVED): under high vertical exaggeration over Himalaya
 // glacial-lake terrain (EXAG=10, lon 86.9 lat 27.0 h 250km), WebGPU used to

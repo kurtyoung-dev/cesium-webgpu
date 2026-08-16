@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // Probe: GPU flow-field wind-particle layer (Campaign 6, C6-FLOWFIELD-WIND).
+// @purpose GPU wind-particle flow-field layer over the offline GFS sample: show=false byte-identical off-gate, ON renders particles, advection moves.
+// @status ACTIVE
 //
 // Verifies, on the WebGPU backend, using the committed offline GFS sample
 // (Apps/SampleData/wind/gfs-wind-sample.png — no network):

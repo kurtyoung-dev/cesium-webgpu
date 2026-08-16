@@ -1,6 +1,8 @@
 // Read instrumented draw counters added in WebGPUSceneRenderer.ts +
 // WebGPUDrawCommand.ts. Initializes window.__dbgDrawCounts BEFORE the
 // page scripts run via addInitScript.
+// @purpose Reads window.__dbgDrawCounts draw counters described as instrumented into WebGPUSceneRenderer.ts + WebGPUDrawCommand.ts.
+// @status INVESTIGATION
 
 import { chromium } from "playwright";
 

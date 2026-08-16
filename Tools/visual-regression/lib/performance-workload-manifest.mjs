@@ -1,3 +1,6 @@
+// @purpose AJV draft-07 validation of the performance workload manifest against the checked-in schema, shared so contract and runner accept one shape.
+// @status ACTIVE
+
 import Ajv from "ajv";
 
 function schemaForInstalledValidator(schema) {

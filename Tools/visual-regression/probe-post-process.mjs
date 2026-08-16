@@ -1,3 +1,6 @@
+// @purpose Diagnostic: dumps enabled-state of upstream postProcessStages vs WebGPU PP pipeline stages on a WebGPU-forced Hello World
+// @status ACTIVE
+
 import { chromium } from "playwright";
 const SHIM = `(function(){
   const FORCED_RENDERER="webgpu"; window.__capturedViewer=null;

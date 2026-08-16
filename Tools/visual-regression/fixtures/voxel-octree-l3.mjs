@@ -1,4 +1,6 @@
 // NEW-VOXEL-OCTREE-L2-ASSET-PROBE — 3-level CUSTOM box voxel provider asset.
+// @purpose Self-contained 3-level CUSTOM box voxel provider whose self-similar gy==gz diagonal yields per-level traversal-depth discriminators for octree probes.
+// @status ACTIVE
 //
 // A deep-octree test asset advertising `availableLevels = 3`:
 //

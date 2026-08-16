@@ -2,6 +2,8 @@
 // "Revisiting Spacetrack Report #3", WGS-72), shared by the SGP4 demo kernel
 // pre-conditioning and probe-orbital-sgp4.mjs. NOT engine code — this is
 // demo/probe-owned domain math (the engine stays orbital-agnostic).
+// @purpose Self-contained JS FP64 near-earth SGP4 (Vallado, WGS-72): sgp4init pre-conditioning + sgp4 time update; the ground truth the GPU kernel ports.
+// @status ACTIVE
 //
 // Two halves, matching the SGP4 stage guardrail:
 //   sgp4init(tle)  — TIME-INDEPENDENT pre-conditioning (FP64). Parses the

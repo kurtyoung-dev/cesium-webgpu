@@ -2,6 +2,8 @@
 // Diagnostic for the south-pole black-hole on WebGPU. At south-pole-close
 // view (lat=-89, alt=3Mm), WebGL renders Antarctic imagery + tile labels
 // in the central ~2° around -90°; WebGPU shows solid black there.
+// @purpose Dumps per-tile selection/mesh/renderable state at lat -89 to find why WebGPU rendered a black hole around the south pole.
+// @status INVESTIGATION
 //
 // Capture state on both backends:
 //   - tilesToRender count + per-tile (level, x, y, rectangle)

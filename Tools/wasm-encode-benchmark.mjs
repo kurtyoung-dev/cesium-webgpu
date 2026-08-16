@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * WASM batch RTE encode CPU micro-benchmark (NEW-BUFFERCOLL-ENCODE-BENCHMARK).
+ * @purpose Node CPU micro-benchmark of the WASM batch_rte_encode kernel vs the scalar JS fround twin, with byte-identity and fallback trip-wire asserts.
+ * @status ACTIVE
  *
  * Measures the *CPU encode cost only* of the BufferPoint repack's POSITION
  * high/low split: the scalar JS fround loop (`WasmRTEBridge._encodeRangeJS`,

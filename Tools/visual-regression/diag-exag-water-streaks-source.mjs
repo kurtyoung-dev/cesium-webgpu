@@ -4,6 +4,8 @@
 // contribution left them). This isolates whether fog / ground-atmosphere /
 // sky-atmosphere is the source by capturing WebGPU with them ON vs OFF — no
 // rebuild, just scene toggles.
+// @purpose Runtime-toggles fog/ground-atmosphere/sky-atmosphere to isolate the source of the exaggerated-Himalaya blue streaks; no rebuild required.
+// @status INVESTIGATION
 //
 // Usage: node Tools/visual-regression/diag-exag-water-streaks-source.mjs
 

@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // Probe (NEW-WEBGPU-PIPELINE-KEY-LOG-DEPTH) — runtime detector for central
 // pipeline-cache key ALIASING across the LOG_DEPTH axis.
+// @purpose Runtime detector for pipeline-cache key aliasing: wraps getPipeline, recomputes keys, flags served entries whose shader modules differ
+// @status ACTIVE
 //
 // THE DEFECT (historical — closed structurally 2026-08-06)
 // ---------------------------------------------------------

@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 /**
  * Verification script for Batches 106-109.
+ * @purpose Batch-scoped verification of velocity pass, refraction capture, point-light shadows and the HDR-toggle gate; PNG-size + console smoke.
+ * @status INVESTIGATION
+ *
  * Drives the WebGPU viewer through scenarios that exercise:
  *   - Velocity pass (TAA Slice 2e, Batch 106)
  *   - Refraction capture (Batch 107)

@@ -3,6 +3,8 @@
 // `ComputeInstanceCollection` cpuKernel. NOT engine code — this is orbital
 // domain math (the engine stays orbital-agnostic; it only runs the kernel and
 // RTE-splits the result).
+// @purpose Demo/probe-owned CPU FP64 near-earth SGP4 kernel mirroring the WGSL kernel, shaped as a ComputeInstanceCollection cpuKernel (42-lane layout).
+// @status ACTIVE
 //
 // The WebGL2 fallback of ComputeInstanceCollection takes a JS kernel
 //   (out, index, timeSeconds, params) => void

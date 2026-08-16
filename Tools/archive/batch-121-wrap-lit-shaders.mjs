@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // Batch 121 helper — convert the 19 Mat Lit + 2 Phong primitive shaders
 // to emit FragOutput so they populate G-buffer slot 1.
+// @purpose One-shot codemod converting 19 Mat*Lit + 2 Phong primitive shaders to emit FragOutput so they populate G-buffer slot 1 (normalRoughness).
+// @status INVESTIGATION
 //
 // Why a helper instead of 21 hand-edits: the conversion is uniform.
 // Every file has:

@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * Batch 436 (3.6 CLOUD-CONE-LIGHT) — PARITY probe.
+ * @purpose B436 zero-drift landing gate: one deterministic cinematic-tier capture, byte-compared across pre/post-436 builds via git stash
+ * @status INVESTIGATION
  *
  * Captures the WebGPU procedural clouds at the CINEMATIC tier
  * (cloudVolumetricQuality = "high" → tier 3), where the new cone-sampled light

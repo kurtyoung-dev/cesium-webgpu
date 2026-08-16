@@ -1,4 +1,7 @@
 // Runtime gate for the per-primitive WebGPU model group-2 bind-group cache.
+// @purpose Runtime gate: the per-primitive model group-2 bind-group cache creates no new merged instance groups after settle, retains cached identities.
+// @status ACTIVE
+//
 // Loads static, instanced, and morphed glTF assets, warms all lazy resources,
 // then verifies a settled render window creates no new merged instance groups
 // and retains the exact cached group identities.

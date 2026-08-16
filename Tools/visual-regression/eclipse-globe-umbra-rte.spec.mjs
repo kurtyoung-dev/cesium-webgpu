@@ -1,4 +1,6 @@
 // eclipse-globe-umbra-rte.spec.mjs — C12-29 S5 regression contract.
+// @purpose C12-29 S5 regression contract: CPU fit/composition laws, camera-independent common-ray representation, matching WebGL/WebGPU resource architecture.
+// @status ACTIVE
 //
 // Pins the CPU fit/composition laws, the camera-independent common-ray
 // representation, and the matching WebGL/WebGPU resource architecture.

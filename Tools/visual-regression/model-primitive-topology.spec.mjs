@@ -1,5 +1,7 @@
 // model-primitive-topology.spec.mjs — browser-free contract for C11-90, the
 // glTF primitive-mode → WebGPU topology realization on the model path.
+// @purpose Contract for glTF mode to WebGPU topology+stripIndexFormat mapping: atomic pair, LINE_LOOP/FAN expansion on real assets, restart legality.
+// @status ACTIVE
 //
 // WHY THIS EXISTS
 // ---------------

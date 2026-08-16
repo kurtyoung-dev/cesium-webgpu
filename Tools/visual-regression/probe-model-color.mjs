@@ -1,5 +1,7 @@
 /**
  * WIRE-MODEL-COLOR acceptance probe.
+ * @purpose model.color acceptance: HIGHLIGHT/REPLACE/MIX tint parity per channel across backends, mode sanity, off-gate identity; fresh page per capture.
+ * @status ACTIVE
  *
  * WebGL blends `model.color` into the lit color per `model.colorBlendMode`
  * (HIGHLIGHT / REPLACE / MIX) + `model.colorBlendAmount`

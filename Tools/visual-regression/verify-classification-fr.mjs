@@ -3,6 +3,8 @@
  * Verifies the existing WebGPU feature renderers for the four
  * BUILD-VAR-HAZARD families render correctly (no crash, content
  * appears) when their primitives are added to a scene:
+ * @purpose Smoke that DepthPlane/GroundPolyline/ClassificationPrimitive/Vector3DTile FR families construct, render and stay error-free on WebGPU.
+ * @status ACTIVE
  *
  *   - DepthPlane: implicit when translucent globe is on
  *   - GroundPolyline: GroundPolylinePrimitive with simple geometry

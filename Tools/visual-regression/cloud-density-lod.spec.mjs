@@ -1,3 +1,6 @@
+// @purpose Pins LOD agreement across CloudDensityDomain.wgsl, ProceduralClouds.wgsl and ProceduralSkyCubemap.wgsl via direct source reads.
+// @status ACTIVE
+
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";

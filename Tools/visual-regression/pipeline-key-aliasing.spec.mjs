@@ -1,6 +1,8 @@
 // pipeline-key-aliasing.spec.mjs — browser-free durable guard for the central
 // pipeline cache key's shader-identity fold, plus the per-axis name markers it
 // superseded.
+// @purpose Guard for the pipeline-cache shader-identity fold: executes real caches over every ShaderDefine bit; mutation group re-inflicts the aliasing.
+// @status ACTIVE
 //
 // ★ STATUS 2026-08-06 — THE CLASS IS NOW STRUCTURALLY CLOSED
 // -----------------------------------------------------------

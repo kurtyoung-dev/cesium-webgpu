@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// @purpose One-off debug harness from the WGS84 reprojection investigation: terrain + debug-flag toggle capture (post-composite stage variant).
+// @status INVESTIGATION
+
 import { chromium } from "playwright";
 import path from "path";
 

@@ -1,3 +1,6 @@
+// @purpose Pins the astronomy-engine 2.1.19 dependency: fixture provenance byte/hash fingerprints vs the resolved installed package (supply-chain gate).
+// @status ACTIVE
+
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import fs from "node:fs";

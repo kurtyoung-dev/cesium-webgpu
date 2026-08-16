@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// @purpose Early attempt to introspect the globe imagery texture cache from the page; never reaches the per-device renderer instance
+// @status INVESTIGATION
+
 import { chromium } from "playwright";
 
 const BASE = "http://localhost:8080";

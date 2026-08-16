@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * Campaign 13 C13-37 baked-density periodicity oracle. WebGPU-only.
+ * @purpose C13-37 baked-density periodicity oracle: same-build legacy/new density-domain x baked/live x midpoint/IGN factorial, failing closed on encoder timing
+ * @status ACTIVE
  *
  * Two full-resolution, temporal-off scenes are captured as a same-build
  * legacy/new density-domain × baked/live × midpoint/IGN factorial. The probe

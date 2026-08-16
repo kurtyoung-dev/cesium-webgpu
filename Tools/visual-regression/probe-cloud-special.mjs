@@ -2,6 +2,8 @@
 /**
  * Batch 612 (E3 CLOUD-EXOTIC-SPECIAL) — the "special clouds" (noctilucent / nacreous)
  * as an iridescent SHADING tint on the WebGPU procedural-cloud arch. WebGPU-only.
+ * @purpose E3 acceptance: noctilucent/nacreous iridescent tints change the deck, differ from each other, OFF stays byte-identical.
+ * @status ACTIVE
  *
  * Unlike the E1/E2 density-shaping dials (species/features), this multiplies the
  * cloud COLOR by an iridescent tint:

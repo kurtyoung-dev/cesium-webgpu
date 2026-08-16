@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * Probe: DP-H18 / C2-23 depthFailAppearance — WebGPU vs WebGL parity.
+ * @purpose Color-appearance depthFailAppearance parity: occluded box shades RED via the depth-fail pass; WebGPU red area within 0.6-1.6x of WebGL.
+ * @status ACTIVE
  *
  * Scene: a BLUE opaque box (depthFailColor RED) partially hidden behind a
  * narrower GREY occluder box, globe off, nadir view.

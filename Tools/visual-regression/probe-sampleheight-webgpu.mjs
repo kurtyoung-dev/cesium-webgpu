@@ -2,6 +2,8 @@
 // Probe (NEW-PICK-RAY-ASYNC, Batch 284; supersedes the FQ-5 Batch-254 honesty
 // assertion): sampleHeight/clampToHeight now WORK on WebGPU via main-scene-depth
 // reuse (the Batch-252 pickPosition reconstruction), not just emit a warning.
+// @purpose Asserts sampleHeight/clampToHeight work on WebGPU via main-scene-depth reuse (cold-cache converges) with WebGL behavior unchanged.
+// @status ACTIVE
 //
 // Background: scene.sampleHeightSupported / clampToHeightSupported gate on
 // context.depthTexture (true on WebGPU). The offscreen ray-render depth path

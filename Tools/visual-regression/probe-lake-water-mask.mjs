@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // ACCEPTANCE probe for C7-LAKE-WATER-MASK (WaterClassificationProvider
 // Phase 1 — `globe.lakeWaterMask`, opt-in, DEFAULT OFF).
+// @purpose Acceptance for opt-in globe.lakeWaterMask (Natural Earth lake polygons OR-composited into the water mask): off-gate, effect, and parity legs
+// @status ACTIVE
 //
 // Cesium World Terrain's water mask is ocean-only (root-caused Batch 632),
 // so large inland lakes render as flat land. The fix OR-composites Natural

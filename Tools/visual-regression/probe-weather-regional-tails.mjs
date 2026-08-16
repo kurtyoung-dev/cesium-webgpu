@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * C13-08 rendered tails — cyclic CoverageJSON + WebGL regional regression.
+ * @purpose C13-08: cyclic CoverageJSON crossing +/-180 ingests parser-to-shader on WebGPU; WebGL billboard pixels stay unchanged under the provider.
+ * @status ACTIVE
  *
  * WebGPU ingests a real CoverageJSON response whose CRS84 longitude axis walks
  * east through +180/-180. Controls use the procedural weather map with no

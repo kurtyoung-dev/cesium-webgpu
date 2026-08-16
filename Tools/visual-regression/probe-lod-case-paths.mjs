@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 // Sweep camera altitude over the north pole. For each altitude:
+// @purpose Polar altitude sweep dumping each tile's reprojection case path (useWebMercatorT/reprojected/ancestor) to find the LOD-dependent imagery residual
+// @status INVESTIGATION
+//
 //   1. Dump every `_tilesToRender` tile with:
 //      - terrain level/x/y, latitude range
 //      - per-imagery-skeleton: useWebMercatorT, reprojected?, ancestor level

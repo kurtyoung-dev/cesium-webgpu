@@ -5,6 +5,8 @@
 // non-bug. This probe loads BoxVertexColors (VEC3 COLOR_0) on BOTH backends
 // and compares — if WebGPU's vertex colors match WebGL's, DP-H37 does NOT
 // reproduce (loader widens it); if WebGPU is visibly wrong, it's real.
+// @purpose DP-H37 guard: unlit VEC3 COLOR_0 quad renders identical vertex colors across backends (float32x4 stride mis-declare would shift alpha).
+// @status ACTIVE
 //
 // Usage: PROBE_BASE=http://localhost:8080 node Tools/visual-regression/probe-vertexcolor-vec3.mjs
 import { chromium } from "playwright";

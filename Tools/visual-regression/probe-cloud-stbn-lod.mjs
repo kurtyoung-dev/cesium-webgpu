@@ -2,6 +2,9 @@
 /**
  * C6-CLOUD-STBN-TAAU (LOD half) — geometric in-march step growth + far-cap on the
  * WebGPU volumetric cloud view-ray march (marchDeck in ProceduralClouds.wgsl).
+ * @purpose Acceptance for cloud march LOD dials (step growth, max ray distance): both reach the march, both true no-ops at defaults.
+ * @status ACTIVE
+ *
  * WebGPU-only. Two orbit-cost dials on globe.defaultCloudCollection.volumetric:
  *   - cloudMarchStepGrowth (UBO 144) — 1.0 off; (1.0,1.1] grows the step with
  *     distance so far shell samples (1-2 px) coarsen.

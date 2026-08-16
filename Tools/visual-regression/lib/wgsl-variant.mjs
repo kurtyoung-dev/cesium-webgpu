@@ -1,5 +1,7 @@
 /**
  * ONE place for "what WGSL does a pipeline actually compile".
+ * @purpose Exposes the engine's real WGSL preprocessor and define registry so specs validate the exact variant text pipelines compile, not raw ifdef source.
+ * @status ACTIVE
  *
  * C13-10 gave three cloud shaders (`ProceduralClouds.wgsl`,
  * `CloudReconstructionAttachments.wgsl`, `CloudTemporalResolve.wgsl`) their

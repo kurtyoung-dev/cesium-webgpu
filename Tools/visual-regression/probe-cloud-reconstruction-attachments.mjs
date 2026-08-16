@@ -3,6 +3,8 @@
 // attachment set is opt-in scaffolding — resident and producing when asked,
 // invisible in pixels AND cost when not (and even when asked, because nothing
 // reads it yet; the consumers are C13-10/12).
+// @purpose C13-09 edge acceptance: opt-in reconstruction attachments produce with pixel-inert output and exact liveBytes; cross-page noise-band method
+// @status ACTIVE
 //
 // Pre-registered legs (QUEUE_2026-07-23_CAMPAIGN13.md, C13-09 row):
 //   (a) DEFAULT, attachments off, cloudVolumetricQuality "low":

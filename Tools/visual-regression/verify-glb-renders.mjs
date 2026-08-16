@@ -3,6 +3,9 @@
  * Hypothesis check: does any glTF model populate cache.primitives on
  * WebGPU? Loads CesiumAir.glb (a simple aircraft, definitely works on
  * WebGL) and probes the WebGPU model cache.
+ * @purpose Hypothesis check from the early model-rendering bug: loads CesiumAir.glb on WebGPU and probes whether the model cache populates primitives.
+ * @status INVESTIGATION
+ *
  */
 import { chromium } from "playwright";
 const BASE = "http://localhost:8080";

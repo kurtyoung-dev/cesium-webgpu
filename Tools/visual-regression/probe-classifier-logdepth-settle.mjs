@@ -3,6 +3,9 @@
 // classifier coverage is reproducible (no partial-tile-streaming variance), for
 // WebGL (ref) / WebGPU flag-OFF / WebGPU flag-ON (startup flip). Same Stripe
 // scene as probe-classifier-textured-materials.mjs.
+// @purpose Settle-until-tilesLoaded variant of the classifier log-depth comparison for reproducible coverage (no tile-streaming variance)
+// @status INVESTIGATION
+//
 import { chromium } from "playwright";
 import fs from "fs";
 const BASE = process.env.PROBE_BASE ?? "http://localhost:8134";

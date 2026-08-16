@@ -3,6 +3,8 @@
 // processor is now reachable from the Scene behind an opt-in flag, and that
 // the deterministic decoupled-lookback SCAN compute path is actually
 // dispatched end-to-end when the flag is on.
+// @purpose Verifies PointCloudShading.gpuLOD reaches the WebGPU LOD processor, decoupled-scan compute dispatches end-to-end, off-gate keeps atomic path
+// @status ACTIVE
 //
 // What this exercises (the real integrated plumbing, not a mock):
 //   CHECK A — Scene wiring: `PointCloudShading` exposes `gpuLOD`

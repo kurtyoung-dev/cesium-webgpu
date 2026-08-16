@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * Batch 408 V11 — per-genus optical EXTINCTION activation probe. WebGPU-only.
+ * @purpose B408 V11 per-genus optical extinction gate: cumulus byte-identical default, cumulonimbus more opaque than cirrus, deck neither vanished nor blown out
+ * @status ACTIVE
  *
  * Slot 103 `profileExtinction` (normalized so the DEFAULT genus CUMULUS == 1.0)
  * now scales `cloud.absorptionCoeff` at the light-march beer/powder, the

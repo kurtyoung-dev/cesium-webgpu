@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 // Smoke-test the three new WebGPU Sandcastles added in Batch 91.
+// @purpose Smoke test of the three Batch-91 WebGPU demos in the legacy Sandcastle gallery: load, finishedLoading, screenshot, console errors.
+// @status INVESTIGATION
+//
 // Loads each demo, waits for `Sandcastle.finishedLoading()`, captures
 // a screenshot, and reports any console errors.
 

@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // Probe-device-limits — diagnostic for Batch 152.
+// @purpose Dumps adapter-reported vs negotiated GPUDevice limits (e.g. the platform maxBindGroups ceiling) from a fresh browser.
+// @status ACTIVE
 //
 // Spawn a fresh browser, query the adapter's reported limits +
 // the actual device's negotiated limits. Tells us what the

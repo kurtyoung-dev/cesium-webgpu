@@ -1,5 +1,7 @@
 /**
  * WIRE-MODEL-SILHOUETTE acceptance probe.
+ * @purpose model.silhouette acceptance: red rim parity across backends (stencil two-pass semantics) + silhouetteSize=0 off-gate identity, zero rim pixels.
+ * @status ACTIVE
  *
  * WebGL renders `model.silhouetteColor` / `model.silhouetteSize` via a
  * stencil two-pass (`ModelSilhouettePipelineStage` + ModelDrawCommand's

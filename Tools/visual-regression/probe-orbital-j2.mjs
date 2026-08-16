@@ -3,6 +3,8 @@
 // (two-float / double-single) scaffold helpers + a secular-J2 mean-element
 // orbital demo kernel must propagate a known element set on the GPU and
 // match a CPU FP64 reference within a stated tolerance.
+// @purpose Verifies df64 GPU secular-J2 orbital kernel matches a JS FP64 reference over 30-day propagation and beats the f32 control
+// @status ACTIVE
 //
 // What it does:
 //   1. Fetches the SHIPPED engine scaffold WGSL

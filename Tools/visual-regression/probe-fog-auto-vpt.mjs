@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * FOG-AUTO-VPT probe (Batch 445 — item 4.13 FOG-AUTO-VPT). WebGPU-only.
+ * @purpose volumetricFog quality='auto' resolves a hardware tier via VisualPerformanceTargetService only when VPT is opted in; default stays 'low'.
+ * @status ACTIVE
  *
  * Verifies that `volumetricFog.quality = "auto"` resolves to a hardware-
  * appropriate tier (low/medium/high) via the VisualPerformanceTargetService

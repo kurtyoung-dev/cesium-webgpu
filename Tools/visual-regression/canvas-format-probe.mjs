@@ -1,3 +1,6 @@
+// @purpose One-shot dump of presentation/preferred/scene color formats and the HDR-canvas flag from a live WebGPU viewer.
+// @status INVESTIGATION
+
 import { chromium } from "playwright";
 
 const browser = await chromium.launch({

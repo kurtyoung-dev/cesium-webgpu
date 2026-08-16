@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // Probe: GLOBE-UNDERGROUND-COLOR — globe.undergroundColor +
 // undergroundColorAlphaByDistance tint parity (WebGL vs WebGPU).
+// @purpose globe.undergroundColor + alphaByDistance tint parity: above-ground off-gate plus red-tint and default underground camera scenarios
+// @status ACTIVE
 //
 // Scenarios:
 //   above-default    — default load, camera above ground, default underground

@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // Batch 427 — SKY-MS (multiple-scattering in the visible sky).
+// @purpose SKY-MS gate: multipleScattering default-OFF byte-identical across rebuilds; ON measurably brightens the horizon band with sane zenith hue.
+// @status ACTIVE
 //
 // Two jobs:
 //   1. PARITY: capture the WebGPU sky with skyAtmosphere.multipleScattering OFF.

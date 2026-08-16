@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // Probe (C13-10 OWED EDGE LEGS B / C / D, machine lane): the march-emitted
 // reconstruction depth and its FIRST CONSUMER.
+// @purpose C13-10 legs B/C/D: march-emitted reconstruction depth consumed by the producer (targets 3->2), resize/tier lifecycle, interleaved A/B cost lanes
+// @status ACTIVE
 //
 // C13-09 shipped the attachment set PRODUCED BUT NOT CONSUMED, and its
 // acceptance leg could therefore demand byte identity. C13-10 is the row where

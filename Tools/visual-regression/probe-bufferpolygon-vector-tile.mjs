@@ -1,5 +1,8 @@
 // probe-bufferpolygon-vector-tile.mjs
 // NEW-WEBGPU-BUFFERPOLYGON-WGSL-IMPORT verification (Batch 180).
+// @purpose Verifies the us-states vector tileset renders through the BufferPolygon WGSL path on both backends: 52 features, matching geometry bytes.
+// @status ACTIVE
+//
 // Loads the sample-us-states vector tileset on WebGL and WebGPU, frames the
 // continental US, captures each canvas, computes a pixel-diff, and reports
 // whether the BufferPolygon path produced geometry + rendered pixels.

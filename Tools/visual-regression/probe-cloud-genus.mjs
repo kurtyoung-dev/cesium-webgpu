@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * Batch 408 V11 per-genus cloud types — wiring + byte-identity probe. WebGPU-only.
+ * @purpose B408 V11 per-genus vertical-profile wiring: cirrus thinner, cumulonimbus denser, stratus distinct; cumulus/unset byte-identical to the pre-V11 default
+ * @status ACTIVE
  *
  * globe.defaultCloudCollection.cloudType (a CloudType index) selects a per-genus vertical density
  * profile: SLAB (flat stratus), BILLOWY (rounded cumulus = the historical

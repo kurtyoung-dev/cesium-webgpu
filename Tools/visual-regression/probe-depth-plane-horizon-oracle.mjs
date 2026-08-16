@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * C9-02B WebGPU depth-plane horizon oracle.
+ * @purpose Horizon-occlusion oracle: points just before/beyond the geometric horizon must render/occlude, proven via GPU readback + pickAsync with a skip A/B.
+ * @status ACTIVE
  *
  * A deterministic ellipsoid scene places one point immediately before the
  * geometric horizon and another immediately beyond it. The normal production

@@ -1,5 +1,7 @@
 // Quick: open the standalone CesiumViewer with renderer=webgpu and
 // capture pixel sample. Bypasses the split-screen page.
+// @purpose Boot smoke: standalone CesiumViewer on WebGPU, samples canvas pixels + post-process pipeline state, bypassing the split-screen page
+// @status ACTIVE
 
 import { chromium } from "playwright";
 

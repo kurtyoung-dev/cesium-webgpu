@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // probe-ocean-tide-datum.mjs — acceptance for C6-FFT-OCEAN-TIDE-DATUM slice 1
 // (the FFT-ocean vertical-datum anchor + the equilibrium tide).
+// @purpose Acceptance for the FFT-ocean datum anchor + equilibrium tide: in-run before/after datum fix, M2-period phase ladder, spring/neap envelope.
+// @status ACTIVE
 //
 // SIBLING of `probe-ocean-datum.mjs` (Batch 759), which MEASURED the problem:
 // Cesium World Terrain's ocean lid is the GEOID, the FFT patch anchored at

@@ -1,4 +1,6 @@
 // C10-07 premise + mechanism probe: async model pipeline compile.
+// @purpose Wraps createRenderPipeline(Async) pre-device to prove Model PBR pipelines compile async (sync=0, no stall) and the model still renders.
+// @status ACTIVE
 //
 // Wraps GPUDevice.prototype.createRenderPipeline / createRenderPipelineAsync
 // BEFORE any device exists, then boots the WebGPU viewer with a glTF model and

@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // C2-25 ENV-SCENE-CAPTURE (Batch 448) — 3D TILESET reflection capture probe.
+// @purpose 3D tileset reflection-capture gate: red-styled buildings publish via the model producer into env cube faces; correct occlusion, 0 errors.
+// @status ACTIVE
 //
 // Batch 447 verified a glTF MilkTruck captures into the env cube. This probe
 // verifies the headline "buildings reflect in water" case: an actual 3D TILESET

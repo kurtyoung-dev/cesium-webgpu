@@ -1,5 +1,7 @@
 /**
  * Q1-KTX2-TRANSCODER-FORMATS regression probe.
+ * @purpose Standing regression guard that loadKTX2 requires the per-context immutable ktx2TranscodeTargets record and resolves a real .ktx2 on WebGPU
+ * @status ACTIVE
  *
  * Premise (FAR-104): KTX2 target selection must come from the consuming
  * context. A process-global "last renderer" format set races when WebGL and

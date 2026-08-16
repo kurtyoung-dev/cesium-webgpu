@@ -3,6 +3,8 @@
 // perspective↔orthographic morph flip so a TAA-enabled mid-morph frame does NOT
 // reproject the current depth against the prior frame's incompatible
 // view-projection (which smears / ghosts the whole frame).
+// @purpose TAA history invalidation across the 2D/3D morph flip: clean render through the transition; motion-vector valid flag drops during MORPHING.
+// @status ACTIVE
 //
 // What's verified, on WebGPU with scene.taaEnabled = true:
 //   (1) Driving scene.morphTo2D() then scene.morphTo3D() renders cleanly through

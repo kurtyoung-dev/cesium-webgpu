@@ -3,6 +3,8 @@
 // each PNG inside a Playwright page (sidesteps node-side PNG deps) and
 // reports per-view mismatch%, mean per-channel delta, and overall
 // brightness ratio. Target: every view < 2% diff.
+// @purpose Diff companion: pixel-diffs every polar-multi capture pair in a Playwright page (no Node PNG dep), reporting per-view mismatch and brightness
+// @status ACTIVE
 
 import { chromium } from "playwright";
 import fs from "fs";

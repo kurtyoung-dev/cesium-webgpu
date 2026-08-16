@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // Probe: C11-205 — REAL MULTIPLE-CONTENT LIFECYCLE + VERSIONED MODEL-STATE
 // PACKET MUTATION EVIDENCE.
+// @purpose Attribution probe: schema-v2 multiple-content observer on the real MultipleContents 1.1 fixture + versioned model-state packet mutation gates.
+// @status ACTIVE
 //
 // C11-205 exists because a resident renderer timing comparison is invalid
 // unless both legs held the same tiles, requested the same bytes, and reached

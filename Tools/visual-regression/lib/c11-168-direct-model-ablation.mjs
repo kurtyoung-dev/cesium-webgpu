@@ -1,5 +1,7 @@
 /**
  * C11-168 resident direct-model causal discriminator.
+ * @purpose Renderer-neutral C11-168 causal discriminator: rejects incomparable run quartets and computes the predeclared difference-in-differences fail-closed.
+ * @status ACTIVE
  *
  * This module is deliberately renderer-neutral. The browser half owns the
  * direct-model subject and its post-timing selector control; the Node half

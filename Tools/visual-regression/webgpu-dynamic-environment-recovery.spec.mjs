@@ -1,3 +1,6 @@
+// @purpose Source-anchored pins that dynamic environment-map caches are owned by one device generation and recover across manager/capture/Scene wiring.
+// @status ACTIVE
+
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";

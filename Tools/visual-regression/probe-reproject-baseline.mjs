@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * WebGL imagery-reprojection tolerance baseline guard.
+ * @purpose Golden-PNG guard: pins the forked WebGL per-fragment Mercator->Geographic reprojection output to a stored baseline (--update, tolerance)
+ * @status ACTIVE
  *
  * WHY THIS EXISTS
  * ---------------

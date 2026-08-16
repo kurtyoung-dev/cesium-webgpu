@@ -1,4 +1,7 @@
 // Sample same pixels in WebGL and WebGPU Bloom.html to confirm what's there.
+// @purpose Samples the same pixels in WebGL and WebGPU Bloom.html renders to confirm what content each backend actually placed there.
+// @status INVESTIGATION
+//
 import { chromium } from "playwright";
 
 const RENDERER_OVERRIDE_SHIM = `

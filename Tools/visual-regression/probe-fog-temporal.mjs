@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // Probe: improvement-plan 3.5 — FOG-TEMPORAL (Batch 435).
+// @purpose Opt-in froxel-fog temporal reprojection + blue-noise jitter: parity mode, static convergence to stable low noise, moving camera with no ghosting.
+// @status ACTIVE
 //
 // Verifies the WebGPU froxel volumetric-fog renderer's opt-in temporal
 // reprojection + blue-noise jitter accumulation. With

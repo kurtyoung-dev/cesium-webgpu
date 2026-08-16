@@ -3,6 +3,8 @@
 // overlay. Gives a clean measure of imagery-only diffs at each polar
 // view. The debug overlay adds tile-grid lines that don't align perfectly
 // between backends and inflate the pixel-diff number.
+// @purpose Standing polar/global imagery parity capture: 6 views x 2 altitudes, clock pinned to a documented UTC so historical baselines stay comparable
+// @status ACTIVE
 //
 // CLOCK PINNING (Batch 70+) — Both backends are captured with the
 // Cesium clock frozen at FIXED_CLOCK_UTC. Without this, the clock

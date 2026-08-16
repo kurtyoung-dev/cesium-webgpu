@@ -1,4 +1,6 @@
 // C10-06 Step C.1 mechanism / cache-hit oracle.
+// @purpose Deterministic oracle that the globe shader prewarm runs at context init and beats the first tile draw (console-log ordering, no wall-clock).
+// @status ACTIVE
 //
 // Proves the globe shader-module prewarm actually runs during context init
 // (T-06-c: getShaderCode was non-null, initialize ran) AND that it beats the

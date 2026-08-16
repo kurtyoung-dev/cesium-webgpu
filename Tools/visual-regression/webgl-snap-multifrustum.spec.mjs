@@ -1,3 +1,6 @@
+// @purpose Source pins for WebGL Scene.snap occluders in DerivedCommand/Scene/SceneRenderer: depth-only reuse, zero color write, blending off, depthMask.
+// @status ACTIVE
+
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";

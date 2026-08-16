@@ -4,6 +4,8 @@
 // BRIGHT (matching WebGL final), the bug is downstream of imagery
 // composite. If it's already DIM, the bug is in the composite itself
 // (sampling, gamma, alpha math).
+// @purpose Bisects the globe brightness gap via the post-composite-color debug mode: bright there = bug downstream of composite, dim = in composite.
+// @status ACTIVE
 
 import { chromium } from "playwright";
 import fs from "fs";

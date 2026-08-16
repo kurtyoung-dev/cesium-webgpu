@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // Probe (DP-H45, Batch 254): scene.pickPosition() over an OPAQUE glTF Model
 // on WebGPU must return the MODEL surface, not the globe behind/below it.
+// @purpose Gate: pickPosition over an opaque glTF model returns the model top (not the globe below) on WebGPU — depth re-packed after the OPAQUE pass
+// @status ACTIVE
 //
 // Background — the bug:
 //   The packed pick-depth color texture (globeDepth.globeDepthTexture) was

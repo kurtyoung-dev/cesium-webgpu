@@ -2,6 +2,9 @@
 // GPU->CPU readback) return a Box primitive on WebGPU vs WebGL? Uses ONLY
 // pickAsync (sync scene.pick leaves the WebGPU pick buffer mapped, breaking
 // subsequent picks — a separate finding). Ellipsoid terrain + valid token.
+// @purpose Minimal pick discriminator: scene.pickAsync must return a Box primitive on the chosen backend; logs pick diagnostics + validation errors
+// @status ACTIVE
+//
 import { chromium } from "playwright";
 const BASE = process.env.PROBE_BASE || "http://localhost:8134";
 const RENDERER = process.env.PROBE_RENDERER || "webgpu";

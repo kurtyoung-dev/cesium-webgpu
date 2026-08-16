@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * Atmospheric Effects Phase B — HEAT SHIMMER (Batch 417b). WebGPU-only visual probe.
+ * @purpose WebGPU-only heat-shimmer proof: ON-vs-OFF warp concentrated in the ground band, animated between frames, zero OFF-vs-OFF drift
+ * @status ACTIVE
  *
  * The shimmer is a WebGPU screen-space effect with no WebGL twin, so the diff is
  * SHIMMER-ON vs SHIMMER-OFF on the SAME WebGPU canvas (not WebGL-vs-WebGPU). A

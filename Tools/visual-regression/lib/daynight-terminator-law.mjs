@@ -1,5 +1,7 @@
 /**
  * CLT-B1 — the pure model behind `probe-daynight-terminator-law.mjs`.
+ * @purpose Pure model behind probe-daynight-terminator-law (CLT-B1); deliberately unchanged post-fix, so lanes A/D now REFUTE — read metrics, not verdicts.
+ * @status ACTIVE
  *
  * WHAT THE PROBE IS FOR. `CELESTIAL_LIGHT_TRANSPORT_PLAN_2026-08-07.md` §2
  * records four static day/night findings and §4 makes CLT-B1 a BLOCKING

@@ -2,6 +2,8 @@
 // Probe (NEW-UPSTREAM-13465-BUFFERPOINT-STALENESS) — verifies that changing a
 // BufferPoint's position AFTER it has already been rendered re-renders the point
 // at its new screen location, on BOTH backends (webgpu + webgl).
+// @purpose Acceptance for the upstream #13465 fix: setPosition after first render re-encodes and moves the point on BOTH backends within 2 frames.
+// @status ACTIVE
 //
 // Root cause (upstream #13465): BufferPoint.setPosition() wrote the new position
 // into the collection's separate _positionView buffer and called

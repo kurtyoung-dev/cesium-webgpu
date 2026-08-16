@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 /**
  * Atmospheric effects — Phase E (Batch 423): PRECIPITATION wiring slice.
+ * @purpose Visual gate: weather particles render via the conditions->effects hierarchy (auto and direct facade), rain vs snow differ, off = baseline
+ * @status ACTIVE
+ *
  * WebGPU-only VISUAL probe.
  *
  * Drives the WebGPU weather-particle renderer THROUGH the unified

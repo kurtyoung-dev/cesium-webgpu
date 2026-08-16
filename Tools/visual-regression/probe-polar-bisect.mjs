@@ -2,6 +2,8 @@
 // Bisect the polar-stretching artifact at 14 Mm orbit by stepping
 // through globeFragmentDebug modes. Captures one screenshot per mode
 // so we can see which intermediate has the streaking pattern.
+// @purpose Polar-stretch diagnostic: steps through globeFragmentDebug FS modes at 14 Mm orbit, one screenshot per mode, to locate the streaking stage
+// @status INVESTIGATION
 
 import { chromium } from "playwright";
 import fs from "fs";

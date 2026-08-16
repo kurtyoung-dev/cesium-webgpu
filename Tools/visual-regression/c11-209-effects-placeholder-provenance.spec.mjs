@@ -1,3 +1,6 @@
+// @purpose Pins the C11-209 effects-placeholder probe's provenance wiring: source/build/served-byte fingerprints, structural gate, analyzer-visible close.
+// @status ACTIVE
+
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";

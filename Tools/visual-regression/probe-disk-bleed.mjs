@@ -1,6 +1,9 @@
 // Probe NEW-VR2-3-IMAGERY-WASH-OUT — sample globe-disk pixels in WebGL
 // vs WebGPU for the affected demos. Reports center-disk RGB so we can
 // see if atmosphere is bleeding cyan onto the ocean.
+// @purpose Samples globe-disk center RGB across affected demos to detect cyan atmosphere bleed onto the ocean (imagery wash-out).
+// @status INVESTIGATION
+//
 import { chromium } from "playwright";
 import fs from "fs";
 

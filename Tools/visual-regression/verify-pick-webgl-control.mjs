@@ -1,3 +1,6 @@
+// @purpose WebGL control leg for the model-feature pick probe: same tileset/camera/pick on the reference backend to isolate WebGPU-specific defects.
+// @status ACTIVE
+
 import { chromium } from "playwright";
 const BASE = "http://localhost:8080";
 (async () => {

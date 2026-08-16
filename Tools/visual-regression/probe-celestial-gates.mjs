@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // probe-celestial-gates.mjs — Campaign 12 celestial gate harness (C12-01 + C12-02).
+// @purpose Campaign 12 celestial gate harness: measured G1-G4 star-field gates on both backends with cubemap/sprite source-split and in-column modulation lanes
+// @status ACTIVE
 //
 // WHAT THIS IS
 // ------------

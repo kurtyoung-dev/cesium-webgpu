@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 // Companion to probe-skybox-stars-sun.mjs (BUG-1): orient the camera in deep
 // space to LOOK AT the sun so the sun disc/glow is in frame on both backends.
+// @purpose BUG-1 companion: points a deep-space camera at the sun on both backends and reports brightest-cluster location + intensity.
+// @status ACTIVE
+//
 // We pin the clock, park far out, then point the camera along the
 // scene->sun direction. Captures WebGL + WebGPU and reports the brightest
 // cluster (sun) location + intensity.

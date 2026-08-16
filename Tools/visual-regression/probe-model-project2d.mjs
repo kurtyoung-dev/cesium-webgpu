@@ -1,5 +1,7 @@
 /**
  * NEW-MODEL-PROJECT2D-BV-MORPH (B11) acceptance probe.
+ * @purpose projectTo2D acceptance: accurate per-vertex 2D/CV reprojection footprint parity vs WebGL for a large-arc model; non-empty; 3D off-gate.
+ * @status ACTIVE
  *
  * `Model` with `projectTo2D: true` asks Cesium to project the model's
  * positions ACCURATELY to the 2D / Columbus-View map frame (per-vertex

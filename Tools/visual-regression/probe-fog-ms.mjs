@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // Probe: improvement-plan 4.3 — FOG-MS (Batch 440).
+// @purpose Opt-in multi-octave multiple scattering in the froxel-fog in-scatter pass: parity/off/on modes; dense mist reads as a lit volume, no blowout.
+// @status ACTIVE
 //
 // Verifies the WebGPU froxel volumetric-fog renderer's opt-in multiple-scattering
 // octaves in the light-scattering (in-scatter source) pass. With

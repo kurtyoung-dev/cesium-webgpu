@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 // Probe (NEW-RESIDENT-INSTANCE-BUFFER-MGR, velocity prev-mirror semantics):
+// @purpose Contract gate: WebGPUResidentInstanceBuffer.sync() prev-mirror semantics (rebuild copy, slot-aligned old-value write, flush, settled zero)
+// @status ACTIVE
+//
 // drives WebGPUResidentInstanceBuffer.sync() directly against the live GPU
 // device with `mirrorPrev: true` and intercepts WebGPUBuffer.write calls to
 // prove the slot-aligned prev-mirror contract:

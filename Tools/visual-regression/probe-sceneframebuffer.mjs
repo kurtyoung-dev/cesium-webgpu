@@ -3,6 +3,8 @@
 // the canvas swap chain entirely. If the scene FBO has rendered
 // content but the canvas is black, the bug is in the post-process
 // blit. If the scene FBO is also empty, the bug is upstream.
+// @purpose Black-canvas-era diagnostic: reads the WebGPU scene FBO color texture via copyTextureToBuffer to localize blit vs upstream failure.
+// @status INVESTIGATION
 
 import { chromium } from "playwright";
 

@@ -1,6 +1,8 @@
 // C12-29 S5 NASA footprint fixture: pins the smallest exact, reproducible
 // shard of NASA SVS 5073's `umbra_lo` shapefile used by the browser-overlay
 // acceptance design. This spec stays offline and does not render.
+// @purpose Offline pin of the exact cropped NASA SVS 5073 umbra_lo shapefile shard (byte hashes, optional full-source reconstruction); no rendering.
+// @status ACTIVE
 //
 // Run:
 //   node --test Tools/visual-regression/nasa-svs-5073-umbra-fixture.spec.mjs

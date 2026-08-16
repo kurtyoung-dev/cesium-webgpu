@@ -1,5 +1,7 @@
 // cloud-reconstruction-consume-probe.spec.mjs — the C13-10 Edge acceptance
 // probe's OWN structure, pinned at authoring time.
+// @purpose Pins the C13-10 Edge consume-probe's own instrument properties: real interleave schedule, null-not-zero pass timing, the 3-vs-2 producer-target move.
+// @status ACTIVE
 //
 // Pure Node (`node --test`). No browser, no build, no adapter.
 //

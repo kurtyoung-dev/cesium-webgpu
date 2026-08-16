@@ -1,5 +1,7 @@
 // celestial-g4-gate.spec.mjs — browser-free guard for the Campaign-12 G4 lane
 // (`probe-celestial-gates.mjs --g4`).
+// @purpose Guards the G4 sun/moon gate: thresholds re-derived from shipped Scene modules, synthetic-frame recovery proofs, eight aimed mutants each rejected.
+// @status ACTIVE
 //
 // G4 is a gate, so a spec that only ran the correct implementation would be
 // worth nothing — the wrong implementations of every rule below also "pass",

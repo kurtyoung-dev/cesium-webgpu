@@ -3,6 +3,9 @@
  * Side-by-side comparison: render CesiumAir.glb on WebGL and WebGPU,
  * compare. WebGL is the reference; WebGPU renders 3 tiny dots, so we
  * need to know what the model SHOULD look like.
+ * @purpose Side-by-side WebGL/WebGPU capture of CesiumAir.glb from the era when WebGPU drew '3 tiny dots'; establishes the reference look.
+ * @status INVESTIGATION
+ *
  */
 import { chromium } from "playwright";
 const BASE = "http://localhost:8080";

@@ -1,5 +1,7 @@
 // sun-radiance-delta.spec.mjs — browser-free guard for the two-radiance solar
 // disc run (`probe-sun-hdr-radiance.mjs`) and its lib.
+// @purpose Browser-free guard for the two-radiance solar-disc probe lane: pre-registration vs SolarDiscModel, measurement recovery, named mutant worlds.
+// @status ACTIVE
 //
 // The lane exists to DECIDE something, so a spec that only exercised the
 // correct implementation would be worth nothing: the wrong implementations pass

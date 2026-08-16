@@ -3,6 +3,8 @@
 // milky-way background texture) draws on WebGPU and matches WebGL — separately
 // from the fork's bright-star catalog point renderer (StarField), which is
 // disabled for the isolated capture so only the cube-map contribution remains.
+// @purpose SkyBox star-cubemap parity isolated from the StarField catalog: density/luminance family match + flipY pattern correlation; repaired 2026-08-07.
+// @status ACTIVE
 //
 // Camera is parked far out in space looking AWAY from Earth (pitch straight up
 // from local ENU) so the frame is pure sky: no globe, no atmosphere limb, no

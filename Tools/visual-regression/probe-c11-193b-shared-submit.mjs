@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * C11-193B Phase 2 — dynamic-IBL frame-encoder/shared-submit acceptance.
+ * @purpose Acceptance that dynamic-IBL refreshes ride the shared scene encoder/submit: no private submits, exact 44-pass contribution per manager.
+ * @status ACTIVE
  *
  * This is a real WebGPU/Edge probe. It installs observation-only wrappers at
  * native WebGPU API boundaries before the viewer boots, warms two independent

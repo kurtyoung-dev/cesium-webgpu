@@ -1,4 +1,6 @@
 // C12-31 — NATURAL SOLAR ATMOSPHERIC AUREOLE: the sky's light-direction contract.
+// @purpose C12-31 contract: atmosphere NONE mode uses the astronomical Sun (not per-sample local-up), LEGACY_OVERHEAD reproduces history, twin lockstep.
+// @status ACTIVE
 //
 // The maintainer screenshot (2026-07-28) showed a broad white patch overhead
 // that is not the Sun billboard, not generic post-process bloom and not an RTE

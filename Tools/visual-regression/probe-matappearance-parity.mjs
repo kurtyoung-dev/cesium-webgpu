@@ -1,4 +1,6 @@
 // NEW-MATAPPEARANCE-DIFFUSE-PARITY verification.
+// @purpose Verifies WGSL Lit shaders use czm_phong-equivalent lighting: luminance + top-vs-side ratio parity on a lit extruded polygon, both backends.
+// @status ACTIVE
 //
 // Renders a LIT MaterialAppearance extruded polygon (top face + side walls →
 // varied normals) on WebGL and WebGPU with the globe/sky hidden + sun ON, and

@@ -1,4 +1,6 @@
 // eclipse-globe-svs-oracle.spec.mjs — C12-29 S5 acceptance ORACLE.
+// @purpose External S5 oracle: EclipseGlobeShadow model outputs vs published NASA 2024-04-08 figures (path centres, 197.5 km umbra width, falloff, shadow speed).
+// @status ACTIVE
 //
 // Every other S5 spec in the fleet checks the model against ITSELF: endpoints,
 // monotonicity, composition identities, GLSL/WGSL lockstep, the f32 conditioning

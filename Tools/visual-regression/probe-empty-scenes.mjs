@@ -1,4 +1,7 @@
 // Probe demos suspected of rendering nothing on WebGPU.
+// @purpose Sweeps demos suspected of rendering nothing on WebGPU: clear-color pixel sniff + primitive/tile counts per demo, both backends.
+// @status INVESTIGATION
+//
 // For each demo: capture WebGL + WebGPU screenshots, compute pixel
 // non-default counts (sniff for "scene is just clear color"), and dump
 // the scene's primitive count + tile count.

@@ -1,4 +1,6 @@
 // Diagnostic for NEW-WEBGPU-GLOBE-2D-REGIONAL-ZOOM.
+// @purpose Entry-point diagnostic for a blank 2D globe: compares tile selection, load queues, 2D frustum and globe command counts across backends and zooms.
+// @status ACTIVE
 //
 // The WebGPU globe renders at full-globe 2D zoom but vanishes at regional 2D
 // zoom (~2.4 Mm). This probe captures, at BOTH a full-globe and a regional 2D

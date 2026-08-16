@@ -3,6 +3,8 @@
 // applies czm_gammaCorrect's sRGB->linear decode (pow(color, czm_gamma)) when
 // HDR is enabled, matching WebGL SkyBoxFS.glsl, and stays byte-identical on the
 // default SDR path.
+// @purpose Acceptance: WebGPU SkyBox cube-map applies sRGB->linear decode under HDR (matching WebGL) while staying byte-identical on the SDR path
+// @status ACTIVE
 //
 // The cube-map faint-star / milky-way background is sRGB-encoded. WebGL decodes
 // it to linear (#ifdef HDR) before it enters the linear HDR pipeline; the

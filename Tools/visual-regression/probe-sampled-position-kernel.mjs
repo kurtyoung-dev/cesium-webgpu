@@ -3,6 +3,8 @@
 // SECOND ComputeInstanceCollection kernel family — must interpolate each
 // instance's GPU-resident position from its uploaded keyframes to the CORRECT
 // position at a queried clock time, on BOTH backends.
+// @purpose Gate: SampledPositionKernel interpolates GPU-resident keyframed positions on BOTH backends, matching pure-JS and SampledPositionProperty refs
+// @status ACTIVE
 //
 // SampledPositionKernel.create() bakes a per-instance keyframe budget into a
 // matched WGSL kernel + JS cpuKernel + param packer (one lane layout). The

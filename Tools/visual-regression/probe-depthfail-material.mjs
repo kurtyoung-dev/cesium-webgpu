@@ -2,6 +2,8 @@
 /**
  * Probe: NEW-WEBGPU-DEPTHFAIL-MATERIAL (Batch 419) — material-based
  * depthFailAppearance, WebGPU vs WebGL parity + cull-derivation correctness.
+ * @purpose Material depthFailAppearance parity + cull derivation: a closed depthFail must back-face cull like WebGL (pins the Batch-419 fix).
+ * @status ACTIVE
  *
  * This is the MATERIAL mirror of probe-depthfail-appearance.mjs (which covers
  * the Batch-390 COLOR-appearance slice). The target box uses a MATERIAL main

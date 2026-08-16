@@ -1,3 +1,6 @@
+// @purpose node:test coverage of the evidence-library lib + CLI: schemas, archive/verify/catalog/upgrade flows, provenance, usage errors, tmpdir fixtures.
+// @status ACTIVE
+
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import fs from "node:fs";

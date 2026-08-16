@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * V0 — SkyAtmosphere extended-LUT device-error fix. WebGPU-only.
+ * @purpose Gate that the extended-LUT passes run with explicit pipeline layouts and zero device errors while the sun steps, with no error filter.
+ * @status ACTIVE
  *
  * The full-Bruneton extension passes (`computeMultipleScattering`,
  * `computeIrradiance`) were built with `layout:"auto"`, which derives a per-kernel

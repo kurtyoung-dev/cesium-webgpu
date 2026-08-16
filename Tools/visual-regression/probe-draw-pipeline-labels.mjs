@@ -1,5 +1,7 @@
 // Hook setPipeline + draw to record what pipelines actually draw
 // during Scene FB pass.
+// @purpose Hooks setPipeline + draw to record which labeled pipelines actually draw during the scene FB pass.
+// @status INVESTIGATION
 
 import { chromium } from "playwright";
 

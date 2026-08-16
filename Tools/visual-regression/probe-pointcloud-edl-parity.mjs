@@ -1,4 +1,6 @@
 // PARITY-PC-EDL — Point Cloud Eye-Dome Lighting WebGL vs WebGPU parity.
+// @purpose Parity gate: point-cloud Eye-Dome Lighting — WebGPU EDL matches WebGL, on visibly differs from off, and the off path is inert
+// @status ACTIVE
 //
 // Loads the PointCloudTimeDynamic sample (the working WebGPU point-cloud
 // render path) and captures, per backend, EDL ON and EDL OFF. Verifies:

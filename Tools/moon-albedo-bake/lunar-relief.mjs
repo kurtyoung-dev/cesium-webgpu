@@ -1,6 +1,8 @@
 /**
  * lunar-relief.mjs — shared, dependency-free derivation and verification of
  * the bundled lunar tangent-space NORMAL map (C12-25).
+ * @purpose Dependency-free derivation + verification of the lunar tangent-space normal map (east-north-up frame), shared by bake and asset spec.
+ * @status ACTIVE
  *
  * WHY THIS EXISTS
  * ---------------

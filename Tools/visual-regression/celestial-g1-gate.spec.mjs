@@ -1,4 +1,6 @@
 // celestial-g1-gate.spec.mjs — browser-free guard for the C12-G1F2 G1 repair.
+// @purpose Browser-free mutant-battery guard of the G1 celestial gate predicates (star modulation, sky floor, sprite deltas, cubemap certifying mode).
+// @status ACTIVE
 //
 // The three repairs this pins are all repairs to a GATE, so a spec that only
 // exercised the correct implementation would be worth nothing: the pre-repair

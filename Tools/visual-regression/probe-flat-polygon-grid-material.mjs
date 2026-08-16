@@ -2,6 +2,8 @@
 // PolygonGeometry with a MaterialAppearance Grid material must render the GRID
 // PATTERN on WebGPU, matching WebGL. The reported bug: WebGPU renders a SOLID
 // fill (st/texcoord never generated → grid math degenerates to a constant).
+// @purpose Flat (height-0) polygon with a Grid MaterialAppearance shows the pattern on WebGPU (st generation), with an extruded-polygon off-gate.
+// @status ACTIVE
 //
 // The probe captures two primitives per backend:
 //   (A) a FLAT polygon (height 0, no extrudedHeight) with a Grid material

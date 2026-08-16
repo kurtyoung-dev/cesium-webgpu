@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * Weather Inspector — standards-keyed PRESET sweep. WebGPU-only.
+ * @purpose Sweeps the Weather Inspector's 8 METAR/WMO presets: okta brightness ladder holds (clear > broken > overcast/storm), 0 device errors.
+ * @status ACTIVE
  *
  * Boots the WebGPU Weather Inspector gallery demo standalone (stub Sandcastle,
  * inject Cesium as a module, call the demo's own startup — the gallery boot

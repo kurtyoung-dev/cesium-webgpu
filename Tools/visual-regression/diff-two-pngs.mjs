@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // Pixel-exact diff between two PNGs. Used by the SKY-MS parity gate to assert
 // the flag-OFF build is BYTE-IDENTICAL across the change (pre vs post).
+// @purpose General CLI pixel-exact PNG diff with optional bottom-crop and exit 0 iff zero drift; the byte-identity gate tool of the diff family.
+// @status ACTIVE
 //
 //   node Tools/visual-regression/diff-two-pngs.mjs A.png B.png
 //

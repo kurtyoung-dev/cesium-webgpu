@@ -6,6 +6,9 @@
 // FragOut struct-swap return treatment, scoping return-wrapping to the
 // fragmentMain body only. Camera UB is the LIT layout (logDepth tail at floats
 // 76-79, already packed by writeRTEUniformsLit). //>>else stays byte-identical.
+// @purpose One-shot codemod adding LOG_DEPTH blocks to PrimitivePBRSimple/Textured WGSL (clipPosition VS treatment + FragOut return swap).
+// @status INVESTIGATION
+//
 import fs from "node:fs";
 import path from "node:path";
 

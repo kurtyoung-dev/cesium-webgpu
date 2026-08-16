@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * C12-29 S5 custom-oblate-ellipsoid runtime certification.
+ * @purpose Runtime certification that a custom oblate ellipsoid renders and derives identically on serial fresh WebGL and WebGPU contexts; write-once evidence
+ * @status ACTIVE
  *
  * The probe runs one fresh WebGL context and one fresh WebGPU context in
  * serial. It does not build, launch a server, or contact a non-loopback host.

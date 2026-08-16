@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * C11-193C real Edge/WebGPU demand-priority and bounded-drain acceptance.
+ * @purpose Acceptance for dynamic-IBL demand priority: HIGH-before-NORMAL admission, bounded lossless deferral, budget semantics, late 2D promotion.
+ * @status ACTIVE
  *
  * Two independent real DynamicEnvironmentMapManagers are driven by ordered
  * Scene primitives. The probe proves same-frame HIGH-before-NORMAL admission,

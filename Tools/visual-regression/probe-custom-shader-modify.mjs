@@ -1,5 +1,7 @@
 /**
  * C4-MODEL-WGSL-CUSTOMSHADER-MODIFY acceptance probe (Q31 slice A).
+ * @purpose MODIFY_MATERIAL ordering acceptance: WGSL customShader runs pre-lighting, so constant diffuse gets shaded and converges with WebGL.
+ * @status ACTIVE
  *
  * Proves the WebGPU model customShader now runs PRE-lighting for
  * CustomShaderMode.MODIFY_MATERIAL, matching WebGL ModelFS's

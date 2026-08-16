@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 /**
  * Weather ingest MVP (Phase 0/1) — end-to-end pipeline probe. WebGPU-only.
+ * @purpose Gate-B leg: ingest MVP — SyntheticWeatherSource through provider/packer to the C2-16 weather map; deck appears at 0.95, clears at 0.0.
+ * @status ACTIVE
+ *
  * PINNED for determinism under `C13-WEATHER-PROBE-FLEET-NETWORK-GLOBE`.
  *
  * Proves the data-driven path: a WeatherProvider + a WeatherSource emits a real

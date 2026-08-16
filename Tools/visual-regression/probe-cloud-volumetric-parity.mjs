@@ -3,6 +3,9 @@
 // radial-noise impostor that filled most of the billboard quad, while WebGL's
 // CloudCollectionFS raymarches a per-cloud ellipsoid (0.82 * maximumSize) with
 // Gardner shading + worley erosion — so WebGPU drew a ~4-5x too-large blob.
+// @purpose Both-backend billboard-cloud footprint comparison: WebGPU impostor blob vs WebGL raymarched core, bright-pixel bbox metrics.
+// @status ACTIVE
+//
 // DEFERRED_WORK measured "281x183 px noise blob vs WebGL's 59x52 px raymarched
 // core" at a 2000x1300 m cloud / 15 km nadir camera.
 //

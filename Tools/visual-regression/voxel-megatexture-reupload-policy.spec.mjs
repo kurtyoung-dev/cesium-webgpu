@@ -1,4 +1,7 @@
 // Browser-free policy/mutant gate for probe-voxel-megatexture PART 3.
+// @purpose Mutant gate for the voxel megatexture reupload evidence policy: valid resident/eviction/return evidence passes, each corruption must go red.
+// @status ACTIVE
+//
 // Run: node --test Tools/visual-regression/voxel-megatexture-reupload-policy.spec.mjs
 
 import assert from "node:assert/strict";

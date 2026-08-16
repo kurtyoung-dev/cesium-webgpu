@@ -6,6 +6,8 @@
 // whether that is a real renderer gap or specific to dynamically-added raw
 // collections. Uses viewer.entities (the viewer's own DataSourceDisplay, same
 // module instance) so there is no dual-module ambiguity.
+// @purpose Disambiguation probe: do markers render via the entity API where dynamically-added raw collections did not, per mode and backend.
+// @status INVESTIGATION
 //
 // Out: output/collent-{3d,2d,cv}-{webgl,webgpu}.png
 

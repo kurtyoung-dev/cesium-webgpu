@@ -2,6 +2,8 @@
 /**
  * Probe: PolylineColorAppearance + PolylineMaterialAppearance Primitive in
  * 3D / Columbus View / 2D / mid-morph on WebGPU vs WebGL (C2-12 / 376b).
+ * @purpose Gate: polyline appearance primitives render in 3D/Columbus/2D/mid-morph on WebGPU via projected-2D plumbing + csm_computePolylinePosition
+ * @status ACTIVE
  *
  * The WebGPU polyline appearance VS was 3D-only — it read position3DHigh/Low and
  * fed them through the (2D/CV) modelView, so in 2D/CV mode it transformed 3D ECEF

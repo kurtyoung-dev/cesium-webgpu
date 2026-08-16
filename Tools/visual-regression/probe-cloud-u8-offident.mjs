@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // Probe (CLOUD-U8-DOCS-DEMO-PROBES close-out acceptance): the off-identity +
 // WebGL-graceful-no-op gate for the whole cloud-unification epic.
+// @purpose Epic close-out standing guard: full volumetric flag surface is byte-inert in BILLBOARD mode on both backends, graceful WebGL no-op.
+// @status ACTIVE
 //
 // This is the STANDING guard for the epic's two hard invariants:
 //

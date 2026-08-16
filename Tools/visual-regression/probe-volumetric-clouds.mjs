@@ -2,6 +2,8 @@
 /**
  * REPRODUCTION/SCOUT probe (probe-FIRST): does the WebGPU procedural volumetric
  * cloud raymarcher render at all? (Tier 4 — C2-15/16/17 prerequisite.)
+ * @purpose Scout probe: does the WebGPU volumetric cloud raymarcher render cloud pixels at all — bright-pixel count vs WebGL at a cloud-covered view.
+ * @status ACTIVE
  *
  * The cloud fidelity upgrades (Perlin-Worley noise, weather map, dual-lobe HG)
  * are only verifiable if the raymarcher actually produces cloud pixels on

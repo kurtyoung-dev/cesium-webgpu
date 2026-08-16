@@ -2,6 +2,8 @@
 // Dump pixels from the reprojected geographic texture for the SAME polar
 // imagery tile on both backends. If they differ pixel-by-pixel, the
 // reprojection ALGORITHM is the source of the polar diff.
+// @purpose Diagnostic: dumps and pixel-compares the reprojected geographic texture for the same polar tile on both backends to localize algorithm diffs
+// @status ACTIVE
 //
 // WebGL: 64-row vertex-grid GPGPU reprojection (`reprojectToGeographic`)
 //        produces `imagery.texture` (a Texture2D handle).

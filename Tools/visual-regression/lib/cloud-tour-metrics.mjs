@@ -1,5 +1,7 @@
 /**
  * C13-01 cloud-tour METRICS — the measurement half of the repaired tour.
+ * @purpose Pure C13-01 per-sequence metrics plus manifest validation, including assessInterleavedAb enforcing the C13-39 interleaved GPU-timing protocol.
+ * @status ACTIVE
  *
  * Everything here is a PURE function over already-captured data: pixel buffers,
  * CPU frame samples, the WebGPU timestamp profiler's result object, and whole

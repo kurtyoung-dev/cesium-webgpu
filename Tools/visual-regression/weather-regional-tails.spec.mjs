@@ -1,4 +1,6 @@
 // C13-08 rendered-tail probe contract.
+// @purpose Contract for the rendered-tail browser probe: cyclic CoverageJSON parse, fused capture, policy rejecting duplicated antimeridian band.
+// @status ACTIVE
 //
 // This does not claim GPU pixels. It proves the browser fixture exercises the
 // cyclic parser, the capture stays fused, and the evidence policy rejects both

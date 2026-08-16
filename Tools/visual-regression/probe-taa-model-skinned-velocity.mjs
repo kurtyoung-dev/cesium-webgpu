@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 // Probe (TAA-SLICE-2B-MODEL-MRT-MOTION — premise-verification / regression):
+// @purpose Locks shipped TAA-SLICE-2B: a skinned animated model under a stationary camera emits non-zero per-pixel velocity; OFF-gate companion.
+// @status ACTIVE
+//
 // The TAA per-model motion-vector path (prev-frame joint / morph / instance
 // UBOs → dedicated single-target rg16float velocity pass → TAA shader prefers
 // per-pixel motion at @binding(5)) was implemented across Batches 96/104/106/

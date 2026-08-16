@@ -1,4 +1,6 @@
 // C11-140 — NEW-GPU-TIMESTAMP-UNIQUE-SAMPLE-ACCOUNTING.
+// @purpose Pins the GPU timestamp profiler's union-fold frame coverage (overlap surfaced, never double-counted) and its no-silent-loss attempt ledger.
+// @status ACTIVE
 //
 // Prerequisite-grade tooling: every later C11 GPU-lane perf claim is only as
 // falsifiable as the timer it cites. Two invariants have to be provable without
@@ -494,5 +496,32 @@ test("the profiler routes coverage through the shared fold, and the clamp is gon
     source,
     /Math\.min\(1,\s*profiledPassStats/,
     "the clamped sum/span ratio must not come back — it hides double counting",
+  );
+});
+
+test("the adapter certification probe is offline and fails closed when timestamps are unavailable", async () => {
+  const source = await readFile(
+    resolve(directory, "probe-gpu-timestamp-profiler.mjs"),
+    "utf8",
+  );
+  assert.match(source, /renderer=webgpu&offline=true/);
+  assert.match(source, /const VIEWER_URL\s*=/);
+  assert.match(source, /new URL\(VIEWER_URL\)\.origin/);
+  assert.doesNotMatch(
+    source,
+    /const URL\s*=/,
+    "the viewer URL must not shadow Node's global URL constructor",
+  );
+  assert.match(source, /externalRequests\.push\(request\.url\(\)\)/);
+  assert.match(
+    source,
+    /failures\.push\(`\$\{consoleErrors\.length\} console error/,
+  );
+  assert.match(source, /if \(!result\.featureAvailable\) \{/);
+  assert.match(source, /process\.exitCode = 3/);
+  assert.doesNotMatch(
+    source,
+    /certified:\s*failures\.length === 0\s*,/,
+    "an unavailable timestamp feature must never be rounded into certification",
   );
 });

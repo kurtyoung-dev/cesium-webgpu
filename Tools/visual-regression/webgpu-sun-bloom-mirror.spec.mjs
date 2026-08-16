@@ -1,5 +1,7 @@
 // webgpu-sun-bloom-mirror.spec.mjs — browser-free guard for the WebGPU sun
 // bright-pass glow, the mirror of the WebGL `Scene/SunPostProcess.js` chain.
+// @purpose Guard that both backends draw ONE sun glow: WebGPU tuning derived from SolarDiscModel not copied, shared constants, one flag, WebGL untouched.
+// @status ACTIVE
 //
 // The row's whole claim is that the two backends draw ONE glow. A spec that
 // only asserted the WebGPU side exists would be worth nothing: the failure mode

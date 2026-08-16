@@ -1,5 +1,7 @@
 /**
  * Pure acceptance policy for C12-29 S4 (orbital-sunrise limb glow).
+ * @purpose Frozen constants and deterministic verdict arithmetic for the C12-29 S4 orbital-sunrise limb-glow acceptance; browser driver owns capture only.
+ * @status ACTIVE
  *
  * The browser driver owns capture, decoding, provenance, and evidence
  * publication. This module owns only immutable constants and deterministic

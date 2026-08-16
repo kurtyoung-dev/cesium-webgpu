@@ -1,3 +1,6 @@
+// @purpose node:test coverage of the representative-tileset lifecycle tracker using fake tiles, requests and content promises.
+// @status ACTIVE
+
 import assert from "node:assert/strict";
 import test from "node:test";
 

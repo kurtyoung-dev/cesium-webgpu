@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * Probe: C9-09-ATTACHMENT-DEMAND-REGISTRY (FAR-401-C0) acceptance.
+ * @purpose Acceptance that the per-frame attachmentDemand record matches actual scene-FB behavior for default frame + each G-buffer consumer, observe-only.
+ * @status ACTIVE
  *
  * Verifies the ONE canonical per-frame attachment-demand record
  * (`scene.getDebugSnapshot().attachmentDemand`) MATCHES the actual scene-FB

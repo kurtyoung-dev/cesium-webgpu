@@ -3,6 +3,8 @@
  * Weather Phase 3 — mock-WCS (OGC API-Coverages / MSC GeoMet) offline probe
  * (Batch 425). WebGPU-only. PINNED for determinism under
  * `C13-WEATHER-PROBE-FLEET-NETWORK-GLOBE`.
+ * @purpose Gate-B leg: OGC API-Coverages ingest via the shared CoverageJSON parser against the /mock-wcs fixture — same pattern gates as the EDR mock.
+ * @status ACTIVE
  *
  * Proves the OGC Coverages ingest chain — fetch -> CoverageJSON parse (the SHARED
  * parser, same one EDR uses) -> packer -> weatherTex -> clouds — works end-to-end

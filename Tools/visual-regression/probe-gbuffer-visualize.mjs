@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // Probe-gbuffer-visualize — Phase 8a Slice 2c (Batch 89).
+// @purpose Renders CesiumDebug.showGBufferNormals() and checks the G-buffer normal texture reads as a proper RGB-mapped sphere with magenta sentinels
+// @status ACTIVE
 //
 // Calls `CesiumDebug.showGBufferNormals()` on the WebGPU viewer to
 // replace the production post-process chain with a fullscreen blit of

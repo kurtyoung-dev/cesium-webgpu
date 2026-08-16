@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 // Probe (Phase 3 Slice 3 — NEW-COLLECTIONS-2DCV-PROJECTED-FRAME-RTE morph leg):
+// @purpose Animated-morph gate: markers track smoothly through morphTo2D/CV with no mid-morph vanish or completion pop, binned by morphTime.
+// @status ACTIVE
+//
 // verify Billboard / Point / Label collections track SMOOTHLY through an
 // ANIMATED morph transition on WebGPU (no mid-morph vanish, no MORPH-COMPLETION
 // -POP), using WebGL as the reference.

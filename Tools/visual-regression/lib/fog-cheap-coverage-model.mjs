@@ -1,6 +1,8 @@
 /**
  * CPU twin of the volumetric fog's CHEAP cloud-shadow density gate
  * (CLOUD-LOW-COVERAGE-CUTOFF, fog arm).
+ * @purpose Bit-faithful CPU twin of the fog cheap cloud-shadow noise gate at real ECEF magnitudes, importing the shipped normalisation and coverage response.
+ * @status ACTIVE
  *
  * WHAT THIS IS FAITHFUL TO, AND WHAT IT IS NOT
  *

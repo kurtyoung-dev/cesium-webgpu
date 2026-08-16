@@ -1,3 +1,6 @@
+// @purpose Provenance fingerprints binding the effects-depth-placeholder startup token across engine source, bundle, source map, probe, and policy files.
+// @status ACTIVE
+
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 

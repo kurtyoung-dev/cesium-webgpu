@@ -1,4 +1,6 @@
 // marker-grammar.mjs — the machine-readable half of the fork comment standard.
+// @purpose Machine-decidable half of the fork comment standard: the banned tracker-vocabulary regex rules (add-only ids) driven by the marker guard.
+// @status ACTIVE
 //
 // WHAT THIS ENCODES. `Documentation/Contributors/CodingGuide/ForkCommentStandard.md`
 // says a comment in `packages/engine/Source` or `packages/widgets/Source`

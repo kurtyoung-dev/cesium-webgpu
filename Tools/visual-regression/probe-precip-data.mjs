@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * PRECIP-DATA (Batch 444) — data-driven precipitation probe. WebGPU-only.
+ * @purpose Gate: data-driven precip — WMO ww maps to type/intensity, visibility couples density, snow-cover ramps, default-OFF leaves manual path intact
+ * @status ACTIVE
  *
  * Verifies improvement-plan 4.11: the `effects.precipitation.dataDriven` flag,
  * when set AND a weather-ingest provider with present-weather is attached,

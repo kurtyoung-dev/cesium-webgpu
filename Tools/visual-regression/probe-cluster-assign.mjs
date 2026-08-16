@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // Probe-cluster-assign — Slice 5d Batch 148 verification.
+// @purpose Compute-readback check of WebGPUClusterAssignRenderer: known 3-light scene yields expected per-cluster counts; dirty-skip works.
+// @status ACTIVE
 //
 // Composes WebGPUClusterBoundsRenderer + WebGPUClusterAssignRenderer
 // in a fresh page. Dispatches both compute passes against a known

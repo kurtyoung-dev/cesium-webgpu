@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * Build-Variant Smoke Test
+ * @purpose Playwright smoke test of each build variant's IIFE bundle (dual/webgl-only/webgpu-only): Viewer constructs, frames render, zero console errors.
+ * @status ACTIVE
  *
  * Loads each variant's IIFE bundle in Playwright, waits for the
  * Viewer to initialize, renders a few frames, and asserts that no

@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 // Layer 2 (DebugTileImageryProvider) on top of layer 1 (Ion imagery).
+// @purpose Captures 2-layer imagery compositing (Ion + debug tile overlay) on both backends for eyeball check of label orientation and grid alignment
+// @status INVESTIGATION
+//
 // Verifies multi-layer compositing on WebGPU matches WebGL.
 //
 // What to look for in the screenshots:

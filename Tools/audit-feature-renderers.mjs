@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // Audit FeatureRendererKey enum <-> registerFeatureRenderer sites
 // <-> getFeatureRenderer consumer sites.
+// @purpose Node audit that FeatureRendererKey enum, registerFeatureRenderer sites and getFeatureRenderer consumers stay mutually consistent; CI/pre-commit gate.
+// @status ACTIVE
 //
 // Fails if either:
 //   - A key in FeatureRendererKey.js has no registration (dead key).

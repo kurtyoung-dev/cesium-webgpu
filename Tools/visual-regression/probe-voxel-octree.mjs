@@ -1,4 +1,6 @@
 // VOXEL-OCTREE-LOD acceptance probe — octree traversal / LOD refinement.
+// @purpose Acceptance: voxel octree LOD refinement to level 2 (73-slot atlas) with L1/L2 discriminator families and cone-sampled in-page expectations.
+// @status ACTIVE
 //
 // Scenario (NEW-VOXEL-OCTREE-L2-ASSET-PROBE): a CUSTOM THREE-level box voxel
 // provider (availableLevels = 3, 4x4x4 cells per tile, metadataOrder Y_UP)

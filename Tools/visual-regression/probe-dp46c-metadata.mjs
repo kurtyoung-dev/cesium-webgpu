@@ -4,6 +4,8 @@
 // GENERATED metadata chunk (`@group(1) @binding(39..)` property-texture
 // bindings + `initializeMetadata` sampling + the
 // `MODEL_HAS_PROPERTY_TEXTURES` material BGL variant).
+// @purpose Property-TEXTURE metadata read in the model FS via the generated chunk's bindings + textureSample and the property-textures BGL variant.
+// @status ACTIVE
 //
 // Scenes (all WebGPU):
 //   A. proptex-on   — SimplePropertyTexture with

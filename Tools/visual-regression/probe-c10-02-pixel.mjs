@@ -1,4 +1,7 @@
 // C10-02 pixel + drillPick oracle.
+// @purpose Pixel + drillPick oracle for styled b3dm: cropped building-region capture and stats per unstyled/subset/all mode, drillPick feature check.
+// @status ACTIVE
+//
 // Loads BatchedWithBatchTable, frames it tightly (globe off, black bg), and
 // per mode captures a cropped PNG of the building region + pixel stats.
 //   RENDERER=webgpu|webgl   MODE=unstyled|subset|all   TAG=<suffix>

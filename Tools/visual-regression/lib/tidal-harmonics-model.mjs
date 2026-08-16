@@ -1,5 +1,7 @@
 // tidal-harmonics-model.mjs — published reference values and the pure analysis
 // helpers behind `tidal-harmonics.spec.mjs`.
+// @purpose Published NOAA/Schureman constituent speeds, Doodson fundamental rates and physics-free signal helpers anchoring the tidal-harmonics spec.
+// @status ACTIVE
 //
 // Everything here is either (a) a number taken from a named external source, or
 // (b) a signal-processing helper with no tide physics in it. The physics lives

@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // Item 3-C (CLOUD-IBL-FULL, Batch 450) — full per-face cloud-march in the env cube.
+// @purpose B450 cloudsInReflections gate: opt-in per-face cloud march adds structure to the env cube; OFF byte-identical; temporal accumulation clean
+// @status ACTIVE
 //
 // Verifies the opt-in `contextOptions.webgpu.cloudsInReflections` path: a low-res
 // procedural cloud raymarch is composited OVER the env-sky faces (before the IBL

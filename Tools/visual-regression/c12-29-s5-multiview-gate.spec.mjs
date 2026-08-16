@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+// @purpose Gate spec for the C12-29 S5 multiview certification: phases, renderer set, WebGPU VR error contract, evidence lifecycle and lock/watchdog wiring.
+// @status ACTIVE
 
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";

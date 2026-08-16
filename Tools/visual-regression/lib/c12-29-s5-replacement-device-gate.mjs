@@ -1,5 +1,7 @@
 /**
  * Fail-closed acceptance policy for C12-29 S5 replacement-device recovery.
+ * @purpose Fail-closed acceptance for S5 replacement-device recovery after genuine Chromium GPU-process termination (v5 schemas, nine-phase ledger).
+ * @status ACTIVE
  *
  * The browser probe owns the genuine Chromium GPU-process termination and the
  * runtime observations.  This module is deliberately browser- and filesystem-

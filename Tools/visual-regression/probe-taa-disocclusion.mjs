@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // Probe-taa-disocclusion — Slice 5c-B Batch 126 verification.
+// @purpose Exercises TAA's third disocclusion check (G-buffer normal divergence) under static and orbiting cameras; new binding builds cleanly.
+// @status ACTIVE
 //
 // Toggles `scene.taaEnabled` on/off with and without camera motion
 // to exercise TAA's disocclusion path. Pre-Batch-126 TAA had 2

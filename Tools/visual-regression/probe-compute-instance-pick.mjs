@@ -4,6 +4,8 @@
 // kernel writes them every frame), so there is no CPU position to hit-test —
 // the engine renders one pick id per instance into the pick FBO and the
 // readback decodes the instance under the cursor.
+// @purpose GPU-resident compute-instances are pickable: scene.pick returns the right instanceIndex for three instances; empty space undefined.
+// @status ACTIVE
 //
 // What it asserts (WebGPU):
 //   (A) scene.pick over a KNOWN instance returns that instance's record —

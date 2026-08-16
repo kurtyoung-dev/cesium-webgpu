@@ -3,6 +3,8 @@
 // property ATTRIBUTES transport EVERY component to the WGSL shader (vec4
 // slot-9 transport replacing DP-H46a's `.x`-only f32), and the generated
 // `metadataDebugColor` paints the RAW per-component values as RGB.
+// @purpose Proves VEC2/3/4 property attributes transport every component (vec4 slot-9), with debug paint of authored per-face RGB; debug-off gate.
+// @status ACTIVE
 //
 // Asset: Specs/Data/Models/glTF-2.0/BoxVec3PropertyAttributes — a cube whose
 // `_FACE_COLOR` VEC3 FLOAT32 property attribute is CONSTANT per face (all 4

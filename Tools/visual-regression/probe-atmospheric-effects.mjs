@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * Atmospheric effects — Phase A (conditions→knobs mapper). Logic probe.
+ * @purpose Logic probe for the Phase-A conditions-to-knobs mapper and applyAtmosphericConditions writing scene knobs (warm-moist vs cold-dry).
+ * @status ACTIVE
  *
  * Phase A is a backend-agnostic mapper (weather conditions → Scene visual knobs),
  * so it's verified by the KNOB VALUES, not a render (whether a backend renders

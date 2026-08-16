@@ -1,3 +1,6 @@
+// @purpose Shared driver for the C11-90 primitive-restart split harness: probe-base validation, watchdog budget, output/evidence paths, capture helpers.
+// @status ACTIVE
+
 import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";

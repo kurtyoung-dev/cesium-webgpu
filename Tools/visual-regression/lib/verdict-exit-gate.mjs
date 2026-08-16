@@ -1,5 +1,7 @@
 // verdict-exit-gate.mjs — the single home for the evidence-gate verdict tiers
 // and the exit code each one leaves with.
+// @purpose Single frozen PASS/FAIL/ERROR/STRUCTURAL exit-code table shared by the S5 gate libraries; fixed a six-copy divergence where STRUCTURAL exited 2.
+// @status ACTIVE
 //
 // WHY THIS EXISTS. Six sibling gate libraries each carried their own copy of
 // the status-to-exit mapping. Five agreed; one routed STRUCTURAL to 2, the code

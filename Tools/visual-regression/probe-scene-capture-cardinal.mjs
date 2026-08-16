@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // C2-25 ENV-SCENE-CAPTURE (Batch 446) — DECISIVE cardinal-orientation probe.
+// @purpose Ground-truth cardinal check for globe env capture: per-face on-screen camera replicas vs captured cube faces, detecting E/W swap or mirror.
+// @status INVESTIGATION
 //
 // Resolves the ONE open correctness question for the globe scene capture:
 //   "Is the side-face cardinal mapping (East/West/North/South) AND the

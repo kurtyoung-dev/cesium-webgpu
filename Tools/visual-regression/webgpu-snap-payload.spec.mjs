@@ -1,6 +1,8 @@
 // webgpu-snap-payload.spec.mjs — browser-free contract for C11-212 /
 // UP144-SNAP-WEBGPU, the WebGPU implementation of upstream v1.144's
 // experimental `Scene.snap` snap-to-geometry picking.
+// @purpose Contract for WebGPU Scene.snap payload: one encoding home (WebGPUSnapPayload.ts), rg32uint format agreement, spiral decode, naga validation.
+// @status ACTIVE
 //
 // WHY THIS EXISTS
 // ---------------

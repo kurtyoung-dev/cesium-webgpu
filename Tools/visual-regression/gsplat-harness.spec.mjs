@@ -1,5 +1,7 @@
 // gsplat-harness.spec.mjs — browser-free guard for the C15-G1 Gaussian-splat
 // probe harness.
+// @purpose Mutation-tests the C15-G1 dual-mode gsplat gate so the absence/presence flip and blank-canvas parity can never go green vacuously.
+// @status ACTIVE
 //
 // The thing this pins is a GATE, so a spec that only exercised the correct
 // implementation would be worth nothing — the WRONG implementation also

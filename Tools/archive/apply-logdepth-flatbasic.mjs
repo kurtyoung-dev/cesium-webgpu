@@ -5,6 +5,9 @@
 // signature to a `FragOut` struct (color + frag_depth) and rewrites every
 // fragmentMain `return X;` to `return FragOut(X, <logdepth>);`. The //>>else
 // branch keeps the historical bare-vec4 path so LOG_DEPTH-off is byte-identical.
+// @purpose One-shot codemod adding LOG_DEPTH //>>ifdef blocks + FragOut struct swap to the 21 Mat*Flat/Basic WGSL primitive shaders.
+// @status INVESTIGATION
+//
 // Idempotent: skips files that already carry v_logDepth.
 import fs from "node:fs";
 import path from "node:path";

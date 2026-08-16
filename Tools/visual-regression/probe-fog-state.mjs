@@ -1,3 +1,6 @@
+// @purpose Dumps fog enabled/density/uniform state on both backends from the Particle System demo via the legacy Sandcastle shim.
+// @status INVESTIGATION
+
 import { chromium } from "playwright";
 
 const RENDERER_OVERRIDE_SHIM = `

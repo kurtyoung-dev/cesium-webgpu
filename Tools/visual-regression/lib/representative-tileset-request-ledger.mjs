@@ -1,3 +1,6 @@
+// @purpose Event-sourced ledger of tileset content requests (issue/terminal events, byte totals, hashes) with cross-run comparison for perf evidence.
+// @status ACTIVE
+
 const ISSUE_EVENT_TYPES = new Set(["issued", "reissued"]);
 const TERMINAL_EVENT_TYPES = new Set([
   "completed",

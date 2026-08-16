@@ -3,6 +3,8 @@
 // is deterministic, all N snapshots are pixel-identical. If not, the
 // run-to-run variance is what's contaminating the polar-multi diff
 // metric.
+// @purpose Captures one backend N times back-to-back to test whether run-to-run variance contaminated the polar-multi diff metric.
+// @status INVESTIGATION
 
 import { chromium } from "playwright";
 import fs from "fs";

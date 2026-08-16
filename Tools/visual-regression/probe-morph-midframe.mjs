@@ -3,6 +3,8 @@
 // 3D→2D and 3D→Columbus transition, for WebGL vs WebGPU. The existing probes
 // only use duration-0 morphs (terminal states); this exercises the MORPHING
 // branch (scene.mode === 0, 0 < morphTime < 1) that the audit found broken.
+// @purpose Captures mid-morph frames of timed 3D-to-2D/CV transitions: the WebGPU globe must not vanish mid-morph (mesh.center double-count P1).
+// @status ACTIVE
 //
 // Signal: during the morph the globe should smoothly flatten (nonBlack% rises
 // 3D→2D / stays substantial 3D→CV). If the WebGPU globe is displaced off-screen

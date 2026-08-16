@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // Probe-scene-lights — Batch 142 / Slice 5d step 2 verification.
+// @purpose Verifies the Scene.lights -> frameState.lights -> 164-float packed UBO chain matches the WGSL LightUniforms punctualLights region.
+// @status ACTIVE
 //
 // Verifies the Scene.lights → frameState.lights → packed UBO chain:
 //   1. scene.lights is a LightCollection instance.

@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * bake-lroc-color.mjs — reproducible lunar-albedo bake (Campaign-12 C12-24).
+ * @purpose Reproducible lunar albedo bake from NASA SVS 4720 lroc_color_poles_2k: pinned SHA-256, sRGB passthrough, JPEG q90 encode, landmark verify, manifest.
+ * @status ACTIVE
  *
  * Input : NASA/GSFC SVS 4720 "CGI Moon Kit", 2019 colour map,
  *         `lroc_color_poles_2k.tif` — 2048x1024 equirectangular (plate carree),

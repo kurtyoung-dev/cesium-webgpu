@@ -4,6 +4,8 @@
 // fabric { channels:vec3, repeat:vec2 }. Before the fix DiffuseMap shared the
 // Image shader ({ repeat, color }), so `repeat` read channels and `color` read
 // repeat+pad → corrupted/wrong texture sampling on WebGPU.
+// @purpose DiffuseMap material on a geometry primitive renders correctly on WebGPU after gaining its own shader pair (was corrupt via Image-shader struct).
+// @status ACTIVE
 //
 // Usage: PROBE_BASE=http://localhost:8080 node Tools/visual-regression/probe-diffusemap-primitive.mjs
 import { chromium } from "playwright";

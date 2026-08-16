@@ -3,6 +3,8 @@
  * C11-209 real Edge/WebGPU startup acceptance for the effects depth
  * placeholders. Native wrappers are installed before Cesium requests a device
  * and attribute only the exact initialization encoder/command buffer.
+ * @purpose Startup acceptance that the effects depth-placeholder init encoder creates exactly the expected textures/views/passes, via native WebGPU API wrappers
+ * @status ACTIVE
  *
  * Run with the repository dev server already listening on localhost:8080:
  *   node Tools/visual-regression/probe-c11-209-effects-placeholder-startup.mjs

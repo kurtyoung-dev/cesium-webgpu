@@ -2,6 +2,8 @@
 // Probe (BUG-ELLIPSOIDPRIM-WEBGPU-TRANSLUCENT-DOUBLE-BLEND, Batch 276) +
 // EllipsoidPrimitive WebGL re-verification of the Batch-269 _computedModelMatrix
 // hoist.
+// @purpose Translucent EllipsoidPrimitive blends exactly once (cull back; ratio ~0.5x opaque, not 0.75x) + WebGL re-verify of the B269 matrix hoist.
+// @status ACTIVE
 //
 // Two independent things this probe nails down:
 //

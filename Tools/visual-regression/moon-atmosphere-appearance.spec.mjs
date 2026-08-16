@@ -2,6 +2,8 @@
 // in-scattering sky-wash, the C12-20 Lommel-Seeliger reflectance, and the
 // C12-23 opposition surge on BOTH backends, plus the CPU integrator's
 // numeric contracts.
+// @purpose Pins moon in-scatter sky-wash, Lommel-Seeliger reflectance and opposition surge on BOTH backends plus the CPU integrator's numeric contracts.
+// @status ACTIVE
 //
 // The composite under test (both backends, character-consistent):
 //     disc = discColor × extinction + inscatter

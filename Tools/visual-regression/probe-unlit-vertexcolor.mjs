@@ -1,4 +1,6 @@
 // C2-3 NEW-WEBGPU-KHR-MATERIALS-UNLIT-BLACK regression sentinel.
+// @purpose Permanent sentinel: a KHR_materials_unlit quad with VEC3 COLOR_0 must never go black on WebGPU nor diverge from WebGL (report proven stale).
+// @status ACTIVE
 //
 // The original report claimed KHR_materials_unlit glTF models render BLACK on
 // WebGPU. Investigation (Campaign 2) proved the WebGPU unlit path already exists

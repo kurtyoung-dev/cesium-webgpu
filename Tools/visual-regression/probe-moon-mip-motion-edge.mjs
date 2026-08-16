@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * C12-33 — moving-camera Moon mip/seam acceptance in real Microsoft Edge.
+ * @purpose C12-33 moving-camera moon mip/seam acceptance in real Edge: 4 routes, canvas-element PNGs; structural failures hard, quality metrics advisory.
+ * @status ACTIVE
  *
  * This is deliberately a moving visual lane, not an idle soak. Both viewers
  * stay on a pinned clock while the camera follows the Moon in its local frame.

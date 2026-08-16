@@ -1,6 +1,8 @@
 // collection-pass-routing.spec.mjs — browser-free guard for (a) which Pass bin
 // the WebGPU collection feature renderers put their COLOR command in, and
 // (b) whether their PICK command is emitted at all.
+// @purpose Guards which Pass bin WebGPU collection renderers put COLOR commands in and that PICK commands are emitted — pins the B914 enum-branch inversion fix.
+// @status ACTIVE
 //
 // ── WHY (a) EXISTS ──────────────────────────────────────────────────────────
 //

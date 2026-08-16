@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 // Probe (NEW-ORBITAL-SGP4-KERNEL verify — the headline accuracy feature):
+// @purpose Verifies GPU df64 near-earth SGP4 kernel against embedded python-sgp4 vectors (<2 km/day); deep-space TLEs must be flagged and skipped
+// @status ACTIVE
+//
 // a GPU df64 near-earth SGP4 kernel, riding the engine's feature-agnostic
 // ComputeInstanceCollection scaffold, must propagate REAL near-earth TLEs and
 // match python-sgp4 reference vectors within a documented position-accuracy

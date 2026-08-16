@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * WASM Sub-Range RTE Encode Check (NEW-WASMRTE-SUBRANGE-ENCODE)
+ * @purpose Standalone Node check that WasmRTEBridge.batchEncodeRange's WASM and JS paths are byte-identical, placement exact, outside bytes preserved.
+ * @status ACTIVE
  *
  * Standalone node unit check for WasmRTEBridge.batchEncodeRange — the
  * sub-range variant of batchEncode that encodes a contiguous

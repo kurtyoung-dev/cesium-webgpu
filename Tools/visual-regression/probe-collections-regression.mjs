@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 // Probe (NEW-COLLECTION-RETOUCH-PROBE — THE consolidated collections gate):
+// @purpose THE consolidated collections gate: five collections render, settled scenes upload nothing, mutations repaint in 2 frames, 0 errors.
+// @status ACTIVE
+//
 // all five collections (Billboard, Label, PointPrimitive, Polyline, Cloud)
 // in ONE scene at a close camera (~11 km, inside the depth-precision
 // envelope — see the GEOMETRY NOTE in probe-billboard-partial-write.mjs),

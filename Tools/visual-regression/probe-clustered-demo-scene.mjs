@@ -5,6 +5,8 @@
 // renders with a clustered-lighting contribution and 0 device errors. This
 // validates the demo's Cesium API usage end-to-end (the Sandcastle HTML
 // wrapper itself is verbatim from the shipped point-light-shadows demo).
+// @purpose Replicates the Clustered Lighting Sandcastle demo scene and asserts a visible clustered contribution with 0 device errors.
+// @status ACTIVE
 
 import { chromium } from "playwright";
 import fs from "fs";

@@ -1,4 +1,7 @@
 // Compare MSAA settings + render bundle state at disk edge.
+// @purpose One-off: compares MSAA settings + render-bundle state at the globe disk edge via a shimmed Sandcastle Hello World page.
+// @status INVESTIGATION
+//
 import { chromium } from "playwright";
 
 const RENDERER_OVERRIDE_SHIM = `

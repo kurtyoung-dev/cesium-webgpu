@@ -4,6 +4,8 @@
 // limb of the Earth so the skybox/stars fill much of the frame. We pin the
 // clock so the star field + sun position are deterministic, then capture both
 // backends and pixel-diff them.
+// @purpose Pinned-clock Earth-limb view: stars, sun, and atmosphere limb render on WebGPU and pixel-match WebGL.
+// @status ACTIVE
 //
 // Pass criterion: WebGPU shows star points in the black background + the
 // atmosphere limb arc, visually matching WebGL.

@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // Probe-mrt-validation — Slice 5c-B Sub-C postmortem capture probe.
+// @purpose Postmortem instrument: hooks uncapturederror/device.lost per ao-x-deferred cell to name the validation error behind the MRT-flip black canvas.
+// @status INVESTIGATION
 //
 // Purpose: when Sub-C is re-applied (MRT mode flipped on, globe pipeline
 // declares 2 targets, render pass adds 2nd attachment, globe shader

@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 /**
  * V5 — Frostbite multi-scatter octaves (phase folded per-octave) + lightSampleScale.
+ * @purpose V5 per-octave phase-folding acceptance: A/B vs stash-reverted pre-V5 build with W1/W2 floor gates (tonal range, lifted shadow floor, modest delta)
+ * @status INVESTIGATION
+ *
  * WebGPU-only (baked tier).
  *
  * The multi-scatter light now folds the dual-lobe phase PER OCTAVE with geometric

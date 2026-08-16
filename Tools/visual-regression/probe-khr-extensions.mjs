@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // Probe-khr-extensions — Batch 145 / NEW-GLTF-PIPELINE-SHAPE-AUDIT Item 4.
+// @purpose Six KHR materials extensions end-to-end: model loads, pipelines draw errorless, and material-UB factor slots contain packed values at audited offsets
+// @status ACTIVE
 //
 // Loads 6 synthetic glTF test assets, each carrying ONE KHR materials
 // extension (clearcoat / specular / anisotropy / iridescence / sheen /

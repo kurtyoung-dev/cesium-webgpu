@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * C13-36 cloud ray-start jitter quality oracle. WebGPU-only.
+ * @purpose C13-36 ray-start-jitter quality oracle: OFF-subtracted coherent-band metric on provenance-locked before/after pairs; fails closed on stale companions
+ * @status ACTIVE
  *
  * This is a visual-quality probe, not a frame-time or performance benchmark.
  * It captures the same authored scene with volumetric clouds OFF, on the first

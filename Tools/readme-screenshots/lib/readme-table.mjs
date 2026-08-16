@@ -1,6 +1,8 @@
 // readme-table.mjs — the SHARED, ENFORCEABLE home of the contract between the
 // README's feature table and the screenshot manifest. Pure Node: no browser,
 // no network, no GPU.
+// @purpose Shared parser + bidirectional cross-check between the README feature table and the screenshot manifest, imported by both runner and spec.
+// @status ACTIVE
 //
 // WHY THIS IS A MODULE AND NOT TWO COPIES. The capture script and its spec both
 // need the same answer to "does every table row have a scene, and does every

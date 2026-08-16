@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // probe-eclipse-sun-fade.mjs — C12-29 S1 (EclipseState + continuous sun fade),
 // WebGL vs WebGPU.
+// @purpose C12-29 S1: continuous limb-darkened sun-billboard fade replaces the one-frame cull pop; sunset sweep, 2026 eclipse, toggle-off identity lanes.
+// @status ACTIVE
 //
 // DEFECT UNDER TEST (research: migration_doc/ECLIPSE_EFFECTS_RESEARCH_2026-07-24.md):
 //   Sun occlusion was a boolean with no intensity path.

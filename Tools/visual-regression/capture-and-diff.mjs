@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * Historical WebGL + historical WebGPU + current parity regression runner
+ * @purpose Primary VR runner: drives the split-screen page over scenes.json, captures WebGL+WebGPU canvases, evaluates 3 gates vs reviewed historical baselines.
+ * @status ACTIVE
  *
  * Drives Playwright through the split-screen comparison page, applies each
  * scene from `scenes.json`, captures the WebGL canvas + WebGPU canvas, and

@@ -1,3 +1,6 @@
+// @purpose Asserts which model pipeline stages are skipped when the native WebGPU renderer owns a primitive, pinning the stage-tax reduction.
+// @status ACTIVE
+
 import assert from "node:assert/strict";
 import test from "node:test";
 

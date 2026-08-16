@@ -1,5 +1,7 @@
 /**
  * ESM resolve hook for wasm-subrange-encode-check.mjs.
+ * @purpose ESM resolve hook redirecting WasmRTEBridge's build-layout wasm-glue specifier to the on-disk glue so the wasm Node checks run the real bridge.
+ * @status ACTIVE
  *
  * The canonical WasmRTEBridge.js (packages/engine/Source/Scene/) imports the
  * wasm-bindgen glue via a build-layout-relative specifier

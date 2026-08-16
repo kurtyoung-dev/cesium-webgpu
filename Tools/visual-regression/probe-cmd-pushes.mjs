@@ -1,5 +1,8 @@
 // Hook frameState.commandList.push to count pushes by pass over the
 // course of a test run.
+// @purpose Diagnostic: hooks frameState.commandList.push and tallies command pushes by pass over a settle window on the WebGPU viewer.
+// @status ACTIVE
+//
 import { chromium } from "playwright";
 
 const URL =

@@ -1,4 +1,7 @@
 // C10-05 PRE/POST evidence — inspect model MATERIAL texture mip chains + path.
+// @purpose C10-05 evidence: walks model material textures to report allocation path (stub vs fallback), mipLevelCount/dims, sampler min-filter.
+// @status INVESTIGATION
+//
 // Loads textured glTF assets in WebGPU, walks each primitive's matInfo readers
 // to the stub-backed GPUTexture, and reports:
 //   - path: "stub" (reader.texture._texture._webgpuTexture present) or "fallback"

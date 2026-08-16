@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // comment-marker-guard.mjs — enforcement for the fork comment standard.
+// @purpose C16 lint guard scanning engine/widgets Source for banned tracker-marker vocabulary, with a clean-list ratchet; lint-staged + one-shot modes.
+// @status ACTIVE
 //
 // Standard: Documentation/Contributors/CodingGuide/ForkCommentStandard.md
 // Grammar:  Tools/c16/lib/marker-grammar.mjs

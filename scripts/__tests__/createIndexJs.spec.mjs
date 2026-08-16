@@ -1,4 +1,7 @@
 // Browser-free regression coverage for private named-export engine modules.
+// @purpose Regression that the generated engine index omits private named-export temporal-history helpers yet still esbuild-bundles cleanly.
+// @status ACTIVE
+//
 // Run: node --test scripts/__tests__/createIndexJs.spec.mjs
 
 import assert from "node:assert/strict";

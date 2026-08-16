@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * Campaign 13 planetary cloud oracle. WebGPU-only.
+ * @purpose C13 planetary oracle: clouds-OFF/ON raw-canvas delta at every checkpoint along connected routes crossing the antimeridian, poles and altitude bands
+ * @status ACTIVE
  *
  * Unlike the older bright-pixel heuristic, this probe renders every checkpoint
  * twice at the same camera and authored JulianDate: volumetric clouds OFF, then

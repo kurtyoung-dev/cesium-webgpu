@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // probe-cpu-sampling-profile.mjs — V8 SAMPLING PROFILER FOR THE RENDER LOOP
+// @purpose V8 sampling profiler over CDP for the render loop on both backends, attributing self-time the per-pass profiler cannot see.
+// @status ACTIVE
 //
 // WHY THIS TOOL EXISTS (2026-07-19):
 // probe-webgpu-frame-breakdown measured a static, settled WebGPU scene

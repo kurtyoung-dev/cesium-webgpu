@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * Probe: NEW-WEBGPU-UNIFORMSTATE-VIEWPORT (backlog item 371).
+ * @purpose Gate for UniformState.viewport seeding on WebGPU: viewportTransformation non-identity and matches WebGL; polyline-ribbon pixel check.
+ * @status ACTIVE
  *
  * ROOT CAUSE this verifies: UniformState.viewport is only ever seeded by the
  * WebGL RenderState.applyViewport path (gl.viewport). The WebGPU render path

@@ -1,4 +1,6 @@
 // NEW-TAA-PROJECTION-JITTER-OVERWRITTEN verification.
+// @purpose Asserts the TAA sub-pixel jitter survives the WebGPU per-frustum projection recompute and reaches the GPU (projection[8]/[9] non-zero).
+// @status ACTIVE
 //
 // Scene.js applies the TAA sub-pixel jitter to the camera projection, but the
 // WebGPU frustum loop's _updateFrustumUniforms recomputes a fresh un-jittered

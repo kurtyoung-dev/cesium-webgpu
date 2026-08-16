@@ -2,6 +2,8 @@
  * REFRESH-SKIP AWARENESS — the shared, enforceable home for one class defect
  * that made THREE cloud-lane probe windows lie on the same day, and (§3) for
  * the redesign the FIX to that defect forced on both probes' visual arms.
+ * @purpose Shared enforceable home for the requestRenderMode refresh-skip defect that froze cloud snapshots and made three probe windows lie on one day.
+ * @status ACTIVE
  *
  * ── THE MECHANISM, TRACED ────────────────────────────────────────────────────
  *

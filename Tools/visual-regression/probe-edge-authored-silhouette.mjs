@@ -2,6 +2,8 @@
 /**
  * Probe: authored `silhouetteNormals` accessor parity
  * (EDGE-AUTHORED-SILHOUETTE-NORMALS).
+ * @purpose Authored silhouetteNormals accessor parity: WebGPU edge extractor consumes the signed-byte accessor like WebGL (numeric + visual lanes).
+ * @status ACTIVE
  *
  * Before this task the WebGPU model-edge extractor
  * (`WebGPUEdgeVisibilityEmitter.extractEdgeGeometry`) always RE-DERIVED

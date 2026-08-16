@@ -1,4 +1,6 @@
 // C11-168 — browser-free causal-discriminator policy and mutant suite.
+// @purpose Browser-free policy + mutant suite for the C11-168 direct-model ablation causal discriminator: leg config, invocation shape, child-process handling.
+// @status ACTIVE
 //
 // Run: node --test Tools/visual-regression/c11-168-direct-model-ablation-policy.spec.mjs
 

@@ -1,3 +1,6 @@
+// @purpose Minimal check that the BatchTableHierarchy b3dm tileset renders on WebGPU with the globe removed from the picture.
+// @status INVESTIGATION
+
 import { chromium } from "playwright";
 const BASE = process.env.PROBE_BASE || "http://localhost:8080";
 const browser = await chromium.launch({

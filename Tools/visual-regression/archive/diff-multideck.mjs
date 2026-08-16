@@ -4,6 +4,8 @@
  * project's visual-regression convention. Prints mismatch% (any channel differs
  * by > THRESH) and max per-channel delta. Used to assert the CLOUD-MULTIDECK
  * parity pair (main vs modified) is byte-identical (zero drift).
+ * @purpose CLI byte-identical (threshold 0) pixel diff for the CLOUD-MULTIDECK parity pair via Playwright canvas decode.
+ * @status INVESTIGATION
  *
  * Usage: node Tools/visual-regression/diff-multideck.mjs <a.png> <b.png>
  */

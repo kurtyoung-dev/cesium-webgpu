@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * Cross-Backend Sandcastle Visual-Regression Runner
+ * @purpose Runs every Sandcastle demo under WebGL then WebGPU via a Viewer shim injecting contextOptions.renderer, pixel-diffs the pair, writes per-demo reports.
+ * @status ACTIVE
  *
  * Loads each Sandcastle gallery demo TWICE — once forced to WebGL and once
  * forced to WebGPU — captures the canvas, pixel-diffs the two captures, and

@@ -2,6 +2,9 @@
 // C2-6 DIAGNOSTIC (NEW-WEBGPU-EXAG-WATER-STREAKS) — 2x2: {webgl,webgpu} x
 // {atmo-on, atmo-off}, + per-backend rendered TILE LEVELS + a "bright-blue lake
 // streak" metric. Decides the branch:
+// @purpose 2x2 {backend}x{atmosphere} capture + rendered tile levels + lake-streak metric; branch-decider for the exaggerated-terrain bright-lake streak bug.
+// @status INVESTIGATION
+//
 //   - If webgl-on vs webgl-off mutes the lakes a lot → atmosphere IS the agent
 //     (fixable: match the WebGPU drape/fade).
 //   - If WebGPU tile levels differ from WebGL at the lake region → terrain LOD

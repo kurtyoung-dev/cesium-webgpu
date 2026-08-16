@@ -1,4 +1,6 @@
 // NEW-VOXEL-OCTREE-DEEP-LEVELS acceptance probe — octree traversal to LEVEL 3.
+// @purpose Acceptance: WebGPU voxel octree traversal reaches level 3 (585-slot atlas, 4-level fixture) with per-ray in-page discriminators at three views.
+// @status ACTIVE
 //
 // Scenario: a CUSTOM FOUR-level box voxel provider (availableLevels = 4, 2x2x2
 // cells per tile, metadataOrder Y_UP) from

@@ -290,6 +290,8 @@ node --test Tools/visual-regression/probe-fleet-contract.spec.mjs
 
 The curated table below is **not exhaustive** — many probes are finer-grained bisection variants of the documented gates. Use it to find an existing probe before writing a new one; most "I need to test X" cases have a template.
 
+**The everything-view lives elsewhere, and it is generated.** This guide is the curated "first probe to run per subsystem" view; the full census of every `.mjs` under `Tools/` and `scripts/` is [TOOLING_CATALOG.md](TOOLING_CATALOG.md), regenerated from each file's own `@purpose` / `@status` header by `node Tools/generate-tooling-catalog.mjs` (maintainer ruling M2). Two consequences for anyone adding a probe: (1) give it a `@purpose` one-liner and a `@status` — `node --test Tools/visual-regression/purpose-header-contract.spec.mjs` enforces it, and the header is the only manual documentation step there is; (2) when the probe's question is answered, retire it by the ritual in [EXECUTOR_LANE_CHARTER_2026-08-14.md](EXECUTOR_LANE_CHARTER_2026-08-14.md) §3.6 — bank the conclusion in `WEBGPU_DEBUGGING_LOG.md`, then promote or archive. Leaving it in place is the third state that produced this guide's four ghost entries.
+
 > **PROBE_BASE gotcha:** most probes default to `http://localhost:8080`, but `probe-collections-regression.mjs` and `probe-pick-basic.mjs` default `PROBE_BASE` to `:8134`. Against the standard dev server, run them with `PROBE_BASE=http://localhost:8080` or they fail on connection, not on rendering (this bit the 2026-07-03 campaign audit sweep — both pass at `:8080`).
 
 ### The spec fleet — the durable-contract layer

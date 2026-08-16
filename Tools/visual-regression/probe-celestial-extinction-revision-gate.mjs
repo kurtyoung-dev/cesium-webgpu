@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * C9-06 celestial-extinction revision-gate acceptance probe.
+ * @purpose Proves shared sun/star extinction is cached by exact physical inputs and the daytime star gate exits before feature-renderer/cache/draw work
+ * @status ACTIVE
  *
  * Proves, on the live WebGL and WebGPU paths, that the shared Sun/star
  * extinction work is cached by its exact physical inputs and that the daytime

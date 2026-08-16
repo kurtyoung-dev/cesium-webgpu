@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // Probe-clustered-matsweep — Slice 5d Batch 155 device-error sweep.
+// @purpose Device-error sweep across all non-textured Mat*Lit shaders with clustered lighting on; each renders and differs from OFF.
+// @status ACTIVE
 //
 // Validates that EACH non-textured lit material shader's pipeline compiles
 // and runs cleanly with Forward+ clustered lighting enabled. The Color

@@ -1,3 +1,6 @@
+// @purpose Schema, hashing and integrity-claim machinery for the content-addressed visual-evidence publication/catalog/verification pipeline (v2).
+// @status ACTIVE
+
 import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";

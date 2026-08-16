@@ -1,6 +1,8 @@
 /**
  * C13-16 — the MARCH TRANSFER model. Maintainer ruling R3 (2026-08-06,
  * `migration_doc/DEFERRED_WORK.md#RULING-2026-08-06`).
+ * @purpose Node reconstruction of the camera-to-pixel cloud march (shell geometry, live density chain, saturating transfer) predicting the probe's estimator.
+ * @status ACTIVE
  *
  * WHY THIS EXISTS, AND WHAT IT IS NOT
  *

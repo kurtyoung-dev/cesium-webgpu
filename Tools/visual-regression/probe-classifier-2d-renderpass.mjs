@@ -1,4 +1,6 @@
 // Diagnostic probe for NEW-CLASSIFIER-GROUNDPRIM-2D-RENDERPASS.
+// @purpose Diagnostic pinpointing which dispatch left a render pass open for GroundPrimitive classification in SCENE2D/CV
+// @status INVESTIGATION
 //
 // GroundPrimitive classification in SCENE2D / COLUMBUS_VIEW on WebGPU throws a
 // cascading render-pass-lifecycle error (`_beginDefaultRenderPass() called

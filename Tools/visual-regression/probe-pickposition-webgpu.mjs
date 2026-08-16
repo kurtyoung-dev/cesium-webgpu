@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // Probe (NEW-PICK-WEBGPU-DEPTH-RECONSTRUCTION, Batch 252): scene.pickPosition()
 // must return a REAL globe-surface Cartesian3 on WebGPU, matching WebGL.
+// @purpose Gate: pickPosition returns a real globe-surface Cartesian3 on WebGPU (converges by frame 3) matching WebGL; zoom-to-cursor smoke
+// @status ACTIVE
 //
 // What it asserts:
 //  1. WebGL leg: pickPosition at screen center over the globe returns a

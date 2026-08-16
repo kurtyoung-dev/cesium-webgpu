@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 // Probe (Batch 239 — NEW-GROUNDATMOSPHERE-RENDERER-DEAD deletion verify):
+// @purpose Deletion-verify gate: separate ground-atmosphere renderer gone (FR key 29 retired) while the in-shader GlobeTerrain path renders and contributes
+// @status ACTIVE
+//
 // the separate-pass WebGPUGroundAtmosphereRenderer + FeatureRendererKey 29
 // registration + Globe.js beginFrame call were DELETED (the UB it packed was
 // never bound by any pipeline). The LIVE ground-atmosphere path is shaded

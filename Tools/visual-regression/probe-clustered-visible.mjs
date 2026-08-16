@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // Probe-clustered-visible — Slice 5d Batch 153 verification.
+// @purpose Clustered consumer on the glTF Model PBR path: PointLight + clustered ON brightens the model center vs OFF by a measured margin.
+// @status ACTIVE
 //
 // Confirms the Forward+ clustered lighting consumer (ModelPBRComplete +
 // the ClusteredLighting FS chunk reading @group(3) bindings 18..22 via

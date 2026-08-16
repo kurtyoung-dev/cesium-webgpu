@@ -7,6 +7,8 @@
  * PURE PLUMBING refactor — same field reads, same `?? default` fallbacks, the
  * legacy call site still passes `globe` (identical field names). Therefore the
  * rendered clouds MUST be BYTE-IDENTICAL before vs after the change.
+ * @purpose U2 slice byte-identity: config-indirection refactor must render identical ON-cloud hashes vs a HEAD-reverted build.
+ * @status INVESTIGATION
  *
  * This probe renders a deterministic WebGPU procedural-cloud scene (clock
  * frozen at a fixed JulianDate so the wind advection — driven by

@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // Inspect tileImagery.textureTranslationAndScale on both backends at close zoom.
+// @purpose Prints tileImagery.textureTranslationAndScale for rendered tiles on both backends at close zoom.
+// @status INVESTIGATION
 
 import { chromium } from "playwright";
 

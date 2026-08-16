@@ -1,5 +1,7 @@
 /**
  * Geometry model for NEW-WEBGPU-GROUND-FOG-RENDERS-NOTHING.
+ * @purpose Scene-geometry model for the ground-fog fix: WGS84 froxel-altitude reconstruction and the band optical-depth march at the probe's exact camera.
+ * @status ACTIVE
  *
  * The DENSITY arithmetic is NOT re-implemented here — `ground-fog-band.spec.mjs`
  * imports the shipped functions out of

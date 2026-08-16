@@ -1,5 +1,7 @@
 /**
  * Pure image-analysis helpers for Campaign 13 cloud probes.
+ * @purpose Pure image analysis for C13 cloud probes: background subtraction, silhouette removal, morphology summary, directional autocorrelation of density.
+ * @status ACTIVE
  *
  * The browser probes capture a same-camera clouds-OFF image and one or more
  * clouds-ON images. These helpers subtract the background, remove the cloud

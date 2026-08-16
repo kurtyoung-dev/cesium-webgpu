@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // Probe: verify SCENE2D and COLUMBUS_VIEW render the globe on WebGPU
 // after the camera-UB tileRectangle + rtc projected-meters fix.
+// @purpose Verifies SCENE2D and Columbus View render the globe on WebGPU after the camera-UB tileRectangle/projected-meters fix, per mode and backend.
+// @status ACTIVE
 //
 // Pre-fix symptom (reported by user): "The 2D and 2.5D projections also
 // don't work and result in the globe just disappearing."

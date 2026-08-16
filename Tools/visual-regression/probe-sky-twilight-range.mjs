@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // C12-34 sky-brightness twilight range — browser acceptance probe (Batch 823+).
+// @purpose C12-34 browser acceptance for the twilight sky-brightness curve: shipped-module ENGINE leg plus positional star-contribution PIXELS leg.
+// @status ACTIVE
 //
 // The Node spec (sky-brightness-twilight.spec.mjs, 27/27) proves the MODEL.
 // This probe proves the shipped RUNTIME executes that model in a real browser

@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * CLOUD-MULTIDECK parity probe (Batch 443 — item 4.9 CLOUD-MULTIDECK).
+ * @purpose B443 landing tool: byte-identity of the default (multiDeck OFF) cloud render between PARITY_TAG=main and =modified builds.
+ * @status INVESTIGATION
  *
  * Captures the DEFAULT cloud render — clouds ON, multiDeck OFF, the default
  * (cinematic) full-res tier — which MUST be byte-identical between the

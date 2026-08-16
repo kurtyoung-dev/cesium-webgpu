@@ -1,3 +1,6 @@
+// @purpose Launches the split-screen comparison page and samples the WebGPU scene-framebuffer center via GPU readback plus frame stats.
+// @status INVESTIGATION
+
 import { chromium } from "playwright";
 
 const URL =

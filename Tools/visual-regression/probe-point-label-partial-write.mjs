@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 // Probe (NEW-PARTIAL-WRITE-WIRE-BPL remainder verify — Point + Label):
+// @purpose Gate: settled point+label scene uploads nothing; one moved point = exactly one 112-byte partial write; label text change = full rebuild
+// @status ACTIVE
+//
 // the point + label renderers' resident-instance manager wirings must
 //   (A) upload NOTHING for a settled scene of 1000 points + 200 labels
 //       (0 full rebuilds AND 0 partial writes on BOTH managers over 30

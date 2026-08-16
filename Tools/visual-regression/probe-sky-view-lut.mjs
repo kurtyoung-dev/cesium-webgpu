@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // Batch 428 — A-LUT-REPARAM (sun-relative sky-view LUT,
 // NEW-ATMOSPHERE-LUT-SUN-RELATIVE).
+// @purpose Sun-relative sky-view LUT gate: useScatteringLut default-OFF byte-identical; ON shows correct azimuthal sky variation vs the inline march.
+// @status ACTIVE
 //
 // Two jobs:
 //   1. PARITY: capture the WebGPU sky with skyAtmosphere.useScatteringLut OFF

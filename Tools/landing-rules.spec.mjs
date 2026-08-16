@@ -1,4 +1,6 @@
 // landing-rules.spec.mjs — contract for the landing-discipline predicates.
+// @purpose Hermetic contract for the landing predicates: control+mutant per rule, DST-straddling quiet-hours pairs, narrow merge exemptions.
+// @status ACTIVE
 //
 // Run: node --test Tools/landing-rules.spec.mjs
 //

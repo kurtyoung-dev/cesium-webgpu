@@ -1,4 +1,6 @@
 // Classifier textured-materials probe (NEW-GROUNDPRIM-TEXTURED-MATERIALS).
+// @purpose Textured GroundPrimitive materials (Stripe/Checkerboard/Grid/Image) variance parity WebGPU vs WebGL
+// @status INVESTIGATION
 //
 // Verifies textured `GroundPrimitive` materials on WebGPU vs WebGL across
 // the materials WebGL ShadowVolumeAppearance.glsl supports:

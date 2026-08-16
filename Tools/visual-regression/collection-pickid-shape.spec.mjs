@@ -1,6 +1,8 @@
 // collection-pickid-shape.spec.mjs — browser-free guard for
 // NEW-WEBGPU-COLLECTION-PICKID-OBJECT-SHAPE, plus a zero-cost guard on the
 // CO-16 pick-pass census instrumentation.
+// @purpose Guards that WebGPU collection renderers register WebGL-shaped pick-id wrappers ({primitive, collection, id}), not bare primitives; CO-16 census guard.
+// @status ACTIVE
 //
 // ── WHY (a) EXISTS: the pick-id SHAPE ───────────────────────────────────────
 //

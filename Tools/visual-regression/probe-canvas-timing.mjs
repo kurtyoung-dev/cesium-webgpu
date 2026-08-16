@@ -1,4 +1,7 @@
 // Snapshot canvas dimensions over time during load.
+// @purpose Samples canvas pixel/CSS dimensions every 100 ms during Sandcastle boot to trace resize timing per renderer
+// @status INVESTIGATION
+//
 import { chromium } from "playwright";
 
 const RENDERER_OVERRIDE_SHIM = `

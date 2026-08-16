@@ -4,6 +4,9 @@
  * texture pixels via copyTextureToBuffer + mapAsync. Tells us whether
  * the GLOBE pass actually wrote ANY color to scene FB, regardless of
  * what the post-process chain does to it later.
+ * @purpose Reads back the sceneFramebuffer color texture via copyTextureToBuffer/mapAsync to prove whether the globe pass wrote any color, ignoring the PP chain.
+ * @status INVESTIGATION
+ *
  */
 import { chromium } from "playwright";
 

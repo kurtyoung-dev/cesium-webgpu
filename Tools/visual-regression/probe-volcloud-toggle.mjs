@@ -2,6 +2,9 @@
 // `scene.globe.atmosphericConditions.clouds.enableVolumetric = true`
 // should activate the procedural cloud renderer (which is the
 // Schneider-style volumetric raymarcher).
+// @purpose Smoke-tests that clouds.enableVolumetric activates the volumetric raymarcher and echoes the legacy flags, via a gallery-demo viewer shim.
+// @status ACTIVE
+//
 import { chromium } from "playwright";
 import fs from "fs";
 

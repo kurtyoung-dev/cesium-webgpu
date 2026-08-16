@@ -1,5 +1,8 @@
 // DIAG (item 375): dump the loadKTX2 cube buffer shape + the IBL load-chain
 // intermediate state, to pin why the KTX2 specular cube never goes ready.
+// @purpose Dumps loadKTX2 cube buffer shape + IBL load-chain intermediate state to pin why the KTX2 specular cube never went ready.
+// @status INVESTIGATION
+//
 import { chromium } from "playwright";
 const BASE = process.env.PROBE_BASE || "http://localhost:8080";
 const KTX2 = "/Specs/Data/EnvironmentMap/kiara_6_afternoon_2k_ibl.ktx2";

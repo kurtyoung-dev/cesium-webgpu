@@ -4,6 +4,8 @@
  * this fork's cloud systems across cloud "types", planet locations, view angles,
  * and times of day. Procedural clouds are WebGPU-only; billboard clouds are
  * captured on both WebGPU and WebGL for renderer parity.
+ * @purpose Data-driven camera-tour harness capturing both cloud systems across type/location/angle/time scenes; procedural WebGPU, billboard both.
+ * @status ACTIVE
  *
  * TWO CLOUD SYSTEMS:
  *   - "procedural": the Schneider volumetric raymarcher (globe.defaultCloudCollection.enableVolumetric,

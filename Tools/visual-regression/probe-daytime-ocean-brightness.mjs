@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 // ACCEPTANCE / REGRESSION probe for NEW-GLOBE-DAYTIME-OCEAN-BRIGHTNESS (Q10).
+// @purpose Day/night ocean-brightness acceptance over the Caribbean: mismatch under ~5% day / ~3% night, with per-term bypass attribution.
+// @status ACTIVE
+//
 // Pins the viewer clock to a DAYTIME and a NIGHT sun position over the
 // Caribbean and captures WebGL vs WebGPU, plus per-term WebGPU bypasses
 // (glint / drape / fog) to attribute the day-side ocean-brightness gap.

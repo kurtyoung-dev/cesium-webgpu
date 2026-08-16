@@ -4,6 +4,8 @@
 // pipeline moved from the hand-rolled `buildBillboardPickDescriptor` to
 // `WebGPUDerivedCommand.deriveDescriptor(colorDescriptor, PICK, ...)` and this
 // probe proves zero behavior change.
+// @purpose Billboard pick gate: pickAsync hit/miss/repeatability plus pipeline-cache hygiene (pick entry present, no duplicate cache names).
+// @status ACTIVE
 //
 // Checks:
 //   (1) PICK HIT — pickAsync at the billboard's center returns an object

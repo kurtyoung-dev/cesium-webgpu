@@ -1,5 +1,7 @@
 // sky-brightness-twilight.spec.mjs — C12-34
 // (NEW-SKY-BRIGHTNESS-ESTIMATOR-NO-TWILIGHT-RANGE).
+// @purpose C12-34 acceptance: the SkyBrightness log-luminance estimator separates the twilight bands the old smoothstep collapsed; mutation-tested.
+// @status ACTIVE
 //
 // WHY THIS EXISTS
 // ───────────────

@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // probe-clustered-lights-resize — Q10 CLUSTERED-ASSIGN-BOUNDS-DIRTY (A7.2).
+// @purpose Regression for stale cluster bins on stationary-camera resize/FOV change: bounds-only change must re-run assign; caching kept.
+// @status ACTIVE
 //
 // Regression probe for the "stale cluster bins on stationary-camera
 // resize / FOV change" bug.

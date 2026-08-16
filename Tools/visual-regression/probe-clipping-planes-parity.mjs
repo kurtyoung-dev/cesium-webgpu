@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 // Probe: PARITY-CLIP-PLANES — clipping planes on a glTF Model, WebGL vs
 // WebGPU. Verifies:
+// @purpose glTF Model clipping-planes parity: clipped region matches across backends and picks return nothing on the clipped side, the model on the visible side
+// @status ACTIVE
+//
 //   (1) The clipped-away region matches between backends (visual parity).
 //   (2) A pick on the CLIPPED side returns undefined (or not the model)
 //       while a pick on the VISIBLE side picks the model.

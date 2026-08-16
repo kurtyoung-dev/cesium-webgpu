@@ -1,4 +1,6 @@
 // NEW-VR2-5 reproduction probe — polylines/classification on 3D Tiles.
+// @purpose Repro: clampToGround classification polyline on the BIM tileset — quantifies the WebGPU saturated cyan/red shadow-volume panels vs WebGL.
+// @status ACTIVE
 //
 // Symptom (doc): the "Polylines on 3D Tiles" demo (BIM Power Plant tileset,
 // ion asset 2464651, + a clampToGround polyline with classificationType

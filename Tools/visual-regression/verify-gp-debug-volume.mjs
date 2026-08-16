@@ -5,6 +5,9 @@
  * translucent dark red (the discard branch). Helps differentiate
  * between "VS produces no on-screen geometry" and "classifier discards
  * everything".
+ * @purpose Differential GP diagnostic: renders with _debugShowShadowVolume to split 'VS emits nothing' from 'classifier discards everything'.
+ * @status INVESTIGATION
+ *
  */
 import { chromium } from "playwright";
 import fs from "fs";

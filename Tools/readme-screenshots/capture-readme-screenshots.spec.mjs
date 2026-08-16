@@ -1,6 +1,9 @@
 // capture-readme-screenshots.spec.mjs — AUTHORING-TIME enforcement of the
 // README feature-table <-> screenshot-manifest contract, and of the capture
 // script's own membership in the probe fleet's machine-safety contract.
+// @purpose Browser-free enforcement of the README-table <-> scenes.json contract plus the capture script's probe-fleet safety membership; mutant-tested.
+// @status ACTIVE
+//
 // Pure Node: no browser, no network, no GPU.
 //
 // THE GAP THIS CLOSES. The README's feature table promises a completion figure,

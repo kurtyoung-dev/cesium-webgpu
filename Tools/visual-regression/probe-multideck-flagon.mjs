@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * CLOUD-MULTIDECK flag-on probe (Batch 443 — item 4.9 CLOUD-MULTIDECK).
+ * @purpose B443 evidence capture: same view with cloud multiDeck OFF (single shell) vs ON (LOW/MID/HIGH decks) for eyeball ordering review; no gate.
+ * @status INVESTIGATION
  *
  * Captures the SAME view with multiDeck OFF and multiDeck ON so the stacked-deck
  * effect is directly comparable:

@@ -1,5 +1,7 @@
 // cloud-observability-counters.spec.mjs — C13-02 (cloud CPU/GPU observability
 // and temporal-cost counters), the Gate-A evidence input.
+// @purpose C13-02 Gate-A: cloud GPU total is a union not a sum, Sky Fill excluded, per-frame counters reset, pass counts tied to encode sites.
+// @status ACTIVE
 //
 // Pure Node (`node --test`). No browser, no build, no adapter.
 //

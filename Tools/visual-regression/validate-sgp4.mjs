@@ -1,6 +1,9 @@
 // validate-sgp4.mjs — validate the JS FP64 SGP4 (sgp4-reference.mjs) against
 // python-sgp4 2.25 reference vectors. Not a probe; a dev gate that proves the
 // JS reference IS SGP4 before the GPU kernel is checked against it.
+// @purpose Dev gate proving the JS FP64 SGP4 reference matches python-sgp4 2.25 vectors to <1 m before the GPU kernel is judged against it.
+// @status ACTIVE
+//
 import { readFileSync } from "node:fs";
 import { sgp4init, sgp4 } from "./sgp4-reference.mjs";
 

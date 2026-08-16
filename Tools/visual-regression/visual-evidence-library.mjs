@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * Append-only visual-evidence library CLI.
+ * @purpose CLI for the append-only content-addressed visual-evidence library: archive/import-legacy/verify/catalog/upgrade with provenance and run identity.
+ * @status ACTIVE
  *
  * Local `Tools/visual-regression/output` directories remain probe-owned
  * scratch/transaction space. This command runs only after a producer exits and

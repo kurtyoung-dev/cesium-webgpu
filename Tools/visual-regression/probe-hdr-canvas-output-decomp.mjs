@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // C4-WEBGPUCONTEXT-DECOMP acceptance probe (Q35 slice: canvas-config cluster).
+// @purpose Acceptance for the WebGPUContext canvas-config extraction: SDR off-gate, HDR toggle via extracted setHDRCanvasOutput, fallback-listener API behavior
+// @status ACTIVE
 //
 // Batch 593 extracted the HDR canvas-output cluster from WebGPUContext.ts into
 // WebGPUContextCanvasConfig.ts (buildCanvasConfig / applyCanvasConfig /

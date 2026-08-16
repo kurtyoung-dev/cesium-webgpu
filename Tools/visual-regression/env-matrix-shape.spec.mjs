@@ -5,6 +5,8 @@
 // disagreeing with its own WebGL reference — so each one is pinned here against
 // either a synthetic image with known ground truth or the actual measured
 // reference numbers, where a browser is not needed to catch a regression.
+// @purpose Browser-free trust anchors for probe-env-pass-matrix: shape-based sun/moon body detector and night source contract, pinned on synthetic ground truth.
+// @status ACTIVE
 //
 // WHY THIS EXISTS
 // ---------------

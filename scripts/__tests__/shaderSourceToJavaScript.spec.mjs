@@ -1,4 +1,7 @@
 // Browser-free contract coverage for the GLSL/WGSL source-to-module boundary.
+// @purpose Contract for the shader source-to-JS-module serializer: literal escapes, quotes, CRLF/lone-CR/U+2028 round-trips through real ESM evaluation.
+// @status ACTIVE
+//
 // Run: node --test scripts/__tests__/shaderSourceToJavaScript.spec.mjs
 
 import assert from "node:assert/strict";

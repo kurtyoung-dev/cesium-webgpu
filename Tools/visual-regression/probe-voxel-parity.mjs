@@ -1,4 +1,6 @@
 // PARITY-VOXEL-SHAPE-PARITY acceptance probe.
+// @purpose Acceptance: the WebGPU voxel box renders at the correct world placement/extent (footprint IoU + color structure vs WebGL), not a flat quad.
+// @status ACTIVE
 //
 // Captures the SAME VoxelBox3DTiles VoxelPrimitive on BOTH the WebGL and the
 // WebGPU renderer at an IDENTICAL camera, then pixel-diffs the two frames.

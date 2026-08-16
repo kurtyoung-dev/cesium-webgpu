@@ -1,4 +1,6 @@
 // star-catalog-depth.spec.mjs — C12-09 acceptance spec.
+// @purpose C12-09 acceptance for the deepened BrightStarCatalog: count/magnitude bands, MAG_CUTOFF = faintest row, no duplicates, sha256 provenance.
+// @status ACTIVE
 //
 // Pure-Node (`node --test Tools/visual-regression/star-catalog-depth.spec.mjs`).
 // Proves the deepened `BrightStarCatalog` is the table the bake says it is,

@@ -1,3 +1,6 @@
+// @purpose Unit tests for the extracted PickFrustumMath drawing-buffer-to-frustum coordinate mapping and pick-frustum half extents.
+// @status ACTIVE
+
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";

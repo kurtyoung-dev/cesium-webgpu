@@ -6,6 +6,8 @@
  * PNG via the browser's toDataURL. Run once on the modified build and once on the
  * stash-reverted main build; the two PNGs must be byte-identical (zero drift) — the
  * half-res change must not touch the full-res default path.
+ * @purpose B432 zero-drift gate: full-res default tier raw-canvas capture must be byte-identical across modified vs stash-reverted builds
+ * @status INVESTIGATION
  *
  * Output: output/cloud-halfres/parity-<TAG>.png  (TAG from PARITY_TAG env).
  *

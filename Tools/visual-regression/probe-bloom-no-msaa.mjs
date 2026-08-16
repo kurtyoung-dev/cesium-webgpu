@@ -1,5 +1,8 @@
 // Probe Bloom.html with scene.msaaSamples = 1 (MSAA disabled) to see
 // if the missing-terrain issue is MSAA-related.
+// @purpose Bloom.html forensics variant: msaaSamples=1 to test whether the missing-terrain issue was MSAA-related.
+// @status INVESTIGATION
+//
 import { chromium } from "playwright";
 import fs from "fs";
 

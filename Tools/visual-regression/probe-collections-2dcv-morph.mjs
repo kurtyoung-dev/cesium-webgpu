@@ -2,6 +2,8 @@
 // Probe (MORPH-COLLECTIONS-AUDIT): verify Billboard / Point / Polyline / Label
 // collections render at the correct map location on WebGPU in SCENE2D and
 // COLUMBUS_VIEW, vs WebGL as the reference.
+// @purpose Instant-morph placement audit: marker crops at the expected map location in 3D/2D/CV on WebGPU vs WebGL reference.
+// @status ACTIVE
 //
 // Adds one Point, one Polyline, one Label, and one Billboard at a fixed
 // lon/lat, flies the camera to look straight down at them, morphs to the

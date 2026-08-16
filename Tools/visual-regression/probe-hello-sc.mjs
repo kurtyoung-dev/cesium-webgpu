@@ -1,3 +1,6 @@
+// @purpose Boots legacy Sandcastle Hello World forced onto WebGPU via a Viewer-patching shim; screenshots and pixel-samples to verify the demo path renders
+// @status ACTIVE
+
 import { chromium } from "playwright";
 
 const SHIM = `(function() {

@@ -1,5 +1,7 @@
 // ocean-datum-model.mjs — pure math + reference table for the shared
 // TIDES / OCEAN-DYNAMICS W0 datum probe (`probe-ocean-datum.mjs`).
+// @purpose Pure-math verdict model classifying Cesium World Terrain's ocean-lid datum (ELLIPSOID_ZERO/GEOID/MIXED) for the tides/ocean-dynamics W0 gate.
+// @status ACTIVE
 //
 // NO browser, NO Playwright, NO engine imports. Every export here is
 // Node-testable in isolation, which is what `ocean-datum.spec.mjs`

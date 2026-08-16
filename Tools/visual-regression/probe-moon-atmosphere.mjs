@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // Probe: NS-MOON-ATMOSPHERE-EXTINCTION
+// @purpose Acceptance: the moon dims + reddens through horizon slant-path extinction at low altitude on both backends; orbit config is the off-gate.
+// @status ACTIVE
 //
 // Verifies that the moon is attenuated + reddened by atmospheric extinction
 // along the view ray near the horizon at low altitude, on BOTH backends, and

@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // Probe: PARITY-HIZ-TILE-BOUNDING
+// @purpose Gates the OBB bounding-volume fix in Hi-Z SOA population: no NaN radii for region-bounded tilesets, radii match sphere-from-OBB, no tileset vanish
+// @status ACTIVE
 //
 // Verifies the fix for Hi-Z occlusion silently mis-culling OBB-bounded
 // 3D-tile tiles. Before the fix, SOABoundingSphereLayout.populate() read

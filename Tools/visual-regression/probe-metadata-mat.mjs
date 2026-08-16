@@ -3,6 +3,8 @@
 // (16) property ATTRIBUTES transport EVERY component to the WGSL shader via
 // the widened four-vec4 slot-9 layout (arrayStride 64, shader locations 9-12)
 // and reassemble into the full matrix in the generated initializeMetadata.
+// @purpose Proves MAT3/MAT4 property attributes transport all 9/16 components to WGSL via the widened slot-9 layout; per-face palette readout, both backends.
+// @status ACTIVE
 //
 // Assets: Specs/Data/Models/glTF-2.0/BoxMat{3,4}PropertyAttributes — cubes
 // whose per-face-constant MAT3/MAT4 FLOAT32 property attribute is authored so

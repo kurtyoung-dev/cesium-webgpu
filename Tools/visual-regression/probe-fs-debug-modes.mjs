@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 // Capture each globe-fragment debug mode at a mid-latitude view.
+// @purpose Captures each globe-fragment debug visualization (uv/alpha/sample0/mip4/...) at a fixed view for manual imagery/UV correctness inspection
+// @status ACTIVE
+//
 // Useful for verifying:
 //   - "uv" — Red=U, Green=V, Blue=webMercT. Should look like a clean
 //     RGB gradient with no banding.

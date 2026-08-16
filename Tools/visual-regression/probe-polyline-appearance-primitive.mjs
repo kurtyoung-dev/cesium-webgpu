@@ -2,6 +2,8 @@
 /**
  * Probe: polyline `Primitive` + `PolylineColorAppearance` parity on WebGPU vs
  * WebGL (NEW-POLYLINE-APPEARANCE-PRIMITIVE-WEBGPU, COLOR slice).
+ * @purpose Gate: Primitive+PolylineColorAppearance renders a screen-space ribbon on WebGPU (dedicated packer/shader; was 0px from collapsed quads)
+ * @status ACTIVE
  *
  * ROOT CAUSE this verifies: WebGPUPrimitiveShaders.selectWebGPUShader only
  * inspected normal/st -> picked the "basic" shader; the basic vertex packer

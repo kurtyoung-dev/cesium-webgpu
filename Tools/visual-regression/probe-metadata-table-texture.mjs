@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // probe-metadata-table-texture — METADATA-TABLE-SOURCES acceptance probe.
+// @purpose Acceptance: property tables keyed by texture/implicit feature IDs on WebGPU + cross-backend feature-pick and pickMetadata-undefined parity.
+// @status ACTIVE
 //
 // Property tables keyed by TEXTURE- and IMPLICIT-sourced feature IDs on
 // WebGPU (previously only ATTRIBUTE-sourced feature IDs keyed a table).

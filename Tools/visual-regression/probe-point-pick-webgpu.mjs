@@ -1,4 +1,6 @@
 // Point-primitive pick gate (NEW-WEBGPU-POINT-COLLECTION-PICK, Batch 323).
+// @purpose Gate: scene.pick/pickAsync over a PointPrimitive returns it with id on WebGPU (warmed sync + async control), at parity with a billboard
+// @status ACTIVE
 //
 // Does scene.pick / scene.pickAsync at a point's screen position return that
 // PointPrimitive (with its id) on WebGPU? This is the regression gate that

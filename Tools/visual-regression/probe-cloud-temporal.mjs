@@ -4,6 +4,8 @@
  * the temporal reprojection/accumulation path at a TEMPORAL tier (T1 low / T2
  * medium, which set temporalEnabled=true + renderResScale=0.5). Three captures, all
  * dumping RAW CANVAS pixels (no UI chrome) via toDataURL:
+ * @purpose Visual smoke check of temporal cloud accumulation at T1/T2 tiers: static convergence, mid-motion ghosting, post-motion settle.
+ * @status ACTIVE
  *
  *   static-converged — hold the camera STILL for ~40 frames; the accumulation should
  *       converge to a clean image at least as clean as the single-pass half-res

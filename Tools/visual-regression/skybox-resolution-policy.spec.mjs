@@ -1,5 +1,8 @@
 // skybox-resolution-policy.spec.mjs — browser-free trust anchor for C12-12
 // (star cube map VRAM / streaming policy). Run with:
+// @purpose Browser-free trust anchor for the star cube-map policy: 2048 default vs disk both directions, honest 4096 opt-in fallback, VRAM re-derived.
+// @status ACTIVE
+//
 //   node --test Tools/visual-regression/skybox-resolution-policy.spec.mjs
 //
 // ── WHAT THIS PINS ─────────────────────────────────────────────────────────

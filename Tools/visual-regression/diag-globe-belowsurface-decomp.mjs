@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // Diag: NEW-GLOBE-BELOWSURFACE-DECOMP (B2) — below-surface darkening epic
 // increment 1/3: instrumented A/B term decomposition.
+// @purpose Per-term A/B decomposition of the WebGPU below-surface darkening residual via pragma-stripped bypass-* globe-fragment modes, one load/scenario.
+// @status ACTIVE
 //
 // The below-surface scenes fail their parity probes with WebGPU uniformly
 // darker than WebGL (probe-globe-underground 12.28% red / 22.85% default vs

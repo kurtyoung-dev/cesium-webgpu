@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // probe-skybox-star-modulation.mjs — C11-176 SKYBOX STAR-MAP FADE (WebGPU vs WebGL)
+// @purpose C11-176 star-modulation parity + opt-in: backends modulate identically; in-column 30 km lane proves the flag moves pixels; exit 3 if unseen.
+// @status ACTIVE
 //
 // ORIGINAL ROOT CAUSE (2026-07-19 celestial research) — RECORDED, THEN
 // CORRECTED. The 2026-07-19 framing was: `AtmosphericConditions.js` ships

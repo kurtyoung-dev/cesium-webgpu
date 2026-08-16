@@ -1,5 +1,7 @@
 /**
  * PARITY-CUSTOM-SHADER-WGSL verification.
+ * @purpose Native-WGSL CustomShader acceptance: user fragment reaches the output color, setUniform re-uploads live, off-gate clean.
+ * @status ACTIVE
  *
  * Renders a glTF Model on the WebGPU backend with a NATIVE-WGSL CustomShader
  * whose `wgslFragmentShaderText` overrides `material.diffuse` to a constant/

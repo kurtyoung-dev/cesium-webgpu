@@ -1,6 +1,8 @@
 // stbn-asset.spec.mjs — C13-11: pins the bundled spatiotemporal blue-noise
 // mask, the spectral evidence that certifies it, and the provenance record
 // that says it has no third party.
+// @purpose Pins the bundled STBN blue-noise atlas: byte/manifest SHA-256, re-measured spectra, histogram uniformity, provenance, with mutant controls.
+// @status ACTIVE
 //
 // These tests fail if:
 //   - the shipped atlas goes missing, changes dimensions or tile layout, or

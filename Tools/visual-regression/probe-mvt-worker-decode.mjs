@@ -1,5 +1,7 @@
 // probe-mvt-worker-decode.mjs
 // NS-MVT-SYNC-DECODE-OFFTHREAD-WASM — acceptance probe for off-thread MVT decode.
+// @purpose Acceptance for the opt-in decodeInWorker MVT path: a dedicated worker is actually created and the tile still renders at cross-backend parity.
+// @status ACTIVE
 //
 // Verifies the opt-in `decodeInWorker: true` path on MVTDataProvider:
 //   1. A dedicated web worker (Workers/decodeMVTTile.js) is actually created —

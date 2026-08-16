@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 /**
  * Deep probe of the GroundPolyline render pipeline:
+ * @purpose GroundPolyline bring-up deep-dump: UBO floats, interleaved vertices, red-pixel footprint — from when the shadow volume rendered nothing
+ * @status INVESTIGATION
+ *
  *  - Dumps the UBO Float32Array (first 96 floats — 6 mat4 + scalars + flags)
  *  - Dumps the first 4 interleaved vertices (47 floats each) from cache buffer
  *  - Pulls the canvas to a buffer and counts (R > G+B+10) pixels — i.e. red

@@ -2,6 +2,8 @@
 // Reproduce the polar-stretching artifact at WGS84 orbit and overlay
 // the new DebugTileImageryProvider so we can SEE which tiles are
 // affected (by rectangle / Mercator-limit annotations).
+// @purpose Diagnostic: reproduced the polar-stretch artifact at WGS84 orbit with the tile-annotation overlay to see which tiles were affected
+// @status INVESTIGATION
 
 import { chromium } from "playwright";
 import fs from "fs";

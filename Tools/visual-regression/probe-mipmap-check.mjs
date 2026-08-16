@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // Inspect the WebGPU globe surface renderer's imagery cache to verify
 // that uploaded textures now have mipLevelCount > 1.
+// @purpose One-off: inspects the WebGPU globe imagery cache to confirm uploaded tile textures allocate mipLevelCount > 1.
+// @status INVESTIGATION
 
 import { chromium } from "playwright";
 

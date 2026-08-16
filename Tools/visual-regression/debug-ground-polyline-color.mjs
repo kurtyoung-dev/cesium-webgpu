@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * Diagnose GroundPolyline visibility on WebGPU.
+ * @purpose Instruments the GroundPolyline renderer cache to find why per-instance color didn't reach the FS (dim-rectangle diagnosis, 2026-04-30).
+ * @status INVESTIGATION
  *
  * Prior diagnosis (2026-04-30) said vsMain produces vertices outside NDC.
  * Re-running the zoom test in 2026-04-30 actually shows DIM rectangles —

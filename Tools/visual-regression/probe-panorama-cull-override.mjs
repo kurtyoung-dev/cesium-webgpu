@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // Probe: EquirectangularPanorama cull-override (#13369).
+// @purpose Regression probe: panorama's cull.enabled:false override must reach the WebGPU pipeline so the sphere interior renders (was blank)
+// @status ACTIVE
 //
 // An EquirectangularPanorama builds a closed sphere (closed: true) but
 // explicitly sets `renderState.cull.enabled: false` so the viewer, placed

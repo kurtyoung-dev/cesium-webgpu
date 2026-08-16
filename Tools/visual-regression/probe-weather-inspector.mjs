@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * Weather Inspector Sandcastle demo — end-to-end verification. WebGPU-only.
+ * @purpose Boots the Weather Inspector Sandcastle demo standalone and drives its real DOM controls: coverage slider + OVC preset change the sky.
+ * @status ACTIVE
  *
  * The gallery .html references ../Sandcastle-header.js + ../load-cesium-es6.js,
  * which 404 when the file is served standalone on :8080 (they only exist inside

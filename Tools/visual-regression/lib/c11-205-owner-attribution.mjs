@@ -1,5 +1,7 @@
 /**
  * C11-205 resident San Francisco CPU-owner attribution.
+ * @purpose Frozen config plus fail-closed policy for the resident-SF CPU owner-attribution diagnostic; instrumented timings never recertify the causal artifact.
+ * @status ACTIVE
  *
  * This module is deliberately browser/Node neutral. The campaign runner loads
  * it in the page for instance-local timing and in Node for fail-closed policy

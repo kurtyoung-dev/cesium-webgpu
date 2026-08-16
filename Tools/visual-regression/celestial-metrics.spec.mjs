@@ -1,5 +1,7 @@
 // celestial-metrics.spec.mjs — trust anchor for the Campaign 12 celestial gate
 // metric library (C12-01). Run with:  node --test Tools/visual-regression/celestial-metrics.spec.mjs
+// @purpose Trust anchor for lib/celestial-metrics.mjs: each metric (census, contrast tail, chroma, falloff, magnitude fidelity) run on closed-form images.
+// @status ACTIVE
 //
 // Every metric is exercised on a SYNTHETIC image whose ground truth is known in
 // closed form, so a regression in the metric maths fails here long before any

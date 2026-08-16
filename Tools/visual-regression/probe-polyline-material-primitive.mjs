@@ -2,6 +2,8 @@
 /**
  * Probe: polyline `Primitive` + `PolylineMaterialAppearance` parity on WebGPU
  * vs WebGL (NEW-POLYLINE-APPEARANCE-PRIMITIVE-WEBGPU, MATERIAL slice).
+ * @purpose Gate: Primitive+PolylineMaterialAppearance MATERIAL slice — Dash renders dashed (run-count metric) and Glow renders, at parity with WebGL
+ * @status ACTIVE
  *
  * The COLOR slice landed a polyline `Primitive` + `PolylineColorAppearance`.
  * The MATERIAL slice adds `PolylineMaterialAppearance` with the PolylineDash /

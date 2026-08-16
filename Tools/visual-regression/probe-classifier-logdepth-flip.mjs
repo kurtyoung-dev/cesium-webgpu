@@ -1,5 +1,7 @@
 // probe-classifier-logdepth-flip.mjs
 // Slice 3a payoff validation for the renderer-wide log-depth epic.
+// @purpose Log-depth Slice 3a payoff: WebGL ref vs WebGPU flag-OFF/ON startup flip — classifier stripes become visible when eye-z reconstruction is precise
+// @status ACTIVE
 //
 // Reuses the PROVEN scene from probe-classifier-textured-materials.mjs (a small
 // sub-degree Stripe-material GroundPrimitive at 350 km nadir over the central

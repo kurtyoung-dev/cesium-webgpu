@@ -1,5 +1,7 @@
 // C12-29 S5 NASA-SVS absolute-footprint gate — pure policy, provenance,
 // lifecycle, and adversarial mutant suite.
+// @purpose node:test half of the NASA/SVS umbra-footprint certification triple (probe + gate-lib + spec) for the S5 eclipse globe shadow.
+// @status ACTIVE
 //
 // Run:
 //   node --test Tools/visual-regression/c12-29-s5-svs-footprint-gate.spec.mjs

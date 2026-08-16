@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * C11-169 — Tools-only nested primitive-traversal CPU discriminator.
+ * @purpose Tools-only CPU discriminator nesting four instance-local timers inside the profiler's coarse phases, engine default path untouched.
+ * @status ACTIVE
  *
  * The production profiler intentionally keeps its fixed 11-phase schema. This
  * bounded diagnostic nests four instance-local timers inside the already

@@ -1,4 +1,6 @@
 // daynight-terminator-law.spec.mjs — CLT-B1's Node-testable half.
+// @purpose CLT-B1 Node half: transcribed laws vs shaders, calibration inversion, ramp classifier, structural exit codes — all mutant-rejected.
+// @status ACTIVE
 //
 // WHAT IS PINNED HERE, AND WHY IT IS NOT THE PROBE'S JOB. An Edge run of
 // `probe-daynight-terminator-law.mjs` can only tell you what the pixels said.

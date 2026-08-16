@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 // Probe: verify SCENE3D still renders correctly AFTER round-tripping
 // through SCENE2D and COLUMBUS_VIEW. Reproduces the user-reported bug:
+// @purpose Regression: SCENE3D renders correctly after round-trips through 2D/Columbus (user-reported split-globe artifact on return to 3D).
+// @status ACTIVE
+//
 // "When leaving the 2d or columbus views and returning to 3d the globe
 // looks like this" (half-broken split-globe artifact).
 

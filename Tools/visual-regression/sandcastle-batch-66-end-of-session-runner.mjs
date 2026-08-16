@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * Sandcastle Batch 66 FINAL Test Runner — re-run after F1, F2, F3 engine fixes.
+ * @purpose End-of-session rerun of the Batch-66 Sandcastle sweep (direct scene.pick, pointer-error filtering) writing per-demo screenshots + report.
+ * @status INVESTIGATION
  *
  * Improvements over the Batch 66 runner:
  *   1. Pick demos no longer synthesize pointer events. We call

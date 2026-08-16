@@ -4,6 +4,9 @@
 // LARGE magenta billboard at 50km, globe OFF, in steady 3D / 2D / CV (instant
 // morphs), and report magenta coverage. If CV is 0 here, it's the Slice-2b
 // steady billboard-in-CV gap, NOT a morph-blend gap.
+// @purpose Reproducer measuring magenta billboard coverage in steady 3D/2D/CV, globe off — bisects the billboard quad-size parity defect vs morph gaps.
+// @status ACTIVE
+//
 import { chromium } from "playwright";
 
 const BASE = process.env.PROBE_BASE || "http://localhost:8134";

@@ -1,6 +1,8 @@
 /**
  * C11-205 — pure evidence classification for the 3D Tiles lifecycle /
  * versioned-model-state work.
+ * @purpose Pure gate classification (true/false/null; exits 0/1/2/3) shared by 3D Tiles lifecycle probes and the performance campaign so verdicts agree.
+ * @status ACTIVE
  *
  * Everything in this module is a pure function over plain data so the gate
  * logic that decides a probe's exit code can be mutation-tested in Node

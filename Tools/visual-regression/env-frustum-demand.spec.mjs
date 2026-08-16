@@ -2,6 +2,8 @@
 // predicate that decides whether `View.createPotentiallyVisibleSet` must
 // restore the camera-range window so a frustum exists to carry the
 // environment layer.
+// @purpose Unit spec for EnvironmentFrustumDemand: when the camera-range window must be restored so a frustum exists to carry the environment layer.
+// @status ACTIVE
 //
 // `EnvironmentFrustumDemand` is a TypeScript module bundled into the engine
 // barrel (no per-file JS build output), so the pure functions are transpiled

@@ -1,4 +1,7 @@
 // spec-cesium-viewer-dev-ui.spec.mjs — the CesiumViewer start contract.
+// @purpose CesiumViewer start contract: dev chrome built only under devUi (absent, not hidden), bare URL resolves WebGPU non-strict, fleet URLs stable.
+// @status ACTIVE
+//
 // Pure Node: no browser, no network, no GPU.
 //
 // WHAT IS BEING PINNED. The CesiumViewer page has three start-time behaviours

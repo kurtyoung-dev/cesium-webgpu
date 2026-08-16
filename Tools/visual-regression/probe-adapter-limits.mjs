@@ -3,6 +3,9 @@
  * Probe what bind-group / texture / binding limits the local WebGPU
  * adapter actually exposes. Runs across multiple Chromium launch
  * configurations to see which path produces the highest limits.
+ * @purpose Dumps WebGPU adapter limits across multiple Chromium launch configs (DXGI vs explicit Vulkan vs high-performance) to find the best-limit path.
+ * @status ACTIVE
+ *
  */
 import { chromium } from "playwright";
 const BASE = "http://localhost:8080";

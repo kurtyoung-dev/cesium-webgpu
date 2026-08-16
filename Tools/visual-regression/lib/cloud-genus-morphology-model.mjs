@@ -2,6 +2,8 @@
  * CPU twin of the C13-16 per-genus cloud morphology
  * (`genusFibreFactor` / `genusErosionHeightWeight` / `genusForwardG` in
  * `packages/engine/Source/Shaders/WebGPU/Environment/ProceduralClouds.wgsl`).
+ * @purpose f32 CPU twin of C13-16 per-genus cloud morphology (wind frame, fallstreak shear, fibre carve); genus rows imported from CloudTypeProfile.js.
+ * @status ACTIVE
  *
  * WHAT THIS IS FAITHFUL TO, AND WHAT IT IS NOT
  *

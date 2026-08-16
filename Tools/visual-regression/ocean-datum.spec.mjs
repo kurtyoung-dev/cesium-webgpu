@@ -1,5 +1,7 @@
 // ocean-datum.spec.mjs — analytic spec for the shared TIDES + OCEAN-DYNAMICS
 // W0 datum probe (`node --test Tools/visual-regression/ocean-datum.spec.mjs`).
+// @purpose Analytic trust anchor for the datum probe: table sanity, regression/classifier correctness, exit-code mapping, probe-model drift check.
+// @status ACTIVE
 //
 // Pins ALL pure math the probe's verdict rests on BEFORE any GPU or network is
 // involved, so a wrong classification can never be blamed on the browser run:

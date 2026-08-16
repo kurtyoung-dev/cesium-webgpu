@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // wire-flat-shaders-aerial-lut.mjs — Batch 97 helper
+// @purpose One-time codemod that wired the aerial-perspective LUT (EffectsUniforms + fog blend) into every Flat primitive WGSL shader from a template.
+// @status INVESTIGATION
 //
 // Mechanically applies the aerial-perspective LUT wiring to all Flat
 // primitive shaders that don't have it yet. The reference template is

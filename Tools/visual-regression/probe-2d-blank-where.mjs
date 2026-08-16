@@ -2,6 +2,8 @@
 // Probe (BUG-3): capture WebGPU + WebGL SCENE2D screenshots and report WHERE the
 // non-black pixels are + a coarse row/col occupancy map, so we can see whether
 // the 2D map is off-screen, mis-scaled, depth-failed, or only the sky renders.
+// @purpose BUG-3 localizer: screenshots SCENE2D on both backends and maps WHERE non-black pixels are (off-screen vs mis-scaled vs depth-failed vs sky-only).
+// @status INVESTIGATION
 //
 // Usage: node Tools/visual-regression/probe-2d-blank-where.mjs
 // Out:   output/bug3-where-{webgpu,webgl}.png

@@ -2,6 +2,9 @@
 // messages (with line numbers + the offending source line) for any Model PBR
 // shader variant that fails to compile. Loads TestKhrSpecular (the 0x8200
 // variant that regressed). Run: node Tools/visual-regression/probe-wgsl-compile-error.mjs
+// @purpose Diagnostic: hooks createShaderModule and dumps WGSL compile errors with source context for Model PBR variants (built for 0x8200 regression).
+// @status INVESTIGATION
+//
 import { chromium } from "playwright";
 
 const BASE = process.env.PROBE_BASE || "http://localhost:8080";

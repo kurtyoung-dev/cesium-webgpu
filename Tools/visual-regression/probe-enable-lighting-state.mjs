@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // Check the actual enableLighting state on both backends at the default load.
+// @purpose Dumps globe.enableLighting state at default load on both backends — a one-question state check.
+// @status INVESTIGATION
 
 import { chromium } from "playwright";
 

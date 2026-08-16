@@ -2,6 +2,8 @@
  * The GATE half of `probe-eclipse-cloud-response.mjs` — C13-41's Edge
  * acceptance predicates, their pre-registered bands, and the fold that turns a
  * run's measurements into a verdict.
+ * @purpose C13-41 Edge-acceptance predicates with derived-never-fitted bands for deck lighting, cloud-shadow invariance, and the exact IBL refresh count.
+ * @status ACTIVE
  *
  * WHY THIS IS ITS OWN MODULE, AND NOT A `judge()` INSIDE THE PROBE. The same
  * reason `eclipse-ladder-rungs.mjs` exists: a predicate that lives inside a

@@ -5,6 +5,9 @@
 //   B = encodeFrustum.y / 1e10 (clamped 0..1)
 // for textured-material fragments. Reads the polygon-center pixels and prints
 // median RGB so we can tell EXACTLY where the chain breaks:
+// @purpose Read the classifier dsColorFS 'TEMP DIAG' RGB encoding (storedDepth/eyeDist/encFar) to localize breaks in the log-depth reconstruction chain
+// @status INVESTIGATION
+//
 //   R~0.55 -> globe wrote LOG; R~0.97+ -> globe wrote STANDARD ndc z (producer bug)
 //   G~0.35 -> decode correct (350km); G~1.0 -> garbage (~1e12) decode
 //   B~1.0  -> encFar==1e10 captured; B~0 -> encode frustum not delivered

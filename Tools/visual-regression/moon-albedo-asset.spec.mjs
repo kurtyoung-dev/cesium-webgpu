@@ -1,6 +1,8 @@
 // moon-albedo-asset.spec.mjs — C12-24: pins the bundled lunar albedo asset,
 // its UV/prime-meridian alignment, the both-backends upload convention, and
 // the LICENSE.md provenance entry.
+// @purpose Pins the bundled lunar albedo asset bytes, equirect orientation landmarks, both-backend flipY upload convention and LICENSE provenance.
+// @status ACTIVE
 //
 // These tests fail if:
 //   - the shipped albedo map goes missing, changes dimensions, stops being a

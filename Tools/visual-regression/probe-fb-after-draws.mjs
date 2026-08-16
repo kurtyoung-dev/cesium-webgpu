@@ -3,6 +3,8 @@
 // of the colorAttachments[0].view's owning texture into a readback
 // buffer. We then map the buffer at the end of the test and report
 // the FIRST non-zero pixel found across all snapshots.
+// @purpose Hooks render-pass end to copy the scene FB texture to a readback buffer, proving whether draws write pixels or get trashed downstream.
+// @status INVESTIGATION
 //
 // Goal: prove or disprove that the 5 draws per "Scene FB load" pass
 // produce visible color writes on the GPU side. If snapshots are

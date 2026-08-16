@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * TAKRAM-9 — cloud-aware god rays (WebGPU-only).
+ * @purpose TAKRAM-9 cloud-aware god rays gate: transmittance mask dims the shaft, default-off is byte-identical, mask-producer liveness counter checked
+ * @status ACTIVE
  *
  * The WebGPU god-ray generate pass historically gated the light shaft on scene
  * DEPTH alone: cloud pixels (which don't write depth) read as "sky" and leaked

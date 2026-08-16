@@ -1,4 +1,6 @@
 // C13-08 — WeatherField bounds / no-data / regional-packer contract.
+// @purpose WeatherField contract: grid registration, regional bounds honoured incl. antimeridian, no-data semantics, global path byte-identical to legacy.
+// @status ACTIVE
 //
 // Pins the decisions this row owns, all of which live in ONE module
 // (`Scene/Weather/WeatherFieldGrid.ts`):

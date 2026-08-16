@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // Probe (DP-H44, Batch 360): WebGPU globe terrain picking, opt-in behind
 // `globe.pickable`.
+// @purpose Gates opt-in WebGPU globe terrain picking (globe.pickable): default stays unpickable, foreground picks unaffected, WebGL leg unaffected by the flag
+// @status ACTIVE
 //
 // What it asserts (WebGPU leg):
 //  1. pickable=false (default): pickAsync over the globe does NOT return the

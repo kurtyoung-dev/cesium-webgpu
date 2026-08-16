@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * C2-11 / 376a — polyline APPEARANCE PRIMITIVE pick on WebGPU.
+ * @purpose Gate: scene.pick over a PolylineColorAppearance Primitive returns the primitive on WebGPU (pick pipeline + per-primitive pick command)
+ * @status ACTIVE
  *
  * Before: createPolylineAppearanceCommands cleared pickCommands → scene.pick over
  * an appearance polyline returned undefined. After: a pick pipeline + per-primitive

@@ -1,3 +1,6 @@
+// @purpose State-isolated ABBA session plan plus pinned lighting/fade constants for C13-41's deck-free eclipse control lane.
+// @status ACTIVE
+
 import { predictFactor } from "./eclipse-cloud-response-gate.mjs";
 
 /**

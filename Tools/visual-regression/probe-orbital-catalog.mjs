@@ -8,6 +8,9 @@
 //   (A) RENDER — ~2000 magenta points (varied circular orbits across three
 //       shells) produce a magenta pixel count over threshold from a 35 Mm
 //       camera,
+// @purpose Regression gate: orbital demo on generic ComputeInstanceCollection renders ~2000 moving points, pinned clock, zero GPU errors
+// @status ACTIVE
+//
 //   (B) MOVE — positions are repopulated by the user compute kernel from
 //       the per-frame time scalar alone (params upload once). The magenta
 //       pixel mask at frame ~15 vs frame ~60 must differ substantially

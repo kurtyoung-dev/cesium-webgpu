@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * Cloud half-res (V9 / CLOUD-HALFRES, Batch 432) probe.
+ * @purpose B432 half-res tier quality gate: 0.5x march + bilateral upscale vs full-res at identical camera/time; no blocky pixelation or edge halos
+ * @status ACTIVE
  *
  * Captures the WebGPU procedural clouds at the DEFAULT/cinematic FULL-RES tier
  * (cloudVolumetricQuality='high' → T3, renderResScale=1.0) vs a HALF-RES tier

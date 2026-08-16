@@ -1,6 +1,8 @@
 // C-R9-VOXEL-CELL-PICK acceptance probe (VOXEL-CELL-PICK-RELAND),
 // extended by NEW-VOXEL-PICK-OCTREE-COMPOSE with Parts B + C, and by
 // C4-VOXEL-PICK-OCTREE-L3 (Q9 reconcile) with Part D.
+// @purpose Byte-level cross-backend parity of pickVoxelCoordinate decode: single tile, refined L1 octree, customShader alpha gate, refined L3 (Parts A-D).
+// @status ACTIVE
 //
 // Verifies per-cell voxel picking parity: `Picking.pickVoxelCoordinate`
 // (the GPU pass behind `Scene.pickVoxel`) must decode to EXACTLY the same

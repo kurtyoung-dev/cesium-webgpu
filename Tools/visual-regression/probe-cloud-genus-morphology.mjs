@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * C13-16 per-genus cloud MORPHOLOGY slice — browser acceptance probe.
+ * @purpose C13-16 GPU-half morphology acceptance: exact neutral-genus uniforms, zero-pixel default baseline, wind-aligned cirrus anisotropy w/ rotation control
+ * @status ACTIVE
  *
  * `cloud-genus-morphology.spec.mjs` (21/21) proves the coordinate transform and
  * the identity guards on the CPU. It cannot prove the GPU samples the new

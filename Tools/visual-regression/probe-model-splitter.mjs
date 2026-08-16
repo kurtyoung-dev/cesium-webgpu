@@ -1,5 +1,7 @@
 /**
  * WIRE-MODEL-SPLITTER acceptance probe.
+ * @purpose model.splitDirection acceptance: LEFT split hides the correct half identically on both backends; NONE off-gate renders the full model.
+ * @status ACTIVE
  *
  * WebGL applies `model.splitDirection` (SplitDirection.LEFT / RIGHT of the
  * split slider) via an FS discard (`ModelSplitterPipelineStage` +

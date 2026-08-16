@@ -1,4 +1,6 @@
 // skybox-diffuse-seam.spec.mjs — C12-11 / DR-01: pins the star-map seam.
+// @purpose Standing DR-01 proof: diffuse skybox faces stay low-passed (no resolved points), band structure + TYCHO_T5 reversal intact, hashes re-derived.
+// @status ACTIVE
 //
 // DR-01 (QUEUE_2026-07-19_CAMPAIGN12.md §6c, decided 2026-07-19) assigns one
 // physical owner to each celestial signal: the cube map carries DIFFUSE Milky

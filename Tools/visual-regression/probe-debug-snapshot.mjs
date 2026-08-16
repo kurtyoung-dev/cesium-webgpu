@@ -1,4 +1,7 @@
 // Use Cesium's getDebugSnapshot for a comprehensive scene state.
+// @purpose Headless scene-state dump: tiles-to-render, pipeline-cache stats, and globe feature-renderer status from a settled viewer.
+// @status ACTIVE
+//
 import { chromium } from "playwright";
 
 const URL =

@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * Batch 434 FLAG-ON probe — 3.3 CLOUD-AERIAL-LUT + 3.4 CLOUD-AMBIENT-LUT.
+ * @purpose B434 flag-on gate: physical aerial mode fogs distant clouds toward the real sky (sun-azimuth-tracking hue) and sky-lut ambient warms sunset undersides
+ * @status ACTIVE
  *
  * Both features couple the procedural clouds to the precomputed atmosphere LUTs,
  * which only bake when `skyAtmosphere.show = true` on a compute-capable device. So

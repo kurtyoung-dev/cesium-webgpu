@@ -2,6 +2,8 @@
 /**
  * CLOUD-MULTIDECK extra views (Batch 443) — confirm correct deck stacking +
  * ordering from several camera positions, multiDeck ON vs OFF.
+ * @purpose B443 evidence capture: deck stacking/ordering from above all decks (15 km) and between decks (3.5 km), ON vs OFF; eyeball only.
+ * @status INVESTIGATION
  *
  *   above   — camera at 15km (above ALL decks), pitch -25 looking DOWN: should
  *             see the HIGH veil over the MID over the LOW deck (correct top-down

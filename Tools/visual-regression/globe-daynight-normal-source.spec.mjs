@@ -1,6 +1,8 @@
 // globe-daynight-normal-source.spec.mjs — CO-15, DEFERRED_WORK row
 // `NEW-WEBGPU-GLOBE-DAYNIGHT-NORMAL-SOURCE` (CELESTIAL_LIGHT_TRANSPORT_PLAN
 // 2026-08-07 §2 bug 2, fifth divergence).
+// @purpose Pins that every WGSL globe day/night term reads the analytic geocentric normal, not the mesh v_normalEC whose constant decode flattened lighting.
+// @status ACTIVE
 //
 // WHAT THIS ROW FIXED. `GlobeTerrain.wgsl`'s day/night FAMILY — the imagery
 // day/night alpha, the night-lights emission gate, the DAYNIGHT_SHADING Lambert

@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * C13-39 — GPU-timestamp A/B lanes for the density-LOD / domain-transform hoist.
+ * @purpose C13-39 GPU-timestamp A/B lanes for the density-LOD/domain hoist; codifies the repo's mandatory interleaved bundle-swap GPU-timing protocol
+ * @status ACTIVE
  *
  * WHAT THIS MEASURES
  * ------------------

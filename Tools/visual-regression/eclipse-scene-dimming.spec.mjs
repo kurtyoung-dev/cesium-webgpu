@@ -3,6 +3,8 @@
 // `eclipseAutoExposure` mode switch, the exact-1.0 identity paths, and the
 // four injection sites (each one JS-side, so both backends inherit one
 // change — the S1 alpha pattern).
+// @purpose C12-29 S2: scene-light/atmosphere dimming curve, ~5-lux totality floor, eclipseAutoExposure default (ruling E2), exact-1.0 identities, 4 JS sites.
+// @status ACTIVE
 //
 // These tests fail if:
 //   - the scene factor starts using `sunVisibleFraction` instead of

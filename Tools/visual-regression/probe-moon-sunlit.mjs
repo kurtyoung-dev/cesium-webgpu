@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // NS-MOON-MATTE-NOT-SUNLIT acceptance / regression probe.
+// @purpose Regression pin: the moon shows sun-relative shading (limb darkening, graded terminator, displaced lit centroid) on both backends.
+// @status ACTIVE
 //
 // User report (2026-07-06, split-screen WebGL vs WebGPU): "the moon renders
 // matte/flat — it does not visibly show sun-relative shading (lit hemisphere,

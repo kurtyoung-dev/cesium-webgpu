@@ -3,6 +3,9 @@
 // elevation can't legitimately occlude the sample buildings)? Principle 8 — the
 // "b3dm invisible on WebGPU" claim must be checked against WebGL at the same
 // view, and against ellipsoid terrain, before assuming a WebGPU depth bug.
+// @purpose C-R9 control: same-view WebGL-vs-WebGPU b3dm render with explicit ellipsoid terrain, ruling out legitimate terrain occlusion first.
+// @status INVESTIGATION
+//
 import { chromium } from "playwright";
 import fs from "fs";
 const BASE = process.env.PROBE_BASE || "http://localhost:8134";

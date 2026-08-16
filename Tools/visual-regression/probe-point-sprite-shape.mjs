@@ -1,4 +1,6 @@
 // POINT-SPRITE-SHAPE — point sprite shape parity (WebGL vs WebGPU).
+// @purpose Parity gate: point-sprite shape (squares vs carved circles) across point-cloud and PointPrimitive scenes; gain-normalized ds4 metric
+// @status ACTIVE
 //
 // WebGL rasterizes gl_Points as SOLID SQUARES (ModelFS.glsl only carves a
 // circle under HAS_POINT_DIAMETER — the Bentley point-style extension). The

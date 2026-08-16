@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 // BUG-1: no-drift, sun centered (Earth behind). Sample the canvas center pixels
 // directly to quantify the sun. Capture ALL console messages (validation errors).
+// @purpose Samples canvas-center pixels with the sun centered (Earth behind) to quantify sun rendering and capture all console/validation messages.
+// @status INVESTIGATION
+//
 import { chromium } from "playwright";
 const BASE = process.env.PROBE_BASE || "http://localhost:8134";
 

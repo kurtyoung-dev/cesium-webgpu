@@ -1,5 +1,7 @@
 // celestial-g2-gate.spec.mjs — browser-free guard for the Campaign-12 G2 lane
 // (`probe-celestial-gates.mjs --g2`).
+// @purpose Guards the G2 star-PSF gate: display-transform inversion round-trip, PSF discrimination vs the old truncated Gaussian, composition rules, via mutants.
+// @status ACTIVE
 //
 // G2 is a gate, so a spec that only ran the correct implementation would be
 // worth nothing — the wrong implementations of every rule below also "pass",

@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * C11-146 authoritative route wrapper and artifact assessor.
+ * @purpose C11-146 route wrapper: fingerprints local+served inputs around the clean moving-altitude run, assesses the artifact, preserves first red.
+ * @status ACTIVE
  *
  * Recommended:
  *   node Tools/visual-regression/assess-c11-146-route.mjs run

@@ -1,5 +1,7 @@
 // C11-13 — device-free executable and structural policy for camera-inside
 // WebGPU voxel proxy rendering.
+// @purpose Device-free gate for camera-inside voxel proxy rendering: executes real WebGPUVoxelRenderer index helpers via esbuild bundle + structural pins.
+// @status ACTIVE
 //
 // Run: node --test Tools/visual-regression/voxel-inside-camera-policy.spec.mjs
 

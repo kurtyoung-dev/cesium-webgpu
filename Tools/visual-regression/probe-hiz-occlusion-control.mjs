@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // Control for probe-hiz-occlusion-consumer.mjs.
+// @purpose Control leg: same 3600-box scene with gpuCullingHint='never' to prove any dense-scene failure is the Hi-Z compute path, not primitive count
+// @status ACTIVE
 //
 // Same dense 3600-box WebGPU scene, but sets scene.gpuCullingHint = 'never'
 // BEFORE rendering. That short-circuits the Hi-Z / gpuCuller / gpuSort

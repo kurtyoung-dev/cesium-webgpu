@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // Probe (Batch 290): two-part gate for the
 // NEW-TAA-PIPELINE-ORDER-RECONCILE + NEW-POSTPROCESS-USER-WARN-PROD stage.
+// @purpose Two-part gate: TAA stays pre-tonemap and temporally stable; GLSL-only user post-process stages emit a permanent deduped warn, not silence.
+// @status ACTIVE
 //
 // Part 1 — NEW-TAA-PIPELINE-ORDER-RECONCILE. The order decision kept TAA
 //   PRE-tonemap (linear/HDR). This re-verifies that TAA still RESOLVES and

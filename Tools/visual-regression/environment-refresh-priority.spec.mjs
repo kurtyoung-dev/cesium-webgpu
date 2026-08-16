@@ -1,4 +1,6 @@
 // C11-193C — same-frame dynamic-environment demand ordering.
+// @purpose Pins C11-193C same-frame dynamic-environment demand ordering in WebGPUEnvironmentRefreshCoordinator, GPU-free via esbuild-transpiled TS.
+// @status ACTIVE
 //
 // GPU-free executable policy plus narrow source contracts for the Scene/WebGPU
 // integration seams. Browser submission/pass-count acceptance remains in the

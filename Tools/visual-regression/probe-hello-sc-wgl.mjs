@@ -1,3 +1,6 @@
+// @purpose WebGL reference leg of the Hello World sky investigation: raw gallery boot, env layers off, samples two fixed ocean/continent pixels
+// @status INVESTIGATION
+
 import { chromium } from "playwright";
 
 const browser = await chromium.launch({

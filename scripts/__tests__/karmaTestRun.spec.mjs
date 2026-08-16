@@ -1,5 +1,7 @@
 // Static Node coverage for the Gulp/Karma completion bridge. No browser is
 // launched: FakeKarmaServer emits the lifecycle events produced by Karma.
+// @purpose Static coverage of the Gulp/Karma completion bridge via a fake Karma server: strict result config, retries, disconnect/error exit codes.
+// @status ACTIVE
 //
 // Run with: node scripts/__tests__/karmaTestRun.spec.mjs
 

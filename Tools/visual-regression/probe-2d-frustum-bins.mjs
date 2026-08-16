@@ -4,6 +4,8 @@
 // GLOBE-pass commands bin into. Confirms the root cause that SCENE2D markers are
 // overwritten because the billboard bins only into the farthest frustum(s) while
 // nearer-frustum opaque globe passes draw over the accumulated color.
+// @purpose SCENE2D multi-frustum binning dump (per-frustum near/far, command counts per pass, billboard plane distances) for pass-overwrite-class bugs.
+// @status ACTIVE
 //
 // Usage: node Tools/visual-regression/probe-2d-frustum-bins.mjs [webgl|webgpu]
 // Env:   PROBE_BASE (default http://localhost:8134)

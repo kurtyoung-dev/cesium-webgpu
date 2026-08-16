@@ -1,6 +1,8 @@
 /**
  * Campaign 13 C13-06 — cloud shadow / mask / environment-capture / atmosphere
  * RTE contract spec.
+ * @purpose C13-06 cloud shadow/mask/env-capture/atmosphere RTE contract: f64 frame-owner math, f32 WGS84-vs-spherical oracle, source ownership, naga validation.
+ * @status ACTIVE
  *
  * Pure Node (`node --test`). Covers:
  *

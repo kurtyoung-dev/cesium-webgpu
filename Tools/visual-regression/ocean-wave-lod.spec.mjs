@@ -1,4 +1,6 @@
 // ocean-wave-lod.spec.mjs — C11-172 v3 analytic acceptance spec.
+// @purpose Extracts ocean-wave march constants from WGSL/GLSL/TS and pins integer-repeat lockstep, fade-band parity, amplitude fade, f32 precision bounds.
+// @status ACTIVE
 //
 // Pins the ocean-wave PHYSICAL-WAVELENGTH march + RTE phase decomposition
 // (2026-07-24) BEFORE any GPU draws it

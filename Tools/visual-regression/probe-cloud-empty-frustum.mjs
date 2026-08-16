@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * Campaign 13 empty-frustum environmental scheduling acceptance probe.
+ * @purpose C13 acceptance: zero-frustum frames still schedule cloud/post/env work when demanded, while the true-empty fast path still skips it all
+ * @status ACTIVE
  *
  * Reproduces the command-empty view that previously skipped procedural clouds:
  * an offline globe camera below the cloud deck, looking upward into a black sky

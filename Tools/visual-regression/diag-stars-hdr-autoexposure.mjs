@@ -6,6 +6,8 @@
 // defaults true, and configure never syncs it down — so WebGPU always
 // auto-exposes. On a near-black starfield that pulls bright stars toward the
 // frame average (dimming them) while lifting the faint background.
+// @purpose Runtime AE-on vs AE-off capture testing whether always-on WebGPU auto-exposure crushes bright HDR catalog stars on a near-black starfield.
+// @status INVESTIGATION
 //
 // No rebuild: toggles scene._alternateSceneRenderer._postProcess
 // .autoExposureEnabled at runtime and captures AE-on vs AE-off.

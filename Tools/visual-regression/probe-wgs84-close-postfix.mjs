@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // Verify close-zoom doesn't regress after Batch 56's per-fragment ground atmo fix.
+// @purpose One-off check that close zoom did not regress after Batch 56's per-fragment ground-atmosphere fix on the WGS84 ellipsoid.
+// @status INVESTIGATION
 
 import { chromium } from "playwright";
 import path from "path";

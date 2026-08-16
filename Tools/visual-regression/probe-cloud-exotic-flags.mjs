@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 /**
  * CLOUD-U7-EXOTIC-E1-E2 — exotic E1/E2 flags exposed through collection.volumetric.
+ * @purpose U7 gate: exotic E1/E2 dials (mammatus/species/feature) reach the raymarcher via collection.volumetric; off states byte-identical
+ * @status ACTIVE
+ *
  * WebGPU-only. Slice 7 of the cloud-unification epic.
  *
  * The exotic density-shaping dials all live on

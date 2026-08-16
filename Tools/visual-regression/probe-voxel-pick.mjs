@@ -1,4 +1,6 @@
 // C-R9-VOXEL-CELL-PICK-TAIL acceptance probe.
+// @purpose Acceptance: public Scene.pickVoxel end-to-end on both backends — VoxelCell returned without throw, identical color/tile/sample cross-backend.
+// @status ACTIVE
 //
 // Exercises the PUBLIC `Scene.pickVoxel(windowPosition)` end-to-end on BOTH
 // backends. Prior to this fix `Scene.pickVoxel` threw on WebGPU after the

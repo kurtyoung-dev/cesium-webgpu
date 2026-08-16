@@ -1,4 +1,6 @@
 // C11-13 — browser-free policy and mutant suite for the physical Edge probe.
+// @purpose Browser-free policy + mutant suite for the physical Edge inside-camera voxel probe: waypoint sequence, pixel/command evidence, watchdog ordering.
+// @status ACTIVE
 //
 // Run: node --test Tools/visual-regression/c11-13-voxel-inside-camera-probe.spec.mjs
 

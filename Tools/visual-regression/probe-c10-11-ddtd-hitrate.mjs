@@ -4,6 +4,9 @@
 // toggle, same build/page). If the FALSE and TRUE hit-rates are comparable, the
 // occasional miss is a pre-existing async-readback race, NOT a switch-caused
 // depth regression.
+// @purpose Hit-rate A/B of the globe-pick point sequence with the pick-fleet switch FALSE/TRUE, showing the occasional miss is a pre-existing race.
+// @status INVESTIGATION
+//
 import { chromium } from "playwright";
 const BASE = process.env.PROBE_BASE || "http://localhost:8080";
 const TRIALS = 8;

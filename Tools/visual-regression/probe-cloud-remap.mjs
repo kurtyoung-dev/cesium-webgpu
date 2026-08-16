@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * V4 — mean-preserving erosion remap. WebGPU-only (baked tier).
+ * @purpose V4 mean-preserving erosion remap A/B vs the pre-V4 build: silhouette preserved at coverage 0.40, deck reads solid (fewer holes) at 0.85
+ * @status INVESTIGATION
  *
  * V3's baked erosion was a LITERAL subtraction → at high coverage it punched
  * holes through the whole deck (lumpy-with-holes / dappled). V4 swaps the baked

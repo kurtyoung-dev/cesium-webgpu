@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // Probe-model-pbr-audit — Batch 141 broad Model PBR audit.
+// @purpose Broad model PBR audit across skinned/instanced/unlit/textured assets: 0 device errors, material-UB sizes/alignment, passes invoked.
+// @status ACTIVE
 //
 // Loads several glTF assets covering different feature combinations:
 //   - CesiumMan: skinned, animated (FLAG_HAS_SKINNING active)

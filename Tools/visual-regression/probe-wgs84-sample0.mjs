@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // Sample0 debug after alpha=1 fix.
+// @purpose One-off sample0 texture debug after the Batch-56 alpha=1 reprojection fix on the WGS84 ellipsoid.
+// @status INVESTIGATION
 
 import { chromium } from "playwright";
 import path from "path";

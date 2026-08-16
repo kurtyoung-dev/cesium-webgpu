@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * C12-29 S4 orbital-sunrise browser acceptance.
+ * @purpose Certifying 400 km orbital-sunrise acceptance: 181 pinned one-second samples in normal + blend-neutral lanes, fail-closed write-once evidence lifecycle
+ * @status ACTIVE
  *
  * Two fresh browser contexts run the same 400 km circular-orbit sunrise. The
  * normal lane retains the globe and atmosphere for visual review. The

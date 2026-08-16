@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// @purpose One-off debug harness from the WGS84 reprojection alpha investigation: terrain + debug-flag toggle capture (layer-1 alpha variant).
+// @status INVESTIGATION
+
 import { chromium } from "playwright";
 import path from "path";
 

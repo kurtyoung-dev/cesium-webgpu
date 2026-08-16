@@ -1,5 +1,7 @@
 // Fixture selection for the eclipse sky probe — the CONSTRAINT SET, in one
 // pure place.
+// @purpose All-lane constraint set for eclipse-sky vantage selection: per-candidate predicates with named rejections after headline-only selection failed.
+// @status ACTIVE
 //
 // ★ THE RULE, earned at Batch 766: A FIXTURE SELECTOR MUST BE CONSTRAINED BY
 // EVERY REQUIREMENT ITS LANES IMPOSE, NOT JUST THE HEADLINE ONE.

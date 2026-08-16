@@ -1,3 +1,6 @@
+// @purpose Gate spec for the C12-29 S5 dense-cost certification: schedule/workload validation, long-task selection, legacy + superseded schema folds, sentinels.
+// @status ACTIVE
+
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import fs from "node:fs";

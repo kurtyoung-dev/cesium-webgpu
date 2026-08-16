@@ -1,5 +1,7 @@
 // image-anchors.mjs — CONTENT anchors for a captured screenshot, decided in
 // Node from the PNG bytes. Pure: no browser, no network, no GPU.
+// @purpose PNG content anchors (brightSpot, horizonCoverage) proving the capture subject is in frame, since DOM chrome alone can pass pixel-percentage floors.
+// @status ACTIVE
 //
 // WHY A PIXEL PERCENTAGE IS NOT EVIDENCE THAT THE SUBJECT IS IN FRAME. The
 // capture script's thresholds ask "how much of this image is not black" and

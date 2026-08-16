@@ -1,4 +1,6 @@
 // C10-03-MSAA-BOUNDARY-BYTES acceptance probe.
+// @purpose Acceptance: demand-driven scene-color MSAA resolve — kill-switch A/B counts resolve passes (eager: per segment; elided: exactly 1).
+// @status ACTIVE
 //
 // Certifies the demand-driven scene-COLOR MSAA resolve ("resolve-on-consume")
 // that replaces the eager per-segment resolve (S4-1). Because the clean

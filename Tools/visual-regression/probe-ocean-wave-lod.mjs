@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // probe-ocean-wave-lod.mjs — C11-172 OCEAN-WAVE PHYSICAL-WAVELENGTH LOD acceptance.
+// @purpose C11-172 acceptance: physical-wavelength wave LOD — banded HF-variance gates prove structure near, calm far, animated; renderer hard-checked.
+// @status ACTIVE
 //
 // DEFECT (maintainer screenshot 2026-07-24): a LOW camera over open ocean on
 // WebGPU renders the waves as uniform per-pixel NOISE to the horizon ("very

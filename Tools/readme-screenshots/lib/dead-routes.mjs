@@ -1,6 +1,8 @@
 // dead-routes.mjs — the URLs a demo page still asks for that NOTHING serves any
 // more, derived from the pages themselves and checked against the disk. Pure
 // Node: no browser, no network, no GPU.
+// @purpose Derives the legacy script URLs demo pages still request but nothing serves, and fulfils them with empty 200s so only real 404s stay fatal.
+// @status ACTIVE
 //
 // THE DEFECT THIS REPLACES. `Apps/Sandcastle/gallery/*.html` still carries the
 // three script tags the legacy Sandcastle app installed. Two of the three files

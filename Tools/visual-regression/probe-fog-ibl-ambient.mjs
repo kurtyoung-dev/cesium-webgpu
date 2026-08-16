@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // Probe: improvement-plan 2.4 — FOG-IBL-AMBIENT (Batch 431).
+// @purpose Opt-in sky-LUT/IBL fog ambient: warms at low sun, neutral/brighter at high sun; a human reads the PNGs and band stats.
+// @status ACTIVE
 //
 // Verifies the WebGPU froxel volumetric-fog renderer's opt-in sky-LUT /
 // IBL-driven fog ambient. With `atmosphericConditions.volumetricFog.iblAmbient`

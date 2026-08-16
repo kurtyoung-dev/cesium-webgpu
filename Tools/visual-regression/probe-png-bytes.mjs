@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 // Read PNG files and report mean RGB bytes — distinguishes between
 // "image actually IS dark" vs "image looks dark on display but bytes are correct".
+// @purpose CLI utility: minimal Node PNG decoder reporting mean RGB bytes of output PNGs — 'image is dark' vs 'display looks dark'
+// @status ACTIVE
+//
 import fs from "fs";
 import path from "path";
 import zlib from "zlib";

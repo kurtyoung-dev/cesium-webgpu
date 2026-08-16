@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // wire-globe-mrt-normal.mjs — Slice 5c-B1 helper (Batch 105).
+// @purpose One-time codemod rewriting GlobeTerrain.wgsl's fragmentMain to the 2-attachment MRT output (color + normal-roughness G-buffer).
+// @status INVESTIGATION
 //
 // Rewrites GlobeTerrain.wgsl's fragmentMain to output a 2-attachment
 // struct {color @location(0), normalRoughness @location(1)} instead of

@@ -1,6 +1,8 @@
 // NEW-WEBGPU-ENV-PASS-DROP (background-clear member) — Node spec for the two
 // pure decisions that together determine whether `scene.backgroundColor`
 // reaches the WebGPU framebuffer on a frame with no content.
+// @purpose Proves the empty-frame background loss was WebGPUContext.clear dropping the ClearCommand; pins the WebGPUCanvasClearState fix and its wiring.
+// @status ACTIVE
 //
 // WHAT WAS ACTUALLY WRONG (traced, not assumed)
 // ---------------------------------------------

@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * Probe (CLOUD-U4A-SCENE-DEFAULT-COLLECTION acceptance + STANDING regression guard).
+ * @purpose Standing guard for scene-owned defaultCloudCollection: four config producers re-homed onto .volumetric, defaults byte-identical.
+ * @status ACTIVE
  *
  * Slice 4A of the cloud-unification epic adds a Scene/Globe-owned MANAGED
  * default volumetric-capable CloudCollection (`scene.globe.defaultCloudCollection`)

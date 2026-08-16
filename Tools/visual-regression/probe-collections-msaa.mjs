@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // Probe-collections-msaa — Batch 134 verification.
+// @purpose MSAA=4 pipeline regression: collection + ground-primitive pipelines must bake multisample count 4 (pre-B134 validation errors).
+// @status ACTIVE
 //
 // Loads billboards + labels + polylines + point primitives + ground
 // primitive + ground polyline simultaneously, with MSAA=4 active.

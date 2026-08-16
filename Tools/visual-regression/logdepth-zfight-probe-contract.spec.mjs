@@ -1,4 +1,6 @@
 // Browser-free contracts for the corrected log-depth composition probe.
+// @purpose Browser-free contract pinning probe-logdepth-zfight's deterministic offline scene and retained terrain-depth policy.
+// @status ACTIVE
 //
 // The post-Batch-818 audit proved the alleged second Bug 814.1 mechanism was
 // an instrument false positive: online terrain made +5 m ellipsoid-relative

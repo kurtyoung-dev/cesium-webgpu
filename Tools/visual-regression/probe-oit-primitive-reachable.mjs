@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * Probe: OIT-PRIMITIVE-REACHABLE (C11-157 Slice A).
+ * @purpose C11-157 Slice A: MRT-OIT reachable for translucent primitives via both injectOITOutput branches; FAR-003 runtime flip, hard gates.
+ * @status ACTIVE
  *
  * Proves the WebGPU MRT-OIT accumulation path is now REACHABLE for standard
  * translucent PRIMITIVES (the Batch-700 evidence probe proved it was NOT — no

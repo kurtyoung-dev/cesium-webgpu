@@ -5,6 +5,8 @@
 // lighting-enabled lane keeps one orbital camera position fixed while aiming
 // first outside, then inside, then outside the selected-terrain penumbra. It
 // certifies the correction-only gates and their one-View WebGPU carrier.
+// @purpose C12-29 S5 browser proof: lunar shadow evaluated per globe fragment — visible/local during the 2024-04-08 eclipse, inert a day later, both backends.
+// @status ACTIVE
 //
 // This is deliberately a small isolation probe. The whole-disc lane disables
 // globe lighting; its only pairwise difference is `enableEclipseGlobeShadow`.

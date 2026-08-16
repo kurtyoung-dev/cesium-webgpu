@@ -1,4 +1,7 @@
 // Probe to investigate why WebGPU demos don't follow camera setView/flyTo.
+// @purpose One-off diagnostic for WebGPU Sandcastle demos ignoring camera setView/flyTo, using a forced-renderer Viewer shim per demo
+// @status INVESTIGATION
+//
 import { chromium } from "playwright";
 
 const DEMO = process.argv[2] || "3D Tiles BIM";

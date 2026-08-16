@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // Probe: C7-SUN-STARS-EXTINCTION
+// @purpose Sun and catalog stars dim/redden through the atmosphere near the horizon on both backends; byte-identical from orbit or atmosphere hidden.
+// @status ACTIVE
 //
 // Verifies the follow-up to B629 (moon atmospheric extinction): the SUN and
 // the catalog STARFIELD dim/redden through the atmosphere near the horizon,

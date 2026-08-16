@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * Probe: OIT-MODEL-REACHABLE (C11-157 Slice C).
+ * @purpose C11-157 Slice C: MRT-OIT reachable for translucent models — BLEND primary + per-feature-styled translucent twin; FAR-003 runtime flip.
+ * @status ACTIVE
  *
  * Proves the WebGPU MRT-OIT accumulation path is now REACHABLE for translucent
  * MODELS — the last and most complex family (Slice A = primitives, B =

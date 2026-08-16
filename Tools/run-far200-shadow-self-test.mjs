@@ -1,3 +1,6 @@
+// @purpose Thin bootstrap: esbuild-bundles Tools/far200-shadow-self-test.ts and executes it via a data: URL import.
+// @status ACTIVE
+
 import { build } from "esbuild";
 
 const result = await build({

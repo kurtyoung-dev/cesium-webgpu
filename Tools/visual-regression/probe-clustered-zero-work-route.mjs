@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // probe-clustered-zero-work-route — C9-16-CLUSTERED-LIGHT-ZERO-WORK-CONTRACT
 // physical API-counter gate (Wave 2 item 32).
+// @purpose C9-16 API-counter gate: zero clustered GPU work at defaults on the moving route, with positive control and label-inventory guard.
+// @status ACTIVE
 //
 // Proves, on the shared moving multi-altitude camera route, that at DEFAULTS
 // (clustered lighting off) the WebGPU backend allocates, uploads, dispatches,

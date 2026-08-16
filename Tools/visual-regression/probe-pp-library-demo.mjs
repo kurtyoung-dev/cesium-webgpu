@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // probe-pp-library-demo — NEW-WEBGPU-PP-LIBRARY-DEMO (B21) acceptance.
+// @purpose Acceptance for the webgpu-post-process-library demo: asset serves, 7 builtins visibly cycle (stale-pipeline check), None byte-identical
+// @status ACTIVE
 //
 // Verifies the `webgpu-post-process-library` Sandcastle demo end-to-end on
 // the WebGPU backend. New-format gallery main.js (bare `import "cesium"`)

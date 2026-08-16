@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // Probe-model-mrt — Slice 5c-B Batch 119 verification.
+// @purpose Model G-buffer verification: 4-cell ao-x-deferred matrix on Milk Truck; perturbed normals + roughness in slot 1 widen the AO signal.
+// @status ACTIVE
 //
 // Loads a glTF model (Cesium Milk Truck — has normal map, base color
 // texture, metallic-roughness) and runs the 4-cell ao×deferred matrix.

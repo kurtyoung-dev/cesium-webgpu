@@ -1,5 +1,7 @@
 // C12-29 S6 (SKY HALF) — the totality sky: obs-1, the E3 default flip, the
 // star reveal, and the 360-degree horizon twilight.
+// @purpose C12-29 S6 sky half: totality sky via algebraic recoveries — shell alpha from dual-background renders, star reveal, E3 flip, horizon twilight.
+// @status ACTIVE
 //
 // THREE LANES, each an EQUIVALENCE or an ALGEBRAIC RECOVERY. No predictive
 // model of the sky pipeline appears anywhere in this file: S2 burned three

@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 /**
  * Weather Phase 3 — mock-METAR offline pipeline probe (Batch 425). WebGPU-only.
+ * @purpose Gate-B leg: full-RGBA METAR chain (obs parse, IDW rasterize, packer) against the /mock-metar fixture; spatial + calibrated channel gates.
+ * @status ACTIVE
+ *
  * PINNED for determinism under `C13-WEATHER-PROBE-FLEET-NETWORK-GLOBE`.
  *
  * Proves the FULL-RGBA METAR ingest chain — station obs -> parse cloud groups ->

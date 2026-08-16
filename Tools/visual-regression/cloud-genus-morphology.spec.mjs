@@ -1,4 +1,6 @@
 // C13-16 — per-genus cloud morphology (the cirrus row).
+// @purpose C13-16 cirrus row: add-only uniform layout, exact CUMULUS byte-neutrality, structural fibre anisotropy/shear metrics, mutation-rejected predicates.
+// @status ACTIVE
 //
 // PREMISE THIS FILE PINS. `Scene/CloudTypeProfile.js` has always carried five
 // axes per WMO genus, and two of them reached no renderer at all: the

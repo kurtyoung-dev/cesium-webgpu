@@ -3,6 +3,8 @@
  * Batch 611 (E2 CLOUD-EXOTIC-FEATURES-REMAINING) — the sibling supplementary features
  * to B592 mammatus / B610 species, as bounded density SHAPING on the baked-density-field
  * procedural-cloud arch. WebGPU-only.
+ * @purpose B611 feature gate: asperitas/fluctus/arcus/virga each reshape the deck; OFF byte-identical under a frozen clock; toggle restores cleanly
+ * @status ACTIVE
  *
  * globe.defaultCloudCollection.volumetric.cloudFeature ("asperitas" | "fluctus"/"kelvin-helmholtz" | "arcus" | "virga" |
  * "praecipitatio") (or numeric globe.defaultCloudCollection.volumetric.cloudFeatureMode 1-4) shapes the deck:

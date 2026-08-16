@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 // probe-dp46e-pick-metadata — DP-H46e proof: scene.pickMetadata PRODUCER on
 // WebGPU. The full round-trip:
+// @purpose scene.pickMetadata producer round-trip on WebGPU: WGSL pick write, async readback convergence, decode, WebGL cross-check.
+// @status ACTIVE
+//
 //   model metadata (property TEXTURE) -> WGSL fragmentPickMetadataMain writes the
 //   selected property's components into the pick-FBO RGBA8 (via the GENERATED
 //   metadataPickingStage, offset/scale + normalization UN-applied) ->

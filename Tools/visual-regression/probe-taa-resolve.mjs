@@ -7,6 +7,8 @@
 // cost velocity passes + the MSAA=1 downgrade while producing NO temporal
 // antialiasing. Batch 244 lazy-adds the effect from
 // `configureWebGPUPostProcessPipeline` on the first taaEnabled frame.
+// @purpose TAA resolve-consumer gate: effect lazily added on first taaEnabled frame; resolve encodes, settled-stable, no smear on rotation.
+// @status ACTIVE
 //
 // Scene: 40 moving billboards + 40 moving points over a black background
 // (globe/sky hidden), top-down camera. Phases:

@@ -2,6 +2,8 @@
 /**
  * Probe: PolylineCollection MIXED materials parity — WebGPU vs WebGL
  * (NS-POLYLINE-COLLECTION-MULTI-MATERIAL).
+ * @purpose Parity gate: one PolylineCollection mixing Solid/Dash/Glow — per-hue run counting proves non-Color groups don't collapse to solid on WebGPU
+ * @status ACTIVE
  *
  * Builds ONE PolylineCollection holding three color-separated horizontal
  * lines so the per-group material loop in WebGPUPolylineRenderer.js is

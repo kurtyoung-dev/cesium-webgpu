@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // probe-ltc-area-light — C6-LTC-AREA-LIGHTS acceptance probe.
+// @purpose C6 LTC area-light acceptance: RectAreaLight brightens a glTF model on WebGPU; zero-area-light off-gate byte-ish identical; 0 device errors.
+// @status ACTIVE
 //
 // Verifies:
 //   1. A RectAreaLight (LTC analytic area light) illuminates a glTF model

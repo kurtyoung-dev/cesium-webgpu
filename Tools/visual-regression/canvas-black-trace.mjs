@@ -2,6 +2,9 @@
 /**
  * Canvas-black trace probe. Loads the WebGPU viewer, renders 60 frames,
  * captures ALL `[WebGPU:` console messages plus any pageerrors / warnings.
+ * @purpose Renders 60 WebGPU frames capturing all [WebGPU:] console output to pin whether globe commands submit and pass validation (black-canvas bug).
+ * @status INVESTIGATION
+ *
  * Goal: pin down whether globe commands are being submitted, whether the
  * render pass exists when they execute, and whether validation rejects
  * any of them.

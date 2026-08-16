@@ -4,6 +4,8 @@
 // were already wired (Batches 177/182); this probe verifies the alpha values
 // (frontFaceAlpha × frontFaceAlphaByDistance) actually reach the globe FS so
 // an enabled translucent globe composites see-through, not opaque.
+// @purpose globe.translucency per-fragment alpha parity: off-gate at defaults, see-through planet from space, half-alpha terrain oblique — WebGL vs WebGPU
+// @status ACTIVE
 //
 // Scenarios:
 //   off-default        — default load, translucency disabled (the default).

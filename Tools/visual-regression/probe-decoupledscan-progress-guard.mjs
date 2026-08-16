@@ -3,6 +3,8 @@
 // prefix-sum kernel must (a) still compute a CORRECT inclusive prefix sum
 // across MANY workgroups now that the forward-progress watchdog bounds the
 // lookback spin (A2.3), and (b) always TERMINATE (never hang the device).
+// @purpose Numeric compute check: the bounded-lookback prefix-sum watchdog preserves correct multi-workgroup scans and always terminates.
+// @status ACTIVE
 //
 // Background: WebGPU/WGSL guarantee no cross-workgroup forward progress, so
 // the naive `loop { atomicLoad; if !empty break; storageBarrier() }` spin in

@@ -1,4 +1,6 @@
 // moon-phase-gate.spec.mjs — C11-176b: pins the Moon.wgsl phaseGate deletion.
+// @purpose Regression tripwire: the Moon.wgsl whole-disc phaseGate multiplier stays deleted; C12-21 scaffolding and naga validation preserved.
+// @status ACTIVE
 //
 // The defect: Moon.wgsl multiplied the whole Phong-lit disc by
 //     let phaseGate = smoothstep(0.0, 0.3, u.phaseFraction);

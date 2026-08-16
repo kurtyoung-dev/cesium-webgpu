@@ -1,3 +1,6 @@
+// @purpose Contract + mutants for the C11-146 route-evidence policy: provenance fingerprinting, artifact assessment, first-red preservation, CLI wiring.
+// @status ACTIVE
+
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";

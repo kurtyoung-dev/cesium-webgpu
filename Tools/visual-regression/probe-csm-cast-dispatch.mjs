@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // probe-csm-cast-dispatch — NEW-CSM-CAST-NO-DISPATCH-VIEWER verification
 // (Batch 296).
+// @purpose Shadow-cast reachability: CSM cascade and single-map paths dispatch and produce umbra pixels, vs a WebGL reference cell.
+// @status ACTIVE
 //
 // Confirms WebGPU shadow CAST commands actually reach the cast pass and a
 // caster visibly darkens the ground. Same scene as probe-csm-soft-shadow:

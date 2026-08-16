@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // build-geoid-undulation-grid.mjs — offline bake for C6-FFT-OCEAN-TIDE-DATUM
 // (Design A slice 1: the FFT-ocean vertical-datum anchor).
+// @purpose Bakes the bundled coarse EGM2008 geoid grid (egm2008-0p5deg.i16) consumed by Core/GeoidUndulationGrid.js for the ocean GEOID vertical datum.
+// @status ACTIVE
 //
 // Produces the bundled coarse EGM2008 geoid-undulation grid
 // `packages/engine/Source/Assets/Geoid/egm2008-0p5deg.i16`, consumed at

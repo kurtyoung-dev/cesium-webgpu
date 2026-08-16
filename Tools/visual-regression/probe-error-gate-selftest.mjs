@@ -1,5 +1,7 @@
 /**
  * Self-test for the shared WebGPU error/crash gate (Tools/lib/webgpu-error-gate.mjs).
+ * @purpose Self-test of the shared webgpu-error-gate lib: clean run stays empty, injected validation error is caught, device.destroy teardown is ignored.
+ * @status ACTIVE
  *
  * Proves the gate actually does its job — the whole point is that it would have
  * caught FORK-34. Three checks, all in one headless Edge session:

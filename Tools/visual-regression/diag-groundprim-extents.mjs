@@ -3,6 +3,9 @@
 // probe's GroundPrimitive polygon, plus the eye-space eastExtent the
 // WebGPU classifier would compute. Tells us where the WebGPU-vs-WebGL
 // surfaceUV frequency mismatch (~4x) actually lives.
+// @purpose Dumps GroundPrimitive planar texcoord batch attributes + eye-space east extent to locate the ~4x WebGPU surfaceUV frequency mismatch.
+// @status INVESTIGATION
+//
 import { chromium } from "playwright";
 
 const PROBE_BASE = process.env.PROBE_BASE || "http://localhost:8134";

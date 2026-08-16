@@ -1,6 +1,8 @@
 // probe-geojson-primitive.mjs
 // GeoJsonPrimitive WebGPU visual-regression probe (WEBGPU_PARITY_AUDIT_2026-06
 // §5 P1 "GeoJsonPrimitive WebGPU visual-regression probe + Sandcastle demo").
+// @purpose Loads a mixed GeoJSON FeatureCollection through GeoJsonPrimitive on both backends; gates capacity math (ERR_CAPACITY) and cross-backend pixel diff
+// @status ACTIVE
 //
 //   node Tools/visual-regression/probe-geojson-primitive.mjs
 //

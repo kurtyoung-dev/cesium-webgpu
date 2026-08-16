@@ -2,6 +2,8 @@
 // probe-eclipse-cloud-response.mjs — C13-41 (the C12-29 S3 rider) Edge
 // acceptance: eclipse-driven cloud lighting, cloud shadow, and IBL
 // dimming/refresh.
+// @purpose C13-41 Edge acceptance: eclipse-driven cloud radiance ratio, shadow contrast, and IBL refresh count — three pre-registered predictions.
+// @status ACTIVE
 //
 // ─────────────────────────────────────────────────────────────────────────────
 // WHY THIS FILE EXISTS AT ALL

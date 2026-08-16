@@ -5,6 +5,8 @@
 // CumulusCloud.cloudType (dirty index 7, NUMBER_OF_PROPERTIES 7->8), and the
 // backend-neutral context.requestVolumetricClouds / consumeVolumetricCloudRequest
 // seam. NOTHING reads these yet.
+// @purpose U1 slice acceptance: CloudVolumetrics/CloudRenderMode API scaffold exists and, unused, leaves BILLBOARD renders byte-identical.
+// @status INVESTIGATION
 //
 // OFF-GATE (the key assertion): with renderMode===BILLBOARD and all volumetric
 // flags off (default), a billboard cloud scene must render BYTE-IDENTICALLY vs

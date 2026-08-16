@@ -1,5 +1,7 @@
 /**
  * Advance the public voxel-pick convergence state.
+ * @purpose Pure convergence predicate for Scene.pickVoxel warm-up: two consecutive identical real cells establish stability; an absent result resets the streak.
+ * @status ACTIVE
  *
  * WebGPU's synchronous `Scene.pickVoxel` composes an ordinary object-pick
  * readback with a typed voxel-coordinate readback. A new cursor may therefore

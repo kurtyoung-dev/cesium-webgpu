@@ -6,6 +6,8 @@
 // per-fragment-always). The VS varyings feed ONLY the per-vertex debug
 // visualizers (tile.time in [13.5e9,15.5e9]); C9-14 gates the VS march on that
 // same window so production does the work in exactly ONE stage (per-fragment).
+// @purpose Before/after self-diff captures (ground/horizon/orbit) proving the globe ground-atmosphere Nishita march runs in exactly one shader stage
+// @status INVESTIGATION
 //
 // This probe captures WebGPU at GROUND / HORIZON / ORBIT with FULL ground
 // atmosphere enabled and writes PNGs to output/<OUT_SUBDIR>/. Run it twice

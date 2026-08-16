@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // Probe-gbuffer-enabled — Phase 8a Slice 2b (Batch 86).
+// @purpose Flips scene.deferredLighting on and asserts the G-buffer producer runs with zero visible pixel change (consumers land in a later slice)
+// @status ACTIVE
 //
 // Flips `scene.deferredLighting = true` on the WebGPU viewer, renders
 // N frames, and verifies:

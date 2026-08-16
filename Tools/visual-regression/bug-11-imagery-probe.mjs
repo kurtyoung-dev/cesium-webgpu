@@ -5,6 +5,8 @@
  * enabled, plus a canvas pixel sample to confirm whether anything is
  * being rendered. Prints the dump so the operator can narrow down on
  * one of the three hypothesized root causes:
+ * @purpose Early diagnostic dumping the per-tile imagery probe (debugShowImageryProbe) + canvas sample to discriminate three hypothesized BUG-11 root causes.
+ * @status INVESTIGATION
  *
  *   A) Reprojection clear alpha=0 collapsing tex.a * effectiveAlpha.
  *      (Defensively fixed in WebGPUImageryReprojection — alpha=1 — but

@@ -1,4 +1,6 @@
 // verify-packaged-notices.spec.mjs — mutants for the packaging-legality check.
+// @purpose Mutant suite for the packaged-notices check: removes one owed notice/wiring element at a time and requires the removal reported.
+// @status ACTIVE
 //
 // Run: node --test Tools/c16/verify-packaged-notices.spec.mjs
 //

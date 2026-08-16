@@ -1,4 +1,6 @@
 // R-2b UNIFIED-FEATURE-ID-TEXTURE (Queue Q28) acceptance probe.
+// @purpose Unified per-fragment feature-ID G-buffer resolvable in-shader: FeatureIdResolve.wgsl recolors globe + billboard IDs to distinct colors.
+// @status ACTIVE
 //
 // Proves that the WebGPU pick pass's unified, source-agnostic per-fragment
 // feature-ID G-buffer (WebGPUPickFramebuffer._colorTexture) is resolvable

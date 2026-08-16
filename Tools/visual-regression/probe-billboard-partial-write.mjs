@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 // Probe (NEW-RESIDENT-INSTANCE-BUFFER-MGR + NEW-PARTIAL-WRITE-WIRE-BPL verify):
+// @purpose Acceptance for resident-instance partial writes: 0 uploads settled, ~1-stride write on one move, moved billboard renders at its new position.
+// @status ACTIVE
+//
 // the billboard renderer's resident-instance partial-write path must
 //   (A) upload NOTHING for a settled 1000-billboard collection
 //       (0 full rebuilds AND 0 partial writes over 30 static frames),

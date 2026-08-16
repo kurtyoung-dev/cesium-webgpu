@@ -1,5 +1,7 @@
 // tooling-coverage.spec.mjs — the repository tooling-coverage contract
 // (REPO-TRACKED-MJS-PRETTIER-COVERAGE + REPO-TOOLS-ESLINT-COVERAGE).
+// @purpose Coverage-of-the-checkers gate: writes broken fixtures under Tools/ and asserts the real prettier/eslint configs actually reject .mjs files.
+// @status ACTIVE
 //
 // WHY THIS EXISTS
 // ───────────────

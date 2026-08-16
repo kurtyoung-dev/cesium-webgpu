@@ -1,4 +1,6 @@
 // probe-gpu-culler-consumers.mjs
+// @purpose Static source-scan gate: all four GPU dispatchers (gpuCull/HiZ/GPUSortKeys/PointCloudSort) must keep a wired consumer and an activation gate
+// @status ACTIVE
 //
 // Structural regression probe for Q18 / NEW-GPU-CULLER-CONSUME-OR-DELETE
 // (Principle-7 landmine). The four GPU compute dispatchers — gpuCull, HiZ

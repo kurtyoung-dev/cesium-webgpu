@@ -1,6 +1,8 @@
 /**
  * Splits monolithic WGSL `struct Uniforms` into separate camera + material
  * structs with distinct bind groups.
+ * @purpose One-time codemod splitting monolithic WGSL 'struct Uniforms' into CameraUniforms/MaterialUniforms with separate bind groups.
+ * @status INVESTIGATION
  *
  * BEFORE:
  *   struct Uniforms { mvpRelativeToEye: mat4x4<f32>, ..., materialColor: vec4<f32> }

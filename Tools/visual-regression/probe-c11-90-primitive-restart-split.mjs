@@ -3,6 +3,9 @@
  * Historical entry point retained for C11-90 evidence continuity. The Split
  * UI is not an authority on Sandcastle standalone routes, so the implementation
  * now runs strict WebGL2 and WebGPU pages in an isolated Tools-only harness.
+ * @purpose Thin retained entry point running the C11-90 primitive-restart WebGL2-vs-WebGPU harness from lib/c11-90-primitive-restart-probe.mjs
+ * @status ACTIVE
+ *
  */
 
 import {

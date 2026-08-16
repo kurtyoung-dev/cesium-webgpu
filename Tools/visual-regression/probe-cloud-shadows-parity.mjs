@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * CLOUD-SHADOWS parity probe (Batch 437 — 4.1 CLOUD-SHADOWS).
+ * @purpose Stash-based A/B proving default-OFF cloud-shadow consumers render byte-identically across the Batch 437 change.
+ * @status INVESTIGATION
  *
  * Captures the THREE default render paths that the cloud-shadow consumers touch,
  * with the feature at its DEFAULT-OFF state (globe.defaultCloudCollection.volumetric.cloudCastShadows=false,

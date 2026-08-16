@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // Probe-model-tangentgen — Slice 5d Batch 159 verification (NEW-MODEL-TANGENT-GENERATION).
+// @purpose Verifies the derivative-tangent fallback for tangentless normal-mapped glTF: 0 device errors + both backends render; A/B signal documented.
+// @status ACTIVE
 //
 // Verifies the screen-space derivative tangent fallback added to
 // perturbNormal() in ModelPBRComplete.wgsl. A glTF primitive can declare a

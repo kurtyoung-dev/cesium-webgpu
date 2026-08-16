@@ -1,6 +1,8 @@
 // celestial-g2-gate.mjs — pure verdict logic + display-transform inversion for
 // the Campaign-12 **G2** gate ("white blobs": the star PSF, the delivered
 // magnitude range, and C12-27's angular solar glare).
+// @purpose Pure verdict logic plus display-transform inversion for G2 (star PSF, delivered magnitude range, C12-27 solar glare) on linearized captures.
+// @status ACTIVE
 //
 // WHAT G2 IS
 // ----------

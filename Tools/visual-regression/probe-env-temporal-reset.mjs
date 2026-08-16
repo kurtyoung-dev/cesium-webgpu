@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // C2-25 ENV-TEMPORAL (Batch 449) — crossfade-vs-reset behavior probe.
+// @purpose Env-cube temporal behavior: small sun delta crossfades (EMA between A and B), large delta resets history (snaps to the new single-frame capture).
+// @status ACTIVE
 //
 // Directly exercises the two temporal behaviors that matter:
 //

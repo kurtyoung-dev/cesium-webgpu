@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * Batch 439 — cloud morphology probe for 4.7 CLOUD-CURL + 4.8 CLOUD-PW-NOISE.
+ * @purpose B439 morphology modes: curl erosion and perlin-worley cores A/B'd against an in-run default baseline, plus a stash-pair parity mode for default flags
+ * @status ACTIVE
  *
  * MODES (env MODE):
  *   parity — default flags (curl amplitude 0, noiseMorphology 'value'). Run on the

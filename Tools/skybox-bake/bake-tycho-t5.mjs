@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * bake-tycho-t5.mjs — reproducible star-map bake pipeline (Campaign-12 C12-10).
+ * @purpose Reproducible Tycho star-map bake: SMPTE gamma-1.8 to sRGB transfer, equirect to six GL cube faces, blurred diffuse + unblurred variants, manifest.
+ * @status ACTIVE
  *
  * Input : NASA SVS 3572 "Tycho Catalog Skymap v2.0", TychoSkymapII.t5_16384x08192
  *         equirectangular (RA/Dec plate carrée). Highest-fidelity offered is the

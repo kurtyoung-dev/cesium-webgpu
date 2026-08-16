@@ -1,6 +1,8 @@
 // eclipse-ladder-rungs.mjs — the obscuration ladder that
 // `probe-eclipse-scene-dimming.mjs` measures S2 dimming across, plus the
 // validation of its rung separation.
+// @purpose Obscuration ladder + rung-separation validation for the S2 dimming probe; extracted from page.evaluate to fix the 0.9+0.1 knife-edge reject.
+// @status ACTIVE
 //
 // WHY THIS IS ITS OWN MODULE. The separation check used to live INSIDE the
 // probe's `page.evaluate` derivation callback, where it could never be tested:

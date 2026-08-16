@@ -1,6 +1,8 @@
 // probe-geojson-holes.mjs
 // GeoJsonPrimitive interior-ring (hole) + debugShowBoundingVolume verification
 // probe for task C4-GEOJSONPRIMITIVE-PROBE (NEXT_QUEUE_2026-07-04 row Q24).
+// @purpose Pixel-samples fill vs hole points to prove GeoJsonPrimitive interior rings are cut out, and that debugShowBoundingVolume draws on both backends
+// @status ACTIVE
 //
 //   node Tools/visual-regression/probe-geojson-holes.mjs
 //

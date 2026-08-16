@@ -7,6 +7,8 @@
 // the globe now writes LOG depth into. At a far nadir camera that mismatch is a
 // range-dependent z-fight: a low-altitude box loses a large fraction of its
 // pixels to terrain bleed-through (the re-audit measured ~28% loss).
+// @purpose Mat/PBR/Basic primitive log-depth z-fight gate: box pixels lost to terrain bleed, master switch ON vs OFF, plus below-surface negative control.
+// @status ACTIVE
 //
 // This probe renders a green Box with a MaterialAppearance (ColorMaterial →
 // the Mat pipeline — the NEW log-depth path) ~2 km above a solid globe at a

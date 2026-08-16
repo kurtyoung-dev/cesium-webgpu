@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // probe-model-appearance-demo — NEW-WEBGPU-MODEL-APPEARANCE-DEMO acceptance.
+// @purpose End-to-end check of the webgpu-model-appearance demo scenario: signature-pixel asserts for color/silhouette/split, off-gate identity, thumbnail.
+// @status ACTIVE
 //
 // Verifies the `webgpu-model-appearance` Sandcastle demo end-to-end on the
 // WebGPU backend. New-format gallery main.js (bare `import "cesium"`) can't

@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // Probe-model-taa-msaa — Batch 143 verification.
+// @purpose Device-error canary: detects velocity-pipeline sampleCount mismatch under TAA + MSAA=4 (multisampled pipeline vs 1-sample velocity target).
+// @status ACTIVE
 //
 // Loads CesiumMan + enables TAA + MSAA=4. The Model velocity pipeline
 // is built with multisample={count:4} (per createVelocityPipeline +

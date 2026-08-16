@@ -6,6 +6,8 @@
  * single PNG. Run it against the Batch-442 build and against a stashed `main`
  * build; the two PNGs must be byte-identical (the advanced flag's only effect
  * when OFF is to write 0 instead of 1 into an unread uniform slot).
+ * @purpose Stash-based parity capture: legacy cold-optics frame must be byte-identical between the B442 build and a stashed main build.
+ * @status INVESTIGATION
  *
  * Usage: PARITY_OUT=<name> PROBE_BASE=http://localhost:8080 \
  *        node Tools/visual-regression/probe-cold-optics-parity.mjs

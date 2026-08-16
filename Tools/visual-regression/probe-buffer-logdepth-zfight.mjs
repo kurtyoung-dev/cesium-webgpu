@@ -4,6 +4,9 @@
 // slice the Buffer family ALWAYS wrote hyperbolic NDC depth: its WGSL called a
 // 1-arg `csm_vertexLogDepth` + an empty `csm_writeLogDepth` no-op stub (resolved
 // in WebGPUBufferPrimitiveRenderer.ts) and never consulted isWebGPULogDepthActive.
+// @purpose Acceptance that the Buffer* family writes log depth: coverage tracked against a co-located log-depth billboard reference at far nadir.
+// @status ACTIVE
+//
 // Since Batch 251 the WebGPU globe writes LOG depth, so Buffer fill geometry sat
 // in a DIFFERENT depth space than the globe and sank behind terrain at a far
 // nadir camera — the z-fight the renderer-wide log-depth epic resolves for every

@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // C11-212 real-GPU multi-frustum snap-occlusion acceptance probe.
+// @purpose C11-212 multi-frustum snap occlusion: far snappable model hidden/revealed by a near primitive across slices; no stale far-slice payload.
+// @status ACTIVE
 //
 // A far, snappable Model and a near, snapless Primitive overlap at the query
 // pixel while Cesium renders them in different frustum slices. The far model

@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 /**
  * Probe whether the GroundPolyline volume is rasterizing.
+ * @purpose GroundPolyline rasterization discriminator: forces the FS to opaque cyan to separate 'VS produces geometry' from 'volume not rasterizing'
+ * @status INVESTIGATION
+ *
  * Forces ALL fragments to opaque cyan via FS override; if cyan
  * shows up where the polyline should be, the VS is producing
  * on-screen geometry. If still empty, the volume isn't rasterizing.

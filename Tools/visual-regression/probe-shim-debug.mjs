@@ -1,4 +1,7 @@
 // Debug the renderer-override shim to see why __capturedViewer stays null.
+// @purpose Debugs the renderer-override shim used by the cross-backend sandcastle runner (why __capturedViewer stayed null) with an in-page shim log.
+// @status INVESTIGATION
+//
 import { chromium } from "playwright";
 
 const SHIM = `

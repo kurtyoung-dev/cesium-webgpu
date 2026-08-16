@@ -5,6 +5,8 @@
  * WebGL), NOT a black screen. Bug was: the wireframe path fed an EMPTY imagery
  * layer set so fragmentMain's composite was skipped and lines emitted the navy
  * base color (~black). Fix feeds the ready imagery layers.
+ * @purpose Acceptance for the WebGPU debugShowWireframe fix: wireframe draws an imagery-colored line mesh (not black), settled by frame-signature stability.
+ * @status ACTIVE
  *
  * Settle by FRAME-SIGNATURE STABILITY (Batch 350 lesson): the WebGPU wireframe
  * line-list pipeline materializes over many frames; coverage/tilesLoaded lie.

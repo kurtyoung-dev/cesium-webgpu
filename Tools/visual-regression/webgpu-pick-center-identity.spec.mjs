@@ -1,3 +1,6 @@
+// @purpose Fake-device coverage of WebGPUPickFramebuffer/PickPass readback identity: map/unmap lifecycle, per-identity pixel decode, voxel pick pins.
+// @status ACTIVE
+
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import path from "node:path";

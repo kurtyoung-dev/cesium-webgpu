@@ -1,6 +1,8 @@
 // eclipse-state.spec.mjs — C12-29 S1: pins the limb-darkened dual-cone
 // obscuration math, the `frameState.eclipseState` publication contract, the
 // off-toggle identity, and the presence of the alpha fade on BOTH backends.
+// @purpose Pins C12-29 S1 eclipse math: limb-darkened dual-cone obscuration, frameState.eclipseState contract, off-toggle identity, both-backend alpha fade.
+// @status ACTIVE
 //
 // These tests fail if:
 //   - the circle-overlap math loses its exact endpoints (disjoint == full

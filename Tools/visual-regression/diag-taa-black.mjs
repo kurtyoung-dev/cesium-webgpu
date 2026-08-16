@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 // One-off diagnostic for Batch 244: TAA resolve runs (counter advances,
 // 0 console *errors*) but the canvas goes black while TAA is on.
+// @purpose One-off diagnostic capturing all console message types + per-frame TAA stats while the canvas went black with TAA enabled.
+// @status INVESTIGATION
+//
 // Captures ALL console message types + per-frame TAA stats.
 import { chromium } from "playwright";
 

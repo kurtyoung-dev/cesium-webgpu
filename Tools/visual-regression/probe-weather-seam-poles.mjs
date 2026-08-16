@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 /**
  * Probe: C13-07 — dateline + pole weather-map seam correction (pixel gate).
+ * @purpose C13-07 pixel gate: no dateline luminance wall (frame-relative column-step test), bounded polar-cap variance, no NaN cluster; non-vacuity gate.
+ * @status ACTIVE
+ *
  * PINNED for determinism under `C13-WEATHER-PROBE-FLEET-NETWORK-GLOBE`.
  *
  * The Node contract suite (weather-map-seam.spec.mjs) proves the TEXTURE math:

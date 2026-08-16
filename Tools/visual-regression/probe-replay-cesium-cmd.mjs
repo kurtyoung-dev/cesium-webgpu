@@ -1,4 +1,7 @@
 // Replay Cesium's SkyAtmosphere command in our own controlled pass.
+// @purpose Bring-up diagnostic: replayed the SkyAtmosphere draw command in a controlled pass to split frame-loop faults from bad pipeline/buffers
+// @status INVESTIGATION
+//
 // If output appears -> Cesium's frame loop has a problem.
 // If output doesn't appear -> the pipeline/bindgroup/buffers themselves
 // are bad.

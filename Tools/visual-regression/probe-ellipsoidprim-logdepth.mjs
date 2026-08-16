@@ -2,6 +2,8 @@
 // Probe (NEW-ELLIPSOIDPRIM-LOG-DEPTH — log-depth slice for the ray-marched
 // EllipsoidPrimitive) + BUG-ELLIPSOIDPRIM-WEBGPU-INVISIBLE end-to-end pixel
 // verification.
+// @purpose Ray-marched EllipsoidPrimitive log-depth: kill-switch flips rebuild the pipeline, shell stays visible ON/OFF and at far camera, zero errors.
+// @status ACTIVE
 //
 // HISTORY:
 //   Batch 266 shipped the LOG_DEPTH shader variant + flip-rebuild guard but the

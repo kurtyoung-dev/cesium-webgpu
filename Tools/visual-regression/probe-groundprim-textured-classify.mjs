@@ -1,4 +1,6 @@
 // C7-GROUNDPRIM-TEXTURED-CLASSIFY-ZERO acceptance probe.
+// @purpose Gates textured GroundPrimitive classification (Stripe/Checkerboard/Grid/Image) on WebGPU with a GLOBE-pass readiness gate that kills the B595 race
+// @status ACTIVE
 //
 // Verifies textured GroundPrimitive classification (Stripe / Checkerboard /
 // Grid / Image materials) draped on the globe renders on WebGPU and converges

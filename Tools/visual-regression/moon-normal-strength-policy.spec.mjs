@@ -1,5 +1,7 @@
 // C12-35 L0 — behavioral contract for the backend-neutral Moon normal-map
 // strength and demand policy.
+// @purpose Behavioral contract for backend-neutral resolveMoonNormalMapStrength defaults and clamping, run against a real Moon instance under Node.
+// @status ACTIVE
 
 import assert from "node:assert/strict";
 import test from "node:test";

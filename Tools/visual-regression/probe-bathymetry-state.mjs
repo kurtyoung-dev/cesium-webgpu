@@ -1,3 +1,6 @@
+// @purpose Boots the Sandcastle Bathymetry demo on forced-WebGPU via the renderer-override shim and dumps console/page state.
+// @status ACTIVE
+
 import { chromium } from "playwright";
 
 const RENDERER_OVERRIDE_SHIM = `

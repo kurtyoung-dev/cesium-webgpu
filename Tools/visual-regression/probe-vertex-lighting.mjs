@@ -1,4 +1,6 @@
 // Probe — Batch 77 VERTEX_LIGHTING path verification.
+// @purpose Smoke-verifies the globe VERTEX_LIGHTING path with world-terrain vertex normals; lambertDiffuseMultiplier must visibly move the canvas.
+// @status ACTIVE
 //
 // Loads CesiumViewer with WebGPU, enables `globe.enableLighting = true`,
 // swaps to Cesium World Terrain with `requestVertexNormals: true`, and

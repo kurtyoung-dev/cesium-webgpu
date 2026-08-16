@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // C11-212 Scene.snap on WebGPU — browser acceptance probe (Batch 812+).
+// @purpose C11-212 Scene.snap acceptance: hit within 50 m, sky-corner miss, WebGPU lazy-identity latch, zero errors; exit 3 STRUCTURAL on preconditions.
+// @status ACTIVE
 //
 // Runs the orchestrator checklist from the C11-212 landing, per backend:
 //

@@ -1,4 +1,6 @@
 // Pure evidence model for the C13-08 rendered-tail probe.
+// @purpose Fixture and pass/fail policy for the C13-08 rendered antimeridian weather-tail probe, mutation-tested against its two target regressions.
+// @status ACTIVE
 //
 // The browser probe owns scene construction and pixel capture. This module owns
 // the fixture and pass/fail policy so mutation tests can prove the gate rejects

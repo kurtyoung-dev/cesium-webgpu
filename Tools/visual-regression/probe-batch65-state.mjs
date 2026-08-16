@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 // Batch 65 state verification. For each of 4 camera positions, dumps:
+// @purpose State dump proving mercator-vs-geographic texture bind decisions stay in lock-step with cached translation/scale at 4 views.
+// @status ACTIVE
+//
 //   1. Imagery provider name + projection
 //   2. Per-tile: useWebMercatorT, hasMerc, hasReproj, hasImage, layer index
 //   3. Texture-cache contents (keys + which are *_merc vs geographic)

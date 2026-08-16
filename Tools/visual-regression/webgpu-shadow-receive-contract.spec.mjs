@@ -1,6 +1,8 @@
 /**
  * NEW-WEBGPU-GLOBE-SUN-SHADOW-RECEIVE-DEAD — WebGPU sun-shadow cast/receive
  * contract spec.
+ * @purpose Pins the sun-shadow fix: single cast-dispatch site + same-frame wipe guard, receive matrix reproduces the cast texel, naga-validated shaders.
+ * @status ACTIVE
  *
  * Pure Node (`node --test`). The defect had two independent links, and this
  * spec pins both plus the parity corrections that ride with them:

@@ -1,5 +1,7 @@
 // sun-orbital-limb-extinction.spec.mjs — C12-29 slice S4 (orbital-sunrise
 // limb glow), VERIFICATION lane.
+// @purpose Measures that Sun.js's extinction integrator already yields the orbital-sunset reddening ramp; 16-sample rule vs 40k-sample oracle.
+// @status ACTIVE
 //
 // S4's brief said: "probe the EXISTING Sun.js extinction integrator first —
 // it may already be the reddening ramp, currently unobservable behind the

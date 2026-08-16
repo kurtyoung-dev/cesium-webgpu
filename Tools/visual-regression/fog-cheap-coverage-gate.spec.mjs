@@ -2,6 +2,8 @@
 // (WebGPUCloudDensityDomain.ts) and relies on Node's built-in type stripping,
 // which is on by default only from 22.18 onward; on 22.6-22.17 add
 // `--experimental-strip-types`.
+// @purpose Pins the fog cheap-path cloud-shadow coverage gate: samples standardised onto the baked field's moments, with mutants and byte-neutrality.
+// @status ACTIVE
 //
 // CLOUD-LOW-COVERAGE-CUTOFF — THE FOG CHEAP-PATH ARM.
 //

@@ -1,3 +1,6 @@
+// @purpose Contract over probe-moon-mip-motion-edge exports: frame analysis, verdict decision, exit codes, evidence paths, paired sensitivity checks.
+// @status ACTIVE
+
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";

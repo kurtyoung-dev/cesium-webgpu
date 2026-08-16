@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // Probe-channel-materials — Batch 139 verification.
+// @purpose Regression: all six channel/channels-uniform materials construct and render with zero device errors (MaterialHelpers inheritance + offset-order fixes)
+// @status ACTIVE
 //
 // All 6 materials that use `channels` or `channel` uniforms go through
 // the same MaterialHelpers code path that Batches 138+139 fixed.

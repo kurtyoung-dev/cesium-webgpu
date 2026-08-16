@@ -1,4 +1,6 @@
 // DP-H7 (Batch 328) — geodesic-arcType polyline subdivision probe.
+// @purpose Premise-refutation record: proved DP-H7's geodesic-subdivision root cause FALSE — PolylineCollection curves correctly on WebGPU (CPU-side)
+// @status INVESTIGATION
 //
 // CLAIM under test (DP-H7): a Polyline / PolylineCollection with
 // arcType GEODESIC straight-lines a chord through the Earth on WebGPU because

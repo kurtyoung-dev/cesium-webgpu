@@ -3,6 +3,8 @@
 // `ComputeInstanceCollection` with a `cpuKernel` must RENDER and MOVE on the
 // WebGL2 backend (which has no compute shaders), and land its dots at the same
 // screen positions as the WebGPU compute leg within tolerance.
+// @purpose WebGL2 cpuKernel fallback: matching WGSL/JS kernel pair renders, moves, and lands centroids within pixels of the WebGPU leg.
+// @status ACTIVE
 //
 // The SAME scene is built twice — once on ?renderer=webgl (the new CPU-kernel
 // fallback path) and once on ?renderer=webgpu (the GPU compute path) — with a

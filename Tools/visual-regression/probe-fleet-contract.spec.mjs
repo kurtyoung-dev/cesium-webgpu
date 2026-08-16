@@ -1,5 +1,7 @@
 // probe-fleet-contract.spec.mjs — AUTHORING-TIME enforcement of the probe
 // machine-safety contract. Pure Node: no browser, no network, no GPU.
+// @purpose Authoring-time probe safety contract: every probe must carry watchdog + try/finally close; mutant-tested detectors, shrink-only allowlist.
+// @status ACTIVE
 //
 // THE GAP THIS CLOSES. `DEFERRED_WORK.md`'s 2026-08-07 machine-safety sweep
 // found 11 of 34 recently-added probes with NO watchdog, 5 of them also closing

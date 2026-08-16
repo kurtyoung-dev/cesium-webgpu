@@ -1,3 +1,6 @@
+// @purpose Behavioral tests for Model3DTileStatePacket: immutable packet reuse when broad tileset state is unchanged, refresh on real change.
+// @status ACTIVE
+
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";

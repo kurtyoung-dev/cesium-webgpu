@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // Capture all console output from a WebGPU CesiumViewer load to see
 // whether the reprojection mipmap generation path is being hit.
+// @purpose One-off diagnostic: captures all console output during a WebGPU load to check whether the reprojection mipmap path is hit
+// @status INVESTIGATION
 
 import { chromium } from "playwright";
 

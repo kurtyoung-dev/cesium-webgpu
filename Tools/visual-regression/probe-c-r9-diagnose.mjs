@@ -1,5 +1,8 @@
 // C-R9 diagnosis with the new depth tooling. Loads the BatchTableHierarchy
 // b3dm tileset on terrain (globe shown) and captures three frames:
+// @purpose C-R9 bisect: baseline vs debugSkipDepthPlane vs windowed Turbo depth overlay to test whether the depth plane occluded the b3dm buildings.
+// @status INVESTIGATION
+//
 //   1. baseline  — normal render (building expected occluded by the globe)
 //   2. skipplane — scene.debugSkipDepthPlane=true (the bisect: if the building
 //                  reappears, the ellipsoid depth plane is the occluder)

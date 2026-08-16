@@ -4,6 +4,8 @@
 // PROFILE on both backends, as a function of angular radius in SOLAR RADII,
 // and discriminates WHY the WebGPU sun contributes nothing near the Earth
 // limb.
+// @purpose Measures the sun billboard's radial luminance profile (solar radii) per backend; discriminates the WebGPU zero-contribution near the limb.
+// @status ACTIVE
 //
 // ─────────────────────────────────────────────────────────────────────────
 // THE PHENOMENON (measured, on clean main at HEAD 764)

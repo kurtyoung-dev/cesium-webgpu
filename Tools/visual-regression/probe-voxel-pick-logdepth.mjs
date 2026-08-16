@@ -1,4 +1,6 @@
 // NEW-WEBGPU-VOXEL-PICK-LOG-DEPTH acceptance probe.
+// @purpose Acceptance: voxel pick with the log-depth gate forced ON — same cell picked, [ld] pipelines bound, occlusion proves frag_depth is written.
+// @status ACTIVE
 //
 // Verifies the voxel PICK path when the pick-fleet log-depth gate is FORCED ON
 // (context._pickLogDepthWriteEnabled = true — the switch C10-11 will flip for

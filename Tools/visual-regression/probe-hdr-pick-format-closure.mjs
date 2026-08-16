@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE acceptance probe (Campaign 9 item 73).
+ * @purpose Fleet-wide object-ID pick matrix across SDR/HDR, MSAA 1/4, runtime HDR flip and resize: every family must return its exact owner with zero errors
+ * @status ACTIVE
  *
  * Fleet-wide object-ID pick matrix on the LIVE WebGPU viewer: every offline-
  * buildable pick-producer family is exercised across SDR/HDR, MSAA 1/4, a

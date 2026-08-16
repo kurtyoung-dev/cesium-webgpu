@@ -3,6 +3,8 @@
 // extension the morph planar leg) on WebGPU, matching WebGL. The exaggeration
 // block in GlobeTerrain.wgsl was gated to SCENE3D (mode>2.5), so CV/morph terrain
 // rendered flat. Fix ungates it + exaggerates the planar-leg height.
+// @purpose Columbus-view / morph vertical exaggeration ungated in GlobeTerrain.wgsl: WebGPU CV relief must match WebGL instead of rendering flat.
+// @status ACTIVE
 //
 // Test: high verticalExaggeration over a mountainous oblique CV view; WebGPU CV
 // relief should match WebGL CV relief (WebGL is the reference). Captures the

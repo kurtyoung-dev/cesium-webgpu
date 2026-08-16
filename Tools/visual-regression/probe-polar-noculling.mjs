@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // Test whether disabling backface culling fixes the polar black hole.
+// @purpose Diagnostic: tested whether disabling backface culling fixes the polar black hole
+// @status INVESTIGATION
 
 import { chromium } from "playwright";
 import fs from "fs";

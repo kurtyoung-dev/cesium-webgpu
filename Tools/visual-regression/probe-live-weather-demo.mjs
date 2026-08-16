@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 /**
  * WebGPU Live Weather (EDR) gallery demo — wiring + graceful-fallback probe.
+ * @purpose Verifies the live-EDR weather demo plumbing to the network boundary: provider wired through /proxy, graceful fallback + status panel on fetch failure
+ * @status ACTIVE
+ *
  * WebGPU-only.
  *
  * Verifies the live-EDR PLUMBING end-to-end up to the network boundary: the demo

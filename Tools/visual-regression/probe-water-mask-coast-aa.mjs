@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // ACCEPTANCE / REGRESSION probe for NS-WATER-MASK-COAST-AA.
+// @purpose Before/after acceptance for the anti-aliased water-mask coastline band on both backends: coast Laplacian energy + changed-pixel locality.
+// @status ACTIVE
 //
 // BUG 2 (both backends): the water-mask-driven ocean effect draws a
 // PIXELATED / blocky water/land boundary at the coast. The low-resolution

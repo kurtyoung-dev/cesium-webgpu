@@ -1,5 +1,7 @@
 /**
  * GLTF-POINTS-MODE acceptance probe.
+ * @purpose Gates glTF mode-0 POINTS rendering: point-list topology threaded through the WebGPU model pipeline; coverage/color/centroid parity vs WebGL
+ * @status ACTIVE
  *
  * A glTF whose primitive has `mode: 0` (POINTS) must render on BOTH backends.
  * WebGL consumes `primitive.primitiveType` via `PrimitiveRenderResources` →

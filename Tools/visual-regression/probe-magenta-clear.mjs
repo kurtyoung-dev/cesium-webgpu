@@ -1,4 +1,7 @@
 // Override Scene FB clear color to bright magenta. Run, then readback FB.
+// @purpose Diagnostic: forces the scene-FB clear to magenta to classify black-canvas causes (no-op draws vs black writes vs broken downstream blit).
+// @status ACTIVE
+//
 // If FB stays magenta -> draws are no-ops (writeMask=0, depth fail, etc).
 // If FB has black/dark patches -> draws write (0,0,0) to color.
 // If FB has globe colors -> rendering actually works at GPU level, but

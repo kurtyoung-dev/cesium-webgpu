@@ -2,6 +2,8 @@
 /**
  * Probe: polyline appearance/material LOG-DEPTH correctness vs the globe
  * (C2-13 / 376c, NEW-POLYLINE-APPEARANCE-PRIMITIVE-WEBGPU).
+ * @purpose Gate: appearance/material polylines write log frag_depth matching the globe so surface polylines rest on it at far cameras (no z-fight)
+ * @status ACTIVE
  *
  * WHAT 376c FIXES: the WebGPU polyline appearance + material pipelines wrote
  * HYPERBOLIC @builtin(frag_depth) while the WebGPU globe writes LOGARITHMIC

@@ -7,6 +7,8 @@
 // 24-bit quantization steps (Batch 229 measurement) — an unresolvable
 // tie against the globe, and markers depth-vanish on some tiles. Every
 // collection probe before this one was capped to <= 11 km cameras.
+// @purpose Far-camera log-depth gate: markers 1000 m above the globe at 220 km must render with log depth ON; kill-switch leg exercised.
+// @status ACTIVE
 //
 // With renderer-wide log depth (master switch `_logDepthWriteEnabled`
 // defaults TRUE since Batch 251), depth resolves at sub-meter precision

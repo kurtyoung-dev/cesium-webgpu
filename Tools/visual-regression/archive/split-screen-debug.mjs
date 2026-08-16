@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// @purpose Quick diagnostic: opens the split-screen page, clicks Launch, logs all console/page errors while both viewers render.
+// @status INVESTIGATION
+
 import { chromium } from "playwright";
 
 (async () => {

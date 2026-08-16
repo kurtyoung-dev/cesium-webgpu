@@ -1,4 +1,7 @@
 // Probe Bloom.html with skyAtmosphere disabled.
+// @purpose Bloom.html forensics variant: skyAtmosphere disabled to isolate the sky's contribution to the bloom-frame anomaly.
+// @status INVESTIGATION
+//
 import { chromium } from "playwright";
 import fs from "fs";
 

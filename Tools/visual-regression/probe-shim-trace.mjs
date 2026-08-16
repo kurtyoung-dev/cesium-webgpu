@@ -1,3 +1,6 @@
+// @purpose Extracts RENDERER_OVERRIDE_SHIM out of cross-backend-sandcastle-runner.mjs by regex and traces its capture state on a legacy gallery demo.
+// @status INVESTIGATION
+
 import { chromium } from "playwright";
 import { readFileSync } from "node:fs";
 import path from "node:path";

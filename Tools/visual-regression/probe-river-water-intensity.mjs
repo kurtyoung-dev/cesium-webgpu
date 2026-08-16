@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 // ACCEPTANCE / REGRESSION probe for PARITY-GLOBE-RIVER-WATER-INTENSITY (Q11).
+// @purpose Acceptance/regression: inland river/lake water luminance on WebGPU within ~10% of WebGL via a water-selective blue-pixel metric, day view
+// @status ACTIVE
+//
 // Inland rivers/lakes (St. Lawrence is the visual reference) render bright
 // blue on WebGL but subdued/darker on WebGPU. This probe pins a DAYTIME sun
 // over the St. Lawrence estuary and captures WebGL vs WebGPU, reporting both

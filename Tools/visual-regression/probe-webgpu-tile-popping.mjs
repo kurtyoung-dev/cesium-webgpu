@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // NS-WEBGPU-TILE-POPPING-SKIRTS acceptance probe.
+// @purpose Acceptance for the stale tile-buffer-cache fix: counts intra-frame black wedges during a cold LOD zoom; WebGPU must not exceed WebGL.
+// @status ACTIVE
 //
 // Bug: at certain zoom/LOD levels the WebGPU globe transiently showed thin
 // BLACK triangular/skirt/wedge slivers on terrain during cold LOD refine that

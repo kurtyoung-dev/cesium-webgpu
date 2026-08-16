@@ -2,6 +2,8 @@
 // Probe-phong-render — diagnostic: does a lit Phong primitive render at all
 // on WebGPU? No clustered lighting involved — pure "is the phong /
 // PerInstanceColorAppearance scene-FB path working" check.
+// @purpose Bring-up diagnostic: does a lit Phong box render at all on WebGPU (brightness + device errors + scene-FB MRT state dump)
+// @status INVESTIGATION
 //
 // Adds ONE PerInstanceColorAppearance box (flat:false → the `phong`
 // shader: normals, no st), frames it, renders, and reports mean brightness

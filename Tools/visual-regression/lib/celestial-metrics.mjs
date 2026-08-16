@@ -1,4 +1,6 @@
 // celestial-metrics.mjs — Campaign 12 celestial gate metric library (C12-01).
+// @purpose C12-01 metric library over RGBA buffers: M1 census, M2/M2e contrast + sky floor, M3 chroma, M4 falloff, M5 magnitude fidelity; 8-bit + HDR.
+// @status ACTIVE
 //
 // Pure functions over RGBA pixel buffers. NO browser, NO Playwright, NO engine
 // imports — every function here is Node-testable in isolation, which is what

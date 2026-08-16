@@ -1,4 +1,6 @@
 // C11-146 / S8-7 — settle-window attribution rule + first-complete-frame metric.
+// @purpose First-complete-frame metric plus the rule that stable-time credit requires a main-thread long-task reduction (GPU-bound settles book none).
+// @status ACTIVE
 //
 // WHY THIS EXISTS
 // ---------------

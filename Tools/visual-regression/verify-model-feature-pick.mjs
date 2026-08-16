@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * Verifies C-R9-MODEL-FEATURE-PICK end-to-end on WebGPU.
+ * @purpose End-to-end per-feature pick on WebGPU: loads a batch-table tileset, picks at center, asserts the result carries a featureId not just the Model.
+ * @status ACTIVE
  *
  * Loads a Cesium tilset that ships per-feature batch-table data (the
  * standard sample tileset), zooms in, performs a pick at canvas center,

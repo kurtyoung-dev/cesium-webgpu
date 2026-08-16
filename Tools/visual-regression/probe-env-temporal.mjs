@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // C2-25 ENV-TEMPORAL (Batch 449) — temporal env-cube accumulation probe.
+// @purpose Opt-in envMapTemporalAccumulation: OFF allocates nothing and stays byte-identical; ON converges to the OFF look and resets on sun jumps.
+// @status ACTIVE
 //
 // Verifies the opt-in `contextOptions.webgpu.envMapTemporalAccumulation` path:
 //

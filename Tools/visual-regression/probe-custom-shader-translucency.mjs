@@ -1,5 +1,7 @@
 /**
  * PARITY-CUSTOM-SHADER-WGSL (translucencyMode slice) verification.
+ * @purpose translucencyMode acceptance: TRANSLUCENT forces an opaque-authored model into the blend pass; INHERIT stays opaque.
+ * @status ACTIVE
  *
  * WebGL's CustomShaderPipelineStage lets a CustomShader override the primitive's
  * render pass via `translucencyMode`: TRANSLUCENT forces the model into the

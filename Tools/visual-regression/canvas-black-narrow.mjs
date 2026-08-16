@@ -2,6 +2,8 @@
 /**
  * Canvas-black-screen narrow-down probe. Tests three render paths and
  * reports which (if any) produce non-black canvas pixels:
+ * @purpose Narrows the black-canvas bug by rendering three paths (default PP chain, depth overlay, frustum tint) and reporting which yields non-black pixels.
+ * @status INVESTIGATION
  *
  *   1. Default WebGPU render path (multi-stage post-process chain).
  *   2. `debugShowDepthAsColor` — bypasses the chain with a single

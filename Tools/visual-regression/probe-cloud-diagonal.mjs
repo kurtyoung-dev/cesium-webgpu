@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * Cloud-coverage DIAGONAL probe. WebGPU-only.
+ * @purpose Regression for the fullscreen-triangle fix: an overcast deck must fill the top-right quadrant (old triangle rasterized only half the screen)
+ * @status ACTIVE
  *
  * The procedural-cloud fullscreen pass used a NON-oversized triangle (verts at
  * three NDC corners), so it rasterized only the lower-left half of the screen

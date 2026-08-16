@@ -1,4 +1,6 @@
 // C11-193 — bounded environment-refresh drain + persistent target pool.
+// @purpose Pins the C11-193 environment-refresh scheduler's no-starvation latency bound and the persistent target pool against a duck-typed fake GPU device.
+// @status ACTIVE
 //
 // Both units are GPU-free logic living in TypeScript modules that are only
 // bundled into the combined engine barrel, so this spec transpiles each source

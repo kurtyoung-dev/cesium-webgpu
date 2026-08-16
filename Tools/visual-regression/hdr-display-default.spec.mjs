@@ -1,5 +1,8 @@
 // hdr-display-default.spec.mjs — browser-free trust anchor for C12-28
 // (NEW-HDR-DEFAULT-ON-HDR-CAPABLE-DISPLAYS). Run with:
+// @purpose Acceptance for HDR-defaults-on on HDR displays: pins the pure decision function because headless Edge cannot synthesize (dynamic-range: high).
+// @status ACTIVE
+//
 //   node --test Tools/visual-regression/hdr-display-default.spec.mjs
 //
 // ── WHY THIS SPEC IS THE ACCEPTANCE, NOT A PROBE ────────────────────────────

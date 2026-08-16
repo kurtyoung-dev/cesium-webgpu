@@ -1,5 +1,7 @@
 // probe-fleet-contract.mjs — the machine-checkable half of the probe authoring
 // contract.
+// @purpose Source-text analyzer enforcing the probe authoring contract (watchdog + finally-close); fails closed when it cannot parse a construct.
+// @status ACTIVE
 //
 // WHY THIS EXISTS. The 2026-08-07 machine-safety sweep found that 11 of the 34
 // probes added in `47a940eed9..a6d4b1763a` shipped with NO watchdog, 5 of them
@@ -29,6 +31,11 @@
 // exact failure this repo has paid for repeatedly, which is why
 // `probe-fleet-contract.spec.mjs` runs the analyzer against synthetic mutants
 // before it runs it against the fleet.
+
+import {
+  parsePurposeHeader,
+  purposeHeaderViolations,
+} from "../../lib/purpose-header.mjs";
 
 /** Characters after which a `/` opens a regex literal rather than dividing. */
 const REGEX_MAY_FOLLOW = /[=(,:[!&|?{};+\-*%~^<>]$/;
@@ -987,6 +994,72 @@ export function analyzeGateLibrarySource(source) {
     declaresStatusExitMapping,
     structuralRoutedToTwo: structural,
     verdictExitBindingViolations: unbound,
+    violations,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// The `@purpose` self-registration rule (maintainer ruling M4).
+//
+// The .mjs library audit found 380 of 642 probes documented nowhere and four
+// documented probes that no longer existed. Ruling M2 replaced the
+// hand-maintained index with self-registration — each file declares its own
+// one-line purpose and lifecycle status in its header, and the catalog is
+// generated from those headers — and ruling M4 made carrying one a contract
+// rule for the two file classes that accreted: `probe-*.mjs` and the
+// `lib/*-gate.mjs` gate libraries. An unenforced naming convention is exactly
+// what the fleet already had.
+//
+// The grammar itself lives in `Tools/lib/purpose-header.mjs` because three
+// consumers read it (this analyzer, the header codemod, the catalog generator)
+// and three private parsers is three grammars. The rule is DRIVEN by
+// `purpose-header-contract.spec.mjs`, deliberately a separate file from
+// `probe-fleet-contract.spec.mjs`: the machine-safety spec is owned by an
+// in-flight lane, and a second lane editing it would collide over a file whose
+// entire value is being trustworthy.
+// ---------------------------------------------------------------------------
+
+/**
+ * Whether ruling M4 requires a `@purpose` header of this file.
+ *
+ * `.spec.mjs` files are excluded from the probe half for the same reason the
+ * machine-safety fleet excludes them — `probe-fleet-contract.spec.mjs` is
+ * itself named `probe-*`, and a naive glob puts the guard inside its own fleet.
+ *
+ * @param {string} relPath Repo-relative, slash-separated path.
+ * @returns {boolean} True when the file must carry a header.
+ */
+export function requiresPurposeHeader(relPath) {
+  const normalized = String(relPath ?? "")
+    .split("\\")
+    .join("/");
+  if (/^Tools\/visual-regression\/lib\/[^/]+-gate\.mjs$/.test(normalized)) {
+    return true;
+  }
+  return (
+    /^Tools\/visual-regression\/probe-[^/]+\.mjs$/.test(normalized) &&
+    !normalized.endsWith(".spec.mjs")
+  );
+}
+
+/**
+ * Read a file's self-registration header.
+ *
+ * Fails CLOSED like every other predicate in this module: a header spelled in a
+ * way the grammar cannot read is reported as ABSENT, so the file lands on the
+ * visible allowlist rather than passing silently.
+ *
+ * @param {string} source Probe or gate-library source text.
+ * @returns {{purpose: string|null, status: string|null, hasHeader: boolean, violations: string[]}}
+ *   Analysis.
+ */
+export function analyzePurposeHeaderSource(source) {
+  const parsed = parsePurposeHeader(source);
+  const violations = purposeHeaderViolations(source);
+  return {
+    purpose: parsed.purpose,
+    status: parsed.status,
+    hasHeader: violations.length === 0,
     violations,
   };
 }

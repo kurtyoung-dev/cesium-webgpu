@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// @purpose Diagnostic dump of imagery-layer/tile state (layers, skeletons, provider readiness) on the WebGPU viewer after a settle loop
+// @status ACTIVE
+
 import { chromium } from "playwright";
 
 const BASE = "http://localhost:8080";

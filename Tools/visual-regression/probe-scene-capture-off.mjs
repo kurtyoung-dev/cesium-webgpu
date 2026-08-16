@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // C2-25 ENV-SCENE-CAPTURE (Batch 446) — OFF-parity probe (run FIRST).
+// @purpose OFF-parity gate for env scene capture: both default-false flags mean no capture sources, no extra GPU pass, canvas unchanged vs WebGL baseline.
+// @status ACTIVE
 //
 // Asserts the default-OFF byte-identity contract: with BOTH the context flag
 // (`contextOptions.webgpu.sceneCaptureReflections`) and the manager flag

@@ -1,3 +1,6 @@
+// @purpose Tried to sample imagery texture formats via a ctx._globeImageryCache field on a Sandcastle Hello World boot
+// @status INVESTIGATION
+
 import { chromium } from "playwright";
 
 const SHIM = `(function() {

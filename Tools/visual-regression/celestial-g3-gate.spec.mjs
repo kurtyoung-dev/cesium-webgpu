@@ -1,5 +1,7 @@
 // celestial-g3-gate.spec.mjs — browser-free guard for the Campaign-12 G3 lane
 // (`probe-celestial-gates.mjs --g3`).
+// @purpose Guards the G3 Milky-Way cubemap gate: arcmin/px definition pinning, orthogonal structure metrics, T3 adversarial rejection, real-byte format arm.
+// @status ACTIVE
 //
 // G3 is a gate, so a spec that only ran the correct implementation would be
 // worth nothing: the wrong implementation of every rule below also "passes", it

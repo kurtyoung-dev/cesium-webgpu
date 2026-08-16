@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * Batch 409 cloud depth-occlusion — A/B capture. WebGPU-only.
+ * @purpose B409 A/B (stash pair) showing the cloud raymarch clamps at scene depth so far-side clouds no longer bleed through the globe disc
+ * @status INVESTIGATION
  *
  * Without depth occlusion the cloud raymarch ignores the scene depth buffer, so
  * the global cloud shell renders THROUGH the globe — far-side clouds (behind the

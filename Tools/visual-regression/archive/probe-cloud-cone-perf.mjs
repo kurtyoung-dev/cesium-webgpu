@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * Batch 436 (3.6 CLOUD-CONE-LIGHT) — COST probe (GPU-synced A/B).
+ * @purpose B436 GPU-synced cost A/B of straight vs cone light march via the TEMP window.__FORCE_CONE override
+ * @status INVESTIGATION
  *
  * Times the cinematic cloud frame with the light march in STRAIGHT vs CONE mode
  * (flipping only window.__FORCE_CONE). Everything else identical, high coverage so

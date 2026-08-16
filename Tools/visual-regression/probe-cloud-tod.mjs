@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * W3 — Time-of-day cloud sun color. WebGPU-only.
+ * @purpose Time-of-day cloud sun-color acceptance: dawn/dusk decks warm (R/B >= 1.15), noon neutral, via manual scene.render(jd) sun control.
+ * @status ACTIVE
  *
  * The direct-sun term is tinted by a CPU-computed sun color keyed on the LOCAL
  * sun elevation: warm orange near the horizon (dawn/dusk), neutral white at

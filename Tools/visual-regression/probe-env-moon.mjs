@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // ENV-MOON-SLIVER acceptance probe — WebGL vs WebGPU moon parity.
+// @purpose Moon parity: full-disc position/texture-variance/bbox/diff gates for the model-space RTE fix, plus a crescent-phase terminator lane.
+// @status ACTIVE
 //
 // Repro context (user report 2026-07-02): in the default WebGPU scene the
 // moon rendered as a white sliver at the wrong screen position instead of a

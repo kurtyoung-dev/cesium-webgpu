@@ -3,6 +3,9 @@
 // high/low RTE encode of a large BufferPointCollection through the WASM batch
 // kernel produces the SAME on-screen result as the per-primitive scalar
 // EncodedCartesian3 path, on BOTH backends (webgpu + webgl). Also checks that:
+// @purpose Parity acceptance that the WASM/batch fround RTE encode renders pixel-identical to scalar EncodedCartesian3, plus threshold routing checks.
+// @status ACTIVE
+//
 //   - a >= threshold collection actually takes the WASM/batch path AND the WASM
 //     kernel genuinely executes (lastWasmUsed) once the module resolves,
 //   - a sub-threshold collection stays on the scalar path (counter),

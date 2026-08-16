@@ -1,3 +1,6 @@
+// @purpose Shared orbit-to-ground camera route (plain serializable waypoints) used by both the visual parity probe and the performance campaign.
+// @status ACTIVE
+
 export const GLOBE_CAMERA_TRACK_ID = "orbit-to-ground-global-v1";
 
 export const GLOBE_CAMERA_TRACK_DURATION_SECONDS = 20;

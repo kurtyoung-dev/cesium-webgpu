@@ -6,6 +6,8 @@
 // inert — the setIntensity/setInscatterScale setters existed but the configure
 // pass never re-pushed them per frame (unlike ColdOptics / HeatShimmer). The fix
 // re-reads the config object every frame in updateAerialPerspectiveFrameData.
+// @purpose Proves aerialPerspectiveConfig intensity/inscatterScale are runtime-mutable per frame on the WebGPU aerial-perspective effect, with OFF-gate.
+// @status ACTIVE
 //
 // Method (WebGPU only — this effect has no WebGL counterpart):
 //   1. Enable aerialPerspective with a LOW intensity config, warm up, capture

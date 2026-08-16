@@ -3,6 +3,8 @@
 // (i.e., parent-imagery substitution during tile loading) or a
 // steady-state bug. Capture at three settle budgets: 120 frames,
 // 600 frames, 2400 frames.
+// @purpose Diagnostic: captured the polar-stretch artifact at 120/600/2400-frame settle budgets to test settle-dependence vs steady-state
+// @status INVESTIGATION
 
 import { chromium } from "playwright";
 import fs from "fs";

@@ -2,6 +2,8 @@
 /**
  * Probe: REPRODUCE + CHARACTERIZE the WebGPU globe-surface DISTORTION + MESH TEAR
  * that appears at FAR camera distances (whole-globe / zoomed-out views).
+ * @purpose Reproduces far-camera globe distortion + mesh tear: height/pitch/atmosphere sweep with disc-silhouette ratio and concave-bite tear detection.
+ * @status INVESTIGATION
  *
  * OWNER REPORT (from screenshots): at whole-globe and zoomed-out views the
  * WebGPU globe is geometrically DISTORTED — continents squished/warped, visible

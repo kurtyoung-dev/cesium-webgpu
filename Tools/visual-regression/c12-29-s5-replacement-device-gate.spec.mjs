@@ -1,3 +1,6 @@
+// @purpose Certifies the S5 eclipse-shadow replacement-device evidence pipeline: schemas, phases, ledger/provenance validators, gate fold of its probe+lib pair.
+// @status ACTIVE
+
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";

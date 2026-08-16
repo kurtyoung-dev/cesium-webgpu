@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // probe-request-render-asymmetry.mjs — IS WEBGPU FAILING TO IDLE?
+// @purpose Hypothesis probe: does WebGPU's pendingForegroundCount fail to drain under requestRenderMode (fake FPS deficit); plus honest rrm=false lane
+// @status INVESTIGATION
 //
 // Hypothesis under test (2026-07-19), from Scene.js:4102-4113:
 //

@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // Probe (PARITY-F16-POSTPROCESS): f16 post-process shader variants.
+// @purpose Gate: f16 post-process variants — ON compiles f16 modules per effect with f32-close output; OFF compiles zero f16 modules (off-gate)
+// @status ACTIVE
 //
 // Two WebGPU passes on the standard CesiumViewer page:
 //   OFF — default (`context.useShaderF16` stays false). Asserts the

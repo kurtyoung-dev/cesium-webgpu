@@ -1,3 +1,6 @@
+// @purpose Gate spec for C12-29 S4 orbital-sunrise certification: band/anchor constants, independent extinction oracle, artifact shape, probe route wiring.
+// @status ACTIVE
+
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";

@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // Batch 117 helper — rewraps `return <expr>;` to `return makeFragOutput(<expr>, normalEC);`
 // inside the body of GlobeTerrain.wgsl's fragmentMain.
+// @purpose One-shot codemod rewrapping every fragmentMain return in GlobeTerrain.wgsl to makeFragOutput(...) for the G-buffer MRT conversion.
+// @status INVESTIGATION
 //
 // Why a helper instead of hand-editing 36 returns: the rewrap is fully
 // uniform (every return inside the function takes the same transform),

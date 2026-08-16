@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * W4 — Aerial-perspective blend on distant clouds. WebGPU-only.
+ * @purpose W4 aerial-perspective gate: blend coefficient must grade with distance (far >> near) via the runtime strength toggle; single-run PASS bars
+ * @status ACTIVE
  *
  * Distant clouds tint toward a time-of-day horizon-haze color (`aerialColor`) by
  * view distance, so they fade into the horizon instead of popping. The shader

@@ -3,6 +3,8 @@
 // tiles are rasterizing (just with wrong imagery), they show RED in the
 // center where the black hole was. If they're NOT rasterizing at all,
 // the black hole stays.
+// @purpose Diagnostic: force-red globe FS at south-pole-close to distinguish 'tiles not rasterizing' from 'rasterizing with wrong imagery'
+// @status INVESTIGATION
 
 import { chromium } from "playwright";
 import path from "path";

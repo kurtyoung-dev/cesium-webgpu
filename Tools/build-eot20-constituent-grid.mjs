@@ -2,6 +2,8 @@
 // build-eot20-constituent-grid.mjs — offline bake of the EOT20 ocean-tide
 // constituent atlas into the "TCG1" grid read by
 // `packages/engine/Source/Core/TideConstituentGrid.js`.
+// @purpose Offline bake of the EOT20 ocean-tide constituent atlas into the TCG1 grid read by Core/TideConstituentGrid.js (CC BY 4.0, attribution mandated).
+// @status ACTIVE
 //
 // Maintainer ruling T5 (migration_doc/TIDES_FEASIBILITY_2026-07-24.md §5a):
 // "support BOTH EOT20 (bundled bake, CC BY 4.0) and NOAA CO-OPS (runtime,

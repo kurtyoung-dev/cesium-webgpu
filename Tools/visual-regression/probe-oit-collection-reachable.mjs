@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * Probe: OIT-COLLECTION-REACHABLE (C11-157 Slice B).
+ * @purpose C11-157 Slice B: MRT-OIT accumulation reachable for translucent billboard/point/polyline collections under the runtime-flipped FAR-003 gate.
+ * @status ACTIVE
  *
  * Proves the WebGPU MRT-OIT accumulation path is now REACHABLE for standard
  * translucent COLLECTIONS (billboard / point / polyline). Slice A did the

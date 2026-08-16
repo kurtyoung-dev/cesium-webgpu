@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * Visual end-to-end verification of b3dm Model rendering on WebGPU.
+ * @purpose WebGL-vs-WebGPU screenshot smoke that the canonical BatchedWithBatchTable b3dm tileset renders; closed the bind-group consolidation loop.
+ * @status ACTIVE
  *
  * Loads BatchedWithBatchTable.json (the canonical b3dm fixture) on both
  * WebGL and WebGPU, captures screenshots, and reports any visible

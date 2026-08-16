@@ -1,5 +1,7 @@
 // mat-logdepth-encode-stash.spec.mjs — browser-free durable guard for
 // NEW-WEBGPU-MAT-LOGDEPTH-MULTI-PRIMITIVE-DEPTH-LOSS.
+// @purpose Executes the real writeLogDepthTail packer to pin stash-first log-depth encoding for the Mat/Primitive family; replays the 2-primitive defect.
+// @status ACTIVE
 //
 // WHY THIS EXISTS
 // ---------------

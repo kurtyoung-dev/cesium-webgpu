@@ -1,4 +1,7 @@
 // C12-33 — pins the WebGPU Moon's frame-owned mip-chain realization.
+// @purpose Pins the WebGPU Moon's frame-owned mip-chain realization across context, stub init, environment renderer and lifecycle sources.
+// @status ACTIVE
+//
 // Run: node --test Tools/visual-regression/moon-webgpu-mip-lifecycle.spec.mjs
 
 import assert from "node:assert/strict";

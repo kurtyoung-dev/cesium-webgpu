@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// @purpose Forces globeFragmentDebug('force-red') on both backends at a 12 Mm view and measures red pixel coverage to prove globe FS rasterization reaches output
+// @status INVESTIGATION
+
 import { chromium } from "playwright";
 import fs from "fs";
 import path from "path";

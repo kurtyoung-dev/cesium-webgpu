@@ -1,4 +1,6 @@
 // moon-mip-lod-shader.spec.mjs — C12-33 Moon derivative/LOD contract.
+// @purpose Structural WGSL contract for Moon derivative/LOD sampling: exactly one ellipsoid hit shaded, explicit gradients, no duplicated color evaluation.
+// @status ACTIVE
 //
 // Run:
 //   node --test Tools/visual-regression/moon-mip-lod-shader.spec.mjs

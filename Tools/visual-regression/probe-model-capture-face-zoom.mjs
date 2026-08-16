@@ -3,6 +3,8 @@
 // model landed on (face 1, -X West), so the captured RED model is visible by eye
 // (the tiled 32x32 thumbnails downsample it away). Confirms occlusion: the model
 // sits OVER the terrain, terrain OVER the sky.
+// @purpose One-off full-res readback of one env-cube face so the captured model is visible by eye; occlusion eyeball check.
+// @status INVESTIGATION
 
 import { chromium } from "playwright";
 import fs from "fs";

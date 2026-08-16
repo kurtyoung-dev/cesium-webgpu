@@ -1,5 +1,7 @@
 /**
  * Independent WebGPU allocation/upload probe.
+ * @purpose Instruments raw browser WebGPU/WebGL API boundaries to detect a hidden WebGL context in explicit-WebGPU scenes and classify compat allocations.
+ * @status ACTIVE
  *
  * This deliberately instruments only browser WebGPU API boundaries. It does not
  * reach into Cesium private resource maps, so it can detect whether an explicit

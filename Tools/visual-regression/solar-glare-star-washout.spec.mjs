@@ -1,6 +1,8 @@
 // solar-glare-star-washout.spec.mjs — C12-27
 // (`NEW-ANGULAR-SOLAR-GLARE-STAR-WASHOUT`), plus the C12-14 samplable star
 // texture and the C12-13 LICENSE.md residual that ride the same batch.
+// @purpose C12-27: extracts solarGlareVeil from five shader texts, compiles each, requires 1e-15 agreement with the JS reference; rejects 7 wrong curves.
+// @status ACTIVE
 //
 // WHAT THIS SPEC IS FOR. C12-27 is a pure-arithmetic change replicated across
 // FIVE shader texts (two WGSL files, one JS-embedded production WGSL copy, and

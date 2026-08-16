@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * Confirm the Weather Inspector's grey-sky caveat is a standalone-shim artifact.
+ * @purpose Confirms the Weather Inspector grey-sky caveat was a standalone-shim artifact by replaying its config in the CesiumViewer boot.
+ * @status INVESTIGATION
  *
  * The standalone probe (probe-weather-inspector.mjs) renders the demo via a
  * hand-rolled boot where the WebGPU sky-atmosphere LUT doesn't initialize → grey

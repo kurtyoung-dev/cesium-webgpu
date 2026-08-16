@@ -1,5 +1,7 @@
 // stbn-rng.mjs — deterministic, license-clean pseudo-random stream for the
 // STBN bake (C13-11, ruling R-2026-08-10-5).
+// @purpose Deterministic license-clean random stream for the STBN bake: AES-256-CTR over zeros keyed by SHA-256(seed), byte-identical across machines.
+// @status ACTIVE
 //
 // PROVENANCE DISCIPLINE. No PRNG implementation was copied from anywhere.
 // The C16 audit flagged a verbatim `mulberry32` elsewhere in this repository;

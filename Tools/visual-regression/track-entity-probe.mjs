@@ -3,6 +3,8 @@
  * Probe `viewer.trackedEntity` behavior on WebGPU vs WebGL using the
  * cross-backend runner's exact patching strategy + HTML rewrite for
  * WebGPU (sync `new Viewer` -> `await Viewer.createAsync`).
+ * @purpose Playwright diagnostic for viewer.trackedEntity on WebGL vs WebGPU via the Sandcastle renderer shim; reports camera/model state over time.
+ * @status ACTIVE
  *
  * Reports model load state, camera position, and trackedEntity state
  * at multiple time points to diagnose why the camera doesn't fly.

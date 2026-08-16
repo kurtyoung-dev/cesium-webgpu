@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 // Probe-cesium-man-debug — Batch 141 deep dive on CesiumMan error.
+// @purpose Batch 141 deep-dive capturing CesiumMan device-error context and timing (startup-only vs per-frame clustering)
+// @status INVESTIGATION
+//
 // Capture full error context and check whether the errors are
 // startup-only or per-frame.
 

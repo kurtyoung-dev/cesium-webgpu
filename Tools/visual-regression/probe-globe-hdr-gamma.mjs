@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // Probe (GLOBE-HDR-GAMMA): globe czm_gammaCorrect under the B479 HDR
 // canvas-output path.
+// @purpose Gates the globe sRGB-to-linear decode under the HDR canvas-output path via known-gray imagery: SDR byte-identical off-gate, HDR single-decode means
+// @status ACTIVE
 //
 // WebGL's czm_gammaCorrect (gammaCorrect.glsl) decodes sRGB → linear under
 // `#ifdef HDR` and no-ops otherwise. The WGSL globe port was a hard no-op

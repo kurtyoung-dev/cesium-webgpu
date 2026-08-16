@@ -1,5 +1,7 @@
 /**
  * MODEL-SCENE-MODES acceptance probe.
+ * @purpose Acceptance: mode-aware model matrix + bounding volume in SCENE2D/COLUMBUS_VIEW matches the WebGL footprint; SCENE3D off-gate parity.
+ * @status ACTIVE
  *
  * WebGL renders glTF models in SCENE2D / COLUMBUS_VIEW by swapping the draw
  * command's model matrix to the scene graph's projected-frame

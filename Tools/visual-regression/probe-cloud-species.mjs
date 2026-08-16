@@ -2,6 +2,8 @@
 /**
  * Batch 610 (E1 CLOUD-EXOTIC-SPECIES) — species/varieties as bounded density
  * SHAPING on the baked-density-field procedural-cloud arch. WebGPU-only.
+ * @purpose E1 acceptance: lenticularis/fibratus/uncinus density shaping changes the deck as specified; species-unset path byte-identical.
+ * @status ACTIVE
  *
  * globe.defaultCloudCollection.volumetric.cloudSpecies ("lenticularis" | "fibratus" | "uncinus") (or numeric
  * globe.defaultCloudCollection.volumetric.cloudSpeciesMode 1/2) shapes the deck: mode 1 carves smooth wind-aligned

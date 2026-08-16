@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // C4-TAKRAM8-GEOMETRY-LENS-GLARE (premise-stale regression probe).
+// @purpose Locks in the WebGPU sun lens-flare bake (disc + glow + six bursts) present and its halo extent converging with WebGL's SunTextureFS bake.
+// @status ACTIVE
 //
 // The caustic/refraction lens-glare around the WebGPU sun disc already ships:
 // createSunTexture() in WebGPUEnvironmentRenderer.js bakes the disc + soft glow

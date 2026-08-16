@@ -6,6 +6,8 @@
 // WebGPU side by side. If the alpha=1.0 fix accidentally crushed
 // overlay transparency, the WebGPU output will be a solid colored
 // box per tile instead of just the labels.
+// @purpose Regression check that the reprojection alpha=1.0 fix didn't crush transparent imagery overlays: tile-coordinate labels over Bing on both backends
+// @status ACTIVE
 //
 // Pass criteria (manual inspection):
 //   - WebGL: Bing aerial visible with X/Y/Level labels overlaid

@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 // Probe (batch-bufferpoint-positionnormalized-probe — §5 P2 slice):
+// @purpose Gap-documentation gate: detectUnsupportedPositionEncoding flags integer/normalized BufferPoint layouts and warns once instead of mis-encoding.
+// @status INVESTIGATION
+//
 // documents the integer / positionNormalized position-encoding GAP for
 // BufferPointCollection. The full snorm/unorm non-RTE pipeline + vertex-layout
 // variant spans all three renderers + three WGSL shaders and is OUT of this

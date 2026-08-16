@@ -1,3 +1,6 @@
+// @purpose Dumps framebuffer/context configuration state from a forced-WebGPU Hello World load via the legacy Sandcastle shim.
+// @status INVESTIGATION
+
 import { chromium } from "playwright";
 const SHIM = `(function(){
   const FORCED_RENDERER="webgpu"; window.__capturedViewer=null;

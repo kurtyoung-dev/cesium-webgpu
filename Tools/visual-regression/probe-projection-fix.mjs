@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // Batch 46 probe: verify imagery renders correctly at orbit altitude
 // after the useWebMercatorT / textureTranslationAndScale reprojection fix.
+// @purpose Verify capture for the useWebMercatorT/textureTranslationAndScale reprojection fix: 7 orbit-altitude views, WebGL vs WebGPU
+// @status ACTIVE
 //
 // Captures WebGPU + WebGL screenshots at the same camera position at
 // ~12 Mm altitude over North America — the view where the user

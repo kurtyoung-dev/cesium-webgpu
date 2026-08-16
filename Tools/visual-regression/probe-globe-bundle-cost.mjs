@@ -5,6 +5,8 @@
 // frame CPU time (scene.render wall-clock) over a settled window. This
 // tells us whether the per-frame bundle is paying its build cost — the
 // decision input for NEW-GLOBE-RENDERBUNDLE-CACHE (cache vs drop).
+// @purpose TEMP A/B measurement of the inline globe render-bundle's per-frame CPU cost — the decision input for the cache-vs-drop call
+// @status INVESTIGATION
 //
 // Usage: node Tools/visual-regression/probe-globe-bundle-cost.mjs
 import { chromium } from "playwright";

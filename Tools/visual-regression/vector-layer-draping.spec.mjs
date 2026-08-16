@@ -1,4 +1,6 @@
 // vector-layer-draping.spec.mjs — C11-213 / UP144-VECTOR-LAYER-WGSL acceptance.
+// @purpose Acceptance for WebGPU vector-layer draping: GLSL-derived oracle vs real storage-buffer packer/WGSL indexing, six named mutations.
+// @status ACTIVE
 //
 // Pure Node, real modules, no browser:
 //   node --test Tools/visual-regression/vector-layer-draping.spec.mjs

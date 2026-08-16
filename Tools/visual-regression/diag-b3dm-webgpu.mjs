@@ -3,6 +3,9 @@
  * WebGPU-only deep diagnostic — why is the canvas black even though
  * the b3dm tileset loads, the model is ready, and primitive cache
  * populates?
+ * @purpose Deep WebGPU-only diagnostic for a black canvas despite a loaded b3dm tileset, ready model and populated primitive cache.
+ * @status INVESTIGATION
+ *
  */
 import { chromium } from "playwright";
 const BASE = "http://localhost:8080";

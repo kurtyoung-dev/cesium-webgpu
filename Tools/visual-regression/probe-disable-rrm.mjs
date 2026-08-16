@@ -1,5 +1,8 @@
 // Disable requestRenderMode to force continuous rendering, then check
 // if globe tiles render properly.
+// @purpose Forces requestRenderMode off (continuous rendering) to check whether globe tiles then render — early blank-globe bisection.
+// @status INVESTIGATION
+//
 import { chromium } from "playwright";
 
 const URL =

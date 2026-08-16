@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // probe-mainthread-encode-ceiling.mjs — Phase 13 GATING SPIKE
 // (NEW-ECS-WORKER-GATING-SPIKE).
+// @purpose Go/no-go spike: fits main-thread encode+upload ms vs N (10k-250k moved points/frame) for 60/30fps ceilings gating the ECS-on-worker phase.
+// @status INVESTIGATION
 //
 // THE GO/NO-GO MEASUREMENT for the entire ECS-in-WASM-on-worker phase.
 //

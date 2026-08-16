@@ -4,6 +4,8 @@
 // main-scene-depth reuse path (Batch 252 reconstruction). Scene.pickFromRay over
 // an arbitrary ray is scoped out on WebGPU — it must NOT throw and must surface
 // a one-time warning instead of failing silently.
+// @purpose Gate: sampleHeight/clampToHeight converge to WebGL-matching heights on WebGPU via scene-depth reuse; pickFromRay warns, never throws
+// @status ACTIVE
 //
 // What it asserts:
 //  1. WebGL leg: sampleHeight at a known location returns a finite height near

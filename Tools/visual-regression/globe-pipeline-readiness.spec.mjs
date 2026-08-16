@@ -1,5 +1,7 @@
 // globe-pipeline-readiness.spec.mjs — pure-logic cover for
 // `probe-globe-pipeline-readiness.mjs`.
+// @purpose Scoring tests plus engine mechanism pins for probe-globe-pipeline-readiness; a pin failure means the traced path changed, not the instrument.
+// @status ACTIVE
 //
 // TWO KINDS OF TEST LIVE HERE, and the distinction matters when one fails.
 //

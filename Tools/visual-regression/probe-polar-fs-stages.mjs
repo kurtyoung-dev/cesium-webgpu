@@ -2,6 +2,8 @@
 // Batch 62 — at south-pole-close, walk every meaningful FS debug stage and
 // capture the screenshot. Goal: identify the exact stage where imagery
 // composite drops to black.
+// @purpose Diagnostic: walks every globe FS debug stage at south-pole-close to find the exact stage where imagery composite drops to black
+// @status INVESTIGATION
 
 import { chromium } from "playwright";
 import fs from "fs";

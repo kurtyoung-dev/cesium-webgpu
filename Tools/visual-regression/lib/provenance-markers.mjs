@@ -1,4 +1,6 @@
 // Shared enforcement for probe PROVENANCE MARKERS.
+// @purpose Enforces bundler/formatter-proof provenance-marker strings for probes; encodes six recorded marker failure modes as shared validators.
+// @status ACTIVE
 //
 // ★ THE RULE, with FIVE recorded strikes across the fleet behind it:
 // A PROVENANCE MARKER MUST BE A STRING NEITHER THE BUNDLER NOR THE FORMATTER

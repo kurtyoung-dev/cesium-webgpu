@@ -1,4 +1,6 @@
 // owned-resource-transaction.mjs — browser-safe ownership transfer helper.
+// @purpose Dependency-free browser-safe helper that swaps an explicitly-owned resource transactionally (rollback on install failure, exactly-once destroy).
+// @status ACTIVE
 //
 // This module is intentionally dependency-free. It is imported from inside a
 // Playwright page evaluation, so importing a Node built-in here (directly or

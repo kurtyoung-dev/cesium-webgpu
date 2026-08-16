@@ -1,5 +1,7 @@
 /**
  * Batch 426 — IBL-HDR (1.2) + IBL-PREFILTER-HQ (1.3) flag-ON improvement probe.
+ * @purpose Flag-ON improvement proof for HDR environment maps + HQ IBL prefilter: brighter peak specular and fewer firefly outliers than the LDR default path
+ * @status ACTIVE
  *
  * Boots TWO WebGPU Scenes on fresh canvases:
  *   - PARITY: contextOptions.webgpu = {}            (defaults: rgba8unorm LDR

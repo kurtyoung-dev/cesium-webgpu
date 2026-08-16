@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * C12-29 S5 dense ACTIVE/INACTIVE cost characterization.
+ * @purpose Dense ACTIVE/INACTIVE eclipse-lane cost characterization: 24 child Node processes, each one fresh Edge running one 600-frame condition in frozen order
+ * @status ACTIVE
  *
  * The coordinator launches 24 child Node processes in the frozen order. Each
  * child launches exactly one fresh Edge process, runs one 600-frame condition,

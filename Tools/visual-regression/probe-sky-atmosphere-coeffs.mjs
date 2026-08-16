@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // Q24R-DPH47-SKY-COEFFS — SkyAtmosphere scattering-coefficient response parity.
+// @purpose Regression guard for verified parity: SkyAtmosphere instance coeffs move both backends' sky identically; scene.atmosphere.* moves neither.
+// @status ACTIVE
 //
 // PREMISE-VERIFICATION RESULT (2026-07-04): the DP-H47 increment-1 premise
 // ("WebGPU SkyAtmosphere ignores scene.atmosphere.rayleighCoefficient; wiring it

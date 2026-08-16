@@ -4,6 +4,8 @@
  * profiler creates no per-call closures on the render hot path while still
  * rendering byte-identically, and that the ENABLED profiler lane produces
  * complete per-pass artifacts through the new closure-free begin/endPass API.
+ * @purpose Disabled CPU pass profiler allocates no per-frame closures (render unaffected); enabled lane yields complete per-pass buckets via begin/endPass.
+ * @status ACTIVE
  *
  * The headline C9-18 defect: nine `_cpuPassProfiler.time(name, () => …)` call
  * sites in WebGPUSceneRenderer / WebGPUSceneRendererFrustumLoop allocated a

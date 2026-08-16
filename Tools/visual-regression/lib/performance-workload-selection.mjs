@@ -1,3 +1,6 @@
+// @purpose Selects runnable workloads per requested renderers; strict mode fails rather than silently dropping an explicitly requested renderer.
+// @status ACTIVE
+
 export function renderersForWorkload(workload, selectedRenderers) {
   if (!Array.isArray(workload.renderers)) {
     return [...selectedRenderers];

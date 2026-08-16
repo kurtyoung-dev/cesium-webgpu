@@ -1,4 +1,6 @@
 // DP-H36 (Batch 325) — i3dm instance-translation RTE precision probe.
+// @purpose i3dm instance-translation RTE precision: pixel-stable across frames and WebGPU placement matches WebGL after the high/low translation split
+// @status ACTIVE
 //
 // Loads a real Earth-scale instanced (i3dm) 3D-Tiles tileset
 // (InstancedWithBatchTable, ~Philadelphia, lon -75.61 / lat 40.04) on BOTH

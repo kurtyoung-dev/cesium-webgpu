@@ -3,6 +3,8 @@
 // UINT32) property-TEXTURE metadata round-trips through the WGSL multi-byte
 // channel unpack (little-endian across 2/4 RGBA8 channels, the
 // czm_unpackTexture convention) on WebGPU, matching WebGL.
+// @purpose Proves UINT16/UINT32 property-texture metadata round-trips the multi-byte little-endian unpack: exact pickMetadata quantization, both backends.
+// @status ACTIVE
 //
 // Asset: Tools/visual-regression/assets/PropertyTextureUint16.gltf (authored by
 //   this task) — a unit quad whose 16x16 property texture has 4 vertical

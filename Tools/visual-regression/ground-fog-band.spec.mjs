@@ -1,6 +1,8 @@
 // RUNNER REQUIREMENT: Node >= 22.18. This spec imports engine `.ts` modules and
 // relies on Node's built-in type stripping, which is on by default only from
 // 22.18 onward; on 22.6-22.17 add `--experimental-strip-types`.
+// @purpose Pins the inscribed-sphere altitude bug that made ground fog arithmetically absent, the Koschmieder-derived fix, four mutants, and byte-neutrality.
+// @status ACTIVE
 //
 // NEW-WEBGPU-GROUND-FOG-RENDERS-NOTHING.
 //

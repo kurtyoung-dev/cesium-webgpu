@@ -6,6 +6,8 @@
 // spelling read a property that never existed, so velocity commands had
 // NEVER emitted). This probe drives the full OFF -> ON -> OFF cycle with
 // MOVING billboards + points and asserts:
+// @purpose Billboard/point velocity-emission OFF-ON-OFF: velocity commands attach with dual vertex streams, rg16float texture allocates, then detach.
+// @status ACTIVE
 //
 //   (a) TAA OFF  — billboard + point color commands carry NO
 //       velocityCommand; the scene-FB velocity texture is unallocated.

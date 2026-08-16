@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 /**
  * Batch 407 struct-growth cloud dials — end-to-end wiring + byte-identity probe.
+ * @purpose B407 struct-growth dials gate: puffSize/exposure/msDecay wired end-to-end, defaults byte-identical, reset returns to the default render
+ * @status ACTIVE
+ *
  * WebGPU-only.
  *
  * Promotes SHAPE_SCALE/CLOUD_EXPOSURE/MS-decay from WGSL consts to CloudUniforms

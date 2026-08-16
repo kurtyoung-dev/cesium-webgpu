@@ -1,5 +1,8 @@
 // C10-11 design-ruling proof — BLEND/translucent picks still function under the
 // pick-fleet switch, and the switch does not change their behavior (the ruling:
+// @purpose Design-ruling proof: translucent Model BLEND picks stay depth-test-only and pickable, A/B'd across the pick-fleet log-depth switch.
+// @status ACTIVE
+//
 // OPAQUE picks write log depth; BLEND picks keep depth-test-only / no depth
 // write, so they neither self-occlude nor lose pickability). A translucent Model
 // (the Model BLEND pick lane — createPickPipeline `isBlend`, depthWriteEnabled

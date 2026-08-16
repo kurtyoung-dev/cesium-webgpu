@@ -1,6 +1,8 @@
 // probe-fleet-contract-allowlist.mjs — the PINNED census of probes that do not
 // yet satisfy the authoring contract enforced by
 // `probe-fleet-contract.spec.mjs`.
+// @purpose Pinned shrink-only census of pre-contract probes exempt from the fleet authoring contract; the spec fails on any NEW violation or stale row.
+// @status ACTIVE
 //
 // This file is DATA, not policy. Every entry is a probe that shipped before the
 // contract was mechanically checkable, recorded here so the spec can fail on a

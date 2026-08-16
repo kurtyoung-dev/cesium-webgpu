@@ -3,6 +3,8 @@
 // shipped fixes do not regress globe / billboard / atmosphere rendering
 // on WebGPU and that the new observability path stays quiet on a healthy
 // device:
+// @purpose Gate for four B304 fixes: imagery-projection single-source, uploadImageSource observability, raySphere precision, billboard updateMode order
+// @status ACTIVE
 //
 //   NEW-USEWEBMERCATORT-SINGLE-SOURCE — the imagery projection decision
 //     is now resolved once (`resolveImageryProjection`) and consumed by

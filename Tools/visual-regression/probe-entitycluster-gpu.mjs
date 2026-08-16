@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // probe-entitycluster-gpu.mjs — Phase 10 EntityCluster-on-GPU (Batch 301,
 // NEW-ENTITYCLUSTER-GPU).
+// @purpose GPU screen-space declutter: clusters form, zoom-out merges, parity with CPU KDBush counts, dispatcher ran, scaling advantage, zero errors.
+// @status ACTIVE
 //
 // Validates that screen-space proximity declutter of a DENSE set of point
 // entities works on WebGPU via the GPU bin/count fast path

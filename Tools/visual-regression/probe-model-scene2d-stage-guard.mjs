@@ -1,5 +1,7 @@
 /**
  * PREREQ-MODEL-SCENE2D-STAGE-GUARD acceptance probe.
+ * @purpose Acceptance: the 2D-stage typedArray strip routes through requiresVertexTypedArrayRetention — kept on WebGPU, stripped on WebGL, unrun in 3D.
+ * @status ACTIVE
  *
  * SceneMode2DPipelineStage (SCENE code) runs whenever `model._projectTo2D` is
  * true and the scene is non-3D. Under WebGL it projects the source positions

@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // C2-25 ENV-SCENE-CAPTURE (Batch 447) — model/3D-Tiles ON reflection probe.
+// @purpose ON-path acceptance: the model capture pass renders an emissive glTF into env-cube faces over globe+sky with occlusion; ON/OFF faces, 0 errors.
+// @status ACTIVE
 //
 // Verifies the model capture pass actually renders a nearby glTF model into the
 // env cube's 6 faces, composited OVER the already-captured globe + sky, with

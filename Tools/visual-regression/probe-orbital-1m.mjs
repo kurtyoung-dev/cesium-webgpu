@@ -2,6 +2,8 @@
 // Probe (NEW-ORBITAL-DEVICE-LIMITS-PROBE verify — Batch 281): validate that
 // the GPU-resident compute-instance pipeline scales to a 1M-object catalog
 // within the WebGPU device limits the renderer relies on.
+// @purpose Validates the GPU-resident compute-instance pipeline at a 1M-object catalog against negotiated device limits (SSBO sizes, dispatch headroom).
+// @status ACTIVE
 //
 // The compute-instance system (NEW-COMPUTE-INSTANCE-SYSTEM) uploads the flat
 // per-instance params to a read-only storage buffer ONCE, runs the user WGSL

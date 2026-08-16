@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // Probe-ssr-consumer — Slice 5c-B Batch 122 verification.
+// @purpose Verifies SSR reads the G-buffer regardless of deferredLighting (legacy gate B122 removed): SSR-on legs match with deferred on and off.
+// @status ACTIVE
 //
 // Toggles `scene._enableSSR` on/off and toggles deferredLighting on/off
 // (legacy gate that Batch 122 removed). Pre-Batch-122 the SSR shader

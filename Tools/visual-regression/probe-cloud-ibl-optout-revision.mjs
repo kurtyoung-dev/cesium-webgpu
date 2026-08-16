@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // C13-38 runtime gate — cloud animation must not refresh dynamic-environment
 // resources while the full reflected-cloud march is opted out.
+// @purpose C13-38 runtime gate: cloud revisions stay unconsumed while the march is opted out; opt-in consumes newest; OFF does one teardown refresh
+// @status ACTIVE
 //
 // The manager records `lastCloudRevision` only after the expensive cube fill,
 // IBL prefilter, and SH projection branch runs. This probe holds every other

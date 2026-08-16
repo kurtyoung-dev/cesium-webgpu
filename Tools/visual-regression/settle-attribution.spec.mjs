@@ -1,4 +1,6 @@
 // C11-146 / S8-7 — settle-window attribution rule + first-complete-frame metric.
+// @purpose Guard spec for the settle-window attribution rule + first-complete-frame metric, so GPU-submit-bound windows never book main-thread credit.
+// @status ACTIVE
 //
 // This is the GUARD that stops the boot/TTFF cluster booking wins it did not
 // earn, so it has to be provable without a browser. Two claims are pinned here:

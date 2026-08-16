@@ -3,6 +3,8 @@
 // "globe explodes into black wedges with RGB-streak tile edges"
 // symptom reported when picking "WGS84 Ellipsoid" from the terrain
 // picker on the WebGPU viewer.
+// @purpose Family-root repro: WGS84 EllipsoidTerrainProvider (unquantized, no webMercatorT) + imagery combos — the black-wedges symptom on WebGPU.
+// @status ACTIVE
 //
 // `WGS84 Ellipsoid` uses EllipsoidTerrainProvider — unquantized, no
 // normals, no webMercatorT — the simplest tile mesh format. The

@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // probe-moon-phase-gate.mjs — C11-176b MOON phaseGate BLACKOUT (WebGPU vs WebGL)
+// @purpose C11-176b acceptance: Moon.wgsl phaseGate blackout defect — derived-epoch crescent/night-full lanes with projected-disc ROI metrics.
+// @status ACTIVE
 //
 // ROOT CAUSE UNDER TEST (C11 queue §1.26/G8; C12-30 suspect (a)):
 //   Moon.wgsl used to multiply the whole Phong-lit disc by

@@ -3,6 +3,8 @@
 // the 3D TILESET capture, so the captured BUILDINGS are visible by eye (the tiled
 // 32x32 thumbnails downsample them away). Confirms occlusion: buildings sit OVER
 // the terrain, terrain OVER the sky. ON vs OFF written side by side.
+// @purpose Full-res readback of all 6 env-cube faces for the tileset capture so buildings and occlusion order are verifiable by eye, ON vs OFF.
+// @status INVESTIGATION
 
 import { chromium } from "playwright";
 import fs from "fs";

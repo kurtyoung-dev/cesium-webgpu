@@ -1,6 +1,8 @@
 // console-gate.mjs — the one rule that decides whether a browser console error
 // belongs to this fork or to somebody else's server. Pure Node: no browser, no
 // network, no GPU.
+// @purpose Host-keyed predicate deciding whether a browser console error belongs to this fork (fatal) or to a third-party tile service (ignorable).
+// @status ACTIVE
 //
 // WHY THIS IS A MODULE. It is a predicate that silences errors, which is the
 // most dangerous shape of code in a verification harness: every mistake in it

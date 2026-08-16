@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // Probe-all-materials — Batch 140 broad material UB audit.
+// @purpose Audits every Material.fromType lit material renders on WebGPU without device errors; reports JS-packed UB layout/size vs WGSL structs.
+// @status ACTIVE
 //
 // Tests every Material.fromType-supported lit material renders without
 // device errors and reports JS-packed UB layout + size for comparison

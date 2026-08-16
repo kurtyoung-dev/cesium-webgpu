@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // build-lake-water-mask.mjs — offline preprocess for C7-LAKE-WATER-MASK
 // (WaterClassificationProvider Phase-1 seed).
+// @purpose Converts Natural Earth 1:10m lakes polygons into the packed LWM1 binary bundled for LakeWaterClassificationProvider (globe.lakeWaterMask).
+// @status ACTIVE
 //
 // Converts the Natural Earth 1:10m "Lakes + Reservoirs" polygon datasets
 // (the global file PLUS the North America supplement) into the compact

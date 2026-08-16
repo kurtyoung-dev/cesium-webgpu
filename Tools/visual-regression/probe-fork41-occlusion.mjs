@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // Probe: FORK-41 OCCLUSION CORRECTNESS (Batch 291)
+// @purpose Hi-Z occlusion no-false-cull gate: dense sky-overhanging boxes must never be culled; asserts dispatches run, default-safe image, zero errors
+// @status ACTIVE
 //
 // FORK-41 activates the Hi-Z pyramid + OcclusionTest compute path in the dense
 // (>=2400 opaque-command) WebGPU high-density cull path.

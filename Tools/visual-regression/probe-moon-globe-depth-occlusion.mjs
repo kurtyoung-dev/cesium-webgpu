@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * C12-37 Moon/globe physical-depth browser oracle.
+ * @purpose C12-37 physical-depth oracle: derived moon-near/earth-near/crossing lanes certify moon-vs-globe depth routing; immutable UUID run artifacts.
+ * @status ACTIVE
  *
  * This probe deliberately does not trust the originally supplied screenshot
  * as geometry. Its exact saved view is run first and MUST classify STRUCTURAL:

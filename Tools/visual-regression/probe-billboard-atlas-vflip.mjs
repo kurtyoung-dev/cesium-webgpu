@@ -2,6 +2,8 @@
 // Probe (C4-BILLBOARD-ATLAS-VFLIP): verify the WebGPU billboard atlas UV
 // orientation matches WebGL for an ASYMMETRIC image, across scene modes and
 // across the main / SDF-label / pick variants.
+// @purpose Parity acceptance for billboard atlas UV orientation (asymmetric image + SDF glyph) across scene modes, plus pick coverage of the quad.
+// @status ACTIVE
 //
 // Method: build a 32x32 image whose TOP half is RED (255,0,0) and BOTTOM half
 // is BLUE (0,0,255). Add it as a billboard (main atlas path) and, separately,

@@ -1,3 +1,6 @@
+// @purpose Collects '[GLOBE-PIPELINE]' console timing logs and __dbgResolveGlobe/__dbgSelectPipeline state during a settle loop
+// @status INVESTIGATION
+
 import { chromium } from "playwright";
 
 const URL =

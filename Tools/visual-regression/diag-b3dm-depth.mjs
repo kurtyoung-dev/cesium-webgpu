@@ -2,6 +2,9 @@
 // logDepthWriteActive multi-frustum fix? Dumps the render frustum partition and
 // captures a globe-ON screenshot at the same 188 m nadir camera where
 // probe-b3dm-noglobe.mjs shows the buildings render with the globe hidden.
+// @purpose Checks terrain-flush b3dm renders with globe SHOWN after the logDepthWriteActive multi-frustum fix; dumps frustum partition + globe-ON screenshot.
+// @status INVESTIGATION
+//
 import { chromium } from "playwright";
 import fs from "fs";
 const BASE = process.env.PROBE_BASE || "http://localhost:8134";

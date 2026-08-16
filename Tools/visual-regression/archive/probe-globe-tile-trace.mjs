@@ -1,4 +1,7 @@
 // Read the cumulative globe tile trace counters
+// @purpose Reads cumulative globe tile-trace debug globals (__dbgGlobeTileTraceGet etc.) plus pipeline-cache size after a settle loop
+// @status INVESTIGATION
+//
 import { chromium } from "playwright";
 
 const URL =

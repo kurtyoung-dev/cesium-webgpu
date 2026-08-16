@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * C13-01 — the fixture/sequence tour with complete per-sequence metrics.
+ * @purpose C13-01 evidence tail: fixture camera tours (OFF/ON cloud deltas per station) plus temporal-reset sequences with CPU/GPU metrics.
+ * @status ACTIVE
  *
  * This is the executable half of the C13-01 evidence tail. The DEFINITIONS live
  * in `lib/cloud-tour-fixtures.mjs` and the METRICS in `lib/cloud-tour-metrics.mjs`,

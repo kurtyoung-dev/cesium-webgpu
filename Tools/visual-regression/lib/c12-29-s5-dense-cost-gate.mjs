@@ -1,6 +1,8 @@
 /**
  * Pure contract and browser-side utilities for the C12-29 S5 dense
  * ACTIVE/INACTIVE cost characterization.
+ * @purpose Frozen experiment and fail-closed fold for the S5 dense ACTIVE/INACTIVE cost characterization (v3 schema, SHA-pinned workload).
+ * @status ACTIVE
  *
  * Node owns process isolation, provenance, publication, and browser launch.
  * This module owns the frozen experiment and the fail-closed fold.  Runtime

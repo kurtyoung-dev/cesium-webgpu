@@ -1,4 +1,7 @@
 // Node/Playwright integration probe for the opt-in WebGPU timestamp profiler.
+// @purpose Certification lane for GPU-timestamp unique-sample accounting: drained readbacks, closed sample ledger, coverage+unprofiled ratios reconstruct 1.0
+// @status ACTIVE
+//
 // Requires the local Cesium server on http://localhost:8080.
 //
 // C11-140 — this probe is the CERTIFICATION lane for GPU-timestamp unique-sample

@@ -1,3 +1,6 @@
+// @purpose Certification contract/finalizer for C12-33 moon mip-motion evidence: lane validation, calibrated thresholds, paired sensitivity, exit tiers.
+// @status ACTIVE
+
 import { randomUUID } from "node:crypto";
 import {
   link,

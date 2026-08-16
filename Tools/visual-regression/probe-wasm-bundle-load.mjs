@@ -2,6 +2,8 @@
 // Probe (NEW-WASM-BRIDGE-BUNDLE-LOAD) — proves the WASM kernel ACTUALLY LOADS
 // and EXECUTES in the real bundled build for ALL SEVEN Wasm*Bridge files, with
 // NO silent JS fallback.
+// @purpose Proves all 7 Wasm*Bridge kernels load and genuinely execute in the emitted bundle (zero wasm 404s, WASM-vs-JS byte identity); --iife mode.
+// @status ACTIVE
 //
 // Background: in the bundled build the dynamic import of the wasm-bindgen glue
 // (ThirdParty/Workers/cesium_wasm.js) used to 404 — two failure shapes:

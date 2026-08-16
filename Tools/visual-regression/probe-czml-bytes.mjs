@@ -1,3 +1,6 @@
+// @purpose Loads a CZML Sandcastle demo forced to WebGPU and greps the console for writeBuffer byte-count and .includes error classes.
+// @status INVESTIGATION
+
 import { chromium } from "playwright";
 
 const RENDERER_OVERRIDE_SHIM = `

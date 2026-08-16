@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 // INVESTIGATION + ACCEPTANCE probe for NS-LARGE-LAKE-WATER-MASK (BUG 3).
+// @purpose Root-caused flat Great Lakes by querying the terrain provider's waterMask directly at lake/ocean/land points, plus a render check on both backends
+// @status INVESTIGATION
+//
 // User report: large inland lakes (Great Lakes) render FLAT with NO
 // water-mask wave effect on BOTH backends, while oceans animate.
 //

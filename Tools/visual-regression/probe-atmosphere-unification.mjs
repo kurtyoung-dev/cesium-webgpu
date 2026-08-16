@@ -1,4 +1,6 @@
 // probe-atmosphere-unification.mjs
+// @purpose Static source-scan invariant guard: all 4 sky-integral consumers sample the ONE shared LUT bake; exit 1 if any diverges to a private table.
+// @status ACTIVE
 //
 // Structural regression probe for Q32 / ATMOSPHERE-UNIFICATION-FULL.
 //

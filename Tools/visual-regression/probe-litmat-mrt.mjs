@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // Probe-litmat-mrt — Slice 5c-B Batch 121 verification.
+// @purpose Extruded lit-material polygon through WebGPUPrimitiveCommands: zero device errors and a measurable deferred/AO signal from the polygon's MRT writes
+// @status ACTIVE
 //
 // Adds an extruded Polygon with MaterialAppearance (Color Lit) so the
 // primitive renders through WebGPUPrimitiveCommands with the Phong

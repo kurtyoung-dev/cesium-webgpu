@@ -1,6 +1,8 @@
 // C11-132 — spec-bundle freshness sentinel. Browser-free Node coverage for the
 // digest/compare/handshake logic that decides whether the SpecList bundle Karma
 // is about to serve was built from the spec sources currently on disk.
+// @purpose Coverage of the spec-bundle freshness sentinel: added/removed/changed spec files must flip the manifest comparison stale and name the offender.
+// @status ACTIVE
 //
 // The acceptance oracle from the guide is a delta: a brand-new spec must NOT be
 // silently absent from the served bundle. That delta is reproduced here without

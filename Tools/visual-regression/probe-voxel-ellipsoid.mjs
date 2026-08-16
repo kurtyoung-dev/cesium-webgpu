@@ -1,5 +1,7 @@
 // NEW-VOXEL-ELLIPSOID-INTERSECT (B22) + NEW-VOXEL-ELLIPSOID-SHAPEUV (B23)
 // acceptance probe.
+// @purpose Acceptance: WebGPU voxel march intersects the oblate ellipsoid shell and lon/lat/height shapeUv cell colors match WebGL (IoU + color gates).
+// @status ACTIVE
 //
 // Renders the SAME procedural ELLIPSOID-shape VoxelPrimitive (oblate radii —
 // per-axis radii correction is part of what's under test) on BOTH the WebGL

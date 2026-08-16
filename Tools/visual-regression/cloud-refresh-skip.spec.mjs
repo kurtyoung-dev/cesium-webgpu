@@ -1,5 +1,7 @@
 // cloud-refresh-skip.spec.mjs — the shared repair for ONE class defect that
 // made both cloud-reconstruction probes lie on the same build.
+// @purpose Pins the repair of the requestRenderMode frozen-frame defect that made both cloud-reconstruction probes count render calls as frames; mutant-checked.
+// @status ACTIVE
 //
 // Pure Node (`node --test`). No browser, no build, no adapter.
 //

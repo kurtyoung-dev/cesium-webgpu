@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // Probe-aerial-lut-primitive — Verify FEAT-GAP-09 wiring on primitives.
+// @purpose Verifies primitives' effects bind group actually forwards the aerial-perspective LUT: polyline must fog with atmosphere ON vs OFF, not stay same.
+// @status ACTIVE
 //
 // Hypothesis (Batch 96 audit): the primitive effects bind group path
 // (`_getOrCreateSharedPrimitiveEffectsBG` in `WebGPUPrimitiveCommands.js`)

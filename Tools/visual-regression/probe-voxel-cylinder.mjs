@@ -1,4 +1,6 @@
 // NEW-VOXEL-CYLINDER-SHAPEUV (B24) acceptance probe.
+// @purpose Acceptance: WebGPU voxel march intersects a bounded hollow cylinder (not the box proxy) and cylindrical shapeUv cell colors match WebGL.
+// @status ACTIVE
 //
 // Renders the SAME procedural CYLINDER-shape VoxelPrimitive (hollow — a
 // nonzero inner radius exercises the inner-cylinder hole interval AND the

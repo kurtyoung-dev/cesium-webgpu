@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * C12-29 S5 absolute NASA-SVS 5073 geospatial-footprint acceptance.
+ * @purpose Absolute NASA-SVS 5073 eclipse geospatial-footprint acceptance over the vendored four-row fixture + local QuantizedMesh, serial WebGL/WebGPU
+ * @status ACTIVE
  *
  * Runs serial WebGL/WebGPU contexts against the vendored four-row fixture and
  * local QuantizedMesh. It never fetches the network, recentres a result, builds

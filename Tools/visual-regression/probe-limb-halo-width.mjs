@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // Probe: NEW-VR2-3b-LIMB-HALO-RESIDUAL (gate) + NEW-GROUND-ATMOSPHERE-DRAPE-LIMB-WIDTH (diagnostic)
+// @purpose Gates isolated SkyAtmosphere shell limb-width parity, and reports (no gate) the tracked ground-atmosphere drape limb residual on the full scene
+// @status ACTIVE
 //
 // Batch 327 PROVED the SkyAtmosphere SHELL is at parity (pixel-identical /
 // marginally narrower in isolation) and re-attributed the reported "WebGPU limb

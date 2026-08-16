@@ -2,6 +2,8 @@
 // real WebGPUSnapFramebuffer class with GPU-shaped mocks; it complements the
 // source-contract assertions in webgpu-snap-payload.spec.mjs and remains useful
 // when an unrelated barrel/export failure blocks Karma before browser launch.
+// @purpose Behavioral lifecycle coverage of the real WebGPUSnapFramebuffer on GPU-shaped mocks; complements the source-contract snap-payload spec.
+// @status ACTIVE
 
 import assert from "node:assert/strict";
 import test from "node:test";

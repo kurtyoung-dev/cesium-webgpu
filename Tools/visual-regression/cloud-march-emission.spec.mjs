@@ -1,5 +1,7 @@
 // cloud-march-emission.spec.mjs — C13-10 (march-emitted reconstruction depth +
 // the first attachment consumer).
+// @purpose C13-10: march-emitted reconstruction depth behind one compile-time bit, four sibling pipelines compile verbatim, CPU-twin cross-validation, mutants.
+// @status ACTIVE
 //
 // Pure Node (`node --test`). No browser, no build, no adapter.
 //

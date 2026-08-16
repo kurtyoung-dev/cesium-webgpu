@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 // Probe (Batch 241 — NEW-GLOBE-BINDGROUP-CACHE verify + regression gate):
+// @purpose Gates the globe per-tile bind-group cache: creations settle to ~0, spike+resettle on pan, globe visibly renders, zero validation errors
+// @status ACTIVE
+//
 // the globe surface renderer's per-tile bind-group cache must
 //   (A) SETTLE — after tiles load at a fixed camera, bind-group
 //       creations/frame must drop to ~0 over a 30-frame steady window

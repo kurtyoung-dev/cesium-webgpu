@@ -1,3 +1,6 @@
+// @purpose Smoke-loads edge-visibility Sandcastle demos under forced WebGPU and dumps console/page errors — a per-demo error scan.
+// @status INVESTIGATION
+
 import { chromium } from "playwright";
 
 const RENDERER_OVERRIDE_SHIM = `

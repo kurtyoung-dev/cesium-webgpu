@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * Sandcastle Batch 66 Test Runner — re-run of Batch 65 after F1/F3 fixes.
+ * @purpose Batch-66 rerun of the Batch-65 Sandcastle sweep adding the rendering-error hard-FAIL marker and the viewer-capture init shim.
+ * @status INVESTIGATION
  *
  * Improvements over the Batch 65 runner:
  *   1. Treat any console message containing "An error occurred while rendering"

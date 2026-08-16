@@ -1,3 +1,6 @@
+// @purpose Runs the Particle System Sandcastle demo per backend (Viewer-override shim) and samples the canvas to check particles render on WebGPU
+// @status ACTIVE
+
 import { chromium } from "playwright";
 
 const RENDERER_OVERRIDE_SHIM = `

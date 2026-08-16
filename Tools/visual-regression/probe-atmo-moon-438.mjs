@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // Batch 438 — 4.4 SKY-MOON dedicated probe.
+// @purpose Finds a real moonlit night via ICRF scan, then asserts dualLightInline ON gives clear moon-glow luminance vs OFF on the inline sky march.
+// @status ACTIVE
 //
 // The moon glow on the inline (parity) march path only shows when the scene's
 // frameState.moonDirectionWC actually has the moon ABOVE the local horizon while

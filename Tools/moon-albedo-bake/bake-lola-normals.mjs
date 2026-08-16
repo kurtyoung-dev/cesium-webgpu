@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * bake-lola-normals.mjs — reproducible lunar NORMAL-map bake (Campaign-12 C12-25).
+ * @purpose Reproducible lunar normal-map bake from NASA LOLA ldem_16 displacement: pinned SHA-256, area downsample, derive, encode, verify, manifest, install.
+ * @status ACTIVE
  *
  * Sibling of bake-lroc-color.mjs (C12-24): same verify / derive / encode /
  * verify-the-encoded-bytes / manifest / install structure, same repo-root

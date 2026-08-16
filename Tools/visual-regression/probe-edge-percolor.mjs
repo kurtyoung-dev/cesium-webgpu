@@ -2,6 +2,8 @@
 /**
  * Probe: per-edge color parity on WebGPU vs WebGL
  * (NEW-EDGE-MATERIALCOLOR-OVERRIDE-WEBGPU, Batch 330).
+ * @purpose Per-edge color parity: WebGPU edge WGSL gains a per-edge edgeColor vertex attribute; COLOR_0-blue GLB edges render blue on both backends.
+ * @status ACTIVE
  *
  * Before this batch the WebGPU model-edge emitter applied a SINGLE
  * primitive-level `EdgeUniforms.color`, so per-edge / per-lineString

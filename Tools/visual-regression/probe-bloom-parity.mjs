@@ -3,6 +3,8 @@
 // between WebGL and WebGPU at DEFAULT `scene.postProcessStages.bloom`
 // uniforms (contrast=128, brightness=-0.3, glowOnly=false, delta=1,
 // sigma=2, stepSize=1).
+// @purpose Bloom uniform-parity gate: default-uniform bloomed-fraction band vs WebGL, glowOnly + brightness response, stripped scene with synthetic sun.
+// @status ACTIVE
 //
 // Pre-fix, the WebGPU sync layer fed WebGL's BRIGHTNESS (-0.3) into a
 // luminance THRESHOLD — `max(color - (-0.3)*avgLum, 0)` passes every

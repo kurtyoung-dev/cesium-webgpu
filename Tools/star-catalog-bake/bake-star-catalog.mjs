@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * Star-catalogue depth bake (C12-09) — Yale BSC5 as served by NASA HEASARC.
+ * @purpose Regenerates the BrightStarCatalog.js data table from the pinned HEASARC BSC5P archive, deepening the embedded sky to naked-eye magnitude.
+ * @status ACTIVE
  *
  * Regenerates the `data` table inside
  * `packages/engine/Source/Scene/BrightStarCatalog.js` from the HEASARC

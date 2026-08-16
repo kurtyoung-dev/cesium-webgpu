@@ -5,6 +5,8 @@
 // scene colour by atmospheric transmittance and adds inscattered light, by
 // scene depth, over the WHOLE scene — and the in-globe ground-atmosphere/fog
 // drape is gated OFF so the two don't double-apply.
+// @purpose Acceptance for the unified aerial-perspective post-process: renders, contributes, depth-correct far-band haze, no double-darkening, no GPU errors.
+// @status ACTIVE
 //
 // Camera: a LOW oblique ground view looking toward the horizon so the frame
 // spans a wide depth range — near terrain (bottom of frame) vs distant terrain

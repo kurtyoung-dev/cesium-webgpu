@@ -1,5 +1,7 @@
 /**
  * C13-01 tour contract spec — pure Node, no browser.
+ * @purpose C13-01 tour contract: fixture/sequence coverage per the queue row, pinned derived clocks, engine-export constants, probe capture discipline.
+ * @status ACTIVE
  *
  * This is the gate that makes the fixture/sequence/metric work checkable
  * without an Edge cycle. It holds four contracts:

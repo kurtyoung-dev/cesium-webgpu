@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // Multi-angle polar diagnostic. Loads the DebugTileImageryProvider
 // overlay on WGS84 and captures at 6 viewpoints + 3 altitudes.
+// @purpose Diagnostic: multi-view polar capture WITH the debug tile overlay — diagnosed mirrored tile labels and missing polar imagery
+// @status INVESTIGATION
 //
 // Diagnoses two user-flagged issues:
 //   1. DebugTileImageryProvider labels appear mirrored in X AND Y on WebGPU

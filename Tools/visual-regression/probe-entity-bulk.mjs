@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // probe-entity-bulk.mjs — Phase 10 Entity bulk fast-path (Batch 300).
+// @purpose BulkPointVisualizer fast lane: tens of thousands of static points render on both backends, pick returns the Entity, per-frame cost drops.
+// @status ACTIVE
 //
 // Validates BulkPointVisualizer: adding tens of thousands of *static*
 // homogeneous `point` entities via a DataSource/EntityCollection must

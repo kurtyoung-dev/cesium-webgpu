@@ -3,6 +3,9 @@
  * Same camera as verify-ground-polyline-zoom but WITHOUT adding the
  * polyline. If the "grey rectangles" still appear, they're terrain
  * artifacts unrelated to the polyline.
+ * @purpose Control leg for the GP investigation: same camera with no polyline, to test whether the 'grey rectangles' were terrain artifacts.
+ * @status INVESTIGATION
+ *
  */
 import { chromium } from "playwright";
 import fs from "fs";

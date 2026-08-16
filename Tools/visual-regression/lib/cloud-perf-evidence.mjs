@@ -1,5 +1,7 @@
 /**
  * Resolve the process-level outcome for the fixed-scene cloud perf probe.
+ * @purpose One-function pass policy for the fixed-scene cloud perf probe: a requested pair ID must never silently degrade to a single-artifact success.
+ * @status ACTIVE
  *
  * A valid unpaired artifact is useful characterization. Supplying a pair ID is
  * an explicit request for A/B evidence, so missing or non-comparable companion

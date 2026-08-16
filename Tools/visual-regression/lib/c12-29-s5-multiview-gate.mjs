@@ -1,3 +1,6 @@
+// @purpose Frozen policy for the S5 same-context logical-View A->B->A shard; explicitly must not be cited as proof of engine multi-View scheduling.
+// @status ACTIVE
+
 import { types as utilTypes } from "node:util";
 
 import { exitCodeForS5StatusOrStructural as exitCodeForC1229S5MultiviewStatus } from "./verdict-exit-gate.mjs";

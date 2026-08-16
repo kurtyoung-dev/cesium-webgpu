@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // Probe-npr-outlines — Slice 5c-B Batch 123 verification.
+// @purpose B123 verification: scene.enableNPROutlines A/B diff over canyon terrain — edges on geometry, sky sentinel pixels unchanged.
+// @status ACTIVE
 //
 // Toggles scene.enableNPROutlines on/off and measures A-vs-B diff at
 // a view with terrain silhouette features (camera near canyon rim,

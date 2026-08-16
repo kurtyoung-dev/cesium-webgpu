@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * W5 — Adaptive coarse→fine raymarch (empty-space skipping). WebGPU-only.
+ * @purpose W5 adaptive-march A/B with pair-ID provenance: image within ~2% of the fixed march and a faster GPU-synced frame from empty-space skipping
+ * @status ACTIVE
  *
  * Verifies the adaptive march (a) preserves the image vs the old fixed-step
  * march and (b) is cheaper (skips empty space). Because the lighting/composite

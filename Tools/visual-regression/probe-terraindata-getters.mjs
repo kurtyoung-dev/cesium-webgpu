@@ -7,6 +7,8 @@
 // attribution). Dropping the getters made both read `undefined`, silently
 // breaking water rendering for quantized-mesh-as-3D-Tiles terrain and dropping
 // legal attribution.
+// @purpose Guards the credits/waterMask getters on Cesium3DTilesTerrainData that the B243 JSDoc codemod deleted (water + attribution breakage).
+// @status ACTIVE
 //
 // What it asserts (against the BUILT bundle, in Edge):
 //  1. Cesium3DTilesTerrainData.prototype has an own `waterMask` getter.

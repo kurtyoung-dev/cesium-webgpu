@@ -1,5 +1,7 @@
 /**
  * Pure policy for C12-29 S5's NASA-SVS 5073 absolute-footprint gate.
+ * @purpose Gate library for the S5 NASA-SVS-5073 eclipse-footprint certification shard, pairing its probe and spec.
+ * @status ACTIVE
  *
  * The browser probe owns rendering, terrain sampling, and evidence publication.
  * This module owns the frozen experiment, physically-derived error budget, and

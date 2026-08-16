@@ -1,6 +1,8 @@
 /**
  * CPU twin of the volumetric cloud coverage -> density response
  * (CLOUD-LOW-COVERAGE-CUTOFF).
+ * @purpose f32 CPU twin of the cloud coverage->density response (gate, BILLOWY gradient, Worley erosion, Beer-Lambert), importing the shipped response curve.
+ * @status ACTIVE
  *
  * WHAT THIS IS FAITHFUL TO, AND WHAT IT IS NOT
  *

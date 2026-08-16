@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * C11-168 fresh-process direct-model causal discriminator.
+ * @purpose Fresh-process causal discriminator: two reverse-order quartets, each leg a separate Node runner + fresh Edge measuring the 600-frame route.
+ * @status ACTIVE
  *
  * Runs two exact reverse-order quartets. Every leg launches a separate Node
  * runner, which launches one fresh Edge process and measures the canonical

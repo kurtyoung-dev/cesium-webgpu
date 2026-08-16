@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // Q14-HDR-TOGGLE-INVALIDATION acceptance probe.
+// @purpose Gates mid-session scene.highDynamicRange toggles: pipelines/bundles must be rekeyed so post-toggle frames emit zero format-mismatch validation errors
+// @status ACTIVE
 //
 // Toggling `scene.highDynamicRange` mid-session flips the scene color target
 // format (rgba8unorm <-> rgba16float / rg11b10ufloat). Any cached pipeline or

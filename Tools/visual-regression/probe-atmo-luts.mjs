@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // probe-atmo-luts — Track V-A1 (NEW-ATMO-BRUNETON-FULL-LUTS) verification.
+// @purpose Reads back multiple-scattering + irradiance LUT texels and asserts physical relationships (MS brightens sky, irradiance falls with zenith).
+// @status ACTIVE
 //
 // Verifies the full-Bruneton extension to WebGPUAtmosphereLUT:
 //   - The multiple-scattering LUT is non-trivial AND brightens the sky

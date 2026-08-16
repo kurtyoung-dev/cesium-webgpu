@@ -1,5 +1,7 @@
 /**
  * Item 4.2 (CLOUD-IBL, Batch 441) verification — cloud-aware dynamic IBL.
+ * @purpose B441 cloud-aware IBL gate: overcast dims + flattens model ambient; coverage without the cloudContributesIBL opt-in leaves IBL identical to clear
+ * @status ACTIVE
  *
  * Validates that folding procedural cloud cover into the WebGPU dynamic
  * environment map's SH-L2 / IBL ambient DIMS + FLATTENS the ambient that lights

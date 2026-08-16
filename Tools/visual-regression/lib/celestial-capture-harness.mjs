@@ -1,6 +1,8 @@
 // celestial-capture-harness.mjs — the shared Playwright/page half of the
 // celestial probe fleet: one definition of "the page is ready", one settle
 // recipe, one capture, one lane driver, one PNG writer.
+// @purpose Shared Playwright/page half of the celestial fleet: one pinned-clock settle recipe, warm-up-then-same-task capture, lane driver, PNG writer.
+// @status ACTIVE
 //
 // WHY THIS IS A MODULE AND NOT A PATTERN. The recipe below is not boilerplate;
 // nearly every line of it is a repair paid for by a failed run:

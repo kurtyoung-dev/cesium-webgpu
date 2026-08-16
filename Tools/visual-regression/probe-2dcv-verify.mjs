@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // Probe (BUG-3): verify SCENE2D and COLUMBUS_VIEW render the globe on WebGPU
 // comparably to WebGL. Captures WebGL + WebGPU x {2D, CV} and an error gate.
+// @purpose BUG-3 visual verification: instant-morphs to 2D and CV on both backends, screenshots plus pixel stats behind the WebGPU error gate.
+// @status INVESTIGATION
 //
 // Inventory BUG-3: "2D/Columbus View modes: branching landed but never
 // visually verified". This probe drives scene.morphTo2D(0) /

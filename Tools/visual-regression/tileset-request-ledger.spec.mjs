@@ -1,3 +1,6 @@
+// @purpose node:test coverage of the tileset request ledger: sequenced issue/cancel/reissue diagnostics, ledger creation and cross-run comparison.
+// @status ACTIVE
+
 import assert from "node:assert/strict";
 import test from "node:test";
 

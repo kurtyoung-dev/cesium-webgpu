@@ -5,6 +5,8 @@
 // pass on WebGPU, not a stale pixel from a prior frame, and must not read a
 // half-written staging buffer under rapid re-read (the
 // _centerReadbackInFlight guard).
+// @purpose Gate: pickVoxel/pickMetadata center-pixel readback reads the just-rendered pass on WebGPU (fresh 1x1 readback, in-flight guard), not stale
+// @status ACTIVE
 //
 // ── What changed (the fix this probe guards) ──────────────────────────────
 //   WebGPUPickFramebuffer.readCenterPixel previously returned

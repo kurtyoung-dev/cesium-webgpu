@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * Probe: OIT-TRANSPARENCY (M-OIT-COVERAGE-AND-FLIP-EVIDENCE, Batch 700).
+ * @purpose OIT coverage + default-flip evidence: WebGL OIT genuinely active; WebGPU opt-in hard-gated active post-Slice-A; splat deferral lane.
+ * @status ACTIVE
  *
  * Order-Independent Transparency coverage + WebGPU-OIT default-flip evidence.
  * Renders a scene of MUTUALLY-INTERSECTING translucent geometry (three

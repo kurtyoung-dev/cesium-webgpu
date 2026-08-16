@@ -1,3 +1,6 @@
+// @purpose node:test guard for lib/cloud-image-analysis.mjs: analyze/compare/periodicity-factorial classification on deterministic synthetic noise images.
+// @status ACTIVE
+
 import assert from "node:assert/strict";
 import test from "node:test";
 

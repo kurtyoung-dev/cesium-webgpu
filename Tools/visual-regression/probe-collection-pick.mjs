@@ -1,6 +1,8 @@
 // probe-collection-pick.mjs — the INSTRUMENTED acceptance lane for the WebGPU
 // collection pick chain (NEW-WEBGPU-POINT-PICK-RESIDUAL, widened to billboards
 // 2026-08-07).
+// @purpose Instrumented 7-link lane for the collection pick chain, naming the first dead link per target, with a Primitive positive control.
+// @status ACTIVE
 //
 // ── WHY THIS LANE EXISTS ────────────────────────────────────────────────────
 //

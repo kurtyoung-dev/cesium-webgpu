@@ -1,5 +1,7 @@
 // celestial-g1-gate.mjs — pure verdict logic for the Campaign-12 G1 celestial
 // gate (C12-G1F2 repair).
+// @purpose Pure verdict logic for the C12 G1 gate after six recorded repairs: per-backend non-vacuity, doubly-blind certifying mode voids the lane as STRUCTURAL.
+// @status ACTIVE
 //
 // WHY THIS FILE EXISTS
 // --------------------

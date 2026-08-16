@@ -1,4 +1,6 @@
 // Determinism kit for visual-regression probes (Q7-PROBE-DETERMINISM).
+// @purpose Probe determinism kit: pinClock, settleTiles, dampSky, nRunMedian — neutralises the four measured sources of run-to-run drift in visual probes.
+// @status ACTIVE
 //
 // Globe / post-process probe severities drift run-to-run (the audit measured
 // underground 12.28 vs 6.75, translucency 25.49 vs 23.14 on unchanged builds).

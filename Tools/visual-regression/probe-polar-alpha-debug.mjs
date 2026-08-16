@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 // At south-pole-close, check post-composite-alpha for polar tiles.
+// @purpose Polar black-hole diagnostic: samples post-composite alpha at south-pole-close to test whether imagery was masked out by texCoordsAlpha
+// @status INVESTIGATION
+//
 // If alpha = 0 in the central region, imagery is being masked out
 // (texCoordsAlpha returning 0).
 

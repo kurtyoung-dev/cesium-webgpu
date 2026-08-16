@@ -1,4 +1,6 @@
 // C13-07 — dateline/pole-safe global weather-map sampling contract.
+// @purpose Pins the one equirect weather-map convention shared by CPU producers and, textually, the WGSL/sampler half: seam filters, UV mapping, bounds pack.
+// @status ACTIVE
 //
 // Pins the ONE equirectangular convention now shared by
 //   - Scene/Weather/WeatherMapSeam.ts        (the convention + the two filters)

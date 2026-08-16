@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 // Capture the north pole from multiple camera positions on both backends
 // for visual side-by-side review. WGS84 ellipsoid, no debug overlay.
+// @purpose Multi-view north-pole captures on both backends for side-by-side eyeball review during the polar investigation; pinned clock, no gate.
+// @status INVESTIGATION
+//
 // Clock pinned to FIXED_CLOCK_UTC for cross-session reproducibility —
 // see WEBGPU_DEBUGGING_LOG.md Batch 70 for why this matters.
 

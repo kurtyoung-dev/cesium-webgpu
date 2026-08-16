@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // Check tex.a values after the alpha=1 force in reprojection FS.
+// @purpose One-off debug: sampled tex.a values after the Batch-56 alpha=1 force in the WebGPU imagery-reprojection fragment shader.
+// @status INVESTIGATION
 
 import { chromium } from "playwright";
 import path from "path";

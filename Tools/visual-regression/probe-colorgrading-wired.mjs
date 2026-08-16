@@ -5,6 +5,8 @@
 // configureWebGPUPostProcessPipeline like godRay/coldOptics. Before this
 // task `addColorGrading` had ZERO runtime call sites — the Batch 478/479
 // shader work was unreachable except by probes poking the pipeline object.
+// @purpose ColorGrading runtime-wiring acceptance: off by default, enable adds the pass, config swap re-grades, disable returns identical.
+// @status ACTIVE
 //
 // Asserts:
 //   (A) DEFAULT: no PostProcess-ColorGrading pass is recorded on an

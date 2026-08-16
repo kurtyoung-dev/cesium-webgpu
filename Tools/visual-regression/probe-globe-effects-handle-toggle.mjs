@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 // Probe (C9-13 NEW-GLOBE-EFFECTS-PER-VIEW-PREPARED-HANDLE — off-gate oracle):
+// @purpose Oracle for the per-frame globe-effects bind-group memo: clipping ON-OFF-ON must carve, restore, and re-carve terrain with zero stale-handle errors
+// @status ACTIVE
+//
 // the per-(context,frame) prepared globe effects bind group memo
 // (`_getOrCreateFrameEffectsBindGroup` in WebGPUGlobeSurfaceRenderer.ts) must
 // preserve the active/placeholder toggle semantics. A stale memo would leave

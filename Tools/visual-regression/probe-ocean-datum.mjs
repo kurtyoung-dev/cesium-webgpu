@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // probe-ocean-datum.mjs — the shared TIDES + OCEAN-DYNAMICS W0 DATUM PROBE.
+// @purpose W0 datum survey gating vertical ocean/tide design: sampleTerrain at 6 open-ocean sites vs EGM2008 + FFT-patch-vs-waterline lanes.
+// @status ACTIVE
 //
 // This is the measurement that gates every vertical ocean design:
 //   • TIDES_FEASIBILITY_2026-07-24.md §4 "FIRST MOVE" + §5a ruling T2

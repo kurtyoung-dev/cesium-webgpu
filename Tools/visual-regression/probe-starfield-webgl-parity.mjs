@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // Probe (NEW-STARS-BRIGHT-CATALOG-WEBGL-FALLBACK, Batch 324): the WebGL
 // bright-star catalog starfield renders the SAME physical stars as WebGPU.
+// @purpose WebGL bright-star catalog fallback gate: WebGL draws catalog stars and the pattern matches WebGPU (positional IoU at pinned time, cubemap off).
+// @status ACTIVE
 //
 // What it verifies:
 //   (A) WebGL now renders star pixels with the catalog ON (non-black star

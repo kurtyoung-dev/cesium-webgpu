@@ -1,4 +1,6 @@
 // Browser-free contract for probe-voxel-megatexture PART 3.
+// @purpose Browser-free convergence predicate for the voxel megatexture probe: first-corner resident set must republish within bounded return attempts.
+// @status ACTIVE
 //
 // A dynamic atlas can have more demanded tiles than slots. Once the complete
 // demand set is stamped, all four residents are protected for that frame, so

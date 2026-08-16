@@ -2,6 +2,8 @@
 /**
  * Atmospheric effects — unified conditions→effects HIERARCHY + auto master
  * (Batch 417a). Logic probe.
+ * @purpose Logic probe for the conditions-to-effects hierarchy + effects.auto master: pure mapper cases, effects tree, auto on/off byte-neutrality.
+ * @status ACTIVE
  *
  * The hierarchy + the `effects.auto` derivation are backend-agnostic logic, so
  * they're verified by the effect STATE the mapper produces, not a render

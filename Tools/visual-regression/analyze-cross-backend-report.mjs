@@ -2,6 +2,8 @@
 /**
  * Post-process the cross-backend sandcastle sweep report into a
  * categorized summary suitable for a PR description.
+ * @purpose Post-processes the cross-backend sandcastle sweep's report.json into pass/fail/diff buckets and issue categories for a PR-ready summary.
+ * @status ACTIVE
  *
  * Usage:
  *   node Tools/visual-regression/analyze-cross-backend-report.mjs

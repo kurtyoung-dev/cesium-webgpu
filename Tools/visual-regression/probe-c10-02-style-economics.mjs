@@ -1,4 +1,6 @@
 // C10-02-TILES-STYLE-COMMAND-ECONOMICS diagnostic probe.
+// @purpose Diagnostic that decided style-command economics: translucentFeaturesLength upkeep, styleCommandsNeeded polarity, per-scenario command counts.
+// @status INVESTIGATION
 //
 // Answers three questions with runtime evidence on the WebGPU backend:
 //   (T-3) Is BatchTexture.translucentFeaturesLength maintained on the WebGPU path

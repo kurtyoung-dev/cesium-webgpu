@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * Batch 436 (3.6 CLOUD-CONE-LIGHT) — EQUAL-QUALITY probe.
+ * @purpose B436 equal-quality A/B of straight vs Schneider 6-tap cone light march by flipping the TEMP window.__FORCE_CONE renderer override
+ * @status INVESTIGATION
  *
  * Renders the SAME cinematic full-res baked-noise cloud scene twice, flipping ONLY
  * the cone-light bit via the TEMP `window.__FORCE_CONE` renderer override:

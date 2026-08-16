@@ -1,3 +1,6 @@
+// @purpose Statistics/diff toolkit for the performance campaign: percentiles, counter-label diffs, run quality/stability, pacing and evidence summaries.
+// @status ACTIVE
+
 import { compareRepresentativeTilesetRequestLedgers } from "./representative-tileset-request-ledger.mjs";
 
 function percentile(values, fraction) {

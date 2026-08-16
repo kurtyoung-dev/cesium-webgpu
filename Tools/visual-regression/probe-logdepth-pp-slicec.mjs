@@ -3,6 +3,8 @@
  * C7-LOGDEPTH-PP-SLICEC — csm_reverseLogDepth consumer half for the two
  * remaining depth-reading post-process effects: Screen-Space Reflections
  * (WebGPUSSREffect) + Contact Shadows (WebGPUContactShadowsEffect).
+ * @purpose Acceptance for log-depth reverse in SSR + ContactShadows view reconstruct; consumer-only A/B via disarmed encode-frustum stash; off-gate.
+ * @status ACTIVE
  *
  * Slice A/B wired AO/DoF/GodRay. SSR + ContactShadows never had a near/far or
  * logActive lane, so their inverse-projection reconstruct (reconstructViewPosition

@@ -1,5 +1,7 @@
 /**
  * Q31-CUSTOMSHADER-SLICE-B-MATERIAL-FIELDS acceptance probe.
+ * @purpose WGSL CustomShader exposes metalness/occlusion/normalEC and they re-drive lighting; untouched-fields shader stays identical.
+ * @status ACTIVE
  *
  * Proves the WGSL CustomShader `czm_customModelMaterial` bridge now exposes the
  * extra material fields — metalness, occlusion, normalEC — and that writing them

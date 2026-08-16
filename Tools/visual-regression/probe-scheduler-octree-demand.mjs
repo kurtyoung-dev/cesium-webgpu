@@ -4,6 +4,8 @@
  * RenderScheduler / SceneOctree perform ZERO per-command maintenance work
  * unless a declared consumer needs stable material IDs, and that turning a
  * consumer on is BYTE-IDENTICAL on the render path.
+ * @purpose C9-08 gate: scheduler/octree do zero per-command work at defaults; consumer registration pixel-identical; octree never admits terrain/tiles.
+ * @status ACTIVE
  *
  * WHAT IT ASSERTS (all read from scene.getDebugSnapshot().containment):
  *  A. Defaults, moving route (passes.render=true), both backends:

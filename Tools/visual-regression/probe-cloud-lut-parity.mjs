@@ -6,6 +6,8 @@
  * two new flags at their DEFAULTS (cloudAerialMode='heuristic',
  * cloudAmbientSource='constant') deterministically, dumping the RAW CANVAS pixels
  * to a PNG via the browser's toDataURL.
+ * @purpose B434 zero-drift gate: default heuristic-aerial + constant-ambient path byte-identical across modified vs stash-reverted builds
+ * @status INVESTIGATION
  *
  * Run once on the modified build (PARITY_TAG=modified) and once on the
  * stash-reverted main build (PARITY_TAG=main); the two PNGs MUST be byte-identical

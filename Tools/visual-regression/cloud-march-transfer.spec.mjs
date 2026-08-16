@@ -1,6 +1,8 @@
 /**
  * C13-16 — the MARCH TRANSFER model, pinned. Maintainer ruling R3, 2026-08-06
  * (`migration_doc/DEFERRED_WORK.md#RULING-2026-08-06`).
+ * @purpose Permanent home of the R3 march-transfer model: predicts the integrated image against 2026-08-06 tour ground truth; mutation group rebuilt non-vacuous.
+ * @status ACTIVE
  *
  * R3 asked for a model that predicts the INTEGRATED IMAGE rather than the field,
  * and for that model to be checked against real product data before anyone

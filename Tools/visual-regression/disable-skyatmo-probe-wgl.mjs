@@ -1,3 +1,6 @@
+// @purpose WebGL twin of disable-skyatmo-probe: disables skyAtmosphere/groundAtmosphere/fog/skyBox and captures, for dark-sky layer attribution.
+// @status INVESTIGATION
+
 import { chromium } from "playwright";
 
 const browser = await chromium.launch({

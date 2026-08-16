@@ -5,6 +5,8 @@
 // inverted clip-z) fixes. Close range deliberately avoids bug-2 (surface depth
 // precision at far distance / missing WebGPU log-depth), which is a separate
 // documented limitation.
+// @purpose Close-camera (600 m) parity check that Billboard/Point/Label render on WebGPU after the cull and clip-z fixes.
+// @status ACTIVE
 //
 // Adds one magenta Billboard, one yellow Point, and one lime Label at a fixed
 // lon/lat, flies the camera to ~600 m looking straight down, settles, then

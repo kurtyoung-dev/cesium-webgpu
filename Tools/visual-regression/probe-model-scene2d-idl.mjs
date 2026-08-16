@@ -1,5 +1,7 @@
 /**
  * C-MODEL-2DIDL-DUPLICATE-RELAND acceptance probe.
+ * @purpose Acceptance: an antimeridian-straddling model in SCENE2D emits the derived wrapped 2D command on WebGPU (both map edges); off-IDL off-gate.
+ * @status ACTIVE
  *
  * WebGL's ModelDrawCommand derives a second, y-shifted "2D" draw command
  * (`derive2DCommand` + `updateModelMatrix2D`) whenever a non-projectTo2D model

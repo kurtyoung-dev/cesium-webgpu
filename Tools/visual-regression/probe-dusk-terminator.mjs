@@ -1,4 +1,7 @@
 // Dusk-terminator regression probe (Batch 24, orbit polish §13.3;
+// @purpose Day/night terminator regression: pinned equinox clock, lit-vs-unlit hemisphere luminance ratio validates lightDirectionEC + nightAmbient floor.
+// @status ACTIVE
+//
 // rebuilt Batch 160 onto the CesiumViewer driver).
 //
 // Validates `lightDirectionEC` plumbing (Batches 17/18) +

@@ -4,6 +4,8 @@
 // drape/atmosphere path so we can tell whether the brightness gap is in
 // the drape branch (gap disappears here) or in the composite chain
 // (gap remains).
+// @purpose Brightness-ratio variant with ground atmosphere off on both backends — separates drape-branch darkening from the imagery-composite chain.
+// @status ACTIVE
 
 import { chromium } from "playwright";
 import fs from "fs";

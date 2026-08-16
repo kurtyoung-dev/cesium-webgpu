@@ -1,4 +1,7 @@
 // Probe demos for the WGSL parser DOCTYPE error.
+// @purpose Diagnostic: loads named Sandcastle demos under a renderer-override shim to reproduce the WGSL-parser DOCTYPE error (shader fetch got HTML).
+// @status INVESTIGATION
+//
 import { chromium } from "playwright";
 
 const RENDERER_OVERRIDE_SHIM = `

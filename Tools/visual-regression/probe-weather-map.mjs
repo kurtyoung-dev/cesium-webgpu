@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * Probe: the weather-map seam (Weather Phase 1 / C2-16, the keystone).
+ * @purpose Keystone C2-16 seam check: cloudWeatherMap ON makes coverage vary spatially across locations (high cell stddev); OFF stays uniform.
+ * @status ACTIVE
  *
  * Before: ProceduralClouds uses ONE global coverage scalar → cloud cover is
  * uniform across the whole sky (only FBM small-scale detail varies). After:

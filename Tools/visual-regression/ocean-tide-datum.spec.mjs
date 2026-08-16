@@ -1,6 +1,8 @@
 // ocean-tide-datum.spec.mjs — C6-FFT-OCEAN-TIDE-DATUM slice 1: pins the
 // bundled EGM2008 grid, the equilibrium TideModel, the AUTO datum derivation,
 // the offset composition order, and the exact-zero off-contract.
+// @purpose Pins the bundled EGM2008 grid, equilibrium TideModel phase/amplitude physics, geoid-then-tide composition order and the exact-zero off-contract.
+// @status ACTIVE
 //
 // These tests fail if:
 //   - the bundled geoid asset is regenerated at a different resolution,

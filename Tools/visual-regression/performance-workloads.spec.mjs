@@ -1,3 +1,6 @@
+// @purpose Large browser-free contract suite over the performance-campaign lib surface: schedules, pacing, evidence, ledgers, URL and manifest validation.
+// @status ACTIVE
+
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";

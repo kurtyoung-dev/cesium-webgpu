@@ -1,5 +1,7 @@
 // Vector3DTile .vctr end-to-end probe (NEW-VECTOR3DTILE-VCTR-E2E, Batch B8
 // of QUEUE_2026-07-03_CAMPAIGN-NEXT).
+// @purpose First real .vctr end-to-end pixel parity: polygon/polyline classifiers from upstream fixtures with IoU masks; stencil Z-fail verified.
+// @status ACTIVE
 //
 // First REAL WebGL-vs-WebGPU pixel comparison for Vector3DTile classifiers
 // driven by actual .vctr tile payloads. FORK_OVERVIEW §8's "no .vctr test

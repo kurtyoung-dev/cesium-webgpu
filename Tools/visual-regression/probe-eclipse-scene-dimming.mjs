@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // probe-eclipse-scene-dimming.mjs — C12-29 S2 (scene-light + atmosphere
 // dimming), WebGL vs WebGPU.
+// @purpose C12-29 S2: scene-light + atmosphere dimming via eclipseSceneLightFactor, measured as within-step off/on/autoexposure luminance ratios.
+// @status ACTIVE
 //
 // WHAT S2 SHIPS (research: migration_doc/ECLIPSE_EFFECTS_RESEARCH_2026-07-24.md).
 // S1 made the sun BILLBOARD fade. S2 makes the WORLD dim: one per-frame scalar

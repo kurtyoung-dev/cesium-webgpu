@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // Probe-ssr-water — Slice 5c-B Batch 132 SSR verification scene.
+// @purpose SSR verification scene: lake + wall reflector 4-cell matrix; visible reflection when on, deferredLighting toggle now a no-op.
+// @status ACTIVE
 //
 // Builds a scene with a low-roughness reflective polygon ("lake")
 // AND a tall block-shape polygon ("wall") behind/above the lake.

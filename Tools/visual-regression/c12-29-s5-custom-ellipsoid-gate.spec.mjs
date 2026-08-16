@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+// @purpose Gate spec for the C12-29 S5 custom-ellipsoid certification: geometry oracles, eclipse bindings, cross-backend derivation, v6 gate fold, mutants.
+// @status ACTIVE
 
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";

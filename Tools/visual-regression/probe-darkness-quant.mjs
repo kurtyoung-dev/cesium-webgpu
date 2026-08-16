@@ -4,6 +4,8 @@
 // reports per-channel mean + max + per-pixel ratio. Identifies whether
 // the darkening is uniform (a constant multiplier or wrong gamma) or
 // non-linear (a tonemap / opacity issue).
+// @purpose Quantitative backend-brightness comparison: 32x32 pixel-grid RGB means/ratios classify darkening as uniform vs non-linear.
+// @status INVESTIGATION
 
 import { chromium } from "playwright";
 

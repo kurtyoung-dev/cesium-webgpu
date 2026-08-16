@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // Probe-khr-meshopt — NEW-UPSTREAM-SYNC-1143 acceptance (Batch: v1.143 merge).
+// @purpose v1.143 merge acceptance: KHR_meshopt_compression assets load via the lazy MeshoptDecoder, render on both backends, and stay under the parity threshold
+// @status ACTIVE
 //
 // Upstream v1.143 (PR #13553) added KHR_meshopt_compression support:
 // `findMeshoptExtension` resolves either EXT_meshopt_compression or the

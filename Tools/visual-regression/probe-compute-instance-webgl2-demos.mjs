@@ -3,6 +3,9 @@
 // Sandcastle demos — "WebGPU Orbital Catalog" and "WebGPU SGP4 Satellites" —
 // must each RENDER and MOVE on BOTH backends, selected by the demo's own
 // ?renderer= query param:
+// @purpose User-facing check: Orbital Catalog and SGP4 Sandcastle demos render and animate on both backends; right backend proven armed.
+// @status ACTIVE
+//
 //   - ?renderer=webgl  exercises the WebGL2 CPU-kernel fallback (the JS
 //     cpuKernel each demo now ships): the engine has no compute shaders there,
 //     so the points come purely from the per-frame CPU kernel.

@@ -1,3 +1,6 @@
+// @purpose Minimal utility: loads the WebGPU viewer, settles 180 frames, prints only error/pipeline-failure console messages.
+// @status ACTIVE
+
 import { chromium } from "playwright";
 const URL =
   "http://localhost:8080/Apps/CesiumViewer/index.html?renderer=webgpu";

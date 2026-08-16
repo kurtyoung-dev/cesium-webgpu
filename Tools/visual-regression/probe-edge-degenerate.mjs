@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // Probe: degenerate-triangle edge parity (upstream PR#13421).
+// @purpose Degenerate-triangle edge parity (PR#13421 repro): extractor emits no NaN/Inf and classifies the zero-area face like WebGL; Node-side numeric.
+// @status ACTIVE
 //
 // Background — PR#13421 fixed a crash where loading a 3D tile / glTF
 // whose mesh contained a degenerate (zero-area) triangle with

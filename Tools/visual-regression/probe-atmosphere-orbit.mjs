@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 // Isolate which atmosphere component (sky vs ground) drives the orbit
 // residual. Captures three configurations at lat=80, alt=12Mm:
+// @purpose Ablation: full/sky-only/ground-only/all-off atmosphere at orbit, pixel-diffing WebGL vs WebGPU per config to attribute the orbit residual.
+// @status ACTIVE
+//
 //   A) full atmosphere (baseline)
 //   B) sky atmosphere ONLY (ground off)
 //   C) ground atmosphere ONLY (sky off)

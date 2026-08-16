@@ -2,6 +2,8 @@
 // probe-dp46b-metadata — DP-H46b proof: property-ATTRIBUTE scalar read via
 // GENERATED WGSL codegen (real `struct Metadata` + `initializeMetadata` +
 // `metadataDebugScalar`), replacing the DP-H46a stub.
+// @purpose Property-attribute scalar read via generated WGSL metadata codegen (struct Metadata + initializeMetadata): gradient proof, chunk asserts, off-parity.
+// @status ACTIVE
 //
 // Scenes (all WebGPU):
 //   A. meta-debug-on  — BoxTexturedWithPropertyAttributes with

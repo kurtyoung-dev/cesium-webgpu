@@ -2,6 +2,8 @@
 /**
  * C6-SSGI-DIFFUSE — screen-space diffuse global illumination (SSILVB visibility
  * bitmask). Fork-added, opt-in, default-off, WebGPU-only.
+ * @purpose C6 SSGI acceptance: ssgi renders, GI-only debug output non-black, OFF byte-identical, orbit degrades to no-op, zero device errors.
+ * @status ACTIVE
  *
  * Verifies:
  *   (1) FEATURE RENDERS — with the AmbientOcclusion stage enabled and its

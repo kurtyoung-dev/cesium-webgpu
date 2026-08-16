@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // Sandcastle WebGPU smoke probe (Batch 242 — CI blind-spot closure).
+// @purpose Standing Sandcastle CI blind-spot smoke: three local-resource WebGPU gallery demos gated on non-black, non-uniform, real device, zero errors.
+// @status ACTIVE
 //
 // WHY THIS EXISTS (the DepthPlane lesson): the DepthPlane MRT bug blanked
 // EVERY WebGPU Sandcastle demo for ~115 batches while all automated probes

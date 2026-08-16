@@ -1,4 +1,6 @@
 // Static contract for the Sandcastle2 Eclipse Explorer.
+// @purpose Static contract for the Sandcastle2 Eclipse Explorer demo: inline frozen preset authority, gallery file set, metadata, vm-checked main.js.
+// @status ACTIVE
 //
 // Run: node --test Tools/visual-regression/eclipse-sandcastle.spec.mjs
 

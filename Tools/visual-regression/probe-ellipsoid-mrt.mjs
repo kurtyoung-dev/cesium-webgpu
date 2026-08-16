@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // Probe-ellipsoid-mrt — Slice 5c-B Batch 118 verification.
+// @purpose EllipsoidPrimitive writes real eye-space normals to G-buffer slot 1: AO must diverge between G-buffer and depth-fallback reads.
+// @status ACTIVE
 //
 // Adds an EllipsoidPrimitive in front of the camera (large enough to
 // cover ~30% of the viewport) and runs the same A/B/C/D matrix as

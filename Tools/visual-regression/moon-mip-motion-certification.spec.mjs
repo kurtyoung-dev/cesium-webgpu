@@ -1,3 +1,6 @@
+// @purpose Certification-pipeline contracts for moon mip-motion evidence: calibrated thresholds, immutable snapshots, reviewer attestation, finalization.
+// @status ACTIVE
+
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import {

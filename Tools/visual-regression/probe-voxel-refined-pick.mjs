@@ -1,4 +1,6 @@
 // NS-VOXEL-REFINED-TILE-CELL-RETENTION acceptance probe.
+// @purpose Acceptance: Scene.pickVoxel on a refined octree tile — retained child content yields a full VoxelCell with identity-encoded color parity.
+// @status ACTIVE
 //
 // Exercises the PUBLIC `Scene.pickVoxel(windowPosition)` end-to-end on a
 // REFINED (octree level-1) voxel tile. Before this fix the WebGPU pick march

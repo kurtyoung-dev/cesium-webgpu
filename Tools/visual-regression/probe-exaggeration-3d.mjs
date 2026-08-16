@@ -4,6 +4,8 @@
 // 3D position offset from `length(position3D)-radius` to the WebGL attribute-based
 // `(newHeight - resolvedHeight)`. Captures an oblique 3D Himalaya view at EXAG=10
 // on both backends. READ the PNGs: WebGPU 3D relief should match WebGL.
+// @purpose SCENE3D vertical-exaggeration didn't-break guard after the B362 switch to the WebGL attribute-based height offset; oblique Himalaya EXAG=10.
+// @status ACTIVE
 //
 // Usage: PROBE_BASE=http://localhost:8080 EXAG=10 node Tools/visual-regression/probe-exaggeration-3d.mjs
 import { chromium } from "playwright";

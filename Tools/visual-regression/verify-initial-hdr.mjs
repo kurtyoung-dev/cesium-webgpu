@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 /**
  * Verify initial-mount HDR works (no runtime toggle).
+ * @purpose Diagnostic splitting 'HDR completely broken' from 'HDR runtime toggle broken' by mounting the viewer with HDR on before frame one.
+ * @status INVESTIGATION
+ *
  * Goal: distinguish "HDR completely broken" from "HDR runtime toggle broken".
  */
 import { chromium } from "playwright";

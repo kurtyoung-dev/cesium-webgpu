@@ -1,5 +1,7 @@
 // comment-marker-guard.spec.mjs — contract for the fork comment standard's
 // lint guard.
+// @purpose node:test contract for the C16 marker guard: rules still match (self-test vs broken rule), scope does not overreach, ratchet honest both ways.
+// @status ACTIVE
 //
 // Run: node --test Tools/c16/comment-marker-guard.spec.mjs
 //

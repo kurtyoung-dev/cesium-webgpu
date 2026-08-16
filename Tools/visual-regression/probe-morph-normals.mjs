@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // Probe (DP-H35): glTF morph-target NORMAL deltas on WebGPU.
+// @purpose DP-H35 acceptance: morph-target NORMAL deltas re-shade on WebGPU — within-backend luminance ratio isolates the normal morph from BRDF gaps.
+// @status ACTIVE
 //
 // Bug: WebGPU morph applies POSITION deltas but NOT NORMAL deltas, so the lit
 // shading on a morph-animated mesh is FROZEN — the surface deforms but the

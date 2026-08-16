@@ -2,6 +2,8 @@
  * Dependency-free reader for the small NASA SVS 5073 polygon fixture beside
  * this file. The module deliberately has no Node imports so the same bytes can
  * be parsed by `node --test` and by a same-origin browser probe.
+ * @purpose Dependency-free ESRI Shapefile Polygon + dBASE reader for the SVS 5073 umbra fixture, parseable by node --test and same-origin browser probes alike.
+ * @status ACTIVE
  *
  * Scope is intentionally narrow and loud: ESRI Shapefile Polygon (type 5),
  * one SHP/SHX pair, dBASE III character/numeric fields, and WGS84 lon/lat

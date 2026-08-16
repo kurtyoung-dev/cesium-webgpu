@@ -2,6 +2,8 @@
 // Probe (C7-SPLAT-DEPTH-COMPOSE) — WebGPU Gaussian splats must COMPOSE over
 // the opaque globe (not vanish), and a splat genuinely behind the surface
 // must STAY hidden.
+// @purpose Gaussian splats compose over the opaque globe and stay hidden behind it; OIT-deferral never-drop seatbelt plus occlusion controls.
+// @status ACTIVE
 //
 // ROOT CAUSE the fix addressed (2026-07-09): the frustum loop unconditionally
 // deferred splat commands with an `_oitPipeline` to the OIT translucent pass

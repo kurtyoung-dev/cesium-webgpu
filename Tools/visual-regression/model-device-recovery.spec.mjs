@@ -1,4 +1,6 @@
 // C11-194 — device/resource-generation recovery contracts for native Models.
+// @purpose Device/resource-generation recovery contracts for native Models across renderer, pipeline cache, device resources and stub texture sources.
+// @status ACTIVE
 //
 // Run: node --test Tools/visual-regression/model-device-recovery.spec.mjs
 

@@ -3,6 +3,8 @@
 // member). Automates the executor's manual bisection: with all environment
 // content hidden, does `scene.backgroundColor` still reach the framebuffer as
 // content is progressively removed?
+// @purpose Background-clear response gate: scene.backgroundColor must reach the canvas as env content is progressively removed (deferred-clear drop defect).
+// @status ACTIVE
 //
 // WHAT THIS GATES
 // ---------------

@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * Smoke test for the Batch 112-114 Vector3DTile feature renderers.
+ * @purpose Smoke for Vector3DTilePrimitive/Polylines/ClampedPolylines feature renderers: FR registration, createCommands, error-free render loop.
+ * @status ACTIVE
  *
  * Phase 1: Vector3DTilePrimitive — extruded polygon classifier.
  * Phase 2: Vector3DTilePolylines — non-clamped 3D polylines.

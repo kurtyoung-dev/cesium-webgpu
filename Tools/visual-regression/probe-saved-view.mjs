@@ -3,6 +3,8 @@
 // param) and capture WebGL vs WebGPU side-by-side. This catches issues
 // the default-camera probes miss — specific camera positions/altitudes
 // trigger LOD-specific tile artifacts and sky-shell depth bugs.
+// @purpose Loads user-reported saved-view URLs and captures WebGL vs WebGPU side-by-side; the canonical capture+diff template for view-specific bugs.
+// @status ACTIVE
 //
 // Usage: node Tools/visual-regression/probe-saved-view.mjs
 // Outputs: probe-saved-view-{webgl,webgpu}-{label}.png

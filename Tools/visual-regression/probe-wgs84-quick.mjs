@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 // Quick probe: orbit-only comparison for WGS84 ellipsoid.
+// @purpose Quick orbit-only WebGL-vs-WebGPU comparison used to verify the Batch-56 alpha=1 force in WebGPUImageryReprojection.
+// @status INVESTIGATION
+//
 // Used to verify the Batch 56 alpha=1 force in WebGPUImageryReprojection fix.
 
 import { chromium } from "playwright";

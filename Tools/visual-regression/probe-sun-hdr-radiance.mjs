@@ -1,5 +1,7 @@
 // probe-sun-hdr-radiance.mjs — the solar disc captured at TWO disc radiances,
 // to settle what shape the rendered-versus-resolved radiance excess has.
+// @purpose Two-radiance discriminator: is the sun-disc excess multiplicative gain or additive pedestal, from plateau ratios via enableTrueSolarRadiance.
+// @status ACTIVE
 //
 // THE QUESTION. Offline inversion of the sun-disc captures recovers a flat disc
 // brighter than the radiance the frame itself resolved onto

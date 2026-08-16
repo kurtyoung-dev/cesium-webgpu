@@ -1,5 +1,7 @@
 /**
  * Acceptance probe for the Q35 culler-pool decomposition slice.
+ * @purpose Acceptance for the culler-pool decomposition: exercises the extracted WebGPUContextCullerPool delegators; globe still renders.
+ * @status ACTIVE
  *
  * Loads the WebGPU CesiumViewer, lets the globe settle, then exercises the
  * culler-pool free functions that were extracted into

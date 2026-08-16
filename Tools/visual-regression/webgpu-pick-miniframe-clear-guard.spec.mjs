@@ -1,5 +1,7 @@
 // C11-13 preservation repair — standalone WebGPU pick mini-frames own an
 // independent clear-loop budget.
+// @purpose Pins that standalone WebGPU pick mini-frames reset their own clear-loop budget: beginPickFrame resets counters and creates its encoder.
+// @status ACTIVE
 //
 // Run: node --test Tools/visual-regression/webgpu-pick-miniframe-clear-guard.spec.mjs
 

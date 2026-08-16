@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * C11-169 — exact WebGPU CPU frame-accounting browser gate.
+ * @purpose C11-169 exact CPU frame-accounting gate: per-frame conservation (total = passes + phases + unattributed) over the shared track; negative lanes.
+ * @status ACTIVE
  *
  * This is deliberately a DIAGNOSTIC, NON-CAUSAL run. Enabling the CPU pass
  * profiler adds clock reads around render passes, so its absolute timings must

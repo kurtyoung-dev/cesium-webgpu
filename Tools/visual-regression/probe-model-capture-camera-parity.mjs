@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // C2-25 ENV-SCENE-CAPTURE (Batch 447) — model/3D-Tiles capture: OFF-parity +
 // CAMERA-PARITY probe (run FIRST, must pass before the ON path).
+// @purpose OFF-parity gate for env-scene-capture models: the packCameraUniforms eye-swap is a no-op on-screen across 3D/2D/CV + multi-view.
+// @status ACTIVE
 //
 // The ONLY on-screen edit in Batch 447 is the `packCameraUniforms` eye-swap:
 // both eye reads now come from `uniformState.cameraPosition` instead of

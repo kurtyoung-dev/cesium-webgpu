@@ -1,6 +1,8 @@
 /**
  * lunar-landmarks.mjs — shared, dependency-free alignment checker for the
  * bundled lunar albedo equirectangular (C12-24).
+ * @purpose Dependency-free landmark alignment checker pinning the lunar albedo map's orientation (180-shift / lon-mirror / lat-mirror each trip a named check).
+ * @status ACTIVE
  *
  * WHY THIS EXISTS
  * ---------------

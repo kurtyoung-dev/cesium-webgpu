@@ -1,4 +1,7 @@
 // capture-plan.mjs — the pure, browser-free half of a capture run's SCHEDULE:
+// @purpose Pure schedule half of a capture run: which scenes run, per-scene budget, manifest-derived watchdog, and what counts as already-captured on disk.
+// @status ACTIVE
+//
 // which scenes actually run, how long each one is allowed to take, and how long
 // the force-exit watchdog waits before it decides the run is wedged.
 //

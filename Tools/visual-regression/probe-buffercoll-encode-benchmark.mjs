@@ -3,6 +3,8 @@
 // for the BufferPointCollection POSITION encode, on BOTH backends (webgpu +
 // webgl), at 10k / 50k / 100k points, PLUS a visual no-regression assertion
 // (WebGPU vs WebGL point coverage parity) at each count (Principle 8).
+// @purpose Repack+upload benchmark of BufferPointCollection position encode (batch vs forced-scalar) at 10k/50k/100k, both backends, visual check.
+// @status ACTIVE
 //
 // WHAT IT MEASURES: a full-collection position update is applied EVERY frame
 // (every point nudged), forcing the whole collection through the repack path

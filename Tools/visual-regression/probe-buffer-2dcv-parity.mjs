@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // probe-buffer-2dcv-parity.mjs  (PARITY-BUFFER-2DCV)
+// @purpose Acceptance for Buffer* (Point/Polyline/Polygon) 2D/Columbus-View reprojection parity — pixel-diffs both backends in all three scene modes.
+// @status ACTIVE
 //
 // Acceptance probe for the Buffer* (Point / Polyline / Polygon) 2D /
 // Columbus-View / Morph reprojection parity task.

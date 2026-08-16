@@ -1,6 +1,9 @@
 /**
  * NEW-KHR-ANISO-TANGENT (IBL) verification — renders TestKhrAnisotropy.gltf
  * on WebGL and WebGPU, captures the model, and pixel-diffs the two backends.
+ * @purpose KHR_materials_anisotropy IBL bent-normal parity: WebGL-vs-WebGPU pixel diff on TestKhrAnisotropy with the WebGPU error gate armed.
+ * @status ACTIVE
+ *
  * Also arms the WebGPU error/crash gate so the new IBL bent-normal shader
  * path is proven to execute without validation errors.
  *

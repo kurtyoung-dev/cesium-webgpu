@@ -1,6 +1,8 @@
 // ocean-tide-datum-model.mjs — pure math, published reference constants and
 // verdict logic for the C6-FFT-OCEAN-TIDE-DATUM acceptance
 // (`probe-ocean-tide-datum.mjs` + `ocean-tide-datum.spec.mjs`).
+// @purpose Published NOAA/ephemeris constants plus verdict logic accepting the geoid-anchor defect fix and the equilibrium-tide feature together.
+// @status ACTIVE
 //
 // NO browser, NO Playwright, NO engine imports. Everything here is
 // Node-testable in isolation; the spec is the trust anchor for the probe's

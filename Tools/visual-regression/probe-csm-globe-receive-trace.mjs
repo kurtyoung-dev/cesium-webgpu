@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // probe-csm-globe-receive-trace — NEW-CSM-GLOBE-RECEIVE-PROJECTION-MISS trace.
+// @purpose Diagnostics-only trace of why globe-terrain CSM receive missed: projects a shadowed point via globe vs cast reconstructions.
+// @status INVESTIGATION
 //
 // Localizes WHY the globe-terrain CSM receiver fails to darken under a
 // caster's shadow while the appearance-primitive receiver self-shadows fine.

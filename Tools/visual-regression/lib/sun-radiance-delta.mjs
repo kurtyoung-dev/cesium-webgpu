@@ -1,5 +1,7 @@
 // sun-radiance-delta.mjs — the solar disc measured at TWO disc radiances, and
 // the discrimination that only a two-radiance run can make.
+// @purpose Two-radiance sun-disc measurement model discriminating multiplicative gain vs additive pedestal via a parameter-free ratio statistic.
+// @status ACTIVE
 //
 // WHAT THIS EXISTS TO SETTLE. Offline inversion of the sun-disc captures
 // recovers a flat disc noticeably BRIGHTER than the radiance the frame itself

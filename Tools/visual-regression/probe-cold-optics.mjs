@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * Atmospheric Effects Phase D — COLD OPTICS (Batch 422). WebGPU-only visual probe.
+ * @purpose Base cold-optics acceptance: ON adds a ring at constant angular radius around the sun (radial profile) vs OFF on the same canvas.
+ * @status ACTIVE
  *
  * Cold optics (22 ice-crystal halo + sun-dogs) is a WebGPU screen-space sky
  * overlay with no WebGL twin, so the diff is OPTICS-ON vs OPTICS-OFF on the

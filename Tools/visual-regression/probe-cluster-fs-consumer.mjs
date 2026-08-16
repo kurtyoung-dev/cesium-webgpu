@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // Probe-cluster-fs-consumer — Slice 5d Batch 149 end-to-end validation.
+// @purpose End-to-end Forward+ chain: bounds -> assign -> debug renderer; pixel colors confirm the FS cluster Z-slice mapping matches assign.
+// @status ACTIVE
 //
 // Composes the FULL Forward+ chain:
 //   1. WebGPUClusterBoundsRenderer  — compute cluster eye-space AABBs.

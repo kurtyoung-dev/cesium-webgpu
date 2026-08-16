@@ -1,5 +1,7 @@
 /**
  * NEW-MODEL-PBR-DIRECT-LIGHT-IBL-PARITY — at-rest neutral-model PBR parity.
+ * @purpose At-rest neutral-model PBR parity: luminance/tint/flatness gap between backends; D1 atmosphere-derived env sky closed the residual to ~1%.
+ * @status ACTIVE
  *
  * A neutral glTF model renders gray/flat (~0.6 luminance) on WebGPU versus a
  * tinted/brighter result on WebGL at REST (default sun, no scene lights). This

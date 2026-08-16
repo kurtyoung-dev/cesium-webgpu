@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * Probe: EdgeDisplayMode tri-mode parity on WebGPU vs WebGL.
+ * @purpose EdgeDisplayMode tri-mode signature parity: the three modes pairwise distinct on WebGPU and tracking WebGL's coverage ordering.
+ * @status ACTIVE
  *
  * Verifies the §5 P2 batch `batch-edge-display-mode-tri`:
  *   - SURFACES_ONLY (the DEFAULT): edge-bearing glTF shows NO edges,

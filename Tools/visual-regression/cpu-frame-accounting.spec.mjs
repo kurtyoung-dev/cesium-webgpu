@@ -1,3 +1,6 @@
+// @purpose Deterministic-clock tests of WebGPUCpuPassProfiler whole-scene phase accounting (CPU_SCENE_PHASE_NAMES coverage, no wall-clock leakage).
+// @status ACTIVE
+
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";

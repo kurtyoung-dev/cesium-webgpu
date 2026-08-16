@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // Probe-khr-lights-punctual — Batch 142 / Slice 5d step 1 verification.
+// @purpose Verifies KHR_lights_punctual extraction: 3 lights resolved per-node into model.lightsFromGltf and packed into the per-model light UBO without errors
+// @status ACTIVE
 //
 // Loads a synthetic glTF asset (TestLightsPunctual.gltf) that declares
 // KHR_lights_punctual at the document level (3 lights: directional,

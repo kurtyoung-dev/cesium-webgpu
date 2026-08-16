@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 // Exact pixel diff of two canvas-element PNGs (Batch 440 parity gate).
+// @purpose CLI exact pixel diff of two canvas PNGs via Playwright canvas decode; reports differing-pixel count/%/max channel delta (fog-MS parity gate tool).
+// @status INVESTIGATION
+//
 // Decodes both via Playwright/createImageBitmap (no Node PNG dep) and reports
 // the count + percentage of differing pixels (and max channel delta).
 //

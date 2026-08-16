@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * C9-02A/C9-02B physical depth-plane scene/pick attachment matrix.
+ * @purpose Runs the live WebGPU depth plane across SDR/HDR, MSAA, resize, and device-invalidation rebuild; records dynamic uniform offsets, fails GPU errors.
+ * @status ACTIVE
  *
  * Exercises the same live WebGPU depth plane through SDR/HDR, MSAA 1/4,
  * viewport resize, and the renderer's device-invalidation rebuild seam. It

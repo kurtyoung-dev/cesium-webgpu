@@ -5,6 +5,8 @@
 // to pure black (the bright catalog stars + their bloom halos vanished). Fix
 // (Batch 364): honor PostProcessStageCollection._autoExposureEnabled (WebGL's
 // opt-in flag, default false) so both backends expose identically by default.
+// @purpose Guards the B364 fix: WebGPU honors the opt-in auto-exposure flag so the HDR night sky is not crushed to black versus WebGL.
+// @status ACTIVE
 //
 // Renders the same night-sky view on BOTH backends under HDR and asserts the
 // WebGPU frame is NOT crushed (bright pixels + saturated bloom-feeding points +

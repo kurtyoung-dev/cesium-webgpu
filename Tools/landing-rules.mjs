@@ -1,4 +1,6 @@
 // landing-rules.mjs — the landing-discipline predicates, as pure functions.
+// @purpose Pure landing-discipline predicates (quiet-hours window, Batch-N subject grammar, body, co-author trailer) shared by pre-push hook and detector.
+// @status ACTIVE
 //
 // Charter:  migration_doc/EXECUTOR_LANE_CHARTER_2026-08-14.md §2.1/§2.2/§2.3
 // Ruling:   migration_doc/MAINTAINER_RULINGS_2026-08-14.md R-2026-08-14-4

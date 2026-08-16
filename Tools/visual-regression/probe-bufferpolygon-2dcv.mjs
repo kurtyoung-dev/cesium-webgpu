@@ -1,6 +1,8 @@
 // probe-bufferpolygon-2dcv.mjs
 // BufferPolygon-family 2D / Columbus-View reproject baseline probe
 // (batch-bufferpolygon-2dcv-probe).
+// @purpose Pre-fix baseline recorder: captures the expected-LARGE 2D/CV diff for BufferPolygon (wandering points) as the before-image for the fix.
+// @status INVESTIGATION
 //
 //   node Tools/visual-regression/probe-bufferpolygon-2dcv.mjs
 //

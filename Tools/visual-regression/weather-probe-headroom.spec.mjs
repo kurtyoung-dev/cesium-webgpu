@@ -2,6 +2,8 @@
 // Gate-B repairs: `probe-weather-metar.mjs`'s gate-4 partial-coverage
 // discriminator, and `probe-weather-channels.mjs`'s migration onto the shared
 // pinning module with a BRACKETING determinism control.
+// @purpose Guard for Gate-B probe repairs: METAR gate-4 partial-coverage discriminator and channels-probe migration onto shared pinning with brackets.
+// @status ACTIVE
 //
 // Both repairs are repairs to a GATE, so a spec that only exercised the correct
 // implementation would be worth nothing: the pre-repair code also "passed" — it

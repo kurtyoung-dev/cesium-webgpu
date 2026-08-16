@@ -1,4 +1,6 @@
 // sun-hdr-radiance.spec.mjs — C12-19 (True HDR sun radiance + BrightPass retune).
+// @purpose Node gate for true-HDR sun radiance: derived disc radiance, alpha-clamp safety, derived BrightPass retune, SunPostProcess 8-bit vacuity fix.
+// @status ACTIVE
 //
 // Pins, in pure Node with no browser:
 //

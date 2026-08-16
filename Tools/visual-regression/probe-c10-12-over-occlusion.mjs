@@ -2,6 +2,8 @@
 /**
  * C10-12 over-occlusion guard — the load-bearing check for the pick-depth-plane
  * gate flip.
+ * @purpose Load-bearing guard for the pick-depth-plane flip: plane-on visible-face pick hit-rate must be >= plane-off at every altitude.
+ * @status ACTIVE
  *
  * The Run-1 failure (2026-07-16) was a log depth-plane over a HYPERBOLIC pick
  * fleet OVER-OCCLUDING every visible pick across the globe disk. Now the fleet

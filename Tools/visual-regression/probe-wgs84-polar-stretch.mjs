@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 // Reproduce the user-reported polar-stretching artifact on WGS84 orbit.
+// @purpose Repro of the user-reported northern-latitude polar stretching on WGS84 orbit at the default home view, WebGL vs WebGPU.
+// @status INVESTIGATION
+//
 // User flagged "stretched at the northern latitudes" — similar to a prior
 // Ion-terrain bug.
 //

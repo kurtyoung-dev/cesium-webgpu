@@ -1,3 +1,6 @@
+// @purpose Browser-side ESM harness driving a voxel octree scene through inside/outside-volume camera waypoints on either backend for the C11-13 probe.
+// @status ACTIVE
+
 import * as Cesium from "cesium";
 
 import {

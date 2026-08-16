@@ -2,6 +2,8 @@
 // Probe (NEW-SPLAT-SORT-CONSUME-INDEXES + NEW-LOG-DEPTH-REMAINING-PRODUCERS-
 // POINTCLOUD-SPLAT — Batch 288). Two things this probe verifies on the WebGPU
 // Gaussian-splat renderer:
+// @purpose Splat back-to-front sort consumption + log-depth producer gate; docstring voids pre-2026-08-01 gate-OFF results (pipeline-key aliasing).
+// @status ACTIVE
 //
 //  (A) BACK-TO-FRONT SORT CONSUMPTION. Pre-Batch-288 the WebGPU draw rendered
 //      splats in buffer (storage) order, never consuming a depth sort, so the

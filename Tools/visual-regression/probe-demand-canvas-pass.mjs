@@ -1,4 +1,6 @@
 // C9-07-DEMAND-OPEN-CANVAS-PASS / FAR-405-C0 acceptance probe.
+// @purpose Certifies deferred canvas-pass demand-open: present, empty-scene clear, requestRenderMode retention, resize, and debug-overlay legs on WebGPU.
+// @status ACTIVE
 //
 // The WebGPU context used to open the "Scene Main Render Pass" (canvas
 // swap-chain pass) unconditionally in beginFrame() and again after the

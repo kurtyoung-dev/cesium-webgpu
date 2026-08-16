@@ -1,6 +1,8 @@
 // moon-phase-terminator.spec.mjs — C12-21 (phase-dependent earthshine) and
 // C12-22 (soft terminator from the Sun's finite angular size), plus the
 // C11-176b regression surface those two ride on.
+// @purpose Cross-language equivalence of softTerminatorMu0 (WGSL/GLSL/JS to 1e-15) plus property predicates proven against four wrong implementations.
+// @status ACTIVE
 //
 // WHAT THIS SPEC IS FOR. Both rows are pure arithmetic changes inside a
 // lockstep shader PAIR (`Shaders/WebGPU/Environment/Moon.wgsl` ↔

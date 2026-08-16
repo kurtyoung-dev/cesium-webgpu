@@ -2,6 +2,8 @@
 /**
  * Probe: explicit `edgeVisibility.lineStrings` edge extraction
  * (NEW-EDGE-LINESTRINGS-EXPLICIT / C-R8-EDGE-LINESTRINGS).
+ * @purpose Regression guard: lineStrings-only primitives emit edges (pre-B316: zero); 7 Node-side asserts incl. restart delimiting, dedup, off-gate.
+ * @status ACTIVE
  *
  * REGRESSION GUARD. The named gap — "explicit lineStrings edges yield ZERO
  * WebGPU edges" — was CLOSED in Batch 316 (`cf7edec7dc`): before it, the

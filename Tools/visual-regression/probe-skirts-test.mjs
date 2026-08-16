@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // Test if the blue tile-boundary lines on WebGPU are caused by terrain
 // skirts. Capture WebGPU at WGS84 14Mm with skirts ON vs OFF.
+// @purpose A/B capture of WebGPU terrain skirts ON vs OFF to test whether blue tile-boundary lines were caused by skirts.
+// @status INVESTIGATION
 
 import { chromium } from "playwright";
 import fs from "fs";

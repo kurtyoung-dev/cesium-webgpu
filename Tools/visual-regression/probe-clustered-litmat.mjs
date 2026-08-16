@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // Probe-clustered-litmat — Slice 5d Batch 154 verification.
+// @purpose Clustered consumer on the primitive Mat*Lit path: lit MaterialAppearance primitive brightens under a PointLight when ON.
+// @status ACTIVE
 //
 // Confirms the Forward+ clustered-lighting consumer works on the primitive
 // "Mat*Lit" path (material appearance with lighting), the same way

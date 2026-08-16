@@ -2,6 +2,8 @@
 /**
  * `C15-G1..G3` — Gaussian-splat probe harness, WebGL reference leg, and the
  * `--expect-webgpu` flip.
+ * @purpose Dual-mode gsplat harness: certifies attributable WebGPU absence pre-G3, scores presence with --expect-webgpu; exit-gate instrument for GSPLAT rows
+ * @status ACTIVE
  *
  * This is the instrument every later GSPLAT row's exit gate runs through, and
  * it is deliberately DUAL-MODE. The same probe has to do two opposite jobs at

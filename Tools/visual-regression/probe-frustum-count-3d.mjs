@@ -8,6 +8,9 @@
 // never routes those commands through commandList, so it runs 1. The fix keys
 // on `pass === Pass.ENVIRONMENT` to keep those commands OUT of the near/far
 // accumulators (they still bin + execute once in the farthest frustum), so
+// @purpose Records scene.numberOfFrustums + per-frustum ENVIRONMENT/GLOBE bins on both backends at 3 altitudes to gate the ENV-command frustum-binning fix
+// @status ACTIVE
+//
 // WebGPU collapses to 1 frustum == WebGL. A sky-only leg (globe hidden, facing
 // space) must still keep >= 1 frustum with the star field visible.
 //

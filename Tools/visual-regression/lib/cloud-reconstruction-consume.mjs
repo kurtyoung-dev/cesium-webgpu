@@ -1,6 +1,8 @@
 /**
  * C13-10 Edge acceptance — the browser-free half of
  * `probe-cloud-reconstruction-consume.mjs`.
+ * @purpose Browser-free half of the C13-10 acceptance: interleaved A/B schedule builder, null-not-zero pass-timing reads, and the FAIL-outranks-STRUCTURAL fold.
+ * @status ACTIVE
  *
  * WHY THESE PIECES LIVE OUTSIDE THE PROBE. Three of the probe's rules are the
  * kind this repo has already been burned by, and a rule that only exists inside

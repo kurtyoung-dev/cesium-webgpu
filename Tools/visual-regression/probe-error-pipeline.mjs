@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * Probe: C2-22 flat-magenta error pipeline for a failed model PBR pipeline.
+ * @purpose Flat-magenta fallback for a failed model PBR pipeline: forced-failure hook renders magenta instead of a silent hole; hook off renders normally.
+ * @status ACTIVE
  *
  * When a model's PBR pipeline fails validation, WebGPU's synchronous
  * createRenderPipeline returns an INVALID pipeline whose draws are silently

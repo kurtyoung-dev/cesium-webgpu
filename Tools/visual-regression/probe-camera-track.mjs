@@ -6,6 +6,8 @@
  * rotate to the far side of the planet), capturing a screenshot at EACH waypoint
  * on BOTH backends (WebGPU + WebGL) to surface tile load/unload artifacts and
  * cross-backend diffs at every camera-distance band ALONG MOTION.
+ * @purpose Connected orbit-to-ground camera track capturing + diffing both backends at each waypoint to surface tile-streaming/LOD artifacts along motion
+ * @status ACTIVE
  *
  * WHY A TRACK (not a static distance sweep): static probes (probe-farcam-*) miss
  * artifacts that only appear while tiles are streaming in/out as the camera

@@ -1,5 +1,8 @@
 // Campaign 8 performance BASELINE harness: load-time + steady-state FPS for WebGL vs
 // WebGPU on the default globe. Read-only (loads the running :8080 server). Bounded.
+// @purpose Campaign-8 perf baseline: load-time + steady-state idle FPS, WebGL vs WebGPU, on the default globe
+// @status INVESTIGATION
+//
 import { chromium } from "playwright";
 
 const BASE = "http://localhost:8080/Apps/CesiumViewer/index.html";

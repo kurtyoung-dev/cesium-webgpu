@@ -1,5 +1,7 @@
 /**
  * C9-02 fixed-checkpoint terrain selection parity probe.
+ * @purpose C9-02 fixed-waypoint parity: shared quadtree selection and portable CPU terrain revisions compared across backends at settled checkpoints.
+ * @status ACTIVE
  *
  * Unlike the moving performance lane, this probe settles the same local
  * ellipsoid/grid scene at exact camera waypoints before comparing the shared

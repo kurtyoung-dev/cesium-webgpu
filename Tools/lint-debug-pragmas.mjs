@@ -2,6 +2,8 @@
 // Lint: flag debug-style console calls in the WebGPU renderer that are NOT
 // wrapped in a `//>>includeStart('debug', pragmas.debug)` ... `//>>includeEnd('debug')`
 // guard.
+// @purpose Lints Renderer/WebGPU for console.log/warn/debug/info calls not wrapped in //>>includeStart('debug') pragmas; console.error exempt by policy.
+// @status ACTIVE
 //
 // Per CLAUDE.md ("Logging & Debug Pragmas"): per-frame / init-time /
 // informational console.{log,warn,debug,info} MUST be pragma-wrapped so the

@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // Batch 429 — SKY-MS all-azimuth (A-LUT-REPARAM follow-up).
+// @purpose Verifies the reparameterized MS LUT lifts the twilight sky at ALL azimuths (toward/side/anti sun), directionally, with no wrap seam.
+// @status ACTIVE
 //
 // Verifies the multiple-scattering add now lifts the sky at ALL azimuths, not
 // just the sun meridian, after re-parameterizing the MS LUT onto the

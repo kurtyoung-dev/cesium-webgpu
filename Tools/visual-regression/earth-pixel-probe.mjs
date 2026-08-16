@@ -3,6 +3,8 @@
  * Earth pixel probe — loads CesiumViewer twice (once per renderer) at the
  * SAME camera position and reads RGB values at the same screen positions
  * to quantify any color shift between WebGL and WebGPU.
+ * @purpose Loads CesiumViewer once per backend at one pinned camera and samples RGB at fixed screen points (center/ocean/continent/sky) to quantify color shift.
+ * @status INVESTIGATION
  *
  * Reports the per-channel delta at sample points (Earth center, ocean,
  * continent, sky) so we can identify whether the residual difference is

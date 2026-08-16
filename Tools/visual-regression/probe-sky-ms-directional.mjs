@@ -7,6 +7,8 @@
 // and on. After Batch 429 the ON add must raise the SUN-SIDE half MORE than the
 // anti-side half — a directional lift, not a flat veil. Also saves the OFF/ON
 // PNGs for a visual read.
+// @purpose Render-level directionality check: MS ON must lift the sun-side half of a horizon-perpendicular view more than the anti-sun half.
+// @status ACTIVE
 //
 //   node Tools/visual-regression/probe-sky-ms-directional.mjs
 //   SKY_MS_TIME=2026-05-19T22:00:00Z node ...   (higher sun)

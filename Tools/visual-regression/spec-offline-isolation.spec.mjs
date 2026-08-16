@@ -1,4 +1,6 @@
 // C11-134 — NEW-FULL-SUITE-OFFLINE-DEPENDENCY-ISOLATION.
+// @purpose C11-134: pins the external-URL classifier (fail-closed) and the online-lane quarantine so network suites skip with a reason offline.
+// @status ACTIVE
 //
 // The exit gate (C11-137) is defined on truthful executed/skipped/failed counts
 // with every skip reasoned. That is unreachable while specs reach Ion / Cesium

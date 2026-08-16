@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // C6-TPDF-DITHER-FINAL acceptance probe.
+// @purpose C6 TPDF dither acceptance: banding metrics on a sky gradient (distinct colors up, max run down); OFF leaves no residue (frame hash equal).
+// @status ACTIVE
 //
 // Verifies the opt-in triangular-PDF dither added to the WebGPU tonemap
 // stage (Tonemapping.wgsl / Tonemapping_f16.wgsl) reduces visible banding

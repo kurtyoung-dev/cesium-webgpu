@@ -4,6 +4,8 @@
 // extents) on each backend. If the bounds differ by more than 1-2 pixels,
 // there is a projection-precision / RTE-camera-offset gap at large camera
 // positions.
+// @purpose Measures Earth-disc pixel bounds per backend at orbit altitude, atmosphere off, to quantify the Batch-63 'WebGPU disc ~10% smaller' report.
+// @status INVESTIGATION
 //
 // Batch 63 noted the WebGPU globe disc appears ~10% smaller at orbit.
 // This probe quantifies that.

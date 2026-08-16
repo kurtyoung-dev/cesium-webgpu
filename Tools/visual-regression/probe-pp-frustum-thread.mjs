@@ -2,6 +2,8 @@
 /**
  * C4-LOGDEPTH-PP-FRUSTUM-SLICEA — thread live per-frame frustum near/far +
  * renderer-wide `logActive` flag into each depth-reading post-process effect UB.
+ * @purpose Gate: live frustum near/far + log-depth flag threaded into AO/DoF/GodRay UBs (not the 0.1/10000 placeholder), byte-identical off-gate
+ * @status ACTIVE
  *
  * Before this slice the AmbientOcclusion + DepthOfField effects baked a
  * placeholder `near=0.1 / far=10000` at init, so their depth linearization was

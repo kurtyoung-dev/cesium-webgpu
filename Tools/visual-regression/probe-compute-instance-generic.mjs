@@ -4,6 +4,9 @@
 // proving the engine system carries zero orbital domain knowledge. The
 // kernel here drives instances along a Lissajous figure-8 path around a
 // fixed point above the globe (pure toy math, nothing Keplerian):
+// @purpose Feature-agnosticism check: a non-orbital Lissajous kernel renders, animates from the time scalar, threads BV + TAA velocity.
+// @status ACTIVE
+//
 //   (A) RENDER — 400 magenta dots on the figure-8 produce a magenta pixel
 //       count over threshold from a fixed camera,
 //   (B) MOVE — the dots advance along the path purely from the per-frame

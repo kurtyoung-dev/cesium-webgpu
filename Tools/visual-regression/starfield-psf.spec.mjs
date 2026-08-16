@@ -1,4 +1,6 @@
 // starfield-psf.spec.mjs — C12-05/06/07/08 analytic acceptance spec.
+// @purpose C12-05..08 analytic acceptance: CPU reference of the Moffat core+wing PSF and linear-Pogson mapping; WGSL/GLSL constant lockstep.
+// @status ACTIVE
 //
 // CPU reference implementation of the StarField Moffat core+wing PSF and
 // the linear-Pogson magnitude→intensity mapping, proving the G2 shape

@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 /**
  * CLOUD-U6-WEATHER-FLAGS — weather flags exposed through collection.volumetric.
+ * @purpose U6 acceptance: weather dials reach the raymarcher via collection.volumetric; inert off the deck path, off-legs byte-identical.
+ * @status ACTIVE
+ *
  * WebGPU-only. Slice 6 of the cloud-unification epic.
  *
  * The three weather dials — cloudWeatherMap, weatherProvider,

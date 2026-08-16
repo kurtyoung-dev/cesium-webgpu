@@ -6,6 +6,8 @@
 // line. This probe forces `ensureAtmosphereLUTResources` to return
 // null on the WebGPU side, then diffs against an unmodified WebGL run
 // at three atmosphere-prominent views.
+// @purpose Verifies the WGSL ground-atmosphere inline analytic fallback matches WebGL when the LUT is forced unavailable, 3 views, pinned clock.
+// @status ACTIVE
 //
 // CLOCK PINNING (Batch 70+) — same fixed UTC as polar-multi-plain so
 // the terminator falls in the same place across runs.

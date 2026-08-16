@@ -1,4 +1,6 @@
 // pre-push-guard.spec.mjs — end-to-end contract for the pre-push hook.
+// @purpose End-to-end wiring contract: hook fires on push, not on fetch/pull, and is POSIX-sh clean, exercised in a throwaway temp repository.
+// @status ACTIVE
 //
 // Run: node --test Tools/pre-push-guard.spec.mjs
 //

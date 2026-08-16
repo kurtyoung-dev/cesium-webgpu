@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // Probe: Atmospheric Effects Phase C — GROUND FOG (Batch 420 / 421).
+// @purpose Gates the froxel ground-fog own-activation path: config echo, ON-lane dispatch, lower-band brightening vs an OFF noise floor — hard exit codes
+// @status ACTIVE
 //
 // Verifies the WebGPU froxel volumetric-fog renderer's near-surface mist
 // boost, driven by `atmosphericConditions.effects.groundFog`. Ground fog

@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * C12-29 S5 same-context logical-View / stereo policy certification.
+ * @purpose Logical-View/stereo policy certification: offscreen ray View, WebGL two-eye VR executor, WebGPU synchronous unsupported-path rejection
+ * @status ACTIVE
  *
  * The A -> B -> A lane is deliberately Tools-owned. `Scene.render` is used to
  * settle the ordinary default view, but never to pretend that Cesium has an

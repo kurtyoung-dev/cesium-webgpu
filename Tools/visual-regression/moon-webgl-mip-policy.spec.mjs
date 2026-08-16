@@ -1,3 +1,6 @@
+// @purpose Behavioral tests of the WebGL moon mip policy: NPOT mip generation under WebGL2, trilinear/linear sampler selection, mip level counts.
+// @status ACTIVE
+
 import test from "node:test";
 import assert from "node:assert/strict";
 

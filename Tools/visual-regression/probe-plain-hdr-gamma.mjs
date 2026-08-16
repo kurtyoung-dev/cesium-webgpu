@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // Q13-PLAIN-HDR-GAMMA-CORE acceptance probe.
+// @purpose Acceptance: plain highDynamicRange=true brightness parity WebGL vs WebGPU (sRGB decodes, no double tonemap), with SDR control legs
+// @status ACTIVE
 //
 // Under PLAIN `scene.highDynamicRange = true` (SDR canvas — NOT the
 // rgba16float HDR-canvas-output path), WebGL pushes the single `HDR` define

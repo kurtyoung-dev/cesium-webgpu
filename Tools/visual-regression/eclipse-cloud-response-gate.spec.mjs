@@ -1,6 +1,8 @@
 // eclipse-cloud-response-gate.spec.mjs — the pure-Node half of C13-41's Edge
 // acceptance: the probe's predicate COMPOSITION, its pre-registered bands, and
 // the arithmetic those bands are derived from.
+// @purpose Pure-Node half of C13-41's Edge acceptance: recomputes the pre-registered bands, derives the sweep refresh count, mutant-checks every fold predicate.
+// @status ACTIVE
 //
 // Pure Node (`node --test`). No browser, no build. This exists because
 // `probe-eclipse-cloud-response.mjs` cannot be run by its author (no Edge in

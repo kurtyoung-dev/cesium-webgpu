@@ -1,3 +1,6 @@
+// @purpose Manifest field requirements, stable stringify/sha256 and PASS/FAIL/NON_CERTIFYING policy shared by capture-and-diff and certification gates.
+// @status ACTIVE
+
 import { createHash } from "node:crypto";
 
 export const GateStatus = Object.freeze({

@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // probe-globe-polar-stretch.mjs — GLOBE-POLAR-STRETCH acceptance probe.
+// @purpose Acceptance for the Mercator-reprojection double-flip fix: ice-centroid/area/shift metrics + mismatch at mid/far/extreme zooms, WebGL vs WebGPU
+// @status ACTIVE
 //
 // USER-REPORTED (2026-07-02): the zoomed-out WebGPU globe stretched high
 // latitudes toward the equator — worse the further out. Root cause: the

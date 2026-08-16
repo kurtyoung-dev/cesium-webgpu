@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // Probe-clustered-per-frame — Slice 5d Batch 151 verification.
+// @purpose Per-frame hook check: lazy dispatcher construction, compute passes run with scene.lights, disable zeroes counts exactly once.
+// @status ACTIVE
 //
 // Loads a real CesiumViewer scene, adds a PointLight + DirectionalLight
 // to scene.lights, toggles scene.clusteredLightingEnabled = true, and

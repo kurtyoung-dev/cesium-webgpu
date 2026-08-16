@@ -1,5 +1,7 @@
 /**
  * Shared WebGPU error / crash gate for the Playwright harnesses.
+ * @purpose Shared Playwright gate catching unscoped WebGPU validation/OOM errors (onuncapturederror) and device loss, plus a console-error listener.
+ * @status ACTIVE
  *
  * Motivation (FORK-34, Batch 207): a five-bug pick regression shipped while
  * BOTH automated harnesses stayed green. The WebGPU draws were raising

@@ -1,5 +1,7 @@
 // Standalone ClassificationPrimitive parity probe
 // (PARITY-GPRIM-CLASSIFY-STANDALONE).
+// @purpose Standalone ClassificationPrimitive parity: terrain-classifying box, coverage within 25% of WebGL, pick returns instance id, zero device errors
+// @status ACTIVE
 //
 // GroundPrimitive already classifies terrain / 3D-Tiles correctly on WebGPU
 // (verified by probe-classifier-scenemode / -textured-materials). This probe

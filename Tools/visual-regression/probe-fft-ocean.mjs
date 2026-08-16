@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 // ACCEPTANCE / REGRESSION probe for C6-FFT-OCEAN (opt-in FFT spectral ocean).
+// @purpose Opt-in FFT spectral ocean: OFF byte-identity across sessions, globe-hidden ON capture paints a non-empty patch, two ON frames differ (waves).
+// @status ACTIVE
+//
 // WebGPU-only feature. The base globe already renders an animated water-mask
 // ocean (B630), so to ISOLATE this feature the probe uses fresh page loads at
 // identical render counts (deterministic frameNumber → identical base) and an

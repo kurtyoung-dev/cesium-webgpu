@@ -1,4 +1,6 @@
 // PARITY-VOXEL-MEGATEXTURE-UPLOAD acceptance probe.
+// @purpose Acceptance: real tile data reaches the 3D megatexture; demand-driven descendant streaming; LRU eviction over a capacity-capped atlas.
+// @status ACTIVE
 //
 // Loads VoxelBox3DTiles on the WebGPU renderer, adds a VoxelPrimitive, and
 // ray-marches the volume. Asserts that the REAL per-tile 'a' VEC4 property

@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // Probe: GPU-SORT-AUTO (NS-GPU-SORT-NO-SCENE-WIRING)
+// @purpose Gates the production auto-enable heuristic for the GPU opaque sort consumer: auto-applies above threshold, off-gates for 'never' and small scenes
+// @status ACTIVE
 //
 // Verifies the PRODUCTION auto-enable heuristic for the GPU front-to-back
 // opaque sort consumer — the piece added by NS-GPU-SORT-NO-SCENE-WIRING on

@@ -1,3 +1,6 @@
+// @purpose Dev build helper: converts WGSL then runs buildEngine/buildWidgets/buildCesium (development, unminified, sourcemapped) skipping tsc.
+// @status ACTIVE
+
 import {
   wgslToJavaScript,
   buildEngine,

@@ -1,4 +1,6 @@
 // C10-11 acceptance — MIXED-FAMILY pick-fleet log-depth coherence + 3-altitude.
+// @purpose Acceptance that the native pick fleet writes coherent log depth: mixed families occlude/reveal monotonically at 20/500/5000 km.
+// @status ACTIVE
 //
 // Proves the whole native pick fleet writes COHERENT log depth into the shared
 // pick FBO across DIFFERENT families: a near opaque geometry Primitive (Box,

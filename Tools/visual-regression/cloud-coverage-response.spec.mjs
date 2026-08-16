@@ -2,6 +2,8 @@
 // (WebGPUCloudDensityDomain.ts) and relies on Node's built-in type stripping,
 // which is on by default only from 22.18 onward; on 22.6-22.17 add
 // `--experimental-strip-types`.
+// @purpose Pins the CLOUD-LOW-COVERAGE-CUTOFF fix: baked base-field support, monotone coverage response on the CPU twin, exact high-anchor preservation.
+// @status ACTIVE
 //
 // CLOUD-LOW-COVERAGE-CUTOFF — the coverage -> density response contract.
 //

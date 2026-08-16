@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // probe-globe-farzoom.mjs — FARZOOM-INTERIOR-BLOBS (Q23) diagnostic probe.
+// @purpose Diagnostic re-bucketing of the far-zoom 'GPU brighter' interior blobs with ground atmosphere toggled, attributing drape vs imagery mip/LOD-bias
+// @status INVESTIGATION
 //
 // GOAL (TIER3 diagnostic): root-cause far-zoom residual **bucket (b)** —
 // the interior "GPU brighter" blobs concentrated over high-latitude snowy

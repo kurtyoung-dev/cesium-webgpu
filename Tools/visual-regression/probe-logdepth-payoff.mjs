@@ -7,6 +7,8 @@
  * (baseline artifact) vs switch-ON (log depth). Measure local variance in the
  * FAR (upper-right) quadrant of the polygon — solid => artifact; patterned =>
  * fixed. Nothing is committed; this only reads pixels.
+ * @purpose A/B: does the renderer-wide log-depth master switch fix the ground-classification far-corner precision artifact? Variance gate + STRUCTURAL guard.
+ * @status ACTIVE
  *
  * ─────────────────────────────────────────────────────────────────────────────
  * A/B REPAIR (Batch 861+) — `NEW-PROBE-VACUOUS-REACHABILITY-ASSERTION` sweep

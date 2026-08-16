@@ -2,6 +2,8 @@
 // Probe (NEW-POINTCLOUDLOD-SLOT255-OFFBYONE verify): the point-cloud LOD
 // compute compaction must NOT corrupt the point at local slot 255 when a
 // workgroup is fully occupied (all 256 lanes visible).
+// @purpose Verifies the LOD compaction WGSL no longer clobbers shared slot 255 at full workgroup occupancy (output = exact permutation 0..255)
+// @status ACTIVE
 //
 // Root cause being verified: the old shader reused `sharedVisible[255]` to
 // broadcast the workgroup's global output offset. That slot is also a REAL

@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // C12-31 — NATURAL SOLAR ATMOSPHERIC AUREOLE: is the sky's bright lobe anchored
 // to the SUN or to the VIEW?
+// @purpose C12-31 aureole certification: whether the sky's bright lobe anchors to the SUN or the VIEW (L1-L4: azimuth, displacement, sunset rejection).
+// @status ACTIVE
 //
 // First browser run passed on 2026-08-01. Re-run on 2026-08-09 against the
 // current uncommitted tree: both backends passed every lane with no console

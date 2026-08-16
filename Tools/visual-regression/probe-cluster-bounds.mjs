@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // Probe-cluster-bounds — Slice 5d Batch 137c verification.
+// @purpose Compute-readback check of WebGPUClusterBoundsRenderer: per-cluster eye-space AABBs match a known projection; dirty-skip works.
+// @status ACTIVE
 //
 // Constructs a WebGPUClusterBoundsRenderer in a fresh CesiumViewer
 // page, dispatches the compute shader with a known perspective

@@ -1,3 +1,6 @@
+// @purpose Shared provenance helpers: safe git HEAD, build/shader fingerprinting, and the STRUCTURAL build-absent reason evidence shards bind to.
+// @status ACTIVE
+
 import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";

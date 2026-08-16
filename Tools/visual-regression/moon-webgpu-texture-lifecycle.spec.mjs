@@ -1,3 +1,6 @@
+// @purpose Behavioral tests of the WebGPU moon texture lifecycle: pair keys, candidate commit, channel reconcile, retire and diagnostics accounting.
+// @status ACTIVE
+
 import test from "node:test";
 import assert from "node:assert/strict";
 

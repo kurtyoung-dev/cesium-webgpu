@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * Translucent Classification debug harness.
+ * @purpose Console-capture harness for the WebGPU Translucent Classification demo; groups GPU validation errors around the GlobePass error scope.
+ * @status INVESTIGATION
  *
  * Loads the `WebGPU Translucent Classification.html` Sandcastle demo in
  * Edge with WebGPU enabled, captures every console message, prints

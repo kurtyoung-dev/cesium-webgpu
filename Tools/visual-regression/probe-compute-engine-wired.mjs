@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // probe-compute-engine-wired — item 370 (NEW-WEBGPU-COMPUTE-ENGINE-WIRING).
+// @purpose Verifies WebGPUContext lazily instantiates the compute engine so dispatchCompute runs (visually inert by design; 0 errors).
+// @status ACTIVE
 //
 // Before this batch WebGPUContext never instantiated a WebGPUComputeEngine, so
 // every WebGPUPerformanceManager.dispatchCompute() (atmosphere LUT bake,

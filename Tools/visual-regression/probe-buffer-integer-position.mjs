@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // Probe (C4-BUFFER-POSITION-INT-NORMALIZED / Q12) — render-diff acceptance for
 // integer + positionNormalized position decode on the WebGPU Buffer* renderers.
+// @purpose Render-diff acceptance for integer + positionNormalized decode on WebGPU Buffer*: normalized-SHORT cross coincides with DOUBLE control.
+// @status ACTIVE
 //
 // Background: a BufferPointCollection can store positions as an integer
 // ComponentDatatype (BYTE/UNSIGNED_BYTE/SHORT/UNSIGNED_SHORT/INT/UNSIGNED_INT)

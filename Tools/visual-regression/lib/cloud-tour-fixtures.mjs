@@ -2,6 +2,8 @@
  * C13-01 cloud-tour FIXTURES and SEQUENCES — the deterministic definition half
  * of the repaired tour. Pure data plus pure functions: this module imports no
  * browser API, launches nothing, and is fully executable under `node --test`.
+ * @purpose Deterministic C13-01 tour definitions: pinned local-solar clocks, absolute camera stations, replay keys, three-lane wind/time discriminators.
+ * @status ACTIVE
  *
  * WHY THIS IS A SEPARATE MODULE. The C13-01 row's remaining tail is
  * "climate/region/type/same-type fixtures, wind/time and temporal-reset

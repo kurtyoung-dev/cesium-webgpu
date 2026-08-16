@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * Weather ingest Phase 2 — TIME MODEL. Logic probe (no network, no WebGPU).
+ * @purpose Weather time-model logic probe (no render): slice quantization, version-on-slice-change, historical/projected resolve, LRU scrub-back hit.
+ * @status ACTIVE
  *
  * The time model is pure provider logic (resolve a quantized time slice, LRU
  * cache, version-only-on-slice-change), so it's verified by the PACKED BYTES +

@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // Probe (Batch 238 — upstream #13433 port): CPU `pickModel` on instanced
 // models + `ModelReader.octDecode` argument order.
+// @purpose Gate for upstream #13433 port: octDecode arg order + CPU pickModel on instanced models (WebGL readback and WebGPU keepTypedArray paths)
+// @status ACTIVE
 //
 // Three sections:
 //

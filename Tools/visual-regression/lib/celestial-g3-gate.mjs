@@ -1,5 +1,7 @@
 // celestial-g3-gate.mjs — pure metrics + verdict logic for the Campaign-12
 // **G3** gate ("asset upgrade": the star-map cube faces themselves).
+// @purpose Pure metrics and verdicts for G3 (star-map cube-face asset quality), criterion 2 re-pointed after DR-01 moved resolved stars to the sprite catalogue.
+// @status ACTIVE
 //
 // WHAT G3 IS — VERBATIM
 // ---------------------

@@ -2,6 +2,8 @@
 // commands per pass. Tells us which Cesium passes have commands
 // (sky/sun in ENVIRONMENT, tiles in GLOBE/3D_TILE, etc.) and which
 // are empty.
+// @purpose Diagnostic: dumps per-pass command counts from frustumCommandsList on WebGPU (which Cesium passes have commands, which are empty)
+// @status ACTIVE
 
 import { chromium } from "playwright";
 

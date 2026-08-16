@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // R-7 / Q26 RENDERBUNDLE-EXPANSION-PROFILE — data-collection pass.
+// @purpose Data collection for the render-bundle shortlist: runs CesiumDebug.cpuPassCost across named scenes, dumps per-pass CPU cost.
+// @status ACTIVE
 //
 // Runs the SHIPPED WebGPUCpuPassProfiler (CesiumDebug.cpuPassCost) across a
 // set of named scenes and dumps per-pass CPU *recording* cost (avg ms over a

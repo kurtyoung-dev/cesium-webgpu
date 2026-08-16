@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // probe-ellipsoid-rte — PARITY-RTE-ELLIPSOID-AWARE (FEAT-3DT2-03) verification.
+// @purpose CSM ground-clamp uses the scene ellipsoid's radii: scaled-globe synth vs CPU rayEllipsoid reference + umbra IoU + WGS84 byte-identical off-gate.
+// @status ACTIVE
 //
 // The WebGPU CSM cascade ground-clamp (NEW-CSM-CASCADE-GROUND-FIT) used
 // hardcoded WGS84 radii, so on a non-Earth globe (Mars/Moon/scaled) the

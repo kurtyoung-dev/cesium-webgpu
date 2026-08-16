@@ -3,6 +3,8 @@
 // the fog, captures MS-OFF, then flips multiScatter ON in the SAME session,
 // re-renders, captures MS-ON. Eliminates cross-session tile-streaming
 // nondeterminism so any fog difference is purely the MS feature.
+// @purpose Single-session multiScatter on/off toggle eliminating cross-session tile nondeterminism during the FOG-MS diagnosis.
+// @status INVESTIGATION
 
 import { chromium } from "playwright";
 import fs from "fs";

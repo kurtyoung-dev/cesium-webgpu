@@ -1,4 +1,6 @@
 // C9-09-ATTACHMENT-DEMAND-REGISTRY — pure-function Node spec.
+// @purpose Pure-Node spec of computeAttachmentDemand (esbuild-transpiled TS): full 2^6 reader matrix + conservative-force + observe-only contracts.
+// @status ACTIVE
 //
 // `computeAttachmentDemand` lives in a TypeScript module that is only bundled
 // into the combined engine barrel (no per-file JS build output) and is not

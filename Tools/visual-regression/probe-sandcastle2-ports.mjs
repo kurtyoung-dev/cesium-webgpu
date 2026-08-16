@@ -1,5 +1,8 @@
 // Sandcastle2 port diagnosis: load the same demo on :8080 (outer app origin) and
 // :8081 (inner bucket origin) and compare. Bounded, always closes the browser.
+// @purpose One-off diagnosis loading the same Sandcastle2 demo on the outer :8080 app origin vs inner :8081 bucket origin and comparing.
+// @status INVESTIGATION
+//
 import { chromium } from "playwright";
 
 const DEMO = "gltf-pbr-extensions";

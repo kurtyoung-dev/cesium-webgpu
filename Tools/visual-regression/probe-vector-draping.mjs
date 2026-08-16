@@ -2,6 +2,8 @@
 /**
  * C11-213 (`UP144-VECTOR-LAYER-WGSL`) — terrain-draped vector polylines,
  * browser acceptance probe.
+ * @purpose C11-213 acceptance for terrain-draped vector polylines: backend/placement/material/Jacobian/cleanup gates with STRUCTURAL verdicts.
+ * @status ACTIVE
  *
  * `vector-layer-draping.spec.mjs` (pure Node) proves the ARITHMETIC: the
  * `WebGPUVectorTileResources.packVectorTileWords` word layout agrees with

@@ -1,3 +1,6 @@
+// @purpose Minimal WebGPU CesiumViewer boot dumping frame-state stats and one screenshot
+// @status INVESTIGATION
+
 import { chromium } from "playwright";
 
 const URL =

@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // Batch 438 — atmosphere-physics trio (4.5 SKY-OZONE / 4.6 MIE-PHASE / 4.4 SKY-MOON).
+// @purpose Mode-driven acceptance for ozone dusk deepening, improved Mie aureole, and inline moon glow, plus an off-mode pre/post byte-parity baseline.
+// @status ACTIVE
 //
 // Modes (argv[2]):
 //   off    — all three flags default-off (PARITY baseline). Run twice across a

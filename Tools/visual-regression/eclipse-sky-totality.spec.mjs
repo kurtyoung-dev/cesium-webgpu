@@ -1,4 +1,6 @@
 // C12-29 S6 (SKY HALF) — node specs for the totality sky.
+// @purpose C12-29 S6 sky half: obs-1 dynamic-lighting resolution root cause, ruling E3 star-brightness modulation (derived curve, exact off), horizon twilight.
+// @status ACTIVE
 //
 // Three separable claims, pinned here so a browser is never needed to catch a
 // regression in any of them:

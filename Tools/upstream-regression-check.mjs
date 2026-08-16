@@ -2,6 +2,8 @@
  * upstream-regression-check.mjs — NEW-UPSTREAM-IMAGERYLAYERS-EMPTY-GUARD +
  * NEW-FORK-MODERNIZATION-REGRESSIONS verification (Batch 232; extended Batch 299
  * with checks 6-8 for the Phase-9 upstream pulls #13366/#13421/#13369).
+ * @purpose Standalone Node re-verification of eight ported upstream fixes (imagery-layers guard, parseUrl, octDecode arg order, etc.); exit 0 = all hold.
+ * @status ACTIVE
  *
  * Standalone Node check (no browser, no build needed — imports engine source
  * directly) that exercises the four items from

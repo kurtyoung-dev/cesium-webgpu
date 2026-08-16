@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 /**
  * Probe (CLOUD-U3-PUBLISH-CONSUME-TOGGLE acceptance + STANDING regression guard):
+ * @purpose Standing guard: VOLUMETRIC CloudCollection publishes one resolved config and suppresses billboards; hidden/BILLBOARD/WebGL publish nothing.
+ * @status ACTIVE
+ *
  * slice 3 of the cloud-unification epic wires CloudCollection.update() to
  * PUBLISH a resolved CloudVolumetrics snapshot (via the backend-neutral
  * context.requestVolumetricClouds seam) when the collection is shown, its

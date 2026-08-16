@@ -4,6 +4,8 @@
  * the WebGPU cubemap was NOT sRGB->linear decoded (WebGL does czm_gammaCorrect),
  * so the faint baked starfield background read ~85x too dim vs the linear
  * StarField catalog points — invisible. Fix gates a pow(2.2) decode on hdrParams.x.
+ * @purpose Verifies the WebGPU baked-SkyBox sRGB-to-linear decode under HDR (faint star dusting visible like WebGL) with an SDR no-op control.
+ * @status ACTIVE
  *
  * Captures, looking up into the night starfield:
  *   stars-hdr-webgpu.png / stars-hdr-webgl.png  (HDR+bloom — the bug path)

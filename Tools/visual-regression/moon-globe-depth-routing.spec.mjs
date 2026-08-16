@@ -1,3 +1,6 @@
+// @purpose Node harness contracts around the moon/globe depth-occlusion probe: run lock, provenance, continuity images, watchdog, evidence finalization.
+// @status ACTIVE
+
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";

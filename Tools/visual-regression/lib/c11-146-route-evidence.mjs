@@ -1,4 +1,6 @@
 // C11-146 — fail-closed moving-altitude route evidence.
+// @purpose Fail-closed C11-146 acceptance for the moving-altitude route: missing metrics or unbound runtime bytes cannot inherit a generic campaign PASS.
+// @status ACTIVE
 //
 // The performance runner records first-complete-frame and settle attribution,
 // but its generic campaign verdict intentionally covers the broader performance

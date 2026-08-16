@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * V2 — 3D noise-texture bake, bound INERT. WebGPU-only.
+ * @purpose V2 inert-bake gate: 3D noise baked + bound with the shader not sampling it — byte-identical to the pre-V2 stash build, bake ran, zero device errors
+ * @status INVESTIGATION
  *
  * V2 bakes the 128³ shape + 32³ detail 3D noise textures once and binds them
  * into the cloud BGL (bindings 6/7/8), but the shader keeps `noiseSource = 0` and

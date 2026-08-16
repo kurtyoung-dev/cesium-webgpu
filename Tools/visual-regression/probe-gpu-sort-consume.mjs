@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // Probe: GPU-SORT-CONSUME (C4-GPU-SORT-PIPELINE-PHASE3)
+// @purpose Gates the GPU sort consumer: readback is a valid permutation, monotonic in the recomputed 64-bit key, applied, and pixel-neutral ON vs OFF
+// @status ACTIVE
 //
 // Verifies the Phase-3 consumer for the GPU-produced front-to-back sort
 // order on WebGPU:

@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // Runtime validation of the "WebGPU Scene Capture Reflections" Sandcastle demo.
+// @purpose Replays the Scene Capture Reflections demo body against CesiumViewer; capture records publish when ON, zero when OFF, 0 errors.
+// @status ACTIVE
 //
 // The legacy Sandcastle framework (Sandcastle-header.js + the ES6 loader) is
 // NOT served by this dev server, so loading the gallery .html standalone just

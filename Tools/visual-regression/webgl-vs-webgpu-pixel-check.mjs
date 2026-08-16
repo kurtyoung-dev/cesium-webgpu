@@ -5,6 +5,8 @@
  * non-black pixels. The intent is to validate the test infra (do
  * non-black pixels reach toDataURL?) before drawing conclusions
  * about the canvas-black-screen bug.
+ * @purpose Test-infra sanity check from the canvas-black-screen investigation: do non-black pixels reach toDataURL on each backend at all?
+ * @status INVESTIGATION
  *
  * Usage:
  *   node Tools/visual-regression/webgl-vs-webgpu-pixel-check.mjs

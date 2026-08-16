@@ -1,4 +1,6 @@
 // NEW-VR2-7 reproduction probe — per-tile brightness anomaly.
+// @purpose Repro: per-tile imagery brightness anomaly at 5 Mm over Lake Superior — max adjacent-block luminance jump WebGPU vs WebGL; PROBE_DARK lane.
+// @status ACTIVE
 //
 // Symptom (doc): at ~5 Mm camera altitude over Lake Superior, WebGPU shows
 // one rectangular imagery tile distinctly brighter than its neighbors with a

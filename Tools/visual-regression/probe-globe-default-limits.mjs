@@ -7,6 +7,8 @@
 // 28 fragment-stage sampled textures (16 imagery + 5 group-2 + 7
 // globe effects); without the reduced-layout fallback, pipeline-layout
 // creation fails validation and the globe never draws.
+// @purpose Gates globe rendering on a device pinned to WebGPU default limits (16 sampled textures): reduced 4-slot imagery layout + multi-pass blend path
+// @status ACTIVE
 //
 // The probe constructs its OWN CesiumWidget on a bare page (root
 // index.html — no auto-created viewer, so the device pool's primary

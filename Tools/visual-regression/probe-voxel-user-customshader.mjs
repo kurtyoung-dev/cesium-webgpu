@@ -1,4 +1,6 @@
 // VOXEL-USER-CUSTOMSHADER acceptance probe.
+// @purpose Acceptance: user voxel customShader — GLSL (WebGL) vs native-WGSL codegen (WebGPU) render the same blue-red ramp; pipeline-name gate.
+// @status ACTIVE
 //
 // Renders the VoxelBox3DTiles VoxelPrimitive with a USER-supplied scalar-ramp
 // customShader on BOTH backends at an identical camera:

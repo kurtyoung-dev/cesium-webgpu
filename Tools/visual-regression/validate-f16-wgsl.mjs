@@ -3,6 +3,8 @@
 // (PARITY-F16-POSTPROCESS) through naga's wgsl-in frontend + validator
 // (Tools/shader-pipeline/naga-wasm-tools). Anything naga rejects —
 // including `enable f16;` semantic errors — fails the run.
+// @purpose Naga-WASM compile gate for every PostProcess *_f16.wgsl variant; exit 1 on rejection. For machines whose GPU lacks shader-f16.
+// @status ACTIVE
 //
 // This is the compile-verification companion to
 // probe-postprocess-f16.mjs for machines whose GPU does not grant the

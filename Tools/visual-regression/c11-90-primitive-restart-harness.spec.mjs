@@ -1,3 +1,6 @@
+// @purpose Contract for the C11-90 harness + probe pair: topology expectations, backend/shape authority, watchdog ordering, probe-fleet contract membership.
+// @status ACTIVE
+
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import os from "node:os";

@@ -1,5 +1,7 @@
 /**
  * Batch 430 — ENV-AERIAL-MS (item 2.2) probe.
+ * @purpose envMapMultiScatter dual mode: flag-off byte-identity dump for the stash gate + flag-on deltas (cube warms toward sun, aerial haze matches sky).
+ * @status ACTIVE
  *
  * TWO jobs, selected by PROBE_MODE:
  *   PROBE_MODE=parity  (default): capture the FLAG-OFF env radiance cube +

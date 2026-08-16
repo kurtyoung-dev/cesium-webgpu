@@ -1,5 +1,7 @@
 // solar-bloom-glow.mjs — the sun bloom's additive glow, as a forward model two
 // lanes read.
+// @purpose Forward model of the sun bloom's additive glow-on-disc so differential disc measurements carry the non-cancelling bloom term correctly.
+// @status ACTIVE
 //
 // `SunPostProcess` (WebGL) and its WebGPU mirror run a bright-pass -> blur ->
 // ADDITIVE-BLEND chain BEFORE the halo stage, and that chain puts light back

@@ -1,4 +1,7 @@
 // Decisive (no-rebuild) check for the flat textured-material classifier:
+// @purpose No-rebuild check whether packExtents finds planar-extent batch-table attributes (root-cause of the flat textured-classifier symptom)
+// @status INVESTIGATION
+//
 // does packExtents() find the planar-extent batch-table attributes it needs?
 // If NOT, packUniforms forces materialMeta.x = 0 -> dsColorFS flat-color fast
 // path -> flat polygon, INSENSITIVE to every windowToEye/invProj edit (the

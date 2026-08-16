@@ -1,3 +1,6 @@
+// @purpose Pins the CPU scene-phase list agreement across Scene.js, ViewportExecutor.js and WebGPUSceneRenderer.ts (vm-executed source integration check).
+// @status ACTIVE
+
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";

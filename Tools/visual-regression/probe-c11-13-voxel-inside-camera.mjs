@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+// @purpose Thin entry point running the shared C11-13 voxel camera-inside-volume probe from lib/, with an outer watchdog ordered to lose to the inner.
+// @status ACTIVE
 
 import { chromium } from "playwright";
 

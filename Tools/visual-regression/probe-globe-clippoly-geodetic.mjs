@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // Probe: GLOBE-CLIPPOLY-GEODETIC — globe clipping polygons, WebGL vs WebGPU.
+// @purpose Globe clipping-polygon parity: the polygon hole must exist on both backends and the clip boundary must align (geodetic SDF convention fix)
+// @status ACTIVE
 //
 // A clipping polygon at mid-latitude (~45°N) cuts a hole in the globe
 // (solid baseColor, no imagery, black background). Verifies:

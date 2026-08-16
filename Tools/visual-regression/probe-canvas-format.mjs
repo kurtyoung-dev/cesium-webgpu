@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // Check the WebGPU canvas format and post-process state.
+// @purpose Dumps WebGPU canvas/presentation format, HDR flags and post-process stage state from a live viewer
+// @status INVESTIGATION
 
 import { chromium } from "playwright";
 

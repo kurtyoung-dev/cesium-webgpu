@@ -3,6 +3,8 @@
 // profile, the C12-18 screen-space halo, the C12-28 SDR display policy, and the
 // moon half — C12-21 phase-dependent earthshine and C12-22 soft terminator,
 // whose owed Edge acceptance IS this lane's first run.
+// @purpose Pure metrics and verdicts for G4: sun disc size and limb law, C12-18 halo, C12-28 SDR policy, and the moon earthshine/soft-terminator acceptance.
+// @status ACTIVE
 //
 // WHAT G4 IS
 // ----------

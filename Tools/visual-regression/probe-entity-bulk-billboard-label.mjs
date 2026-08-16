@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // probe-entity-bulk-billboard-label.mjs — Entity bulk fast-path for BILLBOARDS
 // and LABELS (Batch 333, NEW-ENTITY-BULK-FASTPATH-BILLBOARD-LABEL).
+// @purpose Bulk billboard/label fast lane: hundreds of static entities render + pick on both backends, route through the flat-buffer lane, dynamics update.
+// @status ACTIVE
 //
 // Validates BulkBillboardVisualizer + BulkLabelVisualizer: adding hundreds of
 // *static* homogeneous `billboard` + `label` entities via a DataSource must

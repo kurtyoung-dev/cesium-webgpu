@@ -2,6 +2,8 @@
 // Probe (NEW-COMPUTE-INSTANCE-PICKPOSITION): scene.pickPosition over a
 // GPU-resident compute-instance must return THAT INSTANCE's world position on
 // BOTH backends.
+// @purpose scene.pickPosition over compute-instances returns that instance's ECEF position on both backends; sync contract kept.
+// @status ACTIVE
 //
 // Positions live ONLY in the GPU storage buffer (WebGPU) or are CPU-computed by
 // the cpuKernel (WebGL2), so the ordinary depth-buffer pickPosition can't

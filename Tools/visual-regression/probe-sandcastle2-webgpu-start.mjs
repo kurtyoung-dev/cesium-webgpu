@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // Acceptance probe for NS-SANDCASTLE2-WEBGPU-WONT-START.
+// @purpose Acceptance for the Sandcastle2 frozen-module crash: Mars demo loads on both renderers, no 'Cannot assign to property Viewer', canvas renders.
+// @status ACTIVE
 //
 // Repro: In Sandcastle2 (Apps/Sandcastle2) selecting WebGPU left the viewer stuck
 // on "Loading..." and both backends logged:

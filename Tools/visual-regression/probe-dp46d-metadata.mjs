@@ -5,6 +5,8 @@
 // + `initializeMetadata` textureLoad + the `MODEL_HAS_PROPERTY_TABLES` material
 // BGL variant). CLOSES display-side structural-metadata parity (attribute +
 // texture + table all read in-shader).
+// @purpose Property-TABLE metadata read via textureLoad(table, featureId); closes display-side structural-metadata parity (attr+texture+table).
+// @status ACTIVE
 //
 // Scenes (all WebGPU):
 //   A. proptable-on  — BuildingsMetadata (EXT_structural_metadata property TABLE

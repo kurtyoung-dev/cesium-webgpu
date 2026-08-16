@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // Probe-contact-shadows — Slice 5c-B Batch 133 verification.
+// @purpose Contact-shadows acceptance: wall base darkens when enabled, strength=0.5 darkens less than 1.0, all cells error-free.
+// @status ACTIVE
 //
 // Loads an extruded "wall" polygon over the Pittsburgh terrain at a
 // view where the sun is at a low angle. With contact shadows enabled,

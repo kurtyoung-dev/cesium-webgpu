@@ -1,4 +1,6 @@
 // C12-33 — renderer-neutral texture-mip queue ownership and cube-layer safety.
+// @purpose Gate for the texture-mip generation queue on WebGPUContext: job stamping, dedupe, transactional requeue, cube-layer slicing, teardown order.
+// @status ACTIVE
 //
 // Two halves:
 //

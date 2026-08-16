@@ -2,6 +2,9 @@
 // Probe (C10-09-VELOCITY-PREV-BUFFER-GPU-COPY, V-1 headline + mutation
 // exactness). The TAA motion-vector path in the PointCloud / Gaussian-splat /
 // Cloud renderers keeps a CPU mirror of the previous-frame instance buffer.
+// @purpose Acceptance that TAA prev-instance buffers seed once via GPU copy then skip while unchanged, with one-upload mutation exactness (cloud leg).
+// @status ACTIVE
+//
 // For STATIC content (prev array === curr array) the OLD code re-uploaded the
 // whole array via queue.writeBuffer EVERY frame TAA is on — even though the
 // identical bytes already reside in the current-frame GPU instance buffer.

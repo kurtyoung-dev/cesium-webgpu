@@ -1,5 +1,7 @@
 // starmap-census.mjs — structural metrics that decide whether a star-map cube
 // face carries RESOLVED point sources, DIFFUSE degree-scale light, or both.
+// @purpose Orthogonal point-source census + degree-scale band-structure metrics that make the DR-01 diffuse/sprite ownership split falsifiable both ways.
+// @status ACTIVE
 //
 // This module exists because Campaign-12 DR-01 assigns exactly one physical
 // owner to each signal: the cubemap carries diffuse Milky Way light ONLY, and

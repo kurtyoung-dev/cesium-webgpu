@@ -1,3 +1,6 @@
+// @purpose node:test half of the C12-31 L1-L4 sky-aureole certification triple (probe-sky-aureole-anchor + gate lib + spec).
+// @status ACTIVE
+
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";

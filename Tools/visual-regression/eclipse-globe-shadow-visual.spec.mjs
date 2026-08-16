@@ -1,3 +1,6 @@
+// @purpose Pins probe-eclipse-globe-shadow.mjs structure: canonical same-task capture embed and eclipse/control x on/off isolation on both backends.
+// @status ACTIVE
+
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import test from "node:test";

@@ -1,5 +1,8 @@
 // Smoke test for NEW-WEBGPU-PIPELINE-READY-SIGNAL +
 // NEW-WEBGPU-PERF-MONITOR-SUBSCRIBER. Verifies:
+// @purpose Smoke test that AsyncResourceMonitor/Telemetry accumulate pipeline tokens and p50/p95 latency while the globe renders under requestRenderMode.
+// @status ACTIVE
+//
 //   1. Globe still renders correctly with default requestRenderMode=true
 //      (regression check for the original BUG-WEBGPU-PIPELINE-ASYNC).
 //   2. AsyncResourceMonitor accumulates pipeline tokens during warmup.

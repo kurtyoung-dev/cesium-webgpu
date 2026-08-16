@@ -1,4 +1,6 @@
 // Regression probe for WebGPU multi-frustum object picking.
+// @purpose Regression gate: two boxes in different frustum slices on the center ray — near object wins the pick; hiding it yields the far one (TAA on)
+// @status ACTIVE
 //
 // Two overlapping boxes are placed on the camera center ray far enough apart
 // to occupy different Cesium frustum slices. The near object must win while it

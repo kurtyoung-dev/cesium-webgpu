@@ -1,4 +1,7 @@
 // Probe Bloom.html with bloom disabled. Models should still render.
+// @purpose Bloom.html forensics variant: bloom stage disabled — models must still render, isolating the post-process stage from scene content.
+// @status INVESTIGATION
+//
 import { chromium } from "playwright";
 import fs from "fs";
 

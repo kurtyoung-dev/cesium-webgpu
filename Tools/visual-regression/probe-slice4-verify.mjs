@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // Probe-slice4-verify — Phase 8a Slice 4 deterministic verification (Batch 95).
+// @purpose Deterministic 4-cell AO x deferredLighting matrix proving the G-buffer normal source actually feeds AO (Slice 4 engaged, not just AO on).
+// @status ACTIVE
 //
 // The prior `probe-gbuffer-enabled` probe was unreliable — it toggled
 // `scene.deferredLighting` but didn't explicitly enable AO, so the

@@ -1,4 +1,6 @@
 // solar-disc-model.spec.mjs — C12-15 / C12-16 / C12-17 (the C12 sun wave).
+// @purpose Pins SolarDiscModel as the one constants source for eclipse photometry + both sun-disc bakes: limb law, glare profile, byte-exact OFF toggles.
+// @status ACTIVE
 //
 // Pins, in pure Node with no browser:
 //   - the ONE constants source (C12-15's landing requirement): the eclipse

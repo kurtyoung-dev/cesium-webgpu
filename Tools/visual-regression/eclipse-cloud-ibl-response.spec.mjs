@@ -1,5 +1,7 @@
 // eclipse-cloud-ibl-response.spec.mjs — C13-41 (the C12-29 S3 rider): pins the
 // eclipse response of the cloud + environment-map subsystem.
+// @purpose C13-41 (C12-29 S3 rider): pins seven exact-1.0 non-eclipse identity sites, rejects the S2 scene-factor shadow substitution, both env-bake halves.
+// @status ACTIVE
 //
 // Pure Node (`node --test`). No browser, no build.
 //

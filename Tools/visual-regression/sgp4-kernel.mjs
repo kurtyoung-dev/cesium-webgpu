@@ -1,5 +1,7 @@
 // sgp4-kernel.mjs — the demo/probe-owned SGP4 artifacts that ride the
 // engine's feature-agnostic ComputeInstanceCollection. Two exports:
+// @purpose Demo/probe-owned SGP4 GPU artifacts: param-lane packer with df64 secular rates + the WGSL df64 time-update kernel string.
+// @status ACTIVE
 //
 //   SGP4_FLOATS_PER_INSTANCE  — the param lane count (demo-owned layout)
 //   packSgp4Instance(satrec, color, pixelSize)

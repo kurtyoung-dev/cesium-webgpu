@@ -1,3 +1,6 @@
+// @purpose Generic bisection harness: toggles sky/ground atmosphere, fog, skybox per label and captures a PNG of the WebGPU frame for each combo.
+// @status ACTIVE
+
 import { chromium } from "playwright";
 
 async function probe(label, mods) {

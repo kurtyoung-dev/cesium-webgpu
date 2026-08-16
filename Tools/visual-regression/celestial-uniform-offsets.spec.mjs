@@ -1,6 +1,8 @@
 // celestial-uniform-offsets.spec.mjs — BYTE-OFFSET pin for the two celestial
 // WebGPU uniform buffers: the star cube map (`CubeMapPanorama`) and the star
 // sprite catalogue (`StarField`).
+// @purpose Derives WGSL uniform-layout offsets for the star cubemap + sprite buffers from struct source and pins the JS packers' flat indices against them.
+// @status ACTIVE
 //
 // WHY THIS EXISTS
 // ---------------

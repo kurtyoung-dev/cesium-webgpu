@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * WebGPU Fullscreen Sky gallery demo — end-to-end verification. WebGPU-only.
+ * @purpose Boots the WebGPU Fullscreen Sky gallery demo standalone and verifies fullscreen-vs-shell sky parity, day/night darkening, zero device errors
+ * @status ACTIVE
  *
  * Boots the gallery .html standalone (the bootstrap scripts 404 on :8080 — stub
  * Sandcastle, inject Cesium as a module, call the demo's own startup, supply the

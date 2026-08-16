@@ -1,3 +1,6 @@
+// @purpose One-off variant of the particle sample: WebGPU-forced Particle System Sandcastle with fog disabled, isolating fog's effect on particles
+// @status INVESTIGATION
+
 import { chromium } from "playwright";
 import fs from "fs";
 

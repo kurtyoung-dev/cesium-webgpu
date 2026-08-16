@@ -1,5 +1,7 @@
 /**
  * Postinstall patch: normalize eslint-seatbelt's path keys to forward slashes.
+ * @purpose postinstall patch normalizing eslint-seatbelt path keys to forward slashes so the committed POSIX seatbelt.tsv grandfathers on Windows.
+ * @status ACTIVE
  *
  * eslint-seatbelt@0.1.x keys its eslint.seatbelt.tsv entries via
  * `path.relative(...)`, which uses OS-native separators. Our committed

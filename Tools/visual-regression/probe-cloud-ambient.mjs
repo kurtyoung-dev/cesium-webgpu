@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * W2 — Sky-ambient gradient + ground bounce. WebGPU-only.
+ * @purpose W2 sky-ambient/ground-bounce gate: shadow-side p10 luminance lifted into band and cloud tops bluer than bottoms; single-run PASS bars
+ * @status ACTIVE
  *
  * Adds a height-fraction ambient term so the anti-sun SHADOW side of clouds is
  * no longer near-black: blue sky lights the tops, warm ground-bounce the

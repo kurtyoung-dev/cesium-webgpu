@@ -1,6 +1,8 @@
 // Open a render pass on the scene FB texture and draw a fullscreen
 // triangle. If the FB has the triangle's color afterward, the FB
 // itself works. If still cleared/blank, the issue is with the scene FB.
+// @purpose Draws a fullscreen triangle straight into the scene FB texture to bisect blank-scene bugs: FB broken vs content trashed downstream.
+// @status INVESTIGATION
 
 import { chromium } from "playwright";
 

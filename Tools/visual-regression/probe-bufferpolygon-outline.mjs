@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // probe-bufferpolygon-outline.mjs  (FEAT-BUFFERPOLYGON-OUTLINE)
+// @purpose Acceptance for BufferPolygon outlineColor/outlineWidth: red stroke on both rings, width-0 renders nothing, OFF-gate byte-identical.
+// @status ACTIVE
 //
 // Acceptance probe for BufferPolygon outline rendering (the declared-but-
 // previously-unrendered BufferPolygonMaterial outlineColor / outlineWidth

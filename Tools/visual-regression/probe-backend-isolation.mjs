@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // probe-backend-isolation.mjs — IS WEBGL STILL RUNNING IN WEBGPU MODE?
+// @purpose Answered 2026-07-19 maintainer questions: is a WebGL context still created in webgpu mode, and does split-screen cost what solo costs.
+// @status INVESTIGATION
 //
 // Answers two maintainer questions empirically (2026-07-19):
 //

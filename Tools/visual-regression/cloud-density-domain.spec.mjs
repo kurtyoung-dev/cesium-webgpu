@@ -4,6 +4,9 @@
 // package.json `engines.node` (">=22.0.0") is intentionally NOT tightened for
 // this one spec — run it under Node >= 22.18, or add `--experimental-strip-types`
 // on 22.6-22.17.
+// @purpose Pins the cloud density-domain layout: noise origin/phase/rotation float offsets shared between WebGPUCloudDensityDomain.ts and the WGSL, via exports.
+// @status ACTIVE
+//
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import fs from "node:fs";

@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 // Test new mip-related debug modes at orbit altitude.
+// @purpose One-off: compares globeFragmentDebug mip modes at orbit altitude to tell whether the imagery mip chain is read or the gap is LOD selection.
+// @status INVESTIGATION
+//
 // If mip4 differs from sample0, mipmaps are present and the gap is LOD selection.
 // If mip4 == sample0 (or all-zero), mipmap chain isn't being read.
 

@@ -5,6 +5,8 @@
 // DataSourceDisplay.legacyVisualizersCallback (Batch 341) produces the expected
 // lane classification + per-frame difference for a static catalog, against the
 // REAL current build.
+// @purpose Gates DataSourceDisplay bulk vs legacy visualizer callbacks: lane classification correct and bulk << legacy per-frame cost, on the real build.
+// @status ACTIVE
 //
 // (The Sandcastle HTML itself is served only via the built Sandcastle2 app and is
 // verified manually per the project convention; this probe gates the underlying

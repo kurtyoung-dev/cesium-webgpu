@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * Probe: FORK-41 / C2-21 Hi-Z occlusion CULL CORRECTNESS — occludable scene.
+ * @purpose Hi-Z occlusion cull-correctness gate in a genuinely occludable scene (lid over 2500 boxes): cull actually culls, pixels unchanged, no device errors
+ * @status ACTIVE
  *
  * The original probe-fork41-occlusion.mjs scene uses 90 km-TALL boxes whose
  * bounding spheres (~45 km radius) project to huge screen rects that overhang

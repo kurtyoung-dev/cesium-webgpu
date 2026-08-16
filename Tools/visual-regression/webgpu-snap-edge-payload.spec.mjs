@@ -1,5 +1,7 @@
 // webgpu-snap-edge-payload.spec.mjs — browser-free contract for
 // UP144-SNAP-WEBGPU-EDGES (the C11-212 edge tier of Scene.snap on WebGPU).
+// @purpose Contract for the edge tier of WebGPU Scene.snap: edge-flag payload encode, pick-color plumb into the edge UB, pipeline variant, strict admission.
+// @status ACTIVE
 //
 // WHY THIS EXISTS
 // ---------------

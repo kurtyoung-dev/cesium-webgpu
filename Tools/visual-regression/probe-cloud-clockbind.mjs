@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * Probe: cloud motion is CLOCK-BOUND, not wall-clock (Weather Phase 0a).
+ * @purpose Proves cloud advection is scene-clock-bound: identical frames at a frozen clock across wall time, different frames for clock times 3 h apart
+ * @status ACTIVE
  *
  * Before: ProceduralClouds.wgsl `time` uniform = performance.now()/1000 → clouds
  * drift on wall time regardless of the scene clock (can't scrub/pause/replay).

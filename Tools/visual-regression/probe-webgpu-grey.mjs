@@ -1,6 +1,8 @@
 // Diagnostic probe: open the split-screen page, click Launch, capture
 // console errors + the WebGPU viewer's debug snapshot. Used to track
 // down the WebGPU all-grey regression observed after Batches 183-225.
+// @purpose Quick diagnostic that opened the split-screen page and captured console errors + debug snapshot chasing the all-grey regression.
+// @status INVESTIGATION
 
 import { chromium } from "playwright";
 

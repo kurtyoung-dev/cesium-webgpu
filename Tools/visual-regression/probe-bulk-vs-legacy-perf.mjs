@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 // probe-bulk-vs-legacy-perf.mjs — Settle the design question with DATA:
+// @purpose Benchmark settling bulk static-lane vs legacy per-frame visualizer: setup and steady per-frame cost per entity count, point path isolated.
+// @status ACTIVE
+//
 //   Is the Entity bulk static-lane fast-path (BulkPointVisualizer, and by
 //   extension BulkBillboard/BulkLabel from Batch 333) an UPGRADE over the
 //   legacy per-frame visualizer for FEW items, or only for many?

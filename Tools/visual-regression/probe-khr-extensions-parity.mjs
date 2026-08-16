@@ -1,5 +1,7 @@
 /**
  * KHR material-extension parity probe — Batch 207+ (wave0).
+ * @purpose Loads each KHR material-extension model on both backends in fresh pages; gates renders, GPU errors, and the DOM error panel (shader compile failures)
+ * @status ACTIVE
  *
  * Loads each KHR material-extension test model on BOTH backends, renders ~60
  * frames, captures the canvas, and records for each (model, renderer):

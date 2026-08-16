@@ -1,6 +1,8 @@
 // globe-pipeline-key-contract.spec.mjs — browser-free contract for the globe
 // pipeline cache key: the format itself, the four repaired accessors that read
 // it, and the central cache's own reporting surfaces.
+// @purpose Pins the single-home globe pipeline cache-key builder/parser after the 15-month UNO_/UNMO_ producer-consumer drift; accessors + cache stats.
+// @status ACTIVE
 //
 // WHY THIS EXISTS
 // ---------------

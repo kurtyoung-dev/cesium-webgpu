@@ -2,6 +2,8 @@
 // now draws constant-PIXEL-width antialiased lines (GridMaterial.glsl parity) via
 // screen-space derivatives, instead of the old constant-UV-width step() lines
 // whose apparent thickness scaled with zoom.
+// @purpose Gates the WGSL Grid material's constant-pixel-width antialiased lines across nadir zooms + an oblique view; WebGL held to the same constancy bar
+// @status ACTIVE
 //
 // Batch 685 reframe: the original far capture (pitch -35 from a fixed 333 m
 // south offset, alt 2000) put the polygon ENTIRELY below the frustum's bottom

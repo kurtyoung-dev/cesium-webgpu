@@ -3,6 +3,9 @@
  * Probe the actual commandList contents during a b3dm tileset render
  * on WebGPU to find out why the canvas is uniform dark gray (no model
  * or globe pixels visible).
+ * @purpose Dumps commandList contents during a b3dm tileset render to explain a uniform dark-gray WebGPU canvas.
+ * @status INVESTIGATION
+ *
  */
 import { chromium } from "playwright";
 const BASE = "http://localhost:8080";

@@ -3,6 +3,8 @@
 // at a fixed time on both backends, lighting/atmosphere disabled, and
 // post-processing minimized. Isolates whether the residual diff comes
 // from time-of-day drift (sun direction, day/night fade, animation tick).
+// @purpose Diagnostic: captured polar views with the clock frozen to isolate time-of-day drift as the residual-diff source
+// @status INVESTIGATION
 
 import { chromium } from "playwright";
 import fs from "fs";

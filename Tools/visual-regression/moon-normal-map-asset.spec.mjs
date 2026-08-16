@@ -1,6 +1,8 @@
 // moon-normal-map-asset.spec.mjs — C12-25: pins the bundled lunar NORMAL map,
 // the derivation math that produced it, its crater-relief polarity, the
 // both-backends shader wiring, and the LICENSE.md provenance entry.
+// @purpose Pins the bundled lunar normal map bytes/format, crater-relief polarity, 1/cos(lat) derivation math, both-backend wiring and LICENSE provenance.
+// @status ACTIVE
 //
 // These tests fail if:
 //   - the shipped normal map goes missing, changes dimensions, stops being a

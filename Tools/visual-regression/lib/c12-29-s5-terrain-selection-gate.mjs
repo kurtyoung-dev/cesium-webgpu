@@ -1,5 +1,7 @@
 /**
  * Pure acceptance policy for C12-29 S5's first final-certification shard.
+ * @purpose Frozen inputs, exact terrain-radius arithmetic, evidence-shape checks and verdict folding for S5's first final-certification shard (v10 schema).
+ * @status ACTIVE
  *
  * The browser driver owns the real terrain/provider/pick/capture exercise and
  * immutable evidence publication. This module owns the frozen inputs, exact

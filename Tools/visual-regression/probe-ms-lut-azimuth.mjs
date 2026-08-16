@@ -4,6 +4,8 @@
 // view↔sun azimuth axis) at a near-horizon V row. After the A-LUT-REPARAM
 // follow-up the MS LUT should vary with U (azimuth) the way the sky-view LUT
 // does — confirming the directional all-azimuth re-param, not a flat veil.
+// @purpose One-off readback: multiple-scattering + sky-view LUT variation across the view-sun azimuth axis, confirming the all-azimuth re-param took.
+// @status INVESTIGATION
 
 import { chromium } from "playwright";
 

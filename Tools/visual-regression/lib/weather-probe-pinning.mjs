@@ -1,5 +1,7 @@
 /**
  * Shared determinism pinning for the `probe-weather-*.mjs` fleet.
+ * @purpose Shared determinism pins for the weather probe fleet (offline globe, one clock driver, zero wind), all read back; a failed pin exits STRUCTURAL.
+ * @status ACTIVE
  *
  * WHY THIS EXISTS. `probe-weather-channels.mjs` was pinned individually at Batch
  * 852 after five runs of ONE build produced GREEN/RED/RED/RED/RED. The root

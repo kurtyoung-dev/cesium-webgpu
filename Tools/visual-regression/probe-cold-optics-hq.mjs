@@ -4,6 +4,8 @@
  * ice-crystal optics: 22 + 46 dispersed halos, upper tangent arc, and light
  * pillars. The advanced branch is opt-in (`scene.coldOpticsAdvanced`); the
  * legacy 22 halo + sun-dogs (advanced OFF) must stay byte-identical.
+ * @purpose Advanced ice-crystal optics acceptance (22+46 halos, dispersion, light pillars) with structural preconditions and gated verdicts.
+ * @status ACTIVE
  *
  * Three captures on the SAME WebGPU canvas:
  *   1. cold-optics ON, advanced OFF  — the legacy frame (parity reference).

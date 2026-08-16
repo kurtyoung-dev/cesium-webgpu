@@ -1,3 +1,6 @@
+// @purpose Behavioral tests of the WebGL moon texture lifecycle: channel commit/reconcile, publish/retire ordering and upload-source release accounting.
+// @status ACTIVE
+
 import test from "node:test";
 import assert from "node:assert/strict";
 

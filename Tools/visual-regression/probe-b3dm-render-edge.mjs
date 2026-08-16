@@ -2,6 +2,8 @@
 /**
  * Probe: does the BatchTableHierarchy b3dm tileset actually RENDER (not black)
  * on WebGPU/Edge — and does it match WebGL?
+ * @purpose Re-verifies the stale NEW-BG-CONSOLIDATION claim: b3dm renders non-black on Edge WebGPU and matches WebGL, ellipsoid terrain to rule out occlusion.
+ * @status ACTIVE
  *
  * Re-verifies the inventory claim NEW-BG-CONSOLIDATION ("ModelPBR declares 8
  * bind groups; spec default 4 → b3dm renders as black on Edge/Vulkan"), which

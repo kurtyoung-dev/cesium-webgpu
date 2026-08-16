@@ -1,5 +1,8 @@
 // Scan a vertical strip of pixels for Hello World to find where the
 // bluish off-disk halo actually starts in WebGPU vs WebGL.
+// @purpose Scans a vertical pixel strip on the Hello World demo to locate where the bluish off-disk halo starts, WebGPU vs WebGL.
+// @status INVESTIGATION
+//
 import { chromium } from "playwright";
 
 const RENDERER_OVERRIDE_SHIM = `

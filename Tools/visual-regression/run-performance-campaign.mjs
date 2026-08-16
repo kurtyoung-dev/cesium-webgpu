@@ -1,5 +1,7 @@
 /**
  * Node/Playwright performance characterization runner.
+ * @purpose The performance characterization runner: consumes performance-workloads.json, records Scene.render CPU samples + GPU timestamps; never FPS.
+ * @status ACTIVE
  *
  * The runner consumes performance-workloads.json, asserts the resolved backend,
  * uses deterministic local/procedural content, and records full Scene.render CPU

@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// @purpose Minimal utility: captures one WebGPU and one WebGL CesiumViewer screenshot at a fixed view after 240 rendered frames.
+// @status INVESTIGATION
+
 import { chromium } from "playwright";
 import fs from "fs";
 

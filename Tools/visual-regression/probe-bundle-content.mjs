@@ -1,5 +1,7 @@
 // Hook GPURenderBundleEncoder methods to track what's recorded in
 // bundles. Specifically: the globe tile bundle.
+// @purpose Hooks GPURenderBundleEncoder + pipeline creation to dump what draw state the globe tile render bundle records (targets, blend, depth).
+// @status ACTIVE
 
 import { chromium } from "playwright";
 

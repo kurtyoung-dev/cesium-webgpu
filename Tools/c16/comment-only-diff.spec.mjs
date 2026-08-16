@@ -1,4 +1,6 @@
 // comment-only-diff.spec.mjs — mutants for the Campaign 16 rewrite gate.
+// @purpose Mutant suite for the comment-only-diff gate: every rejected mutant is paired with the nearest legitimate edit that must be accepted.
+// @status ACTIVE
 //
 // Run: node --test Tools/c16/comment-only-diff.spec.mjs
 //

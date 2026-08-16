@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * CLOUD-RTE probe (Batch 445 — item 4.12 CLOUD-RTE). WebGPU-only.
+ * @purpose B445 cloudHighPrecision gate: camera-relative RTE shell path renders essentially identical to the one-part world-space fallback (OFF/ON diff ~0)
+ * @status ACTIVE
  *
  * Verifies the explicit one-part/high-low A/B paths for the default-on
  * camera-relative high-precision primary cloud shell

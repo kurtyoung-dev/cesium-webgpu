@@ -8,6 +8,8 @@
 // then read this via `frameState.light` (sun) + `frameState.atmosphereSkyIrradiance`
 // (ambient) — the Takram talk's "light-source lighting for the ISS", consistent
 // with the post-process "lighting for the terrain".
+// @purpose Acceptance for atmosphere-derived model lighting: derived sun colour + sky irradiance shift model hue warm at low sun, consistent with terrain.
+// @status ACTIVE
 //
 // Reproduction: a metallic/diffuse glTF model placed ON the globe surface, the
 // globe VISIBLE behind it (so we can read terrain + model in one frame and

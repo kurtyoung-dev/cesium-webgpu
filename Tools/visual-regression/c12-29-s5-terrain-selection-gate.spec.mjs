@@ -1,3 +1,6 @@
+// @purpose Certifies the S5 terrain-selection evidence gate: v4-v9 schema migrations, page-diagnostic validation, canonical capture checks, exit-code fold.
+// @status ACTIVE
+
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import fs from "node:fs";

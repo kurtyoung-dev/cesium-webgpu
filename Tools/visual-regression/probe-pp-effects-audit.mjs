@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // Probe-pp-effects-audit — Batch 98 sibling-of-Batch-95 audit.
+// @purpose One-off audit: after the B95 AO silent-no-op fix, matrix-diffed bloom/DoF/godRay to surface any effect still silently no-opping
+// @status INVESTIGATION
 //
 // Batch 95 found AO was a silent no-op on WebGPU because the FR sync
 // wasn't being called. The fix to `WebGPUContext.updateAndClearFramebuffers`

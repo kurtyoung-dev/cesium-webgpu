@@ -1,3 +1,6 @@
+// @purpose Minimal loader for the Mars Sandcastle demo under a WebGPU viewer shim, collecting '[diag' console logs — alternate-ellipsoid diagnostics.
+// @status ACTIVE
+
 import { chromium } from "playwright";
 const SHIM = `(function(){
   const FORCED_RENDERER="webgpu"; window.__capturedViewer=null;

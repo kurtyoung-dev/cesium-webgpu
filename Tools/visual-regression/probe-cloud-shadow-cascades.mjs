@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * CLOUD-LOD-R5-CASCADED-CLOUD-SHADOW-MAP acceptance probe.
+ * @purpose Acceptance for the opt-in 3-cascade cloud shadow map: shadows exist, cascade sharpens near, far kept, OFF byte-identical.
+ * @status ACTIVE
  *
  * Verifies the opt-in 3-cascade cloud beer-shadow-map:
  *   - baseline: cloudCastShadows=true, cloudShadowCascades=false (single BSM)

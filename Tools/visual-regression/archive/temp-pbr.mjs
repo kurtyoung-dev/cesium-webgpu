@@ -1,3 +1,6 @@
+// @purpose One-shot Edge screenshot + cubemap/texture console-error dump of the glTF PBR Extensions demo on WebGPU (KTX2 load check).
+// @status INVESTIGATION
+
 import { chromium } from "playwright";
 import fs from "fs";
 const browser = await chromium.launch({ channel: "msedge", headless: true });

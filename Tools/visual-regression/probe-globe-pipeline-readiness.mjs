@@ -2,6 +2,8 @@
 // probe-globe-pipeline-readiness.mjs — does the WebGPU globe's async
 // pipeline-resolution skip produce user-visible holes with a HEALTHY event
 // loop, and does WebGL diverge from it?
+// @purpose Measures whether the WebGPU globe's async pipeline-miss tile skip produces user-visible holes vs WebGL under a healthy event loop
+// @status ACTIVE
 //
 // ── THE MECHANISM, TRACED IN SOURCE AT BATCH 766 (2c37a3db03) ───────────────
 //

@@ -1,5 +1,8 @@
 // One-shot transform: add the LOG_DEPTH //>>ifdef blocks to the Mat*Lit
 // primitive shaders (clipPosition builtin + FragOutput struct family).
+// @purpose One-shot codemod adding LOG_DEPTH //>>ifdef blocks to the 19 Mat*Lit WGSL primitive shaders, mirroring the PrimitivePhongColor recipe.
+// @status INVESTIGATION
+//
 // Mirrors the canonical PrimitivePhongColor.wgsl log-depth recipe. The
 // //>>else branch keeps the historical hyperbolic path so LOG_DEPTH-off
 // is byte-identical. Idempotent: skips files that already carry v_logDepth.

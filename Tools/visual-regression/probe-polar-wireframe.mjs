@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 // Show the tile mesh as a wireframe at the polar views. If polar tiles
 // exist as wireframe but the imagery is black, it's a UV/sampling bug.
+// @purpose Diagnostic: rendered polar tiles as wireframe to split UV/sampling bugs (mesh present, imagery black) from mesh-construction/culling bugs
+// @status INVESTIGATION
+//
 // If no tile mesh at all, it's a mesh-construction or culling bug.
 
 import { chromium } from "playwright";

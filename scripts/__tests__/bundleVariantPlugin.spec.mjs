@@ -2,6 +2,8 @@
 // onResolve handler the plugin registers and calling it with synthetic
 // args. Covers the decision matrix that governs whether an import gets
 // aliased to an empty stub:
+// @purpose Exercises the build-variant alias plugin's onResolve decision matrix, compat exemption allowlist, re-entry guard and decision cache, no esbuild.
+// @status ACTIVE
 //
 //   dual         — plugin returns null (no aliasing)
 //   webgl-only   — WebGPU TS + WGSL shaders → stubs; GLSL shaders kept

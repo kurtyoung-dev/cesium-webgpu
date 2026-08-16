@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // probe-clustered-multifrustum — NS-CLUSTER-MULTIFRUSTUM-BOUNDS acceptance.
+// @purpose Proves single-grid cluster binning is self-consistent and conservatively correct in a real multi-frustum scene (>=2 frustums).
+// @status ACTIVE
 //
 // Premise under verification: the Forward+ clustered-lighting dispatch
 // (WebGPUSceneRendererClusteredLighting.ts:208-219) collapses the whole

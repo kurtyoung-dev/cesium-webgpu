@@ -1,4 +1,6 @@
 // sun-halo-composition.spec.mjs — C12-18 (absorbing C11-160 + C11-115).
+// @purpose Node gate: WebGPU sun blends ALPHA_BLEND, disc edge at 1.0 Rsun, exactly one live halo source, GLSL/WGSL veil equivalence to 1e-15.
+// @status ACTIVE
 //
 // Pins, in pure Node with no browser:
 //

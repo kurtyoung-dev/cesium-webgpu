@@ -1,6 +1,8 @@
 // globe-daynight-ramp-law.spec.mjs — CLT-B4 / CO-18, DEFERRED_WORK row
 // `NEW-WEBGPU-GLOBE-DAYNIGHT-RAMP-OFFSET`, CELESTIAL_LIGHT_TRANSPORT_PLAN
 // 2026-08-07 §2 bug 2 and §4 row CLT-B4.
+// @purpose Pins that GlobeTerrain.wgsl's day/night ramp and diffuse express GlobeFS.glsl's two laws, coefficients captured from both sources, with mutant tests.
+// @status ACTIVE
 //
 // WHAT THIS ROW RECONCILED. `GlobeFS.glsl` has always carried TWO DISTINCT
 // expressions over one `czm_getLambertDiffuse(czm_lightDirectionEC, normalEC) *

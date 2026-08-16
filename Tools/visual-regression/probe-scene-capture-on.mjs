@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // C2-25 ENV-SCENE-CAPTURE (Batch 446) — ON-correctness probe.
+// @purpose ON-correctness gate: scene capture renders the globe into the env cube's 6 faces with correct face basis (nadir=terrain, zenith=sky).
+// @status ACTIVE
 //
 // Verifies the capture pass actually renders the opaque globe surface into the
 // env cube's 6 faces, AND that the face-basis remap is correct (terrain lands

@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // probe-moon-atmosphere-appearance.mjs — C12 MOON WAVE (C12-30 sky-wash +
 // C12-20 Lommel-Seeliger + C12-23 opposition surge), WebGL vs WebGPU.
+// @purpose C12 moon-wave acceptance: disc extinction+inscatter compositing, Lommel-Seeliger + opposition surge; 3 derived-epoch lanes, WebGL vs WebGPU.
+// @status ACTIVE
 //
 // ROOT CAUSE UNDER TEST (C12-30 appearance half, suspects (2) + (3)):
 //   The opaque moon disc is drawn OVER the sky-atmosphere shell, so its

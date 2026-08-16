@@ -4,6 +4,8 @@
 // EdgeDetection, LensFlare, DepthView) are intercepted on the WebGPU
 // backend and substituted with their WGSL twins instead of hitting the
 // GLSL-drop warning and no-opping.
+// @purpose Gate: the 7 PostProcessStageLibrary builtins get WGSL twins with per-stage cross-backend tolerance, off-gate, and post-tonemap HDR order
+// @status ACTIVE
 //
 // For each stage, on BOTH backends (same deterministic scene):
 //   (1) enabling the stage visibly transforms the frame

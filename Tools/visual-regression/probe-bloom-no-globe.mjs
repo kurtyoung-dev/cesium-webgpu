@@ -1,4 +1,7 @@
 // Probe Bloom.html with globe.show = false to see what fills the lower half.
+// @purpose Bloom.html forensics variant: globe.show=false to identify what fills the lower half during the missing-terrain bloom investigation.
+// @status INVESTIGATION
+//
 import { chromium } from "playwright";
 import fs from "fs";
 

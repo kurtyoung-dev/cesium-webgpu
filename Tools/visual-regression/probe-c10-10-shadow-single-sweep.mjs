@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // probe-c10-10-shadow-single-sweep — C10-10-SHADOW-CAST-SINGLE-SWEEP verification.
+// @purpose Verifies the shadow caster-list fold: sublist reference-identical to the old full scan incl. off-camera casters, shadows still render.
+// @status ACTIVE
 //
 // Premise: with shadows on, the frame builds the per-cascade cast lists with a
 // SECOND full-`commandList` sweep per shadow map (SceneRenderer.insertShadowCastCommands),

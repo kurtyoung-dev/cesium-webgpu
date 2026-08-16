@@ -1,5 +1,7 @@
 // globe-use-log-depth.spec.mjs — browser-free durable guard for
 // NEW-WEBGPU-GLOBE-USE-LOG-DEPTH.
+// @purpose Pins that the globe resolves the shared isWebGPULogDepthActive gate so orthographic modes never mix log and hyperbolic encodings in one depth buffer.
+// @status ACTIVE
 //
 // WHY THIS EXISTS
 // ---------------

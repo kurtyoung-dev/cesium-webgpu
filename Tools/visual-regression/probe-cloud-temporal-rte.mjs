@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * Campaign 13 C13-05 temporal-history/RTE acceptance probe. WebGPU-only.
+ * @purpose C13-05 certification of the cloud temporal-history state machine via the CloudTemporalResolve UB upload: teleports, poles, resizes, culls.
+ * @status ACTIVE
  *
  * This is deliberately separate from probe-cloud-temporal.mjs. The older probe
  * remains a visual smoke check; this probe certifies the renderer's production

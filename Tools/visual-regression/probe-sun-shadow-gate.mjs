@@ -2,6 +2,8 @@
 /**
  * `SUN-SHADOW-GATE-PROBE-NEEDED` — sun shadow receive on the globe, browser
  * acceptance probe (owed since Batch 805).
+ * @purpose Sun-shadow receive-on-globe acceptance: WebGL reference darkening, WebGPU receive ratio band, faded-vs-unfaded darkness asymmetry.
+ * @status ACTIVE
  *
  * The Batch 775/780 `cascadesEnabled` fix is static-analysis-verified only. A
  * quick orchestrator gate at Batch 805 produced instrument ambiguity instead of

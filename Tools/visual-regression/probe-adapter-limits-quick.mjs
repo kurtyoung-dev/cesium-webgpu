@@ -1,3 +1,6 @@
+// @purpose Fast dump of four key GPUAdapter limits (vertex buffers/attributes, bind groups, max buffer size) from the viewer page in one default Edge config.
+// @status ACTIVE
+
 import { chromium } from "playwright";
 const browser = await chromium.launch({ headless: true, channel: "msedge" });
 const ctx = await browser.newContext();

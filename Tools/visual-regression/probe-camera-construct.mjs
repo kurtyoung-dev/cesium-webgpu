@@ -1,4 +1,7 @@
 // Patch Camera class to capture aspectRatio + dbW/H at construction.
+// @purpose Patches the Camera constructor to log aspectRatio/drawingBuffer/fov/position at construction per renderer — startup camera-state diagnostic
+// @status INVESTIGATION
+//
 import { chromium } from "playwright";
 
 const RENDERER_OVERRIDE_SHIM = `

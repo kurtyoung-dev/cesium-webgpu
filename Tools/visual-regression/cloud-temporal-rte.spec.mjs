@@ -1,3 +1,6 @@
+// @purpose Pins WebGPUCloudTemporalHistory reset classification (teleport, morph, deck bounds, scene mode...) and commit semantics vs the engine module.
+// @status ACTIVE
+
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";

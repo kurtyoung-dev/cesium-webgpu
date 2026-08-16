@@ -1,6 +1,8 @@
 /**
  * C2-25 ENV-PARALLAX (Batch 451) verification — Lagarde box/sphere
  * parallax-corrected localized reflections.
+ * @purpose Box/sphere parallax-corrected localized reflections: OFF deterministic and unchanged, each proxy changes the mirror reflection, zero errors.
+ * @status ACTIVE
  *
  * Renders a metallic, LOW-ROUGHNESS (mirror-ish) glTF model lit only by the
  * per-model procedural DynamicEnvironmentMapManager sky cubemap, on the

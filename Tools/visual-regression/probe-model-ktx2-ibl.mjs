@@ -1,5 +1,7 @@
 /**
  * NEW-MODEL-IBL-KTX2-CUBEMAP-WEBGPU (item 375) verification.
+ * @purpose Acceptance: authored KTX2 specular env maps load + prefilter on WebGPU — load proof, WebGL parity, consume-vs-procedural delta, 0 errors.
+ * @status ACTIVE
  *
  * Before this batch, authored KTX2 specular environment maps never loaded on
  * the WebGPU context: ImageBasedLighting.update() early-returns to the WebGPU

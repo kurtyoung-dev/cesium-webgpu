@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // probe-dp46a-metadata — DP-H46a de-risking proof.
+// @purpose DP-H46a de-risk proof: property-attribute metadata reaches the WGSL FS via a debug stub (gradient detector) + MODEL_HAS_METADATA off-parity.
+// @status INVESTIGATION
 //
 // Proves the EXT_structural_metadata property-ATTRIBUTE → GPU → WGSL
 // fragment-shader data path end-to-end, and confirms non-metadata models

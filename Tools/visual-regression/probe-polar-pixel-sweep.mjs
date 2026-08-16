@@ -2,6 +2,8 @@
 // Batch 62 — sample center pixel of canvas at south-pole-close for each
 // FS debug mode. Goal: numerically confirm what value the WGSL `return`
 // produces at the polar zenith pixel.
+// @purpose Diagnostic: samples the center pixel at south-pole-close for each FS debug mode to confirm the WGSL return value at the polar zenith
+// @status INVESTIGATION
 
 import { chromium } from "playwright";
 import zlib from "zlib";

@@ -1,3 +1,6 @@
+// @purpose Disables skyAtmosphere/groundAtmosphere/fog/skyBox on WebGPU and captures, isolating which environment layer caused the dark-sky bug.
+// @status INVESTIGATION
+
 import { chromium } from "playwright";
 
 const browser = await chromium.launch({

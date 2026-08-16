@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 /**
  * Weather Phase 1/3 — mock-EDR offline pipeline probe (Batch 424). WebGPU-only.
+ * @purpose Gate-B leg: full EDR ingest chain (fetch, CoverageJSON, packer, weatherTex, clouds) end-to-end against the /mock-edr fixture, offline.
+ * @status ACTIVE
+ *
  * PINNED for determinism under `C13-WEATHER-PROBE-FLEET-NETWORK-GLOBE`.
  *
  * Proves the FULL EDR ingest chain — fetch -> CoverageJSON parse -> packer ->

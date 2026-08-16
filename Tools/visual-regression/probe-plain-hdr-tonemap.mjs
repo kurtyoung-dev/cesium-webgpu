@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // C4-PLAIN-HDR-GAMMA-TAILS acceptance probe (Q7).
+// @purpose Acceptance for plain-HDR tails: exposure synced to WebGPU tonemap, non-default operators match czm_* references, entity color parity
+// @status ACTIVE
 //
 // Three residual tails after B511/B544 plain-HDR gamma work:
 //  (a) exposure -> WGSL tonemap uniform sync: scene.postProcessStages.exposure

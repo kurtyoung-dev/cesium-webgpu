@@ -1,3 +1,6 @@
+// @purpose Browser-side harness loading primitive-restart strip/fan GLB models per backend, recording pipeline recreation history for the C11-90 probe.
+// @status ACTIVE
+
 import * as Cesium from "cesium";
 
 const renderer = new URLSearchParams(window.location.search).get("renderer");

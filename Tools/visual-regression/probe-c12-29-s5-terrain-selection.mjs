@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * C12-29 S5 real-terrain/selection browser acceptance.
+ * @purpose Real-terrain/selection acceptance: fill-to-real transitions, x2 radius law, async picking, env-map capture over local QuantizedMesh, both backends
+ * @status ACTIVE
  *
  * Runs serial WebGL and WebGPU sessions over the local QuantizedMesh fixture.
  * Each session proves an ellipsoid control, first-beginFrame provider reset,

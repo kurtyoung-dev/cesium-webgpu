@@ -1,3 +1,6 @@
+// @purpose node:test contract for the public voxel-pick convergence state machine (two identical consecutive cells = stable; undefined never converges).
+// @status ACTIVE
+
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";

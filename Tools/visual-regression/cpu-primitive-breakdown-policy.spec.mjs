@@ -1,3 +1,6 @@
+// @purpose Policy guard for probe-c11-169-primitive-breakdown: first-red policy, detail controls, instrumentation evaluation and capture normalization vs source.
+// @status ACTIVE
+
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";

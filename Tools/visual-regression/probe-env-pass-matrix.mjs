@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // probe-env-pass-matrix.mjs — C12-G1F1 (WIDENED) environment-pass independence
 // matrix, WebGPU vs WebGL.
+// @purpose Environment-element independence matrix: any subset of skybox/stars/atmosphere/sun/moon/globe renders exactly that subset, matching WebGL.
+// @status ACTIVE
 //
 // WHAT THIS GATES
 // ---------------

@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // probe-ocean-waves-perf.mjs — OCEAN-WAVES PERF AUDIT (C11-158)
+// @purpose C11-158 perf audit: enhanced-ocean fragment cost ON vs OFF (CPU wall + GPU timestamp per-pass) on a static nadir ocean view; hard watchdog.
+// @status ACTIVE
 //
 // Measures the WebGPU enhanced-ocean fragment cost (Fresnel + GGX specular +
 // 3-octave wave normals + foam + SSS) ON vs OFF on a STATIC, ocean-dominant

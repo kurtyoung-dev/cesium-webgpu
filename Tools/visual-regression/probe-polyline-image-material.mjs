@@ -2,6 +2,8 @@
 /**
  * REPRODUCTION probe (probe-FIRST): does an Image-material polyline render the
  * TEXTURE on WebGPU, or a solid color? (C2-14 / 376d)
+ * @purpose Acceptance: Image-material polyline samples its texture along the line on WebGPU (red->blue gradient split), not a solid color
+ * @status ACTIVE
  *
  * Premise: selectPolylineMaterialShader routes Image/DiffuseMap → polylineMatColor
  * (FS returns material.color), and the polyline material pipeline has no

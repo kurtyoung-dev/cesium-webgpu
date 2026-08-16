@@ -1,3 +1,6 @@
+// @purpose Dumps imagery-tile texture format fields (format/pixelFormat/internalFormat, isWebGPU) from rendered tiles in a live WebGPU viewer.
+// @status INVESTIGATION
+
 import { chromium } from "playwright";
 
 const browser = await chromium.launch({

@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // comment-only-diff.mjs — the binding gate of every Campaign 16 rewrite batch.
+// @purpose Binding gate of every C16 rewrite batch: strips comments from both sides of a diff to a canonical form and requires the remaining code identical.
+// @status ACTIVE
 //
 // THE CLAIM IT CHECKS. C16-03..C16-12 rewrite comments and nothing else. That
 // claim is unfalsifiable by reading a diff: a 900-line comment rewrite hides a

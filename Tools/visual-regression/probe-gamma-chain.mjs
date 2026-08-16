@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 // Probe the actual gamma chain on both backends. Reports:
+// @purpose Read-only dump of the gamma/output chain on both backends: canvas attrs, WebGPU presentation format, active PP stages, HDR/tonemapper state
+// @status INVESTIGATION
+//
 //  - WebGL canvas attributes (alpha, premultipliedAlpha, etc.)
 //  - WebGPU presentation format + colorSpace
 //  - Active post-process stages on each backend

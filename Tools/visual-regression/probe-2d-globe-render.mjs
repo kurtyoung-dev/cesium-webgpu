@@ -1,4 +1,6 @@
 // NEW-WEBGPU-GLOBE-2D-REGIONAL-ZOOM regression guard.
+// @purpose Regression guard for the Batch 167 2D regional-zoom cull fix: WebGPU vs WebGL lit-pixel ratio at regional and full-globe 2D over Lake Superior.
+// @status ACTIVE
 //
 // The WebGPU globe used to render blank at regional 2D zoom (~2.4 Mm) while
 // rendering fine at full-globe zoom. Root cause (Batch 167): the globe

@@ -2,6 +2,8 @@
  * C11-205 — pure-Node contracts for the resident 3D Tiles residency
  * precondition and for the PASS / FAIL / STRUCTURAL classification that the
  * lifecycle probe and the performance campaign both exit on.
+ * @purpose Pure-Node contracts for the resident 3D-Tiles residency precondition and the PASS/FAIL/STRUCTURAL exit classification shared by probe and campaign.
+ * @status ACTIVE
  *
  * Every gate below is stated as a mutation: the healthy shape passes, and each
  * single-field corruption of it must be refused. A contract that only ever

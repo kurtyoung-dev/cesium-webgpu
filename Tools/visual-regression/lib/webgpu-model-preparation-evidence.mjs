@@ -1,3 +1,6 @@
+// @purpose Accumulates and validates WebGPU model preparation/demand counters as measurement-window evidence for performance workloads.
+// @status ACTIVE
+
 const demandFields = Object.freeze([
   ["candidates", "candidates"],
   ["view", "viewAdmitted"],

@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // Probe (PARITY-HDR-PP-MATH): HDR-aware ColorGrading + FXAA math on the
 // tonemap-bypass (HDR canvas output) path.
+// @purpose Gates HDR-aware ColorGrading+FXAA on the tonemap-bypass path: SDR byte-identical vs baseline, stages run in HDR with tonemap absent, WGSL compiles
+// @status ACTIVE
 //
 // Before this task, `_skipSDRStagesForHDR` dropped ColorGrading + FXAA
 // entirely whenever `scene.useHDRCanvasOutput && scene.highDynamicRange`.

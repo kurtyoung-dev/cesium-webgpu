@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // C7-DPH47-ATMO-RESOLVER — shared WebGPUAtmosphereUniforms resolver consistency.
+// @purpose Gate that the shared WebGPUAtmosphereUniforms resolver feeds dynamic-atmosphere lighting into BOTH sky and model-IBL consumers.
+// @status ACTIVE
 //
 // The DP-H47 debt item builds ONE parameterized resolver
 // (Renderer/WebGPU/WebGPUAtmosphereUniforms.ts) and migrates the WebGPU Sky

@@ -1,3 +1,6 @@
+// @purpose Shim-forces WebGPU on the legacy Hello World Sandcastle page and inspects post-process pipeline stage state (tonemap/colorGrading/FXAA).
+// @status INVESTIGATION
+
 import { chromium } from "playwright";
 const SHIM = `(function(){
   const FORCED_RENDERER="webgpu"; window.__capturedViewer=null;

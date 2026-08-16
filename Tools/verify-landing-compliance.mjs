@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // verify-landing-compliance.mjs — the after-the-fact detector that makes a
 // `--no-verify` bypass visible.
+// @purpose After-the-fact detector that re-runs the landing rules + C16 marker gate over a landed commit range, making any --no-verify hook bypass visible.
+// @status ACTIVE
 //
 // Ruling: migration_doc/MAINTAINER_RULINGS_2026-08-14.md R-2026-08-14-4
 // Charter: EXECUTOR_LANE_CHARTER_2026-08-14.md §2.2/§2.3

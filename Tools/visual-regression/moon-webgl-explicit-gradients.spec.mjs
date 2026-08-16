@@ -1,4 +1,6 @@
 // C12-33 WebGL Moon explicit-gradient structural contract.
+// @purpose Structural GLSL contract: Moon UV derivatives execute before miss discards under LUNAR_EXPLICIT_GRADIENTS on the WebGL path.
+// @status ACTIVE
 //
 // Run:
 //   node --test Tools/visual-regression/moon-webgl-explicit-gradients.spec.mjs

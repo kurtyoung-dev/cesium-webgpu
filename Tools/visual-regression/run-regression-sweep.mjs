@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // Run-regression-sweep — Batch 146.
+// @purpose Batch-146 sequential sweep of the Batches 134-145 probe arc, parsing stdout tails for PASS/FAIL markers — a did-the-arc-break-anything check.
+// @status INVESTIGATION
 //
 // Runs every probe added during Batches 134-145 sequentially. For each
 // probe, parses the tail of its stdout for the conventional status

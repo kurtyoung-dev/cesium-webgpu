@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 /**
  * bake-stbn.mjs — reproducible spatiotemporal blue-noise (STBN) bake.
+ * @purpose Reproducible spatiotemporal blue-noise bake: deterministic generate, quantise, spectral certify (abort on fail), encode raw .bin + tile-atlas PNG.
+ * @status ACTIVE
+ *
  * Campaign-13 row C13-11, unblocked by maintainer ruling R-2026-08-10-5.
  *
  * ───────────────────────────────────────────────────────────────────────────

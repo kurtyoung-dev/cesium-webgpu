@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // Probe-normalmap-gbuffer — Batch 135 verification.
+// @purpose B135 verification: G-buffer slot 1 emits the perturbed normal so contact shadows track bumps; A/B diff vs geometric-normal baseline.
+// @status ACTIVE
 //
 // Loads a NormalMap-textured primitive over Pittsburgh terrain with
 // contact shadows ON. Pre-Batch-135 the G-buffer slot 1 emit was the

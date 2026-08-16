@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * Batch 555 (E2 CLOUD-MAMMATUS) — pendulous underside pouches. WebGPU-only.
+ * @purpose B555 mammatus gate: underside pouch carve visibly thins the deck, OFF byte-identical under a frozen clock, strength=0 restores the baseline
+ * @status ACTIVE
  *
  * globe.defaultCloudCollection.volumetric.cloudMammatusStrength (+ Scale/Depth) carves the cloud UNDERSIDE between
  * rounded lobe cells so the flat base reads as a field of downward-bulging pouches

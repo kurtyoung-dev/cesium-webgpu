@@ -1,3 +1,6 @@
+// @purpose Behavioral tests for MoonDecodedSourceCache: canonical URL keying, dedupe, deferred decode settlement and decoded-source close accounting.
+// @status ACTIVE
+
 import test from "node:test";
 import assert from "node:assert/strict";
 

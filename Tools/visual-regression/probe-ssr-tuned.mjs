@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // Probe-ssr-tuned — Batch 136 SSR parameter tuning.
+// @purpose ssrMaxDistance parameter sweep over the lake+wall scene to find a distance that engages SSR (diagnosing the B132 near-zero signal).
+// @status INVESTIGATION
 //
 // Diagnoses: the Batch 132 SSR water probe got 0.094% A-vs-B mismatch
 // — basically zero SSR signal. Root cause hypothesis: default

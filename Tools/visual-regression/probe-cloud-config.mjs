@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * Weather-config foundation — live cloud appearance dials. WebGPU-only.
+ * @purpose Weather-config foundation gate: cloud appearance dials are live without rebuild and unset defaults reproduce the pre-config frame
+ * @status ACTIVE
  *
  * Routes the cloud silver-lining / phase / ambient / erosion uniforms through
  * `globe.cloud*` fields exposed on `scene.atmosphericConditions.clouds.*`. Two

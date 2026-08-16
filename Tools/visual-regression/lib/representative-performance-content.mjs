@@ -1,3 +1,6 @@
+// @purpose Builds and validates the local procedural terrain+models+tiles representative scene configuration for offline performance workloads.
+// @status ACTIVE
+
 import { createRepresentativeTilesetRequestLedger } from "./representative-tileset-request-ledger.mjs";
 
 export const REPRESENTATIVE_CONTENT_PROFILE = "local-procedural-terrain-assets";

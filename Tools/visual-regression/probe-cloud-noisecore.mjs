@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * V3 KEYSTONE — baked 3D-noise density core. WebGPU-only.
+ * @purpose V3 keystone A/B vs the pre-V3 live-noise build: baked clouds render, sane cell count, faster frame, W1/W2 lighting survives on the baked path
+ * @status INVESTIGATION
  *
  * `cloudDensity` / `cloudBaseDensity` now sample the baked Perlin-Worley shape +
  * Worley detail textures (when the tier wants baked — the default `auto` at low

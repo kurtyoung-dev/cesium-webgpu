@@ -1,5 +1,7 @@
 // globe-night-ocean-sentinel.spec.mjs — CLT-B2 (CELESTIAL_LIGHT_TRANSPORT_PLAN
 // 2026-08-07 §2 bug 1, queue row CLT-B2).
+// @purpose Pins the GLOBE_UB_UNSET (-1.0) sentinel that made enableNightLights=false reachable: OFF and default-ON no longer share the same 0.0 uniform encoding.
+// @status ACTIVE
 //
 // WHAT THIS ROW FIXED. `oceanParams` and `nightOceanParams` are two vec4 slots
 // in the globe tile uniform buffer. Six WGSL getters read them, and each one

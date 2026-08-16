@@ -2,6 +2,8 @@
 /**
  * C12-35 L5 — live Edge certification for the shared Moon decoded-source
  * cache and backend-owned WebGL/WebGPU texture lifecycles.
+ * @purpose C12-35 L5 cert: the shared moon decoded-source cache coalesces same-realm WebGL+WebGPU viewers; toggles + A/B supersession without churn.
+ * @status ACTIVE
  *
  * The dedicated split comparison app is intentional: it constructs one WebGL
  * Viewer and one WebGPU Viewer in the SAME page/JavaScript realm. That is the

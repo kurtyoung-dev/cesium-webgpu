@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // C11-184 WebGPU Model shadow-command graph probe.
+// @purpose C11-184 runtime companion: inspects Model's WebGPU command graph at the PVS boundary — caster layouts, variant isolation, zero idle UB churn.
+// @status ACTIVE
 //
 // This is a runtime companion to the focused unit specs. It inspects commands
 // at the PVS boundary, after Model has emitted its native WebGPU command graph

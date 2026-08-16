@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // Probe-clustered-dispatcher — Slice 5d Batch 150 verification.
+// @purpose Dispatcher lifecycle check: enable/disable packs activeLightCount, dirty-tracking skips, readbacks match, scene toggle exists.
+// @status ACTIVE
 //
 // Validates WebGPUClusteredLightingDispatcher end-to-end:
 //   1. Construct the dispatcher.

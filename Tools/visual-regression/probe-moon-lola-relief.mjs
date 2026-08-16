@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // C12-25 LOLA lunar normal map — browser acceptance probe (Batch 811+).
+// @purpose C12-25 LOLA lunar normal-map acceptance: terminator ON/OFF relief, full-phase near-invisibility, cross-backend parity, OFF identity.
+// @status ACTIVE
 //
 // Verifies the shipped terminator relief the way the feature is specified to
 // behave, per backend (WebGL + WebGPU) and cross-backend:

@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 // Verify the new CesiumDebug.globeFragmentDebug() API end-to-end.
+// @purpose End-to-end smoke of CesiumDebug.globeFragmentDebug: registry populated, each mode enables, screenshots captured.
+// @status ACTIVE
+//
 // Loads CesiumViewer, calls the API to enable each mode, captures screenshot.
 
 import { chromium } from "playwright";

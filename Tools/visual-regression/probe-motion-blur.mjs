@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * C6-VELOCITY-MOTION-BLUR — velocity-buffer motion blur. WebGPU-only visual probe.
+ * @purpose WebGPU-only velocity motion blur: deterministic previous-pose control proves smear exists and scales with camera velocity; OFF stability gate.
+ * @status ACTIVE
  *
  * Motion blur is a WebGPU-only screen-space effect with no WebGL twin, so the
  * diff is BLUR-ON vs BLUR-OFF on the SAME WebGPU canvas at the SAME final

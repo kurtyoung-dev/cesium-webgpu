@@ -1,4 +1,6 @@
 // C11-13 preservation repair — exact voxel-pick log-depth pipeline identity.
+// @purpose Pins the exact voxel-pick log-depth pipeline identity across Picking.js, VoxelPrimitive.js, the WebGPU pick pass and the probe that observes it.
+// @status ACTIVE
 //
 // Run: node --test Tools/visual-regression/c11-13-voxel-pick-pipeline-name.spec.mjs
 

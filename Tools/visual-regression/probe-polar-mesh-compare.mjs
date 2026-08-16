@@ -3,6 +3,8 @@
 // WebGPU at lat=80, alt=12 Mm. If the mesh vertices are byte-identical
 // but the projected screen positions diverge, the drift is downstream
 // (RTE math precision, MVP composition, dpdx/dpdy).
+// @purpose Diagnostic: byte-compares polar tile mesh + RTE camera encoding between backends to localize drift to mesh vs downstream RTE/MVP math
+// @status INVESTIGATION
 
 import { chromium } from "playwright";
 

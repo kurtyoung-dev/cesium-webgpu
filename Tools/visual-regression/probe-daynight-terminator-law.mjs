@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // CLT-B1 — day/night terminator LAW probe (premise verification, no fix).
+// @purpose CLT-B1 premise verification: calibration-ladder measurement of the day/night terminator alpha law on both backends.
+// @status ACTIVE
 //
 // SPEC: migration_doc/CELESTIAL_LIGHT_TRANSPORT_PLAN_2026-08-07.md §2 (bugs
 // 1-2) and §4 (row CLT-B1, a BLOCKING prereq for the CLT-B7 blend). The

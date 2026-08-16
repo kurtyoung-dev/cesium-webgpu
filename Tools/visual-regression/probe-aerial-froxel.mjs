@@ -4,6 +4,8 @@
 // `scene.aerialPerspective`), the effect bakes a 32³ froxel volume of
 // accumulated inscatter + transmittance once per frame and the fragment shader
 // does ONE trilinear fetch instead of the 10-step per-pixel analytic march.
+// @purpose Acceptance for the froxel 3D-LUT aerial-perspective fast path: renders, far-band haze signature, distinct from OFF, analytic parity path intact.
+// @status ACTIVE
 //
 // Same low-oblique wide-depth-span view as probe-aerial-perspective.mjs.
 //

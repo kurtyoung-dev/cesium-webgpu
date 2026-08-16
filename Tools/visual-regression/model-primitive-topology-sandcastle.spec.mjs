@@ -1,3 +1,6 @@
+// @purpose Pins that the KHR primitive-restart Sandcastle demo survives the live WebGPU Viewer transform and remains valid module syntax.
+// @status ACTIVE
+
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import path from "node:path";

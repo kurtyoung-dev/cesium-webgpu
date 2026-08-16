@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 /**
  * Weather Phase 3 — G/B/A weather-channel reads (Batch 424). WebGPU-only.
+ * @purpose Gate-B leg: raymarcher applies weather-map G/B/A channels, 9-longitude sweep with a richA/richB determinism control bracketing scored swaps.
+ * @status ACTIVE
+ *
  * PINNED for determinism under `C13-GATE-B-CHANNELS-PROBE-NONDETERMINISM`.
  *
  * Proves the cloud raymarcher APPLIES the weather map's G (genus), B (cloud

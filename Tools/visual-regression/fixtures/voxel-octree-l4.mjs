@@ -1,4 +1,6 @@
 // NEW-VOXEL-OCTREE-DEEP-LEVELS — 4-level CUSTOM box voxel provider asset.
+// @purpose 4-level small-tile (2x2x2) CUSTOM voxel provider whose L3 discriminators detect whether the WebGPU march reaches octree depth 3.
+// @status ACTIVE
 //
 // A deep-octree test asset advertising `availableLevels = 4`, with SMALL tiles
 // (2x2x2 cells) so the full 585-slot depth-3 atlas (root + 8 level-1 + 64

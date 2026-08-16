@@ -1,5 +1,7 @@
 // probe-mvt-datasource-parity.mjs
 // C4-MVT-WEBGPU-PARITY-PROBE (Q25 / R-4) — diagnostic parity probe.
+// @purpose MVT pipeline parity gate: a synthesized vector tile decodes/builds/renders on both backends — noise-floor pixel diff, 0 errors.
+// @status ACTIVE
 //
 // Verifies the inherited runtime MVT pipeline renders identically on WebGL and
 // WebGPU:  MVTDataProvider.fromUrl -> decodeMVT (SYNCHRONOUS) ->

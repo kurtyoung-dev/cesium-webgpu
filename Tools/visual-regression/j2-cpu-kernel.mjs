@@ -3,6 +3,8 @@
 // shaped as a `ComputeInstanceCollection` cpuKernel. NOT engine code — this is
 // orbital domain math (the engine stays orbital-agnostic; it only runs the
 // kernel and RTE-splits the result).
+// @purpose FP64 secular-J2 orbital propagator mirroring the demo's WGSL kernel; single source of truth for two orbital probes and the WebGL2 cpuKernel leg.
+// @status ACTIVE
 //
 // The WebGL2 fallback of ComputeInstanceCollection takes a JS kernel
 //   (out, index, timeSeconds, params) => void

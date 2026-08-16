@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * Deterministically crop four exact records from NASA SVS 5073 `umbra_lo`.
+ * @purpose Deterministically crops four hash-verified umbra_lo records from NASA SVS 5073 into the pinned C12-29 S5 eclipse-footprint fixture shard.
+ * @status ACTIVE
  *
  * The source ZIP is intentionally not vendored. Extract its four `umbra_lo.*`
  * members without transforming them, then run:

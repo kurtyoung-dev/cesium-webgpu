@@ -1,5 +1,8 @@
 // stbn-spectrum.mjs — Fourier certification of a spatiotemporal blue-noise
 // volume, and the exact mutants that prove the certification discriminates.
+// @purpose Fourier certification of an STBN volume (radial spatial spectrum, per-pixel temporal spectrum, cross-correlation) with mutants proving each bar fires.
+// @status ACTIVE
+//
 // Campaign-13 row C13-11.
 //
 // ─────────────────────────────────────────────────────────────────────────────

@@ -1,6 +1,8 @@
 // stbn-core.mjs — spatiotemporal blue-noise (STBN) generation, implemented
 // from the published algorithm descriptions. Campaign-13 row C13-11, unblocked
 // by maintainer ruling R-2026-08-10-5 ("generate our own, ground up").
+// @purpose STBN generation from published algorithms (Ulichney void-and-cluster, Georgiev-Fajardo energy, Wolfe separable spatiotemporal criterion).
+// @status ACTIVE
 //
 // ─────────────────────────────────────────────────────────────────────────────
 // PROVENANCE DISCIPLINE — read this before changing anything below.

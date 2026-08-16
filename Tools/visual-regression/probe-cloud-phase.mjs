@@ -2,6 +2,8 @@
 /**
  * W1 — Dual-lobe Henyey-Greenstein cloud phase (silver lining). WebGPU-only
  * (procedural clouds don't render on WebGL).
+ * @purpose W1 dual-lobe Henyey-Greenstein gate: toward-sun silver-lining rim energy >= 1.25x the away-sun heading; single-run PASS bars
+ * @status ACTIVE
  *
  * The forward lobe (phaseG1) makes BACKLIT clouds (camera looking toward the
  * sun) develop a bright forward-scatter rim — the silver lining — while

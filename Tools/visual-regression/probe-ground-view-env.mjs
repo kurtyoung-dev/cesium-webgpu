@@ -2,6 +2,8 @@
 // Probe (NEW-GROUND-VIEW-ENV-DIVERGENCES, Batch 247): three cross-backend
 // environment divergences at deterministic ground-level views, each measured
 // numerically against the WebGL reference render of the SAME scene:
+// @purpose Numerically gates three ground-level divergences vs WebGL: daytime sky brightness, sun disk vs atmosphere ordering, and globe baseColor consumption
+// @status ACTIVE
 //
 //   (1) Ground-level daytime SKY-ATMOSPHERE brightness. Pre-fix the WebGPU
 //       sky shader took the inscatter-LUT fast path whose 2D bake encodes

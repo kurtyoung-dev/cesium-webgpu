@@ -6,6 +6,8 @@
 // reads the collection's dirty state (_cloudsToUpdateIndex > 0 /
 // _createVertexArray) BEFORE the Batch-228 _consumeDirtyState() call clears
 // it.
+// @purpose Regression: per-cloud property edits re-upload the billboard-cloud instance buffer within 2 frames, then settle with no further rebuilds
+// @status ACTIVE
 //
 // Assertions:
 //  1. Clouds render against a black background (globe/sky hidden) — the

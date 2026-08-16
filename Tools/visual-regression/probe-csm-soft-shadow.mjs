@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // probe-csm-soft-shadow — NEW-CSM-SOFT-SHADOW-PCF verification (Batch 289).
+// @purpose CSM PCF softness gate: soft ON widens the penumbra vs hard OFF and lands in a WebGL-relative band; umbra floor is a ratio.
+// @status ACTIVE
 //
 // Validates that the WebGPU cascaded-shadow-map receive path softens the
 // cascade edge with a 3x3 PCF box kernel, matching WebGL's

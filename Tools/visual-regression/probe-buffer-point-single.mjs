@@ -2,6 +2,8 @@
 // Probe (NEW-BUFFERPOINT-WEBGL-SINGLE-VERTEX-DROPOUT) — exercises the WebGL
 // single-vertex BufferPointCollection path: one gl.POINTS vertex rendered, then
 // moved via a count==1 copyAttributeFromRange sub-data update.
+// @purpose Regression gate for the WebGL single-vertex BufferPoint path (count==1 sub-data update): lone point renders, moves, zero errors.
+// @status ACTIVE
 //
 // Background: WebGL repacks only the dirty range of a BufferPointCollection via
 // VertexArray.copyAttributeFromRange(index, array, vertexOffset, vertexCount).

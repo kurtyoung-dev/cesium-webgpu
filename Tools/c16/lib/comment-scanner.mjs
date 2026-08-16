@@ -1,4 +1,6 @@
 // comment-scanner.mjs — the one tokenizer both Campaign 16 tools share.
+// @purpose The one tokenizer both C16 instruments share (JS/TS/WGSL/GLSL comment vs code vs string), fail-closed, with semantic-comment retention rules.
+// @status ACTIVE
 //
 // WHY ONE TOKENIZER. The comment standard is enforced by two instruments that
 // must agree on what a comment IS: the marker guard (which reads comment text

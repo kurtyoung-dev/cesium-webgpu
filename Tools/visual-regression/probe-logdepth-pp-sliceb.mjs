@@ -2,6 +2,8 @@
 /**
  * C4-LOGDEPTH-PP-SLICEB — csm_reverseLogDepth consumer half for the depth-
  * reading post-process effects (AmbientOcclusion/GTAO, DepthOfField, GodRay).
+ * @purpose Acceptance for log-depth reverse in depth-reading post-FX (AO/GTAO, DoF, GodRay): armed reverse changes pixels; forced-off + effects-off gates.
+ * @status ACTIVE
  *
  * Slice A threaded live near/far + the renderer-wide `logActive` flag into each
  * effect UB but no WGSL read `frustum.z`/`params2.x`. Slice B adds the log-depth

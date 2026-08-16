@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // Probe-cesium-man-race — Batch 144 / Item 5 instrumentation.
+// @purpose Wraps encoder methods before model load to stack-trace the CesiumMan locked-encoder race at the first offending call
+// @status ACTIVE
 //
 // CesiumMan triggers 2 device errors at startup:
 //   "Recording in [CommandEncoder "Scene Frame Command Encoder"] which

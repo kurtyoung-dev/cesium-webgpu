@@ -5,6 +5,8 @@
 // globe and compares WebGL vs WebGPU — the point cloud must occlude/sort against
 // the globe surface identically on both backends. Also asserts 0 device errors
 // and that the point-cloud color render is unchanged.
+// @purpose Gate: standalone WebGPU point-cloud renderer writes log frag_depth so it occludes/sorts against the globe identically to WebGL
+// @status ACTIVE
 //
 // Usage: PROBE_BASE=http://localhost:8080 node Tools/visual-regression/probe-pointcloud-logdepth.mjs
 import { chromium } from "playwright";

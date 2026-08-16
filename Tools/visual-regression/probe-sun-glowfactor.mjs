@@ -3,6 +3,9 @@
 // bake + quad size (parity with WebGL), and that glowFactor=1.0 (default) stays
 // byte-identical to the historical hardcoded bake. Measures the sun bright box
 // and glow-halo box for glowFactor 1.0 and 4.0 on each backend.
+// @purpose Gates scene.sun.glowFactor driving the WebGPU sun bake + quad size, with glowFactor=1.0 byte-identical to the historical hardcoded bake.
+// @status ACTIVE
+//
 import { chromium } from "playwright";
 const BASE = process.env.PROBE_BASE || "http://localhost:8080";
 

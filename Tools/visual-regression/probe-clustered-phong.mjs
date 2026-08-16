@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // Probe-clustered-phong — Slice 5d Batch 157 verification.
+// @purpose Checks flat:false PerInstanceColorAppearance routes to the lit phong shader and the clustered consumer contributes visibly.
+// @status ACTIVE
 //
 // Two-in-one check, both enabled by the Batch 156 MSAA fix + the Batch 157
 // "decode before shader-select" fix:

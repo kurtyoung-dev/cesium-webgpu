@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // NS-WEBGPU-REINIT-BLACK-AFTER-SWITCH acceptance probe.
+// @purpose Acceptance for the re-init lifecycle bug: WebGL-WebGPU-WebGL-WebGPU switches; gates the second WebGPU frame being non-black.
+// @status ACTIVE
 //
 // USER-REPORTED (2026-07-05): start the viewer in WebGL, switch to WebGPU
 // (renders fine), switch back to WebGL, then switch to WebGPU AGAIN -> the

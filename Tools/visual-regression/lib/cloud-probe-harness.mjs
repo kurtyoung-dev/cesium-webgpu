@@ -1,6 +1,8 @@
 /**
  * Installs the browser-side cloud probe helper. The function is deliberately
  * self-contained so Playwright can inject it with `page.addInitScript`.
+ * @purpose Self-contained browser-side helper (addInitScript) configuring defaultCloudCollection.volumetric and verifying every value round-tripped.
+ * @status ACTIVE
  *
  * Cloud volumetric configuration moved off `Globe` during cloud unification.
  * Probes must configure `globe.defaultCloudCollection.volumetric` directly and

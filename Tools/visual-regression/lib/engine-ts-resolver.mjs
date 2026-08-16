@@ -1,5 +1,7 @@
 /**
  * Lets a pure-Node spec execute engine TypeScript that is NOT a leaf module.
+ * @purpose Node resolve hook rewriting engine-internal ./x.js specifiers to sibling .ts so specs can execute non-leaf engine TypeScript directly.
+ * @status ACTIVE
  *
  * Engine source uses the CesiumJS convention of writing `.js` specifiers even
  * between `.ts` files (the extension the build emits). Node's built-in type

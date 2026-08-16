@@ -3,6 +3,9 @@
  * Targeted GroundPolyline test — zoom in close so even thin lines
  * are visible, and add the polyline as a primitive (not via
  * `groundPrimitives`) using the simpler upstream demo pattern.
+ * @purpose Close-zoom GroundPolylinePrimitive render check on either backend (renderer as argv); screenshots plus GP-DIAG console capture.
+ * @status ACTIVE
+ *
  */
 import { chromium } from "playwright";
 import fs from "fs";

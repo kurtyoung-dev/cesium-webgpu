@@ -1,4 +1,6 @@
 // Q5-TIMEDYNAMIC-POINTCLOUD-ZERO — regression probe for the B377 diagnostic.
+// @purpose Regression probe for TimeDynamicPointCloud loading zero on WebGPU: animates the 5-frame sample; checks boundingSphere, memory bytes, pixels.
+// @status ACTIVE
 //
 // Diagnostic claim (B377): `TimeDynamicPointCloud` loads ZERO content on WebGPU
 //   (`boundingSphere` never ready, `totalMemoryUsageInBytes === 0` after many

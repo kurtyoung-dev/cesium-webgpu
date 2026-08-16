@@ -1,5 +1,7 @@
 // cloud-reconstruction-attachments.spec.mjs — C13-09 (cloud reconstruction
 // attachments: front depth, weighted depth, velocity, moments).
+// @purpose C13-09: attachment table add-only, march shader content-hash pin enforcing the C13-39 static-register constraint, stage default-OFF byte/cost neutral.
+// @status ACTIVE
 //
 // Pure Node (`node --test`). No browser, no build, no adapter.
 //

@@ -1,5 +1,7 @@
 // stbn-png.mjs — minimal 8-bit greyscale PNG encoder + decoder for the STBN
 // bake (C13-11).
+// @purpose Minimal spec-derived 8-bit greyscale PNG encoder/decoder so the STBN bake and its node:test spec need no native image dependency.
+// @status ACTIVE
 //
 // PROVENANCE DISCIPLINE. Written from the PNG specification (W3C/ISO
 // 15948:2004: signature, chunk layout, IHDR fields, filter types 0-4, and the

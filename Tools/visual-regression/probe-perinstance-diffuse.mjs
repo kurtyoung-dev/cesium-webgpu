@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // Probe: NEW-PERINSTANCE-DIFFUSE-PARITY (Batch 326)
+// @purpose Parity gate: lit PerInstanceColorAppearance luminance on WebGPU within 8% of WebGL (fixed light, top-down, shadows/fog off)
+// @status ACTIVE
 //
 // A lit (flat:false) PerInstanceColorAppearance primitive rendered visibly
 // DARKER on WebGPU than WebGL under the same directional light, independent of

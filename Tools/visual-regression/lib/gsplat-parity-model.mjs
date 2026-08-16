@@ -1,5 +1,7 @@
 // gsplat-parity-model.mjs — pure, browser-free decision logic for the C15-G1
 // Gaussian-splat probe harness (`probe-gsplat-parity.mjs`).
+// @purpose Pure dual-mode verdict logic for probe-gsplat-parity: attributable-absence marker, presence flip, blank-canvas parity refusal, exits 0/1/2/3.
+// @status ACTIVE
 //
 // WHY THIS FILE EXISTS
 // --------------------

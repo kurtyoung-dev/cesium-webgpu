@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * V1 — tier-preset scaffold byte-identity guard. WebGPU-only.
+ * @purpose Stash-based byte-identity guard for the V1 CloudTierPreset scaffold (unread qualityFlags lane must not move pixels).
+ * @status INVESTIGATION
  *
  * V1 adds the `CloudTierPreset` module + the `qualityFlags`@74 uniform lane, but
  * NO shader reads `qualityFlags` yet and `maxSteps`/`lightSteps` stay on the

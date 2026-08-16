@@ -3,6 +3,8 @@
 // Phase-0 dirty-consume fix, a STATIC PolylineCollection and a STATIC
 // CloudCollection must stop re-touching their primitives every frame on the
 // WebGPU path, with queues drained — while polylines still render.
+// @purpose Gate: static Polyline/CloudCollections stop re-touching primitives per frame (dirty-consume); tripwire for the cloud scene-FB MSAA mismatch
+// @status ACTIVE
 //
 // Render assertions:
 //  - Polyline: asserted at the known-good view (1.5 Mm camera, surface

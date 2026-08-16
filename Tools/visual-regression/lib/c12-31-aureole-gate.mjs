@@ -1,6 +1,8 @@
 /**
  * Pure, browser-independent acceptance policy for the bounded C12-31 L1-L4
  * natural-solar-aureole certificate.
+ * @purpose Gate-predicate library for the C12-31 sky-aureole certification lane, pairing probe-sky-aureole-anchor with its spec.
+ * @status ACTIVE
  *
  * The browser probe records requested and observed state. This module owns the
  * exact topology, independently checks the WGS84 camera/Sun relationships,

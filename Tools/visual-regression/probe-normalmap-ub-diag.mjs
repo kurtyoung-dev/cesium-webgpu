@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 // Probe-normalmap-ub-diag — Batch 138 diagnostic.
+// @purpose B138 diagnostic: inspects NormalMap material uniforms + UB gpuData to explain a 16-byte JS allocation vs the 32-byte WGSL expectation.
+// @status ACTIVE
+//
 // Constructs a NormalMap material the same way Batch 135's probe did,
 // then inspects material.uniforms keys + material._uniformBuffer.gpuData
 // size to figure out exactly why the JS allocates 16 bytes when WGSL

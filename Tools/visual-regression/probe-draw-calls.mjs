@@ -1,6 +1,8 @@
 // Diagnostic probe — instrument the GPURenderPassEncoder to count
 // actual GPU draw calls vs no-ops. Tells us whether commands are
 // reaching the encoder or being skipped silently.
+// @purpose Instruments GPURenderPassEncoder to count real GPU draw calls vs silent no-ops — early 'are commands reaching the encoder?' bisection.
+// @status INVESTIGATION
 
 import { chromium } from "playwright";
 

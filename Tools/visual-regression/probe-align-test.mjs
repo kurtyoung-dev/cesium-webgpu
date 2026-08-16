@@ -2,6 +2,9 @@
 // Search for the best (dx, dy) pixel offset to align WebGPU's image
 // with WebGL's at northpole-close. If the optimum is non-zero, there
 // is a positional shift between the two backends.
+// @purpose Searches best (dx,dy) offset between pre-captured northpole WebGL/WebGPU PNGs to detect a positional shift between backends.
+// @status INVESTIGATION
+//
 import { chromium } from "playwright";
 import fs from "fs";
 

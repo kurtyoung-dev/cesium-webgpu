@@ -1,5 +1,7 @@
 // C11-195 — pure-Node contracts for the WebGPU model group-0 camera
 // dynamic-offset arena.
+// @purpose Bundles the real WebGPUModelCameraArena and pins offset alignment, per-frame reset, view isolation, plus call-site routing source checks.
+// @status ACTIVE
 //
 // Two halves:
 //

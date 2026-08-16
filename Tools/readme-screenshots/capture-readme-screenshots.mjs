@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // capture-readme-screenshots.mjs — one command that produces every image the
 // README's feature table references, into Documentation/Images/webgpu-fork/.
+// @purpose One-command Playwright capture of every image the README feature table references (sandcastle/viewer/page scenes from scenes.json manifest).
+// @status ACTIVE
 //
 //   node Tools/readme-screenshots/capture-readme-screenshots.mjs
 //   node Tools/readme-screenshots/capture-readme-screenshots.mjs --only celestial-moon

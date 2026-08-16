@@ -1,3 +1,6 @@
+// @purpose Env-layer toggle matrix (skyAtmosphere/groundAtmosphere/fog/skyBox) over Sandcastle Hello World to isolate which layer caused a sky color divergence
+// @status INVESTIGATION
+
 import { chromium } from "playwright";
 
 const SHIM = `(function() {

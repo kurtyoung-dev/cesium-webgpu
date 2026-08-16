@@ -1,4 +1,7 @@
 // NEW-VR2-1 forensics — probe Bloom.html GLOBE PASS commands.
+// @purpose Forensics on Bloom.html globe-pass commands — dumps tile draw state to attribute the bloom-frame terrain anomaly.
+// @status INVESTIGATION
+//
 import { chromium } from "playwright";
 
 const RENDERER_OVERRIDE_SHIM = `

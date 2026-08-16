@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * C9-06-CELESTIAL-CLOSE acceptance probe.
+ * @purpose C9-06 close-out acceptance: cached sun/moon extinction bit-equals uncached physics, dusk warm-keep kills star pop-in, backends agree to exact IEEE-754
+ * @status ACTIVE
  *
  * Closes the celestial-extinction revision gate by proving, on the live WebGL
  * and WebGPU paths:

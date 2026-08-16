@@ -1,4 +1,7 @@
 // Probe affected demos for the UniformArrayFloatVec4.set "Invalid vec4 value" error.
+// @purpose Sweeps affected demos for the UniformArrayFloatVec4.set 'Invalid vec4 value' error using the renderer-override shim.
+// @status INVESTIGATION
+//
 import { chromium } from "playwright";
 
 const RENDERER_OVERRIDE_SHIM = `

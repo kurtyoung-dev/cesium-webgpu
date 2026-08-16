@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 /**
  * Probe: C13-06 — cloud cast shadows at high latitude (pixel gate).
+ * @purpose C13-06 pixel gate: cloud cast shadows must darken the ground band at 82N; fully pinned (P1-P8+P10) with bracketing control legs.
+ * @status ACTIVE
+ *
  * PINNED for determinism under `C13-WEATHER-PROBE-FLEET-NETWORK-GLOBE`.
  *
  * Pre-fix the shadow pass marched empty space (spherical footprint 21 km off at

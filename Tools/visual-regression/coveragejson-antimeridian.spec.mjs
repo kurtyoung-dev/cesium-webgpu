@@ -1,4 +1,6 @@
 // C13-08 — CoverageJSON cyclic-longitude parser contract.
+// @purpose C13-08: CoverageJSON cyclic-longitude unwrap through WeatherFieldGrid + WeatherTexPacker so antimeridian-crossing CRS84 axes parse right.
+// @status ACTIVE
 //
 // A CRS84 axis may stay inside [-180, 180] while walking eastward through the
 // antimeridian: 170, 175, 180, -175, -170. The parser must unwrap that axis
