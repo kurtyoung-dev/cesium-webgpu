@@ -238,11 +238,7 @@ export const PROBE_CONTRACT_ALLOWLIST = Object.freeze({
     "no watchdog; browser.close outside finally — added 2026-06-24, pre-dates the spec",
   "probe-cloud-clockbind.mjs":
     "no watchdog; browser.close outside finally — added 2026-06-24, pre-dates the spec",
-  "probe-cloud-cone-equal.mjs":
-    "no watchdog; browser.close outside finally — added 2026-06-29, pre-dates the spec",
   "probe-cloud-cone-parity.mjs":
-    "no watchdog; browser.close outside finally — added 2026-06-29, pre-dates the spec",
-  "probe-cloud-cone-perf.mjs":
     "no watchdog; browser.close outside finally — added 2026-06-29, pre-dates the spec",
   "probe-cloud-config.mjs":
     "no watchdog; browser.close outside finally — added 2026-06-25, pre-dates the spec",
@@ -448,8 +444,6 @@ export const PROBE_CONTRACT_ALLOWLIST = Object.freeze({
     "no watchdog; browser.close outside finally — added 2026-05-13, pre-dates the spec",
   "probe-disk-extent-state.mjs":
     "no watchdog; browser.close outside finally — added 2026-05-17, pre-dates the spec",
-  "probe-dp46a-metadata.mjs":
-    "no watchdog; browser.close outside finally — added 2026-06-30, pre-dates the spec",
   "probe-dp46b-metadata.mjs":
     "no watchdog; browser.close outside finally — added 2026-06-30, pre-dates the spec",
   "probe-dp46c-metadata.mjs":
@@ -586,10 +580,6 @@ export const PROBE_CONTRACT_ALLOWLIST = Object.freeze({
     "no watchdog; browser.close outside finally — added 2026-07-02, pre-dates the spec",
   "probe-globe-rasterizes.mjs":
     "no watchdog; browser.close outside finally — added 2026-06-06, pre-dates the spec",
-  "probe-globe-tile-trace.mjs":
-    "no watchdog; browser.close outside finally — added 2026-05-13, pre-dates the spec",
-  "probe-globe-timing.mjs":
-    "no watchdog; browser.close outside finally — added 2026-05-13, pre-dates the spec",
   "probe-globe-translucency.mjs":
     "no watchdog; browser.close outside finally — added 2026-07-02, pre-dates the spec",
   "probe-globe-underground.mjs":
@@ -604,8 +594,6 @@ export const PROBE_CONTRACT_ALLOWLIST = Object.freeze({
     "no watchdog; browser.close outside finally — added 2026-07-05, pre-dates the spec",
   "probe-gpu-sort-consume.mjs":
     "no watchdog; browser.close outside finally — added 2026-07-04, pre-dates the spec",
-  "probe-gpu-tex.mjs":
-    "no watchdog; browser.close outside finally — added 2026-04-29, pre-dates the spec",
   "probe-gpu-timestamp-profiler.mjs":
     "no watchdog — added 2026-07-16, pre-dates the spec",
   "probe-grid-multizoom.mjs":
@@ -648,8 +636,6 @@ export const PROBE_CONTRACT_ALLOWLIST = Object.freeze({
     "no watchdog; browser.close outside finally — added 2026-06-19, pre-dates the spec",
   "probe-ibl-hdr.mjs":
     "no watchdog; browser.close outside finally — added 2026-06-29, pre-dates the spec",
-  "probe-imagery-format.mjs":
-    "no watchdog; browser.close outside finally — added 2026-05-13, pre-dates the spec",
   "probe-imagery-overlay.mjs":
     "no watchdog; browser.close outside finally — added 2026-05-17, pre-dates the spec",
   "probe-imagery-tex.mjs":
@@ -678,8 +664,6 @@ export const PROBE_CONTRACT_ALLOWLIST = Object.freeze({
     "no watchdog; browser.close outside finally — added 2026-06-26, pre-dates the spec",
   "probe-lod-case-paths.mjs":
     "no watchdog; browser.close outside finally — added 2026-05-23, pre-dates the spec",
-  "probe-logdepth-diag.mjs":
-    "no watchdog; browser.close outside finally — added 2026-05-30, pre-dates the spec",
   "probe-logdepth-globe.mjs":
     "no watchdog; browser.close outside finally — added 2026-05-29, pre-dates the spec",
   "probe-logdepth-pp-sliceb.mjs":
@@ -1048,12 +1032,8 @@ export const PROBE_CONTRACT_ALLOWLIST = Object.freeze({
     "no watchdog; browser.close outside finally — added 2026-06-30, pre-dates the spec",
   "probe-timedynamic-pointcloud-load.mjs":
     "no watchdog; browser.close outside finally — added 2026-07-04, pre-dates the spec",
-  "probe-tonemap.mjs":
-    "no watchdog; browser.close outside finally — added 2026-05-13, pre-dates the spec",
   "probe-tpdf-dither.mjs":
     "no watchdog; browser.close outside finally — added 2026-07-10, pre-dates the spec",
-  "probe-trace-counts.mjs":
-    "no watchdog; browser.close outside finally — added 2026-05-13, pre-dates the spec",
   "probe-trans-scale.mjs":
     "no watchdog; browser.close outside finally — added 2026-05-17, pre-dates the spec",
   "probe-uniformstate-viewport-371.mjs":

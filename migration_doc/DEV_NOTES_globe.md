@@ -797,14 +797,14 @@ _Moved 2026-08-08._
 
 ```text
 Slice 5c-B Batch 121 — G-buffer MRT output struct (added by
-Tools/batch-121-wrap-lit-shaders.mjs). Slot 0 = lit color, slot 1 =
+Tools/archive/batch-121-wrap-lit-shaders.mjs). Slot 0 = lit color, slot 1 =
 eye-space normal + roughness. NormalMap / BumpMap variants emit the
 geometric vertex normal for now; a follow-up batch can switch them
 to their perturbed-normal variable for wider Slice 4 divergence.
 ```
 
 Two facts with no home in this file: the MRT wrapper across the `*Lit` shader
-family was applied by a generator script, `Tools/batch-121-wrap-lit-shaders.mjs`
+family was applied by a generator script, `Tools/archive/batch-121-wrap-lit-shaders.mjs`
 (so a hand edit to one shader will not match its siblings), and the
 NormalMap / BumpMap variants deliberately still emit the geometric vertex
 normal rather than their perturbed normal.
