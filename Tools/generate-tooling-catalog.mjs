@@ -71,7 +71,11 @@ const REF_FILES = Object.freeze(["package.json", "lint-staged.config.js"]);
  * The catalog quotes every file name in its own census, so counting itself
  * would give every file exactly one phantom inbound reference.
  */
-const REF_EXCLUDED = Object.freeze(["migration_doc/TOOLING_CATALOG.md"]);
+const REF_EXCLUDED = Object.freeze([
+  "migration_doc/TOOLING_CATALOG.md",
+  // The banked audit rows name every file too - a census, not a consumer.
+  "Tools/tooling-catalog-audit-rows-2026-08-15.json",
+]);
 
 /** Extensions worth scanning for inbound references. */
 const REF_EXTENSIONS = Object.freeze([
@@ -448,6 +452,21 @@ export function splitCatalog(text) {
  * @returns {string[]} Human-readable difference lines.
  */
 export function describeDrift(committed, regenerated) {
+  return describeDriftDetailed(committed, regenerated).lines;
+}
+
+/**
+ * Like {@link describeDrift} but also says whether any row differs in
+ * something other than the git-freshness column. Freshness can only settle
+ * AFTER the commit that touches a file lands (it reads that commit's date),
+ * so freshness-only drift is unavoidable in the landing commit itself and is
+ * advisory; drift in path/class/status/refs/purpose is the real signal.
+ *
+ * @param {string} committed Region currently in the file.
+ * @param {string} regenerated Region this run produced.
+ * @returns {{ lines: string[], structural: boolean }} Report + verdict.
+ */
+export function describeDriftDetailed(committed, regenerated) {
   const rowKey = (line) => {
     const m = /^\|\s*([^|]+?)\s*\|/.exec(line);
     return m === null ? null : m[1];
@@ -498,7 +517,13 @@ export function describeDrift(committed, regenerated) {
   if (added.length + removed.length + changed.length === 0) {
     out.push("  (prose or layout outside the row tables)");
   }
-  return out;
+  // Byte-identical regions are not drift; otherwise anything beyond the
+  // freshness column - including prose outside the row tables - is structural.
+  const structural =
+    committed !== regenerated &&
+    (added.length + removed.length + (changed.length - dateOnly.length) > 0 ||
+      added.length + removed.length + changed.length === 0);
+  return { lines: out, structural };
 }
 
 /**
@@ -554,10 +579,18 @@ export function main(argv) {
       );
       return 0;
     }
+    const drift = describeDriftDetailed(split.region, regenerated);
+    if (!drift.structural) {
+      console.log(
+        "generate-tooling-catalog --check: census is current except for the git-freshness column " +
+          `(${drift.lines[0]}); freshness only settles after the touching commit lands - advisory, not drift.`,
+      );
+      return 0;
+    }
     console.error(
       "generate-tooling-catalog --check: the committed census has DRIFTED from the tree.",
     );
-    for (const line of describeDrift(split.region, regenerated)) {
+    for (const line of drift.lines) {
       console.error(`  ${line}`);
     }
     console.error(

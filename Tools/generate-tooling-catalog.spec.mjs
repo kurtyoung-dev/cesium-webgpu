@@ -33,6 +33,7 @@ import {
   classify,
   collectCensus,
   describeDrift,
+  describeDriftDetailed,
   listToolingFiles,
   renderCensus,
   splitCatalog,
@@ -258,4 +259,31 @@ test("D3: an identical region reports no drift at all", () => {
     describeDrift(region, region)[0],
     /added 0, removed 0, changed 0/,
   );
+});
+
+test("D4: freshness-only drift is ADVISORY; any other column change is STRUCTURAL", () => {
+  // The freshness column reads a file's last COMMIT date, which only exists
+  // after the touching commit lands - so the landing commit itself always
+  // drifts in that column. --check must not fail on that, and must still fail
+  // when a purpose/status/refs cell moves. Mutation control: same fixture,
+  // one cell of a different column changed, verdict must flip.
+  const before = ROW("a.mjs", "2026-08-01", "A.");
+  const dateOnly = describeDriftDetailed(
+    before,
+    ROW("a.mjs", "2026-08-16", "A."),
+  );
+  assert.equal(dateOnly.structural, false);
+  const purpose = describeDriftDetailed(
+    before,
+    ROW("a.mjs", "2026-08-01", "A revised."),
+  );
+  assert.equal(purpose.structural, true);
+  const both = describeDriftDetailed(
+    before,
+    ROW("a.mjs", "2026-08-16", "A revised."),
+  );
+  assert.equal(both.structural, true);
+  // An identical region is not drift, but a change OUTSIDE the row tables is
+  // (prose/layout) - the detailed verdict must call that structural too.
+  assert.equal(describeDriftDetailed(before, before).structural, false);
 });
