@@ -9,7 +9,6 @@
  */
 
 import { createHash, randomUUID } from "node:crypto";
-import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -21,13 +20,16 @@ import sharp from "sharp";
 import {
   C12_29_S5_SVS_BUILD_SOURCE_FILES,
   C12_29_S5_SVS_BUILD_SOURCE_MAP,
+  C12_29_S5_SVS_ARTIFACT_PREFIX,
   C12_29_S5_SVS_CAPTURE_LABELS,
   C12_29_S5_SVS_CAPTURE_METHOD,
+  C12_29_S5_SVS_CAPTURE_STATES,
   C12_29_S5_SVS_CONTROL,
   C12_29_S5_SVS_DIAGNOSTIC_LIMITS,
   C12_29_S5_SVS_DIAGNOSTICS_SCHEMA,
   C12_29_S5_SVS_EPHEMERIS,
   C12_29_S5_SVS_FIXTURE,
+  C12_29_S5_SVS_IMAGE_VERIFIER_METHOD,
   C12_29_S5_SVS_PHASES,
   C12_29_S5_SVS_RENDERERS,
   C12_29_S5_SVS_ROWS,
@@ -37,16 +39,20 @@ import {
   C12_29_S5_SVS_SOURCE_EDGE,
   C12_29_S5_SVS_SOURCE_FILES,
   C12_29_S5_SVS_SOURCE_MOTION,
+  C12_29_S5_SVS_SUPERSEDED_V4_SCHEMA,
   C12_29_S5_SVS_SUPERSEDED_SCHEMA,
   C12_29_S5_SVS_LEGACY_ERROR_SCHEMA,
   C12_29_S5_SVS_TERRAIN,
   createSvsDiagnosticOverflowMarker,
+  deriveSvsWgs84ProjectedLattice,
   exitCodeForSvsStatus,
   foldC1229S5SvsGate,
   isUuidV4,
   summarizeSvsSpatialMetrics,
   validateSupersededSvsV2FinalArtifactShape,
   validateSupersededSvsV3FinalArtifactShape,
+  validateSupersededSvsV4FinalArtifactShape,
+  validateSupersededSvsV4RunningArtifactShape,
   validateSvsErrorDiagnosticsShape,
   validateSvsFinalArtifactShape,
   validateSvsRunningArtifactShape,
@@ -58,6 +64,7 @@ import {
   createImmutableEvidence,
   fingerprintEvidenceFile,
   inspectBuildSourceIdentity,
+  safeGitHead,
   snapshotEvidenceFiles,
   validateServedEntryIdentities,
 } from "./lib/build-source-identity.mjs";
@@ -97,10 +104,21 @@ const xysDirectory = path.join(
   repositoryRoot,
   "Build/CesiumUnminified/Assets/IAU2006_XYS",
 );
-const xysAssetFiles = fs
-  .readdirSync(xysDirectory)
-  .filter((file) => /^IAU2006_XYS_\d+\.json$/u.test(file))
-  .sort((left, right) => left.localeCompare(right));
+// Resolved on first USE, not on import: the directory is a build output, so
+// scanning it at module scope made the probe — and the focused spec that
+// imports it for the pure functions beside it — do filesystem work merely to
+// be loaded. An absent directory is tolerated here and reported as missing
+// evidence downstream, where a reason can be attached to it.
+let xysAssetFilesCache;
+
+function xysAssetFiles() {
+  xysAssetFilesCache ??= Object.freeze(
+    (fs.existsSync(xysDirectory) ? fs.readdirSync(xysDirectory) : [])
+      .filter((file) => /^IAU2006_XYS_\d+\.json$/u.test(file))
+      .sort((left, right) => left.localeCompare(right)),
+  );
+  return xysAssetFilesCache;
+}
 const runtimePath = "/Build/CesiumUnminified/index.js";
 const viewerPath = "/Apps/CesiumViewer/index.html";
 const base = process.env.PROBE_BASE ?? "http://localhost:8080";
@@ -108,11 +126,14 @@ const outputDirectory = path.resolve(
   process.env.C12_29_S5_SVS_OUTPUT_DIR ??
     path.join(toolDirectory, "output/c12-29-s5-svs-footprint"),
 );
-const artifactPrefix = "campaign12-c12-29-s5-svs-5073-footprint";
+const artifactPrefix = C12_29_S5_SVS_ARTIFACT_PREFIX;
 const WATCHDOG_MS = 540_000;
 const PAGE_TIMEOUT_MS = 240_000;
 const WATCHDOG_DRAIN_MS = 30_000;
 const CLOSE_TIMEOUT_MS = 15_000;
+// The in-run watchdog plus its drain, with a minute of slack, is the longest a
+// healthy run can legitimately take; past that the process itself is stuck.
+const PROCESS_WATCHDOG_MS = WATCHDOG_MS + WATCHDOG_DRAIN_MS + 60_000;
 
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const svsOwnerships = new WeakMap();
@@ -873,24 +894,38 @@ function readExactLatestSnapshot(file, operations = fs) {
     throw new Error("SVS canonical latest is not exact JSON", { cause: error });
   }
   const runningReasons = validateSvsRunningArtifactShape(value);
+  const supersededV4RunningReasons =
+    validateSupersededSvsV4RunningArtifactShape(value);
   const finalReasons = validateSvsFinalArtifactShape(value);
+  const supersededV4Reasons = validateSupersededSvsV4FinalArtifactShape(value);
   const supersededV3Reasons = validateSupersededSvsV3FinalArtifactShape(value);
   const supersededV2Reasons = validateSupersededSvsV2FinalArtifactShape(value);
   if (
     runningReasons.length > 0 &&
+    supersededV4RunningReasons.length > 0 &&
     finalReasons.length > 0 &&
+    supersededV4Reasons.length > 0 &&
     supersededV3Reasons.length > 0 &&
     supersededV2Reasons.length > 0
   ) {
     throw new Error(
       `SVS canonical latest shape is invalid: RUNNING ${runningReasons.join(
         "; ",
-      )}; final ${finalReasons.join("; ")}; superseded-v3 ${supersededV3Reasons.join("; ")}; superseded-v2 ${supersededV2Reasons.join("; ")}`,
+      )}; v4-RUNNING ${supersededV4RunningReasons.join("; ")}; final ${finalReasons.join("; ")}; superseded-v4 ${supersededV4Reasons.join("; ")}; superseded-v3 ${supersededV3Reasons.join("; ")}; superseded-v2 ${supersededV2Reasons.join("; ")}`,
     );
   }
+  const supersededV4 = supersededV4Reasons.length === 0;
+  const supersededV4Running = supersededV4RunningReasons.length === 0;
   const supersededV3 = supersededV3Reasons.length === 0;
-  if (supersededV3 && !bytes.equals(canonicalSvsArtifactBytes(value))) {
-    throw new Error("SVS superseded v3 latest is not canonical JSON");
+  if (
+    (runningReasons.length === 0 ||
+      finalReasons.length === 0 ||
+      supersededV4 ||
+      supersededV4Running ||
+      supersededV3) &&
+    !bytes.equals(canonicalSvsArtifactBytes(value))
+  ) {
+    throw new Error("SVS v5/v4/v3 latest is not canonical JSON");
   }
   return {
     file,
@@ -899,6 +934,8 @@ function readExactLatestSnapshot(file, operations = fs) {
     byteLength: bytes.byteLength,
     sha256: sha256(bytes),
     value,
+    supersededV4,
+    supersededV4Running,
     supersededV3,
     supersededV2: supersededV2Reasons.length === 0,
   };
@@ -942,23 +979,27 @@ function readExactFirstRedSnapshot(file, operations = fs) {
     });
   }
   const reasons = validateSvsFinalArtifactShape(value);
+  const supersededV4Reasons = validateSupersededSvsV4FinalArtifactShape(value);
   const supersededV3Reasons = validateSupersededSvsV3FinalArtifactShape(value);
   const supersededV2Reasons = validateSupersededSvsV2FinalArtifactShape(value);
   if (
     (reasons.length > 0 &&
+      supersededV4Reasons.length > 0 &&
       supersededV3Reasons.length > 0 &&
       supersededV2Reasons.length > 0) ||
     !new Set(["FAIL", "STRUCTURAL", "ERROR"]).has(value.status)
   ) {
     throw new Error(
-      `SVS retained first-red artifact is not exact final red: ${reasons.join("; ")}; superseded-v3 ${supersededV3Reasons.join("; ")}; superseded-v2 ${supersededV2Reasons.join("; ")}`,
+      `SVS retained first-red artifact is not exact final red: ${reasons.join("; ")}; superseded-v4 ${supersededV4Reasons.join("; ")}; superseded-v3 ${supersededV3Reasons.join("; ")}; superseded-v2 ${supersededV2Reasons.join("; ")}`,
     );
   }
   if (
-    supersededV3Reasons.length === 0 &&
+    (reasons.length === 0 ||
+      supersededV4Reasons.length === 0 ||
+      supersededV3Reasons.length === 0) &&
     !bytes.equals(canonicalSvsArtifactBytes(value))
   ) {
-    throw new Error("SVS retained v3 first-red is not canonical JSON");
+    throw new Error("SVS retained v5/v4/v3 first-red is not canonical JSON");
   }
   return {
     file,
@@ -1040,7 +1081,10 @@ function requireExactRecoveryReceipt(
       cause: error,
     });
   }
-  const reasons = validateSvsRunningArtifactShape(observed);
+  const reasons =
+    expectedRunning?.schema === C12_29_S5_SVS_SUPERSEDED_V4_SCHEMA
+      ? validateSupersededSvsV4RunningArtifactShape(observed)
+      : validateSvsRunningArtifactShape(observed);
   if (
     !observedBytes.equals(Buffer.from(expectedBytes)) ||
     reasons.length > 0 ||
@@ -1074,6 +1118,68 @@ function ensureExactRecoveryReceipt(
     file,
     expectedBytes,
     expectedRunning,
+    operations,
+  );
+}
+
+function requireExactSupersededV4Receipt(
+  file,
+  expectedBytes,
+  expectedArtifact,
+  operations = fs,
+) {
+  let observedBytes;
+  try {
+    observedBytes = Buffer.from(operations.readFileSync(file));
+  } catch (error) {
+    throw new Error("SVS superseded-v4 receipt is unreadable", {
+      cause: error,
+    });
+  }
+  let observed;
+  try {
+    observed = JSON.parse(observedBytes.toString("utf8"));
+  } catch (error) {
+    throw new Error("SVS superseded-v4 receipt is not exact JSON", {
+      cause: error,
+    });
+  }
+  const reasons = validateSupersededSvsV4FinalArtifactShape(observed);
+  if (
+    !observedBytes.equals(Buffer.from(expectedBytes)) ||
+    !observedBytes.equals(canonicalSvsArtifactBytes(observed)) ||
+    reasons.length > 0 ||
+    observed.runId !== expectedArtifact.runId ||
+    observed.generatedAt !== expectedArtifact.generatedAt ||
+    observed.status !== expectedArtifact.status
+  ) {
+    throw new Error(`SVS superseded-v4 receipt differs: ${reasons.join("; ")}`);
+  }
+  return {
+    file,
+    schema: C12_29_S5_SVS_SUPERSEDED_V4_SCHEMA,
+    runId: observed.runId,
+    status: observed.status,
+    byteLength: observedBytes.byteLength,
+    sha256: sha256(observedBytes),
+  };
+}
+
+function ensureExactSupersededV4Receipt(
+  file,
+  expectedBytes,
+  expectedArtifact,
+  operations = fs,
+) {
+  try {
+    writeExclusiveVerified(file, expectedBytes, operations);
+  } catch (error) {
+    if (error?.code !== "EEXIST") throw error;
+  }
+  return requireExactSupersededV4Receipt(
+    file,
+    expectedBytes,
+    expectedArtifact,
     operations,
   );
 }
@@ -1320,7 +1426,6 @@ function reconcileFailedLatestReplacement(
     typeof priorReceipt === "string" && expectedPriorBytes !== undefined;
   const expectedPrior = hasPrior ? Buffer.from(expectedPriorBytes) : undefined;
   const cleanupErrors = [];
-  let foreignIdentityObserved = false;
   let before;
   try {
     before = readOptionalExactBytes(
@@ -1332,8 +1437,9 @@ function reconcileFailedLatestReplacement(
     cleanupErrors.push(error);
   }
 
-  if (before?.exists) {
-    foreignIdentityObserved = !before.bytes.equals(candidate);
+  // A foreign successor never enters a claim/restore cycle. Only the exact
+  // candidate published by this invocation may be moved for cleanup.
+  if (before?.exists && before.bytes.equals(candidate)) {
     const failedReceipt = `${paths.latest}.failed.${randomUUID()}.receipt`;
     let claimError;
     try {
@@ -1359,46 +1465,57 @@ function reconcileFailedLatestReplacement(
       cleanupErrors.push(error);
     }
 
-    if (claimed?.exists) {
-      if (!claimed.bytes.equals(before.bytes)) {
-        foreignIdentityObserved = true;
+    const exactCandidateReceipt =
+      claimed?.exists === true && claimed.bytes.equals(candidate);
+    let nonCandidateReceiptReconciled = false;
+    if (claimed?.exists && !exactCandidateReceipt) {
+      // The candidate was replaced between the pre-claim read and rename.
+      // Restore that displaced foreign identity exclusively; a still newer
+      // canonical owner wins and is never overwritten.
+      const restoredForeign = restoreReceiptExclusively(
+        failedReceipt,
+        paths.latest,
+        claimed.bytes,
+        "foreign raced failed-latest claim receipt",
+        operations,
+      );
+      if (!restoredForeign.restored || restoredForeign.error) {
+        cleanupErrors.push(
+          restoredForeign.error ??
+            new Error(
+              "SVS raced foreign latest could not be restored exclusively",
+            ),
+        );
+      } else {
+        nonCandidateReceiptReconciled = true;
+      }
+    }
+    if (exactCandidateReceipt) {
+      try {
+        removeExactReceipt(
+          failedReceipt,
+          claimed.bytes,
+          "owned failed-latest claim receipt",
+          operations,
+        );
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+    }
+    if (canonicalAfterClaim?.exists) {
+      if (canonicalAfterClaim.bytes.equals(candidate)) {
         cleanupErrors.push(
           new Error(
-            "SVS failed-latest claim receipt differs from the exact pre-claim bytes",
+            "SVS failed canonical latest still contains the owned candidate",
+            { cause: claimError },
           ),
         );
       }
-      if (claimed.bytes.equals(candidate)) {
-        try {
-          removeExactReceipt(
-            failedReceipt,
-            claimed.bytes,
-            "owned failed-latest claim receipt",
-            operations,
-          );
-        } catch (error) {
-          cleanupErrors.push(error);
-        }
-      } else {
-        foreignIdentityObserved = true;
-        const restored = restoreReceiptExclusively(
-          failedReceipt,
-          paths.latest,
-          claimed.bytes,
-          "foreign failed-latest claim receipt",
-          operations,
-        );
-        if (!restored.restored || restored.error) {
-          cleanupErrors.push(
-            restored.error ??
-              new Error("SVS foreign failed-latest receipt remains preserved"),
-          );
-        }
-      }
-    } else if (!canonicalAfterClaim?.exists && claimError) {
+      // A different identity is a foreign successor and remains in place.
+    } else if (!exactCandidateReceipt && !nonCandidateReceiptReconciled) {
       cleanupErrors.push(
         new Error(
-          "SVS failed-latest claim left neither canonical bytes nor a receipt",
+          "SVS failed-latest claim left neither canonical bytes nor an exact candidate receipt",
           { cause: claimError },
         ),
       );
@@ -1415,28 +1532,45 @@ function reconcileFailedLatestReplacement(
   } catch (error) {
     cleanupErrors.push(error);
   }
-  if (canonical?.exists && hasPrior) {
+  if (canonical?.exists) {
+    if (canonical.bytes.equals(candidate)) {
+      cleanupErrors.push(
+        new Error("SVS owned candidate remains canonical after reconciliation"),
+      );
+    } else if (hasPrior) {
+      try {
+        removeExactReceipt(
+          priorReceipt,
+          expectedPrior,
+          "owned prior-latest receipt",
+          operations,
+        );
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+    }
+  } else if (canonical && hasPrior) {
+    let observedReceipt;
     try {
-      removeExactReceipt(
+      observedReceipt = readOptionalExactBytes(
         priorReceipt,
-        expectedPrior,
-        "owned prior-latest receipt",
+        "prior-latest claim receipt",
         operations,
       );
     } catch (error) {
       cleanupErrors.push(error);
     }
-  } else if (
-    canonical &&
-    !canonical.exists &&
-    !foreignIdentityObserved &&
-    hasPrior
-  ) {
+    const receiptBytes = observedReceipt?.exists
+      ? observedReceipt.bytes
+      : expectedPrior;
+    const receiptIsExpectedPrior = receiptBytes.equals(expectedPrior);
     const restoredPrior = restoreReceiptExclusively(
       priorReceipt,
       paths.latest,
-      expectedPrior,
-      "owned prior-latest receipt",
+      receiptBytes,
+      receiptIsExpectedPrior
+        ? "owned prior-latest receipt"
+        : "foreign raced prior-latest claim receipt",
       operations,
     );
     if (!restoredPrior.restored || restoredPrior.error) {
@@ -1455,6 +1589,50 @@ function reconcileFailedLatestReplacement(
   }
 }
 
+function removeTemporaryAfterFailure(temporary, operations = fs) {
+  try {
+    if (operations.existsSync(temporary)) operations.unlinkSync(temporary);
+    if (operations.existsSync(temporary)) {
+      throw new Error("SVS latest temporary cleanup silently retained bytes");
+    }
+    return undefined;
+  } catch (error) {
+    return error;
+  }
+}
+
+function reconcileLatestFailureOrThrow(
+  primaryError,
+  paths,
+  temporary,
+  candidateBytes,
+  priorReceipt,
+  expectedPriorBytes,
+  operations,
+  message,
+) {
+  const cleanupErrors = [];
+  const temporaryError = removeTemporaryAfterFailure(temporary, operations);
+  if (temporaryError) cleanupErrors.push(temporaryError);
+  try {
+    reconcileFailedLatestReplacement(
+      paths,
+      candidateBytes,
+      priorReceipt,
+      expectedPriorBytes,
+      operations,
+    );
+  } catch (error) {
+    cleanupErrors.push(error);
+  }
+  if (cleanupErrors.length > 0) {
+    throw new AggregateError([primaryError, ...cleanupErrors], message, {
+      cause: primaryError,
+    });
+  }
+  throw primaryError;
+}
+
 function replaceLatestOwned(
   paths,
   bytes,
@@ -1467,14 +1645,12 @@ function replaceLatestOwned(
   const temporary = `${paths.latest}.${tag}.${randomUUID()}.tmp`;
   writeExclusiveVerified(temporary, bytes, operations);
   if (expectedPriorBytes === undefined) {
-    let exclusiveCreateReturned = false;
     try {
       // With no observed prior latest, only an exclusive create is legal. A
       // late owner that wins this pathname is never receipt-claimed or read-
       // then-unlinked by this invocation.
       requireOwnedLock(paths, lockBytes, operations);
       operations.linkSync(temporary, paths.latest);
-      exclusiveCreateReturned = true;
       requireOwnedLock(paths, lockBytes, operations);
       if (!operations.readFileSync(paths.latest).equals(Buffer.from(bytes))) {
         throw new Error("SVS exclusive canonical latest verification failed");
@@ -1485,44 +1661,33 @@ function replaceLatestOwned(
       }
       return;
     } catch (error) {
-      if (operations.existsSync(temporary)) operations.unlinkSync(temporary);
-      if (exclusiveCreateReturned) {
-        try {
-          reconcileFailedLatestReplacement(
-            paths,
-            bytes,
-            undefined,
-            undefined,
-            operations,
-          );
-        } catch (cleanupError) {
-          throw new AggregateError(
-            [error, cleanupError],
-            "SVS exclusive latest failed and owned cleanup was not exact",
-            { cause: cleanupError },
-          );
-        }
-      }
-      throw error;
+      reconcileLatestFailureOrThrow(
+        error,
+        paths,
+        temporary,
+        bytes,
+        undefined,
+        undefined,
+        operations,
+        "SVS exclusive latest failed and owned cleanup was not exact",
+      );
     }
   }
 
   const expectedPrior = Buffer.from(expectedPriorBytes);
   const priorReceipt = `${paths.latest}.${tag}.${randomUUID()}.prior`;
-  let priorClaimed = false;
   try {
     if (!operations.readFileSync(paths.latest).equals(expectedPrior)) {
       throw new Error("SVS canonical latest changed before owned claim");
     }
     try {
       operations.renameSync(paths.latest, priorReceipt);
-      priorClaimed = true;
     } catch (error) {
       if (
         operations.existsSync(priorReceipt) &&
         !operations.existsSync(paths.latest)
       ) {
-        priorClaimed = true;
+        // The rename completed before the injected/operational throw.
       } else {
         throw error;
       }
@@ -1548,33 +1713,24 @@ function replaceLatestOwned(
       throw new Error("SVS canonical latest verification failed");
     }
     operations.unlinkSync(temporary);
-    if (priorClaimed) operations.unlinkSync(priorReceipt);
+    operations.unlinkSync(priorReceipt);
     if (
       operations.existsSync(temporary) ||
-      (priorClaimed && operations.existsSync(priorReceipt))
+      operations.existsSync(priorReceipt)
     ) {
       throw new Error("SVS canonical latest cleanup receipt remains");
     }
   } catch (error) {
-    if (operations.existsSync(temporary)) operations.unlinkSync(temporary);
-    if (priorClaimed) {
-      try {
-        reconcileFailedLatestReplacement(
-          paths,
-          bytes,
-          priorReceipt,
-          expectedPrior,
-          operations,
-        );
-      } catch (cleanupError) {
-        throw new AggregateError(
-          [error, cleanupError],
-          "SVS canonical latest replacement failed and reconciliation retained ownership evidence",
-          { cause: cleanupError },
-        );
-      }
-    }
-    throw error;
+    reconcileLatestFailureOrThrow(
+      error,
+      paths,
+      temporary,
+      bytes,
+      priorReceipt,
+      expectedPrior,
+      operations,
+      "SVS canonical latest replacement failed and reconciliation retained ownership evidence",
+    );
   }
 }
 
@@ -1698,9 +1854,19 @@ export function beginSvsEvidenceRun(paths, runId, operations = fs) {
   try {
     writeExclusiveVerified(paths.runningReceipt, runningBytes, operations);
     let recovery = null;
+    let supersededV4 = null;
     let supersededV3 = null;
     let supersededV2 = null;
-    if (prior.latestSnapshot.supersededV3 === true) {
+    if (prior.latestSnapshot.supersededV4 === true) {
+      const supersededBytes = Buffer.from(prior.latestSnapshot.bytes);
+      recovery = `${paths.latest}.superseded-v4-${prior.latest.runId}.json`;
+      supersededV4 = ensureExactSupersededV4Receipt(
+        recovery,
+        supersededBytes,
+        prior.latest,
+        operations,
+      );
+    } else if (prior.latestSnapshot.supersededV3 === true) {
       const supersededBytes = Buffer.from(prior.latestSnapshot.bytes);
       recovery = `${paths.latest}.superseded-v3-${prior.latest.runId}.json`;
       supersededV3 = ensureExactSupersededV3Receipt(
@@ -1740,7 +1906,14 @@ export function beginSvsEvidenceRun(paths, runId, operations = fs) {
       operations,
     );
     if (recovery) {
-      if (supersededV3) {
+      if (supersededV4) {
+        supersededV4 = requireExactSupersededV4Receipt(
+          recovery,
+          prior.latestSnapshot.bytes,
+          prior.latest,
+          operations,
+        );
+      } else if (supersededV3) {
         supersededV3 = requireExactSupersededV3Receipt(
           recovery,
           prior.latestSnapshot.bytes,
@@ -1772,6 +1945,7 @@ export function beginSvsEvidenceRun(paths, runId, operations = fs) {
       lock,
       lockBytes,
       recovery,
+      supersededV4,
       supersededV3,
       supersededV2,
     };
@@ -1789,6 +1963,14 @@ export function beginSvsEvidenceRun(paths, runId, operations = fs) {
 }
 
 function requireOwnedSupersessionReceipt(ownership, operations = fs) {
+  if (ownership.supersededV4 !== null && ownership.supersededV4 !== undefined) {
+    return requireExactSupersededV4Receipt(
+      ownership.recovery,
+      ownership.prior.latestSnapshot.bytes,
+      ownership.prior.latest,
+      operations,
+    );
+  }
   if (ownership.supersededV3 !== null && ownership.supersededV3 !== undefined) {
     return requireExactSupersededV3Receipt(
       ownership.recovery,
@@ -1942,18 +2124,6 @@ export function publishSvsFinalArtifact(
   }
 }
 
-function safeGitHead() {
-  try {
-    return execFileSync("git", ["rev-parse", "HEAD"], {
-      cwd: repositoryRoot,
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-    }).trim();
-  } catch {
-    return undefined;
-  }
-}
-
 async function generatedShaderIsExact(rawRelative, generatedRelative) {
   const raw = fs
     .readFileSync(path.join(repositoryRoot, rawRelative), "utf8")
@@ -1964,40 +2134,51 @@ async function generatedShaderIsExact(rawRelative, generatedRelative) {
   return generated.default === raw;
 }
 
-const evidenceFiles = Object.freeze({
-  helper: helperPath,
-  captureHelper: captureHelperPath,
-  parser: parserPath,
-  fixtureManifest: manifestPath,
-  spec: specPath,
-  probe: probePath,
-  buildEntry: buildEntryPath,
-  buildSourceMap: buildSourceMapPath,
-  ...Object.fromEntries(
-    C12_29_S5_SVS_SOURCE_FILES.map((file, index) => [
-      `source${String(index).padStart(2, "0")}`,
-      path.join(repositoryRoot, file),
-    ]),
-  ),
-  ...Object.fromEntries(
-    Object.keys(C12_29_S5_SVS_FIXTURE.members).map((extension) => [
-      `fixture${extension}`,
-      path.join(
-        toolDirectory,
-        "fixtures/nasa-svs-5073",
-        `${C12_29_S5_SVS_FIXTURE.stem}.${extension}`,
-      ),
-    ]),
-  ),
-  terrainLayer: path.join(repositoryRoot, C12_29_S5_SVS_TERRAIN.layer.file),
-  terrainTile: path.join(repositoryRoot, C12_29_S5_SVS_TERRAIN.tile.file),
-  ...Object.fromEntries(
-    xysAssetFiles.map((file) => [`xys:${file}`, path.join(xysDirectory, file)]),
-  ),
-});
+// Built on first USE, not on import: the XYS asset list is read from a build
+// output, so materializing this map at module scope made loading the probe an
+// act of filesystem inspection.
+let evidenceFilesCache;
+
+function evidenceFiles() {
+  evidenceFilesCache ??= Object.freeze({
+    helper: helperPath,
+    captureHelper: captureHelperPath,
+    parser: parserPath,
+    fixtureManifest: manifestPath,
+    spec: specPath,
+    probe: probePath,
+    buildEntry: buildEntryPath,
+    buildSourceMap: buildSourceMapPath,
+    ...Object.fromEntries(
+      C12_29_S5_SVS_SOURCE_FILES.map((file, index) => [
+        `source${String(index).padStart(2, "0")}`,
+        path.join(repositoryRoot, file),
+      ]),
+    ),
+    ...Object.fromEntries(
+      Object.keys(C12_29_S5_SVS_FIXTURE.members).map((extension) => [
+        `fixture${extension}`,
+        path.join(
+          toolDirectory,
+          "fixtures/nasa-svs-5073",
+          `${C12_29_S5_SVS_FIXTURE.stem}.${extension}`,
+        ),
+      ]),
+    ),
+    terrainLayer: path.join(repositoryRoot, C12_29_S5_SVS_TERRAIN.layer.file),
+    terrainTile: path.join(repositoryRoot, C12_29_S5_SVS_TERRAIN.tile.file),
+    ...Object.fromEntries(
+      xysAssetFiles().map((file) => [
+        `xys:${file}`,
+        path.join(xysDirectory, file),
+      ]),
+    ),
+  });
+  return evidenceFilesCache;
+}
 
 async function collectProvenanceSnapshot() {
-  const local = snapshotEvidenceFiles(evidenceFiles);
+  const local = snapshotEvidenceFiles(evidenceFiles());
   const reasons = Object.entries(local)
     .filter(([, identity]) => identity.exists !== true)
     .map(([name]) => `${name}: unreadable`);
@@ -2032,7 +2213,7 @@ async function collectProvenanceSnapshot() {
   }
   return {
     capturedAt: new Date().toISOString(),
-    gitHead: safeGitHead(),
+    gitHead: safeGitHead(repositoryRoot),
     local,
     buildSourceIdentity,
     generatedShaders,
@@ -2108,7 +2289,7 @@ function assessProvenance(start, end, sessions) {
     },
     generatedShaders: start.generatedShaders,
     xysAssets: Object.fromEntries(
-      xysAssetFiles.map((file) => [file, start.local[`xys:${file}`]]),
+      xysAssetFiles().map((file) => [file, start.local[`xys:${file}`]]),
     ),
   };
 }
@@ -2295,7 +2476,23 @@ const MEASURE_SVS_SESSION = async (contract, runtimeSpatialSummarizer) => {
     globalThis.__c1229SvsProgress = { renderer, phases: [...phases] };
     publishCheckpoint({ phase, stage: "phase-transition" });
   };
-  const errors = { page: [], console: [], gpu: [], deviceLost: false };
+  const errors = {
+    page: [],
+    console: [],
+    gpu: [],
+    deviceLost: false,
+    gpuCompletion: {
+      required: renderer === "webgpu",
+      method:
+        renderer === "webgpu"
+          ? "GPUQueue.onSubmittedWorkDone+two-event-turns"
+          : "not-applicable",
+      queueSettled: renderer === "webgpu" ? false : null,
+      postSubmitTurns: 0,
+      timeoutMs:
+        renderer === "webgpu" ? contract.scene.cleanupCloseTimeoutMs : null,
+    },
+  };
   const device = scene.context.device;
   device?.addEventListener?.("uncapturederror", (event) => {
     errors.gpu.push(event?.error?.message ?? String(event?.error));
@@ -2305,6 +2502,34 @@ const MEASURE_SVS_SESSION = async (contract, runtimeSpatialSummarizer) => {
       errors.deviceLost = true;
     });
   }
+  const drainSubmittedGpuWork = async () => {
+    if (renderer !== "webgpu") return;
+    const queue = device?.queue;
+    if (typeof queue?.onSubmittedWorkDone !== "function") {
+      throw new Error("WebGPU submitted-work completion is unavailable");
+    }
+    let timer;
+    let settled;
+    try {
+      settled = await Promise.race([
+        queue.onSubmittedWorkDone().then(() => true),
+        new Promise((resolve) => {
+          timer = setTimeout(
+            () => resolve(false),
+            contract.scene.cleanupCloseTimeoutMs,
+          );
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+    if (!settled) throw new Error("WebGPU submitted-work drain timed out");
+    errors.gpuCompletion.queueSettled = true;
+    for (let turn = 0; turn < 2; turn++) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      errors.gpuCompletion.postSubmitTurns++;
+    }
+  };
   viewer.useDefaultRenderLoop = false;
   viewer.resolutionScale = 1;
   viewer.clock.shouldAnimate = false;
@@ -2341,8 +2566,11 @@ const MEASURE_SVS_SESSION = async (contract, runtimeSpatialSummarizer) => {
   if (atmosphericConditions.volumetricFog) {
     atmosphericConditions.volumetricFog.enabled = false;
   }
-  lighting.enableEclipse = true;
-  lighting.enableEclipseGlobeShadow = true;
+  // Begin from the same neutral state used by every measured white/black/OFF
+  // capture.  The enabled pipeline is warmed explicitly after each camera/time
+  // transition before any evidence is retained.
+  lighting.enableEclipse = false;
+  lighting.enableEclipseGlobeShadow = false;
   lighting.eclipseAutoExposure = true;
   if ("enableEclipseHorizonTwilight" in lighting) {
     lighting.enableEclipseHorizonTwilight = false;
@@ -2796,6 +3024,87 @@ const MEASURE_SVS_SESSION = async (contract, runtimeSpatialSummarizer) => {
     realMeshObjectId: objectId(tile?.data?.mesh),
     fillMeshObjectId: objectId(tile?.data?.fill?.mesh),
   });
+  const captureStateObservation = (frameState) => {
+    const state = frameState.eclipseState;
+    const shadow = frameState.eclipseGlobeShadow;
+    return {
+      frameNumber: frameState.frameNumber,
+      baseColor: [
+        globe.baseColor.red,
+        globe.baseColor.green,
+        globe.baseColor.blue,
+        globe.baseColor.alpha,
+      ],
+      enableEclipse: lighting.enableEclipse,
+      enableEclipseGlobeShadow: lighting.enableEclipseGlobeShadow,
+      eclipseAutoExposure: lighting.eclipseAutoExposure,
+      enableEclipseHorizonTwilight: lighting.enableEclipseHorizonTwilight,
+      atmosphericConditionsIdentity:
+        frameState.atmosphericConditions === globe.atmosphericConditions,
+      eclipseState: {
+        enabled: state?.enabled ?? null,
+        autoExposure: state?.autoExposure ?? null,
+        horizonTwilightEnabled: state?.horizonTwilightEnabled ?? null,
+        valid: state?.valid ?? null,
+        sunVisibleFraction: state?.sunVisibleFraction ?? null,
+        earthOcclusionFraction: state?.earthOcclusionFraction ?? null,
+        moonObscuration: state?.moonObscuration ?? null,
+        sunAngularRadius: state?.sunAngularRadius ?? null,
+        earthAngularRadius: state?.earthAngularRadius ?? null,
+        moonAngularRadius: state?.moonAngularRadius ?? null,
+        earthSeparation: state?.earthSeparation ?? null,
+        moonSeparation: state?.moonSeparation ?? null,
+        eclipseMagnitude: state?.eclipseMagnitude ?? null,
+      },
+      eclipseSceneLightFactor: frameState.eclipseSceneLightFactor ?? null,
+      eclipseGlobeShadowPrepared:
+        frameState.eclipseGlobeShadowPrepared === true,
+      eclipseGlobeShadow: {
+        active: shadow?.active ?? null,
+        revision: shadow?.revision ?? null,
+        sceneLightDimmed: shadow?.sceneLightDimmed ?? null,
+        gate: shadow?.params?.x ?? null,
+        inverseSceneLightFactor: shadow?.params?.y ?? null,
+      },
+      mainViewShadowMatches:
+        shadow !== undefined && shadow === frameState.view?._eclipseGlobeShadow,
+    };
+  };
+  const applyCaptureState = (label) => {
+    const requested = contract.captureStates?.[label];
+    if (
+      !requested ||
+      !Array.isArray(requested.baseColor) ||
+      requested.baseColor.length !== 4
+    ) {
+      throw new Error(`unknown capture state ${label}`);
+    }
+    globe.baseColor = new C.Color(...requested.baseColor);
+    lighting.enableEclipse = requested.enableEclipse;
+    lighting.enableEclipseGlobeShadow = requested.enableEclipseGlobeShadow;
+    lighting.eclipseAutoExposure = requested.eclipseAutoExposure;
+    if ("enableEclipseHorizonTwilight" in lighting) {
+      lighting.enableEclipseHorizonTwilight =
+        requested.enableEclipseHorizonTwilight;
+    }
+    return structuredClone(requested);
+  };
+  const captureStateMatchesRequest = (observed, requested) =>
+    observed?.frameNumber !== null &&
+    JSON.stringify(observed?.baseColor) ===
+      JSON.stringify(requested?.baseColor) &&
+    observed?.enableEclipse === requested?.enableEclipse &&
+    observed?.enableEclipseGlobeShadow ===
+      requested?.enableEclipseGlobeShadow &&
+    observed?.eclipseAutoExposure === requested?.eclipseAutoExposure &&
+    observed?.enableEclipseHorizonTwilight ===
+      requested?.enableEclipseHorizonTwilight &&
+    observed?.eclipseState?.autoExposure === requested?.eclipseAutoExposure &&
+    observed?.eclipseState?.horizonTwilightEnabled ===
+      requested?.enableEclipseHorizonTwilight &&
+    observed?.atmosphericConditionsIdentity === true &&
+    observed?.eclipseGlobeShadowPrepared === true &&
+    observed?.mainViewShadowMatches === true;
   const surfaceProvider =
     globe._surface?.tileProvider ?? globe._surface?._tileProvider;
   if (!surfaceProvider?.showTileThisFrame || !surfaceProvider?.endUpdate) {
@@ -2881,6 +3190,42 @@ const MEASURE_SVS_SESSION = async (contract, runtimeSpatialSummarizer) => {
           .map(tileId),
       ),
     ].sort();
+    const drawWitness = {
+      renderer,
+      frameNumber: frameState.frameNumber,
+      commandCount: preparedCommands.length,
+      ownerTileIds: [...preparedCommandOwnerTileIds],
+      webgl:
+        renderer === "webgl"
+          ? {
+              allCommandsAreWebGl: preparedCommands.every(
+                (command) => command?.isWebGPUDrawCommand !== true,
+              ),
+            }
+          : null,
+      webgpu:
+        renderer === "webgpu"
+          ? {
+              allCommandsAreWebGpu: preparedCommands.every(
+                (command) => command?.isWebGPUDrawCommand === true,
+              ),
+              allPipelinesPresent: preparedCommands.every(
+                (command) => command?.pipeline != null,
+              ),
+              allIndexCountsPositive: preparedCommands.every(
+                (command) =>
+                  Number.isInteger(command?.indexCount) &&
+                  command.indexCount > 0,
+              ),
+              allBindGroupCountsExact: preparedCommands.every(
+                (command) => command?.bindGroups?.length === 4,
+              ),
+              allDynamicOffsetCountsExact: preparedCommands.every(
+                (command) => command?.bindGroup0DynamicOffsets?.length === 3,
+              ),
+            }
+          : null,
+    };
     preparedObservation = {
       capturedInEndUpdate: true,
       selectionRoute:
@@ -2897,6 +3242,8 @@ const MEASURE_SVS_SESSION = async (contract, runtimeSpatialSummarizer) => {
       selectedFillTileIds,
       preparedCommandCount: preparedCommands.length,
       preparedCommandOwnerTileIds,
+      drawWitness,
+      captureStateObservation: captureStateObservation(frameState),
       selectedContent,
       preparedContent,
       preparedRealTileIds,
@@ -2974,6 +3321,14 @@ const MEASURE_SVS_SESSION = async (contract, runtimeSpatialSummarizer) => {
       selectionEventsUnique:
         preparedObservation?.selectionEventsUnique === true,
       preparedCommandCount: preparedObservation?.preparedCommandCount ?? 0,
+      drawWitness:
+        preparedObservation?.drawWitness === undefined
+          ? null
+          : structuredClone(preparedObservation.drawWitness),
+      captureStateObservation:
+        preparedObservation?.captureStateObservation === undefined
+          ? null
+          : structuredClone(preparedObservation.captureStateObservation),
       preparedCommandOwnersMatchSelection:
         preparedObservation?.preparedCommandOwnersMatchSelection === true,
       selectedTileId,
@@ -3063,6 +3418,17 @@ const MEASURE_SVS_SESSION = async (contract, runtimeSpatialSummarizer) => {
       );
     }),
   );
+  const fixedPixelGroundFootprintKm =
+    (2 * fixedCameraHeight * Math.tan(fixedVerticalFov * 0.5)) /
+    contract.scene.viewport.height /
+    1000;
+  if (
+    fixedVerticalFov !== contract.scene.verticalFovRadians ||
+    fixedCameraHeight !== contract.scene.cameraHeightMeters ||
+    fixedPixelGroundFootprintKm !== contract.scene.pixelGroundFootprintKm
+  ) {
+    throw new Error("derived fixed production camera contract differs");
+  }
   const frameCamera = (row) => {
     const bbox = row.bbox;
     const west = bbox[0] - contract.scene.cameraGuardDegrees;
@@ -3072,10 +3438,73 @@ const MEASURE_SVS_SESSION = async (contract, runtimeSpatialSummarizer) => {
     const lon = row.sourceCenter?.[0] ?? 0.5 * (west + east);
     const lat = row.sourceCenter?.[1] ?? 0.5 * (south + north);
     scene.camera.frustum.fov = fixedVerticalFov;
+    const destination = C.Cartesian3.fromDegrees(lon, lat, fixedCameraHeight);
+    const surfaceCenter = C.Cartesian3.fromDegrees(
+      lon,
+      lat,
+      0,
+      globe.ellipsoid,
+    );
     scene.camera.setView({
-      destination: C.Cartesian3.fromDegrees(lon, lat, fixedCameraHeight),
+      destination,
       orientation: { heading: 0, pitch: -Math.PI / 2, roll: 0 },
     });
+    // Camera.setView round-trips the requested nadir through local HPR. Near
+    // pitch -PI/2 that reconstruction is numerically singular and the applied
+    // WC direction can miss the requested surface centre by a few e-8 in
+    // 1-dot space. The certification camera must use the exact requested WC
+    // ray, while preserving setView's north-oriented roll.
+    const requestedDirection = C.Cartesian3.normalize(
+      C.Cartesian3.subtract(surfaceCenter, destination, new C.Cartesian3()),
+      new C.Cartesian3(),
+    );
+    const surfaceNormal = globe.ellipsoid.geodeticSurfaceNormal(
+      surfaceCenter,
+      new C.Cartesian3(),
+    );
+    let requestedRight = C.Cartesian3.normalize(
+      C.Cartesian3.cross(
+        C.Cartesian3.UNIT_Z,
+        surfaceNormal,
+        new C.Cartesian3(),
+      ),
+      new C.Cartesian3(),
+    );
+    const requestedUp = C.Cartesian3.normalize(
+      C.Cartesian3.cross(
+        requestedRight,
+        requestedDirection,
+        new C.Cartesian3(),
+      ),
+      new C.Cartesian3(),
+    );
+    requestedRight = C.Cartesian3.normalize(
+      C.Cartesian3.cross(requestedDirection, requestedUp, new C.Cartesian3()),
+      requestedRight,
+    );
+    C.Cartesian3.clone(requestedDirection, scene.camera.direction);
+    C.Cartesian3.clone(requestedUp, scene.camera.up);
+    C.Cartesian3.clone(requestedRight, scene.camera.right);
+    // Commit the public-vector repair through the same Scene update that owns
+    // all subsequent camera identity and terrain-readiness observations.
+    scene.render(timeFn());
+    const positionWC = C.Cartesian3.clone(
+      scene.camera.positionWC,
+      new C.Cartesian3(),
+    );
+    const directionWC = C.Cartesian3.clone(
+      scene.camera.directionWC,
+      new C.Cartesian3(),
+    );
+    const upWC = C.Cartesian3.clone(scene.camera.upWC, new C.Cartesian3());
+    const rightWC = C.Cartesian3.clone(
+      scene.camera.rightWC,
+      new C.Cartesian3(),
+    );
+    const targetDirection = C.Cartesian3.normalize(
+      C.Cartesian3.subtract(surfaceCenter, positionWC, new C.Cartesian3()),
+      new C.Cartesian3(),
+    );
     return {
       west,
       south,
@@ -3086,6 +3515,27 @@ const MEASURE_SVS_SESSION = async (contract, runtimeSpatialSummarizer) => {
       height: fixedCameraHeight,
       fov: fixedVerticalFov,
       cameraIdentity: cameraStateIdentity(),
+      basisProof: {
+        positionWC: [positionWC.x, positionWC.y, positionWC.z],
+        surfaceCenterWC: [surfaceCenter.x, surfaceCenter.y, surfaceCenter.z],
+        directionWC: [directionWC.x, directionWC.y, directionWC.z],
+        upWC: [upWC.x, upWC.y, upWC.z],
+        rightWC: [rightWC.x, rightWC.y, rightWC.z],
+        directionMagnitude: C.Cartesian3.magnitude(directionWC),
+        upMagnitude: C.Cartesian3.magnitude(upWC),
+        rightMagnitude: C.Cartesian3.magnitude(rightWC),
+        directionUpDot: C.Cartesian3.dot(directionWC, upWC),
+        directionRightDot: C.Cartesian3.dot(directionWC, rightWC),
+        upRightDot: C.Cartesian3.dot(upWC, rightWC),
+        handedness: C.Cartesian3.dot(
+          directionWC,
+          C.Cartesian3.cross(upWC, rightWC, new C.Cartesian3()),
+        ),
+        targetResidual: Math.abs(
+          1 - C.Cartesian3.dot(targetDirection, directionWC),
+        ),
+        capturedAfterSceneRender: true,
+      },
     };
   };
   const measureCameraFrame = (row, frame) => {
@@ -3139,6 +3589,7 @@ const MEASURE_SVS_SESSION = async (contract, runtimeSpatialSummarizer) => {
       nadirAlignment: Math.abs(
         1 - C.Cartesian3.dot(toCenter, scene.camera.directionWC),
       ),
+      basisProof: structuredClone(frame.basisProof),
       heightMeters: frame.height,
       verticalFovRadians: frame.fov,
     };
@@ -3154,6 +3605,32 @@ const MEASURE_SVS_SESSION = async (contract, runtimeSpatialSummarizer) => {
       selectedTileIds: tuple.selectedTileIds,
       preparedSelectedTileIds: tuple.preparedSelectedTileIds,
     });
+  const drawWitnessReady = (tuple) => {
+    const witness = tuple?.drawWitness;
+    if (
+      witness?.renderer !== renderer ||
+      witness?.frameNumber !== tuple?.captureFrameNumber ||
+      !Number.isInteger(witness?.commandCount) ||
+      witness.commandCount < 1 ||
+      JSON.stringify(witness?.ownerTileIds) !==
+        JSON.stringify(tuple?.preparedSelectedTileIds)
+    ) {
+      return false;
+    }
+    if (renderer === "webgpu") {
+      return (
+        witness.webgl === null &&
+        witness.webgpu?.allCommandsAreWebGpu === true &&
+        witness.webgpu?.allPipelinesPresent === true &&
+        witness.webgpu?.allIndexCountsPositive === true &&
+        witness.webgpu?.allBindGroupCountsExact === true &&
+        witness.webgpu?.allDynamicOffsetCountsExact === true
+      );
+    }
+    return (
+      witness.webgpu === null && witness.webgl?.allCommandsAreWebGl === true
+    );
+  };
   const tupleReady = (tuple) =>
     tuple.tilesLoadedAfterRender === true &&
     tuple.sourceTerrainProviderMatches === true &&
@@ -3166,6 +3643,8 @@ const MEASURE_SVS_SESSION = async (contract, runtimeSpatialSummarizer) => {
     tuple.preparedSelectedTileIds.length > 0 &&
     tuple.selectedFillTileIds.length === 0 &&
     tuple.preparedFillTileIds.length === 0 &&
+    drawWitnessReady(tuple) &&
+    tuple.captureStateObservation?.frameNumber === tuple.captureFrameNumber &&
     tuple.selectionContentIdentity ===
       canonicalJsonIdentity({
         selected: tuple.selectedContent,
@@ -3226,7 +3705,53 @@ const MEASURE_SVS_SESSION = async (contract, runtimeSpatialSummarizer) => {
       observations: stable,
     };
   };
-  const captureStableSnapshot = async (transition, stableIdentity) => {
+  const settleCaptureVariantReadiness = async (transition, maxFrames) => {
+    const definitions = [
+      { role: "neutral", label: "off" },
+      { role: "enabled", label: "on" },
+      { role: "restored-neutral", label: "off" },
+    ];
+    const legs = [];
+    for (const definition of definitions) {
+      const requested = applyCaptureState(definition.label);
+      const readiness = await settleTransition(transition, maxFrames);
+      const tuple = readiness.observations.at(-1)?.tuple;
+      if (
+        !readiness.observations.every((observation) =>
+          captureStateMatchesRequest(
+            observation?.tuple?.captureStateObservation,
+            requested,
+          ),
+        )
+      ) {
+        throw new Error(
+          `${transition.role}/${definition.role} capture state did not settle`,
+        );
+      }
+      legs.push({
+        role: definition.role,
+        captureLabel: definition.label,
+        requested,
+        observed: structuredClone(tuple.captureStateObservation),
+        backendDrawWitness: structuredClone(tuple.drawWitness),
+        readiness,
+      });
+    }
+    return {
+      method:
+        "neutral-disabled+enabled-hot+restored-neutral-three-frame-main-globe-readiness",
+      transitionRole: transition.role,
+      transitionIso: transition.iso,
+      legs,
+      productCaptureStartsAfterFrame: legs.at(-1).readiness.lastFrameNumber,
+    };
+  };
+  const captureStableSnapshot = async (
+    transition,
+    stableIdentity,
+    captureLabel,
+  ) => {
+    const requested = applyCaptureState(captureLabel);
     const shot = await captureSnapshot();
     const ephemeris = captureEphemerisLineage();
     const tuple = preparedTuple(transition);
@@ -3239,13 +3764,24 @@ const MEASURE_SVS_SESSION = async (contract, runtimeSpatialSummarizer) => {
         stableIdentity.surfaceProviderIdentity ||
       tuple.providerContentRevision !==
         stableIdentity.providerContentRevision ||
-      tuple.selectionContentIdentity !== stableIdentity.selectionContentIdentity
+      tuple.selectionContentIdentity !==
+        stableIdentity.selectionContentIdentity ||
+      !captureStateMatchesRequest(tuple.captureStateObservation, requested)
     ) {
       throw new Error(
         `${transition.role} terrain drifted during fused capture`,
       );
     }
-    return { ...shot, ephemeris, tuple };
+    return {
+      ...shot,
+      ephemeris,
+      tuple,
+      stateProof: {
+        requested,
+        observed: structuredClone(tuple.captureStateObservation),
+        backendDrawWitness: structuredClone(tuple.drawWitness),
+      },
+    };
   };
   const buildLattice = (
     row,
@@ -3269,6 +3805,7 @@ const MEASURE_SVS_SESSION = async (contract, runtimeSpatialSummarizer) => {
     const classifiedPoints = [];
     let duplicates = 0;
     const projected = new Set();
+    const projectedPixelIdByValidCell = [];
     publishCheckpoint({
       stage: "lattice-projection",
       rowIndex,
@@ -3312,6 +3849,7 @@ const MEASURE_SVS_SESSION = async (contract, runtimeSpatialSummarizer) => {
         }
         projected.add(projectedId);
         valid.push(id);
+        projectedPixelIdByValidCell.push(projectedId);
         worldById.set(id, [lon, lat]);
         if (pointInRing([lon, lat], row.ring)) nasa.push(id);
         const offset = projectedId * 4;
@@ -3396,6 +3934,7 @@ const MEASURE_SVS_SESSION = async (contract, runtimeSpatialSummarizer) => {
         qKm: budget.qKm,
         measurementKind,
         validProjectedCellIds: valid,
+        projectedPixelIdByValidCell,
         nasaInsideCellIds: nasa,
         classifiedCellIds: classified,
         cellLonLat,
@@ -3442,6 +3981,7 @@ const MEASURE_SVS_SESSION = async (contract, runtimeSpatialSummarizer) => {
         latticePitchKm: pitchKm,
         pixelGroundFootprintKm: pixelKm,
         validProjectedCellIds: valid,
+        projectedPixelIdByValidCell,
         nasaInsideCellIds: nasa,
         terrainCellIds: terrain,
         classifiedCellIds: classified,
@@ -3481,6 +4021,7 @@ const MEASURE_SVS_SESSION = async (contract, runtimeSpatialSummarizer) => {
     iso: runtimeRows[0].iso,
     cameraIdentity: frameCamera(runtimeRows[0]).cameraIdentity,
   };
+  applyCaptureState("off");
   const providerReadiness = await settleTransition(
     providerTransition,
     contract.scene.providerReadinessMaxFrames,
@@ -3524,10 +4065,11 @@ const MEASURE_SVS_SESSION = async (contract, runtimeSpatialSummarizer) => {
       iso: row.iso,
       cameraIdentity: frame.cameraIdentity,
     };
-    const transitionReadiness = await settleTransition(
+    const variantReadiness = await settleCaptureVariantReadiness(
       transition,
       contract.scene.transitionReadinessMaxFrames,
     );
+    const transitionReadiness = variantReadiness.legs.at(-1).readiness;
     const stableIdentity = transitionReadiness.observations.at(-1).tuple;
     publishCheckpoint({
       stage: "transition-readiness-complete",
@@ -3540,16 +4082,26 @@ const MEASURE_SVS_SESSION = async (contract, runtimeSpatialSummarizer) => {
       },
     });
     const cameraFrame = measureCameraFrame(row, frame);
-    globe.baseColor = C.Color.WHITE;
-    lighting.enableEclipseGlobeShadow = false;
-    const whiteShot = await captureStableSnapshot(transition, stableIdentity);
-    globe.baseColor = C.Color.BLACK;
-    const blackShot = await captureStableSnapshot(transition, stableIdentity);
-    globe.baseColor = C.Color.WHITE;
-    lighting.enableEclipseGlobeShadow = false;
-    const offShot = await captureStableSnapshot(transition, stableIdentity);
-    lighting.enableEclipseGlobeShadow = true;
-    const onShot = await captureStableSnapshot(transition, stableIdentity);
+    const whiteShot = await captureStableSnapshot(
+      transition,
+      stableIdentity,
+      "white",
+    );
+    const blackShot = await captureStableSnapshot(
+      transition,
+      stableIdentity,
+      "black",
+    );
+    const offShot = await captureStableSnapshot(
+      transition,
+      stableIdentity,
+      "off",
+    );
+    const onShot = await captureStableSnapshot(
+      transition,
+      stableIdentity,
+      "on",
+    );
     const tuple = onShot.tuple;
     const measured = buildLattice(
       row,
@@ -3568,8 +4120,12 @@ const MEASURE_SVS_SESSION = async (contract, runtimeSpatialSummarizer) => {
         captureFrameNumber: tuple.captureFrameNumber,
       },
     );
-    const offImageId = crypto.randomUUID();
-    const onImageId = crypto.randomUUID();
+    const imageIds = Object.fromEntries(
+      ["white", "black", "off", "on"].map((label) => [
+        label,
+        crypto.randomUUID(),
+      ]),
+    );
     independentEphemerisDeltas.push({
       sunMeters: onShot.ephemeris.independent.sunDeltaMeters,
       moonMeters: onShot.ephemeris.independent.moonDeltaMeters,
@@ -3602,12 +4158,13 @@ const MEASURE_SVS_SESSION = async (contract, runtimeSpatialSummarizer) => {
       cameraFrame,
       terrainTuple: tuple,
       ephemeris: structuredClone(onShot.ephemeris),
+      variantReadiness,
       transitionReadiness,
       captureTerrainProofs: [
-        { label: "white", tuple: whiteShot.tuple },
-        { label: "black", tuple: blackShot.tuple },
-        { label: "off", tuple: offShot.tuple },
-        { label: "on", tuple: onShot.tuple },
+        { label: "white", ...whiteShot.stateProof, tuple: whiteShot.tuple },
+        { label: "black", ...blackShot.stateProof, tuple: blackShot.tuple },
+        { label: "off", ...offShot.stateProof, tuple: offShot.tuple },
+        { label: "on", ...onShot.stateProof, tuple: onShot.tuple },
       ],
       thresholdOrigin:
         "exact-WGS84-source-edge+half-lattice+half-pixel;40km-Simon1994",
@@ -3616,20 +4173,34 @@ const MEASURE_SVS_SESSION = async (contract, runtimeSpatialSummarizer) => {
       recentered: false,
       translatedToModel: false,
       metricImageBindings: {
-        off: { imageId: offImageId },
-        on: { imageId: onImageId },
+        white: { imageId: imageIds.white },
+        black: { imageId: imageIds.black },
+        off: { imageId: imageIds.off },
+        on: { imageId: imageIds.on },
       },
       ...measured,
     });
     captures.push(
       {
-        imageId: offImageId,
+        imageId: imageIds.white,
+        label: `${row.role}-white`,
+        dataUrl: whiteShot.dataUrl,
+        captureMethod: contract.captureMethod,
+      },
+      {
+        imageId: imageIds.black,
+        label: `${row.role}-black`,
+        dataUrl: blackShot.dataUrl,
+        captureMethod: contract.captureMethod,
+      },
+      {
+        imageId: imageIds.off,
         label: `${row.role}-off`,
         dataUrl: offShot.dataUrl,
         captureMethod: contract.captureMethod,
       },
       {
-        imageId: onImageId,
+        imageId: imageIds.on,
         label: `${row.role}-on`,
         dataUrl: onShot.dataUrl,
         captureMethod: contract.captureMethod,
@@ -3672,10 +4243,12 @@ const MEASURE_SVS_SESSION = async (contract, runtimeSpatialSummarizer) => {
     iso: contract.control.iso,
     cameraIdentity: controlFrame.cameraIdentity,
   };
-  const controlTransitionReadiness = await settleTransition(
+  const controlVariantReadiness = await settleCaptureVariantReadiness(
     controlTransition,
     contract.scene.transitionReadinessMaxFrames,
   );
+  const controlTransitionReadiness =
+    controlVariantReadiness.legs.at(-1).readiness;
   const controlCameraFrame = measureCameraFrame(runtimeRows[1], controlFrame);
   const controlStableIdentity =
     controlTransitionReadiness.observations.at(-1).tuple;
@@ -3691,27 +4264,25 @@ const MEASURE_SVS_SESSION = async (contract, runtimeSpatialSummarizer) => {
       captureFrameNumber: controlStableIdentity.captureFrameNumber,
     },
   });
-  globe.baseColor = C.Color.WHITE;
-  lighting.enableEclipseGlobeShadow = false;
   const controlWhiteShot = await captureStableSnapshot(
     controlTransition,
     controlStableIdentity,
+    "white",
   );
-  globe.baseColor = C.Color.BLACK;
   const controlBlackShot = await captureStableSnapshot(
     controlTransition,
     controlStableIdentity,
+    "black",
   );
-  globe.baseColor = C.Color.WHITE;
-  lighting.enableEclipseGlobeShadow = false;
   const controlOffShot = await captureStableSnapshot(
     controlTransition,
     controlStableIdentity,
+    "off",
   );
-  lighting.enableEclipseGlobeShadow = true;
   const controlOnShot = await captureStableSnapshot(
     controlTransition,
     controlStableIdentity,
+    "on",
   );
   const controlTerrainTuple = controlOnShot.tuple;
   const controlMeasured = buildLattice(
@@ -3731,17 +4302,33 @@ const MEASURE_SVS_SESSION = async (contract, runtimeSpatialSummarizer) => {
       captureFrameNumber: controlTerrainTuple.captureFrameNumber,
     },
   );
-  const controlOffImageId = crypto.randomUUID();
-  const controlOnImageId = crypto.randomUUID();
+  const controlImageIds = Object.fromEntries(
+    ["white", "black", "off", "on"].map((label) => [
+      label,
+      crypto.randomUUID(),
+    ]),
+  );
   captures.push(
     {
-      imageId: controlOffImageId,
+      imageId: controlImageIds.white,
+      label: "noneclipse-control-white",
+      dataUrl: controlWhiteShot.dataUrl,
+      captureMethod: contract.captureMethod,
+    },
+    {
+      imageId: controlImageIds.black,
+      label: "noneclipse-control-black",
+      dataUrl: controlBlackShot.dataUrl,
+      captureMethod: contract.captureMethod,
+    },
+    {
+      imageId: controlImageIds.off,
       label: "noneclipse-control-off",
       dataUrl: controlOffShot.dataUrl,
       captureMethod: contract.captureMethod,
     },
     {
-      imageId: controlOnImageId,
+      imageId: controlImageIds.on,
       label: "noneclipse-control-on",
       dataUrl: controlOnShot.dataUrl,
       captureMethod: contract.captureMethod,
@@ -3803,6 +4390,7 @@ const MEASURE_SVS_SESSION = async (contract, runtimeSpatialSummarizer) => {
     measurementKind: null,
   });
   mark(contract.phases[7]);
+  await drainSubmittedGpuWork();
   return {
     schema: contract.diagnosticsSchema,
     renderer,
@@ -3957,21 +4545,41 @@ const MEASURE_SVS_SESSION = async (contract, runtimeSpatialSummarizer) => {
         controlMeasured.mask.classificationAppliedOnlyInsideTerrainMask,
       spatialMeasurementKind: controlMeasured.spatialMeasurementKind,
       cameraFrame: controlCameraFrame,
+      ephemeris: structuredClone(controlOnShot.ephemeris),
       terrainTuple: controlTerrainTuple,
+      variantReadiness: controlVariantReadiness,
       transitionReadiness: controlTransitionReadiness,
       captureTerrainProofs: [
-        { label: "white", tuple: controlWhiteShot.tuple },
-        { label: "black", tuple: controlBlackShot.tuple },
-        { label: "off", tuple: controlOffShot.tuple },
-        { label: "on", tuple: controlOnShot.tuple },
+        {
+          label: "white",
+          ...controlWhiteShot.stateProof,
+          tuple: controlWhiteShot.tuple,
+        },
+        {
+          label: "black",
+          ...controlBlackShot.stateProof,
+          tuple: controlBlackShot.tuple,
+        },
+        {
+          label: "off",
+          ...controlOffShot.stateProof,
+          tuple: controlOffShot.tuple,
+        },
+        {
+          label: "on",
+          ...controlOnShot.stateProof,
+          tuple: controlOnShot.tuple,
+        },
       ],
       lattice: controlMeasured.lattice,
       mask: controlMeasured.mask,
       boundary: controlMeasured.boundary,
       centroid: controlMeasured.centroid,
       metricImageBindings: {
-        off: { imageId: controlOffImageId },
-        on: { imageId: controlOnImageId },
+        white: { imageId: controlImageIds.white },
+        black: { imageId: controlImageIds.black },
+        off: { imageId: controlImageIds.off },
+        on: { imageId: controlImageIds.on },
       },
     },
     motion: {
@@ -4011,6 +4619,7 @@ function pageContract(renderer, rows) {
     control: C12_29_S5_SVS_CONTROL,
     captureMethod: C12_29_S5_SVS_CAPTURE_METHOD,
     captureLabels: [...C12_29_S5_SVS_CAPTURE_LABELS],
+    captureStates: C12_29_S5_SVS_CAPTURE_STATES,
     terrainRoute: C12_29_S5_SVS_TERRAIN.baseRoute,
     fixtureParserRoute:
       "/Tools/visual-regression/fixtures/nasa-svs-5073/nasa-svs-5073-shapefile.mjs",
@@ -4037,8 +4646,129 @@ export function createSvsPageEvaluationSource(renderer, rows) {
   return `(${MEASURE_SVS_SESSION.toString()})(${contractJson},(${summarizeSvsSpatialMetrics.toString()}))`;
 }
 
+const canonicalSvsProofIdentity = (value) =>
+  JSON.stringify(value, (_key, entry) => {
+    if (entry && typeof entry === "object" && !Array.isArray(entry)) {
+      return Object.fromEntries(
+        Object.keys(entry)
+          .sort()
+          .map((key) => [key, entry[key]]),
+      );
+    }
+    return entry;
+  });
+
+/** Reclassify one owner directly from decoded immutable PNG bytes in Node. */
+export function deriveSvsDecodedImagePrimitives({
+  expectedRow,
+  owner,
+  images,
+  decodedByImageId,
+  measurementKind,
+}) {
+  const channels = ["white", "black", "off", "on"];
+  const decoded = {};
+  const sources = {};
+  for (const channel of channels) {
+    const binding = owner?.metricImageBindings?.[channel];
+    const image = images.find(
+      (candidate) => candidate?.imageId === binding?.imageId,
+    );
+    const raster = decodedByImageId.get(binding?.imageId);
+    if (
+      !image ||
+      !raster ||
+      raster.width !== C12_29_S5_SVS_SCENE.viewport.width ||
+      raster.height !== C12_29_S5_SVS_SCENE.viewport.height ||
+      raster.channels !== 4 ||
+      raster.data?.byteLength !== raster.width * raster.height * 4
+    ) {
+      throw new Error(
+        `${owner?.role}/${channel}: immutable PNG RGBA decode differs`,
+      );
+    }
+    decoded[channel] = raster;
+    sources[channel] = {
+      imageId: image.imageId,
+      sha256: image.sha256,
+      byteLength: image.byteLength,
+      width: image.width,
+      height: image.height,
+    };
+  }
+
+  const projection = deriveSvsWgs84ProjectedLattice(expectedRow);
+  const terrainCellIds = [];
+  const classifiedCellIds = [];
+  const offBrightTerrainCellIds = [];
+  const oneCodeBoundaryCellIds = [];
+  const luminanceCode = (data, offset) =>
+    0.2126 * data[offset] +
+    0.7152 * data[offset + 1] +
+    0.0722 * data[offset + 2];
+  projection.validProjectedCellIds.forEach((cellId, index) => {
+    const offset = projection.projectedPixelIdByValidCell[index] * 4;
+    const response = Math.max(
+      Math.abs(decoded.white.data[offset] - decoded.black.data[offset]),
+      Math.abs(decoded.white.data[offset + 1] - decoded.black.data[offset + 1]),
+      Math.abs(decoded.white.data[offset + 2] - decoded.black.data[offset + 2]),
+    );
+    if (response <= C12_29_S5_SVS_SCENE.terrainResponseCodeThreshold) return;
+    terrainCellIds.push(cellId);
+    const offLuminance = luminanceCode(decoded.off.data, offset);
+    const onLuminance = luminanceCode(decoded.on.data, offset);
+    const offPass = offLuminance >= C12_29_S5_SVS_SCENE.offMinimumLuminanceCode;
+    if (offPass) offBrightTerrainCellIds.push(cellId);
+    const ratioPass =
+      onLuminance / Math.max(offLuminance, 1) <=
+      C12_29_S5_SVS_SCENE.onOffRatioMaximum;
+    if (offPass && ratioPass) {
+      classifiedCellIds.push(cellId);
+    } else if (
+      (offPass &&
+        !ratioPass &&
+        onLuminance <=
+          offLuminance * C12_29_S5_SVS_SCENE.onOffRatioMaximum + 1) ||
+      (!offPass &&
+        ratioPass &&
+        offLuminance >= C12_29_S5_SVS_SCENE.offMinimumLuminanceCode - 1)
+    ) {
+      oneCodeBoundaryCellIds.push(cellId);
+    }
+  });
+  const terrainSet = new Set(terrainCellIds);
+  const rawClassifier = {
+    terrainCellIds,
+    classifiedCellIds,
+    offBrightTerrainCellIds,
+    oneCodeBoundaryCellIds,
+    terrainPixelCount: terrainCellIds.length,
+    classifiedCellCount: classifiedCellIds.length,
+    strictlyClassifiedCellCount: classifiedCellIds.length,
+    offBrightTerrainPixelCount: offBrightTerrainCellIds.length,
+    oneCodeBoundaryCount: oneCodeBoundaryCellIds.length,
+    allClassifiedMeetOffMinimum: true,
+    allClassifiedMeetOnOffRatio: true,
+    classificationAppliedOnlyInsideTerrainMask: classifiedCellIds.every((id) =>
+      terrainSet.has(id),
+    ),
+  };
+  const proof = {
+    method: C12_29_S5_SVS_IMAGE_VERIFIER_METHOD,
+    measurementKind,
+    sources,
+    projection,
+    rawClassifier,
+  };
+  return {
+    ...proof,
+    verificationSha256: sha256(canonicalSvsProofIdentity(proof)),
+  };
+}
+
 async function materializeImages(session, runId, paths) {
   const images = [];
+  const decodedByImageId = new Map();
   for (const capture of session.captures) {
     const match = /^data:image\/png;base64,([a-z0-9+/=]+)$/iu.exec(
       capture.dataUrl ?? "",
@@ -4051,6 +4781,22 @@ async function materializeImages(session, runId, paths) {
     const fileName = `${artifactPrefix}.${runId}.${capture.imageId}.${session.renderer}.${capture.label}.png`;
     const file = path.join(paths.directory, fileName);
     createImmutableEvidence(file, bytes);
+    const immutableBytes = fs.readFileSync(file);
+    if (!immutableBytes.equals(bytes)) {
+      throw new Error(
+        `${session.renderer}/${capture.label}: immutable PNG bytes drifted`,
+      );
+    }
+    const decoded = await sharp(immutableBytes)
+      .ensureAlpha()
+      .raw()
+      .toBuffer({ resolveWithObject: true });
+    decodedByImageId.set(capture.imageId, {
+      data: decoded.data,
+      width: decoded.info.width,
+      height: decoded.info.height,
+      channels: decoded.info.channels,
+    });
     images.push({
       imageId: capture.imageId,
       label: capture.label,
@@ -4094,15 +4840,41 @@ async function materializeImages(session, runId, paths) {
     };
   };
   for (const row of session.rows) {
-    row.metricImageBindings = {
-      off: bind(row.metricImageBindings.off),
-      on: bind(row.metricImageBindings.on),
-    };
+    row.metricImageBindings = Object.fromEntries(
+      ["white", "black", "off", "on"].map((channel) => [
+        channel,
+        bind(row.metricImageBindings[channel]),
+      ]),
+    );
   }
-  session.control.metricImageBindings = {
-    off: bind(session.control.metricImageBindings.off),
-    on: bind(session.control.metricImageBindings.on),
-  };
+  session.control.metricImageBindings = Object.fromEntries(
+    ["white", "black", "off", "on"].map((channel) => [
+      channel,
+      bind(session.control.metricImageBindings[channel]),
+    ]),
+  );
+  for (const row of session.rows) {
+    const expectedRow = C12_29_S5_SVS_ROWS.find(
+      (expected) => expected.role === row.role,
+    );
+    row.imageDerivedPrimitives = deriveSvsDecodedImagePrimitives({
+      expectedRow,
+      owner: row,
+      images,
+      decodedByImageId,
+      measurementKind: "event",
+    });
+  }
+  const controlSource = C12_29_S5_SVS_ROWS.find(
+    (expected) => expected.role === C12_29_S5_SVS_CONTROL.projectionSourceRole,
+  );
+  session.control.imageDerivedPrimitives = deriveSvsDecodedImagePrimitives({
+    expectedRow: controlSource,
+    owner: session.control,
+    images,
+    decodedByImageId,
+    measurementKind: "control",
+  });
   delete session.captures;
 }
 
@@ -4693,22 +5465,56 @@ export async function runC1229S5SvsProbe(options = {}) {
       operations,
     );
     return { artifact, publication, paths };
+  } finally {
+    // Last-resort reclamation. Both paths above clear `browser` before handing
+    // the handle to `closeBrowserBounded`, so this only runs when something
+    // left the loop without doing either — the leak a `finally` is the only
+    // construct that can cover.
+    if (browser !== undefined) {
+      try {
+        await browser.close();
+      } catch {
+        // The verdict (or the primary error) is already decided and reported;
+        // a failure here must not replace it.
+      }
+      browser = undefined;
+    }
+  }
+}
+
+async function main() {
+  // Terminating watchdog. `withSvsWatchdog` only REJECTS the task it wraps,
+  // which needs the event loop to come back to it; a wedged page loop never
+  // yields, so nothing but `process.exit` ends the run. `unref` keeps the timer
+  // from extending a healthy one.
+  const processWatchdog = setTimeout(() => {
+    console.error(
+      `[probe-c12-29-s5-svs-footprint] process watchdog fired after ` +
+        `${PROCESS_WATCHDOG_MS} ms; the in-run watchdog did not settle`,
+    );
+    process.exit(2);
+  }, PROCESS_WATCHDOG_MS);
+  processWatchdog.unref?.();
+  try {
+    const result = await runC1229S5SvsProbe();
+    console.log(
+      JSON.stringify(
+        {
+          runId: result.artifact.runId,
+          status: result.artifact.status,
+          exitCode: result.artifact.exitCode,
+          artifact: result.paths.run,
+        },
+        null,
+        2,
+      ),
+    );
+    process.exitCode = result.artifact.exitCode;
+  } finally {
+    clearTimeout(processWatchdog);
   }
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === probePath) {
-  const result = await runC1229S5SvsProbe();
-  console.log(
-    JSON.stringify(
-      {
-        runId: result.artifact.runId,
-        status: result.artifact.status,
-        exitCode: result.artifact.exitCode,
-        artifact: result.paths.run,
-      },
-      null,
-      2,
-    ),
-  );
-  process.exitCode = result.artifact.exitCode;
+  await main();
 }

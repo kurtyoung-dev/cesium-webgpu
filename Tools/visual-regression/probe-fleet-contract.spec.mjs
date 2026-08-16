@@ -36,11 +36,15 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import {
+  analyzeGateLibrarySource,
   analyzeProbeSource,
   blankNonCode,
   browserIdentifiers,
+  codeWithTokenLiterals,
   finallyBodies,
   findExitSites,
+  gateStructuralExitViolations,
+  gateVerdictExitBindingViolations,
   hasStructuralTier,
   hasWatchdog,
   innermostGuard,
@@ -65,6 +69,14 @@ const probeFiles = readdirSync(HERE)
   .sort();
 
 const readProbe = (name) => readFileSync(join(HERE, name), "utf8");
+
+// The other half of the thin-probe/fat-lib architecture: `lib/*-gate.mjs` is
+// where the S5 shards decide both the verdict and the exit code it leaves with.
+const gateLibraryFiles = readdirSync(join(HERE, "lib"))
+  .filter((f) => f.endsWith("-gate.mjs"))
+  .sort();
+
+const readGateLibrary = (name) => readFileSync(join(HERE, "lib", name), "utf8");
 
 /** Analysis cache — 620 files parsed once, not once per assertion. */
 const analyses = new Map();
@@ -827,6 +839,198 @@ test("C12 MUTATION control: the rule keys on the VERDICT, not on the exits", () 
   assert.deepEqual(verdictExitViolations(mutated), [
     "prints a PASS/FAIL verdict but no exit path can be non-zero",
   ]);
+});
+
+// ---------------------------------------------------------------------------
+// D. Gate libraries — the exit semantics the probe rules cannot see
+// ---------------------------------------------------------------------------
+//
+// A probe whose only exit is `process.exitCode = artifact.exitCode` satisfies
+// every rule in sections A-C while its gate library maps a verdict tier to
+// whatever number it likes. That is not hypothetical: one library routed
+// STRUCTURAL to 2, making a lane that could not see its subject
+// indistinguishable from a crashed harness, and the contract stayed green
+// because it never opened the file.
+
+/** The mapping exactly as it shipped, and the reason the veto had to go. */
+const GATE_STRUCTURAL_TO_TWO = [
+  "export function exitCodeForShardStatus(status) {",
+  '  if (status === "PASS") return 0;',
+  '  if (status === "FAIL") return 1;',
+  '  if (status === "STRUCTURAL" || status === "ERROR") return 2;',
+  "  throw new RangeError(`unknown status ${String(status)}`);",
+  "}",
+  "",
+].join("\n");
+
+/** The repaired mapping: the two tiers separate again. */
+const GATE_STRUCTURAL_TO_THREE = GATE_STRUCTURAL_TO_TWO.replace(
+  '  if (status === "STRUCTURAL" || status === "ERROR") return 2;',
+  [
+    '  if (status === "ERROR") return 2;',
+    '  if (status === "STRUCTURAL") return 3;',
+  ].join("\n"),
+);
+
+test("D1: the analyzer restores tier NAMES without restoring prose", () => {
+  // A gate spells its tiers as strings, which `blankNonCode` erases on purpose
+  // so printed prose cannot be mistaken for code. The gate view has to see
+  // `"STRUCTURAL"` and still not see a sentence that contains the word.
+  const src = [
+    'const tier = status === "STRUCTURAL" ? 3 : 0;',
+    'const note = "the STRUCTURAL tier used to be 2 which was wrong";',
+    "",
+  ].join("\n");
+  const view = codeWithTokenLiterals(src);
+  assert.equal(view.length, src.length, "the view must preserve offsets");
+  assert.ok(/=== "STRUCTURAL"/.test(view), "tier name was not restored");
+  assert.ok(
+    !/used to be/.test(view),
+    `prose leaked into the gate view: ${view}`,
+  );
+});
+
+test("D2: every spelling of a STRUCTURAL-to-2 mapping is detected", () => {
+  const forms = {
+    "guard, unbraced, as shipped": GATE_STRUCTURAL_TO_TWO,
+    "guard, braced": 'if (status === "STRUCTURAL") {\n  return 2;\n}\n',
+    "frozen table": "const t = Object.freeze({ ERROR: 2, STRUCTURAL: 2 });\n",
+    "quoted table key": 'const t = { "STRUCTURAL": 2 };\n',
+    conditional: 'const code = status === "STRUCTURAL" ? 2 : 0;\n',
+  };
+  for (const [label, src] of Object.entries(forms)) {
+    assert.ok(
+      gateStructuralExitViolations(src).length > 0,
+      `missed a STRUCTURAL-to-2 mapping: ${label}`,
+    );
+  }
+});
+
+test("D3: correct mappings and exception guards are NOT flagged", () => {
+  // The rule must be followable. Exit 2 is exactly where a thrown error
+  // belongs, a lowercase `structural` local is a reason list rather than a tier
+  // name, and a tier chain that puts STRUCTURAL at 3 is the shape being asked
+  // for — flagging any of them would make the contract unusable.
+  const clean = [
+    GATE_STRUCTURAL_TO_THREE,
+    "const t = Object.freeze({ PASS: 0, FAIL: 1, ERROR: 2, STRUCTURAL: 3 });\n",
+    'const c = status === "STRUCTURAL" ? 3 : status === "ERROR" ? 2 : 0;\n',
+    "if (fatal) {\n  return 2;\n}\n",
+    "if (structural.length > 0) {\n  return 2;\n}\n",
+    '// STRUCTURAL: 2 is what the defect looked like\nconst n = "STRUCTURAL: 2";\n',
+  ];
+  for (const src of clean) {
+    assert.deepEqual(
+      gateStructuralExitViolations(src),
+      [],
+      `false positive on:\n${src}`,
+    );
+  }
+});
+
+test("D4: a verdict whose exit code is a bare literal is detected", () => {
+  assert.equal(
+    gateVerdictExitBindingViolations(
+      'const a = { status: "ERROR", exitCode: 2 };\n',
+    ).length,
+    1,
+  );
+  assert.deepEqual(
+    gateVerdictExitBindingViolations(
+      'const a = { status: "ERROR", exitCode: exitCodeForShardStatus("ERROR") };\n',
+    ),
+    [],
+  );
+  // A record that merely HAS an exit code is not a verdict: a subprocess result
+  // carries one and must not be dragged into the status mapping.
+  assert.deepEqual(
+    gateVerdictExitBindingViolations(
+      "const child = { exitCode: 0, signal: null, timedOut: false };\n",
+    ),
+    [],
+  );
+});
+
+test("D5: every gate library satisfies the exit-semantics contract", () => {
+  assert.ok(
+    gateLibraryFiles.length > 10,
+    `only ${gateLibraryFiles.length} gate libraries found`,
+  );
+  const offenders = [];
+  for (const f of gateLibraryFiles) {
+    const a = analyzeGateLibrarySource(readGateLibrary(f));
+    if (a.violations.length > 0) {
+      offenders.push(`lib/${f}: ${a.violations.join("; ")}`);
+    }
+  }
+  assert.deepEqual(
+    offenders,
+    [],
+    `A gate library owns the exit code its probe leaves with. STRUCTURAL is 3
+("the lane could not see its subject"), never 2 ("the harness broke"), and a
+verdict's exit code must be derived from the status mapping rather than typed
+in. There is NO allowlist for this rule.\nOffenders:\n  ${offenders.join("\n  ")}`,
+  );
+});
+
+test("D6 MUTATION control: re-introducing STRUCTURAL-to-2 turns D5 red", () => {
+  // D5 passes trivially if the rule cannot see the defect in real source. Take
+  // the gate that actually shipped the defect, put the mapping back in a copy,
+  // and require the violation to reappear. `exitCodeForShardStatus` is neither
+  // a prefix nor a superstring of anything the detector matches on, so the
+  // control cannot pass by accidentally leaving the repaired form behind.
+  const donor = "c12-29-s5-custom-ellipsoid-gate.mjs";
+  const src = readGateLibrary(donor).replaceAll("\r\n", "\n");
+  assert.deepEqual(
+    analyzeGateLibrarySource(src).violations,
+    [],
+    `${donor} is not clean to begin with`,
+  );
+  const mutated = `${src}\n${GATE_STRUCTURAL_TO_TWO}`;
+  assert.notEqual(mutated, src, `${donor}: mutation did not apply`);
+  const a = analyzeGateLibrarySource(mutated);
+  assert.ok(
+    a.violations.includes("structural routed to exit 2"),
+    `${donor}: the mapping survived its own re-introduction`,
+  );
+  assert.equal(a.structuralRoutedToTwo[0].form, "guard");
+});
+
+test("D7 MUTATION control: unbinding a verdict's exit code turns D5 red", () => {
+  // The converse direction, over the gate that publishes an ERROR artifact:
+  // replace its derived exit code with the number it happens to equal today and
+  // require the rule to notice that the mapping is no longer consulted.
+  const donor = "c12-29-s5-replacement-device-gate.mjs";
+  const src = readGateLibrary(donor).replaceAll("\r\n", "\n");
+  const bound = 'exitCode: exitCodeForC1229S5ReplacementStatus("ERROR"),';
+  assert.ok(src.includes(bound), `${donor}: no bound verdict exit to unbind`);
+  const mutated = src.replace(bound, "exitCode: 2,");
+  const a = analyzeGateLibrarySource(mutated);
+  assert.ok(
+    a.violations.includes("verdict exit code is a bare literal"),
+    `${donor}: the unbound literal was not detected`,
+  );
+});
+
+test("D8: the gate libraries the S5 probes import all declare a mapping", () => {
+  // Anchored, not enumerated as a requirement: the rule above is only load-
+  // bearing for libraries that actually own an exit code, so if these stopped
+  // declaring one the D5 sweep would go quietly vacuous.
+  for (const name of [
+    "c12-29-s5-custom-ellipsoid-gate.mjs",
+    "c12-29-s5-dense-cost-gate.mjs",
+    "c12-29-s5-multiview-gate.mjs",
+    "c12-29-s5-replacement-device-gate.mjs",
+    "c12-29-s5-svs-footprint-gate.mjs",
+    "c12-29-s5-terrain-selection-gate.mjs",
+  ]) {
+    assert.ok(gateLibraryFiles.includes(name), `${name} is missing`);
+    assert.equal(
+      analyzeGateLibrarySource(readGateLibrary(name)).declaresStatusExitMapping,
+      true,
+      `${name} no longer declares a status/exit mapping`,
+    );
+  }
 });
 
 test("C13: the scanner reaches the end of every probe still reading code", () => {

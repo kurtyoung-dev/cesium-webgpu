@@ -11,16 +11,30 @@
 import { createHash } from "node:crypto";
 import { types as utilTypes } from "node:util";
 
-export const C12_29_S5_SVS_SCHEMA = "c12-29-s5-svs-5073-footprint-evidence-v4";
+import { exitCodeForS5StatusOrStructural as exitCodeForSvsStatus } from "./verdict-exit-gate.mjs";
+
+export const C12_29_S5_SVS_SCHEMA = "c12-29-s5-svs-5073-footprint-evidence-v5";
 
 export const C12_29_S5_SVS_DIAGNOSTICS_SCHEMA =
+  "c12-29-s5-svs-5073-footprint-runtime-diagnostics-v5";
+
+export const C12_29_S5_SVS_SUPERSEDED_V4_SCHEMA =
+  "c12-29-s5-svs-5073-footprint-evidence-v4";
+
+export const C12_29_S5_SVS_SUPERSEDED_V4_DIAGNOSTICS_SCHEMA =
   "c12-29-s5-svs-5073-footprint-runtime-diagnostics-v4";
 
 export const C12_29_S5_SVS_SUPERSEDED_SCHEMA =
   "c12-29-s5-svs-5073-footprint-evidence-v3";
 
+export const C12_29_S5_SVS_SUPERSEDED_DIAGNOSTICS_SCHEMA =
+  "c12-29-s5-svs-5073-footprint-runtime-diagnostics-v3";
+
 export const C12_29_S5_SVS_LEGACY_ERROR_SCHEMA =
   "c12-29-s5-svs-5073-footprint-evidence-v2";
+
+export const C12_29_S5_SVS_ARTIFACT_PREFIX =
+  "campaign12-c12-29-s5-svs-5073-footprint";
 
 export const C12_29_S5_SVS_EPHEMERIS = Object.freeze({
   providerConstructor: "Simon1994EphemerisProvider",
@@ -174,10 +188,54 @@ export const C12_29_S5_SVS_CONTROL = Object.freeze({
 });
 
 export const C12_29_S5_SVS_CAPTURE_LABELS = Object.freeze([
+  ...C12_29_S5_SVS_ROWS.flatMap((row) => [
+    `${row.role}-white`,
+    `${row.role}-black`,
+    `${row.role}-off`,
+    `${row.role}-on`,
+  ]),
+  "noneclipse-control-white",
+  "noneclipse-control-black",
+  "noneclipse-control-off",
+  "noneclipse-control-on",
+]);
+
+export const C12_29_S5_SVS_V4_CAPTURE_LABELS = Object.freeze([
   ...C12_29_S5_SVS_ROWS.flatMap((row) => [`${row.role}-off`, `${row.role}-on`]),
   "noneclipse-control-off",
   "noneclipse-control-on",
 ]);
+
+export const C12_29_S5_SVS_CAPTURE_STATES = Object.freeze({
+  white: Object.freeze({
+    baseColor: Object.freeze([1, 1, 1, 1]),
+    enableEclipse: false,
+    enableEclipseGlobeShadow: false,
+    eclipseAutoExposure: true,
+    enableEclipseHorizonTwilight: false,
+  }),
+  black: Object.freeze({
+    baseColor: Object.freeze([0, 0, 0, 1]),
+    enableEclipse: false,
+    enableEclipseGlobeShadow: false,
+    eclipseAutoExposure: true,
+    enableEclipseHorizonTwilight: false,
+  }),
+  off: Object.freeze({
+    baseColor: Object.freeze([1, 1, 1, 1]),
+    enableEclipse: false,
+    enableEclipseGlobeShadow: false,
+    eclipseAutoExposure: true,
+    enableEclipseHorizonTwilight: false,
+  }),
+  on: Object.freeze({
+    baseColor: Object.freeze([1, 1, 1, 1]),
+    enableEclipse: true,
+    enableEclipseGlobeShadow: true,
+    eclipseAutoExposure: true,
+    enableEclipseHorizonTwilight: false,
+  }),
+});
 
 export const C12_29_S5_SVS_CAPTURE_METHOD =
   "scene.render(pinnedJulianDate)+single-toDataURL+decode-same-immutable-PNG";
@@ -235,6 +293,9 @@ export const C12_29_S5_SVS_TERRAIN = Object.freeze({
 
 export const C12_29_S5_SVS_SCENE = Object.freeze({
   viewport: Object.freeze({ width: 960, height: 960 }),
+  verticalFovRadians: 0.9599310885968813,
+  cameraHeightMeters: 556331.4678975162,
+  pixelGroundFootprintKm: 0.6033496486927782,
   cameraGuardDegrees: 1.5,
   minimumMarginPixels: 32,
   latticeSide: 129,
@@ -257,6 +318,138 @@ export const C12_29_S5_SVS_SCENE = Object.freeze({
   terrainMaskMethod:
     "same-camera-white-vs-black-baseColor-absolute-code-response-greater-than-8-intersect-valid-wgs84",
 });
+
+/**
+ * Independently reproduces the exact WGS84 cell-centre projection used by the
+ * browser probe. It deliberately does not consume the browser-reported valid
+ * IDs or cell-to-pixel array, so coordinated permutations and omissions cannot
+ * become self-authenticating evidence.
+ */
+export function deriveSvsWgs84ProjectedLattice(expectedRow) {
+  const bbox = expectedRow?.fixtureGeometry?.bbox;
+  const centerLonLat = expectedRow?.sourceCenter;
+  if (
+    !Array.isArray(bbox) ||
+    bbox.length !== 4 ||
+    bbox.some((value) => !Number.isFinite(value)) ||
+    !Array.isArray(centerLonLat) ||
+    centerLonLat.length !== 2 ||
+    centerLonLat.some((value) => !Number.isFinite(value))
+  ) {
+    throw new TypeError("SVS projection row is malformed");
+  }
+
+  const semimajor = 6_378_137;
+  const semiminor = 6_356_752.314245179;
+  const radiiSquared = [
+    semimajor * semimajor,
+    semimajor * semimajor,
+    semiminor * semiminor,
+  ];
+  const oneOverRadiiSquared = radiiSquared.map((value) => 1 / value);
+  const dot = (left, right) =>
+    left[0] * right[0] + left[1] * right[1] + left[2] * right[2];
+  const subtract = (left, right) =>
+    left.map((value, index) => value - right[index]);
+  const cross = (left, right) => [
+    left[1] * right[2] - left[2] * right[1],
+    left[2] * right[0] - left[0] * right[2],
+    left[0] * right[1] - left[1] * right[0],
+  ];
+  const normalize = (value) => {
+    const magnitude = Math.hypot(...value);
+    if (!(magnitude > 0)) throw new TypeError("SVS projection basis is zero");
+    return value.map((component) => component / magnitude);
+  };
+  // This is the same radii-squared/gamma construction used by
+  // Ellipsoid.cartographicToCartesian, rather than a spherical shortcut.
+  const cartesianFromDegrees = (longitudeDegrees, latitudeDegrees, height) => {
+    const longitude = (longitudeDegrees * Math.PI) / 180;
+    const latitude = (latitudeDegrees * Math.PI) / 180;
+    const cosLatitude = Math.cos(latitude);
+    const normal = [
+      cosLatitude * Math.cos(longitude),
+      cosLatitude * Math.sin(longitude),
+      Math.sin(latitude),
+    ];
+    const scaled = normal.map(
+      (component, index) => component * radiiSquared[index],
+    );
+    const gamma = Math.sqrt(dot(normal, scaled));
+    return scaled.map(
+      (component, index) => component / gamma + normal[index] * height,
+    );
+  };
+
+  const surfaceCenter = cartesianFromDegrees(...centerLonLat, 0);
+  const position = cartesianFromDegrees(
+    ...centerLonLat,
+    C12_29_S5_SVS_SCENE.cameraHeightMeters,
+  );
+  const direction = normalize(subtract(surfaceCenter, position));
+  const surfaceNormal = normalize(
+    surfaceCenter.map(
+      (component, index) => component * oneOverRadiiSquared[index],
+    ),
+  );
+  let right = normalize(cross([0, 0, 1], surfaceNormal));
+  const up = normalize(cross(right, direction));
+  right = normalize(cross(direction, up));
+
+  const side = C12_29_S5_SVS_SCENE.latticeSide;
+  const width = C12_29_S5_SVS_SCENE.viewport.width;
+  const height = C12_29_S5_SVS_SCENE.viewport.height;
+  const aspect = width / height;
+  const tanHalfVerticalFov = Math.tan(
+    C12_29_S5_SVS_SCENE.verticalFovRadians * 0.5,
+  );
+  const west = bbox[0] - C12_29_S5_SVS_SCENE.cameraGuardDegrees;
+  const south = bbox[1] - C12_29_S5_SVS_SCENE.cameraGuardDegrees;
+  const east = bbox[2] + C12_29_S5_SVS_SCENE.cameraGuardDegrees;
+  const north = bbox[3] + C12_29_S5_SVS_SCENE.cameraGuardDegrees;
+  const validProjectedCellIds = [];
+  const projectedPixelIdByValidCell = [];
+  const cellLonLat = [];
+  const projected = new Set();
+  let duplicateProjectedCellCount = 0;
+
+  for (let y = 0; y < side; y++) {
+    const latitude = north - ((y + 0.5) / side) * (north - south);
+    for (let x = 0; x < side; x++) {
+      const longitude = west + ((x + 0.5) / side) * (east - west);
+      const id = y * side + x;
+      const relative = subtract(
+        cartesianFromDegrees(longitude, latitude, 0),
+        position,
+      );
+      const forward = dot(relative, direction);
+      if (!(forward > 0)) continue;
+      const ndcX =
+        dot(relative, right) / (forward * tanHalfVerticalFov * aspect);
+      const ndcY = dot(relative, up) / (forward * tanHalfVerticalFov);
+      const pixelX = Math.floor(((ndcX + 1) * width) / 2);
+      const pixelY = Math.floor(((1 - ndcY) * height) / 2);
+      if (pixelX < 0 || pixelY < 0 || pixelX >= width || pixelY >= height) {
+        continue;
+      }
+      const projectedId = pixelY * width + pixelX;
+      if (projected.has(projectedId)) {
+        duplicateProjectedCellCount++;
+        continue;
+      }
+      projected.add(projectedId);
+      validProjectedCellIds.push(id);
+      projectedPixelIdByValidCell.push(projectedId);
+      cellLonLat.push([id, longitude, latitude]);
+    }
+  }
+  return {
+    validProjectedCellIds,
+    projectedPixelIdByValidCell,
+    cellLonLat,
+    duplicateProjectedCellCount,
+  };
+}
 
 // This is the longest adjacent edge in the exact, unresampled NASA SVS shard.
 // It is source resolution, not a tolerance fitted to a browser result.
@@ -291,6 +484,7 @@ export const C12_29_S5_SVS_SOURCE_FILES = Object.freeze([
   "packages/engine/Source/Core/Cartesian3.js",
   "packages/engine/Source/Core/Cartographic.js",
   "packages/engine/Source/Core/Color.js",
+  "packages/engine/Source/Core/Ellipsoid.js",
   "packages/engine/Source/Core/EllipsoidGeodesic.js",
   "packages/engine/Source/Core/JulianDate.js",
   "packages/engine/Source/Core/Math.js",
@@ -305,6 +499,10 @@ export const C12_29_S5_SVS_SOURCE_FILES = Object.freeze([
   "packages/engine/Source/Core/Simon1994PlanetaryPositions.js",
   "packages/engine/Source/Core/CesiumTerrainProvider.js",
   "packages/engine/Source/Core/QuantizedMeshTerrainData.js",
+  "packages/engine/Source/Scene/AtmosphericConditions.js",
+  "packages/engine/Source/Scene/Camera.js",
+  "packages/engine/Source/Scene/CameraHelpers.js",
+  "packages/engine/Source/Scene/CameraInternals.js",
   "packages/engine/Source/Scene/GridImageryProvider.js",
   "packages/engine/Source/Scene/EclipseState.js",
   "packages/engine/Source/Scene/EclipseGlobeShadow.js",
@@ -329,6 +527,7 @@ export const C12_29_S5_SVS_SOURCE_FILES = Object.freeze([
   "packages/engine/Source/Renderer/WebGPU/WebGPUDynamicEnvironmentMapManager.ts",
   "packages/engine/Source/Renderer/WebGPU/WebGPUDynamicEnvironmentMapCapture.ts",
   "packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceRenderer.ts",
+  "packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfacePipelines.ts",
   "packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceLayouts.ts",
   "packages/engine/Source/Renderer/WebGPU/WebGPUGlobeEclipseUniforms.ts",
   "packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceTypes.ts",
@@ -350,6 +549,45 @@ export const C12_29_S5_SVS_BUILD_SOURCE_FILES = Object.freeze(
     (file) => !file.endsWith(".glsl") && !file.endsWith(".wgsl"),
   ),
 );
+
+const C12_29_S5_SVS_V5_SOURCE_ADDITIONS = new Set([
+  "packages/engine/Source/Core/Ellipsoid.js",
+  "packages/engine/Source/Scene/AtmosphericConditions.js",
+  "packages/engine/Source/Scene/Camera.js",
+  "packages/engine/Source/Scene/CameraHelpers.js",
+  "packages/engine/Source/Scene/CameraInternals.js",
+  "packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfacePipelines.ts",
+]);
+
+export const C12_29_S5_SVS_V4_SOURCE_FILES = Object.freeze(
+  C12_29_S5_SVS_SOURCE_FILES.filter(
+    (file) => !C12_29_S5_SVS_V5_SOURCE_ADDITIONS.has(file),
+  ),
+);
+
+export const C12_29_S5_SVS_V4_BUILD_SOURCE_FILES = Object.freeze(
+  C12_29_S5_SVS_V4_SOURCE_FILES.filter(
+    (file) => !file.endsWith(".glsl") && !file.endsWith(".wgsl"),
+  ),
+);
+
+const SVS_V5_SCHEMA_CONTRACT = Object.freeze({
+  schema: C12_29_S5_SVS_SCHEMA,
+  diagnosticsSchema: C12_29_S5_SVS_DIAGNOSTICS_SCHEMA,
+  buildSourceFiles: C12_29_S5_SVS_BUILD_SOURCE_FILES,
+  captureLabels: C12_29_S5_SVS_CAPTURE_LABELS,
+  metricChannels: Object.freeze(["white", "black", "off", "on"]),
+  requiresV5Evidence: true,
+});
+
+const SVS_V4_SCHEMA_CONTRACT = Object.freeze({
+  schema: C12_29_S5_SVS_SUPERSEDED_V4_SCHEMA,
+  diagnosticsSchema: C12_29_S5_SVS_SUPERSEDED_V4_DIAGNOSTICS_SCHEMA,
+  buildSourceFiles: C12_29_S5_SVS_V4_BUILD_SOURCE_FILES,
+  captureLabels: C12_29_S5_SVS_V4_CAPTURE_LABELS,
+  metricChannels: Object.freeze(["off", "on"]),
+  requiresV5Evidence: false,
+});
 
 export const C12_29_S5_SVS_BUILD_SOURCE_MAP =
   "Build/CesiumUnminified/index.js.map";
@@ -718,12 +956,10 @@ export function isUuidV4(value) {
   );
 }
 
-export function exitCodeForSvsStatus(status) {
-  if (status === "PASS") return 0;
-  if (status === "FAIL") return 1;
-  if (status === "ERROR") return 2;
-  return 3;
-}
+// The tolerant reader over the shared verdict-tier table: this gate resolves
+// statuses read out of untrusted artifact data, where an unreadable tier means
+// the artifact cannot vouch for what it saw.
+export { exitCodeForSvsStatus };
 
 /**
  * Derive every spatial tolerance from source resolution and two quantizers.
@@ -773,7 +1009,10 @@ export function computeSvsFootprintBudget({
   });
 }
 
-export function validateSvsRunningArtifactShape(artifact) {
+export function validateSvsRunningArtifactShape(
+  artifact,
+  schemaContract = SVS_V5_SCHEMA_CONTRACT,
+) {
   const reasons = [];
   try {
     if (
@@ -789,7 +1028,7 @@ export function validateSvsRunningArtifactShape(artifact) {
       reasons.push("RUNNING artifact keys are not exact");
       return reasons;
     }
-    if (artifact?.schema !== C12_29_S5_SVS_SCHEMA) {
+    if (artifact?.schema !== schemaContract.schema) {
       reasons.push("RUNNING artifact schema is not the frozen SVS schema");
     }
     if (!isUuidV4(artifact?.runId)) {
@@ -812,6 +1051,10 @@ export function validateSvsRunningArtifactShape(artifact) {
     reasons.push("RUNNING artifact could not be safely inspected");
     return reasons;
   }
+}
+
+export function validateSupersededSvsV4RunningArtifactShape(artifact) {
+  return validateSvsRunningArtifactShape(artifact, SVS_V4_SCHEMA_CONTRACT);
 }
 
 function boundedSvsString(value, maximumLength, allowEmpty = false) {
@@ -952,6 +1195,7 @@ function validateSvsCheckpointTerrain(value) {
 export function validateSvsRuntimeCheckpointShape(
   checkpoint,
   expectedRenderer,
+  diagnosticsSchema = C12_29_S5_SVS_DIAGNOSTICS_SCHEMA,
 ) {
   const reasons = [];
   try {
@@ -977,7 +1221,7 @@ export function validateSvsRuntimeCheckpointShape(
       return reasons;
     }
     if (
-      checkpoint.schema !== C12_29_S5_SVS_DIAGNOSTICS_SCHEMA ||
+      checkpoint.schema !== diagnosticsSchema ||
       !C12_29_S5_SVS_RENDERERS.includes(checkpoint.renderer) ||
       (expectedRenderer !== undefined &&
         checkpoint.renderer !== expectedRenderer) ||
@@ -1317,7 +1561,10 @@ function validateSvsRuntimeCleanupShape(cleanup) {
 /** Validate the exact bounded diagnostics union accepted by a v3 ERROR. */
 export function validateSvsErrorDiagnosticsShape(
   diagnostics,
-  { requireCleanup = true } = {},
+  {
+    requireCleanup = true,
+    diagnosticsSchema = C12_29_S5_SVS_DIAGNOSTICS_SCHEMA,
+  } = {},
 ) {
   const reasons = [];
   try {
@@ -1342,7 +1589,7 @@ export function validateSvsErrorDiagnosticsShape(
     }
     if (diagnostics.kind === "operational-pre-page-error") {
       if (
-        diagnostics.schema !== C12_29_S5_SVS_DIAGNOSTICS_SCHEMA ||
+        diagnostics.schema !== diagnosticsSchema ||
         diagnostics.renderer !== null ||
         !new Set(["probe-before-page", "browser-watchdog-error"]).has(
           diagnostics.stage,
@@ -1373,7 +1620,7 @@ export function validateSvsErrorDiagnosticsShape(
     }
     if (diagnostics.kind === "runtime-session-cleanup-error") {
       if (
-        diagnostics.schema !== C12_29_S5_SVS_DIAGNOSTICS_SCHEMA ||
+        diagnostics.schema !== diagnosticsSchema ||
         !C12_29_S5_SVS_RENDERERS.includes(diagnostics.renderer) ||
         diagnostics.stage !== "session-cleanup-error" ||
         diagnostics.runtimeCheckpoint !== null ||
@@ -1400,7 +1647,7 @@ export function validateSvsErrorDiagnosticsShape(
       return reasons;
     }
     if (
-      diagnostics.schema !== C12_29_S5_SVS_DIAGNOSTICS_SCHEMA ||
+      diagnostics.schema !== diagnosticsSchema ||
       diagnostics.kind !== "runtime-page-session-error" ||
       !C12_29_S5_SVS_RENDERERS.includes(diagnostics.renderer) ||
       diagnostics.stage !== "page-session-error" ||
@@ -1433,6 +1680,7 @@ export function validateSvsErrorDiagnosticsShape(
         ...validateSvsRuntimeCheckpointShape(
           diagnostics.runtimeCheckpoint,
           diagnostics.renderer,
+          diagnosticsSchema,
         ).map((reason) => `ERROR diagnostics ${reason}`),
       );
       if (diagnostics.checkpointReadError !== null) {
@@ -1562,15 +1810,64 @@ function replaceSupersededSvsSchemas(value) {
   if (value === null || typeof value !== "object") return;
   for (const key of Object.keys(value)) {
     if (value[key] === C12_29_S5_SVS_SUPERSEDED_SCHEMA) {
-      value[key] = C12_29_S5_SVS_SCHEMA;
-    } else if (
-      value[key] === "c12-29-s5-svs-5073-footprint-runtime-diagnostics-v3"
-    ) {
-      value[key] = C12_29_S5_SVS_DIAGNOSTICS_SCHEMA;
+      value[key] = C12_29_S5_SVS_SUPERSEDED_V4_SCHEMA;
+    } else if (value[key] === C12_29_S5_SVS_SUPERSEDED_DIAGNOSTICS_SCHEMA) {
+      value[key] = C12_29_S5_SVS_SUPERSEDED_V4_DIAGNOSTICS_SCHEMA;
     } else {
       replaceSupersededSvsSchemas(value[key]);
     }
   }
+}
+
+function validateIncomingSupersededSvsV3Schemas(artifact) {
+  const reasons = [];
+  const expect = (actual, expected, label) => {
+    if (actual !== expected) reasons.push(`${label} is not exact v3`);
+  };
+  expect(artifact?.schema, C12_29_S5_SVS_SUPERSEDED_SCHEMA, "artifact schema");
+  if (artifact?.status === "ERROR") {
+    expect(
+      artifact?.diagnostics?.schema,
+      C12_29_S5_SVS_SUPERSEDED_DIAGNOSTICS_SCHEMA,
+      "ERROR diagnostics schema",
+    );
+    if (artifact?.diagnostics?.runtimeCheckpoint !== null) {
+      expect(
+        artifact?.diagnostics?.runtimeCheckpoint?.schema,
+        C12_29_S5_SVS_SUPERSEDED_DIAGNOSTICS_SCHEMA,
+        "ERROR runtime checkpoint schema",
+      );
+    }
+    return reasons;
+  }
+  expect(
+    artifact?.report?.schema,
+    C12_29_S5_SVS_SUPERSEDED_SCHEMA,
+    "report schema",
+  );
+  expect(
+    artifact?.report?.lifecycle?.runningReceipt?.schema,
+    C12_29_S5_SVS_SUPERSEDED_SCHEMA,
+    "running receipt schema",
+  );
+  expect(
+    artifact?.report?.lifecycle?.finalReceipt?.schema,
+    C12_29_S5_SVS_SUPERSEDED_SCHEMA,
+    "final receipt schema",
+  );
+  const sessions = artifact?.report?.sessions;
+  if (!Array.isArray(sessions)) {
+    reasons.push("session diagnostics schemas are absent");
+  } else {
+    sessions.forEach((session, index) =>
+      expect(
+        session?.schema,
+        C12_29_S5_SVS_SUPERSEDED_DIAGNOSTICS_SCHEMA,
+        `session ${index} diagnostics schema`,
+      ),
+    );
+  }
+  return reasons;
 }
 
 function upgradeSupersededSvsV3Artifact(artifact) {
@@ -1578,7 +1875,7 @@ function upgradeSupersededSvsV3Artifact(artifact) {
   replaceSupersededSvsSchemas(upgraded);
   if (upgraded.status === "ERROR") return upgraded;
 
-  const v3BuildFiles = C12_29_S5_SVS_BUILD_SOURCE_FILES.filter(
+  const v3BuildFiles = C12_29_S5_SVS_V4_BUILD_SOURCE_FILES.filter(
     (file) => !C12_29_S5_SVS_V4_SOURCE_ADDITIONS.has(file),
   );
   const identity = upgraded?.report?.provenance?.buildSourceIdentity;
@@ -1599,7 +1896,7 @@ function upgradeSupersededSvsV3Artifact(artifact) {
   if (v3BuildFiles.some((file) => !entryByRelative.has(file))) return null;
   const template = entryByRelative.get(v3BuildFiles[0]);
   const prefix = template.file.slice(0, -v3BuildFiles[0].length);
-  identity.entries = C12_29_S5_SVS_BUILD_SOURCE_FILES.map((file) =>
+  identity.entries = C12_29_S5_SVS_V4_BUILD_SOURCE_FILES.map((file) =>
     entryByRelative.has(file)
       ? entryByRelative.get(file)
       : {
@@ -1637,8 +1934,12 @@ function upgradeSupersededSvsV3Artifact(artifact) {
 export function validateSupersededSvsV3FinalArtifactShape(artifact) {
   const reasons = [];
   try {
-    if (artifact?.schema !== C12_29_S5_SVS_SUPERSEDED_SCHEMA) {
-      reasons.push("superseded v3 artifact schema differs");
+    const incomingSchemaReasons =
+      validateIncomingSupersededSvsV3Schemas(artifact);
+    if (incomingSchemaReasons.length > 0) {
+      reasons.push(
+        ...incomingSchemaReasons.map((reason) => `superseded v3 ${reason}`),
+      );
       return reasons;
     }
     const upgraded = upgradeSupersededSvsV3Artifact(artifact);
@@ -1647,7 +1948,7 @@ export function validateSupersededSvsV3FinalArtifactShape(artifact) {
       return reasons;
     }
     reasons.push(
-      ...validateSvsFinalArtifactShape(upgraded).map(
+      ...validateSvsFinalArtifactShape(upgraded, SVS_V4_SCHEMA_CONTRACT).map(
         (reason) => `superseded v3 ${reason}`,
       ),
     );
@@ -1658,14 +1959,103 @@ export function validateSupersededSvsV3FinalArtifactShape(artifact) {
   }
 }
 
-export function validateSvsFinalArtifactShape(artifact) {
+/**
+ * Validate retained v4 bytes against their frozen historical contract. The
+ * validator does not synthesize v5 screenshot-state or pipeline evidence and
+ * never re-emits the predecessor bytes.
+ */
+export function validateSupersededSvsV4FinalArtifactShape(artifact) {
+  const reasons = [];
+  try {
+    if (artifact?.schema !== C12_29_S5_SVS_SUPERSEDED_V4_SCHEMA) {
+      reasons.push("superseded v4 artifact schema differs");
+      return reasons;
+    }
+    reasons.push(
+      ...validateSvsFinalArtifactShape(artifact, SVS_V4_SCHEMA_CONTRACT).map(
+        (reason) => `superseded v4 ${reason}`,
+      ),
+    );
+    if (artifact?.status !== "ERROR") {
+      for (const session of artifact?.report?.sessions ?? []) {
+        if (Object.hasOwn(session?.errors ?? {}, "gpuCompletion")) {
+          reasons.push(
+            "superseded v4 contains v5-only GPU completion evidence",
+          );
+        }
+        const owners = [...(session?.rows ?? []), session?.control];
+        const tuples = [
+          ...(session?.terrain?.providerReadiness?.observations ?? []).map(
+            (observation) => observation?.tuple,
+          ),
+        ];
+        for (const owner of owners) {
+          if (
+            Object.hasOwn(owner ?? {}, "variantReadiness") ||
+            Object.hasOwn(owner?.cameraFrame ?? {}, "basisProof") ||
+            Object.hasOwn(
+              owner?.lattice ?? {},
+              "projectedPixelIdByValidCell",
+            ) ||
+            Object.hasOwn(owner ?? {}, "imageDerivedPrimitives") ||
+            (owner === session?.control &&
+              Object.hasOwn(owner ?? {}, "ephemeris"))
+          ) {
+            reasons.push("superseded v4 contains v5-only owner evidence");
+          }
+          tuples.push(
+            owner?.terrainTuple,
+            ...(owner?.transitionReadiness?.observations ?? []).map(
+              (observation) => observation?.tuple,
+            ),
+            ...(owner?.captureTerrainProofs ?? []).map((proof) => {
+              if (
+                Object.hasOwn(proof ?? {}, "requested") ||
+                Object.hasOwn(proof ?? {}, "observed") ||
+                Object.hasOwn(proof ?? {}, "backendDrawWitness")
+              ) {
+                reasons.push(
+                  "superseded v4 contains v5-only capture proof evidence",
+                );
+              }
+              return proof?.tuple;
+            }),
+          );
+        }
+        if (
+          tuples.some(
+            (tuple) =>
+              Object.hasOwn(tuple ?? {}, "drawWitness") ||
+              Object.hasOwn(tuple ?? {}, "captureStateObservation"),
+          ) ||
+          (session?.ephemeris?.xysFiles ?? []).some(
+            (entry) =>
+              Object.hasOwn(entry?.localStart ?? {}, "file") ||
+              Object.hasOwn(entry?.localEnd ?? {}, "file"),
+          )
+        ) {
+          reasons.push("superseded v4 contains v5-only runtime evidence");
+        }
+      }
+    }
+    return reasons;
+  } catch {
+    reasons.push("superseded v4 artifact could not be safely inspected");
+    return reasons;
+  }
+}
+
+export function validateSvsFinalArtifactShape(
+  artifact,
+  schemaContract = SVS_V5_SCHEMA_CONTRACT,
+) {
   const reasons = [];
   try {
     if (!exactEnumerableDataObject(artifact)) {
       reasons.push("artifact is not an exact enumerable-data object");
       return reasons;
     }
-    if (artifact?.schema !== C12_29_S5_SVS_SCHEMA) {
+    if (artifact?.schema !== schemaContract.schema) {
       reasons.push("artifact schema is not the frozen SVS schema");
     }
     if (!isUuidV4(artifact?.runId))
@@ -1708,9 +2098,9 @@ export function validateSvsFinalArtifactShape(artifact) {
         reasons.push("ERROR artifact diagnostics are absent");
       } else {
         reasons.push(
-          ...validateSvsErrorDiagnosticsShape(artifact.diagnostics).map(
-            (reason) => `ERROR artifact ${reason}`,
-          ),
+          ...validateSvsErrorDiagnosticsShape(artifact.diagnostics, {
+            diagnosticsSchema: schemaContract.diagnosticsSchema,
+          }).map((reason) => `ERROR artifact ${reason}`),
         );
       }
     } else {
@@ -1754,7 +2144,7 @@ export function validateSvsFinalArtifactShape(artifact) {
       }
       let folded;
       try {
-        folded = foldC1229S5SvsGate(artifact?.report);
+        folded = foldSvsReport(artifact?.report, schemaContract);
       } catch (error) {
         reasons.push(`artifact report fold failed: ${error.message}`);
       }
@@ -1788,7 +2178,20 @@ function validateFingerprint(actual, expected, label, reasons) {
   if (actual?.sha256 !== expected.sha256) reasons.push(`${label}: SHA differs`);
 }
 
-function validateProvenance(provenance, reasons) {
+function validateProvenance(
+  provenance,
+  reasons,
+  buildSourceFiles = C12_29_S5_SVS_BUILD_SOURCE_FILES,
+  schemaContract = SVS_V5_SCHEMA_CONTRACT,
+) {
+  if (
+    schemaContract.requiresV5Evidence === true &&
+    (provenance?.ok !== true ||
+      !Array.isArray(provenance?.reasons) ||
+      provenance.reasons.length !== 0)
+  ) {
+    reasons.push("provenance assessment is not an exact green result");
+  }
   if (!/^[0-9a-f]{40}$/u.test(provenance?.gitHead ?? "")) {
     reasons.push("git HEAD provenance is absent");
   }
@@ -1805,9 +2208,9 @@ function validateProvenance(provenance, reasons) {
   const buildEntries = provenance?.buildSourceIdentity?.entries;
   if (
     !Array.isArray(buildEntries) ||
-    buildEntries.length !== C12_29_S5_SVS_BUILD_SOURCE_FILES.length ||
+    buildEntries.length !== buildSourceFiles.length ||
     buildEntries.some((entry, index) => {
-      const relative = C12_29_S5_SVS_BUILD_SOURCE_FILES[index];
+      const relative = buildSourceFiles[index];
       const file = String(entry?.file ?? "").replaceAll("\\", "/");
       const expectedMap = `../../${relative}`;
       return (
@@ -1866,7 +2269,36 @@ function validateProvenance(provenance, reasons) {
   );
 }
 
-function validateSceneContract(scene, renderer, reasons) {
+function derivedSvsFixedCameraHeightMeters() {
+  const expected = C12_29_S5_SVS_SCENE;
+  const usablePixels =
+    expected.viewport.width - 2 * expected.minimumMarginPixels;
+  return Math.max(
+    ...C12_29_S5_SVS_ROWS.map((row) => {
+      const [fixtureWest, fixtureSouth, fixtureEast, fixtureNorth] =
+        row.fixtureGeometry.bbox;
+      const northSouthMeters =
+        (fixtureNorth - fixtureSouth + 2 * expected.cameraGuardDegrees) *
+        111_320;
+      const eastWestMeters =
+        (fixtureEast - fixtureWest + 2 * expected.cameraGuardDegrees) *
+        111_320 *
+        Math.cos((row.sourceCenter[1] * Math.PI) / 180);
+      return (
+        (Math.max(northSouthMeters, eastWestMeters) *
+          expected.viewport.height) /
+        (2 * usablePixels * Math.tan(expected.verticalFovRadians * 0.5))
+      );
+    }),
+  );
+}
+
+function validateSceneContract(
+  scene,
+  renderer,
+  reasons,
+  schemaContract = SVS_V5_SCHEMA_CONTRACT,
+) {
   const expected = C12_29_S5_SVS_SCENE;
   if (
     scene?.renderer !== renderer ||
@@ -1904,6 +2336,20 @@ function validateSceneContract(scene, renderer, reasons) {
     !(scene.verticalFovRadians < Math.PI)
   ) {
     reasons.push(`${renderer}: derived fixed camera is invalid`);
+  }
+  if (
+    schemaContract.requiresV5Evidence === true &&
+    (expected.cameraHeightMeters !== derivedSvsFixedCameraHeightMeters() ||
+      expected.pixelGroundFootprintKm !==
+        (2 *
+          expected.cameraHeightMeters *
+          Math.tan(expected.verticalFovRadians * 0.5)) /
+          expected.viewport.height /
+          1000 ||
+      scene?.cameraHeightMeters !== expected.cameraHeightMeters ||
+      scene?.verticalFovRadians !== expected.verticalFovRadians)
+  ) {
+    reasons.push(`${renderer}: exact production camera derivation differs`);
   }
 }
 
@@ -2054,7 +2500,12 @@ export function validateSvsEphemerisLineage(
   );
 }
 
-function validateIcrf(ephemeris, renderer, reasons) {
+function validateIcrf(
+  ephemeris,
+  renderer,
+  reasons,
+  schemaContract = SVS_V5_SCHEMA_CONTRACT,
+) {
   if (
     ephemeris?.preloadComplete !== true ||
     ephemeris?.matrixMethod !== "Transforms.computeIcrfToFixedMatrix" ||
@@ -2077,28 +2528,80 @@ function validateIcrf(ephemeris, renderer, reasons) {
   }
   const xys = ephemeris?.xysFiles;
   const xysRoutes = Array.isArray(xys) ? xys.map((entry) => entry?.route) : [];
+  const xysFingerprintsByRoute = new Map();
+  let repeatedRoutesAreExact = true;
+  if (Array.isArray(xys)) {
+    for (const entry of xys) {
+      const fingerprint = canonicalJsonIdentity({
+        status: entry?.status,
+        byteLength: entry?.byteLength,
+        sha256: entry?.sha256,
+        localStart: entry?.localStart,
+        localEnd: entry?.localEnd,
+      });
+      const prior = xysFingerprintsByRoute.get(entry?.route);
+      if (prior !== undefined && prior !== fingerprint) {
+        repeatedRoutesAreExact = false;
+      } else if (prior === undefined) {
+        xysFingerprintsByRoute.set(entry?.route, fingerprint);
+      }
+    }
+  }
   if (
     !Array.isArray(xys) ||
     xys.length === 0 ||
-    new Set(xysRoutes).size !== xysRoutes.length ||
+    (schemaContract.requiresV5Evidence !== true &&
+      new Set(xysRoutes).size !== xysRoutes.length) ||
     JSON.stringify(xysRoutes) !== JSON.stringify([...xysRoutes].sort()) ||
-    xys.some(
-      (entry) =>
+    (schemaContract.requiresV5Evidence === true &&
+      repeatedRoutesAreExact !== true) ||
+    xys.some((entry) => {
+      const localIsExact = (local) =>
+        local?.exists === true &&
+        local.byteLength === entry?.byteLength &&
+        local.sha256 === entry?.sha256;
+      const v5KeysAreExact =
+        schemaContract.requiresV5Evidence !== true ||
+        (exactObjectKeys(entry, [
+          "route",
+          "status",
+          "byteLength",
+          "sha256",
+          "localStart",
+          "localEnd",
+        ]) &&
+          exactObjectKeys(entry?.localStart, [
+            "file",
+            "exists",
+            "byteLength",
+            "sha256",
+          ]) &&
+          exactObjectKeys(entry?.localEnd, [
+            "file",
+            "exists",
+            "byteLength",
+            "sha256",
+          ]) &&
+          String(entry.localStart.file)
+            .replaceAll("\\", "/")
+            .endsWith(entry.route) &&
+          entry.localStart.file === entry.localEnd.file);
+      return (
         !/^\/Build\/CesiumUnminified\/Assets\/IAU2006_XYS\/IAU2006_XYS_\d+\.json$/u.test(
           entry?.route ?? "",
         ) ||
         entry?.status !== 200 ||
         !(entry?.byteLength > 0) ||
         !SHA256.test(entry?.sha256 ?? "") ||
-        entry?.localStart?.exists !== true ||
-        entry.localStart.byteLength !== entry.byteLength ||
-        entry.localStart.sha256 !== entry.sha256 ||
-        entry?.localEnd?.exists !== true ||
-        entry.localEnd.byteLength !== entry.byteLength ||
-        entry.localEnd.sha256 !== entry.sha256,
-    )
+        !localIsExact(entry?.localStart) ||
+        !localIsExact(entry?.localEnd) ||
+        !v5KeysAreExact
+      );
+    })
   ) {
-    reasons.push(`${renderer}: IAU2006 XYS response fingerprints are absent`);
+    reasons.push(
+      `${renderer}: IAU2006 XYS response fingerprints are absent, malformed, or inconsistent`,
+    );
   }
 }
 
@@ -2195,7 +2698,15 @@ function validateRuntimeFixture(fixture, renderer, reasons) {
   }
 }
 
-function validateImage(image, expectedLabel, runId, renderer, reasons) {
+function validateImage(
+  image,
+  expectedLabel,
+  runId,
+  renderer,
+  reasons,
+  schemaContract = SVS_V5_SCHEMA_CONTRACT,
+) {
+  const expectedFile = `${C12_29_S5_SVS_ARTIFACT_PREFIX}.${runId}.${image?.imageId}.${renderer}.${expectedLabel}.png`;
   if (
     !isUuidV4(image?.imageId) ||
     image?.label !== expectedLabel ||
@@ -2209,14 +2720,23 @@ function validateImage(image, expectedLabel, runId, renderer, reasons) {
     image?.pngSignatureValid !== true ||
     image?.decoded !== true ||
     typeof image?.file !== "string" ||
-    !image.file.includes(runId)
+    (schemaContract.requiresV5Evidence === true
+      ? image.file !== expectedFile
+      : !image.file.includes(runId))
   ) {
     reasons.push(`${renderer}/${expectedLabel}: capture identity is invalid`);
   }
 }
 
-function validateMetricImageBindings(owner, images, renderer, label, reasons) {
-  for (const channel of ["off", "on"]) {
+function validateMetricImageBindings(
+  owner,
+  images,
+  renderer,
+  label,
+  reasons,
+  schemaContract = SVS_V5_SCHEMA_CONTRACT,
+) {
+  for (const channel of schemaContract.metricChannels) {
     const binding = owner?.metricImageBindings?.[channel];
     const expectedLabel = `${label}-${channel}`;
     const captureProof = owner?.captureTerrainProofs?.find(
@@ -2244,10 +2764,123 @@ function validateMetricImageBindings(owner, images, renderer, label, reasons) {
   }
 }
 
-function validateLattice(row, expected, renderer, reasons) {
+export const C12_29_S5_SVS_IMAGE_VERIFIER_METHOD =
+  "node-sharp-immutable-png-rgba+independent-wgs84-row-major-projection+raw-code-classifier-v1";
+
+function validateSvsImageDerivedPrimitives(
+  owner,
+  expectedRow,
+  images,
+  renderer,
+  label,
+  measurementKind,
+  reasons,
+) {
+  const proof = owner?.imageDerivedPrimitives;
+  const projection = proof?.projection;
+  const raw = proof?.rawClassifier;
+  const channels = ["white", "black", "off", "on"];
+  const expectedProjection = deriveSvsWgs84ProjectedLattice(expectedRow);
+  const expectedRaw = {
+    terrainCellIds: owner?.lattice?.terrainCellIds,
+    classifiedCellIds: owner?.lattice?.classifiedCellIds,
+    offBrightTerrainCellIds: owner?.mask?.offBrightTerrainCellIds,
+    oneCodeBoundaryCellIds: owner?.mask?.oneCodeBoundaryCellIds,
+    terrainPixelCount: owner?.mask?.terrainPixelCount,
+    classifiedCellCount: owner?.mask?.classifiedCellCount,
+    strictlyClassifiedCellCount: owner?.mask?.strictlyClassifiedCellCount,
+    offBrightTerrainPixelCount: owner?.mask?.offBrightTerrainPixelCount,
+    oneCodeBoundaryCount: owner?.mask?.oneCodeBoundaryCount,
+    allClassifiedMeetOffMinimum: owner?.mask?.allClassifiedMeetOffMinimum,
+    allClassifiedMeetOnOffRatio: owner?.mask?.allClassifiedMeetOnOffRatio,
+    classificationAppliedOnlyInsideTerrainMask:
+      owner?.mask?.classificationAppliedOnlyInsideTerrainMask,
+  };
+  const expectedProofWithoutDigest = {
+    method: C12_29_S5_SVS_IMAGE_VERIFIER_METHOD,
+    measurementKind,
+    sources: proof?.sources,
+    projection: expectedProjection,
+    rawClassifier: expectedRaw,
+  };
+  const expectedDigest = createHash("sha256")
+    .update(canonicalJsonIdentity(expectedProofWithoutDigest))
+    .digest("hex");
+  const sourcesAreExact =
+    exactObjectKeys(proof?.sources, channels) &&
+    channels.every((channel) => {
+      const source = proof.sources[channel];
+      const binding = owner?.metricImageBindings?.[channel];
+      const expectedLabel = `${label}-${channel}`;
+      const image = images.find(
+        (candidate) =>
+          candidate?.imageId === binding?.imageId &&
+          candidate?.label === expectedLabel,
+      );
+      return (
+        exactObjectKeys(source, [
+          "imageId",
+          "sha256",
+          "byteLength",
+          "width",
+          "height",
+        ]) &&
+        source.imageId === image?.imageId &&
+        source.sha256 === image?.sha256 &&
+        source.byteLength === image?.byteLength &&
+        source.width === image?.width &&
+        source.height === image?.height
+      );
+    });
+  if (
+    !exactObjectKeys(proof, [
+      "method",
+      "measurementKind",
+      "sources",
+      "projection",
+      "rawClassifier",
+      "verificationSha256",
+    ]) ||
+    proof.method !== C12_29_S5_SVS_IMAGE_VERIFIER_METHOD ||
+    proof.measurementKind !== measurementKind ||
+    !sourcesAreExact ||
+    !exactObjectKeys(projection, [
+      "validProjectedCellIds",
+      "projectedPixelIdByValidCell",
+      "cellLonLat",
+      "duplicateProjectedCellCount",
+    ]) ||
+    !sameJson(projection, expectedProjection) ||
+    !exactObjectKeys(raw, Object.keys(expectedRaw)) ||
+    !sameJson(raw, expectedRaw) ||
+    proof.verificationSha256 !== expectedDigest
+  ) {
+    reasons.push(
+      `${renderer}/${label}: decoded immutable PNG verifier primitives differ`,
+    );
+  }
+}
+
+function validateLattice(
+  row,
+  expected,
+  renderer,
+  reasons,
+  schemaContract = SVS_V5_SCHEMA_CONTRACT,
+) {
   const lattice = row?.lattice;
   const cells = C12_29_S5_SVS_SCENE.latticeSide ** 2;
   const geometry = validateFixtureGeometry(row, expected, renderer, reasons);
+  let independentlyProjected;
+  if (schemaContract.requiresV5Evidence) {
+    try {
+      independentlyProjected = deriveSvsWgs84ProjectedLattice(expected);
+    } catch {
+      reasons.push(
+        `${renderer}/${row?.role}: independent WGS84 projection failed`,
+      );
+    }
+  }
   if (
     lattice?.side !== C12_29_S5_SVS_SCENE.latticeSide ||
     lattice?.candidateCellCount !== cells ||
@@ -2284,6 +2917,7 @@ function validateLattice(row, expected, renderer, reasons) {
   const qBoundary = lattice?.qBoundaryBandCellIds ?? [];
   const validSet = new Set(valid);
   const terrainSet = new Set(terrain);
+  const projectedPixels = lattice?.projectedPixelIdByValidCell;
   if (
     lattice?.validProjectedCellIds?.length !==
       lattice?.validProjectedCellCount ||
@@ -2292,6 +2926,40 @@ function validateLattice(row, expected, renderer, reasons) {
     lattice?.classifiedCellIds?.length !== row?.mask?.classifiedCellCount
   ) {
     reasons.push(`${renderer}/${row?.role}: lattice arrays/counts disagree`);
+  }
+  if (
+    schemaContract.requiresV5Evidence &&
+    (!exactArrayData(projectedPixels, valid.length) ||
+      projectedPixels.length !== valid.length ||
+      projectedPixels.some(
+        (id) =>
+          !Number.isInteger(id) ||
+          id < 0 ||
+          id >=
+            C12_29_S5_SVS_SCENE.viewport.width *
+              C12_29_S5_SVS_SCENE.viewport.height,
+      ) ||
+      new Set(projectedPixels).size !== projectedPixels.length)
+  ) {
+    reasons.push(
+      `${renderer}/${row?.role}: projected pixel binding is not exact`,
+    );
+  }
+  if (
+    schemaContract.requiresV5Evidence &&
+    independentlyProjected &&
+    (!sameJson(valid, independentlyProjected.validProjectedCellIds) ||
+      !sameJson(
+        projectedPixels,
+        independentlyProjected.projectedPixelIdByValidCell,
+      ) ||
+      !sameJson(lattice?.cellLonLat, independentlyProjected.cellLonLat) ||
+      lattice?.duplicateProjectedCellCount !==
+        independentlyProjected.duplicateProjectedCellCount)
+  ) {
+    reasons.push(
+      `${renderer}/${row?.role}: projected lattice is not independently derived from WGS84/camera state`,
+    );
   }
   if (
     valid.some((id) => id >= cells) ||
@@ -2381,7 +3049,14 @@ function validateLattice(row, expected, renderer, reasons) {
       lattice?.pixelGroundFootprintKm,
       expectedPixelGroundFootprintKm,
       1e-9,
-    )
+    ) ||
+    (schemaContract.requiresV5Evidence &&
+      (row?.cameraFrame?.heightMeters !==
+        C12_29_S5_SVS_SCENE.cameraHeightMeters ||
+        row?.cameraFrame?.verticalFovRadians !==
+          C12_29_S5_SVS_SCENE.verticalFovRadians ||
+        lattice?.pixelGroundFootprintKm !==
+          C12_29_S5_SVS_SCENE.pixelGroundFootprintKm))
   ) {
     reasons.push(
       `${renderer}/${row?.role}: lattice/pixel quantizers are not derived`,
@@ -2806,7 +3481,116 @@ function validTerrainContentRecords(records, expectedTileIds) {
   return true;
 }
 
-function validateTerrainTuple(tuple, renderer, label, structural) {
+function validateSvsDrawWitness(tuple, renderer, label, structural) {
+  const witness = tuple?.drawWitness;
+  const commonValid =
+    exactObjectKeys(witness, [
+      "renderer",
+      "frameNumber",
+      "commandCount",
+      "ownerTileIds",
+      "webgl",
+      "webgpu",
+    ]) &&
+    witness.renderer === renderer &&
+    witness.frameNumber === tuple?.captureFrameNumber &&
+    Number.isInteger(witness.commandCount) &&
+    witness.commandCount >= 1 &&
+    witness.commandCount === tuple?.preparedCommandCount &&
+    exactSortedUniqueTileIds(witness.ownerTileIds) &&
+    sameMembers(witness.ownerTileIds, tuple?.preparedSelectedTileIds);
+  const backendValid =
+    renderer === "webgpu"
+      ? witness?.webgl === null &&
+        exactObjectKeys(witness?.webgpu, [
+          "allCommandsAreWebGpu",
+          "allPipelinesPresent",
+          "allIndexCountsPositive",
+          "allBindGroupCountsExact",
+          "allDynamicOffsetCountsExact",
+        ]) &&
+        Object.values(witness.webgpu).every((value) => value === true)
+      : witness?.webgpu === null &&
+        exactObjectKeys(witness?.webgl, ["allCommandsAreWebGl"]) &&
+        witness.webgl.allCommandsAreWebGl === true;
+  if (!commonValid || !backendValid) {
+    structural.push(`${renderer}/${label}: current-frame draw witness differs`);
+  }
+}
+
+function validateSvsTupleStateObservation(tuple, renderer, label, structural) {
+  const observed = tuple?.captureStateObservation;
+  const state = observed?.eclipseState;
+  const shadow = observed?.eclipseGlobeShadow;
+  if (
+    !exactObjectKeys(observed, [
+      "frameNumber",
+      "baseColor",
+      "enableEclipse",
+      "enableEclipseGlobeShadow",
+      "eclipseAutoExposure",
+      "enableEclipseHorizonTwilight",
+      "atmosphericConditionsIdentity",
+      "eclipseState",
+      "eclipseSceneLightFactor",
+      "eclipseGlobeShadowPrepared",
+      "eclipseGlobeShadow",
+      "mainViewShadowMatches",
+    ]) ||
+    observed.frameNumber !== tuple?.captureFrameNumber ||
+    !Array.isArray(observed.baseColor) ||
+    observed.baseColor.length !== 4 ||
+    observed.baseColor.some((value) => !finite(value)) ||
+    typeof observed.enableEclipse !== "boolean" ||
+    typeof observed.enableEclipseGlobeShadow !== "boolean" ||
+    observed.eclipseAutoExposure !== true ||
+    observed.enableEclipseHorizonTwilight !== false ||
+    observed.atmosphericConditionsIdentity !== true ||
+    observed.eclipseGlobeShadowPrepared !== true ||
+    observed.mainViewShadowMatches !== true ||
+    !exactObjectKeys(state, [
+      "enabled",
+      "autoExposure",
+      "horizonTwilightEnabled",
+      "valid",
+      "sunVisibleFraction",
+      "earthOcclusionFraction",
+      "moonObscuration",
+      "sunAngularRadius",
+      "earthAngularRadius",
+      "moonAngularRadius",
+      "earthSeparation",
+      "moonSeparation",
+      "eclipseMagnitude",
+    ]) ||
+    state.autoExposure !== true ||
+    state.horizonTwilightEnabled !== false ||
+    !exactObjectKeys(shadow, [
+      "active",
+      "revision",
+      "sceneLightDimmed",
+      "gate",
+      "inverseSceneLightFactor",
+    ]) ||
+    typeof shadow.active !== "boolean" ||
+    !Number.isInteger(shadow.revision) ||
+    shadow.revision < 0 ||
+    typeof shadow.sceneLightDimmed !== "boolean" ||
+    !finite(shadow.gate) ||
+    !finite(shadow.inverseSceneLightFactor) ||
+    !finite(observed.eclipseSceneLightFactor)
+  ) {
+    structural.push(`${renderer}/${label}: observed lighting state differs`);
+  }
+}
+
+function validateTerrainTuple(
+  tuple,
+  renderer,
+  label,
+  structural,
+  schemaContract = SVS_V5_SCHEMA_CONTRACT,
+) {
   if (
     tuple?.prepared !== true ||
     tuple?.selectionRoute !==
@@ -2899,6 +3683,10 @@ function validateTerrainTuple(tuple, renderer, label, structural) {
       `${renderer}/${label}: terrain selection/content identity differs`,
     );
   }
+  if (schemaContract.requiresV5Evidence) {
+    validateSvsDrawWitness(tuple, renderer, label, structural);
+    validateSvsTupleStateObservation(tuple, renderer, label, structural);
+  }
 }
 
 function validateTransitionReadiness(
@@ -2909,6 +3697,7 @@ function validateTransitionReadiness(
   expectedIso,
   expectedMaxFrames,
   structural,
+  schemaContract = SVS_V5_SCHEMA_CONTRACT,
 ) {
   const observations = readiness?.observations;
   const required = C12_29_S5_SVS_SCENE.readinessConsecutiveStableFrames;
@@ -2936,6 +3725,7 @@ function validateTransitionReadiness(
       renderer,
       `${label}/readiness`,
       structural,
+      schemaContract,
     );
   }
   const tuples = observations.map((observation) => observation?.tuple);
@@ -2981,6 +3771,204 @@ function validateTransitionReadiness(
   return finalTuple;
 }
 
+function validateSvsCaptureStateProof(
+  proof,
+  captureLabel,
+  measurementKind,
+  renderer,
+  label,
+  structural,
+) {
+  const requested = C12_29_S5_SVS_CAPTURE_STATES[captureLabel];
+  const observed = proof?.observed;
+  const state = observed?.eclipseState;
+  const shadow = observed?.eclipseGlobeShadow;
+  const neutral = captureLabel !== "on";
+  const eventOn = captureLabel === "on" && measurementKind === "event";
+  const controlOn = captureLabel === "on" && measurementKind === "control";
+  const physicsKeys = [
+    "sunVisibleFraction",
+    "earthOcclusionFraction",
+    "moonObscuration",
+    "sunAngularRadius",
+    "earthAngularRadius",
+    "moonAngularRadius",
+    "earthSeparation",
+    "moonSeparation",
+    "eclipseMagnitude",
+  ];
+  const fractionsArePhysical = [
+    state?.sunVisibleFraction,
+    state?.earthOcclusionFraction,
+    state?.moonObscuration,
+  ].every((value) => finite(value) && value >= 0 && value <= 1);
+  const radiiArePhysical = [
+    state?.sunAngularRadius,
+    state?.earthAngularRadius,
+    state?.moonAngularRadius,
+  ].every((value) => finite(value) && value > 0);
+  const separationsArePhysical = [
+    state?.earthSeparation,
+    state?.moonSeparation,
+  ].every((value) => finite(value) && value >= 0);
+  const visibleFractionIsDerived = close(
+    state?.sunVisibleFraction,
+    (1 - state?.earthOcclusionFraction) * (1 - state?.moonObscuration),
+    1e-12,
+  );
+  const noneclipsePhysicsIsExact =
+    measurementKind !== "control" ||
+    (state?.sunVisibleFraction === 1 &&
+      state?.earthOcclusionFraction === 0 &&
+      state?.moonObscuration === 0 &&
+      state?.eclipseMagnitude === 0 &&
+      state?.moonSeparation >=
+        state?.sunAngularRadius + state?.moonAngularRadius);
+  if (
+    !sameJson(proof?.requested, requested) ||
+    !sameJson(observed, proof?.tuple?.captureStateObservation) ||
+    !sameJson(proof?.backendDrawWitness, proof?.tuple?.drawWitness) ||
+    !sameJson(observed?.baseColor, requested?.baseColor) ||
+    observed?.enableEclipse !== requested?.enableEclipse ||
+    observed?.enableEclipseGlobeShadow !==
+      requested?.enableEclipseGlobeShadow ||
+    observed?.eclipseAutoExposure !== requested?.eclipseAutoExposure ||
+    observed?.enableEclipseHorizonTwilight !==
+      requested?.enableEclipseHorizonTwilight ||
+    state?.enabled !== requested?.enableEclipse ||
+    state?.autoExposure !== requested?.eclipseAutoExposure ||
+    state?.horizonTwilightEnabled !== requested?.enableEclipseHorizonTwilight ||
+    state?.valid !== true ||
+    physicsKeys.some((key) => !finite(state?.[key])) ||
+    !fractionsArePhysical ||
+    !radiiArePhysical ||
+    !separationsArePhysical ||
+    !(state?.eclipseMagnitude >= 0) ||
+    !visibleFractionIsDerived ||
+    !noneclipsePhysicsIsExact ||
+    (neutral &&
+      (observed?.eclipseSceneLightFactor !== 1 ||
+        shadow?.active !== false ||
+        shadow?.sceneLightDimmed !== false ||
+        shadow?.gate !== 0 ||
+        shadow?.inverseSceneLightFactor !== 1)) ||
+    (eventOn &&
+      (!(observed?.eclipseSceneLightFactor > 0) ||
+        !(observed.eclipseSceneLightFactor < 1) ||
+        shadow?.active !== true ||
+        shadow?.sceneLightDimmed !== true ||
+        shadow?.gate !== 2 ||
+        !close(
+          shadow?.inverseSceneLightFactor,
+          1 / observed.eclipseSceneLightFactor,
+          1e-5,
+        ))) ||
+    (controlOn &&
+      (observed?.eclipseSceneLightFactor !== 1 ||
+        shadow?.active !== false ||
+        shadow?.sceneLightDimmed !== false ||
+        shadow?.gate !== 0 ||
+        shadow?.inverseSceneLightFactor !== 1))
+  ) {
+    structural.push(`${renderer}/${label}: ${captureLabel} shot state differs`);
+  }
+}
+
+function validateVariantReadiness(
+  owner,
+  renderer,
+  label,
+  expectedRole,
+  expectedIso,
+  measurementKind,
+  structural,
+  schemaContract,
+) {
+  if (!schemaContract.requiresV5Evidence) return;
+  const variant = owner?.variantReadiness;
+  const expectedLegs = [
+    ["neutral", "off"],
+    ["enabled", "on"],
+    ["restored-neutral", "off"],
+  ];
+  const legs = variant?.legs;
+  if (
+    variant?.method !==
+      "neutral-disabled+enabled-hot+restored-neutral-three-frame-main-globe-readiness" ||
+    variant?.transitionRole !== expectedRole ||
+    variant?.transitionIso !== expectedIso ||
+    !Array.isArray(legs) ||
+    legs.length !== expectedLegs.length
+  ) {
+    structural.push(`${renderer}/${label}: variant readiness differs`);
+    return;
+  }
+  let priorFrame = -1;
+  let finalReadiness;
+  expectedLegs.forEach(([role, captureLabel], index) => {
+    const leg = legs[index];
+    const readinessTuple = validateTransitionReadiness(
+      leg?.readiness,
+      renderer,
+      `${label}/${role}`,
+      expectedRole,
+      expectedIso,
+      C12_29_S5_SVS_SCENE.transitionReadinessMaxFrames,
+      structural,
+      schemaContract,
+    );
+    if (
+      leg?.role !== role ||
+      leg?.captureLabel !== captureLabel ||
+      !readinessTuple ||
+      leg.readiness.lastFrameNumber <= priorFrame ||
+      !sameJson(leg?.requested, C12_29_S5_SVS_CAPTURE_STATES[captureLabel]) ||
+      !sameJson(leg?.observed, readinessTuple?.captureStateObservation) ||
+      !sameJson(leg?.backendDrawWitness, readinessTuple?.drawWitness)
+    ) {
+      structural.push(`${renderer}/${label}: ${role} readiness leg differs`);
+    }
+    for (const observation of leg?.readiness?.observations ?? []) {
+      validateSvsCaptureStateProof(
+        {
+          requested: C12_29_S5_SVS_CAPTURE_STATES[captureLabel],
+          observed: observation?.tuple?.captureStateObservation,
+          backendDrawWitness: observation?.tuple?.drawWitness,
+          tuple: observation?.tuple,
+        },
+        captureLabel,
+        measurementKind,
+        renderer,
+        `${label}/${role}/readiness-observation`,
+        structural,
+      );
+    }
+    validateSvsCaptureStateProof(
+      {
+        requested: leg?.requested,
+        observed: leg?.observed,
+        backendDrawWitness: leg?.backendDrawWitness,
+        tuple: readinessTuple,
+      },
+      captureLabel,
+      measurementKind,
+      renderer,
+      `${label}/${role}`,
+      structural,
+    );
+    priorFrame = leg?.readiness?.lastFrameNumber ?? priorFrame;
+    finalReadiness = leg?.readiness;
+  });
+  if (
+    variant?.productCaptureStartsAfterFrame !== priorFrame ||
+    !sameJson(owner?.transitionReadiness, finalReadiness)
+  ) {
+    structural.push(
+      `${renderer}/${label}: product capture did not follow restored-neutral readiness`,
+    );
+  }
+}
+
 function validateCaptureTerrainProofs(
   owner,
   renderer,
@@ -2990,6 +3978,8 @@ function validateCaptureTerrainProofs(
   expectedLabels,
   readinessTuple,
   structural,
+  measurementKind = "event",
+  schemaContract = SVS_V5_SCHEMA_CONTRACT,
 ) {
   const proofs = owner?.captureTerrainProofs;
   if (
@@ -3009,7 +3999,18 @@ function validateCaptureTerrainProofs(
       renderer,
       `${label}/${proof?.label ?? "capture"}`,
       structural,
+      schemaContract,
     );
+    if (schemaContract.requiresV5Evidence) {
+      validateSvsCaptureStateProof(
+        proof,
+        proof?.label,
+        measurementKind,
+        renderer,
+        label,
+        structural,
+      );
+    }
   }
   const tuples = proofs.map((proof) => proof?.tuple);
   if (
@@ -3044,9 +4045,224 @@ function validateCaptureTerrainProofs(
       `${renderer}/${label}: inter-capture terrain/loading identity drifted`,
     );
   }
+  if (schemaContract.requiresV5Evidence) {
+    const physics = proofs.map((proof) => {
+      const state = proof?.observed?.eclipseState;
+      return {
+        valid: state?.valid,
+        sunVisibleFraction: state?.sunVisibleFraction,
+        earthOcclusionFraction: state?.earthOcclusionFraction,
+        moonObscuration: state?.moonObscuration,
+        sunAngularRadius: state?.sunAngularRadius,
+        earthAngularRadius: state?.earthAngularRadius,
+        moonAngularRadius: state?.moonAngularRadius,
+        earthSeparation: state?.earthSeparation,
+        moonSeparation: state?.moonSeparation,
+        eclipseMagnitude: state?.eclipseMagnitude,
+      };
+    });
+    if (physics.some((entry) => !sameJson(entry, physics[0]))) {
+      structural.push(
+        `${renderer}/${label}: shot toggles changed eclipse physics`,
+      );
+    }
+  }
 }
 
-function validateRow(row, expected, renderer, failures, structural) {
+function validateSvsCameraBasis(cameraFrame, renderer, label, structural) {
+  const proof = cameraFrame?.basisProof;
+  const vector = (value) =>
+    Array.isArray(value) && value.length === 3 && value.every(finite)
+      ? value
+      : undefined;
+  const position = vector(proof?.positionWC);
+  const center = vector(proof?.surfaceCenterWC);
+  const direction = vector(proof?.directionWC);
+  const up = vector(proof?.upWC);
+  const right = vector(proof?.rightWC);
+  if (!position || !center || !direction || !up || !right) {
+    structural.push(`${renderer}/${label}: camera basis vectors are invalid`);
+    return;
+  }
+  const dot = (left, rightValue) =>
+    left[0] * rightValue[0] + left[1] * rightValue[1] + left[2] * rightValue[2];
+  const magnitude = (value) => Math.hypot(...value);
+  const cross = (left, rightValue) => [
+    left[1] * rightValue[2] - left[2] * rightValue[1],
+    left[2] * rightValue[0] - left[0] * rightValue[2],
+    left[0] * rightValue[1] - left[1] * rightValue[0],
+  ];
+  const normalize = (value) => {
+    const length = magnitude(value);
+    return value.map((component) => component / length);
+  };
+  const lonLat = cameraFrame?.centerLonLat;
+  const height = cameraFrame?.heightMeters;
+  const longitude = Array.isArray(lonLat) ? (lonLat[0] * Math.PI) / 180 : NaN;
+  const latitude = Array.isArray(lonLat) ? (lonLat[1] * Math.PI) / 180 : NaN;
+  const semimajor = 6_378_137;
+  const semiminor = 6_356_752.314245179;
+  const eccentricitySquared =
+    1 - (semiminor * semiminor) / (semimajor * semimajor);
+  const sinLatitude = Math.sin(latitude);
+  const cosLatitude = Math.cos(latitude);
+  const sinLongitude = Math.sin(longitude);
+  const cosLongitude = Math.cos(longitude);
+  const primeVertical =
+    semimajor / Math.sqrt(1 - eccentricitySquared * sinLatitude * sinLatitude);
+  const expectedCartesian = (altitude) => [
+    (primeVertical + altitude) * cosLatitude * cosLongitude,
+    (primeVertical + altitude) * cosLatitude * sinLongitude,
+    (primeVertical * (1 - eccentricitySquared) + altitude) * sinLatitude,
+  ];
+  const expectedCenter = expectedCartesian(0);
+  const expectedPosition = expectedCartesian(height);
+  const expectedDirection = normalize(
+    expectedCenter.map((value, index) => value - expectedPosition[index]),
+  );
+  const geodeticNormal = [
+    cosLatitude * cosLongitude,
+    cosLatitude * sinLongitude,
+    sinLatitude,
+  ];
+  const expectedRight = normalize(cross([0, 0, 1], geodeticNormal));
+  const expectedUp = normalize(cross(expectedRight, expectedDirection));
+  const vectorClose = (left, rightValue, epsilon) =>
+    left.every((value, index) => close(value, rightValue[index], epsilon));
+  const targetRaw = center.map((value, index) => value - position[index]);
+  const targetMagnitude = magnitude(targetRaw);
+  const target = targetRaw.map((value) => value / targetMagnitude);
+  const derived = {
+    directionMagnitude: magnitude(direction),
+    upMagnitude: magnitude(up),
+    rightMagnitude: magnitude(right),
+    directionUpDot: dot(direction, up),
+    directionRightDot: dot(direction, right),
+    upRightDot: dot(up, right),
+    handedness: dot(direction, cross(up, right)),
+    targetResidual: Math.abs(1 - dot(target, direction)),
+  };
+  if (
+    !isDegreeLonLat(lonLat) ||
+    !finite(height) ||
+    !(height > 0) ||
+    !(targetMagnitude > 0) ||
+    !vectorClose(center, expectedCenter, 1e-5) ||
+    !vectorClose(position, expectedPosition, 1e-5) ||
+    !vectorClose(direction, expectedDirection, 1e-12) ||
+    !vectorClose(up, expectedUp, 1e-12) ||
+    !vectorClose(right, expectedRight, 1e-12) ||
+    proof?.capturedAfterSceneRender !== true ||
+    Object.entries(derived).some(
+      ([key, value]) =>
+        !finite(proof?.[key]) || !close(proof[key], value, 1e-12),
+    ) ||
+    Math.abs(derived.directionMagnitude - 1) > 1e-12 ||
+    Math.abs(derived.upMagnitude - 1) > 1e-12 ||
+    Math.abs(derived.rightMagnitude - 1) > 1e-12 ||
+    Math.abs(derived.directionUpDot) > 1e-12 ||
+    Math.abs(derived.directionRightDot) > 1e-12 ||
+    Math.abs(derived.upRightDot) > 1e-12 ||
+    Math.abs(derived.handedness - 1) > 1e-12 ||
+    derived.targetResidual > 1e-9 ||
+    !close(cameraFrame?.nadirAlignment, derived.targetResidual, 1e-12)
+  ) {
+    structural.push(`${renderer}/${label}: exact WC camera basis differs`);
+  }
+}
+
+function expectedSvsCameraIdentity(cameraFrame) {
+  const proof = cameraFrame?.basisProof;
+  if (
+    !Array.isArray(proof?.positionWC) ||
+    !Array.isArray(proof?.directionWC) ||
+    !Array.isArray(proof?.upWC) ||
+    !Array.isArray(proof?.rightWC) ||
+    !finite(cameraFrame?.verticalFovRadians)
+  ) {
+    return undefined;
+  }
+  return JSON.stringify({
+    position: proof.positionWC,
+    direction: proof.directionWC,
+    up: proof.upWC,
+    right: proof.rightWC,
+    fov: cameraFrame.verticalFovRadians,
+  });
+}
+
+function validateSvsOwnerCameraIdentity(owner, renderer, label, structural) {
+  const expectedIdentity = expectedSvsCameraIdentity(owner?.cameraFrame);
+  const readiness = [
+    owner?.transitionReadiness,
+    ...(owner?.variantReadiness?.legs ?? []).map((leg) => leg?.readiness),
+  ];
+  const tuples = [
+    owner?.terrainTuple,
+    ...(owner?.captureTerrainProofs ?? []).map((proof) => proof?.tuple),
+    ...readiness.flatMap((entry) =>
+      (entry?.observations ?? []).map((observation) => observation?.tuple),
+    ),
+  ];
+  if (
+    typeof expectedIdentity !== "string" ||
+    readiness.some((entry) => entry?.cameraIdentity !== expectedIdentity) ||
+    tuples.some(
+      (tuple) =>
+        tuple?.cameraIdentity !== expectedIdentity ||
+        tuple?.expectedCameraIdentity !== expectedIdentity,
+    )
+  ) {
+    structural.push(
+      `${renderer}/${label}: camera identity is not derived from retained camera state`,
+    );
+  }
+}
+
+function validateSvsEventRawClassifier(row, renderer, label, structural) {
+  const lattice = row?.lattice;
+  const mask = row?.mask;
+  const valid = lattice?.validProjectedCellIds ?? [];
+  const terrain = lattice?.terrainCellIds ?? [];
+  const classified = lattice?.classifiedCellIds ?? [];
+  const offBright = mask?.offBrightTerrainCellIds;
+  const oneCode = mask?.oneCodeBoundaryCellIds;
+  const validSet = new Set(valid);
+  const terrainSet = new Set(terrain);
+  const offBrightSet = new Set(offBright ?? []);
+  const classifiedSet = new Set(classified);
+  if (
+    !exactSortedUniqueIntegers(offBright) ||
+    !exactSortedUniqueIntegers(oneCode) ||
+    mask?.terrainPixelCount !== terrain.length ||
+    mask?.classifiedCellCount !== classified.length ||
+    mask?.strictlyClassifiedCellCount !== classified.length ||
+    mask?.offBrightTerrainPixelCount !== offBright?.length ||
+    mask?.oneCodeBoundaryCount !== oneCode?.length ||
+    terrain.length < C12_29_S5_SVS_SCENE.minimumUniqueValidProjectedCells ||
+    offBright.length < C12_29_S5_SVS_SCENE.minimumUniqueValidProjectedCells ||
+    !isSubsetOf(terrain, validSet) ||
+    !isSubsetOf(offBright, terrainSet) ||
+    !isSubsetOf(classified, terrainSet) ||
+    !isSubsetOf(classified, offBrightSet) ||
+    !isSubsetOf(oneCode, terrainSet) ||
+    oneCode.some((id) => classifiedSet.has(id)) ||
+    mask?.allClassifiedMeetOffMinimum !== true ||
+    mask?.allClassifiedMeetOnOffRatio !== true ||
+    mask?.classificationAppliedOnlyInsideTerrainMask !== true
+  ) {
+    structural.push(`${renderer}/${label}: raw classifier primitives differ`);
+  }
+}
+
+function validateRow(
+  row,
+  expected,
+  renderer,
+  failures,
+  structural,
+  schemaContract = SVS_V5_SCHEMA_CONTRACT,
+) {
   if (
     row?.phase !== expected.phase ||
     row?.role !== expected.role ||
@@ -3057,6 +4273,16 @@ function validateRow(row, expected, renderer, failures, structural) {
     !sameMembers(row?.sourceCenter, expected.sourceCenter)
   ) {
     structural.push(`${renderer}/${expected.role}: exact NASA row differs`);
+  }
+  if (schemaContract.requiresV5Evidence) {
+    validateSvsCameraBasis(
+      row?.cameraFrame,
+      renderer,
+      expected.role,
+      structural,
+    );
+    validateSvsOwnerCameraIdentity(row, renderer, expected.role, structural);
+    validateSvsEventRawClassifier(row, renderer, expected.role, structural);
   }
   if (
     row?.clock?.shouldAnimate !== false ||
@@ -3093,7 +4319,12 @@ function validateRow(row, expected, renderer, failures, structural) {
     row.cameraFrame.heightMeters <= 0 ||
     !finite(row?.cameraFrame?.verticalFovRadians) ||
     row.cameraFrame.verticalFovRadians <= 0 ||
-    !(row.cameraFrame.verticalFovRadians < Math.PI)
+    !(row.cameraFrame.verticalFovRadians < Math.PI) ||
+    (schemaContract.requiresV5Evidence &&
+      (row.cameraFrame.heightMeters !==
+        C12_29_S5_SVS_SCENE.cameraHeightMeters ||
+        row.cameraFrame.verticalFovRadians !==
+          C12_29_S5_SVS_SCENE.verticalFovRadians))
   ) {
     structural.push(
       `${renderer}/${expected.role}: camera framing proof differs`,
@@ -3125,7 +4356,23 @@ function validateRow(row, expected, renderer, failures, structural) {
       `${renderer}/${expected.role}: eclipse classification is empty or under-covered`,
     );
   }
-  validateTerrainTuple(row?.terrainTuple, renderer, expected.role, structural);
+  validateTerrainTuple(
+    row?.terrainTuple,
+    renderer,
+    expected.role,
+    structural,
+    schemaContract,
+  );
+  validateVariantReadiness(
+    row,
+    renderer,
+    expected.role,
+    expected.role,
+    expected.iso,
+    "event",
+    structural,
+    schemaContract,
+  );
   const readinessTuple = validateTransitionReadiness(
     row?.transitionReadiness,
     renderer,
@@ -3134,6 +4381,7 @@ function validateRow(row, expected, renderer, failures, structural) {
     expected.iso,
     C12_29_S5_SVS_SCENE.transitionReadinessMaxFrames,
     structural,
+    schemaContract,
   );
   validateCaptureTerrainProofs(
     row,
@@ -3144,8 +4392,10 @@ function validateRow(row, expected, renderer, failures, structural) {
     ["white", "black", "off", "on"],
     readinessTuple,
     structural,
+    "event",
+    schemaContract,
   );
-  validateLattice(row, expected, renderer, structural);
+  validateLattice(row, expected, renderer, structural, schemaContract);
   return validateBudget(row, renderer, failures, structural);
 }
 
@@ -3265,7 +4515,13 @@ function validateMotion(session, budgets, failures, structural) {
   }
 }
 
-function validateControl(control, renderer, cameraSource, structural) {
+function validateControl(
+  control,
+  renderer,
+  cameraSource,
+  structural,
+  schemaContract = SVS_V5_SCHEMA_CONTRACT,
+) {
   const before = C12_29_S5_SVS_ROWS.find(
     (row) => row.role === C12_29_S5_SVS_CONTROL.bracketBeforeRole,
   );
@@ -3308,11 +4564,48 @@ function validateControl(control, renderer, cameraSource, structural) {
     );
   }
 
+  if (schemaContract.requiresV5Evidence) {
+    validateSvsCameraBasis(
+      control?.cameraFrame,
+      renderer,
+      C12_29_S5_SVS_CONTROL.role,
+      structural,
+    );
+    validateSvsOwnerCameraIdentity(
+      control,
+      renderer,
+      C12_29_S5_SVS_CONTROL.role,
+      structural,
+    );
+    if (
+      !validateSvsEphemerisLineage(
+        control?.ephemeris,
+        control?.terrainTuple?.captureFrameNumber,
+        C12_29_S5_SVS_CONTROL.iso,
+      )
+    ) {
+      structural.push(
+        `${renderer}: noneclipse fused on-shot ephemeris lineage differs`,
+      );
+    }
+  }
+
   validateTerrainTuple(
     control?.terrainTuple,
     renderer,
     C12_29_S5_SVS_CONTROL.role,
     structural,
+    schemaContract,
+  );
+  validateVariantReadiness(
+    control,
+    renderer,
+    C12_29_S5_SVS_CONTROL.role,
+    C12_29_S5_SVS_CONTROL.role,
+    C12_29_S5_SVS_CONTROL.iso,
+    "control",
+    structural,
+    schemaContract,
   );
   const readinessTuple = validateTransitionReadiness(
     control?.transitionReadiness,
@@ -3322,6 +4615,7 @@ function validateControl(control, renderer, cameraSource, structural) {
     C12_29_S5_SVS_CONTROL.iso,
     C12_29_S5_SVS_SCENE.transitionReadinessMaxFrames,
     structural,
+    schemaContract,
   );
   validateCaptureTerrainProofs(
     control,
@@ -3332,6 +4626,8 @@ function validateControl(control, renderer, cameraSource, structural) {
     ["white", "black", "off", "on"],
     readinessTuple,
     structural,
+    "control",
+    schemaContract,
   );
   const tupleFields = [
     "selectedTileIds",
@@ -3385,6 +4681,7 @@ function validateControl(control, renderer, cameraSource, structural) {
   const nasa = lattice?.nasaInsideCellIds ?? [];
   const terrain = lattice?.terrainCellIds ?? [];
   const classified = lattice?.classifiedCellIds ?? [];
+  const projectedPixels = lattice?.projectedPixelIdByValidCell;
   const validSet = new Set(valid);
   const terrainSet = new Set(terrain);
   if (
@@ -3413,6 +4710,25 @@ function validateControl(control, renderer, cameraSource, structural) {
   ) {
     structural.push(
       `${renderer}: noneclipse projection/terrain primitives differ from the exact camera source`,
+    );
+  }
+  if (
+    schemaContract.requiresV5Evidence &&
+    (!exactArrayData(projectedPixels, valid.length) ||
+      projectedPixels.length !== valid.length ||
+      projectedPixels.some(
+        (id) =>
+          !Number.isInteger(id) ||
+          id < 0 ||
+          id >=
+            C12_29_S5_SVS_SCENE.viewport.width *
+              C12_29_S5_SVS_SCENE.viewport.height,
+      ) ||
+      new Set(projectedPixels).size !== projectedPixels.length ||
+      !sameJson(projectedPixels, sourceLattice?.projectedPixelIdByValidCell))
+  ) {
+    structural.push(
+      `${renderer}: noneclipse projected-pixel binding differs from camera source`,
     );
   }
 
@@ -3466,6 +4782,7 @@ function validateControl(control, renderer, cameraSource, structural) {
     terrain.length < C12_29_S5_SVS_SCENE.minimumUniqueValidProjectedCells ||
     !isSubsetOf(oneCode, terrainSet) ||
     !isSubsetOf(offBright, terrainSet) ||
+    oneCode?.some((id) => classified.includes(id)) ||
     mask?.allClassifiedMeetOffMinimum !== true ||
     mask?.allClassifiedMeetOnOffRatio !== true ||
     mask?.classificationAppliedOnlyInsideTerrainMask !== true ||
@@ -3477,9 +4794,16 @@ function validateControl(control, renderer, cameraSource, structural) {
   }
 }
 
-function validateSession(session, renderer, runId, failures, structural) {
+function validateSession(
+  session,
+  renderer,
+  runId,
+  failures,
+  structural,
+  schemaContract = SVS_V5_SCHEMA_CONTRACT,
+) {
   if (
-    session?.schema !== C12_29_S5_SVS_DIAGNOSTICS_SCHEMA ||
+    session?.schema !== schemaContract.diagnosticsSchema ||
     session?.renderer !== renderer ||
     session?.serialIndex !== C12_29_S5_SVS_RENDERERS.indexOf(renderer) ||
     session?.freshContext !== true ||
@@ -3503,15 +4827,29 @@ function validateSession(session, renderer, runId, failures, structural) {
     session?.errors?.page?.length !== 0 ||
     session?.errors?.console?.length !== 0 ||
     session?.errors?.gpu?.length !== 0 ||
-    session?.errors?.deviceLost !== false
+    session?.errors?.deviceLost !== false ||
+    (schemaContract.requiresV5Evidence &&
+      (renderer === "webgpu"
+        ? session?.errors?.gpuCompletion?.required !== true ||
+          session?.errors?.gpuCompletion?.method !==
+            "GPUQueue.onSubmittedWorkDone+two-event-turns" ||
+          session?.errors?.gpuCompletion?.queueSettled !== true ||
+          session?.errors?.gpuCompletion?.postSubmitTurns !== 2 ||
+          session?.errors?.gpuCompletion?.timeoutMs !==
+            C12_29_S5_SVS_SCENE.cleanupCloseTimeoutMs
+        : session?.errors?.gpuCompletion?.required !== false ||
+          session?.errors?.gpuCompletion?.method !== "not-applicable" ||
+          session?.errors?.gpuCompletion?.queueSettled !== null ||
+          session?.errors?.gpuCompletion?.postSubmitTurns !== 0 ||
+          session?.errors?.gpuCompletion?.timeoutMs !== null))
   ) {
     structural.push(`${renderer}: session/runtime error surface is invalid`);
   }
   if (!sameMembers(session?.phaseOrder, C12_29_S5_SVS_PHASES)) {
     structural.push(`${renderer}: A-H phase order/cardinality differs`);
   }
-  validateSceneContract(session?.scene, renderer, structural);
-  validateIcrf(session?.ephemeris, renderer, structural);
+  validateSceneContract(session?.scene, renderer, structural, schemaContract);
+  validateIcrf(session?.ephemeris, renderer, structural, schemaContract);
   validateRuntimeFixture(session?.fixtureProof, renderer, structural);
   validateTerrain(session?.terrain, renderer, structural);
   const providerReadinessTuple = validateTransitionReadiness(
@@ -3522,6 +4860,7 @@ function validateSession(session, renderer, runId, failures, structural) {
     C12_29_S5_SVS_ROWS[0].iso,
     C12_29_S5_SVS_SCENE.providerReadinessMaxFrames,
     structural,
+    schemaContract,
   );
   if (
     providerReadinessTuple?.sourceTerrainProviderIdentity !==
@@ -3534,6 +4873,20 @@ function validateSession(session, renderer, runId, failures, structural) {
   const rows = Array.isArray(session?.rows) ? session.rows : [];
   if (rows.length !== C12_29_S5_SVS_ROWS.length) {
     structural.push(`${renderer}: expected four NASA rows`);
+  }
+  if (schemaContract.requiresV5Evidence && rows[0]) {
+    validateSvsOwnerCameraIdentity(
+      {
+        cameraFrame: rows[0].cameraFrame,
+        transitionReadiness: session?.terrain?.providerReadiness,
+        captureTerrainProofs: [],
+        variantReadiness: { legs: [] },
+        terrainTuple: providerReadinessTuple,
+      },
+      renderer,
+      "terrain-provider",
+      structural,
+    );
   }
   const rowLineages = session?.ephemeris?.rowLineages;
   if (
@@ -3588,7 +4941,14 @@ function validateSession(session, renderer, runId, failures, structural) {
   const budgets = new Map();
   C12_29_S5_SVS_ROWS.forEach((expected, index) => {
     const row = rows[index];
-    const budget = validateRow(row, expected, renderer, failures, structural);
+    const budget = validateRow(
+      row,
+      expected,
+      renderer,
+      failures,
+      structural,
+      schemaContract,
+    );
     if (budget) budgets.set(expected.role, budget);
   });
   if (
@@ -3612,13 +4972,23 @@ function validateSession(session, renderer, runId, failures, structural) {
     renderer,
     rows.find((row) => row?.role === C12_29_S5_SVS_CONTROL.cameraSourceRole),
     structural,
+    schemaContract,
   );
   const images = Array.isArray(session?.images) ? session.images : [];
-  if (images.length !== C12_29_S5_SVS_CAPTURE_LABELS.length) {
-    structural.push(`${renderer}: expected ten captures`);
+  if (images.length !== schemaContract.captureLabels.length) {
+    structural.push(
+      `${renderer}: expected ${schemaContract.captureLabels.length} captures`,
+    );
   }
-  C12_29_S5_SVS_CAPTURE_LABELS.forEach((label, index) =>
-    validateImage(images[index], label, runId, renderer, structural),
+  schemaContract.captureLabels.forEach((label, index) =>
+    validateImage(
+      images[index],
+      label,
+      runId,
+      renderer,
+      structural,
+      schemaContract,
+    ),
   );
   C12_29_S5_SVS_ROWS.forEach((row, index) =>
     validateMetricImageBindings(
@@ -3627,14 +4997,41 @@ function validateSession(session, renderer, runId, failures, structural) {
       renderer,
       row.role,
       structural,
+      schemaContract,
     ),
   );
+  if (schemaContract.requiresV5Evidence) {
+    C12_29_S5_SVS_ROWS.forEach((expected, index) =>
+      validateSvsImageDerivedPrimitives(
+        rows[index],
+        expected,
+        images,
+        renderer,
+        expected.role,
+        "event",
+        structural,
+      ),
+    );
+    const controlSource = C12_29_S5_SVS_ROWS.find(
+      (row) => row.role === C12_29_S5_SVS_CONTROL.projectionSourceRole,
+    );
+    validateSvsImageDerivedPrimitives(
+      session?.control,
+      controlSource,
+      images,
+      renderer,
+      C12_29_S5_SVS_CONTROL.role,
+      "control",
+      structural,
+    );
+  }
   validateMetricImageBindings(
     session?.control,
     images,
     renderer,
     C12_29_S5_SVS_CONTROL.role,
     structural,
+    schemaContract,
   );
   if (
     new Set(images.map((image) => image?.imageId)).size !== images.length ||
@@ -3668,7 +5065,13 @@ function validateSession(session, renderer, runId, failures, structural) {
   }
 }
 
-function validateCrossBackend(cross, sessions, failures, structural) {
+function validateCrossBackend(
+  cross,
+  sessions,
+  failures,
+  structural,
+  schemaContract = SVS_V5_SCHEMA_CONTRACT,
+) {
   if (!Array.isArray(cross) || cross.length !== C12_29_S5_SVS_ROWS.length) {
     structural.push("cross-backend comparison cardinality differs");
     return;
@@ -3728,7 +5131,120 @@ function validateCrossBackend(cross, sessions, failures, structural) {
     ) {
       failures.push(`${expected.role}: differing cells escape both Q bands`);
     }
+    if (schemaContract.requiresV5Evidence) {
+      if (
+        !sameJson(
+          gl?.lattice?.validProjectedCellIds,
+          gpu?.lattice?.validProjectedCellIds,
+        ) ||
+        !sameJson(
+          gl?.lattice?.projectedPixelIdByValidCell,
+          gpu?.lattice?.projectedPixelIdByValidCell,
+        )
+      ) {
+        structural.push(
+          `${expected.role}: cross-backend projected-pixel binding differs`,
+        );
+      }
+      const cpuState = (proof) => ({
+        requested: proof?.requested,
+        baseColor: proof?.observed?.baseColor,
+        enableEclipse: proof?.observed?.enableEclipse,
+        enableEclipseGlobeShadow: proof?.observed?.enableEclipseGlobeShadow,
+        eclipseAutoExposure: proof?.observed?.eclipseAutoExposure,
+        enableEclipseHorizonTwilight:
+          proof?.observed?.enableEclipseHorizonTwilight,
+        atmosphericConditionsIdentity:
+          proof?.observed?.atmosphericConditionsIdentity,
+        eclipseState: proof?.observed?.eclipseState,
+        eclipseSceneLightFactor: proof?.observed?.eclipseSceneLightFactor,
+        eclipseGlobeShadowPrepared: proof?.observed?.eclipseGlobeShadowPrepared,
+        eclipseGlobeShadow: {
+          active: proof?.observed?.eclipseGlobeShadow?.active,
+          sceneLightDimmed:
+            proof?.observed?.eclipseGlobeShadow?.sceneLightDimmed,
+          gate: proof?.observed?.eclipseGlobeShadow?.gate,
+          inverseSceneLightFactor:
+            proof?.observed?.eclipseGlobeShadow?.inverseSceneLightFactor,
+        },
+        mainViewShadowMatches: proof?.observed?.mainViewShadowMatches,
+      });
+      const glProofs = gl?.captureTerrainProofs ?? [];
+      const gpuProofs = gpu?.captureTerrainProofs ?? [];
+      if (
+        ["white", "black", "off", "on"].some((captureLabel) => {
+          const glProof = glProofs.find(
+            (proof) => proof?.label === captureLabel,
+          );
+          const gpuProof = gpuProofs.find(
+            (proof) => proof?.label === captureLabel,
+          );
+          return !sameJson(cpuState(glProof), cpuState(gpuProof));
+        })
+      ) {
+        structural.push(
+          `${expected.role}: cross-backend CPU lighting/physics state differs`,
+        );
+      }
+    }
   });
+  if (schemaContract.requiresV5Evidence) {
+    const normalizedControlStates = sessions.map((session) =>
+      (session?.control?.captureTerrainProofs ?? []).map((proof) => ({
+        label: proof?.label,
+        requested: proof?.requested,
+        baseColor: proof?.observed?.baseColor,
+        enableEclipse: proof?.observed?.enableEclipse,
+        enableEclipseGlobeShadow: proof?.observed?.enableEclipseGlobeShadow,
+        eclipseState: proof?.observed?.eclipseState,
+        eclipseSceneLightFactor: proof?.observed?.eclipseSceneLightFactor,
+        active: proof?.observed?.eclipseGlobeShadow?.active,
+        sceneLightDimmed: proof?.observed?.eclipseGlobeShadow?.sceneLightDimmed,
+        gate: proof?.observed?.eclipseGlobeShadow?.gate,
+        inverseSceneLightFactor:
+          proof?.observed?.eclipseGlobeShadow?.inverseSceneLightFactor,
+      })),
+    );
+    if (!sameJson(normalizedControlStates[0], normalizedControlStates[1])) {
+      structural.push("noneclipse-control: cross-backend CPU state differs");
+    }
+    if (
+      !sameJson(
+        sessions[0]?.control?.ephemeris,
+        sessions[1]?.control?.ephemeris,
+      )
+    ) {
+      structural.push(
+        "noneclipse-control: cross-backend ephemeris lineage differs",
+      );
+    }
+    const normalizedXys = sessions.map((session) => {
+      const byRoute = new Map();
+      for (const entry of session?.ephemeris?.xysFiles ?? []) {
+        if (!byRoute.has(entry?.route)) {
+          byRoute.set(entry?.route, {
+            route: entry?.route,
+            status: entry?.status,
+            byteLength: entry?.byteLength,
+            sha256: entry?.sha256,
+            localStart: entry?.localStart,
+            localEnd: entry?.localEnd,
+          });
+        }
+      }
+      return [...byRoute.values()].sort((left, right) =>
+        String(left.route).localeCompare(String(right.route)),
+      );
+    });
+    if (
+      normalizedXys.some((entries) => entries.length === 0) ||
+      !sameJson(normalizedXys[0], normalizedXys[1])
+    ) {
+      structural.push(
+        "cross-backend IAU2006 XYS route/fingerprint sets differ or are incomplete",
+      );
+    }
+  }
 }
 
 function validFirstRedBaseline(value) {
@@ -3773,10 +5289,10 @@ function sameFirstRedProof(left, right) {
 }
 
 /** Fold one complete report. STRUCTURAL takes precedence over product FAIL. */
-export function foldC1229S5SvsGate(report) {
+function foldSvsReport(report, schemaContract) {
   const structuralReasons = [];
   const failures = [];
-  if (report?.schema !== C12_29_S5_SVS_SCHEMA || !isUuidV4(report?.runId)) {
+  if (report?.schema !== schemaContract.schema || !isUuidV4(report?.runId)) {
     structuralReasons.push("report schema/run identity is invalid");
   }
   const lifecycle = report?.lifecycle;
@@ -3802,9 +5318,10 @@ export function foldC1229S5SvsGate(report) {
     lifecycle?.latestBeforeUnlock !== true ||
     lifecycle?.lockOwnedByRun !== true ||
     lifecycle?.archiveLatestByteIdentical !== true ||
-    validateSvsRunningArtifactShape(lifecycle?.runningReceipt).length !== 0 ||
+    validateSvsRunningArtifactShape(lifecycle?.runningReceipt, schemaContract)
+      .length !== 0 ||
     lifecycle?.runningReceipt?.runId !== report?.runId ||
-    lifecycle?.finalReceipt?.schema !== C12_29_S5_SVS_SCHEMA ||
+    lifecycle?.finalReceipt?.schema !== schemaContract.schema ||
     lifecycle?.finalReceipt?.runId !== report?.runId ||
     lifecycle?.finalReceipt?.status !== lifecycle?.finalStatus ||
     (report?.status !== undefined &&
@@ -3825,7 +5342,12 @@ export function foldC1229S5SvsGate(report) {
   ) {
     structuralReasons.push("evidence lifecycle is not mature/write-once");
   }
-  validateProvenance(report?.provenance, structuralReasons);
+  validateProvenance(
+    report?.provenance,
+    structuralReasons,
+    schemaContract.buildSourceFiles,
+    schemaContract,
+  );
   const sessions = Array.isArray(report?.sessions) ? report.sessions : [];
   if (sessions.length !== C12_29_S5_SVS_RENDERERS.length) {
     structuralReasons.push("expected exactly two serial renderer sessions");
@@ -3837,6 +5359,7 @@ export function foldC1229S5SvsGate(report) {
       report?.runId,
       failures,
       structuralReasons,
+      schemaContract,
     ),
   );
   if (sessions[0]?.completedAtMs > sessions[1]?.startedAtMs) {
@@ -3849,6 +5372,7 @@ export function foldC1229S5SvsGate(report) {
     sessions,
     failures,
     structuralReasons,
+    schemaContract,
   );
   const status =
     structuralReasons.length > 0
@@ -3864,12 +5388,24 @@ export function foldC1229S5SvsGate(report) {
   };
 }
 
+/** Fold one complete current-schema report. STRUCTURAL precedes product FAIL. */
+export function foldC1229S5SvsGate(report) {
+  return foldSvsReport(report, SVS_V5_SCHEMA_CONTRACT);
+}
+
+/** Fold one retained v4 report without synthesizing any v5 evidence. */
+export function foldSupersededC1229S5SvsV4Gate(report) {
+  return foldSvsReport(report, SVS_V4_SCHEMA_CONTRACT);
+}
+
 export default {
+  C12_29_S5_SVS_ARTIFACT_PREFIX,
   C12_29_S5_SVS_SCHEMA,
   C12_29_S5_SVS_DIAGNOSTICS_SCHEMA,
   C12_29_S5_SVS_SUPERSEDED_SCHEMA,
   C12_29_S5_SVS_LEGACY_ERROR_SCHEMA,
   C12_29_S5_SVS_EPHEMERIS,
+  C12_29_S5_SVS_IMAGE_VERIFIER_METHOD,
   C12_29_S5_SVS_RENDERERS,
   C12_29_S5_SVS_PHASES,
   C12_29_S5_SVS_ROWS,
@@ -3883,10 +5419,12 @@ export default {
   C12_29_S5_SVS_SIMON1994_BUDGET_KM,
   C12_29_S5_SVS_SOURCE_MOTION,
   C12_29_S5_SVS_SOURCE_EDGE,
+  C12_29_S5_SVS_SUPERSEDED_DIAGNOSTICS_SCHEMA,
   C12_29_S5_SVS_SOURCE_FILES,
   C12_29_S5_SVS_BUILD_SOURCE_FILES,
   C12_29_S5_SVS_BUILD_SOURCE_MAP,
   computeSvsFootprintBudget,
+  deriveSvsWgs84ProjectedLattice,
   summarizeSvsSpatialMetrics,
   deriveSvsSpatialMetrics,
   validateSvsRunningArtifactShape,

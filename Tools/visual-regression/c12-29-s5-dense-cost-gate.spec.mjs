@@ -12,7 +12,7 @@ import {
   C12_29_S5_DENSE_CONFIG,
   C12_29_S5_DENSE_LEGACY_SCHEMA,
   C12_29_S5_DENSE_LOCAL_FILES,
-  C12_29_S5_DENSE_NASA_V4_SOURCE_FILES,
+  C12_29_S5_DENSE_NASA_V5_SOURCE_FILES,
   C12_29_S5_DENSE_RAW_GENERATED_PAIRS,
   C12_29_S5_DENSE_RENDERERS,
   C12_29_S5_DENSE_RUNTIME_SCHEMA,
@@ -110,7 +110,10 @@ function validPrerequisites() {
     nasa: prerequisite(
       "nasa",
       "c12-29-s5-svs-footprint",
-      "c12-29-s5-svs-5073-footprint-evidence-v4",
+      // Tracks the CURRENT dense contract's NASA rung, advanced to v5 with the
+      // NASA-SVS repair (ruling R-2026-08-14-8). The v3 rung used by the
+      // superseded-contract fixtures below deliberately did not move.
+      "c12-29-s5-svs-5073-footprint-evidence-v5",
       NASA_RUN_ID,
       "e",
     ),
@@ -1159,12 +1162,18 @@ test("23 cost sign and magnitude never change PASS; raw paired deltas, ratios, m
 });
 
 test("24 static packet pins new namespace, source closure, wrapper finally, fresh processes, and no ceiling", async () => {
+  // The cross-gate prerequisite pin. It is spelled literally rather than
+  // imported so that a NASA schema bump cannot silently re-point what the dense
+  // contract believes it requires — bumping this line is the act of accepting
+  // the new producer. Advanced to v5 with the NASA-SVS repair
+  // (ruling R-2026-08-14-8); the superseded/legacy rungs deliberately did not
+  // move, because they record what the older dense contracts required.
   assert.equal(
     C12_29_S5_SVS_SCHEMA,
-    "c12-29-s5-svs-5073-footprint-evidence-v4",
+    "c12-29-s5-svs-5073-footprint-evidence-v5",
   );
   assert.deepEqual(
-    C12_29_S5_DENSE_NASA_V4_SOURCE_FILES,
+    C12_29_S5_DENSE_NASA_V5_SOURCE_FILES,
     C12_29_S5_SVS_SOURCE_FILES,
   );
   assert.ok(
@@ -1181,9 +1190,17 @@ test("24 static packet pins new namespace, source closure, wrapper finally, fres
     new Set(C12_29_S5_DENSE_SERVED_FILES).size,
     C12_29_S5_DENSE_SERVED_FILES.length,
   );
-  assert.equal(C12_29_S5_DENSE_NASA_V4_SOURCE_FILES.length, 56);
-  assert.equal(C12_29_S5_DENSE_SOURCE_FILES.length, 65);
-  assert.equal(C12_29_S5_DENSE_BUILD_SOURCE_FILES.length, 63);
+  // 62 = the v5 NASA closure (was 56 under v4; the repair added Ellipsoid,
+  // AtmosphericConditions, Camera, CameraHelpers, CameraInternals, and
+  // WebGPUGlobeSurfacePipelines to derive the frozen camera and footprint —
+  // a strict superset, so the dense closure only widened).
+  assert.equal(C12_29_S5_DENSE_NASA_V5_SOURCE_FILES.length, 62);
+  // 70 = union(62 NASA, DENSE_TIMING_SEMANTIC); five of the six added files are
+  // new to the union and one was already carried by the timing set (65 + 5).
+  assert.equal(C12_29_S5_DENSE_SOURCE_FILES.length, 70);
+  // 68 = 70 minus the two raw shader sources (.glsl/.wgsl), which do not occur
+  // in the bundle's sourcesContent and are proved by raw/generated equality.
+  assert.equal(C12_29_S5_DENSE_BUILD_SOURCE_FILES.length, 68);
   assert.equal(C12_29_S5_DENSE_SUPERSEDED_SOURCE_FILES.length, 46);
   assert.equal(C12_29_S5_DENSE_SUPERSEDED_BUILD_SOURCE_FILES.length, 44);
   assert.ok(

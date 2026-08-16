@@ -122,9 +122,16 @@ export const C12_29_S5_DENSE_PREREQUISITES = Object.freeze({
     producer: "c12-29-s5-terrain-selection",
     schema: "c12-29-s5-terrain-selection-evidence-v10",
   }),
+  // Advanced v4 -> v5 with the NASA-SVS repair (ruling R-2026-08-14-8). Only
+  // the CURRENT rung moves: the superseded and legacy rungs below record what
+  // dense-v2 and dense-v1 artifacts actually required when they were written,
+  // and rewriting them would falsify history rather than reconcile it. Moving
+  // this rung invalidates no banked evidence — there are no dense-cost
+  // publications in the evidence library, and the dense run is serialized
+  // after a fresh NASA publication by design.
   nasa: Object.freeze({
     producer: "c12-29-s5-svs-footprint",
-    schema: "c12-29-s5-svs-5073-footprint-evidence-v4",
+    schema: "c12-29-s5-svs-5073-footprint-evidence-v5",
   }),
   publicationSchema: "cesium-visual-evidence-publication/v2",
 });
@@ -211,15 +218,24 @@ const TERRAIN_V8_SEMANTIC_SOURCE_FILES = Object.freeze([
   "packages/engine/Source/Renderer/WebGPU/WebGPUFeatureRenderers.ts",
 ]);
 
-// This list is deliberately duplicated from the exact NASA-SVS v4 contract.
+// This list is deliberately duplicated from the exact NASA-SVS v5 contract.
 // The helper is imported by the browser, so importing the Node-only NASA gate
 // module here would break the runtime lane.  The Node spec cross-checks the two
 // arrays byte-for-byte and order-for-order to keep this boundary fail closed.
-export const C12_29_S5_DENSE_NASA_V4_SOURCE_FILES = Object.freeze([
+//
+// The mirror moves with the prerequisite pin above because the two are one
+// boundary: a gate that accepts a v5 publication while checking a v4 source
+// closure is no longer fail closed. The v5 closure is a strict superset of the
+// v4 one (+6 files, none removed — Ellipsoid, AtmosphericConditions, Camera,
+// CameraHelpers, CameraInternals, WebGPUGlobeSurfacePipelines, the sources the
+// v5 repair added to derive the frozen camera and footprint), so widening it
+// can only make the dense source closure more fail closed, never less.
+export const C12_29_S5_DENSE_NASA_V5_SOURCE_FILES = Object.freeze([
   "packages/engine/Source/Core/Cartesian2.js",
   "packages/engine/Source/Core/Cartesian3.js",
   "packages/engine/Source/Core/Cartographic.js",
   "packages/engine/Source/Core/Color.js",
+  "packages/engine/Source/Core/Ellipsoid.js",
   "packages/engine/Source/Core/EllipsoidGeodesic.js",
   "packages/engine/Source/Core/JulianDate.js",
   "packages/engine/Source/Core/Math.js",
@@ -234,6 +250,10 @@ export const C12_29_S5_DENSE_NASA_V4_SOURCE_FILES = Object.freeze([
   "packages/engine/Source/Core/Simon1994PlanetaryPositions.js",
   "packages/engine/Source/Core/CesiumTerrainProvider.js",
   "packages/engine/Source/Core/QuantizedMeshTerrainData.js",
+  "packages/engine/Source/Scene/AtmosphericConditions.js",
+  "packages/engine/Source/Scene/Camera.js",
+  "packages/engine/Source/Scene/CameraHelpers.js",
+  "packages/engine/Source/Scene/CameraInternals.js",
   "packages/engine/Source/Scene/GridImageryProvider.js",
   "packages/engine/Source/Scene/EclipseState.js",
   "packages/engine/Source/Scene/EclipseGlobeShadow.js",
@@ -258,6 +278,7 @@ export const C12_29_S5_DENSE_NASA_V4_SOURCE_FILES = Object.freeze([
   "packages/engine/Source/Renderer/WebGPU/WebGPUDynamicEnvironmentMapManager.ts",
   "packages/engine/Source/Renderer/WebGPU/WebGPUDynamicEnvironmentMapCapture.ts",
   "packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceRenderer.ts",
+  "packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfacePipelines.ts",
   "packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceLayouts.ts",
   "packages/engine/Source/Renderer/WebGPU/WebGPUGlobeEclipseUniforms.ts",
   "packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceTypes.ts",
@@ -299,7 +320,7 @@ export const C12_29_S5_DENSE_RAW_GENERATED_PAIRS = Object.freeze([
 
 export const C12_29_S5_DENSE_SOURCE_FILES = Object.freeze([
   ...new Set([
-    ...C12_29_S5_DENSE_NASA_V4_SOURCE_FILES,
+    ...C12_29_S5_DENSE_NASA_V5_SOURCE_FILES,
     ...DENSE_TIMING_SEMANTIC_SOURCE_FILES,
   ]),
 ]);
