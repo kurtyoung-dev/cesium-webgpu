@@ -8,17 +8,64 @@
 **Initial standards vehicle:** optional vendor extension, with promotion considered only after two
 interoperable implementations and benchmark evidence.
 
-This document tracks the design of a lightweight, high-performance update system for frequently
-changing 3D Tiles datasets. It records maintainer decisions, proposed wire/runtime architecture,
-patch-versus-rebuild economics, invalidation and compaction semantics, unresolved questions, and
-implementation milestones.
+### The problem this design exists for
 
-The north-star use case is a small change—such as flattening a hill and updating its imagery—that
-can be produced, transferred, validated, and displayed without rebuilding the entire surrounding
-tile hierarchy. Patches are temporary published state: they remain reachable and immutable while
-referenced, then are compacted into a new immutable base revision. A compact invalidation control
-plane makes the successor state visible quickly, retires superseded tiles and patches without a
-visual hole, and eventually makes unreachable objects eligible for safe garbage collection.
+A 3D Tiles dataset is normally published once and then read. This design is for the case where it is
+not: a **constantly changing provider** — a simulation advancing a world model, a live capture
+pipeline, a sensor-fusion process — that keeps producing new data for a world it has already
+published. The tiles its clients hold are not wrong; they are *incomplete*, because information
+arrived after they were built.
+
+A **patch** is therefore a dynamic overlay of new data onto an existing tile: data generated after
+the fact, bound to a base revision that is already published and already resident in client caches,
+carrying a change that did not exist when that tile was created. It is not a prebaked alternate
+state of an authored asset, and it does not walk a timeline the producer knew in advance.
+Time-dynamic 3D Tiles — captures authored ahead of delivery and selected by time — is the
+complementary problem, and this design is deliberately shaped so that it can **extend** such a
+mechanism rather than duplicate it (Sections 2.4 and 18).
+
+The north-star *edit* is small: flatten a hill and update its imagery, produced, transferred,
+validated, and displayed without rebuilding the surrounding tile hierarchy. The north-star
+*deployment* is that edit arriving several times a second, indefinitely, while clients fly over the
+result. Arrival rate, not edit count, is the independent variable everything here is sized against.
+
+Patches are **durable published state**. A published patch is a first-class state of the dataset,
+not a temporary bridge that owes a rebuild: it remains reachable and immutable while referenced, and
+it may be the end state for its target. Compaction into a new immutable base revision is
+**triggered** — by the normative predicates of Section 12, or by a producer's own economics — never
+automatic, and never implied by the act of publishing a patch. A compact invalidation control plane
+makes the successor state visible quickly, retires superseded tiles and patches without a visual
+hole, and eventually makes unreachable objects eligible for safe garbage collection.
+
+This document tracks the design of that system. It records maintainer decisions, proposed
+wire/runtime architecture, patch-versus-rebuild economics, invalidation and compaction semantics,
+unresolved questions, and implementation milestones.
+
+### Conformance language
+
+The key words **MUST**, **MUST NOT**, **REQUIRED**, **SHALL**, **SHALL NOT**, **SHOULD**,
+**SHOULD NOT**, **RECOMMENDED**, **MAY**, and **OPTIONAL** in this document are to be interpreted as
+described in BCP 14 (RFC 2119 and RFC 8174) when, and only when, they appear in all capitals.
+
+They carry that meaning only inside the sections marked normative below. Elsewhere the same words in
+lower case are ordinary prose — rationale, comparison, or narration — and impose nothing. No section
+of this document creates an obligation that a normative section does not also state.
+
+| Sections | Status | What the key words mean there |
+| --- | --- | --- |
+| 2.5, 4, 5, 7, 8, 10, 11, 12, 13 | **Normative** | Binding requirements on publishers and clients. |
+| 9.2 | **Normative** | The producer's hard rejection gates, which the interoperability extension standardizes. |
+| 17 | **Normative** | Conformance criteria. Every row is testable and traces to a requirement above. |
+| 15.0 | **Normative for the prototype harness only** | Obligations on the reference producer, head server, and fixture set — not on a conforming client or publisher. |
+| 1, 2.1-2.4, 3, 6, 14, 15 other than 15.0, 16, 18, 19 | Non-normative | Requirements framing, motivation, prior art, fork-implementation notes, plans, and open questions. |
+| 9 other than 9.2 | Non-normative | Producer policy. The extension standardizes the gates of 9.2 and the metadata of 9.1; candidate scoring, weights, and thresholds are deployment policy. |
+
+Section 3 is a fork-implementation boundary rather than a wire contract; where it states a producer
+or client obligation, the binding form of that obligation lives in Section 9, 10, or 12.
+
+This document is exploratory, and it uses conformance language so that a later specification draft
+can lift requirements without re-deciding which sentences were binding — not because the contract is
+frozen. Section 15.3 lists the specification apparatus such a draft still owes.
 
 ---
 
@@ -46,9 +93,14 @@ The system must be:
 - **Correct across LOD:** old geometry must not reappear in authoritative/current output as
   screen-space error selects ancestors or descendants.
 - **Safe under compaction:** publish and verify the rebuilt successor before superseding the old base
-  and its ephemeral patches; never create a transient content hole.
+  and the patches compaction incorporates; never create a transient content hole. Compaction is
+  triggered rather than owed (Section 12), so this quality governs the compactions that do run, not a
+  rebuild every patch is assumed to schedule.
 - **Fail-closed:** a missing, corrupt, incompatible, or partially downloaded patch must never
-  create a half-patched state.
+  create a half-patched state. "Fail closed" is a defined term with an exact meaning — refuse the
+  disputed input, keep the current verified generation, report, and reconcile, without inventing a
+  visible state — and it is never reachable from unauthenticated input. Section 4.4 defines it;
+  Section 13 bounds what can reach it.
 
 ### 1.2 Agreed decisions
 
@@ -57,33 +109,160 @@ The system must be:
 3. Publish **content-addressed, atomic patch state**, while keeping discovery and manifests small.
 4. Start with a semantic **`replaceRegion`** operation using a spatial mask plus a replacement
    3D Tiles tileset. A GLB is wrapped as the content of a generated one-tile tileset.
-5. Compact accumulated patches into a new base revision later.
+5. Compact accumulated patches into a new base revision **when a normative trigger fires or the
+   optimizer selects it** — never automatically, and never as a consequence of having published a
+   patch. Section 12 owns the trigger; Section 9 chooses when to compact inside it.
 6. Give datasets, base revisions, patch states, and patches explicit versions and UUIDs.
 7. Do **not** ban vertex and texture patches. Treat them as highly optimized, typed codecs with
    strict preconditions rather than unstructured byte edits.
 8. Include a constant-time/metadata-only first-stage estimator that chooses patch, replacement, or
-   rebuild before expensive encoding begins.
+   rebuild before expensive encoding begins. The estimator is a **pure function of four immutable
+   documents** — `baseProfile`, `activeSummary`, `deploymentProfile`, and one bounded
+   `changeSummary`. No live client state enters it: no camera, visible set, cache contents, session
+   identity, or live measurement. A quantity that is physically a client property enters only as a
+   dated cohort prior in the deployment profile (Section 9.1).
 9. Put patching and invalidation in **one live-update state model**, while keeping composition data,
    patch codecs, and transition notifications separate and independently bounded.
 10. Make the immutable active-state snapshot authoritative. Push, Server-Sent Events (SSE), WebSocket,
     or polling events are low-latency **head-change hints**, never a second source of truth.
 11. For ordinary supersession, publish the complete successor closure, verify it, atomically advance
-    the head, and only then retire the old tile/base/patch closure. Physical deletion happens later
-    after reachability and retention checks.
-12. Keep `supersede`, `invalidate`, HTTP `revalidate`, client `retire`, security `revoke`, and server
-    `garbageCollect` as distinct operations. “Invalidated” never implicitly means “bytes deleted.”
+    the head, and only then `retireClosure` on the old tile/base/patch closure. Physical deletion
+    happens later, after reachability and retention checks.
+12. Keep `supersede`, `invalidate`, HTTP `revalidate`, client `retire`, publisher
+    `retireClosure`, security `revoke`, revocation `withdraw`, and server `garbageCollect` as
+    distinct operations. “Invalidated” never implicitly means “bytes deleted.”
 13. Give invalidation transitions their own UUID, stream epoch, monotonic sequence, target digest
     precondition, and successor state identity so duplicate, missing, replayed, and out-of-order
     events are harmless.
-14. When a patch is economical, publish it first for low latency, then enqueue a configurable
-    debounced/throttled durable rebuild; when it is not economical, rebuild directly without emitting
-    a transient patch.
+14. **A published patch is a first-class durable state, and it may be terminal.** Publishing one
+    incurs no obligation to rebuild. The producer chooses among `patch-terminal`,
+    `patch-then-rebuild`, and `rebuild-now` on estimated cost (Section 9.3.5); a rebuild is
+    scheduled only when that choice selects it or a trigger requires it, and an uneconomical change
+    is published as a direct materialized result with no transient patch. What bounds an
+    accumulating chain is the **normative compaction trigger of Section 12** — structural, and not a
+    matter of policy — rather than a per-patch rebuild pledge.
 15. Let clients defer expensive patch realization for off-screen tiles and pre-bake from bounded
     camera/screen-space-error prediction. Local baking creates only a digest-keyed derived cache entry
     and never
     mutates the immutable base.
 16. Keep HTTP/2/HTTP/3, WebSocket, gRPC, Server-Sent Events/polling, and producer/listener delivery behind
     transport-independent state/digest semantics.
+17. **Freshness is layered, and a publication declares exactly one profile.** *Unsigned* proves
+    integrity only and offers no rollback resistance whatsoever; *signed* adds a short-expiry signed
+    head statement, a durable client `generationWatermark`, and a declared `maxStaleness`;
+    *revocation* adds a pinned `entrypointDigest`. Every currentness claim in this document holds
+    only under the profile that supports it, and an unsigned publication may not claim authoritative
+    currentness at all (Section 4.1).
+18. **The hint plane never fails closed.** Semantic transition identity binds only
+    `{datasetId, generation, supersedesStateDigest, successor.stateDigest}`, while
+    `(trustDomainId, datasetId, updateEpochId, sequence)` carries transport ordering and nothing
+    else. Every hint-plane anomaly — replay, gap, reorder, epoch reset, unknown epoch, unknown
+    dataset, oversized or unparseable hint, flood — resolves the same way: ignore it and schedule
+    one rate-limited head reconciliation. Fail-closed is reserved for disagreement between two
+    *verified* objects. An epoch reset is an ordinary event for a live producer, not a conflict
+    (Section 4.4).
+19. **The extension is strictly additive.** A client that does not implement it, or does not
+    implement one of its profiles, behaves exactly as it does today and receives no patches, states,
+    or invalidations for what it did not implement, because it never asks for them. What varies with
+    the profile is what the *publication* may claim, never what an unaware client does. Revocation
+    is a hard guarantee only for clients that implement the revocation profile and are reaching the
+    current head; a publication whose correctness depends on absence serves only pinned
+    required/current entrypoints (Sections 11 and 13).
+20. **Canonical bytes are what is served, and noncanonical input is rejected rather than
+    normalized.** A publisher serves exactly the canonical manifest bytes; the digest — and any
+    signature over it — is computed over those served bytes. There is no normalizing client and no
+    implementer's choice. The digest registry is `sha256` alone, one suite per closure, with no
+    truncation, no unregistered token, and no negotiated downgrade (Sections 4.2 and 4.3).
+21. **Retention is stateless: no reader lease, and published entrypoints are garbage-collection
+    roots.** Retention is computed from four declared deployment constants plus an operator grace
+    margin, and a client that exceeds them has become an offline client rather than broken the
+    protocol. Every published entrypoint is a durable named root holding its current target's
+    transitive closure, released only through the repoint procedure (Section 4.5).
+22. **Extend time-dynamic 3D Tiles; do not compete with it.** The specification steward's own
+    direction — issue #102, the draft `3DTILES_content_conditional`, and the June 2025 roadmap's
+    incremental-update deliverable — selects among captures authored ahead of delivery. This design
+    publishes overlays a live producer generates afterwards. Where the two meet, this design is
+    shaped to become a profile of, or an extension to, a future `3DTILES_time_dynamic` rather than
+    a duplicate of it (Section 2.4).
+23. **Adopt `3DTILES_temporal`'s semantic-change vocabulary for `transition.reason`.** The
+    free-form `reason` field takes the enumeration {`creation`, `demolition`, `modification`,
+    `union`, `division`}, which derives from CityGML 3.0 versioning and costs nothing to borrow.
+    That extension's `fork` and `merge` transition types name branching cases this design's
+    single-epoch model does not address; they are recorded as named open epoch cases (Section 16)
+    rather than adopted silently (Section 2.4).
+24. **The standards re-survey is binding before D1, not advisory.** R0 re-runs and its result is
+    recorded in Section 2.4 with its date before the terminology/scope freeze. A finding that an
+    overlapping contract has shipped narrows or retires the novelty claim and re-scopes this work as
+    a profile of that contract; it does not invalidate the design.
+25. **Tile expiration is the normative degraded fallback for extension-ignorant clients.** Where a
+    deployment already publishes `expire.duration`/`expire.date`, that polled whole-tile refresh
+    is the declared path for clients that ignore the extension, and it composes with this design
+    instead of competing with it: aware clients reconcile the head, unaware clients re-request whole
+    tiles. Where a deployment publishes no expiration, unaware clients get nothing new — which is
+    exactly what decision 19 requires. The fallback is a deployment's to offer, never an obligation
+    this extension places on a client that never agreed to it (Section 2.4).
+26. **The core-glTF shared-external-buffer construction is available today and is adopted as a
+    transport option.** A small replacement glTF may point `buffer.uri` at the base's
+    content-addressed `.bin`, lay a `bufferView` over it, and attach a core sparse accessor
+    displacing selected elements: conformant glTF 2.0, no new codec, wire cost roughly the sparse
+    indices and values. Phase: **P4**, alongside the loader sparse-accessor prerequisite this
+    repository does not yet satisfy (Sections 2.5 and 7.1).
+27. **`uint16` decoded-quantized height codes are the sole normative payload domain of the
+    quantized-mesh profile.** Real-world meter heights are producer-side inputs, never wire values,
+    so a patched tile is bit-exact by construction and its declared output digest is reproducible on
+    every client and every platform (Section 8.1).
+28. **Typed-codec identity is taken over decoded canonical form, never container bytes.** A base
+    republished with different compression settings but identical decoded content keeps its
+    typed-patch identity, and a client can verify what it is about to modify without re-encoding it.
+    Container-byte identity remains the domain of `replaceContent` and `binaryResourceDelta`
+    (Section 7).
+29. **Element-indexed codecs admit uncompressed and `EXT_meshopt_compression` bases only.** A codec
+    in which the decoder rather than the asset fixes element order or decoded layout offers no
+    wire-stable index and no wire-stable layout to bind, so `KHR_draco_mesh_compression` and the
+    comparable splat bitstreams this fork loads alongside it fall back to whole-slot replacement
+    (Section 7.1).
+30. **`textureBlockReplace` is defined over the base texture's stored format, and supercompressed
+    KTX2 is out of domain.** A Basis ETC1S or UASTC payload has no single decoded block format —
+    the transcode target is chosen per device at load time — so such bases select whole-level
+    replacement, whole-texture replacement, or a `binaryResourceDelta` over the complete encoded
+    KTX2 (Section 7.3).
+31. **Overlays never change implicit availability, and subtree caches are revision-scoped.** An
+    overlay may replace or suppress content at an already-available coordinate, and may never make
+    an unavailable coordinate available or the reverse; any availability, subdivision, or hierarchy
+    change publishes a new base revision. Because implicit subtree and content URIs are
+    coordinate-derived rather than content-addressed, carrying a cached subtree across a
+    base-revision boundary is a correctness failure rather than a cache optimization
+    (Sections 2.5 and 4.4).
+32. **The atomic set is defined by published tiles; client-derived descendants are a client
+    obligation.** A patch names every *published* tile that must move together — the edge neighbour
+    and every coarser or finer representation sharing an affected edge vertex. Meshes a client
+    derived rather than fetched, such as upsampled terrain children, are client state: the client
+    drops and re-derives them inside the same transition and counts the visible ones in its
+    readiness frontier, and a producer never publishes a patch for one (Section 8.1).
+33. **The prototype vehicle is a compositor subtree inside the base tileset's traversal**, not one
+    `Cesium3DTileset` per patch: one cache, one byte budget, one request budget, one statistics
+    record, and one swap owner, for an operation whose defining property is that it is atomic across
+    all of them (Section 3.3.3).
+34. **Activation carries a client-side admission gate.** Pinned mask and replacement-root coverage
+    shrink the usable cache budget, so a commit whose pinned coverage would exceed a configured
+    fraction of `cacheBytes`, or whose predecessor-plus-successor coverage would exceed
+    `cacheBytes` plus `maximumCacheOverflowBytes`, refuses or defers and reports degraded absence
+    rather than thrashing. This is a client rule, distinct from the producer optimizer of Section 9
+    (Section 3.3.3).
+35. **Retirement rides a submission-serial authority that already exists.**
+    `Renderer/ResourceOwnership/` supplies content fingerprints with revisions, realization leases,
+    and a submission-serial authority that already implements the Section 10 rule that a resource
+    retires only once submitted work can no longer reference it. It has no engine consumer today.
+    Adopt it rather than invent a second retirement mechanism (Section 3.3.2).
+36. **Dual-backend parity, or an explicitly declared single-backend scope.** Under repository
+    principle 5 a capability that composes patched content exists on both WebGL and WebGPU, or the
+    work item that schedules it declares it single-backend. The region mask is the only component
+    with genuinely backend-specific halves, and both halves already exist (Section 3.3.2).
+
+Decisions 1-16 were recorded as the design was drafted. Decisions 17-36 record maintainer rulings and
+worker-surfaced resolutions from the 2026-08-16 design audit and the revision wave that answered it;
+each names the section carrying its normative text. The amendments to decisions 5, 8, and 14 are
+edits in place rather than new entries, so no decision number ever changes meaning.
 
 ### 1.3 Important naming caveat
 
@@ -91,6 +270,14 @@ The first interoperable operation is more accurately a **surface replacement ove
 binary patch to one tile. “3D Tiles Patch + Invalidation” remains a useful working umbrella name
 because later codecs can patch individual attributes, texture blocks, features, and quantized-mesh
 samples while the same state model supersedes and retires obsolete generations.
+
+The caveat is load-bearing for the rest of the document, so it is honored in the wording throughout:
+MVP core carries an overlay operation and a tombstone, and every operation that edits *inside* a
+resource — `sparseAttributeOverride`, `textureBlockReplace`, `binaryResourceDelta`,
+`replaceContent`, and the quantized-mesh rungs — is tagged typed-profile (Section 2.2.1). "Patch"
+in prose means "a published overlay operation of either kind"; it never means an in-place byte
+mutation of an immutable base, which Section 6 rules out and Section 4.3 makes impossible.
+Section 16, question 10 keeps the name itself open.
 
 ---
 
@@ -115,11 +302,15 @@ each operation codec has narrow, testable invariants.
 
 ### 2.2 MVP scope
 
-The first MVP is deliberately smaller:
+The first MVP is deliberately smaller than Section 2.1, and it stays small. **MVP core** is:
 
 - one immutable base revision;
-- one small mutable head pointer;
-- one immutable active-state manifest;
+- one small mutable head pointer under the **unsigned freshness profile** (Section 4.1), with
+  mandatory head-versus-state verification — `datasetId`, `generation`, `stateRevisionId`, and
+  the computed `stateDigest` are checked against the head before anything activates, per Section 4.4
+  law 7. Signing is a later phase; verification is not, and an unsigned publication makes no
+  authoritative currentness claim;
+- one immutable active-state manifest, served as canonical bytes;
 - one compact optional invalidation/head-change event shape;
 - disjoint surface masks;
 - one `replaceRegion` operation;
@@ -134,6 +325,39 @@ The first MVP is deliberately smaller:
 
 The MVP does not promise arbitrary solid-volume editing, collision/physics updates, analytics, or
 Cesium quantized-mesh terrain support through the 3D Tiles extension itself.
+
+#### 2.2.1 Phase tags
+
+The body specifies more than MVP core, because a design that wrote down only its first phase would
+have to be re-derived for its second. Everything beyond the list above carries one of the tags
+below, and Sections 5.5, 12.1, 15.1, and 17 apply them to individual requirements and conformance
+rows so that "in the MVP" is a readable property rather than an inference.
+
+| Tag | What it covers | Where it lands in Section 15 |
+| --- | --- | --- |
+| **MVP-core** | The list above: required of every conforming implementation of the first profile. | D1-D2, P0-P3, V1-V3 |
+| **producer-profile** | What a publisher running a live producer owes: the rebuild scheduler, `quietPeriod`/`maxWait`, the durable outbox and its recovery scan, compaction under a live tail, and the decision record. A read-only publication over a static base never exercises it. | P0, V3, B1 |
+| **typed-profile** | One Layer-B payload codec and its conformance suite — `sparseAttributeOverride`, `submeshReplace`, `textureBlockReplace`, `binaryResourceDelta`, `replaceContent`, and the quantized-mesh sibling rungs. Each is separately optional and separately versioned. | P4, P5, P6 |
+| **signed-profile** | The signed freshness profile of Section 4.1: signed head statement, durable `generationWatermark`, declared `maxStaleness`. | After D1; Section 15 schedules no phase of its own for it |
+| **revocation-profile** | The authenticated hard-revocation profile: the signed profile plus pinned `entrypointDigest`, publisher keys and rotation, persistent deny roots. | After the signed profile |
+
+Three phase facts are stated here rather than left to be inferred.
+
+- **`replaceContent` (Section 5.5) is typed-profile, not MVP core.** It is the operation a live
+  producer that rebuilds whole tiles would naturally emit, and Section 12.1 step 1 uses it — but an
+  MVP deployment expresses the same change as `replaceRegion` over a mask covering exactly the
+  tile's surface footprint, with a one-tile replacement tileset wrapping the rebuilt content. The
+  extra wire cost is one mask polygon plus one generated tileset descriptor; the semantics,
+  atomicity, and identity binding are the same. Section 12.1 carries that MVP-core path explicitly.
+- **Sparse content has a fork prerequisite.** This repository's glTF loader implements no
+  sparse-accessor path anywhere under `packages/engine/Source` (Section 2.5), so both the core-glTF
+  shared-external-buffer construction and the typed `sparseAttributeOverride` codec need loader
+  support before either can load here. That prerequisite belongs to **P4**, the phase that carries
+  sparse content, and it is not an assumption of any earlier phase.
+- **MVP core is not the same as "no security".** The unsigned profile still verifies every digest in
+  the closure and still rejects a state that disagrees with its head. What it does not provide is
+  rollback resistance, and Section 4.1 says so in those words rather than leaving it to be
+  discovered.
 
 ### 2.3 Explicit distinction: 3D Tiles surface content versus Cesium terrain
 
@@ -170,7 +394,7 @@ client-applied, base-relative patch protocol with the combined semantics propose
 3. transfer only a semantic subset of changed tile content;
 4. validate and compose that subset across tile and HLOD boundaries;
 5. activate an atomic multi-resource state with rollback;
-6. retain and later compact ephemeral patch generations;
+6. retain published patch generations, and compact them when a declared trigger or the producer's own economics selects it;
 7. notify clients that an exact prior state is superseded, without making event delivery authoritative;
 8. retire and garbage-collect old closures under explicit safety rules; and
 9. standardize a patch-versus-rebuild decision contract.
@@ -183,19 +407,19 @@ tiler has ever implemented incremental updates.
 | --- | --- | --- | --- |
 | 3D Tiles `asset.tilesetVersion` and revisioned URIs | Application-specific version/cache invalidation | Partial-content delta, base precondition, atomic patch state, or composition semantics | The coarse whole-dataset ancestor of the head pointer; replaced here by an exact digest-bound head and state manifest |
 | 3D Tiles external tilesets and multiple contents | More independently referenced renderable content | Spatial subtraction/masking, replacement precedence, or patch lifecycle | The composition substrate `replaceRegion` builds on; supplies containers, not precedence or lifecycle |
-| 3D Tiles `ADD` / `REPLACE` refinement | Parent/child HLOD rendering behavior | Replacement of a polygonal subset across arbitrary active LODs | Governs selection inside one revision; §5.2 correctness must hold across it |
+| 3D Tiles `ADD` / `REPLACE` refinement | Parent/child HLOD rendering behavior | Replacement of a polygonal subset across arbitrary active LODs | Governs selection inside one revision; Section 5.2 correctness must hold across it |
 | 3D Tiles implicit tiling | Stable implicit coordinates and compact availability | Modification of part of an existing content payload | Supplies the stable selectors typed codecs address; hierarchy/availability changes still publish a new base revision |
 | 3D Tiles tile expiration (`expire.duration`, `expire.date`) | Per-tile polled staleness: after a duration or date the tile's whole content is re-requested, with the old content kept visible until the replacement is ready | Deltas, base preconditions, an authoritative dataset state, atomic multi-resource activation, push, retention, or GC | The closest existing streaming-refresh primitive in 3D Tiles, and the origin of the zero-flicker handoff this design reuses; it composes as the degraded path—a deployment may keep expiration on the base for clients that ignore the extension while aware clients reconcile the head |
 | Draft `3DTILES_content_conditional` | Selection among content variants by conditions such as revision/time | Base-relative deltas, masks, content-addressed patch state, or atomic partial mutation; it remains a draft | The nearest active 3D Tiles work: it may eventually select among fully materialized per-tile variants, but selecting an active patch-state manifest would require an integration extension or a change to the draft |
 | Time-dynamic 3D Tiles direction (issue #102; June 2025 Cesium roadmap) | The spec steward's stated intent that a single tileset be updated incrementally while preserving a history of changes, with each new capture updating only affected tiles; #102's original per-tile time-series model | A published extension, schema, or wire format; immutable head/state, atomic multi-resource activation, retention/GC, or a patch-versus-rebuild contract | Complementary and the principal convergence risk: it selects among captures authored ahead of delivery, this design publishes overlays a live producer generates afterwards. See the convergence note below |
-| `3DTILES_temporal` (published 2020; not registered, not adopted) | A 3D Tiles extension carrying authored `versions`, `versionTransitions`, and feature-level `transactions` with date ranges, plus 4D bounding volumes and per-feature validity intervals; client-side selection by date | Base-relative deltas, immutable head/state, content addressing, atomic activation, retention/GC, publication or notification, or any live-producer path | The closest existing 3D Tiles extension to this design's supersession layer. It versions the *modelled world*; this design versions the *published dataset*. Its transition vocabulary is a direct adoption candidate for §4.4 |
+| `3DTILES_temporal` (published 2020; not registered, not adopted) | A 3D Tiles extension carrying authored `versions`, `versionTransitions`, and feature-level `transactions` with date ranges, plus 4D bounding volumes and per-feature validity intervals; client-side selection by date | Base-relative deltas, immutable head/state, content addressing, atomic activation, retention/GC, publication or notification, or any live-producer path | The closest existing 3D Tiles extension to this design's supersession layer. It versions the *modelled world*; this design versions the *published dataset*. Its transition vocabulary is a direct adoption candidate for Section 4.4 |
 | glTF sparse accessors | Sparse values differing from an accessor's initialization state inside one complete asset | Cross-version base identity, update discovery/distribution, atomic live patching, or tile/HLOD semantics | The typed sparse-data building block a future `sparseAttributeOverride` codec should reuse |
 | Core glTF: sparse accessor over a shared external buffer | A conformant construction today: a small new asset may point `buffer.uri` at the base's content-addressed `.bin`, lay a `bufferView` over it, and attach a `sparse` object displacing selected elements—wire cost roughly the sparse indices and values | Cross-asset base identity or digest binding, discovery, ordering, atomic activation, rollback, retention, HLOD composition; and no equivalent for GLB-embedded buffers, whose binary chunk is not addressable from another asset | A zero-new-codec transport option under `replaceContent`/`replaceRegion` for bin-based content, and the reason the "core glTF cannot express this" framing is narrowed to GLB-embedded payloads and to the cross-asset identity/lifecycle gap |
-| glTF morph targets, animations, and material variants | Authored alternate states within one asset | An external patch protocol or mutation of an already published asset | Prebaked alternates, the opposite origin from a post-hoc producer overlay; useful only as provenance rules (§2.5) |
-| glTF `MPEG_scene_dynamic` and companion media extensions | Registered vendor mechanism for timed scene-description update samples carried by media tracks; per ISO/IEC 23090-14 each update sample is an RFC 6902 JSON Patch document (`add`, `remove`, `replace`, `move`, `copy`, `test`) applied as one timed transaction | A 3D Tiles/HLOD spatial patch contract, exact immutable base/state head, client invalidation, atomic multi-resource publication, retention/compaction, or patch optimizer | The nearest registered *update-document* prior art; its JSON Patch model is direct input to the control plane and the §7 envelope, but its authority model is inverted—the stream is authoritative there, the state snapshot here |
+| glTF morph targets, animations, and material variants | Authored alternate states within one asset | An external patch protocol or mutation of an already published asset | Prebaked alternates, the opposite origin from a post-hoc producer overlay; useful only as provenance rules (Section 2.5) |
+| glTF `MPEG_scene_dynamic` and companion media extensions | Registered vendor mechanism for timed scene-description update samples carried by media tracks; per ISO/IEC 23090-14 each update sample is an RFC 6902 JSON Patch document (`add`, `remove`, `replace`, `move`, `copy`, `test`) applied as one timed transaction | A 3D Tiles/HLOD spatial patch contract, exact immutable base/state head, client invalidation, atomic multi-resource publication, retention/compaction, or patch optimizer | The nearest registered *update-document* prior art; its JSON Patch model is direct input to the control plane and the Section 7 envelope, but its authority model is inverted—the stream is authoritative there, the state snapshot here |
 | Other current glTF extensions | Extensibility for geometry, compression, materials, animation, and other asset features | No registered general immutable-base patch/invalidation lifecycle with the combined semantics here | Confirms the negative: the registry has no lifecycle layer |
 | KTX Fragment URI | Standard addressing/retrieval of mip, layer, face, time, and spatial texture subresources | Mutation, predecessor/base identity, atomic multi-resource state, or 3D Tiles composition | Prior art for naming a texture subresource, reusable by `textureBlockReplace` selectors |
-| Quantized-mesh extensions | Append optional normals, water mask, metadata, and related tile data | Replacement of existing vertices/topology, version chains, or atomic multi-tile patches | Shows the terrain format is extensible by appending, not by replacing; §8 needs a sibling profile |
+| Quantized-mesh extensions | Append optional normals, water mask, metadata, and related tile data | Replacement of existing vertices/topology, version chains, or atomic multi-tile patches | Shows the terrain format is extensible by appending, not by replacing; Section 8 needs a sibling profile |
 | OGC API — Tiles Part 1 | Discovery and retrieval of complete tiled representations | Partial/delta update of a tile representation | The retrieval layer this design sits above; unchanged by it |
 | OGC Testbed-15 Images and ChangeSet API Engineering Report (19-070) | Experimental checkpoint, changed/deleted-resource lists, and packages of affected 2D tiles | An adopted standard, 3D Tiles subregion patches, immutable active-state composition, or atomic GPU/client activation | Prior art for checkpoint-based recovery of a changed set; 2D-tile scoped |
 | OGC Testbed-15 Delta Updates Engineering Report (19-012r1) | Experimental architecture delivering *prioritized* feature deltas to clients in DDIL (denied, degraded, intermittent, limited-bandwidth) environments; an AUDIT/CHECKPOINT changeset algorithm between two checkpoints, realized over transactional OGC API — Features and over a WPS façade, with HTTP conditional requests and a GeoPackage-backed client | An adopted standard, any tiled or 3D content model, HLOD composition, immutable content-addressed state, atomic multi-resource activation, or retention/GC—the report never addresses tiles | The closest prior art for the priority-hinted, degraded-bandwidth half of the control plane; its checkpoint-pair changeset is the feature-domain analogue of `supersedesStateDigest` |
@@ -230,7 +454,7 @@ ISO/IEC 23090-14, though not the extension's own README—each update sample is 
 document, with `add`, `remove`, `replace`, `move`, `copy`, and `test` operations applied as a single
 timed transaction. Two things follow. Its timing/stream model is worth studying for the control
 plane, and its JSON Patch document model belongs in the study list for both the control plane and the
-§7 codec envelope as an already-standardized way to express a bounded edit to a structured document.
+Section 7 codec envelope as an already-standardized way to express a bounded edit to a structured document.
 Neither closes the gap: this design still needs independent 3D Tiles selectors, HLOD masking,
 immutable head/state reconciliation, invalidation, offline recovery, retirement, and compaction, and
 it inverts MPEG's authority model—there the stream is authoritative, here the state snapshot is.
@@ -274,7 +498,7 @@ prior art for *versioning vocabulary inside a tileset*, not for *delivering a ch
 tileset*.
 
 **What this design could adopt from it.** Its transition vocabulary is more developed than this
-document's and is orthogonal to it, so borrowing costs nothing. §4.4 defines a *lifecycle and
+document's and is orthogonal to it, so borrowing costs nothing. Section 4.4 defines a *lifecycle and
 authority* vocabulary—`supersede`, `invalidate`, `revalidate`, `suppress`, `revoke`, `retire`,
 `garbageCollect`—which says what the system does to a generation. `3DTILES_temporal` supplies a
 *semantic-change* vocabulary, which says what happened in the world. The state manifest and the
@@ -357,12 +581,12 @@ semantic replacement, typed direct application, and transport-only deltas.
 
 | Mechanism | Compatibility | Required rule |
 | --- | --- | --- |
-| glTF sparse accessors | **Yes** | A replacement tileset may contain ordinary sparse accessors: strictly increasing indices and absolute values overriding an accessor's initialization state inside one complete asset. `sparseAttributeOverride` reuses that index/value representation and adds external base identity, because a glTF sparse accessor by itself cannot refer to an accessor in a different published asset. A replacement glTF may instead reference the base's content-addressed external buffer by URI and lay a sparse accessor over the same buffer view; that construction needs no new codec but requires a non-GLB base. |
-| glTF morph targets | **Yes, with provenance** | `replaceRegion` is transparent. Directly changing base or morph-target attributes requires exact primitive/accessor identity, consistent normals/tangents and bounds, and one atomic resource generation. Weights are per-node runtime state shared by every primitive of the mesh, so bounds evidence must hold over every instantiating node's reachable weight range, not one authored vector. Changing target count or order is content replacement, not a patch. Morph targets remain authored deformation, not patch history. |
-| 3D Tiles implicit tiling | **Yes for overlays** | `replaceRegion` composes above the base tree and does not modify subtree availability. Per-content typed patches use exact implicit `(level,x,y[,z])` plus base/content identity. Subtree and content URIs are template-derived from coordinates rather than content-addressed, so hierarchy or availability changes publish a new base revision, and clients must scope coordinate-keyed subtree caches to a base revision. |
-| Draft `3DTILES_content_conditional` | **Independent, potentially complementary** | Do not require this draft for the MVP. It may select complete materialized variants. Selecting patch-state manifests or nesting external replacement tilesets would require explicit future integration and whatever the final conditional-content standard permits. |
-| HTTP delta encoding / VCDIFF | **Yes as a transport codec** | Bind exact source and target digests, reconstruct the whole immutable target off-thread, verify it, then use the normal loader. This does not replace semantic patch/HLOD rules, and deployment must not assume every CDN/browser implements HTTP delta negotiation. Immutable delta objects fetched with ordinary `GET` are the portable baseline. |
-| Quantized-mesh extensions | **Yes through a sibling terrain profile, not the 3D Tiles extension itself** | Preserve and validate every appended extension record. Oct-encoded normals are geometry-dependent and must be re-supplied by the producer, including at tile boundaries; water masks and metadata are preserved byte-identically or separately replaced. Unknown geometry-dependent extensions force whole-tile replacement unless their invariants are declared. Height payloads carry `uint16` decoded-quantized codes only, per Section 8. |
+| glTF sparse accessors | **Yes** | A replacement tileset MAY contain ordinary sparse accessors: strictly increasing indices and absolute values overriding an accessor's initialization state inside one complete asset. `sparseAttributeOverride` reuses that index/value representation and adds external base identity, because a glTF sparse accessor by itself cannot refer to an accessor in a different published asset. A replacement glTF MAY instead reference the base's content-addressed external buffer by URI and lay a sparse accessor over the same buffer view; that construction needs no new codec but requires a non-GLB base. |
+| glTF morph targets | **Yes, with provenance** | `replaceRegion` is transparent. Directly changing base or morph-target attributes requires exact primitive/accessor identity, consistent normals/tangents and bounds, and one atomic resource generation. Weights are per-node runtime state shared by every primitive of the mesh, so bounds evidence MUST hold over every instantiating node's reachable weight range, not one authored vector. Changing target count or order is content replacement, not a patch. Morph targets remain authored deformation, not patch history. |
+| 3D Tiles implicit tiling | **Yes for overlays** | `replaceRegion` composes above the base tree and does not modify subtree availability. Per-content typed patches use exact implicit `(level,x,y[,z])` plus base/content identity. Subtree and content URIs are template-derived from coordinates rather than content-addressed, so hierarchy or availability changes publish a new base revision, and clients MUST scope coordinate-keyed subtree caches to a base revision. |
+| Draft `3DTILES_content_conditional` | **Independent, potentially complementary** | Do not require this draft for the MVP. It MAY select complete materialized variants. Selecting patch-state manifests or nesting external replacement tilesets would require explicit future integration and whatever the final conditional-content standard permits. |
+| HTTP delta encoding / VCDIFF | **Yes as a transport codec** | Bind exact source and target digests, reconstruct the whole immutable target off-thread, verify it, then use the normal loader. This does not replace semantic patch/HLOD rules, and a deployment MUST NOT assume every CDN/browser implements HTTP delta negotiation. Immutable delta objects fetched with ordinary `GET` are the portable baseline. |
+| Quantized-mesh extensions | **Yes through a sibling terrain profile, not the 3D Tiles extension itself** | Preserve and validate every appended extension record. Oct-encoded normals are geometry-dependent and MUST be re-supplied by the producer, including at tile boundaries; water masks and metadata are preserved byte-identically or separately replaced. Unknown geometry-dependent extensions force whole-tile replacement unless their invariants are declared. Height payloads carry `uint16` decoded-quantized codes only, per Section 8. |
 
 #### glTF sparse accessors
 
@@ -396,7 +620,7 @@ an assumption of it.
 
 #### glTF morph targets
 
-Morph targets continue to operate normally inside base or replacement content. A direct patch may:
+Morph targets continue to operate normally inside base or replacement content. A direct patch MAY:
 
 - change the base attribute while retaining existing morph deltas;
 - change sparse/dense morph-target deltas;
@@ -410,16 +634,16 @@ runtime state supplied by the node or its mesh (`packages/engine/Source/Scene/Mo
 (`Scene/Model/ModelAnimationChannel.js`). Therefore:
 
 - one mesh may be instantiated by several nodes carrying different weights, so a patch to a base
-  attribute or to any target changes every instance. Bounds and geometric-error evidence must be
+  attribute or to any target changes every instance. Bounds and geometric-error evidence MUST be
   proven over the union of every instantiating node's reachable weight range, including
   animation-driven ranges, rather than over the authored weight vector;
 - target count and target order are structural. Adding, removing, or reordering targets changes the
   weight-vector arity and every animation sampler that drives it, so it is content replacement, not
   a `sparseAttributeOverride`;
-- normal and tangent targets must be patched consistently with position targets, and the producer
-  must model the resulting deformed bounds and update every dependent stream.
+- normal and tangent targets MUST be patched consistently with position targets, and the producer
+  MUST model the resulting deformed bounds and update every dependent stream.
 
-A patch may not use morph targets as an implicit update log. Weights are runtime state driven by
+A patch MUST NOT use morph targets as an implicit update log. Weights are runtime state driven by
 animation and application code, so an update encoded as a weight change is not a deterministic
 function of the published state.
 
@@ -436,14 +660,14 @@ are produced by substituting coordinates into templates
 `contentUriTemplates`), so those URIs are coordinate-derived, not content-addressed: two generations
 of one subtree collide at a single URI. The consequent rules:
 
-- an overlay may replace or suppress content at an already-available coordinate. It may never make an
+- an overlay MAY replace or suppress content at an already-available coordinate. It MUST NOT make an
   unavailable coordinate available, or the reverse;
 - any availability, subdivision, or hierarchy change publishes a new base revision under a new
   immutable prefix. Its closure reuses every unchanged content object by digest, so the cost is the
   changed subtree files plus the new root, not the dataset;
 - a patch targeting implicit content binds the subtree digest and the expected content digest, so an
   overlay can never be applied against a different availability;
-- clients must scope subtree caches to a base revision. This engine's `ImplicitSubtreeCache` finds
+- clients MUST scope subtree caches to a base revision. This engine's `ImplicitSubtreeCache` finds
   cached subtrees by implicit coordinates alone, with no revision component
   (`packages/engine/Source/Scene/ImplicitSubtreeCache.js`), so carrying an entry across a
   base-revision boundary is a correctness failure rather than a cache optimization.
@@ -455,7 +679,7 @@ Conditional content and patching solve different problems:
 - conditional content chooses among complete authored contents;
 - patching derives and atomically composes a new state relative to an immutable base.
 
-They can be complementary, but the MVP must not depend on an unsettled draft. Any later integration
+They can be complementary, but the MVP MUST NOT depend on an unsettled draft. Any later integration
 needs explicit rules for URI resolution, required-extension behavior, selection precedence,
 replacement readiness, and nested/external content support.
 
@@ -473,8 +697,8 @@ A terrain height patch cannot ignore them:
 
 - encoded normals are geometry-dependent per-vertex data sized `vertexCount * 2` bytes, and this
   engine never recomputes them, so a patch re-supplies them with cross-tile support (Section 8.1);
-- water masks may remain unchanged or be replaced as a separate typed stream;
-- metadata may remain unchanged only when its declared semantics remain true;
+- water masks MAY remain unchanged or be replaced as a separate typed stream;
+- metadata MAY remain unchanged only when its declared semantics remain true;
 - unknown extensions are preserved only when declared geometry-independent;
 - length/offset changes are handled by reconstructing a complete verified terrain resource rather
   than mutating unknown trailing bytes in place. Every appended record is reached by walking byte
@@ -561,10 +785,16 @@ Defines efficient representations when the base was built with stable update pro
 - `binaryResourceDelta`;
 - `featureMetadataOverride`;
 - `instanceTransformOverride`;
+- `submeshReplace`;
 - `quantizedMeshHeightOverride` — **sibling terrain profile, not part of the 3D Tiles extension**
-  (§2.3). It is listed here to keep the codec ladder in one place; its boundary and engine owner are
-  stated in §3.3.5;
-- `submeshReplace`.
+  (Section 2.3). Sparse absolute height codes; ladder rung 1 of Section 8.3;
+- `quantizedMeshHeightStreamReplace` — **sibling terrain profile, not part of the 3D Tiles
+  extension** (Section 2.3). Complete height-code stream plus the header fields that define or bound
+  it; ladder rung 2 of Section 8.3.
+
+The two `quantizedMesh*` codecs are listed here only to keep the codec ladder in one place. Their
+boundary and engine owner are stated in Section 3.3.5: nothing in the 3D Tiles extension may require
+them, and nothing in them may require the 3D Tiles extension.
 
 Each codec declares hard compatibility conditions. If any condition fails, the producer falls back
 to `replaceRegion`, whole-content replacement, or rebuild.
@@ -637,9 +867,9 @@ deployments, but URL globs and cache-busting tokens should not become normative 
 #### 3.3.2 Capabilities the engine does not have
 
 Three central laws of this design have **no owner in this repository today**: activate the mask and
-replacement in the same frame (§5.2), never partially apply a multi-tile, multi-LOD, or
-terrain-plus-imagery update (§10), and activate coupled terrain and imagery revisions together
-(§8.4).
+replacement in the same frame (Section 5.2), never partially apply a multi-tile, multi-LOD, or
+terrain-plus-imagery update (Section 10), and activate coupled terrain and imagery revisions together
+(Section 8.4).
 
 What exists instead is a per-tile path. The engine feed swaps one tile at a time by reusing the
 expired-content handoff — it assigns the live content to `_expiredContent`, flips the content state,
@@ -658,20 +888,20 @@ The prototype therefore introduces new engine components. Proposed names and fil
 | Region mask realization | `ReplacementRegionMask` | `packages/engine/Source/Scene/ReplacementRegionMask.js` | Dual-backend by construction: WebGL through `Scene/ClippingPolygonCollection.js` and `Scene/Model/ModelClippingPolygonsPipelineStage.js`, WebGPU through `Renderer/WebGPU/WebGPUClippingPolygonCollection.ts`. Both, or the operation does not ship. |
 | Coupled terrain + imagery swap | `GlobeSurfaceRevisionSwap` | `packages/engine/Source/Scene/GlobeSurfaceRevisionSwap.js`, driven from `Scene/GlobeSurfaceTileProvider.js` and `Scene/QuadtreePrimitive.js` | Backend-agnostic staging; WebGPU pins realizations through `Renderer/WebGPU/WebGPUSharedImageryRealizations.ts`, WebGL through its own texture path. |
 | Revision-pinned imagery attachment | extension of `ImagerySourceIdentity` | `packages/engine/Source/Renderer/ImagerySourceIdentity.ts`, `Scene/ImageryLayer.js`, `Scene/GlobeSurfaceTile.js` | The identity module is already backend-neutral and carries object identity plus a monotonic revision; WebGL must adopt the contract the WebGPU realization table already uses. |
-| Residency accounting and pinning | extension of the tileset cache | `packages/engine/Source/Scene/Cesium3DTilesetCache.js`, `Scene/Cesium3DTilesetStatistics.js` | Backend-agnostic. Reports pinned, baked, and double-resident bytes; see §3.3.3. |
-| Digest-keyed derived-composite cache | `PatchBakeCache` | `packages/engine/Source/Scene/PatchBakeCache.js`, over `Renderer/ResourceOwnership/RealizationShadowCache.ts` | Backend-agnostic. Holds the §3.4.2 local bake as an evictable entry keyed by exact state/base/patch identity. |
+| Residency accounting and pinning | extension of the tileset cache | `packages/engine/Source/Scene/Cesium3DTilesetCache.js`, `Scene/Cesium3DTilesetStatistics.js` | Backend-agnostic. Reports pinned, baked, and double-resident bytes; see Section 3.3.3. |
+| Digest-keyed derived-composite cache | `PatchBakeCache` | `packages/engine/Source/Scene/PatchBakeCache.js`, over `Renderer/ResourceOwnership/RealizationShadowCache.ts` | Backend-agnostic. Holds the Section 3.4.2 local bake as an evictable entry keyed by exact state/base/patch identity. |
 
 Two of these lean on infrastructure the fork already has and does not yet use.
 `Renderer/ResourceOwnership/` supplies content fingerprints with revisions, realization leases, and a
 submission-serial authority that runs a retirement only after the submission referencing the resource
 has completed. It has no engine consumer today; only `Tools/far200-shadow-self-test.ts` exercises it.
 Adopting it is cheaper and safer than inventing a second retirement mechanism, because it already
-implements the §10 rule that resources retire only when submitted work can no longer reference them.
+implements the Section 10 rule that resources retire only when submitted work can no longer reference them.
 
 Repository principle 5 governs all of it: a capability that composes patched content exists on both
 backends, or the work item that schedules it declares it single-backend explicitly. Nothing here is
 architecturally WebGL-hostile — the mask is the only piece with genuinely backend-specific halves, and
-both halves already exist. Every row is a prerequisite for the prototype phases of §15 and belongs in
+both halves already exist. Every row is a prerequisite for the prototype phases of Section 15 and belongs in
 [DEFERRED_WORK.md](DEFERRED_WORK.md) before P1 starts.
 
 #### 3.3.3 One tileset, one cache, one budget
@@ -692,13 +922,13 @@ any non-selected tile once total memory exceeds `cacheBytes`, with no concept of
 
 1. Mask coverage and replacement root coverage belonging to the committed generation are **pinned**.
    Evicting them re-exposes base geometry inside the mask and resurrects retired content, breaking
-   §5.2 and §10.
+   Section 5.2 and Section 10.
 2. Content below replacement root coverage evicts normally.
-3. Baked composites (§3.4.2) evict first; they are reconstructible from base plus patch.
+3. Baked composites (Section 3.4.2) evict first; they are reconstructible from base plus patch.
 4. Pinned bytes shrink the usable budget, so activation needs a client-side admission gate: if the
    committed pinned coverage would exceed a configured fraction of `cacheBytes`, refuse activation and
    report degraded absence rather than thrash. This gate is a client rule and is distinct from the
-   producer optimizer of §9.
+   producer optimizer of Section 9.
 5. Bounded zero-flicker double residency is expressed in `maximumCacheOverflowBytes` headroom. A swap
    whose predecessor plus successor coverage does not fit within `cacheBytes` plus
    `maximumCacheOverflowBytes` defers instead of committing.
@@ -721,14 +951,14 @@ reconcile as follows.
 - **One premise yields, and it is Phase 8's.** Its case for data-oriented storage rests on tile
   content mutating rarely. A continuously changing provider makes that false as stated. The amendment:
   per-frame CPU cost becomes O(camera-delta + committed-change-delta), and the second term is bounded
-  by the same admission and throttle rules that bound the producer in §3.4.3. The resident layout does
+  by the same admission and throttle rules that bound the producer in Section 3.4.3. The resident layout does
   not change; the cost claim does.
 - **One rule binds this design.** A commit allocates a new slot, commits, then frees the predecessor
   slot; it never mutates a live slot in place. This is the resident-storage form of the immutable-base
   law, and it is what keeps a swap atomic once the store is GPU-side.
 - **One swap owner, not two.** If the resident stack lands after this prototype, its slot-table write
   becomes the transaction's commit rather than a second owner inside the store. The transaction of
-  §3.3.2 is therefore written so that committing is a table write, not a mutation of tile objects.
+  Section 3.3.2 is therefore written so that committing is a table write, not a mutation of tile objects.
 - **The facade requirement extends to patched content.** That design keeps `Cesium3DTileset`,
   `Cesium3DTile`, and `scene.pick` as the public surface; the compositor subtree is reachable through
   the same surface, never through a parallel API.
@@ -744,7 +974,7 @@ The additive residency techniques queued for voxels and point clouds
 - **Voxel empty-space skipping.** Per-slot occupancy metadata is derived from content, so a patched
   brick invalidates its occupancy entry. Derived data is regenerated inside the same atomic
   transition — the same obligation the terrain profile carries for client-derived descendants
-  (§3.3.5).
+  (Section 3.3.5).
 - **Ray-guided residency feedback.** GPU miss-flags return through a readback ring. Feedback records
   carry the generation that produced them and records from a retired generation are dropped, or the
   streamer loads content for a state that no longer exists.
@@ -752,24 +982,25 @@ The additive residency techniques queued for voxels and point clouds
   at a frame boundary satisfies this by construction, which is one reason the boundary is normative
   rather than convenient.
 
-Local baking (§3.4.2) **composes** with GPU residency under two rules: the bake is a slot write like
+Local baking (Section 3.4.2) **composes** with GPU residency under two rules: the bake is a slot write like
 any other load, and the slot table records the bake's exact digest key and generation so refill is
 reproducible and a stale slot is detectable. It conflicts only with in-place slot mutation, which both
 designs forbid.
 
 #### 3.3.5 The terrain boundary and its crossings
 
-§2.3 keeps quantized-mesh terrain and independent imagery outside the 3D Tiles extension. Three
+Section 2.3 keeps quantized-mesh terrain and independent imagery outside the 3D Tiles extension. Three
 crossings exist anyway; each has an owner:
 
 | Crossing | Where it appears | Owner |
 | --- | --- | --- |
-| Quantized-mesh height override among the Layer B codecs | §3.1 | Terrain sibling profile. Engine owner is `Scene/GlobeSurfaceTileProvider.js` and the terrain data classes, never `Cesium3DTileset`. |
-| Client-derived descendants: `Scene/GlobeSurfaceTile.js` upsamples child terrain from a parent and caches the result per tile rather than per parent generation, so a parent height patch leaves stale children | §8.1 | Terrain sibling profile plus `GlobeSurfaceRevisionSwap`, which invalidates every derived descendant in the same transition. |
-| Coupled imagery revision | §8.4 | Imagery profile plus revision-pinned attachment through `Renderer/ImagerySourceIdentity.ts`. |
+| Quantized-mesh height override among the Layer B codecs | Section 3.1 | Terrain sibling profile. Engine owner is `Scene/GlobeSurfaceTileProvider.js` and the terrain data classes, never `Cesium3DTileset`. |
+| Client-derived descendants: `Scene/GlobeSurfaceTile.js` upsamples child terrain from a parent and caches the result per tile rather than per parent generation, so a parent height patch leaves stale children | Section 8.1 | Terrain sibling profile plus `GlobeSurfaceRevisionSwap`, which invalidates every derived descendant in the same transition. |
+| Coupled imagery revision | Section 8.4 | Imagery profile plus revision-pinned attachment through `Renderer/ImagerySourceIdentity.ts`. |
 
 A deployment with terrain and imagery only has no `tileset.json` on which to hang the extension, so
-its discovery bootstrap belongs to the sibling profiles rather than to this one (§16).
+its discovery bootstrap belongs to the sibling profiles rather than to this one (Section 16,
+question 11).
 
 #### 3.3.6 Subsystem couplings a committed generation touches
 
@@ -780,11 +1011,11 @@ and their own tile requests, so a generation is observed more than once per fram
 - **Picking.** Two obligations. The commit boundary lies between frames, so every pass within a frame
   observes one generation — pick never sees a generation the color pass did not. And the most-detailed
   passes materialize content outside the render frontier, so masks and tombstones bind at traversal
-  time for future-loaded content rather than by walking the current cache (§10 states the law; the
+  time for future-loaded content rather than by walking the current cache (Section 10 states the law; the
   traversal is where it binds). Engine sites: `Scene/Picking.js`,
   `Renderer/WebGPU/WebGPUPickFramebuffer.ts`.
 - **Height and ray queries.** `pickFromRay`, `sampleHeight`, and `clampToHeight` drive most-detailed
-  traversals over the same content, so "rendering-only" (§16, decision 1) is not free in this engine:
+  traversals over the same content, so "rendering-only" (Section 16, question 1) is not free in this engine:
   those queries observe the base unless the mask applies to their pass too. Whichever way that decision
   settles, it is stated as a capability of the profile rather than left to fall out of the
   implementation.
@@ -860,9 +1091,11 @@ and rebuilds a prefix ending at `g-k`. Every rule below is written for that cond
    change.
 3. **If patching wins, publish it first.** Build and verify the immutable patch closure, publish the
    complete active state, CAS the tiny head, then emit the low-latency update. Only after that head
-   commit is the durable rebuild/compaction job eligible to start. The producer never waits for every
-   client to acknowledge or apply the patch—an unbounded global acknowledgement barrier would stall
-   the source pipeline.
+   commit is any **scheduled** rebuild or compaction job eligible to start — and one is scheduled
+   only when the Section 9 choice was `patch-then-rebuild` or a Section 12 trigger fired, never
+   merely because a patch was published (decision 14). The producer never waits for every client to
+   acknowledge or apply the patch: an unbounded global acknowledgement barrier would stall the source
+   pipeline.
 4. **If patching loses, rebuild directly.** Produce the smallest complete materialized result that
    preserves correctness: one content, affected tiles, an affected subtree, or a new base revision.
    This direct result is already the durable rebuild; do not also create a transient patch.
@@ -904,11 +1137,11 @@ rule below is written against a moving frontier:
   `(stateDigest, baseDigest, patchRevisionIds, codec/profile versions)`. It never mutates the immutable
   downloaded base, changes server identity, or becomes authoritative. The entry may be CPU materialized,
   GPU sparse-updated, or compositor-backed according to the codec and cost model. Under GPU residency
-  the bake is a slot write whose key and generation the slot table records (§3.3.4), and it is the
-  first thing evicted under budget pressure (§3.3.3).
+  the bake is a slot write whose key and generation the slot table records (Section 3.3.4), and it is the
+  first thing evicted under budget pressure (Section 3.3.3).
 - If a newer rebuilt tile becomes authoritative before an off-screen patch is realized, skip the
   obsolete bake and prepare the newest generation directly. Under a sustained stream this is routine,
-  so skipped-obsolete-bake and wasted-pre-bake counts are first-class benchmark outputs (§15.2) rather
+  so skipped-obsolete-bake and wasted-pre-bake counts are first-class benchmark outputs (Section 15.2) rather
   than anomaly reports.
 
 #### 3.4.3 Configurable rebuild debounce, throttle, and maximum wait
@@ -939,14 +1172,18 @@ tile cannot starve unrelated targets, reports repeated deferrals and oldest-job 
 operator/capacity alert when the deployment's maximum deferral or patch-debt budget is exceeded. It
 still never violates a writer-fence, memory, or correctness cap merely to meet a timer.
 
-**Dependency on the optimizer's terminal-patch semantics.** Under decision 14 (§1.2) every economical
-patch is followed by a durable rebuild, so with a never-idle stream the rebuild queue is never empty
-and the parameters above are what bound patch debt. If §9 instead admits **terminal** patches —
-patches whose mandated rebuild is uneconomical and is therefore never scheduled — then `maxWait` stops
-being a completion timer and becomes a debt ceiling, and these thresholds become the inputs that decide
-terminality. §9 owns that decision; this section states the dependency and is re-read against whichever
-way it settles. The client rules of §3.3.3 and §3.4.2 are unaffected either way, because a terminal
-patch is still an ordinary committed generation to a client.
+**Relationship to terminal patches.** Decision 14 settled this: a patch may be **terminal**, so the
+rebuild queue is not fed by every publication and `maxWait` is not a completion timer for one.
+`maxWait` is a **debt ceiling** on the jobs that were actually scheduled — the
+`patch-then-rebuild` selections of Section 9.4 and the compactions the Section 12 trigger requires
+— and the thresholds above are among the inputs that decide terminality, because Section 9.2's
+terminal-admissibility gate admits `patch-terminal` only while every Section 12 predicate stays
+false for every touched bin. Two consequences follow for this section. A quiet stream can leave the
+rebuild queue legitimately empty, and that is a correct steady state rather than a starved scheduler.
+And a bin whose trigger has fired keeps a scheduled job even if the producer would rather not run it,
+because a deferred trigger is still a fired trigger (Section 12). The client rules of Sections 3.3.3
+and 3.4.2 are unaffected either way: a terminal patch is an ordinary committed generation to a
+client.
 
 #### 3.4.4 Rebuilt-tile publication and patch invalidation
 
@@ -966,7 +1203,7 @@ the old base/patch-derived CPU/GPU state. Server garbage collection is a later r
 
 Because the simulation does not pause for the rebuild, publication of the rebuilt successor races the
 next steps of the stream. The surviving-tail rebase rule is therefore load-bearing under the primary
-deployment rather than an edge case: a rebuild that cannot rebase its tail defers (§3.4.3) instead of
+deployment rather than an edge case: a rebuild that cannot rebase its tail defers (Section 3.4.3) instead of
 publishing a base that silently drops changes.
 
 ---
@@ -980,7 +1217,7 @@ UUIDs identify logical objects; digests identify exact bytes. Both are needed.
 | `datasetId` | Stable UUID for the logical dataset across every compaction. |
 | `componentId` | Stable identifier for one state component/profile, such as a 3D Tiles surface, imagery layer, collision layer, or metadata/query companion. |
 | `baseRevisionId` | UUID for one immutable base publication. Prefer time-sortable UUIDv7. |
-| `baseUri` | URI of the immutable component-profile root descriptor; the 3D Tiles profile points to `tileset.json`. |
+| `baseUri` | URI of the immutable component-profile root descriptor. Each component profile defines that descriptor's format: the 3D Tiles profile points at a `tileset.json`, the quantized-mesh terrain profile at a `layer.json`, and an imagery-revision profile at whatever root its own service defines. |
 | `resourceManifestUri` | URI of the immutable transitive-resource/Merkle manifest for the base. |
 | `resourceManifestDigest` | Digest binding the manifest that identifies base JSON, external tilesets, subtrees, GLBs, buffers, images, and other transitive resources. |
 | `baseDigest` | Digest of the canonical base-revision descriptor, which includes `componentId`, `baseRevisionId`, root identity, and resource-manifest identity. This one digest therefore binds both logical revision and exact bytes. |
@@ -1013,8 +1250,8 @@ UUIDs alone do not prove content integrity. Digests alone are poor human/operati
 
 ### 4.1 Tiny mutable head
 
-The frequently revalidated object should remain on the order of hundreds of bytes, not contain the
-full patch history:
+The frequently revalidated object SHOULD remain on the order of hundreds of bytes, and MUST NOT
+carry the full patch history:
 
 ```json
 {
@@ -1200,7 +1437,7 @@ The state manifest describes only active patches, not every historical operation
       "base": {
         "baseRevisionId": "0198a98c-7d4f-78b1-8169-c815d33ce5f1",
         "sourceRevision": "source:918273",
-        "baseUri": "imagery/0198a98c/layer.json",
+        "baseUri": "imagery/0198a98c/imagery-root.json",
         "resourceManifestUri": "imagery/0198a98c/resources.merkle.json",
         "resourceManifestDigest": "sha256:...",
         "baseDigest": "sha256:imagery-base"
@@ -1229,14 +1466,17 @@ The state manifest describes only active patches, not every historical operation
 }
 ```
 
-The `transition` object is optional provenance for an incremental handoff. A cold client may fetch
+The `transition` object is optional provenance for an incremental handoff. Its `reason` is
+free-form in this revision; Section 2.4 records `3DTILES_temporal`'s semantic-change enumeration —
+{`creation`, `demolition`, `modification`, `union`, `division`} — as the adoption candidate
+for it (decision 23), to be fixed at D1. A cold client MAY fetch
 the latest head, verify the referenced state manifest directly, and materialize it without walking
 any predecessor chain. The head's `stateDigest` and content-addressed `stateUri` bind the manifest;
 including that digest inside the hashed document would be circular.
 
 Every `sourceRevision` is interpreted only through its bound `sourceDomainId`. The state's
 duplicate-free `sourceDomains` registry defines canonical revision encoding/comparison and whether
-the order is total, partial, or exact-set-only. A one-domain state may declare one default inherited
+the order is total, partial, or exact-set-only. A one-domain state MAY declare one default inherited
 by component/base/update-lineage records; a multi-domain state names the domain explicitly on each
 record. Watermarks, prefix compaction, and tail partitioning are per domain, and revisions from
 different domains are never compared. Partial/exact-set domains use bounded ID sets or Merkle roots
@@ -1244,7 +1484,10 @@ rather than inventing an order.
 
 Each `componentId` is unique in the state. A component profile is identified by an exact, versioned
 `{id, version}` pair; an unknown version is an unknown profile, not an assumed compatible revision.
-The complete `stateRevisionId` is one atomic semantic unit: every changed component must verify and
+Each profile also defines its own `baseUri` root-descriptor format, so the example's
+`imagery-root.json` is a placeholder for whatever the imagery service publishes and is deliberately
+**not** `layer.json`, which is the quantized-mesh terrain descriptor (Section 2.3).
+The complete `stateRevisionId` is one atomic semantic unit: every changed component MUST verify and
 meet the bounded activation frontier before any of them commits. Independent changes that should not
 wait for each other are published as separate state generations; coupled terrain/imagery/object
 changes share one state. A one-component tileset is simply a one-element `components` array.
@@ -1263,12 +1506,12 @@ itself non-current. That is a currentness statement, not a fail-closed suppressi
 client is never made to blank content it already had (Section 11). A fallback names an exact
 alternate component/closure descriptor, its digest, semantic/output identity, and its smaller
 capability set; it is not an alternate state manifest and therefore cannot conflict with the head's
-single `stateDigest`. A profile may be marked ignorable only when it cannot affect any claimed
+single `stateDigest`. A profile MAY be marked ignorable only when it cannot affect any claimed
 rendering/query/currentness result and is not needed by another component. Unsupported required
 members are never partially ignored, and an unknown required component/profile rejects the whole
 atomic state unless such an in-state fallback is compatible and ready.
 
-Each component resource manifest binds its transitive immutable base closure. It may be a flat digest
+Each component resource manifest binds its transitive immutable base closure. It MAY be a flat digest
 list for small datasets or a Merkle tree for large ones, allowing a client to verify touched resources
 without downloading or hashing the entire base. Changing any bound resource publishes a new base
 revision for that component. Replacement tilesets bind their complete transitive closure through the
@@ -1279,7 +1522,7 @@ Every active patch separates a small mandatory descriptor from its potentially h
 descriptor contains the exact operation type, component/base target, selector/mask, canonical write
 set, payload and closure digests/URIs, capability requirements, and conservative bounds. It is fetched
 and verified with the state-control closure so the client can build a complete loaded/future-loaded
-selector index without downloading off-screen geometry or texture bytes. For small states it may be
+selector index without downloading off-screen geometry or texture bytes. For small states it MAY be
 inlined; for larger bounded states it is a content-addressed descriptor/index shard. Heavy patch,
 replacement, and codec resources remain demand-loadable. A coarse `bounds` field alone is only an
 acceleration hint and never sufficient to suppress stale content.
@@ -1289,7 +1532,7 @@ does not accumulate update history. Per-component `tombstones` contains bounded 
 suppressions. `revocations` is reserved for a future authenticated hard-revocation profile; a core
 client that does not implement that required profile rejects the state, keeps what it already had,
 and makes no absence claim about the revoked target. The hard-absence guarantee is scoped to clients
-that implement the profile (Sections 11 and 13). Neither list is a general audit log, and both must be
+that implement the profile (Sections 11 and 13). Neither list is a general audit log, and both MUST be
 compacted or sharded under explicit limits.
 
 Every tombstone record carries `tombstoneId`, `tombstoneRevisionId`, exact component `baseDigest`,
@@ -1307,7 +1550,7 @@ The active operation set is not an imperative log and JSON array order has no se
   target/write set;
 - typed MVP overrides contain absolute result values/blocks/resources, not order-dependent additive
   mutations;
-- independent MVP patch and tombstone write sets must be disjoint. Two independent patches,
+- independent MVP patch and tombstone write sets MUST be disjoint. Two independent patches,
   patch-versus-tombstone, or two nonidentical tombstones that overlap the same semantic element,
   texture block, content slot, or mask interior conflict unless the successor state omits/supersedes
   one;
@@ -1324,7 +1567,7 @@ The active operation set is not an imperative log and JSON array order has no se
   fail-closed dominance over any patch or tombstone targeting the revoked digest. This is profile
   semantics, not list order.
 
-The law must also yield exactly one result when a supersession and an invalidation reach a client for
+The law MUST also yield exactly one result when a supersession and an invalidation reach a client for
 the same target at the same time. Precedence is fixed:
 
 1. **Generation.** Head compare-and-swap totally orders states, so the higher verified `generation`
@@ -1342,7 +1585,7 @@ the same target at the same time. Precedence is fixed:
 These rules make a cold load deterministic, make a concurrent supersede and invalidate converge on one
 answer, and prevent the same active snapshot from producing different bytes after list reordering. The
 first `replaceRegion` profile requires disjoint **closed**
-masks, including boundaries and transition collars; typed codec schemas must expose equally precise
+masks, including boundaries and transition collars; typed codec schemas MUST expose equally precise
 write-set conflict tests.
 
 Canonical state serialization sorts every semantically unordered component, patch, tombstone,
@@ -1387,23 +1630,24 @@ member descendant. The producer/state profile distinguishes:
   loaded later under the already-committed generation.
 
 The complete state-control closure and all heavy resources in the current bounded activation frontier
-must be ready together. After commit, an unloaded/off-screen member can resolve only from the new
-generation; stale loaded content may remain cached but cannot re-enter **as** the new generation. An
-explicitly stale-compatible/degraded profile may render a separately identified predecessor, but that
+MUST be ready together. After commit, an unloaded/off-screen member can resolve only from the new
+generation; stale loaded content MAY remain cached but cannot re-enter **as** the new generation. An
+explicitly stale-compatible/degraded profile MAY render a separately identified predecessor, but that
 output uses the complete coupled predecessor component group and is outside the required/current
 atomic-state guarantee. A required/current profile withholds the complete coupled target group until
 its new frontier is ready. This preserves authoritative semantic atomicity without fetching every
 off-screen payload or creating unbounded double residency.
 
-For very large active patch sets, the same logical schema may be encoded as a compact binary index
+For very large active patch sets, the same logical schema MAY be encoded as a compact binary index
 or spatially partitioned manifest. JSON is preferred for the MVP because its operational simplicity
 and debuggability outweigh small encoding savings at low patch counts.
 
 ### 4.3 Content-addressed storage law
 
-- Immutable base, state, and patch URLs may be cached for a long period with `immutable` semantics.
+- Immutable base, state, and patch URLs MAY be cached for a long period with `immutable` semantics.
 - Only the tiny head is mutable.
-- A patch is ephemeral only in **reachability**. A referenced immutable object cannot be deleted.
+- A patch is ephemeral only in **reachability**, never in authority or durability: it is a published
+  state like any other, and a referenced immutable object cannot be deleted.
 - Compaction publishes a new base before advancing the head.
 - Old bases and patches remain available for at least the retention window that Section 4.5 computes
   from the deployment's declared constants.
@@ -1437,7 +1681,7 @@ Every authority hop is covered:
 | entrypoint to head | `headUri` in the bootstrap fragment; additionally `entrypointDigest` under the revocation profile | The unsigned and signed profiles do not bind the entrypoint, so a stripped or repointed entrypoint is a downgrade those profiles permit and the revocation profile does not (Section 4.1). |
 | head to state | `stateDigest` over the served canonical state bytes | The head is the freshness authority; Section 4.1 states exactly what each profile proves about it. |
 | state to patch descriptor | `descriptorDigest` | Fetched and verified with the state-control closure. |
-| descriptor to payload | `payloadDigest` plus closure digests | The heavy payload may be lazy; it is never activated unverified. |
+| descriptor to payload | `payloadDigest` plus closure digests | The heavy payload MAY be lazy; it is never activated unverified. |
 | state to base | `baseDigest` | Binds the canonical base descriptor including root identity and resource-manifest identity. |
 | base to resources | `resourceManifestDigest`, then per-resource digests or Merkle proofs | Touched resources verify without hashing the whole base. |
 | replacement tileset to its closure | the same resource-manifest mechanism | Replacement content is not a trust exception. |
@@ -1449,7 +1693,7 @@ that exposure is stated in Section 4.1 rather than left implicit.
 
 ### 4.4 Invalidation, supersession, and revision transitions
 
-The extension family has one state authority and may expose many notification transports. An enabled
+The extension family has one state authority and MAY expose many notification transports. An enabled
 tileset discovers the authoritative head through a small bootstrap object. The following is the
 relevant fragment; a complete 3D Tiles entrypoint also lists the vendor name in `extensionsUsed` and,
 when current-state behavior is mandatory, in `extensionsRequired`:
@@ -1469,34 +1713,37 @@ when current-state behavior is mandatory, in `extensionsRequired`:
 ```
 
 The final vendor name is intentionally unfrozen. If current/revoked-state behavior is required for
-correct rendering, the extension must also appear in `extensionsRequired`; an optional-to-ignore
+correct rendering, the extension MUST also appear in `extensionsRequired`; an optional-to-ignore
 extension can promise only a valid but potentially stale base.
 
 `freshnessProfile` is one of `unsigned`, `signed`, or `revocation` and selects the guarantees of
 Section 4.1. A client that does not implement the declared profile does not participate in it: it is
 an unaware client for this dataset and behaves exactly as Section 11 describes. The revocation profile
 additionally publishes the trust-domain descriptor and key material its clients pin; key distribution
-and rotation remain open (Section 16).
+and rotation remain open (Section 16, questions 14 and 16).
 
 #### Normative terminology
 
 | Term | Meaning |
 | --- | --- |
 | `supersede` | Publish a verified successor state and stop treating the predecessor as current when the successor atomically activates. |
-| `invalidate` | Signal that an exact logical state or target must not be assumed current and that the authoritative head must be reconciled. It is not deletion. |
+| `invalidate` | Signal that an exact logical state or target MUST NOT be assumed current and that the authoritative head MUST be reconciled. It is not deletion. |
 | `revalidate` | Perform HTTP validation of the mutable head, normally with a strong ETag and conditional `GET`. |
 | `suppress` | Intentionally make selected content absent without replacement; persist this semantic result as an active tombstone/mask in the state snapshot. |
-| `revoke` | Fail-closed security/corruption action in the future authenticated revocation profile. A current signed state must retain enough data for cold clients; ordinary event history is insufficient. |
-| `retire` | Stop traversing/rendering a predecessor generation and release its CPU/GPU resources after all submitted work is safe. |
+| `revoke` | Fail-closed security/corruption action in the future authenticated revocation profile. A current signed state MUST retain enough data for cold clients; ordinary event history is insufficient. |
+| `retire` | **Client-side.** Stop traversing/rendering a predecessor generation and release its CPU/GPU resources after all submitted work is safe. |
+| `retireClosure` | **Publisher-side.** Stop treating a base, patch, tombstone, or state closure as reachable from the current state. It happens by omission from the new active-state snapshot and is purely logical: the bytes stay exactly where they were, and only `garbageCollect` removes them. |
+| `withdraw` | Remove a revocation record from the active state, permitted only once no supported retained entrypoint, state, or offline lease can still select its target, or an equally authoritative persistent deny root continues to cover it. It is not `retire` in either sense above. |
 | `garbageCollect` | Physically delete an unreachable immutable server object after every retention, lease, rollback, and shared-reference condition passes. |
 | `fail closed` | Refuse to treat a disputed input as authoritative and stop making the guarantee it would have supported, without inventing a new visible state: keep the current verified generation, do not activate the disputed input, report the condition, and reconcile against the authoritative head. It never means blanking content that no rule requires to be absent, and it is never reachable from unauthenticated input. The only operation that intentionally produces absence is `revoke`. |
 
-The ordinary compaction path is `supersede -> retire -> garbageCollect`, never
+The ordinary compaction path is `supersede -> retireClosure -> garbageCollect` on the publisher
+side, with the client's own `retire` riding the activation that follows. It is never
 `invalidate -> delete -> try to load replacement`.
 
 #### Lightweight transition hint
 
-A push/SSE/WebSocket/poll response may carry this compact shape:
+A push/SSE/WebSocket/poll response MAY carry this compact shape:
 
 ```json
 {
@@ -1549,7 +1796,7 @@ carries two independent keys:
   carries no semantic authority whatsoever.
 
 `successor.stateUri`, `mode`, `reason`, and `affected` are non-authoritative routing, priority, or
-diagnostic hints and may vary or be omitted across transports; they never change state semantics or
+diagnostic hints and MAY vary or be omitted across transports; they never change state semantics or
 authorize content. The subsequently verified head supplies the usable state URI and complete identity.
 
 Durable deduplication state — seen `invalidationId` values, epoch and sequence positions, and the
@@ -1585,13 +1832,13 @@ Client laws:
    generations never decrease.
 6. A notification cannot inject an arbitrary URI or patch. The verified head/state and their digest
    closures remain authoritative.
-7. The fetched state's `datasetId`, `generation`, and `stateRevisionId` must exactly equal the head,
-   and its canonical digest must equal `stateDigest`. That comparison is between two verified objects,
-   so a mismatch is a retry or a fail-closed split-brain. A hint's successor generation/digest must
+7. The fetched state's `datasetId`, `generation`, and `stateRevisionId` MUST exactly equal the head,
+   and its canonical digest MUST equal `stateDigest`. That comparison is between two verified objects,
+   so a mismatch is a retry or a fail-closed split-brain. A hint's successor generation/digest MUST
    match the subsequently verified head before it can accelerate work, but a disagreement there is
    hint evidence only: discard the hint and reconcile ordinarily (law 9), never activate from the
    hint, and never fail closed on hint evidence alone.
-8. For direct-transition optimization, the hint's `invalidationId` and `supersedesStateDigest` must
+8. For direct-transition optimization, the hint's `invalidationId` and `supersedesStateDigest` MUST
    equal the state transition's `invalidationId` and `parentStateDigest`. A mismatch discards the
    incremental hint path and performs ordinary complete head/state reconciliation; it cannot reject an
    otherwise valid cold-load snapshot solely because non-authoritative hint metadata was wrong.
@@ -1623,11 +1870,13 @@ Normative selectors are typed and base-scoped; producer-specific wildcard paths 
 | `region` | Declared world/ellipsoid coordinate model, stable content group, conservative bounds, and the same mask rules as `replaceRegion`. |
 | `resourceClosure` | Exact resource/Merkle root digest for retirement and GC; not normally a render selector because resources may be shared. |
 
-Unloaded content must consult the active selector/tombstone index when it is later materialized.
+Unloaded content MUST consult the active selector/tombstone index when it is later materialized.
 Invalidating only tile objects that happen to be in memory is incorrect. For implicit tiling, an
-overlay may replace or suppress content at an already-available coordinate, but changing tile/content
-availability or packed subtree topology requires a new subtree/base revision or a future dedicated
-availability-overlay profile.
+overlay MAY replace or suppress content at an already-available coordinate, but changing tile/content
+availability or packed subtree topology requires a **new base revision** — Section 4 defines no
+subtree-level revision identity, and a new base revision's closure reuses every unchanged
+content-addressed resource, so the cost is the changed subtree files plus the new root — or a future
+dedicated availability-overlay profile.
 
 Canonical locator rules:
 
@@ -1637,12 +1886,12 @@ Canonical locator rules:
   zero-based content index plus tile-subobject/content descriptor digests;
 - an implicit root locator is the bound implicit-root descriptor digest. Coordinates include the
   declared subdivision scheme and zero-based content index, and bind the subtree/resource proof;
-- a producer may expose a shorter stable tile/group ID only when the bound resource manifest maps it
+- a producer MAY expose a shorter stable tile/group ID only when the bound resource manifest maps it
   one-to-one to the canonical locator;
 - a `contentGroupId` is declared by the component profile and maps to a closed set of content slots or
   conditional variants; and
 - authoritative operations require the expected target digest/proof. Non-authoritative event hints
-  may omit it because they can only prioritize reconciliation, never mutate behavior.
+  MAY omit it because they can only prioritize reconciliation, never mutate behavior.
 
 Runtime-expanded child topology and a bare URI are not canonical locators. External tilesets,
 multiple contents, and repacks therefore resolve identically only through the digest-bound segment
@@ -1650,9 +1899,9 @@ chain above.
 
 ### 4.5 Retention, retirement manifests, and garbage collection
 
-Omission from the new active-state snapshot is the authoritative logical retirement rule. An optional
-immutable retirement manifest can summarize closure-level operational advice without bloating the hot
-head or active state:
+Omission from the new active-state snapshot is the authoritative closure-retirement rule
+(`retireClosure`, Section 4.4). An optional immutable retirement manifest can summarize
+closure-level operational advice without bloating the hot head or active state:
 
 ```json
 {
@@ -1679,7 +1928,7 @@ head or active state:
 ```
 
 Each retired closure carries `retainUntil`, the publisher's guaranteed-availability deadline for that
-closure. `purgeEligibleAfter` is the earliest time an implementation may even consider collection and
+closure. `purgeEligibleAfter` is the earliest time an implementation MAY even consider collection and
 MUST be greater than or equal to every applicable `retainUntil`; neither field is permission to
 delete.
 
@@ -1730,7 +1979,7 @@ closure/Merkle root, object count, total bytes, and verification epoch. Head CAS
 O(1) atomic check that the lease/token is current and the matching sealed certificate exists, then
 promotes that closure root to a durable head root in the same transaction; it never enumerates or
 `HEAD`s the closure in the CAS critical path. A publisher whose lease expired or whose pin was reaped
-cannot CAS even when its expected predecessor head still matches. After a crash, an orphan reaper may
+cannot CAS even when its expected predecessor head still matches. After a crash, an orphan reaper MAY
 release an expired pin only after its abort grace period and a fresh
 head/retained-root/shared-reference check; a pin whose candidate won CAS is redundant with the new
 head root, never an orphan. This bounds leaked staging storage without reopening the sweep race.
@@ -1771,7 +2020,7 @@ HTTP policy follows the identity model:
 - the head is mutable and MUST NOT be served with a freshness lifetime exceeding the declared
   `maxHeadRevalidationInterval`. The immediate-notification profile serves it with
   `Cache-Control: no-cache, must-revalidate` and a strong ETag, and a hint-triggered request requires
-  end-to-end revalidation; a bounded-lag polling profile may instead declare a short freshness budget
+  end-to-end revalidation; a bounded-lag polling profile MAY instead declare a short freshness budget
   plus `must-revalidate` and accept that delay as its stated maximum lag. Under the signed profile the
   detached head-statement signature is served with the head, so one response satisfies both;
 - for a continuously publishing producer the steady-state cost is conditional `GET`s rather than head
@@ -1791,7 +2040,7 @@ HTTP policy follows the identity model:
 - a `404`, `410`, cache purge, or expiry timestamp can never recall bytes already cached by a client.
 
 An offline snapshot is internally consistent at generation `G`, but it cannot claim currentness. On
-reconnect it may jump directly to the latest complete state without replaying missed invalidations.
+reconnect it MAY jump directly to the latest complete state without replaying missed invalidations.
 
 ---
 
@@ -1847,7 +2096,7 @@ A hill may exist in coarse ancestors, the edited tile, and fine descendants. Mas
 allows the old hill to reappear during zoom transitions.
 
 The mask therefore applies to every selected base LOD, while the replacement mini-tileset traverses
-its own bounding volumes and geometric error. The client must:
+its own bounding volumes and geometric error. The client MUST:
 
 1. Traverse the base normally.
 2. Traverse the replacement independently.
@@ -1857,12 +2106,12 @@ its own bounding volumes and geometric error. The client must:
 6. Before activation, any candidate failure keeps the predecessor active.
 7. After activation, never lower the authoritative generation merely because a resource becomes
    unavailable. Retry/materialize the current generation or use only a stale fallback that the
-   publication explicitly permits; otherwise report degraded absence. Hard-revoked content must
+   publication explicitly permits; otherwise report degraded absence. Hard-revoked content MUST
    never reappear.
 
 ### 5.3 MVP mask restrictions
 
-To remain interoperable and fast, the first mask profile should be narrow:
+To remain interoperable and fast, the first mask profile SHOULD be narrow:
 
 - WGS84 geodetic surface polygon applied only to a declared continuous 2.5D surface content group;
 - no self-intersections;
@@ -1873,7 +2122,17 @@ To remain interoperable and fast, the first mask profile should be narrow:
 - one continuous 2.5D base surface target, avoiding accidental clipping of buildings, bridges, or
   underground content sharing the same geodetic column;
 - replacement root covers the whole mask;
-- replacement remains inside the base root bounding volume.
+- replacement remains inside the base root bounding volume;
+- polygon vertex count and total active-mask spatial-index size within the limits Section 13 requires
+  the deployment to declare;
+- **representable on both backends at the precision the profile claims.** The fork realizes masks
+  through the clipping-polygon collections named in Section 3.3.2, whose WebGPU half rasterizes a
+  signed-distance atlas rather than evaluating the polygon analytically. A mask whose thinnest
+  feature, sliver, or transition collar falls below the atlas texel footprint at the viewing
+  distances the profile covers is not representable there, so the profile MUST declare a minimum
+  feature size and reject a mask below it at publication rather than degrade silently on one
+  backend. A mask that cannot be represented within the declared limits on **both** backends is not
+  a valid mask (decision 36).
 
 Arbitrary 3D volumes, buildings mixed with terrain, overlapping patches, and named content groups can
 follow after the surface profile is proven.
@@ -1881,7 +2140,7 @@ follow after the surface profile is proven.
 ### 5.4 Performance rules
 
 - Coarse CPU bounding-volume rejection prevents mask evaluation on unaffected tiles.
-- Active masks are held in a small spatial index; lookup must not scan the whole patch catalog.
+- Active masks are held in a small spatial index; lookup MUST NOT scan the whole patch catalog.
 - Base and replacement use the same mask representation to avoid gaps or double ownership.
 - Shader clipping is an implementation choice, not a required wire representation.
 - When an active-state snapshot changes, prepare new pipelines/resources before an atomic state swap.
@@ -1889,6 +2148,10 @@ follow after the surface profile is proven.
   bounded compositor representation.
 
 ### 5.5 `replaceContent`: exact rebuilt-tile operation
+
+**Phase: typed-profile** (Section 2.2.1). `replaceContent` is outside MVP core. Every requirement in
+this section is therefore typed-profile unless it is marked otherwise, and an MVP-core deployment
+reaches the same result through the `replaceRegion` path Section 12.1 step 1 spells out.
 
 `replaceContent` is the materialized fast path used when one existing logical tile/content slot has
 been rebuilt without changing its tile metadata or hierarchy:
@@ -1919,28 +2182,31 @@ been rebuilt without changing its tile metadata or hierarchy:
 }
 ```
 
-An implicit target substitutes the canonical implicit locator from Section 4.4. The operation:
+An implicit target substitutes the canonical implicit locator from Section 4.4. The operation
+(**typed-profile**):
 
 - replaces exactly one declared content slot while leaving sibling contents untouched;
 - preserves the existing tile transform, tile bounding volume, geometric error, refinement, and
-  availability. New content must fit all bound invariants;
+  availability. New content MUST fit all bound invariants;
 - activates the old-content suppression and new content atomically after its state-control closure
-  and current activation frontier are ready;
+  and current activation frontier are ready. This atomicity requirement is **MVP-core** — it is the
+  Section 10 commit rule, and it binds the `replaceRegion` MVP path identically;
 - binds the old and new content/resource digests, so a cache or repack cannot redirect the target;
   and
 - is published in the same state revision when terrain, imagery, metadata, or companion components
-  must move together.
+  must move together. The coupled-activation requirement itself is **MVP-core**; expressing it
+  through `replaceContent` is not.
 
-Payload rules:
+Payload rules (**typed-profile**):
 
 - `expectedContentDigest` binds the predecessor's bytes exactly as published — the stored encoding,
   not a decoded form — so a recompressed or repacked base is a different target and rejects.
 - The replacement's container encoding is independent of the predecessor's. Whole-slot replacement is
   the required fallback whenever a Layer-B codec gate rejects a base encoding (Section 7), so a
-  Draco-compressed slot may be replaced by uncompressed content, or the reverse, provided the slot's
+  Draco-compressed slot MAY be replaced by uncompressed content, or the reverse, provided the slot's
   declared invariants still hold.
-- The replacement carries its own complete resource closure. It may reuse the predecessor's
-  content-addressed resources by digest; it may not depend on a resource reachable only through the
+- The replacement carries its own complete resource closure. It MAY reuse the predecessor's
+  content-addressed resources by digest; it MUST NOT depend on a resource reachable only through the
   predecessor's content.
 - Bounds evidence travels with the payload. Content that would exceed the bound tile's bounding
   volume or geometric error rejects rather than silently widening either.
@@ -2080,12 +2346,26 @@ Base encoding gate:
 - a producer needing sparse updates over such content republishes the primitive through
   `replaceContent`, or authors the base uncompressed or meshopt-compressed with stable IDs.
 
+**Relationship to the zero-new-codec construction.** A publisher can already ship a payload of this
+shape with no new codec at all: a small replacement glTF MAY point `buffer.uri` at the base's
+content-addressed `.bin`, lay a `bufferView` over it, and attach a core sparse accessor
+displacing selected elements (Section 2.5, mode 2). That is conformant glTF 2.0 today, its wire cost
+is roughly the sparse indices and values, and it is what a deployment SHOULD use before this codec
+exists. `sparseAttributeOverride` therefore has to earn its place against that baseline, and it
+does so on exactly four counts: it avoids a second asset parse and a second closure fetch on every
+load of the target; it applies to already-decoded or GPU-resident data rather than only at load time;
+it binds the derived-data obligations — normals, tangents, accessor min/max, bounds, geometric error
+— that a plain accessor cannot express; and it works for GLB-embedded buffers, whose binary chunk
+mode 2 cannot address from another asset at all. A profile that needs none of those four SHOULD use
+mode 2 and skip this codec. Both paths share the same fork prerequisite: no sparse-accessor path
+exists in this repository's loader today (decision 26).
+
 Order-dependent/additive deltas are deferred to the bounded dependency profile and require exact
 input/output digests plus an explicit acyclic dependency edge; they cannot rely on manifest order.
 
-The client may decode into CPU memory or upload sparse ranges directly into a replacement GPU buffer.
-It must publish the new resource generation atomically; it must not edit a buffer still referenced by
-submitted work.
+The client MAY decode into CPU memory or upload sparse ranges directly into a replacement GPU buffer.
+It MUST publish the new resource generation atomically, and it MUST NOT edit a buffer still referenced
+by submitted work.
 
 ### 7.2 `submeshReplace`
 
@@ -2095,7 +2375,7 @@ robust than attempting to splice arbitrary index sequences into a compressed bas
 
 Its provenance requirements are those of `sparseAttributeOverride` minus the value binding: the cut
 boundary names base vertices, so it binds the decoded topology digest and rejects the same
-decoder-ordered bases. Collar positions must agree on both sides within the profile's declared
+decoder-ordered bases. Collar positions MUST agree on both sides within the profile's declared
 tolerance, verified by the producer before publication because the client sees only one side at a
 time.
 
@@ -2224,7 +2504,7 @@ attains an extremum.
 - An edit requiring a height outside that interval changes the interval, and the interval multiplies
   the whole stream: changing it changes the decoded value of every code in the tile. Such an edit
   selects `quantizedMeshHeightStreamReplace` (ladder rung 2) or higher. It is never a sparse override.
-- A producer may also choose rung 2 to re-tighten a slack interval for precision. Tightening is an
+- A producer MAY also choose rung 2 to re-tighten a slack interval for precision. Tightening is an
   optimization, never an admissibility condition, and it costs one height stream rather than one tile.
 - The rendering-side bounding region derives its heights from the declared interval
   (`packages/engine/Source/Scene/GlobeSurfaceTileProviderRendering.js` takes the region's minimum and
@@ -2234,7 +2514,7 @@ attains an extremum.
   occlusion point are consumed verbatim from the header, and the occlusion point is recomputed
   client-side only when `minimumHeight < 0`
   (`Core/QuantizedMeshTerrainData.js`, `Workers/createVerticesFromQuantizedTerrainMesh.js`). Lowering
-  the surface leaves both conservative. Any edit that raises a height must re-prove them or re-supply
+  the surface leaves both conservative. Any edit that raises a height MUST re-prove them or re-supply
   them, because a sphere or occlusion point fitted to the old surface can cull a tile that is now
   visible; re-supplying header fields is rung 2.
 
@@ -2249,10 +2529,10 @@ generally disagree on the raw code. Boundary edits are computed in decoded space
 tile against that tile's own interval.
 
 - A patch that changes any height listed in the bound tile's west, south, east, or north edge index
-  list must include, in the same atomic set, every tile that owns a coincident edge vertex — the
+  list MUST include, in the same atomic set, every tile that owns a coincident edge vertex — the
   same-level edge neighbor and every coarser or finer representation covering that edge — or it
   rejects. That is ladder rung 5.
-- Decoded edge positions across the atomic set must agree within the profile's declared tolerance
+- Decoded edge positions across the atomic set MUST agree within the profile's declared tolerance
   after per-tile re-quantization. The producer verifies this before publication; a client that sees
   one tile at a time cannot.
 - Skirts carry no payload. The client regenerates skirt vertices from the edge index lists and the
@@ -2280,7 +2560,7 @@ Therefore:
 **Derived-descendant rule (normative).** A client may hold meshes it derived rather than fetched. In
 this engine a `GlobeSurfaceTile` whose own terrain is unavailable or failed is upsampled from its
 parent (`Scene/GlobeSurfaceTile.js`, `Core/QuantizedMeshTerrainData.js#upsample`), and the result is
-cached on the descendant tile with no generation key. Activating a height patch therefore must, in
+cached on the descendant tile with no generation key. Activating a height patch therefore MUST, in
 the same atomic transition:
 
 - drop every client-derived descendant of the patched tile and re-derive it from the patched parent;
@@ -2338,7 +2618,7 @@ exact source and target digests — a transport codec, not a semantic one.
 4. **Whole terrain-tile replacement** — topology, vertex count, unknown geometry-dependent extension
    records, or patch economics fail every rung above.
 5. **Multi-LOD/multi-tile atomic set** — required whenever the edit touches a shared edge vertex or
-   spans more than one published LOD representation of the same surface. Any rung above may appear
+   spans more than one published LOD representation of the same surface. Any rung above MAY appear
    inside the set, once per participating tile. Client-derived descendants are handled by the
    derived-descendant rule, not by adding tiles to the published set.
 
@@ -2350,7 +2630,7 @@ unless it moved an edge vertex.
 ### 8.4 Imagery coupled to terrain
 
 If imagery is an independent imagery layer, patch the affected imagery tiles through that service.
-The active state must atomically pair terrain revision `T` with imagery revision `I`; otherwise the
+The active state MUST atomically pair terrain revision `T` with imagery revision `I`; otherwise the
 new shape may briefly display old imagery or vice versa.
 
 If imagery is baked into glTF/KTX content, use `replaceRegion` first and later the typed texture codec.
@@ -2363,7 +2643,7 @@ Define a reusable patch envelope and state model, then bind it through separate 
 - quantized-mesh terrain patch profile;
 - imagery patch/revision profile.
 
-They may share UUIDs, digests, atomic state, CDN, compaction, and cost-model semantics without
+They MAY share UUIDs, digests, atomic state, CDN, compaction, and cost-model semantics without
 pretending the underlying content formats are identical.
 
 ---
@@ -2475,6 +2755,13 @@ candidates use the same fail-closed discipline.
 - hierarchy, transform, refinement, or implicit availability change;
 - bounds/geometric-error safety cannot be proven;
 - topology change requested by a topology-stable codec;
+- **base container encoding inadmissible for the requested codec** — the candidate is an
+  element-indexed typed codec and the bound base is stored in an encoding whose decoder, rather than
+  the asset, fixes element order or decoded layout (Section 7). `KHR_draco_mesh_compression`,
+  comparable decoder-ordered geometry bitstreams, and supercompressed KTX2 fail here; uncompressed
+  and `EXT_meshopt_compression` bases pass. Failing this gate never eliminates the change, only this
+  representation of it: the candidate re-enters as whole-slot `replaceContent`, `replaceRegion`,
+  or `binaryResourceDelta`;
 - texture change is not block/mip/gutter safe;
 - **write-set overlap** — the candidate's canonical write set intersects the write set of any patch
   or tombstone active in the predecessor state, and the candidate's own publication neither omits
@@ -2496,7 +2783,7 @@ candidates use the same fail-closed discipline.
 - required retention/offline guarantees exceed storage policy;
 - client capability profile cannot apply the codec.
 
-**Structural caps.** A candidate crossing a declared cap is rejected in its current shape and may
+**Structural caps.** A candidate crossing a declared cap is rejected in its current shape and MAY
 re-enter only as a smaller or differently shaped candidate:
 
 - p95 activation hitch and time-to-current;
@@ -2838,6 +3125,16 @@ vector with its interval, hard-gate outcome, which stage decided, the margin app
 representation, and the reason. This makes optimizer behaviour auditable and trainable without
 putting the cost model itself into the interoperability specification.
 
+**Mutation testing is how the cost model is held honest.** Because `chooseUpdate` is pure and the
+decision record captures every candidate vector, the optimizer's acceptance is a mutation suite over
+the pure model rather than an assertion that it ran: a mutant estimator that undercounts a term must
+change a recorded decision, and the suite fails if it does not. The mutants Section 17 requires are
+those that undercount wire bytes, origin operations, per-exposure or recurring client cost, amortized
+scheduled-rebuild debt, contention, or required derived data, plus the three the revised model
+specifically forbids — charging a full rebuild to a terminal patch, charging the same rebuild to
+every debounced patch, and comparing a patch's upper bound against a materialized candidate's lower
+bound. The suite runs in the browser-free lane against the P0 producer's seeded stream (Section 15.2).
+
 ### 9.7 Manifest and CDN scaling law
 
 The MVP active-state manifest is a full active snapshot, so its wire and parse cost is O(active
@@ -3027,7 +3324,7 @@ Rules:
 - Validate base revision, manifest, resource closures, payload digests, bounds, codec, and limits
   first. Validate the predecessor only when performing a direct incremental transition from an
   already-current state.
-- Validate freshness before preparing anything. The head must pass its declared profile's checks
+- Validate freshness before preparing anything. The head MUST pass its declared profile's checks
   (Section 4.1), including the durable `generationWatermark`, before a state fetched under it is
   prepared. A state that fails the watermark is not prepared, not retained as a candidate, and never
   counted as a desired generation.
@@ -3066,22 +3363,29 @@ Rules:
 - If `READY(g)` becomes obsolete before its commit boundary because a newer verified desired
   generation exists, skip `g`, retain the current active predecessor, and reuse digest-identical
   prepared resources for the newer generation. Once an atomic commit has begun it completes; the
-  successor is then prepared normally. The authenticated revocation profile may apply its deny rule
+  successor is then prepared normally. The authenticated revocation profile MAY apply its deny rule
   immediately, independently of ordinary readiness.
 - Apply only selectors/tombstones/revocations from the verified active state to loaded and
   future-loaded content; a tree walk of current cache entries is only an optimization. Event
   `affected` selectors may prioritize fetch/preparation but can never suppress or replace content.
 - For ordinary supersession, keep rendering the predecessor until successor coverage is ready. When
   the required authenticated-revocation profile is enabled, a verified signed hard revocation is the
-  explicit exception and may intentionally produce absence.
+  explicit exception and MAY intentionally produce absence.
 - If a tileset-root or subtree manifest changes, reconcile selectors against the new complete tree;
   never apply a delayed manifest change to targets resolved only against the old tree.
 - After verified activation, advance the committed scene-state/render-cache generation exactly once
   per logical transition, not once per duplicate feed message or affected tile. This committed-state
   bump is distinct from the earlier rate-limited wake.
+- **Context loss, device loss, and reload are recovery, not rollback.** They destroy prepared and
+  committed GPU state and may destroy CPU state, but they never restore a superseded generation. The
+  client discards what it lost, re-reads the head, and materializes the state that head names **at
+  recovery time**, which may be newer than the generation it was displaying. Under a signed profile
+  the durable `generationWatermark` survives the loss (Section 4.1) and the recovered generation
+  MUST NOT be below it; under the unsigned profile the client has no floor and reports that it has
+  none. A revocation already applied is re-applied from the recovered state before anything renders.
 
 Bounded rollout is required because a zero-flicker swap may temporarily hold both generations. The
-runtime should cap in-flight preparations, prioritize visible tiles, unload rather than double-buffer
+runtime SHOULD cap in-flight preparations, prioritize visible tiles, unload rather than double-buffer
 safe off-screen content, reserve measured memory headroom, and expose degraded/stale diagnostics when
 replacement repeatedly fails.
 
@@ -3093,7 +3397,7 @@ The extension is **strictly additive**. A client that does not implement it, or 
 of its profiles, behaves exactly as it does today: it loads the immutable base its entrypoint names and
 keeps rendering what it pulled at load. It never receives patches, states, or invalidations for a
 profile it does not implement, because it never asks for them. Nothing here changes what an unaware
-client sees, and no publication may depend on an unaware client changing its behavior.
+client sees, and a publication MUST NOT depend on an unaware client changing its behavior.
 
 What varies is not client behavior but what the publication can claim:
 
@@ -3108,8 +3412,8 @@ What varies is not client behavior but what the publication can claim:
 - **Materialized fallback:** an aware client that lacks a particular codec or component profile fetches
   a fully materialized current representation bound inside the same state manifest.
 
-The claim boundary follows directly: no client may ignore a required capability and claim current data,
-and no publication may claim currentness on clients that never agreed to the contract.
+The claim boundary follows directly: a client MUST NOT ignore a required capability and claim current
+data, and a publication MUST NOT claim currentness on clients that never agreed to the contract.
 
 An extension-aware client also validates the state's versioned `requiredCapabilities`. Missing a
 component, operation, codec, or authenticated-revocation capability, it does not activate the primary
@@ -3147,7 +3451,7 @@ Compaction is what bounds a patch chain. Because a patch may be terminal, no per
 pledge bounds anything, so the trigger below is normative and structural: economics choose *when* to
 compact inside those bounds, never *whether* the bounds apply.
 
-### Normative compaction trigger
+#### Normative compaction trigger
 
 Let `b` range over the spatial bins of the affected component. All three quantities are already
 carried per bin by `activeSummary` (Section 9.1), so the rule adds no schema and is decidable in
@@ -3161,10 +3465,10 @@ COMPACT(b) is REQUIRED when any of
   (C)  applyCost(b)   >  gamma * loadCost(b)
 ```
 
-Crossing any one predicate has two consequences. The producer **must** schedule compaction for `b`,
-and it **must not** admit a further `patch-terminal` candidate touching `b` until the predicate
+Crossing any one predicate has two consequences. The producer **MUST** schedule compaction for `b`,
+and it **MUST NOT** admit a further `patch-terminal` candidate touching `b` until the predicate
 clears. A patch on a triggered bin remains legal only as `patch-then-rebuild`; otherwise the change
-must be coalesced, expressed as a suppression, or published as a materialized replacement.
+MUST be coalesced, expressed as a suppression, or published as a materialized replacement.
 
 **(D) — chain depth.** A target at depth `d` costs `1 + 2d` requests to load cold (Section 9.3.3).
 Fix a deployment ceiling `A_max` on that request amplification; then
@@ -3177,7 +3481,7 @@ D_max = floor( (A_max - 1) / 2 )
 concurrent streams an HTTP/2 connection typically allows, giving `D_max = 16`. The recommended
 window `D_max` in `[8, 32]` is exactly `A_max` in `[17, 65]`. When the descriptor index is sharded
 `S` per shard, the amplification is `1 + d + ceil(d/S)` and `D_max` rises accordingly; a profile
-must declare its sharding before claiming the larger bound.
+MUST declare its sharding before claiming the larger bound.
 
 **(B) — cumulative delta bytes.** A cold load of a patched target transfers
 `baseBytes(b) + deltaBytes(b)`. Constraining `deltaBytes(b) <= beta * baseBytes(b)` is therefore a
@@ -3209,13 +3513,13 @@ rho = C_wall * g / D_max        and the deployment requires   D_max >= C_wall * 
 ```
 
 `rho_max = 0.5` is recommended: the producer must retain half its budget for currentness
-publication. A deployment that cannot satisfy the inequality must shard the bin, reduce `g`, or
+publication. A deployment that cannot satisfy the inequality MUST shard the bin, reduce `g`, or
 accept a larger `D_max` and its proportionally larger residual cost. Section 9.8 row 4 works the
 arithmetic for `g = 4/s`.
 
-### Advisory triggers
+#### Advisory triggers
 
-These remain inputs to the cost model, not obligations. They may bring compaction forward; they can
+These remain inputs to the cost model, not obligations. They MAY bring compaction forward; they can
 never postpone a required one:
 
 - active patch bytes exceed a percentage of base bytes below `beta`;
@@ -3227,7 +3531,7 @@ never postpone a required one:
 - measured tail arrival, rebase throughput, CAS contention, and writer-fence latency prove the
   compaction can finish inside bounded deployment limits.
 
-### Compaction procedure
+#### Compaction procedure
 
 1. Fence a durable source revision `N` and snapshot the exact active state/base used by the build.
 2. Materialize and validate a candidate immutable base `B1` locally containing source changes
@@ -3270,7 +3574,7 @@ trigger clears only when every predicate is false against the newly published `a
 `compactedThroughSourceRevision=N` is safe only when the declared source domain makes `N` a true
 ordered prefix. A source without that guarantee uses selective compaction naming exact logical
 update IDs plus patch revision IDs/digests in a strictly bounded canonical set; a larger set is
-stored as a content-addressed Merkle/index root with bounded proofs. Both forms must rebase or
+stored as a content-addressed Merkle/index root with bounded proofs. Both forms MUST rebase or
 retain every dependent later patch/tombstone. Publishing a new base while carrying old-base-relative
 tail operations is a correctness failure even if their logical source IDs match.
 
@@ -3279,40 +3583,43 @@ tail operations is a correctness failure even if their logical source IDs match.
 Rebuilding one tile does not require regenerating every tile payload or changing the tiling scheme.
 Steps 1 and 2 are separate decisions under separate triggers; step 2 is not implied by step 1.
 
-1. **Publish the change.** If the logical tile, bounds, geometric error, refinement, and implicit
-   availability remain valid, publish the rebuilt content as a `replaceContent` one-tile replacement
-   state operation. The old content and any patches incorporated into the rebuilt bytes stop
-   contributing in the same atomic state transition.
-   - *MVP-only path.* `replaceContent` is a typed operation outside the Section 2.2 MVP. An MVP
-     deployment expresses the same change as `replaceRegion` with a mask covering exactly the tile's
-     surface footprint and a one-tile replacement tileset wrapping the rebuilt content. The wire
-     cost is one mask polygon plus one generated tileset descriptor above the typed form; the
-     semantics, atomicity, and identity binding are the same. Everything below applies unchanged.
-2. **Compact only when required or chosen.** Publishing a new base revision is a separate decision.
+1. **Publish the change** (**typed-profile**, with an MVP-core path). If the logical tile, bounds,
+   geometric error, refinement, and implicit availability remain valid, publish the rebuilt content
+   as a `replaceContent` one-tile replacement state operation. The old content and any patches
+   incorporated into the rebuilt bytes stop contributing in the same atomic state transition.
+   - *MVP-core path.* `replaceContent` is a typed operation outside the Section 2.2 MVP
+     (Section 2.2.1). An MVP deployment expresses the same change as `replaceRegion` with a mask
+     covering exactly the tile's surface footprint and a one-tile replacement tileset wrapping the
+     rebuilt content. The wire cost is one mask polygon plus one generated tileset descriptor above
+     the typed form; the semantics, atomicity, and identity binding are the same. Everything below
+     applies unchanged, and no step below depends on which of the two forms was used.
+2. **Compact only when required or chosen** (**MVP-core**; the scheduler that drives it is
+   **producer-profile**). Publishing a new base revision is a separate decision.
    It is mandatory when any Section 12 trigger predicate is true for a touched bin, and otherwise it
    is one candidate the optimizer weighs against leaving the replacement in place terminally
    (Section 9.4). When compaction runs, the new base revision's resource closure reuses every
    unchanged base object and references only the new tile/content and any changed subtree or root
    shard. Base immutability requires a new revision identity; it does **not** require recomputing or
    retransmitting unchanged content-addressed resources.
-3. Omit incorporated patches from the successor active set. Retain or rebase unrelated/dependent
-   tail patches against the new base digest.
-4. CAS the head, then emit an exact-content/subtree hint. A client loads and verifies the new
-   content, switches mask/selection and content atomically, and retires the old GPU/CPU generation
-   after its fences settle.
+3. Omit incorporated patches from the successor active set (**MVP-core**). Retain or rebase
+   unrelated/dependent tail patches against the new base digest (**producer-profile**).
+4. CAS the head, then emit an exact-content/subtree hint (**MVP-core**). A client loads and verifies
+   the new content, switches mask/selection and content atomically, and retires the old GPU/CPU
+   generation after its fences settle.
 5. The old tile and incorporated patch closure become GC candidates only after retention and
-   reachability rules pass.
+   reachability rules pass (**MVP-core**).
 
 If the rebuild changes hierarchy, availability, bounding-volume containment, or refinement
-semantics, a new base revision must be published for the affected component; its closure may reuse
-every unchanged content-addressed resource, so "republish the subtree" means a new base revision
-identity, not a retransmission. There is no subtree-level revision identity in Section 4.
+semantics, a new base revision MUST be published for the affected component; its closure may reuse
+every unchanged content-addressed resource, so "republish the subtree" means a **new base revision**
+identity, not a retransmission. Section 4 defines no subtree-level revision identity, and no wording
+elsewhere in this document should be read as introducing one.
 
 ---
 
 ## 13. Security and validation limits
 
-The extension/profile must bound:
+The extension/profile MUST bound:
 
 - manifest and payload bytes;
 - patch count and dependency depth;
@@ -3335,11 +3642,12 @@ The extension/profile must bound:
 - unauthorized cross-dataset, cross-base, cross-origin, or shared-cache targets;
 - retention/GC attempts against still-reachable or shared resources.
 
-Patch data must never contain executable JavaScript or arbitrary shader source. HTTPS provides
+Patch data MUST NOT contain executable JavaScript or arbitrary shader source, and a payload
+carrying either is rejected before any other validation. HTTPS provides
 transport protection and digests provide integrity, but freshness and publisher authenticity come
 only from the signed head statement of Section 4.1, whose detached signature covers the exact served
 head bytes. A signature over a state manifest alone proves who built that state, not that it is the
-current one, so it is never sufficient for a currentness or revocation claim. Hard revocations must
+current one, so it is never sufficient for a currentness or revocation claim. Hard revocations MUST
 be authenticated, anti-rollback protected, persisted in the current authoritative state, and bounded
 so a replay or flood cannot create an unbounded tombstone index.
 
@@ -3347,26 +3655,30 @@ A limit that is not declared cannot be enforced or tested, so every bound above 
 a concrete value in the deployment/profile declaration a client obtains with the entrypoint, and that
 declaration MUST be machine-readable. A client rejects any input exceeding the declared limit or its
 own local limit, whichever is smaller, and reports which one fired. A profile that introduces a codec
-MUST extend the declaration with that codec's own axes, at least instance and primitive counts,
-attribute and index counts, mip and block counts, decompressed output bytes and expansion ratio, and
-concurrent bake/upload work, so that resource-limit conformance is a testable claim rather than a
-posture.
+MUST extend the declaration with that codec's own axes, so that resource-limit conformance is a
+testable claim rather than a posture. At minimum:
+
+| Codec class | Axes the profile MUST declare |
+| --- | --- |
+| Element-indexed geometry (`sparseAttributeOverride`, `submeshReplace`) | Override element count, index-range count, attribute and accessor counts per primitive, primitive and instance counts, decoded bytes produced, collar vertex count, and decode expansion ratio. |
+| Texture (`textureBlockReplace`) | Replacement rectangle count, block count per rectangle, mip-level count, total decoded texel bytes, atlas gutter width, and concurrent transcode/upload work. |
+| Quantized-mesh sibling rungs | Vertex count, changed-height-code count, index count, per-edge-list length, appended extension-record count and bytes, and the size of the multi-tile atomic set. |
+| Transport (`binaryResourceDelta`) | Delta bytes, reconstructed target bytes, expansion ratio, and peak reconstruction memory. |
 
 A notification channel is not trusted to inject resources, authorize deletion, or trip a protective
 state. Hints are unauthenticated by construction: the most one may cause is a rate-limited head
-revalidation (Section 4.4, laws 9 and 10). No hint content, whether a replayed identifier, a
-divergent projection, a conflicting generation, an unknown epoch, or a flood, may produce a
-fail-closed condition, because that would hand denial of service to anyone who can reach the
-transport. Fail-closed conditions arise only from a verified head/state disagreement, a failed digest
+revalidation (Section 4.4, laws 9 and 10). Hint content MUST NOT produce a fail-closed condition, whatever it carries — a replayed identifier, a
+divergent projection, a conflicting generation, an unknown epoch, or a flood — because that would
+hand denial of service to anyone who can reach the transport. Fail-closed conditions arise only from a verified head/state disagreement, a failed digest
 or signature, a watermark violation, or a verified revocation.
 
-Hard revocation is a separate required security profile, not an MVP core promise. The profile must
+Hard revocation is a separate required security profile, not an MVP core promise. The profile MUST
 define publisher keys/rotation, signed state and optional signed deny-only notices, anti-rollback
 epochs, exact digest-scoped targets, the pinned `entrypointDigest` of Section 4.1 so a client cannot
 be moved to an entrypoint with the extension stripped, and fail-closed behavior while a successor is
-unavailable. A revocation record cannot retire until no supported retained entrypoint/state/offline
-lease can select the target, or until an equally authoritative persistent deny root continues to
-cover it. A core client without the profile rejects a state containing nonempty `revocations`, keeps
+unavailable. A revocation record cannot be withdrawn until no supported retained
+entrypoint/state/offline lease can select the target, or until an equally authoritative persistent
+deny root continues to cover it. A core client without the profile rejects a state containing nonempty `revocations`, keeps
 what it already had, and makes no absence claim. The profile's guarantee is therefore scoped to the
 clients that implement it and are reaching the current head; Section 11 states that boundary and
 Section 17.3 tests it.
@@ -3438,7 +3750,7 @@ not fast; it has moved the cost somewhere the benchmark was not looking.
 
 | Phase | Deliverable | Status |
 | --- | --- | --- |
-| R0 | Primary-source standards survey and architecture review | Complete |
+| R0 | Primary-source standards survey and architecture review | Complete (2026-08-11); re-surveyed 2026-08-16; **re-run required before D1** (Section 2.4, decision 24) |
 | R1 | This working design/decision tracker | Complete |
 | R2 | Reconcile prior repository invalidation research/prototype with the immutable state model | Complete |
 | D1 | Freeze terminology, scope, fallback, identity, mask, selector, and invalidation semantics | Pending |
@@ -3450,19 +3762,19 @@ not fast; it has moved the cost somewhere the benchmark was not looking.
 | V1 | Typed exact/subtree/implicit/region selector adapter with loaded and future-loaded tile coverage | Pending |
 | V2 | Bounded visible-first zero-flicker rollout, multi-content, and snapshot/cache wake-up | Pending |
 | V3 | Online compaction with live-tail rebase, CAS conflict retry, retirement manifest, and safe GC | Pending |
-| P4 | Sparse glTF position/normal fast path with exact layout provenance | Pending |
+| P4 | Sparse glTF position/normal fast path with exact layout provenance, plus the core-glTF shared-external-buffer transport option (decision 26). **Prerequisite:** glTF sparse-accessor support in the loader, which does not exist anywhere under `packages/engine/Source` today (Section 2.5) | Pending |
 | P5 | Texture block/mip patch experiment | Pending |
-| P6 | Quantized-mesh height-only sibling profile | Pending |
+| P6 | Quantized-mesh height-only sibling profile: ladder rungs 1 and 2 including `quantizedMeshHeightStreamReplace`, the interval rule, the boundary/edge atomic set, the producer-computed boundary-normal rule, and client-derived-descendant invalidation (Section 8) | Pending |
 | B1 | Patch-versus-rebuild benchmark and calibrated thresholds | Pending |
 | I1 | Second independent runtime implementation | Pending |
 | S1 | Vendor extension draft, JSON schemas, and conformance assets | Pending |
 | S2 | Proposal for `3DTILES_*` promotion or future core inclusion | Pending |
 
-P0 is a prerequisite, not an option: P1-P3, V1-V3, B1, and roughly half of §15.2 assume a publication
+P0 is a prerequisite, not an option: P1-P3, V1-V3, B1, and roughly half of Section 15.2 assume a publication
 service and a scenario corpus that this repository does not have. The engine prototype rides the
-compositor-subtree vehicle of §3.3.3 — replacement content inside the base tileset's traversal, one
+compositor-subtree vehicle of Section 3.3.3 — replacement content inside the base tileset's traversal, one
 cache, one budget, one swap owner — so P1 and P2 also depend on the transaction and mask components
-named in §3.3.2.
+named in Section 3.3.2.
 
 ### 15.0 P0 — reference producer, head server, and dataset generator
 
@@ -3475,8 +3787,8 @@ contracts.
    it advances a small world model (a moving excavation front over a synthetic surface plus a handful
    of surface objects), and emits localized changes at a configured rate for a configured duration,
    each carrying `updateId`/`sourceRevision`, a bounded affected-target summary, and the decision the
-   §9 estimator produced. A fixed seed produces a byte-identical stream so a run is reproducible, and
-   the rate is a parameter so arrival-versus-rebase-capacity behavior (§3.4.3) can be driven from
+   Section 9 estimator produced. A fixed seed produces a byte-identical stream so a run is reproducible, and
+   the rate is a parameter so arrival-versus-rebase-capacity behavior (Section 3.4.3) can be driven from
    below capacity to sustained overload.
 2. **Mutable-head publication server.** An immutable content-addressed object route with immutable
    cache headers; one mutable head route with an entity tag and compare-and-swap on conditional write;
@@ -3484,8 +3796,19 @@ contracts.
    garbage-collection controls; injectable delay, corruption, and stale-serving fault profiles; and
    counters for every origin operation. It runs on its own port and does not modify `server.js`, which
    keeps serving the client build.
+
+   The head route is not only the unsigned shape. Because Section 17.3 tests the signed freshness
+   profile, the server MUST also be able to serve a **signed head statement** with `issuedAt` and
+   `expiresAt` and a detached signature over the exact served bytes, hold a test signing key and at
+   least one wrong key, publish the four **deployment constants** of Section 4.5 plus `maxStaleness`
+   in a machine-readable declaration alongside the entrypoint, and serve the
+   **revocation-profile** `entrypointDigest`. Its fixture set MUST include an expired head
+   statement, an older-but-validly-signed head for the anti-rollback and restart cases, a head signed
+   by the wrong key, a head bound to another `datasetId`, and an entrypoint served with the
+   extension stripped. Without those fixtures the freshness and revocation rows of Section 17 are
+   untestable rather than passing.
 3. **Scenario dataset generator.** Writes the base revision, patch closures, tombstones, and rebuilt
-   successors for §15.1 into a scratch directory, deriving from repository fixtures where one fits and
+   successors for Section 15.1 into a scratch directory, deriving from repository fixtures where one fits and
    synthesizing where none does. Generated corpora stay out of version control; only the small
    canonical vectors a conformance suite needs are checked in, and that is S1's deliverable, not P0's.
 
@@ -3519,28 +3842,28 @@ between contract specs and probes ([Tools/visual-regression/README.md](../Tools/
 
 Proposed homes: the three artifacts under `Tools/patch-prototype/`, their contract specs as
 `Tools/visual-regression/*.spec.mjs`, and their probes as `Tools/visual-regression/probe-patch-*.mjs`.
-P0 requires no engine change; P1 onward requires the components of §3.3.2.
+P0 requires no engine change; P1 onward requires the components of Section 3.3.2.
 
 ### 15.1 Required reference scenarios
 
 Each scenario names the dataset it runs against. "Generated" means the P0 generator produces it;
 repository paths are existing fixtures.
 
-| # | Scenario | Dataset |
-| --- | --- | --- |
-| 1 | Flatten an interior hill and update baked imagery. | Generated `hill-base`: a three-level surface tileset with baked imagery. No repository fixture carries a cross-LOD hill. |
-| 2 | Flatten a hill crossing a tile boundary. | Generated `hill-base`, with the edit straddling a shared edge. |
-| 3 | Preserve the flattened result through coarse, medium, and fine HLOD transitions. | Generated `hill-base`; refinement behavior cross-checked against `Specs/Data/Cesium3DTiles/Tilesets/TilesetReplacement1`. |
-| 4 | Apply sparse vertex/normal changes to a layout-stable glTF. | Generated from `Specs/Data/Cesium3DTiles/GltfContent`, with the generator recording exact layout provenance. |
-| 5 | Apply block-aligned texture changes with complete mips/gutters. | Generated KTX2 fixture; shared-resource behavior cross-checked against `Specs/Data/Cesium3DTiles/Tilesets/TilesetWithSharedTextures`. |
-| 6 | Apply a topology-stable quantized-mesh height override. | `Specs/Data/CesiumTerrainTileJson/QuantizedMesh` for the single-tile decode contract; generated for the edge/LOD group and its upsampled descendants. |
-| 7 | Force every optimizer fallback: patch, region replacement, whole tile, and base compaction. | Generated stream with edits sized to cross each threshold in turn. |
-| 8 | Compact an ordered source-update prefix through `sourceRevision N` while later source changes arrive; rebase the entire `N+1...N+k` tail without losing an `updateId`. | Generated seeded stream (P0 producer plus head server). |
-| 9 | Deliver duplicate, reordered, and gapped invalidation events; converge directly on the latest state snapshot. | Generated, through the P0 hint channel's fault profile. |
-| 10 | Replace one exact tile/content slot, one implicit subtree, and one multi-layer atomic state while leaving siblings untouched. | `Specs/Data/Cesium3DTiles/MultipleContents` and `Specs/Data/Cesium3DTiles/Implicit/ImplicitTileset`, plus a generated terrain/imagery pairing for the multi-layer leg. |
-| 11 | Keep old content visible through a delayed successor, then release old CPU/GPU resources only after safe submission fences. | Generated, through the P0 server's injectable delay and failure profiles. |
-| 12 | Exercise semantic suppression, stale-compatible offline state, reconnect, and retention-safe shared-resource garbage collection; exercise hard revocation only under the required authenticated revocation profile. | Generated, using the P0 server's retention/GC controls and a shared-resource closure spanning two states. |
-| 13 | **Continuous simulation stream under a moving camera** — the primary deployment. The producer emits changes at a configured rate for a configured duration while the camera flies a fixed path across the affected extent. No frame shows a mixed generation, double residency stays inside its budget, patch debt and oldest-job age stay bounded, and the client converges to the newest generation after the stream stops. | Generated `hill-base` plus the seeded P0 stream at several rates, including one above sustained rebase capacity. |
+| # | Scenario | Phase | Dataset |
+| --- | --- | --- | --- |
+| 1 | Flatten an interior hill and update baked imagery. | MVP-core | Generated `hill-base`: a three-level surface tileset with baked imagery. No repository fixture carries a cross-LOD hill. |
+| 2 | Flatten a hill crossing a tile boundary. | MVP-core | Generated `hill-base`, with the edit straddling a shared edge. |
+| 3 | Preserve the flattened result through coarse, medium, and fine HLOD transitions. | MVP-core | Generated `hill-base`; refinement behavior cross-checked against `Specs/Data/Cesium3DTiles/Tilesets/TilesetReplacement1`. |
+| 4 | Apply sparse vertex/normal changes to a layout-stable glTF. | typed-profile (P4) | Generated from `Specs/Data/Cesium3DTiles/GltfContent`, with the generator recording exact layout provenance. |
+| 5 | Apply block-aligned texture changes with complete mips/gutters. | typed-profile (P5) | Generated KTX2 fixture; shared-resource behavior cross-checked against `Specs/Data/Cesium3DTiles/Tilesets/TilesetWithSharedTextures`. |
+| 6 | Apply a topology-stable quantized-mesh height override. | typed-profile (P6) | `Specs/Data/CesiumTerrainTileJson/QuantizedMesh` for the single-tile decode contract; generated for the edge/LOD group and its upsampled descendants. |
+| 7 | Force every optimizer fallback: patch, region replacement, whole tile, and base compaction. | producer-profile | Generated stream with edits sized to cross each threshold in turn. |
+| 8 | Compact an ordered source-update prefix through `sourceRevision N` while later source changes arrive; rebase the entire `N+1...N+k` tail without losing an `updateId`. | producer-profile | Generated seeded stream (P0 producer plus head server). |
+| 9 | Deliver duplicate, reordered, and gapped invalidation events; converge directly on the latest state snapshot. | MVP-core | Generated, through the P0 hint channel's fault profile. |
+| 10 | Replace one exact tile/content slot, one implicit subtree, and one multi-layer atomic state while leaving siblings untouched. | Exact-slot leg **typed-profile** (`replaceContent`, Section 5.5), with the **MVP-core** `replaceRegion` footprint form run as its equivalent; implicit-subtree and multi-layer legs **MVP-core** | `Specs/Data/Cesium3DTiles/MultipleContents` and `Specs/Data/Cesium3DTiles/Implicit/ImplicitTileset`, plus a generated terrain/imagery pairing for the multi-layer leg. |
+| 11 | Keep old content visible through a delayed successor, then release old CPU/GPU resources only after safe submission fences. | MVP-core | Generated, through the P0 server's injectable delay and failure profiles. |
+| 12 | Exercise semantic suppression, stale-compatible offline state, reconnect, and retention-safe shared-resource garbage collection; exercise hard revocation only under the required authenticated revocation profile. | MVP-core, plus **revocation-profile** for the revocation leg | Generated, using the P0 server's retention/GC controls and a shared-resource closure spanning two states. |
+| 13 | **Continuous simulation stream under a moving camera** — the primary deployment. The producer emits changes at a configured rate for a configured duration while the camera flies a fixed path across the affected extent. No frame shows a mixed generation, double residency stays inside its budget, patch debt and oldest-job age stay bounded, and the client converges to the newest generation after the stream stops. | producer-profile | Generated `hill-base` plus the seeded P0 stream at several rates, including one above sustained rebase capacity. |
 
 Scenario 13 is the deployment the design exists for; scenarios 1-12 are the correctness ladder it
 depends on, and each must hold under 13's arrival rates as well as in isolation.
@@ -3558,13 +3881,13 @@ capture harness.
 | Manifest and payload bytes | P0 generator and server accounting |
 | Request count and time-to-current | `Tools/visual-regression/lib/representative-tileset-request-ledger.mjs` plus P0 server origin counters |
 | Client validation/decode/upload time | In-page performance marks read by the probe |
-| Visible/imminent/off-screen preparation latency, prediction hit rate, wasted pre-bakes, skipped obsolete bakes | Compositor and bake-cache counters (§3.3.2) surfaced through `scene.getDebugSnapshot()` and read by the probe |
+| Visible/imminent/off-screen preparation latency, prediction hit rate, wasted pre-bakes, skipped obsolete bakes | Compositor and bake-cache counters (Section 3.3.2) surfaced through `scene.getDebugSnapshot()` and read by the probe |
 | Peak CPU/GPU memory; pinned, baked, and double-resident bytes | `Cesium3DTilesetStatistics` and `Cesium3DTileset.totalMemoryUsageInBytes`, plus `Renderer/WebGPU/WebGPUFrameStatistics.ts` on the WebGPU leg |
 | Frame-time and hitching impact | Probe-side frame timing; GPU timing legs interleaved within one run, never compared across builds |
 | Cache hit/offline replay behavior | P0 server counters with its offline/fault profile |
 | Invalidation event bytes, fanout, coalescing, gap recovery, and time-to-current | P0 hint channel counters plus client reconciliation counters |
 | Origin `PUT`/`HEAD`/`DELETE`/`LIST`, reference-index, durable-outbox, and recovery-scan operation counts | P0 server operation counters |
-| In-flight swap count, double-residency peak, and retirement latency | Transaction and cache statistics (§3.3.2, §3.3.3) |
+| In-flight swap count, double-residency peak, and retirement latency | Transaction and cache statistics (Section 3.3.2, Section 3.3.3) |
 | Update arrival/burst rate, compaction rebase throughput, CAS retry/backoff, writer-fence latency, deferral rate, retained-closure byte-days | P0 producer and server telemetry; asserted by contract spec |
 | Debounce quiet/max-wait latency, rebuild jobs avoided/coalesced, throttle queue depth, direct-rebuild versus patch-first completion time | P0 producer scheduler telemetry |
 | Compaction time and storage amplification | P0 generator and server |
@@ -3575,185 +3898,426 @@ client-cohort percentiles, real CDN edge and multi-region propagation behavior, 
 requires a fleet rather than one machine. These are deployment measurements; the prototype reports
 single-client, single-origin numbers and says so.
 
+### 15.3 Specification apparatus (to be produced)
+
+This document specifies behaviour, not syntax. A specification draft — phase S1 — owes the apparatus
+below. It is listed here so that the gap is a tracked deliverable rather than a discovery made during
+drafting. **Nothing in this subsection is written yet, and no schema appears anywhere in this
+document.**
+
+| Apparatus | What it must fix | Where it will live |
+| --- | --- | --- |
+| Extension name, prefix, and version rule | The vendor prefix and final name (Section 16), the `version` member's syntax, and the rule that a capability suffix such as `@1.0` is an exact profile version rather than a semver range (Section 4.2). One version convention across the head (`"v"`), the manifests (`formatVersion`), and the profile records (`version`), which are inconsistent today. | S1 draft, section 1 |
+| JSON schema stubs, one per object | Bootstrap entrypoint fragment; head; signed head statement; active-state manifest, and within it component, base, patch, tombstone, revocation, fallback, and `sourceDomains` records; patch descriptor; transition hint; retirement manifest; deployment-constant declaration; base profile; active summary; decision record. | S1, one `schema/*.schema.json` per object |
+| Digest-string grammar | `algorithm ":" lowercase-hex` with the registered token set, full-length output rule, and the rejection rules of Section 4.3, expressed as a pattern the schemas reference rather than restate. | S1, shared schema definition |
+| URI-resolution rule per object class | One rule per class rather than the single statement Section 5.1 makes about replacement URIs: what `headUri`, `stateUri`, `baseUri`, `resourceManifestUri`, `descriptorUri`, payload URIs, and replacement URIs each resolve against. | S1 draft, section on resolution |
+| Provisional media types | One per served object class, so a client can reject a mistyped response before parsing it and a CDN can be configured without guessing. | S1 draft plus a registration note |
+| Conformance-test vectors | The small canonical byte vectors Section 15.0 keeps out of the generated corpora: canonical-ordering cases, digest cases, a signed head statement and its wrong-key sibling, and one instance of each object above. | S1, checked in beside the schemas |
+
+Two constraints on that work are already fixed by this document and are recorded here so the draft
+does not relitigate them: canonical form is what is served and noncanonical input is rejected rather
+than repaired (decision 20), and the digest registry is `sha256` alone with one suite per closure
+(Section 4.3).
+
 ---
 
 ## 16. Open decisions
 
-1. Is the first extension rendering-only, or must height sampling, ray queries, collision, and analytics
-   observe replacements?
-2. Is stale-base fallback acceptable, or is a separate required/current entrypoint needed?
-3. Does the first mask target the entire base surface or a stable logical content group?
-4. Is WGS84 polygon-prism sufficient for the first profile?
-5. Are active masks required to be disjoint? Current recommendation: yes for MVP.
-6. What exact canonical/Merkle resource-record encoding, representation variants, and content-
-   encoding domain does `baseDigest` bind?
-7. Is JSON sufficient for the first active-state manifest, with binary spatial indexes deferred?
-8. Which stable IDs/provenance can tilers emit to unlock typed vertex and texture codecs?
-9. Must replacement geometry remain inside the old root bounds? Current recommendation: yes for MVP.
-10. What are the default optimizer weights for cloud, desktop, and mobile deployment profiles?
-11. What patch byte/count/runtime thresholds trigger compaction?
-12. Should quantized-mesh share the envelope while remaining a separate profile/repository?
-13. Which versioned terrain and independent-imagery component profiles should be standardized first
-    under the globally atomic state envelope?
-14. How are signatures, rollback protection, and publisher key rotation handled?
-15. Is `3D Tiles Patch + Invalidation`, `3D Tiles Live Update`, or another term the clearest umbrella
-    extension name?
-16. Which notification transports and discovery links are standardized versus left to deployment
-    profiles?
-17. What is the normative typed-selector encoding for explicit IDs, implicit coordinates, content
-    slots/groups, subtrees, and regions?
-18. What stale/offline/rollback lease does a publisher promise, and how can managed offline packages
-    pin a state closure?
-19. What keys, rotation, anti-rollback epoch, deny-root retention, and offline policy should the future
-    authenticated hard-revocation profile require?
-20. When update traffic prevents compaction CAS progress, what maximum bounded writer-fence duration
-    is acceptable?
-21. Should HTTP Cache Groups be emitted as an optional same-origin cache optimization? They cannot be
-    a conformance dependency.
-22. How are shared resource closures reference-counted across bases, replacement tilesets, and
-    rebased patches before GC?
+This list is reconciled against the body as of the 2026-08-16 revision, under one rule: a question
+the body now answers **normatively** is deleted here with a pointer, and a question the body answers
+**provisionally** stays open with its provisional answer named. Nothing acquires the authority of a
+settled decision merely by having been written down somewhere in the body. Section 16.1 records the
+disposition of every question the previous revision carried, so a reader returning to an old number
+can find where it went.
+
+1. **Is the first extension rendering-only, or must height sampling, ray queries, collision, and
+   analytics observe replacements?** This is not a free choice in this engine. `pickFromRay`,
+   `sampleHeight`, and `clampToHeight` drive most-detailed traversals over the same content, so a
+   mask bound only to the render pass leaves those queries observing the unpatched base
+   (Section 3.3.6). Whichever way it settles, the answer belongs in a **declared capability of
+   the component profile** — an explicit list of which passes observe replacements — rather than
+   falling out of the implementation. Open: which passes the first profile declares,
+   and what a client does when it implements fewer than the profile declares.
+2. **Does the first mask target the entire base surface or a stable logical content group?**
+3. **Is a WGS84 polygon prism sufficient for the first profile?**
+4. **Do active masks have to be disjoint beyond the MVP?** Closed for the MVP: Section 4.2's
+   deterministic active-operation law and Section 5.3 both require disjoint *closed* masks, and
+   Section 9.2's write-set-overlap gate enforces it at admission. Open only past that line — whether
+   the future bounded dependency profile admits same-target overlap through its acyclic graph, on
+   what evidence, and how a client bounds the resulting composition cost.
+5. **What exact canonical/Merkle resource-record encoding, representation variants, and
+   content-encoding domain does `baseDigest` bind?** Half answered. Section 7 fixes the digest
+   domain for *typed codecs* (decoded canonical form) and Section 4.3 fixes the algorithm registry
+   and the one-suite rule. The base-revision half is untouched: the canonical resource record's field
+   set, ordering, media type, byte length, and content-encoding rules are required to be normative by
+   Section 4.2 without being stated anywhere.
+6. **Is JSON sufficient for the first active-state manifest, with binary spatial indexes deferred?**
+7. **Which stable IDs must a tiler emit to unlock typed vertex and texture codecs?** Narrowed to the
+   producer-side half. Section 7 now states what a codec *binds* — decoded-layout digest, stable
+   stream ID, accessor semantic and set index, quantization contract — and which base encodings are
+   admissible at all (decision 29). What remains is which of those a tiler is *required* to emit, in
+   what form, and how a consumer discovers that it did.
+8. **Must replacement geometry remain inside the old root bounding volume?** Closed for the MVP by
+   Section 5.3. Open past it: whether a later volume profile relaxes it, and what bounds and
+   geometric-error evidence would then be required to keep culling conservative.
+9. **What calibrated optimizer weights should each deployment profile class carry?** The *shape* is
+   closed — Section 9.3.1 fixes the term set, units, and aggregation levels, and Section 9.5 gives
+   initial seeds and the two knobs `margin` and `rho`. What is open is calibration: fitted weights
+   for cloud, desktop, and mobile profile classes, produced by B1 from real workloads rather than
+   asserted here.
+10. **Is `3D Tiles Patch + Invalidation`, `3D Tiles Live Update`, or another term the clearest
+    umbrella extension name?** Section 1.3's caveat stands until this settles: the first
+    interoperable operation is a surface replacement overlay, not a raw binary patch, and any name
+    chosen has to survive that.
+11. **Which notification transports and discovery links are standardized versus left to deployment
+    profiles?** Narrowed: the bootstrap problem for terrain-and-imagery-only deployments — which
+    have no `tileset.json` on which to hang the extension — belongs to the **sibling profiles**,
+    not to this one (Section 3.3.5), so it is out of scope here rather than open here. What remains
+    open is which transports the 3D Tiles profile itself standardizes and which discovery links it
+    defines.
+12. **What is the normative typed-selector *encoding*?** Narrowed. Section 4.4's target selector
+    registry now fixes the selector set and the required identity for each, and the canonical locator
+    rules fix the explicit and implicit locator shapes. Open: the concrete wire encoding for each,
+    the compact binary form for large active sets, and how a component profile declares its
+    `contentGroupId` domain.
+13. **Which versioned terrain and independent-imagery component profiles should be standardized
+    first under the globally atomic state envelope?** *Provisional:* terrain and imagery first. The
+    codec work of Section 8 and the engine work of Section 3.3.5 both point there, and Section 8.4's
+    coupled terrain-plus-imagery activation is the case that most needs one atomic envelope. Treat
+    that as a lean, not a decision — it has not been weighed against a metadata or query companion
+    profile, and it is recorded provisionally so that a later reader does not mistake the body's
+    emphasis for a ruling.
+14. **What signature suite, key distribution, and key rotation does the signed profile use?**
+    Narrowed: Section 4.1 fixes *what* is signed (the exact served head bytes, detached, covering
+    every member of the head statement), *what* the client persists (the durable
+    `generationWatermark` scoped by `(trustDomainId, datasetId)`), and *what expiry means*. The
+    cryptographic suite, how a client obtains and pins the publisher key set, and how rotation
+    happens without a flag day are all unspecified.
+15. **How can a managed offline package pin a state closure?** Narrowed: Section 4.5 answers the
+    lease question — there is no reader lease, retention derives from declared constants, and an
+    offline client is one that exceeded them. What remains is the *format*: how an offline package
+    names the closure it pinned, how a publisher recognizes the pin against its `offlineWindow`,
+    and how such a package is verified after transport.
+16. **What keys, rotation, and deny-root retention does the authenticated hard-revocation profile
+    require?** Narrowed: Section 13 and Section 4.1 fix the anti-rollback mechanism (watermark plus
+    signed head plus pinned `entrypointDigest`), the fail-closed scope, and the withdrawal rule.
+    Open: the publisher key model and rotation for revocation specifically, and how long a persistent
+    deny root must be retained once every retained state that could select the target has itself
+    aged out.
+17. **When update traffic prevents compaction CAS progress, what maximum bounded writer-fence
+    duration is acceptable?** *Partly answered:* Section 12's hot-stream envelope supplies the
+    surrounding arithmetic — `rho = C_wall * g / D_max` with a recommended `rho_max = 0.5` — and
+    Section 9.2 gates a compaction candidate that cannot prove bounded CAS/fence progress. What is
+    still open is the fence duration itself: a concrete declared maximum, and whether it is one
+    deployment constant or a per-component one.
+18. **Should HTTP Cache Groups be emitted as an optional same-origin cache optimization?** They
+    cannot be a conformance dependency (Section 4.5).
+19. **How are shared resource closures reference-counted across bases, replacement tilesets, and
+    rebased patches before garbage collection?** Section 4.5's mark-epoch protocol deliberately
+    avoids a racy refcount; what is open is whether a bounded index is nevertheless wanted for
+    operational visibility, and what it would cost at the object counts Section 9.7 projects.
+20. **What default values should each deployment-constant carry, per profile class?** Section 4.5
+    requires `maxHeadRevalidationInterval`, `maxLazyFetchHorizon`, `propagationWindow`, and
+    `offlineWindow` to be declared, and Section 4.1 requires `maxStaleness`; none of them has a
+    recommended default. A deployment that has to invent all five from scratch will get the retention
+    arithmetic wrong, so a small table of defaults per profile class — CDN-fronted public, private
+    low-latency, offline-capable — is owed alongside the schema work of Section 15.3.
+21. **Is `maxStaleness` a property of the dataset or of the trust domain?** Section 4.1 declares it
+    per publication and ties it to `maxHeadRevalidationInterval`, but a client persists its
+    watermark per `(trustDomainId, datasetId)`. If one trust domain publishes several datasets at
+    different cadences, it is unclear whether a client may hold different staleness bounds under one
+    key set, and whether an attacker who can pin one dataset gains anything against another.
+22. **How do `fork` and `merge` become epoch operations?** Decision 23 adopts
+    `3DTILES_temporal`'s semantic-change vocabulary for `transition.reason` but explicitly does
+    not adopt its `fork` and `merge` transition types, because this design has a single linear
+    epoch per dataset and no branch identity. Open: whether a branch is a second `datasetId`, a
+    second `updateEpochId` with a declared join, or outside scope entirely — and, if it is in
+    scope, what a client does when two branches claim the same target.
+
+### 16.1 Disposition of the previous revision's questions
+
+| Previous | Disposition | Where |
+| --- | --- | --- |
+| Q1 rendering-only | **Reworded and kept open.** Not free in this engine; the answer must be a declared profile capability. | Now 1 |
+| Q2 stale-base fallback vs required/current entrypoint | **Deleted — answered.** Section 11 defines the optional/stale-compatible entrypoint, the required/current entrypoint, and the dual-entrypoint pair, and Section 13 requires the pinned form when correctness depends on absence. | Section 11 |
+| Q3 first mask target | Kept. | Now 2 |
+| Q4 WGS84 polygon prism | Kept. | Now 3 |
+| Q5 mask disjointness | **Narrowed.** Closed for the MVP by Sections 4.2, 5.3, and 9.2; open only for the future dependency profile. | Now 4 |
+| Q6 `baseDigest` record encoding | **Narrowed.** Typed-codec half answered by Section 7; base-revision half still open. | Now 5 |
+| Q7 JSON manifest | Kept. | Now 6 |
+| Q8 stable IDs from tilers | **Narrowed** to the producer-side half. | Now 7 |
+| Q9 replacement inside root bounds | **Narrowed.** Closed for the MVP by Section 5.3. | Now 8 |
+| Q10 default optimizer weights | **Reworded.** The cost-vector shape is closed; calibration per profile class is what is open. | Now 9 |
+| Q11 compaction thresholds | **Deleted — answered.** Section 12's normative trigger fixes the three predicates `D_max`, `beta`, and `gamma`, with derivations and recommended windows. | Section 12 |
+| Q12 quantized mesh sharing the envelope | **Deleted — answered.** Sections 2.3, 3.3.5, and 8.5 settle it: shared envelope and state model, separate sibling profile, separate engine owner. | Sections 2.3, 8.5 |
+| Q13 which component profiles first | **Kept open, marked provisional** with the terrain-plus-imagery lean named as a lean. | Now 13 |
+| Q14 signatures, rollback, key rotation | **Narrowed** to signature suite plus key distribution and rotation; the mechanism is in Section 4.1. | Now 14 |
+| Q15 umbrella name | Kept. | Now 10 |
+| Q16 transports and discovery links | **Narrowed.** The terrain-and-imagery-only bootstrap moves to the sibling profiles. | Now 11 |
+| Q17 typed-selector encoding | **Narrowed.** The registry and identity requirements are in Section 4.4; the wire encoding is open. | Now 12 |
+| Q18 stale/offline/rollback lease | **Narrowed** to the offline-package pinning format; the lease question is answered statelessly by Section 4.5. | Now 15 |
+| Q19 revocation keys and policy | **Narrowed** to keys, rotation, and deny-root retention. | Now 16 |
+| Q20 writer-fence duration | **Partly answered.** The envelope is in Section 12; the concrete maximum is open. | Now 17 |
+| Q21 HTTP Cache Groups | Kept. | Now 18 |
+| Q22 shared-closure reference counting | Kept, with Section 4.5's mark-epoch protocol noted as the reason a refcount is not required. | Now 19 |
+| — | **New**, surfaced by the revision wave: deployment-constant defaults per profile class. | Now 20 |
+| — | **New:** `maxStaleness` scope, per dataset or per trust domain. | Now 21 |
+| — | **New:** `fork` and `merge` as epoch operations. | Now 22 |
 
 ---
 
 ## 17. Initial acceptance and conformance matrix
 
+Every row below is a testable claim with an identifier, a phase tag (Section 2.2.1), and the body
+requirement it tests. Three disciplines govern the section.
+
+- **Identifiers are stable.** `C-` rows are core state and lifecycle, `T-` rows are typed/content
+  profiles, `F-` rows are the signed freshness profile, `R-` rows are the authenticated revocation
+  profile. A row is never renumbered; a retired row is struck with a pointer.
+- **Phase tags say when a row must pass**, not whether it matters. An implementation claiming only
+  MVP core runs the MVP-core rows; it does not get to fail the others quietly, it declares that it
+  does not implement them.
+- **The matrix is orphan-checked in both directions.** Every row names the body requirement it
+  tests, and every normative requirement either has a row or appears in Section 17.5 with the reason
+  it has none. A row with no body requirement, or a requirement with neither a row nor an entry in
+  17.5, is a defect in this document rather than in an implementation.
+
+Instrument classes are those of Section 14: **N** for the browser-free Node lane, **P** for the
+Playwright probe lane. Where a row is rendered, Section 15.0's dual-backend obligation applies
+(C-93).
+
 ### 17.1 Core state, invalidation, replacement, and lifecycle
 
-- Unknown optional extension renders the declared stale-compatible base.
-- Required extension is rejected by an unaware client.
-- An unknown required component/profile/version rejects the whole atomic state. A compatible in-state
-  materialized fallback activates only when its exact closure/output identity and capability set pass.
-- A patch whose `baseDigest` does not bind the exact component/base revision descriptor rejects.
-- Replaying the same `(datasetId, updateEpochId, sequence)` tuple or `invalidationId` with the same
-  canonical identity projection is idempotent; reusing either event key with a divergent projection
-  fails closed. Non-authoritative URI/mode/reason/affected hints may vary without changing identity.
-- Successive sequence values under the same `updateEpochId` are distinct valid events.
-- Lower generation is ignored; equal generation with a different state digest fails closed.
-- Missing any number of events still converges by fetching the latest head and complete snapshot.
-- A notification with an arbitrary successor URI cannot bypass verified head/state identity.
-- Head `datasetId`/`generation`/`stateRevisionId` and computed `stateDigest` must exactly match the
-  fetched state; a hint successor that disagrees with the verified head cannot activate.
-- Immediate hint handling forces head revalidation even if an intermediary holds a fresh prior head;
-  a bounded-freshness profile instead proves and reports its declared maximum lag.
-- A direct-successor transition with a divergent `parentStateDigest` is not applied incrementally;
-  the client validates and materializes the advertised complete snapshot instead.
-- Failure of one state-control or current activation-frontier resource applies none of the state.
-- Old hill never reappears during parent/child HLOD transitions.
-- Cross-edge replacement is crack-free and boundary ownership is deterministic.
-- Invalid/self-intersecting/out-of-range masks reject.
-- Replacement is not activated before root coverage is ready.
-- Ordinary invalidation and replacement activate in the same frame; a delayed or corrupt successor
-  keeps the predecessor visible.
-- Post-activation loss does not silently restore a superseded generation; an explicitly permitted
-  stale fallback may be used.
-- An active semantic suppression applies to unloaded content when it is later materialized.
-- Exact-content invalidation leaves sibling contents untouched; subtree invalidation does not hit
-  siblings or enumerate an unbounded theoretical tree.
-- Implicit content replacement preserves availability; an availability/topology mutation rejects or
-  selects a new subtree/base revision.
-- A ready/current multi-layer terrain/imagery/object frontier never exposes a mixed generation;
-  withheld lazy targets are not claimed current, and stale-compatible fallback uses the complete
-  coupled predecessor group.
-- A paired base/content multi-component rebuild activates as one state, including when one component
-  uses an in-state materialized fallback.
-- Reordering independent patch/tombstone arrays leaves output identity unchanged.
-- Every semantically unordered state array normalizes to its specified canonical order before hashing;
-  shuffled input yields one digest, while duplicate component/domain/revision/capability/fallback IDs
-  reject.
-- Independent patch-versus-patch, patch-versus-tombstone, nonidentical tombstone overlap, and touching
-  `replaceRegion` closed masks reject. Identical tombstones normalize deterministically.
-- Context loss and reload recover one complete state.
-- Cache/offline replay resolves an exact immutable resource closure.
-- Offline state reports internally consistent but stale, then jumps directly to current on reconnect.
-- Compaction preserves the same semantic surface and state identity lineage.
-- Compaction with concurrent tail changes loses none; every surviving tail patch binds the new base
-  digest and receives a new patch revision identity when re-encoded.
-- Source-built compaction absorbs each patch and tombstone prefix exactly once, omits an empty tail,
-  and re-encodes each surviving tail lineage against the new base without double-applying it.
-- A head CAS conflict retries against the additional tail instead of overwriting it.
-- Compaction that exceeds arrival/rebase/CAS/fence caps defers without blocking currentness updates or
-  publishing a partial base.
-- Rollback publishes a higher generation; a lower-generation rollback is rejected.
-- Old closures remain retrievable through their promised retention window.
-- Shared resources are not collected when any retained state, patch, base, or offline pin references
-  them; an expiry timestamp alone never authorizes deletion.
-- A collector racing candidate upload cannot delete staged or reused resources protected by a durable
-  publication pin; successful CAS establishes the new root before pin release, and deletion performs
-  a final mark-epoch/root/pin recheck.
-- A crashed publisher's expired pin is reaped only after lease, abort-grace, and fresh root/reference
-  checks; a committed candidate remains protected by the head root.
-- Client CPU/GPU resources remain live through submitted work and retire exactly once afterward.
-- Notification floods coalesce to bounded work and the newest verified generation.
-- Coalescing retains every incorporated `updateLineage` record, respects freshness SLA, and selects a
-  materialized candidate rather than exceeding the bounded lineage set.
-- When patching wins, its verified state/head commit precedes rebuild scheduling; when patching loses,
-  the producer publishes the direct materialized result without a transient patch.
-- Repeated edits reset `quietPeriod` but not `maxWait` or the oldest freshness deadline. Threshold and
-  global-throttle tests prove bounded rebuild count and fair attempts when arrival/rebase/CAS capacity
-  is feasible; sustained infeasible load produces explicit debt/age alerts rather than a false
-  completion guarantee.
-- A crash after patch-head CAS but before ordinary queue delivery is recovered from the durable
-  rebuild intent or active-state scan; duplicate scheduling materializes the lineage exactly once.
-- `maxWait` produces a fair scheduled attempt and overload telemetry/alerts, but never claims
-  completion while safe rebase throughput is below sustained arrival.
-- HTTP object fetch plus SSE/WebSocket, gRPC, polling, and in-process listener profiles converge on
-  the same verified state and produce identical output; transport bytes alone never authorize state.
-- An off-screen affected tile performs no decode/upload/compositor work until visibility or bounded
-  camera/screen-space-error prediction demands it. On re-entry it either keeps an explicitly reported
-  predecessor fallback until atomic readiness or presents only the patched/materialized generation;
-  stale bytes are never mislabeled current.
-- A local baked composite is keyed by exact state/base/patch/profile identity, is evictable, and is
-  skipped when a newer rebuilt generation supersedes it before realization.
-- Rebuilt-content activation keeps the patched result visible until ready, then atomically switches
-  and retires the incorporated patch generation only after safe resource fences.
-- Exact semantic no-change selects `NO_OP`; a delete selects an active suppression; a deliberately
-  uneconomic patch selects full replacement/rebuild.
-- Optimizer mutants that undercount bytes, origin operations, client/recurring cost, chain debt,
-  mandatory queued rebuild debt, contention, or required derived data fail.
-- Corrupt payloads, excessive expansion, cycles, resource-limit attacks, oversized selectors,
-  unbounded subtrees/globs, and cross-dataset targets fail closed.
-- A core client rejects any nonempty `revocations` list because that list requires the authenticated
-  revocation profile.
+#### 17.1.1 Discovery, capabilities, and additive behaviour
 
-### 17.2 Optional typed/content profiles
+| ID | Requirement | Phase | Body |
+| --- | --- | --- | --- |
+| C-01 | An unknown optional extension renders the declared stale-compatible base. | MVP-core | 11 |
+| C-02 | A required extension is rejected at load by an unaware client rather than rendering a stale base. | MVP-core | 11 |
+| C-03 | **Strictly additive.** A client that does not implement the extension, or does not implement one of its profiles, receives no patches, states, or invalidations for what it does not implement, and renders identically to the same client run against the same base with no extension present. The publication's behaviour toward it does not change when a patch state exists. | MVP-core | 11, decision 19 |
+| C-04 | An unknown required component, profile, or version rejects the whole atomic state. A compatible in-state materialized fallback activates only when its exact closure/output identity, source revision, and capability set pass. | MVP-core | 4.2, 11 |
+| C-05 | A client missing a required capability with no compatible fallback keeps what it was already showing and reports itself non-current. It is not required to blank content, and this is not a fail-closed condition. | MVP-core | 11 |
+| C-06 | A patch whose `baseDigest` does not bind the exact component/base revision descriptor rejects. | MVP-core | 4.2 |
+| C-07 | Where a deployment declares tile expiration as its degraded path, an extension-ignorant client still performs the polled whole-tile refresh, and an aware client's head reconciliation neither suppresses it nor depends on it. | MVP-core | 2.4, decision 25 |
 
-- Sparse attribute patch rejects any layout/count/quantization mismatch.
-- Texture patch rejects unaligned blocks or missing mip/gutter data.
-- Quantized height patch rejects incomplete edge/LOD groups and unsafe header changes.
-- An independent overlapping typed patch rejects; a future dependency-profile overlap is accepted
-  only through its bounded acyclic graph and exact edge input/output digests, independent of array
-  order.
+#### 17.1.2 Head, state identity, and canonical form
 
-### 17.3 Authenticated revocation profile
+| ID | Requirement | Phase | Body |
+| --- | --- | --- | --- |
+| C-08 | Head `datasetId`, `generation`, and `stateRevisionId` and the computed `stateDigest` exactly match the fetched state; a mismatch is a retry or a verified fail-closed split-brain, never a silent accept. | MVP-core | 4.4 law 7 |
+| C-09 | A `generation` or `sequence` encoded as a JSON number, with a leading zero, or overflowing uint64 rejects; comparison is numeric and never lexicographic over the JSON string. | MVP-core | 4.4 |
+| C-10 | Revisions bound to different `sourceDomainId` values are never compared; a state whose records compare across domains rejects. | MVP-core | 4.2 |
+| C-11 | At most one `sourceDomains` entry carries `default`; a second rejects, and a multi-domain state that omits an explicit domain on a record rejects. | MVP-core | 4.2 |
+| C-12 | **Served bytes are canonical.** A state manifest served in noncanonical form — wrong array order, duplicate JSON object key, duplicate identity key inside an array, or any other RFC 8785 violation — is rejected and never repaired. No client normalizes. | MVP-core | 4.2, decision 20 |
+| C-13 | Shuffled input to a semantically unordered state array is rejected rather than reordered into one digest; the publisher, not the client, produces canonical order. | MVP-core | 4.2 |
+| C-14 | Two publications whose arrays differ only in the order the producer authored them yield the same canonical bytes, the same `stateDigest`, and identical rendered output. | MVP-core | 4.2 |
+| C-15 | A closure that mixes digest algorithms, or names an unregistered or truncated one, is rejected with no fallback to a weaker algorithm. | MVP-core | 4.3 |
+| C-16 | A cold load from the head alone materializes one complete state; no predecessor chain and no event history is required. Neither the head nor the active-state manifest carries update history, so neither grows with patch count or dataset age. | MVP-core | 4.1, 4.2 |
+| C-17 | **Context loss and reload recover forward.** The client discards lost state, re-reads the head, and materializes the state the head names at recovery time — which may be newer than the one it lost — and never restores a superseded generation. | MVP-core | 10 |
+| C-18 | Cache and offline replay resolve an exact immutable resource closure. | MVP-core | 4.5 |
+| C-19 | An offline state reports itself internally consistent but stale, then jumps directly to current on reconnect without replaying missed invalidations. | MVP-core | 4.5 |
+| C-100 | A publication declares exactly one freshness profile. An entrypoint declaring none, or two, rejects; and a publication on the unsigned profile that asserts authoritative currentness in its own diagnostics or metadata is a defect, because the unsigned profile cannot support the claim. | MVP-core | 4.1 |
 
-These rows test the authenticated revocation profile. The rows naming the head statement, the
-generation watermark, and the digest suite apply equally to the signed freshness profile of
-Section 4.1, which the revocation profile includes.
+#### 17.1.3 Hint plane
 
-- An unsigned, wrong-key, replayed, cross-dataset, or rollback revocation fails closed.
-- A verified revocation dominates patches and tombstones targeting the revoked digest, including
-  content not yet loaded, independent of manifest order.
-- Hard-revoked content remains absent during successor failure and cannot return through a stale or
-  offline entrypoint covered by the profile's persistent deny root.
-- A revocation record cannot retire while any supported retained state/offline lease can select the
-  target unless an equally authoritative persistent deny root remains.
-- A head statement that is unsigned, signed by the wrong key, expired beyond the declared
-  `maxStaleness`, bound to another dataset or trust domain, or naming a generation below the durable
-  `generationWatermark` is rejected; the client keeps its last verified state, marks it stale, and
-  never adopts the older generation.
-- The watermark survives reload, cache eviction, and process restart: a client replayed an older but
-  validly signed head after a restart rejects it.
-- An entrypoint that is stripped of the extension, repointed at another head, or does not match the
-  signed `entrypointDigest` fails closed instead of silently downgrading the client to an unsigned
-  stale base.
-- The detached head-statement signature verifies against the exact served head bytes; a re-serialized
-  or renormalized head fails verification.
-- A closure that mixes digest algorithms, or names an unregistered or truncated one, is rejected with
-  no fallback to a weaker algorithm.
-- The profile's absence guarantee is claimed only for clients that implement it and are reaching the
-  current head. Conformance asserts absence on profile clients, and asserts that an unaware or
-  non-profile client is unaffected by the profile rather than blanked by it.
-- An expired head statement does not undo a revocation the client already applied.
+| ID | Requirement | Phase | Body |
+| --- | --- | --- | --- |
+| C-20 | Replaying `invalidationId`, or the delivery key `(trustDomainId, datasetId, updateEpochId, sequence)`, with the **same** semantic identity projection is idempotent: no extra fetch beyond the rate-limited revalidation, no patch work, no generation change. | MVP-core | 4.4 laws 1, 3 |
+| C-21 | Reusing `invalidationId` with a **divergent** semantic projection makes the client ignore the hint and schedule one rate-limited head reconciliation. It MUST NOT fail closed, blank content, or advance any durable record beyond the dedup window. | MVP-core | 4.4 laws 1, 9 |
+| C-22 | A transition re-served under a new `updateEpochId` with restarted `sequence` and its original `invalidationId` is a reset, not a conflict; the client treats it as the same transition. | MVP-core | 4.4 |
+| C-23 | A hint naming a lower generation than the client's verified generation is ignored. A hint naming an equal generation with a different `stateDigest` is ignored and reconciled — an anomaly, not a verdict. | MVP-core | 4.4 law 2 |
+| C-24 | **Fail-closed is qualified.** Split-brain is declared only when the client's own *verified* head names an already-verified generation with a different `stateDigest`, or names a generation below the durable watermark. No hint content reaches that state. | MVP-core (same-generation half); signed-profile (watermark half) | 4.1, 4.4 law 2 |
+| C-25 | Successive `sequence` values under one `updateEpochId` are distinct valid events. | MVP-core | 4.4 |
+| C-26 | Missing any number of events still converges, by fetching the latest head and complete snapshot. | MVP-core | 4.4 law 3 |
+| C-27 | A notification carrying an arbitrary successor URI cannot bypass verified head/state identity. A hint successor disagreeing with the verified head discards the hint path and reconciles ordinarily; it never activates, and it never fails closed on hint evidence alone. | MVP-core | 4.4 laws 6-8 |
+| C-28 | A direct-successor transition with a divergent `parentStateDigest` is not applied incrementally; the client validates and materializes the advertised complete snapshot instead, and does not reject an otherwise valid cold-load snapshot over wrong hint metadata. | MVP-core | 4.4 law 8 |
+| C-29 | Immediate hint handling forces end-to-end head revalidation even when an intermediary holds a fresh prior head; a bounded-lag profile instead proves and reports its declared maximum lag. The head is never served with a freshness lifetime exceeding the declared `maxHeadRevalidationInterval`. | MVP-core | 4.5 |
+| C-30 | **Flood is bounded.** A hint flood, an unparseable or oversized hint, an unknown epoch, and a hint for an unknown dataset all coalesce into bounded work: one jittered rate-limited revalidation per `(trustDomainId, datasetId)`, convergence on the newest verified generation, no fail-closed state, and no durable record advanced other than the dedup window. | MVP-core | 4.4 laws 9-10, 13 |
+| C-31 | Durable dedup state is scoped by `(trustDomainId, datasetId)`: a hint from an origin that does not speak for a dataset cannot pollute that dataset's dedup record or its watermark. | MVP-core | 4.4 |
+| C-32 | `affected` present with false-negative coverage is detected as a publisher defect; `affected` absent is no coverage claim and changes nothing; an empty `affected` array rejects. In no case does `affected` suppress, replace, or authorize content. | MVP-core | 4.4 |
+
+#### 17.1.4 Activation and atomicity
+
+| ID | Requirement | Phase | Body |
+| --- | --- | --- | --- |
+| C-33 | Failure of any state-control or current activation-frontier resource applies none of the state. | MVP-core | 10 |
+| C-34 | **Activation is idempotent, keyed by `stateDigest`.** Re-delivery, reconnect, replay, snapshot wake, and a repeated verified head naming the already-active state produce no state change, no resource churn, and no committed-generation bump; preparing a generation twice reuses the digest-identical prepared resources. | MVP-core | 10 |
+| C-35 | **Loss at the commit boundary does not half-commit.** A prepared resource lost between `READY` and the commit boundary — device loss, eviction, failed final upload — prevents the commit from beginning: the predecessor stays active and the generation returns to preparation. A commit that has begun completes, and no frame shows a half-swapped state. | MVP-core | 10 |
+| C-36 | A lazy-closure failure after commit does not revert the committed generation. The client withholds the affected coupled target group, or shows the complete declared predecessor group under a stale-compatible profile, retries within `maxLazyFetchHorizon`, and reports the target unresolved rather than current. | MVP-core | 10 |
+| C-37 | Post-activation loss does not silently restore a superseded generation; only an explicitly permitted stale fallback MAY be shown. | MVP-core | 5.2 |
+| C-38 | Ordinary invalidation and replacement activate in the same frame; a delayed or corrupt successor keeps the predecessor visible with no hole. | MVP-core | 10 |
+| C-39 | A ready/current multi-layer terrain/imagery/object frontier never exposes a mixed generation. Withheld lazy targets are not claimed current, and a stale-compatible fallback uses the complete coupled predecessor group rather than mixing. | MVP-core | 4.2, 10 |
+| C-40 | A paired base/content multi-component rebuild activates as one state, including when one component uses an in-state materialized fallback. | MVP-core | 4.2 |
+| C-41 | Client CPU/GPU resources remain live through submitted work and retire exactly once afterward. | MVP-core | 10 |
+| C-42 | A `READY(g)` superseded before its commit boundary is skipped, the current predecessor is retained, and digest-identical prepared resources are reused for the newer generation. | MVP-core | 10 |
+
+#### 17.1.5 Masks, HLOD, and replacement correctness
+
+| ID | Requirement | Phase | Body |
+| --- | --- | --- | --- |
+| C-43 | The old hill never reappears during parent/child HLOD transitions. | MVP-core | 5.2 |
+| C-44 | Cross-edge replacement is crack-free and boundary ownership is deterministic. | MVP-core | 5.1, 5.3 |
+| C-45 | Invalid, self-intersecting, out-of-range, or non-disjoint masks reject, including masks whose closed boundaries or transition collars merely touch. | MVP-core | 4.2, 5.3 |
+| C-46 | A mask whose thinnest feature or collar falls below the profile's declared minimum feature size rejects at publication rather than degrading on the backend that cannot represent it. | MVP-core | 5.3 |
+| C-47 | A mask is not exposed before replacement root coverage is renderable and validated. | MVP-core | 5.2 |
+| C-48 | Replacement parent coverage is preserved through ordinary `REPLACE` refinement. | MVP-core | 5.2 |
+| C-49 | **Shadows.** Masked base content stops casting in the same commit frame; a flattened hill does not keep its shadow. | MVP-core | 3.3.6 |
+| C-50 | **Classification and draping.** The classification depth target is re-derived against the replacement in the commit frame, and a coupled state declares which surface its classifiers target; a classifier targeting terrain does not silently resolve against a replacement delivered as 3D Tiles content. | MVP-core | 3.3.6 |
+| C-51 | Temporal reprojection history is rejected for the affected extent in the commit frame; the swap does not ghost. | MVP-core | 3.3.6 |
+
+#### 17.1.6 Selectors, implicit tiling, and tombstones
+
+| ID | Requirement | Phase | Body |
+| --- | --- | --- | --- |
+| C-52 | An active semantic suppression applies to unloaded content when it is later materialized, including content the most-detailed passes materialize outside the render frontier. A walk of current cache entries is an optimization, never the mechanism. | MVP-core | 4.4, 10 |
+| C-53 | Exact-content invalidation leaves sibling contents untouched; subtree invalidation hits no sibling and enumerates no unbounded theoretical tree. | MVP-core | 4.4 |
+| C-54 | **Implicit availability is immutable to overlays.** Implicit content replacement preserves availability; an overlay that would make an unavailable coordinate available, or the reverse, rejects, and an availability, subdivision, or hierarchy change selects a **new base revision**. | MVP-core | 2.5, 4.4 |
+| C-55 | **Subtree caches are revision-scoped.** A subtree cache entry does not cross a base-revision boundary; carrying one across is detected as a correctness failure rather than counted as a cache hit. | MVP-core | 2.5 |
+| C-56 | Independent patch-versus-patch, patch-versus-tombstone, and nonidentical-tombstone overlap reject. Byte-identical duplicate tombstones are normalized by the producer before serialization, and a served manifest still containing two of them, or two records sharing a `tombstoneRevisionId`, rejects. | MVP-core | 4.2 |
+| C-57 | Within one state a verified revocation dominates a tombstone and a tombstone dominates a patch on the same semantic element, independent of array order. | MVP-core; revocation-profile for the revocation half | 4.2 |
+
+#### 17.1.7 Compaction, retention, and garbage collection
+
+| ID | Requirement | Phase | Body |
+| --- | --- | --- | --- |
+| C-58 | Compaction preserves the same semantic surface and the state identity lineage. | MVP-core | 12 |
+| C-59 | Compaction with concurrent tail changes loses none; every surviving tail patch binds the new base digest and receives a new patch revision identity when re-encoded. | producer-profile | 12 |
+| C-60 | Source-built compaction absorbs each patch and tombstone prefix exactly once, omits an empty tail record, and re-encodes each surviving tail lineage against the new base without double-applying it. | producer-profile | 12 |
+| C-61 | A head CAS conflict retries against the additional tail instead of overwriting it, within the declared retry, tail-byte, and elapsed-time caps. | producer-profile | 12 |
+| C-62 | Compaction that exceeds arrival, rebase, CAS, or fence caps defers without blocking currentness updates and without publishing a partial base. | producer-profile | 12 |
+| C-63 | Rollback publishes a higher generation naming prior known-good content; a lower-generation rollback is rejected. | MVP-core | 4.4 law 5 |
+| C-64 | Old closures remain retrievable through their promised retention window. `retainUntil` is never earlier than `maxHeadRevalidationInterval + maxLazyFetchHorizon + propagationWindow + offlineWindow` plus grace, and `purgeEligibleAfter` is never earlier than any applicable `retainUntil`. | MVP-core | 4.5 |
+| C-65 | **Entrypoints are durable roots.** A published entrypoint holds its current target's closure; a repoint keeps the previous target rooted for the full retention window; retiring a name outright still holds its last target for that window. An entrypoint served with immutable caching semantics is a defect. | MVP-core | 4.5 |
+| C-66 | Shared resources are not collected while any retained state, patch, base, offline pin, rollback point, or published entrypoint references them; an expiry timestamp alone never authorizes deletion. | MVP-core | 4.5 |
+| C-67 | A collector racing a candidate upload cannot delete staged or reused resources protected by a durable publication pin; a successful CAS establishes the new root before pin release, and deletion performs a final mark-epoch, root, and pin recheck. | MVP-core | 4.5 |
+| C-68 | A crashed publisher's expired pin is reaped only after lease, abort-grace, and fresh root/reference checks; a committed candidate remains protected by the head root. | producer-profile | 4.5 |
+| C-69 | Compaction reduces `depth(b)` to the surviving rebased tail's depth, and a trigger clears only when every predicate is false against the newly published `activeSummary`. | producer-profile | 12 |
+| C-101 | An aware online client revalidates the head at least once per `maxHeadRevalidationInterval` and completes or abandons a lazy-closure fetch within `maxLazyFetchHorizon`. A client that exceeds either is an offline client by definition: it makes no currentness claim, and the publisher's retention arithmetic does not cover it. | MVP-core | 4.5 |
+
+#### 17.1.8 Producer scheduling and the optimizer
+
+| ID | Requirement | Phase | Body |
+| --- | --- | --- | --- |
+| C-70 | **Terminal admissibility.** A `patch-terminal` candidate is admitted only when publishing it leaves every Section 12 trigger predicate false for every bin it touches. | producer-profile | 9.2 |
+| C-71 | A candidate that would cross a trigger is not rejected; it survives as `patch-then-rebuild` with the compaction it forces priced into `c_debt`. | producer-profile | 9.2 |
+| C-72 | A bin whose trigger has fired admits no further `patch-terminal` candidate until the predicate clears, and a **deferred** trigger keeps it inadmissible for the whole deferral while raising the debt/age alert. | producer-profile | 12 |
+| C-73 | `c_debt` is zero for `patch-terminal` and `rebuild-now` and `alpha * C_rebuild` for `patch-then-rebuild`. A mutant that charges a full rebuild to a terminal patch, or charges one rebuild to every debounced patch, fails. | producer-profile | 9.3.4 |
+| C-74 | Every candidate carries `t_ttc`, and a scheduled rebuild published after a correct patch carries none. A mutant that charges the same staleness twice fails. | producer-profile | 9.3.2 |
+| C-75 | Every comparison is between `costHi` values. A mutant comparing a patch's upper bound against a materialized candidate's lower bound fails. | producer-profile | 9.4 |
+| C-76 | Ranking is over one admissible set with no pre-selected `bestMaterialized`, so a patch is never eliminated by a materialized candidate that then loses to a different one. | producer-profile | 9.4 |
+| C-77 | `chooseUpdate` is pure: nothing is encoded durably, uploaded, pinned, published, or written to the head before a terminal return, and `NEEDS_BOUNDED_STAGE_2` re-enters exactly once. | producer-profile | 9.4, 9.6 |
+| C-78 | A maintenance-only request with no admissible candidate returns `DEFER_COMPACTION`; `NO_SAFE_CANDIDATE_DEFER_TO_OFFLINE_BUILD` is returned only for a source update with no safe representation. | producer-profile | 9.4 |
+| C-79 | Exact semantic no-change selects `NO_OP`; a delete selects an active suppression; a deliberately uneconomic patch selects full replacement or rebuild. | producer-profile | 9.4 |
+| C-80 | **Optimizer mutation suite.** Mutants that undercount wire bytes, origin operations, per-exposure or recurring client cost, amortized scheduled-rebuild debt, contention, or required derived data are detected and fail. | producer-profile | 9.6, 15.2 |
+| C-81 | When patching wins, its verified state and head commit precede any scheduled rebuild; when patching loses, the producer publishes the direct materialized result with no transient patch. | producer-profile | 3.4.1 |
+| C-82 | Repeated edits reset `quietPeriod` but not `maxWait` or the oldest freshness deadline. Threshold and throttle tests prove bounded rebuild count and fair attempts when capacity is feasible; sustained infeasible load produces explicit debt and age alerts rather than a false completion guarantee. | producer-profile | 3.4.3 |
+| C-83 | A crash after the patch head CAS but before ordinary queue delivery is recovered from the durable rebuild intent or an active-state scan, and duplicate scheduling materializes the lineage exactly once. | producer-profile | 3.4.1 |
+| C-84 | Coalescing retains every incorporated `updateLineage` record, respects the oldest remaining freshness deadline, and selects a materialized candidate rather than exceeding the bounded lineage set. | producer-profile | 9.4 |
+| C-85 | HTTP object fetch plus SSE/WebSocket, gRPC, polling, and in-process listener profiles converge on the same verified state and produce identical output; transport bytes alone never authorize state. | MVP-core | 3.4.1 |
+
+#### 17.1.9 Engine vehicle, budget, and dual-backend
+
+| ID | Requirement | Phase | Body |
+| --- | --- | --- | --- |
+| C-86 | **One vehicle.** Replacement and rebuilt content ride inside the base tileset's traversal as a compositor subtree: one cache, one byte budget, one request budget, one statistics record, one swap owner. | MVP-core | 3.3.3 |
+| C-87 | **All four traversal entry points observe the compositor.** A build wired into one of the base, skip, most-detailed, or shared traversals and not the others fails, and the failure is attributed to the unwired entry point. | MVP-core | 3.3.2 |
+| C-88 | Mask coverage and replacement-root coverage of the committed generation are pinned and survive an unload walk; an eviction that re-exposes base geometry inside the mask or resurrects retired content fails. | MVP-core | 3.3.3 |
+| C-89 | Baked composites evict before pinned coverage and before ordinary replacement content. | MVP-core | 3.3.3 |
+| C-90 | **Admission gate.** Committed pinned coverage above the configured fraction of `cacheBytes` refuses activation and reports degraded absence rather than thrashing. | MVP-core | 3.3.3 |
+| C-91 | A swap whose predecessor plus successor coverage exceeds `cacheBytes` plus `maximumCacheOverflowBytes` defers instead of committing, and the deferral is reported. | MVP-core | 3.3.3 |
+| C-92 | Retirement runs only after the submission referencing the resource has completed — through the submission-serial authority on WebGPU and context resource destruction on WebGL — and never on a frame counter alone. | MVP-core | 3.3.2, 10 |
+| C-93 | **Dual backend.** Every rendered row above runs on WebGL and on WebGPU and agrees. A claim demonstrable on only one backend is recorded as declared single-backend rather than generalized. | MVP-core | 3.3.2, 15.0 |
+| C-94 | A local baked composite is keyed by exact state, base, patch, and profile identity, is evictable, never mutates the immutable base, and is skipped when a newer rebuilt generation supersedes it before realization. | MVP-core | 3.4.2 |
+| C-95 | An off-screen affected tile performs no decode, upload, or compositor work until visibility or bounded prediction demands it. On re-entry it either keeps an explicitly reported predecessor fallback until atomic readiness or presents only the patched/materialized generation; stale bytes are never mislabeled current. | MVP-core | 3.4.2 |
+| C-96 | Rebuilt-content activation keeps the patched result visible until ready, then atomically switches and retires the incorporated patch generation only after safe resource fences. | MVP-core | 3.4.4 |
+
+#### 17.1.10 Limits and abuse
+
+| ID | Requirement | Phase | Body |
+| --- | --- | --- | --- |
+| C-97 | Corrupt payloads, excessive expansion, cycles, resource-limit attacks, oversized selectors, unbounded subtrees or globs, and cross-dataset targets fail closed. Every limit exercised is one the deployment declared machine-readably — including the per-codec axes a typed profile is required to add — and the client reports which limit fired, its own or the declared one. | MVP-core | 13 |
+| C-98 | A payload carrying executable JavaScript or arbitrary shader source is rejected before any other validation. | MVP-core | 13 |
+| C-99 | A core client rejects any nonempty `revocations` list, keeps what it already had, and makes no absence claim about the revoked target. | MVP-core | 4.2, 13 |
+
+### 17.2 Optional typed and content profiles
+
+| ID | Requirement | Phase | Body |
+| --- | --- | --- | --- |
+| T-01 | A sparse attribute patch rejects any layout, count, or quantization mismatch, and a duplicate or out-of-order element index rejects rather than resolving last-wins. | typed-profile | 7.1 |
+| T-02 | **Decoded-form identity.** A base republished with different compression settings but identical decoded content keeps its typed-patch identity; an implementation that binds container bytes instead fails. | typed-profile | 7 |
+| T-03 | **Base-encoding gate.** `sparseAttributeOverride` and `submeshReplace` accept uncompressed and `EXT_meshopt_compression` bases and reject `KHR_draco_mesh_compression` and the comparable splat bitstreams, falling back to whole-slot replacement. A meshopt base is decoded, verified against its expected decoded digest, and patched in decoded space; the compressed bitstream is never spliced. | typed-profile | 7.1, 9.2 |
+| T-04 | A texture patch rejects unaligned blocks or missing mip or gutter data. | typed-profile | 7.3 |
+| T-05 | **Stored-format domain.** `textureBlockReplace` is evaluated against the base texture's stored format. A supercompressed KTX2 base rejects and selects whole-level replacement, whole-texture replacement, or `binaryResourceDelta` over the complete encoded KTX2. | typed-profile | 7.3 |
+| T-06 | An independent overlapping typed patch rejects. A future dependency-profile overlap is accepted only through its bounded acyclic graph with exact edge input and output digests, independent of array order. | typed-profile | 4.2, 7.1 |
+| T-07 | `replaceContent` binds the predecessor's stored encoding through `expectedContentDigest`, so a recompressed or repacked base is a different target and rejects, while the replacement's own container encoding is independent of the predecessor's. | typed-profile | 5.5 |
+| T-08 | `binaryResourceDelta` reconstructs the complete target off-thread, verifies the exact target digest, and only then loads it; an unavailable or wrong source digest falls back to the complete immutable target. | typed-profile | 7.4 |
+| T-09 | **Quantized-mesh payload domain.** A height payload carrying anything other than `uint16` codes in `[0, 32767]` — real-world meters, floating-point values, out-of-range codes — rejects. | typed-profile | 8.1 |
+| T-10 | **Interval rule.** An edit whose every height lies inside the declared interval is admitted at rung 1 even when it removes or creates a local or tile-wide extremum, so the north-star flatten-the-hill edit stays on the fast path. | typed-profile | 8.1 |
+| T-11 | An edit requiring a height outside the declared interval selects rung 2 and is never a sparse override. An edit that raises a height re-proves or re-supplies the bounding sphere and horizon occlusion point. | typed-profile | 8.1 |
+| T-12 | **Rung 2 preserves the rest of the tile.** `quantizedMeshHeightStreamReplace` reuses vertex count, vertex order, `u`/`v` codes, indices, and edge lists verbatim, preserves water-mask and metadata records byte-identically, and rejects a payload that alters any of them. | typed-profile | 8.3 |
+| T-13 | **Boundary atomic set.** A patch changing any height in an edge index list rejects unless the same atomic set contains the same-level edge neighbour and every coarser or finer representation covering that edge. Decoded edge positions agree within the declared tolerance after per-tile re-quantization. | typed-profile | 8.1 |
+| T-14 | A patch that tries to transport skirt geometry rejects; skirts are regenerated client-side from the edge index lists and the patched heights at the level-derived depth. | typed-profile | 8.1 |
+| T-15 | **Boundary normals.** A height patch for a normals-bearing tile that omits replacement normals rejects, a single-tile normal recompute is forbidden, and a lighting comparison across the patched edge shows no seam beyond the declared tolerance. | typed-profile | 8.1 |
+| T-16 | **Derived descendants.** Activating a height patch drops and re-derives every client-derived descendant in the same transition, counts the visible ones in the readiness frontier, and never activates while a finer LOD would still display the pre-edit surface. A client that cannot enumerate them drops the whole subtree below the patched tile. | typed-profile | 8.1 |
+| T-17 | Terrain and imagery revisions activate as one state; no frame pairs terrain revision `T` with imagery revision other than `I`. | typed-profile | 8.4 |
+| T-18 | `replaceContent` rejects a replacement that would exceed the bound tile's bounding volume or geometric error rather than silently widening either, and rejects one that depends on a resource reachable only through the predecessor's content. Reuse of the predecessor's content-addressed resources by digest is permitted. | typed-profile | 5.5 |
+| T-19 | A patch to a morph-target base attribute or to any target proves bounds and geometric-error evidence over the union of every instantiating node's reachable weight range, including animation-driven ranges; patches normal and tangent targets consistently with position targets; rejects any change to target count or order as content replacement; and rejects an update encoded as a weight change. | typed-profile | 2.5 |
+
+### 17.3 Signed freshness profile
+
+These rows test the signed freshness profile of Section 4.1. The revocation profile of Section 17.4
+includes every one of them.
+
+| ID | Requirement | Phase | Body |
+| --- | --- | --- | --- |
+| F-01 | Under a signed or revocation profile, a head served without a verifiable signature is not a head: the client rejects it and keeps its last verified state. | signed-profile | 4.1 |
+| F-02 | The detached head-statement signature verifies against the exact served head bytes; a re-serialized or renormalized head fails verification. | signed-profile | 4.1 |
+| F-03 | A head statement whose signature verifies but whose `datasetId` or trust domain is not the one the client bootstrapped is rejected. | signed-profile | 4.1 |
+| F-04 | A verified head naming a generation below the durable `generationWatermark` is rejected and never activated, however well formed and well signed. | signed-profile | 4.1 |
+| F-05 | A verified head naming the watermark generation with a `stateDigest` other than the one recorded for it is a verified split-brain and fails closed. | signed-profile | 4.1, 4.4 law 2 |
+| F-06 | The watermark survives reload, cache eviction, and process restart: an older but validly signed head replayed after a restart is rejected. | signed-profile | 4.1 |
+| F-07 | A client that cannot persist the watermark reports that it has no rollback resistance rather than silently offering the unsigned guarantee under a signed name. | signed-profile | 4.1 |
+| F-08 | `expiresAt` never exceeds `issuedAt + maxStaleness`, and `maxStaleness` never exceeds the declared `maxHeadRevalidationInterval`. | signed-profile | 4.1, 4.5 |
+| F-09 | An expired statement makes the client keep serving its last verified state, mark it stale in diagnostics, and stop making required/current claims. It MUST NOT blank content merely because a statement expired. | signed-profile | 4.1 |
+| F-10 | Recovery is always forward: the client never adopts a lower generation, expired or not, and revalidates until a statement at or above the watermark verifies. | signed-profile | 4.1 |
+
+### 17.4 Authenticated revocation profile
+
+| ID | Requirement | Phase | Body |
+| --- | --- | --- | --- |
+| R-01 | An unsigned, wrong-key, replayed, cross-dataset, or rollback revocation fails closed. | revocation-profile | 13 |
+| R-02 | A verified revocation dominates patches and tombstones targeting the revoked digest, including content not yet loaded, independent of manifest order. | revocation-profile | 4.2, 13 |
+| R-03 | Hard-revoked content remains absent during successor failure and cannot return through a stale or offline entrypoint covered by the profile's persistent deny root. | revocation-profile | 11, 13 |
+| R-04 | A revocation record cannot be withdrawn while any supported retained state or offline lease can still select the target, unless an equally authoritative persistent deny root remains. | revocation-profile | 13 |
+| R-05 | An entrypoint stripped of the extension, repointed at another head, or not matching the signed `entrypointDigest` fails closed instead of silently downgrading the client to an unsigned stale base. | revocation-profile | 4.1 |
+| R-06 | An expired head statement does not undo a revocation the client has already applied. | revocation-profile | 4.1, 13 |
+| R-07 | **Scope.** The same run asserts absence on clients that implement the profile and are reaching the current head, **and** asserts that an unaware or non-profile client is *unaffected* by the profile rather than blanked by it. | revocation-profile | 11, decision 19 |
+| R-08 | A publication whose correctness depends on revoked content being absent serves only required/current entrypoints pinned under this profile, and publishes no stale-compatible entrypoint for that dataset. | revocation-profile | 11 |
+
+### 17.5 Requirements with no conformance row yet
+
+Listed so that the orphan check above is honest in the second direction. Each entry is a normative or
+near-normative statement in the body that no row tests today, with the reason.
+
+| Requirement | Section | Why no row yet |
+| --- | --- | --- |
+| The canonical resource-record encoding, media type, byte length, and content-encoding rules that `baseDigest` binds | 4.2 | Required to be normative but not yet specified — Section 16, question 5. A row cannot be written before the encoding exists. |
+| Antimeridian normalization and pole behaviour for the geodetic surface polygon | 5.1 | Declared normative; the specific cases are not enumerated. C-45 covers self-intersection and range only. Owed with the D1 freeze. |
+| `submeshReplace` collar tolerance verified producer-side before publication | 7.2 | The tolerance is profile-declared and unset; T-13 covers the terrain analogue. Owed with P4. |
+| RFC 9875 cache-group behaviour on safe-method responses | 4.5 | Explicitly optional and explicitly not a conformance dependency — Section 16, question 18. |
+| GPU-resident reconciliation: slot-write commits, generation-tagged residency feedback, no commit between the two compute rasterization passes | 3.3.4 | The resident stack itself is unbuilt (Phase 8). Rows are owed at the same time as the stack, not before. |
+| Point-cloud identifier stability as a codec precondition, and voxel occupancy regeneration inside the transition | 3.3.4 | Both depend on the additive residency techniques being adopted first; neither has an engine consumer to test against today. |
+| The optimizer subordination law — a heuristic may order, seed, or prune but never admit what the gates reject or reject what they admit | 9.5 | Testable in principle, but the seeded heuristics are non-normative and uncalibrated; the row is owed with B1's calibration. |
+| Manifest and scaling-law constants `c0` and `c_rec` | 9.7 | Measured, not required. Section 14 row 4 is the instrument; a conformance row would freeze a measurement. |
+| Deployment-constant default values | 4.5 | No defaults exist yet — Section 16, question 20. C-64 tests the arithmetic over whatever the deployment declares. |
+| The MVP must not depend on the `3DTILES_content_conditional` draft | 2.5 | A scope property of this document, checked by review rather than by an implementation test. It becomes testable only if a later revision adds conditional-content integration. |
+| Active-mask lookup must not scan the whole patch catalog | 5.4 | Measured rather than asserted: Section 14 row 15 bounds spatial lookup at `O(log P)` and 12 us at `P = 4096`. A pass/fail row would freeze a performance number. |
+| Bounded-rollout guidance — cap in-flight preparations, prioritize visible tiles, reserve headroom, expose degraded diagnostics | 10 | A SHOULD over runtime policy. Sections 14 rows 16 and 19 bound the observable consequences (retained bytes, double-residency peak); the policy itself is not a conformance criterion. |
+| Publication cadence, minimum revalidation interval, and signature validity window chosen together; one signed statement per head move | 4.1, 4.5 | Deployment SHOULDs with no client-observable failure mode beyond F-08, which already bounds the window. |
+| Prefer the core-glTF mode-2 construction when none of the typed codec's four advantages apply | 7.1 | Producer policy. Both paths are conformant, so there is nothing for a client to reject. |
+| A profile claiming a larger `D_max` from descriptor sharding must declare that sharding | 12 | Testable, but only against a sharded descriptor index, which no phase before V1 produces. Owed with the sharding work. |
+| The hot-stream envelope `D_max >= C_wall * g / rho_max` | 12 | Measured, not required: Section 14 row 26 asserts the duty cycle from the producer scheduler simulation. |
+| The revocation profile must define publisher keys, rotation, and offline policy | 13 | The definition itself does not exist — Section 16, question 16. The R rows test the mechanism that a key model would plug into, not the key model. |
 
 ---
 
@@ -3762,11 +4326,14 @@ Section 4.1, which the revocation profile includes.
 Each conclusion below is a reading of evidence recorded elsewhere in this document. Where a claim
 depends on measurement that has not been taken, it is marked as pending rather than asserted.
 
-1. The concept addresses a gap in the **published standards**, not a gap in capability. §2.4's survey
+1. The concept addresses a gap in the **published standards**, not a gap in capability. Section 2.4's survey
    finds no adopted standard and no registered extension that binds an update to an exact immutable
    base revision, activates it atomically across coupled resources, and retires the predecessor under
    explicit safety rules. Whether that shape actually reduces update latency against whole-tile
-   replacement is a measurement owed by P1, P6, and B1, and is not established by this document.
+   replacement is a measurement owed by P1, P6, and B1, and is not established by this document. The
+   model of Section 9.8 computes a 20.8x time-to-current advantage for the reference edit — 2,243 ms
+   against 46,630 ms — but that is arithmetic over declared weights and cohort priors, and turning it
+   into a result is exactly what those phases owe.
 2. The best first standards shape is one live-update extension family discovering an immutable
    active-state manifest, plus an optional low-latency invalidation/head-change control plane—not
    HTTP `PATCH`, not blind GLB byte mutation, and not an authoritative imperative event log.
@@ -3775,7 +4342,7 @@ depends on measurement that has not been taken, it is marked as pending rather t
 4. Typed vertex and texture patches remain essential optimization paths. Their fragility is solved
    through exact provenance, narrow codec invariants, derived-data rules, and automatic fallback.
 5. Quantized mesh **appears** patchable for topology-stable height changes under the preconditions
-   §8.1 states, but the claim is conditional on P6 and B1 and is not established here. Independently
+   Section 8.1 states, but the claim is conditional on P6 and B1 and is not established here. Independently
    of that result it is a separate terrain format and needs its own profile, and wide,
    topology-changing, or bounds-changing edits should replace the terrain tile or spatial region.
 6. The patch-versus-rebuild optimizer is a first-class part of the producer architecture. Its cost
@@ -3789,7 +4356,7 @@ depends on measurement that has not been taken, it is marked as pending rather t
    provide correctness.
 9. The repository's existing invalidation feed is valuable adapter and zero-flicker prior art, but it
    is not yet the durable ordering, full-state, multi-layer, offline, and GC contract proposed here.
-10. The distinguishing property of this work is the **origin** of a change, not its encoding. §2.4
+10. The distinguishing property of this work is the **origin** of a change, not its encoding. Section 2.4
    shows a standards landscape well supplied with prebaked, authored-ahead temporal and versioning
    models—`3DTILES_temporal`, CityGML 3.0 versioning, glTF morph targets and material variants, and
    the time-dynamic direction in issue #102 and the June 2025 Cesium roadmap—and essentially
@@ -3800,13 +4367,13 @@ depends on measurement that has not been taken, it is marked as pending rather t
 11. Time-dynamic 3D Tiles is a **convergence obligation, not a competitor**. Its updates are captures
    authored ahead of delivery; these patches are post-hoc overlays from a live producer, and a patch
    can be a delta within a linear time flow. The design should be shaped so it can extend a future
-   `3DTILES_time_dynamic` rather than duplicate it, and §2.4's survey must be re-run before the D1
+   `3DTILES_time_dynamic` rather than duplicate it, and Section 2.4's survey must be re-run before the D1
    freeze.
 12. Two already-standardized mechanisms should be reused rather than reinvented: RFC 6902 JSON Patch,
    which MPEG-I scene description already uses as its update-sample model, as a candidate envelope
    for bounded edits to structured documents; and the core-glTF construction of a sparse accessor
    laid over a shared external buffer, as a zero-new-codec payload for bin-based content. Both
-   narrow what this design must specify itself, and the second narrows the novelty claim in §2.4.
+   narrow what this design must specify itself, and the second narrows the novelty claim in Section 2.4.
 13. Standardization should follow implementation evidence: vendor extension, conformance corpus, two
    runtimes, benchmarks, then possible `3DTILES_*` or future core promotion.
 
@@ -3814,7 +4381,9 @@ depends on measurement that has not been taken, it is marked as pending rather t
 
 ## 19. Primary references
 
-Every URL below was fetched and confirmed to resolve on 2026-08-16. Entries added after the original
+Every URL below was fetched and confirmed to resolve on 2026-08-16, except the two BCP 14 entries
+the conformance-language declaration added afterwards, which are canonical RFC-editor URLs of the
+same form as their neighbours and are marked as not re-fetched. Entries added after the original
 2026-08-11 survey are marked *(added 2026-08-16)*.
 
 - [OGC 3D Tiles 1.1](https://docs.ogc.org/cs/22-025r4/22-025r4.html) — the rendered HTML is roughly
@@ -3850,9 +4419,9 @@ Every URL below was fetched and confirmed to resolve on 2026-08-16. Entries adde
 - [RFC 9875: HTTP Cache Groups](https://www.rfc-editor.org/rfc/rfc9875.html)
 - [RFC 6902: JavaScript Object Notation (JSON) Patch](https://www.rfc-editor.org/rfc/rfc6902.html) *(added 2026-08-16)*
 - [RFC 8785: JSON Canonicalization Scheme](https://www.rfc-editor.org/rfc/rfc8785)
-- [RFC 9562: Universally Unique IDentifiers, including UUIDv7](https://www.rfc-editor.org/rfc/rfc9562.html)
-- [RFC 4122: A Universally Unique IDentifier (UUID) URN Namespace](https://www.rfc-editor.org/rfc/rfc4122.html) — obsoleted by RFC 9562; cited by the canonical-ordering table in §4.2, which should be
-  restated against RFC 9562 (the byte semantics are unchanged) *(added 2026-08-16)*
+- [RFC 9562: Universally Unique IDentifiers, including UUIDv7](https://www.rfc-editor.org/rfc/rfc9562.html) — obsoletes RFC 4122; the canonical-ordering table in Section 4.2 and every UUID rule in this document are stated against it, and RFC 4122 is no longer cited anywhere
+- [RFC 2119: Key words for use in RFCs to Indicate Requirement Levels](https://www.rfc-editor.org/rfc/rfc2119.html) *(added with the conformance-language declaration; not re-fetched by the 2026-08-16 sweep)*
+- [RFC 8174: Ambiguity of Uppercase versus Lowercase in RFC 2119 Key Words](https://www.rfc-editor.org/rfc/rfc8174.html) *(added with the conformance-language declaration; not re-fetched by the 2026-08-16 sweep)*
 - [Repository live-invalidation research](archive/SESSION_2026-04-08_RESEARCH_REPORT.md#6-live-3d-tiles-invalidation--final-design)
 - [Repository snapshot/invalidation reconciliation spike](archive/SNAPSHOT_MODE_SPIKE_2026-04-09.md#32-reconciliation-contract-with-scene_snapshotversion)
 - [RFC 5789: HTTP PATCH](https://www.rfc-editor.org/rfc/rfc5789)
