@@ -52,6 +52,14 @@ export interface RendererFallbackDiagnostic {
   readonly message: string;
 }
 
+/**
+ * Mirrored as JSDoc typedefs in `Scene/Scene.js` so the published `.d.ts` can
+ * type `Scene#contextCreationDiagnostics` — the declaration generator cannot
+ * resolve a TypeScript interface from a JavaScript doclet. Nothing enforces the
+ * two in lockstep, so a member added here (or to `selectionReason` /
+ * `RendererInitializationStage` in `RendererType.ts`) must be added there in the
+ * same change, or the public typings silently drift from the runtime shape.
+ */
 export interface ContextCreationDiagnostics {
   readonly requestedRenderer: RendererType;
   readonly resolvedRenderer: ConcreteRendererType | null;

@@ -84,7 +84,7 @@ class SkyBox {
    * The real bright-star catalog starfield (Track V-C). Augments the
    * static star cubemap with points placed at actual RA/Dec on both
    * backends (WebGPU and WebGL). Toggle with `starField.show`.
-   * @type {StarField}
+   * @type {SkyBox.StarField}
    * @readonly
    */
   get starField() {
@@ -508,5 +508,13 @@ SkyBox.Resolution = SkyBoxResolution;
  * @default SkyBox.Resolution.SIZE_2048
  */
 SkyBox.defaultResolution = DEFAULT_SKYBOX_RESOLUTION;
+
+/**
+ * Public controls for the bright-star catalog rendered by a sky box.
+ *
+ * @typedef {object} SkyBox.StarField
+ * @property {boolean} show Whether the catalog is rendered.
+ * @property {number} intensity The catalog brightness multiplier.
+ */
 
 export default SkyBox;

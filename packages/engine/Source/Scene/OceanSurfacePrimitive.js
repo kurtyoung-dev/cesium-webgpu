@@ -234,7 +234,6 @@ function computeSeaLevelOffset(primitive, anchor, frameState, ellipsoid) {
  * Called each frame by the scene's primitive collection. Computes the RTE
  * anchor + ENU frame + world-anchored UV offset, then dispatches to the WebGPU
  * feature renderer.
- * @param {FrameState} frameState The frame state.
  */
 OceanSurfacePrimitive.prototype.update = function (frameState) {
   if (!this.show) {

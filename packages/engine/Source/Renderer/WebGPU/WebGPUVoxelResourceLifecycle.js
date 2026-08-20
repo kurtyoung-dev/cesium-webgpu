@@ -4,6 +4,7 @@
  * rules can be exercised without constructing a browser GPUDevice.
  *
  * @module WebGPUVoxelResourceLifecycle
+ * @ignore
  */
 
 // Kept as a compatibility export for focused probes written against the old

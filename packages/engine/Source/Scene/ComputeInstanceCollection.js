@@ -596,4 +596,45 @@ class ComputeInstanceCollection {
   }
 }
 
+/**
+ * Position components populated by a CPU fallback kernel.
+ *
+ * @typedef {object} ComputeInstanceCollection.CpuKernelPosition
+ * @property {number} x X coordinate in absolute ECEF meters.
+ * @property {number} y Y coordinate in absolute ECEF meters.
+ * @property {number} z Z coordinate in absolute ECEF meters.
+ */
+
+/**
+ * Color components populated by a CPU fallback kernel.
+ *
+ * @typedef {object} ComputeInstanceCollection.CpuKernelColor
+ * @property {number} red Red component in the range [0, 1].
+ * @property {number} green Green component in the range [0, 1].
+ * @property {number} blue Blue component in the range [0, 1].
+ * @property {number} alpha Alpha component in the range [0, 1].
+ */
+
+/**
+ * Mutable output record populated by a CPU fallback kernel.
+ *
+ * @typedef {object} ComputeInstanceCollection.CpuKernelOutput
+ * @property {ComputeInstanceCollection.CpuKernelPosition} position Position in
+ *        absolute ECEF meters.
+ * @property {ComputeInstanceCollection.CpuKernelColor} color Per-instance color
+ *        components in the range [0, 1].
+ * @property {number} pixelSize Point diameter in pixels.
+ */
+
+/**
+ * Produces one instance for the non-compute renderer.
+ *
+ * @callback ComputeInstanceCollection.CpuKernel
+ * @param {ComputeInstanceCollection.CpuKernelOutput} out Mutable output record.
+ * @param {number} index Zero-based instance index.
+ * @param {number} timeSeconds Seconds elapsed since the collection epoch.
+ * @param {Float32Array} params Packed parameter lanes for every instance.
+ * @returns {void}
+ */
+
 export default ComputeInstanceCollection;

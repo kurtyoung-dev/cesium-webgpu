@@ -155,6 +155,36 @@ const requestRenderAfterFrame = function (scene) {
  */
 
 /**
+ * One renderer initialization attempt recorded while a scene context is created.
+ *
+ * @typedef {object} RendererAttemptDiagnostic
+ * @property {("webgl"|"webgpu"|"webgpu-compat")} renderer The renderer attempted.
+ * @property {("succeeded"|"failed")} status Whether the attempt succeeded.
+ * @property {("availability"|"adapter"|"device"|"context"|"unknown")} [stage] The stage at which the attempt failed.
+ * @property {string} [message] A diagnostic message for a failed attempt.
+ */
+
+/**
+ * The WebGPU-to-WebGL fallback recorded while a scene context is created.
+ *
+ * @typedef {object} RendererFallbackDiagnostic
+ * @property {("webgpu"|"webgpu-compat")} fromRenderer The renderer that failed.
+ * @property {("availability"|"adapter"|"device"|"context"|"unknown")} stage The stage at which fallback occurred.
+ * @property {string} message The fallback diagnostic message.
+ */
+
+/**
+ * Diagnostics describing renderer selection and context creation for a scene.
+ *
+ * @typedef {object} ContextCreationDiagnostics
+ * @property {("webgl"|"webgpu"|"webgpu-compat"|"auto")} requestedRenderer The requested renderer mode.
+ * @property {("webgl"|"webgpu"|"webgpu-compat"|null)} resolvedRenderer The selected concrete renderer, or <code>null</code> when none succeeded.
+ * @property {("explicit"|"auto-webgpu-first"|"auto-webgl-only"|"auto-build-webgl-only"|"auto-build-webgpu-only")} selectionReason Why this renderer selection path was used.
+ * @property {ReadonlyArray<RendererAttemptDiagnostic>} attempts The renderer initialization attempts.
+ * @property {(RendererFallbackDiagnostic|null)} fallback The WebGPU-to-WebGL fallback, or <code>null</code> when no fallback occurred.
+ */
+
+/**
  * The container for all 3D graphical objects and state in a Cesium virtual scene.  Generally,
  * a scene is not created directly; instead, it is implicitly created by {@link CesiumWidget}.
  *

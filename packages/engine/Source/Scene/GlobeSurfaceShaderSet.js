@@ -128,6 +128,7 @@ class GlobeSurfaceShader {
  * @property {number} sourceFlags
  * @property {boolean} completed
  * @property {boolean} prepared
+ * @private
  */
 
 /**
@@ -139,6 +140,7 @@ class GlobeSurfaceShader {
  * @property {GlobeSurfaceShader | undefined} groundAtmosphereCompanionBandSource
  * @property {number} groundAtmosphereCompanionBandFinalConfig
  * @property {number} groundAtmosphereCompanionBandMaterialGeneration
+ * @private
  */
 
 /**
@@ -638,7 +640,10 @@ class GlobeSurfaceShaderSet {
   }
 }
 
-/** @returns {GlobeSurfaceShaderContextBucket} */
+/**
+ * @returns {GlobeSurfaceShaderContextBucket}
+ * @private
+ */
 function createShaderBucket() {
   return {
     shadersByTexturesFlags: [],
