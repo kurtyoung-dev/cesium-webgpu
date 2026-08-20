@@ -1,13 +1,6 @@
-// ┌─────────────────────────────────────────────────────────────────────┐
-// │ PAIR: WebGL GLSL FS (this file)                                       │
-// │       WebGL GLSL VS: Shaders/SkyAtmosphereVS.glsl                    │
-// │       WebGL GLSL helpers: Shaders/SkyAtmosphereCommon.glsl           │
-// │       WebGPU WGSL: Shaders/WebGPU/Environment/SkyAtmosphere.wgsl     │
-// │       (single file containing @vertex + @fragment + helpers)         │
-// │ Last lockstep audit: 2026-08-01, C12-31 (natural-sky light direction)│
-// └─────────────────────────────────────────────────────────────────────┘
-// Any change in this file MUST land with a matching change in the WGSL
-// counterpart. See migration_doc/SHADER_PAIRS_LOCKSTEP.md.
+// Paired shader: Shaders/WebGPU/Environment/SkyAtmosphere.wgsl
+// A change here must land with the matching change there.
+// See SHADER_PAIRS_LOCKSTEP.md.
 //
 // - C12-31 light-direction selection is MATCHED, not divergent: this file
 //   calls `czm_getSkyAtmosphereLightDirection`; the WGSL inlines the same

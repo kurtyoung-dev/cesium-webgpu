@@ -1,13 +1,6 @@
-// ┌─────────────────────────────────────────────────────────────────────┐
-// │ PAIR: WebGL GLSL VS (this file)                                       │
-// │       WebGL GLSL FS: Shaders/SkyAtmosphereFS.glsl                    │
-// │       WebGL GLSL helpers: Shaders/SkyAtmosphereCommon.glsl           │
-// │       WebGPU WGSL: Shaders/WebGPU/Environment/SkyAtmosphere.wgsl     │
-// │       (single file containing @vertex + @fragment + helpers)         │
-// │ Last lockstep audit: 2026-05-19, Batch 76                            │
-// └─────────────────────────────────────────────────────────────────────┘
-// Any change in this file MUST land with a matching change in the WGSL
-// counterpart. See migration_doc/SHADER_PAIRS_LOCKSTEP.md.
+// Paired shader: Shaders/WebGPU/Environment/SkyAtmosphere.wgsl
+// A change here must land with the matching change there.
+// See SHADER_PAIRS_LOCKSTEP.md.
 //
 // Structural divergence summary (full ledger in the WGSL counterpart):
 // - GLSL splits VS+FS+Common; WGSL is one module.

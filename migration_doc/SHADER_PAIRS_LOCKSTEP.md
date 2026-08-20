@@ -43,9 +43,8 @@ plan. We're choosing manual lockstep first because:
 - **Naga WGSL→GLSL transpilation.** Deferred to a later batch. This plan
   is the prerequisite — once the shader pairs are aligned line-by-line,
   Naga becomes a verifier rather than a translator.
-- **Refactoring shaders for parity that are already in lockstep.** Some
-  upstream Cesium shaders (e.g. SkyBoxFS) only ever ran on WebGL and have
-  no WebGPU counterpart yet — those aren't pairs, they're singletons. We
+- **Refactoring shaders for parity that are already in lockstep.** Upstream
+  Cesium shaders with no WebGPU counterpart are singletons, not pairs. We
   leave them alone until a WebGPU counterpart is needed.
 
 ---
@@ -85,8 +84,8 @@ nothing prevents a fix landing in one shader and not the other.
 
 ### Co-located shader-pair files
 
-For each functional pair we maintain in lockstep, the two source files
-live in a canonical layout:
+For each functional pair we maintain in lockstep, the participating source
+files live in a canonical layout:
 
 ```
 packages/engine/Source/Shaders/
@@ -102,48 +101,63 @@ packages/engine/Source/Shaders/
     ...
 ```
 
-We keep the existing directory structure. Each shader file gets a
-**pair-header** comment block at the top:
+We keep the existing directory structure. For pairs that use per-file
+constraint headers, each participating shader file carries a **pair-header**
+at the top. The header identifies the counterpart and carries the editing
+constraint; audit currency lives in the centralized ledger below.
 
 ```glsl
-// ┌─────────────────────────────────────────────────────────────────────┐
-// │ PAIR: WebGL GLSL (this file)                                         │
-// │       WebGPU WGSL: Shaders/WebGPU/ReprojectWebMercator.wgsl          │
-// │ Last lockstep audit: 2026-05-18, Batch 67                            │
-// └─────────────────────────────────────────────────────────────────────┘
-// Any change in this file MUST land with a matching change in the WGSL
-// counterpart. See migration_doc/SHADER_PAIRS_LOCKSTEP.md.
+// Paired shader: Shaders/WebGPU/ReprojectWebMercator.wgsl
+// A change here must land with the matching change there.
+// See SHADER_PAIRS_LOCKSTEP.md.
 ```
 
 And the matching WGSL header:
 
 ```wgsl
-// ┌─────────────────────────────────────────────────────────────────────┐
-// │ PAIR: WebGPU WGSL (this file)                                        │
-// │       WebGL GLSL: Shaders/ReprojectWebMercator{VS,FS}.glsl           │
-// │ Last lockstep audit: 2026-05-18, Batch 67                            │
-// └─────────────────────────────────────────────────────────────────────┘
-// Any change in this file MUST land with a matching change in the GLSL
-// counterpart. See migration_doc/SHADER_PAIRS_LOCKSTEP.md.
+// Paired shader: Shaders/ReprojectWebMercator{VS,FS}.glsl
+// A change here must land with the matching change there.
+// See SHADER_PAIRS_LOCKSTEP.md.
 ```
 
-### Inline-WGSL-in-TS is the WGSL source of truth (where it exists today)
+Here, "a change" means a change to paired shader behavior or to the lockstep
+obligation itself. Header-format maintenance does not require a no-op edit to
+an already-compliant counterpart.
 
-Some WebGPU code still has WGSL inline in TypeScript strings (e.g.
-`WebGPUImageryReprojection.ts` has the reproject WGSL as a template
-literal). The current pattern is "inline TS WGSL is the runtime source;
-the `.wgsl` file is a documentation copy that must be kept in sync."
-This is bad — three sources of truth (TS inline, .wgsl file, GLSL pair).
+### Lockstep audit ledger
 
-**As part of each pair's lockstep work**, we collapse to one WGSL file:
+The ledger is the single mutable record of audit currency. The commit SHA
+identifies the exact shader state that was verified. The seed rows preserve
+one record for each source-file stamp retired by the initial migration; future
+audit records live only here.
+
+| Pair | Audit date | Commit SHA |
+|---|---|---|
+| `Shaders/SkyAtmosphereVS.glsl` ↔ `Shaders/WebGPU/Environment/SkyAtmosphere.wgsl` | 2026-05-19 | `e6975f3bd19a52b762978c168d97d251198bcbda` |
+| `Shaders/SkyAtmosphereCommon.glsl` ↔ `Shaders/WebGPU/Environment/SkyAtmosphere.wgsl` | 2026-05-19 | `e6975f3bd19a52b762978c168d97d251198bcbda` |
+| `Shaders/SkyBoxFS.glsl` ↔ `Shaders/WebGPU/CubeMapPanorama.wgsl` | 2026-07-25 | `0679b0e456a7dfc956386dd7c1b7a9899f5493ab` |
+| `Shaders/SkyAtmosphereFS.glsl` ↔ `Shaders/WebGPU/Environment/SkyAtmosphere.wgsl` | 2026-08-01 | `e7481810653558b71784cc558e19c77258b934a9` |
+| `Shaders/WebGPU/Environment/SkyAtmosphere.wgsl` ↔ `Shaders/SkyAtmosphere{VS,FS,Common}.glsl` | 2026-08-01 | `e7481810653558b71784cc558e19c77258b934a9` |
+
+### Inline WGSL remains migration debt where it exists
+
+Some WebGPU code still has WGSL inline in TypeScript or JavaScript strings.
+The imagery-reprojection pair is no longer one of those cases:
+`WebGPUImageryReprojection.ts` imports the built `.js` wrapper generated from
+`ReprojectWebMercator.wgsl`, which is its runtime source of truth. Where both
+an inline copy and an equivalent `.wgsl` file remain, the pattern creates three
+sources of truth (inline WGSL, `.wgsl` file, GLSL pair).
+
+**As part of each remaining pair's lockstep work**, we collapse to one WGSL
+file:
 
 - The `.wgsl` file becomes the single source of truth for WebGPU.
-- The TS code imports the compiled `.js` wrapper that `gulp build`
-  already produces (`Source/Shaders/WebGPU/...js`).
+- The owning TypeScript or JavaScript module imports the compiled `.js`
+  wrapper that `gulp build` already produces (`Source/Shaders/WebGPU/...js`).
 - The inline template literal is deleted.
 
-This is a pure cleanup with no behavior change — the .wgsl file already
-exists for diagnostic purposes; we're just promoting it.
+Where the equivalent `.wgsl` file already exists for diagnostic purposes,
+this is a pure cleanup with no behavior change — we're just promoting it.
 
 ### Matching naming conventions inside the shader
 
@@ -169,8 +183,8 @@ in spelling and ordering**. The differences should be confined to:
 
 ### Matching comments
 
-Each significant line gets the SAME comment in both files. Comments
-explain the *math* / *intent* / *constraint*, not the syntax. Example:
+Each significant paired line gets the SAME comment in all counterpart files.
+Comments explain the *math* / *intent* / *constraint*, not the syntax. Example:
 
 ```glsl
 // Per-fragment Mercator math: same closed-form expression on both
@@ -253,7 +267,7 @@ look different. We document each one explicitly:
 | Eclipse globe shadow — C12-29 S5 (2026-07-26; integrated, final certification open) | `GlobeFS.glsl::eclipseFragmentFactor` reads one command-local `mat4` captured from the active logical `View`; its columns are the shared four-`vec4` payload. A WebGL-only bit-33 cache flag emits `ENABLE_ECLIPSE_GLOBE_SHADOW` only for gates 1-4, so the ordinary compiled globe variant has no eclipse uniform or helper semantic IR and performs no S5 composition/atmosphere correction. The raw combined GLSL string still contains the preprocessor-guarded helper source; physically omitting that source is measure-first follow-up work. The fragment uses direct exaggerated `v_positionMC`, multiplied by inverse astronomical range before subtraction, plus the existing automatic `czm_ellipsoidInverseRadii`. | `GlobeTerrain.wgsl::globe_eclipseFragmentFactor` reads the same payload from a dedicated 64-byte group-0/binding-2 dynamic UBO and consumes direct `input.v_positionMC`. One allocation-epoch-memoized active slice is reused by tile, imagery, wireframe, pick, and capture commands; ordinary frames bind one stable inert renderer-owned slice without a ring allocation/upload. `CameraUniforms` remains 232 floats / 928 bytes. | **Algorithmically paired; source/RTE gate 14/14 and both-backend WGS84 pixel probe PASS.** CPU f64 publishes `uS = normalize(S)`, `a = 1/|S|`, `dU = normalize(M)-uS`, `b = 1/|M|`. Both shaders form `s=uS-P*a`, `D=dU+P*(a-b)`, `m=s+D`, run an exact algebraic disc-support reject, use `atan2(length(cross(s,D)), dot(s,m))`, analytic circle overlap, the fitted limb-darkening cubic, and the same S2 absolute/relative composition. The horizon test transforms the Sun ray by the rendered ellipsoid inverse radii and uses the stable cross-product closest-distance form. Source/math coverage includes elevated terrain and custom ellipsoids without an antipodal false shadow; real rendered custom-ellipsoid/exaggeration certification remains open. Direct Earth-scale f32 `positionMC` has sub-metre quantization; there is no mutable pass-camera reconstruction and no `acos(dot)` of independently rounded rays. The WebGL cache flag is not a scarce cross-backend `WebGPUShaderDefines` bit. Any payload, support, horizon, composition, or variant-gate change must land in both shaders plus `eclipse-globe-umbra-rte.spec.mjs`. |
 | Lighting — vertex-lighting uniforms | `u_lambertDiffuseMultiplier` + `u_vertexShadowDarkness` (tile-provider config), gated by `#ifdef ENABLE_VERTEX_LIGHTING` (defined when terrain has vertex normals). | Bridged via `camera.lighting.x` (`lambertDiffuseMultiplier`) and `camera.lighting.y` (`vertexShadowDarkness`) packed in the camera UB (Batch 77). The gate is a runtime branch on `camera.lighting.z` (`hasVertexNormals` flag, set from `tileProvider.terrainProvider.hasVertexNormals`). When the flag is on, WGSL uses the WebGL ENABLE_VERTEX_LIGHTING formula directly: `clamp(NdotL × mult × shadowFactor + darkness, 0, 1)`. When the flag is off, WGSL falls back to the existing DAYNIGHT_SHADING-analogue path. | **Shipped.** Layout: `camera.lighting: vec4<f32>` at `CAMERA_UNIFORM_FLOATS` offset 136-139. `.w` carries `zoomedOutOceanSpecularIntensity` since GLOBE-POLAR-STRETCH-POLISH (a future DAYNIGHT_SHADING `fade` bridge needs a new pad). |
 | Lighting — diffuse coefficients (no vertex normals) | `clamp(NdotL × 5 + 0.3, 0, 1)` mixed by `fade` toward 1.0 at close range | `mix(1.0, computeDayNightDiffuse(dayNightNormalEC, sunDir), clamp(tile.lightingFade, 0, 1))` — the same expression and the same mix. Only used when `camera.lighting.z ≤ 0.5` (terrain has no vertex normals — DAYNIGHT_SHADING-equivalent path on WebGL). | **MATCHED as of CLT-B4 / CO-18 (Batch 925) — this row used to read "intentional algorithmic rewrite, NOT a parity bug", and that was wrong.** The old WGSL `mix(0.025, NdotL × 0.88 + 0.12, dayFade)` differed in three independent ways at once (coefficients, night floor, and the missing camera-distance mix), and lane D of `probe-daynight-terminator-law.mjs` measured the result: night/day luminance 0.312 / 0.0896 against WebGL's 1.000 / 0.300. See the DAY/NIGHT RAMP LAW row above for the full contract. The `.w` slot in `camera.lighting` was never spent on this — the fade rides in `TileUniforms.lightingFade` instead. |
-| Lighting — terminator glow | None | `computeTerminatorGlow(dayNightNormalEC, sunDir)` — warm orange/pink band at the day/night boundary. Takes the raw signed `dot(N, L)`, NOT either ramp, so CO-18's law reconciliation does not move it (verified, not assumed). | WGSL-only visual enhancement; CLT-B3's audit subject (port to GLSL as a real pair, or gate behind a default-off toggle). Deliberately neither expanded nor removed by CO-18. |
+| Lighting — terminator glow (CLT-B3 local implementation, 2026-08-09) | `computeTerminatorGlow(normalEC, sunDirectionEC)` returns the analytic-normal, raw-signed-dot, warm `(0.95,0.45,0.15)`, `exp(-40·NdotL²)`, 0.15-amplitude term; the caller multiplies by dynamic `u_terminatorGlowStrength` and absolute eclipse visibility exactly once after base lighting. | The exact same two-argument function/law in `GlobeTerrain.wgsl`; the caller multiplies by `tile.tileControls.z` and absolute eclipse visibility once. | **Lockstep contract:** `Globe.terminatorGlowStrength` sanitizes non-finite/negative values to 0; default 0 is an exact natural/parity identity and branches before `exp`; value 1 preserves the former WebGPU stylized appearance on both backends. The term deliberately uses neither day/night ramp. Any coefficient, normal, eclipse, or application-order change lands in both shaders plus `globe-daynight-ramp-law.spec.mjs`. Local implementation is 59/59 contract-green; terminator-specific browser acceptance and landing remain owed. |
 | Day/night term — NORMAL SOURCE (CO-15, Batch 919) | `GlobeFS.glsl:595-597` recomputes the ANALYTIC geocentric normal per fragment (`czm_geodeticSurfaceNormal(v_positionMC, vec3(0), vec3(1))` → `czm_normal3D × normalMC`) and feeds it to both the day/night imagery alpha (`:600`) and the ENABLE_DAYNIGHT_SHADING diffuse. `GlobeVS.glsl:267` does not even WRITE `v_normalEC` outside `ENABLE_VERTEX_LIGHTING \|\| GENERATE_POSITION_AND_NORMAL \|\| APPLY_MATERIAL`, so the day/night path has no mesh normal available. | `GlobeTerrain.wgsl::fragmentMain` derives `dayNightNormalEC = normalize((camera.modifiedModelView × vec4(normalize(v_positionMC), 0)).xyz)` — the same analytic normal in the same space — and feeds it to `computeDayNightFade`, the DAYNIGHT_SHADING Lambert (`dayNightNdotL`) and `computeTerminatorGlow`. UNCONDITIONAL: no `ShaderDefine` bit, `//>>ifdef` depth 0. The VERTEX_LIGHTING Lambert, the G-buffer normal slot and the CSM slope bias keep the interpolated MESH normal, matching WebGL. | **WebGPU-side correction toward the existing WebGL law — no GLSL twin change needed, and the lockstep obligation is discharged by the GLSL already being correct.** Before CO-15 the WGSL fed the day/night family `input.v_normalEC`, which on normal-less terrain is `octDecode(0.0)` = a CONSTANT (0,0,-1) (the uncompressed no-extras pipeline declares that attribute `float32x2`, so the `.z` read is the WebGPU default 0.0) — every offline provider reports `hasVertexNormals === false`, so the DEFAULT WebGPU globe had a globally-uniform day/night term with no terminator at all. Pixel-confirmed at Batch 915 (day-fade slope 0.000). NOT byte-identical by design. Pinned by `Tools/visual-regression/globe-daynight-normal-source.spec.mjs`. The `+0.5` ramp offset it left open (CLT-B4) is CLOSED at Batch 925 — see the DAY/NIGHT RAMP LAW row above. STILL DIVERGENT and tracked separately: the vertex-normal gating split (CLT-B1 finding (c)). |
 | Shadow receive — code location | NOT in `GlobeFS.glsl` source. WebGL pipeline cache injects shadow-sampling GLSL via `ShadowMapShader.js` per-pipeline based on the shadow-map config. | Inlined directly in `GlobeTerrain.wgsl`: `globeComputeShadowFactor` (single map), `globeComputeShadowFactorPointLight` (cube shadow point light), `globeComputeShadowFactorCSM` (cascaded shadow maps). Gated at runtime in fragmentMain. | Architecture difference forced by the pipeline-cache model: WebGL injects per-config GLSL strings; WebGPU uses fixed shaders with runtime gates. Both produce equivalent shadow visibility for matching shadow-map config. |
 | VS — entry point structure | Single `void main()` (~286 lines) with #ifdef variants for every terrain encoding (QUANTIZATION_BITS12, INCLUDE_WEB_MERCATOR_Y, ENABLE_VERTEX_LIGHTING, GEODETIC_SURFACE_NORMALS, EXAGGERATION, ENABLE_CLIPPING_POLYGONS, FOG/GROUND_ATMOSPHERE/UNDERGROUND_COLOR/TRANSLUCENT, 2D-mode variants). Pipeline cache compiles per-define-set. | Six explicit `@vertex` entry points (`vertexMain`, `vertexMainWebMerc`, `vertexMainWebMercNormals`, `vertexMainQuantized`, `vertexMainQuantizedWebMerc`, `vertexMainQuantizedWebMercNormals`), each decoding a specific vertex layout, then handing off to a shared `processVertex()` helper for the layout-agnostic math. Pipeline picks the entry point based on terrain encoding. | Forced by language + pipeline-creation model: WGSL has no full preprocessor and WebGPU pipelines prefer a single shader module with multiple entries. Shared varying contract (see VS pair-section header) keeps the downstream FS math identical across backends. |
@@ -278,7 +292,7 @@ look different. We document each one explicitly:
 | Sky atmosphere — vertex transform | `czm_model * position` (no RTE — single precision suffices because atmosphere shell mesh is centered at planet origin). | `mvpRelativeToEye × translateRelativeToEye(positionHigh, positionLow, encodedCameraHigh, encodedCameraLow)` — RTE used uniformly across all WGSL shaders for consistency. | WGSL vertex buffer carries `positionHigh`/`positionLow`; CPU-side packer emits split-precision attributes for the atmosphere shell mesh. |
 | Sky atmosphere — translucent globe brightening | `#ifdef GLOBE_TRANSLUCENT` path in computeAtmosphereScattering brightens the inside-globe view when globe-translucency is enabled. | Ported as a runtime gate: `u.atmosControl.w > 0.5` (packed from `frameState.globeTranslucencyState.translucent`) takes the distance/angle-faded horizon-gradient branch inside `skyColorForRay` (GLOBE-TRANSLUCENCY-ALPHA, Batch 488). 0 by default → byte-identical non-translucent path. | Compile-time define vs runtime flag is the only divergence; math matches SkyAtmosphereCommon.glsl L63-90. |
 | Sky atmosphere — ellipsoid math | Pulls `czm_ellipsoidRadii`, `czm_ellipsoidInverseRadii`, `czm_eyeHeight`, `czm_viewerPositionWC` from automatic uniforms. Computes runtime `distanceAdjust`. | Pulls `radiiAndDynamicAtmosphere` + `cameraPositionWC` from explicit Uniforms struct. The `distanceAdjust` math runs CPU-side in `WebGPUSkyAtmosphereRenderer` so the shader-side `innerRadius` is already adjusted. | Same downstream math; the adjustment lives in the renderer for WebGPU. |
-| Sky atmosphere — light-direction selection (C12-31, 2026-08-01) | New shared builtin `czm_getSkyAtmosphereLightDirection` (`Builtin/Functions/getSkyAtmosphereLightDirection.glsl`), called from BOTH `SkyAtmosphereVS.glsl` and `SkyAtmosphereFS.glsl`. Four arms: NONE(0)/SUNLIGHT(2) → `czm_sunDirectionWC`, SCENE_LIGHT(1) → `czm_lightDirectionWC`, LEGACY_OVERHEAD(3) → `positionWC`. | The same selection inlined in `skyColorForRay` as the `isLegacyOverhead` block (WGSL has no builtin include mechanism). Two arms rather than three because the renderer packs the scene light INTO `sunDirectionWC` for enum 1 (`useSceneLight === 1`, `WebGPUSkyAtmosphereRenderer.js`). | **MATCHED — this row is a lockstep obligation, not a divergence.** Before C12-31 both backends substituted local up for the astronomical Sun on the NONE path, which is the DEFAULT whenever `globe.enableLighting` is false: `cosAngle` in `computeAtmosphereColor` went to ≈1 along every ray, parking the Mie phase on a forward peak 4869.9× its 90° value (default `g = 0.9`) and painting a view-locked white aureole. The enum VALUE is deliberately unchanged, so the `!= 0` day/night alpha gates in `SkyAtmosphereCommon.glsl` and the WGSL stay byte-identical. Pinned by `Tools/visual-regression/sky-light-direction.spec.mjs` (16/16). |
+| Sky atmosphere — light-direction selection (C12-31, 2026-08-01) | New shared builtin `czm_getSkyAtmosphereLightDirection` (`Builtin/Functions/getSkyAtmosphereLightDirection.glsl`), called from BOTH `SkyAtmosphereVS.glsl` and `SkyAtmosphereFS.glsl`. Four arms: NONE(0)/SUNLIGHT(2) → `czm_sunDirectionWC`, SCENE_LIGHT(1) → `czm_lightDirectionWC`, LEGACY_OVERHEAD(3) → `positionWC`. | The same selection inlined in `skyColorForRay` as the `isLegacyOverhead` block (WGSL has no builtin include mechanism). Two arms rather than three because the renderer packs the scene light INTO `sunDirectionWC` for enum 1 (`useSceneLight === 1`, `WebGPUSkyAtmosphereRenderer.js`). | **MATCHED — this row is a lockstep obligation, not a divergence.** Before C12-31 both backends substituted local up for the astronomical Sun on the NONE path, which is the DEFAULT whenever `globe.enableLighting` is false: `cosAngle` in `computeAtmosphereColor` went to ≈1 along every ray, parking the Mie phase on a forward peak 4869.9× its 90° value (default `g = 0.9`) and painting a view-locked white aureole. The enum VALUE is deliberately unchanged, so the `!= 0` day/night alpha gates in `SkyAtmosphereCommon.glsl` and the WGSL stay byte-identical. Pinned by `Tools/visual-regression/sky-light-direction.spec.mjs` (24/24). |
 
 The convention ledger is the LOAD-BEARING part of this plan. When a pair
 is in lockstep, the shader files look identical (modulo language syntax)
@@ -291,17 +305,22 @@ boilerplate is concentrated. The shader math itself is convention-free.
 
 ### When editing a shader
 
-1. **Always edit both files in the same commit.** A PR that touches one
-   shader without the matching edit fails review.
-2. **Update the pair-header "Last lockstep audit" date** when you've
-   re-verified the equivalence after the edit.
+1. **Keep behavior changes in lockstep.** Edit every affected counterpart in
+   the same commit. A PR that changes paired shader behavior without the
+   matching counterpart edits fails review; header-format maintenance follows
+   the exception stated with the canonical header above.
+2. **After a paired behavior change is re-verified and lands, update the
+   lockstep audit ledger** with the audit date and the landed commit SHA for
+   the shader state you re-verified. Header-format maintenance alone does not
+   create a new audit record.
 3. **Add or update a convention-ledger entry** if your change touches a
    cross-backend convention (upload, NDC, depth, attribute layout, …).
 4. **Use the same comment text** for any change that affects the algorithm.
 
 ### When reviewing a shader change
 
-1. Open both files side-by-side. Confirm the diffs mirror each other.
+1. Open all files in the pair side-by-side. Confirm the diffs mirror each
+   other.
 2. Run the matching-pair regression probe (one per pair; see "Validation").
 3. Confirm the convention ledger is unchanged or correctly extended.
 
@@ -337,7 +356,10 @@ golden baseline.
 
 ## Phased rollout
 
-### Phase 1 — Imagery reproject pair (this batch / next)
+### Phase 1 — Imagery reproject pair (shipped; historical plan)
+
+Phase 1 is complete. The original work list below is retained as historical
+planning context and is not a set of open instructions.
 
 **Smallest pair. Cleanest target. Already mathematically aligned post-Batch 66.**
 
@@ -348,7 +370,7 @@ Pair files:
 - `Source/Renderer/WebGPU/WebGPUImageryReprojection.ts` ← inline WGSL string removed, loads .wgsl via `.js` wrapper
 
 Work items:
-1. Add pair-header comment blocks to all four shader-source files.
+1. Add pair-header comment blocks to the three shader files.
 2. Promote `ReprojectWebMercator.wgsl` from documentation copy to runtime
    source — `WebGPUImageryReprojection.ts` imports the compiled `.js`
    wrapper, drops the inline string.

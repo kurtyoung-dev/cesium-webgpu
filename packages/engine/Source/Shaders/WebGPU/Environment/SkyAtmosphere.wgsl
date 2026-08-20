@@ -1,19 +1,9 @@
 // SkyAtmosphere.wgsl — Nishita-style atmospheric scattering for CesiumJS WebGPU
 // Renders an ellipsoid shell with Rayleigh + Mie scattering
 //
-// ┌─────────────────────────────────────────────────────────────────────┐
-// │ PAIR: WebGPU WGSL (this file, 536 lines)                             │
-// │       WebGL GLSL: Shaders/SkyAtmosphereVS.glsl (32 lines)            │
-// │                   Shaders/SkyAtmosphereFS.glsl (59 lines)            │
-// │                   Shaders/SkyAtmosphereCommon.glsl (81 lines)        │
-// │                   Shaders/Builtin/Functions/computeScattering.glsl   │
-// │                   Shaders/Builtin/Functions/computeAtmosphereColor.glsl │
-// │                   Shaders/Builtin/Functions/                          │
-// │                     getSkyAtmosphereLightDirection.glsl (C12-31)      │
-// │ Last lockstep audit: 2026-08-01, C12-31 (natural-sky light direction)│
-// └─────────────────────────────────────────────────────────────────────┘
-// Any change in this file MUST land with a matching change in the GLSL
-// counterparts. See migration_doc/SHADER_PAIRS_LOCKSTEP.md.
+// Paired shader: Shaders/SkyAtmosphere{VS,FS,Common}.glsl
+// A change here must land with the matching change there.
+// See SHADER_PAIRS_LOCKSTEP.md.
 //
 // References:
 //   - Tomoyuki Nishita, Takao Sirai, Katsumi Tadamura and Eihachiro Nakamae,

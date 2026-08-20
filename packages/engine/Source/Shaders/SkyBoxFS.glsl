@@ -1,14 +1,10 @@
-// ┌─────────────────────────────────────────────────────────────────────┐
-// │ PAIR: WebGL GLSL FS (this file)                                      │
-// │       WebGL GLSL VS: Shaders/SkyBoxVS.glsl / CubeMapPanoramaVS.glsl  │
-// │       WebGPU WGSL:   Shaders/WebGPU/CubeMapPanorama.wgsl             │
-// │       (the production WGSL is the JS-embedded copy in                │
-// │        Renderer/WebGPU/WebGPUCubeMapPanoramaRenderer.js; the .wgsl   │
-// │        file is kept byte-equivalent for debug pages + tooling)       │
-// │ Last lockstep audit: 2026-07-25, C12-29 S6                           │
-// └─────────────────────────────────────────────────────────────────────┘
-// Any change here MUST land with a matching change in the WGSL counterpart.
-// See migration_doc/SHADER_PAIRS_LOCKSTEP.md.
+// Paired shader: Shaders/WebGPU/CubeMapPanorama.wgsl
+// A change here must land with the matching change there.
+// See SHADER_PAIRS_LOCKSTEP.md.
+//
+// The production WGSL is the JS-embedded copy in
+// Renderer/WebGPU/WebGPUCubeMapPanoramaRenderer.js; the .wgsl file is kept
+// byte-equivalent for debug pages and tooling.
 
 uniform samplerCube u_cubeMap;
 
