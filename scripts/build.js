@@ -52,7 +52,7 @@ function escapeCharacters(token) {
  * @param {string} pragma
  * @param {boolean} exclusive
  */
-function constructRegex(pragma, exclusive) {
+export function constructRegex(pragma, exclusive) {
   const prefix = exclusive ? "exclude" : "include";
   pragma = escapeCharacters(pragma);
 
@@ -67,7 +67,7 @@ function constructRegex(pragma, exclusive) {
 }
 
 /** @type {Record<string, boolean>} */
-const pragmas = { debug: false };
+export const pragmas = { debug: false };
 
 /** @type {esbuild.Plugin} */
 const stripPragmaPlugin = {

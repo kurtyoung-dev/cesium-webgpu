@@ -183,30 +183,27 @@ function getRayIntersection(
   const { context, frameState } = scene;
   const uniformState = context.uniformState;
 
-  // NEW-PICK-RAY-ASYNC (Phase 6) — the synchronous depth-readback block below
-  // (per-frustum LINEAR reconstruction off the offscreen pickFramebuffer's
-  // PickDepth) cannot recover a position on contexts without synchronous
-  // readback (WebGPU): the offscreen ray-pick PickDepth instances never
-  // receive update() and the shared globe-depth texture is LOG-encoded against
-  // the MAIN camera frustum, so getDepth returns a cold/stale value and
-  // `position` stays undefined.
+  // The synchronous depth-readback block below cannot recover a position on
+  // contexts without synchronous readback: the offscreen ray-pick PickDepth
+  // instances never receive update(), and the shared globe-depth texture is
+  // encoded against the main camera frustum. As a result, getDepth returns a
+  // cold or stale value and `position` stays undefined.
   //
-  // sampleHeight / clampToHeight no longer reach this code on WebGPU — Picking
-  // routes them through _reconstructHeightSurfaceWebGPU (main-scene-depth
-  // reuse, Batch 252 reconstruction) instead. pickFromRay over an ARBITRARY
-  // ray still needs an offscreen ray-render + per-view async depth packing,
-  // which is not yet built; it returns the object hit (the offscreen
-  // pickFramebuffer object readback works, one frame stale) but a `position`
-  // of undefined. Surface that scope limit once rather than failing silently.
+  // sampleHeight and clampToHeight avoid this code on WebGPU by reusing the
+  // main scene depth. pickFromRay over an arbitrary ray still needs an
+  // offscreen ray render with per-view asynchronous depth packing, which is not
+  // yet built; it returns the object hit but a `position` of undefined. Surface
+  // that scope limit once rather than failing silently.
   if (!context.supportsSynchronousReadback) {
     oneTimeWarning(
       "WebGPU.pickFromRay.noPosition",
       "Scene.pickFromRay returns a hit object but no `position` on WebGPU: " +
         "the offscreen arbitrary-ray depth path is not implemented for " +
-        "asynchronous-readback backends (tracked as NEW-PICK-RAY-ASYNC). " +
-        "Scene.sampleHeight / Scene.clampToHeight DO work on WebGPU (they " +
-        "reuse the main scene depth); use the *MostDetailed async variants, " +
-        "or sampleTerrainMostDetailed, for arbitrary-ray height queries.",
+        "asynchronous-readback backends. Scene.sampleHeight and " +
+        "Scene.clampToHeight reuse the main scene depth, but the " +
+        "*MostDetailed picking variants are also unsupported on " +
+        "asynchronous-readback backends. For CPU terrain-only height queries, " +
+        "use sampleTerrainMostDetailed.",
     );
   }
 

@@ -1912,15 +1912,20 @@ class Scene {
   }
 
   /**
-   * Returns <code>true</code> if the {@link Scene#sampleHeight} and {@link Scene#sampleHeightMostDetailed} functions are supported.
+   * Returns <code>true</code> if the synchronous {@link Scene#sampleHeight}
+   * function is supported. This property does not indicate support for
+   * {@link Scene#sampleHeightMostDetailed}.
    *
    * On WebGPU the synchronous {@link Scene#sampleHeight} reuses the main
-   * scene depth (NEW-PICK-RAY-ASYNC, Batch 284): it projects the position
-   * into the live view and reconstructs the surface height beneath it. It is
+   * scene depth: it projects the position into the live view and reconstructs
+   * the surface height beneath it. It is
    * one-frame-stale (the first query at a new location returns
    * <code>undefined</code> and converges in 1-2 frames) and only resolves for
    * positions currently visible in the view. The asynchronous
-   * {@link Scene#sampleHeightMostDetailed} variant is always supported.
+   * {@link Scene#sampleHeightMostDetailed} variant relies on offscreen depth
+   * and is unsupported on asynchronous-readback backends. For CPU terrain-only
+   * sampling that is independent of GPU readback, use
+   * {@link sampleTerrainMostDetailed}.
    *
    * @type {boolean}
    * @readonly
@@ -1933,15 +1938,20 @@ class Scene {
   }
 
   /**
-   * Returns <code>true</code> if the {@link Scene#clampToHeight} and {@link Scene#clampToHeightMostDetailed} functions are supported.
+   * Returns <code>true</code> if the synchronous {@link Scene#clampToHeight}
+   * function is supported. This property does not indicate support for
+   * {@link Scene#clampToHeightMostDetailed}.
    *
    * On WebGPU the synchronous {@link Scene#clampToHeight} reuses the main
-   * scene depth (NEW-PICK-RAY-ASYNC, Batch 284): it projects the position
-   * into the live view and reconstructs the surface beneath it. It is
+   * scene depth: it projects the position into the live view and reconstructs
+   * the surface beneath it. It is
    * one-frame-stale (the first query at a new location returns
    * <code>undefined</code> and converges in 1-2 frames) and only resolves for
    * positions currently visible in the view. The asynchronous
-   * {@link Scene#clampToHeightMostDetailed} variant is always supported.
+   * {@link Scene#clampToHeightMostDetailed} variant relies on offscreen depth
+   * and is unsupported on asynchronous-readback backends. For CPU terrain-only
+   * sampling that is independent of GPU readback, use
+   * {@link sampleTerrainMostDetailed}.
    *
    * @type {boolean}
    * @readonly
@@ -5219,10 +5229,19 @@ class Scene {
    * Set {@link Scene#pickTranslucentDepth} to <code>true</code> to include the depth of
    * translucent primitives; otherwise, this essentially picks through translucent primitives.
    * </p>
+   * <p>
+   * <b>WebGPU note:</b> like {@link Scene#snap}, <code>pickPosition</code> reads
+   * scene depth asynchronously and returns the most recent completed relevant
+   * position. With an unchanged rendered view, an exact query may reuse its
+   * recent completed payload. Camera or projection motion, a cold query, or an
+   * old payload can therefore return <code>undefined</code> until a relevant
+   * readback completes. On WebGL <code>pickPosition</code> is fully synchronous
+   * and unaffected.
+   * </p>
    *
    * @param {Cartesian2} windowPosition Window coordinates to perform picking on.
    * @param {Cartesian3} [result] The object on which to restore the result.
-   * @returns {Cartesian3} The cartesian position.
+   * @returns {Cartesian3 | undefined} The cartesian position, or <code>undefined</code> when no current position is available.
    *
    * @exception {DeveloperError} Picking from the depth buffer is not supported. Check pickPositionSupported.
    */
@@ -5586,6 +5605,15 @@ class Scene {
    * This function only samples height from globe tiles and 3D Tiles that are rendered in the current view. Samples height
    * from all other primitives regardless of their visibility.
    * </p>
+   * <p>
+   * <b>WebGPU note:</b> like {@link Scene#snap}, <code>sampleHeight</code> reads
+   * scene depth asynchronously and returns the most recent completed relevant
+   * height. With an unchanged rendered view, an exact visible-position query
+   * may reuse its recent completed payload. Camera or projection motion, a cold
+   * query, a position outside the current view, or an old payload can therefore
+   * return <code>undefined</code> until a relevant readback completes. On WebGL
+   * <code>sampleHeight</code> is fully synchronous and unaffected.
+   * </p>
    *
    * @param {Cartographic} position The cartographic position to sample height from.
    * @param {object[]} [objectsToExclude] A list of primitives, entities, or 3D Tiles features to not sample height from.
@@ -5595,7 +5623,9 @@ class Scene {
    * @example
    * const position = new Cesium.Cartographic(-1.31968, 0.698874);
    * const height = viewer.scene.sampleHeight(position);
-   * console.log(height);
+   * if (Cesium.defined(height)) {
+   *     console.log(height);
+   * }
    *
    * @see Scene#clampToHeight
    * @see Scene#clampToHeightMostDetailed
@@ -5616,6 +5646,15 @@ class Scene {
    * This function only clamps to globe tiles and 3D Tiles that are rendered in the current view. Clamps to
    * all other primitives regardless of their visibility.
    * </p>
+   * <p>
+   * <b>WebGPU note:</b> like {@link Scene#snap}, <code>clampToHeight</code> reads
+   * scene depth asynchronously and returns the most recent completed relevant
+   * position. With an unchanged rendered view, an exact visible-position query
+   * may reuse its recent completed payload. Camera or projection motion, a cold
+   * query, a position outside the current view, or an old payload can therefore
+   * return <code>undefined</code> until a relevant readback completes. On WebGL
+   * <code>clampToHeight</code> is fully synchronous and unaffected.
+   * </p>
    *
    * @param {Cartesian3} cartesian The cartesian position.
    * @param {object[]} [objectsToExclude] A list of primitives, entities, or 3D Tiles features to not clamp to.
@@ -5626,7 +5665,10 @@ class Scene {
    * @example
    * // Clamp an entity to the underlying scene geometry
    * const position = entity.position.getValue(Cesium.JulianDate.now());
-   * entity.position = viewer.scene.clampToHeight(position);
+   * const clampedPosition = viewer.scene.clampToHeight(position);
+   * if (Cesium.defined(clampedPosition)) {
+   *     entity.position = clampedPosition;
+   * }
    *
    * @see Scene#sampleHeight
    * @see Scene#sampleHeightMostDetailed
