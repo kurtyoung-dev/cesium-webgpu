@@ -22,44 +22,113 @@ import {
   buildWidgets,
 } from "./scripts/build.js";
 
-const argv = await yargs(process.argv)
-  .options({
-    port: {
-      default: 8080,
-      description: "Port to listen on.",
-    },
-    sandcastlePort: {
-      default: 8081,
-      description:
-        "Port for the Sandcastle mirror server (main port + 1 by convention).",
-    },
-    public: {
-      type: "boolean",
-      description: "Run a public server that listens on all interfaces.",
-    },
-    devUi: {
-      type: "boolean",
-      description:
-        "Print the CesiumViewer URL that enables the renderer switcher and FPS toggle.",
-    },
-    production: {
-      type: "boolean",
-      description: "If true, skip build step and serve existing built files.",
-    },
-    embeddings: {
-      type: "boolean",
-      default: true,
-      description:
-        "Generate Sandcastle semantic search embeddings. Pass --no-embeddings to skip. Can also be set via SANDCASTLE_NO_EMBEDDINGS=1.",
-    },
-  })
-  .help().argv;
+const outputDirectory = path.join("Build", "CesiumDev");
+const builtOutputDirectory = path.join("Build", "CesiumUnminified");
+
+// Keep this decision free of server startup so its provenance contract can be
+// tested without building bundles or binding a port.
+export function resolveCesiumArtifact({
+  serveBuilt = false,
+  production = false,
+  developmentDirectory = outputDirectory,
+  builtDirectory = builtOutputDirectory,
+  existsSync = fs.existsSync,
+} = {}) {
+  if (serveBuilt) {
+    if (!existsSync(builtDirectory)) {
+      throw new Error(
+        `Cannot serve the built artifact: directory "${builtDirectory}" does not exist. Run "npx gulp build" first.`,
+      );
+    }
+
+    const bundlePath = path.join(builtDirectory, "Cesium.js");
+    if (!existsSync(bundlePath)) {
+      throw new Error(
+        `Cannot serve the built artifact: "${bundlePath}" is missing from directory "${builtDirectory}". Run "npx gulp build" first.`,
+      );
+    }
+
+    return {
+      directory: builtDirectory,
+      generateDevelopmentBuild: false,
+      label: "built artifact",
+    };
+  }
+
+  if (production) {
+    return {
+      directory: builtDirectory,
+      generateDevelopmentBuild: false,
+      label: "built artifact",
+    };
+  }
+
+  return {
+    directory: developmentDirectory,
+    generateDevelopmentBuild: true,
+    label: "development build artifact",
+  };
+}
+
+const isMainModule =
+  process.argv[1] !== undefined &&
+  path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+
+async function parseArguments() {
+  return yargs(process.argv)
+    .options({
+      port: {
+        default: 8080,
+        description: "Port to listen on.",
+      },
+      sandcastlePort: {
+        default: 8081,
+        description:
+          "Port for the Sandcastle mirror server (main port + 1 by convention).",
+      },
+      public: {
+        type: "boolean",
+        description: "Run a public server that listens on all interfaces.",
+      },
+      devUi: {
+        type: "boolean",
+        description:
+          "Print the CesiumViewer URL that enables the renderer switcher and FPS toggle.",
+      },
+      production: {
+        type: "boolean",
+        description: "If true, skip build step and serve existing built files.",
+      },
+      "serve-built": {
+        type: "boolean",
+        description:
+          "Serve Build/CesiumUnminified from a prior npx gulp build. Can also be set via CESIUM_SERVE_BUILT=1.",
+      },
+      embeddings: {
+        type: "boolean",
+        default: true,
+        description:
+          "Generate Sandcastle semantic search embeddings. Pass --no-embeddings to skip. Can also be set via SANDCASTLE_NO_EMBEDDINGS=1.",
+      },
+    })
+    .help().argv;
+}
+
+const argv = isMainModule ? await parseArguments() : {};
+const serveBuilt =
+  isMainModule && (argv.serveBuilt || Boolean(process.env.CESIUM_SERVE_BUILT));
+const artifactConfiguration = isMainModule
+  ? resolveCesiumArtifact({
+      serveBuilt,
+      production: argv.production,
+    })
+  : undefined;
 
 // These functions will not exist in the production zip file but they also won't be run
 const { getSandcastleConfig, buildSandcastleGallery, buildSandcastleApp } =
-  argv.production ? {} : await import("./scripts/buildSandcastle.js");
-
-const outputDirectory = path.join("Build", "CesiumDev");
+  artifactConfiguration?.generateDevelopmentBuild
+    ? await import("./scripts/buildSandcastle.js")
+    : {};
 
 // The CesiumViewer builds its renderer switcher and FPS toggle only when this
 // parameter is present; a bare viewer URL carries the upstream chrome.
@@ -130,11 +199,19 @@ const throttle = (callback) => {
 };
 
 (async function () {
+  if (!isMainModule) {
+    return;
+  }
+
   const gzipHeader = Buffer.from("1F8B08", "hex");
   const production = argv.production;
 
+  console.log(
+    `Serving ${artifactConfiguration.label} from ${artifactConfiguration.directory}.`,
+  );
+
   let contexts;
-  if (!production) {
+  if (artifactConfiguration.generateDevelopmentBuild) {
     contexts = await generateDevelopmentBuild();
     const __dirname = path.dirname(fileURLToPath(import.meta.url));
     if (
@@ -232,7 +309,7 @@ const throttle = (callback) => {
   ];
   app.get(knownTilesetFormats, checkGzipAndNext);
 
-  if (!production) {
+  if (artifactConfiguration.generateDevelopmentBuild) {
     const iifeWorkersCache = new ContextCache(contexts.iifeWorkers);
     const iifeCache = createRoute(
       app,
@@ -416,7 +493,15 @@ const throttle = (callback) => {
     // Serve any static files starting with "Build/CesiumUnminified" from the
     // development build instead. That way, previous build output is preserved
     // while the latest is being served
-    app.use("/Build/CesiumUnminified", express.static("Build/CesiumDev"));
+    app.use(
+      "/Build/CesiumUnminified",
+      express.static(artifactConfiguration.directory),
+    );
+  } else if (serveBuilt) {
+    app.use(
+      "/Build/CesiumUnminified",
+      express.static(artifactConfiguration.directory),
+    );
   }
 
   // Dev-only same-origin proxy for the weather-data ingest (live OGC API-EDR and
@@ -627,7 +712,7 @@ const throttle = (callback) => {
     if (isFirstSig) {
       console.log("\nCesium development servers shutting down.");
 
-      if (!production) {
+      if (artifactConfiguration.generateDevelopmentBuild) {
         contexts.esm.dispose();
         contexts.iife.dispose();
         contexts.workers.dispose();
