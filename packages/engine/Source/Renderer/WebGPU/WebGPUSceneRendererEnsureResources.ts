@@ -1,49 +1,36 @@
 /**
- * Per-frame resource allocation/resize extracted from
- * `WebGPUSceneRenderer._ensureResources`.
+ * Allocates, resizes, and changes the format of every framebuffer consumed by
+ * the scene pass chain:
  *
- * Batch 142 of the audit-recommended SceneRenderer decomposition.
- * Moves the 268-line resource-allocation block — the highest blast-
- * radius extraction left in the SceneRenderer — to a focused module.
+ * - The scene framebuffer (`WebGPUSceneFramebuffer`) owns the main color,
+ *   depth, and ID targets. Its color format switches between an HDR format and
+ *   the canvas format with `useHDR`.
+ * - OIT (`WebGPUOIT`) owns the accumulation and revealage targets for
+ *   order-independent transparency. It is allocated only when both the Scene
+ *   request and the renderer safety gate are enabled.
+ * - The edge MRT framebuffer (`WebGPUEdgeFramebuffer`) is allocated only while
+ *   `_enableEdgeVisibility` is enabled.
+ * - The translucent tile classification framebuffer
+ *   (`WebGPUTranslucentTileClassification`) lazily allocates single-sampled
+ *   depth, packed-depth, and color targets.
+ * - The globe depth framebuffer (`WebGPUGlobeDepth`) is created when
+ *   `useGlobeDepthFramebuffer` is enabled.
+ * - The depth plane (`WebGPUDepthPlane`) is created when `useDepthPlane` is
+ *   enabled and routes its pipelines through the central render-pipeline
+ *   cache.
+ * - The post-process pipeline (`WebGPUPostProcessPipeline`) owns the ping-pong,
+ *   tonemapping, FXAA, and auto-exposure chain that blits the scene framebuffer
+ *   to the canvas. It is rebuilt after an HDR change so its intermediate
+ *   textures use the scene's format.
  *
- * Allocates / resizes / format-toggles every framebuffer the scene
- * pass chain reads from:
+ * Initial mount, canvas resize, and an HDR toggle each recreate the scene
+ * framebuffer. Treating an HDR change like a resize prevents the scene color
+ * target and its dependent OIT, edge, refraction, and velocity textures from
+ * retaining incompatible formats.
  *
- *   - **Scene framebuffer** (`WebGPUSceneFramebuffer`): main color +
- *     depth + ID targets. Format flips between `rgba16float` (HDR) /
- *     canvas format (SDR) on `useHDR` toggle.
- *   - **OIT** (`WebGPUOIT`): accumulation + revealage MRT for
- *     order-independent transparency. FAR-003 contains allocation behind
- *     a renderer-owned comparison gate even when Scene requests OIT.
- *   - **Edge MRT framebuffer** (`WebGPUEdgeFramebuffer`): allocated
- *     only when `_enableEdgeVisibility` is on. C-R8-EDGE-FBO Batch 44.
- *   - **Translucent tile classification framebuffer**
- *     (`WebGPUTranslucentTileClassification`): allocated lazily; small
- *     resources (1 depth + 1 packed-depth + 1 color, all
- *     single-sample). C-R8-TRANSLUCENT-TILE-CLASS Batch 47.
- *   - **Globe depth framebuffer** (`WebGPUGlobeDepth`): created when
- *     `useGlobeDepthFramebuffer && !_globeDepth`.
- *   - **Depth plane** (`WebGPUDepthPlane`): created when
- *     `useDepthPlane && !_depthPlane`. Routes through central
- *     pipeline cache (C-R7-RENDERER-MIGRATION Batch 56).
- *   - **Post-process pipeline** (`WebGPUPostProcessPipeline`): the
- *     ping-pong + tonemapping + FXAA + AutoExposure (HDR) chain that
- *     blits scene FB to canvas. Destroyed + rebuilt on HDR toggle so
- *     the ping-pong textures get the right format (Batch 110).
- *
- * Three triggers cause a recreate cycle:
- *
- *   1. Initial mount (`!_initialized`).
- *   2. Canvas resize (width/height changed).
- *   3. HDR toggle at runtime — Batch 109's gate. Without this, a
- *      same-resolution `scene.useHDR` flip would leave the scene
- *      framebuffer's color format stale and dependent textures (OIT,
- *      edge MRT, refraction, velocity) out of sync.
- *
- * Also subscribes once (per SceneRenderer lifetime) to
- * `context.onDeviceInvalidated` so all the framebuffers + caches get
- * dropped during device-loss recovery — next frame's
- * `_ensureResources` rebuilds them against the new device.
+ * A single `context.onDeviceInvalidated` subscription drops the framebuffers
+ * and caches during device-loss recovery. The next resource-ensure pass
+ * rebuilds them against the replacement device.
  *
  * @module WebGPUSceneRendererEnsureResources
  */
@@ -64,8 +51,8 @@ import type { WebGPUDebugFrustumOverlay } from "./WebGPUDebugFrustumOverlay.js";
 import type { WebGPURenderFrameConfig } from "./WebGPUSceneRenderer.js";
 
 /**
- * The SceneRenderer surface the resource-ensure helper reaches back
- * to. Every field here is read AND written — that's the whole point.
+ * The SceneRenderer surface used by the resource-ensure helper. Every field is
+ * both read and written.
  */
 export interface EnsureResourcesHost {
   // Frame-buffer slots (read+write)
@@ -159,7 +146,11 @@ export function ensureDepthPlane(
   }
 }
 
-/** FAR-003 pure policy helper, exported for no-allocation regression tests. */
+/**
+ * Returns whether native WebGPU OIT resources may be allocated. Exported so
+ * `WebGPUUnsafeDefaultsSpec` can pin the gate without standing up a device;
+ * it has no other caller outside this module.
+ */
 export function shouldAllocateWebGPUOIT(
   requested: boolean,
   safetyGateEnabled: boolean,
@@ -187,11 +178,9 @@ export function ensureResources(
     return;
   }
 
-  // C-R12 (Batch 33) — subscribe once to device-invalidation events
-  // so SceneRenderer-owned resources (scene framebuffer, OIT,
-  // globeDepth, depth plane, post-process pipeline, debug overlays)
-  // are dropped during recovery. Next frame's `_ensureResources`
-  // rebuilds them against the new device.
+  // Subscribe once so device invalidation drops every SceneRenderer-owned GPU
+  // resource. The next resource-ensure pass rebuilds them against the
+  // replacement device.
   if (!host._deviceInvalidationUnsub) {
     host._deviceInvalidationUnsub = context.onDeviceInvalidated(() => {
       host._sceneFramebuffer = null;
@@ -205,16 +194,10 @@ export function ensureResources(
       host._debugFrustumOverlay = null;
       host._initialized = false;
 
-      // C-R12-PER-OBJECT-CACHES (Batch 197) — extend the device-loss
-      // recovery walk to per-Model / per-Collection / per-PostProcess
-      // object caches. Subsystem-level caches (Bloom/AO/DoF/GodRays/
-      // AutoExposure/scene FB) are wired via the registry above.
-      // Per-object caches like `model._webgpuCache`,
-      // `collection._webgpuCache`, `shadowMap._webgpuCache`, etc. typically
-      // get rebuilt next frame via the owning feature renderer's destroy
-      // + recreate flow — but a model that's been removed from primitives
-      // mid-recovery would otherwise hold zombie handles to dead-device
-      // resources. Belt-and-suspenders correctness: walk the scene now.
+      // Clear per-object caches that are not covered by the subsystem registry.
+      // A scene object removed from a primitive collection during recovery can
+      // remain reachable while holding handles from the invalid device, so the
+      // scene graph is walked immediately.
       clearPerObjectCaches(scene);
     });
   }
@@ -225,21 +208,16 @@ export function ensureResources(
   const height = canvas?.height ?? 1;
   const needsResize = width !== host._width || height !== host._height;
   const hdr = config.useHDR ?? false;
-  // Batch 109 — HDR toggle gate. A runtime change to `scene.useHDR`
-  // flips the scene-FB color format between `rgba16float` (or
-  // `rg11b10ufloat`) and the canvas format. Without this gate the
-  // outer `if (!_initialized || needsResize)` block below would
-  // never fire on a same-resolution HDR toggle, leaving the
-  // scene-FB's color format stale + the dependent textures (OIT
-  // accumulation, edge MRT, refraction capture, velocity capture)
-  // out of sync. Treat HDR change as equivalent to a resize for
-  // gating purposes.
+  // Treat an HDR change as a recreate trigger because it changes the scene
+  // framebuffer color format between an HDR format and the canvas format. A
+  // same-resolution toggle must also rebuild dependent OIT, edge, refraction,
+  // and velocity textures.
   const hdrChanged = host._lastHDR !== null && host._lastHDR !== hdr;
   const needsRecreate = !host._initialized || needsResize || hdrChanged;
-  // C10-07 — capture the first-init edge before `host._initialized` is set at
-  // the tail. The deterministic-boot prewarm fires exactly once, after the
-  // scene-FB attachment formats have resolved (the site the C10-06 Step-C.2
-  // deferral identified as where formats ARE known).
+  // Capture the first-initialization edge before `_initialized` is set below.
+  // Deterministic pipeline prewarming runs exactly once, after the scene
+  // framebuffer attachment formats are known; context initialization occurs
+  // before those formats are available.
   const firstInit = !host._initialized;
   host._lastHDR = hdr;
   const numSamples: number = context._msaaSamples ?? 1;
@@ -259,62 +237,39 @@ export function ensureResources(
       numSamples,
       canvasFormat,
     );
-    // C-R4-GLTF-KHR-TRANSMISSION (Batch 107) — `_sceneFramebuffer.update`
-    // destroys the old refraction texture (and view) on resize / HDR
-    // toggle. Clear the published view on the context so the model
-    // renderer doesn't try to bind it on the next frame; `null` here
-    // makes the model bind-group rebuild fall through to the white
-    // placeholder until the next capture pass publishes a new view.
+    // Updating the scene framebuffer destroys its old refraction texture and
+    // view. Clear the published view so the model renderer binds the white
+    // placeholder until the next capture pass publishes a replacement.
     context._refractionSceneView = null;
   }
-  // C-R8-INVERT-HDR (Batch 41) — keep `context._sceneColorFormat`
-  // in sync with the scene framebuffer's actual color format. Feature
-  // renderers (InvertClassification, OIT) read this so their own
-  // texture allocations pick `rgba16float` when the scene is HDR and
-  // the canvas format otherwise. Previously this field was declared
-  // on the context but never assigned, leaving it stuck at the
-  // default `"bgra8unorm"` and producing format mismatches when
-  // scene-facing pipelines composited against HDR targets.
+  // Keep the context color format synchronized with the scene framebuffer.
+  // Invert classification and OIT use it when allocating their targets; a
+  // stale canvas-format value would make their pipelines incompatible with an
+  // HDR scene target.
   const previousSceneColorFormat = context._sceneColorFormat;
   context._sceneColorFormat =
     host._sceneFramebuffer.colorFormat ?? context._sceneColorFormat;
   const sceneColorFormat: GPUTextureFormat =
     host._sceneFramebuffer.colorFormat ?? "bgra8unorm";
 
-  // Slice 5c-B Batch 127 — wire scene-FB views onto context. Pre-fix:
-  // `_sceneColorView` + `_depthStencilView` were declared on
-  // WebGPUContext as `public X = null` and NEVER assigned anywhere
-  // (verified via repo-wide grep 2026-05-25). Consumers (env effects,
-  // translucent pass) read the always-null defaults and silently
-  // skipped. Same "field declared but never assigned" pattern as
-  // `_sceneColorFormat` above — both pre-dated this bug.
-  //
-  // Single-sample depth: `depthSampleableView` is the
-  // single-sample-resolved view. MSAA case: `depthSampleableView` is
-  // null and we leave `_depthStencilView` null too — env effects
-  // continue to skip with MSAA on until Step 5 (MSAA depth resolve)
-  // lands. Step 5 is gated on the env-effects target chain reorder
-  // (Step 4) so single-sample is the right initial proof point.
+  // Publish the scene color view for environmental effects and the translucent
+  // pass. The single-sampled depth view is published separately below.
   context._sceneColorView =
     host._sceneFramebuffer.colorTarget?.getColorTextureView?.(0) ?? null;
-  // Slice 5c-B Batch 128 — `depthSampleableView` now returns the
-  // resolved single-sample view in BOTH single-sample mode (existing
-  // aspect view) and MSAA mode (new resolve target populated by
-  // PostFrustumChain's resolveDepthMSAA dispatch). The Batch 127 gate
-  // on `_msaaSamples === 1` is no longer needed — env effects + AO
-  // + DoF work in default MSAA=4 scenes too.
+  // `depthSampleableView` is single-sampled in both modes: the depth aspect
+  // view in single-sample mode and the resolve target populated by the
+  // post-frustum chain in MSAA mode. Environmental effects, ambient occlusion,
+  // and depth of field can therefore use the same context slot.
   const _ctxWithDepth = context as unknown as {
     _depthStencilView: GPUTextureView | null;
   };
   _ctxWithDepth._depthStencilView =
     host._sceneFramebuffer.depthSampleableView ?? null;
 
-  // Slice 5c-B Batch 129 — post-process snapshot texture. Allocated/
-  // reallocated when the canvas size changes. Holds a copy of the
-  // post-processed canvas content for env effects to sample as their
-  // reflection/composite SOURCE. Canvas-sized + canvas-format so the
-  // copyTextureToTexture dispatch in PostFrustumChain is layout-
-  // compatible.
+  // Allocate the post-process snapshot at canvas size and format. It holds a
+  // copy of the post-processed canvas content for environmental effects to
+  // sample during reflection and compositing, keeping `copyTextureToTexture`
+  // layout-compatible.
   const canvasW = (context._canvas?.width ?? 1) | 0;
   const canvasH = (context._canvas?.height ?? 1) | 0;
   const ppFormat = context.presentationFormat ?? "bgra8unorm";
@@ -332,11 +287,10 @@ export function ensureResources(
       label: "PostProcessSnapshot",
       size: { width: canvasW, height: canvasH, depthOrArrayLayers: 1 },
       format: ppFormat,
-      // C11-60 — this is side A of the environmental-effects ping-pong graph.
-      // It is copied from the canvas first, then may become a render target for
-      // the second/fourth full-screen effect. Sampling and attachment use never
-      // overlap in one pass because the compositor always selects the opposite
-      // side as its target.
+      // This texture is side A of the environmental-effects ping-pong graph. It
+      // is copied from the canvas first and can become the target of the second
+      // or fourth full-screen effect. The compositor always renders into the
+      // side opposite the sampled texture.
       usage:
         GPUTextureUsage.COPY_DST |
         GPUTextureUsage.TEXTURE_BINDING |
@@ -352,27 +306,24 @@ export function ensureResources(
     snapshotOwner._postProcessSnapshotDevice = device;
   }
 
-  // Batch 110 — bump the scene pipeline format generation when the
-  // scene color format actually changes. Renderers caching pipelines
-  // that target scene FB observe the bump and clear+rebuild their
-  // local caches against the new `scenePipelineFormat`. Without this,
-  // a runtime HDR toggle (rgba16float ↔ canvas format) leaves cached
-  // pipelines pointing at the OLD format, producing validation
-  // warnings + black scene-FB writes for sky / globe / model /
-  // primitive draws.
+  // Increment the scene-pipeline format generation whenever the scene color
+  // format changes. Renderers use the generation to rebuild cached
+  // scene-target pipelines; retaining them across an HDR toggle would produce
+  // validation errors and black writes for sky, globe, model, and primitive
+  // draws.
   if (
     context._sceneColorFormat !== undefined &&
     context._sceneColorFormat !== previousSceneColorFormat
   ) {
     context._scenePipelineFormatGeneration += 1;
-    // AUDIT_2026_05_02 B.20 — invalidate cached render bundles whose
-    // baked pipeline formats no longer match the active scene FB.
+    // Invalidate render bundles whose baked pipeline formats no longer match
+    // the active scene framebuffer.
     context.renderBundleManager?.invalidateAll?.();
   }
 
-  // FAR-003: preserve the public Scene OIT request while independently
-  // containing the unsafe native WebGPU MRT path. The alpha fallback in the
-  // translucent pass remains complete when this gate is false.
+  // Preserve the public Scene OIT request while independently gating native
+  // WebGPU MRT allocation. The translucent pass retains a complete alpha
+  // fallback when this gate is disabled.
   host._lastOITRequested = config.useOIT === true;
   const useContainedWebGPUOIT = shouldAllocateWebGPUOIT(
     host._lastOITRequested,
@@ -382,19 +333,18 @@ export function ensureResources(
     host._oit = new WebGPUOIT(context);
   }
   if (useContainedWebGPUOIT && host._oit) {
-    // Session 65 Batch 33 — pass MSAA sample count so the OIT
-    // composite pipeline matches the scene FB's sample count when
-    // the bridge re-enables. This intentionally runs every frame: the
-    // renderer-level drift was already consumed by `prepareFrame`, while
-    // WebGPUOIT.update is itself allocation-idempotent for an unchanged tuple.
+    // Pass the current sample count so the OIT composite pipeline matches the
+    // scene framebuffer whenever OIT is enabled. This runs every frame because
+    // `prepareFrame` may already have consumed renderer-level drift, while
+    // `WebGPUOIT.update` is allocation-idempotent for an unchanged tuple.
     host._oit.update(device, width, height, numSamples);
   }
 
-  // C-R8-EDGE-FBO (Batch 44) — edge MRT framebuffer. Allocated only
-  // when the scene opts in via `_enableEdgeVisibility`; nothing
-  // downstream looks at it otherwise, so idle scenes don't pay for
-  // 3 color textures + depth-stencil. Lazy = first-touch, so if the
-  // flag toggles on mid-session the next update() call allocates.
+  // Allocate the edge MRT framebuffer only when `_enableEdgeVisibility` is
+  // enabled. No downstream path reads its three color textures or depth-stencil
+  // target otherwise. Turning the flag on mid-session allocates on the next
+  // update; turning it off does not release, since the framebuffer lives
+  // until the renderer is destroyed.
   const enableEdgeVisibility = !!(
     scene as unknown as { _enableEdgeVisibility?: boolean }
   )._enableEdgeVisibility;
@@ -411,11 +361,10 @@ export function ensureResources(
     );
   }
 
-  // C-R8-TRANSLUCENT-TILE-CLASS (Batch 47) — translucent classification
-  // framebuffer. Allocated lazily on first scene-init; resources are
-  // small (one depth, one packed-depth, one color — all single-sample)
-  // and the per-frame dispatch is gated on `hasTranslucentDepth` so
-  // idle scenes pay only the allocation, not the per-frame work.
+  // Allocate the translucent-classification framebuffer on first resource
+  // initialization. Its depth, packed-depth, and color targets are
+  // single-sampled; per-frame work remains gated on `hasTranslucentDepth`, so
+  // inactive scenes pay only the allocation cost.
   if (!host._translucentTileClassification) {
     host._translucentTileClassification =
       new WebGPUTranslucentTileClassification();
@@ -448,51 +397,40 @@ export function ensureResources(
   // HDR/SDR scene attachment format consumed by the scene pipeline variant.
   ensureDepthPlane(host, config);
 
-  // Batch 110 (in progress) — when HDR mode toggles at runtime, the
-  // post-process pipeline's ping-pong textures (rgba16float ↔ canvas
-  // format) and every stage's pipeline target format must rebuild.
-  // The cheapest correct path is to destroy the whole pipeline and
-  // let the first-init block below recreate it with the new HDR
-  // setting + the matching stage chain (e.g., `addAutoExposure`
-  // only fires in HDR mode).
-  //
-  // Detection: the pipeline tracks its own `_hdr` mode internally
-  // and we compare against the new `hdr` argument. Skipped on
-  // initial mount so the first-init block runs normally.
+  // Rebuild the post-process pipeline when HDR mode changes because its
+  // ping-pong texture formats and every stage target format depend on that
+  // mode. Destroying the pipeline lets initialization reconstruct the matching
+  // textures and stage chain. The pipeline null check ahead of the comparison
+  // is what skips the initial mount, when there is nothing to rebuild.
   if (
     host._postProcess &&
     (host._postProcess as unknown as { _hdr: boolean })._hdr !== hdr
   ) {
     host._postProcess.destroy();
     host._postProcess = null;
-    // C11-174 — drop the context's cache-stats back-reference with the
-    // pipeline (re-registered below if the pipeline is recreated).
+    // Drop the context's cache-statistics back-reference with the pipeline.
+    // Initialization below re-registers it if the pipeline is recreated.
     context._postProcessCacheStatsSource = null;
   }
 
   // Post-processing pipeline
   if (config.usePostProcess && !host._postProcess) {
     host._postProcess = new WebGPUPostProcessPipeline(context);
-    // C11-174 — register the pipeline's bind-group cache-stats surface so
-    // `WebGPUContext.getRendererStatistics()` can expose the counters
-    // without importing the post-process pipeline graph.
+    // Expose the pipeline's bind-group cache counters through the context
+    // without making the context import the post-process graph.
     context._postProcessCacheStatsSource = host._postProcess;
     const canvasFormat: GPUTextureFormat =
       context.presentationFormat ?? "bgra8unorm";
-    // HDR pipeline fix: when `scene.highDynamicRange=true`, the
-    // ping-pong textures use `rgba16float` so the full dynamic range
-    // from the scene framebuffer survives through bloom / tonemapping
-    // / color grading. Only the final blit down-casts to the canvas
-    // swap chain format (bgra8unorm). Without this, every post-process
-    // stage was silently clamping HDR values to [0,1] and tonemapping
-    // was a mathematical no-op.
+    // HDR ping-pong textures use `rgba16float` so the scene's dynamic range
+    // survives bloom, tonemapping, and color grading. Only the final blit
+    // converts to the canvas swap-chain format; canvas-format intermediates
+    // would clamp values to [0, 1] and make tonemapping ineffective.
     host._postProcess.initialize(device, width, height, canvasFormat, hdr);
     // Add default stages
-    // Phase 5 WGF-3 / PARITY-F16-POSTPROCESS: resolve the f16 opt-in
-    // once, double-gated like the multi-pass effects — the opt-in flag
-    // AND the device actually granting `shader-f16`. Single-gating on
-    // the flag alone made a non-granting device rely on the async
-    // _compileStage fallback; the double gate selects f32 up front.
+    // Enable f16 only when both the opt-in and the device-granted feature are
+    // present. Gating on the opt-in alone would defer the unsupported-device
+    // fallback to asynchronous compilation; this gate selects f32 before
+    // compilation.
     const useShaderF16 = !!(
       context &&
       context.useShaderF16 &&
@@ -508,24 +446,19 @@ export function ensureResources(
       undefined,
       useShaderF16,
     );
-    // TAA is added lazily when scene.taaEnabled = true (not default) —
-    // the lazy-add lives in `configureWebGPUPostProcessPipeline` below,
-    // gated on the live `pipeline.taaEffect` slot (Batch 244,
-    // NEW-TAA-EFFECT-NEVER-ADDED; this comment used to describe a
-    // lazy-add that didn't exist anywhere).
+    // TAA is added lazily when `scene.taaEnabled` becomes true.
+    // `configureWebGPUPostProcessPipeline` below gates creation on the live
+    // `pipeline.taaEffect` slot.
     host._postProcess.addFXAA(device, canvasFormat, useShaderF16);
-    // AUDIT_2026_05_02 B.14 — auto-exposure was previously gated behind
-    // `if (hdr)` only, but SDR scenes still need adaptive exposure for
-    // day/night cycles (the moon → sun → night transition can take
-    // luminance from 1.0 → ~0.001 over a clock advance and an SDR
-    // viewer with `enableMoonLight = true` would go fully black with
-    // no recovery). Always-on autoexposure is cheap (one compute pass)
-    // and lets the tone-mapper see a useful exposure value regardless
-    // of HDR vs SDR.
+    // Registered in both HDR and SDR so enabling it is a flag flip rather
+    // than a pipeline rebuild. It stays disabled until
+    // `configureWebGPUPostProcessPipeline` below syncs
+    // `PostProcessStageCollection.autoExposure`, which is false by default to
+    // match WebGL — so the reduction does not dispatch at defaults and costs
+    // nothing until a user opts in.
     //
-    // C-R7-COMPUTE-PIPELINE-CACHE (Batch 76) — pipe the central
-    // compute pipeline cache through so AutoExposure routes its two
-    // pipeline creations through it.
+    // Pass the central compute-pipeline cache so auto-exposure uses it for both
+    // pipeline creations.
     host._postProcess.addAutoExposure(
       device,
       undefined,
@@ -555,36 +488,28 @@ export function ensureResources(
   host._height = height;
   host._initialized = true;
 
-  // C10-07-ASYNC-MODEL-PIPELINES / NEW-WEBGPU-BOOT-DETERMINISTIC-PIPELINE-PREWARM
-  // — kick the deterministic-boot render-pipeline set's async compile as soon
-  // as the scene-FB attachment formats resolve (this step). Fire-and-forget:
-  // never awaited, never blocks the frame, no-op on failure.
+  // Start compiling deterministic render pipelines once the scene framebuffer
+  // attachment formats are resolved. This is fire-and-forget: it never blocks
+  // the frame, and failures preserve the lazy first-use path.
   if (firstInit) {
     prewarmDeterministicPipelines(host, config);
   }
 }
 
 /**
- * C10-07 — the deterministic-boot pipeline prewarm the C10-06 Step-C.2 deferral
- * (`NEW-WEBGPU-BOOT-DETERMINISTIC-PIPELINE-PREWARM`) left for this slice. It
- * runs once, at the first `ensureResources`, where the scene-FB
- * color/depth/sampleCount are already known — the exact precondition the
- * deferral required and that context `_initialize` could not satisfy.
+ * Starts deterministic pipeline compilation once the scene framebuffer color,
+ * depth, and sample-count formats are known. Context initialization occurs
+ * before those preconditions are available.
  *
- * It routes the deterministic pipelines that resolve through the central async
- * cache to `WebGPURenderPipelineCache.warm()` / `preloadBatch()` — the
- * previously-0-caller preload machinery (S8-1 "built and never wired"). Today
- * the depth plane is the eligible deterministic renderer already migrated to
- * the central cache; it self-warms in `initialize`, so this call is idempotent
- * for it (the cache dedupes cached/pending keys) and confirms the deterministic
- * set is compiled-ahead of the frame's draw. The remaining SYNC deterministic
- * pipelines (SkyAtmosphere, GlobeDepth depth-copy, PostProcess
- * identity/tonemap/FXAA) still resolve through private `device.createRenderPipeline`
- * calls and must be migrated to the central cache per-renderer (guide H5 Step-4)
- * before they can register here — tracked as the immediate follow-on.
+ * Eligible renderers route their variants through the central asynchronous
+ * pipeline cache. The depth plane is currently eligible and also prewarms
+ * during initialization, so cached and pending keys make this call idempotent.
+ * Sky atmosphere, globe-depth copying, and post-process identity, tonemapping,
+ * and FXAA pipelines still use private synchronous creation and cannot
+ * participate until they use the central cache.
  *
- * Fire-and-forget (INV-06-2 / T-06-b): never awaited. A throw never escapes
- * `ensureResources`.
+ * Fire-and-forget. A prewarm failure never escapes `ensureResources`; lazy
+ * first use remains the correctness path.
  */
 function prewarmDeterministicPipelines(
   host: EnsureResourcesHost,
@@ -601,8 +526,8 @@ function prewarmDeterministicPipelines(
     // cache. `prewarm` warms its color + pick variants (idempotent).
     warmed += host._depthPlane?.prewarm(pipelineCache) ?? 0;
 
-    // Observable counter (read by probe-c10-07 / boot prewarm probes) proving
-    // the hook fired at the resources-ready step before the frame's draw.
+    // Record how many pipelines were warmed at the resource-ready point before
+    // the frame's draw; boot-prewarm probes read this counter.
     const ctxCounter = context as unknown as {
       _deterministicPrewarmCount?: number;
     };
@@ -615,12 +540,10 @@ function prewarmDeterministicPipelines(
 }
 
 /**
- * C-R12-PER-OBJECT-CACHES (Batch 197) — clears the `_webgpuCache` slot
- * on per-object owners reachable from the scene (primitives,
- * collections, shadow map, post-process stages). Called from the
- * device-invalidation event handler in `ensureResources` so any
- * orphan-but-still-reachable caches drop their stale GPU handles
- * during recovery.
+ * Clears the `_webgpuCache` slot on per-object owners reachable from the scene
+ * (primitives, collections, shadow map, and post-process stages). The
+ * device-invalidation handler calls this so orphaned but still reachable caches
+ * drop stale GPU handles during recovery.
  *
  * What gets cleared:
  *
@@ -675,9 +598,9 @@ function walkAndClear(node: unknown): void {
       try {
         walkAndClear(owner.get(i));
       } catch {
-        // Defensive: a child throwing during cache clear shouldn't
-        // block the rest of the walk. The next render tick will
-        // re-discover and clean up via the owning FR.
+        // A child throwing during cache clearing must not block the rest of the
+        // walk. The next render tick will rediscover and clean it up through the
+        // owning feature renderer.
       }
     }
   }

@@ -476,3 +476,8 @@ packages/engine/Source/Shaders/WebGPU/Primitive/PrimitivePBRSimple.wgsl
 packages/engine/Source/Shaders/WebGPU/Primitive/PrimitivePBRTextured.wgsl
 packages/engine/Source/Shaders/WebGPU/chunks/structs/ModelUniforms.wgsl
 packages/engine/Source/Shaders/WebGPU/chunks/structs/PBRMaterial.wgsl
+
+# Scene architecture: the SceneRenderer resource-ensure module. No knowledge
+# required relocation; the removed history is already recorded in
+# DEFERRED_WORK.md and WEBGPU_DEBUGGING_LOG.md.
+packages/engine/Source/Renderer/WebGPU/WebGPUSceneRendererEnsureResources.ts
