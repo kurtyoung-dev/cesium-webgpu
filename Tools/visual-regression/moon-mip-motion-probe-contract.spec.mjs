@@ -1,4 +1,4 @@
-// @purpose Contract over probe-moon-mip-motion-edge exports: frame analysis, verdict decision, exit codes, evidence paths, paired sensitivity checks.
+// @purpose Contract over the C12-33 shimmer-envelope probe: honest scope, frame analysis, exit codes, evidence paths, and minimum paired sensitivity.
 // @status ACTIVE
 
 import assert from "node:assert/strict";
@@ -8,6 +8,8 @@ import test from "node:test";
 import {
   analyzeRgbaFrame,
   CALIBRATED_THRESHOLDS,
+  C12_33_DOES_NOT_MEASURE,
+  C12_33_SHIMMER_ENVELOPE_CERTIFICATION,
   classifyRawReport,
   computeParitySeries,
   computeTemporalSeries,
@@ -23,12 +25,14 @@ import {
   MOON_MIP_MOTION_LANES,
   MOON_MIP_SAMPLE_COUNT,
   PAIRED_SENSITIVITY_REQUIREMENTS,
+  PAIRED_SENSITIVITY_MINIMUM_EFFECT,
   parseControlMode,
   parseRunId,
   parseSampleCount,
   portableEvidencePath,
   validateCalibratedThresholds,
 } from "./probe-moon-mip-motion-edge.mjs";
+import { S5_STATUS_EXIT_CODES } from "./lib/verdict-exit-gate.mjs";
 
 const probeUrl = new URL("./probe-moon-mip-motion-edge.mjs", import.meta.url);
 const probeSource = await readFile(probeUrl, "utf8");
@@ -179,6 +183,21 @@ test("probe is Node/Playwright Microsoft Edge only and captures canvas elements"
   assert.doesNotMatch(probeSource, /node:child_process/);
 });
 
+test("the evidence claim is the narrower shimmer envelope and disclaims mip/LOD observation", () => {
+  assert.equal(
+    C12_33_SHIMMER_ENVELOPE_CERTIFICATION,
+    "C12-33-SHIMMER-ENVELOPE-CERTIFICATION",
+  );
+  assert.deepEqual(C12_33_DOES_NOT_MEASURE, [
+    "observed mip or texture-LOD selection across camera motion",
+  ]);
+  assert.ok(Object.isFrozen(C12_33_DOES_NOT_MEASURE));
+  assert.match(
+    probeSource,
+    /does not claim observed mip or texture-LOD selection/,
+  );
+});
+
 test("probe pins one clock and declares all four required moving lanes", () => {
   assert.equal(FIXED_TIME_ISO, "2026-07-02T16:22:00Z");
   assert.deepEqual(
@@ -218,21 +237,29 @@ test("raw reports use library-compatible non-certifying states and cannot self-p
       certificationEligible: false,
     },
   );
-  assert.equal(
+  assert.deepEqual(
     classifyRawReport({
       verdict: "FAIL",
       hardFailures: ["fault"],
       qualityFailures: [],
-    }).status,
-    "STRUCTURAL",
+    }),
+    {
+      status: "STRUCTURAL",
+      exitCode: EXIT_CODES.STRUCTURAL,
+      certificationEligible: false,
+    },
   );
-  assert.equal(
+  assert.deepEqual(
     classifyRawReport({
       verdict: "FAIL",
       hardFailures: [],
       qualityFailures: ["quality"],
-    }).status,
-    "FAIL",
+    }),
+    {
+      status: "FAIL",
+      exitCode: EXIT_CODES.FAIL,
+      certificationEligible: false,
+    },
   );
   assert.match(probeSource, /Object\.assign\(report, classifyRawReport/);
   assert.match(probeSource, /status: "ERROR"/);
@@ -552,6 +579,7 @@ test("quality evaluation gates p95 shimmer, CV, spatial bands, and parity IoU", 
 });
 
 test("paired reports prove requested normal versus force-lod0 sensitivity", () => {
+  assert.equal(PAIRED_SENSITIVITY_MINIMUM_EFFECT, 1e-9);
   assert.deepEqual(PAIRED_SENSITIVITY_REQUIREMENTS, [
     {
       laneId: "minified-16px",
@@ -586,8 +614,28 @@ test("paired reports prove requested normal versus force-lod0 sensitivity", () =
   );
   assert.ok(
     sensitive.comparisons.every(
-      (comparison) => comparison.controlStrictlyWorse,
+      (comparison) =>
+        comparison.controlStrictlyWorse &&
+        comparison.controlMinusNormal >= comparison.minimumControlMinusNormal &&
+        comparison.minimumControlMinusNormal ===
+          PAIRED_SENSITIVITY_MINIMUM_EFFECT,
     ),
+  );
+
+  const numericallyDifferentOnly = syntheticSensitivityReport(
+    "force-lod0",
+    0.2 + 1e-15,
+  );
+  const negligible = evaluatePairedReportSensitivity(
+    normal,
+    numericallyDifferentOnly,
+  );
+  assert.equal(negligible.verdict, "FAIL");
+  assert.ok(
+    negligible.failures.every((failure) =>
+      failure.includes("derived minimum effect"),
+    ),
+    "the historical 1e-15 false green must fail every fixed sensitivity cell",
   );
 
   const regressedNormal = syntheticSensitivityReport("normal", 0.8);
@@ -620,6 +668,13 @@ test("uncalibrated quality is explicitly INCONCLUSIVE with hard 0/1/2/3 exits", 
     HARNESS: 2,
     STRUCTURAL: 3,
   });
+  // The literals above are the readable form; these equalities are what
+  // keeps them the fleet's numerals instead of a seventh private copy of
+  // the table. HARNESS is this probe's name for the ERROR tier.
+  assert.equal(EXIT_CODES.PASS, S5_STATUS_EXIT_CODES.PASS);
+  assert.equal(EXIT_CODES.FAIL, S5_STATUS_EXIT_CODES.FAIL);
+  assert.equal(EXIT_CODES.HARNESS, S5_STATUS_EXIT_CODES.ERROR);
+  assert.equal(EXIT_CODES.STRUCTURAL, S5_STATUS_EXIT_CODES.STRUCTURAL);
   assert.equal(decideVerdict([], [], null).verdict, "INCONCLUSIVE");
   assert.equal(decideVerdict([], [], null).exitCode, 3);
   assert.equal(decideVerdict(["fault"], [], null).verdict, "FAIL");

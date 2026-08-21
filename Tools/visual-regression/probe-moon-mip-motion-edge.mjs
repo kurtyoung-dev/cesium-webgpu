@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
- * C12-33 — moving-camera Moon mip/seam acceptance in real Microsoft Edge.
- * @purpose C12-33 moving-camera moon mip/seam acceptance in real Edge: 4 routes, canvas-element PNGs; structural failures hard, quality metrics advisory.
+ * C12-33-SHIMMER-ENVELOPE-CERTIFICATION in real Microsoft Edge.
+ * @purpose C12-33 paired normal/force-lod0 motion-shimmer envelope, seam-image review, and WebGL/WebGPU parity; does not claim observed mip or texture-LOD selection.
  * @status ACTIVE
  *
  * This is deliberately a moving visual lane, not an idle soak. Both viewers
@@ -49,6 +49,7 @@ import {
   collectGateErrors,
   errorGateInit,
 } from "../lib/webgpu-error-gate.mjs";
+import { stableStringify } from "./lib/visual-gate-policy.mjs";
 
 let activeInvocationRunId = null;
 let activeInvocationControlMode = null;
@@ -75,6 +76,20 @@ const watchdog = setTimeout(() => {
 watchdog.unref?.();
 
 export const FIXED_TIME_ISO = "2026-07-02T16:22:00Z";
+export const C12_33_SHIMMER_ENVELOPE_CERTIFICATION =
+  "C12-33-SHIMMER-ENVELOPE-CERTIFICATION";
+export const C12_33_DOES_NOT_MEASURE = Object.freeze([
+  "observed mip or texture-LOD selection across camera motion",
+]);
+export const MOON_MIP_PREREGISTRATION_DESIGN_ID = "sign-test-v1";
+export const C12_33_FILED_DESIGN_DISCREPANCY =
+  "R-24 ordered a sixteen-cell ratio design with a pre-registered r; the shipped frozen design is the four-cell sign test with an absolute 1e-9 gate; this custody hash binds the shipped design; adopting the R-24 design requires implementing it AND a maintainer-supplied r, at which point designId bumps and the hash changes visibly.";
+export const MOON_MIP_NUMERIC_IDENTITY_TOLERANCE = 1e-12;
+export const PAIRED_SENSITIVITY_MINIMUM_EFFECT_MULTIPLIER = 1000;
+export const PAIRED_SENSITIVITY_MINIMUM_EFFECT =
+  MOON_MIP_NUMERIC_IDENTITY_TOLERANCE *
+  PAIRED_SENSITIVITY_MINIMUM_EFFECT_MULTIPLIER;
+export const PAIRED_SENSITIVITY_COMPARISON = ">=";
 
 // The 0/1/2/3 verdict tiers, named.
 //
@@ -235,6 +250,50 @@ export const MOON_MIP_MOTION_LANES = Object.freeze([
   }),
 ]);
 
+/**
+ * Return the complete source-frozen design document bound by report custody.
+ * Object keys are canonicalized separately; array order remains declaration
+ * order because lane and sensitivity-cell order are part of the design.
+ */
+export function moonMipPreregistrationDocument() {
+  return {
+    designId: MOON_MIP_PREREGISTRATION_DESIGN_ID,
+    calibratedThresholds: CALIBRATED_THRESHOLDS,
+    thresholdSchemaVersion: THRESHOLD_SCHEMA_VERSION,
+    pairedSensitivityRequirements: PAIRED_SENSITIVITY_REQUIREMENTS.map(
+      (requirement) => ({ ...requirement }),
+    ),
+    absoluteGate: {
+      numericIdentityTolerance: MOON_MIP_NUMERIC_IDENTITY_TOLERANCE,
+      multiplier: PAIRED_SENSITIVITY_MINIMUM_EFFECT_MULTIPLIER,
+      minimumControlMinusNormal: PAIRED_SENSITIVITY_MINIMUM_EFFECT,
+      comparison: PAIRED_SENSITIVITY_COMPARISON,
+    },
+    thresholdKeys: {
+      temporal: [...BACKEND_TEMPORAL_THRESHOLD_KEYS],
+      spatial: [...BACKEND_SPATIAL_THRESHOLD_KEYS],
+      parity: [...PARITY_THRESHOLD_KEYS],
+    },
+    lanes: MOON_MIP_MOTION_LANES.map((lane) => ({
+      ...lane,
+      localCameraDirection: [...lane.localCameraDirection],
+    })),
+  };
+}
+
+export function canonicalMoonMipPreregistrationJson() {
+  return stableStringify(moonMipPreregistrationDocument());
+}
+
+export function computeMoonMipPreregistrationSha256() {
+  return sha256Bytes(
+    Buffer.from(canonicalMoonMipPreregistrationJson(), "utf8"),
+  );
+}
+
+export const MOON_MIP_PREREGISTRATION_SHA256 =
+  computeMoonMipPreregistrationSha256();
+
 const toolDirectory = dirname(fileURLToPath(import.meta.url));
 const repositoryDirectory = resolve(toolDirectory, "..", "..");
 function generatedRunId() {
@@ -382,6 +441,11 @@ async function emitFatalProbeArtifact(error, failureKind = "ERROR") {
     schemaVersion: 1,
     campaign: "C12-33",
     probe: "probe-moon-mip-motion-edge",
+    certificationClaim: C12_33_SHIMMER_ENVELOPE_CERTIFICATION,
+    doesNotMeasure: [...C12_33_DOES_NOT_MEASURE],
+    designId: MOON_MIP_PREREGISTRATION_DESIGN_ID,
+    preregistrationSha256: MOON_MIP_PREREGISTRATION_SHA256,
+    filedDiscrepancy: C12_33_FILED_DESIGN_DISCREPANCY,
     runId,
     capturedAt: new Date().toISOString(),
     status: "ERROR",
@@ -1035,9 +1099,12 @@ export function classifyRawReport(result) {
     ? result.qualityFailures
     : [];
   if (hardFailures.length > 0) {
+    // A hard failure means the run never got a usable look at its subject, so
+    // it leaves with the blindness tier. Reporting it as 1 put it in the same
+    // bucket as a subject that was measured and missed its bar.
     return {
       status: "STRUCTURAL",
-      exitCode: EXIT_CODES.FAIL,
+      exitCode: EXIT_CODES.STRUCTURAL,
       certificationEligible: false,
     };
   }
@@ -1141,7 +1208,17 @@ async function matchedRuntimeResourceIdentity(label, servedUrl, baseUrl) {
   };
 }
 
-async function runtimeIdentity(baseUrl, viewerUrl, setup) {
+async function producerSourceIdentity() {
+  const producerSourcePath = fileURLToPath(import.meta.url);
+  const producerSourceBytes = await readFile(producerSourcePath);
+  return {
+    path: portableRepositoryPath(producerSourcePath),
+    byteLength: producerSourceBytes.byteLength,
+    sha256: sha256Bytes(producerSourceBytes),
+  };
+}
+
+async function runtimeIdentity(baseUrl, viewerUrl, setup, producerSource) {
   const bundleUrl = setup?.adapterIdentity?.loadedCesiumScriptUrl;
   if (typeof bundleUrl !== "string" || bundleUrl.length === 0) {
     throw new Error(
@@ -1177,11 +1254,15 @@ async function runtimeIdentity(baseUrl, viewerUrl, setup) {
   };
   const adapterIdentity = setup.adapterIdentity;
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     entries,
     adapterIdentity,
+    producerSource,
     identitySha256: sha256Bytes(
-      Buffer.from(JSON.stringify({ entries, adapterIdentity }), "utf8"),
+      Buffer.from(
+        JSON.stringify({ entries, adapterIdentity, producerSource }),
+        "utf8",
+      ),
     ),
   };
 }
@@ -1307,7 +1388,12 @@ function vectorDistance(left, right) {
   );
 }
 
-function numericSummaryMatches(actual, expected, keys, tolerance = 1e-12) {
+function numericSummaryMatches(
+  actual,
+  expected,
+  keys,
+  tolerance = MOON_MIP_NUMERIC_IDENTITY_TOLERANCE,
+) {
   return keys.every(
     (key) =>
       Number.isFinite(actual?.[key]) &&
@@ -1384,6 +1470,9 @@ function exactRuntimeUrl(viewerUrl, localPath, { adapter = false } = {}) {
 
 export function validateStructuralEvidence(report) {
   const failures = [];
+  if (report?.filedDiscrepancy !== C12_33_FILED_DESIGN_DISCREPANCY) {
+    failures.push("filed R-24 design discrepancy is missing or changed");
+  }
   const ready = report.readiness?.diagnostics;
   if (report.setup?.sameJavaScriptRealm !== true) {
     failures.push(
@@ -1395,12 +1484,18 @@ export function validateStructuralEvidence(report) {
   const requiredRuntimeEntries = Object.keys(RUNTIME_RESOURCE_DEFINITIONS);
   exactObjectKeys(
     runtimeIdentity,
-    ["schemaVersion", "entries", "adapterIdentity", "identitySha256"],
+    [
+      "schemaVersion",
+      "entries",
+      "adapterIdentity",
+      "producerSource",
+      "identitySha256",
+    ],
     "runtimeIdentity",
     failures,
   );
-  if (runtimeIdentity?.schemaVersion !== 1) {
-    failures.push("runtime identity schemaVersion must equal 1");
+  if (runtimeIdentity?.schemaVersion !== 2) {
+    failures.push("runtime identity schemaVersion must equal 2");
   }
   exactObjectKeys(
     runtimeEntries,
@@ -1470,6 +1565,24 @@ export function validateStructuralEvidence(report) {
       );
     }
   }
+  const producerSource = runtimeIdentity?.producerSource;
+  exactObjectKeys(
+    producerSource,
+    ["path", "byteLength", "sha256"],
+    "runtimeIdentity.producerSource",
+    failures,
+  );
+  if (
+    producerSource?.path !==
+      portableRepositoryPath(fileURLToPath(import.meta.url)) ||
+    !Number.isInteger(producerSource?.byteLength) ||
+    producerSource.byteLength <= 0 ||
+    !/^[0-9a-f]{64}$/u.test(producerSource?.sha256 ?? "")
+  ) {
+    failures.push(
+      "runtime identity did not retain the producer source path and byte hash",
+    );
+  }
   if (!/^[0-9a-f]{64}$/u.test(report.runtimeIdentity?.identitySha256 ?? "")) {
     failures.push("runtime identity digest was missing or malformed");
   } else if (
@@ -1479,13 +1592,14 @@ export function validateStructuralEvidence(report) {
         JSON.stringify({
           entries: report.runtimeIdentity.entries,
           adapterIdentity: report.runtimeIdentity.adapterIdentity,
+          producerSource: report.runtimeIdentity.producerSource,
         }),
         "utf8",
       ),
     )
   ) {
     failures.push(
-      "runtime identity digest did not bind its resources and adapter",
+      "runtime identity digest did not bind its resources, adapter, and producer source",
     );
   }
   const adapterIdentity = runtimeIdentity?.adapterIdentity;
@@ -2584,6 +2698,15 @@ function sensitivityMetricValue(lane, backend, metric) {
   return lane?.backends?.[backend]?.temporal?.[metric];
 }
 
+function passesPairedSensitivityAbsoluteGate(controlMinusNormal) {
+  if (PAIRED_SENSITIVITY_COMPARISON !== ">=") {
+    throw new Error(
+      `unsupported paired-sensitivity comparison ${PAIRED_SENSITIVITY_COMPARISON}`,
+    );
+  }
+  return controlMinusNormal >= PAIRED_SENSITIVITY_MINIMUM_EFFECT;
+}
+
 /**
  * Compare one structurally green normal report with its deliberately broken
  * base-level-only control. The four cells are source-controlled above; a
@@ -2719,6 +2842,8 @@ export function evaluatePairedReportSensitivity(normalReport, forceLod0Report) {
       const controlMinusNormal = controlValue - normalValue;
       const normalToControlRatio =
         controlValue === 0 ? null : normalValue / controlValue;
+      const controlMeetsAbsoluteGate =
+        passesPairedSensitivityAbsoluteGate(controlMinusNormal);
       comparisons.push({
         laneId,
         backend,
@@ -2726,12 +2851,13 @@ export function evaluatePairedReportSensitivity(normalReport, forceLod0Report) {
         normalValue,
         controlValue,
         controlMinusNormal,
+        minimumControlMinusNormal: PAIRED_SENSITIVITY_MINIMUM_EFFECT,
         normalToControlRatio,
-        controlStrictlyWorse: controlValue > normalValue,
+        controlStrictlyWorse: controlMeetsAbsoluteGate,
       });
-      if (controlValue <= normalValue) {
+      if (!controlMeetsAbsoluteGate) {
         failures.push(
-          `${key} did not prove force-lod0 was strictly worse than normal`,
+          `${key} did not exceed normal by the derived minimum effect ${PAIRED_SENSITIVITY_MINIMUM_EFFECT}`,
         );
       }
     }
@@ -3444,6 +3570,7 @@ async function runProbe() {
   viewerUrlObject.searchParams.set("baseLayer", "false");
   const viewerUrl = viewerUrlObject.href;
   const headed = process.env.PROBE_HEADED === "1";
+  const capturedProducerSourceIdentity = await producerSourceIdentity();
 
   await mkdirWithoutSymbolicAncestors(dirname(outputPath));
   await mkdir(evidenceDirectory, { recursive: false });
@@ -3504,6 +3631,7 @@ async function runProbe() {
       base,
       viewerUrl,
       setup,
+      capturedProducerSourceIdentity,
     );
     const readiness = await page.evaluate(() =>
       globalThis.__c12MoonMipMotionProbe.waitForReadiness(60_000),
@@ -3630,6 +3758,11 @@ async function runProbe() {
       schemaVersion: 1,
       campaign: "C12-33",
       probe: "probe-moon-mip-motion-edge",
+      certificationClaim: C12_33_SHIMMER_ENVELOPE_CERTIFICATION,
+      doesNotMeasure: [...C12_33_DOES_NOT_MEASURE],
+      designId: MOON_MIP_PREREGISTRATION_DESIGN_ID,
+      preregistrationSha256: MOON_MIP_PREREGISTRATION_SHA256,
+      filedDiscrepancy: C12_33_FILED_DESIGN_DISCREPANCY,
       runId,
       capturedAt: new Date().toISOString(),
       controlMode,
@@ -3717,7 +3850,7 @@ async function runProbe() {
   });
   console.log(JSON.stringify(completedReport, null, 2));
   console.error(
-    `[C12-33] ${completedReport.status} — ${outputPath} ` +
+    `[${C12_33_SHIMMER_ENVELOPE_CERTIFICATION}] ${completedReport.status} — ${outputPath} ` +
       `(hardFailures=${completedReport.result.hardFailures.length}, qualityFailures=${completedReport.result.qualityFailures.length})`,
   );
   return completedReport;

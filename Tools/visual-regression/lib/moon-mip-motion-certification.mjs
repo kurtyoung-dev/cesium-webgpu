@@ -1,4 +1,4 @@
-// @purpose Certification contract/finalizer for C12-33 moon mip-motion evidence: lane validation, calibrated thresholds, paired sensitivity, exit tiers.
+// @purpose Finalizer for C12-33-SHIMMER-ENVELOPE-CERTIFICATION: paired motion-shimmer separation, seam review, parity, and explicit non-claim of observed mip/LOD selection.
 // @status ACTIVE
 
 import { randomUUID } from "node:crypto";
@@ -27,6 +27,10 @@ import { fileURLToPath } from "node:url";
 import sharp from "sharp";
 import {
   analyzeRgbaFrame,
+  C12_33_DOES_NOT_MEASURE,
+  C12_33_FILED_DESIGN_DISCREPANCY,
+  C12_33_SHIMMER_ENVELOPE_CERTIFICATION,
+  computeMoonMipPreregistrationSha256,
   computeParitySeries,
   computeTemporalSeries,
   evaluateCalibratedQuality,
@@ -36,6 +40,8 @@ import {
   isPortableEvidencePath,
   MOON_MIP_CONTROL_MODES,
   MOON_MIP_MOTION_LANES,
+  MOON_MIP_PREREGISTRATION_DESIGN_ID,
+  MOON_MIP_PREREGISTRATION_SHA256,
   MOON_MIP_SAMPLE_COUNT,
   PAIRED_SENSITIVITY_REQUIREMENTS,
   summarizeSpatial,
@@ -65,6 +71,8 @@ function isNonCertifyingExitCode(value) {
   );
 }
 
+// The wire names remain historical aliases so existing publication paths stay
+// stable. `certificationClaim` is the controlling human/machine-facing scope.
 export const C12_33_CERTIFICATION_SCHEMA =
   "cesium-c12-33-moon-mip-motion-certification/v1";
 export const C12_33_REVIEW_SCHEMA = "cesium-c12-33-moon-mip-motion-review/v1";
@@ -245,6 +253,52 @@ function appendUnique(target, values) {
       target.push(value);
     }
   }
+}
+
+export function validateC1233PreregistrationCustody(reports) {
+  const failures = [];
+  const expectedDesignId = MOON_MIP_PREREGISTRATION_DESIGN_ID;
+  const expectedPreregistrationSha256 = computeMoonMipPreregistrationSha256();
+  if (!Array.isArray(reports) || reports.length !== 10) {
+    return [
+      "preregistration custody requires exactly ten raw reports for one certification set",
+    ];
+  }
+  if (new Set(reports.map((report) => report?.designId)).size !== 1) {
+    failures.push(
+      "ten-run preregistration design drift: every report must carry the same designId",
+    );
+  }
+  if (
+    new Set(reports.map((report) => report?.preregistrationSha256)).size !== 1
+  ) {
+    failures.push(
+      "ten-run preregistration hash drift: every report must carry the same preregistrationSha256",
+    );
+  }
+  const first = reports[0];
+  for (const report of reports) {
+    const runId = report?.runId ?? "unknown";
+    if (report?.designId !== expectedDesignId) {
+      failures.push(
+        `preregistration design drift in raw run ${runId}: committed source expects designId ${expectedDesignId}; report carries ${report?.designId ?? "missing"}`,
+      );
+    }
+    if (report?.preregistrationSha256 !== expectedPreregistrationSha256) {
+      failures.push(
+        `preregistration hash drift in raw run ${runId}: committed source recomputes ${expectedPreregistrationSha256}; report carries ${report?.preregistrationSha256 ?? "missing"}`,
+      );
+    }
+    if (
+      report?.designId !== first?.designId ||
+      report?.preregistrationSha256 !== first?.preregistrationSha256
+    ) {
+      failures.push(
+        `ten-run preregistration custody drift: raw run ${runId} carries ${report?.designId ?? "missing"}/${report?.preregistrationSha256 ?? "missing"}, but first run ${first?.runId ?? "unknown"} carries ${first?.designId ?? "missing"}/${first?.preregistrationSha256 ?? "missing"}`,
+      );
+    }
+  }
+  return failures;
 }
 
 function safePathUnder(root, portablePath) {
@@ -737,6 +791,26 @@ export function validateRawMoonMipReport(report) {
     report?.probe !== "probe-moon-mip-motion-edge"
   ) {
     failures.push("raw report campaign/probe identity is invalid");
+  }
+  if (
+    report?.certificationClaim !== C12_33_SHIMMER_ENVELOPE_CERTIFICATION ||
+    !sameJson(report?.doesNotMeasure, C12_33_DOES_NOT_MEASURE)
+  ) {
+    failures.push(
+      "raw report does not carry the exact shimmer-envelope claim and mip/LOD non-claim",
+    );
+  }
+  if (
+    typeof report?.designId !== "string" ||
+    report.designId.length === 0 ||
+    !HASH_PATTERN.test(report?.preregistrationSha256 ?? "")
+  ) {
+    failures.push("raw report preregistration custody fields are malformed");
+  }
+  if (report?.filedDiscrepancy !== C12_33_FILED_DESIGN_DISCREPANCY) {
+    failures.push(
+      "raw report filed R-24 design discrepancy is missing or changed",
+    );
   }
   if (!TOKEN_PATTERN.test(report?.runId ?? "")) {
     failures.push("raw report runId is invalid");
@@ -1919,6 +1993,12 @@ function foldC1233MoonMipMotionEvidenceInternal({
   if (ordered.length === 10) {
     validateFixedSchedule(ordered, structuralFailures);
     validateSharedIdentity(ordered, structuralFailures);
+    appendUnique(
+      structuralFailures,
+      validateC1233PreregistrationCustody(
+        ordered.map((source) => source.report),
+      ),
+    );
   }
   const pairs = ordered.length === 10 ? calibrationPairs(ordered) : [];
   const pairResults = [];
@@ -1986,18 +2066,21 @@ function foldC1233MoonMipMotionEvidenceInternal({
         : latest,
     "",
   );
-  const reviewFailures = validateReviewerAttestation(
-    reviewerAttestation,
-    bindings,
-    { latestPublicationAt, finalizedAt },
-  );
-  appendUnique(structuralFailures, reviewFailures);
-  if (reviewerAttestation?.document?.verdict !== "PASS") {
-    acceptanceFailures.push("independent reviewer verdict is not PASS");
-  }
-  for (const finding of reviewerAttestation?.document?.findings ?? []) {
-    if (finding.verdict !== "PASS") {
-      acceptanceFailures.push(`reviewer finding is not PASS: ${finding.id}`);
+  const reviewPending = reviewerAttestation == null;
+  if (!reviewPending) {
+    const reviewFailures = validateReviewerAttestation(
+      reviewerAttestation,
+      bindings,
+      { latestPublicationAt, finalizedAt },
+    );
+    appendUnique(structuralFailures, reviewFailures);
+    if (reviewerAttestation?.document?.verdict !== "PASS") {
+      acceptanceFailures.push("independent reviewer verdict is not PASS");
+    }
+    for (const finding of reviewerAttestation?.document?.findings ?? []) {
+      if (finding.verdict !== "PASS") {
+        acceptanceFailures.push(`reviewer finding is not PASS: ${finding.id}`);
+      }
     }
   }
 
@@ -2006,12 +2089,24 @@ function foldC1233MoonMipMotionEvidenceInternal({
       ? "STRUCTURAL"
       : acceptanceFailures.length > 0
         ? "FAIL"
-        : "PASS";
-  const exitCode = status === "PASS" ? EXIT_CODES.PASS : EXIT_CODES.FAIL;
+        : reviewPending
+          ? "PENDING-REVIEW"
+          : "PASS";
+  const exitCode =
+    status === "PASS"
+      ? EXIT_CODES.PASS
+      : status === "FAIL"
+        ? EXIT_CODES.FAIL
+        : EXIT_CODES.STRUCTURAL;
   return {
     schema: C12_33_CERTIFICATION_SCHEMA,
     schemaVersion: 1,
     campaign: "C12-33",
+    certificationClaim: C12_33_SHIMMER_ENVELOPE_CERTIFICATION,
+    doesNotMeasure: [...C12_33_DOES_NOT_MEASURE],
+    designId: MOON_MIP_PREREGISTRATION_DESIGN_ID,
+    preregistrationSha256: computeMoonMipPreregistrationSha256(),
+    filedDiscrepancy: C12_33_FILED_DESIGN_DISCREPANCY,
     producer: "moon-mip-motion-offline-finalizer",
     finalizedAt,
     status,
@@ -2056,6 +2151,11 @@ function malformedFoldArtifact(error, finalizedAt) {
     schema: C12_33_CERTIFICATION_SCHEMA,
     schemaVersion: 1,
     campaign: "C12-33",
+    certificationClaim: C12_33_SHIMMER_ENVELOPE_CERTIFICATION,
+    doesNotMeasure: [...C12_33_DOES_NOT_MEASURE],
+    designId: MOON_MIP_PREREGISTRATION_DESIGN_ID,
+    preregistrationSha256: MOON_MIP_PREREGISTRATION_SHA256,
+    filedDiscrepancy: C12_33_FILED_DESIGN_DISCREPANCY,
     producer: "moon-mip-motion-offline-finalizer",
     finalizedAt: safeFinalizedAt,
     status: "STRUCTURAL",
@@ -2425,6 +2525,11 @@ if (isMainModule) {
       schema: C12_33_CERTIFICATION_SCHEMA,
       schemaVersion: 1,
       campaign: "C12-33",
+      certificationClaim: C12_33_SHIMMER_ENVELOPE_CERTIFICATION,
+      doesNotMeasure: [...C12_33_DOES_NOT_MEASURE],
+      designId: MOON_MIP_PREREGISTRATION_DESIGN_ID,
+      preregistrationSha256: MOON_MIP_PREREGISTRATION_SHA256,
+      filedDiscrepancy: C12_33_FILED_DESIGN_DISCREPANCY,
       producer: "moon-mip-motion-offline-finalizer",
       finalizedAt: new Date().toISOString(),
       status: "ERROR",

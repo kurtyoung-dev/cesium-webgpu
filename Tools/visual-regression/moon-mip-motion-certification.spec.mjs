@@ -1,4 +1,4 @@
-// @purpose Certification-pipeline contracts for moon mip-motion evidence: calibrated thresholds, immutable snapshots, reviewer attestation, finalization.
+// @purpose Certification-pipeline contracts for the narrower C12-33 shimmer envelope: honest non-claim, minimum sensitivity, immutable evidence, review, and finalization.
 // @status ACTIVE
 
 import assert from "node:assert/strict";
@@ -16,8 +16,9 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, posix } from "node:path";
+import { basename, dirname, join, posix } from "node:path";
 import test from "node:test";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import sharp from "sharp";
 import {
   C12_33_CERTIFICATION_SCHEMA,
@@ -39,10 +40,20 @@ import {
 import {
   analyzeRgbaFrame,
   cameraMotionSummary,
+  C12_33_DOES_NOT_MEASURE,
+  C12_33_FILED_DESIGN_DISCREPANCY,
+  C12_33_SHIMMER_ENVELOPE_CERTIFICATION,
+  canonicalMoonMipPreregistrationJson,
+  computeMoonMipPreregistrationSha256,
   computeParitySeries,
   computeTemporalSeries,
   FIXED_TIME_ISO,
   MOON_MIP_MOTION_LANES,
+  MOON_MIP_PREREGISTRATION_DESIGN_ID,
+  MOON_MIP_PREREGISTRATION_SHA256,
+  moonMipPreregistrationDocument,
+  PAIRED_SENSITIVITY_MINIMUM_EFFECT,
+  PAIRED_SENSITIVITY_MINIMUM_EFFECT_MULTIPLIER,
   PAIRED_SENSITIVITY_REQUIREMENTS,
   summarizeSpatial,
 } from "./probe-moon-mip-motion-edge.mjs";
@@ -136,11 +147,19 @@ function runtimeIdentity() {
       servedMatchesLocal: true,
     };
   }
+  const producerSource = {
+    path: "Tools/visual-regression/probe-moon-mip-motion-edge.mjs",
+    byteLength: 131_072,
+    sha256: hash("probe-moon-mip-motion-edge-source"),
+  };
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     entries,
     adapterIdentity,
-    identitySha256: hash(JSON.stringify({ entries, adapterIdentity })),
+    producerSource,
+    identitySha256: hash(
+      JSON.stringify({ entries, adapterIdentity, producerSource }),
+    ),
   };
 }
 
@@ -360,6 +379,11 @@ function syntheticReport(index, controlMode, value) {
     schemaVersion: 1,
     campaign: "C12-33",
     probe: "probe-moon-mip-motion-edge",
+    certificationClaim: C12_33_SHIMMER_ENVELOPE_CERTIFICATION,
+    doesNotMeasure: [...C12_33_DOES_NOT_MEASURE],
+    designId: MOON_MIP_PREREGISTRATION_DESIGN_ID,
+    preregistrationSha256: MOON_MIP_PREREGISTRATION_SHA256,
+    filedDiscrepancy: C12_33_FILED_DESIGN_DISCREPANCY,
     runId,
     capturedAt: new Date(Date.UTC(2026, 7, 1, 0, index)).toISOString(),
     status: "NON_CERTIFYING",
@@ -595,9 +619,13 @@ function syntheticSource(index, controlMode, value) {
   return source;
 }
 
-function syntheticSources() {
+function syntheticSources({ normalValue = 0.2, controlValue = 0.6 } = {}) {
   return C12_33_COUNTERBALANCED_CONTROL_ORDER.map((controlMode, index) =>
-    syntheticSource(index, controlMode, controlMode === "normal" ? 0.2 : 0.6),
+    syntheticSource(
+      index,
+      controlMode,
+      controlMode === "normal" ? normalValue : controlValue,
+    ),
   );
 }
 
@@ -971,6 +999,61 @@ async function writePublishedFixture(
   };
 }
 
+test("source-frozen sign-test preregistration has one canonical custody hash", () => {
+  const document = moonMipPreregistrationDocument();
+  const canonical = canonicalMoonMipPreregistrationJson();
+  assert.equal(document.designId, "sign-test-v1");
+  assert.equal(document.calibratedThresholds, null);
+  assert.equal(document.thresholdSchemaVersion, 1);
+  assert.equal(document.pairedSensitivityRequirements.length, 4);
+  assert.deepEqual(
+    document.pairedSensitivityRequirements,
+    PAIRED_SENSITIVITY_REQUIREMENTS,
+  );
+  assert.deepEqual(document.lanes, MOON_MIP_MOTION_LANES);
+  assert.deepEqual(document.absoluteGate, {
+    numericIdentityTolerance: 1e-12,
+    multiplier: PAIRED_SENSITIVITY_MINIMUM_EFFECT_MULTIPLIER,
+    minimumControlMinusNormal: 1e-9,
+    comparison: ">=",
+  });
+  assert.deepEqual(document.thresholdKeys, {
+    temporal: [
+      "maxNormalizedMeanAbsoluteLumaDelta",
+      "maxNormalizedP95PairLumaDelta",
+      "maxNormalizedMeanHighPassDelta",
+      "maxNormalizedP95HighPassDelta",
+      "maxSpatialHighFrequencyCoefficientOfVariation",
+    ],
+    spatial: [
+      "minNormalizedSpatialHighFrequencyMean",
+      "maxNormalizedSpatialHighFrequencyMean",
+      "minNormalizedLaplacianEnergyMean",
+      "maxNormalizedLaplacianEnergyMean",
+    ],
+    parity: [
+      "minMaskIntersectionOverUnionMean",
+      "maxNormalizedMeanAbsoluteLumaError",
+      "maxNormalizedP95AbsoluteLumaError",
+      "maxChangedPixelFractionMean",
+    ],
+  });
+  assert.equal(canonical.endsWith("\n"), false);
+  assert.deepEqual(JSON.parse(canonical), document);
+  assert.equal(
+    computeMoonMipPreregistrationSha256(),
+    MOON_MIP_PREREGISTRATION_SHA256,
+  );
+  assert.equal(
+    hash(Buffer.from(canonical, "utf8")),
+    MOON_MIP_PREREGISTRATION_SHA256,
+  );
+  assert.equal(
+    MOON_MIP_PREREGISTRATION_SHA256,
+    "ac3a3cde89673e95edbfe5c2d220016f92e866a07c0edd90d16e0cc43253ce81",
+  );
+});
+
 test("raw synthetic fixture satisfies the complete structural contract", () => {
   const source = syntheticSources()[0];
   assert.deepEqual(validateRawMoonMipReport(source.report), []);
@@ -1326,6 +1409,67 @@ test(
       "STRUCTURAL",
     );
     await rm(addedDuringCommit);
+
+    const custodyDriftRoot = join(workspace, "custody-drift-library");
+    await mkdir(custodyDriftRoot);
+    const custodyDriftHash = hash("path-backed-custody-drift");
+    const custodyDriftFixture = await writePublishedFixture(custodyDriftRoot, {
+      index: 4,
+      controlMode: C12_33_COUNTERBALANCED_CONTROL_ORDER[4],
+      mutateReport(report) {
+        report.preregistrationSha256 = custodyDriftHash;
+      },
+    });
+    const custodyDriftFixtures = fixtures.map((fixture, index) =>
+      index === 4 ? custodyDriftFixture : fixture,
+    );
+    const custodyDriftSources = custodyDriftFixtures.map(
+      (fixture) => fixture.source,
+    );
+    const custodyDriftReviewPath = join(workspace, "custody-drift-review.json");
+    await writeFile(
+      custodyDriftReviewPath,
+      `${JSON.stringify(reviewerAttestation(custodyDriftSources).document, null, 2)}\n`,
+    );
+    await chmod(custodyDriftReviewPath, 0o444);
+    const custodyDriftOutputPath = join(
+      outputDirectory,
+      "c12-33-custody-drift.json",
+    );
+    const custodyDriftArtifact = await finalizeAndWriteC1233MoonMipMotion({
+      outputPath: custodyDriftOutputPath,
+      manifestPaths: custodyDriftFixtures.map(
+        (fixture) => fixture.manifestPath,
+      ),
+      reviewerAttestationPath: custodyDriftReviewPath,
+      finalizedAt: FINALIZED_AT,
+    });
+    const pathBackedCustodyReds =
+      custodyDriftArtifact.structuralFailures.filter((failure) =>
+        failure.includes("preregistration hash drift"),
+      );
+    assert.equal(custodyDriftArtifact.status, "STRUCTURAL");
+    assert.equal(custodyDriftArtifact.exitCode, 3);
+    assert.equal(custodyDriftArtifact.certificationEligible, false);
+    assert.ok(
+      custodyDriftArtifact.structuralFailures.includes(
+        "ten-run preregistration hash drift: every report must carry the same preregistrationSha256",
+      ),
+    );
+    assert.ok(
+      pathBackedCustodyReds.some(
+        (failure) =>
+          failure.includes("committed source recomputes") &&
+          failure.includes(custodyDriftHash),
+      ),
+    );
+    assert.deepEqual(
+      JSON.parse(await readFile(custodyDriftOutputPath, "utf8")),
+      custodyDriftArtifact,
+    );
+    t.diagnostic(
+      `MUTATION RED (path-backed fixture hash): ${pathBackedCustodyReds.join(" | ")}`,
+    );
   },
 );
 
@@ -1336,6 +1480,14 @@ test("five counterbalanced pairs fold to the only certification-eligible PASS", 
   assert.equal(result.status, "PASS");
   assert.equal(result.exitCode, 0);
   assert.equal(result.certificationEligible, true);
+  assert.equal(
+    result.certificationClaim,
+    C12_33_SHIMMER_ENVELOPE_CERTIFICATION,
+  );
+  assert.deepEqual(result.doesNotMeasure, C12_33_DOES_NOT_MEASURE);
+  assert.equal(result.designId, MOON_MIP_PREREGISTRATION_DESIGN_ID);
+  assert.equal(result.preregistrationSha256, MOON_MIP_PREREGISTRATION_SHA256);
+  assert.equal(result.filedDiscrepancy, C12_33_FILED_DESIGN_DISCREPANCY);
   assert.equal(result.calibration.pairCount, 5);
   assert.equal(result.calibration.pairResults.length, 5);
   assert.equal(result.calibration.thresholdValueCount, 88);
@@ -1349,6 +1501,196 @@ test("five counterbalanced pairs fold to the only certification-eligible PASS", 
           PAIRED_SENSITIVITY_REQUIREMENTS.length,
     ),
   );
+});
+
+test("an otherwise-ready packet without review is surfaced as PENDING-REVIEW", () => {
+  const sources = syntheticSources();
+  const result = fold(sources, null);
+  assert.equal(result.status, "PENDING-REVIEW");
+  assert.equal(result.exitCode, 3);
+  assert.equal(result.certificationEligible, false);
+  assert.deepEqual(result.structuralFailures, []);
+  assert.deepEqual(result.acceptanceFailures, []);
+  assert.equal(result.reviewer, null);
+});
+
+test("a report carrying a different designId is a named certification drift", () => {
+  const sources = syntheticSources();
+  sources[4].report.designId = "ratio-design-v2";
+  refreshSource(sources[4]);
+  const result = fold(sources, reviewerAttestation(sources));
+  assert.equal(result.status, "STRUCTURAL");
+  assert.equal(result.exitCode, 3);
+  assert.equal(result.certificationEligible, false);
+  assert.ok(
+    result.structuralFailures.some((failure) =>
+      failure.includes("preregistration design drift"),
+    ),
+  );
+});
+
+test("mutation control: one fixture hash reds the ten-run same-hash assertion", (t) => {
+  const sources = syntheticSources();
+  const tampered = sources[4];
+  const originalReportBytes = `${JSON.stringify(tampered.report, null, 2)}\n`;
+  const originalReportSha256 = hash(originalReportBytes);
+  tampered.report.preregistrationSha256 = hash(
+    "tampered-preregistration-custody",
+  );
+  refreshSource(tampered);
+  const result = fold(sources, reviewerAttestation(sources));
+  const mutationReds = result.structuralFailures.filter(
+    (failure) =>
+      failure.includes("preregistration hash drift") ||
+      failure.includes("ten-run preregistration custody drift"),
+  );
+  assert.equal(result.status, "STRUCTURAL");
+  assert.equal(result.exitCode, 3);
+  assert.equal(result.certificationEligible, false);
+  assert.ok(
+    result.structuralFailures.includes(
+      "ten-run preregistration hash drift: every report must carry the same preregistrationSha256",
+    ),
+  );
+  assert.ok(mutationReds.length >= 2);
+  t.diagnostic(`MUTATION RED (fixture hash): ${mutationReds.join(" | ")}`);
+
+  tampered.report = JSON.parse(originalReportBytes);
+  refreshSource(tampered);
+  const restoredReportBytes = `${JSON.stringify(tampered.report, null, 2)}\n`;
+  assert.equal(restoredReportBytes, originalReportBytes);
+  assert.equal(hash(restoredReportBytes), originalReportSha256);
+  t.diagnostic(`RESTORED fixture report SHA-256: ${originalReportSha256}`);
+});
+
+test("ten equal report hashes still red when committed source recomputes another hash", () => {
+  const sources = syntheticSources();
+  const coordinatedWrongHash = hash("coordinated-wrong-preregistration");
+  for (const source of sources) {
+    source.report.preregistrationSha256 = coordinatedWrongHash;
+    refreshSource(source);
+  }
+  const result = fold(sources, reviewerAttestation(sources));
+  assert.equal(result.status, "STRUCTURAL");
+  assert.ok(
+    result.structuralFailures.some(
+      (failure) =>
+        failure.includes("preregistration hash drift") &&
+        failure.includes("committed source recomputes"),
+    ),
+  );
+});
+
+test("mutation control: changing the absolute gate recomputes a different custody hash", async (t) => {
+  const probePath = fileURLToPath(
+    new URL("./probe-moon-mip-motion-edge.mjs", import.meta.url),
+  );
+  const certificationPath = fileURLToPath(
+    new URL("./lib/moon-mip-motion-certification.mjs", import.meta.url),
+  );
+  const originalSourceBytes = await readFile(probePath);
+  const originalSourceSha256 = hash(originalSourceBytes);
+  const originalSource = originalSourceBytes.toString("utf8");
+  const originalCertificationBytes = await readFile(certificationPath);
+  const originalCertificationSha256 = hash(originalCertificationBytes);
+  const originalCertificationSource =
+    originalCertificationBytes.toString("utf8");
+  const gateDeclaration =
+    "export const MOON_MIP_NUMERIC_IDENTITY_TOLERANCE = 1e-12;";
+  const mutatedSource = originalSource.replace(
+    gateDeclaration,
+    "export const MOON_MIP_NUMERIC_IDENTITY_TOLERANCE = 2e-12;",
+  );
+  assert.notEqual(mutatedSource, originalSource);
+  const tempProbePath = join(
+    dirname(probePath),
+    `.probe-moon-mip-motion-edge-gate-mutation-${process.pid}-${Date.now()}.mjs`,
+  );
+  const tempCertificationPath = join(
+    dirname(certificationPath),
+    `.moon-mip-motion-certification-gate-mutation-${process.pid}-${Date.now()}.mjs`,
+  );
+  const mutatedCertificationSource = originalCertificationSource.replace(
+    '"../probe-moon-mip-motion-edge.mjs"',
+    `"../${basename(tempProbePath)}"`,
+  );
+  assert.notEqual(mutatedCertificationSource, originalCertificationSource);
+  let tempProbeWritten = false;
+  let tempCertificationWritten = false;
+  try {
+    await writeFile(tempProbePath, mutatedSource, { flag: "wx" });
+    tempProbeWritten = true;
+    await writeFile(tempCertificationPath, mutatedCertificationSource, {
+      flag: "wx",
+    });
+    tempCertificationWritten = true;
+    const mutatedProbe = await import(
+      `${pathToFileURL(tempProbePath).href}?custody-mutation=${Date.now()}`
+    );
+    const mutatedCertification = await import(
+      `${pathToFileURL(tempCertificationPath).href}?custody-mutation=${Date.now()}`
+    );
+    assert.equal(mutatedProbe.PAIRED_SENSITIVITY_MINIMUM_EFFECT, 2e-9);
+    assert.notEqual(
+      mutatedProbe.MOON_MIP_PREREGISTRATION_SHA256,
+      MOON_MIP_PREREGISTRATION_SHA256,
+    );
+    const custodyFailures =
+      mutatedCertification.validateC1233PreregistrationCustody(
+        syntheticSources().map((source) => source.report),
+      );
+    const mutationRed = custodyFailures.find(
+      (failure) =>
+        failure.includes("preregistration hash drift") &&
+        failure.includes("committed source recomputes"),
+    );
+    assert.ok(mutationRed);
+    t.diagnostic(
+      `MUTATION RED (absolute gate ${MOON_MIP_PREREGISTRATION_SHA256} -> ${mutatedProbe.MOON_MIP_PREREGISTRATION_SHA256}): ${mutationRed}`,
+    );
+  } finally {
+    if (tempCertificationWritten) {
+      await unlink(tempCertificationPath);
+    }
+    if (tempProbeWritten) {
+      await unlink(tempProbePath);
+    }
+  }
+  const restoredSourceBytes = await readFile(probePath);
+  assert.deepEqual(restoredSourceBytes, originalSourceBytes);
+  assert.equal(hash(restoredSourceBytes), originalSourceSha256);
+  const restoredCertificationBytes = await readFile(certificationPath);
+  assert.deepEqual(restoredCertificationBytes, originalCertificationBytes);
+  assert.equal(hash(restoredCertificationBytes), originalCertificationSha256);
+  t.diagnostic(
+    `RESTORED producer source SHA-256: ${originalSourceSha256}; certification source SHA-256: ${originalCertificationSha256}`,
+  );
+});
+
+test("coordinated claim widening or disclaimer removal is structural", () => {
+  for (const mutate of [
+    (report) => {
+      report.certificationClaim = "C12-33-MIP-LOD-CERTIFICATION";
+    },
+    (report) => {
+      report.doesNotMeasure = [];
+    },
+  ]) {
+    const sources = syntheticSources();
+    for (const source of sources) {
+      mutate(source.report);
+      refreshSource(source);
+    }
+    const result = fold(sources, reviewerAttestation(sources));
+    assert.equal(result.status, "STRUCTURAL");
+    assert.equal(result.exitCode, 3);
+    assert.equal(result.certificationEligible, false);
+    assert.ok(
+      result.structuralFailures.some((failure) =>
+        failure.includes("shimmer-envelope claim"),
+      ),
+    );
+  }
 });
 
 test("calibration produces the complete fixed 88-value threshold schema", () => {
@@ -1457,6 +1799,7 @@ test("source/build/assets/browser/adapter/sample identity mutations fail closed"
         JSON.stringify({
           entries: source.report.runtimeIdentity.entries,
           adapterIdentity: source.report.runtimeIdentity.adapterIdentity,
+          producerSource: source.report.runtimeIdentity.producerSource,
         }),
       );
     },
@@ -1467,6 +1810,7 @@ test("source/build/assets/browser/adapter/sample identity mutations fail closed"
         JSON.stringify({
           entries: source.report.runtimeIdentity.entries,
           adapterIdentity: source.report.runtimeIdentity.adapterIdentity,
+          producerSource: source.report.runtimeIdentity.producerSource,
         }),
       );
     },
@@ -1480,6 +1824,7 @@ test("source/build/assets/browser/adapter/sample identity mutations fail closed"
         JSON.stringify({
           entries: source.report.runtimeIdentity.entries,
           adapterIdentity: source.report.runtimeIdentity.adapterIdentity,
+          producerSource: source.report.runtimeIdentity.producerSource,
         }),
       );
     },
@@ -1487,7 +1832,7 @@ test("source/build/assets/browser/adapter/sample identity mutations fail closed"
       source.report.setup.normalUrl = source.report.setup.albedoUrl;
     },
     (source) => {
-      source.report.runtimeIdentity.schemaVersion = 2;
+      source.report.runtimeIdentity.schemaVersion = 1;
     },
     (source) => {
       source.report.runtimeIdentity.adapterIdentity.kind = "substitute.html";
@@ -1496,6 +1841,7 @@ test("source/build/assets/browser/adapter/sample identity mutations fail closed"
         JSON.stringify({
           entries: source.report.runtimeIdentity.entries,
           adapterIdentity: source.report.runtimeIdentity.adapterIdentity,
+          producerSource: source.report.runtimeIdentity.producerSource,
         }),
       );
     },
@@ -1521,6 +1867,7 @@ test("stable substituted resources cannot become a shared certifying identity", 
       JSON.stringify({
         entries: source.report.runtimeIdentity.entries,
         adapterIdentity: source.report.runtimeIdentity.adapterIdentity,
+        producerSource: source.report.runtimeIdentity.producerSource,
       }),
     );
     refreshSource(source);
@@ -1632,6 +1979,23 @@ test("every fixed sensitivity cell must separate in every pair", () => {
   assert.ok(
     result.acceptanceFailures.some((failure) =>
       failure.includes("minified-16px:webgpu:normalizedP95HighPassDelta"),
+    ),
+  );
+});
+
+test("a coordinated 1e-15 control separation cannot certify", () => {
+  assert.equal(PAIRED_SENSITIVITY_MINIMUM_EFFECT, 1e-9);
+  const sources = syntheticSources({
+    normalValue: 0.2,
+    controlValue: 0.2 + 1e-15,
+  });
+  const result = fold(sources, reviewerAttestation(sources));
+  assert.equal(result.status, "FAIL");
+  assert.equal(result.exitCode, 1);
+  assert.equal(result.certificationEligible, false);
+  assert.ok(
+    result.acceptanceFailures.some((failure) =>
+      failure.includes("derived minimum effect"),
     ),
   );
 });
