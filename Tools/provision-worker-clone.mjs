@@ -195,6 +195,52 @@ if (!VERIFY_ONLY) {
     }
   }
 
+  // The ThirdParty WASM binaries (splats, Draco, zip) are UNTRACKED build
+  // inputs that `gulp prepare` copies from node_modules into
+  // packages/engine/Source/ThirdParty. A fresh clone plus build without this
+  // step produces an artifact whose splat, Draco, and zip paths 404 at
+  // runtime — the stall looks like a product readiness defect and costs a
+  // diagnosis to attribute. Copy them here so a provisioned clone can never
+  // build that trap.
+  const thirdPartyDir = path.join(
+    clonePath,
+    "packages",
+    "engine",
+    "Source",
+    "ThirdParty",
+  );
+  const wasmSources = [
+    ["@cesium/wasm-splats", "wasm_splats_bg.wasm"],
+    ["@cesium/wasm-splats", "wasm_splats.js"],
+  ];
+  let wasmCopied = 0;
+  for (const [pkg, file] of wasmSources) {
+    const src = path.resolve(sourceRepo, "node_modules", pkg, file);
+    const dest = path.join(thirdPartyDir, file);
+    if (fs.existsSync(src) && !fs.existsSync(dest)) {
+      try {
+        fs.copyFileSync(src, dest);
+        wasmCopied += 1;
+      } catch {
+        notes.push(`could not copy ${file} into ThirdParty`);
+      }
+    }
+  }
+  const requiredThirdParty = ["wasm_splats_bg.wasm", "draco_decoder.wasm"];
+  const missingThirdParty = requiredThirdParty.filter(
+    (f) => !fs.existsSync(path.join(thirdPartyDir, f)),
+  );
+  if (wasmCopied > 0) {
+    notes.push(
+      `copied ${wasmCopied} ThirdParty WASM file(s) from node_modules`,
+    );
+  }
+  if (missingThirdParty.length > 0) {
+    notes.push(
+      `ThirdParty still missing ${missingThirdParty.join(", ")} — run \`npx gulp prepare\` in the clone before any build, or its artifact will 404 splats/Draco at runtime`,
+    );
+  }
+
   if (provisioned.length > 0) {
     const manifest = provisioned
       .map((p) => `${p.objectId}  ${p.path}`)

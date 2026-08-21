@@ -1,7 +1,7 @@
 {
   "$schema": "../baseline-manifest.schema.json",
   "schemaVersion": 1,
-  "updatedAt": "2026-08-21T05:33:33.591Z",
+  "updatedAt": "2026-08-21T05:50:49.600Z",
   "entries": {
     "globe-default:webgl": {
       "scene": "globe-default",
@@ -133,6 +133,50 @@
         "reviewedBy": "orchestrator (cesium-webgpu-agent, maintainer-directed session 2026-08-21)",
         "rationale": "C18-V2 first reviewed baseline (frozen-build program 2026-08-21, cross-backend 0.55%, PNG pair reviewed by orchestrator)",
         "reviewedAt": "2026-08-21T05:33:33.591Z"
+      }
+    },
+    "gsplat-sh-unit-cube:webgl": {
+      "scene": "gsplat-sh-unit-cube",
+      "renderer": "webgl",
+      "provenanceClass": "accepted-current",
+      "image": "gsplat-sh-unit-cube.webgl.png",
+      "imageSha256": "9ac3824c2f9d37e939bf30d60d36b922384a9c6c9387c1a3d3271a4f5a3ab6ab",
+      "width": 799,
+      "height": 752,
+      "sourceCommit": "3679b50fb69e77bef8b02d23b09e79658c2d6fdc",
+      "sourceDirty": false,
+      "sceneIdentity": "5492c88b07888726a38fcc9b0c7bb943360e6df2f695487db8d1f16b8f8de575",
+      "browserClass": "msedge",
+      "browserVersion": "151.0.4129.93",
+      "adapterClass": "nvidia:pascal",
+      "capturedAt": "2026-08-21T05:50:49.600Z",
+      "review": {
+        "status": "approved",
+        "reviewedBy": "orchestrator (cesium-webgpu-agent, maintainer-directed session 2026-08-21)",
+        "rationale": "C18-V2 first reviewed baseline (frozen-build program 2026-08-21, cross-backend 0.40% meeting the C15-G8-derived PASS expectation; first-run red was an environment 404 on untracked ThirdParty WASM, diagnosed and repaired)",
+        "reviewedAt": "2026-08-21T05:50:49.600Z"
+      }
+    },
+    "gsplat-sh-unit-cube:webgpu": {
+      "scene": "gsplat-sh-unit-cube",
+      "renderer": "webgpu",
+      "provenanceClass": "accepted-current",
+      "image": "gsplat-sh-unit-cube.webgpu.png",
+      "imageSha256": "5546807f344696f0cfdeeb0993a7490a46c04492d498f247f6d3e46d337e6846",
+      "width": 799,
+      "height": 752,
+      "sourceCommit": "3679b50fb69e77bef8b02d23b09e79658c2d6fdc",
+      "sourceDirty": false,
+      "sceneIdentity": "5492c88b07888726a38fcc9b0c7bb943360e6df2f695487db8d1f16b8f8de575",
+      "browserClass": "msedge",
+      "browserVersion": "151.0.4129.93",
+      "adapterClass": "nvidia:pascal",
+      "capturedAt": "2026-08-21T05:50:49.600Z",
+      "review": {
+        "status": "approved",
+        "reviewedBy": "orchestrator (cesium-webgpu-agent, maintainer-directed session 2026-08-21)",
+        "rationale": "C18-V2 first reviewed baseline (frozen-build program 2026-08-21, cross-backend 0.40% meeting the C15-G8-derived PASS expectation; first-run red was an environment 404 on untracked ThirdParty WASM, diagnosed and repaired)",
+        "reviewedAt": "2026-08-21T05:50:49.600Z"
       }
     }
   }
