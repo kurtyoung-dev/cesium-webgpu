@@ -304,10 +304,10 @@ import {
   evaluateG3SourcePreflight,
   foldG3Verdict,
   foldVariant,
-  G3_CERTIFICATION_RESOLUTION,
   G3_CERTIFICATION_VARIANT,
   G3_CUBE_FACE_KEYS as G3_FACE_KEYS,
   G3_CUBE_SOURCE_KEYS as G3_SOURCE_KEYS,
+  G3_PREFERRED_UPGRADE_RESOLUTION,
 } from "./lib/celestial-g3-gate.mjs";
 import {
   DISC_BRACKET_EXPOSURES,
@@ -1414,7 +1414,7 @@ async function runG2(browser, git) {
 // follows it instead of silently measuring the old path.
 async function g3ReadEnvironment(page) {
   return page.evaluate(
-    async ({ certificationVariant, certificationResolution }) => {
+    async ({ certificationVariant, preferredUpgradeResolution }) => {
       const C = await import("/Build/CesiumUnminified/index.js");
       const mod =
         await import("/packages/engine/Source/Scene/BrightStarCatalog.js");
@@ -1423,18 +1423,20 @@ async function g3ReadEnvironment(page) {
       const cat = mod.default;
       const scene = window.viewer.scene;
 
-      // EXPLICIT OPT-IN. This must never change `SkyBox.defaultResolution`: G3 is
-      // asking whether the recommended high-resolution asset exists and clears
-      // the gate, not spending 384 MiB in every application scene. At HEAD the
-      // honest policy falls back to 2048; the source sub-lane records that as
-      // STRUCTURAL until a real 4096 tier is registered and bundled.
+      // OPTIONAL UPGRADE REQUEST. This must never change
+      // `SkyBox.defaultResolution`: G3 asks the policy for 4096 so availability
+      // is reported, but the exact tier that resolves is the product subject.
+      // At HEAD that is the shipped/default 2048 tier; its complete source proof
+      // reaches the quality fold and honestly FAILS the ratified angular bars.
       const requestedVariant = C.SkyBox.Variant.TYCHO_T5_DIFFUSE;
       const requestedResolution = C.SkyBox.Resolution.SIZE_4096;
       if (
         requestedVariant !== certificationVariant ||
-        requestedResolution !== certificationResolution
+        requestedResolution !== preferredUpgradeResolution
       ) {
-        throw new Error("G3 certification constants disagree with the engine");
+        throw new Error(
+          "G3 subject/upgrade constants disagree with the engine",
+        );
       }
       const previousSkyBox = scene.skyBox;
       const previousSkyBoxPresent = C.defined(previousSkyBox);
@@ -1514,6 +1516,7 @@ async function g3ReadEnvironment(page) {
       }
 
       return {
+        servedOrigin: window.location.origin,
         variants,
         defaultVariant: C.SkyBox.defaultVariant,
         defaultResolution: C.SkyBox.defaultResolution,
@@ -1553,7 +1556,7 @@ async function g3ReadEnvironment(page) {
     },
     {
       certificationVariant: G3_CERTIFICATION_VARIANT,
-      certificationResolution: G3_CERTIFICATION_RESOLUTION,
+      preferredUpgradeResolution: G3_PREFERRED_UPGRADE_RESOLUTION,
     },
   );
 }
@@ -2056,19 +2059,46 @@ function g3MotionMetrics(sweep) {
 // backend still FETCHES + HASHES its exact URLs; identical bytes reuse the pure
 // analysis record, while a differing digest is decoded rather than accidentally
 // inheriting the first backend's measurements.
-async function g3FetchVariant(sharp, sources, { decodeCache, workload }) {
+async function g3FetchExactSourceResponse(url, servedOrigin) {
+  const requestUrl = new URL(url, servedOrigin).href;
+  const response = await fetch(requestUrl, { redirect: "error" });
+  if (response.redirected !== false || response.url !== requestUrl) {
+    throw new Error(
+      `G3 asset response redirected: requested ${requestUrl}, received ` +
+        `${response.url || "unknown"}`,
+    );
+  }
+  return { requestUrl, response };
+}
+
+async function g3FetchVariant(
+  sharp,
+  sources,
+  { decodeCache, workload, servedOrigin, activeSubject = false },
+) {
   const faces = {};
   const fingerprintRecords = [];
   const sourceProof = {};
   for (const faceKey of G3_FACE_KEYS) {
     const sourceKey = G3_SOURCE_KEYS[faceKey];
     const url = sources?.[sourceKey];
-    if (typeof url !== "string") {
-      sourceProof[faceKey] = { sourceKey, url: null, sha256: null, bytes: 0 };
+    if (typeof url !== "string" || url.trim() === "") {
+      sourceProof[faceKey] = {
+        sourceKey,
+        url: typeof url === "string" ? url : null,
+        responseOk: false,
+        responseStatus: null,
+        responseUrl: null,
+        responseRedirected: null,
+        sha256: null,
+        bytes: 0,
+        decodedWidth: null,
+        decodedHeight: null,
+      };
       fingerprintRecords.push({
         faceKey,
         sourceKey,
-        url: null,
+        url: typeof url === "string" ? url : null,
         sha256: null,
         decodedWidth: null,
         decodedHeight: null,
@@ -2076,15 +2106,44 @@ async function g3FetchVariant(sharp, sources, { decodeCache, workload }) {
       continue;
     }
     workload.fetchAttempts++;
-    const response = await fetch(url);
+    const { response } = await g3FetchExactSourceResponse(url, servedOrigin);
     if (!response.ok) {
-      throw new Error(`G3 asset fetch failed: ${url} -> ${response.status}`);
+      if (!activeSubject) {
+        throw new Error(`G3 asset fetch failed: ${url} -> ${response.status}`);
+      }
+      sourceProof[faceKey] = {
+        sourceKey,
+        url,
+        responseOk: false,
+        responseStatus: Number.isInteger(response.status)
+          ? response.status
+          : null,
+        responseUrl: response.url,
+        responseRedirected: response.redirected,
+        sha256: null,
+        bytes: 0,
+        decodedWidth: null,
+        decodedHeight: null,
+      };
+      fingerprintRecords.push({
+        faceKey,
+        sourceKey,
+        url,
+        sha256: null,
+        decodedWidth: null,
+        decodedHeight: null,
+      });
+      continue;
     }
     const bytes = new Uint8Array(await response.arrayBuffer());
     const digest = sha256(Buffer.from(bytes));
     sourceProof[faceKey] = {
       sourceKey,
       url,
+      responseOk: true,
+      responseStatus: response.status,
+      responseUrl: response.url,
+      responseRedirected: response.redirected,
       sha256: digest,
       bytes: bytes.length,
     };
@@ -2133,7 +2192,9 @@ function g3BuildActiveSourceProof(environment, fetched) {
   const activeSources = environment.activeSources ?? {};
   const faceProof = fetched.sourceProof ?? {};
   const fetchedSourceCount = G3_FACE_KEYS.filter(
-    (faceKey) => typeof faceProof[faceKey]?.url === "string",
+    (faceKey) =>
+      typeof faceProof[faceKey]?.url === "string" &&
+      faceProof[faceKey]?.responseOk === true,
   ).length;
   const fetchedSourcesMatchEnvironmentActiveSources = G3_FACE_KEYS.every(
     (faceKey) => {
@@ -2180,6 +2241,10 @@ function g3BuildEnvironmentSourceProof(environment) {
         {
           sourceKey,
           url: typeof url === "string" ? url : null,
+          responseOk: null,
+          responseStatus: null,
+          responseUrl: null,
+          responseRedirected: null,
           sha256: null,
           bytes: 0,
           decodedWidth: null,
@@ -2189,6 +2254,7 @@ function g3BuildEnvironmentSourceProof(environment) {
     }),
   );
   return {
+    servedOrigin: environment?.servedOrigin ?? null,
     requestedVariant: environment?.requestedVariant ?? null,
     requestedResolution: environment?.requestedResolution ?? null,
     defaultResolution: environment?.defaultResolution ?? null,
@@ -2392,9 +2458,9 @@ function g3StructuralResult(gl, gpu, phase) {
 
 async function runG3(browser, git) {
   // GLOBAL BARRIER: both backend/device/source preflights must finish before
-  // either product page is even opened. In particular, mixed 4096 capability
-  // cannot spend setup/capture/motion work on the capable backend and then
-  // discover that the two-backend gate was structurally unreachable.
+  // either product page is even opened. Different optional-upgrade availability
+  // is reportable; the barrier rejects only an absent/malformed active subject
+  // or an incomplete source/lifecycle proof.
   const [glPreflight, gpuPreflight] = await Promise.all([
     runG3BackendPreflight(browser, "webgl"),
     runG3BackendPreflight(browser, "webgpu"),
@@ -2445,7 +2511,8 @@ async function runG3(browser, git) {
     for (const key of variantKeys) {
       // The active certification candidate is NEVER reconstructed from the
       // default-resolution variant table. It is fetched from the live sky box's
-      // exact sources after the explicit 4096 request has resolved.
+      // exact sources after the optional 4096 request has resolved to the actual
+      // product tier (2048 at HEAD).
       const isActiveCandidate = key === G3_CERTIFICATION_VARIANT;
       const sources = isActiveCandidate
         ? run.environment.activeSources
@@ -2453,6 +2520,8 @@ async function runG3(browser, git) {
       const fetched = await g3FetchVariant(sharp, sources, {
         decodeCache,
         workload: run.workload,
+        servedOrigin: run.environment.servedOrigin,
+        activeSubject: isActiveCandidate,
       });
       decoded[renderer][key] = fetched.variant;
       if (isActiveCandidate) {

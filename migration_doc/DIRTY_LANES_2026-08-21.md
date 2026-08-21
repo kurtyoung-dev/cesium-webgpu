@@ -96,6 +96,17 @@ lifecycle / residency lies → STRUCTURAL). **Gates:** reconcile with `R-2026-08
 before any 4096-only packet is read as certification authority (work item), and the G3
 asset work itself is the ruled-but-manual maintainer session (4096 bake + HDR check).
 Related: fix SOL-2 must land before any G3 re-run is read as certifying.
+**LANDED (Batch 1107, 2026-08-21):** station-3 PASS-WITH-FIXES - the lane IS the
+SOL-2 fix (the unratified 4096-only early-return is removed, the ratified >=2700
+bar returns as an operative FAIL criterion, both enshrined failures-empty mutants
+repaired into their inverses, the Batch-934 RED preserved un-re-measured); 4096
+stays a reported non-certifying upgrade preference. Reviewer fix applied and
+inertness-proven at integration: the forged-residency direction (resident claimed,
+VRAM ledger zero) joins the four-lie mutant sweep and reds when its clause is made
+inert. House-scale disposition recorded: the spec (3,166 lines) crosses the 3,156
+ratchet whose tooling is unimplemented; the probe (4,045) carried its overage in.
+Remaining for G3 itself: the ruled MANUAL maintainer session (4096 bake + HDR
+check) - not this lane's claim.
 
 ## Lane L — Moon-mip LOD / motion certification
 

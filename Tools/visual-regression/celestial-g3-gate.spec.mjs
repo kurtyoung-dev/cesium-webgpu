@@ -54,8 +54,10 @@
 // Run: node --test Tools/visual-regression/celestial-g3-gate.spec.mjs
 
 import assert from "node:assert/strict";
+import { once } from "node:events";
 import { readFileSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { createServer } from "node:http";
 import { builtinModules } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -73,19 +75,20 @@ import {
   DUST_LANE_MARGIN_FRACTION,
   DUST_LANE_SIGMA_DEG,
   EXIT_CODE,
-  G3_CERTIFICATION_FACE_SIZE_PX,
-  G3_CERTIFICATION_RESOLUTION,
   G3_CERTIFICATION_VARIANT,
-  G3_CERTIFICATION_VRAM_BYTES,
   G3_ACTIVE_SOURCE_FINGERPRINT_SCHEMA,
   G3_CUBE_FACE_COUNT,
   G3_CUBE_FACE_KEYS,
+  G3_EXPECTED_DEFAULT_FACE_SIZE_PX,
   G3_EXPECTED_DEFAULT_RESOLUTION,
   G3_MAX_ARCMIN_PER_PIXEL,
   G3_MIN_DUST_LANE_IQR_RATIO,
   G3_MIN_FACE_SIZE_PX,
   G3_MIN_MEDIAN_CHROMA,
   G3_MIN_SOURCE_DENSITY_RATIO,
+  G3_PREFERRED_UPGRADE_FACE_SIZE_PX,
+  G3_PREFERRED_UPGRADE_RESOLUTION,
+  G3_PREFERRED_UPGRADE_VRAM_BYTES,
   MOTION_MIN_CHANGED_PIXELS,
   REQUIRED_CHROMA_SUBSAMPLING,
   REVERSAL_TRIGGER,
@@ -137,6 +140,46 @@ const NODE_BUILTIN_SPECIFIERS = new Set(
     specifier.startsWith("node:") ? specifier : `node:${specifier}`,
   ]),
 );
+
+async function startLoopbackServer(handler) {
+  const server = createServer(handler);
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const address = server.address();
+  assert.ok(address && typeof address !== "string");
+  return {
+    origin: `http://127.0.0.1:${address.port}`,
+    server,
+  };
+}
+
+async function closeLoopbackServer(server) {
+  if (!server?.listening) {
+    return;
+  }
+  await new Promise((resolveClose, rejectClose) => {
+    server.close((error) => {
+      if (error) {
+        rejectClose(error);
+      } else {
+        resolveClose();
+      }
+    });
+  });
+}
+
+async function loadProbeExactSourceFetcher(directory) {
+  const start = PROBE.indexOf("async function g3FetchExactSourceResponse");
+  const end = PROBE.indexOf("async function g3FetchVariant", start);
+  assert.ok(start >= 0 && end > start, "the exact-source fetch helper moved");
+  const file = join(directory, "g3-exact-source-fetch.mjs");
+  await writeFile(
+    file,
+    `${PROBE.slice(start, end)}\nexport { g3FetchExactSourceResponse };\n`,
+    "utf8",
+  );
+  return import(pathToFileURL(file).href);
+}
 
 function literalModuleSpecifiers(source) {
   return [
@@ -273,6 +316,7 @@ const SOURCE_KEYS = Object.freeze({
   pz: "positiveZ",
   mz: "negativeZ",
 });
+const TEST_SERVED_ORIGIN = "http://127.0.0.1:8080";
 const ACTIVE_SOURCES = Object.freeze(
   Object.fromEntries(
     G3_CUBE_FACE_KEYS.map((faceKey) => [
@@ -281,9 +325,21 @@ const ACTIVE_SOURCES = Object.freeze(
     ]),
   ),
 );
-const DEFAULT_CUBE_VRAM_BYTES = G3_CUBE_FACE_COUNT * 2048 * 2048 * 4;
+const SHIPPED_ACTIVE_SOURCES = Object.freeze(
+  Object.fromEntries(
+    G3_CUBE_FACE_KEYS.map((faceKey) => [
+      SOURCE_KEYS[faceKey],
+      `/Assets/g3-2048-${faceKey}.jpg`,
+    ]),
+  ),
+);
+const DEFAULT_CUBE_VRAM_BYTES =
+  G3_CUBE_FACE_COUNT *
+  G3_EXPECTED_DEFAULT_FACE_SIZE_PX *
+  G3_EXPECTED_DEFAULT_FACE_SIZE_PX *
+  4;
 const exactFaceProof = (
-  size = G3_CERTIFICATION_FACE_SIZE_PX,
+  size = G3_PREFERRED_UPGRADE_FACE_SIZE_PX,
   sources = ACTIVE_SOURCES,
 ) =>
   Object.fromEntries(
@@ -294,6 +350,10 @@ const exactFaceProof = (
         {
           sourceKey,
           url: sources[sourceKey],
+          responseOk: true,
+          responseStatus: 200,
+          responseUrl: new URL(sources[sourceKey], TEST_SERVED_ORIGIN).href,
+          responseRedirected: false,
           sha256: "a".repeat(64),
           bytes: 1024,
           decodedWidth: size,
@@ -318,14 +378,15 @@ const activeFingerprintInput = (proof, faceOrder = G3_CUBE_FACE_KEYS) => ({
 });
 
 const ACTIVE_SOURCE_PROOF_BASE = {
+  servedOrigin: TEST_SERVED_ORIGIN,
   requestedVariant: G3_CERTIFICATION_VARIANT,
-  requestedResolution: G3_CERTIFICATION_RESOLUTION,
+  requestedResolution: G3_PREFERRED_UPGRADE_RESOLUTION,
   defaultResolution: G3_EXPECTED_DEFAULT_RESOLUTION,
   maximumCubeMapSize: 8192,
   resolvedVariant: G3_CERTIFICATION_VARIANT,
-  resolvedResolution: G3_CERTIFICATION_RESOLUTION,
-  resolvedFaceSize: G3_CERTIFICATION_FACE_SIZE_PX,
-  resolvedEstimatedVramBytes: G3_CERTIFICATION_VRAM_BYTES,
+  resolvedResolution: G3_PREFERRED_UPGRADE_RESOLUTION,
+  resolvedFaceSize: G3_PREFERRED_UPGRADE_FACE_SIZE_PX,
+  resolvedEstimatedVramBytes: G3_PREFERRED_UPGRADE_VRAM_BYTES,
   previousSkyBoxPresent: true,
   previousSkyBoxResident: true,
   previousResolution: G3_EXPECTED_DEFAULT_RESOLUTION,
@@ -336,12 +397,12 @@ const ACTIVE_SOURCE_PROOF_BASE = {
   previousSkyBoxDestroyed: true,
   candidateSkyBoxDestroyed: false,
   replacementHadRenderOverlap: false,
-  currentEstimatedVramBytes: G3_CERTIFICATION_VRAM_BYTES,
-  peakEstimatedVramBytes: G3_CERTIFICATION_VRAM_BYTES,
+  currentEstimatedVramBytes: G3_PREFERRED_UPGRADE_VRAM_BYTES,
+  peakEstimatedVramBytes: G3_PREFERRED_UPGRADE_VRAM_BYTES,
   activeSourceCount: G3_CUBE_FACE_COUNT,
   fetchedSourceCount: G3_CUBE_FACE_COUNT,
   decodedFaceCount: G3_CUBE_FACE_COUNT,
-  decodedFaceSizeMin: G3_CERTIFICATION_FACE_SIZE_PX,
+  decodedFaceSizeMin: G3_PREFERRED_UPGRADE_FACE_SIZE_PX,
   fetchedSourcesMatchEnvironmentActiveSources: true,
   activeSources: ACTIVE_SOURCES,
   faces: exactFaceProof(),
@@ -352,6 +413,78 @@ const ACTIVE_SOURCE_PROOF_OK = Object.freeze({
     activeFingerprintInput(ACTIVE_SOURCE_PROOF_BASE),
   ),
 });
+const SHIPPED_SOURCE_PROOF_BASE = {
+  ...ACTIVE_SOURCE_PROOF_BASE,
+  maximumCubeMapSize: G3_EXPECTED_DEFAULT_FACE_SIZE_PX,
+  resolvedResolution: G3_EXPECTED_DEFAULT_RESOLUTION,
+  resolvedFaceSize: G3_EXPECTED_DEFAULT_FACE_SIZE_PX,
+  resolvedEstimatedVramBytes: DEFAULT_CUBE_VRAM_BYTES,
+  currentEstimatedVramBytes: DEFAULT_CUBE_VRAM_BYTES,
+  peakEstimatedVramBytes: DEFAULT_CUBE_VRAM_BYTES,
+  decodedFaceSizeMin: G3_EXPECTED_DEFAULT_FACE_SIZE_PX,
+  activeSources: SHIPPED_ACTIVE_SOURCES,
+  faces: exactFaceProof(
+    G3_EXPECTED_DEFAULT_FACE_SIZE_PX,
+    SHIPPED_ACTIVE_SOURCES,
+  ),
+};
+const SHIPPED_SOURCE_PROOF_OK = Object.freeze({
+  ...SHIPPED_SOURCE_PROOF_BASE,
+  fingerprintSha256: computeG3ActiveSourceFingerprint(
+    activeFingerprintInput(SHIPPED_SOURCE_PROOF_BASE),
+  ),
+});
+
+function sourceProofWithActiveSources(proof, activeSources) {
+  const faces = Object.fromEntries(
+    G3_CUBE_FACE_KEYS.map((faceKey) => {
+      const sourceKey = SOURCE_KEYS[faceKey];
+      return [
+        faceKey,
+        {
+          ...proof.faces[faceKey],
+          url: activeSources[sourceKey],
+          responseUrl: (() => {
+            try {
+              return new URL(activeSources[sourceKey], proof.servedOrigin).href;
+            } catch {
+              return null;
+            }
+          })(),
+        },
+      ];
+    }),
+  );
+  const base = { ...proof, activeSources, faces };
+  return {
+    ...base,
+    fingerprintSha256: computeG3ActiveSourceFingerprint(
+      activeFingerprintInput(base),
+    ),
+  };
+}
+
+function sourceProofWithFaceUrl(proof, faceKey, url) {
+  const sourceKey = SOURCE_KEYS[faceKey];
+  return sourceProofWithActiveSources(proof, {
+    ...proof.activeSources,
+    [sourceKey]: url,
+  });
+}
+
+function sourceProofWithFaceResponse(proof, faceKey, response) {
+  const faces = {
+    ...proof.faces,
+    [faceKey]: { ...proof.faces[faceKey], ...response },
+  };
+  const base = { ...proof, faces };
+  return {
+    ...base,
+    fingerprintSha256: computeG3ActiveSourceFingerprint(
+      activeFingerprintInput(base),
+    ),
+  };
+}
 
 /** A motion record that satisfies every structural guard. */
 const MOTION_OK = Object.freeze({
@@ -898,21 +1031,99 @@ test("an old-owner destroy failure keeps the installed candidate owned", () => {
   assert.equal(candidateDestroyCalls, 0);
 });
 
-test("the cheap G3 preflight proves exact reachability before pixel work", () => {
+test("the cheap G3 preflight proves exact active-subject reachability before pixel work", () => {
   const r = evaluateG3SourcePreflight(ACTIVE_SOURCE_PROOF_OK);
   assert.equal(r.pass, true);
   assert.deepEqual(r.criteria, {
-    assetSource_preflightExact4096Reachable: true,
+    assetSource_preflightActiveSubjectReachable: true,
   });
+  assert.equal(r.measured.upgradeTarget.probed, true);
+  assert.equal(r.measured.upgradeTarget.available, true);
+  assert.equal(r.measured.upgradeTarget.certifyingPrerequisite, false);
+});
+
+test("loopback HTTP sources with one canonical six-face path grammar pass preflight", () => {
+  const loopbackSources = Object.fromEntries(
+    G3_CUBE_FACE_KEYS.map((faceKey) => [
+      SOURCE_KEYS[faceKey],
+      `http://127.0.0.1:8080/Assets/g3-4096-${faceKey}.jpg`,
+    ]),
+  );
+  const proof = sourceProofWithActiveSources(
+    ACTIVE_SOURCE_PROOF_OK,
+    loopbackSources,
+  );
+  const r = evaluateG3SourcePreflight(proof);
+  assert.equal(r.pass, true);
+  assert.deepEqual(r.structural, []);
+  const final = evaluateAssetSourceSubLane(proof);
+  assert.equal(final.pass, true);
+  assert.deepEqual(final.structural, []);
+});
+
+test("MUTANT: blank, malformed, and non-loopback source URLs fail preflight", () => {
+  const mutants = [
+    ["blank", " "],
+    ["malformed", "http://[::1/Assets/g3-4096-px.jpg"],
+    ["external", "https://example.com/Assets/g3-4096-px.jpg"],
+    ["non-HTTP local scheme", "file:///Assets/g3-4096-px.jpg"],
+    ["query-bearing", "/Assets/g3-4096-px.jpg?stale=1"],
+  ];
+  for (const [name, url] of mutants) {
+    const r = evaluateG3SourcePreflight(
+      sourceProofWithFaceUrl(ACTIVE_SOURCE_PROOF_OK, "px", url),
+    );
+    assert.equal(r.pass, false, name);
+    assert.deepEqual(r.criteria, {}, name);
+    assert.ok(
+      r.structural.some((reason) => reason.includes("nonblank local assets")),
+      name,
+    );
+  }
+});
+
+test("MUTANT: mixed origins or divergent six-face path grammar fail preflight", () => {
+  const mutants = [
+    sourceProofWithFaceUrl(
+      ACTIVE_SOURCE_PROOF_OK,
+      "px",
+      "http://localhost:8080/Assets/g3-4096-px.jpg",
+    ),
+    sourceProofWithFaceUrl(
+      ACTIVE_SOURCE_PROOF_OK,
+      "px",
+      "/Other/g3-4096-px.jpg",
+    ),
+    sourceProofWithFaceUrl(
+      ACTIVE_SOURCE_PROOF_OK,
+      "px",
+      "/Assets/g3-4096-mx.jpg",
+    ),
+  ];
+  for (const proof of mutants) {
+    const r = evaluateG3SourcePreflight(proof);
+    assert.equal(r.pass, false);
+    assert.deepEqual(r.criteria, {});
+    assert.ok(
+      r.structural.some((reason) => reason.includes("canonical path grammar")),
+    );
+  }
 });
 
 test("MUTANT: runtime policy, device, lifecycle, and residency lies are STRUCTURAL", () => {
   const { px: omittedFace, ...fiveFaces } = ACTIVE_SOURCE_PROOF_OK.faces;
   assert.ok(omittedFace);
   const mutants = [
+    { servedOrigin: null },
+    { servedOrigin: "https://example.com" },
+    { requestedResolution: "not-a-tier" },
     { defaultResolution: "4096" },
     { maximumCubeMapSize: 2048 },
     { previousSkyBoxResident: false },
+    // The forged direction: claiming resident while the VRAM ledger says
+    // otherwise must trip the residency clause itself, not ride through on
+    // the lifecycle check.
+    { previousResidentEstimatedVramBytes: 0 },
     { previousResolution: "1024" },
     { previousSkyBoxDestroyed: false },
     { candidateSkyBoxDestroyed: true },
@@ -920,7 +1131,7 @@ test("MUTANT: runtime policy, device, lifecycle, and residency lies are STRUCTUR
     { currentEstimatedVramBytes: DEFAULT_CUBE_VRAM_BYTES },
     {
       peakEstimatedVramBytes:
-        G3_CERTIFICATION_VRAM_BYTES + DEFAULT_CUBE_VRAM_BYTES,
+        G3_PREFERRED_UPGRADE_VRAM_BYTES + DEFAULT_CUBE_VRAM_BYTES,
     },
     { activeSources: { ...ACTIVE_SOURCES, extra: "/not-a-face.jpg" } },
     {
@@ -955,16 +1166,74 @@ test("MUTANT: runtime policy, device, lifecycle, and residency lies are STRUCTUR
   }
 });
 
-test("the G3 source proof binds the explicit diffuse 4096 active source set", () => {
+test("the G3 source proof binds the exact active 4096 upgrade source set", () => {
   const r = evaluateAssetSourceSubLane(ACTIVE_SOURCE_PROOF_OK);
   assert.equal(r.pass, true);
   assert.deepEqual(r.criteria, {
-    assetSource_exactActive4096SourceSet_proven: true,
+    assetSource_exactActiveSourceSet_proven: true,
   });
+  assert.equal(r.measured.upgradeTarget.available, true);
   assert.equal(
     r.measured.recomputedFingerprintSha256,
     ACTIVE_SOURCE_PROOF_OK.fingerprintSha256,
   );
+});
+
+test("MUTANT: missing, non-OK, or redirected active response proof is STRUCTURAL", () => {
+  const missingResponse = sourceProofWithFaceResponse(
+    ACTIVE_SOURCE_PROOF_OK,
+    "px",
+    { responseOk: undefined, responseStatus: undefined },
+  );
+  const nonOkResponse = {
+    ...sourceProofWithFaceResponse(ACTIVE_SOURCE_PROOF_OK, "px", {
+      responseOk: false,
+      responseStatus: 404,
+      sha256: null,
+      bytes: 0,
+      decodedWidth: null,
+      decodedHeight: null,
+    }),
+    fetchedSourceCount: G3_CUBE_FACE_COUNT - 1,
+    decodedFaceCount: G3_CUBE_FACE_COUNT - 1,
+  };
+  const localPathRedirect = sourceProofWithFaceResponse(
+    ACTIVE_SOURCE_PROOF_OK,
+    "px",
+    {
+      responseRedirected: true,
+      responseUrl: `${TEST_SERVED_ORIGIN}/Assets/redirected-px.jpg`,
+    },
+  );
+  const externalOriginRedirect = sourceProofWithFaceResponse(
+    ACTIVE_SOURCE_PROOF_OK,
+    "px",
+    {
+      responseRedirected: true,
+      responseUrl: "https://example.com/Assets/g3-4096-px.jpg",
+    },
+  );
+  const rawRelativeResponseUrl = sourceProofWithFaceResponse(
+    ACTIVE_SOURCE_PROOF_OK,
+    "px",
+    { responseUrl: ACTIVE_SOURCE_PROOF_OK.faces.px.url },
+  );
+  for (const proof of [
+    missingResponse,
+    nonOkResponse,
+    localPathRedirect,
+    externalOriginRedirect,
+    rawRelativeResponseUrl,
+  ]) {
+    const r = evaluateAssetSourceSubLane(proof);
+    assert.equal(r.pass, false);
+    assert.deepEqual(r.criteria, {});
+    assert.ok(
+      r.structural.some((reason) =>
+        reason.includes("response set was absent, non-OK, or redirected"),
+      ),
+    );
+  }
 });
 
 test("the active-source aggregate has one versioned, ordered canonical payload", () => {
@@ -1025,16 +1294,27 @@ test("MUTANT: a retained face hash change invalidates a stale aggregate", () => 
   assert.ok(r.structural.some((s) => s.includes("recomputed ordered")));
 });
 
-test("MUTANT: a 4096 request that falls back to 2048 is STRUCTURAL", () => {
-  const fallback = evaluateAssetSourceSubLane({
-    ...ACTIVE_SOURCE_PROOF_OK,
-    resolvedResolution: "2048",
-    resolvedFaceSize: 2048,
-    decodedFaceSizeMin: 2048,
+test("a preferred 4096 request resolving to exact 2048 remains source-valid", () => {
+  const shipped = evaluateAssetSourceSubLane(SHIPPED_SOURCE_PROOF_OK);
+  assert.equal(shipped.pass, true);
+  assert.deepEqual(shipped.criteria, {
+    assetSource_exactActiveSourceSet_proven: true,
   });
-  assert.equal(fallback.pass, false);
-  assert.equal(Object.keys(fallback.criteria).length, 0);
-  assert.ok(fallback.structural.some((s) => s.includes("not available")));
+  assert.deepEqual(shipped.structural, []);
+  assert.equal(shipped.measured.upgradeTarget.probed, true);
+  assert.equal(shipped.measured.upgradeTarget.available, false);
+  assert.equal(shipped.measured.upgradeTarget.certifyingPrerequisite, false);
+});
+
+test("an exact direct 2048 request is also source-valid", () => {
+  const direct = evaluateAssetSourceSubLane({
+    ...SHIPPED_SOURCE_PROOF_OK,
+    requestedResolution: G3_EXPECTED_DEFAULT_RESOLUTION,
+  });
+  assert.equal(direct.pass, true);
+  assert.deepEqual(direct.structural, []);
+  assert.equal(direct.measured.upgradeTarget.probed, false);
+  assert.equal(direct.measured.upgradeTarget.available, false);
 });
 
 test("MUTANT: decoding a default-variant source set cannot prove the live asset", () => {
@@ -1061,21 +1341,20 @@ test("MUTANT: an incomplete or unhashed active cube cannot certify", () => {
   assert.ok(incomplete.structural.some((s) => s.includes("SHA-256")));
 });
 
-test("MUTANT: every face must independently decode square at exactly 4096", () => {
-  for (const faceKey of G3_CUBE_FACE_KEYS) {
-    const badFaces = {
-      ...ACTIVE_SOURCE_PROOF_OK.faces,
-      [faceKey]: {
-        ...ACTIVE_SOURCE_PROOF_OK.faces[faceKey],
-        decodedHeight: 2048,
-      },
-    };
-    const r = evaluateAssetSourceSubLane({
-      ...ACTIVE_SOURCE_PROOF_OK,
-      faces: badFaces,
-    });
-    assert.equal(r.pass, false, faceKey);
-    assert.ok(r.structural.some((s) => s.includes("decode square")));
+test("MUTANT: every face must independently decode square at the resolved subject size", () => {
+  for (const proof of [ACTIVE_SOURCE_PROOF_OK, SHIPPED_SOURCE_PROOF_OK]) {
+    for (const faceKey of G3_CUBE_FACE_KEYS) {
+      const badFaces = {
+        ...proof.faces,
+        [faceKey]: {
+          ...proof.faces[faceKey],
+          decodedHeight: proof.resolvedFaceSize / 2,
+        },
+      };
+      const r = evaluateAssetSourceSubLane({ ...proof, faces: badFaces });
+      assert.equal(r.pass, false, `${proof.resolvedFaceSize}:${faceKey}`);
+      assert.ok(r.structural.some((s) => s.includes("decode square")));
+    }
   }
 });
 
@@ -1669,55 +1948,33 @@ function independentlyValidChangedFingerprintBackend(renderer) {
   });
 }
 
-const FALLBACK_ACTIVE_SOURCES = Object.freeze(
-  Object.fromEntries(
-    Object.entries(ACTIVE_SOURCES).map(([key, url]) => [
-      key,
-      url.replace("4096", "2048"),
-    ]),
-  ),
-);
-const FALLBACK_SOURCE_PROOF = Object.freeze({
-  ...ACTIVE_SOURCE_PROOF_OK,
-  resolvedResolution: "2048",
-  resolvedFaceSize: 2048,
-  resolvedEstimatedVramBytes: DEFAULT_CUBE_VRAM_BYTES,
-  currentEstimatedVramBytes: DEFAULT_CUBE_VRAM_BYTES,
-  peakEstimatedVramBytes: DEFAULT_CUBE_VRAM_BYTES,
-  decodedFaceSizeMin: 2048,
-  activeSources: FALLBACK_ACTIVE_SOURCES,
-  faces: exactFaceProof(2048, FALLBACK_ACTIVE_SOURCES),
-});
-
-function fallbackBackend(renderer) {
+function shippedBackend(renderer) {
   const input = backendFixture(renderer);
-  const adversarialThatWouldFail = {
-    ...LEGACY_T3,
-    subsampling: "4:4:4",
-    arcminPerPixel: 1.3,
-    arcminPerPixelWorst: 1.3,
-    maxFaceSources: 0,
-  };
   return evaluateG3Backend({
     ...input,
     asset: {
       ...input.asset,
       active: SHIPPED,
-      sourceProof: FALLBACK_SOURCE_PROOF,
-      fingerprint: `fallback-${renderer}`,
+      sourceProof: SHIPPED_SOURCE_PROOF_OK,
+      fingerprint: SHIPPED_SOURCE_PROOF_OK.fingerprintSha256,
     },
-    split: {
-      ...SPLIT_OK,
-      diffuseMaxFaceSources: 99,
-      liveResolvedSources: 99,
-    },
-    catalogue: { ...CATALOGUE_OK, records: 1, liveResolvedSources: 0 },
-    adversarial: { t3: adversarialThatWouldFail },
-    motion: { ...MOTION_OK, faintPeakRatio: 2, faintSumRatio: 2 },
-    triggers: {
-      [REVERSAL_TRIGGER.SMEARED_MILKY_WAY]: {
-        triggered: renderer === "webgl",
-      },
+    triggers: computeAssetTriggers({
+      active: SHIPPED,
+      unblurred: UNBLURRED,
+      t3: LEGACY_T3,
+      catalogueRecords: CATALOGUE_OK.records,
+    }),
+  });
+}
+
+function backendWithSourceProof(renderer, sourceProof) {
+  const input = backendFixture(renderer);
+  return evaluateG3Backend({
+    ...input,
+    asset: {
+      ...input.asset,
+      sourceProof,
+      fingerprint: sourceProof?.fingerprintSha256 ?? null,
     },
   });
 }
@@ -1753,30 +2010,33 @@ test("an EMPTY criteria set is not a pass", () => {
   assert.notEqual(folded.exitCode, EXIT_CODE.PASS);
 });
 
-test("MUTANT: a full 2048-fallback backend cannot synthesize product failures", () => {
-  const fallback = fallbackBackend("webgl");
-  assert.equal(fallback.pass, false);
-  assert.deepEqual(fallback.criteria, {});
-  assert.deepEqual(Object.keys(fallback.subLanes), ["assetSource"]);
-  assert.equal(fallback.assetFingerprint, null);
-  assert.deepEqual(fallback.triggers, {});
-  assert.ok(
-    fallback.structural.some(
-      (s) => s.includes("assetSource:") && s.includes("2048"),
-    ),
+test("a valid shipped 2048 subject exposes the ratified angular product failures", () => {
+  const shipped = shippedBackend("webgl");
+  assert.equal(shipped.subLanes.assetSource.pass, true);
+  assert.equal(
+    shipped.subLanes.assetSource.measured.upgradeTarget.available,
+    false,
   );
+  assert.deepEqual(shipped.structural, []);
+  assert.equal(shipped.criteria.asset_arcminPerPixel_le_2_0, false);
+  assert.equal(shipped.criteria.asset_faceSize_ge_2700, false);
+  assert.equal(shipped.pass, false);
 });
 
-test("MUTANT: two poisoned 2048-fallback backends fold to STRUCTURAL, not FAIL", () => {
+test("two valid shipped 2048 subjects fold to FAIL/1, never STRUCTURAL/3", () => {
   const folded = foldG3Verdict({
-    webgl: fallbackBackend("webgl"),
-    webgpu: fallbackBackend("webgpu"),
+    webgl: shippedBackend("webgl"),
+    webgpu: shippedBackend("webgpu"),
   });
-  assert.equal(folded.exitCode, EXIT_CODE.STRUCTURAL);
-  assert.equal(folded.verdict, "STRUCTURAL");
-  assert.deepEqual(folded.failures, []);
-  assert.ok(folded.structural.some((s) => s.startsWith("webgl:")));
-  assert.ok(folded.structural.some((s) => s.startsWith("webgpu:")));
+  assert.equal(folded.exitCode, EXIT_CODE.FAIL);
+  assert.equal(folded.verdict, "FAIL");
+  assert.deepEqual(folded.structural, []);
+  for (const renderer of ["webgl", "webgpu"]) {
+    assert.ok(
+      folded.failures.includes(`${renderer}:asset_arcminPerPixel_le_2_0`),
+    );
+    assert.ok(folded.failures.includes(`${renderer}:asset_faceSize_ge_2700`));
+  }
 });
 
 test("a valid 4096 source proof exposes genuine bad-asset backend criteria", () => {
@@ -1830,14 +2090,119 @@ test("a pass on ONE backend is a FAIL for the gate (principle 5)", () => {
   );
 });
 
-test("both backends green is a PASS", () => {
+test("valid 4096 subjects with good metrics proceed through the full fold", () => {
+  const webgl = passingBackend("webgl");
+  const webgpu = passingBackend("webgpu");
+  assert.equal(
+    webgl.subLanes.assetSource.measured.upgradeTarget.available,
+    true,
+  );
+  assert.equal(
+    webgpu.subLanes.assetSource.measured.upgradeTarget.available,
+    true,
+  );
   const folded = foldG3Verdict({
-    webgl: passingBackend("webgl"),
-    webgpu: passingBackend("webgpu"),
+    webgl,
+    webgpu,
   });
   assert.equal(folded.exitCode, EXIT_CODE.PASS);
   assert.equal(folded.failures.length, 0);
   assert.equal(folded.structural.length, 0);
+});
+
+test("missing source identity or malformed provenance folds to STRUCTURAL/3", () => {
+  const missingInput = backendFixture("webgl");
+  const missing = evaluateG3Backend({
+    ...missingInput,
+    asset: { ...missingInput.asset, sourceProof: null, fingerprint: null },
+  });
+  const malformedInput = backendFixture("webgpu");
+  const malformed = evaluateG3Backend({
+    ...malformedInput,
+    asset: {
+      ...malformedInput.asset,
+      sourceProof: {
+        ...malformedInput.asset.sourceProof,
+        fingerprintSha256: "not-a-digest",
+      },
+      fingerprint: "not-a-digest",
+    },
+  });
+  const folded = foldG3Verdict({ webgl: missing, webgpu: malformed });
+  assert.equal(folded.exitCode, EXIT_CODE.STRUCTURAL);
+  assert.equal(folded.verdict, "STRUCTURAL");
+  assert.deepEqual(folded.failures, []);
+  assert.ok(folded.structural.some((entry) => entry.startsWith("webgl:")));
+  assert.ok(folded.structural.some((entry) => entry.startsWith("webgpu:")));
+});
+
+test("invalid URLs, absent responses, 404s, and redirects fold to STRUCTURAL/3", () => {
+  const missingResponse = sourceProofWithFaceResponse(
+    ACTIVE_SOURCE_PROOF_OK,
+    "px",
+    { responseOk: undefined, responseStatus: undefined },
+  );
+  const nonOkResponse = {
+    ...sourceProofWithFaceResponse(ACTIVE_SOURCE_PROOF_OK, "px", {
+      responseOk: false,
+      responseStatus: 404,
+      sha256: null,
+      bytes: 0,
+      decodedWidth: null,
+      decodedHeight: null,
+    }),
+    fetchedSourceCount: G3_CUBE_FACE_COUNT - 1,
+    decodedFaceCount: G3_CUBE_FACE_COUNT - 1,
+  };
+  const localPathRedirect = sourceProofWithFaceResponse(
+    ACTIVE_SOURCE_PROOF_OK,
+    "px",
+    {
+      responseRedirected: true,
+      responseUrl: `${TEST_SERVED_ORIGIN}/Assets/redirected-px.jpg`,
+    },
+  );
+  const externalOriginRedirect = sourceProofWithFaceResponse(
+    ACTIVE_SOURCE_PROOF_OK,
+    "px",
+    {
+      responseRedirected: true,
+      responseUrl: "https://example.com/Assets/g3-4096-px.jpg",
+    },
+  );
+  const subjects = [
+    ["blank", sourceProofWithFaceUrl(ACTIVE_SOURCE_PROOF_OK, "px", " ")],
+    [
+      "malformed",
+      sourceProofWithFaceUrl(
+        ACTIVE_SOURCE_PROOF_OK,
+        "px",
+        "http://[::1/Assets/g3-4096-px.jpg",
+      ),
+    ],
+    [
+      "external",
+      sourceProofWithFaceUrl(
+        ACTIVE_SOURCE_PROOF_OK,
+        "px",
+        "https://example.com/Assets/g3-4096-px.jpg",
+      ),
+    ],
+    ["missing response", missingResponse],
+    ["404 response", nonOkResponse],
+    ["local-path redirect", localPathRedirect],
+    ["external-origin redirect", externalOriginRedirect],
+  ];
+  for (const [name, sourceProof] of subjects) {
+    const folded = foldG3Verdict({
+      webgl: backendWithSourceProof("webgl", sourceProof),
+      webgpu: backendWithSourceProof("webgpu", sourceProof),
+    });
+    assert.equal(folded.exitCode, EXIT_CODE.STRUCTURAL, name);
+    assert.equal(folded.verdict, "STRUCTURAL", name);
+    assert.deepEqual(folded.failures, [], name);
+    assert.ok(folded.structural.length > 0, name);
+  }
 });
 
 test("MUTANT: a valid-looking stale producer aggregate is STRUCTURAL", () => {
@@ -1969,6 +2334,15 @@ test("the summary carries every bound WITH its kind", () => {
     summary.bounds.DERIVED.TWINKLE_TRIGGER_PEAK_RATIO,
     TWINKLE_TRIGGER_PEAK_RATIO,
   );
+  assert.equal(
+    summary.bounds.OPTIONAL_UPGRADE.resolution,
+    G3_PREFERRED_UPGRADE_RESOLUTION,
+  );
+  assert.equal(
+    summary.bounds.OPTIONAL_UPGRADE.faceSize,
+    G3_PREFERRED_UPGRADE_FACE_SIZE_PX,
+  );
+  assert.equal(summary.bounds.OPTIONAL_UPGRADE.certifyingPrerequisite, false);
   assert.ok(summary.backends.webgl.triggers);
 });
 
@@ -2181,13 +2555,14 @@ test("MUTANT: changing only faint projection to requested basis fails", () => {
   assert.throws(() => assertAppliedBasisWiring(mutant));
 });
 
-function assertActive4096SourceWiring(source) {
+function assertActiveResolvedSourceWiring(source) {
   const environment = source.slice(
     source.indexOf("async function g3ReadEnvironment"),
     source.indexOf("async function g3MotionSweep"),
   );
   assert.match(environment, /C\.SkyBox\.Variant\.TYCHO_T5_DIFFUSE/);
   assert.match(environment, /C\.SkyBox\.Resolution\.SIZE_4096/);
+  assert.match(environment, /preferredUpgradeResolution/);
   assert.match(
     environment,
     /C\.SkyBox\.createEarthSkyBox\(requestedVariant,\s*\{[\s\S]{0,200}resolution:\s*requestedResolution/,
@@ -2219,6 +2594,7 @@ function assertActive4096SourceWiring(source) {
     source.indexOf("function g3PreflightEnvironment"),
   );
   for (const field of [
+    "servedOrigin",
     "defaultResolution",
     "maximumCubeMapSize",
     "requestedResolution",
@@ -2246,14 +2622,322 @@ function assertActive4096SourceWiring(source) {
   assert.doesNotMatch(run, /parts\.join|sourceRole/);
 }
 
-test("the probe's G3 asset arm reads and hashes the exact active 4096 request", () => {
+function assertActiveSubjectResponseWiring(source) {
+  const exactFetcher = source.slice(
+    source.indexOf("async function g3FetchExactSourceResponse"),
+    source.indexOf("async function g3FetchVariant"),
+  );
+  assert.match(exactFetcher, /new URL\(url,\s*servedOrigin\)\.href/);
+  assert.match(
+    exactFetcher,
+    /fetch\(requestUrl,\s*\{\s*redirect:\s*"error"\s*\}\)/,
+  );
+  const exactFetch = exactFetcher.indexOf("await fetch(requestUrl");
+  const redirectCheck = exactFetcher.indexOf("if (response.redirected");
+  const exactReturn = exactFetcher.indexOf("return { requestUrl, response }");
+  assert.ok(
+    exactFetch >= 0 &&
+      redirectCheck > exactFetch &&
+      exactReturn > redirectCheck,
+  );
+  assert.match(
+    exactFetcher.slice(redirectCheck, exactReturn),
+    /response\.redirected\s*!==\s*false[\s\S]*response\.url\s*!==\s*requestUrl/,
+  );
+  assert.doesNotMatch(exactFetcher, /fetch\(requestUrl[\s\S]*\.catch/);
+
+  const fetcher = source.slice(
+    source.indexOf("async function g3FetchVariant"),
+    source.indexOf("function g3BuildActiveSourceProof"),
+  );
+  assert.match(fetcher, /activeSubject\s*=\s*false/);
+
+  const missingStart = fetcher.indexOf(
+    'if (typeof url !== "string" || url.trim() === "")',
+  );
+  const fetchStart = fetcher.indexOf(
+    "await g3FetchExactSourceResponse(url, servedOrigin)",
+  );
+  assert.ok(missingStart >= 0 && missingStart < fetchStart);
+  const missingBranch = fetcher.slice(missingStart, fetchStart);
+  assert.match(missingBranch, /responseOk:\s*false/);
+  assert.match(missingBranch, /responseStatus:\s*null/);
+  assert.match(missingBranch, /responseUrl:\s*null/);
+  assert.match(missingBranch, /responseRedirected:\s*null/);
+  assert.match(missingBranch, /continue;/);
+  assert.doesNotMatch(missingBranch, /throw\s+new Error/);
+
+  const nonOkStart = fetcher.indexOf("if (!response.ok)", fetchStart);
+  const bytesStart = fetcher.indexOf("const bytes =", nonOkStart);
+  assert.ok(
+    fetchStart >= 0 && nonOkStart > fetchStart && bytesStart > nonOkStart,
+  );
+  const nonOkBranch = fetcher.slice(nonOkStart, bytesStart);
+  assert.match(
+    nonOkBranch,
+    /if \(!activeSubject\)\s*\{\s*throw new Error\([\s\S]*response\.status/,
+  );
+  assert.match(nonOkBranch, /responseOk:\s*false/);
+  assert.match(nonOkBranch, /responseStatus:/);
+  assert.match(nonOkBranch, /responseUrl:\s*response\.url/);
+  assert.match(nonOkBranch, /responseRedirected:\s*response\.redirected/);
+  assert.match(nonOkBranch, /continue;/);
+
+  const successBranch = fetcher.slice(bytesStart);
+  assert.match(successBranch, /responseOk:\s*true/);
+  assert.match(successBranch, /responseStatus:\s*response\.status/);
+  assert.match(successBranch, /responseUrl:\s*response\.url/);
+  assert.match(successBranch, /responseRedirected:\s*response\.redirected/);
+
+  const finalProof = source.slice(
+    source.indexOf("function g3BuildActiveSourceProof"),
+    source.indexOf("function g3BuildEnvironmentSourceProof"),
+  );
+  assert.match(finalProof, /faceProof\[faceKey\]\?\.responseOk\s*===\s*true/);
+
+  const run = source.slice(
+    source.indexOf("async function runG3(browser, git)"),
+    source.indexOf(
+      "// ---------------------------------------------------------------------------\n// GATE G4",
+    ),
+  );
+  assert.match(run, /servedOrigin:\s*run\.environment\.servedOrigin/);
+  assert.match(run, /activeSubject:\s*isActiveCandidate/);
+}
+
+function assertActiveUrlPreflightWiring(source) {
+  const environment = source.slice(
+    source.indexOf("async function g3ReadEnvironment"),
+    source.indexOf("async function g3MotionSweep"),
+  );
+  assert.match(environment, /servedOrigin:\s*window\.location\.origin/);
+
+  const preflight = source.slice(
+    source.indexOf("function g3PreflightEnvironment"),
+    source.indexOf("// POSITIVE CONTROL for the chroma detector"),
+  );
+  assert.match(
+    preflight,
+    /const evaluated = evaluateG3SourcePreflight\(sourceProof\)/,
+  );
+
+  const product = source.slice(
+    source.indexOf("async function runG3BackendProduct"),
+    source.indexOf("function g3StructuralResult"),
+  );
+  const preflightCall = product.indexOf("g3PreflightEnvironment(environment)");
+  const rejection = product.indexOf("if (!preflight.pass)");
+  const setup = product.indexOf("setupScene(page");
+  assert.ok(
+    preflightCall >= 0 && rejection > preflightCall && setup > rejection,
+  );
+}
+
+test("the probe hashes the exact resolved subject and reports 4096 only as a preference", () => {
   // String surgery on a filename prefix would measure whatever the probe
   // believes ships, not what the engine loads.
   assert.match(PROBE, /const descriptor = C\.SkyBox\.createEarthSkyBox\(v\)/);
   assert.match(PROBE, /variants\[v\] = \{ \.\.\.descriptor\.sources \}/);
   assert.match(PROBE, /descriptor\.destroy\(\)/);
   assert.match(PROBE, /scene\.skyBox\.variant/);
-  assertActive4096SourceWiring(PROBE);
+  assertActiveResolvedSourceWiring(PROBE);
+  assertActiveSubjectResponseWiring(PROBE);
+  assertActiveUrlPreflightWiring(PROBE);
+});
+
+test("MUTANT: local-path and external-origin redirects never reach target bytes", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "g3-redirect-proof-"));
+  let originServer;
+  let externalOriginServer;
+  let localAssetHits = 0;
+  let localRedirectHits = 0;
+  let externalRedirectHits = 0;
+  let externalTargetHits = 0;
+  try {
+    externalOriginServer = await startLoopbackServer((request, response) => {
+      externalTargetHits++;
+      response.writeHead(200, { "content-type": "image/jpeg" });
+      response.end(Buffer.from([9, 8, 7, 6]));
+    });
+    originServer = await startLoopbackServer((request, response) => {
+      const pathname = new URL(request.url, "http://127.0.0.1").pathname;
+      if (pathname === "/asset.jpg") {
+        localAssetHits++;
+        response.writeHead(200, { "content-type": "image/jpeg" });
+        response.end(Buffer.from([1, 2, 3, 4]));
+        return;
+      }
+      if (pathname === "/local-redirect") {
+        localRedirectHits++;
+        response.writeHead(302, { location: "/asset.jpg" });
+        response.end();
+        return;
+      }
+      if (pathname === "/external-redirect") {
+        externalRedirectHits++;
+        response.writeHead(302, {
+          location: `${externalOriginServer.origin}/external.jpg`,
+        });
+        response.end();
+        return;
+      }
+      response.writeHead(404);
+      response.end();
+    });
+
+    const { g3FetchExactSourceResponse } =
+      await loadProbeExactSourceFetcher(directory);
+
+    const relative = await g3FetchExactSourceResponse(
+      "/asset.jpg",
+      originServer.origin,
+    );
+    assert.equal(relative.requestUrl, `${originServer.origin}/asset.jpg`);
+    assert.equal(relative.response.url, relative.requestUrl);
+    assert.equal(relative.response.redirected, false);
+    assert.deepEqual(
+      new Uint8Array(await relative.response.arrayBuffer()),
+      new Uint8Array([1, 2, 3, 4]),
+    );
+
+    const absoluteUrl = `${originServer.origin}/asset.jpg`;
+    const absolute = await g3FetchExactSourceResponse(
+      absoluteUrl,
+      originServer.origin,
+    );
+    assert.equal(absolute.requestUrl, absoluteUrl);
+    assert.equal(absolute.response.url, absoluteUrl);
+    assert.equal(absolute.response.redirected, false);
+    await absolute.response.arrayBuffer();
+    assert.equal(localAssetHits, 2);
+
+    const missing = await g3FetchExactSourceResponse(
+      "/missing.jpg",
+      originServer.origin,
+    );
+    assert.equal(missing.response.status, 404);
+    assert.equal(missing.response.redirected, false);
+
+    await assert.rejects(() =>
+      g3FetchExactSourceResponse("/local-redirect", originServer.origin),
+    );
+    assert.equal(localRedirectHits, 1);
+    assert.equal(localAssetHits, 2, "the local redirect target was fetched");
+
+    await assert.rejects(() =>
+      g3FetchExactSourceResponse("/external-redirect", originServer.origin),
+    );
+    assert.equal(externalRedirectHits, 1);
+    assert.equal(
+      externalTargetHits,
+      0,
+      "the external-origin redirect target was fetched",
+    );
+  } finally {
+    await closeLoopbackServer(originServer?.server);
+    await closeLoopbackServer(externalOriginServer?.server);
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("MUTANT: blank, malformed, or external URLs cannot bypass the probe preflight", () => {
+  const evaluatorBypass = PROBE.replace(
+    "const evaluated = evaluateG3SourcePreflight(sourceProof);",
+    "const evaluated = { pass: true, structural: [] };",
+  );
+  assert.notEqual(
+    evaluatorBypass,
+    PROBE,
+    "the evaluator mutation did not apply",
+  );
+  assert.throws(() => assertActiveUrlPreflightWiring(evaluatorBypass));
+
+  const productBypass = PROBE.replace("if (!preflight.pass) {", "if (false) {");
+  assert.notEqual(productBypass, PROBE, "the product mutation did not apply");
+  assert.throws(() => assertActiveUrlPreflightWiring(productBypass));
+});
+
+test("MUTANT: missing and 404 active responses cannot become top-level fetch errors", () => {
+  const missingThrows = PROBE.replace(
+    'if (typeof url !== "string" || url.trim() === "") {',
+    'if (typeof url !== "string") {',
+  );
+  assert.notEqual(
+    missingThrows,
+    PROBE,
+    "the blank-source mutation did not apply",
+  );
+  assert.throws(() => assertActiveSubjectResponseWiring(missingThrows));
+
+  const activeThrows = PROBE.replace(
+    "if (!activeSubject) {",
+    "if (activeSubject) {",
+  );
+  assert.notEqual(
+    activeThrows,
+    PROBE,
+    "the 404-classification mutation did not apply",
+  );
+  assert.throws(() => assertActiveSubjectResponseWiring(activeThrows));
+
+  const activeFlagRemoved = PROBE.replace(
+    "activeSubject: isActiveCandidate,",
+    "activeSubject: false,",
+  );
+  assert.notEqual(
+    activeFlagRemoved,
+    PROBE,
+    "the active-flag mutation did not apply",
+  );
+  assert.throws(() => assertActiveSubjectResponseWiring(activeFlagRemoved));
+});
+
+test("MUTANT: redirected response bytes cannot inherit the requested source URL", () => {
+  const redirectFollowed = PROBE.replace(
+    'redirect: "error"',
+    'redirect: "follow"',
+  );
+  assert.notEqual(
+    redirectFollowed,
+    PROBE,
+    "the redirect-policy mutation did not apply",
+  );
+  assert.throws(() => assertActiveSubjectResponseWiring(redirectFollowed));
+
+  const finalUrlUnchecked = PROBE.replace(
+    "if (response.redirected !== false || response.url !== requestUrl) {",
+    "if (false) {",
+  );
+  assert.notEqual(
+    finalUrlUnchecked,
+    PROBE,
+    "the final-URL mutation did not apply",
+  );
+  assert.throws(() => assertActiveSubjectResponseWiring(finalUrlUnchecked));
+
+  const relativeUrlUnresolved = PROBE.replace(
+    "const requestUrl = new URL(url, servedOrigin).href;",
+    "const requestUrl = url;",
+  );
+  assert.notEqual(
+    relativeUrlUnresolved,
+    PROBE,
+    "the canonical-request mutation did not apply",
+  );
+  assert.throws(() => assertActiveSubjectResponseWiring(relativeUrlUnresolved));
+});
+
+test("MUTANT: genuine transport rejection cannot be swallowed as STRUCTURAL", () => {
+  const transportSwallowed = PROBE.replace(
+    'const response = await fetch(requestUrl, { redirect: "error" });',
+    'const response = await fetch(requestUrl, { redirect: "error" }).catch(() => ({ ok: false, status: 0 }));',
+  );
+  assert.notEqual(
+    transportSwallowed,
+    PROBE,
+    "the transport mutation did not apply",
+  );
+  assert.throws(() => assertActiveSubjectResponseWiring(transportSwallowed));
 });
 
 test("the evaluator independently recomputes the producer's active aggregate", () => {
@@ -2294,7 +2978,7 @@ test("MUTANT: decoding the default-resolution variant table fails source proof",
     "const sources = run.environment.variants[key];",
   );
   assert.notEqual(mutant, PROBE, "the source-selection mutation did not apply");
-  assert.throws(() => assertActive4096SourceWiring(mutant));
+  assert.throws(() => assertActiveResolvedSourceWiring(mutant));
 });
 
 function assertReplacementLifecycleWiring(source) {

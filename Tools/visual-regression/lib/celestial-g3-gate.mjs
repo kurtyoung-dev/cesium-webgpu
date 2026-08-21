@@ -822,26 +822,35 @@ export const G3_MAX_ARCMIN_PER_PIXEL = 2.0;
 export const G3_MIN_FACE_SIZE_PX = 2700;
 
 /**
- * G3 certification target. The 2048 tier remains the application default; the
- * gate deliberately opts into the recommended 4096 tier and must refuse to
- * certify a fallback as though it were the requested asset.
+ * G3's shipped product subject and optional upgrade request.
+ *
+ * The probe asks the resolution policy for 4096 so the report can say whether
+ * that separately filed upgrade exists, but the exact tier that actually
+ * resolves is the product subject. A complete 2048 source proof is therefore
+ * eligible for scoring and misses the ratified 2700px / 2 arcmin bars as FAIL;
+ * resolution is not a structural precondition for evaluating those bars.
  */
 export const G3_CERTIFICATION_VARIANT = "TYCHO_T5_DIFFUSE";
-export const G3_CERTIFICATION_RESOLUTION = "4096";
-export const G3_CERTIFICATION_FACE_SIZE_PX = 4096;
+export const G3_PREFERRED_UPGRADE_RESOLUTION = "4096";
+export const G3_PREFERRED_UPGRADE_FACE_SIZE_PX = 4096;
 export const G3_CUBE_FACE_COUNT = 6;
 export const G3_EXPECTED_DEFAULT_RESOLUTION = "2048";
-const G3_EXPECTED_DEFAULT_FACE_SIZE_PX = 2048;
+export const G3_EXPECTED_DEFAULT_FACE_SIZE_PX = 2048;
 const G3_EXPECTED_DEFAULT_VRAM_BYTES =
   G3_CUBE_FACE_COUNT *
   G3_EXPECTED_DEFAULT_FACE_SIZE_PX *
   G3_EXPECTED_DEFAULT_FACE_SIZE_PX *
   4;
-export const G3_CERTIFICATION_VRAM_BYTES =
+export const G3_PREFERRED_UPGRADE_VRAM_BYTES =
   G3_CUBE_FACE_COUNT *
-  G3_CERTIFICATION_FACE_SIZE_PX *
-  G3_CERTIFICATION_FACE_SIZE_PX *
+  G3_PREFERRED_UPGRADE_FACE_SIZE_PX *
+  G3_PREFERRED_UPGRADE_FACE_SIZE_PX *
   4;
+const G3_RESOLUTION_FACE_SIZE_PX = Object.freeze({
+  1024: 1024,
+  2048: 2048,
+  4096: 4096,
+});
 export const G3_CUBE_FACE_KEYS = Object.freeze([
   "px",
   "mx",
@@ -858,6 +867,102 @@ export const G3_CUBE_SOURCE_KEYS = Object.freeze({
   pz: "positiveZ",
   mz: "negativeZ",
 });
+
+const G3_LOOPBACK_IPV4 = /^127(?:\.\d{1,3}){3}$/u;
+const G3_LOCAL_ASSET_PATH = /^\/[A-Za-z0-9._~/-]+$/u;
+
+function isG3LoopbackHostname(hostname) {
+  return (
+    hostname === "localhost" ||
+    hostname === "[::1]" ||
+    G3_LOOPBACK_IPV4.test(hostname)
+  );
+}
+
+function g3LoopbackHttpOrigin(value) {
+  try {
+    const parsed = new URL(value);
+    if (
+      typeof value !== "string" ||
+      (parsed.protocol !== "http:" && parsed.protocol !== "https:") ||
+      !isG3LoopbackHostname(parsed.hostname) ||
+      parsed.username !== "" ||
+      parsed.password !== "" ||
+      parsed.pathname !== "/" ||
+      parsed.search !== "" ||
+      parsed.hash !== ""
+    ) {
+      return null;
+    }
+    return parsed.origin;
+  } catch {
+    return null;
+  }
+}
+
+// Turn one face URL into the two facts the preflight must bind across the
+// complete cube: its local origin and its path template. Root-relative URLs
+// retain an explicit same-origin marker; absolute URLs are eligible only when
+// they name a loopback HTTP(S) origin. Percent escapes, dot segments, query
+// strings, and fragments are rejected rather than normalized because the
+// retained string is itself part of the source fingerprint.
+function g3ActiveSourceUrlDescriptor(value, faceKey, servedOrigin) {
+  if (
+    typeof value !== "string" ||
+    value.length === 0 ||
+    value.trim() !== value ||
+    /[\s\\%]/u.test(value) ||
+    /(?:^|\/)\.{1,2}(?:\/|$)/u.test(value)
+  ) {
+    return null;
+  }
+
+  let parsed;
+  let origin;
+  try {
+    if (value.startsWith("/")) {
+      if (value.startsWith("//")) {
+        return null;
+      }
+      parsed = new URL(value, servedOrigin);
+      origin = parsed.origin;
+    } else {
+      parsed = new URL(value);
+      if (
+        (parsed.protocol !== "http:" && parsed.protocol !== "https:") ||
+        !isG3LoopbackHostname(parsed.hostname)
+      ) {
+        return null;
+      }
+      origin = parsed.origin;
+    }
+  } catch {
+    return null;
+  }
+
+  if (
+    parsed.username !== "" ||
+    parsed.password !== "" ||
+    parsed.search !== "" ||
+    parsed.hash !== "" ||
+    origin !== servedOrigin ||
+    !G3_LOCAL_ASSET_PATH.test(parsed.pathname) ||
+    parsed.pathname.includes("//")
+  ) {
+    return null;
+  }
+
+  const faceSuffix = new RegExp(`^(.*)([_-])${faceKey}(\\.jpg)$`, "u");
+  const pathMatch = parsed.pathname.match(faceSuffix);
+  if (!pathMatch || pathMatch[1].length === 0) {
+    return null;
+  }
+  return {
+    origin,
+    canonicalUrl: parsed.href,
+    pathGrammar: `${pathMatch[1]}${pathMatch[2]}{face}${pathMatch[3]}`,
+  };
+}
 
 /**
  * Versioned serialization contract for the active-source aggregate. The
@@ -1121,35 +1226,58 @@ export const EXIT_CODE = Object.freeze({
 // source sub-lane. Keeping these predicates in one function prevents a target
 // from clearing preflight under weaker resolution/lifecycle/VRAM rules than the
 // final proof applies.
+function g3UpgradeTargetFromProof(proof) {
+  return {
+    preferredResolution: G3_PREFERRED_UPGRADE_RESOLUTION,
+    preferredFaceSize: G3_PREFERRED_UPGRADE_FACE_SIZE_PX,
+    requestedResolution: proof?.requestedResolution ?? null,
+    resolvedResolution: proof?.resolvedResolution ?? null,
+    resolvedFaceSize: proof?.resolvedFaceSize ?? null,
+    probed: proof?.requestedResolution === G3_PREFERRED_UPGRADE_RESOLUTION,
+    available:
+      proof?.requestedResolution === G3_PREFERRED_UPGRADE_RESOLUTION &&
+      proof?.resolvedResolution === G3_PREFERRED_UPGRADE_RESOLUTION &&
+      proof?.resolvedFaceSize === G3_PREFERRED_UPGRADE_FACE_SIZE_PX,
+    certifyingPrerequisite: false,
+  };
+}
+
 function sourceEnvironmentStructural(proof) {
   const structural = [];
+  const servedOrigin = g3LoopbackHttpOrigin(proof?.servedOrigin);
+  if (servedOrigin === null) {
+    structural.push(
+      `the served page origin was ${proof?.servedOrigin ?? "null"}; G3 active ` +
+        "sources require a bound loopback HTTP(S) origin",
+    );
+  }
   if (proof?.requestedVariant !== G3_CERTIFICATION_VARIANT) {
     structural.push(
       `the probe requested variant ${proof?.requestedVariant ?? "null"}; G3 ` +
         `certification requires ${G3_CERTIFICATION_VARIANT}`,
     );
   }
-  if (proof?.requestedResolution !== G3_CERTIFICATION_RESOLUTION) {
+  if (
+    !Number.isInteger(G3_RESOLUTION_FACE_SIZE_PX[proof?.requestedResolution])
+  ) {
     structural.push(
       `the probe requested resolution ${proof?.requestedResolution ?? "null"}; ` +
-        `G3 certification requires ${G3_CERTIFICATION_RESOLUTION}`,
+        "the requested tier must be a known resolution label",
     );
   }
   if (proof?.defaultResolution !== G3_EXPECTED_DEFAULT_RESOLUTION) {
     structural.push(
       `the runtime default resolution was ` +
-        `${proof?.defaultResolution ?? "null"}; G3 must opt into 4096 without ` +
+        `${proof?.defaultResolution ?? "null"}; G3 must probe the optional ` +
+        `upgrade without ` +
         `changing the ${G3_EXPECTED_DEFAULT_RESOLUTION} application default`,
     );
   }
-  if (
-    !Number.isFinite(proof?.maximumCubeMapSize) ||
-    proof.maximumCubeMapSize < G3_CERTIFICATION_FACE_SIZE_PX
-  ) {
+  if (!Number.isFinite(proof?.maximumCubeMapSize)) {
     structural.push(
       `the device maximumCubeMapSize was ` +
-        `${proof?.maximumCubeMapSize ?? "null"}; it cannot host a ` +
-        `${G3_CERTIFICATION_FACE_SIZE_PX}px face`,
+        `${proof?.maximumCubeMapSize ?? "null"}; the active subject's ` +
+        "allocability cannot be established",
     );
   }
   if (proof?.resolvedVariant !== G3_CERTIFICATION_VARIANT) {
@@ -1158,15 +1286,27 @@ function sourceEnvironmentStructural(proof) {
         `the requested ${G3_CERTIFICATION_VARIANT} asset was not active`,
     );
   }
+  const expectedResolvedFaceSize =
+    G3_RESOLUTION_FACE_SIZE_PX[proof?.resolvedResolution];
   if (
-    proof?.resolvedResolution !== G3_CERTIFICATION_RESOLUTION ||
-    proof?.resolvedFaceSize !== G3_CERTIFICATION_FACE_SIZE_PX
+    !Number.isInteger(expectedResolvedFaceSize) ||
+    proof?.resolvedFaceSize !== expectedResolvedFaceSize
   ) {
     structural.push(
-      `the explicit ${G3_CERTIFICATION_RESOLUTION} request resolved to ` +
+      `the resolution request resolved to ` +
         `${proof?.resolvedResolution ?? "null"} / ` +
-        `${proof?.resolvedFaceSize ?? "null"}px; the requested tier was not ` +
-        "available to certify",
+        `${proof?.resolvedFaceSize ?? "null"}px; the active subject needs a ` +
+        "known resolution label with its exact face size",
+    );
+  }
+  if (
+    Number.isFinite(proof?.maximumCubeMapSize) &&
+    Number.isFinite(proof?.resolvedFaceSize) &&
+    proof.maximumCubeMapSize < proof.resolvedFaceSize
+  ) {
+    structural.push(
+      `the device maximumCubeMapSize ${proof.maximumCubeMapSize} cannot host ` +
+        `the resolved ${proof.resolvedFaceSize}px active subject`,
     );
   }
   if (
@@ -1189,6 +1329,9 @@ function sourceEnvironmentStructural(proof) {
   const expectedPeak = Math.max(priorResidentBytes ?? NaN, currentBytes ?? NaN);
   const expectedPriorResident =
     proof?.previousSkyBoxResident === true ? previousEstimatedBytes : 0;
+  const expectedCurrentBytes = Number.isInteger(proof?.resolvedFaceSize)
+    ? G3_CUBE_FACE_COUNT * proof.resolvedFaceSize * proof.resolvedFaceSize * 4
+    : NaN;
   if (
     !Number.isFinite(previousEstimatedBytes) ||
     proof?.previousResolution !== G3_EXPECTED_DEFAULT_RESOLUTION ||
@@ -1198,15 +1341,16 @@ function sourceEnvironmentStructural(proof) {
     priorResidentBytes < 0 ||
     priorResidentBytes !== expectedPriorResident ||
     proof?.resolvedEstimatedVramBytes !== currentBytes ||
-    currentBytes !== G3_CERTIFICATION_VRAM_BYTES ||
+    currentBytes !== expectedCurrentBytes ||
     !Number.isFinite(peakBytes) ||
     peakBytes !== expectedPeak
   ) {
     structural.push(
       `the replacement residency proof was prior/current/peak ` +
         `${priorResidentBytes ?? "null"}/${currentBytes ?? "null"}/` +
-        `${peakBytes ?? "null"} bytes; an exact 4096 cube requires current ` +
-        `${G3_CERTIFICATION_VRAM_BYTES} and peak max(prior,current)`,
+        `${peakBytes ?? "null"} bytes; the exact resolved subject requires ` +
+        `current ${Number.isFinite(expectedCurrentBytes) ? expectedCurrentBytes : "unknown"} ` +
+        "and peak max(prior,current)",
     );
   }
   if (proof?.activeSourceCount !== G3_CUBE_FACE_COUNT) {
@@ -1245,6 +1389,30 @@ function sourceEnvironmentStructural(proof) {
       "the proof requires exactly the six canonical face keys and their six " +
         "records must bind exactly to environment.activeSources",
     );
+  } else {
+    const descriptors = G3_CUBE_FACE_KEYS.map((faceKey) =>
+      g3ActiveSourceUrlDescriptor(
+        proof.faces[faceKey].url,
+        faceKey,
+        servedOrigin,
+      ),
+    );
+    const first = descriptors[0];
+    const exactLocalSourceSet =
+      first !== null &&
+      descriptors.every(
+        (descriptor) =>
+          descriptor !== null &&
+          descriptor.origin === first.origin &&
+          descriptor.pathGrammar === first.pathGrammar,
+      );
+    if (!exactLocalSourceSet) {
+      structural.push(
+        "the six active source URLs must be nonblank local assets on one " +
+          "same origin with one canonical path grammar differing only by " +
+          "px/mx/py/my/pz/mz",
+      );
+    }
   }
 
   return structural;
@@ -1263,24 +1431,27 @@ export function evaluateG3SourcePreflight(proof) {
   const structural = sourceEnvironmentStructural(proof);
   const criteria =
     structural.length === 0
-      ? { assetSource_preflightExact4096Reachable: true }
+      ? { assetSource_preflightActiveSubjectReachable: true }
       : {};
   return {
     criteria,
     structural,
-    measured: proof ? { ...proof } : {},
+    measured: proof
+      ? { ...proof, upgradeTarget: g3UpgradeTargetFromProof(proof) }
+      : { upgradeTarget: g3UpgradeTargetFromProof(proof) },
     pass: structural.length === 0 && Object.values(criteria).every(Boolean),
   };
 }
 
 /**
  * SOURCE sub-lane — prove that the asset metrics came from the exact URLs on
- * the live sky box produced by an explicit `TYCHO_T5_DIFFUSE` / 4096 request.
+ * the live sky box produced by an explicit `TYCHO_T5_DIFFUSE` request.
  *
- * Resolution fallback is STRUCTURAL, not a failed quality bar: when the 4096
- * tier is not installed the gate did not observe the subject it was asked to
- * certify. The 2048 application default is intentionally unrelated to this
- * opt-in probe contract.
+ * The probe prefers 4096 so its availability is reported, but the exact tier
+ * that resolves is the product subject. A complete 2048 proof reaches the
+ * quality fold, where it honestly fails the ratified angular bars. Missing,
+ * malformed, unhashed, or dimensionally incoherent source identity remains
+ * STRUCTURAL.
  *
  * @param {object} proof
  * @returns {{criteria:Object<string,boolean>,structural:string[],pass:boolean,
@@ -1288,6 +1459,29 @@ export function evaluateG3SourcePreflight(proof) {
  */
 export function evaluateAssetSourceSubLane(proof) {
   const structural = sourceEnvironmentStructural(proof);
+  const exactActiveResponses = G3_CUBE_FACE_KEYS.every((faceKey) => {
+    const face = proof?.faces?.[faceKey];
+    const descriptor = g3ActiveSourceUrlDescriptor(
+      face?.url,
+      faceKey,
+      g3LoopbackHttpOrigin(proof?.servedOrigin),
+    );
+    return (
+      face?.responseOk === true &&
+      Number.isInteger(face?.responseStatus) &&
+      face.responseStatus >= 200 &&
+      face.responseStatus < 300 &&
+      face?.responseRedirected === false &&
+      face?.responseUrl === descriptor?.canonicalUrl
+    );
+  });
+  if (!exactActiveResponses) {
+    structural.push(
+      "the active source response set was absent, non-OK, or redirected; all " +
+        "six exact local URLs require successful unredirected HTTP responses " +
+        "whose final URLs equal their canonical resolved requests",
+    );
+  }
   if (
     proof?.fetchedSourceCount !== G3_CUBE_FACE_COUNT ||
     proof?.decodedFaceCount !== G3_CUBE_FACE_COUNT
@@ -1305,22 +1499,19 @@ export function evaluateAssetSourceSubLane(proof) {
       /^[0-9a-f]{64}$/u.test(face?.sha256 ?? "") &&
       Number.isFinite(face?.bytes) &&
       face.bytes > 0 &&
-      face?.decodedWidth === G3_CERTIFICATION_FACE_SIZE_PX &&
-      face?.decodedHeight === G3_CERTIFICATION_FACE_SIZE_PX &&
+      face?.decodedWidth === proof?.resolvedFaceSize &&
+      face?.decodedHeight === proof?.resolvedFaceSize &&
       face.decodedWidth === face.decodedHeight
     );
   });
   if (!exactDecodedFaces) {
     structural.push(
       `all ${G3_CUBE_FACE_COUNT} faces require their own served-byte SHA-256 ` +
-        `and must decode square at ${G3_CERTIFICATION_FACE_SIZE_PX}x` +
-        `${G3_CERTIFICATION_FACE_SIZE_PX}`,
+        `and must decode square at the resolved ` +
+        `${proof?.resolvedFaceSize ?? "unknown"}px subject size`,
     );
   }
-  if (
-    proof?.decodedFaceSizeMin !== G3_CERTIFICATION_FACE_SIZE_PX ||
-    proof?.decodedFaceSizeMin !== proof?.resolvedFaceSize
-  ) {
+  if (proof?.decodedFaceSizeMin !== proof?.resolvedFaceSize) {
     structural.push(
       `the decoded active faces measured ` +
         `${proof?.decodedFaceSizeMin ?? "null"}px but the live sky box reported ` +
@@ -1347,11 +1538,18 @@ export function evaluateAssetSourceSubLane(proof) {
   }
 
   const measured = proof
-    ? { ...proof, recomputedFingerprintSha256 }
-    : { recomputedFingerprintSha256 };
+    ? {
+        ...proof,
+        recomputedFingerprintSha256,
+        upgradeTarget: g3UpgradeTargetFromProof(proof),
+      }
+    : {
+        recomputedFingerprintSha256,
+        upgradeTarget: g3UpgradeTargetFromProof(proof),
+      };
   const criteria =
     structural.length === 0
-      ? { assetSource_exactActive4096SourceSet_proven: true }
+      ? { assetSource_exactActiveSourceSet_proven: true }
       : {};
   return {
     criteria,
@@ -1829,14 +2027,11 @@ export function evaluateMotionSubLane(m) {
 export function evaluateG3Backend(backend) {
   const assetSource = evaluateAssetSourceSubLane(backend.asset?.sourceProof);
   if (!assetSource.pass) {
-    // REACHABILITY PRECEDES PRODUCT VERDICT. A fallback tier is useful
-    // diagnostic input, but it is not the 4096 product this gate was asked to
-    // judge. Evaluating its quality predicates would manufacture ordinary FAIL
-    // entries that outrank this structural absence in `foldG3Verdict`, turning
-    // "the subject does not exist" into "the subject is defective". Suppress
-    // every product criterion, fingerprint and reversal trigger until the exact
-    // active source proof is valid. The full probe report still retains the raw
-    // fallback measurements under `backends[renderer].measured`.
+    // SOURCE ELIGIBILITY PRECEDES PRODUCT VERDICT. Suppress product criteria
+    // only when the exact active subject or its provenance/lifecycle proof is
+    // absent or malformed. Resolution below the ratified bar is deliberately
+    // not handled here: an exact 2048 subject passes this source arm and then
+    // produces ordinary angular-sampling FAIL entries below.
     return {
       renderer: backend.renderer,
       subLanes: { assetSource },
@@ -2128,6 +2323,12 @@ export function buildG3Summary(result) {
         TWINKLE_TRIGGER_PEAK_RATIO,
         MOTION_MIN_CHANGED_PIXELS,
       },
+      OPTIONAL_UPGRADE: {
+        resolution: G3_PREFERRED_UPGRADE_RESOLUTION,
+        faceSize: G3_PREFERRED_UPGRADE_FACE_SIZE_PX,
+        estimatedVramBytes: G3_PREFERRED_UPGRADE_VRAM_BYTES,
+        certifyingPrerequisite: false,
+      },
     },
     failures: result.failures,
     structural: result.structural,
@@ -2151,11 +2352,12 @@ export default {
   G3_MAX_ARCMIN_PER_PIXEL,
   G3_MIN_FACE_SIZE_PX,
   G3_CERTIFICATION_VARIANT,
-  G3_CERTIFICATION_RESOLUTION,
-  G3_CERTIFICATION_FACE_SIZE_PX,
+  G3_PREFERRED_UPGRADE_RESOLUTION,
+  G3_PREFERRED_UPGRADE_FACE_SIZE_PX,
   G3_CUBE_FACE_COUNT,
   G3_EXPECTED_DEFAULT_RESOLUTION,
-  G3_CERTIFICATION_VRAM_BYTES,
+  G3_EXPECTED_DEFAULT_FACE_SIZE_PX,
+  G3_PREFERRED_UPGRADE_VRAM_BYTES,
   G3_CUBE_FACE_KEYS,
   G3_CUBE_SOURCE_KEYS,
   G3_ACTIVE_SOURCE_FINGERPRINT_SCHEMA,
