@@ -9,6 +9,7 @@ every operating rule that previously lived only in session memory.
 **Authority:** campaign queue documents are the SOLE status authorities. This handbook is operating
 procedure only. If this document and a queue row disagree about status, **the queue row wins**.
 Dispatch plans (e.g. `CLOSEOUT_PLAN_2026-08-07.md`) are grouping only — same rule.
+(The full precedence order, all documents: charter §0.4.)
 
 **Rule classes used throughout:**
 
@@ -86,6 +87,15 @@ Dispatch plans (e.g. `CLOSEOUT_PLAN_2026-08-07.md`) are grouping only — same r
 
 ## 2. Landing procedure — per batch [HARD]
 
+> ⚠ **SUPERSEDED FOR WORKER HANDOFFS (2026-08-17).** The patch-export / selective-staging
+> flow below is the mechanism that produced Batches 1039 and 1041 — two commits whose bodies
+> claimed executed code over doc-only trees, because a doc-only staging patch was applied while
+> the worker's code half was never staged. For any work handed off by a worker (Claude or
+> Codex), use the branch-based procedure in
+> [`WORKER_ISOLATION_AND_BRANCH_HANDOFF.md`](WORKER_ISOLATION_AND_BRANCH_HANDOFF.md) instead.
+> This section remains authoritative for orchestrator-authored batches with no worker branch.
+
+
 1. **Review the worker diff in full.** Never land unreviewed. Verify the row's premise against HEAD
    first — rows have been wrong before (recorded mechanism wrong: Batch 857; "blocking" dep already
    discharged: Batch 858).
@@ -117,9 +127,9 @@ adversarially-honest>` — the subject states what was actually proven, includin
 
 - **Commit author:** repo-local `cesium-webgpu-agent <cesium-webgpu-agent@users.noreply.github.com>`
   (since Batch 977; recorded in `AUTOMATION.md`). Do NOT "fix" it back to a personal identity.
-- **Push authentication:** the active `gh` account must be **kurtyoung-dev**. A 403 on push means
-  the wrong gh account is active — `gh auth switch`, it is not a permission loss. (Author identity
-  and push auth are deliberately different things.)
+- **Push authentication:** the active `gh` account must be **kurtyoung-dev**. On a 403, report the
+  403 and the active account; switch accounts only when the current task places that action in
+  scope (charter §2.6/§0.2). (Author identity and push auth are deliberately different things.)
 - **GitHub quiet hours — HARD RULE:** no `git commit`, no `git push`, no visible GitHub activity of
   any kind on WEEKDAYS 07:00–19:00 US Eastern. Commits carry timestamps, so do not commit-and-hold
   either — hold work as uncommitted worktree state / exported patches and land after 19:00 ET.
@@ -356,8 +366,7 @@ ForkCommentStandard.md (C16 standard), the C12/C13/C16/C18 queue rows that embod
 doctrine as instances, and previously session-memory-only knowledge (verification doctrine of
 2026-07-25; instrument doctrine of 2026-08-08; worktree junction fix; push-auth/commit-author
 split; stash convention; audit-subagent hazard; crash recovery; environment traps). Where this
-appendix's sources conflict, the order of precedence is: maintainer rulings > queue rows >
-CLAUDE.md > this handbook.
+appendix's sources conflict, charter §0.4's order governs.
 
 ## Untrusted-content doctrine (added 2026-08-15, maintainer prompt-injection review)
 
