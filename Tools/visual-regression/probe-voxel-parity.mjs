@@ -58,10 +58,13 @@ async function capture(renderer) {
   });
   page.on("pageerror", (e) => consoleErrors.push(String(e)));
 
-  await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}`, {
-    waitUntil: "networkidle",
-    timeout: 90000,
-  });
+  await page.goto(
+    `${BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}&offline=true`,
+    {
+      waitUntil: "networkidle",
+      timeout: 90000,
+    },
+  );
   await page.waitForFunction(() => !!window.viewer, { timeout: 90000 });
 
   const info = await page.evaluate(
@@ -269,10 +272,13 @@ async function captureCells(renderer) {
   });
   page.on("pageerror", (e) => consoleErrors.push(String(e)));
 
-  await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}`, {
-    waitUntil: "networkidle",
-    timeout: 90000,
-  });
+  await page.goto(
+    `${BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}&offline=true`,
+    {
+      waitUntil: "networkidle",
+      timeout: 90000,
+    },
+  );
   await page.waitForFunction(() => !!window.viewer, { timeout: 90000 });
 
   const setupInfo = await page.evaluate(

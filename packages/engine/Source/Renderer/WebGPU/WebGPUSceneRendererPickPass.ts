@@ -153,6 +153,8 @@ export interface PickPassCensusRow {
   skippedNonNative: number;
   /** Skipped: no pick variant resolved AND no `pickOnly` / `_isPickCommand`. */
   skippedNoPickVariant: number;
+  /** Skipped: a voxel-coordinate payload did not belong to the selected owner. */
+  skippedWrongVoxelOwner: number;
   /** Of `binned`, how many carried a dedicated-pick marker. */
   dedicatedPickBinned: number;
 }
@@ -201,6 +203,7 @@ function diagPickCensusRow(
       skippedDebugFilter: 0,
       skippedNonNative: 0,
       skippedNoPickVariant: 0,
+      skippedWrongVoxelOwner: 0,
       dedicatedPickBinned: 0,
     };
     census.passes[passIndex] = row;
@@ -224,6 +227,8 @@ type WebGPUPickFBOShape = CesiumOpaqueFramebuffer & {
   width?: number;
   height?: number;
   pickScissor?: { x: number; y: number; width: number; height: number };
+  // Optional pass-domain clear; ordinary object/metadata picking defaults 0.
+  pickClearValue?: GPUColor;
   ensureClassificationDepth?: () => {
     texture: GPUTexture;
     view: GPUTextureView;
@@ -237,6 +242,13 @@ type WebGPUPickFBOShape = CesiumOpaqueFramebuffer & {
   snapColorView?: GPUTextureView;
   resetSnapPayloadCoverage?: (renderPass: GPURenderPassEncoder) => void;
 };
+
+const DEFAULT_PICK_CLEAR_VALUE: GPUColorDict = Object.freeze({
+  r: 0,
+  g: 0,
+  b: 0,
+  a: 0,
+});
 
 /**
  * Apply the caller's target sub-viewport and intersect it with the small pick
@@ -360,7 +372,7 @@ function beginPickRenderPass(
     colorAttachments: [
       {
         view: pickFBO.colorView as GPUTextureView,
-        clearValue: { r: 0, g: 0, b: 0, a: 0 },
+        clearValue: pickFBO.pickClearValue ?? DEFAULT_PICK_CLEAR_VALUE,
         loadOp: colorLoadOp,
         // A snap occluder pass binds the RGBA8 pick target solely to keep the
         // existing pick fleet's pipelines attachment-compatible. No snap
@@ -492,10 +504,6 @@ export function executePickPass(
   diagResetPickCensus(context, numFrustums);
   //>>includeEnd('debug');
 
-  if (numFrustums === 0) {
-    return;
-  }
-
   // Get pick framebuffer from passState (set by WebGPUPickFramebuffer.begin())
   const pickFBORaw = passState?.framebuffer;
   const pickFBO = pickFBORaw as WebGPUPickFBOShape | undefined;
@@ -544,6 +552,41 @@ export function executePickPass(
   // End the current render pass so we can start the pick render pass
   context.endCurrentRenderPass?.();
   const pickDynamicState = resolvePickDynamicState(pickFBO, passState);
+
+  // An empty/cull-only pick still owns a result: no hit. The attachment is
+  // persistent, so returning without a render pass would leave the previous
+  // object's ID in place; for pickVoxel it would also bypass the all-255
+  // no-fragment sentinel and reinterpret those stale bytes as a cell. Clear
+  // once even when PVS produced no frustum, on the same mini-frame encoder
+  // that the readback copies after this function returns.
+  if (numFrustums === 0) {
+    const clearPass = beginPickRenderPass(
+      context,
+      encoder,
+      pickFBO,
+      pickDynamicState,
+      "Pick clear-only pass (zero frustums)",
+      "clear",
+      "clear",
+      "clear",
+      false,
+    );
+    endPickRenderPass(context, clearPass);
+    if (snapMode) {
+      const snapClearPass = beginSnapPayloadRenderPass(
+        context,
+        encoder,
+        pickFBO,
+        pickDynamicState,
+        "Snap payload clear-only pass (zero frustums)",
+        "clear",
+      );
+      endPickRenderPass(context, snapClearPass);
+    }
+    context._pickClassificationDepthView = null;
+    return;
+  }
+
   publishLogDepthEncodeNearFar(scene, uniformState);
   const scene2DCamera = scene.camera as unknown as {
     position: { z: number };
@@ -1053,6 +1096,16 @@ function executePickBatch(
     // such compatibility commands alongside its native feature-renderer
     // command, so the marker alone is not a sufficient admission test.
     const isNativeWebGPU = dispatched.isWebGPUDrawCommand === true;
+    const selectedVoxelOwner = (
+      scene.frameState as unknown as { _pickVoxelPrimitive?: unknown }
+    )._pickVoxelPrimitive;
+    const dispatchedVoxelOwner = (
+      dispatched as CesiumAnyDrawCommand & { _voxelPickOwner?: unknown }
+    )._voxelPickOwner;
+    const isSelectedVoxelPayload =
+      !scene.frameState.passes.pickVoxel ||
+      (selectedVoxelOwner !== undefined &&
+        dispatchedVoxelOwner === selectedVoxelOwner);
     //>>includeStart('debug', pragmas.debug);
     if (censusRow) {
       if (isDedicatedPick) {
@@ -1062,12 +1115,18 @@ function executePickBatch(
         censusRow.skippedNonNative++;
       } else if (!resolvedPickVariant && !isDedicatedPick) {
         censusRow.skippedNoPickVariant++;
+      } else if (!isSelectedVoxelPayload) {
+        censusRow.skippedWrongVoxelOwner++;
       } else {
         censusRow.dispatched++;
       }
     }
     //>>includeEnd('debug');
-    if (!isNativeWebGPU || (!resolvedPickVariant && !isDedicatedPick)) {
+    if (
+      !isNativeWebGPU ||
+      (!resolvedPickVariant && !isDedicatedPick) ||
+      !isSelectedVoxelPayload
+    ) {
       continue;
     }
 

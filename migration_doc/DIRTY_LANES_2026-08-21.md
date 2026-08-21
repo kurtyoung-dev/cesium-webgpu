@@ -51,7 +51,7 @@ classify it at this lane's landing.
 clear-on-zero-frustums), `probe-voxel-parity.mjs` edits, the shared public-correctness
 spec, C18 queue row text. **Status:** Batch 1028 landed the core; **browser closure open —
 the C18-V2 certifying-scene runs are executing in the T0 frozen-build program right now.**
-**Gate:** machine lane (in progress). **Linkage proven 2026-08-21 (Batch 1091):** the C11-13 pick-pipeline spec’s selected-owner dispatch test is red at committed tip (the consumer was never landed) and green in this dirty tree — lane G’s `skippedWrongVoxelOwner` census IS the missing consumer, and the T0 battery’s cell-pick off-pixel red is the same defect’s pixel face. Landing lane G closes both.
+**Gate:** machine lane (in progress). **Linkage proven 2026-08-21 (Batch 1091):** the C11-13 pick-pipeline spec’s selected-owner dispatch test is red at committed tip (the consumer was never landed) and green in this dirty tree — lane G’s `skippedWrongVoxelOwner` census IS the missing consumer, and the T0 battery’s cell-pick off-pixel red is the same defect’s pixel face. Landing lane G closes both. **LANDED Batch 1097 (2026-08-21): engine + parity-probe halves, discriminator-certified (identity spec 9/9, selected-owner spec 5/5, parity probe PASS at tip+G). NARROWED REMAINDER, still open: the cell-pick probe’s off-geometry pixels INSIDE an active frustum still read 0xFFFFFFFF on WebGPU — lane G’s clear covers the zero-frustum path only; filed as the row’s remaining defect with this sharper premise. The shared `pointcloud-voxel-public-correctness.spec.mjs` fails without lane F’s point-cloud half and stays with lane F.**
 
 ## Lane H — C13 cloud: C13-09 sentinel + C13-16 U2 morphology
 
