@@ -27,8 +27,8 @@ import { fileURLToPath } from "node:url";
 
 import { chromium } from "playwright";
 
-const URL =
-  "http://localhost:8080/Apps/CesiumViewer/index.html?renderer=webgpu";
+const VIEWER_URL =
+  "http://localhost:8080/Apps/CesiumViewer/index.html?renderer=webgpu&offline=true";
 
 /** Reps of the moving arc. A single rep is not a timing certification. */
 const REPETITIONS = 5;
@@ -52,19 +52,26 @@ const browser = await chromium.launch({
 const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
 const pageErrors = [];
 const consoleErrors = [];
+const externalRequests = [];
+const localOrigin = new URL(VIEWER_URL).origin;
 page.on("pageerror", (error) => pageErrors.push(String(error)));
 page.on("console", (message) => {
   if (message.type() === "error") {
-    // The default Viewer can report blocked external imagery/terrain requests
-    // in an offline benchmark environment. Preserve that diagnostic without
-    // turning unrelated network availability into a timestamp-profiler
-    // failure. Uncaught page errors remain certifying failures below.
     consoleErrors.push(message.text());
+  }
+});
+page.on("request", (request) => {
+  const requestUrl = new URL(request.url());
+  if (
+    (requestUrl.protocol === "http:" || requestUrl.protocol === "https:") &&
+    requestUrl.origin !== localOrigin
+  ) {
+    externalRequests.push(request.url());
   }
 });
 
 try {
-  await page.goto(URL, { waitUntil: "networkidle", timeout: 30000 });
+  await page.goto(VIEWER_URL, { waitUntil: "networkidle", timeout: 30000 });
   await page.waitForFunction(() => globalThis.viewer?.scene, {
     timeout: 30000,
   });
@@ -155,6 +162,12 @@ try {
   if (pageErrors.length > 0) {
     failures.push(`${pageErrors.length} uncaught page error(s)`);
   }
+  if (consoleErrors.length > 0) {
+    failures.push(`${consoleErrors.length} console error(s)`);
+  }
+  if (externalRequests.length > 0) {
+    failures.push(`${externalRequests.length} external request(s)`);
+  }
 
   if (result.featureAvailable) {
     if (result.reps.length !== REPETITIONS) {
@@ -227,8 +240,12 @@ try {
     backend: result.backend,
     reps: result.reps,
     failures,
+    structuralReasons: result.featureAvailable
+      ? []
+      : ["timestamp-query is unavailable on the resolved WebGPU adapter"],
     pageErrors,
     consoleErrors,
+    externalRequests,
   };
   await writeFile(
     artifactPath,
@@ -238,7 +255,12 @@ try {
   console.log(JSON.stringify(certification, undefined, 2));
   console.log(`certification artifact: ${artifactPath}`);
 
-  if (failures.length > 0) {
+  if (!result.featureAvailable) {
+    console.error(
+      "STRUCTURAL: timestamp-query is unavailable; C11-140 remains uncertified",
+    );
+    process.exitCode = 3;
+  } else if (failures.length > 0) {
     for (const failure of failures) console.error(`FAIL: ${failure}`);
     process.exitCode = 1;
   }

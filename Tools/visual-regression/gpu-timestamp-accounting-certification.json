@@ -1,0 +1,330 @@
+{
+  "item": "C11-140 NEW-GPU-TIMESTAMP-UNIQUE-SAMPLE-ACCOUNTING",
+  "capturedAt": "2026-08-10T16:36:06.068Z",
+  "route": "moving-altitude arc (bounded)",
+  "repetitions": 5,
+  "framesPerRep": 60,
+  "certified": true,
+  "featureAvailable": true,
+  "adapterInfo": null,
+  "backend": "webgpu",
+  "reps": [
+    {
+      "rep": 0,
+      "renderedFrames": 60,
+      "drain": {
+        "drained": 1,
+        "undrained": 0,
+        "abandoned": 0,
+        "timedOut": false
+      },
+      "results": {
+        "enabled": true,
+        "frameMs": 3.432448,
+        "frameAvgMs": 1.4752121379310343,
+        "profiledPassMs": 1.390592,
+        "profiledPassAvgMs": 0.7427155862068964,
+        "coveredMs": 1.390592,
+        "coveredAvgMs": 0.7427155862068964,
+        "overlapMs": 0,
+        "overlappingFrameCount": 0,
+        "unprofiledMs": 2.041856,
+        "unprofiledAvgMs": 0.7324965517241379,
+        "coverageRatio": 0.4051312649164678,
+        "unprofiledRatio": 0.5948687350835322,
+        "coverageBalanced": true,
+        "coverageScope": "between-first-and-last-timed-pass",
+        "passes": {
+          "Canvas Demand Clear Pass": {
+            "name": "Canvas Demand Clear Pass",
+            "lastMs": 0,
+            "avgMs": 0,
+            "minMs": 0,
+            "maxMs": 0
+          },
+          "Scene Framebuffer Render Pass": {
+            "name": "Scene Framebuffer Render Pass",
+            "lastMs": 0.9164800000000001,
+            "avgMs": 0.564689403508772,
+            "minMs": 0,
+            "maxMs": 0.9728
+          },
+          "GlobeDepth-DepthCopy_load_pass": {
+            "name": "GlobeDepth-DepthCopy_load_pass",
+            "lastMs": 0.427008,
+            "avgMs": 0.17077445614035092,
+            "minMs": 0.074752,
+            "maxMs": 0.44953600000000005
+          },
+          "PostProcess-IdentityBlit": {
+            "name": "PostProcess-IdentityBlit",
+            "lastMs": 0.047104,
+            "avgMs": 0.02028182456140351,
+            "minMs": 0.009216,
+            "maxMs": 0.053248
+          }
+        },
+        "frameCount": 58,
+        "attemptedFrameCount": 60,
+        "droppedPassCount": 0,
+        "readbackSkipCount": 2,
+        "failedReadbackCount": 0,
+        "emptyFrameCount": 0,
+        "lostSampleCount": 0,
+        "pendingReadbackCount": 0,
+        "sampleLedgerBalanced": true,
+        "unaccountedSampleCount": 0,
+        "invertedSampleCount": 0
+      }
+    },
+    {
+      "rep": 1,
+      "renderedFrames": 60,
+      "drain": {
+        "drained": 1,
+        "undrained": 0,
+        "abandoned": 0,
+        "timedOut": false
+      },
+      "results": {
+        "enabled": true,
+        "frameMs": 3.456,
+        "frameAvgMs": 3.622211733333333,
+        "profiledPassMs": 1.395744,
+        "profiledPassAvgMs": 1.5634458666666664,
+        "coveredMs": 1.395744,
+        "coveredAvgMs": 1.5634458666666664,
+        "overlapMs": 0,
+        "overlappingFrameCount": 0,
+        "unprofiledMs": 2.060256,
+        "unprofiledAvgMs": 2.058765866666666,
+        "coverageRatio": 0.40386111111111117,
+        "unprofiledRatio": 0.5961388888888889,
+        "coverageBalanced": true,
+        "coverageScope": "between-first-and-last-timed-pass",
+        "passes": {
+          "Scene Framebuffer Render Pass": {
+            "name": "Scene Framebuffer Render Pass",
+            "lastMs": 0.918528,
+            "avgMs": 1.0634581333333335,
+            "minMs": 0.918528,
+            "maxMs": 1.44896
+          },
+          "GlobeDepth-DepthCopy_load_pass": {
+            "name": "GlobeDepth-DepthCopy_load_pass",
+            "lastMs": 0.4290879999999999,
+            "avgMs": 0.4482591999999999,
+            "minMs": 0.42803199999999997,
+            "maxMs": 0.474112
+          },
+          "PostProcess-IdentityBlit": {
+            "name": "PostProcess-IdentityBlit",
+            "lastMs": 0.048128,
+            "avgMs": 0.05172853333333333,
+            "minMs": 0.048128,
+            "maxMs": 0.055296
+          }
+        },
+        "frameCount": 60,
+        "attemptedFrameCount": 60,
+        "droppedPassCount": 0,
+        "readbackSkipCount": 0,
+        "failedReadbackCount": 0,
+        "emptyFrameCount": 0,
+        "lostSampleCount": 0,
+        "pendingReadbackCount": 0,
+        "sampleLedgerBalanced": true,
+        "unaccountedSampleCount": 0,
+        "invertedSampleCount": 0
+      }
+    },
+    {
+      "rep": 2,
+      "renderedFrames": 60,
+      "drain": {
+        "drained": 1,
+        "undrained": 0,
+        "abandoned": 0,
+        "timedOut": false
+      },
+      "results": {
+        "enabled": true,
+        "frameMs": 3.034112,
+        "frameAvgMs": 3.457809066666667,
+        "profiledPassMs": 1.716224,
+        "profiledPassAvgMs": 2.000160533333333,
+        "coveredMs": 1.716224,
+        "coveredAvgMs": 2.000160533333333,
+        "overlapMs": 0,
+        "overlappingFrameCount": 0,
+        "unprofiledMs": 1.317888,
+        "unprofiledAvgMs": 1.4576485333333327,
+        "coverageRatio": 0.5656429294633817,
+        "unprofiledRatio": 0.43435707053661826,
+        "coverageBalanced": true,
+        "coverageScope": "between-first-and-last-timed-pass",
+        "passes": {
+          "Scene Framebuffer Render Pass": {
+            "name": "Scene Framebuffer Render Pass",
+            "lastMs": 1.41312,
+            "avgMs": 1.650329066666667,
+            "minMs": 0.928768,
+            "maxMs": 2.395168
+          },
+          "GlobeDepth-DepthCopy_load_pass": {
+            "name": "GlobeDepth-DepthCopy_load_pass",
+            "lastMs": 0.25907199999999997,
+            "avgMs": 0.3039221333333335,
+            "minMs": 0.257024,
+            "maxMs": 0.592896
+          },
+          "PostProcess-IdentityBlit": {
+            "name": "PostProcess-IdentityBlit",
+            "lastMs": 0.044032,
+            "avgMs": 0.04590933333333334,
+            "minMs": 0.041984,
+            "maxMs": 0.0512
+          }
+        },
+        "frameCount": 60,
+        "attemptedFrameCount": 60,
+        "droppedPassCount": 0,
+        "readbackSkipCount": 0,
+        "failedReadbackCount": 0,
+        "emptyFrameCount": 0,
+        "lostSampleCount": 0,
+        "pendingReadbackCount": 0,
+        "sampleLedgerBalanced": true,
+        "unaccountedSampleCount": 0,
+        "invertedSampleCount": 0
+      }
+    },
+    {
+      "rep": 3,
+      "renderedFrames": 60,
+      "drain": {
+        "drained": 1,
+        "undrained": 0,
+        "abandoned": 0,
+        "timedOut": false
+      },
+      "results": {
+        "enabled": true,
+        "frameMs": 3.027968,
+        "frameAvgMs": 4.316996799999999,
+        "profiledPassMs": 1.71008,
+        "profiledPassAvgMs": 2.479857066666667,
+        "coveredMs": 1.71008,
+        "coveredAvgMs": 2.479857066666667,
+        "overlapMs": 0,
+        "overlappingFrameCount": 0,
+        "unprofiledMs": 1.317888,
+        "unprofiledAvgMs": 1.8371397333333332,
+        "coverageRatio": 0.5647615826851539,
+        "unprofiledRatio": 0.43523841731484614,
+        "coverageBalanced": true,
+        "coverageScope": "between-first-and-last-timed-pass",
+        "passes": {
+          "Scene Framebuffer Render Pass": {
+            "name": "Scene Framebuffer Render Pass",
+            "lastMs": 1.4039039999999998,
+            "avgMs": 2.0415669333333333,
+            "minMs": 1.4039039999999998,
+            "maxMs": 2.7832320000000004
+          },
+          "GlobeDepth-DepthCopy_load_pass": {
+            "name": "GlobeDepth-DepthCopy_load_pass",
+            "lastMs": 0.25907199999999997,
+            "avgMs": 0.37882933333333324,
+            "minMs": 0.25907199999999997,
+            "maxMs": 0.52736
+          },
+          "PostProcess-IdentityBlit": {
+            "name": "PostProcess-IdentityBlit",
+            "lastMs": 0.047104,
+            "avgMs": 0.05946080000000001,
+            "minMs": 0.044032,
+            "maxMs": 0.075776
+          }
+        },
+        "frameCount": 60,
+        "attemptedFrameCount": 60,
+        "droppedPassCount": 0,
+        "readbackSkipCount": 0,
+        "failedReadbackCount": 0,
+        "emptyFrameCount": 0,
+        "lostSampleCount": 0,
+        "pendingReadbackCount": 0,
+        "sampleLedgerBalanced": true,
+        "unaccountedSampleCount": 0,
+        "invertedSampleCount": 0
+      }
+    },
+    {
+      "rep": 4,
+      "renderedFrames": 60,
+      "drain": {
+        "drained": 1,
+        "undrained": 0,
+        "abandoned": 0,
+        "timedOut": false
+      },
+      "results": {
+        "enabled": true,
+        "frameMs": 3.02592,
+        "frameAvgMs": 3.377988799999999,
+        "profiledPassMs": 1.711104,
+        "profiledPassAvgMs": 2.0204538666666667,
+        "coveredMs": 1.711104,
+        "coveredAvgMs": 2.0204538666666667,
+        "overlapMs": 0,
+        "overlappingFrameCount": 0,
+        "unprofiledMs": 1.3148160000000002,
+        "unprofiledAvgMs": 1.3575349333333329,
+        "coverageRatio": 0.565482233502538,
+        "unprofiledRatio": 0.434517766497462,
+        "coverageBalanced": true,
+        "coverageScope": "between-first-and-last-timed-pass",
+        "passes": {
+          "Scene Framebuffer Render Pass": {
+            "name": "Scene Framebuffer Render Pass",
+            "lastMs": 1.403904,
+            "avgMs": 1.6994304000000005,
+            "minMs": 1.403904,
+            "maxMs": 1.980416
+          },
+          "GlobeDepth-DepthCopy_load_pass": {
+            "name": "GlobeDepth-DepthCopy_load_pass",
+            "lastMs": 0.260096,
+            "avgMs": 0.2754389333333333,
+            "minMs": 0.257024,
+            "maxMs": 0.29696
+          },
+          "PostProcess-IdentityBlit": {
+            "name": "PostProcess-IdentityBlit",
+            "lastMs": 0.047104,
+            "avgMs": 0.045584533333333316,
+            "minMs": 0.041984,
+            "maxMs": 0.048128
+          }
+        },
+        "frameCount": 60,
+        "attemptedFrameCount": 60,
+        "droppedPassCount": 0,
+        "readbackSkipCount": 0,
+        "failedReadbackCount": 0,
+        "emptyFrameCount": 0,
+        "lostSampleCount": 0,
+        "pendingReadbackCount": 0,
+        "sampleLedgerBalanced": true,
+        "unaccountedSampleCount": 0,
+        "invertedSampleCount": 0
+      }
+    }
+  ],
+  "failures": [],
+  "structuralReasons": [],
+  "pageErrors": [],
+  "consoleErrors": [],
+  "externalRequests": []
+}
