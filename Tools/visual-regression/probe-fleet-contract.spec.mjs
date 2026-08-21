@@ -57,6 +57,8 @@ import {
   verdictExitViolations,
 } from "./lib/probe-fleet-contract.mjs";
 import { PROBE_CONTRACT_ALLOWLIST } from "./lib/probe-fleet-contract-allowlist.mjs";
+import { PROHIBITED_READER_ALLOWLIST } from "./lib/prohibited-reader-allowlist.mjs";
+import { analyzeProhibitedReader } from "./lib/prohibited-reader-rule.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -84,6 +86,44 @@ const readGateLibrary = (name) => readFileSync(join(HERE, "lib", name), "utf8");
 const analyses = new Map();
 for (const f of probeFiles) {
   analyses.set(f, analyzeProbeSource(readProbe(f)));
+}
+
+const PROHIBITED_READER_KIND = "prohibited-live-canvas-reader";
+const prohibitedReaderAnalyses = new Map();
+for (const f of probeFiles) {
+  prohibitedReaderAnalyses.set(f, analyzeProhibitedReader(readProbe(f)));
+}
+
+/**
+ * Compute the fleet and ratchet findings from injectable analysis results.
+ * The real assertions and their mutation controls share this path.
+ */
+function prohibitedReaderFindings(names, analysisByName, allowlist) {
+  const allowlisted = new Set(Object.keys(allowlist));
+  const present = new Set(names);
+  const violationsFor = (name) => analysisByName.get(name)?.violations ?? [];
+
+  return {
+    offenders: names.flatMap((name) => {
+      const violations = violationsFor(name);
+      if (allowlisted.has(name) || violations.length === 0) {
+        return [];
+      }
+      return [
+        `${name}: ${violations
+          .map((violation) => `${violation.kind} at line ${violation.line}`)
+          .join("; ")}`,
+      ];
+    }),
+    gone: Object.keys(allowlist).filter((name) => !present.has(name)),
+    repaired: Object.keys(allowlist).filter(
+      (name) =>
+        present.has(name) &&
+        !violationsFor(name).some(
+          (violation) => violation.kind === PROHIBITED_READER_KIND,
+        ),
+    ),
+  };
 }
 
 /**
@@ -1046,4 +1086,138 @@ test("C13: the scanner reaches the end of every probe still reading code", () =>
     [],
     `the source scanner went blind partway through: ${blind.join(", ")}`,
   );
+});
+
+test("C14: every non-allowlisted probe avoids the prohibited reader", () => {
+  const { offenders } = prohibitedReaderFindings(
+    probeFiles,
+    prohibitedReaderAnalyses,
+    PROHIBITED_READER_ALLOWLIST,
+  );
+  assert.deepEqual(
+    offenders,
+    [],
+    `drawImage of a live scene canvas is prohibited because it can read an
+invalidated swap-chain texture. Use an element screenshot or the sanctioned
+same-task capture helper; do NOT add a new allowlist row.
+Offenders:\n  ${offenders.join("\n  ")}`,
+  );
+});
+
+test("C15: the prohibited-reader allowlist has no stale entries", () => {
+  const { gone, repaired } = prohibitedReaderFindings(
+    probeFiles,
+    prohibitedReaderAnalyses,
+    PROHIBITED_READER_ALLOWLIST,
+  );
+  assert.deepEqual(
+    gone,
+    [],
+    `prohibited-reader allowlist names files that no longer exist: ${gone}`,
+  );
+  assert.deepEqual(
+    repaired,
+    [],
+    `these probes no longer use the prohibited reader and MUST be deleted from
+the allowlist in the same change that repaired them: ${repaired.join(", ")}`,
+  );
+});
+
+test("C16: every prohibited-reader allowlist entry carries a reason", () => {
+  for (const [name, reason] of Object.entries(PROHIBITED_READER_ALLOWLIST)) {
+    assert.equal(typeof reason, "string", `${name} has no reason`);
+    assert.ok(
+      reason.trim().length >= 20,
+      `${name}'s reason is not a reason: ${reason}`,
+    );
+    assert.doesNotMatch(reason, /[\r\n]/u, `${name}'s reason spans lines`);
+    assert.match(
+      reason,
+      /live scene canvas.*drawImage/u,
+      `${name}'s reason does not name the prohibited reader`,
+    );
+    assert.match(
+      reason,
+      /added \d{4}-\d{2}-\d{2}/u,
+      `${name}'s reason must record when the probe was added`,
+    );
+  }
+});
+
+test("C17: the allowlist names the exact violation each probe still has", () => {
+  const mismatched = [];
+  for (const name of Object.keys(PROHIBITED_READER_ALLOWLIST)) {
+    const actual = prohibitedReaderAnalyses.get(name)?.violations ?? [];
+    if (
+      !actual.some((violation) => violation.kind === PROHIBITED_READER_KIND)
+    ) {
+      mismatched.push(`${name}: no ${PROHIBITED_READER_KIND} violation`);
+    }
+    for (const violation of actual) {
+      if (violation.kind !== PROHIBITED_READER_KIND) {
+        mismatched.push(`${name}: unexpected ${violation.kind} violation`);
+      }
+    }
+  }
+  assert.deepEqual(mismatched, [], mismatched.join("\n"));
+});
+
+test("C18 MUTATION control: a fabricated new violator turns C14 red", () => {
+  const donor = probeFiles.find(
+    (name) =>
+      !Object.hasOwn(PROHIBITED_READER_ALLOWLIST, name) &&
+      prohibitedReaderAnalyses.get(name).violations.length === 0,
+  );
+  assert.ok(donor, "no clean non-allowlisted probe left to mutate");
+  const source = readProbe(donor).replaceAll("\r\n", "\n");
+  const mutated = `${source}
+const readerMutationCanvas = scene.canvas;
+readerMutationContext.drawImage(readerMutationCanvas, 0, 0);
+`;
+  const mutatedAnalysis = analyzeProhibitedReader(mutated);
+  assert.ok(
+    mutatedAnalysis.violations.some(
+      (violation) => violation.kind === PROHIBITED_READER_KIND,
+    ),
+    `${donor}: fabricated reader mutation did not bite`,
+  );
+  const mutatedAnalyses = new Map(prohibitedReaderAnalyses).set(
+    donor,
+    mutatedAnalysis,
+  );
+  const { offenders } = prohibitedReaderFindings(
+    probeFiles,
+    mutatedAnalyses,
+    PROHIBITED_READER_ALLOWLIST,
+  );
+  assert.equal(offenders.length, 1, offenders.join("\n"));
+  assert.match(
+    offenders[0],
+    new RegExp(`^${donor}: ${PROHIBITED_READER_KIND}`),
+  );
+});
+
+test("C19 MUTATION control: a repaired allowlist row turns C15 red", () => {
+  const donor = Object.keys(PROHIBITED_READER_ALLOWLIST)[0];
+  assert.ok(donor, "the prohibited-reader allowlist has no mutation donor");
+  const source = readProbe(donor).replaceAll("\r\n", "\n");
+  const mutated = source.replaceAll("drawImage", "drawFrozenImage");
+  assert.notEqual(mutated, source, `${donor}: repair mutation did not apply`);
+  const mutatedAnalysis = analyzeProhibitedReader(mutated);
+  assert.ok(
+    !mutatedAnalysis.violations.some(
+      (violation) => violation.kind === PROHIBITED_READER_KIND,
+    ),
+    `${donor}: prohibited reader survived the repair mutation`,
+  );
+  const mutatedAnalyses = new Map(prohibitedReaderAnalyses).set(
+    donor,
+    mutatedAnalysis,
+  );
+  const { repaired } = prohibitedReaderFindings(
+    probeFiles,
+    mutatedAnalyses,
+    PROHIBITED_READER_ALLOWLIST,
+  );
+  assert.deepEqual(repaired, [donor]);
 });
