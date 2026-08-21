@@ -832,7 +832,21 @@ class Picking {
         drawingBufferPosition.x,
         drawingBufferPosition.y,
       );
-      if (!defined(depthValue) || depthValue <= 0.0 || depthValue >= 1.0) {
+      if (!defined(depthValue)) {
+        // The readback has not resolved yet. Under request-render mode nothing
+        // else schedules the frame that would resolve it, so without asking for
+        // one the query stays undefined for as long as the camera is still.
+        // The miss is still memoized: the cache is cleared every frame from
+        // `prePassesUpdate`, so this is a within-frame memo that stops repeated
+        // queries at the same pixel re-reading the same unresolved texture, not
+        // a latch.
+        this._pickPositionCache[cacheKey] = undefined;
+        scene.requestRender();
+        return undefined;
+      }
+      if (depthValue <= 0.0 || depthValue >= 1.0) {
+        // A resolved depth outside the usable range is an answer, not a
+        // pending one — nothing would change by rendering again.
         this._pickPositionCache[cacheKey] = undefined;
         return undefined;
       }
