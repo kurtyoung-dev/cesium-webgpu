@@ -208,7 +208,7 @@ const CAPTURE_LANE = async (cfg) => {
   }
   // ── P7: WALL-CLOCK settle, then a same-task render + read.
   const settledFrames = await pin.settle(julianDate, cfg.viewSettleMs);
-  const frame = pin.capture(julianDate, true);
+  const frame = await pin.capture(julianDate, true);
   const { data, width: w, height: h } = frame;
 
   // Ground band: lower 40% of frame (terrain under the deck at this pitch).

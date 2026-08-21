@@ -18,8 +18,6 @@
 
 const PROHIBITED_READER_REASON =
   "copies a live scene canvas through drawImage — added 2026-08-20";
-const PROHIBITED_READER_SCOPE_REASON =
-  "copies a live scene canvas through drawImage — newly detected pre-existing library reader; added 2026-08-21";
 const PROHIBITED_READER_POST_CONTRACT_REASON =
   "copies a live scene canvas through drawImage — post-contract offence already present at dispatch; added 2026-08-21";
 
@@ -29,7 +27,6 @@ const PROHIBITED_READER_POST_CONTRACT_REASON =
  * @type {Readonly<Record<string, string>>}
  */
 export const PROHIBITED_READER_ALLOWLIST = Object.freeze({
-  "lib/weather-probe-pinning.mjs": PROHIBITED_READER_SCOPE_REASON,
   "probe-2d-blank-where.mjs": PROHIBITED_READER_REASON,
   "probe-2d-cv-modes.mjs": PROHIBITED_READER_REASON,
   "probe-2dcv-verify.mjs": PROHIBITED_READER_REASON,

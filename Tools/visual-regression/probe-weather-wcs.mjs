@@ -230,7 +230,7 @@ const RUN_LANE = async (cfg) => {
     }
     const settledFrames = await pin.settle(julianDate, cfg.viewSettleMs);
     // ── P7: same-task capture.
-    const frame = pin.capture(julianDate, wantPng);
+    const frame = await pin.capture(julianDate, wantPng);
     const metric = pin.brightFraction(frame, cfg.brightThreshold, 3);
     return {
       lon,

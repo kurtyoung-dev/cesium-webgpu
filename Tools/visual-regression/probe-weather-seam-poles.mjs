@@ -113,8 +113,8 @@
  * (centerMax vs that frame's p95, one hemisphere vs the other, one sector vs the
  * ring mean), so the comparisons survive; the absolute level does not.
  *
- * Capture doctrine: every pixel read is fused with a `scene.render(julianDate)`
- * in the SAME task (no rAF yield between render and drawImage).
+ * Capture doctrine: `scene.render(julianDate)` and the `canvas.toDataURL` freeze
+ * share one task with no await/rAF yield; pixel decode reads only that frozen PNG.
  *
  * Usage: PROBE_BASE=http://localhost:8080 node Tools/visual-regression/probe-weather-seam-poles.mjs
  * Exit:
@@ -251,7 +251,7 @@ const CAPTURE_LANE = async (cfg) => {
   }
   // ── P7: WALL-CLOCK settle, then a same-task render + read.
   const settledFrames = await pin.settle(julianDate, cfg.viewSettleMs);
-  const frame = pin.capture(julianDate, true);
+  const frame = await pin.capture(julianDate, true);
   const { data, width: w, height: h } = frame;
 
   const lum = (x, y) => {

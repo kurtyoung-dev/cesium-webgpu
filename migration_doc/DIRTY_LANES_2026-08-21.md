@@ -74,6 +74,12 @@ and the `R-2026-08-18-27` charter tiering (ruled). **Reconciliation RESOLVED 202
 clone's HEAD (034c7f74d0) is an ancestor of origin/main — everything it holds already
 landed; this tree's dirty copies are strictly newer repair work and supersede it. The
 clone is retention-only until this lane lands.
+**LANDED (Batch 1104, 2026-08-21):** harness repair + capture lib + stale allowlist
+row removal, station-3 reviewed PASS-WITH-FIXES with all required fixes applied at
+integration (schema literals pinned; uncaught throws exit ERROR 2; cleanup
+incompleteness reclassified STRUCTURAL per R-2026-08-18-27's principle). Fleet 62/62
+in the lane clone; gate spec 36/36 in the freshly built landing tree. The S5
+certification RUN itself remains owed on the machine lane.
 
 ## Lane J — C12-11 star-catalog certification harness
 
@@ -121,6 +127,14 @@ refresh-cost measurement must land first** (machine lane, queued). **Disposition
 packet's R-7 recommendation (closure record as schema migration) is provisionally adopted
 and unblocks the ownership-audit spec's schema.
 
+**LANDED with lane N (Batch 1105, 2026-08-21) as one linked landing group** - the two
+lanes' specs are mutually anchored, so neither could land alone; station-3 reviewed
+PASS-WITH-FIXES (ruling-conformant: refreshCostMeasured keeps its eligibility role, no
+FAIL path on refresh cost exists structurally). finding-ownership-audit.spec.mjs is
+HELD OUT (red until the C18 FEATURE_INVENTORY edit lands); the CAMPAIGN_STATE
+corrections stay with lane P. SOL-4's banked refresh-cost measurement is now
+UNBLOCKED on the machine lane.
+
 ## Lane N — Weather capture doctrine (async immutable capture)
 
 `lib/weather-probe-pinning.mjs` (async `capture()` through the canonical
@@ -132,6 +146,18 @@ and landing, with the explicit cost recorded: figures banked from the retired re
 not comparable, and every consuming probe owes a fresh machine-lane baseline.** The
 2026-08-21 harness work (capture-harness F4) implements the same doctrine for the
 celestial side.
+
+**LANDED with lane M (Batch 1105, 2026-08-21).** Station-3 FAIL converted: the flagon
+probe's re-introduced live reader was rewired through the pinning harness (captures,
+warmup renders, and a documentary-PNG-bound brightness metric), making it the census's
+ninth consumer; the PARSE_ERROR fail-closed branch is now spec-pinned; the pinning
+lib's stale allowlist row retired with the sanctioned-census pin consciously shrunk
+51 to 50. ACCEPTED GAP recorded: the weather suspension scan is narrower than the
+celestial one (an await nested after the first argument inside the freeze declarator
+passes) - canonical-drift guard only. FILED: the census's opt-in-by-import scope
+(committed non-consumer weather probes sit in a blind spot; needs an
+instrument-shape scope row). Every consuming probe owes a fresh machine-lane
+baseline per R-2026-08-21-3.
 
 ## Lane P — Governance / integrity-recovery
 

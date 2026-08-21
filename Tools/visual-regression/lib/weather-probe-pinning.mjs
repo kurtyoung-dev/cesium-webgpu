@@ -1,6 +1,6 @@
 /**
  * Shared determinism pinning for the `probe-weather-*.mjs` fleet.
- * @purpose Shared determinism pins for the weather probe fleet (offline globe, one clock driver, zero wind), all read back; a failed pin exits STRUCTURAL.
+ * @purpose Shared weather-probe determinism pins, ALL READ BACK from the live scene and the packed cloud uniform buffer, plus the canonical immutable same-frame capture; a pin that did not take is STRUCTURAL, never a product verdict.
  * @status ACTIVE
  *
  * WHY THIS EXISTS. `probe-weather-channels.mjs` was pinned individually at Batch
@@ -66,8 +66,11 @@
  *                      noon, so at a fixed latitude the solar elevation is equal
  *                      everywhere and illumination cannot masquerade as a
  *                      weather-field effect. Safe only because of P3.
- *   P7 SAME-TASK       `capture()` does render -> drawImage -> getImageData in
- *                      ONE task with no await between them, and `settle()` is a
+ *   P7 SAME-TASK       `capture()` uses the canonical immutable snapshot:
+ *                      render -> canvas.toDataURL synchronously in ONE task,
+ *                      snapshot the slots, then asynchronously decode that PNG
+ *                      for metrics. Documentary PNG and metrics therefore come
+ *                      from identical bytes, while `settle()` remains a
  *                      WALL-CLOCK budget driven by `setTimeout(0)` yields, never
  *                      a frame count (a cold pipeline variant has measured
  *                      ~2674 ms to compile).
@@ -84,6 +87,46 @@
  * gate in this fleet is relative (a leg against its own control, or one sample
  * against another within one sweep), so the comparisons survive; the absolute
  * level does not.
+ *
+ * WHAT THE CAPTURE CHANGE DOES TO THE NUMBERS. This is a SECOND
+ * non-comparability, independent of the pinning one above, and it reached all
+ * eight consumers at once. The metric bytes used to come from
+ * `drawImage(sceneCanvas)` into a scratch 2D canvas followed by `getImageData`;
+ * they now come from the canonical fused snapshot in `lib/same-task-capture.mjs`
+ * — a same-task `canvas.toDataURL("image/png")` freeze that is then decoded and
+ * read. The move is not cosmetic: a presented WebGPU swap-chain texture is
+ * INVALIDATED, and a `drawImage` of one can report every pixel as zero in the
+ * very run where the same-task `toDataURL` holds a rendered PNG. The retired
+ * reader could return a frame of nothing and had no way to say so.
+ *
+ * WHAT IS STILL COMPARABLE. Frame dimensions, every metric function in this
+ * module and every threshold in the eight consuming probes are untouched, so a
+ * gate means what it meant. Where the frame is opaque the two readers agree byte
+ * for byte — both end in an 8-bit sRGB `getImageData`, and PNG carries the
+ * canvas's own 8-bit RGBA losslessly. Where it is not opaque the new path
+ * un-premultiplies and re-premultiplies once more than the old one, so a channel
+ * can move a count or two and further as alpha falls: smaller than any margin
+ * this fleet scores, though a pixel sitting exactly on a bar can reclassify. A
+ * banked figure that is demonstrably NON-ZERO — `probe-weather-channels.mjs`'s
+ * 0.4129..0.5374 rich means, for instance — rules the emptiness mode out for
+ * itself, and is comparable to a post-change figure within that rounding.
+ *
+ * WHAT IS NOT COMPARABLE. Any banked figure at or near zero, and any figure
+ * whose run left no artifact to re-read, because those are exactly the readings
+ * the retired reader's silent-emptiness mode is indistinguishable from. Any
+ * figure a SPATIAL metric produced — `probe-weather-seam-poles.mjs`'s hemisphere
+ * and sector comparisons, `probe-cloud-shadows-polar.mjs`'s lower-40% ground
+ * band — until the first post-change run confirms the new source's orientation:
+ * the row-stride skew recorded for `toDataURL` cannot apply at this fleet's
+ * 1024- and 640-pixel widths, and the Y-flip was only ever recorded for the
+ * DEFERRED form the fused helper does not use, but neither has been observed on
+ * this lane yet. And every ABSOLUTE figure banked before the PINNING pass, which
+ * this change does nothing to restore.
+ *
+ * Gate-B GREEN verdicts recorded before this pass are not re-attested by it. A
+ * green banked under the retired reader stays what it was — a verdict from an
+ * instrument that could not prove it had read a rendered frame. Re-running the
+ * leg is what banks a comparable number; nothing here converts an old one.
  *
  * NOT A LICENCE TO LOOSEN. Nothing in this module widens, lowers or removes an
  * assertion. The determinism control is an ADDITIONAL gate whose tolerances are
@@ -151,6 +194,8 @@
  * `collectGlobeReadinessStructural` is the standalone enforcement, and
  * `weather-probe-headroom.spec.mjs` pins both halves against mutants.
  */
+
+import { FUSED_SNAPSHOT_CAPTURE_SOURCE } from "./same-task-capture.mjs";
 
 /**
  * A differenced bright-fraction must sit clear of BOTH bounds at every scored
@@ -378,8 +423,14 @@ export const WEATHER_DETERMINISM_DIALS = Object.freeze({
  * Cesium itself is passed in per call rather than captured, because the init
  * script runs before the application module graph exists.
  */
-export function installWeatherPinHarness() {
+export function installWeatherPinHarness(makeFusedSnapshotCapture) {
   const root = globalThis;
+
+  if (typeof makeFusedSnapshotCapture !== "function") {
+    throw new Error(
+      "weather pin harness requires the canonical fused snapshot helper",
+    );
+  }
 
   const SLOTS = {
     time: 35,
@@ -414,6 +465,28 @@ export function installWeatherPinHarness() {
     const viewer = root.viewer;
     viewer.clock.currentTime = julianDate;
     viewer.scene.render(julianDate);
+  };
+
+  // The canonical factory owns one reusable decode canvas. Keep one factory
+  // per live scene/canvas pair rather than allocating a canvas for every rung.
+  // Its render facade routes through P2's sole clock driver, preserving both
+  // viewer.clock.currentTime and Scene.render(frameState.time) at the same pin.
+  let captureScene;
+  let captureCanvas;
+  let captureJulianDate;
+  let fusedCapture;
+  const fusedCaptureFor = (scene, canvas, julianDate) => {
+    captureJulianDate = julianDate;
+    if (scene !== captureScene || canvas !== captureCanvas) {
+      captureScene = scene;
+      captureCanvas = canvas;
+      fusedCapture = makeFusedSnapshotCapture(
+        { render: renderAt },
+        canvas,
+        () => captureJulianDate,
+      );
+    }
+    return fusedCapture;
   };
 
   // P7: wall-clock settle. A frame count silently under-runs a cold pipeline
@@ -633,30 +706,30 @@ export function installWeatherPinHarness() {
     },
 
     /**
-     * P7. render -> drawImage -> getImageData in ONE task. The pixel buffer is
-     * returned for IN-PAGE reduction only; callers must never serialize it back
-     * across the evaluate boundary.
+     * P7. Render -> canvas.toDataURL in ONE synchronous task, snapshot the
+     * shader-visible slots before the first async gap, then decode that immutable
+     * PNG for metrics. The optional documentary PNG is the exact byte source the
+     * metrics decode. Callers must await this function and must never serialize
+     * the pixel buffer back across the evaluate boundary.
      */
-    capture(julianDate, wantPng) {
+    async capture(julianDate, wantPng) {
       const scene = sceneOf();
       const canvas = scene.canvas;
-      if (!root.__weatherPinScratch) {
-        const element = document.createElement("canvas");
-        root.__weatherPinScratch = {
-          element,
-          context: element.getContext("2d", { willReadFrequently: true }),
-        };
-      }
-      const scratch = root.__weatherPinScratch;
-      renderAt(julianDate);
-      const width = canvas.width;
-      const height = canvas.height;
-      scratch.element.width = width;
-      scratch.element.height = height;
-      scratch.context.drawImage(canvas, 0, 0);
-      const data = scratch.context.getImageData(0, 0, width, height).data;
-      const png = wantPng ? scratch.element.toDataURL("image/png") : null;
-      return { data, width, height, png, slots: slotSnapshot() };
+      const fused = fusedCaptureFor(scene, canvas, julianDate);
+
+      // Async functions execute synchronously through their first await. The
+      // canonical helper renders and freezes `dataUrl` before its decode await,
+      // so this slot read is still in the same task and describes that frame.
+      const snapshotPromise = fused.captureSnapshot();
+      const slots = slotSnapshot();
+      const { dataUrl, imageData } = await snapshotPromise;
+      return {
+        data: imageData.data,
+        width: imageData.width,
+        height: imageData.height,
+        png: wantPng ? dataUrl : null,
+        slots,
+      };
     },
 
     /**
@@ -693,7 +766,12 @@ export function installWeatherPinHarness() {
 
 /** Inject the browser helper before the application loads. */
 export async function installWeatherPinHarnessOnPage(page) {
-  await page.addInitScript(installWeatherPinHarness);
+  // One init script gives the browser a deterministic installation order: the
+  // canonical factory exists before the weather harness closes over it. Using
+  // the shared source text is deliberate — page functions cannot import the
+  // Node ESM module across the Playwright evaluate boundary.
+  const content = `${FUSED_SNAPSHOT_CAPTURE_SOURCE}\n;(${installWeatherPinHarness.toString()})(makeFusedSnapshotCapture);`;
+  await page.addInitScript({ content });
 }
 
 /**

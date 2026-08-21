@@ -167,8 +167,9 @@
  *    camera jump are discarded before the evidence loop, the settle is a
  *    wall-clock budget driven by `setTimeout(0)` yields (never a frame count —
  *    a cold pipeline variant has measured ~2674 ms to compile), and
- *    render -> drawImage -> getImageData happens in ONE task with no await
- *    between them. Readiness itself is binned `Pass.GLOBE` commands plus the
+ *    render -> `canvas.toDataURL` freeze happens in ONE task with no await
+ *    between them; pixel decode consumes only those immutable PNG bytes.
+ *    Readiness itself is binned `Pass.GLOBE` commands plus the
  *    shared `__cloudProbe.awaitProceduralReady` contract
  *    (`initialized && pipelineReady && executeCalls > 0`).
  *
@@ -358,7 +359,7 @@ const RUN_LANE = async (cfg) => {
     }
     const settledFrames = await pin.settle(julianDate, cfg.viewSettleMs);
     // ── P7: same-task capture.
-    const frame = pin.capture(julianDate, wantPng);
+    const frame = await pin.capture(julianDate, wantPng);
     const metric = pin.brightFraction(
       frame,
       cfg.brightThreshold,

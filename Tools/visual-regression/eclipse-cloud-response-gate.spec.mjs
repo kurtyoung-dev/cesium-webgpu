@@ -53,7 +53,8 @@ import {
   ENV_REFRESH_STEPS,
   FIXED_LADDER_0_TO_1400_MAX_OBSCURATION_SHIFT,
   HISTORICAL_EPHEMERIS_BRANCH_SHIFT_FLOOR,
-  REFRESH_COST_MIN_SEGMENTS_PER_LEG,
+  REFRESH_COST_PROTOCOL_VERSION,
+  REFRESH_COST_SEGMENTS_PER_LEG,
   SHADOW_GROUND_BRIGHTNESS_FLOOR,
   SWEEP_FRAMES,
   SWEEP_PEAK_OBSCURATION,
@@ -61,6 +62,7 @@ import {
   computeRefreshCost,
   countBucketChanges,
   deckDisplayedRatio,
+  deriveRefreshCostSegmentBounds,
   deckFreeGroundDimTolerance,
   eclipseCloudExitCode,
   eclipseCloudGateLabel,
@@ -82,6 +84,11 @@ import {
   shadowContrastModelIsBoundedByDirectional,
   shadowContrastRatioSupremum,
 } from "./lib/eclipse-cloud-response-gate.mjs";
+import {
+  analyzeWeatherCaptureConsumer,
+  formatWeatherCaptureFailures,
+  WEATHER_CAPTURE_FAILURE,
+} from "./lib/weather-capture-doctrine.mjs";
 import {
   assertEvidenceReadableOrAbsent,
   atomicReplaceEvidence,
@@ -132,6 +139,11 @@ const readEngine = (p) =>
   fs
     .readFileSync(path.join(root, "packages/engine/Source", p), "utf8")
     .replace(/\r\n/g, "\n");
+
+const eclipseCaptureStaticFailures = (source) =>
+  analyzeWeatherCaptureConsumer(source, {
+    relative: "Tools/visual-regression/probe-eclipse-cloud-response.mjs",
+  });
 
 // ─────────────────────────────────────────────────────────────────────────────
 // A. The three pre-registered numbers, recomputed
@@ -586,6 +598,149 @@ const freshDeckFreeSessions = (rungs) =>
     };
   });
 
+function spreadIntegerTotal(total, count) {
+  const quotient = Math.floor(total / count);
+  const remainder = total - quotient * count;
+  return Array.from(
+    { length: count },
+    (_, index) => quotient + (index < remainder ? 1 : 0),
+  );
+}
+
+function spreadWallTime(total, count) {
+  const values = [];
+  let assigned = 0;
+  for (let index = 0; index < count - 1; index++) {
+    const value = total / count;
+    values.push(value);
+    assigned += value;
+  }
+  values.push(total - assigned);
+  return values;
+}
+
+function syncCostAggregatesFromSegments(accounting) {
+  const totals = {
+    eclipse: { frames: 0, wallMs: 0, fills: 0 },
+    control: { frames: 0, wallMs: 0, fills: 0 },
+  };
+  for (const segment of accounting.segments) {
+    totals[segment.leg].frames += segment.frames;
+    totals[segment.leg].wallMs += segment.wallMs;
+    totals[segment.leg].fills += segment.fills;
+  }
+  accounting.eclipseFrames = totals.eclipse.frames;
+  accounting.controlFrames = totals.control.frames;
+  accounting.eclipseWallMs = totals.eclipse.wallMs;
+  accounting.controlWallMs = totals.control.wallMs;
+  accounting.eclipseFills = totals.eclipse.fills;
+  accounting.controlFills = totals.control.fills;
+  return accounting;
+}
+
+const FIXTURE_RUN_ID = "fixture-current-run";
+
+function ratifiedFactorSchedule() {
+  return Array.from({ length: SWEEP_FRAMES }, (_, index) => {
+    const rampIndex =
+      index < SWEEP_RISING_FRAMES ? index : SWEEP_FRAMES - 1 - index;
+    return predictFactor(
+      (SWEEP_PEAK_OBSCURATION * rampIndex) / (SWEEP_RISING_FRAMES - 1),
+    );
+  });
+}
+
+function freshCostAccounting({
+  segmentsPerLeg = REFRESH_COST_SEGMENTS_PER_LEG,
+  frames = SWEEP_FRAMES,
+  eclipseWallMs = 9000,
+  controlWallMs = 5000,
+  eclipseFills = 282,
+  controlFills = 8,
+  backend = "webgpu",
+  runId = FIXTURE_RUN_ID,
+  sessionLabel = `ibl-${backend}`,
+  sessionToken = `fixture-${backend}-session`,
+  ledgerId = `fixture-${backend}-cost-ledger`,
+  factorSchedule = ratifiedFactorSchedule(),
+} = {}) {
+  const bounds = [];
+  const quotient = Math.floor(frames / segmentsPerLeg);
+  const remainder = frames % segmentsPerLeg;
+  let from = 0;
+  for (let pairIndex = 0; pairIndex < segmentsPerLeg; pairIndex++) {
+    const segmentFrames = quotient + (pairIndex < remainder ? 1 : 0);
+    bounds.push([from, from + segmentFrames]);
+    from += segmentFrames;
+  }
+  assert.equal(bounds.length, segmentsPerLeg);
+
+  const wallTimes = {
+    eclipse: spreadWallTime(eclipseWallMs, segmentsPerLeg),
+    control: spreadWallTime(controlWallMs, segmentsPerLeg),
+  };
+  const fills = {
+    eclipse: spreadIntegerTotal(eclipseFills, segmentsPerLeg),
+    control: spreadIntegerTotal(controlFills, segmentsPerLeg),
+  };
+  const nextByLeg = { eclipse: 0, control: 0 };
+  const segments = [];
+  for (let pairIndex = 0; pairIndex < bounds.length; pairIndex++) {
+    const [from, to] = bounds[pairIndex];
+    const order =
+      (pairIndex & 1) === 0 ? ["eclipse", "control"] : ["control", "eclipse"];
+    for (const leg of order) {
+      const legIndex = nextByLeg[leg]++;
+      segments.push({
+        ledgerId,
+        pairIndex,
+        leg,
+        from,
+        to,
+        frames: to - from,
+        wallMs: wallTimes[leg][legIndex],
+        fills: fills[leg][legIndex],
+      });
+    }
+  }
+
+  return syncCostAggregatesFromSegments({
+    protocol: {
+      version: REFRESH_COST_PROTOCOL_VERSION,
+      backend,
+      runId,
+      sessionLabel,
+      sessionToken,
+      ledgerId,
+      sweepFrames: frames,
+      segmentsPerLeg,
+      factorSchedule: [...factorSchedule],
+    },
+    warmupBothLegs: true,
+    warmups: [
+      {
+        ledgerId,
+        leg: "eclipse",
+        completed: true,
+        from: 0,
+        to: frames,
+        frames,
+      },
+      {
+        ledgerId,
+        leg: "control",
+        completed: true,
+        from: 0,
+        to: frames,
+        frames,
+      },
+    ],
+    interleave: "ABBA — the leg that runs first alternates per segment",
+    segmentsPerLeg,
+    segments,
+  });
+}
+
 /** A run in which every gate passes. Mutants below break exactly one thing. */
 function passingRun() {
   const rungs = ECLIPSE_CLOUD_BANDS.ladderTargets.map((target, rungIndex) => {
@@ -726,52 +881,53 @@ function passingRun() {
   });
 
   const buckets = idealSweepBuckets();
-  const factors = buckets.map((_, index) => {
-    const rising = index < SWEEP_RISING_FRAMES;
-    const k = rising ? index : SWEEP_FRAMES - 1 - index;
-    return predictFactor(
-      (SWEEP_PEAK_OBSCURATION * k) / (SWEEP_RISING_FRAMES - 1),
-    );
-  });
-  const iblLane = (rendererType) => ({
-    rendererType,
-    sweepFrames: SWEEP_FRAMES,
-    factors,
-    obscurations: factors.map(() => 0),
-    buckets,
-    initialCommittedWasNaN: false,
-    engineRefreshCount: 275,
-    controlRefreshCount: 1,
-    sweepWallMs: 9000,
-    controlWallMs: 5000,
-    // The INTERLEAVED cost accounting. 4000 ms over 274 eclipse-driven fills.
-    // Each leg carries the toggle-absorbing segment fills (8 per leg), so the
-    // DIFFERENCE is the sweep's own 274 edges.
-    refreshCost: {
-      warmupBothLegs: true,
-      segmentsPerLeg: 8,
-      eclipseFrames: SWEEP_FRAMES,
-      controlFrames: SWEEP_FRAMES,
-      eclipseWallMs: 9000,
+  const factors = ratifiedFactorSchedule();
+  const iblLane = (backend) => {
+    const sessionLabel = `ibl-${backend}`;
+    const sessionToken = `fixture-${backend}-session`;
+    const costLedgerId = `fixture-${backend}-cost-ledger`;
+    return {
+      rendererType: backend,
+      runId: FIXTURE_RUN_ID,
+      sessionLabel,
+      sessionToken,
+      costLedgerId,
+      sweepFrames: SWEEP_FRAMES,
+      factors: [...factors],
+      obscurations: factors.map(() => 0),
+      buckets,
+      initialCommittedWasNaN: false,
+      engineRefreshCount: 275,
+      controlRefreshCount: 1,
+      sweepWallMs: 9000,
       controlWallMs: 5000,
-      eclipseFills: 282,
-      controlFills: 8,
-    },
-    ibl: {
-      baseline: { mean: 0.4, litFraction: 0.5, samples: 20000 },
-      deepest: {
-        mean: 0.4 * predictFactor(SWEEP_PEAK_OBSCURATION),
-        litFraction: 0.5,
-        samples: 20000,
+      // The INTERLEAVED cost accounting. 4000 ms over 274 eclipse-driven fills.
+      // Each leg carries the toggle-absorbing segment fills (8 per leg), so the
+      // DIFFERENCE is the sweep's own 274 edges.
+      refreshCost: freshCostAccounting({
+        backend,
+        runId: FIXTURE_RUN_ID,
+        sessionLabel,
+        sessionToken,
+        ledgerId: costLedgerId,
+        factorSchedule: factors,
+      }),
+      ibl: {
+        baseline: { mean: 0.4, litFraction: 0.5, samples: 20000 },
+        deepest: {
+          mean: 0.4 * predictFactor(SWEEP_PEAK_OBSCURATION),
+          litFraction: 0.5,
+          samples: 20000,
+        },
+        recovered: { mean: 0.4, litFraction: 0.5, samples: 20000 },
       },
-      recovered: { mean: 0.4, litFraction: 0.5, samples: 20000 },
-    },
-    publishedAtDeepest: {
-      moonObscuration: SWEEP_PEAK_OBSCURATION,
-      factor: predictFactor(SWEEP_PEAK_OBSCURATION),
-    },
-    modelReady: true,
-  });
+      publishedAtDeepest: {
+        moonObscuration: SWEEP_PEAK_OBSCURATION,
+        factor: predictFactor(SWEEP_PEAK_OBSCURATION),
+      },
+      modelReady: true,
+    };
+  };
 
   const deckFreeControl = foldDeckFreeControlSessions({
     sessions: freshDeckFreeSessions(rungs),
@@ -792,6 +948,7 @@ function passingRun() {
   }
 
   return {
+    runId: FIXTURE_RUN_ID,
     cloudLanes: {
       rendererType: "webgpu",
       rungs,
@@ -895,17 +1052,16 @@ test("D2 PASS is the fold of the predicate LIST, with no second conjunction", ()
   // 28 -> 29 at CO-21: the same-page settled-twin precondition. The redesigned
   // control added two gates (29 -> 31): four fresh ABBA configure epochs, plus
   // a live DAYNIGHT surface proven by a separate unsaturated DirectionalLight
-  // diagnostic. Demoting the already-discharged refresh-cost estimate makes
-  // the current gating count 30.
-  assert.equal(ECLIPSE_CLOUD_GATE_PREDICATES.length, 30);
+  // diagnostic. R-2026-08-14-1 restores the raw contrast and fresh measured
+  // cost, while retaining the decrement model under two explicit names: 32.
+  assert.equal(ECLIPSE_CLOUD_GATE_PREDICATES.length, 32);
   // 4 -> 5 at CO-19: `offNoCloudVariesWithSun`, the instrument tell.
   // 5 -> 6 at CO-21: `deckFreeGroundRetentionLegsAgreeReportedOnly`, the
   // corroborating disagreement between lane B's two retention ratios.
-  // 6 -> 7 when the already-discharged refresh-cost estimate moved to
-  // reported-only for redesigned-control closure reruns. The recovered run
-  // adds the raw post-cloud-composite contrast as the eighth reported-only
-  // value; the cloud-cancelling decrement is now the gate.
-  assert.equal(ECLIPSE_CLOUD_REPORTED_ONLY_PREDICATES.length, 8);
+  // The ruling removes both demoted operative subjects from reported-only:
+  // raw contrast and refresh-cost eligibility. The remaining six values are
+  // diagnostics that do not replace a gate.
+  assert.equal(ECLIPSE_CLOUD_REPORTED_ONLY_PREDICATES.length, 6);
   assert.equal(ECLIPSE_CLOUD_PARITY_PREDICATES.length, 2);
   // Nothing is scored without a declared blindness domain — an unmapped
   // predicate would be silently unquarantinable.
@@ -921,6 +1077,57 @@ test("D2 PASS is the fold of the predicate LIST, with no second conjunction", ()
     assert.ok(
       !ECLIPSE_CLOUD_GATE_PREDICATES.includes(name),
       `${name} is both gating and reported-only`,
+    );
+  }
+
+  // The load-bearing guard R-2026-08-14-1 explicitly ordered restored. Drive
+  // both deletion and reported-only demotion mutants through the same
+  // assertion so neither dropping nor relabelling either gate can leave this
+  // suite green.
+  const ruledGates = [
+    {
+      gate: "shadowContrastInvariant",
+      demotedAlias: "shadowCompositeContrastInLegacyBandReportedOnly",
+    },
+    {
+      gate: "refreshCostMeasured",
+      demotedAlias: "refreshCostEstimateValidReportedOnly",
+    },
+  ];
+  const assertRuledGatesOperative = (
+    predicates,
+    reportedOnly = ECLIPSE_CLOUD_REPORTED_ONLY_PREDICATES,
+  ) => {
+    for (const { gate, demotedAlias } of ruledGates) {
+      assert.ok(
+        !reportedOnly.includes(demotedAlias),
+        `${gate} may not be demoted to ${demotedAlias}`,
+      );
+      assert.ok(predicates.includes(gate), `${gate} must remain a gate`);
+    }
+  };
+  assert.doesNotThrow(() =>
+    assertRuledGatesOperative(ECLIPSE_CLOUD_GATE_PREDICATES),
+  );
+  for (const { gate } of ruledGates) {
+    assert.throws(
+      () =>
+        assertRuledGatesOperative(
+          ECLIPSE_CLOUD_GATE_PREDICATES.filter((name) => name !== gate),
+        ),
+      new RegExp(`${gate} must remain a gate`),
+      `deleting ${gate} must trip the guard`,
+    );
+  }
+  for (const { gate, demotedAlias } of ruledGates) {
+    assert.throws(
+      () =>
+        assertRuledGatesOperative(
+          ECLIPSE_CLOUD_GATE_PREDICATES.filter((name) => name !== gate),
+          [...ECLIPSE_CLOUD_REPORTED_ONLY_PREDICATES, demotedAlias],
+        ),
+      new RegExp(`${gate} may not be demoted to ${demotedAlias}`),
+      `demoting ${gate} to ${demotedAlias} must trip the guard`,
     );
   }
 });
@@ -976,7 +1183,8 @@ test("D5 strength = F follows the actual producer but fails the shipped law and 
     },
     [
       "shadowStrengthMatchesDirectional",
-      "shadowContrastRejectsAlternativeDesign",
+      "shadowContrastInvariant",
+      "shadowDecrementRejectsAlternativeDesign",
     ],
   );
 });
@@ -1005,21 +1213,28 @@ test("D7 a published factor that drifts from the second implementation fails", (
   );
 });
 
-test("D8 a COARSER ramp that skips bucket edges fails, and takes the count with it", () => {
-  expectFailure(
-    (run) => {
-      for (const lane of [run.iblWebGPU, run.iblWebGL]) {
-        lane.factors = lane.factors.filter((_, index) => index % 4 === 0);
-        lane.sweepFrames = lane.factors.length;
-        lane.engineRefreshCount = 80;
-      }
-    },
-    [
-      "rampNeverSkipsABucket",
-      "engineRefreshCountWebGPUInBand",
-      "engineRefreshCountWebGLInBand",
-      "sweepQuiescenceInBand",
-    ],
+test("D8 a COARSER ramp is red and cannot retain an unrelated 801-frame cost ledger", () => {
+  const run = clone(passingRun());
+  for (const lane of [run.iblWebGPU, run.iblWebGL]) {
+    lane.factors = lane.factors.filter((_, index) => index % 4 === 0);
+    lane.sweepFrames = lane.factors.length;
+    lane.engineRefreshCount = 80;
+  }
+  const verdict = judgeEclipseCloudResponse(run);
+  assert.deepEqual(verdict.failedPredicates.sort(), [
+    "engineRefreshCountWebGLInBand",
+    "engineRefreshCountWebGPUInBand",
+    "rampNeverSkipsABucket",
+    "sweepQuiescenceInBand",
+  ]);
+  assert.match(
+    verdict.structuralReasons.join("\n"),
+    /refresh-cost sweep length diverges from the ratified 801 frames/,
+  );
+  assert.equal(
+    verdict.exitCode,
+    ECLIPSE_CLOUD_EXIT.FAIL,
+    "the measured ramp/count reds must outrank the now-ineligible cost ledger",
   );
 });
 
@@ -1074,26 +1289,35 @@ test("D12 an unreproducible capture fails the determinism bracket", () => {
   );
 });
 
-test("D13 a cost differential that cannot be formed stays explicit and reported-only", () => {
+test("D13 a cost differential that cannot be formed is STRUCTURAL with its exact reason", () => {
   const run = clone(passingRun());
   // Same fill count in both legs: nothing to attribute the wall clock to.
-  run.iblWebGPU.refreshCost.eclipseFills =
-    run.iblWebGPU.refreshCost.controlFills;
+  run.iblWebGPU.refreshCost = freshCostAccounting({
+    eclipseFills: 8,
+    controlFills: 8,
+  });
   const verdict = judgeEclipseCloudResponse(run);
-  assert.equal(verdict.refreshCostEstimateValidReportedOnly, false);
+  assert.equal(verdict.refreshCostMeasured, false);
   assert.equal(verdict.cost.webgpu.valid, false);
   assert.match(verdict.cost.invalidReasons[0], /differential cannot be formed/);
+  assert.match(
+    verdict.structuralReasons.join("\n"),
+    /fresh refresh-cost measurement is ineligible: webgpu:/,
+  );
+  assert.ok(verdict.unscoredPredicates.includes("refreshCostMeasured"));
   assert.deepEqual(verdict.failedPredicates, []);
-  assert.equal(verdict.PASS, true);
+  assert.equal(verdict.PASS, false);
+  assert.equal(verdict.exitCode, ECLIPSE_CLOUD_EXIT.STRUCTURAL);
 });
 
-test("D14 a valid cost estimate remains reported with its exact value", () => {
+test("D14 a valid fresh cost measurement gates and retains its exact value", () => {
   const verdict = judgeEclipseCloudResponse(passingRun());
   // 4000 ms over 274 eclipse-driven fills.
   assert.equal(Number(verdict.cost.webgpuMsPerRefresh.toFixed(4)), 14.5985);
-  assert.equal(verdict.refreshCostEstimateValidReportedOnly, true);
+  assert.equal(verdict.refreshCostMeasured, true);
   assert.equal(verdict.cost.webgpu.valid, true);
   assert.deepEqual(verdict.cost.invalidReasons, []);
+  assert.ok(!verdict.unscoredPredicates.includes("refreshCostMeasured"));
 });
 
 test("D15 backend divergence in the published factor fails PARITY, not a lane gate", () => {
@@ -1386,7 +1610,8 @@ test("H1 the first run's EXACT shape — shadow-blind + deck out of band — is 
       "shadowGroundNotOccluded",
       "shadowNonVacuous",
       "shadowContrastInvariant",
-      "shadowContrastRejectsAlternativeDesign",
+      "shadowDecrementMatchesGroundDim",
+      "shadowDecrementRejectsAlternativeDesign",
       // CO-21: `deck-free` is a CHILD of `shadow`, so a blind lane B takes the
       // attribution AND its convergence precondition with it — the direction
       // that must hold. The converse (an unsettled control blinding the
@@ -1548,21 +1773,40 @@ test("H7 the band [0.44, 0.70] IS the pure-deck formula F(1+e)/(1+Fe)", () => {
 // I. THE REFRESH-COST ARITHMETIC (Batch 909 instrument fix 3)
 // ─────────────────────────────────────────────────────────────────────────────
 
-const costInput = (overrides) => ({
-  warmupBothLegs: true,
-  segmentsPerLeg: 8,
-  eclipseFrames: 801,
-  controlFrames: 801,
-  eclipseWallMs: 9000,
-  controlWallMs: 5000,
-  eclipseFills: 282,
-  controlFills: 8,
-  ...overrides,
-});
+const costInput = (options = {}) => freshCostAccounting(options);
+
+function computeCost(accounting) {
+  if (!accounting?.protocol) {
+    return computeRefreshCost(accounting);
+  }
+  const protocol = accounting.protocol;
+  const lane = {
+    rendererType: protocol.backend,
+    runId: protocol.runId,
+    sessionLabel: protocol.sessionLabel,
+    sessionToken: protocol.sessionToken,
+    costLedgerId: protocol.ledgerId,
+    sweepFrames: protocol.sweepFrames,
+    factors: [...protocol.factorSchedule],
+  };
+  return computeRefreshCost(accounting, {
+    runId: protocol.runId,
+    expectedBackend: protocol.backend,
+    expectedSessionLabel: protocol.sessionLabel,
+    lane,
+    peerLane: {
+      sessionToken: `${protocol.sessionToken}-distinct-peer`,
+      costLedgerId: `${protocol.ledgerId}-distinct-peer`,
+    },
+  });
+}
 
 test("I1 the estimate is (eclipseMs - controlMs) / (eclipseFills - controlFills)", () => {
-  const cost = computeRefreshCost(costInput({}));
+  const cost = computeCost(costInput({}));
   assert.equal(cost.valid, true);
+  assert.equal(cost.derivedFromSegments, true);
+  assert.equal(cost.retainedSegmentCount, 16);
+  assert.equal(cost.warmupWitnessCount, 2);
   assert.equal(cost.msDelta, 4000);
   assert.equal(cost.fillDelta, 274);
   assert.equal(Number(cost.msPerRefresh.toFixed(4)), 14.5985);
@@ -1571,7 +1815,7 @@ test("I1 the estimate is (eclipseMs - controlMs) / (eclipseFills - controlFills)
 
 test("I2 a NEGATIVE differential is INVALID with a named reason, never a number", () => {
   // The first run's actual numbers: 0.77 s eclipse leg, 5.97 s control leg.
-  const cost = computeRefreshCost(
+  const cost = computeCost(
     costInput({ eclipseWallMs: 770, controlWallMs: 5970 }),
   );
   assert.equal(cost.valid, false);
@@ -1583,64 +1827,470 @@ test("I2 a NEGATIVE differential is INVALID with a named reason, never a number"
   assert.equal(Number(((770 - 5970) / 274).toFixed(2)), -18.98);
 });
 
-test("I3 missing warm-up parity is its own named reason — the first run's cause", () => {
-  const cost = computeRefreshCost(costInput({ warmupBothLegs: false }));
+test("I3 both retained warm-up witnesses are required — a boolean cannot replace them", () => {
+  const missingWitness = costInput();
+  missingWitness.warmups.pop();
+  let cost = computeCost(missingWitness);
   assert.equal(cost.valid, false);
   assert.equal(cost.msPerRefresh, null);
-  assert.match(cost.invalidReason, /warm-up parity/);
+  assert.match(cost.invalidReason, /warm-up parity has 1 per-leg witness/i);
+
+  const forgedSummary = costInput();
+  forgedSummary.warmupBothLegs = false;
+  cost = computeCost(forgedSummary);
+  assert.equal(cost.valid, false);
+  assert.match(cost.invalidReason, /summary disagrees.*per-leg witnesses/);
 });
 
 test("I4 a SEQUENTIAL A/B is rejected — interleaving is required, not advised", () => {
-  assert.ok(REFRESH_COST_MIN_SEGMENTS_PER_LEG >= 3);
-  for (const segments of [1, 2]) {
-    const cost = computeRefreshCost(costInput({ segmentsPerLeg: segments }));
+  assert.equal(REFRESH_COST_SEGMENTS_PER_LEG, 8);
+  assert.deepEqual(deriveRefreshCostSegmentBounds(), [
+    [0, 101],
+    [101, 201],
+    [201, 301],
+    [301, 401],
+    [401, 501],
+    [501, 601],
+    [601, 701],
+    [701, 801],
+  ]);
+  for (const segments of [1, 2, 7, 9]) {
+    const cost = computeCost(
+      costInput({ segmentsPerLeg: segments, eclipseFills: segments + 1 }),
+    );
     assert.equal(cost.valid, false, `${segments} segment(s) must be rejected`);
-    assert.match(cost.invalidReason, /not interleaved/);
+    assert.match(cost.invalidReason, /not exactly 8/);
   }
   assert.equal(
-    computeRefreshCost(
-      costInput({ segmentsPerLeg: REFRESH_COST_MIN_SEGMENTS_PER_LEG }),
+    computeCost(
+      costInput({
+        segmentsPerLeg: REFRESH_COST_SEGMENTS_PER_LEG,
+        eclipseFills: 12,
+        controlFills: 8,
+      }),
     ).valid,
     true,
   );
 });
 
-test("I5 unequal frame counts and a zero fill delta are both INVALID", () => {
-  const uneven = computeRefreshCost(costInput({ controlFrames: 400 }));
+test("I5 unshared bounds and a zero fill delta are both INVALID", () => {
+  const unshared = costInput();
+  unshared.segments[1].to -= 1;
+  unshared.segments[1].frames -= 1;
+  syncCostAggregatesFromSegments(unshared);
+  const uneven = computeCost(unshared);
   assert.equal(uneven.valid, false);
-  assert.match(uneven.invalidReason, /different frame counts/);
+  assert.match(uneven.invalidReason, /does not share bounds\/frame count/);
 
-  const noFills = computeRefreshCost(costInput({ eclipseFills: 8 }));
+  const noFills = computeCost(costInput({ eclipseFills: 8, controlFills: 8 }));
   assert.equal(noFills.valid, false);
   assert.match(noFills.invalidReason, /no eclipse-driven fills/);
-  assert.match(
-    noFills.invalidReason,
-    /reported-only differential cannot be formed/,
-  );
+  assert.match(noFills.invalidReason, /fresh differential cannot be formed/);
 
-  const absent = computeRefreshCost(undefined);
+  const absent = computeCost(undefined);
   assert.equal(absent.valid, false);
   assert.match(absent.invalidReason, /no refresh-cost accounting/);
 });
 
 test("I6 a zero differential is VALID at exactly 0 — non-negative by construction", () => {
-  const cost = computeRefreshCost(costInput({ eclipseWallMs: 5000 }));
+  const cost = computeCost(costInput({ eclipseWallMs: 5000 }));
   assert.equal(cost.valid, true);
   assert.equal(cost.msPerRefresh, 0);
   assert.ok(cost.msPerRefresh >= 0);
 });
 
-test("I7 the fold reports either backend INVALID without reopening the discharged row", () => {
+test("I7 either backend INVALID makes the fresh measurement STRUCTURAL", () => {
   const run = clone(passingRun());
-  run.iblWebGL.refreshCost.eclipseWallMs = 100;
+  run.iblWebGL.refreshCost = costInput({
+    backend: "webgl",
+    eclipseWallMs: 100,
+  });
   const verdict = judgeEclipseCloudResponse(run);
-  assert.equal(verdict.refreshCostEstimateValidReportedOnly, false);
+  assert.equal(verdict.refreshCostMeasured, false);
   assert.equal(verdict.cost.webglMsPerRefresh, null);
   assert.equal(verdict.cost.webgpu.valid, true);
   assert.equal(verdict.cost.invalidReasons.length, 1);
   assert.match(verdict.cost.invalidReasons[0], /^webgl: /);
+  assert.match(verdict.structuralReasons.join("\n"), /webgl:/);
+  assert.ok(verdict.unscoredPredicates.includes("refreshCostMeasured"));
   assert.deepEqual(verdict.failedPredicates, []);
-  assert.equal(verdict.PASS, true);
+  assert.equal(verdict.PASS, false);
+  assert.equal(verdict.exitCode, ECLIPSE_CLOUD_EXIT.STRUCTURAL);
+});
+
+test("I8 historical estimates cannot substitute for absent fresh accounting", () => {
+  const run = clone(passingRun());
+  delete run.iblWebGPU.refreshCost;
+  // Adversarial demotion/estimate-substitution shape: every historical field a
+  // permissive fold might consult says yes, but the fresh primitive is absent.
+  run.iblWebGPU.refreshCostEstimateValidReportedOnly = true;
+  run.iblWebGPU.msPerRefresh = 7.749;
+  run.iblWebGPU.sweepWallMs = 9000;
+  run.iblWebGPU.controlWallMs = 5000;
+  const verdict = judgeEclipseCloudResponse(run);
+  assert.equal(verdict.refreshCostMeasured, false);
+  assert.equal(verdict.cost.webgpu.valid, false);
+  assert.match(
+    verdict.cost.webgpu.invalidReason,
+    /reported no refresh-cost accounting/,
+  );
+  assert.match(
+    verdict.structuralReasons.join("\n"),
+    /fresh refresh-cost measurement is ineligible/,
+  );
+  assert.ok(verdict.unscoredPredicates.includes("refreshCostMeasured"));
+  assert.equal(verdict.exitCode, ECLIPSE_CLOUD_EXIT.STRUCTURAL);
+});
+
+test("I9 malformed retained primitives are STRUCTURAL/3, never summary-scored", () => {
+  const mutants = [
+    {
+      name: "missing segment",
+      mutate: (accounting) => accounting.segments.pop(),
+      reason: /exact 2\*N cardinality/,
+    },
+    {
+      name: "reordered pair",
+      mutate: (accounting) =>
+        ([accounting.segments[0], accounting.segments[1]] = [
+          accounting.segments[1],
+          accounting.segments[0],
+        ]),
+      reason: /violates ABBA order/,
+    },
+    {
+      name: "duplicated record",
+      mutate: (accounting) => {
+        accounting.segments[2] = structuredClone(accounting.segments[0]);
+      },
+      reason: /carries pairIndex 0, expected 1/,
+    },
+    {
+      name: "negative wall time",
+      mutate: (accounting) => {
+        accounting.segments[0].wallMs = -1;
+      },
+      reason: /invalid non-negative wall time -1/,
+    },
+    {
+      name: "non-finite wall time",
+      mutate: (accounting) => {
+        accounting.segments[0].wallMs = Infinity;
+      },
+      reason: /invalid non-negative wall time Infinity/,
+    },
+    {
+      name: "negative frame count",
+      mutate: (accounting) => {
+        accounting.segments[0].frames = -1;
+      },
+      reason: /invalid integer frame count -1/,
+    },
+    {
+      name: "fractional frame count",
+      mutate: (accounting) => {
+        accounting.segments[0].frames += 0.5;
+      },
+      reason: /invalid integer frame count/,
+    },
+    {
+      name: "negative fill count",
+      mutate: (accounting) => {
+        accounting.segments[0].fills = -1;
+      },
+      reason: /invalid integer fill count -1/,
+    },
+    {
+      name: "fractional fill count",
+      mutate: (accounting) => {
+        accounting.segments[0].fills += 0.5;
+      },
+      reason: /invalid integer fill count/,
+    },
+    {
+      name: "unshared segment bounds",
+      mutate: (accounting) => {
+        accounting.segments[1].to -= 1;
+        accounting.segments[1].frames -= 1;
+      },
+      reason: /does not share bounds\/frame count/,
+    },
+    {
+      name: "forged aggregate",
+      mutate: (accounting) => {
+        accounting.eclipseWallMs += 1;
+      },
+      reason: /aggregate eclipseWallMs=.*does not equal.*segment total/,
+    },
+    {
+      name: "missing warm-up witness",
+      mutate: (accounting) => accounting.warmups.pop(),
+      reason: /warm-up parity has 1 per-leg witness/,
+    },
+    {
+      name: "duplicated warm-up witness",
+      mutate: (accounting) => {
+        accounting.warmups[1] = structuredClone(accounting.warmups[0]);
+      },
+      reason: /warm-up witnesses duplicate the eclipse leg/,
+    },
+  ];
+
+  for (const { name, mutate, reason } of mutants) {
+    const run = clone(passingRun());
+    mutate(run.iblWebGPU.refreshCost);
+    const verdict = judgeEclipseCloudResponse(run);
+    assert.equal(verdict.refreshCostMeasured, false, name);
+    assert.equal(verdict.cost.webgpu.valid, false, name);
+    assert.match(verdict.cost.webgpu.invalidReason, reason, name);
+    assert.ok(verdict.unscoredPredicates.includes("refreshCostMeasured"), name);
+    assert.deepEqual(verdict.failedPredicates, [], name);
+    assert.equal(verdict.exitCode, ECLIPSE_CLOUD_EXIT.STRUCTURAL, name);
+  }
+});
+
+test("I10 aggregate-only sequential A/B cannot impersonate a fresh ledger", () => {
+  const run = clone(passingRun());
+  run.iblWebGPU.refreshCost = {
+    warmupBothLegs: true,
+    segmentsPerLeg: 1,
+    interleave: "sequential A/B — eclipse then control",
+    eclipseFrames: SWEEP_FRAMES,
+    controlFrames: SWEEP_FRAMES,
+    eclipseWallMs: 770,
+    controlWallMs: 5970,
+    eclipseFills: 282,
+    controlFills: 8,
+    msPerRefresh: 7.749,
+  };
+  const verdict = judgeEclipseCloudResponse(run);
+  assert.equal(verdict.refreshCostMeasured, false);
+  assert.equal(verdict.cost.webgpu.valid, false);
+  assert.match(
+    verdict.cost.webgpu.invalidReason,
+    /no refresh-cost segment ledger/,
+  );
+  assert.match(
+    verdict.cost.webgpu.invalidReason,
+    /aggregate or historical summaries cannot substitute/,
+  );
+  assert.ok(verdict.unscoredPredicates.includes("refreshCostMeasured"));
+  assert.deepEqual(verdict.failedPredicates, []);
+  assert.equal(verdict.exitCode, ECLIPSE_CLOUD_EXIT.STRUCTURAL);
+});
+
+function replaceLaneCost(run, lane, options = {}) {
+  lane.refreshCost = freshCostAccounting({
+    backend: lane.rendererType,
+    runId: run.runId,
+    sessionLabel: lane.sessionLabel,
+    sessionToken: lane.sessionToken,
+    ledgerId: lane.costLedgerId,
+    frames: lane.sweepFrames,
+    factorSchedule: lane.factors,
+    ...options,
+  });
+  return lane.refreshCost;
+}
+
+function expectRefreshCostStructural(mutate, reason) {
+  const run = clone(passingRun());
+  mutate(run);
+  const verdict = judgeEclipseCloudResponse(run);
+  assert.equal(verdict.refreshCostMeasured, false);
+  assert.match(verdict.cost.invalidReasons.join("\n"), reason);
+  assert.ok(verdict.unscoredPredicates.includes("refreshCostMeasured"));
+  assert.deepEqual(verdict.failedPredicates, []);
+  assert.deepEqual(verdict.parityFailed, []);
+  assert.equal(verdict.exitCode, ECLIPSE_CLOUD_EXIT.STRUCTURAL);
+  return verdict;
+}
+
+test("I11 the cost ledger is exactly eight independently partitioned pairs over 801 frames", async (t) => {
+  await t.test(
+    "a coordinated three-frame truncation cannot redefine the protocol",
+    () => {
+      expectRefreshCostStructural((run) => {
+        for (const lane of [run.iblWebGPU, run.iblWebGL]) {
+          lane.factors = lane.factors.slice(0, SWEEP_FRAMES - 3);
+          lane.sweepFrames = lane.factors.length;
+          replaceLaneCost(run, lane);
+        }
+      }, /sweep length diverges from the ratified 801 frames/);
+    },
+  );
+
+  await t.test("a 794+1+1+1+1+1+1+1 partition cannot self-certify", () => {
+    expectRefreshCostStructural((run) => {
+      const accounting = run.iblWebGPU.refreshCost;
+      const bounds = [
+        [0, 794],
+        [794, 795],
+        [795, 796],
+        [796, 797],
+        [797, 798],
+        [798, 799],
+        [799, 800],
+        [800, 801],
+      ];
+      for (let pairIndex = 0; pairIndex < bounds.length; pairIndex++) {
+        const [from, to] = bounds[pairIndex];
+        for (const segment of accounting.segments.slice(
+          2 * pairIndex,
+          2 * pairIndex + 2,
+        )) {
+          segment.from = from;
+          segment.to = to;
+          segment.frames = to - from;
+          segment.fills =
+            pairIndex === 0 ? (segment.leg === "eclipse" ? 275 : 1) : 1;
+        }
+      }
+      syncCostAggregatesFromSegments(accounting);
+    }, /not the independently derived ratified bounds 0\.\.101\/101/);
+  });
+
+  await t.test("an odd 15-record ledger cannot pass cardinality", () => {
+    expectRefreshCostStructural((run) => {
+      run.iblWebGPU.refreshCost.segments.pop();
+    }, /15 records, not the exact 2\*N cardinality 16/);
+  });
+
+  for (const segmentsPerLeg of [7, 9]) {
+    await t.test(
+      `a coordinated ${segmentsPerLeg}-pair estimator is not the ratified estimator`,
+      () => {
+        expectRefreshCostStructural(
+          (run) => {
+            replaceLaneCost(run, run.iblWebGPU, { segmentsPerLeg });
+          },
+          new RegExp(`declares ${segmentsPerLeg} pairs per leg, not exactly 8`),
+        );
+      },
+    );
+  }
+});
+
+test("I12 backend, session, run, and schedule bindings reject replay and substitution", async (t) => {
+  const cases = [
+    {
+      name: "missing protocol header",
+      mutate: (run) => {
+        delete run.iblWebGPU.refreshCost.protocol;
+      },
+      reason:
+        /no protocol header binding it to the live run, backend, session, and factor schedule/,
+    },
+    {
+      name: "wrong backend",
+      mutate: (run) => {
+        run.iblWebGPU.refreshCost.protocol.backend = "webgl";
+      },
+      reason: /protocol backend webgl does not match live webgpu lane/,
+    },
+    {
+      name: "coordinated wrong backend",
+      mutate: (run) => {
+        run.iblWebGPU.rendererType = "webgl";
+        run.iblWebGPU.refreshCost.protocol.backend = "webgl";
+      },
+      reason: /live webgpu cost lane resolved rendererType webgl/,
+    },
+    {
+      name: "wrong session label",
+      mutate: (run) => {
+        run.iblWebGPU.refreshCost.protocol.sessionLabel =
+          "ibl-webgpu-historical";
+      },
+      reason: /refresh-cost session label diverges/,
+    },
+    {
+      name: "coordinated wrong session label",
+      mutate: (run) => {
+        run.iblWebGPU.sessionLabel = "ibl-webgpu-historical";
+        run.iblWebGPU.refreshCost.protocol.sessionLabel =
+          "ibl-webgpu-historical";
+      },
+      reason: /refresh-cost session label diverges/,
+    },
+    {
+      name: "wrong session token",
+      mutate: (run) => {
+        run.iblWebGPU.refreshCost.protocol.sessionToken = "stale-session";
+      },
+      reason: /session token does not bind the ledger/,
+    },
+    {
+      name: "well-formed historical lane and ledger under an old run identity",
+      mutate: (run) => {
+        run.iblWebGPU.runId = "historical-run";
+        run.iblWebGPU.refreshCost.protocol.runId = "historical-run";
+      },
+      reason:
+        /run identity diverges \(report fixture-current-run, lane historical-run, ledger historical-run\)/,
+    },
+    {
+      name: "ledger schedule changed without the live lane",
+      mutate: (run) => {
+        run.iblWebGPU.refreshCost.protocol.factorSchedule[0] -= 1e-6;
+      },
+      reason: /factor schedule diverges from the live lane at frame 0/,
+    },
+    {
+      name: "coordinated lane and ledger schedule rewrite",
+      mutate: (run) => {
+        for (const lane of [run.iblWebGPU, run.iblWebGL]) {
+          lane.factors[0] -= 1e-6;
+          lane.refreshCost.protocol.factorSchedule[0] = lane.factors[0];
+        }
+      },
+      reason:
+        /live refresh-cost factor schedule misses the ratified sweep at frame 0/,
+    },
+  ];
+
+  for (const { name, mutate, reason } of cases) {
+    await t.test(name, () => {
+      expectRefreshCostStructural(mutate, reason);
+    });
+  }
+});
+
+test("I13 backend ledgers and per-page identities cannot be reused across peers", async (t) => {
+  await t.test("a complete WebGPU ledger cannot substitute for WebGL", () => {
+    expectRefreshCostStructural((run) => {
+      [run.iblWebGPU.refreshCost, run.iblWebGL.refreshCost] = [
+        run.iblWebGL.refreshCost,
+        run.iblWebGPU.refreshCost,
+      ];
+    }, /protocol backend webgl does not match live webgpu lane|protocol backend webgpu does not match live webgl lane/);
+  });
+
+  await t.test(
+    "WebGPU segment primitives cannot be copied into a WebGL ledger",
+    () => {
+      expectRefreshCostStructural((run) => {
+        run.iblWebGL.refreshCost.segments = clone(
+          run.iblWebGPU.refreshCost.segments,
+        );
+      }, /is not bound to ledger fixture-webgl-cost-ledger/);
+    },
+  );
+
+  await t.test("the two backend pages cannot reuse one session token", () => {
+    expectRefreshCostStructural((run) => {
+      run.iblWebGL.sessionToken = run.iblWebGPU.sessionToken;
+      run.iblWebGL.refreshCost.protocol.sessionToken =
+        run.iblWebGPU.sessionToken;
+    }, /reuse a session token or ledger identity/);
+  });
+
+  await t.test("the two backend pages cannot reuse one ledger identity", () => {
+    expectRefreshCostStructural((run) => {
+      run.iblWebGL.costLedgerId = run.iblWebGPU.costLedgerId;
+      run.iblWebGL.refreshCost.protocol.ledgerId = run.iblWebGPU.costLedgerId;
+    }, /reuse a session token or ledger identity/);
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1675,6 +2325,20 @@ test("F2 the probe follows the pinning doctrine it documents", () => {
   const probe = fs
     .readFileSync(path.join(here, "probe-eclipse-cloud-response.mjs"), "utf8")
     .replace(/\r\n/g, "\n");
+  const pinning = fs
+    .readFileSync(path.join(here, "lib", "weather-probe-pinning.mjs"), "utf8")
+    .replace(/\r\n/g, "\n");
+  const executableProbe = probe
+    .split("\n")
+    .filter((line) => {
+      const trimmed = line.trimStart();
+      return !(
+        trimmed.startsWith("//") ||
+        trimmed.startsWith("/*") ||
+        trimmed.startsWith("*")
+      );
+    })
+    .join("\n");
   assert.match(probe, /installWeatherPinHarnessOnPage/);
   assert.match(probe, /installCloudProbeHarnessOnPage/);
   assert.match(probe, /offline=true/);
@@ -1700,8 +2364,199 @@ test("F2 the probe follows the pinning doctrine it documents", () => {
   // The determinism bracket and the discarded warm-up.
   assert.match(probe, /discarded on purpose/);
   assert.match(probe, /repeat-A0-eclipseOff-cloudsOn/);
+  // The capture path is transitive through weather-probe-pinning, so scanning
+  // this launcher alone would miss a helper regression. Require the helper to
+  // install the canonical immutable snapshot factory, freeze before its first
+  // decode await, and snapshot slots before awaiting that decode.
+  assert.match(
+    pinning,
+    /import \{ FUSED_SNAPSHOT_CAPTURE_SOURCE \} from "\.\/same-task-capture\.mjs";/u,
+  );
+  assert.match(
+    pinning,
+    /const snapshotPromise = fused\.captureSnapshot\(\);\s*const slots = slotSnapshot\(\);\s*const \{ dataUrl, imageData \} = await snapshotPromise;/u,
+  );
+  assert.match(
+    pinning,
+    /makeFusedSnapshotCapture\(\s*\{ render: renderAt \},\s*canvas,/u,
+  );
+  assert.match(pinning, /png: wantPng \? dataUrl : null/u);
+  assert.doesNotMatch(pinning, /\.drawImage\s*\(\s*canvas\b/u);
+  assert.doesNotMatch(pinning, /\.getImageData\s*\(/u);
+  assert.match(
+    probe,
+    /sameTaskCapturePolicy: fileURLToPath\(\s*new URL\("\.\/lib\/same-task-capture\.mjs", import\.meta\.url\),\s*\)/u,
+  );
+
+  const captureAudit = eclipseCaptureStaticFailures(probe);
+  assert.deepEqual(captureAudit.failures, []);
+  assert.equal(
+    captureAudit.directPinCaptures,
+    5,
+    "every direct pin capture site stays inside the AST-enforced boundary",
+  );
+  assert.match(
+    executableProbe,
+    /const offCloudsPng = deepest \? aOffCloudsFrame\.png : null;/u,
+  );
+  assert.doesNotMatch(
+    executableProbe,
+    /pin\.capture[^\n]*\.png/u,
+    "a separate documentary render would not share the metric bytes",
+  );
   // Canvas-ELEMENT data, reduced in-page, never a page screenshot.
   assert.ok(!probe.includes("page.screenshot"));
+});
+
+test("F2b the eclipse-local AST guard rejects floating, readback, and extra-capture mutants", () => {
+  const probe = fs
+    .readFileSync(path.join(here, "probe-eclipse-cloud-response.mjs"), "utf8")
+    .replace(/\r\n/g, "\n");
+  const replaceExactlyOnce = (before, after, label) => {
+    assert.equal(
+      probe.split(before).length - 1,
+      1,
+      `${label} fixture must match exactly once`,
+    );
+    return probe.replace(before, after);
+  };
+
+  const floatingAlias = eclipseCaptureStaticFailures(
+    replaceExactlyOnce(
+      "await pin.capture(firstTime, false); // discarded on purpose",
+      `const captureAlias = pin.capture;
+  captureAlias(firstTime, false); // discarded on purpose`,
+      "floating capture alias",
+    ),
+  );
+  assert.ok(
+    floatingAlias.failures.some(
+      (failure) => failure.code === WEATHER_CAPTURE_FAILURE.UNAWAITED_CAPTURE,
+    ),
+    formatWeatherCaptureFailures(floatingAlias.failures),
+  );
+
+  const floatingWrapper = eclipseCaptureStaticFailures(
+    replaceExactlyOnce(
+      "await pin.capture(firstTime, false); // discarded on purpose",
+      `const captureWrapper = async (...args) => await pin.capture(...args);
+  captureWrapper(firstTime, false); // discarded on purpose`,
+      "floating capture wrapper",
+    ),
+  );
+  assert.ok(
+    floatingWrapper.failures.some(
+      (failure) => failure.code === WEATHER_CAPTURE_FAILURE.UNAWAITED_CAPTURE,
+    ),
+    formatWeatherCaptureFailures(floatingWrapper.failures),
+  );
+
+  const liveReadback = eclipseCaptureStaticFailures(
+    replaceExactlyOnce(
+      "const frame = await pin.capture(julian, wantPng);",
+      `const liveContext = document.createElement("canvas").getContext("2d");
+    liveContext.drawImage(scene.canvas, 0, 0);
+    liveContext.getImageData(0, 0, scene.canvas.width, scene.canvas.height);
+    const frame = await pin.capture(julian, wantPng);`,
+      "consumer live readback",
+    ),
+  );
+  assert.ok(
+    liveReadback.failures.some(
+      (failure) => failure.code === WEATHER_CAPTURE_FAILURE.CONSUMER_LIVE_READ,
+    ),
+    formatWeatherCaptureFailures(liveReadback.failures),
+  );
+
+  const extraDocumentaryCapture = eclipseCaptureStaticFailures(
+    replaceExactlyOnce(
+      "const offCloudsPng = deepest ? aOffCloudsFrame.png : null;",
+      `const documentaryFrame = await pin.capture(julian, true);
+    const offCloudsPng = deepest ? documentaryFrame.png : null;`,
+      "extra documentary capture",
+    ),
+  );
+  assert.equal(
+    extraDocumentaryCapture.directPinCaptures,
+    6,
+    "a second documentary capture cannot hide behind an awaited call",
+  );
+  assert.ok(
+    extraDocumentaryCapture.failures.some(
+      (failure) =>
+        failure.code === WEATHER_CAPTURE_FAILURE.DOCUMENTARY_ORIGIN_MISMATCH,
+    ),
+    formatWeatherCaptureFailures(extraDocumentaryCapture.failures),
+  );
+});
+
+test("F2c the eclipse-local guard preserves coordinated taint reds and awaited inverses", () => {
+  const probe = fs
+    .readFileSync(path.join(here, "probe-eclipse-cloud-response.mjs"), "utf8")
+    .replace(/\r\n/g, "\n");
+  const replaceExactlyOnce = (source, before, after, label) => {
+    assert.equal(
+      source.split(before).length - 1,
+      1,
+      `${label} fixture must match exactly once`,
+    );
+    return source.replace(before, after);
+  };
+
+  let combined = replaceExactlyOnce(
+    probe,
+    "await pin.capture(firstTime, false); // discarded on purpose",
+    `const captureMap = new Map([["take", pin.capture]]);
+  captureMap.get("take")(firstTime, false);
+  const Promise = { all() { return globalThis.Promise.resolve(); } };
+  await Promise.all([pin.capture(firstTime, false)]); // discarded on purpose`,
+    "combined callable and shadowed-Promise mutant",
+  );
+  combined = replaceExactlyOnce(
+    combined,
+    "const frame = await pin.capture(julian, wantPng);",
+    `const live = document.createElement("canvas").getContext("2d");
+    const invoke = (callback, ...args) => callback(...args);
+    invoke(live.drawImage.bind(live), scene.canvas, 0, 0);
+    const frame = await pin.capture(julian, wantPng);`,
+    "combined callback readback mutant",
+  );
+  combined = replaceExactlyOnce(
+    combined,
+    "const offCloudsPng = deepest ? aOffCloudsFrame.png : null;",
+    `const documentaryFrame = await pin.capture(julian, true);
+    void documentaryFrame.data;
+    const offCloudsPng = deepest ? documentaryFrame.png : null;`,
+    "combined documentary laundering mutant",
+  );
+  const combinedFailures = eclipseCaptureStaticFailures(combined).failures;
+  const combinedCodes = new Set(
+    combinedFailures.map((failure) => failure.code),
+  );
+  for (const code of [
+    WEATHER_CAPTURE_FAILURE.CONSUMER_LIVE_READ,
+    WEATHER_CAPTURE_FAILURE.DOCUMENTARY_ORIGIN_MISMATCH,
+    WEATHER_CAPTURE_FAILURE.UNAWAITED_CAPTURE,
+    WEATHER_CAPTURE_FAILURE.UNTRUSTED_INTRINSIC,
+  ]) {
+    assert.ok(
+      combinedCodes.has(code),
+      `coordinated eclipse mutant must preserve ${code}:\n${formatWeatherCaptureFailures(combinedFailures)}`,
+    );
+  }
+
+  const awaitedInverse = replaceExactlyOnce(
+    probe,
+    "await pin.capture(firstTime, false); // discarded on purpose",
+    `const captureMap = new Map([["take", pin.capture]]);
+  await captureMap.get("take")(firstTime, false); // discarded on purpose`,
+    "awaited Map.get inverse",
+  );
+  assert.deepEqual(
+    eclipseCaptureStaticFailures(awaitedInverse).failures,
+    [],
+    "the exact same modeled aggregate must pass when its capture is awaited",
+  );
 });
 
 test("F3 the probe establishes the deck ISOLATION and the lane-B shadow geometry", () => {
@@ -1894,29 +2749,43 @@ test("F4 the probe's cost legs are interleaved and both pay a warm-up", () => {
     .readFileSync(path.join(here, "probe-eclipse-cloud-response.mjs"), "utf8")
     .replace(/\r\n/g, "\n");
   assert.match(probe, /const COST_SEGMENTS = 8;/);
+  assert.match(
+    probe,
+    /const quotient = Math\.floor\(schedule\.length \/ COST_SEGMENTS\);/,
+  );
+  assert.match(probe, /const remainder = schedule\.length % COST_SEGMENTS;/);
   assert.match(probe, /runCostSegment/);
   assert.match(
     probe,
-    /warmupBothLegs:\s*\n?\s*warmedLegs\.eclipse === true && warmedLegs\.control === true/,
+    /warmupBothLegs:\s*warmedLegs\.eclipse !== null && warmedLegs\.control !== null/,
   );
+  assert.match(probe, /warmups: \[warmedLegs\.eclipse, warmedLegs\.control\]/);
+  assert.match(probe, /pairIndex,/);
+  assert.match(probe, /ledgerId: cfg\.costLedgerId/);
+  assert.match(probe, /version: 1,/);
+  assert.match(probe, /backend: rendererType,/);
+  assert.match(probe, /runId: cfg\.runId,/);
+  assert.match(probe, /sessionToken: cfg\.sessionToken,/);
+  assert.match(probe, /factorSchedule: \[\.\.\.factors\]/);
+  assert.match(probe, /segments: costSegments/);
   assert.match(probe, /ABBA/);
   // The gate reads the interleaved accounting, not the two counting legs.
   assert.match(probe, /refreshCost,/);
   assert.ok(
-    ECLIPSE_CLOUD_REPORTED_ONLY_PREDICATES.includes(
-      "refreshCostEstimateValidReportedOnly",
-    ),
-    "closure reruns must retain cost validity and its INVALID reason as a reported diagnostic",
+    ECLIPSE_CLOUD_GATE_PREDICATES.includes("refreshCostMeasured"),
+    "R-2026-08-14-1: refreshCostMeasured must remain an operative gate",
   );
   assert.ok(
-    !ECLIPSE_CLOUD_GATE_PREDICATES.includes(
+    !ECLIPSE_CLOUD_REPORTED_ONLY_PREDICATES.includes(
       "refreshCostEstimateValidReportedOnly",
     ),
+    "the demoted replacement must not return under a reported-only alias",
   );
-  assert.ok(
-    8 >= REFRESH_COST_MIN_SEGMENTS_PER_LEG,
-    "the probe's segment count must satisfy the gate's interleaving minimum",
-  );
+  assert.match(probe, /COST \(GATING fresh ABBA measurement\)/);
+  assert.equal(8, REFRESH_COST_SEGMENTS_PER_LEG);
+  assert.match(probe, /sessionToken: randomUUID\(\)/);
+  assert.match(probe, /costLedgerId: randomUUID\(\)/);
+  assert.match(probe, /runId: RUN_ID,\n\s*cloudLanes,/);
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2037,7 +2906,7 @@ test("J2 the directional-only model is the SUPREMUM of the split family, not a r
   assert.equal(shadowContrastModelIsBoundedByDirectional(), true);
 });
 
-test("J3 the historical extension predicts 1.0002 while the unchanged raw band is reported-only", () => {
+test("J3 the historical extension predicts 1.0002 while the unchanged raw band gates", () => {
   // The fourth Edge run (tip 6e9c997287), deepest rung, verbatim.
   const strengthEclipse = 0.9995501111290277;
   const clearContrast = 0.22385011803330374 / 0.32925418914786103;
@@ -2069,19 +2938,20 @@ test("J3 the historical extension predicts 1.0002 while the unchanged raw band i
     excessOverCap > 55 && excessOverCap < 65,
     `the measurement is ${excessOverCap}x the family cap`,
   );
-  // The historical band is unchanged for comparison, but the recovered run
-  // proved that this raw image contains the later cloud over-composite. It is
-  // therefore explicitly reported-only rather than widened or used as a gate.
+  // The historical band is unchanged. The later cloud over-composite remains a
+  // mechanism confound to investigate, but R-2026-08-14-1 explicitly rejected
+  // using that confound to de-score this measured red.
   assert.equal(ECLIPSE_CLOUD_BANDS.shadowContrastRatio.lo, 0.97);
   assert.equal(ECLIPSE_CLOUD_BANDS.shadowContrastRatio.hi, 1.03);
   assert.ok(
     ECLIPSE_CLOUD_BANDS.shadowContrastRatio.why.includes(
-      "LEGACY REPORTED-ONLY",
+      "restored as an operative gate",
     ),
-    "the mixed-domain ruling has to be written where the legacy band is",
+    "the maintainer ruling has to be written where the band is",
   );
+  assert.ok(ECLIPSE_CLOUD_GATE_PREDICATES.includes("shadowContrastInvariant"));
   assert.ok(
-    ECLIPSE_CLOUD_REPORTED_ONLY_PREDICATES.includes(
+    !ECLIPSE_CLOUD_REPORTED_ONLY_PREDICATES.includes(
       "shadowCompositeContrastInLegacyBandReportedOnly",
     ),
   );
@@ -2293,9 +3163,10 @@ test("J7 additive cloud contamination moves the raw contrast but cancels from th
   settleDeckFreeTwins(run);
   const verdict = judgeEclipseCloudResponse(run);
   assert.deepEqual(verdict.structuralReasons, []);
-  assert.deepEqual(verdict.failedPredicates, []);
-  assert.equal(verdict.shadowContrastInvariant, true);
-  assert.equal(verdict.shadowCompositeContrastInLegacyBandReportedOnly, false);
+  assert.deepEqual(verdict.failedPredicates, ["shadowContrastInvariant"]);
+  assert.equal(verdict.shadowContrastInvariant, false);
+  assert.equal(verdict.shadowDecrementMatchesGroundDim, true);
+  assert.equal(verdict.shadowDecrementRejectsAlternativeDesign, true);
   assert.equal(verdict.shadowContrastMatchesSplitModelReportedOnly, false);
   // The model still reports its own prediction, and it is still ~1.0002 — the
   // instrument does not follow the measurement.
@@ -2325,8 +3196,12 @@ test("J8 removing the independent ground dim fails the decrement invariant", () 
   }
   const verdict = judgeEclipseCloudResponse(run);
   assert.deepEqual(verdict.structuralReasons, []);
-  assert.deepEqual(verdict.failedPredicates, ["shadowContrastInvariant"]);
+  assert.deepEqual(verdict.failedPredicates.sort(), [
+    "shadowContrastInvariant",
+    "shadowDecrementMatchesGroundDim",
+  ]);
   assert.equal(verdict.shadowContrastInvariant, false);
+  assert.equal(verdict.shadowDecrementMatchesGroundDim, false);
   assert.ok(
     verdict.shadowDecrementModel
       .slice(1)
@@ -2798,7 +3673,10 @@ test("L2 MUTANT — a tolerance that admits the globe-path excess is required to
   settleDeckFreeTwins(run);
   const verdict = judgeEclipseCloudResponse(run);
   assert.deepEqual(verdict.structuralReasons, []);
-  assert.deepEqual(verdict.failedPredicates, ["deckFreeGroundDimsByFactor"]);
+  assert.deepEqual(verdict.failedPredicates, [
+    "shadowContrastInvariant",
+    "deckFreeGroundDimsByFactor",
+  ]);
   const deepest =
     verdict.deckFreeGroundDim[verdict.deckFreeGroundDim.length - 1];
   assert.ok(
@@ -2840,12 +3718,9 @@ test("L3 the decrement cancels cloud residue and catches a deck-free residue-law
   injectUnderDimmingResidue(cloudDriven, { alsoDeckFree: false });
   const cloudVerdict = judgeEclipseCloudResponse(cloudDriven);
   assert.deepEqual(cloudVerdict.structuralReasons, []);
-  assert.deepEqual(cloudVerdict.failedPredicates, []);
-  assert.equal(cloudVerdict.shadowContrastInvariant, true);
-  assert.equal(
-    cloudVerdict.shadowCompositeContrastInLegacyBandReportedOnly,
-    false,
-  );
+  assert.deepEqual(cloudVerdict.failedPredicates, ["shadowContrastInvariant"]);
+  assert.equal(cloudVerdict.shadowContrastInvariant, false);
+  assert.equal(cloudVerdict.shadowDecrementMatchesGroundDim, true);
   assert.equal(cloudVerdict.deckFreeGroundDimsByFactor, true);
   assert.ok(
     Math.abs(cloudVerdict.deckFreeGroundExcessAtDeepest - 1) < 1e-9,
@@ -2860,6 +3735,7 @@ test("L3 the decrement cancels cloud residue and catches a deck-free residue-law
   assert.deepEqual(globeVerdict.failedPredicates.sort(), [
     "deckFreeGroundDimsByFactor",
     "shadowContrastInvariant",
+    "shadowDecrementMatchesGroundDim",
   ]);
   assert.ok(globeVerdict.deckFreeGroundExcessAtDeepest > 1.12);
 
@@ -2881,7 +3757,7 @@ test("L3 the decrement cancels cloud residue and catches a deck-free residue-law
     globeVerdict.failedPredicates.filter(
       (name) => !cloudVerdict.failedPredicates.includes(name),
     ),
-    ["deckFreeGroundDimsByFactor", "shadowContrastInvariant"],
+    ["deckFreeGroundDimsByFactor", "shadowDecrementMatchesGroundDim"],
   );
 });
 
@@ -3079,7 +3955,7 @@ test("L7 MUTANT — a fit that IGNORES the leg's share re-derives the WRONG entr
   );
 });
 
-test("L8 both CO-19 gates can FAIL in isolation, each scoped to its own lane", () => {
+test("L8 both CO-19 subjects fail while the restored raw invariant stays operative", () => {
   assert.equal(ECLIPSE_CLOUD_PREDICATE_LANES.deckPureRatioInBand, "deck");
   // CO-21 moved the attribution into its own `deck-free` domain, a CHILD of
   // `shadow`. Both directions are pinned: lane B still blinds it, and it no
@@ -3121,7 +3997,7 @@ test("L8 both CO-19 gates can FAIL in isolation, each scoped to its own lane", (
       syncShadowDecrementsToDeckFree(run);
       settleDeckFreeTwins(run);
     },
-    ["deckFreeGroundDimsByFactor"],
+    ["deckFreeGroundDimsByFactor", "shadowContrastInvariant"],
   );
 
   // (d) ...and OVER-dims. The gate is two-sided: an eclipse that removes too
@@ -3135,7 +4011,7 @@ test("L8 both CO-19 gates can FAIL in isolation, each scoped to its own lane", (
       syncShadowDecrementsToDeckFree(run);
       settleDeckFreeTwins(run);
     },
-    ["deckFreeGroundDimsByFactor"],
+    ["deckFreeGroundDimsByFactor", "shadowContrastInvariant"],
   );
 });
 
@@ -3232,13 +4108,17 @@ test("K2 a session-dependent deck-free control is STRUCTURAL, not a product FAIL
     verdict.unscoredPredicates.includes("deckFreeGroundCapturesSettled"),
   );
   // The decrement model deliberately consumes this independent control, so a
-  // session-dependent ABBA ground read must quarantine the invariant rather
-  // than silently score it against an uncertified expectation. The parent
-  // shadow lane's own non-vacuity and the unrelated deck lane stay scored.
-  assert.ok(verdict.unscoredPredicates.includes("shadowContrastInvariant"));
+  // session-dependent ABBA ground read quarantines only the decrement
+  // companions. R-2026-08-14-1 forbids that control from silencing lane B's
+  // own raw contrast red, which remains scored in the parent shadow domain.
+  assert.ok(!verdict.unscoredPredicates.includes("shadowContrastInvariant"));
+  assert.equal(verdict.shadowContrastInvariant, true);
+  assert.ok(
+    verdict.unscoredPredicates.includes("shadowDecrementMatchesGroundDim"),
+  );
   assert.ok(
     verdict.unscoredPredicates.includes(
-      "shadowContrastRejectsAlternativeDesign",
+      "shadowDecrementRejectsAlternativeDesign",
     ),
   );
   assert.ok(!verdict.unscoredPredicates.includes("shadowNonVacuous"));
@@ -3260,7 +4140,10 @@ test("K3 the convergence detector cannot LAUNDER a settled defect", () => {
   const verdict = judgeEclipseCloudResponse(run);
   assert.deepEqual(verdict.structuralReasons, []);
   assert.equal(verdict.deckFreeGroundCapturesSettled, true);
-  assert.deepEqual(verdict.failedPredicates, ["deckFreeGroundDimsByFactor"]);
+  assert.deepEqual(verdict.failedPredicates, [
+    "shadowContrastInvariant",
+    "deckFreeGroundDimsByFactor",
+  ]);
   assert.equal(verdict.exitCode, ECLIPSE_CLOUD_EXIT.FAIL);
 });
 
@@ -3644,10 +4527,14 @@ test("K8 the complete DirectionalLight discriminator rejects omitted terms, Sun 
   const verdict = judgeEclipseCloudResponse(judged);
   assert.ok(verdict.structuralReasons.includes("raw baseColor mutant"));
   assert.ok(verdict.unscoredPredicates.includes("deckFreeGroundDimsByFactor"));
-  assert.ok(verdict.unscoredPredicates.includes("shadowContrastInvariant"));
+  assert.ok(!verdict.unscoredPredicates.includes("shadowContrastInvariant"));
+  assert.equal(verdict.shadowContrastInvariant, true);
+  assert.ok(
+    verdict.unscoredPredicates.includes("shadowDecrementMatchesGroundDim"),
+  );
 });
 
-test("K8b fresh v3's exact 1.034 raw ratio is reported-only under deck-free blindness", () => {
+test("K8b a 1.034 raw red survives deck-free blindness and INVALID cost", () => {
   const run = clone(passingRun());
   const deepest = run.cloudLanes.rungs.at(-1).shadow;
   Object.assign(deepest, {
@@ -3660,7 +4547,7 @@ test("K8b fresh v3's exact 1.034 raw ratio is reported-only under deck-free blin
   run.cloudLanes.deckFreeControl.nonVacuityReasons = [
     "fresh v3 raw-baseColor structural blind",
   ];
-  Object.assign(run.iblWebGPU.refreshCost, {
+  run.iblWebGPU.refreshCost = freshCostAccounting({
     eclipseWallMs: 1861,
     controlWallMs: 2238.800000011921,
     eclipseFills: 273,
@@ -3669,17 +4556,25 @@ test("K8b fresh v3's exact 1.034 raw ratio is reported-only under deck-free blin
 
   const verdict = judgeEclipseCloudResponse(run);
   assert.equal(verdict.shadowContrastRatioAtDeepest, 1.0341201343397566);
-  assert.equal(verdict.shadowCompositeContrastInLegacyBandReportedOnly, false);
-  assert.deepEqual(verdict.failedPredicates, []);
+  assert.equal(verdict.shadowContrastInvariant, false);
+  assert.deepEqual(verdict.failedPredicates, ["shadowContrastInvariant"]);
   assert.ok(
     verdict.structuralReasons.includes(
       "fresh v3 raw-baseColor structural blind",
     ),
   );
-  assert.ok(verdict.unscoredPredicates.includes("shadowContrastInvariant"));
-  assert.equal(verdict.refreshCostEstimateValidReportedOnly, false);
+  assert.ok(!verdict.unscoredPredicates.includes("shadowContrastInvariant"));
+  assert.ok(
+    verdict.unscoredPredicates.includes("shadowDecrementMatchesGroundDim"),
+  );
+  assert.equal(verdict.refreshCostMeasured, false);
+  assert.ok(verdict.unscoredPredicates.includes("refreshCostMeasured"));
   assert.match(verdict.cost.invalidReasons[0], /differential is negative/);
-  assert.equal(verdict.exitCode, ECLIPSE_CLOUD_EXIT.STRUCTURAL);
+  assert.equal(
+    verdict.exitCode,
+    ECLIPSE_CLOUD_EXIT.FAIL,
+    "the valid raw red must outrank both structural quarantines",
+  );
 });
 
 test("K9 build identity compares every current source byte with sourcesContent", () => {

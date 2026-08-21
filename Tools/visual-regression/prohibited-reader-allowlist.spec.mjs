@@ -18,7 +18,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const SNAPSHOT_SIZE = 178;
 const SNAPSHOT_MEMBER_DIGEST =
   "645e045b0c966b6d430c27ac98817ec0e884b67db69c4950624df76adcd7f83d";
-const SANCTIONED_TO_DATA_URL_SIZE = 51;
+const SANCTIONED_TO_DATA_URL_SIZE = 50;
 const SANCTIONED_TO_DATA_URL = /\.\s*canvas\s*\.\s*toDataURL\s*\(/u;
 
 let fleetCache;

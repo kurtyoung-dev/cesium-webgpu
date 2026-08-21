@@ -34,10 +34,12 @@
 //
 // Plus the row's original STILL OWED list: an IBL recovery leg that steps a
 // clock through the deep phase and out the other side, and the wall-clock cost
-// of the 275 fills. The second Edge run discharged the one-time cost obligation
-// (7.749 ms/refresh WebGPU, 1.607 WebGL). Lane C retains the full estimate as a
-// reported diagnostic; an INVALID rerun never prints a negative cost and does
-// not revoke the banked measurement.
+// of the 275 fills. Maintainer ruling R-2026-08-14-1 restored the latter as an
+// operative measurement prerequisite because the historical 7.749/1.607
+// estimates are not recoverably banked. Lane C therefore retains fresh ABBA
+// accounting on every run. An INVALID measurement names its exact reason and
+// makes the run STRUCTURAL; it is never printed as a negative cost or replaced
+// with those historical estimates.
 //
 // ─────────────────────────────────────────────────────────────────────────────
 // AIMING vs GATING — the discriminator is never built from what it discriminates
@@ -109,8 +111,9 @@
 // 32` (the escape hatch: no temporal, no jitter, no half-res, LIVE noise, so
 // two captures of one configuration are comparable); a DISCARDED warm-up before
 // the first scored capture (the async noise prewarm renders a cold first
-// fixture stable-black); same-task capture (render -> drawImage -> getImageData
-// with no await between); canvas-ELEMENT screenshots; `rendererType` read back
+// fixture stable-black); same-task capture (render -> `canvas.toDataURL` freeze
+// with no await between, then decode from those immutable bytes); canvas-ELEMENT
+// screenshots; `rendererType` read back
 // and hard-failed on mismatch; a determinism bracket (the first scored
 // configuration is re-captured at the end and must reproduce); an unref'd
 // primary watchdog that closes Edge and drains `finally` into an ERROR artifact,
@@ -283,6 +286,9 @@ const LOCAL_EVIDENCE_FILES = Object.freeze({
   probe: PROBE_FILE,
   weatherPinPolicy: fileURLToPath(
     new URL("./lib/weather-probe-pinning.mjs", import.meta.url),
+  ),
+  sameTaskCapturePolicy: fileURLToPath(
+    new URL("./lib/same-task-capture.mjs", import.meta.url),
   ),
   cloudProbeHarness: fileURLToPath(
     new URL("./lib/cloud-probe-harness.mjs", import.meta.url),
@@ -984,11 +990,11 @@ const RUN_CLOUD_LANES = async (cfg) => {
   // stable-black; a scored capture taken there is not a measurement.
   aimCamera(firstTime, cfg.skyPitchDegrees);
   await pin.settle(firstTime, 1200);
-  pin.capture(firstTime, false); // discarded on purpose
+  await pin.capture(firstTime, false); // discarded on purpose
 
   const captures = [];
-  const captureLabelled = (label, julian, wantPng) => {
-    const frame = pin.capture(julian, wantPng);
+  const captureLabelled = async (label, julian, wantPng) => {
+    const frame = await pin.capture(julian, wantPng);
     captures.push({ label, slots: frame.slots });
     return frame;
   };
@@ -1009,20 +1015,23 @@ const RUN_CLOUD_LANES = async (cfg) => {
     setEclipse(false);
     configure({ enableVolumetric: true });
     await pin.settle(julian, cfg.settleMs);
-    const aOffClouds = skyBand(
-      captureLabelled(`A${index}-eclipseOff-cloudsOn`, julian, deepest),
+    const aOffCloudsFrame = await captureLabelled(
+      `A${index}-eclipseOff-cloudsOn`,
+      julian,
+      deepest,
     );
-    const offCloudsPng = deepest ? pin.capture(julian, true).png : null;
+    const aOffClouds = skyBand(aOffCloudsFrame);
+    const offCloudsPng = deepest ? aOffCloudsFrame.png : null;
     configure({ enableVolumetric: false });
     await pin.settle(julian, cfg.settleMs);
     const aOffBare = skyBand(
-      captureLabelled(`A${index}-eclipseOff-cloudsOff`, julian, false),
+      await captureLabelled(`A${index}-eclipseOff-cloudsOff`, julian, false),
     );
 
     setEclipse(true);
     configure({ enableVolumetric: true });
     await pin.settle(julian, cfg.settleMs);
-    const aOnFrame = captureLabelled(
+    const aOnFrame = await captureLabelled(
       `A${index}-eclipseOn-cloudsOn`,
       julian,
       deepest,
@@ -1032,7 +1041,7 @@ const RUN_CLOUD_LANES = async (cfg) => {
     configure({ enableVolumetric: false });
     await pin.settle(julian, cfg.settleMs);
     const aOnBare = skyBand(
-      captureLabelled(`A${index}-eclipseOn-cloudsOff`, julian, false),
+      await captureLabelled(`A${index}-eclipseOn-cloudsOff`, julian, false),
     );
 
     // ── LANE A DIAGNOSTIC LEG (CO-19), deepest rung only: cloudAerialStrength
@@ -1059,13 +1068,21 @@ const RUN_CLOUD_LANES = async (cfg) => {
       configure({ enableVolumetric: true, dials: aerialZeroDials });
       await pin.settle(julian, cfg.settleMs);
       const zOffClouds = skyBand(
-        captureLabelled(`A${index}-aerial0-eclipseOff-cloudsOn`, julian, false),
+        await captureLabelled(
+          `A${index}-aerial0-eclipseOff-cloudsOn`,
+          julian,
+          false,
+        ),
       );
       setEclipse(true);
       configure({ enableVolumetric: true, dials: aerialZeroDials });
       await pin.settle(julian, cfg.settleMs);
       const zOnClouds = skyBand(
-        captureLabelled(`A${index}-aerial0-eclipseOn-cloudsOn`, julian, false),
+        await captureLabelled(
+          `A${index}-aerial0-eclipseOn-cloudsOn`,
+          julian,
+          false,
+        ),
       );
       aerialZero = {
         aerialStrength: 0.0,
@@ -1174,7 +1191,7 @@ const RUN_CLOUD_LANES = async (cfg) => {
     });
     await pin.settle(julian, cfg.settleMs);
     const bOffNoShadow = groundBand(
-      captureLabelled(`B${index}-eclipseOff-shadowOff`, julian, false),
+      await captureLabelled(`B${index}-eclipseOff-shadowOff`, julian, false),
     );
     configure({
       enableVolumetric: true,
@@ -1182,7 +1199,7 @@ const RUN_CLOUD_LANES = async (cfg) => {
     });
     await pin.settle(julian, cfg.settleMs);
     const bOffShadow = groundBand(
-      captureLabelled(`B${index}-eclipseOff-shadowOn`, julian, false),
+      await captureLabelled(`B${index}-eclipseOff-shadowOn`, julian, false),
     );
     const shadowStrengthOff =
       scene.context?._cloudCache?.shadowStrength ?? null;
@@ -1198,7 +1215,7 @@ const RUN_CLOUD_LANES = async (cfg) => {
     });
     await pin.settle(julian, cfg.settleMs);
     const bOnNoShadow = groundBand(
-      captureLabelled(`B${index}-eclipseOn-shadowOff`, julian, false),
+      await captureLabelled(`B${index}-eclipseOn-shadowOff`, julian, false),
     );
     configure({
       enableVolumetric: true,
@@ -1206,7 +1223,7 @@ const RUN_CLOUD_LANES = async (cfg) => {
     });
     await pin.settle(julian, cfg.settleMs);
     const bOnShadow = groundBand(
-      captureLabelled(`B${index}-eclipseOn-shadowOn`, julian, false),
+      await captureLabelled(`B${index}-eclipseOn-shadowOn`, julian, false),
     );
     const deckFreeEclipseState = scene.frameState?.eclipseState;
     const deckFreePublished = {
@@ -1291,7 +1308,7 @@ const RUN_CLOUD_LANES = async (cfg) => {
     configure({ enableVolumetric: true });
     await pin.settle(julian, cfg.settleMs);
     const repeat = skyBand(
-      captureLabelled("repeat-A0-eclipseOff-cloudsOn", julian, false),
+      await captureLabelled("repeat-A0-eclipseOff-cloudsOn", julian, false),
     );
     results.repeat = {
       first: results.rungs[0].deck.offClouds,
@@ -1638,7 +1655,9 @@ const RUN_DECK_FREE_CONTROL_SESSION = async (cfg) => {
       intensity: cfg.directionalLightIntensity,
     });
     await pin.settle(julian, cfg.settleMs);
-    const diagnosticReduced = diagnosticBandMean(pin.capture(julian, false));
+    const diagnosticReduced = diagnosticBandMean(
+      await pin.capture(julian, false),
+    );
     const diagnosticBaseColor = readBaseColor();
     const diagnosticLighting = readLighting();
     directionalDiagnosticRungs.push({
@@ -1676,7 +1695,7 @@ const RUN_DECK_FREE_CONTROL_SESSION = async (cfg) => {
     }
     aimCamera(julian);
     await pin.settle(julian, cfg.settleMs);
-    const reduced = bandMean(pin.capture(julian, false));
+    const reduced = bandMean(await pin.capture(julian, false));
     const baseColor = readBaseColor();
     const lighting = readLighting();
     rungs.push({
@@ -1737,6 +1756,7 @@ const RUN_IBL_SWEEP = async (cfg) => {
   const pin = globalThis.__weatherPin;
   const viewer = window.viewer;
   const scene = viewer.scene;
+  const rendererType = String(scene.context?.rendererType ?? "").toLowerCase();
 
   const pins = pin.pinScene(C, {
     groundAtmosphere: false,
@@ -1859,7 +1879,7 @@ const RUN_IBL_SWEEP = async (cfg) => {
   const frameLabels = [];
   const settleAndRead = async (julian, label, milliseconds) => {
     await pin.settle(julian, milliseconds);
-    const frame = pin.capture(julian, false);
+    const frame = await pin.capture(julian, false);
     frameLabels.push(label);
     return modelBand(frame);
   };
@@ -1878,10 +1898,10 @@ const RUN_IBL_SWEEP = async (cfg) => {
   // Warm-up so the environment cube's first fill is not inside the timed sweep.
   await pin.settle(C.JulianDate.fromIso8601(schedule[0].iso), 1500);
 
-  // Which legs have rendered the WHOLE schedule at least once. Read (not
-  // asserted) by the cost accounting below, so removing or reordering a phase
-  // flips the flag instead of silently leaving a stale `true` behind.
-  const warmedLegs = { eclipse: false, control: false };
+  // Per-leg witnesses that each counting leg rendered the WHOLE schedule
+  // before the interleaved cost ledger began. The gate requires these retained
+  // primitives; a single asserted `warmupBothLegs` summary is not evidence.
+  const warmedLegs = { eclipse: null, control: null };
 
   const factors = [];
   const buckets = [];
@@ -1908,7 +1928,14 @@ const RUN_IBL_SWEEP = async (cfg) => {
     }
   }
   const sweepWallMs = performance.now() - sweepStartMs;
-  warmedLegs.eclipse = true;
+  warmedLegs.eclipse = {
+    ledgerId: cfg.costLedgerId,
+    leg: "eclipse",
+    completed: true,
+    from: 0,
+    to: schedule.length,
+    frames: schedule.length,
+  };
 
   // The NaN-seeded first commit is a refresh too (`NaN !== anything`), and it
   // is the "one first-frame baseline" term of the 275. It happened during the
@@ -1938,9 +1965,16 @@ const RUN_IBL_SWEEP = async (cfg) => {
     }
   }
   const controlWallMs = performance.now() - controlStartMs;
-  warmedLegs.control = true;
+  warmedLegs.control = {
+    ledgerId: cfg.costLedgerId,
+    leg: "control",
+    completed: true,
+    from: 0,
+    to: schedule.length,
+    frames: schedule.length,
+  };
 
-  // ── Reported-only refresh-cost re-estimate: the INTERLEAVED cost legs.
+  // ── Gating fresh refresh-cost measurement: the INTERLEAVED cost legs.
   //
   // The first run derived the cost from the two counting legs above and got
   // -18.9 ms/refresh: the eclipse leg ran FIRST at 0.77 s and the control leg
@@ -1949,10 +1983,12 @@ const RUN_IBL_SWEEP = async (cfg) => {
   // protocol for GPU timing (Batch 762) applies to wall clock just as hard.
   //
   // Both legs have now rendered the ENTIRE schedule once, so warm-up parity is
-  // paid before anything below is timed, and it is REPORTED from `warmedLegs`
-  // rather than asserted in a comment. The legs are then interleaved segment by
-  // segment with the leg ORDER alternating (ABBA), so any monotone drift over
-  // the run lands on both legs instead of on the effect.
+  // paid before anything below is timed, and each completed schedule is
+  // retained as its own bounded witness in `warmedLegs`. The legs are then
+  // interleaved segment by segment with the leg ORDER alternating (ABBA), so
+  // any monotone drift over the run lands on both legs instead of on the
+  // effect. The gate recomputes from these records and treats the aggregates
+  // below only as exact-equality redundancy checks.
   //
   // Each segment renders one untimed frame immediately after the toggle: that
   // frame absorbs the toggle's own bucket transition out of BOTH the clock and
@@ -1960,12 +1996,16 @@ const RUN_IBL_SWEEP = async (cfg) => {
   const COST_SEGMENTS = 8;
   const segmentBounds = [];
   {
-    const size = Math.ceil(schedule.length / COST_SEGMENTS);
-    for (let start = 0; start < schedule.length; start += size) {
-      segmentBounds.push([start, Math.min(start + size, schedule.length)]);
+    const quotient = Math.floor(schedule.length / COST_SEGMENTS);
+    const remainder = schedule.length % COST_SEGMENTS;
+    let from = 0;
+    for (let pairIndex = 0; pairIndex < COST_SEGMENTS; pairIndex++) {
+      const frames = quotient + (pairIndex < remainder ? 1 : 0);
+      segmentBounds.push([from, from + frames]);
+      from += frames;
     }
   }
-  const runCostSegment = (leg, from, to) => {
+  const runCostSegment = (pairIndex, leg, from, to) => {
     ac.lighting.enableEclipse = leg === "eclipse";
     pin.renderAt(C.JulianDate.fromIso8601(schedule[from].iso)); // untimed
     let previous = committedBucket();
@@ -1980,6 +2020,8 @@ const RUN_IBL_SWEEP = async (cfg) => {
       }
     }
     return {
+      ledgerId: cfg.costLedgerId,
+      pairIndex,
       leg,
       from,
       to,
@@ -1994,7 +2036,7 @@ const RUN_IBL_SWEEP = async (cfg) => {
     const order =
       (s & 1) === 0 ? ["eclipse", "control"] : ["control", "eclipse"];
     for (const leg of order) {
-      costSegments.push(runCostSegment(leg, from, to));
+      costSegments.push(runCostSegment(s, leg, from, to));
     }
     await new Promise((r) => setTimeout(r, 0));
   }
@@ -2003,7 +2045,19 @@ const RUN_IBL_SWEEP = async (cfg) => {
       .filter((segment) => segment.leg === leg)
       .reduce((total, segment) => total + segment[key], 0);
   const refreshCost = {
-    warmupBothLegs: warmedLegs.eclipse === true && warmedLegs.control === true,
+    protocol: {
+      version: 1,
+      backend: rendererType,
+      runId: cfg.runId,
+      sessionLabel: cfg.sessionLabel,
+      sessionToken: cfg.sessionToken,
+      ledgerId: cfg.costLedgerId,
+      sweepFrames: schedule.length,
+      segmentsPerLeg: COST_SEGMENTS,
+      factorSchedule: [...factors],
+    },
+    warmupBothLegs: warmedLegs.eclipse !== null && warmedLegs.control !== null,
+    warmups: [warmedLegs.eclipse, warmedLegs.control],
     warmupNote:
       "the eclipse counting leg and the eclipse-off counting leg each rendered the whole schedule before any segment below was timed",
     interleave: "ABBA — the leg that runs first alternates per segment",
@@ -2043,7 +2097,11 @@ const RUN_IBL_SWEEP = async (cfg) => {
     pins,
     globeReadiness: { sweep: globeReadiness },
     frameLabels,
-    rendererType: String(scene.context?.rendererType ?? "").toLowerCase(),
+    rendererType,
+    runId: cfg.runId,
+    sessionLabel: cfg.sessionLabel,
+    sessionToken: cfg.sessionToken,
+    costLedgerId: cfg.costLedgerId,
     sweepFrames: schedule.length,
     factors,
     obscurations,
@@ -2051,8 +2109,8 @@ const RUN_IBL_SWEEP = async (cfg) => {
     initialCommittedWasNaN: Number.isNaN(initialCommitted),
     engineRefreshCount,
     controlRefreshCount: controlTransitions,
-    // Reported-only from Batch 909 on: the GATE derives the per-refresh cost
-    // from `refreshCost` below, never from these two counting legs. They are
+    // The GATE derives the fresh per-refresh cost from `refreshCost` below,
+    // never from these two counting legs. They are
     // kept because they are what the first run's -18.9 ms was computed from,
     // and a reader comparing runs needs to see them.
     sweepWallMs,
@@ -2843,19 +2901,33 @@ export async function runEclipseCloudResponseProbe() {
         modelUrl: MODEL_URL,
         ramp: derived.ramp,
       };
+      const iblWebGPUConfig = {
+        ...iblConfig,
+        runId: RUN_ID,
+        sessionLabel: "ibl-webgpu",
+        sessionToken: randomUUID(),
+        costLedgerId: randomUUID(),
+      };
+      const iblWebGLConfig = {
+        ...iblConfig,
+        runId: RUN_ID,
+        sessionLabel: "ibl-webgl",
+        sessionToken: randomUUID(),
+        costLedgerId: randomUUID(),
+      };
       iblWebGPU = await withFreshPage(
         browser,
         "webgpu",
         "ibl-webgpu",
         browserEvidence,
-        (page) => page.evaluate(RUN_IBL_SWEEP, iblConfig),
+        (page) => page.evaluate(RUN_IBL_SWEEP, iblWebGPUConfig),
       );
       iblWebGL = await withFreshPage(
         browser,
         "webgl",
         "ibl-webgl",
         browserEvidence,
-        (page) => page.evaluate(RUN_IBL_SWEEP, iblConfig),
+        (page) => page.evaluate(RUN_IBL_SWEEP, iblWebGLConfig),
       );
     } finally {
       await closeActiveBrowser("measurement finally");
@@ -2996,6 +3068,7 @@ export async function runEclipseCloudResponseProbe() {
     // so it is not scoped — it blinds the whole run. The judge still runs, so the
     // report carries every measured number, but its verdicts do not gate.
     const verdicts = judgeEclipseCloudResponse({
+      runId: RUN_ID,
       cloudLanes,
       iblWebGPU,
       iblWebGL,
@@ -3150,8 +3223,8 @@ export async function runEclipseCloudResponseProbe() {
       console.log(
         `SHADOW model: producer/footprint ${t.producerAndFootprintCertified}; ` +
           `raw cloud-composite contrast ${r6(t.rawCompositeContrastAtDeepest)} ` +
-          `(legacy [${ECLIPSE_CLOUD_BANDS.shadowContrastRatio.lo}, ${ECLIPSE_CLOUD_BANDS.shadowContrastRatio.hi}] ` +
-          `${t.rawCompositeContrastInLegacyBand ? "inside" : "outside"}, REPORTED ONLY); ` +
+          `(GATING [${ECLIPSE_CLOUD_BANDS.shadowContrastRatio.lo}, ${ECLIPSE_CLOUD_BANDS.shadowContrastRatio.hi}] ` +
+          `${t.rawCompositeContrastInLegacyBand ? "inside" : "outside"}); ` +
           `terrain decrement observed/expected ${r6(decrement.observed)}/${r6(decrement.expected)}, ` +
           `residual ${r6(decrement.residual)}, quantization interval ` +
           `[${r6(decrement.quantization?.residualInterval?.lo)}, ${r6(decrement.quantization?.residualInterval?.hi)}], ` +
@@ -3210,7 +3283,7 @@ export async function runEclipseCloudResponseProbe() {
     // INVALID is printed as INVALID with its reason. The first run printed
     // "-18.9 ms/refresh", which reads like a measurement and is not one.
     console.log(
-      `COST (reported-only; historical obligation discharged): ` +
+      `COST (GATING fresh ABBA measurement): ` +
         `webgpu ${verdicts.cost.webgpu.valid ? `${r3(verdicts.cost.webgpuMsPerRefresh)} ms/refresh` : `INVALID — ${verdicts.cost.webgpu.invalidReason}`}; ` +
         `webgl ${verdicts.cost.webgl.valid ? `${r3(verdicts.cost.webglMsPerRefresh)} ms/refresh` : `INVALID — ${verdicts.cost.webgl.invalidReason}`}`,
     );

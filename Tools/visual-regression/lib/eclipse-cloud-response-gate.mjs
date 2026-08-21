@@ -154,7 +154,7 @@ export function predictFactor(obscuration, autoExposure = false) {
 /**
  * C13-41's DIRECTIONAL fraction — the share of the surviving flux a cast
  * shadow can still modulate. Deliberately NOT the scene factor: see
- * `shadowContrastRejectsAlternativeDesign` for the arithmetic that rules the
+ * `shadowDecrementRejectsAlternativeDesign` for the arithmetic that rules the
  * substitution out.
  *
  * @param {number} obscuration
@@ -203,13 +203,16 @@ export const CLOUD_SHADOW_BEER_FLOOR = 0.35;
 // (C13-41-SHADOW-CONTRAST-ECLIPSE-EXCESS, CO-17)
 // ─────────────────────────────────────────────────────────────────────────────
 //
-// This is retained as a HISTORICAL RAW-COMPOSITE DIAGNOSTIC. The fourth Edge
+// This is retained as a HISTORICAL MECHANISM DIAGNOSTIC beside the operative
+// raw-composite gate. The fourth Edge
 // run measured `shadowContrastRatioAtDeepest` = 1.0496 against the legacy
 // [0.97, 1.03] band, and the row derived the extension below on the hypothesis
 // that the shadowed floor was ambient-lit by a different law. The derivation
 // refutes that hypothesis without needing to know the split, but the recovered
 // run later proved that the captured band also contains ProceduralClouds' later
-// unshadowable over-composite. Consequently this model is reported, not gated.
+// unshadowable over-composite. Consequently this split model is reported, not
+// gated; R-2026-08-14-1 explicitly says that confound does not demote the raw
+// measured red.
 //
 // THE SHADER'S OWN STRUCTURE gives the split exactly. `GlobeTerrain.wgsl:4838`
 // applies the cast shadow as `color = color * sampleCloudGroundShadow(...)` — a
@@ -268,12 +271,14 @@ export const CLOUD_SHADOW_BEER_FLOOR = 0.35;
 // whole family is capped at 1.00084, and the measurement is 59x past that cap.
 // `shadowContrastModelIsBoundedByDirectional` gates the inequality.
 //
-// THE LEGACY BAND DOES NOT MOVE, BUT IT IS REPORTED-ONLY. The extension still
-// predicts 1.0002 and remains useful when comparing historical artifacts; it
-// cannot turn a post-cloud-composite raw ratio into a terrain product verdict.
-// `evaluateShadowDecrementModel` is the owned gate: its within-state difference
-// cancels the additive cloud term, then compares the eclipse/clear decrement
-// ratio with independent ABBA ground dim times actual producer strength.
+// THE LEGACY BAND DOES NOT MOVE AND R-2026-08-14-1 RESTORES IT AS A GATE. The
+// extension still predicts 1.0002 and remains useful when investigating why the
+// post-cloud-composite raw ratio reaches 1.0496; naming the composite confound
+// is not an authorization to discard that reading. `evaluateShadowDecrementModel`
+// remains a companion gate: its within-state difference cancels the additive
+// cloud term, then compares the eclipse/clear decrement ratio with independent
+// ABBA ground dim times actual producer strength. Passing the companion cannot
+// erase a miss on the raw band.
 //
 // WHAT THE DERIVATION DOES LOCALISE. Because F cancels, the published laws also
 // predict that BOTH ground bands dim by exactly F — `onNoShadow/offNoShadow` and
@@ -283,9 +288,9 @@ export const CLOUD_SHADOW_BEER_FLOOR = 0.35;
 // (1.181983 / 1.126131 = 1.0496). `extractShadowableDimming` inverts the two
 // bands for the shadowable term's own law and reads d/F = 1.000 / 0.992 / 0.995 /
 // 1.008 across the ladder — the shadowable path is exactly right to <1%, so the
-// under-dim lives in the residue the shadow cannot touch. This remains reported
-// historical diagnosis; the certified deck-free ABBA leg and decrement model
-// now carry the attribution and verdict.
+// under-dim lives in the residue the shadow cannot touch. This remains a
+// reported historical diagnosis; the raw invariant and the independently
+// replicated decrement model each retain their own verdict.
 
 /**
  * The ambient/direct-split prediction for the eclipse contrast ratio, in closed
@@ -1024,7 +1029,7 @@ export const ECLIPSE_CLOUD_BANDS = Object.freeze({
   shadowContrastRatio: band(
     0.97,
     1.03,
-    "LEGACY REPORTED-ONLY display band. The original prediction applies to the terrain surface immediately after its beer-shadow multiply, but lane B captures after ProceduralClouds composites C=(1-alpha)G+alphaH. H is an unshadowable, independently Reinhard-mapped cloud term, so the raw shadowed/unshadowed ratio is useful visual telemetry but is not the terrain invariant. The band remains unchanged for historical comparison; `shadowContrastInvariant` now gates the cloud-cancelling decrement ratio against independent ABBA ground dim times producer strength, using exact 8-bit quantization intervals.",
+    "prediction (ii), restored as an operative gate by maintainer ruling R-2026-08-14-1: the post-cloud-composite ratio-of-ratios at obscuration 0.9 must remain inside the original [0.97, 1.03] display band. ProceduralClouds' later composite is a known mechanism confound, but the ruling explicitly preserves the measured 1.0496 red until that mechanism is investigated; it does not authorize demotion. The cloud-cancelling decrement model remains a separate pair of gates against independent ABBA ground dim and producer strength, using exact 8-bit quantization intervals.",
   ),
 
   iblDeepestRatio: band(
@@ -1151,7 +1156,8 @@ export const ECLIPSE_CLOUD_GATE_PREDICATES = Object.freeze([
   "offShadowStrengthExactlyOne",
   "shadowStrengthMatchesDirectional",
   "shadowContrastInvariant",
-  "shadowContrastRejectsAlternativeDesign",
+  "shadowDecrementMatchesGroundDim",
+  "shadowDecrementRejectsAlternativeDesign",
   "shadowContrastModelIsBoundedByDirectional",
   // Lane B attribution leg — the deck-free ground's own dimming law. The
   // fresh-context and lit-surface preconditions are evaluated FIRST. The ABBA
@@ -1171,6 +1177,9 @@ export const ECLIPSE_CLOUD_GATE_PREDICATES = Object.freeze([
   "iblNonVacuous",
   "iblDimsAtDeepest",
   "iblRecovers",
+  // A fresh ABBA measurement is an eligibility prerequisite, not a product
+  // performance budget. Missing or ineligible accounting becomes STRUCTURAL.
+  "refreshCostMeasured",
   // Instrument health
   "determinismBracketHolds",
 ]);
@@ -1186,16 +1195,6 @@ export const ECLIPSE_CLOUD_PARITY_PREDICATES = Object.freeze([
  * legitimately read false.
  */
 export const ECLIPSE_CLOUD_REPORTED_ONLY_PREDICATES = Object.freeze([
-  // The captured lane-B image includes the procedural-cloud over-composite,
-  // which is applied after the terrain beer shadow. Keep the legacy raw ratio
-  // visible, but never let that mixed-domain number decide the terrain model.
-  "shadowCompositeContrastInLegacyBandReportedOnly",
-  // The refresh wall-clock obligation was discharged by the second Edge run
-  // (7.749 ms/refresh WebGPU, 1.607 WebGL). Later acceptance runs still retain
-  // the complete interleaved accounting and an explicit INVALID reason, but a
-  // noisy re-estimate cannot revoke that banked evidence and does not gate the
-  // redesigned-control closure criterion.
-  "refreshCostEstimateValidReportedOnly",
   // A C11-193 bounded-refresh deferral can merge two adjacent bucket edges
   // into a single fill. That is correct behaviour, not a defect, so the exact
   // reading is information rather than a verdict — the BAND gates.
@@ -1291,6 +1290,7 @@ export const ECLIPSE_CLOUD_LANE_PARENTS = Object.freeze({
   "deck-free": "shadow",
   "ibl-page": null,
   "ibl-model": "ibl-page",
+  "refresh-cost": "ibl-page",
 });
 
 /** Every gating predicate's blindness domain. Membership is spec-pinned. */
@@ -1316,11 +1316,15 @@ export const ECLIPSE_CLOUD_PREDICATE_LANES = Object.freeze({
   shadowNonVacuous: "shadow",
   offShadowStrengthExactlyOne: "cloud-page",
   shadowStrengthMatchesDirectional: "cloud-page",
+  // R-2026-08-14-1: the raw post-cloud-composite ratio is lane B's own
+  // measurement. A blind deck-free attribution control must never quarantine
+  // this red; only a blind shadow capture may make it unscorable.
+  shadowContrastInvariant: "shadow",
   // The decrement model consumes the independently replicated ABBA ground dim,
-  // so a blind deck-free control must quarantine it rather than silently fall
-  // back to the contaminated raw cloud-composite contrast.
-  shadowContrastInvariant: "deck-free",
-  shadowContrastRejectsAlternativeDesign: "deck-free",
+  // so a blind deck-free control correctly quarantines these two companion
+  // predicates without touching the raw invariant above.
+  shadowDecrementMatchesGroundDim: "deck-free",
+  shadowDecrementRejectsAlternativeDesign: "deck-free",
   // The split model's bound on itself: derived inside this module from the
   // published laws with no run input, so it is never quarantined — the same
   // domain, and for the same reason, as `predictedRefreshCountExact`.
@@ -1344,6 +1348,7 @@ export const ECLIPSE_CLOUD_PREDICATE_LANES = Object.freeze({
   iblNonVacuous: "ibl-model",
   iblDimsAtDeepest: "ibl-model",
   iblRecovers: "ibl-model",
+  refreshCostMeasured: "refresh-cost",
   // Instrument health
   determinismBracketHolds: "cloud-page",
 });
@@ -1383,25 +1388,61 @@ export function laneIsBlind(blind, domain) {
 // measurement, and the fleet already learned this for GPU timing (Batch 762's
 // mandatory interleaved-A/B protocol). The instrument's answer is structural:
 //
-//   1. BOTH legs run a DISCARDED warm-up segment before either is timed;
+//   1. BOTH legs run a DISCARDED full-schedule warm-up before either is timed,
+//      and each leg retains its own witness rather than one asserted boolean;
 //   2. the two legs are INTERLEAVED in segments over one schedule, so any
 //      monotone drift (thermal, cache, GC) lands on both in equal measure;
 //   3. the estimate is either non-negative or explicitly INVALID with a named
 //      reason — a negative number is never reported as if it were a cost.
 //
-// This function owns rule 3 and VERIFIES rules 1 and 2 from the accounting the
-// lane hands in, so a probe that quietly stops interleaving fails here rather
-// than reporting a plausible-looking number.
+// This function recomputes the estimate EXCLUSIVELY from the retained segment
+// records and verifies all three rules. The six aggregate fields remain useful
+// console/report summaries, but each must exactly equal the ledger-derived
+// value. A probe that quietly stops interleaving, drops a warm-up witness, or
+// hands in plausible historical summaries therefore fails here rather than
+// publishing a number.
 
-/** Minimum interleaved segments per leg. Two legs of one segment each is just
- * the sequential design that produced the negative reading. */
-export const REFRESH_COST_MIN_SEGMENTS_PER_LEG = 3;
+/** The ratified ABBA protocol uses exactly eight balanced segment pairs. */
+export const REFRESH_COST_SEGMENTS_PER_LEG = 8;
+/** Schema version for the live lane/protocol binding carried by cost ledgers. */
+export const REFRESH_COST_PROTOCOL_VERSION = 1;
+
+/**
+ * Independently derives the one admissible near-equal partition: for 801 / 8,
+ * one 101-frame pair followed by seven 100-frame pairs. The probe implements
+ * the same quotient/remainder construction inside the page; the gate never
+ * accepts arbitrary self-consistent bounds supplied by a report.
+ *
+ * @returns {Array<[number, number]>}
+ */
+export function deriveRefreshCostSegmentBounds() {
+  const quotient = Math.floor(SWEEP_FRAMES / REFRESH_COST_SEGMENTS_PER_LEG);
+  const remainder = SWEEP_FRAMES % REFRESH_COST_SEGMENTS_PER_LEG;
+  const bounds = [];
+  let from = 0;
+  for (
+    let pairIndex = 0;
+    pairIndex < REFRESH_COST_SEGMENTS_PER_LEG;
+    pairIndex++
+  ) {
+    const frames = quotient + (pairIndex < remainder ? 1 : 0);
+    bounds.push([from, from + frames]);
+    from += frames;
+  }
+  return bounds;
+}
 
 /**
  * @param {object} accounting The lane's `refreshCost` accounting.
+ * @param {object} binding Live outer-lane and run identity to bind against.
+ * @param {string} binding.runId The owning report's current run UUID.
+ * @param {string} binding.expectedBackend `webgpu` or `webgl` for this lane.
+ * @param {string} binding.expectedSessionLabel The driver's fixed lane label.
+ * @param {object} binding.lane The live outer IBL lane.
+ * @param {object} binding.peerLane The other backend's live outer IBL lane.
  * @returns {object} `{ valid, msPerRefresh, invalidReason, ... }`
  */
-export function computeRefreshCost(accounting) {
+export function computeRefreshCost(accounting, binding) {
   const base = {
     valid: false,
     msPerRefresh: null,
@@ -1416,6 +1457,10 @@ export function computeRefreshCost(accounting) {
     controlFrames: null,
     segmentsPerLeg: null,
     warmupBothLegs: null,
+    warmupWitnessCount: null,
+    retainedSegmentCount: null,
+    derivedFromSegments: false,
+    protocolBound: false,
   };
   const a = accounting;
   if (!a || typeof a !== "object") {
@@ -1426,66 +1471,454 @@ export function computeRefreshCost(accounting) {
     };
   }
 
-  const out = {
+  // No aggregate-only fallback exists. These records are the fresh primitive.
+  if (!Array.isArray(a.segments)) {
+    return {
+      ...base,
+      invalidReason:
+        "the lane retained no refresh-cost segment ledger — aggregate or historical summaries cannot substitute for fresh per-segment accounting",
+    };
+  }
+
+  const live = binding?.lane;
+  const peer = binding?.peerLane;
+  const protocol = a.protocol;
+  if (!binding || typeof binding !== "object" || !live) {
+    return {
+      ...base,
+      retainedSegmentCount: a.segments.length,
+      invalidReason:
+        "the refresh-cost ledger has no live outer-lane binding — a self-contained or historical ledger cannot score",
+    };
+  }
+  if (!protocol || typeof protocol !== "object") {
+    return {
+      ...base,
+      retainedSegmentCount: a.segments.length,
+      invalidReason:
+        "the refresh-cost ledger has no protocol header binding it to the live run, backend, session, and factor schedule",
+    };
+  }
+  const protocolBase = {
     ...base,
-    eclipseWallMs: Number.isFinite(a.eclipseWallMs) ? a.eclipseWallMs : null,
-    controlWallMs: Number.isFinite(a.controlWallMs) ? a.controlWallMs : null,
-    eclipseFills: Number.isFinite(a.eclipseFills) ? a.eclipseFills : null,
-    controlFills: Number.isFinite(a.controlFills) ? a.controlFills : null,
-    eclipseFrames: Number.isFinite(a.eclipseFrames) ? a.eclipseFrames : null,
-    controlFrames: Number.isFinite(a.controlFrames) ? a.controlFrames : null,
-    segmentsPerLeg: Number.isFinite(a.segmentsPerLeg) ? a.segmentsPerLeg : null,
-    warmupBothLegs: a.warmupBothLegs === true,
+    retainedSegmentCount: a.segments.length,
+  };
+  if (protocol.version !== REFRESH_COST_PROTOCOL_VERSION) {
+    return {
+      ...protocolBase,
+      invalidReason: `refresh-cost protocol version ${String(protocol.version)} is not ${REFRESH_COST_PROTOCOL_VERSION}`,
+    };
+  }
+  const expectedBackend = binding.expectedBackend;
+  if (expectedBackend !== "webgpu" && expectedBackend !== "webgl") {
+    return {
+      ...protocolBase,
+      invalidReason: `refresh-cost binding names unknown expected backend ${String(expectedBackend)}`,
+    };
+  }
+  if (live.rendererType !== expectedBackend) {
+    return {
+      ...protocolBase,
+      invalidReason: `live ${expectedBackend} cost lane resolved rendererType ${String(live.rendererType)}`,
+    };
+  }
+  if (protocol.backend !== expectedBackend) {
+    return {
+      ...protocolBase,
+      invalidReason: `refresh-cost protocol backend ${String(protocol.backend)} does not match live ${expectedBackend} lane`,
+    };
+  }
+  if (typeof binding.runId !== "string" || binding.runId.length === 0) {
+    return {
+      ...protocolBase,
+      invalidReason: "the owning report has no current run identity",
+    };
+  }
+  if (live.runId !== binding.runId || protocol.runId !== binding.runId) {
+    return {
+      ...protocolBase,
+      invalidReason: `refresh-cost run identity diverges (report ${binding.runId}, lane ${String(live.runId)}, ledger ${String(protocol.runId)})`,
+    };
+  }
+  if (
+    typeof binding.expectedSessionLabel !== "string" ||
+    binding.expectedSessionLabel.length === 0 ||
+    live.sessionLabel !== binding.expectedSessionLabel ||
+    protocol.sessionLabel !== binding.expectedSessionLabel
+  ) {
+    return {
+      ...protocolBase,
+      invalidReason: `refresh-cost session label diverges (expected ${String(binding.expectedSessionLabel)}, lane ${String(live.sessionLabel)}, ledger ${String(protocol.sessionLabel)})`,
+    };
+  }
+  if (
+    typeof live.sessionToken !== "string" ||
+    live.sessionToken.length === 0 ||
+    protocol.sessionToken !== live.sessionToken
+  ) {
+    return {
+      ...protocolBase,
+      invalidReason: `refresh-cost session token does not bind the ledger to live ${binding.expectedSessionLabel}`,
+    };
+  }
+  if (
+    typeof live.costLedgerId !== "string" ||
+    live.costLedgerId.length === 0 ||
+    protocol.ledgerId !== live.costLedgerId
+  ) {
+    return {
+      ...protocolBase,
+      invalidReason: `refresh-cost ledger identity does not bind to live ${binding.expectedSessionLabel}`,
+    };
+  }
+  if (
+    peer &&
+    (live.sessionToken === peer.sessionToken ||
+      live.costLedgerId === peer.costLedgerId)
+  ) {
+    return {
+      ...protocolBase,
+      invalidReason:
+        "WebGPU and WebGL refresh-cost lanes reuse a session token or ledger identity",
+    };
+  }
+  if (
+    live.sweepFrames !== SWEEP_FRAMES ||
+    protocol.sweepFrames !== SWEEP_FRAMES
+  ) {
+    return {
+      ...protocolBase,
+      invalidReason: `refresh-cost sweep length diverges from the ratified ${SWEEP_FRAMES} frames (lane ${String(live.sweepFrames)}, ledger ${String(protocol.sweepFrames)})`,
+    };
+  }
+  if (protocol.segmentsPerLeg !== REFRESH_COST_SEGMENTS_PER_LEG) {
+    return {
+      ...protocolBase,
+      invalidReason: `refresh-cost protocol declares ${String(protocol.segmentsPerLeg)} pairs per leg, not exactly ${REFRESH_COST_SEGMENTS_PER_LEG}`,
+    };
+  }
+  if (
+    !Array.isArray(live.factors) ||
+    live.factors.length !== SWEEP_FRAMES ||
+    !Array.isArray(protocol.factorSchedule) ||
+    protocol.factorSchedule.length !== SWEEP_FRAMES
+  ) {
+    return {
+      ...protocolBase,
+      invalidReason: `refresh-cost factor schedule must carry exactly ${SWEEP_FRAMES} live and ledger entries`,
+    };
+  }
+  for (let index = 0; index < SWEEP_FRAMES; index++) {
+    const laneFactor = live.factors[index];
+    const ledgerFactor = protocol.factorSchedule[index];
+    if (!Number.isFinite(laneFactor) || !Object.is(ledgerFactor, laneFactor)) {
+      return {
+        ...protocolBase,
+        invalidReason: `refresh-cost factor schedule diverges from the live lane at frame ${index}`,
+      };
+    }
+    const rampIndex =
+      index < SWEEP_RISING_FRAMES ? index : SWEEP_FRAMES - 1 - index;
+    const ratifiedFactor = predictFactor(
+      (SWEEP_PEAK_OBSCURATION * rampIndex) / (SWEEP_RISING_FRAMES - 1),
+    );
+    if (
+      Math.abs(laneFactor - ratifiedFactor) >
+      ECLIPSE_CLOUD_BANDS.factorTolerance.hi
+    ) {
+      return {
+        ...protocolBase,
+        invalidReason: `live refresh-cost factor schedule misses the ratified sweep at frame ${index}`,
+      };
+    }
+  }
+
+  const segmentsPerLeg = a.segmentsPerLeg;
+  const ledgerBase = {
+    ...protocolBase,
+    segmentsPerLeg: Number.isSafeInteger(segmentsPerLeg)
+      ? segmentsPerLeg
+      : null,
+    retainedSegmentCount: a.segments.length,
+    protocolBound: true,
+  };
+  // RULE 2 — exactly the ratified eight-pair ABBA protocol. A different N is a
+  // different estimator even if it remains internally self-consistent.
+  if (segmentsPerLeg !== REFRESH_COST_SEGMENTS_PER_LEG) {
+    return {
+      ...ledgerBase,
+      invalidReason: `the refresh-cost ledger has ${String(segmentsPerLeg)} pairs per leg, not exactly the ratified ${REFRESH_COST_SEGMENTS_PER_LEG}`,
+    };
+  }
+  if (a.segments.length !== 2 * segmentsPerLeg) {
+    return {
+      ...ledgerBase,
+      invalidReason: `the refresh-cost ledger has ${a.segments.length} records, not the exact 2*N cardinality ${2 * segmentsPerLeg} for ${segmentsPerLeg} segment pairs`,
+    };
+  }
+
+  // RULE 1 — two retained, per-leg, full-schedule warm-up witnesses. A single
+  // `warmupBothLegs: true` summary is not evidence that either loop ran.
+  if (!Array.isArray(a.warmups) || a.warmups.length !== 2) {
+    return {
+      ...ledgerBase,
+      warmupWitnessCount: Array.isArray(a.warmups) ? a.warmups.length : null,
+      invalidReason: `warm-up parity has ${Array.isArray(a.warmups) ? a.warmups.length : 0} per-leg witness(es), not exactly two`,
+    };
+  }
+  const withWarmups = {
+    ...ledgerBase,
+    warmupWitnessCount: a.warmups.length,
+  };
+  const warmupsByLeg = new Map();
+  for (const [index, witness] of a.warmups.entries()) {
+    if (!witness || typeof witness !== "object") {
+      return {
+        ...withWarmups,
+        invalidReason: `warm-up witness ${index} is not an object`,
+      };
+    }
+    if (witness.leg !== "eclipse" && witness.leg !== "control") {
+      return {
+        ...withWarmups,
+        invalidReason: `warm-up witness ${index} names unknown leg ${String(witness.leg)}`,
+      };
+    }
+    if (warmupsByLeg.has(witness.leg)) {
+      return {
+        ...withWarmups,
+        invalidReason: `warm-up witnesses duplicate the ${witness.leg} leg`,
+      };
+    }
+    if (witness.ledgerId !== protocol.ledgerId) {
+      return {
+        ...withWarmups,
+        invalidReason: `the ${witness.leg} warm-up witness is not bound to refresh-cost ledger ${protocol.ledgerId}`,
+      };
+    }
+    if (witness.completed !== true) {
+      return {
+        ...withWarmups,
+        invalidReason: `the ${witness.leg} warm-up did not retain a completed full-schedule witness`,
+      };
+    }
+    if (
+      !Number.isSafeInteger(witness.from) ||
+      !Number.isSafeInteger(witness.to) ||
+      !Number.isSafeInteger(witness.frames) ||
+      witness.from !== 0 ||
+      witness.to !== SWEEP_FRAMES ||
+      witness.frames !== SWEEP_FRAMES
+    ) {
+      return {
+        ...withWarmups,
+        invalidReason: `the ${witness.leg} warm-up witness does not cover the exact ratified schedule 0..${SWEEP_FRAMES} (${String(witness.from)}..${String(witness.to)}, ${String(witness.frames)} frames)`,
+      };
+    }
+    warmupsByLeg.set(witness.leg, witness);
+  }
+  const eclipseWarmup = warmupsByLeg.get("eclipse");
+  const controlWarmup = warmupsByLeg.get("control");
+  if (!eclipseWarmup || !controlWarmup) {
+    return {
+      ...withWarmups,
+      invalidReason:
+        "warm-up parity requires one completed eclipse witness and one completed control witness",
+    };
+  }
+  if (
+    eclipseWarmup.from !== controlWarmup.from ||
+    eclipseWarmup.to !== controlWarmup.to ||
+    eclipseWarmup.frames !== controlWarmup.frames
+  ) {
+    return {
+      ...withWarmups,
+      invalidReason: `the warm-up witnesses cover different schedules (${eclipseWarmup.from}..${eclipseWarmup.to} eclipse vs ${controlWarmup.from}..${controlWarmup.to} control)`,
+    };
+  }
+  if (a.warmupBothLegs !== true) {
+    return {
+      ...withWarmups,
+      invalidReason:
+        "warm-up parity summary disagrees with the two completed per-leg witnesses",
+    };
+  }
+
+  const totals = {
+    eclipse: { frames: 0, wallMs: 0, fills: 0 },
+    control: { frames: 0, wallMs: 0, fills: 0 },
+  };
+  const expectedBounds = deriveRefreshCostSegmentBounds();
+  let nextFrom = 0;
+  for (let pairIndex = 0; pairIndex < segmentsPerLeg; pairIndex++) {
+    const pair = a.segments.slice(2 * pairIndex, 2 * pairIndex + 2);
+    const expectedLegs =
+      (pairIndex & 1) === 0 ? ["eclipse", "control"] : ["control", "eclipse"];
+    for (let position = 0; position < pair.length; position++) {
+      const segment = pair[position];
+      const expectedLeg = expectedLegs[position];
+      if (!segment || typeof segment !== "object") {
+        return {
+          ...withWarmups,
+          invalidReason: `refresh-cost segment ${2 * pairIndex + position} is not an object`,
+        };
+      }
+      if (segment.pairIndex !== pairIndex) {
+        return {
+          ...withWarmups,
+          invalidReason: `refresh-cost segment ${2 * pairIndex + position} carries pairIndex ${String(segment.pairIndex)}, expected ${pairIndex}`,
+        };
+      }
+      if (segment.leg !== expectedLeg) {
+        return {
+          ...withWarmups,
+          invalidReason: `refresh-cost pair ${pairIndex} violates ABBA order at position ${position}: ${String(segment.leg)} appeared where ${expectedLeg} was required`,
+        };
+      }
+      if (segment.ledgerId !== protocol.ledgerId) {
+        return {
+          ...withWarmups,
+          invalidReason: `refresh-cost pair ${pairIndex} ${segment.leg} is not bound to ledger ${protocol.ledgerId}`,
+        };
+      }
+      if (
+        !Number.isSafeInteger(segment.from) ||
+        !Number.isSafeInteger(segment.to) ||
+        segment.from < 0 ||
+        segment.to <= segment.from
+      ) {
+        return {
+          ...withWarmups,
+          invalidReason: `refresh-cost pair ${pairIndex} ${segment.leg} has invalid integer bounds ${String(segment.from)}..${String(segment.to)}`,
+        };
+      }
+      if (
+        !Number.isSafeInteger(segment.frames) ||
+        segment.frames < 0 ||
+        segment.frames !== segment.to - segment.from
+      ) {
+        return {
+          ...withWarmups,
+          invalidReason: `refresh-cost pair ${pairIndex} ${segment.leg} has invalid integer frame count ${String(segment.frames)} for bounds ${segment.from}..${segment.to}`,
+        };
+      }
+      if (
+        !Number.isSafeInteger(segment.fills) ||
+        segment.fills < 0 ||
+        segment.fills > segment.frames
+      ) {
+        return {
+          ...withWarmups,
+          invalidReason: `refresh-cost pair ${pairIndex} ${segment.leg} has invalid integer fill count ${String(segment.fills)} for ${segment.frames} frames`,
+        };
+      }
+      if (!Number.isFinite(segment.wallMs) || segment.wallMs < 0) {
+        return {
+          ...withWarmups,
+          invalidReason: `refresh-cost pair ${pairIndex} ${segment.leg} has invalid non-negative wall time ${String(segment.wallMs)}`,
+        };
+      }
+    }
+
+    const [first, second] = pair;
+    if (
+      first.from !== second.from ||
+      first.to !== second.to ||
+      first.frames !== second.frames
+    ) {
+      return {
+        ...withWarmups,
+        invalidReason: `refresh-cost pair ${pairIndex} does not share bounds/frame count (${first.from}..${first.to}/${first.frames} vs ${second.from}..${second.to}/${second.frames})`,
+      };
+    }
+    const [expectedFrom, expectedTo] = expectedBounds[pairIndex];
+    if (
+      first.from !== expectedFrom ||
+      first.to !== expectedTo ||
+      first.frames !== expectedTo - expectedFrom
+    ) {
+      return {
+        ...withWarmups,
+        invalidReason: `refresh-cost pair ${pairIndex} covers ${first.from}..${first.to}/${first.frames}, not the independently derived ratified bounds ${expectedFrom}..${expectedTo}/${expectedTo - expectedFrom}`,
+      };
+    }
+    if (first.from !== nextFrom) {
+      return {
+        ...withWarmups,
+        invalidReason: `refresh-cost pair ${pairIndex} starts at ${first.from}, expected contiguous schedule bound ${nextFrom}`,
+      };
+    }
+    nextFrom = first.to;
+    for (const segment of pair) {
+      totals[segment.leg].frames += segment.frames;
+      totals[segment.leg].wallMs += segment.wallMs;
+      totals[segment.leg].fills += segment.fills;
+      if (!Number.isFinite(totals[segment.leg].wallMs)) {
+        return {
+          ...withWarmups,
+          invalidReason: `the ${segment.leg} segment wall-time sum overflowed`,
+        };
+      }
+    }
+  }
+
+  const scheduleFrames = eclipseWarmup.frames;
+  if (nextFrom !== scheduleFrames) {
+    return {
+      ...withWarmups,
+      invalidReason: `the refresh-cost segment bounds end at ${nextFrom}, not the warm-up schedule end ${scheduleFrames}`,
+    };
+  }
+  if (
+    totals.eclipse.frames !== scheduleFrames ||
+    totals.control.frames !== scheduleFrames
+  ) {
+    return {
+      ...withWarmups,
+      invalidReason: `the two legs do not each cover the warmed schedule (${totals.eclipse.frames} eclipse, ${totals.control.frames} control, ${scheduleFrames} required)`,
+    };
+  }
+
+  const out = {
+    ...withWarmups,
+    eclipseWallMs: totals.eclipse.wallMs,
+    controlWallMs: totals.control.wallMs,
+    eclipseFills: totals.eclipse.fills,
+    controlFills: totals.control.fills,
+    eclipseFrames: totals.eclipse.frames,
+    controlFrames: totals.control.frames,
+    warmupBothLegs: true,
+    derivedFromSegments: true,
   };
 
-  // RULE 1 — warm-up parity. This is the named cause of the first run's
-  // negative reading, so its absence is its own reason rather than a generic
-  // "invalid".
-  if (out.warmupBothLegs !== true) {
-    return {
-      ...out,
-      invalidReason:
-        "warm-up parity was not established — only one leg paid the first-touch cost, which is exactly the asymmetry that produced the first run's negative per-refresh",
-    };
-  }
-
-  // RULE 2 — interleaving. A single segment per leg is the sequential design.
-  if (!(out.segmentsPerLeg >= REFRESH_COST_MIN_SEGMENTS_PER_LEG)) {
-    return {
-      ...out,
-      invalidReason: `the legs were not interleaved (${out.segmentsPerLeg} segment(s) per leg, minimum ${REFRESH_COST_MIN_SEGMENTS_PER_LEG}) — a sequential A/B attributes drift to the effect`,
-    };
-  }
-  if (out.eclipseFrames !== out.controlFrames) {
-    return {
-      ...out,
-      invalidReason: `the two legs rendered different frame counts (${out.eclipseFrames} eclipse vs ${out.controlFrames} control) — everything except the fills no longer cancels`,
-    };
-  }
-  if (!(out.eclipseFrames > 0)) {
-    return {
-      ...out,
-      invalidReason: "neither leg rendered a frame",
-    };
+  // Aggregates are redundancy checks only. Every output above came from the
+  // primitive ledger; a forged or stale summary makes the evidence STRUCTURAL.
+  for (const [field, derived] of [
+    ["eclipseFrames", out.eclipseFrames],
+    ["controlFrames", out.controlFrames],
+    ["eclipseWallMs", out.eclipseWallMs],
+    ["controlWallMs", out.controlWallMs],
+    ["eclipseFills", out.eclipseFills],
+    ["controlFills", out.controlFills],
+  ]) {
+    if (!Object.is(a[field], derived)) {
+      return {
+        ...out,
+        invalidReason: `declared refresh-cost aggregate ${field}=${String(a[field])} does not equal the retained segment total ${String(derived)}`,
+      };
+    }
   }
 
   const fillDelta = out.eclipseFills - out.controlFills;
-  if (!Number.isFinite(fillDelta) || !(fillDelta > 0)) {
+  if (!(fillDelta > 0)) {
     return {
       ...out,
-      fillDelta: Number.isFinite(fillDelta) ? fillDelta : null,
-      invalidReason: `no eclipse-driven fills to attribute cost to (${out.eclipseFills} eclipse vs ${out.controlFills} control) — this run's reported-only differential cannot be formed`,
+      fillDelta,
+      invalidReason: `no eclipse-driven fills to attribute cost to (${out.eclipseFills} eclipse vs ${out.controlFills} control) — this run's fresh differential cannot be formed`,
     };
   }
 
   const msDelta = out.eclipseWallMs - out.controlWallMs;
-  if (!Number.isFinite(msDelta)) {
-    return {
-      ...out,
-      fillDelta,
-      invalidReason: "a leg reported no wall clock",
-    };
-  }
   // RULE 3 — non-negative or INVALID. A negative differential means the control
   // leg outran the eclipse leg, i.e. something other than the fills dominated;
   // reporting `msDelta / fillDelta` there would publish a negative cost as a
@@ -2031,15 +2464,18 @@ export function judgeEclipseCloudResponse(run) {
     const off = ratio(rung?.shadow?.offShadow, rung?.shadow?.offNoShadow);
     return ratio(on, off);
   };
-  // Legacy raw image telemetry. ProceduralClouds composites an independently
-  // tone-mapped cloud term after the terrain shadow, so this ratio is not the
-  // terrain invariant and cannot gate it.
+  // The original raw image criterion. ProceduralClouds composites an
+  // independently tone-mapped cloud term after the terrain shadow, which is a
+  // known mechanism confound, but R-2026-08-14-1 explicitly restored this
+  // unchanged [0.97, 1.03] reading as the operative prediction-(ii) gate. The
+  // decrement model below remains a separately scored diagnostic mechanism; it
+  // cannot replace or erase a valid raw miss.
   v.shadowContrastRatioAtDeepest = contrastRatioAt(deepest);
   v.shadowContrastRatioAtDiscriminating = contrastRatioAt(discriminating);
   v.shadowCompositeContrastRatioAtDeepest = v.shadowContrastRatioAtDeepest;
   v.shadowCompositeContrastRatioAtDiscriminating =
     v.shadowContrastRatioAtDiscriminating;
-  v.shadowCompositeContrastInLegacyBandReportedOnly = inBand(
+  v.shadowContrastInvariant = inBand(
     v.shadowContrastRatioAtDeepest,
     B.shadowContrastRatio,
   );
@@ -2062,7 +2498,7 @@ export function judgeEclipseCloudResponse(run) {
   });
   v.shadowDecrementModelAtDeepest =
     v.shadowDecrementModel[v.shadowDecrementModel.length - 1] ?? null;
-  v.shadowContrastInvariant =
+  v.shadowDecrementMatchesGroundDim =
     v.shadowDecrementModel.length > 0 &&
     v.shadowDecrementModel.every(
       (entry) => entry.valid === true && entry.withinQuantizationBound === true,
@@ -2075,7 +2511,7 @@ export function judgeEclipseCloudResponse(run) {
   v.rejectedDesignContrastRatio =
     shadowContrast(predictFactor(discriminatingObscuration)) /
     shadowContrast(1.0);
-  v.shadowContrastRejectsAlternativeDesign =
+  v.shadowDecrementRejectsAlternativeDesign =
     v.shadowDecrementModel.length > 0 &&
     v.shadowDecrementModel[rungs.indexOf(discriminating)]?.valid === true &&
     v.shadowDecrementModel[rungs.indexOf(discriminating)]
@@ -2317,8 +2753,7 @@ export function judgeEclipseCloudResponse(run) {
     footprint: rungs[0]?.shadow?.footprintOff ?? null,
     producerAndFootprintCertified: v.shadowProducerAndFootprintCertified,
     rawCompositeContrastAtDeepest: v.shadowCompositeContrastRatioAtDeepest,
-    rawCompositeContrastInLegacyBand:
-      v.shadowCompositeContrastInLegacyBandReportedOnly,
+    rawCompositeContrastInLegacyBand: v.shadowContrastInvariant,
     decrementModelAtDeepest: v.shadowDecrementModelAtDeepest,
     groundOnly: v.shadowGroundOnly,
     groundRetention: v.shadowGroundRetentionRatio,
@@ -2429,8 +2864,20 @@ export function judgeEclipseCloudResponse(run) {
   // eclipse-driven fills, over INTERLEAVED legs that both paid a discarded
   // warm-up. `computeRefreshCost` owns the arithmetic AND the validity rules;
   // see its header for why a sequential A/B is not a measurement.
-  const webgpuCost = computeRefreshCost(gpu.refreshCost);
-  const webglCost = computeRefreshCost(gl.refreshCost);
+  const webgpuCost = computeRefreshCost(gpu.refreshCost, {
+    runId: run?.runId,
+    expectedBackend: "webgpu",
+    expectedSessionLabel: "ibl-webgpu",
+    lane: gpu,
+    peerLane: gl,
+  });
+  const webglCost = computeRefreshCost(gl.refreshCost, {
+    runId: run?.runId,
+    expectedBackend: "webgl",
+    expectedSessionLabel: "ibl-webgl",
+    lane: gl,
+    peerLane: gpu,
+  });
   const cost = {
     webgpu: webgpuCost,
     webgl: webglCost,
@@ -2444,11 +2891,19 @@ export function judgeEclipseCloudResponse(run) {
       webglCost.valid ? null : `webgl: ${webglCost.invalidReason}`,
     ].filter((reason) => reason !== null),
   };
-  // Reported-only on closure reruns. The row has no performance budget, and
-  // its one-time wall-clock obligation was discharged by the banked second
-  // Edge run. A later INVALID estimate remains visible with its exact reason;
-  // it is evidence about this estimator, not a new product failure.
-  v.refreshCostEstimateValidReportedOnly = webgpuCost.valid && webglCost.valid;
+  // R-2026-08-14-1 restored this as an operative eligibility gate. The row has
+  // no performance budget, so any finite non-negative measured cost is a valid
+  // measurement rather than a speed PASS. Missing or ineligible accounting
+  // makes the refresh-cost subject unevaluable and therefore STRUCTURAL, with
+  // the exact `computeRefreshCost` reason retained below; it is never converted
+  // into a product FAIL and historical estimates are never substituted.
+  v.refreshCostMeasured = webgpuCost.valid && webglCost.valid;
+  if (!isBlind("ibl-page") && !v.refreshCostMeasured) {
+    markBlind(
+      "refresh-cost",
+      `fresh refresh-cost measurement is ineligible: ${cost.invalidReasons.join("; ") || "no valid backend measurement was produced"}`,
+    );
+  }
 
   // ── Parity ───────────────────────────────────────────────────────────────
   const parity = {};

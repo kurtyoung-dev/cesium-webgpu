@@ -316,7 +316,7 @@ const RUN_LANE = async (cfg) => {
     }
     const settledFrames = await pin.settle(frameTime, cfg.viewSettleMs);
     // ── P7: same-task capture.
-    const frame = pin.capture(frameTime, wantPng);
+    const frame = await pin.capture(frameTime, wantPng);
     return {
       label,
       settledFrames,

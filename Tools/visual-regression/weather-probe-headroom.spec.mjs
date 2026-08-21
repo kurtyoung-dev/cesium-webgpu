@@ -1,8 +1,6 @@
 // weather-probe-headroom.spec.mjs — browser-free guard for the Batch-861
-// Gate-B repairs: `probe-weather-metar.mjs`'s gate-4 partial-coverage
-// discriminator, and `probe-weather-channels.mjs`'s migration onto the shared
-// pinning module with a BRACKETING determinism control.
-// @purpose Guard for Gate-B probe repairs: METAR gate-4 partial-coverage discriminator and channels-probe migration onto shared pinning with brackets.
+// Gate-B repairs and the pinning fleet's transitive immutable-capture doctrine.
+// @purpose Guard Gate-B headroom/determinism repairs plus canonical immutable capture across the shared weather pinning helper and every direct consumer.
 // @status ACTIVE
 //
 // Both repairs are repairs to a GATE, so a spec that only exercised the correct
@@ -20,10 +18,11 @@
 // false-greens on Windows.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { Script } from "node:vm";
 
 import {
   collectGlobeReadinessStructural,
@@ -32,8 +31,18 @@ import {
   collectRepeatStructural,
   COVERAGE_HEADROOM_BAND,
   inHeadroomBand,
+  installWeatherPinHarness,
+  installWeatherPinHarnessOnPage,
   selectPartialCoverageBand,
 } from "./lib/weather-probe-pinning.mjs";
+import { FUSED_SNAPSHOT_CAPTURE_SOURCE } from "./lib/same-task-capture.mjs";
+import {
+  analyzeWeatherCaptureConsumer,
+  analyzeWeatherCaptureDoctrine,
+  censusWeatherCaptureConsumers,
+  formatWeatherCaptureFailures,
+  WEATHER_CAPTURE_FAILURE,
+} from "./lib/weather-capture-doctrine.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(HERE, "..", "..");
@@ -54,6 +63,61 @@ const CHANNELS = readNormalized(
 );
 const METAR_CODE = stripComments(METAR);
 const CHANNELS_CODE = stripComments(CHANNELS);
+
+const WEATHER_PINNING = readNormalized(
+  "Tools/visual-regression/lib/weather-probe-pinning.mjs",
+);
+
+const CAPTURE_CANDIDATE_PATHS = Object.freeze(
+  readdirSync(HERE)
+    .filter((name) => /^probe-.*\.mjs$/u.test(name))
+    .map((name) => `Tools/visual-regression/${name}`)
+    .sort(),
+);
+const CAPTURE_CANDIDATE_SOURCES = Object.freeze(
+  Object.fromEntries(
+    CAPTURE_CANDIDATE_PATHS.map((relative) => [
+      relative,
+      readNormalized(relative),
+    ]),
+  ),
+);
+const CAPTURE_CENSUS = censusWeatherCaptureConsumers(CAPTURE_CANDIDATE_SOURCES);
+const CAPTURE_CONSUMER_PATHS = CAPTURE_CENSUS.paths;
+const CAPTURE_CONSUMERS = CAPTURE_CENSUS.consumers;
+
+const weatherCaptureDoctrineFailures = ({
+  candidateSources = CAPTURE_CANDIDATE_SOURCES,
+  consumers = CAPTURE_CONSUMERS,
+  pinning = WEATHER_PINNING,
+  snapshot = FUSED_SNAPSHOT_CAPTURE_SOURCE,
+} = {}) =>
+  analyzeWeatherCaptureDoctrine({
+    candidateSources,
+    consumers,
+    pinning,
+    snapshot,
+  });
+
+const captureConsumerFixture = (
+  body = "",
+) => `const pin = globalThis.__weatherPin;
+const bandMean = (frame) => {
+  let sum = 0;
+  for (const value of frame.data) sum += value;
+  return sum;
+};
+const metricFrame = await pin.capture(0, true);
+const metric = bandMean(metricFrame);
+const documentaryPng = metricFrame.png;
+void metric;
+void documentaryPng;
+${body}`;
+
+const captureConsumerFailures = (body = "") =>
+  analyzeWeatherCaptureConsumer(captureConsumerFixture(body), {
+    relative: "reviewer-capture-mutant.mjs",
+  }).failures;
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -653,6 +717,1074 @@ test("both probes keep the offline globe in their URL", () => {
       source,
       /renderer=webgpu&offline=true/,
       `${name} must load the offline globe`,
+    );
+  }
+});
+
+test("an unparseable consumer is a PARSE_ERROR red, never a silent skip", () => {
+  const { failures } = analyzeWeatherCaptureConsumer("const broken = (;", {
+    relative: "Tools/visual-regression/probe-weather-fixture-broken.mjs",
+  });
+  assert.ok(failures.length > 0, "an unparseable source produced no failure");
+  assert.ok(
+    failures.some((f) => f.code === WEATHER_CAPTURE_FAILURE.PARSE_ERROR),
+    "the failure is not classified parse-error: " + JSON.stringify(failures),
+  );
+});
+
+test("capture doctrine traverses the shared helper and every direct probe consumer", () => {
+  assert.deepEqual(CAPTURE_CONSUMER_PATHS, [
+    "Tools/visual-regression/probe-cloud-shadows-flagon.mjs",
+    "Tools/visual-regression/probe-cloud-shadows-polar.mjs",
+    "Tools/visual-regression/probe-eclipse-cloud-response.mjs",
+    "Tools/visual-regression/probe-weather-channels.mjs",
+    "Tools/visual-regression/probe-weather-edr-mock.mjs",
+    "Tools/visual-regression/probe-weather-ingest.mjs",
+    "Tools/visual-regression/probe-weather-metar.mjs",
+    "Tools/visual-regression/probe-weather-seam-poles.mjs",
+    "Tools/visual-regression/probe-weather-wcs.mjs",
+  ]);
+  assert.deepEqual(weatherCaptureDoctrineFailures(), []);
+});
+
+test("capture installer emits one parseable canonical init script and fails closed without it", async () => {
+  let installed;
+  const page = {
+    async addInitScript(options) {
+      installed = options;
+    },
+  };
+  await installWeatherPinHarnessOnPage(page);
+  assert.deepEqual(Object.keys(installed), ["content"]);
+  assert.match(
+    installed.content,
+    /const makeFusedSnapshotCapture = \(scene, canvas, timeFn\) =>/u,
+  );
+  assert.match(installed.content, /\(makeFusedSnapshotCapture\);\s*$/u);
+  assert.doesNotThrow(() => new Script(installed.content));
+  assert.throws(
+    () => installWeatherPinHarness(),
+    /requires the canonical fused snapshot helper/u,
+  );
+});
+
+test("capture doctrine rejects transitive and consumer mutants", () => {
+  const eclipsePath =
+    "Tools/visual-regression/probe-eclipse-cloud-response.mjs";
+  const eclipse = CAPTURE_CONSUMERS[eclipsePath];
+  const withEclipse = (mutated) => ({
+    ...CAPTURE_CONSUMERS,
+    [eclipsePath]: mutated,
+  });
+  const replaceExactlyOnce = (source, before, after, label) => {
+    assert.equal(
+      source.split(before).length - 1,
+      1,
+      `${label} fixture must match exactly once`,
+    );
+    return source.replace(before, after);
+  };
+  const mutants = [
+    [
+      "shared-helper live-canvas drawImage/getImageData",
+      {
+        pinning: replaceExactlyOnce(
+          WEATHER_PINNING,
+          "const snapshotPromise = fused.captureSnapshot();",
+          `const live = document.createElement("canvas").getContext("2d");
+      live.drawImage(canvas, 0, 0);
+      live.getImageData(0, 0, canvas.width, canvas.height);
+      const snapshotPromise = fused.captureSnapshot();`,
+          "shared-helper live read",
+        ),
+      },
+      /weather pinning reads the live WebGPU canvas/u,
+    ],
+    [
+      "consumer live-canvas drawImage/getImageData",
+      {
+        consumers: withEclipse(
+          replaceExactlyOnce(
+            eclipse,
+            "const frame = await pin.capture(julian, wantPng);",
+            `const liveContext = document.createElement("canvas").getContext("2d");
+    liveContext.drawImage(scene.canvas, 0, 0);
+    liveContext.getImageData(0, 0, scene.canvas.width, scene.canvas.height);
+    const frame = await pin.capture(julian, wantPng);`,
+            "consumer live read",
+          ),
+        ),
+      },
+      /drawImage bypasses|getImageData bypasses/u,
+    ],
+    [
+      "consumer live-canvas aliases",
+      {
+        consumers: withEclipse(
+          replaceExactlyOnce(
+            eclipse,
+            "const frame = await pin.capture(julian, wantPng);",
+            `const liveContext = document.createElement("canvas").getContext("2d");
+    const drawLive = liveContext.drawImage.bind(liveContext);
+    const { getImageData: readLive } = liveContext;
+    drawLive(scene.canvas, 0, 0);
+    readLive(0, 0, scene.canvas.width, scene.canvas.height);
+    const frame = await pin.capture(julian, wantPng);`,
+            "consumer aliased live read",
+          ),
+        ),
+      },
+      /drawImage bypasses|getImageData bypasses/u,
+    ],
+    [
+      "separate documentary capture",
+      {
+        consumers: withEclipse(
+          replaceExactlyOnce(
+            eclipse,
+            "const offCloudsPng = deepest ? aOffCloudsFrame.png : null;",
+            `const documentaryFrame = await pin.capture(julian, true);
+    const offCloudsPng = deepest ? documentaryFrame.png : null;`,
+            "separate documentary frame",
+          ),
+        ),
+      },
+      /documentary PNG uses a separate capture/u,
+    ],
+    [
+      "separate documentary capture through a member alias",
+      {
+        consumers: withEclipse(
+          replaceExactlyOnce(
+            eclipse,
+            "const offCloudsPng = deepest ? aOffCloudsFrame.png : null;",
+            `const documentaryFrame = await pin.capture(julian, true);
+    const documentaryFrames = { offClouds: documentaryFrame };
+    const offCloudsPng = deepest ? documentaryFrames.offClouds.png : null;`,
+            "member-aliased documentary frame",
+          ),
+        ),
+      },
+      /documentary PNG uses a separate capture/u,
+    ],
+    [
+      "separate documentary wrapper capture",
+      {
+        consumers: withEclipse(
+          replaceExactlyOnce(
+            eclipse,
+            "const offCloudsPng = deepest ? aOffCloudsFrame.png : null;",
+            `const documentaryFrame = await captureLabelled(
+      "documentary-only",
+      julian,
+      true,
+    );
+    const offCloudsPng = deepest ? documentaryFrame.png : null;`,
+            "separate documentary wrapper frame",
+          ),
+        ),
+      },
+      /documentary PNG uses a separate capture/u,
+    ],
+    [
+      "separate documentary capture through nested member aliases",
+      {
+        consumers: withEclipse(
+          replaceExactlyOnce(
+            eclipse,
+            "const offCloudsPng = deepest ? aOffCloudsFrame.png : null;",
+            `const documentaryFrame = await pin.capture(julian, true);
+    const documentaryFrames = { deepest: { frame: documentaryFrame } };
+    const documentaryAlias = documentaryFrames.deepest.frame;
+    const offCloudsPng = deepest ? documentaryAlias.png : null;`,
+            "nested-member documentary frame",
+          ),
+        ),
+      },
+      /documentary PNG uses a separate capture/u,
+    ],
+    [
+      "floating direct capture",
+      {
+        consumers: withEclipse(
+          replaceExactlyOnce(
+            eclipse,
+            "await pin.capture(firstTime, false)",
+            "pin.capture(firstTime, false)",
+            "floating direct capture",
+          ),
+        ),
+      },
+      /pin\.capture invocation is not awaited/u,
+    ],
+    [
+      "floating capture alias",
+      {
+        consumers: withEclipse(
+          replaceExactlyOnce(
+            eclipse,
+            "await pin.capture(firstTime, false); // discarded on purpose",
+            `const captureAlias = pin.capture;
+  captureAlias(firstTime, false); // discarded on purpose`,
+            "floating capture alias",
+          ),
+        ),
+      },
+      /captureAlias invocation is not awaited/u,
+    ],
+    [
+      "floating bound capture alias",
+      {
+        consumers: withEclipse(
+          replaceExactlyOnce(
+            eclipse,
+            "await pin.capture(firstTime, false); // discarded on purpose",
+            `const captureAlias = pin["capture"].bind(pin);
+  captureAlias(firstTime, false); // discarded on purpose`,
+            "floating bound capture alias",
+          ),
+        ),
+      },
+      /captureAlias invocation is not awaited/u,
+    ],
+    [
+      "floating destructured capture alias",
+      {
+        consumers: withEclipse(
+          replaceExactlyOnce(
+            eclipse,
+            "await pin.capture(firstTime, false); // discarded on purpose",
+            `const { capture: captureAlias } = pin;
+  captureAlias(firstTime, false); // discarded on purpose`,
+            "floating destructured capture alias",
+          ),
+        ),
+      },
+      /captureAlias invocation is not awaited/u,
+    ],
+    [
+      "floating thin wrapper",
+      {
+        consumers: withEclipse(
+          replaceExactlyOnce(
+            eclipse,
+            "await pin.capture(firstTime, false); // discarded on purpose",
+            `const captureWrapper = async (...args) => await pin.capture(...args);
+  captureWrapper(firstTime, false); // discarded on purpose`,
+            "floating thin wrapper",
+          ),
+        ),
+      },
+      /captureWrapper invocation is not awaited/u,
+    ],
+    [
+      "floating member alias",
+      {
+        consumers: withEclipse(
+          replaceExactlyOnce(
+            eclipse,
+            "await pin.capture(firstTime, false); // discarded on purpose",
+            `const captureTools = { take: pin.capture };
+  captureTools.take(firstTime, false); // discarded on purpose`,
+            "floating member alias",
+          ),
+        ),
+      },
+      /captureTools\.take invocation is not awaited/u,
+    ],
+    [
+      "floating member thin wrapper",
+      {
+        consumers: withEclipse(
+          replaceExactlyOnce(
+            eclipse,
+            "await pin.capture(firstTime, false); // discarded on purpose",
+            `const captureTools = {
+    take: async (...args) => await pin.capture(...args),
+  };
+  captureTools.take(firstTime, false); // discarded on purpose`,
+            "floating member thin wrapper",
+          ),
+        ),
+      },
+      /captureTools\.take invocation is not awaited/u,
+    ],
+    [
+      "consumer-local documentary render",
+      {
+        consumers: withEclipse(
+          replaceExactlyOnce(
+            eclipse,
+            "const offCloudsPng = deepest ? aOffCloudsFrame.png : null;",
+            `scene.render(julian);
+    const offCloudsPng = deepest ? aOffCloudsFrame.png : null;`,
+            "consumer-local render",
+          ),
+        ),
+      },
+      /consumer-local render creates a second capture source/u,
+    ],
+    [
+      "consumer-local documentary render alias",
+      {
+        consumers: withEclipse(
+          replaceExactlyOnce(
+            eclipse,
+            "const offCloudsPng = deepest ? aOffCloudsFrame.png : null;",
+            `const { render: documentaryRender } = scene;
+    documentaryRender(julian);
+    const offCloudsPng = deepest ? aOffCloudsFrame.png : null;`,
+            "consumer-local render alias",
+          ),
+        ),
+      },
+      /consumer-local render creates a second capture source/u,
+    ],
+    [
+      "decode gap before freeze",
+      {
+        snapshot: replaceExactlyOnce(
+          FUSED_SNAPSHOT_CAPTURE_SOURCE,
+          'const dataUrl = canvas.toDataURL("image/png");',
+          'await Promise.resolve();\n    const dataUrl = canvas.toDataURL("image/png");',
+          "decode gap",
+        ),
+      },
+      /canonical snapshot yields before freezing/u,
+    ],
+    [
+      "canonical helper not installed",
+      {
+        pinning: replaceExactlyOnce(
+          WEATHER_PINNING,
+          "(${installWeatherPinHarness.toString()})(makeFusedSnapshotCapture);",
+          "canonical helper intentionally omitted",
+          "canonical helper omission",
+        ),
+      },
+      /canonical snapshot factory is not installed/u,
+    ],
+  ];
+
+  for (const [name, mutant, expected] of mutants) {
+    const failures = weatherCaptureDoctrineFailures(mutant);
+    assert.match(
+      formatWeatherCaptureFailures(failures),
+      expected,
+      `${name} survived or tripped only an unrelated capture rule`,
+    );
+  }
+});
+
+test("capture doctrine rejects every independently reproduced alias/computed bypass and their combined mutant", () => {
+  const eclipsePath =
+    "Tools/visual-regression/probe-eclipse-cloud-response.mjs";
+  const eclipse = CAPTURE_CONSUMERS[eclipsePath];
+  const replaceExactlyOnce = (source, before, after, label) => {
+    assert.equal(
+      source.split(before).length - 1,
+      1,
+      `${label} fixture must match exactly once`,
+    );
+    return source.replace(before, after);
+  };
+  const auditEclipse = (mutated) =>
+    weatherCaptureDoctrineFailures({
+      consumers: { ...CAPTURE_CONSUMERS, [eclipsePath]: mutated },
+    });
+  const warmup = "await pin.capture(firstTime, false); // discarded on purpose";
+  const documentary =
+    "const offCloudsPng = deepest ? aOffCloudsFrame.png : null;";
+  const captureWrapper = "const frame = await pin.capture(julian, wantPng);";
+
+  const cases = [
+    {
+      code: WEATHER_CAPTURE_FAILURE.DOCUMENTARY_ORIGIN_MISMATCH,
+      name: "nested object documentary container alias",
+      source: replaceExactlyOnce(
+        eclipse,
+        documentary,
+        `const documentaryFrame = await pin.capture(julian, true);
+    const holder = { deep: { frame: documentaryFrame } };
+    const alias = holder;
+    const offCloudsPng = deepest ? alias.deep.frame.png : null;`,
+        "nested object documentary container",
+      ),
+    },
+    {
+      code: WEATHER_CAPTURE_FAILURE.DOCUMENTARY_ORIGIN_MISMATCH,
+      name: "nested array/numeric documentary container alias",
+      source: replaceExactlyOnce(
+        eclipse,
+        documentary,
+        `const documentaryFrame = await pin.capture(julian, true);
+    const holder = [{ deep: [documentaryFrame] }];
+    const alias = holder;
+    const offCloudsPng = deepest ? alias[0].deep[0].png : null;`,
+        "nested array documentary container",
+      ),
+    },
+    {
+      code: WEATHER_CAPTURE_FAILURE.CONSUMER_LIVE_READ,
+      name: "computed drawImage",
+      source: replaceExactlyOnce(
+        eclipse,
+        captureWrapper,
+        `const liveContext = document.createElement("canvas").getContext("2d");
+    liveContext["draw" + "Image"](scene.canvas, 0, 0);
+    const frame = await pin.capture(julian, wantPng);`,
+        "computed drawImage",
+      ),
+    },
+    {
+      code: WEATHER_CAPTURE_FAILURE.CONSUMER_LIVE_READ,
+      name: "computed getImageData",
+      source: replaceExactlyOnce(
+        eclipse,
+        captureWrapper,
+        `const liveContext = document.createElement("canvas").getContext("2d");
+    liveContext["get" + "ImageData"](0, 0, scene.canvas.width, scene.canvas.height);
+    const frame = await pin.capture(julian, wantPng);`,
+        "computed getImageData",
+      ),
+    },
+    {
+      code: WEATHER_CAPTURE_FAILURE.CONSUMER_RENDER,
+      name: "computed render",
+      source: replaceExactlyOnce(
+        eclipse,
+        documentary,
+        `scene["ren" + "der"](julian);
+    const offCloudsPng = deepest ? aOffCloudsFrame.png : null;`,
+        "computed render",
+      ),
+    },
+    {
+      code: WEATHER_CAPTURE_FAILURE.UNAWAITED_CAPTURE,
+      name: "array/numeric capture callable",
+      source: replaceExactlyOnce(
+        eclipse,
+        warmup,
+        "[pin.capture][0](firstTime, false); // discarded on purpose",
+        "array capture callable",
+      ),
+    },
+    {
+      code: WEATHER_CAPTURE_FAILURE.UNAWAITED_CAPTURE,
+      name: "Reflect.get capture callable",
+      source: replaceExactlyOnce(
+        eclipse,
+        warmup,
+        `Reflect.get(pin, "capture")(firstTime, false); // discarded on purpose`,
+        "Reflect.get capture callable",
+      ),
+    },
+    {
+      code: WEATHER_CAPTURE_FAILURE.UNAWAITED_CAPTURE,
+      name: "Function.prototype.bind.call capture callable",
+      source: replaceExactlyOnce(
+        eclipse,
+        warmup,
+        `Function.prototype.bind.call(pin.capture, pin)(firstTime, false); // discarded on purpose`,
+        "bind.call capture callable",
+      ),
+    },
+    {
+      code: WEATHER_CAPTURE_FAILURE.UNAWAITED_CAPTURE,
+      name: "thin sequence wrapper",
+      source: replaceExactlyOnce(
+        eclipse,
+        warmup,
+        `const sequenceWrapper = (...args) => (0, pin.capture)(...args);
+  sequenceWrapper(firstTime, false); // discarded on purpose`,
+        "thin sequence wrapper",
+      ),
+    },
+  ];
+
+  for (const { code, name, source } of cases) {
+    const failures = auditEclipse(source);
+    assert.ok(
+      failures.some((failure) => failure.code === code),
+      `${name} survived or tripped only an unrelated rule:\n${formatWeatherCaptureFailures(failures)}`,
+    );
+  }
+
+  let combined = replaceExactlyOnce(
+    eclipse,
+    warmup,
+    `const captureArray = [pin.capture];
+  captureArray[0](firstTime, false);
+  Reflect.get(pin, "capture")(firstTime, false);
+  Function.prototype.bind.call(pin.capture, pin)(firstTime, false);
+  const sequenceWrapper = (...args) => (0, pin.capture)(...args);
+  sequenceWrapper(firstTime, false); // discarded on purpose`,
+    "combined capture aliases",
+  );
+  combined = replaceExactlyOnce(
+    combined,
+    captureWrapper,
+    `const liveContext = document.createElement("canvas").getContext("2d");
+    liveContext["draw" + "Image"](scene.canvas, 0, 0);
+    liveContext["get" + "ImageData"](0, 0, scene.canvas.width, scene.canvas.height);
+    scene["ren" + "der"](julian);
+    const frame = await pin.capture(julian, wantPng);`,
+    "combined computed reads",
+  );
+  combined = replaceExactlyOnce(
+    combined,
+    documentary,
+    `const documentaryCapture = pin.capture;
+    const documentaryFrame = await documentaryCapture(julian, true);
+    const holder = [{ deep: { frame: documentaryFrame } }];
+    const alias = holder;
+    const offCloudsPng = deepest ? alias[0].deep.frame.png : null;`,
+    "combined documentary alias",
+  );
+  const combinedCodes = new Set(
+    auditEclipse(combined).map((failure) => failure.code),
+  );
+  for (const code of [
+    WEATHER_CAPTURE_FAILURE.CONSUMER_LIVE_READ,
+    WEATHER_CAPTURE_FAILURE.CONSUMER_RENDER,
+    WEATHER_CAPTURE_FAILURE.DOCUMENTARY_ORIGIN_MISMATCH,
+    WEATHER_CAPTURE_FAILURE.UNAWAITED_CAPTURE,
+  ]) {
+    assert.ok(combinedCodes.has(code), `combined mutant must reach ${code}`);
+  }
+});
+
+test("capture consumer census includes named, namespace, and dynamic imports", () => {
+  const sources = {
+    "dynamic.mjs": `const weather = await import("./lib/weather-probe-pinning.mjs");
+weather.installWeatherPinHarnessOnPage(page);`,
+    "named.mjs": `import { installWeatherPinHarnessOnPage as install } from "./lib/weather-probe-pinning.mjs";
+await install(page);`,
+    "namespace.mjs": `import * as weather from "./lib/weather-probe-pinning.mjs";
+await weather.installWeatherPinHarnessOnPage(page);`,
+    "pure-only.mjs": `import { collectPinStructural } from "./lib/weather-probe-pinning.mjs";
+collectPinStructural(report);`,
+  };
+  const census = censusWeatherCaptureConsumers(sources);
+  assert.deepEqual(census.failures, []);
+  assert.deepEqual(census.paths, ["dynamic.mjs", "named.mjs", "namespace.mjs"]);
+  assert.deepEqual(census.modes, {
+    "dynamic.mjs": ["dynamic"],
+    "named.mjs": ["named"],
+    "namespace.mjs": ["namespace"],
+  });
+
+  const failures = weatherCaptureDoctrineFailures({
+    candidateSources: sources,
+    consumers: {},
+  });
+  assert.equal(
+    failures.filter(
+      (failure) => failure.code === WEATHER_CAPTURE_FAILURE.UNTRACKED_CONSUMER,
+    ).length,
+    3,
+    "every import form must enter the fail-closed direct-consumer census",
+  );
+});
+
+test("capture doctrine fails closed on dynamic members, returned callables/frames, and unsupported escapes", () => {
+  const eclipsePath =
+    "Tools/visual-regression/probe-eclipse-cloud-response.mjs";
+  const eclipse = CAPTURE_CONSUMERS[eclipsePath];
+  const warmup = "await pin.capture(firstTime, false); // discarded on purpose";
+  const documentary =
+    "const offCloudsPng = deepest ? aOffCloudsFrame.png : null;";
+  const captureWrapper = "const frame = await pin.capture(julian, wantPng);";
+  const replaceExactlyOnce = (source, before, after, label) => {
+    assert.equal(
+      source.split(before).length - 1,
+      1,
+      `${label} fixture must match exactly once`,
+    );
+    return source.replace(before, after);
+  };
+  const audit = (mutated) =>
+    weatherCaptureDoctrineFailures({
+      consumers: { ...CAPTURE_CONSUMERS, [eclipsePath]: mutated },
+    });
+  const cases = [
+    {
+      code: WEATHER_CAPTURE_FAILURE.CONSUMER_LIVE_READ,
+      name: "unknown live-reader member",
+      source: replaceExactlyOnce(
+        eclipse,
+        captureWrapper,
+        `const liveContext = document.createElement("canvas").getContext("2d");
+    const liveMethod = globalThis.__unknownLiveMethod;
+    liveContext[liveMethod](scene.canvas, 0, 0);
+    const frame = await pin.capture(julian, wantPng);`,
+        "unknown live reader",
+      ),
+    },
+    {
+      code: WEATHER_CAPTURE_FAILURE.CONSUMER_RENDER,
+      name: "unknown scene method",
+      source: replaceExactlyOnce(
+        eclipse,
+        documentary,
+        `const renderMethod = globalThis.__unknownRenderMethod;
+    scene[renderMethod](julian);
+    const offCloudsPng = deepest ? aOffCloudsFrame.png : null;`,
+        "unknown render",
+      ),
+    },
+    {
+      code: WEATHER_CAPTURE_FAILURE.UNSUPPORTED_CAPTURE_ESCAPE,
+      name: "unknown weather-pin member",
+      source: replaceExactlyOnce(
+        eclipse,
+        warmup,
+        `const captureMethod = globalThis.__unknownCaptureMethod;
+  pin[captureMethod](firstTime, false); // discarded on purpose`,
+        "unknown capture member",
+      ),
+    },
+    {
+      code: WEATHER_CAPTURE_FAILURE.UNSUPPORTED_CAPTURE_ESCAPE,
+      name: "dynamic Reflect.get weather-pin member",
+      source: replaceExactlyOnce(
+        eclipse,
+        warmup,
+        `const captureMethod = globalThis.__unknownCaptureMethod;
+  Reflect.get(pin, captureMethod)(firstTime, false); // discarded on purpose`,
+        "dynamic Reflect.get capture",
+      ),
+    },
+    {
+      code: WEATHER_CAPTURE_FAILURE.UNSUPPORTED_CAPTURE_ESCAPE,
+      name: "callable passed to an unsupported consumer",
+      source: replaceExactlyOnce(
+        eclipse,
+        warmup,
+        `const consumeCallable = (value) => value;
+  consumeCallable(pin.capture);
+  await pin.capture(firstTime, false); // discarded on purpose`,
+        "capture callable argument escape",
+      ),
+    },
+    {
+      code: WEATHER_CAPTURE_FAILURE.UNSUPPORTED_CAPTURE_ESCAPE,
+      name: "callable spread escape",
+      source: replaceExactlyOnce(
+        eclipse,
+        warmup,
+        `const captureHolder = { take: pin.capture };
+  const escapedCaptureHolder = { ...captureHolder };
+  void escapedCaptureHolder;
+  await pin.capture(firstTime, false); // discarded on purpose`,
+        "capture callable spread",
+      ),
+    },
+    {
+      code: WEATHER_CAPTURE_FAILURE.UNAWAITED_CAPTURE,
+      name: "returned capture callable",
+      source: replaceExactlyOnce(
+        eclipse,
+        warmup,
+        `const returnCapture = () => pin.capture;
+  returnCapture()(firstTime, false); // discarded on purpose`,
+        "returned capture callable",
+      ),
+    },
+    {
+      code: WEATHER_CAPTURE_FAILURE.DOCUMENTARY_ORIGIN_MISMATCH,
+      name: "returned nested documentary frame",
+      source: replaceExactlyOnce(
+        eclipse,
+        documentary,
+        `const returnDocumentaryFrame = async () => ({
+      deep: await pin.capture(julian, true),
+    });
+    const documentaryHolder = await returnDocumentaryFrame();
+    const offCloudsPng = deepest ? documentaryHolder.deep.png : null;`,
+        "returned documentary frame",
+      ),
+    },
+  ];
+
+  for (const { code, name, source } of cases) {
+    const failures = audit(source);
+    assert.ok(
+      failures.some((failure) => failure.code === code),
+      `${name} survived or tripped only an unrelated rule:\n${formatWeatherCaptureFailures(failures)}`,
+    );
+  }
+
+  const awaitedReturnedCallable = replaceExactlyOnce(
+    eclipse,
+    warmup,
+    `const returnCapture = () => pin.capture;
+  await returnCapture()(firstTime, false); // discarded on purpose`,
+    "awaited returned capture callable",
+  );
+  assert.deepEqual(audit(awaitedReturnedCallable), []);
+
+  const sameOriginReturnedFrame = replaceExactlyOnce(
+    eclipse,
+    documentary,
+    `const returnMetricFrame = async () => ({
+      deep: await pin.capture(julian, true),
+    });
+    const metricHolder = await returnMetricFrame();
+    const metricWitness = bandMean(metricHolder.deep);
+    const offCloudsPng = deepest ? metricHolder.deep.png : null;
+    void metricWitness;`,
+    "same-origin returned metric frame",
+  );
+  assert.deepEqual(audit(sameOriginReturnedFrame), []);
+});
+
+test("capture doctrine accepts awaited aliases/wrappers and same-frame documentary aliases", () => {
+  const eclipsePath =
+    "Tools/visual-regression/probe-eclipse-cloud-response.mjs";
+  const eclipse = CAPTURE_CONSUMERS[eclipsePath];
+  const checkEclipse = (mutated) =>
+    weatherCaptureDoctrineFailures({
+      consumers: { ...CAPTURE_CONSUMERS, [eclipsePath]: mutated },
+    });
+  const replacements = [
+    eclipse.replace(
+      "await pin.capture(firstTime, false); // discarded on purpose",
+      `const captureAlias = pin.capture;
+  await captureAlias(firstTime, false); // discarded on purpose`,
+    ),
+    eclipse.replace(
+      "await pin.capture(firstTime, false); // discarded on purpose",
+      `const captureAlias = pin.capture;
+  const captureWrapper = async (...args) => await captureAlias(...args);
+  await captureWrapper(firstTime, false); // discarded on purpose`,
+    ),
+    eclipse.replace(
+      "await pin.capture(firstTime, false); // discarded on purpose",
+      `const captureTools = { take: pin.capture };
+  await captureTools.take(firstTime, false); // discarded on purpose`,
+    ),
+    eclipse.replace(
+      "const offCloudsPng = deepest ? aOffCloudsFrame.png : null;",
+      `const metricFrames = { offClouds: aOffCloudsFrame };
+    const offCloudsPng = deepest ? metricFrames.offClouds.png : null;`,
+    ),
+    eclipse.replace(
+      "await pin.capture(firstTime, false); // discarded on purpose",
+      `await [pin.capture][0](firstTime, false); // discarded on purpose`,
+    ),
+    eclipse.replace(
+      "await pin.capture(firstTime, false); // discarded on purpose",
+      `await Reflect.get(pin, "capture")(firstTime, false); // discarded on purpose`,
+    ),
+    eclipse.replace(
+      "await pin.capture(firstTime, false); // discarded on purpose",
+      `await Function.prototype.bind.call(pin.capture, pin)(firstTime, false); // discarded on purpose`,
+    ),
+    eclipse.replace(
+      "await pin.capture(firstTime, false); // discarded on purpose",
+      `const sequenceWrapper = (...args) => (0, pin.capture)(...args);
+  await sequenceWrapper(firstTime, false); // discarded on purpose`,
+    ),
+    eclipse.replace(
+      "await pin.capture(firstTime, false); // discarded on purpose",
+      `await pin["cap" + "ture"](firstTime, false); // discarded on purpose`,
+    ),
+    eclipse.replace(
+      "const offCloudsPng = deepest ? aOffCloudsFrame.png : null;",
+      `const metricFrames = { deep: { frame: aOffCloudsFrame } };
+    const metricAlias = metricFrames;
+    const offCloudsPng = deepest ? metricAlias.deep.frame.png : null;`,
+    ),
+    eclipse.replace(
+      "const offCloudsPng = deepest ? aOffCloudsFrame.png : null;",
+      `const metricFrames = [{ deep: [aOffCloudsFrame] }];
+    const metricAlias = metricFrames;
+    const offCloudsPng = deepest
+      ? metricAlias[0]["de" + "ep"][0].png
+      : null;`,
+    ),
+    eclipse.replace(
+      "await pin.capture(firstTime, false); // discarded on purpose",
+      `Math["ma" + "x"](0, 1);
+  await pin.capture(firstTime, false); // discarded on purpose`,
+    ),
+  ];
+
+  for (const [index, replacement] of replacements.entries()) {
+    assert.notEqual(
+      replacement,
+      eclipse,
+      `positive transform ${index} applied`,
+    );
+    assert.deepEqual(
+      checkEclipse(replacement),
+      [],
+      `valid awaited/same-frame alias transform ${index} was rejected`,
+    );
+  }
+});
+
+test("capture doctrine requires executable canonical helper semantics, not inert proof text", () => {
+  const before = "const snapshotPromise = fused.captureSnapshot();";
+  assert.equal(WEATHER_PINNING.split(before).length - 1, 1);
+  const pinning = WEATHER_PINNING.replace(
+    before,
+    `const inertProof = "const snapshotPromise = fused.captureSnapshot();";
+      void inertProof;
+      const snapshotPromise = Promise.resolve({
+        dataUrl: "data:image/png;base64,",
+        imageData: { data: new Uint8ClampedArray(4), width: 1, height: 1 },
+      });`,
+  );
+  const failures = weatherCaptureDoctrineFailures({ pinning });
+  assert.ok(
+    failures.some(
+      (failure) => failure.code === WEATHER_CAPTURE_FAILURE.CAPTURE_ORDER,
+    ),
+    formatWeatherCaptureFailures(failures),
+  );
+});
+
+test("capture taint reaches calls through aggregates, callbacks, reflection, and classes", () => {
+  const livePrefix = `const scene = globalThis.viewer.scene;
+const live = document.createElement("canvas").getContext("2d");`;
+  const cases = [
+    {
+      code: WEATHER_CAPTURE_FAILURE.CONSUMER_LIVE_READ,
+      name: "dynamic object aliases plus call",
+      source: `${livePrefix}
+const operations = { nested: { draw: live.drawImage, read: live.getImageData } };
+const alias = operations.nested;
+alias.draw.call(live, scene.canvas, 0, 0);
+alias.read.call(live, 0, 0, 1, 1);`,
+    },
+    {
+      code: WEATHER_CAPTURE_FAILURE.CONSUMER_LIVE_READ,
+      name: "Reflect.get container plus Reflect.apply",
+      source: `${livePrefix}
+const operations = { read: live.getImageData };
+const read = Reflect.get(operations, "read");
+Reflect.apply(read, live, [0, 0, 1, 1]);`,
+    },
+    {
+      code: WEATHER_CAPTURE_FAILURE.CONSUMER_LIVE_READ,
+      name: "bound live reader through callback",
+      source: `${livePrefix}
+const invoke = (callback, ...args) => callback(...args);
+const draw = live.drawImage.bind(live);
+invoke(draw, scene.canvas, 0, 0);`,
+    },
+    {
+      code: WEATHER_CAPTURE_FAILURE.UNAWAITED_CAPTURE,
+      name: "Array.at capture callable",
+      source: `const captures = [];
+captures.push(pin.capture);
+captures.at(-1)(1, false);`,
+    },
+    {
+      code: WEATHER_CAPTURE_FAILURE.UNAWAITED_CAPTURE,
+      name: "Array.pop capture callable",
+      source: `const captures = [];
+captures.push(pin.capture);
+captures.pop()(1, false);`,
+    },
+    {
+      code: WEATHER_CAPTURE_FAILURE.UNAWAITED_CAPTURE,
+      name: "Map.get capture callable",
+      source: `const captures = new Map();
+captures.set("take", pin.capture);
+captures.get("take")(1, false);`,
+    },
+    {
+      code: WEATHER_CAPTURE_FAILURE.UNAWAITED_CAPTURE,
+      name: "class-returned capture callable",
+      source: `class CaptureCarrier {
+  take() { return pin.capture; }
+}
+const carrier = new CaptureCarrier();
+carrier.take()(1, false);`,
+    },
+    {
+      code: WEATHER_CAPTURE_FAILURE.UNSUPPORTED_CAPTURE_ESCAPE,
+      name: "unmodelled tainted constructor",
+      source: `const UnknownCarrier = globalThis.UnknownCarrier;
+new UnknownCarrier(pin.capture);`,
+    },
+    {
+      code: WEATHER_CAPTURE_FAILURE.CONSUMER_LIVE_READ,
+      name: "unmodelled bound-reader consumer",
+      source: `${livePrefix}
+const consume = globalThis.consume;
+consume(live.getImageData.bind(live));`,
+    },
+    {
+      code: WEATHER_CAPTURE_FAILURE.UNAWAITED_CAPTURE,
+      companionCode: WEATHER_CAPTURE_FAILURE.UNTRUSTED_INTRINSIC,
+      name: "shadowed Promise.all",
+      source: `const Promise = {
+  all(values) { return globalThis.Promise.resolve(values.length); },
+};
+await Promise.all([pin.capture(1, false)]);`,
+    },
+  ];
+
+  for (const { code, companionCode, name, source } of cases) {
+    const failures = captureConsumerFailures(source);
+    assert.ok(
+      failures.some((failure) => failure.code === code),
+      `${name}:\n${formatWeatherCaptureFailures(failures)}`,
+    );
+    if (companionCode) {
+      assert.ok(
+        failures.some((failure) => failure.code === companionCode),
+        `${name} must also reject the shadowed intrinsic:\n${formatWeatherCaptureFailures(failures)}`,
+      );
+    }
+  }
+});
+
+test("capture taint accepts modeled operations when every capture promise is adopted", () => {
+  const inverses = [
+    `const captures = [];
+captures.push(pin.capture);
+await captures.at(-1)(1, false);`,
+    `const captures = [];
+captures.push(pin.capture);
+await captures.pop()(1, false);`,
+    `const captures = new Map();
+captures.set("take", pin.capture);
+await captures.get("take")(1, false);`,
+    `class CaptureCarrier {
+  take() { return pin.capture; }
+}
+const carrier = new CaptureCarrier();
+await carrier.take()(1, false);`,
+    `await Reflect.apply(pin.capture, pin, [1, false]);`,
+    `const invoke = (callback, ...args) => callback(...args);
+await invoke(pin.capture, 1, false);`,
+    `await Promise.all([pin.capture(1, false)]);`,
+  ];
+  for (const [index, inverse] of inverses.entries()) {
+    assert.deepEqual(
+      captureConsumerFailures(inverse),
+      [],
+      `modeled awaited inverse ${index} was rejected`,
+    );
+  }
+});
+
+test("documentary capture must reach a scored reducer; unused pixel touches do not qualify", () => {
+  for (const field of ["width", "data"]) {
+    const failures = captureConsumerFailures(
+      `const documentaryFrame = await pin.capture(2, true);
+void documentaryFrame.${field};
+const separatePng = documentaryFrame.png;
+void separatePng;`,
+    );
+    assert.ok(
+      failures.some(
+        (failure) =>
+          failure.code === WEATHER_CAPTURE_FAILURE.DOCUMENTARY_ORIGIN_MISMATCH,
+      ),
+      `unused .${field} touch laundered documentary origin:\n${formatWeatherCaptureFailures(failures)}`,
+    );
+  }
+
+  const fakeReducer = analyzeWeatherCaptureConsumer(
+    `const pin = globalThis.__weatherPin;
+const bandMean = (frame) => { void frame.data; return 0; };
+const documentaryFrame = await pin.capture(2, true);
+const fakeMetric = bandMean(documentaryFrame);
+const separatePng = documentaryFrame.png;
+void fakeMetric;
+void separatePng;`,
+    { relative: "fake-reducer-mutant.mjs" },
+  ).failures;
+  assert.ok(
+    fakeReducer.some(
+      (failure) =>
+        failure.code === WEATHER_CAPTURE_FAILURE.DOCUMENTARY_ORIGIN_MISMATCH,
+    ),
+    `a reducer name plus inert pixel touch is not genuine scoring:\n${formatWeatherCaptureFailures(fakeReducer)}`,
+  );
+
+  assert.deepEqual(
+    captureConsumerFailures(
+      `const documentaryFrame = await pin.capture(2, true);
+const documentaryMetric = bandMean(documentaryFrame);
+const separatePng = documentaryFrame.png;
+void documentaryMetric;
+void separatePng;`,
+    ),
+    [],
+    "a genuine reducer and PNG from the same capture must remain valid",
+  );
+});
+
+test("capture consumer census resolves static dynamic-import expressions and fails closed on relevant unknowns", () => {
+  const sources = {
+    "concatenated.mjs": `const weather = await import("./lib/weather-" + "probe-pinning.mjs");
+weather.installWeatherPinHarnessOnPage(page);`,
+    "const-bound.mjs": `const modulePath = "./lib/weather-probe-pinning.mjs";
+const weather = await import(modulePath);
+weather.installWeatherPinHarnessOnPage(page);`,
+    "new-url.mjs": `const weather = await import(new URL("./lib/weather-probe-pinning.mjs", import.meta.url));
+weather.installWeatherPinHarnessOnPage(page);`,
+    "template.mjs": `const middle = "probe";
+const weather = await import(\`./lib/weather-\${middle}-pinning.mjs\`);
+weather.installWeatherPinHarnessOnPage(page);`,
+    "unrelated-unresolved.mjs": `const runtimePath = globalThis.runtimePath;
+const runtime = await import(runtimePath);
+void runtime;`,
+    "unresolved-weather.mjs": `const middle = globalThis.captureModule;
+const weather = await import(\`./lib/weather-\${middle}.mjs\`);
+weather.installWeatherPinHarnessOnPage(page);`,
+  };
+  const census = censusWeatherCaptureConsumers(sources);
+  assert.deepEqual(census.paths, [
+    "concatenated.mjs",
+    "const-bound.mjs",
+    "new-url.mjs",
+    "template.mjs",
+    "unresolved-weather.mjs",
+  ]);
+  assert.deepEqual(
+    census.failures.map((failure) => [failure.relative, failure.code]),
+    [
+      [
+        "unresolved-weather.mjs",
+        WEATHER_CAPTURE_FAILURE.UNRESOLVED_CAPTURE_IMPORT,
+      ],
+    ],
+  );
+});
+
+test("combined capture mutant preserves every independent red", () => {
+  const failures =
+    captureConsumerFailures(`const scene = globalThis.viewer.scene;
+const live = document.createElement("canvas").getContext("2d");
+const readers = { draw: live.drawImage.bind(live) };
+const invoke = (callback, ...args) => callback(...args);
+invoke(Reflect.get(readers, "draw"), scene.canvas, 0, 0);
+const captures = new Map([["take", pin.capture]]);
+captures.get("take")(1, false);
+const Promise = { all() { return globalThis.Promise.resolve(); } };
+await Promise.all([pin.capture(2, false)]);
+const documentaryFrame = await pin.capture(3, true);
+void documentaryFrame.data;
+const separatePng = documentaryFrame.png;
+void separatePng;`);
+  const codes = new Set(failures.map((failure) => failure.code));
+  for (const code of [
+    WEATHER_CAPTURE_FAILURE.CONSUMER_LIVE_READ,
+    WEATHER_CAPTURE_FAILURE.DOCUMENTARY_ORIGIN_MISMATCH,
+    WEATHER_CAPTURE_FAILURE.UNAWAITED_CAPTURE,
+    WEATHER_CAPTURE_FAILURE.UNTRUSTED_INTRINSIC,
+  ]) {
+    assert.ok(
+      codes.has(code),
+      `combined mutant must preserve ${code}:\n${formatWeatherCaptureFailures(failures)}`,
     );
   }
 });
