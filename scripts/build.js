@@ -501,6 +501,9 @@ export async function createCesiumJs(variant = "dual") {
   contents +=
     `\n// Slice 5d step 2 — multi-light public API (Batch 142).\n` +
     `export { LightCollection, PointLight, SpotLight, LightType, RectAreaLight, DiskAreaLight } from '@${scope}/engine';\n`;
+  contents +=
+    `\n// Renderer-selection + graphics-context public surface (TS-backed; mirrors createIndexJs).\n` +
+    `export { RendererType, setGlobalDefaultRenderer, getGlobalDefaultRenderer, getDefaultRendererType, getRendererAttemptPlan, getSynchronousRendererType, isWebGPUSupported, isValidRendererType, ContextFactory, GraphicsContext, ContextRegistry } from '@${scope}/engine';\n`;
   // Weather ingest public API (Phase 1) — real EDR/etc. weather -> the WebGPU
   // procedural-cloud weather map. See WEATHER_DATA_INGEST_ROADMAP.md.
   contents +=
