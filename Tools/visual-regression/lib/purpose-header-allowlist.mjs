@@ -41,12 +41,8 @@
  * @type {readonly string[]}
  */
 export const PURPOSE_HEADER_ALLOWLIST = Object.freeze([
-  // Both are HOLD-FOR-SOL (HANDOFF_2026-08-14_CODEX_PAUSE.md SS5, returned to
-  // held at B1048): frozen bytes may not be edited, so they cannot receive the
-  // header until the C12-11 packet resumes. Everything else was headered by
-  // the M2 codemod at B1052 (1,008 files).
-  "lib/c12-11-star-catalog-gate.mjs",
-  "probe-stars-catalog.mjs",
+  // Emptied 2026-08-21: the C12-11 harness rebuild landed with headers, so
+  // the two frozen-bytes holds are discharged. The ratchet is shrink-only.
 ]);
 
 /**
@@ -56,4 +52,4 @@ export const PURPOSE_HEADER_ALLOWLIST = Object.freeze([
  *
  * @type {number}
  */
-export const PURPOSE_HEADER_ALLOWLIST_SNAPSHOT_SIZE = 2;
+export const PURPOSE_HEADER_ALLOWLIST_SNAPSHOT_SIZE = 0;

@@ -995,7 +995,7 @@ export const PROBE_CONTRACT_ALLOWLIST = Object.freeze({
   "probe-starfield-webgl-parity.mjs":
     "no watchdog; browser.close outside finally — added 2026-06-19, pre-dates the spec",
   "probe-stars-catalog.mjs":
-    "no watchdog; browser.close outside finally — added 2026-06-16, pre-dates the spec",
+    "browser.close outside finally — the in-run watchdog's orderly stage-1 close; every runtime path closes bounded inside finally and a stage-2 process fuse covers the wedge — probe added 2026-06-16, row narrowed 2026-08-21 from the pre-rebuild no-watchdog claim",
   "probe-stars-hdr-autoexposure-parity.mjs":
     "no watchdog; browser.close outside finally — added 2026-06-23, pre-dates the spec",
   "probe-stars-hdr-verify.mjs":

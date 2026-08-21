@@ -1173,7 +1173,7 @@ Fix SOL-5 owns the watchdog/close repair and extending the contract to `lib/*-ga
 
 | Instrument | Status |
 | --- | --- |
-| `c12-11-star-catalog-gate.spec.mjs` (28) | **HOLD-FOR-SOL.** `C12-11` star-catalog certification; independent review is **NO-GO** on ten findings, no repair write landed. Gated behind a future eligible G3 PASS that does not exist. |
+| `c12-11-star-catalog-gate.spec.mjs` (23 top-level / 67 total) | `C12-11` star-catalog harness contract (rebuilt 2026-08-21, station-3 reviewed): UUID-bound write-once evidence, checks A-G, four Batch-837 PNGs pinned immutable. The C12-11 ROW stays HELD (ten architecture blockers); the harness cannot produce PASS until an eligible both-backend G3 PASS report exists. |
 | `c12-31-aureole-gate.spec.mjs` (22) | **HOLD-FOR-SOL.** `C12-31` L1–L4 aureole core; independent review **NO-GO** on eight findings; only the gate lib was mid-repair at the pause, so the tuple is mixed and must not be tested as the earlier freeze. |
 | `cloud-morphology-composition.spec.mjs` (14) | Cloud morphology/composition offline contract (C13 lane). |
 | `cloud-u2-perf-evidence.spec.mjs` (16) | `C13-16` U2 cross-bundle GPU-timestamp evidence contract. |

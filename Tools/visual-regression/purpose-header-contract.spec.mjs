@@ -386,11 +386,21 @@ test("C6 MUTATION control: the rule is exercised over REAL fleet source", () => 
   // real injector, require the violation to clear — then delete the injected
   // line and require it to come back.
   const scope = fleet();
-  const donor = scope.names.find(
+  let donor = scope.names.find(
     (n) => scope.analyses.get(n).violations.length > 0,
   );
-  assert.ok(donor, "no unregistered fleet file left to mutate");
-  const source = readFileSync(join(HERE, donor), "utf8");
+  let source;
+  if (donor) {
+    source = readFileSync(join(HERE, donor), "utf8");
+  } else {
+    // A fully-headered fleet leaves no natural donor; synthesize the
+    // violating state by stripping a real file's header so the control
+    // keeps exercising the rule over real source.
+    donor = scope.names[0];
+    source = readFileSync(join(HERE, donor), "utf8")
+      .replace(/^.*@purpose .*\r?\n/m, "")
+      .replace(/^.*@status .*\r?\n/m, "");
+  }
   assert.ok(purposeHeaderViolations(source).length > 0, `${donor} is clean`);
 
   const injected = injectPurposeHeader(source, {
@@ -426,16 +436,18 @@ test("C7 MUTATION control: a grown or stale ratchet is detected", () => {
   assert.match(findings.grew ?? "", /allowlist grew from \d+ to \d+/);
   assert.deepEqual(findings.gone, ["probe-not-a-real-file.mjs"]);
 
-  // And the repaired-row half: pretend one allowlisted file gained a header.
-  const repairedName = PURPOSE_HEADER_ALLOWLIST[0];
+  // And the repaired-row half: pretend one allowlisted file gained a
+  // header. With the live list empty, a synthetic single-row list keeps
+  // this half executable; its snapshot equals its length so only the
+  // repaired signal can fire.
+  const repairedName = PURPOSE_HEADER_ALLOWLIST[0] ?? scope.names[0];
+  const repairList = PURPOSE_HEADER_ALLOWLIST.length
+    ? PURPOSE_HEADER_ALLOWLIST
+    : Object.freeze([repairedName]);
   const patched = {
     names: scope.names,
     analyses: new Map(scope.analyses).set(repairedName, { violations: [] }),
   };
-  const afterRepair = ratchetFindings(
-    PURPOSE_HEADER_ALLOWLIST,
-    PURPOSE_HEADER_ALLOWLIST_SNAPSHOT_SIZE,
-    patched,
-  );
+  const afterRepair = ratchetFindings(repairList, repairList.length, patched);
   assert.deepEqual(afterRepair.repaired, [repairedName]);
 });
