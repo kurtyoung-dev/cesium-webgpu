@@ -4,27 +4,26 @@
  * generated from vector tile sources — building footprints, admin
  * boundaries, country polygons, etc.
  *
- * Classification uses a WebGL-parity STENCIL Z-FAIL shadow volume
- * (Q15R-VECTOR3DTILE-CONTAINMENT-STENCIL, 2026-07-04). Per batch, per
- * ground pass, TWO draws land in one render pass:
- *   1. A stencil-MARK draw (colorWrite off) that counts the volume∩surface
+ * Classification uses a WebGL-parity stencil z-fail shadow volume. Per batch
+ * and ground pass, two draws execute in one render pass:
+ *   1. A stencil-mark draw (color writes disabled) that counts the
+ *      volume∩surface
  *      region into the CLASSIFICATION_MASK stencil bits via
  *      `depthFailOp` decrement-wrap (front) / increment-wrap (back)
- *      against the BOUND scene depth — per-fragment hardware compare at
+ *      against the bound scene depth — per-fragment hardware compare at
  *      full precision, terrain compare-always / tileset compare-equal-0x80.
- *   2. A stencil-TESTED color draw (`NOT_EQUAL 0`, depth test off) that
+ *   2. A stencil-tested color draw (`NOT_EQUAL 0`, depth test off) that
  *      shades exactly that region and resets the bits (passOp zero).
  * This mirrors `Vector3DTilePrimitive.getStencilDepthRenderState` +
- * `colorRenderState`. It supersedes the earlier depth-SAMPLE classifier,
- * which could only reach the volume's inflated PROJECTED silhouette and
- * read empty globe depth at msaa=1 (the two walls documented in
- * NEW-VECTOR3DTILE-CLASSIFY-CONTAINMENT). The mark + color pipelines use a
- * group(0)-only layout and never sample the globe depth texture, so they
- * are independent of `_globeDepthView` population. Pick + velocity still
- * use the depth-sample bind group (the same per-frustum globe-depth ↔
+ * `colorRenderState`. A depth-sample classifier can only reach the volume's
+ * inflated projected silhouette and reads empty globe depth at msaa=1. The
+ * mark and color pipelines therefore use a group(0)-only layout and never
+ * sample the globe depth texture, making them independent of
+ * `_globeDepthView` population. Pick and velocity still use the depth-sample
+ * bind group (the same per-frustum globe-depth ↔
  * packed-translucent-depth resolver) and are skipped when it is absent.
  *
- * **Shipped (Batch 112):**
+ * Pipeline and command structure:
  *   - WGSL VS/FS port of `VectorTileVS.glsl` + `ShadowVolumeFS.glsl`
  *     (RTE-encoded center + RTC-relative positions, batchId attribute).
  *   - Vertex buffer interleave (positionXYZ + batchId, 16 B/vertex).
@@ -35,21 +34,19 @@
  *   - `classificationType` routed to `Pass.TERRAIN_CLASSIFICATION` or
  *     `Pass.CESIUM_3D_TILE_CLASSIFICATION` per the WebGL parity rule.
  *
- * **Deferred to follow-up:**
- *   - Pick containment. The pick path still uses the older depth-SAMPLE
+ * Current limitations:
+ *   - Pick containment. The pick path uses the depth-sample
  *     `pickFS` (discards only sky), so a pick over a vector tile hits the
  *     inflated projected silhouette rather than the stencil-clipped
  *     surface∩volume region. Moving pick to the stencil path needs a
  *     stencil-tested pick pipeline in the single-sample pick FB (which
  *     carries its own depth) — the color path's mark/color split ports
- *     over directly. Tracked with NEW-VECTOR3DTILE-CLASSIFY-CONTAINMENT.
- *   - SCENE2D / COLUMBUS_VIEW stencil coverage
- *     (NEW-VECTOR3DTILE-STENCIL-2DCV-COVERAGE — the reprojected-ENU map
- *     has no clean Z-fail surface; not a WebGL parity gap since upstream
- *     renders nothing in 2D/CV).
+ *     over directly.
+ *   - SCENE2D / COLUMBUS_VIEW stencil coverage. The reprojected ENU map has
+ *     no clean z-fail surface; upstream likewise renders nothing in 2D/CV.
  *   - Per-fragment normal-from-depth-derivative + textured appearance.
  *   - `debugWireframe` mode (the WebGL flow runs a separate
- *     `LINES`-topology pipeline; trivial follow-up).
+ *     `LINES`-topology pipeline, which requires its own WebGPU variant).
  *
  * @private
  * @module WebGPUVector3DTilePrimitiveRenderer
@@ -65,7 +62,7 @@ import SceneMode from "../../Scene/SceneMode.js";
 import csm_depthClamp from "../../Shaders/WebGPU/chunks/functions/csm_depthClamp.js";
 import WebGPUBuffer from "./WebGPUBuffer.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
-// Slice 5c-B Phase 1 (Batch 113) — scene-FB target helper.
+// Keeps pipeline targets aligned with the scene framebuffer's active slots.
 import { makeSceneFBTargets } from "./WebGPUSceneFBTargetHelpers.js";
 import {
   makeBindGroupLayout,
@@ -79,8 +76,8 @@ import { ShaderDefine, ShaderSourceId } from "./WebGPUShaderDefines.js";
 import { WebGPUShaderModuleCache } from "./WebGPUShaderModuleCache.js";
 import { isWebGPULogDepthActive } from "./WebGPULogDepth.js";
 
-// C-R7-SHADER-MODULE-DEDUP (Batch 163) — per-device cache so multiple visible
-// vector tiles share one compiled `GPUShaderModule` for the primitive shader.
+// Multiple visible vector tiles on one device share the compiled primitive
+// shader module.
 const _vectorTilePrimitiveShaderCaches = new WeakMap();
 
 function getVectorTilePrimitiveShaderCache(device) {
@@ -102,15 +99,15 @@ const scratchEncodedCamera = new EncodedCartesian3();
 const scratchView = new Matrix4();
 const scratchVPRTE = new Matrix4();
 
-// NEW-CLASSIFIER-2D-CV-MORPH (Batch 178) — scratches for the CPU-side
-// reprojection of RTC-relative 3D ECEF positions into the SCENE2D /
+// Scratch values for CPU-side reprojection of RTC-relative 3D ECEF positions
+// into the SCENE2D /
 // COLUMBUS_VIEW planar ENU frame. Unlike GroundPrimitive (which gets
 // `position2DHigh/Low` from `GeometryPipeline.projectTo2D`), Vector3DTile
 // content carries only the 3D `_positions` RTC pair, so the 2D positions
 // are derived here: world = position + _center (ECEF) → cartographic →
 // `mapProjection.project` → (projX, projY, height) → ENU `(height, projX,
-// projY)` (the `.zxy` swizzle proven in Batch 170 for the GroundPrimitive
-// 2D path; matches `camera.positionWC`'s ENU frame under `TRANSFORM_2D`).
+// projY)`. This is the GroundPrimitive 2D path's `.zxy` convention and matches
+// `camera.positionWC`'s ENU frame under `TRANSFORM_2D`.
 const scratchReprojWorld = new Cartesian3();
 const scratchReprojCarto = new Cartographic();
 const scratchReprojProj = new Cartesian3();
@@ -141,9 +138,8 @@ function buildVectorTilePipelineResources(
   depthFormat,
   logDepthActive,
   sampleCount,
-  // NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE — pick pipelines target the
-  // context's byte-object-ID format authority (matches the pick FBO),
-  // never the (possibly float/HDR) scene format.
+  // Pick pipelines target the context's byte-object-ID format authority,
+  // which matches the pick FBO rather than the possibly float/HDR scene format.
   pickFormat = "rgba8unorm",
 ) {
   const code = `
@@ -172,9 +168,9 @@ struct U {
 };
 ${
   logDepthActive
-    ? // NEW-CLASSIFIER-LOG-DEPTH (Batch 266) — canonical inline copies. The
-      // volume writes per-vertex log z so its hardware less-equal depth test
-      // composes with the LOG-depth globe. Mirrors GroundPrimitive colorVS.
+    ? // The volume writes per-vertex log z so its hardware less-equal depth
+      // test composes with the log-depth globe. This matches GroundPrimitive
+      // colorVS.
       "fn csm_vertexLogDepth(clipPosition: vec4<f32>, near: f32) -> f32 {\n" +
       "  return (clipPosition.w - near) + 1.0;\n" +
       "}\n" +
@@ -213,9 +209,9 @@ fn vsMain(
   o.pos = csm_depthClamp(u.vpRTE * vec4<f32>(rte, 1.0));
 ${
   logDepthActive
-    ? // NEW-CLASSIFIER-LOG-DEPTH (Batch 266) — write per-vertex log z so the
-      // volume's hardware less-equal depth test composes with the LOG-depth
-      // globe. u.logDepth = (encodeNear, encodeFar, factor, _). The factor is
+    ? // Write per-vertex log z so the volume's hardware less-equal depth test
+      // composes with the log-depth globe. u.logDepth contains
+      // (encodeNear, encodeFar, factor, _). The factor is
       // derived inline from the encode near/far to match the globe's encoding
       // exactly (mirrors GroundPrimitive colorVS). Coarse per-vertex vs the
       // globe's per-fragment frag_depth, but well within the terrain-height
@@ -336,9 +332,8 @@ fn vsVelocity(
   var curClip = csm_depthClamp(u.vpRTE * vec4<f32>(rte, 1.0));
 ${
   logDepthActive
-    ? // NEW-CLASSIFIER-LOG-DEPTH (Batch 266) — the velocity pass shares the
-      // scene depth read-only and tests less-equal, so its rasterized z must
-      // match the log color pass's z or coverage diverges. Same log-z write.
+    ? // The velocity pass shares scene depth read-only and tests less-equal,
+      // so its rasterized z must match the log color pass or coverage diverges.
       "  let _ldNearV = u.logDepth.x;\n" +
       "  let _ldFarV = u.logDepth.y;\n" +
       "  let _ldFactorV = 1.0 / log2((_ldFarV - _ldNearV) + 1.0);\n" +
@@ -384,18 +379,10 @@ fn fsVelocity(i: VelocityVOut) -> @location(0) vec2<f32> {
     `Vector3DTilePrimitive${logDepthActive ? " [log]" : ""}`,
   );
 
-  // NEW-WEBGPU-PIPELINE-KEY-LOG-DEPTH — `logDepthActive` picks a DIFFERENT
-  // `mod` above (the //>>ifdef LOG_DEPTH branch), and every descriptor below
-  // uses `mod` for both stages. The central pipeline cache's `generateCacheKey`
-  // hashes only the descriptor NAME plus structural fields (ms / depth format /
-  // target signature / vertex layout) — never `vertex.module`,
-  // `fragment.module`, `entryPoint`, or the define mask. `_pipelineLogDepth`
-  // below rebuilds these descriptors on a flip, which is exactly the precondition
-  // for aliasing: without this marker the rebuilt log descriptor hits the
-  // hyperbolic pipeline already cached under the identical name. Reachable via
-  // `scene.morphTo2D()` / `camera.switchToOrthographicFrustum()`, which clear
-  // `frameState.useLogDepth`. `ld=` matches the Ocean / Cloud / FlowField
-  // spelling.
+  // `logDepthActive` selects a distinct shader module, and module identity keeps
+  // the central pipeline cache variants structurally separate. The `ld=` suffix
+  // also keeps descriptor labels readable when scene morphing or an orthographic
+  // frustum clears `frameState.useLogDepth` and rebuilds the descriptors.
   const ldFlag = logDepthActive ? 1 : 0;
 
   const sharedBgl = makeBindGroupLayout(
@@ -443,8 +430,8 @@ fn fsVelocity(i: VelocityVOut) -> @location(0) vec2<f32> {
     },
   ];
 
-  // ROADMAP s4.2 (B515) — the color + stencil pipelines run inside the
-  // multisampled scene pass, so their `multisample.count` MUST match
+  // The color and stencil pipelines run inside the multisampled scene pass, so
+  // their `multisample.count` must match
   // `context._msaaSamples` (4 at viewer defaults) or WebGPU rejects the
   // draw with an attachment-incompatible error and vector tiles render
   // fully black. Mirrors WebGPUGroundPrimitiveRenderer's `msState`
@@ -452,13 +439,13 @@ fn fsVelocity(i: VelocityVOut) -> @location(0) vec2<f32> {
   // into the single-sample rg16float texture, so both stay count-1.
   const msState = sampleCount > 1 ? { count: sampleCount } : undefined;
 
-  // Q15R-VECTOR3DTILE-CONTAINMENT-STENCIL — stencil-mark descriptor
-  // factory. Mirrors `getStencilDepthRenderState(mask3DTiles)`:
+  // Stencil-mark descriptor factory. Mirrors
+  // `getStencilDepthRenderState(mask3DTiles)`:
   //   - colorMask off  → makeSceneFBTargets writeMask 0 on every slot.
   //   - depthTest LESS_OR_EQUAL, depthMask false → depthCompare
   //     "less-equal", depthWriteEnabled false.
   //   - front zFail DECREMENT_WRAP / back zFail INCREMENT_WRAP → Z-fail
-  //     shadow-volume counting against the BOUND scene depth.
+  //     shadow-volume counting against the bound scene depth.
   //   - stencilReadMask CESIUM_3D_TILE_MASK (0x80) for the EQUAL compare
   //     (tileset variant); stencilWriteMask CLASSIFICATION_MASK (0x0f)
   //     so inc/dec only touch the low 4 classification bits.
@@ -507,11 +494,10 @@ fn fsVelocity(i: VelocityVOut) -> @location(0) vec2<f32> {
     "equal",
   );
 
-  // Q15R-VECTOR3DTILE-CONTAINMENT-STENCIL — stencil-tested color draw.
-  // Mirrors `colorRenderState`: stencil NOT_EQUAL 0 (masked to
-  // CLASSIFICATION_MASK), all ops ZERO (reset classification bits after
-  // the test so overlapping batches stay independent), depth test OFF,
-  // depth write OFF, premultiplied-alpha-equivalent src-over blend. Only
+  // Stencil-tested color draw. Mirrors `colorRenderState`: stencil
+  // `NOT_EQUAL 0` masked to `CLASSIFICATION_MASK`, all operations zero to
+  // reset classification bits after the test, depth test and writes disabled,
+  // and premultiplied-alpha-equivalent source-over blending. Only
   // fragments the mark pass counted (surface∩volume) survive.
   const colorDescriptor = {
     name: `Vector3DTilePrimitive stencil-color [${format}/${depthFormat}/ms=${sampleCount ?? 1}/ld=${ldFlag}]`,
@@ -563,8 +549,8 @@ fn fsVelocity(i: VelocityVOut) -> @location(0) vec2<f32> {
     },
   };
 
-  // AUDIT_2026_05_02 A.2 (Batch 141) — IGNORE_SHOW stencil-write variant.
-  // Color writes disabled (writeMask=0); stencil-write replaces with 0xff
+  // The `IGNORE_SHOW` stencil-write variant disables color writes and replaces
+  // stencil with 0xff
   // on every classified-surface pixel the volume covers.
   const stencilDescriptor = {
     name: `Vector3DTilePrimitive stencil [${format}/${depthFormat}/ms=${sampleCount ?? 1}/ld=${ldFlag}]`,
@@ -576,8 +562,8 @@ fn fsVelocity(i: VelocityVOut) -> @location(0) vec2<f32> {
       targets: [{ format, writeMask: 0 }],
     },
     primitive: { topology: "triangle-list", cullMode: "none" },
-    // ROADMAP s4.2 (B515) — stencil-only pipeline still runs in the MSAA
-    // scene pass; must carry the same sample count as the color pipeline.
+    // The stencil-only pipeline still runs in the multisampled scene pass and
+    // must carry the same sample count as the color pipeline.
     multisample: msState,
     depthStencil: {
       format: depthFormat,
@@ -600,8 +586,7 @@ fn fsVelocity(i: VelocityVOut) -> @location(0) vec2<f32> {
     },
   };
 
-  // NEW-ADVANCED-MOTION-VECTORS classifiers / Batch 178 — velocity
-  // pipeline descriptor. Same VS bind-group layout as the color
+  // Velocity pipeline descriptor. Uses the same VS bind-group layout as the color
   // pipeline (the FS reads only the per-vertex prevClip/currClip
   // varyings, so no extra storage is needed); the only deltas are:
   //   - Single rg16float color target (matches scene-FB velocity texture)
@@ -682,12 +667,12 @@ function tryResolvePipelines(device, pipelineCache, resources, cache) {
           });
       }
     }
-    // Q15R-VECTOR3DTILE-CONTAINMENT-STENCIL — the two stencil-mark
-    // pipelines (terrain compare-always / tileset compare-equal). Both
+    // Both stencil-mark pipelines (terrain compare-always and tileset
+    // compare-equal)
     // must resolve before a color command is emitted (the color draw is
     // a no-op without the preceding stencil mark). Cache miss is
     // non-fatal per-frame — the color pass is simply skipped this frame
-    // until the async pipeline lands.
+    // until the asynchronous pipeline resolves.
     if (!cache.markTerrainPipeline) {
       const s = pipelineCache.getPipelineSync(
         resources.stencilMarkTerrainDescriptor,
@@ -762,10 +747,9 @@ function tryResolvePipelines(device, pipelineCache, resources, cache) {
           });
       }
     }
-    // NEW-ADVANCED-MOTION-VECTORS classifiers / Batch 178 — velocity
-    // pipeline. Cache miss is non-fatal: the color pass continues to
+    // A velocity-pipeline cache miss is non-fatal: the color pass continues to
     // render correctly without it; only the velocity-pass dispatch
-    // becomes a no-op until the variant lands. Resolved through the
+    // becomes a no-op until the variant resolves. It uses the
     // central cache so two `Vector3DTilePrimitive` primitives share
     // the GPU pipeline.
     if (!cache.velocityPipeline) {
@@ -794,8 +778,8 @@ function tryResolvePipelines(device, pipelineCache, resources, cache) {
       descriptorToGPU(resources.colorDescriptor),
     );
   }
-  // Q15R-VECTOR3DTILE-CONTAINMENT-STENCIL — fallback path (no central
-  // pipeline cache): build the two mark pipelines synchronously.
+  // Without the central pipeline cache, build both mark pipelines
+  // synchronously.
   if (!cache.markTerrainPipeline) {
     cache.markTerrainPipeline = device.createRenderPipeline(
       descriptorToGPU(resources.stencilMarkTerrainDescriptor),
@@ -816,8 +800,7 @@ function tryResolvePipelines(device, pipelineCache, resources, cache) {
       descriptorToGPU(resources.stencilDescriptor),
     );
   }
-  // NEW-ADVANCED-MOTION-VECTORS classifiers / Batch 178 — fallback path
-  // (no central cache). Same rationale as the cache-driven branch above.
+  // Without the central cache, build the velocity pipeline synchronously.
   if (!cache.velocityPipeline) {
     cache.velocityPipeline = device.createRenderPipeline(
       descriptorToGPU(resources.velocityDescriptor),
@@ -835,14 +818,14 @@ function packUniforms(data, frameState, primitive, cache) {
   Matrix4.multiply(uniformState.projection, scratchView, scratchVPRTE);
   Matrix4.pack(scratchVPRTE, data, 0);
 
-  // NEW-CLASSIFIER-2D-CV-MORPH (Batch 178) — mode-branch the encoded
-  // center. In SCENE3D the geometry's RTC positions are relative to the
+  // Branch the encoded center by scene mode. In SCENE3D the geometry's RTC
+  // positions are relative to the
   // 3D ECEF `_center`; in SCENE2D / COLUMBUS_VIEW they're relative to the
   // ENU 2D center (`cache.center2D`, computed in ensureGeometry). The VS
   // math is identical — only the center / bound vertex buffer / `vpRTE`
   // differ by mode. `vpRTE` (above) is already mode-correct
   // (uniformState.view/projection), and the camera below stays
-  // `camera.positionWC` which under `TRANSFORM_2D` IS the ENU frame in
+  // `camera.positionWC`, which under `TRANSFORM_2D` is the ENU frame in
   // 2D/CV (matching the reprojected ENU positions).
   const non3D = frameState?.mode !== SceneMode.SCENE3D;
   const centerSource =
@@ -883,11 +866,10 @@ function packUniforms(data, frameState, primitive, cache) {
   data[34] = ctx?.drawingBufferWidth || 1;
   data[35] = ctx?.drawingBufferHeight || 1;
 
-  // AUDIT_2026_05_02 B.9 (Batch 153) — DP-H41 prev viewProjection at floats
-  // 36..51. UniformState swaps `_previousViewProjection := viewProjection`
-  // at the END of `update()` AFTER returning the prior frame's value via
-  // the getter, so on frame N this slot holds frame N-1's VP. First frame
-  // falls through to identity.
+  // Previous view-projection occupies floats 36..51. `UniformState.update()`
+  // exposes the prior value through the getter before replacing
+  // `_previousViewProjection`, so frame N receives frame N-1's matrix. The
+  // first frame uses identity.
   const prevVP = uniformState.previousViewProjection;
   if (prevVP) {
     Matrix4.pack(prevVP, data, 36);
@@ -910,12 +892,12 @@ function packUniforms(data, frameState, primitive, cache) {
     data[51] = 1;
   }
 
-  // NEW-CLASSIFIER-LOG-DEPTH (Batch 266) — log-depth encode frustum at floats
-  // 52..55 (near, far, factor, reserved). Prefer the stashed FULL-frustum
+  // The log-depth encode frustum occupies floats 52..55 (near, far, factor,
+  // reserved). Prefer the stashed full-frustum
   // encode the globe baked with (`_logDepthEncodeNearFar`) over the live
   // per-slice currentFrustum so this volume's per-vertex log z is encoded
-  // against the SAME near/far the globe wrote into the shared scene depth
-  // (mismatched encode → the less-equal test fails and the volume vanishes).
+  // against the same near/far the globe wrote into shared scene depth; a
+  // mismatched encoding makes the less-equal test fail and the volume vanish.
   // Packed unconditionally; only the LOG_DEPTH VS variant reads it.
   const ldEncode = uniformState._logDepthEncodeNearFar;
   const ldFrustum = uniformState.currentFrustum;
@@ -976,18 +958,18 @@ function ensureGeometry(cache, primitive, device, frameState) {
   );
   cache.vertexCount = numVerts;
 
-  // NEW-CLASSIFIER-2D-CV-MORPH (Batch 178) — build the SCENE2D /
-  // COLUMBUS_VIEW vertex buffer alongside the 3D one, while `_positions`
+  // Build the SCENE2D / COLUMBUS_VIEW vertex buffer alongside the 3D one while
+  // `_positions`
   // is still available (it may be released after this first build, and
   // `ensureGeometry` early-returns once `vertexGPUBuffer` exists — so both
-  // buffers MUST be produced in this single pass). Each vertex is
+  // buffers must be produced in this single pass). Each vertex is
   // reprojected from its RTC-relative 3D ECEF position into the planar ENU
-  // frame, then re-expressed RTC-relative to a 2D center so the SAME
+  // frame, then re-expressed RTC-relative to a 2D center so the same
   // mode-agnostic VS math (`(centerH-camH)+(centerL-camL)+position`) holds
   // with the 2D center / 2D camera / mode-correct `vpRTE` packed in
   // `packUniforms`. Skipped for `scene3DOnly` scenes (no 2D attributes
-  // needed). The reprojection mirrors `GeometryPipeline.projectTo2D` +
-  // the Batch 170 GroundPrimitive ENU `.zxy` convention.
+  // needed). The reprojection mirrors `GeometryPipeline.projectTo2D` and the
+  // GroundPrimitive ENU `.zxy` convention.
   const projection = frameState?.mapProjection;
   const ellipsoid = projection?.ellipsoid;
   if (frameState?.scene3DOnly || !projection || !ellipsoid) {
@@ -1143,13 +1125,11 @@ function uploadBatchColors(cache, primitive, device) {
     }
   }
 
-  // AUDIT_2026_05_02 B.1 — honor per-feature `Cesium3DTileFeature.show`.
-  // The WebGL Vector3DTile path packs `_showAlphaProperties` and reads it
-  // in the VS via `czm_batchTable_show(batchId)`. The WebGPU path didn't
-  // consume `show` at all; setting `tileset.getFeature(i).show = false`
-  // had no visual effect. We fold show into the per-batch alpha here so
-  // the existing color-discard branch in fsMain (added below) hides the
-  // feature without needing a second storage buffer.
+  // Honor per-feature `Cesium3DTileFeature.show`. The WebGL path packs
+  // `_showAlphaProperties` and reads it in the VS through
+  // `czm_batchTable_show(batchId)`. Folding show into the per-batch alpha lets
+  // the existing color-discard branch in fsMain hide the feature without a
+  // second storage buffer.
   const batchTable = primitive._batchTable;
   if (defined(batchTable) && typeof batchTable.getShow === "function") {
     const featuresLength = batchTable.featuresLength ?? 0;
@@ -1253,14 +1233,12 @@ function createWebGPUVector3DTilePrimitiveCommands(primitive, frameState) {
   const context = frameState.context;
   const device = context.device;
 
-  // NEW-CLASSIFIER-2D-CV-MORPH (Batch 178) — SCENE2D + COLUMBUS_VIEW now
-  // render via a CPU-reprojected ENU 2D vertex buffer (built in
+  // SCENE2D and COLUMBUS_VIEW render through the CPU-reprojected ENU 2D vertex
+  // buffer built in
   // ensureGeometry) + mode-branched center packing (packUniforms); the VS
   // math is mode-agnostic. MORPHING still returns no commands: the morph
   // blend needs BOTH the 3D and 2D positions interpolated in EC space (the
-  // GroundPrimitive morphColorVS pattern), which is a separate slice. The
-  // original Batch 150 gate (skip ALL non-3D) is therefore narrowed to
-  // MORPHING-only.
+  // GroundPrimitive morphColorVS pattern), so it remains unsupported.
   const sceneMode = frameState?.mode;
   if (sceneMode === SceneMode.MORPHING) {
     //>>includeStart('debug', pragmas.debug);
@@ -1279,10 +1257,10 @@ function createWebGPUVector3DTilePrimitiveCommands(primitive, frameState) {
   }
   const cache = primitive._webgpuCache;
 
-  // HDR-toggle invalidation (Batch 110 pattern).
+  // Scene-format generation invalidates pipelines when HDR state changes.
   const sceneGen = context._scenePipelineFormatGeneration ?? 0;
-  // NEW-CLASSIFIER-LOG-DEPTH (Batch 266) — the LOG_DEPTH master switch (or a
-  // frame toggling frameState.useLogDepth) flips the VS log-z write, so the
+  // The `LOG_DEPTH` master switch, or a frame toggling
+  // `frameState.useLogDepth`, changes the VS log-z write, so the
   // shader module + every pipeline variant must rebuild. Mirrors the
   // GroundPrimitive `_pipelineLogDepth` flip guard.
   const logDepthActive = isWebGPULogDepthActive(context, frameState);
@@ -1293,15 +1271,15 @@ function createWebGPUVector3DTilePrimitiveCommands(primitive, frameState) {
   ) {
     cache._pipelineResources = undefined;
     cache.colorPipeline = undefined;
-    // Q15R-VECTOR3DTILE-CONTAINMENT-STENCIL — stencil-mark pipelines are
-    // built against the same scene format / msaa / log-depth generation,
+    // Stencil-mark pipelines use the same scene format, sample count, and
+    // log-depth generation,
     // so they invalidate together with the color pipeline.
     cache.markTerrainPipeline = undefined;
     cache.markTilesetPipeline = undefined;
     cache.pickPipeline = undefined;
     cache.stencilPipeline = undefined;
-    // NEW-ADVANCED-MOTION-VECTORS classifiers / Batch 178 — velocity
-    // pipeline targets `rg16float` (the scene-FB velocity texture
+    // The velocity pipeline targets `rg16float`, the scene framebuffer's
+    // velocity texture
     // format), which doesn't change with HDR / canvas-format flips —
     // but keeping this in the invalidation set mirrors the other
     // pipelines' lifecycle and costs nothing (the pipeline cache
@@ -1321,7 +1299,7 @@ function createWebGPUVector3DTilePrimitiveCommands(primitive, frameState) {
       depthFmt,
       logDepthActive,
       sampleCount,
-      // NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE — pick target format authority.
+      // The pick target uses the context's byte-object-ID format authority.
       context.pickPipelineFormat || "rgba8unorm",
     );
     cache._pipelineFormatGeneration = sceneGen;
@@ -1331,12 +1309,9 @@ function createWebGPUVector3DTilePrimitiveCommands(primitive, frameState) {
     cache.markTilesetRequestPending = false;
     cache.pickRequestPending = false;
     cache.stencilRequestPending = false;
-    // NEW-ADVANCED-MOTION-VECTORS classifiers (Batch 178) — Batch 179
-    // cleanup. Init parity with the other pending flags. Defensive
-    // falsy-check at line ~522 made the missing init non-fatal, but
-    // the symmetry matters when format-invalidation re-runs this block
-    // and stale `velocityRequestPending = true` would block the next
-    // resolve attempt.
+    // Initialize every pending flag together. Otherwise format invalidation
+    // could retain `velocityRequestPending = true` and block the next resolve
+    // attempt despite the resolver's defensive falsy check.
     cache.velocityRequestPending = false;
   }
 
@@ -1381,12 +1356,11 @@ function createWebGPUVector3DTilePrimitiveCommands(primitive, frameState) {
   if (!defined(cache.vertexGPUBuffer) || !defined(cache.indexGPUBuffer)) {
     return { colorCommands: [], pickCommands: [] };
   }
-  // NEW-CLASSIFIER-2D-CV-MORPH (Batch 178) — in non-3D modes bind the
-  // reprojected ENU 2D vertex buffer. If the 2D buffer is missing (e.g.
+  // In non-3D modes, bind the reprojected ENU 2D vertex buffer. If that buffer
+  // is missing, for example in
   // scene3DOnly, or a degenerate center), fall back to skipping this frame
   // rather than drawing the 3D-ECEF positions through the 2D projection
-  // (which would produce wandering volumes — the failure mode the Batch
-  // 150 gate originally guarded against).
+  // because that would produce wandering volumes.
   const non3D = sceneMode !== SceneMode.SCENE3D;
   const activeVertexBuffer = non3D
     ? cache.vertexGPUBuffer2D
@@ -1408,15 +1382,15 @@ function createWebGPUVector3DTilePrimitiveCommands(primitive, frameState) {
   // Re-upload batch colors when the dirty flag indicates a re-batch (Vector3DTile
   // shuffles indices on color changes; the storage-buffer contents track the
   // current batchId → color mapping).
-  // AUDIT_2026_05_02 B.1 — also re-upload when the batch table reports
-  // dirty values (e.g., per-feature `show` toggle); without this the
+  // Also re-upload when the batch table reports dirty values, such as a
+  // per-feature `show` toggle; without this the
   // upload only fires on color changes and `feature.show = false` would
   // sit in the texture without ever reaching the storage buffer.
-  // (Audit-rereview correction 2026-05-02: the dirty flag lives on the
-  // batchTable's _batchTexture, not on _batchTable directly. See
+  // The dirty flag lives on the batch table's `_batchTexture`, not on
+  // `_batchTable` directly. See
   // `Cesium3DTileBatchTable.setShow → _batchTexture.setShow` and
-  // `BatchTexture._batchValuesDirty`. The earlier path always read
-  // undefined and never triggered re-upload after the first frame.)
+  // `BatchTexture._batchValuesDirty`; reading it directly from `_batchTable`
+  // yields undefined and prevents re-upload after the first frame.
   const batchValuesDirty =
     primitive._batchTable?._batchTexture?._batchValuesDirty === true;
   if (
@@ -1435,8 +1409,8 @@ function createWebGPUVector3DTilePrimitiveCommands(primitive, frameState) {
   }
 
   // Depth-source resolver (per-frustum bind-group rebuild on view change).
-  // Q15R-VECTOR3DTILE-CONTAINMENT-STENCIL — the stencil MARK+COLOR
-  // classify path does NOT sample this texture (containment is decided by
+  // The stencil mark-and-color classification path does not sample this
+  // texture; containment is decided by
   // the hardware stencil Z-fail against the bound depth), so a missing
   // globe-depth view no longer bails the whole primitive. It only gates
   // the depth-SAMPLE consumers that remain: pick + velocity. When the
@@ -1498,12 +1472,10 @@ function createWebGPUVector3DTilePrimitiveCommands(primitive, frameState) {
   // Pick the classification pass(es) based on `classificationType`.
   // ClassificationType: TERRAIN=0, CESIUM_3D_TILE=1, BOTH=2.
   // Pass enum:          TERRAIN_CLASSIFICATION=3, CESIUM_3D_TILE_CLASSIFICATION=6.
-  // AUDIT_2026_05_02 A.3 (Batch 145) — emit one command per relevant
-  // pass. Pre-fix, BOTH collapsed to pass 6 so a tile primitive set to
-  // BOTH classified 3D Tiles but never terrain (or vice versa for the
-  // earlier code that used pass 3). Mirror the
+  // Emit one command per relevant pass. `BOTH` must classify terrain and 3D
+  // Tiles rather than collapsing to either pass. Mirror the
   // `WebGPUVector3DTileClampedPolylinesRenderer.js` pass-list pattern
-  // so BOTH emits TWO commands per batch — one to pass 3, one to pass
+  // so `BOTH` emits two commands per batch — one to pass 3, one to pass
   // 6 — and the existing IGNORE_SHOW emission only fires for the 3D
   // Tile half (invert classification doesn't apply to terrain).
   const classType = primitive.classificationType ?? 0;
@@ -1512,11 +1484,10 @@ function createWebGPUVector3DTilePrimitiveCommands(primitive, frameState) {
     groundPasses.push(Pass.TERRAIN_CLASSIFICATION);
   }
   if (classType === 1 /* CESIUM_3D_TILE */ || classType === 2 /* BOTH */) {
-    // NEW-WEBGPU-CLASSIFIER-PASS-SLOT-DRIFT (filed 2026-08-07, CO-12): the
-    // INTENDED slot is Pass.CESIUM_3D_TILE_CLASSIFICATION; the literal that used to sit here
-    // named it in a comment but carried the pre-insertion VALUE, which is
-    // Pass.CESIUM_3D_TILE on this fork. Value left UNCHANGED — the correction
-    // needs a 3D-Tile-classification browser lane. See DEFERRED_WORK.
+    // The intended slot is `Pass.CESIUM_3D_TILE_CLASSIFICATION`, but this path
+    // still uses `Pass.CESIUM_3D_TILE`, whose numeric value names the ordinary
+    // 3D Tiles pass. Correcting the mapping requires 3D Tile classification
+    // browser validation.
     groundPasses.push(Pass.CESIUM_3D_TILE);
   }
 
@@ -1529,8 +1500,7 @@ function createWebGPUVector3DTilePrimitiveCommands(primitive, frameState) {
   const totalIndices = cache.indexBufferLength ?? 0;
   const colorCommands = [];
   const pickCommands = [];
-  // AUDIT_2026_05_02 A.2 (Batch 141, NEW-INVERT-CLASS-STENCIL-CLASSIFIER) —
-  // IGNORE_SHOW stencil-write commands, one per batch. Only emitted when
+  // Emit one `IGNORE_SHOW` stencil-write command per batch, and only when
   // the primitive participates in 3D Tile classification (BOTH or
   // CESIUM_3D_TILE — captured by the `groundPasses.includes` check
   // below). The Vector3DTilePrimitive dispatch site pushes these
@@ -1554,8 +1524,8 @@ function createWebGPUVector3DTilePrimitiveCommands(primitive, frameState) {
     const sharedDrawArgs = {
       bindGroups: [cache.sharedBindGroup, cache.depthSampleBindGroup],
       bindGroupResolvers: [undefined, resolveDepthSampleBindGroup],
-      // Batch 178 — 3D ECEF buffer in SCENE3D, reprojected ENU 2D buffer
-      // in SCENE2D / COLUMBUS_VIEW (NEW-CLASSIFIER-2D-CV-MORPH).
+      // SCENE3D uses the 3D ECEF buffer; SCENE2D and COLUMBUS_VIEW use the
+      // reprojected ENU 2D buffer.
       vertexBuffers: [activeVertexBuffer],
       indexBuffer: cache.indexGPUBuffer,
       indexFormat: cache.indexFormat,
@@ -1564,9 +1534,9 @@ function createWebGPUVector3DTilePrimitiveCommands(primitive, frameState) {
       vertexCount: 0,
       owner: primitive,
     };
-    // Q15R-VECTOR3DTILE-CONTAINMENT-STENCIL — the stencil mark + color
-    // pipelines use the group(0)-only ClassifyLayout, so their commands
-    // bind ONLY the shared UBO/storage group (no depth-sample texture).
+    // The stencil mark and color pipelines use the group(0)-only
+    // ClassifyLayout, so their commands bind only the shared UBO/storage group
+    // and no depth-sample texture.
     const classifyDrawArgs = {
       bindGroups: [cache.sharedBindGroup],
       vertexBuffers: [activeVertexBuffer],
@@ -1577,29 +1547,27 @@ function createWebGPUVector3DTilePrimitiveCommands(primitive, frameState) {
       vertexCount: 0,
       owner: primitive,
     };
-    // NEW-ADVANCED-MOTION-VECTORS classifiers / Batch 178 — derive a
-    // velocity command alongside the color command when TAA is on.
-    // Mirrors the Voxel pattern (Batch 173) and the advanced family
-    // collectively (Batches 168-173): the velocity pass walks the
+    // Derive a velocity command alongside the color command when TAA is on.
+    // The velocity pass walks the
     // command list for `cmd.velocityCommand` and dispatches into the
     // single-target rg16float render pass sharing scene depth read-only.
-    // Skip on classifier IGNORE_SHOW emission (only the primary
-    // classification passes need motion vectors; IGNORE_SHOW writes
+    // Skip classifier `IGNORE_SHOW` emission because only the primary
+    // classification passes need motion vectors; `IGNORE_SHOW` writes
     // stencil-only and isn't visible content).
     const taaEnabled = frameState?.taaEnabled === true;
 
     for (let p = 0; p < groundPasses.length; p++) {
       const passEnum = groundPasses[p];
-      // Q15R-VECTOR3DTILE-CONTAINMENT-STENCIL — WebGL-parity two-draw
-      // stencil Z-fail. Per batch, per pass: (1) a stencil-MARK draw that
+      // WebGL-parity two-draw stencil z-fail. Per batch and pass, a stencil-mark
+      // draw first
       // counts the volume∩surface region into the CLASSIFICATION_MASK
       // bits of the BOUND scene stencil (terrain compare-always for pass
       // 3 / tileset compare-equal-0x80 for pass 6), then (2) a
-      // stencil-TESTED color draw (NOT_EQUAL 0) that shades exactly that
+      // stencil-tested color draw (`NOT_EQUAL 0`) that shades exactly that
       // region and resets the bits. Both land in the SAME pass bucket
       // (TERRAIN_CLASSIFICATION=3 or CESIUM_3D_TILE_CLASSIFICATION=6) and
       // execute in push order within one render pass, so the stencil
-      // written by the mark is visible to the immediately-following color
+      // written by the mark is visible to the immediately following color
       // draw. Mirrors Vector3DTilePrimitive.createColorCommands, which
       // interleaves commands[j*2]=stencilDepth, commands[j*2+1]=color.
       const markPipeline =
@@ -1672,11 +1640,10 @@ function createWebGPUVector3DTilePrimitiveCommands(primitive, frameState) {
         new WebGPUDrawCommand({
           ...sharedDrawArgs,
           pipeline: cache.stencilPipeline,
-          // NEW-WEBGPU-CLASSIFIER-PASS-SLOT-DRIFT (filed 2026-08-07, CO-12): the
-          // INTENDED slot is Pass.CESIUM_3D_TILE_CLASSIFICATION_IGNORE_SHOW; the literal that used to sit here
-          // named it in a comment but carried the pre-insertion VALUE, which is
-          // Pass.CESIUM_3D_TILE_CLASSIFICATION on this fork. Value left UNCHANGED — the correction
-          // needs a 3D-Tile-classification browser lane. See DEFERRED_WORK.
+          // The intended slot is
+          // `Pass.CESIUM_3D_TILE_CLASSIFICATION_IGNORE_SHOW`, but this path
+          // still uses `Pass.CESIUM_3D_TILE_CLASSIFICATION`. Correcting the
+          // mapping requires 3D Tile classification browser validation.
           pass: Pass.CESIUM_3D_TILE_CLASSIFICATION,
           renderState: { stencilTest: { reference: 0xff } },
         }),
@@ -1704,7 +1671,7 @@ function destroyWebGPUVector3DTilePrimitiveResources(primitive) {
   if (defined(cache.vertexGPUBuffer)) {
     cache.vertexGPUBuffer.destroy();
   }
-  // NEW-CLASSIFIER-2D-CV-MORPH (Batch 178) — release the reprojected 2D buffer.
+  // Release the reprojected 2D buffer with the other geometry resources.
   if (defined(cache.vertexGPUBuffer2D)) {
     cache.vertexGPUBuffer2D.destroy();
   }

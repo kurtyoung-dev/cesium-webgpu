@@ -1,7 +1,5 @@
 /**
- * (Per-feature pick added in Batch 115.)
- *
- * WebGPU equivalent of `Vector3DTilePolylines` (3D Tiles polylines NOT
+ * WebGPU equivalent of `Vector3DTilePolylines` (3D Tiles polylines not
  * clamped to terrain). Pairs with `WebGPUVector3DTileClampedPolylinesRenderer`
  * for the terrain-clamped variant.
  *
@@ -12,7 +10,7 @@
  * alive (the WebGL `finishVertexArray` is skipped) so this renderer can
  * upload them straight into GPU buffers.
  *
- * **Shipped (Batch 113):**
+ * The renderer provides:
  *   - WGSL VS port of `Vector3DTilePolylinesVS.glsl` + the screen-space
  *     miter expansion from `PolylineCommon.glsl::getPolylineWindowCoordinatesEC`.
  *   - Per-vertex `previousPosition`, `currentPosition`, `nextPosition`
@@ -25,13 +23,14 @@
  *   - `Pass.TRANSLUCENT` matching the WebGL `_command.pass` choice — these
  *     polylines write color but not depth.
  *
- * **Deferred:**
- *   - Near-plane clipping (`clipLineSegmentToNearPlane`). Polylines that
- *     cross the near plane will render with garbage segments. Fix: port
- *     the WebGL clip routine — ~40 LOC of WGSL.
- *   - `POLYLINE_DASH` material variant.
+ * Current limitations:
+ *   - Near-plane clipping (`clipLineSegmentToNearPlane`) is not implemented,
+ *     so polylines crossing the near plane can produce invalid segments.
+ *     Supporting them requires the WebGL clip routine's approximately 40 lines
+ *     of WGSL.
+ *   - The `POLYLINE_DASH` material variant is not implemented.
  *
- * **Per-feature pick (Batch 115):**
+ * Per-feature picking:
  *   - A second storage buffer `pickColors[batchId]` is bound at
  *     group(0) binding(2) and uploaded from `batchTable.getPickColor(i)`.
  *   - A second pipeline (`pickPipeline`) shares the same VS but uses a
@@ -60,10 +59,10 @@ import {
 import { ShaderDefine, ShaderSourceId } from "./WebGPUShaderDefines.js";
 import { WebGPUShaderModuleCache } from "./WebGPUShaderModuleCache.js";
 import { isWebGPULogDepthActive } from "./WebGPULogDepth.js";
-// Slice 5c-B Phase 1 (Batch 113) — scene-FB target helper.
+// Scene-framebuffer color targets include any auxiliary scene attachments.
 import { makeSceneFBTargets } from "./WebGPUSceneFBTargetHelpers.js";
 
-// C-R7-SHADER-MODULE-DEDUP (Batch 163) — per-device module cache.
+// Cache compiled shader modules per device.
 const _polylineShaderCaches = new WeakMap();
 
 function getPolylineShaderCache(device) {
@@ -88,19 +87,19 @@ function buildPolylinePipelineResources(
   depthFormat,
   logDepthActive,
   sampleCount,
-  // NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE — pick pipelines target the
-  // context's byte-object-ID format authority (matches the pick FBO),
-  // never the (possibly float/HDR) scene format.
+  // Pick pipelines use the context's byte-object-ID format authority so their
+  // target matches the pick framebuffer, never the possibly floating-point HDR
+  // scene format.
   pickFormat = "rgba8unorm",
 ) {
   const code = `
 ${
   logDepthActive
-    ? // NEW-CLASSIFIER-LOG-DEPTH (Batch 266) — canonical inline copies. The
-      // non-clamped polyline tests less-equal against the shared scene depth
-      // (write-disabled), which the globe now LOG-encodes; without writing log
-      // z the polyline's hyperbolic z fails the test and it vanishes behind
-      // the surface. Mirrors GroundPrimitive colorVS.
+    ? // The non-clamped polyline tests less-equal against the write-disabled
+      // shared scene depth. When the globe encodes logarithmic depth, the
+      // polyline must write logarithmic z as well or its hyperbolic z fails the
+      // test and vanishes behind the surface. These helpers match the
+      // ground-primitive color vertex stage.
       "fn csm_vertexLogDepth(clipPosition: vec4<f32>, near: f32) -> f32 {\n" +
       "  return (clipPosition.w - near) + 1.0;\n" +
       "}\n" +
@@ -238,9 +237,9 @@ fn vsMain(
   );
 ${
   logDepthActive
-    ? // NEW-CLASSIFIER-LOG-DEPTH (Batch 266) — write log z so the polyline's
-      // less-equal test (against the write-disabled LOG-depth scene depth)
-      // passes. u.logDepth = (encodeNear, encodeFar, factor, _).
+    ? // Write logarithmic z so the polyline's less-equal test against the
+      // write-disabled logarithmic scene depth passes. `u.logDepth` contains
+      // `(encodeNear, encodeFar, factor, reserved)`.
       "  let _ldNear = u.logDepth.x;\n" +
       "  let _ldFar = u.logDepth.y;\n" +
       "  let _ldFactor = 1.0 / log2((_ldFar - _ldNear) + 1.0);\n" +
@@ -332,9 +331,9 @@ fn vsVelocity(
   );
 ${
   logDepthActive
-    ? // NEW-CLASSIFIER-LOG-DEPTH (Batch 266) — the velocity pass shares the
-      // scene depth read-only (less-equal), so its rasterized z must match the
-      // log color pass or coverage diverges. Same log-z write as vsMain.
+    ? // The velocity pass shares scene depth read-only with a less-equal test,
+      // so its rasterized z must match the logarithmic color pass or coverage
+      // diverges. Use the same logarithmic-z write as `vsMain`.
       "  let _ldNearV = u.logDepth.x;\n" +
       "  let _ldFarV = u.logDepth.y;\n" +
       "  let _ldFactorV = 1.0 / log2((_ldFarV - _ldNearV) + 1.0);\n" +
@@ -386,15 +385,12 @@ fn fsVelocity(i: VelocityVOut) -> @location(0) vec2<f32> {
     `Vector3DTilePolylines${logDepthActive ? " [log]" : ""}`,
   );
 
-  // NEW-WEBGPU-PIPELINE-KEY-LOG-DEPTH — `logDepthActive` picks a DIFFERENT
-  // `mod` above, and all three descriptors below use it for both stages. The
-  // central pipeline cache's `generateCacheKey` hashes only the descriptor NAME
-  // plus structural fields — never `vertex.module`, `fragment.module`,
-  // `entryPoint`, or the define mask. `_pipelineLogDepth` below rebuilds these
-  // descriptors on a flip, so without this marker the rebuilt log descriptor
-  // hits the hyperbolic pipeline already cached under the identical name.
-  // Reachable via `scene.morphTo2D()` / `camera.switchToOrthographicFrustum()`,
-  // which clear `frameState.useLogDepth`.
+  // `logDepthActive` selects a distinct shader module for all three
+  // descriptors. Module identity separates their structural cache keys, while
+  // `ldFlag` keeps the logarithmic-depth axis legible in descriptor names and
+  // diagnostics. `_pipelineLogDepth` rebuilds the descriptors when
+  // `scene.morphTo2D()` or `camera.switchToOrthographicFrustum()` clears
+  // `frameState.useLogDepth`.
   const ldFlag = logDepthActive ? 1 : 0;
 
   const sharedBgl = makeBindGroupLayout(device, "Vector3DTilePolylines BGL", [
@@ -428,11 +424,11 @@ fn fsVelocity(i: VelocityVOut) -> @location(0) vec2<f32> {
     },
   ];
 
-  // ROADMAP s4.2 (B515) — the color pipeline runs inside the multisampled
-  // scene pass, so its `multisample.count` MUST match `context._msaaSamples`
-  // (4 at viewer defaults) or WebGPU rejects the draw with an
-  // attachment-incompatible error and vector polylines render fully black.
-  // Pick + velocity render into single-sample targets, so both stay count-1.
+  // The color pipeline runs inside the multisampled scene pass, so its
+  // `multisample.count` must match `context._msaaSamples` (4 at viewer
+  // defaults). A mismatch makes WebGPU reject the draw as attachment-
+  // incompatible and renders vector polylines black. Pick and velocity use
+  // single-sample targets and therefore remain count 1.
   const msState = sampleCount > 1 ? { count: sampleCount } : undefined;
   const colorDescriptor = {
     name: `Vector3DTilePolylines color [${format}/${depthFormat}/ms=${sampleCount ?? 1}/ld=${ldFlag}]`,
@@ -441,9 +437,8 @@ fn fsVelocity(i: VelocityVOut) -> @location(0) vec2<f32> {
     fragment: {
       module: mod,
       entryPoint: "fsMain",
-      // Slice 5c-B Phase 1 (Batch 113) — scene-FB color target via
-      // helper. Pick (L409, [{format}]) and velocity (L435, rg16float)
-      // stay single-target.
+      // The scene-framebuffer helper adds auxiliary scene targets. Pick and
+      // velocity remain single-target in their dedicated render passes.
       targets: makeSceneFBTargets(format, { translucent: true }),
     },
     primitive: { topology: "triangle-list", cullMode: "none" },
@@ -457,10 +452,10 @@ fn fsVelocity(i: VelocityVOut) -> @location(0) vec2<f32> {
     multisample: msState,
   };
 
-  // Pick pipeline: same VS / same depth / same blend / different FS
-  // entry point. The pick FBO consumer expects RGBA8 unorm output in
-  // [0, 1]; the target is stamped with the context's pick-format
-  // authority (NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE).
+  // The pick pipeline shares vertex and depth state with color but uses a
+  // different fragment entry point. The pick framebuffer expects byte-object-
+  // ID output in [0, 1], so the target uses the context's pick-format
+  // authority.
   const pickDescriptor = {
     name: `Vector3DTilePolylines pick [${pickFormat}/${depthFormat}/ld=${ldFlag}]`,
     layout,
@@ -480,13 +475,11 @@ fn fsVelocity(i: VelocityVOut) -> @location(0) vec2<f32> {
     },
   };
 
-  // NEW-ADVANCED-MOTION-VECTORS classifiers (Batch 179) — velocity
-  // pipeline descriptor. Same VS extrusion math as the color pipeline
-  // (so the velocity-pass rasterization covers the SAME fragments the
-  // color pass produced), single rg16float color target, no blend,
-  // depth read-only. Same shared BGL — no extra storage needed; the
-  // per-vertex prev clip is computed from `centerWC + curr` projected
-  // through `prevViewProjection`.
+  // The velocity pipeline uses the color vertex stage's extrusion math so both
+  // passes cover the same fragments. It has one `rg16float` target, no blend,
+  // and read-only depth. The shared bind-group layout needs no extra storage;
+  // each previous clip position is `centerWC + curr` projected through
+  // `prevViewProjection`.
   const velocityDescriptor = {
     name: `Vector3DTilePolylines velocity [${depthFormat}/ld=${ldFlag}]`,
     layout,
@@ -575,11 +568,9 @@ function tryResolvePipelines(device, pipelineCache, resources, cache) {
           });
       }
     }
-    // NEW-ADVANCED-MOTION-VECTORS classifiers (Batch 179) — velocity
-    // pipeline. Cache miss is non-fatal: the color pass continues to
-    // render correctly without it; only the velocity-pass dispatch
-    // becomes a no-op until the variant lands. Same pattern as
-    // Vector3DTilePrimitive (Batch 178).
+    // A velocity cache miss is non-fatal: color remains correct while velocity
+    // dispatch is a no-op until the variant becomes available, matching the
+    // vector-3D-tile primitive renderer.
     if (!cache.velocityPipeline) {
       const velSync = pipelineCache.getPipelineSync(
         resources.velocityDescriptor,
@@ -611,7 +602,7 @@ function tryResolvePipelines(device, pipelineCache, resources, cache) {
       descriptorToGPU(resources.pickDescriptor),
     );
   }
-  // NEW-ADVANCED-MOTION-VECTORS classifiers (Batch 179) — fallback path.
+  // Create velocity directly when no central pipeline cache is available.
   if (!cache.velocityPipeline) {
     cache.velocityPipeline = device.createRenderPipeline(
       descriptorToGPU(resources.velocityDescriptor),
@@ -654,8 +645,8 @@ function packUniforms(data, frameState, primitive) {
 
   data[36] = uniformState.pixelRatio ?? 1.0;
 
-  // AUDIT_2026_05_02 B.9 (Batch 153) — DP-H41 prev viewProjection at floats
-  // 40..55 (16-byte-aligned past the f32 + 3×_pad scalar block).
+  // The previous view-projection matrix occupies floats 40-55, aligned past
+  // the f32 plus three-scalar padding block.
   const prevVP = uniformState.previousViewProjection;
   if (prevVP) {
     Matrix4.pack(prevVP, data, 40);
@@ -678,23 +669,21 @@ function packUniforms(data, frameState, primitive) {
     data[55] = 1;
   }
 
-  // NEW-ADVANCED-MOTION-VECTORS classifiers (Batch 179) — primitive
-  // center in world coordinates at floats 56..58 (vec3 + 1 pad).
-  // Consumed by `vsVelocity` to reconstruct world-space positions
-  // (`worldPos = centerWC + curr`) for projection through
-  // `prevViewProjection`.
+  // Floats 56-58 store the primitive center in world coordinates, followed by
+  // one padding float. `vsVelocity` reconstructs `centerWC + curr` for
+  // projection through `prevViewProjection`.
   const center = primitive._center ?? Cartesian3.ZERO;
   data[56] = center.x;
   data[57] = center.y;
   data[58] = center.z;
   data[59] = 0.0;
 
-  // NEW-CLASSIFIER-LOG-DEPTH (Batch 266) — log-depth encode frustum at floats
-  // 60..63 (near, far, factor, reserved). Prefer the stashed FULL-frustum
-  // encode the globe baked with over the live per-slice currentFrustum so the
-  // polyline's per-vertex log z composes with the globe's scene depth (see the
-  // same pattern in WebGPUBillboardRenderer.packUniforms). Packed
-  // unconditionally; only the LOG_DEPTH VS variant reads it.
+  // Floats 60-63 store the logarithmic-depth encode frustum as near, far,
+  // factor, and reserved. Prefer the stashed full-camera frustum used by the
+  // globe over the live per-slice frustum so the polyline's per-vertex
+  // logarithmic z composes with scene depth. The billboard renderer uses the
+  // same rule. Pack unconditionally; only the logarithmic-depth vertex variant
+  // reads these lanes.
   const ldEncode = uniformState._logDepthEncodeNearFar;
   const ldFrustum = uniformState.currentFrustum;
   let ldNear = ldFrustum ? ldFrustum.x : 0.0;
@@ -946,23 +935,14 @@ function createWebGPUVector3DTilePolylineCommands(primitive, frameState) {
   const context = frameState.context;
   const device = context.device;
 
-  // AUDIT_2026_05_02 A.4 (Batch 150) — non-SCENE3D scene mode gate.
-  // 3D-positions-only VS; 2D / Columbus View positions are not part
-  // of the Vector3DTilePolylines geometry stream (verified Batch 158
-  // — only RTC-relative 3D positions exist, identical to upstream
-  // WebGL).
-  //
-  // **Batch 207** — MORPHING is now allowed through. During morph,
-  // the camera + view/projection matrices interpolate via
-  // `frameState.morphTime` (1.0 = full 3D ↔ 0.0 = full 2D). Our
-  // `packUniforms` reads `uniformState.view` + `uniformState.projection`
-  // which already reflect that interpolation, so feeding the existing
-  // ECEF/RTC positions through the morph-aware matrices renders the
-  // polylines in their 3D world position during the transition —
-  // they fade out of frame as the camera approaches 2D, matching
-  // the animation users expect when 3D-only tile content morphs.
-  // SCENE2D + COLUMBUS_VIEW remain gated because the 3D positions
-  // would project to wandering points (no 2D attribute path).
+  // The vertex stage accepts only RTC-relative 3D positions; the geometry
+  // stream has no 2D or Columbus View attributes, matching upstream WebGL.
+  // Morphing is supported because `uniformState.view` and
+  // `uniformState.projection` already interpolate with `frameState.morphTime`.
+  // Existing ECEF/RTC positions therefore remain in their 3D world location
+  // and fade from view as the camera approaches 2D. Fully 2D and Columbus View
+  // remain gated because projecting the 3D stream without a 2D attribute path
+  // produces wandering points.
   const sceneMode = frameState?.mode;
   if (sceneMode !== SceneMode.SCENE3D && sceneMode !== SceneMode.MORPHING) {
     //>>includeStart('debug', pragmas.debug);
@@ -984,9 +964,8 @@ function createWebGPUVector3DTilePolylineCommands(primitive, frameState) {
   const cache = primitive._webgpuCache;
 
   const sceneGen = context._scenePipelineFormatGeneration ?? 0;
-  // NEW-CLASSIFIER-LOG-DEPTH (Batch 266) — rebuild on LOG_DEPTH master-switch
-  // flip (or a frame toggling frameState.useLogDepth). Mirrors the
-  // GroundPrimitive `_pipelineLogDepth` flip guard.
+  // Rebuild when the logarithmic-depth master switch or per-frame
+  // `useLogDepth` state changes, matching the ground-primitive flip guard.
   const logDepthActive = isWebGPULogDepthActive(context, frameState);
   if (
     defined(cache._pipelineResources) &&
@@ -996,10 +975,8 @@ function createWebGPUVector3DTilePolylineCommands(primitive, frameState) {
     cache._pipelineResources = undefined;
     cache.colorPipeline = undefined;
     cache.pickPipeline = undefined;
-    // NEW-ADVANCED-MOTION-VECTORS classifiers (Batch 179) — clear the
-    // velocity pipeline alongside color/pick on format change so the
-    // resolver re-runs against the new presentation format. Mirrors
-    // the Batch 176 audit fix that surfaced the same gap on splats.
+    // Velocity depends on the same presentation format and must be cleared with
+    // color and pick so the resolver uses the new descriptors.
     cache.velocityPipeline = undefined;
     cache.sharedBindGroup = undefined;
   }
@@ -1013,16 +990,14 @@ function createWebGPUVector3DTilePolylineCommands(primitive, frameState) {
       depthFmt,
       logDepthActive,
       sampleCount,
-      // NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE — pick target format authority.
+      // Use the context's pick-target format authority.
       context.pickPipelineFormat || "rgba8unorm",
     );
     cache._pipelineFormatGeneration = sceneGen;
     cache._pipelineLogDepth = logDepthActive;
     cache.colorRequestPending = false;
     cache.pickRequestPending = false;
-    // NEW-ADVANCED-MOTION-VECTORS classifiers (Batch 179) — pending-
-    // flag init parity with the existing flags (caught as an audit
-    // observation on Batch 178; applying preemptively here).
+    // Initialize the velocity request flag with the color and pick flags.
     cache.velocityRequestPending = false;
   }
   if (
@@ -1106,13 +1081,10 @@ function createWebGPUVector3DTilePolylineCommands(primitive, frameState) {
     owner: primitive,
   });
 
-  // NEW-ADVANCED-MOTION-VECTORS classifiers (Batch 179) — derive
-  // velocity command alongside the color command when TAA is on.
-  // Same pattern as Vector3DTilePrimitive (Batch 178) and Voxel
-  // (Batch 173): the velocity pass walks the command list for
-  // `cmd.velocityCommand` and dispatches into the rg16float render
-  // pass sharing scene depth read-only. Skipped when TAA is off —
-  // static scenes pay nothing.
+  // Attach velocity to the color command when TAA is enabled. The velocity
+  // pass finds `cmd.velocityCommand` while walking the command list and renders
+  // into `rg16float` with shared read-only scene depth, matching vector-3D-tile
+  // primitives and voxels. Static scenes pay nothing when TAA is disabled.
   if (frameState?.taaEnabled === true && defined(cache.velocityPipeline)) {
     colorCmd.velocityCommand = new WebGPUDrawCommand({
       pipeline: cache.velocityPipeline,

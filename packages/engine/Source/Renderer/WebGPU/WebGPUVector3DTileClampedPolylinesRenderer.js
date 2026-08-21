@@ -4,8 +4,8 @@
  * for the un-clamped variant and with `WebGPUVector3DTilePrimitiveRenderer`
  * for the polygon classifier.
  *
- * Architecture mirrors `WebGPUGroundPolylineRenderer`'s depth-sample
- * classifier (ADR-2026-04-28). The volume's rasterization handles lateral
+ * The architecture mirrors `WebGPUGroundPolylineRenderer`'s depth-sample
+ * classifier. The volume's rasterization handles lateral
  * coverage; the FS samples the globe depth texture, reconstructs the eye-
  * space surface position, and tests it against three EC planes (start,
  * end, right) plus the per-fragment width threshold computed from
@@ -20,7 +20,7 @@
  * keeps those arrays alive (the WebGL `finishVertexArray` is skipped) so
  * this renderer can upload them straight into GPU buffers.
  *
- * **Shipped (Batch 114):**
+ * The renderer provides:
  *   - WGSL VS port of `Vector3DTileClampedPolylinesVS.glsl` — per-vertex
  *     shadow-volume extrusion (height + width miter), eye-space plane
  *     reconstruction, manual depth clamp.
@@ -32,10 +32,10 @@
  *   - Single shared depth-sample bind group reused across both ground
  *     passes (TERRAIN + 3D-TILE classification — see "Pass routing" below).
  *
- * **Deferred:**
- *   - Per-feature pick. Same trade-off as the polygon FR: the storage-
- *     buffer indirection means adding `pickColors[batchId]` is one extra
- *     `vec4[]` slot when a future batch enables it.
+ * Current limitations:
+ *   - Per-feature picking is not implemented. The storage-buffer indirection
+ *     makes support one additional `pickColors[batchId]` `vec4[]` slot, as in
+ *     the polygon feature renderer.
  *   - `DEBUG_SHOW_VOLUME` mode (visualizes the swept volume in red/blue).
  *   - Distinct depth source per pass: WebGL stencils against
  *     `czm_globeDepthTexture` for TERRAIN and against `czm_pickDepthTexture`
@@ -67,7 +67,7 @@ import csm_depthClamp from "../../Shaders/WebGPU/chunks/functions/csm_depthClamp
 import csm_reverseLogDepth from "../../Shaders/WebGPU/chunks/functions/csm_reverseLogDepth.js";
 import WebGPUBuffer from "./WebGPUBuffer.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
-// Slice 5c-B Phase 1 (Batch 113) — scene-FB target helper.
+// Scene-framebuffer color targets include any auxiliary scene attachments.
 import { makeSceneFBTargets } from "./WebGPUSceneFBTargetHelpers.js";
 import {
   makeBindGroupLayout,
@@ -81,7 +81,7 @@ import { ShaderDefine, ShaderSourceId } from "./WebGPUShaderDefines.js";
 import { WebGPUShaderModuleCache } from "./WebGPUShaderModuleCache.js";
 import { isWebGPULogDepthActive } from "./WebGPULogDepth.js";
 
-// C-R7-SHADER-MODULE-DEDUP (Batch 163) — per-device module cache.
+// Cache compiled shader modules per device.
 const _clampedPolylineShaderCaches = new WeakMap();
 
 function getClampedPolylineShaderCache(device) {
@@ -93,10 +93,8 @@ function getClampedPolylineShaderCache(device) {
   return cache;
 }
 
-// AUDIT_2026_05_02 B.9 (Batch 153) — bumped from 320 → 384 to fit the
-// trailing `prevViewProjection: mat4x4<f32>` (64 bytes) added per the
-// DP-H41 invariant. Layout: 272 bytes used + 64 bytes prevVP + 48 bytes
-// trailing reserved = 384.
+// The 384-byte buffer holds 272 bytes of base data, the trailing 64-byte
+// `prevViewProjection` mat4, and 48 reserved bytes.
 const UNIFORM_BUFFER_SIZE = 384;
 const BYTES_PER_BATCH_COLOR = 16;
 const INITIAL_BATCH_BUFFER_FEATURES = 64;
@@ -104,13 +102,12 @@ const INITIAL_BATCH_BUFFER_FEATURES = 64;
 const VERTEX_STRIDE_FLOATS = 24;
 const VERTEX_STRIDE_BYTES = VERTEX_STRIDE_FLOATS * 4;
 
-// NEW-WEBGPU-CLASSIFIER-PASS-SLOT-DRIFT (filed 2026-08-07, CO-12).
-// `PASS_CESIUM_3D_TILE_CLASSIFICATION = 6` was a right-looking NAME over a
-// stale VALUE: 6 is Pass.CESIUM_3D_TILE on this fork, not
-// Pass.CESIUM_3D_TILE_CLASSIFICATION (7). Both constants are replaced by
-// the enum member each one ACTUALLY equalled, so no dispatched pass moves
-// and the wrong slot is now readable. The correction needs a 3D-Tile-
-// classification browser lane; see DEFERRED_WORK.
+// Preserve the renderer's current numeric pass slots with enum members that
+// state their actual values. The semantic 3D Tiles target is
+// `Pass.CESIUM_3D_TILE_CLASSIFICATION`, but an enum insertion shifted that
+// value while this renderer retained `Pass.CESIUM_3D_TILE`. Changing the slot
+// requires runtime 3D Tiles classification coverage because it changes
+// dispatch behavior.
 const PASS_TERRAIN_CLASSIFICATION = Pass.TERRAIN_CLASSIFICATION;
 const PASS_CESIUM_3D_TILE_CLASSIFICATION_DRIFTED = Pass.CESIUM_3D_TILE;
 const CLASSIFICATION_TYPE_TERRAIN = 0;
@@ -123,9 +120,9 @@ function buildClampedPolylinePipelineResources(
   depthFormat,
   logDepthActive,
   sampleCount,
-  // NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE — pick pipelines target the
-  // context's byte-object-ID format authority (matches the pick FBO),
-  // never the (possibly float/HDR) scene format.
+  // Pick pipelines use the context's byte-object-ID format authority so their
+  // target matches the pick framebuffer, never the possibly floating-point HDR
+  // scene format.
   pickFormat = "rgba8unorm",
 ) {
   const code = `
@@ -282,14 +279,13 @@ fn windowToEyeCoordinates(fragXY: vec2<f32>, depth: f32) -> vec3<f32> {
   ndc.y = -ndc.y;
 ${
   logDepthActive
-    ? // NEW-CLASSIFIER-LOG-DEPTH (Batch 266) — the sampled scene depth is
-      // LOG-encoded by the globe. Mirrors GroundPrimitive windowToEye: (1)
-      // DECODE the precise eye distance with the globe's ENCODE frustum
-      // (u.logDepth.xy = full-frustum near/far the globe encoded with), since
-      // log encodes clipW = eye distance (projection-independent). (2) RE-ENCODE
-      // to the per-slice window z (u.logDepth.zw = command-build near/far) and
-      // inverse-project, applying the eye.w = 1/depthFromCamera precision
-      // override so the crushed-near-1.0 window depth never limits precision.
+    ? // The globe stores logarithmic scene depth. As in the ground-primitive
+      // window-to-eye path, first decode precise eye distance with the globe's
+      // full-camera encode frustum in `u.logDepth.xy`; logarithmic encoding uses
+      // projection-independent clip w as eye distance. Then re-encode to the
+      // command's per-slice window z from `u.logDepth.zw` and inverse-project.
+      // Setting `eye.w = 1 / depthFromCamera` keeps window depth compressed near
+      // 1.0 from limiting reconstruction precision.
       "  let depthFromCamera = csm_reverseLogDepthToEyeDistance(depth, u.logDepth.x, u.logDepth.y);\n" +
       "  let sNear = u.logDepth.z;\n" +
       "  let sFar = u.logDepth.w;\n" +
@@ -465,14 +461,11 @@ fn fsVelocity(i: VelocityVOut) -> @location(0) vec2<f32> {
     `Vector3DTileClampedPolylines${logDepthActive ? " [log]" : ""}`,
   );
 
-  // NEW-WEBGPU-PIPELINE-KEY-LOG-DEPTH — `logDepthActive` picks a DIFFERENT
-  // `mod` above, and every descriptor below uses it for both stages. The central
-  // pipeline cache's `generateCacheKey` hashes only the descriptor NAME plus
-  // structural fields — never `vertex.module`, `fragment.module`, `entryPoint`,
-  // or the define mask. `_pipelineLogDepth` below rebuilds these descriptors on
-  // a flip, so without this marker the rebuilt log descriptor hits the
-  // hyperbolic pipeline already cached under the identical name. Reachable via
-  // `scene.morphTo2D()` / `camera.switchToOrthographicFrustum()`, which clear
+  // `logDepthActive` selects a distinct shader module for every descriptor.
+  // Module identity separates their structural cache keys, while `ldFlag`
+  // keeps the logarithmic-depth axis legible in descriptor names and
+  // diagnostics. `_pipelineLogDepth` rebuilds descriptors when
+  // `scene.morphTo2D()` or `camera.switchToOrthographicFrustum()` clears
   // `frameState.useLogDepth`.
   const ldFlag = logDepthActive ? 1 : 0;
 
@@ -518,12 +511,10 @@ fn fsVelocity(i: VelocityVOut) -> @location(0) vec2<f32> {
     },
   ];
 
-  // ROADMAP s4.2 (B515) — the color + stencil pipelines run inside the
-  // multisampled scene pass, so their `multisample.count` MUST match
-  // `context._msaaSamples` (4 at viewer defaults) or WebGPU rejects the
-  // draw with an attachment-incompatible error and clamped vector
-  // polylines render fully black. Pick + velocity render into
-  // single-sample targets, so both stay count-1.
+  // Color and stencil run inside the multisampled scene pass, so their sample
+  // count must match `context._msaaSamples` (4 at viewer defaults). A mismatch
+  // makes WebGPU reject the draw as attachment-incompatible and renders clamped
+  // vector polylines black. Pick and velocity use single-sample targets.
   const msState = sampleCount > 1 ? { count: sampleCount } : undefined;
   const colorDescriptor = {
     name: `Vector3DTileClampedPolylines color [${format}/${depthFormat}/ms=${sampleCount ?? 1}/ld=${ldFlag}]`,
@@ -532,9 +523,8 @@ fn fsVelocity(i: VelocityVOut) -> @location(0) vec2<f32> {
     fragment: {
       module: mod,
       entryPoint: "fsMain",
-      // Slice 5c-B Phase 1 (Batch 113) — scene-FB color target via
-      // helper. Pick (L509), depth-only (L527, writeMask:0), and
-      // velocity (L575, rg16float) stay single-target.
+      // The scene-framebuffer helper adds auxiliary scene targets. Pick,
+      // depth-only, and velocity remain single-target in dedicated passes.
       targets: makeSceneFBTargets(format, { translucent: true }),
     },
     // Cull FRONT — see Vector3DTileClampedPolylines.js::getRenderState
@@ -572,7 +562,7 @@ fn fsVelocity(i: VelocityVOut) -> @location(0) vec2<f32> {
     },
   };
 
-  // AUDIT_2026_05_02 A.2 (Batch 141) — IGNORE_SHOW stencil-write variant.
+  // Stencil-write variant for ignore-show classification.
   const stencilDescriptor = {
     name: `Vector3DTileClampedPolylines stencil [${format}/${depthFormat}/ms=${sampleCount ?? 1}/ld=${ldFlag}]`,
     layout,
@@ -583,8 +573,8 @@ fn fsVelocity(i: VelocityVOut) -> @location(0) vec2<f32> {
       targets: [{ format, writeMask: 0 }],
     },
     primitive: { topology: "triangle-list", cullMode: "front" },
-    // ROADMAP s4.2 (B515) — stencil-only pipeline still runs in the MSAA
-    // scene pass; must carry the same sample count as the color pipeline.
+    // Stencil-only still runs in the MSAA scene pass and must match color's
+    // sample count.
     multisample: msState,
     depthStencil: {
       format: depthFormat,
@@ -607,9 +597,9 @@ fn fsVelocity(i: VelocityVOut) -> @location(0) vec2<f32> {
     },
   };
 
-  // NEW-ADVANCED-MOTION-VECTORS classifiers (Batch 179) — velocity
-  // pipeline. Same VS extrusion math as the color pipeline (so coverage
-  // matches), single rg16float color target, no blend, depth read-only.
+  // The velocity pipeline uses the color vertex stage's extrusion math so
+  // coverage matches. It has one `rg16float` target, no blend, and read-only
+  // depth.
   // The volume rasterizes with `cullMode: "front"` and
   // `depthCompare: "always"` matching the color pipeline.
   //
@@ -731,10 +721,8 @@ function tryResolvePipelines(device, pipelineCache, resources, cache) {
           });
       }
     }
-    // NEW-ADVANCED-MOTION-VECTORS classifiers (Batch 179) — velocity
-    // pipeline. Cache miss is non-fatal: color pass continues without
-    // it; velocity-pass dispatch becomes a no-op until the variant
-    // lands.
+    // A velocity cache miss is non-fatal: color remains correct while velocity
+    // dispatch is a no-op until the variant becomes available.
     if (!cache.velocityPipeline) {
       const velSync = pipelineCache.getPipelineSync(
         resources.velocityDescriptor,
@@ -771,7 +759,7 @@ function tryResolvePipelines(device, pipelineCache, resources, cache) {
       descriptorToGPU(resources.stencilDescriptor),
     );
   }
-  // NEW-ADVANCED-MOTION-VECTORS classifiers (Batch 179) — fallback path.
+  // Create velocity directly when no central pipeline cache is available.
   if (!cache.velocityPipeline) {
     cache.velocityPipeline = device.createRenderPipeline(
       descriptorToGPU(resources.velocityDescriptor),
@@ -834,8 +822,8 @@ function packUniforms(data, frameState, primitive) {
   data[66] = uniformState.pixelRatio ?? 1.0;
   data[67] = 0.0;
 
-  // AUDIT_2026_05_02 B.9 (Batch 153) — DP-H41 prev viewProjection at
-  // floats 68..83 (272 bytes used → mat4 starts at 16-aligned offset).
+  // The previous view-projection matrix occupies floats 68-83, placing the
+  // mat4 at the first 16-byte-aligned offset after 272 bytes of base data.
   const prevVP = uniformState.previousViewProjection;
   if (prevVP) {
     Matrix4.pack(prevVP, data, 68);
@@ -858,10 +846,9 @@ function packUniforms(data, frameState, primitive) {
     data[83] = 1;
   }
 
-  // NEW-ADVANCED-MOTION-VECTORS classifiers (Batch 179) — primitive
-  // center in world coordinates at floats 84..86 (vec3 + 1 pad). UBO
-  // capacity is 384 bytes (96 floats); after prev-VP at 68..83 the
-  // next 16-byte-aligned offset is 84.
+  // Floats 84-86 store the primitive center in world coordinates, followed by
+  // one padding float. In the 96-float UBO, offset 84 is the next 16-byte-
+  // aligned lane after the previous matrix at 68-83.
   const centerWC =
     primitive._center && defined(primitive._center) ? primitive._center : null;
   if (centerWC) {
@@ -875,15 +862,13 @@ function packUniforms(data, frameState, primitive) {
   }
   data[87] = 0.0;
 
-  // NEW-CLASSIFIER-LOG-DEPTH (Batch 266) — log-depth frustum lanes at floats
-  // 88..91 (encodeNear, encodeFar, sliceNear, sliceFar). The FS reverses the
-  // globe's log encoding before inverse-projecting the sampled scene depth.
-  // encode* prefers the stashed FULL-frustum encode the globe baked with;
-  // slice* is the command-build current frustum used to re-encode the per-slice
-  // window z (matches GroundPrimitive's group-0 windowToEye fallback —
-  // single-frustum correct; per-slice multi-frustum refinement via a resolver
-  // is a separate deferred slice). Packed unconditionally; only the log
-  // windowToEyeCoordinates branch reads it.
+  // Floats 88-91 store encode near/far and slice near/far. The fragment stage
+  // reverses the globe's logarithmic encoding before inverse-projecting sampled
+  // scene depth. Encode lanes prefer the stashed full-camera frustum used by the
+  // globe; slice lanes use the command's current frustum to re-encode per-slice
+  // window z. This matches the ground-primitive single-frustum fallback; exact
+  // per-slice multi-frustum handling requires a draw-time resolver. Pack the
+  // lanes unconditionally because only the logarithmic branch reads them.
   const ldEncode = uniformState._logDepthEncodeNearFar;
   const ldFrustum = uniformState.currentFrustum;
   const sNear = ldFrustum ? ldFrustum.x : 0.0;
@@ -1139,25 +1124,13 @@ function createWebGPUVector3DTileClampedPolylineCommands(
   const context = frameState.context;
   const device = context.device;
 
-  // AUDIT_2026_05_02 A.4 (Batch 150) — non-SCENE3D scene mode gate.
-  // ClampedPolylines reads a 7-attribute interleaved vertex stream
-  // tied to 3D ECEF positions and ellipsoid normals; 2D / Columbus
-  // View support requires a parallel per-mode attribute set (mirroring
-  // GroundPolyline's Batch 116/117 pattern). 3D Tiles vector tile
-  // content is typically only viewed in 3D mode in production, so
-  // silently skipping emission for those modes matches user-expected
-  // behavior.
-  //
-  // **Batch 208** — MORPHING is now allowed through. During morph the
-  // camera + view/projection interpolate via `frameState.morphTime`
-  // (1.0 → 0.0). The renderer's `packUniforms` consumes
-  // `uniformState.view` + `uniformState.projection` directly, so
-  // routing the existing 3D ECEF positions through the morph-blended
-  // matrices renders the polylines in their 3D world position during
-  // the transition — they fade naturally as the camera approaches the
-  // 2D map. Without this, ClampedPolylines flicker out the instant
-  // morph begins. SCENE2D + COLUMBUS_VIEW remain gated (no 2D
-  // attribute path; 3D positions would project to wandering points).
+  // The seven-attribute vertex stream contains 3D ECEF positions and ellipsoid
+  // normals only. Fully 2D and Columbus View require a parallel per-mode
+  // attribute set, as used by ground polylines, and remain gated because the 3D
+  // stream would project to wandering points. Morphing is supported because
+  // `uniformState.view` and `uniformState.projection` already interpolate with
+  // `frameState.morphTime`; existing ECEF positions remain in their 3D world
+  // location and fade naturally as the camera approaches the 2D map.
   const sceneMode = frameState?.mode;
   if (sceneMode !== SceneMode.SCENE3D && sceneMode !== SceneMode.MORPHING) {
     //>>includeStart('debug', pragmas.debug);
@@ -1178,9 +1151,9 @@ function createWebGPUVector3DTileClampedPolylineCommands(
   const cache = primitive._webgpuCache;
 
   const sceneGen = context._scenePipelineFormatGeneration ?? 0;
-  // NEW-CLASSIFIER-LOG-DEPTH (Batch 266) — rebuild on LOG_DEPTH master-switch
-  // flip (or a frame toggling frameState.useLogDepth) so the FS reverse-log
-  // branch is compiled in / out. Mirrors the GroundPrimitive flip guard.
+  // Rebuild when the logarithmic-depth master switch or per-frame
+  // `useLogDepth` state changes so the fragment reverse-log branch is compiled
+  // in or out, matching the ground-primitive flip guard.
   const logDepthActive = isWebGPULogDepthActive(context, frameState);
   if (
     defined(cache._pipelineResources) &&
@@ -1191,9 +1164,8 @@ function createWebGPUVector3DTileClampedPolylineCommands(
     cache.colorPipeline = undefined;
     cache.pickPipeline = undefined;
     cache.stencilPipeline = undefined;
-    // NEW-ADVANCED-MOTION-VECTORS classifiers (Batch 179) — clear the
-    // velocity pipeline alongside color/pick/stencil on format change
-    // so the resolver re-runs against the new presentation format.
+    // Velocity depends on the same presentation format and must be cleared with
+    // color, pick, and stencil so the resolver uses the new descriptors.
     cache.velocityPipeline = undefined;
     cache.sharedBindGroup = undefined;
     cache.depthSampleBindGroup = undefined;
@@ -1208,7 +1180,7 @@ function createWebGPUVector3DTileClampedPolylineCommands(
       depthFmt,
       logDepthActive,
       sampleCount,
-      // NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE — pick target format authority.
+      // Use the context's pick-target format authority.
       context.pickPipelineFormat || "rgba8unorm",
     );
     cache._pipelineFormatGeneration = sceneGen;
@@ -1368,24 +1340,18 @@ function createWebGPUVector3DTileClampedPolylineCommands(
   ) {
     passes.push(PASS_CESIUM_3D_TILE_CLASSIFICATION_DRIFTED);
   }
-  // AUDIT_2026_05_02 A.2 (Batch 141, NEW-INVERT-CLASS-STENCIL-CLASSIFIER) —
-  // IGNORE_SHOW stencil-write commands. Only emitted for primitives that
-  // classify 3D Tiles (TYPE_3DTILE or BOTH); TERRAIN-only doesn't
-  // participate in invert classification. The pass is hard-coded to 7
-  // (CESIUM_3D_TILE_CLASSIFICATION_IGNORE_SHOW); a TERRAIN-classifying
-  // primitive that's also marked BOTH still gets one IGNORE_SHOW command
-  // (the 3D Tile half), no separate TERRAIN_CLASSIFICATION_IGNORE_SHOW.
+  // Emit ignore-show stencil writes only for primitives that classify 3D
+  // Tiles; terrain-only classification does not participate in inversion. A
+  // BOTH primitive still gets one ignore-show command for its 3D Tiles half,
+  // with no separate terrain ignore-show command.
   const ignoreShowCommands = [];
   const emitsThreeDTileClassification =
     classType === CLASSIFICATION_TYPE_3DTILE ||
     classType === CLASSIFICATION_TYPE_BOTH;
-  // NEW-ADVANCED-MOTION-VECTORS classifiers (Batch 179) — derive
-  // velocity command alongside the color command when TAA is on. Only
-  // attached to the FIRST color command (p === 0) — the BOTH-pass
-  // dual-emit doesn't need duplicate velocity (per-feature animation
-  // isn't possible for static classification volumes anyway). Same
-  // pattern as Vector3DTilePrimitive (Batch 178) and the Polylines
-  // sibling (Batch 179).
+  // Attach velocity to the first color command when TAA is enabled. BOTH emits
+  // two classification passes but does not need duplicate velocity because
+  // static classification volumes cannot animate per feature. Vector-3D-tile
+  // primitives and unclamped polylines use the same single-command rule.
   const taaEnabled = frameState?.taaEnabled === true;
   for (let i = 0; i < passes.length; i++) {
     const passEnum = passes[i];
@@ -1418,11 +1384,11 @@ function createWebGPUVector3DTileClampedPolylineCommands(
       new WebGPUDrawCommand({
         ...sharedDrawArgs,
         pipeline: cache.stencilPipeline,
-        // NEW-WEBGPU-CLASSIFIER-PASS-SLOT-DRIFT (filed 2026-08-07, CO-12): the
-        // INTENDED slot is Pass.CESIUM_3D_TILE_CLASSIFICATION_IGNORE_SHOW; the literal that used to sit here
-        // named it in a comment but carried the pre-insertion VALUE, which is
-        // Pass.CESIUM_3D_TILE_CLASSIFICATION on this fork. Value left UNCHANGED — the correction
-        // needs a 3D-Tile-classification browser lane. See DEFERRED_WORK.
+        // This enum member preserves the renderer's current numeric pass slot.
+        // The semantic target is
+        // `Pass.CESIUM_3D_TILE_CLASSIFICATION_IGNORE_SHOW`, but an enum
+        // insertion shifted that value; changing the slot requires runtime 3D
+        // Tiles classification coverage because it changes dispatch behavior.
         pass: Pass.CESIUM_3D_TILE_CLASSIFICATION,
         renderState: { stencilTest: { reference: 0xff } },
       }),

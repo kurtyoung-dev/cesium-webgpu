@@ -1,34 +1,30 @@
 /**
- * **C-R8-GROUND-POLYLINE-NATIVE — RESOLVED 2026-04-30.** Earlier symptom:
- * polylines on terrain were silently invisible on WebGPU (no crash,
- * no validation warnings). Three independent bugs combined:
+ * Renders `GroundPolylinePrimitive` as a depth-sampled classification volume.
+ * Ground polylines remain visible only when three invariants hold:
  *
- *   1. Depth-test compare op was `less-equal` instead of `always` for a
- *      classifier that doesn't write depth (Batch 116).
- *   2. Per-instance color decoding read from BatchTable as Color
- *      `{red,green,blue,alpha}` but BatchTable returns Cartesian4
- *      `{x,y,z,w}` with UNSIGNED_BYTE values in [0,255] (Batch 116).
- *   3. **Viewport sourced from `uniformState.viewportCartesian4` whose
- *      `.zw` were zero at FR-update time** (FR runs during Scene
- *      primitive update, before per-frame viewport is established on
- *      `uniformState`). The `?? drawingBufferWidth` fallback didn't fire
- *      because 0 is not nullish. With viewport.z = 0, the shader's
- *      `metersPerPixel = 2.0 / (viewport.z * proj[0][0])` returned
- *      Infinity, the width-extrusion math pushed vertices to NaN
- *      clip-space, and every triangle was culled. Fixed by sourcing
- *      from `context.drawingBufferWidth/Height` directly (matches the
- *      pattern used by Ellipsoid/BufferPrimitive/GaussianSplat/Globe).
+ *   1. The depth compare is `always`, because the classifier samples depth in
+ *      the fragment shader and does not write geometric depth. A
+ *      `less-equal` compare discards most of the volume below terrain.
+ *   2. Per-instance colors from the batch table are decoded as Cartesian4
+ *      `{x,y,z,w}` values in the unsigned-byte range [0, 255], rather than as
+ *      Color properties `{red,green,blue,alpha}`.
+ *   3. Viewport dimensions come directly from
+ *      `context.drawingBufferWidth/Height`. Feature-renderer update runs before
+ *      `uniformState.viewportCartesian4` receives the frame viewport, so its
+ *      `.zw` values are still zero. A nullish fallback cannot replace zero;
+ *      `metersPerPixel = 2.0 / (viewport.z * proj[0][0])` would become
+ *      infinite, push the width extrusion to NaN clip space, and silently cull
+ *      every triangle. Ellipsoid, buffer-primitive, Gaussian-splat, and globe
+ *      renderers use the drawing-buffer dimensions for the same reason.
  *
- * Migration Session 4b — full WGSL port of `PolylineShadowVolumeVS.glsl`
- * + `PolylineShadowVolumeFS.glsl` for `GroundPolylinePrimitive`.
- * Sits beside `WebGPUGroundPrimitiveRenderer` in the depth-sample
- * classifier architecture (ADR-2026-04-28); reuses the same
- * `_packedTranslucentDepthView` / `_globeDepthView` plumbing
- * (Session 2) and the per-frustum bind-group resolver (Session 3) so
- * polyline classification picks up runtime depth-source swap and
- * multi-frustum correctness for free.
+ * The WGSL port of `PolylineShadowVolumeVS.glsl` and
+ * `PolylineShadowVolumeFS.glsl` shares the depth-sample classifier architecture
+ * with `WebGPUGroundPrimitiveRenderer`. It uses the same
+ * `_packedTranslucentDepthView` / `_globeDepthView` plumbing and per-frustum
+ * bind-group resolver so runtime depth-source changes and primitives spanning
+ * frustums resolve against the current view.
  *
- * **Shipped:**
+ * The renderer provides:
  *   - WGSL VS port (per-vertex volume extrusion along miter normal,
  *     `czm_metersPerPixel`-driven width adjustment, downward extrusion
  *     for "bottom" vertices, miter-aware aligned-plane recomputation
@@ -41,7 +37,7 @@
  *     batchId) plus 6 for 2D / Columbus View / Morph (position2DHigh/Low,
  *     startHiLo2D, offsetAndRight2D, startEndNormals2D,
  *     texcoordNormalization2D).
- *   - Per-frustum depth-source resolver (Session 3 contract).
+ *   - Per-frustum depth-source resolver.
  *   - Pick command derivation matching the GroundPrimitive renderer's
  *     pattern.
  *   - `DEBUG_SHOW_VOLUME` flag — runtime uniform; when
@@ -75,15 +71,14 @@
  *     the default Color path with the material's `uniforms.color` as
  *     tint — porting Cesium's full Material→GLSL pipeline to WGSL is
  *     a separate multi-week effort.
- *   - NEW-ADVANCED-MOTION-VECTORS classifiers (Batch 183) — vsVelocity
- *     replicates the vsMain volume-extrusion math byte-for-byte; prev
- *     frame projects the un-extruded world position (pH + pL) through
- *     u.prevViewProjection. Velocity command emitted alongside the
- *     first color command per primitive when TAA is on and not in
- *     MORPHING. CLOSES the NEW-ADVANCED-MOTION-VECTORS classifier
- *     family (final entry: GroundPolyline alongside Voxel + Splat +
- *     Vector3DTile{Polylines,ClampedPolylines,Primitives,Classifier} +
- *     GroundPrimitive shipped earlier in the sweep).
+ *   - Motion-vector classification. `vsVelocity` duplicates the `vsMain`
+ *     volume-extrusion math byte for byte, while the previous-frame path
+ *     projects the un-extruded world position (`pH + pL`) through
+ *     `u.prevViewProjection`. One velocity command accompanies the first color
+ *     command per primitive when TAA is enabled and the scene is not morphing.
+ *     This keeps classifier coverage consistent with voxel, splat,
+ *     vector-3D-tile polyline, clamped-polyline, primitive, and classifier
+ *     renderers, plus the ground-primitive renderer.
  *
  * @module WebGPUGroundPolylineRenderer
  * @private
@@ -94,21 +89,18 @@ import EncodedCartesian3 from "../../Core/EncodedCartesian3.js";
 import Matrix4 from "../../Core/Matrix4.js";
 import Pass from "../Pass.js";
 import csm_depthClamp from "../../Shaders/WebGPU/chunks/functions/csm_depthClamp.js";
-// NEW-LOG-DEPTH-REMAINING-CONSUMERS — the reverse helper the depth-sample
-// classifier uses to un-log the sampled globe depth before reconstructing
-// eye-space (mirrors the proven GroundPrimitive Batch-173/185 path).
+// The depth-sample classifier reverses logarithmic globe depth before
+// reconstructing eye-space coordinates, matching the ground-primitive path.
 import csm_reverseLogDepth from "../../Shaders/WebGPU/chunks/functions/csm_reverseLogDepth.js";
 import WebGPUBuffer from "./WebGPUBuffer.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
 import { isWebGPULogDepthActive } from "./WebGPULogDepth.js";
 import { ShaderSourceId } from "./WebGPUShaderDefines.js";
 import { WebGPUShaderModuleCache } from "./WebGPUShaderModuleCache.js";
-// Slice 5c-B Phase 1 (Batch 111) — scene-FB target helper. Used only
-// for color pipelines (lines ~1232 + ~1335). Pick (`[{ format }]`),
-// depth-only (`[{ format, writeMask: 0 }]`), and velocity
-// (`[{ format: "rg16float" }]`) pipelines stay single-target — they
-// each have their own render passes that don't grow to 2 attachments
-// in Phase 2.
+// Color pipelines use the scene-framebuffer target helper so auxiliary scene
+// attachments remain in lockstep. Pick, depth-only, and velocity pipelines stay
+// single-target because their dedicated render passes expose no auxiliary
+// attachment.
 import { makeSceneFBTargets } from "./WebGPUSceneFBTargetHelpers.js";
 import {
   makeBindGroupLayout,
@@ -1182,11 +1174,9 @@ struct VelocityVOut {
 }
 `;
 
-// C-R7-SHADER-MODULE-DEDUP (Batch 185) — per-device module cache.
-// GroundPolyline is typically few-per-scene, but we just touched this
-// file in Batch 183 for the velocity entry points so the ride-along is
-// free. Closes the C-R7-SHADER-MODULE-DEDUP adoption sweep alongside
-// GroundPrimitive, SkyAtmosphere, and EllipsoidPrimitive.
+// Cache shader modules per device. Ground polylines are typically few per
+// scene, but sharing modules still avoids duplicate compilation and matches the
+// ground-primitive, sky-atmosphere, and ellipsoid-primitive renderers.
 const _groundPolylineShaderCaches = new WeakMap();
 
 function getGroundPolylineShaderCache(device) {
@@ -1203,9 +1193,9 @@ function buildPolylinePipelineResources(
   format,
   depthFormat,
   sampleCount,
-  // NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE — pick pipelines target the
-  // context's byte-object-ID format authority (matches the pick FBO),
-  // never the (possibly float/HDR) scene format.
+  // Pick pipelines use the context's byte-object-ID format authority so their
+  // target matches the pick framebuffer, never the possibly floating-point HDR
+  // scene format.
   pickFormat = "rgba8unorm",
 ) {
   const mod = getGroundPolylineShaderCache(device).getOrCreate(
@@ -1216,9 +1206,9 @@ function buildPolylinePipelineResources(
   );
 
   // Group 0: uniform buffer (binding 0) + per-instance storage buffer
-  // (binding 1). The instance data was previously a UBO array capped
-  // at 64 entries; moving it to a storage buffer lifts that cap and
-  // matches the polyline collection sizes seen in real apps (typically
+  // (binding 1). A UBO array would cap instance data at 64 entries; the
+  // storage buffer instead accommodates polyline collection sizes seen in real
+  // applications (typically
   // hundreds of instances per primitive when batched per-route).
   const bgl = makeBindGroupLayout(device, "GroundPolyline BGL", [
     uniformBuffer(0, Stage.VERTEX_FRAGMENT),
@@ -1274,7 +1264,7 @@ function buildPolylinePipelineResources(
     },
   ];
 
-  // Batch 134 — scene-FB color pipelines bake MSAA sample count.
+  // Scene-framebuffer color pipelines bake the attachment's MSAA sample count.
   const msState = sampleCount > 1 ? { count: sampleCount } : undefined;
   const colorDescriptor = {
     name: `GroundPolyline color [${format}/${depthFormat}/ms=${sampleCount ?? 1}]`,
@@ -1283,8 +1273,8 @@ function buildPolylinePipelineResources(
     fragment: {
       module: mod,
       entryPoint: "colorFS",
-      // Slice 5c-B Phase 1 (Batch 111) — scene-FB color target via
-      // helper. Premultiplied alpha blend preserved verbatim.
+      // The scene-framebuffer helper preserves the premultiplied-alpha blend
+      // while adding any auxiliary scene targets.
       targets: makeSceneFBTargets(format, {
         blend: {
           color: {
@@ -1318,8 +1308,7 @@ function buildPolylinePipelineResources(
       // polyline invisible. WebGL's render state intentionally omits
       // `depthTest` (only sets `depthMask: false`) so the volume
       // rasterizes everywhere it covers screen-space; the WebGPU
-      // equivalent is `depthCompare: "always"`. Found 2026-04-30
-      // chasing C-R8-GROUND-POLYLINE-NATIVE.
+      // equivalent is `depthCompare: "always"`.
       depthCompare: "always",
     },
     multisample: msState,
@@ -1342,8 +1331,8 @@ function buildPolylinePipelineResources(
     },
   };
 
-  // AUDIT_2026_05_02 A.2 (Batch 141) — IGNORE_SHOW stencil-write variant.
-  // Batch 134 — also runs in the MSAA scene pass; bake sample count.
+  // The ignore-show stencil-write variant runs in the MSAA scene pass, so its
+  // sample count must match the scene attachments.
   const stencilDescriptor = {
     name: `GroundPolyline stencil [${format}/${depthFormat}/ms=${sampleCount ?? 1}]`,
     layout: pipelineLayout,
@@ -1388,8 +1377,8 @@ function buildPolylinePipelineResources(
     fragment: {
       module: mod,
       entryPoint: "colorFSMorph",
-      // Slice 5c-B Phase 1 (Batch 111) — scene-FB color target via
-      // helper. Premultiplied alpha blend preserved verbatim.
+      // The scene-framebuffer helper preserves the premultiplied-alpha blend
+      // while adding any auxiliary scene targets.
       targets: makeSceneFBTargets(format, {
         blend: {
           color: {
@@ -1437,15 +1426,13 @@ function buildPolylinePipelineResources(
     },
   };
 
-  // NEW-ADVANCED-MOTION-VECTORS classifiers (Batch 183) — velocity
-  // pipeline. Same pipeline layout as the color pipeline (UBO + storage
-  // + depth-sample + material BGLs), even though the velocity stage
-  // doesn't touch the depth-sample or material textures — keeping the
-  // layout matched lets the same bind groups satisfy validation. Single
-  // rg16float color target, no blend, depth read-only, cullMode "none"
-  // mirroring the color pipeline so coverage matches. Only the non-
-  // morph variant is built — JS gating suppresses velocity emission
-  // during MORPHING.
+  // The velocity pipeline keeps the color pipeline's complete layout (UBO,
+  // storage, depth-sample, and material bind-group layouts) even though its
+  // stages do not read the depth or material textures. Matching layouts lets
+  // the same bind groups satisfy validation. Its single `rg16float` target has
+  // no blend, reads depth without writing it, and disables culling so coverage
+  // matches color. Only the non-morph variant is built because command gating
+  // suppresses velocity while the scene is morphing.
   const velocityDescriptor = {
     name: `GroundPolyline velocity [${depthFormat}]`,
     layout: pipelineLayout,
@@ -1521,11 +1508,9 @@ function tryResolvePolylinePipelines(device, pipelineCache, resources, cache) {
     const morphPickSync = pipelineCache.getPipelineSync(
       resources.morphPickDescriptor,
     );
-    // NEW-ADVANCED-MOTION-VECTORS classifiers (Batch 183) — resolve
-    // velocity pipeline alongside the others. Cache miss is non-fatal:
-    // color path renders correctly without velocity; velocity-pass
-    // dispatch becomes a no-op until the variant lands. Mirrors the
-    // GroundPrimitive Batch 180 pattern.
+    // Resolve velocity alongside the other pipelines. A cache miss is
+    // non-fatal: color remains correct while velocity dispatch is a no-op until
+    // the variant becomes available, matching the ground-primitive behavior.
     const velocitySync = pipelineCache.getPipelineSync(
       resources.velocityDescriptor,
     );
@@ -1586,8 +1571,7 @@ function tryResolvePolylinePipelines(device, pipelineCache, resources, cache) {
   cache.morphPickPipeline = device.createRenderPipeline(
     descriptorToGPU(resources.morphPickDescriptor),
   );
-  // NEW-ADVANCED-MOTION-VECTORS classifiers (Batch 183) — fallback path
-  // (no central pipeline cache available).
+  // Create the velocity pipeline directly when no central cache is available.
   cache.velocityPipeline = device.createRenderPipeline(
     descriptorToGPU(resources.velocityDescriptor),
   );
@@ -1658,18 +1642,15 @@ function packUniforms(
   data[66] = scratchEncodedCamera.low.z;
   data[67] = 0.0;
 
-  // Viewport. Source from `context.drawingBufferWidth/Height` instead of
-  // `uniformState.viewportCartesian4`, because the FR's `packUniforms`
-  // runs during Scene primitive update — BEFORE the per-frame viewport
-  // is established on `uniformState`. At that time `viewportCartesian4`
-  // exists as a zero-initialized Cartesian4, and `viewport?.z ?? fallback`
-  // never falls through (0 is not nullish), leaving `viewport.zw = (0,0)`.
-  // The shader's `metersPerPixel = 2.0 / (viewport.z * proj[0][0])` then
-  // returns Infinity, the width-extrusion math pushes vertices to NaN
-  // clip-space, and every triangle is silently culled — the
-  // C-R8-GROUND-POLYLINE-NATIVE silent-invisible bug. Other renderers
-  // (Ellipsoid/BufferPrimitive/GaussianSplat/Globe) read drawingBuffer
-  // directly for the same reason.
+  // Source the viewport from `context.drawingBufferWidth/Height` because this
+  // feature renderer packs uniforms during Scene primitive update, before the
+  // frame viewport is established on `uniformState`. At that point
+  // `viewportCartesian4` is a zero-initialized Cartesian4, and a nullish
+  // fallback cannot replace zero. Leaving `viewport.zw = (0, 0)` makes
+  // `metersPerPixel = 2.0 / (viewport.z * proj[0][0])` infinite, pushes width
+  // extrusion to NaN clip space, and silently culls every triangle. Ellipsoid,
+  // buffer-primitive, Gaussian-splat, and globe renderers read drawing-buffer
+  // dimensions directly for the same reason.
   const ctx = frameState.context;
   data[68] = 0.0;
   data[69] = 0.0;
@@ -1701,13 +1682,10 @@ function packUniforms(
   // morphTime is frameState.morphTime — 0.0 in 2D/CV destination,
   // 1.0 in 3D destination, fractional during a scene-mode transition.
   // The morph pipeline reads it; the regular pipeline ignores it.
-  // BUG: this previously read `uniformState.morphTime`, which does not exist
-  // (the live value lives at `uniformState.frameState.morphTime`); it was
-  // always undefined, so during a morph it fell back to 0.0 and the ground
-  // polyline snapped to its flat 2D shape for the whole transition instead of
-  // interpolating. Mirror the correct sibling read in
-  // `WebGPUGroundPrimitiveRenderer.js` (and the panorama renderer) — use
-  // `frameState.morphTime`.
+  // Read `morphTime` from `frameState`; `uniformState.morphTime` does not exist.
+  // An absent value would fall back to 0.0 during a transition and hold the
+  // polyline in its flat 2D shape instead of interpolating. The ground-primitive
+  // and panorama renderers use the same source.
   const sceneMode = frameState?.mode;
   const is3D = sceneMode === SceneMode.SCENE3D;
   const morphTime = frameState?.morphTime ?? (is3D ? 1.0 : 0.0);
@@ -1746,13 +1724,12 @@ function packUniforms(
     // path with the per-instance color from the batch table).
     data.fill(0.0, 88, 108);
   }
-  // NEW-LOG-DEPTH-REMAINING-CONSUMERS — log-depth reverse lanes (was `_pad`).
-  // Read the globe's ENCODE frustum (the full-camera near/far it log-encoded the
-  // whole shared depth texture with, stashed by the globe camera-UB packer at
-  // scene-update) so windowToEyeCoordinates can un-log the sampled depth. Only
-  // arm the reverse when the master switch + per-frame useLogDepth are on AND a
-  // valid encode frustum has been stashed; otherwise leave the lanes zero so the
-  // FS keeps the byte-identical hyperbolic path.
+  // Slots 108-111 carry logarithmic-depth reversal state. Read the globe's
+  // encode frustum, the full-camera near/far used for the shared depth texture,
+  // so `windowToEyeCoordinates` can reverse the sampled depth. Enable reversal
+  // only when the master switch and per-frame log-depth state are active and a
+  // valid encode frustum is available; zero lanes preserve the byte-identical
+  // hyperbolic path.
   const ctxLog = frameState.context;
   const logActive = isWebGPULogDepthActive(ctxLog, frameState);
   const encNF = uniformState._logDepthEncodeNearFar;
@@ -1767,12 +1744,11 @@ function packUniforms(
   }
   data[111] = 0.0;
 
-  // AUDIT_2026_05_02 B.9 (Batch 153) — DP-H41 prev viewProjection at floats
-  // 112..127. UBO size 512 bytes = 128 floats; mat4 fits exactly at the
-  // tail. UniformState swaps `_previousViewProjection := viewProjection`
-  // at the END of `update()` AFTER returning the prior frame's value, so
-  // on frame N this slot holds frame N-1's VP. First frame falls through
-  // to identity.
+  // The previous view-projection matrix occupies floats 112-127. The 512-byte
+  // UBO contains 128 floats, so the mat4 fits exactly at the tail. UniformState
+  // swaps `_previousViewProjection := viewProjection` at the end of `update()`
+  // after exposing the prior value; frame N therefore receives frame N-1's
+  // matrix. The first frame uses identity.
   const prevVP = uniformState.previousViewProjection;
   if (prevVP) {
     Matrix4.pack(prevVP, data, 112);
@@ -1867,15 +1843,15 @@ const PolylineMaterialType = Object.freeze({
   ARROW: 4,
   STRIPE: 5,
   IMAGE: 6,
-  // Batch 97 — extended material support.
+  // Checkerboard material.
   CHECKERBOARD: 7,
   // Generic fallback for unrecognized materials. Reads `uniforms.color`
   // as a tint and (optionally) `uniforms.image` as a modulating texture
   // — recognizes materials whose shape mirrors a known type even if
   // their `type` string is custom (anonymous fabric / shaderSource
-  // builds). Strict GLSL→WGSL transpilation is the proper full path
-  // (tracked under follow-up); this CUSTOM bucket gives reasonable
-  // visual output for the common "tweaked Cesium material" case.
+  // builds). Arbitrary materials require strict GLSL-to-WGSL transpilation;
+  // this custom bucket provides reasonable output for the common case of a
+  // modified Cesium material.
   CUSTOM: 8,
 });
 
@@ -2075,9 +2051,8 @@ function resolveMaterialState(primitive) {
     };
   }
 
-  // Batch 97 — Checkerboard. Two-color alternating squares. Uses the
-  // `lightColor` uniform as the base color (slot 0) and packs
-  // `darkColor` + repeat into the param slots. The shader does the
+  // Checkerboard uses `lightColor` as the base color in slot 0 and packs
+  // `darkColor` plus repeat into the parameter slots. The shader performs the
   // 2D s/t parity test on `(s × repeat.s, edgeT × repeat.t)`.
   if (type === "Checkerboard") {
     const lightColor = uniforms.lightColor;
@@ -2114,8 +2089,8 @@ function resolveMaterialState(primitive) {
     };
   }
 
-  // Batch 97 — Custom / unknown materials. Inspect the uniform shape
-  // and route to the most-similar known path:
+  // Inspect custom or unknown material uniforms and route them to the closest
+  // supported path:
   //   - has `image`             → IMAGE-style (texture × tint)
   //   - has `evenColor`+`oddColor` → STRIPE-style fallback
   //   - otherwise               → CUSTOM (color tint, optional image)
@@ -2491,9 +2466,6 @@ function ensureBatchTableSnapshot(primitive, cache) {
     // attributes the values come back in raw [0, 255] range via
     // `Cartesian4.unpack`. We need to know the attribute's component
     // datatype to scale to the [0, 1] range the WGSL shader expects.
-    // Tracked-down 2026-04-30 (the bug source for the prior "vsMain
-    // off-screen" misdiagnosis — geometry was on-screen all along, but
-    // colors uploaded as (1,1,1,1) due to the missing scale path here).
     const colorAttrMeta =
       defined(colorIndex) && defined(batchTable._attributes)
         ? batchTable._attributes[colorIndex]
@@ -2642,13 +2614,11 @@ function createWebGPUGroundPolylineCommands(primitive, frameState) {
   }
   const cache = primitive._webgpuPolylineCache;
 
-  // Batch 110 — invalidate cached pipeline resources on scene format
-  // change (HDR toggle). Pre-Batch-166 the cached pipeline OBJECTS
-  // weren't cleared alongside `_pipelineResources` and `bgl` —
-  // the resolver's early-return left stale-format pipelines bound and
-  // WebGPU would reject the next draw at submission. Vector3DTile*
-  // renderers already had this pattern; GroundPolyline + GroundPrimitive
-  // were the outliers.
+  // Invalidate all cached pipeline state when the scene format changes, such as
+  // on an HDR toggle. Clearing only `_pipelineResources` and `bgl` would let the
+  // resolver return stale-format pipeline objects, causing WebGPU to reject the
+  // next draw at submission. Vector-3D-tile and ground-primitive renderers
+  // follow the same complete invalidation rule.
   const sceneGen = context._scenePipelineFormatGeneration ?? 0;
   if (
     defined(cache._pipelineResources) &&
@@ -2663,9 +2633,8 @@ function createWebGPUGroundPolylineCommands(primitive, frameState) {
     cache.stencilPipeline = undefined;
     cache.morphColorPipeline = undefined;
     cache.morphPickPipeline = undefined;
-    // NEW-ADVANCED-MOTION-VECTORS classifiers (Batch 183) — clear the
-    // velocity pipeline alongside the others on format change. Mirrors
-    // the Batch 176/179/180 pattern across the classifier sweep.
+    // The velocity pipeline depends on the same attachment formats and must be
+    // cleared with every other pipeline variant.
     cache.velocityPipeline = undefined;
     // Bind groups reference the old BGL which is now stale.
     cache.materialBindGroup = undefined;
@@ -2683,7 +2652,7 @@ function createWebGPUGroundPolylineCommands(primitive, frameState) {
       format,
       depthFmt,
       sampleCount,
-      // NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE — pick target format authority.
+      // Use the context's pick-target format authority.
       context.pickPipelineFormat || "rgba8unorm",
     );
     cache.bgl = cache._pipelineResources.bgl;
@@ -2831,9 +2800,9 @@ function createWebGPUGroundPolylineCommands(primitive, frameState) {
     UNIFORM_BUFFER_SIZE,
   );
 
-  // Walk the chain to the primitive's `_webgpuGeometryData`. Same
-  // pattern as Batch 81's GroundPrimitive fix; for GroundPolyline the
-  // chain is shorter (no ClassificationPrimitive intermediary).
+  // Walk the wrapper chain to the primitive's `_webgpuGeometryData`. The
+  // ground-polyline chain is shorter than the ground-primitive chain because it
+  // has no ClassificationPrimitive intermediary.
   const geomDataArray = findGeomDataArray(primitive);
   if (!defined(geomDataArray) || geomDataArray.length === 0) {
     return {
@@ -3039,23 +3008,18 @@ function createWebGPUGroundPolylineCommands(primitive, frameState) {
 
   // Pick the classification pass(es) based on the primitive's
   // classificationType (TERRAIN=0, CESIUM_3D_TILE=1, BOTH=2).
-  // AUDIT_2026_05_02 A.3 (Batch 146) — emit one command per relevant
-  // pass. Pre-fix, BOTH collapsed to CESIUM_3D_TILE_CLASSIFICATION
-  // only (the comment in this file from earlier work acknowledged
-  // this as a deferred compromise). Now mirrors the same pass-list
-  // pattern shipped in `WebGPUVector3DTilePrimitiveRenderer.js`
-  // (Batch 145) and `WebGPUGroundPrimitiveRenderer.js` (Batch 146).
+  // Emit one command per relevant pass so BOTH covers terrain and 3D Tiles.
+  // Vector-3D-tile and ground-primitive renderers use the same pass-list shape.
   const classType = primitive?.classificationType ?? 0;
   const groundPasses = [];
   if (classType === 0 /* TERRAIN */ || classType === 2 /* BOTH */) {
     groundPasses.push(Pass.TERRAIN_CLASSIFICATION);
   }
   if (classType === 1 /* CESIUM_3D_TILE */ || classType === 2 /* BOTH */) {
-    // NEW-WEBGPU-CLASSIFIER-PASS-SLOT-DRIFT (filed 2026-08-07, CO-12): the
-    // INTENDED slot is Pass.CESIUM_3D_TILE_CLASSIFICATION; the literal that used to sit here
-    // named it in a comment but carried the pre-insertion VALUE, which is
-    // Pass.CESIUM_3D_TILE on this fork. Value left UNCHANGED — the correction
-    // needs a 3D-Tile-classification browser lane. See DEFERRED_WORK.
+    // `Pass.CESIUM_3D_TILE` preserves this renderer's current numeric pass
+    // slot. The semantic target is `Pass.CESIUM_3D_TILE_CLASSIFICATION`, but an
+    // enum insertion shifted that value; changing the slot requires runtime 3D
+    // Tiles classification coverage because it changes dispatch behavior.
     groundPasses.push(Pass.CESIUM_3D_TILE);
   }
 
@@ -3073,7 +3037,7 @@ function createWebGPUGroundPolylineCommands(primitive, frameState) {
       stencilCommand: null,
       colorCommand: null,
       pickCommand: null,
-      // AUDIT_2026_05_02 A.3 (Batch 146) — array slots for BOTH support.
+      // Array slots preserve the BOTH classification shape on an empty frame.
       colorCommands: [],
       pickCommands: [],
       ignoreShowCommand: null,
@@ -3104,9 +3068,8 @@ function createWebGPUGroundPolylineCommands(primitive, frameState) {
     cache.depthSampleViewRef = depthSourceView;
   }
 
-  // Per-frustum bind-group resolver — picks up the current depth
-  // source at draw time (Session 3 contract). Spans-frustum-boundary
-  // primitives get re-resolved per frustum.
+  // Resolve the current depth source at draw time so primitives spanning a
+  // frustum boundary are rebound for each frustum.
   const resolveDepthSampleBindGroup = () => {
     const currentSource = picking
       ? context._pickClassificationDepthView
@@ -3139,10 +3102,9 @@ function createWebGPUGroundPolylineCommands(primitive, frameState) {
     ? cache.morphPickPipeline
     : cache.pickPipeline;
 
-  // AUDIT_2026_05_02 A.3 (Batch 146) — emit one color (and optional
-  // pick) command per relevant pass. Shared draw args are identical
-  // across passes; only the `pass` enum differs. For BOTH this emits
-  // two color commands (TERRAIN + 3D Tile) per primitive.
+  // Emit one color command and optional pick command per relevant pass. Draw
+  // arguments are shared; only the pass enum differs. BOTH therefore emits
+  // terrain and 3D Tiles color commands for each primitive.
   const sharedDrawArgs = {
     bindGroups: [
       cache.bindGroup,
@@ -3157,13 +3119,11 @@ function createWebGPUGroundPolylineCommands(primitive, frameState) {
     vertexCount: cache.vertexCount || 0,
     owner: primitive,
   };
-  // NEW-ADVANCED-MOTION-VECTORS classifiers (Batch 183) — derive
-  // velocity command alongside the FIRST color command per primitive
-  // when TAA is on AND not in MORPHING (the velocity VS uses the same
-  // single-stream layout as the non-morph color VS; morph would need
-  // its own variant). One velocity command per primitive is sufficient
-  // — the polyline's world-space path is static, so velocity is
-  // camera-only and pass-invariant. CLOSES NEW-ADVANCED-MOTION-VECTORS.
+  // Attach velocity to the first color command when TAA is enabled and the
+  // scene is not morphing. The velocity vertex stage uses the non-morph
+  // single-stream layout, so morphing would require another variant. One
+  // velocity command is sufficient because the polyline's world-space path is
+  // static, making velocity camera-only and pass-invariant.
   const taaEnabled = frameState?.taaEnabled === true;
   const emitVelocity =
     taaEnabled && !isMorphing && defined(cache.velocityPipeline);
@@ -3198,12 +3158,10 @@ function createWebGPUGroundPolylineCommands(primitive, frameState) {
   cache.pickCommand =
     pickCommands.length > 0 ? pickCommands[pickCommands.length - 1] : undefined;
 
-  // AUDIT_2026_05_02 A.2 (Batch 141, NEW-INVERT-CLASS-STENCIL-CLASSIFIER) —
-  // emit IGNORE_SHOW stencil-write command alongside the color command for
-  // primitives that classify 3D Tiles. Morph mode shares the existing
-  // morph pipelines (no separate morph stencil variant — invert
-  // classification doesn't run during scene-mode morphs anyway). The
-  // stencil pipeline only exists for the main (non-morph) classifier.
+  // Emit an ignore-show stencil-write command with the color command for
+  // primitives that classify 3D Tiles. Inverted classification does not run
+  // during scene-mode morphs, so the stencil pipeline exists only for the main
+  // non-morph classifier.
   let ignoreShowCommand = null;
   if (
     groundPasses.includes(6) &&
@@ -3213,11 +3171,11 @@ function createWebGPUGroundPolylineCommands(primitive, frameState) {
     ignoreShowCommand = new WebGPUDrawCommand({
       ...sharedDrawArgs,
       pipeline: cache.stencilPipeline,
-      // NEW-WEBGPU-CLASSIFIER-PASS-SLOT-DRIFT (filed 2026-08-07, CO-12): the
-      // INTENDED slot is Pass.CESIUM_3D_TILE_CLASSIFICATION_IGNORE_SHOW; the literal that used to sit here
-      // named it in a comment but carried the pre-insertion VALUE, which is
-      // Pass.CESIUM_3D_TILE_CLASSIFICATION on this fork. Value left UNCHANGED — the correction
-      // needs a 3D-Tile-classification browser lane. See DEFERRED_WORK.
+      // `Pass.CESIUM_3D_TILE_CLASSIFICATION` preserves this renderer's current
+      // numeric pass slot. The semantic target is
+      // `Pass.CESIUM_3D_TILE_CLASSIFICATION_IGNORE_SHOW`, but an enum insertion
+      // shifted that value; changing the slot requires runtime 3D Tiles
+      // classification coverage because it changes dispatch behavior.
       pass: Pass.CESIUM_3D_TILE_CLASSIFICATION,
       renderState: { stencilTest: { reference: 0xff } },
     });
@@ -3229,9 +3187,8 @@ function createWebGPUGroundPolylineCommands(primitive, frameState) {
     colorCommand: colorCommands.length > 0 ? colorCommands[0] : null,
     pickCommand: cache.pickCommand,
     ignoreShowCommand,
-    // AUDIT_2026_05_02 A.3 (Batch 146) — array-shaped slots so BOTH
-    // primitives push two commands. The dispatch site iterates these
-    // when present, falling back to the singular slot otherwise.
+    // Array-shaped slots let BOTH primitives push two commands. The dispatch
+    // site iterates these when present and otherwise uses the singular slot.
     colorCommands,
     pickCommands,
   };

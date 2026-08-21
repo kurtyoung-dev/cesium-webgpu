@@ -481,3 +481,12 @@ packages/engine/Source/Shaders/WebGPU/chunks/structs/PBRMaterial.wgsl
 # required relocation; the removed history is already recorded in
 # DEFERRED_WORK.md and WEBGPU_DEBUGGING_LOG.md.
 packages/engine/Source/Renderer/WebGPU/WebGPUSceneRendererEnsureResources.ts
+
+# Ground-primitive and vector-classification renderer family. Engineering
+# rationale remains beside the code as timeless constraints.
+packages/engine/Source/Renderer/WebGPU/WebGPUGroundPrimitiveRenderer.js
+packages/engine/Source/Renderer/WebGPU/WebGPUEllipsoidPrimitiveRenderer.ts
+packages/engine/Source/Renderer/WebGPU/WebGPUVector3DTilePrimitiveRenderer.js
+packages/engine/Source/Renderer/WebGPU/WebGPUGroundPolylineRenderer.js
+packages/engine/Source/Renderer/WebGPU/WebGPUVector3DTilePolylinesRenderer.js
+packages/engine/Source/Renderer/WebGPU/WebGPUVector3DTileClampedPolylinesRenderer.js

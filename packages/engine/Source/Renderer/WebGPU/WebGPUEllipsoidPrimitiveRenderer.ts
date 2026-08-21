@@ -1,11 +1,11 @@
 /**
  * WebGPU Ellipsoid Primitive Renderer
  *
- * Renders ray-cast ellipsoid primitives using WebGPU. Each ellipsoid is
- * rendered as a radii-scaled bounding-box geometry (Batch 269 — matching
- * WebGL EllipsoidVS; replaced the old FOV-less screen quad) whose rasterized
- * eye-space surface hands the fragment shader a correct per-pixel eye->surface
- * ray for analytical ray-ellipsoid intersection. Uses RTE (Relative-To-Eye)
+ * Renders ray-cast ellipsoid primitives using WebGPU. Each ellipsoid uses
+ * radii-scaled bounding-box geometry matching WebGL's EllipsoidVS; the
+ * rasterized eye-space surface gives the fragment shader the correct
+ * per-pixel eye-to-surface ray for analytical ray-ellipsoid intersection.
+ * Uses RTE (Relative-To-Eye)
  * positioning for planetary-scale precision; the world transform comes from
  * the Scene's `_computedModelMatrix` (modelMatrix * translate(center)).
  *
@@ -23,7 +23,7 @@ import {
   uniformBuffer,
   Stage,
 } from "./WebGPUBindGroupLayoutHelpers.js";
-// Slice 5c-B Phase 1 (Batch 111) — scene-FB target helper.
+// Builds targets that match the scene framebuffer.
 import { makeSceneFBTargets } from "./WebGPUSceneFBTargetHelpers.js";
 import type {
   WebGPURenderPipelineCache,
@@ -43,9 +43,9 @@ import {
   isWebGPUPickLogDepthActive,
 } from "./WebGPULogDepth.js";
 
-// C-R7-SHADER-MODULE-DEDUP (Batch 185) — per-device module cache.
-// EllipsoidPrimitive is typically few-per-scene; the dedup win is
-// modest but the cache unifies the pattern across the renderer family.
+// The per-device module cache shares shader modules across ellipsoid
+// primitives. Scenes typically contain few of these primitives, but using the
+// common cache keeps module identity consistent across the renderer family.
 const _ellipsoidPrimitiveShaderCaches = new WeakMap<
   GPUDevice,
   WebGPUShaderModuleCache
@@ -75,12 +75,11 @@ interface EllipsoidCache {
   command: CesiumAnyDrawCommand | null;
   pickCommand: CesiumAnyDrawCommand | null;
   initialized: boolean;
-  // C-R7-RENDERER-MIGRATION (Batch 56) — once pipeline-cache routing is
-  // engaged the color + pick pipelines arrive asynchronously via
-  // `WebGPURenderPipelineCache.getPipeline()`. We track whether the
-  // request is already in flight so subsequent frames don't re-issue it,
-  // and skip drawing on frames where the pipelines aren't materialized
-  // yet (matches `getPipelineSync()` returning undefined).
+  // Color and pick pipelines arrive asynchronously through
+  // `WebGPURenderPipelineCache.getPipeline()`. This flag prevents subsequent
+  // frames from issuing duplicate requests; drawing is skipped until both
+  // pipelines are materialized, matching `getPipelineSync()` returning
+  // undefined.
   pipelineRequestPending: boolean;
 }
 
@@ -332,12 +331,12 @@ const scratchEncodedPosition = {
 const scratchMVP = new Matrix4();
 const scratchMV = new Matrix4();
 
-// BUG-ELLIPSOIDPRIM-WEBGPU-INVISIBLE (Batch 269) — unit bounding cube spanning
-// (-1,-1,-1)..(1,1,1), matching WebGL's BoxGeometry.fromDimensions({2,2,2}).
+// Unit bounding cube spanning (-1,-1,-1)..(1,1,1), matching WebGL's
+// BoxGeometry.fromDimensions({2,2,2}).
 // The VS scales each vertex by radii so the box encloses the ellipsoid shell;
 // the rasterized box surface gives the FS correct per-pixel eye->surface rays.
-// 36 indices (12 triangles, 2 per face). cullMode "back" (Batch 276) rasterizes
-// exactly ONE box face per pixel so the ray-cast FS runs once — matching WebGL's
+// The 36 indices form 12 triangles, two per face. Backface culling rasterizes
+// exactly one box face per pixel so the ray-cast FS runs once, matching WebGL's
 // CullFace.FRONT single-rasterization (fixes translucent double-blend). The FS
 // ray-casts to the near ellipsoid surface (t.x) from whichever face rasterizes,
 // so coverage is identical to the prior cullMode "none".
@@ -435,8 +434,8 @@ function createBoxGeometry(device: GPUDevice): {
 // requests — otherwise the cache would treat them as different layouts.
 const ELLIPSOID_VERTEX_BUFFERS: GPUVertexBufferLayout[] = [
   {
-    // BUG-ELLIPSOIDPRIM-WEBGPU-INVISIBLE (Batch 269) — box geometry is vec3
-    // position (12-byte stride), was vec2 (8-byte) for the old screen quad.
+    // Box positions are vec3 values with a 12-byte stride; the depth component
+    // is required to rasterize the bounding volume rather than a screen quad.
     arrayStride: 12,
     attributes: [
       {
@@ -462,11 +461,9 @@ interface EllipsoidPipelineResources {
  * and the descriptor objects passed to `WebGPURenderPipelineCache`.
  * The cache materializes the actual `GPURenderPipeline` objects asynchronously.
  *
- * C-R7-RENDERER-MIGRATION (Batch 56). Previously this function called
- * `device.createRenderPipeline()` twice — once per primitive instance
- * regardless of whether two ellipsoids shared identical pipeline state.
- * Routing through the central cache means two ellipsoids with identical
- * descriptors share a single `GPURenderPipeline`.
+ * Routing through the central cache lets ellipsoids with identical
+ * descriptors share a single `GPURenderPipeline` instead of creating a color
+ * and pick pipeline for every primitive instance.
  */
 function buildEllipsoidPipelineResources(
   device: GPUDevice,
@@ -476,10 +473,10 @@ function buildEllipsoidPipelineResources(
   pickFormat: GPUTextureFormat = "rgba8unorm",
   pickLogActive: boolean = false,
 ): EllipsoidPipelineResources {
-  // NEW-ELLIPSOIDPRIM-LOG-DEPTH (Batch 266) — OR in LOG_DEPTH when active so
-  // the module cache compiles the //>>ifdef LOG_DEPTH FS branch (projection-
-  // recovered eye distance → log frag_depth). defines=0 emits the //>>else
-  // (no frag_depth → rasterized near-plane z), byte-identical to pre-fix.
+  // Include LOG_DEPTH when active so the module cache compiles the fragment
+  // branch that converts projection-recovered eye distance to logarithmic
+  // fragment depth. A zero define mask emits the //>>else branch, leaving the
+  // rasterized near-plane depth without an explicit fragment-depth output.
   const defines = logDepthActive ? ShaderDefine.LOG_DEPTH : 0;
   const shaderModule = getEllipsoidPrimitiveShaderCache(device).getOrCreate(
     ShaderSourceId.ELLIPSOID_PRIMITIVE,
@@ -487,15 +484,15 @@ function buildEllipsoidPipelineResources(
     defines,
     `EllipsoidPrimitive${logDepthActive ? " [log]" : ""}`,
   );
-  // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — the PICK pipeline compiles its
-  // OWN module variant gated by the SEPARATE pick-fleet master switch
-  // (isWebGPUPickLogDepthActive), NOT the scene log switch. This keeps the
-  // pick FBO uniformly hyperbolic OR uniformly log across the whole fleet
-  // (INV-2) and makes the kill switch (`_pickLogDepthWriteEnabled=false`)
+  // The pick pipeline compiles a module variant controlled by the separate
+  // pick-fleet master switch, `isWebGPUPickLogDepthActive`, rather than the
+  // scene logarithmic-depth switch. This keeps the pick framebuffer uniformly
+  // hyperbolic or uniformly logarithmic across the renderer fleet and makes
+  // the kill switch (`_pickLogDepthWriteEnabled=false`)
   // restore byte-identical hyperbolic pick even while the scene stays log.
-  // When pick-log is inactive the module has no LOG_DEPTH define → the pick FS
-  // returns a single-@location(0) output byte-identical to the historical
-  // bare-vec4 return. Dedupes to `shaderModule` when both switches agree.
+  // When pick-log is inactive the module has no LOG_DEPTH define, so the pick
+  // fragment shader returns only its @location(0) vec4 output. It deduplicates
+  // to `shaderModule` when both switches agree.
   const pickModule = pickLogActive
     ? getEllipsoidPrimitiveShaderCache(device).getOrCreate(
         ShaderSourceId.ELLIPSOID_PRIMITIVE,
@@ -527,12 +524,10 @@ function buildEllipsoidPipelineResources(
   });
 
   const colorDescriptor: WebGPURenderPipelineDescriptor = {
-    // NEW-WEBGPU-PIPELINE-KEY-LOG-DEPTH — `logDepthActive` selects a different
-    // `shaderModule` above, but the central cache keys on this NAME plus
-    // structural fields only (never the module), so without the marker the log
-    // and hyperbolic color pipelines alias. The pick descriptor below already
-    // carries the equivalent `[ld]` marker for the same reason; the color half
-    // was missed. `[ld]` matches that sibling's spelling.
+    // `logDepthActive` selects a distinct shader module, which structurally
+    // separates the pipeline variants in the central cache. Keeping the
+    // matching `[ld]` name marker on both color and pick descriptors makes the
+    // selected variant visible in cache diagnostics and GPU labels.
     name: logDepthActive
       ? "EllipsoidPrimitive color pipeline [ld]"
       : "EllipsoidPrimitive color pipeline",
@@ -545,8 +540,8 @@ function buildEllipsoidPipelineResources(
     fragment: {
       module: shaderModule,
       entryPoint: "fragmentMain",
-      // Slice 5c-B Batch 118 — emit G-buffer slot 1 (eye-space normal +
-      // roughness). The shader emits `FragOutput { color, normalRoughness }`
+      // Emit G-buffer slot 1 for eye-space normal and roughness. The shader
+      // emits `FragOutput { color, normalRoughness }`
       // and the pipeline declares slot 1 as writable (writeMask: 0xf via
       // `emitsGBuffer: true`). Pick pipeline is derived from this via
       // `buildPickPipelineDescriptor`, which stamps exactly one target with
@@ -560,20 +555,19 @@ function buildEllipsoidPipelineResources(
         },
       }),
     },
-    // BUG-ELLIPSOIDPRIM-WEBGPU-TRANSLUCENT-DOUBLE-BLEND (Batch 276) — rasterize
-    // only ONE box face per pixel (was cullMode "none", which let both the near
-    // and far box face survive). For opaque the second fragment overwrites
-    // identically (harmless), but a translucent shell (alpha < 1) would blend
-    // twice. WebGL's EllipsoidPrimitive cuts this with `CullFace.FRONT`
-    // (single rasterization); we mirror that with backface culling here. The FS
-    // ray-casts to the NEAR ellipsoid surface (`t.x`) from whichever face
+    // Rasterize only one box face per pixel. Without culling, both the near and
+    // far box faces survive; the second fragment is an identical overwrite for
+    // opaque materials but blends a translucent shell twice. WebGL's
+    // EllipsoidPrimitive uses `CullFace.FRONT` for a single rasterization;
+    // backface culling provides the equivalent behavior here. The fragment
+    // shader ray-casts to the near ellipsoid surface (`t.x`) from whichever face
     // rasterizes, and the box silhouette is identical from either face set, so
-    // coverage is unchanged (verified: opaque green-pixel count is byte-identical
-    // to the prior cullMode "none"). NOTE: the dominant double-blend on this
-    // primitive came from the command carrying NO boundingVolume and NOT being
-    // flagged executeInClosestFrustum — a no-BV command bins into EVERY frustum
-    // slice (2 by default) and draws once per slice; that is fixed below by
-    // mirroring WebGL's boundingVolume + executeInClosestFrustum + Pass wiring.
+    // opaque green-pixel coverage remains byte-identical to cullMode "none".
+    // The command must also carry a bounding volume and
+    // use `executeInClosestFrustum`: a command without a bounding volume is
+    // binned into every frustum slice, two by default, and draws once per slice.
+    // The command wiring below mirrors WebGL's bounding volume, closest-frustum
+    // flag, and pass selection to prevent that second source of blending.
     primitive: { topology: "triangle-list", cullMode: "back" },
     depthStencil: {
       format: "depth24plus-stencil8",
@@ -581,25 +575,20 @@ function buildEllipsoidPipelineResources(
       // less-equal for planetary-scale precision robustness.
       depthCompare: "less-equal",
     },
-    // Slice 5c-B Batch 118 — match scene-FB MSAA sample count. Pre-fix
-    // this defaulted to sampleCount=1 against an MSAA=4 scene FB pass,
-    // tripping "Attachment state not compatible" the moment an
-    // EllipsoidPrimitive landed in a scene with default `msaaSamples=4`.
-    // The DeveloperError ("_beginDefaultRenderPass called with active
-    // render pass") that was the visible failure was downstream — once
-    // the EllipsoidPrimitive's pipeline tripped validation, the WebGPU
-    // command encoder went invalid and downstream beginRenderPass
-    // calls cascaded into the JS-side guard.
+    // Match the scene-framebuffer MSAA sample count. A single-sample pipeline
+    // used in the default four-sample pass triggers an incompatible-attachment
+    // validation error. That invalidates the command encoder, after which
+    // downstream beginRenderPass calls can cascade into the
+    // `_beginDefaultRenderPass called with active render pass` guard.
     multisample: sampleCount > 1 ? { count: sampleCount } : undefined,
   };
 
-  // C-R9 (Batch 30 / refactored Batch 59) — pick pipeline derived from the
-  // color descriptor via {@link buildPickPipelineDescriptor}. Same layout,
+  // Derive the pick pipeline from the color descriptor through
+  // {@link buildPickPipelineDescriptor}. It keeps the same layout,
   // same vertex stage, same depth behaviour; fragment entry swapped to
   // `fragmentPickMain` and blend stripped so pick colors reach the FBO
   // unmodified for byte-exact readback. `forceDepthWriteEnabled: true`
-  // matches the historical Batch 30 setting (color path also writes depth).
-  // NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE — the pick target is stamped with
+  // matches the color path, which also writes depth. The pick target uses
   // `context.pickPipelineFormat` (threaded through `pickFormat`), not the
   // scene format, so HDR scenes get a valid LDR pick pipeline.
   const pickDescriptor: WebGPURenderPipelineDescriptor =
@@ -608,19 +597,19 @@ function buildEllipsoidPipelineResources(
       "fragmentPickMain",
       pickFormat,
       {
-        // Distinct name so the central pipeline cache (keyed on name) never
-        // serves the hyperbolic pick pipeline for the log module or vice versa.
+        // The distinct name exposes the logarithmic variant in cache
+        // diagnostics; shader-module identity separates it structurally.
         name: pickLogActive
           ? "EllipsoidPrimitive pick pipeline [ld]"
           : "EllipsoidPrimitive pick pipeline",
         forceDepthWriteEnabled: true,
       },
     );
-  // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH — override the color-module reuse with the
-  // pick-gated module (both stages; the ellipsoid VS is log-independent — the
-  // FS recovers the log depth from the ray-cast hit — so either module's
-  // vertex stage is byte-identical). depthWriteEnabled stays true both states
-  // (the color path already writes depth), so only the module swaps.
+  // Override color-module reuse with the pick-gated module for both stages.
+  // The ellipsoid vertex shader is log-independent because the fragment
+  // shader recovers logarithmic depth from the ray-cast hit, so either
+  // module's vertex stage is byte-identical. Depth writes remain enabled in
+  // both states; only the module swaps.
   pickDescriptor.vertex.module = pickModule;
   if (pickDescriptor.fragment) {
     pickDescriptor.fragment.module = pickModule;
@@ -733,8 +722,8 @@ function packCameraUniforms(
   viewportHeight: number,
 ): Float32Array {
   // 320 bytes = 80 floats: mvpRTE(16) + mvRTE(16) + camHigh(3+1) + camLow(3+1)
-  //   + viewport(2+2 pad) + previousViewProjection(16) [DP-H41, Batch 27]
-  //   + projection(16) + logDepth(4) [NEW-ELLIPSOIDPRIM-LOG-DEPTH, Batch 266]
+  //   + viewport(2+2 pad) + previousViewProjection(16) + projection(16)
+  //   + logDepth(4).
   const data = new Float32Array(80);
   const view = uniformState.view;
   const projection = uniformState.projection;
@@ -784,8 +773,8 @@ function packCameraUniforms(
   data[42] = 0; // _pad2
   data[43] = 0; // _pad3
 
-  // DP-H41 (Batch 27) — previousViewProjection at slots 44..59 for
-  // TAA / motion-vector reprojection. `UniformState.update()` caches
+  // previousViewProjection occupies slots 44..59 for TAA and motion-vector
+  // reprojection. `UniformState.update()` caches
   // last frame's viewProjection before overwriting the current state.
   const prevVP = uniformState.previousViewProjection;
   if (prevVP) {
@@ -810,21 +799,21 @@ function packCameraUniforms(
     data[59] = 1;
   }
 
-  // NEW-ELLIPSOIDPRIM-LOG-DEPTH (Batch 266) — camera projection at floats
-  // 60..75. The ray-cast FS recovers the eye-space hit's clip-space w
+  // The camera projection occupies floats 60..75. The ray-cast fragment
+  // shader recovers the eye-space hit's clip-space w
   // (= eye distance) via this projection to encode log/hyperbolic depth.
   const proj = m4Values(projection);
   for (let i = 0; i < 16; i++) {
     data[60 + i] = proj[i];
   }
 
-  // NEW-ELLIPSOIDPRIM-LOG-DEPTH (Batch 266) — renderer-wide log-depth lanes
-  // at floats 76..79 (near, far, factor, reserved). This UB carries a
-  // dedicated `logDepth: vec4` tail (NOT the shared CameraUniforms `.w`-lane
-  // convention), so the scalars are written directly here rather than via
+  // Renderer-wide logarithmic-depth lanes occupy floats 76..79:
+  // (near, far, factor, reserved). This uniform buffer carries a dedicated
+  // `logDepth: vec4` tail rather than the shared CameraUniforms `.w`-lane
+  // convention, so the scalars are written directly here rather than via
   // packCameraLogDepthLanes (which targets floats 51/55/59 of the shared
   // struct — inside this layout's previousViewProjection). Prefer the
-  // stashed FULL-frustum encode the globe baked with over the live per-slice
+  // stashed full-frustum encode the globe baked with over the live per-slice
   // currentFrustum so the ellipsoid's depth composes with the globe; see the
   // same pattern in WebGPUBillboardRenderer.packUniforms.
   const ldEncode = (
@@ -855,7 +844,7 @@ function packCameraUniforms(
 }
 
 // 112 bytes = 28 floats: radii(4) + oneOverRadiiSq(4) + color(4)
-// + centerHigh(4) + centerLow(4) + pickColor(4) [C-R9, Batch 30]
+// + centerHigh(4) + centerLow(4) + pickColor(4).
 const ELLIPSOID_UBO_BYTES = 112;
 const ELLIPSOID_UBO_FLOATS = ELLIPSOID_UBO_BYTES / 4;
 
@@ -890,14 +879,12 @@ function packEllipsoidUniforms(
     data[11] = 1.0;
   }
 
-  // BUG-ELLIPSOIDPRIM-WEBGPU-INVISIBLE (Batch 269) — the VS now positions the
-  // shell entirely through `_computedModelMatrix` (folded into the camera UB's
-  // modelViewRelativeToEye + RTE camera split), so the ellipsoid center in the
-  // model frame is the ORIGIN. These centerHigh/centerLow slots are retained
-  // in the struct for layout stability (add-only) but are no longer read by
-  // the shader; zero them. Pre-Batch-268 they carried the bare modelMatrix
-  // translation — which double-counted the transform and (with an IDENTITY
-  // modelMatrix) was just (0,0,0) anyway, contributing to the invisibility.
+  // `_computedModelMatrix`, folded into the camera uniform buffer's
+  // modelViewRelativeToEye and RTE camera split, positions the shell. The
+  // ellipsoid center is therefore the model-frame origin. These
+  // centerHigh/centerLow slots remain for add-only layout stability but are
+  // not read by the shader; keeping them zero prevents the model-matrix
+  // translation from being counted twice.
   data[12] = 0;
   data[13] = 0;
   data[14] = 0;
@@ -907,8 +894,8 @@ function packEllipsoidUniforms(
   data[18] = 0;
   data[19] = 0;
 
-  // C-R9 (Batch 30) — pick color slot. Zero when the primitive hasn't
-  // been pick-registered yet; the pick pass skips the draw in that
+  // Pick color slot. It remains zero until the primitive is registered for
+  // picking; the pick pass skips the draw in that
   // case, so the zero alpha reaching the pick FBO is benign.
   if (pickColor) {
     data[20] = pickColor.red;
@@ -972,8 +959,8 @@ function updateWebGPUEllipsoidPrimitive(
   }
 
   const cache = primitive._webgpuCache as EllipsoidCache;
-  // Batch 110 — ellipsoid primitive draws into scene FB; use
-  // scenePipelineFormat (rgba16float in HDR) instead of canvas format.
+  // Ellipsoid primitives draw into the scene framebuffer, so use
+  // scenePipelineFormat (rgba16float in HDR) rather than the canvas format.
   const canvasFormat: GPUTextureFormat =
     (
       context as unknown as {
@@ -981,28 +968,28 @@ function updateWebGPUEllipsoidPrimitive(
       }
     ).scenePipelineFormat ??
     (navigator.gpu.getPreferredCanvasFormat() as GPUTextureFormat);
-  // NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE — pick pipelines target the context's
-  // byte-object-ID format authority, never the (possibly float/HDR) scene
+  // Pick pipelines target the context's byte-object-ID format authority,
+  // never the possibly floating-point HDR scene
   // format. Same value as the pick framebuffer's color attachment.
   const pickFormat: GPUTextureFormat =
     (context as unknown as { pickPipelineFormat?: GPUTextureFormat })
       .pickPipelineFormat ?? "rgba8unorm";
-  // Slice 5c-B Batch 118 — read MSAA sample count so the pipeline's
+  // Read the MSAA sample count so the pipeline's
   // multisample state matches the scene FB pass it draws into.
   const sampleCount =
     (context as unknown as { _msaaSamples?: number })._msaaSamples ?? 1;
-  // Batch 110 — invalidate cached pipeline resources on scene format
-  // change (HDR toggle).
+  // The scene format generation invalidates cached pipeline resources when
+  // HDR state changes.
   const sceneGen =
     (context as unknown as { _scenePipelineFormatGeneration?: number })
       ._scenePipelineFormatGeneration ?? 0;
-  // NEW-ELLIPSOIDPRIM-LOG-DEPTH (Batch 266) — the LOG_DEPTH master switch (or a
-  // frame that toggles frameState.useLogDepth) flips the shader define, so the
+  // The LOG_DEPTH master switch, or a frame toggling frameState.useLogDepth,
+  // flips the shader define, so the
   // shader module + pipelines must rebuild. Tracked alongside the scene-format
   // generation; mirrors the GroundPrimitive `_pipelineLogDepth` flip guard.
   const logDepthActive = isWebGPULogDepthActive(context, frameState);
-  // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — the pick-fleet master switch is
-  // SEPARATE from the scene log switch; a flip must rebuild the pick pipeline
+  // The pick-fleet master switch is separate from the scene logarithmic-depth
+  // switch; a flip must rebuild the pick pipeline
   // against the pick-gated module (+ its [ld] cache name), so track it too.
   const pickLogActive = isWebGPUPickLogDepthActive(context, frameState);
   const cacheGuard = cache as unknown as {
@@ -1026,29 +1013,21 @@ function updateWebGPUEllipsoidPrimitive(
     cacheGuard._pickPipelineLogDepth = pickLogActive;
   }
 
-  // C-R7-RENDERER-MIGRATION (Batch 56) — route pipeline creation through
-  // the central WebGPURenderPipelineCache. Held on a sidecar so we can
-  // re-resolve every frame until both pipelines materialize.
+  // Route pipeline creation through the central WebGPURenderPipelineCache.
+  // Resources stay on a sidecar so each frame can re-resolve them until both
+  // pipelines materialize.
   let resources = (
     cache as EllipsoidCache & {
       _pipelineResources?: EllipsoidPipelineResources;
     }
   )._pipelineResources;
 
-  // Slice 5c-B Batch 118 — pre-existing bug fix. Before this:
-  // invalidating `_pipelineResources` on a scene-pipeline-format
-  // change left `cache.initialized = true`, so the init block below
-  // was SKIPPED and `resources` stayed undefined. The next call to
-  // `tryResolveEllipsoidPipelines(..., resources!, ...)` then
-  // dereferenced undefined → "Cannot read properties of undefined
-  // (reading 'colorDescriptor')" floods the console.error stream
-  // until the user dismisses the renderer-error dialog.
-  //
-  // If resources is undefined here but `cache.initialized` is true,
-  // rebuild ONLY the pipeline resources + bind groups. The GPU
-  // buffers + quad geometry can be reused — they don't depend on the
-  // scene FB format. The pipeline cache will pick up the new
-  // descriptor variants and async-create matching pipelines.
+  // A scene-format change can invalidate `_pipelineResources` while the
+  // format-independent buffers and geometry remain initialized. Rebuild only
+  // the pipeline resources and bind groups in that state; passing undefined
+  // resources to `tryResolveEllipsoidPipelines` would dereference
+  // `colorDescriptor` and repeatedly report an error. The pipeline cache then
+  // resolves descriptor variants matching the new scene framebuffer format.
   if (cache.initialized && !resources) {
     resources = buildEllipsoidPipelineResources(
       device,
@@ -1074,9 +1053,9 @@ function updateWebGPUEllipsoidPrimitive(
         { binding: 0, resource: { buffer: cache.ellipsoidUniformBuffer! } },
       ],
     });
-    // Force pipeline re-resolution: the cached pipelines were keyed on
-    // the OLD descriptor; new descriptor will cache-miss and async-
-    // create against the new scene FB format.
+    // Force pipeline re-resolution because the cached pipelines describe the
+    // previous scene framebuffer format. The new descriptor resolves or
+    // asynchronously creates the matching variant.
     cache.pipeline = null;
     cache.pickPipeline = null;
     cache.pipelineRequestPending = false;
@@ -1087,15 +1066,14 @@ function updateWebGPUEllipsoidPrimitive(
   // themselves are resolved separately via the central cache below.
   if (!cache.initialized) {
     // Camera UBO: 80 floats × 4 = 320 bytes (mvpRTE + mvRTE + camHigh/Low +
-    //   viewport + previousViewProjection [DP-H41, Batch 27] + projection +
-    //   logDepth [NEW-ELLIPSOIDPRIM-LOG-DEPTH, Batch 266])
+    //   viewport + previousViewProjection + projection + logDepth).
     cache.uniformBuffer = device.createBuffer({
       size: 320,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 
     // Ellipsoid UBO: 28 floats × 4 = 112 bytes (radii + oneOverRadiiSq +
-    //   color + center + pickColor [C-R9, Batch 30])
+    //   color + center + pickColor).
     cache.ellipsoidUniformBuffer = device.createBuffer({
       size: ELLIPSOID_UBO_BYTES,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
@@ -1156,8 +1134,8 @@ function updateWebGPUEllipsoidPrimitive(
   }
 
   // Per-frame uniform updates.
-  // BUG-ELLIPSOIDPRIM-WEBGPU-INVISIBLE (Batch 269) — use the Scene's
-  // `_computedModelMatrix` (= modelMatrix * translate(center)), NOT the bare
+  // Use the scene's `_computedModelMatrix`, equal to modelMatrix multiplied by
+  // translate(center), rather than the bare
   // `modelMatrix`. Scene/EllipsoidPrimitive.js folds `center` into
   // `_computedModelMatrix`; reading the bare modelMatrix dropped `center`
   // entirely, placing every ellipsoid at its model-frame origin (the Earth's
@@ -1177,8 +1155,8 @@ function updateWebGPUEllipsoidPrimitive(
   );
   device.queue.writeBuffer(cache.uniformBuffer!, 0, gpuData(cameraData));
 
-  // C-R9 (Batch 30 / refactored Batch 59) — pick ID lifecycle delegated to
-  // {@link ensurePickId}. The helper keeps the legacy `_pickId` /
+  // Delegate pick-ID lifecycle to {@link ensurePickId}. The helper keeps the
+  // `_pickId` /
   // `_pickIdLastId` cache slots so external debug tooling sees the same
   // shape; allocation is gated on render/pick passes to mirror WebGL's
   // `Scene/EllipsoidPrimitive.js` lines 377-387.
@@ -1199,23 +1177,22 @@ function updateWebGPUEllipsoidPrimitive(
     gpuData(ellipsoidData),
   );
 
-  // C-R1 (Batch 35) — forward any WebGL-style renderState set by
+  // Forward any WebGL-style renderState set by
   // Scene/EllipsoidPrimitive.js onto the emitted WebGPUDrawCommand so
-  // `applyPerEncoderState` (Batch 30) runs stencilRef / blendConstant /
+  // `applyPerEncoderState` runs stencilRef / blendConstant /
   // viewport / scissor before the draw. Refreshed every frame so a
   // material translucent-state change picks up on the next frame
   // without needing to invalidate the command.
   const primitiveRS = (primitive as unknown as { _rs?: unknown })._rs;
 
-  // BUG-ELLIPSOIDPRIM-WEBGPU-TRANSLUCENT-DOUBLE-BLEND (Batch 276) — mirror
-  // Scene/EllipsoidPrimitive.js's command wiring (lines 375-385). A command
-  // with NO boundingVolume is binned into EVERY frustum slice and executed
+  // Mirror Scene/EllipsoidPrimitive.js's command wiring. A command without a
+  // bounding volume is binned into every frustum slice and executed
   // once per slice (2 by default even with the globe off) — harmless for an
   // opaque shell (identical depth → same pixel overwritten) but a translucent
   // shell blends its alpha twice (over black: 0.5·S becomes 0.75·S, 1.5× too
-  // opaque). WebGL avoids this by carrying the bounding sphere AND flagging
+  // opaque). WebGL avoids this by carrying the bounding sphere and flagging
   // `executeInClosestFrustum` for translucent draws so the command runs in a
-  // single frustum. We replicate both, plus route translucent shells through
+  // single frustum. Both fields are mirrored here, and translucent shells use
   // Pass.TRANSLUCENT for correct back-to-front ordering.
   const material = primitive.material;
   const translucent =
@@ -1253,7 +1230,7 @@ function updateWebGPUEllipsoidPrimitive(
 
   commandList.push(cache.command);
 
-  // C-R9 (Batch 30) — pick command. Emitted unconditionally alongside the
+  // The pick command is emitted alongside the
   // color command so the scene-renderer's `_executePickBatch` finds it
   // during pick passes. Commands tagged with pass=OPAQUE already flow
   // into the pick pass through `Pass.OPAQUE` walk in `_executePickPass`;
@@ -1276,7 +1253,7 @@ function updateWebGPUEllipsoidPrimitive(
     (cache.pickCommand as CesiumAnyDrawCommand).boundingVolume =
       primitive._boundingSphere;
     // Wire onto `colorCommand.derivedCommands.picking.pickCommand` so the
-    // Batch 29 `selectCommandVariant` dispatcher swaps to this command on
+    // `selectCommandVariant` dispatcher swaps to this command on
     // pick passes.
     attachPickToColorCommand(
       cache.command as CesiumAnyDrawCommand,
@@ -1301,7 +1278,7 @@ function destroyWebGPUEllipsoidPrimitiveResources(
   cache.vertexBuffer?.destroy();
   cache.indexBuffer?.destroy();
 
-  // C-R9 (Batch 30 / refactored Batch 59) — tear down the pick ID so its
+  // Tear down the pick ID so its
   // slot in the pick registry is reclaimed and the next primitive instance
   // gets a fresh color. No-op if the primitive never entered a pick pass.
   destroyPickIds(primitive as unknown as SinglePickIdCache);

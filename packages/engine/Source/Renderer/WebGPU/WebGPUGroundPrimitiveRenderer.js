@@ -1,34 +1,25 @@
 /**
  * Handles WebGPU rendering of GroundPrimitive / ClassificationPrimitive.
  *
- * **Architecture pivot (ADR-2026-04-28, Migration Session 1):** This
- * renderer is migrating from a 2-pass stencil approach (mark coverage in
- * stencil, then paint where stencil matches) to a depth-texture sampling
- * approach matching WebGL's `ShadowVolumeAppearanceFS.glsl`. The depth
- * approach lets the classifier swap depth sources at runtime
- * (globe-depth ↔ packed-translucent-depth ↔ per-frustum), unlocking
- * translucent-on-translucent classification, PointCloud translucent
- * tile classification (Batch 79 only fixed Models), multi-frustum
- * correctness, and `WebGPUGroundPolylineRenderer` (currently absent) on
- * the same plumbing.
+ * Uses a depth-texture sampling approach matching WebGL's
+ * `ShadowVolumeAppearanceFS.glsl`. Sampling depth instead of marking
+ * coverage in stencil lets the classifier select globe depth,
+ * packed-translucent depth, or a per-frustum source at draw time. The same
+ * plumbing supports translucent-on-translucent and point-cloud tile
+ * classification, multi-frustum rendering, and ground polylines.
  *
  * Current state:
- *   - **Default dispatch path**: depth-sample (single pass per primitive).
- *     Reads `WebGPUGlobeDepth.globeDepthTexture` (RGBA-packed depth) and
- *     `discard`s where depth is 0 (sky / no surface). The volume's
- *     rasterization handles lateral coverage; depth-clamp on the VS is
- *     unchanged from the stencil path.
- *   - **Compiled-but-unused fallback**: stencil 2-pass + color + pick
- *     pipelines. Kept around for Migration Session 2-3 work as a quick
- *     toggle if the depth-sample path needs a regression workaround.
- *     Slated for removal in Migration Session 5.
+ *   - The depth-sample path emits a single pass per primitive. It reads an
+ *     RGBA-packed depth source and discards where depth is 0, which denotes
+ *     sky or an absent surface. Volume rasterization supplies lateral
+ *     coverage, while the vertex shader clamps depth.
+ *   - No stencil fallback is emitted. If no depth source is published yet,
+ *     such as during the first frame or a viewport resize, classification is
+ *     skipped for that frame.
  *
- * Limitations of the Session 1 first-cut (resolved in later sessions):
- *   - Single fixed depth source (globe depth). Translucent-tile clipping
- *     still falls back to Batch 79's selective-depth-write path —
- *     Migration Session 2 wires the runtime depth-source swap.
- *   - Per-instance color only. Material/textured appearance and
- *     normal-from-depth-derivative computation are not ported yet.
+ * Surface normals are not reconstructed from depth derivatives. Unsupported
+ * material types fall back to the primitive's color so classification still
+ * produces a visible result.
  *
  * @private
  * @module WebGPUGroundPrimitiveRenderer
@@ -46,8 +37,8 @@ import csm_vertexLogDepth from "../../Shaders/WebGPU/chunks/functions/csm_vertex
 import csm_writeLogDepth from "../../Shaders/WebGPU/chunks/functions/csm_writeLogDepth.js";
 import WebGPUBuffer from "./WebGPUBuffer.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
-// Slice 5c-B Phase 1 (Batch 111) — scene-FB target helper. Used only
-// for color pipelines. Pick (`[{ format }]`), depth-only
+// Color pipelines use the scene-framebuffer target helper. Pick
+// (`[{ format }]`), depth-only
 // (`[{ format, writeMask: 0 }]`), and velocity (`[{ format: "rg16float" }]`)
 // pipelines stay single-target.
 import { makeSceneFBTargets } from "./WebGPUSceneFBTargetHelpers.js";
@@ -66,10 +57,9 @@ import { ShaderDefine, ShaderSourceId } from "./WebGPUShaderDefines.js";
 import { WebGPUShaderModuleCache } from "./WebGPUShaderModuleCache.js";
 import { isWebGPULogDepthActive } from "./WebGPULogDepth.js";
 
-// C-R7-SHADER-MODULE-DEDUP (Batch 185) — per-device module cache.
-// GroundPrimitive is typically few-per-scene, but we just touched this
-// file in Batch 180 for the velocity entry points so the ride-along is
-// free. Closes the C-R7-SHADER-MODULE-DEDUP adoption sweep.
+// Keep one module cache per device so primitives sharing shader variants also
+// share their compiled modules, even though ground primitives are typically
+// few per scene.
 const _groundPrimitiveShaderCaches = new WeakMap();
 
 function getGroundPrimitiveShaderCache(device) {
@@ -81,15 +71,14 @@ function getGroundPrimitiveShaderCache(device) {
   return cache;
 }
 
-// Batch 164 — UBO 256 → 384 bytes to carry separate `mvRTE` + `proj`
-// matrices + a `morphFlags` vec4 for the SCENE3D ↔ SCENE2D morph
-// pipeline. The morph VS uses these alongside `mvpRTE` to project both
+// The uniform buffer carries separate `mvRTE` and `proj` matrices plus a
+// `morphFlags` vec4 for the SCENE3D ↔ SCENE2D morph pipeline. The morph
+// vertex shader uses these alongside `mvpRTE` to project both
 // the 3D ECEF and 2D-projected position attributes through the
 // morph-state view, then blends in EC space by `morphFlags.x`
-// (morphTime). Pre-Batch-164 the renderer silently skipped MORPHING.
+// (`morphTime`).
 //
-// Batch 171 — UBO 384 → 640 bytes to add the textured-material slots
-// (NEW-GROUNDPRIM-TEXTURED-MATERIALS). New tail carries:
+// The textured-material tail carries:
 //   `invProj` — for depth → eye-coord recovery
 //   `materialMeta` / `materialColor` / `materialParam0` / `materialParam1`
 //                  — material dispatch (mirrors GroundPolyline)
@@ -113,8 +102,8 @@ const scratchProjection = new Matrix4();
 const scratchInvProj = new Matrix4();
 const scratchEncodedCamera = new EncodedCartesian3();
 
-// NEW-GROUNDPRIM-TEXTURED-MATERIALS (Batch 171) — eye-space scratches
-// for the planar-extent transform in packUniforms. The world-space SW
+// Eye-space scratch values support the planar-extent transform in
+// `packUniforms`. The world-space southwest
 // corner + east/north direction vectors are read from the primitive's
 // per-instance attributes (`getGeometryInstanceAttributes`), pulled
 // out of the batch table, and transformed through `scratchMVRTE` (the
@@ -511,18 +500,15 @@ function rebuildMaterialBindGroup(device, cache) {
  */
 function packExtents(data, primitive, frameState) {
   // Walk the wrapping chain to the inner Cesium `Primitive` that carries the
-  // batch table. The renderer is invoked with VARIABLE wrapper depth:
+  // batch table. The renderer is invoked with variable wrapper depth:
   //   GroundPrimitive → ._primitive (ClassificationPrimitive) → ._primitive
   //   (Primitive),  OR directly with a ClassificationPrimitive / Primitive.
-  // The old hard-coded `primitive._primitive._primitive` assumed exactly the
-  // 2-level GroundPrimitive chain, so the per-frame ClassificationPrimitive
-  // call (1 level) walked one hop too deep → null → `return false` →
-  // packUniforms wrote `materialMeta.x = 0`. That zero landed LAST in the
-  // shared uniform buffer, flipping dsColorFS to the flat-color fast path and
-  // rendering every textured material as solid `i.col`. Walk until we find the
-  // object that actually owns `_batchTable` (mirrors the `_webgpuGeometryData`
-  // chain walk at the command-build site below). Bug pinned via the [GPDIAG]
-  // packUniforms trace, Batch 184 — WEBGPU_DEBUGGING_LOG.
+  // A fixed two-hop lookup overshoots a directly supplied
+  // ClassificationPrimitive. That makes this function return false, after
+  // which `packUniforms` writes `materialMeta.x = 0` last and selects the
+  // flat-color path for every textured material. Stop at the object that owns
+  // `_batchTable`, matching the `_webgpuGeometryData` chain walk at the
+  // command-build site below.
   let inner = primitive;
   for (let depth = 0; depth < 4 && inner && !inner._batchTable; depth++) {
     inner = inner._primitive;
@@ -530,15 +516,15 @@ function packExtents(data, primitive, frameState) {
   if (!inner || !inner._instanceIds || inner._instanceIds.length === 0) {
     return false;
   }
-  // Read the extents DIRECTLY from the batch table by integer index,
+  // Read the extents directly from the batch table by integer index,
   // bypassing the public `getGeometryInstanceAttributes(id)` API which
   // requires the GeometryInstance to have a defined `id`. The extents
   // are per-instance attributes added by
   // `ShadowVolumeAppearance.getPlanarTextureCoordinateAttributes`; we
-  // only care about the FIRST instance (multi-instance + per-instance
+  // only care about the first instance (multi-instance + per-instance
   // materials is a follow-up). `_batchTableAttributeIndices` is the
   // name → batch-table-index map populated when the inner Primitive's
-  // batch table is built (Primitive.js); ALL four extent attributes
+  // batch table is built (Primitive.js); all four extent attributes
   // appear together (a planar-extent primitive has all or none).
   const bt = inner._batchTable;
   const indices = inner._batchTableAttributeIndices;
@@ -546,8 +532,9 @@ function packExtents(data, primitive, frameState) {
     return false;
   }
 
-  // Slot layout (recap; floats — kept < byte 512 per the U-struct Dawn-bug
-  // invariant, see packUniforms / WEBGPU_DEBUGGING_LOG Batch 184):
+  // Slot layout. These fields stay below byte 512 because Dawn/Tint can alias
+  // a uniform-buffer vec4's `.zw` components to `.xy` at higher offsets; the
+  // matching packing constraint is documented in `packUniforms`.
   //   swCornerEC   = 72..75  (planar only; 0 in spherical)
   //   eastwardEC   = 76..79  (planar only)
   //   northwardEC  = 80..83  (planar only)
@@ -700,9 +687,7 @@ function packExtents(data, primitive, frameState) {
  * Build the three GroundPrimitive pipeline descriptors (stencil, color,
  * pick) plus the shared pipeline-layout / BGL / shader module.
  *
- * C-R7-RENDERER-MIGRATION (Batch 58). Previously this function called
- * `device.createRenderPipeline()` three times unconditionally per
- * primitive instance. Routing through the central
+ * Routing through the central
  * `WebGPURenderPipelineCache` means two ground primitives with the same
  * format / depth format / blend / stencil descriptor share a single
  * `GPURenderPipeline`. The descriptors themselves still live here (they
@@ -716,26 +701,24 @@ function buildGroundPipelineResources(
   depthFormat,
   sampleCount,
   logDepthActive,
-  // NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE — pick pipelines target the
-  // context's byte-object-ID format authority (matches the pick FBO),
+  // Pick pipelines target the context's byte-object-ID format authority,
+  // matching the pick framebuffer,
   // never the (possibly float/HDR) scene format.
   pickFormat = "rgba8unorm",
 ) {
-  // UBO layout (256 bytes total — `UNIFORM_BUFFER_SIZE`):
+  // Uniform-buffer head layout; the remaining fields are documented beside
+  // their packing sites in `packUniforms`:
   //   floats   0-15 : mvpRTE                         (mat4x4<f32>)
   //   floats  16-19 : camH + _p0                     (vec3<f32> + pad)
   //   floats  20-23 : camL + _p1                     (vec3<f32> + pad)
   //   floats  24-27 : color                          (vec4<f32>)
   //   floats  28-31 : pickColor                      (vec4<f32>)
   //   floats  32-35 : viewport (x, y, w, h)          (vec4<f32>)
-  //   floats  36-63 : reserved (Session 4b will use these for
-  //                   inverseProjection / metersPerPixel inputs needed
-  //                   by the polyline classifier).
+  //   floats  36-39 : morphFlags                     (vec4<f32>)
+  //   floats  40-55 : inverseProjection              (mat4x4<f32>)
   //
-  // Migration Session 5 (Batch 85) — the legacy stencil VS/FS, color VS/FS,
-  // and pick FS entries were removed alongside their pipeline descriptors.
-  // The depth-sample dsColor/dsPick path is now the only classification
-  // path; commands fall back to "skip dispatch" rather than stencil when
+  // The depth-sample `dsColor` / `dsPick` path is the only classification
+  // path. Commands skip dispatch rather than falling back to stencil when
   // no depth source is published yet (first frame, viewport resize), at
   // a cost of one missed classification frame at startup.
   const code = `
@@ -1316,17 +1299,12 @@ struct VelocityCO {
     `GroundPrimitive${logDepthActive ? " [log]" : ""}`,
   );
 
-  // NEW-WEBGPU-PIPELINE-KEY-LOG-DEPTH — `logDepthActive` picks a DIFFERENT
-  // `mod` above, and every descriptor below uses it for both stages. The central
-  // pipeline cache's `generateCacheKey` hashes only the descriptor NAME plus
-  // structural fields — never `vertex.module`, `fragment.module`, `entryPoint`,
-  // or the define mask. `_pipelineLogDepth` below rebuilds these descriptors on
-  // a flip, so without this marker the rebuilt log descriptor hits the
-  // hyperbolic pipeline already cached under the identical name. That is the
-  // terrain-classification failure mode: after `scene.morphTo2D()` /
-  // `camera.switchToOrthographicFrustum()` clears `frameState.useLogDepth`, the
-  // classifier would keep running the log-depth shader against a hyperbolic
-  // scene depth buffer and mis-reconstruct eye distance.
+  // `logDepthActive` selects a distinct module above, and every descriptor
+  // below uses it for both stages. Module identity and entry points are part of
+  // the central pipeline key; the log-depth flag in each descriptor name keeps
+  // the variants legible in diagnostics and provides defense in depth. A
+  // mismatched shader would interpret a hyperbolic scene-depth buffer as
+  // logarithmic depth, or vice versa, and mis-reconstruct eye distance.
   const ldFlag = logDepthActive ? 1 : 0;
   // Group 0: per-primitive uniforms (binding 0) + the material image
   // texture (binding 1) and its sampler (binding 2). The texture/sampler
@@ -1352,8 +1330,8 @@ struct VelocityCO {
       samplerEntry(1, Stage.FRAGMENT, "filtering"),
     ],
   );
-  // NEW-GROUNDPRIM-CLASSIFIER-PER-FRUSTUM-UBO (Batch 173) — group 2:
-  // per-slice frustum state (invProj + per-slice near/far). FRAGMENT-only — the
+  // Group 2 carries per-slice frustum state: inverse projection and near/far.
+  // It is fragment-only because the
   // depth-sample FS reads it for eye-space recovery. The globe's LOG-encode
   // frustum (needed by both the VS log-z write and the FS decode) is delivered
   // via group-0 `u.frustum` instead. Bound per-slice at draw time via the
@@ -1380,7 +1358,7 @@ struct VelocityCO {
     },
   ];
 
-  // Batch 164 — A.4 morph layout: two simultaneous vertex buffers, each
+  // The morph layout uses two simultaneous vertex buffers, each
   // with a (high, low) RTE pair. Buffer 0 carries 3D ECEF positions
   // (locations 0/1 — same as the non-morph pipeline so the JS side
   // reuses the same `position3DHigh/Low` interleave). Buffer 1 carries
@@ -1411,15 +1389,14 @@ struct VelocityCO {
   // path doesn't read or write the stencil bits, so the attachment's
   // stencil aspect remains untouched (other passes still read it for
   // InvertClassification etc.).
-  // Batch 134 — scene-FB color pipelines bake MSAA sample count.
+  // Scene-framebuffer color pipelines bake the MSAA sample count.
   const msState = sampleCount > 1 ? { count: sampleCount } : undefined;
-  // C7-GROUNDPRIM-TEXTURED-CLASSIFY-ZERO — PRE_MULTIPLIED_ALPHA_BLEND
-  // parity. WebGL's ClassificationPrimitive color pass blends with
-  // srcFactor ONE (BlendingState.PRE_MULTIPLIED_ALPHA_BLEND) because
+  // Match WebGL's premultiplied-alpha blend. Its ClassificationPrimitive
+  // color pass uses a source factor of one because
   // ShadowVolumeAppearanceFS premultiplies rgb by alpha in the shader.
   // dsColorFS mirrors the premultiply, so the pipeline must mirror the
-  // ONE srcFactor too — the previous `translucent: true` src-alpha blend
-  // applied alpha twice and darkened every translucent classification
+  // same source factor; using a source-alpha factor applies alpha twice and
+  // darkens every translucent classification
   // (Grid cellAlpha cells, translucent per-instance colors).
   const premultipliedBlend = {
     color: {
@@ -1440,8 +1417,8 @@ struct VelocityCO {
     fragment: {
       module: mod,
       entryPoint: "dsColorFS",
-      // Slice 5c-B Phase 1 (Batch 111) — scene-FB color target via
-      // helper. Premultiplied-alpha blend (WebGL classification parity).
+      // Scene-framebuffer color target with premultiplied-alpha blending for
+      // WebGL classification parity.
       targets: makeSceneFBTargets(format, { blend: premultipliedBlend }),
     },
     primitive: { topology: "triangle-list", cullMode: "none" },
@@ -1474,7 +1451,7 @@ struct VelocityCO {
     // pass; that's enforced at the dispatch site, not here.
   };
 
-  // AUDIT_2026_05_02 A.2 (Batch 141) — IGNORE_SHOW stencil-write variant.
+  // The ignore-show variant writes stencil only.
   // Color writes disabled (writeMask=0); the pipeline runs solely to mark
   // the invert FBO's stencil with 0xff on classified pixels. The
   // stencilReference value is set per-draw via
@@ -1508,11 +1485,11 @@ struct VelocityCO {
       stencilReadMask: 0xff,
       stencilWriteMask: 0xff,
     },
-    // Batch 134 — stencil-only pipeline still runs in the MSAA scene pass.
+    // The stencil-only pipeline still runs in the MSAA scene pass.
     multisample: msState,
   };
 
-  // Batch 164 — A.4 NEW-CLASSIFIER-2D-CV-MORPH morph color pipeline.
+  // The morph color pipeline uses
   // Two-buffer vertex layout (3D + 2D position pairs); same fragment
   // shader as the non-morph color path — the morph blend lives in the
   // VS so the FS just samples globe depth and emits per-instance color.
@@ -1530,9 +1507,8 @@ struct VelocityCO {
     fragment: {
       module: mod,
       entryPoint: "dsColorFS",
-      // Slice 5c-B Phase 1 (Batch 111) — scene-FB color target via
-      // helper. Premultiplied-alpha blend (WebGL classification parity —
-      // see depthSampleColorDescriptor).
+      // Scene-framebuffer color target with premultiplied-alpha blending;
+      // see `depthSampleColorDescriptor` for the WebGL parity constraint.
       targets: makeSceneFBTargets(format, { blend: premultipliedBlend }),
     },
     primitive: { topology: "triangle-list", cullMode: "none" },
@@ -1567,8 +1543,7 @@ struct VelocityCO {
     // depthSamplePickDescriptor).
   };
 
-  // NEW-ADVANCED-MOTION-VECTORS classifiers (Batch 180) — velocity
-  // pipeline. Same pipeline layout (depth-sample BGL pair) as the color
+  // The velocity pipeline uses the same depth-sample bind-group layout as the color
   // pipeline so bind groups are reused; single rg16float color target,
   // no blend, depth read-only. Only the non-morph variant is built —
   // velocity emission is suppressed during MORPHING by the JS-side
@@ -1640,8 +1615,8 @@ function descriptorToGPU(d) {
  * after async creation kicks off so the caller can skip the draw and
  * try again next tick.
  *
- * C-R7-RENDERER-MIGRATION (Batch 58). Mirrors the
- * `tryResolveEllipsoidPipelines` pattern from Batch 56.
+ * Uses the same asynchronous resolution pattern as
+ * `tryResolveEllipsoidPipelines`.
  * @private
  */
 function tryResolveGroundPrimitivePipelines(
@@ -1668,8 +1643,8 @@ function tryResolveGroundPrimitivePipelines(
     const dsStencilSync = pipelineCache.getPipelineSync(
       resources.depthSampleStencilDescriptor,
     );
-    // NEW-ADVANCED-MOTION-VECTORS classifiers (Batch 180) — velocity
-    // pipeline resolved alongside color/pick/stencil. Cache miss is
+    // Resolve the velocity pipeline alongside color, pick, and stencil. A
+    // cache miss is
     // non-fatal: color path continues to render correctly without it;
     // velocity-pass dispatch becomes a no-op until the variant lands.
     const dsVelocitySync = pipelineCache.getPipelineSync(
@@ -1707,8 +1682,8 @@ function tryResolveGroundPrimitivePipelines(
     return false;
   }
 
-  // Fallback: no central cache (e.g. WebGL-backed graphics context, or
-  // pre-init state). Mirror the historical synchronous path.
+  // Without a central cache, such as with a WebGL-backed graphics context or
+  // during pre-initialization, create the pipelines synchronously.
   cache.depthSampleColorPipeline = device.createRenderPipeline(
     descriptorToGPU(resources.depthSampleColorDescriptor),
   );
@@ -1718,7 +1693,7 @@ function tryResolveGroundPrimitivePipelines(
   cache.depthSampleStencilPipeline = device.createRenderPipeline(
     descriptorToGPU(resources.depthSampleStencilDescriptor),
   );
-  // NEW-ADVANCED-MOTION-VECTORS classifiers (Batch 180) — fallback path.
+  // The synchronous path also creates the velocity pipeline.
   cache.velocityPipeline = device.createRenderPipeline(
     descriptorToGPU(resources.velocityDescriptor),
   );
@@ -1726,8 +1701,8 @@ function tryResolveGroundPrimitivePipelines(
 }
 
 /**
- * Batch 164 — A.4 morph pipelines, resolved lazily on the first
- * MORPHING frame so non-morphing scenes don't pay the cache hit.
+ * Resolves morph pipelines lazily on the first morphing frame so
+ * non-morphing scenes do not pay the cache hit.
  * Mirrors `tryResolveGroundPrimitivePipelines` for the morph
  * descriptor pair.
  * @private
@@ -1826,7 +1801,7 @@ function packUniforms(
   data[26] = color?.blue ?? 0.0;
   data[27] = color?.alpha ?? 0.5;
 
-  // C-R9 (Batch 31) — pickColor slot (floats 28-31). Defaults to zero
+  // The pick-color slot occupies floats 28-31 and defaults to zero
   // when no pick ID has been registered yet; the pick pass skips the
   // draw in that case so the zeros never reach the pick FBO.
   data[28] = pickColor?.red ?? 0.0;
@@ -1838,23 +1813,20 @@ function packUniforms(
   // `@builtin(position).xy` by viewport.zw to recover the screen-space
   // UV used to fetch globe depth. Source from `context.drawingBufferWidth/
   // Height` directly: `uniformState.viewportCartesian4` is zero-initialized
-  // until per-frame viewport is established, but FRs run during Scene
-  // primitive update — BEFORE that. `?? drawingBufferWidth` doesn't fall
-  // through on 0 (only nullish), so the original code shipped 0/0 viewport
-  // → screenUV = NaN → depth sample returns 0 → universal discard
-  // (silent rendering failure). Bug-pattern hunt 2026-04-30 — same root
-  // cause as the GroundPolyline silent-invisible bug fixed in Batch 117.
+  // until per-frame viewport setup, but feature renderers run earlier during
+  // primitive update. A nullish fallback does not replace zero, so using that
+  // value produces a 0/0 viewport, a NaN screen UV, a zero depth sample, and a
+  // universal discard. Ground polylines require the same direct source.
   const ctx = frameState.context;
   data[32] = 0.0;
   data[33] = 0.0;
   data[34] = ctx?.drawingBufferWidth || 1;
   data[35] = ctx?.drawingBufferHeight || 1;
 
-  // AUDIT_2026_05_02 B.9 (Batch 153) — DP-H41 prev viewProjection at floats
-  // 36..51. UniformState swaps `_previousViewProjection := viewProjection`
-  // at the END of `update()` AFTER returning the prior frame's value, so
-  // on frame N this slot holds frame N-1's VP. First frame falls through
-  // to identity.
+  // Previous view-projection occupies floats 112-127. `UniformState.update`
+  // returns the prior value before assigning the current view-projection to
+  // `_previousViewProjection`, so frame N receives frame N-1. The first frame
+  // uses identity.
   const prevVP = uniformState.previousViewProjection;
   if (prevVP) {
     Matrix4.pack(prevVP, data, 112); // tail (byte 448) — unused, dodges the Dawn >512 bug
@@ -1877,18 +1849,18 @@ function packUniforms(
     data[127] = 1;
   }
 
-  // Batch 164 — A.4 NEW-CLASSIFIER-2D-CV-MORPH morph fields.
+  // Morph fields:
   //
-  // floats 52..67 — `mvRTE` — model-view RTE (translation zeroed).
+  // floats 128..143 — `mvRTE` — model-view RTE (translation zeroed).
   //   Read by `morphColorVS` to project both the 3D and 2D
   //   position attributes through the morph-state view (then blends
   //   in EC space). For the non-morph paths this slot is don't-care
   //   because `colorVS` only reads `mvpRTE`.
   //
-  // floats 68..83 — `proj` — projection matrix.
+  // floats 144..159 — `proj` — projection matrix.
   //   Final projection after the EC-space morph blend.
   //
-  // floats 84..87 — `morphFlags` — .x = morphTime
+  // floats 36..39 — `morphFlags` — .x = morphTime
   //   (1.0 = full SCENE3D, 0.0 = full SCENE2D / Columbus View,
   //   fractional during MORPHING).
   Matrix4.clone(scratchModelView, scratchMVRTE);
@@ -1909,14 +1881,13 @@ function packUniforms(
   data[38] = 0.0;
   data[39] = 0.0;
 
-  // NEW-GROUNDPRIM-TEXTURED-MATERIALS (Batch 171) — material dispatch slots.
+  // Material dispatch slots.
   // invProj (floats 40..55) — inverse projection, used by windowToEye in the FS.
-  // COMPUTE it from uniformState.projection (which is live at FR pack time — the
+  // Compute it from uniformState.projection, which is live at feature-renderer pack time; the
   // volume's mvpRTE uses it) rather than reading uniformState.inverseProjection,
-  // whose lazy cache is STALE/zero when the GroundPrimitive FR packs its UB at
-  // command-build (verified: the cached value reads ~0 in the shader while the
-  // JS-side post-render value is correct). Degenerate invProj → constant eye
-  // recovery → flat textured UV.
+  // whose lazy cache can still be zero when the GroundPrimitive packs its
+  // uniform buffer during command construction. A degenerate inverse produces
+  // constant eye recovery and flat textured UVs.
   Matrix4.inverse(uniformState.projection, scratchInvProj);
   Matrix4.pack(scratchInvProj, data, 40);
 
@@ -1992,55 +1963,26 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
   const context = frameState.context;
   const device = context.device;
 
-  // AUDIT_2026_05_02 A.4 (Batch 150 conservative gate, narrowed in
-  // Batch 156, narrowed further in Batch 157, MORPHING lifted in
-  // Batch 164) — SCENE2D + COLUMBUS_VIEW use the per-vertex
+  // SCENE2D and COLUMBUS_VIEW use the per-vertex
   // `position2DHigh/Low` attributes that `PrimitivePipeline.js:175-208`
   // produces alongside the 3D positions. With both encoded into the
   // same coordinate space as the active `uniformState.view * projection`
   // and `camera.positionWC`, the existing RTE math at `colorVS`
-  // produces correct classification volumes. MORPHING now routes
-  // through the dedicated `morphColorVS` (Batch 164) which consumes
-  // BOTH attribute sets and blends EC-space positions by
+  // produces correct classification volumes. MORPHING routes through
+  // `morphColorVS`, which consumes both attribute sets and blends
+  // eye-space positions by
   // `uniformState.morphTime`.
   //
-  // SCENE2D / COLUMBUS_VIEW classification (Batch 170 — NEW-CLASSIFIER-
-  // GROUNDPRIM-2D-RTE RESOLVED).
+  // `position2DHigh/Low` stores `(projX, projY, height)`, while
+  // `camera.positionWC` uses the scene's ENU ordering
+  // `(altitude, projX, projY)`. The non-morph `colorVS` and `vsVelocity`
+  // apply WebGL's mode-conditional `.zxy` swizzle before RTE subtraction so
+  // positions and the encoded camera share a coordinate frame. Without the
+  // swizzle, a Mercator extent spanning roughly ±20 million metres moves the
+  // classification volume off-screen. `morphColorVS` applies the same swizzle.
   //
-  // History:
-  //   - Batch 156 added the `position2DHigh/Low` attribute pair.
-  //   - Batch 164 added the morph VS so MORPHING blends 3D ↔ 2D in EC space.
-  //   - Batch 167 unblocked 2D by dropping the 3D-ECEF bounding-volume cull
-  //     for globe + publishing globe depth in non-3D modes.
-  //   - Batch 169 removed the over-broad `_needs2DShader` silent-skip
-  //     (this renderer is FLAT COLOR only — `packUniforms` reads
-  //     `appearance.material.uniforms.color`; no UV / extents / texture
-  //     sampling in any mode — so it does NOT need WebGL's `appearance2D`
-  //     in 2D).
-  //   - Batch 170 fixed the LAST blocker: coordinate-frame mismatch
-  //     between `position2DHigh/Low` (stored as `(projX, projY, height)`,
-  //     the natural output of `mapProjection.project()` in
-  //     `GeometryPipeline.projectTo2D`) and `camera.positionWC` (which
-  //     in SCENE2D / CV is in the camera's ENU frame
-  //     `(altitude, projX, projY)` — produced by `TRANSFORM_2D` in
-  //     `CameraInternals.updateMembers`). The RTE subtraction
-  //     `position2D − cameraENU` was mixing component orderings — across
-  //     a single Mercator extent (`±π * semimajorAxis` ≈ ±20M m) the
-  //     misalignment shoved the volume off-screen.
-  //     Fix: mirror WebGL's `czm_translateRelativeToEye(pos2D.zxy, ...)`
-  //     pattern from PrimitiveShaderHelpers.js:291. The non-morph
-  //     `colorVS` (and the `vsVelocity` clone) now apply a
-  //     mode-conditional `.zxy` swizzle to the bound positions
-  //     (gated by `morphFlags.x` — 1.0 = SCENE3D no-swizzle,
-  //     0.0 = SCENE2D / CV swizzle) so the RTE math composes in ENU
-  //     space matching the view matrix and the encoded camera. No JS
-  //     change needed; positionWC is already in the right frame.
-  //     The MORPHING path was already correct (Batch 164 morphColorVS
-  //     applies the same swizzle at .zxy).
-  //
-  // Remaining 2D follow-up: textured-material detail (`appearance2D` UVs +
-  // extents) tracked as NEW-GROUNDPRIM-TEXTURED-MATERIALS — orthogonal to
-  // flat-color classification.
+  // Textured-material detail in 2D additionally depends on `appearance2D` UVs
+  // and extents; that is orthogonal to selecting the volume positions here.
   const sceneMode = frameState?.mode;
   const isNon3D = sceneMode !== SceneMode.SCENE3D;
   const isMorphing = sceneMode === SceneMode.MORPHING;
@@ -2050,21 +1992,16 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
   }
   const cache = primitive._webgpuCache;
 
-  // C-R7-RENDERER-MIGRATION (Batch 58) — build the BGL + pipeline-layout
-  // + shader module + pipeline descriptors once, then route the actual
+  // Build the bind-group layout, pipeline layout, shader module, and pipeline
+  // descriptors once, then route the actual
   // pipeline creation through `context.webgpuPipelineCache`. The
   // descriptors and shader module are stashed on the cache so the async
   // resolver can re-poll across frames until pipelines materialize.
-  // Batch 110 — invalidate cached pipeline resources on scene format
-  // change (HDR toggle). Pre-Batch-166 the cached pipeline OBJECTS
-  // weren't cleared alongside `_pipelineResources` and `bgl` —
-  // `tryResolveGroundPrimitivePipelines` early-returned on the
-  // truthy slot check and left stale-format pipelines bound. WebGPU
-  // would then reject the draw at submission because the bound
-  // pipeline's color target format didn't match the active attachment.
-  // Vector3DTile* renderers already had this pattern (see
-  // WebGPUVector3DTilePrimitiveRenderer.js:796-801); GroundPrimitive
-  // was the outlier.
+  // Invalidate cached resources when the scene format changes, such as an HDR
+  // toggle. Cached pipeline objects must be cleared with `_pipelineResources`
+  // and `bgl`; otherwise the resolver's truthy-slot check retains a pipeline
+  // whose color format no longer matches the active attachment, and WebGPU
+  // rejects the draw at submission.
   const sceneGen = context._scenePipelineFormatGeneration ?? 0;
   // Renderer-wide log depth: when the master switch flips, the classifier's
   // windowToEye must (de)activate the reverse-log path, which changes the
@@ -2080,16 +2017,13 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
     cache.bgl = undefined;
     // Clear cached pipeline objects so the resolvers re-run against
     // the new resources / format. Both the standard depth-sample trio
-    // and Batch 164's morph pair need clearing.
+    // and the morph pair need clearing.
     cache.depthSampleColorPipeline = undefined;
     cache.depthSamplePickPipeline = undefined;
     cache.depthSampleStencilPipeline = undefined;
     cache.morphColorPipeline = undefined;
     cache.morphPickPipeline = undefined;
-    // NEW-ADVANCED-MOTION-VECTORS classifiers (Batch 180) — clear the
-    // velocity pipeline alongside the others on format change. Mirrors
-    // the Batch 176 audit fix on splats and the Batch 179 fix on
-    // Vector3DTile{Polylines,ClampedPolylines}.
+    // Clear the velocity pipeline alongside the others on format changes.
     cache.velocityPipeline = undefined;
     // Bind groups reference the old BGL which is now stale.
     cache.bindGroup = undefined;
@@ -2097,15 +2031,14 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
     // `materialBindGroupViewRef !== effectiveMatView`, so leaving the ref
     // intact after dropping `cache.bindGroup` skips the rebuild and the
     // draw submits with NO bind group at index 0 (invalidates the whole
-    // scene pass encoder). Latent since the Batch-110 format-change path
-    // (HDR toggles are rare); exposed by the log-depth master switch,
+    // scene pass encoder). This matters for HDR toggles and for the log-depth
+    // master switch,
     // which legitimately flips per scene MODE (useLogDepth is false under
     // 2D's orthographic frustum), making 3D->2D hit this every time.
     cache.materialBindGroupViewRef = null;
     cache.depthSampleBindGroup = undefined;
     cache.depthSampleViewRef = undefined;
-    // NEW-GROUNDPRIM-CLASSIFIER-PER-FRUSTUM-UBO (Batch 173) — the
-    // frustum-state bind groups reference the old frustumStateBgl (the
+    // Frustum-state bind groups reference the old frustumStateBgl because the
     // whole _pipelineResources is rebuilt on format change), so drop them
     // too. The UBO buffers themselves are layout-agnostic but the bind
     // groups must be recreated against the new BGL; clear both so the
@@ -2128,7 +2061,7 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
       depthFmt,
       sampleCount,
       logDepthActive,
-      // NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE — pick target format authority.
+      // Use the pick target format authority rather than the scene format.
       context.pickPipelineFormat || "rgba8unorm",
     );
     cache.bgl = cache._pipelineResources.bgl;
@@ -2160,7 +2093,7 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
     };
   }
 
-  // Batch 164 — A.4 morph pipelines, resolved lazily on the first
+  // Resolve morph pipelines lazily on the first
   // MORPHING frame and cached thereafter. Same first-frame skip
   // contract as the non-morph resolver above.
   if (
@@ -2251,8 +2184,8 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
 
   // Build actual draw commands if vertex data is available.
   //
-  // Migration Session 1 (Batch 81) — `_webgpuGeometryData` is populated
-  // by `Scene/PrimitiveGeometryHelpers.js:788` on the innermost Cesium
+  // `_webgpuGeometryData` is populated by
+  // `Scene/PrimitiveGeometryHelpers.js` on the innermost Cesium
   // `Primitive`. The wrapping chain for a GroundPrimitive is:
   //   `_GroundPrimitive` → `._primitive` (`ClassificationPrimitive`) →
   //   `._primitive` (`Primitive`) → `._webgpuGeometryData` (array).
@@ -2261,17 +2194,16 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
   // through the same lookup with shorter chains.
   //
   // The producer-side hook lives in the existing `Primitive.update` →
-  // `createVertexArray` flow in PrimitiveGeometryHelpers — no new
-  // populator was needed for ClassificationPrimitive because it
+  // `createVertexArray` flow in PrimitiveGeometryHelpers. ClassificationPrimitive
+  // needs no separate populator because it
   // delegates to a Primitive at construction time
-  // (`ClassificationPrimitive.js:417`). What WAS missing was the
-  // walk-the-chain lookup on the renderer side, plus the correct
-  // attribute extraction at `_webgpuGeometryData[g].attributes
-  // .position3DHigh.values` (the slot Migration Session 1 added).
+  // (`ClassificationPrimitive.js:417`). The renderer therefore walks the
+  // wrapper chain and extracts
+  // `_webgpuGeometryData[g].attributes.position3DHigh.values`.
   //
-  // First-cut handles only `_webgpuGeometryData[0]`. Multi-geometry
-  // primitives (rare for GroundPrimitive — typically one rectangle /
-  // polygon per primitive) are tracked as a follow-up.
+  // Only `_webgpuGeometryData[0]` is consumed. Multi-geometry primitives are
+  // rare for GroundPrimitive, which typically represents one rectangle or
+  // polygon.
   const geomDataArray =
     primitive._webgpuGeometryData ??
     primitive._primitive?._webgpuGeometryData ??
@@ -2286,10 +2218,9 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
     };
   }
   const geomData = geomDataArray[0];
-  // AUDIT_2026_05_02 A.4 (Batch 156, hardened in Batch 157) — pick the
-  // position-attribute set that matches the active scene mode.
-  // `PrimitivePipeline.js:175-208` produces BOTH `position3DHigh/Low`
-  // (always) AND `position2DHigh/Low` (only when scene mode is non-3D).
+  // Pick the position-attribute set that matches the active scene mode.
+  // `PrimitivePipeline.js` always produces `position3DHigh/Low` and produces
+  // `position2DHigh/Low` when the scene mode is non-3D.
   // In SCENE3D the 2D set is absent; in SCENE2D / COLUMBUS_VIEW the 2D
   // set is the one whose coordinate system matches
   // `uniformState.view × projection` and `camera.positionWC` (CesiumJS
@@ -2299,11 +2230,10 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
   // Strict — no `?? position3DHigh` fallback in non-3D modes. A
   // primitive that lacks `position2DHigh/Low` while running in
   // SCENE2D / CV would project 3D ECEF coords through the 2D VP
-  // matrix and draw garbage volumes (the exact failure mode that
-  // Batch 150 originally added the conservative gate to prevent).
+  // matrix and draw garbage volumes.
   // The `defined(...)` guard below catches this and returns null
   // commands so the primitive silently skips that frame instead.
-  // Batch 164 — three position-source modes:
+  // Three position-source modes are supported:
   //   "3D"    : SCENE3D — bind only `position3DHigh/Low` (loc 0/1).
   //   "2D"    : SCENE2D / COLUMBUS_VIEW — bind only `position2DHigh/Low`
   //             (loc 0/1, swapped at the source-attribute level so the
@@ -2381,11 +2311,9 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
   // Create vertex buffer(s). Single 24-byte/vertex stream for non-morph
   // modes; two parallel 24-byte streams for MORPHING (3D + 2D).
   //
-  // AUDIT_2026_05_02 A.4 (Batch 156) — when the scene mode toggles
-  // between 3D and 2D/CV (e.g. `scene.morphTo2D()` completes), the
-  // cached vertex buffer was built from the wrong attribute set.
-  // Track which key fed the cache and rebuild on flip. Batch 164
-  // extends this to a third "MORPH" key with a parallel 2D buffer.
+  // Track the source that populated the cached vertex buffer and rebuild when
+  // the scene mode changes between 3D, 2D/CV, and morphing. The morph key also
+  // owns a parallel 2D buffer.
   const positionSourceKey = isMorphing
     ? "MORPH"
     : useNon3DPositions
@@ -2424,7 +2352,7 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
     );
     cache.vertexCount = numVerts;
   }
-  // Batch 164 — second vertex buffer for the morph pipeline. Same
+  // The morph pipeline's second vertex buffer uses the same
   // 24-byte stride / interleave as the primary; lives at slot 1 in
   // the morph descriptor's `morphVertexBuffers`.
   if (isMorphing && !defined(cache.vertexGPUBuffer2D)) {
@@ -2475,33 +2403,29 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
   // Pick the classification pass(es) based on `classificationType`.
   // ClassificationType: TERRAIN=0, CESIUM_3D_TILE=1, BOTH=2.
   // Pass enum:          TERRAIN_CLASSIFICATION=3, CESIUM_3D_TILE_CLASSIFICATION=6.
-  // AUDIT_2026_05_02 A.3 (Batch 146) — emit one command per relevant
-  // pass. Pre-fix, BOTH collapsed to CESIUM_3D_TILE_CLASSIFICATION only
-  // (the comment in this file from Batch 81 acknowledged this as a
-  // compromise). Now mirrors the same pass-list pattern used in
-  // `WebGPUVector3DTilePrimitiveRenderer.js` (Batch 145) and
-  // `WebGPUVector3DTileClampedPolylinesRenderer.js` (Batch 141 era).
+  // Emit one command per relevant pass, matching the pass-list pattern used
+  // by the vector-tile primitive and clamped-polyline renderers. `BOTH` must
+  // produce terrain and 3D Tiles commands rather than collapsing to one pass.
   const classType = primitive?.classificationType ?? 0;
   const groundPasses = [];
   if (classType === 0 /* TERRAIN */ || classType === 2 /* BOTH */) {
     groundPasses.push(Pass.TERRAIN_CLASSIFICATION);
   }
   if (classType === 1 /* CESIUM_3D_TILE */ || classType === 2 /* BOTH */) {
-    // NEW-WEBGPU-CLASSIFIER-PASS-SLOT-DRIFT (filed 2026-08-07, CO-12): the
-    // INTENDED slot is Pass.CESIUM_3D_TILE_CLASSIFICATION; the literal that used to sit here
-    // named it in a comment but carried the pre-insertion VALUE, which is
-    // Pass.CESIUM_3D_TILE on this fork. Value left UNCHANGED — the correction
-    // needs a 3D-Tile-classification browser lane. See DEFERRED_WORK.
+    // The semantic slot is `Pass.CESIUM_3D_TILE_CLASSIFICATION`, but this
+    // branch still uses `Pass.CESIUM_3D_TILE`; their numeric values diverged
+    // when classification passes were inserted. Correcting the dispatch route
+    // requires dedicated 3D Tiles classification runtime coverage.
     groundPasses.push(Pass.CESIUM_3D_TILE);
   }
 
-  // Migration Session 5 — depth-sample is now the only classifier path.
+  // Depth sampling is the only classifier path.
   // Pick a depth source: prefer packed-translucent-depth (front-most
   // translucent surface) so classification volumes clip against
   // translucent 3D-tile surfaces; fall through to globe-depth when no
   // translucent tiles contributed depth this frame. Both views share
   // the same RGBA-packed format. The actual view is bound late at draw
-  // time via `bindGroupResolvers` (Migration Session 3) so per-frustum
+  // time via `bindGroupResolvers` so per-frustum
   // source swaps take effect within a frame.
   //
   // When neither view is published (first frame, viewport resize), no
@@ -2522,9 +2446,8 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
       stencilCommand: null,
       colorCommand: null,
       pickCommand: null,
-      // AUDIT_2026_05_02 A.3 (Batch 146) — array fields for BOTH support.
-      // Empty arrays = no commands this frame (depth source not yet
-      // published).
+      // Array fields support `BOTH`. Empty arrays mean no commands this frame
+      // because the depth source is not yet published.
       colorCommands: [],
       pickCommands: [],
       ignoreShowCommand: null,
@@ -2555,9 +2478,9 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
     cache.depthSampleViewRef = depthSourceView;
   }
 
-  // Per-frustum bind-group resolver (Migration Session 3 contract).
+  // The per-frustum bind-group resolver follows depth-source publications.
   // Each frustum updates `_packedTranslucentDepthView` / `_globeDepthView`
-  // BEFORE its classification pass executes. The resolver picks up the
+  // before its classification pass executes. The resolver picks up the
   // current values at draw time and rebuilds the bind group when the
   // source view ref has changed since the last call. Spans-frustum-
   // boundaries primitives get re-resolved per frustum.
@@ -2582,18 +2505,18 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
     return cache.depthSampleBindGroup;
   };
 
-  // NEW-GROUNDPRIM-CLASSIFIER-PER-FRUSTUM-UBO (Batch 173) — group-2
-  // frustum-state UBO ring + per-slice bind-group resolver.
+  // Group 2 uses a frustum-state uniform-buffer ring and a per-slice
+  // bind-group resolver.
   //
   // The depth → eye recovery in `windowToEye` needs the projection of the
   // slice the fragment is drawn in, but `packUniforms` runs once per frame
   // (command-build) and can only capture one slice. Solve it the same way
   // the depth-source swap does: a bind-group resolver that runs per-draw.
   //
-  // CRITICAL: distinct per-slice GPU buffers. `device.queue.writeBuffer`
-  // is NOT ordered relative to the command encoder — every write in a
-  // frame applies BEFORE the command buffer executes, last-wins. Writing
-  // one shared buffer per slice would leave every slice reading the LAST
+  // Each slice needs a distinct GPU buffer. `device.queue.writeBuffer` is
+  // not ordered relative to the command encoder: every write in a frame
+  // applies before the command buffer executes, and the last write wins.
+  // Writing one shared buffer per slice would leave every slice reading the last
   // slice's projection. So slot the buffers by `_currentFrustumIndex`;
   // each slice writes its own buffer once, the command buffer binds the
   // matching buffer per slice. Buffers + bind groups are lazily grown.
@@ -2638,7 +2561,7 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
   };
   // Static fallback (slice 0) seeded from the once-per-frame uniformState
   // — used only if the per-slice publish is absent (resolver returns
-  // null). Matches the pre-Batch-173 behaviour, so non-multi-frustum and
+  // null). This keeps non-multi-frustum and
   // first-frame paths still get a valid (if not slice-refined) projection.
   // NOTE: fstate carries only the per-slice invProj + band; the globe's
   // LOG-encode frustum is delivered separately via group-0 u.frustum.
@@ -2666,13 +2589,13 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
     cache.frustumStateBindGroup = cache.frustumStateBindGroups[0];
   }
   const resolveFrustumStateBindGroup = () => {
-    // Read the SHARED uniformState (NOT context._currentFrustum* — those live on
-    // the renderer's config.context, a DIFFERENT object than this classifier's
+    // Read the shared uniformState rather than `context._currentFrustum*`;
+    // those fields live on the renderer's config.context, a different object from this classifier's
     // frameState.context under the GraphicsContext abstraction). uniformState
     // carries this slice's projection + the loop-stashed encode frustum + slice
-    // index. NOTE (Link 4, unresolved): this resolver is currently NOT invoked
-    // for the color draw — the static slot 0 below is what binds — so the encode
-    // delivery is still incomplete. See WEBGPU_DEBUGGING_LOG Batch 184.
+    // index. This resolver is not currently invoked for the color draw; the
+    // static slot 0 below is bound instead, so per-slice encode delivery remains
+    // incomplete.
     const us = frameState?.context?.uniformState;
     if (!us) {
       return null;
@@ -2696,12 +2619,12 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
     return cache.frustumStateBindGroups[idx];
   };
 
-  // C-R1-CLASSIFICATION (Batch 98) — forward the ClassificationPrimitive's
+  // Forward the ClassificationPrimitive's
   // appearance render state so `applyPerEncoderState` runs the dynamic
   // stencilRef / blendConstant / scissor / viewport ops on the depth-sample
   // classifier draws. ClassificationPrimitive's `_appearance` exposes the
   // shared 3-pass renderState set (stencilDepth, color, pick) but the
-  // depth-sample architecture (ADR-2026-04-28) collapses those into a single
+  // depth-sample architecture collapses those into a single
   // pipeline + classifier shader pair, so here we forward the appearance's
   // top-level renderState (typically the color-pass state) and let the
   // pipeline handle stencil/blend behavior. Falls through to undefined for
@@ -2710,14 +2633,14 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
     primitive?.appearance?.renderState ??
     primitive?._primitive?.appearance?.renderState;
 
-  // AUDIT_2026_05_02 A.3 (Batch 146) — emit one color (and optional
+  // Emit one color command and optional
   // pick) command per relevant pass. The shared draw args are
   // identical across passes; only the `pass` enum differs. Each pick
   // command is attached to its sibling color command via
   // `attachPickToColorCommand` so the dispatcher's pick-pass swap
   // routes correctly. For BOTH (groundPasses.length === 2), this emits
   // two color and two pick commands per primitive.
-  // Batch 164 — pipeline + vertex-buffer set picked by scene mode.
+  // Select the pipeline and vertex-buffer set by scene mode.
   // MORPHING uses the morph pair (consume both 3D + 2D streams,
   // blend EC-space positions in the VS by morphTime); non-morph
   // modes use the standard depth-sample pair (single stream).
@@ -2731,32 +2654,31 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
     ? [cache.vertexGPUBuffer, cache.vertexGPUBuffer2D]
     : [cache.vertexGPUBuffer];
 
-  // NEW-GROUNDPRIM-CLASSIFIER-FRUSTUM-DISTRIBUTION (Batch 174) —
-  // mode-appropriate bounding volume so Cesium's multi-frustum command
+  // Use the mode-appropriate bounding volume so Cesium's multi-frustum command
   // distribution (View.js createPotentiallyVisibleSet) assigns this
-  // classification command to the frustum slice CONTAINING its surface.
-  // Without a bounding volume, View.js falls back to the FULL camera
+  // classification command to the frustum slice containing its surface.
+  // Without a bounding volume, View.js falls back to the full camera
   // near..far (line 291-298) and `insertIntoBin` dumps the command into
   // every slice including the farthest/empty one — where the textured-
-  // material depth→eye reconstruction (Batch 173) yields a billions-of-
+  // material depth-to-eye reconstruction yields a billions-of-
   // metres eye-z and the UV clamps flat. Mirrors WebGL
   // ClassificationPrimitive.updateAndQueueCommands (which reads
   // primitive._boundingSphereWC / _boundingSphereCV).
   //
-  // The bounding volumes live on the GroundPrimitive itself (NOT the inner
+  // The bounding volumes live on the GroundPrimitive itself, not the inner
   // base Primitive, whose `_boundingSpheres` is empty for ground prims) —
   // `_boundingVolumes` (SCENE3D, world-space OrientedBoundingBox from the
   // tile rectangle + terrain min/max) and `_boundingVolumes2D` (non-3D,
   // a BoundingSphere from `fromRectangleWithHeights2D` with its center
   // swizzled to the `(height, projX, projY)` 2D frame). Both are already
   // in the correct space for their mode's culling volume, so neither hits
-  // the Batch 167 wrong-space trap. This is exactly what WebGL
+  // a coordinate-space mismatch. This is what WebGL
   // `GroundPrimitive.updateAndQueueCommands` reads (GroundPrimitive.js:933-937).
   //
   // Mode-aware: SCENE3D + COLUMBUS_VIEW are perspective and can be
-  // multi-frustum, so they NEED correct distribution. SCENE2D is a single
+  // multi-frustum, so they need correct distribution. SCENE2D is a single
   // orthographic frustum (distribution moot) and MORPHING is transient —
-  // both left undefined to preserve the verified Batch 170 flat-color path.
+  // both stay undefined to preserve the flat-color path.
   let classifyBoundingVolume;
   if (sceneMode === SceneMode.SCENE3D) {
     classifyBoundingVolume = primitive?._boundingVolumes?.[0];
@@ -2782,15 +2704,14 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
     vertexCount: cache.vertexCount || 0,
     owner: primitive,
     renderState: classificationRS,
-    // Distribute to the correct frustum slice (Batch 174). cull only when
+    // Distribute to the correct frustum slice. Cull only when
     // we have a valid same-space bounding volume; undefined BV keeps the
-    // pre-Batch-174 no-cull, full-range behavior.
+    // full-range, no-cull behavior.
     boundingVolume: classifyBoundingVolume,
     cull: defined(classifyBoundingVolume),
   };
-  // NEW-ADVANCED-MOTION-VECTORS classifiers (Batch 180) — derive
-  // velocity command alongside the FIRST color command per primitive
-  // when TAA is on AND not in MORPHING (the velocity VS uses the
+  // Derive a velocity command alongside the first color command per primitive
+  // when TAA is on and the scene is not morphing; the velocity vertex shader uses the
   // single-stream layout; morph would need its own velocity variant
   // matching the two-stream layout — deferred behind real demand for
   // TAA-during-morph). Per-feature animation isn't possible for static
@@ -2841,8 +2762,7 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
   cache.pickCommand =
     pickCommands.length > 0 ? pickCommands[pickCommands.length - 1] : undefined;
 
-  // AUDIT_2026_05_02 A.2 (Batch 141, NEW-INVERT-CLASS-STENCIL-CLASSIFIER) —
-  // emit a CESIUM_3D_TILE_CLASSIFICATION_IGNORE_SHOW command alongside the
+  // Emit a CESIUM_3D_TILE_CLASSIFICATION_IGNORE_SHOW command alongside the
   // color command for primitives that classify 3D Tiles. WebGPUSceneRenderer3DTilePasses
   // dispatches pass 7 inside the invert FBO before the regular CLASSIFICATION
   // pass; this command writes stencil=0xff on every classified-surface pixel
@@ -2851,7 +2771,7 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
   // primitives don't participate in invert classification — only emit
   // when 3D Tile classification is active (BOTH or CESIUM_3D_TILE).
   let ignoreShowCommand = null;
-  // Batch 164 — skip the IGNORE_SHOW stencil-write during MORPHING.
+  // Skip the ignore-show stencil write during morphing.
   // The stencil pipeline binds the single-VB layout (loc 0/1 only),
   // but `sharedDrawArgs.vertexBuffers` carries two streams during
   // morph — WebGPU validates that bound buffer count matches the
@@ -2864,11 +2784,12 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
     ignoreShowCommand = new WebGPUDrawCommand({
       ...sharedDrawArgs,
       pipeline: cache.depthSampleStencilPipeline,
-      // NEW-WEBGPU-CLASSIFIER-PASS-SLOT-DRIFT (filed 2026-08-07, CO-12): the
-      // INTENDED slot is Pass.CESIUM_3D_TILE_CLASSIFICATION_IGNORE_SHOW; the literal that used to sit here
-      // named it in a comment but carried the pre-insertion VALUE, which is
-      // Pass.CESIUM_3D_TILE_CLASSIFICATION on this fork. Value left UNCHANGED — the correction
-      // needs a 3D-Tile-classification browser lane. See DEFERRED_WORK.
+      // The semantic slot is
+      // `Pass.CESIUM_3D_TILE_CLASSIFICATION_IGNORE_SHOW`, but this command
+      // still uses `Pass.CESIUM_3D_TILE_CLASSIFICATION`; their numeric values
+      // diverged when classification passes were inserted. Correcting the
+      // dispatch route requires dedicated 3D Tiles classification runtime
+      // coverage.
       pass: Pass.CESIUM_3D_TILE_CLASSIFICATION,
       // Stencil reference 0xff — `applyPerEncoderState` reads
       // `stencilTest.reference` and calls `passEncoder.setStencilReference`
@@ -2897,7 +2818,7 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
     colorCommand: colorCommands.length > 0 ? colorCommands[0] : null,
     pickCommand: cache.pickCommand,
     ignoreShowCommand,
-    // AUDIT_2026_05_02 A.3 (Batch 146) — array-shaped slots. The
+    // Array-shaped slots let the
     // GroundPrimitive dispatch site iterates these so BOTH
     // classification primitives push two commands (TERRAIN + 3D Tile)
     // instead of one.
@@ -2914,15 +2835,11 @@ function destroyWebGPUGroundPrimitiveResources(primitive) {
   if (defined(cache.uniformBuffer)) {
     cache.uniformBuffer.destroy();
   }
-  // AUDIT_2026_05_02 A.4 (Batch 157 review fix) — release the geometry
-  // GPU buffers. Previously leaked on primitive eviction; the per-frame
-  // mode-flip path at line 768 already destroys+rebuilds the vertex
-  // buffer correctly, but the once-per-lifetime destroy path missed
-  // both the vertex buffer and the index buffer. Pre-existing leak;
-  // amplified by Batch 156's mode-flip rebuild because the buffer is
-  // now actively allocated multiple times per primitive.
+  // Release every geometry GPU buffer on primitive eviction. The mode-flip
+  // path destroys and rebuilds vertex buffers, so omitting them here would
+  // accumulate allocations across scene-mode changes.
   cache.vertexGPUBuffer?.destroy();
-  // Batch 164 — release the morph-side 2D vertex buffer if present.
+  // Release the morph-side 2D vertex buffer if present.
   cache.vertexGPUBuffer2D?.destroy();
   cache.indexGPUBuffer?.destroy();
   // Pick IDs belong to the inner Cesium Primitive and are released by its
