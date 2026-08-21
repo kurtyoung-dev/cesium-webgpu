@@ -14240,3 +14240,7 @@ durable owner, append an exact resolved disposition, or add/update the archived
 run ledger. In-flight repair findings stay on their active campaign row; any
 residual finding in a final handoff must be promoted to a named deferred/queue
 item rather than disappearing inside a review transcript.
+
+## 2026-08-21 — NEW-CELESTIAL-SUNMOON-MASTER-FLAGS-UNWIRED (filed at the EXIT-2 audit landing, Batch 1082)
+
+`AtmosphericConditions.js` ships `enableSunLight` and `enableMoonLight` default-true in the lighting leaf, and neither has ANY consumer: zero references in `packages/*/Source`, `Apps`, or `Specs` beyond the facade itself, and the only setters are two dead API calls in `packages/sandcastle/gallery/eclipse-explorer/main.js:210-211` that change nothing. The facade JSDoc describes master sun/moon contribution switches that do not exist. Decision owed: wire the flags to the lighting paths they claim to gate, or remove them and the dead demo calls. The celestial-gate class audit (`celestial-gate-class-audit.spec.mjs`) carries a no-consumer census for both, so wiring one up without classifying its consumer chain turns the audit red — the filing cannot go stale silently. Related, previously filed: `SKYATMOSPHERE-NIGHT-SKY-DIMMING-UNWIRED`.
