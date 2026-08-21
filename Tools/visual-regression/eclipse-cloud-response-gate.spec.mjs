@@ -640,14 +640,18 @@ function syncCostAggregatesFromSegments(accounting) {
 
 const FIXTURE_RUN_ID = "fixture-current-run";
 
-function ratifiedFactorSchedule() {
+function ratifiedObscurationSchedule() {
   return Array.from({ length: SWEEP_FRAMES }, (_, index) => {
     const rampIndex =
       index < SWEEP_RISING_FRAMES ? index : SWEEP_FRAMES - 1 - index;
-    return predictFactor(
-      (SWEEP_PEAK_OBSCURATION * rampIndex) / (SWEEP_RISING_FRAMES - 1),
-    );
+    return (SWEEP_PEAK_OBSCURATION * rampIndex) / (SWEEP_RISING_FRAMES - 1);
   });
+}
+
+function ratifiedFactorSchedule() {
+  return ratifiedObscurationSchedule().map((obscuration) =>
+    predictFactor(obscuration),
+  );
 }
 
 function freshCostAccounting({
@@ -894,7 +898,7 @@ function passingRun() {
       costLedgerId,
       sweepFrames: SWEEP_FRAMES,
       factors: [...factors],
-      obscurations: factors.map(() => 0),
+      obscurations: ratifiedObscurationSchedule(),
       buckets,
       initialCommittedWasNaN: false,
       engineRefreshCount: 275,
@@ -1788,6 +1792,7 @@ function computeCost(accounting) {
     costLedgerId: protocol.ledgerId,
     sweepFrames: protocol.sweepFrames,
     factors: [...protocol.factorSchedule],
+    obscurations: ratifiedObscurationSchedule(),
   };
   return computeRefreshCost(accounting, {
     runId: protocol.runId,
@@ -1899,6 +1904,28 @@ test("I6 a zero differential is VALID at exactly 0 — non-negative by construct
   assert.ok(cost.msPerRefresh >= 0);
 });
 
+test("I6b a solve residual inside the schedule band does not void the measurement", () => {
+  // The clock instants are solved for the ramp, so the realized obscuration
+  // carries a residual the factor band cannot absorb but the schedule band
+  // must. A self-consistent factor for that realized value is VALID.
+  const run = clone(passingRun());
+  for (const lane of [run.iblWebGPU, run.iblWebGL]) {
+    lane.obscurations[1] += 1.1e-7;
+    lane.factors[1] = predictFactor(lane.obscurations[1]);
+    lane.refreshCost.protocol.factorSchedule[1] = lane.factors[1];
+  }
+  const verdict = judgeEclipseCloudResponse(run);
+  assert.equal(verdict.refreshCostMeasured, true);
+  assert.deepEqual(verdict.cost.invalidReasons, []);
+});
+
+test("I6c a factor that disagrees with its own realized obscuration is STRUCTURAL", () => {
+  expectRefreshCostStructural((run) => {
+    for (const lane of [run.iblWebGPU, run.iblWebGL]) {
+      lane.obscurations[1] += 1.1e-7;
+    }
+  }, /live refresh-cost factor does not match its realized obscuration at frame 1/);
+});
 test("I7 either backend INVALID makes the fresh measurement STRUCTURAL", () => {
   const run = clone(passingRun());
   run.iblWebGL.refreshCost = costInput({
@@ -2245,7 +2272,30 @@ test("I12 backend, session, run, and schedule bindings reject replay and substit
         }
       },
       reason:
+        /live refresh-cost factor does not match its realized obscuration at frame 0/,
+    },
+    {
+      name: "realized obscuration leaves the ratified ramp",
+      mutate: (run) => {
+        for (const lane of [run.iblWebGPU, run.iblWebGL]) {
+          // A self-consistent factor for an obscuration the ramp never
+          // scheduled: the same-input check passes, the ramp check must not.
+          lane.obscurations[0] += 0.001;
+          lane.factors[0] = predictFactor(lane.obscurations[0]);
+          lane.refreshCost.protocol.factorSchedule[0] = lane.factors[0];
+        }
+      },
+      reason:
         /live refresh-cost factor schedule misses the ratified sweep at frame 0/,
+    },
+    {
+      name: "lane lost its realized obscurations",
+      mutate: (run) => {
+        for (const lane of [run.iblWebGPU, run.iblWebGL]) {
+          delete lane.obscurations;
+        }
+      },
+      reason: /must carry exactly 801 realized obscurations/,
     },
   ];
 

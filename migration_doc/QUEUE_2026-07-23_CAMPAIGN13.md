@@ -734,6 +734,24 @@ two gate demotions that the ruling REVERSES:
 **EXIT CRITERIA for the reopened row (both required, ruling rider):**
 
 1. **A fresh, banked refresh-cost measurement** (SOL-4): an Edge run whose
+   **SOL-4 RUN LEDGER 2026-08-21 evening (orchestrator machine lane, `--serve-built`,
+   `probe-eclipse-cloud-response`): NOT YET BANKED, four runs recorded honestly.** Runs 1-2
+   STRUCTURAL on provenance - the served bundle was the U2 A/B-swapped pre-bundle and then
+   a missing artifact (the Batch-1114 engine-tsc break aborted every build; fixed forward in
+   Batch 1121, bundle rebuilt with `buildCesiumDual` + `build`). Run 3 (`2925d5b4`) on an
+   attestable bundle: provenance PASS, parity PASS 2/2, `shadowContrastInvariant` FAIL (the
+   open 1.0496 mechanism, item 2 below, unchanged), refresh-cost lane quarantined by an
+   INSTRUMENT defect - the protocol check compared the live factor against the scheduled
+   ramp under the 1e-9 same-input band while the clock-solved realized obscuration carries a
+   ~1e-7 residual; gate repaired in Batch 1123 (factor vs realized obscuration at 1e-9,
+   realized vs ramp at the schedule band; spec 127 -> 131). Run 4 (`afff9782`) with the
+   repaired gate: factor schedule passes on both backends; **WebGL VALID at 3.342 ms per
+   refresh**; **WebGPU INVALID - the control leg outran the eclipse leg (5982 ms vs 5418 ms
+   over 801 frames), a negative differential the probe refuses to attribute** - measured
+   while two Codex worker sessions ran tsc/eslint/node-test on the same machine, i.e. the
+   CPU-contention class the U2 sentinels established. **Owed: a quiet-machine rerun; the
+   banked artifact requires both backends VALID.** Reports retained under
+   `Tools/visual-regression/output/eclipse-cloud-response-report.run-*.json`.
    interleaved ABBA/warm-up-parity accounting is archived as a retained
    artifact, so the number is reproducible from evidence rather than cited from
    memory. Until it is banked, the run's own estimate gates.

@@ -228,3 +228,25 @@ Thirteen batches landed; one scripted package did not, and the reasons generaliz
   `CesiumScene` type. Every build after that landing aborted at the tsc step, which
   masqueraded as "the bundle did not refresh". Reviews and landing pre-flights run BOTH
   checks; a fix-forward lands the missing declaration, never a history rewrite.
+
+### 4a. Admissibility checks every station-3 review runs (added after the G9 harness landing)
+
+The harness reviews verified behavior and never verified admissibility; the repository
+hook then refused a LAND-verdict deliverable. Every review of a code deliverable now
+ends with these, run read-only and reported with the verdict:
+
+- **Run the repository's own pre-commit gate** (`npx eslint --quiet` and
+  `npx prettier --check` over the deliverable's files). The hook is a transformer, not a
+  checker - `prettier --write` mutates files at commit - so when `--check` is not clean,
+  apply the reformat to a mirror and **re-run the deliverable's suite on the post-gate
+  bytes**; anchors that move under reflow are a defect of the deliverable.
+- **Run any source-text-anchored suite under both line-ending conventions** (convert a
+  mirror to CRLF, run, restore byte-exact). Untracked deliverables never met
+  `autocrlf`, so the CRLF failure is unreachable until the first post-commit checkout;
+  the review must simulate that checkout.
+- **Name text-anchored assertions as a declared fragility class:** a spec that matches
+  source text must normalize everything it does not intend to pin and read raw bytes
+  only where identity is the subject. A spec whose anchors throw at module scope does
+  not merely fail on the wrong checkout - it removes tests.
+- **Verify the instrument before publishing a surprising result:** re-derive any
+  headline number by a second independent method; a review is itself a measurement.

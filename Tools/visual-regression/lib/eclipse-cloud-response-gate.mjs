@@ -1608,6 +1608,22 @@ export function computeRefreshCost(accounting, binding) {
       invalidReason: `refresh-cost factor schedule must carry exactly ${SWEEP_FRAMES} live and ledger entries`,
     };
   }
+  if (
+    !Array.isArray(live.obscurations) ||
+    live.obscurations.length !== SWEEP_FRAMES
+  ) {
+    return {
+      ...protocolBase,
+      invalidReason: `refresh-cost lane must carry exactly ${SWEEP_FRAMES} realized obscurations beside its factors`,
+    };
+  }
+  // The sweep's clock instants are solved for the ratified obscuration ramp,
+  // so the REALIZED obscuration each frame carries a solve residual well
+  // inside the schedule band but far outside the f64 factor band. The factor
+  // is therefore checked against the obscuration the engine actually saw
+  // (same input, f64 band), and the obscuration against the ramp (schedule
+  // band) - comparing the factor straight against the ramp's prediction
+  // turned that residual into a false structural failure.
   for (let index = 0; index < SWEEP_FRAMES; index++) {
     const laneFactor = live.factors[index];
     const ledgerFactor = protocol.factorSchedule[index];
@@ -1617,14 +1633,24 @@ export function computeRefreshCost(accounting, binding) {
         invalidReason: `refresh-cost factor schedule diverges from the live lane at frame ${index}`,
       };
     }
+    const realizedObscuration = live.obscurations[index];
+    if (
+      !Number.isFinite(realizedObscuration) ||
+      Math.abs(laneFactor - predictFactor(realizedObscuration)) >
+        ECLIPSE_CLOUD_BANDS.factorTolerance.hi
+    ) {
+      return {
+        ...protocolBase,
+        invalidReason: `live refresh-cost factor does not match its realized obscuration at frame ${index}`,
+      };
+    }
     const rampIndex =
       index < SWEEP_RISING_FRAMES ? index : SWEEP_FRAMES - 1 - index;
-    const ratifiedFactor = predictFactor(
-      (SWEEP_PEAK_OBSCURATION * rampIndex) / (SWEEP_RISING_FRAMES - 1),
-    );
+    const scheduledObscuration =
+      (SWEEP_PEAK_OBSCURATION * rampIndex) / (SWEEP_RISING_FRAMES - 1);
     if (
-      Math.abs(laneFactor - ratifiedFactor) >
-      ECLIPSE_CLOUD_BANDS.factorTolerance.hi
+      Math.abs(realizedObscuration - scheduledObscuration) >
+      ECLIPSE_CLOUD_BANDS.scheduleObscurationTolerance.hi
     ) {
       return {
         ...protocolBase,
