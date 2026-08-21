@@ -1,8 +1,7 @@
 // PolylineMatGlow.wgsl
 //
-// MATERIAL slice of NEW-POLYLINE-APPEARANCE-PRIMITIVE-WEBGPU — `PolylineGlow`
-// material on a polyline `Primitive` with `PolylineMaterialAppearance`. WGSL
-// port of Materials/PolylineGlowMaterial.glsl fed by the shared polyline VS.
+// WGSL port of Materials/PolylineGlowMaterial.glsl for a polyline `Primitive`
+// with `PolylineMaterialAppearance`, fed by the shared polyline vertex stage.
 //
 // The glow falls off from the line center (st.t == 0.5) toward the edges and,
 // when taperPower < 1, also tapers along the line (st.s). The glow is written
@@ -19,7 +18,7 @@ struct VertexInput {
     @location(5) nextPositionLow: vec3<f32>,
     @location(6) expandAndWidth: vec2<f32>,
     @location(7) st: vec2<f32>,
-    // 376b — projected 2D positions (blended with 3D by camera.morph.x).
+    // Projected 2D positions, blended with 3D by camera.morph.x.
     @location(8) position2DHigh: vec3<f32>,
     @location(9) position2DLow: vec3<f32>,
     @location(10) prevPosition2DHigh: vec3<f32>,
@@ -51,9 +50,9 @@ struct CameraUniforms {
     pixelRatio: f32,
     currentFrustumNear: f32,
     _pad2: vec2<f32>,
-    // 376c — logDepth (near, far, factor, reserved) @ floats 92-95.
+    // Logarithmic-depth parameters (near, far, factor, reserved) at floats 92-95.
     logDepth: vec4<f32>,
-    // 376b — morph.x = morphTime (3D=1, 2D/CV=0) @ float 96.
+    // morph.x = morphTime (3D=1, 2D/CV=0) at float 96.
     morph: vec4<f32>,
 }
 
@@ -88,7 +87,7 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
     let width: f32 = abs(input.expandAndWidth.y) + 0.5;
     let usePrev: bool = input.expandAndWidth.y < 0.0;
 
-    // 376b — czm_computePosition: blend 3D↔2D positions by morphTime.
+    // Blend 3D and 2D positions by morphTime.
     let p: vec4<f32> = csm_computePolylinePosition(
         input.positionHigh, input.positionLow,
         input.position2DHigh, input.position2DLow,
@@ -147,7 +146,7 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
 
     var fragColor: vec4<f32>;
     // GLSL `clamp(0.0, 1.0, glow)` evaluates to min(max(0.0, 1.0), glow) =
-    // min(1.0, glow) — replicate that exact (quirky) ordering for parity.
+    // min(1.0, glow), retaining that exact ordering to match the GLSL material.
     fragColor = vec4<f32>(
         max(vec3<f32>(glow - 1.0) + material.color.rgb, material.color.rgb),
         min(1.0, glow) * material.color.a

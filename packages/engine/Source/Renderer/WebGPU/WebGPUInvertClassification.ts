@@ -20,16 +20,15 @@ import {
 
 interface InvertClassificationCache {
   uniformBuffer: GPUBuffer | null;
-  // Unclassified composite pipeline (stencil-compare EQUAL ref=0):
-  // tints tile pixels NOT touched by classification primitives.
+  // Unclassified composite pipeline (`equal` stencil compare, reference 0):
+  // tints tile pixels that classification primitives did not touch.
   unclassifiedPipeline: GPURenderPipeline | null;
-  // Classified composite pipeline (stencil-compare NOT_EQUAL ref=0):
+  // Classified composite pipeline (`not-equal` stencil compare, reference 0):
   // emits tile color unmodified for pixels the classification-ignore-show
   // pass marked with a non-zero stencil value.
   classifiedPipeline: GPURenderPipeline | null;
-  // Legacy single-pass pipeline retained for the fallback code path
-  // (when no stencil view is available). Matches the Batch 39 behavior:
-  // "every tile pixel tinted when enableHighlight is on".
+  // Single-pass fallback used when no stencil view is available. It tints
+  // every tile pixel while `enableHighlight` is on.
   pipeline: GPURenderPipeline | null;
   shaderModule: GPUShaderModule | null;
   bindGroup: GPUBindGroup | null;
@@ -46,8 +45,8 @@ interface InvertClassificationCache {
   // `resolveTextureView` as the resolve target.
   resolveTexture: GPUTexture | null;
   resolveTextureView: GPUTextureView | null;
-  // C-R8-INVERT-CLASS-STENCIL (Batch 40) — dedicated depth-stencil for
-  // the invert FBO. The tile pass writes depth + color here, the
+  // Dedicated depth-stencil for the invert framebuffer. The tile pass writes
+  // depth and color here, the
   // classification-ignore-show pass writes stencil bits marking
   // classified regions, and the stencil-gated composite reads this
   // view as the depth-stencil attachment (stencil-test drives whether
@@ -64,22 +63,22 @@ interface InvertClassificationCache {
   width: number;
   height: number;
   sampleCount: number;
-  // C-R8-INVERT-HDR (Batch 41) — tracked so cache invalidates when HDR
-  // toggles on/off mid-session. `"" as GPUTextureFormat` never matches
-  // a real format, so the first update always triggers allocation.
+  // Cache the scene color format so an HDR change invalidates compatible
+  // resources. `"" as GPUTextureFormat` never matches a real format, so the
+  // first update always triggers allocation.
   colorFormat: GPUTextureFormat | "";
 }
 
-// C-R8-INVERT-CLASS-STENCIL (Batch 40) — Three fragment entry points:
+// Three fragment entry points share one shader module:
 //
-// - `fragmentMain` (legacy, Batch 39): single-pass composite, no stencil
+// - `fragmentMain`: single-pass fallback with no stencil
 //   gating. Tile pixels are always tinted by `highlightColor`. Used
 //   when the stencil-gated two-pass composite can't run (no stencil
 //   view available).
 //
 // - `fragmentUnclassified`: used by the stencil-gated composite with
 //   stencilCompare=EQUAL, reference=0. Fires on tile pixels that the
-//   classification-ignore-show pass DID NOT mark (stencil == 0 →
+//   classification-ignore-show pass did not mark (stencil == 0 →
 //   "unclassified" tile region). Emits `classColor * highlightColor`
 //   so the unclassified tile area shows the invert tint.
 //
@@ -194,27 +193,21 @@ function updateWebGPUInvertClassification(
   }
 
   const cache = invertClass._webgpuCache as InvertClassificationCache;
-  // C-R8-INVERT-HDR (Batch 41) — track the scene's actual color format
+  // Track the scene's actual color format
   // (populated by the scene renderer each frame from the scene
   // framebuffer's `colorFormat`). Falls back to the canvas format when
   // the context field isn't populated yet (single-pass callers, pre-
-  // first-render state). Previously hardcoded to canvas format, which
-  // broke HDR scenes: tile draw-command pipelines are built for the
-  // scene color format, so their fragment output must target that
-  // format in the redirected pass — canvas format on an HDR scene
-  // caused silent pipeline validation drift. This fix keeps the tile
-  // draw commands' color target compatible with the pipelines that
-  // emitted them.
+  // first-render state). Tile draw-command pipelines are built for the scene
+  // color format, so the redirected pass must target that same format. Using
+  // the canvas format in an HDR scene causes silent pipeline validation drift.
   const canvasFormat: GPUTextureFormat =
     (context as unknown as { _sceneColorFormat?: GPUTextureFormat })
       ._sceneColorFormat ?? navigator.gpu.getPreferredCanvasFormat();
   const width = context.drawingBufferWidth;
   const height = context.drawingBufferHeight;
-  // numSamples is forwarded from FramebufferOrchestrator (which reads
-  // `scene.msaaSamples`). Default scenes use 4×MSAA, so we must create
-  // the render-attachment texture with a matching sample count —
-  // otherwise tile pipelines built for `scene.msaaSamples` fail WebGPU
-  // validation when bound against a sampleCount=1 attachment.
+  // numSamples is forwarded from FramebufferOrchestrator, which reads
+  // `scene.msaaSamples`. The render-attachment texture must match that sample
+  // count or tile pipelines fail validation against the redirected pass.
   const sampleCount = numSamples >= 2 ? numSamples : 1;
 
   if (!cache.initialized) {
@@ -254,10 +247,9 @@ function updateWebGPUInvertClassification(
 
     // Attachment texture matches scene MSAA sample count so the tile
     // draw-command pipelines validate in the redirected render pass.
-    // MSAA attachments can't be sampled directly, so when sampleCount
-    // > 1 we also allocate a single-sample resolve target and bind
-    // that in the composite pass. When sampleCount === 1 there's no
-    // resolve texture — we bind the attachment view directly.
+    // MSAA attachments cannot be sampled directly. A multisampled allocation
+    // therefore gets a single-sample resolve target for the composite pass;
+    // the single-sample allocation binds its attachment view directly.
     cache.classifiedTexture = device.createTexture({
       label: `InvertClassification_color_${sampleCount}x`,
       size: { width, height },
@@ -281,18 +273,16 @@ function updateWebGPUInvertClassification(
       });
       cache.resolveTextureView = cache.resolveTexture.createView();
     } else {
-      // Single-sample path: the attachment view IS the sampleable view.
+      // In the single-sample path, the attachment view is also sampleable.
       cache.resolveTextureView = cache.classifiedTextureView;
     }
 
-    // C-R8-INVERT-CLASS-STENCIL (Batch 40) — depth-stencil texture for
-    // the invert FBO. MSAA-matched to `classifiedTexture` so both can
-    // co-exist in a render pass. Format matches scene depth-stencil
-    // (`depth24plus-stencil8`) so the tile draw-command pipelines —
-    // built for scene depth-stencil format — remain valid in the
-    // redirected pass. Stencil will be written by the future
-    // CLASSIFICATION_IGNORE_SHOW redirect (follow-up) and read by the
-    // stencil-gated composite.
+    // The invert framebuffer's depth-stencil texture matches
+    // `classifiedTexture` in sample count and the scene depth-stencil in
+    // format, keeping redirected tile-command pipelines compatible. The
+    // tile pass writes depth, the classification-ignore-show pass adds
+    // nonzero stencil values, and the composite reads those values to
+    // select each pixel's pipeline.
     cache.depthStencilTexture = device.createTexture({
       label: `InvertClassification_depthStencil_${sampleCount}x`,
       size: { width, height },
@@ -315,11 +305,10 @@ function updateWebGPUInvertClassification(
 
   // Create pipeline if needed (depends on format)
   if (!cache.pipeline) {
-    // C-R8-INVERT-CLASS (Batch 38) — Layout reduced to one texture
-    // (classifiedTex). Scene color is NOT read by the shader — the
-    // composite overlays highlight color in unclassified regions with
-    // src-alpha blending directly onto the scene color target. Avoids
-    // read/write-same-texture conflict.
+    // The layout uses one texture, `classifiedTex`. Scene color is not read by
+    // the shader; the composite overlays highlight color in unclassified
+    // regions with src-alpha blending directly onto the scene color target.
+    // Avoids read/write-same-texture conflict.
     const bgl = makeBindGroupLayout(device, "InvertClassification BGL", [
       texture(0, Stage.FRAGMENT),
       sampler(1, Stage.FRAGMENT),
@@ -327,23 +316,22 @@ function updateWebGPUInvertClassification(
     ]);
     cache.bindGroupLayout = bgl;
 
-    // C-R8-INVERT-CLASS-STENCIL (Batch 40) — Three composite pipelines:
+    // Three composite pipelines cover the available stencil states:
     //
-    // 1. **Legacy single-pass `pipeline`**: fallback when the
+    // 1. `pipeline` is the single-pass fallback when the
     //    stencil-gated composite can't run (no invert depth-stencil
     //    attachment, e.g., `depthStencilView` not yet allocated).
     //    Targets the resolved (single-sample) scene color view, no
-    //    multisample, no depth-stencil attachment. Matches Batch 39
-    //    behavior.
+    //    multisample, and no depth-stencil attachment.
     //
     // 2. **`unclassifiedPipeline`**: MSAA-matched, stencilCompare =
-    //    EQUAL with reference=0. Fires on tile pixels WITHOUT a
+    //    `equal` with reference 0. Fires on tile pixels without a
     //    classification-primitive stencil mark — emits
     //    `classColor * highlightColor` so the unclassified region
     //    receives the invert tint.
     //
     // 3. **`classifiedPipeline`**: MSAA-matched, stencilCompare =
-    //    NOT_EQUAL with reference=0. Fires on tile pixels flagged by
+    //    `not-equal` with reference 0. Fires on tile pixels flagged by
     //    classification — emits the raw tile color unmodified.
     //
     // Pipelines 2 and 3 both target the scene color MSAA attachment
@@ -365,7 +353,7 @@ function updateWebGPUInvertClassification(
       bindGroupLayouts: [bgl],
     });
 
-    // (1) Legacy single-sample fallback (unchanged from Batch 39).
+    // (1) Single-sample fallback.
     cache.pipeline = device.createRenderPipeline({
       layout: pipelineLayout,
       vertex: { module: cache.shaderModule!, entryPoint: "vertexMain" },
@@ -479,8 +467,8 @@ function updateWebGPUInvertClassification(
 }
 
 /**
- * C-R8-INVERT-CLASS-STENCIL (Batch 40) — Composite the
- * InvertClassification classified texture onto the scene color view.
+ * Composites the InvertClassification classified
+ * texture onto the scene color view.
  *
  * Two execution modes depending on what the caller has wired:
  *
@@ -496,7 +484,7 @@ function updateWebGPUInvertClassification(
  *
  * **Single-sample fallback mode**. Activated when `sceneResolveView`
  * is passed as the only target (no MSAA, no stencil). Runs the
- * legacy Batch 39 single-pass composite: every tile pixel is tinted
+ * single-pass fallback: every tile pixel is tinted
  * if `enableHighlight` is on. Used on first-frame-after-enable (no
  * stencil yet populated) and when MSAA info isn't available.
  *
@@ -528,8 +516,8 @@ function executeInvertClassificationComposite(
     // attachment with a resolve target so scene color resolves again
     // at pass end (overwriting the previous resolve with the
     // composited result). Depth-stencil attachment is the invert FBO's
-    // MSAA depth-stencil, loaded read-only (write masks are 0 in the
-    // pipeline so we don't modify it). StencilReference = 0 matches
+    // MSAA depth-stencil, loaded read-only. Zero write masks leave it
+    // unchanged. StencilReference = 0 matches
     // WebGL's `rsUnclassified.reference` / `rsClassified.reference`.
     const pass = encoder.beginRenderPass({
       label: "InvertClassification composite (stencil-gated)",
@@ -564,7 +552,7 @@ function executeInvertClassificationComposite(
     return;
   }
 
-  // Fallback — single-sample, no stencil. Matches Batch 39 behavior.
+  // Single-sample fallback with no stencil.
   if (!cache.pipeline) {
     return;
   }
@@ -585,16 +573,15 @@ function executeInvertClassificationComposite(
 }
 
 /**
- * C-R8-INVERT-CLASS-FBO-REDIRECT (Batch 39) — Build a color attachment
- * that targets the InvertClassification classified texture, with a
- * resolve target when MSAA is active. Returns `null` if the cache
- * isn't ready (e.g., `update()` hasn't run this frame yet), signaling
+ * Builds a color attachment that targets the InvertClassification classified
+ * texture, with a resolve target when MSAA is active. Returns `null` if the
+ * cache isn't ready (e.g., `update()` hasn't run this frame yet), signaling
  * the caller to fall back to rendering directly to the scene FBO.
  *
- * The caller is responsible for pairing this color attachment with a
- * compatible depth-stencil attachment (scene depth, matching sample
- * count) and for clearing the classified texture at the start of the
- * frame's redirected pass.
+ * The caller is responsible for pairing this color attachment
+ * with a compatible depth-stencil attachment (scene depth,
+ * matching sample count) and for clearing the classified texture
+ * at the start of the frame's redirected pass.
  */
 function buildInvertClassificationColorAttachment(
   invertClass: CesiumObjectWithWebGPUCache,
@@ -620,16 +607,15 @@ function buildInvertClassificationColorAttachment(
 }
 
 /**
- * C-R8-INVERT-CLASS-STENCIL (Batch 40) — Build the depth-stencil
- * attachment for the invert FBO. Used by the redirected tile pass
- * (loadOp=clear for both depth and stencil on first use), the
- * future CLASSIFICATION_IGNORE_SHOW redirect (loadOp=load on both
- * to preserve tile depth and append stencil writes), and the
- * stencil-gated composite (loadOp=load on both so the accumulated
+ * Builds the depth-stencil attachment for the invert framebuffer. Used by
+ * the redirected tile pass (loadOp=clear for both depth and stencil on first
+ * use), the classification-ignore-show redirect (loadOp=load on both to
+ * preserve tile depth and append stencil writes), and the stencil-gated
+ * composite (loadOp=load on both so the accumulated
  * stencil bits drive which fragments pass).
  *
- * Callers specify the depth/stencil load ops so the same helper
- * covers all three use cases.
+ * Callers specify the depth/stencil load ops so
+ * the same helper covers all three use cases.
  */
 function buildInvertClassificationDepthStencilAttachment(
   invertClass: CesiumObjectWithWebGPUCache,
@@ -689,8 +675,8 @@ function getInvertClassificationSampleCount(
 }
 
 /**
- * C-R8-INVERT-DEPTH-SOURCE (Batch 41) — Returns the invert FBO's
- * depth-stencil texture so `WebGPUGlobeDepth.executeUpdateDepth` can
+ * Returns the invert framebuffer's depth-stencil texture so
+ * `WebGPUGlobeDepth.executeUpdateDepth` can
  * read from it when invert classification is active. Tile geometry
  * writes to this depth (not scene depth), so downstream consumers
  * that sample globe depth (ground / overlay / decal primitives) need

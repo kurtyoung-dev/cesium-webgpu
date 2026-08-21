@@ -15,9 +15,7 @@ struct VertexOutput {
     @builtin(position) position: vec4<f32>,
     @location(0) texCoord: vec2<f32>,
     @location(1) height: f32,
-    // FEAT-GAP-09 — eye-space position for the aerial-perspective fog block.
-    // Declaration restored (Batch 97 wired the read/write but omitted the
-    // VertexOutput field in 18 of 19 Mat*Flat shaders).
+    // Eye-space position consumed by the aerial-perspective fog block.
     @location(2) eyePosition: vec3<f32>,
     //>>ifdef LOG_DEPTH
     // Interpolated linear depthFromNearPlusOne; the FS converts it to frag_depth.
@@ -33,11 +31,11 @@ struct CameraUniforms {
     _pad1: f32,
         previousViewProjection: mat4x4<f32>,
     //>>ifdef LOG_DEPTH
-    // ─── Renderer-wide log depth (Approach A) ───
+    // Renderer-wide log-depth parameters:
     //   x = frustum near, y = frustum far,
     //   z = oneOverLog2FarDepthFromNearPlusOne (the log-depth factor),
     //   w = reserved. Packed by WebGPUPrimitiveCommands.writeRTEUniformsFlat
-    // into the 16-byte FLAT UB tail (FLAT_CAMERA_BYTES 160 -> 176).
+    // into the 16-byte flat UBO tail (FLAT_CAMERA_BYTES 160 -> 176).
     logDepth: vec4<f32>,
     //>>endif
 }
@@ -52,10 +50,9 @@ struct MaterialUniforms {
 @group(2) @binding(0) var rampSampler: sampler;
 @group(2) @binding(1) var rampTexture: texture_2d<f32>;
 
-// FEAT-GAP-09 (Batch 97) — truncated EffectsUniforms struct, sized to
-// reach the `atmosphereLutControl: vec4<f32>` slot at byte offset 240
-// in the shared 480-byte UBO (see `WebGPUEffectsBindGroup.js`). Reading
-// less than the full UBO is safe — WGSL just sees the prefix.
+// Prefix of the shared 480-byte effects uniform buffer through
+// `atmosphereLutControl` at byte offset 240. Its layout matches
+// `WebGPUEffectsBindGroup.js`; WGSL may declare only the prefix it reads.
 struct EffectsUniforms {
     shadowMatrix: mat4x4<f32>,
     shadowMapSize: vec2<f32>,
@@ -71,7 +68,7 @@ struct EffectsUniforms {
 }
 
 @group(3) @binding(0) var<uniform> effects: EffectsUniforms;
-// FEAT-GAP-09 (Batch 97) — aerial-perspective LUT bindings 7/8/9.
+// Aerial-perspective lookup textures at bindings 7, 8, and 9.
 @group(3) @binding(7) var atmosphereTransmittanceLut: texture_2d<f32>;
 @group(3) @binding(8) var atmosphereInscatterLut: texture_2d<f32>;
 @group(3) @binding(9) var atmosphereLutSampler: sampler;
@@ -79,8 +76,8 @@ struct EffectsUniforms {
 const EARTH_RADIUS: f32 = 6371000.0;
 
 //>>ifdef LOG_DEPTH
-// Renderer-wide log depth (Approach A). Mirror of PrimitivePhongColor.wgsl —
-// keep byte-compatible. near/far/factor come from camera.logDepth. The FS swaps
+// Renderer-wide log-depth helpers mirror PrimitivePhongColor.wgsl and must
+// remain byte-compatible. near/far/factor come from camera.logDepth. The FS swaps
 // to a FragOut struct so it can write @builtin(frag_depth) alongside the color.
 struct FragOut {
     @location(0) color: vec4<f32>,
@@ -140,7 +137,7 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     let rampColor = textureSample(rampTexture, rampSampler, vec2<f32>(t, 0.5));
     var finalColor = rampColor;
 
-    // FEAT-GAP-09 (Batch 97) — Aerial-perspective fog blend. Mirrors
+    // Aerial-perspective fog blend shared with
     // `PrimitiveBasicColor.wgsl::fragmentMain`.
     if (effects.atmosphereLutControl.x > 0.5) {
         let innerRadius = effects.atmosphereLutControl.y;

@@ -2,65 +2,27 @@
 /**
  * WebGPU Edge Visibility Emitter
  *
- * C-R8-EDGE-EMITTER (Batch 45) — Initial cut: native `line-list` thin
- * lines, no silhouette discard, no wide lines, no line pattern.
+ * Builds visible model edges with silhouette rejection, screen-space width,
+ * and a 16-bit dash pattern. Line coordinates follow
+ * `EdgeVisibilityStageVS.glsl`, so dash coverage matches WebGL. Each
+ * edge expands to four vertices and six triangle indices because WebGPU
+ * has no native wide-line support.
  *
- * C-R8-EDGE-{SILHOUETTE,WIDE-LINES,LINE-PATTERN} (Batch 46) — Upgraded
- * to feature-parity with WebGL's `EdgeVisibilityPipelineStage` for
- * everything except per-feature ID gating (which requires the inline
- * per-fragment edge-detection stage tracked separately as
- * `C-R8-EDGE-INLINE`):
- *   - **Silhouette discard** — type=1 silhouette edges are now dropped
- *     when both endpoints are non-silhouette (front/back face products
- *     positive at both endpoints). Discards by emitting clip-rejected
- *     positions (`w = 0`).
- *   - **Wide-line quad expansion** — every edge becomes 4 vertices /
- *     2 triangles. The VS offsets vertices in NDC perpendicular to
- *     the edge by `lineWidth * a_edgeOffset`, producing pixel-accurate
- *     widths regardless of the platform's native line-thickness limit.
- *   - **Line pattern (dashes)** — 16-bit pattern uniform; FS bit-tests
- *     `lineCoord` against the pattern and discards gap fragments.
- *     `lineCoord` is computed in screen space matching
- *     `EdgeVisibilityStageVS.glsl:51-63`.
+ * Triangle `visibility` data and primitive-restart-delimited `lineStrings` are
+ * independent inputs. Both append to one deduplicated edge set; line-string
+ * segments are unconditional hard edges. Per-edge and per-line-string material
+ * colors use a vertex attribute before falling back to the surface uniform.
+ * Authored signed-byte silhouette normals are decoded exactly; adjacency-derived
+ * normals are used only when that accessor is absent.
  *
- * C-R8-EDGE-LINESTRINGS (NEW-EDGE-DISPLAY-MODE-WEBGPU, edge-data slice)
- * — `extractEdgeGeometry` now also consumes the explicit
- * `edgeVisibility.lineStrings` array (BENTLEY / styled-gltf-lines
- * assets). Previously the extractor early-returned when
- * `edgeVisibility.visibility` was absent, so lineStrings-only primitives
- * emitted ZERO WebGPU edges. Each lineString's primitive-restart-
- * delimited index list now produces one HARD edge per consecutive index
- * pair, deduped against the same edge set the visibility path uses
- * (matches WebGL `EdgeVisibilityPipelineStage.extractVisibleEdges`).
+ * Per-feature gating is active. Vertex slot 14 carries the edge feature ID, the
+ * emitter writes its two-byte representation to the ID target, and model
+ * fragments compare it with the current feature when `hasEdgeFeatureIds` is set.
  *
- * **Still deferred** (`C-R8-EDGE-FEATURE-ID`): per-feature edge gating
- * needs the model fragment's current featureId at composite time,
- * which a post-process consumer can't see. Requires `C-R8-EDGE-INLINE`
- * (in-shader per-fragment edge detection in every Model FS) before
- * feature-ID gating becomes implementable.
- *
- * **Edge-data parity** (both gaps now closed):
- *   - per-edge / per-lineString `materialColor` overrides ride the
- *     `a_edgeColor`-equivalent location(7) vertex attribute
- *     (NEW-EDGE-MATERIALCOLOR-OVERRIDE-WEBGPU, Batch 330);
- *   - authored `edgeVisibility.silhouetteNormals` signed-byte accessor
- *     (EDGE-AUTHORED-SILHOUETTE-NORMALS) — silhouette-edge face normals
- *     are now sourced from the accessor when the mesh authors it,
- *     matching WebGL `EdgeVisibilityPipelineStage.generateEdgeFaceNormals`
- *     exactly (sequential silhouette-edge pair indexing, signed-byte →
- *     unit-float decode, zero normals for out-of-range pairs). The
- *     adjacency-derived face normals remain the fallback when the
- *     accessor is absent.
- *
- * UP144-SNAP-WEBGPU-EDGES (C11-212 edge tier) — the emitter now also owns
- * the `Scene.snap` edge candidate producer: `fragmentSnapMain` writes the
- * RG32Uint snap payload (uint32 pick key + edge-flagged f32 eye depth, the
- * encoding home being `WebGPUSnapPayload.ts`) through the per-primitive
- * pick color carried in the edge UB, and
- * `ensureEdgeEmitterSnapPipeline` builds the payload-format pipeline
- * variant on the pick-fleet log-depth axis. This is the WebGPU twin of
- * WebGL's second model draw with `u_isEdgePass = true` — it makes
- * `Snapping.selectBestHit`'s edge-over-surface preference live on WebGPU.
+ * The snap entry writes a pick key and edge-flagged eye depth using the payload
+ * format owned by `WebGPUSnapPayload`. Its lazy pipeline follows the pick-log
+ * depth axis. This makes `Snapping.selectBestHit` prefer edge hits over
+ * coincident surface hits on WebGPU.
  *
  * @module WebGPUEdgeVisibilityEmitter
  * @private
@@ -70,8 +32,8 @@ import Cartesian3 from "../../Core/Cartesian3.js";
 import { makeSceneFBTargets } from "./WebGPUSceneFBTargetHelpers.js";
 import { ShaderDefine, ShaderSourceId } from "./WebGPUShaderDefines.js";
 import { WebGPUShaderModuleCache } from "./WebGPUShaderModuleCache.js";
-// UP144-SNAP-WEBGPU-EDGES — the ONE home of the snap payload format
-// (WebGPUSnapPayload.ts, dependency-free). Never spell the literal here.
+// `WebGPUSnapPayload` is the single source of the snap-target format; do
+// not repeat the literal here.
 import { SNAP_PAYLOAD_FORMAT } from "./WebGPUSnapPayload.js";
 
 const EDGE_EMITTER_WGSL = /* wgsl */ `
@@ -429,20 +391,14 @@ interface EdgeGeometry {
   edgeCount: number;
   /** Total index count (6 * edgeCount). Used as draw indexCount. */
   indexCount: number;
-  /** True when at least one edge had a non-zero feature ID extracted —
-   * lets the model renderer flip the consumer-side `hasFeatureId` flag
-   * so the inline edge-detection stage actually gates on feature ID
-   * instead of falling through to fail-open. False when no FEATURE_ID_0
-   * attribute was present on the primitive. */
+  /** True when at least one edge has a nonzero feature ID. The model renderer
+   * rolls this up to enable its fragment-stage feature comparison. False when
+   * the primitive has no feature-ID attribute. */
   hasFeatureIds: boolean;
 }
 
-// 19 floats per vertex. `featureId` (slot 14) was added after `edgeOffset`
-// for the C-R8-EDGE-FEATURE-ID branch (stride 56 → 60). Then the per-edge
-// `edgeColor` vec4 (slots 15..18) was added for
-// NEW-EDGE-MATERIALCOLOR-OVERRIDE-WEBGPU (Batch 330), bumping the stride
-// 60 → 76 bytes; the pipeline's vertex buffer layout below picks up the
-// new attribute at shaderLocation 7, offset 60.
+// The 19-float, 76-byte vertex layout stores featureId in slot 14 and edgeColor
+// in slots 15-18. Shader locations 6 and 7 begin at byte offsets 56 and 60.
 const FLOATS_PER_VERTEX = 19;
 const VERTEX_STRIDE_BYTES = FLOATS_PER_VERTEX * 4;
 const VERTICES_PER_EDGE = 4;
@@ -455,8 +411,7 @@ const _scratchE1 = new Cartesian3();
 const _scratchE2 = new Cartesian3();
 const _scratchN = new Cartesian3();
 
-// NEW-EDGE-MATERIALCOLOR-OVERRIDE-WEBGPU — an edge `materialColor` override
-// arrives either as a Cartesian4-like object (.x/.y/.z/.w) or a numeric
+// An edge `materialColor` override may be a Cartesian4-like object or a numeric
 // array ([r,g,b,a]), matching WebGL `createQuadEdgeGeometry`'s
 // `setColorFromOverride`, which reads both shapes.
 type EdgeColorLike =
@@ -465,22 +420,21 @@ type EdgeColorLike =
 // Resolved per-edge color: [r, g, b, a] in 0..1, or null = no override.
 type EdgeColorRGBA = [number, number, number, number];
 
-// EDGE-AUTHORED-SILHOUETTE-NORMALS — the `silhouetteNormals` accessor is
-// unpacked by `GltfLoader.loadAccessor` into an array of Cartesian3-like
-// objects whose components are RAW signed bytes (-128..127), not
+// `GltfLoader.loadAccessor` unpacks the `silhouetteNormals` accessor as
+// Cartesian3-like values containing raw signed bytes (-128..127), not
 // pre-normalized floats. Entries may be undefined for malformed/sparse
 // accessors.
 type SilhouetteNormalLike = { x: number; y: number; z: number };
 
 /**
- * EDGE-AUTHORED-SILHOUETTE-NORMALS — decode the authored signed-byte
- * `edgeVisibility.silhouetteNormals` accessor into packed unit-float
+ * Decodes the authored signed-byte `edgeVisibility.silhouetteNormals`
+ * accessor into packed unit-float
  * normals (3 floats per entry). Mirrors WebGL
  * `EdgeVisibilityPipelineStage.generateEdgeFaceNormals` exactly:
  * component map [-128, 127] → [-1, 1] via `2 * ((v + 128) / 255) - 1`,
  * normalize, and (0, 0, 1) for zero-length (or NaN/malformed) entries.
- * Returns null when the accessor is absent or empty so callers keep the
- * adjacency-derived fallback path byte-identical.
+ * Returns null when the accessor is absent or empty so callers select the
+ * adjacency-derived fallback.
  */
 function decodeAuthoredSilhouetteNormals(
   raw: ArrayLike<SilhouetteNormalLike | undefined> | undefined | null,
@@ -554,9 +508,9 @@ function normalizeEdgeColor(
  *   1. the per-triangle 2-bit `edgeVisibility.visibility` encoding
  *      (silhouette / hard / repeated-hard), which carries derived face
  *      normals for the silhouette test; and
- *   2. explicit `edgeVisibility.lineStrings` (C-R8-EDGE-LINESTRINGS) —
- *      primitive-restart-delimited polyline index lists. Every
- *      lineString edge is EdgeVisibilityType.HARD, so it carries no
+ *   2. explicit `edgeVisibility.lineStrings`, whose primitive-restart-delimited
+ *      index lists produce unconditional hard edges. Every
+ *      lineString edge carries no
  *      face normals (the silhouette branch in the VS skips type != 1).
  *
  * Layout per vertex (19 floats, 76 bytes):
@@ -582,10 +536,9 @@ function normalizeEdgeColor(
  * the edge — they're per-edge attributes replicated per-vertex so the
  * shader doesn't need a separate per-edge lookup.
  *
- * NEW-EDGE-MATERIALCOLOR-OVERRIDE-WEBGPU (Batch 330) — per-edge /
- * per-lineString `materialColor` overrides and per-vertex COLOR_0 are now
- * carried in slots [15..18] (the WebGPU equivalent of WebGL's
- * `a_edgeColor`). Color source priority per edge mirrors
+ * Per-edge and per-lineString `materialColor` overrides and per-vertex COLOR_0
+ * are carried in slots [15..18], the WebGPU equivalent of WebGL's
+ * `a_edgeColor`. Color source priority per edge mirrors
  * `EdgeVisibilityPipelineStage.createQuadEdgeGeometry`:
  *   1. the edge's explicit override color (per-lineString `materialColor`,
  *      else the primitive-level `edgeVisibility.materialColor`), else
@@ -593,17 +546,15 @@ function normalizeEdgeColor(
  *   3. the `-1` alpha sentinel → no override → the WGSL FS falls back to
  *      the uniform surface/model color.
  *
- * EDGE-AUTHORED-SILHOUETTE-NORMALS — when the primitive authors the
- * `edgeVisibility.silhouetteNormals` signed-byte accessor (per the
- * EXT_mesh_primitive_edge_visibility spec it MUST be present when the
- * primitive encodes at least one silhouette edge), silhouette-edge face
- * normals come from that accessor: silhouette edges are numbered
+ * When a primitive has silhouette edges, the extension requires its
+ * `edgeVisibility.silhouetteNormals` signed-byte accessor. Silhouette-edge
+ * face normals come from that accessor and are numbered
  * sequentially in dedupe order (matching WebGL
  * `EdgeVisibilityPipelineStage.extractVisibleEdges`), and edge N reads
  * decoded pair [N*2, N*2+1]. Out-of-range pairs leave zero normals (the
  * edge is then always drawn), matching WebGL
  * `generateEdgeFaceNormals`'s bounds skip. Only when the accessor is
- * ABSENT does the extractor fall back to re-deriving face normals from
+ * absent does the extractor fall back to re-deriving face normals from
  * triangle adjacency (WebGL uses zero normals in that out-of-spec case;
  * the derived fallback classifies real silhouettes instead of drawing
  * every silhouette edge unconditionally).
@@ -624,11 +575,10 @@ export function extractEdgeGeometry(
    */
   featureIds?: Float32Array | Uint8Array | Uint16Array | Uint32Array | null,
   /**
-   * NEW-EDGE-MATERIALCOLOR-OVERRIDE-WEBGPU — optional per-vertex RGBA
-   * colors (from a glTF COLOR_0 attribute), packed as 4 floats per vertex
-   * in 0..1. Length is `vertexCount * 4`. Used as the per-edge color
-   * source ONLY when the edge has no explicit `materialColor` override —
-   * mirrors WebGL `createQuadEdgeGeometry`'s
+   * Optional per-vertex RGBA colors from a glTF COLOR_0 attribute, packed as
+   * four floats per vertex in 0..1. Length is `vertexCount * 4`. Used as the
+   * per-edge color source only when there is no explicit `materialColor`
+   * override, mirroring WebGL `createQuadEdgeGeometry`'s
    * override → vertexColor → no-color priority. Pass `null`/omit when the
    * primitive has no COLOR_0; edges without an override then write the
    * `-1` alpha "no override" sentinel and the FS falls back to the
@@ -639,28 +589,25 @@ export function extractEdgeGeometry(
   const p = primitive as {
     edgeVisibility?: {
       visibility?: Uint8Array;
-      // NEW-EDGE-MATERIALCOLOR-OVERRIDE-WEBGPU — primitive-level edge
-      // color override (the `materialColor` global applied to every
-      // visibility-path edge; matches WebGL `edgeVisibility.materialColor`
-      // / `EdgeVisibilityPipelineStage.js:404`). Either a Cartesian4
+      // Primitive-level edge-color override applied to every
+      // visibility-path edge; matches WebGL `edgeVisibility.materialColor` and
+      // `EdgeVisibilityPipelineStage.js:404`. Either a Cartesian4
       // (.x/.y/.z/.w) or a numeric array ([r,g,b,a]).
       materialColor?: EdgeColorLike;
-      // EDGE-AUTHORED-SILHOUETTE-NORMALS — authored signed-byte face-
-      // normal pairs for silhouette edges (2 entries per silhouette
-      // edge, sequential in edge-extraction dedupe order). Loaded by
+      // Authored signed-byte face-normal pairs for silhouette edges, with two
+      // entries per edge in sequential extraction order. Loaded by
       // `GltfLoader.loadAccessor` as Cartesian3-like objects carrying
       // raw signed-byte components.
       silhouetteNormals?: ArrayLike<SilhouetteNormalLike | undefined>;
-      // C-R8-EDGE-LINESTRINGS — explicit polyline edges from the
-      // EXT_mesh_primitive_edge_visibility `lineStrings` array. Each
+      // Explicit polyline edges from the extension's `lineStrings` array. Each
       // entry carries a primitive-restart-delimited index list into the
       // same vertex positions the triangle indices reference. Mirrors
       // the shape `GltfLoader.loadEdgeVisibilityLineStrings` produces.
       lineStrings?: Array<{
         indices?: Uint8Array | Uint16Array | Uint32Array;
         restartIndex?: number;
-        // Per-lineString color override (BENTLEY styled-gltf-lines).
-        // Takes precedence over the primitive-level `materialColor`.
+        // Per-lineString color override; takes precedence over the
+        // primitive-level `materialColor`.
         materialColor?: EdgeColorLike;
       }>;
     };
@@ -685,9 +632,9 @@ export function extractEdgeGeometry(
   const fidSource = featureIds ?? null;
   let sawNonZeroFeature = false;
 
-  // Vertex count guard for the lineStrings path (mirrors WebGL
-  // `extractVisibleEdges`: attributes[0].count). Used to reject
-  // out-of-range lineString indices; 0 disables the range check.
+  // The lineStrings vertex-count guard mirrors WebGL `extractVisibleEdges`
+  // through attributes[0].count. It rejects out-of-range indices; zero
+  // disables the range check.
   const attributes = p?.attributes;
   const vertexCount =
     attributes && attributes.length > 0 ? (attributes[0]?.count ?? 0) : 0;
@@ -701,11 +648,9 @@ export function extractEdgeGeometry(
   const seen = new Set<string>();
   let outEdge = 0;
 
-  // EDGE-AUTHORED-SILHOUETTE-NORMALS — authored signed-byte silhouette
-  // normal pairs. When present, silhouette edges read the accessor and
-  // the adjacency derivation below is skipped entirely (matching WebGL,
-  // which NEVER derives — `generateEdgeFaceNormals` reads the accessor
-  // or leaves zeros). When absent, the derived fallback is unchanged.
+  // When authored signed-byte silhouette-normal pairs are present, use
+  // them without deriving adjacency normals. Only an absent accessor
+  // selects the derived fallback.
   const authoredNormals = decodeAuthoredSilhouetteNormals(
     edgeVis.silhouetteNormals,
   );
@@ -847,8 +792,7 @@ export function extractEdgeGeometry(
     outEdge++;
   };
 
-  // NEW-EDGE-MATERIALCOLOR-OVERRIDE-WEBGPU — resolve a single edge's color
-  // following WebGL `createQuadEdgeGeometry`'s priority: explicit override
+  // Resolve an edge color using WebGL's priority: explicit override
   // (per-lineString / primitive `materialColor`) → lower-index endpoint's
   // per-vertex COLOR_0 → the -1 alpha "no override" sentinel. `lowIndex`
   // is the lower of the edge's two endpoint indices (the vertex WebGL
@@ -885,8 +829,7 @@ export function extractEdgeGeometry(
     ? (visibility as Uint8Array)
     : undefined;
   let edgeIndex = 0;
-  // EDGE-AUTHORED-SILHOUETTE-NORMALS — sequential silhouette-edge counter.
-  // Every newly-seen (post-dedupe) SILHOUETTE edge gets the next index
+  // Every newly seen, deduplicated silhouette edge gets the next index
   // into the authored `silhouetteNormals` pair list, matching WebGL
   // `extractVisibleEdges`'s `silhouetteEdgeCount` numbering exactly.
   let silhouetteEdgeCount = 0;
@@ -943,11 +886,10 @@ export function extractEdgeGeometry(
         nBy = 0,
         nBz = 0;
       if (authoredNormals !== null) {
-        // EDGE-AUTHORED-SILHOUETTE-NORMALS — authored path. Silhouette
-        // edge N reads decoded pair [N*2, N*2+1]; non-silhouette edges
-        // and out-of-range pairs keep zero normals (inert for HARD
-        // edges; a zero normal makes the silhouette dot products 0 →
-        // the edge is always drawn — both match WebGL
+        // An authored silhouette edge N reads decoded pair [N*2, N*2+1].
+        // Non-silhouette edges and out-of-range pairs keep zero normals,
+        // which are inert for hard edges; a zero normal makes the silhouette
+        // dot products 0 → the edge is always drawn — both match WebGL
         // `generateEdgeFaceNormals`, incl. its bounds skip).
         if (silhouetteEdgeIndex >= 0) {
           const pairBase = silhouetteEdgeIndex * 2;
@@ -1039,14 +981,12 @@ export function extractEdgeGeometry(
     }
   }
 
-  // C-R8-EDGE-LINESTRINGS — explicit polyline edges. The WebGL extractor
-  // (`EdgeVisibilityPipelineStage.extractVisibleEdges`) walks each
-  // lineString's primitive-restart-delimited index list and emits one
-  // HARD edge per consecutive index pair, deduped against the same
-  // `seen` set the visibility path uses. We mirror that here. These
-  // edges are always EdgeVisibilityType.HARD (=2) — the silhouette
-  // branch in the VS never runs for them, so the zeroed face normals
-  // are inert (HARD edges are unconditionally drawn).
+  // For explicit polyline edges, walk each lineString's
+  // primitive-restart-delimited index list and emits one HARD edge per
+  // consecutive index pair, deduped against the same `seen` set used by the
+  // visibility path. These edges are always hard, so the silhouette branch in
+  // the VS never runs for them, so the zeroed face normals are inert (HARD
+  // edges are unconditionally drawn).
   const HARD_TYPE_NORM = 2 / 255.0;
   if (hasLineStrings && lineStrings) {
     for (let s = 0; s < lineStrings.length; s++) {
@@ -1165,14 +1105,13 @@ export interface EdgeEmitterCache {
   // initialized yet). Writes only the color attachment — featureId +
   // packed-depth outputs are discarded. Matches the WebGL behavior of
   // executing edge commands in the regular scene FB pass when
-  // `_enableEdgeVisibility` is off. Session 65 Batch 13.
+  // `_enableEdgeVisibility` is off.
   pipelineSingleTarget: GPURenderPipeline | null;
-  // UP144-SNAP-WEBGPU-EDGES — RG32Uint snap-payload pipeline
-  // (`fragmentSnapMain`), built lazily by the first Scene.snap mini-frame
-  // via {@link ensureEdgeEmitterSnapPipeline}. `pipelineSnapLogActive`
-  // records the pick-fleet log-depth axis the pipeline was built for so a
-  // switch flip rebuilds it (mirrors the model pipeline cache's
-  // maybeUpdateForPickLogDepth discipline).
+  // Snap-payload pipeline for `fragmentSnapMain`, built lazily by the first
+  // Scene.snap mini-frame via {@link ensureEdgeEmitterSnapPipeline}.
+  // `pipelineSnapLogActive` records the pick-fleet log-depth axis the pipeline
+  // was built for so a switch flip rebuilds it (mirrors the model pipeline
+  // cache's maybeUpdateForPickLogDepth discipline).
   pipelineSnap: GPURenderPipeline | null;
   pipelineSnapLogActive: boolean;
   cameraBGL: GPUBindGroupLayout | null;
@@ -1211,13 +1150,8 @@ export function destroyEdgeEmitterCache(cache: EdgeEmitterCache): void {
   cache.shaderModule = null;
 }
 
-// Per-device shader-module cache so the base and LOG_DEPTH snap variants
-// compile once per device and dedupe across split-screen contexts
-// (C-R7-SHADER-MODULE-DEDUP; same pattern as the Gaussian-splat renderer).
-// The cache runs the `//>>ifdef` preprocessor on miss, so the base
-// (defines = 0) module is byte-identical to the historical raw-string module:
-// the only ifdef block lives in the snap entry and resolves to its empty
-// else branch.
+// Cache base and log-depth snap modules per device. With zero defines the only
+// conditional block, in the snap entry, resolves to its empty alternative.
 const _edgeModuleCaches = new WeakMap<GPUDevice, WebGPUShaderModuleCache>();
 function getEdgeModuleCache(device: GPUDevice): WebGPUShaderModuleCache {
   let moduleCache = _edgeModuleCaches.get(device);
@@ -1244,8 +1178,8 @@ function makeEdgeVertexState(module: GPUShaderModule): GPUVertexState {
           { shaderLocation: 3, offset: 28, format: "float32x3" }, // normalB
           { shaderLocation: 4, offset: 40, format: "float32x3" }, // otherPos
           { shaderLocation: 5, offset: 52, format: "float32" }, // edgeOffset
-          { shaderLocation: 6, offset: 56, format: "float32" }, // featureId (C-R8-EDGE-FEATURE-ID)
-          { shaderLocation: 7, offset: 60, format: "float32x4" }, // edgeColor (NEW-EDGE-MATERIALCOLOR-OVERRIDE-WEBGPU)
+          { shaderLocation: 6, offset: 56, format: "float32" }, // per-edge feature ID
+          { shaderLocation: 7, offset: 60, format: "float32x4" }, // per-edge color
         ],
       },
     ],
@@ -1271,8 +1205,8 @@ export function ensureEdgeEmitterPipeline(
   cache.sampleCount = sampleCount;
   cache.pipeline = null;
   cache.pipelineSingleTarget = null;
-  // UP144-SNAP-WEBGPU-EDGES — a rebuild (device/format/sampleCount change)
-  // also invalidates the snap variant; ensureEdgeEmitterSnapPipeline lazily
+  // A device, format, or sample-count rebuild also invalidates the snap variant;
+  // ensureEdgeEmitterSnapPipeline lazily
   // rebuilds it against the fresh layout/module on the next snap mini-frame.
   cache.pipelineSnap = null;
 
@@ -1320,8 +1254,7 @@ export function ensureEdgeEmitterPipeline(
   // the pipeline's color-target array.
   const vertex = makeEdgeVertexState(shaderModule);
   const primitive: GPUPrimitiveState = {
-    // C-R8-EDGE-WIDE-LINES — quad expansion lands as triangles, not
-    // native lines. WebGPU has no native wide-line support.
+    // Quad expansion uses triangles because WebGPU has no native wide lines.
     topology: "triangle-list",
     cullMode: "none",
   };
@@ -1355,8 +1288,7 @@ export function ensureEdgeEmitterPipeline(
     multisample,
   });
 
-  // Single-target variant — color only. Session 65 Batch 13
-  // (NEW-VR-DEPTHPLANE-EDGEEMITTER-PIPELINE-FORMAT). Used when the
+  // The color-only variant is used when the
   // edge MRT FBO isn't allocated (the scene didn't request edge
   // visibility) so the edge commands fall back to the regular scene
   // framebuffer pass. The fragment shader's id + depth writes get
@@ -1378,25 +1310,20 @@ export function ensureEdgeEmitterPipeline(
 }
 
 /**
- * UP144-SNAP-WEBGPU-EDGES — get or (re)build the RG32Uint snap-payload
- * pipeline variant. Called only from a `Scene.snap` mini-frame
- * (`frameState.passes.snap`), after {@link ensureEdgeEmitterPipeline} has
- * established the layout + module for this device, so scenes that never snap
- * pay nothing.
+ * Gets or rebuilds the snap-payload pipeline variant. Called only from a
+ * `Scene.snap` mini-frame (`frameState.passes.snap`), after
+ * {@link ensureEdgeEmitterPipeline} has established the layout + module for
+ * this device, so scenes that never snap pay nothing.
  *
  *   - The fragment entry is `fragmentSnapMain`, whose single color target is
  *     {@link SNAP_PAYLOAD_FORMAT} — the format of `WebGPUSnapFramebuffer`'s
  *     payload attachment. WebGPU validates attachment state at DRAW time, so
  *     a mismatched pipeline dispatched into the payload pass would invalidate
- *     the whole snap command buffer (the FORK-34 failure mode).
- *   - `pickLogActive` selects the LOG_DEPTH-preprocessed module so the entry
- *     writes the pick fleet's log `frag_depth` encode (C10-11); the label
- *     carries BOTH the payload-format axis (`[sf=…]`) and the log axis
- *     (`[ld]`) per the descriptor-name convention guarded by
- *     `pipeline-key-aliasing.spec.mjs`. Like the model snap family this is a
- *     direct `createRenderPipeline` hatch — never the central cache — so name
- *     aliasing is structurally impossible; the markers keep a future
- *     migration honest.
+ *     the whole snap command buffer.
+ *   - `pickLogActive` selects the log-depth module. The label names both the
+ *     payload-format axis (`[sf=…]`) and log axis (`[ld]`). Direct pipeline
+ *     creation prevents cache aliasing today, but both descriptor axes must
+ *     remain explicit if this path moves into the central cache.
  *   - Depth follows the model snap pipeline (`less-equal`, depth write ON):
  *     the payload pass LOADS the depth the occluder phase wrote, and an edge
  *     fragment lying exactly on its surface's silhouette must pass the tie.
@@ -1467,11 +1394,10 @@ export interface EdgePrimitiveResources {
   cameraBG: GPUBindGroup;
   edgeBG: GPUBindGroup;
   indexCount: number;
-  /** C-R8-EDGE-FEATURE-ID — populated post-construction by the model
-   * renderer once `extractEdgeGeometry` has reported whether any
+  /** Populated by the model renderer after `extractEdgeGeometry` reports whether any
    * edge in this primitive carried a non-zero feature ID. The model-
-   * level rollup (`cache.hasEdgeFeatureIds`) gates the inline
-   * detection's per-feature comparison in Model FS. */
+   * level rollup (`cache.hasEdgeFeatureIds`) gates the model fragment's
+   * per-feature comparison. */
   hasFeatureIds?: boolean;
 }
 
@@ -1502,9 +1428,8 @@ export function createEdgePrimitiveResources(
     size: 128,
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
-  // Edge UB: vec4 color + vec4 params + vec4 pickColor + vec4 snapLogDepth
-  // = 64 bytes (UP144-SNAP-WEBGPU-EDGES grew it from 32; the two snap lanes
-  // are written every frame but read only by fragmentSnapMain).
+  // Edge UB: color, parameters, pick color, and snap log depth occupy four
+  // vec4 lanes (64 bytes). The final two lanes are snap-only.
   const edgeBuffer = device.createBuffer({
     label: "EdgeEmitter-EdgeUniforms",
     size: 64,
@@ -1572,12 +1497,11 @@ const _scratchEdgeData = new Float32Array(16); // 4 vec4 = 16 floats
  * @param viewportWidth / viewportHeight  pixel dimensions for NDC→pixel offset math
  * @param lineWidth  pixel width for the quad expansion
  * @param linePattern  16-bit dash mask (0xffff = solid)
- * @param pickColor  UP144-SNAP-WEBGPU-EDGES — the owning glTF primitive's
- *   RGBA8-normalized pick color (a Cesium Color), or null when the primitive
- *   has no pick ID; null writes zeros, which decode as pick key 0 ("no
- *   object") so an ID-less edge can never claim a snap hit
+ * @param pickColor The owning glTF primitive's normalized pick color, or null
+ *   when the primitive has no pick ID; null writes zeros, which decode as pick
+ *   key 0 ("no object") so an ID-less edge can never claim a snap hit
  * @param snapLogFactor / snapLogNear  the pick-fleet log-depth encode pair
- *   (oneOverLog2FarDepthFromNearPlusOne, frustum near) — the SAME lanes the
+ *   (oneOverLog2FarDepthFromNearPlusOne, frustum near), using the same lanes the
  *   model fleet packs via packCameraLogDepthLanes, read only by the snap
  *   entry's LOG_DEPTH variant
  */
@@ -1616,8 +1540,8 @@ export function writeEdgeEmitterUniforms(
   // Pattern packed as float — 0xffff fits in mantissa exactly, as do
   // any 16-bit pattern values used in practice.
   edgeData[7] = linePattern & 0xffff;
-  // UP144-SNAP-WEBGPU-EDGES — snap lanes (EdgeUniforms.pickColor +
-  // .snapLogDepth). Read only by fragmentSnapMain.
+  // Snap-only `EdgeUniforms.pickColor` and `.snapLogDepth`
+  // lanes are read by `fragmentSnapMain`.
   edgeData[8] = pickColor?.red ?? 0.0;
   edgeData[9] = pickColor?.green ?? 0.0;
   edgeData[10] = pickColor?.blue ?? 0.0;

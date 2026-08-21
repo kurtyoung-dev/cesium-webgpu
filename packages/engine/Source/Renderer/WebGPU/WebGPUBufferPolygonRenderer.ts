@@ -1,8 +1,7 @@
 /**
  * WebGPU Buffer Polygon Renderer
  *
- * Per-collection slice extracted from `WebGPUBufferPrimitiveRenderer`
- * (Batch 155 of the maintainability sweep).
+ * Per-collection renderer used by `WebGPUBufferPrimitiveRenderer`.
  *
  * Owns the BufferPolygonCollection rendering path: cache type,
  * pipeline builder, init / repack / upload / update / destroy
@@ -32,9 +31,8 @@ import { gpuData, jsModule, numericArray } from "./webgpuTypeHelpers.js";
 import BufferPolygon from "../../Scene/BufferPolygon.js";
 import BufferPolygonMaterial from "../../Scene/BufferPolygonMaterial.js";
 import BufferPolygonMaterialWGSL from "../../Shaders/WebGPU/Collections/BufferPolygonMaterial.js";
-// Slice 5c-B Phase 1 (Batch 108) — scene-FB target helper. Used only
-// for the COLOR pipeline variant; the PICK variant stays single-target
-// because it runs in its own pick-FB render pass.
+// Color pipelines use scene-framebuffer targets; the
+// separate pick pass stays single-target.
 import { makeSceneFBTargets } from "./WebGPUSceneFBTargetHelpers.js";
 
 import {
@@ -97,16 +95,16 @@ export interface PolygonCache extends SharedCache {
   // TRANSLUCENT `pipeline` stays the default. Mirrors the WebGL
   // RenderState.fromCache({ blending: DISABLED }) branch.
   opaquePipeline?: GPURenderPipeline;
-  // PARITY-BUFFER-2DCV — settled-2D/CV coplanar-depth variants (depth test
+  // Settled 2D/CV uses coplanar-depth variants (depth test
   // "always", no depth write). Built lazily on first non-3D settled frame;
   // the TRANSLUCENT + OPAQUE 3D pipelines above stay byte-identical.
   noDepthTestPipeline?: GPURenderPipeline;
   noDepthTestOpaquePipeline?: GPURenderPipeline;
   // noDepthTest the cached color `command` was built for; rebuild on change.
   commandNoDepthTest?: boolean;
-  // Retained build inputs so the OPAQUE color variant can be assembled
-  // lazily with the SAME shader module + bind-group layouts as the default
-  // TRANSLUCENT pipeline (no recompile, no layout drift).
+  // Retained build inputs let the `OPAQUE` color variant reuse the shader
+  // module and bind-group layouts from the default `TRANSLUCENT` pipeline
+  // without recompilation or layout drift.
   shaderModule: GPUShaderModule;
   bgls: GPUBindGroupLayout[];
   sampleCount: number;
@@ -129,42 +127,28 @@ function buildPolygonPipeline(
   bgls: GPUBindGroupLayout[],
   fragmentEntryPoint: string = "fragmentMain",
   sampleCount: number = 1,
-  // When true, build the OPAQUE color variant: blend disabled + depth write
-  // on (matches WebGL `BlendingState.DISABLED` + `depthTest.enabled`). The
-  // default false keeps the historical TRANSLUCENT color path byte-identical.
+  // When true, build the opaque color variant with blending disabled and depth
+  // writes enabled, matching WebGL's disabled blending and enabled depth test.
   opaque: boolean = false,
-  // PARITY-BUFFER-2DCV — when true, build the settled-2D/CV coplanar variant:
-  // depth test disabled (compare "always") + no depth write, so the flat-map
+  // Settled 2D and Columbus View use a coplanar variant with an always depth
+  // comparison and no depth writes so the flat-map
   // reprojected fill draws on top instead of z-fighting the coplanar map.
-  // Mirrors the collection renderers' NEW-COLLECTIONS-2DCV-COPLANAR-DEPTH.
-  // Default false keeps the historical depth-tested path byte-identical.
   noDepthTest: boolean = false,
-  // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — pick-fleet log gate. The polygon
-  // pick pipeline ALREADY writes depth (`isPick || opaque`), so this only tags
-  // the devtools label `[ld]`; the log frag_depth comes from the pick MODULE.
-  // Ignored for the color stage. Default false preserves every existing caller.
+  // The pick-log switch only selects the diagnostic label here; the pick shader
+  // module supplies logarithmic fragment depth. Color pipelines ignore it.
   pickLogActive: boolean = false,
 ): GPURenderPipeline {
-  // Pick-path entry points emit opaque pick IDs and must NOT alpha-blend
+  // Pick entry points emit opaque pick IDs and must not alpha-blend
   // (blending pick IDs produces invalid intermediate values that map to
   // wrong entity IDs at readback). Everything else is a color pipeline
   // that needs standard src-alpha / one-minus-src-alpha blending so a
   // polygon with a `color.alpha < 1` actually composites against the
-  // frame instead of overwriting it — the DP-H16 fix extended to the
-  // buffer-primitive polygon path (polyline / point already had blend).
+  // frame instead of overwriting it.
   const isPick = fragmentEntryPoint === "fragmentPickMain";
-  // Slice 5c-B Phase 1 (Batch 108) — split the targets array build
-  // between the pick path (runs in its own pick-FB render pass — keeps
-  // a single-target descriptor) and the color path (draws into the
-  // scene-FB render pass — routes through `makeSceneFBTargets` so
-  // Phase 2 picks up the 2nd null slot automatically).
-  //
-  // NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE — the pick variant is now built
-  // with `context.pickPipelineFormat` as the `format` arg (the byte-object-ID
-  // authority the pick FBO uses), while the color variant keeps
-  // `scenePipelineFormat`. The historical format mismatch in HDR (pick
-  // pipeline targeting the float scene format against the rgba8unorm pick
-  // attachment) is closed.
+  // Picking uses its separate single-target framebuffer; color targets match
+  // the scene framebuffer's attachment topology. The pick variant uses the
+  // context's byte-object-ID format, while color uses `scenePipelineFormat`,
+  // so both pipelines match their render-pass attachments in HDR scenes.
   const colorBlend: GPUBlendState = {
     color: {
       srcFactor: "src-alpha",
@@ -177,7 +161,7 @@ function buildPolygonPipeline(
       operation: "add",
     },
   };
-  // OPAQUE color variant: no blend (overwrite). Pick path is always opaque
+  // The opaque color variant overwrites. Picking is always opaque
   // (discrete IDs). TRANSLUCENT color path keeps `colorBlend`.
   const colorTargetOpts = opaque ? {} : { blend: colorBlend };
   const targets: Array<GPUColorTargetState | null> = isPick
@@ -236,7 +220,7 @@ function buildPolygonPipeline(
       // TRANSLUCENT color path keeps depth write off when blending
       // fragments — matches the WebGL convention and prevents alpha-blended
       // polygons from occluding geometry behind them.
-      // PARITY-BUFFER-2DCV: the coplanar-2D/CV variant never writes depth.
+      // The coplanar 2D/CV variant never writes depth.
       depthWriteEnabled: !noDepthTest && (isPick || opaque),
       // less-equal (not less) — lets primitives that project exactly
       // onto the far plane due to FP32 rounding still pass the depth
@@ -255,8 +239,7 @@ function initPolygonCache(
   context: CesiumGraphicsContext,
   format: GPUTextureFormat,
   defines: number,
-  // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — the SEPARATE pick-fleet log
-  // switch (isWebGPUPickLogDepthActive), independent of the color `defines`.
+  // Pick-log depth is controlled independently of the color shader defines.
   pickLogActive: boolean,
 ): PolygonCache {
   const device: GPUDevice = context.device;
@@ -275,8 +258,8 @@ function initPolygonCache(
   const indexFormat: GPUIndexFormat =
     indexArr instanceof Uint32Array ? "uint32" : "uint16";
 
-  // NEW-BUFFER-LOG-DEPTH (Batch 263) — resolve `//>>ifdef LOG_DEPTH` against
-  // `defines`; key the module cache by it so on/off compile distinct modules.
+  // Resolve the log-depth pragma against `defines` and include the result in
+  // the module-cache key so enabled and disabled variants stay distinct.
   const shaderSource = preprocessShader(
     context,
     "BufferPolygonMaterial",
@@ -289,13 +272,10 @@ function initPolygonCache(
     defines,
     "BufferPolygonMaterial",
   );
-  // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — the pick pipeline compiles its
-  // OWN module gated on the SEPARATE pick-fleet switch, decoupled from the
-  // color `defines`. Off → REUSE the color module (byte-identical to today);
-  // on → a distinct LOG_DEPTH module (source + pick suffix preprocessed at
-  // LOG_DEPTH so `v_logDepth` is in scope and the pick FS writes log
-  // frag_depth). keySalt prevents aliasing the color module at the SAME
-  // `(sourceId, LOG_DEPTH)` when the scene switch is also on.
+  // The pick fleet has an independent log-depth switch. Its enabled variant
+  // preprocesses both the source and pick suffix so `v_logDepth` is available
+  // to the fragment shader. The key salt prevents it from aliasing a color
+  // module with the same source identifier and define bits.
   const pickDefines =
     (defines & ~ShaderDefine.LOG_DEPTH) |
     (pickLogActive ? ShaderDefine.LOG_DEPTH : 0);
@@ -324,11 +304,9 @@ function initPolygonCache(
     "fragmentMain",
     sampleCount,
   );
-  // NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE — the pick pipeline targets the
-  // context's byte-object-ID format authority (matches the pick FBO), never
-  // the (possibly float/HDR) scene format. NEW-WEBGPU-PICK-FLEET-LOG-DEPTH —
-  // built from `pickModule` (log variant when the gate is on); polygon pick
-  // already writes depth, so only the module + `[ld]` label change.
+  // The pick pipeline targets the context's byte-object-ID format, matching
+  // the pick framebuffer rather than a possibly floating-point scene format.
+  // Its selected module supplies logarithmic fragment depth when enabled.
   const pickPipeline = buildPolygonPipeline(
     device,
     pickModule,
@@ -380,8 +358,7 @@ function repackPolygonDirty(
   cache: PolygonCache,
   context: CesiumGraphicsContext,
   frameState: CesiumFrameState,
-  // PARITY-BUFFER-2DCV — see WebGPUBufferPointRenderer.repackPointDirty. `force`
-  // re-processes every polygon in the dirty range when the scene-mode
+  // `force` reprocesses every polygon in the dirty range when the scene-mode
   // projection frame changed with no per-primitive edits.
   force: boolean,
 ): void {
@@ -391,13 +368,12 @@ function repackPolygonDirty(
     return;
   }
   const allowPicking: boolean = collection._allowPicking;
-  // PARITY-BUFFER-2DCV — reproject each ECEF vertex into the scene-mode frame in
-  // 2D/CV/Morph (per-vertex, preserving the triangulation topology). No-op in
-  // SCENE3D (byte-identical raw-ECEF encode).
+  // Reproject each ECEF vertex into the scene-mode frame in 2D, Columbus View,
+  // and morphing while preserving triangulation. Scene 3D keeps raw ECEF.
   const reproject = frameState.mode !== SceneMode.SCENE3D;
   const modelMatrix = collection.modelMatrix ?? Matrix4.IDENTITY;
-  // PARITY-BUFFER-POSITION-INT-NORMALIZED — 0 unless the collection stores
-  // normalized integer positions; keeps the common path byte-identical.
+  // This divisor is zero unless the collection stores
+  // normalized integer positions.
   const normDivisor = bufferPositionNormalizeDivisor(collection);
   for (let i = dirtyOffset; i < dirtyOffset + dirtyCount; i++) {
     collection.get(i, scratchPolygon);
@@ -504,7 +480,8 @@ export function updateWebGPUBufferPolygonCollection(
   }
   const context = frameState.context;
   const device: GPUDevice = context.device;
-  // Batch 110 — buffer primitives draw into scene FB; use scenePipelineFormat.
+  // Buffer primitives draw into the scene framebuffer, whose format may differ
+  // from the preferred canvas format.
   const format: GPUTextureFormat =
     (
       context as unknown as {
@@ -513,17 +490,16 @@ export function updateWebGPUBufferPolygonCollection(
     ).scenePipelineFormat ??
     (navigator.gpu.getPreferredCanvasFormat() as GPUTextureFormat);
 
-  // NEW-BUFFER-LOG-DEPTH (Batch 263) — renderer-wide log-depth gate; flipping
-  // it invalidates the cache so module + pipeline rebuild.
+  // A scene log-depth state change invalidates the cache so the shader module
+  // and pipeline rebuild together.
   const logDepthActive = isWebGPULogDepthActive(context, frameState);
   const defines = logDepthActive ? ShaderDefine.LOG_DEPTH : 0;
-  // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — SEPARATE pick-fleet master
-  // switch (default OFF until the fleet flips). Flipping it must rebuild the
-  // pick module + pipeline, so track it alongside the format + log guards.
+  // Track the independent pick-log switch alongside the scene format and
+  // color-log state because a change requires a new pick module and pipeline.
   const pickLogActive = isWebGPUPickLogDepthActive(context, frameState);
 
   let cache = collection._webgpuCache as PolygonCache | undefined;
-  // Batch 110 — invalidate on scene format change (HDR toggle).
+  // Invalidate pipelines when the scene format generation changes.
   const sceneGen =
     (context as unknown as { _scenePipelineFormatGeneration?: number })
       ._scenePipelineFormatGeneration ?? 0;
@@ -561,7 +537,7 @@ export function updateWebGPUBufferPolygonCollection(
     collection._dirtyCount = collection.primitiveCount;
   }
 
-  // PARITY-BUFFER-2DCV — force a full re-pack when the scene-mode projection
+  // Force a full repack when the scene-mode projection
   // frame changed (no-op in the SCENE3D steady state).
   const modeRepack = bufferModeNeedsRepack(cache, frameState);
   if (modeRepack) {
@@ -599,15 +575,15 @@ export function updateWebGPUBufferPolygonCollection(
     cache.showAndColor,
   ];
 
-  // blendOption: OPAQUE (blend off, depth write on, Pass.OPAQUE) vs the
-  // default TRANSLUCENT path. Mirrors the WebGL RenderState/Pass branch.
+  // The blend option selects opaque overwrite with depth writes or the default
+  // translucent path, matching the WebGL render-state and pass branch.
   const isOpaque = collection._blendOption === BlendOption.OPAQUE;
-  // PARITY-BUFFER-2DCV — settled 2D/CV: draw the coplanar reprojected fill on
+  // In settled 2D and Columbus View, draw the coplanar reprojected fill on
   // top (no depth test/write) so it doesn't z-fight the flat map. False in 3D
-  // and mid-morph → the historical depth-tested pipeline (byte-identical).
+  // and mid-morph retain the depth-tested pipeline.
   const noDepthTest = computeNoDepthTest(frameState);
-  // NEW-BUFFERPOLYLINE-2D-EXTRUSION — culling BV in the render frame the
-  // packed positions actually live in (3D → same reference, byte-identical).
+  // Cull against a bounding volume in the same render frame as the packed
+  // positions; Scene 3D retains the collection's reference volume.
   const modeBV = computeBufferModeBoundingVolume(collection, frameState, cache);
 
   if (frameState.passes.render) {
@@ -712,7 +688,7 @@ export function updateWebGPUBufferPolygonCollection(
         indexFormat: cache.indexFormat,
         indexCount,
         pass: Pass.OPAQUE,
-        // FORK-34 (Batch 207) — dedicated pick command marker.
+        // This command is submitted only during the pick pass.
         pickOnly: true,
       });
     } else {

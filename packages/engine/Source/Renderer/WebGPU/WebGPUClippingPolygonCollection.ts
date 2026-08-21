@@ -6,17 +6,16 @@
  * polygon + extents data into GPU textures and generates the signed distance
  * field (SDF) atlas via the `PolygonSignedDistance.wgsl` compute shader.
  *
- * Packing convention (GLOBE-CLIPPOLY-GEODETIC fix): the CPU pack is the SAME
+ * Packing convention: the CPU pack is the same
  * `packPolygonsAsFloats` the WebGL path uses (invoked through
  * `ClippingPolygonCollection.packDataForFeatureRenderer`), so polygon vertices
  * and extents are in spherical `fastApproximateAtan2` coordinates and the
- * positions texture carries the upstream per-polygon layout the compute
+ * positions texture carries the per-polygon layout the compute
  * shader expects: 1 header pixel `(positionsLength, extentsIndex)` + 2
- * individual-extent pixels + one pixel per vertex. The previous
- * implementation packed raw geodetic `(lon, lat)` pairs with no headers,
- * which the SDF compute shader (a port of `PolygonSignedDistanceFS.glsl`)
- * could not consume — the whole WebGPU clipping-polygon path produced
- * garbage SDF data and never activated.
+ * individual-extent pixels + one pixel per vertex. Raw geodetic `(lon, lat)`
+ * pairs omit those headers and are incompatible with the SDF compute shader,
+ * which is a port of `PolygonSignedDistanceFS.glsl`; using that layout
+ * produces unusable SDF data and prevents clipping from activating.
  *
  * Consumers: `WebGPUEffectsBindGroup.createEffectsBindGroup` binds
  * `cache.signedDistanceTextureView` + `cache.sdfSampler` at effects bindings
@@ -46,7 +45,7 @@ interface PackedPolygonLayout {
   extentsCount: number;
 }
 
-/** Minimal interface for the upstream ClippingPolygonCollection. */
+/** Minimal interface for ClippingPolygonCollection. */
 interface ClippingPolygonCollectionLike {
   length: number;
   quality?: number;
@@ -65,7 +64,7 @@ interface ClippingPolygonCache {
   signedDistanceTexture: GPUTexture | null;
   signedDistanceTextureView: GPUTextureView | null;
   sdfSampler: GPUSampler | null;
-  // Change detection — mirrors the upstream heuristic (re-pack when the
+  // Change detection mirrors the WebGL heuristic: repack when the
   // total number of positions or the polygon count changes; per-vertex
   // edits with a constant count are not tracked, same as WebGL).
   lastTotalPositions: number;
@@ -163,7 +162,7 @@ function updateWebGPUClippingPolygons(
   // Signed distance atlas (r32float, filterable via the float32-filterable
   // device feature the context requests at init — same assumption the
   // effects placeholder SDF texture already makes). Size matches the
-  // upstream `getClippingDistanceTextureResolution` quality convention.
+  // `getClippingDistanceTextureResolution` quality convention.
   const quality = collection.quality ?? 1.0;
   const sdfSize = Math.min(Math.max(128, Math.ceil(4096 * quality)), maxDim);
   if (cache.signedDistanceTexture) {
@@ -181,7 +180,8 @@ function updateWebGPUClippingPolygons(
   cache.signedDistanceTextureView = cache.signedDistanceTexture.createView();
 
   if (!cache.sdfSampler) {
-    // LINEAR + CLAMP — matches the upstream WebGL signed-distance sampler.
+    // Linear filtering with clamp-to-edge matches the WebGL
+    // signed-distance sampler.
     cache.sdfSampler = device.createSampler({
       label: "ClippingPolygon SDF sampler",
       minFilter: "linear",
@@ -256,9 +256,8 @@ function computePolygonSDF(
       code: PolygonSignedDistanceWGSL,
     });
 
-    // C-R7-COMPUTE-PIPELINE-CACHE (Batch 76) — route through the central
-    // cache. Module-level singleton means dedup matters when two
-    // contexts on the same device both need polygon clipping.
+    // Route through the central cache. This module-level singleton must be
+    // deduplicated when two contexts on the same device need polygon clipping.
     const sdfPipelineLayout = device.createPipelineLayout({
       bindGroupLayouts: [_sdfBindGroupLayout],
     });

@@ -3,7 +3,7 @@
 // Uses RTE (Relative-To-Eye) for 64-bit precision at planetary scale
 // Vertex: posHigh(3) + posLow(3) + st(2) = 8 floats = 32 bytes
 // Camera UBO: group(0) binding(0) — Material UBO: group(1) binding(0)
-// Effects UBO: group(2) binding(0) — aerial-perspective LUT only (FEAT-GAP-09)
+// Effects UBO: group(2) binding(0) — aerial-perspective lookup controls only
 
 struct VertexInput {
     @location(0) positionHigh: vec3<f32>,
@@ -14,8 +14,7 @@ struct VertexInput {
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
     @location(0) texCoord: vec2<f32>,
-    // FEAT-GAP-09 (Batch 97) — eye-space position needed for the
-    // aerial-perspective fog block in fragmentMain.
+    // Eye-space position consumed by the aerial-perspective fog block.
     @location(1) eyePosition: vec3<f32>,
     //>>ifdef LOG_DEPTH
     // Interpolated linear depthFromNearPlusOne; the FS converts it to frag_depth.
@@ -29,16 +28,16 @@ struct CameraUniforms {
     _pad0: f32,
     encodedCameraLow: vec3<f32>,
     _pad1: f32,
-    // DP-H41 (Batch 27) — previous frame's viewProjection for
-    // TAA / motion-vector reprojection. Sourced from
-    // `UniformState._previousViewProjection` (f32 mat4).
+    // Previous frame's view-projection matrix for temporal antialiasing and
+    // motion-vector reprojection, supplied by
+    // `UniformState._previousViewProjection`.
     previousViewProjection: mat4x4<f32>,
     //>>ifdef LOG_DEPTH
-    // ─── Renderer-wide log depth (Approach A) ───
+    // Renderer-wide log-depth parameters:
     //   x = frustum near, y = frustum far,
     //   z = oneOverLog2FarDepthFromNearPlusOne (the log-depth factor),
     //   w = reserved. Packed by WebGPUPrimitiveCommands.writeRTEUniformsFlat
-    // into the 16-byte FLAT UB tail (FLAT_CAMERA_BYTES 160 -> 176).
+    // into the 16-byte flat UBO tail (FLAT_CAMERA_BYTES 160 -> 176).
     logDepth: vec4<f32>,
     //>>endif
 }
@@ -47,12 +46,11 @@ struct MaterialUniforms {
     color: vec4<f32>,
 }
 
-// FEAT-GAP-09 (Batch 97) — truncated EffectsUniforms struct, sized to
-// reach the `atmosphereLutControl: vec4<f32>` slot at byte offset 240
-// in the shared 480-byte UBO (see `WebGPUEffectsBindGroup.js`). Reading
-// less than the full UBO is safe — WGSL just sees the prefix. The
-// clipping fields are kept to maintain the byte layout even though
-// Flat shaders don't currently call any clipping helpers.
+// Prefix of the shared 480-byte effects uniform buffer through
+// `atmosphereLutControl` at byte offset 240. Its layout matches
+// `WebGPUEffectsBindGroup.js`; WGSL may declare only the prefix it reads.
+// The clipping fields preserve their offsets even though flat shaders do not
+// call clipping helpers.
 struct EffectsUniforms {
     shadowMatrix: mat4x4<f32>,
     shadowMapSize: vec2<f32>,
@@ -71,7 +69,7 @@ struct EffectsUniforms {
 @group(1) @binding(0) var<uniform> material: MaterialUniforms;
 
 @group(2) @binding(0) var<uniform> effects: EffectsUniforms;
-// FEAT-GAP-09 (Batch 97) — aerial-perspective LUT bindings 7/8/9.
+// Aerial-perspective lookup textures at bindings 7, 8, and 9.
 // Always populated by `WebGPUEffectsBindGroup`; placeholder 1×1
 // textures when the LUT is inactive. Gated by
 // `effects.atmosphereLutControl.x > 0.5` in fragmentMain so the off-
@@ -81,8 +79,8 @@ struct EffectsUniforms {
 @group(2) @binding(9) var atmosphereLutSampler: sampler;
 
 //>>ifdef LOG_DEPTH
-// Renderer-wide log depth (Approach A). Mirror of PrimitivePhongColor.wgsl —
-// keep byte-compatible. near/far/factor come from camera.logDepth. The FS swaps
+// Renderer-wide log-depth helpers mirror PrimitivePhongColor.wgsl and must
+// remain byte-compatible. near/far/factor come from camera.logDepth. The FS swaps
 // to a FragOut struct so it can write @builtin(frag_depth) alongside the color.
 struct FragOut {
     @location(0) color: vec4<f32>,
@@ -137,9 +135,8 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     //>>endif
     var finalColor = material.color;
 
-    // FEAT-GAP-09 (Batch 97) — Aerial-perspective fog blend. Mirrors
-    // the pattern in `PrimitiveBasicColor.wgsl::fragmentMain`. Sample
-    // the pre-integrated LUT by (cos view-zenith, camera altitude) and
+    // Aerial-perspective fog matches `PrimitiveBasicColor.wgsl::fragmentMain`.
+    // Sample the pre-integrated LUT by (cos view-zenith, camera altitude) and
     // lerp the surface color toward inscatter by (1 - transmittance).
     if (effects.atmosphereLutControl.x > 0.5) {
         let innerRadius = effects.atmosphereLutControl.y;

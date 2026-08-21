@@ -1,7 +1,7 @@
 // PolylineColorAppearance.wgsl
 //
-// COLOR slice of NEW-POLYLINE-APPEARANCE-PRIMITIVE-WEBGPU. WGSL port of
-// Appearances/PolylineColorAppearanceVS.glsl + PerInstanceFlatColorAppearanceFS.
+// WGSL port of Appearances/PolylineColorAppearanceVS.glsl and
+// PerInstanceFlatColorAppearanceFS.glsl.
 //
 // Renders a `Primitive` with `PolylineColorAppearance` over a
 // `PolylineGeometry`. The geometry emits 4 coincident quad vertices per
@@ -10,8 +10,9 @@
 // requested pixel width via the ported PolylineCommon window-coordinate
 // math (csm_getPolylineWindowCoordinates).
 //
-// Vertex layout (96 bytes, 24 floats — must match getPolylineAppearanceVertexLayout
-// in WebGPUPrimitiveShaders.js AND the packer in WebGPUPrimitiveCommands.js):
+// The 96-byte (24-float) vertex layout is shared by these helpers:
+//   WebGPUPrimitiveShaders.js#getPolylineAppearanceVertexLayout
+//   WebGPUPrimitiveCommands.js
 //   loc0 positionHigh   vec3 @0
 //   loc1 positionLow    vec3 @12
 //   loc2 prevPositionHigh vec3 @24
@@ -21,7 +22,7 @@
 //   loc6 expandAndWidth  vec2 @72
 //   loc7 color           vec4 @80
 //
-// RTE: positions are subtracted from the encoded camera FIRST
+// RTE positions subtract the encoded camera first
 // (translateRelativeToEye), never posHigh+posLow directly.
 
 struct VertexInput {
@@ -33,7 +34,7 @@ struct VertexInput {
     @location(5) nextPositionLow: vec3<f32>,
     @location(6) expandAndWidth: vec2<f32>,
     @location(7) color: vec4<f32>,
-    // 376b — projected 2D positions (blended with 3D by camera.morph.x).
+    // Projected 2D positions, blended with 3D by camera.morph.x.
     @location(8) position2DHigh: vec3<f32>,
     @location(9) position2DLow: vec3<f32>,
     @location(10) prevPosition2DHigh: vec3<f32>,
@@ -55,7 +56,7 @@ struct VertexOutput {
 // polyline window-coordinate math needs. Field order + padding are
 // byte-locked to writeRTEUniformsPolyline in WebGPUPrimitiveCommands.js.
 //
-//   float 0-15  mvpRelativeToEye        (parity; VS uses the ortho path)
+//   float 0-15  mvpRelativeToEye        (the vertex stage uses the ortho path)
 //   float 16-19 encodedCameraHigh + pad
 //   float 20-23 encodedCameraLow  + pad
 //   float 24-39 projection
@@ -65,7 +66,7 @@ struct VertexOutput {
 //   float 88    pixelRatio
 //   float 89    currentFrustumNear
 //   float 90-91 pad
-//   float 92-95 logDepth (near, far, factor, reserved) — 376c, packed by
+//   float 92-95 logDepth (near, far, factor, reserved), packed by
 //               writeLogDepthTail; read only inside //>>ifdef LOG_DEPTH
 struct CameraUniforms {
     mvpRelativeToEye: mat4x4<f32>,
@@ -81,7 +82,7 @@ struct CameraUniforms {
     currentFrustumNear: f32,
     _pad2: vec2<f32>,
     logDepth: vec4<f32>,
-    // 376b — morph.x = morphTime (3D=1, 2D/CV=0) @ float 96.
+    // morph.x = morphTime (3D=1, 2D/CV=0) at float 96.
     morph: vec4<f32>,
 }
 
@@ -111,8 +112,8 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
     let width: f32 = abs(input.expandAndWidth.y) + 0.5;
     let usePrev: bool = input.expandAndWidth.y < 0.0;
 
-    // 376b — czm_computePosition: blend 3D↔2D positions by morphTime (3D-only
-    // before this batch; 2D/CV transformed 3D ECEF through the 2D camera → 0px).
+    // Blend the encoded 3D and 2D positions by morphTime. Feeding 3D ECEF
+    // positions directly through a 2D/CV camera collapses the projected width.
     let p: vec4<f32> = csm_computePolylinePosition(
         input.positionHigh, input.positionLow,
         input.position2DHigh, input.position2DLow,

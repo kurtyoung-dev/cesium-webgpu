@@ -2,45 +2,12 @@
 /**
  * WebGPU Translucent Tile Classification
  *
- * Original purpose (Batch 47): WebGPU equivalent of
- * `Scene/TranslucentTileClassification.js`. Enables classification
- * overlays to clamp to translucent 3D-tile surface depth instead of
- * falling through to the opaque globe depth underneath.
+ * WebGPU equivalent of `Scene/TranslucentTileClassification.js`. It captures
+ * and packs the front-most translucent 3D-tile surface depth so classification
+ * overlays clamp to that surface instead of falling through to the opaque
+ * globe depth underneath. The shipped path is consumed by the depth-sampling
+ * classifier in `WebGPUGroundPrimitiveRenderer` and provides:
  *
- * **Migration Session 5 (Batch 85, ADR-2026-04-28) — current role:**
- * the depth-sample classifier
- * (`WebGPUGroundPrimitiveRenderer`) is the runtime consumer of this
- * module. The depth-pack pipeline is still active and produces
- * `_packedTranslucentDepthView` per frame; the depth-sample classifier
- * (Migration Session 2) reads it as the source of front-most
- * translucent surface depth. The depth-sample classifier draws
- * directly into scene color, so the prior accumulation-FBO + composite
- * scaffolding is no longer wired:
- *
- *   - `_runTranslucentTileClassificationComposite` was removed from
- *     `WebGPUSceneRenderer`; nothing now calls `composite()`.
- *   - `_classificationColorTexture` / `_classificationColorView` are
- *     allocated but never written. They are inert until a future
- *     cleanup batch removes them.
- *   - The composite pipeline (`_compositePipeline`, `_compositeBGL`,
- *     `_compositeBindGroup`, `_compositeShaderModule`,
- *     `COMPOSITE_WGSL`, `_ensureCompositePipeline`) is similarly
- *     allocated but unreferenced.
- *
- * Removing the unused scaffolding cleanly is a follow-up batch (~100
- * LOC of careful surgery in this file). It was deferred from Session 5
- * to keep the migration's runtime correctness changes isolated from
- * code-removal churn.
- *
- * **MSAA (Batch 61, C-R8-TRANSLUCENT-DEPTH-MSAA):** scenes with
- * `sampleCount > 1` are no longer skipped. The MSAA pack pipeline
- * binds the scene depth texture as `texture_depth_multisampled_2d` on
- * both opaque and translucent slots and reads sample 0 via
- * `textureLoad`. Output is byte-equivalent to the single-sample copy +
- * pack path's output, so the downstream depth-sample classifier
- * doesn't need MSAA-aware changes.
- *
- * **Current responsibilities:**
  *   - Per-frame translucent depth capture
  *     (`executeTranslucentDepthPass`).
  *   - Per-frame depth pack to RGBA8 color
@@ -50,11 +17,19 @@
  *     `WebGPUSceneRenderer` reads after `executePackDepth` and
  *     publishes on `context._packedTranslucentDepthView`.
  *
- * **What's still a no-op (legacy scaffolding):**
- *   - The accumulation target + composite pipeline (see Session 5
- *     migration note above).
- *   - `executeClassificationPass` — kept as part of the public surface
- *     parity but not invoked.
+ * Multi-frustum colour accumulation was superseded: the shipped depth-sampling
+ * classifier draws directly into scene colour and needs neither the
+ * accumulation target (_classificationColorTexture /
+ * _classificationColorView) nor the composite pipeline (composite,
+ * COMPOSITE_WGSL, the _composite* resources). They are retained deliberately,
+ * and their removal is a separate scoped
+ * cleanup rather than incidental dead-code pruning - do not delete them as a
+ * side effect of unrelated work.
+ *
+ * Multisampled scenes use a separate pack pipeline that binds scene depth as
+ * `texture_depth_multisampled_2d` and reads sample 0 with `textureLoad`. Its
+ * packed output matches the single-sample path, so downstream classifiers do
+ * not need an MSAA-specific interface.
  *
  * @module WebGPUTranslucentTileClassification
  * @private
@@ -113,19 +88,17 @@ fn fragmentMain(in: VertexOutput) -> @location(0) vec4<f32> {
 }
 `;
 
-// C-R8-TRANSLUCENT-DEPTH-MSAA (Batch 61) — MSAA variant of the
-// compare-and-pack pipeline. WGSL `textureSample` cannot read a
+// Multisampled compare-and-pack variant. WGSL `textureSample` cannot read a
 // `texture_depth_multisampled_2d`, and MSAA depth attachments cannot be
-// MSAA-resolved via a render-pass `resolveTarget` (only color targets
-// support that). The workaround mirrors the Batch 43 globe-depth path:
-// bind both depth sources as `texture_depth_multisampled_2d` and read
-// `sampleIndex = 0` via `textureLoad`.
+// MSAA-resolved via a render-pass `resolveTarget` (only color targets support
+// that). Bind both depth sources as `texture_depth_multisampled_2d` and read
+// `sampleIndex = 0` via `textureLoad` instead.
 //
 // Sample 0 is the canonical "first hit" used elsewhere in the project
 // (see `DEPTH_COPY_MSAA_WGSL` in `WebGPUGlobeDepth.ts`). For translucent
 // classification specifically, sample 0 produces output equivalent to
 // the single-sample copy path: the WebGL `CompareAndPackTranslucentDepth`
-// reference also operates on the resolved single-sample depth, and our
+// reference also operates on the resolved single-sample depth, and the
 // `_translucentDepthTexture` (single-sample, populated via
 // `copyTextureToTexture`) is itself the result of an implicit
 // resolve-by-copy on the single-sample side. Per-sample averaging would
@@ -135,11 +108,10 @@ fn fragmentMain(in: VertexOutput) -> @location(0) vec4<f32> {
 // sample is sufficient. No sampler binding is needed (textureLoad is
 // unsampled).
 //
-// In MSAA mode the FIRST-CUT scope is preserved: both opaque and
-// translucent depth come from the same scene framebuffer depth texture
-// (the over-broad capture the single-sample path also uses). With
-// translucentDepth == opaqueDepth, the `>` test is always false, so
-// the packed output is the scene depth — same end result as the
+// In multisample mode both opaque and translucent depth come from the same
+// scene framebuffer depth texture (the over-broad capture the single-sample
+// path also uses). With translucentDepth == opaqueDepth, the `>` test is always
+// false, so the packed output is the scene depth — same end result as the
 // single-sample copy + pack would produce.
 const COMPARE_AND_PACK_MSAA_WGSL = /* wgsl */ `
 @group(0) @binding(0) var opaqueDepthTex: texture_depth_multisampled_2d;
@@ -253,8 +225,8 @@ export class WebGPUTranslucentTileClassification {
   private _packBGL: GPUBindGroupLayout | null = null;
   private _packBindGroup: GPUBindGroup | null = null;
 
-  // C-R8-TRANSLUCENT-DEPTH-MSAA (Batch 61) — MSAA variant of the pack
-  // pipeline. Separate pipeline + bind group layout because the shader
+  // Multisampled pack variant. It needs a separate pipeline and bind group
+  // layout because the shader
   // binding type changes from `texture_depth_2d` to
   // `texture_depth_multisampled_2d` and the layout must declare
   // `multisampled: true` on each depth texture entry. Bind group has
@@ -264,7 +236,10 @@ export class WebGPUTranslucentTileClassification {
   private _packMSAABindGroup: GPUBindGroup | null = null;
   private _packMSAAShaderModule: GPUShaderModule | null = null;
 
-  // Composite pipeline: reads classification color, blends over scene.
+  // Composite pipeline for the unfinished multi-frustum path: reads the
+  // classification accumulation color and blends it over the scene. These
+  // resources are intentionally retained even while no shipped call site
+  // dispatches them.
   private _compositePipeline: GPURenderPipeline | null = null;
   private _compositeBGL: GPUBindGroupLayout | null = null;
   private _compositeBindGroup: GPUBindGroup | null = null;
@@ -276,8 +251,8 @@ export class WebGPUTranslucentTileClassification {
   // Per-frame state — set by `prepareForFrame()` and consumed by
   // downstream `execute*` calls.
   private _hasTranslucentDepth: boolean = false;
-  // C-R8-TRANSLUCENT-DEPTH-MSAA (Batch 61) — when MSAA depth was
-  // captured, `executePackDepth` must route through the MSAA pipeline
+  // When multisampled depth was captured, `executePackDepth` must route
+  // through the multisampled pipeline
   // and bind the scene depth texture directly (no copy was performed).
   // Set by `executeTranslucentDepthPass`; consumed + cleared semantics
   // are per-frame via `prepareForFrame`.
@@ -344,7 +319,7 @@ export class WebGPUTranslucentTileClassification {
     // when the depth-only-command derivation lands this becomes the
     // actual render target for those depth-only draws.
     //
-    // NEW-4-I (Batch 71): format must match the scene FB depth attachment
+    // The format must match the scene framebuffer depth attachment
     // (`SceneFramebuffer-Color_depth`), which is `depth24plus-stencil8`
     // because the scene FB carries stencil for InvertClassification. The
     // `copyTextureToTexture` call in `executeTranslucentDepthPass` rejects
@@ -414,8 +389,7 @@ export class WebGPUTranslucentTileClassification {
    * Capture translucent depth by copying from `sceneDepthTexture` AFTER
    * the main translucent pass ends.
    *
-   * **Selectivity (C-R8-TRANSLUCENT-DEPTH-ONLY, Batch 78):** the broad
-   * scene-depth copy is now gated on whether ANY command in the current
+   * The broad scene-depth copy is gated on whether any command in the current
    * frustum carries `depthForTranslucentClassification === true`. When
    * no commands are flagged (most scenes — only 3D-tilesets ever set
    * the flag, via `Cesium3DTile.js:1084`), the entire pack-depth
@@ -423,13 +397,10 @@ export class WebGPUTranslucentTileClassification {
    * pack pass downstream. Saves a per-frustum copy when nothing reads
    * the result.
    *
-   * **Still over-broad when active:** when at least one flagged command
-   * exists, the implementation still uses the scene-depth copy path
-   * (captures ALL translucent geometry, not just 3D-tile content).
-   * Producing the truly selective render needs depth-only WGSL pipeline
-   * variants per command — folded into the C-R8-TRANSLUCENT-MULTI-FRUSTUM
-   * work because the per-frustum render pass restructure is the natural
-   * place for it.
+   * When at least one flagged command exists, the copy still captures all
+   * translucent geometry rather than only 3D-tile content. A selective path
+   * requires depth-only WGSL variants per command and per-frustum routing;
+   * neither part is implemented yet.
    */
   executeTranslucentDepthPass(
     encoder: GPUCommandEncoder,
@@ -439,8 +410,8 @@ export class WebGPUTranslucentTileClassification {
     if (!this._device || !sceneDepthTexture) return;
     if (!this._translucentDepthTexture) return;
     if (!flaggedCommandsPresent) {
-      // C-R8-TRANSLUCENT-DEPTH-ONLY (Batch 78) — no `depthForTranslucent-
-      // Classification` commands in this frustum; the captured depth
+      // No `depthForTranslucentClassification` commands are present in this
+      // frustum, so the captured depth
       // would feed nothing useful. Clear the in-flight flag so
       // `executePackDepth` is a no-op + `composite` correctly skips.
       this._msaaSourceDepthTexture = null;
@@ -452,16 +423,16 @@ export class WebGPUTranslucentTileClassification {
       (sceneDepthTexture as unknown as { sampleCount?: number }).sampleCount ??
       1;
     if (sampleCount > 1) {
-      // C-R8-TRANSLUCENT-DEPTH-MSAA (Batch 61) — MSAA scene depth
-      // cannot be copied via `copyTextureToTexture` (the platform
-      // requires `sampleCount === destination.sampleCount`, and our
+      // Multisampled scene depth cannot be copied via `copyTextureToTexture`
+      // because the platform requires
+      // `sampleCount === destination.sampleCount`, and the owned
       // `_translucentDepthTexture` is single-sample on purpose so the
-      // single-sample pack pipeline can sample it). Instead of copying,
-      // record the source texture and let `executePackDepth` route
-      // through the MSAA-variant pipeline that reads it directly via
+      // single-sample pack pipeline can sample it). Instead of copying, record
+      // the source texture and let `executePackDepth` route through the
+      // MSAA-variant pipeline that reads it directly via
       // `textureLoad(coord, 0)`.
       //
-      // First-cut scope is preserved: opaque AND translucent depth both
+      // Opaque and translucent depth both
       // come from the same scene framebuffer depth (over-broad — same
       // limitation as the single-sample path), so the WGSL `if
       // (translucentDepth > opaqueDepth)` test never trips, and the
@@ -472,21 +443,19 @@ export class WebGPUTranslucentTileClassification {
       return;
     }
 
-    // Single-sample path: copy from scene depth into our owned target
+    // Single-sample path: copy from scene depth into the owned target
     // so the pack pipeline can sample it as `texture_depth_2d`. The
     // scene depth has `COPY_SRC` by virtue of how the framebuffer is
     // allocated (`WebGPURenderTarget.createTextures` adds the bit when
     // `depthSamplable` is true); runtime mismatches surface as a
     // validation error in the same call.
     //
-    // Aspect must be `"all"` (not `"depth-only"`) — the WebGPU spec
-    // rejects `aspect: "depth-only"` for `copyTextureToTexture` when
-    // the texture format carries a stencil aspect. Both sides are
-    // `Depth24PlusStencil8` (after Batch 71's depth-format alignment),
-    // so `"all"` is the only valid copy aspect. The pack pipeline's
-    // sampleable view (allocated above with `aspect: "depth-only"`)
-    // only binds the depth channel, so the stencil bytes copied into
-    // the destination are inert.
+    // Aspect must be `"all"` (not `"depth-only"`) — the WebGPU spec rejects
+    // `aspect: "depth-only"` for `copyTextureToTexture` when the texture format
+    // carries a stencil aspect. Both sides are `Depth24PlusStencil8`, so
+    // `"all"` is the only valid copy aspect. The pack pipeline's sampleable
+    // view (allocated above with `aspect: "depth-only"`) only binds the depth
+    // channel, so the stencil bytes copied into the destination are inert.
     encoder.copyTextureToTexture(
       { texture: sceneDepthTexture, aspect: "all" },
       { texture: this._translucentDepthTexture, aspect: "all" },
@@ -552,14 +521,13 @@ export class WebGPUTranslucentTileClassification {
   }
 
   /**
-   * C-R8-TRANSLUCENT-DEPTH-MSAA (Batch 61) — MSAA pack path. Binds the
-   * MSAA scene depth as both opaque and translucent inputs (the
-   * first-cut over-broad capture means they're the same texture); the
-   * MSAA-variant shader reads sample 0 via `textureLoad`. Identical
-   * downstream output to the single-sample copy + pack — same
-   * `_packedDepthTexture` is written, so the composite pass and any
-   * classification-pipeline `globeDepthTexture` consumer don't need
-   * MSAA-aware changes.
+   * Packs multisampled depth by binding scene depth as both opaque and
+   * translucent inputs (the first-cut over-broad capture means they're the
+   * same texture); the MSAA-variant shader reads sample 0 via `textureLoad`.
+   * Identical downstream output to the single-sample copy + pack — same
+   * `_packedDepthTexture` is written, so the composite pass and
+   * any classification-pipeline `globeDepthTexture` consumer
+   * don't need MSAA-aware changes.
    */
   private _executePackDepthMSAA(
     encoder: GPUCommandEncoder,
@@ -740,10 +708,9 @@ export class WebGPUTranslucentTileClassification {
   }
 
   /**
-   * C-R8-TRANSLUCENT-DEPTH-MSAA (Batch 61) — lazily build the MSAA
-   * variant of the pack pipeline. Bind group layout has two
-   * `multisampled: true` depth texture slots and no sampler. Pipeline
-   * is single-sample (it writes to the single-sample
+   * Lazily builds the multisampled variant of the pack pipeline. Its bind group
+   * layout has two `multisampled: true` depth texture slots and no sampler.
+   * Pipeline is single-sample (it writes to the single-sample
    * `_packedDepthTexture`); only the source bindings are multisampled.
    */
   private _ensurePackMSAAPipeline(): void {

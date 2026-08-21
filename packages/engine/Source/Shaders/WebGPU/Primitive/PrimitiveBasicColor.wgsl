@@ -23,22 +23,22 @@ struct VertexOutput {
 struct CameraUniforms {
     mvpRelativeToEye: mat4x4<f32>,
     encodedCameraHigh: vec3<f32>,
-    // C4-PLAIN-HDR-GAMMA-TAILS — czm_gamma when scene.highDynamicRange is on,
-    // else 0. Gates the per-instance color sRGB→linear decode in fragmentMain
-    // (mirrors WebGL PerInstanceFlatColorAppearanceFS czm_gammaCorrect).
+    // Holds czm_gamma when high dynamic range is enabled, otherwise zero.
+    // fragmentMain uses it to match the per-instance color conversion in
+    // WebGL's PerInstanceFlatColorAppearanceFS.
     hdrGamma: f32,
     encodedCameraLow: vec3<f32>,
     _pad1: f32,
-    // DP-H41 (Batch 27) — previous frame's viewProjection for
-    // TAA / motion-vector reprojection. Sourced from
-    // `UniformState._previousViewProjection` (f32 mat4).
+    // Previous frame's view-projection matrix for temporal antialiasing and
+    // motion-vector reprojection, supplied by
+    // `UniformState._previousViewProjection`.
     previousViewProjection: mat4x4<f32>,
     //>>ifdef LOG_DEPTH
-    // ─── Renderer-wide log depth (Approach A) ───
+    // Renderer-wide logarithmic-depth parameters:
     //   x = frustum near, y = frustum far,
     //   z = oneOverLog2FarDepthFromNearPlusOne (the log-depth factor),
     //   w = reserved. Packed by WebGPUPrimitiveCommands.writeRTEUniformsFlat
-    // into the 16-byte FLAT UB tail (FLAT_CAMERA_BYTES 160 -> 176).
+    // into the 16-byte flat-camera tail (FLAT_CAMERA_BYTES, 160 to 176 bytes).
     logDepth: vec4<f32>,
     //>>endif
 }
@@ -50,11 +50,10 @@ struct MaterialUniforms {
 @group(0) @binding(0) var<uniform> camera: CameraUniforms;
 @group(1) @binding(0) var<uniform> material: MaterialUniforms;
 
-// ─── Effects bind group (clipping + aerial-perspective LUT) ───
-// FEAT-GAP-09 (Batch 94) — struct extended to reach atmosphereLutControl.
-// The shared `getEffectsBindGroupLayout` UBO is 480+ bytes; flat shaders
-// previously truncated at ~80 bytes (clipping only). Reading past the
-// truncation is safe — the shader just sees more of the same buffer.
+// Effects bind group for clipping and aerial-perspective lookup textures.
+// The shared getEffectsBindGroupLayout uniform buffer is at least 480 bytes.
+// This shader declares its prefix through atmosphereLutControl and reads no
+// later fields; binding the larger shared buffer is valid for that prefix.
 struct EffectsUniforms {
     shadowMatrix: mat4x4<f32>,
     shadowMapSize: vec2<f32>,
@@ -74,18 +73,18 @@ struct EffectsUniforms {
 @group(2) @binding(2) var shadowCompSampler: sampler_comparison;
 @group(2) @binding(3) var clippingPlaneTex: texture_2d<f32>;
 @group(2) @binding(4) var clippingPlaneSampler: sampler;
-// FEAT-GAP-09 (Batch 94) — aerial-perspective LUT bindings 7/8/9. Always
-// populated by WebGPUEffectsBindGroup; placeholder 1×1 textures when the
-// LUT is inactive. Gated by `effects.atmosphereLutControl.x > 0.5` in
-// fragmentMain so the off-path costs only one uniform compare.
+// Aerial-perspective lookup textures at bindings 7, 8, and 9 are always
+// populated by WebGPUEffectsBindGroup. Inactive lookup tables use 1×1
+// placeholders and fragmentMain gates sampling on atmosphereLutControl.x,
+// leaving one uniform comparison on the disabled path.
 @group(2) @binding(7) var atmosphereTransmittanceLut: texture_2d<f32>;
 @group(2) @binding(8) var atmosphereInscatterLut: texture_2d<f32>;
 @group(2) @binding(9) var atmosphereLutSampler: sampler;
 
 //>>ifdef LOG_DEPTH
-// Renderer-wide log depth (Approach A). Mirror of PrimitivePhongColor.wgsl —
-// keep byte-compatible. near/far/factor come from camera.logDepth. The FS swaps
-// to a FragOut struct so it can write @builtin(frag_depth) alongside the color.
+// The logarithmic-depth layout matches PrimitivePhongColor.wgsl. Near, far,
+// and the logarithmic factor come from camera.logDepth; FragOut carries
+// @builtin(frag_depth) alongside color.
 struct FragOut {
     @location(0) color: vec4<f32>,
     @builtin(frag_depth) depth: f32,
@@ -128,7 +127,7 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
     return output;
 }
 
-// ─── Clipping planes ───
+// Clipping planes.
 fn clipByPlanes(eyePos: vec3<f32>) -> bool {
     let count = effects.clippingPlaneCount;
     if (count == 0u) { return false; }
@@ -187,12 +186,10 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
 
     var finalColor = input.color;
 
-    // C4-PLAIN-HDR-GAMMA-TAILS — HDR sRGB→linear decode of the per-instance
-    // color, mirroring WebGL PerInstanceFlatColorAppearanceFS's
-    // `czm_gammaCorrect(v_color)` (`#ifdef HDR`, identity in SDR). Applied
-    // before the fork's aerial-perspective blend so both backends feed the
-    // same linear color into fog + the PP tonemapper. `camera.hdrGamma` is 0
-    // on the default SDR path → skipped → byte-identical.
+    // Decode the per-instance color from sRGB to linear before the
+    // aerial-perspective blend, matching WebGL's czm_gammaCorrect order.
+    // Both backends then feed linear color to fog and post-process tone
+    // mapping. camera.hdrGamma is zero in SDR, leaving the color unchanged.
     if (camera.hdrGamma > 0.5) {
         finalColor = vec4<f32>(
             pow(max(finalColor.rgb, vec3<f32>(0.0)), vec3<f32>(camera.hdrGamma)),
@@ -200,10 +197,9 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
         );
     }
 
-    // FEAT-GAP-09 (Batch 94) — Aerial-perspective fog blend. Mirrors the
-    // pattern in PrimitiveMatColorLit.wgsl L274-310. Sample the
-    // pre-integrated LUT by (cos view-zenith, camera altitude) and lerp
-    // the lit color toward inscatter by (1 - transmittance).
+    // The aerial-perspective blend matches PrimitiveMatColorLit.wgsl. Sample
+    // the pre-integrated lookup table by cosine of view zenith and camera
+    // altitude, then blend toward inscatter by one minus transmittance.
     if (effects.atmosphereLutControl.x > 0.5) {
         let innerRadius = effects.atmosphereLutControl.y;
         let thickness = max(1.0, effects.atmosphereLutControl.z);

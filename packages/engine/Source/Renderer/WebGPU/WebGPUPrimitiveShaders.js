@@ -13,9 +13,8 @@
  */
 import defined from "../../Core/defined.js";
 
-// DP-H22 — dedupe warnings for material types that don't have a
-// material-pipeline-compatible WGSL shader. Set-of-type once-emitted
-// so long-running apps don't flood the console.
+// Emit one warning per material type that lacks a compatible WGSL shader so
+// long-running applications do not flood the console.
 const _warnedMissingMaterial = new Set();
 function _warnMissingMaterialOnce(materialType) {
   if (_warnedMissingMaterial.has(materialType)) {
@@ -23,10 +22,8 @@ function _warnMissingMaterialOnce(materialType) {
   }
   _warnedMissingMaterial.add(materialType);
   //>>includeStart('debug', pragmas.debug);
-  // Batch 25 — ElevationBand shipped with dedicated WGSL shaders, so
-  // it's no longer a fallback case. The remaining warned-about types
-  // are all Polyline* materials which only render through a
-  // PolylineCollection (their vertex layout is collection-specific).
+  // The warned-about types are Polyline materials, whose collection-specific
+  // vertex layout cannot be used by arbitrary primitives.
   console.warn(
     `[WebGPU:Primitive] Material type "${materialType}" is not supported on this pipeline — falling back to Color. ` +
       `${materialType} materials only render through PolylineCollection, not on arbitrary primitives — apply them to a PolylineCollection instead of setting Material.fromType("${materialType}") on a Box/Ellipsoid/etc.`,
@@ -89,33 +86,29 @@ import PrimitivePickMatFlat from "../../Shaders/WebGPU/Primitive/PrimitivePickMa
 import PrimitivePickMatLit from "../../Shaders/WebGPU/Primitive/PrimitivePickMatLit.js";
 import PrimitivePBRSimple from "../../Shaders/WebGPU/Primitive/PrimitivePBRSimple.js";
 import PrimitivePBRTextured from "../../Shaders/WebGPU/Primitive/PrimitivePBRTextured.js";
-// NEW-POLYLINE-APPEARANCE-PRIMITIVE-WEBGPU (COLOR slice) — a polyline
-// `Primitive` with `PolylineColorAppearance` over a `PolylineGeometry`.
-// The shader expands the 4 coincident quad vertices into a screen-space
+// This shader handles a `Primitive` with `PolylineColorAppearance` over a
+// `PolylineGeometry`. It expands four coincident quad vertices into a screen-space
 // ribbon via the ported PolylineCommon window-coordinate math.
 import PolylineColorAppearance from "../../Shaders/WebGPU/Primitive/PolylineColorAppearance.js";
 import csm_polylineCommon from "../../Shaders/WebGPU/chunks/functions/csm_polylineCommon.js";
-// NEW-POLYLINE-APPEARANCE-PRIMITIVE-WEBGPU (MATERIAL slice) — a polyline
-// `Primitive` with `PolylineMaterialAppearance` over a `PolylineGeometry`.
-// The shared polyline VS (color VS minus per-vertex color, plus `st`) feeds a
-// per-material-type FS (Color / Dash / Glow / Arrow / Outline). Each variant
-// carries the same `// @chunk functions/csm_polylineCommon` marker, so
-// getShaderSource prepends the (angle-capable) PolylineCommon functions.
+// These shaders handle a `Primitive` with `PolylineMaterialAppearance` over
+// a `PolylineGeometry`. The shared polyline VS (color VS minus per-vertex
+// color, plus `st`) feeds a per-material-type FS (Color / Dash / Glow / Arrow /
+// Outline). Each variant carries the same
+// `// @chunk functions/csm_polylineCommon` marker, so getShaderSource prepends
+// the (angle-capable) PolylineCommon functions.
 import PolylineMatColor from "../../Shaders/WebGPU/Primitive/PolylineMatColor.js";
-// 376d — textured polyline material (Image / DiffuseMap) — adds a @group(2)
-// texture+sampler the other PolylineMat* shaders lack.
+// Textured polyline materials add a group-2 texture and sampler that the other
+// PolylineMat shaders do not use.
 import PolylineMatImage from "../../Shaders/WebGPU/Primitive/PolylineMatImage.js";
 import PolylineMatDash from "../../Shaders/WebGPU/Primitive/PolylineMatDash.js";
 import PolylineMatGlow from "../../Shaders/WebGPU/Primitive/PolylineMatGlow.js";
 import PolylineMatArrow from "../../Shaders/WebGPU/Primitive/PolylineMatArrow.js";
 import PolylineMatOutline from "../../Shaders/WebGPU/Primitive/PolylineMatOutline.js";
 
-// Batch 165 — B.12 chunk extraction. Point-light cube depth comparison
-// is now a reusable WGSL function in `chunks/functions/csm_samplePointShadow`,
-// imported here and spliced into shaders that include the
-// `// @chunk csm_samplePointShadow` marker. Lets us add point-light cube
-// shadows to the remaining 20+ primitive lit shaders without copying
-// ~80 LOC of dominant-axis perspective-Z + 5-tap PCF math each time.
+// Point-light cube depth comparison is shared as a WGSL chunk. Shaders opt in
+// with the `// @chunk csm_samplePointShadow` marker, avoiding copies of the
+// dominant-axis perspective-depth and five-tap filtering implementation.
 import csm_samplePointShadow from "../../Shaders/WebGPU/chunks/functions/csm_samplePointShadow.js";
 
 // Splice chunks into a shader source if it carries the corresponding
@@ -123,22 +116,14 @@ import csm_samplePointShadow from "../../Shaders/WebGPU/chunks/functions/csm_sam
 // this is the lightest-weight equivalent — markers stay benign comments
 // when the chunk isn't injected (e.g., during isolated-shader testing),
 // so the shader file remains a valid WGSL source on disk.
-// Batch 139 — was a strict `"// @chunk csm_samplePointShadow"` substring
-// match. That bricked 9 shaders that had the marker on the same line as
-// other comment text (e.g., `// Batch 167 - B.12 chunk usage. @chunk
-// csm_samplePointShadow`) — the leading `// Batch 167...` prefix meant
-// the literal "// @chunk csm_samplePointShadow" substring never appeared
-// in source, so the chunk wasn't injected and every draw of those shaders
-// produced "unresolved call target" WGSL parse errors. Switched to a
-// regex that matches `@chunk csm_samplePointShadow` regardless of
-// leading comment text. Still requires the marker to be in a comment
-// (line starts with `//` after optional whitespace) so accidental matches
-// in WGSL code or string literals can't trigger injection.
+// Match the chunk directive anywhere in a comment line because generated WGSL
+// may put explanatory text before it. Requiring a comment-line prefix prevents
+// code and string literals from accidentally triggering injection.
 const POINT_SHADOW_MARKER_REGEX = /^\s*\/\/.*@chunk\s+csm_samplePointShadow\b/m;
-// NEW-POLYLINE-APPEARANCE-PRIMITIVE-WEBGPU — PolylineColorAppearance.wgsl
-// carries `// @chunk functions/csm_polylineCommon`; prepend the ported
-// PolylineCommon window-coordinate functions when the marker is present.
-// Same comment-only matching contract as the point-shadow marker.
+// PolylineColorAppearance.wgsl carries the PolylineCommon chunk
+// directive; prepend the ported PolylineCommon window-coordinate functions
+// when the marker is present. Same comment-only matching
+// contract as the point-shadow marker.
 const POLYLINE_COMMON_MARKER_REGEX =
   /^\s*\/\/.*@chunk\s+functions\/csm_polylineCommon\b/m;
 function injectChunks(src) {
@@ -217,9 +202,9 @@ const _shaderCache = {
   // PBR shaders
   pbrSimple: PrimitivePBRSimple,
   pbrTextured: PrimitivePBRTextured,
-  // NEW-POLYLINE-APPEARANCE-PRIMITIVE-WEBGPU (COLOR slice)
+  // Polyline color appearance
   polylineColor: PolylineColorAppearance,
-  // NEW-POLYLINE-APPEARANCE-PRIMITIVE-WEBGPU (MATERIAL slice)
+  // Polyline material appearances
   polylineMatColor: PolylineMatColor,
   polylineMatImage: PolylineMatImage,
   polylineMatDash: PolylineMatDash,
@@ -262,8 +247,8 @@ function getShaderSource(key) {
       `[WebGPUPrimitiveShaders] Unknown shader key: "${key}". Available: ${Object.keys(_shaderCache).join(", ")}`,
     );
   }
-  // Batch 165 — splice in chunks if the shader includes a marker
-  // comment. Cached so repeated calls don't re-allocate; safe because
+  // Splice in chunks when the shader includes a marker comment. Cache the
+  // result so repeated calls do not allocate; this is safe because
   // shader source strings are immutable once imported. Map (not WeakMap)
   // because keys are strings (primitives don't support WeakMap).
   if (!_chunkInjectedCache.has(source)) {
@@ -339,8 +324,8 @@ function selectWebGPUShader(attributes) {
 function getVertexLayoutForShader(shaderType, options) {
   const compressed = defined(options) && options.compressedVertices === true;
 
-  // DP-H19-SHADER-DECODE (Batch 27) — compressed variant for `phong`.
-  // Consumes a single f32 at location 2 (oct-packed normal) instead of
+  // The compressed `phong` variant consumes one f32 at location 2 for the
+  // octahedrally packed normal instead of
   // the plain `normal: vec3<f32>`. The compressed payload comes straight
   // from `compressedAttributes` (normal-only slot) without the CPU-side
   // octDecode expansion in `ensureUncompressedAttributes`. The material
@@ -429,8 +414,8 @@ function getVertexLayoutForShader(shaderType, options) {
 }
 
 /**
- * NEW-POLYLINE-APPEARANCE-PRIMITIVE-WEBGPU (COLOR slice) — vertex layout for
- * the polyline appearance shader. arrayStride 96 = 24 floats:
+ * Returns the vertex layout for the polyline color-appearance shader. Its
+ * original attributes occupy 96 bytes (24 floats):
  *   loc0 positionHigh   @0   (f32x3)
  *   loc1 positionLow    @12  (f32x3)
  *   loc2 prevPositionHigh @24 (f32x3)
@@ -445,7 +430,7 @@ function getVertexLayoutForShader(shaderType, options) {
  * @private
  */
 function getPolylineAppearanceVertexLayout() {
-  // 376b — 2D/CV/Morph: loc8-13 carry the projected 2D positions
+  // Locations 8-13 carry projected positions for 2D, Columbus View, and morphing
   // (position2DHigh/Low + prev/next 2D) so the VS can blend 3D↔2D by morphTime.
   // Stride 96→168 (24→42 floats). In scene3DOnly mode these attrs are absent in
   // the geometry; the packer zero-fills them and morphTime stays 1.0 (3D path).
@@ -475,8 +460,8 @@ function getPolylineAppearanceVertexLayout() {
 }
 
 /**
- * NEW-POLYLINE-APPEARANCE-PRIMITIVE-WEBGPU (MATERIAL slice) — selects the
- * polyline-material FS variant for a Cesium `Material`. The shared polyline VS
+ * Selects the polyline-material fragment variant for a Cesium `Material`.
+ * The shared polyline vertex shader
  * is the same across all variants; only the FS + MaterialUniforms struct
  * differ. PolylineDash / PolylineGlow / PolylineArrow / PolylineOutline route
  * to their dedicated WGSL; everything else (plain Color and any non-polyline
@@ -517,12 +502,10 @@ function selectPolylineMaterialShader(material) {
       needsTexture: false,
     };
   }
-  // 376d — textured Image material: sample a texture along the line via st.
-  // Scoped to `Image` ({ repeat: vec2, color: vec4 } + `image` texture).
-  // `DiffuseMap` has a DIFFERENT fabric ({ diffuse, alpha, image, repeat }) →
-  // its own uniform layout; routing it here would misread bytes, so it stays a
-  // follow-up (needs a PolylineMatDiffuseMap variant, like the surface path's
-  // separate matImageFlat vs matDiffuseMapFlat shaders).
+  // Image samples a texture along the line using `st` and has
+  // `{ repeat: vec2, color: vec4 }` plus its image texture. DiffuseMap has a
+  // different uniform layout, so routing it through this shader would read
+  // incompatible bytes; it falls through to the supported color material.
   if (materialType === "Image") {
     return {
       type: "polylineMatImage",
@@ -539,8 +522,8 @@ function selectPolylineMaterialShader(material) {
 }
 
 /**
- * NEW-POLYLINE-APPEARANCE-PRIMITIVE-WEBGPU (MATERIAL slice) — vertex layout for
- * the polyline-material shaders. The COLOR-slice attributes minus `color`, plus
+ * Returns the vertex layout for the polyline-material shaders. It uses the
+ * color-appearance attributes without `color`, plus
  * `st` (PolylineMaterialAppearance.VERTEX_FORMAT = POSITION_AND_ST). arrayStride
  * 88 = 22 floats:
  *   loc0 positionHigh     @0   (f32x3)
@@ -557,7 +540,7 @@ function selectPolylineMaterialShader(material) {
  * @private
  */
 function getPolylineMaterialVertexLayout() {
-  // 376b — loc8-13 carry the projected 2D positions (see the appearance layout).
+  // Locations 8-13 carry projected 2D positions; see the appearance layout.
   // Stride 88→160 (22→40 floats).
   return {
     floatsPerVertex: 40,
@@ -605,13 +588,12 @@ function isPhongShader(shaderType) {
   return shaderType === "phong" || shaderType === "phongTextured";
 }
 
-// DP-H19-SHADER-DECODE (Batch 27) — set of shader types that advertise
-// support for GPU-side compressed-vertex decode. Consult this at pipeline
-// build time: if the geometry carries `compressedAttributes` AND the
-// shader is in this set, route through the compressed vertex layout +
-// set the `COMPRESSED_VERTICES` define on the shader module key. If the
-// shader isn't in the set, fall back to the CPU decompression path in
-// `ensureUncompressedAttributes`.
+// This set identifies shader types with GPU-side compressed-vertex decode.
+// Consult it at pipeline build time: if the geometry carries
+// `compressedAttributes` AND the shader is in this set, route through the
+// compressed vertex layout + set the `COMPRESSED_VERTICES` define on the
+// shader module key. If the shader isn't in the set, fall back to the CPU
+// decompression path in `ensureUncompressedAttributes`.
 //
 // Add-as-you-extend. Each addition requires:
 //   1. A `//>>ifdef COMPRESSED_VERTICES` / `//>>else` block in the
@@ -632,14 +614,11 @@ function shaderSupportsCompressedVertices(shaderType) {
   return _SHADERS_WITH_GPU_DECODE.has(shaderType);
 }
 
-// DP-H19-SHADER-DECODE (Batch 27) — global opt-in for the GPU decode
-// pipeline. Defaults to `false` so the CPU path in
-// `ensureUncompressedAttributes` stays authoritative while shader
-// coverage is limited to "phong". Flip via `setCompressedVertexDecodeEnabled(true)`
-// from app code (or from a renderer-init hook) once the pilot shader
-// has been validated end-to-end. Independent of the `COMPRESSED_VERTICES`
-// ShaderDefine bit — the flag gates *whether we try to use it*, the
-// per-shader `_SHADERS_WITH_GPU_DECODE` set gates *which shaders can*.
+// GPU-side compressed-vertex decode is an intentionally disabled pilot whose
+// shader coverage is currently limited to `phong`. Keep this flag, its setter,
+// and the supported-shader set: the flag controls whether decode is attempted,
+// while the set controls which shaders can use it. Until the pilot is enabled,
+// `ensureUncompressedAttributes` remains the authoritative CPU path.
 let _compressedVertexDecodeEnabled = false;
 
 /**
@@ -746,8 +725,8 @@ function selectMaterialShader(material, isFlat, hasNormals, hasST) {
     };
   }
 
-  // C2-5: DiffuseMap has its OWN shader pair — its fabric is
-  // { channels:vec3, repeat:vec2 }, which does NOT match the Image shader's
+  // DiffuseMap needs its own shader pair because its fabric is
+  // { channels:vec3, repeat:vec2 }, which does not match the Image shader's
   // { repeat:vec2, color:vec4 } MaterialUniforms struct. Sharing the Image
   // shader silently corrupted the UBO read (repeat read channels, color read
   // repeat+pad). See PrimitiveMatDiffuseMap{Flat,Lit}.wgsl.
@@ -1006,12 +985,11 @@ function selectMaterialShader(material, isFlat, hasNormals, hasST) {
     };
   }
 
-  // DP-H22 (Batch 25) — ElevationBand shipped with new WGSL shaders
-  // that do the 16-step binary search over a heights texture + color
+  // ElevationBand uses dedicated WGSL shaders that perform a 16-step binary
+  // search over a heights texture and color
   // ramp (see PrimitiveMatElevBandFlat.wgsl / PrimitiveMatElevBandLit.wgsl).
-  // The Batch 25 material texture bind group v2 provides the two
-  // texture slots needed (heights + colors) via `_imageSources.heights`
-  // + `_imageSources.colors`.
+  // Its material texture bind group provides the two texture slots through
+  // `_imageSources.heights` and `_imageSources.colors`.
   if (materialType === "ElevationBand") {
     if (useLighting && hasST) {
       return {
@@ -1027,18 +1005,15 @@ function selectMaterialShader(material, isFlat, hasNormals, hasST) {
     };
   }
 
-  // DP-H22 — surface-level diagnostic for the remaining missing
-  // material families.
+  // Diagnose material families that are unavailable on this pipeline.
   //
   //   Polyline* materials (Arrow, Dash, Glow, Outline) have WGSL
   //   implementations only for the Polyline COLLECTION renderer (see
-  //   Shaders/WebGPU/Collections/Polyline*.wgsl). Their vertex layout
-  //   is Polyline-specific — they can't be applied to arbitrary
-  //   primitives through Material.fromType("PolylineGlow", ...) on a
-  //   box or ellipsoid. WebGL silently fell through to the Color
-  //   default here too; we emit a one-time warning per material
-  //   type so users get feedback when they reach for the wrong
-  //   integration point.
+  //   Shaders/WebGPU/Collections/Polyline*.wgsl). Their vertex layout is
+  //   Polyline-specific — they can't be applied to arbitrary primitives
+  //   through Material.fromType("PolylineGlow", ...) on a box or ellipsoid.
+  //   Use the supported Color fallback and emit a one-time warning per
+  //   material type so the incompatible integration point is visible.
   if (
     materialType === "PolylineArrow" ||
     materialType === "PolylineDash" ||

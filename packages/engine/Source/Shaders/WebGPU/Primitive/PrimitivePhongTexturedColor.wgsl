@@ -3,9 +3,8 @@
 // Uses RTE (Relative-To-Eye) for 64-bit precision at planetary scale
 // Vertex: posHigh(3) + posLow(3) + normal(3) + uv(2) + color(4) = 15 floats = 60 bytes
 //
-// Batch 165 - B.12 chunk usage. Point-light cube shadow path calls
-// `csm_samplePointShadow` from the chunk file; WebGPUPrimitiveShaders.js
-// detects the marker below and prepends the chunk's WGSL at load time.
+// Point-light cube-shadow sampling uses `csm_samplePointShadow`; the marker
+// below causes WebGPUPrimitiveShaders.js to prepend the shared function.
 // @chunk csm_samplePointShadow
 
 struct VertexInput {
@@ -22,12 +21,9 @@ struct VertexOutput {
     @location(1) worldNormal: vec3<f32>,
     @location(2) viewPosition: vec3<f32>,
     @location(3) texCoord: vec2<f32>,
-    // eyePosition is the RTE-precise camera-relative position
-    // ((posHigh-camHigh) + (posLow-camLow)). Both the single-shadow-map
-    // path (`shadowMatrix * vec4(eyePosition,1)`) and the CSM path
-    // (`cascadeVP_RTE * vec4(eyePosition,1)`) read it — keeping a single
-    // varying avoids the lossy FP32 reconstruction of world-space
-    // position that the removed @location(5) `worldPosition` used to do.
+    // `eyePosition` is the RTE-precise camera-relative position. Both the
+    // single-shadow-map and CSM paths consume this one varying, avoiding a
+    // lossy FP32 reconstruction of world-space position.
     @location(4) eyePosition: vec3<f32>,
     //>>ifdef LOG_DEPTH
     // Interpolated linear depthFromNearPlusOne; the FS converts it to frag_depth.
@@ -44,19 +40,19 @@ struct CameraUniforms {
     encodedCameraLow: vec3<f32>,
     _pad1: f32,
     lightDirection: vec4<f32>,
-    // DP-H41 (Batch 27) — previous frame's viewProjection for
-    // TAA / motion-vector reprojection. Sourced from
-    // `UniformState._previousViewProjection` (f32 mat4).
+    // Previous frame's view-projection matrix for temporal antialiasing and
+    // motion-vector reprojection, supplied by
+    // `UniformState._previousViewProjection`.
     previousViewProjection: mat4x4<f32>,
     inverseViewQuaternion: vec4<f32>,
-    // ─── Renderer-wide log depth (Approach A) ───
+    // Renderer-wide logarithmic depth parameters:
     //   x = frustum near, y = frustum far,
     //   z = oneOverLog2FarDepthFromNearPlusOne (the log-depth factor),
     //   w = reserved.
     // Packed by WebGPUPrimitiveCommands.writeRTEUniformsLit into the
     // 16-byte tail appended after inverseViewQuaternion (LIT_CAMERA_BYTES
-    // 320 -> 336). Inert until `_logDepthWriteEnabled` flips and the
-    // LOG_DEPTH pipeline define is set. See WebGPULogDepth.ts.
+    // 320 -> 336). They are inert unless the LOG_DEPTH pipeline define is set.
+    // See WebGPULogDepth.ts.
     logDepth: vec4<f32>,
 }
 
@@ -68,9 +64,9 @@ struct MaterialUniforms {
 @group(1) @binding(0) var<uniform> material: MaterialUniforms;
 
 //>>ifdef LOG_DEPTH
-// Renderer-wide log depth (Approach A). Fully inline shader — mirror of the
-// canonical chunks/functions/csm_{vertexLogDepth,writeLogDepth}.wgsl. Keep
-// byte-compatible. near/far/factor come from camera.logDepth.
+// This fully inline shader mirrors the canonical logarithmic-depth definitions
+// in chunks/functions/csm_{vertexLogDepth,writeLogDepth}.wgsl. The definitions
+// must remain byte-compatible; near, far, and factor come from camera.logDepth.
 fn csm_vertexLogDepth(clipPosition: vec4<f32>, near: f32) -> f32 {
     return (clipPosition.w - near) + 1.0;
 }
@@ -93,13 +89,10 @@ var<private> g_fragLogDepth: f32;
 
 // ─── Effects bind group (shadow receive + clipping + atmosphere + CSM
 // + point-light cube depth) ───
-// Layout MUST match the 480-byte UBO in WebGPUEffectsBindGroup.js. The
-// primitive shader doesn't consume every field (no clipping-polygon
-// path, no inline-edge stage, no CSM-only `pointLightControl` etc.) but
-// the struct must extend through every field this shader DOES read so
-// trailing offsets are correct. We stop at `pointLightPositionRTE`
-// (offset 336) — the polygon-clipping array tail (Batch 160) isn't used
-// here.
+// The layout matches the 480-byte UBO in WebGPUEffectsBindGroup.js. This
+// shader consumes a prefix through `pointLightPositionRTE` at offset 336;
+// retaining intervening fields keeps the trailing offsets correct. The
+// polygon-clipping array tail is not consumed.
 struct EffectsUniforms {
     shadowMatrix: mat4x4<f32>,
     shadowMapSize: vec2<f32>,
@@ -123,7 +116,7 @@ struct EffectsUniforms {
     // offsets to match the UBO.
     edgeControl: vec4<f32>,
     edgeViewport: vec4<f32>,
-    // Batch 161 — B.12 point-light cube-shadow receive.
+    // Point-light cube-shadow receive control.
     // .x = enabled flag; .y = farPlane; .z = nearPlane; .w = depthBias.
     // See `samplePointShadow` below; mirrors `ModelPBRComplete.wgsl`.
     pointLightControl: vec4<f32>,
@@ -134,8 +127,8 @@ struct EffectsUniforms {
 
 // CSM cascade parameters (bindings 10/11). Layout matches
 // `WebGPUCSMRenderer._cascadeParamsData` (272 floats, 1088 bytes).
-// The VP matrices are RTE-aware — multiply by `eyePosition` (NOT a
-// lossy reconstructed worldPos) so the cascade sampling keeps full RTE
+// The VP matrices are RTE-aware — multiply by `eyePosition` rather than a
+// lossy reconstructed worldPos so the cascade sampling keeps full RTE
 // precision. Placeholder zero-filled when CSM is off; the shader gates
 // on `effects.csmControl.x > 0.5` before sampling.
 struct CSMParams {
@@ -154,21 +147,17 @@ struct CSMParams {
 @group(3) @binding(2) var shadowCompSampler: sampler_comparison;
 @group(3) @binding(3) var clippingPlaneTex: texture_2d<f32>;
 @group(3) @binding(4) var clippingPlaneSampler: sampler;
-// FEAT-GAP-09 — Aerial-perspective LUT. Bindings 7/8/9 are populated by
-// WebGPUEffectsBindGroup.js when the atmosphere LUT is active; otherwise
-// they resolve to 1×1 placeholder textures. The shader gates all LUT
-// sampling on `effects.atmosphereLutControl.x > 0.5` so the placeholder
-// case costs only one uniform compare per fragment.
+// Aerial-perspective lookup bindings use live textures while the atmosphere
+// LUT is active and 1-by-1 placeholders otherwise. The control flag gates all
+// sampling, leaving only one uniform comparison on the disabled path.
 @group(3) @binding(7) var atmosphereTransmittanceLut: texture_2d<f32>;
 @group(3) @binding(8) var atmosphereInscatterLut: texture_2d<f32>;
 @group(3) @binding(9) var atmosphereLutSampler: sampler;
 @group(3) @binding(10) var<uniform> csmParams: CSMParams;
 @group(3) @binding(11) var cascadeDepthArray: texture_depth_2d_array;
-// Batch 161 — B.12 point-light cube depth. 6-face depth32float populated
-// by `_renderPointLightCubeCastPasses`. Sampled below when
-// `effects.pointLightControl.x > 0.5`. Reuses `shadowCompSampler`
-// (binding 2) for the comparison sample. Placeholder is a 1×1×6 cube
-// cleared to 1.0 so the off-path costs only one uniform compare.
+// `_renderPointLightCubeCastPasses` populates the six-face depth32float cube.
+// `pointLightControl.x` gates sampling through `shadowCompSampler`; a
+// 1-by-1-by-6 cube cleared to 1.0 serves as the disabled-path placeholder.
 @group(3) @binding(17) var pointLightCubeDepth: texture_depth_cube;
 
 fn translateRelativeToEye(high: vec3<f32>, low: vec3<f32>) -> vec4<f32> {
@@ -227,9 +216,8 @@ fn sampleShadowPCF(uv: vec2<f32>, depth: f32, texelSize: vec2<f32>) -> f32 {
     return shadow / 9.0;
 }
 
-// CSM — cascade selection + sampling. Inlined from ShadowReceiveCSM.wgsl
-// (the WGSL preprocessor's #include path isn't wired for this shader
-// yet; sharing the file across receivers is a Slice 2 follow-on).
+// Cascade selection and sampling are inlined from ShadowReceiveCSM.wgsl
+// because this shader does not use the WGSL preprocessor include path.
 fn selectCascade(viewDepth: f32, splits: vec4<f32>) -> u32 {
     if (viewDepth < splits.x) { return 0u; }
     if (viewDepth < splits.y) { return 1u; }
@@ -266,10 +254,10 @@ fn sampleOneCascade(eyePos: vec3<f32>, cascadeIdx: u32, depthBias: f32) -> f32 {
         depth > 1.0 || depth < 0.0) {
         return 1.0;
     }
-    // CSM-PCF-SOFT: soften the cascade edge with a 3x3 PCF box kernel,
-    // matching WebGL's czm_shadowVisibility USE_SOFT_SHADOWS path. The
-    // kernel radius (in shadow texels) is effects.csmControl.y; 0 keeps
-    // the original single hardware-comparison tap (hard edge).
+    // A 3-by-3 percentage-closer-filtering kernel softens cascade edges,
+    // matching WebGL's `czm_shadowVisibility` soft-shadow path. The radius in
+    // shadow texels is `effects.csmControl.y`; zero selects one hardware
+    // comparison tap and a hard edge.
     let csmPcfRadius = effects.csmControl.y;
     if (csmPcfRadius <= 0.0) {
       return textureSampleCompareLevel(
@@ -325,14 +313,10 @@ fn computeShadowFactorCSM(
     return mix(effects.shadowDarkness, 1.0, visibility);
 }
 
-// Batch 165 — B.12 chunk-based point-light receive. The Batch 161
-// inline `samplePointShadow` has been replaced by a call to the
-// reusable `csm_samplePointShadow` chunk function (declared above by
-// the chunk-injection pass; see WebGPUPrimitiveShaders.js
-// `injectChunks`). Same algorithm — dominant-axis perspective-Z +
-// scaleBias remap + optional 5-tap cross PCF — but now amortized
-// across every primitive lit shader that opts in via the
-// `// @chunk csm_samplePointShadow` marker.
+// Point-light receive uses the shared `csm_samplePointShadow` chunk, declared
+// by WebGPUPrimitiveShaders.js `injectChunks`. It applies dominant-axis
+// perspective depth, scale-bias remapping, and optional five-tap cross PCF.
+// The `@chunk` marker above requests the shared function.
 fn computeShadowFactorPointLight(fragRTE: vec3<f32>) -> f32 {
     if (effects.shadowDarkness >= 1.0) { return 1.0; }
     let visibility = csm_samplePointShadow(
@@ -356,7 +340,6 @@ fn computeShadowFactor(eyePos: vec3<f32>) -> f32 {
     // Already WebGPU shadow-texture space — scale/bias from
     // `ShadowMap.getViewProjection`, v-origin flip from
     // `toWebGPUShadowReceiveMatrix` (`WebGPUShadowReceiveTransform.ts`).
-    // NEW-WEBGPU-GLOBE-SUN-SHADOW-RECEIVE-DEAD.
     let coord = shadowPos.xyz / shadowPos.w;
     let uv = coord.xy;
     let texelSize = 1.0 / effects.shadowMapSize;
@@ -398,11 +381,8 @@ fn clipByPlanes(eyePos: vec3<f32>) -> bool {
     return false;
 }
 
-// Slice 5c-B Batch 121 — G-buffer MRT output struct (added by
-// Tools/batch-121-wrap-lit-shaders.mjs). Slot 0 = lit color, slot 1 =
-// eye-space normal + roughness. NormalMap / BumpMap variants emit the
-// geometric vertex normal for now; a follow-up batch can switch them
-// to their perturbed-normal variable for wider Slice 4 divergence.
+// G-buffer output: slot 0 stores lit color; slot 1 stores the eye-space
+// normal and roughness.
 struct FragOutput {
     @location(0) color: vec4<f32>,
     @location(1) normalRoughness: vec4<f32>,
@@ -435,9 +415,8 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
             minDist = min(minDist, dist);
         }
         if (minDist < effects.clippingEdgeWidth) {
-            // Slice 5d Batch 157 — emit a full FragOutput (latent bare-vec4
-            // type mismatch, dormant until phong routing was fixed). See
-            // PrimitivePhongColor.wgsl for the rationale.
+            // Every return site initializes the full fragment output, including
+            // the G-buffer normal and roughness attachment.
             var edgeOut: FragOutput;
             edgeOut.color = effects.clippingEdgeColor;
             edgeOut.normalRoughness = vec4<f32>(normalize(input.worldNormal), 0.5);
@@ -452,37 +431,26 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
     let baseColor = texColor * input.color;
 
     let normal = normalize(input.worldNormal);
-    // lightDir (the sun direction in eye space) is consumed only by the CSM
-    // slope-bias / cascade-sampling path below — NOT by the diffuse term.
+    // `lightDir` is consumed by CSM slope bias and cascade sampling, not by the
+    // diffuse term.
     let lightDir = normalize(camera.lightDirection.xyz);
     let viewDir = normalize(-input.viewPosition);
 
-    // NEW-PERINSTANCE-DIFFUSE-PARITY (Batch 326) — match the GLSL reference
-    // `czm_phong` (Builtin/Functions/phong.glsl) used by the lit color/material
-    // appearances. See the matching comment in PrimitivePhongColor.wgsl for the
-    // full derivation. czm_phong (3D scene mode) computes diffuse from two
-    // FIXED eye-space light directions (+Z toward the eye, +Y up) — NOT the sun
-    // — and folds a 0.5 ambient term in:  out = color * 0.5 * (1 + diffuse).
-    // The prior ad-hoc Blinn-Phong keyed diffuse on the sun direction with a
-    // 0.15 ambient floor, rendering lit surfaces ~40% darker than WebGL.
-    // material.specular is 0 for these appearances, so the specular term is
-    // dropped to keep parity.
+    // Match `czm_phong` for lit color and material appearances. Diffuse uses
+    // fixed eye-space +Z and +Y light directions and folds in a 0.5 ambient
+    // term: `out = color * 0.5 * (1 + diffuse)`. These materials have zero
+    // specular contribution.
     let diffuse = max(dot(normal, vec3<f32>(0.0, 0.0, 1.0)), 0.0)
                 + max(dot(normal, vec3<f32>(0.0, 1.0, 0.0)), 0.0);
 
-    // CSM Slice 1 — route through the cascaded path when
-    // `effects.csmControl.x > 0.5`. viewDepth = |viewPosition.z| since
-    // the eye-space looking -Z convention puts in-front points at
-    // negative z. `input.eyePosition` is the RTE-precise camera-relative
-    // vector from the vertex stage; feed it straight into the RTE-aware
-    // cascade VPs (no reconstructed worldPos). N + L live in the same
-    // space (both transformed by normalMatrix / camera), so nDotL is
-    // frame-invariant for the slope-bias calc.
+    // The cascaded path uses the absolute eye-space z coordinate for view
+    // depth and feeds the RTE-precise camera-relative position directly to
+    // the cascade matrices. Normal and light direction share eye space, so
+    // their dot product is frame-invariant for slope bias.
     var shadowFactor: f32;
-    // Batch 161 — point-light cube shadows take precedence over CSM /
-    // single-shadow-map paths. Only one shadow map is active at a time
-    // in Cesium, so this only matters during transitions; checking
-    // pointLightControl first matches the Model FS gate order.
+    // Point-light cube shadows take precedence over cascaded and single-map
+    // shadows, matching the Model fragment-shader gate order while only one
+    // shadow map is active.
     if (effects.pointLightControl.x > 0.5) {
         shadowFactor = computeShadowFactorPointLight(input.eyePosition);
     } else if (effects.csmControl.x > 0.5) {
@@ -497,13 +465,11 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
         shadowFactor = computeShadowFactor(input.viewPosition);
     }
     let lighting = 0.5 + 0.5 * diffuse * shadowFactor;
-    // (As in PrimitivePhongColor: the shadow factor darkens only the diffuse
-    // term; the 0.5 ambient floor stays lit even in full shadow — a known
-    // low-severity divergence from WebGL czm_shadowVisibility, which multiplies
-    // the ENTIRE phong output (ambient included) by visibility.)
-    // Slice 5d Batch 156 — additive Forward+ clustered lighting (eye-space
-    // inputs; baseColor = textured × per-vertex color; F0/roughness neutral
-    // dielectric — Phong has no PBR material). Early-outs when no lights.
+    // The shadow factor darkens only the diffuse term, leaving the 0.5 ambient
+    // floor lit. WebGL applies visibility to the entire `czm_phong` result,
+    // including ambient. Additive clustered lighting uses eye-space inputs,
+    // the textured per-vertex base color, and neutral dielectric F0 and
+    // roughness; it exits early when no clustered lights are active.
     let clusteredContrib = evalClusteredLights(
         input.viewPosition, normal, viewDir,
         vec3<f32>(0.04), 0.5, baseColor.rgb,
@@ -511,14 +477,14 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
     );
     var finalColor = vec4<f32>(baseColor.rgb * lighting + clusteredContrib, baseColor.a);
 
-    // FEAT-GAP-09 — Aerial-perspective fog blend. The LUT was pre-integrated
-    // by AtmosphereLUT.wgsl with the current sun direction baked in; we
-    // replace the per-fragment ray march with a single texture sample and
-    // lerp the lit color toward the inscatter color by (1 - transmittance).
+    // The aerial-perspective lookup is pre-integrated by AtmosphereLUT.wgsl
+    // with the current sun direction. One texture sample replaces a
+    // per-fragment ray march and blends lit color toward inscatter by one
+    // minus transmittance.
     //
     // Math mirrors `sampleAtmosphereFogLut` in GlobeTerrain.wgsl:
     //   - viewDir     = normalize(camera-to-fragment) — `eyePosition` is
-    //     already the RTE-precise camera-relative vector, so it IS the
+    //     already the RTE-precise camera-relative vector, so it is the
     //     world-space view direction (rotation is identity in RTE space).
     //   - cameraWC    = encodedCameraHigh + encodedCameraLow reconstructs
     //     the world-space camera position at FP32. The LUT is 256×64 so
@@ -571,10 +537,8 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
         }
     }
 
-    // Slice 5c-B Batch 121 — emit FragOutput. normalRoughness gets the
-    // geometric eye-space normal (vertex shader writes worldNormal as
-    // eye-space via camera.normalMatrix). Roughness 0.5 placeholder —
-    // Lit Mat shaders don't carry material roughness in their UBOs.
+    // `worldNormal` is already in eye space after `camera.normalMatrix`.
+    // The material uniform buffer carries no roughness, so slot 1 uses 0.5.
     var mrtOut: FragOutput;
     mrtOut.color = finalColor;
     mrtOut.normalRoughness = vec4<f32>(normalize(input.worldNormal), 0.5);

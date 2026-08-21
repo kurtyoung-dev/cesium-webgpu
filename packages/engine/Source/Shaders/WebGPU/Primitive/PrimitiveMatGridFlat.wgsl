@@ -12,9 +12,7 @@ struct VertexInput {
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
     @location(0) texCoord: vec2<f32>,
-    // FEAT-GAP-09 — eye-space position for the aerial-perspective fog block.
-    // Declaration restored (Batch 97 wired the read/write but omitted the
-    // VertexOutput field in 18 of 19 Mat*Flat shaders).
+    // Eye-space position consumed by the aerial-perspective fog block.
     @location(1) eyePosition: vec3<f32>,
     //>>ifdef LOG_DEPTH
     // Interpolated linear depthFromNearPlusOne; the FS converts it to frag_depth.
@@ -28,16 +26,16 @@ struct CameraUniforms {
     _pad0: f32,
     encodedCameraLow: vec3<f32>,
     _pad1: f32,
-    // DP-H41 (Batch 27) — previous frame's viewProjection for
-    // TAA / motion-vector reprojection. Sourced from
-    // `UniformState._previousViewProjection` (f32 mat4).
+    // Previous frame's view-projection matrix for temporal antialiasing and
+    // motion-vector reprojection, supplied by
+    // `UniformState._previousViewProjection`.
     previousViewProjection: mat4x4<f32>,
     //>>ifdef LOG_DEPTH
-    // ─── Renderer-wide log depth (Approach A) ───
+    // Renderer-wide log-depth parameters:
     //   x = frustum near, y = frustum far,
     //   z = oneOverLog2FarDepthFromNearPlusOne (the log-depth factor),
     //   w = reserved. Packed by WebGPUPrimitiveCommands.writeRTEUniformsFlat
-    // into the 16-byte FLAT UB tail (FLAT_CAMERA_BYTES 160 -> 176).
+    // into the 16-byte flat UBO tail (FLAT_CAMERA_BYTES 160 -> 176).
     logDepth: vec4<f32>,
     //>>endif
 }
@@ -54,10 +52,9 @@ struct MaterialUniforms {
 @group(0) @binding(0) var<uniform> camera: CameraUniforms;
 @group(1) @binding(0) var<uniform> material: MaterialUniforms;
 
-// FEAT-GAP-09 (Batch 97) — truncated EffectsUniforms struct, sized to
-// reach the `atmosphereLutControl: vec4<f32>` slot at byte offset 240
-// in the shared 480-byte UBO (see `WebGPUEffectsBindGroup.js`). Reading
-// less than the full UBO is safe — WGSL just sees the prefix.
+// Prefix of the shared 480-byte effects uniform buffer through
+// `atmosphereLutControl` at byte offset 240. Its layout matches
+// `WebGPUEffectsBindGroup.js`; WGSL may declare only the prefix it reads.
 struct EffectsUniforms {
     shadowMatrix: mat4x4<f32>,
     shadowMapSize: vec2<f32>,
@@ -73,14 +70,14 @@ struct EffectsUniforms {
 }
 
 @group(2) @binding(0) var<uniform> effects: EffectsUniforms;
-// FEAT-GAP-09 (Batch 97) — aerial-perspective LUT bindings 7/8/9.
+// Aerial-perspective lookup textures at bindings 7, 8, and 9.
 @group(2) @binding(7) var atmosphereTransmittanceLut: texture_2d<f32>;
 @group(2) @binding(8) var atmosphereInscatterLut: texture_2d<f32>;
 @group(2) @binding(9) var atmosphereLutSampler: sampler;
 
 //>>ifdef LOG_DEPTH
-// Renderer-wide log depth (Approach A). Mirror of PrimitivePhongColor.wgsl —
-// keep byte-compatible. near/far/factor come from camera.logDepth. The FS swaps
+// Renderer-wide log-depth helpers mirror PrimitivePhongColor.wgsl and must
+// remain byte-compatible. near/far/factor come from camera.logDepth. The FS swaps
 // to a FragOut struct so it can write @builtin(frag_depth) alongside the color.
 struct FragOut {
     @location(0) color: vec4<f32>,
@@ -133,25 +130,23 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     //>>ifdef LOG_DEPTH
     g_fragLogDepth = input.v_logDepth;
     //>>endif
-    // GridMaterial.glsl parity (C2-10): constant-PIXEL-width antialiased grid
-    // lines via screen-space derivatives, replacing the prior constant-UV-width
-    // step() lines whose apparent thickness scaled with zoom. Mirrors
-    // Shaders/Materials/GridMaterial.glsl term-for-term (the derivative branch).
+    // Screen-space derivatives keep antialiased grid lines at constant pixel
+    // width; a constant UV width would scale with zoom. This matches the
+    // derivative branch in Shaders/Materials/GridMaterial.glsl term for term.
     let st = input.texCoord;
     // Triangle-wave distance to the nearest grid line, per axis, in [0, 0.5].
     var scaled = fract(material.lineCount * st - material.lineOffset);
     scaled = abs(scaled - floor(scaled + vec2<f32>(0.5)));
     const fuzz = 1.2;
-    // lineThickness is in PIXELS (Material.js default 1.0). czm_pixelRatio is
-    // assumed 1.0 here — the grid CameraUniforms UB does not carry it and adding
-    // it is out of scope for C2-10 (single-DPR parity).
+    // lineThickness is in pixels (Material.js default 1.0). The grid camera
+    // uniform buffer does not carry czm_pixelRatio, so this path assumes 1.0.
     let thicknessPx = material.lineThickness * 1.0 - vec2<f32>(1.0);
     // dF = per-fragment UV footprint (Cozzi & Ring, Listing 4.13). GLSL uses
     // max(|dFdx|,|dFdy|) per axis — replicate exactly (not the fwidth sum).
     let dxst = abs(dpdx(st));
     let dyst = abs(dpdy(st));
     let dF = vec2<f32>(max(dxst.x, dyst.x), max(dxst.y, dyst.y)) * material.lineCount;
-    // value = CELL weight (1 in cell, 0 on line).
+    // value = cell weight (1 in cell, 0 on line).
     let value = min(
         smoothstep(dF.x * thicknessPx.x, dF.x * (fuzz + thicknessPx.x), scaled.x),
         smoothstep(dF.y * thicknessPx.y, dF.y * (fuzz + thicknessPx.y), scaled.y),
@@ -161,7 +156,7 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     let cellColor = vec4<f32>(material.color.rgb, material.cellAlpha);
     var finalColor = mix(cellColor, material.color, vec4<f32>(isGrid));
 
-    // FEAT-GAP-09 (Batch 97) — Aerial-perspective fog blend. Mirrors
+    // Aerial-perspective fog blend shared with
     // `PrimitiveBasicColor.wgsl::fragmentMain`.
     if (effects.atmosphereLutControl.x > 0.5) {
         let innerRadius = effects.atmosphereLutControl.y;

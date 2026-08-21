@@ -1,97 +1,47 @@
 /**
- * WebGPU Voxel Data Upload — PARITY-VOXEL-MEGATEXTURE-UPLOAD (increment 1)
+ * Uploads decoded voxel property data to a WebGPU 3D texture.
  *
- * Replaces the 4×4×4 gradient placeholder in {@link WebGPUVoxelRenderer} with
- * the REAL per-tile voxel property data for the ROOT (single) voxel tile.
+ * The root tile maps directly from shape coordinates to its padded texel grid.
+ * The first metadata property is expanded to RGBA; missing color channels are
+ * zero and a missing alpha channel is one.
  *
- * Scope (deliberately narrow — one clean increment):
- *   - ROOT tile only (tileLevel/x/y/z = 0). No octree traversal, no LOD, no
- *     multi-tile megatexture atlas. Direct uvw→texel sampling: the ray-march
- *     cube maps 1:1 to the tile's `dimensions` grid.
- *   - Single metadata property (the first channel-4 / VEC4 property). The test
- *     asset (VoxelBox3DTiles) has exactly one VEC4 FLOAT32 property `a`.
+ * Box providers with `availableLevels >= 2` use a Z-stacked atlas. Slot 0 is
+ * the root and slots 1..8 are level-1 children, indexed by `x + 2y + 4z` in
+ * the Z-up shape frame. A missing child retains `childSlots[i] = -1`, causing
+ * the WGSL walk to sample the deepest resident ancestor for that octant.
  *
- * VOXEL-OCTREE-LOD (increment: depth-1 octree traversal) — when the provider
- * advertises `availableLevels >= 2` and the shape is a BOX (the sampling
- * convention now also covers ELLIPSOID — NEW-VOXEL-ELLIPSOID-SHAPEUV — and
- * CYLINDER — NEW-VOXEL-CYLINDER-SHAPEUV — but multi-level atlases stay
- * box-gated), the destination texture is allocated
- * as a 9-slot 3D ATLAS stacked
- * along Z: slot 0 = root tile, slots 1..8 = the eight level-1 child tiles
- * (childIndex = x + 2y + 4z in the Z-up shape frame). Child tiles are
- * requested + uploaded asynchronously after the root; a child that is
- * unavailable / fails keeps `childSlots[i] = -1` and the WGSL march falls back
- * to sampling the ROOT for that octant — the same semantics as Octree.glsl's
- * OCTREE_FLAG_PACKED_LEAF_FROM_PARENT leaf, specialised to depth 1.
+ * A provider with at least three levels can use a 73-slot atlas when it fits
+ * `maxTextureDimension3D`: slots 9..72 hold level-2 tiles in `x + 4y + 16z`
+ * order. A provider with at least four levels can use a 585-slot atlas when it
+ * fits: slots 73..584 hold level-3 tiles in `x + 8y + 64z` order. The fixed
+ * per-level slot arrays must remain on shallower paths because their `-1`
+ * entries preserve stable UBO ranges and terminate traversal at the deepest
+ * uploaded ancestor.
  *
- * NEW-VOXEL-OCTREE-DEEP-TRAVERSAL (increment: depth-2) — when the provider
- * advertises `availableLevels >= 3` (and the 73-slot atlas fits the device's
- * `maxTextureDimension3D`), the atlas grows to 73 slots: slot 0 = root,
- * 1..8 = level-1 children, 9..72 = the 64 level-2 tiles in linear order
- * `x + 4y + 16z` (the radix-2 extension of the level-1 octant convention,
- * Z-up shape frame). Level-2 tiles upload asynchronously alongside the
- * level-1 set; an unavailable level-2 tile keeps `l2Slots[i] = -1` and the
- * WGSL walk stops at the deepest uploaded ancestor for that region.
+ * Descendants upload only while the camera's SSE ladder demands their level.
+ * The demand is capped by atlas capacity rather than current residency, so a
+ * close camera can converge to the fully populated atlas while a far camera
+ * retains only the root.
  *
- * NEW-VOXEL-STREAMING-UPLOAD (increment: demand-driven upload) — descendant
- * tiles are no longer uploaded eagerly the moment the root lands. Each frame
- * the renderer evaluates the camera's SSE refinement ladder UNCAPPED by what
- * is uploaded (capped only by the atlas capacity) and passes the resulting
- * DEMAND level into {@link tryUploadChildVoxelTiles}: level-1 tiles are
- * requested/uploaded only while the camera demands level >= 1, level-2 tiles
- * only while it demands level >= 2 — mirroring upstream VoxelTraversal, which
- * only adds a tile to the megatexture when the SSE test visits it. A far
- * camera therefore keeps a root-only atlas; zooming in streams descendants in
- * on demand. Scenes whose camera demands the deepest level converge to the
- * SAME fully-uploaded steady state as the historical eager path
- * (pixel-identical steady state — the off-gate).
+ * If all 64 level-2 tiles do not fit, slots after the root and level-1 region
+ * form an LRU pool. A demanded ready tile takes a free slot or evicts the
+ * least-recently-demanded resident not demanded in the current frame. Uploads
+ * wait when every resident is currently demanded, preventing overflow and
+ * same-frame thrashing. Root and level-1 slots are never evicted.
  *
- * NEW-VOXEL-ATLAS-LRU-EVICT (increment: LRU slot eviction) — when the
- * level-2 tile set does NOT fit the atlas (the device's
- * `maxTextureDimension3D` caps the slot count below 73, or the opt-in
- * per-primitive `_webgpuVoxelAtlasMaxSlots` override does), the level-2
- * region of the atlas becomes a DYNAMIC slot pool (slots 9..slotCount-1)
- * with LRU eviction — the upstream VoxelTraversal megatexture add/remove
- * analogue. Residency follows per-tile demand (the renderer's
- * `computeVoxelL2DemandMask`: per-tile SSE + frustum visibility): a demanded
- * tile that is ready to upload takes a free slot, or evicts the
- * least-recently-demanded resident that is NOT demanded this frame; if every
- * resident is currently demanded the upload simply waits (no overflow, no
- * thrash). An evicted tile resets to `idle` and re-requests/re-uploads the
- * next time the camera demands it. Root (slot 0) and the eight level-1 tiles
- * (slots 1..8) keep their static assignments and are never evicted.
- * Under-capacity scenes (the full 73-slot atlas fits and no override is set)
- * take the exact static B19 path — byte-identical (the off-gate).
+ * Level-3 residency is intentionally static: dynamic eviction is implemented
+ * only for level 2, so a level-3 set that does not fit falls back to the
+ * level-2 cap. Extending partial residency deeper requires a per-level page
+ * table; the existing per-level state and slot arrays are scaffolding for that
+ * separation and must not be collapsed into one undifferentiated tile list.
+ * Cylinder and ellipsoid sampling supports padded root textures but remains
+ * root-only until their octree coordinate mapping is supported. Traversal
+ * stops at level 3. Refined picking composes the level-1 slot into the
+ * megatexture index.
  *
- * NEW-VOXEL-OCTREE-DEEP-LEVELS (increment: depth-3) — when the provider
- * advertises `availableLevels >= 4` AND the full 585-slot atlas fits the
- * device (`slotCap >= 585`), the atlas grows to 585 slots: 0 = root, 1..8 =
- * level 1, 9..72 = level 2, 73..584 = the 512 level-3 tiles in linear order
- * `x + 8y + 64z` (the radix-2 extension of the level-2 convention). Level-3
- * tiles upload demand-driven alongside the shallower sets (the same
- * level-generic `driveTileLevelUploads` machine, edge = 8), and the WGSL walk
- * (`octreeDescend`) descends to level 3 reading `l3Slots`. This is the STATIC
- * full-atlas path only — the dynamic LRU pool is NOT yet generalized to level
- * 3, so providers whose level-3 set does not fit the device fall back to the
- * level-2 cap exactly as before (off-gate preserved).
- *
- * What is NOT done here (honest partial — separate increments):
- *   - Octree traversal DEEPER than level 3, and a DYNAMIC (LRU) level-3 pool
- *     for level-3 sets that do not fit the device (a deeper/partial walk would
- *     reuse this increment's LRU pool with a per-level page table instead of
- *     the fixed l2Slots/l3Slots arrays).
- *   - LOD refinement for non-BOX shapes (cylinder/ellipsoid stay root-only).
- *   - Non-VEC4 properties (VEC3/VEC2/scalar) — this increment uploads the first
- *     property expanded to RGBA. Missing channels default to 0, alpha to 1.
- *   (Per-cell pickVoxel against refined tiles shipped in
- *   NEW-VOXEL-PICK-OCTREE-COMPOSE — the pick march composes the same depth-1
- *   traversal and emits the child slot as the megatexture index.)
- *
- * Off-gate: this module is only invoked when a real voxel provider + tile
- * content is available. When no provider/data is present the caller keeps the
- * placeholder gradient path (byte-identical off-case). The ray-march WGSL is
- * unchanged — it still samples a `texture_3d<f32>`; only the SOURCE of that
- * texture changes (placeholder → real data).
+ * The caller uses this module only when provider content is available.
+ * Otherwise it retains the placeholder gradient texture. Both paths expose a
+ * `texture_3d<f32>` to the ray marcher, so only the texture source differs.
  *
  * @module WebGPUVoxelDataUpload
  */
@@ -99,13 +49,11 @@
 // `CesiumFrameState` is an ambient global declared in cesium-js-types.d.ts —
 // referenced without an import, matching WebGPUVoxelRenderer.ts.
 
-// VOXEL-SHAPEUV-CONVENTION — the metadata array is ordered in the INPUT
-// orientation (glTF Y-up for box/cylinder tiles from Cesium3DTilesVoxelProvider,
-// 3D Tiles Z-up otherwise) and includes padding voxels. The destination 3D
-// texture must therefore be sized with the INPUT dimensions (padded +
-// Y-up-swapped) — mirroring `initFromProvider`'s `_inputDimensions` — so a
-// straight linear copy lands every texel where WebGL's Octree.glsl
-// `inputCoordinate` mapping expects it.
+// Provider metadata is ordered in the input orientation (glTF Y-up for
+// box/cylinder tiles from Cesium3DTilesVoxelProvider, 3D Tiles Z-up
+// otherwise) and includes padding voxels. Size the destination with the
+// padded, Y-up-adjusted input dimensions so a linear copy matches
+// Octree.glsl's `inputCoordinate` mapping.
 import VoxelMetadataOrder from "../../Scene/VoxelMetadataOrder.js";
 import VoxelShapeType from "../../Scene/VoxelShapeType.js";
 import {
@@ -153,23 +101,22 @@ interface VoxelProviderLike {
     keyframe: number;
   }): Promise<VoxelContentLike> | undefined;
   readonly dimensions: { x: number; y: number; z: number };
-  // VOXEL-SHAPEUV-CONVENTION — optional provider fields consumed to size the
-  // texture in the INPUT orientation and to record the sample-frame convention.
+  // Optional fields used to size the texture in input orientation
+  // and record the sample-frame convention.
   readonly paddingBefore?: { x: number; y: number; z: number };
   readonly paddingAfter?: { x: number; y: number; z: number };
   readonly metadataOrder?: number;
   readonly shape?: string;
-  // VOXEL-OCTREE-LOD — number of octree levels with available tiles. Gate for
-  // the level-1 child requests; undefined / <2 keeps the single-tile path.
+  // Number of octree levels with available tiles. Undefined or less than two
+  // keeps the single-tile path.
   readonly availableLevels?: number;
 }
 
 /**
- * VOXEL-SHAPEUV-CONVENTION — the sample-frame convention the uploaded texture
- * was laid out with, recorded so the renderer's UBO pack mirrors WebGL's
- * shapeUv → inputCoordinate mapping (Octree.glsl) against the SAME extents the
- * texel data was written with. `null` convention on the state means the legacy
- * direct `uvw = p + 0.5` sampling applies (non-box shapes — unchanged path).
+ * Sample-frame convention used to lay out the uploaded texture. The renderer
+ * packs the same extents into its UBO so its shape-UV-to-input-coordinate
+ * mapping matches Octree.glsl. A `null` convention selects direct
+ * `uvw = p + 0.5` sampling.
  */
 export interface VoxelSampleConvention {
   /** Unpadded tile dimensions in the Z-up shape orientation (u_dimensions). */
@@ -177,7 +124,7 @@ export interface VoxelSampleConvention {
   /** Padding before the tile, Z-up orientation (u_paddingBefore). */
   paddingBefore: { x: number; y: number; z: number };
   /**
-   * Padded dimensions in the INPUT-data orientation (u_inputDimensions):
+   * Padded dimensions in the input-data orientation (u_inputDimensions):
    * `dimensions + paddingBefore + paddingAfter`, then Y/Z swapped when the
    * metadata order is glTF Y-up. These are the texture extents.
    */
@@ -187,25 +134,24 @@ export interface VoxelSampleConvention {
 }
 
 /**
- * VOXEL-OCTREE-LOD — per-child-tile async state. Mirrors the root machine:
- * idle → requesting → processing → done | failed.
+ * Per-child asynchronous state, using the same
+ * idle → requesting → processing → done | failed machine as the root.
  */
 interface VoxelChildTileState {
   phase: "idle" | "requesting" | "processing" | "done" | "failed";
   /**
-   * The tile's decoded content. Populated once phase reaches "processing" and
-   * NS-VOXEL-REFINED-TILE-CELL-RETENTION keeps it RETAINED through "done" (it was
-   * previously nulled after the texture write) so refined-tile `scene.pickVoxel`
-   * can read this tile's metadata — parity with WebGL's retained keyframe-node
-   * content. Reset to null only on LRU eviction (evictLruL2Slot) or failure.
+   * The tile's decoded content. Populated once the phase reaches "processing"
+   * and retained through "done" so refined-tile `scene.pickVoxel` can read the
+   * metadata. Reset to null only on LRU eviction or failure, matching WebGL's
+   * resident keyframe-node lifetime.
    */
   content: VoxelContentLike | null;
   /**
-   * NEW-VOXEL-ATLAS-LRU-EVICT — the {@link VoxelDataUploadState.frameIndex}
-   * value of the most recent frame this tile was DEMANDED (per-tile SSE +
-   * frustum gate). The LRU victim is the resident tile with the smallest
-   * value that is not demanded on the current frame. Unused (stays 0) on the
-   * static full-atlas path and for level-1 tiles.
+   * The {@link VoxelDataUploadState.frameIndex} value of the most recent frame
+   * this tile was demanded by per-tile SSE and frustum tests. The LRU victim is
+   * the resident tile with the smallest value that is not demanded on the
+   * current frame. Unused (stays 0) on the static full-atlas path and for
+   * level-1 tiles.
    */
   lastDemandFrame: number;
   /** Monotonic request identity; invalidates late promise completion. */
@@ -238,108 +184,103 @@ export interface VoxelDataUploadState {
   /** View of {@link texture} for binding into the ray-march bind group. */
   view: GPUTextureView | null;
   /**
-   * VOXEL-SHAPEUV-CONVENTION — set at upload time. When non-null the texture
-   * is laid out in the padded INPUT orientation and the renderer must sample
-   * through the WebGL shapeUv → inputCoordinate chain; when null the texture
-   * uses the legacy unpadded Z-up extents and direct `p + 0.5` sampling.
+   * Set at upload time. A non-null convention means the texture uses padded
+   * input-oriented extents and the renderer must sample through the WebGL
+   * shape-UV-to-input-coordinate chain. Null selects unpadded Z-up extents and
+   * direct `p + 0.5` sampling.
    */
   convention: VoxelSampleConvention | null;
   /**
-   * VOXEL-OCTREE-LOD — number of tile slots stacked along Z in {@link texture}.
-   * 1 = single-tile texture (no atlas — the historical layout, byte-identical
-   * math in the WGSL); 9 = root (slot 0) + eight level-1 children (slots 1..8);
-   * 73 = the depth-2 atlas adding the 64 level-2 tiles (slots 9..72,
-   * NEW-VOXEL-OCTREE-DEEP-TRAVERSAL).
+   * Number of tile slots stacked along Z in {@link texture}. One is a
+   * single-tile texture; nine adds eight level-1 children; 73 adds 64 level-2
+   * tiles; 585 adds 512 level-3 tiles.
    */
   slotCount: number;
   /**
-   * VOXEL-OCTREE-LOD — atlas slot per level-1 child octant (childIndex =
-   * x + 2y + 4z, Z-up shape frame), or -1 while the child is not uploaded.
+   * Atlas slot per level-1 child octant (`x + 2y + 4z` in the Z-up shape
+   * frame), or -1 while the child is not uploaded.
    * Packed verbatim into the ray-march UBO (floats 108..115).
    */
   childSlots: Float32Array;
   /**
-   * NEW-VOXEL-OCTREE-DEEP-TRAVERSAL — atlas slot per level-2 tile (linear
-   * index x + 4y + 16z, Z-up shape frame; 64 entries), or -1 while that tile
-   * is not uploaded. Packed verbatim into the ray-march UBO (floats 120..183).
-   * All -1 on the 9-slot / single-tile paths (never read there — the WGSL walk
-   * only consults level 2 when the target level reaches 2, which requires an
-   * uploaded level-2 tile).
+   * Atlas slot per level-2 tile (`x + 4y + 16z` in the Z-up shape frame; 64
+   * entries), or -1 while that tile is not uploaded. Packed verbatim into the
+   * ray-march UBO (floats 120..183). All -1 on the 9-slot / single-tile paths
+   * (never read there — the WGSL walk only consults level 2 when the target
+   * level reaches 2, which requires an uploaded level-2 tile).
    */
   l2Slots: Float32Array;
   /**
-   * NEW-VOXEL-OCTREE-DEEP-LEVELS — atlas slot per level-3 tile (linear index
-   * x + 8y + 64z over the 8x8x8 level-3 tile grid, Z-up shape frame; 512
-   * entries), or -1 while that tile is not uploaded. Packed verbatim into the
-   * ray-march UBO (floats 228..739). Only non-empty on the STATIC deep-3 atlas
-   * (`slotCount === 585`, base slot 73); all -1 on shallower atlases (never
-   * read there — the WGSL walk only consults level 3 when the target level
-   * reaches 3, which requires an uploaded level-3 tile CPU-side).
+   * Atlas slot per level-3 tile (`x + 8y + 64z` over the 8x8x8 level-3 tile
+   * grid in the Z-up shape frame; 512 entries), or -1 while that tile is not
+   * uploaded. Packed verbatim into the ray-march UBO (floats 228..739). Only
+   * non-empty on the static level-3 atlas (`slotCount === 585`, base slot 73);
+   * all -1 on shallower atlases (never read there — the WGSL walk only consults
+   * level 3 when the target level reaches 3, which requires an uploaded level-3
+   * tile CPU-side).
    */
   l3Slots: Float32Array;
-  /** VOXEL-OCTREE-LOD — child-request lifecycle. "none" = single-tile path. */
+  /** Child-request lifecycle. "none" selects the single-tile path. */
   childPhase: "none" | "loading" | "done";
-  /** VOXEL-OCTREE-LOD — internal per-child async states (8 entries). */
+  /** Internal per-child asynchronous states (8 entries). */
   childStates: VoxelChildTileState[];
   /**
-   * NEW-VOXEL-OCTREE-DEEP-TRAVERSAL — internal per-level-2-tile async states
-   * (64 entries). Only driven when {@link slotCount} is 73.
+   * Internal per-level-2-tile asynchronous states (64 entries). Driven for a
+   * static 73-slot atlas or a dynamic level-2 pool.
    */
   l2States: VoxelChildTileState[];
   /**
-   * NEW-VOXEL-OCTREE-DEEP-LEVELS — internal per-level-3-tile async states (512
-   * entries). Allocated lazily (empty until the static deep-3 atlas is built)
+   * Internal per-level-3-tile asynchronous states (512 entries). Allocated
+   * lazily (empty until the static level-3 atlas is built)
    * and driven only when {@link slotCount} is 585.
    */
   l3States: VoxelChildTileState[];
   /**
-   * NEW-VOXEL-OCTREE-DEEP-LEVELS — number of atlas slots reserved for LEVEL-3
-   * tiles: 0 (no deep-3 atlas) or 512 (static full atlas — every level-3 tile
-   * has a reserved slot 73..584). The dynamic LRU pool is NOT yet generalized
-   * to level 3 (honest partial — see the module docstring); deep-3 refinement
-   * is available only when the full 585-slot atlas fits the device.
+   * Number of atlas slots reserved for level-3 tiles: 0 or 512. Every level-3
+   * tile has a static slot from 73 through 584. Dynamic level-3 eviction is not
+   * supported, so refinement reaches level 3 only when the full 585-slot atlas
+   * fits the device. Keep this separate from the level-2 pool size because the
+   * two levels occupy fixed, independently packed UBO ranges.
    */
   l3PoolSize: number;
   /**
-   * NEW-VOXEL-ATLAS-LRU-EVICT — number of atlas slots available to LEVEL-2
-   * tiles: 0 (no deep atlas), 64 (static full atlas — every level-2 tile has
-   * a reserved slot, the B17/B19 path), or 1..63 (dynamic LRU pool at slots
-   * 9..slotCount-1 when the full set does not fit the capacity).
+   * Number of atlas slots available to level-2 tiles: 0 (no deep atlas), 64
+   * (every level-2 tile has a static reserved slot), or 1..63 (a dynamic LRU
+   * pool at slots 9..slotCount-1 when the full set does not fit the capacity).
    */
   l2PoolSize: number;
-  /** NEW-VOXEL-ATLAS-LRU-EVICT — true when the level-2 pool is LRU-managed. */
+  /** True when the level-2 pool is LRU-managed. */
   l2Dynamic: boolean;
   /**
-   * NEW-VOXEL-ATLAS-LRU-EVICT — free slot indices of the dynamic level-2 pool
-   * (LIFO; seeded descending so pop() hands out 9, 10, ... first). Empty on
-   * the static paths.
+   * Free slot indices of the dynamic level-2 pool (LIFO; seeded descending so
+   * pop() hands out 9, 10, ... first). Empty on the static paths.
    */
   freeL2Slots: number[];
   /**
-   * NEW-VOXEL-ATLAS-LRU-EVICT — monotonic counter incremented each frame
-   * {@link tryUploadChildVoxelTiles} actively drives uploads. The LRU clock.
+   * The LRU clock, incremented on each frame in which
+   * {@link tryUploadChildVoxelTiles} actively drives uploads.
    */
   frameIndex: number;
-  /** NEW-VOXEL-ATLAS-LRU-EVICT — total evictions performed. Probe diagnostic. */
+  /** Total evictions performed, exposed for diagnostics. */
   evictionCount: number;
   /**
-   * NEW-VOXEL-ATLAS-LRU-EVICT — number of level-2 tiles demanded on the most
-   * recent frame with a dynamic pool (per-tile SSE + frustum mask population
-   * count). Probe diagnostic; 0 on the static paths.
+   * Number of level-2 tiles demanded on the most recent frame with a dynamic
+   * pool (per-tile SSE + frustum mask population count). This diagnostic is 0
+   * on the static paths.
    */
   lastL2DemandCount: number;
   /** Texture format chosen at root upload (children must match). */
   uploadFormat: GPUTextureFormat | null;
   /**
-   * VOXEL-OCTREE-LOD — the LOD level the renderer packed into the UBO on the
-   * most recent frame (0 = root, 1 = refined). Diagnostic — read by probes.
+   * The LOD level the renderer packed into the UBO on the
+   * most recent frame (0 = root, 1 = refined). Exposed for diagnostics.
    */
   lastTargetLevel: number;
   /**
-   * NEW-VOXEL-STREAMING-UPLOAD — the camera's demanded refinement level on
-   * the most recent frame (SSE ladder capped by atlas CAPACITY, not by what
-   * is uploaded). Drives which descendant levels {@link tryUploadChildVoxelTiles}
-   * requests/uploads. Diagnostic — read by probes.
+   * The camera's demanded refinement level on the most recent frame (SSE ladder
+   * capped by atlas capacity, not by what is uploaded). Drives which descendant
+   * levels {@link tryUploadChildVoxelTiles} requests/uploads. Exposed for
+   * diagnostics.
    */
   demandLevel: number;
   /** Slot-0 identity used to reject stale asynchronous pick readback. */
@@ -599,7 +540,7 @@ function toHalfFloat(f32: Float32Array): Uint16Array {
  * renderer's update. Returns `true` on the frame the real-data texture becomes
  * available (so the caller can rebuild its bind group to point at
  * `state.view`); returns `false` while pending, already-done, or failed (in
- * which case the caller keeps the placeholder — off-gate byte-identical).
+ * which case the caller keeps the placeholder).
  */
 export function tryUploadRootVoxelTile(
   device: GPUDevice,
@@ -613,7 +554,7 @@ export function tryUploadRootVoxelTile(
 
   const provider = getProvider(primitive);
   if (!provider) {
-    // No real provider → caller keeps the placeholder gradient (off-gate).
+    // Without a real provider, the caller keeps the placeholder gradient.
     return false;
   }
 
@@ -713,20 +654,18 @@ export function tryUploadRootVoxelTile(
   }
 
   const dims = provider.dimensions;
-  // VOXEL-SHAPEUV-CONVENTION — for BOX shapes, size the texture with the
-  // padded INPUT-orientation dimensions (mirrors `initFromProvider`'s
-  // `_inputDimensions`): the metadata array is ordered X, then input-Y, then
-  // input-Z INCLUDING padding voxels, and for glTF-sourced tiles the input Y/Z
-  // axes are the 3D Tiles Z/flipped-Y axes. The renderer's ray-march applies
-  // the matching shapeUv → inputCoordinate mapping (WebGL Octree.glsl).
-  // NEW-VOXEL-ELLIPSOID-SHAPEUV — ELLIPSOID shapes carry the same padded
-  // convention (dimensions are lon/lat/height cell counts; the extent Y/Z
-  // swap for Y_UP metadata mirrors VoxelPrimitiveHelpers' inputDimensions
-  // swap) but the Octree.glsl input-axis swap/flip is SHAPE_BOX-gated
-  // upstream, so `yUpBox` stays false for ellipsoids.
-  // NEW-VOXEL-CYLINDER-SHAPEUV — CYLINDER shapes carry the same padded
-  // convention (dimensions are radius/angle/height cell counts); like
-  // ELLIPSOID, `yUpBox` stays false (the swap/flip is SHAPE_BOX-gated).
+  // Box shapes use padded input-orientation dimensions, matching
+  // `initFromProvider`'s `_inputDimensions`: the metadata array is ordered X,
+  // then input-Y, then input-Z including padding voxels, and for glTF-sourced
+  // tiles the input Y/Z axes are the 3D Tiles Z/flipped-Y axes. The renderer's
+  // ray-march applies the matching shapeUv → inputCoordinate mapping (WebGL
+  // Octree.glsl). Ellipsoid shapes carry the same padded convention (dimensions
+  // are lon/lat/height cell counts; the extent Y/Z swap for Y_UP metadata
+  // mirrors VoxelPrimitiveHelpers' inputDimensions swap) but the Octree.glsl
+  // input-axis swap/flip is `SHAPE_BOX`-gated upstream, so `yUpBox` stays false
+  // for ellipsoids. Cylinder shapes carry the same padded convention
+  // (dimensions are radius/angle/height cell counts); like ellipsoids, `yUpBox`
+  // stays false because the swap/flip is box-gated.
   const isBox = provider.shape === VoxelShapeType.BOX;
   const isEllipsoid = provider.shape === VoxelShapeType.ELLIPSOID;
   const isCylinder = provider.shape === VoxelShapeType.CYLINDER;
@@ -763,29 +702,24 @@ export function tryUploadRootVoxelTile(
 
   const { format, float32 } = chooseFormat(device);
 
-  // VOXEL-OCTREE-LOD — allocate a 9-slot Z-stacked atlas when the provider
-  // has level-1 tiles to refine into AND the convention (BOX) sampling path is
-  // active AND the atlas depth fits the device limit. Slot 0 = root; slots
-  // 1..8 = level-1 children (uploaded asynchronously afterwards — see
-  // tryUploadChildVoxelTiles). Single-level providers keep slotCount = 1 and
-  // the exact historical texture layout (off-gate byte-identical).
+  // Allocate a 9-slot Z-stacked atlas when the provider has level-1 tiles, the
+  // box sampling convention is active, and the atlas depth fits the device
+  // limit. Slot 0 is the root and slots 1..8 are asynchronously uploaded
+  // level-1 children. Single-level providers keep `slotCount = 1`.
   //
-  // NEW-VOXEL-OCTREE-DEEP-TRAVERSAL — providers advertising a THIRD level get
-  // the 73-slot atlas (adds the 64 level-2 tiles at slots 9..72) when it fits
-  // the slot capacity.
+  // Providers advertising a third level get the 73-slot atlas (adds the 64
+  // level-2 tiles at slots 9..72) when it fits the slot capacity.
   //
-  // NEW-VOXEL-ATLAS-LRU-EVICT — slot capacity = the device's
-  // `maxTextureDimension3D` divided by the per-tile depth, further capped by
-  // the opt-in per-primitive `_webgpuVoxelAtlasMaxSlots` override (probe/test
-  // hook + an app-level atlas memory bound; undefined by default → device
-  // capacity only, the historical budget). When the full 73-slot set fits the
-  // capacity the static tile→slot layout is used — byte-identical to the
-  // B17/B19 path (the off-gate). When it does NOT fit but at least ONE spare
+  // Slot capacity is the device's `maxTextureDimension3D` divided by the
+  // per-tile depth, further capped by the optional per-primitive
+  // `_webgpuVoxelAtlasMaxSlots` memory bound. When undefined, the allocation
+  // uses only the device capacity. When the full 73-slot set fits, use the
+  // static tile-to-slot layout. When it does not fit but at least one spare
   // slot beyond the 9 static root+level-1 slots does (capacity >= 10), the
-  // level-2 region becomes a dynamic LRU pool of (slotCount - 9) slots —
-  // demand exceeding capacity streams tiles through the pool with eviction
-  // instead of clamping traversal to depth 1. Capacity < 10 keeps the 9-slot
-  // depth-1 atlas exactly as before.
+  // level-2 region becomes a dynamic LRU pool of (slotCount - 9) slots — demand
+  // exceeding capacity streams tiles through the pool with eviction instead of
+  // clamping traversal to depth 1. Capacity < 10 retains the 9-slot depth-1
+  // atlas.
   const availableLevels = provider.availableLevels ?? 1;
   const maxDim3D = device.limits?.maxTextureDimension3D ?? 2048;
   const override = (
@@ -798,23 +732,22 @@ export function tryUploadRootVoxelTile(
     typeof override === "number" && override >= 1
       ? Math.min(deviceSlotCap, Math.floor(override))
       : deviceSlotCap;
-  // NEW-VOXEL-ELLIPSOID-SHAPEUV — the multi-level atlas stays BOX-gated (it
-  // was previously implied by `convention !== null`, which was box-only):
-  // non-box shapes remain root-only until their octree-refinement increment
-  // is verified, preserving the NEW-VOXEL-OCTREE-DEEP-TRAVERSAL off-gate.
+  // Multilevel atlases remain box-gated because their octree-coordinate
+  // mapping is box-specific. Keep ellipsoids and cylinders on the root-only
+  // path until their refinement mapping is supported; testing only for a
+  // non-null convention would send them through incompatible atlas indexing.
   const multiLevel =
     isBox && convention !== null && availableLevels >= 2 && slotCap >= 9;
   const wantDeep = multiLevel && availableLevels >= 3;
   const fullDeep = wantDeep && slotCap >= 73;
   const partialDeep = wantDeep && !fullDeep && slotCap >= 10;
   const deepLevel = fullDeep || partialDeep;
-  // NEW-VOXEL-OCTREE-DEEP-LEVELS — a provider advertising a FOURTH level
-  // (availableLevels >= 4) gets the 585-slot atlas (adds the 512 level-3 tiles
-  // at slots 73..584) when the full set fits the slot capacity. Only the
-  // STATIC full atlas is supported at level 3 (the dynamic LRU pool stays
-  // level-2-only for now); when the 585-slot set does not fit, traversal falls
-  // back to the level-2 cap exactly as before (off-gate preserved). fullDeep3
-  // implies fullDeep (585 > 73), so level 2 keeps its static slots too.
+  // A provider advertising a fourth level (availableLevels >= 4) gets the
+  // 585-slot atlas (adds the 512 level-3 tiles at slots 73..584) when the full
+  // set fits the slot capacity. Only the static full atlas is supported at
+  // level 3; the dynamic LRU pool remains level-2-only. When the 585-slot set
+  // does not fit, traversal uses the level-2 cap. `fullDeep3` implies fullDeep
+  // (585 > 73), so level 2 keeps its static slots too.
   const fullDeep3 = fullDeep && availableLevels >= 4 && slotCap >= 585;
   const slotCount = fullDeep3
     ? 585
@@ -866,10 +799,10 @@ export function tryUploadRootVoxelTile(
   state.uploadFormat = format;
   state.rootSlotGeneration = publishVoxelAtlasSlot(state.lifecycle, 0);
   state.childPhase = multiLevel ? "loading" : "none";
-  // NEW-VOXEL-ATLAS-LRU-EVICT — level-2 pool bookkeeping. Static full atlas
+  // Level-2 pool bookkeeping. A static full atlas
   // keeps an empty free list (slots are pre-assigned baseSlot + i); the
   // dynamic pool seeds its free list descending so pop() hands out ascending
-  // slot numbers (9, 10, ...) — deterministic for probes.
+  // slot numbers (9, 10, ...), keeping allocation deterministic.
   state.l2PoolSize = fullDeep ? 64 : partialDeep ? slotCount - 9 : 0;
   state.l2Dynamic = partialDeep;
   state.freeL2Slots.length = 0;
@@ -878,10 +811,10 @@ export function tryUploadRootVoxelTile(
       state.freeL2Slots.push(s);
     }
   }
-  // NEW-VOXEL-OCTREE-DEEP-LEVELS — static level-3 pool bookkeeping. Slots
-  // 73..584 are pre-assigned baseSlot + i (no free list — parallels the static
-  // full level-2 path). Level-3 tile states are allocated lazily here so
-  // shallower providers never pay for 512 unused state objects.
+  // Static level-3 pool bookkeeping. Slots 73..584 are pre-assigned as
+  // baseSlot + i (no free list — parallels the static full level-2 path).
+  // Level-3 tile states are allocated lazily here so shallower providers never
+  // pay for 512 unused state objects.
   state.l3Slots.fill(-1);
   if (fullDeep3) {
     state.l3PoolSize = 512;
@@ -1052,13 +985,11 @@ function driveTileLevelUploads(
     }
     slots[i] = slot;
     child.slotGeneration = publishVoxelAtlasSlot(state.lifecycle, slot);
-    // NS-VOXEL-REFINED-TILE-CELL-RETENTION — retain the CPU-side content (was
-    // nulled here to free memory) so a refined-tile `scene.pickVoxel` can build
-    // a full VoxelCell from this child's metadata. Parity with WebGL, whose
-    // VoxelTraversal keeps `keyframeNode.content` for every resident tile —
-    // that is exactly what `findKeyframeNode(tileIndex).content` reads. Rendering
-    // is byte-unchanged (the texture was already written above); only heap
-    // residency changes, matching the WebGL memory model.
+    // Retain the CPU-side content so a refined-tile `scene.pickVoxel` can build
+    // a full VoxelCell from this child's metadata. VoxelTraversal keeps
+    // `keyframeNode.content` for every resident tile, which is what
+    // `findKeyframeNode(tileIndex).content` reads. Rendering uses the uploaded
+    // texture; retaining content aligns CPU metadata lifetime with traversal.
     child.phase = "done";
     settled++;
   }
@@ -1067,33 +998,30 @@ function driveTileLevelUploads(
 }
 
 /**
- * VOXEL-OCTREE-LOD — drive the asynchronous descendant-tile uploads into
- * atlas slots 1..8 (level 1) and — on the 73-slot deep atlas
- * (NEW-VOXEL-OCTREE-DEEP-TRAVERSAL) — slots 9..72 (level 2). Call once per
- * frame from the voxel renderer's update AFTER the root has uploaded
+ * Drives asynchronous descendant-tile uploads into atlas slots 1..8 (level 1)
+ * and, on a 73-slot atlas, slots 9..72 (level 2). Call once per frame from the
+ * voxel renderer's update after the root has uploaded
  * (`state.phase === "done"`); no-ops for single-level providers
  * (`childPhase === "none"`) and once every tile has settled.
  *
- * NEW-VOXEL-STREAMING-UPLOAD — uploads are DEMAND-DRIVEN: `demandLevel` is
- * the camera's SSE-ladder refinement level this frame (capped by atlas
- * capacity, NOT by uploaded tiles — see the renderer's
- * `computeVoxelDemandLevel`). Level-1 tiles are only requested/uploaded while
- * `demandLevel >= 1`, level-2 tiles while `demandLevel >= 2` — the upstream
- * VoxelTraversal megatexture-add analogue (tiles enter the megatexture only
- * when the traversal's SSE test visits them). When demand recedes mid-stream,
- * in-flight requests simply pause at their current phase and resume when the
- * camera demands that level again; uploaded slots stay resident on the
- * static full atlas. `childPhase` flips to "done" only when EVERY tile the
- * atlas has capacity for has settled, so a scene whose camera demands the
- * deepest level converges to the exact eager-upload steady state.
+ * Uploads are demand-driven: `demandLevel` is the camera's SSE-ladder
+ * refinement level for this frame, capped by atlas capacity rather than by
+ * uploaded tiles (see the renderer's `computeVoxelDemandLevel`). Level-1 tiles
+ * are only requested/uploaded while `demandLevel >= 1`, level-2 tiles while
+ * `demandLevel >= 2`, matching VoxelTraversal megatexture behavior: tiles enter
+ * the megatexture only when the traversal's SSE test visits them. When demand
+ * recedes mid-stream, in-flight requests simply pause at their current phase
+ * and resume when the camera demands that level again; uploaded slots stay
+ * resident on the static full atlas. `childPhase` flips to "done" only when
+ * every tile the atlas has capacity for has settled, so a scene whose camera
+ * demands the deepest level converges with every supported tile resident.
  *
- * NEW-VOXEL-ATLAS-LRU-EVICT — when the level-2 pool is DYNAMIC
- * (`state.l2Dynamic`, capacity < 73), the level-2 set is driven by the
- * per-tile demand mask (`l2DemandMask`, renderer-computed SSE + frustum gate)
- * through {@link driveDynamicL2Uploads} instead: demanded tiles take free
- * pool slots or LRU-evict a stale resident; residency follows the camera for
- * the life of the primitive, so `childPhase` never flips to "done" on this
- * path. Static paths ignore the mask entirely — byte-identical B19 flow.
+ * When the level-2 pool is dynamic (`state.l2Dynamic`, capacity < 73), the
+ * level-2 set is driven by the per-tile demand mask (`l2DemandMask`,
+ * renderer-computed SSE + frustum gate) through {@link driveDynamicL2Uploads}
+ * instead: demanded tiles take free pool slots or LRU-evict a stale resident;
+ * residency follows the camera for the life of the primitive, so `childPhase`
+ * never flips to "done" on this path. Static paths ignore the mask entirely.
  */
 export function tryUploadChildVoxelTiles(
   device: GPUDevice,
@@ -1119,8 +1047,8 @@ export function tryUploadChildVoxelTiles(
     return;
   }
 
-  // NEW-VOXEL-ATLAS-LRU-EVICT — advance the LRU clock only on frames that
-  // actively drive uploads (same guard set as the drives below).
+  // Advance the LRU clock only on frames that actively drive uploads, using
+  // the same guard conditions as the drives below.
   state.frameIndex++;
 
   let settled = driveTileLevelUploads(
@@ -1137,7 +1065,7 @@ export function tryUploadChildVoxelTiles(
   let total = 8;
 
   if (state.l2Dynamic) {
-    // NEW-VOXEL-ATLAS-LRU-EVICT — dynamic pool: residency follows demand for
+    // In the dynamic pool, residency follows demand for
     // the life of the primitive; no terminal "done" state exists.
     driveDynamicL2Uploads(
       device,
@@ -1178,7 +1106,7 @@ export function tryUploadChildVoxelTiles(
     }
   }
 
-  // NEW-VOXEL-OCTREE-DEEP-LEVELS — static level-3 set (slots 73..584). Driven
+  // The static level-3 set occupies slots 73..584 and is driven
   // only when the camera demands level >= 3 (the streaming semantics — a tile
   // enters the atlas only when the SSE ladder visits its level). Uses the same
   // level-generic `driveTileLevelUploads` machine (edge = 2^3 = 8, count 512).
@@ -1212,12 +1140,11 @@ export function tryUploadChildVoxelTiles(
 }
 
 /**
- * NEW-VOXEL-ATLAS-LRU-EVICT — evict the least-recently-demanded RESIDENT
- * level-2 tile and return its freed slot, or -1 when every resident is
- * demanded on the current frame (nothing evictable — the caller waits).
- * The victim resets to `idle` so a later demand re-requests + re-uploads it
- * through the normal machine (fresh, correct cell values). Ties break to the
- * lowest tile index — deterministic for probes.
+ * Evicts the least-recently-demanded resident level-2 tile and return its freed
+ * slot, or -1 when every resident is demanded on the current frame (nothing
+ * evictable — the caller waits). The victim resets to `idle` so a later demand
+ * re-requests + re-uploads it through the normal machine (fresh, correct cell
+ * values). Ties break to the lowest tile index for deterministic eviction.
  */
 function evictLruL2Slot(state: VoxelDataUploadState): number {
   const victim = selectVoxelAtlasLruVictim(
@@ -1241,17 +1168,16 @@ function evictLruL2Slot(state: VoxelDataUploadState): number {
 }
 
 /**
- * NEW-VOXEL-ATLAS-LRU-EVICT — drive the level-2 uploads against the DYNAMIC
- * slot pool. Per tile: stamp `lastDemandFrame` when demanded (per-tile SSE +
- * frustum mask from the renderer), advance the request → process machine only
- * for demanded tiles, and on ready-to-write allocate a slot from the free
- * list — or LRU-evict a stale resident when the list is empty. A pool fully
- * held by tiles demanded THIS frame yields no slot: the upload waits (no
- * overflow, no same-frame thrash) and retries when demand shifts. Resident
- * tiles that fall out of demand stay resident until a demanded tile needs
- * their slot. Failed tiles never occupy a slot and are not retried (the WGSL
- * walk falls back to the level-1 ancestor for that region — same semantics
- * as the static path).
+ * Drives level-2 uploads against the dynamic slot pool. Per tile: stamp
+ * `lastDemandFrame` when demanded (per-tile SSE + frustum mask from the
+ * renderer), advance the request → process machine only for demanded tiles, and
+ * on ready-to-write allocate a slot from the free list — or LRU-evict a stale
+ * resident when the list is empty. A pool fully held by tiles demanded in the
+ * current frame yields no slot: the upload waits (no overflow or same-frame
+ * thrashing) and retries when demand shifts. Resident tiles that fall out of
+ * demand stay resident until a demanded tile needs their slot. Failed tiles
+ * never occupy a slot and are not retried (the WGSL walk falls back to the
+ * level-1 ancestor for that region — same semantics as the static path).
  */
 function driveDynamicL2Uploads(
   device: GPUDevice,
@@ -1396,10 +1322,10 @@ function driveDynamicL2Uploads(
     }
     state.l2Slots[i] = slot;
     tile.slotGeneration = publishVoxelAtlasSlot(state.lifecycle, slot);
-    // NS-VOXEL-REFINED-TILE-CELL-RETENTION — retain the CPU-side content so a
-    // refined-tile pick can construct its VoxelCell (see the static-path note in
-    // driveTileLevelUploads). An LRU eviction resets `content` to null in
-    // evictLruL2Slot, so a resident dynamic slot always maps to live content.
+    // Retain the CPU-side content so a refined-tile pick can construct its
+    // VoxelCell (see the static-path note in driveTileLevelUploads). An LRU
+    // eviction resets `content` to null in evictLruL2Slot, so a resident
+    // dynamic slot always maps to live content.
     tile.phase = "done";
   }
 

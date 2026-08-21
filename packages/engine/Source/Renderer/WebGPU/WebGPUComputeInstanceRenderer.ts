@@ -1,19 +1,15 @@
 /// <reference types="@webgpu/types" />
 /**
- * WebGPU Compute-Instance Renderer — the feature-agnostic GPU-resident
- * instance system (NEW-COMPUTE-INSTANCE-SYSTEM; Phase 3 of the Large
- * Dynamic Objects roadmap, generalized in Batch 231 from the Batch-230
- * catalog renderer).
+ * WebGPU Compute-Instance Renderer
  *
  * GPU-resident rendering for `ComputeInstanceCollection`: the per-instance
- * parameter floats (layout = the user's business) upload ONCE to a
- * read-only storage buffer; every frame a compute dispatch (one invocation
- * per instance) runs the USER-SUPPLIED WGSL kernel and writes position
- * (RTE high/low) + color + pixelSize into a second storage buffer; the
- * instanced draw (`ComputeInstanceRender.wgsl`) vertex-pulls
- * `instances[instance_index]` directly from that buffer. Instance state
- * never leaves the GPU — the CPU's per-frame upload is the camera uniform
- * block plus ONE scalar (simulation time).
+ * parameter floats use an application-defined layout and upload when dirty to
+ * a read-only storage buffer; every frame a compute dispatch (one invocation
+ * per instance) runs the user-supplied WGSL kernel and writes position (RTE
+ * high/low) + color + pixelSize into a second storage buffer; the instanced
+ * draw (`ComputeInstanceRender.wgsl`) vertex-pulls
+ * `instances[instance_index]` directly from that buffer. Instance state never
+ * leaves the GPU; per-frame CPU data is the camera block and simulation time.
  *
  * Kernel composition (UserPostProcessStage-style, see that file for the
  * precedent): the compute module is composed at pipeline build as
@@ -24,53 +20,48 @@
  *   + <user kernel defining csm_computeInstance>
  *
  * Composed modules are cached per composed-source string in a per-device
- * map (kernels are per-collection, low cardinality) — NOT in
- * `WebGPUShaderModuleCache`, whose (sourceId, defines) key can't represent
+ * map because kernels are per-collection and low cardinality, rather than in
+ * `WebGPUShaderModuleCache`, whose source-id and define key cannot represent
  * arbitrary user strings. The static render module still goes through the
  * sourceId cache (`ShaderSourceId.COMPUTE_INSTANCE_RENDER`).
  *
- * Bounding volume (Batch 235): positions are GPU-resident, so the engine
- * cannot derive a bounding volume — `collection.boundingSphere` is a USER
+ * Positions are GPU-resident, so the engine cannot derive a bounding volume.
+ * `collection.boundingSphere` is a caller
  * contract ("every position the kernel can produce fits in this sphere").
  * When supplied it threads onto the draw command (`boundingVolume` +
  * `cull: true`) for per-frustum binning/culling; when absent the command
- * keeps the historical bin-into-all-frustums behavior.
+ * is binned into all frustums.
  *
- * TAA motion vectors (Batch 235): two instance-record buffers ping-pong —
- * the kernel writes `instanceBuffers[pingPongIndex]` each frame, and last
- * frame's output buffer binds as the velocity pass's `prevInstances`
- * (@binding(3) — the pick variant claims @binding(2) for pickColors). The
- * partner buffer, velocity pipeline, and per-orientation bind groups all
- * allocate lazily on the first `frameState.taaEnabled` frame, so
- * TAA-off collections pay nothing. The velocity command (rg16float NDC
- * delta, `_runVelocityPass` walks `cmd.velocityCommand`) mirrors the
+ * For temporal motion vectors, two instance-record buffers ping-pong: the
+ * kernel writes `instanceBuffers[pingPongIndex]` each frame, and last frame's
+ * output buffer binds as the velocity pass's `prevInstances` (@binding(3) —
+ * the pick variant claims @binding(2) for pickColors). The partner buffer,
+ * velocity pipeline, and per-orientation bind groups all allocate lazily on
+ * the first `frameState.taaEnabled` frame, so collections without temporal
+ * antialiasing pay nothing. The velocity command writes rg16float NDC delta,
+ * `_runVelocityPass` walks `cmd.velocityCommand`) mirrors the
  * cloud/point/billboard pattern.
  *
- * GPU picking (Batch 279, NEW-ORBITAL-GPU-PICKING): positions are GPU-
- * resident so there is no CPU position to hit-test — picking RASTERIZES the
- * same instanced quads with a per-instance pick color (one CPU-allocated
- * `context.createPickId` per instance) into the single-attachment pick FBO,
- * and the readback decodes the instance under the cursor. The pick id,
- * pick-color storage buffer, pick BGL/pipeline (slot-0-only blend-stripped,
- * the pick-FBO invariants), and pick command all allocate lazily on the
- * first `frameState.passes.pick` frame, so non-picked frames pay nothing.
- * `scene.pick` returns the engine's domain-agnostic
+ * GPU-resident positions cannot be hit-tested on the CPU, so picking
+ * rasterizes the same instanced quads with a per-instance pick color (one
+ * CPU-allocated `context.createPickId` per instance) into the single-attachment
+ * pick FBO, and the readback decodes the instance under the cursor. The pick
+ * id, pick-color storage buffer, pick layout and pipeline, and pick command all
+ * allocate lazily on the first `frameState.passes.pick` frame, so non-picked
+ * frames pay nothing. `scene.pick` returns the engine's domain-agnostic
  * `{ collection, instanceIndex, primitive }` record (the demo maps
- * instanceIndex → its domain object). `collection.allowPicking` (default
- * true) gates the whole pick side.
+ * instanceIndex → its domain object). `collection.allowPicking`
+ * (default true) gates the whole pick side.
  *
- * Currently deferred (tracked in DEFERRED_WORK.md, NEW-COMPUTE-INSTANCE-*):
- *   - WebGL2 fallback (worker/WASM kernel host)
- *   - pickPosition for a compute-instance (per-instance GPU position
- *     reconstruction; scene.pick returns the instance, scene.pickPosition
- *     does not yet reconstruct its world position) — NEW-ORBITAL-GPU-PICKING
- *   - HDR-mode pick (LDR pick pipelines for a float scene format — same
- *     caveat as billboard/point pick)
+ * The WebGL2 fallback executes its CPU kernel on the main thread; worker or
+ * WebAssembly offload is not implemented. WebGPU world-position picking is
+ * available through a bounded asynchronous record readback. Pick identifiers
+ * and readback remain 8-bit even when scene color uses an HDR format.
  *
  * Compute scheduling mirrors `WebGPUWeatherRenderer`: the dispatch is
- * recorded on its OWN command encoder and submitted immediately during the
- * collection's update — queue submission order guarantees it executes
- * before the scene's render submit that consumes the instance buffer.
+ * recorded on the frame encoder when available. Off-frame callers use an
+ * immediate submission; queue order keeps the dispatch before rendering that
+ * consumes the instance buffer.
  *
  * @private
  */
@@ -99,9 +90,7 @@ import type {
   WebGPURenderPipelineDescriptor,
 } from "./WebGPURenderPipelineCache.js";
 
-// Per-device shader module cache so two contexts (split-screen) share the
-// compiled modules (C-R7-SHADER-MODULE-DEDUP pattern). Holds the STATIC
-// render module only.
+// The static render module is shared through a per-device shader-module cache.
 const _renderShaderModuleCaches = new WeakMap<
   GPUDevice,
   WebGPUShaderModuleCache
@@ -190,12 +179,11 @@ function destroyPickIds(cache: {
 }
 
 /**
- * Drop the pick PIPELINE (descriptor + BGL + bind group + command) on a
- * log-depth flip or scene-format-generation bump so it rebuilds against the
- * recompiled render module / new pick-FBO format. The pick IDS and the pick
- * COLOR buffer are NOT cleared here — they depend only on the instance count,
- * not the pipeline shape, so they survive a format flip (uploadParams clears
- * them on a count change).
+ * Drops the pick pipeline, descriptor, layout, bind group, and command when
+ * log-depth or scene-format state changes, allowing them to rebuild against
+ * the compatible render module and pick-framebuffer format. Pick IDs and the
+ * pick-color buffer depend only on instance count and survive these changes;
+ * `uploadParams` clears them when the count changes.
  */
 function resetPickPipeline(cache: ComputeInstanceCache): void {
   cache.pickPipeline = null;
@@ -209,7 +197,7 @@ function resetPickPipeline(cache: ComputeInstanceCache): void {
 
 // Per-instance float lanes are raw f32s: stride = floatsPerInstance * 4.
 // InstanceRecord (scaffold/render output): vec3+pad, vec3+pad, vec4,
-// f32+12 pad = 64 bytes. MUST match `CsmInstanceRecord` /
+// f32+12 pad = 64 bytes. This must match `CsmInstanceRecord` and
 // `InstanceRecord` in the two WGSL files.
 const INSTANCE_RECORD_BYTES = 64;
 // CameraUniforms: mat4 + vec2 + pads + 2×(vec3+pad) + mat4 = 176 bytes.
@@ -220,13 +208,12 @@ const COMPUTE_WORKGROUP_SIZE = 64;
 // pick FS). Matches `pickColors: array<vec4<f32>>` in ComputeInstanceRender.
 const PICK_COLOR_BYTES = 16;
 
-// pickPosition readback (NEW-COMPUTE-INSTANCE-PICKPOSITION) — the cached
-// instance position is only returned for the SAME instance index it was armed
+// A cached position is returned only for the same instance index and while it
+// is at most this many dispatched frames old. Staleness is
 // for and within this many rendered frames of that arming. Staleness is
 // counted in dispatched frames (cache.posUpdateCount), not wall time, so a
-// paused / requestRenderMode scene keeps a valid cache indefinitely (positions
-// can't move without a kernel dispatch). Mirrors PickDepth's
-// ASYNC_DEPTH_MAX_STALE_FRAMES contract.
+// paused or request-render scene keeps a valid cache across wall-clock idle
+// time because positions cannot move without a kernel dispatch.
 const POS_READBACK_MAX_STALE_FRAMES = 4;
 
 interface ComputeInstanceCache {
@@ -266,7 +253,7 @@ interface ComputeInstanceCache {
   velocityPipeline: GPURenderPipeline | null;
   velocityPipelineDescriptor: WebGPURenderPipelineDescriptor | null;
   velocityPipelineRequestPending: boolean;
-  // Pick side (NEW-ORBITAL-GPU-PICKING) — all lazy; null until the first
+  // Pick resources are lazy and remain null until the first
   // frame the scene runs a pick pass (frameState.passes.pick). GPU-resident
   // instances have no CPU position to hit-test, so picking renders the same
   // instanced quads with a per-instance pick color (CPU-allocated pick id)
@@ -284,13 +271,13 @@ interface ComputeInstanceCache {
   // Count the pick ids were last allocated/uploaded for — re-alloc when the
   // instance count drifts (mirrors the color path's instanceCount tracking).
   pickIdCount: number;
-  // pickPosition readback (NEW-COMPUTE-INSTANCE-PICKPOSITION) — positions are
-  // GPU-resident, so reconstructing a picked instance's world position means
-  // reading its one record slot back from the instance buffer. Same
-  // one-frame-stale sync-cache bridge as PickDepth: getInstanceWorldPosition
-  // returns the cached value when the query matches the armed index and is
-  // recent, else arms a copyBufferToBuffer + mapAsync readback and returns
-  // undefined. All lazy; null until the first getInstanceWorldPosition call.
+  // GPU-resident position readback is lazy. Reconstructing a picked instance's
+  // world position means reading its one record slot back from the instance
+  // buffer. Same one-frame-stale sync-cache bridge as PickDepth:
+  // getInstanceWorldPosition returns the cached value when the query matches
+  // the armed index and is recent, else arms a copyBufferToBuffer + mapAsync
+  // readback and returns undefined. All lazy; null until the first
+  // getInstanceWorldPosition call.
   posReadbackBuffer: GPUBuffer | null; // 64-byte (one record) MAP_READ staging
   posReadbackPending: boolean; // dedupe overlapping mapAsync calls
   posCacheValue: { x: number; y: number; z: number } | null; // last decode
@@ -298,10 +285,8 @@ interface ComputeInstanceCache {
   posCacheStamp: number; // frame stamp the readback was armed at
   posUpdateCount: number; // advances once per rendered frame (staleness clock)
   _pipelineFormatGeneration?: number;
-  // Renderer-wide log depth (NEW-COLLECTIONS-LOG-DEPTH) — whether the
-  // render/velocity modules + pipelines were built with LOG_DEPTH; a
-  // master-switch flip forces a re-init (same pattern as the
-  // scene-format generation above).
+  // Whether render and velocity state was built with logarithmic depth. A
+  // scene-switch change requires rebuilding that state.
   _logDepthEnabled?: boolean;
 }
 
@@ -338,8 +323,8 @@ function createQuadVB(device: GPUDevice): GPUBuffer {
 }
 
 /**
- * Upload the collection's flat per-instance parameter lanes. Runs only
- * when the collection is dirty (add/edit/removeAll) — NOT per frame.
+ * Uploads the collection's flat per-instance parameter lanes only when the
+ * collection is dirty through add, edit, or removeAll operations.
  * Recreates the GPU buffers (and invalidates dependent bind groups +
  * command) when the instance count changes.
  */
@@ -362,8 +347,7 @@ function uploadParams(
     cache.instanceBuffers[0] = device.createBuffer({
       label: "ComputeInstance records A",
       size: Math.max(count * INSTANCE_RECORD_BYTES, INSTANCE_RECORD_BYTES),
-      // COPY_SRC so the pickPosition readback can copyBufferToBuffer the picked
-      // instance's record slot (NEW-COMPUTE-INSTANCE-PICKPOSITION).
+      // Copy-source usage lets position readback copy the selected record slot.
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC,
     });
     // The TAA ping-pong partner re-allocates lazily at the new size on
@@ -378,8 +362,8 @@ function uploadParams(
     cache.command = null;
     cache.instanceCount = count;
 
-    // Pick side (NEW-ORBITAL-GPU-PICKING): the instance count drove the pick
-    // id allocation + pick color buffer size, so a count change invalidates
+    // Instance count determines pick-id allocation and pick-color buffer size,
+    // so a count change invalidates
     // them. Free the old pick ids (releases the context pickObjects entries)
     // and tear down the GPU pick color buffer + bind group; they re-allocate
     // lazily on the next pick pass via `ensurePickResources`.
@@ -405,8 +389,8 @@ function uploadParams(
 }
 
 /**
- * Resolve the render pipeline through the central pipeline cache
- * (C-R7-RENDERER-MIGRATION pattern — async on first frame, sync after).
+ * Resolves the render pipeline through the central cache, using its synchronous
+ * result when ready and its asynchronous path otherwise.
  */
 function tryResolveRenderPipeline(
   device: GPUDevice,
@@ -467,12 +451,11 @@ function tryResolveRenderPipeline(
 }
 
 /**
- * Lazily build + resolve the TAA velocity pipeline (Batch 235). First
- * call on a TAA-on frame creates the three-entry velocity BGL (camera +
+ * Lazily builds and resolves the temporal velocity pipeline. Its first active
+ * frame creates the three-entry layout for camera,
  * current + prev instance records) and the descriptor; resolution then
  * follows the same central-cache sync/async flow as the color pipeline.
- * Never reached while TAA is off — the whole velocity side stays
- * unallocated for TAA-off collections.
+ * The velocity side remains unallocated when temporal antialiasing is unused.
  */
 function tryResolveVelocityPipeline(
   device: GPUDevice,
@@ -521,7 +504,7 @@ function tryResolveVelocityPipeline(
       primitive: { topology: "triangle-list", cullMode: "none" },
       // The velocity pass reuses the scene depth attachment read-only.
       // No multisample state: the rg16float velocity target is always
-      // single-sample and TAA forces MSAA=1 (Batch 234 coupling).
+      // single-sample, and temporal antialiasing uses a single sample.
       depthStencil: {
         format: "depth24plus-stencil8",
         depthWriteEnabled: false,
@@ -576,13 +559,12 @@ function tryResolveVelocityPipeline(
 }
 
 /**
- * Lazily build + resolve the GPU pick pipeline (NEW-ORBITAL-GPU-PICKING).
- * First call on a pick-pass frame creates the three-entry pick BGL (camera +
+ * Lazily builds and resolves the GPU pick pipeline. Its first pick-pass call
+ * creates the three-entry layout for camera,
  * current instance records + per-instance pick colors) and the descriptor;
  * resolution then follows the same central-cache sync/async flow as the
- * color pipeline. The pick pipeline targets the SINGLE-attachment pick FBO
- * (slot-0 only, blend stripped, multisample dropped — the pick-FBO invariant
- * enforced by `WebGPUDerivedCommand` PICK variants) and swaps to the render
+ * color pipeline. The pipeline targets the single pick attachment without
+ * blending or multisampling and swaps to the render
  * module's `vertexPickMain`/`fragmentPickMain` entry points, which output the
  * per-instance pick color byte-exact. Never reached until the scene runs a
  * pick pass — the whole pick side stays unallocated for never-picked frames.
@@ -596,12 +578,9 @@ function tryResolvePickPipeline(
   if (cache.pickPipeline) {
     return true;
   }
-  // The pick pipeline MUST target the pick FBO's color format or WebGPU
-  // drops every pick draw ("attachment state not compatible") — FORK-34. The
-  // pick FBO allocates with `scenePipelineFormat` clamped to an 8-bit unorm
-  // (WebGPUPickFramebuffer.pickColorFormat): HDR scene formats fall back to
-  // rgba8unorm there, so HDR pick of compute-instances is a known follow-up
-  // (same caveat the billboard/point pick pipelines carry).
+  // The pipeline target must match `WebGPUPickFramebuffer.pickColorFormat`,
+  // which clamps floating-point scene formats to an 8-bit unorm target. HDR
+  // scene color therefore does not widen compute-instance pick IDs or readback.
   const pickFormat: GPUTextureFormat =
     sceneFormat === "bgra8unorm" || sceneFormat === "rgba8unorm"
       ? sceneFormat
@@ -724,7 +703,7 @@ function initializeComputeInstanceResources(
   // reference the same module's velocity entry points.
   cache.renderShaderModule = renderModule;
 
-  // ── Compute pipeline ──
+  // Compute pipeline.
   cache.computeBindGroupLayout = makeBindGroupLayout(
     device,
     "ComputeInstance compute BGL",
@@ -760,7 +739,7 @@ function initializeComputeInstanceResources(
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
 
-  // ── Render pipeline (descriptor — materialized via the central cache) ──
+  // Render-pipeline descriptor materialized through the central cache.
   cache.renderBindGroupLayout = makeBindGroupLayout(
     device,
     "ComputeInstance render BGL",
@@ -772,10 +751,10 @@ function initializeComputeInstanceResources(
     ],
   );
 
-  // NEW-CLOUD-SCENEFB-PIPELINE-MISMATCH rule (Batch 228) — scene-FB
-  // pipelines MUST bake the MSAA sample count or attachment-state
-  // validation invalidates the whole pass encoder. `ms=` is keyed into the
-  // name so the central cache distinguishes sample-count variants.
+  // Scene-framebuffer pipelines bake the MSAA sample count;
+  // otherwise attachment-state validation invalidates the whole pass
+  // encoder. `ms=` is keyed into the name so the central cache
+  // distinguishes sample-count variants.
   const sampleCount =
     (context as unknown as { _msaaSamples?: number })._msaaSamples ?? 1;
   cache.renderPipelineDescriptor = {
@@ -902,8 +881,8 @@ function updateWebGPUComputeInstanceCollection(
   }
   const cache = collection._webgpuCache as unknown as ComputeInstanceCache;
 
-  // Scene-FB format + generation tracking (Batch 110 pattern) — HDR mode
-  // targets rgba16float instead of canvas bgra8unorm.
+  // Key the scene format and its generation because HDR scene color can use a
+  // floating-point target rather than the canvas format.
   const ctxAny = context as unknown as {
     scenePipelineFormat?: GPUTextureFormat;
     presentationFormat?: GPUTextureFormat;
@@ -977,8 +956,8 @@ function updateWebGPUComputeInstanceCollection(
   if (collection._catalogDirty === true || cache.instanceCount !== count) {
     uploadParams(device, cache, paramsData, count, floatsPerInstance);
   }
-  // Phase-0 dirty-consume discipline: clear the collection's dirty state
-  // every frame on the WebGPU path so settled collections never re-upload.
+  // Clear dirty state after the upload opportunity so settled
+  // collections do not upload again.
   if (typeof collection._consumeDirtyState === "function") {
     collection._consumeDirtyState();
   }
@@ -996,7 +975,7 @@ function updateWebGPUComputeInstanceCollection(
     return;
   }
 
-  // ── TAA prev-position ping-pong (Batch 235) ──
+  // Previous-position ping-pong for temporal antialiasing.
   // The kernel writes instanceBuffers[pingPongIndex] each frame; when the
   // partner buffer exists, last frame's output buffer feeds the velocity
   // pass's prevInstances binding. The partner allocates lazily on the
@@ -1012,8 +991,7 @@ function updateWebGPUComputeInstanceCollection(
     cache.instanceBuffers[1] = device.createBuffer({
       label: "ComputeInstance records B (velocity ping-pong)",
       size: cache.instanceBuffers[0]!.size,
-      // COPY_SRC so a TAA-on collection's pickPosition readback can read
-      // whichever ping-pong buffer is live (NEW-COMPUTE-INSTANCE-PICKPOSITION).
+      // Copy-source usage lets position readback access whichever buffer is live.
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC,
     });
     // This frame still writes+reads the primary buffer; the fresh
@@ -1051,7 +1029,7 @@ function updateWebGPUComputeInstanceCollection(
     });
   }
 
-  // ── Per-frame CPU upload #1: ONE time scalar (+ instance count) ──
+  // Per-frame CPU upload: one time scalar and the instance count.
   const simTime = (collection._simulationTimeSeconds as number) ?? 0;
   const frameParams = cache.frameParamsData;
   frameParams[0] = simTime;
@@ -1076,15 +1054,12 @@ function updateWebGPUComputeInstanceCollection(
     device.queue.submit([encoder.finish()]);
   }
 
-  // Advance the pickPosition readback staleness clock — the kernel just wrote
-  // fresh positions into instanceBuffers[cur], so any pickPosition readback
-  // armed against an older frame is now one render staler
-  // (NEW-COMPUTE-INSTANCE-PICKPOSITION). Counted in RENDERED frames (not wall
-  // time) so a paused/requestRenderMode scene keeps a cached value valid —
-  // positions can't change without a dispatch.
+  // Advance position-readback age after a dispatch. Age is measured in dispatch
+  // generations rather than wall time, so request-render idle time does not
+  // expire data that cannot have changed.
   cache.posUpdateCount++;
 
-  // ── Per-frame CPU upload #2: camera uniforms ──
+  // Per-frame CPU upload: camera uniforms.
   // RTE: zero the VIEW translation column BEFORE multiplying by projection
   // (zeroing after the multiply wipes projection's P23 depth term — see
   // UniformStateComputations.cleanModelViewProjectionRelativeToEye).
@@ -1133,8 +1108,8 @@ function updateWebGPUComputeInstanceCollection(
   data[25] = scratchEncoded.low.y;
   data[26] = scratchEncoded.low.z;
   data[27] = 0;
-  // DP-H41 — previousViewProjection at the struct tail (floats 28..43),
-  // identity fallback on the first frame.
+  // The previous view-projection matrix occupies tail floats 28-43; use
+  // identity until history exists.
   const prevVP = (us as { previousViewProjection?: Matrix4 })
     .previousViewProjection;
   if (prevVP) {
@@ -1159,16 +1134,15 @@ function updateWebGPUComputeInstanceCollection(
     });
   }
   const command = cache.command;
-  // Ping-pong: point the cached command at this frame's CURRENT buffer.
+  // Point the cached command at the current ping-pong buffer.
   command.bindGroups[0] = cache.renderBindGroups[cur]!;
   command.bindGroup = command.bindGroups[0];
 
-  // Bounding volume (Batch 235): positions are GPU-resident, so the BV is
-  // a user contract — collection.boundingSphere bounds every position the
-  // kernel can produce. Refreshed per frame so post-construction
-  // assignment (including back to undefined) takes effect immediately.
-  // Without it the command keeps the historical never-culled,
-  // bin-into-all-frustums behavior.
+  // GPU-resident positions make `collection.boundingSphere` a caller
+  // contract: it bounds every position the kernel can produce. Refreshed per
+  // frame so post-construction assignment (including back to
+  // undefined) takes effect immediately. Without it, the command
+  // is deliberately visible to all frustums.
   const boundingSphere = collection.boundingSphere as
     CesiumBoundingSphere | undefined;
   command.boundingVolume = boundingSphere;
@@ -1190,12 +1164,12 @@ function updateWebGPUComputeInstanceCollection(
 
   frameState.commandList.push(command);
 
-  // ── GPU pick command (NEW-ORBITAL-GPU-PICKING) ──
+  // GPU pick command.
   // Only on a pick-pass frame and when the collection allows picking. The
   // whole pick side (ids, pick-color buffer, pipeline, bind group, command)
   // stays unallocated until the first pick pass, so non-picked frames pay
-  // nothing. The pick command rasterizes the SAME instanced quads pointed at
-  // THIS frame's current instance buffer, so the pick region matches the
+  // nothing. The pick command rasterizes the same instanced quads using the
+  // current instance buffer, so the pick region matches the
   // rendered region exactly.
   if (frameState.passes?.pick === true && collection.allowPicking !== false) {
     pushPickCommand(
@@ -1215,8 +1189,8 @@ function updateWebGPUComputeInstanceCollection(
 }
 
 /**
- * Build (lazily) and push the GPU pick command for this frame's ping-pong
- * orientation (NEW-ORBITAL-GPU-PICKING). Allocates one pick id per instance
+ * Lazily builds and pushes the GPU pick command for the current ping-pong
+ * orientation. Allocates one pick id per instance
  * via `context.createPickId({ collection, instanceIndex, primitive }, ...)`
  * and uploads the packed pick colors to a storage buffer the pick VS
  * vertex-pulls. The pick command is flagged `pickOnly` so the pick pass
@@ -1263,8 +1237,8 @@ function pushPickCommand(
         "compute-instance",
       );
       cache.pickIds.push(pickId);
-      // PickId.color is Color.fromRgba(key) — the integer key packed
-      // little-endian across ALL FOUR channels (red=key&0xff, …,
+      // PickId.color is Color.fromRgba(key), with the integer key packed
+      // little-endian across all four channels (red=key&0xff, …,
       // alpha=(key>>24)&0xff). Store the full RGBA (including alpha, which is
       // 0 for keys < 2^24); the pick FS writes it byte-exact and the readback
       // reconstructs the key from all four bytes. Forcing alpha to 1.0 would
@@ -1312,9 +1286,8 @@ function pushPickCommand(
       vertexCount: 6,
       instanceCount: count,
       pass: Pass.TRANSLUCENT,
-      // FORK-34 (Batch 207) — dedicated pick command: its pipeline already
-      // targets the single pick attachment, so the pick pass dispatches it
-      // instead of skipping it as a no-pick-variant base command.
+      // This dedicated command keeps the picking path while suppressing the
+      // normal color command.
       pickOnly: true,
     });
   }
@@ -1332,21 +1305,20 @@ function pushPickCommand(
 }
 
 /**
- * Reconstruct a picked instance's WORLD position (absolute ECEF meters) on
- * WebGPU (NEW-COMPUTE-INSTANCE-PICKPOSITION). Positions are GPU-resident — the
+ * Reconstructs a picked instance's world position in absolute ECEF meters.
+ * Positions are GPU-resident, and the
  * kernel writes `positionHigh` + `positionLow` (the RTE split of the absolute
  * position) into the instance record buffer each frame and they never come
  * back to the CPU — so `scene.pickPosition` over a compute-instance has no CPU
- * value to return. This reads the picked instance's ONE 64-byte record slot
+ * value to return. This reads the picked instance's 64-byte record slot
  * back via `copyBufferToBuffer` + `mapAsync` and sums high+low to recover the
  * absolute position.
  *
- * The readback is asynchronous (GPU buffer mapping can't resolve within the
- * calling frame), so this uses the SAME one-frame-stale sync-cache bridge as
- * `PickDepth.getDepth`: the FIRST query for an index returns `undefined` (the
- * caller — `Picking.pickPositionWorldCoordinates` — then falls back to the
- * depth path, the pre-feature SAFE state) and ARMS the readback; subsequent
- * queries for the SAME index converge once the map resolves (1-2 frames).
+ * Like `PickDepth.getDepth`, asynchronous readback uses a
+ * one-frame-stale synchronous cache bridge: a cold query returns
+ * `undefined` and arms the readback.
+ * `Picking.pickPositionWorldCoordinates` then falls back to depth; subsequent
+ * queries for the same index converge after mapping completes.
  * The cached value is only trusted for the index it was armed for and within
  * `POS_READBACK_MAX_STALE_FRAMES` dispatched frames.
  *
@@ -1547,12 +1519,10 @@ function destroyWebGPUComputeInstanceResources(
   cache.frameParamsBuffer?.destroy();
   cache.quadVertexBuffer?.destroy();
   cache.cameraUniformBuffer?.destroy();
-  // Pick side (NEW-ORBITAL-GPU-PICKING) — free the per-instance pick ids
-  // (releases the context's pickObjects/pickKinds entries) and the GPU pick
-  // color buffer so a destroyed collection leaves no orphan pick state.
+  // Release per-instance pick IDs and their GPU color buffer.
   destroyPickIds(cache);
   cache.pickColorBuffer?.destroy();
-  // pickPosition readback staging buffer (NEW-COMPUTE-INSTANCE-PICKPOSITION).
+  // Release the position-readback staging buffer.
   cache.posReadbackBuffer?.destroy();
   collection._webgpuCache = undefined;
 }

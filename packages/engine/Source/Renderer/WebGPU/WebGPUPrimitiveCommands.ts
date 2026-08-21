@@ -7,7 +7,7 @@
  * - createWebGPUCommands() — builds GPU pipelines, buffers, bind groups, and draw commands
  * - updateWebGPUCommandUniforms() — per-frame camera matrix updates for GPU uniform buffers
  *
- * ALL rendering uses RTE (Relative-To-Eye) emulated 64-bit precision:
+ * Rendering uses RTE (Relative-To-Eye) emulated 64-bit precision:
  * - Vertex buffers carry positionHigh(3) + positionLow(3) for each vertex
  * - Uniform buffers carry mvpRelativeToEye + encodedCameraHigh/Low
  * - Shaders use translateRelativeToEye() for sub-meter precision at planetary scale
@@ -72,27 +72,21 @@ import {
   getPlaceholderEffects,
   createEffectsBindGroup,
 } from "./WebGPUEffectsBindGroup.js";
-// Slice 5d Batch 154 — Forward+ clustered lighting FS chunk + group-token
-// substitution. Prepended to Mat*Lit shader sources so they declare the
+// Forward+ clustered-lighting fragment chunk with a substitutable group token.
+// Lit material shaders declare
 // cluster bindings (18-22) at whichever group their effects BGL occupies
 // (2 = no texture, 3 = textured) and gain evalClusteredLights().
 import ClusteredLightingChunk from "../../Shaders/WebGPU/chunks/structs/ClusteredLighting.js";
 import { substituteClusteredLightingGroup } from "./WebGPUClusteredLightingBGL.js";
-// DP-H18 / C2-23 — depthFailAppearance twin shader (flat RTE color VS, FS
-// returns the per-instance depthFail color from the material UB). Paired with a
+// The depth-fail appearance uses a flat RTE twin whose fragment stage returns
+// the per-instance depth-fail color. Paired with a
 // depthCompare:'greater' / depthWriteEnabled:false pipeline in
 // createWebGPUCommands so it shades only fragments that fail the normal depth
 // test. Mirrors the WebGL twin in PrimitiveCommandHelpers.js.
 import PrimitiveDepthFailColorSource from "../../Shaders/WebGPU/Primitive/PrimitiveDepthFailColor.js";
-// Slice 5c-B Phase 1 (Batch 105) — centralized scene-FB fragment-target
-// builder. Returns a 1-target array today (mrtMode default off); when
-// the Phase 2 atomic batch flips `setSceneFBMrtMode(true)`, every
-// pipeline that uses this helper automatically produces 2-target
-// arrays without per-renderer edits. The local `makeFragmentTarget`
-// below is kept as a thin wrapper around `_buildSlot0`-equivalent
-// behavior so the existing call sites can route through the helper
-// without descriptor-shape drift (and so the pipeline cache hashes
-// stay stable across the conversion).
+// Scene-framebuffer targets are built centrally so primitive pipelines match the
+// active render-pass topology. Centralizing slot zero, normal-roughness, blend,
+// and write-mask options keeps descriptors and cache keys consistent.
 import { makeSceneFBTargets } from "./WebGPUSceneFBTargetHelpers.js";
 import type { CesiumRenderStateLike } from "./RenderStateToPipelineVariant.js";
 import { writeNormalizedInverseViewQuaternion } from "./WebGPUPrimitiveCameraQuaternion.js";
@@ -306,15 +300,14 @@ interface CacheLike extends PrimitiveShadowCastHost {
   pipeline?: GPURenderPipeline;
   pipelineFrontCull?: GPURenderPipeline;
   pipelineBackCull?: GPURenderPipeline;
-  // C11-157 Slice A — OIT (weighted-blended MRT) reachability for translucent
-  // primitives. Cached once per pipeline (re)build; attached to each
+  // Weighted-blended OIT inputs for translucent primitives. Cached per pipeline
+  // build and attached to each
   // Pass.TRANSLUCENT color command via `_shaderCode` + `_pipelineConfig` so
   // `executeTranslucentPass` auto-builds the MRT accumulation variant when the
-  // FAR-003 `_webgpuOITEnabled` gate is on. Inert (never read) while the gate
-  // is off → gate-OFF byte-identical. `oitShaderCode` is the non-LOG_DEPTH
-  // preprocessed source (OIT runs in a depth-read-only pass; log frag_depth is
-  // meaningless there). `oitPipelineLayout` is the SHARED layout the base
-  // pipelines use, so the command's pre-baked bind groups stay compatible.
+  // OIT switch is enabled. These fields are deliberately dormant when OIT is
+  // disabled. `oitShaderCode` omits log-depth output because accumulation uses
+  // read-only depth. `oitPipelineLayout` is the shared base layout, keeping
+  // existing bind groups compatible.
   oitPipelineLayout?: GPUPipelineLayout;
   oitShaderCode?: string;
   oitDefaultCullMode?: GPUCullMode;
@@ -344,10 +337,9 @@ interface CacheLike extends PrimitiveShadowCastHost {
   indexFormats?: IndexFormatLike[];
   pickShaderModule?: ShaderModuleLike;
   pickPipeline?: GPURenderPipeline;
-  // C10-11-PICK-FLEET-LOG-DEPTH — the pick-fleet LOG_DEPTH state baked into the
-  // cached pick pipeline. Tracked separately from `logDepthEnabled` (the scene
-  // switch) because the pick fleet flips on its own master switch; a flip
-  // rebuilds the pick pipeline against the LOG_DEPTH module. Defaults false.
+  // Log-depth state baked into the cached pick pipeline. It is separate from
+  // scene log depth because the shared pick framebuffer switches as one fleet;
+  // a state change rebuilds the pick pipeline with the matching module.
   pickLogDepthEnabled?: boolean;
   pickCameraBindGroupLayout?: GPUBindGroupLayout;
   pickCameraBindGroups?: GPUBindGroup[];
@@ -408,7 +400,7 @@ type PrimitiveDrawCommand = WebGPUDrawCommand & {
 
 // Minimal shapes for the WebGPU-context sidecars this module reads. The d.ts
 // types `csmRenderer` / `performanceManager` opaquely ("cast at the call
-// site"); we cast to these at the two read sites.
+// site"); these interfaces narrow them at the two read sites.
 interface CsmRendererLike {
   enabled?: boolean;
   cascadeParamsBuffer?: GPUBuffer;
@@ -476,14 +468,12 @@ const scratchEncodedPosition = new EncodedCartesian3();
 // prevVP + inverse-view quaternion + the renderer-wide log-depth tail).
 const scratchRTEUniformData = new Float32Array(84);
 
-// Camera-only UBO sizes (no material fields)
-// DP-H41 (Batch 27) — each variant now carries previousViewProjection (mat4x4,
-// 64 bytes) at the tail for TAA / motion-vector reprojection.
-// Log-depth epic Slice 5 (Mat/PBR/Basic) — the flat variant ALSO gains a
-// 16-byte logDepth vec4 tail (near, far, factor, reserved) AFTER prevVP, so
+// Camera-only UBO sizes, without material fields. Every layout carries a
+// previous-view-projection matrix for motion-vector reprojection. The flat
+// variant adds a 16-byte log-depth tail after it, so
 // the Flat material shaders (PrimitiveMat*Flat) and the unlit Basic shaders
 // can read `camera.logDepth` from their `//>>ifdef LOG_DEPTH` blocks. Packed
-// unconditionally by writeRTEUniformsFlat — inert until the LOG_DEPTH pipeline
+// unconditionally by writeRTEUniformsFlat and remains inert until the log-depth
 // define is set (no shader struct declares the tail field otherwise and the
 // extra 16 bytes are simply unread). 160 -> 176.
 const FLAT_CAMERA_BYTES = 176; // mvpRTE(64) + camHigh(16) + camLow(16) + prevVP(64) + logDepth(16)
@@ -493,30 +483,24 @@ const FLAT_CAMERA_BYTES = 176; // mvpRTE(64) + camHigh(16) + camLow(16) + prevVP
 // camera-relative space for shadow and atmosphere effects without carrying a
 // full matrix. Log depth is read only by the
 // `//>>ifdef LOG_DEPTH` blocks in PrimitivePhongColor / PrimitivePhongTexturedColor
-// (and any future lit producer). The tail is packed unconditionally by
-// writeRTEUniformsLit — it is inert until the LOG_DEPTH pipeline define is set
-// (Slice 4 flip), because no shader struct declares the tail field otherwise
+// and other lit producers. The tail is packed unconditionally by
+// writeRTEUniformsLit; it is inert until the log-depth define is set because no
+// shader struct declares the tail field otherwise
 // and the extra 16 bytes are simply unread.
 const LIT_CAMERA_BYTES = 336; // ...prevVP(64) + inverseViewQuaternion(16) + logDepth(16)
 const LIT_PREVIOUS_VIEW_PROJECTION_OFFSET = 60;
 const LIT_INVERSE_VIEW_QUATERNION_OFFSET = 76;
 const LIT_LOG_DEPTH_OFFSET = 80;
-// C10-11-PICK-FLEET-LOG-DEPTH — grown 160 -> 176 to carry the FLAT logDepth
-// vec4 tail (floats 40-43: near, far, factor, reserved) that
-// writeRTEUniformsFlat already writes. The pick camera buffer AND its scratch
-// array are both sized from this constant (`new Float32Array(PICK_CAMERA_BYTES
-// / 4)`), so the 44th-float logDepth writes now LAND instead of falling off a
-// too-short 40-element array. A pick shader compiled with the LOG_DEPTH define
-// reads camera.logDepth from these lanes; the extra 16 bytes are written
-// unconditionally but read ONLY under the define, so the OFF path is
-// byte-identical in output. Matches the 176-byte FLAT color UB layout exactly.
+// The 176-byte pick layout includes floats 40-43 for the flat log-depth tail.
+// Both GPU storage and scratch data derive from this constant, so the tail
+// cannot fall outside a shorter allocation. Hyperbolic pick shaders leave it
+// unread, matching the flat color layout.
 const PICK_CAMERA_BYTES = 176; // FLAT head (160) + logDepth vec4 tail (16)
 
-// NEW-POLYLINE-APPEARANCE-PRIMITIVE-WEBGPU (COLOR slice) — the polyline
-// appearance camera UB extends the flat parity head (mvpRTE + camHigh/Low)
-// with the matrices the screen-space width-expansion math needs. Layout
+// The polyline-appearance camera buffer extends the flat RTE head with the
+// matrices needed for screen-space width expansion. Layout
 // (floats, byte-locked to CameraUniforms in PolylineColorAppearance.wgsl):
-//   0-15  mvpRelativeToEye        (parity; VS uses the ortho path)
+//   0-15  mvpRelativeToEye        (the vertex shader uses the ortho path)
 //   16-19 encodedCameraHigh + pad
 //   20-23 encodedCameraLow  + pad
 //   24-39 projection
@@ -537,27 +521,16 @@ const PLACEHOLDER_MATERIAL_BYTES = 16;
 const PICK_MATERIAL_BYTES = 16;
 
 // =========================================================================
-// DP-H19 — CPU decompression of `compressedAttributes`
+// CPU decoding of `compressedAttributes`
 // =========================================================================
 //
-// `GeometryPipeline.compressVertices()` (invoked when the Primitive has
-// `compressVertices: true`, which is the DEFAULT) deletes the
-// `normal` / `st` / `tangent` / `bitangent` attributes and replaces them
-// with a single `compressedAttributes` Float32Array containing oct-packed
-// normals and bit-packed UVs. The WebGPU primitive rendering path reads
-// `geometry.attributes.normal` and `geometry.attributes.st` directly —
-// which are deleted — so every default-configured Primitive rendered
-// flat-shaded with black textures.
-//
-// The WebGL path handles this via `#ifdef COMPRESSED_VERTICES` in the
-// vertex shader, decoding `compressedAttributes` on the GPU. We could
-// mirror that in WGSL, but the shader-variant explosion across
-// material-type × compressed-input × pick is substantial. For a simpler
-// correctness fix we decode on the CPU here, reconstructing the original
-// `normal` / `st` attributes as Float32Arrays. This loses the VRAM /
-// bandwidth savings that compression is meant to provide, but makes
-// every `compressVertices: true` primitive render correctly on WebGPU.
-// Shader-side decode is tracked as **FOLLOW-UP DP-H19-SHADER-DECODE**.
+// `GeometryPipeline.compressVertices()` replaces normal, texture-coordinate,
+// tangent, and bitangent attributes with `compressedAttributes`. Primitive
+// shaders consume unpacked attributes, so this path reconstructs Float32Array
+// attributes on the CPU. It restores correctness but forfeits compressed vertex
+// memory and bandwidth savings. Direct WGSL decoding has retained rollout
+// scaffolding, but runtime packed-buffer emission and general shader
+// coverage remain unfinished.
 //
 // `compressVertices()` layout per-vertex (see `GeometryPipeline.js:1558-1615`):
 //
@@ -568,12 +541,11 @@ const PICK_MATERIAL_BYTES = 16;
 //              else → one octEncodeFloat per (normal, tangent, bitangent)
 //                    independently, in that order
 //
-// We consult `geometry._compressedAttributesMeta` (written by
+// `geometry._compressedAttributesMeta` (written by
 // `GeometryPipeline.compressVertices` right before it starts encoding)
 // to know which attributes were present so the decode is unambiguous.
-// If the meta isn't attached (geometry came from a non-upstream code
-// path), we fall back to inferring from `componentsPerAttribute` and
-// log a one-time warning.
+// Without metadata, a validated appearance hint is preferred; guarded layout
+// inference is the final fallback and emits one warning.
 //
 // Scratch Cartesians are reused across decode calls to avoid per-vertex
 // allocations.
@@ -590,8 +562,8 @@ let _decompressMissingMetaWarned = false;
  * Per-vertex slot count that `GeometryPipeline.compressVertices` produces for a
  * given set of source attributes. Mirrors its `numCompressedComponents` formula
  * exactly: `(hasSt && hasNormal ? 2 : 1) + (hasTangent || hasBitangent ? 1 : 0)`.
- * Used to gate the appearance-vertexFormat hint in `ensureUncompressedAttributes`
- * so the hint is only trusted when it's fully consistent with the actual
+ * This gates the appearance-vertexFormat hint in `ensureUncompressedAttributes`
+ * so the hint is trusted only when it is fully consistent with the actual
  * compressed buffer width.
  * @private
  */
@@ -625,17 +597,11 @@ function expectedCompressedSlots(hint: AttributePresenceHint) {
  * @param {object} [attributeHint] Authoritative attribute-presence hint,
  *   normally sourced from the consuming appearance's `vertexFormat`
  *   (`{ hasSt, hasNormal, hasTangent, hasBitangent }`). When the geometry
- *   carries no `_compressedAttributesMeta` (the metadata is dropped when
- *   `Primitive` combines instances into a single geometry AND when the
- *   geometry crosses the async worker boundary), this hint replaces the
- *   fragile vertex-0 magnitude sniff. The sniff mis-classifies a
- *   `compressTextureCoordinates`-packed ST slot as a `normal` whenever the
- *   first vertex's ST packs to ≤ 65535 (e.g. s≈0 → `floor(t*4095) < 4096`),
- *   which silently drops `st` for flat/lit MaterialAppearance polygons and
- *   collapses procedural materials (Grid/Stripe/Checker/…) to a solid fill
- *   (C4-FLAT-MATAPPEARANCE-POLYGON-SOLID). The hint is only applied when its
- *   implied slot count matches `componentsPerAttribute`, so a geometry built
- *   with more attributes than the appearance consumes safely falls back.
+ *   carries no `_compressedAttributesMeta`, because combination and worker
+ *   transfer can lose it. A matching `vertexFormat` prevents packed texture
+ *   coordinates in the oct-normal numeric range from being mistaken for
+ *   normals. The hint is used only when its slot count matches
+ *   `componentsPerAttribute`; otherwise guarded inference remains the fallback.
  * @private
  */
 function ensureUncompressedAttributes(
@@ -652,12 +618,8 @@ function ensureUncompressedAttributes(
     return;
   }
 
-  // Idempotence guard — if the primary targets (normal / st) are
-  // already reconstructed, skip. Tangent / bitangent are write-once
-  // side-products of the same decode pass, so they're either all
-  // present together (post-Batch 27) or never attempted. The normal /
-  // st presence check is the source of truth for "have we decoded
-  // this geometry before."
+  // Reconstructed normal or texture coordinates are the idempotence guard.
+  // Tangent and bitangent are written by the same decode pass when present.
   if (defined(attrs.normal) || defined(attrs.st)) {
     return;
   }
@@ -669,11 +631,9 @@ function ensureUncompressedAttributes(
     return;
   }
 
-  // Prefer the metadata snapshot written by `GeometryPipeline.compressVertices`
-  // (see Batch 23 edit in Core/GeometryPipeline.js) — it tells us exactly
-  // which source attributes were compressed. Falling back to inferring
-  // from `componentsPerAttribute` is ambiguous for some combinations, so
-  // we warn and skip to avoid producing wrong data.
+  // Prefer compression metadata because it identifies the packed source
+  // attributes exactly. Otherwise use a validated appearance hint or guarded
+  // magnitude inference and emit one warning.
   const meta = geometry._compressedAttributesMeta;
   let hasNormal;
   let hasSt;
@@ -692,17 +652,11 @@ function ensureUncompressedAttributes(
     defined(attributeHint) &&
     expectedCompressedSlots(attributeHint) === componentsPerAttribute
   ) {
-    // C4-FLAT-MATAPPEARANCE-POLYGON-SOLID — authoritative attribute-presence
-    // from the consuming appearance's `vertexFormat`. The metadata stash is
-    // dropped both when `Primitive.combineInstances` builds the combined
-    // geometry and across the async worker boundary, so the magnitude sniff
-    // below is the common path — and it mis-classifies an ST slot as a
-    // `normal` whenever the FIRST vertex's ST packs ≤ 65535 (s≈0), silently
-    // dropping `st` and collapsing procedural materials to a solid fill. When
-    // the hint's implied slot count matches the actual `componentsPerAttribute`
-    // we trust the hint exactly (ST is always slot 0 per compressVertices'
-    // canonical ordering); on any mismatch we fall through to the sniff so a
-    // geometry built with extra attributes the appearance ignores stays safe.
+    // A matching appearance `vertexFormat` is authoritative because
+    // metadata can disappear when `Primitive.combineInstances` builds the
+    // combined geometry or during worker transfer. Magnitude inference can
+    // otherwise mistake packed texture coordinates for a normal and drop `st`.
+    // On a slot-count mismatch, use the guarded inference instead.
     hasNormal = attributeHint.hasNormal === true;
     hasSt = attributeHint.hasSt === true;
     hasTangent = attributeHint.hasTangent === true;
@@ -738,8 +692,8 @@ function ensureUncompressedAttributes(
       if (componentsPerAttribute >= 2) {
         const probe1 = values[1];
         const slot1IsSt = probe1 > 65535;
-        // Two slots — canonical case is [st, normal], but tolerate the
-        // inverted ordering some legacy paths produce by sniffing both
+        // Two slots normally use [st, normal], but tolerate the inverted
+        // ordering produced by some inputs by sniffing both
         // slots' magnitudes.
         hasSt = slot0IsSt || slot1IsSt;
         hasNormal = !slot0IsSt || !slot1IsSt;
@@ -766,16 +720,14 @@ function ensureUncompressedAttributes(
   }
 
   // The octPack(normal, tangent, bitangent) special case squeezes all
-  // three into 2 slots; it only fires when ALL THREE are present.
+  // three into 2 slots; it only fires when all three are present.
   const usesOctPack = hasNormal && hasTangent && hasBitangent;
 
   const outNormal = hasNormal ? new Float32Array(numVertices * 3) : null;
   const outST = hasSt ? new Float32Array(numVertices * 2) : null;
-  // DP-H19-TANGENT-DECODE (Batch 27) — also reconstruct tangent /
-  // bitangent when they were originally present. No current WebGPU
-  // material shader reads these, but having them on the geometry lets
-  // any future normal-mapping surface material (DP-H20 + Batch 25 BGL
-  // v2 is a ready consumer) light correctly without a second CPU pass.
+  // Reconstruct tangent and bitangent in the same CPU pass when present. No
+  // active material shader reads them yet, but retaining them is intentional
+  // infrastructure for normal-mapped materials and avoids a second decode.
   // Cost per vertex: +3 floats for each of tangent / bitangent when
   // present — ~24 extra bytes per vertex on fully-tangent-ed geometry.
   const outTangent = hasTangent ? new Float32Array(numVertices * 3) : null;
@@ -803,8 +755,8 @@ function ensureUncompressedAttributes(
       outNormal[v * 3] = scratchDecompressedNormal.x;
       outNormal[v * 3 + 1] = scratchDecompressedNormal.y;
       outNormal[v * 3 + 2] = scratchDecompressedNormal.z;
-      // DP-H19-TANGENT-DECODE — octUnpack already decoded tangent +
-      // bitangent into the scratch Cartesians; just write them out.
+      // `octUnpack` already decoded tangent and bitangent into the scratch
+      // Cartesians; write them directly.
       outTangent[v * 3] = scratchDecompressedTangent.x;
       outTangent[v * 3 + 1] = scratchDecompressedTangent.y;
       outTangent[v * 3 + 2] = scratchDecompressedTangent.z;
@@ -813,8 +765,8 @@ function ensureUncompressedAttributes(
       outBitangent[v * 3 + 2] = scratchDecompressedBitangent.z;
     } else {
       if (hasNormal) {
-        // Some geometry pipelines drop the metadata across worker boundaries
-        // and our inference can pick the wrong attribute (st vs normal) for
+        // Some geometry pipelines drop the metadata across worker boundaries,
+        // and fallback inference can pick the wrong attribute (st vs normal) for
         // single-component compressed buffers — guard against the resulting
         // out-of-range bytes so a misclassified ST value doesn't take down
         // the entire render loop with `DeveloperError: x and y must be
@@ -835,8 +787,8 @@ function ensureUncompressedAttributes(
           outNormal[v * 3 + 2] = 1;
         }
       }
-      // DP-H19-TANGENT-DECODE — standalone tangent / bitangent slots
-      // are each a single packed float; decode independently.
+      // Standalone tangent and bitangent slots each contain one packed float
+      // and are decoded independently.
       if (hasTangent) {
         AttributeCompression.octDecodeFloat(
           values[slot++],
@@ -892,11 +844,8 @@ function ensureUncompressedAttributes(
 // Pipeline color-target builder — opaque vs translucent blend state
 // =========================================================================
 
-// `makeFragmentTarget` helper removed in Batch 105 (Slice 5c-B Phase 1).
-// All call sites now route through `makeSceneFBTargets` from
-// `WebGPUSceneFBTargetHelpers.js` so the Phase 2 atomic batch can flip
-// the global MRT mode and every scene-FB pipeline picks up the 2nd
-// (null) target slot without per-file edits.
+// All scene-framebuffer target descriptors route through `makeSceneFBTargets`,
+// keeping target count and slot shape aligned with the render pass.
 
 // =========================================================================
 // Shared Position Extraction — RTE (positionHigh + positionLow)
@@ -904,7 +853,7 @@ function ensureUncompressedAttributes(
 
 /**
  * Extracts position data from geometry attributes as positionHigh/positionLow
- * pairs for RTE (Relative-To-Eye) rendering. This is CRITICAL for planetary-scale
+ * pairs for RTE (Relative-To-Eye) rendering. This preserves planetary-scale
  * precision — never use single float32 positions for world-space geometry.
  *
  * For geometry with position3DHigh/Low: uses the raw high/low arrays directly.
@@ -970,20 +919,10 @@ function extractPositionData(geometry: GeometryLike) {
 }
 
 /**
- * Map a Cesium `PrimitiveType` (GL enum) to a WebGPU primitive topology
- * string. Returns null for `TRIANGLE_FAN` (WebGPU doesn't support it —
- * caller falls back to `triangle-list`, which is wrong but harmless for
- * the rare TRIANGLE_FAN consumer; mainstream Cesium geometry uses
- * triangle-list or line-list).
- *
- * Session 65 Batch 2 (2026-05-11): without this mapping the primitive
- * pipeline factory hardcoded `triangle-list`, so outline geometries
- * (`BoxOutlineGeometry`, `CylinderOutlineGeometry`, every
- * `*OutlineGeometry.primitiveType = PrimitiveType.LINES`) rendered as
- * triangles. The vertex buffer carried line endpoints, the index buffer
- * carried line indices, the rasterizer interpreted them as triangle
- * strips of garbage — visible as missing outlines on every CZML box
- * with `outline: true`, every CZML cylinder, etc. (~12 CZML demos).
+ * Maps a Cesium `PrimitiveType` to WebGPU topology. `TRIANGLE_FAN` has no
+ * WebGPU equivalent and falls back to `triangle-list`, which is approximate.
+ * Pipeline topology must match the vertex and index topology; interpreting
+ * outline line buffers as triangles produces missing or corrupt geometry.
  * @private
  */
 function mapCesiumPrimitiveTypeToWebGPU(primitiveType: number) {
@@ -1006,10 +945,9 @@ function mapCesiumPrimitiveTypeToWebGPU(primitiveType: number) {
     case PrimitiveType.TRIANGLE_STRIP:
       return "triangle-strip";
     case PrimitiveType.TRIANGLE_FAN:
-      // WebGPU doesn't support triangle-fan. The caller should ideally
-      // convert to triangle-list at geometry-extract time; without that
-      // we fall back to triangle-list which produces wrong topology but
-      // no validation error.
+      // WebGPU does not support triangle-fan. The caller should convert it to
+      // triangle-list while extracting geometry. This fallback avoids a
+      // validation error but produces the wrong topology.
       return "triangle-list";
     default:
       return "triangle-list";
@@ -1091,7 +1029,7 @@ function computeRTEMatrices(
 
 /**
  * Per-frame `time` value for shaders that animate (currently just Water).
- * Mirrors upstream GLSL's `czm_frameNumber` semantic so the WGSL port
+ * Mirrors the GLSL `czm_frameNumber` semantic so the WGSL port
  * matches the wave phase behavior of the WebGL path. Defaults to 0 when
  * UniformState hasn't been seeded yet (first frame).
  * @private
@@ -1108,13 +1046,13 @@ function getFrameTime(uniformState: CesiumUniformState) {
 }
 
 /**
- * C4-PLAIN-HDR-GAMMA-TAILS — HDR sRGB→linear decode gate for the per-instance
- * color shaders (basic / phong). Returns `czm_gamma` (uniformState.gamma,
+ * Returns the HDR sRGB-to-linear decode gamma for per-instance basic and Phong
+ * color shaders. Uses `uniformState.gamma`
  * default 2.2) when `scene.highDynamicRange` is on (`frameState.useHDR`), else
  * 0.0. Packed into the flat/lit CameraUniforms `_pad0`/`hdrGamma` lane (flat
  * float 19, lit float 51). The fragment shader mirrors WebGL's
  * PerInstanceColorAppearanceFS `czm_gammaCorrect(v_color)` (`#ifdef HDR`) when
- * this is > 0.5. Zero on the default SDR path → byte-identical.
+ * this is greater than 0.5. Returns zero on the SDR path.
  * @private
  */
 function getHdrGammaLane(uniformState: CesiumUniformState) {
@@ -1127,9 +1065,8 @@ function getHdrGammaLane(uniformState: CesiumUniformState) {
 
 /**
  * Writes RTE uniform data for a flat (unlit) shader.
- * Layout: mvpRTE(16) + camHigh(3+1pad) + camLow(3+1pad) + prevVP(16)
- *       + logDepth(4) = 44 floats = 176 bytes (DP-H41 prevVP, Batch 27;
- *       logDepth tail log-depth epic Slice 5 — Mat/PBR/Basic)
+ * Layout: mvpRTE(16) + camHigh(4) + camLow(4) + prevVP(16) +
+ * logDepth(4) = 44 floats = 176 bytes.
  * @private
  */
 function writeRTEUniformsFlat(
@@ -1154,41 +1091,26 @@ function writeRTEUniformsFlat(
   // the write is harmless for them.
   ud[23] = getFrameTime(uniformState);
   writePreviousViewProjection(ud, 24, uniformState);
-  // Log-depth epic Slice 5 — logDepth tail at floats 40-43 (after prevVP).
-  // Inert until the LOG_DEPTH define is set on the flat/basic pipeline.
+  // The log-depth tail occupies floats 40-43 after the previous view-projection
+  // matrix. Inert until the LOG_DEPTH define is set on the flat/basic pipeline.
   writeLogDepthTail(ud, 40, uniformState);
 }
 
 /**
  * Writes the renderer-wide log-depth tail (vec4: near, far, factor, reserved)
- * starting at float index `offset`. Mirrors WebGPUGlobeSurfaceCameraUB's tail.
- * Safe to call unconditionally — it only fills previously-unread floats, so it
- * is inert until the LOG_DEPTH pipeline define is set (Slice 4 flip) and the
- * shader's `logDepth` field reads it. See WebGPULogDepth.ts.
+ * starting at float index `offset`. Mirrors WebGPUGlobeSurfaceCameraUB's
+ * tail. Safe to call unconditionally because it fills otherwise unread
+ * floats and is inert until the log-depth define is set and the shader's
+ * `logDepth` field reads it. See WebGPULogDepth.ts.
  *
- * NEW-WEBGPU-MAT-LOGDEPTH-MULTI-PRIMITIVE-DEPTH-LOSS — the encode frustum
- * MUST be the frame-stable FULL-camera stash `_logDepthEncodeNearFar`
- * (published by the globe camera-UB pack and by both frustum loops BEFORE any
- * per-slice remap), NOT the live `currentFrustum`/factor pair. The live pair
- * is a moving target — `_updateFrustumUniforms` re-slices it per frustum
- * slice, the translucent near refresh re-slices it again, and the pick loops
- * re-slice it for the pick mini-frame — so a tail packed from it encodes
- * whatever slice state happens to be current at THIS primitive's pack moment.
- * That made the Mat/PBR/Basic/polyline geometry-Primitive family the LAST
- * log-depth producer whose curve depended on pack timing. A first online-
- * terrain probe attributed a 0.868 slab/globe ratio to this mismatch, but the
- * corrected deterministic ellipsoid-terrain probe measures 0.996; that old
- * number was an instrument false positive, not causal proof. The contract
- * mismatch itself was real and is closed here. Every sibling producer is
- * already stash-first — see the identical pattern + rationale in
- * WebGPUBillboardRenderer.packUniforms, WebGPUPointPrimitiveRenderer, and
- * WebGPUDepthPlane.update (NEW-WEBGPU-DEPTH-PLANE-LOG-DEPTH-CONTRACT). When
- * the stash drives, its frame-stable factor was derived alongside the same
- * pair so encode + factor stay self-consistent without per-command logarithm
- * work; `currentFrustum` remains only as the
- * pre-stash early-frame fallback. The pick fleet is unaffected today (its
- * tail lanes are read only under the separate pick-fleet switch, C10-11) and
- * inherits the same full-camera encode both pick loops publish when it flips.
+ * Prefer the frame-stable `_logDepthEncodeNearFar` range and its paired
+ * factor. `currentFrustum` is re-sliced by opaque, translucent, and pick
+ * loops, so using the live pair would make primitive depth encoding depend
+ * on command timing. The live frustum is only the pre-publication fallback.
+ * All primitive camera writers use this helper so their curve matches the
+ * globe and other producers. Sibling producers
+ * `WebGPUBillboardRenderer.packUniforms`, `WebGPUPointPrimitiveRenderer`, and
+ * `WebGPUDepthPlane.update` use the same frame-stable stash-first pattern.
  * @private
  */
 function writeLogDepthTail(
@@ -1221,7 +1143,7 @@ function writeLogDepthTail(
       factor = encodeFactor;
     } else {
       // Compatibility fallback for early frames and minimal test doubles that
-      // publish only the legacy near/far pair.
+      // publish a near/far pair without its factor.
       const log2Far = Math.log2(far - near + 1.0);
       factor = log2Far > 0.0 ? 1.0 / log2Far : 0.0;
     }
@@ -1286,14 +1208,14 @@ function writeRTEUniformsLit(
     LIT_INVERSE_VIEW_QUATERNION_OFFSET,
     uniformState.inverseViewRotation,
   );
-  // Log-depth epic Slice 2b — logDepth tail at floats 80-83.
+  // The log-depth tail occupies floats 80-83.
   // Inert until the LOG_DEPTH define is set on the lit pipeline.
   writeLogDepthTail(ud, LIT_LOG_DEPTH_OFFSET, uniformState);
 }
 
 /**
- * DP-H41 (Batch 27) — writes 16 floats of `uniformState.previousViewProjection`
- * starting at `offset`. Falls back to identity on the first frame before
+ * Writes 16 floats of `uniformState.previousViewProjection` starting at
+ * `offset`. Falls back to identity on the first frame before
  * `UniformState.update()` has seeded the slot.
  * @private
  */
@@ -1333,17 +1255,16 @@ function writePreviousViewProjection(
 // a separate material UBO.
 
 /**
- * NEW-POLYLINE-APPEARANCE-PRIMITIVE-WEBGPU (COLOR slice) — writes the camera
- * UB for the polyline appearance shader. The polyline VS does its width
- * expansion in screen space, so it needs the full projection /
+ * Writes the camera buffer for polyline-appearance shaders. Their vertex
+ * stage does width expansion in screen space, so it needs the full projection /
  * viewportTransformation / viewportOrthographic / modelViewRTE chain plus
- * pixelRatio + frustum-near, on top of the flat-parity head.
+ * pixelRatio + frustum-near, on top of the shared flat-camera head.
  *
  * Layout (float offsets — byte-locked to CameraUniforms in
  * PolylineColorAppearance.wgsl):
- *   0-15  mvpRelativeToEye        (parity)
- *   16-19 encodedCameraHigh + pad (parity)
- *   20-23 encodedCameraLow  + pad (parity)
+ *   0-15  mvpRelativeToEye
+ *   16-19 encodedCameraHigh + pad
+ *   20-23 encodedCameraLow  + pad
  *   24-39 projection
  *   40-55 viewportTransformation
  *   56-71 viewportOrthographic
@@ -1355,18 +1276,12 @@ function writePreviousViewProjection(
  * The viewport projection receives the context-owned clip-space convention
  * explicitly; no process-global Matrix4 mode is consulted.
  *
- * MISSING-FUNCTIONALITY NOTE (Principle 9): `uniformState.viewport` is only
- * ever set by the WebGL `RenderState.applyViewport` path (it calls
- * `gl.viewport`). The WebGPU render path never seeds it, so
- * `uniformState.viewportOrthographic` / `.viewportTransformation` stay at
- * IDENTITY on WebGPU — which collapsed every polyline-appearance vertex to
- * one clip point (the original 0px symptom, take two). We therefore build
- * both screen-space matrices from `context.drawingBufferWidth/Height` here,
- * matching the established WebGPU collection-renderer pattern (Billboard /
- * BufferPolyline read `context.drawingBufferWidth` directly rather than the
- * GL-only `uniformState.viewport`). Seeding `uniformState.viewport` in the
- * WebGPU render pass setup is the broader fix that would let the getters
- * work for all future screen-space WebGPU shaders — tracked as follow-up.
+ * WebGPU does not populate `uniformState.viewport` through WebGL's
+ * `RenderState.applyViewport` path, so its viewport-derived matrices remain
+ * identity. Derive both screen-space matrices from the context drawing-buffer
+ * dimensions, matching other WebGPU collection renderers. This local derivation
+ * is the active polyline path; renderer-wide viewport seeding remains
+ * unimplemented for other screen-space shaders.
  * @private
  */
 const scratchPolylineViewport = new BoundingRectangle();
@@ -1378,7 +1293,7 @@ function writeRTEUniformsPolyline(
   uniformState: CesiumUniformState,
   context: CesiumGraphicsContext,
 ) {
-  // Parity head — mirrors writeRTEUniformsFlat's first 24 floats so the
+  // This head mirrors writeRTEUniformsFlat's first 24 floats so the
   // shared RTE conventions stay aligned across shader families.
   Matrix4.pack(rte.mvpRTE, ud, 0);
   ud[16] = rte.camHigh.x;
@@ -1449,13 +1364,14 @@ function writeRTEUniformsPolyline(
   ud[89] = defined(frustum) ? frustum.x : 0.0;
   ud[90] = 0.0;
   ud[91] = 0.0;
-  // 376c — log-depth tail (near, far, factor, reserved) at floats 92-95.
+  // The log-depth tail (near, far, factor, reserved) occupies floats 92-95.
   // Inert until the LOG_DEPTH pipeline define is set on the appearance /
   // material polyline pipelines; the shader reads `camera.logDepth` only
   // inside //>>ifdef LOG_DEPTH. 512B UB has room (96 floats = 384 bytes).
   writeLogDepthTail(ud, 92, uniformState);
 
-  // 376b — morphTime (vec4 morph, .x) at float 96. 3D=1.0, 2D/CV=0.0,
+  // Morph time (the x component of the morph vec4) occupies float 96.
+  // It is 1.0 in 3D, 0.0 in 2D/CV, and
   // 0..1 while morphing. The VS blends position3D↔position2D by this. Default
   // 1.0 (3D) so a missing frameState is the safe 3D path.
   const fsMorph = defined(uniformState) ? uniformState.frameState : undefined;
@@ -1469,26 +1385,19 @@ function writeRTEUniformsPolyline(
 }
 
 // =========================================================================
-// Per-Frame Primitive Effects Bind Group (Slice 2d)
+// Per-frame primitive effects bind group
 // =========================================================================
 //
-// Primitive commands are built once and reused frame-to-frame. Before
-// Slice 2d they always bound the shared `getPlaceholderEffects` BG for
-// the effects slot — which zeroes `effects.csmControl.x` — so shadow
-// receive (single-map AND CSM) was effectively dead on the primitive
-// path. The globe terrain path builds a fresh effects BG per frame via
-// `createEffectsBindGroup`; primitives lagged.
+// Primitive commands are built once and reused frame-to-frame, while their
+// shadow and clustered-light inputs can change each frame. Cache one shared
+// effects bind group per frame on the context, rebuild it when those inputs
+// change, and swap it into `command.bindGroups[last]` from the update hook.
+// Current appearance primitives use the identity model matrix, so one shared
+// bind group covers every command.
 //
-// Fix: cache one shared effects BG per frame on the context, rebuild
-// when shadowState / csmRenderer toggles or a new frameNumber ticks,
-// and swap it into `command.bindGroups[last]` from the update hook.
-// Identity modelMatrix is assumed for primitives (true for all current
-// appearance primitives), so one shared BG covers every command.
-//
-// Clipping planes on primitives are a separate gap — the primitive
-// pipeline doesn't currently thread a ClippingPlaneCollection reference
-// through to the effects BG. Tracked as follow-up; this helper leaves
-// the clipping slots on the placeholder so clipping stays no-op.
+// Primitive commands do not yet thread a ClippingPlaneCollection reference
+// into this bind group. Keep the clipping slots on the placeholder until that
+// ownership path exists, so clipping remains an intentional no-op here.
 
 function _getOrCreateSharedPrimitiveEffectsBG(frameState: CesiumFrameState) {
   const context = frameState?.context;
@@ -1515,20 +1424,14 @@ function _getOrCreateSharedPrimitiveEffectsBG(frameState: CesiumFrameState) {
         enabled: true,
         paramsBuffer: csmCandidate.cascadeParamsBuffer,
         cascadeArrayView: csmCandidate.cascadeArrayView,
-        // NEW-CSM-SOFT-SHADOW-PCF — soft-shadow kernel radius (texels).
+        // Soft-shadow kernel radius in texels.
         pcfRadius: csmCandidate.pcfRadius,
       }
     : undefined;
 
-  // Batch 96 (FEAT-GAP-09 fix) — read the aerial-perspective LUT views
-  // from the performance manager and forward them into the primitive
-  // effects bind group. Without this, every primitive shader that
-  // declared the aerial-LUT bindings (PrimitiveBasicColor + all
-  // Mat*Lit / Phong* variants — see SHADER_PAIRS_LOCKSTEP.md) sampled
-  // 1×1 placeholder textures every frame and `effects.atmosphereLutControl.x`
-  // stayed at 0.0, so the fog block was dead code on non-globe geometry.
-  // The globe path forwards these views from `WebGPUGlobeSurfaceRenderer.ts`
-  // (~L1015); this mirrors that wiring for primitives.
+  // Read aerial-perspective LUT views from the performance manager. Otherwise
+  // primitive shaders receive placeholder LUTs and disable fog contribution;
+  // the globe forwards the corresponding real views.
   const perfMgr = context.performanceManager;
   let atmosphereLutViews = null;
   if (perfMgr && typeof perfMgr.ensureAtmosphereLUTResources === "function") {
@@ -1545,23 +1448,16 @@ function _getOrCreateSharedPrimitiveEffectsBG(frameState: CesiumFrameState) {
   const frameNumber = frameState.frameNumber;
   const hasShadow = defined(receiveShadowMap);
 
-  // Slice 5d Batch 154 — Forward+ clustered lighting. The SceneRenderer's
-  // _dispatchClusteredLighting hook stashes the dispatcher's buffers +
-  // a CPU-side "active this frame" flag on the context each frame. When
-  // active, the Mat*Lit fragment shaders read the cluster bindings on the
-  // (shared) effects bind group at @group(2|3) bindings 18-22, so we must
-  // build the ACTIVE effects bind group (not the cheap placeholder) and
-  // bind the dispatcher's real buffers. When inactive (toggle off OR zero
-  // lights) the placeholder fast path is preserved.
+  // The clustered-light dispatcher publishes its buffers and active state on
+  // the context. Active lit shaders require them at effects bindings 18-22;
+  // disabled or empty lighting retains the placeholder fast path.
   const clusteredBuffers = context._clusteredLightingBuffers;
   const hasClustered =
     context._clusteredLightingActive === true && defined(clusteredBuffers);
 
-  // Invalidate cache when frame ticks OR when the (shadow, csm, LUT,
-  // clustered) toggles. We hash all four into a small int so a cheap
-  // compare catches on/off changes within the same frame (rare —
-  // frameState normally increments frameNumber every tick — but the
-  // guard is nearly free).
+  // Invalidate the cache when the frame ticks or when the shadow, CSM, LUT, or
+  // clustered-lighting state changes. A compact hash makes the same-frame
+  // toggle check inexpensive.
   const toggleHash =
     (hasShadow ? 1 : 0) |
     (hasCsm ? 2 : 0) |
@@ -1575,13 +1471,10 @@ function _getOrCreateSharedPrimitiveEffectsBG(frameState: CesiumFrameState) {
     return context._primitiveEffectsBG;
   }
 
-  // When none of (shadow, csm, atmosphereLut, clustered) is active we MUST
-  // return the placeholder explicitly (not null) so callers swap stale
-  // active-state BGs back to zero-filled placeholder data on toggle-off
-  // transitions. Example: CSM toggled ON at frame N plants a real BG in
-  // cmd.bindGroups[last]; CSM toggled OFF at frame N+1 must overwrite
-  // that slot — otherwise the shader reads last frame's csmControl=1.0
-  // and samples stale cascade VPs. Same logic for the LUT + clustered control.
+  // With no shadow, CSM, atmosphere LUT, or clustered-lighting input active,
+  // return the placeholder rather than null. Callers must replace a previously
+  // active bind group with zero-filled data when a feature turns off, or the
+  // shader can retain stale controls and resources from the preceding frame.
   if (!hasShadow && !hasCsm && !hasAtmosphereLut && !hasClustered) {
     const placeholder = getPlaceholderEffects(device);
     context._primitiveEffectsBG = placeholder.bindGroup;
@@ -1594,8 +1487,9 @@ function _getOrCreateSharedPrimitiveEffectsBG(frameState: CesiumFrameState) {
     owner: context,
     shadowMap: receiveShadowMap,
     csm: csmBinding,
-    // Primitives have identity modelMatrix, so world camera == plane-space
-    // camera. Clipping wiring for primitives is a separate follow-up.
+    // Primitives have identity modelMatrix, so world camera equals plane-space
+    // camera. Clipping data stays on placeholder bindings because this path does
+    // not receive a clipping collection reference.
     cameraInPlaneSpace: context.uniformState?.cameraPosition,
     atmosphereLutTransmittanceView: atmosphereLutViews?.transmittance,
     atmosphereLutInscatterView: atmosphereLutViews?.inscatter,
@@ -1607,8 +1501,7 @@ function _getOrCreateSharedPrimitiveEffectsBG(frameState: CesiumFrameState) {
     atmosphereLutPlanetRadii: hasAtmosphereLut
       ? { inner: 6378137.0, outer: 6378137.0 * 1.025 }
       : undefined,
-    // Slice 5d Batch 154 — Forward+ clustered lighting buffers (bindings
-    // 18-22 on the effects BGL). Passed only when active so the no-effects
+    // Pass clustered-lighting bindings 18-22 only while active so the no-effects
     // placeholder fast path is preserved when clustered lighting is off.
     clusteredLighting: hasClustered ? clusteredBuffers : undefined,
   });
@@ -1650,7 +1543,7 @@ function _refreshPrimitiveEffectsSlot(
   if (command._isPickCommand === true) {
     return;
   }
-  // 376d — the textured polyline Image variant has its TEXTURE at the last bind
+  // The textured polyline Image variant has its texture at the last bind
   // group slot (no effects group on that pipeline). Swapping the shared effects
   // BG into the last slot would clobber the texture → blank line. Skip it.
   if (command._noEffectsSlot === true) {
@@ -1743,13 +1636,9 @@ function updateWebGPUCommandUniforms(
     return;
   }
 
-  // NEW-POLYLINE-APPEARANCE-PRIMITIVE-WEBGPU — the polyline appearance camera
-  // UB carries projection / viewport / modelViewRTE which all change per frame
-  // as the camera moves, so it MUST be re-written every frame (not just on
-  // geometry change). Depth-range type is set to webgpu by the command
-  // builders; the viewportOrthographic getter respects it. Shared by both the
-  // COLOR slice (polylineColor) and the MATERIAL slice (polylineMat*), which
-  // use the identical camera UB layout — gated on `_isPolylineAppearance` so
+  // Polyline projection, viewport, and model-view data changes with the camera,
+  // so rewrite this buffer every frame. Color and material polyline shaders
+  // share the layout. `_isPolylineAppearance` prevents
   // the polyline material types don't fall through to the generic flat/lit
   // camera writers below (their UB layout differs).
   if (command._isPolylineAppearance === true) {
@@ -1775,9 +1664,9 @@ function updateWebGPUCommandUniforms(
       POLYLINE_CAMERA_BYTES,
     );
 
-    // MATERIAL slice — re-upload the material UBO when the Material's
+    // Re-upload the material UBO when the Material's
     // `_uniformBuffer` is dirty (time-varying dash pattern / glow phase).
-    // COLOR-slice commands have no `_webgpuMaterialUB`, so this is a no-op
+    // Color-appearance commands have no `_webgpuMaterialUB`, so this is a no-op
     // there.
     const matUB = command._webgpuMaterialUB;
     const matBuffer = command._webgpuMaterialBuffer;
@@ -1791,7 +1680,7 @@ function updateWebGPUCommandUniforms(
       );
     }
 
-    // 376d — refresh the textured Image variant's texture bind group. The
+    // Refresh the textured Image variant's texture bind group. The
     // command is built once (usually before the async Image material decodes),
     // so ensureMaterialTextureBindGroup must re-run until the real image is
     // bound. It keys on `_imageSources.image` identity (undefined → image when
@@ -1848,7 +1737,7 @@ function updateWebGPUCommandUniforms(
     );
   }
 
-  // Slice 2d — swap the effects bind group for this frame so shadow-
+  // Swap the effects bind group for this frame so shadow-
   // receive / CSM bindings reach the primitive shader instead of the
   // zero-filled placeholder the command was built with.
   _refreshPrimitiveEffectsSlot(command, frameState);
@@ -1858,8 +1747,8 @@ function updateWebGPUCommandUniforms(
 // Pick Uniform Update (per frame)
 // =========================================================================
 
-// DP-H41 (Batch 27) — pick buffer now carries previousViewProjection too
-// (40 floats = 160 bytes). Scratch kept at 64 floats for zero-risk headroom.
+// The pick scratch array accommodates the 176-byte flat camera layout,
+// including previous-view-projection and log-depth data; 64 floats leaves room.
 const scratchPickUniformData = new Float32Array(64);
 
 /**
@@ -1907,7 +1796,7 @@ function updateWebGPUPickCommandUniforms(
 }
 
 // =========================================================================
-// NEW-POLYLINE-APPEARANCE-PRIMITIVE-WEBGPU (COLOR slice)
+// Polyline color-appearance helpers
 // =========================================================================
 
 /**
@@ -2003,13 +1892,13 @@ function createPolylineAppearancePipeline(
 }
 
 /**
- * Creates WebGPU draw commands for a polyline `Primitive` with
- * `PolylineColorAppearance` (NEW-POLYLINE-APPEARANCE-PRIMITIVE-WEBGPU, COLOR
- * slice). Packs 24 floats/vertex (posHigh/posLow + prev/next high/low +
+ * Creates WebGPU draw commands for a `PolylineColorAppearance` primitive.
+ * Packs positions, previous and next positions, expansion width, and color
  * expandAndWidth + color) and routes through the polyline appearance shader
  * which expands the coincident quad vertices into a screen-space ribbon.
  *
- * Pick is not wired in this slice (color-only) — pickCommands is cleared.
+ * Picking is not implemented for this command
+ * family, so `pickCommands` is cleared.
  * @private
  */
 function createPolylineAppearanceCommands(
@@ -2047,17 +1936,13 @@ function createPolylineAppearanceCommands(
 
   const vertexLayout = getPolylineAppearanceVertexLayout();
   const translucentChanged = cache.translucent !== translucent;
-  // 376c — renderer-wide log depth. Flip the LOG_DEPTH define on the
-  // appearance pipeline when the master switch + per-frame flag are on, so
-  // the polyline writes hyperbolic @builtin(frag_depth) and z-fights terrain
-  // correctly. Defaults FALSE → defines=0 → byte-identical historical path.
-  // `logDepthChanged` forces a shader-module + pipeline rebuild on toggle.
+  // Scene log depth selects the corresponding appearance shader and pipeline;
+  // a state change requires both to rebuild.
   const logDepthActive = isWebGPULogDepthActive(context, frameState);
   const logDepthChanged = cache.logDepthEnabled !== logDepthActive;
 
-  // Q14-HDR-TOGGLE-INVALIDATION — rebuild the polyline-appearance pipeline
-  // when the scene FB color format flips (HDR toggle). See the main-path guard
-  // for the full rationale. Inert while HDR never toggles (byte-identical).
+  // Rebuild when the scene-framebuffer format generation changes because the
+  // color target format is pipeline state.
   const sceneFormatGen = context._scenePipelineFormatGeneration ?? 0;
   const formatGenChanged = cache.pipelineFormatGeneration !== sceneFormatGen;
 
@@ -2073,7 +1958,7 @@ function createPolylineAppearanceCommands(
 
     // Route through the preprocessor so the chunk-injected source is resolved
     // via getShaderSource (prepends csm_polylineCommon) and the //>>ifdef
-    // LOG_DEPTH blocks resolve. defines=0 reproduces the pre-376c path.
+    // LOG_DEPTH blocks resolve. Zero defines selects the hyperbolic path.
     const code = preprocessShaderSource(
       getShaderSource("polylineColor"),
       logDepthActive ? ShaderDefine.LOG_DEPTH : 0,
@@ -2161,7 +2046,7 @@ function createPolylineAppearanceCommands(
     const ewCPA = expandAndWidth.componentsPerAttribute || 2;
     const colorAttr = attrs.color;
 
-    // 376b — projected 2D positions for the morph blend. Absent in scene3DOnly
+    // Projected 2D positions feed the morph blend. They are absent in scene3DOnly
     // viewers → zero-fill; morphTime stays 1.0 so the VS uses the 3D path.
     const p2dH = attrs.position2DHigh;
     const p2dL = attrs.position2DLow;
@@ -2245,7 +2130,8 @@ function createPolylineAppearanceCommands(
         vertexData[vOff + 22] = scratchPolylineColor[2];
         vertexData[vOff + 23] = scratchPolylineColor[3];
       }
-      // 376b — 2D positions @ floats 24-41 (loc8-13). Zero when absent.
+      // Projected positions occupy floats 24-41 (locations 8-13)
+      // and remain zero when absent.
       if (has2D) {
         for (let c = 0; c < 3; c++) {
           vertexData[vOff + 24 + c] = p2dH.values[p3 + c];
@@ -2326,12 +2212,12 @@ function createPolylineAppearanceCommands(
   for (let i = 0; i < validCommands.length; i++) {
     colorCommands[i] = validCommands[i];
   }
-  // Pick is color-only in this slice.
+  // This command family does not implement picking.
   pickCommands.length = 0;
 }
 
 // =========================================================================
-// NEW-POLYLINE-APPEARANCE-PRIMITIVE-WEBGPU (MATERIAL slice)
+// Polyline material-appearance helpers
 // =========================================================================
 
 const scratchPolylineST = new Cartesian2();
@@ -2415,7 +2301,7 @@ function createPolylineMaterialPipeline(
   cache.cameraBindGroupLayout = cameraBGL;
   cache.materialBindGroupLayout = materialBGL;
 
-  // 376d — textured Image material gets a @group(2) texture+sampler (3-binding
+  // A textured Image material gets a @group(2) texture and sampler (three-binding
   // layout matching the surface path so ensureMaterialTextureBindGroup reuses).
   // The polyline material FS never consumes the effects group, so the textured
   // variant has NO effects group (texture takes slot 2). Non-textured variants
@@ -2479,13 +2365,15 @@ function createPolylineMaterialPipeline(
 
 /**
  * Creates WebGPU draw commands for a polyline `Primitive` with
- * `PolylineMaterialAppearance` (MATERIAL slice). Packs 22 floats/vertex
+ * `PolylineMaterialAppearance`. Packs 22 floats per vertex
  * (posHigh/posLow + prev/next high/low + expandAndWidth + st) and routes
  * through the per-material polyline FS (Color / Dash / Glow / Arrow / Outline).
- * Reuses the COLOR-slice camera UB + writeRTEUniformsPolyline, and the
+ * Reuses the color-appearance camera uniform buffer and
+ * `writeRTEUniformsPolyline`, and the
  * material-path material-UB upload (material._uniformBuffer.gpuData).
  *
- * Pick is not wired in this slice (color-only) — pickCommands is cleared.
+ * Picking is not implemented for this color-only
+ * path, so `pickCommands` is cleared.
  * @private
  */
 function createPolylineMaterialAppearanceCommands(
@@ -2529,13 +2417,12 @@ function createPolylineMaterialAppearanceCommands(
 
   const shaderChanged = cache.shaderType !== shaderInfo.type;
   const translucentChanged = cache.translucent !== translucent;
-  // 376c — log-depth define-flip (see the COLOR builder for the rationale).
+  // Scene log depth is a shader and pipeline axis.
   const logDepthActive = isWebGPULogDepthActive(context, frameState);
   const logDepthChanged = cache.logDepthEnabled !== logDepthActive;
 
-  // Q14-HDR-TOGGLE-INVALIDATION — rebuild the polyline-material pipeline when
-  // the scene FB color format flips (HDR toggle). See the main-path guard for
-  // the full rationale. Inert while HDR never toggles (byte-identical).
+  // Rebuild when the scene-framebuffer format generation changes because the
+  // color target format is pipeline state.
   const sceneFormatGen = context._scenePipelineFormatGeneration ?? 0;
   const formatGenChanged = cache.pipelineFormatGeneration !== sceneFormatGen;
 
@@ -2552,8 +2439,8 @@ function createPolylineMaterialAppearanceCommands(
     cache.pipelineFormatGeneration = sceneFormatGen;
 
     // Route through the preprocessor so getShaderSource's csm_polylineCommon
-    // injection + the //>>ifdef LOG_DEPTH blocks resolve. defines=0 reproduces
-    // the pre-376c byte-identical path.
+    // injection and conditional log-depth blocks resolve. Zero defines
+    // selects the hyperbolic path.
     const code = preprocessShaderSource(
       shaderInfo.code,
       logDepthActive ? ShaderDefine.LOG_DEPTH : 0,
@@ -2629,7 +2516,7 @@ function createPolylineMaterialAppearanceCommands(
     });
   }
 
-  // 376d — textured Image material: build/refresh the @group(2) texture bind
+  // For a textured Image material, build or refresh the @group(2) texture bind
   // group from the material's loaded image (reuses the surface-material helper;
   // falls back to a 1×1 white texture until the image readies).
   if (shaderInfo.needsTexture === true) {
@@ -2659,13 +2546,13 @@ function createPolylineMaterialAppearanceCommands(
     const geometry = geometries[i];
     // `Primitive` runs GeometryPipeline.compressVertices() by default, which
     // packs `st` into `compressedAttributes` and deletes the literal `st`
-    // attribute. PolylineMaterialAppearance.VERTEX_FORMAT requests `st`, so we
-    // must reconstruct it before packing — otherwise st reads as (0,0) and the
+    // attribute. PolylineMaterialAppearance.VERTEX_FORMAT requests `st`, so it
+    // must be reconstructed before packing; otherwise st reads as (0,0) and the
     // st-dependent materials (Glow/Arrow/Outline) collapse (Glow → invisible,
     // since glowPower/abs(0-0.5)-glowPower/0.5 == 0). The polyline-specific
     // decoder is required — the generic ensureUncompressedAttributes mis-sniffs
-    // the ST-only slot as a normal for st==(0,0) first vertices. (The COLOR
-    // slice didn't need this — PolylineColorAppearance has no st.)
+    // the ST-only slot as a normal for first vertices with st==(0,0).
+    // PolylineColorAppearance has no st, so its packer does not need this step.
     ensurePolylineST(geometry);
     const attrs = geometry.attributes;
 
@@ -2699,7 +2586,7 @@ function createPolylineMaterialAppearanceCommands(
       defined(stAttr) && defined(stAttr.values) ? stAttr.values : null;
     const stCPA = defined(stAttr) ? stAttr.componentsPerAttribute || 2 : 2;
 
-    // 376b — projected 2D positions for the morph blend (see the COLOR packer).
+    // Projected 2D positions feed the morph blend, as in the color packer.
     const p2dH = attrs.position2DHigh;
     const p2dL = attrs.position2DLow;
     const pv2dH = attrs.prevPosition2DHigh;
@@ -2713,7 +2600,7 @@ function createPolylineMaterialAppearanceCommands(
       posHighVals.length / (posHigh.componentsPerAttribute || 3);
 
     // 40 floats/vertex: posHigh(3) posLow(3) prevHigh(3) prevLow(3)
-    // nextHigh(3) nextLow(3) expandAndWidth(2) st(2) + 2D positions(18) [376b]
+    // nextHigh(3) nextLow(3) expandAndWidth(2) st(2) + 2D positions(18)
     const vertexData = new Float32Array(numVertices * fpv);
     for (let v = 0; v < numVertices; v++) {
       const p3 = v * 3;
@@ -2747,7 +2634,8 @@ function createPolylineMaterialAppearanceCommands(
         vertexData[vOff + 20] = 0.0;
         vertexData[vOff + 21] = 0.0;
       }
-      // 376b — 2D positions @ floats 22-39 (loc8-13). Zero when absent.
+      // Projected positions occupy floats 22-39 (locations 8-13)
+      // and remain zero when absent.
       if (has2D) {
         for (let c = 0; c < 3; c++) {
           vertexData[vOff + 22 + c] = p2dH.values[p3 + c];
@@ -2794,7 +2682,7 @@ function createPolylineMaterialAppearanceCommands(
       entries: [{ binding: 0, resource: { buffer: cache.cameraBuffers[i] } }],
     });
 
-    // 376d — textured Image variant binds the texture group at slot 2 (no
+    // The textured Image variant binds the texture group at slot 2 (no
     // effects group on that pipeline); all other materials keep the effects
     // placeholder at slot 2.
     const slot2 =
@@ -2826,7 +2714,7 @@ function createPolylineMaterialAppearanceCommands(
     cmd._webgpuCameraBuffer = cache.cameraBuffers[i];
     cmd._webgpuShaderType = shaderInfo.type;
     cmd._isPolylineAppearance = true;
-    // 376d — textured Image variant: slot 2 is the texture, NOT an effects
+    // For the textured Image variant, slot 2 is the texture rather than an effects
     // placeholder. Flag so _refreshPrimitiveEffectsSlot doesn't clobber it,
     // and carry the material + cache so the per-frame hook can refresh the
     // texture bind group once the async image decodes (commands are built once,
@@ -2852,7 +2740,7 @@ function createPolylineMaterialAppearanceCommands(
   for (let i = 0; i < validCommands.length; i++) {
     colorCommands[i] = validCommands[i];
   }
-  // Pick is color-only in this slice.
+  // This command family is color-only; picking is not implemented.
   pickCommands.length = 0;
 }
 
@@ -2901,12 +2789,12 @@ function createWebGPUCommands(
   const colorIndex = primitive._batchTableAttributeIndices?.color;
   const hasInstanceColors = defined(batchTable) && defined(colorIndex);
 
-  // DP-H18 / C2-23 — depthFailAppearance: when set, every main color command
-  // gets a twin "depth-fail" command (depthCompare 'greater', no depth write)
-  // that shades the per-instance depthFail color where the primitive is hidden
-  // behind nearer geometry. Mirrors the WebGL twin (PrimitiveCommandHelpers.js
-  // `_spDepthFail` / `_frontFaceDepthFailRS`). The depthFail color is a
-  // per-instance batch attribute (`depthFailColor`), read CPU-side like `color`.
+  // When `depthFailAppearance` is set, each color command gains a greater,
+  // no-depth-write twin that shades the per-instance depthFail color where the
+  // primitive is hidden behind nearer geometry. Mirrors the WebGL twin
+  // (PrimitiveCommandHelpers.js `_spDepthFail` / `_frontFaceDepthFailRS`). The
+  // depthFail color is a per-instance batch attribute (`depthFailColor`),
+  // read CPU-side like `color`.
   const depthFailAppearance = primitive._depthFailAppearance;
   const hasDepthFail = defined(depthFailAppearance);
   const depthFailColorIndex =
@@ -2922,8 +2810,8 @@ function createWebGPUCommands(
       shaderType: null,
       shaderModule: null,
       pipeline: null,
-      // Log-depth epic Slice 2b — tracks the LOG_DEPTH define state baked into
-      // the cached lit pipeline so the Slice 4 master-switch flip rebuilds it.
+      // Tracks the log-depth state baked into the cached lit pipeline so a
+      // scene-switch change rebuilds it.
       logDepthEnabled: false,
       cameraBindGroupLayout: null,
       materialBindGroupLayout: null,
@@ -2938,8 +2826,7 @@ function createWebGPUCommands(
       vertexCounts: [],
       pickShaderModule: null,
       pickPipeline: null,
-      // C10-11-PICK-FLEET-LOG-DEPTH — pick-fleet log state baked into the pick
-      // pipeline; starts false (hyperbolic pick) until the fleet switch flips.
+      // Pick-log state baked into the cached pick pipeline.
       pickLogDepthEnabled: false,
       pickCameraBindGroupLayout: null,
       pickMaterialBindGroupLayout: null,
@@ -2953,27 +2840,24 @@ function createWebGPUCommands(
 
   // ── Shader selection ──
   const firstGeometry = geometries[0];
-  // Slice 5d Batch 157 — decode oct-encoded vertex attributes BEFORE
-  // selecting the shader. `Primitive` runs `GeometryPipeline.compressVertices`
+  // Decode compressed vertex attributes before shader selection. `Primitive`
+  // runs `GeometryPipeline.compressVertices`
   // by default, which packs the normal (+ st / tangent / bitangent) into a
   // single `compressedAttributes` slot and RTE-splits position into
   // position3DHigh/Low. Without this decode, `selectWebGPUShader` sees no
-  // literal `normal` attribute and falls back to the UNLIT `basic` shader —
+  // literal `normal` attribute and would fall back to the unlit `basic` shader,
   // so a flat:false PerInstanceColorAppearance (or any lit non-material
   // appearance) rendered with no lighting. The per-geometry loop below
-  // already calls this, but that runs AFTER shader selection; the material
-  // path (createMaterialAndQueueCommands) decodes before its selection, so
-  // it was unaffected. ensureUncompressedAttributes is idempotent.
+  // selection. The helper is idempotent.
   ensureUncompressedAttributes(firstGeometry);
 
-  // NEW-POLYLINE-APPEARANCE-PRIMITIVE-WEBGPU (COLOR slice) — a polyline
-  // `Primitive` with `PolylineColorAppearance` over a `PolylineGeometry`.
-  // The geometry carries `expandAndWidth` + `prevPosition3DHigh`/`nextPosition3DHigh`
-  // attributes that the basic packer drops, collapsing the 4 coincident quad
-  // vertices to one clip point (0px). Route to a dedicated packer + pipeline +
-  // camera UB that consume those attributes and do the screen-space width
-  // expansion. Detected before selectWebGPUShader because that helper only
-  // inspects normal/st and would pick "basic".
+  // Detect `PolylineColorAppearance` geometry before generic shader selection.
+  // The geometry carries `expandAndWidth` +
+  // `prevPosition3DHigh`/`nextPosition3DHigh` attributes that the basic packer
+  // does not preserve. Route to a dedicated packer, pipeline, and camera UB
+  // that consume those attributes and do the screen-space width expansion.
+  // Detected before selectWebGPUShader because that helper only inspects
+  // normal/st and would pick "basic".
   const firstAttrs = firstGeometry.attributes;
   const isPolylineAppearanceGeometry =
     defined(firstAttrs.expandAndWidth) &&
@@ -3000,13 +2884,10 @@ function createWebGPUCommands(
 
   const shaderChanged = cache.shaderType !== shaderInfo.type;
   const translucentChanged = cache.translucent !== translucent;
-  // DP-H17 — treat a twoPasses flip like a shader / translucent flip
-  // so the back-face + front-face pipeline variants get rebuilt.
+  // Treat a `twoPasses` change as a pipeline-signature change so
+  // front/back cull variants rebuild.
   const twoPassesChanged = cache.twoPasses !== twoPasses;
-  // Session 65 Batch 2 — detect topology change so outline geometries
-  // (line-list / line-strip) get their own pipeline. The cached
-  // pipeline's topology is baked at create time; we must rebuild on
-  // change.
+  // Rebuild when primitive topology changes because topology is pipeline state.
   const primitiveTopology = mapCesiumPrimitiveTypeToWebGPU(
     firstGeometry.primitiveType,
   );
@@ -3015,41 +2896,21 @@ function createWebGPUCommands(
   const isLit = isPhongShader(shaderInfo.type);
   const cameraBufferSize = isLit ? LIT_CAMERA_BYTES : FLAT_CAMERA_BYTES;
 
-  // Log-depth epic Slice 2b / Slice 5 — the Phong producers (PrimitivePhongColor
-  // / PrimitivePhongTexturedColor) AND the unlit Basic producers
-  // (PrimitiveBasicColor / PrimitiveBasicTexturedColor) gain `//>>ifdef LOG_DEPTH`
-  // blocks that emit logarithmic @builtin(frag_depth). Both shader families now
-  // carry the gated blocks (the lit ones read camera.logDepth from the LIT UB
-  // tail at floats 80-83; the basic ones read it from the FLAT UB tail at floats
-  // 40-43, added by writeRTEUniformsFlat). Activate the define whenever the
-  // master switch + per-frame flag are on. Defaults FALSE, so this is inert
-  // (defines=0 → historical else-branch, byte-identical). `logDepthChanged`
-  // forces a shader-module + pipeline rebuild when the master switch flips,
-  // mirroring the topologyChanged invalidation guard. The COLOR pipeline uses
-  // the scene switch; the PICK pipeline uses the SEPARATE pick-fleet switch
-  // (see pickLogActive below).
+  // Basic and Phong shaders use conditional logarithmic fragment depth. Lit
+  // camera data stores its values at floats 80-83; flat data uses floats 40-43.
+  // A scene log-depth change rebuilds the color shader and pipeline, while the
+  // pick pipeline follows its independent fleet switch below.
   const logDepthActive = isWebGPULogDepthActive(context, frameState);
   const logDepthChanged = cache.logDepthEnabled !== logDepthActive;
-  // C10-11-PICK-FLEET-LOG-DEPTH — the pick fleet writes log-encoded frag_depth
-  // on its OWN master switch (isWebGPUPickLogDepthActive), independent of the
-  // scene switch, because the shared pick FBO depth is all-or-nothing. A flip
-  // must rebuild the pick pipeline (LOG_DEPTH module + widened camera UB lanes),
-  // so fold pickLogChanged into the rebuild guard below. Gated on hasPickIds so
-  // a flip is a no-op for non-pickable primitives. Defaults FALSE → inert.
+  // The pick fleet writes logarithmic fragment depth under its own shared-
+  // framebuffer switch. A change rebuilds the pick module and camera layout;
+  // non-pickable primitives ignore it.
   const pickLogActive = isWebGPUPickLogDepthActive(context, frameState);
   const pickLogChanged =
     hasPickIds && cache.pickLogDepthEnabled !== pickLogActive;
 
-  // Q14-HDR-TOGGLE-INVALIDATION — the cached pipeline bakes in the scene FB
-  // color format (`context.scenePipelineFormat`, resolved into `canvasFormat`
-  // below). A mid-session `scene.highDynamicRange` toggle flips that format
-  // (rgba8unorm ↔ rgba16float / rg11b10ufloat) and bumps
-  // `context._scenePipelineFormatGeneration`. Without this guard the stale
-  // rgba8unorm pipeline stays bound and WebGPU rejects the draw into the
-  // rgba16float scene FB ("Primitive pipeline (cull=back)" attachment-format
-  // mismatch, ~128 errors/frame). Same generation-counter precedent the
-  // GroundPrimitive / Model / globe pipelines already follow. Inert when HDR
-  // never toggles (generation never changes → byte-identical).
+  // The pipeline bakes `scenePipelineFormat`; rebuild when its generation
+  // changes so an HDR toggle cannot reuse an incompatible color target.
   const sceneFormatGen = context._scenePipelineFormatGeneration ?? 0;
   const formatGenChanged = cache.pipelineFormatGeneration !== sceneFormatGen;
 
@@ -3066,31 +2927,19 @@ function createWebGPUCommands(
     cache.translucent = translucent;
     cache.primitiveTopology = primitiveTopology;
     cache.logDepthEnabled = logDepthActive;
-    // C10-11-PICK-FLEET-LOG-DEPTH — stamp the pick-log state the pick pipeline
-    // (rebuilt below in the `if (hasPickIds)` block) is being built with.
+    // Record the pick-log state used for the pipeline rebuilt below.
     cache.pickLogDepthEnabled = pickLogActive;
     cache.pipelineFormatGeneration = sceneFormatGen;
 
-    // DP-H19-SHADER-DECODE (Batch 27) — always route through the
-    // preprocessor so `//>>ifdef COMPRESSED_VERTICES` / `//>>else`
-    // blocks in material shaders resolve to concrete WGSL. `defines=0`
-    // produces the historical code path (the `//>>else` branch carries
-    // the original VertexInput + logic), so this is a no-op for
-    // uncompressed-path shaders. The compressed opt-in flips the bit
-    // in a follow-up wire-up step that also swaps the vertex buffer
-    // packer to emit `compressedAttributes` directly.
-    //
-    // Log-depth epic Slice 2b — OR in LOG_DEPTH for lit Phong producers when
-    // active (see logDepthActive above). The preprocessor resolves the
-    // `//>>ifdef LOG_DEPTH` blocks; with the master switch off this is 0 and
-    // the else-branch (no frag_depth, no varying) is byte-identical.
+    // Always preprocess so compressed-vertex and log-depth branches resolve.
+    // Zero defines selects unpacked hyperbolic input. Direct compressed input
+    // remains intentionally unwired: enabling that bit must be paired with a
+    // packer that emits `compressedAttributes`; retain the branch as rollout
+    // infrastructure until that producer and broader shader coverage exist.
     const shaderDefines = logDepthActive ? ShaderDefine.LOG_DEPTH : 0;
-    // Slice 5d Batch 156 — prepend the Forward+ clustered lighting chunk to
-    // the lit Phong primitive shaders (phong / phongTextured), same as the
-    // Mat*Lit path in createMaterialPipelineAndCache. Gated on the shader
-    // actually calling evalClusteredLights( so the chunk only lands where
-    // it's used (not on basic / pick / flat shaders). Effects BGL is at
-    // group 3 when a texture group occupies group 2, else group 2.
+    // Prepend clustered lighting only to Phong shaders that call
+    // `evalClusteredLights`; substitute effects group 3 for textured
+    // layouts and group 2 otherwise.
     let phongCode = shaderInfo.code;
     if (
       isPhongShader(shaderInfo.type) &&
@@ -3111,14 +2960,8 @@ function createWebGPUCommands(
 
     // Camera BGL — group(0): camera uniforms.
     //
-    // Slice 5c-B Batch 124 — promoted to always VERTEX_FRAGMENT.
-    // Batch 121 conditionally added FRAGMENT for
-    // `isLit || isMaterialLitShader(shaderInfo.type)`, but Batch 124
-    // discovered that Flat shaders also read camera in fragment for
-    // the aerial-LUT fog block (FEAT-GAP-09). Rather than maintain a
-    // shader-type-list of "needs fragment camera" that grows over
-    // time, just declare VERTEX_FRAGMENT once — the visibility flag is
-    // free at runtime and protects every present + future shader.
+    // Camera data is visible to both stages because flat fragment shaders use it
+    // for aerial fog. Uniform visibility avoids a fragile shader-type allowlist.
     cache.cameraBindGroupLayout = makeBindGroupLayout(device, "Camera BGL", [
       uniformBuffer(0, GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT),
     ]);
@@ -3136,12 +2979,8 @@ function createWebGPUCommands(
     ];
 
     if (needsTexture) {
-      // Batch 25 — material texture bind group v2: one shared sampler +
-      // TWO texture slots so multi-texture materials (NormalMap /
-      // BumpMap / Water / ElevationBand) can bind both at once. Single-
-      // texture shaders only declare @binding(1); the @binding(2) slot
-      // is filled with a 1×1 placeholder and the shader ignores it
-      // (WGSL allows bind group layouts to carry unused bindings).
+      // The texture layout carries one sampler and two texture slots.
+      // Single-texture shaders ignore the placeholder secondary slot.
       cache.textureBindGroupLayout = makeBindGroupLayout(
         device,
         "Texture BGL",
@@ -3161,19 +3000,12 @@ function createWebGPUCommands(
     bindGroupLayouts.push(effectsBGL);
     cache.effectsBGL = effectsBGL;
 
-    // Batch 110 — primitive pipelines target the scene FB, so use
-    // `scenePipelineFormat` (mirrors scene FB color format, not canvas
-    // swap chain format). The legacy variable name `canvasFormat` is
-    // kept for diff hygiene but the value is now scene-pipeline-correct.
+    // Primitive color pipelines target the scene framebuffer, so the local
+    // `canvasFormat` value contains `scenePipelineFormat`.
     const canvasFormat =
       context.scenePipelineFormat || navigator.gpu.getPreferredCanvasFormat();
-    // C11-157 Slice A — build the pipeline layout ONCE and reuse it across every
-    // cull variant AND the OIT accumulation variant. A translucent command's
-    // OIT pipeline (auto-built in executeTranslucentPass) must share the exact
-    // layout its pre-baked bind groups were created against, or WebGPU rejects
-    // the setBindGroup. Behaviorally identical to the former per-call inline
-    // layout (pipeline layouts are immutable descriptors — one shared instance
-    // is a pure allocation win, not a behavior change).
+    // Cull and OIT variants share one immutable pipeline layout. OIT must use
+    // the exact layout that created the prebuilt bind groups.
     const primitivePipelineLayout = device.createPipelineLayout({
       label: `Primitive PL ${shaderInfo.type}`,
       bindGroupLayouts: bindGroupLayouts,
@@ -3194,15 +3026,8 @@ function createWebGPUCommands(
         fragment: {
           module: cache.shaderModule.module,
           entryPoint: "fragmentMain",
-          // Slice 5c-B Batch 121 — Lit shaders (Phong + every Mat*Lit
-          // variant) now emit FragOutput { color, normalRoughness } so
-          // the pipeline declares slot 1 as writable. Flat shaders keep
-          // the placeholder slot 1 (writeMask=0) because their fragment
-          // returns @location(0) only — there's no geometric meaning to
-          // a "normal" for flat-shaded primitives. `isLit` here is the
-          // `isPhongShader` predicate (Phong + PhongTextured);
-          // `isMaterialLitShader` (every Mat*Lit) is the parallel for
-          // material-shader pipelines.
+          // Lit shaders emit normal-roughness at slot 1. Flat shaders declare
+          // the slot with a zero write mask because they have no such output.
           targets: makeSceneFBTargets(canvasFormat, {
             translucent,
             emitsGBuffer: isLit || isMaterialLitShader(shaderInfo.type),
@@ -3223,52 +3048,21 @@ function createWebGPUCommands(
           depthWriteEnabled: !translucent,
           depthCompare: "less-equal",
         },
-        // Slice 5d Batch 156 — match the scene FB MSAA sample count, same
-        // fix the material pipeline site got in Batch 132. Without it this
-        // first-site pipeline (phong / phongTextured / basic / basicTextured
-        // — i.e. PerInstanceColorAppearance + basic ColorAppearance) defaults
-        // to sampleCount=1 against the MSAA=4 scene FB pass, so WebGPU
-        // rejects it with "Attachment state not compatible with Scene
-        // Framebuffer Render Pass" and the primitive renders black. The
-        // Batch 132 fix only covered createMaterialPipelineAndCache (Mat*);
-        // this site (selectWebGPUShader-based shaders) was missed.
+        // Pipeline sample count must match the active scene framebuffer; a
+        // single-sample pipeline is incompatible with a multisampled pass.
         multisample:
           (context._msaaSamples ?? 1) > 1
             ? { count: context._msaaSamples }
             : undefined,
       });
-    // Session 65 Batch 3 (2026-05-11): use BACK-face culling when the
-    // appearance is closed (Box, Sphere, Ellipsoid, Cylinder — every
-    // closed convex volume). Mirrors WebGL's
-    // `Appearance.getDefaultRenderState(...)` which sets
-    // `cull: { enabled: true, face: BACK }` when `closed: true`.
-    //
-    // The previous hardcoded `cullMode: "none"` left BOTH front and
-    // back face triangles in the rasterizer. With `depthWriteEnabled =
-    // true` (opaque path) the two faces fight depth-test at triangle
-    // edges where their Z values nearly match — back-face fragments
-    // win some pixels, creating visible "see-through" gridlines along
-    // every triangulation seam. The user-reported symptom: single
-    // opaque red sphere shows lat/long grid + imagery bleeding through
-    // (Show or Hide Entities, single ellipsoid test, every closed-
-    // shape entity demo).
-    //
-    // For non-closed appearances (Polyline, polygon outline, etc.)
-    // we still pass `none` so both faces continue to render — those
-    // primitives don't have a meaningful "back" face.
-    //
-    // EquirectangularPanorama cull-override (#13369): a closed appearance
-    // can still explicitly DISABLE culling via
-    // `renderState.cull.enabled: false`. WebGL honors this — its
-    // `Appearance.getDefaultRenderState(...)` runs the `closed` branch
-    // through `combine(existing, rs, true)` where the user's
-    // `cull.enabled: false` wins over the closed-default `enabled: true`.
-    // A panorama is `closed: true` (sphere) viewed from the inside, so it
-    // sets `cull.enabled: false` to keep the inner faces visible. Without
-    // this check WebGPU would back-face cull the interior and render the
-    // panorama blank. When cull is explicitly disabled we force `none`
-    // regardless of `closed`; the closed-volume two-pass cull behavior
-    // (DP-H17) below only applies on the `cull.enabled !== false` path.
+    // Closed appearances default to back-face culling, matching
+    // `Appearance.getDefaultRenderState(...)` and preventing front/back depth
+    // competition on opaque convex geometry. Non-closed appearances render
+    // both faces. For the EquirectangularPanorama case (#13369), a closed
+    // appearance can explicitly disable culling;
+    // `Appearance.getDefaultRenderState(...)` preserves that override through
+    // `combine(existing, rs, true)`. Two-pass translucent culling applies only
+    // when culling was not explicitly disabled.
     const cullExplicitlyDisabled =
       appearance?.renderState?.cull?.enabled === false;
     const defaultCullMode =
@@ -3278,10 +3072,9 @@ function createWebGPUCommands(
       `Primitive pipeline (cull=${defaultCullMode})`,
     );
 
-    // C11-157 Slice A — cache OIT-variant inputs (see CacheLike). Attached to
-    // each Pass.TRANSLUCENT color command below; read ONLY by
-    // executeTranslucentPass under the FAR-003 gate (gate-OFF inert). The OIT
-    // source is the NON-LOG_DEPTH preprocessing (accumulation is depth-read-
+    // Cache inputs for the optional OIT accumulation variant. They are
+    // deliberately unused while OIT is disabled. The source omits log depth
+    // because accumulation is depth-read-
     // only, so log frag_depth is meaningless there); when the master log switch
     // is off this equals `processedCode`. WebGPUOIT.injectOITOutput transforms
     // both the flat single-`@location(0)` shape and the lit `FragOutput` struct.
@@ -3291,8 +3084,8 @@ function createWebGPUCommands(
       : processedCode;
     cache.oitDefaultCullMode = defaultCullMode;
 
-    // DP-H18 / C2-23 — depthFailAppearance twin pipeline. Always a FLAT shader
-    // ([camera, material, effects] — 3 groups, no texture) regardless of the
+    // The depth-fail twin always uses a flat shader with camera, material, and
+    // effects groups and no texture, regardless of the
     // main appearance, so its bind-group layout is independent of `needsTexture`.
     // Same vertex layout + targets + MSAA as the main pipeline (reuses the main
     // color command's vertex buffer); differs only in the fragment module (returns
@@ -3337,8 +3130,7 @@ function createWebGPUCommands(
           },
           depthStencil: {
             format: "depth24plus-stencil8",
-            // DP-H18 — only shade fragments BEHIND existing depth, and never
-            // overwrite it (the highlight must not occlude later geometry).
+            // Shade only fragments behind existing depth and never overwrite it.
             depthWriteEnabled: false,
             depthCompare: "greater",
           },
@@ -3347,14 +3139,8 @@ function createWebGPUCommands(
               ? { count: context._msaaSamples }
               : undefined,
         });
-      // DP-H18 — the depth-fail pass renders with NO face culling (matching
-      // WebGL's depthFail render state, which inherits the flat depthFail
-      // appearance's cull-disabled default). For a closed volume this lets the
-      // BACK faces (farther) pass the 'greater' test against the front faces and
-      // show through as the depth-fail color — the canonical "x-ray" look — and
-      // for a partially-occluded primitive it shades every fragment behind the
-      // occluder. Using the main `defaultCullMode` ("back" for closed shapes)
-      // would cull exactly those faces and render nothing.
+      // Disable face culling so closed-volume back faces can pass the greater
+      // test and produce the intended x-ray appearance.
       cache.depthFailPipeline = makeDepthFailPipeline(
         "none",
         `DepthFail pipeline (cull=none)`,
@@ -3363,11 +3149,8 @@ function createWebGPUCommands(
       cache.depthFailShaderModule = null;
       cache.depthFailPipeline = null;
     }
-    // DP-H17 — closed translucent volumes need two draw calls with
-    // opposite cull modes so back faces composite before front faces.
-    // Build both variants up-front (they share everything except
-    // cullMode) so the draw-emit code can pick them per twoPasses
-    // pass. Non-twoPasses paths reuse the noCull pipeline as before.
+    // Closed translucent volumes draw back faces before front faces. Build both
+    // cull variants up front; other paths retain the no-cull pipeline.
     if (twoPasses) {
       cache.pipelineFrontCull = makePipeline(
         "front",
@@ -3448,11 +3231,8 @@ function createWebGPUCommands(
     // ── Pick pipeline (split camera/material bind groups) ──
     if (hasPickIds) {
       const pickShaderCode = getPickShaderForType(shaderInfo.type);
-      // C10-11-PICK-FLEET-LOG-DEPTH — compile the pick module with LOG_DEPTH
-      // when the pick-fleet switch is active so the //>>ifdef LOG_DEPTH blocks
-      // (logDepth UB tail read + v_logDepth varying + csm_updatePositionDepth
-      // clip-z clamp + log frag_depth) resolve. defines=0 → historical
-      // hyperbolic else-branch, byte-identical.
+      // Compile the pick module with log depth only while the pick fleet uses
+      // it; otherwise preprocessing retains the hyperbolic path.
       cache.pickShaderModule = WebGPUShaderModule.create({
         device: device,
         code: preprocessShaderSource(
@@ -3462,12 +3242,8 @@ function createWebGPUCommands(
         label: `${shaderInfo.type} Pick Shader${pickLogActive ? " [ld]" : ""}`,
       });
 
-      // Pick camera BGL — group(0).
-      // C10-11-PICK-FLEET-LOG-DEPTH — VERTEX_FRAGMENT (was VERTEX-only): the
-      // pick FS reads camera.logDepth.z (the log factor) under LOG_DEPTH.
-      // Widened unconditionally — broader visibility is always valid and
-      // output-identical when the define is off; mirrors the material-pick BGL
-      // (already VERTEX_FRAGMENT) and the color camera BGL.
+      // Pick camera data is visible to both stages because the log-depth
+      // fragment path reads the camera factor.
       cache.pickCameraBindGroupLayout = makeBindGroupLayout(
         device,
         "Pick Camera BGL",
@@ -3482,8 +3258,7 @@ function createWebGPUCommands(
       );
 
       cache.pickPipeline = device.createRenderPipeline({
-        // C10-11-PICK-FLEET-LOG-DEPTH — [ld] suffix when the log variant is
-        // active, for devtools readability.
+        // Append `[ld]` to log-depth pick labels for diagnostics.
         label: `${shaderInfo.type} Pick Pipeline${pickLogActive ? " [ld]" : ""}`,
         layout: device.createPipelineLayout({
           bindGroupLayouts: [
@@ -3501,25 +3276,21 @@ function createWebGPUCommands(
           entryPoint: "fragmentMain",
           targets: [
             {
-              // NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE — pick pipelines target
-              // the context's byte-object-ID format authority (matches the
-              // pick FBO), never the presentation/scene format.
+              // Use the context's byte-object-ID format so the pipeline matches
+              // the pick framebuffer.
               format:
                 context.pickPipelineFormat ??
                 (navigator.gpu.getPreferredCanvasFormat() as GPUTextureFormat),
             },
           ],
         },
-        // Pick pipeline mirrors the main primitive's topology so
-        // outline geometry picking returns the same fragments as the
-        // visual render (line-list vs triangle-list). Same Batch 2 fix.
+        // Pick topology matches visual topology so outline picking covers the
+        // same line fragments.
         primitive: { topology: primitiveTopology, cullMode: "none" },
         depthStencil: {
           format: "depth24plus-stencil8",
-          // C10-11-PICK-FLEET-LOG-DEPTH — already unconditionally true (the pick
-          // FBO shares its depth attachment); kept true. Off-path is byte-
-          // identical because the off module writes no @builtin(frag_depth), so
-          // the hardware rasterized (hyperbolic) z is written exactly as before.
+          // The shared pick framebuffer keeps depth writes enabled. Without a
+          // fragment-depth output, hardware hyperbolic depth is unchanged.
           depthWriteEnabled: true,
           depthCompare: "less-equal",
         },
@@ -3539,9 +3310,8 @@ function createWebGPUCommands(
   for (let i = 0; i < geometries.length; i++) {
     const geometry = geometries[i];
 
-    // DP-H19 — reconstruct normal / st from `compressedAttributes` when
-    // the primitive was built with `compressVertices: true` (the
-    // default). Must run before any `geometry.attributes.*` reads below.
+    // Reconstruct compressed normal and texture-coordinate attributes before
+    // any geometry-attribute reads.
     ensureUncompressedAttributes(geometry);
 
     // ── Extract RTE position data (positionHigh + positionLow) ──
@@ -3613,20 +3383,16 @@ function createWebGPUCommands(
       }
     }
 
-    // ── Per-VERTEX color via batchId (C4-PLAIN-HDR-GAMMA-TAILS c) ──
-    // When Cesium combines multiple PerInstanceColorAppearance instances it
-    // produces ONE geometry whose color lives in the batch TABLE, selected
-    // per-vertex by a `batchId` attribute (0 for instance 0's vertices, 1 for
-    // instance 1's, …) — exactly what WebGL's PerInstanceColorAppearanceVS
-    // resolves by sampling the batch-table texture. The single `instanceColor`
-    // above is instance `i`'s batch color, but a combined geometry has fewer
-    // geometries (often 1) than instances, so applying instance 0's color to
-    // every vertex painted BOTH boxes with one color (orange box drawn
-    // cornflower blue). Bake the per-vertex color CPU-side by looking up each
-    // vertex's `batchId` in the batch table. Fall back to a per-vertex `color`
-    // attribute (geometries built with explicit colors), then `instanceColor`.
-    // Single-instance byte-identical: batchId≡0 → instanceColors[0] equals the
-    // old getBatchedAttribute(0) value.
+    // Per-vertex color through batchId.
+    // Combined per-instance-color geometry stores colors in the batch table,
+    // selected per-vertex by a `batchId` attribute (0 for instance 0's
+    // vertices, 1 for instance 1's, …) — exactly what WebGL's
+    // PerInstanceColorAppearanceVS resolves by sampling the batch-table
+    // texture. The single `instanceColor` above is instance `i`'s batch color,
+    // but a combined geometry has fewer geometries (often 1) than instances,
+    // so applying instance 0's color to every vertex would inherit instance
+    // zero's color. Resolve each vertex through its batch entry, then fall back
+    // to explicit vertex color and the per-instance color.
     let instanceColors = null;
     if (hasInstanceColors) {
       const n = primitive._numberOfInstances || 0;
@@ -3824,8 +3590,8 @@ function createWebGPUCommands(
       entries: [{ binding: 0, resource: { buffer: cache.cameraBuffers[i] } }],
     });
 
-    // DP-H18 / C2-23 — per-geometry depthFail material UB (16 bytes: the
-    // per-instance depthFail color). Read CPU-side from the batch table like
+    // The 16-byte per-geometry depth-fail material buffer stores the per-instance
+    // color read from the batch table. Like
     // the main `color`; default opaque red when no `depthFailColor` attribute
     // is present (a visible sentinel, not silent).
     if (hasDepthFail) {
@@ -3887,28 +3653,11 @@ function createWebGPUCommands(
     const effectsPlaceholder = getPlaceholderEffects(device);
     commandBindGroups.push(effectsPlaceholder.bindGroup);
 
-    // DP-H17 — closed translucent volumes: emit two draw commands per
-    // geometry, back faces first then front faces. Matches the
-    // canonical WebGL "twoPasses" behavior for semi-transparent boxes,
-    // ellipsoids, cones, etc. — ensures correct compositing of the
-    // volume's interior against its exterior.
-    //
-    // The back-face pipeline (cullMode: "front") runs first; the
-    // front-face pipeline (cullMode: "back") runs second. Scene pass
-    // ordering (both land in Pass.TRANSLUCENT) means they execute in
-    // emission order within the translucent queue.
-    //
-    // Non-twoPasses path keeps the single cullMode: "none" pipeline
-    // — unchanged from before DP-H17.
-    // C-R1 (Batch 36) — forward the primitive's appearance renderState
-    // onto emitted commands so `applyPerEncoderState` (Batch 30) runs
-    // stencilRef / blendConstant / viewport / scissor per-draw. The
-    // pipeline-baked fields (depthTest, depthMask, cull, blend, colorMask)
-    // are still controlled by the Material + appearance.flat/closed
-    // signals above; the renderState passthrough is purely for the
-    // dynamic per-encoder state. Material-BLEND pipelines (DP-H16) and
-    // twoPasses front/back-cull pipelines (DP-H17) continue to drive
-    // pipeline identity.
+    // Closed translucent volumes emit back faces before front faces so the
+    // interior composites before the exterior. Other paths use one no-cull
+    // command. Forward `appearance.renderState` because stencil reference,
+    // blend constant, viewport, and scissor are dynamic encoder state; depth,
+    // cull, blend, and color-mask choices remain pipeline state.
     const appearanceRS = primitive.appearance?.renderState;
     const makeCommand = (
       pipeline: GPURenderPipeline,
@@ -3938,15 +3687,11 @@ function createWebGPUCommands(
       // those values are in Primitive/model coordinates. The transform-aware
       // variant shares one stable UBO and bind-group cache on this primitive.
       configurePrimitiveShadowCastCommand(cmd, cache, fpv * 4);
-      // C11-157 Slice A — attach the OIT accumulation variant inputs to
-      // translucent color commands. `executeTranslucentPass` auto-builds the
-      // MRT pipeline from `_shaderCode` + `_pipelineConfig` ONLY when the
-      // FAR-003 `_webgpuOITEnabled` gate is on; both fields are otherwise inert
-      // (never read), so the sorted-alpha default path is byte-identical. The
-      // OIT pipeline reuses the primitive's SHARED layout (bind-group
-      // compatibility) and the base cull mode. It is single-sample to match the
-      // single-sample OIT accumulation targets — MSAA×OIT accumulation stays
-      // the pre-existing FAR-003 adjacency (NEW-WEBGPU-OIT-MSAA-RESOLVE-ORDERING).
+      // Attach OIT inputs only to translucent commands. They are deliberately
+      // dormant in the sorted-alpha path and become active when OIT is enabled.
+      // The shared layout preserves bind-group compatibility. Accumulation is
+      // single-sample; multisampled resolve and composite ordering remains
+      // unfinished, so these carrier fields must remain with that distinction.
       if (
         translucent &&
         defined(cache.oitShaderCode) &&
@@ -3994,11 +3739,11 @@ function createWebGPUCommands(
       );
     }
 
-    // DP-H18 / C2-23 — depth-fail twin command, emitted AFTER the main
-    // command(s) so the main pass has written depth first; the greater/no-write
-    // pipeline then shades only the occluded fragments. Reuses the main vertex
-    // buffer; binds [camera, depthFailMaterial, effects] (the depth-fail shader
-    // is flat — no texture group). Mirrors the WebGL twin's interleaved emit.
+    // Emit the depth-fail twin after the main command so depth exists first;
+    // the greater/no-write pipeline then shades only the occluded fragments.
+    // Reuses the main vertex buffer; binds [camera, depthFailMaterial, effects]
+    // (the depth-fail shader is flat — no texture group). Mirrors the WebGL
+    // twin's interleaved emit.
     if (hasDepthFail && defined(cache.depthFailPipeline)) {
       const depthFailBindGroups = [
         cache.cameraBindGroups[i],
@@ -4094,15 +3839,9 @@ function createWebGPUCommands(
           : undefined,
         pass: pass,
         owner: primitive as unknown as WebGPUCommandOwner,
-        // C-R1-PRIMITIVE-DERIVED (Batch 98) — forward `appearance.renderState`
-        // onto the pick command too so `applyPerEncoderState` runs the
-        // dynamic stencilRef / blendConstant / scissor / viewport ops in
-        // pick passes. Pipeline-baked state (depthWrite-on, blend-off,
-        // pick-color attachment format) stays in `cache.pickPipeline`;
-        // this passthrough is purely for the per-encoder commands that
-        // can't be baked into the pipeline. Without it, primitives that
-        // declared a stencil-write or scissor in their appearance would
-        // pick incorrectly even though they render correctly.
+        // Forward render state so dynamic stencil, blend-constant, scissor, and
+        // viewport state applies during picking; attachment, depth-write, and
+        // blend state remain pipeline-baked.
         renderState: appearanceRS,
       });
 
@@ -4131,13 +3870,12 @@ function createWebGPUCommands(
 /**
  * Returns the texture-slot mapping for a material shader type.
  *
- * Batch 25 — DP-H20 multi-texture materials (NormalMap, BumpMap, Water,
- * ElevationBand) need two textures bound at once. Each entry maps the
- * material's shader-type string to the `material._imageSources` keys
- * that feed the primary `@binding(1)` slot and the optional secondary
- * `@binding(2)` slot.
+ * Multi-texture materials bind a primary and optional secondary texture. Each
+ * entry maps the material's shader-type string to the
+ * `material._imageSources` keys that feed the primary `@binding(1)` slot and
+ * the optional secondary `@binding(2)` slot.
  *
- * Single-texture materials return `{ primary: "image" }` — the
+ * Single-texture materials return `{ primary: "image" }`; the
  * secondary slot binds a placeholder at bind-group build time and the
  * shader's lack of a `@binding(2)` declaration leaves it unused.
  *
@@ -4161,24 +3899,22 @@ function getTextureUniformName(shaderType: string): {
   }
   if (shaderType.includes("Water")) {
     // Water needs both the wave-normal perturbation texture and the
-    // "where water is" specular mask. Pre-Batch-25 WebGPU only bound
-    // `specularMap` at @binding(1) but the shader read it as if it
-    // were the normal map — a subtle mislabel that produced chaotic
-    // wave behavior on ocean tiles.
+    // water/specular mask. Reversing these slots makes the normal sampler read
+    // the mask and destabilizes wave normals.
     return { primary: "normalMap", secondary: "specularMap" };
   }
   if (shaderType.includes("ElevBand")) {
-    // ElevationBand — DP-H22 (Batch 25). Primary is the heights lookup
-    // texture; secondary is the color ramp.
+    // Elevation-band materials use heights as primary and the
+    // color ramp as secondary.
     return { primary: "heights", secondary: "colors" };
   }
   return { primary: "image" };
 }
 
 /**
- * Creates or reuses a WebGPU texture bind group from a Material's loaded image.
- * Falls back to the context's 1×1 white default texture if the image hasn't
- * loaded yet. Replaces the old checkerboard placeholder approach (MAT-1 fix).
+ * Creates or reuses a WebGPU texture bind group from a
+ * Material's loaded image. Falls back to the context's 1×1
+ * white default texture if the image hasn't loaded yet.
  *
  * @param {object} context - WebGPU context with createTextureFromImage()
  * @param {GPUDevice} device - The GPU device
@@ -4188,11 +3924,8 @@ function getTextureUniformName(shaderType: string): {
  * @returns {boolean} true if a valid texture bind group exists
  * @private
  */
-// NEW-WEBGPU-DEPTHFAIL-MATERIAL (Batch 419) — field-key sets so the texture
-// bind-group helper can target EITHER the main material cache slots or the
-// depthFail twin's `df*` slots without forking a parallel copy. The main path
-// uses MAIN_MAT_TEX_KEYS (historical field names, byte-identical behavior); the
-// depthFail twin passes DF_MAT_TEX_KEYS.
+// Field-key sets let the texture helper target main or depth-fail cache slots
+// without duplicating the binding logic.
 const MAIN_MAT_TEX_KEYS = {
   bindGroup: "textureBindGroup",
   layout: "textureBindGroupLayout",
@@ -4244,7 +3977,7 @@ function ensureMaterialTextureBindGroup(
     return true;
   }
 
-  // DP-H21 — per-axis wrap mode from material fabric.
+  // Select per-axis wrap mode from material fabric.
   //
   // Material fabrics expose tiling via `material.uniforms.repeat`,
   // which may be:
@@ -4257,8 +3990,7 @@ function ensureMaterialTextureBindGroup(
   //   - a plain object `{ x: boolean, y: boolean }` — per-axis
   //     "should this axis tile?" flags. Used by some fabric dialects.
   //
-  // Both shapes are honored. When no hint exists we keep the historical
-  // `clamp-to-edge` default (safe for single-tile materials).
+  // Both shapes are accepted. Without a repeat hint, use `clamp-to-edge`.
   const repeat = material?.uniforms?.repeat;
   let wantsRepeatU = false;
   let wantsRepeatV = false;
@@ -4266,8 +3998,8 @@ function ensureMaterialTextureBindGroup(
     const rx = repeat.x;
     const ry = repeat.y;
     // Numeric shape: > 1 means tile. === 1 means clamp. < 1 is exotic
-    // (under-sampling); caller's shader handles it via fract so we
-    // treat sub-1 as "no tiling at sampler level" too.
+    // under-sampling; the shader handles it through fract, so sub-1 also means
+    // no tiling at the sampler level.
     if (typeof rx === "number") {
       wantsRepeatU = rx > 1;
     } else if (typeof rx === "boolean") {
@@ -4282,10 +4014,8 @@ function ensureMaterialTextureBindGroup(
   const addressModeU = wantsRepeatU ? "repeat" : "clamp-to-edge";
   const addressModeV = wantsRepeatV ? "repeat" : "clamp-to-edge";
 
-  // Rebuild the sampler when its address-mode configuration changes
-  // (material fabric swapped, or repeat uniform mutated). Cheap —
-  // samplers are lightweight and we only rebuild on the actual
-  // change path.
+  // Rebuild the sampler only when its address-mode configuration changes
+  // because samplers are otherwise immutable and reusable.
   if (
     !defined(cache[k.sampler]) ||
     cache[k.samplerAddressU] !== addressModeU ||
@@ -4349,9 +4079,8 @@ function ensureMaterialTextureBindGroup(
   }
   cache[k.primarySource] = primarySource;
 
-  // Build / rebuild slot 2 (secondary). Always bind SOMETHING so the
-  // bind group layout stays satisfied; when the material has no
-  // secondary texture (single-texture material) we bind the placeholder.
+  // Build or rebuild slot 2. Bind the placeholder when a single-texture
+  // material has no secondary view, keeping the layout satisfied.
   let secondaryView;
   if (defined(secondarySource) && defined(context.createTextureFromImage)) {
     const gpuTex2 = context.createTextureFromImage(
@@ -4385,9 +4114,8 @@ function ensureMaterialTextureBindGroup(
 }
 
 /**
- * NEW-WEBGPU-DEPTHFAIL-MATERIAL (Batch 419) — thin wrapper that builds the
- * depthFail twin's texture bind group into the `df*` cache slots, reusing
- * `ensureMaterialTextureBindGroup` with the DF field-key set.
+ * Builds the depth-fail twin's texture bind group in the `df*` cache slots by
+ * reusing `ensureMaterialTextureBindGroup` with the DF field-key set.
  * @private
  */
 function ensureDepthFailMaterialTextureBindGroup(
@@ -4429,16 +4157,11 @@ function createMaterialPipelineAndCache(
 ) {
   const topology = primitiveTopology ?? "triangle-list";
   const closedClosed = appearanceClosed === true;
-  // Log-depth epic Slice 5 — track the LOG_DEPTH define baked into the cached
-  // material pipeline so the master switch flip (or a frame that toggles
-  // frameState.useLogDepth) rebuilds the shader module + pipeline. Mirrors the
-  // logDepthChanged invalidation guard on the Phong/Basic path.
+  // Track the log-depth define baked into the material pipeline so a scene-state
+  // change rebuilds the shader module and pipeline.
   const logDepth = logDepthActive === true;
-  // Q14-HDR-TOGGLE-INVALIDATION — rebuild when the scene FB color format
-  // changes (HDR toggle bumps the generation counter). The pipeline below
-  // bakes `context.scenePipelineFormat` into its color target; a stale-format
-  // material pipeline fails attachment validation once HDR flips the scene FB
-  // to rgba16float. Inert while HDR never toggles (byte-identical).
+  // Rebuild when the scene-framebuffer format generation changes because the
+  // color target is pipeline state.
   const sceneFormatGen = context._scenePipelineFormatGeneration ?? 0;
   if (
     cache.shaderType === shaderInfo.type &&
@@ -4457,17 +4180,10 @@ function createMaterialPipelineAndCache(
   cache.logDepthEnabled = logDepth;
   cache.pipelineFormatGeneration = sceneFormatGen;
 
-  // Slice 5d Batch 154 — prepend the Forward+ clustered lighting chunk to
-  // Mat*Lit shaders so they can additively sample scene PointLights/Spots/
-  // Directionals beyond the single sun. The chunk's `@group(__CL_GROUP__)`
-  // token is substituted to wherever the effects BGL landed for this
-  // pipeline: group 3 when a texture group occupies group 2, else group 2.
-  //
-  // Gate on the shader actually CALLING `evalClusteredLights(` (not just
-  // being a Mat*Lit) so the chunk isn't prepended as dead code to shaders
-  // that haven't been wired yet OR to pipeline variants (e.g. pick) whose
-  // bind-group layout doesn't carry the effects BGL at the expected group.
-  // As each Mat*Lit shader gains the call site, it automatically opts in.
+  // Prepend clustered lighting only when the material shader calls
+  // `evalClusteredLights`. Resolve its group token to 3 for textured
+  // pipelines and 2 otherwise; call-site gating avoids incompatible bindings
+  // in non-consuming variants.
   let materialCode = shaderInfo.code;
   if (
     isMaterialLitShader(shaderInfo.type) &&
@@ -4480,11 +4196,8 @@ function createMaterialPipelineAndCache(
     );
     materialCode = `${clChunk}\n${materialCode}`;
   }
-  // Log-depth epic Slice 5 — OR in LOG_DEPTH for the Mat*/PBR material shaders
-  // when active. The preprocessor resolves the `//>>ifdef LOG_DEPTH` blocks
-  // (logDepth UB tail read + csm_vertexLogDepth varying + csm_updatePositionDepth
-  // clip-z clamp + csm_writeLogDepth frag_depth). With the master switch off this
-  // is 0 and the else-branch (no frag_depth, hyperbolic) is byte-identical.
+  // Material and PBR shaders preprocess their log-depth branches against scene
+  // state; zero defines selects hyperbolic depth.
   // Lit Mat shaders read the tail from the LIT UB (floats 80-83); Flat Mat and
   // PBR read from the FLAT/LIT UB tail respectively — both packed unconditionally.
   const shaderDefines = logDepth ? ShaderDefine.LOG_DEPTH : 0;
@@ -4494,23 +4207,9 @@ function createMaterialPipelineAndCache(
     label: `${shaderInfo.type} Material Shader`,
   });
 
-  // Camera BGL — group(0).
-  //
-  // Slice 5c-B Batch 124 — bug fix surfaced by the litmat polygon probe
-  // (probe-litmat-mrt). Pre-fix: `isLit ? VERTEX_FRAGMENT : VERTEX`.
-  // The Flat material shaders (e.g. PrimitiveMatColorFlat) read
-  // `camera.encodedCameraHigh` + `camera.encodedCameraLow` in fragment
-  // for the FEAT-GAP-09 aerial-perspective fog block at L99. With the
-  // pre-fix gate, Flat pipelines built camera BGL with VERTEX-only
-  // visibility and the shader's fragment read tripped "Entry point's
-  // stage (ShaderStage::Fragment) is not in the binding visibility in
-  // the layout (ShaderStage::Vertex)" the first time a Flat material
-  // primitive rendered in a scene with the LUT active. Default scenes
-  // had the LUT placeholder off so this stayed latent.
-  //
-  // Always VERTEX_FRAGMENT — the visibility flag is free at runtime
-  // and protects against any future shader (Lit or Flat) adding a
-  // fragment-side camera read.
+  // Camera data is visible to both stages because flat material
+  // fragments read encoded camera position for aerial fog. Uniform
+  // visibility avoids a shader-type allowlist.
   cache.cameraBindGroupLayout = makeBindGroupLayout(device, "Mat Camera BGL", [
     uniformBuffer(0, Stage.VERTEX_FRAGMENT),
   ]);
@@ -4528,8 +4227,7 @@ function createMaterialPipelineAndCache(
   ];
 
   if (shaderInfo.needsTexture) {
-    // Batch 25 — two texture slots (see the matching BGL in
-    // `createMaterialPipelineAndCache` ~line 720 for the rationale).
+    // Material textures use a sampler plus primary and secondary slots.
     cache.textureBindGroupLayout = makeBindGroupLayout(
       device,
       "Material Texture BGL",
@@ -4544,17 +4242,15 @@ function createMaterialPipelineAndCache(
     cache.textureBindGroupLayout = null;
   }
 
-  // Slice 2d — material + PBR pipelines gain the effects BGL as the
-  // last bind group so shaders that opt in to CSM receive (PBR simple/
-  // textured today; material Lit variants to follow) can declare
-  // `@group(N)` for effects at the trailing slot. Shaders that don't
+  // Material and PBR pipelines keep effects at the trailing bind group so
+  // consuming shaders share one layout. Shaders that do not
   // reference the effects bindings ignore the extra BG — WebGPU allows
   // unused bind groups in a pipeline layout.
   const matEffectsBGL = getEffectsBindGroupLayout(device);
   bindGroupLayouts.push(matEffectsBGL);
   cache.effectsBGL = matEffectsBGL;
 
-  // Batch 110 — color pipeline targets scene FB; use scenePipelineFormat.
+  // The color pipeline targets the scene framebuffer and uses its format.
   const canvasFormat =
     context.scenePipelineFormat || navigator.gpu.getPreferredCanvasFormat();
   cache.pipeline = device.createRenderPipeline({
@@ -4571,12 +4267,9 @@ function createMaterialPipelineAndCache(
     },
     primitive: {
       topology,
-      // Session 65 Batch 3 — cull back faces for closed convex shapes
-      // (matching `Appearance.getDefaultRenderState` `closed: true`
-      // branch in WebGL). Prevents back-face z-fighting that produces
-      // visible mesh gridlines on opaque ellipsoid/sphere/cylinder
-      // entities (the user-reported gridline bug). Non-closed
-      // appearances stay with `cullMode: "none"`.
+      // Closed non-line geometry culls back faces, matching the `closed: true`
+      // branch of `Appearance.getDefaultRenderState`; lines and non-closed
+      // geometry do not cull.
       cullMode: topology.startsWith("line")
         ? "none"
         : closedClosed
@@ -4589,13 +4282,8 @@ function createMaterialPipelineAndCache(
       depthWriteEnabled: !translucent,
       depthCompare: "less-equal",
     },
-    // Slice 5c-B Batch 132 — match scene FB MSAA. Pre-fix this pipeline
-    // defaulted to sampleCount=1 against the default scene FB MSAA=4
-    // → "Attachment state not compatible" fires the moment any
-    // MaterialAppearance primitive (Polygon, Wall, Corridor, etc.)
-    // renders in a default scene. Same family as the Batch 118
-    // EllipsoidPrimitive MSAA bug. Pulled from `context._msaaSamples`
-    // (defaulted by SceneFramebuffer to the active scene MSAA count).
+    // Material pipeline sample count must match the scene
+    // framebuffer's active MSAA count.
     multisample:
       (context._msaaSamples ?? 1) > 1
         ? { count: context._msaaSamples }
@@ -4606,41 +4294,17 @@ function createMaterialPipelineAndCache(
 }
 
 // =========================================================================
-// NEW-WEBGPU-DEPTHFAIL-MATERIAL (Batch 419) — depthFail twin material pipeline
+// Depth-fail material pipeline
 // =========================================================================
 
 /**
- * Builds (or rebuilds, when the cached signature changed) the depthFail twin
- * material pipeline + bind-group layouts in the `df*` sub-cache namespace.
- *
- * This is the MATERIAL mirror of the COLOR depthFail twin in
- * `createWebGPUCommands`: it reuses the SAME material shader the main path would
- * select for the depthFail material (so the occluded region shows the real
- * depthFail appearance — Color, Stripe, Grid, etc.), bound into a pipeline that
- * differs from the main material pipeline ONLY in its depth state and cull mode:
- *   - depthCompare: 'greater'      → shade only fragments BEHIND existing depth
- *   - depthWriteEnabled: false     → never overwrite depth (the highlight must
- *                                     not occlude later geometry)
- *   - cullMode: derived from the DEPTHFAIL appearance's `closed` / explicit
- *                                  `renderState.cull` — NOT hardcoded. WebGL's
- *                                  depthFail render state IS the depthFail
- *                                  appearance's own render state
- *                                  (`_depthFailAppearance.getRenderState()`,
- *                                  PrimitiveCommandHelpers.createRenderStates
- *                                  line 65) with only `depthTest.func` swapped to
- *                                  GREATER. So a `closed:true` depthFail
- *                                  appearance back-face culls (depthFail shows
- *                                  only where genuinely occluded — the un-occluded
- *                                  main pass survives), and a non-closed one uses
- *                                  cull-none (the back face shows through as the
- *                                  canonical x-ray look). Hardcoding 'none' made
- *                                  WebGPU ignore the depthFail appearance's cull
- *                                  and diverge from WebGL for `closed:true`.
- *
- * `dfCullMode` is the already-derived cull string ('back' | 'none') the caller
- * computed from the depthFail appearance (mirroring the main pipeline's
- * `closedAndCulled` derivation). Line topologies are forced to 'none' here (no
- * front/back faces).
+ * Builds the depth-fail material twin and its `df*` bind-group layouts. It uses
+ * the material shader selected for the depth-fail appearance, with a greater
+ * depth comparison and no depth writes. Cull mode comes from that appearance's
+ * closed and explicit-cull state; line topology always disables culling. This
+ * keeps genuinely occluded regions distinct from the surviving main pass.
+ * `PrimitiveCommandHelpers.createRenderStates` likewise uses the depth-fail
+ * appearance's own render state and changes only `depthTest.func` to `GREATER`.
  *
  * Returns `true` when the pipeline (re)built this call (so callers force a
  * vertex-buffer rebuild), `false` when the cached pipeline is still valid.
@@ -4661,9 +4325,8 @@ function createMaterialDepthFailPipeline(
   const topology = primitiveTopology ?? "triangle-list";
   const logDepth = logDepthActive === true;
   const cullMode = topology.startsWith("line") ? "none" : dfCullMode;
-  // Q14-HDR-TOGGLE-INVALIDATION — depthFail material twin also bakes the scene
-  // FB color format; rebuild on HDR toggle (generation bump). Byte-identical
-  // while HDR never toggles.
+  // The depth-fail twin bakes the scene-framebuffer format, so a
+  // generation change rebuilds it.
   const sceneFormatGen = context._scenePipelineFormatGeneration ?? 0;
   if (
     cache.dfShaderType === shaderInfo.type &&
@@ -4760,7 +4423,7 @@ function createMaterialDepthFailPipeline(
     },
     primitive: {
       topology,
-      // Cull derived from the DEPTHFAIL appearance (see docstring): 'back' for a
+      // Cull derived from the depth-fail appearance: 'back' for a
       // closed depthFail appearance (depthFail only where occluded → un-occluded
       // main pass survives), 'none' otherwise (back face shows through as x-ray).
       // Lines forced to 'none' (no front/back faces).
@@ -4769,8 +4432,7 @@ function createMaterialDepthFailPipeline(
     },
     depthStencil: {
       format: "depth24plus-stencil8",
-      // DP-H18 / NEW-WEBGPU-DEPTHFAIL-MATERIAL — shade only fragments BEHIND
-      // existing depth, and never overwrite it.
+      // Shade only fragments behind existing depth and never overwrite it.
       depthWriteEnabled: false,
       depthCompare: "greater",
     },
@@ -4888,9 +4550,7 @@ function createWebGPUMaterialCommands(
       shaderType: null,
       shaderModule: null,
       pipeline: null,
-      // Log-depth epic Slice 2b — kept in the shape for symmetry with the
-      // phong-path cache; the material path does not yet convert its Mat*Lit
-      // shaders (deferred), so it stays false here.
+      // Log-depth state baked into the material pipeline.
       logDepthEnabled: false,
       cameraBindGroupLayout: null,
       materialBindGroupLayout: null,
@@ -4906,8 +4566,7 @@ function createWebGPUMaterialCommands(
       vertexCounts: [],
       pickShaderModule: null,
       pickPipeline: null,
-      // C10-11-PICK-FLEET-LOG-DEPTH — pick-fleet log state baked into the pick
-      // pipeline; starts false (hyperbolic pick) until the fleet switch flips.
+      // Pick-log state baked into the pick pipeline.
       pickLogDepthEnabled: false,
       pickCameraBindGroupLayout: null,
       pickMaterialBindGroupLayout: null,
@@ -4915,12 +4574,12 @@ function createWebGPUMaterialCommands(
       pickCameraBindGroups: [],
       pickMaterialBuffers: [],
       pickMaterialBindGroups: [],
-      // NEW-WEBGPU-DEPTHFAIL-MATERIAL (Batch 419) — depthFail twin sub-cache.
-      // Mirrors the main material cache (own shader module, pipeline, material
+      // The depth-fail sub-cache mirrors the main material cache with its own
+      // shader module, pipeline, material
       // UB + bind group, per-geometry vertex/camera buffers) but the pipeline
       // is built with depthCompare 'greater' + depthWriteEnabled false +
-      // cullMode 'none'. Populated only when the primitive has a material-based
-      // depthFailAppearance; left null otherwise.
+      // cull mode from the depth-fail appearance. It is populated only for a
+      // material-based depth-fail appearance; null fields otherwise are intentional.
       dfShaderType: null,
       dfShaderModule: null,
       dfPipeline: null,
@@ -4948,17 +4607,15 @@ function createWebGPUMaterialCommands(
   }
   const cache = primitive._webgpuCache;
 
-  // NEW-POLYLINE-APPEARANCE-PRIMITIVE-WEBGPU (MATERIAL slice) — a polyline
-  // `Primitive` with `PolylineMaterialAppearance` reaches the material path
+  // `PolylineMaterialAppearance` reaches the material path
   // (PolylineMaterialAppearance has a `material`, so PrimitiveCommandHelpers
   // routes here, not to createWebGPUCommands). The geometry carries
-  // `expandAndWidth` + `prevPosition3DHigh`/`nextPosition3DHigh` — the same
-  // detection the COLOR slice uses. Route to a dedicated packer + per-material
-  // FS that does the screen-space width expansion and feeds v_st / v_width /
-  // v_polylineAngle to the material shader. Detected before selectMaterialShader
-  // because that helper inspects normal/st and would pick a surface material
-  // shader whose vertex layout drops the polyline attributes (collapsing the
-  // ribbon to 0px — the COLOR-slice symptom, material edition).
+  // `expandAndWidth` and previous/next positions. Route to a dedicated packer
+  // and per-material FS that does the screen-space width expansion and feeds
+  // v_st / v_width / v_polylineAngle to the material shader. Detected before
+  // selectMaterialShader because that helper inspects normal/st
+  // and would pick a surface material shader whose vertex layout
+  // drops the polyline attributes.
   const polyAttrs = geometries[0].attributes;
   const isPolylineMaterialGeometry =
     defined(polyAttrs.expandAndWidth) &&
@@ -4979,21 +4636,15 @@ function createWebGPUMaterialCommands(
     return;
   }
 
-  // DP-H19 — decompress every geometry's `compressedAttributes` back into
-  // `normal` / `st` before any downstream read. Doing this for all
-  // geometries up front (not just `firstGeom`) is important: the
-  // shader-variant-selection below inspects the first geometry's
-  // attribute presence, but later draw commands iterate the full set
-  // and must see the same shape. This helper is idempotent so it's
-  // cheap to call repeatedly (no double-decode on subsequent frames).
+  // Decode every geometry's `compressedAttributes` before downstream reads.
+  // Doing this for all geometries up front (not just `firstGeom`) is
+  // important: the shader-variant-selection below inspects the first
+  // geometry's attribute presence, but later draw commands iterate the full
+  // set and must see the same shape. The helper is idempotent.
   //
-  // C4-FLAT-MATAPPEARANCE-POLYGON-SOLID — pass the consuming appearance's
-  // `vertexFormat` as an authoritative attribute-presence hint. The compressed
-  // geometry loses its `_compressedAttributesMeta` (dropped when Primitive
-  // combines instances AND across the async worker), so without this hint the
-  // decoder's vertex-0 magnitude sniff silently drops `st` for flat/lit
-  // polygons whose first vertex ST packs ≤ 65535, collapsing procedural
-  // materials (Grid/Stripe/Checker/…) to a solid fill.
+  // Pass a matching appearance `vertexFormat` because compression metadata can
+  // be lost during combination and worker transfer; the hint prevents numeric
+  // inference from dropping packed texture coordinates.
   const vf = defined(appearance) ? appearance.vertexFormat : undefined;
   const attributeHint = defined(vf)
     ? {
@@ -5024,37 +4675,27 @@ function createWebGPUMaterialCommands(
   const vertexLayout = getMaterialVertexLayout(shaderInfo.type);
   const cameraBufferSize = isLit ? LIT_CAMERA_BYTES : FLAT_CAMERA_BYTES;
 
-  // Session 65 Batch 2 — topology-aware material pipeline. Outline
-  // geometries (PrimitiveType.LINES, etc.) need `line-list` instead of
-  // `triangle-list`. See `mapCesiumPrimitiveTypeToWebGPU` for the
-  // mapping. Without this, outlined materials in entity-emitted
-  // primitives (CZML Box outlines, ground-polylines styled as
-  // materials) rasterize garbage.
+  // Material pipeline topology follows geometry topology; outlines require line
+  // topology rather than triangle interpretation.
   const matPrimitiveTopology = mapCesiumPrimitiveTypeToWebGPU(
     firstGeom.primitiveType,
   );
 
-  // Log-depth epic Slice 5 — Mat*/PBR shaders now carry `//>>ifdef LOG_DEPTH`
-  // blocks. Activate the define whenever the master switch + per-frame flag are
-  // on; the logDepth UB tail is already packed by writeRTEUniformsLit (Mat*Lit/
-  // PBR) and writeRTEUniformsFlat (Mat*Flat). Inert when off (defines=0,
-  // byte-identical hyperbolic path).
+  // Material and PBR shaders select log depth from scene state; their camera
+  // writers already populate the matching tail.
   const logDepthActive = isWebGPULogDepthActive(context, frameState);
 
-  // EquirectangularPanorama cull-override (#13369): the material path
-  // (MaterialAppearance + a Material — e.g. a panorama's Image material)
-  // is what actually drives back-face culling for closed material
-  // primitives. A closed appearance can explicitly DISABLE culling via
-  // `renderState.cull.enabled: false` (WebGL honors this — the closed
-  // default `cull.enabled: true` loses to the user's `false` through
-  // `combine(existing, rs, true)` in `Appearance.getDefaultRenderState`).
+  // The EquirectangularPanorama cull override (#13369) applies on the
+  // material path. A closed appearance can explicitly disable culling through
+  // `renderState.cull.enabled: false`; the closed default loses to the user's
+  // `false` through `combine(existing, rs, true)` in
+  // `Appearance.getDefaultRenderState`.
   // A panorama is `closed: true` (sphere) viewed from inside, so it sets
-  // `cull.enabled: false` to keep its inner faces visible. We fold the
-  // override into the closed signal here so the pipeline's cullMode
-  // becomes `none` and the interior renders instead of being culled blank,
-  // matching WebGL. Closed volumes WITHOUT the override (Box/Sphere/
-  // Ellipsoid/Cylinder defaults) keep `cull.enabled: true` and still
-  // back-face cull.
+  // `cull.enabled: false` to keep its inner faces visible. Folding the override
+  // into the closed signal makes the pipeline's cull mode `none`, so the
+  // interior renders instead of being culled blank, matching WebGL. Closed
+  // volumes without the override (Box/Sphere/Ellipsoid/Cylinder defaults) keep
+  // `cull.enabled: true` and still back-face cull.
   const cullExplicitlyDisabled =
     appearance?.renderState?.cull?.enabled === false;
   const closedAndCulled =
@@ -5073,9 +4714,8 @@ function createWebGPUMaterialCommands(
     logDepthActive,
   );
 
-  // Bind real material texture (from Material._imageSources) or fall back to
-  // context.defaultTexture (1×1 white). This replaces the old checkerboard
-  // placeholder (MAT-1 fix). Called every command creation so async-loaded
+  // Bind a real material texture or the context's 1×1 white fallback. Check on
+  // every command creation so asynchronously loaded
   // textures are picked up as soon as they arrive.
   if (shaderInfo.needsTexture && defined(cache.textureBindGroupLayout)) {
     ensureMaterialTextureBindGroup(
@@ -5087,16 +4727,9 @@ function createWebGPUMaterialCommands(
     );
   }
 
-  // NEW-WEBGPU-DEPTHFAIL-MATERIAL (Batch 419) — material-based depthFailAppearance.
-  // The MATERIAL mirror of the COLOR depthFail twin in createWebGPUCommands:
-  // when the primitive has a `depthFailAppearance` whose appearance carries a
-  // Material (Entity polygon/box `depthFailMaterial`, MaterialAppearance,
-  // GroundPrimitive), build a twin material command per geometry — same RTE
-  // material shader/UB the main path uses, bound into a greater-compare /
-  // no-write / cull-none pipeline so the depthFail material shows where the
-  // primitive is occluded. The COLOR-appearance depthFail slice is handled in
-  // createWebGPUCommands (PerInstanceColor reaches THAT path); this branch is
-  // additive and only fires when a depthFail MATERIAL is present.
+  // A material-based depth-fail appearance gets one twin per geometry, using its
+  // selected shader and greater/no-write depth state. Per-instance-color depth
+  // fail remains handled by the non-material path.
   const depthFailAppearance = primitive._depthFailAppearance;
   const depthFailMaterial = primitive._depthFailMaterial;
   const hasDepthFailMaterial =
@@ -5107,12 +4740,12 @@ function createWebGPUMaterialCommands(
   let dfCameraBufferSize = FLAT_CAMERA_BYTES;
   if (hasDepthFailMaterial) {
     // The depthFail appearance picks its own flat/lit + material shader. It
-    // shares the geometry's normal/st presence with the main appearance, so the
-    // depthFail shader's vertex layout is built from the SAME attribute set —
-    // but we build a DEDICATED depthFail vertex buffer per geometry (the
-    // depthFail shader may be flat while the main is lit, or vice versa, giving
-    // a different stride; reusing the main VB across a stride mismatch would
-    // misread the layout — the safe faithful mirror is its own VB).
+    // shares the geometry's normal/st presence with the main appearance, so
+    // its vertex layout uses the same attributes but a dedicated buffer per
+    // geometry. The depthFail shader may be flat while the main is lit, or
+    // vice versa, giving a different stride; reusing the main VB
+    // across a stride mismatch would misread the layout — the safe
+    // faithful mirror is its own VB).
     const dfIsFlat = defined(depthFailAppearance.flat)
       ? depthFailAppearance.flat
       : false;
@@ -5127,15 +4760,16 @@ function createWebGPUMaterialCommands(
     dfVertexLayout = getMaterialVertexLayout(dfShaderInfo.type);
     dfCameraBufferSize = dfIsLit ? LIT_CAMERA_BYTES : FLAT_CAMERA_BYTES;
 
-    // Derive the depthFail cull mode from the DEPTHFAIL appearance — NOT the
-    // main appearance, NOT hardcoded. This mirrors WebGL exactly: the depthFail
-    // render state IS `_depthFailAppearance.getRenderState()` (with depthTest.func
-    // → GREATER), so its cull comes from the depthFail appearance's `closed`
-    // flag via Appearance.getDefaultRenderState. Same shape as the main material
-    // pipeline's `closedAndCulled`: a `closed:true` depthFail appearance back-face
-    // culls (depthFail shows only where genuinely occluded → the un-occluded main
-    // pass survives), an explicit `cull.enabled:false` forces 'none' (panorama-
-    // style interior), and a non-closed default is 'none' (x-ray back face).
+    // Derive the depth-fail cull mode from the depth-fail appearance rather
+    // than the main appearance or a hardcoded value. The depth-fail render
+    // state IS `_depthFailAppearance.getRenderState()` (with depthTest.func →
+    // GREATER), so its cull comes from the depthFail appearance's `closed` flag
+    // via Appearance.getDefaultRenderState. Same shape as the main material
+    // pipeline's `closedAndCulled`: a `closed:true` depthFail appearance
+    // back-face culls (depthFail shows only where genuinely occluded → the
+    // un-occluded main pass survives), an explicit `cull.enabled:false`
+    // forces 'none' (panorama-style interior), and a non-closed default is
+    // 'none' (x-ray back face).
     const dfCullExplicitlyDisabled =
       depthFailAppearance?.renderState?.cull?.enabled === false;
     const dfCullMode =
@@ -5158,8 +4792,8 @@ function createWebGPUMaterialCommands(
 
     // Bind the depthFail material texture (if its shader is textured) into the
     // df texture slot. Called every build so async-loaded textures are picked
-    // up; the helper keys on image identity (keeps a separate cache namespace
-    // is unnecessary — we pass the df sub-cache fields via a thin adapter).
+    // up; the helper keys on image identity. A thin adapter supplies the
+    // depth-fail cache fields without a separate helper implementation.
     if (dfShaderInfo.needsTexture && defined(cache.dfTextureBindGroupLayout)) {
       ensureDepthFailMaterialTextureBindGroup(
         context,
@@ -5224,18 +4858,15 @@ function createWebGPUMaterialCommands(
   const pickIds = primitive._pickIds;
   const hasPickIds =
     primitive._allowPicking && defined(pickIds) && pickIds.length > 0;
-  // C10-11-PICK-FLEET-LOG-DEPTH — the pick-fleet log switch is SEPARATE from the
-  // scene log switch and flips independently. createMaterialPipelineAndCache
-  // reports shaderChanged only on scene-log / shader / topology / format
-  // changes, so a bare pick-fleet flip must ALSO trigger the pick rebuild.
-  // Defaults FALSE → inert (pick module define=0, byte-identical hyperbolic).
+  // Pick-log state is independent of scene-log state, so a pick-only change must
+  // rebuild the pick pipeline even when the color pipeline is unchanged.
   const pickLogActive = isWebGPUPickLogDepthActive(context, frameState);
   const pickLogChanged = cache.pickLogDepthEnabled !== pickLogActive;
   if (hasPickIds && (shaderChanged || pickLogChanged)) {
     cache.pickLogDepthEnabled = pickLogActive;
     const pickCode = getMaterialPickShaderForType(shaderInfo.type);
-    // Compile with LOG_DEPTH when the pick-fleet switch is active so the
-    // //>>ifdef LOG_DEPTH blocks resolve; defines=0 → byte-identical hyperbolic.
+    // Compile with log depth only while the pick fleet uses it; zero defines
+    // selects hyperbolic depth.
     cache.pickShaderModule = WebGPUShaderModule.create({
       device,
       code: preprocessShaderSource(
@@ -5245,15 +4876,8 @@ function createWebGPUMaterialCommands(
       label: `${shaderInfo.type} MatPick${pickLogActive ? " [ld]" : ""}`,
     });
 
-    // Pick camera BGL — group(0).
-    //
-    // Slice 5c-B Batch 124 — promoted to VERTEX_FRAGMENT to match the
-    // color BGL fix above. Pick shaders today only read camera in
-    // vertex, but the alpha-mask discard path in some Mat pick shaders
-    // reads material in fragment, and any future migration that
-    // shares the color shader's camera struct (e.g. position-from-eye-
-    // space for selective masking) would trip the same Vertex-only
-    // bug. Visibility flag is free at runtime.
+    // Keep pick camera data visible to both stages so material variants
+    // share a compatible layout.
     cache.pickCameraBindGroupLayout = makeBindGroupLayout(
       device,
       "MatPick Camera BGL",
@@ -5267,14 +4891,13 @@ function createWebGPUMaterialCommands(
       [uniformBuffer(0, Stage.FRAGMENT)],
     );
 
-    // NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE — pick pipelines target the
-    // context's byte-object-ID format authority (matches the pick FBO),
-    // never the presentation/scene format.
+    // Pick pipelines target the context's byte-object-ID format so they
+    // match the pick framebuffer.
     const fmt =
       context.pickPipelineFormat ??
       (navigator.gpu.getPreferredCanvasFormat() as GPUTextureFormat);
     cache.pickPipeline = device.createRenderPipeline({
-      // C10-11-PICK-FLEET-LOG-DEPTH — [ld] suffix for the log variant.
+      // Append `[ld]` to the log-depth material-pick label.
       label: `${shaderInfo.type} MatPick Pipeline${pickLogActive ? " [ld]" : ""}`,
       layout: device.createPipelineLayout({
         bindGroupLayouts: [
@@ -5292,14 +4915,12 @@ function createWebGPUMaterialCommands(
         entryPoint: "fragmentMain",
         targets: [{ format: fmt }],
       },
-      // Material pick pipeline matches the visual render topology so
-      // outline-styled materials get pickable lines (Batch 2 fix).
+      // Material-pick topology matches visual topology so outlines remain pickable.
       primitive: { topology: matPrimitiveTopology, cullMode: "none" },
       depthStencil: {
         format: "depth24plus-stencil8",
-        // C10-11-PICK-FLEET-LOG-DEPTH — already unconditionally true (shared pick
-        // FBO depth); kept true. Off-path byte-identical (off module writes no
-        // @builtin(frag_depth), so the hardware hyperbolic z is written as before).
+        // The shared pick framebuffer keeps depth writes enabled. Without a
+        // fragment-depth output, hardware hyperbolic depth is unchanged.
         depthWriteEnabled: true,
         depthCompare: "less-equal",
       },
@@ -5443,14 +5064,14 @@ function createWebGPUMaterialCommands(
     if (shaderInfo.needsTexture && defined(cache.textureBindGroup)) {
       cmdBGs.push(cache.textureBindGroup);
     }
-    // Slice 2d — trailing effects slot matches the pipeline layout
+    // The trailing effects slot matches the pipeline layout
     // added in `createMaterialPipelineAndCache`. Starts on the
     // shared placeholder; `updateWebGPUMaterialCommandUniforms`
     // swaps in the active BG per frame when shadow / CSM is on.
     const matEffectsPlaceholder = getPlaceholderEffects(device);
     cmdBGs.push(matEffectsPlaceholder.bindGroup);
 
-    // C-R1 (Batch 36) — forward appearance.renderState for material path too.
+    // Forward appearance render state so dynamic encoder state applies.
     const cmd: PrimitiveDrawCommand = new WebGPUDrawCommand({
       pipeline: cache.pipeline,
       bindGroups: cmdBGs,
@@ -5467,10 +5088,8 @@ function createWebGPUMaterialCommands(
     });
     cmd._webgpuCameraBuffer = cache.cameraBuffers[i];
     cmd._webgpuShaderType = shaderInfo.type;
-    // Reference the shared material UBO + wrapper so per-frame updates can
-    // re-upload when the material is dirty. Previously the material UBO was
-    // only uploaded at command-creation time, so time-varying materials
-    // (animated water, flowing dash, glowing polyline) froze after frame 1.
+    // Reference the shared material buffer and wrapper so dirty, time-varying
+    // materials are re-uploaded each frame as needed.
     cmd._webgpuMaterialBuffer = cache.materialBuffer;
     cmd._webgpuMaterialUB = matUB;
     cmd._webgpuMaterialUploadState = cache.materialUploadState;
@@ -5479,16 +5098,10 @@ function createWebGPUMaterialCommands(
     configurePrimitiveShadowCastCommand(cmd, cache, (isLit ? 11 : 8) * 4);
     validCommands.push(cmd);
 
-    // NEW-WEBGPU-DEPTHFAIL-MATERIAL (Batch 419) — emit the depthFail twin
-    // command AFTER the main material command so the main pass writes depth
-    // first; the greater/no-write pipeline then shades the depthFail material
-    // only where the primitive is occluded. Its own RTE vertex buffer (the
-    // depthFail shader's flat/lit layout may differ from the main shader's),
-    // own camera UB, and own [camera, material, texture?, effects] bind groups
-    // built from the `df*` sub-cache. Tagged with the real `mat*` df shader type
-    // so the per-frame `updateWebGPUMaterialCommandUniforms` dispatch in
-    // PrimitiveCommandHelpers (st.startsWith("mat")) keeps its camera + material
-    // UBs current and refreshes the effects slot — no extra plumbing needed.
+    // Emit the depth-fail twin after the main material command. It owns the
+    // vertex, camera, and material resources required by its selected shader;
+    // its material shader tag lets the existing updater refresh
+    // uniforms and effects bindings.
     if (hasDepthFailMaterial && defined(cache.dfPipeline)) {
       const dfVertexData = buildMaterialVertexData(
         posHighValues,
@@ -5559,7 +5172,7 @@ function createWebGPUMaterialCommands(
       dfCmd._webgpuMaterialBuffer = cache.dfMaterialBuffer;
       dfCmd._webgpuMaterialUB = depthFailMaterial._uniformBuffer;
       dfCmd._webgpuMaterialUploadState = cache.dfMaterialUploadState;
-      // 376d-style flag — when the df shader is textured, its TEXTURE occupies
+      // When the depth-fail shader is textured, its texture occupies
       // the last bind-group slot (no effects group is consumed there), so the
       // effects-slot refresh must skip it (else it clobbers the texture).
       dfCmd._noEffectsSlot = cache.dfNeedsTexture === true;
@@ -5632,12 +5245,8 @@ function createWebGPUMaterialCommands(
           : undefined,
         pass,
         owner: primitive as unknown as WebGPUCommandOwner,
-        // C-R1-PRIMITIVE-DERIVED (Batch 98) — material-path pickCommand
-        // also forwards `appearance.renderState`. Same rationale as the
-        // shader-path pickCommand above (line 1498-ish): per-encoder
-        // dynamic state needs to flow even though pipeline-baked state
-        // (pick attachment format, depth-write on, no blend) lives in
-        // `cache.pickPipeline`.
+        // Material-pick commands forward render state for dynamic encoder state;
+        // pick format, depth writes, and blending remain pipeline-baked.
         renderState: primitive.appearance?.renderState,
       });
       pickCmd._webgpuCameraBuffer = cache.pickCameraBuffers[i];
@@ -5666,8 +5275,8 @@ function createWebGPUMaterialCommands(
 // 84 floats = 336 bytes for the lit/PBR camera UBO (mvpRTE+mvRTE+normalMatrix
 // +camHigh+camLow+lightDir+prevVP+inverseViewQuaternion+logDepth;
 // writeRTEUniformsLit writes through float 83). Sized for the larger of the two
-// layouts; flat/material shaders fit comfortably in the same scratch (flat now
-// writes through float 43 for its own logDepth tail). Log-depth epic Slice 5 —
+// layouts; flat/material shaders fit comfortably in the same scratch (flat
+// writes through float 43 for its own log-depth tail).
 // Mat*Lit/PBR read the LIT tail (floats 80-83), Mat*Flat read the FLAT tail
 // (floats 40-43); both inert until the LOG_DEPTH pipeline define is set.
 const scratchMaterialCameraData = new Float32Array(84);
@@ -5728,12 +5337,10 @@ function updateWebGPUMaterialCommandUniforms(
     );
   }
 
-  // Re-upload the material UBO if the Material's `_uniformBuffer` marked
-  // itself dirty since the last frame. MaterialUniformBuffer flips `isDirty`
-  // whenever a time-varying uniform (water clock, dash pattern, glow phase)
-  // gets recomputed in `Material.update()`. Previously the re-upload only
-  // happened at command-creation time \u2014 which only runs once per appearance
-  // change \u2014 so every time-varying material froze after frame 1.
+  // Re-upload the material UBO when `_uniformBuffer` is dirty.
+  // `Material.update()` recomputes time-varying uniforms such as water time,
+  // dash pattern, and glow phase after command creation; skipping this upload
+  // would freeze those materials at their initial values.
   const matUB = command._webgpuMaterialUB;
   const matBuffer = command._webgpuMaterialBuffer;
   if (defined(matUB) && defined(matBuffer)) {
@@ -5746,7 +5353,7 @@ function updateWebGPUMaterialCommandUniforms(
     );
   }
 
-  // Slice 2d — swap the effects bind group for this frame so shadow-
+  // Swap the effects bind group for this frame so shadow-
   // receive / CSM bindings reach lit material + PBR shaders instead of
   // the zero-filled placeholder the command was built with.
   _refreshPrimitiveEffectsSlot(command, frameState);
@@ -5772,10 +5379,7 @@ export {
   LIT_PREVIOUS_VIEW_PROJECTION_OFFSET,
   LIT_INVERSE_VIEW_QUATERNION_OFFSET,
   LIT_LOG_DEPTH_OFFSET,
-  // FEAT-GAP-09 (Batch 100) — exported so Advanced renderers (Voxel,
-  // GaussianSplat, PointCloud) can reuse the per-frame effects-BG
-  // resolver. Keeps the (shadow, csm, atmosphereLut) toggle hash +
-  // placeholder fallback logic centralized — no point in duplicating
-  // it once per Advanced shader renderer.
+  // Share the per-frame effects resolver with voxel, Gaussian-splat, and
+  // point-cloud renderers, centralizing toggle hashing and placeholder fallback.
   _getOrCreateSharedPrimitiveEffectsBG as getOrCreateSharedAdvancedEffectsBG,
 };

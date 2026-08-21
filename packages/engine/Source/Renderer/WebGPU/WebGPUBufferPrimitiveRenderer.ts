@@ -12,9 +12,9 @@
  * Shaders/WebGPU/Collections/Buffer{Polygon,Polyline,Point}Material.wgsl and
  * are preprocessed via the context's WebGPUShaderCache (`#import` resolution).
  *
- * Each collection caches its GPU resources on a `_webgpuCache` field. On dirty
- * we re-pack the entire dirty range CPU-side and re-upload the affected slice
- * via `writeBuffer` (no full reupload).
+ * Each collection caches its GPU resources on a `_webgpuCache`
+ * field. A dirty range is repacked on the CPU and uploaded through
+ * `writeBuffer` without a full reupload.
  *
  * @module WebGPUBufferPrimitiveRenderer
  */
@@ -48,18 +48,9 @@ import {
   Stage,
 } from "./WebGPUBindGroupLayoutHelpers.js";
 import { WebGPUShaderModuleCache } from "./WebGPUShaderModuleCache.js";
-// NEW-WEBGPU-BUFFERPOLYGON-WGSL-IMPORT (Batch 180) — the Buffer* material
-// WGSL uses bare `#import Name;` directives. The runtime preprocessor that
-// was supposed to resolve them (`context.shaderCache.preprocessOnly`) is
-// never wired — `context.shaderCache` is the WebGL `ShaderCache` (no
-// `preprocessOnly`), the `WebGPUShaderCache` is never instantiated, AND its
-// `WGSLShaderPreprocessor` only matches the quoted `// #import "path"` form,
-// not the bare `#import Name;` form — so the directives reached the WGSL
-// compiler verbatim and `#` failed as an invalid token. Resolve them
-// deterministically by inlining the chunk source from this map, matching the
-// JS-string-interpolation pattern every other WebGPU renderer uses (e.g.
-// GroundPrimitive's `${csm_depthClamp}`). All five chunks are leaf (no
-// nested `#import`), so a single in-place pass suffices.
+// Buffer material WGSL uses bare `#import Name;` directives, while the general
+// preprocessor recognizes quoted path imports. Resolve the bare names directly
+// from this leaf-chunk table before normal WGSL preprocessing.
 import CameraUniformsChunk from "../../Shaders/WebGPU/chunks/structs/CameraUniforms.js";
 import csm_translateRelativeToEyeChunk from "../../Shaders/WebGPU/chunks/functions/csm_translateRelativeToEye.js";
 import csm_decodeRGB8Chunk from "../../Shaders/WebGPU/chunks/functions/csm_decodeRGB8.js";
@@ -68,9 +59,8 @@ import csm_writeLogDepthChunk from "../../Shaders/WebGPU/chunks/functions/csm_wr
 import { preprocess } from "./WebGPUShaderPreprocessor.js";
 import { packCameraLogDepthLanes } from "./WebGPULogDepth.js";
 
-// NEW-BUFFER-LOG-DEPTH (Batch 263) — the Buffer* material shaders now join the
-// renderer-wide logarithmic-depth epic. They use the SAME canonical chunk
-// library as the five collection shaders + Model PBR:
+// Buffer material shaders use the canonical logarithmic-depth chunks shared by
+// the collection and model pipelines:
 //   vertex:   v_logDepth = csm_vertexLogDepth(clipPos, near);
 //             out.position = csm_updatePositionDepth(clipPos);
 //   fragment: out.depth = csm_writeLogDepth(v_logDepth, factor);  // @builtin(frag_depth)
@@ -79,15 +69,9 @@ import { packCameraLogDepthLanes } from "./WebGPULogDepth.js";
 // (encodedCameraPositionMCHigh.w / cameraPosition.w — see WebGPULogDepth.ts +
 // chunks/structs/CameraUniforms.wgsl), packed by `packCameraLogDepthLanes`.
 //
-// Previously these import names resolved to a 1-arg `csm_vertexLogDepth` + an
-// empty `csm_writeLogDepth` no-op, so the Buffer family ALWAYS wrote hyperbolic
-// NDC depth and never consulted `isWebGPULogDepthActive`. That stub comment was
-// actively wrong as of Batch 251: the WebGPU globe writes LOG depth now, so the
-// Buffer fill geometry sank behind terrain at far cameras whenever the master
-// switch was on. The `//>>else` branch of each shader keeps the historical
-// hyperbolic path so LOG_DEPTH-off is byte-identical. `csm_updatePositionDepth`
-// ships inside the `csm_vertexLogDepth` chunk; both chunks are leaf (no nested
-// `#import`).
+// The reserved camera padding lanes carry the near and factor values and remain
+// inert when the logarithmic-depth define is absent. `csm_updatePositionDepth`
+// is included by the vertex-depth chunk; both depth chunks are leaves.
 const BUFFER_WGSL_CHUNKS: Record<string, string> = {
   CameraUniforms: CameraUniformsChunk,
   csm_translateRelativeToEye: csm_translateRelativeToEyeChunk,
@@ -97,10 +81,8 @@ const BUFFER_WGSL_CHUNKS: Record<string, string> = {
 };
 const _warnedUnknownImports = new Set<string>();
 
-// C-R7-SHADER-MODULE-DEDUP (Batch 164) — single per-device cache shared
-// across all 3 BufferPrimitive renderers. Each per-device cache keys by
-// (sourceId, defines), so one map is enough for Point/Polyline/Polygon —
-// the source IDs are distinct.
+// All three buffer-primitive renderers share a per-device module cache keyed by
+// source identifier and active defines.
 const _bufferPrimitiveShaderCaches = new WeakMap<
   GPUDevice,
   WebGPUShaderModuleCache
@@ -162,19 +144,18 @@ export interface BufferPrimitiveCollection {
   // Flat interleaved [x,y,z,...] position store. DOUBLE (Float64Array) by
   // default; FLOAT (Float32Array) when the collection opts into low-precision
   // positions. For points, position index i maps to _positionView[i*3..i*3+2]
-  // (vertexOffset == index), so a dirty [offset,count) slice is contiguous —
-  // consumed directly by the WASM batch RTE encode (NEW-BUFFERCOLL-WASM-ENCODE-WIRE).
+  // (vertexOffset == index), so a dirty [offset,count) slice is contiguous and
+  // can be consumed directly by a batch relative-to-eye encoder.
   _positionView: Float64Array | Float32Array;
-  // PARITY-BUFFER-POSITION-INT-NORMALIZED — ComponentDatatype of `_positionView`.
+  // Component datatype of `_positionView`.
   // DOUBLE (default) / FLOAT store model-space positions directly; the integer
   // datatypes (BYTE/UNSIGNED_BYTE/SHORT/UNSIGNED_SHORT/INT/UNSIGNED_INT) hold a
   // compressed representation that the encode path treats as raw model-space
   // integers, or — when `_positionNormalized` — dequantizes to [-1,1] / [0,1].
   _positionDatatype?: number;
-  // PARITY-BUFFER-POSITION-INT-NORMALIZED — when true, integer position values
-  // are normalized: the full integer range maps to [-1,1] (signed) / [0,1]
-  // (unsigned), matching the WebGL vertex-attribute `normalize` flag. Only
-  // meaningful for integer position datatypes.
+  // When true, the full integer position range maps to [-1,1] for signed
+  // data or [0,1] (unsigned), matching the WebGL vertex-attribute `normalize`
+  // flag. Only meaningful for integer position datatypes.
   _positionNormalized?: boolean;
   // The narrow shape (`PolygonCache` / `PolylineCache` / `PointCache`)
   // lives in each per-collection module and is recovered there via a
@@ -197,14 +178,13 @@ export const CAMERA_UBO_FLOATS = CAMERA_UBO_BYTES / 4;
 export interface SharedCache {
   cameraUBO: GPUBuffer;
   cameraData: Float32Array;
-  // PARITY-BUFFER-2DCV — scene-mode/morph state consumed by
-  // `bufferModeNeedsRepack` to force a re-pack when the projection frame
+  // Scene-mode and morph state consumed by `bufferModeNeedsRepack` to force a
+  // repack when the projection frame
   // changes. Optional so cache-construction sites don't have to seed them
   // (undefined → first non-3D frame re-packs, which is the desired behavior).
   _lastPackMode?: number;
   _lastPackMorphTime?: number;
-  // NEW-BUFFERPOLYLINE-2D-EXTRUSION — per-cache storage for the projected
-  // (2D/CV) and morph-union bounding spheres computed by
+  // Per-cache storage for projected and morph-union bounding spheres computed by
   // `computeBufferModeBoundingVolume`. Per-cache (not module scratch) because
   // the draw command holds the reference across the frame — a shared scratch
   // would alias between collections updated in the same frame.
@@ -218,24 +198,25 @@ export const scratchColor = new Color();
 export const scratchCart = new Cartesian3();
 export const scratchEnc = { high: new Cartesian3(), low: new Cartesian3() };
 
-// ─── Integer / normalized position decode (PARITY-BUFFER-POSITION-INT-NORMALIZED) ─
+// Integer and normalized position decoding.
 
 /**
- * PARITY-BUFFER-POSITION-INT-NORMALIZED — when a Buffer* collection stores
- * integer positions with `positionNormalized:true`, the raw integer values map
+ * When a buffer collection stores integer positions with
+ * `positionNormalized:true`, the raw values map
  * onto [-1,1] (signed) / [0,1] (unsigned) exactly like the WebGL vertex
  * attribute `normalize` flag (see `renderBuffer*Collection.js`, which sets
  * `normalize: collection._positionNormalized` on the `position` attribute, and
  * the GLSL `#else` branch that feeds `czm_modelView * vec4(position,1)`). The
  * WebGPU renderers have no integer vertex-attribute path — they always RTE-encode
  * the model-space position into positionHigh/positionLow — so they must apply
- * the same normalization the WebGL GPU applies BEFORE the encode.
+ * the same normalization the WebGL GPU applies before the encode.
  *
- * Returns the per-component divisor (matching `Core/AttributeCompression.dequantize`
- * and the GL2 signed-normalize convention `max(c / (2^(b-1)-1), -1)`), or 0 when
- * no normalization applies (DOUBLE/FLOAT positions, or `positionNormalized`
- * false/unset). A 0 return keeps the non-normalized encode byte-identical — the
- * per-vertex guard `divisor !== 0` skips the decode entirely.
+ * Returns the per-component divisor (matching
+ * `Core/AttributeCompression.dequantize` and the GL2 signed-normalize
+ * convention `max(c / (2^(b-1)-1), -1)`), or 0 when no normalization applies
+ * to floating-point positions or when `positionNormalized` is false or unset.
+ * A zero return leaves the raw values unchanged because the per-vertex guard
+ * `divisor !== 0` skips the decode entirely.
  * @private
  */
 export function bufferPositionNormalizeDivisor(
@@ -264,11 +245,11 @@ export function bufferPositionNormalizeDivisor(
 }
 
 /**
- * PARITY-BUFFER-POSITION-INT-NORMALIZED — dequantize a raw integer position in
- * place to its normalized model-space value, matching
- * `Core/AttributeCompression.dequantize` (and the WebGL GPU normalize). `divisor`
- * must come from {@link bufferPositionNormalizeDivisor}; callers guard on
- * `divisor !== 0` so the non-normalized path stays branch-free at the encode.
+ * Dequantizes a raw integer position in place to its normalized model-space
+ * value, matching `Core/AttributeCompression.dequantize` (and the WebGL GPU
+ * normalize). `divisor` must come from {@link bufferPositionNormalizeDivisor};
+ * callers guard on `divisor !== 0` so the
+ * non-normalized path stays branch-free at the encode.
  * @private
  */
 export function normalizeBufferPositionInPlace(
@@ -280,20 +261,19 @@ export function normalizeBufferPositionInPlace(
   cart.z = Math.max(cart.z / divisor, -1.0);
 }
 
-// ─── Scene-mode position reprojection (PARITY-BUFFER-2DCV) ────────────────────
+// Scene-mode position reprojection.
 
 const scratchProjectModelPoint = new Cartesian3();
 
 /**
- * PARITY-BUFFER-2DCV — map an ECEF (world) position into the active scene
- * mode's render frame, mirroring the already-shipped WebGPUPolylineRenderer /
- * PolylineCollection 2D/CV convention.
+ * Maps an ECEF world position into the active scene mode's render frame,
+ * matching the WebGPU polyline-collection convention.
  *
- *   SCENE3D        — byte-identical: returns the raw ECEF position (a clone).
+ *   SCENE3D        — returns the raw ECEF position as a clone.
  *                    The mode-aware `mvpRelativeToEye` built from
  *                    `uniformState.view/projection` already folds in the
  *                    collection modelMatrix, so the un-transformed ECEF position
- *                    is what the 3D encode path has always fed.
+ *                    is what the 3D encode path requires.
  *   2D / CV / Morph — projects the modelMatrix-applied world position through
  *                    `SceneTransforms.computeActualEllipsoidPosition`, which
  *                    applies the `.zxy` swizzle for Columbus View, the
@@ -333,8 +313,8 @@ export function projectBufferPositionForMode(
 }
 
 /**
- * PARITY-BUFFER-2DCV — returns true when the cached positions must be fully
- * re-packed because the scene-mode projection frame changed since the last
+ * Returns true when cached positions must be fully repacked because the
+ * scene-mode projection frame changed since the last
  * pack. In non-3D modes the packed positions depend on `frameState.mode` and
  * (during MORPHING) `frameState.morphTime`; the Buffer* collections use
  * persistent GPU buffers with dirty-range tracking, so a mode/morph change with
@@ -343,8 +323,8 @@ export function projectBufferPositionForMode(
  *
  * SCENE3D is a no-op: it returns false and leaves `_lastPackMode` at 3 without
  * touching morphTime, so a pure-3D collection never triggers a forced re-pack
- * (byte-identical to the pre-reprojection behavior). The first non-3D frame
- * always re-packs because the tracked mode transitions away from SCENE3D.
+ * touching morphTime. The first non-3D frame repacks because the tracked mode
+ * transitions away from Scene 3D.
  * @private
  */
 export function bufferModeNeedsRepack(
@@ -382,23 +362,11 @@ interface BoundingSphereStatics {
 }
 
 /**
- * NEW-BUFFERPOLYLINE-2D-EXTRUSION — scene-mode-aware command bounding volume.
- *
- * PARITY-BUFFER-2DCV reprojects the packed vertex positions into the 2D/CV
- * render frame, but the draw command kept carrying the raw world-space (ECEF)
- * bounding sphere. In SCENE2D the orthographic culling volume lives in the
- * projected frame, so the ECEF sphere usually falls outside it and the whole
- * command is frustum-culled — the polyline/polygon "absence" in 2D was a
- * culling bug, not an extrusion bug (the screen-space quad extrusion already
- * produces correct clip positions there; verified via cull=false probe).
- *
- * Mirrors upstream `PrimitiveCommandHelpers.updateAndQueueCommands`:
- *   SCENE3D  — the collection's world-space sphere (same reference as before;
- *              byte-identical default path).
- *   2D / CV  — `BoundingSphere.projectTo2D(...)` (center in the (z,x,y)
- *              swizzled render frame, matching the repacked positions).
- *   MORPHING — union of the world-space and projected spheres, so the command
- *              survives culling throughout the morph blend.
+ * Returns a scene-mode-aware command bounding volume. This mirrors
+ * `PrimitiveCommandHelpers.updateAndQueueCommands`: Scene 3D uses the
+ * collection's ECEF sphere; 2D and Columbus View use
+ * `BoundingSphere.projectTo2D`; morphing unions both spheres so the command
+ * stays visible throughout the blend.
  *
  * Storage lives on the cache (`_modeBV` / `_modeBVMorph`) because the command
  * holds the returned reference across the frame.
@@ -509,11 +477,10 @@ export function packCameraUniforms(
     out[76 + i] = mvpIdx[i];
   }
 
-  // NEW-BUFFER-LOG-DEPTH (Batch 263) — fill the reserved `.w` pad lanes of the
-  // CameraUniforms struct with the per-frustum log-depth scalars (factor at
+  // Fill reserved camera padding lanes with per-frustum log-depth scalars (factor at
   // float 51, near at 55, far at 59). Safe to call unconditionally: it only
-  // writes previously-zero pads, so it is inert until a shader reads them and
-  // a pipeline activates the LOG_DEPTH define. Cast to the LogDepthUniformState
+  // writes otherwise-unused pads, so it is inert until a shader reads them and
+  // a pipeline activates the log-depth define. Cast to the LogDepthUniformState
   // shape the helper expects (currentFrustum + the precomputed reciprocal).
   packCameraLogDepthLanes(
     out,
@@ -538,24 +505,14 @@ const _processedShaderCache = new Map<string, string>();
  * variant only needs an alternate fragment entry that returns it instead of
  * `v_color`. This lets one shader module serve both color and pick pipelines.
  *
- * NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — at `defines=0` this resolves to a
- * single-field `@location(0)` struct whose output is byte-identical to the
- * historical bare `-> @location(0) vec4<f32>` return (a one-field struct at
- * `@location(0)` is the accepted output-identical form — see the Ellipsoid /
- * Voxel pick templates). When the pick-fleet gate is active the module compiles
- * this suffix with LOG_DEPTH and the struct ALSO carries the log-encoded
- * `@builtin(frag_depth)` — written from the SAME `v_logDepth` varying +
- * `camera.cameraPosition.w` factor field the color FS (`fragmentMain`) writes,
- * so a converted pick shares the fleet's log encoding in the shared pick FBO.
+ * Without the pick-log define, this resolves to a single color output at
+ * location zero. With the define, it also writes logarithmic fragment depth
+ * from the same varying and camera factor used by the color fragment shader.
  *
- * The LOG_DEPTH gate here is resolved against the PICK-fleet switch
- * (`preprocessPickShader`'s `pickDefines`), INDEPENDENT of the color path's
- * scene-switch `defines` — the pick FBO's single shared depth attachment is
- * all-or-nothing, so the whole fleet must be uniformly hyperbolic OR uniformly
- * log (INV-2). `preprocessShader` therefore resolves this suffix with LOG_DEPTH
- * OFF for the color module (whose `fragmentPickMain` is unused by the pick
- * pipeline when the gate is on — a separate pick module is built via
- * `preprocessPickShader`).
+ * Pick depth uses an independent switch because every producer sharing the pick
+ * framebuffer must use the same depth encoding. The color module preprocesses
+ * this unused suffix without pick-log depth; an enabled pick path builds a
+ * separate module through `preprocessPickShader`.
  */
 const PICK_FRAGMENT_SUFFIX = `
 
@@ -584,29 +541,19 @@ fn fragmentPickMain(input : VertexOutput) -> PickFragOutput {
 `;
 
 /**
- * NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — keySalt folded into the pick
- * module's cache key so it never aliases the COLOR module at the SAME
- * `(sourceId, defines)`. When BOTH the scene log switch and the pick-fleet
- * switch are on, the color module and the pick module are both compiled at
- * `defines = LOG_DEPTH` but from DIFFERENT generated source (the color module's
- * appended suffix is hyperbolic, the pick module's writes frag_depth), so the
- * numeric-only key would collide and the cache would serve the wrong module. A
- * non-zero keySalt is exactly the sanctioned mechanism for "generated WGSL
- * whose source text adds an identity dimension beyond (sourceId, defines)" —
- * see WebGPUShaderModuleCache.getOrCreate.
+ * Salt for pick-module cache keys. Color and pick modules can share a source
+ * identifier and define bits while containing different generated WGSL.
+ * The `keySalt` accepted by `WebGPUShaderModuleCache.getOrCreate` prevents the
+ * cache from returning the wrong module.
  */
 export const BUFFER_PICK_MODULE_KEYSALT = 0x5049434b; // 'PICK'
 
 /**
- * Resolve the bare `#import Name;` directives in a Buffer* shader source by
- * inlining the chunk source (NEW-WEBGPU-BUFFERPOLYGON-WGSL-IMPORT, Batch 180).
- * Shared by the color + pick preprocess paths. Replaces the previously-dead
- * `context.shaderCache.preprocessOnly` branch (that method never existed on the
- * WebGL `ShaderCache` that `context.shaderCache` actually returns, so `#import`
- * lines reached the WGSL compiler verbatim → "invalid character" on `#`).
- * De-dupes so a chunk imported by both the VS and FS isn't emitted twice
- * (redeclaration error); strips + warns-once on an unknown name so a stray
- * directive can never break compilation again.
+ * Resolves bare `#import Name;` directives by inlining entries from the buffer
+ * chunk table before general preprocessing. Shared by color and pick paths. A
+ * chunk imported by both stages is emitted once to avoid redeclaration;
+ * unknown names are stripped and reported once so
+ * directives cannot reach the WGSL compiler.
  */
 function resolveBufferImports(name: string, source: string): string {
   const emitted = new Set<string>();
@@ -640,8 +587,8 @@ export function preprocessShader(
   context: CesiumGraphicsContext,
   name: string,
   source: string,
-  // NEW-BUFFER-LOG-DEPTH (Batch 263) — active-defines bitmask. The Buffer*
-  // shaders now carry `//>>ifdef LOG_DEPTH` blocks; resolving them depends on
+  // Active shader defines are part of the processed-source cache key because
+  // conditional blocks depend on
   // the bitmask, so the processed-source cache keys by (name, defines).
   defines: number = 0,
 ): string {
@@ -655,20 +602,10 @@ export function preprocessShader(
   // API stability with other callers.
   void context;
   const imported = resolveBufferImports(name, source);
-  // NEW-BUFFER-LOG-DEPTH (Batch 263) — resolve the COLOR body's `//>>ifdef
-  // LOG_DEPTH` blocks against the scene-switch `defines`. `defines=0` emits the
-  // `//>>else` branch byte-identically to the historical hyperbolic path.
-  //
-  // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — the appended pick suffix is
-  // resolved SEPARATELY with LOG_DEPTH OFF (`0`), so the COLOR module's
-  // `fragmentPickMain` stays hyperbolic regardless of the scene switch. That
-  // keeps the pick pipeline byte-identical to today when the pick-fleet gate is
-  // off (the renderers reuse this color module for pick then); when the gate is
-  // on the renderers build a SEPARATE pick module via `preprocessPickShader`.
-  // Resolving the suffix here (rather than appending it raw) is REQUIRED now
-  // that it carries `//>>ifdef` directives — an unresolved directive reaching
-  // the module cache's internal `preprocess(source, defines)` would otherwise
-  // silently bind the pick FS to the SCENE switch.
+  // Preprocess the color body against scene defines. Resolve the appended pick
+  // suffix separately without pick-log depth so scene state cannot leak into
+  // the shared pick framebuffer. An enabled pick-log path builds its distinct
+  // module through `preprocessPickShader`.
   processed =
     preprocess(imported, defines) + preprocess(PICK_FRAGMENT_SUFFIX, 0);
   _processedShaderCache.set(cacheKey, processed);
@@ -676,15 +613,13 @@ export function preprocessShader(
 }
 
 /**
- * NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — pick-module source variant. The
- * WHOLE source (VertexOutput / vertexMain, so `v_logDepth` exists in scope) AND
- * the appended pick suffix are preprocessed against the PICK-fleet log state
- * (`pickDefines`), decoupled from the color path's scene-switch `defines`.
+ * Builds the pick-module source variant. The whole source, including the
+ * vertex output and appended suffix, is preprocessed against `pickDefines` so
+ * logarithmic pick depth is independent of color-pass scene state.
  *
- * Only used to build the pick pipeline's module when the pick-fleet gate is
- * active; when it is off the renderers reuse the color module returned by
- * `preprocessShader` (byte-identical to today). The extra `fragmentMain` this
- * module carries is unused by the pick pipeline (which references
+ * When pick-log depth is inactive, renderers reuse the color module returned by
+ * `preprocessShader`. The extra `fragmentMain` this module carries is unused by
+ * the pick pipeline, which references
  * `fragmentPickMain`) but must still compile — which it does in either state.
  */
 export function preprocessPickShader(
@@ -782,20 +717,19 @@ export function destroyPickIds(cache: { pickIds: CesiumPickIdRef[] }): void {
 
 // ─── Exports ─────────────────────────────────────────────────────────────────
 
-// Polygon path moved to its own module (Batch 155); re-exported here so
-// existing import sites continue to resolve through the parent module.
+// Re-export the focused polygon path so parent-module imports remain valid.
 export {
   updateWebGPUBufferPolygonCollection,
   destroyWebGPUBufferPolygonCollection,
 } from "./WebGPUBufferPolygonRenderer.js";
 
-// Polyline path moved to its own module (Batch 156); same re-export pattern.
+// Re-export the focused polyline path through the parent module.
 export {
   updateWebGPUBufferPolylineCollection,
   destroyWebGPUBufferPolylineCollection,
 } from "./WebGPUBufferPolylineRenderer.js";
 
-// Point path moved to its own module (Batch 157); same re-export pattern.
+// Re-export the focused point path through the parent module.
 export {
   updateWebGPUBufferPointCollection,
   destroyWebGPUBufferPointCollection,

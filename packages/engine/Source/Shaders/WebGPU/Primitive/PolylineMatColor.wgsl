@@ -1,18 +1,18 @@
 // PolylineMatColor.wgsl
 //
-// MATERIAL slice of NEW-POLYLINE-APPEARANCE-PRIMITIVE-WEBGPU. A polyline
-// `Primitive` with `PolylineMaterialAppearance` over a `PolylineGeometry`
-// using a plain `Color` material (the default). WGSL port of
+// A polyline `Primitive` with `PolylineMaterialAppearance` over a
+// `PolylineGeometry` using the default plain `Color` material. WGSL port of
 // Appearances/PolylineMaterialAppearanceVS.glsl + PolylineFS.glsl with the
 // `Color` material's `czm_getMaterial` (diffuse = color.rgb, alpha = color.a).
 //
-// The VS is shared (byte-for-byte) across every PolylineMat* variant; only
-// the FS + MaterialUniforms struct differ. It expands the 4 coincident quad
+// The vertex stage is shared byte-for-byte across every PolylineMat* variant;
+// only the fragment stage and MaterialUniforms struct differ. It expands the 4 coincident quad
 // vertices into a screen-space ribbon (csm_getPolylineWindowCoordinatesWithAngle)
 // and forwards v_st / v_width / v_polylineAngle to the material FS.
 //
-// Vertex layout (88 bytes, 22 floats — must match getPolylineMaterialVertexLayout
-// in WebGPUPrimitiveShaders.js AND the packer in WebGPUPrimitiveCommands.js):
+// The 88-byte (22-float) vertex layout is shared by these helpers:
+//   WebGPUPrimitiveShaders.js#getPolylineMaterialVertexLayout
+//   WebGPUPrimitiveCommands.js
 //   loc0 positionHigh     vec3 @0
 //   loc1 positionLow      vec3 @12
 //   loc2 prevPositionHigh vec3 @24
@@ -22,7 +22,7 @@
 //   loc6 expandAndWidth   vec2 @72
 //   loc7 st               vec2 @80
 //
-// RTE: positions subtracted from the encoded camera FIRST.
+// RTE positions subtract the encoded camera first.
 
 struct VertexInput {
     @location(0) positionHigh: vec3<f32>,
@@ -33,7 +33,7 @@ struct VertexInput {
     @location(5) nextPositionLow: vec3<f32>,
     @location(6) expandAndWidth: vec2<f32>,
     @location(7) st: vec2<f32>,
-    // 376b — projected 2D positions (blended with 3D by camera.morph.x).
+    // Projected 2D positions, blended with 3D by camera.morph.x.
     @location(8) position2DHigh: vec3<f32>,
     @location(9) position2DLow: vec3<f32>,
     @location(10) prevPosition2DHigh: vec3<f32>,
@@ -53,7 +53,7 @@ struct VertexOutput {
 }
 
 // CameraUniforms — byte-locked to writeRTEUniformsPolyline in
-// WebGPUPrimitiveCommands.js (identical to the COLOR slice's layout).
+// WebGPUPrimitiveCommands.js, using the color-material layout.
 struct CameraUniforms {
     mvpRelativeToEye: mat4x4<f32>,
     encodedCameraHigh: vec3<f32>,
@@ -67,9 +67,9 @@ struct CameraUniforms {
     pixelRatio: f32,
     currentFrustumNear: f32,
     _pad2: vec2<f32>,
-    // 376c — logDepth (near, far, factor, reserved) @ floats 92-95.
+    // Logarithmic-depth parameters (near, far, factor, reserved) at floats 92-95.
     logDepth: vec4<f32>,
-    // 376b — morph.x = morphTime (3D=1, 2D/CV=0) @ float 96.
+    // morph.x = morphTime (3D=1, 2D/CV=0) at float 96.
     morph: vec4<f32>,
 }
 
@@ -99,7 +99,7 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
     let width: f32 = abs(input.expandAndWidth.y) + 0.5;
     let usePrev: bool = input.expandAndWidth.y < 0.0;
 
-    // 376b — czm_computePosition: blend 3D↔2D positions by morphTime.
+    // Blend 3D and 2D positions by morphTime.
     let p: vec4<f32> = csm_computePolylinePosition(
         input.positionHigh, input.positionLow,
         input.position2DHigh, input.position2DLow,

@@ -11,10 +11,7 @@ packages/engine/Source/Renderer/WebGPU/WebGPUContext.ts	all-caps-fix-label  # 20
 packages/engine/Source/Renderer/WebGPU/WebGPUDepthOfFieldEffect.ts	campaign-row-id  # 2026-08-21 grammar widening
 packages/engine/Source/Renderer/WebGPU/WebGPUEffectsBindGroup.js	campaign-row-id  # 2026-08-21 grammar widening
 packages/engine/Source/Renderer/WebGPU/WebGPUGodRayEffect.ts	campaign-row-id  # 2026-08-21 grammar widening
-packages/engine/Source/Renderer/WebGPU/WebGPUGroundPolylineRenderer.js	campaign-row-id  # 2026-08-21 grammar widening
-packages/engine/Source/Renderer/WebGPU/WebGPUGroundPrimitiveRenderer.js	campaign-row-id  # 2026-08-21 grammar widening
 packages/engine/Source/Renderer/WebGPU/WebGPUModelFeatureId.js	all-caps-fix-label  # 2026-08-21 grammar widening
-packages/engine/Source/Renderer/WebGPU/WebGPUModelInstancing.js	all-caps-fix-label  # 2026-08-21 grammar widening
 packages/engine/Source/Renderer/WebGPU/WebGPUModelMetadata.js	all-caps-fix-label  # 2026-08-21 grammar widening
 packages/engine/Source/Renderer/WebGPU/WebGPUModelPipelineCache.ts	all-caps-fix-label  # 2026-08-21 grammar widening
 packages/engine/Source/Renderer/WebGPU/WebGPUModelTopology.ts	all-caps-fix-label  # 2026-08-21 grammar widening
@@ -51,5 +48,3 @@ packages/engine/Source/Shaders/WebGPU/PostProcess/SSGIComposite.wgsl	campaign-ro
 packages/engine/Source/Shaders/WebGPU/PostProcess/SSGIGenerate.wgsl	campaign-row-id  # 2026-08-21 grammar widening
 packages/engine/Source/Shaders/WebGPU/PostProcess/Tonemapping_f16.wgsl	campaign-row-id  # 2026-08-21 grammar widening
 packages/engine/Source/Shaders/WebGPU/PostProcess/Tonemapping.wgsl	campaign-row-id  # 2026-08-21 grammar widening
-packages/engine/Source/Shaders/WebGPU/Primitive/PrimitivePBRSimple.wgsl	all-caps-fix-label  # 2026-08-21 grammar widening
-packages/engine/Source/Shaders/WebGPU/Primitive/PrimitivePBRTextured.wgsl	all-caps-fix-label  # 2026-08-21 grammar widening

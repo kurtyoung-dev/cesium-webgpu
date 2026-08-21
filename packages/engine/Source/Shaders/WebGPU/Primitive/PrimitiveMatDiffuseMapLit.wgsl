@@ -1,19 +1,19 @@
 // PrimitiveMatDiffuseMapLit.wgsl
 // Diffuse map material + Blinn-Phong lighting — the swizzled texture is the lit
-// diffuse BASE color (unlike EmissionMap, where it is additive emission).
+// diffuse base color, unlike EmissionMap's additive emission.
 // Uses RTE (Relative-To-Eye) for 64-bit precision at planetary scale.
 // Vertex: posHigh(3) + posLow(3) + normal(3) + st(2) = 11 floats = 44 bytes
 // Matches CesiumJS Material.DiffuseMapType: image, channels, repeat.
 //
-// C2-5 (Batch 374): dedicated shader so the MaterialUniforms struct matches the
-// DiffuseMap fabric { channels:vec3, repeat:vec2 } — DiffuseMap previously shared
-// the Image shader ({ repeat, color }), silently corrupting the UBO read.
+// This shader is separate from PrimitiveMatImageLit because its MaterialUniforms
+// must match the DiffuseMap fabric { channels:vec3, repeat:vec2 }; Image uses
+// { repeat:vec2, color:vec4 }, which would misinterpret the uniform buffer.
 //
-// CSM Slice 2d — receives cascaded shadows through the primitive
-// effects bind group at `@group(3)` (texture group occupies @group(2)).
+// Receives cascaded shadows through the primitive effects bind group at
+// `@group(3)`; the texture group occupies `@group(2)`.
 // Ambient stays unshadowed; only direct (diffuse + spec) is modulated.
 //
-// Batch 167 - B.12 chunk usage.
+// The chunk marker supplies point-light cube-shadow sampling.
 // @chunk csm_samplePointShadow
 
 struct VertexInput {
@@ -47,7 +47,7 @@ struct CameraUniforms {
     previousViewProjection: mat4x4<f32>,
     inverseViewQuaternion: vec4<f32>,
     //>>ifdef LOG_DEPTH
-    // ─── Renderer-wide log depth (Approach A) ───
+    // Renderer-wide log-depth parameters:
     //   x = frustum near, y = frustum far,
     //   z = oneOverLog2FarDepthFromNearPlusOne (the log-depth factor),
     //   w = reserved. Packed by WebGPUPrimitiveCommands.writeRTEUniformsLit
@@ -70,7 +70,7 @@ struct MaterialUniforms {
 @group(2) @binding(0) var textureSampler: sampler;
 @group(2) @binding(1) var diffuseTexture: texture_2d<f32>;
 
-// ─── Effects bind group (shadow receive + CSM) — @group(3) ───
+// Effects bind group for shadow receiving and CSM at @group(3).
 struct EffectsUniforms {
     shadowMatrix: mat4x4<f32>,
     shadowMapSize: vec2<f32>,
@@ -84,7 +84,8 @@ struct EffectsUniforms {
     clipPlaneEqHW: array<vec4<f32>, 8>,
     atmosphereLutControl: vec4<f32>,
     csmControl: vec4<f32>,
-    // Batch 167 - extends struct through pointLightPositionRTE for B.12.
+    // Declared through `pointLightPositionRTE` so cube-shadow controls retain
+    // their shared effects-buffer offsets.
     edgeControl: vec4<f32>,
     edgeViewport: vec4<f32>,
     pointLightControl: vec4<f32>,
@@ -110,9 +111,9 @@ struct CSMParams {
 @group(3) @binding(17) var pointLightCubeDepth: texture_depth_cube;
 
 //>>ifdef LOG_DEPTH
-// Renderer-wide log depth (Approach A). These mirror the canonical definitions
-// in PrimitivePhongColor.wgsl / Shaders/WebGPU/chunks/functions/csm_*LogDepth —
-// keep them byte-compatible. near/far/factor come from camera.logDepth.
+// Renderer-wide log-depth helpers mirror the canonical definitions in
+// PrimitivePhongColor.wgsl and `chunks/functions/csm_*LogDepth`; they must
+// remain byte-compatible. near/far/factor come from camera.logDepth.
 fn csm_vertexLogDepth(clipPosition: vec4<f32>, near: f32) -> f32 {
     return (clipPosition.w - near) + 1.0;
 }
@@ -218,7 +219,7 @@ fn sampleCascadeShadow(
     return s0;
 }
 
-// Batch 167 - B.12 chunk-based point-light receive.
+// Point-light cube-shadow sampling through the shared chunk.
 fn computeShadowFactorPointLight(fragRTE: vec3<f32>) -> f32 {
     if (effects.shadowDarkness >= 1.0) { return 1.0; }
     let visibility = csm_samplePointShadow(
@@ -264,8 +265,8 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
     return output;
 }
 
-// Slice 5c-B Batch 121 — G-buffer MRT output struct. Slot 0 = lit color,
-// slot 1 = eye-space normal + roughness.
+// G-buffer output: slot 0 stores lit color; slot 1 stores the eye-space
+// normal and roughness.
 struct FragOutput {
     @location(0) color: vec4<f32>,
     @location(1) normalRoughness: vec4<f32>,
@@ -288,8 +289,8 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
     let NdotH = max(dot(N, H), 0.0);
     let specular = pow(NdotH, 64.0);
 
-    // DiffuseMap: the swizzled texture (sampled at fract(repeat*st) per the GLSL)
-    // IS the lit diffuse base color — unlike EmissionMap, it is NOT additive.
+    // DiffuseMap's swizzled texture, sampled at fract(repeat*st) as in GLSL,
+    // is the lit diffuse base color; EmissionMap instead adds it after lighting.
     let uv = fract(material.repeat * input.texCoord);
     let texColor = textureSample(diffuseTexture, textureSampler, uv);
     let dx = swizzleChannel(texColor, material.channels.x);
@@ -297,15 +298,15 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
     let dz = swizzleChannel(texColor, material.channels.z);
     let baseColor = vec3<f32>(dx, dy, dz);
 
-    // Lit Mat convention (ambient 0.5 + fixed eye-space diffuse), matching the
-    // other lit Mat shaders (NEW-MATAPPEARANCE-DIFFUSE-PARITY).
+    // Use the same ambient 0.5 and fixed eye-space diffuse convention as the
+    // other lit material shaders.
     let ambient = 0.5;
     let ambientTerm = baseColor * ambient;
     let diffuse = 0.5 * (max(dot(N, vec3<f32>(0.0, 0.0, 1.0)), 0.0) + max(dot(N, vec3<f32>(0.0, 1.0, 0.0)), 0.0));
     var directTerm = baseColor * diffuse;
     var spec = vec3<f32>(specular * 0.3);
 
-    // Batch 167 - point-light cube shadows take precedence over CSM.
+    // Point-light cube shadows take precedence over the cascaded shadow map.
     if (effects.pointLightControl.x > 0.5) {
         let shadowFactor = computeShadowFactorPointLight(input.eyePosition);
         directTerm = directTerm * shadowFactor;
@@ -319,7 +320,7 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
         spec = spec * shadowFactor;
     }
 
-    // Slice 5d Batch 155 — additive Forward+ clustered lighting.
+    // Additive Forward+ clustered lighting.
     let clusteredContrib = evalClusteredLights(
         input.viewPosition, N, V,
         vec3<f32>(0.04), 0.5, baseColor,

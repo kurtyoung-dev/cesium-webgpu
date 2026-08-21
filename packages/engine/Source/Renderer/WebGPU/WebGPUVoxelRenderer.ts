@@ -13,21 +13,17 @@ import EncodedCartesian3 from "../../Core/EncodedCartesian3.js";
 import Matrix4 from "../../Core/Matrix4.js";
 import Matrix3 from "../../Core/Matrix3.js";
 import Cartesian3 from "../../Core/Cartesian3.js";
-// PARITY-VOXEL-SHAPE-PARITY (increment 2) — shape/OBB scene-level transform
-// helpers. Run BEFORE the backend branch (Scene Logic Extractor pattern) so the
-// VoxelPrimitive's shape OBB is current on the WebGPU path (the WebGPU feature
-// renderer returns from VoxelPrimitive.update BEFORE the WebGL body that
-// normally refreshes it).
+// Refresh the shape and OBB transforms before the backend branch so they are
+// current when the WebGPU feature renderer returns before the WebGL update body.
 import {
   checkTransformAndBounds,
   updateShapeAndTransforms,
 } from "../../Scene/VoxelPrimitiveHelpers.js";
-// NEW-VOXEL-ELLIPSOID-INTERSECT / NEW-VOXEL-CYLINDER-SHAPEUV — shape-typed
-// real-intersection selection (BOX keeps intersectAABB; ELLIPSOID takes the
-// shell quadratics; CYLINDER the bounded-cylinder quadratic + height slab).
+// Select the intersection for each shape: boxes use the AABB, ellipsoids use
+// shell quadratics, and cylinders use a bounded quadratic plus a height slab.
 import VoxelShapeType from "../../Scene/VoxelShapeType.js";
-// C-R9-VOXEL-CELL-PICK-TAIL — the root SpatialNode built for Scene.pickVoxel's
-// VoxelCell construction (WebGPU path has no CPU VoxelTraversal).
+// The WebGPU path has no CPU VoxelTraversal, so Scene.pickVoxel constructs its
+// VoxelCell from this root SpatialNode.
 import SpatialNode from "../../Scene/SpatialNode.js";
 import Pass from "../Pass.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
@@ -54,14 +50,14 @@ import {
   getPlaceholderEffects,
 } from "./WebGPUEffectsBindGroup.js";
 import { getOrCreateSharedAdvancedEffectsBG } from "./WebGPUPrimitiveCommands.js";
-// Slice 5c-B Phase 1 (Batch 112) — scene-FB target helper.
+// Builds color targets that match the scene framebuffer.
 import { makeSceneFBTargets } from "./WebGPUSceneFBTargetHelpers.js";
 import type {
   WebGPURenderPipelineCache,
   WebGPURenderPipelineDescriptor,
 } from "./WebGPURenderPipelineCache.js";
-// PARITY-VOXEL-MEGATEXTURE-UPLOAD (increment 1) — real root-tile data upload
-// that replaces the placeholder gradient when a voxel provider is present.
+// Uploads real root-tile data to replace the placeholder gradient when a voxel
+// provider is present.
 import {
   createVoxelDataUploadState,
   destroyVoxelDataUploadState,
@@ -83,10 +79,10 @@ import {
   type VoxelAsyncFailureState,
   type VoxelResourceLifecycle,
 } from "./WebGPUVoxelResourceLifecycle.js";
-// VOXEL-USER-CUSTOMSHADER — per-primitive WGSL codegen for a USER-supplied
-// native-WGSL voxel CustomShader (the voxel sibling of the model path's
-// CustomShaderWGSLPipelineStage). GLSL-only voxel customShaders keep the
-// warn + default-gray behavior.
+// Generates per-primitive WGSL for a user-supplied native-WGSL voxel
+// CustomShader (the voxel sibling of the model path's
+// CustomShaderWGSLPipelineStage). GLSL-only voxel customShaders keep the warn +
+// default-gray behavior.
 import {
   generateVoxelUserShaderChunk,
   voxelUserShaderHasUniforms,
@@ -98,7 +94,6 @@ import oneTimeWarning from "../../Core/oneTimeWarning.js";
 
 // Per-device shader module cache so multiple VoxelPrimitives sharing the
 // same GPUDevice reuse a single compiled `GPUShaderModule`.
-// (C-R7-SHADER-MODULE-DEDUP, Batch 72.)
 const _voxelShaderModuleCaches = new WeakMap<
   GPUDevice,
   WebGPUShaderModuleCache
@@ -132,9 +127,9 @@ interface VoxelCache {
   command: CesiumAnyDrawCommand | null;
   pickCommand: CesiumAnyDrawCommand | null;
   initialized: boolean;
-  // C-R7-RENDERER-MIGRATION (Batch 72) — color + pick pipelines arrive
-  // asynchronously from `WebGPURenderPipelineCache.getPipeline()`. Track
-  // whether the request is in flight so we don't re-issue it every frame.
+  // Color and pick pipelines resolve asynchronously from
+  // `WebGPURenderPipelineCache.getPipeline()`. Track
+  // whether the request is in flight to avoid reissuing it every frame.
   pipelineRequestPending: boolean;
   pipelineRequestSerial: number;
   pipelineFailure: VoxelAsyncFailureState;
@@ -142,53 +137,51 @@ interface VoxelCache {
   colorDescriptor: WebGPURenderPipelineDescriptor | null;
   pickDescriptor: WebGPURenderPipelineDescriptor | null;
 
-  // Batch 173 - B.10 NEW-ADVANCED-MOTION-VECTORS (Voxel). No prev VB
-  // needed (cube geometry is static); only the modelMatrix in the UBO
-  // suffices for screen-space velocity emission. Pipeline reuses the
-  // color BGL + pipeline layout — same uniform binding, just a
-  // different pair of entry points.
+  // Cube geometry is static, so velocity needs no previous vertex buffer; only
+  // the modelMatrix in the UBO suffices for screen-space velocity emission.
+  // Pipeline reuses the color BGL + pipeline layout — same uniform binding,
+  // just a different pair of entry points.
   velocityPipeline: GPURenderPipeline | null;
   velocityDescriptor: WebGPURenderPipelineDescriptor | null;
   velocityPipelineRequestPending: boolean;
   velocityPipelineRequestSerial: number;
   velocityPipelineFailure: VoxelAsyncFailureState;
 
-  // PARITY-VOXEL-MEGATEXTURE-UPLOAD (increment 1) — one-time async state
-  // machine that requests the ROOT voxel tile and uploads its real property
-  // data into a 3D texture, replacing the placeholder gradient. Null until the
-  // first frame; when `phase === 'done'` the bind group is rebuilt to point at
-  // `dataUpload.view`. Stays untouched (placeholder retained) when no provider
-  // is present — the off-gate byte-identical case.
+  // This one-time asynchronous state machine requests the root voxel tile and
+  // uploads its real property data into a 3D texture, replacing the placeholder
+  // gradient. It is null until the first frame; when `phase === 'done'` the
+  // bind group is rebuilt to point at `dataUpload.view`. Without a provider,
+  // the state stays untouched and the placeholder remains bound.
   dataUpload: VoxelDataUploadState | null;
   // True once the bind group has been re-pointed at the uploaded real-data
-  // texture, so we only rebuild it once.
+  // texture, so the bind group is rebuilt only once.
   usingRealData: boolean;
   // Retained so the real-data bind group can be rebuilt (same layout, new
   // texture view at binding 1) once the root tile finishes uploading.
   bindGroupLayout: GPUBindGroupLayout | null;
 
-  // PARITY-VOXEL-COLOR-PARITY — retained so the COLOR pipeline can be rebuilt
+  // Retained so the color pipeline can be rebuilt
   // with the VOXEL_CUSTOM_SHADER_COLOR define once the real root tile uploads
   // (the placeholder path stays byte-identical at defines=0). The pipeline
   // layout is the same for the placeholder + real-data color module (same
-  // BGLs), so we reuse it; only the fragment module source (preprocessed WGSL)
+  // BGLs), so it is reused; only the fragment module source (preprocessed WGSL)
   // differs. `pipelineLayout` is captured at init; `colorModuleCustomShader`
   // is the lazily-built defines=VOXEL_CUSTOM_SHADER_COLOR module.
   pipelineLayout: GPUPipelineLayout | null;
   colorModuleCustomShader: GPUShaderModule | null;
 
-  // VOXEL-USER-CUSTOMSHADER — user native-WGSL customShader slots. The
-  // generated chunk is cached per customShader OBJECT identity (userShaderRef)
+  // Native-WGSL customShader state. The generated chunk is cached per
+  // customShader object identity (`userShaderRef`)
   // so the per-frame resolve is a pointer compare; swapping / clearing the
-  // primitive's customShader mid-session invalidates it. `userShaderInfo` is
+  // primitive's customShader at runtime invalidates it. `userShaderInfo` is
   // null for the default shader, GLSL-only shaders (warn + default), and
-  // uniform-carrying WGSL shaders (warn + default — uniforms are a documented
-  // follow-up).
+  // uniform-carrying WGSL shaders, which warn and use the default because the
+  // voxel pipeline does not bind their resources.
   userShaderRef: unknown;
   userShaderInfo: VoxelUserShaderInfo | null;
 
-  // C-R9-VOXEL-CELL-PICK — dedicated per-cell pick pipeline + command for
-  // the `passes.pickVoxel` pass. SEPARATE from `pickPipeline`/`pickCommand`
+  // Dedicated per-cell pick pipeline and command for the `passes.pickVoxel`
+  // pass. It stays separate from `pickPipeline`/`pickCommand`
   // (the object-pick path emitting u.pickColor) so regular `scene.pick`
   // stays byte-identical. The pipeline is only resolved on the real-data
   // path (`usingRealData`) — the placeholder path has no cell convention to
@@ -1418,26 +1411,25 @@ fn fragmentVelocityMain(input: VelocityVertexOutput) -> @location(0) vec2<f32> {
 }
 `;
 
-// PARITY-VOXEL-COLOR-PARITY — distinct pipeline-cache name for the color
-// pipeline once it's rebuilt with the VOXEL_CUSTOM_SHADER_COLOR define. The
-// central pipeline cache keys on `descriptor.name`, so this must differ from
-// the placeholder "Voxel color pipeline" name to avoid a cache collision.
+// Use a distinct pipeline-cache name for the color pipeline rebuilt with the
+// VOXEL_CUSTOM_SHADER_COLOR define. The central pipeline cache keys on
+// `descriptor.name`, so this must differ from the placeholder "Voxel color
+// pipeline" name to avoid a cache collision.
 const VOXEL_COLOR_PARITY_PIPELINE_NAME = "Voxel color pipeline (customShader)";
 
-// VOXEL-USER-CUSTOMSHADER — pipeline-cache name for a USER native-WGSL
-// customShader color pipeline. Carries the generated chunk's hash so distinct
-// user shader bodies get distinct pipeline-cache entries (the central cache
-// keys on `descriptor.name`) while two primitives sharing the same shader
-// share one pipeline.
+// A native-WGSL customShader color pipeline includes the generated chunk's hash
+// in its cache name so distinct user shader bodies get distinct pipeline-cache
+// entries (the central cache keys on `descriptor.name`) while two primitives
+// sharing the same shader share one pipeline.
 function voxelUserShaderPipelineName(info: VoxelUserShaderInfo): string {
   return `Voxel color pipeline (userCustomShader#${info.hash.toString(16)})`;
 }
 
-// NEW-VOXEL-PICK-OCTREE-COMPOSE — per-cell pick pipeline names. The base name
-// must match the init-time descriptor literal; the user variant carries the
-// generated chunk's hash (same discriminator scheme as the color pipeline) so
-// the pick winner gate is rebuilt from the user module when a native-WGSL
-// customShader is active, and reverts when it is cleared.
+// The per-cell pick base name must match the initialization descriptor literal.
+// A user variant carries the generated chunk's hash (same discriminator scheme
+// as the color pipeline) so the pick winner gate is rebuilt from the user
+// module when a native-WGSL customShader is active, and reverts when it is
+// cleared.
 const VOXEL_PICKVOXEL_PIPELINE_NAME = "Voxel pickVoxel pipeline";
 
 function voxelUserPickVoxelPipelineName(info: VoxelUserShaderInfo): string {
@@ -1445,13 +1437,12 @@ function voxelUserPickVoxelPipelineName(info: VoxelUserShaderInfo): string {
 }
 
 /**
- * VOXEL-USER-CUSTOMSHADER — resolve (and cache, keyed by customShader object
- * identity) the generated user-WGSL chunk for this primitive's customShader.
- * Returns `null` when the primitive should keep the DEFAULT gray parity path:
+ * Resolves and caches the generated user-WGSL chunk by customShader object
+ * identity. Returns `null` when the primitive should keep the default gray path:
  * no customShader / the DefaultCustomShader, a GLSL-only customShader
- * (warn + default — the model renderer's PARITY-CUSTOM-SHADER-WGSL policy),
- * or a WGSL customShader with uniforms (warn + default — voxel customShader
- * uniforms/textures are a documented follow-up).
+ * (warn + default, matching the model renderer), or a WGSL customShader with
+ * uniforms. Voxel uniform and texture bindings are not implemented, so those
+ * shaders must keep the default path rather than binding incomplete resources.
  * @private
  */
 function resolveVoxelUserShaderInfo(
@@ -1464,8 +1455,8 @@ function resolveVoxelUserShaderInfo(
     constructor?: { DefaultCustomShader?: unknown };
   };
   const customShader = prim.customShader;
-  // VoxelPrimitive substitutes DefaultCustomShader for an unset/cleared
-  // customShader — that is the Batch 476 default gray path, not a user shader.
+  // VoxelPrimitive substitutes DefaultCustomShader for an unset or cleared
+  // customShader; it selects the default gray path, not a user shader.
   const isDefault =
     !customShader || customShader === prim.constructor?.DefaultCustomShader;
   if (isDefault) {
@@ -1483,8 +1474,8 @@ function resolveVoxelUserShaderInfo(
     typeof customShader.wgslFragmentShaderText !== "string" ||
     customShader.wgslFragmentShaderText.length === 0
   ) {
-    // GLSL-only voxel customShader — transpile is deferred by design; keep the
-    // default gray rendering (the same policy as WebGPUModelRenderer).
+    // No GLSL-to-WGSL transpiler exists on this path, so a GLSL-only voxel
+    // customShader keeps the default gray rendering, matching WebGPUModelRenderer.
     //>>includeStart('debug', pragmas.debug);
     oneTimeWarning(
       "WebGPUVoxel.customShader",
@@ -1499,10 +1490,10 @@ function resolveVoxelUserShaderInfo(
   }
 
   if (voxelUserShaderHasUniforms(customShader)) {
-    // Uniforms (incl. color-map SAMPLER_2D textures) need a voxel BGL /
-    // pipeline-layout variant — a documented follow-up. Warn + default so the
-    // primitive still renders (gray) rather than failing module compilation
-    // on an undeclared `czm_customUniforms` reference.
+    // Uniforms, including color-map SAMPLER_2D textures, need a voxel bind-group
+    // and pipeline-layout variant that this path does not provide. Keep the
+    // warning and default-gray fallback so module compilation cannot fail on an
+    // undeclared `czm_customUniforms` reference.
     //>>includeStart('debug', pragmas.debug);
     oneTimeWarning(
       "WebGPUVoxel.customShaderUniforms",
@@ -1520,7 +1511,7 @@ function resolveVoxelUserShaderInfo(
   return cache.userShaderInfo;
 }
 
-// PARITY-VOXEL-COLOR-PARITY scratches for the model-space light-direction pack.
+// Scratch values for the model-space light-direction pack.
 const scratchMVNormal = new Matrix4();
 const scratchMV3 = new Matrix3();
 const scratchMV3Inv = new Matrix3();
@@ -1532,14 +1523,14 @@ const scratchMVP = new Matrix4();
 // build MVP correctly (must zero before projecting).
 const scratchMVRTE = new Matrix4();
 
-// PARITY-VOXEL-SHAPE-PARITY (increment 2) scratches for building the effective
-// model matrix from the shape's oriented bounding box.
+// Scratch values for building the effective model matrix from the shape's
+// oriented bounding box.
 const scratchObbHalfAxes = new Matrix3();
 const scratchObbCenter = new Cartesian3();
 const scratchEffModel = new Matrix4();
 
-// C11-13 — camera-inside proxy selection. These are shared per-frame
-// scratches: deciding which winding range to draw must not allocate or rebuild
+// Shared per-frame scratch values keep camera-inside proxy selection from
+// allocating or rebuilding
 // geometry/pipelines as the camera crosses the proxy boundary.
 const scratchVoxelProxyInverseModel = new Matrix4();
 const scratchVoxelProxyCamera = new Cartesian3();
@@ -1550,7 +1541,7 @@ const VOXEL_PROXY_INSIDE_EPSILON = 1.0e-7;
 const VOXEL_PROXY_INDEX_COUNT = 36;
 const VOXEL_PROXY_REVERSED_FIRST_INDEX = VOXEL_PROXY_INDEX_COUNT;
 
-// VOXEL-SHAPEUV-CONVENTION scratches for composing the proxy→shapeUv matrix.
+// Scratch values for composing the proxy-to-shapeUv matrix.
 const scratchShapeTransformInv = new Matrix4();
 const scratchProxyToLocal = new Matrix4();
 const scratchUvScaleTranslate = new Matrix4();
@@ -1570,12 +1561,12 @@ interface VoxelShapeLike {
   orientedBoundingBox?: {
     center?: Cartesian3;
     halfAxes?: Matrix3;
-    // VOXEL-OCTREE-LOD — OrientedBoundingBox.distanceSquaredTo, used by the
-    // SSE refine test (mirrors SpatialNode.computeScreenSpaceError).
+    // Used by the SSE refinement test to mirror
+    // SpatialNode.computeScreenSpaceError.
     distanceSquaredTo?(point: Cartesian3): number;
   };
-  // VOXEL-SHAPEUV-CONVENTION — the shape's compound local frame + its OWN
-  // local→shapeUv conversion (VoxelBoxShape.convertLocalToShapeUvSpace), used
+  // The shape's compound local frame and its own local-to-shapeUv conversion
+  // (VoxelBoxShape.convertLocalToShapeUvSpace) are used
   // to compose the proxy→shapeUv matrix with WebGL-identical semantics rather
   // than re-deriving the boundScale formula here (single source of truth).
   shapeTransform?: Matrix4;
@@ -1583,23 +1574,21 @@ interface VoxelShapeLike {
     positionLocal: Cartesian3,
     result: Cartesian3,
   ): Cartesian3;
-  // NEW-VOXEL-ELLIPSOID-INTERSECT — VoxelEllipsoidShape internals consumed by
-  // the ellipsoid shell-intersection uniforms. `_ellipsoid` carries the
-  // per-axis radii (the compound modelMatrix scale);
+  // VoxelEllipsoidShape internals consumed by the shell-intersection uniforms.
+  // `_ellipsoid` carries the per-axis radii (the compound modelMatrix scale);
   // `_minimumHeight`/`_maximumHeight` are the shape's height bounds (bounds z)
   // relative to the ellipsoid surface.
   _ellipsoid?: { radii?: Cartesian3 };
   _minimumHeight?: number;
   _maximumHeight?: number;
-  // NEW-VOXEL-ELLIPSOID-SHAPEUV — VoxelEllipsoidShape internals consumed by
-  // the shapeUv mapping uniforms. `_shaderUniforms` carries the WebGL shader
-  // uniform set (single source of truth for the lon/lat/height scale terms);
-  // `_localToShapeUvTranslate` the JS-side lon/lat offsets; `_shaderDefines`
-  // the ELLIPSOID_HAS_SHAPE_BOUNDS_* flags (value present = enabled,
-  // undefined = disabled — the upstream convention).
-  // NEW-VOXEL-CYLINDER-SHAPEUV — the cylinder* entries are the
-  // VoxelCylinderShape analogues (radial/angle/height scale terms + render
-  // radius bounds + the angle-range wrap origin).
+  // VoxelEllipsoidShape internals consumed by the shapeUv mapping uniforms.
+  // `_shaderUniforms` carries the WebGL shader uniform set (single source of
+  // truth for the lon/lat/height scale terms); `_localToShapeUvTranslate` the
+  // JS-side lon/lat offsets; `_shaderDefines` the ELLIPSOID_HAS_SHAPE_BOUNDS_*
+  // flags (value present = enabled, undefined = disabled — the upstream
+  // convention). The cylinder fields are the VoxelCylinderShape analogues
+  // (radial/angle/height scale terms + render radius bounds + the angle-range
+  // wrap origin).
   _shaderUniforms?: {
     ellipsoidLocalToShapeUvScale?: Cartesian3;
     ellipsoidShapeUvLongitudeRangeOrigin?: number;
@@ -1609,20 +1598,18 @@ interface VoxelShapeLike {
   };
   _localToShapeUvTranslate?: Cartesian3;
   _shaderDefines?: Record<string, unknown>;
-  // NEW-VOXEL-CYLINDER-SHAPEUV — VoxelCylinderShape's height render bounds
-  // live in its two renderBoundPlanes (plane 0: normal -z, distance =
-  // renderMinBounds.z; plane 1: normal +z, distance = -renderMaxBounds.z);
-  // `_minBounds`/`_maxBounds` are the unclipped shape bounds fallback.
+  // VoxelCylinderShape's height render bounds live in its two renderBoundPlanes
+  // (plane 0: normal -z, distance = renderMinBounds.z; plane 1: normal +z,
+  // distance = -renderMaxBounds.z); `_minBounds`/`_maxBounds` are the unclipped
+  // shape bounds fallback.
   renderBoundPlanes?: { get(index: number): { distance: number } | undefined };
   _minBounds?: Cartesian3;
   _maxBounds?: Cartesian3;
 }
 
 /**
- * PARITY-VOXEL-SHAPE-PARITY (increment 2).
- *
- * Compute the effective model matrix that places the ray-march proxy cube at
- * the voxel volume's correct WORLD position, orientation, and extent — mirroring
+ * Computes the effective model matrix that places the ray-march proxy cube at
+ * the voxel volume's correct world position, orientation, and extent, mirroring
  * the WebGL VoxelBoxShape convention.
  *
  * WebGL derives the shape's oriented bounding box from the compound model
@@ -1634,15 +1621,13 @@ interface VoxelShapeLike {
  * The WebGPU ray-march proxy cube is `[-0.5, +0.5]^3` (see
  * {@link createBoxGeometry}) and the shader normalises samples over
  * `minBounds = -0.5 … maxBounds = +0.5`. So to map the `[-0.5, +0.5]` cube onto
- * the same world box we scale the OBB half-axes by 2:
+ * the same world box, scale the OBB half-axes by 2:
  *   `effModel = fromRotationTranslation(2 × halfAxes, center)`.
  *
- * This is the ONLY change from the Batch 474 data-upload path — the shader math,
- * the `[-0.5, +0.5]` cube geometry, and the `[-0.5, +0.5]` bounds are all
- * unchanged; only the model matrix fed into the existing RTE MVP + camera-to-
- * model transform changes. When no shape/OBB is available (no provider — the
- * placeholder gradient path), this returns the primitive's raw `modelMatrix`
- * unchanged, keeping the off-gate byte-identical with Batch 474.
+ * The shader math, `[-0.5, +0.5]` cube geometry, and bounds remain fixed; only
+ * the model matrix supplied to the RTE MVP and camera-to-model transform varies.
+ * When no shape or OBB is available, the placeholder gradient path returns the
+ * primitive's raw `modelMatrix`.
  *
  * @returns the effective model matrix (scratch — do not retain across calls).
  */
@@ -1655,16 +1640,15 @@ function computeVoxelEffectiveModelMatrix(
 
   const shape = (primitive as unknown as { _shape?: VoxelShapeLike })._shape;
   const provider = (primitive as unknown as { _provider?: unknown })._provider;
-  // Off-gate: no shape or no provider → keep the raw modelMatrix so the
-  // placeholder path is byte-identical with Batch 474.
+  // Without a shape or provider, the placeholder path uses the raw modelMatrix.
   if (!shape || !provider) {
     return rawModelMatrix;
   }
 
-  // Scene Logic Extractor pattern — refresh the shape OBB from the current
-  // modelMatrix / bounds BEFORE reading it. The WebGPU feature-renderer path
-  // returns from VoxelPrimitive.update before the WebGL body runs these, so the
-  // OBB would otherwise only reflect construction-time state.
+  // Refresh the shape OBB from the current modelMatrix and bounds before
+  // reading it. The WebGPU feature-renderer path returns from
+  // VoxelPrimitive.update before the WebGL body runs these, so the OBB would
+  // otherwise only reflect construction-time state.
   try {
     checkTransformAndBounds(
       primitive as unknown as Parameters<typeof checkTransformAndBounds>[0],
@@ -1695,13 +1679,13 @@ function computeVoxelEffectiveModelMatrix(
 }
 
 /**
- * C11-13 — transform the camera through the exact effective proxy model used
- * for this draw, then select the index-buffer winding range. The historical
- * first 36 indices remain the non-mirrored outside-camera path. The appended
- * 36 indices reverse every triangle for an inside camera, so the exit faces
- * survive the unchanged `cullMode: "front"` pipelines even when the entry faces
- * are behind the near plane. A negative linear determinant already reverses
- * projected winding, hence the exclusive-or.
+ * Transforms the camera through the effective proxy model used for this draw,
+ * then selects the index-buffer winding range. The first 36 indices are the
+ * non-mirrored outside-camera path. The second 36 reverse every triangle for an
+ * inside camera, so the exit faces survive the unchanged `cullMode: "front"`
+ * pipelines even when the entry faces are behind the near plane. A negative
+ * linear determinant already reverses projected winding, hence the
+ * exclusive-or.
  *
  * Boundary points are treated as inside. The tiny inclusive epsilon absorbs
  * only inverse-transform roundoff at the exact proxy face; non-finite camera
@@ -1766,9 +1750,8 @@ function computeVoxelProxyFirstIndex(
 }
 
 /**
- * VOXEL-SHAPEUV-CONVENTION — pack the WebGL sample-frame convention into UBO
- * floats 76..103, mirroring the chain WebGL uses to derive the megatexture
- * sample coordinate:
+ * Packs the WebGL sample-frame convention into UBO floats 76..103, mirroring
+ * the chain WebGL uses to derive the megatexture sample coordinate:
  *
  *   shapeUv = boxLocalToShapeUvScale · (shapeTransform⁻¹ · world) + translate
  *             (VoxelBoxShape.convertLocalToShapeUvSpace / convertLocalToBoxUv.glsl)
@@ -1777,15 +1760,14 @@ function computeVoxelProxyFirstIndex(
  *
  * The proxy→shapeUv affine is composed on the CPU as
  * `scaleTranslate(convertLocalToShapeUvSpace) · shapeTransform⁻¹ · effModel`
- * so the WGSL march applies ONE mat4 per sample. The scale/translate terms are
+ * so the WGSL march applies one mat4 per sample. The scale/translate terms are
  * probed through the shape's own `convertLocalToShapeUvSpace` (an exact
  * componentwise affine for the box shape) so the WebGL implementation stays
  * the single source of truth for the convention.
  *
- * When the uploaded texture carries no convention (non-box shapes) — or the
- * shape transform is degenerate — falls back to the historical direct mapping
- * (`shapeUv = p + 0.5` over the texture's own extents, no padding/swap), which
- * is output-identical to the pre-convention sampling.
+ * When the uploaded texture carries no convention or the shape transform is
+ * degenerate, it falls back to direct mapping (`shapeUv = p + 0.5` over the
+ * texture's own extents, no padding/swap).
  */
 function packVoxelSampleFrame(
   primitive: CesiumObjectWithWebGPUCache,
@@ -1796,16 +1778,15 @@ function packVoxelSampleFrame(
   const convention = cache.dataUpload?.convention ?? null;
   const shape = (primitive as unknown as { _shape?: VoxelShapeLike })._shape;
 
-  // NEW-VOXEL-ELLIPSOID-SHAPEUV — ELLIPSOID providers carry the sampling
-  // convention (dimensions/padding/inputDimensions) but NOT the box affine:
-  // their local→shapeUv map is nonlinear (lon/lat/height), evaluated per
-  // sample in the WGSL (ellipsoidShapeUvFromLocal via the B22 proxyToLocal).
-  // Probing convertLocalToShapeUvSpace with unit axes — the box path below —
-  // would be meaningless (and NaN-prone at the origin) here, so write the
-  // convention fields + an identity proxyToShapeUv (never read on the
-  // ELLIPSOID branch of computeShapeUvReal) instead.
-  // NEW-VOXEL-CYLINDER-SHAPEUV — CYLINDER shares the same treatment: its
-  // radius/angle/height map is nonlinear too (cylinderShapeUvFromLocal).
+  // Ellipsoid providers carry the sampling convention
+  // (dimensions/padding/inputDimensions) but not the box affine: their
+  // local→shapeUv map is nonlinear (lon/lat/height), evaluated per sample in
+  // the WGSL through the packed proxyToLocal transform. Probing
+  // convertLocalToShapeUvSpace with unit axes — the box path below — would be
+  // meaningless (and NaN-prone at the origin) here, so write the convention
+  // fields + an identity proxyToShapeUv (never read on the ellipsoid branch of
+  // computeShapeUvReal) instead. Cylinders share the same treatment because
+  // their radius/angle/height map is nonlinear too (cylinderShapeUvFromLocal).
   const providerShape = (
     primitive as unknown as { _provider?: { shape?: string } }
   )._provider?.shape;
@@ -1919,33 +1900,30 @@ function packVoxelSampleFrame(
   // paddingBefore stays zero.
 }
 
-// NEW-VOXEL-ELLIPSOID-INTERSECT scratches for composing the proxy→local
-// matrix (separate from the VOXEL-SHAPEUV-CONVENTION scratches — both packs
-// run in the same frame).
+// Separate scratch matrices compose proxy-to-local and proxy-to-shapeUv values
+// during the same frame.
 const scratchEllShapeTransformInv = new Matrix4();
 const scratchEllProxyToLocal = new Matrix4();
 
 /**
- * NEW-VOXEL-ELLIPSOID-INTERSECT — pack the shape-typed intersection fields
- * (floats 184..207): `proxyToLocal` (proxy-cube point → the shape's
- * ellipsoid-centered LOCAL frame in meters, `inverse(shapeTransform) ·
- * effModel`), the ellipsoid's per-axis radii, and the min/max height bounds —
- * the inputs WebGL's IntersectEllipsoid.glsl `intersectHeight()` consumes.
- * Only written for ELLIPSOID-shape providers; BOX providers (and any
- * degenerate/missing shape state) leave the floats zero, so `shapeType` stays
- * 0 and the WGSL takes the bit-identical `intersectAABB` branch — the
- * off-gate.
+ * Packs the shape-typed intersection fields (floats 184..207): `proxyToLocal`
+ * (proxy-cube point to the shape's ellipsoid-centered local frame in meters,
+ * `inverse(shapeTransform) · effModel`), the ellipsoid's per-axis radii, and
+ * the min/max height bounds — the inputs WebGL's IntersectEllipsoid.glsl
+ * `intersectHeight()` consumes. Only written for ellipsoid providers; box
+ * providers (and any degenerate/missing shape state) leave the floats zero, so
+ * `shapeType` stays 0 and the WGSL takes the `intersectAABB` branch.
  *
- * NEW-VOXEL-ELLIPSOID-SHAPEUV also packs the lon/lat/height shapeUv mapping
- * terms (floats 208..215) here so per-cell content addressing runs WebGL's
- * convertLocalToShapeUvSpace chain in the WGSL (ellipsoidShapeUvFromLocal).
+ * The lon/lat/height shapeUv mapping terms (floats 208..215) are packed here so
+ * per-cell content addressing runs WebGL's convertLocalToShapeUvSpace chain in
+ * the WGSL (ellipsoidShapeUvFromLocal).
  *
- * NEW-VOXEL-CYLINDER-SHAPEUV — CYLINDER-shape providers pack `proxyToLocal` +
- * `shapeType = 2` the same way, reuse floats 204/205 for the height slab
- * (the renderBoundPlanes z bounds), and add the cylinder terms at floats
- * 216..227 (render radius min/max, angle-range origin, radial/angle/height
- * scale + offsets) — the inputs WebGL's IntersectCylinder.glsl /
- * VoxelCylinderShape.convertLocalToShapeUvSpace consume.
+ * Cylinder providers pack `proxyToLocal` and `shapeType = 2` the same way,
+ * reuse floats 204/205 for the height slab (the renderBoundPlanes z bounds),
+ * and add the cylinder terms at floats 216..227 (render radius min/max,
+ * angle-range origin, radial/angle/height scale + offsets) — the inputs WebGL's
+ * IntersectCylinder.glsl / VoxelCylinderShape.convertLocalToShapeUvSpace
+ * consume.
  */
 function packVoxelShapeIntersect(
   primitive: CesiumObjectWithWebGPUCache,
@@ -1998,16 +1976,16 @@ function packVoxelShapeIntersect(
   data[200] = radii.x;
   data[201] = radii.y;
   data[202] = radii.z;
-  data[203] = 1; // shapeType = ELLIPSOID
+  data[203] = 1; // Ellipsoid shape type.
   data[204] = minHeight;
   data[205] = maxHeight;
 
-  // NEW-VOXEL-ELLIPSOID-SHAPEUV — lon/lat/height shapeUv mapping terms
-  // (floats 208..215), read from the shape's OWN shader-uniform state so the
-  // WebGL implementation (VoxelEllipsoidShape.update) stays the single source
-  // of truth for the scale/offset formulas. The height scale falls back to
-  // the direct 1/(maxHeight - minHeight) derivation when the shape hasn't
-  // populated its shader uniforms yet (same quantity, same clamped bounds).
+  // Read lon/lat/height shapeUv mapping terms (floats 208..215) from the
+  // shape's own shader-uniform state so the WebGL implementation
+  // (VoxelEllipsoidShape.update) stays the single source of truth for the
+  // scale/offset formulas. The height scale falls back to the direct
+  // 1/(maxHeight - minHeight) derivation when the shape hasn't populated its
+  // shader uniforms yet (same quantity, same clamped bounds).
   const su = shape._shaderUniforms;
   const uvScale = su?.ellipsoidLocalToShapeUvScale;
   const uvTranslate = shape._localToShapeUvTranslate;
@@ -2029,18 +2007,16 @@ function packVoxelShapeIntersect(
 }
 
 /**
- * NEW-VOXEL-CYLINDER-SHAPEUV — pack the CYLINDER shape-typed fields:
- * `proxyToLocal` (floats 184..199, shared with the ellipsoid block),
- * `shapeType = 2` (float 203), the height slab (floats 204/205 — read back
- * from the shape's two renderBoundPlanes, the same planes WebGL's
- * intersectBoundPlanes clips with; falls back to the unclipped shape z
- * bounds), and the cylinder-specific terms at floats 216..227 (render radius
- * min/max, shapeUv angle-range origin, radial/angle/height scale + offsets
- * from the shape's own shader-uniform state — WebGL's
- * VoxelCylinderShape.update stays the single source of truth for the
- * formulas). Any missing/degenerate shape state leaves the floats zero, so
- * `shapeType` stays 0 and the WGSL takes the bit-identical BOX branch — the
- * off-gate.
+ * Packs the cylinder shape-typed fields: `proxyToLocal` (floats 184..199,
+ * shared with the ellipsoid block), `shapeType = 2` (float 203), the height
+ * slab (floats 204/205 — read back from the shape's two renderBoundPlanes, the
+ * same planes WebGL's intersectBoundPlanes clips with; falls back to the
+ * unclipped shape z bounds), and the cylinder-specific terms at floats 216..227
+ * (render radius min/max, shapeUv angle-range origin, radial/angle/height scale
+ * + offsets from the shape's own shader-uniform state — WebGL's
+ * VoxelCylinderShape.update stays the single source of truth for the formulas).
+ * Any missing/degenerate shape state leaves the floats zero, so `shapeType`
+ * stays 0 and the WGSL takes the box branch.
  */
 function packVoxelCylinderIntersect(
   primitive: CesiumObjectWithWebGPUCache,
@@ -2062,7 +2038,7 @@ function packVoxelCylinderIntersect(
   ) {
     return;
   }
-  // Height slab: renderBoundPlanes carry the RENDER (shape ∩ clip) z bounds
+  // Height slab: renderBoundPlanes carry the clipped shape's z bounds
   // (plane 0 distance = renderMinZ, plane 1 distance = -renderMaxZ). Fall
   // back to the unclipped shape bounds, then the DefaultMin/MaxBounds z.
   let zMin = shape._minBounds ? shape._minBounds.z : -1;
@@ -2097,7 +2073,7 @@ function packVoxelCylinderIntersect(
     // than crashing the frame.
     return;
   }
-  data[203] = 2; // shapeType = CYLINDER
+  data[203] = 2; // Cylinder shape type.
   data[204] = zMin;
   data[205] = zMax;
   data[216] = radiusMinMax.x;
@@ -2111,13 +2087,13 @@ function packVoxelCylinderIntersect(
   data[226] = uvTranslate.z;
 }
 
-// VOXEL-OCTREE-LOD scratch for the SSE refine test.
+// Scratch scale for the SSE refinement test.
 const scratchObbScale = new Cartesian3();
 
 /**
- * VOXEL-OCTREE-LOD / NEW-VOXEL-OCTREE-DEEP-TRAVERSAL — decide this frame's
- * target octree level (0 = root, 1..2 = refine) with WebGL's refine test:
- * mirror {@link SpatialNode}'s `computeScreenSpaceError` for the ROOT tile —
+ * Decides this frame's target octree level (0 = root, 1..2 = refine) with
+ * WebGL's refinement test. It mirrors {@link SpatialNode}'s
+ * `computeScreenSpaceError` for the root tile:
  *
  *   sse = (screenHeight / sseDenominator) * (approximateVoxelSize / distance)
  *   approximateVoxelSize = 2 * maxComponent(scale(obb.halfAxes))
@@ -2125,19 +2101,17 @@ const scratchObbScale = new Cartesian3();
  *
  * — then walk the refinement ladder: each level halves a node's
  * `approximateVoxelSize` (half the extent, same per-tile dimensions), so the
- * level-L SSE is `sse / 2^L`; descend while the CURRENT level's SSE still
+ * level-L SSE is `sse / 2^L`; descend while the current level's SSE still
  * meets `primitive.screenSpaceError` (VoxelTraversal descends exactly when a
  * node's SSE meets the primitive's target), capped at the deepest level with
- * ANY uploaded tile so the march never branches into an empty atlas. For
- * depth-1 (9-slot) atlases this reduces exactly to the shipped single refine
- * test — byte-identical behavior for `availableLevels < 3` providers.
+ * any uploaded tile so the march never branches into an empty atlas. For
+ * depth-1 (9-slot) atlases this reduces to a single refinement test.
  *
- * NEW-VOXEL-STREAMING-UPLOAD splits the ladder's CAP into two callers:
- * {@link computeVoxelTargetLevel} caps at the deepest UPLOADED level (what the
- * WGSL march may branch into this frame) while {@link computeVoxelDemandLevel}
- * caps at the atlas CAPACITY (what the camera is asking for — the signal that
- * drives demand-driven descendant uploads, independent of what has streamed
- * in so far).
+ * The two callers apply different caps: {@link computeVoxelTargetLevel} caps at
+ * the deepest uploaded level (what the WGSL march may branch into this frame)
+ * while {@link computeVoxelDemandLevel} caps at the atlas capacity (what the
+ * camera is asking for — the signal that drives demand-driven descendant
+ * uploads, independent of what has streamed in so far).
  */
 function computeVoxelRefinementLevel(
   primitive: CesiumObjectWithWebGPUCache,
@@ -2197,7 +2171,7 @@ function computeVoxelRefinementLevel(
 }
 
 /**
- * VOXEL-OCTREE-LOD — the deepest octree level with ANY uploaded tile in the
+ * Returns the deepest octree level with any uploaded tile in the
  * atlas (0 = root only). The WGSL march must never branch into an empty slot,
  * so this caps the packed target level.
  */
@@ -2215,9 +2189,9 @@ function voxelMaxUploadedLevel(state: VoxelDataUploadState): number {
   if (maxUploadedLevel === 0) {
     return 0;
   }
-  // NEW-VOXEL-ATLAS-LRU-EVICT — any atlas with a level-2 pool (static 64 or
-  // dynamic 1..63) can hold level-2 tiles; scan the slot indirection either
-  // way. `slotCount >= 73` would miss the dynamic partial atlas.
+  // Any atlas with a level-2 pool, static or dynamic, can hold level-2 tiles;
+  // scan the slot indirection either way. `slotCount >= 73` would miss the
+  // dynamic partial atlas.
   if (state.l2PoolSize > 0) {
     for (let i = 0; i < 64; i++) {
       if (state.l2Slots[i] >= 0) {
@@ -2229,8 +2203,8 @@ function voxelMaxUploadedLevel(state: VoxelDataUploadState): number {
   if (maxUploadedLevel < 2) {
     return maxUploadedLevel;
   }
-  // NEW-VOXEL-OCTREE-DEEP-LEVELS — the static deep-3 atlas (l3PoolSize > 0)
-  // can hold level-3 tiles; if any is uploaded the walk may descend to 3.
+  // A static deep atlas with an l3 pool may descend to level 3 once any
+  // level-3 tile is uploaded.
   if (state.l3PoolSize > 0) {
     for (let i = 0; i < 512; i++) {
       if (state.l3Slots[i] >= 0) {
@@ -2243,9 +2217,8 @@ function voxelMaxUploadedLevel(state: VoxelDataUploadState): number {
 }
 
 /**
- * VOXEL-OCTREE-LOD / NEW-VOXEL-OCTREE-DEEP-TRAVERSAL — this frame's UBO target
- * level: the SSE ladder capped at the deepest UPLOADED level. Identical math
- * to the pre-streaming implementation (the ladder + uploaded-cap were fused).
+ * Computes this frame's UBO target level by capping the SSE ladder at the
+ * deepest uploaded level.
  */
 function computeVoxelTargetLevel(
   primitive: CesiumObjectWithWebGPUCache,
@@ -2261,9 +2234,9 @@ function computeVoxelTargetLevel(
 }
 
 /**
- * NEW-VOXEL-STREAMING-UPLOAD — this frame's DEMAND level: the SSE ladder
- * capped only by the atlas CAPACITY (1 for the 9-slot depth-1 atlas, 2 for
- * the 73-slot deep atlas), independent of which tiles have uploaded. Drives
+ * Computes this frame's demand level by capping the SSE ladder only by atlas
+ * capacity (1 for the 9-slot depth-1 atlas, 2 for the 73-slot deep atlas),
+ * independent of which tiles have uploaded. Drives
  * {@link tryUploadChildVoxelTiles}: descendant levels are requested/uploaded
  * only while the camera demands them (upstream VoxelTraversal megatexture-add
  * semantics).
@@ -2273,11 +2246,9 @@ function computeVoxelDemandLevel(
   frameState: CesiumFrameState,
   state: VoxelDataUploadState,
 ): number {
-  // NEW-VOXEL-ATLAS-LRU-EVICT — a dynamic partial atlas (slotCount 10..72,
-  // l2PoolSize > 0) has level-2 CAPACITY too: demand drives tiles through the
-  // LRU pool. Static atlases keep the historical 73→2 / 9→1 mapping exactly.
-  // NEW-VOXEL-OCTREE-DEEP-LEVELS — the static deep-3 atlas has level-3
-  // CAPACITY (l3PoolSize = 512), so the demand ladder may ask for level 3.
+  // A dynamic partial atlas with an l2 pool has level-2 capacity, so demand
+  // drives tiles through the LRU pool. A static deep atlas with 512 l3 slots
+  // has level-3 capacity, allowing the demand ladder to request level 3.
   const capacity =
     state.l3PoolSize > 0
       ? 3
@@ -2289,31 +2260,31 @@ function computeVoxelDemandLevel(
   return computeVoxelRefinementLevel(primitive, frameState, state, capacity);
 }
 
-// NEW-VOXEL-ATLAS-LRU-EVICT scratches for the per-tile level-2 demand mask.
+// Scratch values for the per-tile level-2 demand mask.
 const scratchL2DemandMask = new Uint8Array(64);
 const scratchL2ObbScale = new Cartesian3();
 const scratchL2TileLocal = new Cartesian3();
 const scratchL2TileCenter = new Cartesian3();
 
 /**
- * NEW-VOXEL-ATLAS-LRU-EVICT — per-tile demand mask over the 64 level-2 tiles
+ * Computes a per-tile demand mask over the 64 level-2 tiles
  * (linear index x + 4y + 16z, Z-up shape frame), computed only when the
- * level-2 pool is DYNAMIC (capacity < 64 tiles) and the camera's ladder
- * demands level 2. A tile is demanded when it passes BOTH:
+ * level-2 pool is dynamic (capacity < 64 tiles) and the camera's ladder
+ * demands level 2. A tile is demanded when it passes both:
  *
  *   1. the frustum test — the tile's bounding sphere (OBB subregion center,
  *      conservative radius) intersects `frameState.cullingVolume`
- *      (CullingVolume.computeVisibility's sphere-vs-plane test), and
- *   2. the per-tile SSE gate — the level-2 ladder test with the TILE's own
+ *      (`CullingVolume.computeVisibility`'s sphere-vs-plane test), and
+ *   2. the per-tile SSE gate — the level-2 ladder test with the tile's own
  *      distance: `(screenHeight / sseDenominator) * (tileVoxelSize / dist)
  *      >= screenSpaceError`, where `tileVoxelSize` is the root
  *      approximateVoxelSize quartered (two halvings) and `dist` is the
  *      camera-to-tile-sphere distance.
  *
  * This mirrors upstream VoxelTraversal, which only visits (and megatexture-
- * adds) nodes that are visible AND fail the parent's SSE test — residency in
+ * adds) nodes that are visible and fail the parent's SSE test — residency in
  * the LRU pool follows the camera. Returns null on the static paths (mask
- * unused — byte-identical B19 flow) and an all-zero mask when the camera /
+ * unused) and an all-zero mask when the camera or
  * shape state is unavailable.
  */
 function computeVoxelL2DemandMask(
@@ -2345,7 +2316,7 @@ function computeVoxelL2DemandMask(
   const rootVoxelSize =
     (2.0 * Cartesian3.maximumComponent(halfScale)) / Math.max(1, minDim);
   // Level 2 = two halvings of the root approximateVoxelSize (same ladder as
-  // computeVoxelRefinementLevel), evaluated at the TILE's own distance.
+  // computeVoxelRefinementLevel), evaluated at the tile's own distance.
   const tileVoxelSize = rootVoxelSize / 4.0;
   // Conservative bounding-sphere radius of a level-2 OBB subregion (quarter
   // extent per axis).
@@ -2408,9 +2379,8 @@ function computeVoxelL2DemandMask(
   return mask;
 }
 
-// C11-13 — byte-for-byte historical cube prefix. Non-mirrored outside cameras
-// continue to draw this range, so their geometry and fragment workload stay
-// unchanged.
+// Non-mirrored outside cameras draw this first cube range, preserving their
+// geometry and fragment workload.
 const VOXEL_PROXY_ORIGINAL_INDICES = [
   0, 1, 2, 0, 2, 3, 4, 6, 5, 4, 7, 6, 0, 4, 5, 0, 5, 1, 2, 6, 7, 2, 7, 3, 0, 3,
   7, 0, 7, 4, 1, 5, 6, 1, 6, 2,
@@ -2741,8 +2711,7 @@ function destroyVoxelCache(
  * kicks off async creation and returns false so the caller can skip the
  * frame and try again next tick.
  *
- * C-R7-RENDERER-MIGRATION (Batch 72). Mirrors the
- * `tryResolveEllipsoidPipelines` pattern from Batch 56.
+ * Uses the same lazy-resolution pattern as `tryResolveEllipsoidPipelines`.
  */
 function tryResolveVoxelPipelines(
   device: GPUDevice,
@@ -2818,7 +2787,7 @@ function tryResolveVoxelPipelines(
     return false;
   }
 
-  // Fallback: no central cache. Mirror the historical synchronous path.
+  // Without a central cache, create both pipelines synchronously.
   const lifecycleToken = captureVoxelResourceLifecycleToken(cache.lifecycle);
   try {
     const colorPipeline = device.createRenderPipeline(
@@ -2876,8 +2845,8 @@ interface VoxelProxyCommandSet {
 }
 
 /**
- * C11-13 — update all currently-materialized voxel command variants in place.
- * Called after the lazy velocity and cell-pick attachment points every frame,
+ * Updates all currently materialized voxel command variants in place. Called
+ * after the lazy velocity and cell-pick attachment points every frame,
  * so variants created on this frame cannot retain the constructor default.
  */
 function updateVoxelProxyCommandFirstIndices(
@@ -2928,12 +2897,10 @@ function updateWebGPUVoxelPrimitive(
     return;
   }
 
-  // NEW-WEBGPU-VOXEL-PICK-LOG-DEPTH — pick-fleet log-depth gate (default FALSE
-  // until C10-11 flips the whole fleet). When active, the two voxel PICK
-  // pipelines compile the shader with the LOG_DEPTH define and write log-encoded
+  // The two voxel pick pipelines follow the renderer-wide log-depth gate. When
+  // active, they compile the shader with the LOG_DEPTH define and write log-encoded
   // \`@builtin(frag_depth)\` into the shared pick FBO (depthWriteEnabled:true);
-  // when inactive they stay hyperbolic-none (depthWriteEnabled:false) —
-  // byte-identical to the pre-conversion pick FBO. The COLOR + VELOCITY
+  // when inactive they omit depth writes. The color and velocity
   // pipelines never see this define, so their depth behaviour is unchanged.
   const pickLogActive = isWebGPUPickLogDepthActive(context, frameState);
 
@@ -2941,7 +2908,7 @@ function updateWebGPUVoxelPrimitive(
     cache = createVoxelCache(primitive, context, device, resourceGeneration);
     primitive._webgpuCache = cache;
   }
-  // Batch 110 — voxels draw into scene FB; use scenePipelineFormat.
+  // Voxels draw into the scene framebuffer, so use scenePipelineFormat.
   const canvasFormat: GPUTextureFormat =
     (
       context as unknown as {
@@ -2950,39 +2917,35 @@ function updateWebGPUVoxelPrimitive(
     ).scenePipelineFormat ??
     (navigator.gpu.getPreferredCanvasFormat() as GPUTextureFormat);
 
-  // NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE — pick pipelines target the context's
-  // byte-object-ID format authority (matches the pick FBO), never the
-  // (possibly float/HDR) scene format.
+  // Pick pipelines use the context's byte-object-ID format authority, matching
+  // the pick FBO rather than the possibly floating-point HDR scene format.
   const pickFormat: GPUTextureFormat =
     (context as unknown as { pickPipelineFormat?: GPUTextureFormat })
       .pickPipelineFormat ?? "rgba8unorm";
 
-  // NEW-PICK-METADATA-READBACK (Batch 285) — the color pipeline draws into the
-  // MSAA scene framebuffer, so it MUST bake `multisample.count =
-  // context._msaaSamples` like every other scene-FB renderer
-  // (WebGPUEllipsoidPrimitiveRenderer / BufferPoint / Cloud / ComputeInstance,
-  // etc.). It was previously left at the default count:1, so on any MSAA scene
-  // (the default msaaSamples is 4) WebGPU dropped every voxel color draw with
-  // "Attachment state of [Voxel color pipeline] is not compatible with [Scene
-  // Framebuffer Render Pass]" — the voxel never rendered, so pickVoxel had no
-  // pixel to read back. Pick + velocity stay single-sample (pick FBO and the
-  // velocity target are single-sample). The cache invalidates on sample-count
-  // change as well as format change so a mid-session msaaSamples toggle
-  // rebuilds the descriptor.
+  // The color pipeline draws into the MSAA scene framebuffer, so it must use
+  // `multisample.count = context._msaaSamples`, like every other scene-FB
+  // renderer (WebGPUEllipsoidPrimitiveRenderer / BufferPoint / Cloud /
+  // ComputeInstance, etc.). A count mismatch makes the color pipeline
+  // incompatible with the render pass, drops the voxel draw, and leaves
+  // pickVoxel without a pixel to read back. Pick and velocity stay
+  // single-sample because their targets are single-sample. The cache
+  // invalidates on sample-count and format changes so a runtime msaaSamples
+  // toggle rebuilds the descriptor.
   const sceneSampleCount =
     (context as unknown as { _msaaSamples?: number })._msaaSamples ?? 1;
 
-  // Batch 110 — invalidate cached pipeline on scene format change.
+  // Invalidate the cached pipeline when the scene format changes.
   const sceneGen =
     (context as unknown as { _scenePipelineFormatGeneration?: number })
       ._scenePipelineFormatGeneration ?? 0;
   const prevSampleCount = (
     cache as unknown as { _pipelineSampleCount?: number }
   )._pipelineSampleCount;
-  // NEW-WEBGPU-VOXEL-PICK-LOG-DEPTH — a runtime flip of the pick-fleet gate
-  // (C10-11) must rebuild the pick pipelines against the LOG_DEPTH module +
-  // depthWriteEnabled. Track the state the descriptors were built with and
-  // invalidate on change, alongside the format/MSAA generation stamp.
+  // A runtime change to the pick log-depth gate must rebuild the pick pipelines
+  // against the LOG_DEPTH module and depth-write setting. Track the state the
+  // descriptors were built with and invalidate on change, alongside the
+  // format/MSAA generation stamp.
   const prevPickLog = (cache as unknown as { _pipelinePickLogActive?: boolean })
     ._pipelinePickLogActive;
   if (
@@ -3006,14 +2969,14 @@ function updateWebGPUVoxelPrimitive(
     cache.pipelineFailureReported = false;
     cache.command = null;
     cache.pickCommand = null;
-    // Batch 173 - velocity pipeline references the same shader module
-    // built against the now-invalid format; force rebuild.
+    // The velocity pipeline references the same shader module built against
+    // the invalidated descriptor state, so force a rebuild.
     cache.velocityPipeline = null;
     cache.velocityDescriptor = null;
     cache.velocityPipelineRequestPending = false;
     cache.velocityPipelineRequestSerial++;
     resetVoxelAsyncFailure(cache.velocityPipelineFailure);
-    // C-R9-VOXEL-CELL-PICK — same treatment for the per-cell pick variant.
+    // Invalidate the per-cell pick variant for the same descriptor changes.
     cache.pickVoxelPipeline = null;
     cache.pickVoxelDescriptor = null;
     cache.pickVoxelPipelineRequestPending = false;
@@ -3032,31 +2995,16 @@ function updateWebGPUVoxelPrimitive(
   }
 
   if (!cache.initialized) {
-    // Batch 173 - UBO grew 256 → 320 bytes to include the model matrix
-    // (floats 56-71 at byte offset 224). VOXEL-SHAPEUV-CONVENTION grew it
-    // 320 → 432 bytes for the WebGL sample-frame fields (floats 76-107:
-    // dimensions + Y-up flag, proxy→shapeUv matrix, inputDimensions,
-    // paddingBefore, proxy-space camera) consumed by the real-data
-    // color-parity march. VOXEL-OCTREE-LOD grew it 432 → 480 bytes for the
-    // depth-1 octree fields (floats 108-119: per-child atlas slots + slot
-    // count + target LOD level). NEW-VOXEL-OCTREE-DEEP-TRAVERSAL grew it
-    // 480 → 736 bytes for the 64 level-2 atlas slots (floats 120-183) read by
-    // the iterative octree walk. NEW-VOXEL-ELLIPSOID-INTERSECT grew it
-    // 736 → 832 bytes for the shape-typed intersection fields (floats
-    // 184-207: proxyToLocal + ellipsoidRadii/shapeType + heightMinMax).
-    // NEW-VOXEL-ELLIPSOID-SHAPEUV grew it 832 → 864 bytes for the ellipsoid
-    // lon/lat/height shapeUv mapping terms (floats 208-215).
-    // NEW-VOXEL-CYLINDER-SHAPEUV grew it 864 → 912 bytes for the cylinder
-    // radius/angle/height terms (floats 216-227). NEW-VOXEL-OCTREE-DEEP-LEVELS
-    // grew it 912 -> 2960 bytes for the 512 level-3 atlas slots (floats
-    // 228-739) read by the iterative octree walk when it descends to level 3.
+    // The 2,960-byte UBO contains 740 floats for camera and model transforms,
+    // sample-frame conversion, shape-specific intersection data, and octree
+    // indirection through level 3. The level-3 table occupies floats 228..739;
+    // keep this allocation synchronized with the packing map below.
     cache.uniformBuffer = device.createBuffer({
       size: 2960,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
-    // VOXEL-SHAPEUV-CONVENTION — honour VoxelPrimitive.nearestSampling
-    // (parity: WebGL selects the megatexture's nearest-vs-linear sampler from
-    // the same flag). Default is false → linear, the historical behaviour.
+    // Honor VoxelPrimitive.nearestSampling; WebGL selects the megatexture's
+    // nearest-versus-linear sampler from the same flag. False selects linear.
     const nearestSampling =
       (primitive as unknown as { nearestSampling?: boolean })
         .nearestSampling === true;
@@ -3069,8 +3017,8 @@ function updateWebGPUVoxelPrimitive(
     cache.voxelTexture = texture;
     cache.voxelTextureView = view;
 
-    // C-R7-SHADER-MODULE-DEDUP (Batch 72) — route module compilation
-    // through the per-device shader module cache.
+    // Compile through the per-device shader module cache so primitives on the
+    // same device share modules.
     const moduleCache = getVoxelShaderModuleCache(device);
     const shaderModule = moduleCache.getOrCreate(
       ShaderSourceId.VOXEL_PRIMITIVE,
@@ -3080,12 +3028,11 @@ function updateWebGPUVoxelPrimitive(
     );
     cache.shaderModule = shaderModule;
 
-    // NEW-WEBGPU-VOXEL-PICK-LOG-DEPTH — the PICK pipelines use a LOG_DEPTH
-    // variant of the SAME source when the pick-fleet gate is active; the color
-    // + velocity pipelines never see this define. When the gate is off this is
-    // the base module (define=0) → byte-identical. Distinct cache key
-    // (sourceId, LOG_DEPTH) so it dedupes independently of the color/velocity
-    // modules.
+    // Pick pipelines use a LOG_DEPTH variant of the same source when the
+    // renderer-wide gate is active; color and velocity pipelines never see this
+    // define. When the gate is off this is the base module (define=0) →
+    // byte-identical. Distinct cache key (sourceId, LOG_DEPTH) so it dedupes
+    // independently of the color/velocity modules.
     const pickModule = pickLogActive
       ? moduleCache.getOrCreate(
           ShaderSourceId.VOXEL_PRIMITIVE,
@@ -3103,18 +3050,17 @@ function updateWebGPUVoxelPrimitive(
     // Retain for the real-data bind-group rebuild once the root tile uploads.
     cache.bindGroupLayout = bgl;
 
-    // FEAT-GAP-09 (Batch 100) — append the shared effects bind group
-    // layout so the WGSL fog block at `@group(1)` resolves to the same
-    // 480-byte UBO + aerial-LUT textures the globe and Mat shaders use.
-    // The pipeline cache keys on the descriptor, so adding the BGL is
-    // safe — a fresh pipeline will be built once and reused.
+    // Append the shared effects bind group layout so the WGSL fog block at
+    // `@group(1)` resolves to the same 480-byte UBO and aerial-LUT textures the
+    // globe and Mat shaders use. The pipeline cache keys on the descriptor, so
+    // adding the BGL is safe — a fresh pipeline will be built once and reused.
     const effectsBGL = getEffectsBindGroupLayout(device);
 
     const pipelineLayout = device.createPipelineLayout({
       bindGroupLayouts: [bgl, effectsBGL],
     });
-    // PARITY-VOXEL-COLOR-PARITY — retain for the color-parity pipeline rebuild
-    // once the real root tile uploads (same BGLs → same layout).
+    // Retain the layout for the color pipeline rebuild after the real root tile
+    // uploads; both variants use the same bind group layouts.
     cache.pipelineLayout = pipelineLayout;
 
     // Shared vertex stage — color + pick run identical vertex work
@@ -3137,10 +3083,9 @@ function updateWebGPUVoxelPrimitive(
       },
     ];
 
-    // C-R7-RENDERER-MIGRATION (Batch 72) — descriptor-only construction;
-    // pipelines materialize through `webgpuPipelineCache` so two
-    // VoxelPrimitives sharing the same descriptor share a single
-    // `GPURenderPipeline`.
+    // Construct descriptors only; pipelines materialize through
+    // `webgpuPipelineCache`, so two VoxelPrimitives sharing the same descriptor
+    // share a single `GPURenderPipeline`.
     cache.colorDescriptor = {
       name: "Voxel color pipeline",
       layout: pipelineLayout,
@@ -3152,10 +3097,8 @@ function updateWebGPUVoxelPrimitive(
       fragment: {
         module: shaderModule,
         entryPoint: "fragmentMain",
-        // Slice 5c-B Phase 1 (Batch 112) — scene-FB color target via
-        // helper. Pick (line ~775, manually constructed with same
-        // canvasFormat) and velocity (line ~800, rg16float) pipelines
-        // stay single-target.
+        // The scene-framebuffer helper builds the color target. Pick and
+        // velocity pipelines keep their dedicated single targets.
         targets: makeSceneFBTargets(canvasFormat, {
           blend: {
             color: {
@@ -3173,21 +3116,20 @@ function updateWebGPUVoxelPrimitive(
         // less-equal for planetary-scale precision robustness.
         depthCompare: "less-equal",
       },
-      // Match the MSAA scene framebuffer's sample count (NEW-PICK-METADATA-READBACK).
+      // Match the MSAA scene framebuffer's sample count.
       multisample:
         sceneSampleCount > 1 ? { count: sceneSampleCount } : undefined,
     };
 
-    // C-R9-VOXEL-PICK (Batch 53) — pick pipeline. Same layout, same
-    // vertex stage, same depth behaviour. Fragment entry emits
-    // u.pickColor unmodified — NO blending, so the pick FBO readback
-    // can map the color back to the registered pick target. cullMode
-    // matches the color path so picking and shading agree on which
-    // box face the ray enters from.
+    // The object-pick pipeline uses the same layout and vertex stage, same
+    // depth behaviour. Fragment entry emits u.pickColor unmodified with no
+    // blending, so the pick FBO readback can map the color back to the
+    // registered pick target. cullMode matches the color path so picking and
+    // shading agree on which box face the ray enters from.
     cache.pickDescriptor = {
-      // NEW-WEBGPU-VOXEL-PICK-LOG-DEPTH — distinct name when the log variant is
-      // active so the central pipeline cache (keyed on descriptor name) does
-      // not serve the hyperbolic pipeline for the log module (and vice versa).
+      // Use a distinct name for the log variant so the central pipeline cache,
+      // keyed on descriptor name, does not serve the hyperbolic pipeline for
+      // the log module (and vice versa).
       name: pickLogActive ? "Voxel pick pipeline [ld]" : "Voxel pick pipeline",
       layout: pipelineLayout,
       vertex: {
@@ -3198,28 +3140,27 @@ function updateWebGPUVoxelPrimitive(
       fragment: {
         module: pickModule,
         entryPoint: "fragmentPickMain",
-        // NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE — pick target format
-        // authority (matches the pick FBO), never the scene format.
+        // The pick target uses the pick-FBO format authority,
+        // never the scene format.
         targets: [{ format: pickFormat }],
       },
       primitive: { topology: "triangle-list", cullMode: "front" },
       depthStencil: {
         format: "depth24plus-stencil8",
-        // NEW-WEBGPU-VOXEL-PICK-LOG-DEPTH — write the log frag_depth into the
-        // shared pick FBO depth ONLY when the whole pick fleet is log (gate on);
-        // otherwise stay depth-test-only (byte-identical to the historical path).
+        // Write log frag_depth into the shared pick FBO only when the entire
+        // pick fleet uses log depth; otherwise remain depth-test-only.
         depthWriteEnabled: pickLogActive,
         depthCompare: "less-equal",
       },
     };
 
-    // C-R9-VOXEL-CELL-PICK — per-cell pick descriptor. Same layout / vertex
+    // The per-cell pick descriptor uses the same layout and vertex
     // stage / depth behaviour / single-sample target as the object-pick
     // descriptor above; the fragment entry packs {megatextureIndex,
     // sampleIndex} per WebGL's VoxelFS.glsl PICKING_VOXEL branch instead of
-    // emitting u.pickColor. NO blending — the packed bytes must reach the
+    // emitting u.pickColor. With no blending, the packed bytes reach the
     // pick FBO exactly for Scene.pickVoxel's 255*R+G / 255*B+A decode.
-    // Descriptor-only here (a plain object); the PIPELINE is resolved lazily
+    // This is a plain descriptor object; the pipeline is resolved lazily
     // and only on the real-data path (see attachVoxelCellPickCommand).
     cache.pickVoxelDescriptor = {
       name: pickLogActive
@@ -3234,23 +3175,22 @@ function updateWebGPUVoxelPrimitive(
       fragment: {
         module: pickModule,
         entryPoint: "fragmentPickVoxelMain",
-        // NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE — pick target format
-        // authority (matches the pick FBO), never the scene format.
+        // The pick target uses the pick-FBO format authority,
+        // never the scene format.
         targets: [{ format: pickFormat }],
       },
       primitive: { topology: "triangle-list", cullMode: "front" },
       depthStencil: {
         format: "depth24plus-stencil8",
-        // NEW-WEBGPU-VOXEL-PICK-LOG-DEPTH — see the object-pick descriptor above.
+        // Use the object-pick descriptor's conditional depth-write policy.
         depthWriteEnabled: pickLogActive,
         depthCompare: "less-equal",
       },
     };
 
-    // Batch 173 - velocity descriptor. Same layout / vertex stage as
-    // color (the box geometry is unchanged); different VS entry point
-    // that computes curr + prev clip, and FS entry emitting
-    // (currNdc - prevNdc) to rg16float.
+    // The velocity descriptor uses the same layout and vertex stage as color
+    // (the box geometry is unchanged); different VS entry point that computes
+    // curr + prev clip, and FS entry emitting (currNdc - prevNdc) to rg16float.
     cache.velocityDescriptor = {
       name: "Voxel velocity pipeline",
       layout: pipelineLayout,
@@ -3285,17 +3225,16 @@ function updateWebGPUVoxelPrimitive(
     cache.vertexBuffer = geom.vertexBuffer;
     cache.indexBuffer = geom.indexBuffer;
 
-    // Stamp the generation + sample count this descriptor was built against so
-    // the invalidation block above rebuilds on a later format / MSAA change
-    // (NEW-PICK-METADATA-READBACK).
+    // Stamp the generation and sample count used by this descriptor so the
+    // invalidation block rebuilds it after a format or MSAA change.
     (
       cache as unknown as { _pipelineFormatGeneration?: number }
     )._pipelineFormatGeneration = sceneGen;
     (
       cache as unknown as { _pipelineSampleCount?: number }
     )._pipelineSampleCount = sceneSampleCount;
-    // NEW-WEBGPU-VOXEL-PICK-LOG-DEPTH — stamp the pick-log state the pick
-    // descriptors were built with so a later gate flip (C10-11) rebuilds them.
+    // Stamp the pick-log state used by the pick descriptors so a gate change
+    // rebuilds them.
     (
       cache as unknown as { _pipelinePickLogActive?: boolean }
     )._pipelinePickLogActive = pickLogActive;
@@ -3303,12 +3242,11 @@ function updateWebGPUVoxelPrimitive(
     cache.initialized = true;
   }
 
-  // PARITY-VOXEL-MEGATEXTURE-UPLOAD (increment 1) — drive the one-time root
-  // voxel-tile upload. When no provider is present this returns false every
-  // frame and the placeholder gradient stays bound (off-gate byte-identical).
+  // Drive the one-time root voxel-tile upload. Without a provider this returns
+  // false every frame and leaves the placeholder gradient bound.
   // When the root tile finishes uploading, swap binding 1 to the real-data
   // texture view and re-point every cached command's bind group. The
-  // ray-march WGSL is unchanged — only the 3D texture SOURCE changes.
+  // ray-march WGSL is unchanged; only the 3D texture source changes.
   if (!cache.usingRealData) {
     if (!cache.dataUpload) {
       cache.dataUpload = createVoxelDataUploadState(cache.lifecycle);
@@ -3341,20 +3279,17 @@ function updateWebGPUVoxelPrimitive(
     cache.usingRealData = true;
   }
 
-  // VOXEL-OCTREE-LOD — once the root is bound, drive the asynchronous
-  // descendant-tile uploads into atlas slots 1..8 (+9..72 on the deep atlas).
-  // No-op for single-level providers (childPhase === "none") and once every
-  // tile has settled; writes land in the already-bound atlas texture, so no
-  // bind-group rebuild is needed.
-  // NEW-VOXEL-STREAMING-UPLOAD — uploads are keyed to the camera's SSE demand
-  // level (capacity-capped, NOT uploaded-capped): a far camera keeps a
-  // root-only atlas, zooming in streams level-1 (then level-2) tiles in on
-  // demand — upstream VoxelTraversal megatexture-add semantics. `demandLevel`
-  // is recorded on the state as a probe-readable diagnostic.
-  // NEW-VOXEL-ATLAS-LRU-EVICT — on a dynamic (capacity-capped) level-2 pool,
-  // the per-tile demand mask (SSE + frustum) decides WHICH tiles occupy the
-  // LRU slots; null on the static paths (mask ignored — byte-identical B19
-  // flow).
+  // Once the root is bound, drive asynchronous descendant-tile uploads into
+  // atlas slots 1..8 and, on a deep atlas, 9..72. No-op for single-level
+  // providers (childPhase === "none") and once every tile has settled; writes
+  // land in the already-bound atlas texture, so no bind-group rebuild is
+  // needed. Uploads follow the camera's capacity-capped, rather than
+  // uploaded-capped, SSE demand level: a far camera keeps a root-only atlas,
+  // zooming in streams level-1 (then level-2) tiles in on demand — upstream
+  // VoxelTraversal megatexture-add semantics. `demandLevel` is recorded on the
+  // state for diagnostics. On a dynamic, capacity-capped level-2 pool, the
+  // per-tile SSE and frustum demand mask decides which tiles occupy the LRU
+  // slots. Static paths ignore a null mask.
   if (cache.usingRealData && cache.dataUpload) {
     const du = cache.dataUpload;
     const demandLevel = computeVoxelDemandLevel(primitive, frameState, du);
@@ -3375,23 +3310,22 @@ function updateWebGPUVoxelPrimitive(
     );
   }
 
-  // PARITY-VOXEL-COLOR-PARITY — once a REAL voxel provider's root tile is
-  // bound, the COLOR pipeline must use the VOXEL_CUSTOM_SHADER_COLOR define so
-  // the ray-march applies the default voxel customShader colour mapping +
-  // WebGL-matching front-to-back accumulation (matching the gray
-  // VoxelBox3DTiles appearance) instead of the raw-texel integral. The pick +
-  // velocity pipelines keep defines=0 (they don't colour-accumulate), and the
-  // placeholder / no-provider path never sets `usingRealData` so its module
-  // stays defines=0 → off-gate byte-identical. Applied here (not inside the
-  // one-shot upload block) so a mid-session format/MSAA rebuild — which resets
+  // Once a real voxel provider's root tile is bound, the color pipeline must
+  // use the VOXEL_CUSTOM_SHADER_COLOR define so the ray-march applies the
+  // default voxel customShader colour mapping + WebGL-matching front-to-back
+  // accumulation (matching the gray VoxelBox3DTiles appearance) instead of the
+  // raw-texel integral. The pick + velocity pipelines keep defines=0 (they
+  // don't colour-accumulate), and the placeholder / no-provider path never sets
+  // `usingRealData`, so its module stays at defines=0. Apply this outside the
+  // one-shot upload block so a runtime format or MSAA rebuild, which resets
   // `colorDescriptor` back to the base module — re-patches to the parity
   // module. The name check makes it idempotent + zero-cost per steady frame.
-  // VOXEL-USER-CUSTOMSHADER — when the primitive carries a USER native-WGSL
-  // customShader, the desired module is the generated chunk + VOXEL_WGSL with
-  // the nested VOXEL_USER_CUSTOM_SHADER define; otherwise the Batch 476
-  // default-gray parity module. The name compare keeps this idempotent +
-  // zero-cost per steady frame, and also handles a MID-SESSION customShader
-  // swap/clear (the desired name changes → re-patch in either direction).
+  // When the primitive carries a native-WGSL customShader, the desired module
+  // combines its generated chunk with VOXEL_WGSL under the nested
+  // VOXEL_USER_CUSTOM_SHADER define; otherwise it uses the default-gray module.
+  // The name compare keeps this idempotent and zero-cost per steady frame, and
+  // also handles a customShader swap/clear (the desired name changes → re-patch
+  // in either direction).
   if (cache.usingRealData && cache.colorDescriptor) {
     const userInfo = resolveVoxelUserShaderInfo(primitive, cache);
     const desiredName = userInfo
@@ -3408,7 +3342,7 @@ function updateWebGPUVoxelPrimitive(
             ShaderDefine.VOXEL_USER_CUSTOM_SHADER,
           `VoxelPrimitive (user customShader #${userInfo.hash.toString(16)})`,
           // The full define mask distinguishes this variant from the base and
-          // default-parity modules. The salt has one job: separate DIFFERENT
+          // default-parity modules. The salt has one job: separate different
           // generated user shader bodies sharing the same define set.
           userInfo.hash,
         );
@@ -3432,12 +3366,12 @@ function updateWebGPUVoxelPrimitive(
         cache.colorDescriptor.fragment.module = colorModule;
       }
       // The central pipeline cache keys on `descriptor.name` (+ format/MSAA),
-      // NOT on the shader-module identity — so the patched-module descriptor
-      // MUST get a distinct name or it would collide with the placeholder
+      // not on the shader-module identity, so the patched-module descriptor
+      // must get a distinct name or it would collide with the placeholder
       // "Voxel color pipeline" entry and be served the old raw-texel pipeline.
       cache.colorDescriptor.name = desiredName;
       // Force the color pipeline to re-resolve from the patched descriptor,
-      // and drop the cached draw command so it's rebuilt referencing the NEW
+      // and drop the cached draw command so it's rebuilt referencing the new
       // pipeline (the command captures `cache.pipeline` at construction —
       // leaving it stale would keep drawing with the old raw-texel pipeline).
       cache.pipeline = null;
@@ -3448,24 +3382,22 @@ function updateWebGPUVoxelPrimitive(
       cache.command = null;
     }
 
-    // NEW-VOXEL-PICK-OCTREE-COMPOSE — the per-cell pick module must carry the
-    // SAME user chunk + defines as the color module so the pick winner gate
-    // matches the displayed surface (fragmentPickVoxelMain's
-    // VOXEL_USER_CUSTOM_SHADER branch accumulates voxelMaterial.alpha; the
-    // else branch keeps the default density gate). The getOrCreate call is
-    // identical to the color one, so the module cache serves the SAME
-    // GPUShaderModule — only the pipeline (entry point) differs. Reverts to
-    // the base defines=0 module when the customShader is cleared mid-session.
-    // The name compare keeps this idempotent AND keeps the DEFAULT path
-    // untouched: with no user shader the desired name equals the init-time
-    // literal, so no patch, no pipeline churn — off-gate byte-identical.
+    // The per-cell pick module must carry the same user chunk and defines as
+    // the color module so the pick winner gate matches the displayed surface
+    // (fragmentPickVoxelMain's VOXEL_USER_CUSTOM_SHADER branch accumulates
+    // voxelMaterial.alpha; the else branch keeps the default density gate). The
+    // getOrCreate call is identical to the color one, so the module cache
+    // serves the same GPUShaderModule — only the pipeline (entry point)
+    // differs. Reverts to the base defines=0 module when the customShader is
+    // cleared. The name compare keeps this idempotent and keeps the default
+    // path untouched: with no user shader the desired name equals the init-time
+    // literal, so it causes no patch or pipeline churn.
     if (cache.pickVoxelDescriptor && cache.shaderModule) {
-      // NEW-WEBGPU-VOXEL-PICK-LOG-DEPTH — OR-in LOG_DEPTH on the pickVoxel
-      // module when the pick-fleet gate is active. The [ld] name suffix keeps
-      // the central pipeline cache (keyed on descriptor name) from serving the
-      // hyperbolic pipeline for the log module. With the gate OFF the suffix +
-      // define are empty → identical to the pre-conversion name/module, so the
-      // default path stays byte-identical.
+      // Add LOG_DEPTH to the pickVoxel module when the pick-fleet gate is
+      // active. The [ld] name suffix keeps the central pipeline cache (keyed on
+      // descriptor name) from serving the hyperbolic pipeline for the log
+      // module. With the gate off, both the suffix and define are empty and the
+      // base name and module remain in use.
       const ldSuffix = pickLogActive ? " [ld]" : "";
       const ldDefine = pickLogActive ? ShaderDefine.LOG_DEPTH : 0;
       const desiredPickName = userInfo
@@ -3500,8 +3432,8 @@ function updateWebGPUVoxelPrimitive(
         if (cache.pickVoxelDescriptor.fragment) {
           cache.pickVoxelDescriptor.fragment.module = pickModule;
         }
-        // The central pipeline cache keys on `descriptor.name` — the patched
-        // descriptor MUST get a distinct name or it would be served the
+        // The central pipeline cache keys on `descriptor.name`, so the patched
+        // descriptor must get a distinct name or it would be served the
         // density-gate pipeline cached under the base name.
         cache.pickVoxelDescriptor.name = desiredPickName;
         // Re-resolve the pipeline + rebuild the command from the patched
@@ -3515,9 +3447,8 @@ function updateWebGPUVoxelPrimitive(
     }
   }
 
-  // C-R7-RENDERER-MIGRATION (Batch 72) — resolve color + pick pipelines
-  // through the central cache. Skip the draw on not-yet-ready frames so
-  // we never enqueue commands with null pipelines.
+  // Resolve color and pick pipelines through the central cache. Skip the draw
+  // on not-yet-ready frames so commands with null pipelines are never enqueued.
   // Check after format/custom-shader invalidation: those are deliberate retry
   // boundaries and must clear an obsolete terminal error before it is thrown.
   throwUnreportedVoxelPrimaryPipelineFailure(cache);
@@ -3543,11 +3474,10 @@ function updateWebGPUVoxelPrimitive(
   // depth-mapping term, producing incorrect NDC depth. See
   // `UniformStateComputations.cleanModelViewProjectionRelativeToEye`.
   const us = context.uniformState;
-  // PARITY-VOXEL-SHAPE-PARITY (increment 2) — use the shape/OBB-derived
-  // effective model matrix so the proxy cube is placed at the voxel volume's
-  // correct world position/orientation/extent (mirrors WebGL VoxelBoxShape).
-  // Falls back to the raw modelMatrix in the off-gate (no provider) case, which
-  // keeps the placeholder path byte-identical with Batch 474.
+  // Use the shape/OBB-derived effective model matrix so the proxy cube is
+  // placed at the voxel volume's correct world position/orientation/extent
+  // (mirrors WebGL VoxelBoxShape). Without a provider, the placeholder path
+  // uses the raw modelMatrix.
   const modelMatrix = computeVoxelEffectiveModelMatrix(primitive);
   const view = us.view;
   const projection = us.projection;
@@ -3566,9 +3496,8 @@ function updateWebGPUVoxelPrimitive(
   const camModel = scratchVoxelProxyCamera;
   EncodedCartesian3.fromCartesian(camModel, scratchEncoded);
 
-  // C-R9-VOXEL-PICK (Batch 53 / refactored Batch 59) — pick ID lifecycle
-  // delegated to {@link ensurePickId}. Per-cell / per-tile pick is a
-  // separate follow-up (C-R9-VOXEL-CELL-PICK).
+  // ensurePickId owns the object-pick ID lifecycle. Cell picking uses the
+  // separate pickVoxel command below.
   const passes = frameState.passes;
   const allowAllocate = !!(passes && (passes.pick || passes.render));
   const pickState = primitive as unknown as SinglePickIdCache;
@@ -3580,49 +3509,45 @@ function updateWebGPUVoxelPrimitive(
   );
   const pickColor = pickId?.color;
 
-  // UBO layout (224 bytes = 56 floats):
+  // UBO layout (2,960 bytes = 740 floats):
   //   [ 0..15] mvpRelativeToEye        (mat4)
   //   [16..19] encodedCameraHigh + pad
   //   [20..23] encodedCameraLow  + pad
   //   [24..27] minBounds + stepSize
   //   [28..31] maxBounds + maxSteps
   //   [32..35] cameraPositionEC + densityThreshold
-  //   [36..39] pickColor               (C-R9-VOXEL-PICK, Batch 53)
-  //   [40..55] prevViewProjection      (B.9, Batch 153 — DP-H41)
-  //   [56..71] modelMatrix              (Batch 173 — B.10 voxel velocity)
-  //   [72..74] lightDirectionModel      (PARITY-VOXEL-COLOR-PARITY)
-  //   [75]     voxelLightingEnabled     (PARITY-VOXEL-COLOR-PARITY)
-  //   [76..79] voxelDimensions + metadataYUpBox   (VOXEL-SHAPEUV-CONVENTION)
-  //   [80..95] proxyToShapeUv           (VOXEL-SHAPEUV-CONVENTION)
-  //   [96..99] inputDimensions + pad    (VOXEL-SHAPEUV-CONVENTION)
-  //   [100..103] paddingBefore + pad    (VOXEL-SHAPEUV-CONVENTION)
-  //   [104..107] cameraPositionProxy + pad (VOXEL-SHAPEUV-CONVENTION)
-  //   [108..115] childSlots0/1          (VOXEL-OCTREE-LOD)
-  //   [116..119] atlasInfo: slotCount, targetLevel, pad, pad (VOXEL-OCTREE-LOD)
-  //   [120..183] l2Slots (64 level-2 atlas slots, NEW-VOXEL-OCTREE-DEEP-TRAVERSAL)
-  //   [184..199] proxyToLocal            (NEW-VOXEL-ELLIPSOID-INTERSECT)
-  //   [200..203] ellipsoidRadii + shapeType (NEW-VOXEL-ELLIPSOID-INTERSECT)
-  //   [204..207] shapeHeightMinMax + pad (NEW-VOXEL-ELLIPSOID-INTERSECT)
+  //   [36..39] pickColor
+  //   [40..55] prevViewProjection
+  //   [56..71] modelMatrix
+  //   [72..74] lightDirectionModel
+  //   [75]     voxelLightingEnabled
+  //   [76..79] voxelDimensions + metadataYUpBox
+  //   [80..95] proxyToShapeUv
+  //   [96..99] inputDimensions + pad
+  //   [100..103] paddingBefore + pad
+  //   [104..107] cameraPositionProxy + pad
+  //   [108..115] childSlots0/1
+  //   [116..119] atlasInfo: slotCount, targetLevel, pad, pad
+  //   [120..183] l2Slots (64 level-2 atlas slots)
+  //   [184..199] proxyToLocal
+  //   [200..203] ellipsoidRadii + shapeType
+  //   [204..207] shapeHeightMinMax + pad
   //   [208..211] ellipsoidLocalToShapeUvScale + longitudeRangeOrigin
-  //              (NEW-VOXEL-ELLIPSOID-SHAPEUV)
   //   [212..215] ellipsoidLocalToShapeUvTranslate + hasShapeBounds flags
-  //              (NEW-VOXEL-ELLIPSOID-SHAPEUV)
   //   [216..219] cylinderRenderRadiusMinMax + angleRangeOrigin + pad
-  //              (NEW-VOXEL-CYLINDER-SHAPEUV)
-  //   [220..223] cylinderLocalToShapeUvScale + pad (NEW-VOXEL-CYLINDER-SHAPEUV)
+  //   [220..223] cylinderLocalToShapeUvScale + pad
   //   [224..227] cylinderLocalToShapeUvTranslate + pad
-  //              (NEW-VOXEL-CYLINDER-SHAPEUV)
-  //   [228..739] l3Slots (512 level-3 atlas slots, NEW-VOXEL-OCTREE-DEEP-LEVELS)
+  //   [228..739] l3Slots (512 level-3 atlas slots)
   const data = new Float32Array(740);
   for (let i = 0; i < 16; i++) {
     data[i] = mvp[i];
   }
-  // NEW-WEBGPU-VOXEL-PICK-LOG-DEPTH — renderer-wide log-depth lanes (floats 19
-  // + 23, the former vec3 pads). Prefer the FULL-frustum encode the scene baked
+  // Pack renderer-wide log-depth values in floats 19 and 23, which are vec3
+  // padding lanes. Prefer the full-frustum encode the scene baked
   // (`uniformState._logDepthEncodeNearFar`) over the live per-slice
   // currentFrustum so the voxel pick composes with the globe/depth-plane pick
   // depth (identical recipe to WebGPUEllipsoidPrimitiveRenderer.packUniforms).
-  // Packed unconditionally — it only fills previously-zero pad lanes, so it is
+  // Packed unconditionally into reserved padding lanes, so it is
   // inert until the LOG_DEPTH pick module reads it (pick-fleet gate on).
   const ldEncode = (
     us as unknown as { _logDepthEncodeNearFar?: Float32Array | null }
@@ -3679,11 +3604,10 @@ function updateWebGPUVoxelPrimitive(
     data[39] = 0;
   }
 
-  // AUDIT_2026_05_02 B.9 (Batch 153) — DP-H41 prev viewProjection at floats
-  // 40..55 (byte offset 160). UniformState swaps `_previousViewProjection
-  // := viewProjection` at the END of `update()` AFTER returning the prior
-  // frame's value, so on frame N this slot holds frame N-1's VP. First
-  // frame falls through to identity.
+  // Pack the previous viewProjection at floats 40..55 (byte offset 160).
+  // UniformState swaps `_previousViewProjection := viewProjection` at the end
+  // of `update()` after returning the prior frame's value, so on frame N this
+  // slot holds frame N-1's VP. First frame falls through to identity.
   const prevVP = (us as { previousViewProjection?: Matrix4 })
     .previousViewProjection;
   if (prevVP) {
@@ -3707,24 +3631,24 @@ function updateWebGPUVoxelPrimitive(
     data[55] = 1;
   }
 
-  // Batch 173 - model matrix at floats 56..71 (byte offset 224). Used
-  // by the velocity VS to lift model-space cube vertices to world
+  // The model matrix at floats 56..71 (byte offset 224) lets the velocity
+  // vertex stage lift model-space cube vertices to world
   // space before applying prevViewProjection. CPU passes the
   // primitive's modelMatrix directly (no translation zeroing — the
   // velocity path needs the full transform, not the RTE-zeroed one).
   Matrix4.pack(modelMatrix, data, 56);
 
-  // PARITY-VOXEL-COLOR-PARITY — transform the sun light direction (EC) into the
-  // box's MODEL/local frame so the WGSL default-shader gray lighting
+  // Transform the sun light direction in eye coordinates into the box's local
+  // frame so the WGSL default-shader gray lighting
   // (0.5 + 0.5 * max(0, dot(entryNormalLocal, lightDirModel))) reproduces
   // WebGL's `dot(czm_normal * nLocal, czm_lightDirectionEC)`. Since
   // `dot(czm_normal * n, lEC) == dot(n, czm_normal^T * lEC)` and
-  // `czm_normal = inverseTranspose(modelView3x3)`, the light direction in model
-  // space is `czm_normal^T * lEC = inverse(modelView3x3) * lEC`. Only written
-  // when the color-parity pipeline is active (real data); the off-gate
-  // placeholder writes the historical 72-float layout implicitly zero-padded
-  // here (`data` is zero-initialised past 71), so `voxelLightingEnabled` stays
-  // 0 and the raw-texel else-branch never reads these floats.
+  // `czm_normal = inverseTranspose(modelView3x3)`, the light direction in
+  // model space is `czm_normal^T * lEC = inverse(modelView3x3) * lEC`. Only
+  // written when the color-parity pipeline is active. The placeholder path
+  // leaves this portion of `data` zero-initialized, so
+  // `voxelLightingEnabled` stays 0 and the raw-texel else-branch never reads
+  // these floats.
   if (cache.usingRealData) {
     const mvForNormal = Matrix4.multiply(view, modelMatrix, scratchMVNormal);
     Matrix4.getMatrix3(mvForNormal, scratchMV3);
@@ -3741,24 +3665,23 @@ function updateWebGPUVoxelPrimitive(
     data[74] = lightModel.z;
     data[75] = 1;
 
-    // VOXEL-SHAPEUV-CONVENTION — pack the WebGL sample-frame convention
-    // (floats 76..103) so the parity march samples through the SAME
-    // world→shapeUv→inputCoordinate chain as WebGL. Only meaningful when the
-    // real-data pipeline (VOXEL_CUSTOM_SHADER_COLOR) is active; the
-    // placeholder path leaves these floats zero and never reads them.
+    // Pack the WebGL sample-frame convention at floats 76..103 so the parity
+    // march samples through the same world→shapeUv→inputCoordinate chain as
+    // WebGL. Only meaningful when the real-data pipeline
+    // (VOXEL_CUSTOM_SHADER_COLOR) is active; the placeholder path leaves these
+    // floats zero and never reads them.
     packVoxelSampleFrame(primitive, modelMatrix, cache, data);
-    // The REAL proxy-space camera for the physically-correct parity ray
-    // origin (the placeholder/pick paths keep the historical camera-centered
-    // phantom march and never read this field).
+    // The proxy-space camera supplies the physically correct ray origin for the
+    // real-data path. Placeholder and pick paths retain the camera-centered
+    // phantom march and never read this field.
     data[104] = camModel.x;
     data[105] = camModel.y;
     data[106] = camModel.z;
 
-    // VOXEL-OCTREE-LOD — per-child atlas slots + slot count + this frame's
-    // target LOD level (floats 108..119). Single-tile textures pack
-    // slotCount = 1 and targetLevel = 0, which the WGSL reduces to the exact
-    // historical sampling math (off-gate byte-identical). The placeholder
-    // path never reaches this block and leaves the floats zero.
+    // Pack per-child atlas slots, slot count, and this frame's target LOD at
+    // floats 108..119. Single-tile textures use slotCount = 1 and
+    // targetLevel = 0, which the WGSL reduces to the root sampling path. The
+    // placeholder path never reaches this block and leaves the floats zero.
     const du = cache.dataUpload;
     if (du) {
       for (let i = 0; i < 8; i++) {
@@ -3768,37 +3691,36 @@ function updateWebGPUVoxelPrimitive(
       const targetLevel = computeVoxelTargetLevel(primitive, frameState, du);
       du.lastTargetLevel = targetLevel;
       data[117] = targetLevel;
-      // NEW-VOXEL-OCTREE-DEEP-TRAVERSAL — level-2 slot indirection (-1 =
-      // not uploaded → the WGSL walk stops at the level-1 ancestor). Packed
+      // Level-2 slot indirection uses -1 for an unavailable tile, which stops
+      // the WGSL walk at the level-1 ancestor. It is packed
       // verbatim even on shallower atlases (all -1 there) so a zero-filled
       // tail can never be misread as "level-2 tile at slot 0".
       for (let i = 0; i < 64; i++) {
         data[120 + i] = du.l2Slots[i];
       }
-      // NEW-VOXEL-OCTREE-DEEP-LEVELS — level-3 slot indirection (floats
-      // 228..739; -1 = not uploaded -> the walk stops at the level-2 ancestor).
-      // du.l3Slots is all -1 on shallower atlases, so this is a byte-identical
-      // zero/-1 tail there (never read: the WGSL walk only consults level 3
-      // when targetLevel reaches 3, which needs an uploaded level-3 tile).
+      // Level-3 slot indirection occupies floats 228..739; -1 stops the walk at
+      // the level-2 ancestor. du.l3Slots is all -1 on shallower atlases, so
+      // this is a byte-identical zero/-1 tail there (never read: the WGSL walk
+      // only consults level 3 when targetLevel reaches 3, which needs an
+      // uploaded level-3 tile).
       for (let i = 0; i < 512; i++) {
         data[228 + i] = du.l3Slots[i];
       }
     }
 
-    // NEW-VOXEL-ELLIPSOID-INTERSECT / NEW-VOXEL-CYLINDER-SHAPEUV —
-    // shape-typed intersection fields (floats 184..207 + 216..227).
-    // Zero-filled (shapeType 0 = the bit-identical BOX branch) unless the
-    // provider's shape is ELLIPSOID or CYLINDER.
+    // Pack shape-typed intersection fields at floats 184..207 and 216..227.
+    // Shape type zero selects the box branch; ellipsoid and cylinder providers
+    // overwrite the zero-filled shape-specific fields.
     packVoxelShapeIntersect(primitive, modelMatrix, data);
   }
 
   device.queue.writeBuffer(cache.uniformBuffer!, 0, data);
 
-  // FEAT-GAP-09 (Batch 100) — per-frame effects BG refresh. The
-  // shared helper caches per frame and returns the placeholder when
-  // none of (shadow, csm, atmosphereLut) is active, so this is cheap
-  // and idempotent. We swap slot [1] of the cached command's bind
-  // groups so a single command instance survives multi-frame use.
+  // Refresh the effects bind group each frame. The shared helper caches per
+  // frame and returns the placeholder when none of shadow, CSM, or the
+  // atmosphere LUT is active, so this is cheap and idempotent. Swap slot [1] of
+  // the cached command's bind groups so one command instance survives
+  // multi-frame use.
   const effectsBG =
     getOrCreateSharedAdvancedEffectsBG(frameState) ??
     getPlaceholderEffects(device).bindGroup;
@@ -3818,35 +3740,34 @@ function updateWebGPUVoxelPrimitive(
       cache.bindGroup,
       effectsBG,
     ];
-    // PARITY-VOXEL-COLOR-PARITY — the color pipeline is swapped from the
-    // placeholder (defines=0) to the customShader-parity pipeline once real
-    // voxel data uploads and resolves ASYNCHRONOUSLY. The command may have been
-    // created earlier bound to the placeholder pipeline; re-point it at the
+    // After real voxel data uploads, the color pipeline swaps from the
+    // placeholder (defines=0) to the customShader-parity pipeline. The
+    // replacement resolves asynchronously, so the command may have been
+    // created while bound to the placeholder pipeline; re-point it at the
     // current `cache.pipeline` so the drawn command uses the parity shader
     // rather than the stale raw-texel one. Idempotent (a no-op once equal).
     (cache.command as { pipeline?: GPURenderPipeline | null }).pipeline =
       cache.pipeline;
   }
 
-  // Batch 173 - B.10 NEW-ADVANCED-MOTION-VECTORS attach. Voxel
-  // geometry is the static unit cube — no prev VB needed. The velocity
+  // Attach the velocity command. Voxel geometry is the static unit cube, so no
+  // previous vertex buffer is needed. The velocity
   // VS reuses the same vertex buffer + bind group; only the entry
   // point changes. Same lifecycle as the other advanced renderers.
   attachVoxelVelocityCommand(device, context, frameState, cache);
 
   commandList.push(cache.command);
 
-  // C-R9-VOXEL-PICK (Batch 53) — pick command. Same vertex stage and
-  // bind group as the color command, different fragment entry. Wired
-  // onto the color command's derivedCommands.picking.pickCommand so the
-  // Batch 29 dispatcher (`selectCommandVariant`) routes to it during
-  // pick passes; H-R3 (Batch 35) already added Pass.VOXELS to the pick
-  // walk, so the command is reachable.
+  // The object-pick command uses the color command's vertex stage and bind
+  // group with a different fragment entry. It is wired onto the color command's
+  // derivedCommands.picking.pickCommand so `selectCommandVariant` routes to it
+  // during pick passes. Pass.VOXELS participates in the pick walk, so the
+  // command is reachable.
   if (pickColor) {
     // Pick path uses the placeholder effects BG — the pick fragment
     // entry doesn't reference `effects` / `atmosphere*`, but the
     // pipeline layout now includes the effects BGL (shared layout
-    // with color + velocity), so we MUST bind something at slot 1.
+    // with color + velocity), so slot 1 still requires a binding.
     // Placeholder is safe — WGSL allows unused bindings.
     const pickEffectsBG = getPlaceholderEffects(device).bindGroup;
     if (!cache.pickCommand) {
@@ -3867,18 +3788,17 @@ function updateWebGPUVoxelPrimitive(
     );
   }
 
-  // C-R9-VOXEL-CELL-PICK — per-cell pick variant for `scene.pickVoxel`.
-  // Real-data path only: the placeholder gradient has no cell convention to
-  // decode, and the off-gate (no provider) must not allocate the pipeline.
-  // Attached every frame (idempotent) onto
-  // `derivedCommands.picking.pickVoxelCommand`; `selectCommandVariant`
-  // routes to it ONLY during `passes.pickVoxel`, so the color render and the
-  // regular object pick are untouched.
+  // Per-cell pick variant for `scene.pickVoxel`. Real-data path only: the
+  // placeholder gradient has no cell convention to decode, and a primitive
+  // without a provider must not allocate the pipeline. Attached every frame
+  // (idempotent) onto `derivedCommands.picking.pickVoxelCommand`;
+  // `selectCommandVariant` routes to it only during `passes.pickVoxel`, so the
+  // color render and the regular object pick are untouched.
   if (cache.usingRealData) {
     attachVoxelCellPickCommand(device, context, cache);
   }
 
-  // C11-13 — attachment is intentionally complete before selection. Both the
+  // Attachment is intentionally complete before selection. Both the
   // velocity and cell-pick commands materialize lazily, and object-pick may be
   // allocated only when a pick ID exists. Updating the four live command
   // objects here makes outside ↔ inside transitions allocation-free and keeps
@@ -3890,12 +3810,11 @@ function updateWebGPUVoxelPrimitive(
 }
 
 /**
- * C-R9-VOXEL-CELL-PICK — resolve the per-cell pick pipeline (lazily, through
- * the central pipeline cache when available) and attach the pick-voxel
- * command onto the color command's `derivedCommands.picking.pickVoxelCommand`
- * slot. Mirrors the `attachVoxelVelocityCommand` lifecycle: called every
- * frame on the real-data path, no-ops until the async pipeline resolves,
- * idempotent once attached.
+ * Resolves the per-cell pick pipeline lazily through the central pipeline cache
+ * when available, and attaches the pick-voxel command onto the color command's
+ * `derivedCommands.picking.pickVoxelCommand` slot. Mirrors the
+ * `attachVoxelVelocityCommand` lifecycle: called every frame on the real-data
+ * path, no-ops until the async pipeline resolves, idempotent once attached.
  * @private
  */
 function attachVoxelCellPickCommand(
@@ -4017,10 +3936,9 @@ function attachVoxelCellPickCommand(
 }
 
 /**
- * Batch 173 - B.10 NEW-ADVANCED-MOTION-VECTORS velocity attach for
- * voxel volumes. Builds the velocity pipeline lazily, attaches a
- * `velocityCommand` to `cache.command`. The TAA pass walks the
- * command list for `cmd.velocityCommand` and dispatches it into the
+ * Attaches velocity rendering for voxel volumes. Builds the velocity pipeline
+ * lazily and attaches a `velocityCommand` to `cache.command`. The TAA pass
+ * walks the command list for `cmd.velocityCommand` and dispatches it into the
  * rg16float velocity texture.
  *
  * Voxel geometry is a static unit cube — no prev vertex buffer
@@ -4190,10 +4108,9 @@ function destroyWebGPUVoxelResources(
 }
 
 /**
- * C-R9-VOXEL-CELL-PICK-TAIL — the minimal provider fields that
- * {@link VoxelCell.fromKeyframeNode} reads (via the primitive) but that the
- * WebGPU feature-renderer path never copies onto the primitive (initFromProvider
- * is WebGL-only).
+ * The minimal provider fields that {@link VoxelCell.fromKeyframeNode} reads
+ * through the primitive, but that the WebGPU feature-renderer path never copies
+ * onto the primitive (initFromProvider is WebGL-only).
  */
 interface VoxelPickProviderLike {
   dimensions?: Cartesian3;
@@ -4202,8 +4119,8 @@ interface VoxelPickProviderLike {
 }
 
 /**
- * C-R9-VOXEL-CELL-PICK-TAIL — copy the provider-derived fields VoxelCell reads
- * (`dimensions`, `_paddingBefore`, `_paddingAfter`) onto the primitive. On the
+ * Copies the provider-derived fields VoxelCell reads (`dimensions`,
+ * `_paddingBefore`, `_paddingAfter`) onto the primitive. On the
  * WebGL path these are set by `initFromProvider`; the WebGPU feature-renderer
  * path skips it, leaving them at their zero-Cartesian constructor defaults.
  * Idempotent — mirrors `initFromProvider`'s provider-field copy exactly.
@@ -4231,22 +4148,21 @@ function ensureVoxelPickPrimitiveFields(
 }
 
 /**
- * C-R9-VOXEL-CELL-PICK-TAIL — build the keyframe-node handle `Scene.pickVoxel`
- * needs to construct a {@link VoxelCell} from a WebGPU cell-pick readback.
+ * Builds the keyframe-node handle `Scene.pickVoxel` needs to construct a
+ * {@link VoxelCell} from a WebGPU cell-pick readback.
  *
  * The WebGL path resolves the picked `tileIndex` through the CPU-side
  * `VoxelTraversal.findKeyframeNode`, but the WebGPU feature-renderer path never
  * runs `initFromProvider`, so `primitive._traversal` (and its keyframeNode
- * table) is undefined. This resolver services the ROOT tile (megatextureIndex 0
- * — the single-tile / coarse case, WebGL-byte-identical per
- * VOXEL-CELL-PICK-RELAND) from the FR's uploaded root content, AND — since
- * NS-VOXEL-REFINED-TILE-CELL-RETENTION — the REFINED tiles (megatextureIndex
- * >= 1) by reverse-mapping the picked atlas slot back to its spatial tile
+ * table) is undefined. This resolver services the root tile (megatextureIndex 0,
+ * the single-tile or coarse case) from the feature renderer's uploaded root
+ * content. It services refined tiles (megatextureIndex >= 1) by reverse-mapping
+ * the picked atlas slot back to its spatial tile
  * coordinate and its retained CPU-side child content. Either way it returns a
  * `{ spatialNode, content }` object shaped exactly like a WebGL KeyframeNode so
  * `VoxelCell.fromKeyframeNode` reads the same per-sample metadata + OBB.
  *
- * The picked `tileIndex` is the ATLAS SLOT emitted by the pick march
+ * The picked `tileIndex` is the atlas slot emitted by the pick march
  * (0 = root; 1..8 = level-1 children; 9..72 = level-2; 73..584 = level-3). The
  * slot→tile inverse is read from the live `childSlots`/`l2Slots`/`l3Slots`
  * arrays, so it is correct for both the static full atlas and the dynamic LRU
@@ -4279,8 +4195,7 @@ function getVoxelPickKeyframeNode(
 
   // Resolve the picked atlas slot to its spatial tile coordinate + retained
   // content. Slot 0 is the root (level 0); slots >= 1 reverse-map through the
-  // slot arrays to the retained child/L2/L3 content
-  // (NS-VOXEL-REFINED-TILE-CELL-RETENTION).
+  // slot arrays to the retained child/L2/L3 content.
   let level = 0;
   let tileX = 0;
   let tileY = 0;
@@ -4343,15 +4258,15 @@ function getVoxelPickKeyframeNode(
 }
 
 /**
- * NS-VOXEL-REFINED-TILE-CELL-RETENTION — reverse-map a picked ATLAS SLOT
- * (megatextureIndex >= 1) to its octree tile coordinate (Z-up shape frame) and
- * the retained CPU-side content for that tile. The slot→tile-index inverse is
- * read from the live slot arrays (correct for the static full atlas AND the
- * dynamic LRU pool, where the slot assignment is not positional). The per-level
- * tile-index → (x, y, z) decode is the radix-2 extension of Octree.glsl's
- * `getOctreeChildData` octant order (level 1: childIndex = x + 2y + 4z; level 2:
- * x + 4y + 16z; level 3: x + 8y + 64z), mirroring `driveTileLevelUploads`'s
- * request coordinates.
+ * Reverse-maps a picked atlas slot (megatextureIndex >= 1) to its octree tile
+ * coordinate in the Z-up shape frame and the retained CPU-side content. The
+ * slot-to-tile-index inverse is read from the live slot arrays, which supports
+ * both the static full atlas and the dynamic LRU pool, where the slot
+ * assignment is not positional. The per-level tile-index → (x, y, z) decode is
+ * the radix-2 extension of Octree.glsl's `getOctreeChildData` octant order
+ * (level 1: childIndex = x + 2y + 4z; level 2: x + 4y + 16z;
+ * level 3: x + 8y + 64z), mirroring `driveTileLevelUploads`'s request
+ * coordinates.
  *
  * @returns the tile coordinate + content, or undefined when no resident slot
  * matches or its content is not retained.
@@ -4422,7 +4337,7 @@ export {
   destroyWebGPUVoxelResources,
   getVoxelPickKeyframeNode,
   getVoxelPickReadbackIdentity,
-  // C11-13 focused, device-free contract hooks.
+  // Device-free hooks for proxy winding contracts.
   createVoxelProxyIndices,
   computeVoxelProxyFirstIndex,
   updateVoxelProxyCommandFirstIndices,

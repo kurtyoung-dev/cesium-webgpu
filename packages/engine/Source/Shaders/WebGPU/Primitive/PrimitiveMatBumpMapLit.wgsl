@@ -6,12 +6,11 @@
 // Vertex: posHigh(3) + posLow(3) + normal(3) + st(2) = 11 floats = 44 bytes
 // Matches CesiumJS Material.BumpMapType: image, channel, strength, repeat
 //
-// CSM Slice 2d — receives cascaded shadows through the primitive
-// effects bind group at `@group(3)` (texture group occupies @group(2)).
+// Receives cascaded shadows through the primitive effects bind group at
+// `@group(3)`; the texture group occupies `@group(2)`.
 //
-// Batch 165 - B.12 chunk usage. Point-light cube shadow path calls
-// csm_samplePointShadow from chunks/functions; the marker below tells
-// WebGPUPrimitiveShaders.js to prepend the chunk's WGSL at load time.
+// Point-light cube-shadow sampling uses `csm_samplePointShadow`; the marker
+// below causes WebGPUPrimitiveShaders.js to prepend the shared function.
 // @chunk csm_samplePointShadow
 
 struct VertexInput {
@@ -45,7 +44,7 @@ struct CameraUniforms {
     previousViewProjection: mat4x4<f32>,
     inverseViewQuaternion: vec4<f32>,
     //>>ifdef LOG_DEPTH
-    // ─── Renderer-wide log depth (Approach A) ───
+    // Renderer-wide log-depth parameters:
     //   x = frustum near, y = frustum far,
     //   z = oneOverLog2FarDepthFromNearPlusOne (the log-depth factor),
     //   w = reserved. Packed by WebGPUPrimitiveCommands.writeRTEUniformsLit
@@ -67,7 +66,7 @@ struct MaterialUniforms {
 @group(0) @binding(0) var<uniform> camera: CameraUniforms;
 @group(1) @binding(0) var<uniform> material: MaterialUniforms;
 @group(2) @binding(0) var textureSampler: sampler;
-// DP-H20 (Batch 25) — BumpMap uses TWO textures:
+// BumpMap uses two textures:
 //   @binding(1) diffuseTexture → base color (material uniform `image`)
 //   @binding(2) bumpTexture    → height data for normal perturbation
 //                                (material uniform `bumpMap`)
@@ -87,9 +86,9 @@ struct EffectsUniforms {
     clipPlaneEqHW: array<vec4<f32>, 8>,
     atmosphereLutControl: vec4<f32>,
     csmControl: vec4<f32>,
-    // Batch 165 - extends struct through pointLightPositionRTE (offset
-    // 336) for the B.12 point-light fields. edgeControl + edgeViewport
-    // are padding only.
+    // Declared through `pointLightPositionRTE` at byte offset 336 so the
+    // cube-shadow controls retain their shared effects-buffer offsets;
+    // `edgeControl` and `edgeViewport` are padding in this shader.
     edgeControl: vec4<f32>,
     edgeViewport: vec4<f32>,
     pointLightControl: vec4<f32>,
@@ -110,7 +109,7 @@ struct CSMParams {
 @group(3) @binding(0) var<uniform> effects: EffectsUniforms;
 @group(3) @binding(1) var shadowDepthTex: texture_depth_2d;
 @group(3) @binding(2) var shadowCompSampler: sampler_comparison;
-// FEAT-GAP-09 (Batch 201) — aerial-perspective LUT bindings 7/8/9.
+// Aerial-perspective lookup textures at bindings 7, 8, and 9.
 // Populated by WebGPUEffectsBindGroup.js when atmosphere LUT is active;
 // otherwise resolve to 1×1 placeholder textures. The shader gates all
 // LUT sampling on `effects.atmosphereLutControl.x > 0.5` so the
@@ -120,13 +119,13 @@ struct CSMParams {
 @group(3) @binding(9) var atmosphereLutSampler: sampler;
 @group(3) @binding(10) var<uniform> csmParams: CSMParams;
 @group(3) @binding(11) var cascadeDepthArray: texture_depth_2d_array;
-// Batch 165 - B.12 point-light cube depth.
+// Point-light cube-depth texture.
 @group(3) @binding(17) var pointLightCubeDepth: texture_depth_cube;
 
 //>>ifdef LOG_DEPTH
-// Renderer-wide log depth (Approach A). These mirror the canonical definitions
-// in PrimitivePhongColor.wgsl / Shaders/WebGPU/chunks/functions/csm_*LogDepth —
-// keep them byte-compatible. near/far/factor come from camera.logDepth.
+// Renderer-wide log-depth helpers mirror the canonical definitions in
+// PrimitivePhongColor.wgsl and `chunks/functions/csm_*LogDepth`; they must
+// remain byte-compatible. near/far/factor come from camera.logDepth.
 fn csm_vertexLogDepth(clipPosition: vec4<f32>, near: f32) -> f32 {
     return (clipPosition.w - near) + 1.0;
 }
@@ -192,10 +191,10 @@ fn sampleOneCascade(eyePos: vec3<f32>, cascadeIdx: u32, depthBias: f32) -> f32 {
         depth > 1.0 || depth < 0.0) {
         return 1.0;
     }
-    // CSM-PCF-SOFT: soften the cascade edge with a 3x3 PCF box kernel,
-    // matching WebGL's czm_shadowVisibility USE_SOFT_SHADOWS path. The
-    // kernel radius (in shadow texels) is effects.csmControl.y; 0 keeps
-    // the original single hardware-comparison tap (hard edge).
+    // A 3-by-3 percentage-closer-filtering kernel softens cascade edges,
+    // matching WebGL's `czm_shadowVisibility` soft-shadow path. The radius in
+    // shadow texels is `effects.csmControl.y`; zero selects one hardware
+    // comparison tap and a hard edge.
     let csmPcfRadius = effects.csmControl.y;
     if (csmPcfRadius <= 0.0) {
       return textureSampleCompareLevel(
@@ -247,7 +246,7 @@ fn computeShadowFactorCSM(
     return mix(effects.shadowDarkness, 1.0, visibility);
 }
 
-// Batch 165 - B.12 chunk-based point-light receive.
+// Point-light cube-shadow sampling through the shared chunk.
 fn computeShadowFactorPointLight(fragRTE: vec3<f32>) -> f32 {
     if (effects.shadowDarkness >= 1.0) { return 1.0; }
     let visibility = csm_samplePointShadow(
@@ -278,18 +277,15 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
     //>>ifdef LOG_DEPTH
     // Renderer-wide log depth: interpolate linear depthFromNearPlusOne and clamp
     // clip-z so the FS-written log depth isn't pre-empted by clipping. near =
-    // camera.logDepth.x; computed from clipPosition.w BEFORE the clamp.
+    // camera.logDepth.x; computed from clipPosition.w before the clamp.
     output.v_logDepth = csm_vertexLogDepth(output.clipPosition, camera.logDepth.x);
     output.clipPosition = csm_updatePositionDepth(output.clipPosition);
     //>>endif
     return output;
 }
 
-// Slice 5c-B Batch 121 — G-buffer MRT output struct (added by
-// Tools/batch-121-wrap-lit-shaders.mjs). Slot 0 = lit color, slot 1 =
-// eye-space normal + roughness. NormalMap / BumpMap variants emit the
-// geometric vertex normal for now; a follow-up batch can switch them
-// to their perturbed-normal variable for wider Slice 4 divergence.
+// G-buffer output: slot 0 stores lit color; slot 1 stores the eye-space
+// normal and roughness.
 struct FragOutput {
     @location(0) color: vec4<f32>,
     @location(1) normalRoughness: vec4<f32>,
@@ -354,16 +350,15 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
     let specular = pow(NdotH, 64.0);
 
     let ambient = 0.5;
-    // DP-H20 — read the actual diffuse texture instead of the
-    // hardcoded gray (pre-Batch 25 bug). Sampled at the same UV as the
-    // bump map so per-texel correspondence matches WebGL.
+    // Sample the diffuse texture at the same UV as the bump map so their
+    // texels correspond as they do in WebGL.
     let baseDiffuse = textureSample(diffuseTexture, textureSampler, uv).rgb;
     let ambientTerm = baseDiffuse * ambient;
     let diffuse = 0.5 * (max(dot(perturbedNormal, vec3<f32>(0.0, 0.0, 1.0)), 0.0) + max(dot(perturbedNormal, vec3<f32>(0.0, 1.0, 0.0)), 0.0));
     var directTerm = baseDiffuse * diffuse;
     var spec = vec3<f32>(specular * 0.3);
 
-    // Batch 165 - point-light cube shadows take precedence over CSM.
+    // Point-light cube shadows take precedence over the cascaded shadow map.
     if (effects.pointLightControl.x > 0.5) {
         let shadowFactor = computeShadowFactorPointLight(input.eyePosition);
         directTerm = directTerm * shadowFactor;
@@ -378,7 +373,7 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
         spec = spec * shadowFactor;
     }
 
-    // Slice 5d Batch 155 — additive Forward+ clustered lighting on the
+    // Additive Forward+ clustered lighting uses the
     // bump-perturbed eye-space normal. baseColor = textured albedo;
     // F0/roughness synthesized neutral dielectric (no PBR material).
     let clusteredContrib = evalClusteredLights(
@@ -391,11 +386,10 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
         1.0,
     );
 
-    // FEAT-GAP-09 (Batch 201) — aerial-perspective fog blend. Pattern
-    // mirrors PrimitivePhongTexturedColor.wgsl. Single texture sample
-    // pair (transmittance + inscatter) replaces the per-fragment ray
-    // march. Gated on `atmosphereLutControl.x` so off-path costs one
-    // uniform compare.
+    // Aerial-perspective fog blend matching PrimitivePhongTexturedColor.wgsl.
+    // A transmittance and inscatter lookup pair replaces the per-fragment ray
+    // march. `atmosphereLutControl.x` gates the lookups, so the disabled path
+    // costs one uniform comparison.
     if (effects.atmosphereLutControl.x > 0.5) {
         let innerRadius = effects.atmosphereLutControl.y;
         let thickness = max(1.0, effects.atmosphereLutControl.z);
@@ -432,11 +426,9 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
         }
     }
 
-    // Slice 5c-B Batch 135 — emit the bump-perturbed normal (same as
-    // the lighting eval) to G-buffer slot 1. See PrimitiveMatNormalMapLit
-    // for the full rationale; Bump and NormalMap diverge in how the
-    // perturbation is computed but the G-buffer consumer benefit is
-    // identical.
+    // Store the bump-perturbed normal used by lighting in G-buffer slot 1.
+    // BumpMap and NormalMap compute perturbation differently, but their
+    // G-buffer consumers require the same lighting normal.
     var mrtOut: FragOutput;
     mrtOut.color = finalColor;
     mrtOut.normalRoughness = vec4<f32>(perturbedNormal, 0.5);

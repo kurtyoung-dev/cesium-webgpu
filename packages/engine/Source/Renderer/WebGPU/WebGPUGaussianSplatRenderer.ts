@@ -62,7 +62,8 @@ import {
   getPlaceholderEffects,
 } from "./WebGPUEffectsBindGroup.js";
 import { getOrCreateSharedAdvancedEffectsBG } from "./WebGPUPrimitiveCommands.js";
-// Slice 5c-B Phase 1 (Batch 112) — scene-FB target helper.
+// Use the scene-framebuffer target helper so the pipeline matches the active
+// scene format.
 import { makeSceneFBTargets } from "./WebGPUSceneFBTargetHelpers.js";
 
 interface GaussianSplatCache {
@@ -70,106 +71,96 @@ interface GaussianSplatCache {
   pipeline: GPURenderPipeline | null;
   oitPipeline: GPURenderPipeline | null;
   pickPipeline: GPURenderPipeline | null;
-  // NEW-GS-CLASSIFICATION-DEPTH (Batch 176) — depth-write variant of the
-  // color pipeline. Same layout / vertex / fragment / blend; only the
-  // depthStencil block flips `depthWriteEnabled: true`. Populated on
-  // the splat WebGPUDrawCommand as `classificationDepthPipeline` so the
-  // dispatcher can swap to it when `depthForTranslucentClassification`
-  // is set (Cesium3DTile.update flips that flag for splat-pass commands
-  // alongside translucent commands). Splats can then participate as
-  // classifier targets — clipping volumes, draped classifiers, etc.
-  // pick the splat surface depth instead of the geometry behind it.
-  // Without this variant the splat alpha-blend would let classifiers
-  // pass through to the next-deepest opaque surface.
+  // Depth-writing variant of the color pipeline. It keeps the same layout,
+  // shaders, and blend state; only `depthWriteEnabled` changes. The dispatcher
+  // selects it through `classificationDepthPipeline` when translucent
+  // classification needs the splat surface depth. Without this variant,
+  // classifiers pass through the alpha-blended splats to the next opaque
+  // surface.
   depthWritePipeline: GPURenderPipeline | null;
   shaderModule: GPUShaderModule | null;
   bindGroup: GPUBindGroup | null;
   quadVertexBuffer: GPUBuffer | null;
-  // NEW-SPLAT-SORT-CONSUME-INDEXES (Batch 288) — splat attributes now live in
-  // a read-only STORAGE buffer (group 0 binding 1) the VS reads via
-  // sortedIndices[instance_index]. `sortedIndexBuffer` (binding 2) holds the
-  // CPU back-to-front depth permutation. The bind group needs rebuilding when
-  // either buffer is reallocated (count change).
+  // Splat attributes live in a read-only storage buffer at group 0 binding 1.
+  // The vertex shader indexes it through `sortedIndices[instance_index]`, with
+  // the back-to-front permutation at binding 2. Reallocation of either buffer
+  // invalidates the bind group.
   splatBuffer: GPUBuffer | null;
   sortedIndexBuffer: GPUBuffer | null;
   sortedIndexCount: number;
-  // C15-G5 — packed SH coefficients (group 0 binding 4), the primitive's
-  // `_shData` uploaded verbatim. Always allocated (a 16-byte placeholder when
-  // the content carries no SH) so the bind group matches the ONE shared layout
-  // regardless of the SPLAT_SPHERICAL_HARMONICS variant.
+  // Packed spherical-harmonic coefficients at group 0 binding 4, uploaded
+  // verbatim from `_shData`. A 16-byte placeholder keeps the binding valid for
+  // content without coefficients, allowing both shader variants to share one
+  // layout.
   shBuffer: GPUBuffer | null;
   // Identity of the `_shData` view last uploaded — the same producer-identity
   // dirty signal `splatSourceToken` is, and for the same reason: a snapshot
   // rebuild that lands on the same count and degree still publishes a fresh
-  // subarray over a REUSED scratch buffer, so neither count nor degree is a
+  // subarray over a reused scratch buffer, so neither count nor degree is a
   // sufficient signal on its own.
   shSourceToken: ArrayBufferView | null;
   // Degree resident in `shBuffer` (0 = none), packed into the UBO each frame
   // as `u.shDegree`.
   shDegree: number;
   // Whether the SH term is active for the resident data. Separate from
-  // `resourcesShEnabled` (which describes the compiled PIPELINES) for exactly
+  // `resourcesShEnabled` (which describes the compiled pipelines) for exactly
   // the reason `layoutPacked` / `resourcesLayoutPacked` are separate: the two
   // are legitimately out of step while a cold variant compiles.
   shEnabled: boolean;
   resourcesShEnabled: boolean;
-  // C15-G3 — which attribute-record layout `splatBuffer` currently holds, and
+  // The attribute-record layout currently held by `splatBuffer`, and
   // therefore which `SPLAT_PACKED_WASM` shader variant the pipelines must be
   // built from. `true` = the 32-byte WASM `generate_splat_texture` record
-  // (production); `false` = the historical 64-byte 16-f32 record (the three
-  // synthetic probes). Drives `splatRecordBytes`, the velocity prev-buffer
+  // (production); `false` = the legacy 64-byte 16-f32 record used by
+  // synthetic primitives. This drives `splatRecordBytes`, the velocity prev-buffer
   // size, and whether the in-renderer comparator sort is reachable at all.
   layoutPacked: boolean;
-  // The layout the PIPELINE RESOURCES were compiled for. Tracked separately
-  // from `layoutPacked` (which describes the resident BUFFER) because the two
+  // The layout the pipeline resources were compiled for. Tracked separately
+  // from `layoutPacked` (which describes the resident buffer) because the two
   // are legitimately out of step for the frames between a layout flip and the
   // pipeline resolving: `tryResolveSplatPipelines` returns early while a cold
-  // variant compiles (~2.7 s measured on this fork), and the buffer commit sits
-  // BELOW that return. Comparing the flip against the buffer's layout would
-  // therefore re-invalidate — and re-request — the pipelines on every frame of
-  // that window.
+  // variant compiles, and the buffer commit sits below that return. Comparing
+  // the flip against the buffer's layout would therefore re-invalidate — and
+  // re-request — the pipelines on every frame of that window.
   resourcesLayoutPacked: boolean;
   // Bytes per splat in `splatBuffer` — 32 packed, 64 legacy. Kept next to
-  // `layoutPacked` so every size computation reads ONE number instead of
-  // re-deriving the stride at each site (the class of bug this row exists to
-  // fix was a stride disagreement between producer and consumer).
+  // `layoutPacked` so every size computation reads one number instead of
+  // re-deriving the stride at each site and risking a producer-consumer
+  // disagreement.
   splatRecordBytes: number;
-  // Identity of the object that PRODUCED the resident bytes: the packed
+  // Identity of the object that produced the resident bytes: the packed
   // payload object for the production path, the typed array itself for the
   // legacy path. A count-preserving re-commit (a snapshot rebuild that lands
   // on the same splat count) changes this and nothing else, so the count alone
   // is not a sufficient dirty signal.
   splatSourceToken: object | null;
-  // C15-G3 — identity + length of the `primitive._indexes` permutation last
+  // Identity and length of the `primitive._indexes` permutation last
   // uploaded to `sortedIndexBuffer`. The WASM radix sort resolves into a fresh
   // array, so identity is the re-upload signal.
   providedIndexSource: ArrayBufferView | null;
-  // C15-G4 — provenance of the RESIDENT permutation, mirrored from the
+  // Provenance of the resident permutation, mirrored from the
   // producer's stamp (`GaussianSplatPrimitive._indexesSortSequence` /
   // `_indexesDataGeneration`). The upload boundary is the swap point, so this
   // pair is what makes the swap monotonic: a resolution for an older camera
   // pose, or for a superseded data generation, is refused rather than allowed
-  // to regress the order already on the GPU. `-1` = nothing resident (the
-  // identity seed), which every stamped permutation beats.
+  // to regress the order already on the GPU. `-1` means nothing is resident
+  // (the identity seed), which every stamped permutation beats.
   providedIndexSequence: number;
   providedIndexGeneration: number;
-  // C15-G4 instruments. `comparatorSorts` is the `C15-G4` exit gate's own
-  // observable: the row's contract is that the synchronous main-thread
-  // comparator NEVER runs on production content, and "never" has to be
-  // measured, not inferred. `providedSortUploads` counts worker permutations
-  // that landed; `supersededSortUploads` counts the ones the sequence guard
-  // refused.
+  // Sorting counters expose the actual execution path. `comparatorSorts`
+  // counts synchronous main-thread sorts, `providedSortUploads` counts worker
+  // permutations uploaded, and `supersededSortUploads` counts stale worker
+  // results rejected by the sequence guard.
   comparatorSorts: number;
   providedSortUploads: number;
   supersededSortUploads: number;
   // CPU-side sorted permutation staging; reused across frames when the count
   // is unchanged. Identity until the async sort resolves.
   sortIndices: Uint32Array | null;
-  // Camera pose at the last sort so we only re-sort when the view moves enough.
+  // Camera pose at the last sort, used to avoid sorting until the view moves enough.
   lastSortCameraDir: Cartesian3 | null;
-  // Externally-forced re-sort request for the LEGACY comparator path: set it to
-  // skip the view-angle throttle once. Retained per the `C15-G4` row (the
-  // demand signal stays with the throttle); the production path takes its
+  // Externally forced re-sort request for the legacy comparator path. It skips
+  // the view-angle throttle once; the production path takes its
   // demand from the shared `shouldStartSteadySort` in the primitive instead.
   sortRequestPending: boolean;
   splatCount: number;
@@ -177,45 +168,37 @@ interface GaussianSplatCache {
   pickCommand: CesiumAnyDrawCommand | null;
   initialized: boolean;
   lastRevision: number;
-  // C15-G6h (NEW-SPLAT-MULTIFRUSTUM-DEPTH-COMPOSE) — MODEL-space bounds of the
-  // resident splat centres, recomputed only when the attribute bytes change
-  // (in the same block that uploads them, so it adds no new asymptotic cost),
-  // and the world-space sphere the draw command carries. Kept separate because
-  // the model matrix can change every frame while the data does not: the
-  // per-frame work is one `BoundingSphere.transform`, not a rescan.
+  // Model-space bounds of the resident splat centres, recomputed only when the
+  // attribute bytes change (in the same block that uploads them, so it adds no
+  // new asymptotic cost), and the world-space sphere the draw command carries.
+  // Kept separate because the model matrix can change every frame while the
+  // data does not: the per-frame work is one `BoundingSphere.transform`, not a
+  // rescan.
   localBoundingSphere: BoundingSphere | null;
   worldBoundingSphere: BoundingSphere | null;
-  // NEW-LOG-DEPTH-REMAINING-PRODUCERS-POINTCLOUD-SPLAT (Batch 288) — flip-
-  // rebuild guard mirroring the format-generation guard. When the LOG_DEPTH
-  // master switch flips, the color/depth-write pipelines must recompile from
+  // Rebuild guard mirroring the format-generation guard. When the scene
+  // log-depth switch flips, the color and depth-write pipelines recompile from
   // the other shader-module variant.
   logDepthEnabled: boolean;
-  // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — tracks the pick-fleet master
-  // switch state the pick pipeline was built with (separate from the scene
-  // logDepthEnabled) so a flip rebuilds the pick pipeline.
+  // Tracks the independent pick log-depth switch used to build the pick
+  // pipeline, so changing it rebuilds that pipeline without conflating it with
+  // scene log depth.
   pickLogDepthEnabled: boolean;
   pipelineLayout: GPUPipelineLayout | null;
-  // NEW-WEBGPU-SPLAT-OIT-FALLBACK-UNUSABLE — what the splat command publishes
-  // to the dynamic OIT fallback. Mirrored off the pipeline resources so both
-  // travel with the SAME variant axes the compiled OIT module was built from;
-  // a `_shaderCode` on one axis set and a bind group on another is exactly the
-  // class of defect this row exists to close.
+  // Shader source and configuration published together to the dynamic OIT
+  // fallback. Both come from the same pipeline resources so shader variant
+  // axes cannot drift from the bind-group layout.
   oitFallbackShaderCode: string | null;
   oitFallbackConfig: WebGPUPipelineConfig | null;
-  // C-R7-RENDERER-MIGRATION (Batch 56) — see EllipsoidPrimitiveRenderer
-  // for the rationale. The OIT pipeline is optional (its WGSL injection
-  // can fail) and stays out of the central cache for now to preserve
-  // the existing fall-through-to-null semantics. Only the color + pick
-  // pipelines route through the cache.
+  // OIT shader injection can fail, so the optional OIT pipeline stays outside
+  // the central cache and preserves the fall-through-to-null behavior. The
+  // color and pick pipelines use the central cache.
   pipelineRequestPending: boolean;
 
-  // Batch 171 - B.10 NEW-ADVANCED-MOTION-VECTORS (GaussianSplat).
-  // Same lifecycle as PointCloud Batch 168/169 + Cloud Batch 170:
-  //   - `splatData` tracks THIS frame's typed-array splat upload.
-  //   - `prevSplatData` is promoted from `splatData` AFTER the
-  //     velocity dispatch (PointPrimitive Batch 148 pattern).
-  //   - `prevSplatBuffer` is the GPU mirror of prev positions.
-  //   - `velocityPipeline` resolves through the central pipeline cache.
+  // Motion-vector state maintains a one-frame-lagged copy of splat attributes:
+  // `splatData` tracks the current upload, `prevSplatData` is promoted after
+  // velocity dispatch, and `prevSplatBuffer` mirrors the previous positions on
+  // the GPU. The velocity pipeline resolves through the central cache.
   // Static splat clouds have prev=curr → velocity=0 (camera-only TAA
   // fallback handles motion). For animated splats (rare; the loader
   // typically locks splat data at content load), per-splat velocity
@@ -226,13 +209,13 @@ interface GaussianSplatCache {
   velocityPipeline: GPURenderPipeline | null;
   velocityPipelineDescriptor: WebGPURenderPipelineDescriptor | null;
   velocityPipelineRequestPending: boolean;
-  // C10-09-VELOCITY-PREV-BUFFER-GPU-COPY. Monotonic counter bumped at the
-  // single `splatBuffer` content-write (rebuild) site; the identity-case prev
-  // buffer re-seeds once via copyBufferToBuffer then skips the per-frame CPU
-  // re-upload while the revision is unchanged.
+  // Monotonic counter bumped at the single `splatBuffer` content-write
+  // (rebuild) site; the identity-case prev buffer re-seeds once via
+  // copyBufferToBuffer then skips the per-frame CPU re-upload while the
+  // revision is unchanged.
   instanceDataRevision: number;
   // The `instanceDataRevision` resident in `prevSplatBuffer`; `undefined` =
-  // unknown/stale → re-seed. Reset on prev-buffer realloc (T-4).
+  // unknown or stale means re-seed. Reset on previous-buffer reallocation.
   prevBufferRevision: number | undefined;
 }
 
@@ -1017,14 +1000,14 @@ fn fragmentVelocityMain(input: VelocityVertexOutput) -> @location(0) vec2<f32> {
 const scratchEncoded = { high: new Cartesian3(), low: new Cartesian3() };
 const scratchMVP = new Matrix4();
 const scratchMV = new Matrix4();
-// C15-G5 — the SH view-direction fold: mat3(modelMatrix), then
-// _shInverseRotation * that.
+// The spherical-harmonic view direction is rotated by `mat3(modelMatrix)`,
+// then by `_shInverseRotation`.
 const scratchModelRotation = new Matrix3();
 const scratchShRotation = new Matrix3();
 
-// Per-device shader-module cache so the LOG_DEPTH and non-log variants compile
-// once per device and dedupe across split-screen contexts (C-R7-SHADER-MODULE-
-// DEDUP). The cache runs the `//>>ifdef` preprocessor on miss.
+// Per-device shader-module cache so log-depth variants compile once and dedupe
+// across split-screen contexts. The cache runs the `//>>ifdef` preprocessor on
+// a miss.
 const _splatModuleCaches = new WeakMap<GPUDevice, WebGPUShaderModuleCache>();
 function getSplatModuleCache(device: GPUDevice): WebGPUShaderModuleCache {
   let cache = _splatModuleCaches.get(device);
@@ -1045,11 +1028,10 @@ function createQuadVB(device: GPUDevice): GPUBuffer {
   return buf;
 }
 
-// NEW-SPLAT-SORT-CONSUME-INDEXES (Batch 288) — the only vertex buffer is now
-// the 6-vertex quad at location 0. Splat attributes moved to a storage buffer
-// (group 0 binding 1) the VS reads via sortedIndices[instance_index], so the
-// rasterizer visits splats in back-to-front depth order. Pre-Batch-288 the
-// splat data was a 64-byte per-instance vertex buffer drawn in storage order.
+// The only vertex buffer is the six-vertex quad at location 0. Splat
+// attributes are read from group 0 binding 1 through
+// `sortedIndices[instance_index]`, so rasterization follows back-to-front depth
+// order.
 const SPLAT_VERTEX_BUFFERS: GPUVertexBufferLayout[] = [
   {
     arrayStride: 8,
@@ -1072,13 +1054,12 @@ interface SplatPipelineResources {
   colorDescriptor: WebGPURenderPipelineDescriptor;
   oitDescriptor: WebGPURenderPipelineDescriptor | null;
   pickDescriptor: WebGPURenderPipelineDescriptor;
-  // NEW-GS-CLASSIFICATION-DEPTH (Batch 176). Same as colorDescriptor
-  // but with `depthWriteEnabled: true`. Routed through the central
-  // pipeline cache the same way the color descriptor is.
+  // Same as `colorDescriptor`, but with `depthWriteEnabled: true`. It routes
+  // through the central cache with the color descriptor.
   depthWriteDescriptor: WebGPURenderPipelineDescriptor;
-  // NEW-WEBGPU-SPLAT-OIT-FALLBACK-UNUSABLE — the two halves the dynamic OIT
-  // fallback in `WebGPUSceneRendererTranslucentPass` needs from this renderer.
-  // See `buildSplatPipelineResources` for why they are built unconditionally.
+  // The source and explicit pipeline configuration required by the dynamic OIT
+  // fallback. They are built unconditionally so the fallback never sees a
+  // half-published pair.
   oitFallbackShaderCode: string;
   oitFallbackConfig: WebGPUPipelineConfig;
 }
@@ -1087,10 +1068,8 @@ interface SplatPipelineResources {
  * Build the synchronous resources (shader modules, BGL, pipeline layout)
  * and the descriptor objects passed to `WebGPURenderPipelineCache`.
  *
- * C-R7-RENDERER-MIGRATION (Batch 56). Two splat primitives with identical
- * material settings now share a single `GPURenderPipeline` per variant
- * (color + OIT + pick) instead of materializing six pipelines for two
- * primitives.
+ * Resources are shareable by material settings, so primitives with identical
+ * settings reuse one `GPURenderPipeline` per color, OIT, and pick variant.
  */
 function buildSplatPipelineResources(
   device: GPUDevice,
@@ -1102,14 +1081,14 @@ function buildSplatPipelineResources(
   packedWasmLayout: boolean = false,
   sphericalHarmonics: boolean = false,
 ): SplatPipelineResources {
-  // C15-G3 — the record-layout axis lives in the HI define word
+  // The record-layout axis lives in the high define word
   // (`ShaderDefineHi.SPLAT_PACKED_WASM`; the lo word is full at bit 30). It is
-  // orthogonal to LOG_DEPTH and applies to EVERY variant built here — color,
+  // orthogonal to log depth and applies to every variant built here: color,
   // depth-write, pick, OIT and velocity all read the same storage buffer, so a
   // variant compiled against the other stride would decode garbage rather than
   // simply look different.
   //
-  // C15-G5 — the view-dependent-colour axis rides the SAME hi word. It applies
+  // The view-dependent-color axis uses the same high word. It applies
   // to every variant for the same reason: pick and velocity share `vertexMain`
   // (whose colour output the OIT fragment path also consumes), so compiling one
   // of them without the SH term would make the pick footprint and the OIT
@@ -1119,13 +1098,11 @@ function buildSplatPipelineResources(
     (sphericalHarmonics ? ShaderDefineHi.SPLAT_SPHERICAL_HARMONICS : 0);
   const layoutMarker = packedWasmLayout ? 1 : 0;
   const shMarker = sphericalHarmonics ? 1 : 0;
-  // NEW-LOG-DEPTH-REMAINING-PRODUCERS-POINTCLOUD-SPLAT (Batch 288) — the color
-  // + depth-write variants use the LOG_DEPTH-preprocessed module when active so
-  // the splat FS writes log @builtin(frag_depth). The PICK + OIT variants
-  // always use the base (defines=0) module: pick stays hyperbolic (the pick
-  // FBO is self-consistent — CLAUDE.md rule), and OIT's WGSL injection expects
-  // the bare-@location(0) fragmentMain signature (its pass has
-  // depthWriteEnabled:false anyway, so frag_depth is irrelevant to it).
+  // Color and depth-write variants use the log-depth module when active so the
+  // splat fragment shader writes `@builtin(frag_depth)`. OIT uses the base
+  // module because its injection expects the bare `@location(0)`
+  // `fragmentMain`; its pass does not write depth. Pick selects its module from
+  // the independent pick-depth switch below.
   const moduleCache = getSplatModuleCache(device);
   const smBase = moduleCache.getOrCreate(
     ShaderSourceId.GAUSSIAN_SPLAT,
@@ -1145,13 +1122,10 @@ function buildSplatPipelineResources(
         layoutDefinesHi,
       )
     : smBase;
-  // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — the PICK pipeline is gated by
-  // the SEPARATE pick-fleet master switch (isWebGPUPickLogDepthActive), NOT
-  // the scene log switch. When active it uses the LOG_DEPTH module so
-  // fragmentPickMain writes log frag_depth into the shared pick FBO (all-or-
-  // nothing coherence, INV-2); when inactive it stays on the base module —
-  // byte-identical to the historical hyperbolic pick. Dedupes to `sm` when
-  // both switches agree.
+  // Pick uses its own log-depth switch rather than the scene switch. When
+  // active, `fragmentPickMain` writes logarithmic depth into the shared pick
+  // framebuffer; otherwise it uses the hyperbolic base module. The module
+  // deduplicates with `sm` when both switches agree.
   const pickModule = pickLogActive
     ? moduleCache.getOrCreate(
         ShaderSourceId.GAUSSIAN_SPLAT,
@@ -1164,23 +1138,22 @@ function buildSplatPipelineResources(
     : smBase;
   const bgl = makeBindGroupLayout(device, "GaussianSplat BGL", [
     uniformBuffer(0, Stage.VERTEX_FRAGMENT),
-    // NEW-SPLAT-SORT-CONSUME-INDEXES (Batch 288) — splat attributes, sorted
-    // index permutation, and the prev-frame splat mirror (velocity). All
-    // read-only VERTEX-stage storage; bound on a single group-0 BGL shared
+    // Splat attributes, the sorted-index permutation, and the previous-frame
+    // splat mirror are read-only vertex-stage storage. One group-0 layout is shared
     // by the color / pick / velocity / depth-write pipelines (each statically
     // references the subset it needs — unused bindings are still provided so
     // the bind group matches the shared pipeline layout).
     storageBuffer(1, Stage.VERTEX, { readOnly: true }),
     storageBuffer(2, Stage.VERTEX, { readOnly: true }),
     storageBuffer(3, Stage.VERTEX, { readOnly: true }),
-    // C15-G5 — packed SH coefficients. Declared here UNCONDITIONALLY, exactly
-    // like the WGSL binding, so both states of SPLAT_SPHERICAL_HARMONICS share
+    // Packed spherical-harmonic coefficients are declared unconditionally,
+    // like the WGSL binding, so both shader variants share
     // one BGL / bind group / pipeline layout. A layout may legally carry an
     // entry the shader does not reference, which is what the non-SH variant is.
     storageBuffer(4, Stage.VERTEX, { readOnly: true }),
   ]);
-  // FEAT-GAP-09 (Batch 101) — append shared effects BGL at slot 1 so
-  // the WGSL fog block at @group(1) resolves. Shared layout cascades
+  // Append the shared effects layout at slot 1 so the WGSL fog block at
+  // `@group(1)` resolves. The shared layout applies
   // to the pick, velocity, OIT, and depth-write pipelines too (all
   // built with this same `layout` below).
   const effectsBGL = getEffectsBindGroupLayout(device);
@@ -1199,8 +1172,8 @@ function buildSplatPipelineResources(
     fragment: {
       module: sm,
       entryPoint: "fragmentMain",
-      // Slice 5c-B Phase 1 (Batch 112) — scene-FB color target via
-      // helper. Premultiplied alpha blend preserved verbatim.
+      // Use the scene-framebuffer color target while preserving the
+      // premultiplied-alpha blend.
       targets: makeSceneFBTargets(format, {
         blend: {
           color: { srcFactor: "one", dstFactor: "one-minus-src-alpha" },
@@ -1215,12 +1188,9 @@ function buildSplatPipelineResources(
       // less-equal for planetary-scale precision robustness.
       depthCompare: "less-equal",
     },
-    // NEW-SPLAT-SORT-CONSUME-INDEXES (Batch 288) — scene-FB pipelines MUST
-    // bake the MSAA sample count or the attachment state mismatches the
-    // multisampled Scene Framebuffer Render Pass and invalidates the whole
-    // command buffer. Pre-Batch-288 the splat color/depth-write pipelines
-    // omitted this; the bug was latent because the renderer never actually
-    // drew (no _splatData producer was wired).
+    // Scene-framebuffer pipelines bake the MSAA sample count; otherwise their
+    // attachment state mismatches the multisampled render pass and invalidates
+    // the command buffer.
     multisample: { count: sampleCount },
   };
 
@@ -1231,9 +1201,9 @@ function buildSplatPipelineResources(
   let oitShaderModule: GPUShaderModule | null = null;
   let oitDescriptor: WebGPURenderPipelineDescriptor | null = null;
   try {
-    // C15-G3 — the layout axis must reach the OIT source too: an OIT module
+    // The layout axis must reach the OIT source: a module
     // compiled from the other stride would decode garbage, not merely blend
-    // differently. C15-G5 — and so must the SH axis, or the OIT pass would
+    // differently. The spherical-harmonic axis must also match, or OIT would
     // composite the base colour while the color pass composites the
     // view-dependent one. Both ride `layoutDefinesHi`. LOG_DEPTH stays cleared
     // here (the injector expects the bare `@location(0)` fragmentMain and the
@@ -1271,11 +1241,9 @@ function buildSplatPipelineResources(
     // OIT variant creation is non-fatal — falls back to standard alpha blending
   }
 
-  // C-R9 (Batch 31 / refactored Batch 59) — pick descriptor. The pick VS is
-  // `vertexMain` of the BASE (non-log) module so the pick FBO stays hyperbolic
-  // and self-consistent (CLAUDE.md pick rule). Built explicitly (not via
-  // buildPickPipelineDescriptor's color-clone) because the color descriptor
-  // may reference the LOG_DEPTH module. Blend stripped; single pick target.
+  // Build the pick descriptor explicitly because its vertex module can differ
+  // from the color descriptor's log-depth module. The helper strips blending
+  // and installs the single pick target.
   const pickDescriptor: WebGPURenderPipelineDescriptor =
     buildPickPipelineDescriptor(
       {
@@ -1283,35 +1251,34 @@ function buildSplatPipelineResources(
         vertex: { ...colorDescriptor.vertex, module: pickModule },
       },
       "fragmentPickMain",
-      // NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE — stamp the context's pick
-      // format authority, not the (possibly float/HDR) scene format.
+      // Use the context's pick format rather than the potentially floating-point
+      // scene format.
       pickFormat,
       {
-        // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH — distinct [ld] name so the central
+        // Keep a distinct [ld] name so the central
         // cache never serves the hyperbolic pick pipeline for the log module.
         name: pickLogActive
           ? `GaussianSplat pick pipeline [ld/packed=${layoutMarker}/sh=${shMarker}]`
           : `GaussianSplat pick pipeline [packed=${layoutMarker}/sh=${shMarker}]`,
-        // Write log frag_depth into the shared pick FBO depth ONLY when the
+        // Write log `frag_depth` into the shared pick framebuffer only when the
         // fleet is log (gate on); otherwise stay depth-test-only (byte-
-        // identical to the historical hyperbolic pick).
+        // identical to the hyperbolic pick).
         forceDepthWriteEnabled: pickLogActive,
       },
     );
-  // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH — pick FS module = the pick-gated module
-  // (base when the fleet switch is off; LOG_DEPTH when on).
+  // The pick fragment module follows the independent pick-depth switch: base
+  // when disabled and log depth when enabled.
   if (pickDescriptor.fragment) {
     pickDescriptor.fragment.module = pickModule;
   }
 
-  // NEW-GS-CLASSIFICATION-DEPTH (Batch 176) — depth-write variant of the
-  // color pipeline. Same module / layout / vertex / fragment / blend as
-  // the color pipeline; the only delta is `depthWriteEnabled: true` so
-  // the splat surface populates the scene-FB depth attachment when this
-  // variant is bound. The splat command's `classificationDepthPipeline`
-  // points here; `WebGPUDrawCommand.execute` swaps to it when
-  // `depthForTranslucentClassification` is set on the command (mirrors
-  // Batch 79's translucent-classification mechanism for Models).
+  // Depth-write variant of the color pipeline. Same module / layout / vertex /
+  // fragment / blend as the color pipeline; the only delta is
+  // `depthWriteEnabled: true` so the splat surface populates the scene-FB depth
+  // attachment when this variant is bound. The splat command's
+  // `classificationDepthPipeline` points here; `WebGPUDrawCommand.execute`
+  // swaps to it when `depthForTranslucentClassification` is set on the command,
+  // matching the translucent-classification mechanism used by models.
   const depthWriteDescriptor: WebGPURenderPipelineDescriptor = {
     ...colorDescriptor,
     name: `GaussianSplat depth-write pipeline [ld=${logDepthActive ? 1 : 0}/ms=${sampleCount}/packed=${layoutMarker}/sh=${shMarker}]`,
@@ -1322,22 +1289,19 @@ function buildSplatPipelineResources(
     },
   };
 
-  // ── NEW-WEBGPU-SPLAT-OIT-FALLBACK-UNUSABLE, second half.
-  //
-  // `WebGPUSceneRendererTranslucentPass` (`:165-205`) builds an OIT pipeline
+  // The dynamic fallback in `WebGPUSceneRendererTranslucentPass` builds an OIT pipeline
   // for any command carrying `_shaderCode` but no `_oitPipeline`, and when the
   // command carries no `_pipelineConfig` it substitutes `layout: "auto"`. The
-  // splat VS reads three group-0 storage buffers plus a UBO through an
-  // EXPLICIT `GPUPipelineLayout`, and the command's cached bind groups were
-  // created against THAT layout — binding them to an auto-derived layout is a
-  // WebGPU validation error, not a visual difference. `C15-G3` fixed the
-  // `_shaderCode` half (it now ships preprocessed source rather than the raw
-  // `//>>ifdef` template); this is the layout half.
+  // splat vertex shader reads multiple group-0 storage buffers plus a uniform
+  // buffer through an explicit `GPUPipelineLayout`, and the command's cached
+  // bind groups were created against that layout. Binding them to an auto-derived layout is a
+  // WebGPU validation error, so the fallback publishes preprocessed source and
+  // its explicit layout together.
   //
-  // Built UNCONDITIONALLY, not inside the `try` above: `oitDescriptor` is null
+  // Built unconditionally rather than inside the `try` above: `oitDescriptor` is null
   // exactly when `injectOITOutput` threw, and that is one of the two states in
   // which the fallback is reached (the other is a pipeline-cache resolution
-  // that has not landed yet, where the fallback CAN succeed and must therefore
+  // that has not resolved yet, where the fallback can succeed and must therefore
   // have the real layout). The fields mirror `oitDescriptor` term for term, so
   // a fallback pipeline is the same pipeline the renderer would have built —
   // `createOITPipeline` supplies `WebGPUOIT.OIT_TARGETS` and forces
@@ -1418,10 +1382,9 @@ function tryResolveSplatPipelines(
     const oitSync = resources.oitDescriptor
       ? pipelineCache.getPipelineSync(resources.oitDescriptor)
       : null;
-    // NEW-GS-CLASSIFICATION-DEPTH (Batch 176) — resolve the depth-write
-    // variant alongside color/pick. Cache miss is non-fatal: the color
-    // path still works without it; only the classification-depth swap
-    // becomes a no-op until the variant lands.
+    // Resolve the depth-write variant with color and pick. A miss is non-fatal:
+    // color still works, while classification depth remains unavailable until
+    // the variant resolves.
     const depthWriteSync = pipelineCache.getPipelineSync(
       resources.depthWriteDescriptor,
     );
@@ -1450,7 +1413,7 @@ function tryResolveSplatPipelines(
           .catch(() => {
             // Depth-write variant failure is non-fatal — the color path
             // still works without it; classification-depth swap becomes
-            // a no-op (matches pre-Batch-176 behavior).
+            // a no-op until the variant can be resolved.
             cache.depthWritePipeline = null;
           }),
       ];
@@ -1478,14 +1441,13 @@ function tryResolveSplatPipelines(
     return false;
   }
 
-  // Fallback: no central cache. Mirror the historical synchronous path.
+  // Without a central cache, create the pipelines synchronously.
   cache.pipeline = device.createRenderPipeline(
     descriptorToGPU(resources.colorDescriptor),
   );
   cache.pickPipeline = device.createRenderPipeline(
     descriptorToGPU(resources.pickDescriptor),
   );
-  // NEW-GS-CLASSIFICATION-DEPTH (Batch 176).
   cache.depthWritePipeline = device.createRenderPipeline(
     descriptorToGPU(resources.depthWriteDescriptor),
   );
@@ -1501,12 +1463,11 @@ function tryResolveSplatPipelines(
   return true;
 }
 
-// NEW-SPLAT-SORT-CONSUME-INDEXES (Batch 288) — re-sort threshold. Re-sort when
-// the camera view direction has rotated more than ~0.5° OR moved enough
-// relative to the splat cloud. Mirrors the WebGL steady-sort cadence
+// Re-sort when the camera view direction has rotated more than about 0.5
+// degrees or moved enough relative to the splat cloud. This mirrors the WebGL cadence
 // (GaussianSplatPrimitive DEFAULT_SORT_MIN_ANGLE_RADIANS).
 const SORT_MIN_ANGLE_COS = Math.cos(0.008726646259971648);
-// C15-G4 — a legacy-layout cloud this large would make the synchronous
+// A legacy-layout cloud this large would make the synchronous
 // comparator a visible main-thread stall. The three in-tree exercisers are 3,
 // 27 and a handful of splats, so this can only fire for an out-of-tree producer
 // that should be supplying `_indexes` instead. Diagnostic only: the sort still
@@ -1517,18 +1478,16 @@ const scratchSortDir = new Cartesian3();
 const scratchSortMV = new Matrix4();
 
 /**
- * C15-G3 — the transform that takes splat MODEL space to world space.
+ * Returns the transform from splat model space to world space.
  *
- * A production `GaussianSplatPrimitive` has NO `modelMatrix` member: its WebGL
+ * A production `GaussianSplatPrimitive` has no `modelMatrix` member: its WebGL
  * DrawCommand is built with `modelMatrix: primitive._rootTransform`
  * (`GaussianSplatPrimitive.js:2307-2321`), the ENU frame at the tileset
  * bounding-sphere centre that `transformTile` bakes every tile into so
- * `view * modelMatrix` stays numerically small. Reading `modelMatrix` alone —
- * which is all this renderer did while it was only ever fed synthetic data —
- * resolves to IDENTITY for real content and places the whole cloud at the
- * geocentre.
+ * `view * modelMatrix` stays numerically small. Reading `modelMatrix` alone
+ * resolves to identity for real content and places the cloud at the geocentre.
  *
- * `_rootTransform` wins when present; the three synthetic probes set
+ * `_rootTransform` wins when present; synthetic primitives set
  * `modelMatrix` and no `_rootTransform`, so they are unaffected.
  *
  * @private
@@ -1542,30 +1501,15 @@ function splatModelMatrix(primitive: CesiumObjectWithWebGPUCache): Matrix4 {
 }
 
 /**
- * NEW-SPLAT-SORT-CONSUME-INDEXES (Batch 288). CPU back-to-front sort of the
- * splat indices by view-space depth, uploaded to the sorted-index storage
- * buffer the VS reads via `sortedIndices[instance_index]`. Without this the
- * WebGPU draw visited splats in buffer order, producing order-dependent
- * premultiplied over-blend errors (audit A2.1). Runs only when the camera has
- * rotated enough since the last sort (cheap-frame amortization). The sort key
- * is the splat-center eye-space z; farthest (most negative z) drawn first.
+ * Sorts legacy splat indices back-to-front by eye-space centre depth and
+ * uploads the permutation read through `sortedIndices[instance_index]`.
+ * Camera-angle throttling amortizes the synchronous comparator.
  *
- * # `C15-G4` — why this is RETIRED but not deleted
- *
- * It is a synchronous main-thread `Array.prototype.sort` with a JS comparator
- * over a freshly allocated `Float64Array(count)`. On production content that is
- * a per-frame stall — `tower` is 286,868 splats — so `C15-G4` retires it from
- * that path STRUCTURALLY: the packed layout returns before any work, and
- * `uploadProvidedSortOrder` has already consumed the worker's permutation by
- * the time this is called at all.
- *
- * It is NOT dead code (Principle 7). The LEGACY 16-f32 record has exactly three
- * exercisers, all synthetic probe primitives that carry `_splatData` and no
- * `_indexes` — `probe-splat-sort.mjs` (which asserts the non-identity
- * permutation and is the Batch-288 sort-consume evidence),
- * `probe-splat-globe-occlusion.mjs` and `probe-oit-transparency.mjs`. Deleting
- * this would leave those three drawing in identity order and turn a green
- * instrument red for a reason that has nothing to do with what it measures.
+ * This fallback is deliberately retained for synthetic primitives that carry
+ * the legacy 16-float record without a worker-produced `_indexes` permutation.
+ * Removing it would make the sort, globe-occlusion, and transparency fixtures
+ * draw in identity order. Packed production data returns before the comparator
+ * because large clouds must use the asynchronous worker sort.
  *
  * @private
  */
@@ -1579,11 +1523,11 @@ function maybeSortSplats(
   if (count === 0 || !cache.sortedIndexBuffer) {
     return;
   }
-  // C15-G4 — the retirement itself. The packed production path takes its
-  // permutation from the WASM radix sort the shared pipeline already ran
-  // (`primitive._indexes`), uploaded by `uploadProvidedSortOrder` above; this
-  // comparator is the LEGACY-layout fallback only. Removing this line puts a
-  // synchronous 286k-element main-thread sort back on every qualifying frame.
+  // Packed production data takes its permutation from the WASM radix sort the
+  // shared pipeline already ran (`primitive._indexes`), uploaded by
+  // `uploadProvidedSortOrder` above; this comparator is the legacy-layout
+  // fallback only. Removing this line puts a synchronous 286k-element
+  // main-thread sort back on every qualifying frame.
   if (cache.layoutPacked) {
     return;
   }
@@ -1610,7 +1554,7 @@ function maybeSortSplats(
 
   // modelView = view * modelMatrix (the eye-space transform of model-space
   // splat positions). The renderer packs the same MV (with the translation
-  // column zeroed for RTE) into the UBO below; here we keep the full MV so the
+  // column zeroed for RTE) into the UBO below; the full MV remains here so the
   // depth key is the true eye-space z.
   const us = (
     frameState as unknown as { context: { uniformState: { view: Matrix4 } } }
@@ -1649,16 +1593,13 @@ function maybeSortSplats(
     indices,
     (a: number, b: number) => depth[a] - depth[b],
   );
-  // C15-G4 instrument — the exit gate reads this off the cache and requires 0
-  // on production content. Counted at the point the sort ACTUALLY ran, not at
-  // entry, so the throttled and early-returned frames do not inflate it.
+  // Count at the point the comparator runs so throttled and early-returned
+  // frames do not inflate the diagnostic.
   cache.comparatorSorts++;
-  // Permanent sentinel (no pragma): reaching a main-thread comparator sort at
-  // this size is the stall `C15-G4` exists to prevent, and it can only happen
-  // if a legacy-layout producer grew past probe scale. Behaviour is unchanged —
-  // the sort still runs, so nothing is bypassed or degraded — but the condition
-  // must reach the console, once, rather than showing up as a frame-time
-  // mystery.
+  // A main-thread comparator sort at this size can stall the frame and can
+  // occur only if a legacy-layout producer grows beyond small synthetic-input
+  // scale. The sort still runs, but a one-time warning makes the stall
+  // diagnosable.
   if (
     count >= COMPARATOR_STALL_SPLATS &&
     !_reportedComparatorStall.has(cache)
@@ -1683,7 +1624,7 @@ function maybeSortSplats(
  * The bytes the packed WASM texture generator produced for this primitive,
  * carried on the snapshot as `{ width, height, data }` and committed to
  * `primitive._packedSplatTextureData` by `GaussianSplatPrimitive.commitSnapshot`
- * on the native branch ONLY (WebGL holds the same bytes in a `Texture`).
+ * only on the native branch (WebGL holds the same bytes in a `Texture`).
  *
  * @private
  */
@@ -1698,39 +1639,34 @@ const PACKED_SPLAT_RECORD_BYTES = 32;
 const LEGACY_SPLAT_RECORD_BYTES = 64;
 /** u32 words per splat in the packed WASM record. @private */
 const PACKED_SPLAT_RECORD_WORDS = PACKED_SPLAT_RECORD_BYTES / 4;
-// C15-G6h — f32 lanes per legacy record, the unit `computeLocalSplatBoundingSphere`
+// Floating-point lanes per legacy record, the unit `computeLocalSplatBoundingSphere`
 // strides by. Derived from the byte size for the same reason the word count is:
 // a literal here could drift from the record the shader decodes.
 const LEGACY_SPLAT_RECORD_FLOATS = LEGACY_SPLAT_RECORD_BYTES / 4;
 
 /**
- * Payloads whose short-buffer error has already been reported, so the
- * permanent sentinel below fires once per bad payload rather than once per
- * frame. Weak so a retired snapshot is collectable.
+ * Payloads whose short-buffer error has already been reported. Tracking them
+ * weakly reports each bad payload once without retaining retired snapshots.
  *
  * @private
  */
 const _reportedShortPayloads = new WeakSet<object>();
 
 /**
- * C15-G3 — resolve which attribute bytes this primitive is offering, and in
- * which layout.
+ * Resolves the attribute bytes offered by a primitive and their layout.
  *
- * Two producers exist and they are NOT interchangeable:
+ * Two producers exist and are not interchangeable:
  *
  *   * `_packedSplatTextureData` — the WASM `generate_splat_texture` output,
- *     8 u32 per splat, the PRODUCTION path. Consumed verbatim (Option B in the
- *     `C15-G3` row): no CPU repack, half the GPU memory of the expanded record,
- *     and a covariance that is bit-identical to what WebGL samples out of its
- *     `RGBA32UI` texture — which is what makes a tight `C15-G8` parity
- *     threshold reachable at all.
- *   * `_splatData` / `_renderResources.splatBuffer` — the historical 16-f32
- *     record. Nothing in `packages/` emits it; the three synthetic splat probes
- *     do, and they are the Batch-288 sort-consume evidence.
+ *     8 u32 per splat for production. Consuming it verbatim avoids a CPU repack,
+ *     uses half the GPU memory of the expanded record, and keeps covariance
+ *     bits identical to the WebGL `RGBA32UI` texture.
+ *   * `_splatData` / `_renderResources.splatBuffer` — the legacy 16-f32
+ *     record. Nothing in `packages/` emits it, but synthetic inputs can.
  *
  * `computeSplatTextureLayout` pads the packed buffer out to the full
  * `width * height * 4` texture footprint, but the splat records themselves are
- * a tight `count * 8` run at the FRONT of it — the GLSL row addressing
+ * a tight `count * 8` run at the front of it. The GLSL row addressing
  * (`(i & rowMask) << 1`, `i >> rowShift` at width `maximumTextureSize`) reduces
  * to texel `2*i` exactly, which is why the padding can be sliced off rather
  * than decoded around.
@@ -1765,11 +1701,9 @@ function resolveSplatSource(primitive: CesiumObjectWithWebGPUCache): {
     const words = count * PACKED_SPLAT_RECORD_WORDS;
     if (payload.data.length < words) {
       // The shared layout pass guarantees `data.length >= count * 8`; a short
-      // buffer would make the VS read out of bounds (clamped to zero by WebGPU,
-      // i.e. a silently truncated cloud). Loud, unpragma'd: this is the
-      // producer/consumer stride disagreement the whole row exists to prevent.
-      // Latched per payload so an impossible-but-real condition reports once
-      // instead of once per frame.
+      // buffer would make the vertex shader read out of bounds, which WebGPU
+      // clamps to zero and silently truncates the cloud. This boundary reports
+      // the producer/consumer stride disagreement once per payload.
       if (!_reportedShortPayloads.has(payload)) {
         _reportedShortPayloads.add(payload);
         console.error(
@@ -1782,7 +1716,7 @@ function resolveSplatSource(primitive: CesiumObjectWithWebGPUCache): {
       view: payload.data.subarray(0, words),
       count,
       packed: true,
-      // The PAYLOAD object, not the subarray: a fresh subarray view is
+      // The payload object, not the subarray: a fresh subarray view is
       // allocated on every call, so its identity would report "changed" every
       // frame and re-upload 9 MB per frame on `tower`.
       token: payload,
@@ -1792,13 +1726,13 @@ function resolveSplatSource(primitive: CesiumObjectWithWebGPUCache): {
 }
 
 /**
- * C15-G5 — bands per splat for an SH degree.
+ * Returns the spherical-harmonic bands per splat for a degree.
  *
  * The JS twin of the WGSL `splatShCoefficientCount` and the GLSL
  * `coefficientCount[3] = uint[3](3u, 8u, 15u)` table. Kept here (rather than
  * read off the snapshot's `shCoefficientCount`) so the consumer derives the
- * stride from the SAME quantity the shader does: a degree/count disagreement
- * on the producer side then shows up as a SHORT BUFFER below instead of as a
+ * stride from the same quantity as the shader. A producer degree/count
+ * disagreement then appears as a short buffer below instead of as a
  * silently mis-strided read.
  *
  * @private
@@ -1825,23 +1759,21 @@ const SH_COEFFICIENT_WORDS = 2;
 const _reportedShortShPayloads = new WeakSet<object>();
 
 /**
- * C15-G5 — resolve the spherical-harmonics coefficients this primitive is
- * offering, and at what degree.
+ * Resolves the spherical-harmonic coefficients offered by a primitive and
+ * their degree.
  *
  * `GaussianSplatPrimitive.commitSnapshot` publishes `_shData` (the aggregated,
- * f16-packed `Uint32Array`) and `_sphericalHarmonicsDegree` for BOTH backends —
- * the WebGL path additionally regroups the same array into an `RG32UI` texture,
+ * f16-packed `Uint32Array`) and `_sphericalHarmonicsDegree` for both backends.
+ * The WebGL path additionally regroups the same array into an `RG32UI` texture,
  * which is a pure row-padding rearrangement of these bytes. Consuming the flat
- * array VERBATIM is therefore bit-exact against WebGL and needs no new producer
- * (the `C15-G3` Option-B precedent).
+ * array verbatim is therefore bit-exact against WebGL and needs no new producer.
  *
  * Returns `enabled: false` — i.e. degree 0, base colour only — for content with
  * no SH, and for a payload too short to describe `count` splats at its declared
- * degree. The degrade-to-0 decision for an over-tall SH texture is NOT made
- * here: it is made once, backend-neutrally, in
+ * degree. The degrade-to-zero decision for an over-tall coefficient texture is
+ * not made here: it is made once, backend-neutrally, in
  * `GaussianSplatPrimitive.applySphericalHarmonicsBudget`, and reaches this
- * function as a degree of 0 on both backends alike
- * (`NEW-SPLAT-SH-DEGREE-BACKEND-DEPENDENT`).
+ * function as degree 0 on both backends.
  *
  * @private
  */
@@ -1865,10 +1797,10 @@ function resolveSplatShSource(
   }
   const words = count * splatShBandCount(degree) * SH_COEFFICIENT_WORDS;
   if (shData.length < words) {
-    // A short SH payload would make the VS read out of bounds (clamped to zero
-    // by WebGPU) — i.e. splats silently losing their view-dependent colour
-    // partway through the cloud. Loud and unpragma'd, once per payload: this is
-    // the producer/consumer stride disagreement class the row exists to avoid.
+    // A short spherical-harmonic payload would make the vertex shader read out
+    // of bounds. WebGPU clamps that read to zero, silently dropping the
+    // view-dependent color for part of the cloud, so report the
+    // producer/consumer stride disagreement once per payload.
     if (!_reportedShortShPayloads.has(shData)) {
       _reportedShortShPayloads.add(shData);
       console.error(
@@ -1881,47 +1813,35 @@ function resolveSplatShSource(
     view: shData.length === words ? shData : shData.subarray(0, words),
     degree,
     enabled: true,
-    // The SOURCE array, not the trimmed subarray: `subarray` allocates a fresh
+    // The source array, not the trimmed subarray: `subarray` allocates a fresh
     // view on every call, so its identity would report "changed" every frame.
     token: shData,
   };
 }
 
 /**
- * C15-G6h (NEW-SPLAT-MULTIFRUSTUM-DEPTH-COMPOSE) — MODEL-space bounding sphere
- * over the resident splat centres.
+ * Computes a model-space bounding sphere over resident splat centers.
  *
- * # Why the command needs one at all
- *
- * `View.createPotentiallyVisibleSet` gives a command with NO `boundingVolume`
+ * `View.createPotentiallyVisibleSet` gives a command with no `boundingVolume`
  * the camera's worst-case span (`View.js:382-392`). Under log depth that span
- * is `[0.1, 1e10]`, whose 1e11 ratio splits into TWO depth slices — and the
- * BV-less command then bins into BOTH, while the globe (whose tiles carry real
+ * is `[0.1, 1e10]`, whose 1e11 ratio splits into two depth slices. The
+ * volume-less command then bins into both, while the globe (whose tiles carry real
  * bounding volumes) bins only into the near one. The frustum loop clears depth
  * between slices (`WebGPUSceneRendererFrustumLoop.ts:251-253`) and preserves
- * colour, so the splat's far-slice execution draws against a depth buffer that
- * does not contain the globe. That is the `C15-G6h` leak: measured at Batch 888
- * with all three producers' baked log-depth pairs EQUAL, which excluded the
- * encode and left the binning.
+ * color, so a far-slice splat draw can test against a depth buffer without the
+ * globe.
  *
- * B647 already added `boundingVolume: tileset.boundingSphere` for real content
- * (matching `GaussianSplatPrimitive.js:2318`), but every exerciser of this path
- * is a synthetic primitive with no `_tileset`, so that fix has never executed —
- * the `C15-G6` queue row records exactly that. This derivation closes the gap
- * for ANY producer, so a custom or synthetic primitive cannot silently inherit
- * the worst-case span.
+ * Real content uses `tileset.boundingSphere`, while custom and synthetic
+ * primitives may have no tileset. Deriving the sphere here prevents those
+ * producers from silently inheriting the worst-case span.
  *
- * # Cost
- *
- * Called ONLY from the attribute-commit block, which already walks the same
+ * Called only from the attribute-commit block, which already walks the same
  * bytes to upload them and already fills an O(n) identity permutation. Two
  * allocation-free passes (AABB, then exact radius about its centre) add no new
  * asymptotic cost and nothing per frame — the per-frame work is one
  * `BoundingSphere.transform` at the command site.
  *
- * # What is deliberately NOT included
- *
- * The Gaussian FOOTPRINT (each splat's covariance) is not added to the radius.
+ * The Gaussian footprint from each splat's covariance is deliberately excluded.
  * The command is not `cull`-gated — `Scene.isVisible` returns true immediately
  * for `!command.cull` (`Scene.js:3746`) — so this volume can never clip a splat
  * out of the frame; it feeds slice binning, the scene near/far accumulators and
@@ -1942,7 +1862,7 @@ function computeLocalSplatBoundingSphere(
   if (count <= 0) {
     return null;
   }
-  // Both layouts are read as f32 over the SAME bytes: the packed record stores
+  // Both layouts are read as f32 over the same bytes: the packed record stores
   // position as three u32 words that the WGSL `bitcast<f32>`s, and reading them
   // through a Float32Array is that same reinterpretation, bit-exact.
   const stride = packed
@@ -1972,7 +1892,7 @@ function computeLocalSplatBoundingSphere(
     if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {
       // A NaN centre would poison the sphere and, through it, the scene near/far
       // accumulators — every other command's slice assignment with it. Skip the
-      // record; a cloud that is ENTIRELY non-finite falls through to null below.
+      // record; an entirely non-finite cloud falls through to null below.
       continue;
     }
     if (x < minX) minX = x;
@@ -2013,11 +1933,11 @@ function computeLocalSplatBoundingSphere(
 }
 
 /**
- * `C15-G4` — consume the asynchronous WASM radix sort, and make the swap
- * atomic at the buffer-upload boundary.
+ * Consumes an asynchronous radix-sort permutation atomically at the buffer
+ * upload boundary.
  *
  * `GaussianSplatPrimitive` schedules `GaussianSplatSorter.radixSortIndexes` on
- * a task-processor worker for BOTH backends since `C15-G2`, and publishes the
+ * a task-processor worker for both backends and publishes the
  * resolved permutation to `_indexes` with a `(sequence, dataGeneration)` stamp.
  * The WebGPU draw indexes through `sortedIndices[instance_index]`, so consuming
  * it is a single buffer write — which is exactly what makes the swap atomic:
@@ -2031,13 +1951,13 @@ function computeLocalSplatBoundingSphere(
  *     the length check refuses a permutation that does not describe the buffer.
  *   * **Regression** — a resolution for camera A arriving after one for camera
  *     B. The producer's `isActiveSort` already refuses those, but this consumer
- *     reads `_indexes` off an *arbitrary* object (the synthetic probes prove
- *     that surface is real), so it re-derives the ordering itself from the
+ *     reads `_indexes` off an arbitrary synthetic object, so it re-derives
+ *     the ordering itself from the
  *     stamp rather than trusting a scheduler in another module. A refused
- *     resolution leaves the previous permutation resident and STILL returns
+ *     resolution leaves the previous permutation resident and still returns
  *     `true`: stale-but-consistent beats falling back to a synchronous sort.
  *
- * An unstamped producer (no `_indexesSortSequence`) keeps the historical
+ * An unstamped producer without `_indexesSortSequence` keeps the legacy
  * identity-only behaviour, so the legacy synthetic path is unchanged.
  *
  * @returns {boolean} `true` when a provided permutation is resident, so the
@@ -2084,8 +2004,8 @@ function uploadProvidedSortOrder(
     }
   }
   device.queue.writeBuffer(cache.sortedIndexBuffer, 0, indexes);
-  // Bookkeeping AFTER the write: if the write throws, the cache must keep
-  // describing what is actually on the GPU, not what we intended to put there.
+  // Bookkeeping follows the write so an exception leaves the cache describing
+  // the state actually resident on the GPU.
   cache.providedIndexSource = indexes;
   if (typeof sequence === "number" && typeof generation === "number") {
     cache.providedIndexSequence = sequence;
@@ -2117,8 +2037,7 @@ function updateWebGPUGaussianSplats(
       pipeline: null,
       oitPipeline: null,
       pickPipeline: null,
-      // NEW-GS-CLASSIFICATION-DEPTH (Batch 176) — populated alongside
-      // the color pipeline by `tryResolveSplatPipelines`.
+      // Populated with the color pipeline by `tryResolveSplatPipelines`.
       depthWritePipeline: null,
       shaderModule: null,
       bindGroup: null,
@@ -2126,21 +2045,21 @@ function updateWebGPUGaussianSplats(
       splatBuffer: null,
       sortedIndexBuffer: null,
       sortedIndexCount: 0,
-      // C15-G5 — SH slots. Default to "no view-dependent colour", so a cache
+      // Spherical-harmonic slots default to no view-dependent color, so a cache
       // that never sees SH data compiles the //>>else variant.
       shBuffer: null,
       shSourceToken: null,
       shDegree: 0,
       shEnabled: false,
       resourcesShEnabled: false,
-      // C15-G3 — layout state. Defaults to the legacy record so a cache that
-      // never sees data keeps the historical shape.
+      // Layout state defaults to the legacy record so a cache that
+      // never sees data keeps the legacy shape.
       layoutPacked: false,
       resourcesLayoutPacked: false,
       splatRecordBytes: LEGACY_SPLAT_RECORD_BYTES,
       splatSourceToken: null,
       providedIndexSource: null,
-      // C15-G4 — nothing but the identity seed is resident, so every stamped
+      // Only the identity seed is resident, so every stamped
       // permutation outranks it.
       providedIndexSequence: -1,
       providedIndexGeneration: -1,
@@ -2158,30 +2077,29 @@ function updateWebGPUGaussianSplats(
       logDepthEnabled: false,
       pickLogDepthEnabled: false,
       pipelineLayout: null,
-      // NEW-WEBGPU-SPLAT-OIT-FALLBACK-UNUSABLE — populated with the pipeline
-      // resources; null until they exist, which is also before any command
-      // does, so the fallback can never see a half-published pair.
+      // Populated as a pair with the pipeline resources. Both remain null until
+      // resources exist, so the fallback cannot see partial state.
       oitFallbackShaderCode: null,
       oitFallbackConfig: null,
       pipelineRequestPending: false,
-      // Batch 171 - velocity slots (lazy, allocated when TAA is on).
+      // Velocity slots are allocated lazily when temporal antialiasing is active.
       splatData: null,
       prevSplatData: null,
       prevSplatBuffer: null,
       velocityPipeline: null,
       velocityPipelineDescriptor: null,
       velocityPipelineRequestPending: false,
-      // C10-09 - prev-buffer revision-skip.
+      // Revision of the data mirrored by the previous-frame buffer.
       instanceDataRevision: 0,
       prevBufferRevision: undefined,
-      // C15-G6h - derived command bounds; filled by the attribute commit.
+      // Derived command bounds filled by the attribute commit.
       localBoundingSphere: null,
       worldBoundingSphere: null,
     } as GaussianSplatCache;
   }
 
   const cache = primitive._webgpuCache as GaussianSplatCache;
-  // Batch 110 — splats draw into scene FB; use scenePipelineFormat.
+  // Splats draw into the scene framebuffer and use its pipeline format.
   const canvasFormat: GPUTextureFormat =
     (
       context as unknown as {
@@ -2189,20 +2107,18 @@ function updateWebGPUGaussianSplats(
       }
     ).scenePipelineFormat ??
     (navigator.gpu.getPreferredCanvasFormat() as GPUTextureFormat);
-  // Batch 110 — invalidate pipeline resources on scene format change.
+  // The generation invalidates pipeline resources after a scene-format change.
   const sceneGen =
     (context as unknown as { _scenePipelineFormatGeneration?: number })
       ._scenePipelineFormatGeneration ?? 0;
-  // NEW-LOG-DEPTH-REMAINING-PRODUCERS-POINTCLOUD-SPLAT (Batch 288) — recompile
-  // the color/depth-write pipelines from the other shader-module variant when
-  // the LOG_DEPTH master switch flips. Shares the format-invalidation reset
+  // Recompile color and depth-write pipelines from the other shader variant
+  // when the scene log-depth switch flips. This shares the format-invalidation reset
   // machinery (which already tears down + rebuilds all pipeline resources).
   const logDepthActive = isWebGPULogDepthActive(
     context as unknown as { _logDepthWriteEnabled?: boolean },
     frameState as unknown as { useLogDepth?: boolean },
   );
-  // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — the pick pipeline is gated by
-  // the SEPARATE pick-fleet master switch; a flip must rebuild it against the
+  // The pick pipeline follows a separate pick log-depth switch; a flip rebuilds it against the
   // pick-gated module (+ [ld] name), so track it in the same guard.
   const pickLogActive = isWebGPUPickLogDepthActive(
     context as unknown as {
@@ -2215,21 +2131,21 @@ function updateWebGPUGaussianSplats(
     cache.initialized &&
     (cache.logDepthEnabled !== logDepthActive ||
       cache.pickLogDepthEnabled !== pickLogActive);
-  // C15-G3 — resolve the attribute source BEFORE the invalidation sweep: the
+  // Resolve the attribute source before the invalidation sweep. The
   // record layout is a shader-module axis, so a primitive that switches
   // producers (or a cache built while no data existed) must recompile from the
   // other `SPLAT_PACKED_WASM` variant, exactly like a LOG_DEPTH flip. Without
   // this the first pipeline built (legacy, from the placeholder buffer) would
   // be served for packed data and decode at the wrong stride.
   const source = resolveSplatSource(primitive);
-  // When no source is offered this frame, the RESIDENT layout is authoritative
+  // When no source is offered this frame, the resident layout is authoritative
   // — rebuilding the pipelines for the default layout while packed bytes are
   // still bound would decode at the wrong stride.
   const activeLayoutPacked =
     source.view !== null ? source.packed : cache.layoutPacked;
   const layoutFlipped =
     cache.initialized && cache.resourcesLayoutPacked !== activeLayoutPacked;
-  // C15-G5 — the SH axis is resolved on the SAME "is this primitive offering
+  // Resolve the spherical-harmonic axis from the same "is this primitive offering
   // data" question as the layout axis, so the two can never describe different
   // snapshots. When nothing is offered this frame the resident state stays
   // authoritative (rebuilding to the non-SH variant while SH bytes are still
@@ -2252,8 +2168,7 @@ function updateWebGPUGaussianSplats(
         _pipelineResources?: SplatPipelineResources;
       }
     )._pipelineResources = undefined;
-    // Batch 171 - same pre-existing pattern as Ground{Primitive,Polyline}
-    // and PointCloud: cached pipeline objects + draw commands hold
+    // Cached pipeline objects and draw commands hold
     // pointers to old-format pipelines after the resources reset; the
     // resolver early-returns on the truthy slot check and leaves stale-
     // format pipelines bound. WebGPU then rejects the next draw because
@@ -2263,9 +2178,8 @@ function updateWebGPUGaussianSplats(
     cache.pipeline = null;
     cache.oitPipeline = null;
     cache.pickPipeline = null;
-    // NEW-GS-CLASSIFICATION-DEPTH (Batch 176) — Batch 179 follow-up.
-    // Audit found this slot was missed in the format-invalidation
-    // sweep: stale depth-write pipeline retains the OLD presentation
+    // Clear the depth-write slot in the same invalidation sweep. A stale
+    // depth-write pipeline retains the old presentation
     // format, and `WebGPUDrawCommand.execute`'s classification swap
     // would fail validation against the active attachment. Clears
     // alongside the other pipelines so the resolver re-runs against
@@ -2277,16 +2191,15 @@ function updateWebGPUGaussianSplats(
     cache.velocityPipeline = null;
     cache.velocityPipelineDescriptor = null;
     cache.velocityPipelineRequestPending = false;
-    // NEW-SPLAT-SORT-CONSUME-INDEXES (Batch 288) — the bind group references
-    // the old BGL; drop it so it rebuilds against the new resources below.
+    // The bind group references the old layout; drop it so it rebuilds against
+    // the new resources.
     cache.bindGroup = null;
     (
       cache as unknown as { _pipelineFormatGeneration?: number }
     )._pipelineFormatGeneration = sceneGen;
   }
 
-  // C-R7-RENDERER-MIGRATION (Batch 56) — sidecar holds the resources we
-  // built once and re-use across frames while the cache materializes
+  // The sidecar reuses resources across frames while the cache materializes
   // pipelines asynchronously.
   let resources = (
     cache as GaussianSplatCache & {
@@ -2295,17 +2208,13 @@ function updateWebGPUGaussianSplats(
   )._pipelineResources;
 
   if (!cache.initialized) {
-    // C-R9 (Batch 31) — UBO grew 176 → 192 bytes to include pickColor
-    // (floats 44-47 at offset 176).
-    // AUDIT_2026_05_02 B.9 (Batch 153) — UBO grew 192 → 256 bytes to
-    // include prev viewProjection (floats 48-63 at offset 192).
-    // Batch 172 — UBO grew 256 → 320 bytes to include the model matrix
-    // (floats 64-79 at offset 256). Used by the velocity VS to lift
-    // prev model-space positions to world space before applying
-    // prevViewProjection. Necessary for correct velocity when
-    // `primitive.modelMatrix` is non-identity (typical 3D-Tiles
-    // GaussianSplat content has identity, but custom primitives don't).
-    // C15-G5 — UBO grows 320 → 384 bytes for the spherical-harmonics tail:
+    // The 384-byte uniform buffer contains `pickColor` at byte 176, previous
+    // view-projection at byte 192, and the model matrix at byte 256. The
+    // velocity shader needs the full model matrix to lift previous model-space
+    // positions into world space before applying the previous view-projection,
+    // including for custom primitives with non-identity transforms.
+    //
+    // The spherical-harmonic tail starts at byte 320:
     // `shViewRotation: mat3x3<f32>` at byte 320 (three 16-byte-strided
     // columns, floats 80-91) and `shDegree: f32` at byte 368 (float 92).
     // mat3x3 has 16-byte alignment, so 320 is a legal offset and no padding is
@@ -2316,9 +2225,8 @@ function updateWebGPUGaussianSplats(
     });
     cache.quadVertexBuffer = createQuadVB(device);
 
-    // NEW-SPLAT-SORT-CONSUME-INDEXES (Batch 288) — placeholder STORAGE buffers
-    // (replaced when splat data loads). All three group-0 storage bindings
-    // must exist before the first bind group is built.
+    // Placeholder storage buffers are replaced when splat data loads. All three
+    // group-0 storage bindings must exist before the first bind group is built.
     // COPY_SRC so the velocity prev-seed copyBufferToBuffer (curr → prev) is
     // valid (the prev path GPU-self-copies when no continuous prev exists).
     cache.splatBuffer = device.createBuffer({
@@ -2339,7 +2247,7 @@ function updateWebGPUGaussianSplats(
       size: 64,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
-    // C15-G5 — the SH binding is unconditional, so a primitive with no SH data
+    // The spherical-harmonic binding is unconditional, so content without coefficients
     // still needs a real buffer here for the shared bind group to be valid.
     cache.shBuffer = device.createBuffer({
       label: "GaussianSplat SH coefficients (placeholder)",
@@ -2361,13 +2269,13 @@ function updateWebGPUGaussianSplats(
       canvasFormat,
       logDepthActive,
       sampleCount,
-      // NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE — pick target format authority.
+      // Pick target format authority.
       (context as unknown as { pickPipelineFormat?: GPUTextureFormat })
         .pickPipelineFormat ?? "rgba8unorm",
       pickLogActive,
-      // C15-G3 — the attribute-record layout axis.
+      // Attribute-record layout axis.
       activeLayoutPacked,
-      // C15-G5 — the view-dependent-colour axis.
+      // View-dependent-color axis.
       activeShEnabled,
     );
     (
@@ -2377,15 +2285,14 @@ function updateWebGPUGaussianSplats(
     )._pipelineResources = resources;
     cache.shaderModule = resources.shaderModule;
     cache.pipelineLayout = resources.layout;
-    // NEW-WEBGPU-SPLAT-OIT-FALLBACK-UNUSABLE — publish both halves together,
-    // from the same resource build that produced the bind-group layout the
-    // command's bind groups are created against.
+    // Publish fallback source and configuration together from the resource
+    // build that produced the command's bind-group layout.
     cache.oitFallbackShaderCode = resources.oitFallbackShaderCode;
     cache.oitFallbackConfig = resources.oitFallbackConfig;
     cache.logDepthEnabled = logDepthActive;
     cache.pickLogDepthEnabled = pickLogActive;
-    // C15-G3 — record which record layout these pipelines decode, so the flip
-    // check above compares like with like. C15-G5 — same for the SH axis.
+    // Record the layout and spherical-harmonic axes these pipelines decode so
+    // invalidation compares resident data with matching resources.
     cache.resourcesLayoutPacked = activeLayoutPacked;
     cache.resourcesShEnabled = activeShEnabled;
     // Bind group references the freshly-built BGL + current buffers.
@@ -2394,24 +2301,19 @@ function updateWebGPUGaussianSplats(
 
   // (Re)build the group-0 bind group whenever it's missing (init, format/
   // log-depth flip, or a storage-buffer reallocation cleared it).
-  // ── C15-G3 — commit the attribute bytes.
+  // Commit the attribute bytes.
   //
   // The dirty signal is (count, layout, producer identity), not the count
-  // alone: a snapshot rebuild that lands on the SAME splat count produces a
+  // alone: a snapshot rebuild at the same splat count produces a
   // fresh payload object and nothing else changes, and re-uploading only on a
   // count change would leave the previous cloud resident forever.
   //
-  // C15-G3b — this block sits ABOVE the pipeline gate deliberately. Uploading
-  // the attribute bytes needs the DEVICE, not a pipeline, and
-  // `tryResolveSplatPipelines` legitimately returns early for however long a
-  // cold variant takes to compile (~2.7 s measured on this fork). With the
-  // commit below that gate, `cache.splatCount` stayed 0 for the whole compile
-  // even though the data had been ready since the shared pipeline committed it
-  // — which is exactly what the Batch-881 Edge run measured (`splatCount=0`
-  // sampled during readiness, 27 by the time the scored frame drew). Hoisting
-  // it makes the count mean "the data is resident", not "the data is resident
-  // AND a pipeline happened to finish compiling", and it starts the upload one
-  // compile earlier. The command build still waits on the pipeline below.
+  // This block deliberately precedes the pipeline gate. Uploading attribute
+  // bytes needs the device, not a pipeline, and `tryResolveSplatPipelines`
+  // legitimately returns early for however long a cold variant takes to
+  // compile. Keeping the commit above that return makes `cache.splatCount` mean
+  // that data is resident rather than coupling data readiness to pipeline
+  // compilation. Command construction still waits on the pipeline below.
   const splatData = source.view;
   const revision = source.count;
   if (
@@ -2423,9 +2325,8 @@ function updateWebGPUGaussianSplats(
     if (cache.splatBuffer) {
       cache.splatBuffer.destroy();
     }
-    // NEW-SPLAT-SORT-CONSUME-INDEXES (Batch 288) — splat attributes now live
-    // in a read-only STORAGE buffer the VS reads via sortedIndices. COPY_SRC
-    // for the velocity prev-seed self-copy.
+    // Splat attributes live in a read-only storage buffer read through sorted
+    // indices. `COPY_SRC` for the velocity prev-seed self-copy.
     cache.splatBuffer = device.createBuffer({
       label: `GaussianSplat splats [packed=${source.packed ? 1 : 0}]`,
       size: splatData.byteLength || 64,
@@ -2436,9 +2337,9 @@ function updateWebGPUGaussianSplats(
     });
     if (splatData.byteLength > 0) {
       // Frame-owned upload: `device.queue.writeBuffer` is the queue-ordered
-      // write every renderer on this fork uses for CPU→GPU attribute data. No
-      // private encoder, no private submit — the only `queue.submit` in this
-      // file is the velocity prev-seed self-copy, which predates this row.
+      // write used for CPU-to-GPU attribute data. No private encoder, no
+      // private submit — the only `queue.submit` in this file is the velocity
+      // previous-frame self-copy.
       device.queue.writeBuffer(cache.splatBuffer, 0, splatData);
     }
     cache.splatCount = revision;
@@ -2448,8 +2349,8 @@ function updateWebGPUGaussianSplats(
       ? PACKED_SPLAT_RECORD_BYTES
       : LEGACY_SPLAT_RECORD_BYTES;
     cache.splatSourceToken = source.token;
-    // C15-G6h — recompute the model-space bounds alongside the bytes they
-    // describe. This is the ONLY call site: bounds and buffer contents change
+    // Recompute model-space bounds with the bytes they describe. This is the
+    // only call site: bounds and buffer contents change
     // together by construction, so they can never disagree.
     cache.localBoundingSphere = computeLocalSplatBoundingSphere(
       splatData,
@@ -2457,11 +2358,11 @@ function updateWebGPUGaussianSplats(
       source.packed,
     );
     cache.command = null;
-    // Batch 171 - track THIS frame's splat data so the velocity helper
-    // can promote it to `prevSplatData` AFTER its dispatch. Reference
+    // Track the current splat data so the velocity helper can promote it to
+    // `prevSplatData` after dispatch. This is a reference
     // to the same typed array — the loader owns the storage.
     cache.splatData = splatData;
-    // C10-09 - single `splatBuffer` content-write site; bump so the velocity
+    // Bump the revision at the single `splatBuffer` content-write site so the velocity
     // prev buffer re-seeds once for this content then skips per-frame uploads.
     cache.instanceDataRevision++;
 
@@ -2489,8 +2390,8 @@ function updateWebGPUGaussianSplats(
       // The identity seed just overwrote whatever permutation was resident, so
       // the provided-order upload must re-run even for the same `_indexes`.
       cache.providedIndexSource = null;
-      // C15-G4 — and the sequence guard must not veto that re-upload. The guard
-      // protects a RESIDENT order from being regressed; after the identity seed
+      // The sequence guard must not veto that re-upload. It protects a resident
+      // order from regression; after the identity seed
       // there is no resident order to protect, so the provenance resets with it.
       cache.providedIndexSequence = -1;
       cache.providedIndexGeneration = -1;
@@ -2500,10 +2401,10 @@ function updateWebGPUGaussianSplats(
     cache.bindGroup = null;
     cache.pickCommand = null;
   } else if (!splatData && cache.splatCount > 0 && cache.layoutPacked) {
-    // C15-G3 lifecycle — the production producer withdrew its payload (tileset
-    // unload, `_dirty` snapshot teardown, or `GaussianSplatPrimitive.destroy`,
-    // all of which clear `_packedSplatTextureData` / `_numSplats`). Retire the
-    // draw rather than keep rasterizing a cloud whose source is gone. The GPU
+    // The production producer withdrew its payload (through tileset unload,
+    // `_dirty` snapshot teardown, or `GaussianSplatPrimitive.destroy`, all of
+    // which clear `_packedSplatTextureData` / `_numSplats`). Retire the draw
+    // rather than keep rasterizing a cloud whose source is gone. The GPU
     // buffers stay allocated for the next commit; `destroy` releases them.
     cache.splatCount = 0;
     cache.lastRevision = -1;
@@ -2515,20 +2416,20 @@ function updateWebGPUGaussianSplats(
     cache.prevSplatData = null;
     cache.command = null;
     cache.pickCommand = null;
-    // C15-G5 — the SH coefficients described the withdrawn cloud; retire them
+    // The spherical-harmonic coefficients described the withdrawn cloud; retire them
     // with it so a later commit cannot be drawn against a stale palette.
     cache.shSourceToken = null;
     cache.shDegree = 0;
     cache.shEnabled = false;
   }
 
-  // ── C15-G5 — commit the SH coefficients.
+  // Commit the SH coefficients.
   //
   // Same dirty signal as the attribute commit (producer identity + degree +
   // count), same reason: a snapshot rebuild that lands on the same count and
-  // degree still publishes a fresh `_shData` view over a REUSED scratch buffer.
-  // Sits beside the attribute commit and ABOVE the pipeline gate for the
-  // Batch-881 reason — the upload needs the device, not a pipeline.
+  // degree still publishes a fresh `_shData` view over a reused scratch buffer.
+  // It sits beside the attribute commit and above the pipeline gate because the
+  // upload needs the device, not a pipeline.
   if (
     shSource.view &&
     (cache.shSourceToken !== shSource.token ||
@@ -2575,7 +2476,7 @@ function updateWebGPUGaussianSplats(
         { binding: 1, resource: { buffer: cache.splatBuffer! } },
         { binding: 2, resource: { buffer: cache.sortedIndexBuffer! } },
         { binding: 3, resource: { buffer: cache.prevSplatBuffer! } },
-        // C15-G5 — always bound (placeholder when the content has no SH).
+        // Always bound, using a placeholder when the content has no coefficients.
         { binding: 4, resource: { buffer: cache.shBuffer! } },
       ],
     });
@@ -2615,7 +2516,7 @@ function updateWebGPUGaussianSplats(
         { binding: 1, resource: { buffer: cache.splatBuffer! } },
         { binding: 2, resource: { buffer: cache.sortedIndexBuffer! } },
         { binding: 3, resource: { buffer: cache.prevSplatBuffer! } },
-        // C15-G5 — always bound (placeholder when the content has no SH).
+        // Always bound, using a placeholder when the content has no coefficients.
         { binding: 4, resource: { buffer: cache.shBuffer! } },
       ],
     });
@@ -2623,14 +2524,14 @@ function updateWebGPUGaussianSplats(
     cache.pickCommand = null;
   }
 
-  // C15-G4 — the sort chain, in priority order. The asynchronous WASM radix
+  // Sort in priority order. The asynchronous radix
   // sort the shared pipeline runs on a worker owns the production order; its
   // resolved permutation is swapped in atomically at the buffer-upload
-  // boundary. Only when NO provided permutation describes the resident buffer
+  // boundary. Only when no provided permutation describes the resident buffer
   // does the legacy synchronous comparator get a chance, and it in turn refuses
-  // the packed layout — so on production content neither branch ever runs a
-  // main-thread sort (`cache.comparatorSorts` is the measurement, not the
-  // claim). `uploadProvidedSortOrder` returning `true` after REFUSING a
+  // the packed layout, so production content never reaches a main-thread sort.
+  // `cache.comparatorSorts` records any fallback execution.
+  // `uploadProvidedSortOrder` returning `true` after refusing a
   // superseded resolution is deliberate: keeping the previous order is correct,
   // falling back to a synchronous sort is not.
   if (!uploadProvidedSortOrder(device, primitive, cache)) {
@@ -2644,9 +2545,9 @@ function updateWebGPUGaussianSplats(
   // depth-mapping term, producing incorrect NDC depth and breaking
   // depth testing at planetary scale.
   const us = context.uniformState;
-  // C15-G3 — `_rootTransform` for production content (the ENU frame the splat
-  // positions are expressed in, which is what the WebGL DrawCommand uses);
-  // `modelMatrix` for the synthetic probes. See `splatModelMatrix`.
+  // Use `_rootTransform` for production content: it is the local frame for
+  // splat positions and the transform used by the WebGL DrawCommand.
+  // `modelMatrix` for synthetic primitives. See `splatModelMatrix`.
   const mm = splatModelMatrix(primitive);
   Matrix4.multiply(us.view, mm, scratchMV);
   scratchMV[12] = 0;
@@ -2674,27 +2575,18 @@ function updateWebGPUGaussianSplats(
   data[36] = scratchEncoded.low.x;
   data[37] = scratchEncoded.low.y;
   data[38] = scratchEncoded.low.z;
-  // NEW-LOG-DEPTH-REMAINING-PRODUCERS-POINTCLOUD-SPLAT (Batch 288) — renderer-
-  // wide log-depth lanes in the formerly-zero pad slots (float 35 = near,
-  // float 39 = oneOverLog2FarDepthFromNearPlusOne). Packed unconditionally;
-  // only the //>>ifdef LOG_DEPTH shader variant reads them.
-  //
-  // CRITICAL: prefer the stashed FULL-frustum `_logDepthEncodeNearFar` the
-  // globe baked with over the live per-slice `currentFrustum`. The splat
-  // command is pushed once and executed across all frustum slices, but its
-  // log-depth MUST use the same (near, factor) the globe encoded with or the
-  // splat's frag_depth disagrees with the globe at the same pixel and the
-  // splat loses every depth tie (occluded by terrain it sits above). Same
-  // pattern as WebGPUEllipsoidPrimitiveRenderer / WebGPUBillboardRenderer.
+  // Log-depth values occupy padding lanes: float 35 is near and
+  // float 39 is `oneOverLog2FarDepthFromNearPlusOne`. They are packed
+  // unconditionally, while only the log-depth shader variant reads them.
   const lds = us as unknown as {
     currentFrustum?: { x: number; y: number };
     oneOverLog2FarDepthFromNearPlusOne?: number;
     _logDepthEncodeNearFar?: Float32Array | null;
   };
-  // The globe (WebGPUGlobeSurfaceCameraUB) encodes log depth with the LIVE
+  // The globe (`WebGPUGlobeSurfaceCameraUB`) encodes log depth with the live
   // per-pass `currentFrustum` near/far. The splat command is pushed once and
   // executed in the GAUSSIAN_SPLATS (translucent) pass; to depth-test against
-  // the globe it MUST encode with the same `currentFrustum` the globe used.
+  // the globe it must encode with the same `currentFrustum` the globe used.
   // (Using the stashed full-frustum `_logDepthEncodeNearFar` — meant for
   // depth-sample classifiers — over-deepens the splat vs the globe's per-pass
   // encode and the splat loses every tie.)
@@ -2708,11 +2600,9 @@ function updateWebGPUGaussianSplats(
   data[35] = ldNear;
   data[39] = ldFactor;
   //>>includeStart('debug', pragmas.debug);
-  // C15-G6g — publish WHAT THIS PRODUCER ACTUALLY BAKED, at the moment it
-  // baked it. The whole family has been argued from the fields each producer
-  // READS (verified identical in source at `C15-G3d`) and from a post-render
-  // sample of `uniformState` (which is the LAST FRUSTUM SLICE, not what anyone
-  // packed). Neither is the quantity that decides the depth compare. This is.
+  // Record the exact encoder values at pack time. A post-render uniform-state
+  // sample reflects the last frustum slice rather than the values that governed
+  // this draw's depth comparison.
   recordLogDepthEncoder(us, "splat", ldNear, ldFar, ldFactor);
   //>>includeEnd('debug');
 
@@ -2720,17 +2610,17 @@ function updateWebGPUGaussianSplats(
   // For a standard perspective: P[0][0] = 1/(aspect*tan(fov/2)),
   // P[1][1] = 1/tan(fov/2).
   //
-  // C15-G3b — this is WebGL's focal convention, NOT the half-viewport pixel
+  // This is WebGL's full-viewport focal convention, not the half-viewport value
   // focal packed before it:
   //   GLSL: vec2 focal = vec2(czm_projection[0][0] * czm_viewport.z,
   //                           czm_projection[1][1] * czm_viewport.w);
-  // i.e. the FULL viewport dimension. The factor of 2 is not cosmetic. The
+  // That is the full viewport dimension. The factor of 2 is not cosmetic. The
   // projected covariance scales as focal^2, so at half focal it came out 4x
   // small — while the `+ 0.3` dilation and the 1024-pixel axis clamp in
-  // `projectSplatCovariance`/`splatQuadAxes` are ABSOLUTE constants ported
+  // `projectSplatCovariance` and `splatQuadAxes` are absolute constants ported
   // from the GLSL. A 4x-small covariance against an unchanged dilation
   // inflates every small splat. The compensating halving lives in the quad
-  // expansion, which now divides by the viewport WITHOUT the historical
+  // expansion divides by the viewport without the legacy
   // `* 2.0` — exactly as the GLSL does.
   const vpData = new Float32Array(4);
   const viewportW =
@@ -2745,11 +2635,10 @@ function updateWebGPUGaussianSplats(
   device.queue.writeBuffer(cache.uniformBuffer!, 0, data);
   device.queue.writeBuffer(cache.uniformBuffer!, 160, vpData);
 
-  // C-R9 (Batch 31 / refactored Batch 59) — pick ID lifecycle delegated to
-  // {@link ensurePickId}. Pick IDs are per-primitive, not per-splat; the
-  // whole splat cloud reports the same owner when clicked. UBO write at
-  // offset 176 below stays per-renderer because the layout differs from
-  // every other pick consumer.
+  // Pick-ID lifecycle is delegated to {@link ensurePickId}. Pick IDs are
+  // per-primitive, not per-splat; the whole splat cloud reports the same owner
+  // when clicked. UBO write at offset 176 below stays per-renderer because the
+  // layout differs from every other pick consumer.
   const passes = frameState.passes;
   const allowAllocate = !!(passes && (passes.pick || passes.render));
   const pickState = primitive as unknown as SinglePickIdCache;
@@ -2769,11 +2658,10 @@ function updateWebGPUGaussianSplats(
     device.queue.writeBuffer(cache.uniformBuffer!, 176, pickData);
   }
 
-  // AUDIT_2026_05_02 B.9 (Batch 153) — DP-H41 prev viewProjection at byte
-  // offset 192 (float 48). UniformState swaps `_previousViewProjection`
-  // at the END of `update()` AFTER returning the prior frame's value, so
-  // on frame N this slot holds frame N-1's VP. First frame falls through
-  // to identity.
+  // Previous view-projection starts at byte 192 (float 48). UniformState swaps
+  // `_previousViewProjection` at the end of `update()` after returning the
+  // prior frame's value, so on frame N this slot holds frame N-1's VP. First
+  // frame falls through to identity.
   const prevVPData = new Float32Array(16);
   const prevVP = (us as { previousViewProjection?: Matrix4 })
     .previousViewProjection;
@@ -2787,7 +2675,7 @@ function updateWebGPUGaussianSplats(
   }
   device.queue.writeBuffer(cache.uniformBuffer!, 192, prevVPData);
 
-  // Batch 172 — model matrix at byte offset 256 (float 64). Used by the
+  // The model matrix starts at byte 256 (float 64). It is used by the
   // velocity VS to lift prev model-space positions to world space
   // before applying prevViewProjection. CPU passes the primitive's
   // modelMatrix directly (no translation zeroing — the prev path needs
@@ -2796,7 +2684,7 @@ function updateWebGPUGaussianSplats(
   Matrix4.pack(mm, modelMatrixData, 0);
   device.queue.writeBuffer(cache.uniformBuffer!, 256, modelMatrixData);
 
-  // C15-G5 — spherical-harmonics tail at byte offset 320 (float 80).
+  // The spherical-harmonic tail starts at byte 320 (float 80).
   //
   // The GLSL evaluates SH against
   //   normalize(u_inverseModelRotation * (splatWC - cameraWC))
@@ -2806,10 +2694,10 @@ function updateWebGPUGaussianSplats(
   // on every snapshot rebuild (GaussianSplatPrimitive.js:1536-1552).
   //
   // The WGSL has no world-space splat position; it has `posRTE`, the
-  // camera->splat vector in the primitive's MODEL frame. For a model matrix
+  // camera-to-splat vector in the primitive's model frame. For a model matrix
   // M = [A | t] and a camera encoded in model space (c_model = M^-1 c_world),
   //   A * posRTE = A*p - A*M^-1*c_world = (A*p + t) - c_world = splatWC - c_world
-  // EXACTLY, for any invertible A — the translation cancels in the difference.
+  // exactly for any invertible A; the translation cancels in the difference.
   // So folding the two rotations CPU-side into one mat3 reproduces the GLSL's
   // argument with no extra shader work and no world-space round trip.
   const shRotationData = new Float32Array(16);
@@ -2843,14 +2731,14 @@ function updateWebGPUGaussianSplats(
   shRotationData[12] = cache.shEnabled ? cache.shDegree : 0.0;
   device.queue.writeBuffer(cache.uniformBuffer!, 320, shRotationData);
 
-  // FEAT-GAP-09 (Batch 101) — per-frame effects BG. Shared helper
+  // Refresh the effects bind group each frame. The shared helper
   // returns placeholder when none of (shadow, csm, atmosphereLut) is
   // active, so this is cheap and idempotent.
   const effectsBG =
     getOrCreateSharedAdvancedEffectsBG(frameState) ??
     getPlaceholderEffects(device).bindGroup;
 
-  // C7-SPLAT-DEPTH-COMPOSE — WebGL parity: `GaussianSplatPrimitive.js` builds
+  // Match WebGL: `GaussianSplatPrimitive.js` builds
   // its DrawCommand with `boundingVolume: tileset.boundingSphere` and
   // `modelMatrix: rootTransform` (GaussianSplatPrimitive.js:2140-2148). Those
   // fields drive per-frustum binning (`View.createPotentiallyVisibleSet`) and
@@ -2860,25 +2748,20 @@ function updateWebGPUGaussianSplats(
   // its neighbours. Both refresh every frame (the tileset bounding sphere
   // grows as tiles stream in).
   //
-  // C15-G6h — and "without them" was EVERY frame, for every exerciser of this
-  // path. The pre-existing note here said a missing `boundingVolume` was
-  // "null-safe … single-frustum binning is unaffected". The first half is true
-  // and the second half was the defect: a BV-less command does not get
-  // single-frustum binning, it gets the camera's WORST-CASE span
-  // (`View.js:382-392`), which under log depth is `[0.1, 1e10]` — a 1e11 ratio
-  // that splits into TWO slices and bins the command into BOTH, while the globe
-  // bins into the near one only. Depth is cleared between slices and colour is
-  // not, so the far-slice execution composites against a depth buffer with no
-  // globe in it. Measured at Batch 888 with every producer's baked log-depth
-  // pair EQUAL, which excluded the encode and left exactly this.
+  // A command without a bounding volume does not get single-frustum binning; it
+  // gets the camera's worst-case span (`View.js:382-392`), which under log
+  // depth is `[0.1, 1e10]` — a 1e11 ratio that splits into two slices and bins
+  // the command into both, while the globe bins into the near one only. Depth
+  // is cleared between slices and colour is not, so the far-slice execution
+  // composites against a depth buffer with no globe in it.
   //
-  // So the bounding volume is now derived when no tileset offers one, and the
-  // fallback order is deliberate:
+  // Derive the bounding volume when no tileset offers one. The fallback order
+  // is deliberate:
   //   1. `_tileset.boundingSphere` — WebGL parity, and authoritative for real
-  //      content because it covers the WHOLE tileset (including tiles not yet
+  //      content because it covers the whole tileset, including tiles not yet
   //      resident) rather than just the splats currently uploaded;
   //   2. the derived sphere over the resident centres, transformed to world
-  //      space by the SAME matrix the command carries (C15-G3's lesson: the
+  //      space by the same matrix the command carries. The
   //      splat's model frame is `_rootTransform` for real content and
   //      `modelMatrix` for synthetic primitives — `splatModelMatrix` resolves
   //      both, and a bounding volume left in model space would bin against the
@@ -2910,7 +2793,7 @@ function updateWebGPUGaussianSplats(
     const cmd = new WebGPUDrawCommand({
       pipeline: cache.pipeline,
       bindGroups: [cache.bindGroup, effectsBG],
-      // NEW-SPLAT-SORT-CONSUME-INDEXES (Batch 288) — only the quad VB; splats
+      // Only the quad vertex buffer is bound; splats
       // + sorted indices are read from group-0 storage buffers in the VS.
       vertexBuffers: [cache.quadVertexBuffer],
       vertexCount: 6,
@@ -2920,15 +2803,14 @@ function updateWebGPUGaussianSplats(
       modelMatrix: commandModelMatrix,
       owner:
         primitive as unknown as import("./WebGPUDrawCommand.js").WebGPUCommandOwner,
-      // NEW-GS-CLASSIFICATION-DEPTH (Batch 176) — depth-write variant
-      // for translucent-classification swap. Cesium3DTile.update flips
-      // `depthForTranslucentClassification` for splat-pass commands so
-      // the dispatcher swaps to this variant (writes depth to the
-      // scene-FB) when a classifier needs to clip against the splat
-      // surface. Without the variant, splats stay alpha-blended without
-      // depth-write and classifiers pass through to whatever lies
-      // behind. May be null when the central pipeline cache hasn't
-      // resolved the variant yet — the dispatcher tolerates that.
+      // Depth-write variant for translucent-classification swap.
+      // Cesium3DTile.update flips `depthForTranslucentClassification` for
+      // splat-pass commands so the dispatcher swaps to this variant (writes
+      // depth to the scene-FB) when a classifier needs to clip against the
+      // splat surface. Without the variant, splats stay alpha-blended without
+      // depth-write and classifiers pass through to whatever lies behind. May
+      // be null when the central pipeline cache hasn't resolved the variant yet
+      // — the dispatcher tolerates that.
       classificationDepthPipeline: cache.depthWritePipeline ?? undefined,
     });
     // GS-WSR: attach OIT pipeline variant for weighted-sum rendering
@@ -2939,36 +2821,33 @@ function updateWebGPUGaussianSplats(
     // (`WebGPUSceneRendererTranslucentPass` builds an OIT pipeline from it when
     // `_oitPipeline` is absent).
     //
-    // C15-G3 — PREPROCESSED, not raw. The raw template still carries the
+    // Store preprocessed source rather than the raw template, which carries
     // `//>>ifdef` directives, which WGSL sees as comments: the consumer would
-    // compile a source with BOTH branches of every block present (two
+    // compile a source with both branches of every block present (two
     // `fragmentMain` definitions) and, on the splat shader specifically, with
     // the wrong record stride for packed data.
     //
-    // NEW-WEBGPU-SPLAT-OIT-FALLBACK-UNUSABLE — both halves now come from the
-    // pipeline resources rather than being re-derived here. Two defects the
-    // re-derivation carried: (1) it rebuilt the define mask from
-    // `cache.layoutPacked` alone, so after `C15-G5` it omitted
-    // `SPLAT_SPHERICAL_HARMONICS` while the renderer's OWN OIT module included
-    // it — a fallback pipeline would have composited the base colour while the
-    // colour pass composited the view-dependent one; and (2) no
-    // `_pipelineConfig` was published at all, so the fallback substituted
-    // `layout: "auto"` and the command's explicit-layout bind groups would
-    // have failed WebGPU validation. Publishing them as a pair from one build
-    // is what keeps the shader axes and the layout from drifting apart again.
+    // Source and configuration both come from the pipeline resources rather
+    // than being re-derived here. Re-deriving the define mask from
+    // `cache.layoutPacked` alone can omit `SPLAT_SPHERICAL_HARMONICS` while the
+    // renderer's own OIT module included it, causing fallback OIT to composite
+    // base color while the color pass uses view-dependent color. Omitting
+    // `_pipelineConfig` also makes the fallback substitute `layout: "auto"` and
+    // the command's explicit-layout bind groups would have failed WebGPU
+    // validation. Publishing them as a pair from one build is what keeps the
+    // shader axes and the layout from drifting apart again.
     cmd._shaderCode = cache.oitFallbackShaderCode ?? undefined;
     cmd._pipelineConfig = cache.oitFallbackConfig ?? undefined;
     cache.command = cmd;
   } else {
-    // FEAT-GAP-09 (Batch 101) — per-frame effects BG refresh on
-    // existing command. Slot 1 in the cached bindGroups array tracks
-    // the active effects BG (or placeholder); swap it each frame so
-    // shadow / CSM / atmosphere LUT toggles flow through.
+    // Refresh the effects bind group on an existing command. Slot 1 in the
+    // cached `bindGroups` array tracks the active effects BG (or placeholder);
+    // swap it each frame so shadow / CSM / atmosphere LUT toggles flow through.
     (cache.command as { bindGroups?: GPUBindGroup[] }).bindGroups = [
       cache.bindGroup,
       effectsBG,
     ];
-    // C7-SPLAT-DEPTH-COMPOSE — refresh the WebGL-parity binning/sort fields on
+    // Refresh WebGL-parity binning and sort fields on
     // the cached command (the tileset bounding sphere changes as tiles stream).
     cache.command.boundingVolume = commandBoundingVolume;
     cache.command.modelMatrix = commandModelMatrix;
@@ -2978,18 +2857,17 @@ function updateWebGPUGaussianSplats(
     cache.depthWritePipeline &&
     !cache.command.classificationDepthPipeline
   ) {
-    // NEW-GS-CLASSIFICATION-DEPTH (Batch 176) — central-pipeline-cache
-    // resolution races the command construction. If the depth-write
-    // variant landed AFTER the command was first built (a frame later
-    // than the color pipeline), patch it on so the dispatcher can swap
-    // when needed. Cheap reference write; runs at most once per cache.
+    // Pipeline resolution can race command construction. If the depth-write
+    // variant resolves a frame later than the color pipeline, patch it on so
+    // the dispatcher can swap when needed. Cheap reference write; runs at most
+    // once per cache.
     cache.command.classificationDepthPipeline = cache.depthWritePipeline;
   }
 
-  // C-R9 (Batch 31) — pick command. Same VS + splat buffer as the color
+  // The pick command shares the vertex shader and splat buffer with the color
   // command; different pipeline (pickPipeline) that routes through the
   // `fragmentPickMain` entry point to emit u.pickColor. Wired onto the
-  // color command's derivedCommands so the Batch 29 dispatcher routes
+  // color command's derived commands so the dispatcher routes
   // to it on pick passes.
   if (pickColor) {
     // Pick path uses placeholder effects BG — pipeline layout shared
@@ -2999,7 +2877,7 @@ function updateWebGPUGaussianSplats(
       cache.pickCommand = new WebGPUDrawCommand({
         pipeline: cache.pickPipeline!,
         bindGroups: [cache.bindGroup, pickEffectsBG],
-        // NEW-SPLAT-SORT-CONSUME-INDEXES (Batch 288) — quad VB only.
+        // Only the quad vertex buffer is bound.
         vertexBuffers: [cache.quadVertexBuffer],
         vertexCount: 6,
         instanceCount: cache.splatCount,
@@ -3015,17 +2893,15 @@ function updateWebGPUGaussianSplats(
     );
   }
 
-  // Batch 171 - B.10 NEW-ADVANCED-MOTION-VECTORS attach. Maintain a
-  // one-frame-lagged prev mirror of the splat buffer.
+  // Maintain a one-frame-lagged mirror of the splat buffer for motion vectors.
   attachSplatVelocityCommand(device, context, frameState, cache);
 
   commandList.push(cache.command);
 }
 
 /**
- * Batch 171 - upload prev splat positions, build (or fetch) the
- * velocity pipeline, attach `velocityCommand` to the cache's color
- * command. Mirrors PointCloud Batch 168/169 + Cloud Batch 170.
+ * Uploads previous splat positions, resolves the velocity pipeline, and
+ * attaches `velocityCommand` to the cached color command.
  *
  * Falls into the GPU self-copy branch on:
  *   1. First frame ever — `prevSplatData` is null. Velocity = 0
@@ -3054,7 +2930,7 @@ function attachSplatVelocityCommand(
     return;
   }
 
-  // C15-G3 — stride comes from the resident layout (32 packed / 64 legacy),
+  // Stride comes from the resident layout (32 packed or 64 legacy),
   // not a literal. A 64 here against packed data would allocate (and self-copy)
   // twice the source size and blow past `splatBuffer`'s extent on the seed
   // `copyBufferToBuffer`.
@@ -3063,17 +2939,17 @@ function attachSplatVelocityCommand(
     if (cache.prevSplatBuffer) {
       cache.prevSplatBuffer.destroy();
     }
-    // NEW-SPLAT-SORT-CONSUME-INDEXES (Batch 288) — prev splats are now a
-    // read-only STORAGE buffer (group-0 binding 3) the velocity VS reads via
-    // sortedIndices[instance_index] (parallel to the current splat fetch). The
-    // bind group references it, so rebuild the bind group after realloc.
+    // Previous splats use a read-only storage buffer at group 0 binding 3. The
+    // velocity vertex shader reads it through sortedIndices[instance_index]
+    // (parallel to the current splat fetch). The bind group references it, so
+    // rebuild the bind group after realloc.
     cache.prevSplatBuffer = device.createBuffer({
       label: "GaussianSplat prev splats",
       size: requiredBytes,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
     // Rebuild the bind group immediately against the new prev buffer so the
-    // velocity command built THIS frame (and the color command, which shares
+    // velocity command built this frame and the color command (which shares
     // the bind group) reference a valid group-0 binding 3.
     const res = (
       cache as GaussianSplatCache & {
@@ -3093,7 +2969,7 @@ function attachSplatVelocityCommand(
           { binding: 1, resource: { buffer: cache.splatBuffer } },
           { binding: 2, resource: { buffer: cache.sortedIndexBuffer } },
           { binding: 3, resource: { buffer: cache.prevSplatBuffer } },
-          // C15-G5 — always bound (placeholder when the content has no SH).
+          // Always bound, using a placeholder when the content has no coefficients.
           { binding: 4, resource: { buffer: cache.shBuffer! } },
         ],
       });
@@ -3113,11 +2989,11 @@ function attachSplatVelocityCommand(
       }
       cache.pickCommand = null;
     }
-    // C10-09 T-4 - prev buffer was reallocated; resident revision is stale.
+    // Reallocation makes the resident previous-buffer revision stale.
     cache.prevBufferRevision = undefined;
   }
 
-  // C10-09-VELOCITY-PREV-BUFFER-GPU-COPY — revision-skip + GPU self-copy.
+  // Static data uses a revision guard and a GPU self-copy.
   const prevSrc = cache.prevSplatData;
   const isIdentity = prevSrc === cache.splatData; // static: prev IS curr
   if (
@@ -3126,8 +3002,8 @@ function attachSplatVelocityCommand(
     cache.prevSplatBuffer.size >= requiredBytes
   ) {
     // Identity (static splats): the bytes already reside in `splatBuffer` on
-    // the GPU. Seed `prevSplatBuffer` from it ONCE then SKIP while the data
-    // revision is unchanged (INV-1). Geometry velocity is 0 either way.
+    // the GPU. Seed `prevSplatBuffer` once, then skip while the data revision is
+    // unchanged. Geometry velocity is zero either way.
     if (cache.prevBufferRevision !== cache.instanceDataRevision) {
       const encoder = device.createCommandEncoder({
         label: "GaussianSplat prev identity-seed",
@@ -3142,9 +3018,9 @@ function attachSplatVelocityCommand(
       device.queue.submit([encoder.finish()]);
       cache.prevBufferRevision = cache.instanceDataRevision;
     }
-    // else: static & already resident → NOTHING. This is the per-frame win.
+    // Static and already resident requires no further work.
   } else if (prevSrc && prevSrc.byteLength >= requiredBytes) {
-    // Animated distinct-array path (INV-2) — unchanged.
+    // Animated data uses the distinct-array path.
     device.queue.writeBuffer(
       cache.prevSplatBuffer,
       0,
@@ -3154,7 +3030,7 @@ function attachSplatVelocityCommand(
     );
     cache.prevBufferRevision = undefined;
   } else {
-    // First-frame seed OR count mismatch (INV-4) — existing GPU copy.
+    // First-frame seed or count mismatch uses a GPU copy.
     const encoder = device.createCommandEncoder({
       label: "GaussianSplat prev seed",
     });
@@ -3177,14 +3053,10 @@ function attachSplatVelocityCommand(
     cache.pipelineLayout
   ) {
     cache.velocityPipelineDescriptor = {
-      // NEW-WEBGPU-PIPELINE-KEY-LOG-DEPTH — `cache.shaderModule` below is the
-      // LOG_DEPTH-gated module (chosen by `logDepthActive` in
-      // `buildSplatPipelineResources`), and the `logDepthFlipped` branch nulls
-      // this descriptor so it REBUILDS on a flip. The central pipeline cache
-      // keys on the descriptor name and never reads the module, so a constant
-      // name here would serve the previously-cached module's pipeline for the
-      // newly-compiled one. Matches the `ld=` marker the color and depth-write
-      // pipelines in this file already carry.
+      // `cache.shaderModule` is selected by `logDepthActive`, and a switch flip
+      // clears this descriptor so it rebuilds. Module identity separates the
+      // variants structurally; the `ld=` marker remains in the name so cache
+      // diagnostics identify which variant is active.
       name: `GaussianSplat velocity pipeline [ld=${
         cache.logDepthEnabled ? 1 : 0
       }/packed=${cache.layoutPacked ? 1 : 0}/sh=${cache.shEnabled ? 1 : 0}]`,
@@ -3192,7 +3064,7 @@ function attachSplatVelocityCommand(
       vertex: {
         module: cache.shaderModule,
         entryPoint: "vertexVelocityMain",
-        // NEW-SPLAT-SORT-CONSUME-INDEXES (Batch 288) — quad VB only. The
+        // Only the quad vertex buffer is bound. The
         // velocity VS reads the current splat (binding 1) and prev splat
         // (binding 3) from group-0 storage via sortedIndices[instance_index].
         buffers: [
@@ -3287,7 +3159,7 @@ function attachSplatVelocityCommand(
       new WebGPUDrawCommand({
         pipeline: cache.velocityPipeline,
         bindGroups: [cache.bindGroup, velocityEffectsBG],
-        // NEW-SPLAT-SORT-CONSUME-INDEXES (Batch 288) — quad VB only; curr +
+        // Only the quad vertex buffer is bound; current and
         // prev splats are read from group-0 storage bindings 1/3.
         vertexBuffers: [cache.quadVertexBuffer],
         vertexCount: 6,
@@ -3314,15 +3186,10 @@ function destroyWebGPUGaussianSplatResources(
   cache.uniformBuffer?.destroy();
   cache.quadVertexBuffer?.destroy();
   cache.splatBuffer?.destroy();
-  // NEW-SPLAT-SORT-CONSUME-INDEXES (Batch 288) — release the sorted-index
-  // storage buffer.
   cache.sortedIndexBuffer?.destroy();
-  // Batch 171 - release the velocity-path GPU buffer.
   cache.prevSplatBuffer?.destroy();
-  // C15-G5 — release the SH coefficient storage buffer.
   cache.shBuffer?.destroy();
 
-  // C-R9 (Batch 31 / refactored Batch 59) — release pick ID.
   destroyPickIds(primitive as unknown as SinglePickIdCache);
 
   primitive._webgpuCache = undefined;

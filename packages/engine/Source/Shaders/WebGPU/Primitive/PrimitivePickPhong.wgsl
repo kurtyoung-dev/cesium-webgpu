@@ -12,10 +12,9 @@ struct VertexInput {
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
     //>>ifdef LOG_DEPTH
-    // C10-11-PICK-FLEET-LOG-DEPTH — interpolated linear depthFromNearPlusOne;
-    // the FS converts it to log-encoded @builtin(frag_depth). Present only in
-    // the LOG_DEPTH-compiled pick module (the historical hyperbolic pick module
-    // has no define and never carries it → byte-identical output).
+    // Interpolated linear depth from the near plane plus one. The fragment
+    // stage converts it to logarithmic `@builtin(frag_depth)` only in a
+    // `LOG_DEPTH` module.
     @location(0) v_logDepth: f32,
     //>>endif
 }
@@ -26,20 +25,19 @@ struct CameraUniforms {
     _pad0: f32,
     encodedCameraLow: vec3<f32>,
     _pad1: f32,
-    // DP-H41 (Batch 27) — previous frame's viewProjection for
-    // TAA / motion-vector reprojection. Sourced from
-    // `UniformState._previousViewProjection` (f32 mat4).
+    // Previous frame's view-projection matrix for temporal antialiasing and
+    // motion-vector reprojection, supplied by
+    // `UniformState._previousViewProjection`.
     previousViewProjection: mat4x4<f32>,
     //>>ifdef LOG_DEPTH
-    // C10-11-PICK-FLEET-LOG-DEPTH — renderer-wide log depth (Approach A) lanes:
+    // Renderer-wide log-depth parameters:
     //   x = frustum near, y = frustum far,
-    //   z = oneOverLog2FarDepthFromNearPlusOne (the log-depth factor),
+    //   z = oneOverLog2FarDepthFromNearPlusOne,
     //   w = reserved.
-    // These occupy floats 40-43 of the 176-byte pick camera UB — the SAME
-    // offset the 176-byte FLAT color UB carries `logDepth`, written by
-    // WebGPUPrimitiveCommands.writeRTEUniformsFlat (writeLogDepthTail at float
-    // 40). Read ONLY inside //>>ifdef LOG_DEPTH blocks, so the hyperbolic pick
-    // module (no define) keeps the struct at 160 bytes → byte-identical.
+    // These occupy floats 40-43 of the 176-byte pick camera uniform buffer,
+    // matching the flat-color buffer's `logDepth` tail written by
+    // `WebGPUPrimitiveCommands.writeRTEUniformsFlat`. Without `LOG_DEPTH`,
+    // the struct ends at 160 bytes.
     logDepth: vec4<f32>,
     //>>endif
 }
@@ -52,9 +50,8 @@ struct MaterialUniforms {
 @group(1) @binding(0) var<uniform> material: MaterialUniforms;
 
 //>>ifdef LOG_DEPTH
-// C10-11-PICK-FLEET-LOG-DEPTH — renderer-wide log depth (Approach A), canonical
-// inline copies (mirror of the color sibling + chunks/functions/csm_*LogDepth).
-// Compiled into the pick module ONLY when the pick-fleet switch is active.
+// Inline log-depth helpers matching the color sibling and
+// chunks/functions/csm_*LogDepth. They are compiled only for `LOG_DEPTH`.
 fn csm_vertexLogDepth(clipPosition: vec4<f32>, near: f32) -> f32 {
     return (clipPosition.w - near) + 1.0;
 }
@@ -89,12 +86,9 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
     return output;
 }
 
-// C10-11-PICK-FLEET-LOG-DEPTH — pick output. At defines=0 this is a single
-// @location(0) struct, byte-identical in output to the historical bare
-// `-> @location(0) vec4<f32>` return. Under the pick-fleet LOG_DEPTH module it
-// also carries the log-encoded @builtin(frag_depth), written from the VS
-// v_logDepth varying with the SAME (near, factor) the color sibling uses — so a
-// converted pick fleet depth-tests coherently in the shared pick FBO.
+// Pick output always stores color at location 0. `LOG_DEPTH` variants also
+// write logarithmic fragment depth from the same near plane and factor as the
+// color sibling, keeping depth tests coherent in the shared pick framebuffer.
 struct PickFragOutput {
     @location(0) color: vec4<f32>,
     //>>ifdef LOG_DEPTH

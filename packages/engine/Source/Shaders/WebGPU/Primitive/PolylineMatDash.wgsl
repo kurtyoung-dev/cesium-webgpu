@@ -1,8 +1,7 @@
 // PolylineMatDash.wgsl
 //
-// MATERIAL slice of NEW-POLYLINE-APPEARANCE-PRIMITIVE-WEBGPU — `PolylineDash`
-// material on a polyline `Primitive` with `PolylineMaterialAppearance`. WGSL
-// port of Materials/PolylineDashMaterial.glsl fed by the shared polyline VS.
+// WGSL port of Materials/PolylineDashMaterial.glsl for a polyline `Primitive`
+// with `PolylineMaterialAppearance`, fed by the shared polyline vertex stage.
 //
 // The dash pattern is a 16-bit bitmask sampled along the line in screen space:
 // gl_FragCoord.xy is rotated by the quantized polyline angle so the dash runs
@@ -20,7 +19,7 @@ struct VertexInput {
     @location(5) nextPositionLow: vec3<f32>,
     @location(6) expandAndWidth: vec2<f32>,
     @location(7) st: vec2<f32>,
-    // 376b — projected 2D positions (blended with 3D by camera.morph.x).
+    // Projected 2D positions, blended with 3D by camera.morph.x.
     @location(8) position2DHigh: vec3<f32>,
     @location(9) position2DLow: vec3<f32>,
     @location(10) prevPosition2DHigh: vec3<f32>,
@@ -52,9 +51,9 @@ struct CameraUniforms {
     pixelRatio: f32,
     currentFrustumNear: f32,
     _pad2: vec2<f32>,
-    // 376c — logDepth (near, far, factor, reserved) @ floats 92-95.
+    // Logarithmic-depth parameters (near, far, factor, reserved) at floats 92-95.
     logDepth: vec4<f32>,
-    // 376b — morph.x = morphTime (3D=1, 2D/CV=0) @ float 96.
+    // morph.x = morphTime (3D=1, 2D/CV=0) at float 96.
     morph: vec4<f32>,
 }
 
@@ -93,7 +92,7 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
     let width: f32 = abs(input.expandAndWidth.y) + 0.5;
     let usePrev: bool = input.expandAndWidth.y < 0.0;
 
-    // 376b — czm_computePosition: blend 3D↔2D positions by morphTime.
+    // Blend 3D and 2D positions by morphTime.
     let p: vec4<f32> = csm_computePolylinePosition(
         input.positionHigh, input.positionLow,
         input.position2DHigh, input.position2DLow,

@@ -1,14 +1,12 @@
 // PrimitiveDepthFailColor.wgsl
-// DP-H18 / C2-23 — depthFailAppearance twin of PrimitiveBasicColor.
+// Depth-fail counterpart to PrimitiveBasicColor.
 //
-// Identical RTE vertex stage + vertex layout (posHigh/Low + color) so the
-// depth-fail draw can REUSE the main color command's vertex buffer. The
-// fragment stage IGNORES the interpolated vertex color and returns a single
-// uniform `depthFailColor` (the per-instance depthFail color, read CPU-side
-// from the batch table and packed into the material UB). The depth-fail
-// PIPELINE drives the actual see-through behavior: depthCompare 'greater' +
-// depthWriteEnabled false, so this only shades fragments that FAIL the normal
-// depth test (i.e. the primitive is BEHIND already-drawn geometry).
+// The relative-to-eye vertex stage and position/color layout match
+// PrimitiveBasicColor, allowing both draws to share a vertex buffer. The
+// fragment stage ignores interpolated color and returns the per-instance
+// depthFailColor packed into the material uniform buffer. See-through behavior
+// comes from a greater depth comparison with depth writes disabled, so only
+// fragments behind already-drawn geometry are shaded.
 //
 // Vertex: posHigh(3) + posLow(3) + color(4) = 10 floats = 40 bytes (matches
 // PrimitiveBasicColor exactly).
@@ -40,8 +38,8 @@ struct CameraUniforms {
     //>>endif
 }
 
-// DP-H18 — the per-instance depthFail color, packed by
-// WebGPUPrimitiveCommands.createWebGPUCommands into a 16-byte material UB.
+// WebGPUPrimitiveCommands.createWebGPUCommands packs each per-instance
+// depth-fail color into a 16-byte material buffer.
 struct MaterialUniforms {
     depthFailColor: vec4<f32>,
 }
@@ -145,9 +143,9 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     //>>endif
     if (clipByPlanes(input.eyePosition)) { discard; }
 
-    // DP-H18 — depth-fail highlight: solid per-instance depthFail color,
-    // ignoring the interpolated vertex color. The greater/no-write pipeline
-    // restricts this to occluded fragments.
+    // Use the solid per-instance depth-fail color rather than interpolated
+    // vertex color. The greater/no-write pipeline restricts it to occluded
+    // fragments.
     let finalColor = material.depthFailColor;
 
     //>>ifdef LOG_DEPTH

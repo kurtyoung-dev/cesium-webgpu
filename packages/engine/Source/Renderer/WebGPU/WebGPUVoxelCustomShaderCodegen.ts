@@ -1,34 +1,30 @@
 /**
- * WebGPU Voxel USER CustomShader codegen — VOXEL-USER-CUSTOMSHADER.
+ * Generates per-primitive WGSL for a native voxel {@link CustomShader}.
  *
- * Per-primitive WGSL codegen for a USER-supplied native-WGSL voxel
- * {@link CustomShader}. This is the voxel sibling of the model path's
- * `CustomShaderWGSLPipelineStage` (PARITY-CUSTOM-SHADER-WGSL, Batch 473): a
- * `CustomShader` that supplies `wgslFragmentShaderText` runs through THIS
- * codegen; a GLSL-only voxel customShader keeps the warn + default-gray
- * behavior on WebGPU (GLSL→WGSL transpile stays deferred by design).
+ * A custom shader that supplies `wgslFragmentShaderText` runs through this
+ * codegen. A GLSL-only voxel custom shader warns and uses the default gray
+ * behavior because this path does not transpile GLSL to WGSL.
  *
- * The generated chunk declares the bridge structs the user WGSL reads/writes
- * and inlines the user's fragment body. It is PREPENDED to the renderer's
- * inline `VOXEL_WGSL` source before preprocessing; the call site lives behind
- * `//>>ifdef VOXEL_USER_CUSTOM_SHADER` nested inside the
- * `VOXEL_CUSTOM_SHADER_COLOR` parity march, so every non-user variant is
- * byte-identical to the Batch 476 output.
+ * The generated chunk declares the bridge structs read and written by the
+ * user WGSL and inlines the user's fragment body. It is prepended to the
+ * renderer's inline `VOXEL_WGSL` source before preprocessing. The call site is
+ * guarded by `//>>ifdef VOXEL_USER_CUSTOM_SHADER` inside the
+ * `VOXEL_CUSTOM_SHADER_COLOR` march, which leaves non-user variants unchanged.
  *
- * User contract (native WGSL — NOT the GLSL `fragmentMain` signature):
+ * Native WGSL contract, distinct from the GLSL `fragmentMain` signature:
  *
  *   fn czm_voxelCustomFragmentMain(
  *     fsInput: czm_voxelCustomFragmentInput,
  *     material: ptr<function, czm_voxelCustomMaterial>)
  *
  *   - `fsInput.metadata.<propertyName>` — the sampled value of the provider's
- *     FIRST metadata property (the only one the WebGPU data path uploads —
+ *     first metadata property (the only one the WebGPU data path uploads —
  *     see WebGPUVoxelDataUpload), typed per the property's MetadataType
  *     (SCALAR → f32, VEC2/3/4 → vecN<f32>).
  *   - `fsInput.attributes.normalLocal` — the ray's entry-face normal in the
- *     box-LOCAL frame. `dot(normalLocal, lightDirectionLocal)` equals WebGL's
- *     `dot(fsInput.attributes.normalEC, czm_lightDirectionEC)` (the
- *     PARITY-VOXEL-COLOR-PARITY model-frame lighting identity).
+ *     box-local frame. `dot(normalLocal, lightDirectionLocal)` equals WebGL's
+ *     `dot(fsInput.attributes.normalEC, czm_lightDirectionEC)` because both
+ *     operands use the same model-relative frame.
  *   - `fsInput.attributes.lightDirectionLocal` — the sun light direction in
  *     the same box-local frame.
  *   - `fsInput.attributes.shapeUv` — the sample's shape-UV coordinate
@@ -37,13 +33,14 @@
  *     ray-march accumulates whatever the body writes with WebGL VoxelFS.glsl's
  *     premultiplied front-to-back integral (alpha 0 contributes nothing).
  *
- * What is NOT supported in this increment (warn + default-gray fallback,
- * enforced by the renderer via {@link voxelUserShaderHasUniforms}):
- *   - customShader `uniforms` (incl. SAMPLER_2D color-map textures) — needs a
- *     voxel BGL/pipeline-layout variant; tracked in DEFERRED_WORK
- *     (VOXEL-USER-CUSTOMSHADER follow-up).
- *   - metadata properties beyond the first (the data path uploads only
- *     property 0 — the same limitation as the megatexture upload increment).
+ * Unsupported inputs warn and use the default gray fallback, enforced by the
+ * renderer through {@link voxelUserShaderHasUniforms}:
+ *   - Custom-shader `uniforms`, including `SAMPLER_2D` color-map textures,
+ *     require a voxel bind-group and pipeline-layout variant. The fallback
+ *     must remain until that layout exists so generated shaders cannot refer
+ *     to resources the pipeline does not bind.
+ *   - metadata properties beyond the first, because the megatexture data path
+ *     uploads only property 0.
  *
  * @private
  * @module WebGPUVoxelCustomShaderCodegen
@@ -81,8 +78,8 @@ export interface VoxelUserShaderInfo {
 
 /**
  * FNV-1a 32-bit string hash (mirrors `CustomShaderWGSLPipelineStage`'s local
- * copy — kept local so this module stays dependency-free). Exported for
- * spec coverage (NEW-SPEC-VOXEL-CUSTOMSHADER-CODEGEN); not a public API.
+ * copy and stays local so this module remains dependency-free). Exported for
+ * focused source-level verification; not a public API.
  */
 export function hashStringFNV1a(str: string): number {
   let h = 0x811c9dc5;
@@ -97,8 +94,8 @@ export function hashStringFNV1a(str: string): number {
  * Sanitize a metadata property name to a valid WGSL identifier: leading
  * non-alpha characters get a `_` prefix, every other invalid character maps
  * to `_`. Mirrors the intent of `ModelUtility.sanitizeGlslIdentifier` without
- * pulling in the model-loader dependency graph. Exported for spec coverage
- * (NEW-SPEC-VOXEL-CUSTOMSHADER-CODEGEN); not a public API.
+ * pulling in the model-loader dependency graph. Exported for focused
+ * source-level verification; not a public API.
  */
 export function sanitizeWgslIdentifier(name: string): string {
   let sanitized = name.replace(/[^0-9a-zA-Z_]/g, "_");
@@ -110,7 +107,7 @@ export function sanitizeWgslIdentifier(name: string): string {
 
 /**
  * True when the customShader declares at least one uniform. The voxel user
- * path does not support uniforms yet — the renderer warns + falls back to the
+ * path does not support uniforms; the renderer warns and falls back to the
  * default gray path (see the module docstring).
  */
 export function voxelUserShaderHasUniforms(
@@ -133,7 +130,7 @@ export function voxelUserShaderHasUniforms(
  * the customShader carries no native-WGSL fragment text (GLSL-only → the
  * renderer keeps the warn + default-gray path).
  *
- * The provider's FIRST metadata property (names[0]/types[0]) types the
+ * The provider's first metadata property (names[0]/types[0]) types the
  * `czm_voxelCustomMetadata` field — the same property the WebGPU voxel data
  * path uploads into the megatexture (WebGPUVoxelDataUpload uploads
  * `content.metadata[0]` expanded to RGBA; SCALAR lands in `.x`, VEC2 in
@@ -202,10 +199,9 @@ export function generateVoxelUserShaderChunk(
 
   const chunk = lines.join("\n");
 
-  // Non-zero fingerprint for the DP-H46b generated-source identity and the
-  // pipeline-cache name. Keep remapping the former Batch 476 reserved value
-  // as well so persisted diagnostics retain stable hash behavior across the
-  // cache-key widening.
+  // Zero and the color-define bit are reserved fingerprint values. Remapping
+  // both keeps generated-source cache identities nonzero and preserves the
+  // stable fingerprint contract consumed by persisted diagnostics.
   let hash = hashStringFNV1a(chunk);
   if (hash === 0 || hash === ShaderDefine.VOXEL_CUSTOM_SHADER_COLOR >>> 0) {
     hash = (hash ^ 0x9e3779b9) >>> 0;

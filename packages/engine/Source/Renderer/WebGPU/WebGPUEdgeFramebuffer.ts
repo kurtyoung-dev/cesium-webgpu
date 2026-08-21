@@ -2,7 +2,7 @@
 /**
  * WebGPU equivalent of `Scene/EdgeFramebuffer.js`.
  *
- * C-R8-EDGE-FBO (Batch 44) — Owns the MRT render target used by the
+ * Owns the MRT render target used by the
  * `CESIUM_3D_TILE_EDGES` pass: three color attachments (edge color,
  * edge id + metadata, packed depth) plus a depth-stencil. Mirrors the
  * WebGL `FramebufferManager({ colorAttachmentsLength: 3, depthStencil: true })`
@@ -14,7 +14,7 @@
  * downstream consumers sample the resolved view — WGSL can't
  * `textureSample` a multisampled color texture.
  *
- * The depth-stencil is MSAA-matched but NOT sampleable — edge
+ * The depth-stencil is MSAA-matched but is not sampleable. Edge
  * consumers read the packed-depth color attachment (location 2)
  * instead, which is already resolved when MSAA is on.
  *

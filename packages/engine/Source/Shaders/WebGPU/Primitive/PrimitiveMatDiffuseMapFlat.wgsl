@@ -4,13 +4,12 @@
 // Vertex: posHigh(3) + posLow(3) + st(2) = 8 floats = 32 bytes
 // Matches CesiumJS Material.DiffuseMapType: image, channels, repeat.
 //
-// C2-5 (Batch 374): DiffuseMap previously SHARED the Image shader, whose
-// MaterialUniforms is { repeat:vec2, color:vec4 } — but the DiffuseMap fabric
-// packs { channels:vec3, repeat:vec2 }, so `repeat` read DiffuseMap's channels
-// and `color` read repeat+padding (silent UBO corruption). This dedicated
-// shader's struct matches the DiffuseMap fabric exactly. Same { channels, repeat }
-// layout as EmissionMap; the only semantic difference (Lit variant) is that the
-// swizzled texture is the diffuse BASE rather than additive emission.
+// This shader is separate from PrimitiveMatImageFlat because DiffuseMap packs
+// MaterialUniforms as { channels:vec3, repeat:vec2 }, while Image packs
+// { repeat:vec2, color:vec4 }. Sharing the layout would read channels as
+// `repeat` and repeat plus padding as `color`. The { channels, repeat } layout
+// matches EmissionMap; in lit variants, DiffuseMap uses the swizzled texture as
+// the diffuse base rather than additive emission.
 
 struct VertexInput {
     @location(0) positionHigh: vec3<f32>,
@@ -21,7 +20,7 @@ struct VertexInput {
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
     @location(0) texCoord: vec2<f32>,
-    // FEAT-GAP-09 — eye-space position for the aerial-perspective fog block.
+    // Eye-space position consumed by the aerial-perspective fog block.
     @location(1) eyePosition: vec3<f32>,
     //>>ifdef LOG_DEPTH
     // Interpolated linear depthFromNearPlusOne; the FS converts it to frag_depth.
@@ -37,11 +36,11 @@ struct CameraUniforms {
     _pad1: f32,
         previousViewProjection: mat4x4<f32>,
     //>>ifdef LOG_DEPTH
-    // ─── Renderer-wide log depth (Approach A) ───
+    // Renderer-wide log-depth parameters:
     //   x = frustum near, y = frustum far,
     //   z = oneOverLog2FarDepthFromNearPlusOne (the log-depth factor),
     //   w = reserved. Packed by WebGPUPrimitiveCommands.writeRTEUniformsFlat
-    // into the 16-byte FLAT UB tail (FLAT_CAMERA_BYTES 160 -> 176).
+    // into the 16-byte flat UBO tail (FLAT_CAMERA_BYTES 160 -> 176).
     logDepth: vec4<f32>,
     //>>endif
 }
@@ -59,10 +58,9 @@ struct MaterialUniforms {
 @group(2) @binding(0) var textureSampler: sampler;
 @group(2) @binding(1) var diffuseTexture: texture_2d<f32>;
 
-// FEAT-GAP-09 (Batch 97) — truncated EffectsUniforms struct, sized to
-// reach the `atmosphereLutControl: vec4<f32>` slot at byte offset 240
-// in the shared 480-byte UBO (see `WebGPUEffectsBindGroup.js`). Reading
-// less than the full UBO is safe — WGSL just sees the prefix.
+// Prefix of the shared 480-byte effects uniform buffer through
+// `atmosphereLutControl` at byte offset 240. Its layout matches
+// `WebGPUEffectsBindGroup.js`; WGSL may declare only the prefix it reads.
 struct EffectsUniforms {
     shadowMatrix: mat4x4<f32>,
     shadowMapSize: vec2<f32>,
@@ -78,14 +76,14 @@ struct EffectsUniforms {
 }
 
 @group(3) @binding(0) var<uniform> effects: EffectsUniforms;
-// FEAT-GAP-09 (Batch 97) — aerial-perspective LUT bindings 7/8/9.
+// Aerial-perspective lookup textures at bindings 7, 8, and 9.
 @group(3) @binding(7) var atmosphereTransmittanceLut: texture_2d<f32>;
 @group(3) @binding(8) var atmosphereInscatterLut: texture_2d<f32>;
 @group(3) @binding(9) var atmosphereLutSampler: sampler;
 
 //>>ifdef LOG_DEPTH
-// Renderer-wide log depth (Approach A). Mirror of PrimitivePhongColor.wgsl —
-// keep byte-compatible. near/far/factor come from camera.logDepth. The FS swaps
+// Renderer-wide log-depth helpers mirror PrimitivePhongColor.wgsl and must
+// remain byte-compatible. near/far/factor come from camera.logDepth. The FS swaps
 // to a FragOut struct so it can write @builtin(frag_depth) alongside the color.
 struct FragOut {
     @location(0) color: vec4<f32>,
@@ -151,7 +149,7 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     let dz = swizzleChannel(texColor, material.channels.z);
     var finalColor = vec4<f32>(dx, dy, dz, texColor.a);
 
-    // FEAT-GAP-09 (Batch 97) — Aerial-perspective fog blend. Mirrors
+    // Aerial-perspective fog blend shared with
     // `PrimitiveBasicColor.wgsl::fragmentMain`.
     if (effects.atmosphereLutControl.x > 0.5) {
         let innerRadius = effects.atmosphereLutControl.y;

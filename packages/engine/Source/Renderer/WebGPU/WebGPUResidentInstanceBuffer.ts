@@ -1,40 +1,36 @@
 /**
- * Resident-instance partial-write manager for the WebGPU collection
- * renderers (Phase 1 of the Large Dynamic Objects roadmap —
- * NEW-RESIDENT-INSTANCE-BUFFER-MGR + NEW-PARTIAL-WRITE-COALESCING).
+ * Resident-instance partial-write manager for WebGPU collection renderers.
  *
- * Keeps a resident CPU `Float32Array` of packed per-instance data plus a
- * GPU vertex buffer between frames, so:
- *   - a STATIC collection uploads NOTHING per frame, and
- *   - a sparse change re-packs + uploads ONLY the changed instances'
- *     byte ranges (O(changed), not O(N)).
+ * Keeps a resident CPU `Float32Array` of packed per-instance data plus a GPU
+ * vertex buffer between frames, so:
+ *   - a static collection uploads nothing per frame, and
+ *   - a sparse change repacks and uploads only the changed
+ *     instances' byte ranges, making the work proportional to the
+ *     number changed rather than the collection size.
  *
  * The load-bearing invariant is the slot map: the GPU slot is the running
- * COMPACTED visible order (over `show` + `_clusterShow`), NOT the
- * primitive's dense `_index`. Hidden primitives get no slot. Any event
- * that can shift downstream slots — add / remove / show-toggle /
- * clusterShow change / length change — must force a FULL rebuild (whole
- * CPU re-pack + one writeBuffer + slot-map recompute). Only a property
- * edit on an already-visible instance whose slot is unchanged takes the
- * partial path. Getting this predicate wrong is exactly how the Batch 226
- * all-or-nothing gate shipped stale renders (see DEFERRED_WORK
- * NEW-COLLECTIONS-DIRTY-GATE).
+ * compacted visible order (over `show` + `_clusterShow`), not the primitive's
+ * dense `_index`. Hidden primitives get no slot. Any event that can shift
+ * downstream slots — add / remove / show-toggle / clusterShow change / length
+ * change — must force a full rebuild (whole CPU re-pack + one writeBuffer +
+ * slot-map recompute). Only a property edit on an already-visible instance
+ * whose slot is unchanged takes the partial path. Treating a slot-shifting
+ * event as a partial update leaves downstream slots stale.
  *
  * Velocity prev-mirror (TAA motion vectors): when `mirrorPrev` is set the
- * manager maintains a second GPU buffer holding LAST frame's data at the
- * SAME slots. On partial writes the prev slot is mirrored before the
+ * manager maintains a second GPU buffer holding the previous frame's data at
+ * the same slots. On partial writes the previous slot is mirrored before the
  * current slot is overwritten, and slots written at frame N are caught up
  * at frame N+1 (so a one-frame move produces exactly one frame of
  * non-zero velocity, then settles). On full rebuilds prev = current
  * (zero velocity for the rebuild frame — slots may have shifted, so
  * mapping old slots forward would be wrong).
  *
- * Consumers: billboard (Batch 229), point + label (Batch 232 —
- * NEW-PARTIAL-WRITE-WIRE-BPL complete). The label wiring deliberately
- * forces the full-rebuild path on ANY glyph dirty (glyph dirty
- * granularity is unsound for per-slot writes — see the GRANULARITY NOTE
- * in WebGPULabelRenderer); settled label frames still upload nothing.
- * Folding into NEW-COLLECTION-RENDERER-BASE is P1-T6.
+ * Billboard, point, and label renderers consume this manager. Label updates
+ * deliberately force the full-rebuild path for any dirty glyph because glyph
+ * dirty granularity cannot be mapped soundly to per-slot writes; settled label
+ * frames still upload nothing. The manager remains standalone because a shared
+ * collection-renderer base does not yet own this behavior.
  *
  * @private
  * @module WebGPUResidentInstanceBuffer
@@ -57,7 +53,7 @@ export interface ResidentInstanceItem {
 /**
  * Per-frame sync inputs. `dirtyList[0..dirtyCount)` is the collection's
  * per-frame dirty list (e.g. `_billboardsToUpdate` /
- * `_billboardsToUpdateIndex`) and MUST be captured BEFORE the caller
+ * `_billboardsToUpdateIndex`) and must be captured before the caller
  * consumes the collection's dirty state (`_consumeDirtyState`).
  */
 export interface ResidentInstanceSyncOptions<T extends ResidentInstanceItem> {
@@ -69,7 +65,7 @@ export interface ResidentInstanceSyncOptions<T extends ResidentInstanceItem> {
   dirtyList: ArrayLike<T | undefined>;
   /** Number of valid entries in `dirtyList`. */
   dirtyCount: number;
-  /** Packs ONE instance at `floatOffset` floats into `out`. */
+  /** Packs one instance at `floatOffset` floats into `out`. */
   packInstance: (out: Float32Array, floatOffset: number, item: T) => void;
   /** Visibility predicate (slot-presence rule). Must treat holes as hidden. */
   isVisible: (item: T | undefined) => item is T;
@@ -129,8 +125,8 @@ export class WebGPUResidentInstanceBuffer<T extends ResidentInstanceItem> {
    */
   private _prevValid: boolean = false;
   /**
-   * Slot ranges (flat [start0,end0,start1,end1,...]) written to the
-   * CURRENT buffer last frame; the prev mirror must catch these up next
+   * Slot ranges (flat [start0,end0,start1,end1,...]) written to the current
+   * buffer last frame; the previous mirror must catch these up next
    * frame (their prev value becomes last frame's current value).
    */
   private _pendingPrevSlotRanges: number[] = [];
