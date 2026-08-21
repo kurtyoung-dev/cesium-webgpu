@@ -187,7 +187,7 @@ adversarially-honest>` — the subject states what was actually proven, includin
 - **[CADENCE] Campaign close-out carries a tooling re-audit line** (ruling M4 — a checklist line at
   close-out, deliberately not a standing lane). Before a campaign is declared closed: run
   `node --test Tools/visual-regression/purpose-header-contract.spec.mjs` and
-  `node Tools/generate-tooling-catalog.mjs --check`; retire every probe the campaign left at
+  `node Tools/generate-tooling-catalog-launcher.cjs --check`; retire every probe the campaign left at
   `@status INVESTIGATION` per the retirement ritual (`EXECUTOR_LANE_CHARTER_2026-08-14.md` §3.6);
   land the regenerated census in the close-out batch. A campaign that closes without this is how
   380 probes went undocumented and four deleted probes stayed documented.
@@ -269,7 +269,7 @@ paragraph governs.
 - **Every probe and gate lib self-registers** — `@purpose` (one sentence) + `@status`
   (`ACTIVE | INVESTIGATION | ARCHIVED-CANDIDATE`) in its header, enforced by
   `Tools/visual-regression/purpose-header-contract.spec.mjs`, read by
-  `node Tools/generate-tooling-catalog.mjs` into the `TOOLING_CATALOG.md` census, and retired by the
+  `node Tools/generate-tooling-catalog-launcher.cjs` into the `TOOLING_CATALOG.md` census, and retired by the
   ritual in `EXECUTOR_LANE_CHARTER_2026-08-14.md` §3.6 rather than left in place (ruling M4).
 
 ### Acceptance semantics

@@ -29,28 +29,79 @@
 // batch that touched a probe without regenerating.
 //
 // USAGE
-//   node Tools/generate-tooling-catalog.mjs            # rewrite the section
-//   node Tools/generate-tooling-catalog.mjs --check    # exit 1 on drift
-//   node Tools/generate-tooling-catalog.mjs --stdout   # print, write nothing
+//   node Tools/generate-tooling-catalog-launcher.cjs            # rewrite
+//   node Tools/generate-tooling-catalog-launcher.cjs --check    # check
+//   node Tools/generate-tooling-catalog-launcher.cjs --stdout   # print only
 //
 // EXIT CODES
 //   0  written, or --check found no drift
 //   1  --check found drift
 //   2  the generator itself failed
-//   3  STRUCTURAL: the markers are missing, or no tooling files were found
+//   3  STRUCTURAL: candidate binding/markers/scope cannot certify a census
 
-import { execFileSync } from "node:child_process";
-import { readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import {
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { parsePurposeHeader } from "./lib/purpose-header.mjs";
 
-const ROOT = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
+const CANDIDATE_RUNTIME_ENV = "TOOLING_CATALOG_CANDIDATE_RUNTIME";
+const TRUSTED_LAUNCHER_ENV = "TOOLING_CATALOG_TRUSTED_LAUNCHER";
+const RECEIPT_CHALLENGE_ENV = "TOOLING_CATALOG_RECEIPT_CHALLENGE";
+const RECEIPT_FD_ENV = "TOOLING_CATALOG_RECEIPT_FD";
+const RECEIPT_SUBJECT_ENV = "TOOLING_CATALOG_RECEIPT_SUBJECT";
+const RECEIPT_SCHEMA = "tooling-catalog-completion-v1";
+const CANDIDATE_ROOT_ENV = "TOOLING_CATALOG_ROOT";
+const CANDIDATE_HEAD_ENV = "TOOLING_CATALOG_CANDIDATE_HEAD";
+const HISTORY_GIT_DIR_ENV = "TOOLING_CATALOG_HISTORY_GIT_DIR";
+const HISTORY_OBJECT_DIR_ENV = "TOOLING_CATALOG_HISTORY_OBJECT_DIR";
+const HISTORY_ALTERNATES_ENV = "TOOLING_CATALOG_HISTORY_ALTERNATES";
+const HISTORY_CONFIG_ENV = "TOOLING_CATALOG_HISTORY_CONFIG";
+const ROOT = process.env[CANDIDATE_ROOT_ENV]
+  ? path.resolve(process.env[CANDIDATE_ROOT_ENV])
+  : path.resolve(fileURLToPath(new URL("..", import.meta.url)));
 const CATALOG = path.join(ROOT, "migration_doc", "TOOLING_CATALOG.md");
+const CATALOG_REL = "migration_doc/TOOLING_CATALOG.md";
+const RUNTIME_BINDINGS = Object.freeze([
+  "Tools/generate-tooling-catalog.mjs",
+  "Tools/lib/purpose-header.mjs",
+]);
+
+/*
+ * Capture the raw files at module initialization. A later filesystem read does
+ * not identify the code Node already loaded: another process can replace a
+ * dirty launcher with candidate bytes while the census is running. Git clean
+ * filters are intentionally absent too; candidate binding is a byte identity,
+ * not a prediction of what a later `git add` would store.
+ */
+const INITIAL_RUNTIME_BYTES = new Map([
+  [RUNTIME_BINDINGS[0], readFileSync(fileURLToPath(import.meta.url))],
+  [
+    RUNTIME_BINDINGS[1],
+    readFileSync(
+      fileURLToPath(new URL("./lib/purpose-header.mjs", import.meta.url)),
+    ),
+  ],
+]);
+
+/** Structural candidate ineligibility, distinct from an unreadable object. */
+export class CandidateStructureError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "CandidateStructureError";
+  }
+}
 
 export const BEGIN_MARKER =
-  "<!-- BEGIN GENERATED CENSUS — regenerate with `node Tools/generate-tooling-catalog.mjs`; edits inside this region are overwritten -->";
+  "<!-- BEGIN GENERATED CENSUS — regenerate with `node Tools/generate-tooling-catalog-launcher.cjs`; edits inside this region are overwritten -->";
 export const END_MARKER = "<!-- END GENERATED CENSUS -->";
 
 /** Directories whose `.mjs` files make up the tooling library. */
@@ -83,6 +134,7 @@ const REF_EXTENSIONS = Object.freeze([
   ".js",
   ".cjs",
   ".ts",
+  ".html",
   ".json",
   ".md",
   ".yml",
@@ -93,40 +145,654 @@ const REF_EXTENSIONS = Object.freeze([
 ]);
 
 /**
- * Recursively list files under a directory.
+ * Whether a tracked path is a plausible text source of tooling references.
+ * Exported so the extension boundary has a direct, mutation-sensitive test.
  *
- * @param {string} absolute Directory to walk.
- * @param {(rel: string) => boolean} accept Predicate over repo-relative paths.
- * @returns {string[]} Repo-relative, slash-separated paths.
+ * @param {string} rel Repo-relative path.
+ * @returns {boolean} True when the path is scanned for inbound references.
  */
-function walk(absolute, accept) {
-  const out = [];
-  const stack = [absolute];
-  let guard = 0;
-  while (stack.length > 0 && guard++ < 200000) {
-    const dir = stack.pop();
-    let entries;
-    try {
-      entries = readdirSync(dir, { withFileTypes: true });
-    } catch {
+export function isReferenceSourcePath(rel) {
+  return REF_EXTENSIONS.includes(path.posix.extname(rel));
+}
+
+/**
+ * List paths tracked by the candidate Git index.
+ *
+ * The previous filesystem walk admitted ignored output helpers and unrelated
+ * untracked files into the committed census. That made the catalog impossible
+ * to reproduce from its own commit. The index is the exact prospective tree
+ * used by an authorized landing, so it is the only honest census boundary.
+ *
+ * @param {string[]} scopes Repo-relative pathspecs.
+ * @param {string} [root] Repository root; injectable for hermetic tests.
+ * @returns {string[]} Repo-relative, slash-separated tracked paths.
+ */
+export function listTrackedPaths(scopes, root = ROOT) {
+  try {
+    const output = execFileSync(
+      "git",
+      ["ls-files", "-z", "--cached", "--", ...scopes],
+      {
+        cwd: root,
+        env: { ...process.env, GIT_NO_REPLACE_OBJECTS: "1" },
+        encoding: "utf8",
+        maxBuffer: 256 * 1024 * 1024,
+      },
+    );
+    return parseTrackedPathList(output);
+  } catch (error) {
+    throw new Error(
+      `cannot enumerate the candidate Git index: ${error?.message ?? error}`,
+      { cause: error },
+    );
+  }
+}
+
+/**
+ * Parse Git's NUL-framed path list without rewriting path bytes. Git emits `/`
+ * for directory separators on every platform; a literal backslash is therefore
+ * part of a distinct repository path and must never alias a slash path.
+ *
+ * @param {string} output Raw `git ls-files -z` output.
+ * @returns {string[]} Exact sorted Git path identities.
+ */
+export function parseTrackedPathList(output) {
+  return output.split("\0").filter(Boolean).sort();
+}
+
+/**
+ * Parse NUL-framed `git ls-files --stage -z` output for an exact requested set.
+ * Paths stay opaque: LF is data inside a record, never a record delimiter.
+ *
+ * @param {string} staged Raw NUL-framed index listing.
+ * @param {string[]} paths Exact requested repo-relative paths.
+ * @returns {Map<string, {mode: string, oid: string}>} Stage-zero entries.
+ */
+export function parseCandidateIndexEntries(staged, paths) {
+  const requested = new Set(paths);
+  if (requested.size !== paths.length) {
+    throw new CandidateStructureError(
+      "candidate index read contains duplicate paths",
+    );
+  }
+  const objectIds = new Map();
+  for (const entry of staged.split("\0").filter(Boolean)) {
+    const tab = entry.indexOf("\t");
+    const header = tab === -1 ? "" : entry.slice(0, tab);
+    const rel = tab === -1 ? "" : entry.slice(tab + 1);
+    if (!requested.has(rel)) {
       continue;
     }
-    for (const entry of entries) {
-      if (entry.name === "node_modules" || entry.name === ".git") {
-        continue;
-      }
-      const child = path.join(dir, entry.name);
-      if (entry.isDirectory()) {
-        stack.push(child);
-        continue;
-      }
-      const rel = path.relative(ROOT, child).split(path.sep).join("/");
-      if (accept(rel)) {
-        out.push(rel);
-      }
+    const match = /^(\d{6}) ([0-9a-f]{40,64}) ([0-3])$/.exec(header);
+    if (match === null || match[3] !== "0" || objectIds.has(rel)) {
+      throw new CandidateStructureError(
+        `candidate index entry for ${JSON.stringify(rel)} is unresolved`,
+      );
+    }
+    objectIds.set(rel, { mode: match[1], oid: match[2] });
+  }
+  for (const rel of paths) {
+    if (!objectIds.has(rel)) {
+      throw new CandidateStructureError(
+        `candidate index has no stage-zero entry for ${JSON.stringify(rel)}`,
+      );
     }
   }
-  return out.sort();
+  return objectIds;
+}
+
+/**
+ * Resolve exact stage-zero entries for requested candidate-index paths.
+ *
+ * @param {string[]} paths Repo-relative tracked paths.
+ * @param {string} [root] Repository root; injectable for hermetic tests.
+ * @returns {Map<string, {mode: string, oid: string}>} Candidate entries.
+ */
+export function readCandidateIndexEntries(paths, root = ROOT) {
+  let staged;
+  try {
+    staged = execFileSync("git", ["ls-files", "--stage", "-z"], {
+      cwd: root,
+      env: { ...process.env, GIT_NO_REPLACE_OBJECTS: "1" },
+      encoding: "utf8",
+      maxBuffer: 512 * 1024 * 1024,
+    });
+  } catch (error) {
+    throw new Error(
+      `cannot read candidate index entries: ${error?.message ?? error}`,
+      { cause: error },
+    );
+  }
+  return parseCandidateIndexEntries(staged, paths);
+}
+
+/**
+ * Require ordinary stage-zero files before any candidate blob is read.
+ * Missing/unmerged/type-mismatched subjects are structurally ineligible;
+ * object corruption is deliberately left to the blob reader and is ERROR.
+ *
+ * @param {string[]} paths Exact candidate paths.
+ * @param {string} [root] Repository root.
+ * @returns {string[]} Structural eligibility failures.
+ */
+export function regularCandidatePathReasons(paths, root = ROOT) {
+  let entries;
+  try {
+    entries = readCandidateIndexEntries(paths, root);
+  } catch (error) {
+    if (error instanceof CandidateStructureError) {
+      return [error.message];
+    }
+    throw error;
+  }
+  const reasons = [];
+  for (const rel of paths) {
+    const mode = entries.get(rel)?.mode;
+    if (!["100644", "100755"].includes(mode)) {
+      reasons.push(
+        `candidate index path ${JSON.stringify(rel)} has non-regular mode ${mode ?? "missing"}`,
+      );
+    }
+  }
+  return reasons;
+}
+
+/**
+ * Capture the logical candidate index in Git's NUL-framed stage format.
+ * One `ls-files` invocation observes one atomically published index version,
+ * including a logical expansion of split/sparse storage details.
+ *
+ * @param {string} [root] Repository root.
+ * @param {NodeJS.ProcessEnv} [env] Git environment selecting the index.
+ * @returns {Buffer} Exact logical stage-zero/staged-entry snapshot.
+ */
+export function readCandidateIndexSnapshot(root = ROOT, env = process.env) {
+  try {
+    return execFileSync("git", ["ls-files", "--stage", "-z"], {
+      cwd: root,
+      env,
+      maxBuffer: 512 * 1024 * 1024,
+    });
+  } catch (error) {
+    throw new Error(
+      `cannot snapshot the candidate Git index: ${error?.message ?? error}`,
+      { cause: error },
+    );
+  }
+}
+
+/**
+ * Resolve the exact commit whose history supplies the freshness column.
+ * Replacement objects are irrelevant to ref identity and are disabled.
+ *
+ * @param {string} [root] Repository root.
+ * @param {NodeJS.ProcessEnv} [env] Git environment.
+ * @returns {string} Full commit object ID.
+ */
+export function readCandidateHead(root = ROOT, env = process.env) {
+  try {
+    return execFileSync("git", ["rev-parse", "--verify", "HEAD^{commit}"], {
+      cwd: root,
+      env: { ...env, GIT_NO_REPLACE_OBJECTS: "1" },
+      encoding: "utf8",
+      maxBuffer: 1024 * 1024,
+    }).trim();
+  } catch (error) {
+    throw new Error(
+      `cannot resolve candidate HEAD: ${error?.message ?? error}`,
+      { cause: error },
+    );
+  }
+}
+
+/**
+ * Check whether Git can supply canonical, complete history for last-touch
+ * dates. Replacement objects are disabled separately; legacy grafts and
+ * shallow boundaries must be rejected because both silently rewrite or
+ * truncate history while leaving ordinary Git commands successful.
+ *
+ * @param {string} [root] Repository root.
+ * @param {NodeJS.ProcessEnv} [env] Candidate Git environment.
+ * @returns {string[]} Structural prerequisite failures.
+ */
+export function canonicalHistoryPrerequisiteReasons(
+  root = ROOT,
+  env = process.env,
+) {
+  const safeEnv = { ...env, GIT_NO_REPLACE_OBJECTS: "1" };
+  let shallow;
+  let graftPathText;
+  try {
+    shallow = execFileSync("git", ["rev-parse", "--is-shallow-repository"], {
+      cwd: root,
+      env: safeEnv,
+      encoding: "utf8",
+      maxBuffer: 1024 * 1024,
+    }).trim();
+    graftPathText = execFileSync(
+      "git",
+      ["rev-parse", "--git-path", "info/grafts"],
+      {
+        cwd: root,
+        env: safeEnv,
+        encoding: "utf8",
+        maxBuffer: 1024 * 1024,
+      },
+    ).trim();
+  } catch (error) {
+    throw new Error(
+      `cannot inspect canonical Git history prerequisites: ${error?.message ?? error}`,
+      { cause: error },
+    );
+  }
+  if (shallow !== "true" && shallow !== "false") {
+    throw new Error(`Git returned an invalid shallow-state value: ${shallow}`);
+  }
+
+  const reasons = [];
+  if (shallow === "true") {
+    reasons.push("candidate Git history is shallow");
+  }
+  const graftPath = path.isAbsolute(graftPathText)
+    ? graftPathText
+    : path.resolve(root, graftPathText);
+  try {
+    if (readFileSync(graftPath).length > 0) {
+      reasons.push("candidate Git history has a nonempty info/grafts file");
+    }
+  } catch (error) {
+    if (error?.code !== "ENOENT") {
+      throw new Error(
+        `cannot inspect candidate graft file ${graftPath}: ${error?.message ?? error}`,
+        { cause: error },
+      );
+    }
+  }
+  return reasons;
+}
+
+/**
+ * Build a private, graft-free and shallow-free Git metadata directory for the
+ * freshness walk. The commit is addressed by its frozen object ID and the
+ * original content-addressed object store is read only through alternates.
+ * Mutating the candidate repository's `shallow` or `info/grafts` files while
+ * `git log` runs therefore cannot alter the dates and disappear before the
+ * terminal prerequisite check.
+ *
+ * @param {string} root Candidate repository root.
+ * @param {NodeJS.ProcessEnv} candidateEnv Candidate Git environment.
+ * @param {string} privateRoot Private subject directory.
+ * @returns {NodeJS.ProcessEnv} Isolated history environment.
+ */
+export function createIsolatedHistoryEnvironment(
+  root,
+  candidateEnv,
+  privateRoot,
+) {
+  let objectDirectory = candidateEnv.GIT_OBJECT_DIRECTORY;
+  if (objectDirectory === undefined || objectDirectory === "") {
+    try {
+      objectDirectory = execFileSync(
+        "git",
+        ["rev-parse", "--path-format=absolute", "--git-path", "objects"],
+        {
+          cwd: root,
+          env: { ...candidateEnv, GIT_NO_REPLACE_OBJECTS: "1" },
+          encoding: "utf8",
+          maxBuffer: 1024 * 1024,
+        },
+      ).trim();
+    } catch (error) {
+      throw new Error(
+        `cannot resolve candidate object directory: ${error?.message ?? error}`,
+        { cause: error },
+      );
+    }
+  }
+  if (!path.isAbsolute(objectDirectory)) {
+    objectDirectory = path.resolve(root, objectDirectory);
+  }
+
+  const historyGitDir = path.join(privateRoot, "history.git");
+  const emptyGlobalConfig = path.join(privateRoot, "empty.gitconfig");
+  writeFileSync(emptyGlobalConfig, "");
+  const initEnv = { ...candidateEnv };
+  for (const name of [
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_COMMON_DIR",
+    "GIT_DIR",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_REPLACE_REF_BASE",
+    "GIT_SHALLOW_FILE",
+    "GIT_WORK_TREE",
+  ]) {
+    delete initEnv[name];
+  }
+  initEnv.GIT_CONFIG_GLOBAL = emptyGlobalConfig;
+  initEnv.GIT_CONFIG_NOSYSTEM = "1";
+  initEnv.GIT_NO_REPLACE_OBJECTS = "1";
+  try {
+    execFileSync("git", ["init", "--bare", "--quiet", historyGitDir], {
+      cwd: privateRoot,
+      env: initEnv,
+      maxBuffer: 16 * 1024 * 1024,
+    });
+  } catch (error) {
+    throw new Error(
+      `cannot initialize isolated history metadata: ${error?.message ?? error}`,
+      { cause: error },
+    );
+  }
+
+  const existingAlternates =
+    candidateEnv.GIT_ALTERNATE_OBJECT_DIRECTORIES ?? "";
+  return {
+    ...initEnv,
+    GIT_ALTERNATE_OBJECT_DIRECTORIES: [objectDirectory, existingAlternates]
+      .filter(Boolean)
+      .join(path.delimiter),
+    GIT_DIR: historyGitDir,
+    GIT_OBJECT_DIRECTORY: path.join(historyGitDir, "objects"),
+  };
+}
+
+/**
+ * Materialize one full private index and execute a synchronous callback with
+ * every nested Git command bound to it. The original candidate index and HEAD
+ * remain separately identifiable for the exit-time currency check.
+ *
+ * @template T
+ * @param {(subject: object) => T} callback Synchronous census operation.
+ * @param {string} [root] Repository root.
+ * @returns {T} Callback result.
+ */
+export function withFrozenCandidateIndex(callback, root = ROOT) {
+  const originalEnv = { ...process.env };
+  const candidateEnv = {
+    ...originalEnv,
+    GIT_NO_REPLACE_OBJECTS: "1",
+  };
+  const physicalIndexState = readCandidatePhysicalIndexState(
+    root,
+    candidateEnv,
+  );
+  const indexSnapshot = readCandidateIndexSnapshot(root, candidateEnv);
+  const head = readCandidateHead(root, candidateEnv);
+  const historyPrerequisiteReasons = canonicalHistoryPrerequisiteReasons(
+    root,
+    candidateEnv,
+  );
+  const privateRoot = mkdtempSync(
+    path.join(tmpdir(), "tooling-catalog-index-"),
+  );
+  const privateIndex = path.join(privateRoot, "index");
+  const privateEnv = {
+    ...candidateEnv,
+    GIT_INDEX_FILE: privateIndex,
+  };
+  const priorIndex = process.env.GIT_INDEX_FILE;
+  const priorNoReplace = process.env.GIT_NO_REPLACE_OBJECTS;
+  try {
+    execFileSync("git", ["update-index", "-z", "--index-info"], {
+      cwd: root,
+      env: privateEnv,
+      input: indexSnapshot,
+      maxBuffer: 512 * 1024 * 1024,
+    });
+    execFileSync("git", ["update-index", "--no-split-index"], {
+      cwd: root,
+      env: privateEnv,
+      maxBuffer: 16 * 1024 * 1024,
+    });
+    const historyEnv = createIsolatedHistoryEnvironment(
+      root,
+      candidateEnv,
+      privateRoot,
+    );
+    process.env.GIT_INDEX_FILE = privateIndex;
+    process.env.GIT_NO_REPLACE_OBJECTS = "1";
+    return callback({
+      head,
+      historyEnv,
+      historyPrerequisiteReasons,
+      indexPrerequisiteReasons: physicalIndexState.reasons,
+      indexSnapshot,
+      originalEnv: candidateEnv,
+      privateIndex,
+      privateRoot,
+      physicalIndexFiles: physicalIndexState.files,
+      root,
+    });
+  } finally {
+    if (priorIndex === undefined) {
+      delete process.env.GIT_INDEX_FILE;
+    } else {
+      process.env.GIT_INDEX_FILE = priorIndex;
+    }
+    if (priorNoReplace === undefined) {
+      delete process.env.GIT_NO_REPLACE_OBJECTS;
+    } else {
+      process.env.GIT_NO_REPLACE_OBJECTS = priorNoReplace;
+    }
+    rmSync(privateRoot, { recursive: true, force: true });
+  }
+}
+
+/**
+ * Detect whether the prospective index or the HEAD used for freshness moved
+ * after the private snapshot was taken.
+ *
+ * @param {object} subject Frozen subject from {@link withFrozenCandidateIndex}.
+ * @returns {string[]} Structural currency failures.
+ */
+export function candidateSubjectDriftReasons(subject) {
+  const reasons = [];
+  for (const reason of subject.indexPrerequisiteReasons ?? []) {
+    reasons.push(`candidate index prerequisite is ineligible: ${reason}`);
+  }
+  for (const reason of subject.historyPrerequisiteReasons ?? []) {
+    reasons.push(`candidate history prerequisite is ineligible: ${reason}`);
+  }
+  const currentIndex = readCandidateIndexSnapshot(
+    subject.root,
+    subject.originalEnv,
+  );
+  if (!currentIndex.equals(subject.indexSnapshot)) {
+    reasons.push("candidate Git index changed during census construction");
+  }
+  const currentPhysicalIndex = readCandidatePhysicalIndexState(
+    subject.root,
+    subject.originalEnv,
+  );
+  for (const reason of currentPhysicalIndex.reasons) {
+    reasons.push(`candidate index prerequisite is ineligible: ${reason}`);
+  }
+  const initialPhysical = subject.physicalIndexFiles ?? new Map();
+  if (
+    initialPhysical.size !== currentPhysicalIndex.files.size ||
+    [...initialPhysical].some(
+      ([pathname, bytes]) =>
+        !currentPhysicalIndex.files.get(pathname)?.equals(bytes),
+    )
+  ) {
+    reasons.push(
+      "candidate physical Git index changed during census construction",
+    );
+  }
+  const currentHead = readCandidateHead(subject.root, subject.originalEnv);
+  if (currentHead !== subject.head) {
+    reasons.push(
+      `candidate HEAD changed during census construction (${subject.head} -> ${currentHead})`,
+    );
+  }
+  for (const reason of canonicalHistoryPrerequisiteReasons(
+    subject.root,
+    subject.originalEnv,
+  )) {
+    reasons.push(`candidate history prerequisite is ineligible: ${reason}`);
+  }
+  return reasons;
+}
+
+/**
+ * Read tracked candidate bytes from the Git index in one batch.
+ *
+ * Reading the ordinary filesystem here would let unrelated dirty work alter a
+ * catalog that is later committed without that work. Index blobs make both the
+ * subject list and its parsed purposes/references reproduce the landing tree.
+ *
+ * @param {string[]} paths Repo-relative tracked paths.
+ * @param {string} [root] Repository root; injectable for hermetic tests.
+ * @returns {Map<string, string>} Path -> UTF-8 index contents.
+ */
+export function readCandidateFileBuffers(paths, root = ROOT) {
+  const result = new Map();
+  if (paths.length === 0) {
+    return result;
+  }
+  const objectIds = readCandidateIndexEntries(paths, root);
+
+  let output;
+  try {
+    output = execFileSync("git", ["cat-file", "--batch"], {
+      cwd: root,
+      env: { ...process.env, GIT_NO_REPLACE_OBJECTS: "1" },
+      // Object IDs are fixed-width hexadecimal tokens. Unlike `:path`, they
+      // cannot contain LF and therefore cannot corrupt the batch protocol.
+      input: `${paths.map((rel) => objectIds.get(rel).oid).join("\n")}\n`,
+      maxBuffer: 512 * 1024 * 1024,
+    });
+  } catch (error) {
+    throw new Error(
+      `cannot read candidate index blobs: ${error?.message ?? error}`,
+      { cause: error },
+    );
+  }
+
+  let offset = 0;
+  for (const rel of paths) {
+    const headerEnd = output.indexOf(0x0a, offset);
+    if (headerEnd === -1) {
+      throw new Error(`truncated Git batch header for ${rel}`);
+    }
+    const header = output.subarray(offset, headerEnd).toString("utf8");
+    const match = /^([0-9a-f]{40,64}) blob (\d+)$/.exec(header);
+    if (match === null || match[1] !== objectIds.get(rel).oid) {
+      throw new Error(`candidate object for ${rel} is not the expected blob`);
+    }
+    const size = Number(match[2]);
+    const contentStart = headerEnd + 1;
+    const contentEnd = contentStart + size;
+    if (
+      !Number.isSafeInteger(size) ||
+      size < 0 ||
+      contentEnd >= output.length
+    ) {
+      throw new Error(`candidate blob for ${rel} has invalid framing`);
+    }
+    result.set(rel, Buffer.from(output.subarray(contentStart, contentEnd)));
+    if (output[contentEnd] !== 0x0a) {
+      throw new Error(`candidate blob for ${rel} lacks a batch terminator`);
+    }
+    offset = contentEnd + 1;
+  }
+  if (offset !== output.length) {
+    throw new Error("candidate blob batch contains unrequested trailing data");
+  }
+  return result;
+}
+
+/**
+ * Read tracked candidate bytes as UTF-8 strings.
+ *
+ * @param {string[]} paths Repo-relative tracked paths.
+ * @param {string} [root] Repository root; injectable for hermetic tests.
+ * @returns {Map<string, string>} Path -> UTF-8 index contents.
+ */
+export function readTrackedFiles(paths, root = ROOT) {
+  const result = new Map();
+  for (const [rel, bytes] of readCandidateFileBuffers(paths, root)) {
+    result.set(rel, bytes.toString("utf8"));
+  }
+  return result;
+}
+
+function normalizeBootstrapLineEndings(bytes) {
+  const normalized = Buffer.allocUnsafe(bytes.length);
+  let write = 0;
+  for (let read = 0; read < bytes.length; read++) {
+    if (bytes[read] === 0x0d && bytes[read + 1] === 0x0a) {
+      continue;
+    }
+    normalized[write++] = bytes[read];
+  }
+  return normalized.subarray(0, write);
+}
+
+/**
+ * Compare the executing implementation and its parser dependency to the exact
+ * candidate-index blobs they purport to certify.
+ *
+ * @param {string[]} [paths] Runtime files that define the census semantics.
+ * @param {string} [root] Repository root.
+ * @param {Map<string, Buffer>} [loadedBytes] Raw bytes captured at module initialization.
+ * @returns {string[]} Structural mismatch reasons.
+ */
+export function runtimeCandidateBindingReasons(
+  paths = RUNTIME_BINDINGS,
+  root = ROOT,
+  loadedBytes = INITIAL_RUNTIME_BYTES,
+  allowBootstrapLineEndings = process.env[CANDIDATE_RUNTIME_ENV] !== "1",
+) {
+  const reasons = regularCandidatePathReasons(paths, root);
+  if (reasons.length > 0) {
+    return reasons;
+  }
+  const candidateBytes = readCandidateFileBuffers(paths, root);
+  for (const rel of paths) {
+    const loaded = loadedBytes.get(rel);
+    const candidate = candidateBytes.get(rel);
+    const bootstrapEquivalent =
+      allowBootstrapLineEndings &&
+      Buffer.isBuffer(loaded) &&
+      Buffer.isBuffer(candidate) &&
+      normalizeBootstrapLineEndings(loaded).equals(candidate);
+    if (
+      !Buffer.isBuffer(loaded) ||
+      !Buffer.isBuffer(candidate) ||
+      (!loaded.equals(candidate) && !bootstrapEquivalent)
+    ) {
+      reasons.push(
+        `${rel} module-initialization bytes do not match the candidate-index bootstrap`,
+      );
+    }
+  }
+  return reasons;
+}
+
+/**
+ * Replace the worktree catalog only if it is byte-identical to the snapshot
+ * read before census construction. A concurrent prose edit must never be
+ * silently overwritten by the several-second generation pass.
+ *
+ * @param {string} expected Initial worktree catalog bytes.
+ * @param {string} replacement Complete replacement bytes.
+ * @param {() => string} [readCurrent] Injectable final read.
+ * @param {(value: string) => void} [writeReplacement] Injectable writer.
+ * @returns {boolean} True only when the replacement was written.
+ */
+export function writeCatalogIfUnchanged(
+  expected,
+  replacement,
+  readCurrent = () => readFileSync(CATALOG, "utf8"),
+  writeReplacement = (value) => writeFileSync(CATALOG, value),
+) {
+  if (readCurrent() !== expected) {
+    return false;
+  }
+  writeReplacement(replacement);
+  return true;
 }
 
 /**
@@ -135,11 +801,46 @@ function walk(absolute, accept) {
  * @returns {string[]} Repo-relative paths, sorted.
  */
 export function listToolingFiles() {
-  const files = [];
-  for (const root of CENSUS_ROOTS) {
-    files.push(...walk(path.join(ROOT, root), (rel) => rel.endsWith(".mjs")));
+  return listTrackedPaths(CENSUS_ROOTS).filter((rel) => rel.endsWith(".mjs"));
+}
+
+/**
+ * Reject path identities the Markdown catalog cannot encode losslessly, and
+ * require every `.mjs` census subject to be an ordinary stage-zero file.
+ * The Git readers themselves preserve these bytes (including NUL-framed
+ * history); this explicit boundary prevents two identities from collapsing in
+ * rendered rows.
+ *
+ * @param {string} [root] Repository root.
+ * @returns {string[]} Structural census prerequisite failures.
+ */
+export function candidateCensusPrerequisiteReasons(root = ROOT) {
+  const allPaths = listTrackedPaths(
+    [...new Set([...CENSUS_ROOTS, ...REF_ROOTS, ...REF_FILES])],
+    root,
+  );
+  const reasons = [];
+  for (const rel of allPaths) {
+    if (
+      [...rel].some((character) => {
+        const code = character.codePointAt(0);
+        return character === "\\" || code <= 0x1f || code === 0x7f;
+      })
+    ) {
+      reasons.push(
+        `candidate Git path ${JSON.stringify(rel)} cannot be represented losslessly in the Markdown census`,
+      );
+    }
   }
-  return files.sort();
+  const censusPaths = allPaths.filter(
+    (rel) =>
+      rel.endsWith(".mjs") &&
+      CENSUS_ROOTS.some(
+        (scope) => rel === scope || rel.startsWith(`${scope}/`),
+      ),
+  );
+  reasons.push(...regularCandidatePathReasons(censusPaths, root));
+  return reasons;
 }
 
 /**
@@ -189,43 +890,337 @@ export function classify(rel, declared) {
  * Per-file `git log` calls would be ~990 process spawns; on Windows that alone
  * takes minutes, which is how a freshness tool stops being run.
  *
+ * @param {NodeJS.ProcessEnv} [env] Isolated history environment.
+ * @param {string} [root] Repository root for the Git process.
  * @returns {Map<string, string>} Repo-relative path -> ISO date.
  */
-export function lastTouchDates() {
-  const dates = new Map();
-  let output;
+export function lastTouchDates(head = "HEAD", env = process.env, root = ROOT) {
   try {
-    output = execFileSync(
+    const output = execFileSync(
       "git",
       [
         "log",
         "--name-only",
-        "--pretty=format:%x01%ad",
+        "-z",
+        // 00 separates the pretty record; 01 tags its date; 02 plus Git's
+        // mandatory LF tags the first path. All following paths are NUL
+        // records, so LF and backslash remain ordinary path bytes.
+        "--pretty=format:%x00%x01%ad%x00%x02",
         "--date=short",
+        head,
         "--",
         ...CENSUS_ROOTS,
       ],
-      { cwd: ROOT, encoding: "utf8", maxBuffer: 256 * 1024 * 1024 },
+      {
+        cwd: root,
+        env: { ...env, GIT_NO_REPLACE_OBJECTS: "1" },
+        maxBuffer: 256 * 1024 * 1024,
+      },
     );
-  } catch {
-    return dates;
+    return parseLastTouchHistory(output);
+  } catch (error) {
+    throw new Error(
+      `cannot read tooling freshness history: ${error?.message ?? error}`,
+      { cause: error },
+    );
   }
+}
+
+function physicalIndexPath(root, env) {
+  if (env.GIT_INDEX_FILE) {
+    return path.isAbsolute(env.GIT_INDEX_FILE)
+      ? env.GIT_INDEX_FILE
+      : path.resolve(root, env.GIT_INDEX_FILE);
+  }
+  try {
+    return execFileSync(
+      "git",
+      ["rev-parse", "--path-format=absolute", "--git-path", "index"],
+      {
+        cwd: root,
+        env: { ...env, GIT_NO_REPLACE_OBJECTS: "1" },
+        encoding: "utf8",
+        maxBuffer: 1024 * 1024,
+      },
+    ).trim();
+  } catch (error) {
+    throw new Error(
+      `cannot resolve candidate index path: ${error?.message ?? error}`,
+      { cause: error },
+    );
+  }
+}
+
+function parsePhysicalIndex(bytes, oidLength) {
+  if (
+    bytes.length < 12 + oidLength ||
+    bytes.subarray(0, 4).toString("ascii") !== "DIRC"
+  ) {
+    throw new Error("candidate index has an invalid physical header");
+  }
+  const version = bytes.readUInt32BE(4);
+  if (![2, 3, 4].includes(version)) {
+    throw new Error(`candidate index version ${version} is unsupported`);
+  }
+  const count = bytes.readUInt32BE(8);
+  const paths = [];
+  let previous = Buffer.alloc(0);
+  let offset = 12;
+  for (let i = 0; i < count; i++) {
+    const start = offset;
+    const flagsOffset = start + 40 + oidLength;
+    if (flagsOffset + 2 > bytes.length) {
+      throw new Error("candidate index has a truncated physical entry");
+    }
+    const flags = bytes.readUInt16BE(flagsOffset);
+    let nameOffset = flagsOffset + 2 + ((flags & 0x4000) === 0 ? 0 : 2);
+    let pathname;
+    if (version === 4) {
+      let strip = 0;
+      let byte;
+      do {
+        if (nameOffset >= bytes.length) {
+          throw new Error("candidate index has a truncated v4 path prefix");
+        }
+        byte = bytes[nameOffset++];
+        strip = (strip << 7) + (byte & 0x7f);
+        if ((byte & 0x80) !== 0) {
+          strip++;
+        }
+      } while ((byte & 0x80) !== 0);
+      const nul = bytes.indexOf(0, nameOffset);
+      if (nul === -1 || strip > previous.length) {
+        throw new Error("candidate index has invalid v4 path compression");
+      }
+      pathname = Buffer.concat([
+        previous.subarray(0, previous.length - strip),
+        bytes.subarray(nameOffset, nul),
+      ]);
+      offset = nul + 1;
+    } else {
+      const nul = bytes.indexOf(0, nameOffset);
+      if (nul === -1) {
+        throw new Error("candidate index entry lacks a path terminator");
+      }
+      pathname = Buffer.from(bytes.subarray(nameOffset, nul));
+      const entryLength = nul + 1 - start;
+      offset = start + entryLength + ((8 - (entryLength % 8)) % 8);
+    }
+    previous = pathname;
+    paths.push(pathname);
+  }
+
+  const extensions = [];
+  const extensionEnd = bytes.length - oidLength;
+  while (offset < extensionEnd) {
+    if (offset + 8 > extensionEnd) {
+      throw new Error("candidate index has a truncated extension header");
+    }
+    const signature = bytes.subarray(offset, offset + 4).toString("ascii");
+    const size = bytes.readUInt32BE(offset + 4);
+    const end = offset + 8 + size;
+    if (end > extensionEnd) {
+      throw new Error(`candidate index extension ${signature} is truncated`);
+    }
+    extensions.push({
+      data: bytes.subarray(offset + 8, end),
+      signature,
+    });
+    offset = end;
+  }
+  if (offset !== extensionEnd) {
+    throw new Error("candidate index physical framing is invalid");
+  }
+  return { extensions, paths };
+}
+
+/**
+ * Capture every physical index participating in the candidate (including a
+ * split index's shared file) and reject identities that Git-for-Windows can
+ * silently omit from `ls-files`. Raw bytes are retained for the exit-time ABA
+ * comparison; logical sparse/split expansion still comes from Git itself.
+ *
+ * @param {string} [root] Repository root.
+ * @param {NodeJS.ProcessEnv} [env] Candidate Git environment.
+ * @returns {{files: Map<string, Buffer>, reasons: string[]}} Physical state.
+ */
+export function readCandidatePhysicalIndexState(
+  root = ROOT,
+  env = process.env,
+) {
+  let objectFormat;
+  try {
+    objectFormat = execFileSync("git", ["rev-parse", "--show-object-format"], {
+      cwd: root,
+      env: { ...env, GIT_NO_REPLACE_OBJECTS: "1" },
+      encoding: "utf8",
+      maxBuffer: 1024 * 1024,
+    }).trim();
+  } catch (error) {
+    throw new Error(
+      `cannot resolve candidate object format: ${error?.message ?? error}`,
+      { cause: error },
+    );
+  }
+  const oidLength = objectFormat === "sha256" ? 32 : 20;
+  if (!["sha1", "sha256"].includes(objectFormat)) {
+    throw new Error(`candidate object format ${objectFormat} is unsupported`);
+  }
+
+  const files = new Map();
+  const rawPaths = [];
+  const visit = (indexPath) => {
+    const absolute = path.resolve(indexPath);
+    if (files.has(absolute)) {
+      return;
+    }
+    const bytes = readFileSync(absolute);
+    files.set(absolute, bytes);
+    const parsed = parsePhysicalIndex(bytes, oidLength);
+    rawPaths.push(...parsed.paths);
+    for (const extension of parsed.extensions) {
+      if (extension.signature === "link") {
+        if (extension.data.length < oidLength) {
+          throw new Error("candidate split-index link extension is truncated");
+        }
+        const sharedName = `sharedindex.${extension.data.subarray(0, oidLength).toString("hex")}`;
+        visit(path.join(path.dirname(absolute), sharedName));
+      }
+    }
+  };
+  visit(physicalIndexPath(root, env));
+
+  const decoder = new TextDecoder("utf-8", { fatal: true });
+  const reasons = [];
+  const relevantPrefixes = [...new Set([...CENSUS_ROOTS, ...REF_ROOTS])].map(
+    (scope) => Buffer.from(`${scope}/`, "utf8"),
+  );
+  const relevantExact = new Set(
+    [...CENSUS_ROOTS, ...REF_FILES].map((rel) =>
+      Buffer.from(rel, "utf8").toString("hex"),
+    ),
+  );
+  for (const raw of rawPaths) {
+    const relevant =
+      relevantExact.has(raw.toString("hex")) ||
+      relevantPrefixes.some(
+        (prefix) =>
+          raw.length >= prefix.length &&
+          raw.subarray(0, prefix.length).equals(prefix),
+      );
+    if (
+      relevant &&
+      [...raw].some((byte) => byte === 0x5c || byte <= 0x1f || byte === 0x7f)
+    ) {
+      let display;
+      try {
+        display = JSON.stringify(decoder.decode(raw));
+      } catch {
+        display = `<non-UTF8:${raw.toString("hex")}>`;
+      }
+      reasons.push(
+        `candidate Git path ${display} cannot be represented losslessly in the Markdown census`,
+      );
+    }
+  }
+  return { files, reasons };
+}
+
+/**
+ * Parse the NUL-framed freshness stream emitted by {@link lastTouchDates}.
+ *
+ * @param {Buffer} output Raw Git log bytes.
+ * @returns {Map<string, string>} Exact Git path -> first/newest date.
+ */
+export function parseLastTouchHistory(output) {
+  const dates = new Map();
+  const decoder = new TextDecoder("utf-8", { fatal: true });
   let current = null;
-  for (const raw of output.split("\n")) {
-    const line = raw.replace(/\r$/, "");
-    if (line.startsWith("\u0001")) {
-      current = line.slice(1).trim();
+  let offset = 0;
+  while (offset <= output.length) {
+    let end = output.indexOf(0, offset);
+    if (end === -1) {
+      end = output.length;
+    }
+    let token = output.subarray(offset, end);
+    offset = end + 1;
+    if (token.length === 0) {
+      if (end === output.length) {
+        break;
+      }
       continue;
     }
-    if (line === "" || current === null) {
+    if (token[0] === 0x01) {
+      const date = decoder.decode(token.subarray(1));
+      if (!/^\d{4}-\d{2}-\d{2}$/u.test(date)) {
+        throw new CandidateStructureError(
+          `invalid last-touch date record ${JSON.stringify(date)}`,
+        );
+      }
+      current = date;
       continue;
     }
-    // `git log` walks newest-first, so the first date a path is seen with wins.
-    if (!dates.has(line)) {
-      dates.set(line, current);
+    if (token[0] === 0x02 && token[1] === 0x0a) {
+      token = token.subarray(2);
+    }
+    if (current === null) {
+      throw new CandidateStructureError(
+        "last-touch history emitted a path before its date",
+      );
+    }
+    const rel = decoder.decode(token);
+    // `git log` walks newest-first, so the first date a path is seen wins.
+    if (!dates.has(rel)) {
+      dates.set(rel, current);
+    }
+    if (end === output.length) {
+      break;
     }
   }
   return dates;
+}
+
+/**
+ * Resolve one path-like source token to at most one census subject.
+ * Ambiguous bare basenames deliberately resolve to null rather than crediting
+ * every same-named file with a phantom inbound reference.
+ *
+ * @param {string} source Referencing repo-relative file.
+ * @param {string} rawToken Token found in its source text.
+ * @param {Set<string>} byPath Exact census paths.
+ * @param {Map<string, string[]>} byBase Census paths grouped by basename.
+ * @returns {string|null} One exact referenced path, or null when unresolved.
+ */
+export function resolveReferenceToken(source, rawToken, byPath, byBase) {
+  // A literal backslash is a legal Git path byte. Resolve the exact token
+  // before interpreting backslashes as host/source spelling of separators.
+  if (byPath.has(rawToken)) {
+    return rawToken;
+  }
+  const raw = rawToken.split("\\").join("/");
+  if (byPath.has(raw)) {
+    return raw;
+  }
+  const base = path.posix.basename(raw);
+  const candidates = byBase.get(base) ?? [];
+  const normalized = raw.replace(/^\.\//, "");
+  const sourceRelative = path.posix.normalize(
+    path.posix.join(path.posix.dirname(source), normalized),
+  );
+  if (byPath.has(sourceRelative)) {
+    return sourceRelative;
+  }
+  const suffixMatches = candidates.filter(
+    (candidate) =>
+      candidate === normalized || candidate.endsWith(`/${normalized}`),
+  );
+  if (suffixMatches.length === 1) {
+    return suffixMatches[0];
+  }
+  if (normalized === base && candidates.length === 1) {
+    return candidates[0];
+  }
+  return null;
 }
 
 /**
@@ -249,15 +1244,10 @@ export function inboundRefs(files) {
     byBase.get(base).push(file);
   }
 
-  const sources = [];
-  for (const root of REF_ROOTS) {
-    sources.push(
-      ...walk(path.join(ROOT, root), (rel) =>
-        REF_EXTENSIONS.includes(path.posix.extname(rel)),
-      ),
-    );
-  }
-  sources.push(...REF_FILES);
+  const sources = listTrackedPaths([...REF_ROOTS, ...REF_FILES]).filter(
+    isReferenceSourcePath,
+  );
+  const sourceText = readTrackedFiles(sources);
 
   const counts = new Map(files.map((f) => [f, 0]));
   const token = /[A-Za-z0-9_./\\-]*[A-Za-z0-9_-]\.mjs/g;
@@ -265,26 +1255,18 @@ export function inboundRefs(files) {
     if (REF_EXCLUDED.includes(source)) {
       continue;
     }
-    let text;
-    try {
-      const absolute = path.join(ROOT, source);
-      if (statSync(absolute).size > 8 * 1024 * 1024) {
-        continue;
-      }
-      text = readFileSync(absolute, "utf8");
-    } catch {
+    const text = sourceText.get(source);
+    if (
+      text === undefined ||
+      Buffer.byteLength(text, "utf8") > 8 * 1024 * 1024
+    ) {
       continue;
     }
     const hits = new Set();
     for (const match of text.matchAll(token)) {
-      const raw = match[0].split("\\").join("/");
-      if (byPath.has(raw)) {
-        hits.add(raw);
-        continue;
-      }
-      const base = path.posix.basename(raw);
-      for (const candidate of byBase.get(base) ?? []) {
-        hits.add(candidate);
+      const hit = resolveReferenceToken(source, match[0], byPath, byBase);
+      if (hit !== null) {
+        hits.add(hit);
       }
     }
     for (const hit of hits) {
@@ -315,15 +1297,20 @@ function cell(text) {
  *
  * @returns {{rows: object[], byDirectory: Map<string, object[]>}} Census data.
  */
-export function collectCensus() {
+export function collectCensus(head = "HEAD", historyEnv = process.env) {
   const files = listToolingFiles();
-  const dates = lastTouchDates();
+  const toolingText = readTrackedFiles(files);
+  const dates = lastTouchDates(head, historyEnv);
   const refs = inboundRefs(files);
   const rows = [];
   for (const file of files) {
     let parsed;
     try {
-      parsed = parsePurposeHeader(readFileSync(path.join(ROOT, file), "utf8"));
+      const source = toolingText.get(file);
+      if (source === undefined) {
+        throw new Error(`missing index blob for ${file}`);
+      }
+      parsed = parsePurposeHeader(source);
     } catch {
       parsed = { purpose: null, status: null, className: null };
     }
@@ -432,7 +1419,17 @@ export function renderCensus(census, eol) {
 export function splitCatalog(text) {
   const begin = text.indexOf(BEGIN_MARKER);
   const end = text.indexOf(END_MARKER);
-  if (begin === -1 || end === -1 || end < begin) {
+  const secondBegin =
+    begin === -1 ? -1 : text.indexOf(BEGIN_MARKER, begin + BEGIN_MARKER.length);
+  const secondEnd =
+    end === -1 ? -1 : text.indexOf(END_MARKER, end + END_MARKER.length);
+  if (
+    begin === -1 ||
+    end === -1 ||
+    end < begin ||
+    secondBegin !== -1 ||
+    secondEnd !== -1
+  ) {
     return null;
   }
   const eol = text.includes("\r\n") ? "\r\n" : "\n";
@@ -457,24 +1454,31 @@ export function describeDrift(committed, regenerated) {
 
 /**
  * Like {@link describeDrift} but also says whether any row differs in
- * something other than the git-freshness column. Freshness can only settle
- * AFTER the commit that touches a file lands (it reads that commit's date),
- * so freshness-only drift is unavoidable in the landing commit itself and is
- * advisory; drift in path/class/status/refs/purpose is the real signal.
+ * something other than the git-freshness column. That distinction is useful
+ * diagnostics, but every byte-level difference remains drift and `--check`
+ * fails on it. A freshness-only follow-up may be a mechanical linked landing;
+ * it is not permission to report a stale catalog as current.
  *
  * @param {string} committed Region currently in the file.
  * @param {string} regenerated Region this run produced.
  * @returns {{ lines: string[], structural: boolean }} Report + verdict.
  */
 export function describeDriftDetailed(committed, regenerated) {
-  const rowKey = (line) => {
+  const rowBase = (line) => {
     const m = /^\|\s*([^|]+?)\s*\|/.exec(line);
     return m === null ? null : m[1];
   };
   const index = (text) => {
     const map = new Map();
+    let directory = "";
     for (const raw of text.split(/\r?\n/)) {
-      const key = rowKey(raw);
+      const heading = /^###\s+(.+?\/)\s+\(\d+\)$/.exec(raw);
+      if (heading !== null) {
+        directory = heading[1];
+        continue;
+      }
+      const base = rowBase(raw);
+      const key = base === null ? null : `${directory}${base}`;
       // Census rows have six columns; the two-column summary table above them
       // is not a census row and must not be reported as one.
       if (
@@ -523,7 +1527,421 @@ export function describeDriftDetailed(committed, regenerated) {
     committed !== regenerated &&
     (added.length + removed.length + (changed.length - dateOnly.length) > 0 ||
       added.length + removed.length + changed.length === 0);
-  return { lines: out, structural };
+  return { lines: out, structural, freshnessOnlyPaths: dateOnly };
+}
+
+/**
+ * Exact `--check` verdict for two generated regions.
+ *
+ * Freshness-only drift is ADVISORY only within the candidate commit's own
+ * files: the freshness column reads a file's last COMMIT date, which cannot
+ * exist before the touching commit lands, so the landing commit itself can
+ * never be check-green on those rows and the Batch 1053 contract makes them
+ * advisory. The allowance is BOUNDED by `advisoryPaths` (the files the
+ * candidate head commit touched) because unbounded advisory would also wave
+ * through mass freshness corruption - a shallow or grafted history snaps
+ * hundreds of rows to the graft boundary date, and that drift is the
+ * defense-in-depth signal the isolated-history walk exists to surface.
+ * Structural drift, or freshness drift outside the allowance, fails.
+ *
+ * @param {string} committed Region currently stored in the catalog.
+ * @param {string} regenerated Region produced from the candidate index.
+ * @param {Set<string>|null} [advisoryPaths] Paths whose freshness drift is
+ *   advisory; omitted or null fails closed on any drift.
+ * @returns {0|1} Zero for byte-identical regions or bounded advisory drift.
+ */
+export function catalogCheckExitCode(committed, regenerated, advisoryPaths) {
+  if (committed === regenerated) {
+    return 0;
+  }
+  const drift = describeDriftDetailed(committed, regenerated);
+  if (drift.structural || !advisoryPaths) {
+    return 1;
+  }
+  return drift.freshnessOnlyPaths.every((key) => advisoryPaths.has(key))
+    ? 0
+    : 1;
+}
+
+/**
+ * Paths whose freshness drift the candidate itself explains: the files its
+ * head commit touched, read through the isolated history environment so a
+ * replacement or grafted history cannot widen the allowance. A merge commit
+ * reports its combined diff, which can under-report; the cost is an advisory
+ * miss that demands one explicit regenerate-and-commit, never a silent pass.
+ *
+ * @param {object} subject Frozen candidate subject.
+ * @returns {Set<string>} Repo-relative paths touched by the head commit.
+ */
+function candidateHeadTouchedPaths(subject) {
+  const output = execFileSync(
+    "git",
+    [
+      "show",
+      "--name-only",
+      "--format=",
+      "-z",
+      subject.head,
+      "--",
+      ...CENSUS_ROOTS,
+    ],
+    {
+      cwd: ROOT,
+      env: { ...subject.historyEnv, GIT_NO_REPLACE_OBJECTS: "1" },
+      maxBuffer: 64 * 1024 * 1024,
+    },
+  );
+  const paths = new Set();
+  for (const part of output.toString("utf8").split("\u0000")) {
+    const cleaned = part.trim();
+    if (cleaned !== "") {
+      paths.add(cleaned.replace(/\+/g, "/"));
+    }
+  }
+  return paths;
+}
+
+/**
+ * Revalidate the original candidate immediately before publishing a verdict or
+ * bytes. The census itself reads only the private index snapshot; this second
+ * boundary prevents that internally consistent snapshot from certifying a
+ * different index/HEAD that appeared while the census was being built.
+ *
+ * @param {object} subject Frozen candidate subject.
+ * @returns {null|2|3} Null when stable, otherwise the terminal exit code.
+ */
+function candidateSubjectTerminalFailure(subject) {
+  if (subject.externallyFrozen === true) {
+    return null;
+  }
+  let reasons;
+  try {
+    reasons = candidateSubjectDriftReasons(subject);
+  } catch (error) {
+    console.error(
+      `generate-tooling-catalog: cannot revalidate the candidate subject: ${error?.message ?? error}`,
+    );
+    return 2;
+  }
+  if (reasons.length === 0) {
+    return null;
+  }
+  console.error(
+    "generate-tooling-catalog: STRUCTURAL — the candidate subject is ineligible or changed during census construction.",
+  );
+  for (const reason of reasons) {
+    console.error(`  ${reason}`);
+  }
+  return 3;
+}
+
+/**
+ * Require the catalog and the exact executable/parser sources to exist as
+ * ordinary stage-zero candidate files. Their absence is an ineligible subject,
+ * not an execution fault.
+ *
+ * @param {string} [root] Repository root.
+ * @returns {string[]} Structural prerequisite failures.
+ */
+function requiredCandidatePathReasons(root = ROOT) {
+  const required = [CATALOG_REL, ...RUNTIME_BINDINGS];
+  return regularCandidatePathReasons(required, root);
+}
+
+/**
+ * Run the catalog operation against one immutable private index snapshot.
+ *
+ * @param {boolean} check Whether to compare without writing.
+ * @param {boolean} toStdout Whether to emit only the generated region.
+ * @param {object} subject Frozen candidate subject.
+ * @returns {number} Process exit code.
+ */
+function mainFrozen(check, toStdout, subject) {
+  const initialSubjectFailure = candidateSubjectTerminalFailure(subject);
+  if (initialSubjectFailure !== null) {
+    return initialSubjectFailure;
+  }
+  let requiredPathReasons;
+  try {
+    requiredPathReasons = requiredCandidatePathReasons();
+  } catch (error) {
+    console.error(
+      `generate-tooling-catalog: cannot inspect required candidate paths: ${error?.message ?? error}`,
+    );
+    return 2;
+  }
+  if (requiredPathReasons.length > 0) {
+    const subjectFailure = candidateSubjectTerminalFailure(subject);
+    if (subjectFailure !== null) {
+      return subjectFailure;
+    }
+    console.error(
+      "generate-tooling-catalog: STRUCTURAL — required candidate paths are absent or non-regular.",
+    );
+    for (const reason of requiredPathReasons) {
+      console.error(`  ${reason}`);
+    }
+    return 3;
+  }
+
+  let catalog;
+  if (check || toStdout) {
+    let bindingReasons;
+    try {
+      bindingReasons = runtimeCandidateBindingReasons();
+      catalog = readTrackedFiles([CATALOG_REL]).get(CATALOG_REL);
+      if (catalog === undefined) {
+        throw new Error("candidate index catalog blob is unavailable");
+      }
+    } catch (error) {
+      console.error(
+        `generate-tooling-catalog: cannot bind the candidate runtime/catalog: ${error?.message ?? error}`,
+      );
+      return 2;
+    }
+    if (bindingReasons.length > 0) {
+      const subjectFailure = candidateSubjectTerminalFailure(subject);
+      if (subjectFailure !== null) {
+        return subjectFailure;
+      }
+      console.error(
+        "generate-tooling-catalog: STRUCTURAL — the executing runtime is not the candidate-index runtime.",
+      );
+      for (const reason of bindingReasons) {
+        console.error(`  ${reason}`);
+      }
+      return 3;
+    }
+  } else {
+    try {
+      catalog = readFileSync(CATALOG, "utf8");
+    } catch (error) {
+      console.error(`generate-tooling-catalog: ${error.message}`);
+      return 2;
+    }
+  }
+  const split = splitCatalog(catalog);
+  if (split === null) {
+    const subjectFailure = candidateSubjectTerminalFailure(subject);
+    if (subjectFailure !== null) {
+      return subjectFailure;
+    }
+    console.error(
+      "generate-tooling-catalog: STRUCTURAL — the census markers are missing from\n" +
+        `${path.relative(ROOT, CATALOG)}. Add them around the "## Full census" section:\n` +
+        `${BEGIN_MARKER}\n…\n${END_MARKER}`,
+    );
+    return 3;
+  }
+
+  let censusPrerequisiteReasons;
+  try {
+    censusPrerequisiteReasons = candidateCensusPrerequisiteReasons();
+  } catch (error) {
+    console.error(
+      `generate-tooling-catalog: cannot inspect candidate census prerequisites: ${error?.message ?? error}`,
+    );
+    return 2;
+  }
+  if (censusPrerequisiteReasons.length > 0) {
+    const subjectFailure = candidateSubjectTerminalFailure(subject);
+    if (subjectFailure !== null) {
+      return subjectFailure;
+    }
+    console.error(
+      "generate-tooling-catalog: STRUCTURAL — candidate census paths are ineligible.",
+    );
+    for (const reason of censusPrerequisiteReasons) {
+      console.error(`  ${reason}`);
+    }
+    return 3;
+  }
+
+  let census;
+  try {
+    census = collectCensus(subject.head, subject.historyEnv);
+  } catch (error) {
+    if (error instanceof CandidateStructureError) {
+      const subjectFailure = candidateSubjectTerminalFailure(subject);
+      if (subjectFailure !== null) {
+        return subjectFailure;
+      }
+      console.error(
+        `generate-tooling-catalog: STRUCTURAL — candidate census is ineligible: ${error.message}`,
+      );
+      return 3;
+    }
+    console.error(
+      `generate-tooling-catalog: cannot construct the candidate census: ${error?.message ?? error}`,
+    );
+    return 2;
+  }
+  if (census.rows.length === 0) {
+    const subjectFailure = candidateSubjectTerminalFailure(subject);
+    if (subjectFailure !== null) {
+      return subjectFailure;
+    }
+    console.error(
+      "generate-tooling-catalog: STRUCTURAL — no .mjs files found under " +
+        `${CENSUS_ROOTS.join(", ")}; a census of nothing must not read as a pass.`,
+    );
+    return 3;
+  }
+  const regenerated = renderCensus(census, split.eol);
+
+  const subjectFailure = candidateSubjectTerminalFailure(subject);
+  if (subjectFailure !== null) {
+    return subjectFailure;
+  }
+
+  if (toStdout) {
+    process.stdout.write(`${regenerated}${split.eol}`);
+    return 0;
+  }
+  if (check) {
+    const advisoryPaths = candidateHeadTouchedPaths(subject);
+    if (catalogCheckExitCode(split.region, regenerated, advisoryPaths) === 0) {
+      if (split.region === regenerated) {
+        console.log(
+          `generate-tooling-catalog --check: census is current (${census.rows.length} files).`,
+        );
+      } else {
+        console.warn(
+          "generate-tooling-catalog --check: freshness-only drift - advisory, it settles after the touching commit lands.",
+        );
+        for (const line of describeDriftDetailed(split.region, regenerated)
+          .lines) {
+          console.warn(`  ${line}`);
+        }
+      }
+      return 0;
+    }
+    const drift = describeDriftDetailed(split.region, regenerated);
+    console.error(
+      "generate-tooling-catalog --check: the committed census has DRIFTED from the tree.",
+    );
+    for (const line of drift.lines) {
+      console.error(`  ${line}`);
+    }
+    console.error(
+      "  Regenerate with `node Tools/generate-tooling-catalog-launcher.cjs` and commit the result.",
+    );
+    return 1;
+  }
+
+  const replacement = `${split.before}${regenerated}${split.after}`;
+  let written;
+  try {
+    written = writeCatalogIfUnchanged(catalog, replacement);
+  } catch (error) {
+    console.error(`generate-tooling-catalog: ${error?.message ?? error}`);
+    return 2;
+  }
+  if (!written) {
+    console.error(
+      "generate-tooling-catalog: catalog changed during generation; refusing to overwrite concurrent work",
+    );
+    return 2;
+  }
+  console.log(
+    `generate-tooling-catalog: wrote ${census.rows.length} rows to ${path.relative(ROOT, CATALOG).split(path.sep).join("/")}.`,
+  );
+  return 0;
+}
+
+/**
+ * Use the worktree module only as a byte-bound bootstrap. The implementation
+ * that computes and publishes the verdict is materialized from the frozen
+ * candidate blobs and loaded by a fresh Node process, so its initialization
+ * bytes are exactly the bytes in the prospective index. A fixed CRLF-to-LF
+ * comparison is permitted only for this non-verdict bootstrap; arbitrary Git
+ * filters never participate.
+ *
+ * @param {string[]} argv CLI arguments.
+ * @param {object} subject Frozen outer candidate subject.
+ * @returns {number} Child verdict or bootstrap failure.
+ */
+function mainViaCandidateRuntime(argv, subject) {
+  const initialSubjectFailure = candidateSubjectTerminalFailure(subject);
+  if (initialSubjectFailure !== null) {
+    return initialSubjectFailure;
+  }
+  const requiredReasons = requiredCandidatePathReasons();
+  if (requiredReasons.length > 0) {
+    console.error(
+      "generate-tooling-catalog: STRUCTURAL — required candidate paths are absent or non-regular.",
+    );
+    for (const reason of requiredReasons) {
+      console.error(`  ${reason}`);
+    }
+    return 3;
+  }
+
+  const bindingReasons = runtimeCandidateBindingReasons();
+  if (bindingReasons.length > 0) {
+    const subjectFailure = candidateSubjectTerminalFailure(subject);
+    if (subjectFailure !== null) {
+      return subjectFailure;
+    }
+    console.error(
+      "generate-tooling-catalog: STRUCTURAL — the executing runtime is not the candidate-index runtime (loaded bootstrap mismatch).",
+    );
+    for (const reason of bindingReasons) {
+      console.error(`  ${reason}`);
+    }
+    return 3;
+  }
+
+  const candidateRuntime = readCandidateFileBuffers(RUNTIME_BINDINGS);
+  const runtimeRoot = path.join(subject.privateRoot, "runtime");
+  for (const rel of RUNTIME_BINDINGS) {
+    const destination = path.join(runtimeRoot, ...rel.split("/"));
+    mkdirSync(path.dirname(destination), { recursive: true });
+    writeFileSync(destination, candidateRuntime.get(rel));
+  }
+  const runtimeScript = path.join(
+    runtimeRoot,
+    ...RUNTIME_BINDINGS[0].split("/"),
+  );
+  const result = spawnSync(process.execPath, [runtimeScript, ...argv], {
+    cwd: subject.root,
+    env: {
+      ...process.env,
+      [CANDIDATE_ROOT_ENV]: subject.root,
+      [CANDIDATE_RUNTIME_ENV]: "1",
+      [CANDIDATE_HEAD_ENV]: subject.head,
+      [HISTORY_GIT_DIR_ENV]: subject.historyEnv.GIT_DIR,
+      [HISTORY_OBJECT_DIR_ENV]: subject.historyEnv.GIT_OBJECT_DIRECTORY,
+      [HISTORY_ALTERNATES_ENV]:
+        subject.historyEnv.GIT_ALTERNATE_OBJECT_DIRECTORIES,
+      [HISTORY_CONFIG_ENV]: subject.historyEnv.GIT_CONFIG_GLOBAL,
+      GIT_INDEX_FILE: subject.privateIndex,
+      GIT_NO_REPLACE_OBJECTS: "1",
+    },
+    maxBuffer: 512 * 1024 * 1024,
+  });
+
+  const subjectFailure = candidateSubjectTerminalFailure(subject);
+  if (subjectFailure !== null) {
+    return subjectFailure;
+  }
+  if (
+    result.error ||
+    result.signal !== null ||
+    !Number.isInteger(result.status)
+  ) {
+    console.error(
+      `generate-tooling-catalog: candidate runtime failed to settle: ${result.error?.message ?? result.signal ?? "unknown child failure"}`,
+    );
+    return 2;
+  }
+  if (result.stdout?.length > 0) {
+    process.stdout.write(result.stdout);
+  }
+  if (result.stderr?.length > 0) {
+    process.stderr.write(result.stderr);
+  }
+  return result.status;
 }
 
 /**
@@ -533,82 +1951,122 @@ export function describeDriftDetailed(committed, regenerated) {
  * @returns {number} Process exit code.
  */
 export function main(argv) {
-  const check = argv.includes("--check");
-  const toStdout = argv.includes("--stdout");
-  const unknown = argv.filter((a) => !["--check", "--stdout"].includes(a));
-  if (unknown.length > 0) {
-    console.error(`generate-tooling-catalog: unknown argument ${unknown[0]}`);
+  if (process.env[TRUSTED_LAUNCHER_ENV] !== "1") {
+    console.error(
+      "generate-tooling-catalog: direct execution is unsupported; start with node Tools/generate-tooling-catalog-launcher.cjs",
+    );
     return 2;
   }
-
-  let catalog;
+  if (process.env[CANDIDATE_RUNTIME_ENV] === "1") {
+    const check = argv.includes("--check");
+    const toStdout = argv.includes("--stdout");
+    const unknown = argv.filter((a) => !["--check", "--stdout"].includes(a));
+    if (unknown.length > 0) {
+      console.error(`generate-tooling-catalog: unknown argument ${unknown[0]}`);
+      return 2;
+    }
+    if (check && toStdout) {
+      console.error(
+        "generate-tooling-catalog: --check and --stdout are mutually exclusive",
+      );
+      return 2;
+    }
+    const requiredEnvironment = [
+      CANDIDATE_HEAD_ENV,
+      HISTORY_GIT_DIR_ENV,
+      HISTORY_OBJECT_DIR_ENV,
+      HISTORY_CONFIG_ENV,
+    ];
+    const missing = requiredEnvironment.filter((name) => !process.env[name]);
+    if (missing.length > 0) {
+      console.error(
+        `generate-tooling-catalog: candidate runtime is missing sealed subject environment ${missing.join(", ")}`,
+      );
+      return 2;
+    }
+    const historyEnv = { ...process.env };
+    for (const name of [
+      "GIT_COMMON_DIR",
+      "GIT_INDEX_FILE",
+      "GIT_REPLACE_REF_BASE",
+      "GIT_SHALLOW_FILE",
+      "GIT_WORK_TREE",
+    ]) {
+      delete historyEnv[name];
+    }
+    historyEnv.GIT_DIR = process.env[HISTORY_GIT_DIR_ENV];
+    historyEnv.GIT_OBJECT_DIRECTORY = process.env[HISTORY_OBJECT_DIR_ENV];
+    historyEnv.GIT_ALTERNATE_OBJECT_DIRECTORIES =
+      process.env[HISTORY_ALTERNATES_ENV] ?? "";
+    historyEnv.GIT_CONFIG_GLOBAL = process.env[HISTORY_CONFIG_ENV];
+    historyEnv.GIT_CONFIG_NOSYSTEM = "1";
+    historyEnv.GIT_NO_REPLACE_OBJECTS = "1";
+    return mainFrozen(check, toStdout, {
+      externallyFrozen: true,
+      head: process.env[CANDIDATE_HEAD_ENV],
+      historyEnv,
+      root: ROOT,
+    });
+  }
   try {
-    catalog = readFileSync(CATALOG, "utf8");
+    return withFrozenCandidateIndex(
+      (subject) => mainViaCandidateRuntime(argv, subject),
+      ROOT,
+    );
   } catch (error) {
-    console.error(`generate-tooling-catalog: ${error.message}`);
+    console.error(
+      `generate-tooling-catalog: cannot freeze the candidate subject: ${error?.message ?? error}`,
+    );
     return 2;
   }
-  const split = splitCatalog(catalog);
-  if (split === null) {
-    console.error(
-      "generate-tooling-catalog: STRUCTURAL — the census markers are missing from\n" +
-        `${path.relative(ROOT, CATALOG)}. Add them around the "## Full census" section:\n` +
-        `${BEGIN_MARKER}\n…\n${END_MARKER}`,
-    );
-    return 3;
-  }
+}
 
-  const census = collectCensus();
-  if (census.rows.length === 0) {
-    console.error(
-      "generate-tooling-catalog: STRUCTURAL — no .mjs files found under " +
-        `${CENSUS_ROOTS.join(", ")}; a census of nothing must not read as a pass.`,
-    );
-    return 3;
+function publishCompletionReceipt(status) {
+  if (process.env[CANDIDATE_RUNTIME_ENV] === "1") {
+    return;
   }
-  const regenerated = renderCensus(census, split.eol);
-
-  if (toStdout) {
-    process.stdout.write(`${regenerated}${split.eol}`);
-    return 0;
+  const challenge = process.env[RECEIPT_CHALLENGE_ENV];
+  const descriptor = process.env[RECEIPT_FD_ENV];
+  const subject = process.env[RECEIPT_SUBJECT_ENV];
+  if (
+    challenge === undefined &&
+    descriptor === undefined &&
+    subject === undefined
+  ) {
+    return;
   }
-  if (check) {
-    if (regenerated === split.region) {
-      console.log(
-        `generate-tooling-catalog --check: census is current (${census.rows.length} files).`,
-      );
-      return 0;
-    }
-    const drift = describeDriftDetailed(split.region, regenerated);
-    if (!drift.structural) {
-      console.log(
-        "generate-tooling-catalog --check: census is current except for the git-freshness column " +
-          `(${drift.lines[0]}); freshness only settles after the touching commit lands - advisory, not drift.`,
-      );
-      return 0;
-    }
-    console.error(
-      "generate-tooling-catalog --check: the committed census has DRIFTED from the tree.",
-    );
-    for (const line of drift.lines) {
-      console.error(`  ${line}`);
-    }
-    console.error(
-      "  Regenerate with `node Tools/generate-tooling-catalog.mjs` and commit the result.",
-    );
-    return 1;
+  if (
+    !/^[0-9a-f]{64}$/u.test(challenge ?? "") ||
+    descriptor !== "3" ||
+    !/^[0-9a-f]{64}$/u.test(subject ?? "") ||
+    ![0, 1, 2, 3].includes(status)
+  ) {
+    throw new Error("invalid launcher completion-receipt contract");
   }
-
-  writeFileSync(CATALOG, `${split.before}${regenerated}${split.after}`);
-  console.log(
-    `generate-tooling-catalog: wrote ${census.rows.length} rows to ${path.relative(ROOT, CATALOG).split(path.sep).join("/")}.`,
+  writeFileSync(
+    Number(descriptor),
+    `${JSON.stringify({
+      challenge,
+      schema: RECEIPT_SCHEMA,
+      status,
+      subject,
+    })}\n`,
+    "utf8",
   );
-  return 0;
 }
 
 if (
   process.argv[1] &&
   import.meta.url === pathToFileURL(process.argv[1]).href
 ) {
-  process.exitCode = main(process.argv.slice(2));
+  const status = main(process.argv.slice(2));
+  try {
+    publishCompletionReceipt(status);
+    process.exitCode = status;
+  } catch (error) {
+    console.error(
+      `generate-tooling-catalog: cannot publish completion receipt: ${error?.message ?? error}`,
+    );
+    process.exitCode = 2;
+  }
 }

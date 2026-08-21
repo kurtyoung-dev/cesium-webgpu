@@ -269,7 +269,7 @@ header block:
 ```
 
 `purpose-header-contract.spec.mjs` enforces it (files that predate the rule sit
-on a named, shrink-only allowlist), and `node Tools/generate-tooling-catalog.mjs`
+on a named, shrink-only allowlist), and `node Tools/generate-tooling-catalog-launcher.cjs`
 regenerates the catalog's census from those headers — so a new probe is
 catalog-visible on the next regeneration with zero manual doc work, and drift is
 a contract failure rather than a documentation failure.
@@ -376,7 +376,7 @@ below grants the Git/account/external authority withheld by §0.
 | 2.3 bypass evidence + C16 range check | `npm run verify-landing` → `Tools/verify-landing-compliance.mjs` | Manually selected/default commit range; rechecks messages, timestamps, and range blobs | After-the-fact and invocation-dependent, not prevention or universal CI. A wrong/empty range proves nothing. |
 | Landing-rule self-test | `npm run test-landing-rules` | Pure predicates, hook wiring, detector fixtures, fixed UTC cases around 2026 DST transitions | Proves the tools' tested contract, not that every landing invoked them. |
 | 3.1 probe fleet | `Tools/visual-regression/probe-fleet-contract.spec.mjs` | Direct `Tools/visual-regression/probe-*.mjs` launchers; direct `Tools/visual-regression/lib/*-gate.mjs` exit semantics | It does not traverse an arbitrary transitive import graph, nested directories, helpers with another name, or every lifecycle/provenance rule in this charter. Probe legacy violations remain on a visible shrink-only allowlist; gate exit mapping has no allowlist. |
-| 3.6 purpose/status census | `purpose-header-contract.spec.mjs` and `node Tools/generate-tooling-catalog.mjs --check` | The direct visual-regression and immediate `lib/` files selected by their current predicates | Pre-existing files can be allowlisted; deeper/other tool trees require separate coverage. Catalog freshness is not probe correctness. |
+| 3.6 purpose/status census | `purpose-header-contract.spec.mjs` and `node Tools/generate-tooling-catalog-launcher.cjs --check` | The direct visual-regression and immediate `lib/` files selected by their current predicates | Pre-existing files can be allowlisted; deeper/other tool trees require separate coverage. Catalog freshness is not probe correctness. |
 
 `HOOK_EXPLAIN=1` is a diagnostic for an **already authorized** push, not an
 invitation to run one. The hook fires on push, not fetch/pull/clone. The
