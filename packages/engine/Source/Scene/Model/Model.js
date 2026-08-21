@@ -779,9 +779,26 @@ class Model {
       }
     }
 
+    // Resolve the backend owner once for this logical Model update. Feature
+    // tables, command construction, and submission must not make independent
+    // ownership decisions if the renderer registry changes between them.
+    const modelFeatureRenderer = frameState.context.getFeatureRenderer(
+      FeatureRendererKey.MODEL,
+    );
+    // Native model classifiers intentionally emit no pick command, so their
+    // existing legacy BatchTexture demand remains conservative. A regular
+    // native model owns dense feature-pick realization and must not first pay
+    // for the legacy WebGL pick texture and registry IDs.
+    const nativeOwnsDensePick =
+      defined(modelFeatureRenderer) && !defined(this.classificationType);
+    const passes = frameState.passes;
+    const legacyPickTextureDemand =
+      passes.postProcess === true ||
+      (passes.pick === true && !nativeOwnsDensePick);
+
     updateFeatureTableId(this);
     updateStyle(this);
-    updateFeatureTables(this, frameState);
+    updateFeatureTables(this, frameState, legacyPickTextureDemand);
     updatePointCloudShading(this);
     updateSilhouette(this, frameState);
     updateSkipLevelOfDetail(this, frameState);
@@ -793,7 +810,11 @@ class Model {
 
     this._defaultTexture = frameState.context.defaultTexture;
 
-    const rendererResourcesReady = buildDrawCommands(this, frameState);
+    const rendererResourcesReady = buildDrawCommands(
+      this,
+      frameState,
+      modelFeatureRenderer,
+    );
     updateModelMatrix(this, frameState);
 
     // Many features (e.g. image-based lighting, clipping planes) depend on the model
@@ -844,7 +865,7 @@ class Model {
     // (e.g. model matrix, back-face culling)
     updateSceneGraph(this, frameState);
     updateShowCreditsOnScreen(this);
-    submitDrawCommands(this, frameState);
+    submitDrawCommands(this, frameState, modelFeatureRenderer);
   }
 
   /**
@@ -2345,9 +2366,9 @@ function updateEnvironmentMap(model, frameState) {
   if (model._ready && environmentMapManager.owner === model && !picking) {
     const context = frameState.context;
     if (typeof context.recordEnvironmentMapDemand === "function") {
-      // Telemetry only. `Model.update` does not prove camera visibility, so
-      // standalone ownership stays conservative; a scheduler would need a
-      // selected-consumer registry for ordinary primitives to do better.
+      // `Model.update` does not prove camera visibility, so standalone
+      // ownership stays conservatively HIGH. A selected-consumer registry for
+      // ordinary primitives would be required to assign NORMAL safely.
       context.recordEnvironmentMapDemand(
         environmentMapManager,
         "unknown",
@@ -2405,13 +2426,13 @@ function updateStyle(model) {
   }
 }
 
-function updateFeatureTables(model, frameState) {
+function updateFeatureTables(model, frameState, legacyPickTextureDemand) {
   const featureTables = model._featureTables;
   const length = featureTables.length;
 
   let styleCommandsNeededDirty = false;
   for (let i = 0; i < length; i++) {
-    featureTables[i].update(frameState);
+    featureTables[i].update(frameState, legacyPickTextureDemand);
     // Check if the types of style commands needed have changed and trigger a reset of the draw commands
     // to ensure that translucent and opaque features are handled in the correct passes.
     if (featureTables[i].styleCommandsNeededDirty) {
@@ -2545,10 +2566,7 @@ function updateVerticalExaggeration(model, frameState) {
   }
 }
 
-function buildDrawCommands(model, frameState) {
-  const nativeModelRenderer = frameState.context.getFeatureRenderer(
-    FeatureRendererKey.MODEL,
-  );
+function buildDrawCommands(model, frameState, nativeModelRenderer) {
   const hasNativeModelRenderer = defined(nativeModelRenderer);
   const drawCommandsBackend = hasNativeModelRenderer ? "native" : "legacy";
   if (
@@ -2864,7 +2882,7 @@ function updateShowCreditsOnScreen(model) {
   }
 }
 
-function submitDrawCommands(model, frameState) {
+function submitDrawCommands(model, frameState, modelFr) {
   // Check that show is true after draw commands are built;
   // we want the user to be able to instantly see the model
   // when show is set to true.
@@ -2897,8 +2915,6 @@ function submitDrawCommands(model, frameState) {
     // Cache the FR handle on the model so destroy() can release resources on
     // tile eviction (without this, every evicted tile leaks its per-primitive
     // vertex/index buffers, material UBOs, and textures).
-    const context = frameState.context;
-    const modelFr = context.getFeatureRenderer(FeatureRendererKey.MODEL);
     if (modelFr && defined(model._sceneGraph)) {
       model._featureRenderer = modelFr;
       modelFr.update(model, frameState);

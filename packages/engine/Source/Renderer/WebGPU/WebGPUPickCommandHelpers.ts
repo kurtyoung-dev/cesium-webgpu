@@ -170,9 +170,9 @@ export function findFirstGeometryInstancePickId(
  *   per-renderer cache object for multi-id.)
  * @param options - Per-call options.
  * @param options.allowAllocate - When `false`, only returns an already-cached
- *   pickId; never allocates. Used by callers that want to gate allocation on
- *   `frameState.passes.pick || passes.render` without duplicating the
- *   read-back path. Defaults to `true`.
+ *   pickId; never allocates. This lets each renderer apply its exact demand
+ *   policy (for example, an active pick pass plus owner/classifier
+ *   eligibility) without duplicating the read-back path. Defaults to `true`.
  * @param options.idKey - When set, switches to multi-id mode keyed by this
  *   string. When unset, single-id mode.
  * @param options.kind - Pick discriminator passed to `context.createPickId`.

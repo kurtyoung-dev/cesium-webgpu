@@ -50,13 +50,16 @@ class ModelFeatureTable {
    * Creates/updates the batch texture.
    *
    * @param {FrameState} frameState The frame state.
+   * @param {boolean} [legacyPickTextureDemand] Whether the legacy renderer owns
+   *        pick-texture realization for this update. When omitted,
+   *        {@link BatchTexture#update} retains its pass-derived default.
    *
    * @private
    */
-  update(frameState) {
+  update(frameState, legacyPickTextureDemand) {
     // Assume the number of translucent features has not changed.
     this._styleCommandsNeededDirty = false;
-    this._batchTexture.update(undefined, frameState);
+    this._batchTexture.update(undefined, frameState, legacyPickTextureDemand);
 
     const currentStyleCommandsNeeded =
       StyleCommandsNeeded.getStyleCommandsNeeded(

@@ -36,6 +36,8 @@ import { getWebGPUTextureForDevice } from "./Stubs/WebGLStubTexture.js";
 // then returns material.pickColor, the primitive-granularity pick id, rather
 // than the per-feature one.
 const FEATURE_UNIFORM_SIZE = 48;
+const FEATURE_PICK_ENABLED_OFFSET = 40;
+const FEATURE_PICK_ENABLED_DATA = new Float32Array([1.0]);
 
 /**
  * Finds the selected feature ID set for a given model primitive.
@@ -391,6 +393,163 @@ function updateBatchGPUTexture(device, gpuTexture, batchTexture) {
 }
 
 /**
+ * Retire model-wide feature-pick generations only after no retained primitive
+ * bind entry can reference their texture. Texture replacement can complete
+ * before all primitives promote, and a later view/uniform failure must leave
+ * the old binding and its pick-ID registry entries live for retry. A live
+ * context defers the actual texture destroy until submitted frame work settles;
+ * direct destruction is only the isolated-test/dead-context fallback.
+ *
+ * @param {object} modelCache
+ * @param {object} currentPrimCache
+ * @param {object} context
+ * @private
+ */
+function destroyUnboundRetiredFeaturePickGenerations(
+  modelCache,
+  currentPrimCache,
+  context,
+) {
+  const retiredGenerations = modelCache._retiredFeaturePickGenerations;
+  if (!defined(retiredGenerations) || retiredGenerations.size === 0) {
+    return;
+  }
+
+  const primitives = modelCache.primitives;
+  const primitiveKeys = defined(primitives) ? Object.keys(primitives) : [];
+  for (const [texture, pickIds] of retiredGenerations) {
+    let isBound = currentPrimCache._featurePickBoundGPUTexture === texture;
+    for (let i = 0; !isBound && i < primitiveKeys.length; i++) {
+      isBound =
+        primitives[primitiveKeys[i]]?._featurePickBoundGPUTexture === texture;
+    }
+    if (isBound) {
+      continue;
+    }
+    const scheduleTextureDestroy = context?.scheduleTextureDestroy;
+    if (typeof scheduleTextureDestroy === "function") {
+      try {
+        scheduleTextureDestroy.call(context, texture);
+      } catch {
+        // Keep the entire generation so a later pick can retry the live-context
+        // scheduler. Never destroy its IDs or direct-destroy its texture after
+        // a scheduler error: submitted work may still resolve either identity.
+        continue;
+      }
+    } else {
+      try {
+        texture.destroy();
+      } catch {
+        // Isolated fake/dead contexts have no frame submit to settle. Cleanup is
+        // best-effort and cannot invalidate the promoted replacement.
+      }
+    }
+    // Scheduling is the ownership-transfer point for a live context. Only
+    // after it succeeds may the paired registry entries be released.
+    retiredGenerations.delete(texture);
+    for (const pickId of pickIds) {
+      try {
+        pickId.destroy();
+      } catch {
+        // One broken registry entry must not strand its siblings.
+      }
+    }
+    pickIds.clear();
+  }
+  if (retiredGenerations.size === 0) {
+    modelCache._retiredFeaturePickGenerations = undefined;
+  }
+}
+
+/**
+ * Promote one primitive's retained feature resources from the ordinary-color
+ * fallback to the model-wide per-feature pick texture. The model-wide IDs and
+ * texture are allowed to publish before this function completes; the
+ * primitive-local bind state is not. That split makes a failed view or uniform
+ * upload retryable without exposing `featurePickEnabled = 1` alongside the
+ * fallback texture.
+ *
+ * Replacing the entries array is the material bind-group cache's revision
+ * signal. Every entry except binding 31 retains its exact object identity.
+ *
+ * @param {GPUDevice} device
+ * @param {object} primCache
+ * @param {Model} model
+ * @param {object} context
+ * @param {object} modelCache
+ * @param {object} batchTexture
+ * @private
+ */
+function promoteFeaturePickResources(
+  device,
+  primCache,
+  model,
+  context,
+  modelCache,
+  batchTexture,
+) {
+  if (
+    !defined(context) ||
+    !defined(modelCache) ||
+    !defined(batchTexture) ||
+    !(primCache._featureIdFlags & 0x40000) ||
+    !defined(primCache._featureUniformBuffer) ||
+    !defined(primCache._featureIdEntries)
+  ) {
+    return;
+  }
+
+  const featurePickTexture = ensurePerFeaturePickIds(
+    device,
+    primCache,
+    modelCache,
+    context,
+    model,
+    batchTexture,
+  );
+  if (!defined(featurePickTexture)) {
+    return;
+  }
+  if (primCache._featurePickBoundGPUTexture === featurePickTexture) {
+    destroyUnboundRetiredFeaturePickGenerations(modelCache, primCache, context);
+    return;
+  }
+
+  const currentEntries = primCache._featureIdEntries;
+  let featurePickEntryIndex = -1;
+  for (let i = 0; i < currentEntries.length; i++) {
+    if (currentEntries[i].binding === 31) {
+      featurePickEntryIndex = i;
+      break;
+    }
+  }
+  if (featurePickEntryIndex < 0) {
+    return;
+  }
+
+  // Construct every potentially-throwing JS/WebGPU input before changing the
+  // primitive's published identities. `queue.writeBuffer` is the final native
+  // operation; if it throws, the prior entries and flag remain authoritative:
+  // either fallback/enabled=0 on a cold promotion, or the still-live old
+  // texture/enabled=1 on a size replacement. The next pick retries.
+  const featurePickView = featurePickTexture.createView();
+  const promotedEntries = currentEntries.slice();
+  promotedEntries[featurePickEntryIndex] = {
+    binding: 31,
+    resource: featurePickView,
+  };
+  device.queue.writeBuffer(
+    primCache._featureUniformBuffer,
+    FEATURE_PICK_ENABLED_OFFSET,
+    FEATURE_PICK_ENABLED_DATA,
+  );
+
+  primCache._featureIdEntries = promotedEntries;
+  primCache._featurePickBoundGPUTexture = featurePickTexture;
+  destroyUnboundRetiredFeaturePickGenerations(modelCache, primCache, context);
+}
+
+/**
  * Creates or updates GPU resources for feature ID rendering on a primitive.
  *
  * @param {GPUDevice} device
@@ -424,12 +583,13 @@ function ensureFeatureIdResources(
   if (defined(primCache._featureIdEntries)) {
     const featureTableId = model.featureTableId;
     const featureTables = model.featureTables;
+    let batchTexture;
     if (
       defined(featureTableId) &&
       defined(featureTables) &&
       featureTables.length > featureTableId
     ) {
-      const batchTexture = featureTables[featureTableId].batchTexture;
+      batchTexture = featureTables[featureTableId].batchTexture;
       if (
         defined(batchTexture) &&
         batchTexture._batchValuesDirty &&
@@ -438,6 +598,16 @@ function ensureFeatureIdResources(
         updateBatchGPUTexture(device, primCache._batchGPUTexture, batchTexture);
         batchTexture._batchValuesDirty = false;
       }
+    }
+    if (pickPassActive === true) {
+      promoteFeaturePickResources(
+        device,
+        primCache,
+        model,
+        context,
+        modelCache,
+        batchTexture,
+      );
     }
     return {
       featureIdEntries: primCache._featureIdEntries,
@@ -570,37 +740,10 @@ function ensureFeatureIdResources(
     uniformData[8] = batchDims.x;
     uniformData[9] = batchDims.y;
   }
-  // The `featurePickEnabled` flag sits at float offset 10 (byte 40), directly
-  // after textureDimensions, matching the WGSL struct. It flips to 1.0 once a
-  // feature-pick texture has been allocated for this model.
-  //
-  // Allocation is eager whenever a batch table is present, because any of the
-  // model's primitives could enter a pick pass at any time. Allocating on the
-  // first pick pass instead would race the bind-group construction below, which
-  // would then bind a placeholder texture that is wrong when pick fires. The
-  // cost is bounded and idempotent across re-renders: one Uint8Array of W*H*4
-  // bytes, matching the batch texture dimensions, plus featuresLength pickId
-  // allocations.
-  let featurePickTex = null;
-  if (
-    defined(context) &&
-    defined(modelCache) &&
-    flags & 0x40000 // FLAG_HAS_BATCH_TABLE
-  ) {
-    featurePickTex = ensurePerFeaturePickIds(
-      device,
-      primCache,
-      modelCache,
-      context,
-      model,
-      batchTexture,
-    );
-  }
-  uniformData[10] = defined(featurePickTex) ? 1.0 : 0.0;
-  // Suppress unused-var for `pickPassActive` — kept in the signature so
-  // callers can still gate the allocation if it ever becomes too
-  // expensive (e.g., very large batch tables).
-  void pickPassActive;
+  // Ordinary color rendering retains all feature/style resources but binds the
+  // fallback pick texture and keeps this flag at zero. The first active pick
+  // promotes both together after these essential resources are published.
+  uniformData[10] = 0.0;
 
   const featureUniformBuffer = device.createBuffer({
     label: "Feature ID uniforms",
@@ -636,12 +779,12 @@ function ensureFeatureIdResources(
     { binding: 29, resource: fallbackSampler },
     { binding: 30, resource: { buffer: featureUniformBuffer } },
     // Feature-pick texture and sampler, allocated by `ensurePerFeaturePickIds`
-    // when a batch table is present. Otherwise this is the placeholder white
-    // texture, which the fragment shader never samples because it gates on
+    // on first pick demand. Until then this is the placeholder white texture,
+    // which the fragment shader never samples because it gates on
     // `featurePickEnabled`.
     {
       binding: 31,
-      resource: (featurePickTex || fallbackTex).createView(),
+      resource: fallbackTex.createView(),
     },
     { binding: 32, resource: fallbackSampler },
   ];
@@ -654,8 +797,19 @@ function ensureFeatureIdResources(
   primCache._batchGPUTexture = batchGPUTex;
   primCache._featureUniformBuffer = featureUniformBuffer;
 
+  if (pickPassActive === true) {
+    promoteFeaturePickResources(
+      device,
+      primCache,
+      model,
+      context,
+      modelCache,
+      batchTexture,
+    );
+  }
+
   return {
-    featureIdEntries,
+    featureIdEntries: primCache._featureIdEntries,
     flags: flags,
   };
 }
@@ -672,17 +826,18 @@ function ensureFeatureIdResources(
  *  - On the per-model cache: stamps `cache._featurePickIds`, a Map of
  *    `featureId` to `CesiumPickId`, so allocated pickIds survive across
  *    re-renders and pick-pass readback resolves through them.
- *  - Sets the `featurePickEnabled` slot of the feature uniform block to 1.0, so
- *    the pick fragment shader routes through `lookupFeaturePickColor`.
+ * Primitive-local bind-group promotion and the `featurePickEnabled` uniform
+ * update are committed separately by `promoteFeaturePickResources` after this
+ * model-wide allocation succeeds.
  *
- * Idempotent: subsequent calls reuse the cached texture and pickIds. The texture
- * re-uploads only when the batch table's featuresLength changes, which is
- * handled by destroying the cache slot and re-running.
+ * Idempotent: subsequent calls reuse the cached texture and pickIds. A changed
+ * feature count transactionally replaces the model-wide lookup; superseded
+ * textures remain submit-safe until all primitive bindings migrate.
  *
- * One pickId is allocated per feature, on the first pick pass that reaches a
- * model with a batch table. The pickId target is
- * `{primitive: model, id: featureId}`, so `scene.pick()` returns the featureId
- * of the picked feature alongside the model itself.
+ * One pickId is allocated per feature on the first eligible pick pass. When
+ * the batch-table owner exposes `getFeature`, the registry target is that exact
+ * `Cesium3DTileFeature`/`ModelFeature`; only owners without that API fall back
+ * to `{primitive: model, id: featureId}`.
  *
  * @param {GPUDevice} device
  * @param {object} primCache - per-primitive cache slot
@@ -721,7 +876,10 @@ function ensurePerFeaturePickIds(
   // per-MODEL cache so multi-primitive models share the same pickId set.
   if (
     defined(cache._featurePickGPUTexture) &&
-    cache._featurePickFeaturesLength === featuresLength
+    cache._featurePickBatchTexture === batchTexture &&
+    cache._featurePickFeaturesLength === featuresLength &&
+    cache._featurePickTextureWidth === dimensions.x &&
+    cache._featurePickTextureHeight === dimensions.y
   ) {
     primCache._featurePickGPUTexture = cache._featurePickGPUTexture;
     return cache._featurePickGPUTexture;
@@ -733,6 +891,8 @@ function ensurePerFeaturePickIds(
   // texture are provisional until the upload succeeds.
   const previousPickIds = cache._featurePickIds;
   const previousTexture = cache._featurePickGPUTexture;
+  const canReusePreviousPickIds =
+    cache._featurePickBatchTexture === batchTexture;
   const pickIds = new Map();
   const createdPickIds = [];
   // Register the same object `BatchTexture` registers under WebGL —
@@ -750,7 +910,10 @@ function ensurePerFeaturePickIds(
   let tex;
   try {
     for (let fid = 0; fid < featuresLength; fid++) {
-      let pid = previousPickIds?.get(fid);
+      // Feature IDs are target identities, not merely numeric slots. Reuse is
+      // valid only while the exact BatchTexture owner is unchanged; a new
+      // same-length feature table can map every fid to a different feature.
+      let pid = canReusePreviousPickIds ? previousPickIds?.get(fid) : undefined;
       if (!defined(pid)) {
         const target = ownerHasGetFeature
           ? owner.getFeature(fid)
@@ -802,33 +965,42 @@ function ensurePerFeaturePickIds(
   // feature count, and pick-ID map.
   cache._featurePickIds = pickIds;
   cache._featurePickGPUTexture = tex;
+  cache._featurePickBatchTexture = batchTexture;
   cache._featurePickFeaturesLength = featuresLength;
+  cache._featurePickTextureWidth = dimensions.x;
+  cache._featurePickTextureHeight = dimensions.y;
   primCache._featurePickGPUTexture = tex;
 
-  const retiredPickIds = [];
+  const retiredPickIds = new Set();
   if (defined(previousPickIds)) {
     for (const [fid, pickId] of previousPickIds) {
       if (pickIds.get(fid) !== pickId) {
-        retiredPickIds.push(pickId);
+        retiredPickIds.add(pickId);
       }
     }
     previousPickIds.clear();
   }
-  // Publication is the commit point. Best-effort old-owner cleanup cannot
-  // invalidate the replacement, and one throwing destroy must not strand its
-  // siblings.
-  for (let i = 0; i < retiredPickIds.length; i++) {
-    try {
-      retiredPickIds[i].destroy();
-    } catch {
-      // The replacement map no longer references this retired registry entry.
-    }
-  }
   if (defined(previousTexture) && previousTexture !== tex) {
-    try {
-      previousTexture.destroy();
-    } catch {
-      // The uploaded replacement texture is already authoritative.
+    const retiredGenerations =
+      cache._retiredFeaturePickGenerations ??
+      (cache._retiredFeaturePickGenerations = new Map());
+    let generationPickIds = retiredGenerations.get(previousTexture);
+    if (!defined(generationPickIds)) {
+      generationPickIds = new Set();
+      retiredGenerations.set(previousTexture, generationPickIds);
+    }
+    for (const pickId of retiredPickIds) {
+      generationPickIds.add(pickId);
+    }
+  } else {
+    // Defensive fallback for a malformed/fake texture factory. Real WebGPU
+    // replacement allocations always produce a distinct texture generation.
+    for (const pickId of retiredPickIds) {
+      try {
+        pickId.destroy();
+      } catch {
+        // The replacement map no longer references this retired registry entry.
+      }
     }
   }
   return tex;
@@ -871,6 +1043,7 @@ function destroyFeatureIdResources(primCache) {
   // and owned by the model cache. Drop only this primitive's alias here; the
   // model-level disposer releases the texture exactly once.
   primCache._featurePickGPUTexture = undefined;
+  primCache._featurePickBoundGPUTexture = undefined;
 
   // METADATA-TABLE-SOURCES — only destroy textures allocated by
   // createFeatureIdGPUTexture; stub-owned reused textures are freed with the
@@ -904,12 +1077,31 @@ function destroyPerFeaturePickResources(cache) {
   // A throwing pick-id registry or GPUTexture.destroy implementation must not
   // leave a half-live cache that can be observed or destroyed a second time.
   const pickIdMap = cache._featurePickIds;
-  const pickIds = defined(pickIdMap) ? Array.from(pickIdMap.values()) : [];
+  const pickIds = new Set(defined(pickIdMap) ? pickIdMap.values() : []);
   const pickTexture = cache._featurePickGPUTexture;
+  const retiredGenerations = cache._retiredFeaturePickGenerations;
+  const textures = new Set();
+  if (defined(pickTexture)) {
+    textures.add(pickTexture);
+  }
+  if (defined(retiredGenerations)) {
+    for (const [texture, retiredPickIds] of retiredGenerations) {
+      textures.add(texture);
+      for (const pickId of retiredPickIds) {
+        pickIds.add(pickId);
+      }
+      retiredPickIds.clear();
+    }
+  }
   cache._featurePickIds = undefined;
   cache._featurePickGPUTexture = undefined;
+  cache._featurePickBatchTexture = undefined;
   cache._featurePickFeaturesLength = undefined;
+  cache._featurePickTextureWidth = undefined;
+  cache._featurePickTextureHeight = undefined;
+  cache._retiredFeaturePickGenerations = undefined;
   pickIdMap?.clear();
+  retiredGenerations?.clear();
 
   let firstDestroyError;
   let hasDestroyError = false;
@@ -927,10 +1119,12 @@ function destroyPerFeaturePickResources(cache) {
     }
   };
 
-  for (let i = 0; i < pickIds.length; i++) {
-    destroyBestEffort(pickIds[i]);
+  for (const pickId of pickIds) {
+    destroyBestEffort(pickId);
   }
-  destroyBestEffort(pickTexture);
+  for (const texture of textures) {
+    destroyBestEffort(texture);
+  }
 
   if (hasDestroyError) {
     throw firstDestroyError;

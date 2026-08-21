@@ -283,13 +283,15 @@ class BatchTexture {
     return this._pickIds[batchId];
   }
 
-  update(tileset, frameState) {
+  update(tileset, frameState, legacyPickTextureDemand) {
     const context = frameState.context;
     configureTextureLayout(this, context.limits.maximumTextureSize);
     this._defaultTexture = context.defaultTexture;
 
     const passes = frameState.passes;
-    if (passes.pick || passes.postProcess) {
+    const createLegacyPickTexture =
+      legacyPickTextureDemand ?? (passes.pick || passes.postProcess);
+    if (createLegacyPickTexture) {
       createPickTexture(this, context);
     }
 

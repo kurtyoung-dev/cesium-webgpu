@@ -202,6 +202,34 @@ describe("Scene/Model/ModelFeatureTable", function () {
     expect(feature.getProperty("height")).toEqual(3.0);
   });
 
+  it("forwards explicit legacy pick texture ownership without skipping style state", function () {
+    const table = new ModelFeatureTable({
+      model: {
+        type: ModelType.GLTF,
+      },
+      propertyTable: mockPropertyTable,
+    });
+    const frameState = {};
+    spyOn(table.batchTexture, "update");
+
+    table.update(frameState, false);
+    expect(table.batchTexture.update).toHaveBeenCalledWith(
+      undefined,
+      frameState,
+      false,
+    );
+    expect(table.styleCommandsNeededDirty).toBe(false);
+
+    table.update(frameState, true);
+    expect(table.batchTexture.update).toHaveBeenCalledWith(
+      undefined,
+      frameState,
+      true,
+    );
+    expect(table.batchTexture.update).toHaveBeenCalledTimes(2);
+    table.destroy();
+  });
+
   it("destroy works", function () {
     const table = new ModelFeatureTable({
       model: {

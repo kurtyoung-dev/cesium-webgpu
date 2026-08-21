@@ -705,7 +705,11 @@ interface ModelWebGPUCache extends Idl2DHost, ModelShadowCastUniformHost {
   // per-primitive `pickIds` record owned by WebGPUPickCommandHelpers.
   _featurePickIds?: Map<number, { destroy(): void }>;
   _featurePickGPUTexture?: GPUTexture | null;
+  _featurePickBatchTexture?: unknown;
   _featurePickFeaturesLength?: number;
+  _featurePickTextureWidth?: number;
+  _featurePickTextureHeight?: number;
+  _retiredFeaturePickGenerations?: Map<GPUTexture, Set<{ destroy(): void }>>;
   primitives: { [key: string]: PrimitiveRenderData };
   geometryViews?: { [key: string]: PrimitiveGeometryViewRecord };
   nodes: { [key: string]: NodeCache };
@@ -826,6 +830,7 @@ interface ModelLike {
   boundingSphere?: BoundingSphere;
   show?: boolean;
   ready?: boolean;
+  allowPicking?: boolean;
   lightsFromGltf?: PunctualLightLike[] | boolean;
   isInvisible?: () => boolean;
   featureTableId?: number;
@@ -1040,6 +1045,25 @@ interface SceneCaptureModelsLike {
     capturePointEffects?: CapturePointEffectsConfig;
   }>;
   buildCaptureCommands: unknown;
+}
+
+/**
+ * Publish exactly one capture record per model per logical frame. Pick and
+ * offscreen mini-frames can reuse the scene frame number after the main render;
+ * replacing that model's prior record prevents the next environment capture
+ * from replaying both stale and freshly-promoted bind entries.
+ */
+function upsertModelCapturePublishEntry(
+  models: SceneCaptureModelsLike["models"],
+  entry: SceneCaptureModelsLike["models"][number],
+): void {
+  for (let i = 0; i < models.length; i++) {
+    if (models[i].model === entry.model) {
+      models[i] = entry;
+      return;
+    }
+  }
+  models.push(entry);
 }
 
 /**
@@ -3348,7 +3372,9 @@ function ensureModelCustomShaderResources(
   let cs = cache._customShader;
   // Rebuild the generated chunk when the customShader reference changes.
   if (!defined(cs) || cs.customShader !== customShader) {
-    const generated = generateCustomShaderWGSL(customShader);
+    const generated = generateCustomShaderWGSL(
+      customShader as unknown as Parameters<typeof generateCustomShaderWGSL>[0],
+    );
     if (!defined(generated)) {
       // Native-WGSL vertex-only without a fragment body isn't supported by the
       // generator (needs a fragment body); fall back to no customShader.
@@ -3379,7 +3405,10 @@ function ensureModelCustomShaderResources(
   }
 
   // (Re)pack + upload the uniforms UBO from the live uniform values every frame.
-  const packed = packUniformBuffer(cs.uboFields as object[], customShader);
+  const packed = packUniformBuffer(
+    cs.uboFields as object[],
+    customShader as unknown as Parameters<typeof packUniformBuffer>[1],
+  );
   if (!defined(cs.uboBuffer) || cs.uboByteLength !== packed.byteLength) {
     if (defined(cs.uboBuffer)) {
       cs.uboBuffer.destroy();
@@ -5382,8 +5411,11 @@ function updateWebGPUModel(
   // when it is off nothing is published, `_webgpuSceneCaptureModels` stays
   // null, and the capture pass's model replay is a no-op that leaves the
   // globe-only capture byte-identical. The publish object is reset once per
-  // frame (frameNumber guard) and appended to for every model the feature
-  // renderer processes this frame. `buildCaptureCommands` is a stable function
+  // frame (frameNumber guard) and upserted for every model the feature renderer
+  // processes this frame. A pick/offscreen mini-frame can share frameNumber
+  // with the main render, so republishing the same model replaces its stale
+  // records instead of leaving two entries for next frame's replay.
+  // `buildCaptureCommands` is a stable function
   // reference so the capture pass can build per-face descriptors without a
   // static import of this renderer, which would be a circular import.
   const wantCapturePublish =
@@ -5408,7 +5440,7 @@ function updateWebGPUModel(
       pipelineCache,
       records: captureRecords,
     };
-    pub.models.push(capturePublishEntry);
+    upsertModelCapturePublishEntry(pub.models, capturePublishEntry);
   }
 
   // Drop per-primitive pipeline refs when the scene pipeline format
@@ -6089,7 +6121,7 @@ function updateWebGPUModel(
         device,
         nodeCache,
         runtimeNode,
-        model,
+        model as unknown as Parameters<typeof ensureInstancingResources>[3],
       ) as InstancingResourcesLike | undefined;
       if (defined(instRes)) {
         instanceCount = instRes.instanceCount;
@@ -6277,7 +6309,9 @@ function updateWebGPUModel(
       // `FLAG_HAS_FEATURE_ID_ATTRIBUTE` branch.
       if (!geometry.hasFeatureId0 && defined(glTFPrimitive)) {
         const implicitSource = getSelectedImplicitFeatureId(
-          model,
+          model as unknown as Parameters<
+            typeof getSelectedImplicitFeatureId
+          >[0],
           runtimeNode,
           glTFPrimitive as unknown as Parameters<
             typeof getSelectedImplicitFeatureId
@@ -6297,7 +6331,9 @@ function updateWebGPUModel(
           geometryRecord.implicitFeatureIdVertexCount = geometry.vertexCount;
           geometryRecord.implicitFeatureIdData = defined(implicitSource)
             ? synthesizeImplicitFeatureIdData(
-                model,
+                model as unknown as Parameters<
+                  typeof synthesizeImplicitFeatureIdData
+                >[0],
                 runtimeNode,
                 glTFPrimitive as unknown as Parameters<
                   typeof synthesizeImplicitFeatureIdData
@@ -6322,7 +6358,7 @@ function updateWebGPUModel(
       let metadataDescriptor: ModelMetadataDescriptor | undefined;
       if (defined(glTFPrimitive)) {
         metadataDescriptor = resolveWebGPUModelMetadata(
-          model,
+          model as unknown as Parameters<typeof resolveWebGPUModelMetadata>[0],
           glTFPrimitive as unknown as Parameters<
             typeof resolveWebGPUModelMetadata
           >[1],
@@ -6637,20 +6673,21 @@ function updateWebGPUModel(
       // {@link ensurePickId} in multi-id mode (`idKey = primKey`). Each
       // glTF primitive of a model gets its own pick color so
       // `scene.pick()` can resolve back to
-      // `{primitive: model, id: primKey}`. Per-feature pick, mapping each
-      // EXT_mesh_features feature to its own pick target, is a separate
-      // and larger workstream. The cache key `nodeIdx_primIdx` matches
-      // `primKey` so pick IDs follow primitive identity stably across
+      // `{primitive: model, id: primKey}`. Batched/per-feature targets use the
+      // separate model-wide lookup texture below and are realized by the same
+      // exact pick-demand gate. The cache key `nodeIdx_primIdx` matches
+      // `primKey` so generic pick IDs follow primitive identity stably across
       // re-extractions.
       const passes = frameState.passes;
-      const allowAllocate = !!(passes && (passes.pick || passes.render));
+      const pickDemand =
+        passes?.pick === true && !isClassifier && model.allowPicking !== false;
       const modelPickId = ensurePickId(
         model as unknown as Parameters<typeof ensurePickId>[0],
         context as unknown as Parameters<typeof ensurePickId>[1],
         cache as unknown as Parameters<typeof ensurePickId>[2],
         {
           idKey: primKey,
-          allowAllocate,
+          allowAllocate: pickDemand,
           // Fold a `detail.model` into the pick object so the
           // backend-agnostic `Scene.pickMetadata` orchestration (which reads
           // `pickedObject.detail.model.structuralMetadata` — see
@@ -6748,11 +6785,10 @@ function updateWebGPUModel(
       // per-feature pickIds. `featureIdRes.featureIdEntries` are entries
       // (bindings 26-32) spliced into the merged group 1.
       let featureIdEntries = null;
-      const pickPassActive = !!(passes && passes.pick);
       const featureIdRes = ensureFeatureIdResources(
         device,
         primCache,
-        model,
+        model as unknown as Parameters<typeof ensureFeatureIdResources>[2],
         glTFPrimitive as unknown as Parameters<
           typeof ensureFeatureIdResources
         >[3],
@@ -6760,7 +6796,7 @@ function updateWebGPUModel(
         pipelineCache,
         context,
         cache,
-        pickPassActive,
+        pickDemand,
       ) as FeatureIdResourcesLike | undefined;
 
       // Set instancing and feature ID flags after packMaterialUniforms.
@@ -7382,15 +7418,14 @@ function updateWebGPUModel(
       // forced on. Wired onto the color command's
       // `derivedCommands.picking.pickCommand` so the dispatcher
       // (`selectCommandVariant` in `WebGPUSceneRenderer.ts`) routes here
-      // during pick passes. Only materialized when a pick ID exists:
-      // models in non-pick render passes (frameState.passes.pick=false
-      // and passes.render=false) skip pick-id allocation, so `pickColor`
-      // can be undefined here on an offscreen or update-only frame.
+      // during pick passes. Only materialized on exact pick demand with a pick
+      // ID. Ordinary color, offscreen, and update-only frames do not allocate
+      // pick resources, so `pickColor` can be undefined here.
       // Classifiers do not pick. WebGL's
       // `ClassificationModelDrawCommand` allocates no pick command
       // either; a classifier draws into the TERRAIN or 3D-Tile pass on
       // the scene framebuffer, not the pick FBO.
-      if (pickColor && !isClassifier) {
+      if (pickDemand && pickColor && !isClassifier) {
         if (!defined(primCache.pickPipeline)) {
           primCache.pickPipeline = pipelineCache.getPickPipeline(
             matInfo.alphaMode,
@@ -7589,7 +7624,7 @@ function updateWebGPUModel(
         defined(primCache._metadataWGSL)
       ) {
         const pickWGSL = generateMetadataPickWGSL(
-          model,
+          model as unknown as Parameters<typeof generateMetadataPickWGSL>[0],
           glTFPrimitive,
           pickedMetadataInfo.propertyName,
           runtimeNode,

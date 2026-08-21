@@ -256,6 +256,96 @@ describe(
       batchTexture.setColor(0, Color.YELLOW);
       expect(batchTexture.getColor(0, result)).toEqual(Color.YELLOW);
     });
+
+    it("preserves omitted pass-derived legacy pick texture demand", function () {
+      const passes = scene.frameState.passes;
+      const previousPick = passes.pick;
+      const previousPostProcess = passes.postProcess;
+
+      try {
+        for (const demandedPass of ["pick", "postProcess"]) {
+          passes.pick = demandedPass === "pick";
+          passes.postProcess = demandedPass === "postProcess";
+          const owner = {
+            getFeature: jasmine
+              .createSpy("getFeature")
+              .and.callFake((featureId) => ({ featureId })),
+          };
+          const batchTexture = new BatchTexture({
+            owner,
+            featuresLength: 2,
+          });
+
+          batchTexture.update(mockTileset, scene.frameState);
+
+          expect(owner.getFeature).toHaveBeenCalledTimes(2);
+          expect(batchTexture._pickIds.length).toBe(2);
+          expect(batchTexture.pickTexture).toBeDefined();
+          batchTexture.destroy();
+        }
+      } finally {
+        passes.pick = previousPick;
+        passes.postProcess = previousPostProcess;
+      }
+    });
+
+    it("explicit false pick demand keeps styling live and pick resources cold", function () {
+      const passes = scene.frameState.passes;
+      const previousPick = passes.pick;
+      const previousPostProcess = passes.postProcess;
+      const owner = {
+        getFeature: jasmine.createSpy("getFeature"),
+      };
+      const batchTexture = new BatchTexture({
+        owner,
+        featuresLength: 1,
+      });
+
+      try {
+        passes.pick = true;
+        passes.postProcess = true;
+        batchTexture.setColor(0, Color.YELLOW);
+        batchTexture.update(mockTileset, scene.frameState, false);
+
+        expect(owner.getFeature).not.toHaveBeenCalled();
+        expect(batchTexture._pickIds.length).toBe(0);
+        expect(batchTexture.pickTexture).toBeUndefined();
+        expect(batchTexture.batchTexture).toBeDefined();
+        expect(batchTexture.getColor(0, result)).toEqual(Color.YELLOW);
+      } finally {
+        batchTexture.destroy();
+        passes.pick = previousPick;
+        passes.postProcess = previousPostProcess;
+      }
+    });
+
+    it("explicit true pick demand realizes legacy resources without a pick pass", function () {
+      const passes = scene.frameState.passes;
+      const previousPick = passes.pick;
+      const previousPostProcess = passes.postProcess;
+      const owner = {
+        getFeature: jasmine
+          .createSpy("getFeature")
+          .and.callFake((featureId) => ({ featureId })),
+      };
+      const batchTexture = new BatchTexture({
+        owner,
+        featuresLength: 1,
+      });
+
+      try {
+        passes.pick = false;
+        passes.postProcess = false;
+        batchTexture.update(mockTileset, scene.frameState, true);
+
+        expect(owner.getFeature).toHaveBeenCalledTimes(1);
+        expect(batchTexture.pickTexture).toBeDefined();
+      } finally {
+        batchTexture.destroy();
+        passes.pick = previousPick;
+        passes.postProcess = previousPostProcess;
+      }
+    });
   },
   "WebGL",
 );
