@@ -40,6 +40,8 @@ class WebGPUComputeEngine {
   private _monitor:
     import("./AsyncResourceMonitor.js").AsyncResourceMonitor | null = null;
   private _isDestroyed: boolean;
+  private _pipelineKeyObjectIds: WeakMap<object, number>;
+  private _nextPipelineKeyObjectId: number;
 
   /**
    * @param device - The GPUDevice to compile pipelines against.
@@ -65,6 +67,8 @@ class WebGPUComputeEngine {
     this._pipelineCache = new Map();
     this._centralCache = centralCache ?? null;
     this._isDestroyed = false;
+    this._pipelineKeyObjectIds = new WeakMap();
+    this._nextPipelineKeyObjectId = 1;
   }
 
   /**
@@ -138,44 +142,42 @@ class WebGPUComputeEngine {
     }
     //>>includeEnd('debug');
 
+    let commandStarted = false;
+    let submitted = false;
     try {
-      // Ensure the command has a compiled pipeline
-      if (!command.computePipeline) {
-        this._ensurePipeline(command);
-      }
+      commandStarted = true;
+      this._prepareCommand(command);
 
-      // Validate workgroup dimensions against device limits
-      this._validateWorkgroups(command);
-
-      // Pre-execute callback
-      if (command.preExecute) {
-        command.preExecute();
-      }
-
-      // Create command encoder and compute pass
       const encoder = this._device.createCommandEncoder({
         label: `ComputeEncoder_${command.label}`,
       });
 
-      const computePass = encoder.beginComputePass({
-        label: `ComputePass_${command.label}`,
-      });
-
-      // Execute the command
-      command.execute(computePass);
-
-      computePass.end();
+      let computePass: GPUComputePassEncoder | undefined;
+      try {
+        computePass = encoder.beginComputePass({
+          label: `ComputePass_${command.label}`,
+        });
+        command.encode(computePass);
+      } finally {
+        // A synchronous pipeline/bind/dispatch error must not leave an owned
+        // pass open. This also keeps the borrowed-encoder path below usable by
+        // later commands after an individual dispatch rejects.
+        computePass?.end();
+      }
 
       // Submit
       this._device.queue.submit([encoder.finish()]);
-
-      // Post-execute callback
-      if (command.postExecute) {
-        command.postExecute();
-      }
+      submitted = true;
+      // Preserve the historical standalone API contract: a post callback
+      // error remains observable as a false return even though submission has
+      // already happened. The submitted guard prevents a false cancellation.
+      command.postExecute?.();
 
       return true;
     } catch (e: unknown) {
+      if (commandStarted && !submitted) {
+        this._cancelCommand(command);
+      }
       const msg = e instanceof Error ? e.message : String(e);
       //>>includeStart('debug', pragmas.debug);
       console.warn(
@@ -203,42 +205,60 @@ class WebGPUComputeEngine {
 
     if (commands.length === 0) return true;
 
+    const startedCommands: WebGPUComputeCommand[] = [];
+    let submitted = false;
     try {
-      // Ensure all commands have pipelines
+      // Run each preExecute exactly once before resolving its pipeline. A
+      // producer may populate or replace command resources in that callback.
       for (const cmd of commands) {
-        if (!cmd.computePipeline) {
-          this._ensurePipeline(cmd);
-        }
-        this._validateWorkgroups(cmd);
+        startedCommands.push(cmd);
+        this._prepareCommand(cmd);
       }
 
       const encoder = this._device.createCommandEncoder({
         label: "ComputeEncoder_Batch",
       });
 
-      const computePass = encoder.beginComputePass({
-        label: "ComputePass_Batch",
-      });
-
-      for (const cmd of commands) {
-        if (cmd.preExecute) {
-          cmd.preExecute();
+      let computePass: GPUComputePassEncoder | undefined;
+      try {
+        computePass = encoder.beginComputePass({
+          label: "ComputePass_Batch",
+        });
+        for (const cmd of commands) {
+          cmd.encode(computePass);
         }
-        cmd.execute(computePass);
+      } finally {
+        computePass?.end();
       }
 
-      computePass.end();
       this._device.queue.submit([encoder.finish()]);
+      submitted = true;
 
-      // Post-execute callbacks
+      let postCallbackFailed = false;
+      let postCallbackError: unknown;
       for (const cmd of commands) {
-        if (cmd.postExecute) {
-          cmd.postExecute();
+        try {
+          cmd.postExecute?.();
+        } catch (error) {
+          // Preserve the observable false result while still allowing every
+          // submitted command's post callback to settle exactly once.
+          if (!postCallbackFailed) {
+            postCallbackFailed = true;
+            postCallbackError = error;
+          }
         }
+      }
+      if (postCallbackFailed) {
+        throw postCallbackError;
       }
 
       return true;
     } catch (e: unknown) {
+      if (!submitted) {
+        for (const cmd of startedCommands) {
+          this._cancelCommand(cmd);
+        }
+      }
       const msg = e instanceof Error ? e.message : String(e);
       //>>includeStart('debug', pragmas.debug);
       console.warn(
@@ -251,39 +271,53 @@ class WebGPUComputeEngine {
   }
 
   /**
-   * Executes a compute command within an existing command encoder.
-   * The caller is responsible for managing the encoder lifecycle.
-   * This is useful when compute work needs to be interleaved with
-   * render passes in the same command buffer.
+   * Encodes a compute command within an existing command encoder.
+   *
+   * The caller owns the encoder lifecycle and must settle the successful
+   * command at that exact encoder's disposition: invoke `postExecute` after
+   * queue submission, or `cancel()` if the encoder is abandoned. This method
+   * invokes `preExecute` exactly once. The caller must cancel when this method
+   * returns false. It never finishes or submits the borrowed encoder.
    *
    * @param {GPUCommandEncoder} encoder - Existing command encoder
    * @param {WebGPUComputeCommand} command - The compute command
+   * @param canEncode Optional ownership predicate checked after preExecute and
+   *   preparation. Context uses this to reject re-entrant encoder abandonment.
    * @returns {boolean} True if execution succeeded, false on failure
    */
   executeOnEncoder(
     encoder: GPUCommandEncoder,
     command: WebGPUComputeCommand,
+    canEncode?: () => boolean,
   ): boolean {
+    //>>includeStart('debug', pragmas.debug);
+    if (this._isDestroyed) {
+      throw new DeveloperError("ComputeEngine has been destroyed.");
+    }
+    if (!defined(encoder)) {
+      throw new DeveloperError("encoder is required.");
+    }
+    if (!defined(command)) {
+      throw new DeveloperError("command is required.");
+    }
+    //>>includeEnd('debug');
+
     try {
-      if (!command.computePipeline) {
-        this._ensurePipeline(command);
-      }
+      this._prepareCommand(command, canEncode);
 
-      this._validateWorkgroups(command);
-
-      if (command.preExecute) {
-        command.preExecute();
-      }
-
-      const computePass = encoder.beginComputePass({
-        label: `ComputePass_${command.label}`,
-      });
-
-      command.execute(computePass);
-      computePass.end();
-
-      if (command.postExecute) {
-        command.postExecute();
+      let computePass: GPUComputePassEncoder | undefined;
+      try {
+        if (canEncode && !canEncode()) {
+          throw new RuntimeError(
+            `The command encoder for '${command.label}' is no longer active.`,
+          );
+        }
+        computePass = encoder.beginComputePass({
+          label: `ComputePass_${command.label}`,
+        });
+        command.encode(computePass);
+      } finally {
+        computePass?.end();
       }
 
       return true;
@@ -296,6 +330,97 @@ class WebGPUComputeEngine {
       //>>includeEnd('debug');
       return false;
     }
+  }
+
+  /** Runs per-dispatch preparation in lifecycle order. */
+  private _prepareCommand(
+    command: WebGPUComputeCommand,
+    canEncode?: () => boolean,
+  ): void {
+    command.preExecute?.();
+
+    if (canEncode && !canEncode()) {
+      throw new RuntimeError(
+        `The command encoder for '${command.label}' was abandoned during preExecute.`,
+      );
+    }
+
+    if (!command.claimExecutionDevice(this._device)) {
+      throw new RuntimeError(
+        `WebGPUComputeCommand '${command.label}' belongs to a different ` +
+          "GPUDevice. Rebuild the command and its GPU resources after device recovery.",
+      );
+    }
+
+    command.invalidateGeneratedPipelineIfInputsChanged();
+
+    if (!command.computePipeline) {
+      this._ensurePipeline(command);
+    }
+    this._validateWorkgroups(command);
+
+    if (canEncode && !canEncode()) {
+      throw new RuntimeError(
+        `The command encoder for '${command.label}' was abandoned during preparation.`,
+      );
+    }
+  }
+
+  /** Callback failures must not prevent other abandoned commands settling. */
+  private _cancelCommand(command: WebGPUComputeCommand): void {
+    try {
+      command.cancel();
+    } catch {
+      // Cancellation is best-effort user notification; encoder cleanup and
+      // remaining command settlements must continue.
+    }
+  }
+
+  private _getPipelineKeyObjectId(value: object): number {
+    let id = this._pipelineKeyObjectIds.get(value);
+    if (id === undefined) {
+      id = this._nextPipelineKeyObjectId++;
+      this._pipelineKeyObjectIds.set(value, id);
+    }
+    return id;
+  }
+
+  /**
+   * Builds a collision-safe local cache key from every pipeline-semantic input.
+   * Labels are deliberately excluded; the optional namespace only preserves
+   * the public getOrCreatePipeline cache partition chosen by its caller.
+   */
+  private _createPipelineCacheKey(
+    namespace: string,
+    shaderSource: string | undefined,
+    shaderModule: GPUShaderModule | undefined,
+    entryPoint: string,
+    bindGroupLayouts: GPUBindGroupLayout[] | undefined,
+  ): string {
+    const shaderIdentity = shaderModule
+      ? ["module", this._getPipelineKeyObjectId(shaderModule)]
+      : ["source", shaderSource];
+    const layoutIdentity = bindGroupLayouts
+      ? bindGroupLayouts.map((layout) => this._getPipelineKeyObjectId(layout))
+      : "auto";
+    return JSON.stringify([
+      namespace,
+      shaderIdentity,
+      entryPoint,
+      layoutIdentity,
+    ]);
+  }
+
+  private _createCommandPipelineCacheKey(
+    command: WebGPUComputeCommand,
+  ): string {
+    return this._createPipelineCacheKey(
+      "command",
+      command.shaderSource,
+      command.shaderModule,
+      command.entryPoint,
+      command.bindGroupLayouts,
+    );
   }
 
   /**
@@ -397,7 +522,14 @@ class WebGPUComputeEngine {
     entryPoint: string = "computeMain",
     bindGroupLayouts?: GPUBindGroupLayout[],
   ): GPUComputePipeline {
-    const cached = this._pipelineCache.get(cacheKey);
+    const resolvedCacheKey = this._createPipelineCacheKey(
+      cacheKey,
+      shaderSource,
+      undefined,
+      entryPoint,
+      bindGroupLayouts,
+    );
+    const cached = this._pipelineCache.get(resolvedCacheKey);
     if (cached) {
       return cached.pipeline;
     }
@@ -433,7 +565,7 @@ class WebGPUComputeEngine {
       });
     }
 
-    this._pipelineCache.set(cacheKey, {
+    this._pipelineCache.set(resolvedCacheKey, {
       pipeline,
       shaderModule,
       label: cacheKey,
@@ -448,11 +580,18 @@ class WebGPUComputeEngine {
   private _ensurePipeline(command: WebGPUComputeCommand): void {
     if (command.computePipeline) return;
 
-    // Try to get from cache using shader source as key
-    const cacheKey = command.shaderSource ?? command.label;
+    if (!command.shaderModule && !command.shaderSource) {
+      throw new DeveloperError(
+        "WebGPUComputeCommand must have shaderSource, shaderModule, " +
+          "or computePipeline.",
+      );
+    }
+
+    const cacheKey = this._createCommandPipelineCacheKey(command);
     const cached = this._pipelineCache.get(cacheKey);
     if (cached) {
       command.computePipeline = cached.pipeline;
+      command.markPipelineGenerated(cached.pipeline);
       return;
     }
 
@@ -488,20 +627,22 @@ class WebGPUComputeEngine {
           label: `${command.label}_Pipeline`,
         });
       }
+      this._pipelineCache.set(cacheKey, {
+        pipeline: command.computePipeline,
+        shaderModule: command.shaderModule,
+        label: command.label,
+      });
     } else if (command.shaderSource) {
       // Compile from source
       command.computePipeline = this.getOrCreatePipeline(
-        cacheKey,
+        "command",
         command.shaderSource,
         command.entryPoint,
         command.bindGroupLayouts,
       );
-    } else {
-      throw new DeveloperError(
-        "WebGPUComputeCommand must have shaderSource, shaderModule, " +
-          "or computePipeline.",
-      );
     }
+
+    command.markPipelineGenerated(command.computePipeline!);
   }
 
   /**

@@ -26,6 +26,11 @@ export interface WebGPUComputeBindGroup {
 }
 
 export interface WebGPUComputeCommandOptions {
+  /**
+   * GPUDevice that owns any prebuilt GPU resources in this command. Supplying
+   * it makes cross-device rejection deterministic before the first execution.
+   */
+  device?: GPUDevice;
   /** WGSL compute shader source or pre-compiled shader module */
   shaderSource?: string;
   /** Pre-compiled shader module (takes priority over shaderSource) */
@@ -60,6 +65,14 @@ export interface WebGPUComputeCommandOptions {
   owner?: WebGPUCommandOwner;
   /** Debug label */
   label?: string;
+}
+
+interface GeneratedPipelineProvenance {
+  pipeline: GPUComputePipeline;
+  shaderSource: string | undefined;
+  shaderModule: GPUShaderModule | undefined;
+  entryPoint: string;
+  bindGroupLayouts: GPUBindGroupLayout[] | undefined;
 }
 
 class WebGPUComputeCommand {
@@ -100,6 +113,13 @@ class WebGPUComputeCommand {
   /** Debug label */
   label: string;
 
+  // A command can retain pipelines, shader modules, bind groups, and buffers.
+  // None of those handles may cross a GPUDevice recovery boundary. The first
+  // compute engine that prepares the command claims it; later engines fail
+  // closed instead of submitting stale handles to a replacement device.
+  private _executionDevice: GPUDevice | undefined;
+  private _generatedPipelineProvenance: GeneratedPipelineProvenance | undefined;
+
   /** Marks this as a WebGPU compute command for type checking */
   readonly isWebGPUComputeCommand: boolean = true;
 
@@ -122,23 +142,25 @@ class WebGPUComputeCommand {
     this.pass = Pass.COMPUTE;
     this.owner = options.owner;
     this.label = options.label ?? "WebGPUComputeCommand";
+    this._executionDevice = options.device;
+    this._generatedPipelineProvenance = undefined;
   }
 
   /**
-   * Executes the compute dispatch on a compute pass encoder.
+   * Encodes the compute dispatch without invoking lifecycle callbacks.
    *
-   * @param {GPUComputePassEncoder} computePass - Active compute pass encoder
+   * Frame-owned callers use this seam so `preExecute` can run during command
+   * preparation while `postExecute` waits for the owning command encoder to
+   * reach `queue.submit`.
+   *
+   * @param computePass Active compute pass encoder
    */
-  execute(computePass: GPUComputePassEncoder): void {
+  encode(computePass: GPUComputePassEncoder): void {
     //>>includeStart('debug', pragmas.debug);
     if (!defined(this.computePipeline)) {
-      throw new DeveloperError("computePipeline must be set before execute().");
+      throw new DeveloperError("computePipeline must be set before encode().");
     }
     //>>includeEnd('debug');
-
-    if (this.preExecute) {
-      this.preExecute();
-    }
 
     computePass.setPipeline(this.computePipeline!);
 
@@ -168,9 +190,104 @@ class WebGPUComputeCommand {
         this.workgroupCountZ,
       );
     }
+  }
+
+  /**
+   * Executes the compute dispatch on a compute pass encoder.
+   *
+   * This compatibility entry point preserves the historical immediate
+   * `preExecute` / encode / `postExecute` ordering. Frame-owned execution must
+   * use {@link encode} through WebGPUComputeEngine so the post callback can be
+   * tied to the exact encoder submission boundary.
+   *
+   * @param computePass Active compute pass encoder
+   */
+  execute(computePass: GPUComputePassEncoder): void {
+    // Preserve the historical public execute() precondition ordering: an
+    // unprepared command fails before either lifecycle callback runs.
+    //>>includeStart('debug', pragmas.debug);
+    if (!defined(this.computePipeline)) {
+      throw new DeveloperError("computePipeline must be set before execute().");
+    }
+    //>>includeEnd('debug');
+
+    if (this.preExecute) {
+      this.preExecute();
+    }
+
+    this.encode(computePass);
 
     if (this.postExecute) {
       this.postExecute();
+    }
+  }
+
+  /**
+   * Claims this command for a GPUDevice.
+   *
+   * WebGPU handles do not expose their creating device, so a command without
+   * `options.device` uses its first preparation as the ownership trust
+   * boundary. Producers supplying prebuilt pipelines/modules/bind groups or
+   * buffers should provide the device at construction time.
+   *
+   * @returns true when the command is new or already belongs to `device`;
+   * false when it retains resources from another device generation.
+   * @private
+   */
+  claimExecutionDevice(device: GPUDevice): boolean {
+    if (!this._executionDevice) {
+      this._executionDevice = device;
+      return true;
+    }
+    return this._executionDevice === device;
+  }
+
+  /** Records the semantic inputs for an engine-generated pipeline. @private */
+  markPipelineGenerated(pipeline: GPUComputePipeline): void {
+    this._generatedPipelineProvenance = {
+      pipeline,
+      shaderSource: this.shaderSource,
+      shaderModule: this.shaderModule,
+      entryPoint: this.entryPoint,
+      bindGroupLayouts: this.bindGroupLayouts
+        ? [...this.bindGroupLayouts]
+        : undefined,
+    };
+  }
+
+  /**
+   * Invalidates a retained generated pipeline after preExecute changes any
+   * semantic input. Provenance lives on the command so it remains correct when
+   * another compute engine on the same pooled GPUDevice receives the command.
+   * An explicitly replaced pipeline is producer-owned and is left intact.
+   * @private
+   */
+  invalidateGeneratedPipelineIfInputsChanged(): void {
+    const provenance = this._generatedPipelineProvenance;
+    if (!provenance) {
+      return;
+    }
+    if (this.computePipeline !== provenance.pipeline) {
+      this._generatedPipelineProvenance = undefined;
+      return;
+    }
+
+    const oldLayouts = provenance.bindGroupLayouts;
+    const newLayouts = this.bindGroupLayouts;
+    const layoutsMatch =
+      oldLayouts === undefined
+        ? newLayouts === undefined
+        : newLayouts !== undefined &&
+          oldLayouts.length === newLayouts.length &&
+          oldLayouts.every((layout, index) => layout === newLayouts[index]);
+    if (
+      provenance.shaderSource !== this.shaderSource ||
+      provenance.shaderModule !== this.shaderModule ||
+      provenance.entryPoint !== this.entryPoint ||
+      !layoutsMatch
+    ) {
+      this.computePipeline = undefined;
+      this._generatedPipelineProvenance = undefined;
     }
   }
 

@@ -27,7 +27,7 @@ import Pass from "../../../Source/Renderer/Pass.js";
 // the caller, so a fake encoder fully exercises execute().
 
 // A plain object that records every method execute() may call on a
-// GPUComputePassEncoder. execute() only invokes these — no GPU needed.
+// GPUComputePassEncoder. encode()/execute() only invoke these — no GPU needed.
 function makeFakeComputePass() {
   return {
     calls: [],
@@ -348,6 +348,59 @@ describe("Renderer/WebGPU/WebGPUComputeCommand", function () {
       command.execute(pass);
 
       expect(order).toEqual(["pre", "dispatch", "post"]);
+    });
+
+    it("does not invoke postExecute when encoding throws", function () {
+      const postExecute = jasmine.createSpy("postExecute");
+      const command = new WebGPUComputeCommand({
+        computePipeline: fakePipeline("throwing"),
+        postExecute: postExecute,
+      });
+      const pass = makeFakeComputePass();
+      pass.setPipeline = function () {
+        throw new Error("setPipeline failed");
+      };
+
+      expect(function () {
+        command.execute(pass);
+      }).toThrowError("setPipeline failed");
+      expect(postExecute).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("encode", function () {
+    it("throws before touching the pass when computePipeline is not set", function () {
+      const command = new WebGPUComputeCommand();
+      const pass = makeFakeComputePass();
+
+      expect(function () {
+        command.encode(pass);
+      }).toThrowDeveloperError();
+      expect(pass.calls).toEqual([]);
+    });
+
+    it("encodes without invoking lifecycle callbacks", function () {
+      const preExecute = jasmine.createSpy("preExecute");
+      const postExecute = jasmine.createSpy("postExecute");
+      const pipeline = fakePipeline("callback-free");
+      const command = new WebGPUComputeCommand({
+        computePipeline: pipeline,
+        workgroupCountX: 2,
+        workgroupCountY: 3,
+        workgroupCountZ: 4,
+        preExecute: preExecute,
+        postExecute: postExecute,
+      });
+      const pass = makeFakeComputePass();
+
+      command.encode(pass);
+
+      expect(pass.calls).toEqual([
+        ["setPipeline", pipeline],
+        ["dispatchWorkgroups", 2, 3, 4],
+      ]);
+      expect(preExecute).not.toHaveBeenCalled();
+      expect(postExecute).not.toHaveBeenCalled();
     });
   });
 });

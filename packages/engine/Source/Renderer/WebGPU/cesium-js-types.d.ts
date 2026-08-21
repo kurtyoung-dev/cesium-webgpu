@@ -1668,10 +1668,14 @@ interface WebGPURenderTargetLike {
 
 // ─── WebGPU Compute Command ─────────────────────────────────────────
 
-/** Minimal interface for compute commands dispatched by WebGPUContext. */
+/**
+ * Minimal discriminator shared by legacy and native compute commands.
+ * Native execution is narrowed to WebGPUComputeCommand before encoding; a
+ * generic `execute(context)` signature would hide the pass-encoder mismatch
+ * this boundary is meant to prevent.
+ */
 interface CesiumComputeCommand {
   isWebGPUComputeCommand?: boolean;
-  execute(ctx: object): void;
   [key: string]: unknown;
 }
 

@@ -128,6 +128,7 @@ import {
 } from "./WebGPUDeviceLossRecovery.js";
 import { WebGPURenderBundleManager } from "./WebGPURenderBundleManager.js";
 import WebGPUComputeEngine from "./WebGPUComputeEngine.js";
+import WebGPUComputeCommand from "./WebGPUComputeCommand.js";
 import { WebGPUTimestampProfiler } from "./WebGPUTimestampProfiler.js";
 import { WebGPUStorageBufferPool } from "./WebGPUStorageBufferPool.js";
 import { WebGPUIndirectDrawManager } from "./WebGPUIndirectDrawManager.js";
@@ -4633,14 +4634,116 @@ export class WebGPUContext extends GraphicsContext {
    * sunComputeCommand is skipped.
    */
   override executeComputeCommands(
-    computeCommandList: CesiumComputeCommand[],
-    _sunComputeCommand: CesiumComputeCommand | undefined,
-    _computeEngine: CesiumOpaqueObject | undefined,
+    computeCommandList: unknown[],
+    _sunComputeCommand: unknown,
+    _computeEngine: unknown,
   ): void {
+    const commands: WebGPUComputeCommand[] = [];
     for (let i = 0; i < computeCommandList.length; ++i) {
-      const cmd = computeCommandList[i];
-      if (cmd.isWebGPUComputeCommand) {
-        cmd.execute(this);
+      const cmd = computeCommandList[i] as CesiumComputeCommand | null;
+      if (cmd?.isWebGPUComputeCommand === true) {
+        commands.push(cmd as unknown as WebGPUComputeCommand);
+      }
+    }
+
+    if (commands.length === 0) {
+      return;
+    }
+
+    const cancelCommand = (command: WebGPUComputeCommand): void => {
+      try {
+        command.cancel();
+      } catch {
+        // One user callback must not strand the remaining queued commands.
+      }
+    };
+
+    const encoder = this._currentCommandEncoder;
+    const computeEngine = this.computeEngine;
+    if (!encoder || !computeEngine) {
+      for (const command of commands) {
+        cancelCommand(command);
+      }
+      return;
+    }
+
+    try {
+      // Compute and render passes cannot overlap on one command encoder. The
+      // normal scene path is demand-deferred and usually has no active pass at
+      // this point, but pick/custom framebuffer paths may legitimately do so.
+      this.endCurrentRenderPass();
+    } catch (error) {
+      for (const command of commands) {
+        cancelCommand(command);
+      }
+      throw error;
+    }
+
+    for (const command of commands) {
+      let settled = false;
+      let encodingFinished = false;
+      let encodingFailed = false;
+      let pendingDisposition: boolean | undefined;
+
+      const settle = (submitted: boolean): void => {
+        if (settled) {
+          return;
+        }
+
+        pendingDisposition = submitted;
+        if (!encodingFinished) {
+          // Abandonment may happen re-entrantly inside preExecute (for example
+          // a device-loss/destroy callback). Cancel immediately, then let the
+          // engine's ownership predicate refuse to touch the dead encoder.
+          if (!submitted) {
+            settled = true;
+            cancelCommand(command);
+          }
+          return;
+        }
+
+        settled = true;
+        try {
+          if (!encodingFailed && submitted) {
+            command.postExecute?.();
+          } else {
+            command.cancel();
+          }
+        } catch {
+          // The exact-encoder callback drain isolates callbacks too, but keep
+          // immediate failure paths equally fail-safe.
+        }
+      };
+
+      // Enlist before preparation/encoding. preExecute is user code and can
+      // re-enter context teardown or device-loss handling; the command must
+      // already belong to this exact encoder segment when that happens.
+      if (!this.enqueueAfterCommandEncoderSubmit(encoder, settle)) {
+        encodingFinished = true;
+        encodingFailed = true;
+        settle(false);
+        continue;
+      }
+
+      const encoded = computeEngine.executeOnEncoder(
+        encoder,
+        command,
+        () =>
+          !settled &&
+          pendingDisposition === undefined &&
+          this._currentCommandEncoder === encoder &&
+          !this._isDeviceUnavailable,
+      );
+      encodingFinished = true;
+      encodingFailed = !encoded;
+
+      if (!encoded) {
+        settle(false);
+      } else if (pendingDisposition !== undefined) {
+        // Handles a re-entrant submit during preparation. A successful encode
+        // normally cannot reach this branch because the predicate above
+        // rejects any encoder whose disposition is already known.
+        settle(pendingDisposition);
       }
     }
   }
@@ -6128,6 +6231,10 @@ export class WebGPUContext extends GraphicsContext {
   // ====================================================================================
 
   private _renderBundleManager: WebGPURenderBundleManager | null = null;
+  // Private runtime factory/debug seam used by deterministic integration
+  // probes and legacy PerformanceManager wiring. Keeping it context-local
+  // avoids promoting the native command class to the public engine barrel.
+  readonly _computeCommandClass = WebGPUComputeCommand;
   // General-purpose compute dispatch engine. Lazily initialized via the
   // `computeEngine` getter so a context that never runs compute pays nothing,
   // and dropped on device loss because it caches GPUComputePipelines. Mirrors

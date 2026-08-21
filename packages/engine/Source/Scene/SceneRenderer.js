@@ -864,9 +864,11 @@ function executeCommands(scene, passState) {
 }
 
 function executeComputeCommands(scene) {
-  scene.context.uniformState.updatePass(Pass.COMPUTE);
-
-  const context = scene._context;
+  // The command list was populated against frameState.context. Keep uniform
+  // state and dispatch on that same context so per-view overrides never send
+  // device-local WebGPU commands to scene._context by accident.
+  const context = scene.frameState.context;
+  context.uniformState.updatePass(Pass.COMPUTE);
   context.executeComputeCommands(
     scene._computeCommandList,
     scene._environmentState.sunComputeCommand,
