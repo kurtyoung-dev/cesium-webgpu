@@ -316,7 +316,7 @@ test("voxel pass owns an impossible no-fragment clear and cold is invalid", asyn
   );
 });
 
-test("metadata A to B to voxel cannot cross-publish at one coordinate", async () => {
+test("per-identity slots never cross-serve and serve their own bytes within the staleness window", async () => {
   const { WebGPUPickFramebuffer } = await modulePromise;
   const { context, device } = createHarness();
   const framebuffer = new WebGPUPickFramebuffer(context);
@@ -364,8 +364,8 @@ test("metadata A to B to voxel cannot cross-publish at one coordinate", async ()
   );
   const requestVoxel = device.buffers.at(-1);
 
-  requestB.resolve([20, 21, 22, 23]);
   requestA.resolve([10, 11, 12, 13]);
+  requestB.resolve([20, 21, 22, 23]);
   requestVoxel.resolve([30, 31, 32, 33]);
   await flushCompletions();
 
@@ -381,9 +381,59 @@ test("metadata A to B to voxel cannot cross-publish at one coordinate", async ()
       ),
     ),
     [30, 31, 32, 33],
-    "only the newest exact typed request may publish",
+    "the voxel query must serve its own identity slot",
   );
 
+  // A was stamped at pick 1, so this fifth begin deliberately serves it at
+  // age 4: the inclusive CENTER_PIXEL_MAX_STALE_FRAMES boundary.
+  framebuffer.begin(rectangle, viewport, "metadata");
+  const metadataABytes = framebuffer.readCenterPixel(
+    rectangle,
+    "metadata",
+    classA,
+    propertyA,
+    "schema-a\0class-a\0property-a",
+    pickedA,
+  );
+  const metadataAArray =
+    metadataABytes === undefined ? undefined : Array.from(metadataABytes);
+  assert.notDeepEqual(
+    metadataAArray,
+    [20, 21, 22, 23],
+    "metadata A must never serve metadata B's bytes",
+  );
+  assert.notDeepEqual(
+    metadataAArray,
+    [30, 31, 32, 33],
+    "metadata A must never serve voxel bytes",
+  );
+  assert.deepEqual(
+    metadataAArray,
+    [10, 11, 12, 13],
+    "metadata A must serve its own slot at the inclusive age-4 boundary",
+  );
+
+  framebuffer.begin(rectangle, viewport, "metadata");
+  assert.deepEqual(
+    Array.from(
+      framebuffer.readCenterPixel(
+        rectangle,
+        "metadata",
+        classB,
+        propertyB,
+        "schema-b\0class-b\0property-b",
+        pickedB,
+      ),
+    ),
+    [20, 21, 22, 23],
+    "metadata B must serve its own identity slot",
+  );
+
+  for (let i = 0; i < 5; i++) {
+    framebuffer.begin(rectangle, viewport, "metadata");
+  }
+  const staleDeclinesBefore =
+    framebuffer.getStatistics().centerPixel.declines["stale-beyond-max"];
   framebuffer.begin(rectangle, viewport, "metadata");
   assert.equal(
     framebuffer.readCenterPixel(
@@ -395,7 +445,12 @@ test("metadata A to B to voxel cannot cross-publish at one coordinate", async ()
       pickedA,
     ),
     undefined,
-    "voxel bytes must never satisfy a metadata query",
+    "metadata A must decline after more than CENTER_PIXEL_MAX_STALE_FRAMES further begins",
+  );
+  assert.equal(
+    framebuffer.getStatistics().centerPixel.declines["stale-beyond-max"],
+    staleDeclinesBefore + 1,
+    "the aged metadata A slot must decline specifically as stale-beyond-max",
   );
 });
 
