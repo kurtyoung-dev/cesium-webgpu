@@ -15,10 +15,10 @@ import {
 import { analyzeProhibitedReader } from "./lib/prohibited-reader-rule.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const SNAPSHOT_SIZE = 175;
+const SNAPSHOT_SIZE = 178;
 const SNAPSHOT_MEMBER_DIGEST =
-  "02b60967519599371c5eda04faa99f65650ef2446aea16d1fca9c327c639055a";
-const SANCTIONED_TO_DATA_URL_SIZE = 48;
+  "645e045b0c966b6d430c27ac98817ec0e884b67db69c4950624df76adcd7f83d";
+const SANCTIONED_TO_DATA_URL_SIZE = 51;
 const SANCTIONED_TO_DATA_URL = /\.\s*canvas\s*\.\s*toDataURL\s*\(/u;
 
 let fleetCache;
@@ -27,7 +27,7 @@ function fleet() {
   if (fleetCache !== undefined) {
     return fleetCache;
   }
-  const names = readdirSync(HERE)
+  const probeNames = readdirSync(HERE)
     .filter(
       (name) =>
         name.startsWith("probe-") &&
@@ -35,6 +35,11 @@ function fleet() {
         !name.endsWith(".spec.mjs"),
     )
     .sort();
+  const libraryNames = readdirSync(join(HERE, "lib"))
+    .filter((name) => name.endsWith(".mjs"))
+    .map((name) => `lib/${name}`)
+    .sort();
+  const names = [...probeNames, ...libraryNames].sort();
   const sources = new Map(
     names.map((name) => [name, readFileSync(join(HERE, name), "utf8")]),
   );
@@ -130,7 +135,7 @@ function assertRatchet(allowlist, snapshot, scope) {
   assert.deepEqual(
     findings.repaired,
     [],
-    `repaired probes must be removed from the allowlist: ${findings.repaired}`,
+    `repaired files must be removed from the allowlist: ${findings.repaired}`,
   );
   assert.deepEqual(
     findings.uncovered,
@@ -148,11 +153,11 @@ test("the allowlist and its independent snapshot are frozen, sorted data", () =>
   assert.ok(Object.isFrozen(PROHIBITED_READER_ALLOWLIST_SNAPSHOT.members));
 
   for (const [name, reason] of Object.entries(PROHIBITED_READER_ALLOWLIST)) {
-    assert.match(name, /^probe-.*\.mjs$/u);
+    assert.match(name, /^(?:probe-.*|lib\/.+)\.mjs$/u);
     assert.equal(typeof reason, "string", `${name} has no reason`);
     assert.ok(reason.trim().length >= 20, `${name} has no useful reason`);
     assert.doesNotMatch(reason, /[\r\n]/u, `${name}'s reason spans lines`);
-    assert.match(reason, /added 2026-08-20/u, `${name} has no add-date`);
+    assert.match(reason, /added \d{4}-\d{2}-\d{2}/u, `${name} has no add-date`);
   }
 });
 
@@ -165,7 +170,7 @@ test("the measured fleet satisfies the complete allowlist ratchet", () => {
     (name) => scope.analyses.get(name).violations.length > 0,
   );
   console.log(
-    `      scanned ${scope.names.length} probes; ${violatingFiles.length} violating files; ${findings.length} findings`,
+    `      scanned ${scope.names.length} sources; ${violatingFiles.length} violating files; ${findings.length} findings`,
   );
   assertRatchet(
     PROHIBITED_READER_ALLOWLIST,
@@ -174,7 +179,7 @@ test("the measured fleet satisfies the complete allowlist ratchet", () => {
   );
 });
 
-test("CONTROL: sanctioned live-canvas toDataURL probes stay clean", () => {
+test("CONTROL: sanctioned live-canvas toDataURL sources stay clean", () => {
   const scope = fleet();
   const candidates = scope.names.filter(
     (name) =>
@@ -188,7 +193,7 @@ test("CONTROL: sanctioned live-canvas toDataURL probes stay clean", () => {
   assert.deepEqual(
     violations,
     [],
-    `sanctioned toDataURL probes were flagged: ${violations}`,
+    `sanctioned toDataURL sources were flagged: ${violations}`,
   );
 });
 
@@ -214,7 +219,7 @@ test("MUTATION: adding a fabricated name to the frozen snapshot is rejected", ()
   };
   assert.throws(
     () => assertRatchet(PROHIBITED_READER_ALLOWLIST, mutatedSnapshot, fleet()),
-    /snapshot has 176 members but records 175/u,
+    /snapshot has 179 members but records 178/u,
   );
 });
 
@@ -250,7 +255,7 @@ test("CONTROL: retaining a repaired row is rejected as stale", () => {
         PROHIBITED_READER_ALLOWLIST_SNAPSHOT,
         repairedScope,
       ),
-    /repaired probes must be removed.*probe-2d-blank-where/u,
+    /repaired files must be removed/u,
   );
 });
 

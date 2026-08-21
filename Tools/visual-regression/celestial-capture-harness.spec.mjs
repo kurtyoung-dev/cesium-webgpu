@@ -1,6 +1,6 @@
 // celestial-capture-harness.spec.mjs — browser-free guard for the shared
 // page/settle/capture recipe in `lib/celestial-capture-harness.mjs`.
-// @purpose Mutation-checked guard for lib/celestial-capture-harness.mjs, the shared page/settle/capture recipe the celestial gate probes import.
+// @purpose Mutation-checked guard for lib/celestial-capture-harness.mjs, including its shared frozen-PNG acquisition path.
 // @status ACTIVE
 //
 // WHY THIS SPEC EXISTS. The recipe it guards used to live inside
@@ -24,7 +24,15 @@ import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { parse } from "acorn";
+
 import * as HARNESS_MODULE from "./lib/celestial-capture-harness.mjs";
+import {
+  checkEmbeddedFusedSnapshotIsCanonical,
+  checkFusedCaptureUsage,
+  FUSED_SNAPSHOT_CAPTURE_SOURCE,
+  SAME_TASK_CAPTURE_SOURCE,
+} from "./lib/same-task-capture.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(HERE, "..", "..");
@@ -44,6 +52,91 @@ function anchored(pattern, mutate, message) {
     mutate(HARNESS),
     pattern,
     `${message} — the anchor did not fail on its own mutant, so it is vacuous`,
+  );
+}
+
+function astNodes(root) {
+  const nodes = [];
+  const visit = (value) => {
+    if (!value || typeof value !== "object") return;
+    if (typeof value.type === "string") nodes.push(value);
+    for (const child of Object.values(value)) {
+      if (Array.isArray(child)) child.forEach(visit);
+      else visit(child);
+    }
+  };
+  visit(root);
+  return nodes;
+}
+
+function callName(node) {
+  if (node.type !== "CallExpression") return null;
+  const callee = node.callee;
+  if (callee.type === "Identifier") return callee.name;
+  if (
+    callee.type === "MemberExpression" &&
+    !callee.computed &&
+    callee.object.type === "Identifier" &&
+    callee.property.type === "Identifier"
+  ) {
+    return `${callee.object.name}.${callee.property.name}`;
+  }
+  return null;
+}
+
+function namedArrow(ast, name) {
+  const matches = astNodes(ast).filter(
+    (node) =>
+      node.type === "VariableDeclarator" &&
+      node.id?.type === "Identifier" &&
+      node.id.name === name &&
+      node.init?.type === "ArrowFunctionExpression",
+  );
+  assert.equal(matches.length, 1, `${name} must resolve to one arrow function`);
+  return matches[0].init;
+}
+
+function assertNoCaptureSuspension(source, functionName) {
+  const ast = parse(source, { ecmaVersion: "latest", sourceType: "script" });
+  const capture = namedArrow(ast, functionName);
+  assert.equal(capture.body.type, "BlockStatement");
+  const statements = capture.body.body;
+  const calls = (statement) => astNodes(statement).map(callName);
+  const renderCall =
+    functionName === "captureSnapshot" ? "scene.render" : "renderNow";
+  const renderIndex = statements.findIndex((statement) =>
+    calls(statement).includes(renderCall),
+  );
+  const readIndex = statements.findIndex((statement) =>
+    calls(statement).includes("canvas.toDataURL"),
+  );
+  assert.ok(renderIndex >= 0, `${functionName} must render before capture`);
+  assert.ok(
+    readIndex > renderIndex,
+    `${functionName} must freeze after render`,
+  );
+
+  if (functionName === "snapshotNow") {
+    assert.ok(
+      astNodes(namedArrow(ast, "renderNow")).some(
+        (node) => callName(node) === "scene.render",
+      ),
+      "snapshotNow's renderNow call must resolve to scene.render",
+    );
+  }
+
+  const suspensions = statements
+    .slice(renderIndex + 1, readIndex)
+    .flatMap(astNodes)
+    .filter(
+      (node) =>
+        node.type === "AwaitExpression" || node.type === "YieldExpression",
+    )
+    .map((node) => node.type);
+  assert.deepEqual(
+    suspensions,
+    [],
+    `${functionName} must not suspend between render and canvas.toDataURL`,
   );
 }
 
@@ -166,36 +259,76 @@ test("settle is a wall-clock budget that covers the measured compile cost", () =
 
 test("every measured capture is preceded by a DISCARDED warm-up capture", () => {
   anchored(
-    /const warmupFrames = await settle\(\);\s*\n\s*grab\(\);/,
+    /const warmupFrames = await settle\(\);\s*\n\s*await grab\(\);/,
     (s) =>
-      s.replace(/const warmupFrames = await settle\(\);\s*\n\s*grab\(\);/, ""),
+      s.replace(
+        /const warmupFrames = await settle\(\);\s*\n\s*await grab\(\);/,
+        "",
+      ),
     "the warm-up must settle AND grab, then throw the result away",
   );
   assert.match(HARNESS, /warmupDiscarded: true/);
   assert.ok(
     HARNESS.indexOf("const warmupFrames = await settle();") <
-      HARNESS.indexOf("const full = grab();"),
+      HARNESS.indexOf("const full = await grab();"),
     "the warm-up must run BEFORE the measured capture",
   );
 });
 
-test("render and readback happen in the SAME task", () => {
-  // `grab` renders and reads with no await between; the whole point is that no
-  // yield separates them. A read across a yield is invalid on BOTH backends —
-  // WebGL clears the drawing buffer after the swap, WebGPU invalidates the
-  // swap-chain texture after presentation.
+test("canonical capture sources cannot suspend between render and freeze", () => {
+  assertNoCaptureSuspension(FUSED_SNAPSHOT_CAPTURE_SOURCE, "captureSnapshot");
+  assertNoCaptureSuspension(SAME_TASK_CAPTURE_SOURCE, "snapshotNow");
+
+  const fusedMutant = FUSED_SNAPSHOT_CAPTURE_SOURCE.replace(
+    "    scene.render(timeFn());\n    const dataUrl",
+    "    scene.render(timeFn());\n    await Promise.resolve();\n    const dataUrl",
+  );
+  const sameTaskMutant = SAME_TASK_CAPTURE_SOURCE.replace(
+    "  const snapshotNow = () => {\n    renderNow();",
+    "  const snapshotNow = async () => {\n    renderNow();\n    await Promise.resolve();",
+  );
+  for (const [source, functionName] of [
+    [fusedMutant, "captureSnapshot"],
+    [sameTaskMutant, "snapshotNow"],
+  ]) {
+    assert.throws(
+      () => assertNoCaptureSuspension(source, functionName),
+      /must not suspend between render and canvas\.toDataURL/,
+      `${functionName} doctrine mutant must turn the assertion red`,
+    );
+  }
+});
+
+test("the render is frozen before pixels are decoded or cropped", () => {
+  // `toDataURL` synchronously freezes the rendered canvas. Only its decoded
+  // Image reaches drawImage/getImageData; passing the live WebGPU canvas to
+  // drawImage can return an invalidated swap-chain texture even in one task.
+  assert.deepEqual(checkEmbeddedFusedSnapshotIsCanonical(HARNESS), []);
+  assert.deepEqual(checkFusedCaptureUsage(HARNESS), []);
+
+  const drifted = HARNESS.replace(
+    'const dataUrl = canvas.toDataURL("image/png");',
+    'const dataUrl = canvas.toDataURL("image/webp");',
+  );
+  assert.notEqual(drifted, HARNESS, "the canonical-block mutant did not apply");
+  assert.notDeepEqual(
+    checkEmbeddedFusedSnapshotIsCanonical(drifted),
+    [],
+    "canonical drift must turn the helper pin red",
+  );
+
   const grab = HARNESS.slice(
-    HARNESS.indexOf("const grab = () => {"),
+    HARNESS.indexOf("const grab = async () => {"),
     HARNESS.indexOf("const settle = () => {"),
   );
   assert.ok(grab.length > 0, "the fused capture must exist");
-  assert.match(grab, /scene\.render\(pinnedTime\(\)\)/);
-  assert.match(grab, /ctx\.getImageData\(/);
-  assert.doesNotMatch(
-    grab,
-    /await/,
-    "there must be no await between the render and the readback",
+  assert.match(grab, /await captureSnapshot\(\)/);
+  assert.match(
+    HARNESS,
+    /imageData\.data\.subarray\(sourceStart, sourceStart \+ rowBytes\)/,
+    "the output crop must come from decoded frozen pixels",
   );
+  assert.doesNotMatch(HARNESS, /drawImage\(canvas\s*,/);
 });
 
 test("per-leg state is pinned in BOTH directions, not only on", () => {

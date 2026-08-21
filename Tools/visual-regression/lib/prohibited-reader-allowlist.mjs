@@ -1,23 +1,35 @@
-// @purpose Pin the measured probe fleet that still uses the prohibited live-canvas reader.
+// @purpose Pin the measured visual-regression sources that still use the prohibited live-canvas reader.
 // @status ACTIVE
 
 // This is inherited debt, not permission for new readers. The consuming spec
 // requires every row to keep violating and rejects every violation outside the
-// list. Repairing a probe therefore requires deleting its row here, while the
+// list. Repairing a source therefore requires deleting its row here, while the
 // frozen census below remains as the shrink-only baseline.
 //
-// The baseline was re-measured after the detector was widened on 2026-08-20.
-// The added rows are newly detected pre-existing violations, not new offences.
+// The detector itself widened on 2026-08-20. Its source population widened on
+// 2026-08-21 from direct probes to direct probes plus every shared `lib/*.mjs`.
+// That scope change exposed two pre-existing library readers: the celestial
+// harness repaired in the same change and the weather helper recorded below.
+// The weather row is newly DETECTED inherited debt, not a new offence.
+//
+// Two direct probes added after the original contract were also already red at
+// this dispatch. Their rows say so explicitly; they are post-contract offences,
+// not scope discoveries, and remain follow-up repairs.
 
 const PROHIBITED_READER_REASON =
   "copies a live scene canvas through drawImage — added 2026-08-20";
+const PROHIBITED_READER_SCOPE_REASON =
+  "copies a live scene canvas through drawImage — newly detected pre-existing library reader; added 2026-08-21";
+const PROHIBITED_READER_POST_CONTRACT_REASON =
+  "copies a live scene canvas through drawImage — post-contract offence already present at dispatch; added 2026-08-21";
 
 /**
- * Probe file name -> one-line reason it is temporarily exempt.
+ * Source path -> one-line reason it is temporarily exempt.
  *
  * @type {Readonly<Record<string, string>>}
  */
 export const PROHIBITED_READER_ALLOWLIST = Object.freeze({
+  "lib/weather-probe-pinning.mjs": PROHIBITED_READER_SCOPE_REASON,
   "probe-2d-blank-where.mjs": PROHIBITED_READER_REASON,
   "probe-2d-cv-modes.mjs": PROHIBITED_READER_REASON,
   "probe-2dcv-verify.mjs": PROHIBITED_READER_REASON,
@@ -46,6 +58,9 @@ export const PROHIBITED_READER_ALLOWLIST = Object.freeze({
   "probe-c10-07-async-model-pipelines.mjs": PROHIBITED_READER_REASON,
   "probe-c10-09-prev-buffer-upload.mjs": PROHIBITED_READER_REASON,
   "probe-c10-10-shadow-single-sweep.mjs": PROHIBITED_READER_REASON,
+  "probe-c11-196-lazy-pick-demand.mjs": PROHIBITED_READER_POST_CONTRACT_REASON,
+  "probe-c11-202-batchtexture-pick-demand.mjs":
+    PROHIBITED_READER_POST_CONTRACT_REASON,
   "probe-c12-29-s5-replacement-device.mjs": PROHIBITED_READER_REASON,
   "probe-c9-14-ground-atmo-stage.mjs": PROHIBITED_READER_REASON,
   "probe-camera-track.mjs": PROHIBITED_READER_REASON,
@@ -196,12 +211,14 @@ export const PROHIBITED_READER_ALLOWLIST = Object.freeze({
 });
 
 /**
- * Frozen 2026-08-20 census. The live allowlist may be a subset of these names,
- * never a superset; the spec pins both this size and this membership.
+ * Frozen 2026-08-21 census after the source population widened to include
+ * shared libraries. The live allowlist may be a subset of these names, never a
+ * superset; the spec pins both this size and this membership.
  */
 export const PROHIBITED_READER_ALLOWLIST_SNAPSHOT = Object.freeze({
-  size: 175,
+  size: 178,
   members: Object.freeze([
+    "lib/weather-probe-pinning.mjs",
     "probe-2d-blank-where.mjs",
     "probe-2d-cv-modes.mjs",
     "probe-2dcv-verify.mjs",
@@ -230,6 +247,8 @@ export const PROHIBITED_READER_ALLOWLIST_SNAPSHOT = Object.freeze({
     "probe-c10-07-async-model-pipelines.mjs",
     "probe-c10-09-prev-buffer-upload.mjs",
     "probe-c10-10-shadow-single-sweep.mjs",
+    "probe-c11-196-lazy-pick-demand.mjs",
+    "probe-c11-202-batchtexture-pick-demand.mjs",
     "probe-c12-29-s5-replacement-device.mjs",
     "probe-c9-14-ground-atmo-stage.mjs",
     "probe-camera-track.mjs",

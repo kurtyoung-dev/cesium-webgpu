@@ -14,10 +14,11 @@
 //     headless browser silently shortens the budget into the under-settle it
 //     exists to prevent;
 //   * every measured capture is preceded by a DISCARDED warm-up capture,
-//     because the readback path itself (canvas allocation, drawImage, and on
-//     WebGPU the present/consume cycle) is part of what needs warming;
-//   * the final render and the readback happen in the SAME task, with no await
-//     between them — a read taken across a yield is invalid on both backends;
+//     because PNG encoding, decoding, and scratch allocation are part of the
+//     path that needs warming;
+//   * the final render is synchronously frozen with `toDataURL` in the SAME
+//     task; only the immutable decoded PNG reaches `drawImage`/`getImageData`,
+//     never the live scene canvas;
 //   * the camera aim is applied through an explicit basis and its round-trip
 //     residual is REPORTED, so an aim that did not take is visible as a number
 //     rather than as a mysteriously dim measurement;
@@ -698,8 +699,8 @@ export async function setupScene(
 }
 
 // --------------------------------------------------------------------------
-// In-page: apply the M6 toggles (or the bracket exposure), settle, and capture
-// the crop in the SAME task as the final render (RULE 2).
+// In-page: apply the M6 toggles (or the bracket exposure), settle, synchronously
+// freeze the final render as a PNG, then crop pixels from that immutable image.
 // --------------------------------------------------------------------------
 export async function captureMode(
   page,
@@ -848,21 +849,66 @@ export async function captureMode(
         }
       }
 
-      // RULE 2 — final render + readback in ONE task, no await between.
-      const grab = () => {
-        scene.render(pinnedTime());
-        const canvas = scene.canvas;
+      // The scene canvas is valid only at the render boundary. Freeze it as a
+      // PNG synchronously in that task, then decode and crop the immutable PNG;
+      // `drawImage` must never receive the live WebGPU canvas.
+      const canvas = scene.canvas;
+      // ==BEGIN fused-snapshot-capture==
+      const makeFusedSnapshotCapture = (scene, canvas, timeFn) => {
         const tmp = document.createElement("canvas");
-        tmp.width = canvas.width;
-        tmp.height = canvas.height;
-        const ctx = tmp.getContext("2d");
-        ctx.drawImage(canvas, 0, 0);
-        return ctx.getImageData(
-          cropRect.x,
-          cropRect.y,
-          cropRect.width,
-          cropRect.height,
-        );
+        const ctx = tmp.getContext("2d", { willReadFrequently: true });
+        const decode = async (dataUrl) => {
+          const image = new Image();
+          const loaded = new Promise((resolve, reject) => {
+            image.onload = resolve;
+            image.onerror = () => reject(new Error("fused PNG decode failed"));
+          });
+          image.src = dataUrl;
+          await loaded;
+          tmp.width = image.naturalWidth;
+          tmp.height = image.naturalHeight;
+          ctx.drawImage(image, 0, 0);
+          return ctx.getImageData(0, 0, tmp.width, tmp.height);
+        };
+        const captureSnapshot = async () => {
+          scene.render(timeFn());
+          const dataUrl = canvas.toDataURL("image/png");
+          const imageData = await decode(dataUrl);
+          return { dataUrl, imageData };
+        };
+        return { captureSnapshot };
+      };
+      // ==END fused-snapshot-capture==
+
+      const { captureSnapshot } = makeFusedSnapshotCapture(
+        scene,
+        canvas,
+        pinnedTime,
+      );
+      const cropFrozenSnapshot = (imageData) => {
+        if (
+          cropRect.x < 0 ||
+          cropRect.y < 0 ||
+          cropRect.x + cropRect.width > imageData.width ||
+          cropRect.y + cropRect.height > imageData.height
+        ) {
+          throw new Error("crop exceeds frozen snapshot bounds");
+        }
+        const rowBytes = cropRect.width * 4;
+        const data = new Uint8ClampedArray(rowBytes * cropRect.height);
+        for (let row = 0; row < cropRect.height; row++) {
+          const sourceStart =
+            ((cropRect.y + row) * imageData.width + cropRect.x) * 4;
+          data.set(
+            imageData.data.subarray(sourceStart, sourceStart + rowBytes),
+            row * rowBytes,
+          );
+        }
+        return { data };
+      };
+      const grab = async () => {
+        const { imageData } = await captureSnapshot();
+        return cropFrozenSnapshot(imageData);
       };
 
       const settle = () => {
@@ -881,19 +927,18 @@ export async function captureMode(
         })();
       };
 
-      // WARM-UP CAPTURE — settle, capture, DISCARD. The readback itself is part
-      // of the work being warmed (canvas alloc, drawImage path, and on WebGPU
-      // the present/consume cycle), so warming with renders alone would leave
-      // the first real capture measuring a cold path. Nothing from this pass
-      // reaches the metrics.
+      // WARM-UP CAPTURE — settle, capture, DISCARD. PNG encoding/decoding and
+      // scratch allocation are part of the work being warmed, so rendering
+      // alone would leave the first measured capture on a cold path. Nothing
+      // from this pass reaches the metrics.
       const warmupFrames = await settle();
-      grab();
+      await grab();
 
       const settleFrameCount = await settle();
-      const full = grab();
-      // Read in the SAME task as the measured render (RULE 2) so the resolved
-      // glare describes the frame that was captured, not the intent. `strength`
-      // already carries the `sunVisibleFraction` product; `sunVisibleFraction`
+      const full = await grab();
+      // The default render loop is disabled, so this state still describes the
+      // render synchronously frozen by `grab`, not merely the requested state.
+      // `strength` already carries the `sunVisibleFraction` product; the latter
       // travels separately so "the toggle is off" (strength 0, visibility 1) is
       // distinguishable from "the Sun is behind the Earth" (strength 0,
       // visibility 0) without re-deriving either.
@@ -907,8 +952,9 @@ export async function captureMode(
           }
         : null;
 
-      // G4 LIVE STATE — read in the SAME task as the measured render (RULE 2),
-      // so the resolved appearance describes the frame that was captured rather
+      // G4 LIVE STATE — `useDefaultRenderLoop` is false, so no render can
+      // interleave between the synchronous freeze inside `grab` and these reads.
+      // The resolved appearance therefore describes the captured frame rather
       // than the intent. All of these are published on `frameState` by their
       // owning module BEFORE the backend branch, which is exactly why they can
       // certify a shared-code claim.

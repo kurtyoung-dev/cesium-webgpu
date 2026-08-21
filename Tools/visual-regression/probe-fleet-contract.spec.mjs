@@ -74,6 +74,20 @@ const probeFiles = readdirSync(HERE)
 
 const readProbe = (name) => readFileSync(join(HERE, name), "utf8");
 
+// F4 applies the pixel-acquisition rule to both direct probes and shared
+// libraries. A helper can fan one invalid reader out to many otherwise-clean
+// probes, so `lib/` is part of the rule's source population, not an exemption.
+const prohibitedReaderLibraryFiles = readdirSync(join(HERE, "lib"))
+  .filter((name) => name.endsWith(".mjs"))
+  .map((name) => `lib/${name}`)
+  .sort();
+const prohibitedReaderFiles = [
+  ...probeFiles,
+  ...prohibitedReaderLibraryFiles,
+].sort();
+const readProhibitedReaderFile = (name) =>
+  readFileSync(join(HERE, name), "utf8");
+
 // The other half of the thin-probe/fat-lib architecture: `lib/*-gate.mjs` is
 // where the S5 shards decide both the verdict and the exit code it leaves with.
 const gateLibraryFiles = readdirSync(join(HERE, "lib"))
@@ -82,7 +96,7 @@ const gateLibraryFiles = readdirSync(join(HERE, "lib"))
 
 const readGateLibrary = (name) => readFileSync(join(HERE, "lib", name), "utf8");
 
-/** Analysis cache — 620 files parsed once, not once per assertion. */
+/** Analysis caches parse each source once, not once per assertion. */
 const analyses = new Map();
 for (const f of probeFiles) {
   analyses.set(f, analyzeProbeSource(readProbe(f)));
@@ -90,8 +104,11 @@ for (const f of probeFiles) {
 
 const PROHIBITED_READER_KIND = "prohibited-live-canvas-reader";
 const prohibitedReaderAnalyses = new Map();
-for (const f of probeFiles) {
-  prohibitedReaderAnalyses.set(f, analyzeProhibitedReader(readProbe(f)));
+for (const f of prohibitedReaderFiles) {
+  prohibitedReaderAnalyses.set(
+    f,
+    analyzeProhibitedReader(readProhibitedReaderFile(f)),
+  );
 }
 
 /**
@@ -1088,9 +1105,25 @@ test("C13: the scanner reaches the end of every probe still reading code", () =>
   );
 });
 
-test("C14: every non-allowlisted probe avoids the prohibited reader", () => {
+test("F4: the prohibited-reader population includes probes and shared libraries", () => {
+  assert.equal(
+    prohibitedReaderFiles.length,
+    probeFiles.length + prohibitedReaderLibraryFiles.length,
+  );
+  assert.ok(
+    prohibitedReaderLibraryFiles.includes("lib/celestial-capture-harness.mjs"),
+    "the shared celestial acquisition path fell out of reader-rule scope",
+  );
+  assert.ok(
+    prohibitedReaderLibraryFiles.includes("lib/weather-probe-pinning.mjs"),
+    "a known inherited library reader fell out of reader-rule scope",
+  );
+  assert.equal(prohibitedReaderAnalyses.size, prohibitedReaderFiles.length);
+});
+
+test("C14: every non-allowlisted source avoids the prohibited reader", () => {
   const { offenders } = prohibitedReaderFindings(
-    probeFiles,
+    prohibitedReaderFiles,
     prohibitedReaderAnalyses,
     PROHIBITED_READER_ALLOWLIST,
   );
@@ -1106,7 +1139,7 @@ Offenders:\n  ${offenders.join("\n  ")}`,
 
 test("C15: the prohibited-reader allowlist has no stale entries", () => {
   const { gone, repaired } = prohibitedReaderFindings(
-    probeFiles,
+    prohibitedReaderFiles,
     prohibitedReaderAnalyses,
     PROHIBITED_READER_ALLOWLIST,
   );
@@ -1118,7 +1151,7 @@ test("C15: the prohibited-reader allowlist has no stale entries", () => {
   assert.deepEqual(
     repaired,
     [],
-    `these probes no longer use the prohibited reader and MUST be deleted from
+    `these files no longer use the prohibited reader and MUST be deleted from
 the allowlist in the same change that repaired them: ${repaired.join(", ")}`,
   );
 });
@@ -1163,13 +1196,13 @@ test("C17: the allowlist names the exact violation each probe still has", () => 
 });
 
 test("C18 MUTATION control: a fabricated new violator turns C14 red", () => {
-  const donor = probeFiles.find(
+  const donor = prohibitedReaderFiles.find(
     (name) =>
       !Object.hasOwn(PROHIBITED_READER_ALLOWLIST, name) &&
       prohibitedReaderAnalyses.get(name).violations.length === 0,
   );
-  assert.ok(donor, "no clean non-allowlisted probe left to mutate");
-  const source = readProbe(donor).replaceAll("\r\n", "\n");
+  assert.ok(donor, "no clean non-allowlisted source left to mutate");
+  const source = readProhibitedReaderFile(donor).replaceAll("\r\n", "\n");
   const mutated = `${source}
 const readerMutationCanvas = scene.canvas;
 readerMutationContext.drawImage(readerMutationCanvas, 0, 0);
@@ -1186,7 +1219,7 @@ readerMutationContext.drawImage(readerMutationCanvas, 0, 0);
     mutatedAnalysis,
   );
   const { offenders } = prohibitedReaderFindings(
-    probeFiles,
+    prohibitedReaderFiles,
     mutatedAnalyses,
     PROHIBITED_READER_ALLOWLIST,
   );
@@ -1200,7 +1233,7 @@ readerMutationContext.drawImage(readerMutationCanvas, 0, 0);
 test("C19 MUTATION control: a repaired allowlist row turns C15 red", () => {
   const donor = Object.keys(PROHIBITED_READER_ALLOWLIST)[0];
   assert.ok(donor, "the prohibited-reader allowlist has no mutation donor");
-  const source = readProbe(donor).replaceAll("\r\n", "\n");
+  const source = readProhibitedReaderFile(donor).replaceAll("\r\n", "\n");
   const mutated = source.replaceAll("drawImage", "drawFrozenImage");
   assert.notEqual(mutated, source, `${donor}: repair mutation did not apply`);
   const mutatedAnalysis = analyzeProhibitedReader(mutated);
@@ -1215,7 +1248,7 @@ test("C19 MUTATION control: a repaired allowlist row turns C15 red", () => {
     mutatedAnalysis,
   );
   const { repaired } = prohibitedReaderFindings(
-    probeFiles,
+    prohibitedReaderFiles,
     mutatedAnalyses,
     PROHIBITED_READER_ALLOWLIST,
   );
