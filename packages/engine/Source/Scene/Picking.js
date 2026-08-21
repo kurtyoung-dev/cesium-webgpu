@@ -1294,8 +1294,18 @@ class Picking {
       scene,
       Promise.all(promises).then(function (heights) {
         const length = heights.length;
+        const sampled = new Set();
         for (let i = 0; i < length; ++i) {
-          positions[i].height = heights[i];
+          const position = positions[i];
+          const height = heights[i];
+          // A shared object keeps a defined height through later failures, while the last defined slot wins.
+          if (!defined(height) && sampled.has(position)) {
+            continue;
+          }
+          position.height = height;
+          if (defined(height)) {
+            sampled.add(position);
+          }
         }
         return positions;
       }),

@@ -1,5 +1,5 @@
 /**
- * Behavioural spec for two picking changes:
+ * Behavioural spec for three picking changes:
  *
  *   A. `GraphicsContext#supportsOffscreenRayDepthReadback` and the two
  *      `Scene#*MostDetailedSupported` getters built on it, including the
@@ -9,6 +9,8 @@
  *      guards throw when those two are false.
  *   B. `Picking#clampToHeightMostDetailed` no longer handing the pick the
  *      caller's own array element as an out-parameter.
+ *   C. `Picking#sampleHeightMostDetailed` preserving a successful height when
+ *      multiple array entries refer to the same caller-owned object.
  *
  * Run:  node --test packages/engine/Specs/Scene/PickingMostDetailedSupportSpec.mjs
  *
@@ -114,9 +116,12 @@ const engine = (relative) =>
   import(new URL(`../../Source/${relative}`, import.meta.url).href);
 
 const { default: Picking } = await engine("Scene/Picking.js");
-const { getRayForClampToHeight, clampToHeightMostDetailed } = await engine(
-  "Scene/PickingRayHelpers.js",
-);
+const {
+  getRayForSampleHeight,
+  getRayForClampToHeight,
+  getHeightFromCartesian,
+  clampToHeightMostDetailed,
+} = await engine("Scene/PickingRayHelpers.js");
 const { default: Scene } = await engine("Scene/Scene.js");
 const { default: GraphicsContext } = await engine(
   "Renderer/GraphicsContext.ts",
@@ -126,6 +131,7 @@ const { default: WebGPUContext } = await engine(
   "Renderer/WebGPU/WebGPUContext.ts",
 );
 const { default: Cartesian3 } = await engine("Core/Cartesian3.js");
+const { default: Cartographic } = await engine("Core/Cartographic.js");
 const { default: Ray } = await engine("Core/Ray.js");
 const { default: Ellipsoid } = await engine("Core/Ellipsoid.js");
 const { default: BoundingRectangle } = await engine(
@@ -523,4 +529,164 @@ test("the ray-pick helper never writes an object passed to it", async () => {
     "the helper must not write through a trailing argument",
   );
   assertAt(target, originalValue, "the helper must not write its input");
+});
+
+// ─────────────────────────────────────────────────────────── slice C ────────
+
+function sampleSubject(height) {
+  return Cartographic.fromDegrees(-75.0, 40.0, height);
+}
+
+function expectedHeight(scene, cartographic, depth) {
+  const position = Ray.getPoint(
+    getRayForSampleHeight(scene, cartographic),
+    distanceFor(depth),
+    new Cartesian3(),
+  );
+  return getHeightFromCartesian(scene, position);
+}
+
+test("a failed alias cannot erase a successful sampled height", async () => {
+  const shared = sampleSubject(125.0);
+  const original = Cartographic.clone(shared);
+  const positions = [shared, shared];
+  const { scene, picking } = makeHarness([0.25, undefined]);
+
+  const result = await Picking.prototype.sampleHeightMostDetailed.call(
+    picking,
+    scene,
+    positions,
+  );
+
+  const expected = expectedHeight(scene, original, 0.25);
+  assert.notEqual(
+    expected,
+    undefined,
+    "the successful control sample must produce a height",
+  );
+  assert.notEqual(
+    expected,
+    original.height,
+    "the successful control sample must change the starting height",
+  );
+  assert.equal(result, positions, "the caller's array must be returned");
+  assert.equal(result[0], shared, "entry 0 must keep the caller's object");
+  assert.equal(result[1], shared, "entry 1 must keep the caller's object");
+  assert.equal(
+    shared.height,
+    expected,
+    "a later failed alias must not erase the successful height",
+  );
+});
+
+test("a successful alias replaces an earlier failed sample", async () => {
+  const shared = sampleSubject(125.0);
+  const original = Cartographic.clone(shared);
+  const positions = [shared, shared];
+  const { scene, picking } = makeHarness([undefined, 0.25]);
+
+  const result = await Picking.prototype.sampleHeightMostDetailed.call(
+    picking,
+    scene,
+    positions,
+  );
+
+  const expected = expectedHeight(scene, original, 0.25);
+  assert.notEqual(
+    expected,
+    undefined,
+    "the successful control sample must produce a height",
+  );
+  assert.notEqual(
+    expected,
+    original.height,
+    "the successful control sample must change the starting height",
+  );
+  assert.equal(result, positions, "the caller's array must be returned");
+  assert.equal(result[0], shared, "entry 0 must keep the caller's object");
+  assert.equal(result[1], shared, "entry 1 must keep the caller's object");
+  assert.equal(
+    shared.height,
+    expected,
+    "a successful alias must replace the earlier failed sample",
+  );
+});
+
+test("the last successful alias determines the sampled height", async () => {
+  const shared = sampleSubject(125.0);
+  const original = Cartographic.clone(shared);
+  const positions = [shared, shared];
+  const { scene, picking } = makeHarness([0.25, 0.5]);
+
+  const result = await Picking.prototype.sampleHeightMostDetailed.call(
+    picking,
+    scene,
+    positions,
+  );
+
+  const firstHeight = expectedHeight(scene, original, 0.25);
+  const lastHeight = expectedHeight(scene, original, 0.5);
+  assert.notEqual(
+    firstHeight,
+    lastHeight,
+    "the successful control samples must produce different heights",
+  );
+  assert.equal(result, positions, "the caller's array must be returned");
+  assert.equal(result[0], shared, "entry 0 must keep the caller's object");
+  assert.equal(result[1], shared, "entry 1 must keep the caller's object");
+  assert.equal(
+    shared.height,
+    lastHeight,
+    "the last successful alias must determine the final height",
+  );
+});
+
+test("distinct sampled entries keep their values and identities", async () => {
+  const hit = sampleSubject(125.0);
+  const miss = Cartographic.fromDegrees(-74.0, 39.0, 250.0);
+  const originalHit = Cartographic.clone(hit);
+  const originalMiss = Cartographic.clone(miss);
+  const positions = [hit, miss];
+  const { scene, picking } = makeHarness([0.25, undefined]);
+
+  const result = await Picking.prototype.sampleHeightMostDetailed.call(
+    picking,
+    scene,
+    positions,
+  );
+
+  assert.equal(result, positions, "the caller's array must be returned");
+  assert.equal(result[0], hit, "a successful entry must keep its object");
+  assert.equal(result[1], miss, "a failed entry must keep its object");
+  assert.equal(hit.longitude, originalHit.longitude);
+  assert.equal(hit.latitude, originalHit.latitude);
+  assert.equal(hit.height, expectedHeight(scene, originalHit, 0.25));
+  assert.equal(miss.longitude, originalMiss.longitude);
+  assert.equal(miss.latitude, originalMiss.latitude);
+  assert.equal(
+    miss.height,
+    undefined,
+    "a failed non-aliased sample must still write undefined",
+  );
+});
+
+test("shared entries remain undefined when every sample fails", async () => {
+  const shared = sampleSubject(125.0);
+  const positions = [shared, shared];
+  const { scene, picking } = makeHarness([undefined, undefined]);
+
+  const result = await Picking.prototype.sampleHeightMostDetailed.call(
+    picking,
+    scene,
+    positions,
+  );
+
+  assert.equal(result, positions, "the caller's array must be returned");
+  assert.equal(result[0], shared, "entry 0 must keep the caller's object");
+  assert.equal(result[1], shared, "entry 1 must keep the caller's object");
+  assert.equal(
+    shared.height,
+    undefined,
+    "an all-failed shared sample must report the honest failure",
+  );
 });
