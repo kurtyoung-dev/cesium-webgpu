@@ -758,3 +758,116 @@ because it is a batch that changes code bytes: either a pass explicitly
 permitted to edit embedded-shader strings, or extraction of those literals into
 real `.wgsl` files, which would additionally put them under the guard and under
 the WGSL build pipeline.
+
+### `packages/engine/Source/Shaders/WebGPU/Compute/AtmosphereLUT.wgsl` — `computeMultipleScattering`
+
+_Moved 2026-08-21._
+
+> ═══════════════════════════════════════════════════════════
+> MULTIPLE-SCATTERING LUT — higher scattering orders
+> ═══════════════════════════════════════════════════════════
+>
+> Batch 429 (A-LUT-REPARAM follow-up / SKY-MS all-azimuth) — re-parameterized
+> onto the SAME sun-relative sky-view domain `computeSkyView` uses (Hillaire
+> 2020), so the multiple-scattering add carries a view↔sun AZIMUTH axis and
+> lifts the sky at ALL azimuths, not just the sun meridian.
+>
+>   U axis = relative azimuth between the view direction and the sun,
+>            [0, π] → [0, 1] (the sky is mirror-symmetric about the sun
+>            meridian, so the half-plane covers every azimuth). U=0 looks
+>            toward the sun's azimuth, U=1 anti-sun.
+>   V axis = view zenith with the Hillaire horizon warp
+>              l = cosViewZenith ; V = 0.5 + 0.5*sign(l)*sqrt(|l|)
+>            V=0 down, V=0.5 horizon, V=1 zenith.
+>
+> PREVIOUSLY this table used the inscatter LUT's azimuth-FLAT
+> (cosViewZenith × altitude) mapping with the sun baked into a synthetic Y-up
+> frame, AND an isotropic second-order sphere gather. Both flattened the
+> azimuth signal — the SKY-MS add (Batch 427) was directionally flat (the 427
+> agent measured ~zero off-meridian lift at twilight; a direct LUT readback
+> confirmed max/min ≈ 1.05 across the azimuth axis vs ≈ 22 for the single-
+> scatter sky-view LUT). Two changes fix it:
+>
+>   1. DOMAIN: re-parameterized onto the sky-view (relAzimuth × Hillaire-warped
+>      view-zenith) domain above, with the sun on the canonical meridian at
+>      the observer-relative zenith — so the table now HAS a view↔sun axis.
+>   2. MODEL: replaced the isotropic sphere gather (which integrated the phase
+>      over the whole sphere and averaged the azimuth signal away) with the
+>      directional Hillaire "multiple scattering ≈ f_ms · single scatter"
+>      proportional model. The MS radiance is a BOUNDED multiple of the SAME
+>      single-scatter inscatter integral computeSkyView/computeInscatter use,
+>      evaluated along THIS azimuth-aware view ray. It therefore inherits the
+>      sky-view LUT's azimuth shape EXACTLY (strong toward the sun, weak to the
+>      side, mild back-scatter anti-sun) and — being proportional to the
+>      single-scatter field — is stable across sun elevations instead of
+>      collapsing to zero at a high sun and exploding into a white veil at a
+>      low one (the failure mode of an unbounded explicit second-order gather).
+>
+> Baked at a ground-level observer to match `computeSkyView` (off-meridian MS
+> matters most at ground level, the sky shader's parity reference).
+
+Kept because the refuted isotropic gather and the measured maximum/minimum
+ratios are not recorded elsewhere. The rewritten shader comment retains only
+the algorithmic domain and bounded-model constraints.
+
+### `packages/engine/Source/Shaders/WebGPU/Environment/SkyAtmosphere.wgsl` — `skyColorForRay`
+
+_Moved 2026-08-21._
+
+> Session 65 Batch 20 — `dynamicLighting` enum at `radiiAndDynamic
+> Atmosphere.z` (matches `DynamicAtmosphereLightingType.js`):
+>   0 = NONE        → C12-31: the ASTRONOMICAL SUN. This arm used to be
+>                     per-fragment `normalize(skyPoint)` ("lit from
+>                     directly above"), which made `cosAngle` in
+>                     `computeAtmosphereColor` ≈1 along every ray a
+>                     ground observer looks down, parking the Mie phase
+>                     on its forward peak (4869.9× the 90° value at the
+>                     default g = 0.9) and painting a broad white
+>                     aureole locked to the VIEW instead of the sun.
+>                     `globe.enableLighting` defaults false, so
+>                     `fromGlobeFlags` resolves NONE in the default
+>                     viewer and every default scene showed it.
+>   1 = SCENE_LIGHT → use the uniform direction (JS packs
+>                     `lightDirectionWC` into `sunDirectionWC` for
+>                     this case — see WebGPUSkyAtmosphereRenderer
+>                     Batch 18).
+>   2 = SUNLIGHT    → use the uniform direction (JS packs the true
+>                     sun direction).
+>   3 = LEGACY_OVERHEAD → the named compatibility mode that reproduces
+>                     the historical NONE appearance exactly.
+> GLSL twin: `czm_getSkyAtmosphereLightDirection`
+> (`Builtin/Functions/getSkyAtmosphereLightDirection.glsl`), called from
+> both `SkyAtmosphereVS.glsl` and `SkyAtmosphereFS.glsl`.
+>
+> The enum VALUE is deliberately left at NONE rather than remapped to
+> SUNLIGHT: `isDynamic` below (and its `SkyAtmosphereCommon.glsl` twin)
+> keys the day/night alpha ramp on `!= 0.0`, so remapping would also
+> change the shell's OPACITY. This fix moves the color anchor only.
+>
+> LEGACY_OVERHEAD is the only mode whose light direction varies per
+> fragment, so it is the only one the baked single-direction LUTs can
+> never serve.
+
+Kept because the rejected local-up lighting design and its measured 4869.9×
+Mie forward peak are unique to this comment. The rewritten shader keeps the
+current enum, opacity, and LUT-eligibility constraints.
+
+### `packages/engine/Source/Shaders/WebGPU/Environment/SkyAtmosphere.wgsl` — `MS_SCALE`
+
+_Moved 2026-08-21._
+
+> Conservative scale. As of Batch 429 the MS LUT carries the FULL single-
+> scatter sky-view radiance × f_ms (0.5) — i.e. it is now a sizeable
+> fraction of the sky's own brightness, not the tiny gather output the 427
+> LUT held. So the perceptual scale here is correspondingly smaller: at the
+> old 0.18 the add lifted the zenith by ~14% (over-bright veil). 0.02× lands
+> the lift back in the "tasteful" band — a measurable, now-DIRECTIONAL
+> deepening of the horizon/limb radiance (clearly stronger toward the bright
+> sky thanks to the sky-view re-param, see the 22.6× azimuth spread in the
+> MS LUT) that still preserves the blue hue and the warm sunset band,
+> reading as a richer all-around atmosphere rather than a flat veil.
+> Perceptual constant, not physical.
+
+Kept because the exact tuning values, 14% brightness measurement, and 22.6×
+azimuth spread are unique, while the source constant has since changed. The
+rewritten shader documents only the current perceptual constraint.

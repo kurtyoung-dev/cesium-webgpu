@@ -1,21 +1,20 @@
 /// <reference types="@webgpu/types" />
 /**
- * Atmosphere-LUT resource builder + dispatcher extracted from
- * `WebGPUPerformanceManager` (Batch 161 of the maintainability sweep).
+ * Atmosphere-LUT resource builder and dispatcher used by
+ * `WebGPUPerformanceManager`.
  *
  * Owns the two heavy LUT methods:
- *   - `ensureAtmosphereLUTResources(host, device)` — allocates the sun
- *     + moon transmittance/inscatter texture pairs and matching params
- *     UBOs. Idempotent; cached on the host.
- *   - `dispatchAtmosphereLUT(host, encoder, device, params, target)` —
- *     packs params, lazily builds the shared BGL + per-target bind
- *     groups, then dispatches the two LUT compute entry points
- *     (`computeTransmittance`, `computeInscatter`) via the host's
+ *   - `ensureAtmosphereLUTResources(host, device)` allocates the sun and moon
+ *     transmittance/inscatter texture pairs and their parameter UBOs. It
+ *     caches the resources on the host and is idempotent.
+ *   - `dispatchAtmosphereLUT(host, encoder, device, params, target)` packs
+ *     parameters, lazily builds shared layouts and per-target bind groups,
+ *     then dispatches the LUT compute entry points through the host's
  *     `dispatchCompute` method.
  *
- * The 4 small flag-management methods (`shouldRecomputeAtmosphereLUT`,
- * `invalidateAtmosphereLUT`, and their moon equivalents) stay on the
- * class — they're 3-10 LOC each, no extraction value.
+ * The flag-management methods (`shouldRecomputeAtmosphereLUT`,
+ * `invalidateAtmosphereLUT`, and their moon equivalents) stay on the manager
+ * because they directly control its invalidation state.
  *
  * References:
  *   - Eric Bruneton and Fabrice Neyret, "Precomputed Atmospheric Scattering",
@@ -62,21 +61,19 @@ export interface AtmosphereLUTResources {
   moonParamsData: Float32Array;
   moonBindGroup: GPUBindGroup | null;
   bindGroupLayout: GPUBindGroupLayout | null;
-  // ── Track V-A1: full-Bruneton extension (multiple-scattering + irradiance) ──
-  // Sun-only for now (the moon path keeps transmittance + single scatter).
-  // multipleScatter shares the inscatter (256×128) parameterization;
-  // irradiance shares the transmittance (256×64) parameterization.
+  // Multiple scattering and irradiance are sun-only; the moon path retains
+  // transmittance and single scattering.
   multipleScatter: GPUTexture;
   multipleScatterView: GPUTextureView;
   irradiance: GPUTexture;
   irradianceView: GPUTextureView;
-  // ── Batch 428 (A-LUT-REPARAM / NEW-ATMOSPHERE-LUT-SUN-RELATIVE) ──
-  // Sun-relative sky-view LUT (Hillaire 2020). Shares the inscatter (256×128)
-  // dimensions but a DIFFERENT parameterization (relative-azimuth × warped
-  // view-zenith) so it can represent sky color at any view azimuth relative to
-  // the sun. Written by AtmosphereLUT.wgsl::computeSkyView, sampled by the sky
-  // fragment shader only when `skyAtmosphere.useScatteringLut` is on (opt-in;
-  // default off keeps the inline march, byte-identical to today).
+  // The sun-relative sky-view LUT (Hillaire 2020) shares the inscatter
+  // dimensions but uses a separate relative-azimuth × warped-view-zenith
+  // parameterization. Keeping it separate preserves the legacy inscatter
+  // LUT's altitude × view-zenith mapping for fog, globe, voxel, splat, and
+  // point-cloud consumers. The sky fragment shader samples it only when
+  // `skyAtmosphere.useScatteringLut` is enabled; the default inline-march
+  // path does not read it.
   skyView: GPUTexture;
   skyViewView: GPUTextureView;
   // Sampler + group-1 bind group for the extended passes (read single-scatter
@@ -84,13 +81,10 @@ export interface AtmosphereLUTResources {
   extendedSampler: GPUSampler | null;
   extendedBindGroupLayout: GPUBindGroupLayout | null;
   extendedBindGroup: GPUBindGroup | null;
-  // V0 — explicit EMPTY group-0 layout + bind group. The extended compute
-  // pipelines must use an explicit pipeline layout (group 0 empty, group 1 = the
-  // full 6-binding extended layout) instead of layout:"auto": auto derives a
-  // SUBSET group-1 layout per kernel (each kernel writes only one of the two
-  // storage textures), which is incompatible with the full 6-binding
-  // extendedBindGroup → the "SkyAtmosphere LUT dispatch" invalid-command-buffer
-  // device error. Providing the explicit layout makes the 6-binding group valid.
+  // The extended compute pipelines need an explicit layout with an empty
+  // group 0 and the full extended layout at group 1. An automatic layout is
+  // derived separately for each kernel and omits unused storage textures,
+  // making it incompatible with the shared `extendedBindGroup` at dispatch.
   emptyGroup0BindGroupLayout: GPUBindGroupLayout | null;
   emptyGroup0BindGroup: GPUBindGroup | null;
   width: number;
@@ -99,9 +93,8 @@ export interface AtmosphereLUTResources {
 }
 
 /**
- * Subset of `WebGPUPerformanceManager` reached by the atmosphere LUT
- * helpers. The renderer satisfies this via the underscore-public
- * convention (Batch 161 flips two fields).
+ * Subset of `WebGPUPerformanceManager` reached by the atmosphere LUT helpers.
+ * The renderer exposes these members using its underscore-public convention.
  */
 export interface AtmosphereLUTHost {
   _atmosphereLutResources: AtmosphereLUTResources | null;
@@ -131,12 +124,11 @@ export function ensureAtmosphereLUTResources(
   inscatterView: GPUTextureView;
   moonTransmittanceView: GPUTextureView;
   moonInscatterView: GPUTextureView;
-  // Batch 427 (SKY-MS) — the multiple-scattering view produced by
-  // dispatchAtmosphereExtendedLUT's computeMultipleScattering pass, surfaced
-  // so the sky fragment shader can sample it (opt-in, default off).
+  // The multiple-scattering view is exposed for the sky fragment shader's
+  // opt-in sampling path.
   multipleScatterView: GPUTextureView;
-  // Batch 428 (A-LUT-REPARAM) — sun-relative sky-view LUT view, surfaced so
-  // the sky fragment shader can sample it when `useScatteringLut` is on.
+  // The separate sun-relative sky-view LUT is exposed for `useScatteringLut`;
+  // the legacy inscatter view remains unchanged.
   skyViewView: GPUTextureView;
 } | null {
   if (host._atmosphereLutResources) {
@@ -151,22 +143,22 @@ export function ensureAtmosphereLUTResources(
   }
 
   // Standard LUT dimensions per Bruneton & Neyret / Hillaire conventions.
-  // Transmittance is 256×64; inscatter folds altitude+sun zenith into 256×128.
+  // Transmittance is 256×64. Inscatter folds altitude and sun zenith into
+  // 256×128.
   const width = 256;
   const transmittanceHeight = 64;
   const inscatterHeight = 128;
 
-  // COPY_SRC lets diagnostics/probes read back the LUTs via
-  // copyTextureToBuffer (Track V-A1 probe-atmo-luts). The sun
-  // transmittance + inscatter textures also gain TEXTURE_BINDING so the
-  // extended passes can sample them as inputs (already implied below, but
-  // explicit here). The cost is nil — these are tiny precompute targets.
+  // COPY_SRC lets diagnostics read back the LUTs via `copyTextureToBuffer`.
+  // The sun transmittance and inscatter textures also have TEXTURE_BINDING so
+  // the extension passes can sample them as inputs. The cost is negligible
+  // because these are small precompute targets.
   const usage =
     GPUTextureUsage.STORAGE_BINDING |
     GPUTextureUsage.TEXTURE_BINDING |
     GPUTextureUsage.COPY_SRC;
 
-  // ── Sun LUT pair ──
+  // Sun LUT pair.
   const transmittance = device.createTexture({
     label: "AtmosphereLUT_Sun_Transmittance",
     size: { width, height: transmittanceHeight },
@@ -180,7 +172,7 @@ export function ensureAtmosphereLUTResources(
     usage,
   });
 
-  // ── Moon LUT pair (Phase 1.3c) ──
+  // Moon LUT pair.
   const moonTransmittance = device.createTexture({
     label: "AtmosphereLUT_Moon_Transmittance",
     size: { width, height: transmittanceHeight },
@@ -194,7 +186,7 @@ export function ensureAtmosphereLUTResources(
     usage,
   });
 
-  // ── Track V-A1: full-Bruneton extension targets (sun only) ──
+  // Full-Bruneton extension targets for the sun.
   const multipleScatter = device.createTexture({
     label: "AtmosphereLUT_Sun_MultipleScatter",
     size: { width, height: inscatterHeight },
@@ -207,9 +199,8 @@ export function ensureAtmosphereLUTResources(
     format: "rgba16float",
     usage,
   });
-  // Batch 428 (A-LUT-REPARAM) — sun-relative sky-view LUT (same 256×128 dims as
-  // the inscatter LUT, different parameterization). Same usage flags so probes
-  // can read it back and the sky shader can sample it.
+  // The sky-view LUT has the inscatter LUT's dimensions but a separate
+  // parameterization. Matching usage flags allow readback and sky sampling.
   const skyView = device.createTexture({
     label: "AtmosphereLUT_Sun_SkyView",
     size: { width, height: inscatterHeight },
@@ -217,10 +208,9 @@ export function ensureAtmosphereLUTResources(
     usage,
   });
 
-  // Batch 438 (4.5 SKY-OZONE) — bumped 20 → 24 floats to carry
-  // `ozoneCoefficient: vec3<f32>` (+ pad) appended after `sunCosZenith`. The
-  // vec3 lands on the next 16-byte boundary (float offset 20). The buffer is
-  // still padded to 256 bytes, so the GPU-side size is unchanged.
+  // The 24-float parameter block stores `ozoneCoefficient: vec3<f32>` and its
+  // padding at the next 16-byte boundary after `sunCosZenith` (float offset
+  // 20). The uniform buffer remains padded to 256 bytes.
   const paramsData = new Float32Array(24);
   const paramsBuffer = device.createBuffer({
     label: "AtmosphereLUT_Sun_Params",
@@ -290,18 +280,15 @@ export function dispatchAtmosphereLUT(
     rayleighCoefficient: [number, number, number];
     mieCoefficient: [number, number, number];
     sunDirection: [number, number, number];
-    // Batch 428 (A-LUT-REPARAM) — cosine of the sun's zenith angle relative to
-    // the OBSERVER's local up (dot(sunDir, normalize(cameraWC))). The
-    // single-scatter/MS/irradiance bakes use the synthetic Y-up frame where the
-    // sun's elevation is implicit; the sky-view bake (computeSkyView) needs the
-    // true observer-relative sun zenith to place the sun on its canonical
-    // meridian at the correct elevation. Optional — defaults to sunDirection[1]
-    // (the legacy synthetic-frame behavior) for callers that don't supply it.
+    // Cosine of the sun's zenith angle relative to the observer's local up,
+    // `dot(sunDir, normalize(cameraWC))`. `computeSkyView` needs the true
+    // observer-relative zenith to place the sun at the correct elevation.
+    // Other bakes use a synthetic Y-up frame. Callers that omit this value
+    // retain that behavior through the `sunDirection[1]` default.
     sunCosZenith?: number;
-    // Batch 438 (4.5 SKY-OZONE) — ozone Chappuis-band absorption coefficient
-    // (per-metre, RGB). Pure absorber added to the extinction term of every
-    // Beer-Lambert factor in the bake. Optional — defaults to [0, 0, 0]
-    // (exp(-0) = identity → byte-identical bake) when omitted.
+    // Ozone Chappuis-band absorption coefficient in inverse metres, as RGB.
+    // It is a pure absorber in every Beer-Lambert extinction factor. Omitting
+    // it selects `[0, 0, 0]`, whose `exp(-0)` factor is the identity.
     ozoneCoefficient?: [number, number, number];
   },
   target: "sun" | "moon" = "sun",
@@ -337,16 +324,16 @@ export function dispatchAtmosphereLUT(
   f[16] = params.sunDirection[0];
   f[17] = params.sunDirection[1];
   f[18] = params.sunDirection[2];
-  // Batch 428 (A-LUT-REPARAM) — observer-relative sun zenith cosine in the
-  // _pad2 slot (f[19]). Consumed only by computeSkyView; the other kernels
-  // ignore it. Default to sunDirection[1] (synthetic-frame .y) when omitted.
+  // `computeSkyView` alone consumes the observer-relative sun-zenith cosine
+  // in `_pad2` (`f[19]`). The fallback preserves the synthetic frame used by
+  // callers that omit it.
   f[19] =
     params.sunCosZenith !== undefined
       ? params.sunCosZenith
       : params.sunDirection[1];
-  // Batch 438 (4.5 SKY-OZONE) — ozone coefficient (vec3) at float offset 20
-  // (next 16-byte boundary after sunCosZenith at f[19]). Default [0,0,0] →
-  // identity extinction in the bake. f[23] is _pad3.
+  // The ozone coefficient begins at float offset 20, the next 16-byte
+  // boundary after `sunCosZenith`; `[0, 0, 0]` gives identity extinction.
+  // `f[23]` is `_pad3`.
   const ozone = params.ozoneCoefficient;
   f[20] = ozone !== undefined ? ozone[0] : 0.0;
   f[21] = ozone !== undefined ? ozone[1] : 0.0;
@@ -402,10 +389,9 @@ export function dispatchAtmosphereLUT(
   const wgsT = Math.ceil(lut.transmittanceHeight / 16);
   const wgsI = Math.ceil(lut.inscatterHeight / 16);
 
-  // V0 — build the base LUT pipelines with the EXPLICIT group-0 layout instead of
-  // layout:"auto". The sun/moon bind groups are created from `AtmosphereLUT_BGL`;
-  // an auto-layout pipeline derives its own (different) BGL and rejects them
-  // ("bind group ... was not created by the pipeline" → invalid command buffer).
+  // Build base LUT pipelines with the explicit group-0 layout. Using
+  // `layout: "auto"` derives a different bind-group layout that rejects the
+  // sun and moon groups created from `AtmosphereLUT_BGL`.
   const baseLayouts = [lut.bindGroupLayout];
   host.dispatchCompute(
     encoder,
@@ -432,22 +418,22 @@ export function dispatchAtmosphereLUT(
 }
 
 /**
- * Track V-A1 — dispatch the two full-Bruneton extension passes
- * (`computeMultipleScattering`, `computeIrradiance`) for the SUN LUT pair.
+ * Dispatches the two full-Bruneton extension passes
+ * (`computeMultipleScattering` and `computeIrradiance`) for the sun LUT pair.
  *
- * MUST be called AFTER {@link dispatchAtmosphereLUT}(…, "sun") in the same
- * (or a later) command encoder: the extended passes read the sun
- * transmittance + single-scattering LUTs as sampled inputs. They write the
- * sun multiple-scattering + irradiance targets allocated by
+ * Call this after {@link dispatchAtmosphereLUT}(…, "sun") in the same or a
+ * later command encoder because the extension passes read the sun
+ * transmittance and single-scattering LUTs as sampled inputs. They write the
+ * sun multiple-scattering and irradiance targets allocated by
  * {@link ensureAtmosphereLUTResources}.
  *
- * The extended kernels read their params from a SECOND uniform binding
- * (group 1, binding 0) — we reuse the already-packed sun params buffer, so
- * no extra `writeBuffer` is needed. The kernels never touch group 0, so the
- * auto-derived pipeline layout is a single group-1 bind group bound at
- * index 1.
+ * The extension kernels read their parameters from group 1, binding 0.
+ * Reusing the packed sun-parameter buffer avoids another `writeBuffer`. Since
+ * the kernels never touch group 0, their auto-derived layout contains one
+ * group-1 bind group at index 1.
  *
- * @returns true on success, false if compute is unavailable / resources missing.
+ * @returns True on success, or false when compute or resources are
+ *          unavailable.
  */
 export function dispatchAtmosphereExtendedLUT(
   host: AtmosphereLUTHost,
@@ -479,7 +465,7 @@ export function dispatchAtmosphereExtendedLUT(
         texture(3, Stage.COMPUTE),
         storageTexture(4, Stage.COMPUTE, "rgba16float"),
         storageTexture(5, Stage.COMPUTE, "rgba16float"),
-        // Batch 428 (A-LUT-REPARAM) — sky-view LUT storage output.
+        // Sky-view LUT storage output.
         storageTexture(6, Stage.COMPUTE, "rgba16float"),
       ],
     );
@@ -501,11 +487,9 @@ export function dispatchAtmosphereExtendedLUT(
     });
   }
 
-  // V0 — empty group-0 layout + bind group so the pipeline can be built with an
-  // EXPLICIT layout [emptyGroup0, extended] (group 1 = the full 6-binding
-  // extended layout). Without this the kernels build layout:"auto", which derives
-  // a per-kernel SUBSET group-1 layout (each writes only one storage texture) and
-  // rejects the full 6-binding extendedBindGroup at dispatch.
+  // The empty group-0 layout lets the pipeline use the full extension layout
+  // at group 1. An automatic per-kernel layout omits unused storage textures
+  // and rejects the shared `extendedBindGroup` at dispatch.
   if (!lut.emptyGroup0BindGroupLayout) {
     lut.emptyGroup0BindGroupLayout = device.createBindGroupLayout({
       label: "AtmosphereLUT_EmptyGroup0_BGL",
@@ -524,8 +508,8 @@ export function dispatchAtmosphereExtendedLUT(
   const wgsMS = Math.ceil(lut.inscatterHeight / 16);
   const wgsIrr = Math.ceil(lut.transmittanceHeight / 16);
 
-  // Both extended kernels bind their resources at group index 1; group 0 is an
-  // empty bind group satisfying the explicit pipeline layout.
+  // Both extension kernels bind their resources at group index 1. Group 0 is
+  // an empty bind group satisfying the explicit pipeline layout.
   const extendedLayouts = [
     lut.emptyGroup0BindGroupLayout,
     lut.extendedBindGroupLayout,
@@ -555,13 +539,10 @@ export function dispatchAtmosphereExtendedLUT(
     extendedLayouts,
   );
 
-  // Batch 428 (A-LUT-REPARAM / NEW-ATMOSPHERE-LUT-SUN-RELATIVE) — sun-relative
-  // sky-view LUT (Hillaire 2020). Same 256×128 dims as the inscatter LUT, so it
-  // dispatches over the inscatter-height workgroup grid. Reads the transmittance
-  // LUT + scattering constants from the shared group-1 extended bind group;
-  // writes binding 6. Opt-in consumer (`skyAtmosphere.useScatteringLut`) — the
-  // bake runs whenever the extended pass runs but is visually inert until the
-  // sky shader's flag is on.
+  // The sun-relative sky-view LUT uses the inscatter-height workgroup grid.
+  // It reads transmittance and scattering constants from the shared extension
+  // bind group, writes binding 6, and is sampled only when
+  // `skyAtmosphere.useScatteringLut` is enabled.
   host.dispatchCompute(
     encoder,
     ComputeTaskType.ATMOSPHERE_LUT,

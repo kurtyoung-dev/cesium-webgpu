@@ -1,39 +1,26 @@
-// NEW-MODEL-PBR-DIRECT-LIGHT-IBL-PARITY D1 (Batch 346) -- atmosphere-
-// scattering sky cubemap fill.
+// Procedural atmosphere-scattering cubemap fill.
 //
 // Writes the 6 faces of a cubemap so DynamicEnvironmentMapManager has a
-// real source for the IBL prefilter pipeline (`generateIBLMaps`). This
-// is now a 1:1 port of the WebGL `ComputeRadianceMapFS` + the
-// `czm_computeScattering` / `czm_computeAtmosphereColor` model
-// (`AtmosphereCommon.glsl`) -- the SAME atmosphere math the visible
-// SkyAtmosphere renders. Previously (Batch 134) this used an inline
-// approximation with stale coefficients (8e3/1.2e3 scale heights,
-// 22.4e-6 blue Rayleigh, g=0.76, and a hardcoded planet-local view
-// origin with the live sun direction). That diverged from WebGL's IBL
-// source: WebGL evaluates the sky at the model's actual world position,
-// derives the light direction via `czm_getDynamicAtmosphereLightDirection`
-// (which, with the default dynamicLighting=NONE, uses the local zenith
-// rather than the sun direction -> a smooth radially-symmetric sky), and
-// honors `atmosphereScatteringIntensity` + gamma. The mismatch left the
-// WebGPU IBL ~7.6% dimmer and ~9% short on the blue channel (a flatter,
-// warmer ambient). This file closes that gap.
+// source for the IBL prefilter pipeline (`generateIBLMaps`). The scattering
+// path ports WebGL's `ComputeRadianceMapFS`, `czm_computeScattering`, and
+// `czm_computeAtmosphereColor` model from `AtmosphereCommon.glsl`. It evaluates
+// the sky at the model position, resolves the dynamic atmosphere light, and
+// honors the scene atmosphere coefficients, intensity, and environment gamma.
 //
 // Inputs (uniform -- mirrors ComputeRadianceMapFS uniforms):
-//   - positionWC, enuX/Y/Z:  model world position + ENU->fixed basis so
-//                            each face direction maps to world space the
-//                            same way WebGL's u_enuToFixedFrame does.
+//   - positionWC, enuX/Y/Z:  model world position and ENU-to-fixed basis so
+//                            each face direction maps to world space like
+//                            WebGL's u_enuToFixedFrame.
 //   - sunDirectionWC:        scene sun direction (used when
 //                            dynamicLighting == SUNLIGHT / SCENE_LIGHT).
 //   - rayleighCoefficient/mieCoefficient/scale heights/anisotropy:
-//                            frameState.atmosphere terms (so the WebGPU
-//                            sky tracks the same per-scene atmosphere as
-//                            WebGL instead of stale shader constants).
+//                            frameState.atmosphere terms shared with WebGL.
 //   - innerRadius/outerRadius: WebGL's u_radiiAndDynamicAtmosphereColor
 //                            semantics (DynamicEnvironmentMapManager.js:
-//                            atmosphereNeedsUpdate): inner = |scaleToGeodeticSurface(position)|
-//                            (the surface radius), outer = 1.025 × inner.
-//                            The 111 km scattering shell is internal to
-//                            computeScattering (ATMOSPHERE_THICKNESS).
+//                            atmosphereNeedsUpdate): inner is the surface
+//                            radius and outer is 1.025 times inner. The 111 km
+//                            scattering shell is internal to
+//                            `computeScattering`.
 //   - intensity:             atmosphereScatteringIntensity.
 //   - gamma:                 environment gamma.
 //   - groundColor (rgb) + groundAlbedo (a): ground term for down-facing
@@ -44,15 +31,14 @@
 //
 // Output (storage texture, 2d-array, 6 layers): rgba8unorm cubemap face.
 //
-// True scene capture (3D Tiles + globe in reflections) still requires
-// re-running the scene pipeline through 6 virtual cameras -- tracked as
-// `NEW-DYNAMIC-ENVMAP-FULL-SCENE`. This fill matches WebGL's procedural
-// IBL source, which is all the IBL prefilter consumes.
+// Full-scene capture can include 3D Tiles and the globe in reflections. Its
+// virtual cameras still share the primary camera's tile LOD; this procedural
+// fill remains the WebGL-compatible fallback source for the IBL prefilter.
 
 struct SkyUniforms {
-  // World position of the env-map (model bounding-sphere center). Packed
-  // for completeness + future SUNLIGHT-mode position work; the sky is
-  // currently evaluated in a planet-local frame so this is unread here.
+  // World position of the environment map's model bounding-sphere center.
+  // This slot mirrors the shared layout; the planet-local sky path does not
+  // read it directly.
   positionWC: vec3<f32>,
   faceSize: f32,
   enuX: vec3<f32>,
@@ -71,72 +57,48 @@ struct SkyUniforms {
   mieScaleHeight: f32,
   groundAlbedo: f32,
   dynamicLightingEnum: f32,
-  // atmosphereScatteringIntensity -- the manager-level multiplier
-  // applied to the final sky/ground color (distinct from `intensity`,
-  // which is atmosphere.lightIntensity baked into the phase-weighted
-  // scattering, matching ComputeRadianceMapFS).
+  // Manager-level multiplier applied to the final sky and ground color. This
+  // differs from `intensity`, which bakes `atmosphere.lightIntensity` into the
+  // phase-weighted scattering like `ComputeRadianceMapFS`.
   scatteringIntensity: f32,
-  // Item 2.2 (ENV-AERIAL-MS, Batch 430). When > 0.5 the sky color for each
-  // sky-facing texel is sourced from the sun-relative sky-view LUT (+ the
-  // multiple-scattering LUT add) — the SAME tables the visible SkyAtmosphere
-  // samples — instead of the inline czm_computeScattering march below, so the
-  // reflected env sky matches the visible MS sky (richer, directional, warmer
-  // toward the sun). Opt-in via `contextOptions.webgpu.envMapMultiScatter`;
-  // the renderer packs this only when the LUTs are baked. With the flag 0
-  // (default) the LUT views are bound to a 1x1 placeholder, never sampled, and
-  // the fill is byte-identical to the inline march.
+  // Selects the sun-relative sky-view and multiple-scattering LUTs used by the
+  // visible sky. This makes reflected sky radiance share the visible sky's
+  // directional response. When disabled, placeholder LUTs remain unsampled
+  // and the inline scattering march supplies the texel.
   useMultiScatterLut: f32,
-  // Item 4.2 (CLOUD-IBL, Batch 441). EFFECTIVE cloud coverage in [0, 1] that
-  // the env-cube sky radiance is darkened + flattened toward, so an overcast
-  // procedural-cloud sky produces a dim, flat ambient (the SH-L2 projection +
-  // IBL prefilter that read this cube then carry the overcast look into lit
-  // glTF models / 3D tiles, and into the sky-LUT-derived fog ambient that
-  // shares the same atmosphere source). Driven by `globe.cloudCoverage` ×
-  // `globe.cloudDensity`-derived term, gated ON only when BOTH
-  // `globe.showProceduralClouds` AND `globe.cloudContributesIBL` are true; the
-  // renderer packs 0.0 otherwise. With 0.0 (default) the overcast blend below
-  // is skipped entirely → byte-identical to the pre-4.2 fill. This is a COARSE
-  // coverage-driven darkening (a single global scalar lerps the per-texel sky
-  // toward a grey overcast luminance + flattens the sun-relative directionality);
-  // a true per-face cloud raymarch into the cube is deferred (CLOUD-IBL-FULL).
+  // Effective cloud coverage in [0, 1]. The coarse fallback darkens and
+  // flattens environment radiance so SH projection and IBL prefiltering carry
+  // an overcast ambient into lit geometry. The renderer supplies zero unless
+  // procedural clouds contribute to IBL; the coarse blend is skipped when the
+  // full per-face march is active.
   cloudCoverage: f32,
-  // Item 3-C (CLOUD-IBL-FULL, Batch 450). The two coarse-path pads (37, 38)
-  // are repurposed (add-only — byte offsets unchanged) into the full per-face
-  // cloud-march controls. cloudMarch is the gate: 0 (default) → the march is
-  // skipped ENTIRELY (the whole block below is guarded on it) AND the
-  // bindings 5/6/7 are placeholder 1×1×1 textures → byte-identical to the 4.2
-  // fill. >0 → run the low-res per-face cloud raymarch + composite OVER the sky.
-  cloudMarch: f32,         // 37 — 0 off (default) / >0 run the full per-face march
-  cloudPlanetRadius: f32,  // 38 — DEAD (Batch 450, FIX 4): the march uses the
-                           //      passed `innerR`/`u.innerRadius`, never this slot.
-                           //      Kept add-only so the 160-byte 4.2 row layout +
-                           //      all later offsets stay stable; packed as
-                           //      innerRadius for documentation only.
-  // NEW-MODEL-IBL-AMBIENT (re-land of the audited-GO B3 fix) — the former
-  // reserved pad (39) now carries max(|position| - innerRadius, 0), the
-  // model's height above the geodetic surface. ADD-ONLY: byte offset 156
-  // unchanged; previously always packed 0, and a ground-level model still
-  // packs 0 → identical bytes for the historical common case. Mirrors
-  // ComputeRadianceMapFS's `ellipsoidHeight` (view-origin scaling +
-  // skyAlpha / ground-blend height terms).
+  // Controls the low-resolution per-face cloud march. The slot reuses a
+  // coarse-path pad without changing byte offsets. Zero skips the guarded
+  // march while bindings 5, 6, and 7 hold placeholders; positive values march
+  // and composite clouds over the sky.
+  cloudMarch: f32,         // 37: zero disables the per-face march
+  // Deprecated layout slot. The march uses `innerR` or `u.innerRadius`, but
+  // retaining this field preserves the 160-byte row and every later offset.
+  cloudPlanetRadius: f32,
+  // Model height above the geodetic surface. Reusing the reserved slot keeps
+  // byte offset 156 stable and mirrors `ComputeRadianceMapFS` view-origin,
+  // sky-alpha, and ground-blend height terms.
   ellipsoidHeight: f32,    // 39 — max(|position| - innerRadius, 0) in meters
-  // Item 3-C — cloud-march params. Appended ADD-ONLY (new 16-byte rows). NEVER
-  // read when cloudMarch == 0 (the march block is fully guarded), so the bytes
-  // are inert on the default path. The cloud sun direction is in the SAME local
-  // (Y-up) reference frame as `dir` (the JS packer rotates the world sun into it
-  // via the ENU basis, like `sunLocal`), so the beer's-law light term is
-  // consistent with the face directions the cube is filled along.
+  // Appended cloud-march parameters occupy new 16-byte rows and remain inert
+  // when `cloudMarch` is zero. The JS packer rotates the cloud sun direction
+  // into the same local Y-up frame as `dir`, keeping the Beer-Lambert light
+  // term consistent with cubemap face directions.
   cloudSunLocal: vec3<f32>,   // 40-42 — sun direction in the IBL local frame
   cloudDeckBottom: f32,       // 43 — deck bottom (m above surface)
-  _cloudWindWorldOffset: vec3<f32>,// 44-46 — deprecated; CPU phases include wind
+  _cloudWindWorldOffset: vec3<f32>, // 44-46: CPU phases include wind
   cloudDeckTop: f32,          // 47 — deck top (m above surface)
-  cloudBaseColor: vec3<f32>,  // 48-50 — beer's-law lit base (shadowed) cloud tint
+  cloudBaseColor: vec3<f32>,  // 48-50: shadowed cloud tint
   cloudDensityMult: f32,      // 51 — density scale (globe.cloudDensity-derived)
   cloudTopColor: vec3<f32>,   // 52-54 — sun-lit cloud tint (silver edge)
   cloudPuffSize: f32,         // 55 — baked-shape SHAPE_SCALE (puff size dial)
-  // C13-37 — f64-origin phases at the environment capture position. Local
-  // samples are converted through the packed ENU basis, then added to these
-  // bounded planet-domain phases just like the primary camera-relative march.
+  // F64-derived origin phases at the environment capture position. Local
+  // samples pass through the packed ENU basis before being added to these
+  // bounded planet-domain phases, matching the camera-relative march.
   densityShapeOriginPhase: vec3<f32>, // 56-58
   _padCloudDensity0: f32,              // 59
   densityWarpOriginPhase: vec3<f32>,  // 60-62
@@ -147,22 +109,15 @@ struct SkyUniforms {
 
 @group(0) @binding(0) var<uniform> u: SkyUniforms;
 @group(0) @binding(1) var outputTexture: texture_storage_2d_array<rgba8unorm, write>;
-// Item 2.2 (ENV-AERIAL-MS, Batch 430). Sun-relative sky-view LUT (256x128) +
-// multiple-scattering LUT (256x128) baked by AtmosphereLUT.wgsl
-// (computeSkyView / computeMultipleScattering) and shared with the visible
-// SkyAtmosphere. Bound UNCONDITIONALLY so the pipeline layout never changes;
-// the renderer binds a 1x1 placeholder when `useMultiScatterLut` is off (so the
-// off path's descriptor set is identical and these are never sampled).
+// The 256-by-128 sun-relative sky-view and multiple-scattering LUTs are shared
+// with the visible sky. Always declaring the bindings keeps the pipeline layout
+// stable; the renderer supplies placeholders when `useMultiScatterLut` is off.
 @group(0) @binding(2) var lutSampler: sampler;
 @group(0) @binding(3) var skyViewLut: texture_2d<f32>;
 @group(0) @binding(4) var multipleScatterLut: texture_2d<f32>;
-// Item 3-C (CLOUD-IBL-FULL, Batch 450) — the baked cloud noise the visible
-// volumetric clouds sample (shape = Perlin-Worley billow, detail = high-freq
-// Worley), SHARED from the cloud renderer's `_cloudCache.noise`. Bound
-// UNCONDITIONALLY so the BGL/pipeline layout never forks; the JS renderer binds
-// a 1×1×1 placeholder when `cloudMarch` is off (mirrors the LUT placeholder
-// pattern at bindings 3/4), and the per-face march below is fully gated on
-// `cloudMarch > 0`, so the textures are NEVER sampled on the default path.
+// Baked shape and detail noise are shared with the visible volumetric clouds.
+// Always declaring these bindings prevents layout forks; placeholders are
+// supplied and remain unsampled while `cloudMarch` is off.
 @group(0) @binding(5) var cloudShapeTex: texture_3d<f32>;
 @group(0) @binding(6) var cloudDetailTex: texture_3d<f32>;
 @group(0) @binding(7) var cloudNoiseSampler: sampler;
@@ -208,12 +163,10 @@ fn approximateTanh(x: f32) -> f32 {
   return max(-1.0, min(1.0, x * (27.0 + x2) / (27.0 + 9.0 * x2)));
 }
 
-// Port of czm_raySphereIntersectionInterval (raySphereIntersectionInterval.glsl,
-// including the NEW-RAYSPHERE-PRECISION-BACKPORT Batch-304 1/radius scaling so
-// the f32 discriminant stays stable at planet scale). Sphere centered at the
-// origin. Returns (t0, t1, hit): hit = 1.0 when the discriminant >= 0; both
-// t-values may be negative (behind the origin), matching the GLSL semantics
-// the callers' `start >= 0.0` tests rely on.
+// Port of `czm_raySphereIntersectionInterval`. Scaling by inverse radius keeps
+// the f32 discriminant stable at planet scale. The sphere is centered at the
+// origin. The result is `(t0, t1, hit)`, and both distances may be negative as
+// required by the callers' `start >= 0.0` tests.
 fn raySphereIntersectionInterval(o: vec3<f32>, d: vec3<f32>, radius: f32) -> vec3<f32> {
   let invR = 1.0 / max(radius, 1e-7);
   let ocScaled = o * invR;
@@ -231,19 +184,10 @@ fn raySphereIntersectionInterval(o: vec3<f32>, d: vec3<f32>, radius: f32) -> vec
   return vec3<f32>(t0, t1, 1.0);
 }
 
-// Faithful port of czm_computeScattering (computeScattering.glsl). Uses the
-// frameState.atmosphere coefficients passed via uniforms so the WebGPU
-// sky matches the visible SkyAtmosphere + WebGL IBL exactly.
-//
-// NEW-MODEL-IBL-AMBIENT (re-land of the audited-GO B3 fix): the previous
-// port used a uniform 16-step midpoint integrator with a fixed 111 km ray
-// clamp — diverging from WebGL's ADAPTIVE scheme (tanh split weights →
-// 4 primary / 2 light steps from inside the atmosphere, growing step
-// length, full-step sample placement, and the caller-provided ray length
-// with only the shell exit as the internal clamp). The divergence skewed
-// the radiance cube's blue band and, through the SH projection, tinted
-// every model's IBL ambient olive. This body now transcribes the GLSL
-// line-for-line.
+// Port of `czm_computeScattering` using scene atmosphere coefficients. Matching
+// WebGL requires tanh split weights, adaptive primary and light step counts,
+// growing step lengths, full-step primary sample placement, and the caller's
+// ray length with only the shell exit as an internal clamp.
 fn computeScattering(
   rayOrigin: vec3<f32>,
   rayDir: vec3<f32>,
@@ -370,15 +314,13 @@ fn computeAtmosphereColor(
   return vec4<f32>(color, s.opacity);
 }
 
-// Item 2.2 (ENV-AERIAL-MS, Batch 430) — sample the sun-relative sky-view LUT.
-// COPIED VERBATIM (same UV/basis derivation) from SkyAtmosphere.wgsl's
-// `sampleSkyViewLut` so the reflected env sky agrees with the visible sky:
-//   U = relativeAzimuth(rayDir, sunDir) / PI   (sky symmetric about the sun
-//       meridian → [0, π] covers all azimuths)
-//   V = 0.5 + 0.5 * sign(cosViewZenith) * sqrt(|cosViewZenith|)  (Hillaire warp)
-// `up` is the local vertical at the (synthetic, ground-level) observer; in the
-// env-cube frame that is the local +Y zenith. Returns the baked combined
-// Rayleigh+Mie inscatter (intensity already applied at bake time).
+// Sample the sun-relative sky-view LUT with the same UV and basis derivation as
+// `SkyAtmosphere.wgsl`, keeping reflected and visible sky radiance aligned:
+//   U = relativeAzimuth(rayDir, sunDir) / PI
+//   V = 0.5 + 0.5 * sign(cosViewZenith) * sqrt(abs(cosViewZenith))
+// Mirror symmetry about the sun meridian lets [0, PI] cover every azimuth.
+// `up` is local positive Y at the synthetic ground observer. The returned
+// Rayleigh and Mie inscatter already includes bake-time intensity.
 fn sampleSkyViewLut(up: vec3<f32>, rayDir: vec3<f32>, sunDir: vec3<f32>) -> vec3<f32> {
   let cosViewZenith = clamp(dot(rayDir, up), -1.0, 1.0);
   let vCoord = clamp(
@@ -400,9 +342,8 @@ fn sampleSkyViewLut(up: vec3<f32>, rayDir: vec3<f32>, sunDir: vec3<f32>) -> vec3
   return max(s.rgb, vec3<f32>(0.0));
 }
 
-// Item 2.2 — sample the multiple-scattering LUT (same sun-relative sky-view
-// domain as the sky-view LUT). Identical (U, V) derivation to sampleSkyViewLut
-// so the MS add agrees directionally with the single-scatter sky-view sample.
+// Sample multiple scattering on the same sun-relative domain and with the same
+// UV derivation as `sampleSkyViewLut`, preserving directional agreement.
 fn sampleMultipleScatterLut(up: vec3<f32>, rayDir: vec3<f32>, sunDir: vec3<f32>) -> vec3<f32> {
   let cosViewZenith = clamp(dot(rayDir, up), -1.0, 1.0);
   let vCoord = clamp(
@@ -424,25 +365,22 @@ fn sampleMultipleScatterLut(up: vec3<f32>, rayDir: vec3<f32>, sunDir: vec3<f32>)
   return max(s.rgb, vec3<f32>(0.0));
 }
 
-// Mirror of SkyAtmosphere.wgsl's MS_SCALE — the perceptual on-screen strength
-// of the MS add. Same constant so the env reflection matches the visible sky.
+// Match `SkyAtmosphere.wgsl` so reflected and visible multiple-scattering
+// strength remain consistent.
 const MS_SCALE: f32 = 0.06;
 const PI: f32 = 3.14159265358979323846;
 
-// ─── Item 3-C (CLOUD-IBL-FULL, Batch 450) — low-res per-face cloud march ───
+// Low-resolution per-face cloud march.
 //
-// A DELIBERATELY COARSE port of ProceduralClouds.wgsl's `cloudDensity` +
-// `marchDeck`: it samples the SAME baked shape/detail noise the visible clouds
-// use (so the reflected cloud field tracks the rendered one), but with a small
-// fixed step count, a SINGLE simplified deck, and a cheap 1-tap beer's-law sun
-// shadow. The prefilter + SH that read this cube blur out high-frequency detail,
-// so a low-res march is sufficient — and is the whole point of "low-res per
-// face". The entire path is reached ONLY when `u.cloudMarch > 0` AND
-// `u.cloudCoverage > 0`; otherwise it is never called (bindings 5/6/7 are
-// placeholders) → byte-identical default parity.
+// This deliberately coarse port of `ProceduralClouds.wgsl` samples the visible
+// cloud path's baked shape and detail noise with a small fixed step count, one
+// simplified deck, and a cheap Beer-Lambert sun shadow. The downstream
+// prefilter and SH projection remove high-frequency detail, so a low-resolution
+// march is sufficient. It runs only for positive `cloudMarch` and coverage;
+// otherwise the noise bindings contain unsampled placeholders.
 
-// C13-37 Slice B — the IBL march uses the same ray-interval-to-voxel rule as
-// the visible density field. One-level placeholders naturally clamp to LOD 0.
+// Use the visible density field's ray-interval-to-voxel rule. One-level
+// placeholders naturally clamp to LOD 0.
 fn cloudNoiseMipLevelIBL(
   footprintMeters: f32,
   domainUnitsPerMeter: f32,
@@ -498,8 +436,8 @@ fn cloudDensityMipLevelsIBL(
   );
 }
 
-// Baked cloud BASE shape — a stripped `bakedBase` from ProceduralClouds.wgsl:
-// one trilinear shape fetch warped by a slow detail offset (de-tiles the bake).
+// Baked cloud base shape: one trilinear shape fetch warped by a slow detail
+// offset to reduce tiling, matching `ProceduralClouds.wgsl`.
 fn cloudBakedBaseIBL(
   coordinates: CloudDensityCoordinates,
   mipLevels: CloudNoiseMipLevelsIBL,
@@ -555,14 +493,11 @@ fn cloudDensityIBL(
 
   var density = cloudBakedBaseIBL(coordinates, mipLevels);
   let coverage = clamp(u.cloudCoverage, 0.0, 1.0);
-  // Same coverage response as the visible march — `cloudEffectiveCoverage` is
-  // shared through the CloudDensityDomain chunk this module is composed with,
-  // so the reflected/ambient deck cannot keep the CLOUD-LOW-COVERAGE-CUTOFF
-  // behaviour after the visible deck loses it (that divergence would be
-  // invisible in a screenshot and would silently mis-light every model).
+  // Share `cloudEffectiveCoverage` with the visible march so reflected and
+  // ambient cloud density cannot diverge and silently mis-light models.
   density = smoothstep(1.0 - cloudEffectiveCoverage(coverage), 1.0, density);
 
-  // BILLOWY vertical gradient (the historical cumulus profile).
+  // Billowy vertical gradient for the cumulus profile.
   let hg = smoothstep(0.0, 0.15, heightFraction) * smoothstep(1.0, 0.7, heightFraction);
   density *= hg;
 
@@ -627,22 +562,17 @@ fn marchCloudFaceIBL(
 
   let hitInner = cloudShellIntersect(viewOrigin, dir, innerShell);
   let hitOuter = cloudShellIntersect(viewOrigin, dir, outerShell);
-  // Item 3-C (CLOUD-IBL-FULL, Batch 450, FIX 2) — the view origin sits at the
-  // planet surface (radius innerR), BELOW both cloud shells, so this is the
-  // below-deck case (mirrors ProceduralClouds.wgsl marchDeck's `cameraAltitude
-  // < deckBottom` branch): march the deck itself — enter at the inner-shell FAR
-  // hit (deck bottom) and exit at the outer-shell FAR hit (deck top). The prior
-  // code started at the outer NEAR hit (`hitOuter.x`, behind the surface) and
-  // tried to clip at the inner NEAR hit (`hitInner.x`, always < 0 from below →
-  // dead clip), so it wasted ~5 of 12 steps in the empty sub-deck region. A ray
-  // that misses the deck (`hitInner.y < 0`) yields tStart=0,tEnd<0 → early-out.
+  // The view origin is below both cloud shells at the planet surface. Enter at
+  // the far hit on the inner shell and exit at the far hit on the outer shell,
+  // matching the below-deck branch in `ProceduralClouds.wgsl`. A missed deck
+  // produces an empty interval and exits below.
   var tStart = max(hitInner.y, 0.0);
   var tEnd = hitOuter.y;
   if (tEnd <= tStart) {
     return vec4<f32>(0.0);
   }
 
-  // Cap the marched span so a grazing ray doesn't run a huge segment at low res.
+  // Cap the span so a low-resolution grazing ray cannot cover a huge segment.
   let maxSpan = (deckTop - deckBottom) * 6.0;
   tEnd = min(tEnd, tStart + maxSpan);
 
@@ -690,16 +620,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let face = gid.z;
   let uv = (vec2<f32>(f32(gid.x), f32(gid.y)) + vec2<f32>(0.5)) / f32(size);
 
-  // The cubemap is filled + sampled in the IBL REFERENCE FRAME (a planet-
-  // local frame with +Y up). The PBR shader samples the prefiltered cube
-  // at `Ribl = iblReferenceFrameMatrix * R` using the SAME
-  // `faceUvToDirection` convention as the IBL prefilter; storing radiance
-  // in this local frame (rather than transforming to world) is what keeps
-  // the reflection world-anchored under the reference-frame rotation
-  // (verified by the orbit-invariance check in probe-model-ibl). This
-  // matches the proven Batch-134 orientation; D1 only swaps the inline
-  // approximation for accurate `czm_computeScattering` math + the real
-  // atmosphere coefficients/intensity/light-direction.
+  // Fill and sample the cubemap in the planet-local IBL reference frame with
+  // positive Y up. The PBR shader samples at
+  // `iblReferenceFrameMatrix * reflectionDirection` using the prefilter's
+  // `faceUvToDirection` convention. Keeping radiance in this local frame makes
+  // reflections remain world-anchored as the camera orbits.
   let dir = faceUVToLocalDir(face, uv);
 
   // Planet-local view origin, +Y up (the reference frame's up axis), at the
@@ -710,15 +635,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let viewOrigin = vec3<f32>(0.0, u.innerRadius + u.ellipsoidHeight, 0.0);
   let atmosphereHeight = u.outerRadius - u.innerRadius;
 
-  // onEllipsoid classification (ComputeRadianceMapFS:37-47): a primary ray
-  // that hits the inner (surface) sphere AHEAD of the origin is a ground
-  // texel and terminates at the hit; a sky ray's primary length is the outer
-  // radius VALUE itself (1.025 × surface radius — WebGL passes
-  // `atmosphereOuterRadius` as the ray length, NOT a 111 km clamp; the
-  // scattering march clamps to its own 111 km shell exit internally). This
-  // also fixes the two prior defects: down rays no longer march through the
-  // planet, and the NONE-mode light direction below is no longer the
-  // near-degenerate zenith of a 111 km-capped sky point.
+  // `ComputeRadianceMapFS` classifies a ray as ground when it hits the inner
+  // sphere ahead of the origin and terminates it at that hit. A sky ray instead
+  // uses the outer-radius value as its primary length. The scattering march
+  // applies its own 111 km shell-exit clamp. This keeps downward rays out of
+  // the planet and gives `NONE` lighting the correct sky-sample position.
   let groundHit = raySphereIntersectionInterval(viewOrigin, dir, u.innerRadius);
   let onEllipsoid = groundHit.z > 0.5 && groundHit.x >= 0.0;
   let rayLength = select(u.outerRadius, groundHit.x, onEllipsoid);
@@ -735,13 +656,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   //                      frame via the ENU basis (East->localX, Up->localY,
   //                      North->localZ), so the sun disc lands in the
   //                      correct local direction.
-  // C12-31 — LEGACY_OVERHEAD (3) reproduces the historical NONE appearance, so
-  // it takes the same local-up arm NONE does here. This IBL bake intentionally
-  // still uses local up for NONE: its WebGL twin (`ComputeRadianceMapFS.glsl`
-  // via `czm_getDynamicAtmosphereLightDirection`) does, and the two must stay
-  // in parity until that consumer's own migration lands. Only the visible sky
-  // shell moved onto the astronomical sun in this change. For enums 0/1/2 the
-  // predicate below is bit-for-bit the old `enumVal < 0.5`.
+  // `LEGACY_OVERHEAD` follows the `NONE` local-up arm. The IBL bake keeps local
+  // up for `NONE` because its WebGL counterpart in `ComputeRadianceMapFS.glsl`
+  // resolves that mode through `czm_getDynamicAtmosphereLightDirection`.
   let enumVal = u.dynamicLightingEnum;
   let sunLocal = normalize(vec3<f32>(
     dot(u.sunDirectionWC, u.enuX),
@@ -764,18 +681,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let up = vec3<f32>(0.0, 1.0, 0.0);
   let upDot = dir.y;
 
-  // Item 2.2 (ENV-AERIAL-MS, Batch 430) — the per-texel sky radiance. OFF
-  // (default): the inline czm_computeScattering/computeAtmosphereColor result
-  // (`atmosphereColor.rgb`) verbatim → byte-identical. ON: the sun-relative
-  // sky-view LUT (+ the MS add) — the SAME tables the visible SkyAtmosphere
-  // samples — so reflected sky matches the visible MS sky. The LUT carries the
-  // atmosphere intensity already (matching the inscatter-LUT convention), so it
-  // drops in where `atmosphereColor.rgb` was. The sky-view LUT is sun-relative
-  // and azimuth-aware, so the env-cube's local-frame `sunLocal` + the texel's
-  // `dir` reproduce the directional (warm-toward-sun) sky the visible shell
-  // shows. Gated to non-NONE dynamic lighting (the LUT bakes a single light
-  // direction, like the visible sky's sky-view fast-path); the smooth NONE
-  // ambient keeps the inline radially-symmetric march.
+  // Use the inline atmosphere color unless the sun-relative LUT path is
+  // enabled. The LUTs include bake-time atmosphere intensity and use `sunLocal`
+  // with the texel direction to match the visible sky's directional response.
+  // `NONE` lighting remains on the radially symmetric inline march because the
+  // LUT bakes one light direction.
   var skyColor = atmosphereColor.rgb;
   if (u.useMultiScatterLut > 0.5 && enumVal >= 0.5) {
     let lutSky = sampleSkyViewLut(up, dir, sunLocal);
@@ -783,41 +693,24 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     skyColor = lutSky + lutMs * MS_SCALE;
   }
 
-  // Item 4.2 (CLOUD-IBL, Batch 441) — coarse overcast darkening + flattening.
-  // OFF (u.cloudCoverage == 0, default): this whole block is a no-op
-  // (`coverage` is 0 → both lerps are identity) → byte-identical sky radiance.
-  // ON: an overcast sky scatters the sun into a diffuse grey dome — it is
-  // DIMMER and far less directional than clear sky. We model that as a SINGLE
-  // coverage-driven lerp of the per-texel sky radiance toward a flat, DIMMED
-  // overcast grey BEFORE the sky/ground composite, so the SH projection that
-  // integrates this cube reconstructs a dimmer, flatter ambient (the L1/L2
-  // directional bands collapse → flat; the L0 DC band drops → dim).
-  //
-  // The overcast target is a flat grey (this texel's own luminance, which after
-  // the collapse is the same grey across the whole dome) scaled by a coverage
-  // transmittance well below 1. The transmittance must be aggressive: a flat
-  // grey dome of luminance L deposits MORE irradiance on a vertical facet than
-  // the clear directional sky (whose high radiance is confined to the upper
-  // hemisphere), so a mild scale would let the shadow-fill on the model's side
-  // facets out-weigh the darkening and read BRIGHTER. A dense storm deck
-  // physically transmits only ~10-15% of clear-sky illuminance, so we drive the
-  // full-coverage transmittance to ~0.12 — the integrated ambient then lands
-  // unambiguously DIMMER than clear AND flat (the L1/L2 directional bands
-  // collapse). coverage≈0.5 reads as a hazy bright-overcast (partial collapse
-  // toward a lightly-dimmed grey); coverage→1 as a dim, shadowless storm deck.
-  //
-  // Item 3-C (CLOUD-IBL-FULL, Batch 450) — when the full per-face march is ON
-  // (`u.cloudMarch > 0`) it REPLACES this coarse darkening (the march composites
-  // real cloud structure over the sky below, which is a strictly richer overcast
-  // model), so the 4.2 lerp is skipped to avoid double-darkening. The coarse
-  // path therefore runs ONLY when the march is off (the 4.2 fallback for
-  // `cloudContributesIBL` without `cloudsInReflections`).
+  // Coarse overcast fallback. Zero coverage makes both blends identities.
+  // Otherwise, lerping each texel toward a dim grey dome before the sky-ground
+  // composite lets SH projection reconstruct a flatter and darker ambient.
+//
+  // A flat dome deposits more irradiance on vertical facets than a clear sky
+  // whose brightest radiance occupies the upper hemisphere. The target must
+  // therefore be substantially dimmer to avoid brighter shadow fill. Dense
+  // storm decks transmit roughly 10–15 percent of clear-sky illuminance, so
+  // full coverage uses about 0.12 transmittance. Half coverage reads as hazy
+  // bright overcast; full coverage approaches a dim, shadowless storm deck.
+//
+  // The per-face cloud march replaces this approximation when enabled, so the
+  // coarse path is skipped to avoid double darkening.
   let coverage = clamp(u.cloudCoverage, 0.0, 1.0);
   if (coverage > 0.0 && u.cloudMarch <= 0.0) {
     let lum = dot(skyColor, vec3<f32>(0.2126, 0.7152, 0.0722));
-    // Transmittance: clear (1.0) → ~0.12 at full coverage. Applied to the grey
-    // TARGET so the flattened dome is much dimmer than the texel it replaces
-    // (the lerp moves toward this dimmed grey, never above it).
+    // Apply transmittance to the grey target so flattening cannot brighten the
+    // texel it replaces.
     let transmit = mix(1.0, 0.12, coverage);
     let dimGrey = vec3<f32>(lum) * transmit;
     // How strongly the texel collapses to the dim grey. At full coverage the
@@ -827,16 +720,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     skyColor = mix(skyColor, dimGrey, blend);
   }
 
-  // Item 3-C (CLOUD-IBL-FULL, Batch 450) — full low-res per-face cloud march.
-  // OFF (`u.cloudMarch == 0`, default): never entered → byte-identical (the
-  // bindings 5/6/7 are placeholders and nothing samples them). ON (+ a non-zero
-  // coverage): march the cloud deck along this face's `dir` from the local view
-  // origin and composite the premultiplied result OVER the (clear or LUT) sky.
-  // Clouds occlude the sky behind them (`sky*(1-a) + cloudPremult`), and the
-  // sky/ground composite below then carries the cloudier radiance into the SH +
-  // prefilter, so a reflective surface shows genuine cloud structure rather than
-  // the 4.2 flat darkening. Only the upper hemisphere is marched (the deck sits
-  // above the surface; down-facing texels use the ground term unchanged).
+  // March the cloud deck only for enabled, covered upper-hemisphere texels.
+  // Premultiplied compositing occludes the sky behind each cloud and carries
+  // structured radiance into SH projection and prefiltering. Down-facing texels
+  // retain the ground term.
   if (u.cloudMarch > 0.0 && coverage > 0.0 && upDot > 0.0) {
     let cloud = marchCloudFaceIBL(viewOrigin, dir, u.innerRadius, skyColor);
     skyColor = skyColor * (1.0 - cloud.a) + cloud.rgb;

@@ -38,9 +38,8 @@ import type {
 import type { WebGPUComputePipelineCache } from "./WebGPUComputePipelineCache.js";
 import { getAvailableFrameCommandEncoder } from "./WebGPUFrameCommandEncoder.js";
 
-// Per-device shader module cache so two contexts with weather enabled
-// share a single compiled `GPUShaderModule` for both the compute and
-// render shaders. (C-R7-SHADER-MODULE-DEDUP, Batch 72.)
+// The per-device cache lets weather-enabled contexts share one compiled
+// `GPUShaderModule` for compute and one for rendering.
 const _weatherShaderModuleCaches = new WeakMap<
   GPUDevice,
   WebGPUShaderModuleCache
@@ -61,9 +60,8 @@ const WEATHER_TYPES = { rain: 0, snow: 1, fog: 2, hail: 3 } as const;
 const PARTICLE_SIZE_BYTES = 32; // 8 floats per particle
 const WEATHER_PARAMS_FLOATS = 24; // matches WeatherParams struct
 const WEATHER_PARAMS_BYTES = WEATHER_PARAMS_FLOATS * 4;
-// DP-H41 (Batch 27) — render-pass CameraUniforms now carries
-// `previousViewProjection` (mat4x4, 64 bytes) at the tail for
-// TAA / motion-vector reprojection. Total = 128 + 64 = 192.
+// Render-pass `CameraUniforms` appends the 64-byte `previousViewProjection`
+// matrix for TAA and motion-vector reprojection.
 const RENDER_UNIFORM_SIZE = 192;
 
 export interface WeatherCache {
@@ -78,11 +76,10 @@ export interface WeatherCache {
   uniformData: Float32Array;
   maxParticles: number;
   initialized: boolean;
-  // RTE: previous frame's camera position as a Float64 triple. We
-  // subtract on the CPU in FP64 to produce a small `cameraDelta` vec3
-  // that the compute shader applies to keep camera-relative particles
-  // world-stationary. Without this, particles would visibly snap to a
-  // ~0.6 m grid at Earth radius because FP32 precision is exhausted.
+  // Previous camera position as an FP64 triple. CPU subtraction produces a
+  // small `cameraDelta` that keeps camera-relative particles stationary in
+  // world space. Absolute FP32 positions would snap to an approximately
+  // 0.6-metre grid at Earth radius.
   prevCameraPosition: { x: number; y: number; z: number } | null;
   // Render pass resources
   renderPipeline: GPURenderPipeline | null;
@@ -92,18 +89,14 @@ export interface WeatherCache {
   renderUniformBuffer: GPUBuffer | null;
   renderUniformData: Float32Array;
   renderInitialized: boolean;
-  // C-R7-RENDERER-MIGRATION (Batch 72) — render pipeline arrives
-  // asynchronously from `WebGPURenderPipelineCache.getPipeline()`. The
-  // descriptor is held alongside the pipeline so re-resolution keys
-  // off a stable shape.
+  // The render pipeline arrives asynchronously from
+  // `WebGPURenderPipelineCache.getPipeline`. Retain its descriptor so every
+  // resolution attempt uses the same key.
   renderPipelineRequestPending: boolean;
   renderPipelineDescriptor: WebGPURenderPipelineDescriptor | null;
-  // PRECIP-DATA (Batch 444) — the latest data-driven ground snow-cover scalar
-  // (0..1) the JS integrator (`updateSnowAccumulation`) produced, mirrored here so
-  // a future ground-shader snow-albedo consumer can read it via
-  // `getWeatherSnowCover(context)`. SHIPPED: the scalar is integrated + threaded
-  // through to the renderer; FOLLOW-UP: a ground-shader pass that samples it to
-  // paint white snow albedo on terrain (out of scope for this batch — see report).
+  // Latest `[0, 1]` snow-cover scalar from `updateSnowAccumulation`. It is
+  // exposed through `getWeatherSnowCover`, but no terrain shader currently
+  // consumes it, so it does not whiten the ground.
   snowCover: number;
 }
 
@@ -150,13 +143,8 @@ function initializeWeatherPipelines(
   cache.counterBuffer?.destroy();
   cache.uniformBuffer?.destroy();
 
-  // C-R7-SHADER-MODULE-DEDUP (Batch 72) — route compute shader through
-  // the per-device module cache so all three pipelines share a single
-  // deduped `GPUShaderModule`. Pipeline-level dedup is available via
-  // `context.webgpuComputePipelineCache` (Batch 76+) but the three weather
-  // pipelines are scene-singletons (one Weather instance per scene), so
-  // direct creation is fine here — adoption would only matter for the
-  // multi-instance case.
+  // Use the per-device module cache so all three compute pipelines share one
+  // `GPUShaderModule`.
   const moduleCache = getWeatherShaderModuleCache(device);
   const shaderModule = moduleCache.getOrCreate(
     ShaderSourceId.WEATHER_PARTICLES_COMPUTE,
@@ -175,12 +163,9 @@ function initializeWeatherPipelines(
     bindGroupLayouts: [cache.bindGroupLayout],
   });
 
-  // C-R7-COMPUTE-PIPELINE-CACHE (Batch 76) — route the three Weather
-  // compute pipelines through the central cache so two contexts (split-
-  // screen) sharing the same shader + layout dedupe. Uses the sync path
-  // (`getOrCreateSync`) so this function stays sync — the alternative
-  // is making `updateWeatherParticles` async, which would push the
-  // change through every feature-renderer dispatch site.
+  // Prefer the central compute cache so contexts sharing a device, shader,
+  // and layout reuse all three pipelines. Its synchronous path keeps the
+  // feature renderer's update contract synchronous.
   if (computePipelineCache) {
     cache.resetPipeline = computePipelineCache.getOrCreateSync({
       name: "Weather reset counters",
@@ -198,8 +183,7 @@ function initializeWeatherPipelines(
       compute: { module: shaderModule, entryPoint: "emitParticles" },
     });
   } else {
-    // Fallback path — no central cache (defensive; WebGPU contexts always
-    // expose one). Mirrors the historical sync creation pattern.
+    // Direct creation is the defensive fallback when no central cache exists.
     cache.resetPipeline = device.createComputePipeline({
       label: "Weather reset counters",
       layout: pipelineLayout,
@@ -266,9 +250,8 @@ export function updateWeatherParticles(
 
   const maxParticles = weatherConfig.maxParticles ?? 50000;
   const cache = ensureWeatherCache(context);
-  // PRECIP-DATA (Batch 444) — mirror the data-driven ground snow-cover scalar so
-  // a future ground-shader snow-albedo pass can read it (`getWeatherSnowCover`).
-  // Undefined in the manual/auto path (`?? 0`), so this is inert when off.
+  // Mirror the data-driven snow-cover scalar for `getWeatherSnowCover`.
+  // Manual and automatic paths that omit it resolve to zero.
   cache.snowCover = weatherConfig.snowCover ?? 0;
   initializeWeatherPipelines(
     device,
@@ -281,10 +264,9 @@ export function updateWeatherParticles(
   const data = cache.uniformData;
   let offset = 0;
 
-  // RTE: compute camera delta in FP64 on the CPU so the compute shader
-  // only ever sees small FP32-safe vectors. On the first frame and
-  // after large teleports, clamp the delta so existing particles get
-  // "released" (they'll drift offscreen naturally and be replaced).
+  // Compute camera delta in FP64 so the shader sees only small, FP32-safe
+  // vectors. A zero delta on the first frame or after a large teleport lets
+  // existing particles age out instead of applying an extreme translation.
   const camPos = frameState.camera?.positionWC;
   const currX = camPos?.x ?? 0;
   const currY = camPos?.y ?? 0;
@@ -296,9 +278,8 @@ export function updateWeatherParticles(
     dx = currX - cache.prevCameraPosition.x;
     dy = currY - cache.prevCameraPosition.y;
     dz = currZ - cache.prevCameraPosition.z;
-    // Teleport guard — if the camera moved more than the spawn
-    // volume's extent in one frame, don't try to track: snap prev
-    // to current, leaving delta=0. Stale particles will age out.
+    // A move beyond the spawn volume's extent is a teleport. Reset the prior
+    // position and leave delta zero so stale particles age out.
     const spawnRadius = weatherConfig.spawnRadius ?? 500;
     const teleportSq = spawnRadius * 4 * (spawnRadius * 4);
     if (dx * dx + dy * dy + dz * dz > teleportSq) {
@@ -339,13 +320,10 @@ export function updateWeatherParticles(
   const typeStr = weatherConfig.type ?? "rain";
   const typeId = WEATHER_TYPES[typeStr as keyof typeof WEATHER_TYPES] ?? 0;
   data[offset++] = typeId;
-  // PRECIP-DATA (Batch 444) — the EMISSION probability in the compute shader is
-  // `typeParams.y * dt * 10` (intensity drives spawn rate), so scaling the
-  // effective intensity by the data-driven visibility multiplier makes heavy
-  // precip (low visibility) spawn DENSER particles. `densityScale` is undefined in
-  // the manual/auto path (`?? 1`), so the OFF behavior is byte-identical. Clamp to
-  // [0,1] — the emit probability saturates at 1 anyway, so an over-1 intensity
-  // can't break the budget; clamping keeps the value well-defined.
+  // Emission probability is `typeParams.y * dt * 10`, so the visibility-based
+  // density scale makes heavier precipitation spawn more particles. Omitted
+  // scales resolve to one. Clamp to `[0, 1]` because the probability
+  // saturates at one and higher values carry no additional meaning.
   const baseIntensity = weatherConfig.intensity ?? 0.5;
   const densityScale = weatherConfig.densityScale ?? 1.0;
   const effectiveIntensity = Math.min(
@@ -420,11 +398,9 @@ export function getWeatherMaxParticles(context: CesiumGraphicsContext): number {
 }
 
 /**
- * PRECIP-DATA (Batch 444) — the data-driven ground snow-cover scalar (0..1) the
- * JS integrator produced, mirrored on the weather cache. Returns 0 when the
- * data-driven snow-accumulation path is off (the default). SHIPPED as the
- * consumable scalar; the ground-shader snow-albedo pass that samples it to paint
- * terrain white is a follow-up (see Batch 444 report).
+ * Return the data-driven ground snow-cover scalar in `[0, 1]`, or zero when
+ * snow accumulation is inactive. No terrain shader currently consumes this
+ * value, so it does not change ground albedo.
  */
 export function getWeatherSnowCover(context: CesiumGraphicsContext): number {
   const cache = context._weatherCache;
@@ -444,8 +420,7 @@ function initializeRenderPipeline(
 ): void {
   if (cache.renderInitialized) return;
 
-  // C-R7-SHADER-MODULE-DEDUP (Batch 72) — route render shader through
-  // the per-device module cache.
+  // Use the per-device shader-module cache.
   const moduleCache = getWeatherShaderModuleCache(device);
   const shaderModule = moduleCache.getOrCreate(
     ShaderSourceId.WEATHER_PARTICLE_RENDER,
@@ -467,10 +442,9 @@ function initializeRenderPipeline(
     bindGroupLayouts: [cache.renderBindGroupLayout],
   });
 
-  // C-R7-RENDERER-MIGRATION (Batch 72) — descriptor-only construction;
-  // pipeline is materialized below via `tryResolveWeatherRenderPipeline`
-  // through the central `webgpuPipelineCache` so two contexts with
-  // weather enabled share a single `GPURenderPipeline`.
+  // Store a descriptor here and materialize it through
+  // `tryResolveWeatherRenderPipeline`, allowing weather-enabled contexts to
+  // share one centrally cached `GPURenderPipeline`.
   cache.renderPipelineDescriptor = {
     name: "Weather particle render",
     layout: pipelineLayout,
@@ -481,16 +455,10 @@ function initializeRenderPipeline(
     fragment: {
       module: shaderModule,
       entryPoint: "fragmentMain",
-      // Phase E (Batch 423) — weather particles are a COMPOSITING effect: the
-      // env-effects chain runs AFTER post-process (Batch 127) and draws onto the
-      // CANVAS default render pass, which has a single color attachment. So the
-      // pipeline declares ONE alpha-over target in the canvas format — NOT the
-      // 2-target scene-FB MRT layout `makeSceneFBTargets` produces (MRT mode is
-      // on globally; using that helper gave the pipeline a phantom rgba16float
-      // slot-1 the canvas pass doesn't have → "attachment state not compatible"
-      // validation error, which is why the render half silently never drew).
-      // `WebGPUSceneFBTargetHelpers`' own docstring forbids the helper for
-      // non-scene-FB targets (restriction §, line 46).
+      // Weather particles composite after post-processing onto the default
+      // canvas pass, which has one color attachment. Declare one alpha-over
+      // canvas target instead of the two-target scene-framebuffer MRT layout;
+      // an extra rgba16float target would be incompatible with this pass.
       targets: [
         {
           format,
@@ -530,8 +498,6 @@ function initializeRenderPipeline(
  * Resolve the weather render pipeline through the central pipeline cache.
  * Returns true when the pipeline is ready, false when async creation is
  * still in flight (caller should skip the draw this frame).
- *
- * C-R7-RENDERER-MIGRATION (Batch 72).
  */
 function tryResolveWeatherRenderPipeline(
   device: GPUDevice,
@@ -592,13 +558,13 @@ function tryResolveWeatherRenderPipeline(
 }
 
 /**
- * Render weather particles to the current render pass.
- * Should be called after compute simulation, during the environmental effects phase.
+ * Renders weather particles to the current render pass after compute
+ * simulation during the environmental-effects pass.
  *
- * @param context - WebGPU context
- * @param frameState - Current frame state (camera, timing)
- * @param weatherConfig - Weather configuration
- * @param renderPassEncoder - Active render pass encoder
+ * @param context - The WebGPU context.
+ * @param frameState - The current camera and timing state.
+ * @param weatherConfig - The weather configuration.
+ * @param renderPassEncoder - The active render-pass encoder.
  */
 export function renderWeatherParticles(
   context: CesiumGraphicsContext,
@@ -611,14 +577,10 @@ export function renderWeatherParticles(
   if (!device || !cache?.initialized || !cache.particleBuffer) return false;
   if (!weatherConfig?.enabled) return false;
 
-  // Phase E (Batch 423) — weather particles composite onto the CANVAS default
-  // render pass (env effects run after post-process, Batch 127), so the pipeline
-  // color format must be the canvas presentation format, NOT the HDR scene-FB
-  // format. (They're usually both bgra8unorm, but key off presentationFormat so
-  // an HDR scene FB doesn't make the pipeline incompatible with the canvas pass.)
-  // The generation-based cache invalidation below still keys off the scene-FB
-  // generation, which bumps on any swap-chain reconfigure (canvas resize), so a
-  // canvas-format change rebuilds the pipeline.
+  // Weather particles composite onto the default canvas pass after
+  // post-processing, so the pipeline uses the presentation format instead of
+  // the HDR scene-framebuffer format. Scene-format generation also advances
+  // on swap-chain reconfiguration, rebuilding for any canvas-format change.
   const format: GPUTextureFormat =
     context.presentationFormat ??
     (context as unknown as { scenePipelineFormat?: GPUTextureFormat })
@@ -643,9 +605,8 @@ export function renderWeatherParticles(
   initializeRenderPipeline(device, cache, format, depthFormat);
   if (!cache.renderUniformBuffer) return false;
 
-  // C-R7-RENDERER-MIGRATION (Batch 72) — resolve the render pipeline
-  // through the central cache. Skip the draw on not-yet-ready frames so
-  // we never enqueue a draw command with a null pipeline.
+  // Resolve through the central render-pipeline cache. Skip frames while an
+  // asynchronous request is pending rather than enqueueing a null pipeline.
   if (!cache.renderPipeline) {
     const ctxAny = context as unknown as {
       webgpuPipelineCache?: WebGPURenderPipelineCache | null;
@@ -669,8 +630,8 @@ export function renderWeatherParticles(
   // mvpRelativeToEye (mat4x4) — 16 floats.
   // Particles are stored in a camera-relative frame, so the projection
   // matrix must be the view-projection with its translation column
-  // zeroed. `UniformState.modelViewProjectionRelativeToEye` gives us
-  // exactly that (identity model × translation-zeroed view × proj).
+  // zeroed. `UniformState.modelViewProjectionRelativeToEye` provides that
+  // identity-model × translation-zeroed-view × projection transform.
   const mvpRte =
     uniformState?.modelViewProjectionRelativeToEye ??
     uniformState?.viewProjection;
@@ -694,10 +655,9 @@ export function renderWeatherParticles(
   data[22] = up?.z ?? 0;
   data[23] = 0;
 
-  // Legacy cameraPosition slot — the shader no longer reads this (it
-  // operates entirely in camera-relative space via mvpRelativeToEye)
-  // but the binary layout is preserved so we don't need to reshape the
-  // uniform buffer. Keep maxLifetime in the same w slot.
+  // The reserved camera-position slot preserves the uniform layout even
+  // though the shader works entirely in camera-relative space. `maxLifetime`
+  // remains in its w component.
   data[24] = 0;
   data[25] = 0;
   data[26] = 0;
@@ -714,8 +674,8 @@ export function renderWeatherParticles(
   u32View[0] = typeId;
   data[31] = weatherConfig.intensity ?? 0.5;
 
-  // DP-H41 (Batch 27) — previousViewProjection at slots 32..47 for
-  // TAA / motion-vector reprojection.
+  // Slots 32 through 47 hold `previousViewProjection` for TAA and
+  // motion-vector reprojection.
   const prevVP = uniformState?.previousViewProjection;
   if (prevVP) {
     for (let i = 0; i < 16; i++) data[32 + i] = prevVP[i];
@@ -741,8 +701,8 @@ export function renderWeatherParticles(
   device.queue.writeBuffer(cache.renderUniformBuffer, 0, data);
 
   // The particle buffer changes only when maxParticles forces a resource
-  // rebuild. Reuse the bind group on settled frames; the uniform contents stay
-  // genuinely dynamic and are still uploaded above every rendered frame.
+  // rebuild. Reuse the bind group on settled frames; the uniform contents
+  // remain dynamic and are still uploaded above every rendered frame.
   if (
     !cache.renderBindGroup ||
     cache.renderBindGroupParticleBuffer !== cache.particleBuffer

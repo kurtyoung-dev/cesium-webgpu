@@ -499,11 +499,12 @@ test("E3: the C11-176 orbital regression is closed at the source", () => {
   // The engine's own ATMOSPHERE_THICKNESS — above it neither sky shader
   // integrates anything, so the estimator must agree.
   assert.equal(fadeEnd, 111000);
+  assert.match(skyRendererJs, /const ATMOSPHERE_THICKNESS = 111e3;/);
   assert.match(
-    skyAtmosphereWgsl,
-    /outerRadius — innerRadius \+ 111e3/,
-    "the shell thickness the fade end is anchored to",
+    skyRendererJs,
+    /const outerRadius = innerRadius \+ ATMOSPHERE_THICKNESS;/,
   );
+  assert.match(skyRendererJs, /uniformData\[33\] = outerRadius;/);
   // Sprite and cubemap paths share the same continuous, ellipsoidal-height
   // column law; there is no 100 km catalogue pop.
   assert.match(
@@ -999,10 +1000,16 @@ test("S6: both shaders derive a safe geodetic up from the active ellipsoid", () 
     skyAtmosphereFs.indexOf("vec3 getEclipseObserverUp"),
     skyAtmosphereFs.indexOf("#ifndef PER_FRAGMENT_ATMOSPHERE"),
   );
-  const wgslHelper = skyAtmosphereWgsl.slice(
-    skyAtmosphereWgsl.indexOf("fn getEclipseObserverUp"),
-    skyAtmosphereWgsl.indexOf("// Precomputed atmosphere LUTs"),
+  const wgslHelperStart = skyAtmosphereWgsl.indexOf("fn getEclipseObserverUp");
+  const wgslHelperEnd = skyAtmosphereWgsl.indexOf(
+    "@group(1) @binding(0) var lutSampler: sampler;",
+    wgslHelperStart,
   );
+  assert.ok(
+    wgslHelperStart >= 0 && wgslHelperEnd > wgslHelperStart,
+    "WGSL eclipse-up helper must precede the LUT bindings",
+  );
+  const wgslHelper = skyAtmosphereWgsl.slice(wgslHelperStart, wgslHelperEnd);
 
   assert.match(
     glslHelper,

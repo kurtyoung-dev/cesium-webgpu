@@ -1,13 +1,13 @@
 // csm_effects.wgsl — Shadow receive + clipping plane helper functions
 //
 // Shadow: PCF or hard shadow sampling from a depth comparison texture.
-// Clipping: per-fragment plane test with discard for intersection/union modes.
+// Clipping: per-fragment plane tests for intersection and union modes.
 //
 // These functions are inlined into shaders that declare an EffectsUniforms
 // bind group with shadow depth texture, comparison sampler, and clipping
 // planes texture.
 
-// ─── Shadow Receive ───
+// Shadow receive.
 
 fn csm_sampleShadowMap(
   shadowMap: texture_depth_2d,
@@ -41,8 +41,10 @@ fn csm_sampleShadowMapPCF(
   return shadow / 9.0;
 }
 
-// Computes shadow attenuation factor (1.0 = fully lit, darkness = fully shadowed).
-// worldPosition is the fragment position in RTE eye space (after translateRelativeToEye).
+// Computes the shadow attenuation factor: 1.0 is fully lit and
+// `effects.shadowDarkness` is fully shadowed.
+// `worldPosition` is the fragment's RTE eye-space position after
+// `translateRelativeToEye`.
 fn csm_computeShadowFactor(
   worldPosition: vec3<f32>,
   effects: EffectsUniforms,
@@ -58,11 +60,10 @@ fn csm_computeShadowFactor(
   // Already WebGPU shadow-texture space — scale/bias from
   // `ShadowMap.getViewProjection`, v-origin flip from
   // `toWebGPUShadowReceiveMatrix` (`WebGPUShadowReceiveTransform.ts`).
-  // Re-applying `*0.5 + 0.5` here squeezes every lookup into the wrong
-  // quadrant, which is what made the globe receive no sun shadow at all
-  // (NEW-WEBGPU-GLOBE-SUN-SHADOW-RECEIVE-DEAD). The CASCADED receivers are
-  // different on purpose: they are handed a RAW clip-space cascade VP and do
-  // the full remap themselves.
+  // Reapplying `*0.5 + 0.5` here would squeeze every lookup into the wrong
+  // quadrant, causing receivers to sample cleared depth and report the
+  // fragment as lit. Cascaded receivers instead receive a raw clip-space
+  // cascade view-projection matrix and perform the full remap themselves.
   let coord = shadowPos.xyz / shadowPos.w;
   let uv = coord.xy;
   let texelSize = 1.0 / effects.shadowMapSize;
@@ -77,9 +78,9 @@ fn csm_computeShadowFactor(
   return mix(effects.shadowDarkness, 1.0, visibility);
 }
 
-// ─── Clipping Planes ───
+// Clipping planes.
 
-// Tests a fragment position against clipping planes packed in an RGBA32Float texture.
+// Tests a fragment against clipping planes in an RGBA32Float texture.
 // Each texel: (normal.x, normal.y, normal.z, distance).
 // Returns true if the fragment should be discarded.
 fn csm_clipByPlanes(
@@ -96,8 +97,8 @@ fn csm_clipByPlanes(
   let isUnion = effects.clippingUnionMode == 1u;
   let texWidth = f32(count);
 
-  // Intersection mode: discard if ALL planes clip (fragment outside all half-spaces)
-  // Union mode: discard if ANY plane clips (fragment outside any half-space)
+  // Intersection mode discards when all planes clip the fragment, meaning it
+  // is outside all half-spaces. Union mode discards when any plane clips it.
   var clippedCount: u32 = 0u;
 
   for (var i: u32 = 0u; i < count; i++) {
@@ -115,7 +116,7 @@ fn csm_clipByPlanes(
     }
   }
 
-  // Intersection: discard only if ALL planes clip
+  // Intersection mode discards only when all planes clip the fragment.
   if (!isUnion && clippedCount == count) {
     return true;
   }

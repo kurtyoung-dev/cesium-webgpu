@@ -20,8 +20,8 @@ import { prepareTerrainShadowCastCommandUniforms } from "./WebGPUGlobeSurfaceTil
 import { getOrCreateShadowCastBindGroup } from "./WebGPUShadowCastBindGroupCache.js";
 import { shouldClearShadowCastTarget } from "./WebGPUShadowCastTargetState.js";
 import { toWebGPUShadowReceiveMatrix } from "./WebGPUShadowReceiveTransform.js";
-// C11-90 — the shadow cast path bakes the SAME topology axis as the color
-// path, so it reads it from the same home instead of restating the format.
+// Shadow casting and color rendering bake the same topology axis, so they
+// both read it from the model topology helpers.
 import {
   modelPrimitiveState,
   modelTopologyAxisToken,
@@ -37,9 +37,9 @@ const scratchCameraTranslation = new Matrix4();
 
 const DEFAULT_SHADOW_CAST_TOPOLOGY = "triangle-list";
 const DEFAULT_SHADOW_CAST_CULL_MODE = "back";
-// Legacy point passes are ordered -X,-Y,-Z,+X,+Y,+Z. WebGPU cube array
-// layers are +X,-X,+Y,-Y,+Z,-Z, so cast attachment selection needs an
-// explicit mapping for direction-based cube sampling to read the same face.
+// `ShadowMap` point passes are ordered -X,-Y,-Z,+X,+Y,+Z, while WebGPU cube
+// layers are +X,-X,+Y,-Y,+Z,-Z. This mapping keeps cast attachments aligned
+// with direction-based cube sampling.
 const POINT_LIGHT_PASS_TO_CUBE_LAYER = Object.freeze([1, 3, 5, 0, 2, 4]);
 
 function getPointLightCubeLayer(passIndex) {
@@ -73,7 +73,7 @@ function createShadowMapTexture(device, size) {
 }
 
 /**
- * C-R10 (Batch 34) — Creates a cube-depth shadow map for point lights.
+ * Creates a cube-depth shadow map for point lights.
  *
  * Point lights cast shadows omnidirectionally, so the cast pass draws
  * the scene 6 times (one per cube face) into 6 depth layers. Sampling
@@ -123,8 +123,7 @@ function createPointLightCubeShadowMap(device, size) {
   return { texture, faceViews, cubeView, sampler };
 }
 
-// ─── Shadow cast pipeline registry ───────────────────────────────────────
-//
+// Shadow cast pipeline registry.
 // Different vertex layouts (RTE primitives, single-position models, quantized
 // terrain, instanced) can't share one shadow cast pipeline because WebGPU
 // pipelines bake in the vertex buffer layout. Each entry registers:
@@ -355,17 +354,15 @@ struct ModelShadowUniforms {
       "_shadowCastJointMatricesSB",
     ],
   },
-  // Instanced model path (storage-buffer flavour). Matches Cesium's
-  // actual WebGPU model instancing architecture: per-instance model
-  // matrices live in a storage buffer bound to the color pass at
-  // `@group(5)`. For shadow cast we rebind the same buffer at our
-  // `@group(0) @binding(2)` and index it via @builtin(instance_index).
+  // Storage-buffer model instancing matches Cesium's WebGPU architecture.
+  // Per-instance matrices live in the color pass's group 5; shadow casting
+  // rebinds that buffer at group 0 binding 2 and indexes it through
+  // `@builtin(instance_index)`.
   //
-  // Binding 1 carries the node's base model matrix (same UB the
-  // modelP12 variant uses); binding 2 is the per-instance transforms
-  // storage buffer owned by `WebGPUModelInstancing.ensureInstancingResources`.
-  // WebGPUModelRenderer.js tags instanced commands with this variant
-  // + both UBs.
+  // Binding 1 carries the node base-model matrix used by `modelP12`. Binding
+  // 2 carries per-instance transform storage from
+  // `WebGPUModelInstancing.ensureInstancingResources`. The model renderer
+  // tags instanced commands with this variant and both buffers.
   modelInstancedSB: {
     vsCode: `
 struct ModelShadowUniforms {
@@ -424,13 +421,11 @@ struct InstanceTransform {
     ],
     perCommandBindingFields: ["_shadowCastModelUB", "_shadowCastInstancingSB"],
   },
-  // Instanced model path (classic per-instance VB flavour). Kept for
-  // code paths that use the canonical glTF EXT_mesh_gpu_instancing VB
-  // layout (4×float32x4 per instance, stride 64, instance step). This
-  // variant is currently dormant in CesiumJS — all Cesium model paths
-  // use the storage-buffer variant above — but we register it so
-  // third-party renderers that DO supply a per-instance VB can opt in
-  // via `_shadowCastLayout = "modelInstanced"`.
+  // Classic per-instance vertex-buffer instancing uses the canonical glTF
+  // `EXT_mesh_gpu_instancing` layout: four float32x4 values per instance with
+  // a 64-byte stride. Cesium model paths use the storage-buffer variant;
+  // third-party renderers with an instance vertex buffer can select this one
+  // through `_shadowCastLayout = "modelInstanced"`.
   modelInstanced: {
     vsCode: `
 @vertex fn vs(
@@ -565,23 +560,15 @@ fn decompressTC(c: f32) -> vec2<f32> {
       "_shadowCastTerrainGlobalsUB",
     ],
   },
-  // Uncompressed terrain (Batch 24). Mirrors `quantized12` structurally
-  // but reads the position as-is (no BITS12 decode). The globe's
-  // uncompressed VB stores `position3DAndHeight` as a float32x4 at
-  // offset 0; subsequent bytes carry tex coords, optional normals /
-  // web-mercator-T / geodetic surface normal (DP-H25). All of those
-  // extend the stride without touching the position — so we declare
-  // the minimum 24-byte stride here and let callers pass `overrideStride`
-  // for their actual VB layout (24 / 28 / 32 / 36 / 40 / 44 depending
-  // on feature flags).
+  // Uncompressed terrain mirrors `quantized12` structurally, but its
+  // position does not use BITS12 decoding. The globe stores the float32x4
+  // `position3DAndHeight` at offset 0. Texture coordinates and optional
+  // normals extend the stride without moving it. Callers use `overrideStride`
+  // for 24-, 28-, 32-, 36-, 40-, or 44-byte layouts.
   //
-  // Before Batch 24 uncompressed-terrain shadow cast was structurally
-  // broken: the code fell through to the `rte24` variant via stride-
-  // inference, which reads two vec3s at offset 0 and 12. Those offsets
-  // land on `position.xyz` and `(height, u, v)` — the second vec3 is
-  // tex-coord garbage, not a positionLow. The resulting RTE math
-  // produced shadow coordinates unrelated to the actual terrain
-  // surface. This new variant fixes that at the source.
+  // The `rte24` variant is not a valid fallback: its vec3 reads at offsets 0
+  // and 12 would interpret `(height, u, v)` as `positionLow`, producing
+  // shadow coordinates unrelated to the terrain surface.
   terrainUncompressed: {
     vsCode: `
 struct TerrainShadowUniforms {
@@ -687,9 +674,9 @@ function _inferShadowLayoutKey(cmd, vbStride) {
   }
   // Stride-12 = single-vec3 world-space position. Second most common
   // layout after RTE — covers non-RTE models and debug primitives.
-  // Renderers that need the modelP12 or modelInstanced variants MUST
-  // set `cmd._shadowCastLayout` explicitly because stride 12 alone
-  // can't distinguish world-space vs model-space positions.
+  // Renderers using `modelP12` or `modelInstanced` must set
+  // `cmd._shadowCastLayout`, because stride 12 alone cannot distinguish
+  // world-space from model-space positions.
   if (vbStride === 12) {
     return "p12";
   }
@@ -723,12 +710,12 @@ function _resetShadowLayoutWarningsForSpec() {
 }
 
 /**
- * Test-only hook — removes any test-added shadow cast variants so the
- * registry returns to its module-load state. Mirrors
- * `_resetShadowLayoutWarningsForSpec` so specs can isolate a fresh
- * registry in `afterEach` without leaking test keys across Jasmine
- * blocks. Built-in keys (rte24, p12, modelP12, ...) are preserved
- * because renderers depend on them existing for the entire session.
+ * Test-only hook that removes test-added shadow cast variants so the registry
+ * returns to its module-load state. It mirrors
+ * `_resetShadowLayoutWarningsForSpec`, allowing specs to isolate a fresh
+ * registry in `afterEach` without leaking test keys across Jasmine blocks.
+ * Built-in keys (`rte24`, `p12`, `modelP12`, and others) remain registered
+ * because renderers expect them.
  * @private
  */
 function _resetShadowCastVariantRegistryForSpec() {
@@ -752,12 +739,10 @@ function getShadowCastTopology(command) {
 }
 
 /**
- * C11-90 — the second half of the topology axis. A caster that rasterizes a
- * strip topology bakes the strip's index format into its pipeline (WebGPU
- * derives the implicit primitive-restart value from it), so uint16 and uint32
- * strip casters are DIFFERENT pipelines. Producers set this alongside
- * `_shadowCastTopology`; anything else keeps `undefined`, which is what a
- * non-strip pipeline must declare.
+ * Return the strip-index half of the topology axis. WebGPU derives a strip's
+ * implicit primitive-restart value from its index format, so uint16 and
+ * uint32 casters require different pipelines. Producers set this alongside
+ * `_shadowCastTopology`; non-strip pipelines leave it undefined.
  *
  * @private
  */
@@ -785,16 +770,12 @@ function getShadowCastCullMode(command, invertWinding = false) {
 }
 
 /**
- * C11-90 — the cast pipeline cache key. Its topology segment comes from
- * `modelTopologyAxisToken`, the SAME home the model color key is built from,
- * rather than from a second literal here — because a topology axis spelled out
- * in two files is a topology axis that will eventually disagree between them
- * (the Batch-788 globe-key defect, exactly).
+ * Build the cast-pipeline cache key. Its topology segment comes from
+ * `modelTopologyAxisToken`, the same source used by model color keys, so the
+ * two paths cannot encode the axis differently.
  *
- * `triangle-list` — every caster that existed before C11-90 — appends
- * `|ttriangle-list`, byte-identical to the pre-C11-90 key. Strips append their
- * index format too, so a uint16 and a uint32 `triangle-strip` caster cannot
- * collapse onto one entry.
+ * `triangle-list` appends `|ttriangle-list`. A strip also appends its index
+ * format, so uint16 and uint32 `triangle-strip` casters cannot share an entry.
  *
  * @private
  */
@@ -817,16 +798,11 @@ function getShadowCastPipelineCacheKey(
  * keyed by layout, stride, topology, and cull mode, so each shadow map only
  * pays creation cost once per pipeline-baked state tuple it encounters.
  *
- * Batch 24 — the `overrideStride` parameter (optional) replaces the
- * variant's declared `arrayStride` for the first vertex buffer. The
- * variants declare their default stride (matching the canonical caller),
- * but several callers have extra per-vertex bytes trailing the
- * position data (e.g., uncompressed terrain with vertex normals +
- * web-mercator-T + geodetic surface normal = 28–44 bytes). Without the
- * override WebGPU would walk the buffer at the variant's default
- * stride, silently misaligning every vertex after the first. With it,
- * the pipeline's GPU-side stride matches the actual VB contents and
- * the shadow cast reads the right position data for every vertex.
+ * The optional `overrideStride` replaces the first vertex buffer's declared
+ * `arrayStride`. Some callers append per-vertex data after the position, such
+ * as uncompressed terrain layouts spanning 28 to 44 bytes. Without the
+ * override, WebGPU would use the variant's default stride and misalign every
+ * vertex after the first.
  *
  * @private
  */
@@ -837,8 +813,7 @@ function _getOrCreateCastPipeline(
   overrideStride,
   topology = DEFAULT_SHADOW_CAST_TOPOLOGY,
   cullMode = DEFAULT_SHADOW_CAST_CULL_MODE,
-  // C11-90 — REQUIRED for `line-strip` / `triangle-strip`, forbidden
-  // otherwise. Undefined for every pre-C11-90 caster.
+  // Required for `line-strip` and `triangle-strip`, and undefined otherwise.
   stripIndexFormat = undefined,
 ) {
   if (!defined(cache.castPipelines)) {
@@ -878,7 +853,7 @@ function _getOrCreateCastPipeline(
   // Build the BGL. Binding 0 is always the shared lightVP/camera UB
   // (`u` in the shader prefix). Variants that need additional
   // per-command bindings (model matrix, tile uniforms) list them in
-  // `extraBindings` — we splice those in after the shared entry.
+  // `extraBindings`, which are appended after the shared entry.
   const bindGroupLayoutEntries = [uniformBuffer(0, Stage.VERTEX)];
   if (defined(variant.extraBindings)) {
     for (const eb of variant.extraBindings) {
@@ -891,8 +866,8 @@ function _getOrCreateCastPipeline(
     bindGroupLayoutEntries,
   );
 
-  // Build the final buffers array — shallow-clone when we're overriding
-  // so we don't mutate the shared `SHADOW_CAST_VARIANTS` entry.
+  // Shallow-clone the buffer layouts when overriding so the shared
+  // `SHADOW_CAST_VARIANTS` entry remains immutable.
   let buffers = variant.buffers;
   if (strideDiffers) {
     buffers = variant.buffers.map((buf, idx) =>
@@ -905,8 +880,8 @@ function _getOrCreateCastPipeline(
     layout: device.createPipelineLayout({ bindGroupLayouts: [bgl] }),
     vertex: { module: mod, entryPoint: "vs", buffers },
     fragment: { module: mod, entryPoint: "fs", targets: [] },
-    // C11-90 — same builder as the model color pipelines: topology and its
-    // strip index format are emitted together or not at all.
+    // Use the model color pipeline's topology builder so topology and strip
+    // index format are emitted together.
     primitive: modelPrimitiveState(castTopology, cullMode),
     depthStencil: {
       format: "depth32float",
@@ -929,7 +904,8 @@ function _getOrCreateCastPipeline(
  * quantized terrain or model PBR). Variants registered after the first
  * shadow cast pass will be picked up on the next pass.
  *
- * @param {string} key Unique layout name (also used as `cmd._shadowCastLayout`)
+ * @param {string} key Unique layout name, also used as
+ *                     `cmd._shadowCastLayout`.
  * @param {{vsCode: string, buffers: Array<GPUVertexBufferLayout>}} variant
  */
 function registerShadowCastVariant(key, variant) {
@@ -952,8 +928,8 @@ function getRegisteredShadowCastVariantKeys() {
  * `WebGPUCSMRenderer` so the CSM cast loop can read the same
  * `extraBindings` / `perCommandBindingFields` / `vertexBufferSourceSlots`
  * metadata as the single-shadow-map loop without duplicating the table.
- * Changing the descriptor returned here would leak into BOTH paths —
- * treat as read-only.
+ * The returned descriptor is shared by both paths and must be treated as
+ * read-only.
  * @param {string} key
  * @returns {ShadowCastVariant | undefined}
  */
@@ -971,12 +947,9 @@ function initWebGPUShadowMap(shadowMap, frameState) {
     return;
   }
 
-  // NEW-3-B (Batch 66) — earlier code read `frameState.context.device`
-  // but some early-frame init paths (entity-driven shadow allocation
-  // before the first scene render) pass through with `frameState.context`
-  // either undefined or pointing at a transient placeholder. Guard
-  // against missing context/device — the next frame's shadow update
-  // will retry once the WebGPU context is fully wired.
+  // Entity-driven shadow allocation can run before the first scene render,
+  // when `frameState.context` is absent or transient. Leave initialization
+  // pending in that case so a later frame can retry with the WebGPU context.
   const context = frameState?.context;
   if (!context) {
     return;
@@ -991,11 +964,9 @@ function initWebGPUShadowMap(shadowMap, frameState) {
   }
   const cache = shadowMap._webgpuCache;
 
-  // Create shadow map texture once. Directional / spot lights get a
-  // single 2D depth target; point lights get a cube (6 array layers)
-  // so the cast pass can render 6 faces in sequence and the receive
-  // pass can sample by ray direction. C-R10 (Batch 34) removed the
-  // early-return that previously stubbed point-light shadows out.
+  // Create the shadow texture once. Directional and spot lights use one 2D
+  // depth target; point lights use six cube layers so casting can render each
+  // face and receiving can sample by ray direction.
   if (!defined(cache.depthTexture)) {
     const size = shadowMap._textureSize?.x || SHADOW_MAP_SIZE;
     if (shadowMap._isPointLight) {
@@ -1003,14 +974,11 @@ function initWebGPUShadowMap(shadowMap, frameState) {
       cache.depthTexture = result.texture;
       cache.cubeFaceViews = result.faceViews;
       cache.cubeDepthView = result.cubeView;
-      // The 2D `depthTextureView` slot stays populated with the first
-      // face's view so legacy callers that read it directly (without
-      // checking `cache.isCube`) still observe a valid 2D depth view.
-      // The receive path in `WebGPUEffectsBindGroup.js` (Batch 53+)
-      // detects the cube case via `_isPointLight` + `cache.cubeDepthView`
-      // and binds the cube view at binding 17 — the model FS routes
-      // through `samplePointShadow` and the 2D view at binding 1 stays
-      // unread on the point-light path. C-R10-POINT-LIGHT-RECEIVE.
+      // Keep `depthTextureView` populated with the first face for callers
+      // that require a 2D view. `WebGPUEffectsBindGroup.js` detects point
+      // lights through `_isPointLight` and `cache.cubeDepthView`, binds the
+      // cube view at binding 17, and routes model and globe receivers through
+      // `samplePointShadow`; binding 1 is not sampled on that path.
       cache.depthTextureView = result.faceViews[0];
       cache.comparisonSampler = result.sampler;
       cache.size = size;
@@ -1025,10 +993,8 @@ function initWebGPUShadowMap(shadowMap, frameState) {
     }
   }
 
-  // Cast pipelines are now created lazily per vertex-layout variant
-  // (see _getOrCreateCastPipeline). Eager creation removed so that
-  // shadow maps which only ever see one layout don't pay for unused
-  // variants.
+  // Create cast pipelines lazily in `_getOrCreateCastPipeline` so each shadow
+  // map pays only for the vertex-layout variants it encounters.
 
   // Uniform buffer
   if (!defined(cache.uniformBuffer)) {
@@ -1041,7 +1007,7 @@ function initWebGPUShadowMap(shadowMap, frameState) {
   }
   // Point faces are encoded into one command buffer and submitted together.
   // Rewriting one UBO six times before submit makes every pass observe the
-  // final face matrix, so each legacy face owns persistent uniform contents
+  // final face matrix, so each face owns persistent uniform contents
   // and a no-extra-bindings cache. Directional/spot maps pay none of this.
   if (cache.isCube && !defined(cache.pointFaceUniformBuffers)) {
     cache.pointFaceUniformBuffers = new Array(6);
@@ -1121,8 +1087,8 @@ function resolveShadowCastCameraPosition(frameState) {
 }
 
 /**
- * Computes the native WebGPU point-shadow cast transform for one legacy
- * ShadowMap cube-face camera.
+ * Computes the native WebGPU point-shadow cast transform for one shared
+ * `ShadowMap` cube-face camera.
  *
  * Cesium's shared point cameras retain WebGL's bottom-left cube-face
  * convention. WebGPU render attachments use a top-left framebuffer origin,
@@ -1173,7 +1139,7 @@ function packShadowCastBias(data, shadowMap, isTerrain = false) {
   // Point shadows apply `_pointBias.depthBias` once during cube receive, just
   // like WebGL; adding caster bias here would double-bias the comparison.
   // Directional/spot native casting keeps separate primitive and terrain
-  // payloads because the legacy renderer gives those families different
+  // payloads because the shared renderer gives those families different
   // separation values.
   const isPointLight = shadowMap._isPointLight === true;
   const bias = isTerrain
@@ -1235,9 +1201,9 @@ function getShadowPassDescriptor(shadowMap) {
 }
 
 /**
- * C-R10 (Batch 34) — Cube-face pass descriptor for point-light shadow
- * casting. The depth attachment targets a single cube-face view so each
- * of the 6 cast passes writes to a distinct layer of the cube texture.
+ * Create a cube-face pass descriptor for point-light shadow casting. The
+ * depth attachment targets one face so each of the six cast passes writes a
+ * distinct cube-texture layer.
  *
  * @param {ShadowMap} shadowMap
  * @param {number} passIndex Legacy ShadowMap pass index, 0..5.
@@ -1269,13 +1235,11 @@ function getPointLightFacePassDescriptor(shadowMap, passIndex) {
 /**
  * Gets the shadow map texture and sampler for use in color pass shaders.
  *
- * Returns both the directional/spot 2D view fields AND, when the map is
- * a point light (C-R10-POINT-LIGHT-RECEIVE, Batch 53+), the cube depth
- * view + light position + far plane needed by the cube-receive shader
- * variant. Callers that only handle the 2D path can ignore the cube
- * fields; the auto-detect branch in `WebGPUEffectsBindGroup.js` reads
- * the same cube fields from `shadowMap._webgpuCache` directly so this
- * shape is purely additive to the public 2D contract.
+ * Returns the directional or spot 2D fields and, for point lights, the cube
+ * depth view, light position, and clipping planes needed by cube receivers.
+ * Two-dimensional callers can ignore the point-light fields;
+ * `WebGPUEffectsBindGroup.js` also reads them directly from
+ * `shadowMap._webgpuCache`.
  *
  * @param {ShadowMap} shadowMap
  * @returns {{
@@ -1322,15 +1286,12 @@ function getShadowMapResources(shadowMap) {
     sampler: cache.comparisonSampler,
     matrix,
     size: cache.size ?? SHADOW_MAP_SIZE,
-    // NEW-WEBGPU-SHADOW-DARKNESS-FADE-NOT-APPLIED — WebGL's receive uniform
-    // reads the FADED `_darkness` (`Scene/ShadowMap.js` `combineUniforms`),
-    // which `ShadowMapComputations` ramps to 1.0 (= no darkening) as the light
-    // approaches and crosses the horizon. Reading the public, unfaded
-    // `darkness` kept WebGPU darkening at 0.3 through the terminator.
+    // Use the faded `_darkness` value, which `ShadowMapComputations` ramps to
+    // 1.0 as the light reaches the horizon. The public `darkness` value does
+    // not include this terminator fade.
     darkness: shadowMap._darkness ?? shadowMap.darkness ?? 0.3,
     softShadows: shadowMap.softShadows ?? false,
-    // C-R10-POINT-LIGHT-RECEIVE additions. Undefined for directional /
-    // spot shadow maps so existing callers can continue ignoring them.
+    // Point-light receive fields stay undefined on directional and spot maps.
     isPointLight,
     cubeView: isPointLight ? cache.cubeDepthView : undefined,
     lightPositionWC: isPointLight
@@ -1345,13 +1306,13 @@ function getShadowMapResources(shadowMap) {
 }
 
 /**
- * Renders a shadow cast pass — draws all shadow-casting commands from the light's perspective.
- * Uses the shadow cast pipeline with depth-only output to the shadow map texture.
+ * Renders every shadow-casting command from the light's perspective into a
+ * depth-only shadow texture.
  *
- * @param {GPUCommandEncoder} encoder - Active command encoder
- * @param {ShadowMap} shadowMap - The shadow map with cached WebGPU resources
- * @param {FrameState} frameState
- * @param {Array} castCommands - Array of WebGPUDrawCommands that cast shadows
+ * @param {GPUCommandEncoder} encoder - The active command encoder.
+ * @param {ShadowMap} shadowMap - The shadow map with cached WebGPU resources.
+ * @param {FrameState} frameState - The current frame state.
+ * @param {Array} castCommands - WebGPU draw commands that cast shadows.
  * @returns {boolean} Whether a draw or clear-only pass was encoded.
  */
 function renderShadowCastPass(encoder, shadowMap, frameState, castCommands) {
@@ -1387,15 +1348,15 @@ function renderShadowCastPass(encoder, shadowMap, frameState, castCommands) {
     return true;
   }
 
-  // Update shadow uniforms
+  // Update shadow uniforms.
   const context = frameState?.context;
   const device = context?.device ?? context?._device;
   if (!device) {
     return false;
   }
-  // Capture one authoritative cast origin for the whole pass. UniformState is
-  // the active-view authority used by model/primitive RTE resources; the frame
-  // camera remains the conservative fallback for older/direct callers.
+  // Capture one authoritative cast origin for the whole pass. UniformState
+  // is the active-view authority used by model/primitive RTE resources; the
+  // frame camera remains the conservative fallback for older/direct callers.
   const shadowCastCameraPositionWC =
     resolveShadowCastCameraPosition(frameState);
   packShadowCastUniforms(
@@ -1407,7 +1368,7 @@ function renderShadowCastPass(encoder, shadowMap, frameState, castCommands) {
   // Update the scene-wide terrain globals. Exaggeration comes from
   // frameState (set by Scene.js from `scene.verticalExaggeration`
   // and `scene.verticalExaggerationRelativeHeight`). In 2D / Columbus
-  // View the color pass skips exaggeration, so we mirror that here by
+  // View the color pass skips exaggeration, so mirror that here by
   // forcing exaggeration to 1.0 when sceneMode <= 2 — this keeps the
   // shader branch cold and identical to the non-exaggerated path.
   if (defined(cache.terrainGlobalsUB)) {
@@ -1428,12 +1389,10 @@ function renderShadowCastPass(encoder, shadowMap, frameState, castCommands) {
     );
   }
 
-  // Stamp the scene-wide terrain globals UB onto every quantized12
-  // command so the per-command bind group builder finds it at
-  // `cmd._shadowCastTerrainGlobalsUB`. The globals UB handle is
-  // stable across frames (buffer never reallocates), so the bind
-  // group cache on each command stays valid — we're only writing a
-  // handle that was already there on subsequent frames.
+  // Stamp the scene-wide terrain globals UB onto each quantized12 command.
+  // Each per-command bind group builder retrieves the buffer through
+  // `cmd._shadowCastTerrainGlobalsUB`. The buffer never reallocates, so its
+  // stable handle keeps each command's bind-group cache valid across writes.
   let hasTerrainCaster = false;
   for (let si = 0; si < castCommands.length; si++) {
     const c = castCommands[si];
@@ -1450,10 +1409,8 @@ function renderShadowCastPass(encoder, shadowMap, frameState, castCommands) {
     }
   }
 
-  // Begin shadow render pass (depth-only). C-R10 (Batch 34): for point
-  // lights, `_renderCastPassForShadowMap` is invoked 6 times below with
-  // per-face VPs + per-face pass descriptors. Directional / spot lights
-  // take the single-pass flow here.
+  // Point lights invoke `_renderCastPassForShadowMap` six times with per-face
+  // VPs and attachments. Directional and spot lights use one depth-only pass.
   if (shadowMap._isPointLight) {
     _renderPointLightCubeCastPasses(
       encoder,
@@ -1492,9 +1449,9 @@ function renderShadowCastPass(encoder, shadowMap, frameState, castCommands) {
   if (!passDesc) {
     return false;
   }
-  // C11-192 — only commands entering a real cast pass realize their per-tile
-  // terrain UB. Do this before beginning the pass so the first enabled frame
-  // has complete bindings rather than dropping terrain until frame two.
+  // Realize per-tile terrain uniforms only for commands entering this cast
+  // pass. Do this before beginning the pass so its first enabled frame has
+  // complete bindings.
   prepareTerrainShadowCastCommandUniforms(device, castCommands);
   const pass = encoder.beginRenderPass(passDesc);
   _drawCastCommandsToPass(
@@ -1515,15 +1472,13 @@ function renderShadowCastPass(encoder, shadowMap, frameState, castCommands) {
 }
 
 /**
- * C-R10 (Batch 34) — Runs the 6-face cast loop for a point-light
- * shadow map. Reuses the same cast-pipeline factory + command-drawing
- * body as the directional / spot path, swapping only the light VP in
- * `cache.uniformData[0..15]` + the depth target view per face.
+ * Run the six-face cast loop for a point-light shadow map. Reuses the
+ * directional and spot cast-pipeline factory and command-drawing body while
+ * replacing the light VP and depth attachment for each face.
  *
- * WebGL parity: matches the 6-pass loop in `ShadowMap.js:270-313` that
- * drives the cubemap face-by-face — the cube view is consumed in the
- * receive shader via `textureSampleCompare` with a cube sampler (not
- * wired on the receive side yet; tracked separately).
+ * Matches the six-pass loop in `ShadowMap.js:270-313`. Model and globe
+ * receive shaders consume the completed cube view with
+ * `textureSampleCompare` and a cube sampler.
  *
  * @private
  */
@@ -1544,12 +1499,12 @@ function _renderPointLightCubeCastPasses(
     if (!passDesc) {
       continue;
     }
-    // ShadowMap's legacy point-light passes already contain a per-face
-    // frustum-culled command list. WebGPUContext deliberately preserves those
-    // lists until this loop completes. Falling back to the unique union keeps
-    // direct/internal callers that provide camera-only pass objects working,
-    // while an explicitly empty list remains empty so off-face casters are not
-    // redrawn into all six cube layers.
+    // `ShadowMap` point-light passes already contain a per-face
+    // frustum-culled command list. WebGPUContext preserves those lists until
+    // this loop completes. Falling back to the unique union keeps
+    // direct/internal callers with camera-only pass objects working, while an
+    // explicitly empty list remains empty so off-face casters are not redrawn
+    // into all six cube layers.
     const faceCommands = Array.isArray(passes[face]?.commandList)
       ? passes[face].commandList
       : castCommands;
@@ -1563,11 +1518,11 @@ function _renderPointLightCubeCastPasses(
     ) {
       continue;
     }
-    // Per-face legacy command lists are already spatially culled. Realize only
+    // Per-face command lists are already spatially culled. Realize only
     // terrain that this cube face will actually draw.
     prepareTerrainShadowCastCommandUniforms(device, faceCommands);
     // Copy the common encoded-camera/bias fields, then replace this face's
-    // matrix. The distinct GPUBuffer keeps these bytes immutable until submit.
+    // matrix. A distinct GPUBuffer keeps these bytes immutable until submit.
     faceData.set(cache.uniformData);
     packShadowCastMatrix(
       faceData,
@@ -1598,10 +1553,9 @@ function _renderPointLightCubeCastPasses(
 }
 
 /**
- * Shared cast-command drawing loop extracted from `renderShadowCastPass`
- * so both the single-pass (directional / spot) path and the 6-face
- * (point light) path can reuse the same pipeline + bind group +
- * vertex buffer resolution logic without duplication.
+ * Shared cast-command drawing loop for the single-pass directional or spot
+ * path and the six-face point-light path. Both use the same pipeline,
+ * bind-group, and vertex-buffer resolution logic.
  *
  * @private
  */
@@ -1617,7 +1571,7 @@ function _drawCastCommandsToPass(
   terrainCastBindGroups,
 ) {
   // Pipeline topology, culling, vertex layout, and stride are all baked in
-  // WebGPU. Track the complete key so adjacent commands only share state when
+  // WebGPU. Use the complete key so adjacent commands share state only when
   // every baked field is compatible.
   let currentPipelineKey = null;
   let currentUniformBuffer = null;
@@ -1629,7 +1583,7 @@ function _drawCastCommandsToPass(
   // Commands can be either:
   //   - WebGPU DrawCommands (have vertexBuffers[] with .buffer getter)
   //   - Ad-hoc commands (have _vertexBuffer with raw GPUBuffer)
-  //   - WebGL DrawCommands (have vertexArray — skip these, can't render in WebGPU)
+  //   - WebGL DrawCommands, which have `vertexArray` and cannot render here
   for (let i = 0; i < castCommands.length; i++) {
     const cmd = castCommands[i];
     if (!defined(cmd)) {
@@ -1663,14 +1617,10 @@ function _drawCastCommandsToPass(
       continue;
     }
 
-    // Batch 24 — pass the command's reported stride so stride-divergent
-    // callers (uncompressed terrain with vertex normals / web-mercator-T
-    // / geodetic surface normal) get a pipeline whose `arrayStride`
-    // matches their actual VB stride. Variants with a fixed stride
-    // (rte24, primitiveRte24, p12, modelP12, modelInstanced, quantized12,
-    // modelSkinned)
-    // don't set `vertexStride` on their commands, so `vbStride` would
-    // match the variant's declared stride and no override kicks in.
+    // Pass the command's reported stride so layouts with trailing terrain
+    // attributes receive a matching pipeline `arrayStride`. Fixed-stride
+    // variants omit `vertexStride`, leaving `vbStride` equal to the declared
+    // layout and avoiding an override.
     const topology = getShadowCastTopology(cmd);
     const cullMode = getShadowCastCullMode(cmd, invertWinding);
     const entry = _getOrCreateCastPipeline(
@@ -1697,10 +1647,10 @@ function _drawCastCommandsToPass(
       ? terrainCastBindGroups
       : (sharedCastBindGroups ?? cache.castBindGroups);
 
-    // For variants with no per-command bindings (rte24, p12,
-    // modelInstanced) we can share a single bind group for the whole
-    // pass. For variants with extraBindings (modelP12, quantized12)
-    // we build one per command using the per-variant field map.
+    // For variants with no per-command bindings (`rte24`, `p12`, and
+    // `modelInstanced`), share one bind group for the pass. Extra-binding
+    // variants (`modelP12` and `quantized12`) use the per-variant field map
+    // to build one bind group for each command.
     if (!hasExtraBindings) {
       if (
         entry.cacheKey !== currentPipelineKey ||
@@ -1768,10 +1718,9 @@ function _drawCastCommandsToPass(
     //      needs (pos + joints + weights) from a command whose full
     //      layout has more slots (Cesium model's 7-buffer layout).
     //
-    //   3. `modelInstanced` (the classic VB-instancing variant) is a
-    //      third legacy shape that keeps its old `_shadowCastInstanceVB
-    //      || cmd.vertexBuffers[1]` fallback. Kept for third-party
-    //      callers that explicitly use it.
+    //   3. `modelInstanced` is a third shape that retains the
+    //      `_shadowCastInstanceVB || cmd.vertexBuffers[1]` fallback for
+    //      third-party callers that explicitly use it.
     const sourceSlots = variant.vertexBufferSourceSlots;
     if (sourceSlots && sourceSlots.length > 1) {
       let allResolved = true;

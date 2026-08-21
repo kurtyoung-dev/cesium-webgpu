@@ -241,17 +241,37 @@ test("the Mie forward peak at the default anisotropy is 4869.9x the 90-degree va
     Math.abs(ratio - 4869.9) < 0.5,
     `forward/side Mie ratio ${ratio}, expected 4869.9`,
   );
-  // The figure quoted in the code comments must be the one the math produces.
+  // The GLSL comments quote the derived figure directly.
   for (const [name, src] of [
     ["getSkyAtmosphereLightDirection.glsl", skyLightDirGlsl],
     ["SkyAtmosphereFS.glsl", skyAtmosphereFs],
-    ["SkyAtmosphere.wgsl", skyAtmosphereWgsl],
   ]) {
     assert.ok(
       src.includes("4869.9"),
       `${name}: the derived ratio is not quoted`,
     );
   }
+  // Pin the WGSL implementation to code rather than explanatory prose.
+  pin(
+    skyAtmosphereWgsl,
+    /fn\s+miePhaseFunction\(cosAngle:\s*f32,\s*g:\s*f32\)\s*->\s*f32/,
+    "WGSL Mie phase function",
+  );
+  pin(
+    skyAtmosphereWgsl,
+    /let\s+num\s*=\s*3\.0\s*\*\s*\(1\.0\s*-\s*g2\)\s*\*\s*\(1\.0\s*\+\s*cosAngle\s*\*\s*cosAngle\);/,
+    "WGSL Mie phase numerator",
+  );
+  pin(
+    skyAtmosphereWgsl,
+    /let\s+cosAngle\s*=\s*dot\(rayDir,\s*sunDir\);/,
+    "WGSL view-to-light cosine",
+  );
+  pin(
+    skyAtmosphereWgsl,
+    /let\s+miePhase\s*=\s*miePhaseSelected\(cosAngle,\s*u\.mieAnisotropy\);/,
+    "WGSL selected Mie phase",
+  );
 });
 
 test("the phase function this reasons about is the one the shader ships", () => {

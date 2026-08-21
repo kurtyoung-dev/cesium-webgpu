@@ -1,23 +1,29 @@
 /**
  * WebGPUCubeMapPanoramaRenderer.js
  *
- * Handles WebGPU rendering for CubeMapPanorama (used by SkyBox and standalone panoramas).
- * Creates pipelines, buffers, bind groups, and WebGPUDrawCommand instances for cubemap
- * panorama rendering in the WebGPU renderer.
+ * Handles WebGPU rendering for `CubeMapPanorama`, including `SkyBox` and
+ * standalone panoramas. Creates pipelines, buffers, bind groups, and
+ * `WebGPUDrawCommand` instances.
  *
- * Uniform layout matches CubeMapPanorama.wgsl (272 bytes of data, 288-byte buffer):
+ * Uniform layout matches `CubeMapPanorama.wgsl` (272 bytes of data in a
+ * 288-byte buffer):
  *   projection:         mat4x4<f32>  (offset 0,  64 bytes)
  *   viewRotation:       mat4x4<f32>  (offset 64, 64 bytes)
  *   panoramaTransform:  mat4x4<f32>  (offset 128, 64 bytes)
- *   params:             vec4<f32>    (offset 192, 16 bytes) — far, morphTime, debugCubeFace, skyBrightness
- *   starModulation:     vec4<f32>    (offset 208, 16 bytes) — inflection, steepness, enableFlag, cloudCover
- *   hdr:                vec4<f32>    (offset 224, 16 bytes) — gamma (0 when SDR), reserved, reserved, reserved
- *   solarGlare:         vec4<f32>    (offset 240, 16 bytes) — C12-27 Sun dir in the cube-map (TEME) frame, strength
- *   solarGlareCurve:    vec4<f32>    (offset 256, 16 bytes) — C12-27 angular core (rad), pedestal, support (rad), reserved
+ *   params:             vec4<f32>    (offset 192, 16 bytes)
+ *     far, morph time, debug face, and sky brightness
+ *   starModulation:     vec4<f32>    (offset 208, 16 bytes)
+ *     inflection, steepness, enable flag, and cloud cover
+ *   hdr:                vec4<f32>    (offset 224, 16 bytes)
+ *     gamma when HDR, followed by three reserved values
+ *   solarGlare:         vec4<f32>    (offset 240, 16 bytes)
+ *     sun direction in the cube-map TEME frame and strength
+ *   solarGlareCurve:    vec4<f32>    (offset 256, 16 bytes)
+ *     angular core, pedestal, support, and one reserved value
  */
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
 import WebGPUBuffer from "./WebGPUBuffer.js";
-// Slice 5c-B Phase 1 (Batch 107) — scene-FB target helper.
+// Scene-framebuffer target helper.
 import { makeSceneFBTargets } from "./WebGPUSceneFBTargetHelpers.js";
 import defined from "../../Core/defined.js";
 import Matrix3 from "../../Core/Matrix3.js";
@@ -221,19 +227,17 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
 }
 `;
 
-// Uniform buffer size: 272 bytes of data (C12-27 appended `solarGlare` +
-// `solarGlareCurve` at offsets 240/256), padded to 288 — a multiple of 16, so
-// every vec4 stays naturally aligned. ADD-ONLY: no pre-existing offset moved,
-// so the bind-group layout and every bind group are unchanged.
+// The uniform block contains 272 bytes of data and is padded to 288, keeping
+// every vec4 naturally aligned. `solarGlare` and `solarGlareCurve` occupy the
+// tail at offsets 240 and 256, preserving all preceding offsets.
 const UNIFORM_BUFFER_SIZE = 288;
 const UNIFORM_FLOAT_COUNT = UNIFORM_BUFFER_SIZE / 4;
 
 // Cached per-device resources (shader module, pipeline, bind group layouts)
 let _cachedShaderModule = null;
 let _cachedPipeline = null;
-// Batch 110 — track the format the cached pipeline was built for so
-// runtime HDR toggles invalidate it (the pipeline's fragment-output
-// format must match the recreated scene FB's color format).
+// Cache the pipeline format because an HDR toggle recreates the scene
+// framebuffer with a different color format.
 let _cachedPipelineFormat = null;
 let _cachedPipelineSampleCount = 1;
 let _cachedBindGroupLayout0 = null;
@@ -242,25 +246,18 @@ let _cachedPipelineLayout = null;
 let _cachedDevice = null;
 
 /**
- * Reset every device-bound module-level cache when the active GPUDevice
- * changes (WebGPU context teardown + re-init, or split-screen contexts
- * that each own a separate device). This MUST run — and update
- * `_cachedDevice` — before any per-resource `getShaderModule` /
- * `ensureLayouts` / `getPipeline` guard is evaluated.
+ * Reset every device-bound module cache when the active `GPUDevice` changes,
+ * including context reinitialization and split-screen contexts. This must
+ * update `_cachedDevice` before any `getShaderModule`, `ensureLayouts`, or
+ * `getPipeline` cache guard runs.
  *
- * NS-WEBGPU-REINIT-BLACK-AFTER-SWITCH (2026-07-05): the previous
- * per-getter guards each compared against the SHARED `_cachedDevice` and
- * each mutated it independently. `getShaderModule` set `_cachedDevice` to
- * the new device before `ensureLayouts` ran, so `ensureLayouts`'
- * `_cachedDevice === device` guard then passed and returned the PREVIOUS
- * device's stale bind-group / pipeline layouts. The pipeline built from
- * those cross-device layouts is invalid, and using it aborts the whole
- * "Scene Framebuffer Render Pass" encoder — the canvas renders black on
- * every WebGPU init after a WebGL round-trip.
+ * A shared device guard in each individual getter is unsafe: the first getter
+ * can update `_cachedDevice`, causing later getters to accept layouts that
+ * still belong to the old device. Cross-device layouts invalidate the scene
+ * framebuffer render pass.
  *
- * The old device is already destroyed by the device pool by the time we
- * get here, so we must NOT call `.destroy()` on its handles — just drop
- * the references and let each getter rebuild against the new device.
+ * The device pool already destroyed the old device, so drop its cached handles
+ * without calling `.destroy()` and let each getter rebuild for the new device.
  *
  * @param {GPUDevice} device
  */
@@ -337,10 +334,8 @@ function ensureLayouts(device) {
 function getPipeline(device, format, sampleCount) {
   sampleCount = sampleCount ?? 1;
   resetPanoramaDeviceCacheIfChanged(device);
-  // Batch 110 — re-create when the requested format changes (HDR
-  // toggle flips scene FB color format between rgba16float and the
-  // canvas format). Batch 21 — also re-create when the MSAA sample
-  // count changes.
+  // Recreate when an HDR toggle changes the scene-framebuffer format or when
+  // the MSAA sample count changes.
   if (
     _cachedPipeline &&
     _cachedPipelineFormat === format &&
@@ -368,8 +363,7 @@ function getPipeline(device, format, sampleCount) {
     fragment: {
       module: shaderModule,
       entryPoint: "fragmentMain",
-      // Slice 5c-B Phase 1 (Batch 107) — scene-FB target via the
-      // helper. Standard alpha-over blend (helper's `translucent` default).
+      // Use the scene-framebuffer target helper's standard alpha-over blend.
       targets: makeSceneFBTargets(format, { translucent: true }),
     },
     primitive: {
@@ -386,7 +380,7 @@ function getPipeline(device, format, sampleCount) {
       // before or after terrain and the result is the same.
       depthCompare: "less-equal",
     },
-    // Session 65 Batch 21 — match scene FB sample count.
+    // Match the scene-framebuffer sample count.
     multisample: sampleCount > 1 ? { count: sampleCount } : undefined,
   });
   _cachedPipelineFormat = format;
@@ -396,7 +390,8 @@ function getPipeline(device, format, sampleCount) {
 }
 
 /**
- * Pack a Matrix3 into a Float32Array as a mat4x4<f32> (column-major, 16 floats).
+ * Pack a Matrix3 into a Float32Array as a mat4x4<f32> (column-major,
+ * 16 floats).
  * @param {Matrix3} m3 - Source 3x3 rotation matrix
  * @param {Float32Array} dst - Destination array
  * @param {number} offset - Offset in floats
@@ -446,8 +441,10 @@ const scratchMatrix3 = new Matrix3();
  * Create WebGPU vertex and index buffers from box geometry.
  *
  * @param {GPUDevice} device
- * @param {Object} geometry - CesiumJS Geometry object from BoxGeometry.createGeometry()
- * @returns {{ vertexBuffer: WebGPUBuffer, indexBuffer: WebGPUBuffer, indexCount: number }}
+ * @param {Object} geometry - CesiumJS geometry from
+ *        `BoxGeometry.createGeometry`.
+ * @returns {{vertexBuffer: WebGPUBuffer, indexBuffer: WebGPUBuffer,
+ *          indexCount: number}} The GPU geometry buffers.
  */
 export function createGeometryBuffers(device, geometry) {
   const positions = geometry.attributes.position.values;
@@ -535,8 +532,10 @@ export function createBindGroups(device, uniformBuffer, sampler, cubeMapView) {
  * @param {GPUDevice} device
  * @param {GPUBuffer} uniformBuffer
  * @param {Float32Array} uniformData
- * @param {Object} frameState - CesiumJS FrameState (provides uniformState + per-frame debug toggles)
- * @param {Matrix3|Matrix4|undefined} panoramaTransform - Panorama orientation transform
+ * @param {Object} frameState - CesiumJS frame state containing uniform state
+ *        and per-frame debug controls.
+ * @param {Matrix3|Matrix4|undefined} panoramaTransform - Panorama orientation
+ *        transform.
  * @param {Object|undefined} panorama - Backend-neutral panorama state.
  */
 export function updateUniforms(
@@ -578,23 +577,19 @@ export function updateUniforms(
   packMatrix3As4x4(transform, uniformData, 32);
 
   // Params: x=far, y=morphTime, z=debugCubeFace, w=skyBrightness
-  // The debug field is sourced from frameState rather than a dedicated
-  // parameter so future per-frame additions slot in without churning
-  // every call site. When the debug toggle is off the value is just 0
-  // (production behavior). Sky brightness and the modulation vector were
-  // already resolved by CubeMapPanorama before backend dispatch; generic
-  // panoramas therefore carry an explicit identity vector.
+  // Source the debug field from `frameState` to keep the call signature
+  // independent of per-frame controls. It is zero when disabled. Sky
+  // brightness and modulation are resolved by `CubeMapPanorama` before
+  // backend dispatch; generic panoramas carry an explicit identity vector.
   uniformData[48] = uniformState.entireFrustum.y; // far
-  // morphTime lives on frameState (czm_morphTime in WebGL also reads
-  // `uniformState.frameState.morphTime`). The previous `uniformState.morphTime`
-  // path was always undefined → NaN propagated into the alpha output, blending
-  // against an `undefined`-NaN alpha kept the destination clear color (black)
-  // and the skybox vanished even after the star-modulation default was off.
+  // `morphTime` lives on `frameState`, matching the WebGL `czm_morphTime`
+  // source. Reading it from `uniformState` yields undefined, which propagates
+  // a NaN alpha and leaves the destination at its clear color.
   uniformData[49] = frameState.morphTime ?? 1.0;
   uniformData[50] = frameState.debugShowCubeMapFace | 0; // 0=all, 1..6=face
-  // C12-29 S6 — CubeMapPanorama resolves this vector once before backend
-  // dispatch. SkyBox opts into `isStarMap`; generic/Street View panoramas
-  // resolve z=w=0 and remain byte-identical under daylight and weather.
+  // `CubeMapPanorama` resolves this vector before backend dispatch. `SkyBox`
+  // opts into `isStarMap`; generic and Street View panoramas resolve z and w
+  // to zero so daylight and weather do not modulate them.
   const starModulation = panorama?._starModulation;
   uniformData[51] = panorama?._skyBrightness ?? 1.0;
   uniformData[52] = starModulation?.x ?? 0.0;
@@ -602,12 +597,10 @@ export function updateUniforms(
   uniformData[54] = starModulation?.z ?? 0.0;
   uniformData[55] = starModulation?.w ?? 0.0;
 
-  // C4-CUBEMAP-PANORAMA-HDR-DECODE — hdr.x carries czm_gamma
-  // (uniformState.gamma, default 2.2) when HDR is active, else 0. The
-  // fragment shader mirrors WebGL SkyBoxFS.glsl's czm_gammaCorrect `#ifdef HDR`
-  // sRGB->linear decode when this is > 0.5. Zero on the default SDR path
-  // (frameState.useHDR falsy) → byte-identical output. Matches the billboard /
-  // sun / point renderers' HDR gamma gate convention.
+  // `hdr.x` carries `czm_gamma`, defaulting to 2.2, when HDR is active and
+  // zero otherwise. The fragment shader then mirrors `SkyBoxFS.glsl`'s
+  // `czm_gammaCorrect` sRGB-to-linear decode. This matches the HDR gamma gate
+  // used by the billboard, sun, and point renderers.
   uniformData[56] =
     frameState?.useHDR === true
       ? typeof uniformState?.gamma === "number"
@@ -615,11 +608,11 @@ export function updateUniforms(
         : 2.2
       : 0.0;
 
-  // C12-27 — angular solar-glare washout (floats 60..67, offsets 240/256).
-  // CubeMapPanorama resolves this vector once before backend dispatch, exactly
-  // like `_starModulation`: `isStarMap` gates it, so generic/Street View
-  // panoramas write strength 0 and the shader skips the whole block. The
-  // identity fallbacks below cover a panorama that has not reached `update`.
+  // Angular solar-glare washout occupies floats 60 through 67.
+  // `CubeMapPanorama` resolves it before backend dispatch, like
+  // `_starModulation`. `isStarMap` gates the effect, so generic and Street
+  // View panoramas write zero strength. Identity fallbacks cover an instance
+  // that has not reached `update`.
   const solarGlare = panorama?._solarGlare;
   const solarGlareCurve = panorama?._solarGlareCurve;
   uniformData[60] = solarGlare?.x ?? 0.0;
@@ -717,12 +710,12 @@ function getState(panorama) {
 }
 
 /**
- * C12-14 — expose the loaded cube texture so backend-neutral scene code can
- * publish it as a SAMPLABLE star texture (see `Scene/StarCubeMapResource.js`).
+ * Expose the loaded cube texture so backend-neutral scene code can publish it
+ * as a sampled star texture through `Scene/StarCubeMapResource.js`.
  *
- * Registered as the CUBE_MAP_PANORAMA feature renderer's `getResource`, which
- * is how `CubeMapPanorama` reaches it without importing from `Renderer/WebGPU/`
- * (Principle 2). Returns `undefined` while the six faces are still loading.
+ * Registered as the `CUBE_MAP_PANORAMA` feature renderer's `getResource`, so
+ * `CubeMapPanorama` reaches it without importing from `Renderer/WebGPU/`.
+ * Returns `undefined` while the six faces are loading.
  *
  * @param {Object} panorama The CubeMapPanorama instance.
  * @returns {{texture: GPUTexture, view: GPUTextureView}|undefined}
@@ -757,7 +750,7 @@ function loadCubeMap(device, sources, state, panorama) {
   ];
 
   //>>includeStart('debug', pragmas.debug);
-  // Log the actual source types/URLs so we can diagnose fetch failures.
+  // Log source types and URLs for diagnosing fetch failures.
   for (const face of faceNames) {
     const src = sources[face];
     const srcType = typeof src;
@@ -784,8 +777,8 @@ function loadCubeMap(device, sources, state, panorama) {
         .then((b) => createImageBitmap(b));
     }
     // Image / HTMLImageElement / ImageBitmap — need to ensure it's loaded.
-    // HTMLImageElement might not be decoded yet; wrap in createImageBitmap
-    // which handles decoding for all source types.
+    // `HTMLImageElement` may not be decoded yet; `createImageBitmap` handles
+    // decoding for every supported source type.
     if (src && typeof src === "object") {
       // HTMLImageElement: wait for it to finish loading if it hasn't yet.
       if (src instanceof HTMLImageElement && !src.complete) {
@@ -825,14 +818,10 @@ function loadCubeMap(device, sources, state, panorama) {
 
       for (let i = 0; i < 6; i++) {
         device.queue.copyExternalImageToTexture(
-          // flipY parity (ENV-SKYBOX-STARMAP): WebGL loads skybox faces with
-          // UNPACK_FLIP_Y_WEBGL=true (Renderer/loadCubeMap.js `flipY: true`;
-          // CubeMap's constructor default is also flipY=true), so each stored
-          // face row 0 is the IMAGE BOTTOM. GL and WebGPU share the same
-          // cube-face (s,t) derivation, so WebGPU must flip on upload too or
-          // every face samples vertically mirrored — the visible star map is
-          // then a different sky region than WebGL shows for the same camera
-          // (probe-env-skybox-stars caught an uncorrelated star pattern).
+          // WebGL loads skybox faces with `UNPACK_FLIP_Y_WEBGL=true`, making
+          // stored row 0 the image bottom. WebGL and WebGPU share the same
+          // cube-face `(s, t)` derivation, so WebGPU must also flip on upload
+          // to avoid sampling a vertically mirrored sky region.
           { source: images[i], flipY: true },
           { texture: texture, origin: [0, 0, i] },
           [size, size],
@@ -874,7 +863,7 @@ export function updateCubeMapPanorama(panorama, frameState, useHdr) {
   const device = context.device;
   const state = getState(panorama);
 
-  // --- Load cubemap when sources change ---
+  // Load the cubemap when its sources change.
   if (state.sources !== panorama.sources && !state.cubeMapLoading) {
     state.sources = panorama.sources;
     state.cubeMapLoading = true;
@@ -885,7 +874,7 @@ export function updateCubeMapPanorama(panorama, frameState, useHdr) {
     loadCubeMap(device, state.sources, state, panorama);
   }
 
-  // --- Create geometry buffers once ---
+  // Create geometry buffers once.
   if (!defined(state.vertexBuffer)) {
     const geometry = _createBoxGeometry();
     const buffers = createGeometryBuffers(device, geometry);
@@ -894,7 +883,7 @@ export function updateCubeMapPanorama(panorama, frameState, useHdr) {
     state.indexCount = buffers.indexCount;
   }
 
-  // --- Create uniform buffer + sampler once ---
+  // Create the uniform buffer and sampler once.
   if (!defined(state.uniformBuffer)) {
     const ub = createUniformBuffer(device);
     state.uniformBuffer = ub.uniformBuffer;
@@ -902,7 +891,7 @@ export function updateCubeMapPanorama(panorama, frameState, useHdr) {
     state.sampler = createCubeMapSampler(device);
   }
 
-  // --- Wait for cubemap texture to be ready ---
+  // Wait for the cubemap texture.
   if (!defined(state.cubeMapView)) {
     //>>includeStart('debug', pragmas.debug);
     if (!state._waitLogged) {
@@ -916,10 +905,9 @@ export function updateCubeMapPanorama(panorama, frameState, useHdr) {
     return undefined;
   }
 
-  // Batch 110 — invalidate cached draw command on scene format change
-  // (HDR toggle). The command's pipeline has the fragment-output
-  // format baked in; mismatch produces validation warnings against
-  // the recreated rgba16float scene FB.
+  // Invalidate the draw command when an HDR toggle changes the scene format.
+  // Its pipeline bakes the fragment-output format, which must match the
+  // recreated rgba16float scene framebuffer.
   const currentGen = context._scenePipelineFormatGeneration ?? 0;
   if (
     defined(state.command) &&
@@ -928,7 +916,7 @@ export function updateCubeMapPanorama(panorama, frameState, useHdr) {
     state.command = undefined;
   }
 
-  // --- Create bind groups + command when cubemap is ready ---
+  // Create bind groups and the draw command after the cubemap is ready.
   if (!defined(state.command)) {
     const bg = createBindGroups(
       device,
@@ -939,9 +927,8 @@ export function updateCubeMapPanorama(panorama, frameState, useHdr) {
     state.bindGroup0 = bg.bindGroup0;
     state.bindGroup1 = bg.bindGroup1;
 
-    // Batch 110 — use scenePipelineFormat instead of the canvas format.
-    // The skybox draws into the scene FB, so its fragment-output format
-    // must match the scene FB color format (rgba16float in HDR mode).
+    // The skybox draws into the scene framebuffer, so its fragment-output
+    // format must use `scenePipelineFormat`, including rgba16float in HDR.
     const sceneFormat =
       context.scenePipelineFormat ?? navigator.gpu.getPreferredCanvasFormat();
     state.command = createDrawCommand(
@@ -957,7 +944,7 @@ export function updateCubeMapPanorama(panorama, frameState, useHdr) {
     state._pipelineFormatGeneration = currentGen;
   }
 
-  // --- Update uniforms every frame ---
+  // Update uniforms every frame.
   updateUniforms(
     device,
     state.uniformBuffer,
@@ -967,7 +954,7 @@ export function updateCubeMapPanorama(panorama, frameState, useHdr) {
     panorama,
   );
 
-  // --- Credits ---
+  // Add credits for visible scene-owned panoramas.
   if (panorama.show && defined(panorama._credit) && !panorama._returnCommand) {
     frameState.creditDisplay.addCreditToNextFrame(panorama._credit);
   }

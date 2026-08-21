@@ -15,7 +15,7 @@ import WebGPUBuffer from "./WebGPUBuffer.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
 import SkyAtmosphereWGSL from "../../Shaders/WebGPU/Environment/SkyAtmosphere.js";
 import { resolveSkyDynamicLighting } from "./WebGPUAtmosphereUniforms.js";
-// Slice 5c-B Phase 1 (Batch 106) — scene-FB target helper.
+// Scene-framebuffer target helper.
 import { makeSceneFBTargets } from "./WebGPUSceneFBTargetHelpers.js";
 import {
   makeBindGroupLayout,
@@ -27,10 +27,8 @@ import {
 import { ShaderSourceId } from "./WebGPUShaderDefines.js";
 import { WebGPUShaderModuleCache } from "./WebGPUShaderModuleCache.js";
 
-// C-R7-SHADER-MODULE-DEDUP (Batch 185) — per-device module cache.
-// SkyAtmosphere is singleton-per-scene so the dedup win per scene is
-// negligible, but the cache unifies the pattern across the full
-// renderer family and keeps device-loss handling consistent.
+// Keep shader modules per device. SkyAtmosphere is a scene singleton, but the
+// shared cache pattern also gives it consistent device-loss handling.
 const _skyAtmosphereShaderCaches = new WeakMap();
 
 function getSkyAtmosphereShaderCache(device) {
@@ -42,75 +40,40 @@ function getSkyAtmosphereShaderCache(device) {
   return cache;
 }
 
-// Uniform buffer: 256 bytes (aligned)
-// Session 65 Batch 42 — Phase 4 completion (windSpeed/windDirection):
-// bumped 256 → 272 to accommodate the `windDirectionAndSpeed: vec4<f32>`
-// field appended after `dualLightControl`. WebGPU requires uniform
-// buffer sizes to be a multiple of 16 bytes; 272 = 17 × 16 satisfies
-// that. No bind-group layout change needed (the layout's minBindingSize
-// is what matters and it sizes from this constant).
-//
-// Fullscreen-sky path — bumped 272 → 400 to append `inverseProjection` +
-// `inverseView` (two mat4 = 128 bytes) at float offsets 68/84, used by the
-// view-independent fullscreen sky option to reconstruct the per-pixel world ray.
-// 400 = 25 × 16. The shell-mesh path packs them too but the shell shader ignores
-// them.
-//
-// Batch 438 — bumped 400 → 464 to append four opt-in atmosphere-physics vec4s
-// after `inverseView` (float offset 100):
+// The 496-byte uniform buffer remains 16-byte aligned. Its tail layout is:
+//   windDirectionAndSpeed @64
+//   inverseProjection     @68
+//   inverseView           @84
 //   atmosControl       @100 (improvedMiePhase / dualLightInline / ozoneEnabled)
 //   ozoneCoefficient   @104 (+ pad @107)
 //   moonLightDirWC     @108 (+ pad @111)
 //   moonControl        @112 (phaseFraction / intensityScale)
-// 464 = 29 × 16. ALL default-zero so the sky stays byte-identical with every
-// flag off.
-//
-// C12-29 S6 — bumped 464 → 480 to append ONE vec4 at the TAIL (no existing
-// offset moved):
-//   eclipseControl     @116 (x = 360-degree horizon-twilight gain; y/z/w reserved)
-// 480 = 30 × 16, still 16-aligned. Default zero, and the shader skips the
-// block at zero, so the sky is byte-identical outside totality.
-//
-// Custom-ellipsoid horizon correctness — bumped 480 → 496 to append the
-// active atmosphere ellipsoid's inverse-radii-squared at float offset 120
-// (+ pad @123). No established offset moved.
+//   eclipseControl     @116 (horizon-twilight gain)
+//   ellipsoid weights  @120 (+ pad @123)
+// Zero-valued gates preserve the baseline paths, while fixed offsets keep the
+// shell and fullscreen bind groups compatible.
 const UNIFORM_BUFFER_SIZE = 496;
 
-// Default atmosphere parameters
-// Batch 247 (NEW-GROUND-VIEW-ENV-DIVERGENCES fix 1) — the SKY shader's
-// inscatter-LUT fast path is DISABLED pending a sun-relative
-// re-parameterization of the bake (DEFERRED_WORK:
-// NEW-ATMOSPHERE-LUT-SUN-RELATIVE). The 2D LUT (AtmosphereLUT.wgsl
-// computeInscatter) bakes the WORLD-space sun direction into a synthetic
-// Y-up frame — geometrically unrelated to any fragment's local up — and
-// its (cosViewZenith, altitude) parameterization cannot represent the
-// view–sun azimuth dependence at all, so at ground level it rendered a
-// frame-filling daytime-bright sky regardless of actual sun geometry
-// (probe-ground-view-env: 1.73x the WebGL luminance). With the gate off,
-// the fragment shader takes the inline 64-step ray-march, which is the
-// parity port of WebGL's czm_computeScattering. The LUT BAKE still runs —
-// the globe/voxel/splat fog drape paths sample the same inscatter texture
-// and are tuned against it; only the sky shader's consumption is gated.
-// All LUT scaffolding (bake dispatch, bind group, WGSL branch, dual-light
-// moon LUT) stays in place for the re-parameterized bake to re-enable.
+// The visible sky does not sample the legacy inscatter LUT. Its
+// cosViewZenith-by-altitude mapping has no view-to-sun azimuth axis, but must
+// remain unchanged because globe, voxel, splat, point-cloud, and fog consumers
+// depend on it. The inline march supplies the baseline visible sky, and a
+// separate sun-relative sky-view LUT supplies its optional lookup path. The
+// legacy bake still runs for its non-sky consumers.
 const ENABLE_SKY_INSCATTER_LUT = false;
 
 const DEFAULT_RAYLEIGH_COEFFICIENT = new Cartesian3(5.5e-6, 13.0e-6, 22.4e-6);
 const DEFAULT_MIE_COEFFICIENT = new Cartesian3(21e-6, 21e-6, 21e-6);
-// Batch 438 (4.5 SKY-OZONE) — ozone Chappuis-band absorption coefficient
-// (per-metre, RGB). Bruneton/Hillaire-derived: peak absorption in green/red
-// (the Chappuis band), almost transparent in blue — this is the spectral shape
-// that deepens twilight toward blue/violet at the zenith. Magnitude scaled to
-// sit alongside the Rayleigh coefficient at the ~25 km tent peak. Only applied
-// when `skyAtmosphere.ozone` is on; default is OFF (coefficient zeroed) so the
-// sky is byte-identical.
+// Per-metre RGB Chappuis-band absorption coefficient. Its green/red peak and
+// weak blue absorption deepen twilight toward a blue-violet zenith. The value
+// is scaled against Rayleigh scattering at the 25 km ozone-density peak and is
+// zeroed unless ozone is enabled.
 const DEFAULT_OZONE_COEFFICIENT = new Cartesian3(0.65e-6, 1.881e-6, 0.085e-6);
 const DEFAULT_RAYLEIGH_SCALE_HEIGHT = 8500.0;
 const DEFAULT_MIE_SCALE_HEIGHT = 1200.0;
 const DEFAULT_MIE_ANISOTROPY = 0.758;
 const ATMOSPHERE_SCALE = 1.025;
-// WebGL's scattering-shell thickness (czm_computeScattering's
-// ATMOSPHERE_THICKNESS, computeScattering.glsl) — Batch 247.
+// Match `computeScattering.glsl` shell thickness.
 const ATMOSPHERE_THICKNESS = 111e3;
 
 // Scratch
@@ -131,8 +94,8 @@ function getShaderSource() {
 }
 
 /**
- * Generates the ellipsoid geometry vertices for the atmosphere shell.
- * Returns Float32Array with posHigh(3) + posLow(3) per vertex and Uint16Array indices.
+ * Generates the atmosphere shell's ellipsoid vertices and indices. Vertex
+ * high/low positions use Float32Array; indices use Uint16Array.
  * @private
  */
 function generateAtmosphereGeometry(ellipsoid, scale, slices, stacks) {
@@ -220,9 +183,8 @@ function createPipeline(
   // unavailable we still bind 1×1 placeholder views and clear the
   // `useLut` uniform flag so the fragment shader takes the ray-march path.
   //
-  // Phase 1.3c — bindings 3 and 4 hold the moon LUT pair. They're bound
-  // unconditionally too, falling back to the same placeholder when
-  // dual-light scattering isn't active so the layout stays constant.
+  // Bindings 3 and 4 hold the moon LUT pair. They use the same placeholder
+  // while dual-light scattering is inactive so the layout remains constant.
   const lutBindGroupLayout =
     reuseLutBgl ??
     makeBindGroupLayout(device, "SkyAtmosphere LUT bind group layout", [
@@ -231,16 +193,12 @@ function createPipeline(
       texture(2, Stage.FRAGMENT),
       texture(3, Stage.FRAGMENT),
       texture(4, Stage.FRAGMENT),
-      // Batch 427 (SKY-MS) — multiple-scattering LUT. Bound unconditionally
-      // so the pipeline layout never changes; the shell binds the 1×1
-      // placeholder when the extended bake hasn't run, the real MS view once
-      // it has. The fragment shader only ADDS the term when the opt-in flag is
-      // set, so an empty/placeholder binding is harmless on the default path.
+      // Keep multiple scattering bound unconditionally. A placeholder preserves
+      // the layout until a real view is available, and the shader samples it
+      // only when the feature gate is set.
       texture(5, Stage.FRAGMENT),
-      // Batch 428 (A-LUT-REPARAM) — sun-relative sky-view LUT. Same
-      // unconditional-binding rationale: placeholder until the extended bake
-      // runs, real view after; only sampled when the opt-in
-      // `useScatteringLut` flag is set.
+      // The sun-relative sky-view LUT follows the same placeholder pattern and
+      // is sampled only when `useScatteringLut` is enabled.
       texture(6, Stage.FRAGMENT),
     ]);
 
@@ -266,8 +224,8 @@ function createPipeline(
             {
               arrayStride: 24, // 6 floats
               attributes: [
-                { shaderLocation: 0, offset: 0, format: "float32x3" }, // posHigh
-                { shaderLocation: 1, offset: 12, format: "float32x3" }, // posLow
+                { shaderLocation: 0, offset: 0, format: "float32x3" }, // high
+                { shaderLocation: 1, offset: 12, format: "float32x3" }, // low
               ],
             },
           ],
@@ -275,8 +233,7 @@ function createPipeline(
     fragment: {
       module: shaderModule,
       entryPoint: fullscreen ? "fragmentMainFullscreen" : "fragmentMain",
-      // Slice 5c-B Phase 1 (Batch 106) — scene-FB target. Standard
-      // alpha-over blend for the sky atmosphere layer.
+      // Use standard alpha-over blending in the scene framebuffer.
       targets: makeSceneFBTargets(format, {
         blend: {
           color: {
@@ -303,8 +260,7 @@ function createPipeline(
       depthWriteEnabled: false,
       depthCompare: "less-equal",
     },
-    // Session 65 Batch 21 — match scene FB sample count so MSAA-on
-    // doesn't fail attachment validation.
+    // Match the scene framebuffer sample count for attachment compatibility.
     multisample: sampleCount > 1 ? { count: sampleCount } : undefined,
   });
 
@@ -358,18 +314,14 @@ function ensureLutBindGroup(cache, context, device, frameState, skyAtmosphere) {
           { binding: 0, resource: cache.lutSampler },
           { binding: 1, resource: cache.placeholderLutView },
           { binding: 2, resource: cache.placeholderLutView },
-          // Phase 1.3c — moon LUT placeholders. Same 1×1 zero texture
-          // as the sun side; the fragment shader's dual-light branch is
-          // gated on `dualLightControl.x > 0.5`, which the renderer
-          // clears whenever compute is unavailable, so these are never
-          // sampled in this code path.
+          // Moon LUTs use the same zero placeholder as the sun side. The
+          // renderer clears the dual-light gate when compute is unavailable,
+          // so this path cannot sample them.
           { binding: 3, resource: cache.placeholderLutView },
           { binding: 4, resource: cache.placeholderLutView },
-          // Batch 427 (SKY-MS) — multiple-scattering placeholder. Sampled
-          // only when the opt-in flag is set, which the renderer clears
-          // whenever compute (and thus the MS bake) is unavailable.
+          // Multiple-scattering placeholder; compute availability gates use.
           { binding: 5, resource: cache.placeholderLutView },
-          // Batch 428 (A-LUT-REPARAM) — sky-view placeholder. Same gating.
+          // Sky-view placeholder under the same compute gate.
           { binding: 6, resource: cache.placeholderLutView },
         ],
       });
@@ -401,12 +353,9 @@ function ensureLutBindGroup(cache, context, device, frameState, skyAtmosphere) {
     }
   }
 
-  // Phase 1.3c — track moon direction changes for the dual-light LUT.
-  // Same threshold-gated invalidation pattern as the sun above. Only
-  // active when both `enableDualLightAtmosphere` is on and the moon
-  // direction has been populated by Moon.update() — on the first frame
-  // (before Moon.update has run) the moon direction is undefined and
-  // we skip the moon LUT dispatch entirely.
+  // Track moon-direction changes with the same threshold as the sun. The moon
+  // LUT is considered only when dual light is enabled and `Moon.update` has
+  // populated a direction.
   const ac = frameState.atmosphericConditions;
   const lighting = ac && ac.lighting ? ac.lighting : undefined;
   const enableDualLight =
@@ -415,12 +364,9 @@ function ensureLutBindGroup(cache, context, device, frameState, skyAtmosphere) {
     ? frameState.moonDirectionWC
     : undefined;
 
-  // Phase 1.4 — invalidate BOTH LUTs when weather coefficients change.
-  // The LUT bakes the rayleigh/mie coefficients at compute time, so a
-  // mid-session humidity change wouldn't take effect until the sun
-  // moved without this. Compare against the cached previous values
-  // and force a re-dispatch on any meaningful delta. Also invalidates
-  // the moon LUT in lockstep so dual-light scattering stays coherent.
+  // Invalidate both light LUTs when weather coefficients change because those
+  // coefficients are baked. Keeping sun and moon invalidation in lockstep
+  // prevents the two scattering media from diverging.
   const weatherCheck = ac && ac.weather ? ac.weather : undefined;
   const humidityNow =
     weatherCheck && typeof weatherCheck.humidity === "number"
@@ -430,9 +376,8 @@ function ensureLutBindGroup(cache, context, device, frameState, skyAtmosphere) {
     weatherCheck && typeof weatherCheck.airQuality === "number"
       ? weatherCheck.airQuality
       : 1.0;
-  // Batch 438 (4.5 SKY-OZONE) — re-bake the LUTs when the ozone flag toggles, so
-  // the LUT-sampled paths pick up (or drop) the ozone extinction. Treated as a
-  // bake-input change exactly like humidity/airQuality above.
+  // Treat the ozone gate like other bake inputs so every LUT path adds or
+  // removes its extinction together.
   const ozoneNow = skyAtmosphere.ozone === true;
   if (
     cache.lastHumidity !== humidityNow ||
@@ -479,9 +424,9 @@ function ensureLutBindGroup(cache, context, device, frameState, skyAtmosphere) {
           { binding: 2, resource: cache.placeholderLutView },
           { binding: 3, resource: cache.placeholderLutView },
           { binding: 4, resource: cache.placeholderLutView },
-          // Batch 427 (SKY-MS) — multiple-scattering placeholder.
+          // Multiple-scattering placeholder.
           { binding: 5, resource: cache.placeholderLutView },
-          // Batch 428 (A-LUT-REPARAM) — sky-view placeholder.
+          // Sky-view placeholder.
           { binding: 6, resource: cache.placeholderLutView },
         ],
       });
@@ -494,16 +439,12 @@ function ensureLutBindGroup(cache, context, device, frameState, skyAtmosphere) {
     };
   }
 
-  // (Re)build the real bind group when the LUT views change. The views
-  // come from the perf manager's cached textures and are stable for the
-  // lifetime of the device, so this happens at most once.
-  // Batch 427 (SKY-MS) — bind the real multiple-scattering view when it
-  // exists; otherwise keep the 1×1 placeholder so the layout stays constant
-  // on perf-manager stubs that predate the extended LUT.
+  // Rebuild the real bind group when LUT views change. The performance
+  // manager's cached views remain stable for the device lifetime, so this
+  // happens at most once. Use the real multiple-scattering view when present
+  // and keep the placeholder for partial implementations to preserve layout.
   const msView = res.multipleScatterView ?? cache.placeholderLutView;
-  // Batch 428 (A-LUT-REPARAM) — bind the real sky-view view when present;
-  // otherwise the 1×1 placeholder so the layout stays constant on perf-manager
-  // stubs that predate the sky-view LUT.
+  // Apply the same fallback for the sky-view texture.
   const skyViewView = res.skyViewView ?? cache.placeholderLutView;
   if (
     !defined(cache.lutBindGroup) ||
@@ -539,10 +480,8 @@ function ensureLutBindGroup(cache, context, device, frameState, skyAtmosphere) {
   // the compute pass on a one-shot encoder. We feed it the same scattering
   // constants we'd otherwise use in the ray march so the LUT and the
   // fallback path agree. Once `useLut` flips on, the fragment shader
-  // shortcuts to a single texture sample. Phase 1.3c — when the moon LUT
-  // is also dirty AND dual-light is enabled, batch both dispatches into
-  // the same one-shot encoder so the moon path doesn't pay an extra
-  // submit cost.
+  // shortcuts to a single texture sample. If the enabled moon LUT is also
+  // dirty, use the same encoder to avoid another queue submission.
   const sunDirty = perfMgr.shouldRecomputeAtmosphereLUT();
   const moonDirty =
     enableDualLight &&
@@ -555,13 +494,9 @@ function ensureLutBindGroup(cache, context, device, frameState, skyAtmosphere) {
     const outerRadius = innerRadius * ATMOSPHERE_SCALE;
     const intensity = skyAtmosphere.atmosphereLightIntensity || 50.0;
 
-    // Batch 428 (A-LUT-REPARAM) — the sun's zenith cosine relative to the
-    // CAMERA's local up. The single-scatter bake places the sun in a synthetic
-    // Y-up frame where its elevation is implicit, but the sky-view bake
-    // (computeSkyView) needs the true observer-relative sun elevation to place
-    // the sun on its canonical meridian. Computed from the world sun direction
-    // and the camera position. Falls back to the sun's z when the camera
-    // position is degenerate (first frame).
+    // The sky-view bake needs sun zenith relative to the camera's local up so
+    // it can place the sun on its canonical meridian. Fall back to world z when
+    // camera position is unavailable or degenerate.
     const camPos = frameState.camera?.positionWC;
     let sunCosZenith = sunDir.z;
     if (defined(camPos)) {
@@ -573,8 +508,7 @@ function ensureLutBindGroup(cache, context, device, frameState, skyAtmosphere) {
       }
     }
 
-    // Phase 1.4 — atmospheric conditions modulate the scattering
-    // coefficients before the LUT compute pass:
+    // Atmospheric conditions modulate coefficients before the LUT bake:
     //   humidity   (0..1, default 0.5) → mie scale (0.5 + humidity)
     //                 0.0 → 0.5× (very dry, sharp horizon)
     //                 0.5 → 1.0× (no change)
@@ -607,11 +541,9 @@ function ensureLutBindGroup(cache, context, device, frameState, skyAtmosphere) {
       DEFAULT_MIE_COEFFICIENT.y * mieScale,
       DEFAULT_MIE_COEFFICIENT.z * mieScale,
     ];
-    // Batch 438 (4.5 SKY-OZONE) — bake ozone into the LUTs (transmittance /
-    // inscatter / sky-view / MS) when `skyAtmosphere.ozone` is on, so the
-    // LUT-sampled paths (sky-view fast-path, aerial perspective, fog drape)
-    // get the same ozone deepening as the inline march. OFF → [0,0,0] →
-    // exp(-0) = identity bake → byte-identical.
+    // Bake ozone into every table so sky view, aerial perspective, and fog
+    // receive the same extinction as the inline march. A disabled gate supplies
+    // a zero coefficient.
     const ozoneOn = skyAtmosphere.ozone === true;
     const ozoneCoefSrc =
       skyAtmosphere.atmosphereOzoneCoefficient ?? DEFAULT_OZONE_COEFFICIENT;
@@ -638,21 +570,18 @@ function ensureLutBindGroup(cache, context, device, frameState, skyAtmosphere) {
           rayleighCoefficient,
           mieCoefficient,
           sunDirection: [sunDir.x, sunDir.y, sunDir.z],
-          // Batch 428 (A-LUT-REPARAM) — observer-relative sun zenith for the
-          // chained sky-view bake (computeSkyView). Ignored by the single-
-          // scatter / MS / irradiance kernels.
+          // Observer-relative sun zenith for `computeSkyView`; other kernels
+          // ignore this field.
           sunCosZenith,
-          // Batch 438 (4.5 SKY-OZONE) — ozone extinction baked into the LUTs.
+          // Ozone extinction baked into the LUTs.
           ozoneCoefficient,
         },
         "sun",
       );
-      // Track V-A1 (NEW-ATMO-BRUNETON-FULL-LUTS) — chain the multiple-
-      // scattering + irradiance extension passes on the same encoder. They
-      // read the sun transmittance + single-scattering LUTs we just wrote
-      // and populate the multiple-scatter + irradiance targets. Gated on the
-      // sun dispatch succeeding (compute available). No-op on devices where
-      // the method is absent (older perf-manager stubs in tests).
+      // Chain multiple scattering and irradiance on the same encoder after a
+      // successful sun bake. They consume the transmittance and
+      // single-scattering outputs. The method check keeps partial performance
+      // managers on the base LUT path.
       if (
         sunOk &&
         typeof perfMgr.dispatchAtmosphereExtendedLUT === "function"
@@ -680,7 +609,7 @@ function ensureLutBindGroup(cache, context, device, frameState, skyAtmosphere) {
           rayleighCoefficient,
           mieCoefficient,
           sunDirection: [moonDir.x, moonDir.y, moonDir.z],
-          // Batch 438 (4.5 SKY-OZONE) — same ozone extinction for the moon LUT.
+          // Use the same ozone extinction for the moon LUT.
           ozoneCoefficient,
         },
         "moon",
@@ -693,21 +622,15 @@ function ensureLutBindGroup(cache, context, device, frameState, skyAtmosphere) {
     }
   }
 
-  // Batch 427 (SKY-MS) — MS is "ready" once the sun bake (which chains the
-  // computeMultipleScattering extended pass) has run AND the real MS view is
-  // bound (not the placeholder). `useLut` independently gates the inscatter
-  // fast-path; MS readiness is tracked separately so the opt-in MS add works
-  // even while the inscatter LUT fast-path stays disabled
-  // (ENABLE_SKY_INSCATTER_LUT).
+  // Multiple scattering is ready only after a successful sun bake and binding
+  // of its real view. Track it separately because the legacy inscatter lookup
+  // remains disabled for the visible sky.
   const msReady =
     cache.lutReady === true &&
     defined(res.multipleScatterView) &&
     cache.lutMultipleScatterView === res.multipleScatterView;
-  // Batch 428 (A-LUT-REPARAM) — sky-view LUT is "ready" once the sun bake
-  // (which chains computeSkyView via the extended pass) has run AND the real
-  // sky-view view is bound (not the placeholder). Independent of `useLut`: the
-  // sky-view fast-path works even while the inscatter LUT fast-path stays
-  // disabled (ENABLE_SKY_INSCATTER_LUT).
+  // Sky view is ready only after the sun bake and binding of its real view. It
+  // is independent of the disabled legacy-inscatter lookup.
   const skyViewReady =
     cache.lutReady === true &&
     defined(res.skyViewView) &&
@@ -741,24 +664,19 @@ function packUniforms(
   // This keeps split-screen contexts independent while preserving the
   // atmosphere's current-frustum near/far depth mapping.
   const off = camera.frustum.offCenterFrustum ?? camera.frustum;
-  // Use the CURRENT multi-frustum band's near/far rather than the full
-  // camera frustum range. The sky shell is rendered inside the frustum
-  // loop on the FAR band (i === 0); subsequent globe tiles in that
-  // band write depth values normalized to that band's near/far via
-  // `_updateFrustumUniforms`. If the shell uses `camera.frustum.near/far`
-  // (the full range), the depth-comparison between sky and globe is
-  // computed against two DIFFERENT mappings of physical distance →
-  // NDC z, producing a visible dark line at the globe silhouette where
-  // the sky shell intermittently wraps in front of the globe edge.
-  // `uniformState.currentFrustum` (Cartesian2) is set per-frustum-band
-  // by `_updateFrustumUniforms → updateFrustum`. Fall back to the full
-  // frustum if unavailable (first frame).
-  // Use per-frustum-band near/far when available (multi-frustum scenes).
-  // For single-frustum scenes (default 3D orbit), `currentFrustum` equals
-  // the camera's own near/far, so this is a no-op. For multi-frustum
-  // scenes it keeps sky-shell depth values consistent with the per-band
-  // globe depth — relevant when depth-test ordering at the silhouette
-  // depends on matching projection ranges.
+  // Use the current multi-frustum band's near/far instead of the full camera
+  // frustum range. The sky shell renders inside the frustum loop on the far
+  // band (`i === 0`); later globe tiles in that band write depth normalized to
+  // the band's near/far through `_updateFrustumUniforms`. If the shell uses
+  // the full `camera.frustum.near/far`, sky and globe depth are computed from
+  // different mappings of physical distance to NDC z. The mismatch produces
+  // a dark line where the sky shell wraps in front of the globe silhouette.
+  //
+  // `_updateFrustumUniforms → updateFrustum` sets the Cartesian2
+  // `uniformState.currentFrustum` for each band. Fall back to the full
+  // frustum when unavailable. In a single-frustum scene it matches the
+  // camera's near/far and is a no-op; in a multi-frustum scene it keeps
+  // sky-shell and per-band globe depth consistent at the silhouette.
   const us = frameState.context?.uniformState;
   const bandNear = us?.currentFrustum?.x ?? off.near;
   const bandFar = us?.currentFrustum?.y ?? off.far;
@@ -800,44 +718,11 @@ function packUniforms(
   uniformData[26] = camera.positionWC.z;
   uniformData[27] = 0.0;
 
-  // sunDirectionWC — Session 65 Batch 18 + Batch 20: respect
-  // `frameState.atmosphere.dynamicLighting` enum, mirroring upstream
-  // `czm_getDynamicAtmosphereLightDirection`:
-  //   NONE        (0, default) → C12-31: the astronomical sun. The value
-  //                     packed here USED to be an unread placeholder on
-  //                     this path (the WGSL substituted per-fragment
-  //                     `normalize(skyPoint)`); it is now the sky's
-  //                     actual light direction, so the
-  //                     `frameState.sunDirectionWC` fallback below is
-  //                     load-bearing rather than defensive.
-  //   SCENE_LIGHT (1) → use `uniformState.lightDirectionWC` (honors
-  //                     `scene.light` overrides such as a custom
-  //                     `DirectionalLight`).
-  //   SUNLIGHT    (2) → use `frameState.sunDirectionWC` (force sun
-  //                     regardless of `scene.light`).
-  //   LEGACY_OVERHEAD (3) → per-fragment `normalize(skyPoint)`, resolved
-  //                     entirely in `SkyAtmosphere.wgsl`; the packed
-  //                     value is unread on that path.
-  // 1 = DynamicAtmosphereLightingType.SCENE_LIGHT (see
-  // `Source/Scene/DynamicAtmosphereLightingType.js`).
-  // DP-H47 (Campaign-7) — resolve the dynamic-lighting enum through the shared
-  // `WebGPUAtmosphereUniforms` seam. The sky's scattering coefficients stay on
-  // the SkyAtmosphere instance (WebGL-faithful — see the resolver's module
-  // docstring), so only `dynamicLighting` routes through the seam here.
-  //
-  // C12-29 S6 / obs-1 (2026-07-25) — this was `resolveDynamicLighting(frameState)`,
-  // i.e. `scene.atmosphere.dynamicLighting`, which WebGL hands to the sky ONLY
-  // when there is no globe. With a globe, `Scene.updateEnvironment` calls
-  // `skyAtmosphere.setDynamicLighting(DynamicAtmosphereLightingType.fromGlobeFlags(globe))`,
-  // so any scene with `globe.enableLighting = true` resolved SCENE_LIGHT on
-  // WebGL and NONE here. In the WGSL that turns `isDynamic` false, pins
-  // `nightAlpha` at 1.0, and makes `alpha = mix(finalColor.b, 1.0, opacity)`
-  // exactly 1.0 for a ground camera (altitudeOpacity == 1) — an opaque shell in
-  // every direction. What that hid is exactly the two draws `SceneRenderer`
-  // PREPENDS ahead of the binned atmosphere: the **skyBox cubemap** and the
-  // returned **star-catalogue command**. The moon (appended) and sun (binned
-  // after the atmosphere) execute AFTER the shell. `resolveSkyDynamicLighting`
-  // reads the value Scene already resolved.
+  // Resolve the dynamic-lighting enum from the `SkyAtmosphere` instance, where
+  // `Scene.updateEnvironment` stores the value selected from scene and globe
+  // state. Sky scattering coefficients remain instance-owned. `SCENE_LIGHT`
+  // uses the scene direction; `NONE` and `SUNLIGHT` use the astronomical sun.
+  // `LEGACY_OVERHEAD` derives local up per fragment in the shader.
   const dynamicLighting = resolveSkyDynamicLighting(skyAtmosphere, frameState);
   const useSceneLight = dynamicLighting === 1;
   const uniformState = frameState.context?.uniformState;
@@ -853,34 +738,15 @@ function packUniforms(
   uniformData[30] = sunDir.z;
   uniformData[31] = 0.0;
 
-  // radiiAndDynamicAtmosphere — Session 65 Batch 18: pack the
-  // `dynamicLighting` enum into the `.z` slot (matches the WGSL
-  // struct comment "z=dynamicLighting"). The atmosphere light
-  // intensity that previously occupied this slot is already
-  // duplicated at `uniformData[39]` (the `intensity: f32` field of
-  // the WGSL struct), so removing it here doesn't lose any data the
-  // shader actually reads — `u.radiiAndDynamicAtmosphere.z` was
-  // documented as the enum slot but was never consumed by the WGSL.
-  //
-  // Batch 247 (NEW-GROUND-VIEW-ENV-DIVERGENCES fix 1) — port WebGL's
-  // scattering-shell geometry EXACTLY (SkyAtmosphereCommon.glsl L43-54 +
-  // czm_computeScattering's ATMOSPHERE_THICKNESS = 111e3):
+  // Pack WebGL's scattering-shell geometry and the dynamic-lighting enum:
   //
   //   radiusAdjust = (radiiDiff / 4) + distanceAdjust(eyeHeight)
   //   atmosphereInnerRadius = (|cameraWC| - eyeHeight) - radiusAdjust
   //   atmosphereOuterRadius = atmosphereInnerRadius + 111e3
   //
-  // The previous packing used innerRadius = max ellipsoid radius and
-  // outerRadius = innerRadius × 1.025 (≈ 159.5 km shell). Two parity
-  // consequences at ground level: (a) density heights lacked WebGL's
-  // ~5.3 km radiusAdjust offset, over-weighting the Rayleigh integrand
-  // by ~1/exp(-5346/10000) ≈ 1.7× — the dominant term of the measured
-  // 1.7-1.8× ground-sky over-brightness; (b) the 43%-thicker shell
-  // stretched the altitude-opacity ramp. The `.w` slot packs WebGL's
-  // camera-height convention (`czm_eyeHeight + atmosphereInnerRadius`,
-  // SkyAtmosphereCommon.glsl L104) for the WGSL altitudeOpacity ramp.
-  // The shell MESH stays at ellipsoid × 1.025 (rasterization coverage
-  // only, same as WebGL's scaled ellipsoid geometry).
+  // The radius adjustment aligns density height with WebGL. The `.w` slot
+  // carries `czm_eyeHeight + atmosphereInnerRadius` for altitude opacity,
+  // while the 1.025 ellipsoid scale controls only rasterized shell coverage.
   const ellipsoid = skyAtmosphere._ellipsoid || Ellipsoid.WGS84;
   const maxRadius = Cartesian3.maximumComponent(ellipsoid.radii);
   const camDist = Cartesian3.magnitude(camera.positionWC);
@@ -903,17 +769,10 @@ function packUniforms(
   uniformData[34] = dynamicLighting;
   uniformData[35] = eyeHeight + innerRadius;
 
-  // Scale heights and anisotropy — Batch 247 (NEW-GROUND-VIEW-ENV-
-  // DIVERGENCES fix 1): read the per-instance SkyAtmosphere properties
-  // (WebGL parity — `u_atmosphere*` uniforms in SkyAtmosphere.js) instead
-  // of module constants that had silently diverged from the WebGL
-  // defaults (8500/1200/0.758 vs WebGL's 10000/3200/0.9). This both
-  // matches the WebGL reference AND honors user-configured values.
-  // NOTE: the LUT bake dispatch (createOrUpdateLutResources) still uses
-  // the legacy DEFAULT_* constants — the inscatter LUT now only feeds the
-  // globe/voxel/splat fog drape paths (see ENABLE_SKY_INSCATTER_LUT),
-  // which are tuned against those constants. Unify when the LUT is
-  // re-parameterized (DEFERRED_WORK: NEW-ATMOSPHERE-LUT-SUN-RELATIVE).
+  // Read visible-sky scale heights and anisotropy from the instance, matching
+  // WebGL and honoring user configuration. The legacy inscatter bake retains
+  // its established constants because non-sky fog consumers depend on that
+  // mapping and tuning.
   uniformData[36] =
     skyAtmosphere.atmosphereRayleighScaleHeight ??
     DEFAULT_RAYLEIGH_SCALE_HEIGHT;
@@ -921,22 +780,13 @@ function packUniforms(
     skyAtmosphere.atmosphereMieScaleHeight ?? DEFAULT_MIE_SCALE_HEIGHT;
   uniformData[38] =
     skyAtmosphere.atmosphereMieAnisotropy ?? DEFAULT_MIE_ANISOTROPY;
-  // C12-29 S2 — the WGSL twin of `SkyAtmosphere.js`'s
-  // `u_atmosphereLightIntensity` closure. `u.intensity` is the linear scale on
-  // the inline ray-march (`SkyAtmosphere.wgsl` — the DEFAULT path: the
-  // inscatter LUT is compile-time off via `ENABLE_SKY_INSCATTER_LUT` and the
-  // sky-view LUT needs the opt-in `skyAtmosphere.useScatteringLut`), so one
-  // multiply here dims the shell exactly as the WebGL uniform does.
-  // `_eclipseLightFactor` was refreshed by `SkyAtmosphere.update` before this
-  // renderer ran; 1.0 outside an eclipse, and `x * 1.0` is bit-exact.
+  // Match `SkyAtmosphere.js` by applying the instance's eclipse light factor to
+  // inline-scattering intensity. `SkyAtmosphere.update` refreshes the factor;
+  // it is exactly one outside an eclipse.
   //
-  // The LUT BAKE input (the `intensity` local in `createOrUpdateLutResources`)
-  // is deliberately NOT multiplied: that bake is debounced on sun DIRECTION,
-  // which barely moves across an eclipse, so a dimmed bake would latch at
-  // whatever factor happened to be current and stay wrong long after totality.
-  // Both LUT paths are off at defaults; carrying the eclipse factor into them
-  // needs the quantised-eclipse debounce input that S3/C13 owns
-  // (ECLIPSE_EFFECTS_RESEARCH_2026-07-24.md §5).
+  // Do not multiply the LUT bake input. Its invalidation follows sun direction,
+  // which barely moves during an eclipse, so baking the transient factor could
+  // retain stale dimming after totality.
   uniformData[39] =
     (skyAtmosphere.atmosphereLightIntensity || 50.0) *
     (skyAtmosphere._eclipseLightFactor ?? 1.0);
@@ -947,16 +797,9 @@ function packUniforms(
   uniformData[42] = skyAtmosphere.brightnessShift || 0.0;
   uniformData[43] = useLut ? 1.0 : 0.0;
 
-  // rayleighCoefficient — Session 65 Batch 29 (Phase 4 completion):
-  // applies the same `humidity` → mieScale and `airQuality` → rayleigh
-  // Scale that the LUT compute dispatch uses (lines 441-459 above), so
-  // the inline `computeScattering` path (active for orbit cameras
-  // beyond 2× shell thickness, and for any frame that misses the LUT
-  // path) produces the same atmospheric character as the LUT-cached
-  // path. Without this, the LUT path got humidity/airQuality scaling
-  // but orbit cameras (which use the inline ray-march) saw default
-  // coefficients — producing inconsistent sky color across the
-  // altitude crossover.
+  // Apply the bake's humidity and air-quality scaling to inline coefficients as
+  // well. This keeps atmospheric character stable when orbital cameras cross
+  // from LUT sampling to ray marching.
   const acRT = frameState.atmosphericConditions;
   const weatherRT = acRT && acRT.weather ? acRT.weather : undefined;
   const humidityRT =
@@ -970,10 +813,8 @@ function packUniforms(
   const mieScaleRT = 0.5 + humidityRT;
   const rayleighScaleRT = airQualityRT > 0.001 ? 1.0 / airQualityRT : 1000.0;
 
-  // Batch 247 — read the per-instance coefficients (WebGL parity; the
-  // module DEFAULT_RAYLEIGH_COEFFICIENT's blue term 22.4e-6 had diverged
-  // from WebGL's 28.4e-6 default). Weather scaling stays a fork extra
-  // (neutral at default humidity 0.5 / airQuality 1.0).
+  // Read instance coefficients to match WebGL and honor user configuration.
+  // Default humidity and air quality leave the weather scale neutral.
   const rayleighCoefRT =
     skyAtmosphere.atmosphereRayleighCoefficient ?? DEFAULT_RAYLEIGH_COEFFICIENT;
   const mieCoefRT =
@@ -989,28 +830,21 @@ function packUniforms(
   uniformData[50] = mieCoefRT.z * mieScaleRT;
   uniformData[51] = 0.0;
 
-  // Tier 1 debug controls. Read from frameState (set by Scene each frame)
-  // so a single property toggle on Scene flips the diagnostic on. Layout
-  // matches the WGSL `debug: vec4<f32>` field — see SkyAtmosphere.wgsl.
+  // Debug controls. Read from frame state so a scene property can toggle the
+  // diagnostic. Layout matches `SkyAtmosphere.wgsl`:
   //   x: disableScattering — bypass Rayleigh+Mie, emit flat magenta
-  //   y: multipleScatteringEnabled (Batch 427 SKY-MS) — when > 0.5 the
-  //      fragment shader ADDS the precomputed multiple-scattering LUT term to
-  //      the single-scatter result. Renderer only sets this when the user's
-  //      `skyAtmosphere.multipleScattering` opt-in is on AND the MS LUT is
-  //      baked; default 0 keeps the sky byte-identical to single scatter.
-  //   z/w: reserved for Tier 3 (LUT inspector, sun-dir override)
+  //   y: multipleScatteringEnabled — add the precomputed higher-order term.
+  //      The renderer sets it only when requested and the LUT is ready.
+  //   z: useSkyViewLut — select the separate sun-relative table.
+  //   w: reserved
   uniformData[52] = frameState.debugDisableAtmosphereScattering ? 1.0 : 0.0;
   uniformData[53] = multipleScatteringEnabled ? 1.0 : 0.0;
-  // Batch 428 (A-LUT-REPARAM) — debug.z = useSkyViewLut. Set only when the user
-  // opt-in `skyAtmosphere.useScatteringLut` is on AND the sky-view LUT is baked;
-  // default 0 keeps the inline march (byte-identical to today).
   uniformData[54] = useSkyViewLut ? 1.0 : 0.0;
   uniformData[55] = 0.0;
 
-  // Phase 1.3c — Dual-light atmosphere scattering inputs.
-  // moonDirectionWC (vec3 + pad) at offsets 56-59. Default to a "full
-  // moon overhead" stand-in (0,0,1) when the moon hasn't been ticked
-  // yet so the shader's vec3 read never picks up uninitialised data.
+  // Dual-light atmosphere inputs. `moonDirectionWC` occupies offsets 56-59.
+  // Use positive z before a moon update so the shader never reads
+  // uninitialized vector data.
   const moonDir = defined(frameState.moonDirectionWC)
     ? frameState.moonDirectionWC
     : { x: 0, y: 0, z: 1 };
@@ -1019,14 +853,10 @@ function packUniforms(
   uniformData[58] = moonDir.z;
   uniformData[59] = 0.0;
 
-  // dualLightControl: x=enableDualLight, y=moonPhaseFraction, z=intensityScale, w=pad.
-  // Driven by `frameState.atmosphericConditions.lighting.enableDualLightAtmosphere`
-  // (default ON per B12/B14 lock) AND requires that compute shaders /
-  // the moon LUT are actually available — `useLut` gates the entire
-  // shader-side LUT path, and the dual-light branch is only entered
-  // when the inscatter LUTs are bound. The intensity scale defaults to
-  // 0.05 (~5% of sun) so a full-moon-overhead night sky reads as a
-  // gentle blue glow rather than full daytime blue.
+  // `dualLightControl` packs enablement, moon phase, and intensity scale. Scene
+  // lighting owns the parity-off default; the LUT branch also requires a moon
+  // direction and available lookup resources. The 0.05 fallback intensity
+  // keeps full-moon scattering far below daylight.
   const acLighting =
     frameState.atmosphericConditions &&
     frameState.atmosphericConditions.lighting
@@ -1042,16 +872,10 @@ function packUniforms(
   uniformData[62] = acLighting?.moonIntensity ?? 0.05;
   uniformData[63] = 0.0;
 
-  // Session 65 Batch 42 — Phase 4 completion. Wind state for Phase 5/6
-  // consumers (volumetric fog advection, cloud motion). Source is
-  // `frameState.atmosphericConditions.weather.{windDirection,windSpeed}`.
-  // `windDirection` is expected to be a normalized 3-vector in world
-  // coords; `windSpeed` is m/s.
-  //
-  // No fragment shader path consumes these yet — they're scaffolding.
-  // Default direction (0, 0, 1) + speed 0 means "calm" so any future
-  // consumer that conditionally short-circuits on `windSpeed > 0`
-  // remains backwards-compatible.
+  // Pack world-space wind direction and metres-per-second speed from
+  // atmospheric weather. This shader reserves but does not consume the
+  // values; a positive-z direction and zero speed encode a calm state without
+  // uninitialized data.
   const acWeather =
     frameState.atmosphericConditions && frameState.atmosphericConditions.weather
       ? frameState.atmosphericConditions.weather
@@ -1077,19 +901,14 @@ function packUniforms(
     Matrix4.pack(Matrix4.IDENTITY, uniformData, 84);
   }
 
-  // Batch 438 — three opt-in atmosphere-physics flags + their inputs.
-  // atmosControl @100: x=improvedMiePhase, y=dualLightInline, z=ozoneEnabled,
-  // w=globeTranslucent. ALL default 0 → every gated WGSL branch stays closed
-  // → byte-identical.
+  // `atmosControl` at offset 100 gates improved Mie phase, inline dual light,
+  // ozone, and translucent-globe scattering. Zero leaves each branch inactive.
   uniformData[100] = improvedMiePhase ? 1.0 : 0.0;
   uniformData[101] = dualLightInline ? 1.0 : 0.0;
   uniformData[102] = ozoneEnabled ? 1.0 : 0.0;
-  // GLOBE-TRANSLUCENCY-ALPHA — mirrors WebGL's GLOBE_TRANSLUCENT shader
-  // define (SkyAtmosphere.js:410-412): when the globe renders translucent,
-  // sky rays that hit the planet substitute the dark distance-faded horizon
-  // gradient (SkyAtmosphereCommon.glsl lines 63-90) instead of the full
-  // scattering integral, so the see-through planet disk doesn't flood with
-  // daylight blue. 0 whenever translucency is off (the default).
+  // Mirror WebGL's `GLOBE_TRANSLUCENT` branch. Rays through a translucent globe
+  // use the dark distance-faded horizon gradient instead of full scattering,
+  // preventing daylight blue from flooding the see-through planet disk.
   uniformData[103] =
     frameState.globeTranslucencyState &&
     frameState.globeTranslucencyState.translucent
@@ -1118,14 +937,12 @@ function packUniforms(
   uniformData[110] = moonDirInline.z;
   uniformData[111] = 0.0;
 
-  // moonControl @112: x=moonPhaseFraction, y=moonIntensityScale, z/w reserved.
-  // When dualLightInline is off the WGSL gate (atmosControl.y) ignores these.
-  // The moon march reuses computeScattering with the full atmosphereLightIntensity
-  // (~50) baked in, so the intensity scale is the FRACTION of a daytime sky the
-  // moonlit sky shows. The default 0.12 reads as a gentle, clearly-visible blue
-  // moonglow over a dark night sky (a literal ~0.05 sun-fraction is photometric
-  // but rounds toward black in 8-bit). Overridable via
-  // atmosphericConditions.lighting.moonIntensity.
+  // `moonControl` at offset 112 packs phase fraction, intensity scale, and two
+  // reserved values. The inline gate ignores it when disabled. Since the moon
+  // march already uses full atmosphere light intensity, its scale is the
+  // fraction of daytime sky shown as moonglow. The 0.12 fallback remains
+  // visible after 8-bit output quantization and can be overridden by
+  // atmospheric lighting.
   const acMoon =
     frameState.atmosphericConditions &&
     frameState.atmosphericConditions.lighting
@@ -1138,21 +955,17 @@ function packUniforms(
   uniformData[114] = 0.0;
   uniformData[115] = 0.0;
 
-  // eclipseControl @116 — C12-29 S6, the 360-degree horizon-twilight gain.
-  // The WGSL twin of `SkyAtmosphere.js`'s `u_eclipseHorizonTwilight` closure;
-  // both read the same `frameState.eclipseHorizonTwilight` scalar through the
-  // instance field `SkyAtmosphere.update` refreshes, so the two backends add
-  // one identical number. Exactly 0.0 outside totality, and the shader skips
-  // the whole block at 0 — byte-identical.
+  // `eclipseControl` at offset 116 carries the horizon-twilight gain. Both
+  // backends read the value refreshed by `SkyAtmosphere.update`; zero skips the
+  // shader contribution outside totality.
   uniformData[116] = skyAtmosphere._eclipseHorizonTwilight ?? 0.0;
   uniformData[117] = 0.0;
   uniformData[118] = 0.0;
   uniformData[119] = 0.0;
 
-  // ellipsoidInverseRadiiSquared @120 (+ pad @123). This is the gradient
-  // weight used to derive the observer's geodetic up direction in the S6
-  // horizon-twilight block. `ellipsoid` is the same active SkyAtmosphere
-  // ellipsoid used above for shell geometry and scattering radii.
+  // `ellipsoidInverseRadiiSquared` at offset 120 supplies the gradient used for
+  // geodetic up in the horizon-twilight block. Use the same active ellipsoid as
+  // shell geometry and scattering radii.
   const inverseRadiiSquared = ellipsoid.oneOverRadiiSquared;
   uniformData[120] = inverseRadiiSquared.x;
   uniformData[121] = inverseRadiiSquared.y;
@@ -1206,12 +1019,10 @@ function updateWebGPUSkyAtmosphere(skyAtmosphere, frameState) {
   }
   const cache = skyAtmosphere._webgpuCache;
 
-  // Batch 110 — invalidate cached pipeline when the scene pipeline
-  // format generation bumps (HDR toggle, MSAA toggle). Without this
-  // the cached pipeline keeps its old fragment target format and
-  // produces validation warnings + black sky against the recreated
-  // scene FB. The pipeline rebuild is one-time per format change;
-  // steady-state HDR-on or HDR-off frames pay zero cost.
+  // Invalidate cached pipelines when HDR or MSAA changes the scene target
+  // generation. A pipeline retains its fragment format and would be invalid
+  // against the recreated framebuffer; generation checks avoid rebuilds once
+  // the format stabilizes.
   const currentGen = context._scenePipelineFormatGeneration ?? 0;
   if (
     defined(cache.pipeline) &&
@@ -1220,14 +1031,11 @@ function updateWebGPUSkyAtmosphere(skyAtmosphere, frameState) {
     cache.pipeline = undefined;
     cache.fullscreenPipeline = undefined;
     cache._pipelineFailed = false;
-    // The cached `WebGPUDrawCommand` carries a direct reference to
-    // the OLD pipeline. Drop it so it rebuilds with the new pipeline.
+    // Commands hold direct pipeline references and must rebuild with it.
     cache.command = undefined;
     cache.fullscreenCommand = undefined;
-    // The bind groups were built against the OLD bindGroupLayout
-    // (which is recreated alongside the pipeline). Forcing a rebuild
-    // by clearing the BGL refs below makes the existing bind-group
-    // setup branch (`if (!defined(cache.bindGroup))`) re-fire.
+    // Bind groups target the recreated layouts, so clear both references and
+    // let the normal setup branch rebuild them.
     cache.bindGroup = undefined;
     cache.bindGroupLayout = undefined;
     cache.lutBindGroupLayout = undefined;
@@ -1250,10 +1058,9 @@ function updateWebGPUSkyAtmosphere(skyAtmosphere, frameState) {
       cache.pipeline = result.pipeline;
       cache.bindGroupLayout = result.bindGroupLayout;
       cache.lutBindGroupLayout = result.lutBindGroupLayout;
-      // Fullscreen-sky pipeline (view-independent option). Same shader module +
-      // bind group layouts (makeBindGroupLayout dedupes identical descriptors, so
-      // the shell's bind groups bind here too); differs only in vertex/fragment
-      // entry points, no vertex buffers, and no face cull.
+      // The fullscreen pipeline reuses the shader module and bind-group layouts
+      // so shell bind groups remain compatible. Only entry points, vertex
+      // buffers, and face culling differ.
       const resultFs = createPipeline(
         device,
         shaderCode,
@@ -1307,10 +1114,8 @@ function updateWebGPUSkyAtmosphere(skyAtmosphere, frameState) {
     );
     cache.uniformData = new Float32Array(UNIFORM_BUFFER_SIZE / 4);
   }
-  // Batch 110 — split bindGroup creation out of the uniformBuffer init
-  // branch so a Batch 110 invalidation (which clears bindGroup but
-  // keeps uniformBuffer to avoid reallocating GPU memory) re-creates
-  // the bindGroup against the freshly recreated bindGroupLayout.
+  // Create the bind group independently from its buffer so pipeline
+  // invalidation can rebuild the group without reallocating GPU memory.
   if (!defined(cache.bindGroup)) {
     cache.bindGroup = device.createBindGroup({
       layout: cache.bindGroupLayout,
@@ -1331,26 +1136,16 @@ function updateWebGPUSkyAtmosphere(skyAtmosphere, frameState) {
     skyAtmosphere,
   );
 
-  // Update uniforms every frame. The SKY shader's LUT fast-path is gated
-  // off (ENABLE_SKY_INSCATTER_LUT) — see the constant's doc block; the
-  // bake itself still runs above because the globe fog drape consumes
-  // the same inscatter texture.
-  // Batch 427 (SKY-MS) — opt-in multiple-scattering add. Only enabled when the
-  // user flips `skyAtmosphere.multipleScattering` on AND the extended bake has
-  // produced a real MS LUT (msReady). Default-false → byte-identical to the
-  // single-scattering sky (the shader skips the add).
+  // Update uniforms every frame. The legacy inscatter lookup is disabled for
+  // the visible sky; its bake serves fog, globe, voxel, splat, and point-cloud
+  // consumers. Multiple scattering needs both a request and a ready real LUT.
   const multipleScatteringEnabled =
     skyAtmosphere.multipleScattering === true && lutInfo.msReady === true;
-  // Batch 428 (A-LUT-REPARAM / NEW-ATMOSPHERE-LUT-SUN-RELATIVE) — opt-in
-  // sun-relative sky-view LUT fast-path. Only enabled when the user flips
-  // `skyAtmosphere.useScatteringLut` on AND the extended bake has produced a
-  // real sky-view LUT (skyViewReady). Default-false → byte-identical to the
-  // inline-march sky (the shader's `u.debug.z` stays 0).
+  // The separate sun-relative sky-view lookup also requires an explicit
+  // option and a ready texture; otherwise the inline march remains active.
   const useSkyViewLut =
     skyAtmosphere.useScatteringLut === true && lutInfo.skyViewReady === true;
-  // Batch 438 — three opt-in atmosphere-physics flags. Each defaults false; the
-  // packed uniform stays 0 and the corresponding WGSL gate is closed → the sky
-  // is byte-identical with all three off.
+  // Optional atmosphere-physics flags map directly to independent WGSL gates.
   const improvedMiePhase = skyAtmosphere.improvedMiePhase === true;
   const dualLightInline = skyAtmosphere.dualLightInline === true;
   const ozoneEnabled = skyAtmosphere.ozone === true;
@@ -1373,11 +1168,9 @@ function updateWebGPUSkyAtmosphere(skyAtmosphere, frameState) {
     UNIFORM_BUFFER_SIZE,
   );
 
-  // View-independent fullscreen-sky option. When `skyAtmosphere._webgpuFullscreen`
-  // is set, push a fullscreen-triangle command (no vertex buffer, draw 3) that
-  // reconstructs the per-pixel ray in the shader — covers the whole sky at any
-  // altitude, sidestepping the shell mesh's ground-view coverage gap. Same
-  // uniform buffer + LUT bind group as the shell path.
+  // The view-independent option draws a fullscreen triangle and reconstructs
+  // each ray in the shader. It covers the sky at every altitude without the
+  // shell mesh's ground-view gap and shares the shell's uniforms and LUT group.
   if (
     skyAtmosphere._webgpuFullscreen === true &&
     defined(cache.fullscreenPipeline)

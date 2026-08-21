@@ -2,22 +2,18 @@
  * Shared lifecycle rule for a WebGPU shadow cast target (the single depth map
  * and every CSM cascade layer).
  *
- * A cast pass that receives NO casters still has to clear its target once,
- * otherwise a scene that goes from "casters" to "no casters" leaves receivers
- * sampling last frame's depth forever. That transition clear (Batch 775) is
- * correct — but it is only correct when the target was populated on an EARLIER
- * frame.
+ * A cast pass with no casters still clears its target once. Otherwise a scene
+ * that transitions from casters to no casters leaves receivers sampling the
+ * previous frame's depth indefinitely. The clear is valid only when an
+ * earlier frame populated the target.
  *
- * `NEW-WEBGPU-GLOBE-SUN-SHADOW-RECEIVE-DEAD`: the WebGPU cast dispatch was
- * entered TWICE per frame — once from the backend-neutral
- * `SceneRenderer.executeShadowMapCastCommands` (the only site that populates
- * `ShadowMap.passes[j].commandList`) and again from
- * `WebGPUSceneRenderer.executeCommands`. `WebGPUContext.executeShadowMapCastCommands`
- * empties the per-pass command lists when it is done, so the second entry always
- * saw zero casters, took the transition-clear branch, and wiped the depth the
- * first entry had just written — before any receiver sampled it. The duplicate
- * dispatch was removed; this predicate makes the wipe structurally impossible to
- * reintroduce from ANY future re-entry, rather than relying on there being
+ * `SceneRenderer.executeShadowMapCastCommands` is the only site that populates
+ * `ShadowMap.passes[j].commandList`, and
+ * `WebGPUContext.executeShadowMapCastCommands` empties those lists after
+ * consuming them. A repeated dispatch in the same frame therefore sees no
+ * casters but is not a casters-to-empty transition. Clearing then would erase
+ * depth written earlier in the frame before any receiver samples it. Tracking
+ * the content frame makes that erase impossible without relying on there being
  * exactly one caller.
  *
  * @private
@@ -31,8 +27,7 @@ export type ShadowCastContentState = "uninitialized" | "casters" | "empty";
  * @param contentFrameNumber The frame on which casters were last rendered into
  * the target, or `undefined` if never.
  * @param frameNumber The frame being encoded. `undefined` disables the
- * same-frame guard (callers with no frame identity keep the pre-guard
- * behavior).
+ * same-frame guard.
  * @returns `true` when the target still needs the transition clear.
  * @private
  */
@@ -45,7 +40,7 @@ export function shouldClearShadowCastTarget(
   if (contentState === "empty") {
     return false;
   }
-  // Populated by an earlier dispatch on THIS frame. A caster-less re-entry is
+  // Populated by an earlier dispatch in this frame. A caster-less re-entry is
   // a duplicate dispatch, never a real "casters went away" transition, so
   // clearing here would destroy depth the color pass is about to read.
   if (

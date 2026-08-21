@@ -3,7 +3,7 @@
 // Reads the particle storage buffer from the compute simulation and renders
 // each alive particle as a billboard-style screen-aligned quad.
 //
-// RTE precision — particle.position is CAMERA-RELATIVE (see
+// RTE precision — particle.position is camera-relative (see
 // `WeatherParticles.wgsl` header). Clip space is computed via
 // `mvpRelativeToEye` (translation-zeroed view-projection) so particles
 // project without materializing an absolute world-space position on
@@ -12,7 +12,7 @@
 // they're bounded by `particle.size` (meters).
 //
 // Particle struct (32 bytes):
-//   position: vec3<f32>  (CAMERA-RELATIVE)
+//   position: vec3<f32>  (camera-relative)
 //   lifetime: f32        (remaining seconds, <0 = dead)
 //   velocity: vec3<f32>  (m/s)
 //   size: f32            (world-space radius)
@@ -40,9 +40,8 @@ struct CameraUniforms {
   viewportSize: vec2<f32>,
   weatherType: u32,
   particleAlpha: f32,
-  // DP-H41 (Batch 27) — previous frame's viewProjection for
-  // TAA / motion-vector reprojection. Sourced from
-  // `UniformState._previousViewProjection` (f32 mat4).
+  // Previous frame's view-projection for TAA and motion-vector reprojection,
+  // sourced from `UniformState._previousViewProjection` as an f32 matrix.
   previousViewProjection: mat4x4<f32>,
 };
 

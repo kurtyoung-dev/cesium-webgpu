@@ -5,29 +5,17 @@
 // (SkyAtmosphere.wgsl, GlobeTerrain.wgsl) instead of per-pixel ray marching,
 // reducing fragment cost from ~32 ray march steps to a single texture fetch.
 //
-// Track V-A1 (NEW-ATMO-BRUNETON-FULL-LUTS) extends the original
-// transmittance + single-scattering pair to the full Bruneton precomputed
-// set by adding two more entry points:
-//   - computeMultipleScattering — gathers the single-scattering radiance
-//     over a hemisphere of directions and integrates a bounded number of
-//     higher scattering orders along the view ray. Brightens the sky
-//     (especially near the horizon and in shadow) relative to single
-//     scattering alone, which single-scattering models leave too dark.
-//   - computeIrradiance — indirect sky irradiance landing on a horizontal
-//     surface (the "delta E" / ground-irradiance LUT). Direct sun term
-//     (transmittance · max(cosSunZenith, 0)) plus the diffuse-sky integral
-//     of the inscattered radiance over the upper hemisphere.
-// These two extra passes consume the transmittance + single-scattering LUTs
-// as SAMPLED inputs (group 1) and write their own storage targets, so the
-// original two entry points and their write-only group-0 layout are
-// untouched.
+// The full Bruneton set also includes multiple-scattering and irradiance
+// entry points. Multiple scattering supplies bounded higher-order radiance,
+// particularly near the horizon and in shadow. Irradiance combines direct
+// sunlight with the diffuse-sky integral on a horizontal surface. Both passes
+// sample the transmittance and single-scattering LUTs through group 1, leaving
+// the original write-only group-0 layout unchanged.
 //
 // LUT dimensions:
 //   Transmittance:       256×64  (cosZenith × altitude)
 //   Inscatter (single):  256×128 (cosViewZenith × altitude, sun baked per UB)
-//   MultipleScattering:  256×128 (Batch 429: sun-relative sky-view domain —
-//                                 relAzimuth × Hillaire-warped view-zenith,
-//                                 same as SkyView; was cosViewZenith × altitude)
+//   MultipleScattering:  256×128 (relAzimuth × Hillaire-warped view-zenith)
 //   SkyView (single):    256×128 (relAzimuth × Hillaire-warped view-zenith)
 //   Irradiance:          256×64  (cosSunZenith × altitude)
 //
@@ -38,20 +26,14 @@
 //            iteration; Sébastien Hillaire (2020 Unreal sky); the technique
 //            is reimplemented from the published papers, not copied from any
 //            GPL/BSD reference source. Takram `three-geospatial` (MIT) folds
-//            the same Bruneton LUT set into a WebGPU pipeline — credited per
-//            migration_doc/RESEARCH_TAKRAM_GEOSPATIAL_VISUALS.md. Original
+//            the same Bruneton LUT set into a WebGPU pipeline. The original
 //            single-scattering path follows CesiumJS Nishita scattering in
 //            SkyAtmosphere.wgsl.
 
 const PI: f32 = 3.141592653589793;
 const NUM_OPTICAL_DEPTH_SAMPLES: u32 = 16u;
 const NUM_INSCATTER_SAMPLES: u32 = 32u;
-// Multiple-scattering: legacy gather-sphere sampling constants. Batch 429
-// replaced the isotropic second-order gather with the directional Hillaire
-// "f_ms · single-scatter" proportional model (computeMultipleScattering now
-// reuses the single-scatter inscatter march over NUM_INSCATTER_SAMPLES), so
-// these are no longer consumed by that kernel. Retained (not removed) so any
-// future return to an explicit gather model has its sampling budget on hand.
+// Sampling budgets for explicit multiple-scattering gather variants.
 const NUM_MS_GATHER_DIRS: u32 = 32u;
 const NUM_MS_RAY_SAMPLES: u32 = 16u;
 // Irradiance: hemisphere directions integrated for the diffuse-sky term.
@@ -77,20 +59,14 @@ struct AtmosphereParams {
   _pad1: f32,
   // Sun direction for inscatter LUT
   sunDirection: vec3<f32>,
-  // Batch 428 (A-LUT-REPARAM) — cosine of the sun's zenith angle relative to
-  // the OBSERVER's local up. Used by computeSkyView to place the sun on its
-  // canonical synthetic-frame meridian at the correct elevation. The other
-  // kernels bake the sun's elevation implicitly via sunDirection and ignore
-  // this field (previously the `_pad2` padding slot).
+  // Cosine of the sun's zenith angle relative to the observer's local up.
+  // `computeSkyView` uses it to place the sun on the canonical synthetic-frame
+  // meridian; other kernels derive the elevation from `sunDirection`.
   sunCosZenith: f32,
-  // Batch 438 (4.5 SKY-OZONE) — ozone Chappuis-band absorption coefficient
-  // (per-metre, RGB). Ozone is a PURE ABSORBER (no scattering) concentrated in
-  // a tent profile around ~25 km; its Chappuis-band absorption (peaking in the
-  // green/red) is what deepens real twilight toward blue/violet at the zenith.
-  // Added to the EXTINCTION term of every Beer-Lambert factor in the LUT bake
-  // (transmittance + every inscatter march) so it darkens the long sunset light
-  // path. DEFAULT (0,0,0): exp(-(... + 0)) = identity → byte-identical bake. The
-  // renderer packs the real coefficient only when `skyAtmosphere.ozone` is on.
+  // Per-metre RGB Chappuis-band absorption coefficient. Ozone is a pure
+  // absorber concentrated in a tent profile around 25 km; adding it to each
+  // Beer-Lambert extinction term deepens long twilight paths. A zero
+  // coefficient leaves the bake unchanged.
   ozoneCoefficient: vec3<f32>,
   _pad3: f32,
 }
@@ -99,25 +75,19 @@ struct AtmosphereParams {
 @group(0) @binding(1) var transmittanceOutput: texture_storage_2d<rgba16float, write>;
 @group(0) @binding(2) var inscatterOutput: texture_storage_2d<rgba16float, write>;
 
-// ── Group 1: full-Bruneton extension (multiple-scattering + irradiance) ──
-// These bindings are used ONLY by computeMultipleScattering / computeIrradiance.
-// The original two entry points above declare neither group nor these bindings,
-// so their auto-derived pipeline layout is unchanged. CRUCIALLY the extended
-// kernels read their OWN params copy from this group (binding 0) and never
-// touch @group(0) — so their auto-derived pipeline layout contains group 1
-// only, and the dispatcher binds a single bind group at index 1 (no group-0
-// bind group needed for these passes). The transmittance + single-scattering
-// LUTs are bound here as SAMPLED inputs.
+// Group 1 contains the multiple-scattering and irradiance inputs. Those
+// kernels read their own parameters from binding 0 and never reference group
+// 0, so their auto-derived layout needs only the bind group at index 1. The
+// original entry points do not reference these bindings and retain their
+// group-0-only layout.
 @group(1) @binding(0) var<uniform> extParams: AtmosphereParams;
 @group(1) @binding(1) var lutSampler: sampler;
 @group(1) @binding(2) var transmittanceTex: texture_2d<f32>;
 @group(1) @binding(3) var singleScatterTex: texture_2d<f32>;
 @group(1) @binding(4) var multipleScatterOutput: texture_storage_2d<rgba16float, write>;
 @group(1) @binding(5) var irradianceOutput: texture_storage_2d<rgba16float, write>;
-// Batch 428 (A-LUT-REPARAM / NEW-ATMOSPHERE-LUT-SUN-RELATIVE) — sky-view LUT
-// output. Written by `computeSkyView` only; declared on the SAME group-1
-// layout as the MS/irradiance passes so it rides the existing extended bind
-// group. See `computeSkyView` for the parameterization.
+// `computeSkyView` alone writes this output. Sharing group 1 with the
+// multiple-scattering and irradiance passes avoids another bind-group layout.
 @group(1) @binding(6) var skyViewOutput: texture_storage_2d<rgba16float, write>;
 
 // Density at a given altitude using exponential falloff
@@ -137,7 +107,7 @@ fn raySphereIntersect(origin: vec3<f32>, dir: vec3<f32>, radius: f32) -> vec2<f3
   return vec2<f32>(-b - sqrtD, -b + sqrtD);
 }
 
-// Compute optical depth along a ray from origin in direction dir for a given length
+// Compute optical depth along a ray from the origin over a fixed length.
 fn opticalDepth(
   origin: vec3<f32>,
   dir: vec3<f32>,
@@ -156,14 +126,10 @@ fn opticalDepth(
   return sum;
 }
 
-// Batch 438 (4.5 SKY-OZONE) — ozone number-density tent profile (Bruneton /
-// Hillaire). Ozone is NOT exponential like Rayleigh/Mie; it sits in a layer
-// centred near ~25 km, modelled here as a symmetric linear tent: density 1.0 at
-// the 25 km peak, falling linearly to 0 at 0 km below and ~40 km above (the
-// 15 km half-width matches the Hillaire / Bruneton ozone layer). Returns a unit-
-// less relative density in [0, 1]; the ozone coefficient supplies the per-metre
-// extinction magnitude. Pure absorption — used in extinction (Beer-Lambert)
-// terms only, never in a phase/scatter accumulation.
+// Bruneton/Hillaire ozone number-density profile. Unlike exponential
+// Rayleigh and Mie density, ozone occupies a symmetric linear tent centered at
+// 25 km. The relative density is used only for Beer-Lambert extinction; the
+// coefficient supplies the per-metre magnitude.
 fn ozoneDensity(height: f32) -> f32 {
   let center = 25000.0;
   let halfWidth = 15000.0;
@@ -250,8 +216,7 @@ fn computeTransmittance(
   // Compute optical depths along the ray
   let rayleighOD = opticalDepth(origin, dir, rayLength, params.rayleighScaleHeight, params.innerRadius);
   let mieOD = opticalDepth(origin, dir, rayLength, params.mieScaleHeight, params.innerRadius);
-  // Batch 438 (4.5 SKY-OZONE) — ozone absorption (extinction only). Default
-  // coefficient 0 → adds exp(-0) = identity, byte-identical.
+  // Ozone contributes absorption only; a zero coefficient is the identity.
   let ozoneOD = ozoneOpticalDepth(origin, dir, rayLength, params.innerRadius);
 
   // Transmittance = Beer-Lambert attenuation
@@ -319,8 +284,7 @@ fn computeInscatter(
   var totalMie = vec3<f32>(0.0);
   var rayleighODSum: f32 = 0.0;
   var mieODSum: f32 = 0.0;
-  // Batch 438 (4.5 SKY-OZONE) — accumulate ozone (tent profile) optical depth
-  // along the view ray alongside Rayleigh/Mie. Default coefficient 0 → identity.
+  // Accumulate ozone optical depth alongside Rayleigh and Mie.
   var ozoneODSum: f32 = 0.0;
 
   for (var i = 0u; i < NUM_INSCATTER_SAMPLES; i++) {
@@ -391,11 +355,10 @@ fn sampleSingleScatter(altitude: f32, cosViewZenith: f32) -> vec3<f32> {
   return textureSampleLevel(singleScatterTex, lutSampler, vec2<f32>(u, v), 0.0).rgb;
 }
 
-// Build an orthonormal basis (tangent, bitangent, up) around an up vector so
-// the sky-view azimuth can be measured in the local horizon plane. Shared by
-// computeMultipleScattering (Batch 429) and computeSkyView (Batch 428) — both
-// place the sun on the +tangent meridian and sweep the view by relative
-// azimuth. Declared here (above its first caller) per WGSL's order rule.
+// Build an orthonormal basis around an up vector so sky-view azimuth can be
+// measured in the local horizon plane. Both sky-view kernels place the sun on
+// the positive tangent meridian and sweep the view by relative azimuth. WGSL
+// requires the helper to precede its first caller.
 fn skyViewBasis(up: vec3<f32>) -> mat3x3<f32> {
   // Pick a reference axis least aligned with `up` to avoid a degenerate cross.
   let ref0 = select(
@@ -408,48 +371,14 @@ fn skyViewBasis(up: vec3<f32>) -> mat3x3<f32> {
   return mat3x3<f32>(tangent, bitangent, up);
 }
 
-// ═══════════════════════════════════════════════════════════
-// MULTIPLE-SCATTERING LUT — higher scattering orders
-// ═══════════════════════════════════════════════════════════
+// Multiple-scattering LUT: higher scattering orders.
 //
-// Batch 429 (A-LUT-REPARAM follow-up / SKY-MS all-azimuth) — re-parameterized
-// onto the SAME sun-relative sky-view domain `computeSkyView` uses (Hillaire
-// 2020), so the multiple-scattering add carries a view↔sun AZIMUTH axis and
-// lifts the sky at ALL azimuths, not just the sun meridian.
-//
-//   U axis = relative azimuth between the view direction and the sun,
-//            [0, π] → [0, 1] (the sky is mirror-symmetric about the sun
-//            meridian, so the half-plane covers every azimuth). U=0 looks
-//            toward the sun's azimuth, U=1 anti-sun.
-//   V axis = view zenith with the Hillaire horizon warp
-//              l = cosViewZenith ; V = 0.5 + 0.5*sign(l)*sqrt(|l|)
-//            V=0 down, V=0.5 horizon, V=1 zenith.
-//
-// PREVIOUSLY this table used the inscatter LUT's azimuth-FLAT
-// (cosViewZenith × altitude) mapping with the sun baked into a synthetic Y-up
-// frame, AND an isotropic second-order sphere gather. Both flattened the
-// azimuth signal — the SKY-MS add (Batch 427) was directionally flat (the 427
-// agent measured ~zero off-meridian lift at twilight; a direct LUT readback
-// confirmed max/min ≈ 1.05 across the azimuth axis vs ≈ 22 for the single-
-// scatter sky-view LUT). Two changes fix it:
-//
-//   1. DOMAIN: re-parameterized onto the sky-view (relAzimuth × Hillaire-warped
-//      view-zenith) domain above, with the sun on the canonical meridian at
-//      the observer-relative zenith — so the table now HAS a view↔sun axis.
-//   2. MODEL: replaced the isotropic sphere gather (which integrated the phase
-//      over the whole sphere and averaged the azimuth signal away) with the
-//      directional Hillaire "multiple scattering ≈ f_ms · single scatter"
-//      proportional model. The MS radiance is a BOUNDED multiple of the SAME
-//      single-scatter inscatter integral computeSkyView/computeInscatter use,
-//      evaluated along THIS azimuth-aware view ray. It therefore inherits the
-//      sky-view LUT's azimuth shape EXACTLY (strong toward the sun, weak to the
-//      side, mild back-scatter anti-sun) and — being proportional to the
-//      single-scatter field — is stable across sun elevations instead of
-//      collapsing to zero at a high sun and exploding into a white veil at a
-//      low one (the failure mode of an unbounded explicit second-order gather).
-//
-// Baked at a ground-level observer to match `computeSkyView` (off-meridian MS
-// matters most at ground level, the sky shader's parity reference).
+// U is relative view-to-sun azimuth over [0, pi], with mirror symmetry about
+// the sun meridian. V is view zenith under the Hillaire horizon warp. The
+// bounded proportional model evaluates the single-scattering integral along
+// that azimuth-aware view ray, preserving its directionality across sun
+// elevations. A ground-level observer matches `computeSkyView`, where the
+// off-meridian contribution matters most.
 
 @compute @workgroup_size(16, 16, 1)
 fn computeMultipleScattering(
@@ -509,32 +438,20 @@ fn computeMultipleScattering(
   }
 
   let stepSize = rayLength / f32(NUM_INSCATTER_SAMPLES);
-  // View↔sun scattering cosine — the SAME quantity the single-scatter sky-view
-  // integral uses, so the MS field is directional along the identical azimuth
-  // axis (strongest toward the sun, weak to the side, mild back-scatter anti-
-  // sun). This single per-pixel cosine — rather than an isotropic sphere gather
-  // — is why the re-param now produces a directional all-azimuth MS LUT instead
-  // of the flat veil the pre-429 gather did (the gather integrated the phase
-  // over the whole sphere and averaged the azimuth signal away).
+  // Using the same view-to-sun cosine as the single-scattering integral keeps
+  // the field directional along the LUT's azimuth axis.
   let cosViewSun = dot(viewDir, sunDir);
   let rayleighPhaseVal = rayleighPhase(cosViewSun);
   let miePhaseVal = miePhase(cosViewSun, extParams.mieAnisotropy);
 
-  // ── Single-scatter inscatter along THIS (azimuth-aware) view ray ──
-  // Re-uses the same Beer-Lambert single-scattering integral as computeSkyView
-  // / computeInscatter: at each step accumulate the sun-attenuated medium
-  // density, then phase-combine. The result inherits the sky-view LUT's azimuth
-  // shape exactly. The multiple-scattering radiance is then a BOUNDED multiple
-  // of this single-scatter field (the Hillaire "multiple scattering ≈ f_ms ·
-  // single scatter" approximation) — which is inherently directional AND stable
-  // across sun elevations (it tracks how bright/dark the single-scatter sky
-  // already is per azimuth, instead of exploding at a low sun the way an
-  // unbounded second-order gather did).
+  // Reuse the Beer-Lambert single-scattering integral along this view ray.
+  // Scaling that directional field by a bounded Hillaire-style factor keeps
+  // the result stable across sun elevations.
   var totalRayleigh = vec3<f32>(0.0);
   var totalMie = vec3<f32>(0.0);
   var rayleighODSum: f32 = 0.0;
   var mieODSum: f32 = 0.0;
-  // Batch 438 (4.5 SKY-OZONE) — ozone extinction along the view ray.
+  // Accumulate ozone extinction along the view ray.
   var ozoneODSum: f32 = 0.0;
 
   for (var i = 0u; i < NUM_INSCATTER_SAMPLES; i++) {
@@ -648,53 +565,41 @@ fn computeIrradiance(
   textureStore(irradianceOutput, vec2<i32>(gid.xy), vec4<f32>(irradiance, irrLuminance));
 }
 
-// ═══════════════════════════════════════════════════════════
-// SKY-VIEW LUT — sun-relative all-azimuth sky radiance (Hillaire 2020)
-// ═══════════════════════════════════════════════════════════
+// Sky-view LUT: sun-relative all-azimuth sky radiance (Hillaire 2020).
 //
-// Batch 428 (A-LUT-REPARAM / NEW-ATMOSPHERE-LUT-SUN-RELATIVE). The original
-// single-scatter inscatter LUT (computeInscatter, above) parameterizes only
-// (cosViewZenith × altitude) and bakes the sun direction into a SYNTHETIC
-// Y-up frame — so it carries no view↔sun azimuth axis and CANNOT represent
-// sky color off the sun meridian. That table stays untouched (the globe /
-// voxel / splat / point-cloud fog-drape paths sample it directly and are
-// tuned against its mapping). This NEW table adds the missing azimuth axis.
+// The legacy single-scatter inscatter LUT uses cosViewZenith by altitude and
+// has no view-to-sun azimuth axis. It remains unchanged because globe, voxel,
+// splat, and point-cloud fog paths depend on that mapping. This separate table
+// supplies the missing azimuth dimension for the visible sky.
 //
 // Parameterization (Hillaire 2020 "A Scalable and Production Ready Sky and
 // Atmosphere Rendering Technique", sky-view LUT):
-//   U axis = relative azimuth between the view direction and the sun, mapped
-//            [0, π] → [0, 1]. The sky is mirror-symmetric about the sun
-//            meridian, so the half-plane [0, π] covers every azimuth (a view
-//            and its mirror across the meridian share the same radiance).
-//            U=0 looks toward the sun's azimuth, U=1 looks anti-sun.
-//   V axis = view zenith with the Hillaire non-linear horizon warp so the
-//            thin bright horizon band gets resolution:
-//              l = cosViewZenith               (signed, [-1, 1])
-//              V = 0.5 + 0.5 * sign(l) * sqrt(|l|)
-//            V=0 looks straight down, V=0.5 is the horizon, V=1 is the zenith.
-// Sun zenith + altitude are baked from the uniform (params.sunDirection and a
-// fixed ground-level observer altitude — the off-meridian effect matters most
-// at ground level, which is also where the sky shader's non-LUT fallback is
-// the parity reference). The bake re-runs on every sun-direction change via
-// the same dirty gate as the single-scatter LUT.
+//   U = relative view-to-sun azimuth over [0, PI], mapped to [0, 1]. Mirror
+//       symmetry about the sun meridian lets that half-plane cover every
+//       azimuth. U=0 looks sunward and U=1 looks anti-sun.
+//   V = view zenith under the Hillaire horizon warp, which gives the thin
+//       horizon band more resolution:
+//         l = cosViewZenith
+//         V = 0.5 + 0.5 * sign(l) * sqrt(abs(l))
+//       V=0 looks down, V=0.5 is the horizon, and V=1 is the zenith.
+// Sun zenith comes from the uniform, while the observer remains at ground
+// level because off-meridian differences are strongest there. Sun-direction
+// changes invalidate this table through the single-scatter dirty gate.
 //
-// Storage is rgba16float (atmosphere radiance can be large near the sun): the
-// accumulated RGB is clamped before the store so an f16 path downstream never
-// sees Inf/NaN. RGB = combined Rayleigh+Mie inscatter (intensity baked in, to
-// match the single-scatter LUT's convention); A = Mie luminance (unused for
-// now, kept for layout symmetry with the inscatter LUT).
+// Storage is rgba16float because atmosphere radiance can be large near the
+// sun. Clamping before the store prevents non-finite values downstream. RGB
+// stores combined Rayleigh and Mie inscatter with intensity baked in; alpha
+// stores Mie luminance for layout symmetry with the inscatter LUT.
 //
-// `skyViewBasis` (the local-horizon orthonormal basis used to place the sun on
-// its canonical meridian and sweep the view azimuth) is declared above the
-// multiple-scattering pass — both kernels share the same sky-view domain
-// (Batch 429), and WGSL requires the helper to be declared before its first use.
+// `skyViewBasis` precedes the multiple-scattering pass because both kernels
+// share the local-horizon basis and WGSL requires declaration before use.
 
 @compute @workgroup_size(16, 16, 1)
 fn computeSkyView(
   @builtin(global_invocation_id) gid: vec3<u32>,
 ) {
-  // Self-bound against the storage target's own dimensions (256×128) rather
-  // than params.lutHeight (the shared uniform carries the transmittance height).
+  // Use the storage target's dimensions rather than `params.lutHeight`, since
+  // the shared uniform carries the transmittance height.
   let dims = textureDimensions(skyViewOutput);
   if (gid.x >= dims.x || gid.y >= dims.y) {
     return;
@@ -764,9 +669,8 @@ fn computeSkyView(
   var totalMie = vec3<f32>(0.0);
   var rayleighODSum: f32 = 0.0;
   var mieODSum: f32 = 0.0;
-  // Batch 438 (4.5 SKY-OZONE) — ozone extinction along the view ray. This is
-  // the table the visible sky samples on the sky-view fast-path, so the ozone
-  // twilight-blue deepening lands here too. Default coefficient 0 → identity.
+  // Include ozone extinction because the visible sky samples this table.
+  // A zero coefficient leaves the result unchanged.
   var ozoneODSum: f32 = 0.0;
 
   for (var i = 0u; i < NUM_INSCATTER_SAMPLES; i++) {

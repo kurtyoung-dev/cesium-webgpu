@@ -602,3 +602,25 @@ packages/engine/Source/Renderer/WebGPU/WebGPUBufferPolylineRenderer.ts
 packages/engine/Source/Renderer/WebGPU/WebGPUResidentInstanceBuffer.ts
 packages/engine/Source/Renderer/WebGPU/WebGPUClippingPolygonCollection.ts
 packages/engine/Source/Renderer/WebGPU/WebGPUEdgeFramebuffer.ts
+# Sky, atmosphere, shadow, and weather rendering family. Current layout,
+# sampling, fallback, and physical-model constraints remain inline.
+packages/engine/Source/Renderer/WebGPU/WebGPUAtmosphereLUT.ts
+packages/engine/Source/Renderer/WebGPU/WebGPUAtmosphereUniforms.ts
+packages/engine/Source/Renderer/WebGPU/WebGPUCSMCastPass.ts
+packages/engine/Source/Renderer/WebGPU/WebGPUCSMRenderer.ts
+packages/engine/Source/Renderer/WebGPU/WebGPUCubeMapPanoramaRenderer.js
+packages/engine/Source/Renderer/WebGPU/WebGPUShadowCastTargetState.ts
+packages/engine/Source/Renderer/WebGPU/WebGPUShadowMapRenderer.js
+packages/engine/Source/Renderer/WebGPU/WebGPUShadowReceiveTransform.ts
+packages/engine/Source/Renderer/WebGPU/WebGPUSkyAtmosphereRenderer.js
+packages/engine/Source/Renderer/WebGPU/WebGPUWeatherRenderer.ts
+packages/engine/Source/Shaders/WebGPU/chunks/functions/csm_effects.wgsl
+packages/engine/Source/Shaders/WebGPU/chunks/functions/csm_polylineCommon.wgsl
+packages/engine/Source/Shaders/WebGPU/chunks/functions/csm_samplePointShadow.wgsl
+packages/engine/Source/Shaders/WebGPU/chunks/functions/csm_stochasticDither.wgsl
+packages/engine/Source/Shaders/WebGPU/Compute/AtmosphereLUT.wgsl
+packages/engine/Source/Shaders/WebGPU/Compute/ProceduralSkyCubemap.wgsl
+packages/engine/Source/Shaders/WebGPU/Compute/WeatherParticleRender.wgsl
+packages/engine/Source/Shaders/WebGPU/CubeMapPanorama.wgsl
+packages/engine/Source/Shaders/WebGPU/Environment/SkyAtmosphere.wgsl
+packages/engine/Source/Shaders/WebGPU/Shadow/ShadowReceiveCSM.wgsl

@@ -20,121 +20,65 @@
 //     The multiple-scattering term and the sky-view parameterisation.
 // Reimplemented from those papers; no reference source is incorporated.
 //
-// STRUCTURAL DIVERGENCES (cataloged for the convention ledger)
+// Structural differences from the paired GLSL shaders:
 //
 // 1. **Single file vs multi-file split.** GLSL splits the pipeline into
-//    VS + FS + Common (= czm_computeScattering + czm_computeAtmosphereColor
-//    builtins). WGSL is a single module with @vertex + @fragment + helper
-//    fns inlined; czm_* builtins (pbrNeutralTonemapping, inverseGamma,
-//    applyHSBShift, raySphereIntersect) are ported inline as
-//    `pbrNeutralTonemapSky`, `pow(x, 1/2.2)`, `rgbToHsb`/`hsbToRgb`,
-//    `raySphereIntersect`.
+//    vertex, fragment, and common modules. WGSL keeps both entry points and
+//    their helpers in this module, with Cesium builtins ported inline.
 //
-// 2. **Ray-march quadrature.** RESOLVED Batch 247 — `computeScattering`
-//    is now a 1:1 port of czm_computeScattering's 16/4 adaptive scheme
-//    (w_inside_atmosphere / w_stop_gt_lprl step counts + stride,
-//    including its quadrature quirks). The previous 64-step uniform
-//    march was MORE converged than WebGL, which made the ground-level
-//    sky ~1.5× brighter than the WebGL reference (the coarse GLSL
-//    quadrature undershoots the converged Rayleigh integral). See the
-//    `PRIMARY_STEPS_MAX` comment at line ~230.
-//    Batch 513 (NEW-GLOBE-DRAPE-LIMB-CLOSEOUT): planet-striking rays now
-//    march THROUGH the planet interior like WebGL (the old
-//    `rayEnd = earthIntersect.x` surface clip flooded the globe-hidden
-//    disk interior blue + truncated the limb extinction tail); the only
-//    intentional divergence is a −150 km underground sample-height
-//    floor so the extinction is deterministic — WGSL exp() overflow is
-//    indeterminate per spec, while WebGL rides f32 inf to the same
-//    visual black.
+// 2. **Ray-march quadrature.** `computeScattering` matches the GLSL 16/4
+//    adaptive step scheme, including its full-step primary samples. Rays that
+//    strike the planet continue through its interior so extinction forms the
+//    WebGL limb profile. WGSL alone clamps underground sample height to -150 km
+//    because overflow from `exp` is indeterminate in WGSL; the clamp produces
+//    deterministic total extinction.
 //
-// 3. **Per-vertex vs per-fragment.** GLSL has #ifdef
-//    PER_FRAGMENT_ATMOSPHERE that decides between vertex-evaluated
-//    scattering (then interpolated as `v_mieColor`/`v_rayleighColor`
-//    varyings) vs per-fragment evaluation. WGSL always evaluates
-//    per-fragment — the WGSL VertexOutput carries only position and the
-//    camera-to-vertex delta. Per-vertex would re-introduce the
-//    mesh-pattern artifact at orbit altitudes (same lesson as Batch 56
-//    for ground atmosphere).
+// 3. **Per-vertex vs per-fragment.** GLSL can select vertex- or
+//    fragment-evaluated scattering. WGSL always evaluates per fragment because
+//    interpolated scattering exposes the shell mesh pattern at orbit altitude.
 //
-// 4. **LUT fast-path.** WGSL has a `useLut > 0.5` branch that replaces
-//    the 64-step ray march with a single inscatter LUT texture sample
-//    (LUT baked once per sun-direction change by
-//    `WebGPUPerformanceManager`). GLSL has no equivalent — WebGL2 has
-//    no compute shaders, so the LUT bake step doesn't exist on that
-//    backend. WebGL always uses the inline ray march. Documented as
-//    an intentional one-way enhancement (Phase 4).
-//    ⚠ Batch 247: the JS side currently packs `useLut = 0`
-//    unconditionally (`ENABLE_SKY_INSCATTER_LUT = false` in
-//    WebGPUSkyAtmosphereRenderer) — the 2D bake encodes the world-space
-//    sun direction in a synthetic Y-up frame and has no view–sun
-//    azimuth axis, which rendered a frame-filling over-bright daytime
-//    sky at ground level (NEW-GROUND-VIEW-ENV-DIVERGENCES). The branch
-//    below is retained scaffolding for the sun-relative re-bake
-//    (DEFERRED_WORK: NEW-ATMOSPHERE-LUT-SUN-RELATIVE).
+// 4. **LUT fast paths.** WebGL always ray marches because it has no compute
+//    bake. WGSL retains a legacy inscatter lookup, but the renderer disables it
+//    for the visible sky because its cosViewZenith-by-altitude mapping lacks a
+//    view-to-sun azimuth axis. That mapping stays unchanged for fog, globe,
+//    voxel, splat, and point-cloud consumers. A separate sun-relative sky-view
+//    LUT supplies the visible-sky lookup path.
 //
-// 5. **Dual-light scattering (sun + moon).** WGSL samples a SECOND
-//    inscatter LUT (`moonInscatterLut`) when `dualLightControl.x > 0.5`
-//    and adds the moon contribution scaled by phase × intensity. GLSL
-//    has no equivalent — single light source only. Phase 1.3c
-//    WGSL-only enhancement.
+// 5. **Dual-light scattering.** WGSL can add moon scattering from a second LUT
+//    or inline march. GLSL has a single light source.
 //
-// 6. **Debug bypass output.** WGSL has Tier 1 debug at
-//    `u.debug.x > 0.5` → flat magenta. GLSL has no equivalent — debug
-//    work in WebGL uses external CesiumDebug commands rather than
-//    shader-local toggles.
+// 6. **Debug bypass output.** WGSL can emit flat magenta when
+//    `u.debug.x > 0.5`; GLSL has no shader-local equivalent.
 //
-// 7. **Wind state scaffolding.** WGSL carries `windDirectionAndSpeed`
-//    in the UBO ahead of Phase 5/6 (volumetric fog + cloud motion).
-//    GLSL has no equivalent — none of those phases are planned for
-//    WebGL2 backend.
+// 7. **Wind state.** WGSL reserves `windDirectionAndSpeed` in the uniform
+//    layout, although this shader does not consume it. GLSL has no equivalent.
 //
-// 8. **Tonemap chain order.** GLSL FS L40-48: scatter → IF !HDR
-//    czm_pbrNeutralTonemapping + czm_inverseGamma → IF COLOR_CORRECT
-//    czm_applyHSBShift. WGSL FS L491-500: ALWAYS pbrNeutralTonemapSky →
-//    ALWAYS pow(x, 1/2.2) sRGB encode → IF |hsbShift| > 0.001 then
-//    hsbToRgb(rgbToHsb()). WGSL is unconditional on the tonemap chain
-//    because HDR mode is plumbed differently on the WebGPU side (post-
-//    process pipeline handles HDR composite).
+// 8. **Tonemap chain.** WGSL always applies PBR Neutral tonemapping, sRGB
+//    encoding, and then any HSB shift. GLSL guards parts of that sequence with
+//    HDR and color-correction defines because its HDR composite is plumbed
+//    differently.
 //
 // 9. **RTE vs `czm_model` vertex transform.** GLSL VS uses
-//    `czm_model * position` (no RTE — single precision is sufficient
-//    for the atmosphere shell mesh at planet scale because the shell
-//    is centered on the planet origin). WGSL VS uses
-//    `translateRelativeToEye(positionHigh, positionLow, encodedCameraHigh,
-//    encodedCameraLow)` then `mvpRelativeToEye * positionRTE` — RTE is
-//    used uniformly across all WGSL shaders for consistency, not
-//    because the atmosphere shell needs it.
+//    `czm_model * position`; WGSL uses the renderer-wide relative-to-eye path.
+//    The centered atmosphere shell does not itself require RTE precision.
 //
 // 10. **Translucent-globe brightening.** GLSL has `#ifdef
-//     GLOBE_TRANSLUCENT` path in computeAtmosphereScattering that
-//     substitutes a dark distance-faded horizon gradient for rays that
-//     intersect the planet when translucency is enabled. WGSL ports it
-//     as a RUNTIME gate (`u.atmosControl.w > 0.5`, packed from
-//     `frameState.globeTranslucencyState.translucent`) inside
-//     `skyColorForRay` — GLOBE-TRANSLUCENCY-ALPHA. Compile-time define
-//     vs runtime flag is the only divergence; the math matches
-//     SkyAtmosphereCommon.glsl lines 63-90.
+//     GLOBE_TRANSLUCENT`; WGSL uses runtime gate `u.atmosControl.w > 0.5`.
+//     Both substitute the same dark distance-faded horizon gradient for rays
+//     through a translucent planet.
 //
 // 11. **Ellipsoid math (uniform vs builtins).** GLSL pulls
-//     `czm_ellipsoidRadii`, `czm_ellipsoidInverseRadii`,
-//     `czm_eyeHeight`, `czm_viewerPositionWC` from automatic uniforms.
-//     WGSL pulls `radiiAndDynamicAtmosphere` (innerRadius, outerRadius,
-//     dynamicLighting, _), `cameraPositionWC` from the explicit
-//     `Uniforms` struct — innerRadius IS the ellipsoid-radius minus a
-//     distance-adjust quantity that the CPU pre-computes (no in-shader
-//     equivalent to GLSL's runtime `distanceAdjust` math).
+//     ellipsoid and viewer state from automatic uniforms. WGSL receives the
+//     equivalent values in `Uniforms`, with the distance-adjusted inner radius
+//     already computed on the CPU.
 //
-// 12. **Light-direction selection — MATCHED, NOT divergent (C12-31,
-//     2026-08-01).** GLSL calls the shared builtin
+// 12. **Light-direction selection.** GLSL calls the shared builtin
 //     `czm_getSkyAtmosphereLightDirection(positionWC, lightEnum)` from
-//     both SkyAtmosphereVS and SkyAtmosphereFS; WGSL inlines the same
-//     selection as the `isLegacyOverhead` block in `skyColorForRay`
-//     (WGSL has no builtin include mechanism). Same four arms, same
-//     answers: NONE/SUNLIGHT → astronomical sun, SCENE_LIGHT → the
-//     scene light (packed into `sunDirectionWC` by the renderer),
-//     LEGACY_OVERHEAD → local up. Any change to one MUST land with the
-//     other; `Tools/visual-regression/sky-light-direction.spec.mjs`
-//     fails if they drift.
+//     both stages. WGSL inlines the same selection because it has no builtin
+//     include mechanism: `NONE` and `SUNLIGHT` use the astronomical sun,
+//     `SCENE_LIGHT` uses the packed scene light, and `LEGACY_OVERHEAD` uses
+//     local up. Keep `Tools/visual-regression/sky-light-direction.spec.mjs`
+//     aligned with both implementations.
 
 struct Uniforms {
   mvpRelativeToEye: mat4x4<f32>,
@@ -146,9 +90,8 @@ struct Uniforms {
   _pad2: f32,
   sunDirectionWC: vec3<f32>,
   _pad3: f32,
-  // x = innerRadius — WebGL-parity scattering-shell inner radius
-  //     (`(|cameraWC| - eyeHeight) - radiusAdjust`, Batch 247; mirrors
-  //     SkyAtmosphereCommon.glsl L43-54)
+  // x = innerRadius — WebGL scattering-shell inner radius, computed as
+  //     `(|cameraWC| - eyeHeight) - radiusAdjust`
   // y = outerRadius — innerRadius + 111e3 (czm_computeScattering's
   //     ATMOSPHERE_THICKNESS)
   // z = dynamicLighting enum
@@ -177,28 +120,20 @@ struct Uniforms {
   //       color. Lets you isolate scattering math bugs from LUT/composite
   //       errors. Magenta is intentional — picks up immediately on a blue
   //       sky and is unmistakable for any natural sky color.
-  //   y = multipleScatteringEnabled (Batch 427 SKY-MS) — when > 0.5 the
-  //       fragment shader ADDS the precomputed multiple-scattering LUT term to
-  //       the single-scatter sky color (Hillaire 2020 / Bruneton MS). Raises
-  //       the horizon + shadowed-limb radiance that single scatter leaves too
-  //       dark. The renderer sets this only when the user opt-in
-  //       `skyAtmosphere.multipleScattering` is on AND the MS LUT is baked, so
-  //       the default (0) is byte-identical to single scatter.
-  //   z = useSkyViewLut (Batch 428 A-LUT-REPARAM / NEW-ATMOSPHERE-LUT-SUN-
-  //       RELATIVE) — when > 0.5 the fragment shader REPLACES the inline
-  //       czm_computeScattering march with a single sample of the sun-relative
-  //       sky-view LUT (Hillaire 2020), which is correct at ANY view azimuth
-  //       relative to the sun (the old inscatter LUT could only represent the
-  //       sun meridian). The renderer sets this only when the user opt-in
-  //       `skyAtmosphere.useScatteringLut` is on AND the sky-view LUT is baked,
-  //       so the default (0) keeps the inline march — byte-identical to today.
+  //   y = multipleScatteringEnabled — when > 0.5, add the precomputed
+  //       multiple-scattering term. It raises horizon and shadowed-limb
+  //       radiance that single scattering leaves too dark. The renderer sets
+  //       the flag only when the option is enabled and the LUT is baked.
+  //   z = useSkyViewLut — when > 0.5, replace the inline march with one sample
+  //       from the sun-relative sky-view LUT. Unlike the legacy inscatter
+  //       table, this separate LUT represents every view-to-sun azimuth. The
+  //       renderer sets the flag only when the option is enabled and the LUT
+  //       is baked.
   //   w = unused
   debug: vec4<f32>,
-  // Phase 1.3c — Dual-light atmosphere scattering. The moon LUT is
-  // baked separately from the sun LUT (by WebGPUPerformanceManager
-  // with target="moon") and the fragment shader sums both contributions
-  // when `dualLightControl.x > 0.5`. The moon term scales linearly with
-  // `moonPhaseFraction` (0 = new moon → no contribution, 1 = full moon).
+  // The moon LUT is baked separately from the sun LUT. When dual-light
+  // scattering is enabled, the fragment shader adds both contributions and
+  // scales the moon term linearly by `moonPhaseFraction`.
   moonDirectionWC: vec3<f32>,
   _pad7: f32,
   // x = enableDualLightAtmosphere flag (0/1)
@@ -206,22 +141,13 @@ struct Uniforms {
   // z = moonIntensityScale (default 0.05 — moon is much dimmer than sun)
   // w = pad
   dualLightControl: vec4<f32>,
-  // Session 65 Batch 42 — Phase 4 completion. Wind state pre-emptively
-  // plumbed for Phase 5 (volumetric fog advection), Phase 6 (cloud
-  // motion in raymarched + procedural cloud layers), and the sibling
-  // water-rendering design (wave displacement modulation).
-  //
-  // Source: `frameState.atmosphericConditions.weather.{windSpeed,
-  // windDirection}`. WindSpeed is in m/s; windDirection is a normalized
-  // 3-vector in WORLD coords (Earth-relative). Both pack into a single
-  // vec4 to keep the uniform layout compact:
+  // Packed wind state from
+  // `frameState.atmosphericConditions.weather.{windSpeed, windDirection}`.
+  // This shader does not consume the values, but the fixed slot keeps the
+  // shared uniform layout stable. Direction is normalized in world coordinates
+  // and speed is in metres per second:
   //   xyz = windDirectionWC (normalized; defaults to (0, 0, 1))
   //   w   = windSpeed m/s (defaults to 0 = calm)
-  //
-  // No fragment shader path consumes these yet — they are scaffolding
-  // ahead of Phase 5/6. Adding them now keeps the uniform buffer
-  // layout stable when those phases land so SkyAtmosphere bind groups
-  // don't need to be rebuilt later.
   windDirectionAndSpeed: vec4<f32>,
   // Fullscreen-sky path (view-independent sky option). The shell-mesh path
   // ignores these; the fullscreen path reconstructs the per-pixel world ray
@@ -229,52 +155,39 @@ struct Uniforms {
   // at float offsets 68 (inverseProjection) and 84 (inverseView).
   inverseProjection: mat4x4<f32>,
   inverseView: mat4x4<f32>,
-  // Batch 438 — three opt-in atmosphere-physics flags packed into one vec4.
-  // ALL default 0, so every gate below stays closed and the sky is
-  // byte-identical to the historical single-light HG/no-ozone path.
-  //   x = improvedMiePhase (4.6 MIE-PHASE) — when > 0.5 the Mie phase uses the
-  //       Jendersie & d'Eon 2023 droplet approximation (Draine + forward delta)
-  //       instead of single-g Henyey-Greenstein. Off → exact historical HG.
-  //   y = dualLightInline (4.4 SKY-MOON) — when > 0.5 the inline ray-march path
-  //       ADDS a second analytic moon-light scattering march so moonglow appears
-  //       on the parity (non-LUT) path. Off → single-light inline march.
-  //   z = ozoneEnabled (4.5 SKY-OZONE) — when > 0.5 the inline march applies the
-  //       ozone Chappuis-band extinction (using `ozoneCoefficient`). Off → no
-  //       ozone term. (The LUT bake is gated CPU-side by zeroing the coefficient,
-  //       so it needs no shader flag; this flag only gates the inline path.)
+  // Optional atmosphere-physics gates. Zero selects the single-light
+  // Henyey-Greenstein path without ozone:
+  //   x = improvedMiePhase — select the Jendersie and d'Eon droplet phase
+  //       approximation instead of single-g Henyey-Greenstein.
+  //   y = dualLightInline — add an analytic moon-light scattering march to the
+  //       inline path.
+  //   z = ozoneEnabled — apply Chappuis-band extinction in the inline march.
+  //       The CPU gates LUT ozone by zeroing its coefficient.
   //   w = reserved
   atmosControl: vec4<f32>,
-  // Batch 438 (4.5 SKY-OZONE) — ozone Chappuis-band absorption coefficient
-  // (per-metre, RGB). Pure absorber; consumed only by the inline march's
-  // extinction term when atmosControl.z > 0.5. Default (0,0,0) → identity.
+  // Per-metre RGB Chappuis-band absorption coefficient. It contributes only
+  // to inline-march extinction when `atmosControl.z > 0.5`; zero is identity.
   ozoneCoefficient: vec3<f32>,
   _pad8: f32,
-  // Batch 438 (4.4 SKY-MOON) — moon scattering inputs for the inline dual-light
-  // path. moonLightDirWC is the moon direction in world coords; moonControl
-  // packs x = moonPhaseFraction (0..1), y = moonIntensityScale, z/w reserved.
-  // Only read when atmosControl.y > 0.5. Defaults are harmless when the gate is
-  // closed.
+  // Moon inputs for the inline dual-light path. `moonControl.x` is phase
+  // fraction, `moonControl.y` is intensity scale, and z/w are reserved. These
+  // fields are read only when `atmosControl.y > 0.5`.
   moonLightDirWC: vec3<f32>,
   _pad9: f32,
   moonControl: vec4<f32>,
-  // C12-29 S6 — 360-degree horizon twilight. APPENDED at the tail (float
-  // offset 116, byte offset 464); the buffer grew 464 -> 480 bytes and no
-  // existing offset moved.
-  //   x = horizon gain, as a multiple of the sky's own luminance along the
-  //       same ray. Exactly 0 in every frame that is not the last ~2% of a
-  //       total eclipse's obscuration seen from inside the atmosphere, and
-  //       the whole block is skipped at 0 — byte-identical.
+  // Eclipse horizon twilight control at float offset 116.
+  //   x = horizon gain as a multiple of the sky's luminance along the same ray.
+  //       Zero skips the contribution.
   //   y/z/w = reserved
   eclipseControl: vec4<f32>,
-  // Active atmosphere ellipsoid gradient weights. APPENDED at the tail
-  // (float offset 120, byte offset 480) so no established field moves.
+  // Active atmosphere ellipsoid gradient weights at float offset 120.
   // xyz = 1 / (radii * radii); w-equivalent is the explicit pad below.
   ellipsoidInverseRadiiSquared: vec3<f32>,
   _pad10: f32,
 };
 
-// C12-29 S6 constants — identical values, identical names, in
-// `Shaders/SkyAtmosphereFS.glsl` and `Scene/EclipseState.js`.
+// Keep these constants identical to `Shaders/SkyAtmosphereFS.glsl` and
+// `Scene/EclipseState.js`.
 // atan(25 km / 60 km): the elevation the sunlit penumbral atmosphere subtends
 // from the middle of a ~120 km umbral track. Above it the observer is looking
 // at umbral sky, so the band ends there.
@@ -314,38 +227,25 @@ fn getEclipseObserverUp(
 // direction baked in by AtmosphereLUT.wgsl. Sampling the inscatter table
 // replaces the 16-step ray march below with a single texture fetch.
 //
-// Phase 1.3c — moon LUTs at bindings 3+4 mirror the sun LUTs at 1+2.
-// When dual-light scattering is off the moon LUTs still bind to valid
-// (cleared) textures so the layout stays constant.
+// Moon LUTs at bindings 3 and 4 mirror the sun LUTs at bindings 1 and 2.
+// Cleared moon textures keep the layout stable when dual-light scattering is
+// disabled.
 @group(1) @binding(0) var lutSampler: sampler;
 @group(1) @binding(1) var transmittanceLut: texture_2d<f32>;
 @group(1) @binding(2) var inscatterLut: texture_2d<f32>;
 @group(1) @binding(3) var moonTransmittanceLut: texture_2d<f32>;
 @group(1) @binding(4) var moonInscatterLut: texture_2d<f32>;
-// Batch 427 (SKY-MS) + Batch 429 (A-LUT-REPARAM follow-up) — multiple-scattering
-// LUT (256×128). As of Batch 429 it is baked on the SAME sun-relative sky-view
-// domain as the sky-view LUT (binding 6): relative view↔sun azimuth × Hillaire-
-// warped view-zenith — NOT the old azimuth-flat (cosViewZenith × altitude)
-// inscatter mapping. That gives the MS add a view–sun azimuth axis so it lifts
-// the sky at ALL azimuths, closing the off-meridian gap the 427 add had. Baked
-// by AtmosphereLUT.wgsl::computeMultipleScattering whenever the sun direction
-// changes (chained after the single-scatter bake). Bound unconditionally so the
-// pipeline layout never changes; the fragment shader only ADDS its contribution
-// (via `sampleMultipleScatterLut`, same UV mapping as the sky-view sample) when
-// `u.debug.y > 0.5` (the opt-in `skyAtmosphere.multipleScattering` flag, set by
-// the renderer only when the MS LUT is actually baked). With the flag off the
-// texture is never sampled, so the default sky is byte-identical.
+// The 256-by-128 multiple-scattering LUT uses the sun-relative sky-view domain:
+// relative view-to-sun azimuth by Hillaire-warped view zenith. The azimuth axis
+// lets the contribution vary around the whole sky. `AtmosphereLUT.wgsl` bakes
+// it after single scattering when the sun direction changes. The binding stays
+// in the layout unconditionally and is sampled only when `u.debug.y > 0.5`.
 @group(1) @binding(5) var multipleScatterLut: texture_2d<f32>;
-// Batch 428 (A-LUT-REPARAM / NEW-ATMOSPHERE-LUT-SUN-RELATIVE) — sun-relative
-// sky-view LUT (256×128). Parameterized by (relative view↔sun azimuth ×
-// Hillaire-warped view-zenith) at a baked ground-level observer, so it can
-// represent sky radiance at ANY view azimuth relative to the sun — unlike the
-// inscatter LUT (binding 2) whose (cosViewZenith × altitude) mapping only
-// covers the sun meridian. Baked by AtmosphereLUT.wgsl::computeSkyView. Bound
-// unconditionally so the pipeline layout never changes; only sampled when
-// `u.debug.z > 0.5` (the opt-in `skyAtmosphere.useScatteringLut` flag, set by
-// the renderer only when the LUT is baked). With the flag off the texture is
-// never sampled → byte-identical to the inline-march sky.
+// The separate 256-by-128 sky-view LUT uses relative view-to-sun azimuth and
+// Hillaire-warped view zenith at a ground-level observer. Unlike the legacy
+// inscatter mapping, it represents radiance away from the sun meridian. The
+// binding stays in the layout unconditionally and is sampled only when
+// `u.debug.z > 0.5`.
 @group(1) @binding(6) var skyViewLut: texture_2d<f32>;
 
 struct VertexInput {
@@ -361,9 +261,9 @@ struct VertexOutput {
 };
 
 // Reconstruct the world-space view ray from screen UV (fullscreen sky path).
-// Mirror of the cloud renderer's getWorldRay (ProceduralClouds.wgsl) — the proven
-// on-backend per-pixel ray reconstruction. NDC z=1 (far) so the inverse projection
-// yields a far-plane point; w-zeroed before the inverse view to get a direction.
+// Mirror the cloud renderer's `getWorldRay` in `ProceduralClouds.wgsl`. NDC z=1
+// selects a far-plane point; clearing w before inverse view produces a
+// direction.
 fn getWorldRay(uv: vec2<f32>) -> vec3<f32> {
   let ndc = vec4<f32>(uv * 2.0 - 1.0, 1.0, 1.0);
   var viewDir = u.inverseProjection * ndc;
@@ -409,8 +309,10 @@ fn vertexMainFullscreen(@builtin(vertex_index) vid: u32) -> VertexOutput {
   // (-1,3)) — full coverage with 3 verts, draw(3), triangle-list.
   let tx = f32((vid << 1u) & 2u); // 0, 2, 0
   let ty = f32(vid & 2u); // 0, 0, 2
-  output.position = vec4<f32>(tx * 2.0 - 1.0, ty * 2.0 - 1.0, 1.0, 1.0); // z=1 far
-  output.uv = vec2<f32>(tx, ty); // uv*2-1 == NDC; getWorldRay reconstructs the ray
+  // Pin the triangle to the far plane.
+  output.position = vec4<f32>(tx * 2.0 - 1.0, ty * 2.0 - 1.0, 1.0, 1.0);
+  // `getWorldRay` reconstructs the ray from NDC-equivalent UV coordinates.
+  output.uv = vec2<f32>(tx, ty);
   output.cameraToVertex = vec3<f32>(0.0, 0.0, 1.0); // unused on this path
   output.worldPosition = u.cameraPositionWC;
   return output;
@@ -418,22 +320,10 @@ fn vertexMainFullscreen(@builtin(vertex_index) vid: u32) -> VertexOutput {
 
 // Constants
 const PI: f32 = 3.14159265358979323846;
-// Batch 247 (NEW-GROUND-VIEW-ENV-DIVERGENCES fix 1) — `computeScattering`
-// below is now a 1:1 port of WebGL's `czm_computeScattering`
-// (Builtin/Functions/computeScattering.glsl): 16/4 max steps with the
-// adaptive `w_inside_atmosphere` / `w_stop_gt_lprl` step-count and
-// stride scheme, INCLUDING its quadrature quirks (first sample one full
-// step from the ray start, `total/7` stride inside the atmosphere).
-// The previous 64-step uniform-stride midpoint march was numerically
-// *more* converged than WebGL — which is exactly why it diverged:
-// WebGL's coarse inside-atmosphere quadrature undershoots the converged
-// Rayleigh integral, so the near-converged WGSL sky rendered ~1.5×
-// brighter at ground level even with identical coefficients and shell
-// geometry. Parity means matching WebGL's *output*, not the ideal
-// integral. (The earlier 64-step bump that fixed "no halo at orbit"
-// is preserved by this port too: at orbit `w_inside_atmosphere ≈ 0`
-// → 16 uniform steps from the shell entry point — the same sampling
-// WebGL uses to render its orbit halo.)
+// Match WebGL's `czm_computeScattering` with 16 primary and 4 light steps,
+// adaptive inside-atmosphere counts, full-step primary sample placement, and
+// the `total / 7` inside-atmosphere stride. Matching these quadrature details
+// preserves both ground radiance and the orbital halo.
 const PRIMARY_STEPS_MAX: i32 = 16;
 const LIGHT_STEPS_MAX: i32 = 4;
 
@@ -454,15 +344,14 @@ fn miePhaseFunction(cosAngle: f32, g: f32) -> f32 {
   return num / max(denom, 0.0001);
 }
 
-// Batch 438 (4.6 MIE-PHASE) — Draine phase function (Jendersie & d'Eon 2023,
-// "An Approximate Mie Scattering Function for Fog and Cloud Rendering"). A
-// one-parameter (g, α) generalization of Henyey-Greenstein that adds a physical
-// forward peak + a soft back-scatter lobe — closer to true Mie droplet
-// scattering than single-g HG, giving a more realistic sun aureole and glory.
+// Draine phase function from Jendersie and d'Eon, "An Approximate Mie
+// Scattering Function for Fog and Cloud Rendering" (2023). Its generalized
+// Henyey-Greenstein form adds a physical forward peak and soft backscatter lobe
+// for a more representative droplet aureole.
 //   p(θ) = (1-g²) / (4π · (1 + α·(1+2g²)/3)) ·
 //          (1 + α·cosθ²) / (1 + g² - 2g·cosθ)^(3/2)
-// α = 0 collapses EXACTLY to HG; the droplet-water value α ≈ 1 adds the
-// Cornette-Shanks-style (1 + α·cos²θ) angular term. We use α = 1.
+// Alpha zero reduces to Henyey-Greenstein; alpha one supplies the water-droplet
+// angular term used here.
 fn drainePhaseFunction(cosAngle: f32, g: f32, alpha: f32) -> f32 {
   let g2 = g * g;
   let denom = pow(max(1.0 + g2 - 2.0 * g * cosAngle, 1e-4), 1.5);
@@ -486,9 +375,8 @@ fn improvedMiePhaseFunction(cosAngle: f32) -> f32 {
   return mix(hg, draine, w);
 }
 
-// Batch 438 (4.6 MIE-PHASE) — dispatch on the runtime flag. atmosControl.x <= 0.5
-// (default) returns the EXACT historical single-g HG, so the default sky is
-// byte-identical. > 0.5 returns the improved droplet phase.
+// Select the droplet approximation only when `atmosControl.x > 0.5`; otherwise
+// preserve the single-g Henyey-Greenstein phase.
 fn miePhaseSelected(cosAngle: f32, g: f32) -> f32 {
   if (u.atmosControl.x > 0.5) {
     return improvedMiePhaseFunction(cosAngle);
@@ -500,11 +388,9 @@ fn densityAtHeight(height: f32, scaleHeight: f32) -> f32 {
   return exp(-height / scaleHeight);
 }
 
-// Batch 438 (4.5 SKY-OZONE) — ozone tent-profile relative density (matches
-// AtmosphereLUT.wgsl::ozoneDensity exactly so the inline march and the LUT bake
-// agree). Ozone concentrates near ~25 km; modelled as a symmetric linear tent
-// (1.0 at the 25 km peak, 0 at 10 km and 40 km). Unit-less [0, 1]; the per-metre
-// ozone coefficient supplies the extinction magnitude. Pure absorber.
+// Match `AtmosphereLUT.wgsl::ozoneDensity` so inline and baked extinction
+// agree. The unitless linear tent peaks at 25 km and reaches zero at 10 and
+// 40 km; the per-metre coefficient supplies its absorption magnitude.
 fn ozoneDensityAtHeight(height: f32) -> f32 {
   let center = 25000.0;
   let halfWidth = 15000.0;
@@ -577,11 +463,9 @@ fn computeScattering(
   var opticalDepth = vec2<f32>(0.0);
   let heightScale = vec2<f32>(u.rayleighScaleHeight, u.mieScaleHeight);
 
-  // Batch 438 (4.5 SKY-OZONE) — ozone extinction along the view + light rays.
-  // Gated on atmosControl.z; with the flag off `ozoneExt` is the zero vector so
-  // the attenuation term is byte-identical to the historical Rayleigh+Mie-only
-  // exp(). Ozone is a pure absorber — it appears in the Beer-Lambert exponent
-  // only, never in `rayleighAccumulation`/`mieAccumulation` (no scatter source).
+  // Ozone is a pure absorber, so it contributes only to the Beer-Lambert
+  // exponent and never to the scattering accumulators. A disabled gate selects
+  // a zero coefficient.
   let ozoneEnabled = u.atmosControl.z > 0.5;
   let ozoneCoeff = select(vec3<f32>(0.0), u.ozoneCoefficient, ozoneEnabled);
   var ozoneOpticalDepth: f32 = 0.0;
@@ -594,16 +478,10 @@ fn computeScattering(
     // Sample position along the view ray — one full step from the start,
     // matching the GLSL exactly (NOT midpoint).
     let samplePosition = rayOrigin + rayDir * (rayPositionLength + rayStepLength);
-    // NEW-GLOBE-DRAPE-LIMB-CLOSEOUT — underground sample-height floor.
-    // Planet-striking rays now march through the planet interior (WebGL
-    // parity; see skyColorForRay). Below ~-150 km the density exp() would
-    // overflow f32 (inf → 0×inf → NaN, indeterminate per the WGSL spec);
-    // the floor keeps every term finite while still yielding an optical
-    // depth so large that attenuation underflows to exactly 0 — total
-    // extinction, identical visual result to WebGL's overflow behavior.
-    // Samples above -150 km (every above-ground sample, and the shallow
-    // sub-limb chords that form the limb's extinction tail) are
-    // bit-identical to the unclamped math.
+    // Clamp underground height at -150 km. Deeper density would overflow f32,
+    // whose result is indeterminate in WGSL; this floor keeps terms finite
+    // while still forcing total extinction. Above-ground samples and shallow
+    // sub-limb chords retain their unclamped values.
     let sampleHeight = max(length(samplePosition) - innerRadius, -150000.0);
     let sampleDensity = exp(-sampleHeight / heightScale) * rayStepLength;
     opticalDepth += sampleDensity;
@@ -651,8 +529,7 @@ fn computeScattering(
   // overwrites it with the altitude ramp — mirrored in fragmentMain.)
   let cosAngle = dot(rayDir, sunDir);
   let rayleighPhase = rayleighPhaseFunction(cosAngle);
-  // Batch 438 (4.6 MIE-PHASE) — improved droplet phase when atmosControl.x > 0.5,
-  // else the exact historical HG. miePhaseSelected dispatches on the flag.
+  // Dispatch between the optional droplet phase and Henyey-Greenstein.
   let miePhase = miePhaseSelected(cosAngle, u.mieAnisotropy);
 
   return u.intensity * (
@@ -669,11 +546,7 @@ fn computeScattering(
 //   V = altitude / atmosphereThickness
 // Returns vec3 ready to feed straight into the post-scattering tonemap.
 //
-// Phase 1.3c — accepts a texture parameter so the same helper can be
-// reused for both sun and moon inscatter samples without duplicating
-// the U/V math. WGSL doesn't have first-class texture parameters in
-// every backend, but `texture_2d<f32>` is fine for vertex/fragment
-// stages on every WebGPU 1.0 implementation.
+// A texture parameter lets the sun and moon paths share the UV mapping.
 fn sampleScatteringLut(
   inscatterTex: texture_2d<f32>,
   rayOrigin: vec3<f32>,
@@ -690,52 +563,26 @@ fn sampleScatteringLut(
   let s = textureSampleLevel(
     inscatterTex, lutSampler, vec2<f32>(uCoord, vCoord), 0.0,
   );
-  // Orbital falloff: the LUT was generated for camera positions in [0, thickness].
-  // Above the atmosphere shell the clamped vCoord otherwise produces identical
-  // haze at every orbital altitude. Fade the inscatter contribution above
-  // the atmosphere so it tapers off \u2014 but with a scale-height much larger
-  // than the atmosphere shell thickness, so the halo stays visible across
-  // typical orbit views (5\u201340 Mm above Earth) where WebGL clearly shows
-  // it. Previous scale (1\u00d7 thickness \u2248 160 km on Earth) collapsed the
-  // halo to zero by LEO (Hello World at 5.6 Mm above shell \u2192 exp(-35) \u2248
-  // 0). Using the inner planet radius (~Earth's 6378 km) as the
-  // scale-height stretches the falloff to "perceptibly visible up to
-  // ~3 Earth radii out, faded but present at GEO" \u2014 empirically that
-  // matches the WebGL halo extent. See Session 65 cont. atmosphere
-  // investigation. Camera ALTITUDE inside the shell (0..thickness) the
-  // falloff is identity (exp(0) = 1), so ground-level / low-LEO views
-  // are unaffected.
+  // The LUT clamps altitude at its upper edge, which would otherwise produce
+  // equal haze at every orbital altitude. Fade only the excess altitude using
+  // the inner planet radius as scale height. This preserves WebGL's visible
+  // orbital halo while leaving cameras inside the shell unchanged.
   let excessAltitude = max(0.0, altitude - thickness);
   let orbitScaleHeight = max(thickness, innerRadius);
   let orbitFalloff = exp(-excessAltitude / orbitScaleHeight);
-  // Session 65 Batch 27 (NEW-VR2-3b limb halo fix) — the LUT compute
-  // shader (`AtmosphereLUT.wgsl::computeInscatter` L241-242) already
-  // multiplies the stored inscatter by `params.intensity` at bake
-  // time. The previous `* u.intensity` here applied intensity a
-  // SECOND time, producing an effective `intensity² × inscatter`
-  // (~2500× when intensity = 50) which was the root cause of the
-  // over-bright limb halo + sub-solar glare patch on orbit views
-  // (Hello World, Sentinel-2, Star Burst). Real orbital photography
-  // shows a subtle Rayleigh-dominated blue limb; matching that
-  // requires the single intensity multiplication that the LUT bake
-  // already provides. `orbitFalloff` stays as the runtime-only
-  // attenuation curve since it depends on per-frame camera altitude,
-  // not LUT-baked state.
+  // The baked inscatter already includes `params.intensity`; applying it again
+  // would square the light intensity. Only orbital falloff remains runtime
+  // dependent because camera altitude is not baked into the table.
   return s.rgb * orbitFalloff;
 }
 
-// Batch 428 (A-LUT-REPARAM / NEW-ATMOSPHERE-LUT-SUN-RELATIVE) — sample the
-// sun-relative sky-view LUT. Inverts the parameterization that
-// AtmosphereLUT.wgsl::computeSkyView laid out:
-//   U = relativeAzimuth(viewDir, sunDir) / π     (sky symmetric about the
-//       sun meridian → half-plane [0, π] covers all azimuths)
-//   V = 0.5 + 0.5 * sign(cosViewZenith) * sqrt(|cosViewZenith|)
-//         (Hillaire non-linear horizon warp — concentrates texels at the
-//          horizon band where the sky gradient is steepest)
-// `up` is the local vertical at the observer; `rayDir` and `sunDir` are unit
-// world vectors. Returns the baked combined Rayleigh+Mie inscatter (intensity
-// already applied at bake time, matching the inscatter LUT convention), so the
-// result drops straight into the tonemap like sampleScatteringLut.
+// Sample the sun-relative sky-view LUT by inverting the parameterization in
+// `AtmosphereLUT.wgsl::computeSkyView`:
+//   U = relativeAzimuth(viewDir, sunDir) / PI
+//   V = 0.5 + 0.5 * sign(cosViewZenith) * sqrt(abs(cosViewZenith))
+// Mirror symmetry about the sun meridian lets [0, PI] cover all azimuths. The
+// Hillaire warp concentrates texels around the horizon. The baked Rayleigh and
+// Mie result already includes intensity.
 fn sampleSkyViewLut(
   up: vec3<f32>,
   rayDir: vec3<f32>,
@@ -770,16 +617,10 @@ fn sampleSkyViewLut(
   return max(s.rgb, vec3<f32>(0.0));
 }
 
-// Batch 429 (A-LUT-REPARAM follow-up / SKY-MS all-azimuth) — sample the
-// multiple-scattering LUT, which is now baked on the SAME sun-relative sky-view
-// domain as `computeSkyView` (relative view↔sun azimuth × Hillaire-warped
-// view-zenith) instead of the old azimuth-flat (cosViewZenith × altitude)
-// inscatter mapping. The (U, V) derivation here is IDENTICAL to
-// `sampleSkyViewLut` so the MS add agrees directionally with the single-scatter
-// sky-view fast-path: the MS lift is now strongest toward the bright sky and
-// correct at every azimuth, closing the off-meridian gap that left the SKY-MS
-// add (Batch 427) directionally flat. Returns the baked MS radiance (intensity
-// already applied at bake time, matching the inscatter/sky-view convention).
+// Sample multiple scattering on the same sun-relative domain and with the same
+// UV derivation as `sampleSkyViewLut`. This keeps its directional contribution
+// aligned with the single-scattering sky view. Bake-time intensity is already
+// included.
 fn sampleMultipleScatterLut(
   up: vec3<f32>,
   rayDir: vec3<f32>,
@@ -846,8 +687,8 @@ fn hsbToRgb(hsb: vec3<f32>) -> vec3<f32> {
   return vec3<f32>(b, p, q);
 }
 
-// Khronos PBR Neutral tonemap — port of WebGL czm_pbrNeutralTonemapping
-// (packages/engine/Source/Shaders/Builtin/Functions/pbrNeutralTonemapping.glsl).
+// Khronos PBR Neutral tonemap, ported from WebGL
+// `Builtin/Functions/pbrNeutralTonemapping.glsl`.
 // Identity for inputs ≤ 0.76; gentle peak compression with saturation
 // preservation above. Used below to bring the linear-HDR scattered
 // radiance into SDR display space before the sRGB encode, matching
@@ -868,18 +709,16 @@ fn pbrNeutralTonemapSky(color: vec3<f32>) -> vec3<f32> {
   return mix(c, vec3<f32>(newPeak), vec3<f32>(g));
 }
 
-// Shared sky scattering for one camera ray. Used by BOTH the shell-mesh path
-// (fragmentMain, rayDir from the interpolated shell vertex) and the fullscreen
-// path (fragmentMainFullscreen, rayDir from getWorldRay(uv)). The math is
-// identical; only the ray SOURCE differs. Rays that miss the atmosphere or whose
-// segment is degenerate return a fully-transparent color (alpha 0) — equivalent
-// to the old `discard` under the alpha-over blend, but a function can't discard.
+// Shared sky scattering for one camera ray. The shell-mesh path receives its
+// ray from the interpolated vertex, while the fullscreen path reconstructs it
+// with `getWorldRay`. Rays that miss the atmosphere or have a degenerate
+// segment return transparent black because a helper function cannot discard.
 fn skyColorForRay(rayOrigin: vec3<f32>, rayDir: vec3<f32>) -> vec4<f32> {
   let innerRadius = u.radiiAndDynamicAtmosphere.x;
   let outerRadius = u.radiiAndDynamicAtmosphere.y;
-  // Batch 247 — WebGL-convention camera height (eyeHeight + adjusted
-  // inner radius, packed CPU-side) for the altitude-opacity ramp;
-  // |cameraPositionWC| differs from it by the WebGL radiusAdjust.
+  // Use WebGL's camera-height convention for the altitude-opacity ramp. The
+  // CPU packs eye height plus adjusted inner radius because
+  // `length(cameraPositionWC)` differs by `radiusAdjust`.
   let cameraHeight = u.radiiAndDynamicAtmosphere.w;
 
   // Determine ray intersections
@@ -891,24 +730,12 @@ fn skyColorForRay(rayOrigin: vec3<f32>, rayDir: vec3<f32>) -> vec4<f32> {
 
   let earthIntersect = raySphereIntersect(rayOrigin, rayDir, innerRadius);
   var rayStart = max(0.0, atmosphereIntersect.x);
-  // NEW-GLOBE-DRAPE-LIMB-CLOSEOUT — do NOT stop the ray at the earth
-  // surface. WebGL's SkyAtmosphereCommon.glsl passes the full camera→
-  // shell-vertex distance as `primaryRayLength` (czm_computeScattering
-  // clamps only against the OUTER-sphere exit), so `skyPoint`, the
-  // LEGACY_OVERHEAD light direction, and the night-alpha term all reference
-  // the far shell point — not the ground point — and planet-striking
-  // rays MARCH THROUGH the planet interior, where the exponentially-
-  // growing optical depth extinguishes them. That extinction is what
-  // renders the globe-hidden disk interior black and produces WebGL's
-  // limb profile: a bright grazing-ray peak plus a ~10 px extinction
-  // tail from shallow sub-limb chords. The old `rayEnd =
-  // earthIntersect.x` clip instead returned a bright camera→surface
-  // inscatter slab, flooding the see-through disk interior with a solid
-  // daylight-blue disc whenever the globe surface wasn't drawn over it
-  // (globe.show = false) and truncating the limb tail. The underground
-  // sample-height floor inside computeScattering keeps the through-
-  // planet march deterministic (WebGL rides f32 exp() overflow to the
-  // same visual result; WGSL exp() overflow is indeterminate per spec).
+  // Do not stop at the earth surface. WebGL passes the full camera-to-shell
+  // distance and clamps only at the outer-sphere exit, so planet-striking rays
+  // continue through the interior. Their optical depth blacks out the hidden
+  // disk and preserves the bright grazing peak plus shallow sub-limb extinction
+  // tail. The underground height floor in `computeScattering` makes that
+  // extinction deterministic under WGSL's overflow rules.
   let rayEnd = atmosphereIntersect.y;
 
   let rayLength = rayEnd - rayStart;
@@ -937,64 +764,25 @@ fn skyColorForRay(rayOrigin: vec3<f32>, rayDir: vec3<f32>) -> vec4<f32> {
   // attenuation already applied, so the result drops straight into the
   // tonemap below.
   //
-  // Phase 1.3c — Dual-light scattering. When `dualLightControl.x > 0.5`
-  // we ALSO sample the moon inscatter LUT (baked separately for the
-  // current moon direction) and add its contribution scaled by the moon
-  // phase fraction × the moon intensity scale. The moon term costs one
-  // extra texture sample on the LUT path; on the fallback ray-march
-  // path it's currently skipped (the per-pixel ray march only handles
-  // a single light source — adding moon there is a Phase 5 task that
-  // ties into volumetric fog scattering occlusion).
+  // Dual-light LUT scattering samples the separately baked moon table and
+  // scales it by moon phase and intensity. The inline branch below uses an
+  // analogous second analytic march.
   // Decide between LUT vs inline ray-march. The LUT was generated for
   // camera positions inside the atmosphere shell [innerRadius,
   // outerRadius]; the V coordinate clamps to 1.0 at the edge, so for
-  // orbit-altitude cameras (5–40 Mm above Earth in typical sandcastles)
-  // the LUT keeps returning the EDGE value and the inscatter visibly
-  // collapses (Hello World, Star Burst, every orbit-view demo).
-  // Session 65 cont. atmosphere investigation root cause.
-  //
-  // Fix: when the camera sits well above the shell, fall back to the
-  // inline `computeScattering` ray-march which handles camera-outside-
-  // atmosphere geometry correctly via the rayStart/rayEnd intersection
-  // math above. The 2× threshold gives a smooth crossover — well inside
-  // the atmosphere the LUT path stays optimized (single texture
-  // sample); orbital views ray-march per-fragment which is the path
-  // WebGL takes too.
+  // orbit-altitude cameras the LUT would keep returning its edge value. Above
+  // twice the shell thickness, use the inline march so the ray intersections
+  // handle camera-outside geometry. Cameras inside the shell retain the
+  // single-sample LUT path.
   let cameraHeightAboveShell = max(0.0, length(u.cameraPositionWC) - outerRadius);
 
-  // Session 65 Batch 20 — `dynamicLighting` enum at `radiiAndDynamic
-  // Atmosphere.z` (matches `DynamicAtmosphereLightingType.js`):
-  //   0 = NONE        → C12-31: the ASTRONOMICAL SUN. This arm used to be
-  //                     per-fragment `normalize(skyPoint)` ("lit from
-  //                     directly above"), which made `cosAngle` in
-  //                     `computeAtmosphereColor` ≈1 along every ray a
-  //                     ground observer looks down, parking the Mie phase
-  //                     on its forward peak (4869.9× the 90° value at the
-  //                     default g = 0.9) and painting a broad white
-  //                     aureole locked to the VIEW instead of the sun.
-  //                     `globe.enableLighting` defaults false, so
-  //                     `fromGlobeFlags` resolves NONE in the default
-  //                     viewer and every default scene showed it.
-  //   1 = SCENE_LIGHT → use the uniform direction (JS packs
-  //                     `lightDirectionWC` into `sunDirectionWC` for
-  //                     this case — see WebGPUSkyAtmosphereRenderer
-  //                     Batch 18).
-  //   2 = SUNLIGHT    → use the uniform direction (JS packs the true
-  //                     sun direction).
-  //   3 = LEGACY_OVERHEAD → the named compatibility mode that reproduces
-  //                     the historical NONE appearance exactly.
-  // GLSL twin: `czm_getSkyAtmosphereLightDirection`
-  // (`Builtin/Functions/getSkyAtmosphereLightDirection.glsl`), called from
-  // both `SkyAtmosphereVS.glsl` and `SkyAtmosphereFS.glsl`.
-  //
-  // The enum VALUE is deliberately left at NONE rather than remapped to
-  // SUNLIGHT: `isDynamic` below (and its `SkyAtmosphereCommon.glsl` twin)
-  // keys the day/night alpha ramp on `!= 0.0`, so remapping would also
-  // change the shell's OPACITY. This fix moves the color anchor only.
-  //
-  // LEGACY_OVERHEAD is the only mode whose light direction varies per
-  // fragment, so it is the only one the baked single-direction LUTs can
-  // never serve.
+  // Resolve `DynamicAtmosphereLightingType` like the GLSL
+  // `czm_getSkyAtmosphereLightDirection` helper. `NONE` and `SUNLIGHT` use the
+  // astronomical sun, while `SCENE_LIGHT` uses the scene direction packed in
+  // `sunDirectionWC`. `LEGACY_OVERHEAD` alone uses per-fragment local up and
+  // therefore cannot use a LUT baked for one direction. Keep the enum value
+  // unchanged because the day-night alpha ramp distinguishes `NONE` from the
+  // dynamically lit modes.
   let dynamicLighting = u.radiiAndDynamicAtmosphere.z;
   let isLegacyOverhead = dynamicLighting > 2.5;
   var lightDirWC: vec3<f32>;
@@ -1003,25 +791,14 @@ fn skyColorForRay(rayOrigin: vec3<f32>, rayDir: vec3<f32>) -> vec4<f32> {
   } else {
     lightDirWC = u.sunDirectionWC;
   }
-  // LUT eligibility is UNCHANGED from Batch 20 — the two explicit scene-light
-  // modes only. NONE is now direction-uniform and could in principle sample
-  // the baked tables, but both LUT opt-ins are default-off and the eclipse
-  // dimming path has not been certified against the LUT branch, so widening
-  // eligibility is deliberately deferred rather than smuggled in here. For
-  // enums 0/1/2 this predicate is bit-for-bit the old `!isNoneCase`.
+  // Restrict LUT eligibility to the two explicit scene-light modes. Keeping
+  // `NONE` on inline scattering preserves the established eclipse path.
   let lutEligible = dynamicLighting > 0.5 && dynamicLighting < 2.5;
 
-  // ─── GLOBE-TRANSLUCENCY-ALPHA — translucent-globe sky path ───
-  // Port of WebGL's `#ifdef GLOBE_TRANSLUCENT` branch
-  // (SkyAtmosphereCommon.glsl lines 63-90): when the globe is translucent,
-  // sky rays that intersect the PLANET must not show the full Nishita
-  // scattering integral (which would flood the see-through planet disk with
-  // bright daylight blue); WebGL substitutes a subtle distance/angle-faded
-  // navy "horizon" gradient that darkens to black for rays passing deep
-  // through the planet. `u.atmosControl.w` mirrors the GLOBE_TRANSLUCENT
-  // compile-time define (packed by WebGPUSkyAtmosphereRenderer from
-  // `frameState.globeTranslucencyState.translucent`); 0 by default so
-  // non-translucent scenes never enter this branch (byte-identical).
+  // Translucent-globe sky path. Like the WebGL `GLOBE_TRANSLUCENT` branch, it
+  // replaces full scattering through the planet with a distance- and
+  // angle-faded navy gradient. This prevents bright blue radiance from flooding
+  // the see-through disk. `u.atmosControl.w` supplies the runtime gate.
   if (u.atmosControl.w > 0.5 && earthIntersect.x > 0.0 && earthIntersect.y > 0.0) {
     // WebGL casts a ray from the (far-side) shell fragment toward the
     // ellipsoid centre to find the ground point under it; the far earth
@@ -1061,15 +838,10 @@ fn skyColorForRay(rayOrigin: vec3<f32>, rayDir: vec3<f32>) -> vec4<f32> {
     u.useLut > 0.5 &&
     cameraHeightAboveShell < (outerRadius - innerRadius) * 2.0;
 
-  // Batch 428 (A-LUT-REPARAM / NEW-ATMOSPHERE-LUT-SUN-RELATIVE) — sun-relative
-  // sky-view LUT fast-path. Opt-in via `skyAtmosphere.useScatteringLut`
-  // (renderer packs it into `u.debug.z` only when the LUT is baked). Unlike the
-  // inscatter LUT (`useLutPath`), the sky-view LUT carries a view↔sun azimuth
-  // axis, so it is correct off the sun meridian. Gated to `lutEligible`
-  // (the LUT bakes a single light direction) and to cameras near/inside
-  // the shell (same orbit crossover as the inscatter LUT — above that the inline
-  // march handles camera-outside geometry). Highest priority so the user opt-in
-  // wins over the inscatter fast-path when both happen to be enabled.
+  // The separate sky-view LUT carries a view-to-sun azimuth axis, unlike the
+  // legacy inscatter table. Use it only for eligible single-direction lighting
+  // and cameras near or inside the shell; the inline march handles orbital
+  // geometry. Give this path priority if both LUT gates are enabled.
   let useSkyViewLut =
     lutEligible &&
     u.debug.z > 0.5 &&
@@ -1096,9 +868,8 @@ fn skyColorForRay(rayOrigin: vec3<f32>, rayDir: vec3<f32>) -> vec4<f32> {
       color = color + moonColor * moonScale;
     }
   } else {
-    // Batch 247 — czm_computeScattering port takes the CAMERA origin and
-    // the camera→shell-fragment distance (GLSL primaryRayLength) and
-    // derives its own start/stop internally.
+    // `czm_computeScattering` takes the camera origin and camera-to-shell
+    // distance, then derives its own interval.
     color = computeScattering(
       u.cameraPositionWC,
       rayDir,
@@ -1108,16 +879,9 @@ fn skyColorForRay(rayOrigin: vec3<f32>, rayDir: vec3<f32>) -> vec4<f32> {
       outerRadius,
     );
 
-    // Batch 438 (4.4 SKY-MOON) — dual-light on the INLINE (parity) march. The
-    // prior dual-light path summed a moon contribution only inside the gated LUT
-    // fast-path (which is disabled by default, ENABLE_SKY_INSCATTER_LUT), so
-    // moonglow never appeared on the inline ray-march that the default sky
-    // actually takes — a night sky was pure black. When `atmosControl.y > 0.5`
-    // (the opt-in `dualLightInline` flag) we run a SECOND analytic
-    // `computeScattering` along the moon direction and add it, scaled by the
-    // moon phase fraction × the moon intensity. Same scattering medium → same
-    // function; only the light direction differs. With the flag off this whole
-    // block is skipped → byte-identical single-light parity.
+    // When inline dual light is enabled, reuse the same scattering medium for a
+    // second analytic march along the moon direction. Scale that contribution
+    // by moon phase and intensity; a disabled gate avoids the extra march.
     if (u.atmosControl.y > 0.5 && u.moonControl.x > 0.001) {
       let moonColor = computeScattering(
         u.cameraPositionWC,
@@ -1132,75 +896,33 @@ fn skyColorForRay(rayOrigin: vec3<f32>, rayDir: vec3<f32>) -> vec4<f32> {
     }
   }
 
-  // Batch 427 (SKY-MS) + Batch 429 (A-LUT-REPARAM follow-up) — opt-in
-  // multiple-scattering add (Hillaire 2020 / Bruneton MS). `u.debug.y > 0.5` is
-  // the renderer's gated `skyAtmosphere.multipleScattering` flag (only set when
-  // the MS LUT is baked). As of Batch 429 the MS LUT is baked on the SAME
-  // sun-relative sky-view domain (relative view↔sun azimuth × Hillaire-warped
-  // view-zenith) as `computeSkyView`, so it now carries a view–sun azimuth axis
-  // and lifts the sky at ALL azimuths — not just the meridian. We sample it
-  // through `sampleMultipleScatterLut`, whose (U, V) derivation is identical to
-  // `sampleSkyViewLut`, so the MS add agrees directionally with the
-  // single-scatter sky-view fast-path. The result has `intensity` already baked
-  // in (it is NOT re-applied here) and is ADDED to the single-scatter color
-  // BEFORE tonemapping — lifting the horizon and shadowed-limb radiance that
-  // single scattering alone leaves too dark, while the shared tonemap shoulder
-  // keeps the zenith from blowing out. The off-meridian directional lift the
-  // 427 add was missing is now closed by the re-param. With the flag off
-  // (default) the texture is never sampled and the sky is byte-identical.
+  // Optional multiple scattering uses the sun-relative sky-view domain and the
+  // same UV derivation as `sampleSkyViewLut`, keeping both terms directionally
+  // aligned. Bake-time intensity is already included. Add the term before
+  // tonemapping to lift horizon and shadowed-limb radiance while retaining the
+  // shared highlight shoulder.
   if (u.debug.y > 0.5) {
-    // Local vertical at the observer (LUT baked at ground level → up ≈ the
-    // normalized camera position); rayDir + the SUN direction give the azimuth.
-    // The MS LUT was baked against the WORLD sun (frameState.sunDirectionWC),
-    // so the azimuth reference MUST be `u.sunDirectionWC` — NOT `lightDirWC`,
-    // which in the explicit LEGACY_OVERHEAD mode is the per-fragment
-    // `normalize(skyPoint)` "lit from above" direction. Using lightDirWC there
-    // measures the azimuth against the wrong vector and flattens the MS add to a
-    // view-uniform veil even though the LUT itself is fully directional.
-    //
-    // C12-31 note: before the natural-sky fix this ALSO made the default (NONE)
-    // sky internally inconsistent — primary scattering used the fake local-up
-    // light while the MS add used the real sun. NONE now resolves to
-    // `u.sunDirectionWC` too, so the two agree in every mode except the
-    // opt-in legacy one, where referencing the sun explicitly remains correct.
+    // Use normalized camera position as the ground-level local vertical. The
+    // table is baked against the world sun, so its azimuth reference must be
+    // `u.sunDirectionWC`, including in `LEGACY_OVERHEAD` mode where
+    // `lightDirWC` varies per fragment.
     let upDir = normalize(u.cameraPositionWC);
     let msColor = sampleMultipleScatterLut(upDir, rayDir, u.sunDirectionWC);
-    // Conservative scale. As of Batch 429 the MS LUT carries the FULL single-
-    // scatter sky-view radiance × f_ms (0.5) — i.e. it is now a sizeable
-    // fraction of the sky's own brightness, not the tiny gather output the 427
-    // LUT held. So the perceptual scale here is correspondingly smaller: at the
-    // old 0.18 the add lifted the zenith by ~14% (over-bright veil). 0.02× lands
-    // the lift back in the "tasteful" band — a measurable, now-DIRECTIONAL
-    // deepening of the horizon/limb radiance (clearly stronger toward the bright
-    // sky thanks to the sky-view re-param, see the 22.6× azimuth spread in the
-    // MS LUT) that still preserves the blue hue and the warm sunset band,
-    // reading as a richer all-around atmosphere rather than a flat veil.
-    // Perceptual constant, not physical.
+    // This is a perceptual scale rather than a physical coefficient.
     const MS_SCALE: f32 = 0.06;
     color = color + max(msColor, vec3<f32>(0.0)) * MS_SCALE;
   }
 
-  // Session 65 Batch 27 (NEW-VR2-3b limb halo fix) — match WebGL's
-  // post-scattering pipeline order:
+  // Match WebGL's post-scattering pipeline order:
   //   linear scatter → czm_pbrNeutralTonemapping → czm_inverseGamma
   //   → czm_applyHSBShift → output
   //
-  // Pre-Batch-27 the WGSL applied `1 - exp(-x)` exposure curve INSTEAD
-  // of PBR Neutral. That curve saturates faster (Reinhard-like) and
-  // produced the over-bright sub-solar glare patch + cyan/white limb
-  // haze visible on Hello World, Sentinel-2, Star Burst. PBR Neutral
-  // has a softer shoulder + preserves saturation, matching real-camera
-  // tonemap behavior.
-  //
-  // HSB shift moved to AFTER tonemap+gamma so the shift operates on
-  // perceptual SDR values (matches WebGL ordering at
-  // SkyAtmosphereFS.glsl L41-47).
-  // C12-29 S6 — 360-degree horizon twilight. Added in LINEAR scatter space,
-  // before the tonemap, exactly where `SkyAtmosphereFS.glsl` adds it, so the
-  // two backends composite it identically. Azimuth-independent by
-  // construction: nothing in the band profile references the sun direction,
-  // which is the point — inside the umbra the surrounding penumbra lights the
-  // horizon all the way round.
+  // PBR Neutral preserves saturation through its soft highlight shoulder.
+  // Apply the HSB shift after tonemapping and gamma so it operates on
+  // perceptual SDR values. Add eclipse horizon twilight in linear scattering
+  // space before the tonemap, matching `SkyAtmosphereFS.glsl`. The profile is
+  // azimuth-independent because the surrounding penumbra lights the whole
+  // horizon inside the umbra.
   if (u.eclipseControl.x > 0.0) {
     let upObs = getEclipseObserverUp(
       u.cameraPositionWC,
@@ -1224,24 +946,10 @@ fn skyColorForRay(rayOrigin: vec3<f32>, rayDir: vec3<f32>) -> vec4<f32> {
     finalColor = hsbToRgb(hsb);
   }
 
-  // Batch 53 — port WebGL's altitude-based opacity from
-  // SkyAtmosphereCommon.glsl:72-80. The previous WGSL "geometric path
-  // ratio" formula (`1 - exp(-2 * pathRatio)`) was tuned for ground-
-  // level views but produced opacity ≈ 0.86 even at orbital altitude
-  // (where rayLength ≈ shellThickness perpendicular through the shell),
-  // making the atmosphere shell render as a thick over-bright halo
-  // that bled into the globe disc and made the globe appear smaller
-  // and darker than in WebGL. The visible "ring" the user kept
-  // reporting was this halo.
-  //
-  // WebGL formula: opacity decays linearly with camera altitude above
-  // the atmosphere shell — fully opaque at ground (cameraHeight ≈
-  // innerRadius), fully transparent at orbit (cameraHeight > outerRadius).
-  // Then modulated by nightAlpha so the night side fades to space.
-  //
-  // The mix-against-blue floor is preserved so the visible halo at
-  // orbit still leans sky-blue (matches WebGL's `mix(color.b, 1.0,
-  // opacity)`).
+  // Match `SkyAtmosphereCommon.glsl` altitude opacity. It falls linearly from
+  // opaque at ground level to transparent above the shell, then uses night
+  // alpha to fade the unlit side into space. Mixing against blue preserves the
+  // WebGL hue of the remaining orbital halo.
   let altitudeOpacity = clamp(
     (outerRadius - cameraHeight) / max(1.0, outerRadius - innerRadius),
     0.0,
@@ -1255,13 +963,9 @@ fn skyColorForRay(rayOrigin: vec3<f32>, rayDir: vec3<f32>) -> vec4<f32> {
     clamp(dot(normalize(skyPoint), lightDirWC), 0.0, 1.0),
     isDynamic,
   );
-  // Batch 438 (4.4 SKY-MOON) — when the inline dual-light moon march is active,
-  // the moon must also lift the night-side opacity: with only the sun's
-  // nightAlpha, a moonlit sky (sun down) is alpha≈0 and the moon glow never
-  // shows over the black background even though the moon color is summed into
-  // `color`. Take the max with a moon-side day/night term (scaled by the moon's
-  // dimness) so the alpha follows whichever body is up. Gated on atmosControl.y;
-  // with the flag off this whole term is skipped → byte-identical.
+  // Inline moon scattering must also raise night-side opacity; otherwise its
+  // color disappears against a transparent sky after sunset. Use the brighter
+  // body-side term, scaled by moon phase, while the dual-light gate is enabled.
   if (u.atmosControl.y > 0.5 && u.moonControl.x > 0.001) {
     let moonNight =
       clamp(dot(normalize(skyPoint), normalize(u.moonLightDirWC)), 0.0, 1.0) *

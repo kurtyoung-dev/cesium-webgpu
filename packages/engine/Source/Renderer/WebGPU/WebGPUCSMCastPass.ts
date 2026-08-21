@@ -1,41 +1,30 @@
 /// <reference types="@webgpu/types" />
 /**
- * CSM cast-pass dispatcher extracted from `WebGPUCSMRenderer`
- * (Batch 159 of the maintainability sweep).
+ * CSM cast-pass dispatcher used by `WebGPUCSMRenderer`.
  *
- * Owns the 326-LOC `renderCastPass` body: lazy per-cascade UBO + bind-
- * group allocation, RTE-encoded camera packing, per-cascade depth-bias
- * scaling, per-cascade render-pass dispatch with the shared shadow-cast
- * pipeline factory (rte24 / p12 / modelP12 / modelInstanced(SB) /
- * quantized12 / modelSkinned variants).
+ * Owns lazy per-cascade UBO and bind-group allocation, RTE-encoded camera
+ * packing, depth-bias scaling, and render-pass dispatch through the shared
+ * shadow-cast pipeline factory (`rte24`, `p12`, `modelP12`,
+ * `modelInstanced(SB)`, `quantized12`, and `modelSkinned` variants).
  *
- * The renderer's `renderCastPass` becomes a 1-line delegator. The
- * 11 host fields/methods the helper reads through `this.` are flipped
- * to `public` (with the underscore convention).
+ * The renderer delegates `renderCastPass` here and exposes the required host
+ * fields and methods through the underscore-public convention.
  *
- * **NEW-SHADOW-CAST-GPU-CULL-PHASE-2 (Batch 226):** per-cascade GPU
- * cull activation. Phase 1 (Batch 221) shipped per-cascade culler
- * instances + memory hygiene; Phase 2 wires the actual filter into
- * the per-cascade loop. Strategy:
+ * Per-cascade GPU culling uses the following strategy:
  *
- *   - **Sphere-AABB cull (correctness-safe over-include).** For each
- *     cascade we feed the FrustumCull shader 6 planes of the axis-
- *     aligned cube circumscribing the cascade's bounding sphere
- *     (`sphereCenter`, `sphereRadius`). This over-includes vs a tight
- *     Gribb-Hartmann frustum (cube has corners that extend past the
- *     sphere), but correctness-safe: anything kept is potentially a
- *     valid shadow caster, and missed culls cost only overdraw, not
- *     missing shadows. Tight Gribb-Hartmann extraction is a future
- *     follow-up gated on visual verification.
- *   - Per-cascade `_cascadeCullLastResults[ci]` readback slot driven
- *     by per-cascade `WebGPUGPUCuller` instance (Batch 221).
- *   - Per-cascade hysteresis gate (`_cascadeCullActive[ci]`) at the
- *     same threshold as opaque HiZ (HI=2400, LO=1600) — shadow cast
- *     iterates the same command set as opaque so the cost profile
- *     matches.
- *   - 1-frame readback latency (same model as opaque + translucent
- *     paths). First frame at high density: dispatch only, no filter.
- *     Frame 2+: filter using prior readback.
+ *   - **Sphere-AABB cull (correctness-safe over-include).** Each cascade
+ *     feeds the `FrustumCull` shader the six planes of the axis-aligned cube
+ *     around its bounding sphere (`sphereCenter`, `sphereRadius`). This cube
+ *     includes points outside a tight Gribb-Hartmann frustum, so uncertainty
+ *     costs overdraw instead of missing a valid shadow caster.
+ *   - A per-cascade `_cascadeCullLastResults[ci]` readback slot driven by its
+ *     `WebGPUGPUCuller` instance.
+ *   - A per-cascade hysteresis gate (`_cascadeCullActive[ci]`) at the same
+ *     thresholds as opaque Hi-Z (high 2400, low 1600), because shadow casting
+ *     iterates the same command set.
+ *   - One-frame readback latency, matching the opaque and translucent paths.
+ *     The first high-density frame dispatches without filtering; later frames
+ *     filter with the prior readback.
  *   - Skipped entirely when `context.gpuCullingHint === 'never'` or
  *     when no `getGPUCullerForCascade` getter exists (back-compat).
  *
@@ -62,10 +51,8 @@ import type { CSMCastPassHost, CastCommandShape } from "./WebGPUCSMRenderer.js";
 
 const _scratchEncodedCamera = new EncodedCartesian3();
 
-// NEW-SHADOW-CAST-GPU-CULL-PHASE-2 (Batch 226) — hysteresis
-// thresholds for the per-cascade gate. Match opaque HiZ (Batch 214)
-// since shadow cast iterates the same command set; if HiZ activates,
-// shadow cull should too.
+// Match the opaque Hi-Z hysteresis thresholds because shadow casting iterates
+// the same command set and should activate culling at the same density.
 const CASCADE_CULL_THRESHOLD_HI = 2400;
 const CASCADE_CULL_THRESHOLD_LO = 1600;
 
@@ -140,7 +127,8 @@ function packCascadeCullPlanes(
   R: number,
 ): void {
   // +X face: inward normal (-1, 0, 0); plane passes through (cx+R, *, *).
-  // dot((-1, 0, 0), P) + (cx + R) = (cx + R) - P.x  →  inside when P.x ≤ cx + R.
+  // dot((-1, 0, 0), P) + (cx + R) = (cx + R) - P.x, so points with
+  // P.x <= cx + R are inside.
   out[0] = -1;
   out[1] = 0;
   out[2] = 0;
@@ -200,8 +188,8 @@ function isFiniteF32(value: unknown): value is number {
 
 /**
  * Resolve a command's current conservative sphere without allocating. Values
- * that cannot make a finite, positive f32 GPU sphere fail closed: callers must
- * retain that command rather than risk a false-negative shadow cull.
+ * that cannot form a finite, positive f32 GPU sphere fail closed: callers
+ * must retain that command rather than risk a false-negative shadow cull.
  */
 function readCurrentCommandSphere(
   rawCommand: unknown,
@@ -412,9 +400,7 @@ export function renderCSMCastPass(
 
   prepareCSMTerrainGlobals(host, castCommands, frameState);
 
-  // NEW-SHADOW-CAST-GPU-CULL-PHASE-2 (Batch 226) — lazy per-cascade
-  // cull-state arrays sized to `_cascadeCount`. Re-sized when
-  // `_cascadeCount` changes (rare; user toggle).
+  // Size the lazy per-cascade cull state to the selected cascade count.
   if (host._cascadeCullActive.length !== host._cascadeCount) {
     host._cascadeCullActive = new Array(host._cascadeCount).fill(false);
     host._cascadeCullLastResults = new Array(host._cascadeCount).fill(null);
@@ -439,11 +425,9 @@ export function renderCSMCastPass(
     typeof context.getGPUCullerForCascade === "function";
   const totalCount = castCommands.length;
 
-  // Lazy-allocate per-cascade cast UBOs the first time we cast.
-  // The layout matches WebGPUShadowMapRenderer's existing UBO
-  // (SHADOW_UNIFORM_SIZE = 128 bytes) so every registered cast
-  // pipeline's bind-group layout is compatible without a second
-  // pipeline build.
+  // Allocate per-cascade cast UBOs lazily. Their layout matches the 128-byte
+  // `WebGPUShadowMapRenderer` UBO, so every registered cast pipeline has a
+  // compatible bind-group layout without another pipeline build.
   if (!host._cascadeCastBuffers) {
     host._cascadeCastBuffers = [];
     host._cascadeCastBufferData = [];
@@ -491,10 +475,11 @@ export function renderCSMCastPass(
   for (let ci = 0; ci < host._cascadeCount; ci++) {
     const cascade = host._cascades[ci];
     const data = host._cascadeCastBufferData![ci];
-    // Pack: lightVP_RTE (16) + camHigh+pad (4) + camLow+pad (4) + biases (4) = 28 floats.
+    // Pack 28 floats: 16 light-VP values, two padded camera vectors, and four
+    // bias values.
     // The cast shader multiplies this VP by the camera-relative position
-    // (posRTE = posHigh - camHigh + posLow - camLow), so the matrix MUST
-    // be the RTE-aware form, not the world-space one. See ShadowMap.wgsl.
+    // (posRTE = posHigh - camHigh + posLow - camLow), so the matrix must use
+    // the RTE-aware form instead of the world-space form. See ShadowMap.wgsl.
     for (let k = 0; k < 16; k++) {
       data[k] = cascade.viewProjectionRTE[k];
     }
@@ -522,7 +507,7 @@ export function renderCSMCastPass(
       CSM_CAST_UBO_SIZE,
     );
 
-    // ── Per-cascade GPU cull (Batch 226) ─────────────────────────────
+    // Per-cascade GPU culling.
     // Update the gate, dispatch this frame, and pick the filtered
     // cast list (using prior-frame readback) before the draw loop.
     // No-op when `cullEnabled` is false.
@@ -540,8 +525,8 @@ export function renderCSMCastPass(
       if (nowActive) {
         const culler = context!.getGPUCullerForCascade!(ci);
         if (culler && culler.initialized) {
-          // Build / grow per-cascade SOA scratch + pooled
-          // interleaved upload buffer (B226-N1, Batch 230 audit fix).
+          // Build or grow per-cascade SoA scratch storage and the pooled
+          // interleaved upload buffer.
           let soa = host._cascadeCullSoA[ci];
           if (!soa || soa.capacity < totalCount) {
             const cap = Math.max(totalCount, soa?.capacity ?? 0);
@@ -555,19 +540,15 @@ export function renderCSMCastPass(
             };
             host._cascadeCullSoA[ci] = soa;
           }
-          // B226-O1 (Batch 230 audit fix) — combined SoA + interleaved
-          // fill in a single loop. The interleaved buffer is the only
-          // thing actually uploaded to the GPU; the SoA fields are kept
-          // alongside for potential future use (debug surface, sphere-
-          // sphere narrow-phase, etc.) but populated in lockstep.
+          // Fill the SoA and interleaved representations in one loop. Only
+          // the interleaved buffer is uploaded; the SoA fields remain a
+          // CPU-readable copy of the same sphere set and stay in lockstep.
           //
           // Bail-out: if any command lacks a bounding sphere, we abort
-          // the cull entirely (over-include via no-cull is correct;
-          // partially filled SoA would mismatch the gen and corrupt
-          // the test). The early-return mirrors Batch 226's
-          // `validSpheres === totalCount` invariant.
-          // (`cascade` is already in scope from the outer per-frustum
-          // loop at line 250.)
+          // the cull entirely. No cull is a correctness-safe over-include;
+          // partially filled storage would mismatch the command generation
+          // and corrupt the visibility test. `cascade` comes from the outer
+          // per-frustum loop.
           const interleaved = soa.interleaved;
           let allValid = true;
           for (let i = 0; i < totalCount; i++) {
@@ -638,8 +619,8 @@ export function renderCSMCastPass(
       }
     }
 
-    // C11-192 — the filtered list is the exact demand set for this cascade.
-    // First-cascade realization is reused by later cascades and future frames.
+    // The filtered list is the exact demand set for this cascade. The first
+    // cascade's realization is reused by later cascades and future frames.
     prepareTerrainShadowCastCommandUniforms(host._device, castIter);
 
     const pass = encoder.beginRenderPass({
@@ -692,13 +673,10 @@ export function renderCSMCastPass(
       }
       if (!vb) continue;
 
-      // Slice 2 — accept every registered variant that the single-
-      // shadow-map path knows about. The pipeline factory (shared with
-      // WebGPUShadowMapRenderer via `_getOrCreateCastPipeline`) compiles
-      // at first use; subsequent frames hit the persistent resource-owner
-      // bind-group cache. See SHADOW_CAST_VARIANTS in WebGPUShadowMapRenderer.js
-      // for the canonical list (rte24, p12, modelP12, modelInstanced,
-      // modelInstancedSB, quantized12, modelSkinned).
+      // Accept every variant registered by the single-shadow-map path. The
+      // `_getOrCreateCastPipeline` factory compiles at first use; subsequent
+      // frames use the persistent resource-owner bind-group cache.
+      // `SHADOW_CAST_VARIANTS` in `WebGPUShadowMapRenderer.js` is canonical.
       const layoutKey = _inferShadowLayoutKey(cmd, vbStride);
       if (layoutKey === null) continue;
 
@@ -712,8 +690,8 @@ export function renderCSMCastPass(
         vbStride,
         getShadowCastTopology(cmd),
         getShadowCastCullMode(cmd),
-        // C11-90 — CSM shares the cast pipeline factory with the single
-        // shadow map, so it must pass the same complete topology axis.
+        // CSM shares the cast pipeline factory with the single shadow map, so
+        // it must pass the same complete topology axis.
         getShadowCastStripIndexFormat(cmd),
       );
       if (!pipelineEntry) continue;

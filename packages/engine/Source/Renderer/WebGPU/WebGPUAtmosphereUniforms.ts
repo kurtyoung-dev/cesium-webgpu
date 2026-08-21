@@ -1,58 +1,32 @@
 /**
- * WebGPU shared atmosphere-uniform resolver (DP-H47, Campaign-7).
+ * Shared WebGPU atmosphere-uniform resolution.
  *
- * Historically every WebGPU atmosphere consumer (SkyAtmosphere, the model
- * DynamicEnvironmentMap sky fill, procedural clouds, the globe ground
- * atmosphere) hand-rolled its own pull from `frameState.atmosphere` with its
- * own `DEFAULT_*` fallback constants. Because those hand-rolls read different
- * subsets of `scene.atmosphere.*`, a user-set field could land in one
- * renderer's packing and be silently defaulted in another — the WebGPU-internal
- * inconsistency tracked as DP-H47.
+ * Consumers reading `frameState.atmosphere` supply renderer-specific fallback
+ * coefficients. This preserves each renderer's tuned defaults while routing
+ * an explicitly configured `scene.atmosphere.*` field through one resolver.
  *
- * This module is the single **parameterized-pull** seam recommended in
- * `migration_doc/DEFERRED_WORK.md` (DP-H47, arch step 1): each consumer keeps
- * its own historically-tuned fallback set (so migrating onto the resolver is
- * byte-identical when `scene.atmosphere` leaves a field unset), while a
- * user-set `scene.atmosphere.*` now resolves through ONE code path for every
- * consumer that reads `frameState.atmosphere`.
+ * The visible sky shell has a different parity boundary. Its scattering
+ * coefficients come from the `SkyAtmosphere` instance, matching WebGL's
+ * `Scene/SkyAtmosphere.js`; `scene.atmosphere.*` supplies the ground and model
+ * IBL terms instead. The sky's dynamic-lighting mode is also resolved by
+ * `Scene.updateEnvironment`: globe scenes derive it from the globe flags,
+ * while globeless scenes use `scene.atmosphere.dynamicLighting`. The resolved
+ * value is stored on `SkyAtmosphere`, so sky consumers use
+ * {@link resolveSkyDynamicLighting}. Model IBL consumers use
+ * {@link resolveDynamicLighting} because their WebGL counterpart reads
+ * `scene.atmosphere.dynamicLighting` directly.
  *
- * IMPORTANT — SKY parity boundary (DEFERRED_WORK DP-H47, Q24R 2026-07-04):
- * the visible SkyAtmosphere scattering coefficients are driven by the
- * `SkyAtmosphere` INSTANCE properties (`atmosphereRayleighCoefficient`, …),
- * NOT by `scene.atmosphere.*` — this MIRRORS WebGL (`Scene/SkyAtmosphere.js`
- * binds `u_atmosphereRayleighCoefficient` from the instance; `czm_atmosphere*`
- * drives only the ground + model-IBL sky fill). Routing `scene.atmosphere.*`
- * scattering into the sky would DIVERGE from WebGL, so the sky consumer uses
- * this resolver ONLY for `dynamicLighting` (the one `scene.atmosphere.*` field
- * WebGL applies to the sky, via `SkyAtmosphere.setDynamicLighting`). Its
- * scattering coefficients stay on the instance.
- *
- * C12-29 S6 / obs-1 CORRECTION (2026-07-25): the sentence above was only half
- * true, and the half that was wrong produced a real divergence. WebGL does not
- * hand `scene.atmosphere.dynamicLighting` to the sky when a globe exists — it
- * hands `DynamicAtmosphereLightingType.fromGlobeFlags(globe)`
- * (`Scene.js` `updateEnvironment`), i.e. the LEGACY globe flags
- * (`enableLighting && dynamicAtmosphereLighting`, with
- * `dynamicAtmosphereLightingFromSun` selecting SUNLIGHT). `scene.atmosphere.
- * dynamicLighting` reaches the sky only on the globe-less branch. The value
- * `SkyAtmosphere.setDynamicLighting` stores is therefore the ONE resolved
- * answer, and a WebGPU sky consumer must read THAT, not re-resolve from
- * `frameState.atmosphere`. Use {@link resolveSkyDynamicLighting} for the sky;
- * {@link resolveDynamicLighting} remains correct for the model IBL fill, whose
- * WebGL twin (`DynamicEnvironmentMapManager`) genuinely reads
- * `scene.atmosphere.dynamicLighting` on both backends.
- *
- * CPU-only: this resolver changes no bind-group layout and no WGSL. It is
- * byte-identical at default `scene.atmosphere` settings.
+ * This resolver is CPU-only and changes neither bind-group layouts nor WGSL.
+ * Renderer defaults remain byte-identical when no atmosphere field is set.
  *
  * @module WebGPUAtmosphereUniforms
  */
 
 /**
  * A minimal 3-component vector shape (Cartesian3-compatible) carrying a
- * per-channel scattering coefficient. Both `scene.atmosphere.rayleighCoefficient`
- * (a real `Cartesian3`) and a renderer's plain `{ x, y, z }` default literal
- * satisfy this.
+ * per-channel scattering coefficient. Both
+ * `scene.atmosphere.rayleighCoefficient` (a real `Cartesian3`) and a
+ * renderer's plain `{ x, y, z }` default literal satisfy this.
  */
 export interface AtmosphereCoefficient {
   x: number;
@@ -61,9 +35,9 @@ export interface AtmosphereCoefficient {
 }
 
 /**
- * Renderer-supplied fallback set. Each consumer passes its own historically
- * tuned `DEFAULT_*` constants so that resolving through this module produces
- * byte-identical output when `scene.atmosphere` omits a field.
+ * Renderer-supplied fallback set. Each consumer passes its own tuned
+ * `DEFAULT_*` constants so resolving through this module remains
+ * byte-identical when `scene.atmosphere` omits a field.
  */
 export interface AtmosphereScatteringDefaults {
   rayleighCoefficient: AtmosphereCoefficient;
@@ -92,9 +66,8 @@ export interface ResolvedAtmosphereScattering {
  * Resolves the dynamic-atmosphere-lighting enum from `scene.atmosphere`.
  *
  * `0` (`DynamicAtmosphereLightingType.NONE`) is the default when
- * `frameState.atmosphere` or the field is absent — the same fallback every
- * consumer used inline. Shared so the sky and the model IBL fill resolve it
- * identically.
+ * `frameState.atmosphere` or the field is absent. Centralizing the fallback
+ * keeps all direct consumers consistent.
  *
  * @param frameState the current frame state
  * @returns the `DynamicAtmosphereLightingType` enum value (0/1/2/3)
@@ -107,15 +80,10 @@ export function resolveDynamicLighting(frameState: CesiumFrameState): number {
  * True when the given `DynamicAtmosphereLightingType` selects an explicit
  * scene light source &mdash; `SCENE_LIGHT` (1) or `SUNLIGHT` (2).
  *
- * C12-31 added `LEGACY_OVERHEAD` (3), the named compatibility mode that
- * reproduces the historical `NONE` "lit from directly above" appearance. Every
- * consumer that used to ask `dynamicLighting !== 0` really meant "is there a
- * single, scene-wide light direction I can bake a table against", and the
- * answer for mode 3 is no &mdash; its direction varies per texel/fragment,
- * exactly like the old mode 0. Asking through this predicate keeps mode 3
- * behaving like the historical NONE without any consumer re-deriving the rule.
- *
- * Byte-identical to the old `!== 0` test for enums 0, 1 and 2.
+ * `LEGACY_OVERHEAD` (3) is a compatibility mode whose direction varies per
+ * texel or fragment, so it cannot bake a table against one scene-wide light
+ * direction. This predicate therefore treats it like `NONE` while keeping
+ * `SCENE_LIGHT` and `SUNLIGHT` as the explicit directional modes.
  *
  * @param dynamicLighting the `DynamicAtmosphereLightingType` enum value
  * @returns whether the mode resolves to one scene-wide light direction
@@ -134,10 +102,10 @@ export interface SkyDynamicLightingSource {
 }
 
 /**
- * Resolves the dynamic-atmosphere-lighting enum **for the sky shell**.
+ * Resolves the dynamic-atmosphere-lighting enum for the sky shell.
  *
- * C12-29 S6 / obs-1. `Scene.updateEnvironment` resolves this every frame and
- * stores it on the `SkyAtmosphere` instance:
+ * `Scene.updateEnvironment` resolves this every frame and stores it on the
+ * `SkyAtmosphere` instance:
  *
  * ```js
  * skyAtmosphere.setDynamicLighting(
@@ -146,29 +114,23 @@ export interface SkyDynamicLightingSource {
  * skyAtmosphere.setDynamicLighting(atmosphere.dynamicLighting); // no globe
  * ```
  *
- * WebGL's `u_radiiAndDynamicAtmosphereColor.z` reads exactly that stored
- * value, so WebGPU must too. Re-resolving from `frameState.atmosphere` gave
- * `NONE` on every globe scene with `globe.enableLighting = true` — where WebGL
- * gives `SCENE_LIGHT` — which collapses the WGSL shell's per-fragment
- * `nightAlpha` to a constant 1.0 and makes the ground-level shell fully
- * opaque. What that hid, precisely: the **skyBox cubemap** and the returned
- * **star-catalogue command**, which are the environment draws `SceneRenderer`
- * places before (and therefore visually behind) the binned atmosphere. The
- * moon and sun execute AFTER the atmosphere — the moon by append and the sun
- * because it is binned behind it.
+ * WebGL's `u_radiiAndDynamicAtmosphereColor.z` reads that stored value, so
+ * WebGPU must do the same. Re-resolving from `frameState.atmosphere` in a globe
+ * scene can produce `NONE` while the instance contains `SCENE_LIGHT`. That
+ * makes the WGSL shell's per-fragment `nightAlpha` a constant 1.0 and the
+ * ground-level shell fully opaque, hiding the sky-box cube map and star-catalog
+ * command rendered behind the atmosphere. The moon and sun render after the
+ * atmosphere and are unaffected by that ordering.
  *
  * The `frameState` fallback covers a caller that passes no instance at all
- * (tooling, or a future consumer packing sky uniforms without a
- * `SkyAtmosphere`). It does NOT cover "an instance that never reached
- * `updateEnvironment`": `SkyAtmosphere`'s constructor initialises the slot to
- * `0`, so such an instance reports NONE and takes the instance path.
+ * when packing sky uniforms. It does not override an instance that has not
+ * reached `updateEnvironment`: the `SkyAtmosphere` constructor initializes the
+ * slot to `0`, so that instance reports `NONE` and takes the instance path.
  *
- * C12-31 (2026-08-01): the value this returns now also decides the sky's LIGHT
- * DIRECTION rather than only its day/night alpha gate. `NONE` no longer means
- * "lit from directly above" for the sky shell — the WGSL takes
- * `u.sunDirectionWC` for every mode except the explicit `LEGACY_OVERHEAD` (3).
- * The enum value itself is unchanged, so the `!= 0` alpha gate keyed off it is
- * unchanged too.
+ * The resolved value controls both the sky's day/night alpha and its light
+ * direction. WGSL uses `u.sunDirectionWC` for every mode except the explicit
+ * `LEGACY_OVERHEAD` (3) compatibility mode. The alpha gate remains keyed to
+ * `dynamicLighting != 0`.
  *
  * @param skyAtmosphere the `SkyAtmosphere` instance being packed, if any
  * @param frameState the current frame state
@@ -189,13 +151,12 @@ export function resolveSkyDynamicLighting(
  * `scene.atmosphere`, falling back to the caller-supplied `defaults` for any
  * unset field.
  *
- * The resolved coefficient objects are returned by reference (the
- * `scene.atmosphere` `Cartesian3` when set, otherwise the caller's default
- * literal) — no allocation, matching the pre-resolver inline `?? DEFAULT`
- * reads exactly.
+ * The resolved coefficient objects are returned by reference: the configured
+ * `scene.atmosphere` `Cartesian3`, or the caller's default literal otherwise.
+ * This avoids allocation and preserves the selected object's identity.
  *
  * @param frameState the current frame state
- * @param defaults the consumer's historically-tuned fallback set
+ * @param defaults the consumer's renderer-specific fallback set
  * @returns the resolved scattering terms + dynamic-lighting enum
  */
 export function resolveAtmosphereScattering(

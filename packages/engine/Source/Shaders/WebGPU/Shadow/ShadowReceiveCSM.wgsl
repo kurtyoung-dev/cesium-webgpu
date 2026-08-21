@@ -8,9 +8,9 @@
 // RTE precision contract:
 //   The cascade VP matrices in `CSMParams` are RTE-aware — they are
 //   pre-multiplied by T(+cameraWC) on the CPU side (see
-//   WebGPUCSMRenderer._applyCameraTranslationToVP). Callers MUST pass
+//   WebGPUCSMRenderer._applyCameraTranslationToVP). Callers must pass
 //   a camera-relative position (`eyePos = positionHigh - camHigh +
-//   positionLow - camLow`), NOT a reconstructed world position. Feeding
+//   positionLow - camLow`), not a reconstructed world position. Feeding
 //   a lossy FP32 `worldPos = positionHigh + positionLow` breaks shadows
 //   at Earth scale (6.37M m → ~1m quantization → acne everywhere).
 //
@@ -76,16 +76,15 @@ fn cascadeDepthBias(
 
 // Sample a single cascade's shadow map. `eyePos` is the camera-relative
 // position (RTE); the cascade VP is pre-multiplied by T(+cameraWC) so
-// we skip the lossy worldPos reconstruction.
+// this avoids the lossy worldPos reconstruction.
 //
-// `pcfRadius` (in shadow texels) softens the cascade edge with a 3x3 PCF
-// box kernel, matching WebGL's czm_shadowVisibility USE_SOFT_SHADOWS path
-// (9-tap box averaged 1/9). 0 keeps a single hardware-comparison tap
-// (hard aliased edge — bit-exact with the pre-PCF behavior). Callers wire
-// `effects.csmControl.y` into this; the inlined copies in the receive
-// shaders (GlobeTerrain / ModelPBRComplete / Primitive*) carry the same
-// kernel verbatim. `textureSampleCompareLevel` (explicit LOD) is used so
-// the taps are valid even inside the non-uniform cascade-select branch.
+// `pcfRadius`, measured in shadow texels, softens the cascade edge with a 3x3
+// PCF box kernel. This matches WebGL's `czm_shadowVisibility`
+// `USE_SOFT_SHADOWS` path: a 9-tap box averaged by 1/9. A zero radius keeps one
+// hard hardware-comparison tap. Callers wire `effects.csmControl.y` into this,
+// and inline copies in GlobeTerrain, ModelPBRComplete, and Primitive shaders
+// preserve the same kernel. Explicit LOD in `textureSampleCompareLevel` keeps
+// taps valid inside the non-uniform cascade-selection branch.
 fn sampleOneCascade(
   eyePos: vec3<f32>,
   cascadeIdx: u32,
@@ -105,15 +104,15 @@ fn sampleOneCascade(
   let uv = vec2<f32>(ndc.x * 0.5 + 0.5, 1.0 - (ndc.y * 0.5 + 0.5));
   let depth = ndc.z - depthBias;
 
-  // Bounds check: fully lit if outside the cascade's XY footprint OR
-  // past the far plane (depth > 1) OR behind the light's near plane
+  // Bounds check: fully lit if outside the cascade's XY footprint, past the
+  // far plane (depth > 1), or behind the light's near plane
   // (depth < 0 — nearby fragments when the cascade eye sits deep).
   if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 ||
       depth > 1.0 || depth < 0.0) {
     return 1.0;
   }
 
-  // CSM-PCF-SOFT: hard single tap when pcfRadius <= 0.
+  // A nonpositive radius keeps the hard, single comparison tap.
   if (pcfRadius <= 0.0) {
     return textureSampleCompareLevel(
       shadowMap, shadowSampler, uv, i32(cascadeIdx), depth);

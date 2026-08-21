@@ -22,10 +22,9 @@ import WebGPUBuffer from "./WebGPUBuffer.js";
 import { renderCSMCastPass } from "./WebGPUCSMCastPass.js";
 import type { DebugStatsObject } from "../GraphicsContext.js";
 
-// Re-declare the Matrix4 / Cartesian3 shapes we actually touch so the
-// file doesn't depend on the ambient Cesium* globals (those aren't
-// defined in every consumer context). These match the fields of
-// Cesium's Core/Matrix4 and Core/Cartesian3.
+// Re-declare the Matrix4 and Cartesian3 shapes so this file is independent of
+// ambient Cesium globals, which are absent from some consumers. Their fields
+// match Cesium's Core/Matrix4 and Core/Cartesian3.
 type CesiumMatrix4 = number[] | Float64Array | Float32Array;
 type CesiumCartesian3 = { x: number; y: number; z: number };
 
@@ -46,34 +45,25 @@ const DEFAULT_CASCADE_RESOLUTION = 1024;
 const MIN_CASCADE_RESOLUTION = 256;
 const MAX_CASCADE_RESOLUTION = 4096;
 
-/** Lambda blend factor for split distribution (0 = uniform, 1 = logarithmic). */
+/** Lambda for split distribution: 0 is uniform and 1 is logarithmic. */
 const DEFAULT_LAMBDA = 0.7;
 
 /** Blend band as fraction of cascade width (for seam hiding). */
 const DEFAULT_BLEND_BAND = 0.05;
 
 /**
- * DEFAULT (WGS84) ellipsoid radii (metres). Used by the ground-clamp pass
- * in `_computeFrustumCornersWorldSpace` (NEW-CSM-CASCADE-GROUND-FIT) to
- * pull each cascade frustum-slice's far corners back to the point where
- * the corresponding view ray pierces the globe surface. Without this
- * clamp a low top-down camera's near cascade fits a multi-km bounding
- * sphere (~12 m/texel at 1024²) because the perspective frustum extends
- * to the horizon, whereas the WebGL `ShadowMap` path fits the actual
- * visible scene volume (clamps `sceneCamera.frustum.far` to
- * `shadowState.farPlane` before the cascade fit). Clamping at the ground
- * reproduces that tight fit so cascade-0 stays sub-metre/texel and the
- * cast-shadow edge is crisp instead of a 12 m-texel sawtooth.
- * Inverse-square radii are precomputed for the closed-form
+ * Default WGS84 ellipsoid radii in metres. The ground-clamp pass in
+ * `_computeFrustumCornersWorldSpace` places each cascade's near and far
+ * corners on the corresponding view-ray intersections with the globe. This
+ * prevents a low top-down camera from fitting a multi-kilometre bounding
+ * sphere to empty frustum volume and keeps the near cascade below one metre
+ * per texel. Inverse-square radii are precomputed for the closed-form
  * ray/ellipsoid solve.
  *
- * PARITY-RTE-ELLIPSOID-AWARE (FEAT-3DT2-03): these are DEFAULTS, not the
- * only radii the solve can use. `WebGPUContext.executeShadowMapCastCommands`
- * threads the scene's actual ellipsoid in per cast frame via
- * {@link WebGPUCSMRenderer.setEllipsoid}, so non-Earth globes (Mars, Moon,
- * scaled mocks) clamp against THEIR surface instead of an Earth-sized
- * phantom. For a WGS84 scene the threaded radii equal these constants and
- * the math is byte-identical.
+ * These are defaults rather than fixed inputs.
+ * `WebGPUContext.executeShadowMapCastCommands` supplies the scene ellipsoid
+ * through {@link WebGPUCSMRenderer.setEllipsoid}, so non-Earth globes clamp
+ * against their own surface. A WGS84 scene uses these exact values.
  */
 const WGS84_RADII_X = 6378137.0;
 const WGS84_RADII_Y = 6378137.0;
@@ -83,17 +73,15 @@ const WGS84_ONE_OVER_RADII_SQ_Y = 1.0 / (WGS84_RADII_Y * WGS84_RADII_Y);
 const WGS84_ONE_OVER_RADII_SQ_Z = 1.0 / (WGS84_RADII_Z * WGS84_RADII_Z);
 
 /**
- * Closed-form distance from `origin` to the first (entry) ray/ellipsoid
- * intersection along unit `dir`, both in world (ECEF) coordinates. Returns
- * the positive entry-distance `t`, or `Infinity` when the ray misses the
- * ellipsoid (camera looking at the horizon / sky). FP64 throughout — the
- * coefficients involve 6.4M-scale ECEF coordinates squared, so single
- * precision would lose the discriminant. Mirrors the quadratic in
- * `IntersectionTests.rayEllipsoid` but inlined + scalarized to avoid the
- * per-corner `Ray`/`Cartesian3`/`Interval` allocations that helper makes
- * (this runs 4× per cascade per frame). The inverse-square radii are
- * explicit parameters (defaulting to WGS84) so the solve tracks the
- * scene's actual ellipsoid — see PARITY-RTE-ELLIPSOID-AWARE above.
+ * Closed-form parameter of the first ray/ellipsoid intersection for `origin`
+ * and `dir` in world (ECEF) coordinates. The parameter is a distance when
+ * `dir` is unit length. Returns the positive entry value, or `Infinity` when
+ * the ray misses the ellipsoid. The calculation uses FP64 because squaring
+ * Earth-scale ECEF coordinates in single precision loses the discriminant.
+ * It scalarizes the quadratic from `IntersectionTests.rayEllipsoid` to avoid
+ * four sets of `Ray`, `Cartesian3`, and `Interval` allocations per cascade.
+ * Explicit inverse-square radii keep the solve aligned with the scene
+ * ellipsoid supplied through `setEllipsoid`.
  */
 function _rayEllipsoidEntryDistance(
   ox: number,
@@ -155,9 +143,9 @@ export const CSM_CAST_UBO_SIZE = 128;
 export const CSM_TERRAIN_GLOBALS_SIZE = 16;
 
 /**
- * Scratch EncodedCartesian3 reused across cast-pass invocations. Not
- * thread-safe; this is fine for the single-threaded main-frame path
- * but worth flagging if the renderer ever moves to a worker.
+ * Scratch `EncodedCartesian3` reused across cast-pass invocations. It is
+ * restricted to the single-threaded main-frame path because it is not
+ * thread-safe.
  */
 // EncodedCartesian3's `.d.ts` declares `high: Cartesian3; low: Cartesian3;`
 // directly, so no cast is needed — this is just a scratch instance reused
@@ -173,15 +161,7 @@ const _scratchEncodedCamera = new EncodedCartesian3();
 const _scratchSnappedCenter = new Float64Array(3);
 
 /**
- * Duck-typed shape of a cast-compatible draw command. Mirrors the
- * fields `WebGPUShadowMapRenderer.renderShadowCastPass` reads. We
- * duck-type rather than import `WebGPUDrawCommand` here to avoid
- * pulling the entire rendering-command type surface into the CSM
- * module just for this one call site.
- */
-/**
- * Subset of `WebGPUCSMRenderer` reached by the cast-pass helper
- * (Batch 159). Mirrors the fields the helper needs read+write access to.
+ * Subset of `WebGPUCSMRenderer` that the cast-pass helper reads and writes.
  */
 export interface CSMCastPassHost {
   _device: GPUDevice | null;
@@ -212,10 +192,9 @@ export interface CSMCastPassHost {
     >;
   } | null;
   enabled: boolean;
-  // NEW-SHADOW-CAST-GPU-CULL-PHASE-2 (Batch 226) — per-cascade
-  // GPU cull state. Lazy-allocated on first dispatch with a
-  // sphere-AABB cull (correctness-safe over-include rather than
-  // tight Gribb-Hartmann; see WebGPUCSMCastPass.ts header).
+  // Per-cascade GPU cull state, allocated lazily on first dispatch. The
+  // sphere-AABB test deliberately over-includes rather than risking a missed
+  // caster; see the `WebGPUCSMCastPass.ts` module documentation.
   _cascadeCullActive: boolean[];
   _cascadeCullLastResults: Array<{
     visibilityFlags: Uint32Array;
@@ -235,6 +214,11 @@ export interface CSMCastPassHost {
   _cascadeCullLastFiltered: number[];
 }
 
+/**
+ * Duck-typed shape of a cast-compatible draw command. It mirrors the fields
+ * read by `WebGPUShadowMapRenderer.renderShadowCastPass` and avoids importing
+ * the entire `WebGPUDrawCommand` type surface for one call site.
+ */
 export interface CastCommandShape {
   vertexBuffers?: ReadonlyArray<unknown>;
   _vertexBuffer?: unknown;
@@ -252,18 +236,18 @@ export interface CastCommandShape {
   instanceCount?: number;
   _shadowCastLayout?: string;
   _shadowCastTopology?: GPUPrimitiveTopology;
-  // C11-90 — REQUIRED companion of `_shadowCastTopology` for strip casters.
+  // Strip casters require this companion to `_shadowCastTopology`.
   _shadowCastStripIndexFormat?: GPUIndexFormat;
   _shadowCastCullMode?: GPUCullMode;
-  // Slice 2 — per-command extra bindings (populated by WebGPUModelRenderer
-  // when the command's variant declares `extraBindings`). The CSM cast
-  // loop reads these via the variant's `perCommandBindingFields` names.
+  // `WebGPUModelRenderer` supplies per-command bindings when a variant
+  // declares `extraBindings`; the CSM cast loop reads them through the
+  // variant's `perCommandBindingFields` names.
   _shadowCastModelUB?: unknown;
   _shadowCastJointMatricesSB?: unknown;
   _shadowCastInstancingSB?: unknown;
   _shadowCastInstanceVB?: unknown;
   // Stable resource owner used when the draw command itself is rebuilt each
-  // frame (models). Other command families fall back to command-local caching.
+  // frame, as model commands are. Other families use command-local caching.
   _shadowCastBindGroupCacheHost?: Record<string, unknown>;
 }
 
@@ -274,10 +258,9 @@ export interface CSMConfig {
   blendBand?: number;
   maxShadowDistance?: number;
   enabled?: boolean;
-  // NEW-CSM-SOFT-SHADOW-PCF — soften cascade edges with a 3x3 PCF box
-  // kernel in the receive shaders (matches WebGL's czm_shadowVisibility
-  // USE_SOFT_SHADOWS path). When false, the receivers fall back to a
-  // single hardware-comparison tap (hard aliased edge). Default true.
+  // A 3×3 PCF box kernel softens cascade edges in the receive shaders,
+  // matching the `czm_shadowVisibility` soft-shadow path. When false, the
+  // receivers use one hardware-comparison tap. The default is true.
   softShadows?: boolean;
   // PCF kernel radius in shadow texels (only used when softShadows is
   // true). 1.5 mirrors the single-shadow-map soft path's radius.
@@ -292,8 +275,8 @@ export const DEFAULT_CSM_PCF_RADIUS = 1.5;
 interface CascadeData {
   splitNear: number;
   splitFar: number;
-  // World-space light VP. Kept for diagnostics/debug snapshots. NOT uploaded
-  // to the GPU — the RTE-aware form below is what cast + receive shaders consume.
+  // World-space light VP retained for diagnostic snapshots. Cast and receive
+  // shaders consume only the RTE-aware form below.
   viewProjection: Float32Array;
   // RTE-aware light VP = VP_world * T(+cameraWC). Applied on the GPU as
   //   clipPos = VP_RTE * vec4<f32>(eyePos, 1.0)
@@ -312,7 +295,7 @@ export const BASE_MIN_BIAS = 0.00005;
 export const BASE_MAX_SLOPE_BIAS = 0.0005;
 
 export class WebGPUCSMRenderer {
-  // Public underscore: shared with the cast-pass helper (Batch 159).
+  // Public underscore shared with the cast-pass helper.
   public _device: GPUDevice | null = null;
   public _cascadeCount: number;
   private _resolution: number;
@@ -320,8 +303,8 @@ export class WebGPUCSMRenderer {
   private _blendBand: number;
   private _maxShadowDistance: number;
   enabled: boolean;
-  // NEW-CSM-SOFT-SHADOW-PCF — PCF kernel radius in shadow texels uploaded
-  // to the receive shaders via `effects.csmControl.y`. 0 → hard single tap.
+  // PCF radius in shadow texels, uploaded through `effects.csmControl.y`.
+  // Zero selects a hard single tap.
   private _pcfRadius: number;
 
   // GPU resources
@@ -358,8 +341,7 @@ export class WebGPUCSMRenderer {
   /**
    * Frame number on which casters were last rendered into the cascade array.
    * Read by `shouldClearShadowCastTarget` so a caster-less re-entry on the
-   * SAME frame cannot wipe depth the color pass is about to sample
-   * (`NEW-WEBGPU-GLOBE-SUN-SHADOW-RECEIVE-DEAD`).
+   * same frame cannot wipe depth that the color pass is about to sample.
    */
   public _shadowContentFrame: number | undefined = undefined;
   /**
@@ -379,11 +361,8 @@ export class WebGPUCSMRenderer {
     >;
   } | null = null;
 
-  // NEW-SHADOW-CAST-GPU-CULL-PHASE-2 (Batch 226) — per-cascade GPU
-  // cull state. Sized to `_cascadeCount` lazily; defaults are
-  // false / null / 0. The infrastructure landed in Batch 221
-  // (per-cascade culler instances on the context); this batch
-  // activates the dispatch + filter loop in `WebGPUCSMCastPass`.
+  // Size each cascade's cull state lazily. The context owns culler instances,
+  // while `WebGPUCSMCastPass` owns dispatch and prior-readback filtering.
   public _cascadeCullActive: boolean[] = [];
   public _cascadeCullLastResults: Array<{
     visibilityFlags: Uint32Array;
@@ -395,10 +374,9 @@ export class WebGPUCSMRenderer {
     centerZ: Float32Array;
     radius: Float32Array;
     capacity: number;
-    // B226-N1 (Batch 230 audit fix) — interleaved (cx, cy, cz, r)
-    // upload buffer pooled alongside the SoA so per-frame
-    // dispatch doesn't allocate a fresh Float32Array. Same
-    // capacity contract as the SoA fields; resized in lockstep.
+    // Pool the interleaved `(cx, cy, cz, r)` upload buffer alongside the SoA
+    // arrays to avoid allocating a new `Float32Array` each frame. Both
+    // representations share a capacity and resize in lockstep.
     interleaved: Float32Array;
   } | null> = [];
   public _cascadeCullFilterPool: Array<unknown[]> = [];
@@ -406,12 +384,9 @@ export class WebGPUCSMRenderer {
   public _cascadeCullLastInput: number[] = [];
   public _cascadeCullLastFiltered: number[] = [];
 
-  // PARITY-RTE-ELLIPSOID-AWARE (FEAT-3DT2-03) — the ellipsoid the
-  // cascade ground-clamp solves against. Defaults to WGS84 so Earth
-  // scenes are byte-identical whether or not `setEllipsoid` runs;
-  // `WebGPUContext.executeShadowMapCastCommands` threads the scene's
-  // actual ellipsoid in once per cast frame (change-detected no-op for
-  // the steady state).
+  // The cascade ground clamp uses the scene ellipsoid, with WGS84 defaults.
+  // `WebGPUContext.executeShadowMapCastCommands` supplies it once per cast
+  // frame, and `setEllipsoid` makes unchanged values a no-op.
   private _ellipsoidRadiiX = WGS84_RADII_X;
   private _ellipsoidRadiiY = WGS84_RADII_Y;
   private _ellipsoidRadiiZ = WGS84_RADII_Z;
@@ -428,10 +403,9 @@ export class WebGPUCSMRenderer {
 
   constructor(config?: CSMConfig) {
     this._cascadeCount = config?.cascadeCount ?? DEFAULT_CASCADE_COUNT;
-    // Clamp the requested resolution into [MIN, MAX]. Power-of-two
-    // isn't required by WebGPU for depth32float arrays, so we leave
-    // non-PoT values alone — callers can pass 1536 for a 9 MB variant
-    // if they want. Round any non-integer values down.
+    // Clamp the requested resolution into [MIN, MAX]. WebGPU does not require
+    // power-of-two depth32float array dimensions, so preserve values such as
+    // 1536 and round only fractional inputs down.
     const requested = config?.resolution ?? DEFAULT_CASCADE_RESOLUTION;
     this._resolution = Math.max(
       MIN_CASCADE_RESOLUTION,
@@ -441,8 +415,8 @@ export class WebGPUCSMRenderer {
     this._blendBand = config?.blendBand ?? DEFAULT_BLEND_BAND;
     this._maxShadowDistance = config?.maxShadowDistance ?? 100000;
     this.enabled = config?.enabled ?? false;
-    // Soft shadows default ON (parity with WebGL czm_shadowVisibility's
-    // USE_SOFT_SHADOWS). pcfRadius=0 disables the kernel (hard edge).
+    // Soft shadows default to the WebGL `czm_shadowVisibility` soft-shadow
+    // path; a zero PCF radius selects a hard edge.
     const softShadows = config?.softShadows ?? true;
     this._pcfRadius = softShadows
       ? (config?.pcfRadius ?? DEFAULT_CSM_PCF_RADIUS)
@@ -455,12 +429,10 @@ export class WebGPUCSMRenderer {
     //   vec4<f32> cascadeMinBias                =  4 floats  offset  72
     //   vec4<f32> cascadeMaxSlopeBias           =  4 floats  offset  76
     // WGSL struct size: 80 floats = 320 bytes.
-    // We over-allocate to 272 floats (1088 bytes) so the staging array matches
-    // CSM_PARAMS_PLACEHOLDER_BYTES (one shared size for binding 10) without
-    // forcing every CSM consumer to track a new size constant. Bytes beyond 320
-    // are unwritten zeros — the shader never reads them. NOTE: 1088 is NOT
-    // 256-aligned (1088 % 256 = 64); the real GPU buffer is rounded up to 1280
-    // at creation below via Math.ceil(byteLength / 256) * 256.
+    // Over-allocate the staging array to 272 floats (1088 bytes) to match
+    // `CSM_PARAMS_PLACEHOLDER_BYTES`, the shared binding-10 size. The shader
+    // does not read the unwritten bytes beyond 320. Because 1088 is not
+    // 256-byte aligned, buffer creation below rounds it up to 1280 bytes.
     this._cascadeParamsData = new Float32Array(272);
 
     for (let i = 0; i < this._cascadeCount; i++) {
@@ -495,10 +467,8 @@ export class WebGPUCSMRenderer {
       usage:
         GPUTextureUsage.RENDER_ATTACHMENT |
         GPUTextureUsage.TEXTURE_BINDING |
-        // COPY_SRC lets `debugReadCascadeDepth` copy a single texel out for
-        // the CSM trace probe (NEW-CSM-GLOBE-RECEIVE-PROJECTION-MISS). The
-        // cost is one extra usage bit; no GPU work happens unless the debug
-        // path runs.
+        // COPY_SRC lets `debugReadCascadeDepth` inspect a texel. The extra
+        // usage bit encodes no GPU work unless the debug path runs.
         GPUTextureUsage.COPY_SRC,
     });
 
@@ -546,13 +516,10 @@ export class WebGPUCSMRenderer {
   }
 
   /**
-   * Set the ellipsoid the cascade ground-clamp solves against
-   * (PARITY-RTE-ELLIPSOID-AWARE / FEAT-3DT2-03). Accepts the scene
-   * ellipsoid's `radii` (metres); `undefined`/`null` or non-positive
-   * radii reset to the WGS84 default. Change-detected — calling every
-   * frame with the same radii is three comparisons and an early-out, and
-   * for a WGS84 scene the recomputed inverse-square radii are the exact
-   * same FP64 values as the module defaults (byte-identical math).
+   * Set the ellipsoid used by the cascade ground clamp. Accepts the scene
+   * ellipsoid's `radii` in metres; `undefined` or `null` selects WGS84, while
+   * non-positive radii leave the last valid ellipsoid unchanged. Repeated
+   * calls with the same radii exit before recomputing inverse-square values.
    */
   setEllipsoid(radii?: { x: number; y: number; z: number } | null): void {
     const x = radii?.x ?? WGS84_RADII_X;
@@ -579,18 +546,14 @@ export class WebGPUCSMRenderer {
   }
 
   /**
-   * Largest along-view distance at which any of the camera frustum's four
-   * far-edge rays pierces the scene ellipsoid (NEW-CSM-CASCADE-GROUND-FIT).
-   * This is the depth of the *visible ground patch* — clamping the split
-   * distribution to it (via `computeSplits`'s `groundFar` argument) keeps
-   * the cascades packed across the receivers the camera can actually see,
-   * rather than spread across `[near, maxShadowDistance]`. Returns
-   * `Infinity` when no frustum-edge ray hits the globe (camera aimed at
-   * the horizon/sky), in which case `computeSplits` falls back to the
-   * `maxShadowDistance` clamp. The MAX (not min) edge is used so the whole
-   * visible ground stays inside the cascade set; the per-corner MIN clamp
-   * inside `_computeFrustumCornersWorldSpace` then tightens each individual
-   * cascade's bounding sphere.
+   * Largest along-view distance where one of the camera frustum's four
+   * far-edge rays intersects the scene ellipsoid. This bounds the visible
+   * ground patch so `computeSplits` can distribute cascades across actual
+   * receivers instead of all of `[near, maxShadowDistance]`. Returns
+   * `Infinity` when every edge ray misses the globe, allowing
+   * `maxShadowDistance` to remain the fallback. The maximum edge distance
+   * keeps the whole visible ground inside the cascade set; per-corner clamps
+   * then tighten each cascade's bounding sphere.
    */
   computeVisibleGroundFar(camera: {
     positionWC: CesiumCartesian3;
@@ -643,12 +606,10 @@ export class WebGPUCSMRenderer {
    * Compute cascade splits using a blend of uniform and logarithmic
    * distributions (Practical Split Schemes for Shadow Mapping, GPU Gems 3).
    *
-   * @param groundFar Optional visible-ground far distance (from
-   *   `computeVisibleGroundFar`). When finite + smaller than the
-   *   `maxShadowDistance` clamp, the cascades are distributed across
-   *   `[near, groundFar]` so the near cascade stays tight (see
-   *   NEW-CSM-CASCADE-GROUND-FIT). Omitted/Infinity → legacy
-   *   `maxShadowDistance` clamp.
+   * @param groundFar Optional visible-ground far distance from
+   *   `computeVisibleGroundFar`. A finite value below `maxShadowDistance`
+   *   distributes cascades over `[near, groundFar]` to keep the near cascade
+   *   tight. When omitted or infinite, `maxShadowDistance` sets the limit.
    */
   computeSplits(
     cameraNear: number,
@@ -686,28 +647,28 @@ export class WebGPUCSMRenderer {
    *
    *   1. Extract the 8 world-space corners of the sub-frustum bounded
    *      by `[splitNear, splitFar]` from the camera's position + basis
-   *      + frustum FOV.  We use the CAMERA BASIS directly rather than
-   *      inverse-projecting NDC corners; the basis form is more stable
-   *      under the wide near-far ratios Cesium uses (1 m → 100 km).
+   *      + frustum FOV. The camera basis is used directly because it is more
+   *      stable than inverse-projecting NDC corners across Cesium's wide
+   *      near-far ratios (1 m to 100 km).
    *   2. Fit a bounding sphere around those 8 corners (center-of-mass
    *      + max distance). Sphere fit is rotation-invariant — a plain
    *      AABB fit would make shadow texels swim when the camera
    *      rotates.
-   *   3. Build a light-space view matrix: lookAt from
-   *      (center - lightDir * 2 * radius) toward center.
+   *   3. Build a light-space view matrix looking from
+   *      `(center + lightDir * 2 * radius)` toward the center.
    *   4. Build an ortho projection with left/right/bottom/top at
    *      `±radius`, near/far at `0..3*radius`.  Result is an
    *      axis-aligned box in light space that encloses the sphere.
    *   5. VP = proj × view. Results stored column-major, matching
    *      Cesium's Matrix4 convention.
    *
-   * Slice 2 adds texel-snap stabilization (snap the sphere center to
-   * a shadow-map-texel grid in light space, eliminating the residual
-   * shimmer under slow camera motion).
+   * Texel-snap stabilization maps the sphere center onto the light-space
+   * shadow-map texel grid, eliminating shimmer during slow camera motion.
    *
-   * @param camera Camera shape — supplies position, basis vectors, fovy, aspect.
-   * @param lightDirection Unit vector FROM surface TOWARD light (matches
-   *                       `ShadowMap.lightDirectionEC`).
+   * @param camera Camera shape supplying position, basis vectors, `fovy`, and
+   *               aspect ratio.
+   * @param lightDirection Unit vector from the surface toward the light,
+   *                       matching `ShadowMap.lightDirectionEC`.
    */
   computeCascadeVPs(
     camera: {
@@ -723,16 +684,14 @@ export class WebGPUCSMRenderer {
     const camY = camera.positionWC.y;
     const camZ = camera.positionWC.z;
 
-    // First pass: compute world-space VPs + sphere radii so we can pick the
-    // reference cascade-0 radius for bias scaling below.
+    // First compute world-space VPs and sphere radii to select cascade 0's
+    // reference radius for bias scaling below.
     for (let c = 0; c < this._cascadeCount; c++) {
       const cascade = this._cascades[c];
-      // NEW-CSM-CASCADE-GROUND-FIT — ground-clamp the far corners so a low
-      // top-down camera's near cascade fits the actual visible ground patch
-      // (sub-metre/texel at 1024²) instead of ballooning to the horizon
-      // (~12 m/texel → 50× too-soft sawtooth edge vs the WebGL tight-fit
-      // reference). Mirrors WebGL `ShadowMap` clamping `sceneCamera.frustum
-      // .far` to the visible scene volume before the cascade fit.
+      // Ground-clamp both corner planes so a low top-down camera's near
+      // cascade fits the visible ground patch instead of empty volume toward
+      // the horizon. This keeps the 1024² near cascade below one metre per
+      // texel and mirrors the tight visible-volume fit used by `ShadowMap`.
       const corners = _computeFrustumCornersWorldSpace(
         camera,
         cascade.splitNear,
@@ -927,19 +886,12 @@ export class WebGPUCSMRenderer {
       _currentCommandEncoder?: GPUCommandEncoder | null;
     },
   ): void {
-    // NEW-SHADOW-CAST-GPU-CULL-PHASE-2 (Batch 226) — context is
-    // optional for back-compat; when provided, the cast helper
-    // looks up per-cascade culler instances and gate-filters the
-    // cast list. When omitted (older callers), the cull path is
-    // skipped entirely and the helper falls through to the
-    // unfiltered cast loop — same behavior as Phase 1.
+    // The optional context exposes per-cascade cullers. Without it, this
+    // helper skips GPU culling and renders the unfiltered cast list.
     //
-    // Cast through `unknown` because the renderer keeps its
-    // context shape loose (`unknown` return) while the helper
-    // requires a tighter `GPUCullerLikeInstance | null` shape.
-    // The runtime values from `WebGPUContext.getGPUCullerForCascade`
-    // satisfy the tighter shape; TS just can't see that through
-    // the optional-getter signature here.
+    // Cast through `unknown` because this public context permits an `unknown`
+    // return; the helper requires `GPUCullerLikeInstance | null`. Values
+    // from `WebGPUContext.getGPUCullerForCascade` satisfy the tighter shape.
     renderCSMCastPass(
       this,
       encoder,
@@ -971,11 +923,10 @@ export class WebGPUCSMRenderer {
   }
 
   /**
-   * Debug trace surface for NEW-CSM-GLOBE-RECEIVE-PROJECTION-MISS. Exposes
-   * the per-cascade RTE-aware VP matrices + sphere centers/radii so a probe
-   * can project a known ground point through the SAME matrix the receive
-   * shaders use and compare its (uv, ndc.z) against the stored cast depth.
-   * Pure read of already-computed CPU state — no GPU work.
+   * Expose per-cascade RTE-aware VP matrices and sphere bounds for debugging.
+   * A diagnostic can project a known ground point through the receive
+   * shader's matrix and compare `(uv, ndc.z)` with stored cast depth. This
+   * reads existing CPU state and performs no GPU work.
    */
   debugCascadeMatrices(): Array<{
     splitNear: number;
@@ -1000,13 +951,11 @@ export class WebGPUCSMRenderer {
   }
 
   /**
-   * Read a single texel out of one cascade's stored depth map. Used by the
-   * CSM trace probe to compare the caster's STORED depth at a projected uv
-   * against the receiver's reconstructed ndc.z. `u`,`v` are in [0,1] texture
-   * space (same convention the receive shaders sample with). Returns the
-   * raw depth32float value (0 = light near plane, 1 = far / cleared).
-   * Async (one copyTextureToBuffer + mapAsync). Returns null when CSM is not
-   * initialized.
+   * Read one texel from a cascade's stored depth map. Diagnostics use this to
+   * compare caster depth at a projected UV with the receiver's reconstructed
+   * NDC z. `u` and `v` use the receive shader's `[0, 1]` texture space. A
+   * depth32float result maps 0 to light near and 1 to cleared or far
+   * depth. The asynchronous copy returns `null` before CSM is initialized.
    */
   async debugReadCascadeDepth(
     cascadeIdx: number,
@@ -1021,10 +970,9 @@ export class WebGPUCSMRenderer {
     const res = this._resolution;
     const px = Math.min(res - 1, Math.max(0, Math.floor(u * res)));
     const py = Math.min(res - 1, Math.max(0, Math.floor(v * res)));
-    // Copy the FULL layer (identical to debugScanCascadeLayer, which reads
-    // back correctly) and index the texel. A partial-row copy with a non-zero
-    // origin.y read back as zero on the Vulkan/SwiftShader path; the full
-    // copy is the reliable shape. bytesPerRow must be a 256-multiple.
+    // Copy the full layer and index the texel. A partial-row copy with a
+    // non-zero `origin.y` reads zero on Vulkan/SwiftShader, whereas the
+    // full-layer shape is reliable. `bytesPerRow` must be 256-byte aligned.
     const bytesPerRow = Math.ceil((res * 4) / 256) * 256;
     const readback = device.createBuffer({
       label: "CSM_DebugDepthReadback",
@@ -1055,10 +1003,9 @@ export class WebGPUCSMRenderer {
   }
 
   /**
-   * Copy a full cascade layer back to the CPU and report min/max + a coarse
-   * histogram of stored depth. Confirms whether the cast pass wrote ANY
-   * non-cleared depth into the cascade (a uniform 1.0 = nothing drawn; a
-   * uniform 0.0 = degenerate cast VP). For the trace probe only.
+   * Copy a full cascade layer to the CPU and report its minimum, maximum, and
+   * a coarse depth histogram. A uniform 1.0 means nothing was drawn; a
+   * uniform 0.0 indicates a degenerate cast VP. This is a diagnostic surface.
    */
   async debugScanCascadeLayer(cascadeIdx: number): Promise<{
     min: number;
@@ -1149,7 +1096,7 @@ export class WebGPUCSMRenderer {
   }
 }
 
-// ─── Helpers (exported for specs) ────────────────────────────────────
+// Helpers exported for specs.
 
 /**
  * Extract the 8 world-space corners of the camera sub-frustum between
@@ -1157,20 +1104,15 @@ export class WebGPUCSMRenderer {
  * vectors + FOV directly rather than an inverse-NDC walk — more
  * numerically stable under the wide near/far ranges Cesium scenes use.
  *
- * @param groundClamp When true (NEW-CSM-CASCADE-GROUND-FIT), each of the
- *   four far-plane corners is pulled back along its own view ray to the
- *   point where the ray pierces the scene ellipsoid. This stops a near
- *   cascade from ballooning to the horizon under a low top-down camera
- *   (where the perspective far plane is multi-km past the visible ground
- *   but the actual receivers sit just below the camera). The near plane is
- *   never clamped — it's always in front of the ground. Rays that miss the
- *   ellipsoid (looking at the sky / horizon) keep the unclamped `farDist`.
- *   Default false preserves the pre-fix behavior for specs that exercise
- *   the raw frustum.
- * @param invRadiiSqX/Y/Z Inverse-square radii of the ellipsoid the ground
- *   clamp solves against (PARITY-RTE-ELLIPSOID-AWARE). Default WGS84;
- *   `WebGPUCSMRenderer.computeCascadeVPs` passes the scene's actual
- *   ellipsoid through.
+ * @param groundClamp When true, each near- and far-plane corner is placed at
+ *   its view ray's ellipsoid intersection, clamped to this cascade's depth
+ *   band. This prevents empty air beyond the visible ground from inflating a
+ *   low top-down camera's fit. Rays that miss the ellipsoid keep their
+ *   geometric slice depth. The default false returns raw frustum corners for
+ *   callers that require them.
+ * @param invRadiiSqX/Y/Z Inverse-square radii of the ellipsoid used by the
+ *   ground clamp. The defaults are WGS84;
+ *   `WebGPUCSMRenderer.computeCascadeVPs` supplies the scene ellipsoid.
  *
  * @returns Flat Float64Array of 24 floats (8 corners × xyz).
  */
@@ -1262,8 +1204,8 @@ function _computeFrustumCornersWorldSpace(
   };
 
   if (!groundClamp) {
-    // Legacy raw-frustum corners (specs + 2D/CV gating already excludes
-    // the ground-clamp path; this preserves the historical shape).
+    // Raw frustum corners are used by specs and by callers whose 2D or
+    // Columbus View gating excludes the ground clamp.
     write(0, nearDist, -1, +1);
     write(1, nearDist, +1, +1);
     write(2, nearDist, -1, -1);
@@ -1275,20 +1217,12 @@ function _computeFrustumCornersWorldSpace(
     return out;
   }
 
-  // Ground-clamped fit (NEW-CSM-CASCADE-GROUND-FIT). The shadow RECEIVERS
-  // live in a thin shell at the globe surface, but a perspective frustum
-  // slice is a fat wedge most of whose volume is empty air above the
-  // ground. Fitting a bounding sphere to the raw wedge bloats the radius
-  // (its near corners sit ~km above the surface for a top-down camera),
-  // which is exactly what made the far cascade ~12 m/texel and the cast
-  // edge a 50× sawtooth. So we collapse BOTH the near and far corners onto
-  // the ground along their own view rays: each corner is placed at the
-  // point where its ray pierces the globe, clamped into this cascade's
-  // [splitNear, splitFar] depth band so the cascade still owns only its
-  // slice of the visible ground. Corners whose ray misses the globe keep
-  // their geometric slice depth (so airborne casters near the horizon are
-  // still covered). The result hugs the visible ground patch the way
-  // WebGL's light-space-AABB fit does.
+  // Shadow receivers occupy a thin shell at the globe surface, while a raw
+  // perspective slice contains mostly empty air. Place both near and far
+  // corners at their ground intersections, bounded by `[splitNear,
+  // splitFar]`, so the sphere fits only this cascade's visible ground patch.
+  // A missed intersection retains its geometric depth to cover airborne
+  // casters near the horizon.
   const clampToBand = (sW: number, sH: number, fallback: number): number => {
     const t = tGroundFor(sW, sH);
     if (!Number.isFinite(t)) {
@@ -1386,28 +1320,18 @@ function _computeCascadeVPMatrix(
   const cz = center[2];
   const r = Math.max(radius, 1.0);
 
-  // Eye placed on the LIGHT side of the cascade sphere, looking back toward
-  // the scene along the light's travel direction (-lightDir). `lightDir` is
-  // surface→light, so the light camera sits at `center + lightDir*2r` and
-  // `forward = center - eye = -lightDir` (FROM the light TOWARD the scene).
-  //
-  // NEW-CSM-GLOBE-RECEIVE-PROJECTION-MISS (Batch 298): the previous
-  // `eye = center - lightDir*2r` placed the eye on the ANTI-light side and
-  // made `forward = +lightDir` (looking back toward the sun). That records
-  // the scene depth mirrored about the cascade center, so a ground point in
-  // a wall's umbra and the wall occluding it project to DIFFERENT shadow-map
-  // texels (verified: wall footprint stored at uv≈(0.40,0.58) while the
-  // umbra ground points the wall hides land at uv≈(0.38,0.56), stored=1.0 →
-  // judged lit). Self-shadowing primitives tolerated the mirror because the
-  // caster and receiver share the same texel; cross-object globe receive did
-  // not. Near plane sits just outside the sphere, far plane at 3r.
+  // Place the eye on the light side of the cascade sphere and look along the
+  // light's travel direction. `lightDir` points from the surface to the
+  // light, so `center + lightDir * 2r` gives `forward = -lightDir`. Reversing
+  // this sign can leave self-shadowing intact while mapping a cross-object
+  // caster and receiver to different texels. The near plane sits just outside
+  // the sphere and the far plane at 3r.
   const eyeX = cx + lightDir.x * 2 * r;
   const eyeY = cy + lightDir.y * 2 * r;
   const eyeZ = cz + lightDir.z * 2 * r;
 
-  // Pick world-up that isn't parallel to the light direction. For a
-  // zenith-sun (light ≈ -up) we want world-Z up. For a horizon-sun we
-  // want world-Y up. Test the dot to pick.
+  // Pick a world-up axis that is not parallel to the light direction. Use
+  // world Z for a zenith sun and world Y for a horizon sun.
   let upX = 0;
   let upY = 1;
   let upZ = 0;
@@ -1517,11 +1441,10 @@ function _computeCascadeVPMatrix(
  *                            == VP_world * vec4(worldPos, 1)
  *
  * Columns 0..2 (rotation/scale) are copied verbatim; only column 3 changes.
- * All math is in FP64 (JS `number`), so the 6.3M-magnitude cameraWC values
- * cancel cleanly inside the view matrix's translation column before we
- * down-cast to FP32 storage. This is the CPU half of the RTE precision
- * fix — the GPU half is shaders that feed `eyePos` (not `worldPos`) into
- * this matrix.
+ * All math is in FP64 (JS `number`), so the 6.3M-magnitude `cameraWC` values
+ * cancel inside the view matrix's translation column before conversion to
+ * FP32 storage. Shaders complete the RTE transform by feeding `eyePos`, not
+ * `worldPos`, into this matrix.
  */
 export function applyCameraTranslationToVP(
   vpWorld: Float32Array | Float64Array,
@@ -1554,35 +1477,6 @@ function _applyCameraTranslationToVP(
 }
 
 /**
- * CPU reference for the `rte24` shadow cast vertex shader math. Mirrors
- * the WGSL body in `WebGPUShadowMapRenderer.js` (SHADOW_CAST_VARIANTS.rte24):
- *
- *   let rte = (pH - u.camH) + (pL - u.camL);
- *   var pos = u.lightVP * vec4f(rte, 1.0);
- *   pos.z += u.depthBias;
- *
- * This is the contract every Slice 2 cast-variant (p12, quantized12,
- * modelP12, modelInstancedSB, modelSkinned) must preserve: the RTE
- * subtract + `lightVP_RTE` multiply are invariant. Variant-specific
- * vertex decompression happens BEFORE this step.
- *
- * Arithmetic runs in FP64 (JS `number`). Callers who want FP32 behavior
- * should pass Float32Array inputs — intermediate values still promote to
- * FP64 then round back on store. Using this helper in specs keeps the
- * lightVP_RTE identity (VP_RTE * rte ≡ VP_world * worldPos) explicit.
- *
- * @param pHigh 3-component split-position high bits (world-scale)
- * @param pLow 3-component split-position low bits (sub-meter residual)
- * @param camHigh 3-component encoded camera high bits
- * @param camLow 3-component encoded camera low bits
- * @param lightVpRte Column-major 4×4 VP_RTE (use `applyCameraTranslationToVP`)
- * @param depthBias Per-cascade ortho-NDC depth offset added to clip.z (matches
- *   the WGSL `pos.z += u.depthBias`). WebGPUCSMRenderer stores the positive
- *   scaled value `BASE_MIN_BIAS * (sphereRadius / cascade0Radius)` at
- *   UBO float slot 24; pass 0 for the raw untouched projection.
- * @param result 4-component clip-space output (x, y, z, w)
- */
-/**
  * Quantize the cascade sphere center to the shadow-texel grid in light
  * space. This eliminates slow-motion shimmer on static edges: without
  * snapping, a cascade that moves by 0.5m as the camera moves will shift
@@ -1591,10 +1485,9 @@ function _applyCameraTranslationToVP(
  * the world so edges stay put until the camera moves by a full texel.
  *
  * Math:
- *   1. Build the light-space basis (side, up) the same way
- *      `_computeCascadeVPMatrix` does — it depends ONLY on `lightDir`
- *      and the world-up fallback, NOT on the camera, so the basis is
- *      stable across camera moves.
+ *   1. Build the light-space basis (side, up) from `lightDir` and the
+ *      world-up fallback. It is independent of the camera and therefore
+ *      stable across camera motion.
  *   2. Project the raw center onto (side, up) to get its light-space
  *      XY coordinates relative to the world origin.
  *   3. Round each coordinate to the nearest multiple of
@@ -1626,9 +1519,8 @@ export function snapToTexelGrid(
   resolution: number,
   result: Float64Array | Float32Array | number[],
 ): Float64Array | Float32Array | number[] {
-  // Same world-up fallback as `_computeCascadeVPMatrix` so the basis
-  // we build here matches exactly. If those two ever diverge the snap
-  // would quantize along the wrong axis and the texels would still crawl.
+  // Match `_computeCascadeVPMatrix`'s world-up fallback so the snap grid uses
+  // the same axes as the view matrix.
   let upX = 0;
   let upY = 1;
   let upZ = 0;
@@ -1638,10 +1530,9 @@ export function snapToTexelGrid(
     upZ = 1;
   }
 
-  // forward = normalize(lightDirection). (computeCascadeVPMatrix builds
-  // forward from `center - eye`, but `eye = center - 2r * lightDir`, so
-  // `center - eye = 2r * lightDir` and normalizing gives `lightDir`
-  // directly. Matches the basis `_computeCascadeVPMatrix` produces.)
+  // `_computeCascadeVPMatrix` uses `-lightDirection` as forward. Using
+  // `lightDirection` here flips both the side axis and its projected
+  // coordinate, producing the same snapped world-space delta.
   let fX = lightDirection.x;
   let fY = lightDirection.y;
   let fZ = lightDirection.z;
@@ -1687,6 +1578,35 @@ export function snapToTexelGrid(
   return result;
 }
 
+/**
+ * CPU reference for the `rte24` shadow cast vertex shader math. Mirrors
+ * the WGSL body in `WebGPUShadowMapRenderer.js` (SHADOW_CAST_VARIANTS.rte24):
+ *
+ *   let rte = (pH - u.camH) + (pL - u.camL);
+ *   var pos = u.lightVP * vec4f(rte, 1.0);
+ *   pos.z += u.depthBias;
+ *
+ * Every cast variant (`p12`, `quantized12`, `modelP12`, `modelInstancedSB`,
+ * and `modelSkinned`) preserves the RTE subtraction and `lightVP_RTE`
+ * multiply. Variant-specific vertex decompression happens before this step.
+ *
+ * Arithmetic runs in FP64 (JS `number`). Callers who want FP32 behavior
+ * should pass Float32Array inputs — intermediate values still promote to
+ * FP64 then round back on store. Using this helper in specs keeps the
+ * lightVP_RTE identity (VP_RTE * rte ≡ VP_world * worldPos) explicit.
+ *
+ * @param pHigh 3-component split-position high bits (world-scale)
+ * @param pLow 3-component split-position low bits (sub-meter residual)
+ * @param camHigh 3-component encoded camera high bits
+ * @param camLow 3-component encoded camera low bits
+ * @param lightVpRte Column-major 4×4 VP_RTE; use
+ *                   `applyCameraTranslationToVP`.
+ * @param depthBias Per-cascade ortho-NDC depth offset added to clip.z. This
+ *   matches the WGSL `pos.z += u.depthBias`. WebGPUCSMRenderer stores the
+ *   positive scaled value `BASE_MIN_BIAS * (sphereRadius / cascade0Radius)`
+ *   at UBO float slot 24; pass 0 for the raw untouched projection.
+ * @param result 4-component clip-space output (x, y, z, w)
+ */
 export function computeCastClipPosition(
   pHigh: ArrayLike<number>,
   pLow: ArrayLike<number>,

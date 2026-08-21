@@ -3,22 +3,22 @@
 // WGSL port of Shaders/PolylineCommon.glsl — the screen-space width
 // expansion + miter-join math that turns the 4 coincident quad vertices
 // of a polyline segment (emitted by PolylineGeometry) into a ribbon of
-// the requested pixel width. Used by the WebGPU primitive path for the
-// COLOR slice of NEW-POLYLINE-APPEARANCE-PRIMITIVE-WEBGPU.
+// the requested pixel width. The WebGPU primitive path uses these helpers
+// for color and material polyline appearances.
 //
 // GLSL uses `out` params; WGSL has none, so each helper returns a struct.
 //
-// DEPTH RANGE (WebGPU vs WebGL):
+// WebGPU depth range:
 //   WebGL clip-z is [-1, 1]; WebGPU clip-z is [0, 1]. The original GLSL
 //   relied on `czm_viewportTransformation` to remap NDC-z [-1,1] -> [0,1]
 //   (window.z = 0.5*ndc.z + 0.5) and `czm_viewportOrthographic` to map it
-//   back. On WebGPU the projection already yields ndc.z in [0,1], so we
-//   must NOT re-apply the 0.5*z+0.5 remap or the final depth squishes into
-//   [0.5, 1]. `csm_polylineWindowZ` keeps the raw WebGPU ndc.z so the
-//   round-trip through the WebGPU `viewportOrthographic` (built with the
-//   owning context's WebGPU clip-space convention) lands final ndc.z back in
-//   [0, 1]. The x/y window math is identical to GLSL — raw NDC fed through
-//   `viewportTransformation` (which carries the halfWidth/halfHeight scale).
+//   back. A WebGPU projection already yields ndc.z in [0,1], so reapplying
+//   the 0.5*z+0.5 remap would squeeze the final depth into [0.5, 1].
+//   Keeping the raw WebGPU ndc.z in `csm_polylineWindowZ` lets the round-trip
+//   through `viewportOrthographic` land the final ndc.z back in [0, 1]. The
+//   owning context builds that matrix with the WebGPU clip-space convention.
+//   The x/y window math is identical to GLSL: raw NDC passes through
+//   `viewportTransformation`, which carries the half-width and half-height.
 //
 // Requires (passed in, not global): projection, viewportTransformation,
 // modelViewRTE, viewportOrthographic, pixelRatio, near.
@@ -37,7 +37,7 @@ struct CsmClipResult {
 }
 
 // Eye -> window coordinates. Mirrors czm_eyeToWindowCoordinates but keeps
-// the raw WebGPU ndc.z in window.z (see DEPTH RANGE note above). window.w
+// the raw WebGPU ndc.z in window.z (see the depth-range note above). window.w
 // is the original clip-w, used to re-homogenize the final clip position.
 fn csm_polylineEyeToWindow(
     positionEC: vec4<f32>,
@@ -104,10 +104,10 @@ fn csm_clipLineSegmentToNearPlane(
     return result;
 }
 
-// Port of getPolylineWindowCoordinatesEC (PolylineCommon.glsl). The
-// POLYLINE_DASH `angle` out-param is dropped here — the COLOR slice doesn't
-// need it. The MATERIAL slice gets the angle from the
-// `...WithAngle` variants below, which reuse this function for positionWC.
+// Port of getPolylineWindowCoordinatesEC (PolylineCommon.glsl). Color
+// appearances do not need the `POLYLINE_DASH` angle output. Material
+// appearances get it from the `...WithAngle` variants below, which reuse this
+// function for positionWC.
 fn csm_getPolylineWindowCoordinatesEC(
     positionEC: vec4<f32>,
     prevEC: vec4<f32>,
@@ -199,7 +199,8 @@ fn csm_getPolylineWindowCoordinatesEC(
     let offset: vec2<f32> = leftWC * expandDirection * expandWidth * pixelRatio;
     // Re-homogenize: multiply by the clip-w so the perspective divide in the
     // ortho transform recovers the right pixel position. `-clippedPositionWC.z`
-    // keeps the WebGPU-correct depth (see DEPTH RANGE note + csm_polylineWindowZ).
+    // keeps the WebGPU-correct depth (see the depth-range note and
+    // csm_polylineWindowZ).
     let clipW: f32 = (projection * clippedPositionEC).w;
     return vec4<f32>(
         clippedPositionWC.xy + offset,
@@ -234,19 +235,15 @@ fn csm_getPolylineWindowCoordinates(
         projection, viewportTransformation, pixelRatio, near);
 }
 
-// ---------------------------------------------------------------------------
-// MATERIAL slice — angle-returning variants
-// ---------------------------------------------------------------------------
+// Material slice: angle-returning variants.
 //
-// The MATERIAL slice (PolylineDash, etc.) needs the screen-space polyline
-// angle that the COLOR-slice functions above intentionally dropped. Rather
-// than fork the whole expansion math, these variants reuse
-// csm_getPolylineWindowCoordinatesEC for the positionWC and only add the
-// angle computation, returning both in a struct. The angle math is a port
-// of the `#ifdef POLYLINE_DASH` block in PolylineCommon.glsl
-// getPolylineWindowCoordinatesEC: window-space line direction quantized to
-// the nearest pi/4. v_polylineAngle is consumed by the dash FS to rotate
-// gl_FragCoord so the dash pattern runs along the line.
+// Material appearances such as PolylineDash need the screen-space polyline
+// angle omitted by color appearances. These variants reuse
+// csm_getPolylineWindowCoordinatesEC for positionWC and add only the angle
+// computation, returning both in a struct. The angle math ports the
+// `POLYLINE_DASH` block in PolylineCommon.glsl: it quantizes the window-space
+// line direction to the nearest pi/4. The dash fragment shader uses
+// v_polylineAngle to rotate gl_FragCoord so the pattern follows the line.
 
 const CSM_POLYLINE_PI_OVER_FOUR: f32 = 0.785398163397448;
 // atan(1.0, 0.0) — the GLSL precomputed `1.570796327` offset.
@@ -271,7 +268,7 @@ fn csm_getPolylineWindowCoordinatesECWithAngle(
 ) -> CsmPolylineWindowResult {
     var result: CsmPolylineWindowResult;
 
-    // Window coords of the (unclipped) endpoints — matches the GLSL DASH
+    // Window coords of the unclipped endpoints match the GLSL `POLYLINE_DASH`
     // block which uses czm_eyeToWindowCoordinates directly, not the
     // near-plane-clipped positions.
     let positionWindow: vec4<f32> =
@@ -321,18 +318,16 @@ fn csm_getPolylineWindowCoordinatesWithAngle(
         projection, viewportTransformation, pixelRatio, near);
 }
 
-// ---------------------------------------------------------------------------
-// Scene-mode position blend (NEW-POLYLINE-APPEARANCE-PRIMITIVE-WEBGPU — 376b)
-// ---------------------------------------------------------------------------
+// Scene-mode position blend.
 //
-// WGSL port of czm_computePosition (PrimitiveShaderHelpers.modifyShaderPosition):
-// blend the 3D and 2D RTE positions by morphTime — 3D at morphTime==1, 2D/CV at
-// morphTime==0, a Columbus-View lerp in between. The 2D attributes are
-// .zxy-swizzled into the Columbus-View frame (the projection stores
-// (easting, northing, height); CV wants (height, easting, northing)), exactly
-// as the WebGL appearance VS does. In 2D/CV mode camera.encodedCameraHigh/Low
-// already hold the CV-frame camera position (camera.positionWC is CV-frame
-// there), so the SAME RTE subtract serves both branches.
+// WGSL port of `czm_computePosition` from
+// `PrimitiveShaderHelpers.modifyShaderPosition`. It blends 3D and 2D RTE
+// positions by `morphTime`: 3D at 1, 2D/CV at 0, and a Columbus View lerp in
+// between. The 2D attributes are .zxy-swizzled into the Columbus View frame
+// because the projection stores easting, northing, height while CV expects
+// height, easting, northing. This matches the WebGL appearance vertex shader.
+// In 2D/CV, `camera.encodedCameraHigh/Low` already holds the CV-frame camera
+// position, so the same RTE subtraction handles both branches.
 fn csm_polylineRTE(
     high: vec3<f32>, low: vec3<f32>,
     camHigh: vec3<f32>, camLow: vec3<f32>
@@ -356,28 +351,26 @@ fn csm_computePolylinePosition(
     if (morphTime <= 0.0) {
         return p2D;
     }
-    // Manual lerp (matches csm_columbusViewMorph — avoids mix() endpoint jitter).
+    // Manual lerp avoids mix() jitter and matches csm_columbusViewMorph.
     let pm = p2D.xyz * (1.0 - morphTime) + p3D.xyz * morphTime;
     return vec4<f32>(pm, 1.0);
 }
 
-// ---------------------------------------------------------------------------
-// Log-depth helpers (NEW-POLYLINE-APPEARANCE-PRIMITIVE-WEBGPU — 376c)
-// ---------------------------------------------------------------------------
+// Log-depth helpers.
 //
 // Renderer-wide logarithmic depth for the polyline appearance/material path.
-// Canonical inline copies; see chunks/functions/csm_{vertexLogDepth,
-// writeLogDepth}.wgsl and the identical block in Collections/
-// PolylineCollection.wgsl (lines 48-62). Gated by `//>>ifdef LOG_DEPTH` so the
-// non-log variant (defines=0) is byte-identical to the historical path — these
-// functions don't exist in the compiled module unless the master switch is on.
+// The copies in chunks/functions/csm_{vertexLogDepth,writeLogDepth}.wgsl and
+// Collections/PolylineCollection.wgsl must remain identical. The
+// `//>>ifdef LOG_DEPTH` gate omits these functions from modules that do not
+// enable logarithmic depth.
 //
 // The appearance VS multiplies its screen-space window position by
 // `viewportOrthographic`, whose bottom row is [0,0,0,1]; because
 // `csm_getPolylineWindowCoordinates*` re-homogenizes by the eye-space clip-w,
 // the resulting `output.position.w` equals that clip-w (the positive eye
-// distance) — exactly what `csm_vertexLogDepth` expects (mirrors WebGL's
-// `czm_vertexLogDepth()` reading `gl_Position.w` after `czm_viewportOrthographic`).
+// distance) — exactly what `csm_vertexLogDepth` expects. This mirrors WebGL's
+// `czm_vertexLogDepth()` reading `gl_Position.w` after
+// `czm_viewportOrthographic`.
 //>>ifdef LOG_DEPTH
 fn csm_vertexLogDepth(clipPosition: vec4<f32>, near: f32) -> f32 {
     return (clipPosition.w - near) + 1.0;
