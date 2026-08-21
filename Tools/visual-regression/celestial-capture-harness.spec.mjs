@@ -126,7 +126,7 @@ function assertNoCaptureSuspension(source, functionName) {
   }
 
   const suspensions = statements
-    .slice(renderIndex + 1, readIndex)
+    .slice(renderIndex + 1, readIndex + 1)
     .flatMap(astNodes)
     .filter(
       (node) =>
