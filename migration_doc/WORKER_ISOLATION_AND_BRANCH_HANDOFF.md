@@ -585,3 +585,7 @@ orchestrator is sometimes wrong about the mechanics.
   §9.1.
 - [`CAMPAIGN_STATE.md`](CAMPAIGN_STATE.md) — the three sibling worktrees are inventoried there with
   "Decision owed" recorded against them.
+
+## Machine-lane caveat: clone Karma executes the MAIN tree engine (2026-08-21)
+
+Worker clones link `node_modules` (and `packages/sandcastle/node_modules`) from the main tree by junction, and `node_modules/@cesium/engine` is itself a link back into the MAIN repo `packages/engine`. The combined Karma lane bundles the engine IIFE through that link, so a Karma run inside a clone executes the MAIN tree engine sources, not the clone edits - a clone-side engine fix is invisible to that suite, and was proven so with a runtime function-identity probe. Spec files bundle from the clone and ARE the clone own. Consequence for acceptance runs: a clone Karma run certifies main engine + clone specs; to test a clone engine edit under Karma, either land it first or repoint the engine link for the run and restore it after.
