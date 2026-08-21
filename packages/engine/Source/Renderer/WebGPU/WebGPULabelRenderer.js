@@ -31,7 +31,7 @@ import WebGPUBuffer from "./WebGPUBuffer.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
 import WebGPUCollectionCameraUB from "./WebGPUCollectionCameraUB.js";
 import FeatureRendererKey from "../FeatureRendererKey.js";
-// Slice 5c-B Phase 1 (Batch 107) — scene-FB target helper.
+// Builds scene-framebuffer targets for collection color passes.
 import { makeSceneFBTargets } from "./WebGPUSceneFBTargetHelpers.js";
 
 // Import SDF shader source
@@ -45,8 +45,8 @@ import {
 } from "./WebGPUBindGroupLayoutHelpers.js";
 import { ShaderDefine, ShaderSourceId } from "./WebGPUShaderDefines.js";
 import { isWebGPULogDepthActive } from "./WebGPULogDepth.js";
-// NEW-COLLECTION-RENDERER-BASE (Phase 11, Label finisher — Batch 332) — shared
-// per-frame plumbing (per-device shader-module cache, pipeline-format-gen
+// Shared per-frame plumbing (per-device shader-module cache, pipeline-format
+// generation
 // invalidation, 2D/CV coplanar-depth flag + pipeline-key fold,
 // resident-instance manager lazy create + the load-bearing capture→sync→
 // consume ordering) + the three permanent collection sentinels. Label keeps
@@ -70,20 +70,18 @@ import SceneMode from "../../Scene/SceneMode.js";
 const SDF_EDGE = 1.0 - SDFSettings.CUTOFF; // 0.75
 
 // SDF instance data: 52 floats (208 bytes) — standard 24 floats + 8 for
-// outline/SDF + 4 for perInstanceFlags (DP-H42 / DP-H40 / A.14 DDC) +
+// outline/SDF + 4 for perInstanceFlags (depth-test override, split direction,
+// and distance display condition) +
 // 12 for 3 NearFarScalars (translucencyByDistance,
-// pixelOffsetScaleByDistance, scaleByDistance — Batch 137 / Audit A.14)
-// + 4 for threePointAttribs (depthOrigin + enableDepthCheck — Batch 138 /
-// VS_THREE_POINT_DEPTH_CHECK clamp-to-ground terrain occlusion).
-// Was 36 floats (Batch 21); 48 (Batch 137); now 52 (Batch 138).
+// pixelOffsetScaleByDistance, and scaleByDistance) + 4 for threePointAttribs
+// (depthOrigin + enableDepthCheck for clamp-to-ground terrain occlusion).
 const FLOATS_PER_SDF_INSTANCE = 52;
 const BYTES_PER_SDF_INSTANCE = FLOATS_PER_SDF_INSTANCE * 4;
 const VERTICES_PER_QUAD = 6;
 const UNIFORM_BUFFER_SIZE = 256;
 
 /**
- * Batch 139 (3rd-pass audit fix) — see WebGPUBillboardRenderer for
- * the full comment block. Mirrors WebGL's
+ * See WebGPUBillboardRenderer for the full rationale. Mirrors WebGL's
  * `BillboardCollection.js:1798-1799` Infinity → -1 sentinel encode so
  * the WGSL shader's `< 0` "always disable" branch fires correctly.
  */
@@ -101,8 +99,8 @@ function encodeDisableDepthTestDistance(value) {
 }
 
 /**
- * AUDIT_2026_05_02 A.14 (Batch 137) — pack a CesiumJS NearFarScalar
- * into 4 contiguous floats, mirroring `WebGPUBillboardRenderer.packNearFarScalar`.
+ * Pack a CesiumJS NearFarScalar into 4 contiguous floats, mirroring
+ * `WebGPUBillboardRenderer.packNearFarScalar`.
  * Identity-NFS written when `scalar` is undefined so the WGSL gate
  * produces the unchanged baseline for labels with no per-distance ramp
  * configured.
@@ -130,8 +128,8 @@ const scratchEncodedCamera = new EncodedCartesian3();
 const scratchInverseModel = new Matrix4();
 const scratchCameraMC = new Cartesian3();
 const scratchEncodedPos = new EncodedCartesian3();
-// NEW-BILLBOARD-SIZE-PARITY — per-glyph normalized atlas sub-rect; see the
-// matching scratch + rationale in WebGPUBillboardRenderer.js. Each glyph is
+// Per-glyph normalized atlas sub-rect; see the matching scratch and rationale
+// in WebGPUBillboardRenderer.js. Each glyph is
 // a small image packed into a larger SDF atlas, so the full-`(0,0,1,1)`
 // fallback shrank glyphs to ~1/4 area and sampled neighboring glyphs.
 const scratchImageRect = new BoundingRectangle();
@@ -148,16 +146,16 @@ const SDF_INSTANCE_BUFFER_LAYOUT = {
     { shaderLocation: 5, offset: 80, format: "float32x4" }, // miscFlags
     { shaderLocation: 6, offset: 96, format: "float32x4" }, // outlineColor
     { shaderLocation: 7, offset: 112, format: "float32x4" }, // sdfParams
-    // DP-H42 / DP-H40 / A.14 DDC — perInstanceFlags.
+    // Depth-test override, split direction, and DDC — perInstanceFlags.
     //   x: disableDepthTestDistance, y: splitDirection,
-    //   z: ddcNearSq, w: ddcFarSq (Batch 137).
+    //   z: ddcNearSq, w: ddcFarSq.
     { shaderLocation: 8, offset: 128, format: "float32x4" },
-    // AUDIT_2026_05_02 A.14 (Batch 137) — three NearFarScalars for
+    // Three NearFarScalars for
     // distance-aware translucency / pixel-offset / scale ramps.
     { shaderLocation: 9, offset: 144, format: "float32x4" }, // translucencyByDistance
     { shaderLocation: 10, offset: 160, format: "float32x4" }, // pixelOffsetScaleByDistance
     { shaderLocation: 11, offset: 176, format: "float32x4" }, // scaleByDistance
-    // Batch 138 (VS_THREE_POINT_DEPTH_CHECK) — depthOrigin + enable.
+    // Three-point depth check — depthOrigin + enable.
     { shaderLocation: 12, offset: 192, format: "float32x4" }, // threePointAttribs
   ],
 };
@@ -176,7 +174,7 @@ function isGlyphVisible(bb) {
 /**
  * Pack ONE glyph billboard's 52-float SDF instance record at `offset`
  * floats into `out`. Extracted from the former whole-collection
- * `buildSDFInstanceData` loop (NEW-PARTIAL-WRITE-WIRE-BPL, label half) so
+ * `buildSDFInstanceData` loop so
  * the resident-instance manager owns the resident array + upload policy.
  * Extends the standard billboard record with outline color and SDF params.
  * @private
@@ -198,7 +196,7 @@ function packSDFGlyphInstance(out, offset, bb) {
   out[offset + 7] = bb.rotation || 0.0;
 
   // compressedAttr0: pixelOffset.xy, alignedAxis.xy.
-  // NEW-BILLBOARD-SIZE-PARITY (label layout) — each glyph's per-character
+  // Each glyph's per-character
   // horizontal advance + vertical baseline is stored in the glyph
   // billboard's `_translate` (set by LabelCollection.repositionAllGlyphs via
   // `_setTranslate`), SEPARATE from the label's `_pixelOffset`. WebGL adds
@@ -214,7 +212,7 @@ function packSDFGlyphInstance(out, offset, bb) {
   out[offset + 11] = 0.0;
 
   // compressedAttr1: imageRect (x,y,w,h in atlas, normalized).
-  // NEW-BILLBOARD-SIZE-PARITY — pull the real per-glyph atlas sub-rect via
+  // Pull the real per-glyph atlas sub-rect via
   // `computeTextureCoordinates` (same as WebGL). The old `(0,0,1,1)`
   // fallback sampled the whole SDF atlas, so each glyph rendered at ~1/4
   // area and bled into adjacent glyphs.
@@ -262,15 +260,15 @@ function packSDFGlyphInstance(out, offset, bb) {
   out[offset + 30] = 0.0;
   out[offset + 31] = 0.0;
 
-  // DP-H42 / DP-H40 / A.14 — perInstanceFlags. Labels inherit
+  // Depth-test override, split direction, and DDC — perInstanceFlags. Labels inherit
   // `disableDepthTestDistance`, `splitDirection`, and
   // `distanceDisplayCondition` from the parent Label; the glyph
   // billboards have these fields propagated from the label via
   // `Label.set distanceDisplayCondition` → `glyph.billboard.distanceDisplayCondition`.
   //   x: disableDepthTestDistance (raw meters; squared in shader)
   //   y: splitDirection
-  //   z: distanceDisplayCondition.near^2 (Batch 137)
-  //   w: distanceDisplayCondition.far^2 (Batch 137)
+  //   z: distanceDisplayCondition.near^2
+  //   w: distanceDisplayCondition.far^2
   out[offset + 32] = encodeDisableDepthTestDistance(
     bb._disableDepthTestDistance,
   );
@@ -287,7 +285,7 @@ function packSDFGlyphInstance(out, offset, bb) {
     out[offset + 35] = Number.MAX_VALUE;
   }
 
-  // AUDIT_2026_05_02 A.14 (Batch 137) — three NearFarScalar gates
+  // Three NearFarScalar gates
   // packed into vec4 slots 9/10/11. Identity = 1.0 for all (each is
   // multiplicative onto alpha / pixel-offset / scale). The labels
   // propagate their parent's properties to glyph billboards via
@@ -297,7 +295,7 @@ function packSDFGlyphInstance(out, offset, bb) {
   packNearFarScalar(out, offset + 40, bb._pixelOffsetScaleByDistance, 1.0);
   packNearFarScalar(out, offset + 44, bb._scaleByDistance, 1.0);
 
-  // Batch 138 (VS_THREE_POINT_DEPTH_CHECK) — threePointAttribs.
+  // Three-point depth check — threePointAttribs.
   //   .x: depthOrigin.x — Label-only "horizontal anchor for the
   //        depth-check sample point." Label uses HorizontalOrigin
   //        enum: LEFT=-1, CENTER=0, RIGHT=+1. We read from the
@@ -305,11 +303,9 @@ function packSDFGlyphInstance(out, offset, bb) {
   //        by `Label._rebindAllGlyphs`).
   //   .y: depthOrigin.y — VerticalOrigin enum: TOP=-1, CENTER=0,
   //        BOTTOM=+1.
-  //   .z: enableDepthCheck — 1.0 default; future hook for the
-  //        "label is below ellipsoid" case which WebGL detects via
-  //        scene-mode + ellipsoid intersection. For first cut we
-  //        always enable; deferred refinement matches WebGL's edge
-  //        case.
+  //   .z: enableDepthCheck — 1.0 by default. WebGL can disable this for a
+  //        label below the ellipsoid using scene-mode + intersection data;
+  //        that edge case is not represented here yet.
   //   .w: reserved.
   const horizontalOrigin =
     typeof bb._horizontalOrigin === "number" ? bb._horizontalOrigin : 0;
@@ -331,7 +327,7 @@ function packSDFGlyphInstance(out, offset, bb) {
  */
 function computeLabelDefinesForFrame(glyphCollection, frameState) {
   let defines = 0;
-  // Renderer-wide log depth (NEW-COLLECTIONS-LOG-DEPTH) — OR the LOG_DEPTH
+  // Renderer-wide log depth — OR the LOG_DEPTH
   // bit when the master switch + per-frame flag are on. The bit keys the
   // shader-module cache AND the pipeline maps/names, so the flip rebuilds
   // through the normal keyed-miss path. Inert while the switch defaults
@@ -346,7 +342,7 @@ function computeLabelDefinesForFrame(glyphCollection, frameState) {
   if (frameMin !== 0.0) {
     defines |= ShaderDefine.DISABLE_DEPTH_DISTANCE;
   }
-  // Batch 138 (VS_THREE_POINT_DEPTH_CHECK) — `_shaderClampToGround`
+  // Three-point depth checks use `_shaderClampToGround`, which
   // lives on the underlying glyph BillboardCollection (Label
   // delegates clamp-to-ground propagation through the billboard
   // collection it owns).
@@ -355,7 +351,7 @@ function computeLabelDefinesForFrame(glyphCollection, frameState) {
   }
   const billboards = glyphCollection._billboards;
   const length = glyphCollection.length;
-  // AUDIT_2026_05_02 A.14 (Batch 137) — labels participate in all 6
+  // Labels participate in all six
   // distance-related defines (Billboard's full set, since labels render
   // through the SDF Billboard variant).
   const all =
@@ -387,7 +383,7 @@ function computeLabelDefinesForFrame(glyphCollection, frameState) {
     ) {
       defines |= ShaderDefine.SPLIT_ENABLED;
     }
-    // AUDIT_2026_05_02 A.14 (Batch 137) — DDC + 3 NearFarScalar gates.
+    // DDC + three NearFarScalar gates.
     if (
       (defines & ShaderDefine.DISTANCE_DISPLAY_CONDITION) === 0 &&
       defined(bb._distanceDisplayCondition)
@@ -418,9 +414,8 @@ function computeLabelDefinesForFrame(glyphCollection, frameState) {
 
 // Module-level shader-module cache keyed by GPUDevice (same pattern as
 // WebGPUBillboardRenderer). Shared across every LabelCollection.
-// NEW-COLLECTION-RENDERER-BASE — the per-`GPUDevice` cache WeakMap + lazy
-// getter now come from the shared accessor factory (was an inline WeakMap +
-// 8-line getter, byte-identical to the Billboard/Point/Polyline fold).
+// The per-`GPUDevice` cache WeakMap and lazy getter come from the shared
+// accessor factory, keeping the Billboard/Point/Polyline behavior identical.
 const getSDFShaderModuleCache = makeDeviceShaderModuleCacheAccessor();
 
 /**
@@ -434,8 +429,7 @@ function prewarmLabelShaders(device) {
     return;
   }
   const D = ShaderDefine;
-  // AUDIT_2026_05_02 A.14 (Batch 137) — extend prewarm with the 4
-  // new distance gates. Most KML / GeoJSON labels combine DDC +
+  // Prewarm the four distance gates. Most KML / GeoJSON labels combine DDC +
   // translucency; some additionally use scale-by-distance for
   // zoom-aware UI labels.
   const D_KML = D.DISTANCE_DISPLAY_CONDITION | D.EYE_DISTANCE_TRANSLUCENCY;
@@ -458,8 +452,7 @@ function prewarmLabelShaders(device) {
       D_KML,
       ALL_DDC_GATES,
       D_PROD,
-      // Batch 138 (VS_THREE_POINT_DEPTH_CHECK) — clamp-to-ground
-      // labels are very common (KML/GeoJSON) so warm the
+      // Clamp-to-ground labels are very common (KML/GeoJSON), so warm the
       // 3-point-only and 3-point + KML combos.
       D.VS_THREE_POINT_DEPTH_CHECK,
       D.VS_THREE_POINT_DEPTH_CHECK | D_KML,
@@ -493,14 +486,13 @@ function packUniforms(uniformData, frameState, modelMatrix, labelCollection) {
     scratchCameraMC,
   );
   EncodedCartesian3.fromCartesian(scratchCameraMC, scratchEncodedCamera);
-  // Renderer-wide log depth (NEW-COLLECTIONS-LOG-DEPTH) — encode frustum
+  // Renderer-wide log depth — encode frustum
   // (near, far) + oneOverLog2FarDepthFromNearPlusOne packed into the
   // reserved lanes. Same source every producer uses
   // (uniformState.currentFrustum at scene-update time); unconditional —
   // only the LOG_DEPTH shader variant reads them.
   //
-  // PHASE 3 SLICE 2 (NEW-COLLECTIONS-2DCV-PROJECTED-FRAME-RTE) — prefer the
-  // stashed FULL-frustum encode (`_logDepthEncodeNearFar`) over the live
+  // Prefer the stashed full-frustum encode (`_logDepthEncodeNearFar`) over the live
   // per-slice `currentFrustum` so a per-slice REPACK (2D/CV) keeps the label's
   // log depth on the same curve as the globe's. See the same fix in
   // WebGPUPointPrimitiveRenderer.packUniforms.
@@ -532,13 +524,13 @@ function packUniforms(uniformData, frameState, modelMatrix, labelCollection) {
 
   uniformData[40] = canvas.width;
   uniformData[41] = canvas.height;
-  // NEW-BILLBOARD-SIZE-PARITY — `highResMultiplier` = devicePixelRatio so the
+  // `highResMultiplier` = devicePixelRatio so the
   // WGSL converts CSS-pixel glyph sizes to device pixels (the viewport is in
   // device pixels). Was 1.0, which rendered labels at 1/pixelRatio the linear
   // size (1/4 area at DPR 2). See WebGPUBillboardRenderer.packUniforms.
   uniformData[42] =
     typeof frameState.pixelRatio === "number" ? frameState.pixelRatio : 1.0;
-  // Batch 138 (VS_THREE_POINT_DEPTH_CHECK) — pull threePointDepthTestDistance
+  // Pull threePointDepthTestDistance
   // from the parent LabelCollection's underlying glyph BillboardCollection.
   // Labels delegate to BillboardCollection internally, so the value
   // lives on the glyph collection.
@@ -549,12 +541,12 @@ function packUniforms(uniformData, frameState, modelMatrix, labelCollection) {
   }
   uniformData[43] = threePointDist;
 
-  // DP-H42 — frame-wide fallback threshold (meters).
+  // Frame-wide fallback threshold (meters).
   uniformData[44] =
     typeof frameState?.minimumDisableDepthTestDistance === "number"
       ? frameState.minimumDisableDepthTestDistance
       : 0.0;
-  // DP-H40 — split cutoff in framebuffer pixels.
+  // Split cutoff in framebuffer pixels.
   const splitFraction =
     typeof frameState?.splitPosition === "number"
       ? frameState.splitPosition
@@ -565,7 +557,7 @@ function packUniforms(uniformData, frameState, modelMatrix, labelCollection) {
   uniformData[46] = ldFactor;
   uniformData[47] = 0.0;
 
-  // DP-H41 (Batch 27) — previousViewProjection at slots 48..63 (16 floats,
+  // previousViewProjection at slots 48..63 (16 floats,
   // 64 bytes). Fits in the existing 256-byte buffer — no resize.
   // `UniformState.update()` caches last frame's viewProjection for TAA.
   const prevVP = uniformState.previousViewProjection;
@@ -611,7 +603,7 @@ function createSDFBindGroupLayout(device) {
     uniformBuffer(0, Stage.VERTEX_FRAGMENT),
     texture(1, Stage.FRAGMENT),
     sampler(2, Stage.FRAGMENT),
-    // Batch 138 (VS_THREE_POINT_DEPTH_CHECK) — globe depth (packed-rgba)
+    // Globe depth (packed RGBA) for three-point depth checks
     // + sampler. VS-only visibility; placeholder bound when the
     // feature is off so the BGL is canonical across all ifdef
     // variants.
@@ -627,7 +619,7 @@ function createSDFBindGroupLayout(device) {
  * LabelCollections with identical render-target shape + defines share
  * one pipeline.
  *
- * C-R7-RENDERER-MIGRATION (Batch 73).
+ * Pipeline creation is centralized through the shared cache.
  * @private
  */
 function buildSDFDescriptor(
@@ -655,7 +647,7 @@ function buildSDFDescriptor(
     fragment: {
       module: shaderModule,
       entryPoint: "fragmentMain",
-      // Slice 5c-B Phase 1 (Batch 107) — scene-FB target. Standard
+      // Scene-framebuffer target. Standard
       // alpha-over blend matches the helper's `translucent: true`
       // default exactly (src-alpha / one-minus-src-alpha with explicit
       // `operation: "add"`), so we use the shorthand.
@@ -665,21 +657,20 @@ function buildSDFDescriptor(
     depthStencil: {
       format: depthFormat,
       depthWriteEnabled: false,
-      // NEW-COLLECTIONS-2DCV-COPLANAR-DEPTH — disable the depth test in settled
+      // Disable the depth test in settled
       // 2D/CV so coplanar map-surface label glyphs draw on top of the flat map
       // instead of losing the `less-equal` test to z-fighting. See
       // WebGPUBillboardRenderer for the full rationale; mirrors the
-      // PolylineCollection reference (Batch 261). 3D / mid-morph unchanged.
+      // PolylineCollection reference. 3D / mid-morph is unchanged.
       depthCompare: noDepthTest ? "always" : "less-equal",
     },
-    // Batch 134 — match scene-FB MSAA sample count (see WebGPUBillboardRenderer for rationale).
+    // Match the scene-framebuffer MSAA sample count; see WebGPUBillboardRenderer for rationale.
     multisample: sampleCount > 1 ? { count: sampleCount } : undefined,
   };
 }
 
 /**
- * AUDIT_2026_05_02 B.10 (Batch 144, NEW-COLLECTIONS-MOTION-VECTORS) —
- * second VB layout for the velocity pipeline. Same per-instance stride
+ * Second VB layout for the velocity pipeline. Same per-instance stride
  * as the SDF instance buffer (the renderer keeps a one-frame-lagged
  * mirror of the same data); the velocity VS only reads positions via
  * locations 13 (high) + 14 (low), the next free slots after the SDF
@@ -698,8 +689,7 @@ const VELOCITY_PREV_INSTANCE_BUFFER_LAYOUT = {
 };
 
 /**
- * AUDIT_2026_05_02 B.10 (Batch 144, NEW-COLLECTIONS-MOTION-VECTORS) —
- * descriptor for the SDF velocity pipeline variant. Same VS layout /
+ * Descriptor for the SDF velocity pipeline variant. Same VS layout /
  * shader module / pipeline layout as the regular SDF pipeline; the
  * fragment entry is `fragmentVelocityMain` and the target format is
  * `rg16float` (the scene-FB velocity texture format). Depth is read-
@@ -775,7 +765,7 @@ function descriptorToGPU(d) {
  * the existing GPU pipeline if cached; otherwise kicks off async creation
  * and returns null so the caller skips the frame.
  *
- * C-R7-RENDERER-MIGRATION (Batch 73). Mirrors `tryResolvePolylinePipeline`.
+ * Mirrors `tryResolvePolylinePipeline` and resolves through the shared cache.
  * @private
  */
 function tryResolveLabelSDFPipeline(device, pipelineCache, entry) {
@@ -804,7 +794,7 @@ function tryResolveLabelSDFPipeline(device, pipelineCache, entry) {
     }
     return null;
   }
-  // Fallback — direct synchronous creation matches pre-migration behavior.
+  // Fallback — direct synchronous creation preserves the same behavior.
   entry.pipeline = device.createRenderPipeline(
     descriptorToGPU(entry.descriptor),
   );
@@ -830,7 +820,7 @@ function updateWebGPULabels(labelCollection, frameState, commandList) {
     labelCollection._webgpuLabelCache = {};
   }
 
-  // NEW-COLLECTIONS-ERROR-SENTINELS (Sentinel 1) — re-entry / infinite-loop
+  // Permanent re-entry / infinite-loop
   // guard around the whole (synchronous) label update. The inner build is
   // synchronous, so the begin/end bracket it directly; the `finally` always
   // settles the per-collection depth back to 0. Matches the Billboard /
@@ -860,9 +850,9 @@ function _updateWebGPULabelsInner(labelCollection, frameState, commandList) {
     cache.sdfBindGroupLayout = createSDFBindGroupLayout(device);
   }
 
-  // DP-H42 / DP-H40 — pick the right SDF pipeline for this frame's
+  // Pick the right SDF pipeline for this frame's
   // glyph state. Pipeline + shader module cache by active defines.
-  // C-R7-RENDERER-MIGRATION (Batch 73) — local Map now stores entry slots
+  // The local Map stores entry slots
   // `{ descriptor, pipeline, pending }`; the GPU pipeline is materialized
   // through the central `webgpuPipelineCache` so two LabelCollections
   // with identical (defines, render-target shape) share one
@@ -870,22 +860,22 @@ function _updateWebGPULabelsInner(labelCollection, frameState, commandList) {
   const defines = computeLabelDefinesForFrame(glyphCollection, frameState);
   if (!defined(cache.sdfPipelineEntries)) {
     cache.sdfPipelineEntries = new Map();
-    // AUDIT_2026_05_02 B.10 (Batch 144) — velocity pipeline cache.
+    // Velocity pipeline cache.
     // Same (defines) keying as the regular pipeline so a label
     // collection's color and velocity pipelines stay in lockstep.
     cache.sdfVelocityPipelineEntries = new Map();
   }
-  // Batch 110 — invalidate cached pipeline entries on scene format change.
-  // NEW-COLLECTION-RENDERER-BASE — shared guard (clears the color + velocity
-  // defines→entry maps when `_scenePipelineFormatGeneration` bumps).
+  // Invalidate cached pipeline entries on scene format change. The shared
+  // guard clears the color + velocity
+  // defines→entry maps when `_scenePipelineFormatGeneration` bumps.
   invalidatePipelinesOnSceneFormatChange(cache, context, [
     cache.sdfPipelineEntries,
     cache.sdfVelocityPipelineEntries,
   ]);
-  // NEW-COLLECTIONS-2DCV-COPLANAR-DEPTH — settled 2D/CV draws coplanar label
+  // Settled 2D/CV draws coplanar label
   // glyphs on top of the flat map with the depth test disabled. Fold the flag
-  // into the pipeline-cache key as its own dimension (`defines * 2 + flag` —
-  // C11-149 moved it off define bit 31, which is now free) so 3D keeps its
+  // into the pipeline-cache key as its own dimension (`defines * 2 + flag`)
+  // rather than consuming define bit 31, so 3D keeps its
   // `less-equal` variant byte-identical. (Shared base helpers —
   // `computeNoDepthTest` is `morphTime === 0 && mode !== SCENE3D`,
   // byte-identical to the prior inline derivation.)
@@ -927,8 +917,7 @@ function _updateWebGPULabelsInner(labelCollection, frameState, commandList) {
   }
   cache.sdfPipeline = sdfPipeline;
 
-  // AUDIT_2026_05_02 B.10 (Batch 144, NEW-COLLECTIONS-MOTION-VECTORS) —
-  // resolve the velocity pipeline lazily, gated on TAA being enabled
+  // Resolve the velocity pipeline lazily, gated on TAA being enabled
   // this frame. Static label scenes (TAA off) never construct a
   // velocity pipeline. Reuses the same shader module + bind group
   // layout as the color SDF pipeline.
@@ -1035,9 +1024,9 @@ function _updateWebGPULabelsInner(labelCollection, frameState, commandList) {
   cache.atlasGuid = atlasGuid;
   cache.atlasSourceTag = atlasSourceTag;
 
-  // Batch 138 (VS_THREE_POINT_DEPTH_CHECK) — globe depth view +
-  // sampler. Mirrors WebGPUBillboardRenderer's plumbing. Placeholder
-  // bound when no globe depth is published this frame.
+  // Globe depth view + sampler for three-point depth checks. Mirrors
+  // WebGPUBillboardRenderer's plumbing. A placeholder is bound when no globe
+  // depth is published this frame.
   if (!defined(cache.globeDepthPlaceholder)) {
     cache.globeDepthPlaceholder = device.createTexture({
       label: "Label globe-depth placeholder 1x1",
@@ -1058,8 +1047,7 @@ function _updateWebGPULabelsInner(labelCollection, frameState, commandList) {
       magFilter: "nearest",
     });
   }
-  // Batch 139 (NEW-LABEL-SDF-BIND-GROUP-CACHING fix) — track by
-  // underlying texture identity, not view object. The scene renderer
+  // Track by underlying texture identity, not view object. The scene renderer
   // creates a fresh `GPUTextureView` every frame from a stable
   // `GPUTexture`, so view-object identity comparison rebuilds bind
   // groups every frame on globe scenes. Texture identity is stable
@@ -1075,10 +1063,8 @@ function _updateWebGPULabelsInner(labelCollection, frameState, commandList) {
   const globeDepthView =
     cache.globeDepthCachedView ?? cache.globeDepthPlaceholderView;
 
-  // NEW-LABEL-SDF-BIND-GROUP-CACHING (Batch 139) — gate the bind
-  // group rebuild on whether ANY of the bound resources actually
-  // changed since last frame. Pre-Batch-139 the bind group was
-  // unconditionally recreated every frame, paying the
+  // Rebuild the bind group only when a bound resource changes. Recreating it
+  // unconditionally would pay the
   // `createBindGroup` cost for every Sandcastle frame even when the
   // atlas, globe depth view, and uniform buffer were all stable.
   // With texture-identity tracking above, even globe scenes hit a
@@ -1107,8 +1093,8 @@ function _updateWebGPULabelsInner(labelCollection, frameState, commandList) {
     cache.sdfBindGroupUniformBuffer = uniformBuffer;
   }
 
-  // NEW-COLLECTIONS-PER-FRUSTUM-CAMERA-UB (Phase 3 Slice 1) — per-slice camera
-  // UB. Label's group 0 mixes the camera buffer (binding 0) with the SDF atlas
+  // Per-slice camera UB. Label's group 0 mixes the camera buffer (binding 0)
+  // with the SDF atlas
   // texture/sampler + globe-depth view/sampler (bindings 1-4); the resolver
   // rebuilds group 0 with the slice's own buffer + those same texture refs.
   // The static `cache.sdfBindGroup` is the slice-0 / single-frustum fallback.
@@ -1116,8 +1102,8 @@ function _updateWebGPULabelsInner(labelCollection, frameState, commandList) {
     cache.cameraUB = new WebGPUCollectionCameraUB(device, "Label");
   }
   cache.cameraUB.bindUniformState(context.uniformState);
-  // PHASE 3 SLICE 2 (NEW-COLLECTIONS-2DCV-PROJECTED-FRAME-RTE) — repack the
-  // camera UB per slice at draw time in 2D/CV/MORPHING so the MVP uses the live
+  // Repack the camera UB per slice at draw time in 2D/CV/MORPHING so the MVP
+  // uses the live
   // slice projection (WebGPU depth range). SCENE3D stays snapshot-only.
   const repackPerSlice = frameState.mode !== SceneMode.SCENE3D;
   cache.cameraResolver = cache.cameraUB.makeResolver({
@@ -1134,9 +1120,8 @@ function _updateWebGPULabelsInner(labelCollection, frameState, commandList) {
     ],
   });
 
-  // SDF instance data — resident-instance manager path
-  // (NEW-RESIDENT-INSTANCE-BUFFER-MGR + NEW-PARTIAL-WRITE-WIRE-BPL, label
-  // half). The manager owns the resident CPU array, the GPU vertex
+  // SDF instance data — resident-instance manager path. The manager owns the
+  // resident CPU array, the GPU vertex
   // buffer, and the slot-aligned velocity prev mirror, replacing the
   // former unconditional whole-collection pack + writeBuffer every frame.
   //
@@ -1150,13 +1135,12 @@ function _updateWebGPULabelsInner(labelCollection, frameState, commandList) {
   //   - `rebindAllGlyphs` re-purposes spare billboards across labels
   //     (show toggles + image swaps), shifting the compacted slot mapping
   //     mid-frame in ways one glyph's dirty entry doesn't describe.
-  // A partial write driven by that list can render stale glyphs; per the
-  // Phase 1 scope this is wired conservative-correct. The big win stands:
-  // a SETTLED label collection (dirty list empty) uploads NOTHING, where
-  // pre-Batch-232 it re-packed + re-uploaded every glyph every frame.
+  // A partial write driven by that list can render stale glyphs, so this path
+  // stays conservative about correctness. A settled label collection (dirty
+  // list empty) still uploads nothing instead of repacking and re-uploading
+  // every glyph every frame.
   const taaEnabledThisFrame = frameState.taaEnabled === true;
-  // NEW-COLLECTION-RENDERER-BASE — shared lazy create of the resident
-  // instance manager (was an inline `if (!defined) new …`). Stored on
+  // Lazily create the shared resident instance manager. It is stored on
   // `cache.instanceManager` (the base's field); `cache.sdfInstanceManager`
   // remains a back-compat alias for any external probe that reads it.
   const instanceManager = getOrCreateInstanceManager(
@@ -1184,7 +1168,7 @@ function _updateWebGPULabelsInner(labelCollection, frameState, commandList) {
     frameState.mode === SceneMode.MORPHING;
 
   // The capture→sync→consume ordering is enforced structurally by
-  // `syncInstancesAndConsume` (NEW-COLLECTION-RENDERER-BASE): it runs the sync
+  // `syncInstancesAndConsume` runs the sync
   // against the captured dirty snapshot, THEN invokes the consume. Consuming
   // before sync would clear `_billboardsToUpdateIndex` and never repack.
   //
@@ -1192,9 +1176,8 @@ function _updateWebGPULabelsInner(labelCollection, frameState, commandList) {
   // `prepareForFeatureRenderer` (updateMode + readiness loop) but rendered by
   // THIS SDF path, not the billboard FR — so without the consume its
   // `_createVertexArray` / per-glyph `textureDirty` stay set and every glyph is
-  // re-dirtied every frame (the same per-frame re-touch fixed for billboards in
-  // step 0). The background billboards already consume via the billboard FR.
-  // (NEW-COLLECTIONS-DIRTY-GATE step 0 — labels.)
+  // re-dirtied every frame. The background billboards already consume via the
+  // billboard feature renderer.
   const syncResult = syncInstancesAndConsume(
     instanceManager,
     {
@@ -1215,8 +1198,7 @@ function _updateWebGPULabelsInner(labelCollection, frameState, commandList) {
   cache._instanceSceneMode = frameState.mode;
   cache._instanceAtlasGuid = atlasGuid;
 
-  // NEW-COLLECTIONS-ERROR-SENTINELS (Sentinel 2, null-target guard) —
-  // a non-zero visible glyph count with a null instance buffer means the
+  // A non-zero visible glyph count with a null instance buffer means the
   // resident manager produced an instanced draw with no vertex buffer (a
   // hard bug); `validateInstanceSyncResult` `console.error`s (permanent) and
   // returns false. The empty-collection case (visibleCount 0) also returns
@@ -1227,12 +1209,10 @@ function _updateWebGPULabelsInner(labelCollection, frameState, commandList) {
   }
   cache.sdfInstanceBuffer = syncResult.buffer;
 
-  // NEW-COLLECTIONS-ERROR-SENTINELS (Sentinel 3, size-validation/overflow) —
-  // clamp the glyph instanced draw to what the SDF instance buffer holds
+  // Clamp the glyph instanced draw to what the SDF instance buffer holds
   // (`BYTES_PER_SDF_INSTANCE`/instance). The resident manager grows the
   // buffer to the visible-glyph count, so this is inert on the happy path;
-  // it guards against a drift between `visibleCount` and the buffer capacity
-  // (BUG-15 family).
+  // it guards against drift between `visibleCount` and the buffer capacity.
   const safeVisibleCount = validateInstancedDrawBuffer(
     syncResult.buffer,
     visibleCount,
@@ -1240,34 +1220,18 @@ function _updateWebGPULabelsInner(labelCollection, frameState, commandList) {
     "LabelCollection",
   );
 
-  // Create SDF draw command. Labels are alpha-blended via the SDF shader, so
-  // they must run in the TRANSLUCENT pass or they'll paint opaque rectangles
-  // on top of anything rendered earlier. Match upstream's treatment of labels
-  // as translucent geometry unless the collection explicitly asked for OPAQUE.
-  //
-  // NEW-WEBGPU-COLLECTION-PASS-DEFAULT-REGRESSION (2026-08-07, Batch 917):
-  // reading the enum is necessary, but the FALSE branch must not be
-  // re-derived from the stale comment beside it. The literal that branch
-  // replaced was `9`, and 9 IS Pass.OPAQUE on this fork — so the DEFAULT
-  // blend option (OPAQUE_AND_TRANSLUCENT, and the only one any probe has
-  // certified) shipped in Pass.OPAQUE, NOT Pass.TRANSLUCENT. Rebinning it
-  // onto TRANSLUCENT moved every label collection to a different execution
-  // site (back-to-front sort, the "actual near" frustum republication) and
-  // inverted probe-splat-globe-occlusion's P3 / check-7 controls.
-  //
-  // WebGL PARITY is the arbiter, and it says Pass.OPAQUE for the collapsed
-  // command under EVERY blend option:
-  //   LabelCollection declares no pass of its own; its glyphs ride the background BillboardCollection, whose rule is the one above.
-  // With OPAQUE_AND_TRANSLUCENT WebGL emits a PAIR (even index opaque, odd
-  // translucent); this port collapses that to ONE blended draw, which
-  // Batch 889 shipped — and the occlusion probe certified — in Pass.OPAQUE.
-  // Note BlendOption.TRANSLUCENT also resolves to Pass.OPAQUE in WebGL, via
-  // the `!opaqueAndTranslucent` clause — so a single bin is the faithful
-  // collapse, not a simplification. Blend-mode-dependent choices below key
-  // off the BLEND OPTION, never off this bin. Pinned by
-  // Tools/visual-regression/collection-pass-routing.spec.mjs.
+  // Create the SDF draw command with alpha blending in its pipeline state.
+  // The command still belongs in Pass.OPAQUE: LabelCollection declares no pass
+  // of its own, and its glyphs follow the background BillboardCollection.
+  // WebGL emits an opaque/translucent pair for OPAQUE_AND_TRANSLUCENT; this
+  // renderer collapses that pair to one blended draw in the opaque bin. The
+  // TRANSLUCENT blend option resolves to that same bin through WebGL's
+  // `!opaqueAndTranslucent` branch. Moving the collapsed command to
+  // Pass.TRANSLUCENT would change sorting and frustum publication semantics.
+  // Blend-dependent choices below therefore key off BlendOption, never this
+  // pass bin.
   const labelPass = Pass.OPAQUE;
-  // C-R1-COLLECTIONS-PER-ENCODER (Batch 98) — forward the LabelCollection's
+  // Forward the LabelCollection's
   // background billboard render state so `applyPerEncoderState` runs the
   // dynamic stencilRef / blendConstant / scissor / viewport ops in the
   // SDF label pass. Labels themselves don't expose a `_rsOpaque` /
@@ -1284,8 +1248,8 @@ function _updateWebGPULabelsInner(labelCollection, frameState, commandList) {
   const sdfCommand = new WebGPUDrawCommand({
     pipeline: cache.sdfPipeline,
     bindGroups: [cache.sdfBindGroup],
-    // NEW-COLLECTIONS-PER-FRUSTUM-CAMERA-UB (Phase 3 Slice 1) — per-slice
-    // camera UB at group 0; resolver falls back to the static bind group
+    // Per-slice camera UB at group 0; the resolver falls back to the static
+    // bind group
     // when the slice index is unavailable.
     bindGroupResolvers: [cache.cameraResolver],
     vertexBuffers: [cache.sdfInstanceBuffer],
@@ -1302,11 +1266,10 @@ function _updateWebGPULabelsInner(labelCollection, frameState, commandList) {
     renderState: labelRS,
   });
 
-  // AUDIT_2026_05_02 B.10 (Batch 144, NEW-COLLECTIONS-MOTION-VECTORS) —
-  // attach the velocity command. The TAA pass walks the command list
+  // Attach the velocity command. The TAA pass walks the command list
   // for `cmd.velocityCommand` and dispatches it into the rg16float
-  // velocity texture. Mirrors the Billboard attachment pattern from
-  // Batch 143. Only emitted when TAA is enabled this frame AND the
+  // velocity texture. It mirrors the Billboard attachment pattern and is
+  // emitted only when TAA is enabled this frame and the
   // velocity pipeline resolved (it can be null on the first frame
   // after TAA enables, while async pipeline creation is in flight).
   // The prev mirror is slot-aligned with the current buffer by the
@@ -1340,9 +1303,7 @@ function _updateWebGPULabelsInner(labelCollection, frameState, commandList) {
 
   // Background billboards: route through standard billboard renderer (used
   // for label backgrounds; they're opaque quads the SDF pass doesn't draw).
-  // M-R6 (Batch 35) — replaced numeric literal `0` with enum constant
-  // per CLAUDE.md's "enumerated keys over string/numeric literal lookups"
-  // rule.
+  // Use the enum constant so the registry lookup remains self-describing.
   const billboardFR = context.getFeatureRenderer(
     FeatureRendererKey.BILLBOARD_COLLECTION,
   );

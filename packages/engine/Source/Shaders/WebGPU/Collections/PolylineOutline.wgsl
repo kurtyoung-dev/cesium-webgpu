@@ -13,11 +13,11 @@ struct CameraUniforms {
     encodedCameraLow: vec3<f32>,
     _pad1: f32,
     viewportSize: vec2<f32>,
-    // Renderer-wide log depth (NEW-COLLECTIONS-LOG-DEPTH) — formerly
-    // `_pad2`; carries the encode frustum (near, far). The factor lane
-    // sits after `splitPosition` (previously implicit padding before
-    // previousViewProjection's 16-byte alignment). Packed
-    // unconditionally; only `//>>ifdef LOG_DEPTH` blocks read them.
+    // Renderer-wide log-depth parameters. `logDepthNearFar` carries the encode
+    // frustum, while `logDepthFactor` occupies the scalar lane after
+    // `splitPosition`; `_padLog` preserves `previousViewProjection`'s 16-byte
+    // alignment. Packed unconditionally so every variant shares one uniform
+    // buffer layout, though only LOG_DEPTH variants read them.
     logDepthNearFar: vec2<f32>,
     minimumDisableDepthTestDistance: f32,
     splitPosition: f32,
@@ -35,8 +35,8 @@ struct MaterialUniforms {
 @group(0) @binding(0) var<uniform> camera: CameraUniforms;
 
 //>>ifdef LOG_DEPTH
-// Renderer-wide log depth (NEW-COLLECTIONS-LOG-DEPTH) — canonical inline
-// copies; see chunks/functions/csm_{vertexLogDepth,writeLogDepth}.wgsl.
+// Inline copies of the renderer-wide log-depth helpers; keep synchronized with
+// chunks/functions/csm_{vertexLogDepth,writeLogDepth}.wgsl.
 fn csm_vertexLogDepth(clipPosition: vec4<f32>, near: f32) -> f32 {
   return (clipPosition.w - near) + 1.0;
 }
@@ -67,7 +67,8 @@ struct VertexOutput {
   @location(0) v_st: vec2<f32>,
   @location(1) v_width: f32,
   @location(2) v_distFromCenter: f32,
-  // AUDIT_2026_05_02 A.14 (Batch 137) — see PolylineArrow.wgsl notes.
+  // Per-vertex translucency-by-distance factor; always present so all
+  // distance-display and split variants share the same output layout.
   @location(3) v_alphaScale: f32,
   //>>ifdef SPLIT_ENABLED
   @location(4) splitDirection: f32,
@@ -152,7 +153,7 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
 
   var finalPos = fromScreenSpace(offsetScreen, baseClip.z, baseClip.w, camera.viewportSize);
 
-  // AUDIT_2026_05_02 A.14 (Batch 137) — squared eye distance hoisted.
+  // Squared eye distance shared by the distance-aware gates below.
   let baseRTE = mix(startRTE, endRTE, isEnd);
   let camDistSq = dot(baseRTE, baseRTE);
 
@@ -165,7 +166,8 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   //>>endif
 
   //>>ifdef DISABLE_DEPTH_DISTANCE
-  // Batch 140 — raw-sentinel pattern (see PolylineCollection.wgsl).
+  // Test the raw value before squaring so the negative "always disable"
+  // sentinel remains distinguishable.
   let disableRawDP = input.perInstanceFlags.x;
   if (disableRawDP < 0.0) {
     finalPos.z = finalPos.w;
@@ -184,7 +186,8 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   }
   //>>endif
 
-  // AUDIT_2026_05_02 A.14 (Batch 137) — translucencyByDistance ramp.
+  // Compute the translucency-by-distance factor and collapse fully transparent
+  // segments before rasterization.
   var alphaScale: f32 = 1.0;
   //>>ifdef EYE_DISTANCE_TRANSLUCENCY
   let translucency = czm_nearFarScalar(input.translucencyByDistance, camDistSq);
@@ -286,7 +289,7 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
   let edgeAlpha = 1.0 - smoothstep(0.8, 1.0, edgeDist);
   finalColor.a *= edgeAlpha;
 
-  // AUDIT_2026_05_02 A.14 (Batch 137) — apply translucencyByDistance.
+  // Apply the translucency-by-distance factor to the material alpha.
   finalColor.a *= input.v_alphaScale;
 
   if (finalColor.a < 0.005) {

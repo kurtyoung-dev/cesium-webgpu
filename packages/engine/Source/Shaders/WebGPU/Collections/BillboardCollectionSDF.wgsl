@@ -2,7 +2,7 @@
 // Extends BillboardCollection.wgsl with signed distance field rendering
 // for antialiased text with outlines (used by LabelCollection).
 //
-// Instance data layout (192 bytes per billboard, 12 x vec4 — Batch 137):
+// Instance data layout (192 bytes per billboard, 12 x vec4):
 //   @location(0)  posHighAndScale:           vec4<f32>
 //   @location(1)  posLowAndRotation:         vec4<f32>
 //   @location(2)  compressedAttr0:           vec4<f32> — pixelOffset.xy, alignedAxis.xy
@@ -19,28 +19,24 @@
 //   @location(10) pixelOffsetScaleByDistance: vec4<f32> — near, nearScale, far, farScale
 //   @location(11) scaleByDistance:           vec4<f32> — near, nearScale, far, farScale
 //
-// Batch 21 added @location(8) `perInstanceFlags` for DP-H42 / DP-H40.
-// Batch 137 (Audit A.14 finish) extended with DDC packed into
-// `perInstanceFlags.zw` plus three NearFarScalars at @locations 9/10/11.
-// All gates are read only inside `//>>ifdef` blocks so the SDF fast
-// path pays nothing when those features are off.
+// `perInstanceFlags` carries disable-depth, split, and DDC values at
+// location 8; three NearFarScalars occupy locations 9/10/11. Gates are read
+// only inside `//>>ifdef` blocks, so disabled variants execute no gate logic.
 
 struct CameraUniforms {
   mvpRelativeToEye: mat4x4<f32>,
   viewRotation: mat4x4<f32>,
   encodedCameraHigh: vec3<f32>,
-  // Renderer-wide log depth (NEW-COLLECTIONS-LOG-DEPTH) — formerly-zero
-  // `_pad0` / `_pad1` lanes carry the encode frustum near/far; float 46
-  // (previously implicit padding) carries the factor. Same UBO positions
-  // as the base Billboard shader. See WebGPULogDepth.ts.
+  // Former `_pad0` / `_pad1` lanes carry the log-depth near/far values, while
+  // formerly implicit float 46 carries the factor. This preserves the base
+  // Billboard UBO layout; see WebGPULogDepth.ts.
   logDepthNear: f32,
   encodedCameraLow: vec3<f32>,
   logDepthFar: f32,
   viewportSize: vec2<f32>,
   highResMultiplier: f32,
-  // Batch 138 (VS_THREE_POINT_DEPTH_CHECK) — `_threePointDepthTestDistance`
-  // in meters; squared in shader. Same UBO position as base Billboard
-  // (slot 43, was `_pad2`).
+  // `_threePointDepthTestDistance` in meters; squared in the shader. It uses
+  // the same UBO position as the base Billboard shader (slot 43).
   threePointDepthTestDistance: f32,
   minimumDisableDepthTestDistance: f32,
   splitPosition: f32,
@@ -52,14 +48,14 @@ struct CameraUniforms {
 @group(0) @binding(0) var<uniform> camera: CameraUniforms;
 @group(0) @binding(1) var atlasTexture: texture_2d<f32>;
 @group(0) @binding(2) var atlasSampler: sampler;
-// Batch 138 (VS_THREE_POINT_DEPTH_CHECK) — globe depth (packed-rgba)
-// + sampler for terrain occlusion of clamp-to-ground labels.
+// Packed RGBA globe depth and sampler for terrain occlusion of
+// clamp-to-ground labels.
 @group(0) @binding(3) var globeDepthTex: texture_2d<f32>;
 @group(0) @binding(4) var globeDepthSampler: sampler;
 
 //>>ifdef LOG_DEPTH
-// Renderer-wide log depth (NEW-COLLECTIONS-LOG-DEPTH) — canonical inline
-// copies; see BillboardCollection.wgsl / chunks/functions/csm_*.wgsl.
+// Canonical inline log-depth helpers; see BillboardCollection.wgsl and
+// chunks/functions/csm_*.wgsl.
 fn csm_vertexLogDepth(clipPosition: vec4<f32>, near: f32) -> f32 {
   return (clipPosition.w - near) + 1.0;
 }
@@ -87,13 +83,12 @@ struct VertexInput {
   @location(9) translucencyByDistance: vec4<f32>,
   @location(10) pixelOffsetScaleByDistance: vec4<f32>,
   @location(11) scaleByDistance: vec4<f32>,
-  // Batch 138 (VS_THREE_POINT_DEPTH_CHECK) — depthOrigin + enable.
+  // Depth origin and enable flag for the three-point depth check.
   @location(12) threePointAttribs: vec4<f32>,
 };
 
-// AUDIT_2026_05_02 A.14 (Batch 137) — `czm_nearFarScalar` for the
-// SDF / Label path. Identical implementation to the base Billboard
-// shader so labels behave consistently with point/billboard primitives
+// `czm_nearFarScalar` for the SDF/label path. Its implementation matches the
+// base Billboard shader so labels behave consistently with point/billboard primitives
 // under camera-distance ramps.
 fn czm_nearFarScalar(scalar: vec4<f32>, distSq: f32) -> f32 {
   let nearDistSq = scalar.x * scalar.x;
@@ -125,10 +120,8 @@ fn translateRelativeToEye(posHigh: vec3<f32>, posLow: vec3<f32>, camHigh: vec3<f
   return (posHigh - camHigh) + (posLow - camLow);
 }
 
-// Batch 138 (VS_THREE_POINT_DEPTH_CHECK) — see BillboardCollection.wgsl
-// for full comment block. Identical implementation copied here
-// because WGSL doesn't share helpers across files; future refactor
-// could extract to a shared chunk.
+// This matches BillboardCollection.wgsl's depth unpacking. The implementation
+// is duplicated because WGSL files do not share helpers.
 fn czm_unpackDepth(packedDepth: vec4<f32>) -> f32 {
   return dot(
     packedDepth,
@@ -136,8 +129,8 @@ fn czm_unpackDepth(packedDepth: vec4<f32>) -> f32 {
   );
 }
 
-// Batch 139 — see BillboardCollection.wgsl for the full helper
-// design (NDC-z return + addScreenSpaceOffsetClip companion).
+// Return terrain NDC z for the three-point check; BillboardCollection.wgsl
+// documents the depth-space contract shared with addScreenSpaceOffsetClip.
 fn getGlobeNdcDepth(clipPos: vec4<f32>) -> f32 {
   if (clipPos.w <= 0.0) {
     return 0.0;
@@ -151,8 +144,8 @@ fn getGlobeNdcDepth(clipPos: vec4<f32>) -> f32 {
   return czm_unpackDepth(packed);
 }
 
-// Renderer-wide log depth — candidate depth for the 3-point check in the
-// SAME space as the (possibly log-encoded) globe depth texture. See
+// Candidate depth for the three-point check in the same space as the
+// possibly log-encoded globe depth texture. See
 // BillboardCollection.wgsl::candidateGlobeCompareDepth.
 fn candidateGlobeCompareDepth(clipPos: vec4<f32>) -> f32 {
   //>>ifdef LOG_DEPTH
@@ -163,9 +156,8 @@ fn candidateGlobeCompareDepth(clipPos: vec4<f32>) -> f32 {
   //>>endif
 }
 
-// Batch 139 (4th-pass audit fix) — see BillboardCollection.wgsl for
-// the full WebGL-parity math note. `originScale` removes the
-// spurious negation that the 3rd-pass version introduced.
+// Match the WebGL origin translation without negating `originScale`; see
+// BillboardCollection.wgsl for the full parity math.
 fn addScreenSpaceOffsetClip(
   anchorClip: vec4<f32>,
   direction: vec2<f32>,
@@ -205,10 +197,10 @@ const QUAD_OFFSETS = array<vec2<f32>, 6>(
   vec2<f32>(-0.5,  0.5),
 );
 
-// C4-BILLBOARD-ATLAS-VFLIP — SDF glyph atlas shares the same flipY=true upload
-// and the same WebGL bottom-left texcoord convention as image billboards, so
-// screen-bottom must sample MIN v. The prior array rendered glyphs V-flipped
-// (upside-down text). See BillboardCollection.wgsl for the full derivation.
+// The SDF glyph atlas uses the same `flipY=true` upload and WebGL bottom-left
+// texture-coordinate convention as image billboards, so screen-bottom must
+// sample minimum v. Reversing the mapping renders glyphs upside down; see
+// `BillboardCollection.wgsl` for the coordinate derivation.
 const QUAD_UVS = array<vec2<f32>, 6>(
   vec2<f32>(0.0, 0.0),
   vec2<f32>(1.0, 0.0),
@@ -249,14 +241,13 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   let positionRTE = translateRelativeToEye(posHigh, posLow, camera.encodedCameraHigh, camera.encodedCameraLow);
   var clipPos = camera.mvpRelativeToEye * vec4<f32>(positionRTE, 1.0);
 
-  // AUDIT_2026_05_02 A.14 (Batch 137) — squared eye distance, hoisted
-  // for the four distance-aware gates below.
+  // Hoist the squared eye distance because the distance-aware gates below
+  // reuse it.
   let camDistSq = dot(positionRTE, positionRTE);
 
-  // AUDIT_2026_05_02 A.14 (Batch 137) — apply EYE_DISTANCE_SCALING
-  // BEFORE the corner expansion so the label glyph collapses cleanly
-  // when the user's `label.scaleByDistance.farValue=0`. Mirrors the
-  // base BillboardCollection.wgsl path.
+  // Apply EYE_DISTANCE_SCALING before the corner expansion so the label glyph
+  // collapses cleanly when the user's `label.scaleByDistance.farValue=0`.
+  // This mirrors the base BillboardCollection.wgsl path.
   var effectiveScale: f32 = baseScale;
   //>>ifdef EYE_DISTANCE_SCALING
   let distScale = czm_nearFarScalar(input.scaleByDistance, camDistSq);
@@ -266,7 +257,7 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   }
   //>>endif
 
-  // AUDIT_2026_05_02 A.14 (Batch 137) — apply EYE_DISTANCE_PIXEL_OFFSET
+  // Apply EYE_DISTANCE_PIXEL_OFFSET
   // before the offset is added to clip space.
   var effectivePixelOffset: vec2<f32> = basePixelOffset;
   //>>ifdef EYE_DISTANCE_PIXEL_OFFSET
@@ -287,17 +278,16 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   }
 
   let size = vec2<f32>(billboardWidth, billboardHeight) * effectiveScale;
-  // NEW-BILLBOARD-SIZE-PARITY — bake pixelRatio (highResMultiplier) into the
-  // CSS-px → device-px conversion; see BillboardCollection.wgsl for the
+  // Include pixelRatio (highResMultiplier) in the CSS-px to device-px
+  // conversion; see BillboardCollection.wgsl for the
   // full rationale.
   let pixelToClip = (2.0 * camera.highResMultiplier) / camera.viewportSize;
   clipPos.x += (corner.x * size.x + effectivePixelOffset.x) * pixelToClip.x * clipPos.w;
   clipPos.y += (corner.y * size.y + effectivePixelOffset.y) * pixelToClip.y * clipPos.w;
 
   //>>ifdef DISTANCE_DISPLAY_CONDITION
-  // AUDIT_2026_05_02 A.14 (Batch 137) — DDC gate. Out-of-window
-  // labels collapse to a degenerate clip-pos. Critical for KML labels
-  // that should disappear at far zoom.
+  // Out-of-window labels collapse to a degenerate clip position so KML labels
+  // disappear at far zoom.
   let nearSqDDC = input.perInstanceFlags.z;
   let farSqDDC = input.perInstanceFlags.w;
   if (camDistSq < nearSqDDC || camDistSq > farSqDDC) {
@@ -306,11 +296,12 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   //>>endif
 
   //>>ifdef DISABLE_DEPTH_DISTANCE
-  // DP-H42 — same logic as BillboardCollection.wgsl. Batch 139
-  // (4th-pass audit) — raw-sentinel pattern. Batch 219 — "render on top"
-  // is the WebGPU NEAR plane (NDC z = 0, depth range [0,1] / less-equal
-  // compare), NOT z = w (that is the FAR plane and pushes the label
-  // BEHIND everything). Matches the billboard + point bug-3 fix.
+  // Match BillboardCollection.wgsl's raw-sentinel handling. Inspect the signed
+  // value before squaring so the negative infinity sentinel remains
+  // detectable. "Render on top" means the WebGPU near plane (NDC z = 0 with
+  // a [0,1] depth range and
+  // less-equal comparison); z = w is the far plane and would push the label
+  // behind closer geometry.
   let disableRawDP = input.perInstanceFlags.x;
   if (disableRawDP < 0.0) {
     clipPos.z = 0.0;
@@ -330,17 +321,16 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   //>>endif
 
   //>>ifdef VS_THREE_POINT_DEPTH_CHECK
-  // Batch 138 + Batch 139 — full three-point depth check for clamp-to-
-  // ground labels. Mirrors BillboardCollection.wgsl. Critical for
+  // Full three-point depth check for clamp-to-ground labels. It mirrors
+  // BillboardCollection.wgsl and allows
   // KML/GeoJSON labels with `heightReference: CLAMP_TO_GROUND` to hide
   // behind hills.
   let threshSqLabel =
     camera.threePointDepthTestDistance *
     camera.threePointDepthTestDistance;
-  // Batch 139 (NEW-VS-THREE-POINT-DISABLE-DEPTH-INTERACTION) — same
-  // disable-depth-distance escape hatch as Billboard. Raw-value
-  // sentinel check BEFORE squaring (the original draft squared first
-  // and the `< 0` check could never fire).
+  // Apply the same disable-depth-distance escape hatch as Billboard. Check the
+  // raw sentinel before squaring, because squaring erases the sign and would
+  // make the `< 0` branch unreachable.
   var enableDepthCheckLabel = input.threePointAttribs.z;
   let disableRawLabel = input.perInstanceFlags.x;
   if (disableRawLabel < 0.0) {
@@ -426,11 +416,9 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
     imageRect.y + baseUV.y * imageRect.w
   );
 
-  // AUDIT_2026_05_02 A.14 (Batch 137) — translucencyByDistance ramp
-  // applied to BOTH fill and outline alpha so the label fades
-  // coherently. translucency=0 → vertex pushed behind the near plane
-  // (matches WebGL) and the FS will discard via the smoothstep alpha
-  // anyway when the per-vertex alpha is zero.
+  // Apply the translucencyByDistance ramp to both fill and outline alpha so
+  // the label fades coherently. A zero factor collapses the quad before
+  // rasterization, matching WebGL, while the FS also receives zero alpha.
   var alphaMultiplier: f32 = 1.0;
   //>>ifdef EYE_DISTANCE_TRANSLUCENCY
   let translucency = czm_nearFarScalar(input.translucencyByDistance, camDistSq);
@@ -500,7 +488,7 @@ struct FragOutput {
 @fragment
 fn fragmentMain(input: VertexOutput) -> FragOutput {
   //>>ifdef SPLIT_ENABLED
-  // DP-H40 — discard pixels on the wrong side of the split cutoff before
+  // Discard pixels on the wrong side of the split cutoff before
   // doing any SDF math. Same convention as BillboardCollection.wgsl.
   if (input.splitDirection < 0.0 && input.position.x > camera.splitPosition) {
     discard;
@@ -541,9 +529,8 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
   return out;
 }
 
-// AUDIT_2026_05_02 B.10 (Batch 144, NEW-COLLECTIONS-MOTION-VECTORS) —
-// per-pixel velocity emission for animated labels. Mirrors the
-// Billboard pattern from Batch 143; see `BillboardCollection.wgsl`
+// Per-pixel velocity emission for animated labels. It mirrors the
+// billboard pattern; see `BillboardCollection.wgsl`
 // for the full design notes (center-only delta, prev-instance VB at
 // slot 1, w<=0 fallback).
 //
@@ -630,8 +617,8 @@ fn vertexVelocityMain(input: VelocityVertexInput) -> VelocityVertexOutput {
     );
   }
   let size = vec2<f32>(glyphWidth, glyphHeight) * baseScale;
-  // NEW-BILLBOARD-SIZE-PARITY — bake pixelRatio (highResMultiplier) into the
-  // CSS-px → device-px conversion; see BillboardCollection.wgsl.
+  // Include pixelRatio (highResMultiplier) in the CSS-px to device-px
+  // conversion; see BillboardCollection.wgsl.
   let pixelToClip = (2.0 * camera.highResMultiplier) / camera.viewportSize;
   clipPos.x += (corner.x * size.x + basePixelOffset.x) * pixelToClip.x * clipPos.w;
   clipPos.y += (corner.y * size.y + basePixelOffset.y) * pixelToClip.y * clipPos.w;

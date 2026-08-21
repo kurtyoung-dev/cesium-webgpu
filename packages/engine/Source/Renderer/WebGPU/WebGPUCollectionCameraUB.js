@@ -3,7 +3,7 @@
  * renderers (PointPrimitive, Billboard, Label, Polyline, Cloud).
  *
  * ---------------------------------------------------------------------------
- * PHASE 3 SLICE 1 — NEW-COLLECTIONS-PER-FRUSTUM-CAMERA-UB
+ * Per-frustum collection camera uniforms
  * ---------------------------------------------------------------------------
  *
  * THE PROBLEM. A collection FR packs its camera uniform buffer ONCE per
@@ -22,8 +22,8 @@
  * the geometry out of clip range and the collection vanishes — the all-zero
  * 2D/CV state `probe-collections-2dcv-morph.mjs` reports.
  *
- * THE FIX (this slice). Mirror the GroundPrimitive per-slice resolver
- * (Batch 173, `WebGPUGroundPrimitiveRenderer` `bindGroupResolvers`): give the
+ * Mirror the GroundPrimitive per-slice resolver in
+ * `WebGPUGroundPrimitiveRenderer`: give the
  * collection's draw command a `bindGroupResolvers[i]` closure for the camera
  * group. At DRAW time — inside `WebGPUDrawCommand.execute()`, after the loop
  * has already refreshed `uniformState.projection` for the current slice — the
@@ -32,13 +32,11 @@
  * `writeBuffer` is unordered vs the encoder so the slices must not share a
  * buffer), and returns the matching per-slice bind group. Returning `null`
  * falls back to the static `bindGroups[i]` baked at update time (slice 0 /
- * single-frustum / first-frame), so non-multi-frustum paths are byte-identical
- * to the pre-slice behaviour.
+ * single-frustum / first-frame), preserving the single-frustum behavior.
  *
- * SCOPE NOTE. This slice is the FOUNDATION: it guarantees each slice draws
- * with its own projection and MUST NOT regress 3D. It does not by itself fix
- * 2D/CV rendering — that needs the projected-frame RTE eye encoding +
- * morph blend (slices 2-3). The resolver is the plumbing those slices build on.
+ * Each slice draws through its own buffer. In 3D the resolver copies the
+ * full-frustum snapshot; projected modes may opt into draw-time repacking so
+ * each band uses its live projection and relative-to-eye encoding.
  *
  * USAGE. A collection cache creates one instance and asks it for a resolver:
  *
@@ -131,8 +129,7 @@ class WebGPUCollectionCameraUB {
    *   group-0 entries beyond the camera buffer (binding 0): atlas texture +
    *   sampler, globe-depth view + sampler, noise texture, etc.
    * @param {number} [opts.cameraBinding=0] - Binding slot of the camera UB.
-   * @param {boolean} [opts.repackPerSlice=false] - PHASE 3 SLICE 2
-   *   (NEW-COLLECTIONS-2DCV-PROJECTED-FRAME-RTE). When TRUE the resolver
+   * @param {boolean} [opts.repackPerSlice=false] - When true, the resolver
    *   RE-INVOKES `pack(scratch)` at DRAW time — after the frustum loop's
    *   `_updateFrustumUniforms(...)` has recomputed
    *   `uniformState.projection` for THIS slice's near/far using the owning
@@ -175,10 +172,9 @@ class WebGPUCollectionCameraUB {
     // CRITICAL — capture the frame's reference snapshot HERE, at update time,
     // NOT lazily at draw time inside the resolver.
     //
-    // WHY (NEW-COLLECTIONS-PER-FRUSTUM-CAMERA-UB, the Slice-1 regression
-    // lesson): collections — like the globe (see WebGPUSceneRendererFrustumLoop
+    // Collections — like the globe (see WebGPUSceneRendererFrustumLoop
     // L162-171) — bake their MVP against the FULL camera frustum at scene-update
-    // and REPLAY UNCHANGED across every depth slice. Log-depth's
+    // and replay unchanged across every depth slice. Log-depth's
     // `csm_updatePositionDepth` clip-z clamp makes that single bake correct in
     // all slices. The multi-frustum loop SLICES `uniformState.projection` to a
     // per-band near/far (~5e5) between slices, so re-reading `uniformState`
@@ -186,11 +182,10 @@ class WebGPUCollectionCameraUB {
     // narrow projection — which clips far geometry out of the near slices and
     // vanishes the collection (the observed bb=0/pt=0 far-camera regression).
     //
-    // So Slice 1 packs ONCE here (== the static bake) and the resolver merely
-    // COPIES that snapshot into each slice's OWN buffer. Result: 3D is
-    // byte-identical to the pre-resolver path, while the distinct per-slice
-    // buffers + bind groups exist as the foundation Slices 2-3 build on (those
-    // will introduce per-slice DIVERGENCE for 2D/CV band shifts, mode-gated).
+    // Pack once here, matching the static bake. Unless `repackPerSlice` is set,
+    // the resolver merely copies that snapshot into each slice's own buffer.
+    // This keeps 3D byte-identical while projected modes can repack after their
+    // band projection changes.
     // ---------------------------------------------------------------------
     pack(this._scratch);
     this._snapshotBytes = bufferSize;
@@ -251,12 +246,11 @@ class WebGPUCollectionCameraUB {
       // race adjacent slices. Guarded to one upload per slice per frame.
       if (slot.frameToken !== self._frameToken) {
         slot.frameToken = self._frameToken;
-        // PHASE 3 SLICE 2 (NEW-COLLECTIONS-2DCV-PROJECTED-FRAME-RTE) — in
-        // 2D/CV/MORPHING, RE-PACK against the LIVE per-slice projection that
+        // In 2D/CV/MORPHING, re-pack against the live per-slice projection that
         // the frustum loop just established (WebGPU depth range + this slice's
         // near/far), overwriting the stale update-time snapshot. In 3D the
         // flag is off so the snapshot is uploaded verbatim (byte-identical to
-        // the pre-Slice-2 path). The repack reads `uniformState` through the
+        // the snapshot-only path). The repack reads `uniformState` through the
         // `pack` closure, which closes over the live `frameState`.
         if (repackPerSlice) {
           pack(self._scratch);
@@ -269,7 +263,7 @@ class WebGPUCollectionCameraUB {
           bufferSize,
         );
         //>>includeStart('debug', pragmas.debug);
-        // Per-slice-write diagnostic (NEW-COLLECTIONS-PER-FRUSTUM-CAMERA-UB).
+        // Per-slice-write diagnostic.
         // Throttled summary so multi-frustum scenes show DISTINCT slice
         // indices written to DISTINCT buffers. Body pragma-stripped.
         self._diagRecordWrite(idx);
@@ -386,7 +380,7 @@ class WebGPUCollectionCameraUB {
    * Per-slice-write diagnostic. Records which slice indices got a write this
    * window + emits a throttled summary so multi-frustum scenes can confirm
    * distinct per-slice buffers are exercised. Body is pragma-stripped from
-   * production builds (zero runtime cost). (NEW-COLLECTIONS-PER-FRUSTUM-CAMERA-UB)
+   * production builds, so it has zero runtime cost.
    * @private
    */
   _diagRecordWrite(idx) {

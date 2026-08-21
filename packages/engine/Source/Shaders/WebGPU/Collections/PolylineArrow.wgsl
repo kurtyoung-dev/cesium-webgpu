@@ -5,11 +5,11 @@
 //   color: vec4<f32> — arrow color
 //
 // Instance data is identical to PolylineCollection.wgsl (112 bytes, 7 x
-// vec4 — Batch 137) except padding slots carry texture coordinates:
+// vec4) except padding slots carry texture coordinates:
 //   startPosLow.w → sStart (normalized distance along polyline)
 //   endPosLow.w   → sEnd
-//   @location(5) perInstanceFlags — DP-H42 / DP-H40 / A.14 DDC
-//   @location(6) translucencyByDistance — Batch 137 (Audit A.14 finish)
+//   @location(5) perInstanceFlags — disable-depth distance, split direction, DDC
+//   @location(6) translucencyByDistance — near, nearAlpha, far, farAlpha
 
 struct CameraUniforms {
     mvpRelativeToEye: mat4x4<f32>,
@@ -18,11 +18,11 @@ struct CameraUniforms {
     encodedCameraLow: vec3<f32>,
     _pad1: f32,
     viewportSize: vec2<f32>,
-    // Renderer-wide log depth (NEW-COLLECTIONS-LOG-DEPTH) — formerly
-    // `_pad2`; carries the encode frustum (near, far). The factor lane
-    // sits after `splitPosition` (previously implicit padding before
-    // previousViewProjection's 16-byte alignment). Packed
-    // unconditionally; only `//>>ifdef LOG_DEPTH` blocks read them.
+    // Renderer-wide log-depth parameters. `logDepthNearFar` carries the encode
+    // frustum, while `logDepthFactor` occupies the scalar lane after
+    // `splitPosition`; `_padLog` preserves `previousViewProjection`'s 16-byte
+    // alignment. Packed unconditionally so every variant shares one uniform
+    // buffer layout, though only LOG_DEPTH variants read them.
     logDepthNearFar: vec2<f32>,
     minimumDisableDepthTestDistance: f32,
     splitPosition: f32,
@@ -38,8 +38,8 @@ struct MaterialUniforms {
 @group(0) @binding(0) var<uniform> camera: CameraUniforms;
 
 //>>ifdef LOG_DEPTH
-// Renderer-wide log depth (NEW-COLLECTIONS-LOG-DEPTH) — canonical inline
-// copies; see chunks/functions/csm_{vertexLogDepth,writeLogDepth}.wgsl.
+// Inline copies of the renderer-wide log-depth helpers; keep synchronized with
+// chunks/functions/csm_{vertexLogDepth,writeLogDepth}.wgsl.
 fn csm_vertexLogDepth(clipPosition: vec4<f32>, near: f32) -> f32 {
   return (clipPosition.w - near) + 1.0;
 }
@@ -65,10 +65,8 @@ struct VertexInput {
   @location(6) translucencyByDistance: vec4<f32>,
 };
 
-// AUDIT_2026_05_02 A.14 (Batch 137) — czm_nearFarScalar mirroring the
-// base PolylineCollection.wgsl. Applies to all polyline material
-// variants so material-styled polylines respect the same distance
-// gates the user expects from the upstream WebGL flow.
+// WGSL equivalent of `czm_nearFarScalar`, shared by all polyline material
+// variants so their distance behavior matches the base shader and WebGL path.
 fn czm_nearFarScalar(scalar: vec4<f32>, distSq: f32) -> f32 {
   let nearDistSq = scalar.x * scalar.x;
   let farDistSq = scalar.z * scalar.z;
@@ -84,11 +82,10 @@ struct VertexOutput {
   @builtin(position) position: vec4<f32>,
   @location(0) v_st: vec2<f32>,
   @location(1) v_distFromCenter: f32,
-  // AUDIT_2026_05_02 A.14 (Batch 137) — per-vertex alpha multiplier
-  // computed from translucencyByDistance. Always present in the
-  // varying layout so all (DDC × split) ifdef variants share one
-  // VertexOutput shape; FS multiplies the final material color alpha
-  // by it. When EYE_DISTANCE_TRANSLUCENCY is off the value stays 1.0.
+  // Per-vertex translucency-by-distance factor. It remains present in every
+  // varying layout so all distance-display and split variants share one
+  // VertexOutput shape. The fragment shader applies it to the material alpha,
+  // and it remains 1.0 when disabled.
   @location(2) v_alphaScale: f32,
   //>>ifdef SPLIT_ENABLED
   @location(3) splitDirection: f32,
@@ -162,13 +159,13 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
 
   var finalPos = fromScreenSpace(offsetScreen, baseClip.z, baseClip.w, camera.viewportSize);
 
-  // AUDIT_2026_05_02 A.14 (Batch 137) — squared eye distance hoisted
+  // Squared eye distance is hoisted
   // for the three distance-aware gates below.
   let baseRTE = mix(startRTE, endRTE, isEnd);
   let camDistSq = dot(baseRTE, baseRTE);
 
   //>>ifdef DISTANCE_DISPLAY_CONDITION
-  // AUDIT_2026_05_02 A.14 (Batch 137) — DDC for arrow polylines.
+  // Apply DDC to arrow polylines.
   let nearSqDDC = input.perInstanceFlags.z;
   let farSqDDC = input.perInstanceFlags.w;
   if (camDistSq < nearSqDDC || camDistSq > farSqDDC) {
@@ -177,8 +174,8 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   //>>endif
 
   //>>ifdef DISABLE_DEPTH_DISTANCE
-  // DP-H42 — depth override; same contract as PolylineCollection.wgsl.
-  // Batch 140 — raw-sentinel pattern.
+  // Apply the same depth override as PolylineCollection.wgsl. Check the raw
+  // sentinel before squaring so its negative sign remains detectable.
   let disableRawDP = input.perInstanceFlags.x;
   if (disableRawDP < 0.0) {
     finalPos.z = finalPos.w;
@@ -197,12 +194,10 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   }
   //>>endif
 
-  // AUDIT_2026_05_02 A.14 (Batch 137) — translucencyByDistance ramp
-  // forwarded to the FS via `v_alphaScale`. Material variants can't
-  // multiply `input.color.a` directly because color comes from the
-  // material uniform (not a per-instance attribute), so the scaling
-  // happens in the FS where we have the final material color.
-  // translucency=0 → clip the segment so the FS doesn't run at all.
+  // Material color comes from a uniform rather than `input.color`, so forward
+  // the translucency-by-distance factor for application to the final alpha in
+  // the fragment shader. A zero factor collapses the segment before
+  // rasterization.
   var alphaScale: f32 = 1.0;
   //>>ifdef EYE_DISTANCE_TRANSLUCENCY
   let translucency = czm_nearFarScalar(input.translucencyByDistance, camDistSq);
@@ -274,7 +269,7 @@ struct FragOutput {
 @fragment
 fn fragmentMain(input: VertexOutput) -> FragOutput {
   //>>ifdef SPLIT_ENABLED
-  // DP-H40 — split discard before any material math.
+  // Discard fragments across the split before any material math.
   if (input.splitDirection < 0.0 && input.position.x > camera.splitPosition) {
     discard;
   }
@@ -326,7 +321,7 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
   let currentColor = mix(outsideColor, color, clamp(s + t, 0.0, 1.0));
   var outColor = antialias(outsideColor, color, currentColor, dist);
 
-  // AUDIT_2026_05_02 A.14 (Batch 137) — apply translucencyByDistance.
+  // Apply translucencyByDistance.
   // `v_alphaScale` is 1.0 when EYE_DISTANCE_TRANSLUCENCY is inactive.
   outColor = vec4<f32>(outColor.rgb, outColor.a * input.v_alphaScale);
 

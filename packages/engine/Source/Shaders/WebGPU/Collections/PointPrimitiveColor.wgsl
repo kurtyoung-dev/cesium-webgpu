@@ -8,27 +8,25 @@
 // 32-bit float pairs and the encoded camera position is subtracted
 // on the GPU to produce a small eye-relative offset.
 //
-// Batch 21 — unified CameraUniforms merges the former `MaterialUniforms`
-// (bound at a non-existent @group(1)) with the existing CameraUniforms
-// at @group(0). Pre-existing bug: the JS side only bound group 0, so any
-// access to `material.*` read through a never-bound slot. Merging into
-// the real UB also makes room for DP-H42 (`minimumDisableDepthTestDistance`)
-// and wires `splitPosition` to something the JS actually uploads.
+// CameraUniforms includes the material fields because JavaScript binds only
+// group 0; a separate MaterialUniforms block at group 1 would never be bound.
+// The shared buffer also carries `minimumDisableDepthTestDistance` and the
+// JavaScript-provided `splitPosition`.
 
 struct CameraUniforms {
     mvpRelativeToEye: mat4x4<f32>,            // bytes 0-63
     viewportSize: vec2<f32>,                   // bytes 64-71
-    splitPosition: f32,                        // byte 72 (DP-H40)
-    minimumDisableDepthTestDistance: f32,       // byte 76 (DP-H42)
+    splitPosition: f32,                        // byte 72, framebuffer pixels
+    minimumDisableDepthTestDistance: f32,       // byte 76, meters
     encodedCameraPositionMCHigh: vec3<f32>,    // bytes 80-91 (+4 pad)
     _pad0: f32,
     encodedCameraPositionMCLow: vec3<f32>,     // bytes 96-107 (+4 pad)
     _pad1: f32,
-    // DP-H41 (Batch 27) — previous frame's viewProjection for
+    // Previous frame's viewProjection for
     // TAA / motion-vector reprojection. Sourced from
     // `UniformState._previousViewProjection` (f32 mat4).
     previousViewProjection: mat4x4<f32>,
-    // Renderer-wide log depth (NEW-COLLECTIONS-LOG-DEPTH) — (near, far,
+    // Renderer-wide log depth: (near, far,
     // oneOverLog2FarDepthFromNearPlusOne, reserved) at floats 44-47.
     // Packed unconditionally by packUniforms; only the `//>>ifdef
     // LOG_DEPTH` blocks read it. See WebGPULogDepth.ts.
@@ -54,8 +52,8 @@ struct VertexOutput {
 @group(0) @binding(0) var<uniform> camera: CameraUniforms;
 
 //>>ifdef LOG_DEPTH
-// Renderer-wide log depth (NEW-COLLECTIONS-LOG-DEPTH) — canonical inline
-// copies; see chunks/functions/csm_{vertexLogDepth,writeLogDepth}.wgsl.
+// Canonical renderer-wide log-depth helpers; see
+// chunks/functions/csm_{vertexLogDepth,writeLogDepth}.wgsl.
 fn csm_vertexLogDepth(clipPosition: vec4<f32>, near: f32) -> f32 {
     return (clipPosition.w - near) + 1.0;
 }
@@ -93,7 +91,7 @@ fn translateRelativeToEye(
     return vec4<f32>(highDiff + lowDiff, 1.0);
 }
 
-// AUDIT_2026_05_02 A.14 (Batch 136) — WGSL port of `czm_nearFarScalar`.
+// WGSL port of `czm_nearFarScalar`.
 // See `BillboardCollection.wgsl` for the canonical comment block.
 fn czm_nearFarScalar(scalar: vec4<f32>, distSq: f32) -> f32 {
     let nearDistSq = scalar.x * scalar.x;
@@ -114,14 +112,14 @@ fn vertexMain(
     @location(1) posLowAndOutline: vec4<f32>,   // positionLow.xyz, outlineWidth
     @location(2) pointColor: vec4<f32>,          // color rgba
     @location(3) outColorAndShow: vec4<f32>,     // outlineColor.rgb, show (0/1)
-    // DP-H42 / DP-H40 / A.14 perInstanceFlags. Same contract as Billboard:
+    // Depth-test, split, and distance-display flags; same contract as Billboard:
     //   x = disableDepthTestDistance (meters; squared in shader)
     //   y = splitDirection (-1 / 0 / +1)
-    //   z = distanceDisplayCondition.near^2 (Batch 136)
-    //   w = distanceDisplayCondition.far^2 (Batch 136)
+    //   z = distanceDisplayCondition.near^2
+    //   w = distanceDisplayCondition.far^2
     @location(4) perInstanceFlags: vec4<f32>,
-    // AUDIT_2026_05_02 A.14 (Batch 136) — translucencyByDistance + scaleByDistance
-    // NearFarScalars (near, nearValue, far, farValue). Point has no
+    // translucencyByDistance and scaleByDistance NearFarScalars
+    // (near, nearValue, far, farValue). Point has no
     // pixelOffset attribute, so the EYE_DISTANCE_PIXEL_OFFSET gate is
     // not consumed here.
     @location(5) translucencyByDistance: vec4<f32>,
@@ -151,26 +149,27 @@ fn vertexMain(
     // RTE: compute eye-relative position with emulated 64-bit precision
     // This eliminates jittering at planetary-scale coordinates
     let eyeRelativePos = translateRelativeToEye(posHigh, posLow);
-    // AUDIT_2026_05_02 A.14 (Batch 136) — squared eye distance, hoisted
-    // for use by DDC + DISABLE_DEPTH + the two NearFarScalar gates.
+    // Hoist squared eye distance for distance display, depth disabling,
+    // and both NearFarScalar variants.
     let camDistSq = dot(eyeRelativePos.xyz, eyeRelativePos.xyz);
     var clipPos = camera.mvpRelativeToEye * eyeRelativePos;
 
-    // POINT-SPRITE-SHAPE — mirror PointPrimitiveCollectionVS sizing
-    // exactly: outlinePercent from the UNPADDED size, scaleByDistance
-    // applied to the TOTAL size (outline included, like WebGL), +3.0
-    // anti-aliasing padding, floor at 1.0. Before this the WebGPU
-    // sprite was 3px smaller with a thinner outline ring than WebGL.
-    // (czm_pixelRatio and u_maxTotalPointSize are not plumbed into this
-    // UB; probes run at DPR 1 and WebGPU has no aliased-point clamp.)
+    // Match `PointPrimitiveCollectionVS` sizing: derive `outlinePercent` from
+    // the unpadded size, apply `scaleByDistance` to the total size including
+    // the outline, add 3 px of anti-aliasing padding, and clamp to at least
+    // 1 px. Omitting the padding makes the sprite 3 px smaller and thins its
+    // outline relative to WebGL. `czm_pixelRatio` and
+    // `u_maxTotalPointSize` are unavailable in this uniform block, so parity
+    // is established only at device pixel ratio 1; WebGPU has no aliased-point
+    // clamp to mirror.
     let outlineBothSides = 2.0 * outlineWidth;
     var totalSize: f32 = basePixelSize + outlineBothSides;
     var outlinePercent: f32 = 0.0;
     if (totalSize > 0.0) {
         outlinePercent = outlineBothSides / totalSize;
     }
-    // AUDIT_2026_05_02 A.14 (Batch 136) — apply EYE_DISTANCE_SCALING
-    // before the quad expansion so scale=0 collapses the quad to a
+    // Apply eye-distance scaling before quad expansion so scale=0 collapses
+    // the quad to a
     // point and the DDC clip-pos override doesn't fight the size
     // calculation.
     //>>ifdef EYE_DISTANCE_SCALING
@@ -205,8 +204,8 @@ fn vertexMain(
     );
 
     //>>ifdef DISTANCE_DISPLAY_CONDITION
-    // AUDIT_2026_05_02 A.14 (Batch 136) — gate visibility by squared
-    // eye distance against the per-instance `[nearSq, farSq]` window
+    // Gate visibility by squared eye distance against the per-instance
+    // `[nearSq, farSq]` window
     // packed into `perInstanceFlags.zw`.
     let nearSqDDC = perInstanceFlags.z;
     let farSqDDC = perInstanceFlags.w;
@@ -216,10 +215,10 @@ fn vertexMain(
     //>>endif
 
     //>>ifdef DISABLE_DEPTH_DISTANCE
-    // DP-H42 — override depth when within the per-instance or frame-wide
-    // `disableDepthTestDistance`. Batch 140 — raw-sentinel pattern (see
-    // BillboardCollection.wgsl). Pre-fix the squaring step killed the
-    // sign on the `-1` "always disable" sentinel.
+    // Override depth within the per-instance or frame-wide
+    // `disableDepthTestDistance`. Test the raw sentinel before squaring so
+    // the `-1` "always disable" value retains its sign; see
+    // BillboardCollection.wgsl.
     //
     // Set `clipPos.z = 0.0` → NDC z = 0 = the WebGPU NEAR plane, so the point
     // always passes the `less-equal` depth test (renders ON TOP). The previous
@@ -250,8 +249,8 @@ fn vertexMain(
 
     output.uv = corner;
 
-    // AUDIT_2026_05_02 A.14 (Batch 136) — translucencyByDistance ramp
-    // applied to both the fill (pointColor) and outline alpha so the
+    // Apply the translucencyByDistance ramp to both the fill color and
+    // outline alpha so the
     // point fades coherently under camera distance changes.
     var effectiveAlpha: f32 = pointColor.a;
     //>>ifdef EYE_DISTANCE_TRANSLUCENCY
@@ -263,13 +262,14 @@ fn vertexMain(
     //>>endif
     output.color = vec4<f32>(pointColor.rgb, effectiveAlpha);
     output.outlineColor = vec4<f32>(outColorAndShow.xyz, effectiveAlpha);
-    // POINT-SPRITE-SHAPE — WebGL parity: v_innerPercent = 1 - outlinePercent,
-    // v_pixelDistance = 2 / totalSize (was 1/totalSize, halving the AA band).
+    // Match WebGL's `v_innerPercent = 1.0 - outlinePercent` and
+    // `v_pixelDistance = 2.0 / totalSize`; a numerator of 1.0 would halve the
+    // fragment shader's anti-aliasing band.
     output.innerPercent = 1.0 - outlinePercent;
     output.pixelDistance = 2.0 / totalSize;
 
     //>>ifdef SPLIT_ENABLED
-    // DP-H40 — forward split direction for per-fragment discard.
+    // Forward split direction for per-fragment discard.
     output.splitDirection = perInstanceFlags.y;
     //>>endif
 
@@ -302,7 +302,7 @@ struct FragOutput {
 @fragment
 fn fragmentMain(input: VertexOutput) -> FragOutput {
     //>>ifdef SPLIT_ENABLED
-    // DP-H40 — discard pixels on the wrong side of the split cutoff.
+    // Discard pixels on the wrong side of the split cutoff.
     if (input.splitDirection < 0.0 && input.position.x > camera.splitPosition) {
         discard;
     }
@@ -327,10 +327,9 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
     var color = mix(input.outlineColor, input.color, innerAlpha);
     color = vec4<f32>(color.rgb, color.a * wholeAlpha);
 
-    // Q13-PLAIN-HDR-GAMMA-CORE — mirror WebGL PointPrimitiveCollectionFS.glsl's
-    // `out_FragColor = czm_gammaCorrect(color)` (gated on `#ifdef HDR`, identity
-    // in SDR). `camera.logDepth.w` holds czm_gamma when `scene.highDynamicRange`
-    // is on, else 0 → skipped, so the default SDR path is byte-identical.
+    // Mirror PointPrimitiveCollectionFS.glsl's HDR gamma correction.
+    // `camera.logDepth.w` holds gamma in HDR and zero in SDR, leaving the SDR
+    // path unchanged.
     if (camera.logDepth.w > 0.5) {
         color = vec4<f32>(
             pow(max(color.rgb, vec3<f32>(0.0)), vec3<f32>(camera.logDepth.w)),
@@ -350,9 +349,8 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
     return out;
 }
 
-// AUDIT_2026_05_02 B.10 (Batch 148, NEW-COLLECTIONS-MOTION-VECTORS) —
-// per-pixel velocity emission for animated points. Mirrors the
-// Billboard pattern from Batch 143; see `BillboardCollection.wgsl`
+// Per-pixel velocity emission for animated points. Mirrors the billboard
+// pattern; see `BillboardCollection.wgsl`
 // for the full design notes (center-only delta, prev-instance VB at
 // slot 1, w<=0 fallback).
 //
@@ -415,8 +413,8 @@ fn vertexVelocityMain(input: VelocityVertexInput) -> VelocityVertexOutput {
   // velocity texture covers the same pixels the color pass touched.
   // Same QUAD_CORNERS expansion as `vertexMain`.
   var clipPos = currentCenterClip;
-  // POINT-SPRITE-SHAPE — +3 AA padding matches the color VS so the
-  // velocity quad stays coverage-identical to the color quad.
+  // Include the color vertex shader's 3 px anti-aliasing padding so the
+  // velocity quad covers exactly the pixels written by the color quad.
   var totalSize = basePixelSize + 2.0 * outlineWidth;
   if (totalSize > 0.0) {
     totalSize = totalSize + 3.0;

@@ -1,7 +1,7 @@
 // BillboardCollection.wgsl — Instanced billboard rendering for CesiumJS WebGPU
 // Each billboard is an instanced screen-aligned quad with texture atlas support.
 //
-// Instance data layout (176 bytes per billboard, 11 x vec4 — Batch 138):
+// Instance data layout (176 bytes per billboard, 11 x vec4):
 //   @location(0)  posHighAndScale:           vec4<f32> — encodedPosition.high.xyz, uniformScale
 //   @location(1)  posLowAndRotation:         vec4<f32> — encodedPosition.low.xyz, rotation
 //   @location(2)  compressedAttr0:           vec4<f32> — pixelOffset.xy, alignedAxis.xy
@@ -15,7 +15,7 @@
 //   @location(7)  translucencyByDistance:    vec4<f32> — near, nearAlpha, far, farAlpha
 //   @location(8)  pixelOffsetScaleByDistance: vec4<f32> — near, nearScale, far, farScale
 //   @location(9)  scaleByDistance:           vec4<f32> — near, nearScale, far, farScale
-//   @location(10) threePointAttribs:         vec4<f32> — Batch 138 (VS_THREE_POINT_DEPTH_CHECK):
+//   @location(10) threePointAttribs:         vec4<f32> — depth-check controls:
 //                                              .x = depthOrigin.x (-1 right / 0 center / +1 left,
 //                                                    or 0 = inherit billboard origin)
 //                                              .y = depthOrigin.y (-1 / 0 / +1 vertical anchor)
@@ -23,11 +23,10 @@
 //                                              .w = reserved
 //
 // Trailing slots (perInstanceFlags + 3 NearFarScalars + threePointAttribs)
-// are only consumed inside `//>>ifdef` blocks for DP-H42
-// (DISABLE_DEPTH_DISTANCE), DP-H40 (SPLIT_ENABLED), AUDIT_2026_05_02
-// A.14 (DISTANCE_DISPLAY_CONDITION + EYE_DISTANCE_TRANSLUCENCY +
-// EYE_DISTANCE_PIXEL_OFFSET + EYE_DISTANCE_SCALING), and Batch 138
-// (VS_THREE_POINT_DEPTH_CHECK). When none of those defines are active
+// are only consumed by the DISABLE_DEPTH_DISTANCE, SPLIT_ENABLED,
+// DISTANCE_DISPLAY_CONDITION, EYE_DISTANCE_TRANSLUCENCY,
+// EYE_DISTANCE_PIXEL_OFFSET, EYE_DISTANCE_SCALING, and
+// VS_THREE_POINT_DEPTH_CHECK variants. When none of those defines are active,
 // WGSL treats the declared inputs as unused and the rasterizer ignores
 // the VB slots — cost is 80 bytes per instance of VRAM bandwidth only.
 
@@ -35,30 +34,29 @@ struct CameraUniforms {
   mvpRelativeToEye: mat4x4<f32>,
   viewRotation: mat4x4<f32>,
   encodedCameraHigh: vec3<f32>,
-  // Renderer-wide log depth (NEW-COLLECTIONS-LOG-DEPTH) — the previously
-  // zero `_pad0` / `_pad1` lanes now carry the log-depth frustum near/far
-  // and the float-46 slot (previously implicit struct padding) carries
-  // oneOverLog2FarDepthFromNearPlusOne. Packed unconditionally by
-  // `packUniforms`; only the `//>>ifdef LOG_DEPTH` blocks read them.
+  // Former `_pad0` / `_pad1` lanes carry the log-depth frustum near/far, and
+  // formerly implicit float 46 carries oneOverLog2FarDepthFromNearPlusOne.
+  // `packUniforms` fills them unconditionally without changing the UBO layout;
+  // only the `//>>ifdef LOG_DEPTH` blocks read them.
   // See WebGPULogDepth.ts for the encode contract.
   logDepthNear: f32,
   encodedCameraLow: vec3<f32>,
   logDepthFar: f32,
   viewportSize: vec2<f32>,
   highResMultiplier: f32,
-  // Batch 138 (VS_THREE_POINT_DEPTH_CHECK) — `BillboardCollection.threePointDepthTestDistance`
-  // raw distance in meters; squared in shader for the lengthSq compare.
+  // `BillboardCollection.threePointDepthTestDistance` in meters; squared in
+  // the shader for the lengthSq compare.
   // 0.0 = feature off / per-frame skip. Mirrors WebGL's
-  // `u_threePointDepthTestDistance` semantics. Sits in the previously
-  // unused `_pad2` slot — no UBO size change.
+  // `u_threePointDepthTestDistance` semantics. Stored in a padding slot, so
+  // the UBO size does not change.
   threePointDepthTestDistance: f32,
-  // DP-H42 — frame-wide fallback threshold. When a billboard's per-instance
+  // Frame-wide fallback threshold. When a billboard's per-instance
   // `disableDepthTestDistance` is zero and this is non-zero, we use this
   // value so `scene.minimumDisableDepthTestDistance` applies globally.
   // Value is the raw (unsquared) distance in meters; squared in the shader
   // for the comparison.
   minimumDisableDepthTestDistance: f32,
-  // DP-H40 — frame-wide split screen cutoff in framebuffer pixels
+  // Frame-wide split-screen cutoff in framebuffer pixels
   // (`frameState.splitPosition * context.drawingBufferWidth`). Matches
   // WebGL's `czm_splitPosition` convention so the fragment compare sits
   // in the same coordinate space as `position.xy` / `gl_FragCoord.x`.
@@ -68,11 +66,11 @@ struct CameraUniforms {
   // `previousViewProjection`'s 16-byte alignment, so the struct size and
   // every existing offset are unchanged.
   logDepthFactor: f32,
-  // Q13-PLAIN-HDR-GAMMA-CORE — carries czm_gamma (scene.gamma, default 2.2)
-  // when `scene.highDynamicRange` is on, else 0. Repurposes the former
-  // `_padLog` at float 47 — no UBO size change. The fragment shader gates the
-  // WebGL `#ifdef HDR` czm_gammaCorrect sRGB→linear decode on `> 0.5`, so the
-  // default SDR path (0) stays the historical identity.
+  // Holds `czm_gamma` (`scene.gamma`, default 2.2) while
+  // `scene.highDynamicRange` is enabled and zero otherwise. It occupies float
+  // 47 without changing the uniform-buffer size. The fragment shader applies
+  // WebGL's `#ifdef HDR` sRGB-to-linear decode only when this value exceeds
+  // 0.5, leaving the default SDR path unchanged.
   hdrGamma: f32,
       previousViewProjection: mat4x4<f32>,
 };
@@ -80,9 +78,8 @@ struct CameraUniforms {
 @group(0) @binding(0) var<uniform> camera: CameraUniforms;
 @group(0) @binding(1) var atlasTexture: texture_2d<f32>;
 @group(0) @binding(2) var atlasSampler: sampler;
-// Batch 138 (VS_THREE_POINT_DEPTH_CHECK) — globe depth as a packed
-// rgba8 color texture (czm_packDepth scheme). Sampled in the VS via
-// `getGlobeDepth` to occlude clamp-to-ground billboards behind
+// Packed RGBA8 globe depth (`czm_packDepth`) sampled by
+// `getGlobeNdcDepth` to occlude clamp-to-ground billboards behind
 // terrain. Always-bound layout entry; the VS only samples it inside
 // the matching ifdef block. When the feature is off the texture
 // view points at a 1×1 placeholder produced by the renderer.
@@ -90,9 +87,8 @@ struct CameraUniforms {
 @group(0) @binding(4) var globeDepthSampler: sampler;
 
 //>>ifdef LOG_DEPTH
-// Renderer-wide log depth (NEW-COLLECTIONS-LOG-DEPTH). Collection shaders
-// are fully inline (no #import chunk pipeline), so these mirror the
-// canonical definitions in Shaders/WebGPU/chunks/functions/
+// Collection shaders are fully inline (no #import chunk pipeline), so these
+// mirror the canonical definitions in Shaders/WebGPU/chunks/functions/
 // csm_{vertexLogDepth,writeLogDepth}.wgsl — keep them byte-compatible.
 // near/far/factor come from the camera UB lanes (packUniforms).
 fn csm_vertexLogDepth(clipPosition: vec4<f32>, near: f32) -> f32 {
@@ -124,7 +120,7 @@ struct VertexInput {
   @location(7) translucencyByDistance: vec4<f32>,
   @location(8) pixelOffsetScaleByDistance: vec4<f32>,
   @location(9) scaleByDistance: vec4<f32>,
-  // Batch 138 (VS_THREE_POINT_DEPTH_CHECK) — depthOrigin + enable flag.
+  // Depth origin and enable flag for the three-point depth check.
   @location(10) threePointAttribs: vec4<f32>,
 };
 
@@ -133,7 +129,7 @@ struct VertexOutput {
   @location(0) texCoord: vec2<f32>,
   @location(1) color: vec4<f32>,
   //>>ifdef SPLIT_ENABLED
-  // DP-H40 — per-instance split direction forwarded to the fragment
+  // Per-instance split direction forwarded to the fragment
   // stage so each billboard's side-of-cutoff is preserved after
   // rasterization. `-1` = left half only, `0` = always render,
   // `+1` = right half only.
@@ -150,7 +146,7 @@ fn translateRelativeToEye(posHigh: vec3<f32>, posLow: vec3<f32>, camHigh: vec3<f
   return (posHigh - camHigh) + (posLow - camLow);
 }
 
-// AUDIT_2026_05_02 A.14 (Batch 136) — WGSL port of
+// WGSL port of
 // `Source/Shaders/Builtin/Functions/nearFarScalar.glsl`'s
 // `czm_nearFarScalar`. Linearly interpolates `nearValue` → `farValue`
 // over `[near, far]` using squared distances to avoid the sqrt that
@@ -169,10 +165,10 @@ fn czm_nearFarScalar(scalar: vec4<f32>, distSq: f32) -> f32 {
   return mix(scalar.y, scalar.w, t);
 }
 
-// Batch 138 (VS_THREE_POINT_DEPTH_CHECK) — WGSL port of WebGL's
+// WGSL port of WebGL's
 // `czm_unpackDepth(rgba)`. The globe depth pass packs eye-space depth
 // into a 4-channel RGBA8 texture using `czm_packDepth`. Reverse the
-// packing so the VS can compare against the candidate label's
+// packing so the VS can compare against the candidate primitive's
 // depth. Matches `Source/Shaders/Builtin/Functions/unpackDepth.glsl`.
 fn czm_unpackDepth(packedDepth: vec4<f32>) -> f32 {
   return dot(
@@ -181,18 +177,17 @@ fn czm_unpackDepth(packedDepth: vec4<f32>) -> f32 {
   );
 }
 
-// Batch 138 / Batch 139 (VS_THREE_POINT_DEPTH_CHECK) — sample the
+// Sample the
 // packed globe-depth texture at a clip-space position and return the
 // terrain's NDC z directly. Returns 0 when off-globe (the packed
 // depth is 0 — `czm_packDepth` maps "no terrain" to 0).
 //
-// WebGPU NDC z range is [0, 1] (matching D3D12/Metal/Vulkan), NOT
+// WebGPU NDC z range is [0, 1] (matching D3D12/Metal/Vulkan), unlike
 // WebGL's [-1, 1]. The globe pass writes `position.z / position.w`
-// already in [0, 1], so the unpacked value IS the terrain's NDC z;
+// already in [0, 1], so the unpacked value is the terrain's NDC z;
 // callers compare in NDC space using a uniform NDC bias instead of
-// converting back to clip-z. (Earlier Batch 138 draft converted to
-// clip-z and used a fixed clip-z bias which was distance-dependent
-// and made the gate effectively a no-op at long distances.)
+// converting back to clip-z, where a fixed bias would be distance-dependent
+// and ineffective at long distances.
 fn getGlobeNdcDepth(clipPos: vec4<f32>) -> f32 {
   if (clipPos.w <= 0.0) {
     return 0.0;
@@ -208,10 +203,9 @@ fn getGlobeNdcDepth(clipPos: vec4<f32>) -> f32 {
   return czm_unpackDepth(packed);
 }
 
-// Renderer-wide log depth (NEW-COLLECTIONS-LOG-DEPTH) — the candidate depth
-// the 3-point check compares against the unpacked globe depth. The globe
+// Candidate depth for the three-point check. The globe
 // depth texture is a copy of the scene depth buffer: hyperbolic NDC z
-// normally, LOG-encoded when the LOG_DEPTH epic is active — so the
+// normally, logarithmically encoded when LOG_DEPTH is active — so the
 // comparison value must live in the same space. The log form derives the
 // eye distance from clip.w (csm_vertexLogDepth contract) and applies the
 // same encode the globe FS used (camera.logDepthNear / logDepthFactor =
@@ -225,17 +219,14 @@ fn candidateGlobeCompareDepth(clipPos: vec4<f32>) -> f32 {
   //>>endif
 }
 
-// Batch 139 (NEW-VS-THREE-POINT-FULL-3POINT-SAMPLING) — WGSL port of
-// the WebGL helper `addScreenSpaceOffset` from
-// `BillboardCollectionVS.glsl:51-87`. Computes the clip-space position
+// WGSL port of WebGL's `addScreenSpaceOffset` helper. Computes the clip position
 // of a corner of a billboard given the anchor's clipPos, a direction
 // in {(0,0), (0,1), (1,1)} for the WebGL 3-point sample-point set,
 // the label origin in {-1, 0, +1}², the billboard size in pixels,
 // the pixelOffset, the rotation, and the pixel→clip scale.
 //
-// WebGL math (4th-pass audit — `originScale` had a spurious negation
-// in the 3rd-pass version; WebGL `BillboardCollectionVS.glsl:58` is
-// `originTranslate = origin * abs(halfSize)` with NO negation):
+// `originScale` follows the WebGL expression without negation:
+// `originTranslate = origin * abs(halfSize)`.
 //   halfSize = size * 0.5
 //   halfSizeOffset = halfSize * (direction * 2 - 1)   // [-half, +half]
 //   originScale = origin * abs(halfSize)              // shift along origin
@@ -291,16 +282,14 @@ const QUAD_OFFSETS = array<vec2<f32>, 6>(
   vec2<f32>(-0.5,  0.5),
 );
 
-// C4-BILLBOARD-ATLAS-VFLIP — V matches WebGL's atlas convention. WebGL's
-// BillboardCollectionVS.glsl:141 computes `textureCoordinatesBottomLeft +
-// direction * range`, mapping the BOTTOM-of-screen quad corner to the atlas
-// rect's MIN v (its "bottom-left") and the TOP corner to MAX v. The atlas
-// texture in both backends is uploaded flipY=true (image bottom → v=0), so
-// screen-bottom must sample MIN v to render the image upright. The prior
-// array assigned v=1 to the bottom corner, producing a vertical flip vs WebGL
-// (red/blue swap on an asymmetric image; upside-down glyphs on labels).
-// QUAD_OFFSETS y increases upward after the positive pixelToClip.y transform,
-// so corner.y=-0.5 is screen-bottom → v=0, corner.y=+0.5 is screen-top → v=1.
+// WebGL's `BillboardCollectionVS.glsl` computes
+// `textureCoordinatesBottomLeft + direction * range`, mapping the
+// screen-bottom quad corner to the atlas rectangle's minimum v and the
+// screen-top corner to its maximum v. Both backends upload the atlas with
+// `flipY=true`, placing the image bottom at v=0, so reversing this mapping
+// vertically flips asymmetric images and label glyphs. `QUAD_OFFSETS.y`
+// increases upward after the positive `pixelToClip.y` transform; therefore
+// corner.y=-0.5 maps to v=0 and corner.y=+0.5 maps to v=1.
 const QUAD_UVS = array<vec2<f32>, 6>(
   vec2<f32>(0.0, 0.0),
   vec2<f32>(1.0, 0.0),
@@ -336,15 +325,14 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   let positionRTE = translateRelativeToEye(posHigh, posLow, camera.encodedCameraHigh, camera.encodedCameraLow);
   var clipPos = camera.mvpRelativeToEye * vec4<f32>(positionRTE, 1.0);
 
-  // AUDIT_2026_05_02 A.14 (Batch 136) — squared eye distance, hoisted
-  // here because four distinct gates (DDC, DISABLE_DEPTH, and the
-  // three nearFarScalar gates) all consume it. Computing once avoids
+  // Squared eye distance is hoisted because five distance-aware gates (DDC,
+  // DISABLE_DEPTH, and the three nearFarScalar gates) consume it. Computing once avoids
   // four redundant dot products in the hot path. `positionRTE` is
-  // already the camera-relative offset, so dot-self IS the squared
+  // already the camera-relative offset, so dot-self is the squared
   // eye-space distance.
   let camDistSq = dot(positionRTE, positionRTE);
 
-  // AUDIT_2026_05_02 A.14 (Batch 136) — apply EYE_DISTANCE_SCALING
+  // Apply EYE_DISTANCE_SCALING
   // before the corner expansion. WebGL's `BillboardCollectionVS.glsl:228-236`
   // multiplies `scale *= distanceScale` and pushes the vertex behind
   // the near plane when the result is exactly 0 (matching that path).
@@ -358,7 +346,7 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   }
   //>>endif
 
-  // AUDIT_2026_05_02 A.14 (Batch 136) — apply EYE_DISTANCE_PIXEL_OFFSET
+  // Apply EYE_DISTANCE_PIXEL_OFFSET
   // before the pixel-offset-to-clip-space conversion. Mirrors WebGL's
   // `pixelOffset *= czm_nearFarScalar(pixelOffsetScaleByDistance, lengthSq)`
   // at `BillboardCollectionVS.glsl:249-252`.
@@ -385,22 +373,21 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   // Billboard size in pixels (post-distance-scaling)
   let size = vec2<f32>(billboardWidth, billboardHeight) * effectiveScale;
 
-  // Convert CSS-pixel offsets to clip space. NEW-BILLBOARD-SIZE-PARITY —
-  // `viewportSize` is the DEVICE-pixel drawing buffer (canvas.width =
+  // Convert CSS-pixel offsets to clip space.
+  // `viewportSize` is the device-pixel drawing buffer (canvas.width =
   // cssWidth * devicePixelRatio), but `size` and `pixelOffset` are authored
   // in CSS pixels. WebGL scales both by `czm_metersPerPixel`, which folds in
   // `czm_pixelRatio` (metersPerPixel.glsl:43), so a billboard of N CSS px
   // covers N*pixelRatio device px. Mirror that by baking `highResMultiplier`
-  // (= frameState.pixelRatio) into the pixel→clip factor. Without it WebGPU
-  // rendered billboards/labels at 1/pixelRatio the linear size (1/4 area at
+  // (= frameState.pixelRatio) into the pixel→clip factor. Omitting it would
+  // render billboards and labels at 1/pixelRatio the linear size (1/4 area at
   // DPR 2). Matches BufferPointMaterial.wgsl's `outerRadius * pixelRatio`.
   let pixelToClip = (2.0 * camera.highResMultiplier) / camera.viewportSize;
   clipPos.x += (corner.x * size.x + effectivePixelOffset.x) * pixelToClip.x * clipPos.w;
   clipPos.y += (corner.y * size.y + effectivePixelOffset.y) * pixelToClip.y * clipPos.w;
 
   //>>ifdef DISTANCE_DISPLAY_CONDITION
-  // AUDIT_2026_05_02 A.14 (Batch 135) — gate visibility by camera-to-
-  // billboard squared eye distance against the per-instance
+  // Gate visibility by the squared camera-to-billboard distance against the per-instance
   // `[nearSq, farSq]` window packed into `perInstanceFlags.zw`. When
   // outside the window, push the vertex behind the near plane so all
   // 6 quad corners clip — same trick the WebGL VS uses at
@@ -413,23 +400,20 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   //>>endif
 
   //>>ifdef DISABLE_DEPTH_DISTANCE
-  // DP-H42 — override depth when the camera is within the configured
+  // Override depth when the camera is within the configured
   // distance of this billboard. Mirrors BillboardCollectionVS.glsl:267-276:
   // per-instance value wins, falling back to the frame-wide minimum, then
   // comparing squared eye-space distance so we avoid a sqrt.
   //
-  // Set `clipPos.z = 0.0` → NDC z = 0 = the WebGPU NEAR plane (depth 0), so the
-  // billboard always passes the `less-equal` depth test regardless of what is in
-  // the buffer (it renders ON TOP). The previous code set `clipPos.z = clipPos.w`
-  // → NDC z = 1 = the FAR plane (depth 1.0), which under `less-equal` fails
-  // against any closer geometry (the globe) — i.e. it pushed the billboard
-  // BEHIND everything instead of on top. WebGPU clip space is z∈[0,1] (near→far),
+  // Set `clipPos.z = 0.0` so NDC z = 0, the WebGPU near plane, and the
+  // billboard passes the `less-equal` depth test regardless of the buffer.
+  // Setting `clipPos.z = clipPos.w` would target the far plane and fail against
+  // closer geometry. WebGPU clip space is z∈[0,1] (near→far),
   // not WebGL's [-1,1]; "always on top" is the near plane (0), not the far plane.
   //
-  // Batch 139 (4th-pass audit) — check the raw signed value for the
-  // `< 0` infinity sentinel BEFORE squaring (squaring kills the sign).
-  // Pre-fix the sentinel branch was dead code because squaring -1 → +1
-  // and the `disableDepthSq < 0.0` check could never fire.
+  // Check the raw signed value for the `< 0` infinity sentinel before
+  // squaring. Squaring -1 to +1 would erase the sign and make the sentinel
+  // branch unreachable.
   let disableRawDP = input.perInstanceFlags.x;
   if (disableRawDP < 0.0) {
     // Sentinel: always disable depth test.
@@ -450,28 +434,25 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   //>>endif
 
   //>>ifdef VS_THREE_POINT_DEPTH_CHECK
-  // Batch 138 + Batch 139 — full three-point depth check for clamp-to-
-  // ground billboards. Mirrors `BillboardCollectionVS.glsl:294-323`.
-  // Only runs when the camera is within `threePointDepthTestDistance`
-  // AND `enableDepthCheck` is true (which Batch 139 now computes from
-  // disable-depth-distance, matching WebGL's escape-hatch behavior).
-  // Samples globe depth at three label-anchor key points (origin / top
-  // / top-right) and collapses the vertex when ALL three are occluded
+  // Full three-point depth check for clamp-to-ground billboards, matching
+  // BillboardCollectionVS.glsl.
+  // It only runs when the camera is within `threePointDepthTestDistance`
+  // and `enableDepthCheck` remains true after the disable-depth-distance
+  // escape hatch is applied.
+  // Samples globe depth at three anchor key points (origin / top
+  // / top-right) and collapses the vertex when all three are occluded
   // by terrain.
   let threshSq3PD =
     camera.threePointDepthTestDistance *
     camera.threePointDepthTestDistance;
-  // Batch 139 (NEW-VS-THREE-POINT-DISABLE-DEPTH-INTERACTION) — drop
-  // `enableDepthCheck` to 0 when the camera is within the per-billboard
-  // or frame-wide `disableDepthTestDistance`. WebGL does this in
-  // `BillboardCollectionVS.glsl:266-277` so close-up clamped billboards
+  // Clear `enableDepthCheck` when the camera is within the per-billboard
+  // or frame-wide `disableDepthTestDistance`. WebGL applies the same gate so
+  // close-up clamped billboards
   // bypass the depth test (otherwise they'd be incorrectly occluded by
-  // their own ground when the depth-test override fires). Batch 138's
-  // initial implementation hardcoded `enableDepthCheck = 1.0` and was
-  // a parity gap.
+  // their own ground when the depth-test override fires).
   //
-  // CRITICAL: check the RAW signed value for the `< 0` sentinel
-  // BEFORE squaring. The WebGL convention treats negative
+  // Check the raw signed value for the `< 0` sentinel before squaring.
+  // The WebGL convention treats negative
   // `disableDepthTestDistance` as "always disable" (infinity). We
   // store raw meters in `perInstanceFlags.x`; squaring kills the sign.
   var enableDepthCheck3PD = input.threePointAttribs.z;
@@ -565,7 +546,7 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   output.position = clipPos;
 
   //>>ifdef SPLIT_ENABLED
-  // DP-H40 — forward the per-instance split direction to the fragment
+  // Forward the per-instance split direction to the fragment
   // stage. The fragment uses it to discard pixels on the wrong side of
   // `camera.splitPosition`. Interpolation over a screen-aligned quad is
   // constant in the sign-of-direction sense, so rasterization preserves
@@ -580,7 +561,7 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
     imageRect.y + baseUV.y * imageRect.w
   );
 
-  // AUDIT_2026_05_02 A.14 (Batch 136) — apply EYE_DISTANCE_TRANSLUCENCY
+  // Apply EYE_DISTANCE_TRANSLUCENCY
   // to the propagated alpha. WebGL's `BillboardCollectionVS.glsl:240-247`
   // pushes the vertex behind the near plane when translucency is
   // exactly 0; intermediate values just scale the fragment alpha (the
@@ -627,7 +608,7 @@ struct FragOutput {
 @fragment
 fn fragmentMain(input: VertexOutput) -> FragOutput {
   //>>ifdef SPLIT_ENABLED
-  // DP-H40 — discard pixels on the wrong side of the split cutoff.
+  // Discard pixels on the wrong side of the split cutoff.
   // Matches the BillboardCollectionFS.glsl WebGL path:
   //   `splitDirection < 0` → render only left of cutoff
   //   `splitDirection > 0` → render only right of cutoff
@@ -645,11 +626,10 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
 
   var texColor = textureSample(atlasTexture, atlasSampler, input.texCoord);
   var vtxColor = input.color;
-  // Q13-PLAIN-HDR-GAMMA-CORE — mirror WebGL BillboardCollectionFS.glsl's
-  // `color = czm_gammaCorrect(color); color *= czm_gammaCorrect(v_color);`
-  // (gated on `#ifdef HDR`, identity in SDR). `camera.hdrGamma` holds czm_gamma
-  // when `scene.highDynamicRange` is on, else 0 → this whole block is skipped
-  // and the result is byte-identical to the prior `texColor * input.color`.
+  // Mirror the WebGL `BillboardCollectionFS.glsl` HDR path by gamma-correcting
+  // both the sampled atlas color and the vertex color before multiplication.
+  // `camera.hdrGamma` holds `czm_gamma` in HDR and zero in SDR, so the default
+  // SDR result remains `texColor * input.color`.
   if (camera.hdrGamma > 0.5) {
     let g = vec3<f32>(camera.hdrGamma);
     texColor = vec4<f32>(pow(max(texColor.rgb, vec3<f32>(0.0)), g), texColor.a);
@@ -667,17 +647,16 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
   return out;
 }
 
-// AUDIT_2026_05_02 B.10 (Batch 143, NEW-COLLECTIONS-MOTION-VECTORS) —
-// per-pixel velocity emission for animated billboards.
+// Per-pixel velocity emission for animated billboards.
 //
-// Problem: TAA's camera-only fallback (depth + camera-delta reprojection)
-// is correct for STATIC billboards but ghosts on ANIMATED billboards
+// TAA's camera-only fallback (depth + camera-delta reprojection)
+// is correct for static billboards but ghosts on animated billboards
 // where per-instance position changes between frames (entity tracking,
 // moving labels). The velocity emission here closes that gap.
 //
-// Approach: rasterize the billboard quad the same way the color VS does
+// Rasterize the billboard quad the same way the color VS does
 // (so the velocity texture covers the right pixels), but emit the
-// CENTER-ONLY position delta as the velocity. Per-pixel rotation /
+// center-only position delta as the velocity. Per-pixel rotation /
 // per-pixel size deltas are intentionally ignored — for moving
 // billboards (the common animated case), corner-induced offsets cancel
 // (same corner relative to the moving center), so center-delta is the
@@ -772,8 +751,8 @@ fn vertexVelocityMain(input: VelocityVertexInput) -> VelocityVertexOutput {
     );
   }
   let size = vec2<f32>(billboardWidth, billboardHeight) * baseScale;
-  // NEW-BILLBOARD-SIZE-PARITY — same CSS-px → device-px conversion as the
-  // color VS so the velocity quad covers exactly the pixels the color pass
+  // Use the same CSS-px to device-px conversion as the color VS so the
+  // velocity quad covers exactly the pixels the color pass
   // rasterized.
   let pixelToClip = (2.0 * camera.highResMultiplier) / camera.viewportSize;
   clipPos.x += (corner.x * size.x + basePixelOffset.x) * pixelToClip.x * clipPos.w;

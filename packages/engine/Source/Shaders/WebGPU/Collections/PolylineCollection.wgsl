@@ -13,7 +13,6 @@
 //                                          distanceDisplayConditionNearSq,
 //                                          distanceDisplayConditionFarSq
 //   @location(6) translucencyByDistance:  vec4<f32> — near, nearAlpha, far, farAlpha
-//                                          (AUDIT_2026_05_02 A.14, Batch 136)
 //
 // Polyline has no pixelOffset or quad-scale, so EYE_DISTANCE_PIXEL_OFFSET
 // and EYE_DISTANCE_SCALING gates are not consumed here. The remaining
@@ -27,15 +26,15 @@ struct CameraUniforms {
   encodedCameraLow: vec3<f32>,
   _pad1: f32,
   viewportSize: vec2<f32>,
-  // Renderer-wide log depth (NEW-COLLECTIONS-LOG-DEPTH) — formerly
-  // `_pad2`; carries the encode frustum (near, far). The factor lane
-  // sits after `splitPosition` (previously implicit padding before
-  // previousViewProjection's 16-byte alignment). Packed
-  // unconditionally; only `//>>ifdef LOG_DEPTH` blocks read them.
+  // Renderer-wide log-depth parameters. `logDepthNearFar` carries the encode
+  // frustum, while `logDepthFactor` occupies the scalar lane after
+  // `splitPosition`; `_padLog` preserves `previousViewProjection`'s 16-byte
+  // alignment. Packed unconditionally so every variant shares one uniform
+  // buffer layout, though only LOG_DEPTH variants read them.
   logDepthNearFar: vec2<f32>,
-  // DP-H42 — frame-wide fallback threshold (meters). Squared in the shader.
+  // Frame-wide fallback threshold in meters, squared in the shader.
   minimumDisableDepthTestDistance: f32,
-  // DP-H40 — split cutoff in framebuffer pixels
+  // Split cutoff in framebuffer pixels
   // (`frameState.splitPosition * drawingBufferWidth`).
   splitPosition: f32,
   logDepthFactor: f32,
@@ -46,8 +45,8 @@ struct CameraUniforms {
 @group(0) @binding(0) var<uniform> camera: CameraUniforms;
 
 //>>ifdef LOG_DEPTH
-// Renderer-wide log depth (NEW-COLLECTIONS-LOG-DEPTH) — canonical inline
-// copies; see chunks/functions/csm_{vertexLogDepth,writeLogDepth}.wgsl.
+// Inline copies of the renderer-wide log-depth helpers; keep synchronized with
+// chunks/functions/csm_{vertexLogDepth,writeLogDepth}.wgsl.
 fn csm_vertexLogDepth(clipPosition: vec4<f32>, near: f32) -> f32 {
   return (clipPosition.w - near) + 1.0;
 }
@@ -99,7 +98,7 @@ fn fromScreenSpace(screen: vec2<f32>, depth: f32, w: f32, viewportSize: vec2<f32
   return vec4<f32>(ndc * w, depth, w);
 }
 
-// AUDIT_2026_05_02 A.14 (Batch 136) — WGSL port of `czm_nearFarScalar`.
+// WGSL port of `czm_nearFarScalar`.
 // See `BillboardCollection.wgsl` for the canonical comment block.
 fn czm_nearFarScalar(scalar: vec4<f32>, distSq: f32) -> f32 {
   let nearDistSq = scalar.x * scalar.x;
@@ -165,22 +164,19 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   // Convert back to clip space
   var finalPos = fromScreenSpace(offsetScreen, baseClip.z, baseClip.w, camera.viewportSize);
 
-  // AUDIT_2026_05_02 A.14 (Batch 136) — squared eye distance. The
-  // segment's logical position is the per-vertex interpolated RTE
-  // (start endpoint, end endpoint, or midpoint depending on `isEnd`).
-  // Each fragment of the segment then sees the interpolated value,
-  // which is what WebGL's PolylineVS does for distance gates.
+  // Squared eye distance from the segment endpoint selected by `isEnd`. The
+  // per-endpoint outputs interpolate across the segment, matching WebGL's
+  // PolylineVS distance behavior.
   let baseRTE = mix(startRTE, endRTE, isEnd);
   let camDistSq = dot(baseRTE, baseRTE);
 
   //>>ifdef DISTANCE_DISPLAY_CONDITION
-  // AUDIT_2026_05_02 A.14 (Batch 136) — gate visibility by squared
-  // eye distance against the per-instance `[nearSq, farSq]` window
-  // packed into `perInstanceFlags.zw`. Polylines push BOTH endpoints
-  // to a degenerate clip position when out of range so the segment
-  // never rasterizes. (Pushing only the current vertex would still
-  // leave a degenerate sliver visible because the other endpoint
-  // could remain on-screen.)
+  // Gate each vertex independently using the squared eye distance of the
+  // endpoint selected by `isEnd` and the per-instance `[nearSq, farSq]` window.
+  // An out-of-range vertex alone collapses to the degenerate clip position.
+  // Known limitation: a segment whose endpoint vertices straddle the visibility
+  // boundary may leave a sliver, and that behavior is not currently verified
+  // either way.
   let nearSqDDC = input.perInstanceFlags.z;
   let farSqDDC = input.perInstanceFlags.w;
   if (camDistSq < nearSqDDC || camDistSq > farSqDDC) {
@@ -189,16 +185,13 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   //>>endif
 
   //>>ifdef DISABLE_DEPTH_DISTANCE
-  // DP-H42 — override depth when the camera is within the configured
+  // Override depth when the camera is within the configured
   // per-instance `disableDepthTestDistance` (perInstanceFlags.x) or the
-  // frame-wide fallback. Forcing `finalPos.z = finalPos.w` maps to
-  // NDC z = 1 so the rasterizer's less-equal depth compare always
-  // passes. Mirrors BillboardCollection.wgsl.
+  // frame-wide fallback. This polyline path represents the override by
+  // forcing `finalPos.z = finalPos.w`.
   //
-  // Batch 140 (NEW-DISABLE-DEPTH-DISTANCE-INFINITY-PARITY-POLYLINE-POINT)
-  // — raw-sentinel pattern. Pre-fix the squaring step killed the sign
-  // on the `-1` "always disable" sentinel, so the WebGL-parity branch
-  // was dead code.
+  // Check the raw `-1` "always disable" sentinel before squaring, because
+  // squaring would erase the sign and make the WebGL-parity branch unreachable.
   let disableRawDP = input.perInstanceFlags.x;
   if (disableRawDP < 0.0) {
     finalPos.z = finalPos.w;
@@ -219,7 +212,7 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
 
   output.position = finalPos;
 
-  // AUDIT_2026_05_02 A.14 (Batch 136) — translucencyByDistance ramp.
+  // Apply the translucencyByDistance ramp.
   // Multiplied into the propagated alpha; clipping to a degenerate
   // position when translucency is exactly 0 matches WebGL's "if
   // (translucency == 0.0) positionEC = vec3(0.0)" pattern.
@@ -235,7 +228,7 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   output.distFromCenter = side; // For AA
 
   //>>ifdef SPLIT_ENABLED
-  // DP-H40 — forward per-polyline split direction so the FS can discard
+  // Forward the per-polyline split direction so the FS can discard
   // pixels on the wrong side of `camera.splitPosition`. Both vertices of
   // a segment carry the same splitDirection (per-instance), so the
   // interpolated value on any fragment of that segment is exactly the
@@ -276,7 +269,7 @@ struct FragOutput {
 @fragment
 fn fragmentMain(input: VertexOutput) -> FragOutput {
   //>>ifdef SPLIT_ENABLED
-  // DP-H40 — discard pixels on the wrong side of the split cutoff.
+  // Discard pixels on the wrong side of the split cutoff.
   // `camera.splitPosition` is in framebuffer pixels (JS pre-multiplies
   // `frameState.splitPosition` by `drawingBufferWidth`), same coord
   // space as `position.x` — so the compare runs in pixel space.
@@ -304,12 +297,11 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
   return fragOut;
 }
 
-// AUDIT_2026_05_02 B.10 (Batch 148, NEW-COLLECTIONS-MOTION-VECTORS) —
-// per-pixel velocity emission for animated polylines. Mirrors the
-// Billboard / Label pattern from Batches 143/144; see
+// Per-pixel velocity emission for animated polylines. It mirrors the
+// billboard and label pattern; see
 // `BillboardCollection.wgsl` for the full design notes.
 //
-// Polyline differs from Billboard in that each instance carries TWO
+// A polyline differs from a billboard in that each instance carries two
 // positions (start + end). The velocity VS computes both prev and
 // current clip positions for both endpoints, then `mix`es them by the
 // vertex's `isEnd` (0=start, 1=end) — same pattern the regular VS

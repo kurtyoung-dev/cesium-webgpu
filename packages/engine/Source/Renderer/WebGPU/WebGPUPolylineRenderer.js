@@ -17,10 +17,9 @@
  * The base PolylineCollection.wgsl ignores these via .xyz access, so RTE
  * precision is unaffected.
  *
- * Batch 22 appended `perInstanceFlags` at @location(5) carrying DP-H42's
- * per-polyline `disableDepthTestDistance` and DP-H40's `splitDirection`.
- * Batch 136 (Audit A.14) added DDC near^2/far^2 to perInstanceFlags.zw
- * (previously _pad/_pad) and translucencyByDistance at @location(6).
+ * `perInstanceFlags` at @location(5) carries each polyline's
+ * `disableDepthTestDistance`, `splitDirection`, and squared near/far
+ * distance-display thresholds. `translucencyByDistance` uses @location(6).
  * Polyline does not have pixelOffset or quad-scale, so the
  * EYE_DISTANCE_PIXEL_OFFSET / EYE_DISTANCE_SCALING gates are not
  * consumed here. All 6 polyline shaders (base color + pick + 4 material
@@ -36,16 +35,15 @@ import EncodedCartesian3 from "../../Core/EncodedCartesian3.js";
 import Matrix4 from "../../Core/Matrix4.js";
 import BlendOption from "../../Scene/BlendOption.js";
 import Pass from "../Pass.js";
-// PHASE 3 SLICE 4 (MORPH-POLYLINE-COLLECTION-2D) — scene-mode-aware
-// position projection. `SceneTransforms.computeActualEllipsoidPosition`
+// Scene-mode-aware position projection. `SceneTransforms.computeActualEllipsoidPosition`
 // maps an ECEF position to the active scene mode's frame: identity in
 // SCENE3D, `(proj.z, proj.x, proj.y)` in COLUMBUS_VIEW, `(0, proj.x,
 // proj.y)` in SCENE2D, and a CPU-side per-vertex lerp by `morphTime`
-// in MORPHING (the same `.zxy` swizzle + manual lerp the WebGL
+// in MORPHING (the same `.zxy` swizzle and manual lerp the WebGL
 // `PolylineVS.glsl` does on the GPU). Encoding the actual position in
 // the segment buffer — instead of the raw ECEF — lets the existing
 // mode-aware `mvpRelativeToEye` (built from `uniformState.view/projection`)
-// project polylines correctly in all four modes WITHOUT adding a second
+// project polylines correctly in all four modes without adding a second
 // position stream or a WGSL morph branch. SCENE3D stays byte-identical.
 import SceneMode from "../../Scene/SceneMode.js";
 import SceneTransforms from "../../Scene/SceneTransforms.js";
@@ -53,10 +51,10 @@ import WebGPUBuffer from "./WebGPUBuffer.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
 import WebGPUCollectionCameraUB from "./WebGPUCollectionCameraUB.js";
 import { getCollectionShaderSource } from "./WebGPUCollectionShaders.js";
-// C11-157 Slice B — non-LOG_DEPTH preprocess of the polyline color source for
-// the OIT accumulation variant (`cmd._shaderCode`). Inert unless the FAR-003 gate.
+// The OIT accumulation variant keeps a non-LOG_DEPTH preprocess of the
+// polyline color source in `cmd._shaderCode`; it is unused unless OIT is active.
 import { preprocess as preprocessShaderSource } from "./WebGPUShaderPreprocessor.js";
-// Slice 5c-B Phase 1 (Batch 110) — scene-FB target helper.
+// Build color targets against the scene framebuffer.
 import { makeSceneFBTargets } from "./WebGPUSceneFBTargetHelpers.js";
 import {
   makeBindGroupLayout,
@@ -72,14 +70,13 @@ import {
   createMaterialUploadState,
   uploadMaterialUniformBuffer,
 } from "./WebGPUMaterialUploadState.js";
-// NEW-COLLECTION-RENDERER-BASE (Phase 11 finisher, Batch 307) — shared
-// per-frame scaffolding. Polyline is bucket-shaped (grouped by material
+// Shared per-frame scaffolding. Polyline is bucket-shaped (grouped by material
 // type, no resident-instance manager, no per-instance pick buffer), so it
 // folds only the genuinely-shared pieces:
-//   - the per-device shader-module-cache accessor (was an inline WeakMap),
+//   - the per-device shader-module-cache accessor,
 //   - the settled-2D/CV coplanar-depth flag (`computeNoDepthTest`), and
 //   - the re-entry / infinite-loop sentinel (Sentinel 1).
-// Polyline keeps its OWN unique logic: the material-type bucketing, the
+// Polyline keeps its unique logic: the material-type bucketing, the
 // nested `pipelines[materialType] → Map` cache + its bespoke string
 // pipeline key, segment packing, and the per-material velocity gate.
 import {
@@ -92,8 +89,7 @@ import {
 } from "./WebGPUCollectionRendererBase.js";
 
 // Instance buffer: 7 × vec4 = 28 floats (112 bytes).
-// Was 24 floats (Batch 22); bumped in Batch 136 to add the
-// translucencyByDistance gate.
+// The final vec4 carries the translucency-by-distance gate.
 const FLOATS_PER_SEGMENT = 28;
 const BYTES_PER_SEGMENT = FLOATS_PER_SEGMENT * 4;
 const VERTICES_PER_SEGMENT = 6;
@@ -103,12 +99,12 @@ const VERTICES_PER_SEGMENT = 6;
 const MATERIAL_RESOURCE_RETIREMENT_GRACE_FRAMES = 60;
 
 /**
- * Batch 140 (NEW-DISABLE-DEPTH-DISTANCE-INFINITY-PARITY-POLYLINE-POINT) —
- * mirrors `WebGPUBillboardRenderer.encodeDisableDepthTestDistance`.
- * Maps `Number.POSITIVE_INFINITY` to `-1.0` so the WGSL `<0` always-
- * disable sentinel fires (matching WebGL `BillboardCollection.js:1798-1799`).
- * Earlier the JS pack collapsed Infinity to 0.0 (the `isFinite` branch
- * returned the default), which made the WGSL sentinel branch dead code.
+ * Encodes `disableDepthTestDistance` using the same representation as
+ * `WebGPUBillboardRenderer.encodeDisableDepthTestDistance`.
+ * Maps `Number.POSITIVE_INFINITY` to `-1.0` so the WGSL `<0` always-disable
+ * sentinel fires, matching WebGL's sentinel packing convention.
+ * Infinity must be handled before the finite-value branch; collapsing it to
+ * 0.0 would make the WGSL sentinel branch unreachable.
  */
 function encodeDisableDepthTestDistance(value) {
   if (typeof value !== "number") {
@@ -124,12 +120,11 @@ function encodeDisableDepthTestDistance(value) {
 }
 
 /**
- * AUDIT_2026_05_02 A.14 (Batch 136) — pack a CesiumJS NearFarScalar
- * (near, nearValue, far, farValue) into 4 contiguous floats. Mirrors
- * `WebGPUBillboardRenderer.packNearFarScalar`. Identity-NFS written
- * when `scalar` is undefined so the shader's gate produces the
- * unchanged baseline for polylines with no `translucencyByDistance`
- * configured.
+ * Packs a CesiumJS NearFarScalar
+ * (near, nearValue, far, farValue) into four contiguous floats. Mirrors
+ * `WebGPUBillboardRenderer.packNearFarScalar`. When `scalar` is undefined, an
+ * identity NearFarScalar is written so the shader preserves the baseline for
+ * polylines without `translucencyByDistance`.
  */
 function packNearFarScalar(out, offset, scalar, identity) {
   if (scalar) {
@@ -150,8 +145,8 @@ function packNearFarScalar(out, offset, scalar, identity) {
 // Camera UBO: mvpRTE(64) + camHigh(16) + camLow(16) + viewport(8) + pad(8)
 //   + minimumDisableDepthTestDistance(4) + splitPosition(4) + pad(8)
 //   + previousViewProjection(64)  = 192 bytes (48 floats).
-// DP-H41 (Batch 27) — previousViewProjection appended for TAA / motion
-// vectors. Offset 128..191 = slots 32..47.
+// previousViewProjection supports TAA and motion vectors at byte offsets
+// 128..191, or float slots 32..47.
 const CAMERA_BUFFER_SIZE = 192;
 const CAMERA_FLOATS = CAMERA_BUFFER_SIZE / 4; // 48
 
@@ -167,34 +162,31 @@ const scratchEncodedCamera = new EncodedCartesian3();
 const scratchEncodedStart = new EncodedCartesian3();
 const scratchEncodedEnd = new EncodedCartesian3();
 
-// PHASE 3 SLICE 4 (MORPH-POLYLINE-COLLECTION-2D) — scratch for the
-// per-endpoint mode-projected position + a world-frame copy after the
-// collection modelMatrix is applied. The projection is keyed off the
-// ECEF position run through the collection's modelMatrix, matching the
-// WebGL `PolylineBucket.getSegments` step (`modelMatrix * position`
-// THEN `projection.project(cartographic)`).
+// Scratch space for each mode-projected endpoint and for a world-frame copy
+// after the collection model matrix is applied. Non-3D projection starts from
+// the ECEF position transformed by that matrix, matching
+// `PolylineBucket.getSegments`: apply `modelMatrix`, then call
+// `projection.project(cartographic)`.
 const scratchActualStart = new Cartesian3();
 const scratchActualEnd = new Cartesian3();
 const scratchModelPoint = new Cartesian3();
 
 /**
- * PHASE 3 SLICE 4 (MORPH-POLYLINE-COLLECTION-2D) — map an ECEF position
- * into the active scene mode's render frame. In SCENE3D this is the raw
- * world position (after the collection modelMatrix). In 2D / Columbus
- * View / Morph it's the projected `.zxy`-convention position that the
- * mode-aware `mvpRelativeToEye` expects, with the morph lerp applied
- * CPU-side. Returns `result` (a Cartesian3).
+ * Maps an ECEF position into the active scene mode's render frame. In
+ * SCENE3D, `result` receives the raw ECEF input because
+ * `mvpRelativeToEye` already includes the collection model matrix. In 2D,
+ * Columbus View, and morph mode, it receives the projected `.zxy` position
+ * expected by `mvpRelativeToEye`, with the model matrix and morph interpolation
+ * applied on the CPU. Returns `result` (a Cartesian3).
  *
- * `modelMatrix` is the collection's modelMatrix; identity for the common
+ * `modelMatrix` is the collection's model matrix; identity for the common
  * case, in which the multiply is a no-op clone.
  * @private
  */
 function projectPositionForMode(position, frameState, modelMatrix, result) {
   if (frameState.mode === SceneMode.SCENE3D) {
-    // SCENE3D byte-identical: encode the raw ECEF position. The
-    // existing `mvpRelativeToEye` already folds in the modelMatrix, so
-    // we hand back the un-transformed position (matching the legacy
-    // `EncodedCartesian3.fromCartesian(start)` call site).
+    // `mvpRelativeToEye` already includes the model matrix in SCENE3D, so
+    // encode the raw ECEF position expected by `EncodedCartesian3`.
     return Cartesian3.clone(position, result);
   }
   // 2D / CV / Morph: project the modelMatrix-applied world position.
@@ -314,7 +306,7 @@ function groupByMaterialType(collection, result) {
     // Base Color-type materials are per-instance colored — the Color shader
     // reads the per-instance color attribute and ignores the material UBO —
     // so exact-object-identity grouping split N solid-color polylines into N
-    // draws. Key Color materials by material TYPE so they batch into a single
+    // draws. Key Color materials by material type so they batch into a single
     // draw; UBO-consuming types (Dash/Glow/Arrow/Outline/Image) keep
     // exact-object-identity grouping because distinct instances carry
     // distinct uniforms.
@@ -343,7 +335,7 @@ function groupByMaterialType(collection, result) {
 
 function getMaterialResourceKey(cache, materialType, material) {
   // Color-type groups share one stable resource key: groupByMaterialType
-  // batches ALL Color polylines into a single type-keyed group whose
+  // batches all Color polylines into a single type-keyed group whose
   // `group.material` is merely the last member's instance. An identity-derived
   // key would flap with collection membership and churn the cached
   // material/segment buffers; the Color shader never reads the material UBO,
@@ -450,8 +442,8 @@ function prepareMaterialTypeFrameResources(
   pipelineResult.cameraBindGroupLayout = pipelineEntry.cameraBindGroupLayout;
   pipelineResult.materialBindGroupLayout =
     pipelineEntry.materialBindGroupLayout;
-  // C11-157 Slice B — carry the OIT variant inputs (base pipeline descriptor +
-  // non-LOG_DEPTH source) onto the frame-result object the command site reads.
+  // Carry the OIT variant inputs (base pipeline descriptor plus non-LOG_DEPTH
+  // source) on the frame-result object read by the command site.
   pipelineResult.descriptor = pipelineEntry.descriptor;
   pipelineResult.oitShaderCode = pipelineEntry.oitShaderCode;
 
@@ -565,9 +557,8 @@ function buildSegmentDataForGroup(
       // Wrap to positions[0] for the final closing segment of a loop.
       const end = positions[(j + 1) % positions.length];
 
-      // PHASE 3 SLICE 4 (MORPH-POLYLINE-COLLECTION-2D) — encode the
-      // scene-mode-projected endpoint so 2D / CV / Morph project at the
-      // right map location. No-op clone in SCENE3D (byte-identical).
+      // Encode scene-mode-projected endpoints so 2D, Columbus View, and morph
+      // modes use the correct map location. SCENE3D is a byte-identical clone.
       const projStart = projectPositionForMode(
         start,
         frameState,
@@ -621,13 +612,13 @@ function buildSegmentDataForGroup(
       segmentData[offset + 18] = b;
       segmentData[offset + 19] = a;
 
-      // perInstanceFlags — DP-H42 / DP-H40 / A.14 per-polyline state,
-      // shared by every segment of that polyline so the depth override,
-      // split direction, and DDC window are coherent across the line.
+      // perInstanceFlags stores per-polyline state shared by every segment so
+      // the depth override, split direction, and distance-display window stay
+      // coherent across the line.
       //   x: disableDepthTestDistance (raw meters; squared in shader)
       //   y: splitDirection (-1 LEFT / 0 NONE / +1 RIGHT)
-      //   z: distanceDisplayCondition.near^2 (Batch 136)
-      //   w: distanceDisplayCondition.far^2 (Batch 136)
+      //   z: distanceDisplayCondition.near^2
+      //   w: distanceDisplayCondition.far^2
       segmentData[offset + 20] = encodeDisableDepthTestDistance(
         polyline._disableDepthTestDistance,
       );
@@ -646,9 +637,8 @@ function buildSegmentDataForGroup(
         segmentData[offset + 23] = Number.MAX_VALUE;
       }
 
-      // AUDIT_2026_05_02 A.14 (Batch 136) — translucencyByDistance.
-      // Identity = 1.0 (multiplicative onto alpha). Polyline doesn't
-      // expose pixelOffset or per-quad scale, so the other two
+      // translucencyByDistance uses 1.0 as the multiplicative alpha identity.
+      // Polyline does not expose pixelOffset or per-quad scale, so the other two
       // NearFarScalar gates aren't packed.
       packNearFarScalar(
         segmentData,
@@ -702,21 +692,19 @@ function buildPickSegmentData(collection, context, frameState, modelMatrix) {
     const width = polyline.width || 1.0;
     const loopClose = polyline.loop === true && positions.length >= 2;
 
-    // One pick ID per polyline (all segments share it).
-    //
-    // NEW-WEBGPU-COLLECTION-PICKID-OBJECT-SHAPE — this used to register the
-    // BARE `polyline`, so a resolved pick handed user code a Polyline whose
-    // `.primitive` / `.collection` / `.id` read `undefined`, where WebGL hands
-    // back `{primitive, collection, id}` (`Polyline.getPickId`,
-    // Polyline.js:163-175 — same `"polyline"` kind).
+    // One pick ID is shared by all segments of a polyline. `Polyline.getPickId`
+    // preserves WebGL's `"polyline"` kind and registers the wrapper shape
+    // `{ primitive, collection, id }`. Registering the bare polyline instead
+    // would expose undefined `.primitive`, `.collection`, and `.id` properties
+    // to user code.
     const pc = polyline.getPickId(context).color;
 
     const segLimit = loopClose ? positions.length : positions.length - 1;
     for (let j = 0; j < segLimit; j++) {
       const offset = segmentCount * FLOATS_PER_SEGMENT;
-      // PHASE 3 SLICE 4 (MORPH-POLYLINE-COLLECTION-2D) — pick path mirrors
-      // the color path's projected encoding so picked regions land on the
-      // same screen pixels in 2D / CV / Morph.
+      // The pick path mirrors the color path's projected encoding so picked
+      // regions land on the same screen pixels in 2D, Columbus View, and
+      // morph modes.
       const projPickStart = projectPositionForMode(
         positions[j],
         frameState,
@@ -755,9 +743,9 @@ function buildPickSegmentData(collection, context, frameState, modelMatrix) {
       segmentData[offset + 18] = pc.blue;
       segmentData[offset + 19] = pc.alpha;
 
-      // Pick path inherits DP-H42 / DP-H40 / A.14 so the picked region
-      // matches what the user sees on screen. Same contract as the
-      // color path.
+      // The pick path applies the same depth override, split direction, and
+      // distance gates as the color path so the picked region matches the
+      // visible line.
       segmentData[offset + 20] = encodeDisableDepthTestDistance(
         polyline._disableDepthTestDistance,
       );
@@ -802,26 +790,24 @@ const SEGMENT_BUFFER_LAYOUT = {
     { shaderLocation: 2, offset: 32, format: "float32x4" },
     { shaderLocation: 3, offset: 48, format: "float32x4" },
     { shaderLocation: 4, offset: 64, format: "float32x4" },
-    // DP-H42 / DP-H40 / A.14 DDC perInstanceFlags. Same slot in every
-    // polyline shader variant so per-polyline state can flow through
+    // perInstanceFlags occupies the same slot in every polyline shader variant
+    // so per-polyline depth, split, and distance-display state flows through
     // regardless of material type.
     { shaderLocation: 5, offset: 80, format: "float32x4" },
-    // AUDIT_2026_05_02 A.14 (Batch 136) — translucencyByDistance.
+    // Per-polyline translucency-by-distance parameters.
     { shaderLocation: 6, offset: 96, format: "float32x4" },
   ],
 };
 
 /**
- * AUDIT_2026_05_02 B.10 (Batch 148, NEW-COLLECTIONS-MOTION-VECTORS) —
- * second VB layout for the velocity pipeline. Same per-instance stride
- * as the regular segment buffer (the renderer keeps a one-frame-lagged
- * mirror of the same data); the velocity VS only reads the four
- * position fields via locations 7-10, the next free slots after the
- * current VS's 0-6 attribute set.
+ * Defines the second vertex-buffer layout for the velocity pipeline. It uses
+ * the same per-instance stride as the regular segment buffer because the
+ * renderer keeps a one-frame-lagged mirror of that data. The velocity vertex
+ * shader reads only the four position fields at locations 7-10, immediately
+ * after the current shader's locations 0-6.
  *
- * Polyline differs from Billboard / Label / Point in that each
- * instance carries TWO positions (start + end), so prev needs four
- * vec4 slots instead of two.
+ * Each polyline instance carries both a start and end position, so its
+ * previous-frame data requires four vec4 slots instead of two.
  * @private
  */
 const VELOCITY_PREV_SEGMENT_BUFFER_LAYOUT = {
@@ -844,16 +830,14 @@ const VELOCITY_PREV_SEGMENT_BUFFER_LAYOUT = {
  * Used so the shader-module cache key stays stable even when callers
  * pass different source strings for the same material type.
  *
- * NS-POLYLINE-COLLECTION-MULTI-MATERIAL — the render/velocity call sites
- * pass the collection's `material.type` string ("PolylineDash",
- * "PolylineGlow", "Color", …), NOT the lowercase shader key. The switch
- * below is keyed on the shader key, so normalize through `selectShaderKey`
- * first. Without this, every material type fell through to `default`
- * (POLYLINE_COLLECTION), collapsing the module-cache key to a single id per
- * `defines`: in a MIXED collection the first-processed group's compiled
- * module (usually Color) was returned for every other group, so Dash/Glow
- * lines rendered with the solid Color shader. Single-material collections
- * only worked because no other type poisoned the shared key first.
+ * Render and velocity call sites pass the collection's public `material.type`
+ * string ("PolylineDash", "PolylineGlow", "Color", …), not the lowercase
+ * shader key used by this switch. Normalize through `selectShaderKey` first;
+ * otherwise every material falls through to `POLYLINE_COLLECTION` and aliases
+ * one module-cache id per `defines`. In a mixed collection that would serve the
+ * first group's compiled module to all later groups, rendering Dash and Glow
+ * lines with the solid Color shader. Single-material collections mask this
+ * alias because no second shader competes for the same cache key.
  * @private
  */
 function sourceIdForMaterialType(materialType) {
@@ -875,23 +859,23 @@ function sourceIdForMaterialType(materialType) {
 
 // Module-level shader-module cache keyed by GPUDevice, shared across
 // every PolylineCollection on that device. Same pattern as Billboard /
-// Label / Point — folded onto the shared base accessor
-// (NEW-COLLECTION-RENDERER-BASE).
+// Label / Point through the shared base accessor.
 const getPolylineShaderModuleCache = makeDeviceShaderModuleCacheAccessor();
 
 /**
- * Scan the collection for the DP-H42 / DP-H40 / A.14 defines that
- * apply this frame. Short-circuits once all four bits are set.
+ * Scan the collection for the depth override, split, distance-display, and
+ * translucency defines that apply this frame. Short-circuits once all four
+ * bits are set.
  * Baseline (no features) stays the hot path.
  * @private
  */
 function computePolylineDefinesForFrame(collection, frameState) {
   let defines = 0;
-  // Renderer-wide log depth (NEW-COLLECTIONS-LOG-DEPTH) — OR the LOG_DEPTH
-  // bit when the master switch + per-frame flag are on. The bit keys the
-  // shader-module cache AND the pipeline maps/names, so the flip rebuilds
+  // Enable renderer-wide log depth by adding the LOG_DEPTH bit when the master
+  // switch and per-frame flag are on. The bit keys both the shader-module cache
+  // and the pipeline maps and names, so the flip rebuilds
   // through the normal keyed-miss path. Inert while the switch defaults
-  // FALSE (defines unchanged, byte-identical shaders).
+  // false (defines unchanged, byte-identical shaders).
   if (isWebGPULogDepthActive(frameState?.context, frameState)) {
     defines |= ShaderDefine.LOG_DEPTH;
   }
@@ -933,7 +917,7 @@ function computePolylineDefinesForFrame(collection, frameState) {
     ) {
       defines |= ShaderDefine.SPLIT_ENABLED;
     }
-    // AUDIT_2026_05_02 A.14 (Batch 136) — DDC + translucencyByDistance.
+    // Distance-display and translucency-by-distance feature variants.
     if (
       (defines & ShaderDefine.DISTANCE_DISPLAY_CONDITION) === 0 &&
       defined(p._distanceDisplayCondition)
@@ -963,8 +947,8 @@ function prewarmPolylineShaders(device) {
     return;
   }
   const D = ShaderDefine;
-  // AUDIT_2026_05_02 A.14 (Batch 136) — added DDC + translucencyByDistance
-  // variants. Polyline consumes 4 distance-related defines, but the
+  // Prewarm the common distance-display and translucency-by-distance
+  // variants. Polyline consumes four distance-related defines, but the
   // most common production combos are: baseline, DDC alone (KML),
   // DDC + translucency (animated KML lines), and the all-active set.
   const D_KML = D.DISTANCE_DISPLAY_CONDITION | D.EYE_DISTANCE_TRANSLUCENCY;
@@ -1010,11 +994,11 @@ function prewarmPolylineShaders(device) {
 // =========================================================================
 
 /**
- * Build the cache-friendly descriptor for a color polyline pipeline.
+ * Builds the cache-friendly descriptor for a color polyline pipeline.
  *
- * C-R7-RENDERER-MIGRATION (Batch 58). Returns the descriptor plus the
- * shared BGLs so the caller can build bind groups; the actual
- * `GPURenderPipeline` is materialized by `WebGPURenderPipelineCache`.
+ * Returns the descriptor plus the shared bind-group layouts so the caller can
+ * build bind groups. The pipeline resolver materializes the actual
+ * `GPURenderPipeline`, normally through `WebGPURenderPipelineCache`.
  * @private
  */
 function buildPolylineColorDescriptor(
@@ -1054,22 +1038,19 @@ function buildPolylineColorDescriptor(
     fragment: {
       module: shaderModule,
       entryPoint: "fragmentMain",
-      // Slice 5c-B Phase 1 (Batch 110) — scene-FB color target via
-      // helper. Standard alpha-over blend matches the helper's
+      // Target the scene framebuffer through the shared helper. Standard
+      // alpha-over blend matches the helper's
       // `translucent: true` shorthand exactly.
       targets: makeSceneFBTargets(format, { translucent: true }),
     },
     primitive: { topology: "triangle-list", cullMode: "none" },
-    // PHASE 3 SLICE 4 (MORPH-POLYLINE-COLLECTION-2D) — honor the
-    // collection's `depthTest.enabled` state. WebGL's PolylineCollection
-    // sets `useDepthTest = frameState.morphTime !== 0.0`
-    // (PolylineCollection.js:530), so in 2D AND Columbus View (both
-    // morphTime === 0) the polyline renders with depth test OFF / no
-    // depth write — it draws ON TOP of the co-planar flat map instead of
-    // z-fighting it. The WebGPU pipeline previously hardcoded
-    // `less-equal` + depthWrite, which made the CV polyline lose the
-    // depth test against the map surface and render as a truncated wedge.
-    // `always` + no depth-write matches the WebGL no-depth-test path.
+    // Honor the collection's `depthTest.enabled` state. WebGL's
+    // PolylineCollection sets `useDepthTest = frameState.morphTime !== 0.0`,
+    // so in 2D and Columbus View (both
+    // morphTime === 0) the polyline renders with depth testing and depth
+    // writes disabled. This draws it over the coplanar flat map instead of
+    // z-fighting or being truncated by the map surface. `always` plus no
+    // depth write matches the WebGL path.
     depthStencil: noDepthTest
       ? {
           format: depthFormat,
@@ -1081,7 +1062,8 @@ function buildPolylineColorDescriptor(
           depthWriteEnabled: true,
           depthCompare: "less-equal",
         },
-    // Batch 134 — match scene-FB MSAA sample count (see WebGPUBillboardRenderer for rationale).
+    // Match the scene-framebuffer MSAA sample count; see
+    // WebGPUBillboardRenderer for the rationale.
     multisample: sampleCount > 1 ? { count: sampleCount } : undefined,
   };
 
@@ -1089,21 +1071,12 @@ function buildPolylineColorDescriptor(
 }
 
 /**
- * Build the cache-friendly descriptor for a pick polyline pipeline. Pick
- * is camera-only (one BGL — pick color comes from instance data, no
- * material UBO).
- *
- * C-R7-RENDERER-MIGRATION (Batch 58).
- * @private
- */
-/**
- * AUDIT_2026_05_02 B.10 (Batch 148, NEW-COLLECTIONS-MOTION-VECTORS) —
- * descriptor for the polyline velocity pipeline variant. Same VS
- * layout / shader module / pipeline layout as the regular polyline
- * pipeline; the fragment entry is `fragmentVelocityMain` and the
- * target format is `rg16float` (the scene-FB velocity texture format).
- * Depth is read-only so fragments behind opaque geometry fail the
- * depth test. Mirrors `buildBillboardVelocityDescriptor` (Batch 143).
+ * Builds the polyline velocity-pipeline descriptor. It uses the same shader
+ * module and pipeline layout as the regular polyline pipeline; the fragment
+ * entry is `fragmentVelocityMain` and the target format is `rg16float` (the
+ * scene-framebuffer velocity texture format). Depth is read-only so fragments
+ * behind opaque geometry fail the depth test. Mirrors
+ * `buildBillboardVelocityDescriptor`.
  * @private
  */
 function buildPolylineVelocityDescriptor(
@@ -1142,6 +1115,14 @@ function buildPolylineVelocityDescriptor(
   return { descriptor, cameraBindGroupLayout };
 }
 
+/**
+ * Builds the cache-friendly descriptor for a pick polyline pipeline. Pick is
+ * camera-only: pick color comes from instance data, so no material uniform
+ * buffer or second bind-group layout is needed.
+ *
+ * The pipeline resolver materializes the pipeline from this descriptor.
+ * @private
+ */
 function buildPolylinePickDescriptor(
   device,
   shaderModule,
@@ -1155,10 +1136,10 @@ function buildPolylinePickDescriptor(
     [uniformBuffer(0, Stage.VERTEX_FRAGMENT)],
   );
 
-  // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — the defines hex already encodes
-  // the LOG_DEPTH bit, but append an explicit `[ld]` marker so the central
-  // pipeline cache (keyed on the descriptor name) can't serve a stale
-  // hyperbolic/log variant across a pick-fleet gate flip.
+  // Shader-module identity and the defines mask distinguish the LOG_DEPTH
+  // variant structurally. Append an explicit `[ld]` suffix so cache
+  // descriptions and diagnostics identify logarithmic and hyperbolic pick
+  // pipelines at a glance.
   const ldSuffix = defines & ShaderDefine.LOG_DEPTH ? " [ld]" : "";
   const descriptor = {
     name: `Polyline pick pipeline [${format}/${depthFormat}/defines=0x${defines.toString(16)}${ldSuffix}]`,
@@ -1178,9 +1159,9 @@ function buildPolylinePickDescriptor(
     primitive: { topology: "triangle-list", cullMode: "none" },
     depthStencil: {
       format: depthFormat,
-      // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH — already true today (nearer pick
-      // producers back-clip farther ones in the shared pick FBO), so the log
-      // frag_depth write composes with the fleet with no change here.
+      // Nearer pick producers back-clip farther ones in the shared pick
+      // framebuffer. The logarithmic frag_depth write therefore composes with
+      // the rest of the pick pass while preserving depth writes.
       depthWriteEnabled: true,
       depthCompare: "less-equal",
     },
@@ -1226,7 +1207,8 @@ function descriptorToGPU(d) {
  * The `entry` is a slot object { descriptor, pipeline, pending, ... }
  * that gets mutated in place.
  *
- * C-R7-RENDERER-MIGRATION (Batch 58).
+ * Pipeline resolution is centralized here so color and pick entries share the
+ * same asynchronous and synchronous fallback behavior.
  * @private
  */
 function tryResolvePolylinePipeline(device, pipelineCache, entry) {
@@ -1255,7 +1237,7 @@ function tryResolvePolylinePipeline(device, pipelineCache, entry) {
     }
     return null;
   }
-  // Fallback — direct synchronous creation matches pre-migration behavior.
+  // Contexts without a central cache require direct synchronous creation.
   entry.pipeline = device.createRenderPipeline(
     descriptorToGPU(entry.descriptor),
   );
@@ -1288,13 +1270,12 @@ function packCameraUniforms(uniformData, frameState, modelMatrix) {
   Matrix4.multiply(uniformState.projection, scratchMVRTE, scratchMVPRTE);
   Matrix4.pack(scratchMVPRTE, uniformData, 0);
 
-  // Camera position split into high/low for RTE. Encode in the SAME
-  // frame that the per-vertex positions live in (model-space when the
-  // collection's modelMatrix is non-identity); see C-P5 in the 2026-04-16
-  // per-feature review for the frame-mismatch rationale.
+  // Split the camera position into high/low components in the same coordinate
+  // frame as the vertices: model space when the collection's modelMatrix is
+  // non-identity.
   //
-  // PHASE 3 SLICE 4 (MORPH-POLYLINE-COLLECTION-2D) — this is ALSO correct
-  // for 2D / Columbus View / Morph WITHOUT re-projecting the camera.
+  // This also applies to 2D, Columbus View, and morph modes without
+  // reprojecting the camera.
   // `camera.positionWC` in 2D/CV is already expressed in the projected
   // `.zxy` frame (x = height above the map, y = easting, z = northing),
   // the same frame `computeActualEllipsoidPosition` produces for the
@@ -1321,23 +1302,18 @@ function packCameraUniforms(uniformData, frameState, modelMatrix) {
   // Viewport size for screen-space line expansion
   uniformData[24] = canvas.width;
   uniformData[25] = canvas.height;
-  // Renderer-wide log depth (NEW-COLLECTIONS-LOG-DEPTH) — encode frustum
-  // (near, far) + oneOverLog2FarDepthFromNearPlusOne packed into the
+  // Pack the renderer-wide log-depth encode frustum (near and far) plus
+  // oneOverLog2FarDepthFromNearPlusOne into the
   // reserved lanes. Same source every producer uses
   // (uniformState.currentFrustum at scene-update time); unconditional —
   // only the LOG_DEPTH shader variant reads them.
   //
-  // PHASE 3 SLICE 4 (MORPH-POLYLINE-COLLECTION-2D) — prefer the stashed
-  // FULL-frustum encode (`_logDepthEncodeNearFar`) over the live per-slice
-  // `currentFrustum`, mirroring the Slice-2 fix in
-  // WebGPUBillboardRenderer / WebGPUPointPrimitiveRenderer. The globe bakes
-  // its log-depth uniform once at scene update (full frustum) and replays
-  // it unchanged across slices; when this collection REPACKS per slice
-  // (2D / CV / Morph rebuild the segment + camera every frame), reading the
-  // per-slice `currentFrustum` would encode the polyline against a
-  // different near/far than the globe wrote, so the polyline's frag_depth
-  // fails the depth test against the globe and fragments get discarded —
-  // the Columbus-View "line renders but truncated" symptom.
+  // Prefer the stashed full-frustum encode (`_logDepthEncodeNearFar`) over the
+  // live per-slice `currentFrustum`. The globe packs its log-depth uniform once
+  // during scene update and reuses it across slices, while 2D, Columbus View,
+  // and morph modes repack this collection for each slice. Reading the live
+  // slice would encode the polyline with different near/far planes, causing
+  // its frag_depth to fail against the globe and truncate the line.
   const ldEncode = uniformState._logDepthEncodeNearFar;
   const ldFrustum = uniformState.currentFrustum;
   let ldNear = ldFrustum ? ldFrustum.x : 0.0;
@@ -1355,17 +1331,17 @@ function packCameraUniforms(uniformData, frameState, modelMatrix) {
     const ldLog2Far = Math.log2(ldFar - ldNear + 1.0);
     ldFactor = ldLog2Far > 0.0 ? 1.0 / ldLog2Far : 0.0;
   }
-  // Log-depth encode frustum at the former _pad2 lanes.
+  // Log-depth encode frustum at float slots 26 and 27.
   uniformData[26] = ldNear;
   uniformData[27] = ldFar;
 
-  // DP-H42 — frame-wide fallback threshold (meters; squared in shader).
+  // Frame-wide fallback threshold in meters; the shader squares it.
   uniformData[28] =
     typeof frameState?.minimumDisableDepthTestDistance === "number"
       ? frameState.minimumDisableDepthTestDistance
       : 0.0;
 
-  // DP-H40 — split cutoff in framebuffer pixels. WebGL's `czm_splitPosition`
+  // Split cutoff in framebuffer pixels. WebGL's `czm_splitPosition`
   // convention: `frameState.splitPosition` is the fraction [0, 1] and we
   // upload `fraction * drawingBufferWidth` so the fragment compare sits in
   // the same pixel coord space as WGSL's `@builtin(position).x`.
@@ -1375,12 +1351,12 @@ function packCameraUniforms(uniformData, frameState, modelMatrix) {
       : 0.0;
   const drawingBufferWidth = context?.drawingBufferWidth ?? canvas.width ?? 0.0;
   uniformData[29] = splitFraction * drawingBufferWidth;
-  // Log-depth factor at float 30 (previously implicit padding).
+  // Log-depth factor at float slot 30.
   uniformData[30] = ldFactor;
   uniformData[31] = 0.0;
 
-  // DP-H41 (Batch 27) — previousViewProjection at slots 32..47 (16 floats,
-  // 64 bytes). Cached by `UniformState.update()` BEFORE overwriting the
+  // previousViewProjection occupies slots 32..47 (16 floats, 64 bytes).
+  // `UniformState.update()` caches it before overwriting the
   // current-frame state, so on frame N this slot holds frame N-1's VP.
   // TAA / motion-vector shaders read it via `camera.previousViewProjection`.
   const prevVP = uniformState.previousViewProjection;
@@ -1406,10 +1382,9 @@ function packCameraUniforms(uniformData, frameState, modelMatrix) {
   }
 }
 
-// packMaterialUniforms removed — material data now sourced from
-// MaterialUniformBuffer.gpuData via the Option B split. Camera UBO
-// is group(0), material UBO is group(1). For the base "Color" type,
-// a 16-byte placeholder is used (no material uniforms needed).
+// Material data comes from MaterialUniformBuffer.gpuData. The camera UBO is
+// group(0), and the material UBO is group(1). The base "Color" type uses a
+// 16-byte placeholder because it has no material uniforms.
 
 // =========================================================================
 // Pipeline cache helpers
@@ -1418,15 +1393,13 @@ function packCameraUniforms(uniformData, frameState, modelMatrix) {
 /**
  * Gets or creates a pipeline cache entry for the given (material type,
  * defines) tuple. Each entry is a `{ descriptor, pipeline, pending,
- * cameraBindGroupLayout, materialBindGroupLayout }` slot; the pipeline
- * itself is materialized by `WebGPURenderPipelineCache` so two
- * collections with identical (materialType, defines) share one
+ * cameraBindGroupLayout, materialBindGroupLayout }` slot. The pipeline is
+ * normally materialized by `WebGPURenderPipelineCache`, allowing two
+ * collections with identical (materialType, defines) to share one
  * `GPURenderPipeline`.
  *
- * C-R7-RENDERER-MIGRATION (Batch 58). Previously this returned
- * `{ pipeline, cameraBindGroupLayout, materialBindGroupLayout }` with an
- * already-created pipeline; now it returns the same shape with `pipeline`
- * possibly null until the central cache resolves it.
+ * The returned slot keeps `pipeline` nullable until the resolver materializes
+ * it while exposing both bind-group layouts immediately.
  * @private
  */
 function getOrCreatePolylinePipelineEntry(
@@ -1441,13 +1414,11 @@ function getOrCreatePolylinePipelineEntry(
     cache.pipelines = {};
   }
 
-  // Batch 110 — invalidate cached pipelines on scene format change
-  // (HDR toggle). The polyline cache nests Map-by-defines under each
+  // Invalidate color and velocity pipelines when the scene format changes,
+  // such as an HDR toggle. The polyline cache nests Map-by-defines under each
   // materialType key, so we drop the entire materialType-keyed object
   // and rebuild empty maps on next access.
-  // Batch 148 (NEW-COLLECTIONS-MOTION-VECTORS) — also drop the velocity
-  // pipeline cache so the next-frame velocity emission rebuilds against
-  // the current scene format.
+  // The velocity cache must also rebuild against the current scene format.
   const sceneGen = context._scenePipelineFormatGeneration ?? 0;
   if (cache._pipelineFormatGeneration !== sceneGen) {
     cache.pipelines = {};
@@ -1461,8 +1432,8 @@ function getOrCreatePolylinePipelineEntry(
     byDefines = new Map();
     cache.pipelines[materialType] = byDefines;
   }
-  // PHASE 3 SLICE 4 (MORPH-POLYLINE-COLLECTION-2D) — the depth-test state
-  // (on in 3D / morph-in-progress, off in settled 2D/CV) is part of the
+  // The depth-test state (on in 3D and mid-morph, off in settled 2D and
+  // Columbus View) is part of the
   // pipeline, so it has to key the cache alongside `defines`. Compose a
   // string key so a 3D→2D flip resolves a distinct pipeline rather than
   // reusing the depth-testing one.
@@ -1501,9 +1472,9 @@ function getOrCreatePolylinePipelineEntry(
     pending: false,
     cameraBindGroupLayout: built.cameraBindGroupLayout,
     materialBindGroupLayout: built.materialBindGroupLayout,
-    // C11-157 Slice B — non-LOG_DEPTH preprocessed source for the OIT
+    // Non-LOG_DEPTH preprocessed source for the OIT
     // accumulation variant (depth-read-only pass; frag_depth stripped). One per
-    // (materialType, defines) pipeline; read ONLY under the FAR-003 gate.
+    // (materialType, defines) pipeline; read only while OIT is active.
     oitShaderCode: preprocessShaderSource(
       shaderCode,
       defines & ~ShaderDefine.LOG_DEPTH,
@@ -1515,20 +1486,18 @@ function getOrCreatePolylinePipelineEntry(
 }
 
 /**
- * AUDIT_2026_05_02 B.10 (Batch 148, NEW-COLLECTIONS-MOTION-VECTORS) —
- * gets or creates the velocity pipeline entry for the given (material,
+ * Gets or creates the velocity pipeline entry for the given (material,
  * defines) tuple. Lazily populated only when TAA is enabled this
  * frame; static scenes never construct a velocity pipeline. The
  * cache is keyed identically to the regular pipeline cache so a
  * polyline collection's color and velocity pipelines stay in lockstep.
  *
- * NOTE — only the base PolylineCollection shader currently exposes
+ * Only the base PolylineCollection shader exposes
  * `vertexVelocityMain` / `fragmentVelocityMain`. The PolylineArrow /
  * PolylineDash / PolylineGlow / PolylineOutline material variants
  * don't have velocity entry points yet, so velocity emission is
- * skipped for those materials (camera-only TAA fallback continues
- * to work). Tracked as a follow-up for the rare animated-material
- * case.
+ * skipped for those materials, with camera-only TAA as the fallback. Material
+ * velocity requires corresponding entry points before this gate can expand.
  * @private
  */
 function getOrCreatePolylineVelocityPipelineEntry(
@@ -1605,8 +1574,7 @@ async function updateWebGPUPolylines(collection, frameState, commandList) {
     collection._webgpuCache = {};
   }
 
-  // NEW-COLLECTIONS-ERROR-SENTINELS (Sentinel 1, NEW-COLLECTION-RENDERER-BASE)
-  // — re-entry / infinite-loop guard around the whole (async) update. The
+  // Re-entry and infinite-loop guard around the whole asynchronous update. The
   // polyline update is awaited per material group; `beginCollectionFrame`
   // counts overlapping in-flight entries and `console.error`s (throttled)
   // only on a runaway recursive re-enqueue. The `finally` always settles the
@@ -1630,31 +1598,26 @@ async function _updateWebGPUPolylinesInner(
   const cache = collection._webgpuCache;
   const modelMatrix = collection.modelMatrix || Matrix4.IDENTITY;
 
-  // AUDIT_2026_05_02 A.14 (Batch 136) — both Polyline distance gates
-  // (DDC + translucencyByDistance) are wired. Polyline has no
-  // pixelOffset or quad-scale, so those gates don't apply here.
+  // Polyline consumes distance-display and translucency-by-distance gates. It
+  // has no pixel offset or quad scale, so the corresponding gates do not apply.
 
   // Prewarm all (material × defines) shader modules on first render per
   // device so the hot path doesn't pay for `createShaderModule` cost.
   prewarmPolylineShaders(device);
 
-  // Compute the DP-H42 / DP-H40 defines bitmask for this frame. One bit
-  // set per feature that ANY polyline in the collection activates (or
+  // Compute the feature-defines bitmask for this frame. One bit is set per
+  // feature that any polyline in the collection activates (or
   // the frame-wide `minimumDisableDepthTestDistance` is non-zero).
   const defines = computePolylineDefinesForFrame(collection, frameState);
   cache.currentDefines = defines;
 
-  // PHASE 3 SLICE 4 (MORPH-POLYLINE-COLLECTION-2D) — mirror WebGL's
-  // `useDepthTest = frameState.morphTime !== 0.0` (PolylineCollection.js:530).
+  // Mirror WebGL's `useDepthTest = frameState.morphTime !== 0.0`.
   // In settled 2D + Columbus View (morphTime === 0) the polyline draws on
-  // top of the flat map with NO depth test; in 3D / mid-morph it depth-tests
+  // top of the flat map without a depth test; in 3D and mid-morph it depth-tests
   // normally. Keys the pipeline cache so the 3D pipeline stays byte-identical.
-  // NEW-COLLECTION-RENDERER-BASE — folded onto the shared coplanar-depth
-  // flag. `computeNoDepthTest` returns `morphTime === 0 && mode !== SCENE3D`;
-  // settled 3D always reports `morphTime === 1.0` (SceneMode.getMorphTime), so
-  // the extra `mode !== SCENE3D` guard never changes the result vs the prior
-  // `frameState.morphTime === 0.0` test — byte-identical, with the SCENE3D
-  // intent now explicit and shared with Billboard/Point/Label.
+  // `computeNoDepthTest` provides the shared coplanar-depth flag and returns
+  // `morphTime === 0 && mode !== SCENE3D`. Settled 3D reports
+  // `morphTime === 1.0`, keeping the intent consistent across collection types.
   const noDepthTest = computeNoDepthTest(frameState);
   cache.currentNoDepthTest = noDepthTest;
 
@@ -1751,14 +1714,12 @@ async function _updateWebGPUPolylinesInner(
       );
     }
 
-    // NEW-COLLECTIONS-PER-FRUSTUM-CAMERA-UB (Phase 3 Slice 1) — per-slice
-    // camera UB, one resolver per material type (each material group keeps
-    // its own per-slice buffer pool). The static `cache[camBgKey]` above is
-    // the slice-0 / single-frustum fallback. Polyline's camera UB lives in a
-    // DEDICATED group at command index 0 (material is group 1), so the
-    // resolver swaps just the camera group — the cleanest case.
-    // Setup is hoisted into `prepareMaterialTypeFrameResources`; every exact
-    // material group of this type shares the same per-frame resolver.
+    // Use one per-slice camera-uniform resolver per material type. Each group
+    // keeps its own per-slice buffer pool, while `cache[camBgKey]` remains the
+    // slice-zero or single-frustum fallback. The camera UBO is command group 0
+    // and the material UBO is group 1, so the resolver replaces only the camera
+    // group. `prepareMaterialTypeFrameResources` creates the resolver once per
+    // frame for all exact-material groups of the same type.
 
     // Material bind group
     const matBgKey = `matBindGroup_${materialResourceKey}`;
@@ -1796,11 +1757,10 @@ async function _updateWebGPUPolylinesInner(
       );
     }
 
-    // AUDIT_2026_05_02 B.10 (Batch 148, NEW-COLLECTIONS-MOTION-VECTORS) —
-    // before overwriting the GPU segment buffer with this frame's data,
-    // upload the PREVIOUS frame's data to the prev-segment buffer so
+    // Before overwriting the GPU segment buffer with this frame's data,
+    // upload the previous frame's data to the previous-segment buffer so
     // the velocity VS reads both streams at slot 0 and slot 1. Mirrors
-    // the Billboard / Label pattern from Batches 143/144.
+    // the Billboard and Label pattern.
     const taaEnabledThisFrame = frameState.taaEnabled === true;
     const prevSbKey = `prevSegmentBuffer_${materialResourceKey}`;
     const prevDataKey = `prevSegmentData_${materialResourceKey}`;
@@ -1851,25 +1811,19 @@ async function _updateWebGPUPolylinesInner(
     // transition doesn't lose a frame of history.
     cache[prevDataKey] = segmentData;
 
-    // Create draw command for render pass. Pick the pass from the
-    // collection's blendOption so translucent polylines composite
-    // correctly against the rest of the translucent scene. Polyline
-    // materials default to alpha-blended (PolylineDash / PolylineGlow /
-    // PolylineArrow all render with alpha), so defaulting to TRANSLUCENT
-    // when the collection leaves blendOption unspecified is safer than
-    // the previous hardcoded OPAQUE.
+    // Create the color draw command. Pass routing follows WebGL's collapsed-bin
+    // contract below, while render-state and OIT choices remain keyed by the
+    // collection's blend option.
     if (frameState.passes.render) {
-      // NEW-COLLECTIONS-ERROR-SENTINELS (Sentinel 2, null-target guard) —
-      // the segment vertex buffer must be live at the render-pass boundary.
+      // The segment vertex buffer must be live at the render-pass boundary.
       if (!validateDrawTargets([cache[sbKey]], "PolylineCollection")) {
         continue;
       }
-      // NEW-COLLECTIONS-ERROR-SENTINELS (Sentinel 3, size-validation/
-      // overflow) — clamp the instanced draw to what the segment buffer
+      // Clamp the instanced draw to what the segment buffer
       // holds (`BYTES_PER_SEGMENT`/instance). The buffer was grown to
       // `segmentCount * BYTES_PER_SEGMENT` above, so this is inert on the
       // happy path; it guards against a drift between `segmentCount` and the
-      // last grow (BUG-15 family).
+      // last grow.
       const safeSegmentCount = validateInstancedDrawBuffer(
         cache[sbKey],
         segmentCount,
@@ -1878,38 +1832,25 @@ async function _updateWebGPUPolylinesInner(
       );
 
       const polylineBlendOpt = collection._blendOption;
-      //
-      // NEW-WEBGPU-COLLECTION-PASS-DEFAULT-REGRESSION (2026-08-07, Batch 917):
-      // reading the enum is necessary, but the FALSE branch must not be
-      // re-derived from the stale comment beside it. The literal that branch
-      // replaced was `9`, and 9 IS Pass.OPAQUE on this fork — so the DEFAULT
-      // blend option (OPAQUE_AND_TRANSLUCENT, and the only one any probe has
-      // certified) shipped in Pass.OPAQUE, NOT Pass.TRANSLUCENT. Rebinning it
-      // onto TRANSLUCENT moved every polyline collection to a different execution
-      // site (back-to-front sort, the "actual near" frustum republication) and
-      // inverted probe-splat-globe-occlusion's P3 / check-7 controls.
-      //
-      // WebGL PARITY is the arbiter, and it says Pass.OPAQUE for the collapsed
-      // command under EVERY blend option:
-      //   PolylineCollection.js:801 — `command.pass = translucent ? Pass.TRANSLUCENT : Pass.OPAQUE`, keyed off per-bucket MATERIAL translucency, not off a blend option (PolylineCollection exposes none, so `_blendOption` is permanently undefined). Wiring that per-bucket flag through is NEW-WEBGPU-POLYLINE-PASS-BUCKET-TRANSLUCENCY.
-      // With OPAQUE_AND_TRANSLUCENT WebGL emits a PAIR (even index opaque, odd
-      // translucent); this port collapses that to ONE blended draw, which
-      // Batch 889 shipped — and the occlusion probe certified — in Pass.OPAQUE.
-      // Note BlendOption.TRANSLUCENT also resolves to Pass.OPAQUE in WebGL, via
-      // the `!opaqueAndTranslucent` clause — so a single bin is the faithful
-      // collapse, not a simplification. Blend-mode-dependent choices below key
-      // off the BLEND OPTION, never off this bin. Pinned by
+      // WebGL assigns each bucket's pass from material translucency, not from a
+      // collection blend option. This renderer collapses WebGL's paired
+      // opaque/translucent commands to one
+      // blended draw, so the faithful single bin is `Pass.OPAQUE` for every
+      // blend option; `BlendOption.TRANSLUCENT` also reaches that bin through
+      // WebGL's `!opaqueAndTranslucent` branch. Moving the collapsed command to
+      // `Pass.TRANSLUCENT` would also move it into back-to-front sorting and the
+      // actual-near-frustum path, changing globe occlusion. Render-state and OIT
+      // choices below must therefore use the blend option rather than this pass
+      // bin. The contract is pinned by
       // Tools/visual-regression/collection-pass-routing.spec.mjs.
       const polylinePass = Pass.OPAQUE;
-      // C-R1-COLLECTIONS-PER-ENCODER (Batch 39) — forward the matching
-      // render-state from PolylineCollection (`_opaqueRS` / `_translucentRS`,
-      // built on demand at lines 536/548 in PolylineCollection.js). The
-      // WebGL path does this inline per command at line 740 of
-      // PolylineCollection.js — without this forward, the WebGPU pass
-      // picks up encoder defaults for stencil/blend/viewport overrides
-      // instead of the polyline-specific values.
-      // Keyed off the BLEND OPTION, not the pass bin — identical selection to
-      // both Batch 889 and Batch 914 (undefined !== OPAQUE → _translucentRS).
+      // Forward PolylineCollection's matching `_opaqueRS` or `_translucentRS`
+      // render state, which the collection builds on demand. WebGL attaches
+      // this state per command; without it, WebGPU uses encoder defaults
+      // instead of the polyline-specific stencil, blend, and viewport
+      // overrides. This selection keys off the blend option rather than the
+      // pass bin. `PolylineCollection` exposes no blend option, so
+      // `_blendOption` is permanently undefined and selects `_translucentRS`.
       const polylineRS =
         polylineBlendOpt === BlendOption.OPAQUE
           ? collection._opaqueRS
@@ -1917,8 +1858,7 @@ async function _updateWebGPUPolylinesInner(
       const cmd = new WebGPUDrawCommand({
         pipeline: pipelineResult.pipeline,
         bindGroups: [cache[camBgKey], cache[matBgKey]],
-        // NEW-COLLECTIONS-PER-FRUSTUM-CAMERA-UB (Phase 3 Slice 1) — per-slice
-        // camera UB at group 0; material group 1 is slice-invariant.
+        // Per-slice camera UBO at group 0; material group 1 is slice-invariant.
         bindGroupResolvers: [cameraResolver, undefined],
         vertexBuffers: [cache[sbKey]],
         vertexCount: VERTICES_PER_SEGMENT,
@@ -1934,18 +1874,15 @@ async function _updateWebGPUPolylinesInner(
         renderState: polylineRS,
       });
 
-      // C11-157 Slice B — OIT reachability for translucent polylines. Attach
-      // the OIT variant inputs when the command lands in Pass.TRANSLUCENT;
-      // reuses the base color pipeline's SHARED layout (camera+material BGLs)
-      // + vertex/primitive/depth state (single-sample for the OIT accumulation
+      // Attach OIT inputs to blended polylines. The variant reuses the base
+      // color pipeline's shared layout (camera and material bind-group layouts)
+      // plus vertex, primitive, and depth state (single-sample for accumulation
       // targets). createOITPipeline forces depthWriteEnabled:false, so reusing
       // the base depthStencil (which may write depth on the 3D path) is safe.
-      // Inert when the FAR-003 gate is off → gate-OFF byte-identical. The
-      // polyline material FS returns a `FragOutput` struct (@location(0) color)
-      // — handled by injectOITOutput's Slice-A struct branch.
-      // Attached whenever the collection is BLENDED — exactly the set Batch 889
-      // attached on. Inert while the command sits in Pass.OPAQUE; kept as live
-      // scaffolding for the per-bucket translucency split (Principle 7).
+      // When OIT is disabled or the command remains in Pass.OPAQUE, this metadata
+      // is inert. The material fragment shader returns a `FragOutput` struct at
+      // location 0, which the OIT output injector handles. Keeping the metadata
+      // on blended collections supports a per-bucket translucency split.
       if (
         polylineBlendOpt !== BlendOption.OPAQUE &&
         defined(pipelineResult.descriptor) &&
@@ -1964,12 +1901,11 @@ async function _updateWebGPUPolylinesInner(
         };
       }
 
-      // AUDIT_2026_05_02 B.10 (Batch 148, NEW-COLLECTIONS-MOTION-VECTORS) —
-      // attach velocity command. Only emitted when TAA is on, the
+      // Attach a velocity command only when TAA is on, the
       // material has a velocity entry point (currently base color
       // only), and the velocity pipeline resolved this tick. The TAA
       // pass walks `cmd.velocityCommand` and dispatches into the
-      // rg16float velocity texture. Velocity uses ONLY the camera
+      // rg16float velocity texture. Velocity uses only the camera
       // bind group (slot 0); the material BG is unused by the
       // velocity FS, so we omit it entirely from the velocity command.
       // Each velocity pipeline owns its own `cameraBindGroupLayout`,
@@ -2042,8 +1978,8 @@ async function _updateWebGPUPolylinesInner(
     );
   }
 
-  // Phase 0 dirty-consume (NEW-DIRTY-CONSUME-POLYLINE). The WebGPU renderer
-  // replaces the WebGL vertex-array build and PolylineCollection.update()
+  // Consume dirty state after building the WebGPU segment data. This renderer
+  // replaces the WebGL vertex-array build, and PolylineCollection.update()
   // returns to the FR before the WebGL clear path runs, so the per-polyline
   // _dirty flags, the _polylinesToUpdate queue, and _propertiesChanged are
   // never cleared on the FR path. Consume them now that segment data has been
@@ -2071,21 +2007,18 @@ function _pushPolylinePickCommand(
 ) {
   const context = frameState.context;
 
-  // DP-H42 / DP-H40 — pick pipeline mirrors the color pipeline's defines
-  // so picked regions match the visible ones.
-  // C-R7-RENDERER-MIGRATION (Batch 58) — `pickPipelines` is now a Map of
-  // `defines → { descriptor, pipeline, pending, cameraBindGroupLayout }`.
-  // The actual GPU pipeline is materialized via `context.webgpuPipelineCache`.
+  // Mirror the color pipeline's feature defines so pick geometry matches
+  // visible lines. `pickPipelines` maps each defines mask to
+  // `{ descriptor, pipeline, pending, cameraBindGroupLayout }`; the central
+  // `context.webgpuPipelineCache` materializes each GPU pipeline.
   //
-  // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — the pick module's LOG_DEPTH
-  // define is gated by the SEPARATE pick-fleet master switch
-  // (`isWebGPUPickLogDepthActive`), NOT the scene log switch baked into
-  // `currentDefines`. Strip the scene LOG_DEPTH bit and re-add it only when the
-  // pick fleet is active, so with the switch OFF (default) the pick shader emits
-  // a single-`@location(0)` output byte-identical to the pre-conversion pick and
-  // the shared pick FBO stays uniformly hyperbolic (INV-2). The pick pass runs
-  // the SAME `packCameraUniforms` as the color path, so the pick camera buffer
-  // already carries the log lanes (floats 26-27 near/far, float 30 factor).
+  // Pick log depth is controlled independently from scene log depth. Remove
+  // the scene's LOG_DEPTH bit and restore it only when
+  // `isWebGPUPickLogDepthActive` is true. With pick log depth disabled, the
+  // shader retains its baseline single `@location(0)` output and the shared
+  // pick framebuffer remains uniformly hyperbolic. Both paths use
+  // `packCameraUniforms`, whose slots 26-27 hold the near/far planes and slot
+  // 30 holds the log-depth factor.
   const pickLogActive = isWebGPUPickLogDepthActive(context, frameState);
   const pickDefines =
     ((cache.currentDefines ?? 0) & ~ShaderDefine.LOG_DEPTH) |
@@ -2096,9 +2029,8 @@ function _pushPolylinePickCommand(
   let pickPipelineEntry = cache.pickPipelines.get(pickDefines);
   if (!defined(pickPipelineEntry)) {
     const pickShader = getCollectionShaderSource("polylinePick");
-    // NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE — pick pipelines target the
-    // context's byte-object-ID format authority (matches the pick FBO),
-    // never the (possibly float/HDR) scene format.
+    // Match the pick framebuffer's byte object-ID format. The scene format may
+    // be floating-point HDR and is not a valid pick target.
     const format = context.pickPipelineFormat || "rgba8unorm";
     const depthFmt = context.depthFormat || "depth24plus-stencil8";
     const moduleCache = getPolylineShaderModuleCache(device);
@@ -2203,10 +2135,10 @@ function _pushPolylinePickCommand(
     pickSize,
   );
 
-  // NEW-COLLECTIONS-ERROR-SENTINELS (Sentinels 2 + 3) — null-target +
-  // overflow guard on the pick instanced draw. The pick segment buffer is
-  // grown to `pickResult.segmentCount * BYTES_PER_SEGMENT` just above, so
-  // both are inert on the happy path.
+  // Validate the pick segment buffer and clamp the instance count to its
+  // capacity. The buffer was just grown to
+  // `pickResult.segmentCount * BYTES_PER_SEGMENT`, so these checks are inert
+  // unless allocation or count bookkeeping drifts.
   if (
     !validateDrawTargets([cache.pickSegmentBuffer], "PolylineCollection pick")
   ) {
@@ -2238,7 +2170,7 @@ function _pushPolylinePickCommand(
     // relevant to pick IDs). Falls back to translucent state for
     // TRANSLUCENT-only collections.
     renderState: collection._opaqueRS ?? collection._translucentRS,
-    // FORK-34 (Batch 207) — dedicated pick command marker.
+    // Mark this command for execution only by the pick path.
     pickOnly: true,
   });
 
@@ -2251,9 +2183,8 @@ function destroyWebGPUPolylineResources(collection) {
     return;
   }
 
-  // Destroy all segment buffers (per-material and pick).
-  // Batch 148 (NEW-COLLECTIONS-MOTION-VECTORS) — also release per-
-  // material `prevSegmentBuffer_*` GPU buffers.
+  // Destroy per-material segment buffers, their previous-frame motion-vector
+  // buffers, and their camera and material uniform buffers.
   for (const key of Object.keys(cache)) {
     if (
       key.startsWith("segmentBuffer_") ||

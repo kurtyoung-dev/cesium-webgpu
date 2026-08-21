@@ -37,10 +37,10 @@ import {
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
 import WebGPUCollectionCameraUB from "./WebGPUCollectionCameraUB.js";
 import { getCollectionShaderSource } from "./WebGPUCollectionShaders.js";
-// C11-157 Slice B — non-LOG_DEPTH preprocess of the point color source for the
-// OIT accumulation variant (`cmd._shaderCode`). Inert unless the FAR-003 gate.
+// Preprocess a non-LOG_DEPTH point color source for the OIT accumulation
+// variant (`cmd._shaderCode`). The variant is inert unless OIT is enabled.
 import { preprocess as preprocessShaderSource } from "./WebGPUShaderPreprocessor.js";
-// Slice 5c-B Phase 1 (Batch 110) — scene-FB target helper.
+// Build color targets from the scene framebuffer configuration.
 import { makeSceneFBTargets } from "./WebGPUSceneFBTargetHelpers.js";
 import { ShaderDefine, ShaderSourceId } from "./WebGPUShaderDefines.js";
 import {
@@ -49,11 +49,10 @@ import {
   recordLogDepthEncoder,
 } from "./WebGPULogDepth.js";
 import SceneMode from "../../Scene/SceneMode.js";
-// NEW-COLLECTION-RENDERER-BASE (Phase 11) — shared per-frame plumbing
-// (resident-instance manager fold, pipeline-format-gen invalidation,
-// 2D/CV coplanar-depth flag, pick buffer mgmt) + the three permanent
-// collection sentinels. Point keeps its own pack/define-scan/descriptors;
-// only the duplicated scaffolding moved to the base.
+// The shared collection base owns the resident-instance manager, pipeline
+// format invalidation, the 2D/CV coplanar-depth flag, pick-buffer management,
+// and the permanent collection sentinels. Points retain their specialized
+// packing, define scan, and descriptors.
 import {
   beginCollectionFrame,
   endCollectionFrame,
@@ -73,12 +72,11 @@ import {
 // =========================================================================
 
 /**
- * Floats per instance: 7 vec4 = 28 floats. Batch 21 extended from 4→5
- * for DP-H42 / DP-H40 `perInstanceFlags`. Batch 136 (Audit A.14) added
- * `translucencyByDistance` (slot 5) and `scaleByDistance` (slot 6) for
- * the EYE_DISTANCE_TRANSLUCENCY / EYE_DISTANCE_SCALING gates. Point
- * primitives have no pixelOffset attribute, so the
- * EYE_DISTANCE_PIXEL_OFFSET gate doesn't apply here.
+ * Floats per instance: 7 vec4 = 28 floats. The first five slots include
+ * `perInstanceFlags`; slot 5 carries `translucencyByDistance` and slot 6
+ * carries `scaleByDistance` for the corresponding eye-distance variants.
+ * Point primitives have no pixelOffset attribute, so they do not consume
+ * the EYE_DISTANCE_PIXEL_OFFSET variant.
  */
 const FLOATS_PER_INSTANCE = 28;
 /** Bytes per instance: 28 * 4 = 112 bytes */
@@ -102,13 +100,11 @@ const scratchEncodedPosition = new EncodedCartesian3();
 // =========================================================================
 
 /**
- * Batch 140 (NEW-DISABLE-DEPTH-DISTANCE-INFINITY-PARITY-POLYLINE-POINT) —
- * mirrors `WebGPUBillboardRenderer.encodeDisableDepthTestDistance`.
+ * Mirrors `WebGPUBillboardRenderer.encodeDisableDepthTestDistance`.
  * Maps `Number.POSITIVE_INFINITY` to `-1.0` so the WGSL `<0` always-
  * disable sentinel fires (matching WebGL
  * `PointPrimitiveCollection.js:1102` Infinity → -1 substitution).
- * Earlier the JS pack collapsed Infinity to 0.0 (the `isFinite` branch
- * returned the default), making the WGSL sentinel branch dead.
+ * Collapsing Infinity to 0.0 would make the WGSL sentinel branch dead.
  */
 function encodeDisableDepthTestDistance(value) {
   if (typeof value !== "number") {
@@ -124,10 +120,9 @@ function encodeDisableDepthTestDistance(value) {
 }
 
 /**
- * AUDIT_2026_05_02 A.14 (Batch 136) — pack a CesiumJS NearFarScalar
- * (near, nearValue, far, farValue) into 4 contiguous floats. Identity-NFS
- * written when `scalar` is undefined so the shader's gate produces the
- * unchanged baseline for points with no per-distance ramp configured.
+ * Packs a CesiumJS NearFarScalar (near, nearValue, far, farValue) into four
+ * contiguous floats. An identity scalar is written when `scalar` is undefined
+ * so points without a distance ramp retain their baseline value.
  * Mirrors `WebGPUBillboardRenderer.packNearFarScalar`.
  */
 function packNearFarScalar(out, offset, scalar, identity) {
@@ -161,10 +156,9 @@ function isPointInstance(point) {
 }
 
 /**
- * Pack ONE point's 28-float instance record at `offset` floats into
- * `out`. Extracted from the former whole-collection `buildInstanceData`
- * loop (NEW-PARTIAL-WRITE-WIRE-BPL, point half) so the resident-instance
- * manager can re-pack a single changed slot without touching neighbors.
+ * Packs one point's 28-float instance record at `offset` floats into `out`.
+ * The resident-instance manager calls this for a single changed slot so
+ * neighboring records do not need to be repacked.
  * @private
  */
 function packPointInstance(out, offset, point) {
@@ -202,11 +196,11 @@ function packPointInstance(out, offset, point) {
   out[offset + 14] = outlineColor.blue;
   out[offset + 15] = point._show ? 1.0 : 0.0;
 
-  // perInstanceFlags — DP-H42 / DP-H40 / A.14 DDC.
+  // Depth-test, split, and distance-display flags.
   //   x: disableDepthTestDistance (raw meters; squared in shader)
   //   y: splitDirection (-1 LEFT / 0 NONE / +1 RIGHT)
-  //   z: distanceDisplayCondition.near^2 (Batch 136)
-  //   w: distanceDisplayCondition.far^2 (Batch 136)
+  //   z: distanceDisplayCondition.near^2
+  //   w: distanceDisplayCondition.far^2
   out[offset + 16] = encodeDisableDepthTestDistance(
     point._disableDepthTestDistance,
   );
@@ -223,10 +217,9 @@ function packPointInstance(out, offset, point) {
     out[offset + 19] = Number.MAX_VALUE;
   }
 
-  // AUDIT_2026_05_02 A.14 (Batch 136) — translucencyByDistance +
-  // scaleByDistance NearFarScalars. Identity = 1.0 for both
-  // (multiplicative). EYE_DISTANCE_PIXEL_OFFSET doesn't apply here
-  // (Point has no pixelOffset attribute).
+  // The translucencyByDistance and scaleByDistance scalars are both
+  // multiplicative, so their identity value is 1.0. Points have no
+  // pixelOffset attribute and therefore need no pixel-offset scalar.
   packNearFarScalar(out, offset + 20, point._translucencyByDistance, 1.0);
   packNearFarScalar(out, offset + 24, point._scaleByDistance, 1.0);
 }
@@ -296,9 +289,9 @@ function buildPickInstanceData(collection, context) {
 
     // Pick color from the primitive's OWN pick-id factory.
     //
-    // NEW-WEBGPU-COLLECTION-PICKID-OBJECT-SHAPE — this used to register the
-    // BARE `point` (`context.createPickId(point, "point")`), so a resolved pick
-    // handed user code a PointPrimitive whose `.primitive` / `.collection` /
+    // Register the same wrapper shape as the WebGL path. Registering the bare
+    // `point` (`context.createPickId(point, "point")`) would cause a resolved pick
+    // to hand user code a PointPrimitive whose `.primitive` / `.collection` /
     // `.id` all read `undefined`, where WebGL hands back
     // `{primitive, collection, id}` (`PointPrimitive.getPickId`,
     // PointPrimitive.js:454-467 — which already passes the same `"point"`
@@ -319,9 +312,9 @@ function buildPickInstanceData(collection, context) {
     instanceData[offset + 14] = 0.0;
     instanceData[offset + 15] = 0.0;
 
-    // Same perInstanceFlags as the color path so pick obeys DP-H42 /
-    // DP-H40 / A.14 DDC. Pick must mirror color visibility exactly so
-    // an invisible point is also unpickable.
+    // Use the color path's depth-test, split, and distance-display flags.
+    // Pick visibility must match color visibility so an invisible point is
+    // also unpickable.
     instanceData[offset + 16] = encodeDisableDepthTestDistance(
       point._disableDepthTestDistance,
     );
@@ -339,7 +332,7 @@ function buildPickInstanceData(collection, context) {
       instanceData[offset + 18] = 0.0;
       instanceData[offset + 19] = Number.MAX_VALUE;
     }
-    // AUDIT_2026_05_02 A.14 (Batch 136) — pick path's NearFarScalars.
+    // Mirror the color path's distance-based translucency and scale.
     packNearFarScalar(
       instanceData,
       offset + 20,
@@ -359,9 +352,8 @@ function buildPickInstanceData(collection, context) {
 // =========================================================================
 
 /**
- * Instance vertex buffer layout — step mode = instance, 112 bytes
- * stride (Batch 136). Bumped from 80 bytes to fit the two NearFarScalar
- * gates added by Audit A.14.
+ * Instance vertex buffer layout with instance step mode and a 112-byte
+ * stride. The final 32 bytes hold the two NearFarScalar values.
  * @private
  */
 const INSTANCE_BUFFER_LAYOUT = {
@@ -372,19 +364,18 @@ const INSTANCE_BUFFER_LAYOUT = {
     { shaderLocation: 1, offset: 16, format: "float32x4" }, // posLowAndOutline
     { shaderLocation: 2, offset: 32, format: "float32x4" }, // color
     { shaderLocation: 3, offset: 48, format: "float32x4" }, // outColorAndShow
-    // DP-H42 / DP-H40 / A.14 DDC — perInstanceFlags.
+    // Depth-test, split, and distance-display flags.
     { shaderLocation: 4, offset: 64, format: "float32x4" },
-    // AUDIT_2026_05_02 A.14 (Batch 136) — translucencyByDistance +
-    // scaleByDistance. Always declared so a single layout serves all
-    // ifdef variants without rebuilding.
+    // Translucency and scale by distance. These attributes are always
+    // declared so one layout serves every shader variant.
     { shaderLocation: 5, offset: 80, format: "float32x4" },
     { shaderLocation: 6, offset: 96, format: "float32x4" },
   ],
 };
 
 /**
- * AUDIT_2026_05_02 B.10 (Batch 148, NEW-COLLECTIONS-MOTION-VECTORS) —
- * second VB layout for the velocity pipeline. Same per-instance stride
+ * Second vertex-buffer layout for the velocity pipeline. It uses the same
+ * per-instance stride
  * as the regular instance buffer (the renderer keeps a one-frame-lagged
  * mirror of the same data); the velocity VS only reads positions via
  * locations 7-8, the next free slots after the current VS's 0-6
@@ -425,7 +416,7 @@ function createPointBindGroupLayout(device) {
  * two PointPrimitiveCollections rendering with the same (format, depth
  * format, blend, defines) tuple share one pipeline.
  *
- * C-R7-RENDERER-MIGRATION (Batch 58).
+ * The central cache owns pipeline materialization and reuse.
  * @private
  */
 function buildPointColorDescriptor(
@@ -470,9 +461,9 @@ function buildPointColorDescriptor(
     fragment: {
       module: shaderModule,
       entryPoint: "fragmentMain",
-      // Slice 5c-B Phase 1 (Batch 110) — scene-FB color target via
-      // helper. `blendState` is passed through verbatim (it's caller-
-      // provided so preserving the exact reference matters for cache).
+      // Build the scene-framebuffer target through the shared helper.
+      // `blendState` is caller-provided and its exact reference matters for
+      // cache identity, so pass it through unchanged.
       targets: makeSceneFBTargets(format, { blend: blendState }),
     },
     primitive: {
@@ -481,27 +472,27 @@ function buildPointColorDescriptor(
     },
     depthStencil: {
       format: depthFormat,
-      // NEW-COLLECTIONS-2DCV-COPLANAR-DEPTH — disable depth WRITE and TEST in
-      // settled 2D/CV so coplanar map-surface points draw on top of the flat
+      // Disable depth writes and tests in settled 2D/CV so coplanar
+      // map-surface points draw on top of the flat
       // map instead of losing the `less-equal` test to z-fighting against it.
       // See WebGPUBillboardRenderer for the full rationale; mirrors the
-      // PolylineCollection reference (Batch 261). 3D / mid-morph unchanged.
+      // PolylineCollection implementation. 3D and mid-morph are unchanged.
       depthWriteEnabled: noDepthTest ? false : !translucent,
       depthCompare: noDepthTest ? "always" : "less-equal",
     },
-    // Batch 134 — match scene-FB MSAA sample count (see WebGPUBillboardRenderer for rationale).
+    // Match the scene framebuffer's MSAA sample count; see the billboard renderer.
     multisample: sampleCount > 1 ? { count: sampleCount } : undefined,
   };
 }
 
 /**
- * AUDIT_2026_05_02 B.10 (Batch 148, NEW-COLLECTIONS-MOTION-VECTORS) —
- * descriptor for the velocity pipeline variant. Same VS layout /
+ * Descriptor for the velocity pipeline variant. It uses the same vertex
+ * layout,
  * shader module / pipeline layout as the regular point pipeline;
  * the fragment entry is `fragmentVelocityMain` and the target format
  * is `rg16float` (the scene-FB velocity texture format). Depth is
  * read-only so fragments behind opaque geometry fail the depth test.
- * Mirrors `buildBillboardVelocityDescriptor` (Batch 143).
+ * Mirrors `buildBillboardVelocityDescriptor`.
  * @private
  */
 function buildPointVelocityDescriptor(
@@ -540,7 +531,7 @@ function buildPointVelocityDescriptor(
 /**
  * Build the cache-friendly descriptor for the pick pipeline.
  *
- * C-R7-RENDERER-MIGRATION (Batch 58).
+ * The central cache owns pipeline materialization and reuse.
  * @private
  */
 function buildPointPickDescriptor(
@@ -555,10 +546,10 @@ function buildPointPickDescriptor(
     label: "PointPrimitive pick pipeline layout",
     bindGroupLayouts: [bindGroupLayout],
   });
-  // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — the defines hex already encodes
-  // the LOG_DEPTH bit, but append an explicit `[ld]` marker so the central
-  // pipeline cache (keyed on the descriptor name) can't serve a stale
-  // hyperbolic/log variant across a pick-fleet gate flip.
+  // Shader-module identity and the defines mask distinguish the LOG_DEPTH
+  // variant structurally. Keep the explicit `[ld]` suffix as defense in depth
+  // and so cache descriptions and diagnostics distinguish logarithmic from
+  // hyperbolic pick pipelines at a glance.
   const ldSuffix = defines & ShaderDefine.LOG_DEPTH ? " [ld]" : "";
   return {
     name: `PointPrimitive pick [${format}/${depthFormat}/defines=0x${defines.toString(16)}${ldSuffix}]`,
@@ -576,9 +567,9 @@ function buildPointPickDescriptor(
     primitive: { topology: "triangle-list", cullMode: "none" },
     depthStencil: {
       format: depthFormat,
-      // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH — already true today (nearer pick
-      // producers back-clip farther ones in the shared pick FBO), so the log
-      // frag_depth write composes with the fleet with no change here.
+      // Nearer pick producers back-clip farther ones in the shared pick FBO,
+      // so log-depth fragment output composes with the other producers while
+      // retaining the existing write and compare behavior.
       depthWriteEnabled: true,
       depthCompare: "less-equal",
     },
@@ -621,7 +612,7 @@ function descriptorToGPU(d) {
  * The `entry` is a slot object that gets mutated:
  *   { pipeline: GPURenderPipeline | null, pending: boolean }
  *
- * C-R7-RENDERER-MIGRATION (Batch 58).
+ * The central cache owns pipeline materialization and reuse.
  * @private
  */
 function tryResolvePointPipeline(device, pipelineCache, descriptor, entry) {
@@ -659,9 +650,9 @@ function tryResolvePointPipeline(device, pipelineCache, descriptor, entry) {
 }
 
 // Module-level shader-module cache keyed by GPUDevice. Shared across every
-// PointPrimitiveCollection rendered on a given device. The per-device
-// WeakMap accessor now comes from the shared collection base
-// (NEW-COLLECTION-RENDERER-BASE) — same dedupe behavior, one implementation.
+// PointPrimitiveCollection rendered on a given device. The shared collection
+// base provides the per-device WeakMap accessor so all collection renderers
+// use one deduplication implementation.
 const getPointShaderModuleCache = makeDeviceShaderModuleCacheAccessor();
 
 /**
@@ -676,9 +667,8 @@ function prewarmPointShaders(device, colorSource, pickSource) {
     return;
   }
   const D = ShaderDefine;
-  // AUDIT_2026_05_02 A.14 (Batch 136) — added DDC + translucency + scaling
-  // variants. Point consumes 5 distance-related defines; we seed the
-  // most common scenarios.
+  // Points consume five distance-related defines. Seed the most common
+  // combinations to move their shader compilation off the render path.
   const D_DDC_TRANS =
     D.DISTANCE_DISPLAY_CONDITION | D.EYE_DISTANCE_TRANSLUCENCY;
   const D_ALL_DIST =
@@ -720,7 +710,7 @@ function prewarmPointShaders(device, colorSource, pickSource) {
  */
 function computePointDefinesForFrame(collection, frameState) {
   let defines = 0;
-  // Renderer-wide log depth (NEW-COLLECTIONS-LOG-DEPTH) — OR the LOG_DEPTH
+  // Enable the renderer-wide LOG_DEPTH
   // bit when the master switch + per-frame flag are on. The bit keys the
   // shader-module cache AND the pipeline maps/names, so the flip rebuilds
   // through the normal keyed-miss path. Inert while the switch defaults
@@ -765,7 +755,7 @@ function computePointDefinesForFrame(collection, frameState) {
     ) {
       defines |= ShaderDefine.SPLIT_ENABLED;
     }
-    // AUDIT_2026_05_02 A.14 (Batch 136) — DDC + translucency + scaling.
+    // Enable only the distance variants used by this collection.
     if (
       (defines & ShaderDefine.DISTANCE_DISPLAY_CONDITION) === 0 &&
       defined(p._distanceDisplayCondition)
@@ -799,8 +789,8 @@ function computePointDefinesForFrame(collection, frameState) {
  * CameraUniforms struct in PointPrimitiveColor.wgsl / PointPrimitivePick.wgsl:
  *   [0-15]  mvpRelativeToEye (mat4x4) — MVP with translation zeroed
  *   [16-17] viewportSize (vec2)
- *   [18]    splitPosition (f32) — DP-H40 (framebuffer pixels)
- *   [19]    minimumDisableDepthTestDistance (f32) — DP-H42 (meters)
+ *   [18]    splitPosition (f32, framebuffer pixels)
+ *   [19]    minimumDisableDepthTestDistance (f32, meters)
  *   [20-22] encodedCameraPositionMCHigh (vec3)
  *   [23]    _pad0 (f32)
  *   [24-26] encodedCameraPositionMCLow (vec3)
@@ -838,7 +828,7 @@ function packUniforms(uniformData, frameState, modelMatrix) {
   uniformData[16] = canvas.width;
   uniformData[17] = canvas.height;
 
-  // DP-H40 — split cutoff in framebuffer pixels (fraction × drawing width).
+  // Convert the fractional split cutoff to framebuffer pixels.
   const splitFraction =
     typeof frameState?.splitPosition === "number"
       ? frameState.splitPosition
@@ -846,7 +836,7 @@ function packUniforms(uniformData, frameState, modelMatrix) {
   const drawingBufferWidth = context?.drawingBufferWidth ?? canvas.width ?? 0.0;
   uniformData[18] = splitFraction * drawingBufferWidth;
 
-  // DP-H42 — frame-wide fallback threshold (meters; squared in shader).
+  // Frame-wide fallback threshold in meters; the shader squares it.
   uniformData[19] =
     typeof frameState?.minimumDisableDepthTestDistance === "number"
       ? frameState.minimumDisableDepthTestDistance
@@ -881,7 +871,7 @@ function packUniforms(uniformData, frameState, modelMatrix) {
   uniformData[26] = camLow.z;
   uniformData[27] = 0.0; // _pad2
 
-  // DP-H41 (Batch 27) — previousViewProjection at slots 28..43 (16 floats,
+  // previousViewProjection occupies slots 28..43 (16 floats,
   // 64 bytes). Fits in the existing 256-byte buffer — no resize needed.
   // `UniformState.update()` caches last frame's viewProjection for TAA /
   // motion-vector reprojection before overwriting the current frame's state.
@@ -907,13 +897,12 @@ function packUniforms(uniformData, frameState, modelMatrix) {
     uniformData[43] = 1;
   }
 
-  // Renderer-wide log depth (NEW-COLLECTIONS-LOG-DEPTH) — logDepth vec4
+  // Renderer-wide logDepth vec4
   // (near, far, factor, reserved) at floats 44-47 (struct tail; the GPU
   // buffer is 256 bytes so no resize). Same encode frustum every producer
   // packs; unconditional — only the LOG_DEPTH shader variant reads it.
   //
-  // PHASE 3 SLICE 2 (NEW-COLLECTIONS-2DCV-PROJECTED-FRAME-RTE) — the log-depth
-  // ENCODE frustum MUST be the FULL camera frustum, NOT the per-slice
+  // The log-depth encode frustum must be the full camera frustum, not the per-slice
   // `currentFrustum`. The globe bakes its log-depth uniform ONCE at scene
   // update (full frustum) and replays unchanged across slices; it stashes that
   // exact near/far on `uniformState._logDepthEncodeNearFar`. When this collection
@@ -948,13 +937,12 @@ function packUniforms(uniformData, frameState, modelMatrix) {
   uniformData[45] = ldFar;
   uniformData[46] = ldFactor;
   //>>includeStart('debug', pragmas.debug);
-  // C15-G6g — publish the pair THIS producer baked. The point is the probe's
-  // non-splat control (check 7) and it sits on the OTHER side of the
-  // stash-vs-live rule from the splat, so its baked pair is the direct
-  // comparison the whole investigation has been missing.
+  // Publish the pair baked by this producer. Points use the stashed
+  // full-frustum pair rather than the live per-slice pair, so exposing it
+  // permits a direct comparison with producers that use the other policy.
   recordLogDepthEncoder(uniformState, "collection", ldNear, ldFar, ldFactor);
   //>>includeEnd('debug');
-  // Q13-PLAIN-HDR-GAMMA-CORE — HDR gamma gate at float 47 (camera.logDepth.w).
+  // The HDR gamma value occupies float 47 (`camera.logDepth.w`).
   // Carries czm_gamma (uniformState.gamma, default 2.2) when
   // `scene.highDynamicRange` is on (`frameState.useHDR`), else 0. The fragment
   // shader mirrors WebGL PointPrimitiveCollectionFS.glsl's `#ifdef HDR`
@@ -987,8 +975,8 @@ function packUniforms(uniformData, frameState, modelMatrix) {
  * @private
  */
 function updateWebGPUPointPrimitives(collection, frameState, commandList) {
-  // NEW-COLLECTIONS-ERROR-SENTINELS (Sentinel 1) — re-entry / infinite-loop
-  // guard around the whole update. `beginCollectionFrame` increments a
+  // Guard the whole update against re-entry and infinite loops.
+  // `beginCollectionFrame` increments a
   // per-collection depth and logs (throttled) if this update is re-entered
   // for the same collection before returning; `endCollectionFrame` in the
   // finally always settles it back to 0.
@@ -1019,10 +1007,9 @@ function _updateWebGPUPointPrimitivesInner(
   // Cache initialized by the outer `updateWebGPUPointPrimitives` wrapper.
   const cache = collection._webgpuCache;
 
-  // AUDIT_2026_05_02 A.14 (Batch 136) — all three Point distance gates
-  // (DDC + translucencyByDistance + scaleByDistance) are wired. Point
-  // has no pixelOffset attribute, so EYE_DISTANCE_PIXEL_OFFSET doesn't
-  // apply here. Previous one-time warning retired.
+  // Points support distance display, translucency by distance, and scale by
+  // distance. They have no pixelOffset attribute, so the corresponding
+  // eye-distance variant does not apply.
 
   // Prewarm shader modules (idempotent per device).
   const colorShaderCode = getCollectionShaderSource("pointColor");
@@ -1034,32 +1021,31 @@ function _updateWebGPUPointPrimitivesInner(
     cache.bindGroupLayout = createPointBindGroupLayout(device);
   }
 
-  // DP-H42 / DP-H40 — pick the right pipeline for this frame's point state.
+  // Select the pipeline matching this frame's point state.
   const defines = computePointDefinesForFrame(collection, frameState);
-  // C-R7-RENDERER-MIGRATION (Batch 58) — `cache.pipelines` is now a Map
-  // of `defines → { descriptor, pipeline, pending }`. The descriptor is
+  // `cache.pipelines` maps
+  // `defines → { descriptor, pipeline, pending }`. The descriptor is
   // built once per (defines) and passed to the central
   // `WebGPURenderPipelineCache`; the pipeline arrives async on the first
   // request, then synchronously on subsequent frames.
   if (!defined(cache.pipelines)) {
     cache.pipelines = new Map();
-    // AUDIT_2026_05_02 B.10 (Batch 148, NEW-COLLECTIONS-MOTION-VECTORS)
-    // — velocity pipeline cache. Same (defines) keying as the regular
+    // The velocity pipeline cache uses the same define key as the regular
     // pipeline so a point collection's color and velocity pipelines
     // stay in lockstep.
     cache.velocityPipelines = new Map();
   }
-  // Batch 110 — invalidate cached pipelines on scene format change.
-  // NEW-COLLECTION-RENDERER-BASE — shared format-generation guard.
+  // Invalidate every cached pipeline when the scene format changes. The
+  // shared base owns the format-generation guard.
   invalidatePipelinesOnSceneFormatChange(cache, context, [
     cache.pipelines,
     cache.pickPipelines,
     cache.velocityPipelines,
   ]);
-  // NEW-COLLECTIONS-2DCV-COPLANAR-DEPTH — settled 2D/CV draws coplanar points
+  // Settled 2D/CV draws coplanar points
   // on top of the flat map with the depth test disabled. Fold the flag into
-  // the pipeline-cache key as its own dimension (`defines * 2 + flag` —
-  // C11-149 moved it off define bit 31, which is now free) so 3D keeps its
+  // the pipeline-cache key as its own dimension (`defines * 2 + flag`)
+  // rather than consuming a shader-define bit, so 3D keeps its
   // `less-equal` variant byte-identical. (Shared base helpers.)
   const noDepthTest = computeNoDepthTest(frameState);
   const pipelineKey = pipelineKeyWithDepthFlag(defines, noDepthTest);
@@ -1089,10 +1075,10 @@ function _updateWebGPUPointPrimitivesInner(
       ),
       pipeline: null,
       pending: false,
-      // C11-157 Slice B — non-LOG_DEPTH preprocessed source for the OIT
+      // Preprocess a non-LOG_DEPTH source for the OIT
       // accumulation variant (depth-read-only pass; frag_depth stripped).
       // Attached to the translucent color command; read ONLY under the
-      // FAR-003 gate (gate-OFF inert).
+      // OIT path and otherwise remains inert.
       oitShaderCode: preprocessShaderSource(
         colorShaderCode,
         defines & ~ShaderDefine.LOG_DEPTH,
@@ -1146,8 +1132,8 @@ function _updateWebGPUPointPrimitivesInner(
     });
   }
 
-  // NEW-COLLECTIONS-PER-FRUSTUM-CAMERA-UB (Phase 3 Slice 1) — per-slice
-  // camera-UB resolver. The static `cache.bindGroup` above carries the
+  // Resolve the camera uniform buffer per frustum slice. The static
+  // `cache.bindGroup` above carries the
   // slice-0 / single-frustum bake (packed just above); the resolver repacks
   // + binds a DISTINCT per-slice buffer at draw time so each depth slice the
   // multi-frustum loop re-executes this command in gets its OWN projection.
@@ -1156,12 +1142,12 @@ function _updateWebGPUPointPrimitivesInner(
     cache.cameraUB = new WebGPUCollectionCameraUB(device, "PointPrimitive");
   }
   cache.cameraUB.bindUniformState(context.uniformState);
-  // PHASE 3 SLICE 2 (NEW-COLLECTIONS-2DCV-PROJECTED-FRAME-RTE) — in
-  // SCENE2D / COLUMBUS_VIEW / MORPHING, repack the camera UB per slice at
+  // In SCENE2D, COLUMBUS_VIEW, and MORPHING, repack the camera uniform
+  // buffer per slice at
   // DRAW time so `mvpRelativeToEye` is baked against the live slice
   // projection (WebGPU depth range + per-band near/far) instead of the
-  // stale WebGL-range update-time snapshot. SCENE3D stays snapshot-only
-  // (byte-identical to the pre-Slice-2 path).
+  // stale WebGL-range update-time snapshot. SCENE3D remains snapshot-only
+  // to preserve its existing byte sequence.
   const repackPerSlice = frameState.mode !== SceneMode.SCENE3D;
   cache.cameraResolver = cache.cameraUB.makeResolver({
     bufferSize: UNIFORM_BUFFER_SIZE,
@@ -1171,15 +1157,13 @@ function _updateWebGPUPointPrimitivesInner(
   });
 
   // --- Instance data — resident-instance partial-write path ---
-  // (NEW-RESIDENT-INSTANCE-BUFFER-MGR + NEW-PARTIAL-WRITE-WIRE-BPL, point
-  // half.) A settled collection uploads nothing; a sparse change re-packs
+  // A settled collection uploads nothing; a sparse change repacks
   // + uploads only the changed slots' byte ranges. The manager owns the
   // resident CPU array, the GPU vertex buffer, the _index→slot map, and
   // the slot-aligned velocity prev mirror (TAA motion vectors) — it
   // subsumes the former all-or-nothing `needsRebuild` gate.
   const taaEnabledThisFrame = frameState.taaEnabled === true;
-  // NEW-COLLECTION-RENDERER-BASE — shared lazy create of the resident
-  // instance manager (was an inline `if (!defined) new …`).
+  // Lazily create the resident instance manager through the shared base.
   const instanceManager = getOrCreateInstanceManager(
     cache,
     device,
@@ -1203,9 +1187,8 @@ function _updateWebGPUPointPrimitivesInner(
   // ORDERING (load-bearing): capture + sync the dirty list FIRST, then
   // consume. `_consumeDirtyState` resets `_pointPrimitivesToUpdateIndex`,
   // so syncing after the consume would always see an empty dirty list and
-  // never partial-write. (NEW-DIRTY-CONSUME-POINT + Phase 1.) The
-  // capture→sync→consume ordering is now enforced structurally by
-  // `syncInstancesAndConsume` (NEW-COLLECTION-RENDERER-BASE): it runs the
+  // never perform a partial write. The capture→sync→consume ordering is
+  // enforced structurally by `syncInstancesAndConsume`: it runs the
   // sync against the captured dirty snapshot, THEN invokes the consume.
   // Without it, `_createVertexArray`/`_dirty` stay set on the WebGPU path:
   // `updateMode` re-projects every position every frame AND a moved point
@@ -1247,31 +1230,20 @@ function _updateWebGPUPointPrimitivesInner(
   // Recreated every frame (cheap object) so pipeline/defines rotation,
   // blend-option changes, and visible-count changes are always reflected
   // — mirrors the billboard wiring.
-  // pass:0 was a real bug (that value is Pass.ENVIRONMENT, not OPAQUE),
-  // causing points to render before the globe surface and paint over
-  // the sky. NEW-WEBGPU-COLLECTION-PASS-LITERAL-DRIFT (2026-08-07): the replacement
-  // values were written as NUMERIC literals against a fork Pass enum that
-  // has since gained a second insertion, so 8/9 drifted onto
-  // CESIUM_3D_TILE_CLASSIFICATION_IGNORE_SHOW / OPAQUE. Read the enum.
-  // Pick by collection.blendOption — point primitives use discard-based
-  // alpha cutoffs so OPAQUE is safe when the collection is all-opaque.
+  // The command must run after the globe; Pass.ENVIRONMENT would run too
+  // early and allow points to paint over the sky. Use the enum member rather
+  // than a numeric literal because additions to Pass can change literal
+  // meanings. Point primitives use discard-based alpha cutoffs, so OPAQUE is
+  // safe when the collection is all opaque.
   //
-  // NEW-WEBGPU-COLLECTION-PASS-DEFAULT-REGRESSION (2026-08-07, Batch 917):
-  // reading the enum is necessary, but the FALSE branch must not be
-  // re-derived from the stale comment beside it. The literal that branch
-  // replaced was `9`, and 9 IS Pass.OPAQUE on this fork — so the DEFAULT
-  // blend option (OPAQUE_AND_TRANSLUCENT, and the only one any probe has
-  // certified) shipped in Pass.OPAQUE, NOT Pass.TRANSLUCENT. Rebinning it
-  // onto TRANSLUCENT moved every point collection to a different execution
-  // site (back-to-front sort, the "actual near" frustum republication) and
-  // inverted probe-splat-globe-occlusion's P3 / check-7 controls.
-  //
-  // WebGL PARITY is the arbiter, and it says Pass.OPAQUE for the collapsed
-  // command under EVERY blend option:
+  // Keep the collapsed command in Pass.OPAQUE for every blend option.
+  // Moving it to Pass.TRANSLUCENT introduces back-to-front sorting and
+  // "actual near" frustum republication, which changes globe occlusion.
+  // The WebGL selection is the parity authority:
   //   PointPrimitiveCollection.js:827 — `opaqueCommand || !opaqueAndTranslucent ? Pass.OPAQUE : Pass.TRANSLUCENT`
   // With OPAQUE_AND_TRANSLUCENT WebGL emits a PAIR (even index opaque, odd
-  // translucent); this port collapses that to ONE blended draw, which
-  // Batch 889 shipped — and the occlusion probe certified — in Pass.OPAQUE.
+  // translucent); this port collapses that pair to one blended draw in
+  // Pass.OPAQUE.
   // Note BlendOption.TRANSLUCENT also resolves to Pass.OPAQUE in WebGL, via
   // the `!opaqueAndTranslucent` clause — so a single bin is the faithful
   // collapse, not a simplification. Blend-mode-dependent choices below key
@@ -1281,8 +1253,8 @@ function _updateWebGPUPointPrimitivesInner(
   cache.colorCommand = new WebGPUDrawCommand({
     pipeline: cache.pipeline,
     bindGroups: [cache.bindGroup],
-    // NEW-COLLECTIONS-PER-FRUSTUM-CAMERA-UB (Phase 3 Slice 1) — per-slice
-    // camera UB. Resolver returns null on single-frustum / first frame →
+    // Resolve the camera uniform buffer per frustum slice. The resolver
+    // returns null on a single-frustum or first frame and
     // falls back to the static bind group, preserving prior behaviour.
     bindGroupResolvers: [cache.cameraResolver],
     vertexBuffers: [cache.instanceBuffer],
@@ -1296,30 +1268,28 @@ function _updateWebGPUPointPrimitivesInner(
     sortPriority: collection._commandOrdering.sortPriority,
     materialSortId: collection._commandOrdering.materialSortId,
     cull: true,
-    // C-R1-COLLECTIONS-PER-ENCODER (Batch 39) — forward the matching
-    // render-state (`_rsOpaque` vs `_rsTranslucent`) so
+    // Forward the render state matching the collection's blend option
+    // (`_rsOpaque` or `_rsTranslucent`) so
     // `applyPerEncoderState` drives the dynamic WebGPU pass state from
     // the same values the WebGL path uses.
-    // Keyed off the BLEND OPTION, not the pass bin — identical selection to
-    // both Batch 889 (`pointPass === 8` ⟺ `_blendOption === 0`) and Batch 914.
+    // Key this choice on the blend option, not the pass bin, because the
+    // collapsed command always occupies Pass.OPAQUE.
     renderState:
       collection._blendOption === BlendOption.OPAQUE
         ? collection._rsOpaque
         : collection._rsTranslucent,
   });
 
-  // C11-157 Slice B — OIT reachability for translucent point primitives.
-  // Attach the OIT variant inputs when the command lands in Pass.TRANSLUCENT
-  // reusing the base color pipeline's SHARED layout + vertex/primitive/
-  // depth state (single-sample for the OIT accumulation targets). Inert when
-  // the FAR-003 gate is off → gate-OFF byte-identical. The point FS returns a
+  // Attach OIT inputs for non-opaque point collections. The variant reuses
+  // the base color pipeline's shared layout and vertex, primitive, and depth
+  // state, while remaining single-sampled for the accumulation targets. It is
+  // inert while OIT is disabled. The point fragment shader returns a
   // `FragOutput` struct (@location(0) color) — injectOITOutput struct branch.
-  // Attached whenever the collection is BLENDED — exactly the set Batch 889
-  // attached on (`pointPass === 9` held for TRANSLUCENT and
-  // OPAQUE_AND_TRANSLUCENT). Inert while the command sits in Pass.OPAQUE: the
+  // Attach it whenever the collection is blended. It remains dormant while
+  // the command sits in Pass.OPAQUE because the
   // OIT auto-build loop only walks `frustumCommands.commands[Pass.TRANSLUCENT]`.
-  // Kept as live scaffolding for the two-command split that would restore
-  // WebGL's opaque/translucent PAIR (Principle 7).
+  // Keep these inputs available for a two-command split that restores
+  // WebGL's opaque/translucent pair.
   if (
     collection._blendOption !== BlendOption.OPAQUE &&
     defined(pipelineEntry.oitShaderCode)
@@ -1337,8 +1307,7 @@ function _updateWebGPUPointPrimitivesInner(
     };
   }
 
-  // AUDIT_2026_05_02 B.10 (Batch 148, NEW-COLLECTIONS-MOTION-VECTORS) —
-  // attach velocity command. The TAA pass walks the command list for
+  // Attach the velocity command. The TAA pass walks the command list for
   // `cmd.velocityCommand` and dispatches it into the rg16float velocity
   // texture. The prev mirror is slot-aligned with the current buffer by
   // the resident-instance manager (partial writes mirror the prev slot
@@ -1431,19 +1400,18 @@ function _pushPickCommand(
   commandList,
   frameState,
 ) {
-  // DP-H42 / DP-H40 — pick pipeline mirrors the color pipeline's defines
-  // so the pick region matches what's visible on screen.
-  // C-R7-RENDERER-MIGRATION (Batch 58) — `cache.pickPipelines` is now
+  // The pick pipeline mirrors the color pipeline's visibility defines so
+  // the pick region matches what is visible on screen. `cache.pickPipelines`
+  // maps
   // `defines → { descriptor, pipeline, pending }` and the actual GPU
   // pipeline is materialized via `context.webgpuPipelineCache`.
   //
-  // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — the pick module's LOG_DEPTH
-  // define is gated by the SEPARATE pick-fleet master switch
+  // The pick module's LOG_DEPTH define uses the separate pick-fleet switch
   // (`isWebGPUPickLogDepthActive`), NOT the scene log switch baked into
   // `currentDefines`. Strip the scene LOG_DEPTH bit and re-add it only when the
-  // pick fleet is active, so with the switch OFF (default) the pick shader emits
-  // a single-`@location(0)` output byte-identical to the pre-conversion pick and
-  // the shared pick FBO stays uniformly hyperbolic (INV-2). The `defines` bit is
+  // pick fleet is active. With the switch off, the pick shader emits a
+  // single-`@location(0)` output and the shared pick FBO stays uniformly
+  // hyperbolic. The `defines` bit is
   // carried into the descriptor name (+ `[ld]`) so the pipeline cache rebuilds on
   // a flip. The pick reuses the color camera UB, which already packs the log
   // lanes (floats 44-47).
@@ -1513,8 +1481,8 @@ function _pushPickCommand(
     return;
   }
 
-  // NEW-COLLECTION-RENDERER-BASE — shared grow-on-demand pick buffer +
-  // size-validation/overflow sentinel (Sentinel 3). `writePickInstances`
+  // The shared pick buffer grows on demand and carries an overflow sentinel.
+  // `writePickInstances`
   // clamps + logs if the payload would overrun the buffer, then returns
   // the safe instance count for the draw.
   const pickSize = pickResult.visibleCount * BYTES_PER_INSTANCE;
@@ -1551,7 +1519,7 @@ function _pushPickCommand(
     // matches the color-opaque path. Falls back to `_rsTranslucent`
     // when the collection is TRANSLUCENT-only.
     renderState: collection._rsOpaque ?? collection._rsTranslucent,
-    // FORK-34 (Batch 207) — dedicated pick command marker.
+    // Mark this command as exclusive to the pick pass.
     pickOnly: true,
   });
 

@@ -1,7 +1,7 @@
 /**
  * Shared base for the WebGPU collection feature renderers
- * (Billboard / Point / Label / Cloud / Polyline) — Phase 11,
- * NEW-COLLECTION-RENDERER-BASE + NEW-COLLECTIONS-ERROR-SENTINELS.
+ * (Billboard / Point / Label / Cloud / Polyline), including their permanent
+ * error sentinels.
  *
  * The five collection renderers each re-implemented the same per-frame
  * scaffolding around `WebGPUResidentInstanceBuffer`:
@@ -34,8 +34,8 @@
  *   3. Size-validation / overflow guard — `ensurePickInstanceBuffer` +
  *      `writePickInstances` `console.error` + clamp when the requested
  *      instance payload exceeds the allocated buffer, preventing an
- *      out-of-range `writeBuffer` / over-count instanced draw (BUG-15
- *      family). `validateInstancedDrawBuffer` is the explicit-buffer
+ *      out-of-range `writeBuffer` / over-count instanced draw.
+ *      `validateInstancedDrawBuffer` is the explicit-buffer
  *      variant used by Cloud / Polyline / Label glyph draws: it clamps the
  *      drawn instance count to what the vertex/instance buffer physically
  *      holds.
@@ -62,7 +62,7 @@ import {
 import { WebGPUShaderModuleCache } from "./WebGPUShaderModuleCache.js";
 
 /**
- * The narrow slice of CesiumJS `FrameState` the base helpers read.
+ * The subset of CesiumJS `FrameState` that the base helpers read.
  * Kept structural (not an import of the ambient `CesiumFrameState`) so
  * this module stays decoupled from the scene-layer typings and callers
  * can pass their existing untyped frame-state objects.
@@ -94,7 +94,7 @@ export interface CollectionRenderCache {
 }
 
 // =========================================================================
-// Sentinel 1 — re-entry / infinite-loop guard
+// Re-entry / infinite-loop guard
 // =========================================================================
 
 const REENTRY_LOG_THROTTLE_MS = 3000;
@@ -118,8 +118,8 @@ const REENTRY_SANE_LIMIT = 16;
  * Increment the per-collection re-entry depth at the top of a renderer's
  * `update*` entry point. A depth past {@link REENTRY_SANE_LIMIT} means the
  * collection's update is re-entering itself without the prior calls ever
- * settling — a recursive command-list build (the BUG-12 "clear loop"
- * failure mode applied to collections). PERMANENT `console.error`
+ * settling — a recursive command-list build (the collection form of a
+ * clear-loop failure). PERMANENT `console.error`
  * (throttled), never pragma-stripped.
  *
  * Pair every `beginCollectionFrame` with an `endCollectionFrame` (call it
@@ -189,8 +189,8 @@ export function invalidatePipelinesOnSceneFormatChange(
 // =========================================================================
 
 /**
- * NEW-COLLECTIONS-2DCV-COPLANAR-DEPTH — in settled 2D / Columbus View
- * (`morphTime === 0`, mode ≠ SCENE3D) collection quads sit coplanar with
+ * In settled 2D / Columbus View (`morphTime === 0`, mode ≠ SCENE3D),
+ * collection quads sit coplanar with
  * the flat map and lose the `less-equal` depth test to z-fighting, so the
  * renderers disable the depth test there and draw on top. 3D + mid-morph
  * keep `less-equal`. This is the single source of truth for that flag.
@@ -207,8 +207,7 @@ export function computeNoDepthTest(
  * integer — exactly representable, allocation-free, and collision-free
  * against every `(defines, flag)` pair.
  *
- * History (C11-149 / NEW-WEBGPU-SHADERDEFINE-WIDTH-EXPANSION): this
- * helper previously squatted on bit 31 of the define mask
+ * This helper previously squatted on bit 31 of the define mask
  * (`defines | 0x80000000`), which made the last free `ShaderDefine`
  * lo-word bit unusable as a real define — any future `1 << 31` entry
  * would have aliased the noDepthTest pipeline variant. The folded key
@@ -249,8 +248,8 @@ export function getOrCreateInstanceManager<T extends ResidentInstanceItem>(
  * Run the resident-instance manager's per-frame sync with the load-bearing
  * ORDERING enforced in one place: capture the dirty list, sync, THEN call
  * the collection's `consumeDirtyState`. Syncing after the consume would
- * always observe an empty dirty list and never partial-write
- * (NEW-DIRTY-CONSUME-*). The renderers used to inline this with a comment
+ * always observe an empty dirty list and never partial-write. The renderers
+ * used to inline this with a comment
  * warning about the order; folding it here makes the ordering structural.
  *
  * `consumeDirtyState` is invoked AFTER `sync` returns — `sync` reads the
@@ -267,7 +266,7 @@ export function syncInstancesAndConsume<T extends ResidentInstanceItem>(
 }
 
 /**
- * Sentinel 2 — null-target guard. A non-zero visible count with a null
+ * Null-target guard. A non-zero visible count with a null
  * buffer means the manager produced an instanced draw with no vertex
  * buffer — a hard bug (the draw would read garbage or be dropped). Returns
  * true when the result is SAFE TO DRAW (visibleCount > 0 and buffer set);
@@ -297,7 +296,7 @@ export function validateInstanceSyncResult(
  * Ensure the collection's pick instance buffer is at least `requiredBytes`,
  * growing (destroy + recreate) on demand. Returns the buffer to write into.
  *
- * Sentinel 3 (size-validation / overflow) lives in the writer
+ * Size validation and overflow handling live in the writer
  * `writePickInstances` below — this allocator guarantees capacity, and the
  * writer asserts the payload fits before issuing `writeBuffer`.
  */
@@ -324,7 +323,7 @@ export function ensurePickInstanceBuffer(
 
 /**
  * Write packed pick instance data to the pick buffer with the
- * size-validation / overflow sentinel (Sentinel 3, BUG-15 family).
+ * permanent size-validation / overflow sentinel.
  * `payloadBytes` is the byte length actually being written; if it exceeds
  * the buffer capacity we `console.error` and CLAMP to the buffer size so
  * the `writeBuffer` stays in range instead of throwing a validation error
@@ -357,14 +356,14 @@ export function writePickInstances(
 }
 
 // =========================================================================
-// Sentinel 2 — null-target guard for explicit-buffer draws
+// Null-target guard for explicit-buffer draws
 // =========================================================================
 
 const NULL_TARGET_LOG_THROTTLE_MS = 3000;
 const _nullTargetLastLogTime: Record<string, number> = Object.create(null);
 
 /**
- * Sentinel 2 (null-target guard), explicit-buffer variant. The
+ * Null-target guard for explicit-buffer draws. The
  * resident-instance collections (Billboard / Point / Label) use
  * {@link validateInstanceSyncResult}; the collections that build their own
  * vertex/instance buffers (Cloud / Polyline) call this at the render-pass
@@ -410,14 +409,14 @@ export function validateDrawTargets(
 }
 
 // =========================================================================
-// Sentinel 3 — instanced-draw size validation for explicit-buffer draws
+// Instanced-draw size validation for explicit-buffer draws
 // =========================================================================
 
 const DRAW_OVERFLOW_LOG_THROTTLE_MS = 3000;
 const _drawOverflowLastLogTime: Record<string, number> = Object.create(null);
 
 /**
- * Sentinel 3 (size-validation / overflow), instanced-draw variant. Before
+ * Instanced-draw size validation and overflow handling. Before
  * issuing an instanced draw whose per-instance data lives in `buffer`
  * (Cloud / Polyline / Label glyph streams), confirm the buffer is large
  * enough for `instanceCount * bytesPerInstance`. On the happy path the
@@ -425,7 +424,7 @@ const _drawOverflowLastLogTime: Record<string, number> = Object.create(null);
  * last grow, or the buffer shrank) it `console.error`s (throttled, keyed by
  * `label`) and CLAMPS the returned instance count to what physically fits,
  * so the caller draws a safe sub-range instead of reading out of bounds
- * (the BUG-15 index/instance-overflow family). PERMANENT log.
+ * after an index/instance overflow. PERMANENT log.
  *
  * @returns the instance count that is safe to draw given the clamp.
  */

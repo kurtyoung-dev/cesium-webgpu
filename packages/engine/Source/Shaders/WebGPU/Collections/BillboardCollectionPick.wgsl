@@ -1,7 +1,7 @@
 // BillboardCollectionPick.wgsl — Pick shader for instanced billboard rendering
 // Same vertex logic as BillboardCollection.wgsl but outputs pick color instead of texture.
 //
-// Instance data layout (160 bytes per billboard, 10 x vec4 — Batch 137):
+// Instance data layout (160 bytes per billboard, 10 x vec4):
 //   @location(0) posHighAndScale:           vec4<f32> — encodedPosition.high.xyz, uniformScale
 //   @location(1) posLowAndRotation:         vec4<f32> — encodedPosition.low.xyz, rotation
 //   @location(2) compressedAttr0:           vec4<f32> — pixelOffset.xy, alignedAxis.xy
@@ -16,24 +16,22 @@
 //   @location(8) pixelOffsetScaleByDistance: vec4<f32> — near, nearScale, far, farScale
 //   @location(9) scaleByDistance:           vec4<f32> — near, nearScale, far, farScale
 //
-// The pick path applies DP-H42 + DP-H40 + AUDIT_2026_05_02 A.14 (DDC +
-// translucency + pixelOffset + scaling) the same way the color path
-// does so the picked region matches the visible one. Batch 136
-// extended the color path; Batch 137 brings pick to parity (a
-// translucency=0 / scale=0 / out-of-DDC-window billboard must NOT
-// pick — `clipPos = (0,0,0,1)` collapses the quad to a degenerate
-// point that the depth-clip rejects).
+// The pick path applies disable-depth distance, split clipping, DDC,
+// translucency, pixel offset, and scaling the same way the color path does so
+// the picked region matches the visible one. A billboard with zero
+// translucency, zero scale, or an out-of-window DDC must not pick;
+// `clipPos = (0,0,0,1)` collapses the quad so it cannot rasterize.
 
 struct CameraUniforms {
   mvpRelativeToEye: mat4x4<f32>,
   viewRotation: mat4x4<f32>,
   encodedCameraHigh: vec3<f32>,
-  // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — the pick pipeline reuses the
-  // color bind group (the SAME camera UB the color path packs), so these
-  // formerly-`_pad0`/`_pad1` lanes already carry the log-depth encode frustum
-  // (near at float 35, far at float 39) and float 46 the factor. Byte layout is
-  // UNCHANGED. Only the `//>>ifdef LOG_DEPTH` pick module reads them; the
-  // hyperbolic pick module never does. See BillboardCollection.wgsl (color).
+  // The pick pipeline reuses the color bind group and the same camera UB as
+  // the color path. Padding lanes carry the log-depth encode frustum (near at
+  // float 35, far at float 39) and float 46 carries the factor without
+  // changing the byte layout. Only the `//>>ifdef LOG_DEPTH` pick module reads
+  // them; the hyperbolic pick module never does. See BillboardCollection.wgsl
+  // (color).
   logDepthNear: f32,
   encodedCameraLow: vec3<f32>,
   logDepthFar: f32,
@@ -56,10 +54,10 @@ struct CameraUniforms {
 @group(0) @binding(2) var atlasSampler: sampler;
 
 //>>ifdef LOG_DEPTH
-// NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — renderer-wide log depth, canonical
-// inline copies matching the color sibling (BillboardCollection.wgsl). Compiled
-// into the pick module ONLY when the pick-fleet gate is active
-// (isWebGPUPickLogDepthActive); the //>>else path is byte-identical to today.
+// Canonical inline log-depth helpers matching BillboardCollection.wgsl. They
+// are compiled into the pick module only when `isWebGPUPickLogDepthActive` is
+// true; inactive preprocessing leaves the non-log module's byte sequence
+// unchanged.
 fn csm_vertexLogDepth(clipPosition: vec4<f32>, near: f32) -> f32 {
   return (clipPosition.w - near) + 1.0;
 }
@@ -88,9 +86,8 @@ struct VertexInput {
   @location(9) scaleByDistance: vec4<f32>,
 };
 
-// AUDIT_2026_05_02 A.14 (Batch 137) — `czm_nearFarScalar` for the pick
-// path. Identical implementation to the color path so a primitive's
-// distance-aware visibility is mirrored exactly.
+// `czm_nearFarScalar` for the pick path. Its implementation matches the color
+// path so a primitive's distance-aware visibility is mirrored exactly.
 fn czm_nearFarScalar(scalar: vec4<f32>, distSq: f32) -> f32 {
   let nearDistSq = scalar.x * scalar.x;
   let farDistSq = scalar.z * scalar.z;
@@ -110,7 +107,7 @@ struct VertexOutput {
   @location(2) splitDirection: f32,
   //>>endif
   //>>ifdef LOG_DEPTH
-  // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH — interpolated linear depthFromNearPlusOne;
+  // Interpolated linear depthFromNearPlusOne;
   // the pick FS converts it to frag_depth (matches the color sibling's varying).
   @location(3) v_logDepth: f32,
   //>>endif
@@ -130,10 +127,9 @@ const QUAD_OFFSETS = array<vec2<f32>, 6>(
   vec2<f32>(-0.5,  0.5),
 );
 
-// C4-BILLBOARD-ATLAS-VFLIP — keep the pick quad's atlas alpha-discard lookup
-// in the SAME V orientation as the color pass (BillboardCollection.wgsl) so
-// the transparent region discarded during picking matches the visible pixels.
-// See the color shader for the full derivation.
+// Use the color pass's v orientation for the pick quad so atlas-alpha discard
+// rejects the same transparent pixels that the color pass leaves invisible.
+// See `BillboardCollection.wgsl` for the coordinate derivation.
 const QUAD_UVS = array<vec2<f32>, 6>(
   vec2<f32>(0.0, 0.0),
   vec2<f32>(1.0, 0.0),
@@ -169,10 +165,10 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   let positionRTE = translateRelativeToEye(posHigh, posLow, camera.encodedCameraHigh, camera.encodedCameraLow);
   var clipPos = camera.mvpRelativeToEye * vec4<f32>(positionRTE, 1.0);
 
-  // Hoisted: squared eye distance, consumed by 4 gates below.
+  // Hoist the squared eye distance because the distance-aware gates reuse it.
   let camDistSq = dot(positionRTE, positionRTE);
 
-  // AUDIT_2026_05_02 A.14 (Batch 137) — apply EYE_DISTANCE_SCALING
+  // Apply EYE_DISTANCE_SCALING
   // before the corner expansion so a `scaleByDistance.farValue=0`
   // billboard collapses and is unpickable. Mirrors the color path.
   var effectiveScale: f32 = baseScale;
@@ -184,8 +180,8 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   }
   //>>endif
 
-  // AUDIT_2026_05_02 A.14 (Batch 137) — apply EYE_DISTANCE_PIXEL_OFFSET
-  // before the pixel-to-clip conversion. Pick parity with color path.
+  // Apply EYE_DISTANCE_PIXEL_OFFSET before the pixel-to-clip conversion so
+  // the pick path remains aligned with the color path.
   var effectivePixelOffset: vec2<f32> = basePixelOffset;
   //>>ifdef EYE_DISTANCE_PIXEL_OFFSET
   let pxScale = czm_nearFarScalar(input.pixelOffsetScaleByDistance, camDistSq);
@@ -209,18 +205,17 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   // Billboard size in pixels (post-distance-scaling)
   let size = vec2<f32>(billboardWidth, billboardHeight) * effectiveScale;
 
-  // Convert CSS-pixel offsets to clip space. NEW-BILLBOARD-SIZE-PARITY —
-  // pick quads must cover the same device pixels as the color pass so picks
-  // land on the rendered billboard; bake pixelRatio (highResMultiplier) into
-  // the CSS-px → device-px conversion. See BillboardCollection.wgsl.
+  // Convert CSS-pixel offsets to clip space. Pick quads must cover the same
+  // device pixels as the color pass so picks land on the rendered billboard.
+  // Bake pixelRatio (highResMultiplier) into the CSS-px to device-px
+  // conversion; see BillboardCollection.wgsl.
   let pixelToClip = (2.0 * camera.highResMultiplier) / camera.viewportSize;
   clipPos.x += (corner.x * size.x + effectivePixelOffset.x) * pixelToClip.x * clipPos.w;
   clipPos.y += (corner.y * size.y + effectivePixelOffset.y) * pixelToClip.y * clipPos.w;
 
   //>>ifdef DISTANCE_DISPLAY_CONDITION
-  // AUDIT_2026_05_02 A.14 (Batch 137) — DDC gate. Out-of-window
-  // billboards collapse to a degenerate clip-pos so the pick fragment
-  // never rasterizes.
+  // Out-of-window DDC billboards collapse to a degenerate clip position so the
+  // pick fragment never rasterizes.
   let nearSqDDC = input.perInstanceFlags.z;
   let farSqDDC = input.perInstanceFlags.w;
   if (camDistSq < nearSqDDC || camDistSq > farSqDDC) {
@@ -229,10 +224,13 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   //>>endif
 
   //>>ifdef DISABLE_DEPTH_DISTANCE
-  // Batch 139 (4th-pass audit) — raw-sentinel pattern. Pick path
-  // mirrors the color path's DISABLE_DEPTH_DISTANCE behavior so a
-  // billboard with `disableDepthTestDistance = Infinity` (raw -1 in
-  // the buffer) is correctly pickable above terrain.
+  // Check the raw sentinel before squaring so
+  // `disableDepthTestDistance = Infinity` (packed as -1) retains its sign.
+  // This pick shader represents the depth override with the far-plane clip
+  // value, `clipPos.z = clipPos.w`.
+  // Unlike the color pass, which uses z = 0 to force the visible overlay on top
+  // of scene depth, the pick pass uses z = w to pass its far-cleared depth
+  // target without overriding nearer pick geometry.
   let disableRawDPick = input.perInstanceFlags.x;
   if (disableRawDPick < 0.0) {
     clipPos.z = clipPos.w;
@@ -251,7 +249,7 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   }
   //>>endif
 
-  // AUDIT_2026_05_02 A.14 (Batch 137) — translucency=0 → unpickable.
+  // A billboard with zero translucency is unpickable.
   // For partial translucency (0 < t < 1) the pick still fires because
   // the user can still see and interact with the billboard.
   //>>ifdef EYE_DISTANCE_TRANSLUCENCY
@@ -277,9 +275,8 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   output.pickColor = input.pickColor;
 
   //>>ifdef LOG_DEPTH
-  // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH — mirror the color sibling's block
-  // (BillboardCollection.wgsl vertexMain). Computed AFTER every clipPos
-  // override above. A forced z == 0 (near-plane / hide collapse) maps to
+  // Mirror BillboardCollection.wgsl's color block. Compute this after every
+  // clipPos override above. A forced z == 0 (near-plane / hide collapse) maps to
   // v_logDepth = 1.0; every other case takes the general encode.
   if (output.position.z == 0.0) {
     output.v_logDepth = 1.0;
@@ -292,12 +289,11 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   return output;
 }
 
-// NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — shared pick output. At defines=0
-// (pick-fleet gate OFF) this is a single-field `@location(0)` struct,
-// output-byte-identical to the historical bare `-> @location(0) vec4<f32>`
-// return. When the gate is active the struct also carries the log-encoded
-// `@builtin(frag_depth)` (the SAME encoding the color sibling writes) so the
-// converted pick fleet depth-tests coherently in the shared pick FBO.
+// Shared pick output. Without LOG_DEPTH this single-field struct is
+// byte-equivalent to the bare `-> @location(0) vec4<f32>` return. With
+// LOG_DEPTH it also carries the color sibling's log-encoded
+// `@builtin(frag_depth)`, keeping depth tests coherent in the shared pick
+// framebuffer.
 struct PickFragOutput {
   @location(0) color: vec4<f32>,
   //>>ifdef LOG_DEPTH

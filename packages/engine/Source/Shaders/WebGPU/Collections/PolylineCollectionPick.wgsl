@@ -2,20 +2,19 @@
 // Same vertex logic as PolylineCollection.wgsl but outputs pick color
 // instead of line color.
 //
-// Instance data per segment (112 bytes, 7 x vec4) — Batch 137 finishes
-// audit A.14 by matching the color path's distance-attribute layout.
+// Instance data per segment (112 bytes, 7 x vec4), matching the color path's
+// distance-attribute layout:
 //   @location(0) startPosHighAndWidth:    vec4<f32>
 //   @location(1) startPosLow:             vec4<f32>
 //   @location(2) endPosHighAndMiter:      vec4<f32>
 //   @location(3) endPosLow:               vec4<f32>
 //   @location(4) pickColor:               vec4<f32>
-//   @location(5) perInstanceFlags:        vec4<f32> — DP-H42 / DP-H40 (Batch 22)
-//                                          + DDC nearSq / farSq (Batch 137)
-//   @location(6) translucencyByDistance:  vec4<f32> — Batch 137
+//   @location(5) perInstanceFlags:        vec4<f32> — disable-depth distance,
+//                                          split direction, DDC nearSq/farSq
+//   @location(6) translucencyByDistance:  vec4<f32> — near, nearAlpha, far, farAlpha
 //
-// Pick parity: a polyline that's invisible due to DDC or
-// translucency=0 must NOT pick. Pre-Batch-137 it would still pick
-// because pick didn't read these slots. Polyline has no pixelOffset
+// A polyline hidden by DDC or zero translucency must not pick, so this path
+// reads the same visibility slots as the color path. Polyline has no pixelOffset
 // or quad-scale, so EYE_DISTANCE_PIXEL_OFFSET / EYE_DISTANCE_SCALING
 // don't apply.
 
@@ -26,12 +25,11 @@ struct CameraUniforms {
   encodedCameraLow: vec3<f32>,
   _pad1: f32,
   viewportSize: vec2<f32>,
-  // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — formerly `_pad2`; carries the
-  // log-depth encode frustum (near, far). The factor lane sits after
-  // `splitPosition` (previously implicit padding before previousViewProjection's
-  // 16-byte alignment). Byte layout UNCHANGED. The pick pass runs the SAME
-  // `packCameraUniforms` the color path does, so these lanes are populated; only
-  // the `//>>ifdef LOG_DEPTH` pick module reads them. See PolylineCollection.wgsl.
+  // Renderer-wide log-depth parameters. `logDepthNearFar` carries the encode
+  // frustum, while `logDepthFactor` occupies the scalar lane after
+  // `splitPosition`; `_padLog` preserves `previousViewProjection`'s 16-byte
+  // alignment. The pick and color paths use the same `packCameraUniforms`, so
+  // every variant shares one populated layout, though only LOG_DEPTH reads it.
   logDepthNearFar: vec2<f32>,
   minimumDisableDepthTestDistance: f32,
   splitPosition: f32,
@@ -43,10 +41,8 @@ struct CameraUniforms {
 @group(0) @binding(0) var<uniform> camera: CameraUniforms;
 
 //>>ifdef LOG_DEPTH
-// NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — renderer-wide log depth, canonical
-// inline copies matching the color sibling (PolylineCollection.wgsl). Compiled
-// into the pick module ONLY when the pick-fleet gate is active; the //>>else
-// path is byte-identical to today.
+// Inline copies of the renderer-wide log-depth helpers; keep synchronized with
+// PolylineCollection.wgsl. Only LOG_DEPTH variants include these helpers.
 fn csm_vertexLogDepth(clipPosition: vec4<f32>, near: f32) -> f32 {
   return (clipPosition.w - near) + 1.0;
 }
@@ -71,9 +67,9 @@ struct VertexInput {
   @location(6) translucencyByDistance: vec4<f32>,
 };
 
-// AUDIT_2026_05_02 A.14 (Batch 137) — czm_nearFarScalar for the
-// polyline pick path. translucency=0 must collapse the pick quad to
-// a degenerate clip-pos so the user can't pick an invisible polyline.
+// `czm_nearFarScalar` for the polyline pick path. Zero translucency must
+// collapse the pick quad to a degenerate clip position so an invisible
+// polyline cannot be picked.
 fn czm_nearFarScalar(scalar: vec4<f32>, distSq: f32) -> f32 {
   let nearDistSq = scalar.x * scalar.x;
   let farDistSq = scalar.z * scalar.z;
@@ -92,7 +88,7 @@ struct VertexOutput {
   @location(1) splitDirection: f32,
   //>>endif
   //>>ifdef LOG_DEPTH
-  // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH — interpolated linear depthFromNearPlusOne;
+  // Interpolated linear depthFromNearPlusOne;
   // the pick FS converts it to frag_depth (matches the color sibling).
   @location(2) v_logDepth: f32,
   //>>endif
@@ -164,13 +160,13 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   // Convert back to clip space
   var finalPos = fromScreenSpace(offsetScreen, baseClip.z, baseClip.w, camera.viewportSize);
 
-  // AUDIT_2026_05_02 A.14 (Batch 137) — squared eye distance, used
-  // by DDC + DISABLE_DEPTH + translucency below.
+  // Squared eye distance used by the distance-display, depth-override, and
+  // translucency gates below.
   let baseRTE = mix(startRTE, endRTE, isEnd);
   let camDistSq = dot(baseRTE, baseRTE);
 
   //>>ifdef DISTANCE_DISPLAY_CONDITION
-  // AUDIT_2026_05_02 A.14 (Batch 137) — pick parity for DDC.
+  // Apply the same DDC visibility window as the color path.
   let nearSqDDC = input.perInstanceFlags.z;
   let farSqDDC = input.perInstanceFlags.w;
   if (camDistSq < nearSqDDC || camDistSq > farSqDDC) {
@@ -179,9 +175,10 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   //>>endif
 
   //>>ifdef DISABLE_DEPTH_DISTANCE
-  // DP-H42 — pick pipeline obeys the same depth override as the color
+  // The pick pipeline obeys the same depth override as the color
   // pipeline so the picked region matches what the user sees.
-  // Batch 140 — raw-sentinel pattern (see PolylineCollection.wgsl).
+  // Check the raw sentinel before squaring so its negative sign remains
+  // detectable; see PolylineCollection.wgsl.
   let disableRawDP = input.perInstanceFlags.x;
   if (disableRawDP < 0.0) {
     finalPos.z = finalPos.w;
@@ -200,7 +197,7 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   }
   //>>endif
 
-  // AUDIT_2026_05_02 A.14 (Batch 137) — translucency=0 → unpickable.
+  // Zero translucency makes the polyline unpickable.
   //>>ifdef EYE_DISTANCE_TRANSLUCENCY
   let translucency = czm_nearFarScalar(input.translucencyByDistance, camDistSq);
   if (translucency == 0.0) {
@@ -216,9 +213,8 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   //>>endif
 
   //>>ifdef LOG_DEPTH
-  // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH — mirror the color sibling's block
-  // (PolylineCollection.wgsl vertexMain). Computed AFTER every position
-  // override above. The pick DISABLE_DEPTH path pushes to the far plane
+  // Mirror PolylineCollection.wgsl's color block. Compute this after every position
+  // override above. The pick depth-override path pushes to the far plane
   // (z == w); map it to the log far plane. A forced z == 0 maps to the near
   // plane. Every other case takes the general encode.
   if (output.position.z == output.position.w && output.position.w != 0.0) {
@@ -236,12 +232,10 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   return output;
 }
 
-// NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — shared pick output. At defines=0
-// (pick-fleet gate OFF) this is a single-field `@location(0)` struct,
-// output-byte-identical to the historical bare `-> @location(0) vec4<f32>`
-// return. When the gate is active the struct also carries the log-encoded
-// `@builtin(frag_depth)` so the converted pick fleet depth-tests coherently in
-// the shared pick FBO.
+// Shared pick output. Without LOG_DEPTH this single-field struct is
+// byte-equivalent to the bare `-> @location(0) vec4<f32>` return. With
+// LOG_DEPTH it also carries log-encoded `@builtin(frag_depth)` so depth tests
+// remain coherent in the shared pick framebuffer.
 struct PickFragOutput {
   @location(0) color: vec4<f32>,
   //>>ifdef LOG_DEPTH

@@ -33,12 +33,12 @@ import WebGPUBuffer from "./WebGPUBuffer.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
 import WebGPUCollectionCameraUB from "./WebGPUCollectionCameraUB.js";
 import { getCollectionShaderSource } from "./WebGPUCollectionShaders.js";
-// C11-157 Slice B — non-LOG_DEPTH preprocess of the collection color source
-// for the OIT accumulation variant (`cmd._shaderCode`). Same pattern the
-// primitive path uses (Slice A). Inert unless the FAR-003 gate is on.
+// Preprocess the collection color source without LOG_DEPTH for the OIT
+// accumulation variant (`cmd._shaderCode`). This mirrors the primitive path
+// and remains inert while OIT is disabled.
 import { preprocess as preprocessShaderSource } from "./WebGPUShaderPreprocessor.js";
-// Slice 5c-B Phase 1 (Batch 110) — scene-FB target helper. Used only
-// for the COLOR pipeline; pick + velocity stay single-target.
+// The scene-framebuffer target helper is used only by the color pipeline;
+// pick and velocity remain single-target.
 import { makeSceneFBTargets } from "./WebGPUSceneFBTargetHelpers.js";
 import {
   makeBindGroupLayout,
@@ -52,9 +52,9 @@ import {
   isWebGPULogDepthActive,
   isWebGPUPickLogDepthActive,
 } from "./WebGPULogDepth.js";
-// NEW-COLLECTION-RENDERER-BASE (Phase 11) — shared per-frame plumbing +
-// the three permanent collection sentinels. Billboard keeps its own
-// pack/define-scan/atlas/descriptors; only duplicated scaffolding moved.
+// Shared per-frame plumbing includes the permanent collection guards.
+// Billboards retain their own packing, define scanning, atlas handling, and
+// descriptors; only duplicated scaffolding is shared.
 import {
   beginCollectionFrame,
   endCollectionFrame,
@@ -68,22 +68,20 @@ import {
   writePickInstances,
   makeDeviceShaderModuleCacheAccessor,
 } from "./WebGPUCollectionRendererBase.js";
-// NEW-DERIVEDCOMMAND-VARIANT-FACTORY (Batch 248) — pick pipeline descriptor
-// is derived from the color descriptor through the centralized variant
-// factory; pipeline resolution (color/pick/velocity) routes through the
-// factory's shared sync/async state machine.
+// The pick pipeline descriptor is derived from the color descriptor through
+// the centralized variant factory. Color, pick, and velocity pipeline
+// resolution all use the factory's shared synchronous/asynchronous state machine.
 import {
   DerivedCommandType,
   WebGPUDerivedCommand,
 } from "./WebGPUDerivedCommand.js";
 import SceneMode from "../../Scene/SceneMode.js";
 
-// Per-instance stride. Batch 135 carried 7 vec4 (28 floats) for
-// DP-H42/H40 + DISTANCE_DISPLAY_CONDITION. Batch 136 (Audit A.14
-// finish) extends to 10 vec4 (40 floats) for the three remaining
-// NearFarScalar gates. Batch 138 adds an 11th vec4
-// (`threePointAttribs`) for VS_THREE_POINT_DEPTH_CHECK clamp-to-ground
-// terrain occlusion. 16-byte stride alignment preserved.
+// Per-instance stride. The first seven vec4 values carry the depth-test,
+// split, and distance-display state. Three NearFarScalar gates extend the
+// record to ten vec4 values, and `threePointAttribs` adds an eleventh for
+// VS_THREE_POINT_DEPTH_CHECK clamp-to-ground terrain occlusion. The stride
+// remains 16-byte aligned.
 const FLOATS_PER_INSTANCE = 44;
 const BYTES_PER_INSTANCE = FLOATS_PER_INSTANCE * 4;
 const VERTICES_PER_QUAD = 6;
@@ -96,7 +94,7 @@ const scratchEncodedCamera = new EncodedCartesian3();
 const scratchEncodedPos = new EncodedCartesian3();
 const scratchInverseModel = new Matrix4();
 const scratchCameraMC = new Cartesian3();
-// NEW-BILLBOARD-SIZE-PARITY — the billboard's normalized atlas sub-rect
+// The billboard's normalized atlas sub-rectangle
 // (bottom-left x/y + width/height). The atlas is larger than any single
 // image (32×32 for a 16px image), so a billboard that samples the full
 // `(0,0,1,1)` atlas covers only the fraction of the quad where its image
@@ -106,9 +104,8 @@ const scratchCameraMC = new Cartesian3();
 const scratchImageRect = new BoundingRectangle();
 
 /**
- * Batch 139 (3rd-pass audit fix) — encode the
- * `disableDepthTestDistance` per-instance attribute so the WGSL
- * sentinel check works. WebGL's convention (mirrored at
+ * Encodes the `disableDepthTestDistance` per-instance attribute so the WGSL
+ * sentinel check follows WebGL's convention (mirrored at
  * `BillboardCollection.js:1798-1799`):
  *
  *   - `Number.POSITIVE_INFINITY` → -1.0 (always-disable sentinel; the
@@ -118,9 +115,8 @@ const scratchImageRect = new BoundingRectangle();
  *   - other (undefined, NaN, non-number) → 0.0 (no per-instance
  *     override; falls back to frame-wide minimum in the shader).
  *
- * Pre-Batch-139 the JS pack collapsed Infinity to 0.0, which made the
- * shader's sentinel branch dead code — the disable-depth-distance
- * "always disable" mode never fired on WebGPU.
+ * Collapsing Infinity to 0.0 would make the shader's sentinel branch dead and
+ * prevent the disable-depth-distance "always disable" mode from firing.
  */
 function encodeDisableDepthTestDistance(value) {
   if (typeof value !== "number") {
@@ -129,8 +125,8 @@ function encodeDisableDepthTestDistance(value) {
   if (value === Number.POSITIVE_INFINITY) {
     return -1.0;
   }
-  // 4th-pass audit fix — guard against `NaN`, `-Infinity`, and
-  // negative finite values. WebGL squares the input in the shader so
+  // Guard against `NaN`, `-Infinity`, and negative finite values. WebGL
+  // squares the input in the shader so
   // sign is dropped (negative distances become positive squared
   // distances), but WebGPU stores raw and uses `<0` as the always-
   // disable sentinel. Treating negatives as 0 (no override) matches
@@ -143,8 +139,8 @@ function encodeDisableDepthTestDistance(value) {
 }
 
 /**
- * AUDIT_2026_05_02 A.14 (Batch 136) — pack a CesiumJS NearFarScalar
- * into the (near, nearValue, far, farValue) layout the WGSL helper
+ * Packs a CesiumJS NearFarScalar into the
+ * (near, nearValue, far, farValue) layout the WGSL helper
  * `czm_nearFarScalar` expects. Returns the same layout the WebGL
  * upstream uses; the shader squares the near/far values internally so
  * we pack raw distances, not squared. When `scalar` is undefined, we
@@ -178,8 +174,8 @@ function packNearFarScalar(out, offset, scalar, identity) {
 }
 
 // Shader source is bundled at build time via WebGPUCollectionShaders.js
-// (esbuild inlines the .wgsl.js mirror). The previous runtime `fetch()`
-// against a relative path resolved against the demo's HTML location, so
+// (esbuild inlines the .wgsl.js mirror). A runtime `fetch()` against a relative
+// path would resolve against the demo's HTML location, so
 // from `Apps/Sandcastle/gallery/X.html` it tried to load
 // `Apps/Sandcastle/Source/Shaders/...` which 404s — the dev server returned
 // its HTML 404 page and Naga choked on `<!DOCTYPE html>`. The cached
@@ -203,7 +199,7 @@ function isBillboardVisible(bb) {
 /**
  * Pack ONE billboard's 44-float instance record at `offset` floats into
  * `out`. Extracted from the former whole-collection `buildInstanceData`
- * loop (NEW-PARTIAL-WRITE-WIRE-BPL) so the resident-instance manager can
+ * loop so the resident-instance manager can
  * re-pack a single changed slot without touching its neighbors. The pick
  * builder reuses it and overwrites the color slot.
  * @private
@@ -238,8 +234,8 @@ function packBillboardInstance(out, offset, bb) {
   out[offset + 11] = alignedAxis ? alignedAxis.y : 0.0;
 
   // compressedAttr1: imageRect (x,y,w,h in atlas, normalized).
-  // NEW-BILLBOARD-SIZE-PARITY — pull the real atlas sub-rect from the
-  // billboard's resolved texture, exactly like WebGL's
+  // Pull the real atlas sub-rectangle from the billboard's resolved texture,
+  // exactly like WebGL's
   // `writeCompressedAttribute0/1` (BillboardCollection.js:1572). The atlas
   // packs each image into a power-of-two region larger than the image
   // (e.g. a 16px image lands in a 32×32 atlas at width/height = 0.5), so
@@ -278,7 +274,7 @@ function packBillboardInstance(out, offset, bb) {
   out[offset + 22] = bb.width || 32.0;
   out[offset + 23] = bb.height || 32.0;
 
-  // perInstanceFlags — DP-H42 / DP-H40 / A.14 per-billboard state.
+  // perInstanceFlags stores per-billboard depth, split, and display state.
   //   x: disableDepthTestDistance (raw meters; squared in shader)
   //   y: splitDirection (-1 LEFT / 0 NONE / +1 RIGHT)
   //   z: distanceDisplayCondition.near^2 (squared meters; 0 if unset)
@@ -287,8 +283,8 @@ function packBillboardInstance(out, offset, bb) {
     bb._disableDepthTestDistance,
   );
   out[offset + 25] = bb._splitDirection ?? 0.0;
-  // AUDIT_2026_05_02 A.14 (Batch 135) — pack the squared near/far
-  // distance display window. WGSL gate compares squared eye distance
+  // Pack the squared near/far distance-display window. The WGSL gate compares
+  // squared eye distance
   // against [near^2, far^2] (no sqrt). Default values match WebGL's
   // `czm_nearFarScalar` semantics: near=0 / far=Infinity → always
   // visible. The renderer also flips DISTANCE_DISPLAY_CONDITION on
@@ -306,8 +302,8 @@ function packBillboardInstance(out, offset, bb) {
     out[offset + 27] = Number.MAX_VALUE;
   }
 
-  // AUDIT_2026_05_02 A.14 (Batch 136) — three NearFarScalar gates
-  // packed into vec4 slots 7/8/9. Identity is 1.0 for all three (each
+  // Pack the three NearFarScalar gates into vec4 slots 7/8/9. Their identity
+  // is 1.0 because each
   // is multiplicative — alpha, pixel-offset scale, quad scale). The
   // `packNearFarScalar` helper writes an identity-NFS when the user
   // didn't set the property, so the shader's gate produces the
@@ -317,7 +313,7 @@ function packBillboardInstance(out, offset, bb) {
   packNearFarScalar(out, offset + 32, bb._pixelOffsetScaleByDistance, 1.0);
   packNearFarScalar(out, offset + 36, bb._scaleByDistance, 1.0);
 
-  // Batch 138 (VS_THREE_POINT_DEPTH_CHECK) — threePointAttribs vec4:
+  // VS_THREE_POINT_DEPTH_CHECK uses the threePointAttribs vec4:
   //   .x = depthOrigin.x (-1 / 0 / +1, label horizontal anchor; 0 means
   //         "inherit billboard origin" per WebGL convention).
   //   .y = depthOrigin.y (-1 / 0 / +1, vertical anchor).
@@ -354,8 +350,8 @@ function buildPickInstanceData(collection, context) {
     }
 
     const offset = visibleCount * FLOATS_PER_INSTANCE;
-    // Same record as the color path — the pick pipeline obeys DP-H42,
-    // DP-H40, and A.14 too so the picked region matches what the user
+    // Use the same record as the color path so the pick pipeline obeys the
+    // depth-test, split, and distance gates and the picked region matches what the user
     // sees on screen (a clicked pixel below the camera's DepthDistance
     // threshold should still pick the billboard above terrain; a pixel
     // outside the split-cutoff or distance window should not pick a
@@ -364,12 +360,12 @@ function buildPickInstanceData(collection, context) {
 
     // @location(4): pick color instead of display color.
     //
-    // NEW-WEBGPU-COLLECTION-PICKID-OBJECT-SHAPE — this used to register the
-    // BARE `bb` (`context.createPickId(bb, "billboard")`). Two consequences,
-    // both wrong: (1) a resolved pick handed user code a Billboard whose
-    // `.primitive` / `.collection` / `.id` read `undefined`, where WebGL hands
-    // back `{primitive, collection, id}`; and (2) for a LABEL the registered
-    // target was the INTERNAL GLYPH billboard rather than the Label — because
+    // Registering the bare `bb` (`context.createPickId(bb, "billboard")`) has
+    // two incorrect consequences: (1) a resolved pick hands user code a
+    // Billboard whose `.primitive` / `.collection` / `.id` read `undefined`,
+    // whereas WebGL hands back `{primitive, collection, id}`; and (2) for a
+    // LABEL the registered target is the INTERNAL GLYPH billboard rather than
+    // the Label — because
     // `Billboard.getPickId` (Billboard.js:1010-1023) registers
     // `this._pickPrimitive`, which `LabelCollection.js:302` sets to the owning
     // Label. `getPickId` also already passes the same `"billboard"` kind, so
@@ -396,18 +392,18 @@ const INSTANCE_BUFFER_LAYOUT = {
     { shaderLocation: 3, offset: 48, format: "float32x4" },
     { shaderLocation: 4, offset: 64, format: "float32x4" },
     { shaderLocation: 5, offset: 80, format: "float32x4" },
-    // DP-H42 / DP-H40 / A.14 DDC — perInstanceFlags. Always declared in
-    // the layout; the shader only reads it inside the matching
+    // perInstanceFlags is always declared in the layout; the shader only reads
+    // it inside the matching
     // `//>>ifdef` blocks.
     { shaderLocation: 6, offset: 96, format: "float32x4" },
-    // AUDIT_2026_05_02 A.14 (Batch 136) — three NearFarScalar gates.
-    // Always declared so a single pipeline layout serves all 8
+    // The three NearFarScalar gates are always declared so a single pipeline
+    // layout serves all eight
     // ifdef variants without rebuilding.
     { shaderLocation: 7, offset: 112, format: "float32x4" },
     { shaderLocation: 8, offset: 128, format: "float32x4" },
     { shaderLocation: 9, offset: 144, format: "float32x4" },
-    // Batch 138 (VS_THREE_POINT_DEPTH_CHECK) — depthOrigin +
-    // enableDepthCheck. Pick shader keeps its existing 10-attribute
+    // VS_THREE_POINT_DEPTH_CHECK carries depthOrigin and enableDepthCheck.
+    // The pick shader keeps its existing 10-attribute
     // VertexInput; the WebGPU spec allows a buffer layout to declare
     // more attributes than the shader reads.
     { shaderLocation: 10, offset: 160, format: "float32x4" },
@@ -419,8 +415,8 @@ function createBillboardBindGroupLayout(device) {
     uniformBuffer(0, Stage.VERTEX_FRAGMENT),
     texture(1, Stage.FRAGMENT),
     sampler(2, Stage.FRAGMENT),
-    // Batch 138 (VS_THREE_POINT_DEPTH_CHECK) — globe depth packed-rgba
-    // texture + sampler. VS-only visibility: the 3-point check
+    // VS_THREE_POINT_DEPTH_CHECK uses the packed-RGBA globe depth texture and
+    // sampler. Visibility is vertex-only: the three-point check
     // sampling happens in `getGlobeDepth(positionEC)` from vertexMain;
     // FS doesn't need access. Placeholder 1×1 texture is bound when
     // the feature is off so the BGL stays a single canonical layout
@@ -435,8 +431,6 @@ function createBillboardBindGroupLayout(device) {
  * billboard pipeline. The actual `GPURenderPipeline` is materialized
  * through `webgpuPipelineCache.getPipeline()` so two BillboardCollections
  * with identical (defines, format, depthFormat) share one pipeline.
- *
- * C-R7-RENDERER-MIGRATION (Batch 73).
  * @private
  */
 function buildBillboardDescriptor(
@@ -464,42 +458,39 @@ function buildBillboardDescriptor(
     fragment: {
       module: shaderModule,
       entryPoint: "fragmentMain",
-      // Slice 5c-B Phase 1 (Batch 110) — scene-FB color target via
-      // helper. The velocity (rg16float) builder and the pick variant
-      // (derived from THIS descriptor via WebGPUDerivedCommand, Batch
-      // 248) target their own render passes; both intentionally stay
-      // single-target.
+      // Use the scene-framebuffer color target helper here. The velocity
+      // (`rg16float`) builder and the pick variant derived from this descriptor
+      // target their own render passes and intentionally remain single-target.
       targets: makeSceneFBTargets(format, { translucent: true }),
     },
     primitive: { topology: "triangle-list", cullMode: "none" },
     depthStencil: {
       format: depthFormat,
       depthWriteEnabled: false,
-      // PHASE 3 SLICE 2 (NEW-COLLECTIONS-2DCV-COPLANAR-DEPTH) — in settled
-      // 2D / Columbus View (morphTime === 0) the billboard sits COPLANAR
+      // In settled 2D or Columbus View (`morphTime === 0`) the billboard sits
+      // coplanar
       // with the flat map / globe surface it depth-tests against. Under the
       // orthographic (2D) or full-frustum (CV) depth encode a height-0
       // anchor lands at essentially the same NDC z as the map, so the
       // `less-equal` test loses to z-fighting and every quad fragment is
       // discarded — the all-zero 2D/CV billboard state. WebGL's 2D path
       // dodges this because its ortho depth places overlays in front; the
-      // proven in-repo fix (PolylineCollection, Batch 261) is to DISABLE
-      // the depth test in settled 2D/CV so overlays draw on top of the flat
+      // PolylineCollection handles the same geometry by disabling the depth
+      // test in settled 2D/CV so overlays draw on top of the flat
       // map. 3D and mid-morph keep `less-equal` so terrain occlusion + the
       // 3-point clamp-to-ground check stay byte-identical.
       depthCompare: noDepthTest ? "always" : "less-equal",
     },
-    // Batch 134 — scene FB color pass is MSAA when context._msaaSamples > 1.
-    // Pre-Batch-134 this builder dropped `multisample`, defaulting to count=1
-    // and producing the same family of validation errors caught at Batches
-    // 118 (Ellipsoid) and 132 (MaterialAppearance).
+    // The scene-framebuffer color pass is multisampled when
+    // `context._msaaSamples > 1`. Omitting `multisample` defaults to count 1
+    // and makes the pipeline incompatible with a multisampled render pass.
     multisample: sampleCount > 1 ? { count: sampleCount } : undefined,
   };
 }
 
 /**
- * AUDIT_2026_05_02 B.10 (Batch 143, NEW-COLLECTIONS-MOTION-VECTORS) —
- * second VB layout for the velocity pipeline. Same per-instance stride
+ * Defines the second vertex-buffer layout for the velocity pipeline. It uses
+ * the same per-instance stride
  * as the regular instance buffer (the renderer keeps a one-frame-lagged
  * mirror of the same data), but the velocity VS only reads positions
  * via two locations, 11 (high) + 12 (low).
@@ -518,8 +509,8 @@ const VELOCITY_PREV_INSTANCE_BUFFER_LAYOUT = {
 };
 
 /**
- * AUDIT_2026_05_02 B.10 (Batch 143, NEW-COLLECTIONS-MOTION-VECTORS) —
- * descriptor for the velocity pipeline variant. Same VS layout / shader
+ * Builds the descriptor for the velocity pipeline variant. It uses the same
+ * vertex layout and shader
  * module / pipeline layout as the regular billboard pipeline; the
  * fragment entry is `fragmentVelocityMain` and the target format is
  * `rg16float` (the scene-FB velocity texture format). Depth is bound
@@ -567,8 +558,7 @@ function buildBillboardVelocityDescriptor(
  * the frame. Falls back to direct synchronous creation when
  * `pipelineCache` is null.
  *
- * C-R7-RENDERER-MIGRATION (Batch 73). Since Batch 248 this delegates to
- * the centralized variant factory's shared resolution state machine
+ * This delegates to the centralized variant factory's shared resolution state machine
  * (`WebGPUDerivedCommand.resolveVariantPipeline`) — same behavior, one
  * implementation.
  * @private
@@ -585,7 +575,7 @@ function tryResolveBillboardPipeline(device, pipelineCache, entry) {
 // BillboardCollection rendered on a given device so we don't recompile
 // the same (source, defines) tuple for each collection. Weak so a lost
 // device is GC'd along with its modules. The per-device WeakMap accessor
-// now comes from the shared collection base (NEW-COLLECTION-RENDERER-BASE).
+// comes from the shared collection base.
 const getShaderModuleCache = makeDeviceShaderModuleCacheAccessor();
 
 /**
@@ -603,8 +593,7 @@ function prewarmBillboardShaders(device, colorSource, pickSource) {
     return;
   }
   const D = ShaderDefine;
-  // AUDIT_2026_05_02 A.14 (Batches 135 + 136) — billboard-relevant
-  // defines now total 6: DISABLE_DEPTH_DISTANCE, SPLIT_ENABLED,
+  // The billboard-relevant defines total six: DISABLE_DEPTH_DISTANCE, SPLIT_ENABLED,
   // DISTANCE_DISPLAY_CONDITION, EYE_DISTANCE_TRANSLUCENCY,
   // EYE_DISTANCE_PIXEL_OFFSET, EYE_DISTANCE_SCALING. Full Cartesian
   // product is 64 variants — too many to prewarm. We seed the most
@@ -629,8 +618,8 @@ function prewarmBillboardShaders(device, colorSource, pickSource) {
     D.DISABLE_DEPTH_DISTANCE | D_KML,
     ALL_DDC_GATES,
     D_PROD,
-    // Batch 138 — VS_THREE_POINT_DEPTH_CHECK common combos. KML
-    // labels with `heightReference: CLAMP_TO_GROUND` typically also
+    // Prewarm common VS_THREE_POINT_DEPTH_CHECK combinations. KML labels with
+    // `heightReference: CLAMP_TO_GROUND` typically also
     // set DDC + translucency, so we prewarm that combo + standalone.
     D.VS_THREE_POINT_DEPTH_CHECK,
     D.VS_THREE_POINT_DEPTH_CHECK | D_KML,
@@ -681,7 +670,7 @@ function packUniforms(uniformData, frameState, modelMatrix, collection) {
   // cancellation fails at Earth scale — billboards drift by thousands
   // of metres.
   //
-  // Fix: encode the camera in the same frame the positions live in.
+  // Encode the camera in the same frame as the positions.
   // `modelMatrix` is typically identity for billboard collections, in
   // which case `inverse(modelMatrix) * positionWC === positionWC` and
   // this is a no-op; when it's set, we get the correct local-frame
@@ -693,19 +682,18 @@ function packUniforms(uniformData, frameState, modelMatrix, collection) {
     scratchCameraMC,
   );
   EncodedCartesian3.fromCartesian(scratchCameraMC, scratchEncodedCamera);
-  // Renderer-wide log depth (NEW-COLLECTIONS-LOG-DEPTH) — encode frustum
-  // (near, far) + oneOverLog2FarDepthFromNearPlusOne packed into the
+  // Encode the renderer-wide log-depth frustum (near, far) and
+  // oneOverLog2FarDepthFromNearPlusOne into the
   // reserved lanes. Same source every producer uses
   // (uniformState.currentFrustum at scene-update time); unconditional —
   // only the LOG_DEPTH shader variant reads them.
   //
-  // PHASE 3 SLICE 2 (NEW-COLLECTIONS-2DCV-PROJECTED-FRAME-RTE) — prefer the
-  // stashed FULL-frustum encode (`_logDepthEncodeNearFar`) over the live
+  // Prefer the stashed full-frustum encode (`_logDepthEncodeNearFar`) over the live
   // per-slice `currentFrustum`. The globe bakes its log-depth uniform once at
   // scene update (full frustum) and replays unchanged; when this collection
-  // REPACKS per slice (2D/CV), reading the per-slice currentFrustum would
+  // repacks per slice in 2D/CV, reading the per-slice currentFrustum would
   // encode against a different near/far than the globe and lose the depth test.
-  // See the same fix in WebGPUPointPrimitiveRenderer.packUniforms.
+  // WebGPUPointPrimitiveRenderer.packUniforms uses the same full-frustum rule.
   const ldEncode = uniformState._logDepthEncodeNearFar;
   const ldFrustum = uniformState.currentFrustum;
   let ldNear = ldFrustum ? ldFrustum.x : 0.0;
@@ -734,17 +722,17 @@ function packUniforms(uniformData, frameState, modelMatrix, collection) {
 
   uniformData[40] = canvas.width;
   uniformData[41] = canvas.height;
-  // NEW-BILLBOARD-SIZE-PARITY — `highResMultiplier` = devicePixelRatio. The
-  // viewport (`canvas.width/height`) is in DEVICE pixels but billboard
+  // `highResMultiplier` is the device pixel ratio. The viewport
+  // (`canvas.width/height`) is in device pixels but billboard
   // `width`/`height`/`pixelOffset` are authored in CSS pixels, so the WGSL
   // pixel→clip factor must scale CSS px up by pixelRatio to match WebGL,
-  // which folds `czm_pixelRatio` into `czm_metersPerPixel`. Previously hard-
-  // coded to 1.0, which made WebGPU billboards/labels render at 1/pixelRatio
-  // the linear size (1/4 the pixel area at DPR 2).
+  // which folds `czm_pixelRatio` into `czm_metersPerPixel`. A value fixed at
+  // 1.0 would render WebGPU billboards and labels at 1/pixelRatio of their
+  // intended linear size (one-quarter of the intended pixel area at DPR 2).
   uniformData[42] =
     typeof frameState.pixelRatio === "number" ? frameState.pixelRatio : 1.0;
-  // Batch 138 (VS_THREE_POINT_DEPTH_CHECK) — threePointDepthTestDistance
-  // populated from `BillboardCollection.threePointDepthTestDistance`
+  // Populate the VS_THREE_POINT_DEPTH_CHECK distance from
+  // `BillboardCollection.threePointDepthTestDistance`
   // when the collection has clamp-to-ground billboards. WebGL stores
   // this on the collection (not frame-state) and computes a default
   // when unset, so we read it directly from the collection. 0 (default)
@@ -755,7 +743,7 @@ function packUniforms(uniformData, frameState, modelMatrix, collection) {
       : 0.0;
   uniformData[43] = threePointDist;
 
-  // DP-H42 — frame-wide minimum disable-depth-test distance in meters.
+  // Frame-wide minimum disable-depth-test distance in meters.
   // `frameState.minimumDisableDepthTestDistance` is populated by Scene.js
   // each frame from the `Scene.minimumDisableDepthTestDistance` setter.
   uniformData[44] =
@@ -763,7 +751,7 @@ function packUniforms(uniformData, frameState, modelMatrix, collection) {
       ? frameState.minimumDisableDepthTestDistance
       : 0.0;
 
-  // DP-H40 — split cutoff in framebuffer pixels. WebGL keeps this in
+  // Split cutoff in framebuffer pixels. WebGL keeps this in
   // pixel space as `czm_splitPosition`, which is
   // `frameState.splitPosition * drawingBufferWidth`. Mirror that here so
   // the fragment-stage compare sits in the same coord system as
@@ -776,7 +764,7 @@ function packUniforms(uniformData, frameState, modelMatrix, collection) {
   uniformData[45] = splitFraction * drawingBufferWidth;
   // Log-depth factor at float 46 (previously implicit padding).
   uniformData[46] = ldFactor;
-  // Q13-PLAIN-HDR-GAMMA-CORE — HDR gamma gate at float 47 (camera.hdrGamma).
+  // The HDR gamma gate occupies float 47 (`camera.hdrGamma`).
   // Carries czm_gamma (uniformState.gamma, default 2.2) when
   // `scene.highDynamicRange` is on (`frameState.useHDR`), else 0. The fragment
   // shader mirrors WebGL BillboardCollectionFS.glsl's `#ifdef HDR`
@@ -789,8 +777,8 @@ function packUniforms(uniformData, frameState, modelMatrix, collection) {
         : 2.2
       : 0.0;
 
-  // DP-H41 (Batch 27) — previousViewProjection at slots 48..63 (16 floats,
-  // 64 bytes). Fits in the existing 256-byte uniform buffer — no resize.
+  // `previousViewProjection` occupies slots 48..63 (16 floats, 64 bytes) and
+  // fits in the existing 256-byte uniform buffer.
   // `UniformState.update()` caches last frame's viewProjection, so on frame
   // N this slot holds frame N-1. TAA / motion-vector shaders read it via
   // `camera.previousViewProjection`.
@@ -831,8 +819,8 @@ function packUniforms(uniformData, frameState, modelMatrix, collection) {
  */
 function computeDefinesForFrame(collection, frameState) {
   let defines = 0;
-  // Renderer-wide log depth (NEW-COLLECTIONS-LOG-DEPTH) — OR the LOG_DEPTH
-  // bit when the master switch + per-frame flag are on. The bit keys the
+  // Set LOG_DEPTH when the renderer-wide switch and per-frame flag are on.
+  // The bit keys the
   // shader-module cache AND the pipeline maps/names, so the flip rebuilds
   // through the normal keyed-miss path. Inert while the switch defaults
   // FALSE (defines unchanged, byte-identical shaders).
@@ -846,8 +834,8 @@ function computeDefinesForFrame(collection, frameState) {
   if (frameMin !== 0.0) {
     defines |= ShaderDefine.DISABLE_DEPTH_DISTANCE;
   }
-  // Batch 138 (VS_THREE_POINT_DEPTH_CHECK) — `_shaderClampToGround` is
-  // set true by `BillboardCollection.update()` when ANY billboard in the
+  // `_shaderClampToGround` enables VS_THREE_POINT_DEPTH_CHECK. It is set by
+  // `BillboardCollection.update()` when any billboard in the
   // collection has `heightReference !== HeightReference.NONE`. Mirrors
   // the WebGL define-flip at `BillboardCollection.js:1031`.
   if (collection._shaderClampToGround === true) {
@@ -855,8 +843,8 @@ function computeDefinesForFrame(collection, frameState) {
   }
   const billboards = collection._billboards;
   const length = collection.length;
-  // Short-circuit the scan once all seven flags are set. (Six A.14
-  // gates + clamp-to-ground; clamp-to-ground is set above
+  // Short-circuit the scan once all seven flags are set. The six distance and
+  // split gates are scanned here; clamp-to-ground is set above
   // collection-wide so doesn't participate in the per-billboard scan.)
   const all =
     ShaderDefine.DISABLE_DEPTH_DISTANCE |
@@ -887,8 +875,7 @@ function computeDefinesForFrame(collection, frameState) {
     ) {
       defines |= ShaderDefine.SPLIT_ENABLED;
     }
-    // AUDIT_2026_05_02 A.14 (Batch 135) — DISTANCE_DISPLAY_CONDITION
-    // gate. Flip the bit so the baseline pipeline stays the fast
+    // Flip DISTANCE_DISPLAY_CONDITION only when needed so the baseline pipeline stays the fast
     // path; collections that never set a window pay zero shader cost
     // for the gate.
     if (
@@ -897,8 +884,8 @@ function computeDefinesForFrame(collection, frameState) {
     ) {
       defines |= ShaderDefine.DISTANCE_DISPLAY_CONDITION;
     }
-    // AUDIT_2026_05_02 A.14 (Batch 136) — three NearFarScalar gates.
-    // Same opt-in semantics as DDC: bit only flips when at least one
+    // The three NearFarScalar gates use the same opt-in semantics as DDC: a
+    // bit flips only when at least one
     // billboard sets the property, so collections that don't use
     // distance-aware translucency / pixel-offset / scaling stay on
     // the baseline shader.
@@ -950,13 +937,13 @@ function createPlaceholderTexture(device) {
  * @param {Array} commandList
  */
 function updateWebGPUBillboards(collection, frameState, commandList) {
-  // NEW-COLLECTIONS-ERROR-SENTINELS (Sentinel 1) — re-entry / infinite-loop
-  // guard around the whole update. The inner build is SYNCHRONOUS (no
-  // `await` inside `_updateWebGPUBillboardsInner`), so the begin/end MUST
+  // Guard against re-entry and infinite loops around the whole update. The
+  // inner build is synchronous, with no
+  // `await` inside `_updateWebGPUBillboardsInner`, so begin/end must
   // bracket it synchronously — NOT across an `await` microtask boundary.
   // Bracketing across `await` would defer every `endCollectionFrame` to a
-  // microtask, letting the depth climb to "calls this frame" (per
-  // frustum-slice / pass) and false-trip the sentinel. The function still
+  // microtask, letting the depth climb to "calls this frame" for each
+  // frustum slice or pass and falsely trip the guard. The function still
   // returns a Promise (kept async-compatible for the feature-renderer
   // contract) by handing back a resolved promise after the synchronous
   // work completes.
@@ -983,10 +970,9 @@ function _updateWebGPUBillboardsInner(collection, frameState, commandList) {
   // Cache initialized by the outer `updateWebGPUBillboards` wrapper.
   const cache = collection._webgpuCache;
 
-  // AUDIT_2026_05_02 A.14 (Batch 136) — all four billboard distance
-  // gates are now wired: `distanceDisplayCondition` (Batch 135),
+  // All four billboard distance gates are wired: `distanceDisplayCondition`,
   // `translucencyByDistance`, `pixelOffsetScaleByDistance`, and
-  // `scaleByDistance` (Batch 136). Each ramps via the WGSL helper
+  // `scaleByDistance`. Each ramps via the WGSL helper
   // `czm_nearFarScalar` and gates the shader behind a per-feature
   // ShaderDefine bit so collections that don't use a given gate stay
   // on the baseline pipeline. The previous one-time warning is
@@ -1004,12 +990,12 @@ function _updateWebGPUBillboardsInner(collection, frameState, commandList) {
     cache.bindGroupLayout = createBillboardBindGroupLayout(device);
   }
 
-  // DP-H42 / DP-H40 — pick the right shader module + pipeline for the
-  // current frame's billboard state. Unchanged billboard collections
+  // Select the shader module and pipeline for the current frame's billboard
+  // state. Unchanged billboard collections
   // settle to the same `defines` value every frame, so the map lookup
   // is the hot path and pipeline resolution only fires on the first
   // frame that exercises a new combination.
-  // C-R7-RENDERER-MIGRATION (Batch 73) — local Map now holds entry slots
+  // The local map holds entry slots
   // `{ descriptor, pipeline, pending }`; the GPU pipeline is materialized
   // through the central `webgpuPipelineCache` so two BillboardCollections
   // with identical render-target shape + defines share one pipeline.
@@ -1017,24 +1003,24 @@ function _updateWebGPUBillboardsInner(collection, frameState, commandList) {
   if (!defined(cache.pipelineEntries)) {
     cache.pipelineEntries = new Map();
     cache.pickPipelineEntries = new Map();
-    // AUDIT_2026_05_02 B.10 (Batch 143) — velocity pipeline cache. Same
-    // (defines) keying as the regular pipeline cache so a billboard
+    // Key the velocity pipeline cache by the same defines as the regular
+    // pipeline cache so a billboard
     // collection's color and velocity pipelines stay in lockstep.
     cache.velocityPipelineEntries = new Map();
   }
-  // Batch 110 — invalidate cached pipeline entries on scene format
-  // change (HDR toggle). NEW-COLLECTION-RENDERER-BASE — shared guard.
+  // Invalidate cached pipeline entries when the scene format changes, such as
+  // on an HDR toggle.
   invalidatePipelinesOnSceneFormatChange(cache, context, [
     cache.pipelineEntries,
     cache.pickPipelineEntries,
     cache.velocityPipelineEntries,
   ]);
-  // PHASE 3 SLICE 2 (NEW-COLLECTIONS-2DCV-COPLANAR-DEPTH) — settled 2D / CV
-  // (morphTime === 0) draws coplanar billboards on top of the flat map with
+  // In settled 2D/CV (`morphTime === 0`), draw coplanar billboards on top of
+  // the flat map with
   // the depth test disabled (see `buildBillboardDescriptor`). Fold the flag
   // into the pipeline-cache key so a 3D↔2D flip resolves a DISTINCT pipeline
   // and 3D keeps its `less-equal` variant byte-identical. Mirrors the
-  // PolylineRenderer `noDepthTest` pipeline-key dimension (Batch 261).
+  // PolylineRenderer `noDepthTest` pipeline-key dimension.
   // (Shared base helpers.)
   const noDepthTest = computeNoDepthTest(frameState);
   cache.currentNoDepthTest = noDepthTest;
@@ -1061,12 +1047,13 @@ function _updateWebGPUBillboardsInner(collection, frameState, commandList) {
       sampleCount,
       noDepthTest,
     );
-    // C11-157 Slice B — cache the non-LOG_DEPTH preprocessed source for the
-    // OIT accumulation variant. OIT runs in a depth-read-only pass, so the
+    // Cache the non-LOG_DEPTH preprocessed source for the OIT accumulation
+    // variant. OIT runs in a depth-read-only pass, so the
     // LOG_DEPTH `@builtin(frag_depth)` FragOutput member is stripped (leaving
     // the plain `@location(0)` struct the injector's struct branch handles).
-    // Attached to the translucent color command below; read ONLY by
-    // executeTranslucentPass under the FAR-003 gate (gate-OFF inert).
+    // Attached to the translucent color command below; `executeTranslucentPass`
+    // reads it only while OIT is enabled, so it remains inert when the gate is
+    // off.
     const oitShaderCode = preprocessShaderSource(
       shaderCode,
       defines & ~ShaderDefine.LOG_DEPTH,
@@ -1085,8 +1072,7 @@ function _updateWebGPUBillboardsInner(collection, frameState, commandList) {
   cache.pipeline = pipeline;
   cache.currentDefines = defines;
 
-  // AUDIT_2026_05_02 B.10 (Batch 143, NEW-COLLECTIONS-MOTION-VECTORS) —
-  // resolve the velocity pipeline lazily, gated on TAA being enabled
+  // Resolve the velocity pipeline lazily, gated on TAA being enabled
   // this frame. Static scenes (TAA off) never construct a velocity
   // pipeline. Reuses the same shader module + bind group layout as the
   // color pipeline.
@@ -1177,11 +1163,11 @@ function _updateWebGPUBillboardsInner(collection, frameState, commandList) {
     });
   }
 
-  // Batch 138 / Batch 139 (VS_THREE_POINT_DEPTH_CHECK) \u2014 globe depth
-  // view + sampler. Pulls the underlying texture from
-  // `context._globeDepthTexture` (published by the scene renderer's
-  // frustum loop) and creates the view ourselves so cache identity is
-  // stable. The scene renderer's `_globeDepthView` is a fresh view
+  // VS_THREE_POINT_DEPTH_CHECK uses the globe-depth view and sampler. The
+  // renderer pulls the underlying texture from `context._globeDepthTexture`
+  // (published by the scene renderer's frustum loop) and creates the view
+  // directly so cache identity is stable. The scene renderer's
+  // `_globeDepthView` is a fresh view
   // every frame; comparing by texture identity avoids per-frame bind
   // group rebuilds. Falls back to a 1\u00d71 placeholder when the globe
   // didn't render this frame.
@@ -1233,8 +1219,8 @@ function _updateWebGPUBillboardsInner(collection, frameState, commandList) {
     });
   }
 
-  // NEW-COLLECTIONS-PER-FRUSTUM-CAMERA-UB (Phase 3 Slice 1) \u2014 per-slice camera
-  // UB. Billboard's group 0 mixes the camera buffer (binding 0) with the atlas
+  // The per-slice camera uniform buffer shares billboard group 0 with the atlas.
+  // Group 0 mixes the camera buffer (binding 0) with the atlas
   // texture/sampler + globe-depth view/sampler (bindings 1-4), which rotate per
   // frame \u2014 the resolver rebuilds group 0 with the slice's own buffer + those
   // SAME texture refs as extraEntries (its generation token keys off the
@@ -1244,8 +1230,8 @@ function _updateWebGPUBillboardsInner(collection, frameState, commandList) {
     cache.cameraUB = new WebGPUCollectionCameraUB(device, "Billboard");
   }
   cache.cameraUB.bindUniformState(context.uniformState);
-  // PHASE 3 SLICE 2 (NEW-COLLECTIONS-2DCV-PROJECTED-FRAME-RTE) — repack the
-  // camera UB per slice at draw time in 2D/CV/MORPHING so the MVP uses the live
+  // Repack the camera uniform buffer per slice at draw time in
+  // 2D/CV/MORPHING so the MVP uses the live
   // slice projection (WebGPU depth range). SCENE3D stays snapshot-only.
   const repackPerSlice = frameState.mode !== SceneMode.SCENE3D;
   cache.cameraResolver = cache.cameraUB.makeResolver({
@@ -1261,14 +1247,12 @@ function _updateWebGPUBillboardsInner(collection, frameState, commandList) {
     ],
   });
 
-  // Instance data — resident-instance partial-write path
-  // (NEW-RESIDENT-INSTANCE-BUFFER-MGR + NEW-PARTIAL-WRITE-WIRE-BPL).
+  // Resident instance data uses the partial-write path.
   // A settled collection uploads nothing; a sparse change re-packs +
   // uploads only the changed slots' byte ranges. The manager owns the
   // resident CPU array, the GPU vertex buffer, the compacted
   // _index→slot map, and the slot-aligned velocity prev mirror.
-  // NEW-COLLECTION-RENDERER-BASE — shared lazy create of the resident
-  // instance manager (was an inline `if (!defined) new …`).
+  // Lazily create the resident instance manager through the shared helper.
   const instanceManager = getOrCreateInstanceManager(
     cache,
     device,
@@ -1292,9 +1276,8 @@ function _updateWebGPUBillboardsInner(collection, frameState, commandList) {
   // ORDERING (load-bearing): capture + sync the dirty list FIRST, then
   // consume. `_consumeDirtyState` resets `_billboardsToUpdateIndex`, so
   // syncing after the consume would always see an empty dirty list and
-  // never partial-write. (NEW-COLLECTIONS-DIRTY-GATE step 0 + Phase 1.)
-  // The capture→sync→consume ordering is now enforced structurally by
-  // `syncInstancesAndConsume` (NEW-COLLECTION-RENDERER-BASE). Without it
+  // never partial-write. `syncInstancesAndConsume` structurally enforces the
+  // capture→sync→consume ordering. Without it
   // the WebGL `_createVertexArray` / `textureDirty` flags stay set on the
   // WebGPU path and `updateMode` + the readiness loop re-dirty every
   // settled billboard every frame — defeating the partial-update gate. See
@@ -1328,41 +1311,22 @@ function _updateWebGPUBillboardsInner(collection, frameState, commandList) {
   }
   cache.instanceBuffer = syncResult.buffer;
 
-  // Pick the command pass from the collection's blendOption so translucent
-  // billboards composite in the back-to-front translucent pass rather than
-  // painting on top of opaque geometry in unsorted order. BlendOption is:
+  // BlendOption controls render-state selection below:
   //   OPAQUE = 0, TRANSLUCENT = 1, OPAQUE_AND_TRANSLUCENT = 2
-  // For OPAQUE_AND_TRANSLUCENT we emit the command in the TRANSLUCENT pass
-  // since billboard shaders use straight alpha blending; truly opaque glyphs
-  // still composite correctly in the translucent pass. A future refinement
-  // would emit two commands (one per pass) when the collection is mixed.
   const blendOpt = collection._blendOption;
-  //
-  // NEW-WEBGPU-COLLECTION-PASS-DEFAULT-REGRESSION (2026-08-07, Batch 917):
-  // reading the enum is necessary, but the FALSE branch must not be
-  // re-derived from the stale comment beside it. The literal that branch
-  // replaced was `9`, and 9 IS Pass.OPAQUE on this fork — so the DEFAULT
-  // blend option (OPAQUE_AND_TRANSLUCENT, and the only one any probe has
-  // certified) shipped in Pass.OPAQUE, NOT Pass.TRANSLUCENT. Rebinning it
-  // onto TRANSLUCENT moved every billboard collection to a different execution
-  // site (back-to-front sort, the "actual near" frustum republication) and
-  // inverted probe-splat-globe-occlusion's P3 / check-7 controls.
-  //
-  // WebGL PARITY is the arbiter, and it says Pass.OPAQUE for the collapsed
-  // command under EVERY blend option:
+  // WebGL emits paired opaque and translucent commands for
+  // OPAQUE_AND_TRANSLUCENT, while this path collapses the collection to one
+  // blended draw. The faithful single-bin choice is Pass.OPAQUE for every
+  // blend option:
   //   BillboardCollection.js:1204 — `opaqueCommand || !opaqueAndTranslucent ? Pass.OPAQUE : Pass.TRANSLUCENT`
-  // With OPAQUE_AND_TRANSLUCENT WebGL emits a PAIR (even index opaque, odd
-  // translucent); this port collapses that to ONE blended draw, which
-  // Batch 889 shipped — and the occlusion probe certified — in Pass.OPAQUE.
-  // Note BlendOption.TRANSLUCENT also resolves to Pass.OPAQUE in WebGL, via
-  // the `!opaqueAndTranslucent` clause — so a single bin is the faithful
-  // collapse, not a simplification. Blend-mode-dependent choices below key
-  // off the BLEND OPTION, never off this bin. Pinned by
+  // Routing the collapsed draw through Pass.TRANSLUCENT changes its sorting
+  // and frustum state and can invert globe occlusion. Blend-mode-dependent
+  // choices below therefore key off the blend option, never this bin. Pinned by
   // Tools/visual-regression/collection-pass-routing.spec.mjs.
   const billboardPass = Pass.OPAQUE;
 
-  // C-R1-COLLECTIONS-PER-ENCODER (Batch 39) — forward the source
-  // JS-side renderState from BillboardCollection (`_rsOpaque` /
+  // Forward the source JavaScript render state from BillboardCollection
+  // (`_rsOpaque` /
   // `_rsTranslucent`) so `applyPerEncoderState` drives the dynamic
   // WebGPU pass state (stencil ref, blend constant, scissor,
   // viewport) from the same values the WebGL path uses. Without this
@@ -1370,8 +1334,8 @@ function _updateWebGPUBillboardsInner(collection, frameState, commandList) {
   // current pass, producing subtle stencil/blend drift relative to
   // WebGL. The `pass: OPAQUE` emit uses `_rsOpaque`; every other
   // emit (TRANSLUCENT or OPAQUE_AND_TRANSLUCENT) uses `_rsTranslucent`.
-  // Keyed off the BLEND OPTION, not the pass bin — identical selection to both
-  // Batch 889 and Batch 914.
+  // Key this off the blend option rather than the pass bin so it matches the
+  // corresponding WebGL command variant.
   const colorRenderState =
     blendOpt === BlendOption.OPAQUE
       ? collection._rsOpaque
@@ -1380,8 +1344,8 @@ function _updateWebGPUBillboardsInner(collection, frameState, commandList) {
   cache.colorCommand = new WebGPUDrawCommand({
     pipeline: cache.pipeline,
     bindGroups: [cache.bindGroup],
-    // NEW-COLLECTIONS-PER-FRUSTUM-CAMERA-UB (Phase 3 Slice 1) — per-slice
-    // camera UB at group 0. Falls back to the static bind group when the
+    // Resolve the per-slice camera uniform buffer at group 0. Fall back to the
+    // static bind group when the
     // slice index is unavailable (single-frustum / first frame).
     bindGroupResolvers: [cache.cameraResolver],
     vertexBuffers: [cache.instanceBuffer],
@@ -1398,18 +1362,16 @@ function _updateWebGPUBillboardsInner(collection, frameState, commandList) {
     renderState: colorRenderState,
   });
 
-  // C11-157 Slice B — OIT reachability for translucent billboards. When the
-  // command lands in Pass.TRANSLUCENT, attach the OIT variant inputs so
-  // executeTranslucentPass auto-builds the MRT accumulation pipeline under the
-  // FAR-003 gate. Reuses the base color pipeline's SHARED layout + vertex
+  // For blended billboards, attach the OIT variant inputs so a command routed
+  // through Pass.TRANSLUCENT can build the MRT accumulation pipeline when OIT
+  // is enabled. Reuse the base color pipeline's shared layout and vertex
   // layout + primitive/depth state (so the pre-baked bind group + per-slice
   // camera resolver stay compatible), single-sample to match the OIT
-  // accumulation targets. Inert (never read) when the gate is off → gate-OFF
-  // byte-identical. The billboard FS returns a `FragOutput` struct
-  // (@location(0) color) — handled by injectOITOutput's Slice-A struct branch.
-  // Attached whenever the collection is BLENDED — exactly the set Batch 889
-  // attached on. Inert while the command sits in Pass.OPAQUE; kept as live
-  // scaffolding for the two-command split (Principle 7).
+  // accumulation targets. These fields are never read while OIT is disabled.
+  // The billboard fragment shader returns a `FragOutput` struct
+  // (`@location(0)` color), handled by `injectOITOutput`'s struct branch.
+  // Keep these inputs on every blended collection even while its command sits
+  // in Pass.OPAQUE so a future two-command split can use the same live path.
   if (blendOpt !== BlendOption.OPAQUE && defined(entry.oitShaderCode)) {
     cache.colorCommand._shaderCode = entry.oitShaderCode;
     cache.colorCommand._pipelineConfig = {
@@ -1424,11 +1386,10 @@ function _updateWebGPUBillboardsInner(collection, frameState, commandList) {
     };
   }
 
-  // AUDIT_2026_05_02 B.10 (Batch 143, NEW-COLLECTIONS-MOTION-VECTORS) —
-  // attach velocity command. The TAA pass walks the command list for
+  // Attach the velocity command. The TAA pass walks the command list for
   // `cmd.velocityCommand` and dispatches it into the rg16float velocity
-  // texture. Mirrors `WebGPUModelRenderer.js`'s velocity attachment
-  // pattern (Batch 106). Only emitted when TAA is enabled this frame
+  // texture. This mirrors `WebGPUModelRenderer.js`'s velocity attachment
+  // pattern and is emitted only when TAA is enabled this frame
   // AND the velocity pipeline resolved this tick (it can be null on
   // the first frame after TAA enables, while async pipeline creation
   // is in flight; the next frame will pick up the resolved pipeline).
@@ -1492,25 +1453,24 @@ function _pushBillboardPickCommand(
   commandList,
   frameState,
 ) {
-  // DP-H42 / DP-H40 — pick pipeline uses the same defines as the color
-  // pipeline for this frame so the pick region exactly matches the
+  // The pick pipeline uses the color pipeline's defines for this frame so the
+  // pick region exactly matches the
   // rendered region. Falls back to the baseline (0) when the color path
   // hasn't set currentDefines yet (first-ever frame).
-  // C-R7-RENDERER-MIGRATION (Batch 73) — entry-based caching via
-  // `cache.pickPipelineEntries`; pipeline resolves through the central
+  // Cache entries in `cache.pickPipelineEntries` and resolve pipelines through
+  // the central
   // pipeline cache. Skip the pick command if the pipeline is still
   // materializing (a frame later it'll be ready).
   //
-  // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — the pick MODULE's LOG_DEPTH
-  // define is gated by the SEPARATE pick-fleet master switch
+  // Gate the pick module's LOG_DEPTH define with the separate pick-depth switch
   // (`isWebGPUPickLogDepthActive`), NOT the scene log switch that `currentDefines`
   // already baked in. The color-entry lookup + descriptor derivation still use
   // the color defines (so the derived pick descriptor inherits the exact color
   // pipeline state), but the pick shader compiles with the scene LOG_DEPTH bit
-  // STRIPPED and re-added only when the pick fleet is active. With the switch
-  // OFF (default) the pick module has no LOG_DEPTH define → the pick FS emits a
-  // single-`@location(0)` output byte-identical to the pre-conversion pick, so
-  // the shared pick FBO stays uniformly hyperbolic (INV-2).
+  // stripped and re-added only when the pick fleet is active. When disabled,
+  // the pick module has no LOG_DEPTH define, so the pick fragment
+  // shader emits a single-`@location(0)` output and the shared pick framebuffer
+  // stays uniformly hyperbolic.
   const pickLogActive = isWebGPUPickLogDepthActive(context, frameState);
   const colorDefines = cache.currentDefines ?? 0;
   const pickModuleDefines =
@@ -1519,29 +1479,24 @@ function _pushBillboardPickCommand(
   if (!defined(cache.pickPipelineEntries)) {
     cache.pickPipelineEntries = new Map();
   }
-  // Keyed on the pick-MODULE defines so a pick-fleet gate flip (C10-11) rebuilds
-  // against the log module + [ld] descriptor name instead of serving the stale
+  // Key on the pick module's defines so toggling pick log depth rebuilds against
+  // the log module and `[ld]` descriptor name instead of serving the stale
   // hyperbolic entry.
   let pickEntry = cache.pickPipelineEntries.get(pickModuleDefines);
   if (!defined(pickEntry)) {
-    // NEW-DERIVEDCOMMAND-VARIANT-FACTORY (Batch 248) — the pick descriptor
-    // is DERIVED from the color descriptor through the centralized variant
+    // Derive the pick descriptor from the color descriptor through the
+    // centralized variant
     // factory (slot-0-only blend-stripped target, depth write forced on,
     // multisample dropped for the single-sample pick FBO) instead of the
     // old hand-rolled `buildBillboardPickDescriptor`.
     //
-    // NEW-WEBGPU-BILLBOARD-PICK-PIPELINE-KEY-MISMATCH (2026-08-07, Batch 917):
-    // this lookup used the RAW `colorDefines`, but `pipelineEntries` is keyed by
+    // `pipelineEntries` is keyed by
     // `pipelineKeyWithDepthFlag(defines, noDepthTest)` = `defines * 2 + flag`
-    // (WebGPUCollectionRendererBase.ts:221-226, since Batch 739 / C11-149
-    // widened the key off define bit 31). The two agree ONLY when
-    // `defines === 0 && !noDepthTest` — and on the default 3D path `defines`
-    // always carries ShaderDefine.LOG_DEPTH, so the lookup ALWAYS missed and the
-    // `return` below fired on EVERY frame, before `commandList.push(
-    // cache.pickCommand)`. The billboard pick command was therefore never
-    // emitted at all, which is why Batch 914's pass-binning fix (necessary, and
-    // correct) did not make billboard/label picking work on its own. Labels ride
-    // the same path via `billboardFR.update(...)`, so they died with it.
+    // (WebGPUCollectionRendererBase.ts:221-226), not raw `colorDefines`. The two
+    // agree only when `defines === 0 && !noDepthTest`; the default 3D path
+    // carries ShaderDefine.LOG_DEPTH, so a raw-key lookup misses every frame and
+    // returns before emitting the billboard pick command. Labels share this path
+    // through `billboardFR.update(...)` and require the composed key as well.
     const colorEntry = cache.pipelineEntries.get(
       pipelineKeyWithDepthFlag(colorDefines, cache.currentNoDepthTest === true),
     );
@@ -1567,11 +1522,11 @@ function _pushBillboardPickCommand(
       // Whole-module swap: the dedicated pick shader source compiled at
       // the pick-gated defines (entry points unchanged — vertexMain/
       // fragmentMain exist in both modules).
-      // NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE — the pick target is stamped
-      // with the context's byte-object-ID format authority, never the
+      // Stamp the pick target with the context's byte-object-ID format
+      // authority, never the
       // (possibly float/HDR) scene slot-0 format.
-      // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH — `[ld]` name discriminator so the
-      // central pipeline cache (keyed on descriptor name) never serves the
+      // Use the `[ld]` name discriminator so the central pipeline cache, keyed
+      // on descriptor name, never serves the
       // hyperbolic pick pipeline for the log module or vice versa.
       {
         module: pickModule,
@@ -1597,8 +1552,8 @@ function _pushBillboardPickCommand(
     return;
   }
 
-  // NEW-COLLECTION-RENDERER-BASE — shared grow-on-demand pick buffer +
-  // size-validation/overflow sentinel (Sentinel 3). `writePickInstances`
+  // Use the shared grow-on-demand pick buffer and size-validation guard.
+  // `writePickInstances`
   // clamps + logs if the payload would overrun, then returns the safe
   // instance count for the draw.
   const pickSize = pickResult.visibleCount * BYTES_PER_INSTANCE;
@@ -1637,8 +1592,8 @@ function _pushBillboardPickCommand(
     materialSortId: collection._commandOrdering.materialSortId,
     cull: true,
     renderState: collection._rsOpaque ?? collection._rsTranslucent,
-    // FORK-34 (Batch 207) — mark as a dedicated pick command so the pick
-    // pass dispatches it (single-target pick pipeline) instead of skipping
+    // Mark this as a dedicated pick command so the pick pass dispatches its
+    // single-target pipeline instead of skipping
     // it as a no-pick-variant base command.
     pickOnly: true,
   });
@@ -1669,7 +1624,7 @@ function destroyWebGPUBillboardResources(collection) {
     cache.atlasPlaceholder.destroy();
   }
   if (defined(cache.atlasTexture)) {
-    // Legacy field from before atlas-invalidation landed; destroy if present.
+    // Destroy the optional legacy atlas texture when present.
     cache.atlasTexture.destroy();
   }
   collection._webgpuCache = undefined;
