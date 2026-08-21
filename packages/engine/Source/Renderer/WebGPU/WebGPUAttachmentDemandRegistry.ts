@@ -1,35 +1,30 @@
 /**
- * C9-09-ATTACHMENT-DEMAND-REGISTRY (`FAR-401-C0`).
+ * Canonical pre-pass attachment demand for a WebGPU frame.
  *
- * ONE canonical, pre-pass, per-frame attachment-demand record describing
- * every enabled attachment consumer. It is computed once per frame per
- * context (in `WebGPUContext.updateAndClearFramebuffers`, before any scene
- * pass opens or any pipeline builds) and is then immutable for the rest of
- * the frame. Both the *legacy executor* (the three scene-pass-open sites,
- * the G-buffer allocation site, the `makeSceneFBTargets` pipeline builders)
- * and the *future FAR-400/401 render graph* (Wave-6 T1) are meant to read
- * this same record so exactly one authority decides the frame's scene-FB
- * attachment topology.
+ * The record describes every enabled attachment consumer. It is computed
+ * once per frame and context in
+ * `WebGPUContext.updateAndClearFramebuffers`, before any scene pass opens or
+ * pipeline builds, and remains immutable for the rest of the frame. The
+ * current executor's scene-pass open sites, G-buffer allocation, and
+ * `makeSceneFBTargets` pipeline builders share this authority. The same data
+ * contract can also feed a render graph without introducing a second source
+ * of attachment-topology decisions.
  *
- * SCOPE (C9-09): registry + wiring + truthful reporting ONLY. This slice
- * changes NO topology — `computeAttachmentDemand` is a pure function that is
- * *recorded* on the context and surfaced through the debug snapshot, but
- * nothing in the render path yet gates on it. The default force switch keeps
- * the frame in the historical full-MRT topology (`forceSceneMRT` defaults
- * `true`), so the reported `topology` is `"mrt"` on every frame today,
- * matching the always-MRT executor. C9-10 (`FAR-403-C0`) is the slice that
- * acts on `gbufferDemanded` to drop the G-buffer when no consumer needs it.
+ * This record is currently observational: `computeAttachmentDemand` publishes
+ * it on the context and through the debug snapshot, while the render path
+ * continues to use the full-MRT topology. `forceSceneMRT` therefore defaults
+ * to `true`, making the reported topology match the executor. A demand-driven
+ * executor can use `gbufferDemanded` to omit the G-buffer only after every
+ * pipeline and pass-open site is topology-aware.
  *
- * CONSERVATIVE-DEMAND CONTRACT (campaign 9 rule 3 / plan invariant 2): any
- * consumer that cannot be confidently enumerated must be treated as
- * demanding the complete topology. The `forceSceneMRT` escape hatch and the
- * OR-of-readers rule below are how that is honored — a reader we are unsure
- * about is added to the OR (demands MRT), never dropped.
+ * Demand is conservative: a consumer that cannot be enumerated confidently
+ * requires the complete topology. `forceSceneMRT` provides the escape hatch,
+ * and every known reader participates in the Boolean union rather than being
+ * omitted on uncertainty.
  *
- * PURITY: `computeAttachmentDemand` reads only plain scene flags plus the
- * caller-supplied force switch. It holds NO GPU handles and NO caches, so
- * device loss/recovery is trivially safe (the record is recomputed next
- * frame from scene state).
+ * `computeAttachmentDemand` reads only plain scene flags and the
+ * caller-supplied force switch. It holds no GPU handles or caches, so device
+ * recovery simply recomputes the record from scene state on the next frame.
  */
 
 /**
@@ -52,7 +47,7 @@ export interface AttachmentDemandSceneLike {
   deferredLighting?: boolean;
   /** G-buffer normal debug overlay (`CesiumDebug.showGBufferNormals`). */
   debugShowGBufferNormals?: boolean;
-  /** TAA — uses the separate rg16float velocity target, NOT this G-buffer. */
+  /** TAA uses the separate `rg16float` velocity target rather than this G-buffer. */
   taaEnabled?: boolean;
   /** Order-independent translucency request (contained off by default). */
   _useOIT?: boolean;
@@ -77,8 +72,8 @@ export interface AttachmentGBufferReaders {
    * SSGI feed. On WebGPU the AO/SSGI stage only reads G-buffer normals when
    * deferred lighting is also on (`WebGPUSceneRenderer` AO feed gate), so
    * this is reported as `ambientOcclusion.enabled && deferredLighting`. Its
-   * demand is already subsumed by `deferredLighting` in the OR; it is broken
-   * out for observability and for the C9-10 precise-variant work.
+   * demand is already subsumed by `deferredLighting` in the Boolean union; it
+   * remains separate for observability and precise topology selection.
    */
   ssgi: boolean;
   /** G-buffer normal debug overlay. */
@@ -86,15 +81,15 @@ export interface AttachmentGBufferReaders {
 }
 
 /**
- * Observe-only record of the OTHER attachment families a frame uses. C9-09's
- * acceptance requires the record to "cover every attachment consumer"; only
- * the G-buffer family is *acted on* (in C9-10). These are recorded for the
- * future graph and for truthful reporting — none of them gate anything here.
+ * Observe-only record of the other attachment families a frame uses. The
+ * G-buffer family is the topology-selection input; these families remain
+ * recorded for truthful reporting and for a future render graph, without
+ * gating work in this module.
  */
 export interface AttachmentOtherFamilies {
   /** rg16float velocity target (TAA). */
   velocityTarget: boolean;
-  /** OIT accum/reveal framebuffer request (FAR-003-contained off by default). */
+  /** OIT accumulation/reveal framebuffer request, contained off by default. */
   oitRequested: boolean;
   /** Edge-visibility MRT. */
   edgeMrt: boolean;
@@ -105,18 +100,17 @@ export interface AttachmentOtherFamilies {
   /** Post-process composite active (WebGPU always composites off-screen). */
   postProcess: boolean;
   /**
-   * C10-03-MSAA-BOUNDARY-BYTES — the frame demands a resolved scene-COLOR
-   * texture (a consumer reads `colorTarget.getColorTextureView(0)` /
-   * `_sceneColorView`). On WebGPU this is TRUE whenever the post-process
-   * composite runs (the always-on, load-bearing consumer — the PP blit is the
-   * only path that reaches the canvas), and is the demand that the
-   * "resolve-on-consume" elision honors. Observe-only here, like the other
-   * families: the actual resolve count is measured on the context as
+   * The frame demands resolved scene color when a consumer reads
+   * `colorTarget.getColorTextureView(0)` or `_sceneColorView`. This is true
+   * whenever the WebGPU post-process composite runs because its blit is the
+   * path that reaches the canvas. The resolve-on-consume path honors this
+   * demand. It remains observational here: the actual resolve count is
+   * measured on the context as
    * `_attachmentDemandActual.sceneColorResolveOpens`; behavior is driven by
    * that demand plus the intra-frame staleness flag
-   * (`WebGPUContext._sceneColorResolvePending`). A per-frame pure record cannot
-   * itself track intra-frame staleness, so the flag is the executor — see the
-   * ensure helper.
+   * (`WebGPUContext._sceneColorResolvePending`). A pure per-frame record cannot
+   * track intra-frame staleness, so the ensure helper uses that flag when it
+   * executes a resolve.
    */
   resolvedSceneColor: boolean;
 }
@@ -130,9 +124,9 @@ export interface AttachmentDemandRecord {
   gbufferReaders: AttachmentGBufferReaders;
   /** Compact bitmask of `gbufferReaders` (bit order matches the field list). */
   gbufferReadersMask: number;
-  /** OR of every enumerated reader — the TRUE consumer demand, before force. */
+  /** Boolean union of every enumerated reader before the force switch. */
   gbufferReadersDemand: boolean;
-  /** Force switch (conservative default `true` until the Gate-B flip). */
+  /** Conservative force switch; defaults to `true` while topology is fixed. */
   forceSceneMRT: boolean;
   /** `gbufferReadersDemand || forceSceneMRT` — what the topology follows. */
   gbufferDemanded: boolean;
@@ -157,10 +151,9 @@ export const GBUFFER_READER_BITS = {
  */
 export interface ComputeAttachmentDemandOptions {
   /**
-   * When `true` (the conservative default until the C9-10 Gate-B decision
-   * clears), the frame is forced to full-MRT topology regardless of reader
-   * demand — preserving today's exact behavior. Any consumer that cannot be
-   * enumerated is covered by keeping this `true`.
+   * When `true`, the frame uses full-MRT topology regardless of reader demand.
+   * This is the conservative default while the executor has a fixed topology
+   * and covers any consumer that cannot yet be enumerated.
    */
   forceSceneMRT: boolean;
   /** True when the frame is a pick/pickVoxel mini-frame. */
@@ -191,7 +184,7 @@ export function computeAttachmentDemand(
   const aoEnabled = scene.postProcessStages?.ambientOcclusion?.enabled === true;
   // SSGI only feeds the G-buffer when deferred lighting is also on (the
   // WebGPU AO feed gate). Recorded for observability; demand is subsumed by
-  // `deferredLighting` in the OR below.
+  // `deferredLighting` in the Boolean union below.
   const ssgi = aoEnabled && deferredLighting;
 
   const gbufferReaders: AttachmentGBufferReaders = {
@@ -230,9 +223,8 @@ export function computeAttachmentDemand(
     globeDepth: options.globeDepth === true,
     picking: options.picking === true,
     postProcess: options.postProcess === true,
-    // C10-03: resolved scene color is demanded whenever the PP composite runs
-    // (the always-on WebGPU canvas path). Non-pick frames therefore always
-    // demand exactly one resolved scene-color read before post-process.
+    // The post-process composite is the WebGPU canvas path, so it always
+    // demands current resolved scene color before it runs.
     resolvedSceneColor: options.postProcess === true,
   };
 

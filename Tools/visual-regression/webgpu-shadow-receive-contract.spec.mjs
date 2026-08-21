@@ -203,10 +203,11 @@ test("B1: the WebGPU scene renderer no longer dispatches the shadow cast pass", 
 });
 
 test("B2 MUTATION: re-adding the second dispatch fails the B1 check", () => {
+  const insertionAnchor = "    const opaqueFrustumNearOffset: number =";
   const mutant = webgpuSceneRendererSource.replace(
-    "// Opaque near offset to avoid tearing between adjacent frustums",
+    insertionAnchor,
     "if (!config.picking) { context.executeShadowMapCastCommands(scene); }\n" +
-      "    // Opaque near offset to avoid tearing between adjacent frustums",
+      insertionAnchor,
   );
   assert.notEqual(mutant, webgpuSceneRendererSource, "the mutation must apply");
   assert.match(

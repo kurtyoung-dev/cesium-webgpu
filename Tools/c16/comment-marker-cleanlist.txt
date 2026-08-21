@@ -511,3 +511,17 @@ packages/engine/Source/Shaders/WebGPU/Collections/PolylineCollectionPick.wgsl
 packages/engine/Source/Shaders/WebGPU/Collections/PolylineDash.wgsl
 packages/engine/Source/Shaders/WebGPU/Collections/PolylineGlow.wgsl
 packages/engine/Source/Shaders/WebGPU/Collections/PolylineOutline.wgsl
+
+# WebGPU scene orchestration, framebuffer, and pass-routing family. Timeless
+# resource-lifetime, ordering, fallback, and safety constraints remain inline.
+packages/engine/Source/Renderer/WebGPU/WebGPUSceneRenderer.ts
+packages/engine/Source/Renderer/WebGPU/WebGPUSceneRendererPostFrustumChain.ts
+packages/engine/Source/Renderer/WebGPU/WebGPUDrawCommand.ts
+packages/engine/Source/Renderer/WebGPU/WebGPUAttachmentDemandRegistry.ts
+packages/engine/Source/Renderer/WebGPU/WebGPUSceneFramebuffer.ts
+packages/engine/Source/Renderer/WebGPU/WebGPUSceneRendererTranslucentPass.ts
+packages/engine/Source/Renderer/WebGPU/WebGPURenderTarget.ts
+packages/engine/Source/Renderer/WebGPU/WebGPUSceneRendererClusteredLighting.ts
+packages/engine/Source/Renderer/WebGPU/WebGPUSceneRendererFrameReset.ts
+packages/engine/Source/Renderer/WebGPU/WebGPUSceneRendererPassRedirect.ts
+packages/engine/Source/Renderer/WebGPU/WebGPUSceneFBTargetHelpers.ts

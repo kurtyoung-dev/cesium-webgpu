@@ -1,27 +1,20 @@
 /**
- * Post-frustum chain extracted from
- * `WebGPUSceneRenderer.executeCommands`.
- *
- * Batch 141 of the audit-recommended SceneRenderer decomposition —
- * Slice D (final slice) of the executeCommands four-slice plan
- * (see `migration_doc/BATCH_138_PLAN_EXECUTE_COMMANDS_SLICE_PLAN.md`).
+ * Runs the tail of `WebGPUSceneRenderer.executeCommands` after the
+ * per-frustum loop has finished.
  *
  * Tail of the frame, after the per-frustum loop closes:
  *
- *   - Pass 12 OVERLAY (runs once, not per-frustum).
+ *   - The overlay pass, which runs once rather than per frustum.
  *   - Depth plane render (when `!clearGlobeDepth`).
- *   - Environmental effects (clouds, SSR, weather, volumetric fog —
- *     extracted in Batch 134, called here via the wrapper).
- *   - InvertClassification composite (Batch 39 — back-onto-scene-color
- *     after the main scene pass ends + resolves).
- *   - Velocity pass (Batch 106 / TAA Slice 2e — collects
- *     `cmd.velocityCommand` from the model renderer when
- *     `frameState.taaEnabled === true`).
- *   - Post-processing (REQUIRED on WebGPU — blits the scene
- *     framebuffer to the canvas).
- *   - `context._sceneHasTransmission = false` (Batch 107 cleanup —
- *     model renderer sets it during `update()`, we reset at frame
- *     end so next frame's `update()` starts clean).
+ *   - Screen-space normal reconstruction and invert-classification
+ *     compositing after scene depth and color are final.
+ *   - The velocity pass, which collects `cmd.velocityCommand` from the model
+ *     renderer when `frameState.taaEnabled === true`.
+ *   - Post-processing, which is the WebGPU path that blits the scene
+ *     framebuffer to the canvas.
+ *   - Environmental effects composited over the post-processed canvas.
+ *   - Reset of `context._sceneHasTransmission` after every consumer has read
+ *     the signal established during scene update.
  * Performance finalization runs from `WebGPUContext.endFrame()` after every
  * render pass has ended and immediately before the command encoder finishes.
  *
@@ -36,14 +29,13 @@ import { hasEnvironmentalEffectDemand } from "./WebGPUSceneRendererEnvironmentDe
 
 /** SceneRenderer surface the post-frustum chain reaches back to. */
 export interface PostFrustumChainHost {
-  // Field reads
+  // State read by the chain.
   _postProcess: WebGPUPostProcessPipeline | null;
   _sceneFramebuffer: WebGPUSceneFramebuffer | null;
-  // Pragma-stripped log-once guard (production builds elide both the
-  // declaration and reads/writes here)
+  // Production builds elide this log-once guard and all of its accesses.
   _ppDebugLogged: boolean;
 
-  // Method callbacks
+  // Operations supplied by the owning renderer.
   _executeOverlayPass(
     frustumCommandsList: CesiumFrustumCommands[],
     config: WebGPURenderFrameConfig,
@@ -53,27 +45,23 @@ export interface PostFrustumChainHost {
     passKind: "scene" | "pick",
   ): void;
   _executeEnvironmentalEffects(config: WebGPURenderFrameConfig): void;
-  // Phase 8a Slice 2 (Batch 85) — screen-space normal reconstruction.
-  // Runs after the scene render pass closes (post environmentalEffects)
-  // and before the InvertClassification composite. Gated on
-  // `frameState.useDeferredLighting`; no-op when the flag is false
-  // (default).
+  // Reconstructs screen-space normals after the scene pass closes and before
+  // invert-classification compositing. It is a no-op unless
+  // `frameState.useDeferredLighting` is true.
   _executeGBufferProducer(config: WebGPURenderFrameConfig): void;
   _runInvertClassificationComposite(config: WebGPURenderFrameConfig): void;
   _runVelocityPass(config: WebGPURenderFrameConfig): void;
-  // NEW-GEOJSON-WEBGPU-BV-DEBUG-DRAW-PASS — per-command
-  // `debugShowBoundingVolume` red-wireframe pass. No-op (opens no pass) when
-  // no command is flagged, so unflagged frames are byte-identical.
+  // Draws red wireframes for commands with `debugShowBoundingVolume`. It opens
+  // no pass when no command is flagged, leaving ordinary frames unchanged.
   _executeBoundingVolumeDebugPass(config: WebGPURenderFrameConfig): void;
   _runPostProcessing(config: WebGPURenderFrameConfig): void;
-  // C10-03-MSAA-BOUNDARY-BYTES — demand-driven scene-COLOR MSAA resolve.
+  // Resolves multisampled scene color only when a consumer needs it.
   _ensureSceneColorResolved(context: WebGPUContext): void;
 }
 
 /**
- * Run the post-frustum tail of the frame. Caller (`executeCommands`
- * on the SceneRenderer) is responsible for the per-frustum loop
- * (Slice C / Batch 140) — this picks up immediately after.
+ * Runs the post-frustum tail of the frame. The caller is responsible for
+ * completing the per-frustum loop first.
  *
  * @param host - The owning SceneRenderer.
  * @param context - The active WebGPU context (for the
@@ -88,26 +76,21 @@ export function executePostFrustumChain(
   config: WebGPURenderFrameConfig,
   frustumCommandsList: CesiumFrustumCommands[],
 ): void {
-  // Pass 12: OVERLAY (runs once, not per-frustum)
+  // The overlay pass runs once rather than once per frustum.
   host._executeOverlayPass(frustumCommandsList, config);
 
-  // Depth plane (if enabled, renders after all frustums)
+  // The depth plane renders after all frustums.
   if (!config.clearGlobeDepth) {
     host._renderDepthPlane(config, "scene");
   }
 
-  // Slice 5c-B Batch 128 — MSAA depth resolve. In single-sample mode
-  // this is a no-op (the depth aspect view is already sampleable).
-  // In MSAA mode, this dispatches a fullscreen FS pass that reads
-  // sample 0 of the multisampled depth and writes to a single-sample
-  // depth32float resolve target. `SceneFramebuffer.depthSampleableView`
-  // now returns the resolved view, so AO + DoF + env effects get a
-  // bindable `texture_depth_2d`-compatible view in both modes.
+  // Single-sample depth is already sampleable, so its resolve is a no-op.
+  // Multisampled depth is copied from sample zero by a fullscreen pass into a
+  // single-sample `r16float` target used by ambient occlusion, depth of field,
+  // and environmental effects.
   //
-  // Must run AFTER the scene render pass + globe-depth update
-  // (depth is committed) and BEFORE `_runPostProcessing` (consumes
-  // the resolved view for AO, DoF) AND BEFORE env effects (consume
-  // it for NPR / SSR / Procedural Clouds).
+  // The resolve runs after the scene and globe-depth passes commit depth, and
+  // before post-processing or environmental effects read it.
   const _ssceneFB = host._sceneFramebuffer as unknown as {
     resolveDepthMSAA?: (encoder: GPUCommandEncoder) => void;
   } | null;
@@ -115,90 +98,51 @@ export function executePostFrustumChain(
     context as unknown as { _currentCommandEncoder?: GPUCommandEncoder }
   )._currentCommandEncoder;
   if (_ssceneFB?.resolveDepthMSAA && _ssEncoder) {
-    // The resolve pass uses a depth-only attachment as render target.
-    // We need to end any active render pass on the main encoder
-    // BEFORE recording the resolve pass; afterwards we let the
-    // downstream chain re-open whatever pass it needs.
+    // A new resolve pass cannot be recorded while another render pass owns
+    // the encoder. Downstream stages open the pass they need afterwards.
     context.endCurrentRenderPass?.();
     _ssceneFB.resolveDepthMSAA(_ssEncoder);
   }
 
-  // Slice 5c-B Batch 127 — `_executeEnvironmentalEffects` MOVED to
-  // AFTER `_runPostProcessing` (~L162). Pre-Batch-127 env effects ran
-  // here and wrote to `outputView = context.currentTextureView`, then
-  // post-process blitted the scene FB color over the canvas and
-  // stomped their output. Pre-Batch-127 the env effects chain was
-  // ALSO silently skipping due to the `_depthStencilView = null` bug
-  // (fixed in Batch 127 Step 1). With both bugs addressed, env
-  // effects run + their writes composite over the post-processed
-  // canvas via `loadOp="load"`. See PostFrustumChain Batch 127 long
-  // comment at the new call site for the full reasoning.
-
-  // Phase 8a Slice 2 (Batch 85) — G-buffer producer. Screen-space
-  // normal reconstruction from scene depth. The scene render pass has
-  // closed by this point (environmentalEffects runs full-screen
-  // composites which require the scene pass to be closed), so depth
-  // is final and readable by compute. Gated on
-  // `frameState.useDeferredLighting`; the wrapper returns immediately
-  // when the flag is false (the default). Slice 3+ wire SSAO/SSR to
-  // read from `view.gBufferFramebuffer.normalRoughnessTexture` after
-  // this dispatch completes.
+  // Screen-space normal reconstruction needs final, readable scene depth, so
+  // it runs after the scene pass closes. The wrapper returns immediately when
+  // deferred lighting is disabled. Consumers read the resulting
+  // `view.gBufferFramebuffer.normalRoughnessTexture` after this dispatch.
   host._executeGBufferProducer(config);
 
-  // C-R8-EDGE-COMPOSITE-PRUNE (Batch 50) — post-process edge composite
-  // retired. Model edges now composite inline inside Model FS via
-  // `applyEdgeOverlay()` (Batch 48); primitive shaders don't currently
-  // emit edges. The edge MRT views are still produced (model emitter
-  // runs into the edge FBO) and remain readable from
-  // `context._edge*View` for the inline stage. No call here.
+  // Model edges composite inline in the model fragment shader through
+  // `applyEdgeOverlay()`. Primitive shaders do not emit edges, so the edge MRT
+  // views remain available to the inline stage without a separate
+  // post-process composite here.
 
-  // Migration Session 5 (Batch 85) — Batch 47's composite call removed.
-  // The depth-sample classifier (ADR-2026-04-28) draws directly into
-  // scene color during the per-frustum CESIUM_3D_TILE_CLASSIFICATION
-  // pass, so there is no separate accumulation target to composite
-  // back. The accumulation-FBO + composite pipeline scaffolding in
-  // WebGPUTranslucentTileClassification was retired in this batch.
+  // The depth-sample classifier draws directly into scene color during the
+  // per-frustum tile-classification pass. It therefore has no accumulation
+  // target that needs a separate composite in this chain.
 
-  // C-R8-INVERT-CLASS-FBO-REDIRECT (Batch 39) — Composite the
-  // InvertClassification classified texture back onto scene color.
-  // Runs AFTER the main scene pass ends + resolves (so the target
-  // is the single-sample resolved view the composite pipeline is
-  // built for) and BEFORE post-processing (so the tonemap/FXAA
-  // chain sees the composited scene).
+  // Invert-classification targets the single-sample resolved scene color. It
+  // must run after the main scene pass ends and before tonemapping and FXAA so
+  // the post-process chain sees the classified pixels.
   host._runInvertClassificationComposite(config);
 
-  // TAA Slice 2e (Batch 106) — velocity pass for per-pixel motion
-  // vectors. Walks the frustum command lists, collects any
-  // `cmd.velocityCommand` (attached by the model renderer when
-  // `frameState.taaEnabled === true`), and dispatches them into a
-  // dedicated single-target rg16float render pass that shares scene
-  // depth read-only. Skipped entirely when no command carries a
-  // velocity slot — static scenes / TAA-off frames pay zero cost.
-  // Must run AFTER the main scene pass closes (so the depth values
-  // are committed) and BEFORE post-process consumes the velocity
-  // texture in TAA's `motionTex` binding (Batch 104).
+  // The velocity pass collects `cmd.velocityCommand` entries into a dedicated
+  // `rg16float` target while sharing scene depth read-only. It runs after scene
+  // depth is committed and before temporal antialiasing reads `motionTex`. A
+  // frame with no velocity commands queues no work.
   host._runVelocityPass(config);
 
-  // NEW-GEOJSON-WEBGPU-BV-DEBUG-DRAW-PASS — per-command
-  // `debugShowBoundingVolume` red wireframe. Runs AFTER the main scene pass
-  // closed + resolved (draws into the resolved scene-color view) and BEFORE
-  // `_runPostProcessing` blits that view to the canvas, so the wireframe
-  // survives to present. No-op when no command carries the flag (default),
-  // keeping unflagged frames byte-identical.
+  // Bounding-volume wireframes draw into resolved scene color after the main
+  // pass closes and before post-processing blits it to the canvas. The method
+  // opens no pass when no command is flagged.
   host._executeBoundingVolumeDebugPass(config);
 
-  // C10-03-MSAA-BOUNDARY-BYTES — the ALWAYS-ON resolved-color consumer.
-  // Post-process reads `context._sceneColorView` (the single-sample resolve
-  // view) and blits it to the canvas — the only path that reaches the canvas
-  // on WebGPU. With the eager per-segment resolve elided, this is where the
-  // one required scene-COLOR resolve happens on the default globe (the demand
-  // flag is dirty from the frustum-loop draws → exactly 1 resolve/frame).
-  // Miss this and every MSAA frame is black (Trap 4). Inert under MSAA-off (I5)
-  // and a no-op when a prior consumer already resolved with nothing redrawn.
+  // Post-processing always reads the single-sample scene-color view and is the
+  // WebGPU path that reaches the canvas. Resolving here keeps the default path
+  // to one resolve after the frustum loop. The call is inert without
+  // multisampling and when an earlier consumer already resolved the current
+  // contents; omitting it would leave multisampled frames black.
   host._ensureSceneColorResolved(context);
 
-  // Post-processing (tonemapping, FXAA, etc.)
-  // On WebGPU this is REQUIRED to blit the scene framebuffer to canvas.
+  // Post-processing performs tonemapping, FXAA, and the required scene-to-canvas blit.
   //>>includeStart('debug', pragmas.debug);
   if (!host._ppDebugLogged) {
     host._ppDebugLogged = true;
@@ -212,29 +156,15 @@ export function executePostFrustumChain(
   //>>includeEnd('debug');
   host._runPostProcessing(config);
 
-  // Slice 5c-B Batch 129 — snapshot the post-processed canvas into
-  // `context._postProcessSnapshotTexture` so env effects (NPR, SSR,
-  // Clouds) sample a display-space, tonemapped, FXAA'd reflection
-  // source instead of the raw HDR scene FB. The env effects then
-  // composite their output BACK onto the canvas via loadOp="load".
-  // WebGPU forbids read+write on the same texture in a single render
-  // pass; this 1-pass copyTextureToTexture is the cheapest workaround
-  // (compared to making the canvas swap chain dual-buffered or
-  // routing env effects through a separate accumulation buffer).
+  // Environmental effects need a display-space reflection source after
+  // tonemapping and FXAA. Snapshotting the canvas avoids reading and writing
+  // the same WebGPU texture in one render pass, without requiring a
+  // dual-buffered swap chain or another accumulation target. The full-screen
+  // copy is skipped unless an effect will consume it.
   //
-  // Cost: one full-screen GPU copy per frame (~25 KB at 1280×720
-  // bgra8unorm). Free when no env effect is enabled, since none of
-  // them will sample the snapshot.
-  //
-  // Slice 5c-B Batch 131 — gate the snapshot copy on whether ANY env
-  // effect that consumes the snapshot is enabled this frame. When all
-  // five effects (SSR, NPR, Procedural Clouds, Weather, Volumetric
-  // Fog) are off — the default for the basic CesiumViewer — the copy
-  // is skipped entirely. Saves the per-frame canvas-copy bandwidth
-  // (~7 MB at 1920×1080 bgra8unorm) for the common case.
-  // Use the same non-consuming demand contract as the empty-frustum scheduler.
-  // In particular, this includes a user-owned VOLUMETRIC CloudCollection's
-  // pending request, not only the managed default collection.
+  // Demand includes pending work from a user-owned volumetric
+  // `CloudCollection`, not only the managed default collection, matching the
+  // empty-frustum scheduler's non-consuming query.
   const _anyEnvEffectEnabled = hasEnvironmentalEffectDemand(
     config.scene,
     context,
@@ -250,7 +180,7 @@ export function executePostFrustumChain(
   const ppEncoder = _ppCtx._currentCommandEncoder;
   const ppSnapshot = _ppCtx._postProcessSnapshotTexture;
   if (_anyEnvEffectEnabled && ppEncoder && ppSnapshot) {
-    // End the current render pass before issuing a copyTextureToTexture.
+    // Texture copies cannot be encoded while a render pass is active.
     context.endCurrentRenderPass?.();
     const canvasTex = (
       context as unknown as {
@@ -270,33 +200,19 @@ export function executePostFrustumChain(
     }
   }
 
-  // Slice 5c-B Batch 127 — environmental effects (NPR outlines, SSR,
-  // Procedural Clouds, Weather particles, Volumetric Fog). Runs AFTER
-  // post-process so their canvas writes composite ON TOP of the
-  // post-processed scene color, NOT under it. Pre-fix env effects ran
-  // before post-process and wrote to canvas; the post-process blit
-  // overwrote their contribution. Post-fix the env effects' write
-  // landed on canvas survives to the next frame's present.
-  //
-  // Color-space note: env effects sample `_sceneColorView` (raw HDR
-  // pre-postprocess) for their SOURCE reads (e.g. SSR's reflection
-  // source). Their WRITES land on the canvas which already carries
-  // the tonemapped + FXAA'd display-space scene. The mismatch is
-  // acceptable for the current use cases (NPR edges, SSR overlay,
-  // cloud composite) where the WRITE color is computed in
-  // display-space anyway (edge color is RGBA8-ish, cloud color is
-  // pre-toned). A future batch can re-route SSR's reflection
-  // compositing to also use the post-processed scene color as source
-  // for color-space consistency.
+  // Environmental effects run after post-processing so their canvas writes
+  // composite over, rather than get overwritten by, the scene-color blit.
+  // Effects that still sample `_sceneColorView` read raw HDR scene color while
+  // writing display-space output over the tonemapped canvas. This is suitable
+  // for the current edge, reflection-overlay, and cloud composites because
+  // their output colors are already display-space values. A reflection path
+  // that needs strict color-space consistency must instead sample the
+  // post-processed snapshot.
   host._executeEnvironmentalEffects(config);
 
-  // C-R4-GLTF-KHR-TRANSMISSION (Batch 107) — clear the per-frame
-  // transmission signal at the END of executeCommands. The model
-  // renderer sets this to `true` during `update()` (which runs
-  // BEFORE executeCommands as part of scene update), so resetting
-  // at the start would clobber it before the per-frustum capture
-  // step gets to read it. Resetting here means next frame's
-  // `update()` starts with a clean slate; if no model declares
-  // transmission, the capture step early-exits.
+  // The model renderer publishes transmission demand during scene update.
+  // Clear it only after all per-frustum captures have consumed it; clearing it
+  // at frame start would erase the current frame's signal. The next update
+  // then begins clean, and frames without transmissive models skip capture.
   context._sceneHasTransmission = false;
 }

@@ -2,10 +2,6 @@
  * Scene-framebuffer render-pass redirect extracted from
  * `WebGPUSceneRenderer.executeCommands`.
  *
- * Batch 138 of the audit-recommended SceneRenderer decomposition —
- * Slice A of the executeCommands four-slice plan (see
- * `migration_doc/BATCH_138_PLAN_EXECUTE_COMMANDS_SLICE_PLAN.md`).
- *
  * Responsibility: end the canvas swap-chain render pass that
  * `WebGPUContext.beginFrame()` opened, and begin a new one targeting
  * the scene framebuffer's color + depth attachments. The post-process
@@ -14,10 +10,10 @@
  *
  * Three branches:
  *
- *   1. Happy path — `usePostProcess && _sceneFramebuffer.colorTarget`:
+ *   1. `usePostProcess && _sceneFramebuffer.colorTarget`:
  *      end canvas pass, build attachments, begin scene-FB pass, set
  *      viewport + scissor.
- *   2. Bad config — `usePostProcess` is true but no scene framebuffer:
+ *   2. `usePostProcess` is true but there is no scene framebuffer:
  *      log a critical error (the canvas will end up black).
  *   3. `usePostProcess` is false: do nothing — the canvas pass stays
  *      open and commands draw directly to it.
@@ -37,9 +33,9 @@ import type { WebGPUSceneFramebuffer } from "./WebGPUSceneFramebuffer.js";
 import type { WebGPURenderFrameConfig } from "./WebGPUSceneRenderer.js";
 
 /**
- * Slice 5c-B Batch 117 — build the MRT slot-1 (G-buffer normal-roughness)
- * color attachment for the scene framebuffer render pass. Returns null
- * when MRT mode is off OR when the G-buffer view isn't yet allocated.
+ * Builds the MRT slot 1 G-buffer normal-roughness color attachment for the
+ * scene-framebuffer render pass. Returns null when MRT mode is off or the
+ * G-buffer view is not yet allocated.
  * Shared between this module and the two re-open sites in
  * `WebGPUSceneRenderer.ts` (`_resumeScenePass` and `_clearDepthStencil`)
  * so all three pass-open paths produce the same attachment shape.
@@ -80,9 +76,9 @@ export function buildMrtSlot1Attachment(
     return null;
   }
   const hasResolve = !!gb.resolveTargetView;
-  // C9-09 truthful reporting: count every scene-pass slot-1 (G-buffer) open
-  // so the debug snapshot reflects the actual MRT pass topology. All three
-  // scene-pass-open sites funnel through this one builder.
+  // Count every scene-pass G-buffer attachment open so the debug snapshot
+  // reflects the actual MRT topology. All three scene-pass-open sites funnel
+  // through this builder.
   const counters = sceneAny?._context?._attachmentDemandActual;
   if (counters) {
     counters.slot1AttachmentOpens += 1;
@@ -108,16 +104,16 @@ export interface PassRedirectHost {
   _height: number;
   // Per-frame cached viewport (set from `passState.viewport` at the top of
   // `executeCommands`). Equals the full canvas for normal renders; equals the
-  // per-half sub-rect during the SCENE2D infinite-scroll wrap (BUG-3). The
-  // scene-FB pass opens with THIS viewport/scissor so the wrap's two halves
+  // per-half sub-rectangle during the 2D infinite-scroll wrap. The
+  // scene-framebuffer pass opens with this viewport and scissor so both halves
   // each draw only into their screen sub-rect.
   _viewportX: number;
   _viewportY: number;
   _viewportWidth: number;
   _viewportHeight: number;
   // Pragma-stripped log-once guard (production builds elide the field
-  // declaration AND the read/write inside this module — both sides are
-  // wrapped in debug pragma blocks). NOTE: do not paste the literal
+  // declaration and the read/write inside this module; both sides are
+  // wrapped in debug pragma blocks. Do not paste the literal
   // pragma directive text into this comment — `stripPragmaPlugin` in
   // `scripts/build.js` matches the regex `//>>includeStart('debug', …)`
   // anywhere in source (it has no comment-awareness), so a mention of
@@ -141,7 +137,7 @@ export function setupSceneFramebufferRenderPass(
   context: WebGPUContext,
   config: WebGPURenderFrameConfig,
 ): void {
-  // ── Redirect the render pass from the canvas to the scene framebuffer ──
+  // Redirect the render pass from the canvas to the scene framebuffer.
   //
   // The WebGPU context's beginFrame() opens a default render pass
   // targeting the canvas swap chain. But we need commands to draw into
@@ -157,10 +153,10 @@ export function setupSceneFramebufferRenderPass(
 
     const colorTarget = host._sceneFramebuffer.colorTarget;
     const bg = config.backgroundColor;
-    // C10-03-MSAA-BOUNDARY-BYTES — open the initial scene-FB segment WITHOUT an
-    // eager color resolve (`resolve:false`); scene color resolves on demand via
-    // `_ensureSceneColorResolved` before each consumer. (Slot-1 G-buffer resolve
-    // is appended separately by `buildMrtSlot1Attachment` and is out of scope.)
+    // Omit the scene-color resolve target only when resolve elision is active.
+    // Elided intermediate segments are resolved on demand before a consumer;
+    // the compatibility path keeps the resolve target attached at pass end.
+    // The MRT G-buffer resolve is appended separately below.
     let colorAttachments = colorTarget.getColorAttachments?.(
       [
         {
@@ -190,20 +186,21 @@ export function setupSceneFramebufferRenderPass(
       );
     }
 
-    // Slice 5c-B Batch 117 — when MRT mode is on, append the G-buffer
-    // normal-roughness view as a 2nd color attachment. The MRT slot-1
-    // attachment is shared between this initial open and the two
+    // When MRT mode is on, append the G-buffer normal-roughness view as the
+    // second color attachment. This attachment is shared between the initial
+    // open and the two
     // re-open sites (`_resumeScenePass` + `_clearDepthStencil`) via
     // `buildMrtSlot1Attachment`. loadOp="clear" here because this is
-    // the FIRST open of the scene-FB pass per frame; the re-open
+    // the first open of the scene-framebuffer pass per frame; the re-open
     // sites pass "load" to preserve accumulated G-buffer writes.
-    // BUG-3 — SCENE2D infinite-scroll wrap accumulation. On the SECOND
-    // viewport half (`config.sceneFbLoad`), open the scene-FB pass with
+    // During 2D infinite-scroll wrap accumulation, open the second viewport
+    // half (`config.sceneFbLoad`) with
     // color loadOp="load" so the first half's draws (and the cleared
     // background everywhere else) survive. The first half / single render
     // keeps the default "clear". (loadOp=clear/load applies to the whole
     // attachment regardless of viewport, so the first half's clear still
-    // covers the full FB; the per-half viewport below only confines DRAWS.)
+    // covers the full framebuffer; the per-half viewport below only confines
+    // draws.)
     const sceneFbLoad = config.sceneFbLoad === true;
     if (sceneFbLoad && colorAttachments?.length) {
       colorAttachments = colorAttachments.map((a) => ({
@@ -217,9 +214,8 @@ export function setupSceneFramebufferRenderPass(
         sceneFbLoad ? "load" : "clear",
       );
       if (slot1) {
-        // Defensive: build a NEW array rather than mutating in place,
-        // in case the producer returns a frozen one (was one of the
-        // 6 suspect causes from the Batch 116 postmortem).
+        // Build a new array rather than mutating in place because the producer
+        // may return a frozen array.
         colorAttachments = [...colorAttachments, slot1];
       }
     }
@@ -237,7 +233,7 @@ export function setupSceneFramebufferRenderPass(
         return;
       }
       // Use the per-frame cached viewport (= full canvas for normal renders;
-      // = the per-half sub-rect during the SCENE2D wrap, BUG-3) so each wrap
+      // = the per-half sub-rectangle during the 2D wrap) so each wrap
       // half's draws are confined to its screen region. Clamp to a valid,
       // non-zero extent — a degenerate (0-width/height) viewport trips a
       // WebGPU validation error.

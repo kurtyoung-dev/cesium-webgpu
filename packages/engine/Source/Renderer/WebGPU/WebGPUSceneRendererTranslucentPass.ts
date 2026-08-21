@@ -1,27 +1,19 @@
 /**
- * Translucent-pass dispatch extracted from `WebGPUSceneRenderer`.
+ * Dispatches the translucent pass for `WebGPUSceneRenderer` through one of
+ * two paths:
  *
- * Batch 136 of the audit-recommended SceneRenderer decomposition.
- * Covers both dispatch paths:
+ *   1. Full MRT OIT (McGuire & Bavoil 2013) when the renderer safety gate is
+ *      enabled, `WebGPUOIT` is supported, `useOIT` is on, the frame is not a
+ *      pick frame, and commands carry `_oitPipeline` variants. Commands that
+ *      retain `_shaderCode` can build their OIT variant lazily. The path runs
+ *      an accumulation pass and composites it over the scene framebuffer.
+ *   2. Back-to-front alpha blending through per-command `executeBatch` when
+ *      OIT is unavailable.
  *
- *   1. Full MRT OIT (McGuire & Bavoil 2013) — only when the internal
- *      FAR-003 comparison gate is forced, WebGPUOIT is supported,
- *      `useOIT` is on, this isn't a pick frame, and
- *      commands carry `_oitPipeline` variants. Auto-builds OIT
- *      pipelines for any command with `_shaderCode` that hasn't yet
- *      been wired. Runs accumulation pass + composite over the scene
- *      framebuffer.
- *   2. Alpha-blend fallback — back-to-front sort + per-command
- *      `executeBatch` when the OIT path bails for any reason.
- *
- * The function reaches back to the SceneRenderer host for two pieces
- * of state:
- *
- *   - `_oit`: the WebGPUOIT instance (read for support / pipeline
- *     factory / composite call).
- *   - `_deferredOITSplats`: GS-WSR splat commands deferred from the
- *     opaque-pass dispatcher to be folded into the OIT accumulation
- *     pass. Read AND nulled (consumed once per frame).
+ * The host supplies the OIT instance and safety state, scene-color resolve,
+ * translucent culling, and any Gaussian splats deferred from the opaque pass.
+ * Deferred splats are consumed exactly once, either by OIT accumulation or by
+ * the inline fallback.
  *
  * @module WebGPUSceneRendererTranslucentPass
  */
@@ -37,13 +29,10 @@ import {
   type WebGPURenderFrameConfig,
 } from "./WebGPUSceneRenderer.js";
 
-// C11-157 Slice C — a vertex/index buffer on a draw command can be EITHER our
-// `WebGPUBuffer` wrapper (`.buffer` accessor — primitives/collections) OR a raw
-// `GPUBuffer` (models). `executeOITCommand` must resolve both, exactly like the
-// canonical `WebGPUDrawCommand.execute()` path. Before this, the OIT
-// accumulation path assumed the wrapper and threw `setIndexBuffer: parameter 1
-// is not of type 'GPUBuffer'` on model commands (raw GPUBuffer → `.buffer`
-// undefined) — latent until Slice C made translucent models OIT-reachable.
+// Draw commands may carry either a `WebGPUBuffer` wrapper from a primitive or
+// collection renderer, or a raw `GPUBuffer` from a model renderer. OIT must
+// resolve both forms just like `WebGPUDrawCommand.execute()`; reading
+// `.buffer` unconditionally turns a raw model buffer into `undefined`.
 function resolveOITBuffer(
   buf: { buffer: GPUBuffer } | GPUBuffer | undefined,
 ): GPUBuffer | undefined {
@@ -56,8 +45,7 @@ function resolveOITBuffer(
 }
 
 /**
- * The SceneRenderer surface that the extracted translucent pass
- * reaches back to.
+ * The SceneRenderer surface used by the translucent pass.
  */
 export interface TranslucentPassHost {
   _oit: WebGPUOIT | null;
@@ -67,20 +55,18 @@ export interface TranslucentPassHost {
     commands: CesiumAnyDrawCommand[];
     count: number;
   } | null;
-  // Batch 216 — gate-controlled GPU cull for translucent commands.
-  // Returns the (possibly filtered) command array + matching count.
-  // Hot-path safe: returns the input array when the gate is off.
+  // Returns the command array and matching count after optional translucent
+  // GPU culling. The input array is returned unchanged when the gate is off.
   _maybeGPUCullTranslucent: (
     commands: CesiumAnyDrawCommand[],
     count: number,
     config: WebGPURenderFrameConfig,
   ) => { commands: CesiumAnyDrawCommand[]; count: number };
-  // C10-03-MSAA-BOUNDARY-BYTES — demand-driven scene-COLOR MSAA resolve.
+  // Resolves multisampled scene color only when a consumer needs it.
   _ensureSceneColorResolved: (context: WebGPUContext) => void;
-  // C11-157 Slice A — the scene framebuffer's color target exposes the
-  // all-aspects render-pass depth-stencil view the OIT accumulation pass must
-  // depth-test against (NOT the depth-only sampleable view carried by
-  // `context._depthStencilView`, which is for shader sampling only).
+  // OIT depth testing needs the scene framebuffer's combined depth-stencil
+  // render-pass view. `context._depthStencilView` is a depth-only view intended
+  // for shader sampling.
   _sceneFramebuffer?: {
     colorTarget?: {
       getDepthStencilTextureView?: () => GPUTextureView | undefined;
@@ -89,7 +75,7 @@ export interface TranslucentPassHost {
 }
 
 /**
- * Dispatch the TRANSLUCENT pass for a single frustum.
+ * Dispatches `Pass.TRANSLUCENT` for a single frustum.
  *
  * @param host - The owning SceneRenderer (for `_oit` +
  *   `_deferredOITSplats` access).
@@ -105,14 +91,11 @@ export function executeTranslucentPass(
   let commands = frustumCommands.commands[Pass.TRANSLUCENT];
   let count: number = frustumCommands.indices[Pass.TRANSLUCENT];
 
-  // C7-SPLAT-DEPTH-COMPOSE — never-drop seatbelt for deferred GS-WSR splats.
-  // Only relevant when the opt-in `_splatOITDeferral` flag is armed (default
-  // off = splats already drew inline in pass 11). Pre-fix, the `count === 0`
-  // early return below dropped `_deferredOITSplats` silently whenever the
-  // frame had zero TRANSLUCENT commands (the common bare-globe + splat scene),
-  // so the deferred splat never rendered. Flushing them inline preserves
-  // WebGL-parity semantics: back-to-front sorted, scene-pass depth test,
-  // executed in GAUSSIAN_SPLATS-before-TRANSLUCENT order.
+  // The optional splat-to-OIT path can defer Gaussian splats even when the
+  // frame has no ordinary translucent commands. Consume them before any early
+  // return so they cannot disappear in a bare-globe splat scene. The inline
+  // path preserves WebGL semantics: back-to-front order, scene-pass depth
+  // testing, and `Pass.GAUSSIAN_SPLATS` before `Pass.TRANSLUCENT`.
   const executeDeferredSplatsInline = (): void => {
     const deferred = host._deferredOITSplats;
     if (!deferred) {
@@ -129,16 +112,12 @@ export function executeTranslucentPass(
 
   context.uniformState?.updatePass(Pass.TRANSLUCENT);
 
-  // Batch 216 — gate-controlled translucent GPU cull. The gate
-  // (`_gpuCullActive`) is updated in the opaque pass each frame; if
-  // active, this re-tests translucent commands against the same
-  // cullingVolume and replaces the array with a filtered subset.
-  // Order is preserved (same iteration), so OIT accumulation and
-  // back-to-front alpha both stay correct. No-op when the gate is
-  // off, on pick, or when no readback is fresh yet.
-  // C7-SPLAT-DEPTH-COMPOSE — only cull when there are translucent commands;
-  // with count === 0 but deferred splats pending we still need to reach the
-  // flush below rather than early-returning here.
+  // Translucent GPU culling uses its own command-count gate and re-tests
+  // commands against the current culling volume. Filtering preserves input
+  // order, so both OIT accumulation and back-to-front alpha sorting remain
+  // valid. The helper is a no-op during picking, while disabled, or before a
+  // fresh readback exists. Deferred splats still need the flush below when the
+  // ordinary translucent count is zero.
   if (count > 0) {
     const culled = host._maybeGPUCullTranslucent(commands, count, config);
     if (culled.commands !== commands) {
@@ -147,12 +126,9 @@ export function executeTranslucentPass(
     }
   }
 
-  // OIT accumulation + composite path.
-  // Full MRT OIT (McGuire & Bavoil 2013) requires 2-target pipeline variants
-  // for each renderer (accumulation rgba16float + revealage r8unorm).
-  // Pipeline variant support is implemented per-renderer by checking
-  // command._oitPipeline. When available, we use the MRT accumulation pass;
-  // otherwise fall back to standard alpha blending.
+  // Full MRT OIT requires two-target pipeline variants: `rgba16float`
+  // accumulation and `r8unorm` revealage. A command without `_oitPipeline`
+  // uses the alpha-blended fallback.
   if (
     host._webgpuOITEnabled &&
     host._oit &&
@@ -160,9 +136,8 @@ export function executeTranslucentPass(
     config.useOIT &&
     !config.picking
   ) {
-    // Auto-create OIT pipeline variants for commands that have shader code
-    // but no OIT pipeline yet. This enables OIT for any command that opts in
-    // by storing its WGSL source in _shaderCode.
+    // Retaining WGSL in `_shaderCode` opts a command into lazy OIT pipeline
+    // creation.
     let hasOITPipelines = false;
     for (let ci = 0; ci < count; ci++) {
       const cmd = commands[ci];
@@ -206,23 +181,22 @@ export function executeTranslucentPass(
     }
 
     if (hasOITPipelines) {
-      // Full OIT path: end opaque render pass → accumulation → composite
+      // The OIT path ends the opaque pass, accumulates, and then composites.
       const encoder: GPUCommandEncoder | undefined =
         context._currentCommandEncoder;
-      // C11-157 Slice A — the OIT accumulation pass depth-tests against the
-      // opaque scene depth, so it needs the scene FB's ALL-ASPECTS render-pass
-      // depth-stencil view. `context._depthStencilView` is the depth-ONLY
-      // sampleable view (for env/AO/DoF shader sampling); using it as a
-      // depthStencilAttachment on a depth24plus-stencil8 target fails WebGPU's
-      // "must encompass all aspects" validation. Fall back to it only if the
-      // scene FB view is unavailable (defensive; shouldn't happen in practice).
+      // OIT accumulation depth-tests against opaque scene depth and therefore
+      // needs the combined render-pass depth-stencil view. A depth-only
+      // sampleable view does not encompass every aspect of a
+      // `depth24plus-stencil8` attachment and fails WebGPU validation. The
+      // context view remains a defensive fallback for formats without a
+      // published combined view.
       const depthView =
         host._sceneFramebuffer?.colorTarget?.getDepthStencilTextureView?.() ??
         context._depthStencilView;
       if (encoder && depthView) {
         context.endCurrentRenderPass?.();
 
-        // Begin OIT accumulation render pass (2 MRT targets, depth read-only)
+        // The accumulation pass has two color targets and read-only depth.
         const accPassDesc = host._oit.getAccumulationPassDescriptor(depthView);
         if (accPassDesc) {
           const accPass = encoder.beginRenderPass(
@@ -232,23 +206,17 @@ export function executeTranslucentPass(
             ),
           );
           host._webgpuOITActiveThisFrame = true;
-          // Helper to execute a single OIT command in the accumulation pass
+          // Encode one OIT command into the accumulation pass.
           const executeOITCommand = (cmd: CesiumAnyDrawCommand) => {
             if (!cmd?._oitPipeline) return;
             accPass.setPipeline(cmd._oitPipeline);
-            // NEW-COLLECTIONS-2DCV-COPLANAR-DEPTH — honor per-index bind-group
-            // resolvers, mirroring `WebGPUDrawCommand.execute()` (L515-519).
-            // Collection FRs (billboard/point/label/polyline/cloud) deliver
-            // their per-slice camera UB — repacked against the live per-slice
-            // projection (WebGPU depth range, this band's near/far) — ONLY via
-            // a resolver; the static `cmd.bindGroups[bi]` holds the stale
-            // FR-update-time bake (WebGL clip-z range). In SCENE2D that stale
-            // bake puts a map-surface overlay at NDC z ≈ 7.3 (outside [0,1]),
-            // so the OIT accumulation draw clipped every fragment — the
-            // all-zero 2D billboard/point/label state. Resolving here routes
-            // the in-range per-slice UB into the OIT path too. A resolver
-            // returning null falls back to the static group (single-frustum /
-            // first frame), unchanged.
+            // Collection renderers publish a camera uniform block repacked for
+            // each live frustum slice only through bind-group resolvers. The
+            // static bind group retains the renderer-update projection, whose
+            // WebGL clip range lies outside WebGPU's [0, 1] range in 2D. Using
+            // the resolver keeps billboards, points, labels, polylines, and
+            // clouds inside the current slice. A null result falls back to the
+            // static group for single-frustum and first-frame cases.
             const commandBindings = cmd as unknown as {
               bindGroupResolvers?: Array<
                 undefined | (() => GPUBindGroup | null)
@@ -256,12 +224,10 @@ export function executeTranslucentPass(
               bindGroupDynamicOffsets?: Array<number[] | undefined>;
             };
             const resolvers = commandBindings.bindGroupResolvers;
-            // C11-195 — the OIT accumulation variant is built against the SAME
-            // pipeline layout as the color pipeline, so a group whose layout
-            // declares `hasDynamicOffset` (the model's group 0) must be bound
-            // with its offset here too. Omitting it is a validation error, and
-            // binding offset 0 instead would draw the translucent model with
-            // some other draw's camera block.
+            // The OIT variant uses the color pipeline's layout. A group with
+            // `hasDynamicOffset` must therefore carry the same offset here;
+            // omitting it is invalid, while binding offset zero can select
+            // another draw's camera block.
             const dynamicOffsets = commandBindings.bindGroupDynamicOffsets;
             for (let bi = 0; bi < cmd.bindGroups.length; bi++) {
               const resolver = resolvers?.[bi];
@@ -294,7 +260,7 @@ export function executeTranslucentPass(
             }
           };
 
-          // Execute translucent commands with OIT pipeline variants
+          // Encode translucent commands that carry OIT variants.
           for (let ci = 0; ci < count; ci++) {
             const cmd = commands[ci];
             if (cmd?.isWebGPUDrawCommand && cmd._oitPipeline) {
@@ -302,7 +268,7 @@ export function executeTranslucentPass(
             }
           }
 
-          // GS-WSR: Include deferred Gaussian splat commands in OIT accumulation
+          // Include deferred Gaussian splats in OIT accumulation.
           const deferredSplats = host._deferredOITSplats;
           if (deferredSplats) {
             for (let si = 0; si < deferredSplats.count; si++) {
@@ -313,14 +279,12 @@ export function executeTranslucentPass(
 
           accPass.end();
 
-          // C10-03 — resolve the accumulated opaque scene color on demand
-          // before the OIT composite writes over it (the eager per-segment
-          // resolve was elided). Inert under MSAA-off (I5). MSAA×OIT
-          // compositing ordering is the pre-existing FAR-003 adjacency, not
-          // this slice's concern.
+          // Resolve accumulated opaque color before the OIT composite writes
+          // over it. The call is inert for single-sample color and preserves
+          // the established multisample/OIT ordering.
           host._ensureSceneColorResolved(context);
 
-          // Composite OIT result over opaque scene
+          // Composite the OIT result over opaque scene color.
           const sceneColorView = context._sceneColorView;
           const sceneColorFormat = context._sceneColorFormat ?? "bgra8unorm";
           if (sceneColorView) {
@@ -332,36 +296,31 @@ export function executeTranslucentPass(
           }
         }
 
-        // Resume default render pass for subsequent passes
+        // Resume the default render pass for subsequent work.
         context.resumeDefaultRenderPass?.();
-        // C7-SPLAT-DEPTH-COMPOSE — if the accumulation pass didn't run
-        // (accPassDesc null) the deferred splats are still pending; draw
-        // them inline on the resumed scene pass rather than dropping them.
+        // A missing accumulation descriptor leaves deferred splats pending, so
+        // draw them inline on the resumed scene pass.
         executeDeferredSplatsInline();
         return;
       }
     }
   }
 
-  // C7-SPLAT-DEPTH-COMPOSE — the OIT accumulation path didn't run (no OIT
-  // pipelines this frame, or OIT unsupported/picking); consume any deferred
-  // splats inline FIRST. WebGL pass order draws GAUSSIAN_SPLATS before
-  // TRANSLUCENT (`SceneRenderer.js`), so the splats compose under the
-  // translucent fallback that follows.
+  // When OIT does not run, consume deferred splats inline before translucent
+  // alpha blending. This matches WebGL pass order and composes splats under
+  // the fallback that follows.
   executeDeferredSplatsInline();
   if (count === 0) {
     return;
   }
 
-  // Fallback: render translucent commands with standard alpha blending.
-  // Without OIT, alpha compositing is order-dependent — commands MUST be
-  // drawn back-to-front for correct results. Without this sort, overlapping
-  // translucent UI (labels through buildings, semi-transparent layers, etc.)
-  // composites in command-push order and shows visibly wrong occlusion.
+  // Alpha compositing is order-dependent, so the fallback must draw commands
+  // back-to-front. Command-push order gives visibly wrong occlusion for
+  // overlapping labels, buildings, and semi-transparent layers.
   //
-  // We sort a slice rather than the full backing array so pooled slots at
-  // [count, length) keep their last-frame contents for the next frame's
-  // reuse logic, and `frustumCommands.indices` stays authoritative.
+  // Sort only the active prefix so pooled slots at [count, length) retain
+  // their contents for reuse and `frustumCommands.indices` remains
+  // authoritative.
   sortCommandsBackToFront(commands, count, scene);
   executeBatch(commands, count, scene, context, passState);
 }

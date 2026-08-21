@@ -118,9 +118,10 @@ function resolveBufferSize(buf: AnyGPUBuffer): number {
 }
 
 /**
- * C11-195 — deep copy of the per-group dynamic-offset arrays used by
- * {@link WebGPUDrawCommand.clone}. Preserves `undefined` holes (groups with no
- * dynamic bindings) so a clone's `setBindGroup` arity matches the original's.
+ * Deep-copies the per-group dynamic-offset arrays used by
+ * {@link WebGPUDrawCommand.clone}. `undefined` holes represent groups with no
+ * dynamic bindings and must survive so the clone uses the same `setBindGroup`
+ * arity as the original.
  */
 function cloneDynamicOffsets(
   offsets: Array<number[] | undefined> | undefined,
@@ -198,15 +199,15 @@ interface WebGPUDrawCommandOptions {
    *   - non-indexed: `(vertexCount, instanceCount, firstVertex, firstInstance)` × u32
    *   - indexed:     `(indexCount, instanceCount, firstIndex, baseVertex, firstInstance)` × u32
    *
-   * Consumed by the GPU-LOD point cloud renderer where a compute pass
-   * writes instanceCount into the buffer before the draw runs. CPU-side
+   * Consumed by the GPU level-of-detail point-cloud renderer, where a compute
+   * pass writes `instanceCount` into the buffer before the draw runs. CPU-side
    * `instanceCount` is ignored when this is set.
    */
   drawIndirectBuffer?: AnyGPUBuffer;
   /** Byte offset into `drawIndirectBuffer` for the draw args. Default 0. */
   drawIndirectOffset?: number;
   /**
-   * Optional WebGL-style `renderState` carried through for C-R1. Feature
+   * Optional WebGL-style `renderState`. Feature
    * renderers that want to honour `stencilReference`, `blendConstant`,
    * `viewport`, or `scissorRect` on a per-command basis populate this.
    * `WebGPUDrawCommand.execute()` forwards it to
@@ -218,28 +219,28 @@ interface WebGPUDrawCommandOptions {
    */
   renderState?: CesiumRenderStateLike;
   /**
-   * C-R8-TRANSLUCENT-DEPTH-ONLY (Batch 78). When true, the command
-   * contributes to translucent classification depth. Set by
-   * `Cesium3DTile.js:1084` for translucent 3D-tile commands. Defaults
-   * to false; only 3D-tile renderers should set it.
+   * When true, the command contributes to translucent classification depth.
+   * Translucent 3D Tiles commands set this so classification volumes can be
+   * clipped against their surfaces. Defaults to false; only 3D Tiles renderers
+   * should set it.
    */
   depthForTranslucentClassification?: boolean;
   /**
-   * C-R8-TRANSLUCENT-DEPTH-ONLY (Batch 79). Optional sibling pipeline
-   * with `depthWriteEnabled = true` forced on for ALPHA_BLEND. When
+   * Optional sibling pipeline with `depthWriteEnabled = true` forced on for
+   * alpha-blended commands. When
    * `depthForTranslucentClassification` is true and this variant is
    * supplied, `execute()` binds it instead of the default `pipeline`,
    * causing the translucent tile surface to populate the scene-FB
    * depth attachment. The stencil-based GroundPrimitive classifier
    * then clips its volumes against the tile surface (matching WebGL's
    * `czm_globeDepthTexture` sampling behaviour without a separate
-   * depth-texture pass). For OPAQUE/MASK commands the variant is
+   * depth-texture pass). For opaque and masked commands the variant is
    * unused because depth is already written.
    */
   classificationDepthPipeline?: GPURenderPipeline;
   /**
-   * Migration Session 3 (Batch 83) — late-bound bind-group resolvers.
-   * One slot per @group binding; entries that are `undefined` use the
+   * Late-bound bind-group resolvers, with one slot per `@group` binding.
+   * Entries that are `undefined` use the
    * static `bindGroups[i]`, entries that are functions are called at
    * execute() time and their return value overrides the static bind
    * group for that draw. Used for resources that change per-frustum
@@ -251,11 +252,11 @@ interface WebGPUDrawCommandOptions {
    */
   bindGroupResolvers?: Array<undefined | (() => GPUBindGroup | null)>;
   /**
-   * C11-195 — per-@group dynamic-offset arrays, indexed the same way as
+   * Per-`@group` dynamic-offset arrays, indexed the same way as
    * `bindGroups`. An entry is required for exactly those groups whose layout
    * declares `hasDynamicOffset` on one or more bindings, and its length must
    * equal that layout's dynamic-binding count in binding order. Absent /
-   * `undefined` entries bind with no offsets (the historical behavior).
+   * `undefined` entries use the two-argument bind call with no offsets.
    *
    * The model path uses this for its group-0 camera block: one shared bind
    * group over the per-frame ring page plus a one-element offset selecting
@@ -319,9 +320,8 @@ class WebGPUDrawCommand {
    * pipeline / bind group / buffer / draw recording. Owners that benefit
    * (static-pipeline renderers like the moon, sky atmosphere) build the
    * bundle once via {@link WebGPURenderBundleManager#getOrCreate} and
-   * keep it cached. The fallback path still works if `bundle` is unset,
-   * so renderers can opt in incrementally. Phase 1.2c v2 — Moon is the
-   * first consumer.
+   * keep it cached. The fallback path still works when `bundle` is unset, so
+   * each renderer can opt in independently; the moon currently supplies one.
    */
   bundle?: GPURenderBundle;
 
@@ -364,13 +364,12 @@ class WebGPUDrawCommand {
   // Pipeline config needed to recreate OIT variants
   _pipelineConfig?: WebGPUPipelineConfig;
 
-  // C-R1: WebGL-style renderState forwarded to the encoder per-draw.
+  // WebGL-style render state forwarded to the encoder per draw.
   renderState?: CesiumRenderStateLike;
 
   /**
-   * C-R8-TRANSLUCENT-DEPTH-ONLY (Batch 78). Mirrors the WebGL
-   * `DrawCommand.depthForTranslucentClassification` flag (set by
-   * `Cesium3DTile.js:1084` on every translucent 3D-tile command).
+   * Mirrors the WebGL `DrawCommand.depthForTranslucentClassification` flag
+   * carried by translucent 3D Tiles commands.
    * `WebGPUTranslucentTileClassification.executeTranslucentDepthPass`
    * checks this flag before doing the broad scene-depth copy — when no
    * commands in the frustum are flagged, the entire pack-depth pipeline
@@ -383,21 +382,21 @@ class WebGPUDrawCommand {
   depthForTranslucentClassification: boolean = false;
 
   /**
-   * C-R8-TRANSLUCENT-DEPTH-ONLY (Batch 79). Optional depth-write variant
-   * of `pipeline`. Bound by `execute()` in place of `pipeline` whenever
+   * Optional depth-write variant of `pipeline`. Bound by `execute()` in place
+   * of `pipeline` whenever
    * `depthForTranslucentClassification` is true and this variant is set.
-   * For ALPHA_BLEND models, `WebGPUModelRenderer` builds a sibling
+   * For alpha-blended models, `WebGPUModelRenderer` builds a sibling
    * pipeline with `depthWriteEnabled = true` and stashes it here so a
    * translucent 3D-tile surface populates the scene-FB depth attachment.
-   * Undefined for OPAQUE/MASK paths (they already write depth) and for
+   * Undefined for opaque and masked paths (they already write depth) and for
    * non-tile renderers that never receive the flag.
    */
   classificationDepthPipeline?: GPURenderPipeline;
 
   /**
-   * Migration Session 3 (Batch 83) — per-bind-group late-binding
-   * resolvers. See `WebGPUDrawCommandOptions.bindGroupResolvers` for
-   * the contract. Indexed by @group binding number; absent entries
+   * Per-bind-group late-binding resolvers. See
+   * `WebGPUDrawCommandOptions.bindGroupResolvers` for the contract. Indexed by
+   * `@group` binding number; absent entries
    * use the static `bindGroups[i]` reference. Resolvers run inside
    * `execute()` between pipeline binding and vertex-buffer setup,
    * giving consumers (e.g., depth-sample classifier) a hook to swap
@@ -406,11 +405,11 @@ class WebGPUDrawCommand {
   bindGroupResolvers?: Array<undefined | (() => GPUBindGroup | null)>;
 
   /**
-   * C11-195 — per-@group dynamic-offset arrays. See
+   * Per-`@group` dynamic-offset arrays. See
    * `WebGPUDrawCommandOptions.bindGroupDynamicOffsets` for the contract.
    * Applied in `execute()` to the bind group actually bound for that index,
    * whether it came from the static array or from a resolver — a resolver
-   * swaps the RESOURCE, never the dynamic-offset layout.
+   * swaps the resource, never the dynamic-offset layout.
    */
   bindGroupDynamicOffsets?: Array<number[] | undefined>;
 
@@ -514,12 +513,12 @@ class WebGPUDrawCommand {
 
     // Indirect draw — when the consumer sets this, `execute()` takes
     // the drawIndirect / drawIndexedIndirect path and ignores CPU-side
-    // counts. Used by the GPU-LOD point cloud path where visibleCount
-    // is computed on the GPU.
+    // counts. The GPU level-of-detail point-cloud path uses this after its
+    // compute pass writes `visibleCount` on the GPU.
     this.drawIndirectBuffer = options.drawIndirectBuffer;
     this.drawIndirectOffset = options.drawIndirectOffset ?? 0;
 
-    // C-R1: WebGL-style renderState forwarded per-draw. Undefined when the
+    // WebGL-style render state forwarded per draw. Undefined when the
     // feature renderer already bakes everything into the pipeline (typical
     // WebGPU-native case); non-null when the command came from a WebGL
     // consumer that wants stencilRef / blendConstant / viewport / scissor.
@@ -587,7 +586,7 @@ class WebGPUDrawCommand {
     // of recording the draw calls again. The bundle internally captures
     // setPipeline / setBindGroup / setVertexBuffer / setIndexBuffer /
     // drawIndexed, so the per-frame CPU work collapses to one
-    // executeBundles call. Phase 1.2c v2 — Moon is the first consumer.
+    // executeBundles call.
     if (defined(this.bundle)) {
       // A bundle is opaque at replay time, so publish the pass-owned state
       // immediately before it. Native commands below can be more selective:
@@ -602,8 +601,7 @@ class WebGPUDrawCommand {
       return;
     }
 
-    // Set the pipeline. C-R8-TRANSLUCENT-DEPTH-ONLY (Batch 79) — when
-    // a translucent 3D-tile command is flagged for classification depth
+    // When a translucent 3D Tiles command is flagged for classification depth
     // and a depth-write variant has been provided, bind the variant
     // instead of the default. The variant differs only in
     // `depthWriteEnabled = true`; layout, vertex, fragment, and blend
@@ -619,7 +617,7 @@ class WebGPUDrawCommand {
         : this.pipeline;
     passEncoder.setPipeline(pipelineToBind);
 
-    // C-R1: apply per-encoder dynamic state (stencilRef / blendConstant /
+    // Apply per-encoder dynamic state (stencilRef / blendConstant /
     // viewport / scissor) from any WebGL-style renderState before the draw
     // call. No-op when `renderState` is undefined (the WebGPU-native
     // happy path where everything is baked into the pipeline).
@@ -632,8 +630,7 @@ class WebGPUDrawCommand {
       this.renderState,
     );
 
-    // Set all bind groups. Migration Session 3 (Batch 83) — per-index
-    // resolvers, when present, are called at draw time to swap in a
+    // Per-index resolvers are called at draw time to swap in a
     // frustum-current bind group (e.g., the depth-sample classifier's
     // depth source view, which can flip between globe-depth and
     // packed-translucent-depth across frustums within the same frame).
@@ -641,8 +638,8 @@ class WebGPUDrawCommand {
     // keeping the command functional when the per-frustum source isn't
     // published yet (first frame, viewport resize, no translucent
     // tiles this frustum).
-    // C11-195 — a group whose layout declares `hasDynamicOffset` MUST be bound
-    // with its offset array; omitting it is a validation error that
+    // A group whose layout declares `hasDynamicOffset` must be bound with its
+    // offset array; omitting it is a validation error that
     // invalidates the frame's command buffer. `undefined` for groups with no
     // dynamic bindings reproduces the two-argument call exactly.
     for (let i = 0; i < this.bindGroups.length; i++) {
@@ -720,10 +717,9 @@ class WebGPUDrawCommand {
     return new WebGPUDrawCommand({
       pipeline: this.pipeline,
       bindGroups: [...this.bindGroups],
-      // C11-195 — a derived command (WebGPUDerivedCommand.deriveCommand) that
-      // dropped these would bind group 0 at dynamic offset 0, i.e. some other
-      // model's camera slice. Deep-copy so a base and its derivations can
-      // never alias one offset array.
+      // A derived command that dropped these offsets would bind group 0 at
+      // dynamic offset 0, selecting another model's camera slice. Deep-copy so
+      // a base command and its derivations cannot alias one offset array.
       bindGroupDynamicOffsets: cloneDynamicOffsets(
         this.bindGroupDynamicOffsets,
       ),

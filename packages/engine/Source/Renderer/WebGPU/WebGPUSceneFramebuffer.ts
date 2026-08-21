@@ -28,22 +28,22 @@ export class WebGPUSceneFramebuffer {
   private _hdr: boolean = false;
   private _colorFormat: GPUTextureFormat = LDR_FORMAT;
   private _isDestroyed: boolean = false;
-  // TAA Slice 2d (Batch 104) — per-pixel velocity texture written by
-  // the model FS @location(1) when MRT velocity output is enabled.
-  // Lazily allocated the first frame TAA is enabled; reset on resize.
-  // rg16float, single-sample (MSAA velocity isn't sensible — the TAA
-  // resolve pass samples the resolved color, so velocity must match).
+  // Per-pixel velocity texture written by the model fragment shader at
+  // `@location(1)` when MRT velocity output is enabled. It is allocated lazily
+  // when TAA first needs it and reset on resize. The TAA resolve shader binds
+  // velocity as a regular `texture_2d`, so this `rg16float` target is always
+  // single-sample.
   private _velocityTexture: GPUTexture | null = null;
   private _velocityView: GPUTextureView | null = null;
-  // C-R4-GLTF-KHR-TRANSMISSION (Batch 107) — refraction scene-color
-  // capture target. Holds an `opaque-only` snapshot of scene color
+  // Refraction scene-color capture target. Holds an opaque-only snapshot of
+  // scene color
   // taken between OPAQUE/MASK passes and the TRANSLUCENT pass; the
   // model FS samples it at @group(2)@binding(23) when a primitive
   // declares KHR_materials_transmission. The capture path uses
   // `GPUCommandEncoder.copyTextureToTexture` from scene color into
-  // this texture (scene color must therefore be RESOLVED single-
-  // sample by capture time — MSAA scenes need the resolveTarget as
-  // the source). Allocated lazily on first use; reset on resize.
+  // this texture. The source must be single-sample, so MSAA scenes populate
+  // the color resolve target before capture. Allocated lazily on first use and
+  // reset on resize.
   // Format matches `_colorFormat` so the copy is a same-format blit.
   private _refractionTexture: GPUTexture | null = null;
   private _refractionView: GPUTextureView | null = null;
@@ -84,8 +84,8 @@ export class WebGPUSceneFramebuffer {
   }
 
   /**
-   * TAA Slice 2d (Batch 104) — per-pixel motion-vector texture.
-   * `rg16float`, single-sample. Allocated on first access via
+   * Per-pixel motion-vector texture in single-sample `rg16float` format.
+   * Allocated on first access via
    * {@link ensureVelocityTexture} so static scenes (TAA off) don't pay
    * the W*H*4 bytes upfront. Returns the texture view that velocity-
    * aware pipelines (model FS @location(1)) write into and the TAA
@@ -129,8 +129,7 @@ export class WebGPUSceneFramebuffer {
   }
 
   /**
-   * C-R4-GLTF-KHR-TRANSMISSION (Batch 107) — view of the refraction
-   * capture texture (opaque-only scene color snapshot). Returns null
+   * View of the opaque-only refraction scene-color snapshot. Returns null
    * until {@link ensureRefractionTexture} is invoked at least once
    * (the SceneRenderer's transmission capture pass is the only caller).
    * Bound by transmissive Model primitives at @binding(23) so the FS
@@ -175,19 +174,19 @@ export class WebGPUSceneFramebuffer {
   }
 
   /**
-   * C-R4-GLTF-KHR-TRANSMISSION (Batch 107) — capture the current scene
-   * color texture into the refraction target. Same-format blit via
-   * `copyTextureToTexture`; MSAA scenes use the resolved color (which
-   * `colorTarget.getColorTexture()` already prefers when a resolve
-   * target exists). Caller is the SceneRenderer between the OPAQUE
-   * passes and the TRANSLUCENT pass; after this call the texture
+   * Captures the current scene color texture into the refraction target with a
+   * same-format `copyTextureToTexture` blit. MSAA scenes must populate the
+   * single-sample color resolve before this call; `getColorTexture()` selects
+   * that allocation but does not perform the resolve. Caller is the
+   * SceneRenderer between the opaque and translucent passes; after this call
+   * the texture
    * bound to model FS @binding(23) reflects opaque-only scene color
    * and transmissive primitives can sample it for the refraction
    * lookup.
    *
    * Returns true on success, false if the source texture or target
    * texture is missing (caller should skip the transmission pass for
-   * the current frame). The method does NOT end the current render
+   * the current frame). The method does not end the current render
    * pass — caller is responsible for that and for resuming after.
    */
   captureRefraction(
@@ -231,21 +230,21 @@ export class WebGPUSceneFramebuffer {
   }
 
   /**
-   * Depth-only aspect view suitable for binding to `texture_depth_2d` in
-   * WGSL. Returns undefined when MSAA is on (multisampled depth can't be
-   * sampled). Used by the Tier 2 debug depth-as-color overlay.
+   * Single-sample view for downstream depth reads. In single-sample mode this
+   * is a depth-only aspect view suitable for `texture_depth_2d`. In MSAA mode
+   * it is the `r16float` color resolve suitable for `texture_2d<f32>`, populated
+   * by {@link resolveDepthMSAA} after the scene pass.
    */
   get depthSampleableView(): GPUTextureView | undefined {
     return this._colorTarget?.getDepthSampleableView();
   }
 
   /**
-   * Slice 5c-B Batch 128 — dispatch the MSAA depth resolve. No-op in
-   * single-sample mode (the depth aspect view is already sampleable).
-   * Caller (SceneRenderer's post-frustum chain) invokes this after the
-   * main scene render pass closes so `depthSampleableView` returns a
-   * resolved single-sample view that env effects + AO + DoF can bind
-   * as `texture_depth_2d`.
+   * Converts sample zero of the MSAA depth attachment into the single-sample
+   * `r16float` color target. No-op in single-sample mode, where the depth
+   * aspect view is already sampleable. The SceneRenderer invokes this after
+   * the main scene render pass closes so environmental effects, ambient
+   * occlusion, and depth of field read current-frame depth.
    */
   resolveDepthMSAA(encoder: GPUCommandEncoder): void {
     this._colorTarget?.resolveDepthMSAA?.(encoder);
@@ -301,15 +300,13 @@ export class WebGPUSceneFramebuffer {
     // Destroy existing targets
     this._colorTarget?.destroy();
     this._idTarget?.destroy();
-    // TAA Slice 2d (Batch 104) — invalidate velocity texture too so
-    // the next `ensureVelocityTexture` call reallocates at the new
-    // dimensions.
+    // Invalidate velocity so the next `ensureVelocityTexture` call reallocates
+    // at the new dimensions.
     this._velocityTexture?.destroy();
     this._velocityTexture = null;
     this._velocityView = null;
-    // C-R4-GLTF-KHR-TRANSMISSION (Batch 107) — invalidate refraction
-    // capture too: the next `ensureRefractionTexture` call reallocates
-    // at the new dimensions / color format.
+    // Invalidate refraction capture so the next `ensureRefractionTexture` call
+    // reallocates at the new dimensions and color format.
     this._refractionTexture?.destroy();
     this._refractionTexture = null;
     this._refractionView = null;
@@ -317,11 +314,10 @@ export class WebGPUSceneFramebuffer {
 
     // Create main color target with MSAA + depth-stencil.
     //
-    // depthSamplable=true makes the depth attachment usable as a sampled
-    // texture in subsequent passes (depth-as-color debug overlay, future
-    // soft-particle / depth-aware effects). Only takes effect when
-    // sampleCount === 1 — multisampled depth textures can't be sampled
-    // in WGSL, so MSAA scenes silently fall back to non-sampleable depth.
+    // `depthSamplable` makes depth available to later passes. Single-sample
+    // scenes expose a depth-only aspect view directly; MSAA scenes use that
+    // view as the input to a per-frame conversion into a sampleable
+    // single-sample `r16float` target.
     this._colorTarget = new WebGPURenderTarget(device, {
       name: "SceneFramebuffer-Color",
       width,
@@ -364,12 +360,12 @@ export class WebGPUSceneFramebuffer {
   }
 
   /**
-   * If MSAA is enabled, resolve the multisample color texture to a single-sample texture.
+   * Compatibility hook for preparing scene color textures.
    */
   prepareColorTextures(): void {
-    // WebGPU MSAA resolve is automatic when using resolveTarget in the render pass descriptor.
-    // The WebGPURenderTarget handles this in its renderPassDescriptor.
-    // No manual resolve step needed.
+    // No setup is required here. Render-pass descriptors either attach a
+    // `resolveTarget` or deliberately defer resolution to an explicit
+    // demand-resolve pass.
   }
 
   /**

@@ -55,15 +55,11 @@ import type { WebGPUContext } from "./WebGPUContext.js";
 import { WebGPUSceneFramebuffer } from "./WebGPUSceneFramebuffer.js";
 import { WebGPUEdgeFramebuffer } from "./WebGPUEdgeFramebuffer.js";
 import { WebGPUTranslucentTileClassification } from "./WebGPUTranslucentTileClassification.js";
-// C-R8-EDGE-COMPOSITE-PRUNE (Batch 50) — `WebGPUEdgeComposite` retired.
-// Model edges now composite inline inside `ModelPBRComplete.wgsl` via
-// `applyEdgeOverlay()` (Batch 48), with full per-feature gating that
-// the post-process consumer couldn't see. Primitive shaders don't
-// emit edge commands, so no consumer is missing — the file was the
-// only path the post-process overlay served. If a future emitter
-// (decals, ground primitives) adds a `Pass.CESIUM_3D_TILE_EDGES`
-// command path, restore the composite OR ride C-R8-EDGE-INLINE-PRIMITIVES
-// to extend the inline stage to that shader family.
+// Model edges composite inline inside `ModelPBRComplete.wgsl` through
+// `applyEdgeOverlay()`, where the full per-feature gates are visible.
+// Primitive shaders do not emit edge commands. A producer that adds a
+// `Pass.CESIUM_3D_TILE_EDGES` command must either extend the inline stage to
+// its shader family or restore a post-process composite for that pass.
 import { WebGPUOIT } from "./WebGPUOIT.js";
 import { WebGPUClusteredLightingDispatcher } from "./WebGPUClusteredLightingDispatcher.js";
 import { WebGPUGlobeDepth } from "./WebGPUGlobeDepth.js";
@@ -137,20 +133,20 @@ export interface WebGPURenderFrameConfig {
   usePostProcess?: boolean;
   useHDR?: boolean;
   shadowState?: CesiumFrameState["shadowState"];
-  // ── SCENE2D infinite-scroll wrap (BUG-3) ──
+  // Scene 2D infinite-scroll wrapping.
   // `execute2DViewportCommands` (ViewportExecutor.js) renders the 2D map in
-  // two viewport halves via TWO `executeCommands` calls per frame, each with
+  // two viewport halves through two `executeCommands` calls per frame, each with
   // its own off-center frustum + `passState.viewport` sub-rect. WebGL
   // accumulates both halves into one framebuffer (clear on the first half
   // only). The WebGPU renderer mirrors that by accumulating both halves into
   // the scene framebuffer and blitting once:
   //   - `sceneFbLoad`: when true, open the scene-FB pass with color
   //     loadOp="load" (preserve the first half) instead of "clear". Set on the
-  //     SECOND half. Undefined/false → clear (normal single-pass behavior).
+  //     second half. Undefined/false means clear for a single-pass frame.
   //   - `deferComposite`: when true, skip the post-frustum chain (env effects,
-  //     composite, velocity, post-process blit) AND the performance-manager
+  //     composite, velocity, post-process blit) and the performance-manager
   //     endFrame so the first half just accumulates into the scene FB. Set on
-  //     the FIRST half of a split. The SECOND (or single) pass runs the chain,
+  //     the first half of a split. The second (or single) pass runs the chain,
   //     which blits the fully-accumulated scene FB once.
   // The performance-manager beginFrame is correspondingly skipped on the
   // second half. CPU pass accounting is owned by the outer Scene frame, so
@@ -161,9 +157,8 @@ export interface WebGPURenderFrameConfig {
 
 // --------------- Module-level helpers ---------------
 
-// Per-context once-per-key warning tracker. Replaces the old
-// `(context as any)._warnedCommands` monkey-patching pattern with a
-// module-level WeakMap so we don't need `as any` casts.
+// A module-level weak map keeps warning state per context without adding
+// ad-hoc properties or `as any` casts to the context itself.
 const _warnedCommandsMap = new WeakMap<WebGPUContext, Set<string>>();
 function _getWarnedCommands(context: WebGPUContext): Set<string> {
   let set = _warnedCommandsMap.get(context);
@@ -175,7 +170,7 @@ function _getWarnedCommands(context: WebGPUContext): Set<string> {
 }
 
 /**
- * Backend-agnostic derived-command dispatcher (C-R2) — mirrors the
+ * Backend-agnostic derived-command dispatcher that mirrors the
  * polymorphic selection in {@link Scene/SceneRenderer.js#executeCommand}
  * so WebGPU honours `logDepth` / `hdr` / `picking` / `pickingMetadata` /
  * `depth-only` / `shadows.receive` variants when a feature renderer has
@@ -183,8 +178,7 @@ function _getWarnedCommands(context: WebGPUContext): Set<string> {
  *
  * Empty `derivedCommands` (the common case for WebGPU-native feature
  * renderers that handle variants internally) falls through to the base
- * command, so wiring this dispatcher on top of the existing execute path
- * is byte-identical for those renderers.
+ * command, keeping their execute path unchanged.
  *
  * `isPickPass = true` is how `_executePickBatch` signals that it is
  * rendering to the pick FBO; the WebGL path infers this from
@@ -192,22 +186,20 @@ function _getWarnedCommands(context: WebGPUContext): Set<string> {
  * branch so we pass the signal explicitly to keep the dispatcher a pure
  * function.
  */
-// Exported so the extracted pick-pass module
-// (`WebGPUSceneRendererPickPass.ts`, Batch 133) can call the same
-// dispatcher the in-file `executeWebGPUCommand` uses. Internal-API
-// shape preserved exactly; this is just a visibility flip.
+// The pick-pass module and `executeWebGPUCommand` share this dispatcher so
+// both paths select derived commands identically.
 export function selectCommandVariant(
   command: CesiumAnyDrawCommand,
   scene: CesiumScene,
   isPickPass: boolean,
   /**
-   * UP144-SNAP-WEBGPU (C11-212) — select the SNAPPING variant instead of the
+   * Select the snapping variant instead of the
    * pick variant. Deliberately a caller-supplied axis rather than a read of
-   * `frameState.passes.snap`: a snapping mini-frame runs TWO phases over the
+   * `frameState.passes.snap`: a snapping mini-frame runs two phases over the
    * same frame state, and the occluder phase must keep selecting the ordinary
    * pick variants (that is what writes the depth the payload phase tests
-   * against). Only the payload phase passes `true`, so every non-snap caller —
-   * and the occluder phase — is byte-identical to before.
+   * against). Only the payload phase passes `true`, so every non-snap caller
+   * and the occluder phase keep selecting their ordinary variants.
    */
   snapVariant: boolean = false,
 ): CesiumAnyDrawCommand {
@@ -224,14 +216,14 @@ export function selectCommandVariant(
 
   // Log depth is a depth-write variant — swap before the other gates so
   // downstream reads see the log-depth command's own `derivedCommands` chain
-  // (matching SceneRenderer.executeCommand line 49-51). EXCEPT during PICK:
-  // the pick command is attached to the BASE command's
-  // `derivedCommands.picking.pickCommand` (attachPickToColorCommand), NOT to
+  // (matching SceneRenderer.executeCommand line 49-51). During a pick pass,
+  // the pick command is attached to the base command's
+  // `derivedCommands.picking.pickCommand` (attachPickToColorCommand), not to
   // the log-depth variant. Swapping first hides it, so the pick check below
-  // falls through and returns the log-depth COLOR command — whose MRT
+  // falls through and returns the log-depth color command — whose MRT
   // scene-framebuffer attachments are incompatible with the single-target
   // pick render pass, so WebGPU drops every pick draw and the pick FBO stays
-  // empty (FORK-34: all picking returns undefined). The pick pass renders its
+  // empty, making every pick return undefined. The pick pass renders its
   // own self-consistent depth in the pick FBO, so it doesn't need the
   // log-depth variant.
   if (frameState.useLogDepth && !isPicking && derived.logDepth?.command) {
@@ -251,9 +243,9 @@ export function selectCommandVariant(
   if (isPicking || isDepth) {
     const d = cmd.derivedCommands;
     if (isPicking && !isDepth) {
-      // UP144-SNAP-WEBGPU (C11-212) — snapping payload phase. A command with a
+      // Snapping payload phase. A command with a
       // snap variant renders it (writing the RGBA32F snap payload); a command
-      // WITHOUT one returns unchanged, which the pass executor reads as "skip"
+      // without one returns unchanged, which the pass executor reads as "skip"
       // — its occlusion contribution was already made in the occluder phase,
       // and its pick pipeline targets an incompatible attachment format. This
       // short-circuits ahead of the metadata/pick slots so a snapping pass can
@@ -269,8 +261,8 @@ export function selectCommandVariant(
       ) {
         return d.pickingMetadata.pickMetadataCommand;
       }
-      // C-R9-MODEL-PICK-TRANSLUCENT (Batch 192) — route to hover or
-      // precise pick variant when the scene-level mode flag is set.
+      // Route to the hover or precise pick variant when the scene-level mode
+      // flag is set.
       // Falls through to default pickCommand if the requested variant
       // isn't materialized (e.g., precise pass 1 fallback for
       // OPAQUE/MASK alphaMode where there's no separate pass 2).
@@ -283,7 +275,7 @@ export function selectCommandVariant(
       const pickMode = frameState.passes.pickMode;
       if (!frameState.pickingMetadata && d?.picking) {
         const picking = d.picking;
-        // C-R9-VOXEL-CELL-PICK — a pickVoxel pass routes to the per-cell
+        // A pickVoxel pass routes to the per-cell
         // pick variant (packs {megatextureIndex, sampleIndex} like WebGL's
         // VoxelFS.glsl PICKING_VOXEL branch) ahead of the object-pick color.
         // Additive: only voxel commands populate the slot; every other
@@ -330,7 +322,7 @@ function executeWebGPUCommand(
     return;
   }
 
-  // C-R2: run the base command through the derived-command dispatcher so
+  // Run the base command through the derived-command dispatcher so
   // WebGPU inherits WebGL's logDepth/hdr/shadows-receive variant selection.
   const dispatched = selectCommandVariant(command, scene, false);
 
@@ -457,9 +449,8 @@ function sortActiveCommandRange(
  * Without OIT, alpha compositing is order-dependent — overlapping translucent
  * geometry renders wrong in command-push order.
  */
-// Exported so the extracted translucent-pass module
-// (`WebGPUSceneRendererTranslucentPass.ts`, Batch 136) can call the
-// same back-to-front sorter used by the in-file alpha-blend fallback.
+// The translucent-pass module and the in-file alpha-blend fallback share this
+// sorter so their back-to-front ordering cannot diverge.
 export function sortCommandsBackToFront(
   commands: CesiumAnyDrawCommand[],
   count: number,
@@ -498,9 +489,7 @@ export function sortCommandsFrontToBack(
  * the camera-distance metric comes from the box center, not the sphere's
  * conservative `distanceSquaredTo`.
  */
-// Exported so the extracted per-frustum loop module
-// (`WebGPUSceneRendererFrustumLoop.ts`, Batch 140) can call the same
-// splat-distance sorter the inline path uses.
+// The per-frustum loop and the inline path share this splat-distance sorter.
 export function sortGaussianSplatsBackToFront(
   commands: CesiumAnyDrawCommand[],
   count: number,
@@ -517,9 +506,7 @@ export function sortGaussianSplatsBackToFront(
   );
 }
 
-// Exported so the extracted globe-pass module
-// (`WebGPUSceneRendererGlobePass.ts`, Batch 135) can call the same
-// dispatcher used elsewhere in this file. Internal-API shape preserved.
+// The globe-pass module uses the same dispatcher as the other scene passes.
 export function executeBatch(
   commands: CesiumAnyDrawCommand[],
   count: number,
@@ -551,7 +538,7 @@ export function executeBatch(
  * Indirect-draw fast path for tile passes.
  *
  * Walks the command list and groups consecutive commands that share the
- * same pipeline + bind group identity AND that already have an attached
+ * same pipeline and bind group identity and that already have an attached
  * indexed vertex/index buffer pair. Each homogeneous run is submitted to
  * `WebGPUIndirectDrawManager.submitBatch()` and executed via a single
  * `executeBatchIndexed()` call on the active render pass — collapsing N
@@ -567,9 +554,7 @@ export function executeBatch(
  * `true -> always`; an internal `auto` value remains available for threshold
  * characterization. The existing per-command path is the default.
  */
-// Exported alongside `executeBatch` so the extracted 3D-tile-passes
-// module (`WebGPUSceneRenderer3DTilePasses.ts`, Batch 137) can reach
-// the indirect-draw fast path the in-file `runPass` chose.
+// The 3D Tiles pass module shares this fast path with the in-file pass runner.
 export function executeBatchIndirect(
   commands: CesiumAnyDrawCommand[],
   count: number,
@@ -639,9 +624,9 @@ export function executeBatchIndirect(
       if (next.indexBuffer !== headIndexBuffer) break;
       // Cheap structural check on bind groups: same length, same refs.
       if (!sameBindGroupArray(next.bindGroups, headBindGroups)) break;
-      // C11-195 — bind-group identity is no longer sufficient. Under a
+      // Bind-group identity alone is insufficient. Under a
       // dynamic-offset arena two different models on the same ring page share
-      // one group-0 bind group and differ ONLY in their byte offset, so
+      // one group-0 bind group and differ only in their byte offset, so
       // merging them into one run would draw the second with the first's
       // camera block. The offsets are part of the bound state a
       // `drawIndexedIndirect` inherits, so they must match to merge.
@@ -688,7 +673,7 @@ export function executeBatchIndirect(
     renderPass.setPipeline(headPipeline);
     if (headBindGroups) {
       for (let g = 0; g < headBindGroups.length; g++) {
-        // C11-195 — every command in this run was proven to carry identical
+        // Every command in this run carries identical
         // dynamic offsets above, so binding the head's is binding all of them.
         const offsets = headDynamicOffsets?.[g];
         if (offsets !== undefined) {
@@ -729,8 +714,8 @@ function sameBindGroupArray(
 }
 
 /**
- * C11-195 — structural equality for per-group dynamic-offset arrays. Compares
- * BY VALUE, not by reference: two commands built from the same arena slice
+ * Structural equality for per-group dynamic-offset arrays. Compares by value,
+ * not by reference: two commands built from the same arena slice
  * legitimately hold different array instances holding the same offset, and
  * refusing to merge those would silently undo the indirect batching win.
  */
@@ -797,7 +782,7 @@ function executeBatchDepthOnly(
  * Used for globe translucency — selects blend/cull/depth based on
  * the _webgpuTranslucencyDerived type marker.
  */
-// Exported alongside `executeBatch` for the same Batch-135 reason.
+// The globe-pass module shares this executor with the in-file path.
 export function executeBatchTranslucent(
   commands: CesiumAnyDrawCommand[],
   count: number,
@@ -808,14 +793,11 @@ export function executeBatchTranslucent(
   for (let i = 0; i < count; i++) {
     const cmd = commands[i];
     if (!cmd) continue;
-    // AUDIT_2026_05_02 A.1 — `WebGPUGlobeTranslucencyState.update*()`
-    // populates `_webgpuTranslucencyDerived[0..N-1]` with one derived
+    // `WebGPUGlobeTranslucencyState.update*()` populates
+    // `_webgpuTranslucencyDerived[0..N-1]` with one derived
     // descriptor per pass (front-faces, back-faces, depth-only, etc.).
-    // Previously this loop only read `[0]`, dropping every subsequent
-    // derived pass — so any scene needing more than a single derived
-    // pass (the common case for globe translucency) rendered with
-    // incomplete blend/depth contributions. Now we iterate the full
-    // count, materializing the per-derived pipeline variant for each.
+    // Iterate the full count because globe translucency commonly needs several
+    // derived passes. Omitting any entry loses its blend or depth contribution.
     if (cmd._webgpuTranslucencyDerived) {
       const derivedCount =
         cmd._webgpuTranslucencyDerivedCount ??
@@ -851,8 +833,7 @@ export function executeBatchTranslucent(
   }
 }
 
-// NEW-GPU-SORT-PIPELINE Phase 3 (C4-GPU-SORT-PIPELINE-PHASE3) — debug
-// capture shape returned by `getGpuSortConsumeSnapshot()` for the
+// Debug capture returned by `getGpuSortConsumeSnapshot()` for the
 // acceptance probe. Only populated under the debug pragma.
 interface GpuSortDebugCapture {
   validCount: number;
@@ -870,8 +851,8 @@ interface GpuSortDebugCapture {
   consumeEnabled: boolean;
 }
 
-// NEW-GPU-SORT-PIPELINE Phase 3 — opaque tag carried through the
-// dispatcher's readback ring so the decoded (compacted) sorted indices
+// An opaque tag travels through the dispatcher's readback ring so the decoded
+// compacted sorted indices
 // stay paired with the exact compaction map from the dispatch that
 // produced them, even though the ring surfaces the decode 1-2 frames
 // later. `debug` is populated only under the debug pragma.
@@ -905,16 +886,15 @@ export class WebGPUSceneRenderer {
   private _projectionJitterRestore: Float64Array | null = null;
   private _infiniteProjectionJitterRestore: Float64Array | null = null;
 
-  // Batch 226 (NEW-SHADOW-CAST-GPU-CULL-PHASE-2 stats wire-in) —
-  // cached context reference set during `_executeOpaquePass` so
+  // Cache the context during `_executeOpaquePass` so
   // diagnostic surfaces (`getHighDensityCullStats`) can read CSM
   // renderer state without threading the context through every
   // call. The renderer is owned by a single Scene tied to a single
   // Context, so caching here is safe.
   private _lastContext: WebGPUContext | null = null;
 
-  // Slice 5c-B Batch 117 — per-frame scene reference for `_resumeScenePass`
-  // and `_clearDepthStencil` to reach into `scene._view.gBufferFramebuffer`
+  // The per-frame scene reference lets `_resumeScenePass` and
+  // `_clearDepthStencil` reach `scene._view.gBufferFramebuffer`
   // when re-opening the scene-FB render pass with the MRT slot-1
   // attachment. Stashed at the top of `executeCommands` (the only
   // method that's already wired with `config.scene`) and cleared at
@@ -923,93 +903,81 @@ export class WebGPUSceneRenderer {
   public _scene: unknown = null;
 
   // Scene-level rendering resources (lazy-initialized)
-  // Public underscore: shared with the executeCommands slice extracts
-  // (`WebGPUSceneRendererPassRedirect.ts`, Batch 138 — and following
-  // slices in Batches 139-141).
+  // Public underscore shared with the executeCommands helper modules.
   public _sceneFramebuffer: WebGPUSceneFramebuffer | null = null;
-  // C-R8-EDGE-FBO (Batch 44) — MRT framebuffer for the
+  // MRT framebuffer for the
   // CESIUM_3D_TILE_EDGES pass (edge color + id + packed depth + depth-
   // stencil). Lazily allocated on first frame where
-  // `scene._enableEdgeVisibility` is true; stays null otherwise to
+  // `scene._enableEdgeVisibility` is true; it stays null otherwise to
   // avoid paying the allocation cost for scenes that don't use edges.
-  // Public underscore: shared with the extracted 3D-tile-passes
-  // module (`WebGPUSceneRenderer3DTilePasses.ts`, Batch 137).
+  // Public underscore shared with the 3D Tiles pass module.
   public _edgeFramebuffer: WebGPUEdgeFramebuffer | null = null;
-  // C-R8-TRANSLUCENT-TILE-CLASS (Batch 47) — translucent tile
-  // classification. Allocated when a frame produces classification
-  // commands AND has translucent geometry that needs depth capture.
-  // Currently allocates eagerly when scene-init runs because the
+  // Translucent tile classification resources. Needed when a frame produces
+  // classification commands and has translucent geometry that needs depth
+  // capture. They allocate eagerly during scene initialization because the
   // first-cut depth-capture path uses `copyTextureToTexture` from the
   // scene framebuffer — cheap to keep allocated.
-  // Public underscore: shared with executeCommands slice extracts
-  // (Batch 139's per-frame state reset + Batch 140's per-frustum loop).
+  // Public underscore shared with the frame-reset and per-frustum helpers.
   public _translucentTileClassification: WebGPUTranslucentTileClassification | null =
     null;
-  // Public underscore: shared with the extracted translucent-pass
-  // module (`WebGPUSceneRendererTranslucentPass.ts`, Batch 136).
+  // Public underscore shared with the translucent-pass module.
   public _oit: WebGPUOIT | null = null;
-  // FAR-003: the public Scene OIT option remains a request, while this
+  // The public Scene OIT option remains a request, while this
   // renderer-owned safety gate controls whether the currently unsafe WebGPU
   // MRT implementation may allocate or execute. Default false preserves the
   // complete alpha-blend fallback.
   public _webgpuOITEnabled: boolean = false;
   public _lastOITRequested: boolean = false;
   public _webgpuOITActiveThisFrame: boolean = false;
-  // Public underscore: shared with the executeCommands frustum-loop
-  // slice (Batch 140).
+  // Public underscore shared with the executeCommands frustum-loop helper.
   public _globeDepth: WebGPUGlobeDepth | null = null;
-  // Public underscore: shared with the _ensureResources slice (Batch 142).
+  // Public underscore shared with the resource-ensure helper.
   public _depthPlane: WebGPUDepthPlane | null = null;
-  // Public underscore: shared with the post-frustum chain slice
-  // (Batch 141).
+  // Public underscore shared with the post-frustum chain helper.
   public _postProcess: WebGPUPostProcessPipeline | null = null;
-  // Tier 2 debug — fullscreen depth visualization. Lazily constructed
+  // Fullscreen depth visualization, constructed lazily
   // on first request so production frames pay nothing.
-  // Public underscore: shared with the _ensureResources slice (Batch 142).
+  // Public underscore shared with the resource-ensure helper.
   public _debugDepthOverlay: WebGPUDebugDepthOverlay | null = null;
   private _depthOverlayWarningLogged: boolean = false;
-  // Phase 8a Slice 2c (Batch 89) — debug overlay that visualizes the
-  // G-buffer normal texture as a fullscreen blit. Lazy-constructed on
+  // Debug overlay that visualizes the G-buffer normal texture as a fullscreen
+  // blit. Constructed lazily on
   // first invocation; null when `scene.debugShowGBufferNormals` is off.
   public _debugGBufferOverlay: WebGPUDebugGBufferOverlay | null = null;
   private _gbufferProducerWarnedNoDepth: boolean = false;
-  // Tier 2 debug — frustum + command tint overlay (WebGPU equivalent of
+  // Frustum and command tint overlay, equivalent to WebGL's
   // `debugShowFrustums` / `debugShowCommands`). Lazy.
-  // Public underscore: shared with the _ensureResources slice (Batch 142).
+  // Public underscore shared with the resource-ensure helper.
   public _debugFrustumOverlay: WebGPUDebugFrustumOverlay | null = null;
-  // NEW-GEOJSON-WEBGPU-BV-DEBUG-DRAW-PASS — per-command
-  // `debugShowBoundingVolume` red-wireframe pass (WebGPU equivalent of
+  // Per-command `debugShowBoundingVolume` red-wireframe pass, equivalent to
   // SceneDebug's WebGL bounding-volume draw). Lazy; null until the first
   // frame that has a flagged command.
   public _boundingVolumeDebugPass: WebGPUBoundingVolumeDebugPass | null = null;
   // Captured during the frustum loop so the post-process debug overlay
   // can tint pixels by which frustum drew them. Reset each frame.
-  // Public underscore: shared with executeCommands slice extracts
-  // (Batch 139's per-frame state reset + Batch 140's per-frustum loop).
+  // Public underscore shared with the frame-reset and per-frustum helpers.
   public _capturedFrustumRanges: { near: number; far: number }[] = [];
 
-  // C-R8-INVERT-CLASS-STENCIL (Batch 40) — set by `_execute3DTilePasses`
+  // Set by `_execute3DTilePasses`
   // when it successfully runs the CLASSIFICATION_IGNORE_SHOW pass into
   // the invert FBO, meaning the depth-stencil view carries stencil
   // bits the final composite can use to split classified vs
   // unclassified tile pixels. Reset per-frame at the start of the
   // scene render loop; consumed by `_runInvertClassificationComposite`.
-  // Public underscore: shared with the extracted 3D-tile-passes
-  // module (Batch 137). Stencil readiness flag for invert-composite.
+  // Public underscore shared with the 3D Tiles pass module. This is the
+  // stencil-readiness flag for the invert composite.
   public _invertClassStencilReady: boolean = false;
 
-  // C-R8-EDGE-FBO (Batch 44) — set by `_execute3DTilePasses` when the
+  // Set by `_execute3DTilePasses` when the
   // CESIUM_3D_TILE_EDGES pass actually ran into the edge MRT
-  // framebuffer AND produced content. Reset per-frame; the model FS
-  // inline edge stage (Batch 48) reads it via `context._edge*View` to
+  // framebuffer and produced content. Reset per-frame; the model fragment
+  // shader's inline edge stage reads it through `context._edge*View` to
   // decide whether to gate the overlay or skip.
-  // Public underscore: shared with the extracted 3D-tile-passes
-  // module (Batch 137).
+  // Public underscore shared with the 3D Tiles pass module.
   public _edgeTexturesPopulated: boolean = false;
-  // Public underscore: shared with the _ensureResources slice (Batch 142).
+  // Public underscore shared with the resource-ensure helper.
   public _initialized: boolean = false;
-  // Public underscore: shared with the extracted 3D-tile-passes
-  // module (Batch 137).
+  // Public underscore shared with the 3D Tiles pass module.
   public _width: number = 0;
   public _height: number = 0;
   public _tileIndirectStatus: TileIndirectStatus = {
@@ -1020,7 +988,7 @@ export class WebGPUSceneRenderer {
     fallbackReason: "not-requested",
   };
   public _tileIndirectStatusFrame: number = -1;
-  // Audit C.11 (Batch 132) -- per-frame viewport derived from
+  // The per-frame viewport is derived from
   // `passState.viewport` when present, else the full canvas. Used by
   // every `setViewport` / `setScissorRect` call in the scene-FB
   // render-pass setup so split-screen / sub-viewport callers see
@@ -1032,43 +1000,41 @@ export class WebGPUSceneRenderer {
   public _viewportY: number = 0;
   public _viewportWidth: number = 0;
   public _viewportHeight: number = 0;
-  // Batch 109 — track last-applied HDR mode so a runtime toggle of
+  // Track the last-applied HDR mode so a runtime toggle of
   // `scene.useHDR` triggers a framebuffer recreate even when the
   // window dimensions don't change. Initial value `null` so the
   // first `update()` call always reaches `_sceneFramebuffer.update`
-  // regardless of the initial HDR setting. See Batch 110 for the
-  // companion pipeline-cache invalidation that completes the
-  // runtime toggle (without it, pipelines have the old canvas
+  // regardless of the initial HDR setting. Pipeline-cache invalidation is
+  // required with the recreate; without it, pipelines have the old canvas
   // format baked in and produce validation warnings against the
   // recreated rgba16float scene FB).
-  // Public underscore: shared with the _ensureResources slice (Batch 142).
+  // Public underscore shared with the resource-ensure helper.
   public _lastHDR: boolean | null = null;
 
-  // Slice 5d Batch 151 — Forward+ clustered lighting dispatcher.
+  // Forward+ clustered-lighting dispatcher.
   // Lazily constructed on first use (the device isn't available at
   // SceneRenderer construction time). Owns the cluster-bounds +
   // cluster-assign compute renderers + the params uniform; consumer
   // pipelines bind its public buffers at @group(4) via the chunk in
   // ClusteredLighting.wgsl.
   //
-  // Inert when scene.clusteredLightingEnabled === false OR when zero
+  // Inert when scene.clusteredLightingEnabled === false or when zero
   // lights are configured — the dispatcher returns activeLightCount=0
   // and the consumer FS chunk early-outs without touching the storage
   // buffers.
-  // Batch 310 — public-underscore (was `private`) so the extracted
-  // WebGPUSceneRendererClusteredLighting slice can lazily construct +
-  // read it through the `ClusteredLightingHost` surface, matching the
-  // cross-module access convention used by the other SceneRenderer
-  // slice hosts (e.g. `_postProcess`, `_sceneFramebuffer`).
+  // Public underscore so `WebGPUSceneRendererClusteredLighting` can construct
+  // and read it through the `ClusteredLightingHost` surface, matching the
+  // other scene-renderer helper hosts such as `_postProcess` and
+  // `_sceneFramebuffer`.
   public _clusteredLightingDispatcher: WebGPUClusteredLightingDispatcher | null =
     null;
-  // Session 65 Batch 25 — track previous MSAA sample count so the
+  // Track the previous MSAA sample count so the
   // scene framebuffer recreate path AND the render bundle cache
   // invalidation both fire when `scene.msaaSamples` changes. The
   // bridge in `prepareFrame` writes `context._msaaSamples`; that
   // value alone doesn't trigger a recreate because the framebuffer
   // already exists at the old sample count.
-  // Session 65 Batch 36 — initial value `1` (not null) so the first
+  // The initial value is `1`, not null, so the first
   // frame after the bridge re-enable correctly detects the
   // 1→4 transition and triggers framebuffer recreate + bundle
   // invalidation. A null sentinel would skip the change detection
@@ -1077,8 +1043,8 @@ export class WebGPUSceneRenderer {
   private _depthPlaneWarned: boolean = false;
 
   // ── Debug log-once guards (pragma-stripped in production) ──
-  // `_renderPassRedirectLogged` is `public` so the extracted
-  // render-pass-redirect module (Batch 138) can read/write it via the
+  // `_renderPassRedirectLogged` is public so the render-pass-redirect module
+  // can read and write it through the
   // host interface. Production builds strip the declaration along
   // with the pragma block; the new module's reads/writes are also
   // inside their own pragma blocks, so production never touches the
@@ -1088,8 +1054,8 @@ export class WebGPUSceneRenderer {
   private _debugLogged: boolean = false;
   private _postInitDebugLogged: boolean = false;
   public _renderPassRedirectLogged: boolean = false;
-  // `public` so the post-frustum chain slice (Batch 141) can read/
-  // write through the host interface. Field declaration stays inside
+  // Public so the post-frustum chain can read and write through the host
+  // interface. The field declaration stays inside
   // the surrounding pragma block.
   public _ppDebugLogged: boolean = false;
   private _globeValidationDone: boolean = false;
@@ -1099,50 +1065,43 @@ export class WebGPUSceneRenderer {
   private _globePassLastLog: number = 0;
   //>>includeEnd('debug');
 
-  // ── Runtime state that was previously ad-hoc on `this as any` ──
-  // Public underscore: shared with the frustum-loop slice (Batch 140).
+  // Runtime state shared with the frustum-loop helper through public
+  // underscore fields.
   public _currentFrustumIndex: number = 0;
-  // Public underscore: shared with the extracted translucent-pass
-  // module (`WebGPUSceneRendererTranslucentPass.ts`, Batch 136).
+  // Public underscore shared with the translucent-pass module.
   public _deferredOITSplats: {
     commands: CesiumAnyDrawCommand[];
     count: number;
   } | null = null;
-  // C7-SPLAT-DEPTH-COMPOSE — opt-in GS-WSR splat-to-OIT deferral. DEFAULT
-  // FALSE = WebGL parity. WebGL executes GAUSSIAN_SPLATS inline in the scene
+  // Opt-in Gaussian-splat weighted-sum-rendering deferral to OIT. It defaults
+  // to false for WebGL parity. WebGL executes Gaussian splats inline in the scene
   // pass (`GaussianSplatPrimitive.js` pushes its DrawCommand — depthTest on,
-  // depthMask off, PRE_MULTIPLIED_ALPHA blend — into `commandList`; the
-  // GAUSSIAN_SPLATS pass draws it right after OPAQUE and never routes it
-  // through OIT). The fork's GS-WSR deferral (Batch 136-era) routed splats
-  // that carried an `_oitPipeline` into the translucent OIT accumulation pass
-  // instead; but `executeTranslucentPass` early-returns when the frame has
-  // ZERO TRANSLUCENT commands (the common bare-globe + splat scene), so the
-  // deferred splats were silently DROPPED every frame — the splat vanished,
-  // presenting as "occluded by the opaque globe". Gating the deferral behind
-  // this default-false flag restores inline WebGL-parity execution; the
-  // translucent pass also carries a never-drop seatbelt for the armed path.
+  // depthMask off, premultiplied-alpha blend — into `commandList`; the splat
+  // pass draws it right after opaque and never routes it through OIT). Deferral
+  // sends splats carrying an `_oitPipeline` to translucent OIT accumulation.
+  // `executeTranslucentPass` returns early when a frame has no translucent
+  // commands, which is common for a bare globe with splats, so the armed path
+  // also carries a never-drop seatbelt that executes deferred splats.
   public _splatOITDeferral: boolean = false;
-  // NEW-MULTIFRUSTUM-CULL-RESULTS (Batch 220) — per-frustum readback
-  // slot for the opaque pass. Each frustum dispatches against its own
+  // Per-frustum opaque-pass readback slots. Each frustum dispatches against its own
   // culler instance and stores its readback under its own frustum
   // index, so multi-frustum scenes (typical with log-depth) get full
-  // GPU cull benefit instead of the previous "last-frustum-wins"
-  // limitation.
+  // GPU cull benefit without sibling frustums overwriting one another.
   private _lastCullResultsByFrustum: Map<number, GPUCullResults> = new Map();
-  // Wave-0 P0 fix — per-frustum readback in-flight guard. The GPUCuller's
-  // readback staging buffer is mapped (mapAsync) while `readResults`
+  // Guard each frustum's in-flight readback. The GPU culler's staging buffer is
+  // mapped with `mapAsync` while `readResults`
   // resolves; re-running `prepareReadback` (copyBufferToBuffer into that
   // staging buffer) on the next frame while it is still mapped raises
   // "[Buffer] used in submit while mapped", invalidating the whole command
   // buffer → dense-scene black screen. Mirrors `_hiZReadbackInFlight`.
   private _gpuCullReadbackInFlight: Set<number> = new Set();
-  // Batch 216 — separate readback slot for the translucent pass so
+  // A separate readback slot for the translucent pass ensures
   // its readback (keyed on the translucent command count) doesn't
   // race / mismatch with the opaque pass's. Same 1-frame latency
   // contract.
   private _lastCullResultsTranslucent: GPUCullResults | null = null;
   private _gpuCullFilterPoolTranslucent: CesiumAnyDrawCommand[] = [];
-  // Batch 213 (cosmetic) — reusable filter output array for
+  // Reusable filter output array for
   // `gpuCullCommands`. Allocating a fresh `[]` every frame at high
   // density (10K+ commands) creates GC pressure; the consumer
   // (`_executeOpaquePass`) reads the result synchronously and
@@ -1154,7 +1113,7 @@ export class WebGPUSceneRenderer {
   private _gpuCullFilterPool: CesiumAnyDrawCommand[] = [];
   private _gpuCullingRequestedMode: "auto" | "always" | "never" = "never";
 
-  // NEW-HIZ-CONSUME (Batch 210) — HiZ occlusion threshold-gated state.
+  // Threshold-gated HiZ occlusion state.
   //
   // Activates only when the opaque batch reaches `_hiZThreshold` (much
   // higher than the gpuCuller threshold of 256, since HiZ pays for an
@@ -1172,42 +1131,41 @@ export class WebGPUSceneRenderer {
   private static readonly HI_Z_THRESHOLD = 2000;
   private static readonly HI_Z_THRESHOLD_HI = 2400;
   private static readonly HI_Z_THRESHOLD_LO = 1600;
-  // FAR-003 — renderer-owned consumer activation flag, default OFF. Keeping
+  // Renderer-owned consumer activation flag, disabled by default. Keeping
   // this per instance prevents one scene's diagnostic toggle from changing
   // another scene/context and makes visibility consumption an explicit opt-in.
   //
   // The Hi-Z pyramid build + OcclusionTest dispatch + async readback run
   // whenever the density gate is active; when this flag is true the visibility
-  // result is allowed to DROP occluded commands.
+  // result is allowed to drop occluded commands.
   //
-  // **C2-21 root cause (the real blocker, finally found):** the pyramid was
-  // built from `context.depthOnlyTextureView` — the context's DEFAULT depth
-  // texture, which the WebGPU scene NEVER writes (it renders into
-  // `_sceneFramebuffer`, post-process is mandatory). So mip 0 read an
-  // unwritten, clear=1.0 depth → the whole pyramid was FAR → `sphereNearZ >
-  // maxHiZ` could never hold → hitRatio pinned to 0 no matter how correct the
-  // OcclusionTest math was. The earlier "two correctness gaps" (mip off-by-one,
-  // 4-corner background bleed) were real but only ever cause UNDER-culling
-  // (overhang-sky → maxHiZ=1.0 → stays VISIBLE) — they are conservative and
-  // cannot produce a false-cull. `_dispatchHiZForNextFrame` now sources
+  // The pyramid must not use `context.depthOnlyTextureView`: the WebGPU scene
+  // never writes that default depth texture because post-process rendering
+  // targets `_sceneFramebuffer`. Reading its clear value of 1.0 would make the
+  // whole pyramid all-far, so `sphereNearZ > maxHiZ` could never hold and the
+  // hit ratio would stay at zero. A mip off-by-one or four-corner background
+  // bleed can only under-cull because sky overhang produces maxHiZ=1.0; those
+  // cases remain conservative and cannot hide visible geometry.
+  // `_dispatchHiZForNextFrame` therefore sources
   // `_sceneFramebuffer.depthSampleableView` (the same MSAA-resolved
   // sampleable depth velocity/AO/DoF bind), and the dispatcher picks the
   // texture_2d<f32> mip-0 pipeline for the r16float MSAA-resolved view vs the
   // texture_depth_2d pipeline for single-sample.
   //
-  // **Verified (`probe-fork41-occlusion-v2.mjs`):** an occludable scene (a
+  // `probe-fork41-occlusion-v2.mjs` measures an occludable scene with a
   // wide near "lid" over 2500 cubes it fully hides) culls the cubes
   // (hitRatio 1.0, hiZFiltered 397/992897) and the consume-ON image is
-  // 0.007% identical to GPU-cull-forced-off — the dropped cubes were hidden
-  // anyway, so zero visible change. The sky-overhanging tall-box scene
-  // (`probe-fork41-occlusion.mjs`) confirms no false-cull. Toggle for A/B via
+  // 0.007% different from GPU-cull-forced-off; the dropped cubes are hidden,
+  // so the visible result is unchanged. The sky-overhanging tall-box scene in
+  // `probe-fork41-occlusion.mjs` checks that the conservative case does not
+  // false-cull. Toggle the consumer for A/B comparisons through
   // `setHiZConsumeEnabled` / `CesiumDebug.hiZConsume`.
   private _hiZConsumeEnabled: boolean = false;
 
   /**
-   * FORK-41 / C2-21 — enable/disable the consumer-side application of Hi-Z
-   * occlusion visibility (dropping occluded commands). FAR-003 keeps this OFF
-   * until result identity is tied to the producing frame/frustum/command list.
+   * Enable or disable consumer-side application of Hi-Z occlusion visibility.
+   * It remains disabled until result identity is tied to the producing frame,
+   * frustum, and command list.
    * The build/dispatch/readback can still run in an explicitly requested
    * producer mode; this toggle only controls result consumption.
    */
@@ -1215,19 +1173,18 @@ export class WebGPUSceneRenderer {
     this._hiZConsumeEnabled = value === true;
   }
 
-  /** FORK-41 — whether occluded commands are actually dropped. */
+  /** Whether occluded commands are actually dropped. */
   get hiZConsumeEnabled(): boolean {
     return this._hiZConsumeEnabled;
   }
 
   /**
-   * NS-GPU-SORT-NO-SCENE-WIRING — set the consumer-side activation mode
-   * for the GPU-produced front-to-back sort order. `"never"` is the FAR-003
-   * contained default. `"auto"` applies whenever the opaque-command-count
+   * Set the consumer-side activation mode for the GPU-produced front-to-back
+   * sort order. `"never"` is the contained default. `"auto"` applies whenever
+   * the opaque-command-count
    * gate is active and `"always"` force-applies; `"never"` is the off-gate (the
-   * keygen + bitonic sort + readback still run when the density gate is
-   * active — stats surface via `highDensityCull()` — but the permutation
-   * is never applied, byte-identical to the pre-heuristic default).
+   * key generation, bitonic sort, readback, and permutation consumer are all
+   * disabled, so the ordinary CPU ordering path remains unchanged).
    * Reordering opaque commands is output-invariant, so every mode is
    * byte-neutral for the final image; the mode only trades early-Z cost.
    */
@@ -1237,33 +1194,32 @@ export class WebGPUSceneRenderer {
     }
   }
 
-  /** NS-GPU-SORT-NO-SCENE-WIRING — current consumer activation mode. */
+  /** Current GPU-sort consumer activation mode. */
   get gpuSortConsumeMode(): "auto" | "always" | "never" {
     return this._gpuSortConsumeMode;
   }
 
   /**
-   * NEW-GPU-SORT-PIPELINE Phase 3 (C4-GPU-SORT-PIPELINE-PHASE3) —
-   * back-compat boolean toggle for the consumer. `true` maps to the
+   * Compatibility boolean for the GPU-sort consumer. `true` maps to the
    * `"always"` mode (force-apply); `false` maps to `"never"` (the
-   * off-gate). New callers should prefer `setGpuSortConsumeMode` so the
-   * `"auto"` production heuristic stays reachable — a boolean can't
-   * express it. Used by `CesiumDebug.gpuSortConsume` for A/B probes.
+   * off-gate). Callers that need the production `"auto"` heuristic use
+   * `setGpuSortConsumeMode`; a boolean cannot express it. Used by
+   * `CesiumDebug.gpuSortConsume` for comparison probes.
    */
   setGpuSortConsumeEnabled(value: boolean): void {
     this._gpuSortConsumeMode = value === true ? "always" : "never";
   }
 
   /**
-   * Phase 3 — whether the GPU sort order would be applied when the density
-   * gate is active (i.e. mode is not `"never"`). In `"auto"`/`"always"`
+   * Whether the GPU sort order is applied while the density gate is active,
+   * meaning the mode is not `"never"`. In `"auto"` or `"always"`
    * the consumer applies; in `"never"` it does not.
    */
   get gpuSortConsumeEnabled(): boolean {
     return this._gpuSortConsumeMode !== "never";
   }
 
-  /** Internal FAR-003 comparison gate for the contained WebGPU OIT path. */
+  /** Internal comparison gate for the contained WebGPU OIT path. */
   setWebGPUOITEnabled(value: boolean): void {
     this._webgpuOITEnabled = value === true;
   }
@@ -1272,9 +1228,9 @@ export class WebGPUSceneRenderer {
   get webgpuOITEnabled(): boolean {
     return this._webgpuOITEnabled;
   }
-  // B214-N1 (Batch 219) — per-frustum gate state.
+  // Per-frustum gate state.
   private _hiZActiveByFrustum: Map<number, boolean> = new Map();
-  // Batch 217 — HiZ effectiveness counters.
+  // HiZ effectiveness counters.
   private _hiZDispatchCount: number = 0;
   private _hiZLastInput: number = 0;
   private _hiZLastFiltered: number = 0;
@@ -1297,21 +1253,14 @@ export class WebGPUSceneRenderer {
   // duplicate readback calls per frame.
   private _hiZReadbackInFlight: boolean = false;
   private _hiZConsumedThisFrame: boolean = false;
-  // Batch 213 (cosmetic) — reusable filter output for
+  // Reusable filter output for
   // `_filterByHiZVisibility`. Same lifetime model as
   // `_gpuCullFilterPool` above.
   private _hiZFilterPool: CesiumAnyDrawCommand[] = [];
 
-  // NEW-GPUSORTKEYS-CONSUME (Batch 211) — threshold-gated GPU sort-key
-  // generation. Phase 1 wire-in: produces packed 64-bit sort keys
-  // (sortKeysHigh + sortKeysLow + commandIndices) on the GPU when the
-  // command count justifies the dispatch.
-  //
-  // **Phase 2 (deferred):** the actual GPU sort over the keys is a
-  // separate compute pipeline (bitonic / radix on u64) that doesn't
-  // exist yet. Until that lands, the keys are generated but the
-  // commands are still ordered by upstream JS sort. Tracked as
-  // NEW-GPU-SORT-PIPELINE in DEFERRED_WORK.md.
+  // Threshold-gated GPU sort-key generation. It produces packed 64-bit keys
+  // (`sortKeysHigh`, `sortKeysLow`, and command indices), feeds the bitonic
+  // sort pipeline, and queues the tagged readback consumed below.
   //
   // Threshold is intentionally high (5000) — JS sort is faster than
   // dispatch+readback round-trip below this density. SOA scratch is
@@ -1319,7 +1268,7 @@ export class WebGPUSceneRenderer {
   private static readonly GPU_SORT_KEYS_THRESHOLD = 5000;
   private static readonly GPU_SORT_KEYS_THRESHOLD_HI = 6000;
   private static readonly GPU_SORT_KEYS_THRESHOLD_LO = 4000;
-  // B214-N1 (Batch 219) — per-frustum gate state.
+  // Per-frustum gate state.
   private _gpuSortActiveByFrustum: Map<number, boolean> = new Map();
   private _sortKeysAllocatedFor: number = 0;
   private _sortKeysSoA: {
@@ -1330,14 +1279,13 @@ export class WebGPUSceneRenderer {
     capacity: number;
   } | null = null;
   private _sortKeysDispatches: number = 0;
-  // NEW-GPU-SORT-PIPELINE — sorted-indices readback state.
+  // Sorted-indices readback state.
   // `_lastSortedIndices` is the most-recent decoded readback; the
   // consumer reorders the opaque command list using it (1-2 frame
   // latency via the dispatcher's deferred-readback ring, which handles
   // map-vs-submit races internally — no consumer-level in-flight flag).
-  // NEW-GPU-SORT-PIPELINE Phase 3 (C4-GPU-SORT-PIPELINE-PHASE3) — the
-  // readback carries the compaction map so the permutation indexes the
-  // ORIGINAL command array, not the compacted SOA. Canonical-distance
+  // The readback carries the compaction map so the permutation indexes the
+  // original command array, not the compacted SOA. Canonical-distance
   // dispatches require every command to be encodable, so this map is identity
   // and `skipped` is empty today; retaining both fields keeps delayed readback
   // tags self-describing and backwards-compatible with existing probes.
@@ -1361,26 +1309,26 @@ export class WebGPUSceneRenderer {
     compactedToOriginal: Uint32Array;
     skipped: number[];
   } | null = null;
-  // NS-GPU-SORT-NO-SCENE-WIRING (2026-07-05) — consumer-side activation
-  // MODE. Three states, mirroring `Scene.gpuCullingHint` semantics:
+  // Consumer-side activation has three modes matching
+  // `Scene.gpuCullingHint` semantics:
   //   - "auto":  explicit threshold-characterization mode. The consumer applies
   //              the GPU front-to-back permutation whenever the per-frustum
   //              opaque-command-count gate (`gpuSortActive`, hysteresis
   //              GPU_SORT_KEYS_THRESHOLD_HI/LO) is active. This is the
-  //              "live path" — the count threshold IS the heuristic, so no
+  //              live path; the count threshold is the heuristic, so no
   //              extra flag is needed for a dense scene to benefit.
-  //   - "always": force-apply whenever a readback exists (debug/A-B).
-  //   - "never" (DEFAULT): force-off; neither the sort producer nor consumer
+  //   - "always": force-apply whenever a readback exists for comparisons.
+  //   - "never" (default): force-off; neither the sort producer nor consumer
   //              runs. This avoids ending the render pass, uploading keys,
   //              sorting, and mapping a readback whose result cannot be used.
   // Reordering opaque commands is output-invariant (depth test resolves
   // overlap) so every mode is byte-neutral for the final image; the mode
-  // only trades early-Z efficiency. Precedent: `_hiZConsumeEnabled` (a
-  // sibling consumer) is also explicitly opt-in while identity hazards remain.
+  // only trades early-Z efficiency. `_hiZConsumeEnabled`, a sibling consumer,
+  // is also explicitly opt-in while identity hazards remain.
   // Toggle via `setGpuSortConsumeMode` / `setGpuSortConsumeEnabled` /
   // `CesiumDebug.gpuSortConsume`.
   private _gpuSortConsumeMode: "auto" | "always" | "never" = "never";
-  // Phase 3 diagnostic counters (surfaced via getHighDensityCullStats).
+  // Consumer diagnostic counters surfaced through `getHighDensityCullStats`.
   private _sortConsumeApplied: number = 0;
   private _sortConsumeSkipped: number = 0;
   private _sortConsumeAppliedThisFrame: boolean = false;
@@ -1389,13 +1337,13 @@ export class WebGPUSceneRenderer {
   // comparator. Populated only under the debug pragma.
   private _gpuSortDebugCapture: GpuSortDebugCapture | null = null;
 
-  // C-R12 (Batch 33) — Tracks the device-invalidation unsubscribe so
+  // Track the device-invalidation unsubscribe so
   // re-calls to `_ensureResources` don't stack duplicate subscribers.
-  // Public underscore: shared with the _ensureResources slice (Batch 142).
+  // Public underscore shared with the resource-ensure helper.
   public _deviceInvalidationUnsub: (() => void) | null = null;
 
-  // R-7a (FUTURE_RESEARCH 2026-05-01) — CPU-side per-pass recording-cost
-  // profiler. Disabled by default; toggle via `setCpuPassProfiling(true)`
+  // CPU-side per-pass recording-cost profiler. Disabled by default;
+  // toggle via `setCpuPassProfiling(true)`
   // (or `CesiumDebug.cpuPassCost(true)`). Shared with the frustum-loop
   // slice via the host interface so per-frustum sub-passes accumulate
   // into per-frame buckets.
@@ -1403,19 +1351,19 @@ export class WebGPUSceneRenderer {
     false,
   );
 
-  // --- Lazy initialization ---
+  // Lazy initialization.
 
   /**
-   * Batch 110 — early-frame hook that recreates the scene framebuffer
-   * + bumps the scene-pipeline-format generation BEFORE primitives'
+   * Early-frame hook that recreates the scene framebuffer and bumps the
+   * scene-pipeline-format generation before primitives'
    * update methods run. Called from `Scene.render()` between
    * `context.beginFrame()` and `scene.updateEnvironment()`.
    *
    * Without this hook, the framebuffer recreation lives inside
-   * `_ensureResources` which runs from `executeCommands` AFTER
+   * `_ensureResources` which runs from `executeCommands` after
    * primitives have already populated the command list. On the
    * runtime HDR toggle frame, primitives like SkyAtmosphere would
-   * emit commands referencing the OLD-format pipeline (because the
+   * emit commands referencing the old-format pipeline because the
    * generation hadn't bumped yet), then `_ensureResources` would
    * bump the generation too late, producing one transient
    * pipeline-vs-attachment validation warning per toggle direction.
@@ -1440,32 +1388,28 @@ export class WebGPUSceneRenderer {
       return;
     }
 
-    // Session 65 Batch 36 — MSAA bridge re-enabled after the
-    // Batches 21+25+28+32+33+34+35 sweep made the downstream
-    // pipelines MSAA-aware (SkyAtmosphere, Sun, Moon, CubeMapPanorama,
+    // The MSAA bridge is enabled because every downstream scene-framebuffer
+    // pipeline is sample-count-aware (SkyAtmosphere, Sun, Moon, CubeMapPanorama,
     // DepthPlane, Globe terrain, Model PBR + velocity + classification,
     // OIT composite, InvertClassification, TranslucentTileClassification,
     // GlobeDepth — every path that targets the scene FB now reads
     // `context._msaaSamples` and bakes the matching `multisample.count`
     // into its pipeline).
     //
-    // Bridge: `scene.msaaSamples` (default 4 from `Scene.js:405`)
+    // `scene.msaaSamples` (default 4 from `Scene.js:405`) is
     // capped at 4 and propagated into `context._msaaSamples`. Triggers
-    // - Scene FB recreate at the new sample count (Batch 25
-    //   `_lastMsaaSamples` drift detection)
-    // - Render bundle cache wipe (Batch 25 `msaaChanged` branch)
+    // - Scene framebuffer recreation at the new sample count through
+    //   `_lastMsaaSamples` drift detection
+    // - Render bundle cache invalidation through the `msaaChanged` branch
     // - `_scenePipelineFormatGeneration` bump → every generation-keyed
     //   pipeline cache (Globe, Model, OIT, InvertClassification, etc.)
     //   refreshes on the next frame
     //
-    // Kill switch: set `scene.msaaSamples = 1` to fall back to no-AA.
+    // Setting `scene.msaaSamples = 1` selects the non-multisampled path.
     //
-    // Batch 234 (NEW-COLLECTIONS-TAA-GATE-DORMANT) — TAA forces the
-    // effective sample count to 1, implementing the contract documented
+    // TAA forces the effective sample count to 1, implementing the contract documented
     // on `Scene.taaEnabled` ("Disables MSAA when active — the two are
-    // incompatible"). The contract was never enforced before because the
-    // velocity gates never fired (frameState.taaEnabled was unpublished),
-    // so the incompatibility never surfaced: the velocity pass pairs the
+    // incompatible"). The velocity pass pairs the
     // single-sample rg16float velocity texture with the scene depth
     // attachment, and a 4x multisampled depth in that pass descriptor is
     // a validation error that kills the whole pass. `scene.msaaSamples`
@@ -1493,10 +1437,10 @@ export class WebGPUSceneRenderer {
     const needsResize = width !== this._width || height !== this._height;
     const hdr = config.useHDR ?? false;
     const hdrChanged = this._lastHDR !== null && this._lastHDR !== hdr;
-    // Session 65 Batch 25 — detect MSAA sample-count drift. When the
+    // Detect MSAA sample-count drift. When the
     // bridge above writes `context._msaaSamples` from
     // `scene.msaaSamples`, the framebuffer needs recreation at the
-    // new sample count AND the render bundle cache must be wiped
+    // new sample count and the render bundle cache must be invalidated
     // (bundles bake their pipeline's sample count at record time).
     const msaaChanged = this._lastMsaaSamples !== requestedSamples;
     const needsRecreate =
@@ -1520,7 +1464,7 @@ export class WebGPUSceneRenderer {
         canvasFormat,
       );
       context._refractionSceneView = null;
-      // C10-03 — resize / HDR / MSAA flip destroys + recreates the resolve
+      // Resize, HDR, or MSAA changes recreate the resolve
       // texture; force the next consumer to resolve into the fresh target so
       // post-process can never sample an uninitialized resolve (Trap 6).
       context._sceneColorResolvePending = true;
@@ -1534,10 +1478,10 @@ export class WebGPUSceneRenderer {
       context._sceneColorFormat !== previousSceneColorFormat;
     if (colorFormatChanged || msaaChanged) {
       context._scenePipelineFormatGeneration += 1;
-      // AUDIT_2026_05_02 B.20 — every cached `GPURenderBundle` bakes its
-      // pipeline's color attachment formats AND sample count. When
+      // Every cached `GPURenderBundle` bakes its pipeline's color attachment
+      // formats and sample count. When
       // either the scene color format flips (HDR toggle) or the MSAA
-      // sample count changes (Session 65 Batch 25), bundles that
+      // sample count changes, bundles that
       // reference the old pipeline are stale and produce validation
       // errors when replayed against the new pass encoder. Wipe the
       // bundle cache here. The shared
@@ -1553,9 +1497,8 @@ export class WebGPUSceneRenderer {
    * Called once per frame before the frustum loop.
    */
   private _ensureResources(config: WebGPURenderFrameConfig): void {
-    // Body extracted to `WebGPUSceneRendererEnsureResources.ts` in
-    // Batch 142. The wrapper stays so `executeCommands` keeps calling
-    // it as `this._ensureResources(config)`.
+    // Keep this wrapper because `executeCommands` calls the resource-ensure
+    // helper through `this._ensureResources(config)`.
     ensureResources(this, config);
   }
   executeCommands(config: WebGPURenderFrameConfig): void {
@@ -1567,13 +1510,13 @@ export class WebGPUSceneRenderer {
       (scene as { gpuCullingHint?: "auto" | "always" | "never" })
         .gpuCullingHint ?? "never";
 
-    // Slice 5c-B Batch 117 — stash scene for `_resumeScenePass` and
+    // Stash the scene for `_resumeScenePass` and
     // `_clearDepthStencil` so they can read `scene._view.gBufferFramebuffer`
     // when MRT mode is on. Cleared in the picking-early-return below
     // and at the natural end of this method.
     this._scene = scene;
 
-    // Audit C.11 (Batch 132) -- snapshot the requested viewport once
+    // Snapshot the requested viewport once
     // per frame. `passState.viewport` is the BoundingRectangle the
     // caller (Scene / pick / OIT) requested; falls back to full canvas
     // when undefined. Bound + clamp to canvas so a stale rectangle
@@ -1586,7 +1529,7 @@ export class WebGPUSceneRenderer {
     if (vp) {
       this._viewportX = Math.max(0, vp.x | 0);
       this._viewportY = Math.max(0, vp.y | 0);
-      // Audit re-review (Batch 134) -- Math.max(0, ...) outer clamp
+      // The `Math.max(0, ...)` outer clamp
       // prevents negative width/height when a stale split-screen rect
       // has its origin past the just-shrunk canvas. Negative
       // dimensions trip a WebGPU validation error and drop the frame;
@@ -1617,7 +1560,7 @@ export class WebGPUSceneRenderer {
         this._cpuPassProfiler.endPass("pick");
         this._cpuPassProfiler.endFrame();
       }
-      // C-R4-GLTF-KHR-TRANSMISSION (Batch 107) — pick frames also call
+      // Pick frames also call
       // `modelFr.update`, which sets `_sceneHasTransmission` when a
       // transmissive primitive is in view. The pick branch doesn't run
       // the regular capture step and exits before the end-of-frame
@@ -1625,7 +1568,7 @@ export class WebGPUSceneRenderer {
       // trigger an unnecessary capture there. Reset here to keep the
       // flag scoped to the frame that set it.
       context._sceneHasTransmission = false;
-      // Slice 5c-B Batch 117 — clear stashed scene reference on pick
+      // Clear the stashed scene reference on a pick
       // early-return so a regular frame that follows doesn't see a
       // stale scene ref if it somehow skips the executeCommands entry.
       this._scene = null;
@@ -1715,7 +1658,7 @@ export class WebGPUSceneRenderer {
 
     // Performance infrastructure: begin frame for render bundles, indirect draws, profiling
     //
-    // BUG-3 — in the SCENE2D two-pass wrap, `beginFrame` runs only on the
+    // In the Scene 2D two-pass wrap, `beginFrame` runs only on the
     // first pass (`sceneFbLoad` false) and `endFrame` only on the last pass
     // (`deferComposite` false), so the begin/end pair stays balanced across
     // the two `executeCommands` calls that render one frame.
@@ -1724,64 +1667,52 @@ export class WebGPUSceneRenderer {
       perfManager.beginFrame();
     }
 
-    // Slice 5d Batch 151 — dispatch clustered lighting compute passes
-    // once per frame, BEFORE any material draws. The dispatcher
+    // Dispatch clustered-lighting compute passes once per frame before any
+    // material draws. The dispatcher
     // internally checks scene.clusteredLightingEnabled + light count
     // and skips both compute passes when disabled or empty. Output
     // storage buffers + params uniform are bound by consumer
-    // pipelines at @group(4) via the chunk in ClusteredLighting.wgsl
-    // (Batch 149). Inert today — Batch 152+ wires actual consumers.
+    // pipelines at @group(4) through the chunk in ClusteredLighting.wgsl.
     this._dispatchClusteredLighting(config);
 
-    // --- Shadow cast pass ---
-    // NOT dispatched here. `SceneRenderer.executeShadowMapCastCommands` is the
-    // canonical, backend-neutral site: it is the ONLY place that populates
+    // Shadow casting is not dispatched here.
+    // `SceneRenderer.executeShadowMapCastCommands` is the canonical,
+    // backend-neutral site and the only place that populates
     // `ShadowMap.passes[j].commandList` (light-frustum + per-cascade culling of
     // `shadowState.casterCommands`), and it delegates to
     // `context.executeShadowMapCastCommands` immediately afterwards, before
     // `executeCommands` is ever reached.
     //
-    // NEW-WEBGPU-GLOBE-SUN-SHADOW-RECEIVE-DEAD: this used to call the context
-    // dispatch a SECOND time. `WebGPUContext.executeShadowMapCastCommands`
-    // empties the per-pass command lists when it finishes, so the second entry
-    // always collected zero casters — and once Batch 775 gave the caster-less
-    // branch a transition clear, that second entry wiped the depth the first
-    // entry had just written, on the same command encoder, before the color
-    // pass sampled it. Every WebGPU receiver then read an all-far depth map and
-    // reported "fully lit".
+    // `WebGPUContext.executeShadowMapCastCommands` empties the per-pass command
+    // lists when it finishes. Dispatching again here would collect no casters,
+    // take the caster-less transition-clear branch, and wipe the depth written
+    // by the canonical dispatch on the same command encoder before the color
+    // pass samples it. Every receiver would then read an all-far depth map and
+    // report fully lit.
     //
     // The `shadow` CPU-pass-profiler bucket goes with it: the dispatch no longer
-    // happens inside the renderer's frame. `shouldClearShadowCastTarget` keeps
-    // the wipe impossible even if some future path re-enters the dispatch.
+    // happens inside the renderer's frame. `shouldClearShadowCastTarget` also
+    // prevents a caster-less re-entry from wiping same-frame content.
 
-    // Opaque near offset to avoid tearing between adjacent frustums
+    // Bias the opaque near plane to avoid cracks between adjacent frustums.
     const opaqueFrustumNearOffset: number =
       scene.opaqueFrustumNearOffset ?? 0.9999;
 
-    // ── Render-pass redirect (canvas → scene framebuffer) ──
-    // Body extracted to `WebGPUSceneRendererPassRedirect.ts` in
-    // Batch 138 (Slice A of the executeCommands decomposition plan,
-    // see `migration_doc/BATCH_138_PLAN_EXECUTE_COMMANDS_SLICE_PLAN.md`).
+    // Redirect rendering from the canvas to the scene framebuffer.
     setupSceneFramebufferRenderPass(this, context, config);
 
-    // Per-frame state reset extracted to `WebGPUSceneRendererFrameReset.ts`
-    // in Batch 139 (Slice B of the executeCommands decomposition plan).
+    // Reset per-frame state before entering the frustum loop.
     resetPerFrameState(this, context);
 
-    // Multi-frustum dispatch loop extracted to
-    // `WebGPUSceneRendererFrustumLoop.ts` in Batch 140 (Slice C of
-    // the executeCommands decomposition plan). The 2D-jitter setup
-    // is folded into the helper since it only feeds the loop.
+    // The multi-frustum helper also owns 2D jitter because the jitter feeds
+    // only that loop.
     this._beginDepthPlanePass(config, numFrustums);
     executeFrustumLoop(this, config, opaqueFrustumNearOffset);
 
-    // Post-frustum chain (overlay + depth plane + env effects +
-    // invert composite + velocity pass + post-process + frame
-    // teardown) extracted to `WebGPUSceneRendererPostFrustumChain.ts`
-    // in Batch 141 (Slice D — final slice of the executeCommands
-    // decomposition).
+    // The post-frustum chain owns overlays, the depth plane, environmental
+    // effects, the invert composite, velocity, post-process, and teardown.
     //
-    // BUG-3 — on the FIRST half of the SCENE2D wrap (`deferComposite`), skip
+    // On the first half of the Scene 2D wrap (`deferComposite`), skip
     // the chain entirely: the half just accumulates its draws into the scene
     // framebuffer. The pass it left open is closed + reopened with
     // loadOp="load" by the second half's `setupSceneFramebufferRenderPass`,
@@ -1811,10 +1742,8 @@ export class WebGPUSceneRenderer {
    * they do not generate pick IDs.
    */
   private _executePickPass(config: WebGPURenderFrameConfig): void {
-    // Body extracted to `WebGPUSceneRendererPickPass.ts` in Batch 133.
-    // The wrapper stays here because `executeCommands` calls it as
-    // `this._executePickPass(config)`. `_executePickBatch` (the inner
-    // helper) moved with the body — no longer present on this class.
+    // Keep this wrapper because `executeCommands` calls the pick-pass helper as
+    // `this._executePickPass(config)`.
     // A pick can be the first work after recovery. Rebuild only this resource
     // family here; do not allocate the full scene/postprocess graph on a pick
     // hot path. Device identity is part of the helper's exact reuse contract.
@@ -1826,10 +1755,7 @@ export class WebGPUSceneRenderer {
 
   // --- Frustum state ---
 
-  // Public underscore: shared with the extracted pick-pass module
-  // (`WebGPUSceneRendererPickPass.ts`, Batch 133). The other two
-  // callers (`executeCommands` lines 1287 + 1488) still call it as
-  // `this._updateFrustumUniforms(...)` — visibility flip only.
+  // Public underscore shared with the pick-pass module and the in-file callers.
   public _updateFrustumUniforms(
     uniformState: CesiumUniformState,
     near: number,
@@ -1987,10 +1913,7 @@ export class WebGPUSceneRenderer {
    * subsequent draws away from the scene framebuffer and producing an
    * all-black canvas because the post-process chain blits an empty FB.
    */
-  // Public underscore: shared with the extracted 3D-tile-passes
-  // module (`WebGPUSceneRenderer3DTilePasses.ts`, Batch 137). Other
-  // internal callers still call as `this._resumeScenePass(...)` —
-  // visibility flip only.
+  // Public underscore shared with the 3D Tiles pass module and in-file callers.
   public _resumeScenePass(context: WebGPUContext): void {
     const colorTarget = this._sceneFramebuffer?.colorTarget;
     if (!colorTarget || !context._currentCommandEncoder) {
@@ -1998,7 +1921,7 @@ export class WebGPUSceneRenderer {
       context.resumeDefaultRenderPass?.();
       return;
     }
-    // C10-03 — open the resumed scene segment WITHOUT an eager color resolve
+    // Open the resumed scene segment without an eager color resolve
     // (`resolve:false`); scene color resolves on demand via
     // `_ensureSceneColorResolved`. With no resolveTarget upstream the spread
     // below copies none through (I1), so no map-time deletion is needed.
@@ -2022,14 +1945,14 @@ export class WebGPUSceneRenderer {
       context.resumeDefaultRenderPass?.();
       return;
     }
-    // Slice 5c-B Batch 117 — append MRT slot-1 G-buffer attachment when
+    // Append the MRT slot-1 G-buffer attachment when
     // MRT mode is on. loadOp="load" preserves writes accumulated in the
     // pass that was just ended.
     const slot1 = buildMrtSlot1Attachment(this._scene, "load");
     if (slot1) {
       colorAttachments = [...colorAttachments, slot1];
     }
-    // C9-07 — end via the context helper so the tracked pass target is
+    // End through the context helper so the tracked pass target is
     // nulled alongside the encoder (a raw inline end would leave it stale).
     context.endCurrentRenderPass?.();
     const passDesc: GPURenderPassDescriptor = {
@@ -2041,7 +1964,7 @@ export class WebGPUSceneRenderer {
     if (!passEncoder) {
       return;
     }
-    // Audit C.11 (Batch 132) -- use the per-frame cached viewport so
+    // Use the per-frame cached viewport so
     // split-screen and sub-viewport callers see their requested
     // rectangle. Falls through to full canvas via the snapshot in
     // `executeCommands`.
@@ -2062,24 +1985,24 @@ export class WebGPUSceneRenderer {
   }
 
   /**
-   * C10-03-MSAA-BOUNDARY-BYTES — demand-driven "resolve-on-consume" for scene
-   * COLOR. The scene-FB segments open WITHOUT a `resolveTarget`
+   * Demand-driven resolve-on-consume for scene color. Scene-framebuffer
+   * segments open without a `resolveTarget`
    * (`getColorAttachments({ resolve:false })`), so the multisampled color is no
-   * longer resolved eagerly at every `pass.end()` (~10 resolves/frame → the
-   * S4-1 waste). Instead every resolved-color consumer (refraction capture,
+   * longer resolved eagerly at every `pass.end()`, avoiding approximately ten
+   * resolves per frame. Instead every resolved-color consumer (refraction capture,
    * OIT composite, invert-classification composite, bounding-volume debug, and
-   * ALWAYS the pre-post-process blit) calls this immediately before reading
+   * always the pre-post-process blit) calls this immediately before reading
    * `colorTarget.getColorTextureView(0)` / `context._sceneColorView`.
    *
    * Idempotent + conservative:
-   * - `_msaaSamples <= 1` → no resolve target exists (I5), the resolve view IS
-   *   the attachment view, so this is inert and the MSAA-off path is
-   *   byte-identical by construction.
+   * - `_msaaSamples <= 1` → no resolve target exists, and the resolve view is
+   *   the attachment view, so this is inert and the non-multisampled path is
+   *   unchanged.
    * - `_sceneColorResolvePending === false` → nothing has drawn to the scene FB
    *   since the last resolve; skip (this is what keeps a write-consumer's
    *   output — e.g. the fallback invert composite that draws into the
    *   single-sample resolve view — from being stomped by a redundant re-resolve
-   *   before post-process, since `resumeDefaultRenderPass` opens the CANVAS
+   *   before post-process, since `resumeDefaultRenderPass` opens the canvas
    *   pass and never re-dirties scene color).
    *
    * The resolve is a raw zero-draw pass on the frame command encoder (mirrors
@@ -2126,7 +2049,7 @@ export class WebGPUSceneRenderer {
     }
   }
 
-  // Public underscore: shared with the frustum-loop slice (Batch 140).
+  // Public underscore shared with the frustum-loop helper.
   public _clearDepthStencil(context: WebGPUContext): void {
     // ── Multi-frustum depth clear — CRITICAL for correct rendering ──
     //
@@ -2143,21 +2066,15 @@ export class WebGPUSceneRenderer {
     // color) + `depthLoadOp: "clear"` (reset depth). `getDepthStencilAttachment`
     // already defaults to depthLoadOp="clear", so we only override color.
     //
-    // Previously the trigger was `label === "Scene Framebuffer Render Pass"`,
-    // but earlier per-frustum work (globe-depth copy, 3D-tile depth update,
-    // translucent depth capture) routes through `endCurrentRenderPass()` +
-    // `resumeDefaultRenderPass()`, which leaves the active pass label as
-    // "Scene Main Render Pass" (the canvas swap-chain pass). This made the
-    // clear silently fall through to the canvas-side `context.clear` and
-    // every subsequent draw — including the next frustum's globe pass —
-    // landed on the canvas instead of the scene framebuffer, leaving the
-    // FB empty and producing an all-black post-process blit. The trigger
-    // is now scene-framebuffer-presence-based: if we have a color target
-    // and an encoder, always open a scene-FB pass.
+    // Decide from scene-framebuffer availability rather than the active pass
+    // label. Per-frustum globe-depth copies, tile-depth updates, and translucent
+    // depth capture can resume under the generic scene-pass label. A label gate
+    // would then route the clear and subsequent draws to the canvas, leave the
+    // scene framebuffer empty, and produce a black post-process blit.
     const colorTarget = this._sceneFramebuffer?.colorTarget;
     if (colorTarget && context._currentCommandEncoder) {
-      // C10-03 — depth-clear re-open preserves accumulated color
-      // (loadOp:"load") but must NOT eagerly resolve it; scene color resolves
+      // A depth-clear re-open preserves accumulated color (`loadOp:"load"`)
+      // but must not eagerly resolve it; scene color resolves
       // on demand (`resolve:false`).
       const rawColor: GPURenderPassColorAttachment[] | undefined =
         colorTarget.getColorAttachments?.(undefined, {
@@ -2170,7 +2087,7 @@ export class WebGPUSceneRenderer {
       const depthStencilAttachment = colorTarget.getDepthStencilAttachment?.();
 
       if (colorAttachments?.length) {
-        // Slice 5c-B Batch 117 — append MRT slot-1 G-buffer attachment
+        // Append the MRT slot-1 G-buffer attachment
         // (loadOp="load" preserves accumulated writes from the prior
         // frustum's globe pass).
         const slot1 = buildMrtSlot1Attachment(this._scene, "load");
@@ -2190,7 +2107,7 @@ export class WebGPUSceneRenderer {
         if (!passEncoder) {
           return;
         }
-        // Audit C.11 (Batch 132) -- per-frame viewport.
+        // Use the per-frame viewport.
         passEncoder.setViewport(
           this._viewportX,
           this._viewportY,
@@ -2213,9 +2130,9 @@ export class WebGPUSceneRenderer {
     context.clear?.({ depth: 1.0, stencil: 0, color: false });
   }
 
-  // --- Globe pass (with GlobeDepth integration) ---
+  // Globe pass with GlobeDepth integration.
 
-  // Public underscore: shared with the frustum-loop slice (Batch 140).
+  // Public underscore shared with the frustum-loop helper.
   public _executeGlobePass(
     frustumCommands: CesiumFrustumCommands,
     config: WebGPURenderFrameConfig,
@@ -2280,42 +2197,34 @@ export class WebGPUSceneRenderer {
     }
     //>>includeEnd('debug');
 
-    // Translucency dispatch + render-bundle attempt + fallback
-    // executeBatch were extracted to `WebGPUSceneRendererGlobePass.ts`
-    // in Batch 135. The diag prelude above (validation error scope,
-    // render-pass logging, command-count throttle) stays inline because
-    // the 5 diag fields it touches are pragma-stripped class members,
-    // and `context.uniformState?.updatePass(Pass.GLOBE)` is the
-    // load-bearing tail of the prelude that has to run before dispatch.
+    // Keep the diagnostic prelude here because its fields are stripped from
+    // production builds. Updating the globe uniform pass at the end of the
+    // prelude is required before the delegated dispatch begins.
     executeGlobeDispatch(commands, count, config);
   }
 
   // --- 3D Tiles passes ---
 
-  // Public underscore: shared with the frustum-loop slice (Batch 140).
+  // Public because the frustum loop delegates this pass through the renderer.
   public _execute3DTilePasses(
     frustumCommands: CesiumFrustumCommands,
     config: WebGPURenderFrameConfig,
     onAfterTileMainPass?: () => void,
   ): void {
-    // Body extracted to `WebGPUSceneRenderer3DTilePasses.ts` in Batch 137.
-    // The wrapper stays so `executeCommands` keeps calling it as
-    // `this._execute3DTilePasses(frustumCommands, config, onAfterTileMainPass)`.
+    // Preserve the renderer entry point while delegating the pass implementation.
     execute3DTilePasses(this, frustumCommands, config, onAfterTileMainPass);
   }
 
   // --- Opaque pass ---
 
-  // Public underscore: shared with the frustum-loop slice (Batch 140).
+  // Public because the frustum loop delegates this pass through the renderer.
   public _executeOpaquePass(
     frustumCommands: CesiumFrustumCommands,
     config: WebGPURenderFrameConfig,
   ): void {
     const { scene, context, passState } = config;
-    // Batch 226 — cache for stats diagnostics (see
-    // `_buildShadowCascadeCullStats`). Updated every frame so the
-    // diagnostic surface always reflects the current frame's
-    // context state.
+    // Update this every frame so shadow-cascade diagnostics use the current
+    // context rather than a context retained from an earlier frame.
     this._lastContext = context as WebGPUContext;
     const commands = frustumCommands.commands[Pass.OPAQUE];
     const count: number = frustumCommands.indices[Pass.OPAQUE];
@@ -2324,8 +2233,7 @@ export class WebGPUSceneRenderer {
     }
     context.uniformState?.updatePass(Pass.OPAQUE);
 
-    // NEW-GPU-CULLER-CONSUME (Batch 209) + NEW-HIZ-CONSUME (Batch 210)
-    // — threshold-gated GPU culling for very large opaque batches.
+    // Threshold-gated GPU culling is reserved for very large opaque batches.
     // CPU culling already runs upstream in `Scene.updateFrameState`,
     // but at the 10K-instance scale the GPU-side fine-grained re-test
     // (frustum from gpuCuller, occlusion from HiZ) still cuts draw-
@@ -2335,8 +2243,8 @@ export class WebGPUSceneRenderer {
     // (count < 256) every helper returns the input array untouched,
     // so this path is a no-op for typical scenes.
     //
-    // **Batch 212 audit** — pick passes (`config.picking`) skip ALL
-    // GPU cull / HiZ filtering. Pick must test every command the CPU
+    // Pick passes skip GPU culling and hierarchical-Z filtering. Picking must
+    // test every command the CPU
     // pass produced, including ones GPU culling would mark as
     // occluded — users can pick objects that are visually behind
     // others (e.g., through transparent overlays). Mismatching the
@@ -2344,9 +2252,8 @@ export class WebGPUSceneRenderer {
     // a visually-clicked pixel maps to the wrong (or no) feature.
     let activeCommands = commands as CesiumAnyDrawCommand[];
     let activeCount = count;
-    // Batch 223 (B219-N1 + B219-N2 audit fixes) — frame-start
-    // bookkeeping that runs UNCONDITIONALLY at the top of every
-    // opaque pass. Two purposes:
+    // Run frame-start bookkeeping at the top of every opaque pass, even when
+    // the GPU cull gate is closed. This serves two purposes:
     //   1. Reset stats accumulators when frustum 0 starts a new
     //      frame, regardless of whether the GPU cull gate fires
     //      (the prior `_statsTickFrameIfNeeded` only ticked on
@@ -2382,18 +2289,15 @@ export class WebGPUSceneRenderer {
       trimMap(this._lastCullResultsByFrustum);
     }
 
-    // Batch 219 (B214-N1 + B215-N1) — per-frustum gate state with
-    // hysteresis. Each frustum tracks its own previous-frame state so
+    // Each frustum keeps its own hysteresis state so
     // a 3-frustum scene with (2400, 500, 800) commands no longer
     // collapses through a single shared `_*Active` flag (which would
     // flip T→F→F within one frame, defeating the purpose of
     // hysteresis).
     //
-    // `Scene.gpuCullingHint = 'never'` short-circuits all three gates
-    // to false — closes B215-N1 ("never" was previously stored but
-    // never read).
+    // `Scene.gpuCullingHint = "never"` short-circuits all three gates.
     //
-    // Picking always bypasses (Batch 212 audit) — we don't update
+    // Picking always bypasses these gates, and does not update them, because
     // the gates from pick passes either, since pick framerate is on-
     // demand and would skew hysteresis on the render path.
     const fIdx = this._currentFrustumIndex;
@@ -2439,12 +2343,12 @@ export class WebGPUSceneRenderer {
         | { planes: Array<{ x: number; y: number; z: number; w: number }> }
         | undefined;
       if (cv && cv.planes && cv.planes.length > 0) {
-        // Wave-0 P0 fix — gpuCullCommands records a `beginComputePass`
+        // `gpuCullCommands` records a `beginComputePass`
         // ("frustum-N Compute Pass") on the frame encoder; like HiZ/sort it
         // must NOT run while the scene render pass is open (invalidates the
         // whole command buffer → dense-scene black screen). It is
-        // async-latency (consumes the PRIOR frame's readback synchronously,
-        // line ~3308), so simply bracketing the compute dispatch is correct;
+        // asynchronous-latency work that consumes the prior frame's readback
+        // synchronously, so bracketing the compute dispatch is sufficient;
         // resume restores the scene pass (loadOp:load) for executeBatch below.
         const wgpuCtx = context as WebGPUContext;
         wgpuCtx.endCurrentRenderPass?.();
@@ -2462,7 +2366,7 @@ export class WebGPUSceneRenderer {
       }
     }
     // Apply HiZ visibility on top of the (already CPU + gpuCuller)
-    // filtered list. Per-frustum gate (Batch 219). No-op also when
+    // filtered list. This is a no-op when the per-frustum gate is closed,
     // picking or when no readback is available yet.
     if (hiZActive) {
       const occluded = this._filterByHiZVisibility(activeCommands, activeCount);
@@ -2472,16 +2376,15 @@ export class WebGPUSceneRenderer {
       }
     }
 
-    // NEW-GPU-SORT-PIPELINE Phase 3 (C4-GPU-SORT-PIPELINE-PHASE3) — apply
-    // the GPU-produced front-to-back order to the opaque list. Only when
+    // Apply the GPU-produced front-to-back order to the opaque list only when
     // no cull/HiZ filtering dropped commands this frame (`activeCount ===
     // count`): the permutation indexes the ORIGINAL raw `commands` array,
     // so it can only be applied when the executed set is still the full
     // raw set (just possibly copied by the cull/HiZ passes, which
     // preserve order). When filtering dropped commands, cull/HiZ take
     // precedence and the CPU order stands (opaque order is a pure early-Z
-    // optimization, so this is correct either way). FAR-003 defaults the
-    // consumer to "never"; "auto" remains an explicit threshold probe. See
+    // optimization, so this is correct either way). The consumer defaults to
+    // "never"; "auto" remains an explicit threshold probe. See
     // `_applySortedOrder` / `setGpuSortConsumeMode`.
     if (gpuSortActive && activeCount === count) {
       const reordered = this._applySortedOrder(
@@ -2507,20 +2410,18 @@ export class WebGPUSceneRenderer {
     // pre-cull command list so the SOA aligns with what next frame
     // will receive. Below threshold this is a fast no-op.
     //
-    // **Batch 212 audit** — skip dispatch on pick passes; the pick
-    // depth target is a separate framebuffer and would feed
+    // Pick passes skip dispatch because their separate depth target would feed
     // misleading visibility into the next render frame's HiZ
     // filtering. Pick passes also typically run on demand (mouse
     // events) — dispatching there wastes GPU time on a buffer that
     // never feeds a render frame.
-    // HiZ dispatch for next frame — per-frustum gate (Batch 219) so
-    // the producer side respects the same hysteresis as the consumer.
-    // Wave-0 P0 fix — both HiZ and GPU-sort-key dispatches record
+    // The producer uses the same per-frustum hysteresis as the consumer.
+    // Both hierarchical-Z and GPU-sort-key dispatches record
     // `beginComputePass` on the frame encoder. Doing that while the scene
     // framebuffer render pass is still open is a "CommandEncoder is locked
     // while RenderPassEncoder is open" validation error that invalidates the
-    // ENTIRE command buffer → every dense (>=2400 opaque-cmd) WebGPU scene
-    // black-screened. Bracket the compute dispatches with
+    // entire command buffer, black-screening dense WebGPU scenes with at
+    // least 2400 opaque commands. Bracket the compute dispatches with
     // endCurrentRenderPass / resumeDefaultRenderPass exactly like the
     // clustered-lighting + velocity compute dispatches do (resume preserves
     // scene-FB contents via loadOp:load, so the frustum loop continues
@@ -2549,14 +2450,12 @@ export class WebGPUSceneRenderer {
 
   // --- Translucent pass (with OIT integration) ---
 
-  // Public underscore: shared with the frustum-loop slice (Batch 140).
+  // Public because the frustum loop delegates this pass through the renderer.
   public _executeTranslucentPass(
     frustumCommands: CesiumFrustumCommands,
     config: WebGPURenderFrameConfig,
   ): void {
-    // Body extracted to `WebGPUSceneRendererTranslucentPass.ts` in
-    // Batch 136. The wrapper stays so `executeCommands` keeps calling
-    // it as `this._executeTranslucentPass(frustumCommands, config)`.
+    // Preserve the renderer entry point while delegating the pass implementation.
     // The extracted function reaches back via the `TranslucentPassHost`
     // interface for `_oit` (read) and `_deferredOITSplats` (read +
     // null on consume).
@@ -2565,7 +2464,7 @@ export class WebGPUSceneRenderer {
 
   // --- Overlay pass ---
 
-  // Public underscore: shared with the post-frustum chain slice (Batch 141).
+  // Public because the post-frustum chain delegates this pass through the renderer.
   public _executeOverlayPass(
     frustumCommandsList: CesiumFrustumCommands[],
     config: WebGPURenderFrameConfig,
@@ -2616,7 +2515,7 @@ export class WebGPUSceneRenderer {
     }
   }
 
-  // Public underscore: shared with the frustum-loop slice (Batch 140).
+  // Public because the frustum loop delegates this pass through the renderer.
   public _renderDepthPlane(
     config: WebGPURenderFrameConfig,
     passKind: WebGPUDepthPlanePassKind,
@@ -2656,51 +2555,43 @@ export class WebGPUSceneRenderer {
 
   /**
    * Execute environmental effects that composite onto the rendered scene.
-   * These run after all geometry passes but before post-processing.
-   * Each effect reads from the scene color/depth and composites its result.
+   * These display-space effects run after the main post-processing pass. Each
+   * effect reads scene color and depth and composites its result.
    *
    * Order: Procedural Clouds → SSR → Weather Particles
    * - Clouds are behind geometry (atmosphere-level)
    * - SSR modifies surface reflections
    * - Weather is in front (camera-relative particles)
    */
-  // Public underscore: shared with the post-frustum chain slice (Batch 141).
+  // Public because the post-frustum chain delegates this pass through the renderer.
   public _executeEnvironmentalEffects(config: WebGPURenderFrameConfig): void {
-    // Body extracted to `WebGPUSceneRendererEnvironmentalEffects.ts` in
-    // Batch 134. The wrapper stays so `executeCommands` keeps calling
-    // it as `this._executeEnvironmentalEffects(config)`. The extracted
-    // function takes zero `this.*` deps (verified pre-extraction by
-    // grep) so it's a free function — no host interface needed.
+    // The implementation has no renderer state dependencies, so it remains a
+    // free function behind this stable renderer entry point.
     executeEnvironmentalEffects(config);
   }
 
   /**
-   * Phase 8a Slice 2 (Batch 85) — screen-space normal reconstruction
-   * from scene depth into `view.gBufferFramebuffer`.
+   * Reconstructs screen-space normals from scene depth into
+   * `view.gBufferFramebuffer` when the primary pipelines do not populate it.
    *
-   * Originally gated on `frameState.useDeferredLighting === true` and
-   * ran AFTER the scene render pass, OVERWRITING any MRT writes made
-   * during the pass. With Slice 5c-B Phases 1-2 (Batches 105-119) the
-   * G-buffer is now populated by per-shader `@location(1)` emits from
-   * converted primitives (globe, ellipsoid, glTF Model). For pixels
-   * those emitters cover, the MRT writes are the source of truth.
+   * In multiple-render-target mode, per-shader `@location(1)` outputs from
+   * converted globe, ellipsoid, and glTF model primitives are the source of
+   * truth. The compute producer must not overwrite those fragment values.
    *
-   * Slice 5c-B Batch 120 (NEW-GBUFFER-MRT-COMPUTE-PRODUCER-RETIRE):
-   * skip the compute producer entirely when MRT mode is on AND the
-   * G-buffer is allocated. Three implications:
+   * The compute producer is therefore skipped when that mode is active and
+   * the G-buffer is allocated. Three implications follow:
    *
    *   - Pixels covered by an MRT-emitting pipeline (globe + ellipsoid +
-   *     Model + future B3DM/Polygon) keep their real per-fragment data.
-   *   - Pixels covered by Phase 1 placeholder pipelines (writeMask:0
+   *     Model) keep their real per-fragment data.
+   *   - Pixels covered by placeholder pipelines (`writeMask: 0`
    *     on slot 1: sky, billboards, labels, points, etc.) keep the
    *     loadOp=clear sentinel (0,0,0,1).
    *   - The AO / SSR / contact-shadow consumers already check
    *     `length(xyz) < 0.01` and fall back to their own depth-derived
    *     path for sentinel pixels — no consumer change needed.
    *
-   * Runs AFTER `_executeEnvironmentalEffects` (which has closed the
-   * scene render pass and resolved depth) and BEFORE the
-   * InvertClassification composite + post-processing.
+   * The post-frustum chain calls this after the scene render pass closes and
+   * before invert classification, velocity, and post-processing.
    */
   public _executeGBufferProducer(config: WebGPURenderFrameConfig): void {
     const frameState = config.scene.frameState as
@@ -2708,8 +2599,8 @@ export class WebGPUSceneRenderer {
     if (!frameState || frameState.useDeferredLighting !== true) {
       return;
     }
-    // Slice 5c-B Batch 120 — skip the compute producer when MRT mode
-    // is on. Converted primitives' @location(1) emits are the source
+    // Skip the compute producer in multiple-render-target mode. Converted
+    // primitives' `@location(1)` outputs are the source
     // of truth; non-emitting primitives leave the loadOp=clear
     // sentinel (0,0,0,1) and consumers fall back to depth-derived for
     // those pixels via the existing length(xyz) < 0.01 check.
@@ -2725,8 +2616,8 @@ export class WebGPUSceneRenderer {
       endCurrentRenderPass?: () => void;
       resumeDefaultRenderPass?: () => void;
     };
-    // Phase 8a Slice 2d (Batch 90) — close any render pass that's
-    // still open on the shared command encoder before we start a
+    // Close any render pass still open on the shared command encoder before
+    // starting a
     // compute pass. WebGPU forbids `beginComputePass` while a render
     // pass is recording on the same encoder. The post-frustum chain
     // calls us right after `_executeEnvironmentalEffects`, which may
@@ -2735,27 +2626,16 @@ export class WebGPUSceneRenderer {
     context.endCurrentRenderPass?.();
     const encoder = context._currentCommandEncoder;
     const device = context.device;
-    // Phase 8a Slice 2c (Batch 89) — fixed depth-source bug. Previously
-    // read `context.depthOnlyTextureView` which is a separate depth
-    // attachment unused by the scene render. The actual scene depth
-    // lives on `_sceneFramebuffer.depthSampleableView` (same source the
-    // depth-as-color debug overlay uses). With the wrong texture bound,
-    // every sample returned 0 → producer's `depth >= 0.99999` check
-    // failed (0 < 0.99999) but the unproject math produced garbage
-    // positions that all ended up at the same point, making the cross
-    // product near-zero → high-gradient sentinel branch for every
-    // pixel. Net result: G-buffer was all-sentinel, overlay showed
-    // pure magenta.
+    // Read the depth written by the scene framebuffer, which is also the
+    // source used by the depth debug overlay. `context.depthOnlyTextureView`
+    // belongs to a separate attachment; binding it here produces zero-depth
+    // samples, degenerate unprojected positions, and an all-sentinel G-buffer.
     const depthView = this._sceneFramebuffer?.depthSampleableView ?? null;
     if (!encoder || !device || !depthView) {
-      // Phase 8a Slice 2c (Batch 89) — surface the silent-bail case.
-      // Most common reason: MSAA is on (default 4) so the depth
-      // attachment is multisampled and `depthSampleableView` can't be
-      // bound to the producer's single-sample `texture_depth_2d`
-      // binding. Slice 2d will add a multisampled-depth code path
-      // (`texture_depth_multisampled_2d` + `textureLoad(.., 0)`); for
-      // now, users must call `scene.msaaSamples = 1` BEFORE viewer
-      // construction to enable the producer.
+      // Surface a missing command encoder, device, or sampleable scene-depth
+      // view instead of silently omitting the G-buffer producer. Multisampled
+      // depth is converted to a sampleable single-sample view when resources
+      // are available.
       if (!this._gbufferProducerWarnedNoDepth) {
         this._gbufferProducerWarnedNoDepth = true;
         //>>includeStart('debug', pragmas.debug);
@@ -2801,9 +2681,8 @@ export class WebGPUSceneRenderer {
     const perfMgr = ctxWithPerfMgr.performanceManager;
     if (!perfMgr) return;
 
-    // Phase 8a Slice 2d (Batch 90) — pass the scene's sample count so
-    // the dispatcher picks the multisampled-depth pipeline when MSAA
-    // is on (Cesium default is 4). Read from `scene.msaaSamples`
+    // Pass the scene's sample count so the dispatcher selects the matching
+    // depth pipeline. Read from `scene.msaaSamples`
     // directly; this is the same value `SceneFramebuffer.update` uses
     // to build the depth attachment, so the dispatcher's choice of
     // pipeline matches the actual texture's sample count.
@@ -2824,28 +2703,26 @@ export class WebGPUSceneRenderer {
     context.resumeDefaultRenderPass?.();
   }
 
-  // C-R8-EDGE-COMPOSITE-PRUNE (Batch 50) — `_runEdgeComposite()` was
-  // removed. The model FS inline edge stage (Batch 48) is the
-  // authoritative consumer; primitive shaders don't currently emit
-  // edges. If a future emitter adds non-model edge commands, restore
-  // the post-process composite OR ride C-R8-EDGE-INLINE-PRIMITIVES to
-  // extend the inline stage to that shader family.
+  // Models consume edges in their inline fragment stage; primitive shaders do
+  // not currently emit edges. A future non-model edge emitter must either add
+  // an equivalent inline stage to its shader family or restore a post-process
+  // composite.
 
-  // Migration Session 5 (Batch 85) — `_runTranslucentTileClassification-
-  // Composite` removed. The depth-sample classifier draws directly into
-  // scene color, so there's no accumulation target to composite back.
+  // The depth-sample classifier draws translucent tile classification
+  // directly into scene color, so there is no accumulation target to
+  // composite afterward.
 
   // --- InvertClassification composite ---
 
   /**
-   * C-R8-INVERT-CLASS-FBO-REDIRECT (Batch 39) — Pairs with the FBO
-   * redirect in {@link _execute3DTilePasses}. When the redirect is
+   * Pairs with the framebuffer redirect in {@link _execute3DTilePasses}. When
+   * the redirect is
    * active, 3D-tile pixels go into `InvertClassification.classifiedTexture`
    * instead of scene color; this method composites them back onto the
    * resolved scene color view so the frame has tiles in the final image.
    *
-   * Runs AFTER the main scene render pass ends, which is required
-   * because the composite targets the SINGLE-SAMPLE resolved view
+   * Runs after the main scene render pass ends, which is required
+   * because the composite targets the single-sample resolved view
    * (`colorTarget.getColorTextureView(0)`) and the MSAA attachment
    * only resolves on pass end. Wrapped in end/resume so post-process
    * continues to see the scene pass active on resume.
@@ -2854,7 +2731,7 @@ export class WebGPUSceneRenderer {
    * tile pass went to the default path and scene color already has
    * the tiles in place.
    */
-  // Public underscore: shared with the post-frustum chain slice (Batch 141).
+  // Public because the post-frustum chain delegates this pass through the renderer.
   public _runInvertClassificationComposite(
     config: WebGPURenderFrameConfig,
   ): void {
@@ -2871,24 +2748,21 @@ export class WebGPUSceneRenderer {
       return;
     }
 
-    // AUDIT_2026_05_02 A.2 (Batch 141, NEW-INVERT-CLASS-STENCIL-CLASSIFIER —
-    // resolved). Each classifier renderer (Ground primitive, ground polyline,
-    // Vector3DTile primitive, Vector3DTile clamped polylines) now emits a
-    // dedicated IGNORE_SHOW stencil-write command alongside its color
+    // Each ground and vector-tile classifier renderer emits a dedicated
+    // `IGNORE_SHOW` stencil-write command alongside its color
     // command for 3D-Tile classification. The dispatcher in
     // `WebGPUSceneRenderer3DTilePasses.ts` runs those commands inside the
     // invert FBO and flips `invertHasStencilData = true` once the
     // CLASSIFICATION_IGNORE_SHOW pass ran with > 0 commands, which makes
     // the stencil-gated composite branch in `runInvertCompositeFromTracker`
-    // active. The previous "every-pixel-tinted" warning is now obsolete.
+    // active.
 
-    // End the current scene pass (required regardless of MSAA so the
-    // composite / read can run outside a render pass), then — C10-03 —
-    // resolve MSAA color into the single-sample resolve view on demand (the
-    // eager per-segment resolve was elided). Both the stencil-gated path
+    // End the current scene pass so the composite can run outside a render
+    // pass, then resolve multisampled color into the single-sample view on
+    // demand. Both the stencil-gated path
     // (writes MSAA + auto-resolves at its own pass end) and the fallback path
     // (writes the resolved view directly) require the resolved view to already
-    // hold the accumulated scene color. Ensure is inert under MSAA-off (I5).
+    // hold the accumulated scene color. The ensure is inert without MSAA.
     context.endCurrentRenderPass?.();
     this._ensureSceneColorResolved(context);
 
@@ -2898,12 +2772,12 @@ export class WebGPUSceneRenderer {
     const resolveView: GPUTextureView | undefined =
       colorTarget?.getColorTextureView?.(0);
 
-    // C-R8-INVERT-CLASS-STENCIL (Batch 40) — when the stencil-ready
-    // flag is set (CLASSIFICATION_IGNORE_SHOW ran and wrote stencil
+    // When the stencil-ready flag is set, the
+    // `CLASSIFICATION_IGNORE_SHOW` pass has written stencil
     // bits into the invert FBO), pass the MSAA scene-color attachment
     // view so the composite can run at MSAA sample count alongside
     // the MSAA invert depth-stencil. Otherwise fall back to the
-    // single-sample single-pass composite (Batch 39 behavior).
+    // single-sample, single-pass composite.
     //
     // `GPURenderPassColorAttachment.view` is typed `GPUTexture | GPUTextureView`
     // by `@webgpu/types`, but our `WebGPURenderTarget` always stores a
@@ -2940,12 +2814,11 @@ export class WebGPUSceneRenderer {
     context.resumeDefaultRenderPass?.();
   }
 
-  // --- KHR_materials_transmission refraction capture (Batch 107) ---
+  // --- KHR_materials_transmission refraction capture ---
 
   /**
-   * C-R4-GLTF-KHR-TRANSMISSION (Batch 107) — captures opaque-only
-   * scene color into the scene-FB refraction target so transmissive
-   * Model primitives drawn in the TRANSLUCENT pass can sample the
+   * Captures opaque-only scene color into the scene framebuffer's refraction
+   * target so transmissive model primitives drawn in the translucent pass can sample the
    * scene behind them without their own contribution. Runs once per
    * frustum, between the opaque/voxels/splats passes and the
    * TRANSLUCENT pass. Gated on `context._sceneHasTransmission` (set
@@ -2960,7 +2833,7 @@ export class WebGPUSceneRenderer {
    * pass. MSAA scenes use the resolved color (returned by
    * `colorTarget.getColorTexture` when a resolve target exists).
    *
-   * Multi-frustum scenes capture ONCE PER FRUSTUM — each frustum's
+   * Multi-frustum scenes capture once per frustum: each frustum's
    * transmissive draws see that frustum's opaque backdrop. The
    * refraction texture is overwritten between frustums so the
    * latest capture wins; for transmission, that's correct because
@@ -2968,7 +2841,7 @@ export class WebGPUSceneRenderer {
    * to frustum N (the per-frustum opaque writes accumulate into
    * the same scene color across frustums in the WebGPU pipeline).
    */
-  // Public underscore: shared with the frustum-loop slice (Batch 140).
+  // Public because the frustum loop delegates this pass through the renderer.
   public _captureRefractionScene(config: WebGPURenderFrameConfig): void {
     const { context } = config;
     if (!context._sceneHasTransmission || !this._sceneFramebuffer) {
@@ -2979,10 +2852,9 @@ export class WebGPUSceneRenderer {
       return;
     }
 
-    // End the scene pass (required for the copy), then — C10-03 — resolve
-    // MSAA color on demand: the refraction copy source is the resolved color
-    // texture (`colorTarget.getColorTexture()`), which the eager per-segment
-    // resolve used to keep current. Ensure is inert under MSAA-off (I5).
+    // End the scene pass for the copy, then resolve multisampled color on
+    // demand. The refraction source is the resolved color texture returned by
+    // `colorTarget.getColorTexture()`. The ensure is inert without MSAA.
     context.endCurrentRenderPass?.();
     this._ensureSceneColorResolved(context);
     const encoder: GPUCommandEncoder | undefined =
@@ -3007,18 +2879,18 @@ export class WebGPUSceneRenderer {
     this._resumeScenePass(context);
   }
 
-  // --- TAA velocity pass (Slice 2e, Batch 106) ---
+  // --- TAA velocity pass ---
 
   /**
-   * TAA Slice 2e (Batch 106) — per-pixel motion-vector pass for models.
+   * Writes per-pixel motion vectors for models.
    *
    * Walks the frustum command lists, collects every command carrying a
    * `velocityCommand` slot (attached by `WebGPUModelRenderer` when
    * `frameState.taaEnabled === true` and the primitive is opaque/mask),
    * and dispatches them into a dedicated `rg16float` render pass that
-   * shares the scene-FB depth attachment in read-only mode. The
-   * resulting velocity texture is consumed by the TAA effect (Batch
-   * 104) at `@binding(5) motionTex` — TAA prefers per-pixel velocity
+   * shares the scene framebuffer's depth attachment in read-only mode. The
+   * resulting velocity texture is consumed by the TAA effect at
+   * `@binding(5) motionTex`; TAA prefers per-pixel velocity
    * over depth reprojection when the sample is non-zero, falling back
    * to depth reprojection for static pixels (sky, terrain).
    *
@@ -3032,26 +2904,25 @@ export class WebGPUSceneRenderer {
    * Translucent (BLEND) primitives are excluded by the model renderer:
    * they don't write scene depth in the color pass, so the velocity
    * pass's read-only depth attachment can't establish their visibility
-   * — translucent velocity needs OIT-style accumulation, deferred.
+   * Translucent velocity therefore requires a separate OIT-style accumulation
+   * path that is not currently implemented.
    *
    * Free for static scenes: when no command carries a velocityCommand
    * (TAA off, or no models in view), the function early-exits before
    * any GPU work is queued.
    */
-  // Public underscore: shared with the post-frustum chain slice (Batch 141).
+  // Public because the post-frustum chain delegates this pass through the renderer.
   /**
-   * Slice 5d Batch 151 — Forward+ clustered lighting per-frame hook.
-   * Walks scene.lights + every visible model.lightsFromGltf, hands
-   * the world-space list to the WebGPUClusteredLightingDispatcher
-   * along with the current frame's view + projection matrices. The
-   * dispatcher transforms positions/directions to eye-space, packs
-   * into the WGSL ClusteredLight layout, and records both compute
-   * passes into the active command encoder.
+   * Per-frame hook for Forward+ clustered lighting. Walks scene lights, then
+   * hands the collected list and the current view and projection matrices to
+   * the clustered-lighting dispatcher. Per-model glTF lights stay excluded
+   * until their model transforms can be applied before packing.
+   * The dispatcher packs the WGSL light layout and records both compute passes
+   * into the active command encoder.
    *
    * Called early in executeCommands (after _ensureResources, before
    * any consumer draw) so the storage buffers are ready when Model
-   * PBR / Lit Mat consumers (Batch 153+, merged into group 3 effects)
-   * read them.
+   * PBR and lit-material consumers read them.
    *
    * Inert when scene.clusteredLightingEnabled === false OR zero
    * lights are configured — the dispatcher returns activeLightCount=0
@@ -3061,18 +2932,15 @@ export class WebGPUSceneRenderer {
    * @private
    */
   private _dispatchClusteredLighting(config: WebGPURenderFrameConfig): void {
-    // Batch 310 — logic extracted verbatim to
-    // WebGPUSceneRendererClusteredLighting.ts (god-object decomposition
-    // slice). `this` satisfies the minimal `ClusteredLightingHost`
-    // surface (the dispatcher field + viewport dims).
+    // The helper needs only the dispatcher and viewport dimensions exposed by
+    // the minimal `ClusteredLightingHost` surface.
     dispatchClusteredLighting(this, config);
   }
 
   /**
-   * Public accessor for the clustered-lighting dispatcher's GPU
-   * buffers. Consumer pipelines (Model PBR + Lit Mat shaders, when
-   * wired in Batch 153+ via group 3 effects merge) call this to obtain
-   * handles for their bind groups.
+   * Public accessor for the clustered-lighting dispatcher's GPU buffers.
+   * Model PBR and lit-material pipelines use these handles in their bind
+   * groups.
    *
    * Returns null when the dispatcher hasn't been constructed yet
    * (first frame before any executeCommands call) — caller should
@@ -3162,8 +3030,8 @@ export class WebGPUSceneRenderer {
     const passEncoder = encoder.beginRenderPass(
       context.withRenderPassTimestamps(passDesc, "TAA Velocity Pass"),
     );
-    // Audit C.11 (Batch 132) -- per-frame viewport rather than full
-    // canvas, so the velocity pass writes only into the requested
+    // Use the per-frame viewport rather than the full canvas so the velocity
+    // pass writes only into the requested
     // sub-rectangle (matches the main color pass).
     passEncoder.setViewport(
       this._viewportX,
@@ -3219,7 +3087,7 @@ export class WebGPUSceneRenderer {
 
   // --- Post-processing ---
 
-  // Public underscore: shared with the post-frustum chain slice (Batch 141).
+  // Public because the post-frustum chain delegates this pass through the renderer.
   public _runPostProcessing(config: WebGPURenderFrameConfig): void {
     const { context, scene } = config;
     const frameState = scene?._frameState;
@@ -3238,8 +3106,8 @@ export class WebGPUSceneRenderer {
       return;
     }
 
-    // Phase 8a Slice 2c (Batch 89) — G-buffer normal visualization.
-    // Replaces the production post-process chain with a fullscreen blit
+    // G-buffer normal visualization replaces the production post-process
+    // chain with a fullscreen blit
     // of `view.gBufferFramebuffer.normalRoughnessTexture`. Requires the
     // G-buffer to be populated; the `CesiumDebug.showGBufferNormals()`
     // command forces `scene.deferredLighting = true` to guarantee that.
@@ -3299,16 +3167,12 @@ export class WebGPUSceneRenderer {
     if (encoder && sourceView && targetView) {
       // Pass the scene color texture for auto-exposure compute dispatch.
       const sceneColorTexture = colorTarget?.getColorTexture?.(0) ?? null;
-      // TAA Slice 2d (Batch 104) — forward the per-pixel velocity
-      // texture view (when allocated). Currently null when no
-      // velocity pass populated it; the TAA effect binds its 1×1
-      // zero placeholder and the shader falls back to depth
-      // reprojection. The follow-up that wires model FS @location(1)
-      // velocity output will populate this view via
-      // `sceneFramebuffer.ensureVelocityTexture(...)`.
+      // Forward the velocity texture populated by the model velocity pass.
+      // When no command produced velocity, the TAA effect binds its 1×1 zero
+      // placeholder and falls back to depth reprojection.
       const motionView = this._sceneFramebuffer?.velocityView ?? null;
-      // Session 65 Batch 22 — orbit polish §13.1. Bloom intensity
-      // fades from 1.0 at ground to 0.0 above 1 Earth radius
+      // Bloom intensity fades from 1.0 at ground level to 0.0 above one Earth
+      // radius of
       // altitude. Real orbital photography shows essentially zero
       // bloom on the Earth disk; treating bloom as a camera-lens
       // effect (Frostbite GDC 2016 convention) and gating by
@@ -3326,8 +3190,8 @@ export class WebGPUSceneRenderer {
       if (bloomEffect?.applyAltitudeGate) {
         bloomEffect.applyAltitudeGate(heightMeters);
       }
-      // Session 65 Batch 39 — orbit polish §13.x. Auto-exposure altitude
-      // gate paired with bloom. The compute reduction still runs (cheap)
+      // The auto-exposure altitude gate is paired with bloom. Its inexpensive
+      // compute reduction still runs,
       // but its multiplier blends toward neutral 1.0 as the camera rises
       // above the gate range, so the bright atmosphere limb doesn't pull
       // exposure down and darken the visible disk at orbit. Ground-level
@@ -3341,9 +3205,8 @@ export class WebGPUSceneRenderer {
       if (autoExposure?.applyAltitudeGate) {
         autoExposure.applyAltitudeGate(heightMeters);
       }
-      // Phase 8a Slice 4 (Batch 87) — when the G-buffer producer ran
-      // this frame (`scene.deferredLighting === true`), forward the
-      // normal texture view so the AO effect (and Slice 5+ consumers)
+      // When deferred lighting populated the G-buffer this frame, forward the
+      // normal texture view so ambient occlusion and other consumers
       // can read it. Null otherwise → effects fall back to depth-only
       // reconstruction.
       const view = (
@@ -3370,8 +3233,8 @@ export class WebGPUSceneRenderer {
         motionView,
         gBufferNormalView,
       );
-      // C9-07 / FAR-405-C0 — the PP pipeline wrote `targetView` (the
-      // canvas) through raw `encoder.beginRenderPass` calls the context
+      // The post-process pipeline writes the canvas `targetView` through raw
+      // `encoder.beginRenderPass` calls that the context
       // cannot observe. Mark the canvas written so no later default-pass
       // open clears the blit and the endFrame present fallback stays off.
       context.markCanvasContentWritten();
@@ -3382,9 +3245,8 @@ export class WebGPUSceneRenderer {
       );
     }
 
-    // C9-07 / FAR-405-C0 — the unconditional canvas-pass resume that used
-    // to sit here (empty pass #2 on the default route) is gone. Downstream
-    // consumers self-manage: the snapshot copy ends passes, env effects
+    // Do not open an unconditional canvas pass here. Downstream consumers
+    // manage their own passes: the snapshot copy ends passes, environmental effects
     // end+resume around themselves, and legacy overlay commands demand-open
     // the canvas pass in `WebGPUContext.executeDrawCommand`.
   }
@@ -3408,10 +3270,9 @@ export class WebGPUSceneRenderer {
     const encoder: GPUCommandEncoder | undefined =
       context._currentCommandEncoder;
     const targetView: GPUTextureView | undefined = context.currentTextureView;
-    // Sampleable depth view is only available when the scene framebuffer
-    // is single-sample (no MSAA) — see WebGPURenderTarget.depthSamplable
-    // contract. When MSAA is on, the depth-as-color overlay can't run;
-    // log once and skip.
+    // This overlay binds `texture_depth_2d`, so it can use only the direct
+    // single-sample depth view. An MSAA framebuffer exposes converted depth as
+    // `r16float`, which requires a different shader binding contract.
     const depthView: GPUTextureView | undefined =
       this._sceneFramebuffer?.depthSampleableView;
 
@@ -3444,7 +3305,7 @@ export class WebGPUSceneRenderer {
     // Windowed band (meters of eye-space distance). When max > min, force the
     // windowed overlay mode (3 = turbo, 4 = grayscale) so a tight depth band
     // gets the full color range — discriminates near-identical depths the
-    // log-normalized modes 0-2 collapse to one shade (C-R9 tooling).
+    // log-normalized modes 0-2 collapse to one shade.
     const windowMin = (fs?.debugDepthWindowMin as number) || 0;
     const windowMax = (fs?.debugDepthWindowMax as number) || 0;
     const useTurbo = fs?.debugDepthWindowTurbo !== false;
@@ -3463,16 +3324,16 @@ export class WebGPUSceneRenderer {
       windowMax,
       useTurbo,
     );
-    // C9-07 — the overlay wrote the canvas via its own pass; without the
-    // marker the resume below (a first open) would clear the output.
+    // The overlay wrote the canvas through its own pass. Mark it written so
+    // the resume below cannot clear the output on its first context-managed open.
     context.markCanvasContentWritten();
 
     context.resumeDefaultRenderPass?.();
   }
 
   /**
-   * Phase 8a Slice 2c (Batch 89) — runs the {@link WebGPUDebugGBufferOverlay}
-   * in place of the production post-process chain. Samples
+   * Runs the {@link WebGPUDebugGBufferOverlay} in place of the production
+   * post-process chain. Samples
    * `view.gBufferFramebuffer.normalRoughnessTexture` and blits it to the
    * canvas as a normal-map visualization (.xyz * 0.5 + 0.5 → RGB).
    * Magenta sentinel for sky / depth-clear / high-gradient pixels where
@@ -3523,7 +3384,7 @@ export class WebGPUSceneRenderer {
           }),
         );
         passEncoder.end();
-        // C9-07 — the magenta sentinel clear wrote the canvas.
+        // Record the sentinel clear so a later pass does not clear it again.
         context.markCanvasContentWritten();
       }
       context.resumeDefaultRenderPass?.();
@@ -3539,7 +3400,7 @@ export class WebGPUSceneRenderer {
     );
 
     this._debugGBufferOverlay.execute(encoder, gBufferView, targetView);
-    // C9-07 — the overlay wrote the canvas via its own pass.
+    // Record that the overlay wrote the canvas through its own pass.
     context.markCanvasContentWritten();
 
     context.resumeDefaultRenderPass?.();
@@ -3551,8 +3412,9 @@ export class WebGPUSceneRenderer {
    * color + sampleable depth view, tints per pixel by frustum membership
    * (mode 0) or depth-banded palette (mode 1), and blits to the canvas.
    *
-   * Needs the same single-sample (non-MSAA) scene framebuffer contract as
-   * the depth overlay — depth can only be sampled when MSAA is off.
+   * Its shader binds `texture_depth_2d`, so it requires the direct
+   * single-sample depth view. The `r16float` conversion used for MSAA requires
+   * a different binding contract.
    */
   private _executeDebugFrustumOverlay(
     config: WebGPURenderFrameConfig,
@@ -3619,28 +3481,28 @@ export class WebGPUSceneRenderer {
       mode,
       ranges,
     );
-    // C9-07 — the overlay wrote the canvas via its own pass.
+    // Record that the overlay wrote the canvas through its own pass.
     context.markCanvasContentWritten();
 
     context.resumeDefaultRenderPass?.();
   }
 
   /**
-   * NEW-GEOJSON-WEBGPU-BV-DEBUG-DRAW-PASS — draw a red wireframe of the
-   * bounding volume of every command flagged `debugShowBoundingVolume`.
+   * Draws a red wireframe around the bounding volume of every command flagged
+   * `debugShowBoundingVolume`.
    *
    * WebGPU equivalent of `Scene/SceneDebug.js#debugShowBoundingVolume`. The
-   * flag plumbs through `GeoJsonPrimitive` + all three `Buffer*`
-   * `WebGPUDrawCommand`s (Batch 583); this consumes it.
+   * flag flows through `GeoJsonPrimitive` and all three `Buffer*`
+   * `WebGPUDrawCommand`s; this pass consumes it.
    *
-   * DEFAULT-OFF / BYTE-IDENTICAL: collects flagged commands from
-   * `frameState.commandList`; when none carry the flag (the default) it
+   * It collects flagged commands from `frameState.commandList`; when none carry
+   * the default-off flag, it
    * returns before opening any pass, so an unflagged frame is unchanged.
    *
    * Runs from the post-frustum chain, after the main scene pass has closed
    * + resolved and before `_runPostProcessing` samples the scene-color
    * texture — so the wireframe reaches the canvas through the post-process
-   * blit. Draws into the RESOLVED single-sample color view with
+   * blit. Draws into the resolved single-sample color view with
    * `loadOp="load"`.
    */
   public _executeBoundingVolumeDebugPass(
@@ -3685,10 +3547,9 @@ export class WebGPUSceneRenderer {
       return;
     }
 
-    // C10-03 — the wireframe draws INTO the resolved color view; resolve the
-    // accumulated scene color on demand first (the eager per-segment resolve
-    // was elided). Only reached when a command is flagged, so unflagged frames
-    // stay byte-identical. Inert under MSAA-off (I5).
+    // The wireframe draws into the resolved color view, so first ensure that it
+    // contains accumulated scene color. This is reached only for a flagged
+    // command and is inert without MSAA, leaving ordinary frames unchanged.
     this._ensureSceneColorResolved(context);
 
     // Close the scene pass so we can open our own single-attachment pass on
@@ -3725,7 +3586,7 @@ export class WebGPUSceneRenderer {
 
   // --- Pass helper ---
 
-  // Public underscore: shared with the frustum-loop slice (Batch 140).
+  // Public because the frustum loop delegates this pass through the renderer.
   public _executePassCommands(
     frustumCommands: CesiumFrustumCommands,
     passIndex: number,
@@ -3760,11 +3621,8 @@ export class WebGPUSceneRenderer {
     return this._postProcess;
   }
 
-  // NEW-DERIVEDCOMMAND-VARIANT-FACTORY (Batch 248) — the old
-  // `createDerivedCommand(baseCommand, type, context)` static (a zero-caller
-  // wrapper over the pre-rewrite flag-stamping factories) was removed when
-  // `WebGPUDerivedCommand` became the real descriptor-variant factory.
-  // Renderers call `WebGPUDerivedCommand.deriveDescriptor` /
+  // `WebGPUDerivedCommand` is the descriptor-variant factory. Renderers call
+  // `WebGPUDerivedCommand.deriveDescriptor` and
   // `.resolveVariantPipeline` directly and attach the resulting commands on
   // `derivedCommands.*` for `selectCommandVariant` to dispatch.
 
@@ -3803,8 +3661,8 @@ export class WebGPUSceneRenderer {
       this._boundingVolumeDebugPass.destroy();
       this._boundingVolumeDebugPass = null;
     }
-    // C-R12 (Batch 33) — release the context's invalidation subscriber
-    // so it doesn't outlive this SceneRenderer and keep a dead closure
+    // Release the context's invalidation subscriber so it does not outlive this
+    // renderer and retain a dead closure
     // captured on the context's listener set.
     if (this._deviceInvalidationUnsub) {
       this._deviceInvalidationUnsub();
@@ -3819,10 +3677,9 @@ export class WebGPUSceneRenderer {
 
   // ─── GPU Frustum Culling ───
 
-  // Batch 214 — threshold hysteresis. Each dispatcher uses two
-  // thresholds (HI / LO) and a per-dispatcher `_*Active` state flag.
-  // Activation requires count >= HI; deactivation requires count <
-  // LO. Between LO and HI the previous state holds. This prevents
+  // Each dispatcher uses high and low hysteresis thresholds plus a state flag.
+  // Activation requires the high threshold; deactivation requires a count
+  // below the low threshold. Between them the previous state holds. This prevents
   // dispatch flap when the command count oscillates around a single
   // threshold (typical with LOD / tile streaming at the boundary).
   // The previous single thresholds are kept as `_THRESHOLD` aliases
@@ -3831,20 +3688,18 @@ export class WebGPUSceneRenderer {
   private static readonly GPU_CULL_THRESHOLD = 256;
   private static readonly GPU_CULL_THRESHOLD_HI = 384;
   private static readonly GPU_CULL_THRESHOLD_LO = 192;
-  // B214-N1 (Batch 219) — per-frustum gate state. Each frustum's
-  // hysteresis evolves from its own previous-frame state instead of
+  // Each frustum's gate evolves from its own previous-frame state instead of
   // racing with sibling frustums. Map keyed by frustum index. Stays
   // small (typical 1-4 entries).
-  // B216-N2 — translucent path has its OWN gate based on translucent
-  // command count, not opaque count. A particle-heavy scene with 50
-  // opaque + 5000 translucent commands now activates translucent
-  // GPU cull instead of staying off because opaque was below HI.
+  // The translucent path has its own gate based on translucent command count,
+  // not opaque count. A particle-heavy scene with 50
+  // opaque and 5000 translucent commands therefore activates translucent GPU
+  // culling even when the opaque count is below the high threshold.
   private _gpuCullActiveByFrustum: Map<number, boolean> = new Map();
   private _gpuCullTranslucentActiveByFrustum: Map<number, boolean> = new Map();
-  // Batch 217 — per-frame effectiveness counters. Cumulative
-  // dispatch count + last-frame totals (sum across frustums).
-  // B217-N1/N2 fix (Batch 219) — `_lastFrameInput`/`_lastFrameFiltered`
-  // accumulate across frustums within a frame so multi-frustum scenes
+  // Effectiveness counters include cumulative dispatch count and last-frame
+  // totals. `_lastFrameInput` and `_lastFrameFiltered` accumulate across
+  // frustums within a frame so multi-frustum scenes
   // see the cumulative cull effect, not just the last frustum's slice.
   // `_translucentDispatchCount` separately tracks translucent path.
   private _gpuCullDispatchCount: number = 0;
@@ -3872,8 +3727,8 @@ export class WebGPUSceneRenderer {
    * @param context - WebGPU context with gpuCuller
    * @param cullingVolume - Camera culling volume with planes[]
    * @param effectiveCount - Optional explicit valid-prefix length.
-   *    Batch 209 added this so opaque-pass callers can pass the
-   *    pre-sized `frustumCommands.commands[OPAQUE]` array directly
+   *    This lets opaque-pass callers provide the pre-sized
+   *    `frustumCommands.commands[OPAQUE]` array directly
    *    with the matching `frustumCommands.indices[OPAQUE]` count, with
    *    no per-frame slice allocation in the hot path.
    * @returns Filtered command array (may be same reference if no culling done)
@@ -3890,15 +3745,14 @@ export class WebGPUSceneRenderer {
       typeof effectiveCount === "number"
         ? effectiveCount
         : (commands?.length ?? 0);
-    // Batch 214 — the activation gate (hysteresis) is enforced by
-    // the caller. We still guard against zero/negative counts and
+    // The caller enforces activation hysteresis. This method still guards
+    // against zero or negative counts and
     // missing inputs but the threshold check itself moved upstream.
     if (!commands || count <= 0) {
       return commands;
     }
 
-    // NEW-MULTIFRUSTUM-CULL-RESULTS (Batch 220) — pick the per-
-    // frustum culler instance so multiple frustums in the same frame
+    // Use a per-frustum culler instance so multiple frustums in the same frame
     // don't clobber each other's staging buffers. Frustum 0 reuses
     // the legacy `gpuCuller` (no extra VRAM for single-frustum
     // scenes); frustums 1..N use lazy-allocated instances.
@@ -3947,8 +3801,8 @@ export class WebGPUSceneRenderer {
       return commands;
     }
 
-    // Wave-0 P0 fix — skip re-dispatch + readback for this frustum while its
-    // prior readback is still mapping. `prepareReadback` copies into the
+    // Skip redispatch and readback while this frustum's prior readback is
+    // mapping. `prepareReadback` copies into the
     // readback staging buffer; doing that while a prior `readResults`
     // mapAsync is still pending raises "[Buffer] used in submit while
     // mapped" and invalidates the entire command buffer (dense-scene black
@@ -3959,8 +3813,8 @@ export class WebGPUSceneRenderer {
       culler.dispatch(encoder, count, 0 /* CullMode.VISIBILITY */);
       this._gpuCullDispatchCount++;
 
-      // Async readback — results available next frame, keyed per-
-      // frustum (Batch 220) so each frustum's filter consumes its own
+      // Results become available next frame and are keyed per frustum so each
+      // frustum's filter consumes its own
       // readback instead of racing the others.
       culler.prepareReadback(encoder, count);
       this._gpuCullReadbackInFlight.add(fIdx);
@@ -3976,7 +3830,7 @@ export class WebGPUSceneRenderer {
     }
 
     // Use previous frame's results if available. Output array is
-    // pooled (Batch 213) — the call site reads `filtered.length`
+    // pooled because the call site reads `filtered.length`
     // synchronously inside `executeBatch`, never retains the ref.
     const prev = this._lastCullResultsByFrustum.get(fIdx);
     if (prev && prev.visibilityFlags && prev.objectCount === count) {
@@ -3986,8 +3840,7 @@ export class WebGPUSceneRenderer {
       for (let i = 0; i < count; i++) {
         if (flags[i] === 1) filtered.push(commands[i]);
       }
-      // B217-N1 (Batch 219) + B219-N2 (Batch 223) — accumulate across
-      // frustums in the same frame. Reset is done unconditionally at
+      // Accumulate across frustums in the same frame. Reset is unconditional at
       // the top of `_executeOpaquePass` (frustum 0 entry) so this
       // path no longer needs to gate on a frustum-tick check.
       this._gpuCullLastInput += count;
@@ -3999,11 +3852,9 @@ export class WebGPUSceneRenderer {
   }
 
   /**
-   * Batch 216 — gate-controlled translucent-pass GPU cull. Called
-   * from the extracted translucent-pass module via the host
-   * interface. Internally consults `_gpuCullActive` (the same gate
-   * that drives the opaque path's culling) so on/off behavior is
-   * coordinated. Skipped on pick.
+   * Gate-controlled translucent-pass GPU culling, called through the host
+   * interface by the translucent-pass module. It uses a translucent-specific
+   * per-frustum gate and is skipped during picking.
    *
    * Returns the original `commands` reference when the gate is off,
    * the cullingVolume is missing, or the dispatcher hasn't produced
@@ -4017,12 +3868,12 @@ export class WebGPUSceneRenderer {
     if (config.picking || count <= 0) {
       return { commands, count };
     }
-    // B216-N2 (Batch 219) — translucent gate is independent of the
-    // opaque gate. Activates based on TRANSLUCENT command count, so a
+    // The translucent gate is independent of the opaque gate and activates
+    // from the translucent command count, so a
     // particle-heavy scene with 50 opaque + 5000 translucent commands
     // correctly fires the translucent cull even though the opaque
-    // gate stayed off. Per-frustum hysteresis (B214-N1).
-    // FAR-003: translucent culling is more hazardous than opaque culling
+    // gate stayed off. Each frustum maintains its own hysteresis.
+    // Translucent culling is more hazardous than opaque culling
     // because this call site can run inside an active render pass. It is
     // therefore reachable only through the explicit `always` force mode;
     // `auto` remains opaque-only characterization.
@@ -4063,7 +3914,7 @@ export class WebGPUSceneRenderer {
     return { commands: filtered, count: filtered.length };
   }
 
-  // ─── Translucent-pass GPU cull (Batch 216) ──────────────────────────────
+  // ─── Translucent-pass GPU culling ──────────────────────────────────────
 
   /**
    * Threshold-gated GPU cull for the translucent pass. Mirrors the
@@ -4084,8 +3935,8 @@ export class WebGPUSceneRenderer {
   ): CesiumAnyDrawCommand[] {
     if (!commands || effectiveCount <= 0) return commands;
 
-    // B216-N1 (Batch 218 audit fix) — use the dedicated translucent
-    // culler instance so this pass's `prepareReadback` doesn't
+    // Use the dedicated translucent culler so this pass's `prepareReadback`
+    // does not
     // clobber the opaque pass's pending readback in the same encoder.
     const culler = context.gpuCullerTranslucent;
     if (!culler || !culler.initialized) return commands;
@@ -4140,9 +3991,8 @@ export class WebGPUSceneRenderer {
       for (let i = 0; i < count; i++) {
         if (flags[i] === 1) filtered.push(commands[i]);
       }
-      // B217-N1/N2 (Batch 219) + B219-N2 (Batch 223) — translucent
-      // stats accumulate across frustums separately from opaque.
-      // Reset moved to `_executeOpaquePass` frustum-0 entry.
+      // Translucent statistics accumulate across frustums separately from
+      // opaque statistics and reset at the frustum-zero opaque-pass entry.
       this._gpuCullLastTranslucentInput += count;
       this._gpuCullLastTranslucentFiltered += filtered.length;
       return filtered;
@@ -4150,15 +4000,15 @@ export class WebGPUSceneRenderer {
     return commands;
   }
 
-  // ─── Threshold hysteresis helper (Batch 214) ───────────────────────────
+  // ─── Threshold hysteresis helper ───────────────────────────────────────
 
   /**
    * Update an activation gate with hysteresis. Returns the new
    * active state and stores it on the dispatcher. Call once per
    * frame per dispatcher with the current command count.
    *
-   *   - active && count <  LO  →  deactivate
-   *   - !active && count >= HI →  activate
+   *   - active and below the low threshold: deactivate
+   *   - inactive and at or above the high threshold: activate
    *   - otherwise               →  hold previous state
    *
    * Two-threshold design prevents single-frame flap when count
@@ -4176,7 +4026,7 @@ export class WebGPUSceneRenderer {
     return count >= hi;
   }
 
-  // ─── HiZ occlusion (NEW-HIZ-CONSUME, Batch 210) ─────────────────────────
+  // ─── Hierarchical-Z occlusion ──────────────────────────────────────────
 
   /**
    * Filter opaque commands against the previous-frame HiZ visibility
@@ -4188,32 +4038,31 @@ export class WebGPUSceneRenderer {
     commands: CesiumAnyDrawCommand[],
     count: number,
   ): CesiumAnyDrawCommand[] {
-    // Batch 214 — gate enforcement is upstream (`_hiZActive`).
+    // The caller enforces the `_hiZActive` gate.
     if (count <= 0) return commands;
     const prev = this._lastHiZVisibility;
     if (!prev || prev.count !== count) return commands;
-    // Pooled output (Batch 213) — same lifetime contract as
+    // The pooled output has the same lifetime contract as
     // `gpuCullCommands`: caller consumes synchronously inside
     // `executeBatch`, doesn't retain the ref across frames.
     const flags = prev.flags;
     const filtered = this._hiZFilterPool;
     filtered.length = 0;
     for (let i = 0; i < count; i++) {
-      // C12-37 — preserve explicit non-occludable commands (celestial bodies)
-      // conservatively. Keep them in the producer arrays so result count and
+      // Preserve explicitly non-occludable commands such as celestial bodies.
+      // Keep them in the producer arrays so result count and
       // index identity do not drift; only override the consumer decision.
       if (commands[i].occlude === false || flags[i] === 1) {
         filtered.push(commands[i]);
       }
     }
-    // B217-N1 (Batch 219) + B219-N2 (Batch 223) — accumulate across
-    // frustums. Reset moved to `_executeOpaquePass` frustum-0 entry.
-    // Stats reflect what the test WOULD drop even when consumption is off,
+    // Accumulate across frustums and reset at the frustum-zero opaque-pass
+    // entry. Statistics reflect what the test would drop even when consumption is off,
     // so CesiumDebug.highDensityCull surfaces the (currently inert) hit ratio.
     this._hiZLastInput += count;
     this._hiZLastFiltered += filtered.length;
-    // FAR-003 — gate the actual command drop. Default OFF until result identity
-    // includes its producing frustum/frame/command generation. The toggle
+    // Do not drop commands by default until each result identifies its producing
+    // frustum, frame, and command generation. The toggle
     // remains for A/B regression probes (`CesiumDebug.hiZConsume`).
     if (!this._hiZConsumeEnabled) return commands;
     this._hiZConsumedThisFrame = true;
@@ -4221,16 +4070,15 @@ export class WebGPUSceneRenderer {
   }
 
   /**
-   * NEW-GPU-SORT-PIPELINE Phase 3 (C4-GPU-SORT-PIPELINE-PHASE3) —
-   * consumer for the GPU-produced front-to-back sort order. Applies the
-   * previous frame's bitonic-sort permutation to the RAW opaque command
+   * Consumes the GPU-produced front-to-back sort order. Applies the previous
+   * frame's bitonic-sort permutation to the raw opaque command
    * list, producing a reordered array that is a strict permutation of
    * the same commands (nothing added or dropped).
    *
    * The readback `indices` hold SOA slots and `compactedToOriginal` maps each
    * back to its original command index. Canonical-distance dispatches are
    * all-or-nothing, making this map identity and `skipped` empty, but the
-   * tagged reconstruction protocol remains defensive against old/in-flight
+   * tagged reconstruction remains defensive against old or in-flight
    * results. The permutation therefore indexes the ORIGINAL `commands` array.
    *
    * Only applied when this frame's opaque count matches the count the
@@ -4247,8 +4095,8 @@ export class WebGPUSceneRenderer {
   ): CesiumAnyDrawCommand[] {
     if (count <= 0) return commands;
     if (this._gpuSortConsumeMode === "never") {
-      // Off-gate: byte-identical to the pre-heuristic default — never
-      // reorder. Explicit "auto" + "always" fall through and apply; this
+      // The off gate never reorders. Explicit "auto" and "always" fall through
+      // and apply; this
       // method is only reached when the opaque-count gate is already active.
       return commands;
     }
@@ -4305,8 +4153,8 @@ export class WebGPUSceneRenderer {
   }
 
   /**
-   * NEW-GPU-SORT-PIPELINE Phase 3 — debug snapshot of the last GPU sort
-   * dispatch + readback, for the acceptance probe to verify the GPU
+   * Debug snapshot of the last GPU sort dispatch and readback, allowing probes
+   * to verify that the GPU
    * order matches the CPU comparator. Returns null in production (the
    * capture is pragma-stripped) or before the first readback.
    */
@@ -4326,7 +4174,7 @@ export class WebGPUSceneRenderer {
     count: number,
     frustumCommands?: CesiumFrustumCommands,
   ): void {
-    // Batch 214 — gate enforcement is upstream (`_hiZActive`).
+    // The caller enforces the `_hiZActive` gate.
     if (count <= 0) return;
     if (this._hiZReadbackInFlight) return;
 
@@ -4378,13 +4226,14 @@ export class WebGPUSceneRenderer {
       };
     };
     const encoder = ctxAny._currentCommandEncoder;
-    // FORK-41 ROOT CAUSE (C2-21) — the Hi-Z pyramid MUST read the depth the
-    // scene opaque pass actually writes. The WebGPU renderer renders into
+    // The hierarchical-Z pyramid must read the depth written by the scene
+    // opaque pass. The WebGPU renderer renders into
     // `_sceneFramebuffer` (post-process is mandatory), so the opaque depth
-    // lands in the scene framebuffer's depth attachment, NOT the context's
+    // lands in the scene framebuffer's depth attachment, not the context's
     // default `_depthTexture`. Reading `context.depthOnlyTextureView` (the
-    // default depth) gave an UNWRITTEN, clear=1.0 texture → the pyramid was
-    // all-FAR → `sphereNearZ > maxHiZ` never held → hitRatio pinned to 0
+    // default depth) supplies an unwritten, clear-value 1.0 texture, making the
+    // pyramid entirely far depth. Then `sphereNearZ > maxHiZ` never holds and
+    // the hit ratio remains zero
     // regardless of how correct the OcclusionTest math was. Source the same
     // sampleable depth the velocity / AO / DoF compute passes bind
     // (`_sceneFramebuffer.depthSampleableView`, MSAA-resolved to sampleCount 1
@@ -4445,20 +4294,20 @@ export class WebGPUSceneRenderer {
     const vp = us?.viewProjection;
     if (!vp) return;
 
-    // B210-N2 (Batch 213) — prefer the per-frustum near/far that the
-    // caller forwarded from `frustumCommands` over the uniformState
+    // Prefer the per-frustum near and far values forwarded through
+    // `frustumCommands` over the uniform-state
     // values, which `Scene.executeCommands` overwrites after the
     // last frustum iteration. Tighter bounds = more aggressive
     // occlusion test. Fallback chain: per-frustum → uniformState →
     // loose default. The loose default still produces correct
     // visibility (just less aggressive culling).
-    // FORK-41 (Batch 291) — log-depth reconciliation. The Hi-Z pyramid is
-    // built from the depth attachment, which the renderer-wide log-depth
+    // The hierarchical-Z pyramid is built from the depth attachment, which the
+    // renderer-wide logarithmic-depth
     // buffer writes in log space. Forward `useLogDepth` + the precomputed
-    // czm_oneOverLog2FarDepthFromNearPlusOne so the occlusion-test WGSL
-    // encodes the sphere's nearest depth into the SAME space. Without this
+    // `czm_oneOverLog2FarDepthFromNearPlusOne` value so the occlusion-test WGSL
+    // encodes the sphere's nearest depth into the same space. Without this
     // the comparison is linear-vs-log and collapses to all-visible
-    // (hitRatio=0 — measured pre-fix). `nearPlane` here MUST be the frustum
+    // and produces a zero hit ratio. `nearPlane` must be the frustum
     // near used by the depth write so the log encoding matches; we already
     // forward the per-frustum near above.
     const logDepthEnabled = us?.frameState?.useLogDepth === true;
@@ -4468,16 +4317,15 @@ export class WebGPUSceneRenderer {
     // from THIS frustum's near/far rather than reading the shared
     // uniformState scalar. `Scene.executeCommands` advances uniformState to
     // the last frustum after the split loop, so the cached scalar can be
-    // stale relative to `frustumCommands` (the same B210-N2 reason the
-    // near/far above prefer frustumCommands). `UniformState.updateFrustum`
+    // stale relative to `frustumCommands`. `UniformState.updateFrustum`
     // computes exactly `1 / log2((far - near) + 1)`, so we match it here.
     let logDepthFactor = 0.0;
     if (logDepthEnabled && farPlane > nearPlane) {
       const log2Far = Math.log2(farPlane - nearPlane + 1.0);
       logDepthFactor = log2Far > 0.0 ? 1.0 / log2Far : 0.0;
     }
-    // FORK-41 (C2-21) — when the scene framebuffer is MSAA, `depthView` above
-    // is the resolved r16float color view (a `texture_2d<f32>`), NOT a depth
+    // With MSAA, `depthView` is the resolved `r16float` color view, a
+    // `texture_2d<f32>` rather than a depth
     // texture. Tell the dispatcher so mip 0 uses the texture_2d pipeline.
     const mip0IsDepthFormat =
       depthView !== this._sceneFramebuffer?.depthSampleableView ||
@@ -4493,8 +4341,8 @@ export class WebGPUSceneRenderer {
       mip0IsDepthFormat,
     };
 
-    // B210-D1 (Batch 213) — pass the frame counter so per-frustum
-    // dispatches in the same frame share one pyramid build.
+    // Pass the frame counter so per-frustum dispatches in the same frame share
+    // one pyramid build.
     const frameId = us?.frameState?.frameNumber ?? -1;
     const ok = fr.dispatch(
       encoder,
@@ -4525,13 +4373,13 @@ export class WebGPUSceneRenderer {
       });
   }
 
-  // ─── GPU sort keys (NEW-GPUSORTKEYS-CONSUME, Batch 211) ─────────────────
+  // ─── GPU sort keys ─────────────────────────────────────────────────────
 
   /**
-   * Threshold-gated GPU sort-key generation. Dispatched after the
-   * opaque pass to overlap with rasterization. Phase 1 wire-in only —
-   * the keys are generated but no GPU sort pipeline consumes them
-   * yet (JS sort is still authoritative for command ordering).
+   * Threshold-gated GPU sort-key generation, dispatched after the opaque pass
+   * to overlap with rasterization. A bitonic pass sorts the generated keys and
+   * returns a tagged permutation for next-frame consumption. JavaScript order
+   * remains authoritative when the list cannot be represented by GPU keys.
    *
    * Returns true if a dispatch was issued, false otherwise (below
    * threshold, missing FR, no encoder, no camera state).
@@ -4541,7 +4389,7 @@ export class WebGPUSceneRenderer {
     commands: CesiumAnyDrawCommand[],
     count: number,
   ): boolean {
-    // Batch 214 — gate enforcement is upstream (`_gpuSortActive`).
+    // The caller enforces the `_gpuSortActive` gate.
     if (count <= 0) return false;
     for (let i = 0; i < count; i++) {
       if (!isCommandOrderingGPUEncodable(commands[i])) {
@@ -4567,8 +4415,7 @@ export class WebGPUSceneRenderer {
               sortMode: number;
             },
           ) => boolean;
-          // Batch 228 Phase 2 — sort + readback chain. Phase 3
-          // (C4-GPU-SORT-PIPELINE-PHASE3) added the tag-paired ring.
+          // The sort and readback chain uses a tag-paired ring.
           runBitonicSort?: (
             encoder: GPUCommandEncoder,
             count: number,
@@ -4623,8 +4470,8 @@ export class WebGPUSceneRenderer {
       };
       this._sortKeysSoA = soa;
     }
-    // Phase 3 (C4-GPU-SORT-PIPELINE-PHASE3) — build the compaction map
-    // alongside the SOA. The live GPU path now requires every command to
+    // Build the compaction map alongside the structure-of-arrays inputs. The
+    // live GPU path requires every command to
     // expose the same finite `boundingVolume.distanceSquaredTo(camera)` term
     // the CPU comparator uses. A list containing an unsortable command stays
     // entirely on the CPU; no center-distance approximation or partial-list
@@ -4684,9 +4531,8 @@ export class WebGPUSceneRenderer {
     if (!ok) return false;
     this._sortKeysDispatches++;
 
-    // NEW-GPU-SORT-PIPELINE Phase 3 (C4-GPU-SORT-PIPELINE-PHASE3) — chain
-    // the bitonic sort + deferred-ring readback. The compaction map for
-    // THIS dispatch is snapshotted and passed as the readback `tag` so
+    // Chain the bitonic sort and deferred-ring readback. Snapshot this
+    // dispatch's compaction map and pass it as the readback `tag` so
     // the decoded indices (surfaced 1-2 frames later by the ring) stay
     // paired with the exact compaction that produced them. Each frame we
     // then pull the latest decoded pair and store it in
@@ -4700,7 +4546,7 @@ export class WebGPUSceneRenderer {
       if (sortOk) {
         // Snapshot the compaction map for this dispatch. The scratch
         // arrays are reused next frame, so copy the valid slice + the
-        // skipped list; the ring surfaces this decode on a LATER frame.
+        // skipped list; the ring surfaces this decode on a later frame.
         const c2oSnapshot = compactedToOriginal.slice(0, valid);
         const skippedSnapshot = skipped.slice();
         const tag: GpuSortReadbackTag = {
@@ -4731,7 +4577,7 @@ export class WebGPUSceneRenderer {
         fr.prepareIndicesReadback(encoder, valid, tag);
 
         // Pull the latest decoded pair (may be from a prior frame). The
-        // ring guarantees indices + tag come from the SAME dispatch.
+        // ring guarantees the indices and tag come from the same dispatch.
         const latest = fr.latestSortedIndices();
         if (latest && latest.indices) {
           const t = latest.tag as GpuSortReadbackTag | null;
@@ -4756,11 +4602,11 @@ export class WebGPUSceneRenderer {
     return true;
   }
 
-  // ─── High-density cull diagnostic surface (Batch 217) ──────────────────
+  // ─── High-density cull diagnostic surface ──────────────────────────────
 
   /**
-   * FAR-003 safety-policy snapshot. This deliberately reads only already-owned
-   * renderer/context state: diagnostics must not trigger lazy feature-renderer,
+   * Safety-policy snapshot that deliberately reads only already-owned renderer
+   * and context state. Diagnostics must not trigger lazy feature-renderer,
    * culler, indirect-manager, or OIT allocation.
    */
   getContainmentStats(): {
@@ -5031,8 +4877,7 @@ export class WebGPUSceneRenderer {
         thresholdHi: WebGPUSceneRenderer.GPU_SORT_KEYS_THRESHOLD_HI,
         thresholdLo: WebGPUSceneRenderer.GPU_SORT_KEYS_THRESHOLD_LO,
         dispatches: this._sortKeysDispatches,
-        // Phase 3 (C4-GPU-SORT-PIPELINE-PHASE3) — consumer state.
-        // `consumeMode` surfaces the explicit comparison policy;
+        // `consumeMode` surfaces the explicit consumer policy;
         // `consumeEnabled` stays true whenever the mode is not "never".
         consumeMode: this._gpuSortConsumeMode,
         consumeEnabled: this.gpuSortConsumeEnabled,
@@ -5045,8 +4890,8 @@ export class WebGPUSceneRenderer {
   }
 
   /**
-   * NEW-SHADOW-CAST-GPU-CULL-PHASE-2 (Batch 226) — read the per-
-   * cascade GPU cull stats from the CSM renderer's host fields and
+   * Reads per-cascade GPU culling statistics from the cascaded-shadow-map
+   * renderer's host fields and
    * format them for `getHighDensityCullStats()`. Returns zero/empty
    * shape when no CSM renderer is attached (e.g., scene without
    * `useCascadedShadowMaps`), so consumers can read the field
@@ -5103,7 +4948,7 @@ export class WebGPUSceneRenderer {
     };
   }
 
-  // ─── R-7a CPU pass profiler accessors ──────────────────────────────────
+  // CPU pass profiler accessors.
 
   /**
    * Toggle the CPU-side per-pass recording-cost profiler. Off by default and

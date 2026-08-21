@@ -1,45 +1,27 @@
 /// <reference types="@webgpu/types" />
 /**
- * Forward+ clustered-lighting per-frame orchestration extracted from
- * `WebGPUSceneRenderer`.
+ * Per-frame Forward+ clustered-lighting orchestration for WebGPU scene
+ * rendering.
  *
- * Slice (god-object decomposition) of the audit-recommended
- * SceneRenderer break-up — see
- * `migration_doc/WEBGPU_CONTEXT_DECOMPOSITION_PLAN.md`. This is a pure
- * move + delegate (ZERO behavior change): the two methods
- * `_dispatchClusteredLighting` and `_getClusteredLightingBuffers`
- * moved here verbatim as free functions over a minimal `host` surface.
- *
- * # What this slice owns
- *
- * The once-per-frame Forward+ clustered-lighting compute hook (Slice 5d
- * Batch 151). It:
+ * The orchestration:
  *
  *   1. Returns before dispatcher allocation when clustered lighting is
- *      disabled. Once enabled, lazily constructs the dispatcher (the device
- *      wasn't available at SceneRenderer construction time).
- *   2. Walks `scene.lights` (+ a documented future hook for per-model
- *      glTF KHR_lights_punctual lights) into a world-space light list.
- *   3. Ends the active canvas render pass before issuing enabled compute
- *      work (beginComputePass on a locked encoder is a validation error —
- *      same family as BUG-MIPMAP-DURING-CANVAS-PASS), dispatches, then
- *      resumes the default pass. Stable disabled frames do none of this.
- *   4. Stashes the dispatcher's GPU buffer handles + an "is contributing
- *      this frame" boolean on the context so material pipelines can bind
- *      them at draw time without threading the dispatcher through every
- *      render path.
+ *      disabled. Once enabled, it lazily constructs the dispatcher because
+ *      the device is unavailable when the scene renderer is constructed.
+ *   2. Converts `scene.lights` into world-space punctual and area-light lists.
+ *      Per-model glTF lights remain excluded because their model-space values
+ *      require each model's transform before eye-space packing.
+ *   3. Ends the active canvas render pass before enabled compute work because
+ *      a command encoder cannot begin a compute pass while a render pass is
+ *      open, then resumes the default render pass after dispatch. Stable
+ *      disabled frames do none of this.
+ *   4. Publishes the dispatcher's GPU buffer handles and a per-frame activity
+ *      flag on the context so material pipelines can bind the data without
+ *      threading the dispatcher through every render path.
  *
- * # Host surface
- *
- * The functions reach back into the owning SceneRenderer for exactly
- * three pieces of state (verified by grep pre-extraction):
- *   - `_clusteredLightingDispatcher` — lazily owned dispatcher instance
- *     (read + assign-on-first-call).
- *   - `_viewportWidth` / `_viewportHeight` — current scaled viewport,
- *     passed to the dispatcher as cluster-grid dimensions.
- *
- * Everything else flows through `config` (scene + context) and the
- * dispatcher's own public getters.
+ * The host surface contains only the lazily owned dispatcher and the current
+ * scaled viewport dimensions. All other inputs flow through `config`, and
+ * buffer access flows through the dispatcher's public getters.
  *
  * @module WebGPUSceneRendererClusteredLighting
  */
@@ -54,19 +36,18 @@ export interface ClusteredLightingBuffers {
   perClusterLightCount: GPUBuffer;
   perClusterLightIndices: GPUBuffer;
   params: GPUBuffer;
-  // C6-LTC-AREA-LIGHTS — analytic area-light resources. `ltcLUTView` is
-  // null until the dispatcher lazily builds the LUT on first area light;
-  // consumers fall back to the placeholder LUT then. No sampler — the LUT
-  // is read via textureLoad in the FS.
+  // The analytic area-light LUT remains null until the dispatcher builds it
+  // for the first area light. Consumers bind the placeholder LUT until then.
+  // The fragment shader reads the LUT with textureLoad, so no sampler is needed.
   areaLights: GPUBuffer;
   ltcLUTView: GPUTextureView | null;
 }
 
 /**
- * Minimal SceneRenderer surface the clustered-lighting slice reaches
- * back to. The dispatcher field is owned by the host (its lifetime
- * matches the renderer / device); this slice lazily constructs it and
- * reads it on subsequent frames.
+ * Minimal SceneRenderer surface used by clustered-lighting orchestration. The
+ * dispatcher field is owned by the host because its lifetime matches the
+ * renderer and device; this module constructs it lazily and reads it on
+ * subsequent frames.
  */
 export interface ClusteredLightingHost {
   _clusteredLightingDispatcher: WebGPUClusteredLightingDispatcher | null;
@@ -87,24 +68,20 @@ interface ClusteredLightingContextState {
 const _disabledClusteredLightingHosts = new WeakSet<ClusteredLightingHost>();
 
 /**
- * Slice 5d Batch 151 — Forward+ clustered lighting per-frame hook.
- * Walks scene.lights + every visible model.lightsFromGltf, hands
- * the world-space list to the WebGPUClusteredLightingDispatcher
- * along with the current frame's view + projection matrices. The
- * dispatcher transforms positions/directions to eye-space, packs
- * into the WGSL ClusteredLight layout, and records both compute
- * passes into the active command encoder.
+ * Dispatches Forward+ clustered lighting for the current frame. Scene-level
+ * lights and the current view and projection data are passed to the dispatcher,
+ * which transforms positions and directions to eye space, packs the WGSL
+ * `ClusteredLight` layout, and records both compute passes on the active command
+ * encoder.
  *
- * Called early in executeCommands (after _ensureResources, before
- * any consumer draw) so the storage buffers are ready when Model
- * PBR / Lit Mat consumers (Batch 153+, merged into group 3 effects)
- * read them.
+ * This runs after resource setup and before consumer draws so the storage
+ * buffers are ready for model and lit-material pipelines.
  *
- * Inert when scene.clusteredLightingEnabled === false. After a true-to-false
- * transition, an existing dispatcher receives one zero-count params write;
- * subsequent disabled frames return before GPU allocation or queue traffic.
- * With the feature enabled but no configured lights, the dispatcher publishes
- * activeLightCount=0 and consumer FS chunks skip the cluster read entirely.
+ * When `scene.clusteredLightingEnabled` is false, a dispatcher that was active
+ * receives one zero-count parameter write; subsequent disabled frames return
+ * before GPU allocation or queue traffic. When the feature is enabled without
+ * configured lights, `activeLightCount` is zero and fragment shaders skip the
+ * cluster read.
  */
 export function dispatchClusteredLighting(
   host: ClusteredLightingHost,
@@ -180,12 +157,10 @@ export function dispatchClusteredLighting(
     );
   }
 
-  // End the active canvas render pass before issuing compute work.
-  // beginComputePass() on the main encoder while a render pass is
-  // open triggers a "encoder is locked" validation error — same
-  // family as Batch 144's CesiumMan startup race
-  // (BUG-MIPMAP-DURING-CANVAS-PASS). Resume the default pass
-  // afterwards so the rest of executeCommands continues seamlessly.
+  // End the active canvas render pass before issuing compute work. Beginning a
+  // compute pass while a render pass is open locks the encoder and fails
+  // validation. Resume the default pass afterward so command execution can
+  // continue with the render pass it expects.
   context.endCurrentRenderPass?.();
   const encoder = context._currentCommandEncoder;
   if (!encoder) {
@@ -205,7 +180,7 @@ export function dispatchClusteredLighting(
     outerConeAngle?: number;
     spotDirWC?: { x: number; y: number; z: number };
   }> = [];
-  // C6-LTC-AREA-LIGHTS — parallel world-space area-light list.
+  // Area lights use a parallel world-space list for analytic evaluation.
   const areaLights: Array<{
     lightType: number;
     positionWC: { x: number; y: number; z: number };
@@ -246,9 +221,8 @@ export function dispatchClusteredLighting(
         };
         if (L?.enabled === false) continue;
         const lt = L?.lightType ?? 0;
-        // C6-LTC-AREA-LIGHTS — RECT_AREA (3) / DISK_AREA (4) route to the
-        // separate analytic area-light list, not the clustered punctual
-        // path.
+        // Rectangle and disk lights use the separate analytic area-light list
+        // instead of the clustered punctual-light path.
         if (lt === 3 || lt === 4) {
           const isDisk = lt === 4;
           areaLights.push({
@@ -290,13 +264,10 @@ export function dispatchClusteredLighting(
         });
       }
     }
-    // glTF KHR_lights_punctual lights per model — walk the scene's
-    // primitives + collect lightsFromGltf. Each model's lights are
-    // already in model space; the dispatcher's per-light pack
-    // multiplies by viewMatrix to land in eye-space. For non-trivial
-    // model transforms a separate per-model matrix multiply would
-    // be needed — left for a follow-up batch since the typical
-    // scene.lights path covers the common case.
+    // Per-model `KHR_lights_punctual` lights are not appended here because
+    // their positions and directions are in model space. Supporting them
+    // requires applying each model's transform before the dispatcher applies
+    // the view transform. Scene-level lights cover the current path.
   }
 
   const uniformState = context.uniformState as unknown as {
@@ -307,20 +278,17 @@ export function dispatchClusteredLighting(
   const inverseProjection = uniformState?.inverseProjection;
   const viewMatrix = uniformState?.view;
   if (!inverseProjection || !viewMatrix) {
-    // Frame state not ready (e.g., empty pick pass). Skip — but first
-    // resume the default canvas pass we ended at :120 above, otherwise
-    // the rest of executeCommands (shadow casts, scene render) runs with
-    // no active render pass, producing a "no active render pass"
-    // validation error and a dropped frame.
+    // Frame state can be unavailable for an empty pick pass. Resume the default
+    // canvas pass before returning; otherwise shadow and scene commands run
+    // without an active render pass, fail validation, and drop the frame.
     context.resumeDefaultRenderPass?.();
     return;
   }
 
-  // Camera frustum near/far. Use the scene's outermost frustum (the
-  // multi-frustum loop's first slice is the closest near, last is
-  // the farthest far — collapsing here means cluster bounds span
-  // the full visible depth range). Per-frustum-slice cluster bounds
-  // are a future optimization.
+  // Use the scene's outermost frustum: the first multi-frustum slice has the
+  // closest near plane and the last has the farthest far plane, so the cluster
+  // bounds span the full visible depth range. Per-slice cluster bounds would
+  // reduce that range but are not computed here.
   const cam = (
     scene as unknown as {
       camera?: { frustum?: { near?: number; far?: number } };
@@ -341,17 +309,13 @@ export function dispatchClusteredLighting(
     areaLights,
   });
 
-  // Slice 5d Batch 153 — Stash the dispatcher's GPU buffers on the
-  // context so material pipelines (Model PBR + future Lit Mat
-  // shaders) can pass them to `createEffectsBindGroup` at draw time
-  // without threading the dispatcher through every render path. The
-  // buffer handles don't change frame-to-frame (only their contents),
-  // so the effects bind group cache hits on the resource-identity key
-  // and only allocates a fresh (UBO + BG) pair the first time these
-  // appear. When the dispatcher hasn't run yet OR clustered lighting
-  // is disabled, callers can omit `options.clusteredLighting` and the
-  // effects bind group falls back to per-device placeholders (whose
-  // `params.activeLightCount = 0` makes the FS chunk early-out).
+  // Publish stable buffer handles on the context so material pipelines can
+  // pass them to `createEffectsBindGroup` without threading the dispatcher
+  // through every render path. Only the contents change between frames, so the
+  // effects bind-group cache can reuse its resource-identity entry. Before the
+  // dispatcher runs, or while lighting is disabled, callers omit the option and
+  // bind per-device placeholders whose zero active-light count skips the
+  // fragment-shader cluster work.
   const d = host._clusteredLightingDispatcher;
   ctxStash._clusteredLightingBuffers = {
     clusterLights: d.clusterLightsBuffer,
@@ -359,18 +323,15 @@ export function dispatchClusteredLighting(
     perClusterLightCount: d.perClusterLightCountBuffer,
     perClusterLightIndices: d.perClusterLightIndicesBuffer,
     params: d.paramsBuffer,
-    // C6-LTC-AREA-LIGHTS — area-light storage + lazily-built LUT.
+    // Area-light storage and its lazily built lookup texture.
     areaLights: d.areaLightsBuffer,
     ltcLUTView: d.ltcLUTView,
   };
-  // Slice 5d Batch 154 — CPU-side "is clustered lighting contributing
-  // this frame" flag. Consumers that have a cheap no-effects fast path
-  // (the shared primitive effects bind group) gate on this so they only
-  // skip the placeholder when there are actually active lights. The
-  // Model PBR path passes the buffers unconditionally (it always builds
-  // an active effects BG anyway) and relies on params.activeLightCount=0
-  // for the FS early-out; primitives need the boolean to preserve their
-  // placeholder fast path when clustered lighting is off / empty.
+  // This flag lets consumers with a no-effects fast path avoid replacing their
+  // shared placeholder unless lights actually contribute. Model PBR always
+  // builds an active effects bind group and relies on a zero active-light count
+  // for the fragment-shader early return; primitives need the boolean to retain
+  // their placeholder path when clustered lighting is disabled or empty.
   ctxStash._clusteredLightingActive = enabled && d.lastActiveLightCount > 0;
 
   // Resume the default canvas render pass so the rest of
@@ -380,14 +341,9 @@ export function dispatchClusteredLighting(
 }
 
 /**
- * Public accessor for the clustered-lighting dispatcher's GPU
- * buffers. Consumer pipelines (Model PBR + Lit Mat shaders, when
- * wired in Batch 153+ via group 3 effects merge) call this to obtain
- * handles for their bind groups.
- *
- * Returns null when the dispatcher hasn't been constructed yet
- * (first frame before any executeCommands call) — caller should
- * use placeholder buffers in that case.
+ * Returns the clustered-lighting dispatcher's GPU buffers for consumer bind
+ * groups. Returns null before the dispatcher is constructed, in which case the
+ * caller must bind placeholder resources.
  */
 export function getClusteredLightingBuffers(
   host: ClusteredLightingHost,

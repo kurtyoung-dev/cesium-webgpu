@@ -58,18 +58,18 @@ export interface WebGPURenderTargetDescriptor {
   mipLevelCount?: number;
 
   /**
-   * Whether the depth attachment should be sampleable as a texture in
-   * subsequent passes. Adds `TEXTURE_BINDING` to the depth texture usage
-   * and creates a `aspect: "depth-only"` view via {@link WebGPURenderTarget.getDepthSampleableView}.
+   * Whether the depth attachment should be readable by subsequent passes.
+   * Adds `TEXTURE_BINDING` to the depth texture usage and creates an
+   * `aspect: "depth-only"` view.
    *
-   * Cost: forces `storeOp: "store"` on the depth attachment (negates the
-   * TBDR mobile-GPU `discard` optimization). Use only when downstream
-   * passes actually need the depth — depth-as-color debug overlay, soft
-   * particles, depth-aware post-processing, etc.
+   * Cost: adds binding usage to the depth texture. Under MSAA it also allocates
+   * a single-sample color target and requires a fullscreen conversion pass.
+   * Use only when downstream passes need depth.
    *
-   * Note: incompatible with MSAA depth — multisampled depth textures
-   * cannot be sampled in WGSL. When `sampleCount > 1` this flag is
-   * silently ignored and the depth view stays non-sampleable.
+   * For MSAA, the depth-only view feeds a conversion pass that writes sample
+   * zero into a single-sample `r16float` color target. In that mode
+   * {@link WebGPURenderTarget.getDepthSampleableView} returns the converted
+   * color view rather than the multisampled depth view.
    *
    * Default: false.
    */
@@ -103,13 +103,11 @@ export class WebGPURenderTarget {
   // Depth-only aspect view for sampling (only created when depthSamplable=true)
   private _depthSampleableView?: GPUTextureView;
 
-  // Slice 5c-B Batch 128 — MSAA depth resolve target. Allocated when
-  // sampleCount > 1 AND depthSamplable === true. Each frame a
-  // depth-only render pass samples MSAA depth (sample 0) and writes
-  // via `@builtin(frag_depth)` to this single-sample depth32float
-  // attachment, then `getDepthSampleableView()` returns the resolved
-  // view in place of the MSAA aspect view. Consumers (env effects, AO,
-  // DoF) keep their `texture_depth_2d` bindings unchanged.
+  // MSAA depth-conversion target, allocated when `sampleCount > 1` and
+  // `depthSamplable` is true. Each frame a fullscreen pass reads sample zero
+  // from multisampled depth and writes it through `@location(0)` to this
+  // single-sample `r16float` color attachment. Downstream consumers must bind
+  // the returned view as `texture_2d<f32>`, not `texture_depth_2d`.
   private _msaaDepthResolveTexture: GPUTexture | null = null;
   private _msaaDepthResolveAttachmentView: GPUTextureView | null = null;
   private _msaaDepthResolveSampleableView: GPUTextureView | null = null;
@@ -203,9 +201,8 @@ export class WebGPURenderTarget {
         // (depth comparison) or `textureLoad` (raw depth). Multisample
         // depth can only be read via `textureLoad` (per-sample fetch).
         // Both paths still require `TEXTURE_BINDING` on the underlying
-        // texture so the bind group can attach it — without the bit,
-        // `GlobeDepth-DepthCopy-MSAA-BindGroup` creation fails with
-        // "usage doesn't include TextureBinding" (Session 65 Batch 4).
+        // texture so the bind group can attach it. Without this bit, bind-group
+        // creation fails because the texture lacks `TEXTURE_BINDING` usage.
         depthUsage |= GPUTextureUsage.TEXTURE_BINDING;
         // Sampleable depth textures are also the source of
         // `copyTextureToTexture` in
@@ -245,12 +242,12 @@ export class WebGPURenderTarget {
         });
       }
 
-      // Slice 5c-B Batch 128 — allocate the MSAA depth resolve target
-      // when sampleable + MSAA. The aspect view above is still
+      // Allocate the MSAA depth-conversion target when downstream sampling is
+      // requested. The aspect view above is still
       // multisampled (texture_depth_multisampled_2d-compatible only);
-      // env effects + AO + DoF need a real single-sample sampleable
-      // depth view. Each frame `resolveDepthMSAA(encoder)` reads
-      // sample 0 of the MSAA depth via a fullscreen FS pass and
+      // Environmental effects, ambient occlusion, and depth of field need a
+      // single-sample view. Each frame `resolveDepthMSAA(encoder)` reads
+      // sample zero of the MSAA depth via a fullscreen fragment pass and
       // writes it to this r16float texture's @location(0). Format
       // choice rationale: r16float is filterable-float-compatible
       // (matches AO's existing BGL declaration); depth32float would
@@ -279,8 +276,8 @@ export class WebGPURenderTarget {
   }
 
   /**
-   * Slice 5c-B Batch 128 — dispatch the MSAA depth resolve render pass.
-   * No-op when MSAA isn't on (single-sample depth is already
+   * Dispatches the MSAA depth-conversion render pass. No-op when MSAA is not
+   * enabled (single-sample depth is already
    * sampleable via the aspect view) or when the depth attachment
    * isn't sampleable (`depthSamplable: true` not set on descriptor).
    * Caller (SceneFramebuffer or SceneRenderer) calls this once per
@@ -309,13 +306,11 @@ export class WebGPURenderTarget {
    *
    * @param clearValues - Optional clear values for each attachment
    * @param options - Optional behavior flags. `resolve` (default `true`)
-   *   controls whether an MSAA `resolveTarget` is baked onto each attachment.
-   *   C10-03-MSAA-BOUNDARY-BYTES: the scene-FB pass-open sites pass
-   *   `resolve:false` so intermediate segments do NOT eagerly resolve at every
-   *   `pass.end()`; a single demand-driven `createColorResolvePassDescriptor`
-   *   pass resolves scene color only when a consumer reads it. Default `true`
-   *   keeps every unmigrated caller (`renderPassDescriptor`,
-   *   `getClearPassDescriptor`) byte-identical.
+   *   controls whether an MSAA `resolveTarget` is attached. Scene-framebuffer
+   *   pass-open sites can pass `resolve:false` to avoid resolving intermediate
+   *   segments at every `pass.end()`; a demand pass then resolves color before
+   *   a consumer reads it. The default gives callers that do not opt into
+   *   elision a populated single-sample target at pass end.
    * @returns Array of color attachment descriptors
    */
   getColorAttachments(
@@ -331,9 +326,9 @@ export class WebGPURenderTarget {
         storeOp: "store" as const,
       };
 
-      // Add resolve target if MSAA is enabled AND the caller wants the
-      // eager per-segment resolve. C10-03: scene-FB segments open with
-      // `resolve:false` and defer the resolve to a demand pass.
+      // Add a resolve target when MSAA is enabled and the caller wants the
+      // per-segment resolve. Scene-framebuffer segments may pass
+      // `resolve:false` and defer this work to a demand pass.
       if (withResolve && this.resolveTargets.length > 0) {
         descriptor.resolveTarget = this.resolveTargets[index].view;
       }
@@ -343,9 +338,9 @@ export class WebGPURenderTarget {
   }
 
   /**
-   * C10-03-MSAA-BOUNDARY-BYTES — build a zero-draw, single-color-attachment
-   * render pass descriptor that resolves the multisampled color attachment
-   * (index 0) into its single-sample resolve target. Used by
+   * Builds a zero-draw, single-color-attachment render-pass descriptor that
+   * resolves multisampled color attachment zero into its single-sample target.
+   * Used by
    * `WebGPUSceneRenderer._ensureSceneColorResolved` to perform the
    * demand-driven "resolve-on-consume" once per frame, replacing the eager
    * per-segment resolves elided via `getColorAttachments({ resolve:false })`.
@@ -353,9 +348,9 @@ export class WebGPURenderTarget {
    * `loadOp:"load"` preserves the accumulated MSAA color; `storeOp:"store"`
    * is mandatory — later scene segments resume with color `loadOp:"load"`, so
    * a `"discard"` here would destroy the accumulated scene. No depth-stencil
-   * attachment and NO MRT slot-1: a pass with zero draws carries no
+   * attachment and no MRT slot 1: a pass with zero draws carries no
    * pipeline-compat constraints, and slot-1 (G-buffer) resolves are a separate
-   * concern (owned by `buildMrtSlot1Attachment` / C9-10).
+   * concern owned by `buildMrtSlot1Attachment`.
    *
    * @returns The resolve-only descriptor, or `null` when there is no MSAA
    *   resolve target (single-sample) or the target is not single-color
@@ -387,14 +382,11 @@ export class WebGPURenderTarget {
   /**
    * Get depth/stencil attachment descriptor for render pass.
    *
-   * CRITICAL — the load/store ops MUST be overridable. Before this was
-   * parameterized, `depthLoadOp` was hard-coded to `"clear"` and every
-   * caller that reopened the scene framebuffer pass silently wiped the
-   * depth buffer. That broke multi-frustum accumulation AND made the
-   * depth-as-color debug overlay sample an all-1.0 depth texture (the
-   * "everything magenta" symptom). When reopening a pass to preserve
-   * prior-frustum depth or to sample depth in a subsequent pass, pass
-   * `depthLoadOp: "load"`.
+   * Load and store operations are caller-selectable because a reopened scene
+   * pass must preserve depth accumulated by earlier frustums. Such callers
+   * must pass `depthLoadOp: "load"`; clearing on reopen would erase that depth
+   * and leave depth-sampling overlays with the clear value instead of scene
+   * geometry.
    *
    * @param depthClearValue - Depth clear value (default: 1.0)
    * @param stencilClearValue - Stencil clear value (default: 0)
@@ -440,7 +432,8 @@ export class WebGPURenderTarget {
    * @returns Color texture or undefined
    */
   getColorTexture(index: number = 0): GPUTexture | undefined {
-    // If MSAA is enabled, return resolve target (which can be sampled)
+    // Under MSAA, return the single-sample resolve allocation. The caller must
+    // ensure a resolving pass has populated it before reading.
     if (this.resolveTargets.length > 0) {
       return this.resolveTargets[index]?.texture;
     }
@@ -464,7 +457,9 @@ export class WebGPURenderTarget {
   }
 
   /**
-   * Get depth texture (cannot be sampled with depth24plus format)
+   * Gets the underlying depth attachment texture. Downstream readers should
+   * use {@link getDepthSampleableView}, whose representation accounts for the
+   * target's sample count.
    *
    * @returns Depth texture or undefined
    */
@@ -494,25 +489,20 @@ export class WebGPURenderTarget {
   }
 
   /**
-   * Get the depth-only aspect view for sampling. Returns undefined unless
-   * the descriptor opted in via `depthSamplable: true` AND the depth
-   * texture is single-sample (multisampled depth can't be sampled).
+   * Gets the single-sample view for downstream depth reads. Returns undefined
+   * unless the descriptor opted in via `depthSamplable: true`.
    *
-   * Bind this view to a `texture_depth_2d` in WGSL — the regular
-   * attachment view (depth+stencil aspect) is not valid for that binding.
+   * In single-sample mode this is a depth-only aspect view for
+   * `texture_depth_2d`. In MSAA mode it is the `r16float` color target produced
+   * by {@link resolveDepthMSAA} and must be bound as `texture_2d<f32>`.
    *
    * @returns Sampleable depth view or undefined
    */
   getDepthSampleableView(): GPUTextureView | undefined {
-    // Slice 5c-B Batch 128 — when MSAA is on AND we've allocated a
-    // resolve target, return its single-sample sampleable view so
-    // consumers (env effects, AO, DoF, gBuffer-producer single-sample
-    // path) bind a `texture_depth_2d`-compatible view. The original
-    // aspect view on the MSAA depth texture is still multisampled and
-    // would trip "Sample count doesn't match expectation" at bind
-    // time. Caller is responsible for invoking `resolveDepthMSAA`
-    // each frame so this view is populated with the current frame's
-    // depth.
+    // Under MSAA, return the single-sample `r16float` conversion target. The
+    // original depth-aspect view remains multisampled and is valid only for a
+    // `texture_depth_multisampled_2d` binding. The caller must invoke
+    // `resolveDepthMSAA` each frame before consumers read this color view.
     if (this._msaaDepthResolveSampleableView) {
       return this._msaaDepthResolveSampleableView;
     }
