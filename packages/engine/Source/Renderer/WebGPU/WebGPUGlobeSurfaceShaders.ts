@@ -200,7 +200,7 @@ export function getDebugFragmentShaderModule(
   //   shaders' orientation.
   const augmented = `${preprocessedBase}
 
-// Slice 5c-B Batch 117 — debug fragment variants emit FragOutput too.
+// Debug fragment variants emit FragOutput too.
 // FragOutput + makeFragOutput are defined in the production source
 // (GlobeTerrain.wgsl, which is preprocessedBase above) — these debug
 // variants are appended to that source, so the struct + helper are

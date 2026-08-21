@@ -927,7 +927,7 @@ function configureWebGPUPostProcessPipeline(
           "these stages are SKIPPED (they produce no output). " +
           "Supply a `wgslFragmentShader: string` uniform on each stage to " +
           "execute custom WGSL post-process effects. Stages with " +
-          "`wgslFragmentShader` set are honored. Track NEW-POSTPROCESS-USER-WGSL.",
+          "`wgslFragmentShader` set are honored.",
       );
     }
   } else if (

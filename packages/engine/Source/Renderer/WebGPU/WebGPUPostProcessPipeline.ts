@@ -657,19 +657,19 @@ export class WebGPUPostProcessPipeline {
 // Identity blit — fullscreen triangle, texture sample, NO color
 // transform.
 //
-// Session 65 Batch 48 (revert of Batch 47): the inline pow(1/2.2)
-// encode added in Batch 47 caused double-gamma-encoding for the FOG /
+// The blit's inline pow(1/2.2) encode was reverted because it caused
+// double-gamma encoding for the FOG /
 // SkyAtmosphere / SkyBox / ground-atmosphere paths, which ALREADY
 // apply pow(c, 1/2.2) inside the per-pixel shader (see e.g.
 // GlobeTerrain.wgsl FOG branch line 2619, SkyAtmosphere.wgsl line 492,
 // ModelPBRComplete.wgsl line 928). Fragments rendered through those
 // paths got encoded twice → pow(c, 1/4.84) → washed-out / desaturated
-// look reported as 'BUG-WEBGPU-CUBEMAP-DOUBLE-GAMMA'-style symptom.
+// appearance characteristic of double-gamma encoding.
 //
 // Fragments rendered through paths that DON'T pre-encode (raw imagery
 // at orbit altitudes outside the fog/atmosphere drape) stayed dark
 // without the blit-side encode, producing the gamma-2.4-darker
-// signature probe-darkness-quant.mjs measured pre-Batch-47.
+// signature expected when the final encode is missing.
 //
 // The proper architectural fix is one of:
 //   A. Make the canvas format bgra8unorm-srgb so the GPU ROP applies
@@ -682,8 +682,8 @@ export class WebGPUPostProcessPipeline {
 //      have encodes; imagery/atmosphere-drape do not. Pick the
 //      canonical layer (probably the final stage) and consolidate.
 //
-// Both options are bigger than Batch 47 attempted; tracking under
-// NEW-VR2-3-IMAGERY-WASH-OUT.
+// Either option requires a coordinated color-space change across every
+// canvas-writing pipeline; this identity blit therefore remains a no-op.
 @group(0) @binding(0) var srcTex: texture_2d<f32>;
 @group(0) @binding(1) var srcSamp: sampler;
 

@@ -2639,7 +2639,7 @@ class WebGPUModelPipelineCache {
         .CesiumWebGPUForcePipelineError === true
     ) {
       return this._device.createShaderModule({
-        label: "Model PBR FORCED-ERROR (C2-22 probe)",
+        label: "Model PBR FORCED-ERROR (deliberate probe path)",
         code: "garbage_token_not_valid_wgsl",
       });
     }

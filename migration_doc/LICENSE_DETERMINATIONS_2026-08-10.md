@@ -591,6 +591,8 @@ it for headings the manifest in §5 actually names.
 
 ## 9. Addendum — 2026-08-13, Astronomy Engine dependency
 
+### L-25 — `astronomy-engine@2.1.19` dependency · RESOLVED
+
 `L-25` records the exact `astronomy-engine@2.1.19` dependency used only by the
 opt-in high-precision celestial-ephemeris path. The upstream tag's `LICENSE`
 is MIT, copyright 2019–2023 Don Cross. The npm tarball declares MIT but omits a

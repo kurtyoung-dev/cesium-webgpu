@@ -116,7 +116,7 @@ export const GLOBE_FRAGMENT_DEBUG_MODES: ReadonlyArray<GlobeFragmentDebugMode> =
       name: "rayleigh-v",
       sentinel: 14.0e9,
       description:
-        "Per-vertex `v_atmosphereRayleighColor` varying. Since C9-14 the VS per-vertex ground-atmosphere march runs ONLY while this or `mie-v` is active (tile.time in [13.5e9,15.5e9]); production shades ground atmosphere per-fragment, so activating this mode is what populates the varying.",
+        "Per-vertex `v_atmosphereRayleighColor` varying. The VS per-vertex ground-atmosphere march runs only while this or `mie-v` is active (tile.time in [13.5e9,15.5e9]); production shades ground atmosphere per-fragment, so activating this mode is what populates the varying.",
     },
     {
       name: "mie-v",
@@ -168,13 +168,13 @@ export const GLOBE_FRAGMENT_DEBUG_MODES: ReadonlyArray<GlobeFragmentDebugMode> =
     {
       name: "bypass-underground",
       sentinel: 22.0e9,
-      description: "Skip the underground tint blend (GLOBE-UNDERGROUND-COLOR).",
+      description: "Skip the underground tint blend.",
     },
     {
       name: "bypass-translucency",
       sentinel: 23.0e9,
       description:
-        "Skip the per-fragment translucency alpha ramp (GLOBE-TRANSLUCENCY-ALPHA); the multi-pass blend pipelines still run.",
+        "Skip the per-fragment translucency alpha ramp; the multi-pass blend pipelines still run.",
     },
     {
       name: "bypass-drape",
@@ -186,12 +186,12 @@ export const GLOBE_FRAGMENT_DEBUG_MODES: ReadonlyArray<GlobeFragmentDebugMode> =
       name: "bypass-seam-clamp",
       sentinel: 25.0e9,
       description:
-        "Revert the B506 fragment-entry UV clamp to raw interpolated UVs (tile-seam term).",
+        "Revert the fragment-entry UV clamp to raw interpolated UVs (tile-seam term).",
     },
     {
       name: "bypass-glint",
       sentinel: 26.0e9,
-      description: "Skip the B506 Phong ocean sun-glint specular term.",
+      description: "Skip the Phong ocean sun-glint specular term.",
     },
     {
       name: "bypass-fog",

@@ -543,9 +543,9 @@ function generateMetadataWGSL(model, primitive, runtimeNode, resolved) {
 
   const lines = [];
   lines.push(
-    "// DP-H46b/c/d — GENERATED structural-metadata chunk (property attributes + textures + tables).",
+    "// GENERATED structural-metadata chunk: property attributes, textures, and tables.",
   );
-  lines.push("// Replaces the DP-H46a stub; declared real per metadata class.");
+  lines.push("// GENERATED structural-metadata declarations for this class.");
 
   // 1a. Property-texture binding declarations: one texture per unique physical
   //     property texture plus one shared sampler. Binding numbers come from the
@@ -959,7 +959,7 @@ function generateMetadataPickWGSL(model, primitive, propertyName, runtimeNode) {
   const lines = [];
   lines.push("");
   lines.push(
-    "// DP-H46e — GENERATED metadata-pick stage (scene.pickMetadata producer).",
+    "// GENERATED metadata-pick stage: produces values for scene.pickMetadata queries.",
   );
   lines.push(
     `// Picked property: ${propertyName}${defined(picked) ? "" : " (NOT GPU-readable — writes 0)"}`,

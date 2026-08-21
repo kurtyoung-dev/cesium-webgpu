@@ -204,8 +204,8 @@ export function executeSSR(
 
   // Use provided normal texture or fallback placeholder. The placeholder
   // is uninitialized — SSR will sample garbage and produce noise rather
-  // than reflections. A real normal G-buffer is gated on FEAT-GAP-01
-  // (Phase-8a Foundation: depth prepass + normal G-buffer). Surface this
+  // than reflections. A real normal G-buffer for this path awaits the
+  // depth-prepass and normal G-buffer foundation work. Surface this
   // once so users don't think SSR is broken — they're seeing the
   // documented placeholder behavior.
   let normalView = normalTextureView;
@@ -216,8 +216,8 @@ export function executeSSR(
       console.warn(
         "[CesiumJS:webgpu] Screen-space reflections enabled without a normal G-buffer. " +
           "SSR will sample an uninitialized placeholder and produce noise. " +
-          "A real normal G-buffer is gated on FEAT-GAP-01 (Phase-8a Foundation). " +
-          "See migration_doc/DEFERRED_WORK.md.",
+          "No normal G-buffer was available for this view. " +
+          "Set `scene.screenSpaceReflections = false` to avoid the placeholder noise.",
       );
       //>>includeEnd('debug');
     }
