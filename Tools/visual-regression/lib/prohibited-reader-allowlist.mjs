@@ -61,7 +61,6 @@ export const PROHIBITED_READER_ALLOWLIST = Object.freeze({
   "probe-c11-196-lazy-pick-demand.mjs": PROHIBITED_READER_POST_CONTRACT_REASON,
   "probe-c11-202-batchtexture-pick-demand.mjs":
     PROHIBITED_READER_POST_CONTRACT_REASON,
-  "probe-c12-29-s5-replacement-device.mjs": PROHIBITED_READER_REASON,
   "probe-c9-14-ground-atmo-stage.mjs": PROHIBITED_READER_REASON,
   "probe-camera-track.mjs": PROHIBITED_READER_REASON,
   "probe-canvas-vs-screenshot.mjs": PROHIBITED_READER_REASON,

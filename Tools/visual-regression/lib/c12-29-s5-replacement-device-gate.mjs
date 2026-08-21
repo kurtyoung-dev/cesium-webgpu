@@ -1,6 +1,6 @@
 /**
  * Fail-closed acceptance policy for C12-29 S5 replacement-device recovery.
- * @purpose Fail-closed acceptance for S5 replacement-device recovery after genuine Chromium GPU-process termination (v5 schemas, nine-phase ledger).
+ * @purpose Fail-closed acceptance for S5 replacement-device recovery after genuine Chromium GPU-process termination (v8 semantic-attestation/candidate-recovery schemas).
  * @status ACTIVE
  *
  * The browser probe owns the genuine Chromium GPU-process termination and the
@@ -10,18 +10,40 @@
  * failure.
  */
 
+import { createHash } from "node:crypto";
+
+import {
+  C12_29_S5_REPLACEMENT_CAPTURE_PROOF_SCHEMA,
+  C12_29_S5_REPLACEMENT_CAPTURE_TRANSACTION_SCHEMA,
+  C12_29_S5_REPLACEMENT_FUSED_SOURCE_SHA256,
+  C12_29_S5_REPLACEMENT_RUNTIME_ATTESTATION_SCHEMA,
+  C12_29_S5_REPLACEMENT_RUNTIME_ATTESTOR_SOURCE_SHA256,
+  C12_29_S5_REPLACEMENT_SAMPLER_SCHEMA,
+  C12_29_S5_REPLACEMENT_SAMPLER_SOURCE_SHA256,
+  C12_29_S5_REPLACEMENT_SAMPLE_GRID,
+  C12_29_S5_REPLACEMENT_VIEWPORT,
+  deriveC1229S5ReplacementCaptureFrameSha256,
+  deriveC1229S5ReplacementCaptureTransactionSha256,
+  deriveC1229S5ReplacementSampleStats,
+} from "./c12-29-s5-replacement-device-capture.mjs";
 import { exitCodeForS5StatusOrStructural as exitCodeForC1229S5ReplacementStatus } from "./verdict-exit-gate.mjs";
 
 export const C12_29_S5_REPLACEMENT_SCHEMA =
-  "c12-29-s5-replacement-device-evidence-v5";
+  "c12-29-s5-replacement-device-evidence-v8";
 export const C12_29_S5_REPLACEMENT_NATIVE_LEDGER_SCHEMA =
-  "c12-29-s5-replacement-device-native-resource-ledger-v5";
+  "c12-29-s5-replacement-device-native-resource-ledger-v8";
 export const C12_29_S5_REPLACEMENT_PAGE_PROGRESS_SCHEMA =
-  "c12-29-s5-replacement-device-page-progress-v5";
+  "c12-29-s5-replacement-device-page-progress-v8";
 export const C12_29_S5_REPLACEMENT_RUNTIME_DIAGNOSTICS_SCHEMA =
-  "c12-29-s5-replacement-device-runtime-diagnostics-v5";
+  "c12-29-s5-replacement-device-runtime-diagnostics-v8";
 export const C12_29_S5_REPLACEMENT_PROVENANCE_SCHEMA =
-  "c12-29-s5-replacement-device-provenance-v5";
+  "c12-29-s5-replacement-device-provenance-v8";
+export const C12_29_S5_REPLACEMENT_POLICY_BOUNDARY_SCHEMA =
+  "c12-29-s5-replacement-device-policy-boundary-v1";
+export const C12_29_S5_REPLACEMENT_SOURCE_BOUNDARY_SCHEMA =
+  "c12-29-s5-replacement-device-source-map-boundary-v1";
+export const C12_29_S5_REPLACEMENT_RUNNING_SCHEMA =
+  "c12-29-s5-replacement-device-running-authority-v2";
 
 export const C12_29_S5_REPLACEMENT_PHASES = Object.freeze([
   "control.before",
@@ -46,9 +68,36 @@ export const C12_29_S5_REPLACEMENT_RENDERERS = Object.freeze([
   "webgpu",
 ]);
 
+const SAMPLE_COUNT =
+  C12_29_S5_REPLACEMENT_SAMPLE_GRID.width *
+  C12_29_S5_REPLACEMENT_SAMPLE_GRID.height;
+
+// These bars preserve the v5 acceptance set while exposing their derivation.
+// Changed-sample shares are discrete at 1/256, so 5% and 20% accepted exactly
+// 12 and 51 samples. MAD budgets are independent integer-channel error budgets:
+// one level for paired sampler rounding, three for stable rerasterization, and
+// eight additional levels for the post-recovery rerasterization.
+export const C12_29_S5_REPLACEMENT_THRESHOLD_DERIVATION = Object.freeze({
+  sampleCount: SAMPLE_COUNT,
+  minimumNonBlackShare: 1 / 8,
+  minimumNonBlackSamplePixels: Math.ceil(SAMPLE_COUNT / 8),
+  changedSampleRgbSumThreshold: 3 * 3,
+  pairedSamplerRoundingMad: 1,
+  controlRerasterizationMad: 3,
+  controlMaximumMeanAbsoluteDelta: 1 + 3,
+  replacementAdditionalRerasterizationMad: 8,
+  replacementMaximumMeanAbsoluteDelta: 1 + 3 + 8,
+  controlMaximumChangedSamples: Math.floor(0.05 * SAMPLE_COUNT),
+  controlMaximumChangedPixelShare:
+    Math.floor(0.05 * SAMPLE_COUNT) / SAMPLE_COUNT,
+  replacementMaximumChangedSamples: Math.floor(0.2 * SAMPLE_COUNT),
+  replacementMaximumChangedPixelShare:
+    Math.floor(0.2 * SAMPLE_COUNT) / SAMPLE_COUNT,
+});
+
 export const C12_29_S5_REPLACEMENT_CONFIG = Object.freeze({
   eventIso: "2024-04-08T18:17:16Z",
-  viewport: Object.freeze({ width: 960, height: 960 }),
+  viewport: C12_29_S5_REPLACEMENT_VIEWPORT,
   terrainWidth: 9,
   terrainHeight: 9,
   terrainMeters: 250,
@@ -60,13 +109,19 @@ export const C12_29_S5_REPLACEMENT_CONFIG = Object.freeze({
   maximumRecoveryMs: 120_000,
   maximumPickFrames: 60,
   maximumCaptureFrames: 300,
-  sampleWidth: 16,
-  sampleHeight: 16,
-  minimumNonBlackSamplePixels: 32,
-  controlMaximumMeanAbsoluteDelta: 4,
-  controlMaximumChangedPixelShare: 0.05,
-  replacementMaximumMeanAbsoluteDelta: 12,
-  replacementMaximumChangedPixelShare: 0.2,
+  sampleWidth: C12_29_S5_REPLACEMENT_SAMPLE_GRID.width,
+  sampleHeight: C12_29_S5_REPLACEMENT_SAMPLE_GRID.height,
+  samplerSchema: C12_29_S5_REPLACEMENT_SAMPLER_SCHEMA,
+  minimumNonBlackSamplePixels:
+    C12_29_S5_REPLACEMENT_THRESHOLD_DERIVATION.minimumNonBlackSamplePixels,
+  controlMaximumMeanAbsoluteDelta:
+    C12_29_S5_REPLACEMENT_THRESHOLD_DERIVATION.controlMaximumMeanAbsoluteDelta,
+  controlMaximumChangedPixelShare:
+    C12_29_S5_REPLACEMENT_THRESHOLD_DERIVATION.controlMaximumChangedPixelShare,
+  replacementMaximumMeanAbsoluteDelta:
+    C12_29_S5_REPLACEMENT_THRESHOLD_DERIVATION.replacementMaximumMeanAbsoluteDelta,
+  replacementMaximumChangedPixelShare:
+    C12_29_S5_REPLACEMENT_THRESHOLD_DERIVATION.replacementMaximumChangedPixelShare,
   pageTimeoutMs: 300_000,
   watchdogMs: 600_000,
   eclipseBinding: 2,
@@ -83,8 +138,98 @@ export const C12_29_S5_REPLACEMENT_CONFIG = Object.freeze({
   tinyModelRoute:
     "/Specs/Data/Models/glTF-2.0/BoxTextured/glTF-Binary/BoxTextured.glb",
   outputNamespace:
-    "Tools/visual-regression/output/c12-29-s5-replacement-device-v5",
+    "Tools/visual-regression/output/c12-29-s5-replacement-device-v8",
 });
+
+export const C12_29_S5_REPLACEMENT_POLICY_ROOTS = Object.freeze([
+  "Tools/visual-regression/probe-c12-29-s5-replacement-device.mjs",
+  "Tools/visual-regression/c12-29-s5-replacement-device-gate.spec.mjs",
+]);
+
+export const C12_29_S5_REPLACEMENT_POLICY_FILES = Object.freeze([
+  "Tools/visual-regression/probe-c12-29-s5-replacement-device.mjs",
+  "Tools/visual-regression/c12-29-s5-replacement-device-gate.spec.mjs",
+  "Tools/visual-regression/lib/c12-29-s5-replacement-device-gate.mjs",
+  "Tools/visual-regression/lib/c12-29-s5-replacement-device-capture.mjs",
+  "Tools/visual-regression/lib/build-source-identity.mjs",
+  "Tools/visual-regression/lib/same-task-capture.mjs",
+  "Tools/visual-regression/lib/verdict-exit-gate.mjs",
+  "Tools/lib/webgpu-error-gate.mjs",
+]);
+
+export const C12_29_S5_REPLACEMENT_POLICY_EXTERNALS = Object.freeze([
+  "acorn",
+  "node:assert/strict",
+  "node:child_process",
+  "node:crypto",
+  "node:fs",
+  "node:os",
+  "node:path",
+  "node:test",
+  "node:url",
+  "node:zlib",
+  "playwright",
+]);
+
+export const C12_29_S5_REPLACEMENT_POLICY_EDGES = Object.freeze(
+  [
+    [
+      "Tools/visual-regression/c12-29-s5-replacement-device-gate.spec.mjs",
+      "./lib/c12-29-s5-replacement-device-capture.mjs",
+      "Tools/visual-regression/lib/c12-29-s5-replacement-device-capture.mjs",
+    ],
+    [
+      "Tools/visual-regression/c12-29-s5-replacement-device-gate.spec.mjs",
+      "./lib/c12-29-s5-replacement-device-gate.mjs",
+      "Tools/visual-regression/lib/c12-29-s5-replacement-device-gate.mjs",
+    ],
+    [
+      "Tools/visual-regression/c12-29-s5-replacement-device-gate.spec.mjs",
+      "./lib/same-task-capture.mjs",
+      "Tools/visual-regression/lib/same-task-capture.mjs",
+    ],
+    [
+      "Tools/visual-regression/c12-29-s5-replacement-device-gate.spec.mjs",
+      "./probe-c12-29-s5-replacement-device.mjs",
+      "Tools/visual-regression/probe-c12-29-s5-replacement-device.mjs",
+    ],
+    [
+      "Tools/visual-regression/lib/c12-29-s5-replacement-device-capture.mjs",
+      "./same-task-capture.mjs",
+      "Tools/visual-regression/lib/same-task-capture.mjs",
+    ],
+    [
+      "Tools/visual-regression/lib/c12-29-s5-replacement-device-gate.mjs",
+      "./c12-29-s5-replacement-device-capture.mjs",
+      "Tools/visual-regression/lib/c12-29-s5-replacement-device-capture.mjs",
+    ],
+    [
+      "Tools/visual-regression/lib/c12-29-s5-replacement-device-gate.mjs",
+      "./verdict-exit-gate.mjs",
+      "Tools/visual-regression/lib/verdict-exit-gate.mjs",
+    ],
+    [
+      "Tools/visual-regression/probe-c12-29-s5-replacement-device.mjs",
+      "../lib/webgpu-error-gate.mjs",
+      "Tools/lib/webgpu-error-gate.mjs",
+    ],
+    [
+      "Tools/visual-regression/probe-c12-29-s5-replacement-device.mjs",
+      "./lib/build-source-identity.mjs",
+      "Tools/visual-regression/lib/build-source-identity.mjs",
+    ],
+    [
+      "Tools/visual-regression/probe-c12-29-s5-replacement-device.mjs",
+      "./lib/c12-29-s5-replacement-device-capture.mjs",
+      "Tools/visual-regression/lib/c12-29-s5-replacement-device-capture.mjs",
+    ],
+    [
+      "Tools/visual-regression/probe-c12-29-s5-replacement-device.mjs",
+      "./lib/c12-29-s5-replacement-device-gate.mjs",
+      "Tools/visual-regression/lib/c12-29-s5-replacement-device-gate.mjs",
+    ],
+  ].map(([from, specifier, to]) => Object.freeze({ from, specifier, to })),
+);
 
 export const C12_29_S5_REPLACEMENT_SOURCE_FILES = Object.freeze([
   "packages/engine/Source/Core/CustomHeightmapTerrainProvider.js",
@@ -117,11 +262,7 @@ export const C12_29_S5_REPLACEMENT_SOURCE_FILES = Object.freeze([
 ]);
 
 export const C12_29_S5_REPLACEMENT_LOCAL_FILES = Object.freeze([
-  "Tools/visual-regression/lib/c12-29-s5-replacement-device-gate.mjs",
-  "Tools/visual-regression/c12-29-s5-replacement-device-gate.spec.mjs",
-  "Tools/visual-regression/probe-c12-29-s5-replacement-device.mjs",
-  "Tools/visual-regression/lib/build-source-identity.mjs",
-  "Tools/lib/webgpu-error-gate.mjs",
+  ...C12_29_S5_REPLACEMENT_POLICY_FILES,
   ...C12_29_S5_REPLACEMENT_SOURCE_FILES,
   "Apps/CesiumViewer/index.html",
   "Apps/CesiumViewer/CesiumViewer.js",
@@ -130,6 +271,8 @@ export const C12_29_S5_REPLACEMENT_LOCAL_FILES = Object.freeze([
   "package.json",
   "package-lock.json",
   "node_modules/playwright/package.json",
+  "node_modules/acorn/package.json",
+  "node_modules/acorn/dist/acorn.mjs",
 ]);
 
 export const C12_29_S5_REPLACEMENT_SERVED_FILES = Object.freeze([
@@ -150,7 +293,23 @@ export const C12_29_S5_REPLACEMENT_CONTRACT = Object.freeze({
     pageProgress: C12_29_S5_REPLACEMENT_PAGE_PROGRESS_SCHEMA,
     runtimeDiagnostics: C12_29_S5_REPLACEMENT_RUNTIME_DIAGNOSTICS_SCHEMA,
     provenance: C12_29_S5_REPLACEMENT_PROVENANCE_SCHEMA,
+    captureProof: C12_29_S5_REPLACEMENT_CAPTURE_PROOF_SCHEMA,
+    captureTransaction: C12_29_S5_REPLACEMENT_CAPTURE_TRANSACTION_SCHEMA,
+    runtimeAttestation: C12_29_S5_REPLACEMENT_RUNTIME_ATTESTATION_SCHEMA,
+    policyBoundary: C12_29_S5_REPLACEMENT_POLICY_BOUNDARY_SCHEMA,
+    sourceBoundary: C12_29_S5_REPLACEMENT_SOURCE_BOUNDARY_SCHEMA,
+    sampler: C12_29_S5_REPLACEMENT_SAMPLER_SCHEMA,
   }),
+  sampler: Object.freeze({
+    schema: C12_29_S5_REPLACEMENT_SAMPLER_SCHEMA,
+    viewport: C12_29_S5_REPLACEMENT_CONFIG.viewport,
+    grid: Object.freeze({
+      width: C12_29_S5_REPLACEMENT_CONFIG.sampleWidth,
+      height: C12_29_S5_REPLACEMENT_CONFIG.sampleHeight,
+    }),
+    algorithm: "integer-partition box average with Math.round per RGBA channel",
+  }),
+  thresholds: C12_29_S5_REPLACEMENT_THRESHOLD_DERIVATION,
   trigger: Object.freeze({
     launchFlag: C12_29_S5_REPLACEMENT_CONFIG.launchFlag,
     object: C12_29_S5_REPLACEMENT_CONFIG.triggerObject,
@@ -176,6 +335,13 @@ export const C12_29_S5_REPLACEMENT_CONTRACT = Object.freeze({
 const UUID_V4 =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 const SHA256 = /^[0-9a-f]{64}$/u;
+const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
+const IMAGE_LABELS = new Set([
+  "control-before",
+  "control-after-gap",
+  "webgpu-before",
+  "webgpu-after",
+]);
 const FINAL_STATUSES = new Set(["PASS", "FAIL", "STRUCTURAL", "ERROR"]);
 const SESSION_RUNTIME_KEYS = Object.freeze([
   "schema",
@@ -204,6 +370,7 @@ const PROGRESS_KEYS = Object.freeze([
 const CHECK_KEYS = Object.freeze([
   "phaseOrderExact",
   "provenanceStable",
+  "executionAttested",
   "controlGapHealthy",
   "genuineTrigger",
   "nonDestroyedLoss",
@@ -530,6 +697,541 @@ function validBuildSourceEntry(value, expectedPath, localStart) {
   );
 }
 
+function validCaptureSourceProof(value) {
+  const validDigestProof = (proof, canonicalSha256) =>
+    exactKeys(proof, [
+      "beginMarkerCount",
+      "endMarkerCount",
+      "canonicalSha256",
+      "embeddedSha256",
+      "executedSha256",
+    ]) &&
+    proof.beginMarkerCount === 1 &&
+    proof.endMarkerCount === 1 &&
+    proof.canonicalSha256 === canonicalSha256 &&
+    proof.embeddedSha256 === canonicalSha256 &&
+    proof.executedSha256 === canonicalSha256;
+  return (
+    exactKeys(value, [
+      "schema",
+      "measurement",
+      "fused",
+      "sampler",
+      "frameReader",
+      "attestor",
+      "helperInstalls",
+      "captureCalls",
+      "samplerCalls",
+      "documentaryOrigins",
+      "sampleOrigins",
+      "sameOrigin",
+      "failureCount",
+    ]) &&
+    value.schema === C12_29_S5_REPLACEMENT_CAPTURE_PROOF_SCHEMA &&
+    exactKeys(value.measurement, [
+      "declarationCount",
+      "identifierUses",
+      "pageEvaluateCalls",
+      "phaseSnapshotCalls",
+      "phaseSnapshotLabels",
+      "finishCalls",
+      "executedSha256",
+    ]) &&
+    value.measurement.declarationCount === 1 &&
+    value.measurement.identifierUses === 4 &&
+    value.measurement.pageEvaluateCalls === 1 &&
+    value.measurement.phaseSnapshotCalls === 4 &&
+    exactArray(value.measurement.phaseSnapshotLabels, [
+      "control-before",
+      "control-after-gap",
+      "webgpu-before",
+      "webgpu-after",
+    ]) &&
+    value.measurement.finishCalls === 4 &&
+    SHA256.test(value.measurement.executedSha256 ?? "") &&
+    validDigestProof(value.fused, C12_29_S5_REPLACEMENT_FUSED_SOURCE_SHA256) &&
+    exactKeys(value.sampler, [
+      "schema",
+      "beginMarkerCount",
+      "endMarkerCount",
+      "canonicalSha256",
+      "embeddedSha256",
+      "executedSha256",
+    ]) &&
+    value.sampler.schema === C12_29_S5_REPLACEMENT_SAMPLER_SCHEMA &&
+    value.sampler.beginMarkerCount === 1 &&
+    value.sampler.endMarkerCount === 1 &&
+    value.sampler.canonicalSha256 ===
+      C12_29_S5_REPLACEMENT_SAMPLER_SOURCE_SHA256 &&
+    value.sampler.embeddedSha256 ===
+      C12_29_S5_REPLACEMENT_SAMPLER_SOURCE_SHA256 &&
+    value.sampler.executedSha256 ===
+      C12_29_S5_REPLACEMENT_SAMPLER_SOURCE_SHA256 &&
+    exactKeys(value.frameReader, [
+      "declarationCount",
+      "executedSha256",
+      "restricted",
+    ]) &&
+    value.frameReader.declarationCount === 1 &&
+    SHA256.test(value.frameReader.executedSha256 ?? "") &&
+    value.frameReader.restricted === true &&
+    exactKeys(value.attestor, [
+      "schema",
+      "installerSha256",
+      "initScriptCalls",
+      "exposeBindingCalls",
+      "prepareCalls",
+      "captureCalls",
+      "finishCalls",
+      "restrictedDialect",
+      "randomBindingNames",
+      "eventSinkWrites",
+      "bodyBindings",
+      "runnerRestricted",
+    ]) &&
+    value.attestor.schema ===
+      C12_29_S5_REPLACEMENT_RUNTIME_ATTESTATION_SCHEMA &&
+    value.attestor.installerSha256 ===
+      C12_29_S5_REPLACEMENT_RUNTIME_ATTESTOR_SOURCE_SHA256 &&
+    value.attestor.initScriptCalls === 1 &&
+    value.attestor.exposeBindingCalls === 1 &&
+    value.attestor.prepareCalls === 1 &&
+    value.attestor.captureCalls === 1 &&
+    value.attestor.finishCalls === 4 &&
+    value.attestor.restrictedDialect === true &&
+    value.attestor.randomBindingNames === 1 &&
+    value.attestor.eventSinkWrites === 1 &&
+    value.attestor.bodyBindings === 1 &&
+    value.attestor.runnerRestricted === true &&
+    value.helperInstalls === 1 &&
+    value.captureCalls === 1 &&
+    value.samplerCalls === 1 &&
+    value.documentaryOrigins === 1 &&
+    value.sampleOrigins === 1 &&
+    value.sameOrigin === true &&
+    value.failureCount === 0
+  );
+}
+
+function validPolicyBoundary(value, localStart) {
+  if (
+    !exactKeys(value, [
+      "schema",
+      "roots",
+      "files",
+      "edges",
+      "externalSpecifiers",
+      "dynamicImports",
+      "closed",
+    ]) ||
+    value.schema !== C12_29_S5_REPLACEMENT_POLICY_BOUNDARY_SCHEMA ||
+    !exactArray(value.roots, C12_29_S5_REPLACEMENT_POLICY_ROOTS) ||
+    !exactFingerprintSet(value.files, C12_29_S5_REPLACEMENT_POLICY_FILES) ||
+    !exactArray(
+      value.externalSpecifiers,
+      C12_29_S5_REPLACEMENT_POLICY_EXTERNALS,
+    ) ||
+    !properArray(value.edges) ||
+    !properArray(value.dynamicImports) ||
+    value.closed !== true
+  ) {
+    return false;
+  }
+  const fileSet = new Set(C12_29_S5_REPLACEMENT_POLICY_FILES);
+  if (
+    !sameJson(value.edges, C12_29_S5_REPLACEMENT_POLICY_EDGES) ||
+    !value.files.every((entry) => {
+      const local = localStart?.find((item) => item?.path === entry.path);
+      return (
+        local?.byteLength === entry.byteLength && local?.sha256 === entry.sha256
+      );
+    }) ||
+    !value.edges.every(
+      (edge) =>
+        exactKeys(edge, ["from", "specifier", "to"]) &&
+        fileSet.has(edge.from) &&
+        boundedString(edge.specifier, 1024) &&
+        edge.specifier.startsWith(".") &&
+        fileSet.has(edge.to),
+    ) ||
+    !value.dynamicImports.every(
+      (entry) =>
+        exactKeys(entry, ["from", "expression"]) &&
+        fileSet.has(entry.from) &&
+        boundedString(entry.expression, 1024),
+    )
+  ) {
+    return false;
+  }
+  const verdictEdge = value.edges.filter(
+    (edge) =>
+      edge.to === "Tools/visual-regression/lib/verdict-exit-gate.mjs" &&
+      edge.from ===
+        "Tools/visual-regression/lib/c12-29-s5-replacement-device-gate.mjs",
+  );
+  return (
+    verdictEdge.length === 1 &&
+    value.dynamicImports.length === 1 &&
+    value.dynamicImports[0].from ===
+      "Tools/visual-regression/probe-c12-29-s5-replacement-device.mjs" &&
+    value.dynamicImports[0].expression === "contract.runtimePath"
+  );
+}
+
+function validSourceBoundary(value, sourceMapFingerprint) {
+  if (
+    !exactKeys(value, [
+      "schema",
+      "sourceMapByteLength",
+      "sourceMapSha256",
+      "sourceMapEntryCount",
+      "resolvedEntryCount",
+      "exactEntryCount",
+      "pathSetSha256",
+      "currentSetSha256",
+      "embeddedSetSha256",
+      "roots",
+      "rootsPresent",
+      "duplicatePaths",
+      "missingPaths",
+      "allExact",
+    ]) ||
+    value.schema !== C12_29_S5_REPLACEMENT_SOURCE_BOUNDARY_SCHEMA ||
+    !positiveInteger(value.sourceMapByteLength) ||
+    !SHA256.test(value.sourceMapSha256 ?? "") ||
+    !positiveInteger(value.sourceMapEntryCount) ||
+    !positiveInteger(value.resolvedEntryCount) ||
+    !nonnegativeInteger(value.exactEntryCount) ||
+    value.exactEntryCount > value.resolvedEntryCount ||
+    !SHA256.test(value.pathSetSha256 ?? "") ||
+    !SHA256.test(value.currentSetSha256 ?? "") ||
+    !SHA256.test(value.embeddedSetSha256 ?? "") ||
+    !exactArray(value.roots, C12_29_S5_REPLACEMENT_SOURCE_FILES) ||
+    typeof value.rootsPresent !== "boolean" ||
+    !stringArray(value.duplicatePaths, 4096) ||
+    !stringArray(value.missingPaths, 4096) ||
+    typeof value.allExact !== "boolean"
+  ) {
+    return false;
+  }
+  const derivedExact =
+    value.exactEntryCount === value.resolvedEntryCount &&
+    value.duplicatePaths.length === 0 &&
+    value.missingPaths.length === 0 &&
+    value.rootsPresent;
+  return (
+    value.resolvedEntryCount === value.sourceMapEntryCount &&
+    value.allExact === derivedExact &&
+    sourceMapFingerprint?.byteLength === value.sourceMapByteLength &&
+    sourceMapFingerprint?.sha256 === value.sourceMapSha256
+  );
+}
+
+function validBrowserIdentity(value) {
+  return (
+    exactKeys(value, ["name", "version"]) &&
+    boundedString(value.name, 128) &&
+    boundedString(value.version, 512)
+  );
+}
+
+function validRuntimeIdentity(value, renderer) {
+  return (
+    exactKeys(value, [
+      "renderer",
+      "userAgent",
+      "platform",
+      "language",
+      "devicePixelRatio",
+      "secureContext",
+      "webdriver",
+    ]) &&
+    value.renderer === renderer &&
+    boundedString(value.userAgent, 2048) &&
+    boundedString(value.platform, 256) &&
+    boundedString(value.language, 128) &&
+    finite(value.devicePixelRatio) &&
+    value.devicePixelRatio > 0 &&
+    value.secureContext === true &&
+    typeof value.webdriver === "boolean"
+  );
+}
+
+function validWitnessToken(value, nullable = false) {
+  return (nullable && value === null) || boundedString(value, 256);
+}
+
+// The witness's owner tokens are shape-checked here and bound to their image
+// records in runtimeAttestationLineageReasons.  Their CONSTANCY across a
+// session is not checked here: "the same Scene/context/canvas survived" is a
+// registered product expectation, so it is derived by sameOwnerTokens and
+// consumed by the FAIL-tier ownership checks instead.
+function validRuntimeAttestation(value, session, captureSourceProof) {
+  if (
+    !exactKeys(value, [
+      "schema",
+      "sessionId",
+      "renderer",
+      "installerSha256",
+      "events",
+    ]) ||
+    value.schema !== C12_29_S5_REPLACEMENT_RUNTIME_ATTESTATION_SCHEMA ||
+    value.sessionId !== session.sessionId ||
+    value.renderer !== session.renderer ||
+    value.installerSha256 !==
+      C12_29_S5_REPLACEMENT_RUNTIME_ATTESTOR_SOURCE_SHA256 ||
+    !properArray(value.events) ||
+    value.events.length < 2 ||
+    value.events.length > 4
+  ) {
+    return false;
+  }
+  const witnessNonce = value.events[0]?.witnessNonce;
+  if (!isC1229S5ReplacementUuidV4(witnessNonce)) return false;
+  for (let index = 0; index < value.events.length; index++) {
+    const event = value.events[index];
+    if (
+      event?.schema !== C12_29_S5_REPLACEMENT_RUNTIME_ATTESTATION_SCHEMA ||
+      event?.sessionId !== session.sessionId ||
+      event?.renderer !== session.renderer ||
+      event?.witnessNonce !== witnessNonce ||
+      event?.sequence !== index + 1
+    ) {
+      return false;
+    }
+  }
+  const begin = value.events[0];
+  if (
+    !exactKeys(begin, [
+      "schema",
+      "sessionId",
+      "renderer",
+      "witnessNonce",
+      "sequence",
+      "kind",
+      "installerSha256",
+      "measurementSha256",
+      "captureFactorySha256",
+      "samplerSha256",
+      "frameReaderSha256",
+      "sceneToken",
+      "contextToken",
+      "canvasToken",
+    ]) ||
+    begin.kind !== "begin" ||
+    begin.installerSha256 !==
+      C12_29_S5_REPLACEMENT_RUNTIME_ATTESTOR_SOURCE_SHA256 ||
+    begin.measurementSha256 !==
+      captureSourceProof?.measurement?.executedSha256 ||
+    begin.captureFactorySha256 !== C12_29_S5_REPLACEMENT_FUSED_SOURCE_SHA256 ||
+    begin.samplerSha256 !== C12_29_S5_REPLACEMENT_SAMPLER_SOURCE_SHA256 ||
+    begin.frameReaderSha256 !==
+      captureSourceProof?.frameReader?.executedSha256 ||
+    !validWitnessToken(begin.sceneToken) ||
+    !validWitnessToken(begin.contextToken) ||
+    !validWitnessToken(begin.canvasToken)
+  ) {
+    return false;
+  }
+  const captures = value.events.slice(1, -1);
+  for (let index = 0; index < captures.length; index++) {
+    const event = captures[index];
+    if (
+      !exactKeys(event, [
+        "schema",
+        "sessionId",
+        "renderer",
+        "witnessNonce",
+        "sequence",
+        "kind",
+        "label",
+        "captureOrdinal",
+        "captureNonce",
+        "frameSha256",
+        "pngSha256",
+        "sampleSha256",
+        "transactionSha256",
+        "beforeFrameNumber",
+        "frameNumber",
+        "renderCalls",
+        "freezeCalls",
+        "witnessSequence",
+        "sceneToken",
+        "contextToken",
+        "canvasToken",
+        "adapterToken",
+        "deviceToken",
+        "resourceGeneration",
+      ]) ||
+      event.kind !== "capture" ||
+      !IMAGE_LABELS.has(event.label) ||
+      event.captureOrdinal !== index + 1 ||
+      !isC1229S5ReplacementUuidV4(event.captureNonce) ||
+      !SHA256.test(event.frameSha256 ?? "") ||
+      !SHA256.test(event.pngSha256 ?? "") ||
+      !SHA256.test(event.sampleSha256 ?? "") ||
+      !SHA256.test(event.transactionSha256 ?? "") ||
+      !(
+        event.beforeFrameNumber === null ||
+        nonnegativeInteger(event.beforeFrameNumber)
+      ) ||
+      !positiveInteger(event.frameNumber) ||
+      event.renderCalls !== 1 ||
+      event.freezeCalls !== 1 ||
+      event.witnessSequence !== event.sequence ||
+      !validWitnessToken(event.sceneToken) ||
+      !validWitnessToken(event.contextToken) ||
+      !validWitnessToken(event.canvasToken) ||
+      !validWitnessToken(event.adapterToken, session.renderer === "webgl") ||
+      !validWitnessToken(event.deviceToken, session.renderer === "webgl") ||
+      !(session.renderer === "webgl"
+        ? event.resourceGeneration === null ||
+          nonnegativeInteger(event.resourceGeneration)
+        : nonnegativeInteger(event.resourceGeneration))
+    ) {
+      return false;
+    }
+  }
+  const finish = value.events.at(-1);
+  return (
+    exactKeys(finish, [
+      "schema",
+      "sessionId",
+      "renderer",
+      "witnessNonce",
+      "sequence",
+      "kind",
+      "bodySha256",
+      "captureCount",
+      "finalSceneToken",
+      "finalContextToken",
+      "finalCanvasToken",
+      "finalAdapterToken",
+      "finalDeviceToken",
+      "finalResourceGeneration",
+    ]) &&
+    finish.kind === "finish" &&
+    SHA256.test(finish.bodySha256 ?? "") &&
+    finish.captureCount === captures.length &&
+    validWitnessToken(finish.finalSceneToken) &&
+    validWitnessToken(finish.finalContextToken) &&
+    validWitnessToken(finish.finalCanvasToken) &&
+    validWitnessToken(finish.finalAdapterToken, session.renderer === "webgl") &&
+    validWitnessToken(finish.finalDeviceToken, session.renderer === "webgl") &&
+    (session.renderer === "webgl"
+      ? finish.finalResourceGeneration === null ||
+        nonnegativeInteger(finish.finalResourceGeneration)
+      : nonnegativeInteger(finish.finalResourceGeneration))
+  );
+}
+
+function validBrowserSessions(value, localStart, served, captureSourceProof) {
+  if (
+    !properArray(value) ||
+    value.length !== C12_29_S5_REPLACEMENT_RENDERERS.length
+  ) {
+    return false;
+  }
+  const servedOrigin = (() => {
+    try {
+      return new URL(served?.[0]?.url).origin;
+    } catch {
+      return null;
+    }
+  })();
+  const sessionIds = new Set();
+  for (let index = 0; index < value.length; index++) {
+    const session = value[index];
+    const renderer = C12_29_S5_REPLACEMENT_RENDERERS[index];
+    if (
+      !exactKeys(session, [
+        "sessionId",
+        "renderer",
+        "runtimeIdentity",
+        "responses",
+        "attestation",
+      ]) ||
+      !isC1229S5ReplacementUuidV4(session.sessionId) ||
+      sessionIds.has(session.sessionId) ||
+      session.renderer !== renderer ||
+      !validRuntimeIdentity(session.runtimeIdentity, renderer) ||
+      !validRuntimeAttestation(
+        session.attestation,
+        session,
+        captureSourceProof,
+      ) ||
+      !properArray(session.responses) ||
+      session.responses.length !== C12_29_S5_REPLACEMENT_SERVED_FILES.length
+    ) {
+      return false;
+    }
+    sessionIds.add(session.sessionId);
+    for (
+      let responseIndex = 0;
+      responseIndex < C12_29_S5_REPLACEMENT_SERVED_FILES.length;
+      responseIndex++
+    ) {
+      const response = session.responses[responseIndex];
+      const expectedPath = C12_29_S5_REPLACEMENT_SERVED_FILES[responseIndex];
+      const local = localStart?.find((entry) => entry?.path === expectedPath);
+      let url;
+      try {
+        url = new URL(response?.url);
+      } catch {
+        return false;
+      }
+      if (
+        !exactKeys(response, [
+          "path",
+          "url",
+          "status",
+          "method",
+          "resourceType",
+          "fromServiceWorker",
+          "byteLength",
+          "sha256",
+        ]) ||
+        response.path !== expectedPath ||
+        url.origin !== servedOrigin ||
+        url.pathname !== `/${expectedPath}` ||
+        response.status !== 200 ||
+        response.method !== "GET" ||
+        !boundedString(response.resourceType, 64) ||
+        response.fromServiceWorker !== false ||
+        !positiveInteger(response.byteLength) ||
+        !SHA256.test(response.sha256 ?? "") ||
+        local?.byteLength !== response.byteLength ||
+        local?.sha256 !== response.sha256
+      ) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+function preflightDigestValue(value) {
+  return {
+    schema: value?.schema,
+    gitHead: value?.gitHead,
+    localStart: value?.localStart,
+    served: value?.served,
+    buildSourceIdentity: value?.buildSourceIdentity,
+    captureSourceProof: value?.captureSourceProof,
+    policyBoundary: value?.policyBoundary,
+    sourceBoundaryStart: value?.sourceBoundaryStart,
+    launch: value?.launch,
+  };
+}
+
+export function deriveC1229S5ReplacementPreflightSha256(value) {
+  return sha256(
+    JSON.stringify(
+      materializeC1229S5ReplacementEvidence(preflightDigestValue(value)),
+    ),
+  );
+}
+
 export function validateC1229S5ReplacementProvenance(value) {
   const reasons = [];
   value = materializedForValidation(value, reasons, "provenance");
@@ -540,10 +1242,18 @@ export function validateC1229S5ReplacementProvenance(value) {
     "localEnd",
     "served",
     "buildSourceIdentity",
+    "captureSourceProof",
+    "policyBoundary",
+    "sourceBoundaryStart",
+    "sourceBoundaryEnd",
+    "preflightSha256",
     "stable",
     "buildEntryMatchesServed",
     "servedMatchesLocal",
+    "browserResponsesMatchLocal",
     "launch",
+    "browser",
+    "sessions",
   ];
   if (!exactKeys(value, keys))
     reasons.push("provenance top-level shape is invalid");
@@ -569,6 +1279,12 @@ export function validateC1229S5ReplacementProvenance(value) {
     )
   )
     reasons.push("provenance served file set is invalid");
+  if (!validCaptureSourceProof(value?.captureSourceProof)) {
+    reasons.push("provenance capture-source proof is invalid");
+  }
+  if (!validPolicyBoundary(value?.policyBoundary, value?.localStart)) {
+    reasons.push("provenance policy import closure is invalid");
+  }
   if (
     !exactKeys(value?.buildSourceIdentity, [
       "ok",
@@ -625,10 +1341,47 @@ export function validateC1229S5ReplacementProvenance(value) {
     !exactArray(value?.launch?.args, [C12_29_S5_REPLACEMENT_CONFIG.launchFlag])
   )
     reasons.push("provenance browser launch identity is invalid");
+  const sourceMap = properArray(value?.localStart)
+    ? value.localStart.find(
+        (entry) => entry?.path === "Build/CesiumUnminified/index.js.map",
+      )
+    : undefined;
+  if (!validSourceBoundary(value?.sourceBoundaryStart, sourceMap)) {
+    reasons.push("provenance start source-map closure is invalid");
+  }
+  if (!validSourceBoundary(value?.sourceBoundaryEnd, sourceMap)) {
+    reasons.push("provenance end source-map closure is invalid");
+  }
+  if (
+    !SHA256.test(value?.preflightSha256 ?? "") ||
+    value?.preflightSha256 !==
+      (() => {
+        try {
+          return deriveC1229S5ReplacementPreflightSha256(value);
+        } catch {
+          return null;
+        }
+      })()
+  ) {
+    reasons.push("provenance preflight digest is invalid");
+  }
+  if (!validBrowserIdentity(value?.browser)) {
+    reasons.push("provenance actual browser identity is invalid");
+  }
+  const browserSessionsValid = validBrowserSessions(
+    value?.sessions,
+    value?.localStart,
+    value?.served,
+    value?.captureSourceProof,
+  );
+  if (!browserSessionsValid) {
+    reasons.push("provenance browser-consumed session identities are invalid");
+  }
   if (
     typeof value?.stable !== "boolean" ||
     typeof value?.buildEntryMatchesServed !== "boolean" ||
-    typeof value?.servedMatchesLocal !== "boolean"
+    typeof value?.servedMatchesLocal !== "boolean" ||
+    typeof value?.browserResponsesMatchLocal !== "boolean"
   )
     reasons.push("provenance result flags are invalid");
   const localBuildEntry = properArray(value?.localStart)
@@ -674,11 +1427,14 @@ export function validateC1229S5ReplacementProvenance(value) {
   ) {
     reasons.push("provenance served-file result contradicts its fingerprints");
   }
-  const sourceMap = properArray(value?.localStart)
-    ? value.localStart.find(
-        (entry) => entry?.path === "Build/CesiumUnminified/index.js.map",
-      )
-    : undefined;
+  if (
+    typeof value?.browserResponsesMatchLocal === "boolean" &&
+    value.browserResponsesMatchLocal !== browserSessionsValid
+  ) {
+    reasons.push(
+      "provenance browser-response result contradicts consumed response bodies",
+    );
+  }
   if (
     sourceMap &&
     (value?.buildSourceIdentity?.sourceMapByteLength !== sourceMap.byteLength ||
@@ -694,6 +1450,153 @@ export function validateC1229S5ReplacementProvenance(value) {
     !sameJson(value.localStart, value.localEnd)
   )
     reasons.push("provenance changed during the run");
+  if (!sameJson(value?.sourceBoundaryStart, value?.sourceBoundaryEnd)) {
+    reasons.push(
+      "provenance closed source-map boundary changed during the run",
+    );
+  }
+  const stable =
+    properArray(value?.localStart) &&
+    properArray(value?.localEnd) &&
+    sameJson(value.localStart, value.localEnd) &&
+    sameJson(value?.sourceBoundaryStart, value?.sourceBoundaryEnd);
+  if (typeof value?.stable === "boolean" && value.stable !== stable) {
+    reasons.push("provenance stable flag contradicts its closed boundaries");
+  }
+  return { ok: reasons.length === 0, reasons };
+}
+
+export function validateC1229S5ReplacementPreflightProvenance(value) {
+  const reasons = [];
+  let materialized;
+  try {
+    materialized = materializeC1229S5ReplacementEvidence(value);
+  } catch (error) {
+    return {
+      ok: false,
+      reasons: [
+        `preflight provenance is not materializable: ${String(error?.message ?? error)}`,
+      ],
+    };
+  }
+  if (
+    !exactArray(materialized.localEnd, []) ||
+    materialized.sourceBoundaryEnd !== null ||
+    materialized.browser !== null ||
+    !exactArray(materialized.sessions, []) ||
+    materialized.stable !== false ||
+    materialized.browserResponsesMatchLocal !== false
+  ) {
+    reasons.push("preflight provenance already claims run-time authority");
+  }
+  if (
+    materialized.buildSourceIdentity?.ok !== true ||
+    materialized.policyBoundary?.closed !== true ||
+    materialized.sourceBoundaryStart?.allExact !== true ||
+    materialized.buildEntryMatchesServed !== true ||
+    materialized.servedMatchesLocal !== true
+  ) {
+    reasons.push(
+      "preflight provenance prerequisites are not exact and eligible",
+    );
+  }
+  const origin = (() => {
+    try {
+      return new URL(materialized.served?.[0]?.url).origin;
+    } catch {
+      return "http://invalid.invalid";
+    }
+  })();
+  const completed = {
+    ...materialized,
+    localEnd: structuredClone(materialized.localStart),
+    sourceBoundaryEnd: structuredClone(materialized.sourceBoundaryStart),
+    stable: true,
+    browserResponsesMatchLocal: true,
+    browser: { name: "preflight-placeholder", version: "0" },
+    sessions: C12_29_S5_REPLACEMENT_RENDERERS.map((renderer, index) => {
+      const sessionId = `123e4567-e89b-42d3-a456-42661417400${index}`;
+      const witnessNonce = `223e4567-e89b-42d3-a456-42661417400${index}`;
+      const sceneToken = `preflight-scene-${index}`;
+      const contextToken = `preflight-context-${index}`;
+      const canvasToken = `preflight-canvas-${index}`;
+      return {
+        sessionId,
+        renderer,
+        runtimeIdentity: {
+          renderer,
+          userAgent: "preflight-placeholder",
+          platform: "preflight-placeholder",
+          language: "en",
+          devicePixelRatio: 1,
+          secureContext: true,
+          webdriver: true,
+        },
+        responses: C12_29_S5_REPLACEMENT_SERVED_FILES.map((servedPath) => {
+          const local = materialized.localStart.find(
+            (entry) => entry.path === servedPath,
+          );
+          return {
+            path: servedPath,
+            url: new URL(`/${servedPath}`, origin).href,
+            status: 200,
+            method: "GET",
+            resourceType: servedPath.endsWith(".html") ? "document" : "script",
+            fromServiceWorker: false,
+            byteLength: local?.byteLength ?? 0,
+            sha256: local?.sha256 ?? "",
+          };
+        }),
+        attestation: {
+          schema: C12_29_S5_REPLACEMENT_RUNTIME_ATTESTATION_SCHEMA,
+          sessionId,
+          renderer,
+          installerSha256: C12_29_S5_REPLACEMENT_RUNTIME_ATTESTOR_SOURCE_SHA256,
+          events: [
+            {
+              schema: C12_29_S5_REPLACEMENT_RUNTIME_ATTESTATION_SCHEMA,
+              sessionId,
+              renderer,
+              witnessNonce,
+              sequence: 1,
+              kind: "begin",
+              installerSha256:
+                C12_29_S5_REPLACEMENT_RUNTIME_ATTESTOR_SOURCE_SHA256,
+              measurementSha256:
+                materialized.captureSourceProof.measurement.executedSha256,
+              captureFactorySha256: C12_29_S5_REPLACEMENT_FUSED_SOURCE_SHA256,
+              samplerSha256: C12_29_S5_REPLACEMENT_SAMPLER_SOURCE_SHA256,
+              frameReaderSha256:
+                materialized.captureSourceProof.frameReader.executedSha256,
+              sceneToken,
+              contextToken,
+              canvasToken,
+            },
+            {
+              schema: C12_29_S5_REPLACEMENT_RUNTIME_ATTESTATION_SCHEMA,
+              sessionId,
+              renderer,
+              witnessNonce,
+              sequence: 2,
+              kind: "finish",
+              bodySha256: "0".repeat(64),
+              captureCount: 0,
+              finalSceneToken: sceneToken,
+              finalContextToken: contextToken,
+              finalCanvasToken: canvasToken,
+              finalAdapterToken:
+                renderer === "webgpu" ? "preflight-adapter" : null,
+              finalDeviceToken:
+                renderer === "webgpu" ? "preflight-device" : null,
+              finalResourceGeneration: renderer === "webgpu" ? 0 : null,
+            },
+          ],
+        },
+      };
+    }),
+  };
+  const complete = validateC1229S5ReplacementProvenance(completed);
+  reasons.push(...complete.reasons);
   return { ok: reasons.length === 0, reasons };
 }
 
@@ -792,19 +1695,6 @@ export function validateC1229S5ReplacementRuntimeDiagnostics(value, renderer) {
   return { ok: reasons.length === 0, reasons };
 }
 
-function deriveImageSampleStats(rgba) {
-  let nonBlackPixels = 0;
-  let luminance = 0;
-  for (let index = 0; index < rgba.length; index += 4) {
-    if (rgba[index] || rgba[index + 1] || rgba[index + 2]) nonBlackPixels++;
-    luminance +=
-      0.2126 * rgba[index] +
-      0.7152 * rgba[index + 1] +
-      0.0722 * rgba[index + 2];
-  }
-  return { nonBlackPixels, meanLuminance: luminance / (rgba.length / 4) };
-}
-
 function deriveImageSampleDelta(left, right) {
   let absolute = 0;
   let changed = 0;
@@ -814,7 +1704,11 @@ function deriveImageSampleDelta(left, right) {
       Math.abs(left[index + 1] - right[index + 1]) +
       Math.abs(left[index + 2] - right[index + 2]);
     absolute += delta / 3;
-    if (delta > 9) changed++;
+    if (
+      delta >
+      C12_29_S5_REPLACEMENT_THRESHOLD_DERIVATION.changedSampleRgbSumThreshold
+    )
+      changed++;
   }
   return {
     meanAbsoluteDelta: absolute / (left.length / 4),
@@ -826,20 +1720,63 @@ function validImage(value) {
   const shaped =
     exactKeys(value, [
       "label",
+      "sessionId",
+      "renderer",
+      "witnessNonce",
+      "witnessSequence",
+      "sceneToken",
+      "contextToken",
+      "canvasToken",
+      "adapterToken",
+      "deviceToken",
+      "resourceGeneration",
+      "captureNonce",
+      "captureOrdinal",
+      "frameSha256",
+      "transactionSha256",
       "width",
       "height",
+      "pngFile",
       "byteLength",
       "sha256",
+      "sampleSha256",
+      "samplerSchema",
+      "sampleWidth",
+      "sampleHeight",
       "nonBlackPixels",
       "meanLuminance",
       "sampleRgba",
     ]) &&
-    boundedString(value.label, 128) &&
-    positiveInteger(value.width) &&
-    positiveInteger(value.height) &&
+    IMAGE_LABELS.has(value.label) &&
+    isC1229S5ReplacementUuidV4(value.sessionId) &&
+    C12_29_S5_REPLACEMENT_RENDERERS.includes(value.renderer) &&
+    isC1229S5ReplacementUuidV4(value.witnessNonce) &&
+    positiveInteger(value.witnessSequence) &&
+    validWitnessToken(value.sceneToken) &&
+    validWitnessToken(value.contextToken) &&
+    validWitnessToken(value.canvasToken) &&
+    validWitnessToken(value.adapterToken, value.renderer === "webgl") &&
+    validWitnessToken(value.deviceToken, value.renderer === "webgl") &&
+    (value.renderer === "webgl"
+      ? value.resourceGeneration === null ||
+        nonnegativeInteger(value.resourceGeneration)
+      : nonnegativeInteger(value.resourceGeneration)) &&
+    isC1229S5ReplacementUuidV4(value.captureNonce) &&
+    positiveInteger(value.captureOrdinal) &&
+    SHA256.test(value.frameSha256 ?? "") &&
+    SHA256.test(value.transactionSha256 ?? "") &&
+    value.width === C12_29_S5_REPLACEMENT_CONFIG.viewport.width &&
+    value.height === C12_29_S5_REPLACEMENT_CONFIG.viewport.height &&
+    typeof value.pngFile === "string" &&
+    UUID_V4.test(value.pngFile.slice(0, 36)) &&
+    value.pngFile === `${value.pngFile.slice(0, 36)}.${value.label}.png` &&
     positiveInteger(value.byteLength) &&
     typeof value.sha256 === "string" &&
     SHA256.test(value.sha256) &&
+    SHA256.test(value.sampleSha256 ?? "") &&
+    value.samplerSchema === C12_29_S5_REPLACEMENT_SAMPLER_SCHEMA &&
+    value.sampleWidth === C12_29_S5_REPLACEMENT_CONFIG.sampleWidth &&
+    value.sampleHeight === C12_29_S5_REPLACEMENT_CONFIG.sampleHeight &&
     nonnegativeInteger(value.nonBlackPixels) &&
     finite(value.meanLuminance) &&
     numericArray(
@@ -852,10 +1789,13 @@ function validImage(value) {
       (entry) => Number.isInteger(entry) && entry >= 0 && entry <= 255,
     );
   if (!shaped) return false;
-  const derived = deriveImageSampleStats(value.sampleRgba);
+  const derived = deriveC1229S5ReplacementSampleStats(value.sampleRgba);
   return (
     value.nonBlackPixels === derived.nonBlackPixels &&
-    Object.is(value.meanLuminance, derived.meanLuminance)
+    Object.is(value.meanLuminance, derived.meanLuminance) &&
+    value.sampleSha256 === sha256(JSON.stringify(value.sampleRgba)) &&
+    value.transactionSha256 ===
+      deriveC1229S5ReplacementCaptureTransactionSha256(value)
   );
 }
 
@@ -887,7 +1827,9 @@ function validTerrainSnapshot(value) {
     value.selectedTileIds.length > 0 &&
     boundedString(value.providerToken, 128) &&
     validS5Snapshot(value.s5) &&
-    validImage(value.image)
+    validImage(value.image) &&
+    value.image.frameSha256 ===
+      deriveC1229S5ReplacementCaptureFrameSha256(value)
   );
 }
 
@@ -933,6 +1875,7 @@ function validControl(value) {
       "terrainExact",
       "s5PayloadExact",
       "renderComparable",
+      "nonVacuous",
     ]) &&
     validateC1229S5ReplacementRuntimeDiagnostics(value.runtime, "webgl").ok &&
     exactBooleanObject(value.cleanup, [
@@ -1152,6 +2095,57 @@ const NATIVE_MARK_STAGES = Object.freeze({
   "capture-native-start": "replacement-healthy",
   "capture-descriptor": "replacement-capture",
 });
+
+const GPU_LIMIT_KEYS = Object.freeze([
+  "maxBindGroups",
+  "maxBufferSize",
+  "maxTextureDimension2D",
+  "maxUniformBufferBindingSize",
+  "minUniformBufferOffsetAlignment",
+]);
+
+function validGpuFeatureList(value) {
+  return (
+    stringArray(value, 512) && exactArray(value, [...new Set(value)].sort())
+  );
+}
+
+function validGpuLimits(value) {
+  return (
+    exactKeys(value, GPU_LIMIT_KEYS) &&
+    GPU_LIMIT_KEYS.every((key) => positiveInteger(value[key]))
+  );
+}
+
+function validGpuDeviceIdentity(value) {
+  return (
+    exactKeys(value, [
+      "adapterInfo",
+      "adapterFeatures",
+      "adapterLimits",
+      "deviceLabel",
+      "deviceFeatures",
+      "deviceLimits",
+    ]) &&
+    exactKeys(value.adapterInfo, [
+      "vendor",
+      "architecture",
+      "device",
+      "description",
+    ]) &&
+    ["vendor", "architecture", "device", "description"].every(
+      (key) =>
+        typeof value.adapterInfo[key] === "string" &&
+        value.adapterInfo[key].length <= 1024,
+    ) &&
+    validGpuFeatureList(value.adapterFeatures) &&
+    validGpuLimits(value.adapterLimits) &&
+    typeof value.deviceLabel === "string" &&
+    value.deviceLabel.length <= 1024 &&
+    validGpuFeatureList(value.deviceFeatures) &&
+    validGpuLimits(value.deviceLimits)
+  );
+}
 
 function validNativeSequenceReceipt(value, role) {
   const stage = role === "D0" ? "before-loss" : "replacement-capture";
@@ -1390,13 +2384,15 @@ export function validateC1229S5ReplacementNativeLedger(value) {
           "armedAtAcquisition",
           "createBufferCount",
           "createBindGroupCount",
+          "identity",
         ]) &&
         entry.role === (index === 0 ? "D0" : "D1") &&
         boundedString(entry.token, 128) &&
         positiveInteger(entry.firstOrdinal) &&
         typeof entry.armedAtAcquisition === "boolean" &&
         nonnegativeInteger(entry.createBufferCount) &&
-        nonnegativeInteger(entry.createBindGroupCount),
+        nonnegativeInteger(entry.createBindGroupCount) &&
+        validGpuDeviceIdentity(entry.identity),
     )
   )
     reasons.push("native device ownership ledger is invalid");
@@ -1965,7 +2961,8 @@ function recoveryConsolePass(webgpu) {
   );
 }
 
-function controlPass(control) {
+function controlPass(report) {
+  const control = report.control;
   const terrain = deriveTerrainContinuity(control.before, control.afterGap);
   const delta = deriveImageSampleDelta(
     control.before.image.sampleRgba,
@@ -1976,6 +2973,11 @@ function controlPass(control) {
       C12_29_S5_REPLACEMENT_CONFIG.controlMaximumMeanAbsoluteDelta &&
     delta.changedPixelShare <=
       C12_29_S5_REPLACEMENT_CONFIG.controlMaximumChangedPixelShare;
+  const nonVacuous =
+    control.before.image.nonBlackPixels >=
+      C12_29_S5_REPLACEMENT_CONFIG.minimumNonBlackSamplePixels &&
+    control.afterGap.image.nonBlackPixels >=
+      C12_29_S5_REPLACEMENT_CONFIG.minimumNonBlackSamplePixels;
   return (
     Object.values(control.continuity).every(Boolean) &&
     control.continuity.frameAdvanced ===
@@ -1984,11 +2986,14 @@ function controlPass(control) {
     control.continuity.terrainExact === terrain.selectedIdsExact &&
     control.continuity.s5PayloadExact === terrain.s5PayloadExact &&
     control.continuity.renderComparable === renderComparable &&
+    control.continuity.nonVacuous === nonVacuous &&
+    nonVacuous &&
     terrain.surfaceRadiusExact &&
     terrain.activeBoth &&
     control.before.s5.gate > 0.5 &&
     control.afterGap.s5.gate > 0.5 &&
     runtimeClean(control.runtime, false) &&
+    controlOwnersSurvived(report) &&
     Object.values(control.cleanup).every(Boolean)
   );
 }
@@ -2015,6 +3020,161 @@ function payloadProofPass(proof) {
   );
 }
 
+// Charter section 1 / R-2026-08-18-27: a valid measurement that misses a
+// registered expectation is a FAILURE; STRUCTURAL is reserved for evidence
+// that cannot be evaluated at all.  Owner-token constancy across a session's
+// witness records is a valid measurement of the ownership-survival claim, so
+// it is derived here for the FAIL tier rather than asserted above the
+// structural guard.  The genuinely cross-channel binding -- an image record
+// against its attestation event -- is a shape question and stays structural.
+const OWNER_TOKEN_KEYS = Object.freeze([
+  "sceneToken",
+  "contextToken",
+  "canvasToken",
+]);
+
+function sameOwnerTokens(left, right) {
+  if (!left || !right) return false;
+  return OWNER_TOKEN_KEYS.every((key) => left[key] === right[key]);
+}
+
+function attestedOwnerTokensConstant(session) {
+  const events = session?.attestation?.events;
+  if (!properArray(events) || events.length < 2) return false;
+  const begin = events[0];
+  const finish = events.at(-1);
+  return (
+    events.slice(1, -1).every((event) => sameOwnerTokens(begin, event)) &&
+    finish?.finalSceneToken === begin?.sceneToken &&
+    finish?.finalContextToken === begin?.contextToken &&
+    finish?.finalCanvasToken === begin?.canvasToken
+  );
+}
+
+function sessionFor(report, renderer) {
+  return (report?.provenance?.sessions ?? []).find(
+    (session) => session?.renderer === renderer,
+  );
+}
+
+function controlOwnersSurvived(report) {
+  return (
+    sameOwnerTokens(
+      report?.control?.before?.image,
+      report?.control?.afterGap?.image,
+    ) && attestedOwnerTokensConstant(sessionFor(report, "webgl"))
+  );
+}
+
+function replacementOwnersSurvived(report) {
+  const before = report?.webgpu?.before?.image;
+  const after = report?.webgpu?.terrain?.after?.image;
+  return (
+    sameOwnerTokens(before, after) &&
+    attestedOwnerTokensConstant(sessionFor(report, "webgpu"))
+  );
+}
+
+// The witnessed adapter/device tokens are re-derived at every capture, so
+// their INEQUALITY is the independent form of identity.freshAdapter and
+// identity.freshDevice -- the same product claim, and therefore the same tier
+// as the self-reports it checks.
+function replacementDeviceIsFresh(report) {
+  const before = report?.webgpu?.before?.image;
+  const after = report?.webgpu?.terrain?.after?.image;
+  if (!before || !after) return false;
+  return (
+    before.adapterToken !== after.adapterToken &&
+    before.deviceToken !== after.deviceToken
+  );
+}
+
+function runtimeAttestationLineageReasons(report) {
+  const reasons = [];
+  const sessions = new Map(
+    (report?.provenance?.sessions ?? []).map((session) => [
+      session.renderer,
+      session,
+    ]),
+  );
+  const expected = new Map([
+    [
+      "webgl",
+      [report?.control?.before, report?.control?.afterGap].filter(Boolean),
+    ],
+    [
+      "webgpu",
+      report?.webgpu?.classification === "eligible-replacement"
+        ? [report?.webgpu?.before, report?.webgpu?.terrain?.after].filter(
+            Boolean,
+          )
+        : report?.webgpu?.before
+          ? [report.webgpu.before]
+          : [],
+    ],
+  ]);
+  for (const renderer of C12_29_S5_REPLACEMENT_RENDERERS) {
+    const session = sessions.get(renderer);
+    const attestation = session?.attestation;
+    const captureEvents = (attestation?.events ?? []).filter(
+      (event) => event?.kind === "capture",
+    );
+    const snapshots = expected.get(renderer) ?? [];
+    if (captureEvents.length !== snapshots.length) {
+      reasons.push(`${renderer} runtime witness capture cardinality differs`);
+      continue;
+    }
+    for (let index = 0; index < snapshots.length; index++) {
+      const snapshot = snapshots[index];
+      const image = snapshot?.image;
+      const event = captureEvents[index];
+      if (
+        image?.sessionId !== session?.sessionId ||
+        image?.renderer !== renderer ||
+        image?.witnessNonce !== attestation?.events?.[0]?.witnessNonce ||
+        image?.witnessSequence !== event?.sequence ||
+        image?.label !== event?.label ||
+        image?.captureOrdinal !== event?.captureOrdinal ||
+        image?.captureNonce !== event?.captureNonce ||
+        image?.frameSha256 !== event?.frameSha256 ||
+        image?.sha256 !== event?.pngSha256 ||
+        image?.sampleSha256 !== event?.sampleSha256 ||
+        image?.transactionSha256 !== event?.transactionSha256 ||
+        image?.sceneToken !== event?.sceneToken ||
+        image?.contextToken !== event?.contextToken ||
+        image?.canvasToken !== event?.canvasToken ||
+        image?.adapterToken !== event?.adapterToken ||
+        image?.deviceToken !== event?.deviceToken ||
+        image?.resourceGeneration !== event?.resourceGeneration ||
+        snapshot?.frameNumber !== event?.frameNumber
+      ) {
+        reasons.push(
+          `${renderer} ${image?.label ?? index} runtime witness lineage differs`,
+        );
+      }
+    }
+  }
+  if (report?.webgpu?.classification === "eligible-replacement") {
+    const before = report.webgpu.before?.image;
+    const after = report.webgpu.terrain?.after?.image;
+    const finish = sessions.get("webgpu")?.attestation?.events?.at(-1);
+    if (
+      !before ||
+      !after ||
+      before.resourceGeneration !== report.webgpu.generations.before ||
+      after.resourceGeneration !== report.webgpu.generations.after ||
+      finish?.finalAdapterToken !== after.adapterToken ||
+      finish?.finalDeviceToken !== after.deviceToken ||
+      finish?.finalResourceGeneration !== after.resourceGeneration
+    ) {
+      reasons.push(
+        "WebGPU runtime witness does not bind its capture records to the reported adapter/device generations",
+      );
+    }
+  }
+  return reasons;
+}
+
 function checkObject(report) {
   const webgpu = report.webgpu;
   const full = webgpu.classification === "eligible-replacement";
@@ -2032,8 +3192,11 @@ function checkObject(report) {
       report.provenance.stable &&
       report.provenance.buildEntryMatchesServed &&
       report.provenance.servedMatchesLocal &&
+      report.provenance.browserResponsesMatchLocal &&
+      report.provenance.sourceBoundaryStart.allExact &&
       report.provenance.buildSourceIdentity.ok,
-    controlGapHealthy: controlPass(report.control),
+    executionAttested: runtimeAttestationLineageReasons(report).length === 0,
+    controlGapHealthy: controlPass(report),
     genuineTrigger:
       full &&
       webgpu.eligibility.eligible &&
@@ -2056,7 +3219,9 @@ function checkObject(report) {
       webgpu.recovery.state === "healthy" &&
       webgpu.recovery.deviceLostEvents === 1 &&
       webgpu.recovery.recoveredEvents === 1 &&
-      Object.values(webgpu.identity).every(Boolean),
+      Object.values(webgpu.identity).every(Boolean) &&
+      replacementOwnersSurvived(report) &&
+      replacementDeviceIsFresh(report),
     generationAdvanced:
       full &&
       webgpu.generations.delta === 1 &&
@@ -2157,6 +3322,72 @@ function checkObject(report) {
   };
 }
 
+function validateImageLineage(report) {
+  const reasons = [];
+  const expected = [
+    [report?.control?.before?.image, "control-before"],
+    [report?.control?.afterGap?.image, "control-after-gap"],
+  ];
+  if (report?.webgpu?.before?.image) {
+    expected.push([report.webgpu.before.image, "webgpu-before"]);
+  }
+  if (report?.webgpu?.classification === "eligible-replacement") {
+    expected.push([report.webgpu.terrain?.after?.image, "webgpu-after"]);
+    if (
+      !sameJson(
+        report.webgpu.before?.image,
+        report.webgpu.terrain?.before?.image,
+      ) ||
+      !sameJson(
+        report.webgpu.render?.beforeImage,
+        report.webgpu.terrain?.before?.image,
+      ) ||
+      !sameJson(
+        report.webgpu.render?.afterImage,
+        report.webgpu.terrain?.after?.image,
+      )
+    ) {
+      reasons.push(
+        "WebGPU repeated image witnesses do not share exact metadata",
+      );
+    }
+  }
+  const pngFiles = [];
+  const captureNonces = [];
+  const transactions = [];
+  for (const [image, label] of expected) {
+    if (
+      image?.label !== label ||
+      image?.pngFile !== `${report?.runId}.${label}.png`
+    ) {
+      reasons.push(`${label} PNG is not UUID-bound to this run`);
+    } else {
+      pngFiles.push(image.pngFile);
+      captureNonces.push(image.captureNonce);
+      transactions.push(image.transactionSha256);
+    }
+  }
+  if (new Set(pngFiles).size !== pngFiles.length) {
+    reasons.push("documentary PNG paths are not unique per capture");
+  }
+  if (
+    new Set(captureNonces).size !== captureNonces.length ||
+    new Set(transactions).size !== transactions.length
+  ) {
+    reasons.push("capture transaction nonces/seals are not unique");
+  }
+  if (
+    report?.control?.before?.image?.captureOrdinal !== 1 ||
+    report?.control?.afterGap?.image?.captureOrdinal !== 2 ||
+    report?.webgpu?.before?.image?.captureOrdinal !== 1 ||
+    (report?.webgpu?.classification === "eligible-replacement" &&
+      report?.webgpu?.terrain?.after?.image?.captureOrdinal !== 2)
+  ) {
+    reasons.push("capture transaction ordinals are not exact per session");
+  }
+  return reasons;
+}
+
 export function foldC1229S5ReplacementDeviceGate(report) {
   const structuralReasons = [];
   const failureReasons = [];
@@ -2194,6 +3425,8 @@ export function foldC1229S5ReplacementDeviceGate(report) {
     structuralReasons.push("WebGL control evidence is malformed");
   const webgpu = validWebgpu(report?.webgpu);
   if (!webgpu.ok) structuralReasons.push(...webgpu.reasons);
+  structuralReasons.push(...runtimeAttestationLineageReasons(report));
+  structuralReasons.push(...validateImageLineage(report));
   if (
     !exactBooleanObject(report?.cleanup, [
       "complete",
@@ -2210,6 +3443,10 @@ export function foldC1229S5ReplacementDeviceGate(report) {
     if (!checks.provenanceStable)
       structuralReasons.push(
         "provenance did not bind a stable exact build/source set",
+      );
+    if (!checks.executionAttested)
+      structuralReasons.push(
+        "executed measurement/capture transaction lacks exact runtime attestation",
       );
     if (!checks.phaseOrderExact)
       structuralReasons.push("phase order is not exact");
@@ -2234,7 +3471,7 @@ export function foldC1229S5ReplacementDeviceGate(report) {
         ["controlGapHealthy", "WebGL no-loss gap control changed or failed"],
         [
           "sameOwners",
-          "Scene/context/canvas/GPUCanvasContext/View ownership did not survive",
+          "Scene/context/canvas/GPUCanvasContext/View ownership did not survive onto a fresh adapter/device",
         ],
         [
           "generationAdvanced",
@@ -2267,9 +3504,16 @@ export function foldC1229S5ReplacementDeviceGate(report) {
           "replacement-device retained capture did not submit and clean up",
         ],
         ["runtimeClean", "runtime/transport/GPU error ledger is not clean"],
-        ["cleanupComplete", "probe cleanup did not complete"],
       ])
         if (!checks[key]) failureReasons.push(reason);
+      // Cleanup incompleteness is harness hygiene, not product evidence:
+      // scoring it FAIL would convert a probe defect into a product
+      // regression (R-2026-08-18-27's mirror image), so it invalidates the
+      // evidence instead.
+      if (!checks.cleanupComplete)
+        structuralReasons.push(
+          "probe cleanup did not complete - evidence is not trustworthy",
+        );
     }
   }
   const status =
@@ -2408,13 +3652,18 @@ function validErrorDiagnostics(value) {
   return true;
 }
 
-export function createC1229S5ReplacementErrorArtifact(runId, diagnostics) {
+export function createC1229S5ReplacementErrorArtifact(
+  runId,
+  diagnostics,
+  preflightSha256,
+) {
   return {
     schema: C12_29_S5_REPLACEMENT_SCHEMA,
     runId,
     incomplete: false,
     status: "ERROR",
     exitCode: exitCodeForC1229S5ReplacementStatus("ERROR"),
+    preflightSha256,
     reasons: { structural: [], failures: [diagnostics.message] },
     diagnostics,
   };
@@ -2435,6 +3684,7 @@ export function validateC1229S5ReplacementFinalArtifact(artifact) {
         "incomplete",
         "status",
         "exitCode",
+        "preflightSha256",
         "reasons",
         "diagnostics",
       ])
@@ -2444,7 +3694,8 @@ export function validateC1229S5ReplacementFinalArtifact(artifact) {
       artifact?.schema !== C12_29_S5_REPLACEMENT_SCHEMA ||
       !isC1229S5ReplacementUuidV4(artifact?.runId) ||
       artifact?.incomplete !== false ||
-      artifact?.exitCode !== 2
+      artifact?.exitCode !== 2 ||
+      !SHA256.test(artifact?.preflightSha256 ?? "")
     )
       reasons.push("ERROR artifact identity/status is invalid");
     if (
