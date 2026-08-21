@@ -50,10 +50,12 @@ const sources = {
     path.join(here, "c11-13-voxel-inside-camera-harness.html"),
     "utf8",
   ),
-  harness: fs.readFileSync(
-    path.join(here, "c11-13-voxel-inside-camera-harness.mjs"),
-    "utf8",
-  ),
+  harness: fs
+    .readFileSync(
+      path.join(here, "c11-13-voxel-inside-camera-harness.mjs"),
+      "utf8",
+    )
+    .replaceAll("\r\n", "\n"),
   implementation: fs.readFileSync(
     path.join(here, "lib/c11-13-voxel-inside-camera-probe.mjs"),
     "utf8",

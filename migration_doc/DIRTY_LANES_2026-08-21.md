@@ -51,7 +51,7 @@ classify it at this lane's landing.
 clear-on-zero-frustums), `probe-voxel-parity.mjs` edits, the shared public-correctness
 spec, C18 queue row text. **Status:** Batch 1028 landed the core; **browser closure open —
 the C18-V2 certifying-scene runs are executing in the T0 frozen-build program right now.**
-**Gate:** machine lane (in progress).
+**Gate:** machine lane (in progress). **Linkage proven 2026-08-21 (Batch 1091):** the C11-13 pick-pipeline spec’s selected-owner dispatch test is red at committed tip (the consumer was never landed) and green in this dirty tree — lane G’s `skippedWrongVoxelOwner` census IS the missing consumer, and the T0 battery’s cell-pick off-pixel red is the same defect’s pixel face. Landing lane G closes both.
 
 ## Lane H — C13 cloud: C13-09 sentinel + C13-16 U2 morphology
 

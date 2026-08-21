@@ -33,7 +33,7 @@ import {
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, "../..");
 const read = (relativePath) =>
-  readFileSync(path.join(ROOT, relativePath), "utf8");
+  readFileSync(path.join(ROOT, relativePath), "utf8").replaceAll("\r\n", "\n");
 
 function assessVoxelFailureSafety(upload) {
   const failures = [];
@@ -344,16 +344,37 @@ test("mandatory root upload failures retain their reason and surface once", () =
     "a caught root failure may not discard its reason",
   );
 
-  assert.match(
-    renderer,
-    /function throwUnreportedVoxelRootUploadFailure[\s\S]*?takeVoxelAsyncFailure\(cache\.dataUpload\.rootFailure\)[\s\S]*?throw failure;/,
+  const rootFailureReportStart = renderer.indexOf(
+    "function reportVoxelRootUploadFailure(",
   );
+  const rootFailureReportEnd = renderer.indexOf(
+    "function createVoxelCache(",
+    rootFailureReportStart,
+  );
+  const rootFailureReport = renderer.slice(
+    rootFailureReportStart,
+    rootFailureReportEnd,
+  );
+  assert.ok(
+    rootFailureReportStart >= 0 &&
+      rootFailureReportEnd > rootFailureReportStart,
+  );
+  const rootFailureReportPattern =
+    /takeVoxelAsyncFailure\(cache\.dataUpload\.rootFailure\)[\s\S]*?const message = failure instanceof Error \? failure\.message : String\(failure\);[\s\S]*?cache\.context\.log\([\s\S]*?`VoxelPrimitive root tile upload failed: \$\{message\}`[\s\S]*?tileFailed\?\.raiseEvent\?\.\(\);/;
+  assert.match(rootFailureReport, rootFailureReportPattern);
+  assert.doesNotMatch(rootFailureReport, /\bthrow\b/u);
+  const repeatedRootFailure = rootFailureReport.replace(
+    "takeVoxelAsyncFailure(cache.dataUpload.rootFailure)",
+    "peekVoxelAsyncFailure(cache.dataUpload.rootFailure)",
+  );
+  assert.notEqual(repeatedRootFailure, rootFailureReport);
+  assert.doesNotMatch(repeatedRootFailure, rootFailureReportPattern);
   const uploadDrive = renderer.indexOf("tryUploadRootVoxelTile(");
-  const uploadThrow = renderer.indexOf(
-    "throwUnreportedVoxelRootUploadFailure(cache)",
+  const uploadReport = renderer.indexOf(
+    "reportVoxelRootUploadFailure(cache, primitive)",
     uploadDrive,
   );
-  assert.ok(uploadDrive >= 0 && uploadThrow > uploadDrive);
+  assert.ok(uploadDrive >= 0 && uploadReport > uploadDrive);
 });
 
 test("retained aliases release their shared VoxelContent exactly once", () => {
