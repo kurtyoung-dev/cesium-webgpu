@@ -197,6 +197,10 @@ interface PickReadbackRegion {
   resourceGeneration: number;
   attachmentGeneration: number;
   viewProvenance: unknown;
+  // Pick-clock value when this readback was captured. Read only by the
+  // instrumentation; deliberately absent from _readbackRegionsEqual so a
+  // region that differs only in age still matches exactly as before.
+  armStamp: number;
 }
 
 /**
@@ -223,6 +227,472 @@ function unpackPickPixels(
     );
   }
   return pixels;
+}
+
+/**
+ * Why a synchronous pick returned nothing is not knowable from the outside.
+ * WebGPU cannot read the pick attachment back synchronously, so every
+ * `end()` is served from a readback armed by an EARLIER pick, or declined.
+ * Nothing in this subsystem recorded which of those happened, how old a served
+ * result was, or which gate declined it, so a report of "picking is broken"
+ * could not be separated from "picking is one pick behind" or "the cache gate
+ * fail-closed because the camera moved". These counters make that distinction
+ * observable BEFORE any gate is changed.
+ *
+ * Cost judgement, per the logging rules: every counter below is a monotonic
+ * increment, or a min/max over a number the caller already computed, on a path
+ * that runs at most once per pick and already pays for a texture copy plus a
+ * spiral search over the pick rectangle. Stripping them would make a shipped
+ * build unmeasurable while saving arithmetic that does not register against
+ * that surrounding work, so they are NOT pragma-wrapped. The one member that
+ * costs real work is `recentDeclines`: it allocates a record per decline and
+ * its only consumer is a developer reading a console dump, so its maintenance
+ * IS pragma-wrapped and a production build reports an empty list.
+ * @private
+ */
+export type PickServeDeclineReason =
+  | "no-device"
+  | "no-attachment"
+  | "no-cached-readback"
+  | "resource-generation-changed"
+  | "attachment-generation-changed"
+  | "view-provenance-changed"
+  | "center-outside-cached-region"
+  | "no-region-overlap";
+
+/**
+ * Why a readback was not armed. The two `*-in-flight` reasons are the
+ * `_readbackInFlight` suppressions: the first is the whole request skipped
+ * because the previous map has not resolved, the second is a request whose
+ * copy extent changed and so needs a differently-sized staging buffer that
+ * cannot be swapped while the old one is mapping-pending.
+ * @private
+ */
+export type PickArmDeclineReason =
+  | "no-device"
+  | "no-attachment"
+  | "readback-in-flight"
+  | "staging-buffer-in-flight"
+  | "staging-buffer-unavailable"
+  | "no-frame-encoder"
+  | "frame-submit-rejected"
+  | "frame-not-submitted";
+
+/**
+ * Why a completed readback's bytes were discarded instead of becoming the
+ * cache. Anything other than `superseded-by-newer-sequence` means the bytes
+ * were rendered against state that no longer exists.
+ * @private
+ */
+export type PickPublishDeclineReason =
+  | "destroyed"
+  | "device-changed"
+  | "resource-generation-changed"
+  | "color-texture-replaced"
+  | "attachment-generation-changed"
+  | "view-provenance-changed"
+  | "superseded-by-newer-sequence";
+
+/**
+ * Why a metadata/voxel center-pixel read returned `undefined`. `no-cache-entry`
+ * is a genuinely cold typed query; `stale-beyond-max` means the value exists
+ * but is older than CENTER_PIXEL_MAX_STALE_FRAMES picks.
+ * @private
+ */
+export type PickCenterPixelDeclineReason =
+  | "no-device"
+  | "no-attachment"
+  | "no-cache-entry"
+  | "stale-beyond-max"
+  | "identity-not-current"
+  | "duplicate-in-flight";
+
+type PickDeclineStage = "serve" | "arm" | "publish" | "centerPixel";
+
+type PickDeclineReason =
+  | PickServeDeclineReason
+  | PickArmDeclineReason
+  | PickPublishDeclineReason
+  | PickCenterPixelDeclineReason;
+
+interface PickDeclineRecord {
+  stage: PickDeclineStage;
+  reason: PickDeclineReason;
+  updateCount: number;
+}
+
+const PICK_SERVE_DECLINE_REASONS: readonly PickServeDeclineReason[] = [
+  "no-device",
+  "no-attachment",
+  "no-cached-readback",
+  "resource-generation-changed",
+  "attachment-generation-changed",
+  "view-provenance-changed",
+  "center-outside-cached-region",
+  "no-region-overlap",
+];
+
+const PICK_ARM_DECLINE_REASONS: readonly PickArmDeclineReason[] = [
+  "no-device",
+  "no-attachment",
+  "readback-in-flight",
+  "staging-buffer-in-flight",
+  "staging-buffer-unavailable",
+  "no-frame-encoder",
+  "frame-submit-rejected",
+  "frame-not-submitted",
+];
+
+const PICK_PUBLISH_DECLINE_REASONS: readonly PickPublishDeclineReason[] = [
+  "destroyed",
+  "device-changed",
+  "resource-generation-changed",
+  "color-texture-replaced",
+  "attachment-generation-changed",
+  "view-provenance-changed",
+  "superseded-by-newer-sequence",
+];
+
+const PICK_CENTER_PIXEL_DECLINE_REASONS: readonly PickCenterPixelDeclineReason[] =
+  [
+    "no-device",
+    "no-attachment",
+    "no-cache-entry",
+    "stale-beyond-max",
+    "identity-not-current",
+    "duplicate-in-flight",
+  ];
+
+// Enough decline history to explain one interaction (a drag is a handful of
+// picks) without becoming a log. Debug builds only.
+const RECENT_DECLINE_CAPACITY = 32;
+
+/**
+ * Pre-seed every reason to zero so an increment is a write to an existing own
+ * property rather than a hidden-class transition, and so a reader can tell
+ * "this reason never fired" from "this build does not know that reason".
+ */
+function zeroedDeclineCounts<T extends string>(
+  reasons: readonly T[],
+): Record<T, number> {
+  const counts = {} as Record<T, number>;
+  for (const reason of reasons) {
+    counts[reason] = 0;
+  }
+  return counts;
+}
+
+function copyDeclineCounts<T extends string>(
+  counts: Record<T, number>,
+): Record<T, number> {
+  return { ...counts };
+}
+
+/**
+ * Age of a served result, measured in PICK PASSES (the clock `_updateCount`
+ * advances once per `begin()`), not in rendered frames: a paused scene that
+ * picks twice reports an age of 1 however many frames elapsed, because pick
+ * staleness is bounded by picks.
+ * @private
+ */
+export interface PickAgeSummary {
+  last: number | null;
+  min: number | null;
+  max: number | null;
+  mean: number | null;
+  samples: number;
+}
+
+class PickAgeTracker {
+  private _last: number | null = null;
+  private _min: number | null = null;
+  private _max: number | null = null;
+  private _sum: number = 0;
+  private _samples: number = 0;
+
+  add(age: number): void {
+    // A negative or non-finite age means the arm stamp and the pick clock
+    // disagree, which is a bookkeeping defect rather than a measurement.
+    // Dropping it keeps min/max honest instead of poisoning them.
+    if (!Number.isFinite(age) || age < 0) {
+      return;
+    }
+    this._last = age;
+    this._min = this._min === null ? age : Math.min(this._min, age);
+    this._max = this._max === null ? age : Math.max(this._max, age);
+    this._sum += age;
+    this._samples++;
+  }
+
+  summarize(): PickAgeSummary {
+    return {
+      last: this._last,
+      min: this._min,
+      max: this._max,
+      mean: this._samples > 0 ? this._sum / this._samples : null,
+      samples: this._samples,
+    };
+  }
+
+  reset(): void {
+    this._last = null;
+    this._min = null;
+    this._max = null;
+    this._sum = 0;
+    this._samples = 0;
+  }
+}
+
+/**
+ * Immutable view of the pick counters. Every nested record is copied so a
+ * caller holding a snapshot cannot mutate the live counters, and two snapshots
+ * taken at different times can be diffed.
+ * @private
+ */
+export interface PickFramebufferStatistics {
+  endCalls: number;
+  endAsyncCalls: number;
+  servedFresh: number;
+  servedCached: number;
+  cold: number;
+  serveDeclines: Record<PickServeDeclineReason, number>;
+  readbacksArmed: number;
+  readbacksPublished: number;
+  readbacksUnresolved: number;
+  readbackInFlightSuppressions: number;
+  armDeclines: Record<PickArmDeclineReason, number>;
+  publishDeclines: Record<PickPublishDeclineReason, number>;
+  age: PickAgeSummary;
+  centerPixel: {
+    reads: number;
+    served: number;
+    armed: number;
+    published: number;
+    declines: Record<PickCenterPixelDeclineReason, number>;
+    age: PickAgeSummary;
+  };
+  recentDeclines: PickDeclineRecord[];
+}
+
+/**
+ * Counter block for one {@link WebGPUPickFramebuffer}. Exported so a spec can
+ * drive the outcomes directly; runtime readers go through
+ * `WebGPUPickFramebuffer.getStatistics()`.
+ *
+ * Invariants the recorders enforce structurally:
+ *  - `endCalls === servedFresh + servedCached + cold`, because every `end()`
+ *    increments exactly one of the three.
+ *  - `cold === sum(serveDeclines)`, because `recordServeDecline` is the only
+ *    thing that increments `cold`. An undifferentiated decline count therefore
+ *    cannot drift away from its reasons.
+ *  - `readbacksArmed >= readbacksPublished + sum(publishDeclines)`; the
+ *    difference is `readbacksUnresolved` — readbacks whose map never came back
+ *    at all, which no other counter would reveal.
+ * @private
+ */
+export class WebGPUPickFramebufferStats {
+  endCalls: number = 0;
+  endAsyncCalls: number = 0;
+  servedFresh: number = 0;
+  servedCached: number = 0;
+  cold: number = 0;
+  readbacksArmed: number = 0;
+  readbacksPublished: number = 0;
+  centerPixelReads: number = 0;
+  centerPixelServed: number = 0;
+  centerPixelArmed: number = 0;
+  centerPixelPublished: number = 0;
+
+  readonly serveDeclines: Record<PickServeDeclineReason, number> =
+    zeroedDeclineCounts(PICK_SERVE_DECLINE_REASONS);
+  readonly armDeclines: Record<PickArmDeclineReason, number> =
+    zeroedDeclineCounts(PICK_ARM_DECLINE_REASONS);
+  readonly publishDeclines: Record<PickPublishDeclineReason, number> =
+    zeroedDeclineCounts(PICK_PUBLISH_DECLINE_REASONS);
+  readonly centerPixelDeclines: Record<PickCenterPixelDeclineReason, number> =
+    zeroedDeclineCounts(PICK_CENTER_PIXEL_DECLINE_REASONS);
+
+  private readonly _age = new PickAgeTracker();
+  private readonly _centerPixelAge = new PickAgeTracker();
+  private _recentDeclines: PickDeclineRecord[] = [];
+
+  recordEnd(): void {
+    this.endCalls++;
+  }
+
+  recordEndAsync(): void {
+    this.endAsyncCalls++;
+  }
+
+  /** Exact-region cache hit: the served bytes cover precisely this query. */
+  recordServedFresh(age: number): void {
+    this.servedFresh++;
+    this._age.add(age);
+  }
+
+  /** Widened-gate hit: bytes reprojected out of an overlapping earlier query. */
+  recordServedCached(age: number): void {
+    this.servedCached++;
+    this._age.add(age);
+  }
+
+  recordServeDecline(
+    reason: PickServeDeclineReason,
+    updateCount: number,
+  ): void {
+    this.cold++;
+    this.serveDeclines[reason]++;
+    this._pushRecentDecline("serve", reason, updateCount);
+  }
+
+  recordReadbackArmed(): void {
+    this.readbacksArmed++;
+  }
+
+  recordArmDecline(reason: PickArmDeclineReason, updateCount: number): void {
+    this.armDeclines[reason]++;
+    this._pushRecentDecline("arm", reason, updateCount);
+  }
+
+  recordReadbackPublished(): void {
+    this.readbacksPublished++;
+  }
+
+  recordPublishDecline(
+    reason: PickPublishDeclineReason,
+    updateCount: number,
+  ): void {
+    this.publishDeclines[reason]++;
+    this._pushRecentDecline("publish", reason, updateCount);
+  }
+
+  recordCenterPixelRead(): void {
+    this.centerPixelReads++;
+  }
+
+  recordCenterPixelServed(age: number): void {
+    this.centerPixelServed++;
+    this._centerPixelAge.add(age);
+  }
+
+  recordCenterPixelArmed(): void {
+    this.centerPixelArmed++;
+  }
+
+  recordCenterPixelPublished(): void {
+    this.centerPixelPublished++;
+  }
+
+  recordCenterPixelDecline(
+    reason: PickCenterPixelDeclineReason,
+    updateCount: number,
+  ): void {
+    this.centerPixelDeclines[reason]++;
+    this._pushRecentDecline("centerPixel", reason, updateCount);
+  }
+
+  /**
+   * Both `_readbackInFlight` suppression shapes, summed: a skipped request and
+   * a staging buffer that could not be resized while mapping-pending. A rising
+   * value under continuous picking means the map is not keeping up with the
+   * pick rate, which presents to a user as picks that never warm.
+   */
+  get readbackInFlightSuppressions(): number {
+    return (
+      this.armDeclines["readback-in-flight"] +
+      this.armDeclines["staging-buffer-in-flight"]
+    );
+  }
+
+  /**
+   * Readbacks that were armed and then neither published nor explicitly
+   * declined — the map rejected, or the framebuffer was torn down first.
+   */
+  get readbacksUnresolved(): number {
+    let declined = 0;
+    for (const reason of PICK_PUBLISH_DECLINE_REASONS) {
+      declined += this.publishDeclines[reason];
+    }
+    return Math.max(
+      0,
+      this.readbacksArmed - this.readbacksPublished - declined,
+    );
+  }
+
+  getStatistics(): PickFramebufferStatistics {
+    return {
+      endCalls: this.endCalls,
+      endAsyncCalls: this.endAsyncCalls,
+      servedFresh: this.servedFresh,
+      servedCached: this.servedCached,
+      cold: this.cold,
+      serveDeclines: copyDeclineCounts(this.serveDeclines),
+      readbacksArmed: this.readbacksArmed,
+      readbacksPublished: this.readbacksPublished,
+      readbacksUnresolved: this.readbacksUnresolved,
+      readbackInFlightSuppressions: this.readbackInFlightSuppressions,
+      armDeclines: copyDeclineCounts(this.armDeclines),
+      publishDeclines: copyDeclineCounts(this.publishDeclines),
+      age: this._age.summarize(),
+      centerPixel: {
+        reads: this.centerPixelReads,
+        served: this.centerPixelServed,
+        armed: this.centerPixelArmed,
+        published: this.centerPixelPublished,
+        declines: copyDeclineCounts(this.centerPixelDeclines),
+        age: this._centerPixelAge.summarize(),
+      },
+      recentDeclines: this._recentDeclines.slice(),
+    };
+  }
+
+  reset(): void {
+    this.endCalls = 0;
+    this.endAsyncCalls = 0;
+    this.servedFresh = 0;
+    this.servedCached = 0;
+    this.cold = 0;
+    this.readbacksArmed = 0;
+    this.readbacksPublished = 0;
+    this.centerPixelReads = 0;
+    this.centerPixelServed = 0;
+    this.centerPixelArmed = 0;
+    this.centerPixelPublished = 0;
+    for (const reason of PICK_SERVE_DECLINE_REASONS) {
+      this.serveDeclines[reason] = 0;
+    }
+    for (const reason of PICK_ARM_DECLINE_REASONS) {
+      this.armDeclines[reason] = 0;
+    }
+    for (const reason of PICK_PUBLISH_DECLINE_REASONS) {
+      this.publishDeclines[reason] = 0;
+    }
+    for (const reason of PICK_CENTER_PIXEL_DECLINE_REASONS) {
+      this.centerPixelDeclines[reason] = 0;
+    }
+    this._age.reset();
+    this._centerPixelAge.reset();
+    this._recentDeclines = [];
+  }
+
+  /**
+   * Decline history. Allocating a record per decline is real per-pick work
+   * whose only consumer is a console dump, so it is confined to debug builds;
+   * the aggregate counters above stay live in production and remain sufficient
+   * to answer "how often" without the "in what order".
+   */
+  private _pushRecentDecline(
+    stage: PickDeclineStage,
+    reason: PickDeclineReason,
+    updateCount: number,
+  ): void {
+    //>>includeStart('debug', pragmas.debug);
+    this._recentDeclines.push({ stage, reason, updateCount });
+    if (this._recentDeclines.length > RECENT_DECLINE_CAPACITY) {
+      this._recentDeclines.shift();
+    }
+    //>>includeEnd('debug');
+  }
 }
 
 export class WebGPUPickFramebuffer {
@@ -327,6 +797,10 @@ export class WebGPUPickFramebuffer {
   // one begin → render → readCenterPixel cycle). Measured in picks, not wall
   // time, so a paused scene keeps a valid cache indefinitely.
   private _updateCount: number = 0;
+
+  // Pick instrumentation. See WebGPUPickFramebufferStats for the cost
+  // judgement behind which members survive the debug pragma.
+  private readonly _stats = new WebGPUPickFramebufferStats();
 
   constructor(context: CesiumGraphicsContext) {
     this._context = context;
@@ -562,6 +1036,7 @@ export class WebGPUPickFramebuffer {
       resourceGeneration: this._attachmentResourceGeneration,
       attachmentGeneration: this._attachmentGeneration,
       viewProvenance: this._ordinaryPickViewProvenance,
+      armStamp: this._updateCount,
     };
   }
 
@@ -621,13 +1096,33 @@ export class WebGPUPickFramebuffer {
   ): Uint8Array | null {
     const cached = this._lastReadRegion;
     const cachedPixels = this._lastReadPixels;
-    if (
-      !cached ||
-      !cachedPixels ||
-      cached.resourceGeneration !== region.resourceGeneration ||
-      cached.attachmentGeneration !== region.attachmentGeneration ||
-      cached.viewProvenance !== region.viewProvenance
-    ) {
+    // One combined test would answer "declined" without answering "why", and
+    // the why is the whole point of the gate: a provenance decline is the
+    // camera moving, a generation decline is the attachment being rebuilt.
+    // Evaluated in the original order, so only the label is new.
+    if (!cached || !cachedPixels) {
+      this._stats.recordServeDecline("no-cached-readback", this._updateCount);
+      return null;
+    }
+    if (cached.resourceGeneration !== region.resourceGeneration) {
+      this._stats.recordServeDecline(
+        "resource-generation-changed",
+        this._updateCount,
+      );
+      return null;
+    }
+    if (cached.attachmentGeneration !== region.attachmentGeneration) {
+      this._stats.recordServeDecline(
+        "attachment-generation-changed",
+        this._updateCount,
+      );
+      return null;
+    }
+    if (cached.viewProvenance !== region.viewProvenance) {
+      this._stats.recordServeDecline(
+        "view-provenance-changed",
+        this._updateCount,
+      );
       return null;
     }
 
@@ -642,6 +1137,10 @@ export class WebGPUPickFramebuffer {
       centerY < cached.logicalOriginTopY ||
       centerY >= cached.logicalOriginTopY + cached.logicalHeight
     ) {
+      this._stats.recordServeDecline(
+        "center-outside-cached-region",
+        this._updateCount,
+      );
       return null;
     }
 
@@ -660,6 +1159,7 @@ export class WebGPUPickFramebuffer {
     );
     const overlapWidth = overlapRight - overlapLeft;
     if (overlapWidth <= 0 || overlapBottom <= overlapTop) {
+      this._stats.recordServeDecline("no-region-overlap", this._updateCount);
       return null;
     }
 
@@ -690,22 +1190,34 @@ export class WebGPUPickFramebuffer {
     requestDevice: GPUDevice,
     colorTexture: GPUTexture,
   ): void {
-    if (
-      this._isDestroyed ||
-      this._device !== requestDevice ||
-      this._attachmentDevice !== requestDevice ||
-      this._attachmentResourceGeneration !== region.resourceGeneration ||
-      this._colorTexture !== colorTexture ||
-      this._attachmentGeneration !== region.attachmentGeneration ||
-      this._ordinaryPickViewProvenance !== region.viewProvenance ||
-      requestSequence < this._lastPublishedReadbackSequence
-    ) {
+    // Split by reason for the same purpose as the serve gate: a torn-down
+    // framebuffer, a rebuilt attachment and a superseded request are three
+    // different stories about why a completed readback never became the cache.
+    const reason: PickPublishDeclineReason | undefined = this._isDestroyed
+      ? "destroyed"
+      : this._device !== requestDevice ||
+          this._attachmentDevice !== requestDevice
+        ? "device-changed"
+        : this._attachmentResourceGeneration !== region.resourceGeneration
+          ? "resource-generation-changed"
+          : this._colorTexture !== colorTexture
+            ? "color-texture-replaced"
+            : this._attachmentGeneration !== region.attachmentGeneration
+              ? "attachment-generation-changed"
+              : this._ordinaryPickViewProvenance !== region.viewProvenance
+                ? "view-provenance-changed"
+                : requestSequence < this._lastPublishedReadbackSequence
+                  ? "superseded-by-newer-sequence"
+                  : undefined;
+    if (reason !== undefined) {
+      this._stats.recordPublishDecline(reason, this._updateCount);
       return;
     }
 
     this._lastReadPixels = pixels;
     this._lastReadRegion = region;
     this._lastPublishedReadbackSequence = requestSequence;
+    this._stats.recordReadbackPublished();
   }
 
   /**
@@ -723,7 +1235,12 @@ export class WebGPUPickFramebuffer {
     const context = this._context;
     const device = this._device;
 
+    this._stats.recordEnd();
     if (!device || !this._colorTexture) {
+      this._stats.recordServeDecline(
+        !device ? "no-device" : "no-attachment",
+        this._updateCount,
+      );
       return [];
     }
 
@@ -738,6 +1255,10 @@ export class WebGPUPickFramebuffer {
       this._lastReadPixels &&
       this._readbackRegionsEqual(this._lastReadRegion, region)
     ) {
+      this._stats.recordServedFresh(
+        this._updateCount -
+          (this._lastReadRegion?.armStamp ?? this._updateCount),
+      );
       return pickObjectsFromPixels(
         context,
         this._lastReadPixels,
@@ -757,6 +1278,10 @@ export class WebGPUPickFramebuffer {
     // identical to the exact-match path (one frame).
     const reprojected = this._extractPixelsFromCachedRegion(region);
     if (reprojected) {
+      this._stats.recordServedCached(
+        this._updateCount -
+          (this._lastReadRegion?.armStamp ?? this._updateCount),
+      );
       return pickObjectsFromPixels(
         context,
         reprojected,
@@ -798,7 +1323,12 @@ export class WebGPUPickFramebuffer {
     const context = this._context;
     const device = this._device;
 
+    this._stats.recordEndAsync();
     if (!device || !this._colorTexture) {
+      this._stats.recordArmDecline(
+        !device ? "no-device" : "no-attachment",
+        this._updateCount,
+      );
       return [];
     }
 
@@ -814,6 +1344,9 @@ export class WebGPUPickFramebuffer {
       const pixels = new Uint8Array(
         region.logicalWidth * region.logicalHeight * 4,
       );
+      // No GPU copy, but a publish is still expected, so this counts as armed
+      // to keep armed >= published + publishDeclines meaningful.
+      this._stats.recordReadbackArmed();
       this._publishReadbackCache(
         pixels,
         region,
@@ -867,6 +1400,7 @@ export class WebGPUPickFramebuffer {
         [region.copyWidth, region.copyHeight],
       );
       device.queue.submit([encoder.finish()]);
+      this._stats.recordReadbackArmed();
 
       await stagingBuffer.mapAsync(GPUMapMode.READ);
       mapped = true;
@@ -926,7 +1460,12 @@ export class WebGPUPickFramebuffer {
   ): Uint8Array | undefined {
     const device = this._device;
     const colorTexture = this._colorTexture;
+    this._stats.recordCenterPixelRead();
     if (!device || !colorTexture) {
+      this._stats.recordCenterPixelDecline(
+        !device ? "no-device" : "no-attachment",
+        this._updateCount,
+      );
       return undefined;
     }
     const width = this._pickWidth;
@@ -980,8 +1519,15 @@ export class WebGPUPickFramebuffer {
       this._updateCount - cached.stamp >= 0 &&
       this._updateCount - cached.stamp <= CENTER_PIXEL_MAX_STALE_FRAMES
     ) {
+      this._stats.recordCenterPixelServed(this._updateCount - cached.stamp);
       return cached.value.slice(0, 4);
     }
+    // A present-but-too-old entry and a genuinely cold query both return
+    // undefined to the caller; only the counters can tell them apart.
+    this._stats.recordCenterPixelDecline(
+      cached ? "stale-beyond-max" : "no-cache-entry",
+      this._updateCount,
+    );
     return undefined;
   }
 
@@ -1130,6 +1676,10 @@ export class WebGPUPickFramebuffer {
    */
   private _readCenterPixelAsync(identity: CenterPixelReadbackIdentity): void {
     if (!this._centerPixelIdentityIsCurrent(identity)) {
+      this._stats.recordCenterPixelDecline(
+        "identity-not-current",
+        this._updateCount,
+      );
       return;
     }
     // Dedupe per identity, not globally: a readback already in flight for THIS
@@ -1137,6 +1687,10 @@ export class WebGPUPickFramebuffer {
     // in-flight readback must not suppress this one.
     for (const pending of this._centerPendingRequests) {
       if (this._centerPixelIdentitiesEqual(pending.identity, identity)) {
+        this._stats.recordCenterPixelDecline(
+          "duplicate-in-flight",
+          this._updateCount,
+        );
         return;
       }
     }
@@ -1176,6 +1730,7 @@ export class WebGPUPickFramebuffer {
         [1, 1],
       );
       device.queue.submit([encoder.finish()]);
+      this._stats.recordCenterPixelArmed();
 
       const buffer = stagingBuffer;
       buffer
@@ -1200,6 +1755,7 @@ export class WebGPUPickFramebuffer {
               stamp: requestStamp,
               requestSequence,
             });
+            this._stats.recordCenterPixelPublished();
           } finally {
             try {
               buffer.unmap();
@@ -1231,6 +1787,10 @@ export class WebGPUPickFramebuffer {
   private _ensureSyncStagingBuffer(bufferSize: number): GPUBuffer | null {
     const device = this._device;
     if (!device || !(bufferSize > 0)) {
+      this._stats.recordArmDecline(
+        "staging-buffer-unavailable",
+        this._updateCount,
+      );
       return null;
     }
     if (
@@ -1241,6 +1801,13 @@ export class WebGPUPickFramebuffer {
       return this._stagingBuffer;
     }
     if (this._readbackInFlight) {
+      // Distinct from the whole-request suppression below: here the request
+      // survived the in-flight check because the extent changed, and it is the
+      // buffer swap that cannot happen while the old one is mapping-pending.
+      this._stats.recordArmDecline(
+        "staging-buffer-in-flight",
+        this._updateCount,
+      );
       return null;
     }
 
@@ -1267,17 +1834,23 @@ export class WebGPUPickFramebuffer {
     const device = this._device;
     const colorTexture = this._colorTexture;
     if (!device || !colorTexture) {
+      this._stats.recordArmDecline(
+        !device ? "no-device" : "no-attachment",
+        this._updateCount,
+      );
       return;
     }
     // Skip if the previous frame's mapAsync hasn't unmapped yet — the
     // staging buffer is still mapping-pending or mapped, and submitting
     // a copy that targets it throws "used in submit while mapped".
     if (this._readbackInFlight) {
+      this._stats.recordArmDecline("readback-in-flight", this._updateCount);
       return;
     }
 
     const requestSequence = this._nextReadbackSequence++;
     if (region.copyWidth === 0 || region.copyHeight === 0) {
+      this._stats.recordReadbackArmed();
       this._publishReadbackCache(
         new Uint8Array(region.logicalWidth * region.logicalHeight * 4),
         region,
@@ -1293,6 +1866,7 @@ export class WebGPUPickFramebuffer {
       bytesPerRow * region.copyHeight,
     );
     if (!stagingBuffer) {
+      // _ensureSyncStagingBuffer already attributed the reason.
       return;
     }
     const frameContext = this._context as CesiumGraphicsContext & {
@@ -1306,6 +1880,7 @@ export class WebGPUPickFramebuffer {
       !encoder ||
       typeof frameContext.enqueueAfterFrameSubmit !== "function"
     ) {
+      this._stats.recordArmDecline("no-frame-encoder", this._updateCount);
       return;
     }
 
@@ -1332,6 +1907,7 @@ export class WebGPUPickFramebuffer {
     // submitted the draw+copy command buffer in-order.
     const accepted = frameContext.enqueueAfterFrameSubmit((submitted) => {
       if (!submitted) {
+        this._stats.recordArmDecline("frame-not-submitted", this._updateCount);
         this._readbackInFlight = false;
         return;
       }
@@ -1380,6 +1956,13 @@ export class WebGPUPickFramebuffer {
         });
     });
     this._readbackInFlight = accepted;
+    if (accepted) {
+      this._stats.recordReadbackArmed();
+    } else {
+      // The copy was encoded into the frame encoder but nothing will map it,
+      // so no publish can follow. Counted as a decline, never as an arm.
+      this._stats.recordArmDecline("frame-submit-rejected", this._updateCount);
+    }
   }
 
   /**
@@ -1656,6 +2239,26 @@ export class WebGPUPickFramebuffer {
     // decoded as the first result of the replacement target.
     this._lastReadPixels = null;
     this._lastReadRegion = null;
+  }
+
+  /**
+   * Snapshot of the pick instrumentation counters. Surfaced through
+   * `CesiumDebug.pick()` and intended for `Scene#getDebugSnapshot`.
+   *
+   * Reading is free of side effects and safe at any time; the returned record
+   * is a copy, so two snapshots can be diffed across an interaction.
+   */
+  getStatistics(): PickFramebufferStatistics {
+    return this._stats.getStatistics();
+  }
+
+  /**
+   * Zero the pick counters. A probe calls this immediately before the
+   * interaction it wants to measure so an earlier warm-up cannot be mistaken
+   * for the measurement.
+   */
+  resetStatistics(): void {
+    this._stats.reset();
   }
 
   isDestroyed(): boolean {

@@ -234,8 +234,7 @@ function getCesium3DTileFeatureName(feature) {
   return "Unnamed Feature";
 }
 
-function pickEntity(viewer, e) {
-  const picked = viewer.scene.pick(e.position);
+function entityFromPickedObject(picked) {
   if (defined(picked)) {
     const id = picked.id ?? picked.primitive.id;
     if (id instanceof Entity) {
@@ -254,8 +253,48 @@ function pickEntity(viewer, e) {
     }
   }
 
+  return undefined;
+}
+
+/**
+ * Resolves the entity under a window position and hands it to <code>apply</code>.
+ *
+ * The pick is asynchronous because a synchronous one cannot be answered on a
+ * backend whose pick buffer is read back asynchronously: it declines whenever
+ * the view has moved since the last readback, which is exactly what a click
+ * during camera motion looks like, and it reports that decline as "nothing
+ * here" — indistinguishable from a real miss. Callers must be able to tell
+ * "nothing is there" from "not knowable yet", so an unanswerable pick has to
+ * arrive as a rejection rather than as an empty result.
+ *
+ * @param {Viewer} viewer The viewer whose scene is picked.
+ * @param {Cartesian2} windowPosition The position to pick.
+ * @param {function} isCurrent Reports whether this request is still the newest
+ *        one its caller issued. A superseded request applies nothing.
+ * @param {function} apply Receives the picked entity, or <code>undefined</code>
+ *        when the pick was answered and found nothing.
+ * @returns {Promise} Rejects when the pick could not be answered at all.
+ *
+ * @private
+ */
+async function pickEntityAsync(viewer, windowPosition, isCurrent, apply) {
+  const picked = await viewer.scene.pickAsync(windowPosition);
+  if (!isCurrent()) {
+    return;
+  }
+
+  const entity = entityFromPickedObject(picked);
+  if (defined(entity)) {
+    apply(entity);
+    return;
+  }
+
   // No regular entity picked.  Try picking features from imagery layers.
-  return pickImageryLayerFeature(viewer, e.position);
+  // The imagery pick starts and its result is applied in the same turn: its
+  // loading placeholder has to be the viewer's selection before that pick's
+  // own supersession check runs, and an imagery provider is free to answer
+  // immediately.
+  apply(pickImageryLayerFeature(viewer, windowPosition));
 }
 
 const scratchStopTime = new JulianDate();
@@ -1141,27 +1180,65 @@ class Viewer {
       );
 
       // Subscribe to left clicks and zoom to the picked object.
-      function pickAndTrackObject(e) {
-        const entity = pickEntity(that, e);
-        if (defined(entity)) {
-          //Only track the entity if it has a valid position at the current time.
-          if (
-            Property.getValueOrUndefined(
-              entity.position,
-              that.clock.currentTime,
-            )
-          ) {
-            that.trackedEntity = entity;
-          } else {
-            that.zoomTo(entity);
-          }
-        } else if (defined(that.trackedEntity)) {
-          that.trackedEntity = undefined;
+      //
+      // Picking resolves later than the click that started it, so two clicks
+      // can resolve out of order. Each request takes the next number from a
+      // monotonic counter and may only write while it is still the newest;
+      // a superseded result is dropped rather than queued behind its
+      // predecessor, so a slow earlier pick can never overwrite a faster
+      // later one.
+      //
+      // A pick that could not be answered must leave the current selection
+      // alone — only an answered pick that found nothing may clear it.
+      // Otherwise a click landing while the camera is still moving silently
+      // deselects, and since tracking guarantees camera motion, double
+      // clicking a tracked entity would stop tracking it.
+      let selectionPickSequence = 0;
+      let trackedPickSequence = 0;
+
+      function reportUnansweredPick(error) {
+        // Keeping the selection is the recovery, but the failure is still
+        // real and has to reach the console. A viewer torn down while a pick
+        // was in flight rejects by design and is not worth reporting.
+        if (!that.isDestroyed()) {
+          console.error(error);
         }
       }
 
+      function pickAndTrackObject(e) {
+        const sequence = ++trackedPickSequence;
+        function isCurrent() {
+          return sequence === trackedPickSequence && !that.isDestroyed();
+        }
+
+        pickEntityAsync(that, e.position, isCurrent, function (entity) {
+          if (defined(entity)) {
+            //Only track the entity if it has a valid position at the current time.
+            if (
+              Property.getValueOrUndefined(
+                entity.position,
+                that.clock.currentTime,
+              )
+            ) {
+              that.trackedEntity = entity;
+            } else {
+              that.zoomTo(entity);
+            }
+          } else if (defined(that.trackedEntity)) {
+            that.trackedEntity = undefined;
+          }
+        }).catch(reportUnansweredPick);
+      }
+
       function pickAndSelectObject(e) {
-        that.selectedEntity = pickEntity(that, e);
+        const sequence = ++selectionPickSequence;
+        function isCurrent() {
+          return sequence === selectionPickSequence && !that.isDestroyed();
+        }
+
+        pickEntityAsync(that, e.position, isCurrent, function (entity) {
+          that.selectedEntity = entity;
+        }).catch(reportUnansweredPick);
       }
 
       cesiumWidget.screenSpaceEventHandler.setInputAction(

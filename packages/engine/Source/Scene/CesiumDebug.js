@@ -19,6 +19,7 @@ import PostProcessStageLibrary from "./PostProcessStageLibrary.js";
  *   CesiumDebug.toggleFPS()               — toggle FPS counter
  *   CesiumDebug.postProcess()             — dump post-process pipeline state
  *   CesiumDebug.canvasPixels()            — sample canvas pixels for diagnostics
+ *   CesiumDebug.pick()                    — pick readback counters
  *
  * @private
  */
@@ -85,6 +86,7 @@ function installCesiumDebug(viewer) {
 ║  CesiumDebug.highDensityCull() — gpuCuller/HiZ/sort-keys stats ║
 ║  CesiumDebug.globeBindGroups() — globe bind-group cache stats ║
 ║  CesiumDebug.cacheStats()      — pipeline + bind-group cache counters ║
+║  CesiumDebug.pick(reset?)      — pick readback served/cold/decline counters ║
 ║  CesiumDebug.cloudStats(t/f)   — cloud observability + CPU stage timing ║
 ║  CesiumDebug.cloudReconstructionAttachments(t/f) — C13-09 attachment set ║
 ║  CesiumDebug.cloudReconstruction(t/f) — C13-10 march-emitted depth + consumer ║
@@ -1295,6 +1297,137 @@ function installCesiumDebug(viewer) {
         "[CesiumDebug] tile-debug overlay installed. " +
           "Call CesiumDebug.tileDebugOverlay(null) to remove.",
       );
+    },
+
+    /**
+     * Dump the pick framebuffer's readback instrumentation.
+     *
+     * A backend whose pick readback is asynchronous cannot answer a
+     * synchronous `scene.pick()` from the pass it just rendered: the result
+     * comes from a readback armed by an EARLIER pick, or the gates decline and
+     * the call returns nothing. This dump is how you tell those apart.
+     *
+     * Read it in this order:
+     *  - `servedFresh` + `servedCached` vs `cold`. A hover that never leaves
+     *    `cold` is not a picking bug on its own — look at the reason.
+     *  - `serveDeclines`. `view-provenance-changed` dominating means the gate
+     *    is fail-closed through camera motion, which is the designed
+     *    behaviour, not a defect. `attachment-generation-changed` dominating
+     *    means the pick attachment is being rebuilt under the picks.
+     *  - `age`. Staleness of a served result, counted in PICK PASSES. A steady
+     *    1 is the expected one-pick lag; a growing max means readbacks are
+     *    falling behind the pick rate.
+     *  - `readbacksArmed` vs `readbacksPublished`, and `readbacksUnresolved`.
+     *    A large unresolved count means maps are not coming back at all.
+     *  - `readbackInFlightSuppressions`. Rising under continuous picking means
+     *    the pick rate is outrunning the readback.
+     *
+     * Feature-detected, not backend-branched: a pick framebuffer that reads
+     * back synchronously has nothing to stale and exposes no counters, so it
+     * reports as unavailable rather than as an error.
+     *
+     * Pass `true` to zero the counters first — do that immediately before the
+     * interaction you want to measure so an earlier warm-up cannot be read as
+     * part of it.
+     *
+     * Usage:
+     *   CesiumDebug.pick()       — dump counters
+     *   CesiumDebug.pick(true)   — zero the counters, then dump (all zeros)
+     */
+    pick(reset) {
+      const pickFramebuffer = scene.defaultView?.pickFramebuffer;
+      if (!pickFramebuffer) {
+        console.warn(
+          "[CesiumDebug] No pick framebuffer — the scene has not picked yet",
+        );
+        return null;
+      }
+      if (typeof pickFramebuffer.getStatistics !== "function") {
+        console.warn(
+          "[CesiumDebug] This pick framebuffer exposes no readback " +
+            "instrumentation (its readback is synchronous, so a pick is never " +
+            "served stale and never declines).",
+        );
+        return null;
+      }
+      if (reset === true) {
+        pickFramebuffer.resetStatistics?.();
+      }
+      const stats = pickFramebuffer.getStatistics();
+      const total = stats.endCalls > 0 ? stats.endCalls : 1;
+      const share = (n) => `${((n / total) * 100).toFixed(1)}%`;
+      console.table([
+        {
+          outcome: "servedFresh",
+          count: stats.servedFresh,
+          shareOfEndCalls: share(stats.servedFresh),
+          note: "exact-region cache hit",
+        },
+        {
+          outcome: "servedCached",
+          count: stats.servedCached,
+          shareOfEndCalls: share(stats.servedCached),
+          note: "reprojected from an overlapping earlier query",
+        },
+        {
+          outcome: "cold",
+          count: stats.cold,
+          shareOfEndCalls: share(stats.cold),
+          note: "returned no pixels — see serveDeclines",
+        },
+      ]);
+      console.table({
+        endCalls: stats.endCalls,
+        endAsyncCalls: stats.endAsyncCalls,
+        readbacksArmed: stats.readbacksArmed,
+        readbacksPublished: stats.readbacksPublished,
+        readbacksUnresolved: stats.readbacksUnresolved,
+        readbackInFlightSuppressions: stats.readbackInFlightSuppressions,
+        ageLastPicks: stats.age.last,
+        ageMinPicks: stats.age.min,
+        ageMaxPicks: stats.age.max,
+        ageMeanPicks:
+          stats.age.mean === null ? null : Number(stats.age.mean.toFixed(2)),
+        ageSamples: stats.age.samples,
+      });
+      // Only the reasons that actually fired — a table of twenty-nine zeroes
+      // buries the one row that matters. The full keyed record is still on the
+      // returned object.
+      const firedDeclines = [];
+      for (const [stage, counts] of [
+        ["serve", stats.serveDeclines],
+        ["arm", stats.armDeclines],
+        ["publish", stats.publishDeclines],
+        ["centerPixel", stats.centerPixel.declines],
+      ]) {
+        for (const [reason, count] of Object.entries(counts)) {
+          if (count > 0) {
+            firedDeclines.push({ stage, reason, count });
+          }
+        }
+      }
+      if (firedDeclines.length > 0) {
+        firedDeclines.sort((a, b) => b.count - a.count);
+        console.table(firedDeclines);
+      } else {
+        console.log("[CesiumDebug] No declines recorded.");
+      }
+      if (stats.centerPixel.reads > 0) {
+        console.table({
+          reads: stats.centerPixel.reads,
+          served: stats.centerPixel.served,
+          armed: stats.centerPixel.armed,
+          published: stats.centerPixel.published,
+          ageLastPicks: stats.centerPixel.age.last,
+          ageMaxPicks: stats.centerPixel.age.max,
+        });
+      }
+      if (stats.recentDeclines.length > 0) {
+        // Debug builds only — the ordered history is pragma-stripped from a
+        // production build, where the aggregates above are all that survive.
+        console.table(stats.recentDeclines);
+      }
+      return stats;
     },
 
     /**
