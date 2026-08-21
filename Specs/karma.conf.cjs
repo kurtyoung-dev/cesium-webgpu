@@ -115,7 +115,20 @@ module.exports = function (config) {
     customLaunchers: {
       ChromeDebugging: {
         base: "Chrome",
-        flags: ["--remote-debugging-port=9333"],
+        flags: [
+          "--remote-debugging-port=9333",
+          // Keep Edge in the process Karma launched when CHROME_BIN selects it.
+          "--edge-skip-compat-layer-relaunch",
+        ],
+      },
+      EdgeCompat: {
+        // Edge 151 otherwise relaunches outside Karma's process tree; an
+        // isolated profile also prevents forwarding to an interactive session.
+        base: "Chrome",
+        flags: [
+          `--user-data-dir=${os.tmpdir()}\\karma-edge-${Date.now()}-${Math.floor(Math.random() * 1e9)}`,
+          "--edge-skip-compat-layer-relaunch",
+        ],
       },
       EdgeHeadlessCI: {
         // base "Chrome" (not "ChromeHeadless") so we control the flag set

@@ -20,6 +20,7 @@ import {
   runKarmaTestServer,
   strictKarmaResultConfig,
 } from "./scripts/karmaTestRun.js";
+import { resolveDefaultBrowsers } from "./scripts/karmaDefaultBrowsers.js";
 
 import {
   buildCesium,
@@ -736,10 +737,11 @@ export async function runCoverage(options) {
   const workspace = options.workspace;
 
   const folders = [];
-  let browsers = ["Chrome"];
-  if (argv.browsers) {
-    browsers = argv.browsers.split(",");
-  }
+  const browsers = resolveDefaultBrowsers(
+    process.env.CHROME_BIN,
+    false,
+    argv.browsers,
+  );
 
   const instrumenter = createInstrumenter({
     esModules: true,
@@ -1039,10 +1041,11 @@ export async function test() {
         : buildWorkspaceSpecBundle(target, {}),
   });
 
-  let browsers = debug ? ["ChromeDebugging"] : ["Chrome"];
-  if (argv.browsers) {
-    browsers = argv.browsers.split(",");
-  }
+  const browsers = resolveDefaultBrowsers(
+    process.env.CHROME_BIN,
+    debug,
+    argv.browsers,
+  );
 
   let files = [
     { pattern: "Specs/Data/**", included: false },
