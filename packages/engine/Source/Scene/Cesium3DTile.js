@@ -1088,7 +1088,7 @@ class Cesium3DTile {
       // splat-pass commands the same way translucent commands are
       // treated here — the splat renderer ships a `classificationDepthPipeline`
       // variant that `WebGPUDrawCommand.execute` swaps in when this
-      // flag is set. Pass.GAUSSIAN_SPLATS = 11 (see Pass.js).
+      // flag is set. Pass.GAUSSIAN_SPLATS = 12 (see Pass.js).
       const translucent =
         command.pass === Pass.TRANSLUCENT ||
         command.pass === Pass.GAUSSIAN_SPLATS;
