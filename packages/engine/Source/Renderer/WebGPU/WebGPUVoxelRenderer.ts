@@ -1666,8 +1666,12 @@ function computeVoxelEffectiveModelMatrix(
   // returns from VoxelPrimitive.update before the WebGL body runs these, so the
   // OBB would otherwise only reflect construction-time state.
   try {
-    checkTransformAndBounds(primitive);
-    updateShapeAndTransforms(primitive);
+    checkTransformAndBounds(
+      primitive as unknown as Parameters<typeof checkTransformAndBounds>[0],
+    );
+    updateShapeAndTransforms(
+      primitive as unknown as Parameters<typeof updateShapeAndTransforms>[0],
+    );
   } catch {
     // Shape update can throw if the volume is degenerate (zero scale, inverted
     // bounds). Fall back to the raw modelMatrix rather than crashing the frame.
@@ -4314,8 +4318,12 @@ function getVoxelPickKeyframeNode(
   // already current, but keep it robust to call order). Same guarded calls as
   // computeVoxelEffectiveModelMatrix.
   try {
-    checkTransformAndBounds(primitive);
-    updateShapeAndTransforms(primitive);
+    checkTransformAndBounds(
+      primitive as unknown as Parameters<typeof checkTransformAndBounds>[0],
+    );
+    updateShapeAndTransforms(
+      primitive as unknown as Parameters<typeof updateShapeAndTransforms>[0],
+    );
   } catch {
     // Degenerate volume — fall back to whatever OBB the shape last held.
   }

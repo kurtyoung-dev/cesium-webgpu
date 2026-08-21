@@ -735,10 +735,12 @@ class Matrix3 {
     //>>includeEnd('debug');
 
     const startIndex = index * 3;
-
-    const x = /** @type {number} */ (matrix[startIndex]);
-    const y = /** @type {number} */ (matrix[startIndex + 1]);
-    const z = /** @type {number} */ (matrix[startIndex + 2]);
+    const matrixValues = /** @type {number[]} */ (
+      /** @type {unknown} */ (matrix)
+    );
+    const x = matrixValues[startIndex];
+    const y = matrixValues[startIndex + 1];
+    const z = matrixValues[startIndex + 2];
 
     result.x = x;
     result.y = y;
@@ -797,9 +799,12 @@ class Matrix3 {
     Check.typeOf.object("result", result);
     //>>includeEnd('debug');
 
-    const x = /** @type {number} */ (matrix[index]);
-    const y = /** @type {number} */ (matrix[index + 3]);
-    const z = /** @type {number} */ (matrix[index + 6]);
+    const matrixValues = /** @type {number[]} */ (
+      /** @type {unknown} */ (matrix)
+    );
+    const x = matrixValues[index];
+    const y = matrixValues[index + 3];
+    const z = matrixValues[index + 6];
 
     result.x = x;
     result.y = y;

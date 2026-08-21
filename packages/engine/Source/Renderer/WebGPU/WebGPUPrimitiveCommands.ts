@@ -127,9 +127,12 @@ type IndexFormatLike = "uint16" | "uint32";
 interface AttributeLike {
   values?: NumArray;
   componentsPerAttribute?: number;
-  componentDatatype?: number;
+  componentDatatype?: GeometryAttribute["componentDatatype"];
   normalize?: boolean;
 }
+
+const FLOAT_COMPONENT_DATATYPE =
+  ComponentDatatype.FLOAT as unknown as GeometryAttribute["componentDatatype"];
 
 interface GeometryAttributesLike {
   position?: AttributeLike;
@@ -857,28 +860,28 @@ function ensureUncompressedAttributes(
 
   if (outNormal) {
     geometry.attributes.normal = new GeometryAttribute({
-      componentDatatype: ComponentDatatype.FLOAT,
+      componentDatatype: FLOAT_COMPONENT_DATATYPE,
       componentsPerAttribute: 3,
       values: outNormal,
     });
   }
   if (outST) {
     geometry.attributes.st = new GeometryAttribute({
-      componentDatatype: ComponentDatatype.FLOAT,
+      componentDatatype: FLOAT_COMPONENT_DATATYPE,
       componentsPerAttribute: 2,
       values: outST,
     });
   }
   if (outTangent) {
     geometry.attributes.tangent = new GeometryAttribute({
-      componentDatatype: ComponentDatatype.FLOAT,
+      componentDatatype: FLOAT_COMPONENT_DATATYPE,
       componentsPerAttribute: 3,
       values: outTangent,
     });
   }
   if (outBitangent) {
     geometry.attributes.bitangent = new GeometryAttribute({
-      componentDatatype: ComponentDatatype.FLOAT,
+      componentDatatype: FLOAT_COMPONENT_DATATYPE,
       componentsPerAttribute: 3,
       values: outBitangent,
     });
@@ -2380,7 +2383,7 @@ function ensurePolylineST(geometry: GeometryLike) {
     outST[v * 2 + 1] = st.y;
   }
   geometry.attributes.st = new GeometryAttribute({
-    componentDatatype: ComponentDatatype.FLOAT,
+    componentDatatype: FLOAT_COMPONENT_DATATYPE,
     componentsPerAttribute: 2,
     values: outST,
   });

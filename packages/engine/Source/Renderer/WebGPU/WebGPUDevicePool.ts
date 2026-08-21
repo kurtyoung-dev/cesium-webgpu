@@ -145,7 +145,7 @@ const SPEC_DEFAULT_LIMITS: Readonly<Record<string, number>> = Object.freeze({
  * answer "does this primary device meet a candidate's requirement?" for
  * any limit the user might pass (not just the ones we adaptively
  * negotiate). Sourced from the `GPUSupportedLimits` interface in the
- * WebGPU spec (current as of 2026-04-30); re-verify on spec revisions.
+ * WebGPU spec (current as of 2026-08-09); re-verify on spec revisions.
  * Snapshotting only the adaptively negotiated subset leaves silent compat
  * gaps for every other limit a user might pass.
  */
@@ -162,7 +162,11 @@ const ALL_WEBGPU_LIMITS: readonly string[] = Object.freeze([
   "maxSampledTexturesPerShaderStage",
   "maxSamplersPerShaderStage",
   "maxStorageBuffersPerShaderStage",
+  "maxStorageBuffersInVertexStage",
+  "maxStorageBuffersInFragmentStage",
   "maxStorageTexturesPerShaderStage",
+  "maxStorageTexturesInVertexStage",
+  "maxStorageTexturesInFragmentStage",
   "maxUniformBuffersPerShaderStage",
   "maxUniformBufferBindingSize",
   "maxStorageBufferBindingSize",
@@ -181,6 +185,7 @@ const ALL_WEBGPU_LIMITS: readonly string[] = Object.freeze([
   "maxComputeWorkgroupSizeY",
   "maxComputeWorkgroupSizeZ",
   "maxComputeWorkgroupsPerDimension",
+  "maxImmediateSize",
 ]);
 
 /**

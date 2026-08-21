@@ -372,8 +372,11 @@ class Matrix2 {
     //>>includeEnd('debug');
 
     const startIndex = index * 2;
-    const x = /** @type {number} */ (matrix[startIndex]);
-    const y = /** @type {number} */ (matrix[startIndex + 1]);
+    const matrixValues = /** @type {number[]} */ (
+      /** @type {unknown} */ (matrix)
+    );
+    const x = matrixValues[startIndex];
+    const y = matrixValues[startIndex + 1];
 
     result.x = x;
     result.y = y;
@@ -431,8 +434,11 @@ class Matrix2 {
     Check.typeOf.object("result", result);
     //>>includeEnd('debug');
 
-    const x = /** @type {number} */ (matrix[index]);
-    const y = /** @type {number} */ (matrix[index + 2]);
+    const matrixValues = /** @type {number[]} */ (
+      /** @type {unknown} */ (matrix)
+    );
+    const x = matrixValues[index];
+    const y = matrixValues[index + 2];
 
     result.x = x;
     result.y = y;
