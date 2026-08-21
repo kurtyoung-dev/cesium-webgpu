@@ -46,9 +46,15 @@ export const MARKER_RULES = Object.freeze([
   },
   {
     id: "campaign-row-id",
-    pattern: /\bC\d{1,2}-\d+[A-Za-z]?\b/g,
+    pattern: /\bC(?:\d{1,2}-\d+[A-Za-z]?|\d{1,2}-[A-Z][A-Z0-9-]*[a-z]?)\b/g,
     description: "Campaign queue row ids belong in the queue, not the source.",
-    example: "C13-10 owns this",
+    example: "C15-G3b owns this",
+  },
+  {
+    id: "parity-report-row-id",
+    pattern: /\bQ\d{1,2}-[A-Z][A-Z0-9-]+\b/g,
+    description: "Parity-report row ids belong in the report, not the source.",
+    example: "Q13-PLAIN-HDR-GAMMA-CORE owns this",
   },
   {
     id: "campaign-name",
@@ -98,6 +104,14 @@ export const MARKER_RULES = Object.freeze([
     description:
       "DEFERRED_WORK entry ids point at a backlog row, not at the code.",
     example: "NEW-WEBGPU-PIPELINE-KEY-DEFINE-AXIS-GENERAL",
+  },
+  {
+    id: "all-caps-fix-label",
+    pattern:
+      /(?<![A-Z0-9_-])(?!(?:NEW|BUG|EPIC|FIX)-)[A-Z]{3,}(?:-[A-Z]{3,}){2,}(?![A-Z0-9_-])/g,
+    description:
+      "Bare fix labels are development-history tags, not code constraints.",
+    example: "POINT-SPRITE-SHAPE",
   },
   {
     id: "numbered-bug-id",

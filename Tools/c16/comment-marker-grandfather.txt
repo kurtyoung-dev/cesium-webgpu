@@ -1,0 +1,55 @@
+# Exact clean-list exceptions introduced by the 2026-08-21 grammar widening.
+#
+# Each row is a file/rule pair, derived from the full marker census. A row is
+# valid only while that file still has at least one finding under that rule;
+# once the pair self-cleans, the guard errors until the stale row is removed.
+
+packages/engine/Source/Renderer/WebGPU/cesium-js-types.d.ts	all-caps-fix-label  # 2026-08-21 grammar widening
+packages/engine/Source/Renderer/WebGPU/cesium-js-types.d.ts	campaign-row-id  # 2026-08-21 grammar widening
+packages/engine/Source/Renderer/WebGPU/WebGPUAmbientOcclusionEffect.ts	campaign-row-id  # 2026-08-21 grammar widening
+packages/engine/Source/Renderer/WebGPU/WebGPUContext.ts	all-caps-fix-label  # 2026-08-21 grammar widening
+packages/engine/Source/Renderer/WebGPU/WebGPUDepthOfFieldEffect.ts	campaign-row-id  # 2026-08-21 grammar widening
+packages/engine/Source/Renderer/WebGPU/WebGPUEffectsBindGroup.js	campaign-row-id  # 2026-08-21 grammar widening
+packages/engine/Source/Renderer/WebGPU/WebGPUGodRayEffect.ts	campaign-row-id  # 2026-08-21 grammar widening
+packages/engine/Source/Renderer/WebGPU/WebGPUGroundPolylineRenderer.js	campaign-row-id  # 2026-08-21 grammar widening
+packages/engine/Source/Renderer/WebGPU/WebGPUGroundPrimitiveRenderer.js	campaign-row-id  # 2026-08-21 grammar widening
+packages/engine/Source/Renderer/WebGPU/WebGPUModelFeatureId.js	all-caps-fix-label  # 2026-08-21 grammar widening
+packages/engine/Source/Renderer/WebGPU/WebGPUModelInstancing.js	all-caps-fix-label  # 2026-08-21 grammar widening
+packages/engine/Source/Renderer/WebGPU/WebGPUModelMetadata.js	all-caps-fix-label  # 2026-08-21 grammar widening
+packages/engine/Source/Renderer/WebGPU/WebGPUModelPipelineCache.ts	all-caps-fix-label  # 2026-08-21 grammar widening
+packages/engine/Source/Renderer/WebGPU/WebGPUModelTopology.ts	all-caps-fix-label  # 2026-08-21 grammar widening
+packages/engine/Source/Renderer/WebGPU/WebGPUMotionBlurEffect.ts	campaign-row-id  # 2026-08-21 grammar widening
+packages/engine/Source/Renderer/WebGPU/WebGPUPostProcessPipeline.ts	campaign-row-id  # 2026-08-21 grammar widening
+packages/engine/Source/Renderer/WebGPU/WebGPUPostProcessStageCollection.ts	all-caps-fix-label  # 2026-08-21 grammar widening
+packages/engine/Source/Renderer/WebGPU/WebGPUPostProcessStageCollection.ts	campaign-row-id  # 2026-08-21 grammar widening
+packages/engine/Source/Renderer/WebGPU/WebGPUShaderDefines.ts	all-caps-fix-label  # 2026-08-21 grammar widening
+packages/engine/Source/Renderer/WebGPU/WebGPUVolumetricFogResources.ts	all-caps-fix-label  # 2026-08-21 grammar widening
+packages/engine/Source/Scene/GltfLoader.js	all-caps-fix-label  # 2026-08-21 grammar widening
+packages/engine/Source/Scene/Model/CustomShader.js	all-caps-fix-label  # 2026-08-21 grammar widening
+packages/engine/Source/Scene/Model/CustomShaderWGSLPipelineStage.js	all-caps-fix-label  # 2026-08-21 grammar widening
+packages/engine/Source/Scene/Model/InstancingPipelineStage.js	all-caps-fix-label  # 2026-08-21 grammar widening
+packages/engine/Source/Scene/Model/MetadataWGSLPipelineStage.js	all-caps-fix-label  # 2026-08-21 grammar widening
+packages/engine/Source/Scene/Model/Model.js	all-caps-fix-label  # 2026-08-21 grammar widening
+packages/engine/Source/Scene/Model/ModelPrimitiveGeometry.js	all-caps-fix-label  # 2026-08-21 grammar widening
+packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl	all-caps-fix-label  # 2026-08-21 grammar widening
+packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl	parity-report-row-id  # 2026-08-21 grammar widening
+packages/engine/Source/Shaders/WebGPU/Model/ModelPBRComplete.wgsl	all-caps-fix-label  # 2026-08-21 grammar widening
+packages/engine/Source/Shaders/WebGPU/Model/ModelPBRComplete.wgsl	campaign-row-id  # 2026-08-21 grammar widening
+packages/engine/Source/Shaders/WebGPU/Model/ModelPBRComplete.wgsl	parity-report-row-id  # 2026-08-21 grammar widening
+packages/engine/Source/Shaders/WebGPU/Model/ModelSilhouetteStage.wgsl	all-caps-fix-label  # 2026-08-21 grammar widening
+packages/engine/Source/Shaders/WebGPU/PostProcess/AmbientOcclusionGenerate_f16.wgsl	campaign-row-id  # 2026-08-21 grammar widening
+packages/engine/Source/Shaders/WebGPU/PostProcess/AmbientOcclusionGenerate.wgsl	campaign-row-id  # 2026-08-21 grammar widening
+packages/engine/Source/Shaders/WebGPU/PostProcess/BilateralBlur1D.wgsl	campaign-row-id  # 2026-08-21 grammar widening
+packages/engine/Source/Shaders/WebGPU/PostProcess/DepthOfField_f16.wgsl	campaign-row-id  # 2026-08-21 grammar widening
+packages/engine/Source/Shaders/WebGPU/PostProcess/DepthOfField.wgsl	campaign-row-id  # 2026-08-21 grammar widening
+packages/engine/Source/Shaders/WebGPU/PostProcess/GodRayGenerate_f16.wgsl	campaign-row-id  # 2026-08-21 grammar widening
+packages/engine/Source/Shaders/WebGPU/PostProcess/GodRayGenerate.wgsl	campaign-row-id  # 2026-08-21 grammar widening
+packages/engine/Source/Shaders/WebGPU/PostProcess/GTAOGenerate.wgsl	campaign-row-id  # 2026-08-21 grammar widening
+packages/engine/Source/Shaders/WebGPU/PostProcess/MotionBlur.wgsl	campaign-row-id  # 2026-08-21 grammar widening
+packages/engine/Source/Shaders/WebGPU/PostProcess/SolarHalo.wgsl	campaign-row-id  # 2026-08-21 grammar widening
+packages/engine/Source/Shaders/WebGPU/PostProcess/SSGIComposite.wgsl	campaign-row-id  # 2026-08-21 grammar widening
+packages/engine/Source/Shaders/WebGPU/PostProcess/SSGIGenerate.wgsl	campaign-row-id  # 2026-08-21 grammar widening
+packages/engine/Source/Shaders/WebGPU/PostProcess/Tonemapping_f16.wgsl	campaign-row-id  # 2026-08-21 grammar widening
+packages/engine/Source/Shaders/WebGPU/PostProcess/Tonemapping.wgsl	campaign-row-id  # 2026-08-21 grammar widening
+packages/engine/Source/Shaders/WebGPU/Primitive/PrimitivePBRSimple.wgsl	all-caps-fix-label  # 2026-08-21 grammar widening
+packages/engine/Source/Shaders/WebGPU/Primitive/PrimitivePBRTextured.wgsl	all-caps-fix-label  # 2026-08-21 grammar widening

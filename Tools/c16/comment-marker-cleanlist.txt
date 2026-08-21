@@ -5,9 +5,11 @@
 # remediated to the fork comment standard
 # (Documentation/Contributors/CodingGuide/ForkCommentStandard.md) and is
 # enforced STRICTLY from then on: a marker reappearing under a listed path is
-# an ERROR in the pre-commit hook and in the one-shot scan, not a warning.
-# Paths that are NOT listed are still warn-only, because the rewrite shards
-# C16-03..C16-12 have not reached them yet.
+# an ERROR in the pre-commit hook and in the one-shot scan, not a warning. The
+# only exceptions are exact file/rule pairs in comment-marker-grandfather.txt;
+# a different rule in the same file remains an error. Paths that are NOT listed
+# are still warn-only, because the rewrite shards C16-03..C16-12 have not
+# reached them yet.
 #
 # HOW TO USE IT. A rewrite batch appends the paths it certified, in the same
 # commit as the rewrite. That is what makes the debt monotonically
@@ -20,7 +22,8 @@
 # `node Tools/c16/comment-marker-guard.mjs --verify-cleanlist` asserts both
 # halves of the ratchet's honesty: every entry still resolves to at least one
 # in-scope file (so a rename cannot silently retire an entry), and everything
-# the list covers is still marker-free.
+# the list covers has no findings outside a current grandfather pair. A
+# grandfather row with no current finding is itself an error.
 #
 # Seed entries below are directories that were ALREADY marker-free when the
 # guard landed at C16-00 — measured, not assumed (188 files), so

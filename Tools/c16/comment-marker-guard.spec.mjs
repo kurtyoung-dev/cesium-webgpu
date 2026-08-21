@@ -18,9 +18,10 @@
 //      spread into those would be reverted within a week, taking the code
 //      coverage with it.
 //   3. THE RATCHET IS HONEST. A clean-list entry means "this was remediated
-//      and stays remediated". Both halves are exercised end to end against
-//      real files: a marker under a listed path is an error even without
-//      --strict, and a marker outside one is a warning until --strict.
+//      and stays remediated". Exact file/rule pairs exposed by a grammar
+//      widening may remain warnings only while their grandfather rows stay
+//      live. The tests pin that narrow demotion, strict sibling rules, stale
+//      row failure, and the existing unlisted-path warning behaviour.
 
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -30,10 +31,13 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import {
+  classifyFindings,
   collectScopeFiles,
+  findStaleGrandfatherRows,
   isCleanListed,
   isInScope,
   readCleanList,
+  readGrandfatherList,
   scanSource,
   toRepoRelative,
 } from "./comment-marker-guard.mjs";
@@ -53,6 +57,12 @@ const STANDARD_DOC = path.join(
   "Contributors",
   "CodingGuide",
   "ForkCommentStandard.md",
+);
+const GRANDFATHER_FILE = path.join(
+  ROOT,
+  "Tools",
+  "c16",
+  "comment-marker-grandfather.txt",
 );
 
 /**
@@ -104,6 +114,35 @@ function withSourceFixtures(files, body) {
     for (const full of paths) {
       fs.rmSync(full, { force: true });
     }
+  }
+}
+
+/**
+ * Append exact rows for one test, then restore the grandfather file byte for
+ * byte. This drives the CLI's real parser and enforcement path.
+ *
+ * @param {string[]} rows Complete grandfather rows to append.
+ * @param {() => void} body Test body.
+ */
+function withGrandfatherRows(rows, body) {
+  const original = fs.readFileSync(GRANDFATHER_FILE);
+  const separator = original.at(-1) === 0x0a ? "" : "\n";
+  try {
+    fs.writeFileSync(
+      GRANDFATHER_FILE,
+      Buffer.concat([
+        original,
+        Buffer.from(`${separator}${rows.join("\n")}\n`, "utf8"),
+      ]),
+    );
+    body();
+  } finally {
+    fs.writeFileSync(GRANDFATHER_FILE, original);
+    assert.deepEqual(
+      fs.readFileSync(GRANDFATHER_FILE),
+      original,
+      "the grandfather fixture must restore byte-identically",
+    );
   }
 }
 
@@ -235,6 +274,69 @@ test("ordinary engineering prose does not trip the grammar", () => {
   );
 });
 
+test("parity rows, alphabetic campaign labels, and bare fix labels are precise", () => {
+  const cases = [
+    {
+      ruleId: "parity-report-row-id",
+      examples: ["Q13-PLAIN-HDR-GAMMA-CORE", "Q1-DEPTH24PLUS"],
+      counterExamples: [
+        "Q123-PLAIN-HDR-GAMMA-CORE",
+        "Q13_plain_hdr_gamma_core",
+        "Q13-plain-hdr-gamma-core",
+      ],
+    },
+    {
+      ruleId: "campaign-row-id",
+      examples: [
+        "C13-10",
+        "C4-BILLBOARD-ATLAS-VFLIP",
+        "C14-BILLBOARD-ATLAS-VFLIP",
+        "C15-G3",
+        "C15-G3b",
+        "C15-G6h",
+        "C12-G1F1",
+      ],
+      counterExamples: ["C4 continuity", "C4_billboard_atlas_vflip"],
+    },
+    {
+      ruleId: "all-caps-fix-label",
+      examples: ["POINT-SPRITE-SHAPE", "PLAIN-HDR-GAMMA-CORE"],
+      counterExamples: [
+        "WELL-KNOWN",
+        "WGSL-IN-JS",
+        "POINT_SPRITE_SHAPE",
+        "identifier_POINT-SPRITE-SHAPE",
+        "POINT-SPRITE-SHAPE_identifier",
+        "NEW-WEBGPU-PIPELINE",
+        "AB-POINT-SPRITE-SHAPE",
+      ],
+    },
+  ];
+
+  for (const ruleCase of cases) {
+    for (const example of ruleCase.examples) {
+      const findings = scanSource(
+        "packages/engine/Source/Scene/Subject.js",
+        `// ${example}\n`,
+      );
+      assert.ok(
+        findings.some((finding) => finding.ruleId === ruleCase.ruleId),
+        `${ruleCase.ruleId} missed example ${example}`,
+      );
+    }
+    for (const counterExample of ruleCase.counterExamples) {
+      const findings = scanSource(
+        "packages/engine/Source/Scene/Subject.js",
+        `// ${counterExample}\n`,
+      );
+      assert.ok(
+        findings.every((finding) => finding.ruleId !== ruleCase.ruleId),
+        `${ruleCase.ruleId} overmatched counter-example ${counterExample}`,
+      );
+    }
+  }
+});
+
 // ---------------------------------------------------------------------------
 // 2. The guard does not overreach.
 // ---------------------------------------------------------------------------
@@ -321,7 +423,7 @@ test("clean-list matching is path-segment exact", () => {
   );
 });
 
-test("the shipped clean list is non-empty and still clean", () => {
+test("the shipped clean list and grandfather ratchets are current", async () => {
   const result = runGuard(["--verify-cleanlist"]);
   assert.equal(
     result.status,
@@ -334,10 +436,31 @@ test("the shipped clean list is non-empty and still clean", () => {
     covered > 0,
     "an empty clean list makes --verify-cleanlist prove nothing",
   );
+  assert.match(result.output, /49 grandfather rows/);
+  assert.match(result.output, /GRANDFATHERED 196 current findings/);
+
+  const grandfatherRows = await readGrandfatherList();
+  assert.equal(grandfatherRows.length, 49);
+  assert.deepEqual(
+    Object.fromEntries(
+      [...new Set(grandfatherRows.map((row) => row.ruleId))]
+        .sort()
+        .map((ruleId) => [
+          ruleId,
+          grandfatherRows.filter((row) => row.ruleId === ruleId).length,
+        ]),
+    ),
+    {
+      "all-caps-fix-label": 22,
+      "campaign-row-id": 25,
+      "parity-report-row-id": 2,
+    },
+    "the grandfather rows must be the census-derived file/rule pairs",
+  );
 });
 
-test("a clean-list entry that matches no file is reported DEAD", async () => {
-  // The half that stops a rename from silently retiring an entry.
+test("clean-list entries and grandfather rows cannot go stale", async () => {
+  // The clean-list half stops a rename from silently retiring an entry.
   const files = await collectScopeFiles();
   const cleanList = await readCleanList();
   assert.ok(cleanList.length > 0);
@@ -347,22 +470,102 @@ test("a clean-list entry that matches no file is reported DEAD", async () => {
       `clean-list entry "${entry}" matches no in-scope file`,
     );
   }
+
+  // The grandfather half stops an exception surviving after its exact rule
+  // has self-cleaned. First drive the pure predicate with one live and one
+  // stale rule for the same clean-listed file.
+  const subject = "packages/widgets/Source/C16StaleGrandfatherFixture.js";
+  const rows = [
+    { file: subject, ruleId: "campaign-row-id" },
+    { file: subject, ruleId: "batch-id" },
+  ];
+  const liveFindings = [{ file: subject, ruleId: "campaign-row-id" }];
+  assert.deepEqual(
+    findStaleGrandfatherRows(rows, [subject], liveFindings, cleanList, false),
+    [{ file: subject, ruleId: "batch-id" }],
+  );
+
+  // End-to-end negative control: the CLI treats that stale row as an error.
+  withSourceFixtures(
+    { [subject]: "// Describes the fixture.\nexport const fixture = 1;\n" },
+    () => {
+      withGrandfatherRows(
+        [`${subject}\tbatch-id  # 2026-08-21 grammar widening`],
+        () => {
+          const stale = runGuard([subject]);
+          assert.equal(
+            stale.status,
+            1,
+            `a stale grandfather row must be an error:\n${stale.output}`,
+          );
+          assert.match(stale.output, /STALE GRANDFATHER ROWS/);
+          assert.match(stale.output, /C16StaleGrandfatherFixture\.js/);
+        },
+      );
+    },
+  );
 });
 
-test("clean-listed paths are ERRORS; unlisted paths are warnings until --strict", () => {
+test("grandfathering is exact by file and rule; other severity stays strict", () => {
   const cleanListed = "packages/widgets/Source/C16GuardFixture.js";
   const pending = "packages/engine/Source/Scene/C16GuardFixture.js";
-  const dirty = "// Batch 999 wired this up.\nexport const fixture = 1;\n";
+  const dirty = [
+    "// C15-G3 owns the campaign history.",
+    "// Batch 999 wired this up.",
+    "export const fixture = 1;",
+    "",
+  ].join("\n");
   const clean = "// Wires the fixture up.\nexport const fixture = 1;\n";
 
+  const synthetic = classifyFindings(
+    [
+      { file: cleanListed, ruleId: "campaign-row-id" },
+      { file: cleanListed, ruleId: "batch-id" },
+    ],
+    {
+      strict: false,
+      cleanList: ["packages/widgets/Source"],
+      grandfatherRows: [{ file: cleanListed, ruleId: "campaign-row-id" }],
+    },
+  );
+  assert.deepEqual(
+    synthetic.warnings.map((finding) => finding.ruleId),
+    ["campaign-row-id"],
+  );
+  assert.deepEqual(
+    synthetic.errors.map((finding) => finding.ruleId),
+    ["batch-id"],
+  );
+
   withSourceFixtures({ [cleanListed]: dirty, [pending]: dirty }, () => {
-    const listed = runGuard([cleanListed]);
-    assert.equal(
-      listed.status,
-      1,
-      `a marker under a certified path must fail without --strict:\n${listed.output}`,
+    withGrandfatherRows(
+      [`${cleanListed}\tcampaign-row-id  # 2026-08-21 grammar widening`],
+      () => {
+        const listed = runGuard(["--json", cleanListed]);
+        assert.equal(
+          listed.status,
+          1,
+          `the non-grandfathered rule must keep the same file red:\n${listed.output}`,
+        );
+        const report = JSON.parse(listed.output);
+        assert.deepEqual(
+          report.warnings.map((finding) => finding.ruleId),
+          ["campaign-row-id"],
+        );
+        assert.deepEqual(
+          report.errors.map((finding) => finding.ruleId),
+          ["batch-id"],
+        );
+
+        const strict = runGuard(["--strict", "--json", cleanListed]);
+        assert.equal(strict.status, 1);
+        assert.deepEqual(
+          JSON.parse(strict.output).errors.map((finding) => finding.ruleId),
+          ["campaign-row-id", "batch-id"],
+          "--strict must override grandfather severity",
+        );
+      },
     );
-    assert.match(listed.output, /ERRORS/);
 
     const unlisted = runGuard([pending]);
     assert.equal(
@@ -371,9 +574,9 @@ test("clean-listed paths are ERRORS; unlisted paths are warnings until --strict"
       `an unremediated path is warn-only until its shard lands:\n${unlisted.output}`,
     );
 
-    const strict = runGuard(["--strict", pending]);
+    const pendingStrict = runGuard(["--strict", pending]);
     assert.equal(
-      strict.status,
+      pendingStrict.status,
       1,
       "--strict is what the rewrite shards flip; it must fail on the same file",
     );

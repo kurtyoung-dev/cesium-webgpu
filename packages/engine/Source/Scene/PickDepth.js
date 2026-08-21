@@ -187,7 +187,7 @@ class PickDepth {
     //     number|undefined — NEVER a Promise (a Promise silently broke all of
     //     them: callers treated the Promise object as a depth value).
     //  2. GPU buffer mapping cannot resolve within the calling frame, so the
-    //     value returned is the ONE-FRAME-STALE cached result of an earlier
+    //     value returned is the one-frame-stale cached result of an earlier
     //     call's readback. The first query at a new location returns
     //     undefined (callers fall back to ray picking — the pre-fix SAFE
     //     state) and ARMS the readback; queries converge 1-2 frames later.

@@ -6,6 +6,7 @@
 // Standard: Documentation/Contributors/CodingGuide/ForkCommentStandard.md
 // Grammar:  Tools/c16/lib/marker-grammar.mjs
 // Ratchet:  Tools/c16/comment-marker-cleanlist.txt
+// Grandfather: Tools/c16/comment-marker-grandfather.txt
 //
 // SCOPE. `packages/engine/Source` and `packages/widgets/Source` only, minus
 // vendored `ThirdParty/` trees. `migration_doc/`, `Tools/`, `Specs/`, the
@@ -38,8 +39,11 @@
 // still carries markers, so a finding is a WARNING by default and the process
 // exits 0. A path listed in the clean list has been remediated and certified:
 // findings there are ERRORS and exit 1, in the one-shot run and in the
-// pre-commit hook alike. Rewrite batches append their shard's paths to the
-// clean list, which is what makes the debt monotonically non-increasing.
+// pre-commit hook alike. The grandfather file records exact file/rule pairs
+// exposed by a later grammar widening; only those pairs remain warnings, and a
+// row becomes an error as soon as its pair self-cleans. Rewrite batches append
+// their shard's paths to the clean list, which is what makes the debt
+// monotonically non-increasing.
 //
 // USAGE
 //   node Tools/c16/comment-marker-guard.mjs
@@ -52,7 +56,8 @@
 //       are skipped, not failed.
 //   node Tools/c16/comment-marker-guard.mjs --verify-cleanlist
 //       Assert every clean-list entry resolves to at least one in-scope file
-//       AND that all of them are still marker-free.
+//       AND that all of them have no findings except current grandfathered
+//       pairs. Stale grandfather rows are errors.
 //   --json           Machine-readable report on stdout.
 //   --census         Report only; never exits non-zero for findings.
 //   --max-files N    Cap the number of offending files listed (default 40).
@@ -97,6 +102,14 @@ const CLEAN_LIST_PATH = path.join(
   "c16",
   "comment-marker-cleanlist.txt",
 );
+
+const GRANDFATHER_PATH = path.join(
+  ROOT,
+  "Tools",
+  "c16",
+  "comment-marker-grandfather.txt",
+);
+const GRANDFATHER_REASON = "2026-08-21 grammar widening";
 
 /**
  * Normalize any path to a repo-relative, slash-separated form.
@@ -156,6 +169,82 @@ export async function readCleanList() {
 }
 
 /**
+ * Parse exact file/rule exceptions exposed by a later grammar widening.
+ *
+ * @param {string} text Grandfather file contents.
+ * @returns {Array<{file: string, ruleId: string}>} Exact file/rule pairs.
+ */
+export function parseGrandfatherList(text) {
+  const rows = [];
+  const seen = new Set();
+  for (const [index, rawLine] of text.split(/\r?\n/).entries()) {
+    const trimmed = rawLine.trim();
+    if (trimmed === "" || trimmed.startsWith("#")) {
+      continue;
+    }
+
+    const match = rawLine.match(/^([^\t]+)\t([a-z0-9-]+) {2}# (.+?)\s*$/);
+    if (match === null || match[3] !== GRANDFATHER_REASON) {
+      throw new Error(
+        `invalid grandfather row ${index + 1}; expected path<TAB>ruleId  # ${GRANDFATHER_REASON}`,
+      );
+    }
+
+    const file = match[1].trim().replaceAll("\\", "/");
+    const ruleId = match[2];
+    if (!isInScope(file) || !MARKER_RULES.some((rule) => rule.id === ruleId)) {
+      throw new Error(
+        `invalid grandfather row ${index + 1}; ${file} [${ruleId}] is not an in-scope file/rule pair`,
+      );
+    }
+
+    const key = grandfatherKey(file, ruleId);
+    if (seen.has(key)) {
+      throw new Error(
+        `duplicate grandfather row ${index + 1}; ${file} [${ruleId}]`,
+      );
+    }
+    seen.add(key);
+    rows.push({ file, ruleId });
+  }
+  return rows;
+}
+
+/**
+ * Read the exact file/rule grandfather ratchet.
+ *
+ * @returns {Promise<Array<{file: string, ruleId: string}>>} Exact pairs.
+ */
+export async function readGrandfatherList() {
+  return parseGrandfatherList(await fs.readFile(GRANDFATHER_PATH, "utf8"));
+}
+
+/**
+ * Stable key for one exact file/rule pair.
+ *
+ * @param {string} file Repo-relative file.
+ * @param {string} ruleId Marker rule id.
+ * @returns {string} Pair key.
+ */
+function grandfatherKey(file, ruleId) {
+  return `${file}\u0000${ruleId}`;
+}
+
+/**
+ * Whether a finding is one of the exact grandfathered pairs.
+ *
+ * @param {{file: string, ruleId: string}} finding Marker finding.
+ * @param {Array<{file: string, ruleId: string}>} grandfatherRows Exact pairs.
+ * @returns {boolean} True only for an exact file/rule match.
+ */
+export function isGrandfathered(finding, grandfatherRows) {
+  const key = grandfatherKey(finding.file, finding.ruleId);
+  return grandfatherRows.some(
+    (row) => grandfatherKey(row.file, row.ruleId) === key,
+  );
+}
+
+/**
  * Whether a path is certified clean, and therefore enforced strictly.
  *
  * @param {string} relPath Repo-relative path.
@@ -166,6 +255,70 @@ export function isCleanListed(relPath, cleanList) {
   return cleanList.some(
     (entry) => relPath === entry || relPath.startsWith(`${entry}/`),
   );
+}
+
+/**
+ * Apply strict, clean-list, and exact grandfather severity in that order.
+ *
+ * @param {Array<{file: string, ruleId: string}>} findings Marker findings.
+ * @param {{strict: boolean, cleanList: string[], grandfatherRows: Array<{file: string, ruleId: string}>}} options Severity inputs.
+ * @returns {{errors: Array<{file: string, ruleId: string}>, warnings: Array<{file: string, ruleId: string}>}} Partitioned findings.
+ */
+export function classifyFindings(findings, options) {
+  const errors = [];
+  const warnings = [];
+  for (const finding of findings) {
+    const cleanListed = isCleanListed(finding.file, options.cleanList);
+    if (
+      !options.strict &&
+      cleanListed &&
+      isGrandfathered(finding, options.grandfatherRows)
+    ) {
+      warnings.push(finding);
+    } else if (options.strict || cleanListed) {
+      errors.push(finding);
+    } else {
+      warnings.push(finding);
+    }
+  }
+  return { errors, warnings };
+}
+
+/**
+ * Rows whose exact file/rule pair has no current finding.
+ *
+ * A full-scope scan validates every row, including rows for deleted files. A
+ * path-mode scan validates only rows for files in that invocation; otherwise
+ * lint-staged would call every unrelated row stale on each one-file check.
+ *
+ * @param {Array<{file: string, ruleId: string}>} grandfatherRows Exact pairs.
+ * @param {string[]} files Files scanned by this invocation.
+ * @param {Array<{file: string, ruleId: string}>} findings Current findings.
+ * @param {string[]} cleanList Clean-list entries.
+ * @param {boolean} completeScan Whether every in-scope file was scanned.
+ * @returns {Array<{file: string, ruleId: string}>} Stale rows.
+ */
+export function findStaleGrandfatherRows(
+  grandfatherRows,
+  files,
+  findings,
+  cleanList,
+  completeScan,
+) {
+  const scanned = new Set(files);
+  const livePairs = new Set(
+    findings.map((finding) => grandfatherKey(finding.file, finding.ruleId)),
+  );
+  return grandfatherRows.filter((row) => {
+    if (!completeScan && !scanned.has(row.file)) {
+      return false;
+    }
+    return (
+      !scanned.has(row.file) ||
+      !isCleanListed(row.file, cleanList) ||
+      !livePairs.has(grandfatherKey(row.file, row.ruleId))
+    );
+  });
 }
 
 /**
@@ -398,6 +551,7 @@ async function main() {
   }
 
   const cleanList = await readCleanList();
+  const grandfatherRows = await readGrandfatherList();
 
   let files;
   let mode;
@@ -432,20 +586,30 @@ async function main() {
   }
 
   const census = buildCensus(files, findings);
+  const staleGrandfatherRows = findStaleGrandfatherRows(
+    grandfatherRows,
+    files,
+    findings,
+    cleanList,
+    mode === "scope",
+  );
 
   if (options.verifyCleanList) {
-    return verifyCleanList(cleanList, files, findings, options);
+    return verifyCleanList(
+      cleanList,
+      grandfatherRows,
+      staleGrandfatherRows,
+      files,
+      findings,
+      options,
+    );
   }
 
-  const errors = [];
-  const warnings = [];
-  for (const finding of findings) {
-    if (options.strict || isCleanListed(finding.file, cleanList)) {
-      errors.push(finding);
-    } else {
-      warnings.push(finding);
-    }
-  }
+  const { errors, warnings } = classifyFindings(findings, {
+    strict: options.strict,
+    cleanList,
+    grandfatherRows,
+  });
 
   if (options.json) {
     process.stdout.write(
@@ -454,9 +618,11 @@ async function main() {
           mode,
           strict: options.strict,
           cleanListEntries: cleanList.length,
+          grandfatherEntries: grandfatherRows.length,
           census,
           errors,
           warnings,
+          staleGrandfathers: staleGrandfatherRows,
         },
         null,
         2,
@@ -469,10 +635,13 @@ async function main() {
     console.log(renderCensus(census));
     console.log("");
     console.log(
-      `  clean list  ${cleanList.length} entr${cleanList.length === 1 ? "y" : "ies"} — findings under those paths are ERRORS`,
+      `  clean list  ${cleanList.length} entr${cleanList.length === 1 ? "y" : "ies"} — findings are ERRORS unless exactly grandfathered`,
     );
     console.log(
-      `  errors      ${errors.length}\n  warnings    ${warnings.length}`,
+      `  grandfather ${grandfatherRows.length} exact file/rule pairs — matching clean-list findings are WARNINGS`,
+    );
+    console.log(
+      `  errors      ${errors.length + staleGrandfatherRows.length}\n  warnings    ${warnings.length}`,
     );
     if (errors.length > 0) {
       console.log("");
@@ -483,6 +652,15 @@ async function main() {
         );
       }
     }
+    if (staleGrandfatherRows.length > 0) {
+      console.log("");
+      console.log(
+        "STALE GRANDFATHER ROWS (remove a row when its file/rule pair self-cleans):",
+      );
+      for (const row of staleGrandfatherRows) {
+        console.log(`  ${row.file}  [${row.ruleId}]`);
+      }
+    }
     if (warnings.length > 0 && !options.strict) {
       const worst = [...new Set(warnings.map((w) => w.file))]
         .map((file) => [file, warnings.filter((w) => w.file === file).length])
@@ -490,7 +668,7 @@ async function main() {
         .slice(0, options.maxFiles);
       console.log("");
       console.log(
-        `PENDING (not yet remediated; ${worst.length} worst of ${new Set(warnings.map((w) => w.file)).size} files):`,
+        `WARNINGS (pending paths plus grandfathered pairs; ${worst.length} worst of ${new Set(warnings.map((w) => w.file)).size} files):`,
       );
       for (const [file, count] of worst) {
         console.log(`  ${String(count).padStart(5)}  ${file}`);
@@ -498,45 +676,81 @@ async function main() {
     }
   }
 
-  if (options.census) {
+  if (options.census && staleGrandfatherRows.length === 0) {
     return 0;
   }
-  return errors.length > 0 ? 1 : 0;
+  return errors.length > 0 || staleGrandfatherRows.length > 0 ? 1 : 0;
 }
 
 /**
- * Assert the ratchet is honest: every entry names something real, and
- * everything it names is still marker-free.
+ * Assert both ratchets are honest: every clean-list entry names something
+ * real, every non-grandfathered finding is still absent, and every exact
+ * grandfather row still has a current finding.
  *
  * @param {string[]} cleanList Clean-list entries.
+ * @param {Array<{file: string, ruleId: string}>} grandfatherRows Exact pairs.
+ * @param {Array<{file: string, ruleId: string}>} staleGrandfatherRows Stale rows.
  * @param {string[]} files Files scanned.
- * @param {Array<{file: string}>} findings Findings from the scan.
+ * @param {Array<{file: string, ruleId: string}>} findings Findings from the scan.
  * @param {{json: boolean}} options Parsed options.
  * @returns {number} Exit code.
  */
-function verifyCleanList(cleanList, files, findings, options) {
+function verifyCleanList(
+  cleanList,
+  grandfatherRows,
+  staleGrandfatherRows,
+  files,
+  findings,
+  options,
+) {
   const dead = cleanList.filter(
     (entry) =>
       !files.some((file) => file === entry || file.startsWith(`${entry}/`)),
   );
-  const regressed = findings.filter((finding) =>
+  const cleanListedFindings = findings.filter((finding) =>
     isCleanListed(finding.file, cleanList),
+  );
+  const grandfathered = cleanListedFindings.filter((finding) =>
+    isGrandfathered(finding, grandfatherRows),
+  );
+  const regressed = cleanListedFindings.filter(
+    (finding) => !isGrandfathered(finding, grandfatherRows),
   );
   const covered = files.filter((file) => isCleanListed(file, cleanList));
 
   if (options.json) {
     process.stdout.write(
-      `${JSON.stringify({ entries: cleanList.length, covered: covered.length, dead, regressed }, null, 2)}\n`,
+      `${JSON.stringify(
+        {
+          entries: cleanList.length,
+          covered: covered.length,
+          grandfatherEntries: grandfatherRows.length,
+          grandfathered,
+          staleGrandfathers: staleGrandfatherRows,
+          dead,
+          regressed,
+        },
+        null,
+        2,
+      )}\n`,
     );
   } else {
     console.log(
-      `comment-marker-guard --verify-cleanlist: ${cleanList.length} entries covering ${covered.length} of ${files.length} in-scope files`,
+      `comment-marker-guard --verify-cleanlist: ${cleanList.length} entries covering ${covered.length} of ${files.length} in-scope files; ${grandfatherRows.length} grandfather rows`,
     );
     for (const entry of dead) {
       console.log(`  DEAD ENTRY  ${entry} — matches no in-scope file`);
     }
     for (const finding of regressed.slice(0, 200)) {
       console.log(`  REGRESSED   ${finding.file}`);
+    }
+    for (const row of staleGrandfatherRows) {
+      console.log(`  STALE ROW   ${row.file}  [${row.ruleId}]`);
+    }
+    if (grandfathered.length > 0) {
+      console.log(
+        `  GRANDFATHERED ${grandfathered.length} current findings in exact file/rule pairs`,
+      );
     }
   }
 
@@ -552,7 +766,11 @@ function verifyCleanList(cleanList, files, findings, options) {
     );
     return 3;
   }
-  return dead.length > 0 || regressed.length > 0 ? 1 : 0;
+  return dead.length > 0 ||
+    regressed.length > 0 ||
+    staleGrandfatherRows.length > 0
+    ? 1
+    : 0;
 }
 
 // Only run when invoked as a script. The spec imports the predicates above and

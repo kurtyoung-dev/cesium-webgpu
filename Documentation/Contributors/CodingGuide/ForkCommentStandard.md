@@ -65,7 +65,8 @@ anonymized for that reason.
 | Rule id                | Matches                                             | Why it is banned                                          |
 | ---------------------- | --------------------------------------------------- | --------------------------------------------------------- |
 | `batch-id`             | `Batch \d`, `Batches \d`                            | Names a commit, not a constraint                          |
-| `campaign-row-id`      | `C\d{1,2}-\d+`                                      | A queue row id; the queue is the authority                |
+| `campaign-row-id`      | `C\d{1,2}-\d+`, alphabetic `C\d{1,2}-` labels       | A queue row id; the queue is the authority                |
+| `parity-report-row-id` | `Q\d{1,2}-` parity-report labels                    | A parity-report row id; the report is the authority       |
 | `campaign-name`        | `Campaign \d`                                       | Dates the comment to a work programme                     |
 | `review-id`            | `C-R\d`                                             | Audit-round identifier                                    |
 | `dp-h-id`              | `DP-H\d`                                            | Design-point identifier                                   |
@@ -74,6 +75,7 @@ anonymized for that reason.
 | `upstream-sync-id`     | `UP\d{3}-`                                          | Upstream-sync work-item identifier                        |
 | `cloud-unification-id` | `CLOUD-U\d`                                         | Work-item identifier                                      |
 | `deferred-work-id`     | `NEW-`, `BUG-`, `EPIC-`, `FIX-` prefixed ledger ids | Points at a backlog row, not at the code                  |
+| `all-caps-fix-label`   | Three or more hyphenated ALL-CAPS words             | A bare development-history label, not a code constraint   |
 | `numbered-bug-id`      | `BUG-\d`                                            | Debugging-log entry number                                |
 | `session-id`           | `Session \d`                                        | Dates the comment to a working session                    |
 | `tracker-document`     | Names of the campaign ledgers and queue files       | The code must stand on its own                            |
@@ -83,7 +85,9 @@ Three more rules are part of the standard but are **not** machine-checked,
 because every regex for them produces false positives at a rate that teaches
 reviewers to ignore the tool:
 
-- **No ALL-CAPS emphasis.** Upstream uses sentence case. If a point needs
+- **No ALL-CAPS emphasis.** Upstream uses sentence case. The narrow
+  `all-caps-fix-label` rule catches bare labels with three or more long
+  segments; ordinary emphasis remains a review judgement. If a point needs
   emphasis, the sentence is not yet doing its job.
 - **No first person.** Not "we", "I", "our", and not "note to whoever picks
   this up". The reader is a maintainer, not an audience.
@@ -275,20 +279,26 @@ knowledge that the rewrite dropped.
 
 ## 8. Enforcement
 
-Three instruments, all under `Tools/c16/`:
+Four instruments, all under `Tools/c16/`:
 
 1. **`comment-marker-guard.mjs`** — the vocabulary rules in §3, over comments
    only. Wired into `lint-staged`, so it runs on staged engine and widgets
    source at commit time, and runnable repository-wide for a census
    (`node Tools/c16/comment-marker-guard.mjs`). Findings are warnings by
    default and errors under `--strict` or under a path listed in
-   `comment-marker-cleanlist.txt`.
+   `comment-marker-cleanlist.txt`, except for an exact pair recorded in the
+   grammar-widening grandfather file.
 2. **`comment-marker-cleanlist.txt`** — the ratchet. A remediation batch
    appends the paths it certified, in the same commit as the rewrite, and those
    paths are enforced strictly from then on. `--verify-cleanlist` asserts every
-   entry still resolves to a real file and that everything it covers is still
-   clean, so neither a rename nor a regression can quietly retire an entry.
-3. **`comment-only-diff.mjs`** — the gate for remediation batches. It strips
+   entry still resolves to a real file and has no ungrandfathered findings, so
+   neither a rename nor a regression can quietly retire an entry.
+3. **`comment-marker-grandfather.txt`** — exact cleanlisted file/rule pairs
+   exposed by the 2026-08-21 grammar widening. Only the named rule is a warning;
+   every other rule in the same file stays an error. A row becomes an error
+   once its pair has zero current findings, so the exception set shrinks as
+   files self-clean.
+4. **`comment-only-diff.mjs`** — the gate for remediation batches. It strips
    comments from both sides of a ref pair and requires the remainder to be
    identical, which is the only way "I only changed comments" can be checked
    rather than believed. Build pragmas, lint directives and license banners
