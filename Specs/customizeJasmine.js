@@ -6,6 +6,11 @@ import {
   installOfflineNetworkSpecAttribution,
   setOfflineLane,
 } from "./networkPolicy.js";
+import {
+  installWebGPULaneRunAssertion,
+  installWebGPULaneSpecLedger,
+  setWebGPULane,
+} from "./webgpuPolicy.js";
 
 function customizeJasmine(
   env,
@@ -17,6 +22,8 @@ function customizeJasmine(
   debugCanvasWidth,
   debugCanvasHeight,
   offline,
+  webgpuDemanded,
+  webgpuRequiredTier,
 ) {
   // set this for uniform test resolution across devices
   window.devicePixelRatio = 1;
@@ -45,6 +52,34 @@ function customizeJasmine(
       },
     });
   }
+
+  // The Scene-level WebGPU lane, published before any spec module evaluates
+  // for the same reason the offline lane is: `describeRequiresWebGPU()` decides
+  // at declaration time whether its suite runs.
+  //
+  // The ledger and the end-of-run assertion install UNCONDITIONALLY, not only
+  // when the lane is demanded. The assertion throws only for a demanded run,
+  // but it also emits the lane's summary line on any run that declared a lane
+  // suite — and that line is the only thing that makes a skipped lane visible,
+  // since `specReporter.suppressSkipped` hides pending and excluded specs from
+  // the default reporter entirely.
+  setWebGPULane({
+    demanded: webgpuDemanded === true,
+    requiredTier: webgpuRequiredTier,
+  });
+  installWebGPULaneSpecLedger(env, window);
+  installWebGPULaneRunAssertion(env, {
+    scope: window,
+    report(message) {
+      // Console capture stays disabled for the full engine suite; send this one
+      // stable line through Karma explicitly, exactly as the offline lane does.
+      if (typeof window.__karma__?.info === "function") {
+        window.__karma__.info({ log: message, type: "info" });
+      } else {
+        window.console.info(message);
+      }
+    },
+  });
 
   const originalDescribe = window.describe;
 

@@ -111,8 +111,11 @@ of that decision rather than changed incidentally.
 
 ### NEW-SPEC-HARNESS-NO-WEBGPU-SCENE-COVERAGE
 
-**Status:** OPEN / HIGH — filed 2026-08-20. This is a
-verification-capability gap, not a rendering defect.
+**Status:** CLOSED — filed 2026-08-20, closed the same day. The lane described
+under "What closes it" is built, wired, and was executed green. See the
+"HOW IT WAS CLOSED" block at the end of this row for what landed and for one
+launcher defect the work uncovered. This was a verification-capability gap, not
+a rendering defect.
 
 **The mechanism.** The shared Jasmine scene helper configures only
 `options.contextOptions.webgl` before calling the synchronous constructor
@@ -164,6 +167,56 @@ Jasmine harness and run representative behavioral specs against it. An absent
 WebGPU adapter/device must produce a visible named skip or a failure in the run
 record — never a fallback or silent pass — so lack of capability cannot be
 mistaken for coverage.
+
+**HOW IT WAS CLOSED.** Four pieces, modelled on `Specs/networkPolicy.js`:
+
+- `Specs/webgpuPolicy.js` — `describeRequiresWebGPU()` (declaration-time
+  `"gpu" in navigator` check → `xdescribe` plus a recorded reason), a `specDone`
+  ledger that counts only `passed`/`failed` as execution, an adapter-tier
+  classifier, and a root `afterAll` that THROWS when the lane was demanded and
+  zero WebGPU specs executed, or when a hardware-demanding lane got software.
+- `Specs/createSceneAsync.js` — the `createScene.js` analogue. It forces
+  `strictRenderer: true` (rejecting `strictRenderer: false` and `renderer:
+  "auto"` outright) and re-checks `context.rendererType` after construction, so
+  the WebGL fallback path cannot deliver a scene to a WebGPU spec.
+  `Specs/createScene.js` is byte-identical — the WebGL lane is untouched.
+- `packages/engine/Specs/Scene/SceneWebGPUSpec.js` — six non-pixel behavioural
+  specs (backend + creation diagnostics, fresh registry id, frame-number
+  advance over repeated renders, adapter tier, absent synchronous readback,
+  destroy/unregister). Pixel matchers are deliberately unused: they run on the
+  synchronous `context.readPixels()`, which WebGPU implements as a `null` shim.
+- Lane selection threaded like `--offline`: `gulp test --webgpu`
+  (`--webgpu-tier=any` to accept software), read by token in
+  `Specs/karma-main.js`, installed in `Specs/customizeJasmine.js`. npm scripts
+  `test-webgpu`, `test-webgpu-any-adapter`, `test-webgpu-policy`.
+
+Visibility, given `specReporter.suppressSkipped`: the lane emits one stable
+`[webgpu lane] summary {...}` line through `__karma__.info()` on any run that
+declares a lane suite, exactly as the offline lane does. A skipped lane is
+therefore *named* rather than invisible, and a demanded one that skipped is a
+hard failure.
+
+The lane's failure paths are covered by `Specs/webgpuPolicy.spec.mjs`
+(`node --test`, 21 cases, no browser) rather than only by a green browser run —
+a green run proves the lane executed, never that it would have failed
+otherwise. The adapter fixtures there are measured, not invented: Edge
+151.0.4129.93 under the `EdgeHeadlessCI` flags reports
+`vendor "nvidia" / architecture "pascal" / isFallbackAdapter false`, and the
+same flags plus `--disable-gpu` report
+`vendor "google" / architecture "swiftshader" / isFallbackAdapter true`.
+
+**Launcher defect found and fixed on the way.** The Karma `EdgeHeadlessCI`
+launcher could not start a browser at all on Edge 151: the spawned msedge exits
+0 after ~90ms while a detached replacement carrying
+`--edge-skip-compat-layer-relaunch` keeps running, so karma-chrome-launcher
+reports "Cannot start Chrome", retries, gives up, and orphans the replacements.
+Adding that flag to the launcher's own flag list fixes it (measured: 94ms exit
+without, still alive at 13s with). Until this was fixed, no real-device WebGPU
+Jasmine spec could run through Karma on this machine.
+
+**Verified:** `gulp test --workspace=engine --browsers=EdgeHeadlessCI --webgpu
+--includeName="Scene on WebGPU"` — 6 of 6 executed, `adapterTier "hardware"`,
+`skippedSuiteCount 0`, TOTAL 6 SUCCESS.
 
 ### NEW-DEVSERVER-SERVES-DEV-BUILD-NOT-GULP-ARTIFACT
 

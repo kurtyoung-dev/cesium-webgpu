@@ -133,6 +133,16 @@ module.exports = function (config) {
           "--enable-unsafe-webgpu",
           "--disable-dev-shm-usage",
           `--user-data-dir=${os.tmpdir()}\\karma-edge-${Date.now()}-${Math.floor(Math.random() * 1e9)}`,
+          // Without this, Edge 151 RELAUNCHES ITSELF through its compatibility
+          // layer: the process karma-chrome-launcher spawned exits 0 after
+          // ~90ms while a detached replacement (carrying this very flag) keeps
+          // running and loads the Karma page. The launcher only watches the
+          // process it spawned, so it reports "Cannot start Chrome", retries,
+          // gives up after two attempts — and leaves the replacement browsers
+          // orphaned. Measured directly: with Karma's exact argv the spawned
+          // process exits in 94ms; with this flag appended it is still alive
+          // 13s later.
+          "--edge-skip-compat-layer-relaunch",
         ],
       },
     },

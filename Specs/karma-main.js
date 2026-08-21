@@ -10,6 +10,10 @@ let debugCanvasWidth;
 let debugCanvasHeight;
 
 let offline = false;
+let webgpuDemanded = false;
+let webgpuRequiredTier;
+
+const WEBGPU_TIER_PREFIX = "--webgpu-tier=";
 
 if (__karma__.config.args) {
   includeCategory = __karma__.config.args[0];
@@ -23,6 +27,18 @@ if (__karma__.config.args) {
   // with the jasmine adapter's own `--grep` pair, so a positional index here
   // would break the moment either side gains an argument.
   offline = __karma__.config.args.includes("--offline");
+  // Same token discipline for the Scene-level WebGPU lane. `--webgpu` demands
+  // that the lane execute — a run in which it is skipped fails instead of
+  // reporting green, because a skipped suite is invisible under
+  // `specReporter.suppressSkipped`.
+  webgpuDemanded = __karma__.config.args.includes("--webgpu");
+  const tierArgument = __karma__.config.args.find(
+    (argument) =>
+      typeof argument === "string" && argument.startsWith(WEBGPU_TIER_PREFIX),
+  );
+  webgpuRequiredTier = tierArgument
+    ? tierArgument.slice(WEBGPU_TIER_PREFIX.length)
+    : undefined;
 }
 
 if (release) {
@@ -42,4 +58,6 @@ customizeJasmine(
   debugCanvasWidth,
   debugCanvasHeight,
   offline,
+  webgpuDemanded,
+  webgpuRequiredTier,
 );

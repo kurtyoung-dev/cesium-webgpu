@@ -982,6 +982,17 @@ export async function test() {
   // online lane is opt-in with `--no-offline`, which preserves the coverage
   // rather than deleting it.
   const offline = argv.offline !== false;
+  // Scene-level WebGPU lane. It runs opportunistically by default — where an
+  // adapter exists the suites execute, and where one does not they record a
+  // truthful skip. `--webgpu` DEMANDS it: the run then fails if the lane was
+  // skipped, which is the only way a dead lane can be told apart from a passing
+  // one under `specReporter.suppressSkipped`. A demanded lane requires a
+  // hardware adapter unless `--webgpu-tier=any` is passed, because
+  // `--disable-gpu` still resolves an adapter — as SwiftShader — and a run that
+  // silently certified software would be worse than no lane at all.
+  const webgpuDemanded = argv.webgpu === true;
+  const webgpuRequiredTier =
+    typeof argv.webgpuTier === "string" ? argv.webgpuTier : undefined;
   const debug = argv.debug ? true : false;
   const debugCanvasWidth = argv.debugCanvasWidth;
   const debugCanvasHeight = argv.debugCanvasHeight;
@@ -1127,6 +1138,10 @@ export async function test() {
           // Token, not position — karma-main.js reads it by name so neither
           // side's arg list is pinned to the other's length.
           ...(offline ? ["--offline"] : []),
+          ...(webgpuDemanded ? ["--webgpu"] : []),
+          ...(webgpuRequiredTier
+            ? [`--webgpu-tier=${webgpuRequiredTier}`]
+            : []),
         ],
       },
     },
