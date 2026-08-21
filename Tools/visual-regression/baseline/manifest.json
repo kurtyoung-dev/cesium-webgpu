@@ -1,7 +1,7 @@
 {
   "$schema": "../baseline-manifest.schema.json",
   "schemaVersion": 1,
-  "updatedAt": "2026-07-18T00:50:19.216Z",
+  "updatedAt": "2026-08-21T05:30:40.631Z",
   "entries": {
     "globe-default:webgl": {
       "scene": "globe-default",
@@ -45,6 +45,50 @@
         "reviewedBy": "C9-30 checkpoint (Opus measurement worker)",
         "rationale": "P0-4a baseline repair: prior globe-default.webgpu.png was a known-degenerate flat-gray capture (94.69% historical FAIL); current WebGPU capture visually verified as correct SF-Bay globe (crossBackend 0.46%, in 0.43-0.77% band) at C9-30 checkpoint HEAD Batch 690",
         "reviewedAt": "2026-07-18T00:50:19.216Z"
+      }
+    },
+    "voxel-box-procedural:webgl": {
+      "scene": "voxel-box-procedural",
+      "renderer": "webgl",
+      "provenanceClass": "accepted-current",
+      "image": "voxel-box-procedural.webgl.png",
+      "imageSha256": "fb148af0101b3945f7c7808db4ac181b619ab7e0df80ff9b8a143e89530677a8",
+      "width": 799,
+      "height": 752,
+      "sourceCommit": "cfecd8ab35cab6edb46f83e377701184754fa489",
+      "sourceDirty": false,
+      "sceneIdentity": "4f218cdec7818a6a04d51a67daf19da0b68d4665b3619b82146fb39828da73b7",
+      "browserClass": "msedge",
+      "browserVersion": "151.0.4129.93",
+      "adapterClass": "nvidia:pascal",
+      "capturedAt": "2026-08-21T05:30:40.631Z",
+      "review": {
+        "status": "approved",
+        "reviewedBy": "orchestrator (cesium-webgpu-agent, maintainer-directed session 2026-08-21)",
+        "rationale": "C18-V2 first reviewed baseline (frozen-build program 2026-08-21, cross-backend 0.49%/0.55%, PNG pairs reviewed by orchestrator)",
+        "reviewedAt": "2026-08-21T05:30:40.631Z"
+      }
+    },
+    "voxel-box-procedural:webgpu": {
+      "scene": "voxel-box-procedural",
+      "renderer": "webgpu",
+      "provenanceClass": "accepted-current",
+      "image": "voxel-box-procedural.webgpu.png",
+      "imageSha256": "65b27654314072d31f69df391db106d02fdb91c2ca02c609930cefdeb42a8445",
+      "width": 799,
+      "height": 752,
+      "sourceCommit": "cfecd8ab35cab6edb46f83e377701184754fa489",
+      "sourceDirty": false,
+      "sceneIdentity": "4f218cdec7818a6a04d51a67daf19da0b68d4665b3619b82146fb39828da73b7",
+      "browserClass": "msedge",
+      "browserVersion": "151.0.4129.93",
+      "adapterClass": "nvidia:pascal",
+      "capturedAt": "2026-08-21T05:30:40.631Z",
+      "review": {
+        "status": "approved",
+        "reviewedBy": "orchestrator (cesium-webgpu-agent, maintainer-directed session 2026-08-21)",
+        "rationale": "C18-V2 first reviewed baseline (frozen-build program 2026-08-21, cross-backend 0.49%/0.55%, PNG pairs reviewed by orchestrator)",
+        "reviewedAt": "2026-08-21T05:30:40.631Z"
       }
     }
   }
