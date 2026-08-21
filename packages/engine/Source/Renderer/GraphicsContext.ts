@@ -1012,6 +1012,37 @@ export abstract class GraphicsContext {
   }
 
   /**
+   * Capability getter for the offscreen ray-depth readback that the
+   * `*MostDetailed` height queries depend on.
+   *
+   * `Scene.sampleHeightMostDetailed` and `Scene.clampToHeightMostDetailed`
+   * render the scene into an offscreen view aimed along an arbitrary ray and
+   * recover a world position from that view's depth. That offscreen render is a
+   * pick pass, and the globe-depth framebuffer is off for pick passes — so on a
+   * backend whose only packed pick-depth producer is that framebuffer, the
+   * offscreen view's `PickDepth` is never handed a depth texture and its depth
+   * query returns `undefined`. The queries still resolve; they just write
+   * `undefined` into every element of the caller's array, which is a silent
+   * wrong answer rather than a failure the caller can detect.
+   *
+   * `true` means the offscreen ray render yields a depth the picking code can
+   * read back, so those queries return real answers. `false` means the producer
+   * does not exist on this backend.
+   *
+   * This is deliberately a different axis from `supportsSynchronousReadback`.
+   * The SYNCHRONOUS `Scene.sampleHeight` / `Scene.clampToHeight` do work on
+   * backends without synchronous readback — they reuse the main scene's
+   * already-rendered depth instead of an offscreen ray render — so
+   * `Scene.sampleHeightSupported` / `Scene.clampToHeightSupported` must keep
+   * reporting `true` there.
+   *
+   * Default `true` (WebGL); WebGPU overrides to `false`.
+   */
+  get supportsOffscreenRayDepthReadback(): boolean {
+    return true;
+  }
+
+  /**
    * Capability getter for the encoding of the packed pick-depth texture this
    * context publishes to `PickDepth`.
    *

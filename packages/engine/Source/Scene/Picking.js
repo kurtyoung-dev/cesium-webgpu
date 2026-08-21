@@ -1308,21 +1308,37 @@ class Picking {
     const length = cartesians.length;
     const promises = new Array(length);
     for (let i = 0; i < length; ++i) {
+      // No result out-parameter. Handing the pick the caller's own array
+      // element would write that object while the rest of the batch is still in
+      // flight, and two entries holding one object would overwrite each other.
       promises[i] = clampToHeightMostDetailed(
         this,
         scene,
         cartesians[i],
         objectsToExclude,
         width,
-        cartesians[i],
       );
     }
     return deferPromiseUntilPostRender(
       scene,
       Promise.all(promises).then(function (clampedCartesians) {
         const length = clampedCartesians.length;
+        // Every write to a caller-owned object happens here, once all the picks
+        // have settled. Each input object backs at most one output, so entries
+        // that share an object still get independent results while entries with
+        // their own object are still clamped in place.
+        const reused = new Set();
         for (let i = 0; i < length; ++i) {
-          cartesians[i] = clampedCartesians[i];
+          const clamped = clampedCartesians[i];
+          const original = cartesians[i];
+          if (!defined(clamped)) {
+            cartesians[i] = undefined;
+          } else if (defined(original) && !reused.has(original)) {
+            reused.add(original);
+            cartesians[i] = Cartesian3.clone(clamped, original);
+          } else {
+            cartesians[i] = clamped;
+          }
         }
         return cartesians;
       }),

@@ -572,7 +572,6 @@ function clampToHeightMostDetailed(
   cartesian,
   objectsToExclude,
   width,
-  result,
 ) {
   const ray = getRayForClampToHeight(scene, cartesian);
   return launchMostDetailedRayPick(
@@ -592,7 +591,10 @@ function clampToHeightMostDetailed(
         true,
       );
       if (defined(pickResult)) {
-        return Cartesian3.clone(pickResult.position, result);
+        // A fresh instance, never a caller-owned object: the batch that drives
+        // this is still running its other picks, and `pickResult.position` is
+        // owned by the pick machinery.
+        return Cartesian3.clone(pickResult.position);
       }
     },
   );

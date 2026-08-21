@@ -1932,6 +1932,7 @@ class Scene {
    *
    * @see Scene#sampleHeight
    * @see Scene#sampleHeightMostDetailed
+   * @see Scene#sampleHeightMostDetailedSupported
    */
   get sampleHeightSupported() {
     return this._context.depthTexture;
@@ -1958,9 +1959,58 @@ class Scene {
    *
    * @see Scene#clampToHeight
    * @see Scene#clampToHeightMostDetailed
+   * @see Scene#clampToHeightMostDetailedSupported
    */
   get clampToHeightSupported() {
     return this._context.depthTexture;
+  }
+
+  /**
+   * Returns <code>true</code> if the asynchronous
+   * {@link Scene#sampleHeightMostDetailed} function is supported.
+   *
+   * This is narrower than {@link Scene#sampleHeightSupported}: the most-detailed
+   * variant additionally needs the renderer to recover depth from an offscreen
+   * ray render. Where that producer is missing the query still resolves, but
+   * every sampled height comes back <code>undefined</code>, so check this before
+   * relying on the result. For CPU terrain-only sampling that needs no GPU
+   * readback at all, use {@link sampleTerrainMostDetailed}.
+   *
+   * @type {boolean}
+   * @readonly
+   *
+   * @see Scene#sampleHeightMostDetailed
+   * @see Scene#sampleHeightSupported
+   */
+  get sampleHeightMostDetailedSupported() {
+    return (
+      this.sampleHeightSupported &&
+      this._context.supportsOffscreenRayDepthReadback
+    );
+  }
+
+  /**
+   * Returns <code>true</code> if the asynchronous
+   * {@link Scene#clampToHeightMostDetailed} function is supported.
+   *
+   * This is narrower than {@link Scene#clampToHeightSupported}: the
+   * most-detailed variant additionally needs the renderer to recover depth from
+   * an offscreen ray render. Where that producer is missing the query still
+   * resolves, but every element of the array comes back <code>undefined</code>,
+   * so check this before relying on the result. For CPU terrain-only sampling
+   * that needs no GPU readback at all, use {@link sampleTerrainMostDetailed}.
+   *
+   * @type {boolean}
+   * @readonly
+   *
+   * @see Scene#clampToHeightMostDetailed
+   * @see Scene#clampToHeightSupported
+   */
+  get clampToHeightMostDetailedSupported() {
+    return (
+      this.clampToHeightSupported &&
+      this._context.supportsOffscreenRayDepthReadback
+    );
   }
 
   /**

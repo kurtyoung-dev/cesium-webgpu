@@ -1849,6 +1849,24 @@ export class WebGPUContext extends GraphicsContext {
   }
 
   /**
+   * WebGPU has no offscreen ray-depth producer. The offscreen render that the
+   * `*MostDetailed` height queries drive is a pick pass, and the globe-depth
+   * framebuffer — the only packed pick-depth source here — is off for pick
+   * passes, so the offscreen view's `PickDepth` never receives a depth texture
+   * and its query returns `undefined`. Overrides the base `true` so callers can
+   * test `Scene.sampleHeightMostDetailedSupported` /
+   * `Scene.clampToHeightMostDetailedSupported` up front instead of discovering
+   * the gap as an array full of `undefined`.
+   *
+   * The synchronous `Scene.sampleHeight` / `Scene.clampToHeight` are
+   * unaffected — they reuse the main scene depth and stay supported here — so
+   * this stays separate from `supportsSynchronousReadback`.
+   */
+  override get supportsOffscreenRayDepthReadback(): boolean {
+    return false;
+  }
+
+  /**
    * Cloud-unification epic — per-frame volumetric cloud request published by a
    * `CloudCollection` whose `renderMode` is `VOLUMETRIC`. Stored here for the
    * env-effects phase to consume. `undefined` when no collection requested a
