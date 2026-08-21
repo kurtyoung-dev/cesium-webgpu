@@ -9,6 +9,7 @@
 - `loadKTX2` now requires the `supportedTargetFormats` argument and throws in release builds when it is omitted. External callers of `Cesium.loadKTX2(url)` must pass the supported transcode target formats (previously implicit).
 - Synchronous `new Scene()` with `renderer: 'auto'` or `renderer: 'webgpu'` now throws — WebGPU initialization is asynchronous. Use `Scene.createAsync()` instead; synchronous construction remains supported for `renderer: 'webgl'`.
 - `pickHoverAsync` now resolves to the single picked object or `undefined` (previously it exposed an internal drill-pick array).
+- With `globe.enableLighting = true`, the WebGPU night-time city-light boost is now opt-in via `globe.enableNightLights = true`.
 
 #### Additions :tada:
 

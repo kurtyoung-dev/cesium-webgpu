@@ -371,6 +371,8 @@ class Globe {
      * are treated as emissive city lights, boosted proportional to
      * their luminance. Only active with enableLighting, and only on the WebGPU
      * renderer; the WebGL path ignores it.
+     * The default is off for cross-backend parity; set this property to
+     * <code>true</code> to opt in.
      * <p>
      * Setting this to <code>false</code> produces zero emission. The enable and
      * {@link Globe#nightIntensity} travel as separate signals precisely so that
@@ -378,9 +380,9 @@ class Globe {
      * collide with the shader's unset sentinel and render as the default 2.5.
      * </p>
      * @type {boolean}
-     * @default true
+     * @default false
      */
-    this.enableNightLights = true;
+    this.enableNightLights = false;
 
     /**
      * Multiplier for night-side city light emission brightness.
