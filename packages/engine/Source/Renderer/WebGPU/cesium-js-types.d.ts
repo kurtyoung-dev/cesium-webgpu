@@ -1114,6 +1114,9 @@ interface CesiumObjectWithWebGPUCache {
 // ─── Scene ───────────────────────────────────────────────────────────────
 
 interface CesiumScene {
+  // Scene.js sets this debug switch and WebGL gates its depth plane on it; the
+  // WebGPU environment-state path reads it for the same gate.
+  debugSkipDepthPlane?: boolean;
   readonly frameState: CesiumFrameState;
   readonly context: CesiumGraphicsContext;
   readonly camera: CesiumCamera;

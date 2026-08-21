@@ -181,3 +181,50 @@ Before any machine restart mid-campaign: refresh the dirty-state backup
 untracked files), copy the landing script and drafted messages out of the session
 scratchpad into the backup folder, and update the memory resume line to the durable
 paths. Worktree dirt survives reboots; session timers and scratchpads do not.
+
+## 11. Lessons from the first landing run (2026-08-21 evening, Batches 1108-1120)
+
+Thirteen batches landed; one scripted package did not, and the reasons generalize:
+
+- **Every instrument review must run eslint and `prettier --check`** on the deliverable,
+  not only its specs and mutations. The repository's pre-commit hook is the first
+  lint gate a worker-authored probe meets, and a review that skipped lint certified a
+  package the hook then refused. The sibling review that did run lint caught the
+  equivalent defect before landing.
+- **Specs must normalize line endings when they read source text** for anchors
+  (`.replace(/\r\n/g, "\n")`). This repository runs `autocrlf=true`, so every Windows
+  checkout is CRLF and a multi-line `\n` anchor finds nothing - a spec that is green
+  on the worker's LF files is red on the next checkout. Portability is proven by
+  running the spec on an LF and a CRLF copy.
+- **Shared files are staged per hunk, never whole**, when another held lane owns hunks
+  in the same file: `git diff -U0 <file>` → keep the wanted `@@` hunk(s) → `git apply
+  --cached --unidiff-zero <hunk-patch>`, then assert `git diff --cached -U0` shows
+  exactly those hunks before committing. Tested dry with `--check` before the window.
+- **The after-the-fact landing verifier runs the marker guard in strict mode, which is
+  grandfather-blind**, while the live commit-time guard honors the grandfather ledger.
+  A range verification can therefore report findings that pre-date the range; classify
+  each finding against the pre-range blob before recording anything (every one of
+  tonight's 65 was present verbatim before the first landed commit).
+- **Stop-on-failure in landing chains.** A batch whose commit fails must not be followed
+  by the next batch's `git add` - the failed batch's files stay staged and poison every
+  later attempt. Chain batches with an explicit failure exit, and reset the index before
+  retrying.
+- **Batch numbers are commit order.** When a scripted batch is pulled, renumber the
+  batches behind it and fix every pending doc stamp that cites the old number before
+  committing, so that "order by batch number" stays true.
+- **A swapped bundle is not refreshed by `npx gulp build`.** After an interleaved A/B
+  campaign leaves a substituted bundle in `Build/`, the incremental build reports success
+  without rewriting it - two "rebuilds" produced byte-identical output whose embedded
+  `sourcesContent` still carried pre-landing text, and the provenance gate of every
+  certification probe went STRUCTURAL. Restore with `npx gulp clean && npx gulp buildCesiumDual` - the default
+  `build` task writes no `Build/CesiumUnminified` at all and `buildRelease` emits it
+  without the `index.js.map` the provenance gate attests - then prove the served
+  identity changed, the served status is 200 (a missing artifact serves a 404 body that
+  still hashes), and the embedded sources match disk before any machine-lane run.
+- **The engine-project TypeScript check is a landing gate; the root one is not enough.**
+  `npx tsc --noEmit` at the repository root passed all day while
+  `tsc --project packages/engine/tsconfig.json` - the step `gulp build` actually runs -
+  failed on a property a landed one-liner used without declaring it on the ambient
+  `CesiumScene` type. Every build after that landing aborted at the tsc step, which
+  masqueraded as "the bundle did not refresh". Reviews and landing pre-flights run BOTH
+  checks; a fix-forward lands the missing declaration, never a history rewrite.
