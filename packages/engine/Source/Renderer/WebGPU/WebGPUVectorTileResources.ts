@@ -86,14 +86,21 @@ export interface VectorTileCpuData {
 export interface VectorTileRendererResources {
   /** The device the buffer belongs to — checked before binding (multi-context). */
   readonly device: GPUDevice;
+  /** WebGPUContext recovery epoch owning every native handle in this record. */
+  readonly resourceGeneration: number;
+  /** Whether the retained CPU bake produced a non-placeholder buffer. */
+  readonly hasVectorData: boolean;
   /** Null once destroyed. */
   buffer: GPUBuffer | null;
+  /** Exact backend-ownership check used during pre-render tile preparation. */
+  isCompatible(context: VectorTileDeviceContext): boolean;
   destroy(): void;
 }
 
-/** Minimal context shape: the packer only needs the device. */
+/** Minimal context shape: native ownership is the exact device/generation pair. */
 interface VectorTileDeviceContext {
   readonly device?: GPUDevice | null;
+  readonly resourceGeneration?: number;
 }
 
 /** `VectorTileData` with the optional backend slot this module writes. */
@@ -224,7 +231,9 @@ export function packVectorTileWords(
 
 /**
  * Realize a baked `VectorTileData` as a WebGPU storage buffer, hung off the
- * data object as `rendererResources`.
+ * data object as `rendererResources`. Realization is idempotent for one exact
+ * `(device, resourceGeneration)` pair. A recovery epoch or device change
+ * destroys the stale buffer and re-uploads the retained stage-2 CPU bake once.
  *
  * Registered on the `GLOBE_SURFACE` feature-renderer descriptor as
  * `prepareVectorTileData`, so `VectorPipeline.packPrimitiveTextures` can hand
@@ -246,26 +255,43 @@ export function prepareWebGPUVectorTileData(
   }
 
   const target = data as VectorTileDataWithResources;
-  // Re-bakes reuse the same VectorTileData object, so drop any prior buffer
-  // before installing the new one.
-  target.rendererResources?.destroy();
-  target.rendererResources = undefined;
-
-  const words = packVectorTileWords(data);
-  if (!words) {
+  const resourceGeneration = context?.resourceGeneration ?? 0;
+  const existing = target.rendererResources;
+  if (existing?.isCompatible(context)) {
     return true;
   }
 
-  const buffer = device.createBuffer({
-    label: "Globe vector tile lookup",
-    size: words.byteLength,
-    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-  });
-  device.queue.writeBuffer(buffer, 0, words);
+  // The stage-2 arrays stay on VectorTileData after the first realization.
+  // A recovered device/generation reuses that backend-neutral CPU bake here,
+  // during tile preparation, rather than returning a placeholder from the
+  // draw path or asking VectorProvider to rebuild geometry.
+  existing?.destroy();
+  target.rendererResources = undefined;
+
+  const words = packVectorTileWords(data);
+  let buffer: GPUBuffer | null = null;
+  if (words) {
+    buffer = device.createBuffer({
+      label: "Globe vector tile lookup",
+      size: words.byteLength,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+    device.queue.writeBuffer(buffer, 0, words);
+  }
 
   const resources: VectorTileRendererResources = {
     device,
+    resourceGeneration,
+    hasVectorData: words !== null,
     buffer,
+    isCompatible(candidateContext) {
+      return (
+        candidateContext?.device === resources.device &&
+        (candidateContext?.resourceGeneration ?? 0) ===
+          resources.resourceGeneration &&
+        (!resources.hasVectorData || resources.buffer !== null)
+      );
+    },
     destroy() {
       if (resources.buffer !== null) {
         resources.buffer.destroy();
@@ -282,7 +308,9 @@ export function prepareWebGPUVectorTileData(
  * Falls back to `placeholder` when the tile has no vector data, when its
  * buffer was already destroyed, or when the data was realized on a DIFFERENT
  * device (split-screen / multi-context — binding another device's buffer is a
- * validation error, not a visual glitch).
+ * validation error, not a visual glitch). Device-generation reconciliation
+ * deliberately happens earlier in `VectorProvider.updateTileData`; this draw
+ * helper never allocates or uploads.
  */
 export function resolveVectorTileBuffer(
   device: GPUDevice,

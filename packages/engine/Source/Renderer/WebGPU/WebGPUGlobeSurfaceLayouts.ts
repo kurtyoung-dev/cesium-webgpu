@@ -160,19 +160,16 @@ export function createBindGroupLayouts(host: LayoutsHost): void {
       // (`GLOBE_NON_IMAGERY_FRAGMENT_TEXTURES`), and the reduced 4-slot
       // imagery layout lands on exactly the 16-texture spec floor, so five
       // more would break default-limit adapters outright. Storage buffers draw
-      // from a separate budget (`maxStorageBuffersPerShaderStage`, spec floor
-      // 8; this is the globe layout's only one), so the texture accounting
-      // above is unchanged. Bound unconditionally — tiles with no clamped
-      // vector data get a 32-byte all-zero placeholder whose gridWidth header
-      // word is 0.
+      // from a separate budget, so the texture accounting above is unchanged.
+      // Bound unconditionally — tiles with no clamped vector data get a
+      // 32-byte all-zero placeholder whose gridWidth header word is 0.
       //
-      // This is the globe layout's only fragment-stage storage buffer. Core
-      // WebGPU guarantees 8 and `WebGPUDevicePool` defaults `featureLevel` to
-      // "core", so the default path is safe. WebGPU compatibility mode is
-      // opt-in and may report `maxStorageBuffersInFragmentStage` as low as 0
-      // on GLES-class adapters, where this layout then fails to create.
-      // Forking the layout is not the fix — the unconditional binding exists
-      // precisely to keep it single-shape.
+      // This is the globe layout's only fragment-stage storage buffer. Current
+      // WebGPU default limits guarantee 8 fragment storage buffers in core and
+      // 4 in compatibility mode; the compatibility-mode zero applies to the
+      // vertex-stage limit. Older implementations may omit the newer per-stage
+      // accessor, in which case `maxStorageBuffersPerShaderStage` is the legacy
+      // diagnostic. One binding fits every conforming profile.
       storageBuffer(11, Stage.FRAGMENT, { readOnly: true }),
     ],
   );

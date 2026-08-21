@@ -271,15 +271,30 @@ class VectorProvider {
 
     if (hasPolylines) {
       VectorPipeline.packPolylineGrid(result);
-      VectorPipeline.packPrimitiveTextures(context, result);
     }
 
     if (hasPolygons) {
       VectorPipeline.packPolygonGrid(result);
-      VectorPipeline.packPolygonTextures(context, result);
     }
 
-    VectorPipeline.packPrimitiveTextures(context, result);
+    // Both CPU lookup families must be complete before the active renderer is
+    // offered the tile. A backend claim owns the entire realization: in
+    // particular, WebGPU packs one storage buffer and must not pay for WebGL
+    // Texture objects it cannot use.
+    if (VectorPipeline.packPrimitiveTextures(context, result)) {
+      return result;
+    }
+
+    // WebGL has no GLOBE_SURFACE feature renderer, so the shared primitive
+    // tables above and each present geometry family are realized as textures
+    // exactly once.
+    if (hasPolylines) {
+      VectorPipeline.packPolylineTextures(context, result);
+    }
+
+    if (hasPolygons) {
+      VectorPipeline.packPolygonTextures(context, result);
+    }
 
     return result;
   }
@@ -308,6 +323,15 @@ class VectorProvider {
     const dirtyRectangles = this._dirtyRectangles;
     const tilingScheme = this._tilingScheme;
     if (!intersectRectangles(x, y, level, dirtyRectangles, tilingScheme)) {
+      // The stage-2 CPU bake remains valid, but backend-native resources may
+      // not: WebGPU device recovery advances an opaque resource generation.
+      // Reconcile that ownership here in the pre-render tile update, never in
+      // bind-group construction. Compatible resources short-circuit inside
+      // VectorPipeline, and WebGL has no feature hook, so the ordinary cached
+      // path performs no allocation and retains its single realization.
+      if (defined(currentData) && currentData.show) {
+        VectorPipeline.prepareRendererResources(context, currentData);
+      }
       return currentData;
     }
 

@@ -118,6 +118,10 @@ const vectorPipelinePath = path.join(
   root,
   "packages/engine/Source/Core/VectorPipeline.js",
 );
+const vectorProviderPath = path.join(
+  root,
+  "packages/engine/Source/Core/VectorProvider.js",
+);
 
 const wgsl = fs.readFileSync(wgslPath, "utf8");
 const glslCommon = fs.readFileSync(glslCommonPath, "utf8");
@@ -126,6 +130,7 @@ const layoutsTs = fs.readFileSync(layoutsPath, "utf8");
 const rendererTs = fs.readFileSync(rendererPath, "utf8");
 const featureRenderersTs = fs.readFileSync(featureRenderersPath, "utf8");
 const vectorPipelineJs = fs.readFileSync(vectorPipelinePath, "utf8");
+const vectorProviderJs = fs.readFileSync(vectorProviderPath, "utf8");
 
 enableEngineTsResolution();
 
@@ -147,6 +152,7 @@ const Cartesian2 = await engineModule("Core/Cartesian2.js");
 
 const {
   packVectorTileWords,
+  prepareWebGPUVectorTileData,
   resolveVectorTileBuffer,
   VECTOR_TILE_HEADER_WORDS,
   VECTOR_TILE_PLACEHOLDER_BYTES,
@@ -416,7 +422,7 @@ function wgslScreenFromUv(uvDx, uvDy, mutate = {}) {
  * which a CPU evaluator cannot observe.
  */
 function glslVectorPolylineRender(data, uv, screenFromUv, baseColor) {
-  const grid = data.gridCellIndices;
+  const grid = data.polylineGridCellIndices;
   const gridWidth = grid[0];
   const gridHeight = grid[1];
   const cellX = Math.min(
@@ -432,7 +438,7 @@ function glslVectorPolylineRender(data, uv, screenFromUv, baseColor) {
   const indexEnd = grid[cellIndex + 2];
   const indexStart = cellIndex === 0 ? 0 : grid[cellIndex + 1];
 
-  const segmentTextureWidth = data.segmentTextureWidth;
+  const segmentTextureWidth = data.polylineSegmentTextureWidth;
   const [primitiveTextureWidth] = nextPowerOfTwoSize(data.primitiveCount);
   const widthBytes = concatBytes(data.widths);
   const colorBytes = concatBytes(data.colors);
@@ -440,12 +446,12 @@ function glslVectorPolylineRender(data, uv, screenFromUv, baseColor) {
   let result = baseColor;
   for (let i = indexStart; i < indexEnd; i++) {
     const st = texelIndex(i, segmentTextureWidth);
-    const ax = data.segmentTexels[st * 4];
-    const ay = data.segmentTexels[st * 4 + 1];
-    const bx = data.segmentTexels[st * 4 + 2];
-    const by = data.segmentTexels[st * 4 + 3];
+    const ax = data.polylineSegmentTexels[st * 4];
+    const ay = data.polylineSegmentTexels[st * 4 + 1];
+    const bx = data.polylineSegmentTexels[st * 4 + 2];
+    const by = data.polylineSegmentTexels[st * 4 + 3];
 
-    const primitiveIndex = data.segmentPrimitiveIndicesTexels[st];
+    const primitiveIndex = data.polylineSegmentPrimitiveIndicesTexels[st];
     const pt = texelIndex(primitiveIndex, primitiveTextureWidth);
     // r8unorm read × 255 == the raw byte.
     const lineWidth = widthBytes[pt];
@@ -561,23 +567,23 @@ function wgslVectorPolylineRender(
 function buildBakedTile() {
   // Enough segments (>16) that `packPolylineGrid` builds a MULTI-CELL grid;
   // a 1x1 grid would make the cell-offset arithmetic vacuous.
-  const segments = [];
-  const segmentPrimitiveIndices = [];
+  const polylineSegments = [];
+  const polylineSegmentPrimitiveIndices = [];
   for (let i = 0; i < 40; i++) {
     const t = i / 40;
     // Alternating near-horizontal and near-vertical strokes across the tile.
     if (i % 2 === 0) {
-      segments.push([0.02, t, 0.98, t + 0.01]);
+      polylineSegments.push([0.02, t, 0.98, t + 0.01]);
     } else {
-      segments.push([t, 0.02, t + 0.01, 0.98]);
+      polylineSegments.push([t, 0.02, t + 0.01, 0.98]);
     }
-    segmentPrimitiveIndices.push(i % 3);
+    polylineSegmentPrimitiveIndices.push(i % 3);
   }
 
   const result = {
     show: true,
-    segments,
-    segmentPrimitiveIndices,
+    polylineSegments,
+    polylineSegmentPrimitiveIndices,
     primitiveCount: 3,
     // Distinct widths AND asymmetric colours: a channel-order or an
     // indirection defect has to change the answer.
@@ -749,12 +755,12 @@ test("A2 — every run the header points at is inside the packed array", () => {
   const primitiveCount = words[VECTOR_TILE_PRIMITIVE_COUNT];
 
   assert.ok(gridWidth > 1, "fixture must produce a multi-cell grid");
-  assert.equal(gridWidth, baked.gridCellIndices[0]);
-  assert.equal(gridHeight, baked.gridCellIndices[1]);
+  assert.equal(gridWidth, baked.polylineGridCellIndices[0]);
+  assert.equal(gridHeight, baked.polylineGridCellIndices[1]);
   assert.equal(primitiveCount, baked.primitiveCount);
   assert.equal(
     segmentCount,
-    baked.gridCellIndices[gridWidth * gridHeight + 1],
+    baked.polylineGridCellIndices[gridWidth * gridHeight + 1],
     "segmentCount must be the grid's final cell-end offset",
   );
 
@@ -798,9 +804,9 @@ test("A3 — degenerate bakes pack to null so the shader gets the placeholder", 
   assert.equal(packVectorTileWords({}), null);
   assert.equal(
     packVectorTileWords({
-      gridCellIndices: new Uint32Array([0, 0]),
-      segmentTexels: new Float32Array(4),
-      segmentPrimitiveIndicesTexels: new Float32Array(1),
+      polylineGridCellIndices: new Uint32Array([0, 0]),
+      polylineSegmentTexels: new Float32Array(4),
+      polylineSegmentPrimitiveIndicesTexels: new Float32Array(1),
       primitiveCount: 1,
       widths: [new Uint8Array([1])],
       colors: [new Uint8Array([1, 2, 3, 4])],
@@ -810,9 +816,9 @@ test("A3 — degenerate bakes pack to null so the shader gets the placeholder", 
   );
   assert.equal(
     packVectorTileWords({
-      gridCellIndices: new Uint32Array([1, 1, 0]),
-      segmentTexels: new Float32Array(4),
-      segmentPrimitiveIndicesTexels: new Float32Array(1),
+      polylineGridCellIndices: new Uint32Array([1, 1, 0]),
+      polylineSegmentTexels: new Float32Array(4),
+      polylineSegmentPrimitiveIndicesTexels: new Float32Array(1),
       primitiveCount: 1,
       widths: [new Uint8Array([1])],
       colors: [new Uint8Array([1, 2, 3, 4])],
@@ -1262,9 +1268,9 @@ test("E3 — neither shader inverts a singular Jacobian, and both use the same t
 function fakeWebGPUContext(calls) {
   return {
     getFeatureRenderer(key) {
-      calls.push(key);
       return {
         prepareVectorTileData(context, data) {
+          calls.push({ key, context, data });
           data.rendererResources = {
             destroyed: false,
             destroy() {
@@ -1289,19 +1295,74 @@ function fakeWebGLContext() {
   };
 }
 
-test("C1 — a backend that claims the bake suppresses the five WebGL textures", () => {
-  const baked = buildBakedTile();
-  const calls = [];
-  VectorPipeline.packPolylineTextures(fakeWebGPUContext(calls), baked);
+test("C0 — VectorProvider offers one complete CPU bake before any WebGL realization", () => {
+  for (const call of [
+    "packPolylineGrid(result)",
+    "packPolygonGrid(result)",
+    "packPrimitiveTextures(context, result)",
+    "packPolylineTextures(context, result)",
+    "packPolygonTextures(context, result)",
+  ]) {
+    assert.equal(
+      vectorProviderJs.split(call).length - 1,
+      1,
+      `${call} must occur exactly once in VectorProvider`,
+    );
+  }
 
-  assert.equal(calls.length, 1, "the bake must consult the feature renderer");
+  const polylineGrid = vectorProviderJs.indexOf("packPolylineGrid(result)");
+  const polygonGrid = vectorProviderJs.indexOf("packPolygonGrid(result)");
+  const claim = vectorProviderJs.indexOf(
+    "packPrimitiveTextures(context, result)",
+  );
+  const polylineTextures = vectorProviderJs.indexOf(
+    "packPolylineTextures(context, result)",
+  );
+  const polygonTextures = vectorProviderJs.indexOf(
+    "packPolygonTextures(context, result)",
+  );
+  assert.ok(polylineGrid < claim && polygonGrid < claim);
+  assert.ok(claim < polylineTextures && claim < polygonTextures);
+  assert.match(
+    vectorProviderJs,
+    /if \(VectorPipeline\.packPrimitiveTextures\(context, result\)\) \{\s*return result;\s*\}/,
+    "a backend claim must return before either WebGL texture family is constructed",
+  );
+});
+
+test("C1 — one backend claim suppresses every WebGL texture family", () => {
+  const baked = buildBakedTile();
+  baked.polygonRings = [
+    new Float64Array([0.2, 0.2, 0.8, 0.2, 0.8, 0.8, 0.2, 0.8]),
+  ];
+  baked.polygonRingPrimitiveIndices = [2];
+  VectorPipeline.packPolygonGrid(baked);
+  const calls = [];
+  const context = fakeWebGPUContext(calls);
+  const claimed = VectorPipeline.packPrimitiveTextures(context, baked);
+
+  assert.equal(claimed, true);
+  assert.equal(
+    calls.length,
+    1,
+    "the backend must receive the bake exactly once",
+  );
+  assert.equal(calls[0].context, context);
+  assert.equal(calls[0].data, baked);
+  assert.ok(
+    baked.polylineGridCellIndices && baked.polygonGridCellIndices,
+    "both CPU lookup families must be complete before the backend claim",
+  );
   assert.ok(baked.rendererResources, "backend resources must be installed");
   for (const slot of [
-    "segmentTexture",
+    "polylineSegmentTexture",
     "widthTexture",
     "colorTexture",
-    "segmentPrimitiveIndicesTexture",
-    "gridCellIndicesTexture",
+    "polylineSegmentPrimitiveIndicesTexture",
+    "polylineGridCellIndicesTexture",
+    "polygonEdgeTexture",
+    "polygonEdgePrimitiveIndicesTexture",
+    "polygonGridCellIndicesTexture",
   ]) {
     assert.equal(
       baked[slot],
@@ -1311,11 +1372,19 @@ test("C1 — a backend that claims the bake suppresses the five WebGL textures",
   }
 });
 
-test("C2 — with no backend renderer the WebGL texture path still runs", () => {
-  const baked = buildBakedTile();
+test("C2 — with no backend renderer the WebGL shared and polyline texture paths still run", () => {
   assert.throws(
-    () => VectorPipeline.packPolylineTextures(fakeWebGLContext(), baked),
-    "the WebGL five-Texture path must still be reached when no feature renderer claims the bake",
+    () =>
+      VectorPipeline.packPrimitiveTextures(
+        fakeWebGLContext(),
+        buildBakedTile(),
+      ),
+    "the WebGL shared primitive textures must be reached when no feature renderer claims the bake",
+  );
+  assert.throws(
+    () =>
+      VectorPipeline.packPolylineTextures(fakeWebGLContext(), buildBakedTile()),
+    "the WebGL polyline texture family must remain reachable",
   );
 });
 
@@ -1325,10 +1394,9 @@ test("M2 — a bake that ignores the backend is DETECTED", () => {
   const calls = [];
   let threw = false;
   try {
-    // Reproduce the defect by handing the real function a context whose
-    // feature renderer DECLINES — the same code path the pre-fix version took
-    // unconditionally — and assert it reaches the WebGL texture allocation.
-    VectorPipeline.packPolylineTextures(
+    // Reproduce the fallback by handing the ownership arbiter a context whose
+    // feature renderer DECLINES, and assert it reaches WebGL allocation.
+    VectorPipeline.packPrimitiveTextures(
       {
         getFeatureRenderer(key) {
           calls.push(key);
@@ -1351,7 +1419,7 @@ test("M2 — a bake that ignores the backend is DETECTED", () => {
 test("C3 — freeResources releases backend resources and clears the slot", () => {
   const baked = buildBakedTile();
   const calls = [];
-  VectorPipeline.packPolylineTextures(fakeWebGPUContext(calls), baked);
+  VectorPipeline.packPrimitiveTextures(fakeWebGPUContext(calls), baked);
   const resources = baked.rendererResources;
   VectorPipeline.freeResources(baked);
   assert.equal(resources.destroyed, true);
@@ -1394,6 +1462,174 @@ test("C4 — resolveVectorTileBuffer refuses another device's buffer and destroy
     ),
     realBuffer,
   );
+});
+
+test("C5 — cached CPU bakes realize once per exact device generation", () => {
+  const previousUsage = globalThis.GPUBufferUsage;
+  globalThis.GPUBufferUsage = { STORAGE: 1, COPY_DST: 2 };
+  try {
+    const baked = buildBakedTile();
+    const retainedGrid = baked.polylineGridCellIndices;
+    const retainedSegments = baked.polylineSegmentTexels;
+    const events = [];
+    const makeDevice = (id) => ({
+      id,
+      createBuffer(descriptor) {
+        const buffer = {
+          id: `${id}-${events.length}`,
+          destroyed: false,
+          destroy() {
+            this.destroyed = true;
+            events.push({ type: "destroy", device: id, buffer: this });
+          },
+        };
+        events.push({ type: "create", device: id, descriptor, buffer });
+        return buffer;
+      },
+      queue: {
+        writeBuffer(buffer, offset, words) {
+          events.push({
+            type: "write",
+            device: id,
+            buffer,
+            offset,
+            byteLength: words.byteLength,
+          });
+        },
+      },
+    });
+
+    const deviceA = makeDevice("A");
+    const deviceB = makeDevice("B");
+    let featureLookups = 0;
+    let backendClaims = 0;
+    const context = {
+      device: deviceA,
+      resourceGeneration: 1,
+      getFeatureRenderer() {
+        featureLookups++;
+        return {
+          prepareVectorTileData(activeContext, data) {
+            backendClaims++;
+            return prepareWebGPUVectorTileData(activeContext, data);
+          },
+        };
+      },
+    };
+
+    assert.equal(VectorPipeline.prepareRendererResources(context, baked), true);
+    const generation1 = baked.rendererResources;
+    assert.equal(VectorPipeline.prepareRendererResources(context, baked), true);
+    assert.equal(baked.rendererResources, generation1);
+    assert.equal(featureLookups, 1, "same tuple must bypass the registry");
+    assert.equal(backendClaims, 1, "same tuple must not be claimed twice");
+
+    context.resourceGeneration = 2;
+    assert.equal(VectorPipeline.prepareRendererResources(context, baked), true);
+    const generation2 = baked.rendererResources;
+    assert.notEqual(generation2, generation1);
+    assert.equal(generation1.buffer, null, "old generation must be destroyed");
+    assert.equal(generation2.resourceGeneration, 2);
+
+    context.device = deviceB;
+    assert.equal(VectorPipeline.prepareRendererResources(context, baked), true);
+    const deviceBResources = baked.rendererResources;
+    assert.equal(
+      generation2.buffer,
+      null,
+      "old device buffer must be destroyed",
+    );
+    assert.equal(deviceBResources.device, deviceB);
+    assert.equal(VectorPipeline.prepareRendererResources(context, baked), true);
+    assert.equal(featureLookups, 3);
+    assert.equal(backendClaims, 3, "one claim is allowed for each exact tuple");
+    assert.equal(events.filter((event) => event.type === "create").length, 3);
+    assert.equal(events.filter((event) => event.type === "write").length, 3);
+
+    assert.equal(baked.polylineGridCellIndices, retainedGrid);
+    assert.equal(baked.polylineSegmentTexels, retainedSegments);
+    assert.match(
+      vectorProviderJs,
+      /if \(!intersectRectangles[\s\S]{0,1200}?VectorPipeline\.prepareRendererResources\(context, currentData\);[\s\S]{0,80}?return currentData;/,
+      "device reconciliation must happen during cached tile preparation",
+    );
+    assert.doesNotMatch(
+      rendererTs,
+      /prepareWebGPUVectorTileData\(/,
+      "the draw/bind-group path must only resolve already-realized buffers",
+    );
+    VectorPipeline.freeResources(baked);
+  } finally {
+    if (previousUsage === undefined) {
+      delete globalThis.GPUBufferUsage;
+    } else {
+      globalThis.GPUBufferUsage = previousUsage;
+    }
+  }
+});
+
+test("C6 — unchanged WebGL tiles negative-cache one exact context tuple", () => {
+  const baked = buildBakedTile();
+  let featureLookups = 0;
+  const webglContext = {
+    resourceGeneration: 0,
+    getFeatureRenderer() {
+      featureLookups++;
+      return undefined;
+    },
+  };
+
+  assert.equal(
+    VectorPipeline.prepareRendererResources(webglContext, baked),
+    false,
+  );
+  assert.equal(featureLookups, 1);
+
+  for (let frame = 0; frame < 100; frame++) {
+    assert.equal(
+      VectorPipeline.prepareRendererResources(webglContext, baked),
+      false,
+    );
+  }
+  assert.equal(
+    featureLookups,
+    1,
+    "the same WebGL tuple must bypass the feature-renderer registry",
+  );
+
+  webglContext.resourceGeneration = 1;
+  assert.equal(
+    VectorPipeline.prepareRendererResources(webglContext, baked),
+    false,
+  );
+  assert.equal(
+    featureLookups,
+    2,
+    "a new native-resource generation must receive one fresh probe",
+  );
+
+  let secondContextLookups = 0;
+  const secondWebglContext = {
+    resourceGeneration: 1,
+    getFeatureRenderer() {
+      secondContextLookups++;
+      return undefined;
+    },
+  };
+  assert.equal(
+    VectorPipeline.prepareRendererResources(secondWebglContext, baked),
+    false,
+  );
+  assert.equal(secondContextLookups, 1);
+  assert.equal(
+    VectorPipeline.prepareRendererResources(secondWebglContext, baked),
+    false,
+  );
+  assert.equal(secondContextLookups, 1);
+
+  VectorPipeline.freeResources(baked);
+  assert.equal(baked.rendererResourceMissContext, undefined);
+  assert.equal(baked.rendererResourceMissGeneration, undefined);
 });
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -1497,7 +1733,7 @@ test("D4 — the composite runs after the underground tint and before the transl
 test("D5 — the bake routes through the feature-renderer registry, not an isWebGPU test", () => {
   assert.match(
     vectorPipelineJs,
-    /featureRenderer\?\.prepareVectorTileData\?\.\(context, result\)/,
+    /featureRenderer\.prepareVectorTileData\(context, result\)/,
   );
   assert.ok(
     !/isWebGPU|Renderer\/WebGPU\//.test(vectorPipelineJs),

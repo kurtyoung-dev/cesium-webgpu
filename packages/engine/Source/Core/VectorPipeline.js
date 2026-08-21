@@ -40,6 +40,15 @@ const scratchSegmentStart = new Cartesian2();
 const scratchSegmentEnd = new Cartesian2();
 
 /**
+ * Backend-owned realization of vector-tile resources.
+ *
+ * @typedef {object} VectorRendererResources
+ * @property {function(): void} destroy Releases the native resources.
+ * @property {function(Context): boolean} [isCompatible] Returns whether the
+ *   resources belong to the active backend ownership tuple.
+ */
+
+/**
  * Vector geometry intersecting a terrain tile, mapped into the tile's [0,1]^2 UV domain.
  *
  * @typedef {object} VectorTileData
@@ -67,7 +76,8 @@ const scratchSegmentEnd = new Cartesian2();
  * @property {Float32Array} [polygonEdgePrimitiveIndicesTexels] Index per polygon edge, mapping to material for the edge.
  * @property {Uint32Array} [polygonGridCellIndices] Polygon grid header [gridWidth, gridHeight, ...per-cell end offsets].
  *
- * Stage 3: Build GPU texture resources, uploaded lazily at draw time.
+ * Stage 3: Build backend-native GPU resources during pre-render tile
+ * preparation, before draw-command or bind-group construction.
  *
  * The texture slots are the WebGL realization, read by
  * `VectorCommon.glsl` via `texelFetch`. C11-213: when a backend feature
@@ -75,8 +85,15 @@ const scratchSegmentEnd = new Cartesian2();
  * `rendererResources` INSTEAD and every texture slot stays undefined — the
  * WebGPU globe reads one read-only storage buffer, because the sampled
  * textures do not fit the globe pipeline layout on default-limit adapters.
- * @property {{destroy: function(): void}} [rendererResources] Backend-owned
- *   GPU resources, released by {@link VectorPipeline.freeResources}.
+ * @property {VectorRendererResources} [rendererResources] Backend-owned
+ *   GPU resources. `isCompatible` lets the backend validate opaque native
+ *   ownership during the pre-render tile update without moving recovery into
+ *   the draw path. Released by {@link VectorPipeline.freeResources}.
+ * @property {Context} [rendererResourceMissContext] Context for the one-entry
+ *   negative preparation cache. This keeps unchanged WebGL tiles out of the
+ *   feature-renderer registry while remaining bounded and backend-neutral.
+ * @property {number} [rendererResourceMissGeneration] Native-resource
+ *   generation paired with `rendererResourceMissContext`.
  * @property {Texture} [polylineSegmentTexture] GPU texture of polylineSegmentTexels.
  * @property {Texture} [polylineSegmentPrimitiveIndicesTexture] GPU texture of primitive indices per segment.
  * @property {Texture} [widthTexture] GPU texture of primitive widths, by primitive index.
@@ -612,17 +629,16 @@ class VectorPipeline {
    * `GLOBE_SURFACE` renderer, so the lookup returns undefined and the
    * `Texture` path below — the one `VectorCommon.glsl` reads — runs
    * exactly as before.
-
+   *
    *
    * @param {Context} context
    * @param {VectorTileData} result
+   * @returns {boolean} Whether the active backend claimed the complete tile
+   *   realization. When true, callers must not construct WebGL textures.
    */
   static packPrimitiveTextures(context, result) {
-    const featureRenderer = context.getFeatureRenderer?.(
-      FeatureRendererKey.GLOBE_SURFACE,
-    );
-    if (featureRenderer?.prepareVectorTileData?.(context, result)) {
-      return;
+    if (VectorPipeline.prepareRendererResources(context, result)) {
+      return true;
     }
 
     const [primTextureWidth, primTextureHeight] = _nextPowerOfTwoSize(
@@ -662,6 +678,57 @@ class VectorPipeline {
       sampler: Sampler.NEAREST,
       flipY: false,
     });
+
+    return false;
+  }
+
+  /**
+   * Ensure an already-baked tile has resources compatible with the active
+   * backend ownership tuple. This is called during tile preparation, before
+   * draw-command or bind-group construction. The CPU grid bake stays on
+   * `result`, so device recovery can re-realize it without another provider
+   * request or any WebGL allocation.
+   *
+   * A compatible backend resource answers here without consulting the feature
+   * registry again. WebGL has no preparation hook and returns false without
+   * creating textures; its normal initial realization remains owned by
+   * {@link VectorPipeline.packPrimitiveTextures}.
+   *
+   * @param {Context} context
+   * @param {VectorTileData} result
+   * @returns {boolean} Whether a backend owns a compatible realization.
+   */
+  static prepareRendererResources(context, result) {
+    if (result.rendererResources?.isCompatible?.(context)) {
+      return true;
+    }
+
+    const resourceGeneration = context.resourceGeneration ?? 0;
+    if (
+      result.rendererResourceMissContext === context &&
+      result.rendererResourceMissGeneration === resourceGeneration
+    ) {
+      return false;
+    }
+
+    const featureRenderer = context.getFeatureRenderer?.(
+      FeatureRendererKey.GLOBE_SURFACE,
+    );
+    if (!defined(featureRenderer?.prepareVectorTileData)) {
+      // WebGL has no GLOBE_SURFACE preparation hook. Remember only this exact
+      // context/generation tuple so thousands of unchanged visible tiles do
+      // not repeat the same registry lookup every frame. A different context
+      // or a recovered resource generation is always probed independently.
+      result.rendererResourceMissContext = context;
+      result.rendererResourceMissGeneration = resourceGeneration;
+      return false;
+    }
+
+    // A real hook may legitimately decline transiently, so only absence is
+    // negative-cached. Clear an older tuple before delegating.
+    result.rendererResourceMissContext = undefined;
+    result.rendererResourceMissGeneration = undefined;
+    return featureRenderer.prepareVectorTileData(context, result) === true;
   }
 
   /**
@@ -746,6 +813,8 @@ class VectorPipeline {
     // released first; the texture handles below are undefined on that path.
     data.rendererResources?.destroy();
     data.rendererResources = undefined;
+    data.rendererResourceMissContext = undefined;
+    data.rendererResourceMissGeneration = undefined;
     data.polylineSegmentTexture?.destroy();
     data.widthTexture?.destroy();
     data.colorTexture?.destroy();

@@ -62,6 +62,15 @@ describe("Core/VectorProvider", function () {
     expect(data.widths.length).toBeGreaterThan(0);
     expect(data.colors.length).toBeGreaterThan(0);
 
+    // A WebGL realization owns the shared primitive textures and the complete
+    // polyline lookup family exactly once. WebGPU claims the CPU bake before
+    // reaching these constructors and leaves every slot undefined.
+    expect(data.widthTexture).toBeDefined();
+    expect(data.colorTexture).toBeDefined();
+    expect(data.polylineSegmentTexture).toBeDefined();
+    expect(data.polylineSegmentPrimitiveIndicesTexture).toBeDefined();
+    expect(data.polylineGridCellIndicesTexture).toBeDefined();
+
     // Grid header: [gridWidth, gridHeight, ...per-cell end offsets].
     const gridWidth = data.polylineGridCellIndices[0];
     const gridHeight = data.polylineGridCellIndices[1];

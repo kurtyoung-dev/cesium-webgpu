@@ -365,7 +365,10 @@ export interface FeatureRenderer {
    * `true` when the backend has taken ownership — `VectorPipeline` then skips
    * its WebGL five-`Texture` path entirely, including for the "nothing to
    * drape" case. WebGL registers no `GLOBE_SURFACE` renderer, so the lookup
-   * returns undefined there and the GLSL path runs unchanged.
+   * returns undefined there and the GLSL path runs unchanged. The hook may be
+   * called again during pre-render tile preparation after native ownership
+   * changes; implementations must be idempotent for their exact device and
+   * resource-generation tuple.
    */
   prepareVectorTileData?(context: unknown, data: unknown): boolean;
 

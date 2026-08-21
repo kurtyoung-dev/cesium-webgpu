@@ -391,25 +391,25 @@ describe("Renderer/WebGPU/WebGPUGlobeSurfaceLayouts", function () {
     });
 
     // Group 2 — water mask + ocean normal + globe-material payload +
-    // cloud-shadow map.
+    // cloud-shadow map + draped-vector lookup.
     // Single-shape layout: texture/sampler pairs at 0/1 and 2/3, then a
     // material UBO at 4, image texture/sampler at 5/6, heights
-    // texture/sampler at 7/8, and cloud-shadow texture/sampler at 9/10 —
-    // 11 entries total.
-    describe("group 2 — water mask + ocean normal + material + cloud shadow", function () {
+    // texture/sampler at 7/8, cloud-shadow texture/sampler at 9/10, and the
+    // fragment read-only storage buffer at 11 — 12 entries total.
+    describe("group 2 — water mask + ocean normal + material + cloud shadow + vectors", function () {
       let layout;
       beforeEach(function () {
         layout = host._bindGroupLayout2.descriptor;
       });
 
-      it("is labeled and has eleven entries", function () {
+      it("is labeled and has twelve entries", function () {
         expect(layout.label).toBe(
           "Globe water mask + ocean normal + material layout",
         );
-        expect(layout.entries.length).toBe(11);
+        expect(layout.entries.length).toBe(12);
       });
 
-      it("follows the texture/sampler + UBO + image + heights + cloud-shadow binding shape", function () {
+      it("follows the complete binding shape", function () {
         const e = layout.entries;
         // 0: water mask texture, 1: water mask sampler
         expect(e[0].binding).toBe(0);
@@ -440,6 +440,27 @@ describe("Renderer/WebGPU/WebGPUGlobeSurfaceLayouts", function () {
         expect(e[9].texture).toBeDefined();
         expect(e[10].binding).toBe(10);
         expect(e[10].sampler).toBeDefined();
+        // 11: draped-vector flat-word lookup
+        expect(e[11].binding).toBe(11);
+        expect(e[11].buffer).toBeDefined();
+        expect(e[11].buffer.type).toBe("read-only-storage");
+      });
+
+      it("uses one fragment storage slot within the compatibility floor of four", function () {
+        const fragmentStorageEntries = layout.entries.filter(
+          (entry) =>
+            entry.buffer?.type === "read-only-storage" &&
+            (entry.visibility & GPUShaderStage.FRAGMENT) !== 0,
+        );
+        const compatibilityFragmentStorageFloor = 4;
+        expect(fragmentStorageEntries.length).toBe(1);
+        expect(fragmentStorageEntries[0].binding).toBe(11);
+        expect(fragmentStorageEntries[0].visibility).toBe(
+          GPUShaderStage.FRAGMENT,
+        );
+        expect(fragmentStorageEntries.length).toBeLessThanOrEqual(
+          compatibilityFragmentStorageFloor,
+        );
       });
 
       it("marks every group-2 entry FRAGMENT-visible", function () {
