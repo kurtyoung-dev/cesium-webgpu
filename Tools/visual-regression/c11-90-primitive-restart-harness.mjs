@@ -259,7 +259,7 @@ async function loadTopology(key) {
   const origin = Cesium.Cartesian3.fromDegrees(-75.152408, 39.946975, 50.0);
   const modelMatrix = Cesium.Transforms.headingPitchRollToFixedFrame(
     origin,
-    Cesium.HeadingPitchRoll.ZERO,
+    new Cesium.HeadingPitchRoll(0.0, 0.0, 0.0),
   );
   model = viewer.scene.primitives.add(
     await Cesium.Model.fromGltfAsync({
