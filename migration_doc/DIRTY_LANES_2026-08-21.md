@@ -70,8 +70,10 @@ never a Sol dispatch.
 (+1,350, v8 schema), its spec (+2,460), untracked capture lib. **Status:** harness repair
 after the first shard's operational ERROR; no product verdict claimed. **Gates:** the S5
 fleet-contract repair (fix SOL-5 — watchdogs/browser leaks/exit semantics, a work item)
-and the `R-2026-08-18-27` charter tiering (ruled). A divergent copy may exist in the
-`cesium-webgpu-cert-s5-*` clone — reconcile before landing either side.
+and the `R-2026-08-18-27` charter tiering (ruled). **Reconciliation RESOLVED 2026-08-21:** the `cesium-webgpu-cert-s5-3cbb82885fc7`
+clone's HEAD (034c7f74d0) is an ancestor of origin/main — everything it holds already
+landed; this tree's dirty copies are strictly newer repair work and supersede it. The
+clone is retention-only until this lane lands.
 
 ## Lane J — C12-11 star-catalog certification harness
 
@@ -99,6 +101,14 @@ that ruling-audit finding **R-17** proves partially unsatisfiable (the
 **Disposition under the provisional rulings: the packet's R-17 recommendation is adopted —
 amend the clause order to target the shared function; a repair package executes it, then
 this lane lands.** Fix SOL-10 (contract re-scope) rides the same repair.
+**LANDED whole (Batches 1087 + 1100, 2026-08-21):** the R-17 repair landed as the
+lod-shader spec re-anchor (1087); the remaining four files landed together with the
+re-scoped custody hash (1100) — `preregistrationSha256` binds the ACTUAL frozen
+sign-test design (`sign-test-v1`) after an accepted worker refutation proved the ruled
+sixteen-cell ratio design does not exist in shipped source; the discrepancy is filed
+verbatim in the probe and every report for the maintainer. Suites 23/23 + 20/20 re-run
+in the landing tree. Remaining for this lane: only the 2.5-hour Edge ten-run set,
+queued behind the design ruling — no dirty files.
 
 ## Lane M — C13-41 eclipse cloud-response gate
 
