@@ -240,10 +240,21 @@ Execution order top-to-bottom; sizes are estimates.
   fix the `nightIntensity` 0.0 sentinel collision (§2 bug 1): carry the enable
   explicitly, wire or drop the write-only `tileProvider.enableNightLights`, make
   C11-159 actually flippable; audit the sibling ocean sentinels in the same slice.
-- **CLT-B3 (S)** — Contain `computeTerminatorGlow` (§2 bug 3): port to GLSL as
-  a real lockstep pair or gate behind a default-off toggle. Check with the C12
-  owner whether it lands via C12 exit-gate-2's audit instead — do not
-  double-schedule.
+- **CLT-B3 (S)** — **IMPLEMENTATION COMPLETE 2026-08-09; LANDED 2026-08-12 in
+  `9c043987a5` ("Land C13-41 eclipse controls and glow parity", between Batches
+  1027 and 1033). REMAINING: the terminator-specific both-backend browser
+  acceptance.** `computeTerminatorGlow` is now
+  a real GLSL/WGSL lockstep pair. `Globe.terminatorGlowStrength` defaults to 0
+  (natural/parity identity), while 1 reproduces the former WebGPU band on both
+  backends. Both use the analytic geocentric normal, scene-light direction and
+  absolute eclipse attenuation once; zero branches before `exp`. Contracts
+  59/59 and the controlled generic-bloom probe pass. This terrain term cannot
+  account for a glow in sky-only pixels. The matching sky-shell mechanism is
+  owned by C12-31: the default `SkyAtmosphere` `NONE` branch now uses the
+  astronomical Sun rather than a fake per-fragment overhead Sun, while explicit
+  `LEGACY_OVERHEAD` preserves the old mode. Its focused 2026-08-09 offline
+  WebGL/WebGPU aureole rerun passes with zero night glow, but the full C12
+  acceptance sweep and exact reported-camera reproduction remain open.
 - **CLT-B4 (M)** — ✅ **COMPLETE. Implementation DONE at Batch 927 (`3d1c397af4`,
   CO-18); ACCEPTANCE MET at terminator run 3 — Batch 929 (`cd7cc079c2`), on tip
   `5aec156b93`: every pre-registered number hit and the day/night ramp divergence
@@ -264,7 +275,7 @@ Execution order top-to-bottom; sizes are estimates.
   `WebGPUGlobeLightingFade.ts`, TileUniforms float 463). The false "Matches the
   GLSL path" comment is gone. Law written into `SHADER_PAIRS_LOCKSTEP.md` as
   the DAY/NIGHT RAMP LAW pair row; new guard
-  `Tools/visual-regression/globe-daynight-ramp-law.spec.mjs` (31 tests).
+  `Tools/visual-regression/globe-daynight-ramp-law.spec.mjs` (34 tests).
   **NOT DELIVERED, and NOT a silent drop:** finding (c)'s vertex-normal gate —
   WebGL emits `ENABLE_VERTEX_LIGHTING` _instead of_ `ENABLE_DAYNIGHT_SHADING`
   on vertex-normal terrain, so its day/night alpha does not exist there at all,

@@ -18183,6 +18183,53 @@ Step 2 is what makes B647 finally execute for the synthetic and custom producers
 
 **Pinned.** `gsplat-harness.spec.mjs` 148 -> 156. `computeLocalSplatBoundingSphere` is EXTRACTED FROM THE REAL SOURCE AND EXECUTED over both record layouts (legacy 16-f32 with the position split across the RTE high/low lanes so the recombination is proven, and packed 8-u32 read as the same bytes), on an asymmetric flat cloud that a plain average would fail; a second case with no point at an AABB corner separates the exact radius from half the diagonal; empty, short and all-NaN inputs must return null rather than a sphere that would poison the scene near/far accumulators. Four mutants rejected: the fallback removed, the sphere left in model space, the legacy RTE low word dropped, and the O(n) scan hoisted into the per-frame path. A fifth rule pins the OTHER half of the mechanism - the per-frustum depth-clear contract and `View.js`'s worst-case-span comment - so a future reader cannot inherit the wrong reason for this code.
 
+---
+
+## 2026-08-09 high-priority post-audit correction pass (local, uncommitted)
+
+**Status:** source implementation and integrated verification are green; nothing
+is staged, committed, or claimed as landed. Campaign terminal gates named below
+remain authoritative.
+
+> **[Doc-sync landing stamp, 2026-08-20.]** The backend-ownership items below have
+> since landed: the pipeline-cache normalized effective-state keying at Batch 1021
+> (`aaf9cbe00f`, 2026-08-11), the `WebGPUModelRenderer` descriptor typing with the
+> C11-196/C11-202 landing unit at Batch 1072 (`9cf9b0019d`, 2026-08-20), and the
+> vector-tile ownership/recovery correction at Batch 1073 (`59472891b9`,
+> 2026-08-20). The natural-lighting subsection below is likewise landed work (see
+> its own stamp). The cloud and voxel/point-cloud subsections of the original
+> local pass are not part of this landed sync; they land with their owning lanes.
+
+### Backend ownership, caches, and recovery
+
+- A Batch-958 merge error made `VectorProvider` call the shared primitive
+  packer twice and never create the WebGL polyline texture family. The corrected
+  architecture completes both CPU grids, offers the complete descriptor once,
+  and lets one backend claim it. WebGPU creates one native storage buffer and
+  zero WebGL `Texture`s; WebGL creates each present family plus shared tables
+  once. The retained stage-2 CPU grids are repacked and re-realized once per exact
+  `(GPUDevice, resourceGeneration)` during pre-render preparation, never during
+  draw/bind-group resolution. A bounded one-tuple negative cache also keeps
+  unchanged WebGL tiles out of the feature-renderer registry after the first
+  miss. Vector ownership/recovery contracts: **31/31**. *[Landed Batch 1073
+  (`59472891b9`), 2026-08-20; no browser lane claimed at landing — the C11-213 row
+  keeps gate F and its compatibility-mode acceptance open.]*
+- `WebGPURenderPipelineCache` now keys and applies one normalized effective
+  state: exact per-target blend equations/write masks, explicit-target
+  precedence, null MRT preservation, input immutability, and correct
+  `depthTest:false` behavior when stencil does or does not require an
+  attachment, while modifier-only depth variants remain depthless.
+  Numbered-pipeline sentinels: **63/63**; the exact three-file
+  `globe-pipeline-readiness` + `globe-use-log-depth` +
+  `pipeline-key-aliasing` union: **131/131**. *[Landed Batch 1021
+  (`aaf9cbe00f`), 2026-08-11.]*
+- `WebGPUModelRenderer` no longer duplicates property texture/table layouts as
+  `unknown`; its descriptor types are derived from the resource helpers'
+  parameter types. This changes no runtime bytes or allocation behavior and
+  restores the package TypeScript gate. *[Landed Batch 1072 (`9cf9b0019d`),
+  2026-08-20 — these cast hunks were interleaved with the C11-196/C11-202 landing
+  unit and landed with it; the Batch 1070 build-ts landing note records the
+  deliberate split.]*
 ### C11-60/C11-194 IBL generation lifetime — Batch 1022
 
 - IBL retains one 40-float SH buffer per live generation. Stable frames perform
@@ -18193,6 +18240,503 @@ Step 2 is what makes B647 finally execute for the synthetic and custom producers
   lost-device `destroy()` throws, while decoded KTX2 CPU data is retained for
   re-upload. Focused Edge recovery: **3/3** (17,876 skipped), including injected
   destroy failure.
+
+### Natural lighting and the reported sky glow
+
+- The formerly WebGPU-only terrain terminator band is an explicit paired
+  appearance control. `Globe.terminatorGlowStrength=0` is the default natural
+  identity; value 1 preserves the old look on both renderers. GLSL and WGSL use
+  the same analytic normal, scene-light direction, Gaussian law, and absolute
+  eclipse factor exactly once; zero branches before `exp`. Contracts: **59/59**.
+- That terrain term cannot produce the screenshot's sky-only patch. The
+  matching mechanism is owned by C12-31: the legacy default atmosphere
+  substituted a per-fragment fake overhead Sun, placing the `g=0.9` forward Mie
+  peak near the view/zenith direction. The default `SkyAtmosphere` `NONE` branch
+  now uses the astronomical Sun on both backends and preserves the old behavior
+  only as explicit `LEGACY_OVERHEAD`; `SCENE_LIGHT` remains intentionally
+  separate. The focused 2026-08-09 offline aureole probe passes correct Sun
+  tracking, zero night mean/peak, zero errors, and **65/65** related contracts,
+  while the full C12 acceptance sweep and exact reported-camera reproduction
+  remain open.
+  Generic bloom correctly remains radiance-driven; solar halo/bloom/lens-flare/
+  god-ray paths are the Sun-anchored effects.
+  *[Landing stamp, 2026-08-20: the terminator control landed 2026-08-12 in
+  `9c043987a5` (CLT-B3, "Land C13-41 eclipse controls and glow parity"), and the
+  C12-31 `SkyAtmosphere` astronomical-Sun default with explicit `LEGACY_OVERHEAD`
+  is in-tree at HEAD. The stated remainders stay open: the full C12 acceptance
+  sweep, the exact reported-camera reproduction, and CLT-B3's terminator-specific
+  both-backend browser acceptance.]*
+
+## C12-37 — Moon/globe physical-depth ordering (2026-08-10; LANDED 2026-08-12)
+
+> **Status-label correction, 2026-08-14 (fix SOL-11 of
+> [SOL_WEEK_AUDIT_2026-08-14.md](SOL_WEEK_AUDIT_2026-08-14.md)).** This entry's heading
+> read `(2026-08-10, local/uncommitted)` and its status line read
+> `JASMINE/LANDING OWED — NOT COMPLETE`. **Both are stale.** The 15-path product/tool
+> packet landed as **`6d4a2376fc`** (2026-08-12 21:00) and the row was closed by
+> **`4d43ee6015`** (2026-08-12 22:31); `QUEUE_2026-07-19_CAMPAIGN12.md` is the status
+> authority and records C12-37 as COMPLETE / EDGE VERIFIED. The original wording is
+> preserved below because the mechanism narrative it introduces is still accurate. Two
+> riders carried forward: the C12-37 run ledger omitted two of its three FAILs (audit
+> finding S8 — the two paragraphs are now in the C12 queue row), and audit finding S12
+> notes the physical-Moon route bypasses snapshot freeze and publishes stale debug
+> statistics, so `CesiumDebug.snapshot()` can report uniforms the executed draw did not
+> use. Fix SOL-6 owns S12.
+
+**Status: LOCAL IMPLEMENTATION + BROWSER GATE GREEN; JASMINE/LANDING OWED —
+NOT COMPLETE.** *(Original wording, superseded by the correction above.)* The exact
+maintainer screenshot state remains
+`STRUCTURAL / REPORTED-REPRO-INVALID`: current-source f64 preflight places the
+Moon behind the recorded camera. It is retained as the negative control; the
+browser gate uses deterministic true-ephemeris Moon-near and Earth-near overlap
+fixtures.
+
+### Source attribution and architecture
+
+Both backends had implemented the Moon as environment-only background. WebGL
+disabled its depth test and drew it before the globe/frustum loop; WebGPU
+disabled depth writes, forced far-plane depth, and encoded it as always behind
+scene geometry. The local fix keeps that ordinary Earth-near route
+byte-identical. A backend-neutral f64, hysteretic distance-demand selects one
+bounded RTE physical Moon command only when the Moon can precede Earth. That
+command uses `Pass.OPAQUE`, canonical current-frustum log depth, normal frustum
+binning, and the published packed globe depth needed after `clearGlobeDepth`;
+it is excluded from the Earth-centric octree and conservatively from Hi-Z.
+Relevant implementation lives in `Scene/Moon.js`, `Scene/EllipsoidPrimitive.js`,
+`Scene/Scene.js`, `Scene/SceneOctree.js`,
+`Renderer/WebGPU/WebGPUEnvironmentRenderer.js`,
+`Renderer/WebGPU/WebGPUSceneRenderer.ts`, `Shaders/EllipsoidFS.glsl`, and
+`Shaders/WebGPU/Environment/Moon.wgsl`; focused Node/Jasmine contracts and
+`probe-moon-globe-depth-occlusion.mjs` accompany it.
+
+### First red and corrected browser result
+
+The first fresh derived run was correctly RED. WebGL's Moon-near HDR lanes had
+mismatch/halo p95 **149/184** despite near-perfect winner fractions. This was a
+real source defect: the physical Moon alone received HDR derivation while the
+legacy environment Moon never does, and the intended skip marker disappeared
+because `DrawCommand.shallowClone` did not copy `_moonPhysicalDepthRoute` to the
+log-depth clone. The source now propagates that marker before recursive HDR
+derivation. WebGPU initially reported TAA reset count **0**; that was a probe
+defect because the effect is lazy. The corrected probe establishes the effect
+and baseline before counting route flips.
+
+The corrected fresh run exits **0** with `failures=[]`. WebGL and WebGPU each
+pass all **10** overlap lanes with minimum winner fraction **1.0**, maximum
+winner mismatch/halo p95 **0**, and zero console errors. The forced inside-Moon
+lane reports `activeFrusta=4` and `physicalExec=3` on both backends. WebGL HDR
+p95 is **0** with exact physical/legacy color continuity. WebGPU reports
+`taaEffectAvailable=true` and `taaResetCount=2`; WebGL has no TAA effect by
+design.
+
+### Open gates and debt boundaries
+
+The Moon Jasmine suites and landing remain owed. The old near-omitting
+`Moon.wgsl` log-depth exception remains valid only for the legacy far-plane
+environment route; the conditional physical route uses canonical per-frustum
+log depth. C12-37 caches its physical command but does not close
+`S6-PERF-MOON-DIRECT-RETURN-RETAINED-RESOURCES`: the ordinary WebGPU
+environment route still mutates a scratch command list and creates its legacy
+command per visible frame. Nor does it close
+`S6-PERF-SUN-MOON-BOUNDING-VOLUMES`: only the conditional physical Moon gains a
+real bound; the ordinary environment Moon and WebGPU Sun remain unbounded.
+
+## C11-140 — timestamp accounting adapter certification (2026-08-10, local/uncommitted)
+
+**Status: LOCAL MACHINE-CERTIFIED; PROBE FIX + GUARD + ARTIFACT LANDING OWED —
+NOT COMPLETE.** The accounting/union fold and bounded drain remain the landed
+Batch-903 core. This run certifies that core on the current local probe, but the
+probe correction, its non-regression assertion, and the resulting artifact are
+not yet durable repository evidence.
+
+> **[Landed Batch 1074 (`d36a835b82`), 2026-08-20.]** The repaired probe and the
+> banked 2026-08-10 certification artifact are now repository evidence (the 13/13
+> strengthened guard is also in-tree at HEAD), and the owed route rerun against
+> the fresh bundle ran tonight in the machine lane: exit 0 with clean gates. The
+> queue row remains the completion authority for closing C11-140.
+
+### Bootstrap defect caught before certification
+
+The first real invocation failed deterministically before browser launch:
+module-local `const URL` shadowed Node's global `URL`, so
+`new URL(URL).origin` referenced the lexical binding rather than the
+constructor. The probe now names the string `VIEWER_URL`; the focused spec pins
+both `const VIEWER_URL` and `new URL(VIEWER_URL).origin` and rejects a future
+`const URL`. `node --check Tools/visual-regression/probe-gpu-timestamp-profiler.mjs`
+is green, and
+`node --test Tools/visual-regression/gpu-timestamp-unique-sample-accounting.spec.mjs`
+passes **13/13**.
+
+### Real Edge/WebGPU result
+
+The repaired Node/Playwright Edge certification exits **0**. Artifact
+`Tools/visual-regression/gpu-timestamp-accounting-certification.json`
+(`capturedAt=2026-08-10T16:36:06.068Z`) reports `certified=true`, WebGPU backend,
+and `featureAvailable=true` for `timestamp-query`. It flies the required bounded
+moving-altitude arc for **5 repetitions x 60 rendered frames**. Every repetition
+has `sampleLedgerBalanced=true`, `coverageBalanced=true`, and
+`unaccountedSampleCount=0`; failed, lost, empty, and pending counts are zero.
+Rep 1 truthfully records 58 resolved samples plus 2 readback skips; reps 2–5
+resolve all 60. Every bounded tail drain reports `drained=1`, `undrained=0`,
+`abandoned=0`, `timedOut=false`. `failures`, `structuralReasons`, `pageErrors`,
+`consoleErrors`, and `externalRequests` are empty.
+
+The machine gate is therefore genuinely green, but Campaign 11 doctrine still
+requires the probe fix, strengthened guard, and certification artifact to land
+before `C11-140` can be COMPLETE or its GPU-lane numbers can be cited as durable
+campaign evidence.
+
+## C11-205 — lifecycle gate and fixed-frame phase diagnosis (2026-08-10, local/uncommitted)
+
+**Status: PARTIAL / MEASUREMENT BLOCKER.** The focused lifecycle browser gate is
+green, but neither the API-attribution pair nor the causal pair is certified.
+The local change in this slice corrects the measurement harness; it is not an
+engine, traversal, SSE, request-policy, or renderer-parity fix.
+
+> **[Landed Batch 1032 (`be0683c60d`), 2026-08-12.]** The harness corrections
+> described here (activation index, prime-admission policy) landed with the shared
+> resident owner-attribution Tools packet — see the Batch 1032 entry below. The row
+> remains NOT COMPLETE pending performance remediation and row-close
+> reconciliation.
+
+### Lifecycle-v2 gate: PASS
+
+The real `probe-c11-205-lifecycle-v2.mjs` lane passes WebGL and WebGPU. Both
+backends produce request-ledger signature `1bf0f7c3-b152437e`, two content
+slots/two models, one ready tile, two requests with zero open, and stability
+count 12. Versioned state-packet mutation and dynamic per-tile propagation are
+green, with no page, console, device, or lifecycle errors. This discharges the
+focused fixture/observer gate only.
+
+### Full-r6 attribution: honest RED, then harness attribution
+
+The first external run lasted roughly 20 minutes but was incomplete and wrote
+no artifact; it is not evidence. The final valid run wrote
+`Tools/visual-regression/output/performance/c11-205-attribution-2026-08-10-rerun.json`
+(**12 runs, 167,908,005 bytes**) and honestly exited **1**. All 12 runs reported
+measurement camera progress `[1/599 … 1, 1]` versus replay `[0 … 1]`, leaving
+**0/6 comparable pairs**.
+
+This is a deterministic harness activation-index defect present in both the
+resident-convergence observer and measured window. Progress zero was assigned
+before the action loop but not rendered; initializing `cameraTrackFrameIndex`
+to 1 therefore omitted zero and duplicated the clamped endpoint. Both sites
+now initialize at 0. The strict fixed-frame comparator remains unchanged.
+`node --check Tools/visual-regression/run-performance-campaign.mjs` is green,
+and the offline `performance-workloads.spec.mjs` fleet passes **56/56**, with a
+negative control for the old phase-shifted sequence.
+
+Focused discriminator
+`Tools/visual-regression/output/performance/c11-205-phase-discriminator-webgl.json`
+uses one renderer, one repetition, and 60 frames. Its sole `run.result` is
+`pass`; `fixedFrameProgress.identical=true`, `firstDivergenceIndex=null`,
+maximum absolute difference is **0**, and both progress endpoints are exact.
+The artifact's overall campaign result/exit remains 1 by design because it
+contains no paired certification lane; it must not be presented as a WebGL vs
+WebGPU pass.
+
+### Prime-admission attribution: paired discriminator PASS
+
+The phase-blocked artifact's stable WebGL 15-request/signature
+`27b1e7d0-dd48cecb` versus WebGPU 12-request/signature
+`268fe338-d3839698` split is now source-attributed to the harness, not engine
+traversal. Cesium's moving-request cull and default `foveatedTimeDelay=0.2`
+consult `camera.timeSinceMoved`, a wall-clock quantity. `tilesLoaded` does not
+count requests suppressed before admission, so WebGL's longer route-prime dwell
+admitted three peripheral siblings that the faster leg did not request.
+
+The harness now changes admission only during the **untimed resident route
+prime**: snapshot every tileset's original values, set `foveatedTimeDelay=0`
+and `cullRequestsWhileMoving=false` inside `try`, then restore them in `finally`
+before convergence and measurement. Policy scope, original values, and
+restoration are emitted into the artifact. No measured feature, traversal, SSE,
+selection, rendering, or comparator changed. The strict resident and identity
+gates remain intact. `performance-workloads.spec.mjs` passes **57/57**, and the
+runner's Node syntax check is green.
+
+Paired r1/60 API artifact
+`Tools/visual-regression/output/performance/c11-205-prime-admission-discriminator-pair.json`
+has `run.result=pass` for WebGL and WebGPU. Both fixed-frame arrays are
+identical with maximum difference 0. Both report prime-only policy `0/false`,
+`restoredBeforeConvergence=true`, and four original tileset policies of
+`0.2/true`. The pair is valid attribution-only with `reasons=[]`; workload
+fingerprint and all eight segment signatures match exactly. Each lifecycle
+ledger has 20 requests, zero open, signature `aa38af59-4b01a371`, exact
+chronology and byte outcomes, and the frame comparison records zero selected or
+ready mismatch frames.
+
+The reduced process exits 1 solely because r1/API is noncertifying; neither run
+nor its pair failed. This proved the local harness correction and closed the
+interim request-split attribution without making a performance claim.
+
+### Full corrected r6 API attribution: PASS
+
+`Tools/visual-regression/output/performance/c11-205-attribution-phase-prime-fixed-2026-08-10.json`
+is **171,308,539 bytes**, generated `2026-08-10T17:43:59.849Z`, and exits **0**.
+All **12/12** runs pass with `structural=false`, `failures=[]`, and quality
+correctly labeled `attribution-only`. The pair summary is valid/status
+`attribution-only` with `reasons=[]`: **6/6 valid pairs**, three in each order,
+and no ready-set exclusions.
+
+Every pair has an exact workload fingerprint, all eight segment signatures,
+and ready identity. Each backend's request ledger contains 20 requests with
+signature `aa38af59-4b01a371`; chronology matches, mismatch count is zero, and
+byte outcomes are exact: transfer **20,127**, encoded **56,508**, decoded
+**193,856**. Selected- and ready-mismatch frames are both zero. The WebGL and
+WebGPU six-run aggregates are stable with `reasons=[]`.
+
+This is the required proof that the instrumented legs perform equivalent work
+and hold equivalent ready/request identity. It is **not causal timing
+certification**, because API instrumentation is intentionally attribution-only;
+the causal result is recorded separately below.
+
+### Separate non-instrumented causal r6: PASS, WebGPU deficit valid
+
+`Tools/visual-regression/output/performance/c11-205-causal-phase-prime-fixed-2026-08-10.json`
+is **7,070,900 bytes**, generated `2026-08-10T18:05:31.888Z`, and exits **0**.
+The protocol records `apiInstrumentation=false` and GPU timestamps disabled
+across six counterbalanced 600-frame pairs. All **12/12** runs are clean PASS,
+non-structural, failure-free, measurement-valid, and aggregation-eligible, with
+zero page or device errors. The pair summary is valid/status `certified`,
+`certificationEligible=true`, and `reasons=[]`: **6/6 eligible pairs**, three in
+each order, no ready-set exclusions, exact workload fingerprint/all eight
+segments/ready identity, and no outcome differences. Both six-run aggregates
+are stable with `reasons=[]`.
+
+The valid measurements show a material WebGPU deficit:
+
+- CPU-p95 across-run median: WebGL **4.6499999985 ms** (4.4–7.6), WebGPU
+  **9.2024999993 ms** (8.305–10.0).
+- Wall-p99 across-run median: WebGL **20.3025 ms** (19.702–21.302), WebGPU
+  **23.302 ms** (20.605–24.802).
+- Navigation-to-stable median: WebGL **48,116.65 ms**, WebGPU **52,099.36 ms**.
+
+There are no GPU timing samples (`validGpuRunCount=0`), so these data establish
+CPU/wall and stability latency only; they cannot identify a GPU bottleneck.
+C11-205's local lifecycle/identity/causal measurement gates are green. It
+remains **NOT COMPLETE** until the harness/evidence changes land, while the
+slower WebGPU result moves to C11-168/root-cause optimization. Preserve every
+feature and do not infer or apply a speculative GPU fix from this artifact.
+
+## C11-169 — exact whole-Scene CPU phase attribution (2026-08-11, local/uncommitted)
+
+**Status: LOCAL IMPLEMENTATION + FOCUSED EDGE + DIAGNOSTIC BROWSER GREEN; UNLANDED / NOT COMPLETE / NO FPS CLAIM.**
+
+> **[Landed 2026-08-14 in `c404c3de04` ("Land whole-scene CPU accounting").]** The
+> accounting source described here is in-tree; the resident owner-attribution Tools
+> packet had already landed at Batch 1032 (`be0683c60d`). Evidence-led remediation
+> and the separate uninstrumented causal confirmation remain open, so the row stays
+> NOT COMPLETE.
+
+### Instrument boundary and mutually exclusive ledger
+
+`WebGPUCpuPassProfiler` retains the legacy named-pass map and exact normal-Scene record, and now adds a fixed 11-key coarse ledger: `sceneUpdate`, `frameState`, `contextBegin`, `sceneEnvironmentUpdate`, `visibilityCommandPrep`, `primitiveTraversal`, `computeShadows`, `rendererOverhead`, `frameFinalize`, `contextEndSubmit`, and `afterRenderCreditTrace`. A named `beginPass` closes the active coarse interval and its matching `endPass` resumes that phase at the same timestamp. Repeated phase visits accumulate, including WebVR, multi-frustum, and wrapped 2D continuation work, without double counting named passes.
+
+```text
+totalMs + overlapMs = profiledPassMs + unaccountedMs
+totalMs + attributionOverlapMs = profiledPassMs + phaseTotalMs + unattributedMs
+unaccountedMs + attributionOverlapMs = phaseTotalMs + unattributedMs + overlapMs
+```
+
+The wrapper measures the unchanged `Scene.render` body through `postRender`, credit-display completion, and performance tracing. Renderer replacement, profiler disable, error, mismatched marks, or same-Scene recursive render cancels the outer token; different Scenes remain independent. Suppressed requestRender publishes nothing and standalone pick cannot overwrite the normal record. Disabled mode reads no accounting clock and allocates/mutates no Map or record ledger; marker sites retain only their inexpensive branch/property-call path. Exact enabled publication uses the same start/end samples for the wrapper and profiler, and structural invalidity fails closed.
+
+### Focused evidence and retained non-product reds
+
+Pure Node policy/integration coverage is **31/31**. Package TypeScript is clean and the integrated build passes in **53 s**. Focused Edge/Karma `WebGPUCpuPassProfiler` is **26/26** with **18,203 skipped**; focused `ViewportExecutor` is **2/2** with **18,227 skipped**.
+
+Two earlier Edge attempts remain explicit. A combined substring-filter invocation selected **0 tests** and is a harness-selection red, not engine evidence. The first separate Viewport run executed two tests and failed one because the extracted helper fixture did not supply the new frame-local renderer pin; that was a real test-helper compatibility defect. The helper was corrected to model the production frame state, and the unchanged behavior assertion then passed 2/2. Neither red was hidden by a filter relaxation.
+
+### Preserved browser first red: wrong population law
+
+The write-once first-red artifact is `Tools/visual-regression/output/performance/c11-169-whole-frame-phase-attribution.first-red.json`, `runId=5e013ea8-648c-49f3-8ac2-f3a5a3ee715d`, SHA-256 `2219C3F1EE85BE33802A8084421E32C8DE7C84AB054D94353A5605815741D176`. Route, all four phase discriminators, hit counts, accounting identities, topology/isolation negatives, and every error lane were green. Its only failures were named-pass-positive occupancy on two 48-frame paired controls: PVS **43/48 = 0.8958** and after-render **40/48 = 0.8333** against a 0.9 bar.
+
+That 90% rule belongs to the 180-frame moving population. The repeated paired controls can legitimately time every sub-0.1 ms named pass within one browser clock quantum; their all-zero named maps still carried exact nonzero coarse time and valid identities. Forcing more work would contaminate the four orthogonal controls. The repair therefore keeps the moving-route 0.9 gate, sets only paired-control accounting occupancy to zero, and adds direct fail-closed non-vacuity: named buckets must exist and both baseline and injected populations must contain positive named-pass frames. Baseline-only, injected-only, and all-zero mutants prove the new gate bites.
+
+### Final diagnostic browser artifact
+
+`Tools/visual-regression/output/performance/c11-169-whole-frame-phase-attribution.json` has `schemaVersion=4`, `runId=e07afdd3-67b6-41ab-aa09-a62ece40da6e`, `generatedAt=2026-08-11T09:28:44.566Z`, and SHA-256 `A5A2B43CF606CFF11DF0EDC56C352556633113DEB77B43083CF659A613DA9839`. It is `PASS`, exit 0, with `failures=[]`, all **14 serialized `.pass` booleans** true, one armed WebGPU device, and empty console/page/local-request/GPU/device-loss/fatal lanes. The browser artifact has no fixed 31-check array; **31/31 refers only to Node**.
+
+- Moving route: **180/180** exact unique Scene samples, all **8/8** segments, progress 0→1, maximum two frustums, and all 11 phases positive. Median total/named/coarse CPU is **4.8/0.3/4.5 ms**; p95 is **13.5/0.7/13.2 ms**. Additive mean is **6.7506 = 0.3144 + 6.4361 ms**, or 4.66% named / 95.34% coarse. Every record has exact zero unattributed time, pass overlap, attribution overlap, and residual across all three equations and both bucket sums.
+- Phase shares by additive mean: `primitiveTraversal` is **45.72% of total** / 47.96% of coarse, median/p95 **1.5/8.9 ms**. `rendererOverhead` is 12.33% of total; `afterRenderCreditTrace`, `frameFinalize`, and `sceneEnvironmentUpdate` are 8.52%, 8.29%, and 7.88%. The long-tail after-render median/p95 is 0.1/3.2 ms.
+- Four exact controls: each has 24 pairs, progress 0→1, seam/spin hits **48/24**, and per-pair baseline/injected hit deltas 1/0 and 1/1. Primitive/PVS/renderer/after-render target medians are **7.8/8.0/8.1/8.0 ms** for an 8 ms injection; total medians are 7.5/7.9/8.1/8.1 ms; named-pass medians are all 0; summed off-target phase medians are −0.2/0.0/+0.3/+0.2 ms; unattributed medians are 0. Positive named baseline/injected counts are 21/21, 21/20, 23/24, and 22/21.
+- Negatives: suppression reaches exact quiescence after 9 drains / 162.2 ms, three zero-foreground states, and three preflights; the scored call changes normal/legacy/Scene counts by 0/0/0. Four frustums produce one normal sample; the wrapped 2D two-execute path produces one; standalone pick produces legacy `+1`, normal `+0`, and preserves the normal record/window.
+
+### First-green nested `primitiveTraversal` breakdown
+
+`Tools/visual-regression/output/performance/c11-169-primitive-traversal-breakdown.json` has `schemaVersion=1`, `runId=e60f18d2-fbc1-48ba-b499-4806481bf20f`, `generatedAt=2026-08-11T10:22:11.412Z`, and SHA-256 `8C7F14B614C467C5686619731426062C7B435D3F4545BC6B9481D39D1373FDB0`. It is `PASS`, exit 0, with empty failure and console/page/local-request/GPU/device/render error lanes. This was the probe's first browser invocation, so its write-once first-red path is physically absent. Offline policy is **17/17**, the combined Node matrix is **48/48**, static gates are green, and independent review reports P0=0/P1=0.
+
+- Route accounting is **120/120** unique Scene frames over **8/8** segments, with named-profiler work in **118/120** frames. Total median/mean/p95 is **9.0/13.5175/55.8 ms**; `primitiveTraversal` is **2.3/4.6358/8.4 ms**.
+- Nested mean attribution is `globeRender=4.5692 ms`, `groundPrimitiveUpdate=0.0067 ms`, `ordinaryPrimitiveUpdate=0.0008 ms`, and primitive residual `=0.0592 ms`. Thus globe rendering owns **98.56% of the mean primitive phase** for this exact capture. `dynamicEnvironmentDrain` is **0.0067 ms** mean and remains correctly owned by `computeShadows`, outside the primitive equation.
+- Each of four independent controls uses 12 baseline/injected pairs and an 8 ms spin, with exact **24/12** seam/spin hits. Off-target medians are bounded at **0.3 ms** across coarse phases and **0.1 ms** across nested details.
+
+### Scope boundary and next pivot
+
+This capture did not reach residency: `globeTilesLoaded=false` and `pendingForegroundCount=3` after prime. It rendered only the default local Natural Earth II globe and loaded no explicit model or tileset asset. The result is therefore a streaming-state default-globe diagnostic; it cannot be transferred to C11-168, the resident C11-205 San Francisco workload, or an optimization/FPS/causal conclusion. Historical globe-only cross-backend measurement was already near parity. Keep this run as the default-globe control and move the same phase/sub-phase attribution to the resident C11-205 San Francisco route before choosing any performance fix.
+
+### Honest interpretation and next boundary
+
+This is synchronous, instrumented CPU attribution only. Asynchronous GPU execution is excluded, absolute timing is noncausal, and no FPS or speedup percentage is earned. It establishes a truthful coarse owner for the formerly unaccounted interval and a first nested owner split for the streaming default globe; it does not establish why the resident workload is expensive or that reducing globe work will improve the uninstrumented workload. Mechanical landing, resident San Francisco/C11-205 phase attribution, any evidence-led repair, and a separate uninstrumented causal measurement remain required before C11-169 or C11-168 can close.
+
+## C11-209 — one effects-placeholder initialization submission (2026-08-11, landed Batch 1026)
+
+**Status: COMPLETE — IMPLEMENTED / VERIFIED / LANDED Batch 1026; DIAGNOSTIC STARTUP SHAPE ONLY / NO TIMING CLAIM.**
+
+`WebGPUEffectsBindGroup.getPlaceholderEffects` previously created and submitted one command buffer for base depth, four more for CSM layers, and six more for cube faces. The local change creates one labeled encoder, records those same **11 distinct depth-only render passes**, finishes once, and submits once. The base clear now uses the depth view already stored in the cache. Clear value 1.0, store semantics, CSM `[0,1,2,3]` targeting, cube `[0,1,2,3,4,5]` targeting, placeholder count, and cache ownership are unchanged.
+
+Focused Edge/Karma `WebGPUEffectsDeviceCache` is **5/5**. It proves one encoder/submit and eleven passes per realization, cache-hit identity on the second access, whole-device invalidation and fresh realization, and destruction/ownership behavior.
+
+Batch 1025 hardened the real Edge/WebGPU startup probe with exact source-map, served-bundle, probe, and policy provenance before Cesium/device startup. Its fail-closed artifact lifecycle replaces stale output with a unique `RUNNING` marker first and emits explicit `ERROR`/exit 2 plus a write-once first-red on timeout or outer failure. Final schema-2 artifact `Tools/visual-regression/output/performance/c11-209-effects-placeholder-startup.json` has `runId=81b6febc-f488-4a0b-b975-71c1d058ff4d`, `generatedAt=2026-08-12T02:09:15.528Z`, SHA-256 `E370643CEEEEA318585EF00D1B3865A9CFA4258DACE6C6E063EE416CFFB6BA02`, `status=PASS`, `pass=true`, `exitCode=0`, `incomplete=false`, and **17/17** green checks. Its named schema-2 archive is byte-identical, while the earlier schema-1 pass remains preserved at SHA-256 `94ED22ED7D3021F49A50CC8DC4BC382D8A155A33D410822501694C395D89B828`.
+
+The exact initial vector is **3 target textures / 13 target views / 1 target encoder / 11 depth-only passes / 1 finish / 1 command buffer / 1 exact queue submission**. View provenance is non-vacuous and unique: one base `1x1x1` default view, four CSM layer views `[0,1,2,3]` plus one `2d-array` view, and six depth-only cube-face views `[0,1,2,3,4,5]` plus one cube view. Each pass has `colorAttachments=[]`, `depthClearValue=1`, `depthLoadOp=clear`, `depthStoreOp=store`, and one `end`. Twenty-four manual steady frames have exact zero deltas across all seven vector fields. The scored canvas remains visible with 14 globe tiles, 20.9036% nonblack pixels, 384 quantized colors, and luma standard deviation 52.7167. Validation, device loss, Scene render, page, console, and local-request error lanes are empty. The first browser invocation was also green, so there is no first-red artifact to preserve.
+
+This discharges real-browser startup/device acceptance and earns startup-submit consolidation credit only. It does **not** measure startup duration, frame time, FPS, or a performance percentage.
+
+## C11-193A — persistent manager-local dynamic-IBL output graph (2026-08-10, local/uncommitted)
+
+**Status: LOCAL IMPLEMENTATION + FOCUSED EDGE GREEN; BROWSER/PERF/LANDING OWED — NOT COMPLETE. Independent audit: P0=0/P1=0.**
+
+> **[Landed 2026-08-12 at `b20234a16b` ("Land C11-193 shared environment refresh
+> scheduler") as part of the reviewed 18-file A/B/C packet — see the landing entry
+> below. Moving-performance attribution and broader recovery remain open.]**
+
+The dynamic-only `WebGPUIBLPipeline` path now retains a manager-local output
+graph instead of recreating its native identities for every refresh:
+irradiance/radiance textures, cube/storage/per-mip views, dispatch bind groups,
+CPU staging, and the parameter-pool lease. Ownership is the exact
+context/device/resource-generation/topology tuple; immutable kernels and the
+sampler remain generation-keyed. The public radiance wrapper remains stable.
+Explicit-source handling and WebGL are unchanged.
+
+The adversarial review found and fixed the publication hazards before this
+checkpoint. The incumbent graph is not retired or replaced until upload,
+encoder finish, and queue submit have all succeeded. Any failure destroys the
+candidate, unlocks/rolls back, preserves the incumbent, and permits retry.
+Duplicate owner transactions in one scope and replacement of an in-use arena
+are rejected, while teardown remains fail-safe.
+
+`npm run tsc --workspace @cesium/engine` is green. The named Edge/Karma suite
+passes **17/17** with **18,145 skipped**, and Prettier/diff checks are green.
+That suite uses fake GPU objects: it proves lifecycle contracts, not native GPU
+validation, a performance improvement, or broad browser compatibility.
+
+**Completion qualifications:** persistent HQ reuse is untested; native
+real-GPU, moving-performance, device-loss/recovery,
+multi-context/multi-manager/multiview probes remain owed. The inherited raw
+dynamic-cubemap swap still destroys the old raw cube before a full refresh
+submits, so a later exceptional failure may temporarily leave the stable
+radiance wrapper referencing the destroyed incumbent until retry. Stable
+native identity is also not CPU-allocation-free: short-lived binding
+arrays/descriptors and two manager-cache lookups per refresh remain. C11-193B
+still owns shared frame encoding/submission and submit-owned parameter leases;
+C11-193C now owns the local same-frame demand-priority coordinator and bounded
+scheduler evidence, while landing and moving causal attribution remain open.
+
+## C11-193B — dynamic IBL borrows the Scene encoder and settles exact submit-owned leases (2026-08-11, local/uncommitted)
+
+**Status: LOCAL IMPLEMENTATION + FOCUSED EDGE + REAL EDGE/WEBGPU BROWSER GREEN; LANDING + MOVING-PERFORMANCE/BROADER-RECOVERY OWED — NOT COMPLETE / NO FPS CLAIM.** C11-193A removed native output-graph churn but still encoded/submitted a private dynamic-environment command buffer. Reusing a frame encoder without changing ownership would have been unsafe: two managers could alias one immediately released packed-parameter buffer, and publication/fairness could advance for work whose encoder segment was later abandoned.
+
+> **[Landed 2026-08-12 at `b20234a16b` with the A/B/C packet — see the landing
+> entry below.]**
+
+The local C11-193B path borrows the exact active `Scene Frame Command Encoder`, holds a unique manager-local parameter-arena lease plus provisional output transaction against that exact encoder, and registers a segment-specific submitted/abandoned callback. It publishes output, clears `needsUpdate`, releases the lease, and advances submission-owned state only after native submit returns successfully. Abandonment, encode error, frame truncation, device invalidation, or failed finalization rolls back and leaves a level-triggered retry; off-frame callers retain the private fallback. The callback seam is context/encoder-specific so secondary segments cannot settle another encoder's work.
+
+Focused evidence is green: the exact-encoder `unsafe default containment` suite passes **16/16** with **17,813 skipped**, TypeScript is green, and independent review found P0=0/P1=0; the final named Edge/Karma `WebGPUDynamicEnvironmentMapManager` suite passes **25/25** with **17,816 skipped**, exit 0. The first real Node/Playwright Edge/WebGPU invocation passed **19/19** on its first run—there is no browser red to report. Artifact `Tools/visual-regression/output/performance/c11-193b-dynamic-ibl-shared-submit.json` warms two independent managers in seven frames. The same-topology lane records two exact 44-pass sequences (**88 total**) on one Scene encoder and one submit matching the no-refresh control. A topology replacement records **44** passes on one Scene submit, remains pending/fail-closed through the native submit boundary, publishes its complete replacement afterward, isolates the untouched manager, and consumes one requested zero-pass follow-up. Same-topology output/view/arena identities stay stable per manager while writable arenas and outputs remain distinct. Private dynamic-environment encoders/submits are **0/0**; browser, request, validation, OOM, and device-loss gates are zero.
+
+This is architectural and lifecycle evidence, not measured frame-time credit. C11-193C below adds the local same-frame demand-priority drain and correct deferrable-quota law. Landing, moving-camera/FPS measurement, persistent HQ reuse, replacement-device/device-loss, multi-context/multiview browser certification, the inherited raw-cubemap exceptional-recovery gap, and residual descriptor/lookup CPU allocations remain open.
+
+## C11-193C — same-frame dynamic-IBL demand priority and bounded Scene drain (2026-08-11, local/uncommitted)
+
+**Status: C11-193A/B/C LOCAL IMPLEMENTATION + FOCUSED EDGE + C11-193B/C REAL EDGE/WEBGPU BROWSER GREEN; LANDING + MOVING-PERFORMANCE ATTRIBUTION + BROADER RECOVERY OWED — C11-193 NOT COMPLETE / NO FPS CLAIM. Independent final review: P0=0/P1=0.**
+
+> **[Landed 2026-08-12 at `b20234a16b` with the A/B/C packet — see the landing
+> entry below. Of this status line's owed list, "LANDING" is discharged;
+> moving-performance attribution and broader recovery stay open.]**
+
+The prior registry was advisory because managers ticked before traversal published final same-frame demand and the scheduler treated HIGH and NORMAL alike. The local C11-193C path puts a context-owned collection around ground and ordinary primitive update, queues each exact manager tick, then drains `DEMANDED` and conservative `UNKNOWN` before `PROVEN_NONE`. A real wrapped 2D first half drains HIGH only and holds NORMAL so second-half demand can promote it before the continuation encoder. Budget 1 applies only to deferrable work; MANDATORY unpublished resources and anti-starvation escalation bypass that slot. One deferral arms one `afterRender` resume, and the C11-193B submission callback remains the only authority that advances fairness.
+
+The final review also closed the non-rendering hazards. Coordinator entries, jobs, and HIGH/NORMAL scratch arrays are retained rather than allocated per frame or manager; the empty path creates no closure, maps, or drain arrays. Synchronous preflight still detaches stale device-generation outputs before command preparation. Queued work pins the exact `frameState.context` plus resource generation, rejects destroyed managers and invalid collection/context state, releases captured references on drain/reset/error, and retries level-triggered work after an updater throws. WebGL, off-frame fallback, manager-local regional/weather outputs, and unique writable arenas are unchanged.
+
+Evidence is green: Node priority plus drain/pool/lifecycle suites **56/56**, focused Edge/Karma **31/31**, package TypeScript, and a fresh integrated build (**PASS, 79.7 s**). The fail-closed real-browser probe is `Tools/visual-regression/probe-c11-193c-demand-priority.mjs`; final artifact `Tools/visual-regression/output/performance/c11-193c-dynamic-ibl-demand-priority.json` records `schemaVersion=1`, `runId=6c895a6d-d808-4397-8981-0cb2df6d3acc`, SHA-256 `7CB3D70DAD06DCCCED6E6DE0BC3A0A73699AAF294393C09513CEB970F4FB3BE3`, **29/29**, and exit 0.
+
+- Priority: NORMAL queues first as proven-none, DEMANDED HIGH queues second, but HIGH alone runs the exact **44-pass** sky/irradiance/radiance/SH sequence on one Scene encoder/submit; NORMAL runs 0. Scheduler requests/granted/deferrable/deferred/resume/submissions/pending = **2/1/1/1/1/1/1**, demand is demanded/proven-none = **1/1**, and the coordinator ends empty.
+- Resume: deferred NORMAL runs exact **44** on the next requested frame with requests/granted/deferrable/deferred/submissions/pending = **1/1/1/0/1/0**; the stable repeat performs zero work. This browser lane proves lossless service, not sustained contention; the Node policy cases own alternation and escalation.
+- MANDATORY + UNKNOWN-HIGH: exact **44 + 44 = 88** passes share one Scene encoder/submit. Scheduler requests/granted/mandatory/deferrable/deferred/submissions/pending = **2/2/1/1/0/2/0**, proving mandatory work does not consume the ordinary slot; its stable repeat is zero.
+- Real split 2D: the first Scene submit carries 0 dynamic passes; late demand promotes the held NORMAL job and the `Secondary Viewport Continuation Encoder` carries exact **44** on its own submit. Scheduler requests/granted/deferrable/deferred/submissions/pending = **1/1/1/0/1/0**; the split repeat is zero.
+- Settlement: every active manager keeps the same non-null pending, scope, commit, arena, buffer, and exact encoder identities through native submit with `commitReady=true`, `encodingFailed=false`, and arena locked. `lastSubmitFrameId` remains the incumbent through submit, changes to the current frame only afterward, and pending/scope/commit clear while the arena unlocks. Manager graphs remain isolated and identity-stable; private encoders/submits are **0/0**; the visible 1000×720 control renders one globe tile; all browser/request/Scene/WebGPU/device gates are empty.
+
+The write-once first red remains at `Tools/visual-regression/output/performance/c11-193c-dynamic-ibl-demand-priority.first-red.json`, `runId=5cd791e0-9c4e-4c66-b2a2-061045134bac`, SHA-256 `B2C4DD55D50A4C65643BA694707B666BB62ACFBE0AFE9CD75EE2BF4308E93452`. It was wholly Tools-owned: a first predicate assumed every live refresh has `needsUpdate === true`, while valid sun-dirty deferrable work carries `needsUpdate=false` and an explicit pending transaction. The final gate instead compares exact pending/scope/commit/arena/buffer identities, exact encoder, lock/readiness/failure state, and strict scheduler transition; no product acceptance was weakened.
+
+This remains one-browser/adapter/device/context diagnostic evidence. Native submit return is not GPU-completion proof. Reentrant manager lifetime, an invalid manager shared across contexts, malformed custom Scene/frame-state invariants, and broad device-loss/replacement/multiview recovery are uncertified. Telemetry snapshot getters still allocate and must stay diagnostic. Landing, moving-camera causal attribution, persistent HQ reuse, exceptional raw-cubemap recovery, and residual descriptor/lookup cleanup remain open. Do not rerun the browser probe on the unchanged frozen build and do not infer FPS credit.
+
+## C11-196 — model pick resources are native-demand-lazy without losing first-pick functionality (2026-08-11, local/uncommitted)
+
+**Status: LOCAL IMPLEMENTATION + FOCUSED EDGE + DIAGNOSTIC EDGE/PLAYWRIGHT GREEN; LANDING + MOVING-PERFORMANCE/BROADER-RECOVERY ACCEPTANCE OWED — NOT COMPLETE / NO FPS CLAIM.** The prior WebGPU model path paid native picking allocation during ordinary color: generic and per-feature registry IDs, an RGBA lookup texture, a pick pipeline, and derived commands could exist before any pick. The local path keeps feature styling complete during color—batch texture, feature UBO, fallback binding 31, byte-40 disabled—while exact `passes.pick === true`, non-classifier, `allowPicking !== false` demand synchronously realizes the pick-only resources. It retains all pick variants and per-feature behavior; it does not remove picking or styling.
+
+> **[Landed Batch 1072 (`9cf9b0019d`), 2026-08-20, in one landing unit with the
+> C11-202 bounded gate.]** The moving-performance/broader-recovery acceptance stays
+> owed; the row stays open.
+
+Publication is atomic. A view or byte-40 upload failure leaves the prior coherent entries/bound texture/flag and retries. Feature-count replacement keeps the old bound texture alive until every primitive migrates, then retires it through `context.scheduleTextureDestroy` so already encoded work remains submit-safe. A same-frame pick mini-frame upserts the model's scene-capture publication entry rather than leaving stale and fresh records together. Dense pick IDs target the exact tile features, and repeated demand is identity-stable.
+
+Offline/Edge evidence: Node **13/13**; named Edge/Karma `WebGPUModelFeatureId` **19/19**, **17,823 skipped**, exit 0; package TypeScript green; independent audit P0=0/P1=0. Final browser artifact `Tools/visual-regression/output/c11-196-model-lazy-pick-demand.json` (`generatedAt=2026-08-11T04:19:57.165Z`) contains `pass=true`, `exitCode=0`, `failures=[]`, and zero page/WebGPU/render errors. The local 30-feature hierarchy renders 14,478 nonblack pixels. Cold native generic/dense/lookup/pipeline counts are **0/0/0/0**, with one style primitive using the fallback. First pick realizes **1/30/1/1**, one byte-40 enable, one merged material bind-group rebuild, and one derived pick command; the entries array changes identity while its UBO remains stable. It returns `_Cesium3DTileFeature` 28 and readable hierarchy values (`roof2`/yellow, `building2`/39.3, `zone0`/3, height 6, area 12). Repeat returns the same feature identity with no new pick ID/texture/pipeline/bind-group work. Four later color frames also allocate none and emit no derived pick command. Fresh `allowPicking=false` yields no hit, no derived command, and native **0/0/0/0**.
+
+**Preserved reds and C11-202 handoff evidence:** the first probe red was a harness precondition error—the public `allowPicking` accessor is readonly, and the console gate misclassified existing WebGPU debug warnings. The second corrected run left every native disabled-lane gate green but counted 30 tile-feature registry calls. Source attribution proved `Model.update -> updateFeatureTables -> BatchTexture.update` ran before `submitDrawCommands` applied `allowPicking`; these are backend-neutral legacy frontend IDs, not C11-196 native resource creation. The artifact reports 30 legacy calls explicitly, and `.first-red.json` plus `.legacy-frontend-red.json` retain both histories. The later bounded C11-202 checkpoint below now suppresses that tax for regular native models without regressing WebGL, batch-table styling, classifiers, post-process, or feature picking. No performance percentage is earned until the local source lands and a moving route measures it.
+
+## C11-202 — native MODEL ownership suppresses the legacy BatchTexture pick tax (2026-08-11, local/uncommitted)
+
+**Status: LOCAL BOUNDED IMPLEMENTATION + FOCUSED EDGE + DIAGNOSTIC EDGE/PLAYWRIGHT GREEN; LANDING/BROAD DESCRIPTOR/MOVING-PERFORMANCE/RECOVERY WORK OWED — C11-202 NOT COMPLETE / NO FPS CLAIM.** C11-196's preserved disabled-picking artifact exposed 30 legacy tile-feature registry IDs created before native command admission. The bounded repair does not borrow those IDs or remove picking. `Model.update` snapshots the MODEL feature renderer once before feature-table work and reuses it for build/submit. Regular non-classifier native models pass explicit legacy demand only for post-process, while classifiers and WebGL/no-renderer retain pick-pass legacy demand. `BatchTexture.update` keeps its old pass-derived default when that optional ownership signal is omitted, so classic 3D Tiles callers are byte-for-byte policy-compatible and style updates remain live.
+
+> **[Landed Batch 1072 (`9cf9b0019d`), 2026-08-20.]** The adjacent mutable
+> `featureIdLabel`/`instanceFeatureIdLabel` P1, the paired-ID release-timing and
+> retired-generation P2s, the broad descriptor audit, and moving measurement remain
+> open; the row stays open.
+
+The same-count replacement audit found a second exact target-identity requirement. Native dense cache reuse now requires the exact `BatchTexture`, feature count, and dimensions. Superseded lookup textures and PickIds retire as one `_retiredFeaturePickGenerations` entry keyed by the texture. Publication may install the new map before primitive promotion, but the old ID set remains valid with the old texture through view/uniform failure and multi-primitive migration. Live-context scheduler failure retains the complete generation; scheduling success transfers the texture lifetime to the context before IDs are released; teardown deduplicates current/retired owners. The first post-implementation re-audit caught the premature-ID-destroy P1, the repair landed locally, and the final independent pass reports P0=0/P1=0 for this bounded slice.
+
+**Focused evidence:** Node behavior/source/mutant **16/16**; Edge/Karma `BatchTexture` **25/25** with 18,192 skipped; `ModelFeatureTable` **11/11** with 18,206 skipped; final `WebGPUModelFeatureId` **23/23** with 17,845 skipped; package TypeScript, targeted Prettier/diff, and final integrated `npm run build` **PASS in 83.2 s**. The last two feature-ID cases prove new-owner failure/retry and last-marker retirement. The steady-state browser artifact predates only that replacement/failure hardening and remains valid; no browser rerun was required.
+
+Artifact `Tools/visual-regression/output/c11-202-batchtexture-pick-demand.json` (`generatedAt=2026-08-11T05:44:02.186Z`) records `status=PASS`, `pass=true`, `exitCode=0`, `failures=[]`, and clean page/device gates. WebGPU color stays pick-cold through 97 batch-table updates. First enabled pick creates **0** legacy IDs/textures/uploads and exactly **1 generic + 30 native dense IDs + one native lookup texture/upload**, then returns exact feature 28 and its eight hierarchy properties; repeat and four later color frames create nothing new. Fresh `allowPicking=false` stays zero in every legacy/native counter and returns no hit. WebGL control creates its historical **30 legacy IDs + one 120-byte texture/upload** on first pick, returns feature 28, and remains stable. This is a non-vacuous ownership/correctness discriminator, not timing evidence.
+
+**Preserved first red:** `c11-202-batchtexture-pick-demand.first-red.json` (`generatedAt=2026-08-11T05:40:05.977Z`, exit 2) combines two harness defects: a brittle formatted-source substring did not recognize explicit demand forwarding, and WebGL `pickAsync` exceeded the 120 s lane bound. Final source matching accepts the formatted call and WebGL uses its exact synchronous `scene.pick` path; allocation, feature identity/property, repeat stability, and error gates were not waived.
+
+**Still open:** mutable `featureIdLabel` / `instanceFeatureIdLabel` selection can retain stale native primitive feature entries or instancing buffers across descriptor reset (**adjacent P1**, needs submit-safe rebuild). Paired IDs still release when old-texture scheduling succeeds rather than when an already-issued asynchronous pick readback settles (**P2**, overlapping replacement/destruction is uncertified). An unbound retired generation without a later promotion drains only on a later ensure/promotion or final teardown (**bounded P2 retention**). Landing, moving allocation/timing, broad descriptors/remaining legacy CPU objects, edge-emitter RTE, selected-feature post-process ownership, and device/fallback/multi-context recovery remain mandatory.
+
+## C11-210 — native compute commands borrow the exact frame encoder (2026-08-11, local/uncommitted)
+
+**Status: LOCAL IMPLEMENTATION + FOCUSED EDGE + REAL EDGE/WEBGPU BROWSER GREEN; LANDING/P2 ACCEPTANCE OWED — NOT COMPLETE / NO FPS CLAIM. Independent review: P0=0/P1=0.**
+
+> **[Landed Batch 1071 (`806a7f2ce4`), 2026-08-20.]** The owed fresh-bundle rerun
+> ran tonight in the machine lane at `d4fa0ecf48`: probe 30/30 PASS with the
+> focused Karma lane green. The P2 boundaries below remain open and the row stays
+> open.
+
+### Root cause and implementation boundary
+
+The public command-list path was structurally mismatched: `SceneRenderer.executeComputeCommands` passed the graphics context to commands whose native execution contract required a `GPUComputePassEncoder`. The repaired path uses `scene.frameState.context`, closes an active render pass, narrows only native `WebGPUComputeCommand` instances, and borrows the frame's already-active `GPUCommandEncoder`. It registers exact encoder-segment settlement before invoking `preExecute` or performing preparation, then opens one compute pass, encodes every admitted command, and ends the pass in `finally`. There is no per-command encoder, finish, or queue submit.
+
+`WebGPUComputeCommand.encode(pass)` is deliberately callback-free; existing public `execute(pass)` still performs pre/encode/post for compatibility. The engine now owns preparation and validation, calls `preExecute` exactly once, checks encoder ownership again after preparation and immediately before `beginComputePass`, and rejects work after re-entrant encoder loss even if its abandonment callback already fired. Generated-pipeline reuse keys the full semantic tuple (source or module identity, entry point, and layout identities), and provenance lives on the command so a command moving between engines that share one pooled device is re-resolved after semantic mutation. Exact device claims reject known cross-device reuse. Standalone and batch compatibility APIs preserve observable post-callback errors; batch post settlement isolates callbacks so one throw does not suppress later callbacks.
+
+### Focused gates and the honest zero-test red
+
+Four focused specs cover the command seam, engine lifecycle/cache/device contracts, context exact settlement, and frame-local Scene routing. The corrected serial Edge/Karma run passes **43/43**, skips **17,817**, fails zero, and exits 0. The first attempt executed **0 tests** and exited 1 before browser capture because `CHROME_BIN` was missing. That is retained as a harness/configuration red, not product evidence. Package TypeScript, integrated TypeScript, full build, focused ESLint/Prettier, and diff checks are green.
+
+### Real native browser acceptance and preserved first red
+
+The first browser artifact is retained at `Tools/visual-regression/output/performance/c11-210-compute-command-list-first-red.json`. It was `STRUCTURAL`, not a product execution failure, for two exact probe defects: subject-pass matching used the native pipeline label, which is the generic string `command`, instead of the named descriptor `ComputePass_C11-210 ...`; and six `Rectangle.fromDegrees` camera views never activated Cesium's 2D continuation encoder. Even that run showed one real dispatch, count/sentinel success, hooks **1/1/0**, one shared product submit, and no private encoder in each measured normal/pick/unsplit-2D lane, with zero error gates.
+
+The corrected probe identifies the hard pass-descriptor label and uses the already-proven point-destination 2D wrap search. The hardened final artifact `Tools/visual-regression/output/performance/c11-210-compute-command-list.json` was generated `2026-08-11T04:50:09.165Z` and records `status=PASS`, `pass=true`, `exitCode=0`, `failures=[]`, and **30/30** checks. Its native instrumentation covers device encoder creation, compute-pipeline creation, pass begin, pipeline bind, dispatch, finish, and queue submit.
+
+- Normal: one `Scene Frame Command Encoder`, one subject pass/dispatch, one submit.
+- Pick mini-frame: one `Pick Frame Command Encoder`, one subject pass/dispatch, one submit.
+- Real wrapped 2D at longitude 179: one subject pass on the first Scene encoder, then one `Secondary Viewport Continuation Encoder`; two product submits total.
+- Every product encoder has `finishCount=1` and `submitCount=1`. Total product submits are **4**. The one `C11-210 Harness Readback Encoder` submit is separately labeled and excluded, yielding five measured submits overall.
+- Each storage result is count **1** and sentinel **287378126 (`0x11210ace`)**. Every command settles pre/post/cancel **1/1/0**. Normal/pick post remains pending through native submit and settles during exact encoder bookkeeping; 2D post settles after the first segment and before continuation submit.
+- Scene render, WebGPU validation, device-loss, browser, and local-request errors are all zero.
+
+### Honest completion boundary
+
+This is local and unlanded. Real normal, pick, and wrapped-2D command-list integration is certified, but replacement-device/device-loss, pooled multi-context, WebVR, and other offscreen variants remain P2 acceptance. Malformed/untrusted commands can still emit asynchronous validation errors that poison the borrowed frame encoder; duplicate or cross-mutating objects in `executeMultiple` are not snapshot-isolated; an unstamped first-use external prebuilt pipeline retains caller trust because no producer-device/provenance metadata exists; and `persists` semantics remain deferred. WebGL and non-native-command skip behavior are preserved. This is a correctness/lifecycle restoration, not a measured performance improvement.
+
 ## C11-169 / C11-205 — resident owner-attribution Tools packet landed (2026-08-12, Batch 1032)
 
 **Status: TOOLS PACKET LANDED at `be0683c60d`; BOTH ROWS REMAIN NOT COMPLETE / DIAGNOSTIC ONLY / NO FPS OR GPU CLAIM.**
@@ -18204,6 +18748,7 @@ The shared harness had two exact attribution hazards. The untimed C11-205 route 
 Batch 1032 lands exactly `run-performance-campaign.mjs`, `performance-workloads.spec.mjs`, `lib/performance-campaign-utils.mjs`, `lib/c11-205-owner-attribution.mjs`, and `c11-205-owner-attribution-policy.spec.mjs`. Fresh pre-landing static evidence was Node **73/73**, syntax, Prettier, ESLint, and scoped diff hygiene green. Runner SHA-256 remains `8045B6462EF498B290DC5965C0013715BCA34A0E0C1EEA269F22349ED137AE12`.
 
 The immutable ignored artifact `c11-169-resident-sf-owner-attribution.json` (`runId=63c4806e-83cb-4ac3-bddd-8a28d1dcdca7`, 8,453,346 bytes, SHA-256 `C755784AEF33AA85DF8C8F0DD72C0E025BFF38AC54F441CF1349DB5E95774C1C`) is PASS/exit 0 across four 600-frame AB/BA legs and binds frozen runtime bundle SHA-256 `7B42F00D0135C28CE5D9CC90486966EBA21B452B8974A6293381FE8761BFCBDA`. The 57 console messages are allowlisted sandboxed `about:blank` notices, not an empty console lane. These synchronous instrumented shares are noncausal and noncertifying; the referenced C11-205 causal run had no GPU timestamp samples. Accounting-source landing, evidence-led remediation, and separate uninstrumented causal confirmation remain open.
+
 ## C11-13 — voxel inside-camera acceptance closed (2026-08-12)
 
 **Status: COMPLETE.** The proxy-face implementation landed in Batch 1031 at `348063f48b` (status record `3858db387e`). Physical-acceptance and preservation repairs then landed at `54c97766dc`, `1592ea290d`, `0db658197f`, `532cad5e1f`, `8a9178d99c`, `3b9f2027a7`, `3742a84b22`, `b93b012479`, `439ccb100a`, and final megatexture-oracle repair `f54d58cdd4`.
