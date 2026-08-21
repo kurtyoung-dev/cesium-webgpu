@@ -27,6 +27,7 @@
 import { chromium } from "playwright";
 import fs from "fs";
 import path from "path";
+import { launchLaneIfGated } from "./lib/backend-isolation-launch.mjs";
 
 const BASE = "http://localhost:8080"; // NOTE: server binds IPv6; 127.0.0.1 does NOT resolve
 const OUT_DIR = "Tools/visual-regression/output";
@@ -189,7 +190,7 @@ async function inspectContexts(page, globalNames) {
   }, globalNames);
 }
 
-async function runLane(browser, { name, url, globals }) {
+async function runLane(browser, { name, url, globals, launchSelector }) {
   const context = await browser.newContext({
     viewport: { width: 1280, height: 720 },
   });
@@ -202,6 +203,7 @@ async function runLane(browser, { name, url, globals }) {
   const lane = { name, url, ok: false };
   try {
     await page.goto(url, { waitUntil: "domcontentloaded", timeout: 90000 });
+    await launchLaneIfGated(page, launchSelector);
     for (const g of globals) await waitForViewer(page, g);
     // Let terrain/imagery settle so we are not timing tile loads.
     await page.waitForTimeout(6000);
@@ -251,6 +253,7 @@ async function runLane(browser, { name, url, globals }) {
         name: "split",
         url: `${BASE}/Apps/WebGPUTest/split-screen-comparison.html`,
         globals: ["webglViewer", "webgpuViewer"],
+        launchSelector: "#btnLaunch",
       }),
     );
   } finally {
