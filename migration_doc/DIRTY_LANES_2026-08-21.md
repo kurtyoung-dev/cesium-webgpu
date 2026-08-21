@@ -13,6 +13,25 @@ why it has not landed*.
 archive, verified in both directions). Refresh the backup before any operation that
 touches these files.
 
+**Landed and removed from this register (2026-08-21 evening, Batches 1108-1119):** lane H
+(C13 cloud sentinel + U2 morphology + the COMPLETE/REGRESSED A/B verdict, 1108), lane J (the
+C12-11 harness, row HELD, 1109), the W1-D C12 documentation-truth bundle (1110), the three C16
+wave-1 comment shards under one merged ledger (1111), the C11 premise dispositions (1112), the
+governance set - progress synthesis, ruling requests, Sol brief rules 1-11, the tiered
+orchestration playbook, the C15-G9 escalation stamp (1113), the C11-P1 standing-reds package
+with the verified C11 queue-truth pass (1114; `WebGPUContext.ts` landed ONE hunk - lane F's
+clusters remain below), the C15 gsplat G7/G6 instruments (1115), the C16 wave-2
+sky/atmosphere/shadow/weather shard (1116), the C14/C15 license vetting with the Apache-2.0
+baseline finding (1117), the C16-R1 string-literal slice A with its scanner (1118), and the
+lockstep-doc convention ratification (1119). **Held back at the hook, now a fix round:** the
+C15-G9 frame-variance discriminator harness (probe + model + spec, reviewed LAND and byte-pinned)
+failed the pre-commit eslint gate with four findings its review had not checked; the repair
+exposed that the spec reads sources without line-ending normalization (its multi-line mutation
+anchors find nothing on a CRLF checkout - this repository runs autocrlf) and that the model was
+not prettier-clean (the hook's reformat moved the D4-M6 anchor). Lint fixes are in the tree;
+anchor repair, EOL normalization and a delta re-review are dispatched; it lands under the next
+batch number once green on a CRLF checkout. The register below is what remains.
+
 **Landed and removed from this register (2026-08-20/21):** the C11-210 compute-command
 lane (Batch 1071), the C11-196/202 model-pick unit (1072), the C11-213 vector slice
 (1073), the C11-140 probe + artifact (1074), picking S0/S1 (1075), the Matrix/TS-cast
