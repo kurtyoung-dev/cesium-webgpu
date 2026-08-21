@@ -457,8 +457,15 @@ export function buildPipelineDescriptor(
   // The renderer-local caches carry the mask outright: every key
   // `buildGlobePipelineCacheKey` builds ends with `|${defines.toString(16)}`.
   const ldLabel = logDepthOn ? ", ld=1" : "";
+  // Keep the diagnostic name legible on the descriptor axes that tooling
+  // compares. Use effective values so clamped strides and capture MSAA do not
+  // advertise states that the descriptor does not actually contain.
+  const strideLabel = `, stride=${vertexBuffers[0].arrayStride}`;
+  const mercatorLabel = hasWebMercatorT ? ", webMercatorT" : "";
+  const geodeticLabel = hasGeodeticSurfaceNormals ? ", geodeticNormals" : "";
+  const sampleLabel = `, samples=${isCapture ? 1 : (host._sampleCount ?? 1)}`;
   return {
-    name: `Globe terrain (${quantLabel}, ${normLabel}, ${blendLabel}${debugLabel}${cdLabel}${dobLabel}${dofLabel}${tbfLabel}${ncLabel}${imgLabel}${capLabel}${oceanLabel}${ldLabel})`,
+    name: `Globe terrain (${quantLabel}, ${normLabel}, ${blendLabel}${debugLabel}${cdLabel}${dobLabel}${dofLabel}${tbfLabel}${ncLabel}${imgLabel}${capLabel}${oceanLabel}${ldLabel}${strideLabel}${mercatorLabel}${geodeticLabel}${sampleLabel})`,
     // Declare the lo-word define mask the modules above were compiled with.
     // Optional as far as the cache is concerned (module identity already
     // separates every variant); supplied here because the globe has the mask
@@ -852,6 +859,34 @@ export function selectCapturePipeline(
   return resolveCapturePipelineEntrySync(host, entry);
 }
 
+function buildGlobePickPipelineDescriptor(
+  host: PipelineHost,
+  colorDescriptor: WebGPURenderPipelineDescriptor,
+): WebGPURenderPipelineDescriptor {
+  // Pick rendering is always single-sample. Rewrite the terminal marker so
+  // the derived descriptor does not advertise the scene's MSAA count. A
+  // missing suffix is a diagnostics defect, never a reason to kill the pick
+  // path: report it and fall through with the unmodified name.
+  const singleSampleName = colorDescriptor.name.replace(
+    /, samples=\d+\)$/u,
+    ", samples=1)",
+  );
+  if (singleSampleName === colorDescriptor.name) {
+    console.error(
+      `[CesiumJS:webgpu] Globe color descriptor name is missing its effective sample suffix: ${colorDescriptor.name}`,
+    );
+  }
+  return buildPickPipelineDescriptor(
+    colorDescriptor,
+    "fragmentPickMain",
+    host._pickFormat ?? "rgba8unorm",
+    {
+      name: `${singleSampleName} pick`,
+      forceDepthWriteEnabled: true,
+    },
+  );
+}
+
 /**
  * Select the globe terrain pick pipeline variant.
  *
@@ -923,17 +958,7 @@ export function selectPickPipeline(
       // get the pick-gated v_logDepth path.
       pickLogActive,
     );
-    const descriptor = buildPickPipelineDescriptor(
-      colorDescriptor,
-      "fragmentPickMain",
-      // Stamp the context's pick format authority, mirrored onto the host,
-      // never the scene format.
-      host._pickFormat ?? "rgba8unorm",
-      {
-        name: `${colorDescriptor.name} pick`,
-        forceDepthWriteEnabled: true,
-      },
-    );
+    const descriptor = buildGlobePickPipelineDescriptor(host, colorDescriptor);
     entry = { descriptor, pipeline: null, pending: false };
     host._pipelineCache.set(cacheKey, entry);
   }

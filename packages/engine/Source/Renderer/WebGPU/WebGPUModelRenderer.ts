@@ -8004,12 +8004,12 @@ function updateWebGPUModel(
         packMaterialUniforms(
           primCache.materialDataTranslucent,
           translucentMaterialUploadState.currentWords,
-          modelMatrix,
+          nodeModelMatrix,
           matInfo,
           primHasSkinning,
           primHasMorphTargets,
           pickColor,
-          cache.prevModelMatrix,
+          prevNodeModelMatrixForPack,
           motionEnabled,
           1, // passClass = translucent
         );

@@ -342,7 +342,7 @@ RenderCommand.prototype._executeWebGL = function (context, passState) {
 RenderCommand.prototype._executeWebGPU = function (context, passState) {
   const cmd = this.getNativeCommand(context);
   if (cmd && typeof cmd.execute === "function") {
-    cmd.execute(context._currentRenderPass || passState);
+    cmd.execute(context._currentRenderPassEncoder || passState);
   }
 };
 

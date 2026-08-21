@@ -51,10 +51,17 @@ NormalInfo getNormalInfo(ProcessedAttributes attributes)
     #ifdef HAS_BITANGENTS
         vec3 tangent = attributes.tangentEC;
         vec3 bitangent = attributes.bitangentEC;
-    #else // Assume HAS_NORMAL_TEXTURE
+    // computeTangent needs the normal-texture UV derivatives, so the
+    // screen-space derivation is only valid when that texture exists.
+    #elif defined(HAS_NORMAL_TEXTURE)
         vec3 tangent = computeTangent(attributes.positionEC, normalTexCoords);
         tangent = normalize(tangent - geometryNormal * dot(geometryNormal, tangent));
         vec3 bitangent = normalize(cross(geometryNormal, tangent));
+    #else
+        // No texture coordinates to differentiate: anisotropy still needs a
+        // stable frame, so build one from the geometry normal alone.
+        vec3 tangent = normalize(cross(geometryNormal, -attributes.positionEC));
+        vec3 bitangent = normalize(cross(tangent, geometryNormal));
     #endif
 
     #ifdef HAS_NORMAL_TEXTURE

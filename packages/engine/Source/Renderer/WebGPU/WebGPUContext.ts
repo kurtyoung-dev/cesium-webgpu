@@ -4947,6 +4947,7 @@ export class WebGPUContext extends GraphicsContext {
     environmentState.useDepthPlane =
       environmentState.clearGlobeDepth &&
       scene.mode === 3 /* SceneMode.SCENE3D */ &&
+      scene.debugSkipDepthPlane !== true &&
       scene._globeTranslucencyState.useDepthPlane;
 
     // On for WebGPU whenever not picking, so the globe-depth-framebuffer path
