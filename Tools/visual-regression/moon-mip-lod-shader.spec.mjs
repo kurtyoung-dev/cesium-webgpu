@@ -1,5 +1,5 @@
 // moon-mip-lod-shader.spec.mjs — C12-33 Moon derivative/LOD contract.
-// @purpose Structural WGSL contract for Moon derivative/LOD sampling: exactly one ellipsoid hit shaded, explicit gradients, no duplicated color evaluation.
+// @purpose Structural WGSL contract for Moon derivative/LOD sampling, asserted per @fragment entry point: exactly one ellipsoid hit shaded, explicit gradients, no duplicated color evaluation.
 // @status ACTIVE
 //
 // Run:
@@ -26,28 +26,86 @@ const codeOnly = shaderSource
   })
   .join("\n");
 
+// Moon.wgsl carries two @fragment entry points: `fs` for the legacy pass and
+// `fsPhysical` for the depth-participating one. Whole-file match counts and
+// indexOf() ordering silently read only the first of them, so every locality
+// claim below is asserted against an individually brace-matched body instead.
+function fragmentEntryPoints(source) {
+  const entries = [];
+  const header = /@fragment\s+fn\s+([A-Za-z_][A-Za-z0-9_]*)/g;
+  let match;
+  while ((match = header.exec(source)) !== null) {
+    const open = source.indexOf("{", header.lastIndex);
+    assert.ok(open > 0, `@fragment fn ${match[1]} has no body`);
+    let depth = 0;
+    let close = -1;
+    for (let i = open; i < source.length; i++) {
+      if (source[i] === "{") {
+        depth += 1;
+      } else if (source[i] === "}") {
+        depth -= 1;
+        if (depth === 0) {
+          close = i;
+          break;
+        }
+      }
+    }
+    assert.ok(close > open, `@fragment fn ${match[1]} has an unbalanced body`);
+    entries.push({
+      name: match[1],
+      start: match.index,
+      body: source.slice(open + 1, close),
+    });
+  }
+  return entries;
+}
+
+const fragmentEntries = fragmentEntryPoints(codeOnly);
+
 test("opaque front/back selection shades exactly one valid ellipsoid hit", () => {
-  assert.match(codeOnly, /let outsideHit = ts\.x >= 0\.0;/);
-  assert.match(codeOnly, /let tHit = select\(ts\.y, ts\.x, outsideHit\);/);
-  assert.match(codeOnly, /let side = select\(-1\.0, 1\.0, outsideHit\);/);
-  assert.match(
-    codeOnly,
-    /let hitColor = computeEllipsoidColor\(hitMC, side, uv, uvDx, uvDy\);/,
+  assert.equal(
+    fragmentEntries.length,
+    2,
+    "expected the legacy and depth-participating Moon fragment entry points",
   );
 
-  // One declaration plus one call. A second call would duplicate the Moon's
-  // full texture/normal/lighting work for an unobservable opaque face.
-  assert.equal((codeOnly.match(/computeEllipsoidColor\s*\(/g) ?? []).length, 2);
-  assert.doesNotMatch(codeOnly, /outsideColor|insideColor/);
+  for (const { name, body } of fragmentEntries) {
+    assert.match(body, /let outsideHit = ts\.x >= 0\.0;/, name);
+    assert.match(body, /let tHit = select\(ts\.y, ts\.x, outsideHit\);/, name);
+    assert.match(body, /let side = select\(-1\.0, 1\.0, outsideHit\);/, name);
+    assert.match(
+      body,
+      /let hitColor = computeEllipsoidColor\(hitMC, side, uv, uvDx, uvDy\);/,
+      name,
+    );
 
-  // Both the material and final target remain unconditionally opaque. This
-  // is the invariant that makes selecting one hit equivalent to the old
-  // general-purpose alpha composite used by EllipsoidFS.glsl.
+    // One call per body. A second would duplicate the Moon's full
+    // texture/normal/lighting work for an unobservable opaque face.
+    assert.equal(
+      (body.match(/computeEllipsoidColor\s*\(/g) ?? []).length,
+      1,
+      `${name} must shade exactly one hit`,
+    );
+    assert.doesNotMatch(body, /outsideColor|insideColor/, name);
+
+    // The final target stays unconditionally opaque. That is the invariant
+    // making one-hit selection equivalent to the old general-purpose alpha
+    // composite used by EllipsoidFS.glsl.
+    assert.match(
+      body,
+      /out\.color = vec4<f32>\(hitColor\.rgb \* u\.extinction \+ u\.inscatter, 1\.0\);/,
+      name,
+    );
+  }
+
+  // One shared declaration plus exactly one call from each entry body — this
+  // catches a stray third caller introduced anywhere else in the file.
+  assert.equal(
+    (codeOnly.match(/computeEllipsoidColor\s*\(/g) ?? []).length,
+    fragmentEntries.length + 1,
+  );
+  // The material itself is pinned opaque inside the shared helper.
   assert.match(codeOnly, /m\.alpha = 1\.0;/);
-  assert.match(
-    codeOnly,
-    /out\.color = vec4<f32>\(hitColor\.rgb \* u\.extinction \+ u\.inscatter, 1\.0\);/,
-  );
 });
 
 test("albedo and normal use explicit pre-discard gradients with independent texture LOD", () => {
@@ -67,18 +125,35 @@ test("albedo and normal use explicit pre-discard gradients with independent text
     "implicit derivatives are unsafe after a fragment-varying miss discard",
   );
 
-  const derivativeIndex = codeOnly.indexOf("var uvDx = dpdx(uv);");
-  const discardIndex = codeOnly.indexOf("discard;", derivativeIndex);
-  const sampleIndex = codeOnly.indexOf("textureSampleGrad(tex");
-  assert.ok(derivativeIndex > 0, "UV derivatives must be explicit");
-  assert.ok(
-    discardIndex > derivativeIndex,
-    "dpdx/dpdy must execute before the fragment-varying miss discard",
-  );
-  assert.ok(
-    sampleIndex < derivativeIndex,
-    "the textureSampleGrad helper must be declared before fs computes gradients",
-  );
+  const helperDeclaration = codeOnly.indexOf("fn computeEllipsoidColor(");
+  assert.ok(helperDeclaration > 0, "the shared shading helper must exist");
+
+  for (const { name, start, body } of fragmentEntries) {
+    assert.ok(
+      helperDeclaration < start,
+      `the textureSampleGrad helper must be declared before ${name}`,
+    );
+
+    const derivativeX = body.indexOf("var uvDx = dpdx(uv);");
+    const derivativeY = body.indexOf("var uvDy = dpdy(uv);");
+    const firstDiscard = body.indexOf("discard;");
+    assert.ok(
+      derivativeX >= 0 && derivativeY >= 0,
+      `${name} must compute explicit UV derivatives`,
+    );
+    assert.ok(
+      firstDiscard > derivativeX && firstDiscard > derivativeY,
+      `${name}: dpdx/dpdy must execute before the body's first fragment-varying discard`,
+    );
+
+    // Sampling belongs to the shared helper; the body only forwards the
+    // gradients it computed itself, so no body samples on its own.
+    assert.doesNotMatch(
+      body,
+      /textureSampleGrad\s*\(/,
+      `${name} must sample through the shared helper`,
+    );
+  }
 });
 
 test("miss-helper UVs are limb-continuous and longitude gradients unwrap", () => {
@@ -92,10 +167,12 @@ test("miss-helper UVs are limb-continuous and longitude gradients unwrap", () =>
     /vec2<f32>\(-1\.0, -1\.0\)/,
     "a fixed miss sentinel would poison derivatives in limb-adjacent quads",
   );
-  assert.match(codeOnly, /var uvDx = dpdx\(uv\);/);
-  assert.match(codeOnly, /var uvDy = dpdy\(uv\);/);
-  assert.match(codeOnly, /uvDx\.x = uvDx\.x - round\(uvDx\.x\);/);
-  assert.match(codeOnly, /uvDy\.x = uvDy\.x - round\(uvDy\.x\);/);
+  for (const { name, body } of fragmentEntries) {
+    assert.match(body, /var uvDx = dpdx\(uv\);/, name);
+    assert.match(body, /var uvDy = dpdy\(uv\);/, name);
+    assert.match(body, /uvDx\.x = uvDx\.x - round\(uvDx\.x\);/, name);
+    assert.match(body, /uvDy\.x = uvDy\.x - round\(uvDy\.x\);/, name);
+  }
   assert.doesNotMatch(
     codeOnly,
     /uvD[xy]\.y\s*=.*round/,
