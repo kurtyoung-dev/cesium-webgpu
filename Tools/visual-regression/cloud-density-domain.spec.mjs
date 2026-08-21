@@ -691,13 +691,20 @@ test("LIVE and bit-13-off preserve the literal legacy density route", () => {
   // together — the condition the freeze's own docstring sets for a re-freeze.
   // `legacyBakedBase` is again untouched and keeps its original hash, which is
   // what proves the re-freeze was scoped to the morphology chain.
+  //
+  // Re-frozen again 2026-08-09 (C13-16 U2 composition): all three density
+  // evaluators now apply the model-approved variance budget and fibre carve
+  // before erosion; the two full-density routes additionally apply the same
+  // genus-conditioned erosion-depth compensation. The default CUMULUS row is
+  // still exact identity, the macro route moved in the same change, and
+  // `legacyBakedBase` remains untouched for the third time.
   const frozenLegacyHashes = {
     legacyBakedBase:
       "63cc67e6e7790a33c3ac39a3958d74335debe667d67d24a0e0e2c35609af4cde",
     legacyCloudDensity:
-      "aedcb3c971a89d15c4966b5b0bc2a0d5d85fc469009378b242b8b111afe6cc39",
+      "7e66e67d4a669bfb58cec116705cf50d38113a333a15201cb3e48c3df664adef",
     legacyCloudBaseDensity:
-      "10d19f4bf91f9e66803e038d8d44a31d0a72b31fe25d880b396bbf2feb408d61",
+      "78862a846cbbc14516e40fbbc7513e7a617dd38e2cd6bdefb63c9ee34c1d4380",
   };
   for (const [name, hash] of Object.entries(frozenLegacyHashes)) {
     assert.equal(

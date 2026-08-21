@@ -277,14 +277,18 @@ fn nearestShellInterval(rd: vec3<f32>) -> vec2<f32> {
 // Transmittance-weighted mean distance implied by `alpha` over `[t0, t1]`
 // under uniform extinction. Mirrors `cloudTransmittanceWeightedDepth` in
 // `WebGPUCloudReconstructionAttachments.ts` expression for expression; both
-// limits are closed form rather than clamped, so alpha -> 0 gives the interval
-// midpoint and alpha -> 1 gives the front face.
+// limits are closed form rather than clamped. Exact zero means no cloud and
+// keeps the -1 sentinel; positive alpha -> 0 gives the interval midpoint and
+// alpha -> 1 gives the front face.
 fn weightedDepthFromAlpha(t0: f32, t1: f32, alpha: f32) -> f32 {
   let span = t1 - t0;
   if (!(span > 0.0)) {
     return -1.0;
   }
   let a = clamp(alpha, 0.0, 1.0);
+  if (a == 0.0) {
+    return -1.0;
+  }
   if (a <= MIN_RESOLVED_ALPHA) {
     return t0 + 0.5 * span;
   }
@@ -336,7 +340,7 @@ fn fragmentMain(input: VertexOutput) -> AttachmentOutput {
   // A shell miss leaves (-1, -1): "this ray carries no cloud", which a consumer
   // must propagate rather than treat as distance zero.
   var weighted = -1.0;
-  if (interval.x >= 0.0) {
+  if (interval.x >= 0.0 && alpha > 0.0) {
     weighted = weightedDepthFromAlpha(interval.x, interval.y, alpha);
     out.depth = vec2<f32>(interval.x, weighted);
   }

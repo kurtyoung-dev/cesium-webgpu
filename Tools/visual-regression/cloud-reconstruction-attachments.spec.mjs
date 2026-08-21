@@ -15,8 +15,9 @@
 //     group F enforces it MECHANICALLY: the march shader is pinned by content
 //     hash and line count, the producer module is required not to embed it,
 //     and the producer pipeline is required to compile from the new module
-//     ALONE. C13-10 is the row allowed to change the march; when it does, it
-//     updates the pin deliberately and the diff says so;
+//     ALONE. A row that must change the shared density law (`C13-10`, or
+//     C13-16's visible/shadow/base-consistency correction) updates the pin
+//     deliberately and records why a separate module cannot satisfy it;
 //
 //   - THE ROW QUIETLY BECOMING A VISUAL CHANGE. This is infrastructure: the
 //     producer writes, nothing reads. Group E pins that the composite source
@@ -416,8 +417,8 @@ test("C1 an empty or inverted interval reports -1, never a plausible zero", () =
   assert.equal(cloudTransmittanceWeightedDepth(2000, 1000, 0.5), -1);
 });
 
-test("C2 alpha->0 is the midpoint, alpha->1 is near the front, and NEITHER snaps", () => {
-  assert.equal(cloudTransmittanceWeightedDepth(1000, 2000, 0), 1500);
+test("C2 zero alpha is no-cloud; positive alpha->0 is the midpoint without a snap", () => {
+  assert.equal(cloudTransmittanceWeightedDepth(1000, 2000, 0), -1);
   // The low-alpha branch must be CONTINUOUS with the formula it replaces: the
   // two terms diverge together there, so the branch exists for significant
   // digits, not because the limit differs.
@@ -446,11 +447,11 @@ test("C2 alpha->0 is the midpoint, alpha->1 is near the front, and NEITHER snaps
   );
 });
 
-test("C3 the estimate stays INSIDE the interval and decreases with alpha", () => {
+test("C3 every positive-alpha estimate stays inside the interval and decreases", () => {
   const t0 = 12000;
   const t1 = 19000;
   let previous = Number.POSITIVE_INFINITY;
-  for (let i = 0; i <= 200; i++) {
+  for (let i = 1; i <= 200; i++) {
     const alpha = i / 200;
     const depth = cloudTransmittanceWeightedDepth(t0, t1, alpha);
     assert.ok(
@@ -477,7 +478,7 @@ test("C4 the estimator is translation-invariant, as a distance along a ray must 
 });
 
 test("C5 out-of-range alpha is clamped rather than producing NaN", () => {
-  assert.equal(cloudTransmittanceWeightedDepth(1000, 2000, -5), 1500);
+  assert.equal(cloudTransmittanceWeightedDepth(1000, 2000, -5), -1);
   assert.equal(
     cloudTransmittanceWeightedDepth(1000, 2000, 5),
     cloudTransmittanceWeightedDepth(1000, 2000, 1),
@@ -886,26 +887,38 @@ test("E9 the debug surface reaches the set without a static import of the lazy r
 //     computed from the 8cc74fbb… file itself, so F1b is an equality against
 //     the historical shader, not against a snapshot of the new one.
 //
-//   IF F1a FAILS AND YOU ARE NOT C13-10, the change belongs in a separate
-//   module and a separate pipeline, the way this row's producer does it.
-//   IF F1b FAILS, a variant block's `//>>else` stopped being the historical
-//   code — every pipeline compiled at `definesHi = 0` just changed.
+//   ★ UPDATED AGAIN BY C13-16 U2 ON 2026-08-09, DELIBERATELY. The approved
+//     budget -> fibre carve -> erosion law must be identical in the visible
+//     march, base oracle, beer shadows, cascade atlas and god-ray mask. Moving
+//     it to a private visible pipeline would break `base >= full` and
+//     shadow/visible agreement. The change adds no uniform slots and is exact
+//     identity for default CUMULUS; the focused composition spec pins its 47
+//     executable lines and rejects old-order/missing-call mutants.
+//
+//   IF F1a FAILS without an approved shared-density-law change, the change
+//   belongs in a separate module and pipeline, the way this row's producer does.
+//   IF F1b FAILS, every pipeline compiled at `definesHi = 0` changed; re-freeze
+//   only with a recorded cross-consumer reason like the one above.
 const MARCH_WGSL_SHA256 =
-  "74affeac6add9256cca0bf5b52b07b0f2e56dab115feae848d56331fceb30173";
-const MARCH_WGSL_LINES = 3105;
-// SHA-256 of the default variant with blank lines and whole-line comments
-// removed. Computed from the PRE-C13-10 module (8cc74fbb…, 2962 lines) and
-// unchanged by this row: 1798 lines of code.
+  "03c524493456f448e3cf5f29daf9c423219253be57323ccf1ebdcd577787897d";
+// Re-frozen 2026-08-21 at the C13-16 landing: the U2 A/B bundle flips rewrote
+// this file in the main tree after the mid-lane pin was computed, drifting
+// comment bytes only — the code-only pin below never moved and the line count
+// is unchanged, so the compiler-visible content is the approved baseline.
+const MARCH_WGSL_LINES = 3156;
+// SHA-256 of the C13-16-approved default variant with blank lines and all line
+// comments removed. The prior C13-10 baseline was 1798 executable lines; the 47
+// added lines are the shared density-law correction described above.
 const MARCH_DEFAULT_CODE_SHA256 =
-  "b20ff584a16e0c78df248c34e2849b808a80cc3a1434a7ed1074e9b292de843b";
-const MARCH_DEFAULT_CODE_LINES = 1798;
+  "83d6e4592f1bf3089673fbe54da4eab6c47db3621e98a3ad7e5948c0e7b538e3";
+const MARCH_DEFAULT_CODE_LINES = 1845;
 
-/** Blank- and comment-line-stripped source: the text a compiler acts on. */
+/** Blank- and line-comment-stripped source: the text a compiler acts on. */
 function codeOnly(source) {
   return source
     .split("\n")
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0 && !line.startsWith("//"))
+    .map((line) => line.replace(/\/\/.*$/, "").trim())
+    .filter((line) => line.length > 0)
     .join("\n");
 }
 
@@ -923,22 +936,28 @@ test("F1a ProceduralClouds.wgsl matches its pin — any change here is deliberat
   );
 });
 
-test("F1b the DEFAULT march variant is the pre-C13-10 module, code for code", () => {
-  // This is the check that actually enforces C13-39 now. Four of the five
+test("F1b the DEFAULT march variant matches the approved C13-16 baseline", () => {
+  // This is the check that enforces C13-39 from the approved U2 baseline. Four
+  // of the five
   // pipelines compiled from this module (full-resolution march, beer-shadow
-  // map, cascade atlas, god-ray mask) compile it at `definesHi = 0`; if that
-  // text is the historical text, their register footprint is the historical
-  // footprint, whatever the emitting variant costs.
+  // map, cascade atlas, god-ray mask) compile it at `definesHi = 0`. They must
+  // share the corrected density law, but may not silently grow beyond it,
+  // whatever the emitting variant costs.
   const code = codeOnly(defaultVariant(marchWgsl));
+  assert.equal(
+    codeOnly("let sentinel = 1.0; // rewritten prose"),
+    "let sentinel = 1.0;",
+    "the code-only pin must ignore trailing comments as well as whole lines",
+  );
   assert.equal(
     code.split("\n").length,
     MARCH_DEFAULT_CODE_LINES,
-    "the default variant gained or lost CODE lines — a //>>else stopped being the historical path",
+    "the default variant gained or lost CODE lines — review the shared-density-law constraint",
   );
   assert.equal(
     crypto.createHash("sha256").update(code).digest("hex"),
     MARCH_DEFAULT_CODE_SHA256,
-    "the default march variant is no longer byte-identical to the pre-C13-10 module",
+    "the default march variant drifted from the approved C13-16 baseline",
   );
   // ...and the variant must actually DO something, or the pin above is
   // pinning a no-op.
@@ -998,7 +1017,7 @@ test("F3 the WGSL and the TS twin are the SAME estimator, character for characte
   ]) {
     assert.ok(
       source.includes("return t0 + 0.5 * span;"),
-      `${name} alpha->0 limit`,
+      `${name} positive alpha->0 limit`,
     );
     assert.ok(
       source.includes("return -1.0;"),
@@ -1012,6 +1031,10 @@ test("F3 the WGSL and the TS twin are the SAME estimator, character for characte
       `${name} snaps to t0 — see the estimator's own note on why that is a discontinuity`,
     );
   }
+  assert.ok(
+    producerWgsl.includes("interval.x >= 0.0 && alpha > 0.0"),
+    "the fallback producer must keep both depth channels at -1 for zero alpha",
+  );
   // Both floors are the SAME numbers, or the twin stops predicting the shader.
   assert.ok(producerWgsl.includes("MIN_RESOLVED_ALPHA: f32 = 1.0e-4;"));
   assert.ok(producerWgsl.includes("MIN_RESOLVED_TRANSMITTANCE: f32 = 1.0e-6;"));

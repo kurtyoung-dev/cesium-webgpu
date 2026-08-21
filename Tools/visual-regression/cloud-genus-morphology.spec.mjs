@@ -418,8 +418,12 @@ test("MUTATION: the shader wiring cannot be silently unhooked", () => {
       `${name} must apply the genus fibre factor`,
     );
     // MUTATION: strip the call and the same check must fail.
+    const mutated = body.replace(
+      /genusFibreFactor\((samplePos|morphologyCoordinate), heightFraction\)/,
+      "1.0",
+    );
     assert.doesNotMatch(
-      body.replace(/genusFibreFactor\([^)]*\) \*\n?\s*/g, ""),
+      mutated,
       /genusFibreFactor\((samplePos|morphologyCoordinate), heightFraction\)/,
     );
   }

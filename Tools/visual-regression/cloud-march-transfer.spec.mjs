@@ -849,34 +849,44 @@ describe("C13-16 R7 budget — the candidate reads its inputs from shipped artif
     );
   });
 
-  it("is NOT a twin of shipped code — the shader implements none of it", () => {
-    // THE NEGATIVE IDENTITY PIN. Everywhere else in this fleet a model function
-    // is pinned to the shader expression it mirrors. Here the claim is the
-    // opposite one and it is just as load-bearing: the budget is a CANDIDATE,
-    // R7's evaluation of it is the deliverable, and nothing was shipped. If
-    // someone later lands the mechanism, this test fails and forces the model to
-    // be repointed at the real expression instead of quietly becoming a fiction.
+  it("pins the model-approved operating point to the local WGSL candidate", () => {
+    // The old NEGATIVE identity pin fulfilled its purpose: U2 is implemented
+    // locally, so this is now a positive identity pin. The focused composition spec carries
+    // the full ordering/mutation proof; this group keeps the transfer model's
+    // four candidate values attached to the artifact it predicts.
     const shaderPath = path.resolve(
       path.dirname(fileURLToPath(import.meta.url)),
       "../../packages/engine/Source/Shaders/WebGPU/Environment/ProceduralClouds.wgsl",
     );
     const source = fs.readFileSync(shaderPath, "utf8");
-    for (const symbol of [
-      "baseVarianceBudget",
-      "genusBaseVarianceBudget",
-      "budgetPivot",
-      "gateMeanQuantile",
-    ]) {
-      assert.equal(
-        source.includes(symbol),
-        false,
-        `${symbol} appeared in ProceduralClouds.wgsl — the budget has been ` +
-          `SHIPPED. Repoint this model at the shipped expression and replace ` +
-          `this negative pin with a real identity pin.`,
-      );
-    }
-    // And the three morphology functions the row DID ship are still there, so a
-    // path typo cannot make the assertion above pass vacuously.
+    assert.ok(
+      source.includes(`const GENUS_BASE_FIELD_MEAN: f32 = ${BASE_FIELD_MEAN};`),
+    );
+    assert.ok(
+      source.includes(
+        `const GENUS_BASE_VARIANCE_BUDGET: f32 = ${U2_CANDIDATE.baseVarianceBudget};`,
+      ),
+    );
+    assert.ok(
+      source.includes(
+        `const GENUS_BASE_VARIANCE_DOWN_WEIGHT: f32 = ${U2_CANDIDATE.budgetDownWeight};`,
+      ),
+    );
+    assert.ok(
+      source.includes(
+        `const GENUS_EROSION_COMPENSATION: f32 = ${U2_CANDIDATE.erosionCompensation};`,
+      ),
+    );
+    assert.ok(source.includes("fn applyGenusBaseVarianceBudget"));
+    assert.ok(source.includes("fn genusErosionDepthScale"));
+    assert.equal(U2_CANDIDATE.budgetPivotQuantile, BASE_FIELD_MEAN);
+    assert.equal(
+      source.includes("gateMeanQuantile"),
+      false,
+      "U1's coverage-response refinement was explicitly not a prerequisite",
+    );
+    // The original morphology functions are also pinned so a path typo cannot
+    // make the assertions above pass against an unrelated file.
     for (const symbol of [
       "fn genusFibreFactor",
       "fn genusErosionHeightWeight",
@@ -922,7 +932,7 @@ describe("C13-16 R7 budget — the candidate is inert at its default", () => {
   });
 });
 
-describe("C13-16 R7 budget — the PIVOT a mean-neutral budget needs cannot be a constant", () => {
+describe("C13-16 R7 budget — the mean-neutral pivot varies with coverage", () => {
   it("measures the gate's own mean, and it moves with coverage", () => {
     const probe = gateMean(cloudEffectiveCoverage(PROBE_MARCH.coverage));
     const fixture = gateMean(
@@ -954,12 +964,13 @@ describe("C13-16 R7 budget — the PIVOT a mean-neutral budget needs cannot be a
     assert.ok(Math.abs(samples[0] - 0.6049) < 0.01);
     assert.ok(Math.abs(samples[3] - 0.4931) < 0.005);
     assert.ok(Math.abs(samples[4] - BASE_FIELD_MEAN) < 0.005);
-    // The spread is what refutes the constant: 0.12 of base-field value across
-    // a field whose own sigma is ~0.115.
+    // The spread refutes a constant as a MEAN-NEUTRAL pivot: 0.12 of base-field
+    // value across a field whose own sigma is ~0.115. It does not refute U2's
+    // deliberate lower-weight constant-pivot trade-off, scored separately.
     assert.ok(samples[0] - samples[4] > 0.1);
   });
 
-  it("shipping the probe's pivot as a constant costs the fixture another 14 points", () => {
+  it("the Batch-896 probe-pivot constant costs the fixture another 14 points", () => {
     const exactDelta = fixtureOpacityDelta({ baseVarianceBudget: 0.85 });
     const constantDelta = fixtureOpacityDelta({
       baseVarianceBudget: 0.85,
@@ -1282,8 +1293,9 @@ describe("C13-16 R7 budget — MUTATION: every new lever must be READ", () => {
 // Batch 896 ended at a STOP and listed what would lift it. Both items are now
 // levers in the model and both have been swept. The STOP lifts for the PAIR
 // (reorder + genus-conditioned erosion compensation), and the R7 unblocker U1
-// turns out not to be needed at all. Nothing is shipped: this is still a design
-// instrument, and the negative shader pin below is extended to say so.
+// turns out not to be needed at all. The U2 point is now the local WGSL law; the
+// model's default remains the historical pre-U2 composition so the measured
+// Batch-857 validation and the before/after frontier stay reproducible.
 // ───────────────────────────────────────────────────────────────────────────
 
 /** R7's bars again, so the U2 groups score against the SAME numbers. */
@@ -1299,30 +1311,32 @@ const U2_GATE_D_WINDOW = Object.freeze([60, 120]);
  */
 const FIXTURE_RECORDED_GROUND_FRACTION = 0.0028;
 
-describe("U2-REORDER — the composition change, defined against the SHIPPED order", () => {
-  it("the SHIPPED shader still carves AFTER the erosion clamp", () => {
-    // The reorder is only a delta if the thing it is a delta FROM is still
-    // there. `legacyCloudDensity` must still clamp to zero and only then
-    // multiply the fibre factor in its trailing product. If this order ever
-    // changes in the shader, `carveBeforeErosion: false` has stopped meaning
-    // "shipped" and every number in these groups is measured against a fiction.
+describe("U2-REORDER — the composition change, defined against the historical order", () => {
+  it("the local shader has the approved carve-before-erosion composition", () => {
+    // The model's false setting now means HISTORICAL rather than the local
+    // candidate. The WGSL must carry the approved U2 order while retaining the baked route's
+    // remap spelling; changing remap to subtractive was evaluated and rejected.
     const shaderPath = path.resolve(
       path.dirname(fileURLToPath(import.meta.url)),
       "../../packages/engine/Source/Shaders/WebGPU/Environment/ProceduralClouds.wgsl",
     );
     const source = fs.readFileSync(shaderPath, "utf8");
-    const start = source.indexOf("fn legacyCloudDensity(");
-    assert.ok(start > 0, "legacyCloudDensity not found");
-    const body = source.slice(start, source.indexOf("\nfn ", start + 10));
-    const clampAt = body.indexOf("density = max(density, 0.0);");
-    const carveAt = body.indexOf("genusFibreFactor(samplePos, heightFraction)");
+    const legacyStart = source.indexOf("fn legacyCloudDensity(");
+    assert.ok(legacyStart > 0, "legacyCloudDensity not found");
+    const legacy = source.slice(
+      legacyStart,
+      source.indexOf("\nfn ", legacyStart + 10),
+    );
+    const clampAt = legacy.indexOf("density = max(density, 0.0);");
+    const carveAt = legacy.indexOf("density *= genusFibre;");
     assert.ok(clampAt > 0, "the subtractive erosion's zero clamp is gone");
     assert.ok(carveAt > 0, "the fibre carve is gone from legacyCloudDensity");
     assert.ok(
-      clampAt < carveAt,
-      "legacyCloudDensity now carves BEFORE the clamp — the U2 reorder has " +
-        "been SHIPPED. Repoint the model's default and re-baseline these groups.",
+      carveAt < clampAt,
+      "legacyCloudDensity regressed to carving after the zero clamp",
     );
+    assert.match(legacy, /applyGenusBaseVarianceBudget\(/);
+    assert.match(legacy, /genusErosionDepthScale\(\)/);
     // And the BAKED route's remap spelling is still the other shipped one, which
     // is what `erosionMode` exists to express.
     assert.ok(source.includes("remap(density, erosionLo, 1.0, 0.0, 1.0)"));
@@ -1488,28 +1502,28 @@ describe("U2 — the EROSION MODE finding: the two shipped routes disagree", () 
   });
 });
 
-describe("U2 — the SIGN-OFF candidate clears every R7 bar", () => {
+describe("U2 — the constant-pivot LOCAL candidate clears every R7 bar", () => {
   const scored = () => candidate(U2_CANDIDATE, { scan: true });
 
-  it("gate C: CIRRUS 1.733 against the 1.6 floor, ratio 2.072 against 1.4", () => {
+  it("gate C: CIRRUS 1.702 against the 1.6 floor, ratio 2.035 against 1.4", () => {
     const s = scored();
-    assert.ok(Math.abs(s.cirrus - 1.733) < R7_ELONGATION_PIN, `${s.cirrus}`);
+    assert.ok(Math.abs(s.cirrus - 1.702) < R7_ELONGATION_PIN, `${s.cirrus}`);
     assert.ok(s.cirrus >= U2_GATE_C_FLOOR);
     assert.ok(s.cirrusOverCumulus >= U2_GATE_C_RATIO);
     assert.ok(
-      Math.abs(s.cirrusOverCumulus - 2.072) < R7_ELONGATION_PIN,
+      Math.abs(s.cirrusOverCumulus - 2.035) < R7_ELONGATION_PIN,
       `${s.cirrusOverCumulus}`,
     );
   });
 
-  it("gate D: the argmax sits on the true wind axis with a 1.38x margin", () => {
+  it("gate D: the argmax sits on the true wind axis with a 1.43x margin", () => {
     const s = scored();
     assert.ok(
       s.argmaxDeg >= U2_GATE_D_WINDOW[0] && s.argmaxDeg <= U2_GATE_D_WINDOW[1],
       `argmax ${s.argmaxDeg}`,
     );
-    assert.ok(Math.abs(s.argmaxMargin - 1.456) < 0.05, `${s.argmaxMargin}`);
-    // The baseline is a 1.02x near-tie, i.e. the shipped composition is one
+    assert.ok(Math.abs(s.argmaxMargin - 1.432) < 0.05, `${s.argmaxMargin}`);
+    // The baseline is a 1.02x near-tie, i.e. the historical composition is one
     // percent of noise away from the 60 deg the probe actually measured. The
     // candidate is not.
     const baseline = candidate({}, { scan: true });
@@ -1521,37 +1535,35 @@ describe("U2 — the SIGN-OFF candidate clears every R7 bar", () => {
     assert.ok(s.stepCirrusCirrostratus >= U2_GATE_E_STEP);
     assert.ok(s.stepCirrostratusCirrocumulus >= U2_GATE_E_STEP);
     assert.ok(
-      Math.abs(s.stepCirrusCirrostratus - 1.644) < R7_ELONGATION_PIN,
+      Math.abs(s.stepCirrusCirrostratus - 1.619) < R7_ELONGATION_PIN,
       `${s.stepCirrusCirrostratus}`,
     );
     assert.ok(
-      Math.abs(s.stepCirrostratusCirrocumulus - 1.121) < R7_ELONGATION_PIN,
+      Math.abs(s.stepCirrostratusCirrocumulus - 1.119) < R7_ELONGATION_PIN,
       `${s.stepCirrostratusCirrocumulus}`,
     );
   });
 
-  it("opacity: +4.4% at the gate configuration, -10.2% at the tour fixture", () => {
+  it("opacity: +3.2% at the gate configuration, -13.2% at the tour fixture", () => {
     const s = scored();
     assert.ok(
-      Math.abs(s.probeOpacityDelta - 0.044) < R7_OPACITY_PIN,
+      Math.abs(s.probeOpacityDelta - 0.032) < R7_OPACITY_PIN,
       `${s.probeOpacityDelta}`,
     );
     assert.ok(
-      Math.abs(s.fixtureOpacityDelta + 0.102) < R7_OPACITY_PIN,
+      Math.abs(s.fixtureOpacityDelta + 0.132) < R7_OPACITY_PIN,
       `${s.fixtureOpacityDelta}`,
     );
-    // Both are "a few percent" in R7's wording, and NEITHER is within a strict
-    // 3%. The candidate is not the cheapest point on the frontier — it is the
-    // cheapest one whose gate-C margin clears the model's own validated band,
-    // which is the constraint that actually decides whether an Edge run is worth
-    // spending. The cheaper balanced point is pinned in the frontier group.
+    // The gate configuration remains close to R7's "few percent" wording, while
+    // the thin tour fixture pays a materially larger cost. The browser item-6
+    // floor is therefore load-bearing; this model result is not a visual pass.
     assert.ok(s.probeOpacityDelta > 0 && s.fixtureOpacityDelta < 0);
   });
 
   it("the tour fixture's FLOOR is predicted to hold with margin", () => {
     const s = scored();
     assert.ok(
-      Math.abs(s.fixtureTailDelta + 0.078) < R7_OPACITY_PIN,
+      Math.abs(s.fixtureTailDelta + 0.127) < R7_OPACITY_PIN,
       `${s.fixtureTailDelta}`,
     );
     const predicted =
@@ -1560,9 +1572,10 @@ describe("U2 — the SIGN-OFF candidate clears every R7 bar", () => {
       predicted > TOUR_CIRRUS_FIXTURE.minChangedFraction,
       `predicted ground changedFraction ${predicted} is under the floor`,
     );
-    // ~0.00258 against 0.002, i.e. 29% of margin. Batch 896's best gate-C point
-    // predicted 0.00159 — UNDER the floor. That reversal is the whole result.
-    assert.ok(predicted > 0.00255, `${predicted}`);
+    // ~0.00244 against 0.002, i.e. about 22% of margin. Batch 896's best gate-C
+    // point predicted 0.00159 — UNDER the floor. Browser acceptance must now
+    // decide whether this smaller constant-pivot margin survives the real image.
+    assert.ok(predicted > 0.00243, `${predicted}`);
   });
 
   it("leaves CUMULUS byte-identical", () => {
@@ -1571,41 +1584,43 @@ describe("U2 — the SIGN-OFF candidate clears every R7 bar", () => {
 });
 
 describe("U2 — U1 is a refinement, not a prerequisite", () => {
-  it("the exact per-coverage pivot buys margin, and the candidate passes without it", () => {
+  it("the dynamic per-coverage pivot buys margin over the exact WGSL constant", () => {
     // R7's unblocker U1 was "ship a `cloudGateMean(cEff)` response so the budget
     // can be mean-neutral at every coverage". At Batch 896's budget weight
     // (0.45) that was load-bearing: a constant pivot cost another 14 points at
-    // the fixture. At the PAIR's much smaller weight (0.24) it is worth ~3.6
-    // points of fixture tail, and every gate still passes without it — so U1
-    // comes off the critical path.
-    const exact = candidate(U2_CANDIDATE, { scan: false });
-    const plain = candidate(
-      { ...U2_CANDIDATE, budgetPivotQuantile: BASE_FIELD_MEAN },
+    // the fixture. At the PAIR's much smaller weight (~0.29) the dynamic pivot
+    // is useful but not required. U2_CANDIDATE explicitly carries BASE_FIELD_MEAN
+    // so every headline score above is the exact law in WGSL; deleting that one
+    // property below opts into the research-only dynamic refinement.
+    const local = candidate(U2_CANDIDATE, { scan: false });
+    const dynamic = candidate(
+      { ...U2_CANDIDATE, budgetPivotQuantile: undefined },
       { scan: false },
     );
-    assert.ok(plain.cirrus >= U2_GATE_C_FLOOR, `${plain.cirrus}`);
-    assert.ok(plain.stepCirrostratusCirrocumulus >= U2_GATE_E_STEP);
+    assert.ok(local.cirrus >= U2_GATE_C_FLOOR, `${local.cirrus}`);
+    assert.ok(local.stepCirrusCirrostratus >= U2_GATE_E_STEP);
+    assert.ok(local.stepCirrostratusCirrocumulus >= U2_GATE_E_STEP);
     const predicted =
-      FIXTURE_RECORDED_GROUND_FRACTION * (1 + plain.fixtureTailDelta);
+      FIXTURE_RECORDED_GROUND_FRACTION * (1 + local.fixtureTailDelta);
     assert.ok(
       predicted > TOUR_CIRRUS_FIXTURE.minChangedFraction,
-      `plain-pivot floor prediction ${predicted}`,
+      `constant-pivot floor prediction ${predicted}`,
     );
-    // The exact pivot is BETTER at the fixture — that is its value, stated as a
-    // number so "U1 is optional" is a measured claim and not a shrug.
+    // The dynamic pivot is BETTER at the fixture — that is its value, stated as
+    // a number so "U1 is optional" is a measured claim and not a shrug.
     assert.ok(
-      exact.fixtureTailDelta > plain.fixtureTailDelta,
-      "the exact pivot should spare the fixture",
+      dynamic.fixtureTailDelta > local.fixtureTailDelta,
+      "the dynamic pivot should spare the fixture",
     );
+    assert.ok(dynamic.cirrus > local.cirrus);
   });
 });
 
-describe("U2 — VALIDATION splits: shipped matches measurements, reordered is PRE-REGISTERED", () => {
-  it("the SHIPPED-composition model still reproduces the measured run", () => {
-    // MUST HOLD. `carveBeforeErosion` defaults to false, so the Batch-857
-    // five-lane validation is untouched by any of this; re-asserted here because
-    // the composition lever is exactly the kind of thing that silently
-    // re-baselines a validation.
+describe("U2 — VALIDATION splits: historical matches measurements, U2 was pre-registered", () => {
+  it("the HISTORICAL-composition model still reproduces the measured run", () => {
+    // MUST HOLD. `carveBeforeErosion` defaults to false in the model so the
+    // Batch-857 pre-U2 validation remains a stable ground-truth reference; the
+    // local U2 operating point is U2_CANDIDATE and is scored separately.
     const worst = worstErrors();
     assert.ok(worst.elongation <= THICK_ELONGATION_TOLERANCE);
     assert.ok(worst.halfLength <= HALF_LENGTH_RELATIVE_TOLERANCE);
@@ -1617,9 +1632,9 @@ describe("U2 — VALIDATION splits: shipped matches measurements, reordered is P
     }
   });
 
-  it("the REORDERED predictions are NOT validated, and must not be compared to the measured run", () => {
-    // The reordered model predicts a DIFFERENT IMAGE from the one the product
-    // renders today, so agreement with `MEASURED_SCREEN_ELONGATION` would mean
+  it("the U2 predictions differ from the historical measured run as pre-registered", () => {
+    // The reordered model predicts a DIFFERENT IMAGE from the pre-U2 recorded
+    // run, so agreement with `MEASURED_SCREEN_ELONGATION` would mean
     // the composition change had done nothing. This asserts the DISagreement, so
     // nobody later reads the reordered numbers as validated.
     const reordered = candidate(U2_CANDIDATE, { scan: false });
@@ -1629,14 +1644,14 @@ describe("U2 — VALIDATION splits: shipped matches measurements, reordered is P
       if (name === "CIRRUS") {
         assert.ok(
           Math.abs(model - measured) > THIN_ELONGATION_TOLERANCE,
-          `${name}: the reordered prediction must NOT match the shipped ` +
+          `${name}: the reordered prediction must NOT match the historical ` +
             `measurement, or the composition change is a no-op`,
         );
       }
     }
     // CUMULUS is the exception and must still match — it is the byte-identity
     // lane, so the reordered model has to keep reproducing the measured run
-    // there exactly as the shipped model does.
+    // there exactly as the historical model does.
     assert.ok(
       Math.abs(
         reordered.elongation.CUMULUS -
@@ -1651,12 +1666,13 @@ describe("U2 — the RESIDUAL frontier: the STOP lifted, it did not vanish", () 
    * Batch 896's frontier ran from (+1.2%, -47.5%) to (+26.1%, +2.9%) with no
    * feasible point. The pair moves the whole curve, but a curve is still what it
    * is: at gate-C-passing elongation the two opacity surfaces still trade, at
-   * about 1:1.7. These rows are the new shape.
+   * about 1:1.6 on the exact constant-pivot local WGSL law. These rows are the new
+   * shape; the dynamic-pivot research frontier remains historical evidence.
    */
   const U2_FRONTIER = [
-    { compensation: 0.55, probe: 0.029, fixture: -0.126 },
-    { compensation: 0.6, probe: 0.044, fixture: -0.102 },
-    { compensation: 0.65, probe: 0.058, fixture: -0.079 },
+    { compensation: 0.55, probe: 0.018, fixture: -0.154 },
+    { compensation: 0.6, probe: 0.032, fixture: -0.132 },
+    { compensation: 0.65, probe: 0.047, fixture: -0.109 },
   ];
 
   for (const row of U2_FRONTIER) {
@@ -1678,10 +1694,9 @@ describe("U2 — the RESIDUAL frontier: the STOP lifted, it did not vanish", () 
   }
 
   it("no point is within 3% at BOTH configurations — the residual", () => {
-    // Honest about what did NOT close. R7's opacity wording is "a few percent";
-    // the candidate is +4.8 / -5.8, which is a few percent on both. A STRICT 3%
-    // reading is still not reachable, and saying so here stops the candidate
-    // from being sold as tighter than it is.
+    // Honest about what did NOT close. The local constant-pivot candidate is
+    // +3.2 / -13.2, and no compensation row is within a strict 3% at both
+    // surfaces. Saying so here stops it from being sold as tighter than it is.
     for (const row of U2_FRONTIER) {
       const s = candidate(
         { ...U2_CANDIDATE, erosionCompensation: row.compensation },

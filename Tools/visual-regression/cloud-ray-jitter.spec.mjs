@@ -112,17 +112,9 @@ test("the f32 IGN field is spatially balanced and temporally decorrelated", () =
 test("tier intent and renderer wiring carry QF_JITTER without changing the escape route", () => {
   assert.match(tiers, /CLOUD_QF_JITTER\s*=\s*1\s*<<\s*3/);
 
-  const low = sourceSection(
-    tiers,
-    "// T1 Volumetric-Low",
-    "// T2 Volumetric-High",
-  );
-  const medium = sourceSection(
-    tiers,
-    "// T2 Volumetric-High",
-    "// T3 Cinematic",
-  );
-  const high = sourceSection(tiers, "// T3 Cinematic", "];");
+  const low = sourceSection(tiers, "tier: 1,", "tier: 2,");
+  const medium = sourceSection(tiers, "tier: 2,", "tier: 3,");
+  const high = sourceSection(tiers, "tier: 3,", "];");
   const escape = sourceSection(
     tiers,
     'if (typeof raw === "number" && raw !== 64)',
@@ -175,7 +167,7 @@ test("the shader uses pixel-local IGN, a temporal-only animation phase, and an e
   const phaseHelper = sourceSection(
     shader,
     "fn cloudRaySamplePhase(",
-    "// ─── Full-screen triangle",
+    "fn vertexMain(",
   );
   assert.match(phaseHelper, /QF_JITTER/);
   assert.match(phaseHelper, /return 0\.5;/);
@@ -189,7 +181,7 @@ test("the shader uses pixel-local IGN, a temporal-only animation phase, and an e
   const fragment = sourceSection(
     shader,
     "fn fragmentMain(input: VertexOutput)",
-    "// ─── TAKRAM-9",
+    "fn fragmentCloudMaskMain(",
   );
   assert.match(
     fragment,

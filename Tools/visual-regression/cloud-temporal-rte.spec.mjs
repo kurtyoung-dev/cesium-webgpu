@@ -682,9 +682,7 @@ test("temporal layout stays within one 256-byte row and bind groups are not allo
   const ensureStart = rendererSource.indexOf(
     "function ensureTemporalResources(",
   );
-  const executeStart = rendererSource.indexOf(
-    "// C13-05 — compare with the last frame",
-  );
+  const executeStart = rendererSource.indexOf("const temporalResetReasons =");
   const temporalPassStart = rendererSource.indexOf(
     "const temporalPass = encoder.beginRenderPass",
     executeStart,

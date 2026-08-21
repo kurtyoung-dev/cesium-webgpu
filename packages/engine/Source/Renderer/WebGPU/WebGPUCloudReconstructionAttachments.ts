@@ -399,11 +399,13 @@ export function cloudAttachmentGenerationIsCurrent(
  *
  *     E[t] = t0 + 1/s - L * (1 - alpha) / alpha.
  *
- * Two limits matter. As `alpha -> 0` the estimator tends to the interval
- * midpoint — a uniformly thin interval has its mass in the middle — and that
- * limit is a branch, because the two terms both diverge like `span / alpha`
- * and their difference loses most of its significant digits below
- * `alpha ~ 1e-4`. The branch is continuous with the formula at its threshold.
+ * Two limits matter. An exact zero alpha means the ray carries no cloud and
+ * returns the `-1` sentinel. As positive `alpha -> 0` the estimator tends to
+ * the interval midpoint — a uniformly thin interval has its mass in the middle
+ * — and that limit is a branch, because the two terms both diverge like
+ * `span / alpha` and their difference loses most of its significant digits
+ * below `alpha ~ 1e-4`. The positive-alpha branch is continuous with the
+ * formula at its threshold.
  *
  * As `alpha -> 1` the estimator tends toward `t0`, but only logarithmically:
  * at `alpha = 1 - 1e-4` it is still ~11% of the interval past the entry point.
@@ -415,8 +417,8 @@ export function cloudAttachmentGenerationIsCurrent(
  * inside the deck, which is both continuous and closer to what an opaque cloud
  * looks like than the entry plane is.
  *
- * Returns `-1` for an empty interval so callers propagate "no cloud" rather
- * than a plausible-looking zero.
+ * Returns `-1` for an empty interval or zero alpha so callers propagate "no
+ * cloud" rather than a plausible-looking distance.
  *
  * This is an estimator, not an accumulation, and is exact only for uniform
  * extinction inside the interval. It is nonetheless the default rather than a
@@ -440,6 +442,9 @@ export function cloudTransmittanceWeightedDepth(
     return -1.0;
   }
   const a = Math.min(Math.max(alpha, 0.0), 1.0);
+  if (a === 0.0) {
+    return -1.0;
+  }
   if (a <= CLOUD_WEIGHTED_DEPTH_MIN_ALPHA) {
     return t0 + 0.5 * span;
   }

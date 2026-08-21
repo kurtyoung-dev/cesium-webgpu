@@ -73,9 +73,12 @@
  * ATTRIBUTION lever, and the scoring entry point is
  * {@link scoreBudgetCandidate}.
  *
- * NONE OF IT IS A SHIPPED PATH, and the sweep is the reason: no candidate
- * satisfies R7's four conditions while leaving the tour fixture's coverage floor
- * intact. Two nonlinearities stand downstream of the budget and neither is
+ * THE R7-ONLY SWEEP WAS NOT SHIPPED, and the sweep is the reason: no candidate
+ * satisfied R7's four conditions while leaving the tour fixture's coverage
+ * floor intact. U2 below later supplied the missing composition pair and is the
+ * locally implemented operating point awaiting browser acceptance and landing.
+ * Two nonlinearities stand downstream of the
+ * original budget and neither is
  * visible from the base field:
  *
  *   1. the COVERAGE GATE `smoothstep(1 - cEff, 1, base)`, which makes a
@@ -133,11 +136,14 @@
  * two shipped routes disagreeing about the composition R7's budget fights is
  * worth having in an executable form.
  *
- * {@link U2_CANDIDATE} is the recommended operating point. `budgetPivotQuantile`
- * is deliberately NOT part of it: at the much smaller budget weight the pair
- * needs (0.24 against 0.45), the exact per-coverage pivot buys 3.6 points of
- * fixture tail and the design passes without it, so the R7 unblocker "ship a
- * `cloudGateMean(cEff)` response" is a refinement and no longer a prerequisite.
+ * {@link U2_CANDIDATE} is the exact locally implemented operating point. Its
+ * `budgetPivotQuantile` is the derived constant {@link BASE_FIELD_MEAN}, matching
+ * `GENUS_BASE_FIELD_MEAN` in WGSL. At the pair's smaller budget weight the
+ * dynamic per-coverage pivot buys additional fixture-tail margin, but the
+ * constant-pivot design still clears the model gates without a response LUT or
+ * extra hot-path resource access. The R7 unblocker "ship a
+ * `cloudGateMean(cEff)` response" therefore remains a refinement rather than a
+ * prerequisite.
  */
 
 import CloudType from "../../../packages/engine/Source/Scene/CloudType.js";
@@ -317,9 +323,9 @@ export const EROSION_REMAP = "remap";
  * the tour fixture's floor) is a CURVE along this axis, and a frontier stated as
  * two isolated points invites the reply "you did not look in between".
  *
- * NOT A SHIPPED PATH. Nothing in `ProceduralClouds.wgsl` implements any of this;
- * `cloud-march-transfer.spec.mjs` asserts that negatively so the candidate
- * cannot quietly become a twin of code that does not exist.
+ * HISTORICAL R7 STUDY LEVER. The local U2 WGSL now uses one point on this
+ * continuum (`GENUS_BASE_VARIANCE_DOWN_WEIGHT = 0.25`); the exported endpoints
+ * remain the executable controls that define and falsify the frontier.
  */
 export const BUDGET_DOWN_WEIGHT_SYMMETRIC = 1;
 export const BUDGET_DOWN_WEIGHT_UP_ONLY = 0;
@@ -732,11 +738,12 @@ export function buildModelParameters(overrides = {}) {
   p.budgetWeight = baseVarianceBudgetWeight(p.row, p.baseVarianceBudget, {
     useAspect: p.budgetUseAspect,
   });
-  // The pivot that makes the budget mean-NEUTRAL in the gate: the base-field
-  // quantile whose gate value equals the gate's own mean at THIS effective
-  // coverage. Measured from the shipped `fbmNoise`, never authored. An override
-  // is how the "what if a single constant were shipped instead" study is run,
-  // and that study is the one that refutes the constant.
+  // The default is the research pivot that makes the budget mean-NEUTRAL in the
+  // gate: the base-field quantile whose gate value equals the gate's own mean at
+  // THIS effective coverage. An explicit override selects a constant-pivot
+  // shader twin. The high-weight Batch-896 study refuted a constant as
+  // mean-neutral/fixture-safe at that operating point; U2_CANDIDATE deliberately
+  // selects BASE_FIELD_MEAN at a smaller weight and scores that exact local law.
   p.budgetPivotQuantile =
     overrides.budgetPivotQuantile ??
     (p.budgetWeight > 0 ? gateMeanQuantile(p.effectiveCoverage) : 0);
@@ -1118,20 +1125,25 @@ export function columnOpacityExceedance(
  * the thin lanes to 0.1, so a candidate whose predicted elongation is 1.65
  * predicts a MEASURED value of 1.60 with a band that straddles gate C's floor —
  * a coin flip, and not something to spend an Edge run on. This point predicts
- * 1.733, i.e. a residual-corrected 1.679 with the whole +/-0.1 band above 1.6.
+ * 1.702, i.e. a residual-corrected 1.648 with the model centre above 1.6 while
+ * the conservative failure band still reaches below it; browser gate C is
+ * therefore decisive rather than pre-certified by the model.
  *
- * The balanced point (`baseVarianceBudget` 0.45, `erosionCompensation` 0.667)
- * is cheaper on opacity — +4.8% / -5.8% against this point's +4.4% / -10.2% —
- * and was rejected for exactly that band reason. Both are on the frontier the
- * spec pins; the trade between the two opacity surfaces still runs about 1:1.7.
+ * The dynamic-pivot study remains useful research, but it is not the local WGSL
+ * twin. The exact constant-pivot point costs +3.2% / -13.2% mean opacity at the
+ * gate/tour configurations and predicts the tour tail at -12.7%. Those are the
+ * values the sign-off spec pins and the browser acceptance must confirm.
  *
- * NOT SHIPPED. This is a model record so the numbers a sign-off would rest on
- * are executable rather than transcribed.
+ * LOCAL 2026-08-09; UNCOMMITTED, BROWSER ACCEPTANCE AND LANDING OWED. The model
+ * retains the historical composition as its default because the pre-U2 browser
+ * measurements validate that baseline; callers select this object to predict
+ * and verify the locally implemented, uncommitted WGSL law.
  */
 export const U2_CANDIDATE = Object.freeze({
   carveBeforeErosion: true,
   baseVarianceBudget: 0.55,
   budgetDownWeight: 0.25,
+  budgetPivotQuantile: BASE_FIELD_MEAN,
   erosionCompensation: 0.6,
 });
 

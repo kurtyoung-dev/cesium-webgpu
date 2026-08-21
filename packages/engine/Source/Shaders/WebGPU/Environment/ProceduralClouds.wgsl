@@ -852,6 +852,65 @@ fn genusFibreFactor(sp: vec3<f32>, h: f32) -> f32 {
   return clamp(1.0 - carve, 0.0, 1.0);
 }
 
+// Model-approved fibre-composition constants. These are global authored
+// constants rather than new uniforms because the operating point is one
+// composition law shared by every genus. The per-genus strength/aspect row is
+// still the gate: CUMULUS strength 0 takes the exact identity return below.
+const GENUS_BASE_FIELD_MEAN: f32 = 0.484375;
+const GENUS_BASE_VARIANCE_BUDGET: f32 = 0.55;
+const GENUS_BASE_VARIANCE_DOWN_WEIGHT: f32 = 0.25;
+const GENUS_EROSION_COMPENSATION: f32 = 0.6;
+
+// Spend a small, genus-conditioned variance budget after the coverage gate but
+// before the height profile and fibre carve. Pulling troughs toward the gated
+// field mean receives the full budget; pulling peaks down receives only 0.25 of
+// it, preserving the low-coverage upper tail the North Atlantic fixture needs.
+// The directionality term prevents a near-round fibrous genus from paying for
+// variance reduction that cannot reveal directional structure.
+fn applyGenusBaseVarianceBudget(
+  gatedDensity: f32,
+  coverageThreshold: f32,
+) -> f32 {
+  let strength = clamp(cloud.genusFibreStrength, 0.0, 1.0);
+  if (strength <= 0.0) {
+    return gatedDensity;
+  }
+  let aspect = max(cloud.genusFibreAnisotropy, 1.0);
+  let directionality = 1.0 - 1.0 / aspect;
+  let budgetWeight = clamp(
+    GENUS_BASE_VARIANCE_BUDGET * strength * directionality,
+    0.0,
+    1.0,
+  );
+  if (budgetWeight <= 0.0) {
+    return gatedDensity;
+  }
+  // Feeding the derived base-field mean through this coverage's own gate keeps
+  // the pivot coverage-aware without adding a response LUT or a uniform slot.
+  let pivot = smoothstep(
+    coverageThreshold,
+    1.0,
+    GENUS_BASE_FIELD_MEAN,
+  );
+  let weight = select(
+    budgetWeight,
+    budgetWeight * GENUS_BASE_VARIANCE_DOWN_WEIGHT,
+    pivot < gatedDensity,
+  );
+  return gatedDensity + (pivot - gatedDensity) * weight;
+}
+
+// The carve-before-erosion order sharpens filament gaps but removes mass. A
+// genus-conditioned reduction of erosion depth restores that mass without
+// moving CUMULUS or changing the existing height-dependent erosion profile.
+fn genusErosionDepthScale() -> f32 {
+  let strength = clamp(cloud.genusFibreStrength, 0.0, 1.0);
+  if (strength <= 0.0) {
+    return 1.0;
+  }
+  return 1.0 - GENUS_EROSION_COMPENSATION * strength;
+}
+
 // Height weighting of the subtractive detail erosion.
 //
 // Cumuliform erosion is base-weighted (`1 - h`): a convective water cloud has a
@@ -1224,9 +1283,9 @@ fn legacyCloudDensity(
   } else {
     density = fbmNoise(samplePos);
   }
-  density = smoothstep(
-    1.0 - cloudEffectiveCoverage(effectiveCoverage), 1.0, density
-  );
+  let coverageThreshold = 1.0 - cloudEffectiveCoverage(effectiveCoverage);
+  density = smoothstep(coverageThreshold, 1.0, density);
+  density = applyGenusBaseVarianceBudget(density, coverageThreshold);
 
   let hForGradient = clamp(
     (heightFraction - wch.baseShiftFrac) /
@@ -1238,6 +1297,8 @@ fn legacyCloudDensity(
     hForGradient, wch.perGenusShape, cloud.anvilBias
   );
   density *= heightGradient;
+  let genusFibre = genusFibreFactor(samplePos, heightFraction);
+  density *= genusFibre;
 
   if (noiseBakedEnabled()) {
     var detailPos = samplePos * 5.0;
@@ -1253,6 +1314,7 @@ fn legacyCloudDensity(
     let worleyDetail = 1.0 - detail.r;
     let erosionLo =
       worleyDetail * cloud.erosionStrength *
+      genusErosionDepthScale() *
       genusErosionHeightWeight(heightFraction);
     density = clamp(
       remap(density, erosionLo, 1.0, 0.0, 1.0), 0.0, 1.0
@@ -1261,7 +1323,8 @@ fn legacyCloudDensity(
     let worleyDetail = worleyF1(
       samplePos * 5.0 + windOffset * 0.001
     );
-    density -= worleyDetail * 0.18 * genusErosionHeightWeight(heightFraction);
+    density -= worleyDetail * 0.18 * genusErosionDepthScale() *
+      genusErosionHeightWeight(heightFraction);
     density = max(density, 0.0);
   }
 
@@ -1269,7 +1332,6 @@ fn legacyCloudDensity(
     cloud.densityMultiplier *
     cloud.profileDensityScale *
     wch.densityScale *
-    genusFibreFactor(samplePos, heightFraction) *
     mammatusFactor(samplePos, heightFraction) *
     speciesFactor(samplePos, heightFraction) *
     featureFactor(samplePos, heightFraction);
@@ -1306,9 +1368,9 @@ fn legacyCloudBaseDensity(
   } else {
     density = fbmNoise(samplePos);
   }
-  density = smoothstep(
-    1.0 - cloudEffectiveCoverage(effectiveCoverage), 1.0, density
-  );
+  let coverageThreshold = 1.0 - cloudEffectiveCoverage(effectiveCoverage);
+  density = smoothstep(coverageThreshold, 1.0, density);
+  density = applyGenusBaseVarianceBudget(density, coverageThreshold);
   let hForGradient = clamp(
     (heightFraction - wch.baseShiftFrac) /
       max(1.0 - wch.baseShiftFrac, 1e-3),
@@ -1319,11 +1381,12 @@ fn legacyCloudBaseDensity(
     hForGradient, wch.perGenusShape, cloud.anvilBias
   );
   density *= heightGradient;
+  let genusFibre = genusFibreFactor(samplePos, heightFraction);
+  density *= genusFibre;
   return density *
     cloud.densityMultiplier *
     cloud.profileDensityScale *
     wch.densityScale *
-    genusFibreFactor(samplePos, heightFraction) *
     mammatusFactor(samplePos, heightFraction) *
     speciesFactor(samplePos, heightFraction) *
     featureFactor(samplePos, heightFraction);
@@ -1376,9 +1439,9 @@ fn cloudMacroSampleAt(
   } else {
     density = fbmNoise(coordinates.canonical);
   }
-  density = smoothstep(
-    1.0 - cloudEffectiveCoverage(effectiveCoverage), 1.0, density
-  );
+  let coverageThreshold = 1.0 - cloudEffectiveCoverage(effectiveCoverage);
+  density = smoothstep(coverageThreshold, 1.0, density);
+  density = applyGenusBaseVarianceBudget(density, coverageThreshold);
 
   let hForGradient = clamp(
     (heightFraction - wch.baseShiftFrac) /
@@ -1389,12 +1452,13 @@ fn cloudMacroSampleAt(
   density *= heightGradientFor(
     hForGradient, wch.perGenusShape, cloud.anvilBias
   );
+  let genusFibre = genusFibreFactor(morphologyCoordinate, heightFraction);
+  density *= genusFibre;
 
   let factor =
     cloud.densityMultiplier *
     cloud.profileDensityScale *
     wch.densityScale *
-    genusFibreFactor(morphologyCoordinate, heightFraction) *
     mammatusFactor(morphologyCoordinate, heightFraction) *
     speciesFactor(morphologyCoordinate, heightFraction) *
     featureFactor(morphologyCoordinate, heightFraction);
@@ -1432,6 +1496,7 @@ fn cloudDensityFromMacro(
   let worleyDetail = 1.0 - detail.r;
   let erosionLo =
     worleyDetail * cloud.erosionStrength *
+    genusErosionDepthScale() *
     genusErosionHeightWeight(heightFraction);
   density = clamp(remap(density, erosionLo, 1.0, 0.0, 1.0), 0.0, 1.0);
   return density * sample.densityFactor;
