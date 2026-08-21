@@ -10,16 +10,16 @@ import { WebGPUComputePipelineCache } from "../../../Source/Renderer/WebGPU/WebG
 //
 // These specs cover the parts that DON'T need a device:
 //   - constructor + getStats() default shape
-//   - the documented cache-key format (name | layout-id | entryPoint |
-//     constants), exercised by pre-seeding the cache map at the key the
-//     pure key generator produces for a fresh cache
+//   - the documented cache-key format
+//     (name|l:<layout>|m:<module>|e:<entry>[|c:<constants>]), exercised by
+//     pre-seeding the cache map at the key the pure key generator produces
 //   - getPipelineSync() miss path (returns undefined, bumps misses) and
 //     hit path (pre-seeded, returns the entry, bumps hits)
 //   - has() / getCachedPipelineNames() on empty + seeded caches
 //   - getStats().hitRate accounting + size accounting
 //   - layout-identity dedup vs. "auto" no-dedup, observed via the hit
-//     path (same layout object → same key → hit; "auto" → fresh
-//     sentinel → miss)
+//     path (same layout and module objects → same key → hit; "auto"
+//     → fresh sentinel → miss)
 //   - clear() / destroy() / setAsyncResourceMonitor() device-free paths
 //
 // SKIPPED (device-bound — require a real GPUDevice/queue): getPipeline,
@@ -34,9 +34,9 @@ function makeCache(contextId, monitor) {
   );
 }
 
-// A descriptor with a real (non-"auto") layout object. On a fresh cache
-// the first layout observed is assigned identity 0 (layoutIdentityCounter
-// starts at 0), so its key is `${name}|l:0|e:${entryPoint}`.
+// A descriptor with a real (non-"auto") layout object. On a fresh cache,
+// the first layout observed is assigned identity 0. Module identities are
+// assigned independently, so keys are derived rather than assembled here.
 function makeDescriptor(name, entryPoint, layout, constants) {
   return {
     name: name,
@@ -55,11 +55,9 @@ function fakePipeline(tag) {
   return /** @type {any} */ ({ __fakePipeline: tag });
 }
 
-// Seed the private cache map at the key the pure generateCacheKey would
-// produce, so the hit path can be exercised without a device. Copied
-// verbatim from WebGPUComputePipelineCache.generateCacheKey:
-//   `${name}|l:${layoutId}|e:${entryPoint}${constantsKey}`
-// with constantsKey = `|c:${JSON.stringify(constants)}` when present.
+// Seed the private cache map at a key derived by the cache itself, so the
+// hit path can be exercised without a device. Keys have the shape
+// `name|l:<layout>|m:<module>|e:<entry>[|c:<constants>]`.
 function seed(cache, key, pipeline, descriptor) {
   cache.cache.set(key, {
     pipeline: pipeline,
@@ -120,8 +118,7 @@ describe("Renderer/WebGPU/WebGPUComputePipelineCache", function () {
       const layout = {};
       const desc = makeDescriptor("Fog_Density", "main", layout);
       const pipeline = fakePipeline("density");
-      // First non-"auto" layout on a fresh cache → identity 0.
-      seed(cache, "Fog_Density|l:0|e:main", pipeline, desc);
+      seed(cache, cache.generateCacheKey(desc), pipeline, desc);
 
       expect(cache.getPipelineSync(desc)).toBe(pipeline);
       const s = cache.getStats();
@@ -137,12 +134,7 @@ describe("Renderer/WebGPU/WebGPUComputePipelineCache", function () {
       const desc = makeDescriptor("Fog_Scatter", "cs", layout, constants);
       const pipeline = fakePipeline("scatter");
       // constantsKey = `|c:${JSON.stringify(constants)}`.
-      seed(
-        cache,
-        `Fog_Scatter|l:0|e:cs|c:${JSON.stringify(constants)}`,
-        pipeline,
-        desc,
-      );
+      seed(cache, cache.generateCacheKey(desc), pipeline, desc);
       expect(cache.getPipelineSync(desc)).toBe(pipeline);
       expect(cache.getStats().hits).toBe(1);
     });
@@ -151,10 +143,13 @@ describe("Renderer/WebGPU/WebGPUComputePipelineCache", function () {
       const cache = makeCache();
       const layout = {};
       const seeded = makeDescriptor("Fog_Density", "main", layout);
-      seed(cache, "Fog_Density|l:0|e:main", fakePipeline("d"), seeded);
+      seed(cache, cache.generateCacheKey(seeded), fakePipeline("d"), seeded);
 
-      // Same name + layout, different entry point → different key → miss.
-      const other = makeDescriptor("Fog_Density", "other", layout);
+      // Same name, layout, and module; a different entry point must miss.
+      const other = {
+        ...seeded,
+        compute: { ...seeded.compute, entryPoint: "other" },
+      };
       expect(cache.getPipelineSync(other)).toBeUndefined();
       expect(cache.getStats().misses).toBe(1);
     });
@@ -163,45 +158,41 @@ describe("Renderer/WebGPU/WebGPUComputePipelineCache", function () {
       const cache = makeCache();
       const layout = {};
       const seeded = makeDescriptor("Fog_Density", "main", layout);
-      seed(cache, "Fog_Density|l:0|e:main", fakePipeline("d"), seeded);
+      seed(cache, cache.generateCacheKey(seeded), fakePipeline("d"), seeded);
 
-      const other = makeDescriptor("Fog_Other", "main", layout);
+      // Same layout, module, and entry point; a different name must miss.
+      const other = { ...seeded, name: "Fog_Other" };
       expect(cache.getPipelineSync(other)).toBeUndefined();
       expect(cache.getStats().misses).toBe(1);
     });
   });
 
   describe("layout identity (dedup vs. 'auto')", function () {
-    it("dedups two descriptors sharing the same layout object", function () {
+    it("dedups two descriptors sharing layout and module objects", function () {
       const cache = makeCache();
       const layout = {};
       const pipeline = fakePipeline("shared");
       const first = makeDescriptor("Cull", "main", layout);
-      // First layout observed → identity 0.
-      seed(cache, "Cull|l:0|e:main", pipeline, first);
+      seed(cache, cache.generateCacheKey(first), pipeline, first);
 
-      // A second descriptor reusing the SAME layout object resolves to
-      // the same identity (0) and therefore the same key → hit.
-      const second = makeDescriptor("Cull", "main", layout);
+      // Reusing both identity-bearing objects produces the same key.
+      const second = { ...first, compute: { ...first.compute } };
       expect(cache.getPipelineSync(second)).toBe(pipeline);
       expect(cache.getStats().hits).toBe(1);
     });
 
     it("never dedups 'auto' layouts (fresh negative sentinel each time)", function () {
       const cache = makeCache();
-      // The first 'auto' lookup resolves to sentinel -1 (-1 - counter, counter
-      // 0→1) and misses; seed the result at that key so a dedup WOULD hit it.
-      // (The lookup itself advances the counter — `seed` alone would not, since
-      // it bypasses generateCacheKey.)
+      // Deriving the first key resolves to sentinel -1. Seed that key so a
+      // repeated sentinel would hit it; the lookup must use fresh sentinel -2.
       const first = makeDescriptor("OneOff", "main", "auto");
+      const firstKey = cache.generateCacheKey(first);
+      seed(cache, firstKey, fakePipeline("a"), first);
       expect(cache.getPipelineSync(first)).toBeUndefined();
-      seed(cache, "OneOff|l:-1|e:main", fakePipeline("a"), first);
 
-      // A second 'auto' lookup advances the counter → fresh sentinel -2 →
-      // different key → MISS, even though name + entry point match. If 'auto'
-      // deduped, this would HIT the seeded -1 entry — the bug this guards.
-      const other = makeDescriptor("OneOff", "main", "auto");
-      expect(cache.getPipelineSync(other)).toBeUndefined();
+      // A second lookup of the same descriptor advances to another fresh
+      // sentinel, so it also misses with every other key component unchanged.
+      expect(cache.getPipelineSync(first)).toBeUndefined();
       expect(cache.getStats().misses).toBe(2);
     });
   });
@@ -220,7 +211,7 @@ describe("Renderer/WebGPU/WebGPUComputePipelineCache", function () {
       const cache = makeCache();
       const layout = {};
       const desc = makeDescriptor("Fog_Density", "main", layout);
-      seed(cache, "Fog_Density|l:0|e:main", fakePipeline("d"), desc);
+      seed(cache, cache.generateCacheKey(desc), fakePipeline("d"), desc);
       expect(cache.has(desc)).toBe(true);
     });
   });
@@ -230,8 +221,8 @@ describe("Renderer/WebGPU/WebGPUComputePipelineCache", function () {
       const cache = makeCache();
       const a = makeDescriptor("Fog_Density", "main", {});
       const b = makeDescriptor("Fog_Scatter", "cs", {});
-      seed(cache, "Fog_Density|l:0|e:main", fakePipeline("a"), a);
-      seed(cache, "Fog_Scatter|l:0|e:cs", fakePipeline("b"), b);
+      seed(cache, cache.generateCacheKey(a), fakePipeline("a"), a);
+      seed(cache, cache.generateCacheKey(b), fakePipeline("b"), b);
       const names = cache.getCachedPipelineNames();
       expect(names.length).toBe(2);
       expect(names).toContain("Fog_Density");
@@ -244,8 +235,8 @@ describe("Renderer/WebGPU/WebGPUComputePipelineCache", function () {
       const cache = makeCache();
       const a = makeDescriptor("A", "main", {});
       const b = makeDescriptor("B", "main", {});
-      seed(cache, "A|l:0|e:main", fakePipeline("a"), a);
-      seed(cache, "B|l:0|e:main", fakePipeline("b"), b);
+      seed(cache, cache.generateCacheKey(a), fakePipeline("a"), a);
+      seed(cache, cache.generateCacheKey(b), fakePipeline("b"), b);
       expect(cache.getStats().size).toBe(2);
     });
 
@@ -253,7 +244,7 @@ describe("Renderer/WebGPU/WebGPUComputePipelineCache", function () {
       const cache = makeCache();
       const layout = {};
       const hitDesc = makeDescriptor("Hit", "main", layout);
-      seed(cache, "Hit|l:0|e:main", fakePipeline("h"), hitDesc);
+      seed(cache, cache.generateCacheKey(hitDesc), fakePipeline("h"), hitDesc);
 
       // 1 hit on the seeded entry.
       cache.getPipelineSync(hitDesc);
@@ -277,7 +268,7 @@ describe("Renderer/WebGPU/WebGPUComputePipelineCache", function () {
     it("drops cached entries and zeroes hit/miss/created stats", function () {
       const cache = makeCache();
       const desc = makeDescriptor("Fog_Density", "main", {});
-      seed(cache, "Fog_Density|l:0|e:main", fakePipeline("d"), desc);
+      seed(cache, cache.generateCacheKey(desc), fakePipeline("d"), desc);
       // Generate some traffic.
       cache.getPipelineSync(desc); // hit
       cache.getPipelineSync(makeDescriptor("Nope", "main", {})); // miss
@@ -295,13 +286,18 @@ describe("Renderer/WebGPU/WebGPUComputePipelineCache", function () {
       const cache = makeCache();
       const layout = {};
       const desc = makeDescriptor("Fog_Density", "main", layout);
-      seed(cache, "Fog_Density|l:0|e:main", fakePipeline("d"), desc);
+      seed(cache, cache.generateCacheKey(desc), fakePipeline("d"), desc);
       cache.clear();
 
-      // After clear, the first layout observed resolves to identity 0
-      // again, so re-seeding at the l:0 key and looking up hits.
+      // After clear, deriving the key assigns fresh cache-local layout
+      // identity state; looking up the same descriptor remains stable.
       const reseeded = makeDescriptor("Fog_Density", "main", layout);
-      seed(cache, "Fog_Density|l:0|e:main", fakePipeline("d2"), reseeded);
+      seed(
+        cache,
+        cache.generateCacheKey(reseeded),
+        fakePipeline("d2"),
+        reseeded,
+      );
       expect(cache.has(reseeded)).toBe(true);
     });
   });
@@ -316,7 +312,7 @@ describe("Renderer/WebGPU/WebGPUComputePipelineCache", function () {
     it("clears seeded entries", function () {
       const cache = makeCache();
       const desc = makeDescriptor("Fog_Density", "main", {});
-      seed(cache, "Fog_Density|l:0|e:main", fakePipeline("d"), desc);
+      seed(cache, cache.generateCacheKey(desc), fakePipeline("d"), desc);
       cache.destroy();
       expect(cache.getStats().size).toBe(0);
       expect(cache.getCachedPipelineNames()).toEqual([]);
