@@ -406,7 +406,9 @@ function decodeDataUrl(value) {
 
 function safeCaptureName(value) {
   const name = String(value ?? "");
-  if (!/^[a-z0-9][a-z0-9._-]{0,119}$/u.test(name)) {
+  // Cell names are camelCase (towerAtTower); letters of either case are safe
+  // evidence filenames on every filesystem the fleet runs on.
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$/u.test(name)) {
     throw new Error(`unsafe capture name ${name}`);
   }
   return name;
