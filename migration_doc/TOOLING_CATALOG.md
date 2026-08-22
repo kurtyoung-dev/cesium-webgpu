@@ -206,11 +206,11 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 
 | Metric | Value |
 |---|---|
-| Files in census | 1044 |
-| ACTIVE | 843 |
+| Files in census | 1047 |
+| ACTIVE | 846 |
 | INVESTIGATION | 195 |
 | NO @purpose HEADER | 6 |
-| Classes | probe 644, spec 190, other 96, lib 74, gate-lib 18, bake-tool 12, runner 6, fixture 4 |
+| Classes | probe 644, spec 193, other 96, lib 74, gate-lib 18, bake-tool 12, runner 6, fixture 4 |
 
 ### Tools/ (31)
 
@@ -238,7 +238,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | provision-worker-clone.mjs | other | ACTIVE | 2026-08-21 | 1 | Provision a worker clone with the governance git cannot deliver, create the local main ref the handoff diff needs, and REFUSE if any routed authority is unreachable. |
 | run-far200-shadow-self-test.mjs | runner | ACTIVE | 2026-08-16 | 2 | Thin bootstrap: esbuild-bundles Tools/far200-shadow-self-test.ts and executes it via a data: URL import. |
 | upstream-regression-check.mjs | other | ACTIVE | 2026-08-16 | 7 | Standalone Node re-verification of eight ported upstream fixes (imagery-layers guard, parseUrl, octDecode arg order, etc.); exit 0 = all hold. |
-| variant-smoke-test.mjs | other | ACTIVE | 2026-08-16 | 22 | Playwright smoke test of each build variant's IIFE bundle (dual/webgl-only/webgpu-only): Viewer constructs, frames render, zero console errors. |
+| variant-smoke-test.mjs | other | ACTIVE | 2026-08-16 | 23 | Playwright smoke test of each build variant's IIFE bundle (dual/webgl-only/webgpu-only): Viewer constructs, frames render, zero console errors. |
 | verify-landing-compliance.mjs | other | ACTIVE | 2026-08-16 | 8 | After-the-fact detector that re-runs the landing rules + C16 marker gate over a landed commit range, making any --no-verify hook bypass visible. |
 | verify-landing-compliance.spec.mjs | spec | ACTIVE | 2026-08-16 | 1 | Contract for the bypass detector against immutable history: known-bad C12-37 landing must red, known-good B1041-1043 landing must pass. |
 | verify-tracked-references.mjs | other | ACTIVE | 2026-08-21 | 6 | Asserts every node launch target in package.json/.mcp.json and every relative import in changed .mjs/.cjs/.js files resolves to a path the tree actually tracks. |
@@ -259,6 +259,13 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | batch-121-wrap-lit-shaders.mjs | other | INVESTIGATION | 2026-08-16 | 2 | One-shot codemod converting 19 Mat*Lit + 2 Phong primitive shaders to emit FragOutput so they populate G-buffer slot 1 (normalRoughness). |
 | wire-flat-shaders-aerial-lut.mjs | other | INVESTIGATION | 2026-08-16 | 1 | One-time codemod that wired the aerial-perspective LUT (EffectsUniforms + fog blend) into every Flat primitive WGSL shader from a template. |
 | wire-globe-mrt-normal.mjs | other | INVESTIGATION | 2026-08-16 | 2 | One-time codemod rewriting GlobeTerrain.wgsl's fragmentMain to the 2-attachment MRT output (color + normal-roughness G-buffer). |
+
+### Tools/build-infra/ (2)
+
+| File | Class | Status | Touched | Refs | Purpose |
+|---|---|---|---|---|---|
+| empty-module-stub.spec.mjs | spec | ACTIVE | 2026-08-21 | 2 | Prove the single-backend build stub answers instanceof without throwing, keeps throwing on real use, and binds every named export of a stubbed module. |
+| wgsl-comment-strip.spec.mjs | spec | ACTIVE | 2026-08-21 | 2 | Prove the minify-time WGSL comment strip preserves every //>> directive byte-exact, leaves unminified modules untouched, and is wired into the build. |
 
 ### Tools/c16/ (10)
 
@@ -338,7 +345,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | stbn-rng.mjs | bake-tool | ACTIVE | 2026-08-16 | 3 | Deterministic license-clean random stream for the STBN bake: AES-256-CTR over zeros keyed by SHA-256(seed), byte-identical across machines. |
 | stbn-spectrum.mjs | bake-tool | ACTIVE | 2026-08-16 | 5 | Fourier certification of an STBN volume (radial spatial spectrum, per-pixel temporal spectrum, cross-correlation) with mutants proving each bar fires. |
 
-### Tools/visual-regression/ (862)
+### Tools/visual-regression/ (863)
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
@@ -683,7 +690,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | probe-clustered-per-frame.mjs | probe | ACTIVE | 2026-08-16 | 7 | Per-frame hook check: lazy dispatcher construction, compute passes run with scene.lights, disable zeroes counts exactly once. |
 | probe-clustered-phong.mjs | probe | ACTIVE | 2026-08-16 | 6 | Checks flat:false PerInstanceColorAppearance routes to the lit phong shader and the clustered consumer contributes visibly. |
 | probe-clustered-visible.mjs | probe | ACTIVE | 2026-08-16 | 6 | Clustered consumer on the glTF Model PBR path: PointLight + clustered ON brightens the model center vs OFF by a measured margin. |
-| probe-clustered-zero-work-route.mjs | probe | ACTIVE | 2026-08-16 | 6 | C9-16 API-counter gate: zero clustered GPU work at defaults on the moving route, with positive control and label-inventory guard. |
+| probe-clustered-zero-work-route.mjs | probe | ACTIVE | 2026-08-16 | 7 | C9-16 API-counter gate: zero clustered GPU work at defaults on the moving route, with positive control and label-inventory guard. |
 | probe-cmd-pushes.mjs | probe | ACTIVE | 2026-08-16 | 3 | Diagnostic: hooks frameState.commandList.push and tallies command pushes by pass over a settle window on the WebGPU viewer. |
 | probe-cold-optics-hq.mjs | probe | ACTIVE | 2026-08-16 | 4 | Advanced ice-crystal optics acceptance (22+46 halos, dispersion, light pillars) with structural preconditions and gated verdicts. |
 | probe-cold-optics-parity.mjs | probe | INVESTIGATION | 2026-08-16 | 1 | Stash-based parity capture: legacy cold-optics frame must be byte-identical between the B442 build and a stashed main build. |
@@ -1194,6 +1201,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | webgl-snap-multifrustum.spec.mjs | spec | ACTIVE | 2026-08-16 | 0 | Source pins for WebGL Scene.snap occluders in DerivedCommand/Scene/SceneRenderer: depth-only reuse, zero color write, blending off, depthMask. |
 | webgl-vs-webgpu-pixel-check.mjs | other | INVESTIGATION | 2026-08-16 | 0 | Test-infra sanity check from the canvas-black-screen investigation: do non-black pixels reach toDataURL on each backend at all? |
 | webgpu-cloud-shadow-bind-group-cache.spec.mjs | spec | ACTIVE | 2026-08-16 | 1 | Drives the real WebGPUCloudShadowBindGroupCache on a fake device: per-slot dedupe, descriptor identity, invalidation on resource change. |
+| webgpu-clustered-zero-light-dispatch.spec.mjs | spec | ACTIVE | 2026-08-21 | 0 | Proves settled zero-light frames avoid redundant params writes and compute passes. |
 | webgpu-dynamic-environment-recovery.spec.mjs | spec | ACTIVE | 2026-08-16 | 1 | Source-anchored pins that dynamic environment-map caches are owned by one device generation and recover across manager/capture/Scene wiring. |
 | webgpu-frame-accounting-policy.spec.mjs | spec | ACTIVE | 2026-08-16 | 2 | Guard for the frame-breakdown probe's accounting: phase names match the engine profiler, coverage/overlap validity, request-render suppression. |
 | webgpu-pick-center-identity.spec.mjs | spec | ACTIVE | 2026-08-21 | 6 | Fake-device coverage of WebGPUPickFramebuffer/PickPass readback identity: map/unmap lifecycle, per-identity pixel decode, voxel pick pins. |
@@ -1339,7 +1347,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
-| bundleVariantPlugin.spec.mjs | spec | ACTIVE | 2026-08-16 | 3 | Exercises the build-variant alias plugin's onResolve decision matrix, compat exemption allowlist, re-entry guard and decision cache, no esbuild. |
+| bundleVariantPlugin.spec.mjs | spec | ACTIVE | 2026-08-21 | 4 | Exercises the build-variant alias plugin's onResolve decision matrix, compat exemption allowlist, re-entry guard and decision cache, no esbuild. |
 | createIndexJs.spec.mjs | spec | ACTIVE | 2026-08-16 | 0 | Regression that the generated engine index omits private named-export temporal-history helpers yet still esbuild-bundles cleanly. |
 | karmaTestRun.spec.mjs | spec | ACTIVE | 2026-08-16 | 2 | Static coverage of the Gulp/Karma completion bridge via a fake Karma server: strict result config, retries, disconnect/error exit codes. |
 | shaderSourceToJavaScript.spec.mjs | spec | ACTIVE | 2026-08-16 | 1 | Contract for the shader source-to-JS-module serializer: literal escapes, quotes, CRLF/lone-CR/U+2028 round-trips through real ESM evaluation. |
