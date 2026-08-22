@@ -1330,6 +1330,8 @@ prewarm counter).
 
 ### B.4 NEW-WGSL-STRING-COMMENT-STRIP — P2 · S · opus-or-sol
 
+> **PREMISE CORRECTION (2026-08-21, landed Batch 1125, station-3 review):** the Step-0 premise below is half-false. At HEAD a minify-time strip ALREADY existed in `wgslToJavaScript` (`contents.replace(///.*$/gm, "")`) and it deleted every `//>>` directive line - 1,510 of 1,510 across 84 gated shaders - so under `gulp build --minify` / `buildWatch --minify` the preprocessor emitted identical text at every define (variant selection dead) and 63/84 shaders failed naga parse. Shipped release/variant minified bundles were unaffected only because `buildCesium` never reconverted WGSL for them (they carried unstripped WGSL). The row is therefore a correctness fix for the `--minify` path first and the size win second; the register's "~330 KB" is stale - the raw-WGSL saving measured 1,285 KiB. The landed `buildCesium` per-bundle regeneration is what makes the release bundles benefit at all.
+
 #### What + why
 
 Register cluster-21 (LQ §6.5(c) incr. 1, PLANNED, never implemented): "Strip comments/blank lines
@@ -1388,6 +1390,8 @@ Independent — schedulable anytime.
 ---
 
 ### B.5 NEW-EMPTYMODULE-STUB-HARDENING — P2 · S · opus-or-sol
+
+> **PREMISE CORRECTION (2026-08-21, landed Batch 1125, station-3 review):** the register's reproduction does not exist. `SharedContext.js` lives at `Source/Renderer/SharedContext.js`, outside the stubbed `Source/Renderer/WebGPU/` path, and webgpu-only builds redirect nothing to `emptyModule.js` (only GLSL strings to `emptyShader.js`; the stub is reachable only in webgl-only builds). `Scene.js`'s `instanceof SharedContext` was never stubbed and never threw. `Symbol.hasInstance` whitelisting is prospective hardening for the leaf-strip seed (B.10), exactly as Trap 3 says - not a live crash fix. The named-export gap was real (HEAD's plugin fails a named-import fixture seven times) and is closed; its one live consumer is `ContextFactory.ts`'s destructured dynamic import.
 
 #### What + why
 

@@ -33,11 +33,14 @@
  */
 
 import path from "path";
+import { existsSync } from "fs";
+import { readFile } from "fs/promises";
 import { fileURLToPath } from "url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const STUB_SHADER = path.resolve(__dirname, "stubs", "emptyShader.js");
 const STUB_MODULE = path.resolve(__dirname, "stubs", "emptyModule.js");
+const EMPTY_MODULE_NAMESPACE = "cesium-empty-module";
 const WEBGL_BUILD_CAPABILITIES = path.resolve(
   __dirname,
   "stubs",
@@ -48,6 +51,145 @@ const WEBGPU_BUILD_CAPABILITIES = path.resolve(
   "stubs",
   "rendererBuildCapabilitiesWebGPU.js",
 );
+
+function resolveStubSourcePath(candidate) {
+  const candidates = [candidate];
+  if (candidate.endsWith(".js")) {
+    const withoutExtension = candidate.slice(0, -3);
+    candidates.push(`${withoutExtension}.ts`, `${withoutExtension}.tsx`);
+  }
+
+  return candidates.find((sourcePath) => existsSync(sourcePath)) ?? candidate;
+}
+
+/**
+ * Collect runtime named exports from a JavaScript or TypeScript module.
+ *
+ * Type-only declarations are deliberately omitted because esbuild erases
+ * them before linking. Export-star declarations fail loudly: a virtual stub
+ * cannot preserve names it has not enumerated.
+ *
+ * @param {string} source Module source.
+ * @param {string} [sourcePath="module.ts"] Source path used for parser mode and diagnostics.
+ * @returns {Promise<string[]>} Sorted runtime export names, excluding default.
+ */
+export async function collectRuntimeExportNames(
+  source,
+  sourcePath = "module.ts",
+) {
+  const typescriptModule = await import("typescript");
+  const ts = typescriptModule.default ?? typescriptModule;
+  const extension = path.extname(sourcePath).toLowerCase();
+  const scriptKind =
+    extension === ".js" || extension === ".mjs" || extension === ".cjs"
+      ? ts.ScriptKind.JS
+      : ts.ScriptKind.TS;
+  const sourceFile = ts.createSourceFile(
+    sourcePath,
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    scriptKind,
+  );
+  const exportNames = new Set();
+
+  const addBindingName = (bindingName) => {
+    if (ts.isIdentifier(bindingName)) {
+      exportNames.add(bindingName.text);
+      return;
+    }
+    for (const element of bindingName.elements) {
+      if (!ts.isOmittedExpression(element)) {
+        addBindingName(element.name);
+      }
+    }
+  };
+
+  for (const statement of sourceFile.statements) {
+    if (ts.isExportDeclaration(statement)) {
+      if (statement.isTypeOnly) {
+        continue;
+      }
+      const exportClause = statement.exportClause;
+      if (exportClause === undefined) {
+        throw new Error(
+          `Cannot create a named empty-module stub for export * in ${sourcePath}.`,
+        );
+      }
+      if (ts.isNamespaceExport(exportClause)) {
+        exportNames.add(exportClause.name.text);
+        continue;
+      }
+      for (const element of exportClause.elements) {
+        if (!element.isTypeOnly && element.name.text !== "default") {
+          exportNames.add(element.name.text);
+        }
+      }
+      continue;
+    }
+
+    const modifiers = ts.canHaveModifiers(statement)
+      ? (ts.getModifiers(statement) ?? [])
+      : [];
+    const isExported = modifiers.some(
+      (modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword,
+    );
+    const isDefault = modifiers.some(
+      (modifier) => modifier.kind === ts.SyntaxKind.DefaultKeyword,
+    );
+    const isDeclared = modifiers.some(
+      (modifier) => modifier.kind === ts.SyntaxKind.DeclareKeyword,
+    );
+    if (!isExported || isDefault || isDeclared) {
+      continue;
+    }
+
+    if (ts.isVariableStatement(statement)) {
+      for (const declaration of statement.declarationList.declarations) {
+        addBindingName(declaration.name);
+      }
+    } else if (
+      (ts.isClassDeclaration(statement) ||
+        ts.isFunctionDeclaration(statement) ||
+        ts.isEnumDeclaration(statement) ||
+        ts.isModuleDeclaration(statement) ||
+        ts.isImportEqualsDeclaration(statement)) &&
+      statement.name !== undefined &&
+      ts.isIdentifier(statement.name)
+    ) {
+      exportNames.add(statement.name.text);
+    }
+  }
+
+  return [...exportNames].sort();
+}
+
+/**
+ * Create a virtual module whose default and named exports share one stub.
+ *
+ * @param {Iterable<string>} exportNames Runtime named exports to expose.
+ * @param {string} [stubSpecifier="./stubs/emptyModule.js"] Module specifier for the throwing stub.
+ * @returns {string} JavaScript module source.
+ */
+export function createEmptyModuleStubSource(
+  exportNames,
+  stubSpecifier = "./stubs/emptyModule.js",
+) {
+  const names = [...new Set(exportNames)]
+    .filter((name) => name !== "default")
+    .sort();
+  for (const name of names) {
+    if (!/^[$A-Z_a-z][$\w]*$/u.test(name)) {
+      throw new Error(`Unsupported empty-module export name: ${name}`);
+    }
+  }
+
+  const namedExports =
+    names.length === 0
+      ? ""
+      : `\nexport {\n${names.map((name) => `  stub as ${name},`).join("\n")}\n};\n`;
+  return `import stub from ${JSON.stringify(stubSpecifier)};\n\nexport default stub;\n${namedExports}`;
+}
 
 function isRendererBuildCapabilitiesFile(absPath) {
   return /\/Source\/Renderer\/RendererBuildCapabilities\.(?:js|ts)$/u.test(
@@ -191,6 +333,27 @@ export function bundleVariantPlugin(variant) {
   return {
     name: `cesium-bundle-variant-${variant}`,
     setup(build) {
+      build.onLoad(
+        { filter: /.*/, namespace: EMPTY_MODULE_NAMESPACE },
+        async (args) => {
+          const sourcePath = args.pluginData?.sourcePath;
+          if (typeof sourcePath !== "string") {
+            throw new Error("Empty-module stub source path is missing.");
+          }
+          const source = await readFile(sourcePath, "utf8");
+          const exportNames = await collectRuntimeExportNames(
+            source,
+            sourcePath,
+          );
+          return {
+            contents: createEmptyModuleStubSource(exportNames),
+            loader: "js",
+            resolveDir: __dirname,
+            watchFiles: [sourcePath],
+          };
+        },
+      );
+
       // Intercept *every* import resolution. We need onResolve here
       // (rather than esbuild's static `alias` option) because we're
       // pattern-matching path SHAPE, not exact paths — there are 200+
@@ -268,6 +431,16 @@ export function bundleVariantPlugin(variant) {
           // resolver handle it. Returning null is important so other
           // onResolve plugins (registered after us) get a turn.
           return null;
+        }
+
+        if (cached === STUB_MODULE) {
+          const sourcePath = resolveStubSourcePath(candidate);
+          return {
+            path: STUB_MODULE,
+            namespace: EMPTY_MODULE_NAMESPACE,
+            suffix: `?source=${encodeURIComponent(sourcePath)}`,
+            pluginData: { sourcePath },
+          };
         }
 
         // Redirect to the stub. The stub path is absolute, so esbuild

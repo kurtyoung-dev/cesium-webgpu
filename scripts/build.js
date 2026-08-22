@@ -821,6 +821,103 @@ const shaderFiles = [
 const wgslShaderFiles = ["packages/engine/Source/Shaders/WebGPU/**/*.wgsl"];
 
 /**
+ * Remove comments and blank lines from WGSL without erasing build directives.
+ *
+ * Directive lines bypass every transformation because the runtime preprocessor
+ * and pragma stripper consume their exact bytes. Other line comments are
+ * removed only after a small lexical scan proves the marker is outside a
+ * quoted literal. Unterminated quotes keep the original line because guessing
+ * would risk changing shader source.
+ *
+ * @param {string} source WGSL source text.
+ * @returns {string} Source with comments and blank lines removed.
+ */
+// The directive whitelist is consulted before the block-comment state, so a
+// `//>>` line inside a `/* ... */` block would be emitted as a live directive.
+// No shipped shader does that; the precedence is deliberate so a directive
+// can never be swallowed by an unbalanced block comment around it.
+export function stripWgslComments(source) {
+  const lineParts = source.split(/(\r\n|\n|\r)/u);
+  let inBlockComment = false;
+  let result = "";
+
+  for (let partIndex = 0; partIndex < lineParts.length; partIndex += 2) {
+    const line = lineParts[partIndex];
+    const lineEnding = lineParts[partIndex + 1] ?? "";
+    if (line.length === 0 && lineEnding.length === 0) {
+      continue;
+    }
+
+    if (line.trimStart().startsWith("//>>")) {
+      result += line + lineEnding;
+      continue;
+    }
+
+    let strippedLine = "";
+    let quote;
+    let escaped = false;
+
+    for (let column = 0; column < line.length; column++) {
+      const character = line[column];
+      const nextCharacter = line[column + 1];
+
+      if (inBlockComment) {
+        if (character === "*" && nextCharacter === "/") {
+          inBlockComment = false;
+          column++;
+        }
+        continue;
+      }
+
+      if (quote !== undefined) {
+        strippedLine += character;
+        if (escaped) {
+          escaped = false;
+        } else if (character === "\\") {
+          escaped = true;
+        } else if (character === quote) {
+          quote = undefined;
+        }
+        continue;
+      }
+
+      if (character === '"' || character === "'") {
+        quote = character;
+        strippedLine += character;
+        continue;
+      }
+
+      if (character === "/" && nextCharacter === "/") {
+        break;
+      }
+
+      if (character === "/" && nextCharacter === "*") {
+        if (strippedLine.length > 0 && !/\s$/u.test(strippedLine)) {
+          strippedLine += " ";
+        }
+        inBlockComment = true;
+        column++;
+        continue;
+      }
+
+      strippedLine += character;
+    }
+
+    if (quote !== undefined) {
+      result += line + lineEnding;
+      continue;
+    }
+
+    strippedLine = strippedLine.trim();
+    if (strippedLine.length > 0) {
+      result += strippedLine + lineEnding;
+    }
+  }
+
+  return result;
+}
+
+/**
  * Serialize normalized shader source as an ES module without allowing
  * JavaScript string escapes to change the shader's runtime bytes.
  *
@@ -1011,6 +1108,23 @@ export async function glslToJavaScript(minify, minifyStateFilePath, workspace) {
 }
 
 /**
+ * The single decision the minify branch makes, exposed so a spec can prove
+ * both that the strip is wired into the build and that unminified modules
+ * pass through byte-for-byte.
+ *
+ * @param {string} source The WGSL module source, line endings already normalized.
+ * @param {boolean} minify Whether the build is a minified one.
+ * @returns {string} The module contents to write.
+ */
+export function wgslModuleContents(source, minify) {
+  if (!minify) {
+    return source;
+  }
+  const stripped = stripWgslComments(source);
+  return stripped.endsWith("\n") ? stripped : `${stripped}\n`;
+}
+
+/**
  * Converts WGSL shader files to JavaScript modules, similar to glslToJavaScript.
  * Each .wgsl file becomes a .js module exporting its source as a string.
  * Also generates CsmBuiltins.js index for WebGPU shader chunks.
@@ -1020,6 +1134,14 @@ export async function glslToJavaScript(minify, minifyStateFilePath, workspace) {
  * @returns {Promise<void>}
  */
 export async function wgslToJavaScript(minify, minifyStateFilePath, workspace) {
+  const expectedMinifyState = minify.toString();
+  const currentMinifyState = existsSync(minifyStateFilePath)
+    ? await readFile(minifyStateFilePath, { encoding: "utf8" })
+    : undefined;
+  if (currentMinifyState !== expectedMinifyState) {
+    await mkdirp(path.dirname(minifyStateFilePath));
+    await writeFile(minifyStateFilePath, expectedMinifyState);
+  }
   const minifyStateFileLastModified = existsSync(minifyStateFilePath)
     ? statSync(minifyStateFilePath).mtime.getTime()
     : 0;
@@ -1091,16 +1213,7 @@ export async function wgslToJavaScript(minify, minifyStateFilePath, workspace) {
         copyrightComments = `${extractedCopyrightComments.join("\n")}\n`;
       }
 
-      if (minify) {
-        contents = contents
-          .replace(/\/\/.*$/gm, "")
-          .replace(/\/\*[\s\S]*?\*\//gm, "");
-        contents = contents
-          .replace(/\s+$/gm, "")
-          .replace(/^\s+/gm, "")
-          .replace(/\n+/gm, "\n");
-        contents += "\n";
-      }
+      contents = wgslModuleContents(contents, minify);
 
       return writeFile(
         jsFile,
@@ -1932,6 +2045,15 @@ export async function buildCesium(options) {
 
   // Generate Build folder to place build artifacts.
   mkdirp.sync("Build");
+
+  // Release tasks reuse generated shader modules while alternating between
+  // unminified and minified bundles. Refresh the WGSL modules for this bundle
+  // so one output cannot inherit the other output's string payload.
+  await wgslToJavaScript(
+    minify,
+    "packages/engine/Build/minifyWgslBundle.state",
+    "engine",
+  );
 
   // Each variant gets its own output directory under Build/, so the
   // four bundles can coexist and be compared side-by-side. The historical

@@ -7,10 +7,10 @@
 // instantiate WebGPU — which they shouldn't, because the WebGL-only
 // build aliases RendererBuildCapabilities to disable WebGPU selection.
 //
-// We export both a default and named accessors so the various import
-// shapes used across the codebase all see SOMETHING. Anything trying to
-// `new WebGPUContext()` against this stub trips the explicit error
-// instead of failing inscrutably with `undefined is not a constructor`.
+// The redirect plugin exposes this Proxy through both default and generated
+// named bindings. Anything trying to `new WebGPUContext()` against this stub
+// trips the explicit error instead of failing inscrutably with `undefined is
+// not a constructor`.
 
 function _stubThrow() {
   throw new Error(
@@ -19,6 +19,8 @@ function _stubThrow() {
       "contextOptions.renderer = 'webgl' to keep the WebGL path.",
   );
 }
+
+const _stubHasInstance = () => false;
 
 const _stub = new Proxy(
   // Use a function as the proxy target so callers that try to invoke or
@@ -29,8 +31,8 @@ const _stub = new Proxy(
   {
     get(_target, prop) {
       void _target;
-      // Allow common module-introspection properties to read as undefined
-      // without throwing — those happen at module-load time.
+      // Module interop, reflection, and Promise assimilation probe these
+      // properties without consuming the backend API.
       if (
         prop === "__esModule" ||
         prop === Symbol.toStringTag ||
@@ -38,7 +40,15 @@ const _stub = new Proxy(
       ) {
         return undefined;
       }
-      return _stubThrow;
+      if (prop === Symbol.hasInstance) {
+        return _stubHasInstance;
+      }
+      // Coercion, sync or async iteration, prototype traversal, constructor
+      // lookup, and a nested `default` read all use the exported value. Keeping
+      // every other well-known symbol plus prototype, constructor, and default
+      // on the throwing path prevents a missing backend from looking like an
+      // empty or partially usable implementation.
+      return _stubThrow();
     },
     construct() {
       _stubThrow();

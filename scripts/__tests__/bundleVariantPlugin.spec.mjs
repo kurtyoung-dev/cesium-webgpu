@@ -1,7 +1,8 @@
 // bundleVariantPlugin spec — exercised without esbuild by capturing the
 // onResolve handler the plugin registers and calling it with synthetic
-// args. Covers the decision matrix that governs whether an import gets
-// aliased to an empty stub:
+// args. The named-stub onLoad path has its own focused build-infrastructure
+// spec. This file covers the decision matrix that governs whether an import
+// gets aliased to an empty stub:
 // @purpose Exercises the build-variant alias plugin's onResolve decision matrix, compat exemption allowlist, re-entry guard and decision cache, no esbuild.
 // @status ACTIVE
 //
@@ -65,6 +66,7 @@ function makeFakeBuild() {
       capturedFilter = options.filter;
       capturedHandler = handler;
     },
+    onLoad() {},
     resolve(handler) {
       return capturedHandler ? handler(capturedHandler) : undefined;
     },
