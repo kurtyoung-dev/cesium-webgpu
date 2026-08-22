@@ -30,6 +30,19 @@ export const FRAME_VARIANCE_LANE_IDS = Object.freeze([
 /** The shared status table, re-exported for probe reporting without copying it. */
 export const FRAME_VARIANCE_EXIT_CODES = S5_STATUS_EXIT_CODES;
 
+/** Fields that define comparable scene state across fresh pages. */
+export const D2_INITIAL_STATE_EQUIVALENCE_FIELDS = Object.freeze([
+  "julian",
+  "camera",
+  "indexesSha256",
+  "indexesLength",
+  "positionsSha256",
+  "positionsLength",
+  "modelViewSha256",
+  "generation",
+  "dataGeneration",
+]);
+
 const frozenDesign = (prediction, discrimination, control) =>
   Object.freeze({ prediction, discrimination, control });
 
@@ -220,6 +233,44 @@ function validateComparisonList(records, expected, label, reasons) {
   return records.map((record, index) =>
     finiteFractionOrReason(record, `${label}-${index}`, reasons),
   );
+}
+
+function canonicalD2InitialState(signature) {
+  let state;
+  try {
+    state = JSON.parse(signature);
+  } catch {
+    return null;
+  }
+  if (
+    state === null ||
+    typeof state !== "object" ||
+    Array.isArray(state) ||
+    !D2_INITIAL_STATE_EQUIVALENCE_FIELDS.every((field) =>
+      Object.hasOwn(state, field),
+    )
+  ) {
+    return null;
+  }
+  return JSON.stringify(
+    Object.fromEntries(
+      D2_INITIAL_STATE_EQUIVALENCE_FIELDS.map((field) => [field, state[field]]),
+    ),
+  );
+}
+
+/** Compare scene state without treating fresh-page scheduling history as state. */
+export function equivalentD2InitialStates(resetSignatures) {
+  if (!Array.isArray(resetSignatures) || resetSignatures.length !== 4) {
+    return false;
+  }
+  const canonicalStates = resetSignatures.map(canonicalD2InitialState);
+  if (canonicalStates.some((state) => state === null)) return false;
+  const stateMismatch = canonicalStates.some(
+    (state) => state !== canonicalStates[0],
+  );
+  if (stateMismatch) return false;
+  return true;
 }
 
 /** D2 — compare like framing with like framing across the two orders. */
@@ -1127,6 +1178,7 @@ export default Object.freeze({
   D1_FROZEN_FRAME_READS,
   FRAME_VARIANCE_LANE_IDS,
   FRAME_VARIANCE_EXIT_CODES,
+  D2_INITIAL_STATE_EQUIVALENCE_FIELDS,
   FRAME_VARIANCE_DESIGNS,
   FRAME_VARIANCE_ASSETS,
   fractionOf,
@@ -1136,6 +1188,7 @@ export default Object.freeze({
   maxPairwiseChangedPixels,
   analyzeSpatialDistribution,
   evaluateD1FrozenFrame,
+  equivalentD2InitialStates,
   evaluateD2Ordering,
   evaluateD3AssetFramingCross,
   evaluateD4SortedIndexIdentity,

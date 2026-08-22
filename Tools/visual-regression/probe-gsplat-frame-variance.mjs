@@ -51,6 +51,7 @@ import {
   analyzeSpatialDistribution,
   changedPixelCount,
   createFrameVarianceErrorResult,
+  equivalentD2InitialStates,
   evaluateD1FrozenFrame,
   evaluateD2Ordering,
   evaluateD3AssetFramingCross,
@@ -1787,9 +1788,9 @@ async function executeD2(state, options, evidence, backend) {
       (order) => rawByOrder[order].metadata.fixedJulian === true,
     ),
     fixedCameras,
-    equivalentInitialStates: resetSignatures.every(
-      (signature) => signature === resetSignatures[0],
-    ),
+    // Fresh-page scheduling counters are timing artifacts, not scene state;
+    // full signatures remain recorded as evidence below.
+    equivalentInitialStates: equivalentD2InitialStates(resetSignatures),
     sameStateControls: [
       comparisonRecord(frame("AA", "first"), frame("AA", "second")),
       comparisonRecord(frame("BB", "first"), frame("BB", "second")),

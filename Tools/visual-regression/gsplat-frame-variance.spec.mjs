@@ -146,6 +146,28 @@ function d2Input(orderPixels = 0, controlPixels = 0) {
   };
 }
 
+function d2ResetSignature(overrides = {}) {
+  return JSON.stringify({
+    julian: "2461274.500000000",
+    camera: "fixed-camera",
+    indexesSha256: "a".repeat(64),
+    indexesLength: 286_868,
+    positionsSha256: "b".repeat(64),
+    modelViewSha256: "c".repeat(64),
+    positionsLength: 860_604,
+    sequence: 6,
+    generation: 4,
+    dataGeneration: 4,
+    sortThrottleSatisfied: true,
+    inFlight: false,
+    ...overrides,
+  });
+}
+
+function d2ResetSignatures(...overrides) {
+  return [0, 1, 2, 3].map((index) => d2ResetSignature(overrides[index]));
+}
+
 function d3Input(pattern = {}) {
   const value = (name) => (pattern[name] ? OVER_BAR_PIXELS : 0);
   return {
@@ -420,6 +442,85 @@ test("D2 compares only same framings across order and keeps AA/BB as controls", 
   assert.equal(model.evaluateD2Ordering(unequalReset).status, "STRUCTURAL");
 });
 
+test("D2 accepts the observed sequence-only reset difference", () => {
+  assert.deepEqual(model.D2_INITIAL_STATE_EQUIVALENCE_FIELDS, [
+    "julian",
+    "camera",
+    "indexesSha256",
+    "indexesLength",
+    "positionsSha256",
+    "positionsLength",
+    "modelViewSha256",
+    "generation",
+    "dataGeneration",
+  ]);
+  const equivalentInitialStates = model.equivalentD2InitialStates(
+    d2ResetSignatures(
+      { sequence: 6 },
+      { sequence: 7 },
+      { sequence: 6 },
+      { sequence: 7 },
+    ),
+  );
+  assert.equal(equivalentInitialStates, true);
+  assert.equal(
+    model.evaluateD2Ordering({
+      ...d2Input(),
+      equivalentInitialStates,
+    }).status,
+    "PASS",
+  );
+});
+
+test("D2 rejects a scene-state reset mismatch", () => {
+  const equivalentInitialStates = model.equivalentD2InitialStates(
+    d2ResetSignatures({}, {}, { positionsSha256: "d".repeat(64) }, {}),
+  );
+  assert.equal(equivalentInitialStates, false);
+  const result = model.evaluateD2Ordering({
+    ...d2Input(),
+    equivalentInitialStates,
+  });
+  assert.equal(result.status, "STRUCTURAL");
+  assert.deepEqual(result.structural, ["D2:initial-states-not-equivalent"]);
+});
+
+test("every equivalence field is load-bearing and the excluded three are not", () => {
+  const perturbed = {
+    julian: "2026-06-01T18:00:01Z",
+    camera: "a-different-camera",
+    indexesSha256: "e".repeat(64),
+    indexesLength: 286_869,
+    positionsSha256: "f".repeat(64),
+    positionsLength: 860_605,
+    modelViewSha256: "0".repeat(64),
+    generation: 5,
+    dataGeneration: 5,
+  };
+  assert.deepEqual(Object.keys(perturbed), [
+    ...model.D2_INITIAL_STATE_EQUIVALENCE_FIELDS,
+  ]);
+  for (const [field, value] of Object.entries(perturbed)) {
+    assert.equal(
+      model.equivalentD2InitialStates(
+        d2ResetSignatures({}, {}, { [field]: value }, {}),
+      ),
+      false,
+      `${field} must break initial-state equivalence`,
+    );
+  }
+  for (const field of ["sequence", "sortThrottleSatisfied", "inFlight"]) {
+    assert.equal(
+      model.equivalentD2InitialStates(
+        d2ResetSignatures({}, {}, { [field]: 99 }, {}),
+      ),
+      true,
+      `${field} must not break initial-state equivalence`,
+    );
+  }
+  assert.ok(Object.isFrozen(model.D2_INITIAL_STATE_EQUIVALENCE_FIELDS));
+});
+
 test("D3 classifies the complete asset/framing cross without de-scoring the red", () => {
   const asset = model.evaluateD3AssetFramingCross(
     d3Input({ towerAtTower: true, towerAtCube: true }),
@@ -613,6 +714,18 @@ test("probe source uses only canonical fused capture and write-once evidence", (
     d1Source,
     /afterRender\?\.frameNumber === beforeBatch\.frameNumber \+ 1/u,
   );
+});
+
+test("capture filenames accept mixed-case evidence cell names", () => {
+  // eslint-disable-next-line no-new-func
+  const safeCaptureName = new Function(
+    `${extractFunction(PROBE_SOURCE, "safeCaptureName")}; return safeCaptureName;`,
+  )();
+  assert.equal(
+    safeCaptureName("webgl-d3-towerAtTower-frame-0"),
+    "webgl-d3-towerAtTower-frame-0",
+  );
+  assert.throws(() => safeCaptureName("../unsafe"), /unsafe capture name/u);
 });
 
 test("mustReplace is loud for absent and duplicate anchors", () => {
@@ -902,6 +1015,7 @@ const CAPTURE_MUTANTS = [
 ];
 
 test("four loud capture-source mutants are killed and the real probe survives", async (t) => {
+  assert.equal(CAPTURE_MUTANTS.length, 4);
   for (const mutant of CAPTURE_MUTANTS) {
     await t.test(mutant.id, () => {
       assert.deepEqual(
@@ -946,8 +1060,11 @@ function checkProbeWiring(source) {
     'const orders = ["AA", "BB", "AB", "BA"];',
   ), "D2-not-four-fresh-histories");
   require(source.includes(
-    "equivalentInitialStates: resetSignatures.every(",
+    "equivalentInitialStates: equivalentD2InitialStates(resetSignatures),",
   ), "D2-reset-equivalence-not-wired");
+  require(source.includes(
+    "result.measurements.resetSignatures = resetSignatures;",
+  ), "D2-full-reset-signatures-not-recorded");
   require(source.includes(
     'comparisonRecord(frame("AB", "first"), frame("BA", "second"))',
   ) &&
@@ -1183,9 +1300,17 @@ const PROBE_WIRING_MUTANTS = [
     reason: "D2-not-four-fresh-histories",
   },
   {
+    id: "P-D2-drop-full-reset-evidence",
+    anchor: "result.measurements.resetSignatures = resetSignatures;",
+    replacement: "result.measurements.resetSignaturesOmitted = true;",
+    reason: "D2-full-reset-signatures-not-recorded",
+  },
+  {
     id: "P-D2-assume-equivalent-resets",
-    anchor: "equivalentInitialStates: resetSignatures.every(",
-    replacement: "equivalentInitialStates: true || resetSignatures.every(",
+    anchor:
+      "equivalentInitialStates: equivalentD2InitialStates(resetSignatures),",
+    replacement:
+      "equivalentInitialStates: true || equivalentD2InitialStates(resetSignatures),",
     reason: "D2-reset-equivalence-not-wired",
   },
   {
@@ -1442,6 +1567,7 @@ const PROBE_WIRING_MUTANTS = [
 ];
 
 test("probe lane wiring and immutable evidence kill loud source mutants", async (t) => {
+  assert.equal(PROBE_WIRING_MUTANTS.length, 38);
   assert.deepEqual(checkProbeWiring(PROBE_SOURCE), []);
   for (const mutant of PROBE_WIRING_MUTANTS) {
     await t.test(mutant.id, () => {
@@ -1574,6 +1700,33 @@ const MODEL_MUTANTS = [
       delete input.equivalentInitialStates;
       return subject.evaluateD2Ordering(input).status === "STRUCTURAL";
     },
+  },
+  {
+    lane: "D2",
+    id: "D2-M6-treat-sequence-as-scene-state",
+    anchor: ['  "dataGeneration",', "]);"].join("\n"),
+    replacement: ['  "dataGeneration",', '  "sequence",', "]);"].join("\n"),
+    pins: "fresh-page scheduling sequence is evidence, not scene state",
+    rule: (subject) =>
+      subject.equivalentD2InitialStates(
+        d2ResetSignatures(
+          { sequence: 6 },
+          { sequence: 7 },
+          { sequence: 6 },
+          { sequence: 7 },
+        ),
+      ) === true,
+  },
+  {
+    lane: "D2",
+    id: "D2-M7-inert-state-mismatch",
+    anchor: "if (stateMismatch) return false;",
+    replacement: "if (false && stateMismatch) return false;",
+    pins: "a positions hash mismatch must keep the reset proof structural",
+    rule: (subject) =>
+      subject.equivalentD2InitialStates(
+        d2ResetSignatures({}, {}, { positionsSha256: "d".repeat(64) }, {}),
+      ) === false,
   },
   {
     lane: "D3",
@@ -1820,7 +1973,16 @@ const MODEL_MUTANTS = [
 ];
 
 test("each D1-D5 gate kills four loud model mutants in both directions", async (t) => {
-  assert.equal(MODEL_MUTANTS.length, 24);
+  assert.equal(MODEL_MUTANTS.length, 26);
+  assert.deepEqual(
+    Object.fromEntries(
+      model.FRAME_VARIANCE_LANE_IDS.map((lane) => [
+        lane,
+        MODEL_MUTANTS.filter((mutant) => mutant.lane === lane).length,
+      ]),
+    ),
+    { D1: 4, D2: 7, D3: 4, D4: 6, D5: 5 },
+  );
   for (const lane of model.FRAME_VARIANCE_LANE_IDS) {
     assert.ok(
       MODEL_MUTANTS.filter((mutant) => mutant.lane === lane).length >= 4,
@@ -2008,6 +2170,7 @@ const ENGINE_MUTANTS = [
 ];
 
 test("four loud extracted-engine mutants are killed and production survives", async (t) => {
+  assert.equal(ENGINE_MUTANTS.length, 4);
   const production = loadShouldStartSteadySort(ENGINE_SOURCE);
   for (const mutant of ENGINE_MUTANTS) {
     await t.test(mutant.id, () => {
