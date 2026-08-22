@@ -164,3 +164,26 @@ scoped to the OTFFT sub-component; four considered-and-excluded or new not-adopt
 (EGM2008, Cesium World Terrain, grib2json, the 10cm-flux endpoint and GOES secondary
 feed); the A-16/O-46 one-source-two-campaigns note; the GRIB2/NetCDF dedupe rationale;
 and the S-09 transitive-attribution wording.
+
+## 12. SOL-4: the WebGPU refresh cost is below the wall-clock sweep's resolution
+
+**Fact (two runs, 2026-08-21 evening, attestable bundle, repaired gate).** WebGL banks
+3.342 / 2.714 ms per refresh. WebGPU cannot be attributed: the no-refresh control leg is
+consistently SLOWER than the eclipse leg (5982 vs 5418 ms; 5092 vs 4958 ms over 801
+frames), so the interleaved ABBA differential is negative and the probe refuses to print
+a cost - by design. Both WebGPU legs run ~6.5 ms/frame (WebGL ~1.2); the historical
+1.607 ms/refresh would be ~440 ms, inside the 134-564 ms drift. The busy-leg-faster sign
+is what a GPU power-state down-clock on the idler leg produces.
+**Question.** R-2026-08-14-1 made a banked fresh refresh cost an operative C13-41 exit
+prerequisite, so the instrument is ratified and the orchestrator cannot change it alone.
+Options: (a) re-instrument the cost lane on GPU timestamp queries (the repository's
+`gpuPassCost` path) so the fills' GPU time is measured directly, with the same
+pre-registered sweep and both-backends-valid rule; (b) rule the WebGPU refresh cost
+unmeasurable by wall clock at this fixture's frame cost and accept the WebGL figure
+plus the WebGPU negative-differential record as the banked artifact; (c) both - bank (b)
+now and run (a) as the durable instrument.
+**Recommendation: (c).** (b) unblocks the C13-41 exit chain on honest evidence today;
+(a) is the only instrument that can ever resolve a ~1.6 ms effect under a ~6.5 ms frame.
+**Pros:** the critical path moves without inventing a number; the durable instrument is
+the right one. **Cons:** (a) is S-M of probe work plus a delta review; (b) leaves the
+WebGPU cost as a bound, not a figure, in the ledger until (a) runs.

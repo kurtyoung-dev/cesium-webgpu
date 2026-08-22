@@ -11,10 +11,9 @@
  *   2. Converts `scene.lights` into world-space punctual and area-light lists.
  *      Per-model glTF lights remain excluded because their model-space values
  *      require each model's transform before eye-space packing.
- *   3. Ends the active canvas render pass before enabled compute work because
- *      a command encoder cannot begin a compute pass while a render pass is
- *      open, then resumes the default render pass after dispatch. Stable
- *      disabled frames do none of this.
+ *   3. Ends the active canvas render pass only when enabled work must update
+ *      params or issue compute commands, then resumes the default pass after
+ *      dispatch. Stable empty frames leave the active pass untouched.
  *   4. Publishes the dispatcher's GPU buffer handles and a per-frame activity
  *      flag on the context so material pipelines can bind the data without
  *      threading the dispatcher through every render path.
@@ -26,7 +25,11 @@
  * @module WebGPUSceneRendererClusteredLighting
  */
 
-import { WebGPUClusteredLightingDispatcher } from "./WebGPUClusteredLightingDispatcher.js";
+import {
+  WebGPUClusteredLightingDispatcher,
+  type ClusterAreaLightInput,
+  type ClusterLightingInputLight,
+} from "./WebGPUClusteredLightingDispatcher.js";
 import type { WebGPURenderFrameConfig } from "./WebGPUSceneRenderer.js";
 
 /** Buffer-handle bundle the dispatcher exposes to consumer pipelines. */
@@ -67,6 +70,38 @@ interface ClusteredLightingContextState {
 // queue traffic.
 const _disabledClusteredLightingHosts = new WeakSet<ClusteredLightingHost>();
 
+// Dispatch copies these entries into its own reusable storage before returning,
+// so sequential frame hooks can share the temporary input arrays safely.
+const _clusteredLightingLightsScratch: ClusterLightingInputLight[] = [];
+const _clusteredLightingAreaLightsScratch: ClusterAreaLightInput[] = [];
+
+// Keep the published bundle stable so resource-identity caches only observe
+// changes to the buffer contents or the lazily-created LUT view.
+const _clusteredLightingBufferStashes = new WeakMap<
+  WebGPUClusteredLightingDispatcher,
+  ClusteredLightingBuffers
+>();
+
+function getClusteredLightingBufferStash(
+  dispatcher: WebGPUClusteredLightingDispatcher,
+): ClusteredLightingBuffers {
+  let buffers = _clusteredLightingBufferStashes.get(dispatcher);
+  if (!buffers) {
+    buffers = {
+      clusterLights: dispatcher.clusterLightsBuffer,
+      clusterAABBs: dispatcher.clusterAABBsBuffer,
+      perClusterLightCount: dispatcher.perClusterLightCountBuffer,
+      perClusterLightIndices: dispatcher.perClusterLightIndicesBuffer,
+      params: dispatcher.paramsBuffer,
+      areaLights: dispatcher.areaLightsBuffer,
+      ltcLUTView: dispatcher.ltcLUTView,
+    };
+    _clusteredLightingBufferStashes.set(dispatcher, buffers);
+  }
+  buffers.ltcLUTView = dispatcher.ltcLUTView;
+  return buffers;
+}
+
 /**
  * Dispatches Forward+ clustered lighting for the current frame. Scene-level
  * lights and the current view and projection data are passed to the dispatcher,
@@ -80,8 +115,7 @@ const _disabledClusteredLightingHosts = new WeakSet<ClusteredLightingHost>();
  * When `scene.clusteredLightingEnabled` is false, a dispatcher that was active
  * receives one zero-count parameter write; subsequent disabled frames return
  * before GPU allocation or queue traffic. When the feature is enabled without
- * configured lights, `activeLightCount` is zero and fragment shaders skip the
- * cluster read.
+ * configured lights, repeated frames return before pass churn or queue traffic.
  */
 export function dispatchClusteredLighting(
   host: ClusteredLightingHost,
@@ -157,42 +191,15 @@ export function dispatchClusteredLighting(
     );
   }
 
-  // End the active canvas render pass before issuing compute work. Beginning a
-  // compute pass while a render pass is open locks the encoder and fails
-  // validation. Resume the default pass afterward so command execution can
-  // continue with the render pass it expects.
-  context.endCurrentRenderPass?.();
-  const encoder = context._currentCommandEncoder;
-  if (!encoder) {
-    context.resumeDefaultRenderPass?.();
-    return;
-  }
+  const dispatcher = host._clusteredLightingDispatcher;
 
   // Gather world-space lights. The dispatcher walks them per-frame
   // and transforms to eye-space using the supplied viewMatrix.
-  const lights: Array<{
-    lightType: number;
-    posOrDirWC: { x: number; y: number; z: number };
-    color: { r?: number; g?: number; b?: number };
-    intensity?: number;
-    range?: number;
-    innerConeAngle?: number;
-    outerConeAngle?: number;
-    spotDirWC?: { x: number; y: number; z: number };
-  }> = [];
+  const lights = _clusteredLightingLightsScratch;
+  lights.length = 0;
   // Area lights use a parallel world-space list for analytic evaluation.
-  const areaLights: Array<{
-    lightType: number;
-    positionWC: { x: number; y: number; z: number };
-    directionWC: { x: number; y: number; z: number };
-    upWC: { x: number; y: number; z: number };
-    halfWidth: number;
-    halfHeight: number;
-    color: { red?: number; green?: number; blue?: number };
-    intensity?: number;
-    twoSided?: boolean;
-    range?: number;
-  }> = [];
+  const areaLights = _clusteredLightingAreaLightsScratch;
+  areaLights.length = 0;
   if (enabled) {
     // Scene-level lights from LightCollection.
     const sceneLights = (
@@ -270,6 +277,28 @@ export function dispatchClusteredLighting(
     // the view transform. Scene-level lights cover the current path.
   }
 
+  if (
+    lights.length === 0 &&
+    areaLights.length === 0 &&
+    dispatcher.paramsAreAllZero
+  ) {
+    ctxStash._clusteredLightingBuffers =
+      getClusteredLightingBufferStash(dispatcher);
+    ctxStash._clusteredLightingActive = false;
+    return;
+  }
+
+  // End the active canvas render pass before issuing compute work. Beginning a
+  // compute pass while a render pass is open locks the encoder and fails
+  // validation. Resume the default pass afterward so command execution can
+  // continue with the render pass it expects.
+  context.endCurrentRenderPass?.();
+  const encoder = context._currentCommandEncoder;
+  if (!encoder) {
+    context.resumeDefaultRenderPass?.();
+    return;
+  }
+
   const uniformState = context.uniformState as unknown as {
     projection?: ArrayLike<number>;
     inverseProjection?: ArrayLike<number>;
@@ -297,7 +326,7 @@ export function dispatchClusteredLighting(
   const near = Math.max(cam?.frustum?.near ?? 1.0, 0.1);
   const far = Math.max(cam?.frustum?.far ?? 10000.0, near + 1.0);
 
-  host._clusteredLightingDispatcher.dispatch(encoder, {
+  dispatcher.dispatch(encoder, {
     enabled,
     lights,
     viewportWidth: host._viewportWidth,
@@ -316,17 +345,8 @@ export function dispatchClusteredLighting(
   // dispatcher runs, or while lighting is disabled, callers omit the option and
   // bind per-device placeholders whose zero active-light count skips the
   // fragment-shader cluster work.
-  const d = host._clusteredLightingDispatcher;
-  ctxStash._clusteredLightingBuffers = {
-    clusterLights: d.clusterLightsBuffer,
-    clusterAABBs: d.clusterAABBsBuffer,
-    perClusterLightCount: d.perClusterLightCountBuffer,
-    perClusterLightIndices: d.perClusterLightIndicesBuffer,
-    params: d.paramsBuffer,
-    // Area-light storage and its lazily built lookup texture.
-    areaLights: d.areaLightsBuffer,
-    ltcLUTView: d.ltcLUTView,
-  };
+  const d = dispatcher;
+  ctxStash._clusteredLightingBuffers = getClusteredLightingBufferStash(d);
   // This flag lets consumers with a no-effects fast path avoid replacing their
   // shared placeholder unless lights actually contribute. Model PBR always
   // builds an active effects bind group and relies on a zero active-light count
@@ -350,13 +370,5 @@ export function getClusteredLightingBuffers(
 ): ClusteredLightingBuffers | null {
   const d = host._clusteredLightingDispatcher;
   if (!d) return null;
-  return {
-    clusterLights: d.clusterLightsBuffer,
-    clusterAABBs: d.clusterAABBsBuffer,
-    perClusterLightCount: d.perClusterLightCountBuffer,
-    perClusterLightIndices: d.perClusterLightIndicesBuffer,
-    params: d.paramsBuffer,
-    areaLights: d.areaLightsBuffer,
-    ltcLUTView: d.ltcLUTView,
-  };
+  return getClusteredLightingBufferStash(d);
 }

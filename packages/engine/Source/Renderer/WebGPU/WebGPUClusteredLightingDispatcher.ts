@@ -173,11 +173,13 @@ export class WebGPUClusteredLightingDispatcher {
   /** Scratch — reused each dispatch to avoid GC. */
   private readonly _scratchEyeLights: ClusteredLightDef[] = [];
   private _lastActiveLightCount: number = 0;
+  private _lastWrittenActiveLightCount: number = 0;
 
   // ── LTC area lights (C6-LTC-AREA-LIGHTS) ──
   private readonly _areaLightsBuffer: GPUBuffer;
   private readonly _areaLightsData: Float32Array;
   private _lastAreaLightCount: number = 0;
+  private _lastWrittenAreaLightCount: number = 0;
   /** LUT texture is created lazily the first time an area light appears. */
   private _ltcTexture: GPUTexture | null = null;
   private _ltcView: GPUTextureView | null = null;
@@ -258,6 +260,14 @@ export class WebGPUClusteredLightingDispatcher {
   /** Most recent packed area-light count. */
   get lastAreaLightCount(): number {
     return this._lastAreaLightCount;
+  }
+
+  /** Whether the params buffer's last-written light counts were both zero. */
+  get paramsAreAllZero(): boolean {
+    return (
+      this._lastWrittenActiveLightCount === 0 &&
+      this._lastWrittenAreaLightCount === 0
+    );
   }
 
   /**
@@ -347,8 +357,22 @@ export class WebGPUClusteredLightingDispatcher {
     }
     this._lastAreaLightCount = areaCount;
 
-    // Update the params uniform first so consumer FS sees the right
-    // activeLightCount even when we skip the compute dispatches.
+    // Eliding the write also freezes the viewport and near/far slots at their
+    // last written values — zeros on a dispatcher that has never packed a
+    // light. Every consumer reads those slots only after the active-light
+    // count gate, so keep that gate if the params layout grows.
+    const redundantZeroParams =
+      activeCount === 0 &&
+      areaCount === 0 &&
+      this._lastWrittenActiveLightCount === 0 &&
+      this._lastWrittenAreaLightCount === 0;
+    if (redundantZeroParams) {
+      this._lastActiveLightCount = 0;
+      return 0;
+    }
+
+    // Update the params uniform before compute work so consumers see the new
+    // counts even when no compute pass is needed.
     // .x = punctual clustered count (Batch 149 gate); .y = area-light
     // count (C6-LTC-AREA-LIGHTS gate — was documented-unused).
     const data = this._paramsData;
@@ -363,6 +387,8 @@ export class WebGPUClusteredLightingDispatcher {
     data[6] = 0;
     data[7] = 0;
     this._device.queue.writeBuffer(this._paramsBuffer, 0, data);
+    this._lastWrittenActiveLightCount = activeCount;
+    this._lastWrittenAreaLightCount = areaCount;
 
     if (activeCount === 0) {
       this._lastActiveLightCount = 0;

@@ -749,9 +749,20 @@ two gate demotions that the ruling REVERSES:
    refresh**; **WebGPU INVALID - the control leg outran the eclipse leg (5982 ms vs 5418 ms
    over 801 frames), a negative differential the probe refuses to attribute** - measured
    while two Codex worker sessions ran tsc/eslint/node-test on the same machine, i.e. the
-   CPU-contention class the U2 sentinels established. **Owed: a quiet-machine rerun; the
-   banked artifact requires both backends VALID.** Reports retained under
-   `Tools/visual-regression/output/eclipse-cloud-response-report.run-*.json`.
+   CPU-contention class the U2 sentinels established. Run 5 (`b7d2971e`) with no
+   orchestration load: WebGL VALID again at 2.714 ms per refresh (eclipse 1495 ms vs control
+   757 ms over 801 frames, 272 fills); WebGPU INVALID again with the SAME SIGN - control 5092 ms
+   vs eclipse 4958 ms. **Two runs agreeing in sign is not contention: on WebGPU both legs run
+   at ~6.5 ms per frame (WebGL ~1.2) and the no-refresh control leg is consistently the slower
+   one, so a wall-clock ABBA sweep cannot attribute the 272 fills - the historical 1.607 ms
+   per refresh would be ~440 ms, inside the observed 134-564 ms leg-to-leg drift. The sign
+   pattern (busy leg faster) is what a GPU power-state down-clock on the idler leg produces.
+   NEXT STEP IS A RULING (RULING_REQUESTS item 12): the banked cost is an operative exit
+   prerequisite under R-2026-08-14-1, so its instrument cannot be changed by the orchestrator -
+   either re-instrument the cost lane on GPU timestamp queries (the repository already carries
+   `gpuPassCost`) or rule the WebGPU refresh cost unmeasurable-by-wall-clock and below the
+   sweep's resolution.** Filed as `NEW-SOL4-REFRESH-COST-BELOW-WALLCLOCK-RESOLUTION`.
+   Reports retained under `Tools/visual-regression/output/eclipse-cloud-response-report.run-*.json`.
    interleaved ABBA/warm-up-parity accounting is archived as a retained
    artifact, so the number is reproducible from evidence rather than cited from
    memory. Until it is banked, the run's own estimate gates.

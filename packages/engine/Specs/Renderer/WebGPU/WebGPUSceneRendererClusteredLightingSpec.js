@@ -3,23 +3,16 @@ import {
   getClusteredLightingBuffers,
 } from "../../../Source/Renderer/WebGPU/WebGPUSceneRendererClusteredLighting.js";
 
-// C9-16-CLUSTERED-LIGHT-ZERO-WORK-CONTRACT — direct unit coverage for the
-// disabled/no-light zero-work state machine and the single enabled->disabled
-// transition params write. Mock-device based (no navigator.gpu): the hook is
-// exercised over fake host/context/dispatcher surfaces so it runs in headless
-// CI where a real WebGPU device is unavailable. The lazy real-dispatcher
-// construction on the FIRST enabled frame is covered end-to-end by the
-// Playwright gates (probe-clustered-per-frame.mjs etc.); here every case that
-// needs a dispatcher injects a recording fake, per the sanctioned pattern.
+// The hook is exercised over recording host, context, and dispatcher surfaces
+// so its state machine does not require a real WebGPU device.
 
 function makeBuffer(label) {
   return { label: label };
 }
 
-// A recording stand-in for WebGPUClusteredLightingDispatcher. Records every
-// dispatch() call with its inputs and exposes identity-stable buffer getters so
-// the hook's stash-publication path (invariant 4) can be asserted.
-function makeFakeDispatcher(lastActiveLightCount) {
+// The stand-in snapshots inputs because the real dispatcher copies them before
+// the scene hook reuses its module-level arrays on the next frame.
+function makeFakeDispatcher(lastActiveLightCount, lastAreaLightCount) {
   const buffers = {
     clusterLights: makeBuffer("clusterLights"),
     clusterAABBs: makeBuffer("clusterAABBs"),
@@ -28,12 +21,39 @@ function makeFakeDispatcher(lastActiveLightCount) {
     params: makeBuffer("params"),
     areaLights: makeBuffer("areaLights"),
   };
+  const initialActiveCount = lastActiveLightCount ?? 0;
+  const initialAreaCount = lastAreaLightCount ?? 0;
   return {
     dispatchCalls: [],
-    lastActiveLightCount: lastActiveLightCount ?? 0,
+    paramsWriteBufferCalls: 0,
+    lastActiveLightCount: initialActiveCount,
+    lastAreaLightCount: initialAreaCount,
+    _lastWrittenActiveLightCount: initialActiveCount,
+    _lastWrittenAreaLightCount: initialAreaCount,
+    get paramsAreAllZero() {
+      return (
+        this._lastWrittenActiveLightCount === 0 &&
+        this._lastWrittenAreaLightCount === 0
+      );
+    },
     dispatch: function (encoder, inputs) {
-      this.dispatchCalls.push({ encoder: encoder, inputs: inputs });
-      return this.lastActiveLightCount;
+      const lights = Array.from(inputs.lights);
+      const areaLights = Array.from(inputs.areaLights ?? []);
+      const activeCount = inputs.enabled ? lights.length : 0;
+      const areaCount = inputs.enabled ? areaLights.length : 0;
+      this.dispatchCalls.push({
+        encoder: encoder,
+        inputs: { ...inputs, lights: lights, areaLights: areaLights },
+      });
+      this.lastActiveLightCount = activeCount;
+      this.lastAreaLightCount = areaCount;
+      if (activeCount === 0 && areaCount === 0 && this.paramsAreAllZero) {
+        return 0;
+      }
+      this.paramsWriteBufferCalls++;
+      this._lastWrittenActiveLightCount = activeCount;
+      this._lastWrittenAreaLightCount = areaCount;
+      return activeCount;
     },
     get clusterLightsBuffer() {
       return buffers.clusterLights;
@@ -128,7 +148,7 @@ describe("Renderer/WebGPU/WebGPUSceneRendererClusteredLighting", function () {
   });
 
   it("enabled->disabled transition writes exactly one zero-count params dispatch", function () {
-    const dispatcher = makeFakeDispatcher(0);
+    const dispatcher = makeFakeDispatcher(1);
     const host = makeHost(dispatcher);
     const context = makeContext();
     const scene = makeScene(false);
@@ -136,6 +156,7 @@ describe("Renderer/WebGPU/WebGPUSceneRendererClusteredLighting", function () {
     // First disabled frame after the dispatcher already existed: one sync.
     dispatchClusteredLighting(host, { scene: scene, context: context });
     expect(dispatcher.dispatchCalls.length).toBe(1);
+    expect(dispatcher.paramsWriteBufferCalls).toBe(1);
     const call = dispatcher.dispatchCalls[0];
     expect(call.inputs.enabled).toBe(false);
     expect(call.inputs.lights).toEqual([]);
@@ -169,33 +190,70 @@ describe("Renderer/WebGPU/WebGPUSceneRendererClusteredLighting", function () {
     expect(dispatcher.dispatchCalls[0].inputs.enabled).toBe(false);
   });
 
-  it("enabled with zero effective lights publishes identity-stable buffers and marks inactive", function () {
-    const dispatcher = makeFakeDispatcher(0); // lastActiveLightCount 0
+  it("enabled with repeated zero effective lights performs no queue or pass work", function () {
+    const dispatcher = makeFakeDispatcher(0, 0);
     const host = makeHost(dispatcher);
     const context = makeContext();
-    const scene = makeScene(true, []); // enabled, no lights
+    const scene = makeScene(true, []);
 
     dispatchClusteredLighting(host, { scene: scene, context: context });
 
-    expect(dispatcher.dispatchCalls.length).toBe(1);
-    expect(dispatcher.dispatchCalls[0].inputs.enabled).toBe(true);
-    expect(dispatcher.dispatchCalls[0].inputs.lights).toEqual([]);
-    // Enabled path ends+resumes the pass around the compute hook.
-    expect(context._calls.endCurrentRenderPass).toBe(1);
-    expect(context._calls.resumeDefaultRenderPass).toBe(1);
-    // Invariant 4: buffers are published (stable handles) even with 0 lights,
-    // but the "contributing this frame" flag is false.
+    expect(dispatcher.dispatchCalls.length).toBe(0);
+    expect(dispatcher.paramsWriteBufferCalls).toBe(0);
+    expect(context._calls.endCurrentRenderPass).toBe(0);
+    expect(context._calls.resumeDefaultRenderPass).toBe(0);
     const firstBuffers = context._clusteredLightingBuffers;
     expect(firstBuffers).toBeDefined();
     expect(firstBuffers.params).toBe(dispatcher._buffers.params);
     expect(context._clusteredLightingActive).toBe(false);
 
-    // A second enabled/zero-light frame keeps the SAME buffer identities.
     dispatchClusteredLighting(host, { scene: scene, context: context });
-    expect(context._clusteredLightingBuffers.params).toBe(firstBuffers.params);
-    expect(context._clusteredLightingBuffers.clusterLights).toBe(
-      firstBuffers.clusterLights,
-    );
+    expect(dispatcher.dispatchCalls.length).toBe(0);
+    expect(dispatcher.paramsWriteBufferCalls).toBe(0);
+    expect(context._calls.endCurrentRenderPass).toBe(0);
+    expect(context._calls.resumeDefaultRenderPass).toBe(0);
+    expect(context._clusteredLightingBuffers).toBe(firstBuffers);
+  });
+
+  it("writes params exactly once when enabled lighting transitions from active to zero", function () {
+    const dispatcher = makeFakeDispatcher(0, 0);
+    const host = makeHost(dispatcher);
+    const context = makeContext();
+    const light = {
+      lightType: 1,
+      enabled: true,
+      position: { x: 10, y: 20, z: 30 },
+      color: { red: 1, green: 1, blue: 1 },
+      intensity: 2,
+    };
+
+    dispatchClusteredLighting(host, {
+      scene: makeScene(true, [light]),
+      context: context,
+    });
+    const activeBuffers = context._clusteredLightingBuffers;
+    const writesBeforeTransition = dispatcher.paramsWriteBufferCalls;
+
+    dispatchClusteredLighting(host, {
+      scene: makeScene(true, []),
+      context: context,
+    });
+    expect(dispatcher.paramsWriteBufferCalls - writesBeforeTransition).toBe(1);
+    expect(dispatcher.dispatchCalls.length).toBe(2);
+    expect(context._calls.endCurrentRenderPass).toBe(2);
+    expect(context._calls.resumeDefaultRenderPass).toBe(2);
+    expect(context._clusteredLightingBuffers).toBe(activeBuffers);
+    expect(context._clusteredLightingActive).toBe(false);
+
+    dispatchClusteredLighting(host, {
+      scene: makeScene(true, []),
+      context: context,
+    });
+    expect(dispatcher.paramsWriteBufferCalls - writesBeforeTransition).toBe(1);
+    expect(dispatcher.dispatchCalls.length).toBe(2);
+    expect(context._calls.endCurrentRenderPass).toBe(2);
+    expect(context._calls.resumeDefaultRenderPass).toBe(2);
+    expect(context._clusteredLightingBuffers).toBe(activeBuffers);
   });
 
   it("enabled with an active light marks clustered lighting contributing", function () {
@@ -217,6 +275,34 @@ describe("Renderer/WebGPU/WebGPUSceneRendererClusteredLighting", function () {
     expect(dispatcher.dispatchCalls[0].inputs.lights.length).toBe(1);
     expect(context._clusteredLightingActive).toBe(true);
     expect(context._clusteredLightingBuffers).toBeDefined();
+    expect(context._calls.endCurrentRenderPass).toBe(1);
+    expect(context._calls.resumeDefaultRenderPass).toBe(1);
+  });
+
+  it("balances the enabled render pass when frame state is unavailable", function () {
+    const light = {
+      lightType: 1,
+      enabled: true,
+      position: { x: 10, y: 20, z: 30 },
+      color: { red: 1, green: 1, blue: 1 },
+      intensity: 2,
+    };
+    const contexts = [
+      makeContext({ encoder: undefined }),
+      makeContext({ uniformState: {} }),
+    ];
+
+    for (const context of contexts) {
+      const dispatcher = makeFakeDispatcher(0, 0);
+      dispatchClusteredLighting(makeHost(dispatcher), {
+        scene: makeScene(true, [light]),
+        context: context,
+      });
+
+      expect(dispatcher.dispatchCalls.length).toBe(0);
+      expect(context._calls.endCurrentRenderPass).toBe(1);
+      expect(context._calls.resumeDefaultRenderPass).toBe(1);
+    }
   });
 
   it("re-enabling after a disabled transition resumes dispatch", function () {
@@ -294,5 +380,6 @@ describe("Renderer/WebGPU/WebGPUSceneRendererClusteredLighting", function () {
     expect(buffers).not.toBeNull();
     expect(buffers.params).toBe(dispatcher._buffers.params);
     expect(buffers.clusterLights).toBe(dispatcher._buffers.clusterLights);
+    expect(getClusteredLightingBuffers(host)).toBe(buffers);
   });
 });
