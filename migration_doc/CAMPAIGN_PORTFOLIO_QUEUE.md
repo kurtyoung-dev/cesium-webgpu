@@ -150,7 +150,7 @@ Execute in this order where dependencies permit:
 4. **C12 G3 / C12-12:** prepare the ordered 4096-per-face star-cubemap bake and
    G3 rerun as one maintainer machine session. The manual asset/HDR work is not
    a worker task.
-5. **C12 decisions:** resolve CLT-D10/G1 canonicity, C11-79 gate membership,
+5. **C12 decisions:** resolve CLT-D10/G1 canonicity, C11-79 gate membership, **[RULED 2026-08-21 evening: `R-2026-08-21-14` accept-red carried to C17; `R-2026-08-21-16` all four OUT]**
    and C12-31 follow-up membership. CLT-D10 is an out-of-band ruling now; it
    does not launch all of C17.
 6. Burn down C12-33, C12-11, C12-31, C12-G1F2, C12-12 identity, EXIT-2, and

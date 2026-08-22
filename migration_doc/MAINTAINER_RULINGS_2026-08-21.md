@@ -85,3 +85,88 @@ verified bundles.
 *Executions in flight at ruling time: T0 frozen-build acceptance program (C11-13 green
 through its physical probe and focused Karma; battery running), five Sol packages
 (C16 shard, Karma launcher, capture harness, marker grammar, voxel spec anchors).*
+
+## Evening rulings — 2026-08-21 (the RULING_REQUESTS_2026-08-21.md packet, items 1-12)
+
+Ruled by the maintainer in session on 2026-08-21 evening; each item below names its
+packet number. These are operative, not provisional, unless stated.
+
+## R-2026-08-21-13 — G3 celestial gate: the 4096 bake + HDR check session (packet item 1)
+
+Schedule the manual maintainer session: bake and bundle the 4096 cube faces and run the
+HDR-hardware check in one sitting, discharging G3, the C12-12 tier item and C12-28 together.
+The ratified >= 2700 px bar stands; no de-scoring.
+
+## R-2026-08-21-14 — G1 sky-atmosphere shell extent (packet item 2)
+
+Conditional: C12 may close with G1 red ONLY if a future campaign carries a concrete plan to
+fix `NEW-WEBGPU-SKYATMOSPHERE-SHELL-EXTENT-ALPHA`; absent such a plan the defect escalates to
+the next fix rather than being carried. Disposition of the condition: SATISFIED - Campaign 17 (proposed) carries `CLT-D10`, the shell-extent decision, as a named item of its packet; the maintainer ruled that proposed-C17 with CLT-D10 counts. C12 therefore closes with G1 explicitly red, carried to C17 as CLT-D10; the red stays visible in the C12 queue and the C17 packet.
+
+## R-2026-08-21-15 — C12-33 moon-mip: run both designs (packet item 3)
+
+`sign-test-v1` (four-cell sign test, 1e-9 gate, custody-hashed) is blessed as the design of
+record NOW and its scripted 2.5-hour Edge ten-run set runs in the machine lane. The
+sixteen-cell ratio design is ALSO ordered as a later build, to be run once a correlation `r`
+is pre-registered by the maintainer before that build is dispatched (never supplied post hoc);
+it gets its own designId and custody hash.
+
+## R-2026-08-21-16 — C12 exit-gate membership (packet item 4)
+
+All four OUT of the C12 exit gate, tracked where they live: `C11-79` stays in C11; `C12-26`
+(earth-limb airglow) defers to C17; `C12-31-FOLLOWUP-A/B/C` are filed follow-ups while the
+C12-31 acceptance sweep itself stays IN; `C12-11` closes out of the gate on the shipped
+starfield with the rebuilt harness (Batch 1109) as the instrument of record for a post-C12
+certification, its HELD state kept visibly recorded.
+
+## R-2026-08-21-17 — C15-G9 escalation disposition (packet item 5)
+
+The `R-2026-08-10-7` escalation is acknowledged; the disposition is to RUN the D1-D5
+discriminator harness (landed Batch 1122) in the machine lane. No design decision precedes
+the measurement; the 0.050% bar stays mutant-pinned.
+
+## R-2026-08-21-18 — C16-20 gains an empty-grandfather clause (packet item 6)
+
+The C16 exit gate requires the grandfather ledger to be EMPTY: census = 0 with nothing
+parked. The ledger remains shrink-only and retires rows as their files' shards land.
+
+## R-2026-08-21-19 — C16-02c is IN Campaign 16 as a late shard (packet item 7)
+
+The build-ts `.d.ts` surface joins the C16 standard as a late shard after the remaining
+rewrite shards; declaration files are consumer-facing documentation.
+
+## R-2026-08-21-20 — U2 morphology stays ON (packet item 8)
+
+Re-affirmed: the landed U2 morphology stays enabled with its measured cost disclosed and
+`C13-39B` as the named containment; the fork's performance principle (never default-disable
+a feature to win a metric) governs.
+
+## R-2026-08-21-21 — the provisional amendment batch stays provisional (packet item 9)
+
+The eleven R-2026-08-21 amendments remain provisional until the picking programme (B1-B5)
+has run under them; they are then ratified in one pass with that evidence.
+
+## R-2026-08-21-22 — 3D Tiles extension decisions batched (packet item 10)
+
+Decision 23 (`3DTiles_temporal` vocabulary), the reframed title/abstract, and wave B scoping
+are taken together in one sitting when the fork campaigns are quieter.
+
+## R-2026-08-21-23 — license baseline is Apache-2.0 (packet item 11)
+
+Confirmed: the fork's operative license baseline is Apache-2.0 (inherited from upstream
+CesiumJS; `LICENSE.md`, the engine LICENSE and `package.json` agree). Every "MIT repo"
+statement in plans and queue rows is to be corrected; intake of MIT/BSD/ISC/PD/CC-BY sources
+is license-compatible with NOTICE-file attribution under Apache-2.0 section 4(d); copyleft and
+NC/SA sources remain disqualified. `LICENSE_VETTING_AURORA_OCEAN_2026-08-21.md` gets its
+softening pass against this baseline (with the review's deferred quality edits) before any
+C14/C15 intake.
+
+## R-2026-08-21-24 — SOL-4: bank the honest record AND re-instrument (packet item 12)
+
+Both: (a) the runs of 2026-08-21 are banked as the SOL-4 artifact of record - WebGL 3.342 and
+2.714 ms per refresh, WebGPU unmeasurable by wall clock at this fixture's frame cost with the
+negative-differential record retained - which satisfies the R-2026-08-14-1 prerequisite on
+honest evidence; and (b) the refresh-cost lane is re-instrumented on GPU timestamp queries
+(the repository's `gpuPassCost` path) under the same pre-registered sweep and
+both-backends-valid rule, as the durable instrument. Until (b) runs, the WebGPU cost is a
+bound in the ledger, not a figure.

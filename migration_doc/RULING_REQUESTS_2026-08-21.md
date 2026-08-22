@@ -1,10 +1,12 @@
 # Ruling requests — 2026-08-21
 
-Everything currently blocked on a maintainer decision, consolidated from the six
+All twelve items below were RULED in session on 2026-08-21 evening (R-2026-08-21-13..24); the text is retained as the decision record. Everything that was blocked on a maintainer decision, consolidated from the six
 2026-08-21 campaign audits and the day's landings. Each item carries a
 recommendation with its costs stated. Items 1-2 are the C14 critical path.
 
 ## 1. G3 celestial gate: the 4096 bake + HDR check (manual session)
+
+**RULED 2026-08-21 evening -> `R-2026-08-21-13` in `MAINTAINER_RULINGS_2026-08-21.md`.**
 
 **Question.** The G3 gate now honestly FAILS at the shipped 2048 asset against
 the ratified >= 2700 px bar (SOL-2 landed Batch 1107). Only the ruled manual
@@ -20,6 +22,8 @@ session could spill.
 
 ## 2. G1 sky-atmosphere shell-extent: rule CLT-D10 or accept-red-at-close
 
+**RULED 2026-08-21 evening -> `R-2026-08-21-14` in `MAINTAINER_RULINGS_2026-08-21.md`.**
+
 **Question.** G1 is RED on `NEW-WEBGPU-SKYATMOSPHERE-SHELL-EXTENT-ALPHA`, whose
 canonical answer is owned by unlaunched C17 (CLT-D10). C12 cannot reach this
 from inside. Options: (a) rule the shell-extent question now, out of band;
@@ -34,6 +38,8 @@ a known cosmetic defect; a later C17 fix may re-open celestial acceptance
 imagery for re-baseline.
 
 ## 3. C12-33 moon-mip: sign-test-v1 vs the ruled sixteen-cell design
+
+**RULED 2026-08-21 evening -> `R-2026-08-21-15` in `MAINTAINER_RULINGS_2026-08-21.md`.**
 
 **Question.** The shipped, custody-hashed design is a four-cell SIGN TEST with
 an absolute 1e-9 gate (`sign-test-v1`, Batch 1100). The ruling text described a
@@ -51,6 +57,8 @@ sixteen-cell build becomes new work with a new custody hash (designId bump
 makes that visible, by design).
 
 ## 4. In/out-of-gate calls for the C12 exit (four small decisions)
+
+**RULED 2026-08-21 evening -> `R-2026-08-21-16` in `MAINTAINER_RULINGS_2026-08-21.md`.**
 
 - **C11-79 (celestial retained resources, partial):** membership in the C12
   exit gate is stated nowhere. **Recommend OUT** - it is a perf rider, not
@@ -72,6 +80,8 @@ makes that visible, by design).
 
 ## 5. C15-G9 tower frame-variance: the escalation the ruling already ordered
 
+**RULED 2026-08-21 evening -> `R-2026-08-21-17` in `MAINTAINER_RULINGS_2026-08-21.md`.**
+
 **Question.** `R-2026-08-10-7` escalates any structural line older than 30
 batches to the maintainer queue. `C15-GSPLAT-TOWER-FRAME-VARIANCE` has been
 STRUCTURAL since Batch 916 - ~191 batches. The G9 discriminator harness (D1-D5)
@@ -84,6 +94,8 @@ frame) decides whether the variance is instrument noise before any deeper call.
 clock keeps running.
 
 ## 6. C16-20 exit gate vs the grandfather file
+
+**RULED 2026-08-21 evening -> `R-2026-08-21-18` in `MAINTAINER_RULINGS_2026-08-21.md`.**
 
 **Question.** The C16 exit demands CENSUS = 0, but the grandfather file
 currently parks 187 findings on clean-listed paths - the gate can read green
@@ -99,6 +111,8 @@ added cost is small).
 
 ## 7. C16-02c: the build-ts `.d.ts` lane in/out call
 
+**RULED 2026-08-21 evening -> `R-2026-08-21-19` in `MAINTAINER_RULINGS_2026-08-21.md`.**
+
 **Question.** The `.d.ts` surface fails the C16 marker standard but is not in
 the shipped-comment path the campaign targets; the lane has sat unruled.
 **Recommendation: IN, as a late shard** (after P4-P9), because `.d.ts` files
@@ -107,6 +121,8 @@ are read by downstream TypeScript consumers - they ARE shipped documentation.
 **Cons:** one more M-sized shard before C16-20.
 
 ## 8. U2 regression disposition (informational; default path already ruled)
+
+**RULED 2026-08-21 evening -> `R-2026-08-21-20` in `MAINTAINER_RULINGS_2026-08-21.md`.**
 
 **Fact.** The completed A/B campaign scores the landed U2 morphology at ~+5%
 shadow map, +2-12% cumulus full-res march, +9-19% cascade atlas (cirrus march
@@ -120,6 +136,8 @@ leave it ON, and that is what is landing.
 
 ## 9. The provisional R-2026-08-21 batch: ratification checkpoint
 
+**RULED 2026-08-21 evening -> `R-2026-08-21-21` in `MAINTAINER_RULINGS_2026-08-21.md`.**
+
 The eleven amendment adoptions were provisional ("give the recommendations an
 honest shot"). Evidence so far: A1 (precedence order) landed under non-author
 review and is holding; C1/C3 executed; A2's launcher/guard slice landed with
@@ -130,6 +148,8 @@ programme (B1-B5) runs under them, then ratify in one pass.**
 
 ## 10. 3D Tiles extension workstream (separate track, still open from B1057)
 
+**RULED 2026-08-21 evening -> `R-2026-08-21-22` in `MAINTAINER_RULINGS_2026-08-21.md`.**
+
 Decision 23 (adopt the `3DTiles_temporal` transition vocabulary) wants a
 conscious yes/no; the reframed title/abstract wants a read; wave B (fix pass
 over the 51 surviving audit findings) wants scoping. **Recommendation: batch
@@ -137,6 +157,8 @@ all three into one sitting when the fork campaigns are quieter; nothing in the
 fork blocks on them.**
 
 ## 11. License baseline: the fork is Apache-2.0, not MIT (verified 2026-08-21)
+
+**RULED 2026-08-21 evening -> `R-2026-08-21-23` in `MAINTAINER_RULINGS_2026-08-21.md`.**
 
 **Fact, orchestrator-verified:** `LICENSE.md`, `packages/engine/LICENSE.md`, and the root
 `package.json` (`"license": "Apache-2.0"`) all state Apache-2.0 — upstream CesiumJS's
@@ -166,6 +188,8 @@ feed); the A-16/O-46 one-source-two-campaigns note; the GRIB2/NetCDF dedupe rati
 and the S-09 transitive-attribution wording.
 
 ## 12. SOL-4: the WebGPU refresh cost is below the wall-clock sweep's resolution
+
+**RULED 2026-08-21 evening -> `R-2026-08-21-24` in `MAINTAINER_RULINGS_2026-08-21.md`.**
 
 **Fact (two runs, 2026-08-21 evening, attestable bundle, repaired gate).** WebGL banks
 3.342 / 2.714 ms per refresh. WebGPU cannot be attributed: the no-refresh control leg is
