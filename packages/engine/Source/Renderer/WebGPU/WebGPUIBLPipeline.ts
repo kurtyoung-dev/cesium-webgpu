@@ -29,10 +29,28 @@ import {
   Stage,
 } from "./WebGPUBindGroupLayoutHelpers.js";
 import type { PooledParameterBuffer } from "./WebGPUEnvironmentTargetPool.js";
+import type { WebGPUPassTimestampProvider } from "./WebGPUPerformanceManager.js";
 
 const IRRADIANCE_SIZE = 32;
 const RADIANCE_BASE_SIZE = 128;
 const RADIANCE_MIP_LEVELS = 6; // log2(128) - 1, roughness 0..1
+
+type IBLPassTimestampProvider = Partial<
+  Pick<WebGPUPassTimestampProvider, "withComputePassTimestamps">
+>;
+
+function beginIBLComputePass(
+  encoder: GPUCommandEncoder,
+  timestampProvider?: IBLPassTimestampProvider,
+  descriptor?: GPUComputePassDescriptor,
+): GPUComputePassEncoder {
+  if (!descriptor) {
+    return encoder.beginComputePass();
+  }
+  return encoder.beginComputePass(
+    timestampProvider?.withComputePassTimestamps?.(descriptor) ?? descriptor,
+  );
+}
 
 /**
  * Quality mode for the radiance prefilter. `'parity'`, the default, samples the
@@ -709,6 +727,8 @@ function dispatchSourceCubeMipChain(
   sourceCube: GPUTexture,
   sourceFormat: GPUTextureFormat,
   encodingScope: IBLCommandEncodingScope,
+  timestampProvider?: IBLPassTimestampProvider,
+  passDescriptor?: GPUComputePassDescriptor,
 ): boolean {
   const mipLevelCount = sourceCube.mipLevelCount;
   if (mipLevelCount <= 1) {
@@ -881,7 +901,11 @@ function dispatchSourceCubeMipChain(
   for (let mip = 1; mip < mipLevelCount; mip++) {
     const dstSize = Math.max(1, baseSize >> mip);
 
-    const pass = encoder.beginComputePass();
+    const pass = beginIBLComputePass(
+      encoder,
+      timestampProvider,
+      passDescriptor,
+    );
     pass.setPipeline(cache.mipDownsamplePipeline);
     pass.setBindGroup(0, bindGroups[mip - 1]);
     pass.dispatchWorkgroups(Math.ceil(dstSize / 8), Math.ceil(dstSize / 8), 6);
@@ -902,6 +926,8 @@ function dispatchIrradianceConvolution(
     | import("./WebGPUComputePipelineCache.js").WebGPUComputePipelineCache
     | null = null,
   encodingScope?: IBLCommandEncodingScope,
+  timestampProvider?: IBLPassTimestampProvider,
+  passDescriptor?: GPUComputePassDescriptor,
 ): void {
   const ownsEncodingScope = !encodingScope;
   const scope =
@@ -995,7 +1021,11 @@ function dispatchIrradianceConvolution(
   }
 
   for (let face = 0; face < 6; face++) {
-    const pass = encoder.beginComputePass();
+    const pass = beginIBLComputePass(
+      encoder,
+      timestampProvider,
+      passDescriptor,
+    );
     pass.setPipeline(cache.irradiancePipeline!);
     pass.setBindGroup(0, bindGroups[face]);
     pass.dispatchWorkgroups(
@@ -1297,6 +1327,8 @@ function dispatchRadiancePrefilter(
     | null = null,
   hqOptions?: RadianceHQOptions,
   encodingScope?: IBLCommandEncodingScope,
+  timestampProvider?: IBLPassTimestampProvider,
+  passDescriptor?: GPUComputePassDescriptor,
 ): void {
   const ownsEncodingScope = !encodingScope;
   const scope =
@@ -1319,6 +1351,8 @@ function dispatchRadiancePrefilter(
       hqOptions.sourceCube,
       fmt,
       scope,
+      timestampProvider,
+      passDescriptor,
     );
     if (built) {
       if (!cache.radianceHQPipeline || !cache.radianceHQBGL) {
@@ -1450,7 +1484,11 @@ function dispatchRadiancePrefilter(
   for (let mip = 0; mip < RADIANCE_MIP_LEVELS; mip++) {
     const mipSize = RADIANCE_BASE_SIZE >> mip;
     for (let face = 0; face < 6; face++) {
-      const pass = encoder.beginComputePass();
+      const pass = beginIBLComputePass(
+        encoder,
+        timestampProvider,
+        passDescriptor,
+      );
       pass.setPipeline(pipeline);
       pass.setBindGroup(0, bindGroups[mip * 6 + face]);
       pass.dispatchWorkgroups(Math.ceil(mipSize / 8), Math.ceil(mipSize / 8));
@@ -1520,6 +1558,9 @@ function generateIBLMaps(
     | null = null,
   hqOptions?: RadianceHQOptions,
   encodingScope?: IBLCommandEncodingScope,
+  timestampProvider?: IBLPassTimestampProvider,
+  irradiancePassDescriptor?: GPUComputePassDescriptor,
+  radiancePassDescriptor?: GPUComputePassDescriptor,
 ): void {
   const outputTransaction = preparePersistentIBLOutputs(device, cache);
   const ownsEncodingScope = !encodingScope;
@@ -1567,6 +1608,8 @@ function generateIBLMaps(
         sourceCubeView,
         computePipelineCache,
         scope,
+        timestampProvider,
+        irradiancePassDescriptor,
       );
       dispatchRadiancePrefilter(
         device,
@@ -1575,6 +1618,8 @@ function generateIBLMaps(
         computePipelineCache,
         hqOptions,
         scope,
+        timestampProvider,
+        radiancePassDescriptor,
       );
     } else {
       try {
@@ -1584,6 +1629,8 @@ function generateIBLMaps(
           sourceCubeView,
           computePipelineCache,
           scope,
+          timestampProvider,
+          irradiancePassDescriptor,
         );
       } catch {
         // Authored IBL preserves its historical independent-stage fallback.
@@ -1596,6 +1643,8 @@ function generateIBLMaps(
           computePipelineCache,
           hqOptions,
           scope,
+          timestampProvider,
+          radiancePassDescriptor,
         );
       } catch {
         // Authored IBL preserves its historical independent-stage fallback.
@@ -1643,6 +1692,7 @@ export {
 export type {
   IBLCommandEncodingScope,
   IBLParameterArenaPool,
+  IBLPassTimestampProvider,
   IBLPersistentParameterArena,
   IBLPipelineCache,
   RadianceHQOptions,

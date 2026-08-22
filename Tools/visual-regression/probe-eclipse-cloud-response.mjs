@@ -2010,7 +2010,6 @@ const RUN_IBL_SWEEP = async (cfg) => {
     }
   }
   const costContext = scene._context;
-  const debug = globalThis.CesiumDebug;
   const isWebGPU = rendererType === "webgpu";
   const timestampFeatureAvailable =
     isWebGPU && costContext?.hasFeature?.("timestamp-query") === true;
@@ -2028,7 +2027,7 @@ const RUN_IBL_SWEEP = async (cfg) => {
   let gpuCaptureAvailable =
     timestampFeatureAvailable &&
     profiler !== null &&
-    typeof debug?.gpuPassCost === "function" &&
+    typeof profiler.reset === "function" &&
     typeof profiler._addToRollingWindow === "function" &&
     profiler._latestResults instanceof Map;
   if (timestampFeatureAvailable && !gpuCaptureAvailable) {
@@ -2038,7 +2037,7 @@ const RUN_IBL_SWEEP = async (cfg) => {
 
   const timestampProfilingInitially =
     costContext?.performanceManager?.config?.timestampProfiling === true;
-  let activeGpuSamples = null;
+  let activeGpuSamplesByPass = null;
   let captureHook = {
     installed: false,
     restored: true,
@@ -2053,12 +2052,13 @@ const RUN_IBL_SWEEP = async (cfg) => {
     );
     const originalFunction = profiler._addToRollingWindow;
     const wrapper = function (array, value) {
-      if (
-        activeGpuSamples !== null &&
-        array ===
-          profiler._latestResults.get(cfg.refreshCostProtocol.gpuTime.passName)
-      ) {
-        activeGpuSamples.push(value);
+      if (activeGpuSamplesByPass !== null) {
+        const passName = cfg.refreshCostProtocol.gpuTime.passNames.find(
+          (candidate) => array === profiler._latestResults.get(candidate),
+        );
+        if (passName !== undefined) {
+          activeGpuSamplesByPass[passName].push(value);
+        }
       }
       return originalFunction.call(this, array, value);
     };
@@ -2088,6 +2088,9 @@ const RUN_IBL_SWEEP = async (cfg) => {
         "WebGPU gpuPassCost pass-sample hook could not be installed";
       restoreGpuCapture();
     }
+  }
+  if (gpuCaptureAvailable) {
+    costContext.performanceManager.config.timestampProfiling = true;
   }
 
   const awaitQueueCompletion = async () => {
@@ -2131,6 +2134,7 @@ const RUN_IBL_SWEEP = async (cfg) => {
     resolutionNs: null,
     totalMs: null,
     samplesMs: [],
+    samplesMsByPass: {},
     invalidReason: gpuUnavailableReason,
     queueDrain: null,
     drain: null,
@@ -2138,9 +2142,6 @@ const RUN_IBL_SWEEP = async (cfg) => {
   });
 
   const runCostSegment = async (pairIndex, leg, from, to) => {
-    if (gpuCaptureAvailable) {
-      debug.gpuPassCost(false);
-    }
     ac.lighting.enableEclipse = leg === "eclipse";
     pin.renderAt(C.JulianDate.fromIso8601(schedule[from].iso)); // untimed
     let previous = committedBucket();
@@ -2175,8 +2176,13 @@ const RUN_IBL_SWEEP = async (cfg) => {
     const preDrain = await profiler.drainPendingReadbacks(
       cfg.refreshCostProtocol.readbackTimeoutMs,
     );
-    debug.gpuPassCost(true);
-    activeGpuSamples = [];
+    profiler.reset();
+    activeGpuSamplesByPass = Object.fromEntries(
+      cfg.refreshCostProtocol.gpuTime.passNames.map((passName) => [
+        passName,
+        [],
+      ]),
+    );
     const wallStartMs = performance.now();
     let readbackYieldMs = 0;
     for (let f = from; f < to; f++) {
@@ -2196,9 +2202,24 @@ const RUN_IBL_SWEEP = async (cfg) => {
       cfg.refreshCostProtocol.readbackTimeoutMs,
     );
     const raw = profiler.getResults();
-    const samplesMs = activeGpuSamples;
-    activeGpuSamples = null;
-    debug.gpuPassCost(false);
+    const capturedSamplesByPass = activeGpuSamplesByPass;
+    activeGpuSamplesByPass = null;
+    const sampledPassNames = cfg.refreshCostProtocol.gpuTime.passNames.filter(
+      (passName) => capturedSamplesByPass[passName].length > 0,
+    );
+    const samplesMsByPass = Object.fromEntries(
+      sampledPassNames.map((passName) => [
+        passName,
+        capturedSamplesByPass[passName],
+      ]),
+    );
+    const samplesMs = Array.from({ length: fills }, (_, fillIndex) =>
+      sampledPassNames.reduce(
+        (total, passName) =>
+          total + (samplesMsByPass[passName][fillIndex] ?? 0),
+        0,
+      ),
+    );
 
     const results = {
       enabled: raw.enabled,
@@ -2253,6 +2274,36 @@ const RUN_IBL_SWEEP = async (cfg) => {
     if (!samplesMs.every((sample) => Number.isFinite(sample) && sample >= 0)) {
       invalidReasons.push("the GPU pass ledger contains an invalid duration");
     }
+    for (const passName of sampledPassNames) {
+      const passSamples = samplesMsByPass[passName];
+      if (
+        !passSamples.every((sample) => Number.isFinite(sample) && sample >= 0)
+      ) {
+        invalidReasons.push(
+          `the GPU pass ledger contains an invalid ${passName} duration`,
+        );
+      }
+      if (passSamples.length !== fills) {
+        invalidReasons.push(
+          `the GPU pass ledger retained ${passSamples.length} ${passName} sample(s) for ${fills} measured fill(s)`,
+        );
+      }
+    }
+    const mandatoryPassNames = cfg.refreshCostProtocol.gpuTime.passNames.slice(
+      0,
+      -1,
+    );
+    const missingMandatoryLabel =
+      fills > 0
+        ? mandatoryPassNames.find(
+            (passName) => !Object.hasOwn(samplesMsByPass, passName),
+          )
+        : undefined;
+    if (missingMandatoryLabel) {
+      invalidReasons.push(
+        `the GPU pass ledger is missing mandatory pass ${missingMandatoryLabel} for ${fills} measured fill(s)`,
+      );
+    }
     if (samplesMs.length !== fills) {
       invalidReasons.push(
         `the GPU pass ledger retained ${samplesMs.length} environment-refresh sample(s) for ${fills} measured fill(s)`,
@@ -2279,6 +2330,7 @@ const RUN_IBL_SWEEP = async (cfg) => {
           ? samplesMs.reduce((total, sample) => total + sample, 0)
           : null,
         samplesMs,
+        samplesMsByPass,
         invalidReason: valid ? null : invalidReasons.join("; "),
         queueDrain,
         drain,
@@ -2299,9 +2351,8 @@ const RUN_IBL_SWEEP = async (cfg) => {
       await new Promise((r) => setTimeout(r, 0));
     }
   } finally {
-    activeGpuSamples = null;
+    activeGpuSamplesByPass = null;
     if (gpuCaptureAvailable) {
-      debug.gpuPassCost(false);
       captureHook = restoreGpuCapture();
       costContext.performanceManager.config.timestampProfiling =
         timestampProfilingInitially;
@@ -2383,6 +2434,9 @@ const RUN_IBL_SWEEP = async (cfg) => {
     controlWallMs: sumLeg("control", "wallMs"),
     eclipseFills: sumLeg("eclipse", "fills"),
     controlFills: sumLeg("control", "fills"),
+    // Retain the full alternating ledger for the gate's cost function. Inline
+    // eclipse-minus-control arithmetic would erase the ordering evidence and
+    // let sequential A/B drift impersonate refresh cost.
     // Per-segment, so a reader can see WHERE a differential comes from. If the
     // first run's 7.7x inversion was a step change at the eclipse toggle rather
     // than a warm-up ramp, it shows up here as a per-segment pattern instead of
@@ -2424,7 +2478,7 @@ const RUN_IBL_SWEEP = async (cfg) => {
     initialCommittedWasNaN: Number.isNaN(initialCommitted),
     engineRefreshCount,
     controlRefreshCount: controlTransitions,
-    // The GATE derives the fresh per-refresh cost from `refreshCost` below,
+    // The gate derives the fresh per-refresh cost from `refreshCost` below,
     // never from these two counting legs. They are
     // kept because they are what the first run's -18.9 ms was computed from,
     // and a reader comparing runs needs to see them.

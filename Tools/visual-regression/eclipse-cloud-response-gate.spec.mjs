@@ -642,6 +642,77 @@ function spreadGpuSamplesAcrossSegments(total, fillCounts) {
   });
 }
 
+const MANDATORY_REFRESH_COST_GPU_PASS_NAMES =
+  REFRESH_COST_GPU_TIME_PROTOCOL.passNames.slice(0, -1);
+const OPTIONAL_REFRESH_COST_GPU_PASS_NAME =
+  REFRESH_COST_GPU_TIME_PROTOCOL.passNames.at(-1);
+
+function splitGpuTotalByMandatoryPass(total) {
+  let assigned = 0;
+  return Object.fromEntries(
+    MANDATORY_REFRESH_COST_GPU_PASS_NAMES.map((passName, index) => {
+      const passTotal =
+        index === MANDATORY_REFRESH_COST_GPU_PASS_NAMES.length - 1
+          ? total - assigned
+          : (total * (index + 1)) / 10;
+      assigned += passTotal;
+      return [passName, passTotal];
+    }),
+  );
+}
+
+function spreadGpuSamplesByPassAcrossSegments(total, fillCounts) {
+  const passTotals = splitGpuTotalByMandatoryPass(total);
+  return Object.fromEntries(
+    MANDATORY_REFRESH_COST_GPU_PASS_NAMES.map((passName) => [
+      passName,
+      spreadGpuSamplesAcrossSegments(passTotals[passName], fillCounts),
+    ]),
+  );
+}
+
+function sumGpuSamplesByPass(samplesMsByPass, fills) {
+  return Array.from({ length: fills }, (_, fillIndex) =>
+    REFRESH_COST_GPU_TIME_PROTOCOL.passNames.reduce(
+      (total, passName) =>
+        total + (samplesMsByPass[passName]?.[fillIndex] ?? 0),
+      0,
+    ),
+  );
+}
+
+function syncGpuSegmentSamplesFromPasses(segment) {
+  segment.gpuTime.samplesMs = sumGpuSamplesByPass(
+    segment.gpuTime.samplesMsByPass,
+    segment.fills,
+  );
+  segment.gpuTime.totalMs = segment.gpuTime.samplesMs.reduce(
+    (total, sample) => total + sample,
+    0,
+  );
+  return segment;
+}
+
+function setMandatoryPassCostsPerFill(accounting, passCosts) {
+  assert.equal(passCosts.length, MANDATORY_REFRESH_COST_GPU_PASS_NAMES.length);
+  for (const segment of accounting.segments) {
+    if (!segment.gpuTime?.valid) {
+      continue;
+    }
+    segment.gpuTime.samplesMsByPass =
+      segment.fills > 0
+        ? Object.fromEntries(
+            MANDATORY_REFRESH_COST_GPU_PASS_NAMES.map((passName, index) => [
+              passName,
+              Array(segment.fills).fill(passCosts[index]),
+            ]),
+          )
+        : {};
+    syncGpuSegmentSamplesFromPasses(segment);
+  }
+  return syncCostAggregatesFromSegments(accounting);
+}
+
 function syncCostAggregatesFromSegments(accounting) {
   const totals = {
     eclipse: { frames: 0, wallMs: 0, gpuMs: 0, fills: 0 },
@@ -727,10 +798,16 @@ function freshCostAccounting({
   };
   const gpuSamples = gpuAvailable
     ? {
-        eclipse: spreadGpuSamplesAcrossSegments(eclipseGpuMs, fills.eclipse),
-        control: spreadGpuSamplesAcrossSegments(controlGpuMs, fills.control),
+        eclipse: spreadGpuSamplesByPassAcrossSegments(
+          eclipseGpuMs,
+          fills.eclipse,
+        ),
+        control: spreadGpuSamplesByPassAcrossSegments(
+          controlGpuMs,
+          fills.control,
+        ),
       }
-    : { eclipse: [], control: [] };
+    : { eclipse: {}, control: {} };
   const nextByLeg = { eclipse: 0, control: 0 };
   const segments = [];
   for (let pairIndex = 0; pairIndex < bounds.length; pairIndex++) {
@@ -740,7 +817,16 @@ function freshCostAccounting({
     for (const leg of order) {
       const legIndex = nextByLeg[leg]++;
       const segmentFills = fills[leg][legIndex];
-      const samplesMs = gpuAvailable ? gpuSamples[leg][legIndex] : [];
+      const samplesMsByPass =
+        gpuAvailable && segmentFills > 0
+          ? Object.fromEntries(
+              MANDATORY_REFRESH_COST_GPU_PASS_NAMES.map((passName) => [
+                passName,
+                gpuSamples[leg][passName][legIndex],
+              ]),
+            )
+          : {};
+      const samplesMs = sumGpuSamplesByPass(samplesMsByPass, segmentFills);
       segments.push({
         ledgerId,
         pairIndex,
@@ -759,6 +845,7 @@ function freshCostAccounting({
               resolutionNs: null,
               totalMs: samplesMs.reduce((total, sample) => total + sample, 0),
               samplesMs,
+              samplesMsByPass,
               invalidReason: null,
               queueDrain: {
                 completed: true,
@@ -794,6 +881,7 @@ function freshCostAccounting({
               resolutionNs: null,
               totalMs: null,
               samplesMs: [],
+              samplesMsByPass: {},
               invalidReason: gpuUnavailableReason,
               queueDrain: null,
               drain: null,
@@ -2485,6 +2573,17 @@ test("I14 valid GPU time on both backends is the selected refresh-cost source", 
     controlGpuMs: 0,
   });
 
+  for (const lane of [run.iblWebGPU, run.iblWebGL]) {
+    const sampledSegment = lane.refreshCost.segments.find(
+      (segment) => segment.gpuTime.valid && segment.fills > 0,
+    );
+    assert.ok(sampledSegment);
+    assert.deepEqual(
+      Object.keys(sampledSegment.gpuTime.samplesMsByPass),
+      MANDATORY_REFRESH_COST_GPU_PASS_NAMES,
+    );
+  }
+
   const verdict = judgeEclipseCloudResponse(run);
   assert.equal(verdict.refreshCostMeasured, true);
   assert.equal(verdict.cost.webgpu.measurementSource, "gpu-time");
@@ -2500,7 +2599,11 @@ test("I14 valid GPU time on both backends is the selected refresh-cost source", 
 });
 
 test("I15 an unavailable GPU path has a backend-specific named disposition", () => {
-  const verdict = judgeEclipseCloudResponse(passingRun());
+  const run = passingRun();
+  const unavailableSegment = run.iblWebGL.refreshCost.segments[0];
+  assert.deepEqual(unavailableSegment.gpuTime.samplesMs, []);
+  assert.deepEqual(unavailableSegment.gpuTime.samplesMsByPass, {});
+  const verdict = judgeEclipseCloudResponse(run);
   const webgl = verdict.cost.webgl;
   assert.equal(verdict.refreshCostMeasured, true);
   assert.equal(webgl.valid, true);
@@ -2543,13 +2646,16 @@ test("I16 a negative GPU differential is INVALID with the exact reason", () => {
   );
 });
 
-test("I17 the previous refresh-cost protocol version is rejected", () => {
-  assert.equal(REFRESH_COST_PROTOCOL_VERSION, 2);
-  const accounting = costInput();
-  accounting.protocol.version = 1;
-  const cost = computeCost(accounting);
-  assert.equal(cost.valid, false);
-  assert.equal(cost.invalidReason, "refresh-cost protocol version 1 is not 2");
+test("I17 the whole-refresh GPU pass set and protocol version are literal", () => {
+  assert.equal(REFRESH_COST_PROTOCOL_VERSION, 3);
+  assert.deepEqual(REFRESH_COST_GPU_TIME_PROTOCOL.passNames, [
+    "DynEnvMap Sky Fill",
+    "DynEnvMap IBL Irradiance",
+    "DynEnvMap IBL Radiance Prefilter",
+    "DynEnvMap SH Projection",
+    "DynEnvMap Temporal Blend",
+  ]);
+  assert.equal(REFRESH_COST_GPU_TIME_PROTOCOL.scope, "whole-refresh");
 });
 
 test("I18 MUTANT an inert GPU-preference branch cannot silently select wall clock", async () => {
@@ -2586,25 +2692,21 @@ test("I18 MUTANT an inert GPU-preference branch cannot silently select wall cloc
   }, /actual.*wall-clock-fallback|wall-clock-fallback.*gpu-time/is);
 });
 
-test("I19 MUTATION missing fill-pass evidence cannot become a valid zero GPU cost", () => {
+test("I19 MUTATION per-pass sample cardinality must equal fill cardinality", () => {
   const accounting = costInput();
   const segment = accounting.segments.find(
     (candidate) => candidate.gpuTime.valid && candidate.fills > 1,
   );
   assert.ok(segment);
-  segment.gpuTime.samplesMs.pop();
-  segment.gpuTime.totalMs = segment.gpuTime.samplesMs.reduce(
-    (total, sample) => total + sample,
-    0,
-  );
-  syncCostAggregatesFromSegments(accounting);
+  const passName = MANDATORY_REFRESH_COST_GPU_PASS_NAMES[1];
+  segment.gpuTime.samplesMsByPass[passName].pop();
 
   const cost = computeCost(accounting);
   assert.equal(cost.valid, false);
   assert.equal(cost.msPerRefresh, null);
   assert.equal(
     cost.invalidReason,
-    `refresh-cost pair ${segment.pairIndex} ${segment.leg} retained ${segment.gpuTime.samplesMs.length} GPU environment-refresh sample(s) for ${segment.fills} measured fill(s)`,
+    `refresh-cost pair ${segment.pairIndex} ${segment.leg} GPU pass ${passName} retained ${segment.gpuTime.samplesMsByPass[passName].length} sample(s) for ${segment.fills} measured fill(s)`,
   );
 });
 
@@ -2616,8 +2718,11 @@ test("I20 MUTATION an all-zero GPU differential at an undeclared resolution is a
   assert.ok(gpuSegments.length > 0);
   for (const segment of gpuSegments) {
     assert.equal(segment.gpuTime.resolutionKnown, false);
-    segment.gpuTime.samplesMs = segment.gpuTime.samplesMs.map(() => 0);
-    segment.gpuTime.totalMs = 0;
+    for (const passName of Object.keys(segment.gpuTime.samplesMsByPass)) {
+      segment.gpuTime.samplesMsByPass[passName] =
+        segment.gpuTime.samplesMsByPass[passName].map(() => 0);
+    }
+    syncGpuSegmentSamplesFromPasses(segment);
   }
   syncCostAggregatesFromSegments(accounting);
 
@@ -2628,9 +2733,154 @@ test("I20 MUTATION an all-zero GPU differential at an undeclared resolution is a
     cost.invalidReason,
     /is exactly 0 ms over \d+ fills at an undeclared timestamp resolution/,
   );
-  // The scope of the timed pass is declared in the protocol itself.
-  assert.equal(REFRESH_COST_GPU_TIME_PROTOCOL.scope, "sky-cube-bake-only");
-  assert.match(REFRESH_COST_GPU_TIME_PROTOCOL.scopeNote, /LOWER BOUND/);
+  assert.equal(REFRESH_COST_GPU_TIME_PROTOCOL.scope, "whole-refresh");
+  assert.match(
+    REFRESH_COST_GPU_TIME_PROTOCOL.scopeNote,
+    /every compute pass the refresh encodes/,
+  );
+  assert.match(REFRESH_COST_GPU_TIME_PROTOCOL.scopeNote, /temporal-blend pass/);
+  assert.doesNotMatch(REFRESH_COST_GPU_TIME_PROTOCOL.scopeNote, /LOWER BOUND/);
+});
+
+test("I21 every mandatory pass is summed into each per-refresh GPU figure", () => {
+  const accounting = setMandatoryPassCostsPerFill(costInput(), [1, 2, 3, 4]);
+  const sampledSegment = accounting.segments.find(
+    (segment) => segment.gpuTime.valid && segment.fills > 0,
+  );
+  assert.ok(sampledSegment);
+  assert.deepEqual(
+    MANDATORY_REFRESH_COST_GPU_PASS_NAMES.map(
+      (passName) => sampledSegment.gpuTime.samplesMsByPass[passName][0],
+    ),
+    [1, 2, 3, 4],
+  );
+  assert.equal(sampledSegment.gpuTime.samplesMs[0], 10);
+
+  const cost = computeCost(accounting);
+  assert.equal(cost.valid, true);
+  assert.equal(cost.measurementSource, "gpu-time");
+  assert.equal(cost.msPerRefresh, 10);
+  assert.equal(cost.eclipseGpuMs, accounting.eclipseFills * 10);
+  assert.equal(cost.controlGpuMs, accounting.controlFills * 10);
+});
+
+test("I22 a fill missing one mandatory pass is INVALID with the named reason", () => {
+  const accounting = setMandatoryPassCostsPerFill(
+    costInput({ eclipseFills: REFRESH_COST_SEGMENTS_PER_LEG, controlFills: 0 }),
+    [1, 2, 3, 4],
+  );
+  const segment = accounting.segments.find(
+    (candidate) => candidate.gpuTime.valid && candidate.fills === 1,
+  );
+  assert.ok(segment);
+  const missingPassName = MANDATORY_REFRESH_COST_GPU_PASS_NAMES[2];
+  delete segment.gpuTime.samplesMsByPass[missingPassName];
+  syncGpuSegmentSamplesFromPasses(segment);
+  syncCostAggregatesFromSegments(accounting);
+
+  const cost = computeCost(accounting);
+  assert.equal(cost.valid, false);
+  assert.equal(cost.msPerRefresh, null);
+  assert.equal(
+    cost.invalidReason,
+    `refresh-cost pair ${segment.pairIndex} ${segment.leg} is missing mandatory GPU pass ${missingPassName} for 1 measured fill(s)`,
+  );
+});
+
+test("I23 the conditional temporal-blend pass may be absent everywhere", () => {
+  const accounting = costInput();
+  for (const segment of accounting.segments) {
+    assert.equal(
+      Object.hasOwn(
+        segment.gpuTime.samplesMsByPass,
+        OPTIONAL_REFRESH_COST_GPU_PASS_NAME,
+      ),
+      false,
+    );
+  }
+
+  const cost = computeCost(accounting);
+  assert.equal(cost.valid, true);
+  assert.equal(cost.measurementSource, "gpu-time");
+});
+
+test("I24 a v2 refresh-cost report is rejected loudly", () => {
+  const accounting = costInput();
+  accounting.protocol.version = 2;
+  const cost = computeCost(accounting);
+  assert.equal(cost.valid, false);
+  assert.equal(cost.invalidReason, "refresh-cost protocol version 2 is not 3");
+});
+
+test("I25 MUTANT a sky-only summation cannot impersonate whole-refresh GPU time", async () => {
+  const gateSource = fs.readFileSync(
+    path.join(here, "lib", "eclipse-cloud-response-gate.mjs"),
+    "utf8",
+  );
+  const summation =
+    "const summedPassNames = REFRESH_COST_GPU_TIME_PROTOCOL.passNames;";
+  assert.equal(gateSource.split(summation).length - 1, 1);
+  const mutantSource = gateSource.replace(
+    summation,
+    "const summedPassNames = REFRESH_COST_GPU_TIME_PROTOCOL.passNames.slice(0, 1);",
+  );
+  const mutantModule = await import(
+    `data:text/javascript;base64,${Buffer.from(mutantSource).toString("base64")}`
+  );
+  const accounting = setMandatoryPassCostsPerFill(costInput(), [1, 2, 3, 4]);
+  const healthy = computeCost(accounting);
+  const mutant = computeCost(accounting, mutantModule.computeRefreshCost);
+  assert.equal(healthy.valid, true);
+  assert.equal(healthy.msPerRefresh, 10);
+  assert.equal(mutant.valid, false);
+  assert.match(
+    mutant.invalidReason,
+    /whole-refresh sample \d+ does not equal its retained per-pass sum/,
+  );
+  assert.throws(() => {
+    assert.equal(mutant.valid, true);
+    assert.equal(mutant.msPerRefresh, 10);
+  }, /false !== true|actual.*false.*expected.*true/is);
+});
+
+test("I26 MUTANT an inert mandatory-label guard is caught", async () => {
+  const gateSource = fs.readFileSync(
+    path.join(here, "lib", "eclipse-cloud-response-gate.mjs"),
+    "utf8",
+  );
+  const guard = "if (missingMandatoryLabel) {";
+  assert.equal(gateSource.split(guard).length - 1, 1);
+  const mutantSource = gateSource.replace(
+    guard,
+    "if (false && missingMandatoryLabel) {",
+  );
+  const mutantModule = await import(
+    `data:text/javascript;base64,${Buffer.from(mutantSource).toString("base64")}`
+  );
+  const accounting = setMandatoryPassCostsPerFill(
+    costInput({ eclipseFills: REFRESH_COST_SEGMENTS_PER_LEG, controlFills: 0 }),
+    [1, 2, 3, 4],
+  );
+  const segment = accounting.segments.find(
+    (candidate) => candidate.gpuTime.valid && candidate.fills === 1,
+  );
+  assert.ok(segment);
+  const missingPassName = MANDATORY_REFRESH_COST_GPU_PASS_NAMES[2];
+  delete segment.gpuTime.samplesMsByPass[missingPassName];
+  syncGpuSegmentSamplesFromPasses(segment);
+  syncCostAggregatesFromSegments(accounting);
+
+  const healthy = computeCost(accounting);
+  const mutant = computeCost(accounting, mutantModule.computeRefreshCost);
+  assert.equal(healthy.valid, false);
+  assert.equal(
+    healthy.invalidReason,
+    `refresh-cost pair ${segment.pairIndex} ${segment.leg} is missing mandatory GPU pass ${missingPassName} for 1 measured fill(s)`,
+  );
+  assert.equal(mutant.valid, true);
+  assert.throws(() => {
+    assert.equal(mutant.valid, false);
+  }, /true !== false|actual.*true.*expected.*false/is);
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -3102,26 +3352,37 @@ test("F4 the probe's cost legs are interleaved and both pay a warm-up", () => {
   assert.match(probe, /warmups: \[warmedLegs\.eclipse, warmedLegs\.control\]/);
   assert.match(probe, /pairIndex,/);
   assert.match(probe, /ledgerId: cfg\.costLedgerId/);
-  assert.equal(REFRESH_COST_PROTOCOL_VERSION, 2);
+  assert.equal(REFRESH_COST_PROTOCOL_VERSION, 3);
   assert.match(probe, /version: cfg\.refreshCostProtocol\.version,/);
   assert.match(probe, /backend: rendererType,/);
   assert.match(probe, /runId: cfg\.runId,/);
   assert.match(probe, /sessionToken: cfg\.sessionToken,/);
   assert.match(probe, /factorSchedule: \[\.\.\.factors\]/);
   assert.match(probe, /gpuTime: \{/);
-  assert.match(probe, /debug\.gpuPassCost\(true\)/);
+  assert.doesNotMatch(probe, /debug\.gpuPassCost\(/);
+  assert.match(
+    probe,
+    /costContext\.performanceManager\.config\.timestampProfiling = true;/,
+  );
+  assert.match(probe, /profiler\.reset\(\);/);
   assert.match(probe, /profiler\.drainPendingReadbacks/);
   assert.match(probe, /samplesMs/);
+  assert.match(probe, /samplesMsByPass/);
+  assert.match(probe, /gpuTime\.passNames\.find/);
   assert.match(probe, /readbackYieldMs/);
   assert.match(probe, /wallMs = performance\.now\(\) - wallStartMs;/);
   assert.doesNotMatch(probe, /wallMs = .* - readbackYieldMs;/);
   assert.match(probe, /resolutionKnown: false/);
   assert.match(probe, /resolutionNs: null/);
   assert.match(probe, /if \(samplesMs\.length !== fills\)/);
+  assert.match(probe, /if \(passSamples\.length !== fills\)/);
+  assert.match(probe, /if \(missingMandatoryLabel\)/);
   assert.match(probe, /hasFeature\?\.\("timestamp-query"\) === true/);
   assert.match(probe, /REFRESH_COST_GPU_TIME_PROTOCOL\.scope/);
   assert.match(probe, /segments: costSegments/);
   assert.match(probe, /ABBA/);
+  assert.match(probe, /Retain the full alternating ledger/);
+  assert.match(probe, /sequential A\/B drift impersonate refresh cost/);
   // The gate reads the interleaved accounting, not the two counting legs.
   assert.match(probe, /refreshCost,/);
   assert.ok(
@@ -3139,6 +3400,120 @@ test("F4 the probe's cost legs are interleaved and both pay a warm-up", () => {
   assert.match(probe, /sessionToken: randomUUID\(\)/);
   assert.match(probe, /costLedgerId: randomUUID\(\)/);
   assert.match(probe, /runId: RUN_ID,\n\s*cloudLanes,/);
+});
+
+test("F7 the five engine pass descriptors execute and route through timestamp wrapping", async () => {
+  const managerSource = readEngine(
+    "Renderer/WebGPU/WebGPUDynamicEnvironmentMapManager.ts",
+  );
+  const pipelineSource = readEngine("Renderer/WebGPU/WebGPUIBLPipeline.ts");
+  const descriptorPattern =
+    /const\s+(DYNAMIC_ENVIRONMENT_[A-Z_]+_PASS_DESCRIPTOR): GPUComputePassDescriptor\s*=\s*(\{\s*label:\s*"([^"]+)",\s*\});/g;
+  const descriptorMatches = [...managerSource.matchAll(descriptorPattern)];
+  assert.equal(descriptorMatches.length, 5);
+  assert.deepEqual(
+    descriptorMatches.map((match) => match[3]),
+    REFRESH_COST_GPU_TIME_PROTOCOL.passNames,
+  );
+  const combinedEngineSource = `${managerSource}\n${pipelineSource}`;
+  for (const passName of REFRESH_COST_GPU_TIME_PROTOCOL.passNames) {
+    assert.equal(
+      descriptorMatches.filter((match) => match[3] === passName).length,
+      1,
+    );
+    assert.equal(
+      combinedEngineSource.split(`label: "${passName}",`).length - 1,
+      1,
+    );
+  }
+
+  const descriptorModuleSource = descriptorMatches
+    .map((match) => `export const ${match[1]} = ${match[2]}`)
+    .join("\n");
+  const descriptors = await import(
+    `data:text/javascript;base64,${Buffer.from(descriptorModuleSource).toString("base64")}`
+  );
+  assert.deepEqual(
+    descriptorMatches.map((match) => descriptors[match[1]].label),
+    REFRESH_COST_GPU_TIME_PROTOCOL.passNames,
+  );
+
+  const directRoutePattern =
+    /frameState\.context\.withComputePassTimestamps\?\.\(\s*(DYNAMIC_ENVIRONMENT_[A-Z_]+_PASS_DESCRIPTOR),?\s*\)\s*\?\?\s*\1/g;
+  const directlyRouted = [...managerSource.matchAll(directRoutePattern)].map(
+    (match) => match[1],
+  );
+  assert.deepEqual(directlyRouted, [
+    "DYNAMIC_ENVIRONMENT_TEMPORAL_PASS_DESCRIPTOR",
+    "DYNAMIC_ENVIRONMENT_SKY_PASS_DESCRIPTOR",
+    "DYNAMIC_ENVIRONMENT_SH_PASS_DESCRIPTOR",
+  ]);
+  const managerIBLRoute = managerSource.match(
+    /generateIBLMaps\([\s\S]*?frameState\.context,\s*(DYNAMIC_ENVIRONMENT_IRRADIANCE_PASS_DESCRIPTOR),\s*(DYNAMIC_ENVIRONMENT_RADIANCE_PASS_DESCRIPTOR),\s*\);/,
+  );
+  assert.ok(managerIBLRoute);
+  assert.deepEqual(
+    new Set([...directlyRouted, managerIBLRoute[1], managerIBLRoute[2]]),
+    new Set(descriptorMatches.map((match) => match[1])),
+  );
+
+  const wrapperExpression =
+    "timestampProvider?.withComputePassTimestamps?.(descriptor) ?? descriptor";
+  assert.equal(pipelineSource.split(wrapperExpression).length - 1, 1);
+  assert.equal(
+    [
+      ...pipelineSource.matchAll(
+        /const pass = beginIBLComputePass\(\s*encoder,\s*timestampProvider,\s*passDescriptor,\s*\);/g,
+      ),
+    ].length,
+    3,
+  );
+  assert.equal(
+    [
+      ...pipelineSource.matchAll(
+        /dispatchIrradianceConvolution\(\s*device,\s*workingCache,\s*sourceCubeView,\s*computePipelineCache,\s*scope,\s*timestampProvider,\s*irradiancePassDescriptor,\s*\);/g,
+      ),
+    ].length,
+    2,
+  );
+  assert.equal(
+    [
+      ...pipelineSource.matchAll(
+        /dispatchRadiancePrefilter\(\s*device,\s*workingCache,\s*sourceCubeView,\s*computePipelineCache,\s*hqOptions,\s*scope,\s*timestampProvider,\s*radiancePassDescriptor,\s*\);/g,
+      ),
+    ].length,
+    2,
+  );
+  assert.equal(
+    [
+      ...pipelineSource.matchAll(
+        /dispatchSourceCubeMipChain\(\s*device,\s*cache,\s*hqOptions\.sourceCube,\s*fmt,\s*scope,\s*timestampProvider,\s*passDescriptor,\s*\);/g,
+      ),
+    ].length,
+    1,
+  );
+  const wrapperModule = await import(
+    `data:text/javascript;base64,${Buffer.from(`export const route = (timestampProvider, descriptor) => timestampProvider?.withComputePassTimestamps?.(descriptor) ?? descriptor;`).toString("base64")}`
+  );
+  for (const match of descriptorMatches) {
+    const descriptor = descriptors[match[1]];
+    assert.equal(wrapperModule.route(undefined, descriptor), descriptor);
+    const seen = [];
+    const wrapped = { label: `${descriptor.label} wrapped` };
+    assert.equal(
+      wrapperModule.route(
+        {
+          withComputePassTimestamps(received) {
+            seen.push(received);
+            return wrapped;
+          },
+        },
+        descriptor,
+      ),
+      wrapped,
+    );
+    assert.deepEqual(seen, [descriptor]);
+  }
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

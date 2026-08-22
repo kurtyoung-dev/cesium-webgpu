@@ -379,6 +379,23 @@ const ENV_REFRESH_URGENCY_HIGH = 1;
 const ENV_REFRESH_URGENCY_NORMAL = 2;
 const ENV_REFRESH_DECISION_DEFER = "defer";
 
+const DYNAMIC_ENVIRONMENT_SKY_PASS_DESCRIPTOR: GPUComputePassDescriptor = {
+  label: "DynEnvMap Sky Fill",
+};
+const DYNAMIC_ENVIRONMENT_IRRADIANCE_PASS_DESCRIPTOR: GPUComputePassDescriptor =
+  {
+    label: "DynEnvMap IBL Irradiance",
+  };
+const DYNAMIC_ENVIRONMENT_RADIANCE_PASS_DESCRIPTOR: GPUComputePassDescriptor = {
+  label: "DynEnvMap IBL Radiance Prefilter",
+};
+const DYNAMIC_ENVIRONMENT_SH_PASS_DESCRIPTOR: GPUComputePassDescriptor = {
+  label: "DynEnvMap SH Projection",
+};
+const DYNAMIC_ENVIRONMENT_TEMPORAL_PASS_DESCRIPTOR: GPUComputePassDescriptor = {
+  label: "DynEnvMap Temporal Blend",
+};
+
 /** Structural view of the scheduling/pooling seams on WebGPUContext. */
 interface EnvironmentRefreshContextSeams {
   scheduleEnvironmentRefresh?: (manager: object, urgency: number) => string;
@@ -1329,13 +1346,20 @@ function updatePreflightedWebGPUDynamicEnvironmentMap(
             device,
             cache,
             manager,
+            frameState,
             sunDir,
             refreshEncoder,
             resetHistory,
           )
         : null;
       runIBLPrefilter(device, cache, frameState, hqOptions, encodingScope);
-      runSphericalHarmonicProjection(device, cache, manager, refreshEncoder);
+      runSphericalHarmonicProjection(
+        device,
+        cache,
+        manager,
+        frameState,
+        refreshEncoder,
+      );
       const commitState: DynamicEnvironmentRefreshCommitState = {
         sceneCaptureResult,
         wantCapture,
@@ -1586,6 +1610,7 @@ function runEnvCubeTemporalBlend(
   device: GPUDevice,
   cache: DynEnvMapCache,
   manager: DynEnvMapManagerLike,
+  frameState: CesiumFrameState,
   sunDir: { x: number; y: number; z: number },
   encoder: GPUCommandEncoder,
   forceHistoryReset = false,
@@ -1811,7 +1836,11 @@ function runEnvCubeTemporalBlend(
   }
 
   const groupsXY = Math.ceil(cache.size / 8);
-  const pass = encoder.beginComputePass();
+  const pass = encoder.beginComputePass(
+    frameState.context.withComputePassTimestamps?.(
+      DYNAMIC_ENVIRONMENT_TEMPORAL_PASS_DESCRIPTOR,
+    ) ?? DYNAMIC_ENVIRONMENT_TEMPORAL_PASS_DESCRIPTOR,
+  );
   pass.setPipeline(cache.blendPipeline);
   pass.setBindGroup(0, cache.blendBindGroup);
   pass.dispatchWorkgroups(groupsXY, groupsXY, 6);
@@ -2558,12 +2587,10 @@ function runProceduralSkyFill(
   // timestamp lane. `withComputePassTimestamps` returns the exact descriptor
   // when the profiler is not armed, leaving the default path unchanged, and the
   // optional-call guard keeps it safe on contexts without the accessor.
-  const skyPassDescriptor: GPUComputePassDescriptor = {
-    label: "DynEnvMap Sky Fill",
-  };
   const pass = encoder.beginComputePass(
-    frameState.context.withComputePassTimestamps?.(skyPassDescriptor) ??
-      skyPassDescriptor,
+    frameState.context.withComputePassTimestamps?.(
+      DYNAMIC_ENVIRONMENT_SKY_PASS_DESCRIPTOR,
+    ) ?? DYNAMIC_ENVIRONMENT_SKY_PASS_DESCRIPTOR,
   );
   pass.setPipeline(cache.skyPipeline);
   pass.setBindGroup(0, cache.skyBindGroup);
@@ -2585,6 +2612,7 @@ function runSphericalHarmonicProjection(
   device: GPUDevice,
   cache: DynEnvMapCache,
   manager: DynEnvMapManagerLike,
+  frameState: CesiumFrameState,
   encoder: GPUCommandEncoder,
 ): void {
   if (!cache.cubemapTextureView || !cache.sampler) {
@@ -2646,7 +2674,11 @@ function runSphericalHarmonicProjection(
   }
 
   // Dispatch 1 workgroup of 9 invocations (one coefficient each).
-  const pass = encoder.beginComputePass();
+  const pass = encoder.beginComputePass(
+    frameState.context.withComputePassTimestamps?.(
+      DYNAMIC_ENVIRONMENT_SH_PASS_DESCRIPTOR,
+    ) ?? DYNAMIC_ENVIRONMENT_SH_PASS_DESCRIPTOR,
+  );
   pass.setPipeline(cache.shPipeline);
   pass.setBindGroup(0, cache.shBindGroup);
   pass.dispatchWorkgroups(1, 1, 1);
@@ -2708,6 +2740,9 @@ function runIBLPrefilter(
     ).webgpuComputePipelineCache ?? null,
     hqOptions,
     encodingScope,
+    frameState.context,
+    DYNAMIC_ENVIRONMENT_IRRADIANCE_PASS_DESCRIPTOR,
+    DYNAMIC_ENVIRONMENT_RADIANCE_PASS_DESCRIPTOR,
   );
 }
 

@@ -1391,19 +1391,31 @@ export function laneIsBlind(blind, domain) {
 /** The ratified ABBA protocol uses exactly eight balanced segment pairs. */
 export const REFRESH_COST_SEGMENTS_PER_LEG = 8;
 /** Schema version for the live lane/protocol binding carried by cost ledgers. */
-export const REFRESH_COST_PROTOCOL_VERSION = 2;
-/** Renderer timestamp instrument and pass identity carried by every ledger. */
+export const REFRESH_COST_PROTOCOL_VERSION = 3;
+/** Renderer timestamp instrument and pass set carried by every ledger. */
 export const REFRESH_COST_GPU_TIME_PROTOCOL = Object.freeze({
   instrument: "CesiumDebug.gpuPassCost",
   source: "WebGPUTimestampProfiler._latestResults",
   feature: "timestamp-query",
-  passName: "DynEnvMap Sky Fill",
+  passNames: Object.freeze([
+    "DynEnvMap Sky Fill",
+    "DynEnvMap IBL Irradiance",
+    "DynEnvMap IBL Radiance Prefilter",
+    "DynEnvMap SH Projection",
+    "DynEnvMap Temporal Blend",
+  ]),
   rawUnit: "ns",
   reportUnit: "ms",
-  scope: "sky-cube-bake-only",
+  scope: "whole-refresh",
   scopeNote:
-    "one refresh encodes the sky fill plus an untimed IBL prefilter (6 irradiance + 36 radiance dispatches) and the SH projection; only the labelled sky-fill pass carries timestampWrites, so this is a LOWER BOUND on the refresh, not the refresh cost",
+    "the declared set is every compute pass the refresh encodes: sky fill, IBL irradiance, IBL radiance prefilter (including optional source-mip preparation), SH projection, and temporal blend; the temporal-blend pass appears only when envMapTemporalAccumulation is enabled, so each segment records the labels that actually produced samples; excluded from the set are the two encoder-level cube copies in the temporal path, which cannot carry timestampWrites, and the optional scene-capture render pass, which could be timed via withRenderPassTimestamps but is not - both are inert at this lane's defaults (sceneCaptureReflections and envMapTemporalAccumulation are off)",
 });
+const REFRESH_COST_OPTIONAL_GPU_PASS_NAME =
+  REFRESH_COST_GPU_TIME_PROTOCOL.passNames.at(-1);
+const REFRESH_COST_MANDATORY_GPU_PASS_NAMES =
+  REFRESH_COST_GPU_TIME_PROTOCOL.passNames.filter(
+    (passName) => passName !== REFRESH_COST_OPTIONAL_GPU_PASS_NAME,
+  );
 /** Stable reasons distinguish a missing instrument from a measured result. */
 export const REFRESH_COST_WEBGPU_GPU_UNAVAILABLE_REASON =
   "WebGPU timestamp-query feature is unavailable";
@@ -1452,6 +1464,17 @@ function gpuResolutionMatches(value, reference) {
   );
 }
 
+function sumRefreshCostSamplesByPass(samplesMsByPass, fills) {
+  const summedPassNames = REFRESH_COST_GPU_TIME_PROTOCOL.passNames;
+  return Array.from({ length: fills }, (_, fillIndex) =>
+    summedPassNames.reduce(
+      (total, passName) =>
+        total + (samplesMsByPass[passName]?.[fillIndex] ?? 0),
+      0,
+    ),
+  );
+}
+
 function readRefreshCostGpuSegment(block, header, frames, fills, label) {
   if (!block || typeof block !== "object") {
     return {
@@ -1477,6 +1500,10 @@ function readRefreshCostGpuSegment(block, header, frames, fills, label) {
       block.totalMs === null &&
       Array.isArray(block.samplesMs) &&
       block.samplesMs.length === 0 &&
+      block.samplesMsByPass !== null &&
+      typeof block.samplesMsByPass === "object" &&
+      !Array.isArray(block.samplesMsByPass) &&
+      Object.keys(block.samplesMsByPass).length === 0 &&
       block.invalidReason === header.unavailableReason &&
       block.queueDrain === null &&
       block.drain === null &&
@@ -1525,11 +1552,15 @@ function readRefreshCostGpuSegment(block, header, frames, fills, label) {
   }
 
   const samples = block.samplesMs;
+  const samplesMsByPass = block.samplesMsByPass;
   if (
     block.status !== "valid" ||
     block.invalidReason !== null ||
     !Array.isArray(samples) ||
-    !samples.every((sample) => Number.isFinite(sample) && sample >= 0)
+    !samples.every((sample) => Number.isFinite(sample) && sample >= 0) ||
+    samplesMsByPass === null ||
+    typeof samplesMsByPass !== "object" ||
+    Array.isArray(samplesMsByPass)
   ) {
     return {
       schemaError: `${label} has malformed resolved GPU pass samples`,
@@ -1538,9 +1569,69 @@ function readRefreshCostGpuSegment(block, header, frames, fills, label) {
       invalidReason: null,
     };
   }
+  const presentPassNames = Object.keys(samplesMsByPass);
+  const undeclaredPassName = presentPassNames.find(
+    (passName) => !REFRESH_COST_GPU_TIME_PROTOCOL.passNames.includes(passName),
+  );
+  if (undeclaredPassName) {
+    return {
+      schemaError: `${label} retained undeclared GPU pass ${undeclaredPassName}`,
+      valid: false,
+      totalMs: null,
+      invalidReason: null,
+    };
+  }
+  for (const passName of presentPassNames) {
+    const passSamples = samplesMsByPass[passName];
+    if (
+      !Array.isArray(passSamples) ||
+      !passSamples.every((sample) => Number.isFinite(sample) && sample >= 0)
+    ) {
+      return {
+        schemaError: `${label} GPU pass ${passName} has malformed resolved samples`,
+        valid: false,
+        totalMs: null,
+        invalidReason: null,
+      };
+    }
+    if (passSamples.length !== fills) {
+      return {
+        schemaError: `${label} GPU pass ${passName} retained ${passSamples.length} sample(s) for ${fills} measured fill(s)`,
+        valid: false,
+        totalMs: null,
+        invalidReason: null,
+      };
+    }
+  }
+  const missingMandatoryLabel =
+    fills > 0
+      ? REFRESH_COST_MANDATORY_GPU_PASS_NAMES.find(
+          (passName) => !Object.hasOwn(samplesMsByPass, passName),
+        )
+      : undefined;
+  if (missingMandatoryLabel) {
+    return {
+      schemaError: `${label} is missing mandatory GPU pass ${missingMandatoryLabel} for ${fills} measured fill(s)`,
+      valid: false,
+      totalMs: null,
+      invalidReason: null,
+    };
+  }
   if (samples.length !== fills) {
     return {
       schemaError: `${label} retained ${samples.length} GPU environment-refresh sample(s) for ${fills} measured fill(s)`,
+      valid: false,
+      totalMs: null,
+      invalidReason: null,
+    };
+  }
+  const summedSamples = sumRefreshCostSamplesByPass(samplesMsByPass, fills);
+  const mismatchedFill = samples.findIndex(
+    (sample, fillIndex) => !Object.is(sample, summedSamples[fillIndex]),
+  );
+  if (mismatchedFill !== -1) {
+    return {
+      schemaError: `${label} whole-refresh sample ${mismatchedFill} does not equal its retained per-pass sum`,
       valid: false,
       totalMs: null,
       invalidReason: null,
@@ -1597,6 +1688,11 @@ function readRefreshCostGpuSegment(block, header, frames, fills, label) {
 }
 
 /**
+ * Keep this as the sole fold over retained cost segments. Replacing it with
+ * inline subtraction and division would make sequential A-then-B timing look
+ * admissible again; the alternating segment ledger must control drift before
+ * any cost arithmetic runs.
+ *
  * @param {object} accounting The lane's `refreshCost` accounting.
  * @param {object} binding Live outer-lane and run identity to bind against.
  * @param {string} binding.runId The owning report's current run UUID.
@@ -1781,10 +1877,16 @@ export function computeRefreshCost(accounting, binding) {
   for (const [field, expected] of Object.entries(
     REFRESH_COST_GPU_TIME_PROTOCOL,
   )) {
-    if (gpuHeader[field] !== expected) {
+    const actual = gpuHeader[field];
+    const matches = Array.isArray(expected)
+      ? Array.isArray(actual) &&
+        actual.length === expected.length &&
+        actual.every((value, index) => value === expected[index])
+      : actual === expected;
+    if (!matches) {
       return {
         ...protocolBase,
-        invalidReason: `refresh-cost GPU-time protocol ${field}=${String(gpuHeader[field])} does not match ${expected}`,
+        invalidReason: `refresh-cost GPU-time protocol ${field}=${String(actual)} does not match ${expected}`,
       };
     }
   }
@@ -3277,9 +3379,9 @@ export function judgeEclipseCloudResponse(run) {
   v.determinismDelta = cloud.repeat?.delta ?? null;
   v.determinismBracketHolds = inBand(v.determinismDelta, B.determinismDelta);
 
-  // The cost fold owns source preference as well as arithmetic: renderer GPU
-  // time when valid, otherwise only the backend's explicitly authorized wall
-  // figure. Both retain the same interleaved segment and warm-up witnesses.
+  // Keep source preference and arithmetic in the cost function. Inlining three
+  // arithmetic lines here would erase the alternating segment proof and make a
+  // sequential A-then-B measurement look admissible again.
   const webgpuCost = computeRefreshCost(gpu.refreshCost, {
     runId: run?.runId,
     expectedBackend: "webgpu",
