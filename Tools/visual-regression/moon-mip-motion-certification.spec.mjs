@@ -294,6 +294,15 @@ function syntheticReport(index, controlMode, value) {
         width: 799,
         height: 852,
         coveredPixels: interiorPixels + 10,
+        strayLitPixels: 0,
+        principalComponentBounds: {
+          minX: 1,
+          minY: 1,
+          maxX: 20,
+          maxY: 20,
+          width: 20,
+          height: 20,
+        },
         coveredFraction: 0.1,
         coveredMeanLuminance: 100,
         interiorPixels,
@@ -403,6 +412,7 @@ function syntheticReport(index, controlMode, value) {
       normalUrl:
         "http://localhost:8080/Build/CesiumUnminified/Assets/Textures/Moon/ldem_normal_1k.png",
       lightingFixture: "camera-coincident-directional-light",
+      catalogStarFieldDisabled: true,
       sameJavaScriptRealm: true,
       adapterIdentity,
     },
@@ -697,6 +707,8 @@ function fixturePublicFrame(decoded, pngPath, bytes) {
     width: decoded.width,
     height: decoded.height,
     coveredPixels: decoded.coveredPixels,
+    strayLitPixels: decoded.strayLitPixels,
+    principalComponentBounds: decoded.principalComponentBounds,
     coveredFraction: rounded(decoded.coveredFraction),
     coveredMeanLuminance: rounded(decoded.coveredMeanLuminance),
     interiorPixels: decoded.interiorPixels,
@@ -766,14 +778,19 @@ function fixtureParitySummary(samples) {
 
 const fixtureImageCache = new Map();
 
-async function fixtureImage(controlMode, lane, sampleIndex) {
+async function fixtureImage(
+  controlMode,
+  lane,
+  sampleIndex,
+  { strayLitPixel = false } = {},
+) {
   const variant =
     controlMode === "force-lod0" && lane.id === "minified-16px"
       ? sampleIndex % 2 === 0
         ? "control-checker"
         : "control-flat"
       : "stable-checker";
-  const key = `${lane.id}:${variant}`;
+  const key = `${lane.id}:${variant}:${strayLitPixel ? "stray" : "clean"}`;
   if (!fixtureImageCache.has(key)) {
     fixtureImageCache.set(
       key,
@@ -811,6 +828,12 @@ async function fixtureImage(controlMode, lane, sampleIndex) {
             data[offset + 3] = 255;
           }
         }
+        if (strayLitPixel) {
+          const offset = (width * height - 1) * 4;
+          data[offset] = 20;
+          data[offset + 1] = 20;
+          data[offset + 2] = 20;
+        }
         const decoded = analyzeRgbaFrame({ data, width, height });
         const bytes = await sharp(data, {
           raw: { width, height, channels: 4 },
@@ -824,7 +847,7 @@ async function fixtureImage(controlMode, lane, sampleIndex) {
   return fixtureImageCache.get(key);
 }
 
-async function bindFixturePngMetrics(source) {
+async function bindFixturePngMetrics(source, { strayFirstPng = false } = {}) {
   const reportDirectory = posix.dirname(source.reportOriginalPath);
   const bytesByOriginalPath = new Map();
   for (const lane of source.report.lanes) {
@@ -836,6 +859,13 @@ async function bindFixturePngMetrics(source) {
           source.report.controlMode,
           lane,
           sampleIndex,
+          {
+            strayLitPixel:
+              strayFirstPng &&
+              lane.id === "close" &&
+              backend === "webgl" &&
+              sampleIndex === 0,
+          },
         );
         const pngPath = lane.backends[backend].frames[sampleIndex].pngPath;
         const frame = fixturePublicFrame(decoded, pngPath, bytes);
@@ -889,6 +919,7 @@ async function writePublishedFixture(
     index = 0,
     controlMode = "normal",
     corruptFirstPng = false,
+    strayFirstPng = false,
     mutateReport,
   } = {},
 ) {
@@ -897,7 +928,9 @@ async function writePublishedFixture(
     controlMode,
     controlMode === "normal" ? 0.2 : 0.6,
   );
-  const bytesByOriginalPath = await bindFixturePngMetrics(source);
+  const bytesByOriginalPath = await bindFixturePngMetrics(source, {
+    strayFirstPng,
+  });
   if (corruptFirstPng) {
     bytesByOriginalPath.set(
       source.pngs[0].originalPath,
@@ -1064,6 +1097,52 @@ test("raw synthetic fixture satisfies the complete structural contract", () => {
     ).length,
     104,
   );
+  assert.ok(
+    source.report.lanes
+      .flatMap((lane) =>
+        ["webgl", "webgpu"].flatMap((backend) => lane.backends[backend].frames),
+      )
+      .every((frame) => frame.strayLitPixels === 0),
+  );
+});
+
+test("polluted raw frames route structurally before their framing misses", () => {
+  const sources = syntheticSources();
+  const report = sources[0].report;
+  for (const fixture of [
+    { laneId: "close", inflatedDiameter: 370, band: "132-348" },
+    { laneId: "minified-16px", inflatedDiameter: 40, band: "8-28" },
+  ]) {
+    const backend = report.lanes.find((lane) => lane.id === fixture.laneId)
+      .backends.webgl;
+    for (const frame of backend.frames) {
+      frame.discDiameterPx = fixture.inflatedDiameter;
+    }
+    backend.frames[3].strayLitPixels = 1;
+    backend.spatial = summarizeSpatial(backend.frames);
+  }
+
+  const failures = validateRawMoonMipReport(report);
+  for (const fixture of [
+    { laneId: "close", inflatedDiameter: 370, band: "132-348" },
+    { laneId: "minified-16px", inflatedDiameter: 40, band: "8-28" },
+  ]) {
+    const backgroundReason = `${fixture.laneId}/webgl frame 3: 1 stray lit pixel(s) outside the principal disc - background is not black`;
+    const framingReason = `${fixture.laneId}/webgl measured ${fixture.inflatedDiameter}px, outside structural framing band ${fixture.band}px`;
+    const backgroundIndex = failures.findIndex((failure) =>
+      failure.includes(backgroundReason),
+    );
+    const framingIndex = failures.findIndex((failure) =>
+      failure.includes(framingReason),
+    );
+    assert.ok(backgroundIndex >= 0, backgroundReason);
+    assert.ok(framingIndex > backgroundIndex, framingReason);
+  }
+
+  refreshSource(sources[0]);
+  const result = fold(sources, reviewerAttestation(sources));
+  assert.equal(result.status, "STRUCTURAL");
+  assert.equal(result.exitCode, 3);
 });
 
 test("publication loader verifies manifest sidecar and every report/PNG byte", async (t) => {
@@ -1076,6 +1155,12 @@ test("publication loader verifies manifest sidecar and every report/PNG byte", a
   assert.equal(loaded.publicationVerified, true);
   assert.equal(loaded.report.status, "NON_CERTIFYING");
   assert.equal(loaded.pngs.length, 104);
+  const decodedFrame = loaded.report.lanes[0].backends.webgl.frames[0];
+  assert.equal(decodedFrame.strayLitPixels, 0);
+  assert.deepEqual(
+    decodedFrame.principalComponentBounds,
+    decodedFrame.illuminatedBounds,
+  );
 
   const reviewPath = join(workspace, "immutable-review.json");
   const reviewDocument = {
@@ -1275,6 +1360,19 @@ test("published bytes are real PNGs and decoded primitives defeat coordinated re
   await assert.rejects(
     () => loadPublishedMoonMipRun(nonPng.manifestPath),
     /non-PNG signature/,
+  );
+
+  const strayMismatchRoot = join(workspace, "stray-mismatch-library");
+  await mkdir(strayMismatchRoot);
+  const strayMismatch = await writePublishedFixture(strayMismatchRoot, {
+    strayFirstPng: true,
+    mutateReport(report) {
+      report.lanes[0].backends.webgl.frames[0].strayLitPixels = 0;
+    },
+  });
+  await assert.rejects(
+    () => loadPublishedMoonMipRun(strayMismatch.manifestPath),
+    /metric primitives disagree with decoded pixels/,
   );
 
   const forgedRoot = join(workspace, "forged-library");

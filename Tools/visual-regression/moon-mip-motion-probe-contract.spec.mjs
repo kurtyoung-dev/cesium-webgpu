@@ -30,6 +30,7 @@ import {
   parseRunId,
   parseSampleCount,
   portableEvidencePath,
+  summarizeSpatial,
   validateCalibratedThresholds,
 } from "./probe-moon-mip-motion-edge.mjs";
 import { S5_STATUS_EXIT_CODES } from "./lib/verdict-exit-gate.mjs";
@@ -59,6 +60,73 @@ function syntheticFrame({ checker = false, phase = 0 } = {}) {
     }
   }
   return analyzeRgbaFrame({ data, width, height });
+}
+
+function syntheticDiscMetric({ diameter, canvasSize, stray = false }) {
+  const data = new Uint8Array(canvasSize * canvasSize * 4);
+  const center = (canvasSize - 1) * 0.5;
+  const radius = diameter * 0.5;
+  for (let y = 0; y < canvasSize; y++) {
+    for (let x = 0; x < canvasSize; x++) {
+      const offset = (y * canvasSize + x) * 4;
+      const inside = (x - center) ** 2 + (y - center) ** 2 <= radius ** 2;
+      const value = inside ? 130 : 0;
+      data[offset] = value;
+      data[offset + 1] = value;
+      data[offset + 2] = value;
+      data[offset + 3] = 255;
+    }
+  }
+  if (stray) {
+    const offset = (canvasSize * canvasSize - 1) * 4;
+    data[offset] = 20;
+    data[offset + 1] = 20;
+    data[offset + 2] = 20;
+  }
+  return analyzeRgbaFrame({ data, width: canvasSize, height: canvasSize });
+}
+
+function extractStructuralFramingBlock(source) {
+  const startAnchor = "    const target = laneDefinition.targetDiscDiameterPx;";
+  const endAnchor = "    const centerDots =";
+  const start = source.indexOf(startAnchor);
+  assert.ok(start >= 0, "structural framing block opening anchor is missing");
+  const end = source.indexOf(endAnchor, start);
+  assert.ok(end > start, "structural framing block closing anchor is missing");
+  return source.slice(start, end);
+}
+
+function loadStructuralFramingBlock(source) {
+  const block = extractStructuralFramingBlock(source);
+  // eslint-disable-next-line no-new-func
+  return new Function(
+    "lane",
+    "laneDefinition",
+    "summarizeSpatial",
+    `"use strict"; const failures = [];\n${block}\nreturn failures;`,
+  );
+}
+
+function structuralFramingFailures(source, laneDefinition, frame) {
+  const lane = {
+    id: laneDefinition.id,
+    backends: {
+      webgl: { frames: [frame] },
+      webgpu: {
+        frames: [
+          syntheticDiscMetric({
+            diameter: laneDefinition.targetDiscDiameterPx,
+            canvasSize: laneDefinition.id === "minified-16px" ? 64 : 500,
+          }),
+        ],
+      },
+    },
+  };
+  return loadStructuralFramingBlock(source)(
+    lane,
+    laneDefinition,
+    summarizeSpatial,
+  );
 }
 
 function syntheticThresholds() {
@@ -181,6 +249,23 @@ test("probe is Node/Playwright Microsoft Edge only and captures canvas elements"
   assert.match(probeSource, /page\.locator\(selector\)\.first\(\)\.screenshot/);
   assert.doesNotMatch(probeSource, /page\.screenshot\s*\(/);
   assert.doesNotMatch(probeSource, /node:child_process/);
+});
+
+test("scene hygiene disables the independent catalog starfield and records it", () => {
+  assert.match(
+    probeSource,
+    /if \(scene\.skyBox\) \{[\s\S]*?scene\.skyBox\.show = false;[\s\S]*?if \(scene\.skyBox\.starField\) \{[\s\S]*?scene\.skyBox\.starField\.show = false;/u,
+  );
+  assert.match(
+    probeSource,
+    /The catalog starfield renders independently of skyBox\.show\./u,
+  );
+  assert.match(probeSource, /catalogStarFieldDisabled:/u);
+  assert.match(probeSource, /strayLitPixels: metric\.strayLitPixels/u);
+  assert.match(
+    probeSource,
+    /principalComponentBounds: metric\.principalComponentBounds/u,
+  );
 });
 
 test("the evidence claim is the narrower shimmer envelope and disclaims mip/LOD observation", () => {
@@ -481,6 +566,123 @@ test("spatial HF metric distinguishes a checker from a smooth disc", () => {
   assert.ok(
     checker.normalizedLaplacianEnergy > smooth.normalizedLaplacianEnergy,
   );
+});
+
+test("principal-component metrics expose one stray pixel without changing the frozen bounding metric", () => {
+  const clean = syntheticDiscMetric({ diameter: 240, canvasSize: 500 });
+  const polluted = syntheticDiscMetric({
+    diameter: 240,
+    canvasSize: 500,
+    stray: true,
+  });
+
+  assert.equal(clean.strayLitPixels, 0);
+  assert.equal(clean.discDiameterPx, 240);
+  assert.deepEqual(clean.illuminatedBounds, clean.principalComponentBounds);
+  assert.equal(polluted.strayLitPixels, 1);
+  assert.deepEqual(
+    polluted.principalComponentBounds,
+    clean.principalComponentBounds,
+  );
+  assert.equal(polluted.discDiameterPx, 370);
+  assert.equal(polluted.illuminatedBounds.width, 370);
+  assert.equal(polluted.illuminatedBounds.height, 370);
+});
+
+test("the minified disc routes one isolated pixel through the same component metric", () => {
+  const clean = syntheticDiscMetric({ diameter: 16, canvasSize: 64 });
+  const polluted = syntheticDiscMetric({
+    diameter: 16,
+    canvasSize: 64,
+    stray: true,
+  });
+
+  assert.equal(clean.strayLitPixels, 0);
+  assert.equal(clean.discDiameterPx, 16);
+  assert.equal(polluted.strayLitPixels, 1);
+  assert.deepEqual(
+    polluted.principalComponentBounds,
+    clean.principalComponentBounds,
+  );
+  assert.equal(polluted.discDiameterPx, 40);
+});
+
+test("background pollution is structural before framing while clean frames stay unchanged", () => {
+  for (const fixture of [
+    {
+      laneId: "close",
+      diameter: 240,
+      canvasSize: 500,
+      expectedDiameter: 370,
+      expectedBand: "132-348",
+    },
+    {
+      laneId: "minified-16px",
+      diameter: 16,
+      canvasSize: 64,
+      expectedDiameter: 40,
+      expectedBand: "8-28",
+    },
+  ]) {
+    const laneDefinition = MOON_MIP_MOTION_LANES.find(
+      (lane) => lane.id === fixture.laneId,
+    );
+    const clean = syntheticDiscMetric({
+      diameter: fixture.diameter,
+      canvasSize: fixture.canvasSize,
+    });
+    const polluted = syntheticDiscMetric({
+      diameter: fixture.diameter,
+      canvasSize: fixture.canvasSize,
+      stray: true,
+    });
+    assert.deepEqual(
+      structuralFramingFailures(probeSource, laneDefinition, clean),
+      [],
+    );
+    assert.deepEqual(
+      structuralFramingFailures(probeSource, laneDefinition, polluted),
+      [
+        `${fixture.laneId}/webgl frame 0: 1 stray lit pixel(s) outside the principal disc - background is not black`,
+        `${fixture.laneId}/webgl measured ${fixture.expectedDiameter}px, outside structural framing band ${fixture.expectedBand}px`,
+      ],
+    );
+  }
+});
+
+test("mutation control catches an inert black-background precondition", (t) => {
+  const anchor = "if (strayLitPixels > 0) {";
+  assert.equal(probeSource.split(anchor).length - 1, 1);
+  const mutatedSource = probeSource.replace(
+    anchor,
+    "if (false && strayLitPixels > 0) {",
+  );
+  const laneDefinition = MOON_MIP_MOTION_LANES.find(
+    (lane) => lane.id === "close",
+  );
+  const polluted = syntheticDiscMetric({
+    diameter: 240,
+    canvasSize: 500,
+    stray: true,
+  });
+  const expected =
+    "close/webgl frame 0: 1 stray lit pixel(s) outside the principal disc - background is not black";
+  const productionFailures = structuralFramingFailures(
+    probeSource,
+    laneDefinition,
+    polluted,
+  );
+  const mutantFailures = structuralFramingFailures(
+    mutatedSource,
+    laneDefinition,
+    polluted,
+  );
+  assert.equal(productionFailures[0], expected);
+  assert.notEqual(mutantFailures[0], expected);
+  assert.deepEqual(mutantFailures, [
+    "close/webgl measured 370px, outside structural framing band 132-348px",
+  ]);
+  t.diagnostic(`MUTATION RED: inert check lost ${expected}`);
 });
 
 test("temporal shimmer is zero for identical pixels and positive for a phase flip", () => {

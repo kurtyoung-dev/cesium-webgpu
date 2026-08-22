@@ -732,6 +732,76 @@ export function analyzeRgbaFrame({ data, width, height }) {
     }
   }
 
+  const visited = new Uint8Array(pixelCount);
+  const componentStack = new Int32Array(coveredPixels);
+  let principalComponentPixels = 0;
+  let principalComponentBounds = null;
+  for (let pixel = 0; pixel < pixelCount; pixel++) {
+    if (mask[pixel] === 0 || visited[pixel] !== 0) {
+      continue;
+    }
+
+    let stackLength = 1;
+    componentStack[0] = pixel;
+    visited[pixel] = 1;
+    let componentPixels = 0;
+    let componentMinX = width;
+    let componentMinY = height;
+    let componentMaxX = -1;
+    let componentMaxY = -1;
+    while (stackLength > 0) {
+      const current = componentStack[--stackLength];
+      const x = current % width;
+      const y = (current - x) / width;
+      componentPixels++;
+      componentMinX = Math.min(componentMinX, x);
+      componentMinY = Math.min(componentMinY, y);
+      componentMaxX = Math.max(componentMaxX, x);
+      componentMaxY = Math.max(componentMaxY, y);
+
+      if (x > 0 && mask[current - 1] !== 0 && visited[current - 1] === 0) {
+        visited[current - 1] = 1;
+        componentStack[stackLength++] = current - 1;
+      }
+      if (
+        x + 1 < width &&
+        mask[current + 1] !== 0 &&
+        visited[current + 1] === 0
+      ) {
+        visited[current + 1] = 1;
+        componentStack[stackLength++] = current + 1;
+      }
+      if (
+        y > 0 &&
+        mask[current - width] !== 0 &&
+        visited[current - width] === 0
+      ) {
+        visited[current - width] = 1;
+        componentStack[stackLength++] = current - width;
+      }
+      if (
+        y + 1 < height &&
+        mask[current + width] !== 0 &&
+        visited[current + width] === 0
+      ) {
+        visited[current + width] = 1;
+        componentStack[stackLength++] = current + width;
+      }
+    }
+
+    if (componentPixels > principalComponentPixels) {
+      principalComponentPixels = componentPixels;
+      principalComponentBounds = Object.freeze({
+        minX: componentMinX,
+        minY: componentMinY,
+        maxX: componentMaxX,
+        maxY: componentMaxY,
+        width: componentMaxX - componentMinX + 1,
+        height: componentMaxY - componentMinY + 1,
+      });
+    }
+  }
+
   let gradientSum = 0;
   let laplacianSum = 0;
   let interiorLuminance = 0;
@@ -782,6 +852,8 @@ export function analyzeRgbaFrame({ data, width, height }) {
     width,
     height,
     coveredPixels,
+    strayLitPixels: coveredPixels - principalComponentPixels,
+    principalComponentBounds,
     coveredFraction: coveredPixels / pixelCount,
     coveredMeanLuminance:
       coveredPixels > 0 ? coveredLuminance / coveredPixels : 0,
@@ -1129,6 +1201,8 @@ function publicFrameMetric(metric, pngPath, pngBuffer) {
     width: metric.width,
     height: metric.height,
     coveredPixels: metric.coveredPixels,
+    strayLitPixels: metric.strayLitPixels,
+    principalComponentBounds: metric.principalComponentBounds,
     coveredFraction: rounded(metric.coveredFraction),
     coveredMeanLuminance: rounded(metric.coveredMeanLuminance),
     interiorPixels: metric.interiorPixels,
@@ -1644,9 +1718,12 @@ export function validateStructuralEvidence(report) {
     report.setup?.normalUrl !== runtimeEntries?.moonNormal?.served?.url ||
     report.setup?.fixedTimeIso !== FIXED_TIME_ISO ||
     report.setup?.lightingFixture !== "camera-coincident-directional-light" ||
+    report.setup?.catalogStarFieldDisabled !== true ||
     expectedViewerUrl === null
   ) {
-    failures.push("setup asset/clock/lighting provenance is invalid");
+    failures.push(
+      "setup asset/clock/lighting/scene-hygiene provenance is invalid",
+    );
   }
   if (
     report.control?.requestedMode !== report.controlMode ||
@@ -2437,9 +2514,22 @@ export function validateStructuralEvidence(report) {
 
     const target = laneDefinition.targetDiscDiameterPx;
     for (const backend of ["webgl", "webgpu"]) {
-      const measured = summarizeSpatial(
-        lane.backends?.[backend]?.frames ?? [],
-      ).discDiameterPxMedian;
+      const frames = lane.backends?.[backend]?.frames ?? [];
+      for (let frameIndex = 0; frameIndex < frames.length; frameIndex++) {
+        const strayLitPixels = frames[frameIndex]?.strayLitPixels;
+        if (!Number.isInteger(strayLitPixels) || strayLitPixels < 0) {
+          failures.push(
+            `${lane.id}/${backend} frame ${frameIndex}: stray lit pixel count is missing or invalid`,
+          );
+          continue;
+        }
+        if (strayLitPixels > 0) {
+          failures.push(
+            `${lane.id}/${backend} frame ${frameIndex}: ${strayLitPixels} stray lit pixel(s) outside the principal disc - background is not black`,
+          );
+        }
+      }
+      const measured = summarizeSpatial(frames).discDiameterPxMedian;
       const lower = laneDefinition.id === "minified-16px" ? 8 : target * 0.55;
       const upper = laneDefinition.id === "minified-16px" ? 28 : target * 1.45;
       if (measured < lower || measured > upper) {
@@ -2915,7 +3005,13 @@ async function installBrowserHarness(page) {
         scene.highDynamicRange = false;
         scene.globe.show = false;
         scene.imageryLayers.removeAll();
-        scene.skyBox.show = false;
+        if (scene.skyBox) {
+          scene.skyBox.show = false;
+          if (scene.skyBox.starField) {
+            // The catalog starfield renders independently of skyBox.show.
+            scene.skyBox.starField.show = false;
+          }
+        }
         scene.skyAtmosphere.show = false;
         scene.sun.show = false;
         scene.moon.show = true;
@@ -3522,6 +3618,9 @@ async function installBrowserHarness(page) {
         albedoUrl,
         normalUrl,
         lightingFixture: "camera-coincident-directional-light",
+        catalogStarFieldDisabled: [webgl, webgpu].every(
+          (viewer) => viewer.scene.skyBox?.starField?.show === false,
+        ),
         sameJavaScriptRealm:
           webgl.scene.canvas.ownerDocument.defaultView ===
           webgpu.scene.canvas.ownerDocument.defaultView,

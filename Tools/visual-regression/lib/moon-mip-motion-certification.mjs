@@ -498,6 +498,8 @@ function publicDecodedFrame(decoded, pngPath, pngBytes) {
     width: decoded.width,
     height: decoded.height,
     coveredPixels: decoded.coveredPixels,
+    strayLitPixels: decoded.strayLitPixels,
+    principalComponentBounds: decoded.principalComponentBounds,
     coveredFraction: roundedMetric(decoded.coveredFraction),
     coveredMeanLuminance: roundedMetric(decoded.coveredMeanLuminance),
     interiorPixels: decoded.interiorPixels,
