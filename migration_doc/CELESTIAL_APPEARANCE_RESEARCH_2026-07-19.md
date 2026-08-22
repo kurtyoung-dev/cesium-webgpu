@@ -173,7 +173,7 @@ The fork ships six 1024×1024 JPEGs derived from **t3** (`packages/engine/Source
 - Same SVS product, same collection, same creators, **same existing `LICENSE.md` entry** — zero new provenance work beyond refreshing the two dead links.
 - Directly serves the maintainer's dense-Milky-Way reference: t5 is the "very bright Milky Way" render.
 - Resolution: 1024/face gives ~5.3 arcmin/px; 4096/face gives ~1.3 arcmin/px, matching the 16k equirect source almost exactly.
-- **License: NASA/GSFC SVS, US public domain**, commercial use permitted, credit requested not required. Credit line to carry: *"NASA/Goddard Space Flight Center Scientific Visualization Studio."* **SAFE TO BUNDLE in an MIT repo.**
+- **License: NASA/GSFC SVS, US public domain**, commercial use permitted, credit requested not required. Credit line to carry: *"NASA/Goddard Space Flight Center Scientific Visualization Studio."* **SAFE TO BUNDLE in an Apache-2.0 repo** (baseline corrected `R-2026-08-21-23`; the earlier "MIT repo" framing was wrong — public-domain intake is compatible either way).
 - **One gotcha, flagged and UNVERIFIED as a mechanism:** SVS states the product's *"color standard to SMPTE with a gamma of 1.8"*, and the shipped JPEGs carry no ICC profile. Decoding gamma-1.8 content as sRGB (~2.2) darkens and flattens it. This is shared by both backends so it is **not** the parity fade — but it is a real contributor to the absolute "faint" look and should be corrected during the re-bake (convert to sRGB explicitly, don't just re-crop).
 - Format: 4:2:0 chroma subsampling in the current JPEGs actively destroys per-star colour. Re-bake to 4:4:4, PNG, or KTX2. VRAM: 4096/face RGBA8 = ~402 MB uncompressed, so BC6H/ASTC via KTX2 is required, or ship 2048 default with 4096 opt-in.
 

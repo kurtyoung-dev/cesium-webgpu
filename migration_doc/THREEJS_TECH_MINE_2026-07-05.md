@@ -118,7 +118,7 @@ Derivability legend: **P** = portable-permissive (MIT/BSD/Apache/CC0/ISC/Zlib �
 
 | Item | License reality | Disposition |
 |---|---|---|
-| **LYGIA shader library** | Prosperity License (non-commercial free / 30-day commercial trial) — **NOT MIT** despite WGSL variants | **Blocked for porting.** Do not vendor into our MIT repo. Reimplement individual algorithms fresh from their *original* public sources (many are standard). |
+| **LYGIA shader library** | Prosperity License (non-commercial free / 30-day commercial trial) — **NOT MIT** despite WGSL variants | **Blocked for porting.** Do not vendor into our Apache-2.0 repo (baseline corrected `R-2026-08-21-23`; the earlier "MIT repo" framing was wrong — a non-commercial licence is disqualified under either). Reimplement individual algorithms fresh from their *original* public sources (many are standard). |
 | **three-rc (Radiance Cascades reference)** | **No license** — author explicitly refuses to license | Code blocked; **RC technique itself is freely published** → derive-only (#4). |
 | **webgiya (surfel GI)** | License unstated in repo/article | Blocked-or-unclear; also scene assumptions (static indoor, CPU-BVH, world-space surfels) disqualify globe use. Reference architecture only. |
 | **R3F-Ultimate-Lens-Flare** | No license field | Rights unclear — moot anyway: **we already ship ghost/halo/chromatic lens flare.** Do not copy. |

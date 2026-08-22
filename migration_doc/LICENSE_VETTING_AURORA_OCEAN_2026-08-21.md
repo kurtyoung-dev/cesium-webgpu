@@ -10,22 +10,29 @@ fork.
 
 ## 1. Standing rule and licence baseline
 
-The fork's shipped licence baseline is Apache-2.0: the root `LICENSE.md`,
+Maintainer ruling `R-2026-08-21-23` confirms that the fork's operative licence
+baseline is Apache-2.0, inherited from upstream CesiumJS. The root `LICENSE.md`,
 `packages/engine/LICENSE.md`, and `package.json` (`"license": "Apache-2.0"`) agree.
-Anything derived from an external source must be licence-compatible with that
-distribution and attributed using the `L-24` Shota Matsuda / Takram convention. A
-`Reference:` comment is scholarly credit; it does not replace a required third-party
-notice, data-provenance entry, licence text, or dependency manifest entry.
+Every determination below is re-baselined against that ruled fact. Anything derived
+from an external source must be compatible with Apache-2.0 distribution and
+attributed using the `L-24` Shota Matsuda / Takram convention. A `Reference:` comment
+is scholarly credit; it does not replace a required third-party notice,
+data-provenance entry, licence text, or dependency manifest entry.
 
-The task statement's MIT-distribution claim remains an open framing item, routed to
-maintainer ruling item 11 in `migration_doc/RULING_REQUESTS_2026-08-21.md`
-(recommendation: confirm Apache-2.0); it is not a global intake blocker. On the
-licence-compatibility axis, permissive inbound under MIT, BSD, ISC, Unlicense,
-public-domain, and CC-BY terms is compatible with Apache-2.0 distribution when the
-applicable licence and attribution obligations, including NOTICE-file attribution
-under Apache-2.0 §4(d), are propagated. Copyleft and noncommercial terms remain
-disqualified. Every per-row evidence hold, including missing licence text, unpinned
-revisions, and unquoted terms, is independent of this baseline and stands unchanged.
+Inbound MIT, BSD-2-Clause, BSD-3-Clause, ISC, Unlicense, public-domain, CC0, and
+CC-BY-4.0 sources are compatible with Apache-2.0 when the applicable licence and
+attribution obligations are carried in the distribution's third-party notices (§3), consistent with
+Apache-2.0 §4(d); CC-BY-4.0 intake must also satisfy its own attribution and
+change-indication terms. Inbound Apache-2.0 is same-licence intake and must propagate
+the upstream Apache licence and any applicable NOTICE attribution. GPL, LGPL, AGPL,
+MPL-2.0 file-level derivation, CC-BY-SA, CC-BY-NC, proprietary, and no-licence sources
+remain disqualified for code or asset derivation; they may inform technique study
+only without copying protected expression.
+
+The ruled baseline does not manufacture evidence. A verdict may soften only when
+MIT-versus-Apache framing was the sole remaining reason for its hold. Holds based on
+missing quotable licence text, an unpinned revision, unquoted product-specific terms,
+an unresolved citation, provenance, or component lineage remain exactly as recorded. Separately from the baseline, this pass folds in the station-3 review's deferred quality edits recorded with `R-2026-08-21-23`. Where those edits record in-repo evidence that already existed but was unquoted, they may narrow the *scope* of a hold without softening its row-level verdict; `O-25` is the only row where that occurs.
 
 This document is a pre-registration record, not legal advice and not a numbered
 `L-xx` shipped-obligation determination. A numbered determination and the required
@@ -37,6 +44,18 @@ The inventory deduplicates by external source identity, not by number of mention
 Repeated links to one endpoint are one reference; a product page, its data feed, and
 an upstream model are separate when their rights or intended uses differ. A vague
 mention is retained as `UNRESOLVED-CITATION` rather than being guessed.
+
+`A-16` and `O-46` are the same NWS-disclaimer source identity. It is recorded once in
+each campaign inventory so each plan remains independently complete; the all-records
+total therefore contains two campaign records for that one cross-campaign identity.
+
+This pass keeps the standards-row approach. CoverageJSON, METAR, and WCS remain
+separate rows because the plans invoke them as external interoperability contracts or
+source families whose exact specifications, providers, and terms must be pinned.
+GRIB2, NetCDF, and ECMAScript are excluded as unversioned format or language words
+that only describe a consuming row and have no independently adopted specification
+citation. The named `grib2json` tool is not the GRIB2 format word and is recorded
+separately as `O-62`.
 
 Evidence follows the C18-S0/L-24 hierarchy:
 
@@ -68,7 +87,7 @@ Required verdicts are used as follows:
 | --- | --- |
 | `CLEAR-TO-DERIVE` | No identified copyright restriction blocks the stated use; any normal provenance action remains stated in the row. |
 | `ATTRIBUTION-REQUIRED` | The stated use is compatible only with the listed scholarly, licence, notice, or data-provenance credit. |
-| `HOLD-LEGAL` | Licence text, source identity, provenance, component lineage, or the distribution baseline is not sufficiently established for the stated intake. |
+| `HOLD-LEGAL` | Licence text, source identity, provenance, component lineage, product-specific terms, or a required revision pin is not sufficiently established for the stated intake. |
 | `DO-NOT-USE` | The planned use is incompatible, expressly excluded, obsolete, or restricted to a use the fork must not ship. |
 
 Risk classes are limited to `public-domain`, `permissive`, `copyleft`,
@@ -95,9 +114,23 @@ full licence/provenance record must ship. The L-24 precedent states the distinct
 directly: a reference block credits an author; it does not grant or reproduce a
 licence.
 
+Every adopted compatible inbound source also receives a third-party notice entry
+naming the source, owner, licence, canonical URL, and adopted mechanism. The fork's
+operative notice mechanism is the `# Third-Party Code` section of the root,
+`packages/engine`, and `packages/widgets` `LICENSE.md` files plus `ThirdParty.json`
+— the surfaces `Tools/c16/verify-packaged-notices.mjs` checks actually reach each
+published artifact. The repository ships no separate `NOTICE` file today; Apache-2.0
+§4(d) governs propagation of attribution notices carried in an inbound work's own
+NOTICE file, and if a fork-level `NOTICE` file is later introduced it must be added
+to that verifier's covered surfaces. Apache-2.0 intake propagates the upstream NOTICE where applicable; MIT,
+BSD, ISC, Unlicense, public-domain, and CC0 intake carries the corresponding source
+and status attribution; and CC-BY-4.0 intake additionally carries the creator, title,
+source, licence link, and change indication its own terms require. Any full licence
+text or copyright notice required by the inbound terms ships as well.
+
 ## 4. Campaign 15 aurora and space-weather inventory
 
-The source-document count is **27 distinct references**: 17 linked sources, six
+The source-document count is **29 distinct references**: 17 linked sources, eight
 named-but-unlinked sources, and four `UNRESOLVED-CITATION` records. Repeated uses
 of an endpoint in §2/§2a are folded into its single row.
 
@@ -130,6 +163,8 @@ of an endpoint in §2/§2a are folded into its single row.
 | A-25 | Fairbanks 2025 aurora observation/photograph/replay material, C15-07H lines 571–576 | `ASSET`/`DATA`: immutable historical offline replay; photograph context only | `UNRESOLVED-CITATION`: no source, photographer/data owner, archive, or terms. Risk `unknown` | Yes; asset/data owner, source, timestamp, transforms, licence | Canonical byte source, owner, exact licence, download record, hash, transformation and archival permission | `HOLD-LEGAL` |
 | A-26 | Unidentified “second licensed aurora reference,” §2b lines 317–320 | Unknown; no derivation may be based on it | `UNRESOLVED-CITATION`; only one aurora reference is actually listed. Risk `unknown` | Cannot be formed | Identify the alleged second source or correct the plural claim | `HOLD-LEGAL` |
 | A-27 | “Eclipse Explorer follow-up” solar-prominence state provider, C15-06P line 384 | `DATA/API`: located solar-prominence state for eclipse composition | `UNRESOLVED-CITATION`: the exact data owner and source identity are open, and “Eclipse Explorer” is not identified as a NASA product or an internal item. Risk `unknown` | Yes, provider/owner and data-provenance credit | Identify whether “Eclipse Explorer” refers to NASA's product or an internal item; then establish owner, endpoint, terms, and attribution form | `HOLD-LEGAL` |
+| A-28 | SWPC `10cm-flux-30-day.json` endpoint, §2a lines 250–255 and C15-06 lines 495–501 | Not adopted; schema-change evidence only, with no runtime or fixture intake | Named in SCN 26-21, but no canonical endpoint, product-specific terms, payload evidence, or redistribution right is quoted. Risk `unknown` | No while not adopted; NOAA/SWPC data provenance and NOTICE-file credit if adopted | Canonical endpoint/product owner, current schema, product terms, fixture rights, attribution, and transformations | `HOLD-LEGAL` (not adopted) |
+| A-29 | GOES secondary X-ray feed, §2a lines 240–244 and C15-06 lines 495–501 | Not adopted; measured only to validate instrument-source mapping while C15-06 selects the primary feed | Feed identity is named but no URL, product-specific terms, payload evidence, or fixture right is pinned. Risk `unknown` | No while not adopted; instrument/data provenance and NOTICE-file credit if adopted | Canonical endpoint, product owner, terms, schema, instrument attribution, fixture rights, and transformations | `HOLD-LEGAL` (not adopted) |
 
 ### A-01 — NCEI World Magnetic Model
 
@@ -357,12 +392,13 @@ reliance. Verdict: **CLEAR-TO-DERIVE** under the quoted conditions.
 **What was found and classification.** The queue quotes both `"The WDC Kyoto does
 not allow commercial applications of the geomagnetic indices"` and the requirement
 to include data DOIs in the Reference section. The noncommercial restriction is
-incompatible with the task-directed MIT distribution.
+incompatible with the ruled Apache-2.0 distribution baseline.
 
 **Attribution and determination.** No attribution block can cure the prohibited
 commercial use. No built-in Kyoto provider, Dst snapshot, or Kyoto-derived fixture
 may ship. A caller-owned numeric override remains outside this intake. Verdict:
-**DO-NOT-USE**.
+**DO-NOT-USE**. This pass replaces the stale MIT-baseline wording; the verdict stays
+unchanged because noncommercial terms remain disqualified under Apache-2.0.
 
 ### A-18 — JHU/APL OVATION Prime model
 
@@ -413,8 +449,11 @@ at products/kyoto-dst.json` and immediately warns that the mirror `does not eras
 the source restrictions`. The copied/reformatted data remains tied to Kyoto's
 noncommercial restriction.
 
-**Attribution and determination.** No notice can make the intended MIT distribution
-compatible. Keep the provider and snapshot absent. Verdict: **DO-NOT-USE**.
+**Attribution and determination.** No notice can make the ruled Apache-2.0
+distribution compatible with the source restriction. Keep the provider and snapshot
+absent. Verdict: **DO-NOT-USE**. This pass replaces the stale MIT-baseline wording;
+the verdict stays unchanged because the underlying noncommercial restriction is
+independent of the fork's baseline.
 
 ### A-22 — `olawlor/AuroraRendererUnity`
 
@@ -497,9 +536,44 @@ or an internal item, and it gives no owner, endpoint, or terms. The intended use
 NASA's product or an internal item; then establish the owner, endpoint, terms, and
 required attribution form before intake. Verdict: **HOLD-LEGAL**.
 
+### A-28 — SWPC `10cm-flux-30-day.json` endpoint
+
+**What was found and classification.** Queue evidence quotes SCN 26-21 as
+`covering kyoto-dst.json, 10cm-flux-30-day.json,
+noaa-planetary-k-index.json, and noaa-planetary-k-index-forecast.json`, with those
+products moving `to a standard JSON object format`. The endpoint is mentioned as a
+schema-change subject only. `C15-06` instead says `Consume only the replacement
+rtsw_mag_1m.json and rtsw_wind_1m.json feeds` and `Consume GOES primary X-rays`;
+the `10cm-flux-30-day.json` feed is not adopted. No canonical URL, payload, or
+product-specific terms are quoted. Risk: `unknown`.
+
+**Attribution and determination.** This pass adds a not-adopted row because the
+queue names the endpoint even though no campaign intake selects it; the Apache-2.0
+baseline cannot supply the missing product evidence. If a later row adopts it, use
+`Data source: NOAA SWPC — <verified 10cm-flux-30-day product and canonical URL>;
+retrieval window; hash; transformations; product terms`, plus NOTICE-file credit.
+Verdict: **HOLD-LEGAL** (not adopted).
+
+### A-29 — GOES secondary X-ray feed
+
+**What was found and classification.** Queue evidence states, verbatim, `the
+secondary X-ray feed returned satellite: 19 — so the mapping is live and
+self-consistent` and explains that the per-instrument primary/secondary split is not
+uniform. The measurement validates `instrument-sources.json`; it does not identify
+the secondary endpoint or adopt it. `C15-06` selects `GOES primary X-rays` instead.
+No canonical URL, terms, fixture right, or payload provenance is pinned. Risk:
+`unknown`.
+
+**Attribution and determination.** This pass adds a not-adopted row because the
+queue measured a distinct secondary feed without selecting it for ingestion; the
+Apache-2.0 baseline cannot manufacture its missing endpoint and product terms. A
+future intake needs `Data source: NOAA SWPC — GOES secondary X-rays, <canonical
+URL>; instrument; retrieval window; hash; transformations; product terms`, plus
+NOTICE-file credit. Verdict: **HOLD-LEGAL** (not adopted).
+
 ## 5. Campaign 14 ocean and wind inventory
 
-The source-document count is **59 distinct references**. GFS and RTOFS are
+The source-document count is **62 distinct references**. GFS and RTOFS are
 separate data products; aliases such as `cambecc/earth` and `earth (nullschool)`
 are one source; a paper/model and an implementation of it are separate when the
 campaign proposes different derivation routes. The source plan's NWS disclaimer,
@@ -508,7 +582,9 @@ status they support. External standards, algorithms, retired service paths, and
 licence-policy sources are also separate identities; format words that merely
 describe a named implementation (`GRIB2/NetCDF` within `fluid-earth`, `MLS-MPM/SPH`
 within WebGPU-Ocean, and RGBA8/equirectangular encoding within the named flow-field
-implementations) are not multiplied into sources without a distinct citation.
+implementations) are not multiplied into sources without a distinct citation. Per
+the §2 choice, the named `grib2json` tool is a source row while the GRIB2 format word
+is not.
 
 | ID | Source and plan location | Intended use | In-repo licence evidence and risk | Attribution owed | Online verification still owed before landing | Verdict |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -534,9 +610,9 @@ implementations) are not multiplied into sources without a distinct citation.
 | O-20 | Box-Muller Gaussian generation, line 67 | Standard algorithm for deterministic fixed noise; no source translation | Named mathematical algorithm; no source identified. Risk `unknown` for publication expression | Yes, canonical algorithm citation | Canonical publication and confirmation implementation is independent | `ATTRIBUTION-REQUIRED` |
 | O-21 | Stockham FFT, line 173 | Independent FFT algorithm or `dli/waves` code translation | Algorithm route is distinct from declared-MIT code route. Risk `unknown` for publication, `permissive` as declared for code | Yes; paper block or MIT notice depending route | Canonical algorithm source; `dli/waves` exact licence/revision if code-guided | `ATTRIBUTION-REQUIRED` for clean-room math; O-37 holds code translation |
 | O-22 | Unidentified 256² FFT performance envelope, line 113 | Performance-budget justification only | `UNRESOLVED-CITATION`; no source/artifact. Risk `unknown` | Yes if ever cited | Source, hardware/configuration, run artifact and comparability | `HOLD-LEGAL` |
-| O-23 | Crest / Wave Harmonic, lines 65/67/72/141 | `DERIVED-CODE` or structural study of wind spectra/transitions/zones | `VERBATIM-IN-REPO`: MIT line and permission opening quoted. Risk `permissive` | Yes, MIT notice and L-24 mechanism block | Canonical repository/commit, complete licence, files/components used | `ATTRIBUTION-REQUIRED` |
+| O-23 | Crest / Wave Harmonic, lines 65/67/72/141 | `DERIVED-CODE` or structural study of wind spectra/transitions/zones | `VERBATIM-IN-REPO`: §4 says the LICENSE was fetched, quotes its MIT copyright/permission opening, and marks the source `BUNDLE-OK`, upgrading it to fetched evidence. Risk `permissive` | Yes, MIT notice, NOTICE-file attribution, and L-24 mechanism block | Pin the fetched LICENSE, canonical repository/commit, and files/components used | `ATTRIBUTION-REQUIRED` |
 | O-24 | “Atlas local injection,” line 72 | Local sea-state injection technique study | `UNRESOLVED-CITATION`: no owner/project/paper. Risk `unknown` | Cannot be formed | Identify the exact source or remove the claim | `HOLD-LEGAL` |
-| O-25 | `2Retr0/GodotOceanWaves`, lines 72/142/172 | GLSL-to-WGSL/code translation for spectra, cascades and foam | `VERBATIM-IN-REPO`: MIT, Ethan Truong; OTFFT component lineage not rechecked here. Risk `permissive` with transitive `unknown` | Yes, MIT and component notices plus mechanism block | Canonical commit, complete licence, file boundaries, OTFFT licence/notice | `HOLD-LEGAL` for file-level translation |
+| O-25 | `2Retr0/GodotOceanWaves`, lines 72/142/172 | GLSL-to-WGSL/code translation for spectra, cascades and foam | `VERBATIM-IN-REPO`: §4 says the LICENSE was fetched and quotes MIT/Ethan Truong; §4a expressly upgrades the catalog's △ to ✔. Top-level risk `permissive`; OTFFT remains `unknown` | Yes, top-level MIT notice, NOTICE-file attribution, and mechanism block; OTFFT notice if that component clears and is used | Pin the fetched top-level LICENSE, canonical commit, and file boundaries; separately establish the precise OTFFT identity, revision, grant, and lineage under S-09 | `HOLD-LEGAL` only for the OTFFT sub-component; top-level GodotOceanWaves is `ATTRIBUTION-REQUIRED` |
 | O-26 | SINTEF `gpuocean`, line 143 | Domain study only | GPL-3.0-or-later. Risk `copyleft` | No code notice because no code may enter | None unless a separate permissive paper source is chosen | `DO-NOT-USE` for code/pseudocode translation |
 | O-27 | `cambecc/earth` / earth (nullschool), lines 144/182 | Velocity/projection/GRIB format study; possible code guidance | MIT reported from hosting API, not licence file; author surname conflicts (`Beccarino`/`Beccario`). Risk `permissive` as declared | Yes if used | Verbatim licence, canonical author spelling, repository/revision, files used | `HOLD-LEGAL` for code reuse |
 | O-28 | `RaymanNg/3D-Wind-Field`, line 145 | Globe longitude/latitude particle integration | `DETERMINED-IN-REPO` L-12: MIT, copyright 2019 RaymanNg. Risk `permissive` | Yes, existing MIT notice and mechanism block | Only revision/file-specific check for new copying beyond vetted lineage | `ATTRIBUTION-REQUIRED` |
@@ -548,9 +624,9 @@ implementations) are not multiplied into sources without a distinct citation.
 | O-34 | `gasgiant/FFT-Ocean`, lines 151/170 | FFT decomposition, packing, cascades and Jacobian foam | `DETERMINED-IN-REPO` L-13: MIT, copyright 2020 Ivan Pensionerov. Risk `permissive` | Yes, existing MIT notice and mechanism block | Revision-specific check for new code beyond determined lineage | `ATTRIBUTION-REQUIRED` |
 | O-35 | `Popov72/OceanDemo`, lines 151/170 | Three-cascade compute FFT, packing, foam and buoyancy | `DETERMINED-IN-REPO` L-13: MIT notice resolved; port retains Pensionerov line. Risk `permissive` | Yes, dual Popov/Pensionerov lineage and MIT notice | Revision/file check; preserve upstream port attribution | `ATTRIBUTION-REQUIRED` |
 | O-36 | `BarthPaleologue/WebTide`, lines 151/171 | WGSL FFT structure and spherical/triplanar wrap study | `DETERMINED-IN-REPO` L-13: MIT, copyright 2024 Barthélemy Paléologue. Risk `permissive` | Yes, existing MIT notice and mechanism block | Revision/file check for new copied/adapted expression | `ATTRIBUTION-REQUIRED` |
-| O-37 | `dli/waves`, lines 125/151/173 | WebGL2 feasibility and possible Stockham code translation | MIT only `DECLARED-ONLY`. Risk `permissive` as declared | Yes if used | Verbatim licence/copyright, repository/revision, code lineage | `HOLD-LEGAL` for code translation |
-| O-38 | EncinoWaves, line 151 | Ocean algorithm/code reference | Apache-2.0 reported; no licence text, copyright holder, NOTICE, or pinned revision is quoted in-repo. `RESEARCH_REGISTER_2026-07-06.md:133` records `EncinoWaves = Apache-2.0 (usable; prefer derive-from-paper to avoid NOTICE obligations).` Risk `permissive` as declared | Yes; propagate the Apache-2.0 NOTICE attribution | Verbatim licence text, copyright holder, NOTICE, pinned revision, and file provenance | `HOLD-LEGAL` |
-| O-39 | `jbouny/fft-ocean`, line 174 | Projected-grid/clipmap-alternative study | MIT only `DECLARED-ONLY`. Risk `permissive` as declared | Yes if used | Verbatim licence/copyright, revision, lineage | `HOLD-LEGAL` |
+| O-37 | `dli/waves`, lines 125/151/173 | WebGL2 feasibility and possible Stockham code translation | `RESEARCH_REGISTER_2026-07-06.md:133` places `dli/waves (© 2014 Li)` among `multiple independently re-verified MIT sources`, but quotes no grant or revision; the plan also contradicts its own prior-verified row with a later MIT △ row. Evidence remains `DECLARED-ONLY`; risk `permissive` as declared | Yes if used | Verbatim licence/copyright, repository/revision, code lineage | `HOLD-LEGAL` for code translation |
+| O-38 | EncinoWaves, line 151 | Ocean algorithm/code reference | Apache-2.0 reported; no licence text, copyright holder, NOTICE, or pinned revision is quoted in-repo. `RESEARCH_REGISTER_2026-07-06.md:133` records `EncinoWaves = Apache-2.0 (usable; prefer derive-from-paper to avoid NOTICE obligations).` The plan calls it prior-verified/BUNDLE-OK but omits it from the later pre-registration table. Risk `permissive` as declared | Yes; propagate the Apache-2.0 NOTICE attribution | Verbatim licence text, copyright holder, NOTICE, pinned revision, and file provenance | `HOLD-LEGAL` |
+| O-39 | `jbouny/fft-ocean`, line 174 | Projected-grid/clipmap-alternative study | `RESEARCH_REGISTER_2026-07-06.md:133` places `jbouny/fft-ocean` among `multiple independently re-verified MIT sources`, but quotes no grant or revision. Evidence remains `DECLARED-ONLY`; risk `permissive` as declared | Yes if used | Verbatim licence/copyright, revision, lineage | `HOLD-LEGAL` |
 | O-40 | three.js Water / Water2, line 175 | Flow-map dual normals and cross-fade for W2/inland water | MIT only `DECLARED-ONLY`; Bouny lineage noted. Risk `permissive` as declared | Yes if used | Exact addon files/revision, three.js licence, contributor/Bouny lineage | `HOLD-LEGAL` |
 | O-41 | `evanw/webgl-water`, line 176 | Caustics/refraction study | MIT only in `index.html`; no licence file. Risk `unknown` | Yes only after grant established | Author-confirmed canonical grant, copyright, revision, files | `HOLD-LEGAL` |
 | O-42 | `threejs-caustics`, line 177 | Arbitrary-mesh caustics technique/code study | BSD-3 only `DECLARED-ONLY`. Risk `permissive` as declared | Yes if used | Verbatim BSD-3 text/copyright, revision, source lineage | `HOLD-LEGAL` |
@@ -571,6 +647,9 @@ implementations) are not multiplied into sources without a distinct citation.
 | O-57 | PO.DAAC citation policy, line 139 | Citation/terms evidence for OSCAR | Mentioned but not linked or quoted. `UNRESOLVED-CITATION`; risk `unknown` | Yes if OSCAR is adopted | Canonical policy/version, prescribed citation and relationship to product licence | `HOLD-LEGAL` |
 | O-58 | Unnamed NASA full/open-sharing policy, line 140 | General terms evidence for MERRA-2 | Partial quotation with no policy title, URL, date or scope. `UNRESOLVED-CITATION`; risk `unknown` | Cite only after identification | Exact policy and current MERRA-2 product-specific licence/terms | `HOLD-LEGAL` |
 | O-59 | GitHub licence API, lines 144/145 | Secondary metadata evidence for `earth` and RaymanNg licences | API result is not the upstream grant and no response artifact is retained. Risk `unknown` as legal proof | No campaign-code attribution; upstream authors still owed | Verify actual repository licence files/revisions instead of relying on API labels | `DO-NOT-USE` as sole licence proof |
+| O-60 | EGM2008, unconfirmed register line 226 | Not adopted; geoid comparator named in the ocean-datum probe result | Only the model name and one comparison result are present; no exact release, owner/source, data or software terms, revision, or redistributed bytes are identified. Risk `unknown` | No while not adopted; model/data provenance and NOTICE-file credit if later used | Exact EGM2008 product/release, owner, canonical source, licence, files/hashes, transformations, and whether any bytes or software enter the fork | `HOLD-LEGAL` (not adopted) |
+| O-61 | Cesium World Terrain, unconfirmed register line 226 | Not adopted; existing terrain used as the measured ocean-lid datum context | The plan names Cesium World Terrain and a probe result but quotes no service/data terms, tile rights, source revision, or asset provenance. Risk `unknown` | No while not adopted; Cesium/service provenance and NOTICE-file credit if later used as intake | Exact product/service identity, applicable terms, access/caching/fixture rights, terrain revision, and any derived or retained bytes | `HOLD-LEGAL` (not adopted) |
+| O-62 | `grib2json`, pre-registration line 182 | Not adopted; format/tooling reference attached to the earth/nullschool row | Only the tool name and `format reference` role appear; no canonical project, author, licence text, revision, dependency lineage, or files are identified. Risk `unknown` | No while not adopted; project notice and NOTICE-file attribution if later used | Canonical repository/package, owner, licence/copyright, pinned revision, dependencies, files used, and relationship to `cambecc/earth` | `HOLD-LEGAL` (not adopted) |
 
 ### O-01 — NOAA/NCEP GFS wind
 
@@ -912,10 +991,16 @@ rely only on the planned local baseline. Verdict: **HOLD-LEGAL** and
 
 **What was found and classification.** Plan evidence (verbatim): `"MIT License /
 Copyright (c) 2019 Wave Harmonic and contributors / Permission is hereby granted,
-free of charge, to any person obtaining a copy"`. Crest guides empirical spectra,
-smooth wind transitions, zones, and spatial modulation. Studying an idea is
-`DERIVED-TECHNIQUE`; translating code, shader structure, constants, or tests is
-`DERIVED-CODE` and invokes MIT notice retention. Risk: `permissive`.
+free of charge, to any person obtaining a copy" (LICENSE, fetched)` and
+`BUNDLE-OK (code portable with attribution)` (`OCEAN_DYNAMICS_PLAN_2026-07-24.md:141`).
+Crest guides empirical spectra, smooth wind transitions, zones, and spatial
+modulation. Studying an idea is `DERIVED-TECHNIQUE`; translating code, shader
+structure, constants, or tests is `DERIVED-CODE` and invokes MIT notice retention.
+Risk: `permissive`.
+
+Plan upgrade evidence (verbatim):
+
+> | Crest (wave-harmonic) | "MIT License / Copyright (c) 2019 Wave Harmonic and contributors / Permission is hereby granted, free of charge, to any person obtaining a copy" (LICENSE, fetched) | **BUNDLE-OK** (code portable with attribution) |
 
 **Attribution and determination.** For independent technique use: `Reference: Wave
 Harmonic and contributors — Crest (MIT), <canonical repository URL> — <specific
@@ -923,6 +1008,9 @@ wind transition/spectrum/zone mechanism>. Re-expressed for Cesium's ocean pipeli
 technique only — no source was copied.` Any adaptation must replace the no-copy
 claim with file/revision details and ship the MIT notice. Verify repository,
 revision, full licence, and components online. Verdict: **ATTRIBUTION-REQUIRED**.
+This pass records the plan's fetched-LICENSE upgrade and leaves the verdict unchanged
+because MIT intake was already attribution-bearing and is compatible with the ruled
+Apache-2.0 baseline when NOTICE-file attribution ships.
 
 ### O-24 — “Atlas local injection”
 
@@ -940,17 +1028,29 @@ principles. Verdict: **HOLD-LEGAL** and `UNRESOLVED-CITATION`.
 ### O-25 — `2Retr0/GodotOceanWaves`
 
 **What was found and classification.** Plan evidence (verbatim): `"MIT License /
-Copyright (c) 2024 Ethan Truong"` and `TMA spectrum + Hasselmann directional
-spreading + foam accumulate/decay`. Direct GLSL-to-WGSL or structural translation
-is `DERIVED-CODE`, not merely learning an algorithm. The plan also notes component
-lineage that requires a separate OTFFT check. Risk: `permissive` for the quoted
-top-level declaration and `unknown` for unresolved components/file lineage.
+Copyright (c) 2024 Ethan Truong" (LICENSE, fetched)` and `BUNDLE-OK (TMA+Horvath
+GLSL portable)` (`OCEAN_DYNAMICS_PLAN_2026-07-24.md:142`). The later
+pre-registration row says, verbatim, `MIT △ (catalog) — already upgraded to ✔ by §4
+above, LICENSE fetched 2026-07-24` (`:172`). Direct GLSL-to-WGSL or structural
+translation is `DERIVED-CODE`, not merely learning an algorithm. The research register also notes
+component lineage that requires a separate OTFFT check. Risk: `permissive` for the
+fetched top-level licence and `unknown` for the unresolved OTFFT component.
+
+Plan upgrade evidence (verbatim):
+
+> | GodotOceanWaves | "MIT License / Copyright (c) 2024 Ethan Truong" (LICENSE, fetched) | **BUNDLE-OK** (TMA+Horvath GLSL portable) |
+>
+> | 2Retr0/GodotOceanWaves | godot GLSL compute | MIT △ (catalog) — **already upgraded to ✔ by §4 above**, LICENSE fetched 2026-07-24 | Ethan Truong | **W3 spectrum stack** — TMA spectrum + Hasselmann directional spreading + foam accumulate/decay, matching W3's two-layer spec. |
 
 **Attribution and determination.** After verification use `Reference: Ethan Truong
 — 2Retr0/GodotOceanWaves (MIT), <repository and commit> — <files and mechanisms
 adapted>. Ported/adapted into WGSL; source expression was used; see shipped MIT and
-component notices.` Verify the full licence, commit, file history, OTFFT licence,
-and all notices online. Verdict: **HOLD-LEGAL** for file-level translation.
+component notices.` Pin the fetched top-level licence, commit, and file history, and
+verify all top-level notices online. This pass narrows the prior blanket hold because
+the fetched GodotOceanWaves MIT licence is Apache-2.0-compatible; the row-level
+**HOLD-LEGAL** remains exactly in place, scoped only to OTFFT's still-unquoted precise
+identity, revision, grant, and Godot lineage under S-09. Top-level GodotOceanWaves
+use is **ATTRIBUTION-REQUIRED** once the ordinary intake pins are banked.
 
 ### O-26 — SINTEF `gpuocean`
 
@@ -958,13 +1058,15 @@ and all notices online. Verdict: **HOLD-LEGAL** for file-level translation.
 v3.0-or-later` and `DISQUALIFIED for code bundling (copyleft); techniques/domain
 reference only`. Translating its code, shaders, pseudocode-like implementation, or
 distinctive structure would be `DERIVED-CODE` under incompatible copyleft for the
-task's MIT distribution baseline. Risk: `copyleft`.
+ruled Apache-2.0 distribution baseline. Risk: `copyleft`.
 
 **Attribution and determination.** No Reference block can cure incompatible code
 reuse. Do not inspect it as an implementation template or translate it. A separately
 published paper could be evaluated as a new source and independently reimplemented,
 but no such precise paper is adopted here. No online verification is owed unless
 that route is proposed. Verdict: **DO-NOT-USE** for code or pseudocode translation.
+This pass replaces the stale MIT-baseline wording; GPL-3.0-or-later remains
+disqualified under Apache-2.0, so the verdict does not change.
 
 ### O-27 — `cambecc/earth` / earth (nullschool)
 
@@ -1120,13 +1222,41 @@ outside L-13's vetted lineage. Verdict: **ATTRIBUTION-REQUIRED**.
 `minimal fragment-shader Stockham FFT chain`. The triangle legend says a declared
 licence `MUST be upgraded to ✔ at intake before any file-level reuse`. A feasibility
 observation is technique study; translating shader stages, indexing, constants, or
-packing is `DERIVED-CODE`. Risk: `permissive` as declared, not verified.
+packing is `DERIVED-CODE`. The research register places the exact fragment
+`dli/waves (© 2014 Li)` under the exact description `multiple independently
+re-verified MIT sources` (`RESEARCH_REGISTER_2026-07-06.md:133`). Risk:
+`permissive` as declared, not evidenced by a quotable grant in this pass.
+
+Register evidence (verbatim):
+
+> **CLEAN** — multiple independently re-verified MIT sources: WebTide (© 2024 Paleologue), gasgiant/FFT-Ocean (© 2020 Pensionerov), Popov72/OceanDemo, 2Retr0/GodotOceanWaves (© 2024 Truong, incl. its OTFFT MIT attribution), dli/waves (© 2014 Li), jbouny/fft-ocean, GarrettGunnell/Water. EncinoWaves = Apache-2.0 (usable; prefer derive-from-paper to avoid NOTICE obligations). **BLOCKED:** iamyoukou/fftWater and codeagent/webgl-ocean have **no license file** (all rights reserved — reference-reading only, no code porting). Papers (Tessendorf, Horvath 2015) are derive-from-math.
+
+**Plan self-contradiction.** The deferred review described a §4-versus-§5 conflict;
+the source headings place the exact conflict in §4 versus its later §4a
+pre-registration. The first passage is (`OCEAN_DYNAMICS_PLAN_2026-07-24.md:151`):
+
+> | Already verified in-repo (no re-verification needed) | gasgiant/FFT-Ocean, Popov72/OceanDemo, WebTide, dli/waves all MIT; EncinoWaves Apache-2.0; Tessendorf notes = published math, derive-don't-copy (`RESEARCH_REGISTER_2026-07-06.md:147`; `DEFERRED_WORK.md:5256`) | BUNDLE-OK per prior verification |
+
+The later passage is (`:164-166`, `:173`):
+
+> **Legend:** ✔ = licence file read verbatim this pass; △ = repo-declared only,
+> **MUST be upgraded to ✔ at intake before any file-level reuse**; STUDY-ONLY =
+> techniques only, never copy code; UNKNOWN = no reuse until cleared.
+>
+> | dli/waves | WebGL | MIT △ | David Li | **W3 reference baseline** — minimal fragment-shader Stockham FFT chain; also the feasibility proof cited by `NEW-FFT-OCEAN-WEBGL2-FALLBACK`. |
+
+Thus `dli/waves` is both prior-verified/BUNDLE-OK and later declared-only. EncinoWaves
+is prior-verified/BUNDLE-OK in the first passage but absent from the later table. The
+later, stricter evidence shape controls this pre-registration because the plan does
+not resolve the conflict or omission with retained licence text.
 
 **Attribution and determination.** If cleared, use `Reference: David Li — dli/waves
 (MIT), <repository and commit> — <specific Stockham/WebGL feasibility mechanism>.
 Adapted or independently re-expressed as accurately stated; see shipped MIT
 notice.` Read the actual licence/copyright, pin files/revision, and trace lineage
-online before code reuse. Verdict: **HOLD-LEGAL** for code translation.
+online before code reuse. This pass adds the register evidence and surfaces the
+plan's internal contradiction; the verdict stays **HOLD-LEGAL** because neither
+source supplies quotable licence text or a pinned revision.
 
 ### O-38 — EncinoWaves
 
@@ -1138,12 +1268,21 @@ Apache-2.0 fork is same-licence intake, the cleanest licence-compatibility case,
 requires propagation of NOTICE attribution under Apache-2.0 §4(d). Any code or
 shader use is `DERIVED-CODE`. Risk: `permissive` as declared.
 
+**Plan self-contradiction.** The §4 row quoted at O-37 lists `EncinoWaves
+Apache-2.0` under `Already verified in-repo (no re-verification needed)` and marks
+the group `BUNDLE-OK per prior verification`. The later pre-registration table has
+no EncinoWaves row at all, even though its legend says the table carries the
+code-reference half at its own verification level. This is an omission/inconsistency,
+not a second contrary EncinoWaves licence sentence.
+
 **Attribution and determination.** A cleared block must be `Reference: <verified
 authors> — EncinoWaves (Apache-2.0), <repository and commit> — <specific adapted
 mechanism>. Source expression adapted; see shipped Apache licence and NOTICE.`
 The in-repo evidence quotes no actual licence text, identifies no copyright holder,
 includes no NOTICE, and pins no repository revision. Verify those items and the
-file provenance before intake. Verdict: **HOLD-LEGAL**.
+file provenance before intake. This pass surfaces the plan's prior-verified claim and
+later omission; the verdict stays **HOLD-LEGAL** because same-licence compatibility
+does not supply the missing licence, copyright, NOTICE, or revision evidence.
 
 ### O-39 — `jbouny/fft-ocean`
 
@@ -1151,13 +1290,22 @@ file provenance before intake. Verdict: **HOLD-LEGAL**.
 `screen-space projected grid (infinite horizon without a giant mesh)`. The triangle
 is declared-only. Studying the broad projected-grid idea can be
 `DERIVED-TECHNIQUE`; porting mesh construction, shaders, constants, or code is
-`DERIVED-CODE` and needs the actual grant. Risk: `permissive` as declared.
+`DERIVED-CODE` and needs the actual grant. The research register places the exact
+project name `jbouny/fft-ocean` under the exact description `multiple independently
+re-verified MIT sources` (`RESEARCH_REGISTER_2026-07-06.md:133`). Risk:
+`permissive` as declared, not evidenced by a quotable grant in this pass.
+
+Register evidence (verbatim):
+
+> **CLEAN** — multiple independently re-verified MIT sources: WebTide (© 2024 Paleologue), gasgiant/FFT-Ocean (© 2020 Pensionerov), Popov72/OceanDemo, 2Retr0/GodotOceanWaves (© 2024 Truong, incl. its OTFFT MIT attribution), dli/waves (© 2014 Li), jbouny/fft-ocean, GarrettGunnell/Water. EncinoWaves = Apache-2.0 (usable; prefer derive-from-paper to avoid NOTICE obligations). **BLOCKED:** iamyoukou/fftWater and codeagent/webgl-ocean have **no license file** (all rights reserved — reference-reading only, no code porting). Papers (Tessendorf, Horvath 2015) are derive-from-math.
 
 **Attribution and determination.** If cleared, use `Reference: Jérémy Bouny —
 jbouny/fft-ocean (MIT), <repository and commit> — projected-grid mechanism.
 <Independent implementation or adaptation statement>; see shipped MIT notice if
 source expression was used.` Verify licence/copyright, revision, files, and lineage
-online before any code-guided work. Verdict: **HOLD-LEGAL**.
+online before any code-guided work. This pass adds the register evidence; the verdict
+stays **HOLD-LEGAL** because the register does not reproduce the grant or pin a
+revision.
 
 ### O-40 — three.js `Water` / `Water2`
 
@@ -1442,6 +1590,57 @@ and retain the actual upstream licence/copyright at a pinned revision, as L-12 l
 did for RaymanNg; resolve the `earth` author spelling under O-27. The API label must
 not be the sole clearance basis. Verdict: **DO-NOT-USE** as sole licence proof.
 
+### O-60 — EGM2008
+
+**What was found and classification.** The plan's unconfirmed register states,
+verbatim, `Cesium-World-Terrain ocean-lid datum — CONFIRMED GEOID (Batch 759,
+probe-ocean-datum: RMS 3.7 m vs EGM2008; FFT patch +101.6 m above the baked sea at
+high-undulation coasts; exaggeration displaces the lid)`
+(`OCEAN_DYNAMICS_PLAN_2026-07-24.md:226`). EGM2008 is a distinct geoid model/source,
+not an alias for the terrain service. The passage records a comparison result but
+does not adopt EGM2008 data or software and does not identify an exact release,
+owner, source, licence, file, or transformation. Risk: `unknown`.
+
+**Attribution and determination.** This pass adds a not-adopted row because EGM2008
+is a distinct named source in the plan's probe result; the Apache-2.0 baseline cannot
+provide its absent product and provenance evidence. Any future use needs `Data/model
+source: <verified EGM2008 owner> — <exact release, canonical URL and licence>;
+files/hashes; transformations; role in the datum comparison`, plus NOTICE-file
+credit. Verdict: **HOLD-LEGAL** (not adopted).
+
+### O-61 — Cesium World Terrain
+
+**What was found and classification.** The same plan passage quoted at O-60 names
+`Cesium-World-Terrain ocean-lid datum` and records the probe's geoid comparison. The
+terrain service/data is a separate source identity from EGM2008. It is measurement
+context, not a newly adopted dataset or dependency, and the plan quotes no product
+terms, access/caching rights, terrain revision, fixture rights, or retained bytes.
+Risk: `unknown`.
+
+**Attribution and determination.** This pass adds a not-adopted row because Cesium
+World Terrain is explicitly named as the datum context; the Apache-2.0 licence on
+CesiumJS code does not establish rights in the separately hosted terrain data. A
+future intake must identify the exact product/service and terms, access and caching
+rights, revision, derived or retained bytes, transformations, and Cesium credit,
+plus any required NOTICE-file entry. Verdict: **HOLD-LEGAL** (not adopted).
+
+### O-62 — `grib2json`
+
+**What was found and classification.** The plan's `earth (nullschool)` row names the
+exact role `grib2json format reference; projection-aware velocity`
+(`OCEAN_DYNAMICS_PLAN_2026-07-24.md:182`). No separate project URL, author, licence,
+revision, dependency chain, or file is given, and W4 does not adopt the tool. The
+named tool is a distinct possible source identity; it is not the generic GRIB2 format
+word excluded by the §2 dedupe rule. Risk: `unknown`.
+
+**Attribution and determination.** This pass adds a not-adopted row because the plan
+names `grib2json` as a possible tooling reference while supplying none of the
+evidence required for code or dependency intake. If later adopted, use `Reference:
+<verified owner> — grib2json (<verified licence>), <canonical repository and pinned
+revision> — <specific decoding/format mechanism>`, accurately state adaptation or
+dependency use, ship the required licence notice and NOTICE-file attribution, and
+trace its relationship to `cambecc/earth`. Verdict: **HOLD-LEGAL** (not adopted).
+
 ## 6. Supplemental `migration_doc/` search dispositions
 
 The repository-wide Markdown search used the requested aurora/ocean/FFT/spectrum
@@ -1449,14 +1648,17 @@ terms and related implementation names. It found **24 additional named or unreso
 sources** that do not occur as adopted references in the two source plans: two C15
 pattern guides plus two indirect C15 night-gate sources, six wind/tooling references,
 six FFT/ocean references, and eight bathymetry/context references. They are not added to the
-27-reference C15 or 59-reference C14 source-document counts, and they do not expand
+29-reference C15 or 62-reference C14 source-document counts, and they do not expand
 campaign scope. They are recorded so a future intake cannot silently treat a
 catalog mention as clearance.
 
-Attribution owed **now** is `No` for every `S-xx` row because none is adopted by the
-two source plans and this pass derives or includes nothing from it. The fourth
-column and prose record the conditional author/data credit, L-24 block, or shipped
-notice that would become owed if a future plan adopts and clears the source.
+Attribution owed **now** is `No` for the independently unadopted `S-xx` sources
+because this pass derives or includes nothing from them. `S-09` is the explicit
+transitive exception to that blanket wording: no OTFFT attribution is owed before
+clearance, but it becomes owed with any cleared O-25 intake that actually contains
+the OTFFT sub-component. The fourth column and prose record the conditional
+author/data credit, L-24 block, or shipped notice that would become owed if a future
+plan adopts and clears the source.
 
 | ID | Additional source and in-repo location | Intended or possible use | Evidence, risk, and attribution | Online verification owed | Verdict |
 | --- | --- | --- | --- | --- | --- |
@@ -1468,7 +1670,7 @@ notice that would become owed if a future plan adopts and clears the source.
 | S-06 | `hypatia-earth/zero`, `RESEARCH_REGISTER_2026-07-06.md:84` and three.js mine line 85 | Flow-field particle/advection implementation study | Register says MIT “verified” but quotes no text. Risk `permissive` as declared; author unknown in evidence | Canonical repo/revision, verbatim licence/copyright, files and dependencies | `HOLD-LEGAL` |
 | S-07 | `pngjs`, research register line 84 | Possible PNG encoder dependency for offline wind assets | Register says MIT “verified” but quotes no text. Risk `permissive` as declared; owner notice owed | Canonical package/version, licence/copyright, dependency and bundled-code audit | `HOLD-LEGAL` |
 | S-08 | `GarrettGunnell/Water`, research register line 133 | FFT/water implementation study | Register says MIT “re-verified” but quotes no text. Risk `permissive` as declared; Garrett Gunnell owed | Repository/revision, verbatim licence/copyright, source/asset lineage | `HOLD-LEGAL` |
-| S-09 | OTFFT, research register lines 133/138 | Stockham shared-memory FFT component behind GodotOceanWaves | Only an `OTFFT MIT attribution` assertion; no precise repo/version or text. Risk `unknown`; author/owner unresolved | Exact OTFFT project/version, full licence/copyright, files and Godot lineage | `HOLD-LEGAL` |
+| S-09 | OTFFT, research register lines 133/138 | Stockham shared-memory FFT component behind GodotOceanWaves | Only an `OTFFT MIT attribution` assertion; no precise repo/version or text. Risk `unknown`; author/owner unresolved. No independent attribution is owed now, but the component's notice becomes transitive with any cleared O-25 intake that contains it | Exact OTFFT project/version, full licence/copyright, files and Godot lineage | `HOLD-LEGAL` |
 | S-10 | `iamyoukou/fftWater`, research register lines 133/144 | Explicitly prohibited FFT-ocean code reference | `no license file (all rights reserved)` and `Never port`. Risk `proprietary`; no attribution because unused | None unless an owner supplies a compatible grant | `DO-NOT-USE` |
 | S-11 | `codeagent/webgl-ocean`, research register lines 133/144 | Explicitly prohibited FFT-ocean code reference | `no license file (all rights reserved)` and `Never port`. Risk `proprietary`; no attribution because unused | None unless an owner supplies a compatible grant | `DO-NOT-USE` |
 | S-12 | “Mastin,” `WATER_RENDERING_DESIGN.md:294` | Named FFT-ocean technique alongside Tessendorf | `UNRESOLVED-CITATION`; no title, author identity, URL, or licence. Risk `unknown`; attribution cannot be formed | Identify author/work/year/URL and distinguish paper math from code | `HOLD-LEGAL` |
@@ -1517,10 +1719,12 @@ terms online. Verdict: **HOLD-LEGAL**.
 
 Catalog evidence (verbatim): `FILE-COPYLEFT MPL-2.0 dual-commercial △` and
 `technique study only, no wholesale copy`. File or shader derivation would incur
-MPL file-level obligations and is outside the intended MIT-only intake. A separately
+MPL file-level obligations and is outside the ruled Apache-2.0 intake. A separately
 identified paper or clean-room design could receive a scholarly Reference block,
 but the repository itself must not be the code template. Verify only if that
-separate route is proposed. Verdict: **DO-NOT-USE** for file/code derivation.
+separate route is proposed. Verdict: **DO-NOT-USE** for file/code derivation. This
+pass replaces the stale MIT-baseline wording; MPL-2.0 file-level derivation remains
+disqualified under the Apache-2.0 rule, so the verdict does not change.
 
 ### S-05 — `leaflet-velocity`
 
@@ -1562,7 +1766,11 @@ Additional evidence (verbatim): `its OTFFT MIT attribution` and
 quote its grant. OTFFT code or shader structure is `DERIVED-CODE`; the Stockham
 algorithm itself can instead be independently sourced under O-21. Identify the
 component, author, revision, full licence/copyright and exact Godot lineage online
-before any component-guided work. Verdict: **HOLD-LEGAL**.
+before any component-guided work. This pass softens §6's blanket `No` attribution
+wording: no OTFFT credit is owed before clearance, but its notice and NOTICE-file
+attribution become transitive if an O-25 intake contains the component. Verdict:
+**HOLD-LEGAL** because the precise identity, grant, revision, and lineage remain
+unresolved.
 
 ### S-10 — `iamyoukou/fftWater`
 
@@ -1707,39 +1915,51 @@ lineage verification. Verdict: **HOLD-LEGAL** for new external derivation and
 
 | Inventory | Source-document references | `CLEAR-TO-DERIVE` | `ATTRIBUTION-REQUIRED` | `HOLD-LEGAL` | `DO-NOT-USE` |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Campaign 15 queue | 27 | 1 | 8 | 14 | 4 |
-| Campaign 14 ocean plan | 59 | 1 | 17 | 37 | 4 |
-| Direct-plan total | 86 | 2 | 25 | 51 | 8 |
+| Campaign 15 queue | 29 | 1 | 8 | 16 | 4 |
+| Campaign 14 ocean plan | 62 | 1 | 17 | 40 | 4 |
+| Direct-plan total | 91 | 2 | 25 | 56 | 8 |
 | Supplemental search-only watchlist | 24 | 0 | 0 | 19 | 5 |
-| All records in this document | 110 | 2 | 25 | 70 | 13 |
+| All records in this document | 115 | 2 | 25 | 75 | 13 |
 
-The C15 count comprises 17 linked sources, six named-but-unlinked sources, and
+The C15 count comprises 17 linked sources, eight named-but-unlinked sources, and
 four unresolved citations. The ocean count uses the strict source/work/algorithm
 identity rule: named standards, algorithms, policy documents and retired services
 are not silently folded into a dataset or codebase, while aliases and mere format
-descriptors are deduplicated as explained in §5. Each of the 86 direct-plan
+descriptors are deduplicated as explained in §§2 and 5. Each of the 91 direct-plan
 references has exactly one inventory row and exactly one matching prose
 determination. The 24 search-only records have the same one-row/one-determination
 shape but are not campaign dependencies until a plan adopts them.
 
+The all-records total is a campaign-record census, not a globally unique-identity
+census: `A-16` and `O-46` are the same NWS-disclaimer identity recorded once in each
+campaign. Every pre-existing row retained its row-level verdict. The five added
+not-adopted rows (`A-28`, `A-29`, and `O-60`–`O-62`) account for the five additional
+`HOLD-LEGAL` records.
+
 `O-01` and `O-02` follow the A-07 split-count precedent: each source remains one
 record and is counted once under the committed/bundled leg's row-level
-`HOLD-LEGAL` verdict. Its live `DATA/API` leg remains `ATTRIBUTION-REQUIRED` and
-does not create a second record.
+`HOLD-LEGAL` verdict. Their live `DATA/API` legs remain `ATTRIBUTION-REQUIRED` and
+do not create second records.
+
+`O-25` is also counted once under its row-level `HOLD-LEGAL` verdict. Its fetched
+top-level GodotOceanWaves MIT licence is attribution-compatible, but the row remains
+held for the transitive OTFFT sub-component recorded separately at `S-09`.
 
 ### 7.2 Items blocking source-dependent implementation
 
-The shipped baseline is Apache-2.0: `LICENSE.md`, `packages/engine/LICENSE.md`, and
-`package.json` (`"license": "Apache-2.0"`) agree. The task statement's MIT claim is
-the open framing item routed to maintainer ruling item 11 in
-`migration_doc/RULING_REQUESTS_2026-08-21.md` (recommendation: confirm
-Apache-2.0), not a global blocker. On the licence-compatibility axis, permissive
-MIT/BSD/ISC/Unlicense/public-domain/CC-BY intake is compatible with Apache-2.0 when
-its licence and attribution obligations, including NOTICE-file attribution under
-Apache-2.0 §4(d), are propagated; copyleft and noncommercial intake remains
-disqualified. Every row-specific hold for missing licence text, unpinned revisions,
-unquoted terms, unresolved ownership, or absent NOTICE evidence is independent of
-that baseline and stands unchanged.
+Maintainer ruling `R-2026-08-21-23` confirms Apache-2.0 as the operative baseline;
+`LICENSE.md`, `packages/engine/LICENSE.md`, and `package.json` agree. MIT,
+BSD-2-Clause, BSD-3-Clause, ISC, Unlicense, public-domain, CC0, and CC-BY-4.0 intake
+is compatible when NOTICE-file attribution under Apache-2.0 §4(d) and the inbound
+terms are propagated; Apache-2.0 intake is same-licence intake with NOTICE
+propagation. GPL, LGPL, AGPL, MPL-2.0 file-level derivation, CC-BY-SA, CC-BY-NC,
+proprietary, and no-licence sources remain disqualified for code or asset
+derivation. No verdict softened on baseline grounds: every hold still rests on missing
+licence text, an unpinned revision, unquoted product-specific terms, an unresolved
+citation, provenance, or component lineage rather than on MIT-versus-Apache framing
+alone. The single verdict-cell change is `O-25`, whose row-level `HOLD-LEGAL` is
+unchanged and whose scope narrows on the deferred review's fetched-licence evidence,
+not on the baseline.
 
 For Campaign 15, the following records block the affected starts:
 
@@ -1753,6 +1973,10 @@ For Campaign 15, the following records block the affected starts:
   output is in scope. `A-25` blocks the Fairbanks historical replay/photo asset.
   `A-27` blocks the C15-06P solar-prominence state provider until “Eclipse Explorer”
   is identified and its owner, endpoint, terms, and attribution form are established.
+- `A-28` and `A-29` are not adopted by C15-06 and therefore do not block its selected
+  feeds. Any future `10cm-flux-30-day.json` or GOES secondary-X-ray intake remains
+  held until its endpoint, owner, product terms, fixture rights, and provenance are
+  established.
 - `A-01`–`A-06`, `A-09`, and `A-13` allow independent factual/mathematical
   implementation only with the stated attribution and online source check before
   landing. `A-17`, `A-20`, `A-21`, and `A-23` are exclusions, not workarounds.
@@ -1763,10 +1987,12 @@ For Campaign 14, the following records block the affected starts:
   block source-guided W2/W3 model, spreading, foam, local-injection, IDW, FBM, and
   curl-noise work until the vague citations are resolved or the work is documented
   as wholly in-tree/independent.
-- `O-25`, `O-27`, `O-29`, `O-37`–`O-45`, and `O-48` block new file-level code or
-  dependency intake. `O-28`, `O-30`, and `O-34`–`O-36` may proceed only inside the
-  already determined revisions/lineage with notices; new files or revisions require
-  the stated delta check.
+- `O-25` blocks the OTFFT-bearing component route pending `S-09`; the fetched
+  top-level GodotOceanWaves MIT source is attribution-compatible after its ordinary
+  intake pins are banked. `O-27`, `O-29`, `O-37`–`O-45`, and `O-48` block new
+  file-level code or dependency intake. `O-28`, `O-30`, and `O-34`–`O-36` may
+  proceed only inside the already determined revisions/lineage with notices; new
+  files or revisions require the stated delta check.
 - `O-04` blocks the live EDR source; `O-06`–`O-09` block optional unverified
   streams/assets; `O-22` blocks use of the external FFT performance claim as a
   budget justification. `O-01` and `O-02` block new committed/bundled GFS/RTOFS
@@ -1777,6 +2003,9 @@ For Campaign 14, the following records block the affected starts:
   generated bytes or tooling land.
 - `O-26`, `O-31`, and `O-49` are excluded code/service paths. `O-59` excludes an
   API label as sole licence proof. None may be used to bypass a hold.
+- `O-60`–`O-62` are not adopted; they record EGM2008, Cesium World Terrain, and
+  `grib2json` because the plan names them. They do not block the current plan unless
+  a future intake uses their data, service, software, or protected expression.
 
 Purely in-tree W0/W1 contract and baseline work that derives from no external
 expression is not blocked by an item-level licence hold. Separate campaign-governance
@@ -1788,8 +2017,8 @@ not changed by this document.
 No online verification was performed in this pass. Before the corresponding code,
 data, fixture, or asset lands, complete and retain the exact checks in each row for:
 
-- C15: `A-01`–`A-16`, `A-18`, `A-19`, `A-22`, and `A-24`–`A-27`.
-- C14: `O-01`–`O-25`, `O-27`–`O-30`, `O-32`–`O-48`, and `O-50`–`O-59`.
+- C15: `A-01`–`A-16`, `A-18`, `A-19`, `A-22`, and `A-24`–`A-29`.
+- C14: `O-01`–`O-25`, `O-27`–`O-30`, `O-32`–`O-48`, and `O-50`–`O-62`.
 - Search-only sources, if adopted: `S-01`–`S-03`, `S-06`–`S-09`,
   `S-12`–`S-21`, and `S-23`–`S-24` (19 rows).
 
@@ -1805,11 +2034,18 @@ confirmed all of the following:
 
 - this file exists and contains one balanced fenced-code block;
 - inventory rows and prose headings are each unique and contiguous at `A-01` through
-  `A-27`, `O-01` through `O-59`, and `S-01` through `S-24`;
-- all 110 references appear exactly once as an inventory row and exactly once as a
+  `A-29`, `O-01` through `O-62`, and `S-01` through `S-24`;
+- all 115 records appear exactly once as an inventory row and exactly once as a
   matching prose determination;
+- the row-derived verdict census is 2 `CLEAR-TO-DERIVE`, 25
+  `ATTRIBUTION-REQUIRED`, 75 `HOLD-LEGAL`, and 13 `DO-NOT-USE`, with the C15, C14,
+  direct-plan, supplemental, and all-record splits matching §7.1;
+- the §7.3 owed-verification sets exactly match the row-derived C15, C14, and
+  supplemental sets, with no missing or extra ID;
+- the verbatim register and ocean-plan excerpts byte-match their cited in-repo source
+  lines;
 - all six Markdown tables have internally consistent pipe-column counts, and no
-  box-drawing characters or first-person drafting language occurs; and
+  box-drawing character or first-person drafting language occurs; and
 - this documentation lane wrote no path other than
   `migration_doc/LICENSE_VETTING_AURORA_OCEAN_2026-08-21.md`.
 

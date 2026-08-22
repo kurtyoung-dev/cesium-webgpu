@@ -68,7 +68,7 @@ Slot as a new high-value track (the user is explicitly prioritizing visual impre
 ---
 
 ## 4. Notes / risks
-- **License/attribution:** MIT repo + BSD Bruneton reference → implement the technique, credit Bruneton + Takram in shader headers. Do not vendor GPL code (none here — it's MIT).
+- **License/attribution:** Apache-2.0 repo (corrected `R-2026-08-21-23` — the earlier "MIT repo" framing was wrong) + BSD Bruneton reference → implement the technique, credit Bruneton + Takram in shader headers. Do not vendor GPL code (none here — it's MIT).
 - **Cost:** volumetric clouds + BSM are expensive; TAAU (item 6) is the gating perf enabler — and our TAA is already live (Batch 244), so the history/reprojection plumbing exists to build on.
 - **WebGL2:** the post-process atmosphere + clouds are fragment-shader raymarches (no compute *required*), so a WebGL2 path is feasible (the LUT precompute is the part that prefers compute — can fall back to render-to-texture). Decide per item.
 - **Parity discipline unchanged:** every item gets a WebGL-vs-WebGPU visual-diff probe; none regress the active-TAA / log-depth / bind-group-cache gates.
