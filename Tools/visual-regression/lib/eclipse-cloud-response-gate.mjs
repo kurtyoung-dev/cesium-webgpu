@@ -1377,35 +1377,38 @@ export function laneIsBlind(blind, domain) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// THE REFRESH-COST ARITHMETIC (C13-41-ECLIPSE-REFRESH-COST-UNMEASURED)
+// THE REFRESH-COST ARITHMETIC
 // ─────────────────────────────────────────────────────────────────────────────
 //
-// WHY THIS IS A FUNCTION AND NOT THREE LINES INSIDE THE FOLD. The first run's
-// cost leg produced -18.9 ms/refresh: the eclipse leg ran FIRST at 0.77 s and
-// the control leg ran SECOND at 5.97 s, so the differential `sweep - control`
-// was dominated by whatever the second leg paid that the first did not. A
-// wall-clock A/B whose two legs do not pay the same warm-up is not a
-// measurement, and the fleet already learned this for GPU timing (Batch 762's
-// mandatory interleaved-A/B protocol). The instrument's answer is structural:
-//
-//   1. BOTH legs run a DISCARDED full-schedule warm-up before either is timed,
-//      and each leg retains its own witness rather than one asserted boolean;
-//   2. the two legs are INTERLEAVED in segments over one schedule, so any
-//      monotone drift (thermal, cache, GC) lands on both in equal measure;
-//   3. the estimate is either non-negative or explicitly INVALID with a named
-//      reason — a negative number is never reported as if it were a cost.
-//
-// This function recomputes the estimate EXCLUSIVELY from the retained segment
-// records and verifies all three rules. The six aggregate fields remain useful
-// console/report summaries, but each must exactly equal the ledger-derived
-// value. A probe that quietly stops interleaving, drops a warm-up witness, or
-// hands in plausible historical summaries therefore fails here rather than
-// publishing a number.
+// The warm-ups, eight interleaved pairs, schedule, realized obscurations, fill
+// denominator, and redundant aggregates are all recomputed from retained
+// primitives. Valid renderer timestamps are preferred because CPU wall clock
+// cannot separate pass cost from device power-state drift. Wall time remains a
+// bound; only the backend without renderer timer accounting may use it as its
+// named figure of record. Missing, unresolved, or negative GPU timing never
+// becomes a numeric cost.
 
 /** The ratified ABBA protocol uses exactly eight balanced segment pairs. */
 export const REFRESH_COST_SEGMENTS_PER_LEG = 8;
 /** Schema version for the live lane/protocol binding carried by cost ledgers. */
-export const REFRESH_COST_PROTOCOL_VERSION = 1;
+export const REFRESH_COST_PROTOCOL_VERSION = 2;
+/** Renderer timestamp instrument and pass identity carried by every ledger. */
+export const REFRESH_COST_GPU_TIME_PROTOCOL = Object.freeze({
+  instrument: "CesiumDebug.gpuPassCost",
+  source: "WebGPUTimestampProfiler._latestResults",
+  feature: "timestamp-query",
+  passName: "DynEnvMap Sky Fill",
+  rawUnit: "ns",
+  reportUnit: "ms",
+  scope: "sky-cube-bake-only",
+  scopeNote:
+    "one refresh encodes the sky fill plus an untimed IBL prefilter (6 irradiance + 36 radiance dispatches) and the SH projection; only the labelled sky-fill pass carries timestampWrites, so this is a LOWER BOUND on the refresh, not the refresh cost",
+});
+/** Stable reasons distinguish a missing instrument from a measured result. */
+export const REFRESH_COST_WEBGPU_GPU_UNAVAILABLE_REASON =
+  "WebGPU timestamp-query feature is unavailable";
+export const REFRESH_COST_WEBGL_GPU_UNAVAILABLE_REASON =
+  "WebGL renderer has no GPU timestamp accounting path";
 
 /**
  * Independently derives the one admissible near-equal partition: for 801 / 8,
@@ -1432,6 +1435,167 @@ export function deriveRefreshCostSegmentBounds() {
   return bounds;
 }
 
+function gpuResolutionIsValid(value) {
+  return (
+    (value?.resolutionKnown === false && value.resolutionNs === null) ||
+    (value?.resolutionKnown === true &&
+      Number.isFinite(value.resolutionNs) &&
+      value.resolutionNs > 0)
+  );
+}
+
+function gpuResolutionMatches(value, reference) {
+  return (
+    gpuResolutionIsValid(value) &&
+    value.resolutionKnown === reference.resolutionKnown &&
+    Object.is(value.resolutionNs, reference.resolutionNs)
+  );
+}
+
+function readRefreshCostGpuSegment(block, header, frames, fills, label) {
+  if (!block || typeof block !== "object") {
+    return {
+      schemaError: `${label} has no GPU-time accounting block`,
+      valid: false,
+      totalMs: null,
+      invalidReason: null,
+    };
+  }
+  if (!gpuResolutionMatches(block, header)) {
+    return {
+      schemaError: `${label} GPU timestamp resolution does not match the protocol header`,
+      valid: false,
+      totalMs: null,
+      invalidReason: null,
+    };
+  }
+  if (!header.available) {
+    const unavailableIsExact =
+      block.status === "unavailable" &&
+      block.available === false &&
+      block.valid === false &&
+      block.totalMs === null &&
+      Array.isArray(block.samplesMs) &&
+      block.samplesMs.length === 0 &&
+      block.invalidReason === header.unavailableReason &&
+      block.queueDrain === null &&
+      block.drain === null &&
+      block.results === null;
+    return unavailableIsExact
+      ? {
+          schemaError: null,
+          valid: false,
+          totalMs: null,
+          invalidReason: header.unavailableReason,
+        }
+      : {
+          schemaError: `${label} does not retain the protocol's exact GPU-unavailable witness`,
+          valid: false,
+          totalMs: null,
+          invalidReason: null,
+        };
+  }
+  if (block.available !== true) {
+    return {
+      schemaError: `${label} contradicts the available GPU-time protocol header`,
+      valid: false,
+      totalMs: null,
+      invalidReason: null,
+    };
+  }
+  if (block.valid !== true) {
+    const invalidIsNamed =
+      block.status === "invalid" &&
+      block.totalMs === null &&
+      typeof block.invalidReason === "string" &&
+      block.invalidReason.length > 0;
+    return invalidIsNamed
+      ? {
+          schemaError: null,
+          valid: false,
+          totalMs: null,
+          invalidReason: block.invalidReason,
+        }
+      : {
+          schemaError: `${label} reports unusable GPU time without an exact named reason`,
+          valid: false,
+          totalMs: null,
+          invalidReason: null,
+        };
+  }
+
+  const samples = block.samplesMs;
+  if (
+    block.status !== "valid" ||
+    block.invalidReason !== null ||
+    !Array.isArray(samples) ||
+    !samples.every((sample) => Number.isFinite(sample) && sample >= 0)
+  ) {
+    return {
+      schemaError: `${label} has malformed resolved GPU pass samples`,
+      valid: false,
+      totalMs: null,
+      invalidReason: null,
+    };
+  }
+  if (samples.length !== fills) {
+    return {
+      schemaError: `${label} retained ${samples.length} GPU environment-refresh sample(s) for ${fills} measured fill(s)`,
+      valid: false,
+      totalMs: null,
+      invalidReason: null,
+    };
+  }
+  const totalMs = samples.reduce((total, sample) => total + sample, 0);
+  if (!Number.isFinite(totalMs) || !Object.is(block.totalMs, totalMs)) {
+    return {
+      schemaError: `${label} GPU total ${String(block.totalMs)} does not equal its retained pass-sample sum ${String(totalMs)}`,
+      valid: false,
+      totalMs: null,
+      invalidReason: null,
+    };
+  }
+  const queueDrain = block.queueDrain;
+  const drain = block.drain;
+  const results = block.results;
+  const counters = [
+    "readbackSkipCount",
+    "failedReadbackCount",
+    "emptyFrameCount",
+    "lostSampleCount",
+    "pendingReadbackCount",
+    "unaccountedSampleCount",
+    "invertedSampleCount",
+    "droppedPassCount",
+  ];
+  if (
+    queueDrain?.completed !== true ||
+    queueDrain.timedOut !== false ||
+    queueDrain.error !== null ||
+    drain?.timedOut !== false ||
+    drain.undrained !== 0 ||
+    drain.abandoned !== 0 ||
+    results?.enabled !== true ||
+    results.attemptedFrameCount !== frames ||
+    results.frameCount !== frames ||
+    results.sampleLedgerBalanced !== true ||
+    counters.some((field) => results[field] !== 0)
+  ) {
+    return {
+      schemaError: `${label} GPU timestamp validity ledger does not close over its ${frames} measured frames`,
+      valid: false,
+      totalMs: null,
+      invalidReason: null,
+    };
+  }
+  return {
+    schemaError: null,
+    valid: true,
+    totalMs,
+    invalidReason: null,
+  };
+}
+
 /**
  * @param {object} accounting The lane's `refreshCost` accounting.
  * @param {object} binding Live outer-lane and run identity to bind against.
@@ -1447,10 +1611,20 @@ export function computeRefreshCost(accounting, binding) {
     valid: false,
     msPerRefresh: null,
     invalidReason: null,
+    measurementSource: null,
+    fallbackReason: null,
     msDelta: null,
     fillDelta: null,
+    gpuMsDelta: null,
+    gpuMsPerRefresh: null,
+    wallMsDelta: null,
+    wallMsPerRefresh: null,
+    wallClockRole: null,
+    gpuTime: null,
     eclipseWallMs: null,
     controlWallMs: null,
+    eclipseGpuMs: null,
+    controlGpuMs: null,
     eclipseFills: null,
     controlFills: null,
     eclipseFrames: null,
@@ -1595,6 +1769,68 @@ export function computeRefreshCost(accounting, binding) {
     return {
       ...protocolBase,
       invalidReason: `refresh-cost protocol declares ${String(protocol.segmentsPerLeg)} pairs per leg, not exactly ${REFRESH_COST_SEGMENTS_PER_LEG}`,
+    };
+  }
+  const gpuHeader = protocol.gpuTime;
+  if (!gpuHeader || typeof gpuHeader !== "object") {
+    return {
+      ...protocolBase,
+      invalidReason: "refresh-cost protocol has no GPU-time instrument header",
+    };
+  }
+  for (const [field, expected] of Object.entries(
+    REFRESH_COST_GPU_TIME_PROTOCOL,
+  )) {
+    if (gpuHeader[field] !== expected) {
+      return {
+        ...protocolBase,
+        invalidReason: `refresh-cost GPU-time protocol ${field}=${String(gpuHeader[field])} does not match ${expected}`,
+      };
+    }
+  }
+  if (
+    typeof gpuHeader.featureAvailable !== "boolean" ||
+    typeof gpuHeader.available !== "boolean" ||
+    !gpuResolutionIsValid(gpuHeader)
+  ) {
+    return {
+      ...protocolBase,
+      invalidReason:
+        "refresh-cost GPU-time protocol lacks explicit availability or timestamp-resolution flags",
+    };
+  }
+  if (
+    gpuHeader.available
+      ? gpuHeader.featureAvailable !== true ||
+        gpuHeader.unavailableReason !== null
+      : typeof gpuHeader.unavailableReason !== "string" ||
+        gpuHeader.unavailableReason.length === 0
+  ) {
+    return {
+      ...protocolBase,
+      invalidReason:
+        "refresh-cost GPU-time protocol availability contradicts its feature or reason fields",
+    };
+  }
+  if (
+    !gpuHeader.available &&
+    expectedBackend === "webgl" &&
+    gpuHeader.unavailableReason !== REFRESH_COST_WEBGL_GPU_UNAVAILABLE_REASON
+  ) {
+    return {
+      ...protocolBase,
+      invalidReason: `WebGL GPU-time protocol must name its renderer limitation exactly: ${REFRESH_COST_WEBGL_GPU_UNAVAILABLE_REASON}`,
+    };
+  }
+  if (
+    !gpuHeader.available &&
+    expectedBackend === "webgpu" &&
+    gpuHeader.featureAvailable === false &&
+    gpuHeader.unavailableReason !== REFRESH_COST_WEBGPU_GPU_UNAVAILABLE_REASON
+  ) {
+    return {
+      ...protocolBase,
+      invalidReason: `WebGPU GPU-time protocol must name its missing feature exactly: ${REFRESH_COST_WEBGPU_GPU_UNAVAILABLE_REASON}`,
     };
   }
   if (
@@ -1771,9 +2007,10 @@ export function computeRefreshCost(accounting, binding) {
   }
 
   const totals = {
-    eclipse: { frames: 0, wallMs: 0, fills: 0 },
-    control: { frames: 0, wallMs: 0, fills: 0 },
+    eclipse: { frames: 0, wallMs: 0, gpuMs: 0, fills: 0 },
+    control: { frames: 0, wallMs: 0, gpuMs: 0, fills: 0 },
   };
+  let gpuMeasurementInvalidReason = null;
   const expectedBounds = deriveRefreshCostSegmentBounds();
   let nextFrom = 0;
   for (let pairIndex = 0; pairIndex < segmentsPerLeg; pairIndex++) {
@@ -1876,6 +2113,30 @@ export function computeRefreshCost(accounting, binding) {
     }
     nextFrom = first.to;
     for (const segment of pair) {
+      const gpuSegment = readRefreshCostGpuSegment(
+        segment.gpuTime,
+        gpuHeader,
+        segment.frames,
+        segment.fills,
+        `refresh-cost pair ${pairIndex} ${segment.leg}`,
+      );
+      if (gpuSegment.schemaError) {
+        return {
+          ...withWarmups,
+          invalidReason: gpuSegment.schemaError,
+        };
+      }
+      if (gpuSegment.valid) {
+        totals[segment.leg].gpuMs += gpuSegment.totalMs;
+        if (!Number.isFinite(totals[segment.leg].gpuMs)) {
+          return {
+            ...withWarmups,
+            invalidReason: `the ${segment.leg} segment GPU-time sum overflowed`,
+          };
+        }
+      } else if (gpuHeader.available && !gpuMeasurementInvalidReason) {
+        gpuMeasurementInvalidReason = gpuSegment.invalidReason;
+      }
       totals[segment.leg].frames += segment.frames;
       totals[segment.leg].wallMs += segment.wallMs;
       totals[segment.leg].fills += segment.fills;
@@ -1935,34 +2196,164 @@ export function computeRefreshCost(accounting, binding) {
     }
   }
 
-  const fillDelta = out.eclipseFills - out.controlFills;
+  const aggregateGpu = a.gpuTime;
+  if (!aggregateGpu || typeof aggregateGpu !== "object") {
+    return {
+      ...out,
+      invalidReason: "the refresh-cost ledger has no aggregate GPU-time block",
+    };
+  }
+  if (!gpuResolutionMatches(aggregateGpu, gpuHeader)) {
+    return {
+      ...out,
+      invalidReason:
+        "aggregate GPU timestamp resolution does not match the protocol header",
+    };
+  }
+  const captureHook = aggregateGpu.captureHook;
+  const captureHookValid = gpuHeader.available
+    ? captureHook?.installed === true &&
+      captureHook.restored === true &&
+      captureHook.originalIdentityRestored === true
+    : captureHook?.installed === false &&
+      captureHook.restored === true &&
+      captureHook.originalIdentityRestored === true;
+  if (!captureHookValid && !gpuHeader.available) {
+    return {
+      ...out,
+      invalidReason:
+        "the GPU-unavailable ledger has a malformed capture-hook witness",
+    };
+  }
+  if (!captureHookValid && !gpuMeasurementInvalidReason) {
+    gpuMeasurementInvalidReason =
+      "GPU timestamp capture hook was not installed and restored exactly";
+  }
+  const gpuAggregateValid =
+    gpuHeader.available && gpuMeasurementInvalidReason === null;
+  const expectedGpuAggregate = gpuHeader.available
+    ? {
+        status: gpuAggregateValid ? "valid" : "invalid",
+        available: true,
+        valid: gpuAggregateValid,
+        eclipseMs: gpuAggregateValid ? totals.eclipse.gpuMs : null,
+        controlMs: gpuAggregateValid ? totals.control.gpuMs : null,
+        invalidReason: gpuAggregateValid ? null : gpuMeasurementInvalidReason,
+      }
+    : {
+        status: "unavailable",
+        available: false,
+        valid: false,
+        eclipseMs: null,
+        controlMs: null,
+        invalidReason: gpuHeader.unavailableReason,
+      };
+  for (const [field, expected] of Object.entries(expectedGpuAggregate)) {
+    if (!Object.is(aggregateGpu[field], expected)) {
+      return {
+        ...out,
+        invalidReason: `declared aggregate GPU-time ${field}=${String(aggregateGpu[field])} does not equal the segment-derived value ${String(expected)}`,
+      };
+    }
+  }
+  const withGpu = {
+    ...out,
+    eclipseGpuMs: expectedGpuAggregate.eclipseMs,
+    controlGpuMs: expectedGpuAggregate.controlMs,
+    gpuTime: {
+      ...expectedGpuAggregate,
+      resolutionKnown: gpuHeader.resolutionKnown,
+      resolutionNs: gpuHeader.resolutionNs,
+    },
+  };
+
+  const fillDelta = withGpu.eclipseFills - withGpu.controlFills;
   if (!(fillDelta > 0)) {
     return {
-      ...out,
+      ...withGpu,
       fillDelta,
-      invalidReason: `no eclipse-driven fills to attribute cost to (${out.eclipseFills} eclipse vs ${out.controlFills} control) — this run's fresh differential cannot be formed`,
+      invalidReason: `no eclipse-driven fills to attribute cost to (${withGpu.eclipseFills} eclipse vs ${withGpu.controlFills} control) — this run's fresh differential cannot be formed`,
     };
   }
 
-  const msDelta = out.eclipseWallMs - out.controlWallMs;
-  // RULE 3 — non-negative or INVALID. A negative differential means the control
-  // leg outran the eclipse leg, i.e. something other than the fills dominated;
-  // reporting `msDelta / fillDelta` there would publish a negative cost as a
-  // measurement, which is what the first run did.
-  if (msDelta < 0) {
-    return {
-      ...out,
-      fillDelta,
-      msDelta,
-      invalidReason: `the control leg outran the eclipse leg (${out.controlWallMs} ms control vs ${out.eclipseWallMs} ms eclipse over the same ${out.eclipseFrames} frames) — the differential is negative, so no per-refresh cost can be attributed to the fills`,
-    };
-  }
-
-  return {
-    ...out,
+  const wallMsDelta = withGpu.eclipseWallMs - withGpu.controlWallMs;
+  const wallMsPerRefresh = wallMsDelta / fillDelta;
+  const wallClockRole =
+    gpuHeader.available || expectedBackend === "webgpu"
+      ? "bound"
+      : "figure-of-record";
+  const measuredBase = {
+    ...withGpu,
     fillDelta,
-    msDelta,
-    msPerRefresh: msDelta / fillDelta,
+    wallMsDelta,
+    wallMsPerRefresh,
+    wallClockRole,
+  };
+
+  if (gpuHeader.available && !gpuAggregateValid) {
+    return {
+      ...measuredBase,
+      invalidReason: gpuMeasurementInvalidReason,
+    };
+  }
+
+  const gpuTime = measuredBase.gpuTime;
+  if (gpuTime.valid) {
+    const gpuMsDelta = withGpu.eclipseGpuMs - withGpu.controlGpuMs;
+    const gpuMsPerRefresh = gpuMsDelta / fillDelta;
+    const gpuMeasured = {
+      ...measuredBase,
+      measurementSource: "gpu-time",
+      msDelta: gpuMsDelta,
+      gpuMsDelta,
+      gpuMsPerRefresh: gpuMsDelta < 0 ? null : gpuMsPerRefresh,
+      gpuTime: {
+        ...measuredBase.gpuTime,
+        msDelta: gpuMsDelta,
+        msPerRefresh: gpuMsDelta < 0 ? null : gpuMsPerRefresh,
+      },
+    };
+    if (gpuMsDelta < 0) {
+      return {
+        ...gpuMeasured,
+        invalidReason: `the environment-refresh GPU differential is negative (${withGpu.controlGpuMs} ms control vs ${withGpu.eclipseGpuMs} ms eclipse over the same ${withGpu.eclipseFrames} frames) — no per-refresh cost can be attributed to the fills`,
+      };
+    }
+    if (gpuMsDelta === 0 && gpuTime.resolutionKnown !== true) {
+      return {
+        ...gpuMeasured,
+        invalidReason: `the environment-refresh GPU differential is exactly 0 ms over ${fillDelta} fills at an undeclared timestamp resolution — indistinguishable from a pass below one quantum, so it is a bound and not a figure`,
+      };
+    }
+    return {
+      ...gpuMeasured,
+      msPerRefresh: gpuMsPerRefresh,
+      valid: true,
+    };
+  }
+
+  if (expectedBackend === "webgpu") {
+    return {
+      ...measuredBase,
+      invalidReason: gpuHeader.unavailableReason,
+    };
+  }
+
+  const wallFallback = {
+    ...measuredBase,
+    measurementSource: "wall-clock-fallback",
+    fallbackReason: gpuHeader.unavailableReason,
+    msDelta: wallMsDelta,
+  };
+  if (wallMsDelta < 0) {
+    return {
+      ...wallFallback,
+      invalidReason: `the control leg outran the eclipse leg (${withGpu.controlWallMs} ms control vs ${withGpu.eclipseWallMs} ms eclipse over the same ${withGpu.eclipseFrames} frames) — the differential is negative, so no per-refresh cost can be attributed to the fills`,
+    };
+  }
+  return {
+    ...wallFallback,
+    msPerRefresh: wallMsPerRefresh,
     valid: true,
   };
 }
@@ -2886,10 +3277,9 @@ export function judgeEclipseCloudResponse(run) {
   v.determinismDelta = cloud.repeat?.delta ?? null;
   v.determinismBracketHolds = inBand(v.determinismDelta, B.determinismDelta);
 
-  // C13-41-ECLIPSE-REFRESH-COST-UNMEASURED: the differential wall clock of the
-  // eclipse-driven fills, over INTERLEAVED legs that both paid a discarded
-  // warm-up. `computeRefreshCost` owns the arithmetic AND the validity rules;
-  // see its header for why a sequential A/B is not a measurement.
+  // The cost fold owns source preference as well as arithmetic: renderer GPU
+  // time when valid, otherwise only the backend's explicitly authorized wall
+  // figure. Both retain the same interleaved segment and warm-up witnesses.
   const webgpuCost = computeRefreshCost(gpu.refreshCost, {
     runId: run?.runId,
     expectedBackend: "webgpu",
@@ -2917,12 +3307,9 @@ export function judgeEclipseCloudResponse(run) {
       webglCost.valid ? null : `webgl: ${webglCost.invalidReason}`,
     ].filter((reason) => reason !== null),
   };
-  // R-2026-08-14-1 restored this as an operative eligibility gate. The row has
-  // no performance budget, so any finite non-negative measured cost is a valid
-  // measurement rather than a speed PASS. Missing or ineligible accounting
-  // makes the refresh-cost subject unevaluable and therefore STRUCTURAL, with
-  // the exact `computeRefreshCost` reason retained below; it is never converted
-  // into a product FAIL and historical estimates are never substituted.
+  // This is an eligibility gate, not a speed budget. Missing or ineligible
+  // accounting is structural, retains the exact reason, and is never replaced
+  // by a historical estimate.
   v.refreshCostMeasured = webgpuCost.valid && webglCost.valid;
   if (!isBlind("ibl-page") && !v.refreshCostMeasured) {
     markBlind(

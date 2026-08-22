@@ -53,8 +53,11 @@ import {
   ENV_REFRESH_STEPS,
   FIXED_LADDER_0_TO_1400_MAX_OBSCURATION_SHIFT,
   HISTORICAL_EPHEMERIS_BRANCH_SHIFT_FLOOR,
+  REFRESH_COST_GPU_TIME_PROTOCOL,
   REFRESH_COST_PROTOCOL_VERSION,
   REFRESH_COST_SEGMENTS_PER_LEG,
+  REFRESH_COST_WEBGL_GPU_UNAVAILABLE_REASON,
+  REFRESH_COST_WEBGPU_GPU_UNAVAILABLE_REASON,
   SHADOW_GROUND_BRIGHTNESS_FLOOR,
   SWEEP_FRAMES,
   SWEEP_PEAK_OBSCURATION,
@@ -619,15 +622,40 @@ function spreadWallTime(total, count) {
   return values;
 }
 
+function spreadGpuSamples(total, count) {
+  if (count === 0) {
+    return [];
+  }
+  return [...Array(count - 1).fill(0), total];
+}
+
+function spreadGpuSamplesAcrossSegments(total, fillCounts) {
+  const samples = spreadGpuSamples(
+    total,
+    fillCounts.reduce((sum, count) => sum + count, 0),
+  );
+  let from = 0;
+  return fillCounts.map((count) => {
+    const segmentSamples = samples.slice(from, from + count);
+    from += count;
+    return segmentSamples;
+  });
+}
+
 function syncCostAggregatesFromSegments(accounting) {
   const totals = {
-    eclipse: { frames: 0, wallMs: 0, fills: 0 },
-    control: { frames: 0, wallMs: 0, fills: 0 },
+    eclipse: { frames: 0, wallMs: 0, gpuMs: 0, fills: 0 },
+    control: { frames: 0, wallMs: 0, gpuMs: 0, fills: 0 },
   };
   for (const segment of accounting.segments) {
     totals[segment.leg].frames += segment.frames;
     totals[segment.leg].wallMs += segment.wallMs;
     totals[segment.leg].fills += segment.fills;
+    if (segment.gpuTime?.valid) {
+      segment.gpuTime.results.attemptedFrameCount = segment.frames;
+      segment.gpuTime.results.frameCount = segment.frames;
+      totals[segment.leg].gpuMs += segment.gpuTime.totalMs;
+    }
   }
   accounting.eclipseFrames = totals.eclipse.frames;
   accounting.controlFrames = totals.control.frames;
@@ -635,6 +663,10 @@ function syncCostAggregatesFromSegments(accounting) {
   accounting.controlWallMs = totals.control.wallMs;
   accounting.eclipseFills = totals.eclipse.fills;
   accounting.controlFills = totals.control.fills;
+  if (accounting.gpuTime?.valid) {
+    accounting.gpuTime.eclipseMs = totals.eclipse.gpuMs;
+    accounting.gpuTime.controlMs = totals.control.gpuMs;
+  }
   return accounting;
 }
 
@@ -662,6 +694,12 @@ function freshCostAccounting({
   eclipseFills = 282,
   controlFills = 8,
   backend = "webgpu",
+  gpuAvailable = backend === "webgpu",
+  eclipseGpuMs = eclipseWallMs,
+  controlGpuMs = controlWallMs,
+  gpuUnavailableReason = backend === "webgl"
+    ? REFRESH_COST_WEBGL_GPU_UNAVAILABLE_REASON
+    : REFRESH_COST_WEBGPU_GPU_UNAVAILABLE_REASON,
   runId = FIXTURE_RUN_ID,
   sessionLabel = `ibl-${backend}`,
   sessionToken = `fixture-${backend}-session`,
@@ -687,6 +725,12 @@ function freshCostAccounting({
     eclipse: spreadIntegerTotal(eclipseFills, segmentsPerLeg),
     control: spreadIntegerTotal(controlFills, segmentsPerLeg),
   };
+  const gpuSamples = gpuAvailable
+    ? {
+        eclipse: spreadGpuSamplesAcrossSegments(eclipseGpuMs, fills.eclipse),
+        control: spreadGpuSamplesAcrossSegments(controlGpuMs, fills.control),
+      }
+    : { eclipse: [], control: [] };
   const nextByLeg = { eclipse: 0, control: 0 };
   const segments = [];
   for (let pairIndex = 0; pairIndex < bounds.length; pairIndex++) {
@@ -695,6 +739,8 @@ function freshCostAccounting({
       (pairIndex & 1) === 0 ? ["eclipse", "control"] : ["control", "eclipse"];
     for (const leg of order) {
       const legIndex = nextByLeg[leg]++;
+      const segmentFills = fills[leg][legIndex];
+      const samplesMs = gpuAvailable ? gpuSamples[leg][legIndex] : [];
       segments.push({
         ledgerId,
         pairIndex,
@@ -703,7 +749,56 @@ function freshCostAccounting({
         to,
         frames: to - from,
         wallMs: wallTimes[leg][legIndex],
-        fills: fills[leg][legIndex],
+        fills: segmentFills,
+        gpuTime: gpuAvailable
+          ? {
+              status: "valid",
+              available: true,
+              valid: true,
+              resolutionKnown: false,
+              resolutionNs: null,
+              totalMs: samplesMs.reduce((total, sample) => total + sample, 0),
+              samplesMs,
+              invalidReason: null,
+              queueDrain: {
+                completed: true,
+                timedOut: false,
+                error: null,
+              },
+              drain: {
+                drained: 0,
+                undrained: 0,
+                abandoned: 0,
+                timedOut: false,
+              },
+              results: {
+                enabled: true,
+                attemptedFrameCount: to - from,
+                frameCount: to - from,
+                readbackSkipCount: 0,
+                failedReadbackCount: 0,
+                emptyFrameCount: 0,
+                lostSampleCount: 0,
+                pendingReadbackCount: 0,
+                unaccountedSampleCount: 0,
+                invertedSampleCount: 0,
+                droppedPassCount: 0,
+                sampleLedgerBalanced: true,
+              },
+            }
+          : {
+              status: "unavailable",
+              available: false,
+              valid: false,
+              resolutionKnown: false,
+              resolutionNs: null,
+              totalMs: null,
+              samplesMs: [],
+              invalidReason: gpuUnavailableReason,
+              queueDrain: null,
+              drain: null,
+              results: null,
+            },
       });
     }
   }
@@ -719,6 +814,29 @@ function freshCostAccounting({
       sweepFrames: frames,
       segmentsPerLeg,
       factorSchedule: [...factorSchedule],
+      gpuTime: {
+        ...REFRESH_COST_GPU_TIME_PROTOCOL,
+        featureAvailable: gpuAvailable,
+        available: gpuAvailable,
+        unavailableReason: gpuAvailable ? null : gpuUnavailableReason,
+        resolutionKnown: false,
+        resolutionNs: null,
+      },
+    },
+    gpuTime: {
+      status: gpuAvailable ? "valid" : "unavailable",
+      available: gpuAvailable,
+      valid: gpuAvailable,
+      resolutionKnown: false,
+      resolutionNs: null,
+      eclipseMs: gpuAvailable ? eclipseGpuMs : null,
+      controlMs: gpuAvailable ? controlGpuMs : null,
+      invalidReason: gpuAvailable ? null : gpuUnavailableReason,
+      captureHook: {
+        installed: gpuAvailable,
+        restored: true,
+        originalIdentityRestored: true,
+      },
     },
     warmupBothLegs: true,
     warmups: [
@@ -1774,14 +1892,14 @@ test("H7 the band [0.44, 0.70] IS the pure-deck formula F(1+e)/(1+Fe)", () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// I. THE REFRESH-COST ARITHMETIC (Batch 909 instrument fix 3)
+// I. THE REFRESH-COST ARITHMETIC
 // ─────────────────────────────────────────────────────────────────────────────
 
 const costInput = (options = {}) => freshCostAccounting(options);
 
-function computeCost(accounting) {
+function computeCost(accounting, implementation = computeRefreshCost) {
   if (!accounting?.protocol) {
-    return computeRefreshCost(accounting);
+    return implementation(accounting);
   }
   const protocol = accounting.protocol;
   const lane = {
@@ -1794,7 +1912,7 @@ function computeCost(accounting) {
     factors: [...protocol.factorSchedule],
     obscurations: ratifiedObscurationSchedule(),
   };
-  return computeRefreshCost(accounting, {
+  return implementation(accounting, {
     runId: protocol.runId,
     expectedBackend: protocol.backend,
     expectedSessionLabel: protocol.sessionLabel,
@@ -1821,7 +1939,11 @@ test("I1 the estimate is (eclipseMs - controlMs) / (eclipseFills - controlFills)
 test("I2 a NEGATIVE differential is INVALID with a named reason, never a number", () => {
   // The first run's actual numbers: 0.77 s eclipse leg, 5.97 s control leg.
   const cost = computeCost(
-    costInput({ eclipseWallMs: 770, controlWallMs: 5970 }),
+    costInput({
+      backend: "webgl",
+      eclipseWallMs: 770,
+      controlWallMs: 5970,
+    }),
   );
   assert.equal(cost.valid, false);
   assert.equal(cost.msPerRefresh, null, "a negative cost is never reported");
@@ -1897,9 +2019,14 @@ test("I5 unshared bounds and a zero fill delta are both INVALID", () => {
   assert.match(absent.invalidReason, /no refresh-cost accounting/);
 });
 
-test("I6 a zero differential is VALID at exactly 0 — non-negative by construction", () => {
-  const cost = computeCost(costInput({ eclipseWallMs: 5000 }));
+test("I6 a zero wall-clock differential is VALID at exactly 0 — non-negative by construction", () => {
+  // Wall clock is the figure of record only where no GPU timing path exists
+  // (WebGL). A zero GPU differential is a bound, not a figure — see I20.
+  const cost = computeCost(
+    costInput({ backend: "webgl", eclipseWallMs: 5000 }),
+  );
   assert.equal(cost.valid, true);
+  assert.equal(cost.measurementSource, "wall-clock-fallback");
   assert.equal(cost.msPerRefresh, 0);
   assert.ok(cost.msPerRefresh >= 0);
 });
@@ -2341,6 +2468,169 @@ test("I13 backend ledgers and per-page identities cannot be reused across peers"
       run.iblWebGL.refreshCost.protocol.ledgerId = run.iblWebGPU.costLedgerId;
     }, /reuse a session token or ledger identity/);
   });
+});
+
+test("I14 valid GPU time on both backends is the selected refresh-cost source", () => {
+  const run = clone(passingRun());
+  replaceLaneCost(run, run.iblWebGPU, {
+    gpuAvailable: true,
+    eclipseWallMs: 5418,
+    controlWallMs: 5982,
+    eclipseGpuMs: 548,
+    controlGpuMs: 0,
+  });
+  replaceLaneCost(run, run.iblWebGL, {
+    gpuAvailable: true,
+    eclipseGpuMs: 274,
+    controlGpuMs: 0,
+  });
+
+  const verdict = judgeEclipseCloudResponse(run);
+  assert.equal(verdict.refreshCostMeasured, true);
+  assert.equal(verdict.cost.webgpu.measurementSource, "gpu-time");
+  assert.equal(verdict.cost.webgl.measurementSource, "gpu-time");
+  assert.equal(verdict.cost.webgpu.msDelta, 548);
+  assert.equal(verdict.cost.webgl.msDelta, 274);
+  assert.equal(verdict.cost.webgpu.msPerRefresh, 2);
+  assert.equal(verdict.cost.webgl.msPerRefresh, 1);
+  assert.equal(verdict.cost.webgpu.wallMsDelta, -564);
+  assert.equal(verdict.cost.webgl.wallMsDelta, 4000);
+  assert.equal(verdict.cost.webgpu.wallClockRole, "bound");
+  assert.equal(verdict.cost.webgl.wallClockRole, "bound");
+});
+
+test("I15 an unavailable GPU path has a backend-specific named disposition", () => {
+  const verdict = judgeEclipseCloudResponse(passingRun());
+  const webgl = verdict.cost.webgl;
+  assert.equal(verdict.refreshCostMeasured, true);
+  assert.equal(webgl.valid, true);
+  assert.equal(webgl.measurementSource, "wall-clock-fallback");
+  assert.equal(webgl.fallbackReason, REFRESH_COST_WEBGL_GPU_UNAVAILABLE_REASON);
+  assert.equal(webgl.wallClockRole, "figure-of-record");
+  assert.equal(webgl.gpuTime.status, "unavailable");
+  assert.equal(webgl.gpuTime.invalidReason, webgl.fallbackReason);
+
+  const webgpu = computeCost(
+    costInput({ backend: "webgpu", gpuAvailable: false }),
+  );
+  assert.equal(webgpu.valid, false);
+  assert.equal(webgpu.msPerRefresh, null);
+  assert.equal(
+    webgpu.invalidReason,
+    REFRESH_COST_WEBGPU_GPU_UNAVAILABLE_REASON,
+  );
+  assert.equal(webgpu.wallClockRole, "bound");
+  assert.equal(webgpu.wallMsDelta, 4000);
+});
+
+test("I16 a negative GPU differential is INVALID with the exact reason", () => {
+  const cost = computeCost(
+    costInput({
+      eclipseWallMs: 9000,
+      controlWallMs: 5000,
+      eclipseGpuMs: 20,
+      controlGpuMs: 30,
+    }),
+  );
+  assert.equal(cost.valid, false);
+  assert.equal(cost.measurementSource, "gpu-time");
+  assert.equal(cost.msPerRefresh, null);
+  assert.equal(cost.gpuMsDelta, -10);
+  assert.equal(cost.wallMsDelta, 4000);
+  assert.equal(
+    cost.invalidReason,
+    "the environment-refresh GPU differential is negative (30 ms control vs 20 ms eclipse over the same 801 frames) — no per-refresh cost can be attributed to the fills",
+  );
+});
+
+test("I17 the previous refresh-cost protocol version is rejected", () => {
+  assert.equal(REFRESH_COST_PROTOCOL_VERSION, 2);
+  const accounting = costInput();
+  accounting.protocol.version = 1;
+  const cost = computeCost(accounting);
+  assert.equal(cost.valid, false);
+  assert.equal(cost.invalidReason, "refresh-cost protocol version 1 is not 2");
+});
+
+test("I18 MUTANT an inert GPU-preference branch cannot silently select wall clock", async () => {
+  const gateSource = fs.readFileSync(
+    path.join(here, "lib", "eclipse-cloud-response-gate.mjs"),
+    "utf8",
+  );
+  const branch = "if (gpuTime.valid) {";
+  assert.equal(gateSource.split(branch).length - 1, 1);
+  const mutantSource = gateSource.replace(
+    branch,
+    "if (false && gpuTime.valid) {",
+  );
+  const mutantModule = await import(
+    `data:text/javascript;base64,${Buffer.from(mutantSource).toString("base64")}`
+  );
+  const accounting = costInput({
+    backend: "webgl",
+    gpuAvailable: true,
+    eclipseWallMs: 9000,
+    controlWallMs: 5000,
+    eclipseGpuMs: 274,
+    controlGpuMs: 0,
+  });
+  const healthy = computeCost(accounting);
+  const mutant = computeCost(accounting, mutantModule.computeRefreshCost);
+  assert.equal(healthy.measurementSource, "gpu-time");
+  assert.equal(healthy.msPerRefresh, 1);
+  assert.equal(mutant.measurementSource, "wall-clock-fallback");
+  assert.equal(mutant.msPerRefresh, 4000 / 274);
+  assert.throws(() => {
+    assert.equal(mutant.measurementSource, "gpu-time");
+    assert.equal(mutant.msPerRefresh, 1);
+  }, /actual.*wall-clock-fallback|wall-clock-fallback.*gpu-time/is);
+});
+
+test("I19 MUTATION missing fill-pass evidence cannot become a valid zero GPU cost", () => {
+  const accounting = costInput();
+  const segment = accounting.segments.find(
+    (candidate) => candidate.gpuTime.valid && candidate.fills > 1,
+  );
+  assert.ok(segment);
+  segment.gpuTime.samplesMs.pop();
+  segment.gpuTime.totalMs = segment.gpuTime.samplesMs.reduce(
+    (total, sample) => total + sample,
+    0,
+  );
+  syncCostAggregatesFromSegments(accounting);
+
+  const cost = computeCost(accounting);
+  assert.equal(cost.valid, false);
+  assert.equal(cost.msPerRefresh, null);
+  assert.equal(
+    cost.invalidReason,
+    `refresh-cost pair ${segment.pairIndex} ${segment.leg} retained ${segment.gpuTime.samplesMs.length} GPU environment-refresh sample(s) for ${segment.fills} measured fill(s)`,
+  );
+});
+
+test("I20 MUTATION an all-zero GPU differential at an undeclared resolution is a bound, not a figure", () => {
+  const accounting = costInput();
+  const gpuSegments = accounting.segments.filter(
+    (candidate) => candidate.gpuTime.valid,
+  );
+  assert.ok(gpuSegments.length > 0);
+  for (const segment of gpuSegments) {
+    assert.equal(segment.gpuTime.resolutionKnown, false);
+    segment.gpuTime.samplesMs = segment.gpuTime.samplesMs.map(() => 0);
+    segment.gpuTime.totalMs = 0;
+  }
+  syncCostAggregatesFromSegments(accounting);
+
+  const cost = computeCost(accounting);
+  assert.equal(cost.valid, false);
+  assert.equal(cost.msPerRefresh, null);
+  assert.match(
+    cost.invalidReason,
+    /is exactly 0 ms over \d+ fills at an undeclared timestamp resolution/,
+  );
+  // The scope of the timed pass is declared in the protocol itself.
+  assert.equal(REFRESH_COST_GPU_TIME_PROTOCOL.scope, "sky-cube-bake-only");
+  assert.match(REFRESH_COST_GPU_TIME_PROTOCOL.scopeNote, /LOWER BOUND/);
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2812,11 +3102,24 @@ test("F4 the probe's cost legs are interleaved and both pay a warm-up", () => {
   assert.match(probe, /warmups: \[warmedLegs\.eclipse, warmedLegs\.control\]/);
   assert.match(probe, /pairIndex,/);
   assert.match(probe, /ledgerId: cfg\.costLedgerId/);
-  assert.match(probe, /version: 1,/);
+  assert.equal(REFRESH_COST_PROTOCOL_VERSION, 2);
+  assert.match(probe, /version: cfg\.refreshCostProtocol\.version,/);
   assert.match(probe, /backend: rendererType,/);
   assert.match(probe, /runId: cfg\.runId,/);
   assert.match(probe, /sessionToken: cfg\.sessionToken,/);
   assert.match(probe, /factorSchedule: \[\.\.\.factors\]/);
+  assert.match(probe, /gpuTime: \{/);
+  assert.match(probe, /debug\.gpuPassCost\(true\)/);
+  assert.match(probe, /profiler\.drainPendingReadbacks/);
+  assert.match(probe, /samplesMs/);
+  assert.match(probe, /readbackYieldMs/);
+  assert.match(probe, /wallMs = performance\.now\(\) - wallStartMs;/);
+  assert.doesNotMatch(probe, /wallMs = .* - readbackYieldMs;/);
+  assert.match(probe, /resolutionKnown: false/);
+  assert.match(probe, /resolutionNs: null/);
+  assert.match(probe, /if \(samplesMs\.length !== fills\)/);
+  assert.match(probe, /hasFeature\?\.\("timestamp-query"\) === true/);
+  assert.match(probe, /REFRESH_COST_GPU_TIME_PROTOCOL\.scope/);
   assert.match(probe, /segments: costSegments/);
   assert.match(probe, /ABBA/);
   // The gate reads the interleaved accounting, not the two counting legs.
@@ -4601,7 +4904,7 @@ test("K8b a 1.034 raw red survives deck-free blindness and INVALID cost", () => 
     eclipseWallMs: 1861,
     controlWallMs: 2238.800000011921,
     eclipseFills: 273,
-    controlFills: 0,
+    controlFills: 1,
   });
 
   const verdict = judgeEclipseCloudResponse(run);

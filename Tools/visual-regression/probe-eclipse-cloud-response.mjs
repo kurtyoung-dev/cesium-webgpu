@@ -181,6 +181,10 @@ import {
   ECLIPSE_CLOUD_PARITY_PREDICATES,
   ECLIPSE_CLOUD_PREDICATE_LANES,
   ECLIPSE_CLOUD_REPORTED_ONLY_PREDICATES,
+  REFRESH_COST_GPU_TIME_PROTOCOL,
+  REFRESH_COST_PROTOCOL_VERSION,
+  REFRESH_COST_WEBGL_GPU_UNAVAILABLE_REASON,
+  REFRESH_COST_WEBGPU_GPU_UNAVAILABLE_REASON,
   SWEEP_FRAMES,
   SWEEP_PEAK_OBSCURATION,
   SWEEP_RISING_FRAMES,
@@ -1976,19 +1980,19 @@ const RUN_IBL_SWEEP = async (cfg) => {
 
   // ── Gating fresh refresh-cost measurement: the INTERLEAVED cost legs.
   //
-  // The first run derived the cost from the two counting legs above and got
-  // -18.9 ms/refresh: the eclipse leg ran FIRST at 0.77 s and the control leg
-  // ran SECOND at 5.97 s. A wall-clock A/B whose legs do not pay the same
-  // warm-up is not a measurement — the fleet's mandatory interleaved-A/B
-  // protocol for GPU timing (Batch 762) applies to wall clock just as hard.
-  //
   // Both legs have now rendered the ENTIRE schedule once, so warm-up parity is
   // paid before anything below is timed, and each completed schedule is
   // retained as its own bounded witness in `warmedLegs`. The legs are then
   // interleaved segment by segment with the leg ORDER alternating (ABBA), so
-  // any monotone drift over the run lands on both legs instead of on the
-  // effect. The gate recomputes from these records and treats the aggregates
-  // below only as exact-equality redundancy checks.
+  // the ratified schedule and fill denominator remain unchanged.
+  //
+  // WebGPU records every resolved environment-fill pass directly from the
+  // renderer timestamp ledger. Animation-frame yields let the asynchronous
+  // readback ring advance; their elapsed time remains inside the retained
+  // continuous wall-clock bound and is also banked separately. The backend
+  // without renderer timestamp accounting keeps the original synchronous
+  // wall-clock figure and an explicit unavailable witness instead of a
+  // fabricated GPU duration.
   //
   // Each segment renders one untimed frame immediately after the toggle: that
   // frame absorbs the toggle's own bucket transition out of BOTH the clock and
@@ -2005,12 +2009,176 @@ const RUN_IBL_SWEEP = async (cfg) => {
       from += frames;
     }
   }
-  const runCostSegment = (pairIndex, leg, from, to) => {
+  const costContext = scene._context;
+  const debug = globalThis.CesiumDebug;
+  const isWebGPU = rendererType === "webgpu";
+  const timestampFeatureAvailable =
+    isWebGPU && costContext?.hasFeature?.("timestamp-query") === true;
+  let gpuUnavailableReason = isWebGPU
+    ? cfg.refreshCostProtocol.webgpuUnavailableReason
+    : cfg.refreshCostProtocol.webglUnavailableReason;
+  let profiler = null;
+  if (timestampFeatureAvailable) {
+    try {
+      profiler = costContext.timestampProfiler;
+    } catch (error) {
+      gpuUnavailableReason = `WebGPU timestamp profiler initialization failed: ${String(error)}`;
+    }
+  }
+  let gpuCaptureAvailable =
+    timestampFeatureAvailable &&
+    profiler !== null &&
+    typeof debug?.gpuPassCost === "function" &&
+    typeof profiler._addToRollingWindow === "function" &&
+    profiler._latestResults instanceof Map;
+  if (timestampFeatureAvailable && !gpuCaptureAvailable) {
+    gpuUnavailableReason =
+      "WebGPU gpuPassCost pass-sample accounting is unavailable";
+  }
+
+  const timestampProfilingInitially =
+    costContext?.performanceManager?.config?.timestampProfiling === true;
+  let activeGpuSamples = null;
+  let captureHook = {
+    installed: false,
+    restored: true,
+    originalIdentityRestored: true,
+  };
+  let restoreGpuCapture = () => captureHook;
+  if (gpuCaptureAvailable) {
+    const hadOwn = Object.hasOwn(profiler, "_addToRollingWindow");
+    const ownDescriptor = Object.getOwnPropertyDescriptor(
+      profiler,
+      "_addToRollingWindow",
+    );
+    const originalFunction = profiler._addToRollingWindow;
+    const wrapper = function (array, value) {
+      if (
+        activeGpuSamples !== null &&
+        array ===
+          profiler._latestResults.get(cfg.refreshCostProtocol.gpuTime.passName)
+      ) {
+        activeGpuSamples.push(value);
+      }
+      return originalFunction.call(this, array, value);
+    };
+    profiler._addToRollingWindow = wrapper;
+    gpuCaptureAvailable = profiler._addToRollingWindow === wrapper;
+    captureHook = {
+      installed: gpuCaptureAvailable,
+      restored: false,
+      originalIdentityRestored: false,
+    };
+    restoreGpuCapture = () => {
+      if (hadOwn) {
+        Object.defineProperty(profiler, "_addToRollingWindow", ownDescriptor);
+      } else {
+        delete profiler._addToRollingWindow;
+      }
+      const restored = profiler._addToRollingWindow === originalFunction;
+      captureHook = {
+        installed: gpuCaptureAvailable,
+        restored,
+        originalIdentityRestored: restored,
+      };
+      return captureHook;
+    };
+    if (!gpuCaptureAvailable) {
+      gpuUnavailableReason =
+        "WebGPU gpuPassCost pass-sample hook could not be installed";
+      restoreGpuCapture();
+    }
+  }
+
+  const awaitQueueCompletion = async () => {
+    const queuePromise = costContext?.device?.queue?.onSubmittedWorkDone?.();
+    if (!queuePromise) {
+      return {
+        completed: false,
+        timedOut: false,
+        error: "WebGPU queue completion API is unavailable",
+      };
+    }
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = (result) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(result);
+      };
+      const timer = setTimeout(
+        () => finish({ completed: false, timedOut: true, error: null }),
+        cfg.refreshCostProtocol.readbackTimeoutMs,
+      );
+      Promise.resolve(queuePromise).then(
+        () => finish({ completed: true, timedOut: false, error: null }),
+        (error) =>
+          finish({
+            completed: false,
+            timedOut: false,
+            error: String(error),
+          }),
+      );
+    });
+  };
+
+  const unavailableGpuTime = () => ({
+    status: "unavailable",
+    available: false,
+    valid: false,
+    resolutionKnown: false,
+    resolutionNs: null,
+    totalMs: null,
+    samplesMs: [],
+    invalidReason: gpuUnavailableReason,
+    queueDrain: null,
+    drain: null,
+    results: null,
+  });
+
+  const runCostSegment = async (pairIndex, leg, from, to) => {
+    if (gpuCaptureAvailable) {
+      debug.gpuPassCost(false);
+    }
     ac.lighting.enableEclipse = leg === "eclipse";
     pin.renderAt(C.JulianDate.fromIso8601(schedule[from].iso)); // untimed
     let previous = committedBucket();
     let fills = 0;
-    const startMs = performance.now();
+    let wallMs;
+
+    if (!gpuCaptureAvailable) {
+      const startMs = performance.now();
+      for (let f = from; f < to; f++) {
+        pin.renderAt(C.JulianDate.fromIso8601(schedule[f].iso));
+        const committed = committedBucket();
+        if (!Object.is(committed, previous)) {
+          fills++;
+          previous = committed;
+        }
+      }
+      wallMs = performance.now() - startMs;
+      return {
+        ledgerId: cfg.costLedgerId,
+        pairIndex,
+        leg,
+        from,
+        to,
+        frames: to - from,
+        wallMs,
+        readbackYieldMs: 0,
+        fills,
+        gpuTime: unavailableGpuTime(),
+      };
+    }
+
+    const preDrain = await profiler.drainPendingReadbacks(
+      cfg.refreshCostProtocol.readbackTimeoutMs,
+    );
+    debug.gpuPassCost(true);
+    activeGpuSamples = [];
+    const wallStartMs = performance.now();
+    let readbackYieldMs = 0;
     for (let f = from; f < to; f++) {
       pin.renderAt(C.JulianDate.fromIso8601(schedule[f].iso));
       const committed = committedBucket();
@@ -2018,7 +2186,79 @@ const RUN_IBL_SWEEP = async (cfg) => {
         fills++;
         previous = committed;
       }
+      const yieldStartMs = performance.now();
+      await new Promise((resolveFrame) => requestAnimationFrame(resolveFrame));
+      readbackYieldMs += performance.now() - yieldStartMs;
     }
+    wallMs = performance.now() - wallStartMs;
+    const queueDrain = await awaitQueueCompletion();
+    const drain = await profiler.drainPendingReadbacks(
+      cfg.refreshCostProtocol.readbackTimeoutMs,
+    );
+    const raw = profiler.getResults();
+    const samplesMs = activeGpuSamples;
+    activeGpuSamples = null;
+    debug.gpuPassCost(false);
+
+    const results = {
+      enabled: raw.enabled,
+      attemptedFrameCount: raw.attemptedFrameCount,
+      frameCount: raw.frameCount,
+      readbackSkipCount: raw.readbackSkipCount,
+      failedReadbackCount: raw.failedReadbackCount,
+      emptyFrameCount: raw.emptyFrameCount,
+      lostSampleCount: raw.lostSampleCount,
+      pendingReadbackCount: raw.pendingReadbackCount,
+      unaccountedSampleCount: raw.unaccountedSampleCount,
+      invertedSampleCount: raw.invertedSampleCount,
+      droppedPassCount: raw.droppedPassCount,
+      sampleLedgerBalanced: raw.sampleLedgerBalanced,
+    };
+    const invalidReasons = [];
+    if (
+      preDrain.timedOut ||
+      preDrain.undrained !== 0 ||
+      preDrain.abandoned !== 0
+    ) {
+      invalidReasons.push("the pre-segment GPU readback drain did not close");
+    }
+    if (
+      queueDrain.completed !== true ||
+      queueDrain.timedOut ||
+      queueDrain.error !== null
+    ) {
+      invalidReasons.push("the measured GPU queue did not complete cleanly");
+    }
+    if (drain.timedOut || drain.undrained !== 0 || drain.abandoned !== 0) {
+      invalidReasons.push("the measured GPU readback drain did not close");
+    }
+    if (
+      results.enabled !== true ||
+      results.attemptedFrameCount !== to - from ||
+      results.frameCount !== to - from ||
+      results.sampleLedgerBalanced !== true ||
+      results.readbackSkipCount !== 0 ||
+      results.failedReadbackCount !== 0 ||
+      results.emptyFrameCount !== 0 ||
+      results.lostSampleCount !== 0 ||
+      results.pendingReadbackCount !== 0 ||
+      results.unaccountedSampleCount !== 0 ||
+      results.invertedSampleCount !== 0 ||
+      results.droppedPassCount !== 0
+    ) {
+      invalidReasons.push(
+        `the GPU sample ledger did not close over ${to - from} measured frames`,
+      );
+    }
+    if (!samplesMs.every((sample) => Number.isFinite(sample) && sample >= 0)) {
+      invalidReasons.push("the GPU pass ledger contains an invalid duration");
+    }
+    if (samplesMs.length !== fills) {
+      invalidReasons.push(
+        `the GPU pass ledger retained ${samplesMs.length} environment-refresh sample(s) for ${fills} measured fill(s)`,
+      );
+    }
+    const valid = invalidReasons.length === 0;
     return {
       ledgerId: cfg.costLedgerId,
       pairIndex,
@@ -2026,27 +2266,71 @@ const RUN_IBL_SWEEP = async (cfg) => {
       from,
       to,
       frames: to - from,
-      wallMs: performance.now() - startMs,
+      wallMs,
+      readbackYieldMs,
       fills,
+      gpuTime: {
+        status: valid ? "valid" : "invalid",
+        available: true,
+        valid,
+        resolutionKnown: false,
+        resolutionNs: null,
+        totalMs: valid
+          ? samplesMs.reduce((total, sample) => total + sample, 0)
+          : null,
+        samplesMs,
+        invalidReason: valid ? null : invalidReasons.join("; "),
+        queueDrain,
+        drain,
+        results,
+      },
     };
   };
+
   const costSegments = [];
-  for (let s = 0; s < segmentBounds.length; s++) {
-    const [from, to] = segmentBounds[s];
-    const order =
-      (s & 1) === 0 ? ["eclipse", "control"] : ["control", "eclipse"];
-    for (const leg of order) {
-      costSegments.push(runCostSegment(s, leg, from, to));
+  try {
+    for (let s = 0; s < segmentBounds.length; s++) {
+      const [from, to] = segmentBounds[s];
+      const order =
+        (s & 1) === 0 ? ["eclipse", "control"] : ["control", "eclipse"];
+      for (const leg of order) {
+        costSegments.push(await runCostSegment(s, leg, from, to));
+      }
+      await new Promise((r) => setTimeout(r, 0));
     }
-    await new Promise((r) => setTimeout(r, 0));
+  } finally {
+    activeGpuSamples = null;
+    if (gpuCaptureAvailable) {
+      debug.gpuPassCost(false);
+      captureHook = restoreGpuCapture();
+      costContext.performanceManager.config.timestampProfiling =
+        timestampProfilingInitially;
+    }
   }
   const sumLeg = (leg, key) =>
     costSegments
       .filter((segment) => segment.leg === leg)
       .reduce((total, segment) => total + segment[key], 0);
+  const invalidGpuSegment = costSegments.find(
+    (segment) => segment.gpuTime.status === "invalid",
+  );
+  const gpuAggregateValid =
+    gpuCaptureAvailable &&
+    invalidGpuSegment === undefined &&
+    captureHook.restored &&
+    captureHook.originalIdentityRestored;
+  const gpuAggregateInvalidReason = invalidGpuSegment
+    ? invalidGpuSegment.gpuTime.invalidReason
+    : gpuCaptureAvailable && !gpuAggregateValid
+      ? "GPU timestamp capture hook was not installed and restored exactly"
+      : gpuUnavailableReason;
+  const sumGpuLeg = (leg) =>
+    costSegments
+      .filter((segment) => segment.leg === leg)
+      .reduce((total, segment) => total + segment.gpuTime.totalMs, 0);
   const refreshCost = {
     protocol: {
-      version: 1,
+      version: cfg.refreshCostProtocol.version,
       backend: rendererType,
       runId: cfg.runId,
       sessionLabel: cfg.sessionLabel,
@@ -2055,7 +2339,38 @@ const RUN_IBL_SWEEP = async (cfg) => {
       sweepFrames: schedule.length,
       segmentsPerLeg: COST_SEGMENTS,
       factorSchedule: [...factors],
+      gpuTime: {
+        ...cfg.refreshCostProtocol.gpuTime,
+        featureAvailable: timestampFeatureAvailable,
+        available: gpuCaptureAvailable,
+        unavailableReason: gpuCaptureAvailable ? null : gpuUnavailableReason,
+        resolutionKnown: false,
+        resolutionNs: null,
+      },
     },
+    gpuTime: gpuCaptureAvailable
+      ? {
+          status: gpuAggregateValid ? "valid" : "invalid",
+          available: true,
+          valid: gpuAggregateValid,
+          resolutionKnown: false,
+          resolutionNs: null,
+          eclipseMs: gpuAggregateValid ? sumGpuLeg("eclipse") : null,
+          controlMs: gpuAggregateValid ? sumGpuLeg("control") : null,
+          invalidReason: gpuAggregateValid ? null : gpuAggregateInvalidReason,
+          captureHook,
+        }
+      : {
+          status: "unavailable",
+          available: false,
+          valid: false,
+          resolutionKnown: false,
+          resolutionNs: null,
+          eclipseMs: null,
+          controlMs: null,
+          invalidReason: gpuUnavailableReason,
+          captureHook,
+        },
     warmupBothLegs: warmedLegs.eclipse !== null && warmedLegs.control !== null,
     warmups: [warmedLegs.eclipse, warmedLegs.control],
     warmupNote:
@@ -2900,6 +3215,13 @@ export async function runEclipseCloudResponseProbe() {
         lon: derived.lon,
         modelUrl: MODEL_URL,
         ramp: derived.ramp,
+        refreshCostProtocol: {
+          version: REFRESH_COST_PROTOCOL_VERSION,
+          gpuTime: { ...REFRESH_COST_GPU_TIME_PROTOCOL },
+          webgpuUnavailableReason: REFRESH_COST_WEBGPU_GPU_UNAVAILABLE_REASON,
+          webglUnavailableReason: REFRESH_COST_WEBGL_GPU_UNAVAILABLE_REASON,
+          readbackTimeoutMs: 5000,
+        },
       };
       const iblWebGPUConfig = {
         ...iblConfig,
@@ -3284,8 +3606,8 @@ export async function runEclipseCloudResponseProbe() {
     // "-18.9 ms/refresh", which reads like a measurement and is not one.
     console.log(
       `COST (GATING fresh ABBA measurement): ` +
-        `webgpu ${verdicts.cost.webgpu.valid ? `${r3(verdicts.cost.webgpuMsPerRefresh)} ms/refresh` : `INVALID — ${verdicts.cost.webgpu.invalidReason}`}; ` +
-        `webgl ${verdicts.cost.webgl.valid ? `${r3(verdicts.cost.webglMsPerRefresh)} ms/refresh` : `INVALID — ${verdicts.cost.webgl.invalidReason}`}`,
+        `webgpu ${verdicts.cost.webgpu.valid ? `${r3(verdicts.cost.webgpuMsPerRefresh)} ms/refresh [${verdicts.cost.webgpu.measurementSource === "gpu-time" ? REFRESH_COST_GPU_TIME_PROTOCOL.scope : "whole-frame"}] via ${verdicts.cost.webgpu.measurementSource}` : `INVALID — ${verdicts.cost.webgpu.invalidReason}`}; ` +
+        `webgl ${verdicts.cost.webgl.valid ? `${r3(verdicts.cost.webglMsPerRefresh)} ms/refresh [${verdicts.cost.webgl.measurementSource === "gpu-time" ? REFRESH_COST_GPU_TIME_PROTOCOL.scope : "whole-frame"}] via ${verdicts.cost.webgl.measurementSource} (${verdicts.cost.webgl.fallbackReason ?? "no fallback"})` : `INVALID — ${verdicts.cost.webgl.invalidReason}`}`,
     );
 
     publishFinalArtifact(report);
