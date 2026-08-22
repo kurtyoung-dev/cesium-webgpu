@@ -541,7 +541,7 @@ guide · wave.**
 | `C11-59` | S1-5 / S7-6 — 2D/CV/ortho band economics | frame-delta | P2 | perf | M | G4 | W3 |
 | `C11-60` | S2-2 / S2-3 / S2-4 — cache-hit-path allocation riders | frame-delta | P2 | perf | S | G4 | W3 · **PARTIAL — two slices landed Batches 1019/1022; ledger row is the authority** |
 | `C11-61` | NEW-CLUSTERED-ENABLED-ZERO-LIGHT-FRAME-ZERO-WORK | frame-delta | P2 | perf | S | G4 | W3 · **LANDED-PARTIAL Batch 1124 — ledger row is the authority** |
-| `C11-62` | C9-08 octree persistence / NEW-SCENEOCTREE-DIRTY-REVISION-REBUILD-AND-PVS-PROMOTION | frame-delta | P2 | perf | M | G4 | W3 |
+| `C11-62` | C9-08 octree persistence / NEW-SCENEOCTREE-DIRTY-REVISION-REBUILD-AND-PVS-PROMOTION — **PARTIAL: clauses (a) revision/dirty skip and (c) on/off/restored oracle LANDED Batch 1133 (2026-08-21; Sol build, full + delta Opus reviews, zero mutant survivors, engine-project tsc green in main); clause (b) the measured moving-route comparison is OWED to the machine lane — `probe-scheduler-octree-demand.mjs` case E (>200-command parity lane, rebuild-skip counter) authored, not yet run. Row stays OPEN until (b) is measured; the octree stays opt-in and never auto-promoted.** | frame-delta | P2 | perf | M | G4 | W3 |
 | `C11-63` | C10-10 follow-up — revision-maintained shadow-caster sublist | frame-delta | P2 | perf | M | G4 | W6 (blocked on S1-6 tier `C11-SEED-23`) |
 | `C11-SEED-01` | WebGL near-ground seg5 p99 GC-tail (no ID) | frame-delta | P3 | perf | unknown | G4 | seed |
 

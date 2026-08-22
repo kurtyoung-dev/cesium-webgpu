@@ -24,10 +24,9 @@
  *       passes.render=false (front-to-back translucent material tiebreak is a
  *       real consumer) — bumps framesRun. This proves the pick-path consumer is
  *       demand-signalled so pick output is preserved.
- *  E. SceneOctree eligibility never admits terrain / 3D-Tiles / voxels
- *       (OCTREE_ELIGIBLE_PASSES = OPAQUE|TRANSLUCENT only), asserted by
- *       enabling the octree and confirming no terrain/tile/voxel command was
- *       inserted while the globe is drawn.
+ *  E. SceneOctree eligibility never admits terrain / 3D-Tiles / voxels, and a
+ *       stable command set above minCommandsForOctree renders byte-identically
+ *       OFF / ON / restored-OFF while the unchanged ON frame skips rebuilding.
  *
  * Boot mirrors probe-camera-track.mjs (Edge/msedge + offline NaturalEarthII +
  * ellipsoid, frame-signature settle). Output PNGs are written for manual read.
@@ -41,12 +40,16 @@ import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 
+import { exitCodeForS5Status } from "./lib/verdict-exit-gate.mjs";
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BASE = process.env.PROBE_BASE || "http://localhost:8080";
 const OUT_DIR = path.join(__dirname, "output");
 const VIEWPORT = { width: 800, height: 800 };
 const HEADED = process.env.PROBE_HEADED === "1";
 const DIFF_TOL = 4; // near-exact; render path must be byte-identical
+const MAX_OCTREE_FIXTURE_COMMANDS = 512;
+const WATCHDOG_MS = 600_000;
 
 const MIN_FRAMES = 90;
 const STABLE_NEEDED = 25;
@@ -218,6 +221,21 @@ async function capture(page, outPath) {
   return true;
 }
 
+async function captureCanvasElement(page, outPath) {
+  const canvas = page.locator(".cesium-widget canvas").first();
+  await canvas.screenshot({ path: outPath });
+  return true;
+}
+
+async function presentSettle(page) {
+  await page.evaluate(
+    () =>
+      new Promise((resolve) => {
+        requestAnimationFrame(() => requestAnimationFrame(resolve));
+      }),
+  );
+}
+
 async function pixelDiff(page, aPath, bPath, tol) {
   const aB64 = fs.readFileSync(aPath).toString("base64");
   const bB64 = fs.readFileSync(bPath).toString("base64");
@@ -244,17 +262,18 @@ async function pixelDiff(page, aPath, bPath, tol) {
         return { ok: false, why: "size mismatch" };
       let diffCount = 0,
         maxDelta = 0;
-      const da = A.data,
-        db = B.data;
-      for (let i = 0; i < da.length; i += 4) {
-        const dr = Math.abs(da[i] - db[i]);
-        const dg = Math.abs(da[i + 1] - db[i + 1]);
-        const dbb = Math.abs(da[i + 2] - db[i + 2]);
-        const m = Math.max(dr, dg, dbb);
+      const aData = A.data,
+        bData = B.data;
+      for (let i = 0; i < aData.length; i += 4) {
+        const dr = Math.abs(aData[i] - bData[i]);
+        const dg = Math.abs(aData[i + 1] - bData[i + 1]);
+        const db = Math.abs(aData[i + 2] - bData[i + 2]);
+        const da = Math.abs(aData[i + 3] - bData[i + 3]);
+        const m = Math.max(dr, dg, db, da);
         if (m > maxDelta) maxDelta = m;
         if (m > tol) diffCount++;
       }
-      const total = (da.length / 4) | 0;
+      const total = (aData.length / 4) | 0;
       return {
         ok: true,
         total,
@@ -303,42 +322,334 @@ async function pickCenter(page) {
   });
 }
 
-/** Enable octree; render; confirm no terrain/tile/voxel command was inserted. */
-async function octreeEligibilityCheck(page) {
-  return await page.evaluate(async () => {
-    const v = window.viewer;
-    const scene = v.scene;
+/** Create separate primitives so the fixture emits more than 200 commands. */
+async function prepareOctreeParityFixture(page) {
+  return await page.evaluate(
+    async ({ maxFixtureCommands }) => {
+      const C = await import("/Build/CesiumUnminified/index.js");
+      const v = window.viewer;
+      const scene = v.scene;
+      const octree = scene._renderScheduler.octree;
+      const originalEnabled = octree.enabled;
+      const originalMinCommandsForOctree = octree.minCommandsForOctree;
+      const originalUseDefaultRenderLoop = v.useDefaultRenderLoop;
+      const threshold = octree.minCommandsForOctree;
+      const thresholdValid =
+        Number.isInteger(threshold) && threshold >= 1 && threshold < Infinity;
+      const fixtureCount = thresholdValid ? Math.max(201, threshold + 17) : 0;
+      const primitives = [];
+      const allowedPasses =
+        Number.isFinite(C.Pass?.OPAQUE) && Number.isFinite(C.Pass?.TRANSLUCENT)
+          ? [C.Pass.OPAQUE, C.Pass.TRANSLUCENT]
+          : [];
+
+      v.useDefaultRenderLoop = false;
+      octree.enabled = false;
+      window.__octreeDemandFixture = {
+        allowedPasses,
+        originalEnabled,
+        originalMinCommandsForOctree,
+        originalUseDefaultRenderLoop,
+        primitives,
+      };
+
+      if (
+        !thresholdValid ||
+        fixtureCount <= threshold ||
+        fixtureCount > maxFixtureCommands
+      ) {
+        return {
+          counterAvailable:
+            (octree.stats.rebuilds === undefined ||
+              Number.isFinite(octree.stats.rebuilds)) &&
+            (octree.stats.rebuildSkips === undefined ||
+              Number.isFinite(octree.stats.rebuildSkips)),
+          fixtureCommandCount: 0,
+          fixtureCount,
+          fullCommandCount: 0,
+          passAvailable: allowedPasses.length === 2,
+          stableFrames: 0,
+          threshold,
+          thresholdValid: false,
+        };
+      }
+
+      for (let i = 0; i < fixtureCount; i++) {
+        const column = i % 18;
+        const row = Math.floor(i / 18);
+        const longitude = -123.08 + column * 0.08;
+        const latitude = 37.31 + row * 0.08;
+        const modelMatrix = C.Transforms.eastNorthUpToFixedFrame(
+          C.Cartesian3.fromDegrees(longitude, latitude, 1500),
+        );
+        const geometry = C.BoxGeometry.fromDimensions({
+          dimensions: new C.Cartesian3(3000, 3000, 3000),
+          vertexFormat: C.PerInstanceColorAppearance.VERTEX_FORMAT,
+        });
+        const geometryInstance = new C.GeometryInstance({
+          geometry,
+          modelMatrix,
+          attributes: {
+            color: C.ColorGeometryInstanceAttribute.fromColor(
+              i % 2 === 0 ? C.Color.CYAN : C.Color.MAGENTA,
+            ),
+          },
+        });
+        primitives.push(
+          scene.primitives.add(
+            new C.Primitive({
+              allowPicking: false,
+              appearance: new C.PerInstanceColorAppearance({
+                closed: true,
+                flat: true,
+                translucent: false,
+              }),
+              asynchronous: false,
+              geometryInstances: geometryInstance,
+            }),
+          ),
+        );
+      }
+
+      const takeIndexedSnapshot = (commands) =>
+        commands.map((command) => {
+          const boundingVolume = command.boundingVolume;
+          const center = boundingVolume?.center;
+          const matrix = command.modelMatrix;
+          const matrixValues = matrix
+            ? Array.from({ length: 16 }, (_, index) => matrix[index])
+            : [];
+          const stableSphere =
+            !boundingVolume ||
+            (Number.isFinite(center?.x) &&
+              Number.isFinite(center?.y) &&
+              Number.isFinite(center?.z) &&
+              Number.isFinite(boundingVolume.radius));
+          const stableMatrix =
+            !matrix || matrixValues.every((value) => Number.isFinite(value));
+          return {
+            boundingVolume,
+            center,
+            centerX: center?.x,
+            centerY: center?.y,
+            centerZ: center?.z,
+            command,
+            cull: command.cull,
+            matrix,
+            matrixValues,
+            moonPhysicalDepthRoute: command._moonPhysicalDepthRoute === true,
+            occlude: command.occlude,
+            pass: command._pass ?? command.pass,
+            radius: boundingVolume?.radius,
+            stableShape: stableSphere && stableMatrix,
+            visibilityMask: command.visibilityMask,
+          };
+        });
+      const sameIndexedSnapshot = (left, right) =>
+        left.length === right.length &&
+        left.every((entry, index) => {
+          const other = right[index];
+          return (
+            entry.boundingVolume === other.boundingVolume &&
+            entry.center === other.center &&
+            entry.centerX === other.centerX &&
+            entry.centerY === other.centerY &&
+            entry.centerZ === other.centerZ &&
+            entry.command === other.command &&
+            entry.cull === other.cull &&
+            entry.matrix === other.matrix &&
+            entry.matrixValues.every(
+              (value, matrixIndex) => value === other.matrixValues[matrixIndex],
+            ) &&
+            entry.moonPhysicalDepthRoute === other.moonPhysicalDepthRoute &&
+            entry.occlude === other.occlude &&
+            entry.pass === other.pass &&
+            entry.radius === other.radius &&
+            entry.stableShape === other.stableShape &&
+            entry.visibilityMask === other.visibilityMask
+          );
+        });
+
+      let previousFull = [];
+      let stableFrames = 0;
+      let fixtureCommands = [];
+      let currentFull = [];
+      for (let i = 0; i < 60; i++) {
+        scene.render();
+        await new Promise((resolve) => requestAnimationFrame(resolve));
+        fixtureCommands = primitives.flatMap((primitive) =>
+          primitive._colorCommands.filter(Boolean),
+        );
+        currentFull = takeIndexedSnapshot(scene.frameState.commandList);
+        const fixtureReady =
+          fixtureCommands.length > threshold &&
+          fixtureCommands.every(
+            (command) =>
+              allowedPasses.includes(command._pass ?? command.pass) &&
+              Number.isFinite(command.boundingVolume?.center?.x) &&
+              Number.isFinite(command.boundingVolume?.center?.y) &&
+              Number.isFinite(command.boundingVolume?.center?.z) &&
+              Number.isFinite(command.boundingVolume?.radius),
+          );
+        const fullListReady = currentFull.every((entry) => entry.stableShape);
+        stableFrames =
+          fixtureReady &&
+          fullListReady &&
+          sameIndexedSnapshot(previousFull, currentFull)
+            ? stableFrames + 1
+            : 0;
+        previousFull = currentFull;
+        if (stableFrames >= 2) {
+          break;
+        }
+      }
+
+      return {
+        counterAvailable:
+          (octree.stats.rebuilds === undefined ||
+            Number.isFinite(octree.stats.rebuilds)) &&
+          (octree.stats.rebuildSkips === undefined ||
+            Number.isFinite(octree.stats.rebuildSkips)),
+        fixtureCommandCount: fixtureCommands.length,
+        fixtureCount,
+        fullCommandCount: currentFull.length,
+        passAvailable: allowedPasses.length === 2,
+        stableFrames,
+        threshold,
+        thresholdValid: true,
+      };
+    },
+    { maxFixtureCommands: MAX_OCTREE_FIXTURE_COMMANDS },
+  );
+}
+
+/** Render one controlled frame and read the tree before another frame starts. */
+async function sampleOctreeFrame(page, enabled) {
+  return await page.evaluate(async (enabled) => {
+    const scene = window.viewer.scene;
     const octree = scene._renderScheduler.octree;
-    octree.enabled = true;
-    octree.minCommandsForOctree = 1; // force build even with few commands
-    for (let i = 0; i < 5; i++) {
-      scene.render();
-      await new Promise((r) => requestAnimationFrame(r));
+    if (typeof enabled === "boolean") {
+      octree.enabled = enabled;
     }
+    scene.render();
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+
+    const fixture = window.__octreeDemandFixture;
+    const fixturePrimitives = new Set(fixture?.primitives ?? []);
     const snap = scene.getDebugSnapshot();
-    // Inspect the octree tree: gather passes of inserted commands.
     const passes = new Set();
+    let fixtureCommandsInserted = 0;
     const walk = (node) => {
       if (!node) return;
       const cmds = node._commands || node.commands || [];
-      for (const c of cmds) passes.add(c._pass ?? c.pass);
+      for (const command of cmds) {
+        passes.add(command._pass ?? command.pass);
+        if (fixturePrimitives.has(command.owner)) {
+          fixtureCommandsInserted++;
+        }
+      }
       const kids = node._children || node.children || [];
       for (const k of kids) walk(k);
     };
-    try {
-      walk(octree._root);
-    } catch (e) {
-      /* tolerate structure differences */
-    }
-    const result = {
-      octreeContainment: snap.containment.renderScheduler.octree,
-      insertedPasses: Array.from(passes),
+    walk(octree._root);
+    return {
+      allowedPasses: fixture?.allowedPasses ?? [],
       commandsInserted: octree.stats.commandsInserted,
+      fixtureCommandsInserted,
+      insertedPasses: Array.from(passes),
+      octreeContainment: snap.containment.renderScheduler.octree,
+      rebuildSkips: octree.stats.rebuildSkips,
+      rebuilds: octree.stats.rebuilds,
       tilesLoaded: scene.globe.tilesLoaded,
     };
-    octree.enabled = false;
-    return result;
+  }, enabled);
+}
+
+async function readOctreeCounters(page) {
+  return await page.evaluate(() => {
+    const stats = window.viewer.scene._renderScheduler.octree.stats;
+    return {
+      rebuildSkips: stats.rebuildSkips ?? 0,
+      rebuilds: stats.rebuilds ?? 0,
+    };
   });
+}
+
+async function disableOctreeAndSample(page) {
+  return await page.evaluate(async () => {
+    const scene = window.viewer.scene;
+    const octree = scene._renderScheduler.octree;
+    const rebuildSkipsBeforeDisable = octree.stats.rebuildSkips;
+    const rebuildsBeforeDisable = octree.stats.rebuilds;
+    octree.enabled = false;
+    scene.render();
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+    return {
+      rebuildSkipsAfterDisabledFrame: octree.stats.rebuildSkips,
+      rebuildSkipsBeforeDisable,
+      rebuildsAfterDisabledFrame: octree.stats.rebuilds,
+      rebuildsBeforeDisable,
+    };
+  });
+}
+
+async function removeOctreeParityFixture(page) {
+  await page.evaluate(() => {
+    const scene = window.viewer.scene;
+    const octree = scene._renderScheduler.octree;
+    const fixture = window.__octreeDemandFixture;
+    if (!fixture) return;
+    octree.enabled = fixture.originalEnabled;
+    octree.minCommandsForOctree = fixture.originalMinCommandsForOctree;
+    for (const primitive of fixture.primitives) {
+      scene.primitives.remove(primitive);
+    }
+    delete window.__octreeDemandFixture;
+    window.viewer.useDefaultRenderLoop = fixture.originalUseDefaultRenderLoop;
+  });
+}
+
+/** Exercise eligibility, unchanged rebuild skip, and OFF/ON/restored parity. */
+async function octreeEligibilityAndParityCheck(page, renderer) {
+  let preparation;
+  try {
+    preparation = await prepareOctreeParityFixture(page);
+    await renderAndSnap(page, 4);
+    const offPath = path.join(OUT_DIR, `octree-${renderer}-off.png`);
+    const onPath = path.join(OUT_DIR, `octree-${renderer}-on.png`);
+    const restoredPath = path.join(
+      OUT_DIR,
+      `octree-${renderer}-off-restored.png`,
+    );
+    await presentSettle(page);
+    await captureCanvasElement(page, offPath);
+
+    const countersBeforeOn = await readOctreeCounters(page);
+    const firstOnFrame = await sampleOctreeFrame(page, true);
+    const unchangedOnFrame = await sampleOctreeFrame(page);
+    await renderAndSnap(page, 2);
+    await presentSettle(page);
+    await captureCanvasElement(page, onPath);
+
+    const disabledFrame = await disableOctreeAndSample(page);
+    await renderAndSnap(page, 3);
+    await presentSettle(page);
+    await captureCanvasElement(page, restoredPath);
+
+    return {
+      countersBeforeOn,
+      disabledFrame,
+      firstOnFrame,
+      offOnDiff: await pixelDiff(page, offPath, onPath, 0),
+      offRestoredDiff: await pixelDiff(page, offPath, restoredPath, 0),
+      preparation,
+      rebuildSkipDelta:
+        unchangedOnFrame.rebuildSkips - firstOnFrame.rebuildSkips,
+      unchangedOnFrame,
+    };
+  } finally {
+    await removeOctreeParityFixture(page);
+  }
 }
 
 async function runBackend(browser, renderer, results) {
@@ -423,16 +734,16 @@ async function runBackend(browser, renderer, results) {
   r.checks.D_pick = pick;
   r.checks.D_pickBumpedRuns = pick.runsAfter > pick.runsBefore; // expect true
 
-  // --- E: octree never admits terrain/tile/voxel ---
-  const oe = await octreeEligibilityCheck(page);
-  const Pass = { GLOBE: 4, CESIUM_3D_TILE: 5, VOXELS: 6 }; // informational only
+  // --- E: >threshold eligibility, rebuild skip, and OFF/ON/restored parity ---
+  // Attribute only errors raised by this case.
+  const errsBeforeE = errs.length;
+  const oe = await octreeEligibilityAndParityCheck(page, renderer);
   r.checks.E_octree = oe;
-  // insertedPasses must be a subset of {OPAQUE, TRANSLUCENT}; terrain (GLOBE)
-  // and tiles/voxels must never appear.
-  const badPasses = oe.insertedPasses.filter(
-    (p) => p === Pass.GLOBE || p === Pass.CESIUM_3D_TILE || p === Pass.VOXELS,
+  const badPasses = oe.firstOnFrame.insertedPasses.filter(
+    (pass) => !oe.firstOnFrame.allowedPasses.includes(pass),
   );
   r.checks.E_noTerrainTileVoxelInserted = badPasses.length === 0; // expect true
+  r.checks.E_noPageErrors = errs.length === errsBeforeE;
 
   await page.close();
   results.push(r);
@@ -457,6 +768,7 @@ async function main() {
   // Verdict
   let pass = true;
   const fails = [];
+  const structuralReasons = [];
   for (const r of results) {
     const c = r.checks;
     // eslint-disable-next-line no-loop-func -- the closure is consumed inside this iteration (or reads a shared kill switch), not a stale per-iteration binding
@@ -464,6 +776,11 @@ async function main() {
       if (!cond) {
         pass = false;
         fails.push(`${r.renderer}: ${name}`);
+      }
+    };
+    const structural = (name, cond) => {
+      if (!cond) {
+        structuralReasons.push(`${r.renderer}: ${name}`);
       }
     };
     assert(
@@ -499,13 +816,86 @@ async function main() {
       "E_noTerrainTileVoxelInserted",
       c.E_noTerrainTileVoxelInserted === true,
     );
+    structural(
+      "E_fixture_stable_above_threshold",
+      c.E_octree.preparation.thresholdValid === true &&
+        c.E_octree.preparation.fixtureCommandCount > 200 &&
+        c.E_octree.preparation.fixtureCommandCount >
+          c.E_octree.preparation.threshold &&
+        c.E_octree.preparation.fullCommandCount >
+          c.E_octree.preparation.threshold &&
+        c.E_octree.preparation.stableFrames >= 2,
+    );
+    structural(
+      "E_pass_and_skip_counter_available",
+      c.E_octree.preparation.passAvailable === true &&
+        c.E_octree.preparation.counterAvailable === true &&
+        c.E_octree.firstOnFrame.allowedPasses.length === 2 &&
+        Number.isFinite(c.E_octree.firstOnFrame.rebuilds) &&
+        Number.isFinite(c.E_octree.firstOnFrame.rebuildSkips),
+    );
+    structural(
+      "E_fixture_inserted_above_threshold",
+      c.E_octree.firstOnFrame.fixtureCommandsInserted >
+        c.E_octree.preparation.threshold,
+    );
+    assert(
+      "E_first_frame_rebuilt",
+      c.E_octree.firstOnFrame.rebuilds ===
+        c.E_octree.countersBeforeOn.rebuilds + 1,
+    );
+    assert(
+      "E_unchanged_rebuild_skipped",
+      c.E_octree.unchangedOnFrame.rebuilds ===
+        c.E_octree.firstOnFrame.rebuilds && c.E_octree.rebuildSkipDelta === 1,
+    );
+    assert(
+      "E_disabled_frame_did_no_octree_work",
+      c.E_octree.disabledFrame.rebuildSkipsAfterDisabledFrame ===
+        c.E_octree.disabledFrame.rebuildSkipsBeforeDisable &&
+        c.E_octree.disabledFrame.rebuildsAfterDisabledFrame ===
+          c.E_octree.disabledFrame.rebuildsBeforeDisable,
+    );
+    assert("E_no_page_errors", c.E_noPageErrors === true);
+    assert(
+      "E_off_restored_byte_identity",
+      c.E_octree.offRestoredDiff?.ok === true &&
+        c.E_octree.offRestoredDiff.diffCount === 0 &&
+        c.E_octree.offRestoredDiff.maxDelta === 0,
+    );
+    assert(
+      "E_off_on_byte_identity",
+      c.E_octree.offOnDiff?.ok === true &&
+        c.E_octree.offOnDiff.diffCount === 0 &&
+        c.E_octree.offOnDiff.maxDelta === 0,
+    );
   }
 
-  console.log(JSON.stringify({ pass, fails, results }, null, 2));
-  process.exit(pass ? 0 : 1);
+  const status =
+    structuralReasons.length > 0 ? "STRUCTURAL" : pass ? "PASS" : "FAIL";
+  console.log(
+    JSON.stringify(
+      { status, pass, fails, structuralReasons, results },
+      null,
+      2,
+    ),
+  );
+  return status;
 }
 
-main().catch((e) => {
-  console.error("PROBE ERROR:", e);
-  process.exit(2);
-});
+const watchdog = setTimeout(() => {
+  console.error(
+    `[probe-scheduler-octree-demand] watchdog fired after ${WATCHDOG_MS} ms`,
+  );
+  process.exit(exitCodeForS5Status("ERROR"));
+}, WATCHDOG_MS);
+
+main()
+  .then((status) => {
+    process.exitCode = exitCodeForS5Status(status);
+  })
+  .catch((error) => {
+    console.error("PROBE ERROR:", error);
+    process.exitCode = exitCodeForS5Status("ERROR");
+  })
+  .finally(() => clearTimeout(watchdog));

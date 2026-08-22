@@ -206,11 +206,11 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 
 | Metric | Value |
 |---|---|
-| Files in census | 1047 |
-| ACTIVE | 846 |
+| Files in census | 1048 |
+| ACTIVE | 847 |
 | INVESTIGATION | 195 |
 | NO @purpose HEADER | 6 |
-| Classes | probe 644, spec 193, other 96, lib 74, gate-lib 18, bake-tool 12, runner 6, fixture 4 |
+| Classes | probe 644, spec 194, other 96, lib 74, gate-lib 18, bake-tool 12, runner 6, fixture 4 |
 
 ### Tools/ (31)
 
@@ -279,7 +279,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | spec-anchor-sweep.spec.mjs | spec | NO @purpose HEADER | 2026-08-20 | 0 | — |
 | string-literal-marker-scan.mjs | other | ACTIVE | 2026-08-21 | 3 | Finds banned tracker vocabulary inside string and template literals that the comment-marker guard intentionally cannot see. |
 | string-literal-marker-scan.spec.mjs | spec | ACTIVE | 2026-08-21 | 1 | Proves the string-literal marker scanner sees planted markers, excludes non-literal text, and depends on the shared marker grammar. |
-| verify-packaged-notices.mjs | other | ACTIVE | 2026-08-16 | 4 | Verifies every third-party license notice actually reaches each published artifact (root/engine/widgets LICENSE.md, ThirdParty.json, release zip). |
+| verify-packaged-notices.mjs | other | ACTIVE | 2026-08-16 | 5 | Verifies every third-party license notice actually reaches each published artifact (root/engine/widgets LICENSE.md, ThirdParty.json, release zip). |
 | verify-packaged-notices.spec.mjs | spec | ACTIVE | 2026-08-16 | 2 | Mutant suite for the packaged-notices check: removes one owed notice/wiring element at a time and requires the removal reported. |
 
 ### Tools/c16/lib/ (2)
@@ -345,7 +345,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | stbn-rng.mjs | bake-tool | ACTIVE | 2026-08-16 | 3 | Deterministic license-clean random stream for the STBN bake: AES-256-CTR over zeros keyed by SHA-256(seed), byte-identical across machines. |
 | stbn-spectrum.mjs | bake-tool | ACTIVE | 2026-08-16 | 5 | Fourier certification of an STBN volume (radial spatial spectrum, per-pixel temporal spectrum, cross-correlation) with mutants proving each bar fires. |
 
-### Tools/visual-regression/ (863)
+### Tools/visual-regression/ (864)
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
@@ -1145,6 +1145,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | sandcastle-batch-66-end-of-session-runner.mjs | other | INVESTIGATION | 2026-08-16 | 2 | End-of-session rerun of the Batch-66 Sandcastle sweep (direct scene.pick, pointer-error filtering) writing per-demo screenshots + report. |
 | sandcastle-batch-66-final-runner.mjs | other | INVESTIGATION | 2026-08-16 | 10 | Post-F1/F2/F3 rerun of the Batch-66 WebGPU Sandcastle sweep: every 'WebGPU *.html' demo headless, known artifacts filtered, JSON report. |
 | sandcastle-smoke.mjs | other | ACTIVE | 2026-08-16 | 6 | Standing Sandcastle CI blind-spot smoke: three local-resource WebGPU gallery demos gated on non-black, non-uniform, real device, zero errors. |
+| scene-octree-dirty-revision.spec.mjs | spec | ACTIVE | — | 1 | Proves SceneOctree revision reuse, mutation rebuilds, and disabled/restored PVS behavior. |
 | settle-attribution.spec.mjs | spec | ACTIVE | 2026-08-16 | 2 | Guard spec for the settle-window attribution rule + first-complete-frame metric, so GPU-submit-bound windows never book main-thread credit. |
 | sgp4-cpu-kernel.mjs | other | ACTIVE | 2026-08-16 | 5 | Demo/probe-owned CPU FP64 near-earth SGP4 kernel mirroring the WGSL kernel, shaped as a ComputeInstanceCollection cpuKernel (42-lane layout). |
 | sgp4-kernel.mjs | other | ACTIVE | 2026-08-16 | 4 | Demo/probe-owned SGP4 GPU artifacts: param-lane packer with df64 secular rates + the WGSL df64 time-update kernel string. |
@@ -1326,7 +1327,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | solar-bloom-glow.mjs | lib | ACTIVE | 2026-08-16 | 6 | Forward model of the sun bloom's additive glow-on-disc so differential disc measurements carry the non-cancelling bloom term correctly. |
 | sun-radiance-delta.mjs | lib | ACTIVE | 2026-08-16 | 4 | Two-radiance sun-disc measurement model discriminating multiplicative gain vs additive pedestal via a parameter-free ratio statistic. |
 | tidal-harmonics-model.mjs | lib | ACTIVE | 2026-08-16 | 1 | Published NOAA/Schureman constituent speeds, Doodson fundamental rates and physics-free signal helpers anchoring the tidal-harmonics spec. |
-| verdict-exit-gate.mjs | gate-lib | ACTIVE | 2026-08-16 | 21 | Single frozen PASS/FAIL/ERROR/STRUCTURAL exit-code table shared by the S5 gate libraries; fixed a six-copy divergence where STRUCTURAL exited 2. |
+| verdict-exit-gate.mjs | gate-lib | ACTIVE | 2026-08-16 | 22 | Single frozen PASS/FAIL/ERROR/STRUCTURAL exit-code table shared by the S5 gate libraries; fixed a six-copy divergence where STRUCTURAL exited 2. |
 | visual-evidence-library.mjs | lib | ACTIVE | 2026-08-16 | 5 | Schema, hashing and integrity-claim machinery for the content-addressed visual-evidence publication/catalog/verification pipeline (v2). |
 | visual-gate-policy.mjs | lib | ACTIVE | 2026-08-16 | 12 | Manifest field requirements, stable stringify/sha256 and PASS/FAIL/NON_CERTIFYING policy shared by capture-and-diff and certification gates. |
 | voxel-megatexture-reupload-gate.mjs | gate-lib | ACTIVE | 2026-08-16 | 3 | Browser-free convergence predicate for the voxel megatexture probe: first-corner resident set must republish within bounded return attempts. |

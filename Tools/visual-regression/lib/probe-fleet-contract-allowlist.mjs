@@ -948,8 +948,6 @@ export const PROBE_CONTRACT_ALLOWLIST = Object.freeze({
     "no watchdog; browser.close outside finally — added 2026-05-26, pre-dates the spec",
   "probe-sceneframebuffer.mjs":
     "no watchdog; browser.close outside finally — added 2026-05-13, pre-dates the spec",
-  "probe-scheduler-octree-demand.mjs":
-    "no watchdog — added 2026-07-16, pre-dates the spec",
   "probe-shim-debug.mjs":
     "no watchdog; browser.close outside finally — added 2026-05-13, pre-dates the spec",
   "probe-shim-trace.mjs":

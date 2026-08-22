@@ -250,3 +250,15 @@ ends with these, run read-only and reported with the verdict:
   not merely fail on the wrong checkout - it removes tests.
 - **Verify the instrument before publishing a surprising result:** re-derive any
   headline number by a second independent method; a review is itself a measurement.
+- **Workers cannot move a clone's tip.** The Codex `workspace-write` sandbox treats `.git/`
+  as read-only, so a brief that begins with `git pull` fails before any work starts (the
+  worker correctly stops and asks). Bringing a clone to the current tip is the
+  orchestrator's job, done before dispatch and verified with `git log -1` in the dispatch
+  preflight - and never done into a clone whose previous session may still be live.
+- **Briefs that cite gitignored run evidence must ship that evidence into the clone first.**
+  `Tools/visual-regression/output/**` never reaches a clone through git. A premise check
+  that quotes an `artifact.json` or a PNG md5 will stop the worker - correctly - until the
+  orchestrator copies the cited run directories into the clone's same gitignored path
+  (the G9 round-2 dispatch of 2026-08-21 lost one relay cycle to this). Copy before
+  dispatch and name the clone-local path in the brief; the copy is invisible to
+  `git status`, so it cannot pollute the extraction.

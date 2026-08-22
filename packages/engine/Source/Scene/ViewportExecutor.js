@@ -532,7 +532,7 @@ function execute2DViewportCommands(
 
     passState.viewport = viewport;
 
-    // BUG-3 — flag that the SCENE2D infinite-scroll wrap MAY split the frame
+    // Flag that the SCENE2D infinite-scroll wrap may split the frame
     // into two viewport halves. Default true (the else-if/else branches below
     // all split); the single-pass `if` branch resets it to false. Consumed by
     // `executeCommandsInViewport` to tell the WebGPU renderer to accumulate
@@ -697,12 +697,63 @@ function execute2DViewportCommands(
 }
 
 /**
+ * Replaces the raw command list with the octree-visible and bypass commands.
+ * The revision scan stays behind the opt-in gate and above the command-count
+ * threshold, so disabled and small-list paths retain their existing work.
+ *
+ * @param {Scene} scene The scene being rendered.
+ * @param {DrawCommand[]} commandList The commands emitted for this viewport.
+ * @param {SceneOctree} octree The scene's spatial command index.
+ * @param {FrameState.ShadowState} shadowState Current shadow state.
+ * @returns {boolean} Whether pre-PVS shadow casters were captured.
+ * @private
+ */
+function applySceneOctree(scene, commandList, octree, shadowState) {
+  if (!octree.enabled) {
+    return false;
+  }
+
+  const commandSetRevision =
+    commandList.length >= octree.minCommandsForOctree
+      ? octree.updateCommandSetRevision(commandList)
+      : undefined;
+  const buildResult = octree.build(
+    commandList,
+    scene.frameState.frameNumber,
+    commandSetRevision,
+  );
+  if (!buildResult.useOctree) {
+    return false;
+  }
+
+  collectPrePvsShadowCasters(commandList, shadowState, true);
+  const prePvsShadowCastersCaptured = shadowState.shadowsEnabled === true;
+  const cullingVolume = scene.frameState.cullingVolume;
+  const occluder =
+    scene.frameState.mode === SceneMode.SCENE3D
+      ? scene.frameState.occluder
+      : undefined;
+  const visible = octree.collectVisible(cullingVolume, occluder);
+
+  // Bypass carries the lunar route, commands without bounding volumes, and
+  // commands whose resolved pass is neither OPAQUE nor TRANSLUCENT.
+  commandList.length = 0;
+  const bypassList = buildResult.bypassCommands;
+  for (let i = 0; i < bypassList.length; i++) {
+    commandList.push(bypassList[i]);
+  }
+  for (let i = 0; i < visible.length; i++) {
+    commandList.push(visible[i]);
+  }
+  return prePvsShadowCastersCaptured;
+}
+
+/**
  * Execute the draw commands to render the scene into the viewport.
  * If this is the first viewport rendered, the framebuffers will be cleared
  * to the background color.
  *
- * SORT-3 (demand-gated since C9-08): after primitives update, commands are
- * binned through the RenderScheduler, which assigns `materialSortId` only when
+ * After primitives update, the RenderScheduler assigns `materialSortId` only when
  * a consumer actually reads it this frame. The default render path does NOT
  * read it (opaque unsorted; translucent back-to-front ignores materialSortId);
  * only the opaque multi-level tiebreak used by the pick-pass front-to-back
@@ -723,8 +774,8 @@ function executeCommandsInViewport(firstViewport, scene, passState) {
 
   setCpuScenePhase(scene, "visibilityCommandPrep");
 
-  // FAR-003: the layer buckets are not consumed by either renderer, so their
-  // duplicate O(N log N) sort is opt-in. C9-08: even the linear stable
+  // The layer buckets are not consumed by either renderer, so their duplicate
+  // O(N log N) sort is opt-in. Even the linear stable
   // material-ID assignment on the default path is demand-gated — it does zero
   // per-command work unless a consumer actually reads `materialSortId` this
   // frame. The default render pass (opaque unsorted, translucent back-to-front)
@@ -764,30 +815,12 @@ function executeCommandsInViewport(firstViewport, scene, passState) {
 
   // Octree-accelerated PVS when enabled and command count exceeds threshold
   if (octree.enabled) {
-    const buildResult = octree.build(
-      scene.frameState.commandList,
-      scene.frameState.frameNumber,
+    prePvsShadowCastersCaptured = applySceneOctree(
+      scene,
+      cmdList,
+      octree,
+      shadowState,
     );
-    if (buildResult.useOctree) {
-      collectPrePvsShadowCasters(cmdList, shadowState, true);
-      prePvsShadowCastersCaptured = shadowState.shadowsEnabled === true;
-      // Replace commandList with octree-visible + bypass commands
-      const cullingVolume = scene.frameState.cullingVolume;
-      const occluder =
-        scene.frameState.mode === SceneMode.SCENE3D
-          ? scene.frameState.occluder
-          : undefined;
-      const visible = octree.collectVisible(cullingVolume, occluder);
-      // Merge visible octree commands with bypass commands (terrain, 3D Tiles, etc.)
-      scene.frameState.commandList.length = 0;
-      const bypassList = buildResult.bypassCommands;
-      for (let bi = 0; bi < bypassList.length; bi++) {
-        scene.frameState.commandList.push(bypassList[bi]);
-      }
-      for (let vi = 0; vi < visible.length; vi++) {
-        scene.frameState.commandList.push(visible[vi]);
-      }
-    }
   }
 
   // Occlusion culling (opt-in, requires compute shader support)
@@ -820,7 +853,7 @@ function executeCommandsInViewport(firstViewport, scene, passState) {
     setCpuScenePhase(scene, "visibilityCommandPrep");
   }
 
-  // BUG-3 — derive the WebGPU 2D-wrap accumulation flags for this pass.
+  // Derive the WebGPU 2D-wrap accumulation flags for this pass.
   // WebGL ignores them (it clears framebuffers per `firstViewport` directly).
   // For the WebGPU renderer (SceneRenderer.executeCommands → alternate renderer):
   //   - `_exec2DSceneFbLoad` (true on the SECOND half): open the scene FB with

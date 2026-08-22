@@ -12,9 +12,10 @@ import OctreeNode from "./OctreeNode.js";
  * - 3D Tiles (have their own Cesium3DTilesetTraversal)
  * - Voxels (have their own VoxelTraversal)
  *
- * The octree is rebuilt every frame from the command list. This is efficient
- * because most commands have stable bounding volumes — the tree structure
- * is reused (clear + re-insert) rather than fully recreated.
+ * The octree tracks the indexed state of the command list. Stable command
+ * sets reuse the existing tree when the caller supplies a revision; changed
+ * sets clear and reinsert into the same structure unless a structural option
+ * changed.
  *
  * All coordinates are ECEF float64. RTE is a GPU rendering technique only.
  *
@@ -108,6 +109,54 @@ class SceneOctree {
   }
 
   /**
+   * Advances the command-set revision when any state used to place or admit a
+   * command changes. Exact scalar comparison avoids hash collisions and sees
+   * in-place mutations that object-identity checks miss.
+   *
+   * @param {Array} commandList The full command list from frameState.
+   * @returns {number} The current command-set revision.
+   * @private
+   */
+  updateCommandSetRevision(commandList) {
+    let state = this._commandSetRevisionState;
+    if (!defined(state)) {
+      state = {
+        revision: 0,
+        snapshots: [],
+      };
+      this._commandSetRevisionState = state;
+    }
+
+    const snapshots = state.snapshots;
+    const commandCount = commandList.length;
+    let dirty = snapshots.length !== commandCount;
+
+    try {
+      for (let i = 0; i < commandCount; i++) {
+        let snapshot = snapshots[i];
+        if (!defined(snapshot)) {
+          snapshot = createCommandSnapshot();
+          snapshots[i] = snapshot;
+        }
+        dirty = updateCommandSnapshot(snapshot, commandList[i]) || dirty;
+      }
+    } catch (error) {
+      // A command getter can throw after earlier snapshots were updated. Burn
+      // the old token before rethrowing so recovery cannot reuse the old tree.
+      state.revision++;
+      this._lastBuiltCommandSetRevision = undefined;
+      this._lastBuildResult = undefined;
+      throw error;
+    }
+    snapshots.length = commandCount;
+
+    if (dirty) {
+      state.revision++;
+    }
+    return state.revision;
+  }
+
+  /**
    * Builds the octree from a command list. Call once per frame after
    * all commands have been generated but before culling/sorting.
    *
@@ -116,9 +165,12 @@ class SceneOctree {
    *
    * @param {Array} commandList The full command list from frameState.
    * @param {number} frameNumber Current frame number.
+   * @param {number} [commandSetRevision] Revision returned by
+   *   {@link SceneOctree#updateCommandSetRevision}. Omitting it preserves the
+   *   conservative full rebuild used by existing direct callers.
    * @returns {object} { octreeCommands: count, bypassCommands: Array }
    */
-  build(commandList, frameNumber) {
+  build(commandList, frameNumber, commandSetRevision) {
     const startTime = performance.now();
 
     this._lastFrameNumber = frameNumber;
@@ -132,6 +184,8 @@ class SceneOctree {
       if (defined(this._root)) {
         this._root.clear();
       }
+      this._lastBuiltCommandSetRevision = undefined;
+      this._lastBuildResult = undefined;
       this._stats.buildTimeMs = performance.now() - startTime;
       return {
         octreeCommands: 0,
@@ -140,8 +194,41 @@ class SceneOctree {
       };
     }
 
-    // Create or clear root
-    if (!defined(this._root)) {
+    // Persistence state and counters do not exist until the opt-in path has a
+    // large enough list, keeping construction and default frames unchanged.
+    if (!defined(this._stats.rebuilds)) {
+      this._stats.rebuilds = 0;
+      this._stats.rebuildSkips = 0;
+    }
+
+    const structureUnchanged =
+      this.rootHalfExtent === this._lastBuiltRootHalfExtent &&
+      this.maxDepth === this._lastBuiltMaxDepth &&
+      this.maxCommandsPerNode === this._lastBuiltMaxCommandsPerNode;
+    const canReuse =
+      defined(commandSetRevision) &&
+      defined(this._root) &&
+      defined(this._lastBuildResult) &&
+      commandSetRevision === this._lastBuiltCommandSetRevision &&
+      structureUnchanged;
+
+    if (canReuse) {
+      // `_stats` is per-frame, so commandsInserted stays 0 on a reuse frame:
+      // it reports insertions done now, not the tree's contents. The cached
+      // result's octreeCommands keeps the count from the frame that built it.
+      this._stats.rebuildSkips++;
+      this._stats.buildTimeMs = performance.now() - startTime;
+      return this._lastBuildResult;
+    }
+
+    // Clearing mutates the cached tree in place. Invalidate its reuse token
+    // first so a failed insertion cannot expose a partially rebuilt tree later.
+    this._lastBuiltCommandSetRevision = undefined;
+    this._lastBuildResult = undefined;
+
+    // Structural options are part of the index. Recreate the root when they
+    // change; clearing cannot update extents or child split limits.
+    if (!defined(this._root) || !structureUnchanged) {
       this._root = new OctreeNode(
         Cartesian3.ZERO, // ECEF origin
         this.rootHalfExtent,
@@ -167,12 +254,19 @@ class SceneOctree {
     }
 
     this._stats.buildTimeMs = performance.now() - startTime;
-
-    return {
+    const buildResult = {
       octreeCommands: this._stats.commandsInserted,
       bypassCommands: bypassCommands,
       useOctree: true,
     };
+    this._lastBuiltCommandSetRevision = commandSetRevision;
+    this._lastBuildResult = buildResult;
+    this._lastBuiltRootHalfExtent = this.rootHalfExtent;
+    this._lastBuiltMaxDepth = this.maxDepth;
+    this._lastBuiltMaxCommandsPerNode = this.maxCommandsPerNode;
+    this._stats.rebuilds++;
+
+    return buildResult;
   }
 
   /**
@@ -242,12 +336,16 @@ class SceneOctree {
     }
 
     const diag = this._root.getDiagnostics();
+    const bypassCount = defined(this._lastBuildResult)
+      ? this._lastBuildResult.bypassCommands.length
+      : this._stats.commandsSkipped;
     return [
       `=== SceneOctree (${this.enabled ? "ENABLED" : "DISABLED"}) ===`,
       `Nodes: ${diag.nodeCount} (${diag.leafCount} leaves)`,
       `Max depth: ${diag.maxDepth} / ${this.maxDepth}`,
-      `Commands: ${diag.totalCommands} in tree, ${this._stats.commandsSkipped} bypassed`,
+      `Commands: ${diag.totalCommands} in tree, ${bypassCount} bypassed`,
       `Build: ${this._stats.buildTimeMs.toFixed(2)}ms`,
+      `Rebuilds: ${this._stats.rebuilds}, skipped: ${this._stats.rebuildSkips}`,
       `Cull: ${this._stats.cullTimeMs.toFixed(2)}ms`,
       `Frustum tests saved: ${this._stats.frustumTestsSaved}`,
     ].join("\n");
@@ -258,6 +356,9 @@ class SceneOctree {
    */
   destroy() {
     this._root = undefined;
+    this._commandSetRevisionState = undefined;
+    this._lastBuiltCommandSetRevision = undefined;
+    this._lastBuildResult = undefined;
     this._visibleResult.length = 0;
   }
 
@@ -280,6 +381,74 @@ class SceneOctree {
   }
 }
 
+function createCommandSnapshot() {
+  return {
+    command: undefined,
+    boundingVolume: undefined,
+    centerX: undefined,
+    centerY: undefined,
+    centerZ: undefined,
+    radius: undefined,
+    pass: undefined,
+    moonPhysicalDepthRoute: false,
+  };
+}
+
+function updateSnapshotValue(snapshot, property, value) {
+  const changed = !Object.is(snapshot[property], value);
+  snapshot[property] = value;
+  return changed;
+}
+
+/**
+ * Updates one reusable snapshot and reports whether the octree-relevant state
+ * changed. The tree stores command identity and reads bounding-volume
+ * definedness, center x/y/z, radius, `_moonPhysicalDepthRoute`, and
+ * `_pass ?? pass`. A primitive that moves updates its bounding volume, which
+ * is already tracked. Unknown bounding-volume shapes remain volatile.
+ *
+ * @param {object} snapshot Reusable command snapshot.
+ * @param {object} command Command emitted for the current viewport.
+ * @returns {boolean} Whether the command requires a new tree revision.
+ * @private
+ */
+function updateCommandSnapshot(snapshot, command) {
+  let dirty = updateSnapshotValue(snapshot, "command", command);
+
+  const boundingVolume = command.boundingVolume;
+  dirty =
+    updateSnapshotValue(snapshot, "boundingVolume", boundingVolume) || dirty;
+  const center = defined(boundingVolume) ? boundingVolume.center : undefined;
+
+  const hasStableSphere =
+    !defined(boundingVolume) ||
+    (defined(center) &&
+      Number.isFinite(center.x) &&
+      Number.isFinite(center.y) &&
+      Number.isFinite(center.z) &&
+      Number.isFinite(boundingVolume.radius));
+  if (!hasStableSphere) {
+    dirty = true;
+  }
+  dirty = updateSnapshotValue(snapshot, "centerX", center?.x) || dirty;
+  dirty = updateSnapshotValue(snapshot, "centerY", center?.y) || dirty;
+  dirty = updateSnapshotValue(snapshot, "centerZ", center?.z) || dirty;
+  dirty =
+    updateSnapshotValue(snapshot, "radius", boundingVolume?.radius) || dirty;
+
+  dirty =
+    updateSnapshotValue(snapshot, "pass", command._pass ?? command.pass) ||
+    dirty;
+  dirty =
+    updateSnapshotValue(
+      snapshot,
+      "moonPhysicalDepthRoute",
+      command._moonPhysicalDepthRoute === true,
+    ) || dirty;
+
+  return dirty;
+}
+
 /**
  * Passes that should be included in the octree. We only manage user
  * entity/primitive commands — NOT terrain, 3D Tiles, compute, or overlay.
@@ -296,7 +465,7 @@ const OCTREE_ELIGIBLE_PASSES = [Pass.OPAQUE, Pass.TRANSLUCENT];
  * @private
  */
 function isOctreeEligible(command) {
-  // C12-37 — the SceneOctree root is Earth-sized and cannot represent the
+  // The SceneOctree root is Earth-sized and cannot represent the
   // physical Moon sphere without clamping or dropping it. Keep normal frustum
   // binning and leave other `occlude === false` commands on their historical
   // octree path; only the private lunar route bypasses this acceleration tree.
