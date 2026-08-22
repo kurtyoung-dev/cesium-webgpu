@@ -12,10 +12,15 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import * as model from "./lib/gsplat-frame-variance-model.mjs";
 import {
+  D4_SCHEDULER_HISTORY_RESET_FIELDS,
   beginConsumedSourceAttestation,
   changedFootprintExtent,
+  checkEmbeddedD4SchedulerHistoryResetIsCanonical,
+  d3CellRecord,
   donorAssetScale,
+  partitionD1Captures,
   registeredFramingMatches,
+  resetD4SchedulerHistory,
   sorterWasmBinding,
   sorterWorkerBinding,
   sourceMapBindings,
@@ -121,6 +126,7 @@ function frozenRead(changedPixels = 0, overrides = {}) {
     ...record(changedPixels),
     renderCount: 1,
     readCount: 5,
+    subjectCoveragePixels: 1_000,
     fixedJulian: true,
     fixedCamera: true,
     fixedSceneState: true,
@@ -198,6 +204,76 @@ function d3Input(pattern = {}) {
   };
 }
 
+const RECORDED_CUBE_FOOTPRINT_EXTENTS = Object.freeze([
+  Object.freeze({
+    valid: true,
+    changed: 85_455,
+    borderCoveragePixels: 40,
+    extent: Object.freeze({ minX: 134, minY: 0, maxX: 889, maxY: 748 }),
+    contained: false,
+  }),
+  Object.freeze({
+    valid: true,
+    changed: 85_455,
+    borderCoveragePixels: 40,
+    extent: Object.freeze({ minX: 134, minY: 0, maxX: 889, maxY: 748 }),
+    contained: false,
+  }),
+]);
+
+function validD3CellWitness(overrides = {}) {
+  return {
+    framing: { valid: true },
+    metadata: { framingValid: true },
+    registeredFramingMatch: true,
+    ...overrides,
+  };
+}
+
+function recordedCubeCell(subject = d3CellRecord, raw = validD3CellWitness()) {
+  return subject(raw, RECORDED_CUBE_FOOTPRINT_EXTENTS, record(0));
+}
+
+function d3A1Holds(subject) {
+  const cell = recordedCubeCell(subject);
+  return (
+    cell.framingValid === true &&
+    cell.footprintPixels === 85_455 &&
+    cell.subjectCoverageContained === false &&
+    cell.borderCoveragePixels > 0
+  );
+}
+
+function d3ReplayInput(subject = d3CellRecord) {
+  const towerExtent = [
+    {
+      valid: true,
+      changed: 90_000,
+      borderCoveragePixels: 0,
+      extent: { minX: 200, minY: 100, maxX: 800, maxY: 700 },
+      contained: true,
+    },
+  ];
+  return {
+    fixedJulian: true,
+    fixedCameras: true,
+    cells: {
+      towerAtTower: subject(
+        validD3CellWitness(),
+        towerExtent,
+        record(OVER_BAR_PIXELS),
+      ),
+      towerAtCube: subject(
+        validD3CellWitness(),
+        towerExtent,
+        record(OVER_BAR_PIXELS),
+      ),
+      cubeAtTower: recordedCubeCell(subject),
+      cubeAtCube: recordedCubeCell(subject),
+    },
+  };
+}
+
 function sortSnapshot(overrides = {}) {
   const snapshot = {
     sourceObjectId: 11,
@@ -254,6 +330,7 @@ function spatialRecord(options = {}) {
   return {
     canvasPixels: PIXELS,
     changedPixels,
+    foregroundArea: 300_000,
     edgeArea: 100_000,
     interiorArea: 200_000,
     edgeChanged,
@@ -393,6 +470,19 @@ test("D1 decides frozen-frame stability and its cube control never silently pass
   const advanced = d1Input();
   advanced.tower.renderCount = 2;
   assert.equal(model.evaluateD1FrozenFrame(advanced).status, "STRUCTURAL");
+});
+
+test("D1 rejects a zero-coverage control without confusing it with zero variance", () => {
+  const renderedQuiet = model.evaluateD1FrozenFrame(d1Input(0, 0));
+  assert.equal(renderedQuiet.status, "PASS");
+  assert.equal(renderedQuiet.measurements.control, 0);
+  assert.ok(renderedQuiet.measurements.controlSubjectCoveragePixels > 0);
+
+  const blank = d1Input(0, 0);
+  blank.control.subjectCoveragePixels = 0;
+  const result = model.evaluateD1FrozenFrame(blank);
+  assert.equal(result.status, "STRUCTURAL");
+  assert.deepEqual(result.structural, ["control:subject-not-rendered"]);
 });
 
 test("D1 is mandatory and makes requested downstream lanes ineligible", () => {
@@ -560,6 +650,58 @@ test("D3 classifies the complete asset/framing cross without de-scoring the red"
   assert.equal(model.evaluateD3AssetFramingCross(clipped).status, "STRUCTURAL");
 });
 
+test("A1 D3 records border coverage without invalidating registered framing", () => {
+  const cell = recordedCubeCell();
+  assert.equal(cell.framingValid, true);
+  assert.equal(cell.footprintPixels, 85_455);
+  assert.equal(cell.subjectCoverageContained, false);
+  assert.ok(cell.borderCoveragePixels > 0);
+});
+
+test("A2 recorded cube witnesses reach a scored D3 asset classification", () => {
+  const result = model.evaluateD3AssetFramingCross(d3ReplayInput());
+  assert.equal(
+    result.structural.some((reason) =>
+      /^D3:cubeAt(?:Tower|Cube):framing-invalid$/u.test(reason),
+    ),
+    false,
+  );
+  assert.equal(result.status, "FAIL");
+  assert.equal(result.classification, "ASSET_CONTENT");
+});
+
+test("A3 genuine D3 framing failures retain their cell-specific reason", () => {
+  for (const raw of [
+    validD3CellWitness({ framing: { valid: false } }),
+    validD3CellWitness({ metadata: { framingValid: false } }),
+    validD3CellWitness({ registeredFramingMatch: false }),
+  ]) {
+    const input = d3ReplayInput();
+    input.cells.cubeAtTower = d3CellRecord(
+      raw,
+      RECORDED_CUBE_FOOTPRINT_EXTENTS,
+      record(0),
+    );
+    const result = model.evaluateD3AssetFramingCross(input);
+    assert.equal(result.status, "STRUCTURAL");
+    assert.ok(result.structural.includes("D3:cubeAtTower:framing-invalid"));
+  }
+});
+
+test("A4 an empty D3 footprint is named independently from framing", () => {
+  const input = d3ReplayInput();
+  input.cells.cubeAtTower = d3CellRecord(validD3CellWitness(), [], record(0));
+  const result = model.evaluateD3AssetFramingCross(input);
+  assert.equal(result.status, "STRUCTURAL");
+  assert.ok(
+    result.structural.includes("D3:cubeAtTower:subject-footprint-empty"),
+  );
+  assert.equal(
+    result.structural.includes("D3:cubeAtTower:framing-invalid"),
+    false,
+  );
+});
+
 test("D4 separates permutation content, expected source identity, resident recommit, input drift, and pinned control", () => {
   const stable = model.evaluateD4SortedIndexIdentity(d4Input());
   assert.equal(stable.status, "FAIL");
@@ -595,6 +737,54 @@ test("D4 separates permutation content, expected source identity, resident recom
     model.evaluateD4SortedIndexIdentity(controlInput).classification,
     "CONTROL_FIRED",
   );
+});
+
+function d4ResetHolds(subject) {
+  const previousViewMatrix = new Float64Array(16).map(
+    (_value, index) => index + 1,
+  );
+  const primitive = {
+    _lastSteadySortFrameNumber: 42,
+    _hasLastSteadySortCameraPosition: true,
+    _hasLastSteadySortCameraDirection: true,
+    _prevViewMatrix: previousViewMatrix,
+  };
+  const C = {
+    Matrix4: {
+      ZERO: Object.freeze(new Array(16).fill(0)),
+      clone(source, result) {
+        for (let index = 0; index < 16; index++) result[index] = source[index];
+        return result;
+      },
+    },
+  };
+  subject(C, primitive);
+  return (
+    primitive._lastSteadySortFrameNumber === -1 &&
+    primitive._hasLastSteadySortCameraPosition === false &&
+    primitive._hasLastSteadySortCameraDirection === false &&
+    primitive._prevViewMatrix === previousViewMatrix &&
+    [...previousViewMatrix].every((value) => value === 0)
+  );
+}
+
+test("B1 the canonical D4 reset clears all scheduler history in place", () => {
+  const rawProbeSource = fs.readFileSync(PROBE_PATH, "utf8");
+  assert.deepEqual(
+    checkEmbeddedD4SchedulerHistoryResetIsCanonical(rawProbeSource),
+    [],
+  );
+  assert.deepEqual(
+    checkEmbeddedD4SchedulerHistoryResetIsCanonical(PROBE_SOURCE),
+    [],
+  );
+  assert.equal(d4ResetHolds(resetD4SchedulerHistory), true);
+  assert.deepEqual(D4_SCHEDULER_HISTORY_RESET_FIELDS, [
+    "_lastSteadySortFrameNumber",
+    "_hasLastSteadySortCameraPosition",
+    "_hasLastSteadySortCameraDirection",
+    "_prevViewMatrix",
+  ]);
 });
 
 test("D5 uses area-normalized edge/interior rates and retains the tower red", () => {
@@ -662,6 +852,80 @@ function image(width, height, onPixels, changedPixels = new Map()) {
   return { width, height, channels: 4, data };
 }
 
+function blankSpatialRecord(subject = model) {
+  const blank = image(5, 5, new Set());
+  return subject.analyzeSpatialDistribution(blank, blank, blank);
+}
+
+function renderedQuietDiscSpatialRecord(subject = model) {
+  const foreground = new Set();
+  for (let y = 0; y < 7; y++) {
+    for (let x = 0; x < 7; x++) {
+      if ((x - 3) ** 2 + (y - 3) ** 2 <= 4) foreground.add(y * 7 + x);
+    }
+  }
+  const off = image(7, 7, new Set());
+  const on = image(7, 7, foreground);
+  return subject.analyzeSpatialDistribution(on, on, off);
+}
+
+function sliverSpatialRecord(subject = model) {
+  const foreground = new Set([11, 12, 13]);
+  const off = image(5, 5, new Set());
+  const on = image(5, 5, foreground);
+  return subject.analyzeSpatialDistribution(on, on, off);
+}
+
+test("C1 blank on/off frames report zero foreground, edge, and interior area", () => {
+  const blank = blankSpatialRecord();
+  assert.equal(blank.foregroundArea, 0);
+  assert.equal(blank.edgeArea, 0);
+  assert.equal(blank.interiorArea, 0);
+});
+
+test("C2 a blank D5 control is void with one named reason", () => {
+  const result = model.evaluateD5SpatialDistribution(
+    d5Input(spatialRecord(), blankSpatialRecord()),
+  );
+  assert.equal(result.status, "STRUCTURAL");
+  assert.deepEqual(result.structural, ["D5-control:subject-not-rendered"]);
+  assert.equal(
+    result.structural.some((reason) =>
+      /D5-control:(?:edgeRate|interiorRate|empty-edge-region|empty-interior-region)/u.test(
+        reason,
+      ),
+    ),
+    false,
+  );
+  assert.deepEqual(result.notes, [
+    "the unit-cube control produced zero rendered coverage — the control did not render and cannot satisfy or fire the lane",
+  ]);
+});
+
+test("C3 a rendered zero-variance D5 disc satisfies the coverage precondition", () => {
+  const result = model.evaluateD5SpatialDistribution(
+    d5Input(spatialRecord(), renderedQuietDiscSpatialRecord()),
+  );
+  assert.equal(result.status, "FAIL");
+  assert.deepEqual(result.structural, []);
+  assert.equal(result.measurements.controlEdgeRate, 0);
+  assert.equal(result.measurements.controlInteriorRate, 0);
+  assert.ok(result.measurements.controlForegroundArea > 0);
+  assert.match(result.failures[0], /D5:tower-variance-over-bar/u);
+});
+
+test("C4 a rendered one-pixel sliver retains the empty-interior diagnosis", () => {
+  const result = model.evaluateD5SpatialDistribution(
+    d5Input(spatialRecord(), sliverSpatialRecord()),
+  );
+  assert.equal(result.status, "STRUCTURAL");
+  assert.ok(result.structural.includes("D5-control:empty-interior-region"));
+  assert.equal(
+    result.structural.includes("D5-control:subject-not-rendered"),
+    false,
+  );
+});
+
 test("pixel arithmetic examines every pair and derives a silhouette boundary", () => {
   const foreground = new Set([6, 7, 8, 11, 12, 13, 16, 17, 18]);
   const off = image(5, 5, new Set());
@@ -676,6 +940,7 @@ test("pixel arithmetic examines every pair and derives a silhouette boundary", (
   });
 
   const interiorMap = model.analyzeSpatialDistribution(base, interior, off);
+  assert.equal(interiorMap.foregroundArea, 9);
   assert.equal(interiorMap.edgeArea, 8);
   assert.equal(interiorMap.interiorArea, 1);
   assert.equal(interiorMap.edgeChanged, 0);
@@ -689,6 +954,31 @@ test("pixel arithmetic examines every pair and derives a silhouette boundary", (
   assert.equal(edgeMap.edgeChanged, 1);
   assert.equal(edgeMap.interiorChanged, 0);
   assert.equal(edgeMap.interiorComponentCount, 0);
+});
+
+function d1OffFrameExclusionHolds(subject = partitionD1Captures) {
+  const rendered = image(3, 3, new Set([4]));
+  const off = image(3, 3, new Set());
+  const captures = [
+    ...new Array(5)
+      .fill(undefined)
+      .map((_value, index) => ({ name: `read-${index}`, frame: rendered })),
+    { name: "off", frame: off },
+  ];
+  const partition = subject(captures);
+  const readFrames = partition.readCaptures.map((capture) => capture.frame);
+  return (
+    partition.readCaptures.length === 5 &&
+    partition.offCapture === captures[5] &&
+    model.maxPairwiseChangedPixels(readFrames).changedPixels === 0 &&
+    model.maxPairwiseChangedPixels([...readFrames, partition.offCapture.frame])
+      .changedPixels > 0 &&
+    model.changedPixelCount(readFrames[0], partition.offCapture.frame) > 0
+  );
+}
+
+test("D1 scores only five reads and uses the later off frame only for coverage", () => {
+  assert.equal(d1OffFrameExclusionHolds(), true);
 });
 
 test("probe source uses only canonical fused capture and write-once evidence", () => {
@@ -976,10 +1266,14 @@ test("D3 framing helpers execute tangent, donor-scale, and persisted-edge contro
     data: new Uint8ClampedArray(blank.data),
   };
   centered.data[(1 * 4 + 1) * 4] = 255;
-  assert.equal(changedFootprintExtent(centered, blank).contained, true);
+  const centeredExtent = changedFootprintExtent(centered, blank);
+  assert.equal(centeredExtent.contained, true);
+  assert.equal(centeredExtent.borderCoveragePixels, 0);
   const edge = { ...blank, data: new Uint8ClampedArray(blank.data) };
   edge.data[0] = 255;
-  assert.equal(changedFootprintExtent(edge, blank).contained, false);
+  const edgeExtent = changedFootprintExtent(edge, blank);
+  assert.equal(edgeExtent.contained, false);
+  assert.equal(edgeExtent.borderCoveragePixels, 1);
 });
 
 const CAPTURE_MUTANTS = [
@@ -1015,7 +1309,11 @@ const CAPTURE_MUTANTS = [
 ];
 
 test("four loud capture-source mutants are killed and the real probe survives", async (t) => {
-  assert.equal(CAPTURE_MUTANTS.length, 4);
+  assert.equal(
+    CAPTURE_MUTANTS.length,
+    4,
+    "adding a mutant is intended — bump this count",
+  );
   for (const mutant of CAPTURE_MUTANTS) {
     await t.test(mutant.id, () => {
       assert.deepEqual(
@@ -1055,6 +1353,18 @@ function checkProbeWiring(source) {
   require(source.includes(
     "if (renderCount === 0) {",
   ), "D1-no-one-render-guard");
+  require(source.includes(
+    "const towerPartition = partitionD1Captures(towerRaw.captures);",
+  ) &&
+    source.includes(
+      "const cubePartition = partitionD1Captures(cubeRaw.captures);",
+    ) &&
+    source.includes("towerPartition.readCaptures.map((capture) =>") &&
+    source.includes("cubePartition.readCaptures.map((capture) =>") &&
+    source.includes("tower.frames.get(towerPartition.offCapture.name)") &&
+    source.includes(
+      "cube.frames.get(cubePartition.offCapture.name)",
+    ), "D1-off-frame-not-separated-from-scored-reads");
 
   require(source.includes(
     'const orders = ["AA", "BB", "AB", "BA"];',
@@ -1093,10 +1403,10 @@ function checkProbeWiring(source) {
     "function registeredFramingMatches(donor, crossed)",
   ) &&
     source.includes(
-      "raw.registeredFramingMatch === true",
+      "rawCellWitnesses?.registeredFramingMatch === true",
     ), "D3-donor-framing-match-not-proven");
   require(source.includes(
-    "footprintPixels: Math.max(",
+    "const footprintPixels = Math.max(",
   ), "D3-persisted-footprint-not-wired");
   require(source.includes("captureRange - sphere.radius > near") &&
     source.includes("centerOnCanvas") &&
@@ -1116,15 +1426,19 @@ function checkProbeWiring(source) {
     ) &&
     source.includes("canvas.height - configuration.framingMarginPixels") &&
     source.includes("radiusPx >= 1"), "D3-framing-validity-not-proven");
-  require(source.includes(
-    "footprintExtents.every((extent) => extent.contained === true)",
-  ) &&
-    source.includes("minX > 0") &&
+  require(source.includes("minX > 0") &&
     source.includes("maxX < left.width - 1") &&
     source.includes("minY > 0") &&
+    source.includes("maxY < left.height - 1") &&
+    source.includes("subjectCoverageContained = extents.every(") &&
+    source.includes("    subjectCoverageContained,") &&
+    source.includes("    borderCoveragePixels,") &&
     source.includes(
-      "maxY < left.height - 1",
-    ), "D3-persisted-extent-containment-not-proven");
+      "subjectCoverageContained: cells[cell].subjectCoverageContained",
+    ) &&
+    source.includes(
+      "borderCoveragePixels: cells[cell].borderCoveragePixels",
+    ), "D3-persisted-extent-containment-not-recorded");
 
   require(source.includes(
     "const initialQuiescence = await waitForSortQuiescence();",
@@ -1142,6 +1456,24 @@ function checkProbeWiring(source) {
   require(source.includes(
     "for (let index = 0; index < 3; index++)",
   ), "D4-not-three-output-snapshots");
+  require(checkEmbeddedD4SchedulerHistoryResetIsCanonical(source).length ===
+    0 &&
+    source.includes("resetD4SchedulerHistory(C, primitive);") &&
+    source.includes(
+      "C.Matrix4.clone(C.Matrix4.ZERO, primitive._prevViewMatrix);",
+    ), "D4-scheduler-history-reset-not-canonical");
+  const d4RequestLoopSource = source.slice(
+    source.indexOf("for (let index = 0; index < 3; index++)"),
+    source.indexOf("const pinnedInputSignature = await materializeSortInput("),
+  );
+  // The settled-scene early return rewrites the memo on every scheduling
+  // render, so a reset hoisted out of the loop only binds the first request.
+  require(countOccurrences(source, "resetD4SchedulerHistory(C, primitive);") ===
+    1 &&
+    countOccurrences(
+      d4RequestLoopSource,
+      "\n      resetD4SchedulerHistory(C, primitive);\n      renderNow();\n",
+    ) === 1, "D4-scheduler-history-reset-not-per-request");
   require(source.includes(
     "positionsSha256: await digestHex(rawInput.positions)",
   ) &&
@@ -1170,6 +1502,11 @@ function checkProbeWiring(source) {
   require(countOccurrences(d5Source, "analyzeSpatialDistribution(") === 2 &&
     countOccurrences(d5Source, '.frames.get("off")') ===
       2, "D5-on-on-off-maps-not-wired");
+  require(source.includes("primitive?._webgpuCache?.pipeline != null &&") &&
+    source.includes("primitive?._webgpuCache?.pickPipeline != null") &&
+    source.includes(
+      'structural.push("webgpu-splat-pipeline-not-ready");',
+    ), "webgpu-splat-pipeline-readiness-not-wired");
 
   for (const boundaryEntry of [
     "buildIdentity: BUILD_IDENTITY_SOURCE_PATH",
@@ -1286,12 +1623,27 @@ function checkProbeWiring(source) {
   return failures;
 }
 
+function loadProbeFunction(source, name) {
+  // eslint-disable-next-line no-new-func
+  return new Function(`${extractFunction(source, name)}; return ${name};`)();
+}
+
 const PROBE_WIRING_MUTANTS = [
   {
     id: "P-D1-run-downstream-after-decider-red",
     anchor: 'if (results.some((result) => result.status !== "PASS")) {',
     replacement: "if (false) {",
     reason: "D1-no-downstream-short-circuit",
+  },
+  {
+    id: "M-D1-b-score-off-frame-as-read",
+    anchor: "return { readCaptures, offCapture: offCaptures[0] };",
+    replacement: "return { readCaptures: list, offCapture: offCaptures[0] };",
+    reason: "D1-off-frame-not-separated-from-scored-reads",
+    rule: (source) =>
+      d1OffFrameExclusionHolds(
+        loadProbeFunction(source, "partitionD1Captures"),
+      ),
   },
   {
     id: "P-D2-drop-reverse-order-history",
@@ -1321,8 +1673,8 @@ const PROBE_WIRING_MUTANTS = [
   },
   {
     id: "P-D3-invent-subject-footprint",
-    anchor: "footprintPixels: Math.max(",
-    replacement: "footprintPixels: 1 || Math.max(",
+    anchor: "const footprintPixels = Math.max(",
+    replacement: "const footprintPixels = 1 || Math.max(",
     reason: "D3-persisted-footprint-not-wired",
   },
   {
@@ -1333,8 +1685,8 @@ const PROBE_WIRING_MUTANTS = [
   },
   {
     id: "P-D3-assume-donor-framing-match",
-    anchor: "raw.registeredFramingMatch === true &&",
-    replacement: "true &&",
+    anchor: "rawCellWitnesses?.registeredFramingMatch === true,",
+    replacement: "true,",
     reason: "D3-donor-framing-match-not-proven",
   },
   {
@@ -1362,9 +1714,30 @@ const PROBE_WIRING_MUTANTS = [
   },
   {
     id: "P-D3-ignore-persisted-border-containment",
-    anchor: "footprintExtents.every((extent) => extent.contained === true)",
-    replacement: "footprintExtents.every((extent) => extent.valid === true)",
-    reason: "D3-persisted-extent-containment-not-proven",
+    anchor: "    subjectCoverageContained,",
+    replacement: "    subjectCoverageContained: true,",
+    reason: "D3-persisted-extent-containment-not-recorded",
+  },
+  {
+    id: "M-D3-a-reconflate-framing-with-coverage-containment",
+    anchor: [
+      "      rawCellWitnesses?.registeredFramingMatch === true,",
+      "    footprintPixels,",
+    ].join("\n"),
+    replacement: [
+      "      rawCellWitnesses?.registeredFramingMatch === true &&",
+      "      extents.every((extent) => extent?.contained === true),",
+      "    footprintPixels,",
+    ].join("\n"),
+    reason: "D3-framing-coverage-separation-not-preserved",
+    rule: (source) => d3A1Holds(loadProbeFunction(source, "d3CellRecord")),
+  },
+  {
+    id: "M-D3-c-inert-coverage-caveat-computation",
+    anchor: "  if (footprintPixels > 0) {",
+    replacement: "  if (false && footprintPixels > 0) {",
+    reason: "D3-coverage-caveat-computation-inert",
+    rule: (source) => d3A1Holds(loadProbeFunction(source, "d3CellRecord")),
   },
   {
     id: "P-Q1-quiesce-on-advancing-frame-counter",
@@ -1391,10 +1764,86 @@ const PROBE_WIRING_MUTANTS = [
     reason: "D4-exact-input-hash-dropped",
   },
   {
+    id: "M-D4-a-drop-previous-view-matrix-reset",
+    anchor: [
+      "function resetD4SchedulerHistory(C, primitive) {",
+      "  primitive._lastSteadySortFrameNumber = -1;",
+      "  primitive._hasLastSteadySortCameraPosition = false;",
+      "  primitive._hasLastSteadySortCameraDirection = false;",
+      "  C.Matrix4.clone(C.Matrix4.ZERO, primitive._prevViewMatrix);",
+      "}",
+      "",
+      "function extractEmbeddedD4SchedulerHistoryReset(probeSource) {",
+    ].join("\n"),
+    replacement: [
+      "function resetD4SchedulerHistory(C, primitive) {",
+      "  primitive._lastSteadySortFrameNumber = -1;",
+      "  primitive._hasLastSteadySortCameraPosition = false;",
+      "  primitive._hasLastSteadySortCameraDirection = false;",
+      "}",
+      "",
+      "function extractEmbeddedD4SchedulerHistoryReset(probeSource) {",
+    ].join("\n"),
+    reason: "D4-scheduler-history-reset-not-canonical",
+    rule: (source) =>
+      d4ResetHolds(loadProbeFunction(source, "resetD4SchedulerHistory")),
+  },
+  {
+    id: "M-D4-b-inert-scheduler-history-reset",
+    anchor: [
+      "function resetD4SchedulerHistory(C, primitive) {",
+      "  primitive._lastSteadySortFrameNumber = -1;",
+      "  primitive._hasLastSteadySortCameraPosition = false;",
+      "  primitive._hasLastSteadySortCameraDirection = false;",
+      "  C.Matrix4.clone(C.Matrix4.ZERO, primitive._prevViewMatrix);",
+      "}",
+      "",
+      "function extractEmbeddedD4SchedulerHistoryReset(probeSource) {",
+    ].join("\n"),
+    replacement: [
+      "function resetD4SchedulerHistory(C, primitive) {",
+      "  if (false && index >= 0) {",
+      "    primitive._lastSteadySortFrameNumber = -1;",
+      "    primitive._hasLastSteadySortCameraPosition = false;",
+      "    primitive._hasLastSteadySortCameraDirection = false;",
+      "    C.Matrix4.clone(C.Matrix4.ZERO, primitive._prevViewMatrix);",
+      "  }",
+      "}",
+      "",
+      "function extractEmbeddedD4SchedulerHistoryReset(probeSource) {",
+    ].join("\n"),
+    reason: "D4-scheduler-history-reset-not-canonical",
+    rule: (source) =>
+      d4ResetHolds(loadProbeFunction(source, "resetD4SchedulerHistory")),
+  },
+  {
+    id: "M-D4-c-hoist-scheduler-history-reset-out-of-the-request-loop",
+    anchor: [
+      "      resetD4SchedulerHistory(C, primitive);",
+      "      renderNow();",
+    ].join("\n"),
+    replacement: [
+      "      if (index === 0) {",
+      "        resetD4SchedulerHistory(C, primitive);",
+      "      }",
+      "      renderNow();",
+    ].join("\n"),
+    reason: "D4-scheduler-history-reset-not-per-request",
+  },
+  {
     id: "P-D5-assume-fixed-time",
     anchor: "towerRaw.metadata.fixedJulian === true &&",
     replacement: "true ||",
     reason: "D5-fixed-witnesses-dropped",
+  },
+  {
+    id: "P-WGPU-drop-splat-pipeline-readiness",
+    anchor: [
+      "primitive?._webgpuCache?.pipeline != null &&",
+      "        primitive?._webgpuCache?.pickPipeline != null",
+    ].join("\n"),
+    replacement: "true",
+    reason: "webgpu-splat-pipeline-readiness-not-wired",
   },
   {
     id: "P-E1-drop-decoder-from-source-boundary",
@@ -1567,7 +2016,11 @@ const PROBE_WIRING_MUTANTS = [
 ];
 
 test("probe lane wiring and immutable evidence kill loud source mutants", async (t) => {
-  assert.equal(PROBE_WIRING_MUTANTS.length, 38);
+  assert.equal(
+    PROBE_WIRING_MUTANTS.length,
+    45,
+    "adding a mutant is intended — bump this count",
+  );
   assert.deepEqual(checkProbeWiring(PROBE_SOURCE), []);
   for (const mutant of PROBE_WIRING_MUTANTS) {
     await t.test(mutant.id, () => {
@@ -1577,6 +2030,19 @@ test("probe lane wiring and immutable evidence kill loud source mutants", async 
         mutant.replacement,
         mutant.id,
       );
+      if (mutant.rule) {
+        assert.equal(
+          mutant.rule(PROBE_SOURCE),
+          true,
+          `${mutant.id}: real probe behavior rejected`,
+        );
+        assert.equal(
+          mutant.rule(source),
+          false,
+          `${mutant.id}: behavioral mutant survived`,
+        );
+        return;
+      }
       const failures = checkProbeWiring(source);
       assert.ok(
         failures.includes(mutant.reason),
@@ -1633,6 +2099,27 @@ const MODEL_MUTANTS = [
       delete input.tower.fixedSortInput;
       delete input.control.fixedSortInput;
       return subject.evaluateD1FrozenFrame(input).status === "STRUCTURAL";
+    },
+  },
+  {
+    lane: "D1",
+    id: "M-D1-a-delete-subject-coverage-precondition",
+    anchor: [
+      "  if (!(record?.subjectCoveragePixels > 0)) {",
+      "    reasons.push(`${label}:subject-not-rendered`);",
+      "  }",
+    ].join("\n"),
+    replacement: "  // mutant deleted the subject-coverage precondition",
+    pins: "a zero-coverage control is void, never a satisfied control",
+    rule: (subject) => {
+      const input = d1Input(0, 0);
+      input.control.subjectCoveragePixels = 0;
+      const result = subject.evaluateD1FrozenFrame(input);
+      return (
+        result.status === "STRUCTURAL" &&
+        result.structural.length === 1 &&
+        result.structural[0] === "control:subject-not-rendered"
+      );
     },
   },
   {
@@ -1886,6 +2373,63 @@ const MODEL_MUTANTS = [
   },
   {
     lane: "D5",
+    id: "M-D5-a-delete-zero-coverage-branch",
+    anchor: [
+      "  if (record?.foregroundArea === 0) {",
+      "    reasons.push(`${label}:subject-not-rendered`);",
+      "    return;",
+      "  }",
+    ].join("\n"),
+    replacement: "  // mutant deleted the zero-coverage branch",
+    pins: "zero rendered coverage has one named structural diagnosis",
+    rule: (subject) => {
+      const result = subject.evaluateD5SpatialDistribution(
+        d5Input(spatialRecord(), blankSpatialRecord(subject)),
+      );
+      return (
+        result.status === "STRUCTURAL" &&
+        result.structural.length === 1 &&
+        result.structural[0] === "D5-control:subject-not-rendered"
+      );
+    },
+  },
+  {
+    lane: "D5",
+    id: "M-D5-b-inert-zero-coverage-branch",
+    anchor: "  if (record?.foregroundArea === 0) {",
+    replacement: "  if (false && record?.foregroundArea === 0) {",
+    pins: "the zero-coverage diagnosis must be reachable",
+    rule: (subject) => {
+      const result = subject.evaluateD5SpatialDistribution(
+        d5Input(spatialRecord(), blankSpatialRecord(subject)),
+      );
+      return (
+        result.status === "STRUCTURAL" &&
+        result.structural.length === 1 &&
+        result.structural[0] === "D5-control:subject-not-rendered"
+      );
+    },
+  },
+  {
+    lane: "D5",
+    id: "M-D5-c-unconditional-zero-coverage-reason",
+    anchor: "  if (record?.foregroundArea === 0) {",
+    replacement: "  if (true) {",
+    pins: "a rendered quiet control must not be voided",
+    rule: (subject) => {
+      const result = subject.evaluateD5SpatialDistribution(
+        d5Input(spatialRecord(), renderedQuietDiscSpatialRecord(subject)),
+      );
+      return (
+        result.status === "FAIL" &&
+        result.structural.length === 0 &&
+        result.measurements.controlEdgeRate === 0 &&
+        result.measurements.controlInteriorRate === 0
+      );
+    },
+  },
+  {
+    lane: "D5",
     id: "D5-M1-allow-empty-edge-region",
     anchor:
       "if (!(record?.edgeArea > 0)) reasons.push(`${label}:empty-edge-region`);",
@@ -1897,6 +2441,7 @@ const MODEL_MUTANTS = [
       input.tower.edgeArea = 0;
       input.tower.edgeChanged = 0;
       input.tower.edgeRate = 0;
+      input.tower.foregroundArea = input.tower.interiorArea;
       return (
         subject.evaluateD5SpatialDistribution(input).status === "STRUCTURAL"
       );
@@ -1972,17 +2517,25 @@ const MODEL_MUTANTS = [
   },
 ];
 
-test("each D1-D5 gate kills four loud model mutants in both directions", async (t) => {
-  assert.equal(MODEL_MUTANTS.length, 26);
-  assert.deepEqual(
-    Object.fromEntries(
-      model.FRAME_VARIANCE_LANE_IDS.map((lane) => [
-        lane,
-        MODEL_MUTANTS.filter((mutant) => mutant.lane === lane).length,
-      ]),
-    ),
-    { D1: 4, D2: 7, D3: 4, D4: 6, D5: 5 },
+test("each D1-D5 gate kills its exact loud model-mutant set", async (t) => {
+  assert.equal(
+    MODEL_MUTANTS.length,
+    30,
+    "adding a mutant is intended — bump this count",
   );
+  for (const [lane, expected] of Object.entries({
+    D1: 5,
+    D2: 7,
+    D3: 4,
+    D4: 6,
+    D5: 8,
+  })) {
+    assert.equal(
+      MODEL_MUTANTS.filter((mutant) => mutant.lane === lane).length,
+      expected,
+      `${lane}: adding a mutant is intended — bump this count`,
+    );
+  }
   for (const lane of model.FRAME_VARIANCE_LANE_IDS) {
     assert.ok(
       MODEL_MUTANTS.filter((mutant) => mutant.lane === lane).length >= 4,
@@ -2021,6 +2574,59 @@ function extractFunction(source, name) {
   }
   throw new Error(`${name}: unterminated function declaration`);
 }
+
+function privateReads(source, receiver) {
+  return new Set(
+    [
+      ...source.matchAll(new RegExp(`\\b${receiver}\\.(_[A-Za-z0-9_]+)`, "gu")),
+    ].map((match) => match[1]),
+  );
+}
+
+function d4SchedulerMemoReads(source) {
+  const settledComparison =
+    "Matrix4.equals(camera.viewMatrix, this._prevViewMatrix)";
+  const comparisonIndex = source.indexOf(settledComparison);
+  assert.ok(comparisonIndex >= 0, "D4 settled-scene comparison is missing");
+  const settledStart = source.lastIndexOf("if (", comparisonIndex);
+  const settledEnd = source.indexOf("return;", comparisonIndex);
+  assert.ok(
+    settledStart >= 0 && settledEnd > comparisonIndex,
+    "D4 settled-scene early-return condition is incomplete",
+  );
+  const settledCondition = source.slice(settledStart, settledEnd);
+  assert.match(settledCondition, /!hasPendingWork/u);
+
+  const predicateReads = privateReads(
+    extractFunction(source, "shouldStartSteadySort"),
+    "primitive",
+  );
+  const resetMemos = privateReads(settledCondition, "this");
+  for (const field of predicateReads) {
+    const guardingFlag = field.replace(/^_last/u, "_hasLast");
+    const isGuardedPayload =
+      guardingFlag !== field && predicateReads.has(guardingFlag);
+    if (!isGuardedPayload) resetMemos.add(field);
+  }
+  return resetMemos;
+}
+
+function d4SchedulerResetCovers(source) {
+  const resetFields = new Set(D4_SCHEDULER_HISTORY_RESET_FIELDS);
+  return [...d4SchedulerMemoReads(source)].every((field) =>
+    resetFields.has(field),
+  );
+}
+
+test("B2 every engine scheduler memo before publication is reset by D4", () => {
+  assert.deepEqual([...d4SchedulerMemoReads(ENGINE_SOURCE)].sort(), [
+    "_hasLastSteadySortCameraDirection",
+    "_hasLastSteadySortCameraPosition",
+    "_lastSteadySortFrameNumber",
+    "_prevViewMatrix",
+  ]);
+  assert.equal(d4SchedulerResetCovers(ENGINE_SOURCE), true);
+});
 
 function extractConstant(source, name) {
   const expression = new RegExp(`const ${name} = ([^;]+);`, "u").exec(
@@ -2167,15 +2773,32 @@ const ENGINE_MUTANTS = [
     rule: (predicate) =>
       runSortPredicate(predicate, sortPredicateFixture()) === false,
   },
+  {
+    id: "S5-add-unreset-settled-scene-memo",
+    anchor: [
+      "!hasPendingWork &&",
+      "        Matrix4.equals(camera.viewMatrix, this._prevViewMatrix)",
+    ].join("\n"),
+    replacement: [
+      "!hasPendingWork &&",
+      "        this._futureSteadySortMemo &&",
+      "        Matrix4.equals(camera.viewMatrix, this._prevViewMatrix)",
+    ].join("\n"),
+    rule: (_predicate, source) => d4SchedulerResetCovers(source),
+  },
 ];
 
-test("four loud extracted-engine mutants are killed and production survives", async (t) => {
-  assert.equal(ENGINE_MUTANTS.length, 4);
+test("five loud extracted-engine mutants are killed and production survives", async (t) => {
+  assert.equal(
+    ENGINE_MUTANTS.length,
+    5,
+    "adding a mutant is intended — bump this count",
+  );
   const production = loadShouldStartSteadySort(ENGINE_SOURCE);
   for (const mutant of ENGINE_MUTANTS) {
     await t.test(mutant.id, () => {
       assert.equal(
-        mutant.rule(production),
+        mutant.rule(production, ENGINE_SOURCE),
         true,
         `${mutant.id}: production rejected`,
       );
@@ -2187,7 +2810,7 @@ test("four loud extracted-engine mutants are killed and production survives", as
       );
       const subject = loadShouldStartSteadySort(source);
       assert.equal(
-        mutant.rule(subject),
+        mutant.rule(subject, source),
         false,
         `${mutant.id}: mutant survived`,
       );

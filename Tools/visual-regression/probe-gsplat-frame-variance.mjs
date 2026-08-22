@@ -201,6 +201,55 @@ const PROCESS_FUSE_MS = IN_RUN_WATCHDOG_MS + BROWSER_CLOSE_TIMEOUT_MS + 60_000;
 const ARTIFACT_SCHEMA = "c15-gsplat-frame-variance-artifact-v1";
 const RUNNING_SCHEMA = "c15-gsplat-frame-variance-running-v1";
 const TERMINAL_RECEIPT_SCHEMA = "c15-gsplat-frame-variance-terminal-receipt-v1";
+const D4_SCHEDULER_HISTORY_RESET_BEGIN =
+  "// ==BEGIN " + "d4-scheduler-history-reset==";
+const D4_SCHEDULER_HISTORY_RESET_END =
+  "// ==END " + "d4-scheduler-history-reset==";
+const D4_SCHEDULER_HISTORY_RESET_FIELDS = Object.freeze([
+  "_lastSteadySortFrameNumber",
+  "_hasLastSteadySortCameraPosition",
+  "_hasLastSteadySortCameraDirection",
+  "_prevViewMatrix",
+]);
+
+function resetD4SchedulerHistory(C, primitive) {
+  primitive._lastSteadySortFrameNumber = -1;
+  primitive._hasLastSteadySortCameraPosition = false;
+  primitive._hasLastSteadySortCameraDirection = false;
+  C.Matrix4.clone(C.Matrix4.ZERO, primitive._prevViewMatrix);
+}
+
+function extractEmbeddedD4SchedulerHistoryReset(probeSource) {
+  const text = String(probeSource ?? "").replace(/\r\n/g, "\n");
+  const start = text.indexOf(D4_SCHEDULER_HISTORY_RESET_BEGIN);
+  const end = text.indexOf(D4_SCHEDULER_HISTORY_RESET_END);
+  if (start < 0 || end <= start) return null;
+  const block = text
+    .slice(start + D4_SCHEDULER_HISTORY_RESET_BEGIN.length, end)
+    .replace(/^\n/, "")
+    .replace(/\n[ \t]*$/, "");
+  const lines = block.split("\n");
+  const common = lines
+    .filter((line) => line.trim().length > 0)
+    .map((line) => line.match(/^[ \t]*/u)[0])
+    .sort((left, right) => left.length - right.length)[0];
+  return lines
+    .map((line) =>
+      common && line.startsWith(common) ? line.slice(common.length) : line,
+    )
+    .join("\n");
+}
+
+function checkEmbeddedD4SchedulerHistoryResetIsCanonical(probeSource) {
+  const embedded = extractEmbeddedD4SchedulerHistoryReset(probeSource);
+  if (embedded === null) {
+    return ["the probe has no scheduler-history reset block"];
+  }
+  const canonical = resetD4SchedulerHistory.toString().replace(/\r\n/g, "\n");
+  return embedded === canonical
+    ? []
+    : ["the embedded scheduler-history reset block has drifted"];
+}
 
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
 
@@ -309,6 +358,7 @@ function assertCapturePreflight() {
   const source = fs.readFileSync(PROBE_SOURCE_PATH, "utf8");
   const failures = [
     ...checkEmbeddedFusedSnapshotIsCanonical(source),
+    ...checkEmbeddedD4SchedulerHistoryResetIsCanonical(source),
     ...checkFusedCaptureUsage(source),
   ];
   if (failures.length > 0) {
@@ -463,6 +513,24 @@ function comparisonRecord(left, right) {
     changedPixels: changedPixelCount(left, right),
     canvasPixels: left.width * left.height,
   };
+}
+
+function partitionD1Captures(captures) {
+  const list = Array.isArray(captures) ? captures : [];
+  const readCaptures = list.filter((capture) => capture?.name !== "off");
+  const offCaptures = list.filter((capture) => capture?.name === "off");
+  if (
+    readCaptures.length !== 5 ||
+    !readCaptures.every(
+      (capture, index) => capture?.name === `read-${index}`,
+    ) ||
+    offCaptures.length !== 1
+  ) {
+    throw new Error(
+      "D1 captures must contain five ordered reads and one off frame",
+    );
+  }
+  return { readCaptures, offCapture: offCaptures[0] };
 }
 
 function structuralLane(lane, backend, reasons) {
@@ -702,6 +770,15 @@ const RUN_ASSET_SCENARIO = async (configuration) => {
     return { captureSnapshot };
   };
   // ==END fused-snapshot-capture==
+
+  // ==BEGIN d4-scheduler-history-reset==
+  function resetD4SchedulerHistory(C, primitive) {
+    primitive._lastSteadySortFrameNumber = -1;
+    primitive._hasLastSteadySortCameraPosition = false;
+    primitive._hasLastSteadySortCameraDirection = false;
+    C.Matrix4.clone(C.Matrix4.ZERO, primitive._prevViewMatrix);
+  }
+  // ==END d4-scheduler-history-reset==
 
   const captures = [];
   const structural = [];
@@ -973,8 +1050,10 @@ const RUN_ASSET_SCENARIO = async (configuration) => {
       primitive?._indexes?.length === configuration.asset.expectedSplats;
     const nativeReady =
       configuration.renderer !== "webgpu" ||
-      primitive?._webgpuCache?.splatCount ===
-        configuration.asset.expectedSplats;
+      (primitive?._webgpuCache?.splatCount ===
+        configuration.asset.expectedSplats &&
+        primitive?._webgpuCache?.pipeline != null &&
+        primitive?._webgpuCache?.pickPipeline != null);
     if (sharedReady && nativeReady) break;
     await new Promise((resolve) => setTimeout(resolve, 0));
   }
@@ -990,6 +1069,13 @@ const RUN_ASSET_SCENARIO = async (configuration) => {
     primitive?._webgpuCache?.splatCount !== configuration.asset.expectedSplats
   ) {
     structural.push("webgpu-splat-buffer-not-ready");
+  }
+  if (
+    configuration.renderer === "webgpu" &&
+    (primitive?._webgpuCache?.pipeline == null ||
+      primitive?._webgpuCache?.pickPipeline == null)
+  ) {
+    structural.push("webgpu-splat-pipeline-not-ready");
   }
 
   const waitForSortQuiescence = async () => {
@@ -1153,6 +1239,14 @@ const RUN_ASSET_SCENARIO = async (configuration) => {
       appendCapture(`read-${index}`, snapshots[index]);
     }
     const postDecode = stateWitness(primitive);
+    tileset.show = false;
+    const { captureSnapshot: captureOffSnapshot } = makeFusedSnapshotCapture(
+      scene,
+      canvas,
+      () => frameTime,
+    );
+    const off = await captureOffSnapshot();
+    appendCapture("off", off);
     return {
       ok: true,
       captures,
@@ -1345,9 +1439,7 @@ const RUN_ASSET_SCENARIO = async (configuration) => {
       const requestGeneration = primitive?._splatDataGeneration ?? -1;
       // This changes scheduler history only. The camera, Julian date, splat
       // positions, model-view matrix, count, and data generation remain fixed.
-      primitive._lastSteadySortFrameNumber = -1;
-      primitive._hasLastSteadySortCameraPosition = false;
-      primitive._hasLastSteadySortCameraDirection = false;
+      resetD4SchedulerHistory(C, primitive);
       renderNow();
       const active = primitive?._activeSort;
       const requestBound =
@@ -1701,24 +1793,36 @@ async function executeD1(state, options, evidence, backend) {
     `${backend}-d1-cube`,
     cubeRaw.captures,
   );
-  const towerImages = towerRaw.captures.map((capture) =>
+  const towerPartition = partitionD1Captures(towerRaw.captures);
+  const cubePartition = partitionD1Captures(cubeRaw.captures);
+  const towerImages = towerPartition.readCaptures.map((capture) =>
     tower.frames.get(capture.name),
   );
-  const cubeImages = cubeRaw.captures.map((capture) =>
+  const cubeImages = cubePartition.readCaptures.map((capture) =>
     cube.frames.get(capture.name),
   );
+  const towerOff = tower.frames.get(towerPartition.offCapture.name);
+  const cubeOff = cube.frames.get(cubePartition.offCapture.name);
   const towerPair = maxPairwiseChangedPixels(towerImages);
   const cubePair = maxPairwiseChangedPixels(cubeImages);
+  const towerSubjectCoveragePixels = Math.max(
+    ...towerImages.map((frame) => changedPixelCount(frame, towerOff)),
+  );
+  const cubeSubjectCoveragePixels = Math.max(
+    ...cubeImages.map((frame) => changedPixelCount(frame, cubeOff)),
+  );
   const canvasPixels = VIEWPORT.width * VIEWPORT.height;
   const result = evaluateD1FrozenFrame({
     tower: {
       ...towerRaw.metadata,
       changedPixels: towerPair.changedPixels,
+      subjectCoveragePixels: towerSubjectCoveragePixels,
       canvasPixels,
     },
     control: {
       ...cubeRaw.metadata,
       changedPixels: cubePair.changedPixels,
+      subjectCoveragePixels: cubeSubjectCoveragePixels,
       canvasPixels,
     },
   });
@@ -1818,6 +1922,7 @@ function changedFootprintExtent(left, right) {
   let maxX = -1;
   let maxY = -1;
   let changed = 0;
+  let borderCoveragePixels = 0;
   for (let y = 0; y < left.height; y++) {
     for (let x = 0; x < left.width; x++) {
       const offset = (y * left.width + x) * 4;
@@ -1829,6 +1934,9 @@ function changedFootprintExtent(left, right) {
         continue;
       }
       changed++;
+      if (x === 0 || y === 0 || x === left.width - 1 || y === left.height - 1) {
+        borderCoveragePixels++;
+      }
       minX = Math.min(minX, x);
       minY = Math.min(minY, y);
       maxX = Math.max(maxX, x);
@@ -1838,6 +1946,7 @@ function changedFootprintExtent(left, right) {
   return {
     valid: true,
     changed,
+    borderCoveragePixels,
     extent: changed > 0 ? { minX, minY, maxX, maxY } : null,
     // A subject pixel on any outermost row or column could continue beyond
     // the documentary canvas. Require an observed quiet border on all sides.
@@ -1847,6 +1956,44 @@ function changedFootprintExtent(left, right) {
       minY > 0 &&
       maxX < left.width - 1 &&
       maxY < left.height - 1,
+  };
+}
+
+function d3CellRecord(rawCellWitnesses, footprintExtents, comparison) {
+  const extents = Array.isArray(footprintExtents) ? footprintExtents : [];
+  const footprintPixels = Math.max(
+    0,
+    ...extents.map((extent) => extent?.changed ?? 0),
+  );
+  let subjectCoverageContained = false;
+  let borderCoveragePixels = 0;
+  if (footprintPixels > 0) {
+    subjectCoverageContained = extents.every(
+      (extent) => extent?.contained === true,
+    );
+    borderCoveragePixels = Math.max(
+      0,
+      ...extents.map((extent) => {
+        if (Number.isInteger(extent?.borderCoveragePixels)) {
+          return Math.max(0, extent.borderCoveragePixels);
+        }
+        const bounds = extent?.extent;
+        return extent?.changed > 0 && (bounds?.minX === 0 || bounds?.minY === 0)
+          ? 1
+          : 0;
+      }),
+    );
+  }
+  return {
+    ...comparison,
+    framingValid:
+      rawCellWitnesses?.framing?.valid === true &&
+      rawCellWitnesses?.metadata?.framingValid === true &&
+      rawCellWitnesses?.registeredFramingMatch === true,
+    footprintPixels,
+    subjectCoverageContained,
+    borderCoveragePixels,
+    footprintExtents: extents,
   };
 }
 
@@ -1865,18 +2012,11 @@ async function persistD3Cell(state, evidence, backend, cell, raw) {
     changedFootprintExtent(second, off),
   ];
   return {
-    record: {
-      ...comparisonRecord(first, second),
-      framingValid:
-        raw.framing?.valid === true &&
-        raw.metadata?.framingValid === true &&
-        raw.registeredFramingMatch === true &&
-        footprintExtents.every((extent) => extent.contained === true),
-      footprintPixels: Math.max(
-        ...footprintExtents.map((extent) => extent.changed ?? 0),
-      ),
+    record: d3CellRecord(
+      raw,
       footprintExtents,
-    },
+      comparisonRecord(first, second),
+    ),
     receipts: persisted.receipts,
   };
 }
@@ -2001,7 +2141,18 @@ async function executeD3(state, options, evidence, backend) {
       {
         ...raw.framing,
         registeredFramingMatch: raw.registeredFramingMatch,
+        subjectCoverageContained: cells[cell].subjectCoverageContained,
+        borderCoveragePixels: cells[cell].borderCoveragePixels,
         persistedFootprintExtents: raw.persistedFootprintExtents,
+      },
+    ]),
+  );
+  result.measurements.coverageCaveats = Object.fromEntries(
+    Object.keys(cells).map((cell) => [
+      cell,
+      {
+        subjectCoverageContained: cells[cell].subjectCoverageContained,
+        borderCoveragePixels: cells[cell].borderCoveragePixels,
       },
     ]),
   );
@@ -2717,10 +2868,15 @@ async function main() {
 }
 
 export {
+  D4_SCHEDULER_HISTORY_RESET_FIELDS,
   beginConsumedSourceAttestation,
   changedFootprintExtent,
+  checkEmbeddedD4SchedulerHistoryResetIsCanonical,
+  d3CellRecord,
   donorAssetScale,
+  partitionD1Captures,
   registeredFramingMatches,
+  resetD4SchedulerHistory,
   sorterWasmBinding,
   sorterWorkerBinding,
   sourceMapBindings,

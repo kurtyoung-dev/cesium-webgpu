@@ -163,6 +163,9 @@ function validateFrozenReadSet(record, label, reasons) {
   if (record?.readCount !== D1_FROZEN_FRAME_READS) {
     reasons.push(`${label}:read-count-not-five`);
   }
+  if (!(record?.subjectCoveragePixels > 0)) {
+    reasons.push(`${label}:subject-not-rendered`);
+  }
   for (const [field, reason] of [
     ["fixedJulian", "julian-advanced"],
     ["fixedCamera", "camera-advanced"],
@@ -180,7 +183,12 @@ export function evaluateD1FrozenFrame(input) {
   validateFrozenReadSet(input?.control, "control", reasons);
   const tower = finiteFractionOrReason(input?.tower, "tower", reasons);
   const control = finiteFractionOrReason(input?.control, "control", reasons);
-  const measurements = { tower, control };
+  const measurements = {
+    tower,
+    control,
+    towerSubjectCoveragePixels: input?.tower?.subjectCoveragePixels,
+    controlSubjectCoveragePixels: input?.control?.subjectCoveragePixels,
+  };
   if (reasons.length > 0) {
     return structuralResult("D1", reasons, { measurements });
   }
@@ -883,6 +891,7 @@ export function analyzeSpatialDistribution(frameA, frameB, offFrame) {
     canvasPixels: total,
     changedPixels,
     changedFraction: fractionOf(changedPixels, total),
+    foregroundArea: edgeArea + interiorArea,
     edgeArea,
     interiorArea,
     edgeChanged,
@@ -905,9 +914,14 @@ export function analyzeSpatialDistribution(frameA, frameB, offFrame) {
 }
 
 function validateSpatial(record, label, reasons) {
+  if (record?.foregroundArea === 0) {
+    reasons.push(`${label}:subject-not-rendered`);
+    return;
+  }
   for (const field of [
     "canvasPixels",
     "changedPixels",
+    "foregroundArea",
     "edgeArea",
     "interiorArea",
     "edgeChanged",
@@ -945,6 +959,7 @@ function validateSpatial(record, label, reasons) {
     !Number.isInteger(record?.interiorComponentCount) ||
     !Number.isInteger(record?.largestInteriorComponent) ||
     !Number.isInteger(record?.occupiedInteriorGridCells) ||
+    record.foregroundArea !== record.edgeArea + record.interiorArea ||
     record.changedPixels < record.edgeChanged + record.interiorChanged ||
     record.edgeChanged > record.edgeArea ||
     record.interiorChanged > record.interiorArea ||
@@ -987,6 +1002,8 @@ export function evaluateD5SpatialDistribution(input) {
   const measurements = {
     towerFraction,
     controlFraction,
+    towerForegroundArea: input?.tower?.foregroundArea,
+    controlForegroundArea: input?.control?.foregroundArea,
     towerEdgeRate: input?.tower?.edgeRate,
     towerInteriorRate: input?.tower?.interiorRate,
     controlEdgeRate: input?.control?.edgeRate,
@@ -1019,7 +1036,18 @@ export function evaluateD5SpatialDistribution(input) {
     },
   };
   if (reasons.length > 0) {
-    return structuralResult("D5", reasons, { measurements });
+    const notes = [];
+    if (input?.control?.foregroundArea === 0) {
+      notes.push(
+        "the unit-cube control produced zero rendered coverage — the control did not render and cannot satisfy or fire the lane",
+      );
+    }
+    if (input?.tower?.foregroundArea === 0) {
+      notes.push(
+        "the tower subject produced zero rendered coverage — the subject did not render and cannot satisfy or fire the lane",
+      );
+    }
+    return structuralResult("D5", reasons, { measurements, notes });
   }
 
   const controlFired = frameVarianceFires(controlFraction);
