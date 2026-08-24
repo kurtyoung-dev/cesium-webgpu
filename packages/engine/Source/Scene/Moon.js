@@ -933,9 +933,10 @@ class Moon {
    * Returns a diagnostic snapshot of the moon's current per-frame state.
    * Backend-agnostic dispatch: routes through the registered moon feature
    * renderer's `getStatistics(moon)` entry point so Scene code can call this
-   * without importing from `Renderer/WebGPU/`. Returns `null` when no feature
-   * renderer is registered (e.g., WebGL backend) or when the moon hasn't yet
-   * had its first `update()` call.
+   * without importing from `Renderer/WebGPU/`. With no feature renderer
+   * registered (the WebGL backend) the equivalent WebGL snapshot is returned
+   * instead. Returns `null` when there is no scene context, or when the moon
+   * hasn't yet had its first `update()` call.
    *
    * @param {Scene} scene The owning scene; used to obtain the active
    *   GraphicsContext for the feature renderer lookup.
@@ -961,6 +962,10 @@ class Moon {
       );
       return Object.freeze({
         backend: "webgl",
+        moonTextureWidth: this._albedoMapTexture?.width ?? null,
+        moonTextureHeight: this._albedoMapTexture?.height ?? null,
+        normalTextureWidth: this._normalMapTexture?.width ?? null,
+        normalTextureHeight: this._normalMapTexture?.height ?? null,
         lifecycle,
         sourceCache: getSharedMoonDecodedSourceCache().getDiagnostics(),
         albedoTextureLoaded: lifecycle.albedo.realTexture,

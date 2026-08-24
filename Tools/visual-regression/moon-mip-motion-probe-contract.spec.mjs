@@ -37,6 +37,204 @@ import { S5_STATUS_EXIT_CODES } from "./lib/verdict-exit-gate.mjs";
 
 const probeUrl = new URL("./probe-moon-mip-motion-edge.mjs", import.meta.url);
 const probeSource = await readFile(probeUrl, "utf8");
+const normalizedProbeSource = probeSource.replace(/\r\n/gu, "\n");
+const webgpuEnvironmentRendererSource = (
+  await readFile(
+    new URL(
+      "../../packages/engine/Source/Renderer/WebGPU/WebGPUEnvironmentRenderer.js",
+      import.meta.url,
+    ),
+    "utf8",
+  )
+).replace(/\r\n/gu, "\n");
+const moonSource = (
+  await readFile(
+    new URL("../../packages/engine/Source/Scene/Moon.js", import.meta.url),
+    "utf8",
+  )
+).replace(/\r\n/gu, "\n");
+
+function loadReadinessFailureEvaluator(source) {
+  const startAnchor = "  const readinessBlockedBy =";
+  const endAnchor = "\n  const compile = report.webglShaderCompile;";
+  const start = source.indexOf(startAnchor);
+  assert.ok(start >= 0, "readiness failure block opening anchor is missing");
+  const end = source.indexOf(endAnchor, start);
+  assert.ok(end > start, "readiness failure block closing anchor is missing");
+  const block = source.slice(start, end);
+  // eslint-disable-next-line no-new-func
+  return new Function(
+    "report",
+    `"use strict"; const failures = []; const ready = report.readiness?.diagnostics;\n${block}\nreturn failures;`,
+  );
+}
+
+function loadMipDiagnosticsDerivation(source) {
+  const startAnchor = "      const expectedMipCount =";
+  const endAnchor = "      const backendDiagnostics =";
+  const start = source.indexOf(startAnchor);
+  assert.ok(start >= 0, "mip derivation opening anchor is missing");
+  const end = source.indexOf(endAnchor, start);
+  assert.ok(end > start, "mip derivation closing anchor is missing");
+  const block = source.slice(start, end);
+  // eslint-disable-next-line no-new-func
+  return new Function(
+    "stats",
+    "channel",
+    `"use strict";\n${block}\nreturn channelMipDiagnostics(stats, channel);`,
+  );
+}
+
+function loadPickContract(source) {
+  const startAnchor = "  const webGLPickContractFailures =";
+  const start = source.indexOf(startAnchor);
+  assert.ok(start >= 0, "pick contract opening anchor is missing");
+  const end = source.indexOf("\n  };", start);
+  assert.ok(end > start, "pick contract closing anchor is missing");
+  const declaration = source.slice(start, end + "\n  };".length);
+  // eslint-disable-next-line no-new-func
+  return new Function(
+    `"use strict";\n${declaration}\nreturn webGLPickContractFailures;`,
+  )();
+}
+
+function loadWebGPUBaseLevelGate(source) {
+  const startAnchor = "      const webGPUBaseLevelOnly =";
+  const endAnchor = "\n\n      const applyControlMode =";
+  const start = source.indexOf(startAnchor);
+  assert.ok(start >= 0, "WebGPU base-level gate opening anchor is missing");
+  const end = source.indexOf(endAnchor, start);
+  assert.ok(end > start, "WebGPU base-level gate closing anchor is missing");
+  const declaration = source.slice(start, end);
+  // eslint-disable-next-line no-new-func
+  return new Function(
+    `"use strict";\n${declaration}\nreturn webGPUBaseLevelOnly;`,
+  )();
+}
+
+function harnessReadinessSequence(source) {
+  const startAnchor = "    const setup = await installBrowserHarness(page);";
+  const endAnchor = "    const lanes = [];";
+  const start = source.indexOf(startAnchor);
+  assert.ok(start >= 0, "harness sequence opening anchor is missing");
+  const end = source.indexOf(endAnchor, start);
+  assert.ok(end > start, "harness sequence closing anchor is missing");
+  return source.slice(start, end);
+}
+
+function harnessReadinessDeadlineMs(sequence) {
+  const match =
+    /globalThis\.__c12MoonMipMotionProbe\.waitForReadiness\(([\d_]+)\)/u.exec(
+      sequence,
+    );
+  return match === null ? null : Number(match[1].replaceAll("_", ""));
+}
+
+function prepositionPrecedesReadiness(sequence) {
+  const position = sequence.indexOf(
+    "globalThis.__c12MoonMipMotionProbe.positionForReadiness(count)",
+  );
+  const readiness = sequence.search(
+    /globalThis\.__c12MoonMipMotionProbe\.waitForReadiness\(/u,
+  );
+  return position >= 0 && readiness > position;
+}
+
+function loadForceLod0SamplerInstall(source) {
+  const startAnchor = "        const samplerDescriptor = {";
+  const endAnchor = "        const bundleManager =";
+  const start = source.indexOf(startAnchor);
+  assert.ok(start >= 0, "force-lod0 sampler descriptor anchor is missing");
+  const end = source.indexOf(endAnchor, start);
+  assert.ok(
+    end > start,
+    "force-lod0 sampler install closing anchor is missing",
+  );
+  const block = source.slice(start, end);
+  // eslint-disable-next-line no-new-func
+  return new Function(
+    "cache",
+    "device",
+    "webGPUBaseLevelOnly",
+    `"use strict";\n${block}\nreturn {
+      baseLevelOnly: webGPUBaseLevelOnly(cache.sampler, appliedSamplerState),
+      samplerState: {
+        live: cache.sampler === appliedSamplerState.sampler,
+        lodMinClamp: appliedSamplerState.lodMinClamp,
+        lodMaxClamp: appliedSamplerState.lodMaxClamp,
+      },
+    };`,
+  );
+}
+
+function loadWebGPUMipDerivation(source, width, height) {
+  const countAnchor =
+    "const mipLevelCount = Math.floor(Math.log2(Math.max(width, height))) + 1;";
+  assert.ok(
+    source.includes(countAnchor),
+    "WebGPU mip-count derivation anchor is missing",
+  );
+  const maxLod = /^[ \t]*mipLevelCount,\n[ \t]*maxLod: (.*),$/mu.exec(source);
+  assert.ok(maxLod !== null, "WebGPU published maxLod anchor is missing");
+  // eslint-disable-next-line no-new-func
+  return new Function(
+    "width",
+    "height",
+    `"use strict";\n${countAnchor}\nreturn { mipLevelCount, maxLod: ${maxLod[1]} };`,
+  )(width, height);
+}
+
+function loadWebGLPublishedMipShape(source, channel, mipLevelCount) {
+  const prefix = channel === "albedo" ? "moon" : "normal";
+  const binding = `${channel}MipLevelCount`;
+  const block = new RegExp(
+    `^[ \\t]*${prefix}TextureMipLevelCount:[\\s\\S]*?^[ \\t]*${prefix}TextureMaxLod:[\\s\\S]*?,$`,
+    "mu",
+  ).exec(source);
+  assert.ok(block !== null, `${channel} WebGL published mip anchor is missing`);
+  // eslint-disable-next-line no-new-func
+  return new Function(binding, `"use strict"; return ({\n${block[0]}\n});`)(
+    mipLevelCount,
+  );
+}
+
+const PUBLISHED_STATISTICS_FUNCTIONS = {
+  webgpu: "function getWebGPUMoonStatistics(",
+  webgl: "getDebugStatistics(scene) {",
+};
+
+function loadPublishedDimensionShape(source, backend, state) {
+  const functionAnchor = PUBLISHED_STATISTICS_FUNCTIONS[backend];
+  const functionIndex = source.indexOf(functionAnchor);
+  assert.ok(
+    functionIndex >= 0,
+    `${backend} statistics function anchor is missing`,
+  );
+  const backendAnchor = `backend: "${backend}",`;
+  const backendIndex = source.indexOf(backendAnchor, functionIndex);
+  assert.ok(
+    backendIndex >= 0,
+    `${backend} statistics opening anchor is missing`,
+  );
+  const start = source.lastIndexOf("\n", backendIndex) + 1;
+  const endAnchor =
+    backend === "webgpu" ? "\n    pipelineReady:" : "\n        lifecycle,";
+  const end = source.indexOf(endAnchor, backendIndex);
+  assert.ok(end > start, `${backend} statistics closing anchor is missing`);
+  const fields = source.slice(start, end);
+  if (backend === "webgpu") {
+    // eslint-disable-next-line no-new-func
+    return new Function("cache", `"use strict"; return ({\n${fields}\n});`)(
+      state,
+    );
+  }
+  // eslint-disable-next-line no-new-func
+  return new Function(`"use strict"; return ({\n${fields}\n});`).call(state);
+}
+
+function removePublishedDimension(source, field) {
+  return source.replace(new RegExp(`^\\s*${field}:.*\\n`, "mu"), "");
+}
 
 function syntheticFrame({ checker = false, phase = 0 } = {}) {
   const width = 11;
@@ -457,60 +655,467 @@ test("run ids make default evidence paths unique and reject unsafe names", () =>
   );
 });
 
-test("probe requires both full texture chains and the frame-owned queue drain", () => {
-  for (const token of [
-    "moonTextureMipLevelCount",
-    "moonTextureMaxLod",
-    "normalTextureMipLevelCount",
-    "normalTextureMaxLod",
-    "_pendingTextureMipJobs",
-    "onSubmittedWorkDone",
-  ]) {
-    assert.ok(probeSource.includes(token), `missing diagnostic token ${token}`);
+test("unpublished readiness diagnostics are structural and never print equal missing operands", (t) => {
+  const completeMips = {
+    albedo: {
+      actualMipLevelCount: 12,
+      expectedMipLevelCount: 12,
+      maxLod: 11,
+      fullChain: true,
+    },
+    normal: {
+      actualMipLevelCount: 11,
+      expectedMipLevelCount: 11,
+      maxLod: 10,
+      fullChain: true,
+    },
+  };
+  const report = {
+    readiness: {
+      ready: false,
+      blockedBy: [
+        { backend: "webgl", channel: "albedo", reason: "texture" },
+        { backend: "webgpu", channel: "renderer", reason: "pipeline" },
+      ],
+      diagnostics: { webgl: null, webgpu: null },
+    },
+    gpuDrain: { completed: true, pendingTextureMipJobs: 0 },
+    finalDiagnostics: {
+      webgl: {
+        textureLoaded: true,
+        normalLoaded: true,
+        pipelineReady: true,
+        mips: completeMips,
+      },
+      webgpu: {
+        textureLoaded: true,
+        normalLoaded: true,
+        pipelineReady: true,
+        mips: completeMips,
+      },
+    },
+  };
+  const evaluate = loadReadinessFailureEvaluator(normalizedProbeSource);
+  const failures = evaluate(report);
+  assert.ok(
+    failures.some((failure) =>
+      failure.startsWith("readiness instrument was structurally invalid:"),
+    ),
+  );
+  for (const backend of ["webgl", "webgpu"]) {
+    for (const channel of ["albedo", "normal"]) {
+      assert.ok(
+        failures.includes(
+          `${backend} ${channel} mip diagnostics were never published (renderer realized no texture)`,
+        ),
+      );
+    }
   }
-  assert.match(probeSource, /actualMipLevelCount === expected/);
-  assert.match(probeSource, /pendingTextureMipJobs !== 0/);
+  assert.equal(
+    failures.some((failure) =>
+      failure.includes("actual=missing, expected=missing"),
+    ),
+    false,
+  );
+  assert.equal(
+    failures.some((failure) => failure.includes("not retained through final")),
+    false,
+  );
+  assert.match(
+    failures.find((failure) =>
+      failure.startsWith("readiness instrument was structurally invalid:"),
+    ),
+    /camera-facing observation was never published for webgl, webgpu/,
+  );
+
+  const branch = `if (
+        !Number.isFinite(actualMipLevelCount) ||
+        !Number.isFinite(expectedMipLevelCount)
+      ) {`;
+  assert.equal(normalizedProbeSource.split(branch).length - 1, 1);
+  const inertSource = normalizedProbeSource.replace(
+    branch,
+    `if (
+        false &&
+        (!Number.isFinite(actualMipLevelCount) ||
+          !Number.isFinite(expectedMipLevelCount))
+      ) {`,
+  );
+  const inertFailures = loadReadinessFailureEvaluator(inertSource)(report);
+  assert.equal(
+    inertFailures.some((failure) =>
+      failure.includes("mip diagnostics were never published"),
+    ),
+    false,
+  );
+  t.diagnostic(
+    "MUTATION RED: an inert unpublished-diagnostics branch loses the structural renderer-realization reasons",
+  );
 });
 
-test("mip-0 calibration control is symmetric, recorded, and fail-closed", () => {
+test("readiness distinguishes observed behind-camera state from unpublished camera-facing state", () => {
+  const incompleteMips = { albedo: null, normal: null };
+  const backend = (rendererType, moonInFrontOfCamera) => ({
+    rendererType,
+    clockOffsetSeconds: 0,
+    textureLoaded: false,
+    normalLoaded: false,
+    pipelineReady: false,
+    pendingTextureMipJobs: 1,
+    moonInFrontOfCamera,
+    mips: incompleteMips,
+  });
+  const report = {
+    readiness: {
+      ready: false,
+      blockedBy: [
+        { backend: "webgpu", channel: "renderer", reason: "pipeline" },
+      ],
+      diagnostics: {
+        webgl: backend("webgl", true),
+        webgpu: backend("webgpu", false),
+      },
+    },
+    gpuDrain: { completed: true, pendingTextureMipJobs: 0 },
+    finalDiagnostics: {
+      webgl: { textureLoaded: true, normalLoaded: true, mips: {} },
+      webgpu: {
+        textureLoaded: true,
+        normalLoaded: true,
+        pipelineReady: true,
+        mips: {},
+      },
+    },
+  };
+  const evaluate = loadReadinessFailureEvaluator(normalizedProbeSource);
+  const offCameraFailures = evaluate(report);
+  assert.ok(
+    offCameraFailures.some((failure) =>
+      failure.includes(
+        "Moon was behind the camera on the last sampled frame for webgpu",
+      ),
+    ),
+  );
+  assert.equal(
+    offCameraFailures.some((failure) =>
+      failure.includes("camera-facing observation was never published"),
+    ),
+    false,
+  );
+
+  delete report.readiness.diagnostics.webgpu.moonInFrontOfCamera;
+  const unknownFailures = evaluate(report);
+  assert.ok(
+    unknownFailures.some((failure) =>
+      failure.includes(
+        "Moon camera-facing observation was never published for webgpu",
+      ),
+    ),
+  );
+  assert.equal(
+    unknownFailures.some((failure) =>
+      failure.includes("Moon was behind the camera"),
+    ),
+    false,
+  );
+});
+
+test("finite equal mip counts produce no incomplete-count reason", () => {
+  const mip = {
+    actualMipLevelCount: 12,
+    expectedMipLevelCount: 12,
+    maxLod: 11,
+    fullChain: true,
+  };
+  const backend = {
+    rendererType: "webgl",
+    clockOffsetSeconds: 0,
+    textureLoaded: true,
+    normalLoaded: true,
+    pipelineReady: true,
+    pendingTextureMipJobs: 0,
+    moonInFrontOfCamera: true,
+    mips: { albedo: mip, normal: mip },
+  };
+  const report = {
+    readiness: {
+      ready: true,
+      blockedBy: [],
+      diagnostics: {
+        webgl: backend,
+        webgpu: { ...backend, rendererType: "webgpu" },
+      },
+    },
+    gpuDrain: { completed: true, pendingTextureMipJobs: 0 },
+    finalDiagnostics: {
+      webgl: backend,
+      webgpu: { ...backend, rendererType: "webgpu" },
+    },
+  };
+  const failures = loadReadinessFailureEvaluator(normalizedProbeSource)(report);
+  assert.deepEqual(failures, []);
+  assert.equal(
+    failures.some((failure) => failure.includes("actual=12, expected=12")),
+    false,
+  );
+});
+
+test("expected mip counts derive only from published texture dimensions", (t) => {
+  const published = {
+    moonTextureWidth: 2048,
+    moonTextureHeight: 1024,
+    moonTextureMipLevelCount: 12,
+    moonTextureMaxLod: 11,
+    normalTextureWidth: 1024,
+    normalTextureHeight: 512,
+    normalTextureMipLevelCount: 11,
+    normalTextureMaxLod: 10,
+  };
+  const guarded = new Proxy(published, {
+    get(target, property, receiver) {
+      assert.equal(String(property).startsWith("_"), false);
+      return Reflect.get(target, property, receiver);
+    },
+  });
+  const derive = loadMipDiagnosticsDerivation(normalizedProbeSource);
+  assert.deepEqual(derive(guarded, "albedo"), {
+    width: 2048,
+    height: 1024,
+    actualMipLevelCount: 12,
+    expectedMipLevelCount: 12,
+    maxLod: 11,
+    fullChain: true,
+  });
+  assert.equal(derive(guarded, "normal").expectedMipLevelCount, 11);
+
+  const fieldAnchor = "stats?.moonTextureWidth";
+  assert.equal(normalizedProbeSource.split(fieldAnchor).length - 1, 1);
+  const renamedSource = normalizedProbeSource.replace(
+    fieldAnchor,
+    "stats?.renamedMoonTextureWidth",
+  );
+  const renamed = loadMipDiagnosticsDerivation(renamedSource)(
+    published,
+    "albedo",
+  );
+  assert.equal(renamed.expectedMipLevelCount, null);
+  assert.equal(renamed.fullChain, false);
+  t.diagnostic(
+    "MUTATION RED: renaming the published width prevents expected mip derivation",
+  );
+});
+
+test("pick define contract is conditional on the color albedo-gradient axis", (t) => {
+  const pickFailures = loadPickContract(normalizedProbeSource);
+  assert.deepEqual(pickFailures([], []), []);
+  const colorDefines = ["LUNAR_ALBEDO_EXPLICIT_GRADIENTS"];
+  const completePickDefines = [
+    "LUNAR_EXPLICIT_GRADIENTS",
+    "LUNAR_ALBEDO_EXPLICIT_GRADIENTS",
+  ];
+  assert.deepEqual(pickFailures(colorDefines, completePickDefines), []);
+  assert.deepEqual(pickFailures(colorDefines, [completePickDefines[0]]), [
+    "WebGL pick shader contract did not carry LUNAR_ALBEDO_EXPLICIT_GRADIENTS",
+  ]);
+  t.diagnostic(
+    "MUTATION RED: dropping one required pick define violates the color-to-pick contract",
+  );
+});
+
+test("force-lod0 gate checks requested clamps and installed sampler identity", (t) => {
   assert.deepEqual(MOON_MIP_CONTROL_MODES, ["normal", "force-lod0"]);
   assert.equal(parseControlMode("normal"), "normal");
   assert.equal(parseControlMode(" FORCE-LOD0 "), "force-lod0");
   assert.throws(() => parseControlMode("unknown"), /must be one of/);
-  for (const token of [
-    "C12_MOON_MIP_CONTROL",
-    "TextureMinificationFilter.LINEAR",
-    "lodMaxClamp: 0",
-    "renderBundleManager",
-    "bindGroupRebuilt",
-    "controlMode",
-    'report.browser?.channel !== "msedge"',
-    '"playwright-canvas-element-png"',
-    '"#leftViewer canvas"',
-    '"#rightViewer canvas"',
-    "normal control did not retain mip-capable sampling",
+
+  const sampler = {};
+  const gate = loadWebGPUBaseLevelGate(normalizedProbeSource);
+  assert.equal(
+    gate(sampler, { sampler, lodMinClamp: 0, lodMaxClamp: 0 }),
+    true,
+  );
+  const requestedLiteral = { lodMinClamp: 0, lodMaxClamp: 0 };
+  const appliedState = {
+    sampler,
+    lodMinClamp: requestedLiteral.lodMinClamp,
+    lodMaxClamp: 32,
+  };
+  assert.equal(gate(sampler, appliedState), false);
+  t.diagnostic(
+    "MUTATION RED: an applied lodMaxClamp of 32 cannot pass a requested level-zero literal",
+  );
+});
+
+test("Moon pre-positioning precedes readiness", (t) => {
+  const sequence = harnessReadinessSequence(normalizedProbeSource);
+  assert.equal(prepositionPrecedesReadiness(sequence), true);
+  const removed = sequence.replace(
+    "globalThis.__c12MoonMipMotionProbe.positionForReadiness(count)",
+    "undefined",
+  );
+  assert.equal(prepositionPrecedesReadiness(removed), false);
+  t.diagnostic(
+    "MUTATION RED: removing the Moon pre-position call invalidates readiness order",
+  );
+});
+
+test("the readiness wall-clock deadline is pinned to twenty seconds", (t) => {
+  const sequence = harnessReadinessSequence(normalizedProbeSource);
+  assert.equal(harnessReadinessDeadlineMs(sequence), 20_000);
+  const relaxed = sequence.replace(
+    "waitForReadiness(20_000)",
+    "waitForReadiness(60_000)",
+  );
+  assert.equal(harnessReadinessDeadlineMs(relaxed), 60_000);
+  t.diagnostic(
+    "MUTATION RED: restoring the sixty second readiness deadline breaks the pinned bound",
+  );
+});
+
+test("force-lod0 install binds a base-level-only sampler at the call site", (t) => {
+  const gate = loadWebGPUBaseLevelGate(normalizedProbeSource);
+  const device = { createSampler: (descriptor) => ({ descriptor }) };
+  assert.match(
+    normalizedProbeSource,
+    /baseLevelOnly: webGPUBaseLevelOnly\(\s*cache\.sampler,\s*appliedSamplerState,\s*\)/u,
+  );
+
+  const applied = loadForceLod0SamplerInstall(normalizedProbeSource)(
+    {},
+    device,
+    gate,
+  );
+  assert.equal(applied.baseLevelOnly, true);
+  assert.equal(applied.samplerState.live, true);
+  assert.equal(applied.samplerState.lodMinClamp, 0);
+  assert.equal(applied.samplerState.lodMaxClamp, 0);
+
+  const clampAnchor = "          lodMaxClamp: 0,\n        };";
+  assert.equal(normalizedProbeSource.split(clampAnchor).length - 1, 1);
+  const clamped = loadForceLod0SamplerInstall(
+    normalizedProbeSource.replace(
+      clampAnchor,
+      "          lodMaxClamp: 32,\n        };",
+    ),
+  )({}, device, gate);
+  assert.equal(clamped.baseLevelOnly, false);
+  assert.equal(clamped.samplerState.lodMaxClamp, 32);
+
+  const installAnchor =
+    "        cache.sampler = appliedSamplerState.sampler;\n";
+  assert.equal(normalizedProbeSource.split(installAnchor).length - 1, 1);
+  const uninstalled = loadForceLod0SamplerInstall(
+    normalizedProbeSource.replace(installAnchor, ""),
+  )({}, device, gate);
+  assert.equal(uninstalled.baseLevelOnly, false);
+  assert.equal(uninstalled.samplerState.live, false);
+  t.diagnostic(
+    "MUTATION RED: a non-zero descriptor clamp and a skipped sampler install both fail the force-lod0 gate",
+  );
+});
+
+test("both Moon statistics shapes publish all texture dimensions", (t) => {
+  const fields = [
+    "moonTextureWidth",
+    "moonTextureHeight",
+    "normalTextureWidth",
+    "normalTextureHeight",
+  ];
+  const webgpuState = {
+    moonTextureWidth: 2048,
+    moonTextureHeight: 1024,
+    normalTextureWidth: 1024,
+    normalTextureHeight: 512,
+  };
+  const webglState = {
+    _albedoMapTexture: { width: 2048, height: 1024 },
+    _normalMapTexture: { width: 1024, height: 512 },
+  };
+  assert.deepEqual(
+    loadPublishedDimensionShape(
+      webgpuEnvironmentRendererSource,
+      "webgpu",
+      webgpuState,
+    ),
+    { backend: "webgpu", ...webgpuState },
+  );
+  assert.deepEqual(
+    loadPublishedDimensionShape(moonSource, "webgl", webglState),
+    {
+      backend: "webgl",
+      moonTextureWidth: 2048,
+      moonTextureHeight: 1024,
+      normalTextureWidth: 1024,
+      normalTextureHeight: 512,
+    },
+  );
+
+  for (const [backend, source, state] of [
+    ["webgpu", webgpuEnvironmentRendererSource, webgpuState],
+    ["webgl", moonSource, webglState],
   ]) {
-    assert.ok(probeSource.includes(token), `missing control token ${token}`);
+    for (const field of fields) {
+      const mutated = removePublishedDimension(source, field);
+      assert.equal(mutated === source, false, `${backend}/${field} mutant bit`);
+      const shape = loadPublishedDimensionShape(mutated, backend, state);
+      assert.equal(Object.hasOwn(shape, field), false);
+      t.diagnostic(
+        `MUTATION RED: removing ${backend}.${field} loses a published dimension`,
+      );
+    }
   }
 });
 
-test("probe records WebGL color/pick compile proof and browser/GPU faults", () => {
-  for (const token of [
-    "LUNAR_EXPLICIT_GRADIENTS",
-    "LUNAR_ALBEDO_EXPLICIT_GRADIENTS",
-    "LUNAR_NORMAL_EXPLICIT_GRADIENTS",
-    "scene.pick",
-    "attachConsoleErrorGate",
-    "armWebGPUDevices",
-    "collectGateErrors",
-    'page.on("pageerror"',
-    'page.on("console"',
+test("both Moon statistics shapes derive maxLod from the published mip count", (t) => {
+  assert.deepEqual(
+    loadWebGPUMipDerivation(webgpuEnvironmentRendererSource, 2048, 1024),
+    { mipLevelCount: 12, maxLod: 11 },
+  );
+  for (const [channel, prefix, count] of [
+    ["albedo", "moon", 12],
+    ["normal", "normal", 11],
   ]) {
-    assert.ok(
-      probeSource.includes(token),
-      `missing fault/compile token ${token}`,
-    );
+    const shape = loadWebGLPublishedMipShape(moonSource, channel, count);
+    assert.equal(shape[`${prefix}TextureMipLevelCount`], count);
+    assert.equal(shape[`${prefix}TextureMaxLod`], count - 1);
+    const absent = loadWebGLPublishedMipShape(moonSource, channel, null);
+    assert.equal(absent[`${prefix}TextureMaxLod`], null);
   }
+
+  const webgpuAnchor = "maxLod: mipLevelCount - 1,";
+  assert.equal(
+    webgpuEnvironmentRendererSource.split(webgpuAnchor).length - 1,
+    1,
+  );
+  assert.deepEqual(
+    loadWebGPUMipDerivation(
+      webgpuEnvironmentRendererSource.replace(
+        webgpuAnchor,
+        "maxLod: mipLevelCount,",
+      ),
+      2048,
+      1024,
+    ),
+    { mipLevelCount: 12, maxLod: 12 },
+  );
+
+  const webglAnchor =
+    "albedoMipLevelCount === null ? null : albedoMipLevelCount - 1,";
+  assert.equal(moonSource.split(webglAnchor).length - 1, 1);
+  assert.equal(
+    loadWebGLPublishedMipShape(
+      moonSource.replace(
+        webglAnchor,
+        "albedoMipLevelCount === null ? null : albedoMipLevelCount,",
+      ),
+      "albedo",
+      12,
+    ).moonTextureMaxLod,
+    12,
+  );
+  t.diagnostic(
+    "MUTATION RED: breaking either maxLod derivation loses the mipLevelCount minus one invariant",
+  );
 });
 
 test("camera samples retain an exact clock and a deterministic front-lit fixture", () => {

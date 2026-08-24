@@ -2453,6 +2453,10 @@ function getWebGPUMoonStatistics(moon) {
     getWebGPUMoonTextureLifecycleDiagnostics(lifecycle);
   return Object.freeze({
     backend: "webgpu",
+    moonTextureWidth: cache.moonTextureWidth ?? null,
+    moonTextureHeight: cache.moonTextureHeight ?? null,
+    normalTextureWidth: cache.normalTextureWidth ?? null,
+    normalTextureHeight: cache.normalTextureHeight ?? null,
     pipelineReady: defined(cache.pipeline),
     bindGroupReady: defined(cache.bindGroup),
     moonTextureLoaded: defined(albedoLifecycle)

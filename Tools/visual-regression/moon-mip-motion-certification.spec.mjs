@@ -188,11 +188,13 @@ function backendDiagnostics(rendererType) {
       albedo: {
         actualMipLevelCount: 12,
         expectedMipLevelCount: 12,
+        maxLod: 11,
         fullChain: true,
       },
       normal: {
         actualMipLevelCount: 11,
         expectedMipLevelCount: 11,
+        maxLod: 10,
         fullChain: true,
       },
     },
@@ -450,7 +452,10 @@ function syntheticReport(index, controlMode, value) {
         "LUNAR_EXPLICIT_GRADIENTS",
         "LUNAR_ALBEDO_EXPLICIT_GRADIENTS",
       ],
-      pickedProbeId: true,
+      picked: false,
+      pickedProbeId: false,
+      pickResultNote:
+        "Moon pick identity is diagnostic-only because the scene environment gate excludes the Moon from pick frames",
     },
     lanes,
     spatialScale: {},

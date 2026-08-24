@@ -1756,9 +1756,31 @@ export function validateStructuralEvidence(report) {
       "force-lod0 did not bind a base-level-only sampler on both backends",
     );
   }
+  const readinessBlockedBy = Array.isArray(report.readiness?.blockedBy)
+    ? report.readiness.blockedBy
+    : [];
+  const readinessBlockedSummary =
+    readinessBlockedBy.length > 0
+      ? readinessBlockedBy
+          .map(
+            (entry) =>
+              `${entry?.backend ?? "unknown"}/${entry?.channel ?? "unknown"}:${entry?.reason ?? "unknown"}`,
+          )
+          .join(", ")
+      : "unpublished readiness state";
+  const offCameraBackends = ["webgl", "webgpu"].filter(
+    (backend) => ready?.[backend]?.moonInFrontOfCamera === false,
+  );
+  const unpublishedFacingBackends = ["webgl", "webgpu"].filter(
+    (backend) => typeof ready?.[backend]?.moonInFrontOfCamera !== "boolean",
+  );
   if (report.readiness?.ready !== true) {
     failures.push(
-      "wall-clock readiness deadline elapsed before both Moon mip chains became current",
+      offCameraBackends.length > 0
+        ? `readiness instrument was structurally invalid: Moon was behind the camera on the last sampled frame for ${offCameraBackends.join(", ")} (blocked by ${readinessBlockedSummary})`
+        : unpublishedFacingBackends.length > 0
+          ? `readiness instrument was structurally invalid: Moon camera-facing observation was never published for ${unpublishedFacingBackends.join(", ")} (blocked by ${readinessBlockedSummary})`
+          : `wall-clock readiness deadline elapsed with the Moon in view (blocked by ${readinessBlockedSummary})`,
     );
   }
   if (
@@ -1769,7 +1791,7 @@ export function validateStructuralEvidence(report) {
     ready?.webgpu?.pipelineReady !== true
   ) {
     failures.push(
-      "readiness did not revalidate loaded Moon textures and the WebGPU pipeline",
+      `readiness did not revalidate loaded Moon textures and the WebGPU pipeline (blocked by ${readinessBlockedSummary})`,
     );
   }
   if (ready?.webgl?.rendererType !== "webgl") {
@@ -1794,9 +1816,22 @@ export function validateStructuralEvidence(report) {
     const diagnostics = ready?.[backend];
     for (const channel of ["albedo", "normal"]) {
       const mip = diagnostics?.mips?.[channel];
-      if (!mip || mip.fullChain !== true) {
+      const actualMipLevelCount = mip?.actualMipLevelCount;
+      const expectedMipLevelCount = mip?.expectedMipLevelCount;
+      if (
+        !Number.isFinite(actualMipLevelCount) ||
+        !Number.isFinite(expectedMipLevelCount)
+      ) {
         failures.push(
-          `${backend} ${channel} mip chain was incomplete (actual=${mip?.actualMipLevelCount ?? "missing"}, expected=${mip?.expectedMipLevelCount ?? "missing"})`,
+          `${backend} ${channel} mip diagnostics were never published (renderer realized no texture)`,
+        );
+      } else if (actualMipLevelCount !== expectedMipLevelCount) {
+        failures.push(
+          `${backend} ${channel} mip chain was incomplete (actual=${actualMipLevelCount}, expected=${expectedMipLevelCount})`,
+        );
+      } else if (mip?.fullChain !== true) {
+        failures.push(
+          `${backend} ${channel} mip diagnostics did not mark the finite complete chain as full`,
         );
       }
     }
@@ -1851,17 +1886,22 @@ export function validateStructuralEvidence(report) {
       failures.push(`WebGL color shader did not compile with ${required}`);
     }
   }
-  for (const required of [
-    "LUNAR_EXPLICIT_GRADIENTS",
-    "LUNAR_ALBEDO_EXPLICIT_GRADIENTS",
-  ]) {
-    if (!compile?.pickDefines?.includes(required)) {
-      failures.push(`WebGL pick shader did not compile with ${required}`);
+  const webGLPickContractFailures = (colorDefines, pickDefines) => {
+    if (!colorDefines.includes("LUNAR_ALBEDO_EXPLICIT_GRADIENTS")) {
+      return [];
     }
-  }
-  if (compile?.pickedProbeId !== true) {
-    failures.push("WebGL center pick did not return the Moon probe id");
-  }
+    return ["LUNAR_EXPLICIT_GRADIENTS", "LUNAR_ALBEDO_EXPLICIT_GRADIENTS"]
+      .filter((required) => !pickDefines.includes(required))
+      .map(
+        (required) => `WebGL pick shader contract did not carry ${required}`,
+      );
+  };
+  failures.push(
+    ...webGLPickContractFailures(
+      compile?.colorDefines ?? [],
+      compile?.pickDefines ?? [],
+    ),
+  );
 
   const expectedLaneIds = MOON_MIP_MOTION_LANES.map((lane) => lane.id);
   const actualLanes = Array.isArray(report.lanes) ? report.lanes : [];
@@ -3054,28 +3094,25 @@ async function installBrowserHarness(page) {
         Number.isFinite(width) && Number.isFinite(height)
           ? Math.floor(Math.log2(Math.max(width, height))) + 1
           : null;
-      const textureDimensions = (texture, width, height) => ({
-        width: texture?.width ?? width ?? null,
-        height: texture?.height ?? height ?? null,
-      });
-      const channelMipDiagnostics = (stats, dimensions, channel) => {
+      const publishedTextureDimensions = (stats, channel) =>
+        channel === "albedo"
+          ? {
+              width: stats?.moonTextureWidth ?? null,
+              height: stats?.moonTextureHeight ?? null,
+            }
+          : {
+              width: stats?.normalTextureWidth ?? null,
+              height: stats?.normalTextureHeight ?? null,
+            };
+      const channelMipDiagnostics = (stats, channel) => {
         const albedo = channel === "albedo";
         const actualMipLevelCount = albedo
-          ? (stats?.moonTextureMipLevelCount ??
-            stats?.albedoTextureMipLevelCount ??
-            stats?.lifecycle?.albedo?.mipLevelCount ??
-            null)
-          : (stats?.normalTextureMipLevelCount ??
-            stats?.lifecycle?.normal?.mipLevelCount ??
-            null);
+          ? (stats?.moonTextureMipLevelCount ?? null)
+          : (stats?.normalTextureMipLevelCount ?? null);
         const maxLod = albedo
-          ? (stats?.moonTextureMaxLod ??
-            stats?.albedoTextureMaxLod ??
-            stats?.lifecycle?.albedo?.maxLod ??
-            null)
-          : (stats?.normalTextureMaxLod ??
-            stats?.lifecycle?.normal?.maxLod ??
-            null);
+          ? (stats?.moonTextureMaxLod ?? null)
+          : (stats?.normalTextureMaxLod ?? null);
+        const dimensions = publishedTextureDimensions(stats, channel);
         const expected = expectedMipCount(dimensions.width, dimensions.height);
         return {
           ...dimensions,
@@ -3093,21 +3130,26 @@ async function installBrowserHarness(page) {
         const moon = scene.moon;
         const stats = moon.getDebugStatistics(scene);
         const webgpuBackend = scene.context.rendererType === "webgpu";
-        const cache = moon._webgpuCache;
-        const albedoDimensions = webgpuBackend
-          ? textureDimensions(
-              undefined,
-              cache?.moonTextureWidth,
-              cache?.moonTextureHeight,
-            )
-          : textureDimensions(moon._albedoMapTexture);
-        const normalDimensions = webgpuBackend
-          ? textureDimensions(
-              undefined,
-              cache?.normalTextureWidth,
-              cache?.normalTextureHeight,
-            )
-          : textureDimensions(moon._normalMapTexture);
+        // Mirror the exact predicate the WebGPU Moon renderer branches on in
+        // its behind-camera early-out. A frustum test is not the mechanism: an
+        // off-screen-but-in-front Moon realizes its textures normally.
+        let moonInFrontOfCamera;
+        try {
+          const moonCenter = C.Matrix4.getTranslation(
+            moon._ellipsoidPrimitive.modelMatrix,
+            new C.Cartesian3(),
+          );
+          const cameraToMoon = C.Cartesian3.subtract(
+            moonCenter,
+            scene.camera.positionWC,
+            new C.Cartesian3(),
+          );
+          moonInFrontOfCamera =
+            C.Cartesian3.dot(cameraToMoon, scene.camera.directionWC) >=
+            -moon.ellipsoid.maximumRadius;
+        } catch {
+          moonInFrontOfCamera = null;
+        }
         return {
           rendererType: scene.context.rendererType,
           frameNumber: scene._frameState.frameNumber,
@@ -3122,9 +3164,10 @@ async function installBrowserHarness(page) {
             stats?.normalMapLoaded === true ||
             stats?.normalTextureLoaded === true,
           pipelineReady: webgpuBackend ? stats?.pipelineReady === true : true,
+          moonInFrontOfCamera,
           mips: {
-            albedo: channelMipDiagnostics(stats, albedoDimensions, "albedo"),
-            normal: channelMipDiagnostics(stats, normalDimensions, "normal"),
+            albedo: channelMipDiagnostics(stats, "albedo"),
+            normal: channelMipDiagnostics(stats, "normal"),
           },
           pendingTextureMipJobs: webgpuBackend
             ? (scene.context._pendingTextureMipJobs?.length ?? null)
@@ -3136,6 +3179,54 @@ async function installBrowserHarness(page) {
         webgl: backendDiagnostics(webgl),
         webgpu: backendDiagnostics(webgpu),
       });
+      const readinessBlockers = (snapshot) => {
+        const blockedBy = [];
+        const add = (backend, channel, reason, unmet) => {
+          if (unmet) {
+            blockedBy.push({ backend, channel, reason });
+          }
+        };
+        for (const backend of ["webgl", "webgpu"]) {
+          const backendSnapshot = snapshot[backend];
+          add(
+            backend,
+            "albedo",
+            "texture",
+            backendSnapshot.textureLoaded !== true,
+          );
+          add(
+            backend,
+            "normal",
+            "normal",
+            backendSnapshot.normalLoaded !== true,
+          );
+          add(
+            backend,
+            "albedo",
+            "mip chain",
+            backendSnapshot.mips.albedo.fullChain !== true,
+          );
+          add(
+            backend,
+            "normal",
+            "mip chain",
+            backendSnapshot.mips.normal.fullChain !== true,
+          );
+        }
+        add(
+          "webgpu",
+          "renderer",
+          "pipeline",
+          snapshot.webgpu.pipelineReady !== true,
+        );
+        add(
+          "webgpu",
+          "texture queue",
+          "pending jobs",
+          snapshot.webgpu.pendingTextureMipJobs !== 0,
+        );
+        return blockedBy;
+      };
       const diagnosticsReady = (snapshot) =>
         snapshot.webgl.rendererType === "webgl" &&
         snapshot.webgpu.rendererType === "webgpu" &&
@@ -3168,6 +3259,7 @@ async function installBrowserHarness(page) {
               ready: true,
               elapsedWallClockMs: performance.now() - started,
               diagnostics: snapshot,
+              blockedBy: readinessBlockers(snapshot),
             };
           }
         }
@@ -3175,6 +3267,7 @@ async function installBrowserHarness(page) {
           ready: false,
           elapsedWallClockMs: performance.now() - started,
           diagnostics: snapshot,
+          blockedBy: readinessBlockers(snapshot),
         };
       };
 
@@ -3290,6 +3383,17 @@ async function installBrowserHarness(page) {
           targetDiscDiameterPx: lane.targetDiscDiameterPx,
           canvasHeight,
           fovyRadians: fovy,
+        };
+      };
+
+      const positionForReadiness = (sampleCount) => {
+        const lane = laneById.get("close");
+        if (!lane) {
+          throw new Error("close Moon motion lane was unavailable");
+        }
+        return {
+          webgl: positionViewer(webgl, lane, 0, sampleCount),
+          webgpu: positionViewer(webgpu, lane, 0, sampleCount),
         };
       };
 
@@ -3456,6 +3560,29 @@ async function installBrowserHarness(page) {
       const compileWebGLPick = async () => {
         const scene = webgl.scene;
         const primitive = scene.moon._ellipsoidPrimitive;
+        const frameState = scene._frameState;
+        // EllipsoidPrimitive consumes its define-tracking fields before the
+        // `passes.render` branch, so this pick-only update clears them without
+        // rebuilding the colour shader. That is safe only because the clock,
+        // Moon configuration and texture state are already settled here.
+        const previousPickPass = frameState.passes.pick;
+        const previousCommandList = frameState.commandList;
+        try {
+          frameState.commandList = [];
+          frameState.passes.pick = true;
+          primitive.update(frameState);
+        } finally {
+          frameState.passes.pick = previousPickPass;
+          frameState.commandList = previousCommandList;
+        }
+        const colorProgramReady = primitive._sp !== undefined;
+        const pickProgramReady = primitive._pickSP !== undefined;
+        const colorDefines = Array.from(
+          primitive._sp?.fragmentShaderSource?.defines ?? [],
+        );
+        const pickDefines = Array.from(
+          primitive._pickSP?.fragmentShaderSource?.defines ?? [],
+        );
         const canvas = scene.canvas;
         const picked = await Promise.resolve(
           scene.pick(
@@ -3468,19 +3595,25 @@ async function installBrowserHarness(page) {
         scene.requestRender();
         await nextAnimationFrame();
         return {
-          colorProgramReady: primitive._sp !== undefined,
-          pickProgramReady: primitive._pickSP !== undefined,
-          colorDefines: Array.from(
-            primitive._sp?.fragmentShaderSource?.defines ?? [],
-          ),
-          pickDefines: Array.from(
-            primitive._pickSP?.fragmentShaderSource?.defines ?? [],
-          ),
+          colorProgramReady,
+          pickProgramReady,
+          colorDefines,
+          pickDefines,
           picked: picked !== undefined,
           pickedId: picked?.id ?? null,
           pickedProbeId: picked?.id === "c12-moon-mip-probe",
+          pickResultNote:
+            "Moon pick identity is diagnostic-only because the scene environment gate excludes the Moon from pick frames",
         };
       };
+
+      // A GPUSampler is opaque, so this is a request echo of the descriptor
+      // clamps plus an identity check that the requested sampler is the one
+      // installed on the cache - not a read-back of GPU state.
+      const webGPUBaseLevelOnly = (sampler, appliedSamplerState) =>
+        sampler === appliedSamplerState?.sampler &&
+        appliedSamplerState?.lodMinClamp === 0 &&
+        appliedSamplerState?.lodMaxClamp === 0;
 
       const applyControlMode = async (requestedMode) => {
         if (!validControlModes.has(requestedMode)) {
@@ -3528,7 +3661,7 @@ async function installBrowserHarness(page) {
           );
         }
         const previousBindGroup = cache.bindGroup;
-        const descriptor = {
+        const samplerDescriptor = {
           minFilter: "linear",
           magFilter: "linear",
           mipmapFilter: "linear",
@@ -3537,7 +3670,12 @@ async function installBrowserHarness(page) {
           lodMinClamp: 0,
           lodMaxClamp: 0,
         };
-        cache.sampler = device.createSampler(descriptor);
+        const appliedSamplerState = {
+          sampler: device.createSampler(samplerDescriptor),
+          lodMinClamp: samplerDescriptor.lodMinClamp,
+          lodMaxClamp: samplerDescriptor.lodMaxClamp,
+        };
+        cache.sampler = appliedSamplerState.sampler;
         const bundleManager = webgpuScene.context.renderBundleManager;
         let bundleInvalidated = false;
         if (bundleManager && cache._bundleKey !== undefined) {
@@ -3572,8 +3710,15 @@ async function installBrowserHarness(page) {
             normalMinificationFilter: normalTexture.sampler.minificationFilter,
           },
           webgpu: {
-            baseLevelOnly: descriptor.lodMaxClamp === 0,
-            samplerDescriptor: descriptor,
+            baseLevelOnly: webGPUBaseLevelOnly(
+              cache.sampler,
+              appliedSamplerState,
+            ),
+            samplerState: {
+              live: cache.sampler === appliedSamplerState.sampler,
+              lodMinClamp: appliedSamplerState.lodMinClamp,
+              lodMaxClamp: appliedSamplerState.lodMaxClamp,
+            },
             bundleInvalidated,
             bindGroupRebuilt:
               cache.bindGroup !== undefined &&
@@ -3602,6 +3747,7 @@ async function installBrowserHarness(page) {
 
       globalThis.__c12MoonMipMotionProbe = {
         waitForReadiness,
+        positionForReadiness,
         moveTrackedCamera,
         compileWebGLPick,
         applyControlMode,
@@ -3732,8 +3878,12 @@ async function runProbe() {
       setup,
       capturedProducerSourceIdentity,
     );
+    const readinessPose = await page.evaluate(
+      (count) => globalThis.__c12MoonMipMotionProbe.positionForReadiness(count),
+      sampleCount,
+    );
     const readiness = await page.evaluate(() =>
-      globalThis.__c12MoonMipMotionProbe.waitForReadiness(60_000),
+      globalThis.__c12MoonMipMotionProbe.waitForReadiness(20_000),
     );
     const control = await page.evaluate(
       (requestedMode) =>
@@ -3876,6 +4026,7 @@ async function runProbe() {
       runtimeIdentity: capturedRuntimeIdentity,
       setup,
       readiness,
+      readinessPose,
       control,
       webglShaderCompile,
       lanes,
