@@ -527,3 +527,72 @@ pre-registration in form only.
 **What is unchanged.** `R-2026-08-21-15` stands in full — both designs remain blessed, `sign-test-v1`
 remains the design of record, and the never-post-hoc rule on `r` is reaffirmed, not relaxed. This
 ruling sets the ordering, nothing else.
+
+---
+
+## R-2026-08-24-12 — Evidence library repair: RELOCATE, then re-admit through `import-legacy`
+
+**Question.** The publication tool refused every producer because three C13-16 U2 evidence
+directories (`c13-16-u2-b1108`, `-b1108b`, `-b1108c`) had been copied by hand into the root of
+`cesium-webgpu-visual-evidence` on 2026-08-21, and `archiveVisualEvidence` verifies the whole
+library before any first-time publication. This blocked the C12-33 certification lane.
+
+**Ruled (third sitting, ~18:20 ET).** Rename-move the three directories out of the library root
+into a sibling staging folder (`cesium-webgpu-visual-evidence-staging/`, left in place), then
+re-admit their bytes through the supported `import-legacy` path. Nothing is deleted. The
+alternative — leave the library untouched for a later manual repair — was rejected because it
+held the C12 critical path on a defect of process, not of evidence. Executed the same evening:
+185 files inventoried by sha256, moved with inodes preserved, verifier green, re-admitted as
+`legacy/c13-16-u2/…`, verifier green again (33 publications, 145/145 objects). One forced
+deviation recorded: the tool stamps Git provenance from `--source-root`, so the import ran from
+a byte-verified scaffold inside the worktree because the staging folder has no `.git`.
+
+**Lesson recorded with it.** `archive` captures repository provenance per run and the finalizer
+demands one identity across a ten-run block; a landing that moves `HEAD` mid-publication spends
+the block irrecoverably in an append-only library. Publications and landings are serialized
+from now on — the lane is granted an explicit quiescent window.
+
+---
+
+## R-2026-08-24-13 — Lane F: the far distance cull and `lodFarDistance` are RESTORED as a kept toggle before landing
+
+**Question.** The GPU point-cloud LOD rewrite to projected geometric error dropped the fourth
+"culled" tier, so points beyond the former far radius now render at 1/64 instead of not at all,
+and the public `lodFarDistance` knob that tuned that cull was deleted (zero consumers). No A/B
+was measured. The package is otherwise a correctness fix (colour formats, Draco, EDL).
+
+**Ruled (fourth sitting, ~21:00 ET).** Restore the cull as a culled tier gated on
+`lodFarDistance` in projected-error space with the prior default, and restore the knob; then
+land. This is the fork's own governing principle — never remove additive behaviour as a side
+effect, keep the toggle — and it keeps the `C18-A1` acceptance recipe valid. The alternative
+(accept the removal as declared with an interleaved A/B owed) was rejected: a behaviour change
+and a removed public knob would have shipped unmeasured inside a bug-fix batch.
+
+---
+
+## R-2026-08-24-14 — `C15-G6`: an asymmetric one-backend zero-splat result is FAIL, not STRUCTURAL
+
+**Question.** In the authored, unrun multi-frustum probe, the case where WebGL composes
+splat-coloured pixels and WebGPU composes none — both backends holding at least one splat draw
+command — exited 3 STRUCTURAL ("could not see its subject"), although it is the row's headline
+defect. The tier had to be pre-registered before the first machine run.
+
+**Ruled.** Asymmetric → tier 1 FAIL (exit 1): the subject was seen and failed. The symmetric
+zero/zero case stays tier 3 STRUCTURAL. This matches `lib/verdict-exit-gate.mjs`'s own
+definitions; keeping STRUCTURAL and relying on the artifact's reason string was rejected because
+exit-code consumers would read the headline defect as instrument blindness.
+
+---
+
+## R-2026-08-24-15 — `C11-62` clause (b): the ledger clause STANDS; the row stays open until a timed comparison runs
+
+**Question.** The queue row narrows clause (b) to "run case E" (skip counters + pixel identity,
+now green on both backends after the domain fix), while `DEFERRED_WORK.md` demands a measured
+comparison proving the enabled octree beats ordinary Scene PVS on the moving multi-altitude
+route with more than 200 commands — which case E does not perform.
+
+**Ruled.** Keep the ledger clause. `C11-62` clause (b) cannot close on case E; the timed
+octree-versus-PVS instrument over the canonical moving-altitude route must be built and run
+first. The recommended alternative (amend the ledger to match the row and file the timing as its
+own row) was declined: the performance claim is the point of the row. The fix lands on its own
+merits with the row explicitly OPEN.
