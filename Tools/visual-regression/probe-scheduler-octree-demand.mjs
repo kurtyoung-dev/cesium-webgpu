@@ -14,10 +14,11 @@
  *       octree.enabled=false, builtThisFrame=false, buildTimeMs=0,
  *       commandsInserted=0.  → zero-work at defaults (counter evidence).
  *  B. Register a long-lived consumer (requireStableMaterialIds): the linear
- *       assignment now runs every frame (framesRun climbs, ranThisFrame=true,
- *       materialAllocator.count>0) AND the rendered frame is pixel-identical to
- *       the defaults frame (the default render path never reads materialSortId,
- *       so running vs skipping the maintenance changes nothing on screen).
+ *       assignment now runs every frame (framesRun climbs, ranThisFrame=true).
+ *       The allocator grows when commands expose a key it can use; a backend
+ *       with no keyable commands is reported as structural. The rendered frame
+ *       remains pixel-identical to the defaults frame because the default
+ *       render path never reads materialSortId.
  *  C. Release the consumer: maintenance is gated off again (framesSkipped
  *       resumes climbing, ranThisFrame=false).
  *  D. A pick at screen center works and — because pick passes run with
@@ -25,8 +26,9 @@
  *       real consumer) — bumps framesRun. This proves the pick-path consumer is
  *       demand-signalled so pick output is preserved.
  *  E. SceneOctree eligibility never admits terrain / 3D-Tiles / voxels, and a
- *       stable command set above minCommandsForOctree renders byte-identically
- *       OFF / ON / restored-OFF while the unchanged ON frame skips rebuilding.
+ *       stable indexed command subsequence above the full-list threshold renders
+ *       byte-identically OFF / ON / restored-OFF while the unchanged ON frame
+ *       skips rebuilding.
  *
  * Boot mirrors probe-camera-track.mjs (Edge/msedge + offline NaturalEarthII +
  * ellipsoid, frame-signature settle). Output PNGs are written for manual read.
@@ -192,8 +194,23 @@ async function renderAndSnap(page, frames) {
     }
     const snap = scene.getDebugSnapshot();
     const sched = scene._renderScheduler;
+    const commands = scene.frameState.commandList;
+    const defined = (value) => value !== undefined && value !== null;
+    let keyableCommandCount = 0;
+    for (let i = 0; i < commands.length; i++) {
+      const command = commands[i];
+      if (
+        defined(command._shaderProgram) ||
+        defined(command.shaderProgram?.id) ||
+        defined(command.pipeline)
+      ) {
+        keyableCommandCount++;
+      }
+    }
     return {
+      commandCount: commands.length,
       containment: snap.containment,
+      keyableCommandCount,
       passesRender: scene.frameState.passes.render === true,
       materialAllocatorCount: sched ? sched.materialAllocator.count : -1,
     };
@@ -367,6 +384,14 @@ async function prepareOctreeParityFixture(page) {
           fixtureCommandCount: 0,
           fixtureCount,
           fullCommandCount: 0,
+          indexedCommandCount: 0,
+          firstInstability: {
+            condition: "fixturePreparationUnavailable",
+            field: thresholdValid ? "fixtureCommandCount" : "threshold",
+            index: -1,
+            pairPosition: "none",
+            resolvedPass: null,
+          },
           passAvailable: allowedPasses.length === 2,
           stableFrames: 0,
           threshold,
@@ -411,8 +436,13 @@ async function prepareOctreeParityFixture(page) {
         );
       }
 
+      const isOctreeIndexedCommand = (command) =>
+        command._moonPhysicalDepthRoute !== true &&
+        command.boundingVolume !== undefined &&
+        command.boundingVolume !== null &&
+        allowedPasses.includes(command._pass ?? command.pass);
       const takeIndexedSnapshot = (commands) =>
-        commands.map((command) => {
+        commands.filter(isOctreeIndexedCommand).map((command) => {
           const boundingVolume = command.boundingVolume;
           const center = boundingVolume?.center;
           const matrix = command.modelMatrix;
@@ -445,62 +475,228 @@ async function prepareOctreeParityFixture(page) {
             visibilityMask: command.visibilityMask,
           };
         });
-      const sameIndexedSnapshot = (left, right) =>
-        left.length === right.length &&
-        left.every((entry, index) => {
+      const indexedSnapshotFields = [
+        "boundingVolume",
+        "center",
+        "centerX",
+        "centerY",
+        "centerZ",
+        "command",
+        "cull",
+        "matrix",
+        "matrixValues",
+        "moonPhysicalDepthRoute",
+        "occlude",
+        "pass",
+        "radius",
+        "stableShape",
+        "visibilityMask",
+      ];
+      const describeIndexedInstability = (
+        index,
+        field,
+        entry,
+        details = {},
+      ) => {
+        const instability = {
+          index,
+          field,
+          resolvedPass: entry?.pass ?? null,
+          ...details,
+        };
+        const owner = entry?.command?.owner;
+        if (owner !== undefined && owner !== null) {
+          instability.ownerConstructorName = owner.constructor?.name ?? null;
+        }
+        return instability;
+      };
+      const firstIndexedInstability = (left, right) => {
+        const sharedLength = Math.min(left.length, right.length);
+        for (let index = 0; index < sharedLength; index++) {
+          const entry = left[index];
           const other = right[index];
-          return (
-            entry.boundingVolume === other.boundingVolume &&
-            entry.center === other.center &&
-            entry.centerX === other.centerX &&
-            entry.centerY === other.centerY &&
-            entry.centerZ === other.centerZ &&
-            entry.command === other.command &&
-            entry.cull === other.cull &&
-            entry.matrix === other.matrix &&
-            entry.matrixValues.every(
-              (value, matrixIndex) => value === other.matrixValues[matrixIndex],
-            ) &&
-            entry.moonPhysicalDepthRoute === other.moonPhysicalDepthRoute &&
-            entry.occlude === other.occlude &&
-            entry.pass === other.pass &&
-            entry.radius === other.radius &&
-            entry.stableShape === other.stableShape &&
-            entry.visibilityMask === other.visibilityMask
+          for (const field of indexedSnapshotFields) {
+            const same =
+              field === "matrixValues"
+                ? entry.matrixValues.length === other.matrixValues.length &&
+                  entry.matrixValues.every(
+                    (value, matrixIndex) =>
+                      value === other.matrixValues[matrixIndex],
+                  )
+                : entry[field] === other[field];
+            if (!same) {
+              return describeIndexedInstability(index, field, other);
+            }
+          }
+        }
+        if (left.length !== right.length) {
+          return describeIndexedInstability(
+            sharedLength,
+            "length",
+            right[sharedLength] ?? left[sharedLength],
           );
-        });
+        }
+        return undefined;
+      };
+      const sameIndexedSnapshot = (left, right) =>
+        firstIndexedInstability(left, right) === undefined;
 
-      let previousFull = [];
+      let previousIndexed = [];
       let stableFrames = 0;
       let fixtureCommands = [];
-      let currentFull = [];
+      let currentIndexed = [];
+      let finalPairInstability;
+      let fixtureReady = false;
+      let fullCommandCount = 0;
+      let indexedListReady = false;
+      let lastIndexedMismatch;
       for (let i = 0; i < 60; i++) {
         scene.render();
         await new Promise((resolve) => requestAnimationFrame(resolve));
         fixtureCommands = primitives.flatMap((primitive) =>
           primitive._colorCommands.filter(Boolean),
         );
-        currentFull = takeIndexedSnapshot(scene.frameState.commandList);
-        const fixtureReady =
+        const commands = scene.frameState.commandList;
+        fullCommandCount = commands.length;
+        currentIndexed = takeIndexedSnapshot(commands);
+        fixtureReady =
           fixtureCommands.length > threshold &&
           fixtureCommands.every(
             (command) =>
-              allowedPasses.includes(command._pass ?? command.pass) &&
+              isOctreeIndexedCommand(command) &&
               Number.isFinite(command.boundingVolume?.center?.x) &&
               Number.isFinite(command.boundingVolume?.center?.y) &&
               Number.isFinite(command.boundingVolume?.center?.z) &&
               Number.isFinite(command.boundingVolume?.radius),
           );
-        const fullListReady = currentFull.every((entry) => entry.stableShape);
+        indexedListReady = currentIndexed.every((entry) => entry.stableShape);
+        const snapshotsMatch =
+          i > 0 && sameIndexedSnapshot(previousIndexed, currentIndexed);
+        const indexedMismatch =
+          i > 0 && !snapshotsMatch
+            ? firstIndexedInstability(previousIndexed, currentIndexed)
+            : undefined;
+        finalPairInstability = indexedMismatch
+          ? {
+              ...indexedMismatch,
+              comparedSamples: { previous: i, current: i + 1 },
+              condition: "indexedSnapshotMismatch",
+            }
+          : undefined;
+        if (finalPairInstability) {
+          lastIndexedMismatch = finalPairInstability;
+        }
         stableFrames =
-          fixtureReady &&
-          fullListReady &&
-          sameIndexedSnapshot(previousFull, currentFull)
+          fixtureReady && indexedListReady && snapshotsMatch
             ? stableFrames + 1
             : 0;
-        previousFull = currentFull;
+        previousIndexed = currentIndexed;
         if (stableFrames >= 2) {
           break;
+        }
+      }
+
+      const describeReadinessFailure = () => {
+        if (!fixtureReady) {
+          const details = {
+            condition: "fixtureNotReady",
+            finalPairMatched: true,
+            pairPosition: "none",
+          };
+          if (fixtureCommands.length <= threshold) {
+            return describeIndexedInstability(
+              -1,
+              "fixtureCommandCount",
+              undefined,
+              details,
+            );
+          }
+          for (let index = 0; index < fixtureCommands.length; index++) {
+            const command = fixtureCommands[index];
+            const boundingVolume = command.boundingVolume;
+            const center = boundingVolume?.center;
+            let field;
+            if (command._moonPhysicalDepthRoute === true) {
+              field = "_moonPhysicalDepthRoute";
+            } else if (
+              boundingVolume === undefined ||
+              boundingVolume === null
+            ) {
+              field = "boundingVolume";
+            } else if (!allowedPasses.includes(command._pass ?? command.pass)) {
+              field = "pass";
+            } else if (!Number.isFinite(center?.x)) {
+              field = "center.x";
+            } else if (!Number.isFinite(center?.y)) {
+              field = "center.y";
+            } else if (!Number.isFinite(center?.z)) {
+              field = "center.z";
+            } else if (!Number.isFinite(boundingVolume.radius)) {
+              field = "radius";
+            }
+            if (field) {
+              return describeIndexedInstability(
+                index,
+                field,
+                { command, pass: command._pass ?? command.pass },
+                details,
+              );
+            }
+          }
+          return describeIndexedInstability(
+            -1,
+            "fixtureReady",
+            undefined,
+            details,
+          );
+        }
+        if (!indexedListReady) {
+          const index = currentIndexed.findIndex((entry) => !entry.stableShape);
+          return describeIndexedInstability(
+            index,
+            "stableShape",
+            currentIndexed[index],
+            {
+              condition: "indexedShapeNotReady",
+              finalPairMatched: true,
+              pairPosition: "none",
+            },
+          );
+        }
+        return describeIndexedInstability(
+          currentIndexed.length > 0 ? 0 : -1,
+          "stableFrames",
+          currentIndexed[0],
+          {
+            condition: "insufficientStableFrames",
+            finalPairMatched: true,
+            observedStableFrames: stableFrames,
+            pairPosition: "none",
+            requiredStableFrames: 2,
+          },
+        );
+      };
+      let firstInstability = null;
+      if (stableFrames < 2) {
+        if (finalPairInstability) {
+          firstInstability = {
+            ...finalPairInstability,
+            fixtureReady,
+            indexedListReady,
+            pairPosition: "final",
+          };
+        } else if (!fixtureReady || !indexedListReady) {
+          firstInstability = describeReadinessFailure();
+        } else if (lastIndexedMismatch) {
+          firstInstability = {
+            ...lastIndexedMismatch,
+            finalPairMatched: true,
+            fixtureReady,
+            indexedListReady,
+            pairPosition: "prior",
+          };
+        } else {
+          firstInstability = describeReadinessFailure();
         }
       }
 
@@ -510,9 +706,13 @@ async function prepareOctreeParityFixture(page) {
             Number.isFinite(octree.stats.rebuilds)) &&
           (octree.stats.rebuildSkips === undefined ||
             Number.isFinite(octree.stats.rebuildSkips)),
+        firstInstability,
         fixtureCommandCount: fixtureCommands.length,
         fixtureCount,
-        fullCommandCount: currentFull.length,
+        fixtureReady,
+        fullCommandCount,
+        indexedCommandCount: currentIndexed.length,
+        indexedListReady,
         passAvailable: allowedPasses.length === 2,
         stableFrames,
         threshold,
@@ -709,7 +909,9 @@ async function runBackend(browser, renderer, results) {
   r.checks.B_consumersOn = consumersOn; // expect 1
   r.checks.B_ranThisFrame = mimB.ranThisFrame; // expect true
   r.checks.B_framesRunAdvanced = mimB.framesRun > 0; // expect true
-  r.checks.B_materialAllocatorCount = sB.materialAllocatorCount; // expect > 0
+  r.checks.B_commandCount = sB.commandCount;
+  r.checks.B_keyableCommandCount = sB.keyableCommandCount;
+  r.checks.B_materialAllocatorCount = sB.materialAllocatorCount;
   const bPath = path.join(OUT_DIR, `c9-08-${renderer}-consumer.png`);
   await capture(page, bPath);
   const diff = await pixelDiff(page, aPath, bPath, DIFF_TOL);
@@ -794,7 +996,12 @@ async function main() {
     assert("B_consumersOn==1", c.B_consumersOn === 1);
     assert("B_ranThisFrame", c.B_ranThisFrame === true);
     assert("B_framesRunAdvanced", c.B_framesRunAdvanced === true);
-    assert("B_materialAllocatorCount>0", c.B_materialAllocatorCount > 0);
+    assert("B_commandsObserved", c.B_commandCount > 0);
+    if (c.B_keyableCommandCount > 0) {
+      assert("B_materialAllocatorCount>0", c.B_materialAllocatorCount > 0);
+    } else {
+      structural("B_no_keyable_commands", false);
+    }
     // Byte-identical render path: the consumer-on vs default diff must not
     // exceed the consumer-off temporal-noise floor by more than a hair. The
     // default render path never reads materialSortId, so running vs skipping

@@ -109,9 +109,9 @@ class SceneOctree {
   }
 
   /**
-   * Advances the command-set revision when any state used to place or admit a
-   * command changes. Exact scalar comparison avoids hash collisions and sees
-   * in-place mutations that object-identity checks miss.
+   * Advances the command-set revision when the indexed command sequence or
+   * state read by the tree changes. Exact scalar comparison avoids hash
+   * collisions and sees in-place mutations that object-identity checks miss.
    *
    * @param {Array} commandList The full command list from frameState.
    * @returns {number} The current command-set revision.
@@ -120,25 +120,37 @@ class SceneOctree {
   updateCommandSetRevision(commandList) {
     let state = this._commandSetRevisionState;
     if (!defined(state)) {
-      state = {
-        revision: 0,
-        snapshots: [],
-      };
+      state = createCommandSetRevisionState();
       this._commandSetRevisionState = state;
     }
 
     const snapshots = state.snapshots;
     const commandCount = commandList.length;
-    let dirty = snapshots.length !== commandCount;
+    const bypassCommands = state.bypassCommands;
+    const previousEligibleCount = snapshots.length;
+    let eligibleCount = 0;
+    let dirty = false;
+
+    // Commands outside the index can be recreated every frame. Refresh their
+    // references without making that churn invalidate the spatial tree.
+    state.commandList = undefined;
+    bypassCommands.length = 0;
 
     try {
       for (let i = 0; i < commandCount; i++) {
-        let snapshot = snapshots[i];
+        const command = commandList[i];
+        if (!isOctreeEligible(command)) {
+          bypassCommands.push(command);
+          continue;
+        }
+
+        let snapshot = snapshots[eligibleCount];
         if (!defined(snapshot)) {
           snapshot = createCommandSnapshot();
-          snapshots[i] = snapshot;
+          snapshots[eligibleCount] = snapshot;
         }
-        dirty = updateCommandSnapshot(snapshot, commandList[i]) || dirty;
+        dirty = updateCommandSnapshot(snapshot, command) || dirty;
+        eligibleCount++;
       }
     } catch (error) {
       // A command getter can throw after earlier snapshots were updated. Burn
@@ -148,7 +160,9 @@ class SceneOctree {
       this._lastBuildResult = undefined;
       throw error;
     }
-    snapshots.length = commandCount;
+    dirty = previousEligibleCount !== eligibleCount || dirty;
+    snapshots.length = eligibleCount;
+    state.commandList = commandList;
 
     if (dirty) {
       state.revision++;
@@ -162,6 +176,12 @@ class SceneOctree {
    *
    * Commands that are not octree-eligible (terrain, 3D Tiles, compute,
    * overlay, no bounding volume) are returned in the bypass array.
+   *
+   * The returned bypass array is owned by the octree and reused across calls.
+   * Callers must consume or copy it before the next revision scan or build.
+   * When the octree is used the result object is reused as well, mutated in
+   * place and identical to the one retained for the next reuse check, so a
+   * caller that keeps a reference sees it change on the following build.
    *
    * @param {Array} commandList The full command list from frameState.
    * @param {number} frameNumber Current frame number.
@@ -186,6 +206,13 @@ class SceneOctree {
       }
       this._lastBuiltCommandSetRevision = undefined;
       this._lastBuildResult = undefined;
+      const scanned = this._commandSetRevisionState;
+      if (defined(scanned)) {
+        // A partition belongs to the list it was scanned from. This build is
+        // not consuming it, so it must not stay live for a later one.
+        scanned.commandList = undefined;
+        scanned.bypassCommands.length = 0;
+      }
       this._stats.buildTimeMs = performance.now() - startTime;
       return {
         octreeCommands: 0,
@@ -194,19 +221,34 @@ class SceneOctree {
       };
     }
 
-    // Persistence state and counters do not exist until the opt-in path has a
-    // large enough list, keeping construction and default frames unchanged.
+    let state = this._commandSetRevisionState;
+    if (!defined(state)) {
+      state = createCommandSetRevisionState();
+      this._commandSetRevisionState = state;
+    }
+    const bypassCommands = state.bypassCommands;
+
+    // Persistence counters do not exist until the opt-in path has a large
+    // enough list, keeping construction and default frames unchanged.
     if (!defined(this._stats.rebuilds)) {
       this._stats.rebuilds = 0;
       this._stats.rebuildSkips = 0;
     }
+
+    const canUseCommandScan =
+      defined(commandSetRevision) &&
+      commandSetRevision === state.revision &&
+      state.commandList === commandList;
+    // A scan is a one-build token. Direct callers and failed builds must
+    // repartition rather than publishing references from an earlier list.
+    state.commandList = undefined;
 
     const structureUnchanged =
       this.rootHalfExtent === this._lastBuiltRootHalfExtent &&
       this.maxDepth === this._lastBuiltMaxDepth &&
       this.maxCommandsPerNode === this._lastBuiltMaxCommandsPerNode;
     const canReuse =
-      defined(commandSetRevision) &&
+      canUseCommandScan &&
       defined(this._root) &&
       defined(this._lastBuildResult) &&
       commandSetRevision === this._lastBuiltCommandSetRevision &&
@@ -240,7 +282,9 @@ class SceneOctree {
       this._root.clear();
     }
 
-    const bypassCommands = [];
+    if (!canUseCommandScan) {
+      bypassCommands.length = 0;
+    }
 
     for (let i = 0; i < commandCount; i++) {
       const command = commandList[i];
@@ -248,18 +292,21 @@ class SceneOctree {
         this._root.insert(command);
         this._stats.commandsInserted++;
       } else {
-        bypassCommands.push(command);
+        if (!canUseCommandScan) {
+          bypassCommands.push(command);
+        }
         this._stats.commandsSkipped++;
       }
     }
 
     this._stats.buildTimeMs = performance.now() - startTime;
-    const buildResult = {
-      octreeCommands: this._stats.commandsInserted,
-      bypassCommands: bypassCommands,
-      useOctree: true,
-    };
-    this._lastBuiltCommandSetRevision = commandSetRevision;
+    const buildResult = getBuildResult(state);
+    buildResult.octreeCommands = this._stats.commandsInserted;
+    buildResult.bypassCommands = bypassCommands;
+    buildResult.useOctree = true;
+    this._lastBuiltCommandSetRevision = canUseCommandScan
+      ? commandSetRevision
+      : undefined;
     this._lastBuildResult = buildResult;
     this._lastBuiltRootHalfExtent = this.rootHalfExtent;
     this._lastBuiltMaxDepth = this.maxDepth;
@@ -379,6 +426,29 @@ class SceneOctree {
   get isBuilt() {
     return defined(this._root) && this._root.totalCommandCount > 0;
   }
+}
+
+function createCommandSetRevisionState() {
+  return {
+    revision: 0,
+    snapshots: [],
+    bypassCommands: [],
+    commandList: undefined,
+    buildResult: undefined,
+  };
+}
+
+function getBuildResult(state) {
+  let buildResult = state.buildResult;
+  if (!defined(buildResult)) {
+    buildResult = {
+      octreeCommands: 0,
+      bypassCommands: state.bypassCommands,
+      useOctree: false,
+    };
+    state.buildResult = buildResult;
+  }
+  return buildResult;
 }
 
 function createCommandSnapshot() {
