@@ -1,0 +1,4 @@
+interface:
+  display_name: "Run Cesium Campaign Lane"
+  short_description: "Run a bounded, reviewable campaign wave"
+  default_prompt: "Use $run-cesium-campaign-lane to execute or pause a bounded Cesium campaign wave safely."

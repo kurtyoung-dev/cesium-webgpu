@@ -1,0 +1,28 @@
+// TRACKED MIRROR of .mcp.json, which is gitignored at .gitignore:5.
+// Copy to .mcp.json to enable. Follows the CAMPAIGN_STATE.md precedent (a tracked mirror of the
+// gitignored CLAUDE.md). Ruled by R-2026-08-18-26.
+{
+  "mcpServers": {
+    "playwright": {
+      "type": "stdio",
+      "command": "cmd",
+      "args": [
+        "/c",
+        "npx",
+        "-y",
+        "@playwright/mcp@latest",
+        "--browser",
+        "firefox"
+      ]
+    },
+    "codex": {
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "Tools/codex-mcp-launcher.mjs",
+        "-c",
+        "sandbox_mode=\"read-only\""
+      ]
+    }
+  }
+}

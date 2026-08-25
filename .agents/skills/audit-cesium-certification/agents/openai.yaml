@@ -1,0 +1,4 @@
+interface:
+  display_name: "Audit Cesium Certification"
+  short_description: "Audit claims, gates, and evidence independently"
+  default_prompt: "Use $audit-cesium-certification to perform a read-only, evidence-backed certification review."

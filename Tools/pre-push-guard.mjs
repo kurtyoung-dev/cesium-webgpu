@@ -181,7 +181,20 @@ function main() {
     return {
       name: request.remoteRef ?? request.localRef ?? "(ref)",
       highestPushedBatch,
-      evaluation: evaluateCommits(commits, { highestPushedBatch }),
+      // includeCommitQuietHours is what makes checkCommitQuietHours run at all
+      // (landing-rules.mjs:428/:460/:476). Without it the only quiet-hours test
+      // was checkQuietHours(new Date()) above — the PUSH instant — so a commit
+      // stamped 11:00 Monday pushed cleanly at 20:00. The rule exists precisely
+      // because commits carry visible timestamps whenever they are pushed, and
+      // 24 such commits are already permanent ancestors of main. Ordered by
+      // R-2026-08-17-1. Until this landed the charter's own audit row
+      // (EXECUTOR_LANE_CHARTER_2026-08-14.md:375) recorded the in-range
+      // commit-timestamp check as "not yet landed", with only the after-the-fact
+      // `npm run verify-landing` detector covering it.
+      evaluation: evaluateCommits(commits, {
+        highestPushedBatch,
+        includeCommitQuietHours: true,
+      }),
     };
   });
 
