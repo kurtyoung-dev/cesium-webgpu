@@ -1,20 +1,20 @@
 /// <reference types="@webgpu/types" />
 /**
- * WebGPU Order-Independent Transparency (OIT)
+ * Implements the multiple-render-target weighted blended
+ * order-independent-transparency approximation. Translucent fragments
+ * accumulate weighted premultiplied color in `rgba16float` and revealage in
+ * `r8unorm`; a fullscreen pass composites those textures over opaque scene
+ * color.
  *
- * Implements weighted blended OIT for correct translucent rendering.
- * Based on McGuire & Bavoil 2013 "Weighted Blended Order-Independent Transparency"
+ * Allocation and execution require the scene's OIT request and the default-off
+ * `CesiumDebug.webgpuOIT` containment control. Otherwise translucent commands
+ * use sorted alpha blending. This module does not implement the
+ * dual-source-blending variant.
  *
- * Strategy:
- * 1. Render translucent geometry to MRT (Multi-Render-Target):
- *    - Target 0 (accumulation): premultiplied-alpha color * weight
- *    - Target 1 (revealage): alpha * weight (product)
- * 2. Composite over the opaque scene using a fullscreen pass:
- *    - finalColor = accumulation.rgb / max(accumulation.a, epsilon)
- *    - alpha = 1 - revealage
- *
- * If dual-source-blending is available (Chrome 128+), we use it for
- * single-pass OIT. Otherwise, we fall back to this MRT approach.
+ * References:
+ *   - Morgan McGuire and Louis Bavoil, "Weighted Blended Order-Independent
+ *     Transparency" (JCGT 2013) — the accumulation and revealage equations,
+ *     reimplemented here.
  *
  * @private
  */
@@ -94,11 +94,9 @@ export class WebGPUOIT {
 
   // Composite pipeline resources
   private _compositePipeline: GPURenderPipeline | null = null;
-  // The color-target format the current composite pipeline was built for. The
-  // composite render pass writes into the scene color (bgra8unorm by default,
-  // rgba16float in HDR); the pipeline's target format MUST match the attachment
-  // or WebGPU fails pipeline-vs-attachment validation. Pre-fix this was pinned
-  // to rgba8unorm and never rebuilt, so MRT-OIT composite failed every frame.
+  // The composite pipeline writes into scene color, whose format is
+  // `bgra8unorm` by default and `rgba16float` in HDR. Its target format must
+  // match the attachment exactly.
   private _compositeFormat: GPUTextureFormat = "rgba8unorm";
   private _compositeBindGroupLayout: GPUBindGroupLayout | null = null;
   private _compositeBindGroup: GPUBindGroup | null = null;
@@ -149,17 +147,12 @@ export class WebGPUOIT {
           storeOp: "store" as GPUStoreOp,
         },
       ],
-      // C11-157 Slice A — READ-ONLY depth+stencil. The OIT accumulation pass
-      // depth-TESTS translucent fragments against the opaque scene depth but
-      // never writes it (the OIT pipelines set depthWriteEnabled:false). For a
-      // combined depth24plus-stencil8 target the attachment must encompass ALL
-      // aspects, so BOTH depth and stencil are declared read-only; WebGPU
-      // forbids loadOp/storeOp alongside `*ReadOnly: true`, so they are omitted
-      // (the prior `depthReadOnly:true` + depthLoadOp/StoreOp combination was
-      // an invalid descriptor that failed validation every frame — latent
-      // because the OIT path was unreachable until Slice A wired it up). The
-      // `depthStencilView` MUST be the all-aspects render-pass attachment view,
-      // NOT a depth-only sampleable view (see the caller).
+      // The accumulation pass tests translucent fragments against opaque depth
+      // without modifying depth or stencil. A combined
+      // `depth24plus-stencil8` attachment therefore declares both aspects
+      // read-only and omits their load/store operations, as required by WebGPU.
+      // `depthStencilView` must encompass all attachment aspects rather than be
+      // the depth-only sampling view.
       depthStencilAttachment: {
         view: depthStencilView,
         depthReadOnly: true,
@@ -168,10 +161,10 @@ export class WebGPUOIT {
     };
   }
 
-  // Session 65 Batch 33 — MSAA sample count tracked alongside the
-  // viewport dimensions. When `context._msaaSamples` changes (bridge
-  // re-enable), `update()` rebuilds the composite pipeline at the new
-  // count. Default 1 = single-sample (pre-bridge behavior).
+  // Scene-framebuffer sample count used for composite target compatibility.
+  // Accumulation and revealage remain single-sampled. A later frustum can still
+  // resolve over an earlier OIT composite, so matching this count does not make
+  // the multisample path ordering-safe.
   private _sampleCount: number = 1;
 
   /**
@@ -250,12 +243,9 @@ export class WebGPUOIT {
       return;
     }
 
-    // Ensure the composite pipeline's color-target format matches the actual
-    // attachment we're about to write into. The scene color is bgra8unorm by
-    // default and rgba16float in HDR; the pipeline must match or the render
-    // pass fails WebGPU's pipeline-vs-attachment format validation. Pre-fix the
-    // pipeline was pinned to rgba8unorm and `targetFormat` was ignored, so this
-    // (the entire MRT-OIT composite) failed validation every frame.
+    // Rebuild when the pipeline's color-target format differs from the current
+    // scene-color attachment. The attachment is `bgra8unorm` by default and
+    // `rgba16float` in HDR; WebGPU rejects any other pipeline target format.
     if (
       this._device &&
       (!this._compositePipeline || this._compositeFormat !== targetFormat)
@@ -349,11 +339,9 @@ export class WebGPUOIT {
         ],
       },
       primitive: { topology: "triangle-list" },
-      // Session 65 Batch 33 — match scene FB sample count so MSAA
-      // composite output validates against the MSAA scene color
-      // attachment. Composite source textures (accumulation, revealage)
-      // remain single-sample — the multisample state only affects the
-      // pipeline's render-target compatibility.
+      // Match the scene framebuffer's sample count for render-target
+      // compatibility; the sampled accumulation and revealage inputs remain
+      // single-sampled.
       multisample:
         this._sampleCount > 1 ? { count: this._sampleCount } : undefined,
     });
@@ -391,11 +379,9 @@ export class WebGPUOIT {
     this._compositeBindGroup = null;
   }
 
-  // ─── OIT Pipeline Variant Factory ───
-
-  // Cache of OIT shader modules: hash(baseCode) → GPUShaderModule
+  // Shader modules and pipelines are keyed by shader-code length, fragment
+  // entry point, and pipeline label in `createOITPipeline`.
   private _oitShaderCache = new Map<string, GPUShaderModule>();
-  // Cache of OIT pipelines: hash(basePipeline+layout) → GPURenderPipeline
   private _oitPipelineCache = new Map<string, GPURenderPipeline>();
 
   /**
@@ -468,19 +454,12 @@ fn csm_oitOutput(color: vec4<f32>, clipZ: f32) -> OITFragOutput {
 }
 `;
 
-    // ── C11-157 Slice A — struct-typed fragment return support (ADD-ONLY) ──
-    // The single-`@location(0)` path below is preserved VERBATIM; Gaussian
-    // splats + FLAT primitive shaders depend on its exact output (a spec
-    // asserts byte-identity). LIT / MRT-G-buffer primitive fragment shaders
-    // instead return a NAMED STRUCT (e.g. `-> FragOutput` with `@location(0)
-    // color` + `@location(1) normalRoughness`). The text-surgery below can't
-    // strip a `@location(0)` that lives on the STRUCT DEFINITION rather than
-    // the function signature, and after renaming the entry to a non-entry
-    // function that struct's `@location`/`@builtin` attributes would be
-    // orphaned (WGSL rejects IO attributes outside entry-point I/O). Struct
-    // returns therefore route through a dedicated branch that renames the
-    // entry, strips the struct's IO attributes, and wraps with
-    // `csm_oitOutput(base.<colorField>, in.<posField>.z)`.
+    // A structure-returning entry needs a separate transformation because its
+    // location and builtin attributes are declared on structure members. After
+    // the entry is renamed, those attributes must be removed before the
+    // structure can be returned from a non-entry function. The direct
+    // `@location(0)` branch remains separate so Gaussian-splat and flat
+    // primitive output stays byte-identical.
     const structInfo = WebGPUOIT._analyzeStructFragmentReturn(
       baseWGSL,
       fragmentEntryPoint,
@@ -548,13 +527,11 @@ fn ${fragmentEntryPoint}(${paramName}: ${paramType}) -> OITFragOutput {
   }
 
   /**
-   * Analyze a fragment shader whose entry point returns a NAMED STRUCT type
-   * (the LIT / MRT-G-buffer primitive shape, `-> FragOutput`). Returns null for
-   * the single-`@location(0)` shape (so the caller keeps the verbatim legacy
-   * path) or when the shader can't be parsed (graceful fall-through). On
-   * success returns the struct name, the `@location(0)` color member name, and
-   * the fragment input parameter name/type plus its `@builtin(position)` member
-   * name (the clip/frag position the OIT weight function samples).
+   * Analyzes a fragment entry point that returns a named structure such as the
+   * lit or multiple-render-target `FragOutput` shape. Returns `null` for a
+   * direct `@location(0)` return or when the shader cannot be parsed. On
+   * success, returns the structure name, location-zero color member, fragment
+   * input parameter name and type, and its builtin-position member name.
    * @private
    */
   private static _analyzeStructFragmentReturn(
@@ -577,8 +554,8 @@ fn ${fragmentEntryPoint}(${paramName}: ${paramType}) -> OITFragOutput {
     }
     const paramDecl = sig[1].trim();
     const returnType = sig[2].trim();
-    // A `@location(0) vec4<f32>` (or any `@`-prefixed) return is the single-
-    // target shape → NOT a struct; let the byte-identical legacy path handle it.
+    // An attribute-prefixed return is the direct single-target form, not a
+    // structure, and is handled by the single-location branch.
     if (returnType.startsWith("@") || !/^[A-Za-z_]\w*$/.test(returnType)) {
       return null;
     }
@@ -666,12 +643,10 @@ fn ${fragmentEntryPoint}(${paramName}: ${paramType}) -> OITFragOutput {
   }
 
   /**
-   * Transform a struct-returning fragment shader into an OIT MRT variant
-   * (weighted-blended dual output). Add-only companion to `injectOITOutput` —
-   * never invoked for the single-`@location(0)` shape. Strategy: (1) rename the
-   * entry to a non-entry `_oit_base_*` keeping its `-> <struct>` return, (2)
-   * strip the struct's I/O attributes, (3) append an OIT wrapper entry that
-   * calls the base and re-emits `csm_oitOutput(base.<colorField>, in.pos.z)`.
+   * Transforms a structure-returning fragment shader into a weighted-blended
+   * OIT variant with two outputs. Renames the entry point to a helper, removes
+   * its return structure's I/O attributes, and appends a wrapper that converts
+   * the location-zero color and fragment depth with `csm_oitOutput`.
    * @private
    */
   private static _injectOITStructReturn(
@@ -773,10 +748,8 @@ fn ${fragmentEntryPoint}(${info.paramName}: ${info.paramType}) -> OITFragOutput 
       this._oitPipelineCache.set(cacheKey, pipeline);
       return pipeline;
     } catch (e) {
-      // Pipeline creation failure — must always reach the console as a real
-      // error per CLAUDE.md (shader compile / pipeline creation failures are
-      // never pragma-stripped). Promoted from console.warn so the
-      // debug-pragma lint leaves it permanent.
+      // Pipeline creation failures are permanent runtime errors; release
+      // stripping must not remove their diagnostics.
       console.error(`[OIT] Failed to create OIT pipeline variant:`, e);
       return null;
     }

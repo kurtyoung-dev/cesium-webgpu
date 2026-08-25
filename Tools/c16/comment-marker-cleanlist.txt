@@ -651,3 +651,10 @@ packages/engine/Source/Scene/Picking.js
 packages/engine/Source/Renderer/WebGPU/WebGPUSceneRendererPickPass.ts
 packages/engine/Source/Renderer/WebGPU/WebGPUPickCommandHelpers.ts
 packages/engine/Source/Renderer/WebGPU/WebGPUPickFramebuffer.ts
+# Post-process stage integration and supporting G-buffer/OIT topology. Current
+# constraints remain inline; extracted knowledge moved to
+# migration_doc/DEV_NOTES_postprocess.md.
+packages/engine/Source/Renderer/WebGPU/WebGPUUserPostProcessStage.ts
+packages/engine/Source/Renderer/WebGPU/WebGPUGBufferRenderer.ts
+packages/engine/Source/Renderer/WebGPU/WebGPUOIT.ts
+packages/engine/Source/Scene/GBufferFramebuffer.js

@@ -1,44 +1,22 @@
 import destroyObject from "../Core/destroyObject.js";
 
 /**
- * Phase 8a (Batch 80 — Slice 1, Batch 85 — Slice 2, Batch 86 — Slice 2b)
- * — depth-prepass + normal G-buffer scaffolding.
+ * Owns the WebGPU normal-and-roughness G-buffer attachments.
  *
- * **Slice 2b note (this batch):** rewritten to manage GPU resources
- * directly (raw `GPUTexture` + `GPUTextureView`) instead of through
- * `FramebufferManager`. The Slice 1 design used `FramebufferManager`
- * for consistency with `SceneFramebuffer`, but FramebufferManager
- * creates Cesium `Texture` objects without `STORAGE_BINDING` usage,
- * so the WGSL compute producer (Slice 2) couldn't bind the G-buffer
- * as `texture_storage_2d<rgba16float, write>`. Slice 2b closes that
- * gap by creating the texture with the right usage flags directly.
+ * The single-sample `rgba16float` texture stores
+ * `(normalEye.xyz, roughness)`. `WebGPUContext` updates it on every non-pick
+ * frame; consumer demand does not currently gate allocation or scene-
+ * framebuffer MRT topology. Scene passes bind it directly at one sample or use
+ * it as the resolve target for a multisampled companion. Compute fallback
+ * producers can bind it as storage, and post-process consumers sample it.
  *
- * The trade-off: this class is now WebGPU-specific (it builds a
- * `GPUTexture` against `context.device`). That's fine — deferred
- * lighting is a WebGPU-only path. The WebGL backend never instantiates
- * this class through `frameState.useDeferredLighting` because the
- * gate is also WebGPU-only.
+ * The multisampled companion is a render attachment only because WebGPU does
+ * not permit multisampled storage textures.
  *
- * Allocates a single `rgba16float` color attachment for packed
- * `(normalEye.xyz, roughness)`. Usage flags:
- *   - `STORAGE_BINDING` — required so the compute producer can write
- *     into it (`@group(0) @binding(2) var gBufferOut: texture_storage_2d`).
- *   - `TEXTURE_BINDING` — required so Slice 3+ consumers (SSAO/SSR/etc.)
- *     can sample from it.
- *   - `COPY_DST` — required for the per-frame clear (we don't use a
- *     render-pass clear since this texture is never bound as a render
- *     attachment).
+ * The G-buffer has no separate depth texture. A depth-derived producer reads
+ * the scene framebuffer's sampleable depth view, which avoids another prepass
+ * and keeps reconstruction aligned with the depth used to render the scene.
  *
- * The depth side of the prepass is intentionally NOT a separate
- * texture — Slice 2's compute producer samples the SCENE depth
- * attachment (via `context.depthOnlyTextureView`) so we get the depth
- * data "for free" without an extra prepass render. If a future slice
- * needs a separate depth attachment (e.g., for a hardware-accelerated
- * early-Z prepass), it can be added here without breaking existing
- * consumers.
- *
- * @see migration_doc/PHASE_8_SHADER_STRATEGY.md
- * @see migration_doc/WEBGPU_DEBUGGING_LOG.md Batch 80, 85, 86
  * @private
  */
 class GBufferFramebuffer {
@@ -46,47 +24,32 @@ class GBufferFramebuffer {
     this._width = 0;
     this._height = 0;
     this._sampleCount = 1;
-    // Single-sample texture (always allocated). Doubles as:
-    //   - The compute producer's storage_2d write target.
-    //   - AO / SSR / other consumers' sampled-2D read source.
-    //   - The MRT-render-pass color attachment when sampleCount === 1.
-    //   - The MRT-render-pass resolveTarget when sampleCount > 1.
+    // The single-sample texture is the compute storage target, the sampled
+    // consumer view, the direct MRT attachment at one sample, and the resolve
+    // target when multisampling is enabled.
     this._texture = null;
     this._textureView = null;
-    // Multisampled texture (only allocated when sampleCount > 1).
-    // Used ONLY as the MRT-render-pass color attachment in MSAA mode.
-    // Cannot be bound as storage_2d (WebGPU forbids multisampled
-    // storage textures) — that's why we keep the single-sample
-    // `_texture` above as the resolve target + producer/consumer
-    // backing store.
+    // The multisampled companion exists only for the MRT color attachment.
+    // WebGPU forbids multisampled storage textures, so it resolves into the
+    // single-sample producer/consumer texture.
     this._textureMSAA = null;
     this._textureMSAAView = null;
   }
 
   /**
-   * Allocate / resize the normal+roughness texture to match the
-   * current viewport.
+   * Allocates or resizes the normal-and-roughness attachments to match the
+   * viewport and effective scene-framebuffer sample count.
    *
-   * Slice 5c-B Phase 2 v2 (Batch 115) — supports MSAA via a paired
-   * (multisampled, single-sample-resolve) texture allocation. When
-   * `numSamples > 1`, both textures are created; the multisampled
-   * view is what the MRT render pass binds as its color attachment,
-   * and the single-sample view is auto-populated via render-pass
-   * resolve at end-of-pass. The compute producer + AO/SSR consumers
-   * always operate on the single-sample view, identical to today.
+   * With multisampling, the MRT render pass writes the multisampled companion
+   * and resolves into the single-sample texture. Compute producers and sampled
+   * consumers always use the single-sample view. Without multisampling, the
+   * render pass binds the single-sample texture directly.
    *
-   * When `numSamples === 1`, only the single-sample texture is
-   * allocated; the render pass binds it directly with no resolve.
-   *
-   * @param {WebGPUContext} context
-   * @param {BoundingRectangle} viewport
-   * @param {boolean} _hdr  Unused — G-buffer is always HALF_FLOAT
-   *                         (needed for signed normals without
-   *                         octahedral encoding complexity).
-   * @param {number} numSamples  Scene-FB MSAA sample count to match.
-   *                             1 = no MSAA (single-sample only).
-   *                             >1 = paired multisampled +
-   *                             single-sample-resolve allocation.
+   * @param {WebGPUContext} context The context whose device owns the textures.
+   * @param {BoundingRectangle} viewport The allocation dimensions.
+   * @param {boolean} _hdr Unused; the G-buffer always uses `rgba16float`.
+   * @param {number} numSamples The effective scene-framebuffer sample count;
+   *        values less than two select the single-sample layout.
    */
   update(context, viewport, _hdr, numSamples) {
     const width = viewport.width | 0;
@@ -118,10 +81,9 @@ class GBufferFramebuffer {
     this._width = width;
     this._height = height;
     this._sampleCount = sampleCount;
-    // Always allocate the single-sample texture — compute producer and
-    // consumers (AO / SSR) read/write this. RENDER_ATTACHMENT lets it
-    // serve as resolveTarget (in MSAA mode) OR the direct attachment
-    // (in single-sample mode).
+    // A valid update always allocates the single-sample texture. It is the
+    // multisample resolve target or the direct attachment, and remains
+    // storage- and texture-bindable for producers and consumers.
     this._texture = device.createTexture({
       label: "Phase8a_GBuffer_NormalRoughness",
       size: { width, height },
@@ -131,9 +93,8 @@ class GBufferFramebuffer {
         GPUTextureUsage.STORAGE_BINDING |
         GPUTextureUsage.TEXTURE_BINDING |
         GPUTextureUsage.COPY_DST |
-        // Phase 2 v2 — required so the scene-FB render pass can bind
-        // this either as a direct color attachment (sampleCount=1)
-        // or as the resolveTarget of a multisampled attachment (>1).
+        // The scene-framebuffer render pass binds this directly at one sample
+        // or as the resolve target of the multisampled companion.
         GPUTextureUsage.RENDER_ATTACHMENT,
     });
     this._textureView = this._texture.createView({
@@ -157,77 +118,65 @@ class GBufferFramebuffer {
   }
 
   /**
-   * Clear is handled inside the compute producer (it overwrites every
-   * fragment with either a real normal or a (0,0,0,1) sentinel). This
-   * method stays for API parity with `SceneFramebuffer.clear` and is
-   * a no-op for now; if a future slice needs an explicit pre-pass
-   * clear (e.g., for the depth-attachment half), wire it here.
+   * Leaves clearing to the active producer path.
+   *
+   * The MRT render pass clears the attachment to `(0,0,0,1)`. The compute
+   * fallback writes every pixel as either a normal or the same sentinel. This
+   * method remains a no-op for API parity with `SceneFramebuffer.clear`.
    */
   clear(_context, _passState) {
-    // Producer writes every fragment in `GBufferNormalsFromDepth.wgsl`;
-    // sky / depth-clear fragments emit a (0,0,0,1) sentinel via the
-    // shader's `depth >= 0.99999` early-return. No CPU-side clear
-    // command is needed.
+    // The render pass or full-screen compute producer initializes every texel
+    // before consumers read it.
   }
 
   /**
-   * The eye-space normal (`.xyz`) + roughness (`.w`) view, ready to
-   * bind to compute as a storage texture or to fragment as a sampled
-   * texture. Slice 2 producer writes this; Slice 3+ consumers read it.
+   * Returns the single-sample normal-and-roughness view used for storage writes
+   * and sampled reads. In multisample mode, the render pass resolves into this
+   * view; at one sample it is the direct color attachment.
    *
-   * In MSAA mode this is the RESOLVED single-sample view (auto-populated
-   * at end of MRT render pass). In single-sample mode this is the same
-   * texture the render pass writes to directly.
-   *
-   * @returns {GPUTextureView | null}
+   * @returns {GPUTextureView | null} The allocated view, or `null` before a
+   *          successful update.
    */
   get normalRoughnessTexture() {
     return this._textureView;
   }
 
   /**
-   * Phase 2 v2 (Batch 115) — view to bind as the MRT render-pass color
-   * attachment (slot 1). Returns the multisampled view when MSAA is on;
-   * otherwise the single-sample view (identical to `normalRoughnessTexture`).
-   * The render pass automatically resolves into `normalRoughnessTexture`
-   * at end-of-pass when MSAA is on.
+   * Returns the MRT color-attachment view. This is the multisampled companion
+   * when MSAA is active and otherwise the single-sample texture.
    *
-   * @returns {GPUTextureView | null}
+   * @returns {GPUTextureView | null} The current attachment view, or `null`
+   *          before allocation.
    */
   get renderAttachmentView() {
     return this._textureMSAAView ?? this._textureView;
   }
 
   /**
-   * Phase 2 v2 (Batch 115) — resolveTarget view for the MRT render-pass
-   * color attachment. Returns the single-sample view when MSAA is on
-   * (so the multisampled writes resolve into the storage-bindable
-   * texture compute + consumers read). Returns `null` when MSAA is off
-   * (no resolve needed; the direct attachment IS the consumer texture).
+   * Returns the single-sample MRT resolve target when MSAA is active. At one
+   * sample, the render pass writes the consumer texture directly and no resolve
+   * target is needed.
    *
-   * @returns {GPUTextureView | null}
+   * @returns {GPUTextureView | null} The resolve view, or `null` when no resolve
+   *          is required.
    */
   get resolveTargetView() {
     return this._sampleCount > 1 ? this._textureView : null;
   }
 
   /**
-   * Phase 2 v2 (Batch 115) — current sample count this G-buffer is
-   * allocated for. Used by callers building render-pass descriptors
-   * to confirm the G-buffer matches the scene-FB sample count.
+   * Returns the effective sample count used by the G-buffer attachments.
    *
-   * @returns {number}
+   * @returns {number} The current sample count.
    */
   get sampleCount() {
     return this._sampleCount;
   }
 
   /**
-   * Backwards-compat slot for the probe — used to detect "framebuffer
-   * is allocated" without coupling the probe to the raw texture handle.
-   * Kept truthy whenever `update()` has run with a non-zero viewport.
+   * Returns whether the single-sample G-buffer texture is allocated.
    *
-   * @returns {boolean}
+   * @returns {boolean} `true` after a successful update.
    */
   get framebuffer() {
     return this._texture !== null;

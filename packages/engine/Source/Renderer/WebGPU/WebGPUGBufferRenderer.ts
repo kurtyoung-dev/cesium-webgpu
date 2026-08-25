@@ -1,27 +1,19 @@
 /// <reference types="@webgpu/types" />
 /**
- * G-buffer renderer — Phase 8a Slice 2 (Batch 85).
+ * Provides the fallback G-buffer compute pass. It reconstructs eye-space
+ * normals and a depth-gradient roughness proxy from resolved scene depth and
+ * writes them to `view.gBufferFramebuffer.normalRoughnessTexture`.
  *
- * Owns the screen-space normal-from-depth compute pass. Reads the
- * resolved scene depth and writes packed `(normalEye, roughness=1)` into
- * the color attachment of `view.gBufferFramebuffer` (Phase 8a Slice 1,
- * Batch 80).
+ * The current scene framebuffer uses its multiple-render-target topology on
+ * every non-pick frame, independently of consumer demand. While that topology
+ * is active, fragment pipelines with normal-roughness outputs populate the
+ * attachment and this fallback is skipped; other pipelines leave its clear
+ * sentinel.
  *
- * Lifecycle:
- *   - `ensureGBufferComputeResources(host, device)` — allocates the
- *     uniforms UBO + the persistent bind-group layout. Idempotent;
- *     cached on the host.
- *   - `dispatchGBufferNormalsFromDepth(host, encoder, device, params)`
- *     — packs the inverse-projection matrix + viewport size into the
- *     UBO, rebuilds the per-frame bind group (depth view + G-buffer
- *     storage view can both change per resize), then dispatches the
- *     `computeNormalFromDepth` entry point via `host.dispatchCompute`.
+ * Single-sample and multisample depth require separate shader modules,
+ * bind-group layouts, bind groups, and pipelines because WGSL fixes the depth
+ * texture type in the module.
  *
- * Patterned after `WebGPUAtmosphereLUT.ts` — same host-interface
- * shape, same cache model, same compute-task-type routing through
- * `WebGPUPerformanceManager.dispatchCompute`.
- *
- * @see migration_doc/WEBGPU_DEBUGGING_LOG.md Batch 85
  * @module WebGPUGBufferRenderer
  */
 
@@ -35,11 +27,9 @@ import {
 import { ComputeTaskType } from "./WebGPUPerformanceManager.js";
 import type { ComputeTaskTypeValue } from "./WebGPUPerformanceManager.js";
 
-// Phase 8a Slice 2d (Batch 90) — pull the shader sources directly so
-// the dispatcher can create its own pipelines with explicit BGLs (the
-// `host.dispatchCompute` path uses pipeline-specific auto-layouts that
-// can't be paired with custom-built bind groups for the MSAA depth
-// binding).
+// Pipelines use explicit layouts because the automatic layouts created by
+// `host.dispatchCompute` are pipeline-specific and cannot accept the custom
+// bind groups required by the multisampled-depth variant.
 import GBufferNormalsFromDepthSource from "../../Shaders/WebGPU/Compute/GBufferNormalsFromDepth.js";
 import GBufferNormalsFromDepthMSAASource from "../../Shaders/WebGPU/Compute/GBufferNormalsFromDepthMSAA.js";
 
@@ -48,19 +38,10 @@ const WORKGROUP_SIZE = 8;
 export interface GBufferComputeResources {
   uniformsBuffer: GPUBuffer;
   uniformsData: Float32Array;
-  // Phase 8a Slice 2d (Batch 90) — two bind group layouts, two bind
-  // groups, two pipelines: one set each for single-sample and
-  // multisampled depth. WGSL declares texture sample type at module
-  // scope, so two shaders + two pipelines are required.
-  //
-  // We CREATE THE PIPELINES DIRECTLY with our custom BGLs (instead of
-  // routing through `host.dispatchCompute` which uses auto-layout)
-  // because WebGPU requires reference-identity match between the bind
-  // group's layout and the pipeline's expected layout. Auto-layouts
-  // are pipeline-specific objects and cannot be shared with custom-
-  // built BGLs. The atmosphere LUT works around this by relying on
-  // browser leniency for storage-texture-only layouts; the MSAA depth
-  // binding type is stricter and requires explicit BGL plumbing.
+  // Single-sample and multisample depth use separate resource sets because
+  // WGSL fixes the texture sample type at module scope. The pipelines are
+  // created from the same explicit layouts used by their bind groups; an
+  // automatic pipeline layout has a distinct identity.
   bindGroupLayout: GPUBindGroupLayout | null;
   bindGroupLayoutMSAA: GPUBindGroupLayout | null;
   pipeline: GPUComputePipeline | null;
@@ -123,21 +104,17 @@ export function ensureGBufferComputeResources(
 }
 
 export interface GBufferDispatchParams {
-  // Column-major mat4x4 (length 16). Eye-space output from
-  // `inverse(projection)`. CPU packs this from
-  // `uniformState.inverseProjection` (NOT inverseViewProjection — we
-  // want eye-space positions, not world).
+  // Column-major 4x4 inverse projection matrix (16 values). The producer
+  // reconstructs eye-space positions, so this is
+  // `uniformState.inverseProjection`, not `inverseViewProjection`.
   inverseProjection: Float32Array | number[];
   viewportWidth: number;
   viewportHeight: number;
   depthView: GPUTextureView;
   outputView: GPUTextureView;
-  // Phase 8a Slice 2d (Batch 90) — sample count of the depth view.
-  // When > 1, the dispatcher selects the multisampled-depth pipeline
-  // (`NORMAL_FROM_DEPTH_MSAA`) and binds the depth view as
-  // `texture_depth_multisampled_2d`. When 1 (or undefined), the
-  // single-sample pipeline runs as before. Cesium's default is 4 —
-  // pre-Slice-2d the producer silently bailed on MSAA scenes.
+  // Sample count of `depthView`. Values greater than 1 select the
+  // `texture_depth_multisampled_2d` shader and layout; 1 or `undefined` selects
+  // the `texture_depth_2d` path.
   depthSampleCount?: number;
 }
 
@@ -170,13 +147,9 @@ export function dispatchGBufferNormalsFromDepth(
 
   const isMSAA = (params.depthSampleCount ?? 1) > 1;
 
-  // Pick the right bind-group layout. The MSAA path binds
-  // `texture_depth_multisampled_2d`; the single-sample path binds
-  // `texture_depth_2d`. WGSL requires the binding type to match the
-  // texture-view's sample count, so we keep separate layouts (and
-  // separate bind groups) for the two cases. Both layouts share the
-  // same binding slots so the dispatcher's WGSL helper code is
-  // identical except for the texture-load call.
+  // Select the bind-group layout matching the depth texture type. Both layouts
+  // share binding slots, so the shader variants differ only in their
+  // texture-load operation.
   if (isMSAA) {
     if (!res.bindGroupLayoutMSAA) {
       res.bindGroupLayoutMSAA = makeBindGroupLayout(
@@ -224,8 +197,8 @@ export function dispatchGBufferNormalsFromDepth(
     res[cacheKey] = bg;
     res.cachedDepthView = params.depthView;
     res.cachedOutputView = params.outputView;
-    // Invalidate the OTHER cache when views change — a future
-    // dispatch on the other path would re-create it on demand.
+    // A view change invalidates the bind group for the alternate sample-count
+    // path so it is rebuilt before that path runs again.
     if (isMSAA) {
       res.cachedBindGroup = null;
     } else {
@@ -233,12 +206,9 @@ export function dispatchGBufferNormalsFromDepth(
     }
   }
 
-  // Build the pipeline ourselves with the explicit BGL. The
-  // `host.dispatchCompute` path uses auto-layout which is
-  // pipeline-specific and can't be paired with custom bind groups —
-  // works for atmosphere LUT's storage-only bindings but fails for the
-  // MSAA depth binding (browser strict mode rejects the layout
-  // mismatch and the dispatch becomes a silent no-op).
+  // The pipeline uses the same explicit layout object as its bind group.
+  // Pipeline-specific automatic layouts have a different identity and are not
+  // compatible with these custom bindings.
   if (isMSAA) {
     if (!res.pipelineMSAA) {
       const module = device.createShaderModule({
@@ -286,9 +256,8 @@ export function dispatchGBufferNormalsFromDepth(
   pass.dispatchWorkgroups(wgsX, wgsY, 1);
   pass.end();
 
-  // `dispatchCompute` no longer used — taskType / entryPoint args are
-  // now redundant. Keep the host interface for forward-compat with
-  // any future caller; this dispatcher doesn't need it.
+  // The explicit pipeline path retains the shared compute-host surface but does
+  // not use its dispatcher or task type.
   void ComputeTaskType;
   void host;
 

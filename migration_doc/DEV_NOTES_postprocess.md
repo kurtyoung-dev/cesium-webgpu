@@ -528,3 +528,94 @@ follow-up (see migration_doc/DEFERRED_WORK.md).
 ```
 
 The full derivation of the band's no-op defect, including the follow-up it names: a per-froxel-column datum reconstructed from the depth buffer, tracked in the deferred-work ledger. The rewritten docblock keeps the derivation and drops the pointer.
+
+### `packages/engine/Source/Renderer/WebGPU/WebGPUUserPostProcessStage.ts` — `SCHEMA_TYPE_BYTES`
+
+_Moved 2026-08-24._
+
+```text
+B204-N1 (Batch 205) — bytes actually WRITTEN by `_packUniforms` for
+each schema type. Used by the collision check to decide if a schema
+entry overlaps `PASS_INDEX_OFFSET`. Note vec3 only writes 3 floats
+(12 bytes) here even though WGSL aligns vec3 to a 16-byte slot — the
+collision is about JS writes clobbering the pass-index slot, not
+WGSL layout. So vec3 declared at offset 48 (writes [48..60)) is safe;
+vec4 at offset 48 (writes [48..64)) collides with [60..64).
+```
+
+This preserves the distinction between JavaScript write width and WGSL slot size, including one safe range and one collision range.
+
+### `packages/engine/Source/Renderer/WebGPU/WebGPUUserPostProcessStage.ts` — `SCHEMA_TYPE_ALIGNS`
+
+_Moved 2026-08-24._
+
+```text
+B205-N1 (Batch 213) — WGSL alignment requirements per type. The
+shader-side struct layout follows these rules; if the JS-declared
+offset doesn't match, the JS pack writes data the shader interprets
+at the WRONG offset (silent miscompare — the shader reads garbage,
+the visual result is wrong but no error is thrown).
+  - float: 4-byte aligned, occupies 4 bytes
+  - vec2:  8-byte aligned, occupies 8 bytes
+  - vec3:  16-byte aligned (WGSL pads vec3 to 16), occupies 12 bytes
+          in our pack but the shader reads from a 16-byte slot
+  - vec4:  16-byte aligned, occupies 16 bytes
+```
+
+This records the silent-failure symptom and the exact alignment and write-width table behind schema validation.
+
+### `packages/engine/Source/Renderer/WebGPU/WebGPUUserPostProcessStage.ts` — `WebGPUUserPostProcessStage#_packUniforms`
+
+_Moved 2026-08-24._
+
+```text
+B204-N1 (Batch 205) — PASS_INDEX_OFFSET is reserved for the
+framework. Detect range overlap, not just an exact-offset
+match: a vec4 declared at offset 48 spans bytes [48..64) and
+its .w component would silently be clobbered by the pass
+index write at byte 60. Same shape for vec3@52, vec2@56,
+float@60, plus any out-of-range offset >=64. Skip + warn so
+the schema author can move the entry to a safe offset.
+```
+
+This preserves the exact mutant an offset-equality check misses and the complete set of overlap examples.
+
+### `packages/engine/Source/Renderer/WebGPU/WebGPUPostProcessStageCollection.ts` — `configureWebGPUPostProcessPipeline`
+
+_Moved 2026-08-24._
+
+```text
+C4-PLAIN-HDR-GAMMA-TAILS (a) — sync the user's tonemap exposure.
+WebGL drives its tonemap `exposure` uniform from
+`PostProcessStageCollection._exposure` (the `scene.postProcessStages
+.exposure` setter, default 1.0). Nothing synced it to the WebGPU tonemap
+stage, so exposure changes were a silent no-op on WebGPU. Mirror it here.
+Default 1.0 equals the value packed at addTonemapping → byte-identical off
+path. When auto-exposure is enabled the per-frame dispatch multiplies this
+manual base by the adaptive multiplier (see WebGPUPostProcessPipeline), so
+feeding the manual value keeps both paths correct.
+```
+
+This records the silent WebGPU no-op and its interaction with adaptive exposure; the rewritten comment states only the current data flow.
+
+### `packages/engine/Source/Renderer/WebGPU/WebGPUAmbientOcclusionEffect.ts` — `AmbientOcclusionEffect#constructor`
+
+_Moved 2026-08-24._
+
+> C6-SSGI-DIFFUSE defaults (RESEARCH_R-SSGI §9).
+
+This preserves the original research-record link. The tracked summary and current code disagree on AO intensity and resolution, so the rewritten source does not claim that every default came from that research.
+
+### `packages/engine/Source/Scene/GBufferFramebuffer.js` — (module docblock)
+
+_Moved 2026-08-24._
+
+> The depth side of the prepass is intentionally NOT a separate
+> texture — Slice 2's compute producer samples the SCENE depth
+> attachment (via `context.depthOnlyTextureView`) so we get the depth
+> data "for free" without an extra prepass render. If a future slice
+> needs a separate depth attachment (e.g., for a hardware-accelerated
+> early-Z prepass), it can be added here without breaking existing
+> consumers.
+
+This records the rationale for sharing scene depth instead of adding another prepass. The named view is historical; current code reads the scene framebuffer's sampleable depth view.

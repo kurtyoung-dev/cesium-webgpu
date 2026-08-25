@@ -1,71 +1,64 @@
 /// <reference types="@webgpu/types" />
 /**
- * NEW-POSTPROCESS-USER-WGSL — user-supplied WGSL post-process stages.
+ * User-supplied WGSL post-process stages.
  *
- * `Scene.postProcessStages.add(...)` lets users insert custom shader
- * effects. On WebGL, GLSL is supported. On WebGPU (Batch 198 first slice),
- * stages with a `wgslFragmentShader: string` uniform are compiled +
- * chained into the post-process pipeline.
- *
- * **Batch 204 second slice:** named-uniform schema + multi-pass support.
+ * `Scene.postProcessStages.add(...)` lets users insert custom shader effects.
+ * WebGL consumes GLSL; WebGPU compiles and chains stages that provide a
+ * `wgslFragmentShader: string` uniform. GLSL-only user stages are not
+ * transpiled on WebGPU.
  *
  * # Convention for user shaders
  *
- * The user provides a WGSL fragment shader as `stage.uniforms
- * .wgslFragmentShader: string`. The shader MUST declare:
+ * The user provides WGSL fragment source in
+ * `stage.uniforms.wgslFragmentShader`. The shader must declare:
  *
  *   - `@group(0) @binding(0) var sourceTexture: texture_2d<f32>;`
  *   - `@group(0) @binding(1) var sourceSampler: sampler;`
  *   - `@group(0) @binding(2) var<uniform> uniforms: UserUniforms;`
  *     where `struct UserUniforms { values: array<vec4<f32>, 4> };`
- *     (16 packed floats = 4 vec4s = 64 bytes UBO)
- *   - Entry point named `fragmentMain` returning
+ *     provides 16 packed floats in a 64-byte uniform buffer.
+ *   - An entry point named `fragmentMain` returning
  *     `@location(0) vec4<f32>`.
  *
- * The vertex stage is provided by the framework — a fullscreen triangle.
- * User shaders only write the fragment.
+ * The framework supplies a fullscreen-triangle vertex stage; user shaders
+ * provide only the fragment stage.
  *
- * # Uniform schema (Batch 204)
+ * # Uniform schema
  *
- * Two packing modes:
+ * Two packing modes write the uniform buffer:
  *
  * 1. **Schema-driven (preferred)** — the user provides a
  *    `wgslUniformSchema: UniformSchema` uniform alongside
- *    `wgslFragmentShader`. Each entry maps a name to a `(type, offset)`
- *    pair; `_packUniforms` writes the value at the byte offset based on
- *    the type's width (1/2/3/4 floats). Lets the user shader address
- *    uniforms by name (e.g., `uniforms.values[0].x` is the float at
- *    offset 0; `uniforms.values[1].xy` is the vec2 at offset 16, etc.)
- *    and lets the JS provider pass `[1, 0.5, 0.2]` arrays for vec3/4.
+ *    `wgslFragmentShader`. Each entry maps a name to a typed byte offset.
+ *    `_packUniforms` writes the value at that offset using the type's width,
+ *    so a shader can address named values through the fixed
+ *    `uniforms.values` layout and JavaScript providers can supply arrays for
+ *    vector values.
  *
- * 2. **Iteration-order (Batch 198 fallback)** — when no schema is
- *    provided, numeric uniforms are packed into floats 0..N in
- *    iteration order. Backwards-compatible with Batch 198 user stages.
+ * 2. **Iteration-order** — without a schema, scalar numeric uniforms are
+ *    packed into consecutive floats in property iteration order.
  *
- * # Multi-pass (Batch 204)
+ * # Multi-pass
  *
- * The user can set `wgslNumberOfPasses: number` (default 1) on the
- * stage. The framework runs the SAME pipeline N times in sequence,
- * ping-ponging between two intermediate textures. The current pass
- * index is packed into UBO offset 60 (last float of the 16-float UBO,
- * reserved for framework use); the user shader can read it as
- * `uniforms.values[3].w` and adapt per-pass behavior (e.g., separable
- * Gaussian blur runs horizontal pass at index 0, vertical at index 1).
+ * `wgslNumberOfPasses` defaults to one and is clamped to the range 1–32. When
+ * more than one pass is requested, the framework runs the same pipeline for
+ * each pass and alternates between two intermediate textures. Byte offset 60,
+ * the last float in the buffer, is reserved for the current pass index; shaders
+ * read it as `uniforms.values[3].w`.
  *
  * @module WebGPUUserPostProcessStage
  */
 
 /**
- * Batch 204 — named-uniform schema. Each entry maps a uniform name to
- * a (type, offset-in-bytes) pair within the 64-byte UBO. Offsets must
- * respect WGSL alignment rules:
- *   - float: 4-byte aligned, occupies 4 bytes
- *   - vec2: 8-byte aligned, occupies 8 bytes
- *   - vec3 / vec4: 16-byte aligned, occupies 16 bytes (vec3 also 16
- *     because WGSL packs vec3 as vec4 with implicit padding)
+ * Describes named uniforms by type and byte offset within the 64-byte uniform
+ * buffer. Offsets obey WGSL alignment:
+ *   - float: 4-byte aligned, writes 4 bytes
+ *   - vec2: 8-byte aligned, writes 8 bytes
+ *   - vec3: 16-byte aligned, writes 12 bytes in a 16-byte WGSL slot
+ *   - vec4: 16-byte aligned, writes 16 bytes
  *
- * The framework reserves the last 4 bytes (offset 60) for the per-pass
- * pass-index float — schema entries must not write to offset 60.
+ * Bytes 60–63 are reserved for the framework's per-pass index, so schema
+ * entries must not overlap that range.
  */
 export type UniformType = "float" | "vec2" | "vec3" | "vec4";
 export interface UniformSchemaEntry {
@@ -75,13 +68,10 @@ export interface UniformSchemaEntry {
 export type UniformSchema = Record<string, UniformSchemaEntry>;
 const PASS_INDEX_OFFSET = 60; // float at offset 60, last slot in 64-byte UBO
 
-// B204-N1 (Batch 205) — bytes actually WRITTEN by `_packUniforms` for
-// each schema type. Used by the collision check to decide if a schema
-// entry overlaps `PASS_INDEX_OFFSET`. Note vec3 only writes 3 floats
-// (12 bytes) here even though WGSL aligns vec3 to a 16-byte slot — the
-// collision is about JS writes clobbering the pass-index slot, not
-// WGSL layout. So vec3 declared at offset 48 (writes [48..60)) is safe;
-// vec4 at offset 48 (writes [48..64)) collides with [60..64).
+// Number of bytes the JavaScript packer writes for each schema type. The
+// collision check compares these ranges with the reserved pass-index slot. A
+// vec3 at offset 48 writes [48..60) and is safe; a vec4 at offset 48 writes
+// [48..64) and overlaps the reserved [60..64) range.
 const SCHEMA_TYPE_BYTES: Record<UniformType, number> = {
   float: 4,
   vec2: 8,
@@ -89,16 +79,13 @@ const SCHEMA_TYPE_BYTES: Record<UniformType, number> = {
   vec4: 16,
 };
 
-// B205-N1 (Batch 213) — WGSL alignment requirements per type. The
-// shader-side struct layout follows these rules; if the JS-declared
-// offset doesn't match, the JS pack writes data the shader interprets
-// at the WRONG offset (silent miscompare — the shader reads garbage,
-// the visual result is wrong but no error is thrown).
-//   - float: 4-byte aligned, occupies 4 bytes
-//   - vec2:  8-byte aligned, occupies 8 bytes
-//   - vec3:  16-byte aligned (WGSL pads vec3 to 16), occupies 12 bytes
-//           in our pack but the shader reads from a 16-byte slot
-//   - vec4:  16-byte aligned, occupies 16 bytes
+// Required WGSL alignment for each schema type. A misaligned JavaScript offset
+// makes the packer and shader-side layout address different bytes, producing a
+// silent value mismatch:
+//   - float: 4-byte aligned, writes 4 bytes
+//   - vec2:  8-byte aligned, writes 8 bytes
+//   - vec3:  16-byte aligned, writes 12 bytes in a 16-byte WGSL slot
+//   - vec4:  16-byte aligned, writes 16 bytes
 const SCHEMA_TYPE_ALIGNS: Record<UniformType, number> = {
   float: 4,
   vec2: 8,
@@ -160,11 +147,9 @@ export class WebGPUUserPostProcessStage implements PostProcessEffect {
     sampler: GPUSampler;
     bindGroup: GPUBindGroup;
   } | null> = [];
-  // Batch 204 multi-pass — TWO intermediate textures for ping-pong.
-  // Single-pass stages use only `_intermediateTextureA`. Multi-pass
-  // stages alternate A/B with each `numberOfPasses` iteration. The
-  // execute() return view always points at the LAST written texture
-  // so the caller's chain reads the final pass result.
+  // Two intermediate textures support ping-pong for multi-pass stages.
+  // Single-pass stages use only `_intermediateTextureA`; multiple passes
+  // alternate A and B, and `execute()` returns the texture written last.
   private _intermediateTextureA: GPUTexture | null = null;
   private _intermediateTextureB: GPUTexture | null = null;
   private _intermediateViewA: GPUTextureView | null = null;
@@ -175,10 +160,10 @@ export class WebGPUUserPostProcessStage implements PostProcessEffect {
   // Uniform values map. With schema: vec3/vec4 keys may be number[].
   // Without schema: all values are number (iteration-order packing).
   private readonly _uniformValues: Record<string, number | number[]>;
-  // Batch 204 — named-uniform schema. Optional; falls back to
-  // iteration-order packing for backwards compat with Batch 198 users.
+  // Optional named-uniform schema. Without one, scalar values are packed in
+  // property iteration order.
   private readonly _schema: UniformSchema | undefined;
-  // Batch 204 — number of passes; default 1 (single-pass).
+  // Number of passes; defaults to one.
   private readonly _numberOfPasses: number;
 
   constructor(
@@ -196,11 +181,9 @@ export class WebGPUUserPostProcessStage implements PostProcessEffect {
     // is almost certainly a user error (Gaussian blurs typically
     // run 1-4 passes). Hard-cap at 32 to prevent runaway loops.
     this._numberOfPasses = Math.max(1, Math.min(32, numberOfPasses ?? 1));
-    // B205-N1 (Batch 213) — schema alignment validation. Catches
-    // misaligned offsets at construction time so users see one warn
-    // per stage instead of silent shader miscompare. Range-overlap
-    // with PASS_INDEX_OFFSET is left to per-frame `_packUniforms`
-    // because that's also where bounds-out-of-UBO is caught.
+    // Validate alignment once at construction so debug builds diagnose a
+    // shader/packer mismatch at the declaration boundary. `_packUniforms`
+    // checks the upper write boundary at the reserved pass-index slot.
     if (schema) this._validateSchema(schema);
   }
 
@@ -337,10 +320,9 @@ export class WebGPUUserPostProcessStage implements PostProcessEffect {
       return sourceView;
     }
 
-    // Batch 204 multi-pass — for `numberOfPasses > 1`, ping-pong
-    // between A and B intermediates: pass 0 reads sourceView, writes
-    // A; pass 1 reads A, writes B; pass 2 reads B, writes A; etc.
-    // Final return view is whichever was written last.
+    // Multiple passes alternate destinations: pass 0 reads the source and
+    // writes A, pass 1 reads A and writes B, and subsequent passes continue
+    // alternating. The returned view is the destination written last.
     let currentSource = sourceView;
     let lastWrittenView: GPUTextureView = this._intermediateViewA;
     for (let passIdx = 0; passIdx < this._numberOfPasses; passIdx++) {
@@ -349,9 +331,8 @@ export class WebGPUUserPostProcessStage implements PostProcessEffect {
       // blur runs horizontal at index 0, vertical at index 1).
       this._packUniforms(passIdx);
 
-      // Pick destination view: alternate A/B for multi-pass, A only
-      // for single-pass. We write to the texture NOT being read from.
-      // Single-pass case (numberOfPasses === 1): always write to A.
+      // Pick the destination view: alternate A/B for multiple passes, and use A
+      // for a single pass. The destination is never the sampled texture.
       const writeToA = passIdx % 2 === 0;
       const targetView = writeToA
         ? this._intermediateViewA
@@ -366,7 +347,7 @@ export class WebGPUUserPostProcessStage implements PostProcessEffect {
         targetView,
       );
 
-      // Next pass reads what we just wrote.
+      // The next pass reads the texture written by this pass.
       currentSource = targetView;
     }
 
@@ -442,8 +423,6 @@ export class WebGPUUserPostProcessStage implements PostProcessEffect {
     this._device = null;
   }
 
-  // ── private ──
-
   private _allocateIntermediate(width: number, height: number): void {
     if (!this._device) return;
     this._intermediateTextureA?.destroy();
@@ -460,9 +439,8 @@ export class WebGPUUserPostProcessStage implements PostProcessEffect {
       usage,
     });
     this._intermediateViewA = this._intermediateTextureA.createView();
-    // Batch 204 — only allocate B when multi-pass is active. Saves
-    // VRAM for the common single-pass case (most user stages won't
-    // use multi-pass).
+    // Allocate the second full-size intermediate only for multi-pass stages;
+    // single-pass stages need only texture A.
     if (this._numberOfPasses > 1) {
       this._intermediateTextureB = this._device.createTexture({
         label: `UserPostProcessStage[${this.name}] intermediate-B`,
@@ -478,13 +456,9 @@ export class WebGPUUserPostProcessStage implements PostProcessEffect {
   }
 
   /**
-   * Batch 204 — pack uniforms per-pass. Schema-driven mode writes by
-   * named offset + type; iteration-order mode (Batch 198 fallback)
-   * writes scalars to floats 0..N. The pass index is always written to
-   * `PASS_INDEX_OFFSET` (offset 60) regardless of mode — schema users
-   * read it as `uniforms.values[3].w`; iteration-order users get it
-   * at the same physical slot as long as their uniforms don't pack
-   * past float index 14.
+   * Packs one pass's uniforms. Schema mode writes values at typed byte offsets;
+   * without a schema, scalar values fill consecutive floats in property
+   * iteration order. The framework always writes the pass index at byte 60.
    */
   private _packUniforms(passIndex: number): void {
     if (!this._device || !this._uniformBuffers[passIndex]) return;
@@ -496,13 +470,10 @@ export class WebGPUUserPostProcessStage implements PostProcessEffect {
         const entry = this._schema[key];
         const value = this._uniformValues[key];
         if (value === undefined) continue;
-        // B204-N1 (Batch 205) — PASS_INDEX_OFFSET is reserved for the
-        // framework. Detect range overlap, not just an exact-offset
-        // match: a vec4 declared at offset 48 spans bytes [48..64) and
-        // its .w component would silently be clobbered by the pass
-        // index write at byte 60. Same shape for vec3@52, vec2@56,
-        // float@60, plus any out-of-range offset >=64. Skip + warn so
-        // the schema author can move the entry to a safe offset.
+        // Reject any entry whose written byte range ends after byte 60, the
+        // start of the reserved pass-index slot. An exact-offset check would
+        // miss a vec4 at offset 48, whose `.w` component occupies byte 60; the
+        // same overlap occurs for vec3 at 52, vec2 at 56, and float at 60.
         const entrySize = SCHEMA_TYPE_BYTES[entry.type];
         if (
           entry.offset + entrySize > PASS_INDEX_OFFSET ||
@@ -548,7 +519,7 @@ export class WebGPUUserPostProcessStage implements PostProcessEffect {
         }
       }
     } else {
-      // Iteration-order fallback (Batch 198 backwards-compat path).
+      // Without a schema, pack scalar values in property iteration order.
       let i = 0;
       for (const key in this._uniformValues) {
         if (i >= USER_UNIFORM_FLOAT_COUNT - 1) break;

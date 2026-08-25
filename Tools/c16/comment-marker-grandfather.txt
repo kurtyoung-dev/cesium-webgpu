@@ -6,7 +6,6 @@
 
 packages/engine/Source/Renderer/WebGPU/cesium-js-types.d.ts	all-caps-fix-label  # 2026-08-21 grammar widening
 packages/engine/Source/Renderer/WebGPU/cesium-js-types.d.ts	campaign-row-id  # 2026-08-21 grammar widening
-packages/engine/Source/Renderer/WebGPU/WebGPUAmbientOcclusionEffect.ts	campaign-row-id  # 2026-08-21 grammar widening
 packages/engine/Source/Renderer/WebGPU/WebGPUContext.ts	all-caps-fix-label  # 2026-08-21 grammar widening
 packages/engine/Source/Renderer/WebGPU/WebGPUDepthOfFieldEffect.ts	campaign-row-id  # 2026-08-21 grammar widening
 packages/engine/Source/Renderer/WebGPU/WebGPUEffectsBindGroup.js	campaign-row-id  # 2026-08-21 grammar widening
@@ -17,8 +16,6 @@ packages/engine/Source/Renderer/WebGPU/WebGPUModelPipelineCache.ts	all-caps-fix-
 packages/engine/Source/Renderer/WebGPU/WebGPUModelTopology.ts	all-caps-fix-label  # 2026-08-21 grammar widening
 packages/engine/Source/Renderer/WebGPU/WebGPUMotionBlurEffect.ts	campaign-row-id  # 2026-08-21 grammar widening
 packages/engine/Source/Renderer/WebGPU/WebGPUPostProcessPipeline.ts	campaign-row-id  # 2026-08-21 grammar widening
-packages/engine/Source/Renderer/WebGPU/WebGPUPostProcessStageCollection.ts	all-caps-fix-label  # 2026-08-21 grammar widening
-packages/engine/Source/Renderer/WebGPU/WebGPUPostProcessStageCollection.ts	campaign-row-id  # 2026-08-21 grammar widening
 packages/engine/Source/Renderer/WebGPU/WebGPUShaderDefines.ts	all-caps-fix-label  # 2026-08-21 grammar widening
 packages/engine/Source/Renderer/WebGPU/WebGPUVolumetricFogResources.ts	all-caps-fix-label  # 2026-08-21 grammar widening
 packages/engine/Source/Scene/GltfLoader.js	all-caps-fix-label  # 2026-08-21 grammar widening

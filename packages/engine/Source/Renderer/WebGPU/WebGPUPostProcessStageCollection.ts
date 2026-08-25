@@ -45,9 +45,8 @@ import {
   SUN_BRIGHT_PASS_THRESHOLD_LEGACY,
   solarBloomCompositeRadiusPx,
 } from "../../Scene/SolarDiscModel.js";
-// C4-LOGDEPTH-PP-FRUSTUM-SLICEA — single source of truth for whether renderer-
-// wide log depth is active this frame (threaded into each depth-reading PP
-// effect UB so the Slice-B log-reverse can branch on it).
+// Resolves the renderer-wide log-depth state threaded into depth-reading
+// post-process uniform buffers.
 import { isWebGPULogDepthActive } from "./WebGPULogDepth.js";
 // Request and read the procedural cloud renderer's screen-space
 // transmittance mask, which resolves cloud occlusion of the god-ray shaft.
@@ -144,9 +143,8 @@ export interface PostProcessCache {
   aoIntensity: number;
   aoBias: number;
   // Whether `_userStages` on the pipeline has been populated from
-  // `scene.postProcessStages._stages` yet this session. Set on the first
-  // build, and reset to false when the user collection's stage list empties
-  // so the configure pass rebuilds.
+  // `scene.postProcessStages._stages`. Set on the first build and reset when the
+  // user collection's stage list empties so the configure pass rebuilds.
   _userStagesBuilt?: boolean;
   // The user-stage list length last consumed by a (re)build, `undefined`
   // until the first one. Rebuilding only on the first build or on an emptied
@@ -283,18 +281,14 @@ function findDepthOfFieldStage(collection: unknown): {
 }
 
 /**
- * Map the CesiumJS Tonemapper to our WebGPU tonemapping mode.
+ * Maps the CesiumJS Tonemapper to the WebGPU tonemapping mode.
  *
- * CesiumJS's `Tonemapper` is a STRING enum ("REINHARD" / "MODIFIED_REINHARD" /
- * "FILMIC" / "ACES" / "PBR_NEUTRAL") stored on
+ * CesiumJS's `Tonemapper` is a string-valued enum ("REINHARD" /
+ * "MODIFIED_REINHARD" / "FILMIC" / "ACES" / "PBR_NEUTRAL") stored on
  * `PostProcessStageCollection._tonemapper` (the `tonemapper` getter/setter).
  *
- * Pre-fix this read `collection._tonemapping?.type ?? collection._tonemappingType`
- * — `_tonemapping` is the post-process STAGE object (no `.type`) and
- * `_tonemappingType` doesn't exist — AND switched on NUMBERS (0..4). Both the
- * property and the value type were wrong, so it ALWAYS hit the default: the
- * user-facing `scene.postProcessStages.tonemapper` setting was a silent no-op
- * (every scene rendered with PBR_NEUTRAL regardless of selection).
+ * The value comes from `PostProcessStageCollection._tonemapper`, with the public
+ * getter as a fallback. Unknown values select `PBR_NEUTRAL`.
  */
 function mapTonemapType(collection: CesiumObjectWithWebGPUCache): number {
   const type = collection._tonemapper ?? collection.tonemapper;
@@ -507,13 +501,10 @@ function configureWebGPUPostProcessPipeline(
   }
   pipeline.setStageEnabled("TAA", taaEnabled);
 
-  // --- Motion Blur (C6-VELOCITY-MOTION-BLUR; controlled by scene.motionBlur) ---
-  // WebGPU-only velocity-buffer motion blur. Lazily added on the first
-  // `scene.motionBlur` frame, mirroring the TAA lazy-add above. The gate
-  // checks the LIVE `pipeline.motionBlurEffect` slot (addMotionBlur is
-  // internally idempotent) so it re-adds transparently after any pipeline
-  // recreate (HDR toggle, resize, device loss) that nulls the slot. Default
-  // off → byte-identical: the effect is never instantiated and never runs.
+  // Lazily create the WebGPU velocity-buffer motion-blur effect when
+  // `scene.motionBlur` is true. Checking the live `pipeline.motionBlurEffect`
+  // slot lets a pipeline recreation add it again. With the default false gate,
+  // the effect is neither instantiated nor executed.
   const motionBlurEnabled =
     (scene as unknown as { motionBlur?: boolean })?.motionBlur === true;
   if (motionBlurEnabled && !pipeline.motionBlurEffect) {
@@ -563,30 +554,20 @@ function configureWebGPUPostProcessPipeline(
   cache.tonemappingEnabled = useHdr;
   pipeline.setStageEnabled("Tonemap", useHdr && !hdrOutputMode);
   pipeline.setTonemappingMode(cache.tonemapMode);
-  // C4-PLAIN-HDR-GAMMA-TAILS (a) — sync the user's tonemap exposure.
-  // WebGL drives its tonemap `exposure` uniform from
-  // `PostProcessStageCollection._exposure` (the `scene.postProcessStages
-  // .exposure` setter, default 1.0). Nothing synced it to the WebGPU tonemap
-  // stage, so exposure changes were a silent no-op on WebGPU. Mirror it here.
-  // Default 1.0 equals the value packed at addTonemapping → byte-identical off
-  // path. When auto-exposure is enabled the per-frame dispatch multiplies this
-  // manual base by the adaptive multiplier (see WebGPUPostProcessPipeline), so
-  // feeding the manual value keeps both paths correct.
+  // Mirror `PostProcessStageCollection._exposure` into WebGPU tonemapping. The
+  // collection defaults to 1.0; auto exposure multiplies its adaptive value by
+  // this manual base.
   const userExposure = (collection as unknown as { _exposure?: number })
     ._exposure;
   pipeline.setTonemappingExposure(
     typeof userExposure === "number" ? userExposure : 1.0,
   );
 
-  // C6-TPDF-DITHER-FINAL — opt-in triangular-PDF dither on the tonemap stage
-  // to break banding across smooth sky/atmosphere/fog gradients before the
-  // 8-bit canvas quantization. Scene-level flag `scene.ditherEnabled` (default
-  // OFF) mirrors the colorGrading/godRay opt-in pattern; an optional numeric
-  // `scene.ditherStrength` overrides the ±1-LSB default. Default OFF writes
-  // 0.0 -> byte-identical output. Effective in the HDR pipeline (rgba16float
-  // intermediates preserve the sub-LSB noise until the final downcast); a
-  // no-op benefit in the fully-8-bit SDR chain where banding is baked into the
-  // scene framebuffer before post-process.
+  // Optional triangular-PDF dither runs in tonemapping before conversion to an
+  // 8-bit canvas. `scene.ditherEnabled` defaults false; the disabled path writes
+  // zero strength and leaves output unchanged. An rgba16float intermediate
+  // preserves the sub-LSB noise until the final conversion, whereas a fully
+  // 8-bit scene chain has already quantized its gradients before post-process.
   const ditherScene = scene as unknown as {
     ditherEnabled?: boolean;
     ditherStrength?: number;
@@ -715,18 +696,15 @@ function configureWebGPUPostProcessPipeline(
     }
   }
 
-  // --- Ambient Occlusion: lazily initialize on first enable ---
+  // Lazily initialize ambient occlusion on first enable.
   if (cache.ambientOcclusionEnabled && !cache.aoInitialized) {
     const ao = collection.ambientOcclusion;
-    // AUDIT_2026_05_02 B.13 — read `algorithm` from user uniforms so
-    // GTAO is reachable without monkey-patching. Falls back to "hbao"
-    // when unset for backwards compatibility. The AO algorithm
-    // discriminator is the lone string-typed uniform — narrow it to
-    // the literal union without going through `numU`.
+    // The algorithm discriminator is the lone string-typed AO uniform; narrow
+    // it to the supported literal union without passing it through `numU`.
     const rawAlgo = ao?.uniforms?.algorithm;
-    // C6-SSGI-DIFFUSE — "ssgi" opt-in joins the string-typed algorithm
-    // discriminator. Default stays "hbao" (byte-identical); ssgi is only
-    // reached when the user explicitly sets it AND enables the AO stage.
+    // `"ssgi"` is an explicit algorithm opt-in. Missing or unknown values
+    // retain the `"hbao"` default, and the ambient-occlusion stage must also be
+    // enabled.
     const algorithm: "gtao" | "hbao" | "ssgi" =
       rawAlgo === "gtao" || rawAlgo === "hbao" || rawAlgo === "ssgi"
         ? rawAlgo
@@ -744,7 +722,7 @@ function configureWebGPUPostProcessPipeline(
         ambientOcclusionOnly: Boolean(
           ao?.uniforms?.ambientOcclusionOnly ?? false,
         ),
-        // C6-SSGI-DIFFUSE — SSILVB parameters (ignored unless algorithm ssgi).
+        // SSILVB parameters; ignored unless the selected algorithm is `"ssgi"`.
         giIntensity: numU(ao?.uniforms?.giIntensity, 1.0),
         sliceCount: numU(ao?.uniforms?.sliceCount, 2),
         ssgiStepCount: numU(ao?.uniforms?.ssgiStepCount, 8),
@@ -762,7 +740,8 @@ function configureWebGPUPostProcessPipeline(
     cache.aoInitialized = true;
   }
   pipeline.setStageEnabled("AmbientOcclusion", cache.ambientOcclusionEnabled);
-  // C4-LOGDEPTH-PP-FRUSTUM-SLICEA — thread live frustum near/far + logActive.
+  // Refresh the enabled effect with the overall camera frustum and the current
+  // renderer-wide log-depth state.
   if (cache.ambientOcclusionEnabled) {
     updateAmbientOcclusionFrameData(pipeline, scene);
   }
@@ -785,7 +764,8 @@ function configureWebGPUPostProcessPipeline(
     cache.dofInitialized = true;
   }
   pipeline.setStageEnabled("DepthOfField", cache.depthOfFieldEnabled);
-  // C4-LOGDEPTH-PP-FRUSTUM-SLICEA — thread live frustum near/far + logActive.
+  // Refresh the enabled effect with the overall camera frustum and the current
+  // renderer-wide log-depth state.
   if (cache.depthOfFieldEnabled) {
     updateDepthOfFieldFrameData(pipeline, scene);
   }
@@ -1364,15 +1344,11 @@ function updateAerialPerspectiveFrameData(
     };
     camera?: { frustum?: { near?: number; far?: number } };
     skyAtmosphere?: { atmosphereLightIntensity?: number };
-    // Item 2.3 (AERIAL-FROXEL, Batch Q23) — opt-in froxel fast path (default
-    // false; nested under the already-opt-in `aerialPerspective`).
+    // Opt-in froxel fast path, nested under the aerial-perspective opt-in.
     aerialPerspectiveFroxel?: boolean;
-    // Q15 (ATMO-AERIAL-PERSPECTIVE-NEARFIELD-TUNE) — the same config object the
-    // configure pass reads at init (`addAerialPerspective`), re-read every frame
-    // so `scene.aerialPerspectiveConfig.{intensity,inscatterScale}` are runtime-
-    // mutable. Only the two dials that map to cheap per-frame uniform slots are
-    // synced here (the structural flags — froxel, useMultiScatterLut — have their
-    // own scene-level toggles above / dedicated setters).
+    // Runtime-mutable numeric haze settings, refreshed while the effect is
+    // enabled and the required camera uniforms are available. Structural modes
+    // use their dedicated scene-level controls.
     aerialPerspectiveConfig?: {
       intensity?: number;
       inscatterScale?: number;
@@ -1405,19 +1381,14 @@ function updateAerialPerspectiveFrameData(
   fx.setMultipleScatterView(lut?.multipleScatterView ?? null);
   fx.setUseMultiScatterLut(envMapMultiScatter);
 
-  // Item 2.3 (AERIAL-FROXEL, Batch Q23) — opt-in froxel fast path. Default
-  // false → the analytic per-pixel march (byte-identical). When on, the effect
-  // bakes the 32³ froxel volume this frame and the fragment does one trilinear
-  // fetch. Scene-level flag (`scene.aerialPerspectiveFroxel`).
+  // The opt-in froxel path bakes a 32³ volume and replaces the analytic
+  // per-pixel march with one trilinear fetch. The default false gate retains
+  // the analytic path.
   fx.setFroxelEnabled(sceneAny?.aerialPerspectiveFroxel === true);
 
-  // Q15 (ATMO-AERIAL-PERSPECTIVE-NEARFIELD-TUNE) — runtime-mutable haze dials.
-  // Mirrors the ColdOptics / HeatShimmer per-frame `setIntensity` pattern: the
-  // config object is read at init (addAerialPerspective) but mutating it later
-  // was previously inert because nothing re-pushed it. Re-reading here makes
-  // `scene.aerialPerspectiveConfig.{intensity,inscatterScale}` live. When the
-  // dials are unset/unchanged the effect keeps its init config value, so the
-  // default path is byte-identical.
+  // Refresh the numeric haze settings on each valid enabled-frame update.
+  // Missing properties leave the effect's current values unchanged; structural
+  // modes are controlled separately.
   const apCfg = sceneAny?.aerialPerspectiveConfig;
   if (apCfg) {
     if (typeof apCfg.intensity === "number") {
@@ -1688,8 +1659,8 @@ function updateGodRaySunUV(
   const near = cam?.frustum?.near;
   const far = cam?.frustum?.far;
   if (typeof near === "number" && typeof far === "number" && far > near) {
-    // C4-LOGDEPTH-PP-FRUSTUM-SLICEA — also thread the renderer-wide log-depth
-    // flag; the GodRayGenerate FS reverses log depth on it (C4-LOGDEPTH-PP-SLICEB).
+    // Pass the renderer-wide log-depth state with the frustum; the God-ray
+    // generate shader reverses sampled log depth when this flag is active.
     fx.setFrustum(
       near,
       far,
@@ -1707,14 +1678,11 @@ function updateGodRaySunUV(
 }
 
 /**
- * C4-LOGDEPTH-PP-FRUSTUM-SLICEA — resolve the live per-frame camera frustum
- * near/far bracket plus the renderer-wide log-depth flag for a depth-reading
- * post-process effect. Reads the OVERALL camera frustum (not
- * `uniformState.currentFrustum`, which is mutated per multi-frustum slice and
- * by configure time reflects only the far slice — see `updateGodRaySunUV`).
- * Returns `null` when the camera frustum is not yet a valid near<far pair
- * (early frame), so callers leave the effect's existing (placeholder or prior)
- * values in place rather than pushing garbage.
+ * Resolves the overall camera frustum and renderer-wide log-depth state for a
+ * depth-reading post-process effect. `uniformState.currentFrustum` is mutated
+ * per slice and can represent only the far slice when configuration runs, so
+ * this reads `scene.camera.frustum`. Returns `null` until near and far form a
+ * valid bracket, leaving the effect's current values intact.
  */
 function resolvePostProcessFrustum(scene?: CesiumScene): {
   near: number;
@@ -1739,10 +1707,8 @@ function resolvePostProcessFrustum(scene?: CesiumScene): {
 }
 
 /**
- * C4-LOGDEPTH-PP-FRUSTUM-SLICEA — push the live frustum near/far + logActive
- * into the AmbientOcclusion generate UB each frame (replacing the baked
- * `0.1 / 10000` placeholder). Only reached while AO is enabled → default scene
- * byte-identical.
+ * Updates the ambient-occlusion generator with the live overall-camera
+ * frustum and renderer-wide log-depth state.
  */
 function updateAmbientOcclusionFrameData(
   pipeline: WebGPUPostProcessPipeline,
@@ -1752,10 +1718,9 @@ function updateAmbientOcclusionFrameData(
   if (!fx) return;
   const f = resolvePostProcessFrustum(scene);
   if (f) fx.setFrustum(f.near, f.far, f.logActive);
-  // C6-SSGI-DIFFUSE — altitude fade so SSGI degrades to a byte-exact no-op from
-  // orbit (planet-scale guard, decoupled from depth reconstruction). Fades from
-  // 1 at/below `loFade` metres to 0 at/above `hiFade`. no-op for hbao/gtao
-  // (setAltitudeFade guards on the algorithm).
+  // Fade SSGI from 1 at or below 8,000 metres to 0 at or above 60,000 metres so
+  // orbit frames are a byte-exact no-op. `setAltitudeFade` ignores the HBAO and
+  // GTAO algorithms.
   const cam = (
     scene as unknown as {
       camera?: { positionCartographic?: { height?: number } };
@@ -1774,10 +1739,8 @@ function updateAmbientOcclusionFrameData(
 }
 
 /**
- * C4-LOGDEPTH-PP-FRUSTUM-SLICEA — push the live frustum near/far + logActive
- * into the DepthOfField composite UB each frame (replacing the baked
- * `0.1 / 10000` placeholder). Only reached while DoF is enabled → default scene
- * byte-identical.
+ * Updates the depth-of-field composite with the live overall-camera frustum
+ * and renderer-wide log-depth state.
  */
 function updateDepthOfFieldFrameData(
   pipeline: WebGPUPostProcessPipeline,
