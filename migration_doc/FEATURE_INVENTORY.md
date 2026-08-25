@@ -972,6 +972,8 @@ This table is the current EXIT-3 classification overlay for the historical celes
 
 | Entry | Git-proven landing | Recorded shipped evidence |
 | --- | --- | --- |
+| `C12-05` / `C12-06` / `C12-07` / `C12-08` star PSF: Moffat core+wing, halo-extent quad, chroma-preserving amplitude split, linear-Pogson dynamic range | Batch 748 (`e0e20625ff`) | Gate G2 (white blobs) — whose headline criteria are exactly these rows' deliverables — passed on both backends at Batch 905 (`ced8c1256f`). The queue names only `C12-27` as discharged by that run, so no separate row-level Edge discharge is inferred here. |
+| `C12-09` star catalogue depth to vmag 5.5 (2,868 records) | Batch 804 (`6794488107`) | Row recorded COMPLETE / LANDED; both renderers consume the same table and cutoff. The magnitude-6.0 / 5,058 deepen is parked behind `C12-11` moving-camera alias and frame-cost evidence and is not claimed here. |
 | `C12-20` / `C12-23` / `C12-30` Moon reflectance, opposition surge, sky wash | Batch 756 (`89dcd0da08`) | Targeted Edge gate recorded PASS. |
 | `C12-15` / `C12-16` / `C12-17` solar appearance and `C12-29 S4` implementation | Batch 766 (`2c37a3db03`) | Targeted solar gates recorded PASS; S4 is recorded COMPLETE / EDGE VERIFIED. |
 | `C12-35` Moon request/device lifecycle | Batch 819 (`ad43f8c527`) | L0–L5 lifecycle gate recorded PASS, including the real-Edge lane. |
@@ -1168,12 +1170,14 @@ These are the current WIP classifications. Any matching §B.4 prose is retained 
 
 | Entry | Landed implementation evidence | Current recorded state |
 | --- | --- | --- |
-| `C12-11` DR-01 seam | Batch 833 (`a8864e7ff7`) | **BLOCKED / RETURNED TO HELD** at Batch 1048 (`879157fef0`) with ten architecture blockers plus the hermeticity red; acceptance owed. |
+| `C12-11` DR-01 seam | Batch 833 (`a8864e7ff7`) | **BLOCKED / RETURNED TO HELD** at Batch 1048 (`879157fef0`) with ten architecture blockers plus the hermeticity red; acceptance owed. **RULED `R-2026-08-21-16`: OUT of the C12 exit gate** — C12 closes on the shipped starfield, with the rebuilt harness (Batch 1109) as the instrument of record for a post-C12 certification; the HELD state stays visibly recorded. |
 | `C12-12` skybox resolution / VRAM policy | Batch 932 policy seam (`0736c12f08`) | 4096 tier not baked; KTX2/default-sky acceptance remains open. |
 | `C12-14` samplable star cube | Batch 865 (`193393790c`) | Scaffolding with no consumer; acceptance owed. |
-| `C12-33` Moon mip / LOD moving seam | Batch 819 implementation (`ad43f8c527`); repairs at B1087 (`73221e8ec1`) and B1100 (`1d22e2c737`) | Acceptance never executed; blocked on the `sign-test-v1` four-cell versus ruled sixteen-cell design decision. |
+| `C12-33` Moon mip / LOD moving seam | Batch 819 implementation (`ad43f8c527`); repairs at B1087 (`73221e8ec1`) and B1100 (`1d22e2c737`) | Acceptance never executed. The design question is RULED — `R-2026-08-21-15` blesses BOTH: `sign-test-v1` (four-cell, custody-hashed at B1100) is the design of record now and its 2.5-hour Edge ten-run set is queued in the machine lane; the sixteen-cell ratio design is a later build gated on a maintainer-pre-registered `r`. |
 | `C12-29 S5` per-fragment lunar shadow | B777/B780 integration (`964c45309c`, `5748e7ad1d`); B1104 harness repair (`fc3f53bb97`) | Final seven-lane certification remains open; the B1104 repair is not a certification run. |
 | `C12-36` twilight-range sky-brightness estimator | Batch 823 log-luminance landing (`f7c617304d`); Batch 824 engine leg (`43caae0589`) | Engine/control leg recorded PASS; star-pixel acceptance remains **OWED** after the structural instrument run. |
+| `C12-31` natural solar-atmosphere aureole | Sky-shell fix landed Batch 785 (`e748181065`); L1–L4 gate tuple landed Batch 1048 (`879157fef0`) at 25/25 | Full acceptance sweep still OWED and IN the exit gate by `R-2026-08-21-16`; findings #4 and #6 of the 2026-08-14 review remain OPEN and are recorded in-source, so a green run is silent on both. `C12-31-FOLLOWUP-A/B/C` are filed follow-ups, ruled OUT of the gate. |
+| `C12-28` HDR default on HDR-capable displays | Batch 932 (`0736c12f08`) | Resolver spec green on both backends (`Scene/HdrDisplayCapability.ts`, `Scene#hdrDisplayPolicy`); the MANUAL HDR-hardware check is OWED, and `C12-28-CANVAS-EXTENDED-RANGE-OPT-IN` records the extended-range canvas half as opt-in by decision, not omission. |
 
 #### Preserved implementation history
 
@@ -1272,7 +1276,7 @@ Explicitly punted, gated on external dependencies, or research-stage. Sourced fr
 
 ### D.7 Post-process & Effects
 
-- Earth-limb airglow emission — `C12-26` / `NEW-EARTH-LIMB-AIRGLOW-EMISSION` (**NOT STARTED; maintainer scope call pending**) — a new Sun-independent emissive limb shell for O I 557.7 nm nightglow (~90–105 km) and O I 630.0 nm F-region red-orange emission; the existing `SkyAtmosphere` scattering path cannot produce the nightside bands because `nightAlpha` fades the shell to zero.
+- Earth-limb airglow emission — `C12-26` / `NEW-EARTH-LIMB-AIRGLOW-EMISSION` (**NOT STARTED; OUT of the C12 exit gate — deferred to proposed C17 as new light-transport physics by maintainer ruling `R-2026-08-21-16`, landed Batch 1127 (`e535725479`). The earlier "maintainer scope call pending" is discharged; C17 is unlaunched, so this stays in §D.**) — a new Sun-independent emissive limb shell for O I 557.7 nm nightglow (~90–105 km) and O I 630.0 nm F-region red-orange emission; the existing `SkyAtmosphere` scattering path cannot produce the nightside bands because `nightAlpha` fades the shell to zero.
 
 - C6-SSGI-DIFFUSE-GLSL — WebGL/GLSL twin of the SSILVB screen-space GI (§B). Deferred: the WebGPU path shipped first (Campaign-6 WebGPU-exceeds class). GLSL ES 3.0 has `bitCount` on highp int so it is feasible, but it needs a separate GLSL port of SSGIGenerate/BilateralBlur1D/SSGIComposite + wiring into the WebGL AO stage. Not required for parity (fork-added enhancement). (C6-SSGI-DIFFUSE-GLSL)
 - FEAT-SURVEY-22 GPU particle emitter with ease curves + atlas sprites (FEAT-SURVEY-22)
