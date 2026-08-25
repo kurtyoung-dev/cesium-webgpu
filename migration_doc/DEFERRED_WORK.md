@@ -4627,6 +4627,30 @@ Filed after the WebGPU-vs-WebGL ~50%-FPS investigation (Batch 717 root-cause + f
 
 - **NEW-WEBGPU-UPLOADIMAGESOURCE-CACHE-CONTRACT-TRAP — RESOLVED by `C11-167` / Batch 721 (2026-07-19); residual diagnostic hardening open.** The production `uploadImageSource` call-site audit completed and found every live caller guarded; do not repeat the audit. Batch 717's ocean source-identity memo removed the measured upload/view/bind-group storm for a stable source. The 2026-07-22 re-audit found a distinct residual: module-global `reuploadWatch` is unbounded, mixes ownership domains, and records before source validation/shared-realization lookup, so it can retain keys and report logical attempts as physical reuploads. Scope it to the context/device cache, bound it with TTL/LRU, and record only validated physical realization attempts. Runtime ocean source swap/removal and multi-view source leasing remain separate `FAR-205` lifecycle work.
 
+- **NEW-C11-170-SENTINEL-UNOBSERVABLE-TO-GATE — filed Batch 1150 (C11-170).** The engine's
+  permanent re-upload sentinel (`WebGPUGlobeSurfaceTextures.ts:809-836`, `console.error` at
+  `:827-834`, firing at ≥30 uploads of one `cacheKey` inside a rolling 2 s window) reaches no
+  report the C11-170 gate can read, so its Signal G is a positive-only detector with a declared
+  blind spot rather than a live one. Two independent causes, both machine-checked at tip:
+  `attachConsoleErrorGate` (`Tools/lib/webgpu-error-gate.mjs:180`, admission filter at `:189`)
+  admits console text only when it matches `WEBGPU_FAULT_RE` (`:168-169`), which the sentinel's
+  message does not — the message contains the phrase "bind-group cache", not `createBindGroup`,
+  and `WEBGPU_FAULT_RE.test(sentinel)` evaluates `false` — so
+  `probe-webgpu-frame-breakdown.mjs:1184` collects nothing; and
+  `probe-backend-isolation.mjs:221,225` retains `consoleErrors.slice(0, 6)`, a cap both banked
+  solo lanes already saturate with unrelated `RequestErrorEvent` /
+  `net::ERR_NETWORK_ACCESS_DENIED` entries (`webgpu-solo` 6/6, `webgl-solo` 6/6, `split` 0/6 in
+  `output/backend-isolation-report.json`), so later sentinel text can be truncated away.
+  `probe-cpu-sampling-profile.mjs` and `probe-request-render-asymmetry.mjs` attach no console
+  listener at all. **Do not close this in isolation:** the sentinel is the same module-global
+  `reuploadWatch` detector that `NEW-WEBGPU-UPLOADIMAGESOURCE-CACHE-CONTRACT-TRAP` (above)
+  records as unbounded and as recording *before* source validation / shared-realization lookup,
+  so wiring it to a gate first would import a known over-reporting detector as a FAIL source.
+  Sequence the detector hardening first, then choose between extending `WEBGPU_FAULT_RE` (which
+  changes what every consumer of the shared error gate counts as a fault) and widening the
+  backend-isolation truncation (which changes a probe whose banked artifact supplies the C11-170
+  Signal D and Signal E-1 bars).
+
 - **PERF-MEASUREMENT-VALIDITY-RISKS — OPEN, documentation/tooling guard.** No entry in this file covered the traps that made the original deficit report hard to interpret; `NEW-C9-01-COUNTER-PRAGMA-STRIP` (`:5500-5504`) is explicitly scoped as "not a defaults/hot-path defect" and does not cover them. The recorded traps: (a) **`requestRenderMode` FPS is meaningless** — `Apps/CesiumViewer` hardcodes `requestRenderMode: true` (`CesiumViewerStartupOptions.js:24,41`) and `Scene.js:4235-4237` only calls `recordFrame()` when `shouldRender`, so FPS there measures *dirty-flag cadence*, not frame cost. Note the asymmetry runs the WRONG way for a "WebGPU is slower" hypothesis: `Scene.js:4102-4113` gives WebGPU an EXTRA wake source (`pendingAsyncResources`, structurally 0 on WebGL), which would *raise* reported FPS. (b) **vsync / rAF caps** flatten both backends to the display period — `summarizeFramePacing()` exists but assumes 60 Hz (see `C11-173`). (c) **Unminified bundle overhead is real but SHARED and it FAVORS WebGPU**: `Build/CesiumUnminified/Cesium.js` carries 2832 `DeveloperError` refs vs 3 in `Build/Cesium/Cesium.js`, but 79% of debug blocks live in Core (889) + Scene (817) — shared code — and per-LOC the WebGPU dir carries **6.2× FEWER** debug blocks than the WebGL renderer (0.89 vs 9.06 per 1000 code lines) with **zero** `Check.*` sites vs WebGL's 121. A shared additive constant compresses ratios; it cannot manufacture a WebGPU-specific gap. (d) **`Apps/WebGPUTest/split-screen-comparison.html` is broken** — never exposes both viewers within 90 s, no console errors (`C11-171`); any split-vs-solo comparison through it is uninterpretable. **Always run `probe-request-render-asymmetry.mjs` before optimizing anything.**
 
 - **S1-6-FRAME-DELTA-RETAINED-COMMANDLIST — OPEN, absolute-throughput lever (NOT a backend-gap fix).** The shared scene-frontend CPU floor, ~4-5 ms avg / 8-10 ms p95, **command-count-independent**. Anchor: `PERF_ARCH_DEEP_DIVE_2026-07-16.md:122-136`. Previously tracked ONLY as `C11-SEED-23`. **⚠ Do NOT schedule this as a response to a WebGPU-vs-WebGL gap** — it is backend-neutral work that both backends pay equally, so it raises absolute throughput on BOTH and **cannot narrow a ratio**. Legitimate on its own merits; misfiled as a gap remedy. **Effort:** L.
