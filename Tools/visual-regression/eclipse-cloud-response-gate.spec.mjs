@@ -1,7 +1,7 @@
 // eclipse-cloud-response-gate.spec.mjs — the pure-Node half of C13-41's Edge
 // acceptance: the probe's predicate COMPOSITION, its pre-registered bands, and
 // the arithmetic those bands are derived from.
-// @purpose Pure-Node half of C13-41's Edge acceptance: recomputes the pre-registered bands, derives the sweep refresh count, mutant-checks every fold predicate.
+// @purpose Pure-Node half of C13-41's Edge acceptance: derives bucket fills and submitted-refresh cost, and mutant-checks every fold predicate.
 // @status ACTIVE
 //
 // Pure Node (`node --test`). No browser, no build. This exists because
@@ -13,7 +13,7 @@
 //     from the published constants and must match the row's text exactly
 //     (0.464228 / 0.999550 / 275). A retune of the 5-lux floor, the 1/3
 //     adaptation exponent or the 1/256 grid moves them and fails here;
-//   - the sweep's refresh count is DERIVED, not written down, and the ramp is
+//   - the sweep's bucket-fill count is DERIVED, not written down, and the ramp is
 //     shown not to skip a bucket — the failure mode that would collapse the
 //     count from "edges crossed" to "jumps taken";
 //   - every gating predicate is shown to be able to FAIL, by feeding the fold
@@ -39,6 +39,8 @@ import {
   BAND_MEAN_CAPTURE_DELTA,
   BAND_MEAN_QUANTIZATION_HALF_STEP,
   CLOUD_SHADOW_BEER_FLOOR,
+  describeRefreshCostLedgerClosure,
+  REFRESH_COST_LEDGER_EXPECTATIONS,
   DECK_AERIAL_SHARE_CROSS_RUN,
   DECK_TONEMAP_ENTRY_CEILING,
   ECLIPSE_ADAPTATION_EXPONENT,
@@ -183,7 +185,7 @@ test("A2 the DIRECTIONAL fraction at 0.9 is the row's 0.999550, and it is monoto
   }
 });
 
-test("A3 the sweep produces EXACTLY 275 refreshes, buckets 256 -> 119", () => {
+test("A3 the sweep produces EXACTLY 275 eclipse-driven fills, buckets 256 -> 119", () => {
   assert.equal(ENV_REFRESH_STEPS, 256);
   assert.equal(SWEEP_FRAMES, 801);
   assert.equal(SWEEP_RISING_FRAMES, 401);
@@ -392,7 +394,7 @@ test("C5 the quiescence band matches 'roughly two thirds of an 801-frame sweep'"
   assert.ok(1.0 > b.hi, "a refresh never must fail");
 });
 
-test("C6 the engine refresh band's CEILING is the arithmetic maximum", () => {
+test("C6 the engine fill band's CEILING is the arithmetic maximum", () => {
   const b = ECLIPSE_CLOUD_BANDS.engineRefreshCount;
   assert.equal(
     b.hi,
@@ -629,13 +631,13 @@ function spreadGpuSamples(total, count) {
   return [...Array(count - 1).fill(0), total];
 }
 
-function spreadGpuSamplesAcrossSegments(total, fillCounts) {
+function spreadGpuSamplesAcrossSegments(total, refreshCounts) {
   const samples = spreadGpuSamples(
     total,
-    fillCounts.reduce((sum, count) => sum + count, 0),
+    refreshCounts.reduce((sum, count) => sum + count, 0),
   );
   let from = 0;
-  return fillCounts.map((count) => {
+  return refreshCounts.map((count) => {
     const segmentSamples = samples.slice(from, from + count);
     from += count;
     return segmentSamples;
@@ -661,21 +663,21 @@ function splitGpuTotalByMandatoryPass(total) {
   );
 }
 
-function spreadGpuSamplesByPassAcrossSegments(total, fillCounts) {
+function spreadGpuSamplesByPassAcrossSegments(total, refreshCounts) {
   const passTotals = splitGpuTotalByMandatoryPass(total);
   return Object.fromEntries(
     MANDATORY_REFRESH_COST_GPU_PASS_NAMES.map((passName) => [
       passName,
-      spreadGpuSamplesAcrossSegments(passTotals[passName], fillCounts),
+      spreadGpuSamplesAcrossSegments(passTotals[passName], refreshCounts),
     ]),
   );
 }
 
-function sumGpuSamplesByPass(samplesMsByPass, fills) {
-  return Array.from({ length: fills }, (_, fillIndex) =>
-    REFRESH_COST_GPU_TIME_PROTOCOL.passNames.reduce(
-      (total, passName) =>
-        total + (samplesMsByPass[passName]?.[fillIndex] ?? 0),
+function sumGpuSamplesByPass(samplesMsByPass, refreshes) {
+  const passNames = Object.keys(samplesMsByPass);
+  return Array.from({ length: refreshes }, (_, refreshIndex) =>
+    passNames.reduce(
+      (total, passName) => total + samplesMsByPass[passName][refreshIndex],
       0,
     ),
   );
@@ -684,7 +686,7 @@ function sumGpuSamplesByPass(samplesMsByPass, fills) {
 function syncGpuSegmentSamplesFromPasses(segment) {
   segment.gpuTime.samplesMs = sumGpuSamplesByPass(
     segment.gpuTime.samplesMsByPass,
-    segment.fills,
+    segment.refreshes,
   );
   segment.gpuTime.totalMs = segment.gpuTime.samplesMs.reduce(
     (total, sample) => total + sample,
@@ -693,18 +695,18 @@ function syncGpuSegmentSamplesFromPasses(segment) {
   return segment;
 }
 
-function setMandatoryPassCostsPerFill(accounting, passCosts) {
+function setMandatoryPassCostsPerRefresh(accounting, passCosts) {
   assert.equal(passCosts.length, MANDATORY_REFRESH_COST_GPU_PASS_NAMES.length);
   for (const segment of accounting.segments) {
     if (!segment.gpuTime?.valid) {
       continue;
     }
     segment.gpuTime.samplesMsByPass =
-      segment.fills > 0
+      segment.refreshes > 0
         ? Object.fromEntries(
             MANDATORY_REFRESH_COST_GPU_PASS_NAMES.map((passName, index) => [
               passName,
-              Array(segment.fills).fill(passCosts[index]),
+              Array(segment.refreshes).fill(passCosts[index]),
             ]),
           )
         : {};
@@ -715,13 +717,14 @@ function setMandatoryPassCostsPerFill(accounting, passCosts) {
 
 function syncCostAggregatesFromSegments(accounting) {
   const totals = {
-    eclipse: { frames: 0, wallMs: 0, gpuMs: 0, fills: 0 },
-    control: { frames: 0, wallMs: 0, gpuMs: 0, fills: 0 },
+    eclipse: { frames: 0, wallMs: 0, gpuMs: 0, fills: 0, refreshes: 0 },
+    control: { frames: 0, wallMs: 0, gpuMs: 0, fills: 0, refreshes: 0 },
   };
   for (const segment of accounting.segments) {
     totals[segment.leg].frames += segment.frames;
     totals[segment.leg].wallMs += segment.wallMs;
     totals[segment.leg].fills += segment.fills;
+    totals[segment.leg].refreshes += segment.refreshes;
     if (segment.gpuTime?.valid) {
       segment.gpuTime.results.attemptedFrameCount = segment.frames;
       segment.gpuTime.results.frameCount = segment.frames;
@@ -734,6 +737,8 @@ function syncCostAggregatesFromSegments(accounting) {
   accounting.controlWallMs = totals.control.wallMs;
   accounting.eclipseFills = totals.eclipse.fills;
   accounting.controlFills = totals.control.fills;
+  accounting.eclipseRefreshes = totals.eclipse.refreshes;
+  accounting.controlRefreshes = totals.control.refreshes;
   if (accounting.gpuTime?.valid) {
     accounting.gpuTime.eclipseMs = totals.eclipse.gpuMs;
     accounting.gpuTime.controlMs = totals.control.gpuMs;
@@ -764,6 +769,8 @@ function freshCostAccounting({
   controlWallMs = 5000,
   eclipseFills = 282,
   controlFills = 8,
+  eclipseRefreshes = eclipseFills,
+  controlRefreshes = controlFills,
   backend = "webgpu",
   gpuAvailable = backend === "webgpu",
   eclipseGpuMs = eclipseWallMs,
@@ -796,15 +803,19 @@ function freshCostAccounting({
     eclipse: spreadIntegerTotal(eclipseFills, segmentsPerLeg),
     control: spreadIntegerTotal(controlFills, segmentsPerLeg),
   };
+  const refreshes = {
+    eclipse: spreadIntegerTotal(eclipseRefreshes, segmentsPerLeg),
+    control: spreadIntegerTotal(controlRefreshes, segmentsPerLeg),
+  };
   const gpuSamples = gpuAvailable
     ? {
         eclipse: spreadGpuSamplesByPassAcrossSegments(
           eclipseGpuMs,
-          fills.eclipse,
+          refreshes.eclipse,
         ),
         control: spreadGpuSamplesByPassAcrossSegments(
           controlGpuMs,
-          fills.control,
+          refreshes.control,
         ),
       }
     : { eclipse: {}, control: {} };
@@ -817,8 +828,9 @@ function freshCostAccounting({
     for (const leg of order) {
       const legIndex = nextByLeg[leg]++;
       const segmentFills = fills[leg][legIndex];
+      const segmentRefreshes = refreshes[leg][legIndex];
       const samplesMsByPass =
-        gpuAvailable && segmentFills > 0
+        gpuAvailable && segmentRefreshes > 0
           ? Object.fromEntries(
               MANDATORY_REFRESH_COST_GPU_PASS_NAMES.map((passName) => [
                 passName,
@@ -826,7 +838,17 @@ function freshCostAccounting({
               ]),
             )
           : {};
-      const samplesMs = sumGpuSamplesByPass(samplesMsByPass, segmentFills);
+      const samplesMs = sumGpuSamplesByPass(samplesMsByPass, segmentRefreshes);
+      const refreshBaselineFrameId =
+        backend === "webgpu"
+          ? pairIndex * 1000 + (leg === "eclipse" ? 0 : 500)
+          : null;
+      // Both backends retain a per-frame witness; only WebGPU carries a frame
+      // ordinal to chain.
+      const refreshSubmissions = spreadIntegerTotal(
+        segmentRefreshes,
+        to - from,
+      );
       segments.push({
         ledgerId,
         pairIndex,
@@ -836,6 +858,18 @@ function freshCostAccounting({
         frames: to - from,
         wallMs: wallTimes[leg][legIndex],
         fills: segmentFills,
+        refreshes: segmentRefreshes,
+        refreshValid: true,
+        refreshInvalidReason: null,
+        refreshBaselineFrameId,
+        refreshFrameIds:
+          backend === "webgpu"
+            ? Array.from(
+                { length: to - from },
+                (_, frameIndex) => refreshBaselineFrameId + frameIndex + 1,
+              )
+            : null,
+        refreshSubmissions,
         gpuTime: gpuAvailable
           ? {
               status: "valid",
@@ -1481,7 +1515,7 @@ test("D10 an IBL that does not respond at all fails, and so does DOUBLE dimming"
   );
 });
 
-test("D11 a noisy control (the eclipse-off leg re-filling) fails", () => {
+test("D11 a noisy control with eclipse-driven fills fails", () => {
   expectFailure(
     (run) => {
       run.iblWebGPU.controlRefreshCount = 40;
@@ -2012,7 +2046,7 @@ function computeCost(accounting, implementation = computeRefreshCost) {
   });
 }
 
-test("I1 the estimate is (eclipseMs - controlMs) / (eclipseFills - controlFills)", () => {
+test("I1 the estimate uses the submitted-refresh differential", () => {
   const cost = computeCost(costInput({}));
   assert.equal(cost.valid, true);
   assert.equal(cost.derivedFromSegments, true);
@@ -2020,6 +2054,7 @@ test("I1 the estimate is (eclipseMs - controlMs) / (eclipseFills - controlFills)
   assert.equal(cost.warmupWitnessCount, 2);
   assert.equal(cost.msDelta, 4000);
   assert.equal(cost.fillDelta, 274);
+  assert.equal(cost.refreshDelta, 274);
   assert.equal(Number(cost.msPerRefresh.toFixed(4)), 14.5985);
   assert.equal(cost.invalidReason, null);
 });
@@ -2088,7 +2123,7 @@ test("I4 a SEQUENTIAL A/B is rejected — interleaving is required, not advised"
   );
 });
 
-test("I5 unshared bounds and a zero fill delta are both INVALID", () => {
+test("I5 unshared bounds and a zero refresh delta are both INVALID", () => {
   const unshared = costInput();
   unshared.segments[1].to -= 1;
   unshared.segments[1].frames -= 1;
@@ -2097,10 +2132,15 @@ test("I5 unshared bounds and a zero fill delta are both INVALID", () => {
   assert.equal(uneven.valid, false);
   assert.match(uneven.invalidReason, /does not share bounds\/frame count/);
 
-  const noFills = computeCost(costInput({ eclipseFills: 8, controlFills: 8 }));
-  assert.equal(noFills.valid, false);
-  assert.match(noFills.invalidReason, /no eclipse-driven fills/);
-  assert.match(noFills.invalidReason, /fresh differential cannot be formed/);
+  const noRefreshes = computeCost(
+    costInput({ eclipseRefreshes: 8, controlRefreshes: 8 }),
+  );
+  assert.equal(noRefreshes.valid, false);
+  assert.match(noRefreshes.invalidReason, /no positive environment-refresh/);
+  assert.match(
+    noRefreshes.invalidReason,
+    /fresh differential cannot be formed/,
+  );
 
   const absent = computeCost(undefined);
   assert.equal(absent.valid, false);
@@ -2642,12 +2682,12 @@ test("I16 a negative GPU differential is INVALID with the exact reason", () => {
   assert.equal(cost.wallMsDelta, 4000);
   assert.equal(
     cost.invalidReason,
-    "the environment-refresh GPU differential is negative (30 ms control vs 20 ms eclipse over the same 801 frames) — no per-refresh cost can be attributed to the fills",
+    "the environment-refresh GPU differential is negative (30 ms control vs 20 ms eclipse over the same 801 frames) — no per-refresh cost can be attributed to the submitted refreshes",
   );
 });
 
 test("I17 the whole-refresh GPU pass set and protocol version are literal", () => {
-  assert.equal(REFRESH_COST_PROTOCOL_VERSION, 3);
+  assert.equal(REFRESH_COST_PROTOCOL_VERSION, 4);
   assert.deepEqual(REFRESH_COST_GPU_TIME_PROTOCOL.passNames, [
     "DynEnvMap Sky Fill",
     "DynEnvMap IBL Irradiance",
@@ -2692,7 +2732,7 @@ test("I18 MUTANT an inert GPU-preference branch cannot silently select wall cloc
   }, /actual.*wall-clock-fallback|wall-clock-fallback.*gpu-time/is);
 });
 
-test("I19 MUTATION per-pass sample cardinality must equal fill cardinality", () => {
+test("I19 MUTATION per-pass sample cardinality must equal submitted refreshes", () => {
   const accounting = costInput();
   const segment = accounting.segments.find(
     (candidate) => candidate.gpuTime.valid && candidate.fills > 1,
@@ -2706,7 +2746,7 @@ test("I19 MUTATION per-pass sample cardinality must equal fill cardinality", () 
   assert.equal(cost.msPerRefresh, null);
   assert.equal(
     cost.invalidReason,
-    `refresh-cost pair ${segment.pairIndex} ${segment.leg} GPU pass ${passName} retained ${segment.gpuTime.samplesMsByPass[passName].length} sample(s) for ${segment.fills} measured fill(s)`,
+    `refresh-cost pair ${segment.pairIndex} ${segment.leg} GPU pass ${passName} retained ${segment.gpuTime.samplesMsByPass[passName].length} sample(s) for ${segment.refreshes} environment refresh(es) submitted (${segment.fills} eclipse-driven fill(s))`,
   );
 });
 
@@ -2731,7 +2771,7 @@ test("I20 MUTATION an all-zero GPU differential at an undeclared resolution is a
   assert.equal(cost.msPerRefresh, null);
   assert.match(
     cost.invalidReason,
-    /is exactly 0 ms over \d+ fills at an undeclared timestamp resolution/,
+    /is exactly 0 ms over \d+ submitted refreshes at an undeclared timestamp resolution/,
   );
   assert.equal(REFRESH_COST_GPU_TIME_PROTOCOL.scope, "whole-refresh");
   assert.match(
@@ -2743,7 +2783,7 @@ test("I20 MUTATION an all-zero GPU differential at an undeclared resolution is a
 });
 
 test("I21 every mandatory pass is summed into each per-refresh GPU figure", () => {
-  const accounting = setMandatoryPassCostsPerFill(costInput(), [1, 2, 3, 4]);
+  const accounting = setMandatoryPassCostsPerRefresh(costInput(), [1, 2, 3, 4]);
   const sampledSegment = accounting.segments.find(
     (segment) => segment.gpuTime.valid && segment.fills > 0,
   );
@@ -2760,12 +2800,12 @@ test("I21 every mandatory pass is summed into each per-refresh GPU figure", () =
   assert.equal(cost.valid, true);
   assert.equal(cost.measurementSource, "gpu-time");
   assert.equal(cost.msPerRefresh, 10);
-  assert.equal(cost.eclipseGpuMs, accounting.eclipseFills * 10);
-  assert.equal(cost.controlGpuMs, accounting.controlFills * 10);
+  assert.equal(cost.eclipseGpuMs, accounting.eclipseRefreshes * 10);
+  assert.equal(cost.controlGpuMs, accounting.controlRefreshes * 10);
 });
 
-test("I22 a fill missing one mandatory pass is INVALID with the named reason", () => {
-  const accounting = setMandatoryPassCostsPerFill(
+test("I22 a submitted refresh missing one mandatory pass is INVALID", () => {
+  const accounting = setMandatoryPassCostsPerRefresh(
     costInput({ eclipseFills: REFRESH_COST_SEGMENTS_PER_LEG, controlFills: 0 }),
     [1, 2, 3, 4],
   );
@@ -2783,7 +2823,7 @@ test("I22 a fill missing one mandatory pass is INVALID with the named reason", (
   assert.equal(cost.msPerRefresh, null);
   assert.equal(
     cost.invalidReason,
-    `refresh-cost pair ${segment.pairIndex} ${segment.leg} is missing mandatory GPU pass ${missingPassName} for 1 measured fill(s)`,
+    `refresh-cost pair ${segment.pairIndex} ${segment.leg} is missing mandatory GPU pass ${missingPassName} for 1 environment refresh(es) submitted (1 eclipse-driven fill(s))`,
   );
 });
 
@@ -2809,7 +2849,7 @@ test("I24 a v2 refresh-cost report is rejected loudly", () => {
   accounting.protocol.version = 2;
   const cost = computeCost(accounting);
   assert.equal(cost.valid, false);
-  assert.equal(cost.invalidReason, "refresh-cost protocol version 2 is not 3");
+  assert.equal(cost.invalidReason, "refresh-cost protocol version 2 is not 4");
 });
 
 test("I25 MUTANT a sky-only summation cannot impersonate whole-refresh GPU time", async () => {
@@ -2817,17 +2857,16 @@ test("I25 MUTANT a sky-only summation cannot impersonate whole-refresh GPU time"
     path.join(here, "lib", "eclipse-cloud-response-gate.mjs"),
     "utf8",
   );
-  const summation =
-    "const summedPassNames = REFRESH_COST_GPU_TIME_PROTOCOL.passNames;";
+  const summation = "const summedPassNames = Object.keys(samplesMsByPass);";
   assert.equal(gateSource.split(summation).length - 1, 1);
   const mutantSource = gateSource.replace(
     summation,
-    "const summedPassNames = REFRESH_COST_GPU_TIME_PROTOCOL.passNames.slice(0, 1);",
+    "const summedPassNames = Object.keys(samplesMsByPass).slice(0, 1);",
   );
   const mutantModule = await import(
     `data:text/javascript;base64,${Buffer.from(mutantSource).toString("base64")}`
   );
-  const accounting = setMandatoryPassCostsPerFill(costInput(), [1, 2, 3, 4]);
+  const accounting = setMandatoryPassCostsPerRefresh(costInput(), [1, 2, 3, 4]);
   const healthy = computeCost(accounting);
   const mutant = computeCost(accounting, mutantModule.computeRefreshCost);
   assert.equal(healthy.valid, true);
@@ -2857,7 +2896,7 @@ test("I26 MUTANT an inert mandatory-label guard is caught", async () => {
   const mutantModule = await import(
     `data:text/javascript;base64,${Buffer.from(mutantSource).toString("base64")}`
   );
-  const accounting = setMandatoryPassCostsPerFill(
+  const accounting = setMandatoryPassCostsPerRefresh(
     costInput({ eclipseFills: REFRESH_COST_SEGMENTS_PER_LEG, controlFills: 0 }),
     [1, 2, 3, 4],
   );
@@ -2875,12 +2914,526 @@ test("I26 MUTANT an inert mandatory-label guard is caught", async () => {
   assert.equal(healthy.valid, false);
   assert.equal(
     healthy.invalidReason,
-    `refresh-cost pair ${segment.pairIndex} ${segment.leg} is missing mandatory GPU pass ${missingPassName} for 1 measured fill(s)`,
+    `refresh-cost pair ${segment.pairIndex} ${segment.leg} is missing mandatory GPU pass ${missingPassName} for 1 environment refresh(es) submitted (1 eclipse-driven fill(s))`,
   );
   assert.equal(mutant.valid, true);
   assert.throws(() => {
     assert.equal(mutant.valid, false);
   }, /true !== false|actual.*true.*expected.*false/is);
+});
+
+test("I27 submitted-refresh cardinality contributes the complete GPU total", () => {
+  const accounting = costInput({
+    eclipseWallMs: 1000,
+    controlWallMs: 100,
+    eclipseGpuMs: 1000,
+    controlGpuMs: 100,
+    eclipseFills: 10,
+    controlFills: 0,
+    eclipseRefreshes: 12,
+    controlRefreshes: 3,
+  });
+  for (const segment of accounting.segments) {
+    for (const samples of Object.values(segment.gpuTime.samplesMsByPass)) {
+      assert.equal(samples.length, segment.refreshes);
+    }
+  }
+
+  const cost = computeCost(accounting);
+  assert.equal(cost.valid, true);
+  assert.equal(cost.eclipseGpuMs, 1000);
+  assert.equal(cost.controlGpuMs, 100);
+  assert.equal(cost.eclipseRefreshes, 12);
+  assert.equal(cost.controlRefreshes, 3);
+  assert.equal(cost.fillDelta, 10);
+  assert.equal(cost.refreshDelta, 9);
+  assert.equal(cost.gpuMsPerRefresh, 100);
+  assert.equal(cost.wallMsPerRefresh, 100);
+  assert.equal(cost.msPerRefresh, 100);
+});
+
+test("I28 a surplus sample on a zero-submission frame invalidates its named segment", async () => {
+  const accounting = costInput({ controlFills: 0, controlRefreshes: 0 });
+  const segment = accounting.segments.find(
+    (candidate) => candidate.pairIndex === 0 && candidate.leg === "control",
+  );
+  const passName = MANDATORY_REFRESH_COST_GPU_PASS_NAMES[0];
+  assert.equal(segment.refreshes, 0);
+  assert.ok(segment.refreshSubmissions.every((submitted) => submitted === 0));
+  segment.gpuTime.samplesMsByPass = { [passName]: [1] };
+
+  const expected = `refresh-cost pair 0 control GPU pass ${passName} retained 1 sample(s) for 0 environment refresh(es) submitted (0 eclipse-driven fill(s))`;
+  const healthy = computeCost(accounting);
+  assert.equal(healthy.valid, false);
+  assert.equal(healthy.invalidReason, expected);
+
+  const gateSource = fs.readFileSync(
+    path.join(here, "lib", "eclipse-cloud-response-gate.mjs"),
+    "utf8",
+  );
+  const cardinality = "passSamples.length !== refreshes";
+  assert.equal(gateSource.split(cardinality).length - 1, 1);
+  const mutantSource = gateSource.replace(
+    cardinality,
+    "passSamples.length < refreshes",
+  );
+  const mutantModule = await import(
+    `data:text/javascript;base64,${Buffer.from(mutantSource).toString("base64")}`
+  );
+  const mutant = computeCost(accounting, mutantModule.computeRefreshCost);
+  assert.equal(mutant.valid, true);
+  assert.throws(() => assert.equal(mutant.invalidReason, expected));
+});
+
+test("I29 a submitted refresh with no retained pass sample is invalid", () => {
+  const accounting = costInput({
+    eclipseFills: 456,
+    controlFills: 0,
+    eclipseRefreshes: 456,
+    controlRefreshes: 0,
+  });
+  const segment = accounting.segments.find(
+    (candidate) => candidate.pairIndex === 3 && candidate.leg === "eclipse",
+  );
+  assert.equal(segment.fills, 57);
+  assert.equal(segment.refreshes, 57);
+  segment.gpuTime.samplesMsByPass = Object.fromEntries(
+    MANDATORY_REFRESH_COST_GPU_PASS_NAMES.map((passName) => [
+      passName,
+      Array(48).fill(1),
+    ]),
+  );
+  segment.gpuTime.samplesMs = Array(48).fill(4);
+  segment.gpuTime.totalMs = 48 * 4;
+  segment.gpuTime.results.readbackSkipCount = 14;
+  segment.gpuTime.results.frameCount = 86;
+  syncCostAggregatesFromSegments(accounting);
+
+  const cost = computeCost(accounting);
+  assert.equal(cost.valid, false);
+  assert.equal(
+    cost.invalidReason,
+    `refresh-cost pair 3 eclipse GPU pass ${MANDATORY_REFRESH_COST_GPU_PASS_NAMES[0]} retained 48 sample(s) for 57 environment refresh(es) submitted (57 eclipse-driven fill(s))`,
+  );
+});
+
+test("I30 frame telemetry binds one refresh read to each consecutive render", () => {
+  const accounting = costInput();
+  const segment = accounting.segments.find(
+    (candidate) => candidate.pairIndex === 2 && candidate.leg === "eclipse",
+  );
+  const previousFrameId = segment.refreshFrameIds[0];
+  segment.refreshFrameIds[1] += 1;
+  const skippedFrameId = segment.refreshFrameIds[1];
+
+  const cost = computeCost(accounting);
+  assert.equal(cost.valid, false);
+  assert.equal(
+    cost.invalidReason,
+    `pair 2 eclipse: environment refresh telemetry frameId ${skippedFrameId} did not advance exactly once from ${previousFrameId}`,
+  );
+});
+
+test("I31 submitted-refresh delta is the denominator on both backends", async () => {
+  const options = {
+    eclipseWallMs: 1000,
+    controlWallMs: 100,
+    eclipseGpuMs: 1000,
+    controlGpuMs: 100,
+    eclipseFills: 10,
+    controlFills: 0,
+    eclipseRefreshes: 12,
+    controlRefreshes: 3,
+  };
+  const webgpuAccounting = costInput(options);
+  const webglAccounting = costInput({ ...options, backend: "webgl" });
+  const webgpu = computeCost(webgpuAccounting);
+  const webgl = computeCost(webglAccounting);
+  assert.equal(webgpu.fillDelta, 10);
+  assert.equal(webgpu.refreshDelta, 9);
+  assert.equal(webgpu.gpuMsPerRefresh, 100);
+  assert.equal(webgpu.wallMsPerRefresh, 100);
+  assert.equal(webgpu.msPerRefresh, 100);
+  assert.equal(webgl.refreshDelta, 9);
+  assert.equal(webgl.wallMsPerRefresh, 100);
+  assert.equal(webgl.msPerRefresh, 100);
+
+  const noControlRefreshes = computeCost(
+    costInput({ ...options, backend: "webgl", controlRefreshes: 0 }),
+  );
+  assert.equal(noControlRefreshes.refreshDelta, 12);
+  assert.equal(noControlRefreshes.msPerRefresh, 75);
+  assert.ok(webgl.msPerRefresh > noControlRefreshes.msPerRefresh);
+
+  const gateSource = fs.readFileSync(
+    path.join(here, "lib", "eclipse-cloud-response-gate.mjs"),
+    "utf8",
+  );
+  const denominator = "/ refreshDelta";
+  assert.equal(gateSource.split(denominator).length - 1, 2);
+  const mutantSource = gateSource.replaceAll(denominator, "/ fillDelta");
+  const mutantModule = await import(
+    `data:text/javascript;base64,${Buffer.from(mutantSource).toString("base64")}`
+  );
+  const mutantWebgpu = computeCost(
+    webgpuAccounting,
+    mutantModule.computeRefreshCost,
+  );
+  const mutantWebgl = computeCost(
+    webglAccounting,
+    mutantModule.computeRefreshCost,
+  );
+  assert.equal(mutantWebgpu.gpuMsPerRefresh, 90);
+  assert.equal(mutantWebgpu.wallMsPerRefresh, 90);
+  assert.equal(mutantWebgpu.msPerRefresh, 90);
+  assert.equal(mutantWebgl.wallMsPerRefresh, 90);
+  assert.equal(mutantWebgl.msPerRefresh, 90);
+  assert.throws(() => assert.equal(mutantWebgpu.msPerRefresh, 100));
+  assert.throws(() => assert.equal(mutantWebgl.msPerRefresh, 100));
+});
+
+test("I32 declared refresh aggregates cannot override retained segment totals", () => {
+  for (const field of ["eclipseRefreshes", "controlRefreshes"]) {
+    const accounting = costInput();
+    const retained = accounting[field];
+    accounting[field] += 1;
+    const cost = computeCost(accounting);
+    assert.equal(cost.valid, false);
+    assert.equal(
+      cost.invalidReason,
+      `declared refresh-cost aggregate ${field}=${retained + 1} does not equal the retained segment total ${retained}`,
+    );
+  }
+});
+
+test("I32b a declared segment count its own per-frame telemetry does not support is INVALID", async () => {
+  // The gate re-derives the count from the retained per-frame reads instead of
+  // trusting the segment's own `refreshes` field. Without that cross-check a
+  // probe could declare any denominator it liked, which is the whole defect
+  // this lane exists to close, one level up.
+  const accounting = costInput();
+  const segment = accounting.segments.find(
+    (candidate) => candidate.pairIndex === 2 && candidate.leg === "eclipse",
+  );
+  const declared = segment.refreshes;
+  const supported = segment.refreshSubmissions.reduce(
+    (total, submitted) => total + submitted,
+    0,
+  );
+  assert.equal(supported, declared);
+  segment.refreshSubmissions = spreadIntegerTotal(declared - 1, segment.frames);
+
+  const cost = computeCost(accounting);
+  assert.equal(cost.valid, false);
+  assert.equal(cost.msPerRefresh, null);
+  assert.equal(
+    cost.invalidReason,
+    `refresh-cost pair 2 eclipse retained ${declared - 1} submitted refresh(es) in per-frame telemetry but declared ${declared}`,
+  );
+
+  // INERTNESS: make the cross-check unreachable rather than deleting it. A
+  // spec that survives that is asserting text, not a live branch.
+  const gateSource = fs.readFileSync(
+    path.join(here, "lib", "eclipse-cloud-response-gate.mjs"),
+    "utf8",
+  );
+  const crossCheck = "submittedTotal !== segment.refreshes";
+  assert.equal(gateSource.split(crossCheck).length - 1, 1);
+  const mutantSource = gateSource.replace(crossCheck, `false && ${crossCheck}`);
+  const mutantModule = await import(
+    `data:text/javascript;base64,${Buffer.from(mutantSource).toString("base64")}`
+  );
+  const mutant = computeCost(accounting, mutantModule.computeRefreshCost);
+  // With the cross-check inert the run is STILL refused  but by the aggregate
+  // comparison, and the number it names is the DERIVED total, not the declared
+  // one. That is the proof the declared field never becomes operative: even
+  // with its guard removed there is no path on which it is the denominator.
+  assert.equal(mutant.valid, false);
+  assert.notEqual(mutant.invalidReason, cost.invalidReason);
+  assert.equal(
+    mutant.invalidReason,
+    `refresh-cost pair 2 eclipse GPU pass ${MANDATORY_REFRESH_COST_GPU_PASS_NAMES[0]} retained ${declared} sample(s) for ${declared - 1} environment refresh(es) submitted (${segment.fills} eclipse-driven fill(s))`,
+    "the DERIVED count is what the cardinality check uses, so the declared field is unreachable even with its own guard inert",
+  );
+  assert.throws(() => assert.equal(mutant.invalidReason, cost.invalidReason));
+});
+
+test("I32c a ledger that did not close names every counter that tripped, with its value", async () => {
+  // The behaviour, not the array: ring saturation must read as a short
+  // frameCount WITH its matching readbackSkipCount, and a discarded sample must
+  // read differently from a merely unprofiled frame.
+  const frames = 100;
+  const closed = {
+    enabled: true,
+    attemptedFrameCount: frames,
+    frameCount: frames,
+    sampleLedgerBalanced: true,
+    readbackSkipCount: 0,
+    failedReadbackCount: 0,
+    emptyFrameCount: 0,
+    lostSampleCount: 0,
+    pendingReadbackCount: 0,
+    unaccountedSampleCount: 0,
+    invertedSampleCount: 0,
+    droppedPassCount: 0,
+  };
+  assert.equal(describeRefreshCostLedgerClosure(closed, frames), "");
+
+  // The real pair-3 shape from the 2026-08-24 commissioning ledger.
+  const ringSaturated = { ...closed, frameCount: 86, readbackSkipCount: 14 };
+  assert.equal(
+    describeRefreshCostLedgerClosure(ringSaturated, frames),
+    "frameCount=86, readbackSkipCount=14",
+  );
+  // The real pair-4 shape.
+  assert.equal(
+    describeRefreshCostLedgerClosure(
+      { ...closed, frameCount: 63, readbackSkipCount: 37 },
+      frames,
+    ),
+    "frameCount=63, readbackSkipCount=37",
+  );
+  // A discarded sample is a DIFFERENT sentence from an unprofiled frame.
+  const dropped = describeRefreshCostLedgerClosure(
+    { ...closed, droppedPassCount: 3 },
+    frames,
+  );
+  assert.equal(dropped, "droppedPassCount=3");
+  assert.notEqual(
+    dropped,
+    describeRefreshCostLedgerClosure(ringSaturated, frames),
+  );
+  assert.equal(
+    describeRefreshCostLedgerClosure({ ...closed, lostSampleCount: 3 }, frames),
+    "lostSampleCount=3",
+  );
+
+  // Every counter the renderer publishes is covered, one at a time.
+  for (const {
+    counter,
+    closed: closedValue,
+  } of REFRESH_COST_LEDGER_EXPECTATIONS) {
+    const broken =
+      closedValue === true ? false : closedValue === "frames" ? frames - 1 : 1;
+    assert.equal(
+      describeRefreshCostLedgerClosure(
+        { ...closed, [counter]: broken },
+        frames,
+      ),
+      `${counter}=${String(broken)}`,
+      `${counter} must be named when it does not close`,
+    );
+  }
+  assert.equal(REFRESH_COST_LEDGER_EXPECTATIONS.length, 12);
+
+  // R5 INERTNESS: drop readbackSkipCount from the table. The probe derives BOTH
+  // its detection and its message from this one table, so a dropped counter
+  // stops being reported AND stops being detected  which is why the table is
+  // here and not embedded in the probe.
+  const gateSource = fs
+    .readFileSync(
+      path.join(here, "lib", "eclipse-cloud-response-gate.mjs"),
+      "utf8",
+    )
+    .replace(
+      new RegExp(String.fromCharCode(13, 10), "g"),
+      String.fromCharCode(10),
+    );
+  const row =
+    '  Object.freeze({ counter: "readbackSkipCount", closed: 0 }),' +
+    String.fromCharCode(10);
+  const mutantModule = await import(
+    `data:text/javascript;base64,${Buffer.from(gateSource.replace(row, "")).toString("base64")}`
+  );
+  assert.equal(mutantModule.REFRESH_COST_LEDGER_EXPECTATIONS.length, 11);
+  assert.equal(
+    mutantModule.describeRefreshCostLedgerClosure(ringSaturated, frames),
+    "frameCount=86",
+    "the mutant loses the counter that explains the short frameCount",
+  );
+  assert.throws(() =>
+    assert.equal(
+      mutantModule.describeRefreshCostLedgerClosure(ringSaturated, frames),
+      "frameCount=86, readbackSkipCount=14",
+    ),
+  );
+  // And a segment whose ONLY defect is a skipped readback goes undetected.
+  assert.equal(
+    mutantModule.describeRefreshCostLedgerClosure(
+      { ...closed, readbackSkipCount: 14 },
+      frames,
+    ),
+    "",
+  );
+  assert.notEqual(
+    describeRefreshCostLedgerClosure(
+      { ...closed, readbackSkipCount: 14 },
+      frames,
+    ),
+    "",
+  );
+});
+
+test("I32d the probe derives both the ledger check and its message from the shared table", () => {
+  const probe = fs
+    .readFileSync(path.join(here, "probe-eclipse-cloud-response.mjs"), "utf8")
+    .replace(
+      new RegExp(String.fromCharCode(13, 10), "g"),
+      String.fromCharCode(10),
+    );
+  // ONE call site, used as the condition and interpolated into the reason, so a
+  // counter cannot be dropped from the message while still tripping the check.
+  const callSite = [
+    "    const ledgerOffenders = describeRefreshCostLedgerClosure(",
+    "      results,",
+    "      to - from,",
+    "    );",
+  ].join(String.fromCharCode(10));
+  assert.equal(probe.split(callSite).length - 1, 1);
+  assert.ok(probe.includes('if (ledgerOffenders !== "") {'));
+  assert.ok(
+    probe.includes(
+      "did not close over ${to - from} measured frames (${ledgerOffenders})",
+    ),
+  );
+  // The hand-written disjunction it replaced must not come back.
+  assert.ok(!probe.includes("results.readbackSkipCount !== 0 ||"));
+  assert.ok(probe.includes("describeRefreshCostLedgerClosure,"));
+});
+
+test("I33 every invalid segment in the real ledger shape remains attributed", async () => {
+  const rows = [
+    [0, "eclipse", 101, 21, 25, 0, 101],
+    [0, "control", 101, 0, 16, 0, 101],
+    [1, "control", 100, 0, 9, 0, 100],
+    [1, "eclipse", 100, 25, 25, 0, 100],
+    [2, "eclipse", 100, 33, 33, 0, 100],
+    [2, "control", 100, 0, 8, 0, 100],
+    [3, "control", 100, 0, 8, 0, 100],
+    [3, "eclipse", 100, 57, 48, 14, 86],
+    [4, "eclipse", 100, 56, 38, 37, 63],
+    [4, "control", 100, 0, 8, 0, 100],
+    [5, "control", 100, 0, 8, 0, 100],
+    [5, "eclipse", 100, 34, 34, 0, 100],
+    [6, "eclipse", 100, 25, 25, 0, 100],
+    [6, "control", 100, 0, 9, 0, 100],
+    [7, "control", 100, 0, 16, 0, 100],
+    [7, "eclipse", 100, 21, 25, 0, 100],
+  ];
+  const accounting = costInput();
+  const expectedReasons = [];
+  for (let index = 0; index < rows.length; index++) {
+    const [pairIndex, leg, frames, fills, samples, skips, resolvedFrames] =
+      rows[index];
+    const segment = accounting.segments[index];
+    assert.equal(segment.pairIndex, pairIndex);
+    assert.equal(segment.leg, leg);
+    assert.equal(segment.frames, frames);
+    segment.fills = fills;
+    segment.refreshes = fills;
+    segment.refreshSubmissions = spreadIntegerTotal(fills, frames);
+    segment.gpuTime.samplesMsByPass = Object.fromEntries(
+      MANDATORY_REFRESH_COST_GPU_PASS_NAMES.map((passName) => [
+        passName,
+        Array(samples).fill(1),
+      ]),
+    );
+    segment.gpuTime.results.readbackSkipCount = skips;
+    segment.gpuTime.results.frameCount = resolvedFrames;
+    if (samples === fills) {
+      segment.gpuTime.samplesMs = Array(samples).fill(4);
+      segment.gpuTime.totalMs = samples * 4;
+    } else {
+      const reason = `pair ${pairIndex} ${leg}: the GPU pass ledger retained ${samples} ${MANDATORY_REFRESH_COST_GPU_PASS_NAMES[0]} sample(s) for ${fills} environment refresh(es) submitted (${fills} eclipse-driven fill(s))`;
+      expectedReasons.push(reason);
+      segment.gpuTime.status = "invalid";
+      segment.gpuTime.valid = false;
+      segment.gpuTime.totalMs = null;
+      segment.gpuTime.samplesMs = [];
+      segment.gpuTime.invalidReason = reason;
+    }
+  }
+  syncCostAggregatesFromSegments(accounting);
+  const expected = expectedReasons.join(" | ");
+  Object.assign(accounting.gpuTime, {
+    status: "invalid",
+    valid: false,
+    eclipseMs: null,
+    controlMs: null,
+    invalidReason: expected,
+  });
+
+  const cost = computeCost(accounting);
+  assert.equal(accounting.eclipseRefreshes, 272);
+  assert.equal(accounting.controlRefreshes, 0);
+  assert.equal(cost.valid, false);
+  assert.equal(cost.invalidReason, expected);
+  assert.deepEqual(
+    expectedReasons.map((reason) => reason.match(/^pair \d+ \w+/)[0]),
+    [
+      "pair 0 eclipse",
+      "pair 0 control",
+      "pair 1 control",
+      "pair 2 control",
+      "pair 3 control",
+      "pair 3 eclipse",
+      "pair 4 eclipse",
+      "pair 4 control",
+      "pair 5 control",
+      "pair 6 control",
+      "pair 7 control",
+      "pair 7 eclipse",
+    ],
+  );
+  for (const pairIndex of [1, 2, 5, 6]) {
+    assert.doesNotMatch(
+      cost.invalidReason,
+      new RegExp(`pair ${pairIndex} eclipse:`),
+    );
+  }
+
+  const gateSource = fs.readFileSync(
+    path.join(here, "lib", "eclipse-cloud-response-gate.mjs"),
+    "utf8",
+  );
+  const accumulation = "} else if (gpuHeader.available) {";
+  assert.equal(gateSource.split(accumulation).length - 1, 1);
+  const mutantSource = gateSource.replace(
+    accumulation,
+    "} else if (gpuHeader.available && gpuMeasurementInvalidReasons.length === 0) {",
+  );
+  const mutantModule = await import(
+    `data:text/javascript;base64,${Buffer.from(mutantSource).toString("base64")}`
+  );
+  const mutant = computeCost(accounting, mutantModule.computeRefreshCost);
+  assert.notEqual(mutant.invalidReason, expected);
+  assert.match(
+    mutant.invalidReason,
+    /declared aggregate GPU-time invalidReason/,
+  );
+  assert.throws(() => assert.equal(mutant.invalidReason, expected));
+});
+
+test("I34 settled count, control, shadow, and band contracts are unchanged", () => {
+  const verdict = judgeEclipseCloudResponse(passingRun());
+  assert.equal(predictedSweepRefreshCount(), 275);
+  assert.equal(verdict.predictedSweepRefreshCount, 275);
+  assert.equal(verdict.predictedRefreshCountExact, true);
+  assert.equal(verdict.controlRefreshQuiescent, true);
+  assert.equal(verdict.shadowContrastInvariant, true);
+  assert.deepEqual(ECLIPSE_CLOUD_BANDS.shadowContrastRatio, {
+    lo: 0.97,
+    hi: 1.03,
+    why: ECLIPSE_CLOUD_BANDS.shadowContrastRatio.why,
+    status: "DERIVED",
+  });
+  assert.ok(
+    ECLIPSE_CLOUD_GATE_PREDICATES.includes("predictedRefreshCountExact"),
+  );
+  assert.ok(ECLIPSE_CLOUD_GATE_PREDICATES.includes("controlRefreshQuiescent"));
+  assert.ok(ECLIPSE_CLOUD_GATE_PREDICATES.includes("shadowContrastInvariant"));
+  assert.equal(verdict.PASS, true);
+  assert.equal(verdict.exitCode, ECLIPSE_CLOUD_EXIT.PASS);
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -3352,7 +3905,7 @@ test("F4 the probe's cost legs are interleaved and both pay a warm-up", () => {
   assert.match(probe, /warmups: \[warmedLegs\.eclipse, warmedLegs\.control\]/);
   assert.match(probe, /pairIndex,/);
   assert.match(probe, /ledgerId: cfg\.costLedgerId/);
-  assert.equal(REFRESH_COST_PROTOCOL_VERSION, 3);
+  assert.equal(REFRESH_COST_PROTOCOL_VERSION, 4);
   assert.match(probe, /version: cfg\.refreshCostProtocol\.version,/);
   assert.match(probe, /backend: rendererType,/);
   assert.match(probe, /runId: cfg\.runId,/);
@@ -3374,9 +3927,21 @@ test("F4 the probe's cost legs are interleaved and both pay a warm-up", () => {
   assert.doesNotMatch(probe, /wallMs = .* - readbackYieldMs;/);
   assert.match(probe, /resolutionKnown: false/);
   assert.match(probe, /resolutionNs: null/);
-  assert.match(probe, /if \(samplesMs\.length !== fills\)/);
-  assert.match(probe, /if \(passSamples\.length !== fills\)/);
+  assert.match(probe, /if \(samplesMs\.length !== refreshes\)/);
+  assert.match(probe, /if \(passSamples\.length !== refreshes\)/);
   assert.match(probe, /if \(missingMandatoryLabel\)/);
+  assert.match(probe, /costContext\?\.getEnvironmentRefreshStats\?\.\(\)/);
+  assert.match(probe, /recordEnvironmentRefresh\(\);/);
+  assert.match(probe, /frameId !== previousRefreshFrameId \+ 1/);
+  assert.match(probe, /refreshes \+= submissions;/);
+  assert.match(probe, /time\.dayNumber/);
+  assert.match(probe, /time\.secondsOfDay/);
+  assert.match(
+    probe,
+    /current\.dayNumber !== previousWebglRefreshTime\.dayNumber/,
+  );
+  assert.match(probe, /eclipseRefreshes: sumLeg\("eclipse", "refreshes"\)/);
+  assert.match(probe, /controlRefreshes: sumLeg\("control", "refreshes"\)/);
   assert.match(probe, /hasFeature\?\.\("timestamp-query"\) === true/);
   assert.match(probe, /REFRESH_COST_GPU_TIME_PROTOCOL\.scope/);
   assert.match(probe, /segments: costSegments/);
@@ -3400,6 +3965,17 @@ test("F4 the probe's cost legs are interleaved and both pay a warm-up", () => {
   assert.match(probe, /sessionToken: randomUUID\(\)/);
   assert.match(probe, /costLedgerId: randomUUID\(\)/);
   assert.match(probe, /runId: RUN_ID,\n\s*cloudLanes,/);
+
+  const scheduler = readEngine(
+    "Renderer/WebGPU/WebGPUEnvironmentRefreshScheduler.ts",
+  );
+  const context = readEngine("Renderer/WebGPU/WebGPUContext.ts");
+  assert.match(scheduler, /this\._telemetry\.submissions \+= 1;/);
+  assert.match(context, /getEnvironmentRefreshStats\(\)/);
+  assert.match(
+    readEngine("Scene/DynamicEnvironmentMapManager.js"),
+    /this\._lastTime = JulianDate\.clone\(frameState\.time, this\._lastTime\);/,
+  );
 });
 
 test("F7 the five engine pass descriptors execute and route through timestamp wrapping", async () => {
@@ -3989,6 +4565,198 @@ test("J9 decrement quantization admits the hard edge and rejects one code beyond
     oneCodeBeyond.quantization.observedInterval.lo >
       oneCodeBeyond.quantization.expectedInterval.hi,
   );
+});
+
+const DEEPEST_SHADOW_LEDGER = Object.freeze({
+  offNoShadow: 0.6779672263764543,
+  offShadow: 0.3794818412087721,
+  onNoShadow: 0.332292576127518,
+  onShadow: 0.19234006690183653,
+  deckRatio: 0.513868583346416,
+});
+
+function runWithDeepestShadowLedger() {
+  const run = clone(passingRun());
+  const deepest = run.cloudLanes.rungs.at(-1);
+  Object.assign(deepest.shadow, DEEPEST_SHADOW_LEDGER);
+  deepest.deck.onContribution =
+    deepest.deck.offContribution * DEEPEST_SHADOW_LEDGER.deckRatio;
+  return run;
+}
+
+test("J10 the deepest residue locus reproduces the mechanism arithmetic", () => {
+  const verdict = judgeEclipseCloudResponse(runWithDeepestShadowLedger());
+  const model = verdict.shadowContrastModel.at(-1);
+  const {
+    offNoShadow: Uc,
+    offShadow: Sc,
+    onNoShadow: Ue,
+    onShadow: Se,
+  } = DEEPEST_SHADOW_LEDGER;
+  const terrainDim = (Ue - Se) / (Uc - Sc);
+  const compositeDim = Ue / Uc;
+  assert.equal(model.terrainDim, terrainDim);
+  assert.equal(model.compositeDim, compositeDim);
+  assert.ok(Math.abs(model.terrainDim - 0.4688755837980454) <= Number.EPSILON);
+  assert.ok(
+    Math.abs(model.compositeDim - 0.4901307367076268) <= Number.EPSILON,
+  );
+  const publishedFactor = 0.46420022839842723;
+  assert.equal(
+    Number((model.terrainDim / publishedFactor).toFixed(6)),
+    1.010072,
+  );
+  assert.equal(
+    Number((model.compositeDim / publishedFactor).toFixed(6)),
+    1.055861,
+  );
+  assert.deepEqual(
+    verdict.shadowResidueDimLocus.map(({ share, requiredResidueDim }) => [
+      share,
+      Number(requiredResidueDim.toFixed(6)),
+    ]),
+    [
+      [0.2, 0.575151],
+      [0.3, 0.539726],
+      [0.4, 0.522013],
+      [0.5, 0.511386],
+      [0.6, 0.504301],
+      [0.7, 0.49924],
+    ],
+  );
+  const expectedShare =
+    (compositeDim - terrainDim) /
+    (DEEPEST_SHADOW_LEDGER.deckRatio - terrainDim);
+  assert.equal(verdict.shadowResidueShareAtDeckRatio, expectedShare);
+  assert.equal(Number(expectedShare.toFixed(6)), 0.47241);
+});
+
+test("J10b the beer floor caps the residue share, and the deck-like share exceeds it", () => {
+  const verdict = judgeEclipseCloudResponse(runWithDeepestShadowLedger());
+  const model = verdict.shadowContrastModel.at(-1);
+  const { offNoShadow: Uc, offShadow: Sc } = DEEPEST_SHADOW_LEDGER;
+  const clearContrast = Sc / Uc;
+  assert.equal(model.clearContrast, clearContrast);
+  // clearContrast = T*(1 - share) + share with T >= the beer floor, so
+  // share <= (clearContrast - floor) / (1 - floor). Executed here, not copied.
+  const ceiling =
+    (clearContrast - CLOUD_SHADOW_BEER_FLOOR) / (1 - CLOUD_SHADOW_BEER_FLOOR);
+  assert.equal(verdict.shadowResidueShareCeiling, ceiling);
+  assert.equal(verdict.shadowResidueShareCeiling, 0.32266890343992366);
+
+  // The deck-like hypothesis is OUT OF RANGE: the share that would make the
+  // required residue dim equal the measured deck ratio sits above the ceiling.
+  assert.ok(
+    verdict.shadowResidueShareAtDeckRatio > verdict.shadowResidueShareCeiling,
+    "a residue dimming at the measured deck ratio needs more share than the beer floor allows",
+  );
+
+  // requiredResidueDim is DECREASING in share, so the ceiling is a FLOOR on the
+  // residue's own dimming  and that floor is ABOVE the measured deck ratio,
+  // which is why the deck alone cannot carry the excess.
+  const locus = verdict.shadowResidueDimLocus;
+  for (let i = 1; i < locus.length; i++) {
+    assert.ok(locus[i].requiredResidueDim < locus[i - 1].requiredResidueDim);
+  }
+  const required = (share) =>
+    (model.compositeDim - model.terrainDim * (1 - share)) / share;
+  const residueDimFloor = required(ceiling);
+  assert.equal(Number(residueDimFloor.toFixed(6)), 0.534749);
+  assert.ok(residueDimFloor > DEEPEST_SHADOW_LEDGER.deckRatio);
+});
+
+test("J11 equal residue and terrain dim reconstruct raw contrast exactly one", () => {
+  const {
+    offNoShadow: Uc,
+    offShadow: Sc,
+    onNoShadow: Ue,
+    onShadow: Se,
+  } = DEEPEST_SHADOW_LEDGER;
+  const terrainDim = (Ue - Se) / (Uc - Sc);
+  const clearDecrement = Uc - Sc;
+  const equalLawUnshadowed = Uc * terrainDim;
+  const equalLawShadowed = equalLawUnshadowed - clearDecrement * terrainDim;
+  const reconstructedRawContrast =
+    equalLawShadowed / equalLawUnshadowed / (Sc / Uc);
+  assert.ok(Math.abs(reconstructedRawContrast - 1) <= 1e-12);
+
+  const verdict = judgeEclipseCloudResponse(runWithDeepestShadowLedger());
+  assert.equal(verdict.shadowContrastRatioAtDeepest, 1.0341102079879674);
+  assert.equal(verdict.shadowContrastInvariant, false);
+  assert.equal(ECLIPSE_CLOUD_BANDS.shadowContrastRatio.lo, 0.97);
+  assert.equal(ECLIPSE_CLOUD_BANDS.shadowContrastRatio.hi, 1.03);
+});
+
+test("J12 degenerate residue divisions publish null", () => {
+  let run = runWithDeepestShadowLedger();
+  let deepest = run.cloudLanes.rungs.at(-1);
+  deepest.shadow.offShadow = deepest.shadow.offNoShadow;
+  let verdict = judgeEclipseCloudResponse(run);
+  assert.equal(verdict.shadowContrastModel.at(-1).terrainDim, null);
+  assert.ok(
+    verdict.shadowResidueDimLocus.every(
+      ({ requiredResidueDim }) => requiredResidueDim === null,
+    ),
+  );
+  assert.equal(verdict.shadowResidueShareAtDeckRatio, null);
+
+  run = runWithDeepestShadowLedger();
+  deepest = run.cloudLanes.rungs.at(-1);
+  deepest.shadow.offNoShadow = 0;
+  verdict = judgeEclipseCloudResponse(run);
+  assert.equal(verdict.shadowContrastModel.at(-1).compositeDim, null);
+  assert.ok(
+    verdict.shadowResidueDimLocus.every(
+      ({ requiredResidueDim }) => requiredResidueDim === null,
+    ),
+  );
+
+  run = runWithDeepestShadowLedger();
+  deepest = run.cloudLanes.rungs.at(-1);
+  const terrainDim =
+    (deepest.shadow.onNoShadow - deepest.shadow.onShadow) /
+    (deepest.shadow.offNoShadow - deepest.shadow.offShadow);
+  deepest.deck.onContribution = deepest.deck.offContribution * terrainDim;
+  verdict = judgeEclipseCloudResponse(run);
+  assert.equal(verdict.shadowResidueShareAtDeckRatio, null);
+
+  run = runWithDeepestShadowLedger();
+  run.cloudLanes.rungs.at(-1).shadow.onNoShadow = Number.POSITIVE_INFINITY;
+  verdict = judgeEclipseCloudResponse(run);
+  assert.equal(verdict.shadowContrastModel.at(-1).terrainDim, null);
+  assert.equal(verdict.shadowContrastModel.at(-1).compositeDim, null);
+});
+
+test("J13 residue diagnostics cannot alter the verdict", async () => {
+  const baseline = judgeEclipseCloudResponse(passingRun());
+  const injectedRun = passingRun();
+  injectedRun.cloudLanes.shadowResidueDimLocus = [
+    { share: -1000, requiredResidueDim: Number.POSITIVE_INFINITY },
+  ];
+  const injected = judgeEclipseCloudResponse(injectedRun);
+  assert.equal(baseline.PASS, true);
+  assert.equal(injected.PASS, true);
+  assert.equal(injected.exitCode, ECLIPSE_CLOUD_EXIT.PASS);
+  assert.deepEqual(injected.failedPredicates, baseline.failedPredicates);
+
+  const gateSource = fs.readFileSync(
+    path.join(here, "lib", "eclipse-cloud-response-gate.mjs"),
+    "utf8",
+  );
+  const gatingAnchor = '"shadowContrastInvariant",';
+  assert.equal(gateSource.split(gatingAnchor).length - 1, 1);
+  const mutantSource = gateSource.replace(
+    gatingAnchor,
+    '"shadowContrastInvariant", "shadowResidueDimLocus",',
+  );
+  const mutantModule = await import(
+    `data:text/javascript;base64,${Buffer.from(mutantSource).toString("base64")}`
+  );
+  const mutant = mutantModule.judgeEclipseCloudResponse(injectedRun);
+  assert.equal(mutant.PASS, false);
+  assert.equal(mutant.exitCode, ECLIPSE_CLOUD_EXIT.FAIL);
+  assert.ok(mutant.failedPredicates.includes("shadowResidueDimLocus"));
+  assert.throws(() => assert.equal(mutant.PASS, true));
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

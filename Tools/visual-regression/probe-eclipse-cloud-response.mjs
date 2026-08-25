@@ -2,7 +2,7 @@
 // probe-eclipse-cloud-response.mjs — C13-41 (the C12-29 S3 rider) Edge
 // acceptance: eclipse-driven cloud lighting, cloud shadow, and IBL
 // dimming/refresh.
-// @purpose C13-41 Edge acceptance: eclipse-driven cloud radiance ratio, shadow contrast, and IBL refresh count — three pre-registered predictions.
+// @purpose C13-41 Edge acceptance: eclipse-driven cloud radiance ratio, shadow contrast, IBL bucket-fill count, and submitted-refresh cost.
 // @status ACTIVE
 //
 // ─────────────────────────────────────────────────────────────────────────────
@@ -27,14 +27,14 @@
 //         (`mix(1, 0.35, s)` goes 0.350000 -> 0.350293), i.e. visually
 //         unchanged — a probe measuring a LARGE shadow-contrast change at 0.9
 //         REFUTES the model.
-//   (iii) a 0 -> 0.9 -> 0 obscuration sweep produces exactly 275 environment
-//         refreshes (one first-frame baseline + 2 x 137 bucket edges, buckets
-//         256 -> 119), which is quiescent on roughly two thirds of an
-//         801-frame sweep.
+//   (iii) a 0 -> 0.9 -> 0 obscuration sweep produces exactly 275 eclipse-driven
+//         fills (one first-frame baseline + 2 x 137 bucket edges, buckets
+//         256 -> 119), with no eclipse-driven fill on roughly two thirds of
+//         an 801-frame sweep.
 //
 // Plus the row's original STILL OWED list: an IBL recovery leg that steps a
 // clock through the deep phase and out the other side, and the wall-clock cost
-// of the 275 fills. Maintainer ruling R-2026-08-14-1 restored the latter as an
+// of those fills. Maintainer ruling R-2026-08-14-1 restored the latter as an
 // operative measurement prerequisite because the historical 7.749/1.607
 // estimates are not recoverably banked. Lane C therefore retains fresh ABBA
 // accounting on every run. An INVALID measurement names its exact reason and
@@ -74,9 +74,10 @@
 // prediction is about; the anti-latch recovery IS, and a reverse replay
 // exercises it exactly. Lane A/B use real, forward, physically-ordered instants.
 //
-// WHY 401 FRAMES ON THE RAMP AND NOT FEWER. The refresh count is the number of
+// WHY 401 FRAMES ON THE RAMP AND NOT FEWER. The eclipse-driven fill count is
+// the number of
 // bucket CHANGES, not the number of bucket EDGES: a ramp coarse enough to jump
-// two buckets in one frame fires ONE refresh and the count collapses. The
+// two buckets in one frame fires ONE fill and the count collapses. The
 // bucket derivative is steepest at the deep end — `db/do = (256/3) *
 // flux^(-2/3) * (1-FLOOR)`, which at o = 0.9 (flux 0.1) is ~396 per unit
 // obscuration, i.e. 0.89 buckets per frame at the ramp's `do = 0.9/400`. Under
@@ -175,6 +176,7 @@ import {
 import {
   BAND_MEAN_CAPTURE_DELTA,
   DECK_AERIAL_SHARE_CROSS_RUN,
+  describeRefreshCostLedgerClosure,
   ECLIPSE_CLOUD_BANDS,
   ECLIPSE_CLOUD_EXIT,
   ECLIPSE_CLOUD_GATE_PREDICATES,
@@ -244,6 +246,9 @@ const SOURCE_FILES = [
   "packages/engine/Source/Scene/DynamicEnvironmentMapManager.js",
   "packages/engine/Source/Renderer/WebGPU/WebGPUProceduralCloudRenderer.ts",
   "packages/engine/Source/Renderer/WebGPU/WebGPUDynamicEnvironmentMapManager.ts",
+  "packages/engine/Source/Renderer/WebGPU/WebGPUEnvironmentRefreshScheduler.ts",
+  "packages/engine/Source/Renderer/WebGPU/WebGPUContext.ts",
+  "packages/engine/Source/Renderer/WebGPU/WebGPUTimestampProfiler.ts",
   "packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceCameraUB.ts",
   "packages/engine/Source/Scene/Globe.js",
   "packages/engine/Source/Scene/GlobeSurfaceTileProvider.js",
@@ -391,6 +396,8 @@ const REQUIRED_TOKENS = [
   "eclipseSceneLightFactor",
   "shadowStrength",
   "enableEclipse",
+  "getEnvironmentRefreshStats",
+  "noteRefreshSubmitted",
 ];
 
 function sha256(bytes) {
@@ -1817,10 +1824,9 @@ const RUN_IBL_SWEEP = async (cfg) => {
   if (!manager) {
     return { structuralError: "model.environmentMapManager is absent" };
   }
-  // The COMMITTED refresh level, read from whichever backend owns it. Both
-  // commit inside the branch that actually re-fills, so a transition here IS a
-  // fill — that is what makes counting transitions a refresh count rather than
-  // a re-derivation of the arithmetic.
+  // The committed eclipse level is a witness for eclipse-driven fills only.
+  // Every transition proves a fill, but a refresh submitted for another reason
+  // can recommit the same bucket and leave no transition.
   const committedBucket = () => {
     const webgpu = manager._webgpuCache;
     if (webgpu && "lastEclipseEnvBucket" in webgpu) {
@@ -1949,9 +1955,11 @@ const RUN_IBL_SWEEP = async (cfg) => {
     bucketTransitions + (Number.isNaN(initialCommitted) ? 0 : 1);
 
   // ── The COUNT control: the identical 801-frame schedule with the eclipse
-  // effect OFF, which produces exactly ONE eclipse-driven fill (the identity
-  // bucket, committed once). This leg exists for `controlRefreshQuiescent`; it
-  // is NOT where the cost comes from any more (see the next block).
+  // effect OFF, which produces exactly ONE eclipse-driven fill (the first
+  // transition to the identity bucket). Other refresh causes may still submit
+  // work and recommit that same value. This leg exists for
+  // `controlRefreshQuiescent`; the submitted-refresh cost remains visible in
+  // the next block even when this eclipse-driven count is zero.
   ac.lighting.enableEclipse = false;
   await pin.settle(C.JulianDate.fromIso8601(schedule[0].iso), 1500);
   let controlTransitions = 0;
@@ -1984,7 +1992,9 @@ const RUN_IBL_SWEEP = async (cfg) => {
   // paid before anything below is timed, and each completed schedule is
   // retained as its own bounded witness in `warmedLegs`. The legs are then
   // interleaved segment by segment with the leg ORDER alternating (ABBA), so
-  // the ratified schedule and fill denominator remain unchanged.
+  // the ratified schedule and eclipse-driven fill witness remain unchanged.
+  // Submitted environment refreshes provide the cost denominator because the
+  // timed passes fire for every refresh cause, not only bucket transitions.
   //
   // WebGPU records every resolved environment-fill pass directly from the
   // renderer timestamp ledger. Animation-frame yields let the asynchronous
@@ -2144,14 +2154,121 @@ const RUN_IBL_SWEEP = async (cfg) => {
   const runCostSegment = async (pairIndex, leg, from, to) => {
     ac.lighting.enableEclipse = leg === "eclipse";
     pin.renderAt(C.JulianDate.fromIso8601(schedule[from].iso)); // untimed
+    const segmentPrefix = `pair ${pairIndex} ${leg}:`;
+    const segmentReason = (reason) =>
+      reason.startsWith(segmentPrefix) ? reason : `${segmentPrefix} ${reason}`;
     let previous = committedBucket();
     let fills = 0;
+    let refreshes = 0;
+    let refreshBaselineFrameId = null;
+    const refreshFrameIds = isWebGPU ? [] : null;
+    // Retained on BOTH backends so the gate re-derives the count from per-frame
+    // evidence instead of trusting the segment's own total. WebGL has no frame
+    // ordinal to chain, so only the per-frame witness itself is retained there.
+    const refreshSubmissions = [];
+    const refreshInvalidReasons = [];
+    const invalidateRefreshWitness = (reason) => {
+      if (refreshInvalidReasons.length === 0) {
+        refreshInvalidReasons.push(segmentReason(reason));
+      }
+    };
+    const readWebgpuRefreshTelemetry = () => {
+      try {
+        return costContext?.getEnvironmentRefreshStats?.() ?? null;
+      } catch (error) {
+        invalidateRefreshWitness(
+          `environment refresh telemetry read failed: ${String(error?.message ?? error)}`,
+        );
+        return null;
+      }
+    };
+    const snapshotWebglRefreshTime = () => {
+      const time = manager._lastTime;
+      return Number.isFinite(time?.dayNumber) &&
+        Number.isFinite(time?.secondsOfDay)
+        ? {
+            dayNumber: time.dayNumber,
+            secondsOfDay: time.secondsOfDay,
+          }
+        : null;
+    };
+    let previousRefreshFrameId = null;
+    let previousWebglRefreshTime = null;
+    if (isWebGPU) {
+      const telemetry = readWebgpuRefreshTelemetry();
+      if (!Number.isSafeInteger(telemetry?.frameId)) {
+        invalidateRefreshWitness(
+          "environment refresh telemetry did not expose an integer frameId after the untimed render",
+        );
+      } else {
+        refreshBaselineFrameId = telemetry.frameId;
+        previousRefreshFrameId = telemetry.frameId;
+      }
+    } else {
+      previousWebglRefreshTime = snapshotWebglRefreshTime();
+      if (previousWebglRefreshTime === null) {
+        invalidateRefreshWitness(
+          "WebGL environment refresh time was unavailable after the untimed render",
+        );
+      }
+    }
+    const recordEnvironmentRefresh = () => {
+      if (isWebGPU) {
+        const telemetry = readWebgpuRefreshTelemetry();
+        const frameId = Number.isSafeInteger(telemetry?.frameId)
+          ? telemetry.frameId
+          : null;
+        const submissions =
+          Number.isSafeInteger(telemetry?.submissions) &&
+          telemetry.submissions >= 0
+            ? telemetry.submissions
+            : null;
+        refreshFrameIds.push(frameId);
+        refreshSubmissions.push(submissions);
+        if (
+          frameId === null ||
+          previousRefreshFrameId === null ||
+          frameId !== previousRefreshFrameId + 1
+        ) {
+          invalidateRefreshWitness(
+            `environment refresh telemetry frameId ${String(frameId)} did not advance exactly once from ${String(previousRefreshFrameId)}`,
+          );
+        }
+        if (submissions === null) {
+          invalidateRefreshWitness(
+            "environment refresh telemetry did not expose a non-negative integer submissions count",
+          );
+        } else {
+          refreshes += submissions;
+        }
+        previousRefreshFrameId = frameId;
+        return;
+      }
+
+      const current = snapshotWebglRefreshTime();
+      if (current === null || previousWebglRefreshTime === null) {
+        invalidateRefreshWitness(
+          "WebGL environment refresh time was unavailable after a measured render",
+        );
+        refreshSubmissions.push(0);
+      } else if (
+        current.dayNumber !== previousWebglRefreshTime.dayNumber ||
+        current.secondsOfDay !== previousWebglRefreshTime.secondsOfDay
+      ) {
+        refreshes++;
+        refreshSubmissions.push(1);
+      } else {
+        refreshSubmissions.push(0);
+      }
+      previousWebglRefreshTime = current;
+    };
     let wallMs;
 
     if (!gpuCaptureAvailable) {
       const startMs = performance.now();
       for (let f = from; f < to; f++) {
         pin.renderAt(C.JulianDate.fromIso8601(schedule[f].iso));
+        recordEnvironmentRefresh();
         const committed = committedBucket();
         if (!Object.is(committed, previous)) {
           fills++;
@@ -2169,6 +2286,15 @@ const RUN_IBL_SWEEP = async (cfg) => {
         wallMs,
         readbackYieldMs: 0,
         fills,
+        refreshes,
+        refreshValid: refreshInvalidReasons.length === 0,
+        refreshInvalidReason:
+          refreshInvalidReasons.length === 0
+            ? null
+            : refreshInvalidReasons.join("; "),
+        refreshBaselineFrameId,
+        refreshFrameIds,
+        refreshSubmissions,
         gpuTime: unavailableGpuTime(),
       };
     }
@@ -2187,6 +2313,7 @@ const RUN_IBL_SWEEP = async (cfg) => {
     let readbackYieldMs = 0;
     for (let f = from; f < to; f++) {
       pin.renderAt(C.JulianDate.fromIso8601(schedule[f].iso));
+      recordEnvironmentRefresh();
       const committed = committedBucket();
       if (!Object.is(committed, previous)) {
         fills++;
@@ -2213,14 +2340,6 @@ const RUN_IBL_SWEEP = async (cfg) => {
         capturedSamplesByPass[passName],
       ]),
     );
-    const samplesMs = Array.from({ length: fills }, (_, fillIndex) =>
-      sampledPassNames.reduce(
-        (total, passName) =>
-          total + (samplesMsByPass[passName][fillIndex] ?? 0),
-        0,
-      ),
-    );
-
     const results = {
       enabled: raw.enabled,
       attemptedFrameCount: raw.attemptedFrameCount,
@@ -2235,44 +2354,64 @@ const RUN_IBL_SWEEP = async (cfg) => {
       droppedPassCount: raw.droppedPassCount,
       sampleLedgerBalanced: raw.sampleLedgerBalanced,
     };
-    const invalidReasons = [];
+    const invalidReasons = [...refreshInvalidReasons];
+    const samplesMs = Array.from({ length: refreshes }, (_, refreshIndex) => {
+      let total = 0;
+      for (const passName of sampledPassNames) {
+        const sample = samplesMsByPass[passName][refreshIndex];
+        if (!Number.isFinite(sample) || sample < 0) {
+          invalidReasons.push(
+            segmentReason(
+              `the GPU pass ledger has no finite ${passName} duration at submitted environment refresh index ${refreshIndex}`,
+            ),
+          );
+          return null;
+        }
+        total += sample;
+      }
+      return total;
+    });
     if (
       preDrain.timedOut ||
       preDrain.undrained !== 0 ||
       preDrain.abandoned !== 0
     ) {
-      invalidReasons.push("the pre-segment GPU readback drain did not close");
+      invalidReasons.push(
+        segmentReason("the pre-segment GPU readback drain did not close"),
+      );
     }
     if (
       queueDrain.completed !== true ||
       queueDrain.timedOut ||
       queueDrain.error !== null
     ) {
-      invalidReasons.push("the measured GPU queue did not complete cleanly");
+      invalidReasons.push(
+        segmentReason("the measured GPU queue did not complete cleanly"),
+      );
     }
     if (drain.timedOut || drain.undrained !== 0 || drain.abandoned !== 0) {
-      invalidReasons.push("the measured GPU readback drain did not close");
-    }
-    if (
-      results.enabled !== true ||
-      results.attemptedFrameCount !== to - from ||
-      results.frameCount !== to - from ||
-      results.sampleLedgerBalanced !== true ||
-      results.readbackSkipCount !== 0 ||
-      results.failedReadbackCount !== 0 ||
-      results.emptyFrameCount !== 0 ||
-      results.lostSampleCount !== 0 ||
-      results.pendingReadbackCount !== 0 ||
-      results.unaccountedSampleCount !== 0 ||
-      results.invertedSampleCount !== 0 ||
-      results.droppedPassCount !== 0
-    ) {
       invalidReasons.push(
-        `the GPU sample ledger did not close over ${to - from} measured frames`,
+        segmentReason("the measured GPU readback drain did not close"),
+      );
+    }
+    // The single detection AND the message come from one table in the gate
+    // module. Duplicating the condition here is how a counter gets dropped
+    // from the message while still tripping the check, or the reverse.
+    const ledgerOffenders = describeRefreshCostLedgerClosure(
+      results,
+      to - from,
+    );
+    if (ledgerOffenders !== "") {
+      invalidReasons.push(
+        segmentReason(
+          `the GPU sample ledger did not close over ${to - from} measured frames (${ledgerOffenders})`,
+        ),
       );
     }
     if (!samplesMs.every((sample) => Number.isFinite(sample) && sample >= 0)) {
-      invalidReasons.push("the GPU pass ledger contains an invalid duration");
+      invalidReasons.push(
+        segmentReason("the GPU pass ledger contains an invalid duration"),
+      );
     }
     for (const passName of sampledPassNames) {
       const passSamples = samplesMsByPass[passName];
@@ -2280,12 +2419,16 @@ const RUN_IBL_SWEEP = async (cfg) => {
         !passSamples.every((sample) => Number.isFinite(sample) && sample >= 0)
       ) {
         invalidReasons.push(
-          `the GPU pass ledger contains an invalid ${passName} duration`,
+          segmentReason(
+            `the GPU pass ledger contains an invalid ${passName} duration`,
+          ),
         );
       }
-      if (passSamples.length !== fills) {
+      if (passSamples.length !== refreshes) {
         invalidReasons.push(
-          `the GPU pass ledger retained ${passSamples.length} ${passName} sample(s) for ${fills} measured fill(s)`,
+          segmentReason(
+            `the GPU pass ledger retained ${passSamples.length} ${passName} sample(s) for ${refreshes} environment refresh(es) submitted (${fills} eclipse-driven fill(s))`,
+          ),
         );
       }
     }
@@ -2294,19 +2437,23 @@ const RUN_IBL_SWEEP = async (cfg) => {
       -1,
     );
     const missingMandatoryLabel =
-      fills > 0
+      refreshes > 0
         ? mandatoryPassNames.find(
             (passName) => !Object.hasOwn(samplesMsByPass, passName),
           )
         : undefined;
     if (missingMandatoryLabel) {
       invalidReasons.push(
-        `the GPU pass ledger is missing mandatory pass ${missingMandatoryLabel} for ${fills} measured fill(s)`,
+        segmentReason(
+          `the GPU pass ledger is missing mandatory pass ${missingMandatoryLabel} for ${refreshes} environment refresh(es) submitted (${fills} eclipse-driven fill(s))`,
+        ),
       );
     }
-    if (samplesMs.length !== fills) {
+    if (samplesMs.length !== refreshes) {
       invalidReasons.push(
-        `the GPU pass ledger retained ${samplesMs.length} environment-refresh sample(s) for ${fills} measured fill(s)`,
+        segmentReason(
+          `the GPU pass ledger retained ${samplesMs.length} combined environment-refresh sample(s) for ${refreshes} environment refresh(es) submitted (${fills} eclipse-driven fill(s))`,
+        ),
       );
     }
     const valid = invalidReasons.length === 0;
@@ -2320,6 +2467,15 @@ const RUN_IBL_SWEEP = async (cfg) => {
       wallMs,
       readbackYieldMs,
       fills,
+      refreshes,
+      refreshValid: refreshInvalidReasons.length === 0,
+      refreshInvalidReason:
+        refreshInvalidReasons.length === 0
+          ? null
+          : refreshInvalidReasons.join("; "),
+      refreshBaselineFrameId,
+      refreshFrameIds,
+      refreshSubmissions,
       gpuTime: {
         status: valid ? "valid" : "invalid",
         available: true,
@@ -2362,18 +2518,27 @@ const RUN_IBL_SWEEP = async (cfg) => {
     costSegments
       .filter((segment) => segment.leg === leg)
       .reduce((total, segment) => total + segment[key], 0);
-  const invalidGpuSegment = costSegments.find(
-    (segment) => segment.gpuTime.status === "invalid",
-  );
-  const gpuAggregateValid =
+  const invalidGpuSegmentReasons = costSegments
+    .filter((segment) => segment.gpuTime.status === "invalid")
+    .map((segment) => {
+      const prefix = `pair ${segment.pairIndex} ${segment.leg}:`;
+      const reason = segment.gpuTime.invalidReason;
+      return reason.startsWith(prefix) ? reason : `${prefix} ${reason}`;
+    });
+  const gpuAggregateInvalidReasons = [...invalidGpuSegmentReasons];
+  if (
     gpuCaptureAvailable &&
-    invalidGpuSegment === undefined &&
-    captureHook.restored &&
-    captureHook.originalIdentityRestored;
-  const gpuAggregateInvalidReason = invalidGpuSegment
-    ? invalidGpuSegment.gpuTime.invalidReason
-    : gpuCaptureAvailable && !gpuAggregateValid
-      ? "GPU timestamp capture hook was not installed and restored exactly"
+    (!captureHook.restored || !captureHook.originalIdentityRestored)
+  ) {
+    gpuAggregateInvalidReasons.push(
+      "GPU timestamp capture hook was not installed and restored exactly",
+    );
+  }
+  const gpuAggregateValid =
+    gpuCaptureAvailable && gpuAggregateInvalidReasons.length === 0;
+  const gpuAggregateInvalidReason =
+    gpuAggregateInvalidReasons.length > 0
+      ? gpuAggregateInvalidReasons.join(" | ")
       : gpuUnavailableReason;
   const sumGpuLeg = (leg) =>
     costSegments
@@ -2434,6 +2599,8 @@ const RUN_IBL_SWEEP = async (cfg) => {
     controlWallMs: sumLeg("control", "wallMs"),
     eclipseFills: sumLeg("eclipse", "fills"),
     controlFills: sumLeg("control", "fills"),
+    eclipseRefreshes: sumLeg("eclipse", "refreshes"),
+    controlRefreshes: sumLeg("control", "refreshes"),
     // Retain the full alternating ledger for the gate's cost function. Inline
     // eclipse-minus-control arithmetic would erase the ordering evidence and
     // let sequential A/B drift impersonate refresh cost.

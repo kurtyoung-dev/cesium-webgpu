@@ -2,7 +2,7 @@
  * The GATE half of `probe-eclipse-cloud-response.mjs` — C13-41's Edge
  * acceptance predicates, their pre-registered bands, and the fold that turns a
  * run's measurements into a verdict.
- * @purpose C13-41 Edge-acceptance predicates with derived-never-fitted bands for deck lighting, cloud-shadow invariance, and the exact IBL refresh count.
+ * @purpose C13-41 Edge-acceptance predicates with derived-never-fitted bands for deck lighting, cloud-shadow invariance, IBL bucket fills, and submitted-refresh cost.
  * @status ACTIVE
  *
  * WHY THIS IS ITS OWN MODULE, AND NOT A `judge()` INSIDE THE PROBE. The same
@@ -23,9 +23,10 @@
  *   (ii)  cloud shadow — the ground contrast `mix(1, 0.35, s)` moves
  *         0.350000 -> 0.350293, i.e. +0.08%; a LARGE measured change REFUTES
  *         the model.                              -> `shadowContrastInvariant`
- *   (iii) IBL refresh — a 0 -> 0.9 -> 0 sweep produces exactly 275 environment
- *         refreshes (1 baseline + 2 x 137 bucket edges, buckets 256 -> 119),
- *         quiescent on roughly two thirds of an 801-frame sweep.
+ *   (iii) IBL refresh — a 0 -> 0.9 -> 0 sweep produces exactly 275
+ *         eclipse-driven fills (1 baseline + 2 x 137 bucket edges, buckets
+ *         256 -> 119), with no eclipse-driven fill on roughly two thirds of
+ *         an 801-frame sweep.
  *                             -> `predictedRefreshCountExact` + the two engine
  *                                count bands + `sweepQuiescenceInBand`
  *
@@ -690,11 +691,13 @@ export function fitDeckAerialShareFromPureDeck(
 }
 
 /**
- * Counts LEVEL CHANGES in a committed-bucket series, which is what an
- * environment refresh count is: the managers commit the bucket only inside the
- * branch that actually re-fills, so one transition is one fill. A series that
- * jumps two buckets in one step is ONE change, not two — which is exactly why
- * the ramp has to be fine enough not to skip.
+ * Counts LEVEL CHANGES in a committed-bucket series. Every transition proves
+ * an eclipse-driven fill because the bucket is committed inside the refresh
+ * branch, but a refresh for another reason can commit the same value and leave
+ * no transition. This is therefore a fill witness, not a count of all
+ * environment refreshes. A series that jumps two buckets in one step is ONE
+ * change, not two — which is exactly why the ramp has to be fine enough not to
+ * skip.
  *
  * @param {Array<number>} series
  * @param {number} [seed=Number.NaN] The committed level before the series.
@@ -740,16 +743,16 @@ export function idealSweepBuckets() {
  * @returns {number}
  */
 export function predictedSweepRefreshCount() {
-  // The first commit walks NaN -> 256 during the warm-up, before the sweep's
-  // first frame; the sweep itself then contributes its own level changes.
+  // The first eclipse-driven fill walks NaN -> 256 during the warm-up, before
+  // the sweep's first frame; the sweep itself contributes its level changes.
   const buckets = idealSweepBuckets();
   return 1 + countBucketChanges(buckets, buckets[0]);
 }
 
 /**
  * Largest single-frame bucket jump in a series. Must be at most 1, or the ramp
- * skipped an edge and the refresh count collapses toward the number of jumps
- * rather than the number of edges.
+ * skipped an edge and the eclipse-driven fill count collapses toward the
+ * number of jumps rather than the number of edges.
  *
  * @param {Array<number>} series
  * @returns {number}
@@ -1053,13 +1056,13 @@ export const ECLIPSE_CLOUD_BANDS = Object.freeze({
   sweepQuiescence: band(
     0.6,
     0.75,
-    "the row's 'quiescent on roughly two thirds of an 801-frame sweep'. 274 of the 801 sweep frames change a bucket, so 527/801 = 0.658 are quiescent. The band is 0.658 -0.058/+0.092, wide enough to survive a handful of merged edges and narrow enough that a refresh EVERY frame (0.0) or a refresh NEVER (1.0) fails",
+    "the row's eclipse-driven fill cadence. 274 of the 801 sweep frames change a bucket, so 527/801 = 0.658 have no eclipse-driven fill. The band is 0.658 -0.058/+0.092, wide enough to survive a handful of merged edges and narrow enough that an eclipse-driven fill EVERY frame (0.0) or NEVER (1.0) fails",
   ),
 
   controlRefreshCount: band(
     0,
     2,
-    "the eclipse-OFF control over the identical 801-frame schedule. With the effect off the factor is exactly 1.0 on every frame, so the bucket sits at the identity 256 and commits at most once. Two is the allowance for the initial commit plus one resource-generation re-commit",
+    "the eclipse-OFF control over the identical 801-frame schedule. With the effect off the factor is exactly 1.0 on every frame, so the bucket can transition to the identity 256 at most once. Two is the allowance for that initial transition plus one resource-generation transition. Other refresh causes may recommit the same bucket value and remain separately visible as `controlRefreshes` in the cost block",
   ),
 
   determinismDelta: band(
@@ -1380,9 +1383,10 @@ export function laneIsBlind(blind, domain) {
 // THE REFRESH-COST ARITHMETIC
 // ─────────────────────────────────────────────────────────────────────────────
 //
-// The warm-ups, eight interleaved pairs, schedule, realized obscurations, fill
-// denominator, and redundant aggregates are all recomputed from retained
-// primitives. Valid renderer timestamps are preferred because CPU wall clock
+// The warm-ups, eight interleaved pairs, schedule, realized obscurations,
+// submitted-refresh denominator, eclipse-driven fill count, and redundant
+// aggregates are all recomputed from retained primitives. Valid renderer
+// timestamps are preferred because CPU wall clock
 // cannot separate pass cost from device power-state drift. Wall time remains a
 // bound; only the backend without renderer timer accounting may use it as its
 // named figure of record. Missing, unresolved, or negative GPU timing never
@@ -1391,7 +1395,7 @@ export function laneIsBlind(blind, domain) {
 /** The ratified ABBA protocol uses exactly eight balanced segment pairs. */
 export const REFRESH_COST_SEGMENTS_PER_LEG = 8;
 /** Schema version for the live lane/protocol binding carried by cost ledgers. */
-export const REFRESH_COST_PROTOCOL_VERSION = 3;
+export const REFRESH_COST_PROTOCOL_VERSION = 4;
 /** Renderer timestamp instrument and pass set carried by every ledger. */
 export const REFRESH_COST_GPU_TIME_PROTOCOL = Object.freeze({
   instrument: "CesiumDebug.gpuPassCost",
@@ -1464,18 +1468,191 @@ function gpuResolutionMatches(value, reference) {
   );
 }
 
-function sumRefreshCostSamplesByPass(samplesMsByPass, fills) {
-  const summedPassNames = REFRESH_COST_GPU_TIME_PROTOCOL.passNames;
-  return Array.from({ length: fills }, (_, fillIndex) =>
+/**
+ * The twelve renderer-ledger counters a timed segment must close on, each with
+ * the value that means "closed". Kept beside the fold that consumes them so a
+ * counter cannot be added to the renderer and silently go unchecked here.
+ */
+export const REFRESH_COST_LEDGER_EXPECTATIONS = Object.freeze([
+  Object.freeze({ counter: "enabled", closed: true }),
+  Object.freeze({ counter: "attemptedFrameCount", closed: "frames" }),
+  Object.freeze({ counter: "frameCount", closed: "frames" }),
+  Object.freeze({ counter: "sampleLedgerBalanced", closed: true }),
+  Object.freeze({ counter: "readbackSkipCount", closed: 0 }),
+  Object.freeze({ counter: "failedReadbackCount", closed: 0 }),
+  Object.freeze({ counter: "emptyFrameCount", closed: 0 }),
+  Object.freeze({ counter: "lostSampleCount", closed: 0 }),
+  Object.freeze({ counter: "pendingReadbackCount", closed: 0 }),
+  Object.freeze({ counter: "unaccountedSampleCount", closed: 0 }),
+  Object.freeze({ counter: "invertedSampleCount", closed: 0 }),
+  Object.freeze({ counter: "droppedPassCount", closed: 0 }),
+]);
+
+/**
+ * Name every renderer-ledger counter that did not close, with its value.
+ *
+ * A bare "did not close" sends the reader back to the JSON to find out WHICH
+ * counter tripped, and the failure modes are not interchangeable: a saturated
+ * readback ring reads as `frameCount` short of the segment with a matching
+ * `readbackSkipCount` and loses only timing, while a dropped or lost sample
+ * means the renderer discarded work the fold would have counted. Those must not
+ * produce the same sentence.
+ *
+ * @param {object} results One segment's retained renderer counters.
+ * @param {number} frames The segment's frame count.
+ * @returns {string} Comma-separated `name=value` pairs; empty when all closed.
+ */
+export function describeRefreshCostLedgerClosure(results, frames) {
+  if (!results || typeof results !== "object") {
+    return "results absent";
+  }
+  return REFRESH_COST_LEDGER_EXPECTATIONS.filter(
+    ({ counter, closed }) =>
+      !Object.is(results[counter], closed === "frames" ? frames : closed),
+  )
+    .map(({ counter }) => `${counter}=${String(results[counter])}`)
+    .join(", ");
+}
+
+/**
+ * Prefix one segment-local refusal without duplicating a prefix already
+ * retained by the probe.
+ *
+ * @param {number} pairIndex
+ * @param {string} leg
+ * @param {string} reason
+ * @returns {string}
+ */
+export function formatRefreshCostSegmentReason(pairIndex, leg, reason) {
+  const prefix = `pair ${pairIndex} ${leg}:`;
+  return reason.startsWith(prefix) ? reason : `${prefix} ${reason}`;
+}
+
+function sumRefreshCostSamplesByPass(samplesMsByPass, refreshes) {
+  const summedPassNames = Object.keys(samplesMsByPass);
+  return Array.from({ length: refreshes }, (_, refreshIndex) =>
     summedPassNames.reduce(
-      (total, passName) =>
-        total + (samplesMsByPass[passName]?.[fillIndex] ?? 0),
+      (total, passName) => total + samplesMsByPass[passName][refreshIndex],
       0,
     ),
   );
 }
 
-function readRefreshCostGpuSegment(block, header, frames, fills, label) {
+function readRefreshCostRefreshWitness(segment, backend, label) {
+  const refused = (schemaError, invalidReason = null) => ({
+    schemaError,
+    valid: false,
+    invalidReason,
+    submittedTotal: null,
+  });
+  if (segment.refreshValid !== true) {
+    const invalidIsNamed =
+      segment.refreshValid === false &&
+      typeof segment.refreshInvalidReason === "string" &&
+      segment.refreshInvalidReason.length > 0;
+    return invalidIsNamed
+      ? refused(
+          null,
+          formatRefreshCostSegmentReason(
+            segment.pairIndex,
+            segment.leg,
+            segment.refreshInvalidReason,
+          ),
+        )
+      : refused(`${label} has no exact named environment-refresh witness`);
+  }
+  if (segment.refreshInvalidReason !== null) {
+    return refused(
+      `${label} marks its environment-refresh witness valid while retaining an invalid reason`,
+    );
+  }
+
+  // Both backends retain one witness per frame, so the count this function
+  // returns is DERIVED from the per-frame evidence and is what the cost
+  // arithmetic divides by. `segment.refreshes` is cross-checked against it and
+  // is never itself operative  a probe cannot declare a denominator.
+  const submissions = segment.refreshSubmissions;
+  const frameIds = segment.refreshFrameIds;
+  const wantsFrameIds = backend !== "webgl";
+  if (
+    !Array.isArray(submissions) ||
+    submissions.length !== segment.frames ||
+    (wantsFrameIds &&
+      (!Number.isSafeInteger(segment.refreshBaselineFrameId) ||
+        !Array.isArray(frameIds) ||
+        frameIds.length !== segment.frames))
+  ) {
+    return refused(
+      `${label} does not retain one environment-refresh telemetry read for each of its ${segment.frames} frames`,
+    );
+  }
+  if (
+    !wantsFrameIds &&
+    (segment.refreshBaselineFrameId !== null || frameIds !== null)
+  ) {
+    // WebGL has no frame ordinal to chain; carrying one would mean the witness
+    // came from the wrong backend's accessor.
+    return refused(
+      `${label} retained WebGPU frame-ordinal telemetry for a WebGL last-time witness`,
+    );
+  }
+  for (let index = 0; index < submissions.length; index++) {
+    const submitted = submissions[index];
+    if (!Number.isSafeInteger(submitted) || submitted < 0) {
+      return refused(
+        `${label} has malformed environment-refresh telemetry at frame offset ${index}`,
+      );
+    }
+    if (!wantsFrameIds) {
+      continue;
+    }
+    const frameId = frameIds[index];
+    if (!Number.isSafeInteger(frameId)) {
+      return refused(
+        `${label} has malformed environment-refresh telemetry at frame offset ${index}`,
+      );
+    }
+    const previousFrameId =
+      index === 0 ? segment.refreshBaselineFrameId : frameIds[index - 1];
+    if (frameId !== previousFrameId + 1) {
+      return refused(
+        null,
+        formatRefreshCostSegmentReason(
+          segment.pairIndex,
+          segment.leg,
+          `environment refresh telemetry frameId ${frameId} did not advance exactly once from ${previousFrameId}`,
+        ),
+      );
+    }
+  }
+  const submittedTotal = submissions.reduce(
+    (total, submitted) => total + submitted,
+    0,
+  );
+  if (
+    !Number.isSafeInteger(submittedTotal) ||
+    submittedTotal !== segment.refreshes
+  ) {
+    return refused(
+      `${label} retained ${submittedTotal} submitted refresh(es) in per-frame telemetry but declared ${segment.refreshes}`,
+    );
+  }
+  return {
+    schemaError: null,
+    valid: true,
+    invalidReason: null,
+    submittedTotal,
+  };
+}
+
+function readRefreshCostGpuSegment(
+  block,
+  header,
+  frames,
+  refreshes,
+  fills,
+  label,
+) {
   if (!block || typeof block !== "object") {
     return {
       schemaError: `${label} has no GPU-time accounting block`,
@@ -1594,9 +1771,9 @@ function readRefreshCostGpuSegment(block, header, frames, fills, label) {
         invalidReason: null,
       };
     }
-    if (passSamples.length !== fills) {
+    if (passSamples.length !== refreshes) {
       return {
-        schemaError: `${label} GPU pass ${passName} retained ${passSamples.length} sample(s) for ${fills} measured fill(s)`,
+        schemaError: `${label} GPU pass ${passName} retained ${passSamples.length} sample(s) for ${refreshes} environment refresh(es) submitted (${fills} eclipse-driven fill(s))`,
         valid: false,
         totalMs: null,
         invalidReason: null,
@@ -1604,34 +1781,34 @@ function readRefreshCostGpuSegment(block, header, frames, fills, label) {
     }
   }
   const missingMandatoryLabel =
-    fills > 0
+    refreshes > 0
       ? REFRESH_COST_MANDATORY_GPU_PASS_NAMES.find(
           (passName) => !Object.hasOwn(samplesMsByPass, passName),
         )
       : undefined;
   if (missingMandatoryLabel) {
     return {
-      schemaError: `${label} is missing mandatory GPU pass ${missingMandatoryLabel} for ${fills} measured fill(s)`,
+      schemaError: `${label} is missing mandatory GPU pass ${missingMandatoryLabel} for ${refreshes} environment refresh(es) submitted (${fills} eclipse-driven fill(s))`,
       valid: false,
       totalMs: null,
       invalidReason: null,
     };
   }
-  if (samples.length !== fills) {
+  if (samples.length !== refreshes) {
     return {
-      schemaError: `${label} retained ${samples.length} GPU environment-refresh sample(s) for ${fills} measured fill(s)`,
+      schemaError: `${label} retained ${samples.length} GPU environment-refresh sample(s) for ${refreshes} environment refresh(es) submitted (${fills} eclipse-driven fill(s))`,
       valid: false,
       totalMs: null,
       invalidReason: null,
     };
   }
-  const summedSamples = sumRefreshCostSamplesByPass(samplesMsByPass, fills);
-  const mismatchedFill = samples.findIndex(
-    (sample, fillIndex) => !Object.is(sample, summedSamples[fillIndex]),
+  const summedSamples = sumRefreshCostSamplesByPass(samplesMsByPass, refreshes);
+  const mismatchedRefresh = samples.findIndex(
+    (sample, refreshIndex) => !Object.is(sample, summedSamples[refreshIndex]),
   );
-  if (mismatchedFill !== -1) {
+  if (mismatchedRefresh !== -1) {
     return {
-      schemaError: `${label} whole-refresh sample ${mismatchedFill} does not equal its retained per-pass sum`,
+      schemaError: `${label} whole-refresh sample ${mismatchedRefresh} does not equal its retained per-pass sum`,
       valid: false,
       totalMs: null,
       invalidReason: null,
@@ -1711,6 +1888,7 @@ export function computeRefreshCost(accounting, binding) {
     fallbackReason: null,
     msDelta: null,
     fillDelta: null,
+    refreshDelta: null,
     gpuMsDelta: null,
     gpuMsPerRefresh: null,
     wallMsDelta: null,
@@ -1723,6 +1901,8 @@ export function computeRefreshCost(accounting, binding) {
     controlGpuMs: null,
     eclipseFills: null,
     controlFills: null,
+    eclipseRefreshes: null,
+    controlRefreshes: null,
     eclipseFrames: null,
     controlFrames: null,
     segmentsPerLeg: null,
@@ -2109,10 +2289,11 @@ export function computeRefreshCost(accounting, binding) {
   }
 
   const totals = {
-    eclipse: { frames: 0, wallMs: 0, gpuMs: 0, fills: 0 },
-    control: { frames: 0, wallMs: 0, gpuMs: 0, fills: 0 },
+    eclipse: { frames: 0, wallMs: 0, gpuMs: 0, fills: 0, refreshes: 0 },
+    control: { frames: 0, wallMs: 0, gpuMs: 0, fills: 0, refreshes: 0 },
   };
-  let gpuMeasurementInvalidReason = null;
+  const refreshMeasurementInvalidReasons = [];
+  const gpuMeasurementInvalidReasons = [];
   const expectedBounds = deriveRefreshCostSegmentBounds();
   let nextFrom = 0;
   for (let pairIndex = 0; pairIndex < segmentsPerLeg; pairIndex++) {
@@ -2177,6 +2358,16 @@ export function computeRefreshCost(accounting, binding) {
           invalidReason: `refresh-cost pair ${pairIndex} ${segment.leg} has invalid integer fill count ${String(segment.fills)} for ${segment.frames} frames`,
         };
       }
+      if (
+        !Number.isSafeInteger(segment.refreshes) ||
+        segment.refreshes < 0 ||
+        segment.refreshes > segment.frames
+      ) {
+        return {
+          ...withWarmups,
+          invalidReason: `refresh-cost pair ${pairIndex} ${segment.leg} has invalid integer environment-refresh count ${String(segment.refreshes)} for ${segment.frames} frames`,
+        };
+      }
       if (!Number.isFinite(segment.wallMs) || segment.wallMs < 0) {
         return {
           ...withWarmups,
@@ -2215,12 +2406,34 @@ export function computeRefreshCost(accounting, binding) {
     }
     nextFrom = first.to;
     for (const segment of pair) {
+      const label = `refresh-cost pair ${pairIndex} ${segment.leg}`;
+      const refreshWitness = readRefreshCostRefreshWitness(
+        segment,
+        expectedBackend,
+        label,
+      );
+      if (refreshWitness.schemaError) {
+        return {
+          ...withWarmups,
+          invalidReason: refreshWitness.schemaError,
+        };
+      }
+      if (!refreshWitness.valid) {
+        // Nothing downstream can be read off a segment whose own per-frame
+        // witness failed: its derived count is absent, so a GPU cardinality
+        // check here would report "for null refreshes" and bury the cause.
+        refreshMeasurementInvalidReasons.push(refreshWitness.invalidReason);
+        continue;
+      }
+      // The DERIVED count, never the declared field.
+      const segmentRefreshes = refreshWitness.submittedTotal;
       const gpuSegment = readRefreshCostGpuSegment(
         segment.gpuTime,
         gpuHeader,
         segment.frames,
+        segmentRefreshes,
         segment.fills,
-        `refresh-cost pair ${pairIndex} ${segment.leg}`,
+        label,
       );
       if (gpuSegment.schemaError) {
         return {
@@ -2236,12 +2449,19 @@ export function computeRefreshCost(accounting, binding) {
             invalidReason: `the ${segment.leg} segment GPU-time sum overflowed`,
           };
         }
-      } else if (gpuHeader.available && !gpuMeasurementInvalidReason) {
-        gpuMeasurementInvalidReason = gpuSegment.invalidReason;
+      } else if (gpuHeader.available) {
+        gpuMeasurementInvalidReasons.push(
+          formatRefreshCostSegmentReason(
+            pairIndex,
+            segment.leg,
+            gpuSegment.invalidReason,
+          ),
+        );
       }
       totals[segment.leg].frames += segment.frames;
       totals[segment.leg].wallMs += segment.wallMs;
       totals[segment.leg].fills += segment.fills;
+      totals[segment.leg].refreshes += segmentRefreshes;
       if (!Number.isFinite(totals[segment.leg].wallMs)) {
         return {
           ...withWarmups,
@@ -2249,6 +2469,17 @@ export function computeRefreshCost(accounting, binding) {
         };
       }
     }
+  }
+
+  // A broken per-frame witness is refused BEFORE any aggregate is compared:
+  // the derived count is what every total below is built from, so an aggregate
+  // mismatch computed on top of it would report a downstream symptom instead of
+  // the cause.
+  if (refreshMeasurementInvalidReasons.length > 0) {
+    return {
+      ...withWarmups,
+      invalidReason: refreshMeasurementInvalidReasons.join(" | "),
+    };
   }
 
   const scheduleFrames = eclipseWarmup.frames;
@@ -2274,6 +2505,8 @@ export function computeRefreshCost(accounting, binding) {
     controlWallMs: totals.control.wallMs,
     eclipseFills: totals.eclipse.fills,
     controlFills: totals.control.fills,
+    eclipseRefreshes: totals.eclipse.refreshes,
+    controlRefreshes: totals.control.refreshes,
     eclipseFrames: totals.eclipse.frames,
     controlFrames: totals.control.frames,
     warmupBothLegs: true,
@@ -2289,6 +2522,8 @@ export function computeRefreshCost(accounting, binding) {
     ["controlWallMs", out.controlWallMs],
     ["eclipseFills", out.eclipseFills],
     ["controlFills", out.controlFills],
+    ["eclipseRefreshes", out.eclipseRefreshes],
+    ["controlRefreshes", out.controlRefreshes],
   ]) {
     if (!Object.is(a[field], derived)) {
       return {
@@ -2327,10 +2562,15 @@ export function computeRefreshCost(accounting, binding) {
         "the GPU-unavailable ledger has a malformed capture-hook witness",
     };
   }
-  if (!captureHookValid && !gpuMeasurementInvalidReason) {
-    gpuMeasurementInvalidReason =
-      "GPU timestamp capture hook was not installed and restored exactly";
+  if (!captureHookValid && gpuHeader.available) {
+    gpuMeasurementInvalidReasons.push(
+      "GPU timestamp capture hook was not installed and restored exactly",
+    );
   }
+  const gpuMeasurementInvalidReason =
+    gpuMeasurementInvalidReasons.length > 0
+      ? gpuMeasurementInvalidReasons.join(" | ")
+      : null;
   const gpuAggregateValid =
     gpuHeader.available && gpuMeasurementInvalidReason === null;
   const expectedGpuAggregate = gpuHeader.available
@@ -2370,23 +2610,27 @@ export function computeRefreshCost(accounting, binding) {
   };
 
   const fillDelta = withGpu.eclipseFills - withGpu.controlFills;
-  if (!(fillDelta > 0)) {
+  const refreshDelta = withGpu.eclipseRefreshes - withGpu.controlRefreshes;
+  const measuredCounts = {
+    ...withGpu,
+    fillDelta,
+    refreshDelta,
+  };
+  if (!(refreshDelta > 0)) {
     return {
-      ...withGpu,
-      fillDelta,
-      invalidReason: `no eclipse-driven fills to attribute cost to (${withGpu.eclipseFills} eclipse vs ${withGpu.controlFills} control) — this run's fresh differential cannot be formed`,
+      ...measuredCounts,
+      invalidReason: `no positive environment-refresh differential to attribute cost to (${withGpu.eclipseRefreshes} eclipse vs ${withGpu.controlRefreshes} control) — this run's fresh differential cannot be formed`,
     };
   }
 
   const wallMsDelta = withGpu.eclipseWallMs - withGpu.controlWallMs;
-  const wallMsPerRefresh = wallMsDelta / fillDelta;
+  const wallMsPerRefresh = wallMsDelta / refreshDelta;
   const wallClockRole =
     gpuHeader.available || expectedBackend === "webgpu"
       ? "bound"
       : "figure-of-record";
   const measuredBase = {
-    ...withGpu,
-    fillDelta,
+    ...measuredCounts,
     wallMsDelta,
     wallMsPerRefresh,
     wallClockRole,
@@ -2402,7 +2646,7 @@ export function computeRefreshCost(accounting, binding) {
   const gpuTime = measuredBase.gpuTime;
   if (gpuTime.valid) {
     const gpuMsDelta = withGpu.eclipseGpuMs - withGpu.controlGpuMs;
-    const gpuMsPerRefresh = gpuMsDelta / fillDelta;
+    const gpuMsPerRefresh = gpuMsDelta / refreshDelta;
     const gpuMeasured = {
       ...measuredBase,
       measurementSource: "gpu-time",
@@ -2418,13 +2662,13 @@ export function computeRefreshCost(accounting, binding) {
     if (gpuMsDelta < 0) {
       return {
         ...gpuMeasured,
-        invalidReason: `the environment-refresh GPU differential is negative (${withGpu.controlGpuMs} ms control vs ${withGpu.eclipseGpuMs} ms eclipse over the same ${withGpu.eclipseFrames} frames) — no per-refresh cost can be attributed to the fills`,
+        invalidReason: `the environment-refresh GPU differential is negative (${withGpu.controlGpuMs} ms control vs ${withGpu.eclipseGpuMs} ms eclipse over the same ${withGpu.eclipseFrames} frames) — no per-refresh cost can be attributed to the submitted refreshes`,
       };
     }
     if (gpuMsDelta === 0 && gpuTime.resolutionKnown !== true) {
       return {
         ...gpuMeasured,
-        invalidReason: `the environment-refresh GPU differential is exactly 0 ms over ${fillDelta} fills at an undeclared timestamp resolution — indistinguishable from a pass below one quantum, so it is a bound and not a figure`,
+        invalidReason: `the environment-refresh GPU differential is exactly 0 ms over ${refreshDelta} submitted refreshes at an undeclared timestamp resolution — indistinguishable from a pass below one quantum, so it is a bound and not a figure`,
       };
     }
     return {
@@ -2450,7 +2694,7 @@ export function computeRefreshCost(accounting, binding) {
   if (wallMsDelta < 0) {
     return {
       ...wallFallback,
-      invalidReason: `the control leg outran the eclipse leg (${withGpu.controlWallMs} ms control vs ${withGpu.eclipseWallMs} ms eclipse over the same ${withGpu.eclipseFrames} frames) — the differential is negative, so no per-refresh cost can be attributed to the fills`,
+      invalidReason: `the control leg outran the eclipse leg (${withGpu.controlWallMs} ms control vs ${withGpu.eclipseWallMs} ms eclipse over the same ${withGpu.eclipseFrames} frames) — the differential is negative, so no per-refresh cost can be attributed to the submitted refreshes`,
     };
   }
   return {
@@ -3143,10 +3387,28 @@ export function judgeEclipseCloudResponse(run) {
   // it reading ~1.0 while `unshadowed`/`shadowed` read >1.0 is what localises the
   // under-dim to the residue the cast shadow cannot touch.
   v.shadowContrastModel = rungs.map((rung) => {
-    const clearContrast = ratio(
-      rung.shadow?.offShadow,
-      rung.shadow?.offNoShadow,
-    );
+    const clearUnshadowed = rung.shadow?.offNoShadow;
+    const clearShadowed = rung.shadow?.offShadow;
+    const eclipseUnshadowed = rung.shadow?.onNoShadow;
+    const eclipseShadowed = rung.shadow?.onShadow;
+    const clearDecrement =
+      Number.isFinite(clearUnshadowed) && Number.isFinite(clearShadowed)
+        ? clearUnshadowed - clearShadowed
+        : null;
+    const eclipseDecrement =
+      Number.isFinite(eclipseUnshadowed) && Number.isFinite(eclipseShadowed)
+        ? eclipseUnshadowed - eclipseShadowed
+        : null;
+    // These two are the SAME reads as `groundDimming.shadowable` and
+    // `groundDimming.unshadowed` below, under the decomposition's own names:
+    // `extractShadowableDimming` is `(uF - sF) / (u1 - s1)` after its
+    // `1 - c1` division, i.e. `terrainDim`, and `unshadowed` is `onNoShadow /
+    // offNoShadow`, i.e. `compositeDim`. Both pairs are published because each
+    // name is the one its own reader reaches for; they can differ in the last
+    // ULP because the routes are different, never in value.
+    const terrainDim = ratio(eclipseDecrement, clearDecrement);
+    const compositeDim = ratio(eclipseUnshadowed, clearUnshadowed);
+    const clearContrast = ratio(clearShadowed, clearUnshadowed);
     const strengthEclipse = rung.published?.shadowStrength;
     const strengthClear = rung.publishedOff?.shadowStrength;
     const factor = rung.published?.factor;
@@ -3156,6 +3418,8 @@ export function judgeEclipseCloudResponse(run) {
     return {
       obscuration: rung.published?.moonObscuration ?? null,
       factor: factor ?? null,
+      terrainDim,
+      compositeDim,
       clearContrast,
       measured: contrastRatioAt(rung),
       predicted: predictShadowContrastRatio({
@@ -3176,6 +3440,46 @@ export function judgeEclipseCloudResponse(run) {
       },
     };
   });
+  const deepestShadowDims = v.shadowContrastModel.at(-1) ?? null;
+  const residueShares = [0.2, 0.3, 0.4, 0.5, 0.6, 0.7];
+  v.shadowResidueDimLocus = residueShares.map((share) => ({
+    share,
+    requiredResidueDim:
+      Number.isFinite(deepestShadowDims?.compositeDim) &&
+      Number.isFinite(deepestShadowDims?.terrainDim)
+        ? ratio(
+            deepestShadowDims.compositeDim -
+              deepestShadowDims.terrainDim * (1 - share),
+            share,
+          )
+        : null,
+  }));
+  v.shadowResidueShareAtDeckRatio =
+    Number.isFinite(deepestShadowDims?.compositeDim) &&
+    Number.isFinite(deepestShadowDims?.terrainDim) &&
+    Number.isFinite(v.deckRatioAtDeepest)
+      ? ratio(
+          deepestShadowDims.compositeDim - deepestShadowDims.terrainDim,
+          v.deckRatioAtDeepest - deepestShadowDims.terrainDim,
+        )
+      : null;
+  // A hard upper bound on the residue share, out of the shadow term's own
+  // form. The clear contrast is `T*(1 - share) + share` with `T = mix(1, 0.35,
+  // s)`, and `T` can never fall below the beer floor, so
+  // `clearContrast >= 0.35 + 0.65*share` and the share cannot exceed
+  // `(clearContrast - 0.35) / 0.65`. `requiredResidueDim` above is DECREASING
+  // in share, so a ceiling on the share is a FLOOR on how slowly the residue
+  // may dim: a hypothesis whose share exceeds this ceiling is out of range,
+  // and the residue must dim by at least `requiredResidueDim(ceiling)`.
+  // Reported only, like the locus it bounds.
+  v.shadowResidueShareCeiling = Number.isFinite(
+    deepestShadowDims?.clearContrast,
+  )
+    ? ratio(
+        deepestShadowDims.clearContrast - CLOUD_SHADOW_BEER_FLOOR,
+        1 - CLOUD_SHADOW_BEER_FLOOR,
+      )
+    : null;
   // Agreement within the determinism bracket, which is the tightest difference
   // this instrument can resolve at all. FALSE on the fourth run's numbers by
   // design — see the reported-only list for why it does not gate.
@@ -3273,6 +3577,9 @@ export function judgeEclipseCloudResponse(run) {
     producerAndFootprintCertified: v.shadowProducerAndFootprintCertified,
     rawCompositeContrastAtDeepest: v.shadowCompositeContrastRatioAtDeepest,
     rawCompositeContrastInLegacyBand: v.shadowContrastInvariant,
+    residueDimLocus: v.shadowResidueDimLocus,
+    residueShareAtDeckRatio: v.shadowResidueShareAtDeckRatio,
+    residueShareCeiling: v.shadowResidueShareCeiling,
     decrementModelAtDeepest: v.shadowDecrementModelAtDeepest,
     groundOnly: v.shadowGroundOnly,
     groundRetention: v.shadowGroundRetentionRatio,

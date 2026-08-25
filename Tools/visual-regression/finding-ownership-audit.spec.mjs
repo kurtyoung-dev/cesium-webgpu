@@ -128,6 +128,77 @@ const dispositionLedger = JSON.parse(
 );
 const uuidV4Pattern =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const rulingIdPattern = /^R-\d{4}-\d{2}-\d{2}-\d+$/;
+
+// Which owner states each disposition may name. Hoisted out of the ledger walk
+// because the walk can only exercise the pairs the ledger happens to contain:
+// widening this table is invisible there and must be caught here instead.
+const ownerStatesByDisposition = Object.freeze({
+  "active-repair": Object.freeze(["active"]),
+  "closed-by-certifying-pass": Object.freeze(["closed", "reopened"]),
+});
+
+// The owner state model. `reopened` exists because a closure can be overturned:
+// R-2026-08-17-7 ruled that vacating one means moving the machine-readable state,
+// not editing the prose, since consumers read `state` and a stale `closed` keeps
+// propagating an overturned status. A reopened owner MUST name the ruling that
+// overturned it and MUST retain its `closureRunId` — the run happened, and
+// history is not rewritten; only its warrant lapsed.
+const ownerStateModel = Object.freeze({
+  active: Object.freeze({
+    required: Object.freeze(["document", "reference", "state"]),
+    optional: Object.freeze([]),
+  }),
+  closed: Object.freeze({
+    required: Object.freeze(["closureRunId", "document", "reference", "state"]),
+    optional: Object.freeze([]),
+  }),
+  reopened: Object.freeze({
+    required: Object.freeze([
+      "closureRunId",
+      "document",
+      "reference",
+      "reopenedBy",
+      "state",
+    ]),
+    optional: Object.freeze([
+      "closureRunAnnotation",
+      "priorState",
+      "reopenedRecordedBy",
+    ]),
+  }),
+});
+
+// One validator for the real ledger walk AND for the synthetic owners the state
+// model test drives, so a branch cannot be exercised by tests while the real
+// walk uses different rules.
+function assertOwnerShape(ownerId, owner) {
+  assert.ok(
+    Object.hasOwn(ownerStateModel, owner.state),
+    `${ownerId} has unknown state ${String(owner.state)}`,
+  );
+  const { required, optional } = ownerStateModel[owner.state];
+  const keys = Object.keys(owner).sort();
+  for (const key of required) {
+    assert.ok(keys.includes(key), `${ownerId} is missing ${key}`);
+  }
+  const allowed = new Set([...required, ...optional]);
+  for (const key of keys) {
+    assert.ok(allowed.has(key), `${ownerId} carries undeclared key ${key}`);
+  }
+  if (owner.state !== "active") {
+    assert.match(owner.closureRunId, uuidV4Pattern);
+  }
+  if (owner.state === "reopened") {
+    assert.match(owner.reopenedBy, rulingIdPattern);
+    if (Object.hasOwn(owner, "reopenedRecordedBy")) {
+      assert.match(owner.reopenedRecordedBy, rulingIdPattern);
+    }
+    if (Object.hasOwn(owner, "priorState")) {
+      assert.equal(owner.priorState, "closed");
+    }
+  }
+}
 
 test("canonical finding sources retain a non-vacuous ownership census", () => {
   assert.ok(
@@ -240,11 +311,12 @@ test("the archived non-PASS disposition ledger is exact and non-vacuous", () => 
       Object.hasOwn(dispositionLedger.owners, entry.owner),
       `${entry.runId} has unknown owner ${entry.owner}`,
     );
-    const expectedOwnerState =
-      entry.disposition === "active-repair" ? "active" : "closed";
-    assert.equal(
-      dispositionLedger.owners[entry.owner].state,
-      expectedOwnerState,
+    // A vacated closure keeps its entries: the runs happened and were closed by
+    // a pass that has since been superseded, so `closed-by-certifying-pass` may
+    // name a `closed` OR a `reopened` owner. `active-repair` still may not.
+    const expectedOwnerStates = ownerStatesByDisposition[entry.disposition];
+    assert.ok(
+      expectedOwnerStates.includes(dispositionLedger.owners[entry.owner].state),
       `${entry.runId} disposition disagrees with ${entry.owner}`,
     );
   }
@@ -263,23 +335,97 @@ test("the archived non-PASS disposition ledger is exact and non-vacuous", () => 
   );
 });
 
+test("the owner state model admits reopened, and reopened must name its ruling", () => {
+  const closed = Object.freeze({
+    document: "QUEUE_2026-07-19_CAMPAIGN12.md",
+    reference: "C12-37",
+    state: "closed",
+    closureRunId: "1f437ee9-37e5-4d17-94a1-a269e81679ab",
+  });
+  const active = Object.freeze({
+    document: "QUEUE_2026-07-19_CAMPAIGN12.md",
+    reference: "custom-ellipsoid runtime",
+    state: "active",
+  });
+  const reopened = Object.freeze({
+    ...closed,
+    state: "reopened",
+    reopenedBy: "R-2026-08-14-1",
+    reopenedRecordedBy: "R-2026-08-17-7",
+    priorState: "closed",
+    closureRunAnnotation:
+      "a genuine PASS of a gate that has since been superseded",
+  });
+
+  // REACHABILITY / INERTNESS. This is the tooth that catches a `reopened`
+  // branch made unreachable: with the branch inert a well-formed reopened owner
+  // falls through to the unknown-state or key-set refusal and this throws.
+  assertOwnerShape("reopened-fixture", reopened);
+  assertOwnerShape("closed-fixture", closed);
+  assertOwnerShape("active-fixture", active);
+
+  const reject = (owner, why) =>
+    assert.throws(() => assertOwnerShape("fixture", owner), undefined, why);
+
+  // A reopened entry that does not name the ruling that overturned it.
+  const { reopenedBy: _reopenedBy, ...withoutRuling } = reopened;
+  reject(withoutRuling, "reopened without reopenedBy must fail");
+  reject(
+    { ...reopened, reopenedBy: "R-2026-8-14-1" },
+    "a malformed ruling id must fail",
+  );
+  reject(
+    { ...reopened, reopenedBy: "the 2026-08-14 packet" },
+    "prose in place of a ruling id must fail",
+  );
+
+  // History is not rewritten: the closure run survives the vacate.
+  const { closureRunId: _closureRunId, ...withoutHistory } = reopened;
+  reject(withoutHistory, "reopened must retain closureRunId");
+  reject(
+    { ...reopened, closureRunId: "not-a-uuid" },
+    "a malformed closureRunId must fail",
+  );
+
+  // The model is closed over its three states and their declared keys.
+  reject({ ...reopened, state: "vacated" }, "an unknown state must fail");
+  reject(
+    { ...reopened, supersededBy: "R-2026-08-14-1" },
+    "an undeclared key must fail",
+  );
+  reject({ ...reopened, priorState: "active" }, "priorState must be closed");
+  reject(
+    { ...closed, state: "reopened" },
+    "closed keys alone do not satisfy reopened",
+  );
+
+  assert.deepEqual(Object.keys(ownerStateModel).sort(), [
+    "active",
+    "closed",
+    "reopened",
+  ]);
+  // The disposition mapping is exact: a certifying pass may name a closure that
+  // still stands or one that was vacated, and never an active repair.
+  assert.deepEqual(ownerStatesByDisposition, {
+    "active-repair": ["active"],
+    "closed-by-certifying-pass": ["closed", "reopened"],
+  });
+});
+
 test("every visual-evidence owner resolves to a durable queue record", () => {
   for (const [ownerId, owner] of Object.entries(dispositionLedger.owners)) {
-    assert.deepEqual(
-      Object.keys(owner).sort(),
-      owner.state === "closed"
-        ? ["closureRunId", "document", "reference", "state"]
-        : ["document", "reference", "state"],
-    );
+    assertOwnerShape(ownerId, owner);
     const ownerDocument = readMigrationFile(owner.document);
     assert.ok(
       ownerDocument.includes(owner.reference),
       `${ownerId} lost queue reference ${owner.reference}`,
     );
-    if (owner.state === "closed") {
-      assert.match(owner.closureRunId, uuidV4Pattern);
-    } else {
-      assert.equal(owner.state, "active");
+    if (owner.state === "reopened") {
+      const reopeningDocument = readMigrationFile(owner.document);
+      assert.ok(
+        reopeningDocument.includes(owner.reopenedBy),
+        `${ownerId} names ${owner.reopenedBy} but its document does not`,
+      );
     }
   }
 });

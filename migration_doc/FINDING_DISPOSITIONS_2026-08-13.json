@@ -37,8 +37,12 @@
     "C13-41": {
       "document": "QUEUE_2026-07-23_CAMPAIGN13.md",
       "reference": "C13-41 ACCEPTANCE + LANDING RECONCILIATION",
-      "state": "closed",
-      "closureRunId": "b5e3f63c-94c6-4204-8706-dd30eabd2eaf"
+      "state": "reopened",
+      "reopenedBy": "R-2026-08-14-1",
+      "reopenedRecordedBy": "R-2026-08-17-7",
+      "priorState": "closed",
+      "closureRunId": "b5e3f63c-94c6-4204-8706-dd30eabd2eaf",
+      "closureRunAnnotation": "Run b5e3f63c-94c6-4204-8706-dd30eabd2eaf was a genuine PASS of a gate that has since been superseded. Its warrant was the demotion R-2026-08-14-1 reversed: shadowContrastInvariant and refreshCostMeasured were restored as GATES, so a PASS obtained while shadowContrastInvariant was non-gating no longer certifies this row. Nothing is erased."
     }
   },
   "entries": [

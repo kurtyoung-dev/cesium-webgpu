@@ -13868,7 +13868,29 @@ Both are CONSTANT model-space vectors along the spin axis, not surface normals. 
 
 ### C13-41-SHADOW-CONTRAST-ECLIPSE-EXCESS — the cast shadow's contrast weakens ~5% at deepest eclipse where the model predicts +0.08% (FILED 2026-08-07, Batch 915 — first run in which the shadow lane ever scored) **EXTENDED 2026-08-07 (CO-17, fifth pass): the ambient/direct split is DERIVED, it REFUTES its own leading hypothesis, THE BAND DOES NOT MOVE, and the finding is REFRAMED — the shadow path is exactly correct and the excess is a CONSEQUENCE of a ground band that under-dims by 12.6%.**
 
-**Status: CLOSED-NEGATIVE / INSTRUMENT-DOMAIN FALSE FINDING (2026-08-12).** The landing-equivalent redesigned-control run `b5e3f63c-94c6-4204-8706-dd30eabd2eaf` scores all lanes and the replacement terrain-shadow decrement invariant passes: observed `0.468872` versus expected `0.464791`, inside the propagated quantization interval. The old raw post-cloud composite ratio `1.034120` is retained as reported-only because the later cloud composite is outside the terrain-shadow model. The exact packet landed as `9c043987a5`; no product defect or band widening remains. The historical derivation below is retained as the investigation record.
+**Status: RE-OPENED 2026-08-24 (SOL-4 first commissioning run), executing `R-2026-08-17-7`.** That
+  ruling already ordered this: vacate the machine-readable `closed` state to `reopened` pointing at
+  `R-2026-08-14-1`, annotate the closure run as a genuine PASS of a gate that has since been
+  superseded, and sweep the ledger. The vacate has not been applied —
+  `FINDING_DISPOSITIONS_2026-08-13.json` still reads `"state": "closed"` for `C13-41`; the exact
+  JSON edit is drafted at `scratchpad/laneM/finding-dispositions-vacate.md`. The 2026-08-12 closure
+  asserted that the raw post-cloud composite ratio is "retained as reported-only"; it is not.
+  `shadowContrastInvariant` is a live gate at HEAD, restored by `R-2026-08-14-1`, and it is RED at
+  **1.0341102079879674** across ten recorded reports in three clusters, relative spread 1.4e-5,
+  outside the band in all ten — while `run-53c67362` scored that same reading PASS / exit 0 before
+  the restore, which is precisely the superseded-gate PASS the ruling describes. The mechanism is
+  now decomposed rather than asserted: the decrement cancels the un-shadowable residue and gives
+  `terrainDim = 0.46887558379804545` (1.0101 x F) against `compositeDim = 0.49013073670762686`
+  (1.0559 x F), and substituting `terrainDim` for the residue reconstructs a raw ratio of exactly 1
+  to 1e-12 — the entire 3.411% excess lives in the residue and none of it in the shadow term. **The
+  beer floor bounds that residue:** `clearContrast = T*(1-share) + share` with `T >= 0.35` gives
+  `share <= 0.32266890343992366`, and because `requiredResidueDim` is decreasing in share the
+  ceiling is a FLOOR of **0.5347485349345928** on the residue's dimming — above the measured
+  `deckRatioAtDeepest` 0.513868583346416, whose implied share 0.4724102220997878 is out of range.
+  **So the visible deck alone cannot carry the excess**, and any earlier reading that it could is
+  withdrawn. The band does NOT move. Reported-only `shadowResidueDimLocus`,
+  `shadowResidueShareAtDeckRatio` and `shadowResidueShareCeiling` carry this in the instrument. The
+  2026-08-12 derivation below is retained as the investigation record.
 
 **THE EXTENSION THE ROW ASKED FOR, AND WHY IT MOVES NOTHING.** `GlobeTerrain.wgsl:4838` applies the cast shadow as `color = color * sampleCloudGroundShadow(...)` — a MULTIPLY on the whole accumulated surface colour — so the only un-shadowable part of the ground is whatever is ADDED after that line. Write `D` for the shadowable term and `A` for that residue:
 
