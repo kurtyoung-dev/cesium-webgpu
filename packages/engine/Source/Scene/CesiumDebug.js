@@ -467,6 +467,21 @@ function installCesiumDebug(viewer) {
         `[CesiumDebug] CPU pass cost (frames=${profile.frameCount}):`,
       );
       console.table(rows);
+      const frame = profile.lastFrame;
+      if (frame) {
+        console.table([
+          {
+            frame: frame.sceneFrameNumber,
+            sequence: frame.sequence,
+            totalMs: frame.totalMs.toFixed(3),
+            profiledPassMs: frame.profiledPassMs.toFixed(3),
+            unaccountedMs: frame.unaccountedMs.toFixed(3),
+            overlapMs: frame.overlapMs.toFixed(3),
+            coveragePercent: (frame.coverageRatio * 100).toFixed(1),
+            valid: frame.valid,
+          },
+        ]);
+      }
       return profile;
     },
 

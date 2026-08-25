@@ -233,7 +233,7 @@ export const CAMERA_UNIFORM_BYTES = CAMERA_UNIFORM_FLOATS * 4;
 //                    that's invisible whenever fog is off because the
 //                    fog branch is the only delivery mechanism).
 //                z = atmosphereLightIntensity (default 10.0)
-//                w = reserved
+//                w = HDR-enabled flag (mirrors WebGL's HDR shader define)
 //
 //   476 - 479  initialColor (vec4) — globe.baseColor (WebGL
 //                `u_initialColor`), consumed by the no-imagery first-pass base

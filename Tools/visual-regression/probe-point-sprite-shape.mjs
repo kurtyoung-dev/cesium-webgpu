@@ -69,10 +69,13 @@ async function capture(renderer, sceneKind) {
     if (m.type() === "error") errs.push(m.text());
   });
   page.on("pageerror", (e) => errs.push("PAGEERR:" + e.message));
-  await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}`, {
-    waitUntil: "domcontentloaded",
-    timeout: 90000,
-  });
+  await page.goto(
+    `${BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}&offline=true`,
+    {
+      waitUntil: "domcontentloaded",
+      timeout: 90000,
+    },
+  );
   await page.waitForFunction(() => !!window.viewer, { timeout: 90000 });
 
   const info = await page.evaluate(async (sceneKind) => {

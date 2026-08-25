@@ -722,7 +722,7 @@ struct VertexInputQuantized {
 // Separate struct for the `hasWebMercatorT && hasNormals` quantized case.
 // When both are present, compressed0.w holds the compressed webMercatorT and
 // the oct-encoded normal spills into a separate single-component attribute
-// at location 1 \u2014 see TerrainEncoding.getAttributes:683-691. The WebGPU
+// at location 1 — see TerrainEncoding.getAttributes:683-691. The WebGPU
 // pipeline must declare location 1 as float32 so the shader can read it.
 struct VertexInputQuantizedWebMercNormals {
   @location(0) compressed0: vec4<f32>,
@@ -1708,7 +1708,7 @@ fn vertexMainQuantized(input: VertexInputQuantized) -> VertexOutput {
 
 // Vertex shader for quantized terrain with webMercatorT and no normals.
 // When hasWebMercatorT=true but hasNormals=false, compressed0.w stores the
-// COMPRESSED webMercatorT. No normal available \u2014 use a hardcoded up vector.
+// COMPRESSED webMercatorT. No normal available — use a hardcoded up vector.
 @vertex
 fn vertexMainQuantizedWebMerc(input: VertexInputQuantized) -> VertexOutput {
   let xy = decompressTextureCoordinates(input.compressed0.x);
@@ -1718,7 +1718,7 @@ fn vertexMainQuantizedWebMerc(input: VertexInputQuantized) -> VertexOutput {
   let uv = decompressTextureCoordinates(input.compressed0.z);
   let webMercT = decompressTextureCoordinates(input.compressed0.w).x;
   let safeWebMercT = sanitizeWebMercatorT(webMercT, uv.y);
-  // 32896.0 = oct-encoded (0,0,1) up vector \u2014 prevents back-face culling
+  // 32896.0 = oct-encoded (0,0,1) up vector — prevents back-face culling
   return processVertex(position, uv, 32896.0, safeWebMercT,
                        decodeQuantizedHeight(zh.y),
                        //>>ifdef GEODETIC_NORMAL
