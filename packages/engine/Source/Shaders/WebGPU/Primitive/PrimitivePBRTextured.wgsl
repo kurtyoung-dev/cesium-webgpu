@@ -46,11 +46,11 @@ struct CameraUniforms {
     previousViewProjection: mat4x4<f32>,
     inverseViewQuaternion: vec4<f32>,
     //>>ifdef LOG_DEPTH
-    // ─── Renderer-wide log depth (Approach A) ───
+    // Renderer-wide logarithmic-depth parameters:
     //   x = frustum near, y = frustum far,
     //   z = oneOverLog2FarDepthFromNearPlusOne (the log-depth factor),
     //   w = reserved. Packed by WebGPUPrimitiveCommands.writeRTEUniformsLit
-    // into the 16-byte LIT UB tail (LIT_CAMERA_BYTES 320 -> 336).
+    // into the 16-byte lit-camera tail (LIT_CAMERA_BYTES, 320 to 336 bytes).
     logDepth: vec4<f32>,
     //>>endif
 }
@@ -67,7 +67,7 @@ struct MaterialUniforms {
 @group(2) @binding(0) var textureSampler: sampler;
 @group(2) @binding(1) var baseColorTexture: texture_2d<f32>;
 
-// ─── Effects bind group (shadow receive + CSM) ───
+// Effects bind group for shadow receive and cascaded shadow maps.
 // Texture group occupies @group(2), so effects lands at @group(3) —
 // matches PrimitivePhongTexturedColor's convention. Layout mirrors the
 // 272-byte EffectsUniforms in WebGPUEffectsBindGroup.js.
@@ -107,10 +107,9 @@ struct CSMParams {
 @group(3) @binding(0) var<uniform> effects: EffectsUniforms;
 @group(3) @binding(1) var shadowDepthTex: texture_depth_2d;
 @group(3) @binding(2) var shadowCompSampler: sampler_comparison;
-// FEAT-GAP-09 — Aerial-perspective LUT. Bindings 7/8/9 are populated by
-// WebGPUEffectsBindGroup.js when the atmosphere LUT is active; otherwise
-// they resolve to 1×1 placeholder textures. Gated by
-// `effects.atmosphereLutControl.x > 0.5` in fragmentMain.
+// Aerial-perspective lookup textures at bindings 7, 8, and 9 are populated
+// by WebGPUEffectsBindGroup.js. Inactive lookup tables resolve to 1×1
+// placeholders, and fragmentMain gates sampling on atmosphereLutControl.x.
 @group(3) @binding(7) var atmosphereTransmittanceLut: texture_2d<f32>;
 @group(3) @binding(8) var atmosphereInscatterLut: texture_2d<f32>;
 @group(3) @binding(9) var atmosphereLutSampler: sampler;
@@ -121,9 +120,9 @@ struct CSMParams {
 const PI: f32 = 3.14159265359;
 
 //>>ifdef LOG_DEPTH
-// Renderer-wide log depth (Approach A). Mirror of PrimitivePhongColor.wgsl —
-// keep byte-compatible. near/far/factor come from camera.logDepth. The FS swaps
-// to a FragOut struct so it can write @builtin(frag_depth) alongside the color.
+// The logarithmic-depth layout matches PrimitivePhongColor.wgsl. Near, far,
+// and the logarithmic factor come from camera.logDepth; FragOut carries
+// @builtin(frag_depth) alongside color.
 struct FragOut {
     @location(0) color: vec4<f32>,
     @builtin(frag_depth) depth: f32,
@@ -178,7 +177,7 @@ fn fresnelSchlick(cosTheta: f32, F0: vec3<f32>) -> vec3<f32> {
     return F0 + (1.0 - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
 }
 
-// ─── CSM helpers (inlined from PrimitivePhongColor) ───
+// Cascaded shadow-map helpers matching PrimitivePhongColor.
 fn selectCascade(viewDepth: f32, splits: vec4<f32>) -> u32 {
     if (viewDepth < splits.x) { return 0u; }
     if (viewDepth < splits.y) { return 1u; }
@@ -213,10 +212,10 @@ fn sampleOneCascade(eyePos: vec3<f32>, cascadeIdx: u32, depthBias: f32) -> f32 {
         depth > 1.0 || depth < 0.0) {
         return 1.0;
     }
-    // CSM-PCF-SOFT: soften the cascade edge with a 3x3 PCF box kernel,
-    // matching WebGL's czm_shadowVisibility USE_SOFT_SHADOWS path. The
-    // kernel radius (in shadow texels) is effects.csmControl.y; 0 keeps
-    // the original single hardware-comparison tap (hard edge).
+    // A 3-by-3 percentage-closer-filtering kernel softens cascade edges,
+    // matching WebGL's `czm_shadowVisibility` soft-shadow path. The radius in
+    // shadow texels is `effects.csmControl.y`; zero selects one hardware
+    // comparison tap and a hard edge.
     let csmPcfRadius = effects.csmControl.y;
     if (csmPcfRadius <= 0.0) {
       return textureSampleCompareLevel(

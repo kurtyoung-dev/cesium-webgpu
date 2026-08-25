@@ -333,10 +333,9 @@ function ensureMaterialImage(device, cache, imageSource) {
     });
     // flipY — WebGL Material image textures upload with flipY: true (the
     // Texture default), so row 0 of the source lands at t=0 (bottom).
-    // Without the flip the sampled pattern is vertically mirrored vs
-    // WebGL (C7-GROUNDPRIM-TEXTURED-CLASSIFY-ZERO: the Image material
-    // rendered a phase-inverted checkerboard — same variance, ~90%
-    // per-pixel mismatch).
+    // Without the flip the sampled pattern is vertically mirrored against
+    // WebGL: a checkerboard keeps the same variance while producing about
+    // 90% per-pixel mismatch.
     device.queue.copyExternalImageToTexture(
       { source: imageBitmap, flipY: true },
       { texture: tex },

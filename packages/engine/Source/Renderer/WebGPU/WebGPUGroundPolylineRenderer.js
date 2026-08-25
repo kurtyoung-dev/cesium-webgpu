@@ -2320,8 +2320,8 @@ function ensureMaterialImage(device, cache, imageSource) {
     });
     // flipY — WebGL Material image textures upload with flipY: true (the
     // Texture default); mirror it so the sampled pattern isn't vertically
-    // mirrored vs WebGL. Same fix as the GroundPrimitive material image
-    // (C7-GROUNDPRIM-TEXTURED-CLASSIFY-ZERO).
+    // mirrored against WebGL. This matches the GroundPrimitive material-image
+    // upload convention.
     device.queue.copyExternalImageToTexture(
       { source: imageBitmap, flipY: true },
       { texture: tex },
