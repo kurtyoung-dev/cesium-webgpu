@@ -1,39 +1,32 @@
 /**
- * Shared infrastructure for renderer-wide logarithmic depth (Approach A for
- * NEW-WEBGPU-GLOBE-CLASSIFY-DEPTH-PRECISION). This module is the single point
- * that decides whether log depth is active and packs the per-frustum log-depth
- * scalars into the reserved `.w` lanes of the shared `CameraUniforms` struct.
+ * Shared infrastructure for WebGPU logarithmic depth. This module provides the
+ * common gate for participating scene and pick paths and packs per-frustum
+ * log-depth scalars into reserved `.w` lanes of the shared `CameraUniforms`
+ * struct.
  *
  * # Why this exists
  *
- * The WebGPU globe (and every other depth producer) currently writes standard
- * hyperbolic NDC z. In a single ~[near, far] log-depth frustum spanning the
- * planet, one 24-bit quantum is ~73 km of reconstructed eye-z at a 350 km
- * surface — far larger than a classified polygon, so textured-material
- * classification reconstructs a banded (flat) UV and far-distance picking is
- * imprecise. Writing logarithmic depth (matching WebGL's `#ifdef LOG_DEPTH`)
- * redistributes precision to ~0.42 m/quantum. See the `LOG_DEPTH` entry in
- * `WebGPUShaderDefines.ts` and the `csm_*LogDepth` chunk family.
+ * Across a single [near, far] frustum spanning the planet, one 24-bit
+ * hyperbolic-depth quantum is about 73 km of reconstructed eye-z at a 350 km
+ * surface. That is wider than a classified polygon, so textured-material
+ * classification can reconstruct banded UV coordinates and far-distance
+ * picking loses precision. Logarithmic depth redistributes the same precision
+ * to about 0.42 m per quantum. Producers and depth consumers must select the
+ * same encoding.
  *
- * # Gating — single flip point
+ * # Gating
  *
- * Producers set the `LOG_DEPTH` shader define, and consumers reverse the
- * encoding, exactly when {@link isWebGPULogDepthActive} returns true. That is
- * `context._logDepthWriteEnabled && frameState.useLogDepth`. The
- * `_logDepthWriteEnabled` master switch now defaults TRUE — Batch 251
- * (NEW-COLLECTIONS-LOG-DEPTH master-switch) flipped it on, so renderer-wide
- * log depth is LIVE by default. Historically the switch defaulted FALSE while
- * the epic was landed slice-by-slice so each producer/consumer change stayed
- * inert until the flip (the lanes below are packed regardless — they only fill
- * previously-zero pads — but no shader read them and no pipeline set the
- * define until the switch flipped). Keeping the switch gives a one-line kill
- * switch: flipping it false restores hyperbolic NDC depth everywhere.
+ * Participating producers set `LOG_DEPTH`, and matching consumers reverse the
+ * encoding, exactly when {@link isWebGPULogDepthActive} returns true:
+ * `context._logDepthWriteEnabled && frameState.useLogDepth`. The context master
+ * switch defaults to true. Setting it false selects the participating paths'
+ * hyperbolic branches.
  *
  * # CameraUniforms `.w`-lane convention
  *
- * The 368-byte `CameraUniforms` struct reserves three `.w` pad lanes that have
- * always carried zero. Log depth repurposes them with NO struct-size or offset
- * change (so every existing packer keeps its float indices):
+ * The 368-byte `CameraUniforms` struct reserves three `.w` padding lanes. Log
+ * depth uses them without a struct-size or offset change, so every packer keeps
+ * its float indices:
  *
  *   float 51  cameraPosition.w               = oneOverLog2FarDepthFromNearPlusOne
  *   float 55  encodedCameraPositionMCHigh.w  = frustum near
@@ -71,10 +64,10 @@ interface LogDepthFrameState {
 }
 
 /**
- * True when depth producers should write log depth and consumers should reverse
- * it this frame. The master switch (`context._logDepthWriteEnabled`) gates the
- * whole epic; `frameState.useLogDepth` mirrors WebGL's per-frame LOG_DEPTH
- * decision (already true on WebGPU via `Scene.defaultLogDepthBuffer`).
+ * True when participating scene producers should write logarithmic depth and
+ * matching consumers should reverse it this frame. The context master switch
+ * defaults to true; `frameState.useLogDepth` carries the scene's per-frame
+ * depth decision.
  */
 export function isWebGPULogDepthActive(
   context: LogDepthContext | null | undefined,
@@ -84,23 +77,15 @@ export function isWebGPULogDepthActive(
 }
 
 /**
- * True when the WebGPU PICK fleet should write log-encoded `@builtin(frag_depth)`
- * this frame. This is a SEPARATE flip point from {@link isWebGPULogDepthActive}
- * because the pick mini-frame owns its own single shared depth attachment
- * (`WebGPUSceneRendererPickPass` `depthView`, INV-2): the whole pick fleet must
- * be uniformly hyperbolic OR uniformly log — a mixed FBO depth-tests
- * incoherently (a log producer at ~0.4 over-occludes a hyperbolic producer at
- * ~0.999 over the entire disk). The scene half (`_logDepthWriteEnabled`) is
- * already TRUE by default, but the pick fleet is still uniformly hyperbolic, so
- * this master switch defaults FALSE and stays there until EVERY native pick
- * producer writes log frag_depth in one coordinated change (C10-11,
- * `NEW-WEBGPU-PICK-FLEET-LOG-DEPTH`). The voxel pick
- * (`NEW-WEBGPU-VOXEL-PICK-LOG-DEPTH`) is the first producer wired to this gate —
- * it was the fleet blocker because it had ZERO log-depth infrastructure. With
- * the switch FALSE the voxel pick module carries no `LOG_DEPTH` define and its
- * pick pipelines keep `depthWriteEnabled:false` → byte-identical to the
- * pre-conversion pick FBO. C10-11 flips this true after converting the rest of
- * the fleet.
+ * True when the native WebGPU pick fleet's shared depth attachment uses
+ * logarithmic encoding. Picking has a separate gate from
+ * {@link isWebGPULogDepthActive} because the pick mini-frame owns one shared
+ * depth attachment: every producer must use the same encoding or depth tests
+ * become incoherent. A logarithmic value near 0.4 can over-occlude a
+ * hyperbolic value near 0.999 across the disk. The context defaults this gate
+ * to true; false selects uniformly hyperbolic picking. Opaque and masked
+ * producers write logarithmic depth, while blended and translucent picks
+ * remain depth-test-only.
  */
 export function isWebGPUPickLogDepthActive(
   context: (LogDepthContext & PickLogDepthContext) | null | undefined,
@@ -110,27 +95,18 @@ export function isWebGPUPickLogDepthActive(
 }
 
 /**
- * C15-G6g — record what a log-depth producer ACTUALLY baked, at the moment it
- * baked it.
+ * Debug-only recorder for the exact near, far, and factor values a log-depth
+ * producer bakes.
  *
- * Every round of the splat-vs-globe depth investigation so far has argued from
- * one of two quantities, and NEITHER is the one that decides the compare:
+ * Comparing the source fields each producer reads does not establish the
+ * runtime values it packed. A post-render `UniformState` sample also contains
+ * only the last frustum slice, not necessarily the values packed during each
+ * producer's update. Collection and depth-plane paths can use the stashed
+ * full-camera encode while globe and Gaussian-splat paths use the live current
+ * frustum; those values agree only when no intervening re-slice occurs.
+ * Recording the triple at write time exposes divergent encoders directly.
  *
- *   * the FIELDS each producer reads (`currentFrustum`,
- *     `oneOverLog2FarDepthFromNearPlusOne`) — verified character-identical in
- *     source at `C15-G3d`, which says nothing about their VALUES; and
- *   * a post-render sample of `uniformState` — which holds the LAST FRUSTUM
- *     SLICE's near/far, not what any producer packed during the update phase.
- *
- * The deciding quantity is the `(near, factor)` pair baked into each producer's
- * uniform buffer. Producers disagree about WHICH pair that should be — the
- * collections fleet and the depth plane prefer the stashed full-camera-frustum
- * encode (`_logDepthEncodeNearFar`), while the globe and the Gaussian-splat
- * renderer read the live `currentFrustum` — and the two coincide only while
- * nothing re-slices the frustum between their packs. This records the pair so a
- * single run can say whether they coincided, instead of another offline argument.
- *
- * Pragma-stripped: the call sites and this body vanish from release builds.
+ * The call sites and this body are stripped from release builds.
  *
  * @param uniformState  the shared UniformState the probe reads back from
  * @param producer      short producer key ("splat", "globe", "collection", ...)

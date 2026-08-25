@@ -28,13 +28,9 @@ import ShadowMap from "./ShadowMap.js";
 import TranslucentTileClassification from "./TranslucentTileClassification.js";
 import { createViewTemporalHistory } from "./ViewTemporalHistory.js";
 
-// C10-10-SHADOW-CAST-SINGLE-SWEEP — the passes whose commands can cast a
-// shadow. Folding cast-candidate collection into the single PVS sweep needs an
-// O(1) pass test here, replacing the per-call
-// `[GLOBE, CESIUM_3D_TILE, OPAQUE, TRANSLUCENT].includes(pass)` that
-// `SceneRenderer.insertShadowCastCommands` used to run once per command per
-// shadow map. Indexed by the Pass enum; absent entries read back `undefined`
-// (falsy), so `isShadowedPass[pass] === true` is the caster-pass gate.
+// Pass-indexed shadow-caster eligibility. Missing entries are false, giving the
+// PVS walk an O(1) pass test. Eligibility is combined with the frame shadow
+// switch and the command's `castShadows` flag.
 const isShadowedPass = [];
 isShadowedPass[Pass.GLOBE] = true;
 isShadowedPass[Pass.CESIUM_3D_TILE] = true;
@@ -108,11 +104,10 @@ class View {
     // prepare-only readers.
     this._temporalHistory = createViewTemporalHistory();
 
-    // C12-29 — eclipse outputs are observer-camera-dependent, so their
-    // lifetime follows the logical View rather than the Scene. The active
-    // View's objects are published as short-lived FrameState aliases by
-    // Scene.updateFrameState(). Auxiliary pass cameras (shadow maps and
-    // environment-capture faces) deliberately do not replace these objects.
+    // Eclipse outputs are observer-camera-dependent, so their lifetime follows
+    // the logical View rather than the Scene. Scene publishes the active View's
+    // objects as short-lived FrameState aliases. Auxiliary pass cameras such as
+    // shadow maps and environment-capture faces do not replace these objects.
     this._eclipseState = createEclipseState();
     this._eclipseSceneLightFactor = 1.0;
     this._eclipseHorizonTwilight = 0.0;
@@ -130,12 +125,11 @@ class View {
     this.sceneFramebuffer = new SceneFramebuffer();
     this.edgeFramebuffer = new EdgeFramebuffer();
     this.planarFillIdFramebuffer = new PlanarFillIdFramebuffer();
-    // Phase 8a Slice 1 (Batch 80) — scaffolding for the depth-prepass +
-    // normal G-buffer. Allocated unconditionally so the view always has
-    // the slot wired (Principle 7), but the underlying GPU textures are
-    // only created when `frameState.useDeferredLighting` is set true
-    // (Slice 2+). With the flag at its default `false` this carries no
-    // runtime cost. See migration_doc/PHASE_8_SHADER_STRATEGY.md.
+    // Persistent per-view normal/roughness framebuffer. WebGPU allocates its
+    // texture for the non-pick MRT attachment shape even when deferred-lighting
+    // consumers are disabled. The frame-state flag controls consumers and the
+    // non-MRT compute producer; MRT fragment outputs and allocation are
+    // independent of it.
     this.gBufferFramebuffer = new GBufferFramebuffer();
     this.globeDepth = globeDepth;
     this.globeTranslucencyFramebuffer = new GlobeTranslucencyFramebuffer();
@@ -154,17 +148,15 @@ class View {
     // Acts similar to a ManagedArray.
     this._commandExtents = [];
 
-    // C10-10-SHADOW-CAST-SINGLE-SWEEP — per-frame shadow-caster sublist,
-    // collected during `createPotentiallyVisibleSet` (the single PVS walk) and
-    // published to `frameState.shadowState.casterCommands`. Persistent + reset
-    // by length each PVS so it does not re-allocate. Includes off-camera casters
-    // (INV-1). Consumed by `SceneRenderer.insertShadowCastCommands`, which now
-    // only light/cascade-culls this small set instead of re-scanning the full
-    // command list per shadow map.
+    // Per-frame shadow-caster sublist collected during the PVS walk and
+    // published to `frameState.shadowState.casterCommands`. It is persistent
+    // and reset by length to avoid reallocating. Camera-invisible casters remain
+    // in this list because they can cast into view; the shadow executor later
+    // light- and cascade-culls the list.
     this._shadowCasters = [];
-    // C11-184 — reused only when an optional pre-PVS camera visibility filter
-    // is active. It deduplicates the shadow-only side channel against commands
-    // that survived into the ordinary PVS walk.
+    // Used only when an optional pre-PVS camera visibility filter is active.
+    // It deduplicates the shadow-only side channel against commands that
+    // survived into the ordinary PVS walk.
     this._shadowCasterSeen = new Set();
   }
 
@@ -263,9 +255,9 @@ class View {
 
     computeList.length = 0;
     overlayList.length = 0;
-    // C10-10 — reset the shadow-caster sublist for this PVS walk (by length so
-    // the backing array is reused; T-5/T-6: every PVS entry starts empty so a
-    // non-shadowed or second (2D-wrap) run never leaks stale casters).
+    // Reset the shadow-caster sublist by length so the backing array is reused.
+    // Every PVS entry starts empty, preventing a non-shadowed or second 2D-wrap
+    // run from leaking stale casters.
     const shadowCasters = this._shadowCasters;
     shadowCasters.length = 0;
 
@@ -275,8 +267,8 @@ class View {
 
     let near = +Number.MAX_VALUE;
     let far = -Number.MAX_VALUE;
-    // C10-01: track whether any BV-less Pass.ENVIRONMENT command was seen so a
-    // sky-only view (nothing else in the list) can still get a frustum below.
+    // Track bounding-volume-less environment commands so an environment-only
+    // view can still receive a frustum below.
     let sawEnvironmentNoBV = false;
 
     const { shadowsEnabled } = shadowState;
@@ -314,12 +306,9 @@ class View {
         let commandNear;
         let commandFar;
 
-        // C10-10-SHADOW-CAST-SINGLE-SWEEP — is this command a shadow caster to
-        // fold into the per-frame caster sublist? Guarded on `shadowsEnabled`
-        // (INV-5: no collection, zero new cost, when shadows are off). Matches
-        // the old `insertShadowCastCommands` gate
-        // (`!command.castShadows || !shadowedPasses.includes(command.pass)`)
-        // exactly — `castShadows` is a strict boolean flag getter.
+        // A command enters the caster sublist only when shadows are enabled,
+        // `castShadows` is true, and its pass is shadow-eligible. This prevents
+        // caster collection when shadows are disabled.
         const isCaster =
           shadowsEnabled &&
           command.castShadows === true &&
@@ -330,14 +319,10 @@ class View {
 
         if (defined(boundingVolume)) {
           if (!scene.isVisible(cullingVolume, command, occluder)) {
-            // C10-10 INV-1 (CRITICAL): camera-invisible, but an object behind/
-            // beside the camera can still cast a shadow into view. Collect
-            // BEFORE this camera-cull `continue`. INV-2 / Trap T-1: this branch
-            // never reaches `insertIntoBin`, so this is the ONLY site that runs
-            // `updateDerivedCommands` (builds `derivedCommands.shadows`) for an
-            // off-camera caster — without it the WebGL cast dispatch reads
-            // `derivedCommands.shadows` = undefined and the off-screen shadow
-            // is lost / throws.
+            // A camera-invisible object behind or beside the camera can still
+            // cast a shadow into view, so collect it before this `continue`.
+            // This branch never reaches `insertIntoBin`; prepare its derived
+            // shadow command here so the WebGL cast dispatch can execute it.
             if (isCaster) {
               scene.updateDerivedCommands(command);
               shadowCasters.push(command);
@@ -345,10 +330,10 @@ class View {
             continue;
           }
 
-          // C10-10: camera-visible caster. Its `updateDerivedCommands` runs
-          // later via `insertIntoBin` (the `commandExtents` loop below), so
-          // collect only — Trap T-2: do NOT call it here or globe casters
-          // (re-dirtied every frame) would rebuild their cast command twice.
+          // A camera-visible caster reaches `insertIntoBin` through the extent
+          // loop below, which prepares its derived commands. Collect it here
+          // without preparing it twice; globe casters are re-dirtied every
+          // frame, so duplicate preparation would rebuild their cast commands.
           if (isCaster) {
             shadowCasters.push(command);
           }
@@ -391,16 +376,13 @@ class View {
           // worst-case near and far planes to avoid clipping something important.
           commandNear = frustum.near;
           commandFar = frustum.far;
-          // C10-01: BV-less Pass.ENVIRONMENT commands (sky-atmosphere shell,
-          // sun, moon, star field) still bin into (and execute once in) the
-          // farthest frustum via the extent below, but must NOT feed the scene
-          // near/far accumulators. Under log depth the camera worst-case span is
-          // [0.1, 1e10] (ratio 1e11 -> 2 frustums), so letting these directional
-          // effects widen near/far forced a permanent 2-frustum floor on every
-          // default 3D frame — the empty far band paying the full per-frustum
-          // scaffold for nothing. WebGL never routes these through commandList,
-          // so it already renders them in one content-fit frustum. Same defect
-          // class as Batch 268's BV-less command exploding the 2D split.
+          // Bounding-volume-less environment commands still bin against the
+          // camera range and execute in the farthest frustum, but they do not
+          // widen the scene near/far accumulators. Under log depth the worst-case
+          // [0.1, 1e10] camera span has ratio 1e11 and creates two frustums;
+          // widening for directional effects would leave an empty far band that
+          // pays the full per-frustum setup cost. WebGL core environment does
+          // not enter `commandList` and already uses a content-fit frustum.
           if (pass !== Pass.ENVIRONMENT) {
             near = Math.min(near, commandNear);
             far = Math.max(far, commandFar);
@@ -408,11 +390,10 @@ class View {
             sawEnvironmentNoBV = true;
           }
 
-          // C10-10 Trap T-4: a caster without a bounding volume (rare — casters
-          // normally carry a BV). It DOES reach `insertIntoBin` via the extent
-          // below (so `updateDerivedCommands` runs there — collect only), and
-          // the light-frustum `isVisible` with no BV returns true → added to
-          // every cascade, matching the old full-scan behavior. Conservative.
+          // A caster without a bounding volume still reaches `insertIntoBin`,
+          // so collect it without preparing it here. Light-frustum visibility
+          // treats a missing bounding volume as visible, conservatively keeping
+          // the caster in every applicable cascade.
           if (isCaster) {
             shadowCasters.push(command);
           }
@@ -447,32 +428,24 @@ class View {
       shadowState.nearPlane = shadowNear;
       shadowState.farPlane = shadowFar;
       shadowState.closestObjectSize = shadowClosestObjectSize;
-      // C10-10 — publish the caster sublist collected above so
-      // `executeShadowMapCastCommands` iterates it instead of re-scanning the
-      // full command list per shadow map.
+      // Publish the caster sublist so `executeShadowMapCastCommands` can avoid
+      // re-scanning the full command list for each shadow map.
       shadowState.casterCommands = shadowCasters;
     } else {
-      // C10-10 Trap T-5: never leave a stale sublist that a later mid-frame
-      // shadow toggle could read as this frame's casters.
+      // Clear the publication so a later mid-frame shadow toggle cannot read a
+      // stale sublist as this frame's casters.
       shadowState.casterCommands = undefined;
     }
 
     if (needsEnvironmentOnlyFrustum(near, far, sawEnvironmentNoBV, scene)) {
-      // C10-01: sky-only view — only BV-less Pass.ENVIRONMENT commands were
-      // seen, so the accumulators never moved off their +/-MAX_VALUE sentinels.
-      // Restore the camera-range window so a frustum still exists to bin and
-      // execute them. Without it near stays +MAX, the clamps collapse the
-      // range, and nothing renders — a black canvas.
-      //
-      // C12-G1F1 widens the trigger from "saw a BV-less env command in
-      // commandList" to "this frame has ANY environment content to draw".
-      // Core environment renderers are return-only so Scene's resolved
-      // visibility gates remain authoritative. `sawEnvironmentNoBV` alone
-      // would therefore make frustum existence depend on an unrelated legacy
-      // command-list publisher. The shared predicate asks the environment
-      // layer directly. Unchanged for WebGL (no `_alternateSceneRenderer`) and
-      // for every frame that already had geometry (`near <= far` short-circuits
-      // before any lookup).
+      // An environment-only view leaves the near/far accumulators at their
+      // sentinels. Restore the camera window so at least one frustum exists;
+      // otherwise the clamps collapse the range and the environment frame is
+      // dropped. The shared predicate checks injected environment state as well
+      // as bounding-volume-less commands because return-only renderers never
+      // enter `commandList`. That injected-state branch is inert without an
+      // alternate scene renderer, and frames with geometry short-circuit the
+      // lookup.
       near = frustum.near;
       far = frustum.far;
     }

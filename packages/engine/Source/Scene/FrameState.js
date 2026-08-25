@@ -460,11 +460,11 @@ class FrameState {
     this.moonAtmosphereExtinction = undefined;
 
     /**
-     * Per-frame RGB atmospheric IN-SCATTERING (sky-wash) for the Moon —
+     * Per-frame RGB atmospheric in-scattering (sky wash) for the Moon —
      * the additive half of the transfer {@link FrameState#moonAtmosphereExtinction}
      * is the multiplicative half of: the sky radiance scattered into the
      * camera→moon path, added over the opaque disc so a daytime moon reads
-     * pale/sky-washed instead of a dark cutout (C12-30). Exactly
+     * pale/sky-washed instead of a dark cutout. Exactly
      * {@link Cartesian3#ZERO} — the additive identity — when disabled, when
      * the atmosphere is hidden, or from orbit. Consumed by the WebGPU moon
      * feature renderer; the WebGL path reads it via the Moon primitive.
@@ -473,7 +473,7 @@ class FrameState {
     this.moonAtmosphereInscatter = undefined;
 
     /**
-     * Per-frame lunar opposition-surge brightness multiplier (C12-23) —
+     * Per-frame lunar opposition-surge brightness multiplier —
      * the Hapke-SHOE term computed CPU-side from the true Sun–Moon–observer
      * phase angle. 1.0 (identity) when disabled or away from opposition.
      * Consumed by the WebGPU moon feature renderer; the WebGL path reads
@@ -483,11 +483,11 @@ class FrameState {
     this.moonOppositionSurge = undefined;
 
     /**
-     * Per-frame earthshine phase scale (C12-21) — Earth's illuminated
-     * fraction as seen FROM the Moon, the exact complement of the Moon's own
+     * Per-frame earthshine phase scale — Earth's illuminated fraction as seen
+     * from the Moon, the exact complement of the Moon's own
      * phase, so earthshine peaks at new moon and is exactly zero at full.
-     * Exactly 1.0 — the historical constant term — when the toggle or
-     * moon-phase modelling is off. Resolved by
+     * Exactly 1.0, the multiplicative identity, when the toggle or moon-phase
+     * modelling is off. Resolved by
      * {@link readMoonPhaseAppearance}; consumed by the WebGPU moon feature
      * renderer, and by the WebGL path via the Moon primitive's
      * `u_earthshinePhaseScale`.
@@ -496,10 +496,10 @@ class FrameState {
     this.moonEarthshinePhaseScale = undefined;
 
     /**
-     * Per-frame soft-terminator width (C12-22) — the Sun's angular RADIUS in
+     * Per-frame soft-terminator width — the Sun's angular radius in
      * radians as seen from the Moon (~4.649e-3), measured from the true
      * Sun→Moon distance. Exactly 0.0 when the toggle is off, which selects
-     * the legacy `max(N·L, 0)` horizon clip in both shader twins. Resolved by
+     * the `max(N·L, 0)` horizon clip in both shader twins. Resolved by
      * {@link readMoonPhaseAppearance}; consumed by the WebGPU moon feature
      * renderer, and by the WebGL path via the Moon primitive's
      * `u_terminatorSoftness`.
@@ -515,7 +515,7 @@ class FrameState {
      * (from orbit / atmosphere hidden), making the sun byte-identical in
      * that case. Consumed by the WebGPU sun renderer; the WebGL path reads
      * it via the {@link Sun} primitive's uniform. Computed by
-     * {@link computeAtmosphereExtinction} (shared with the Moon, B629).
+     * {@link computeAtmosphereExtinction}, shared with the Moon.
      * @type {Cartesian3|undefined}
      */
     this.sunAtmosphereExtinction = undefined;
@@ -526,7 +526,7 @@ class FrameState {
      * model — each star's slant transmittance is
      * `zenithTransmittance^airmass(elevation)` — so a single zenith ray
      * (integrated by {@link computeAtmosphereExtinction}, shared with the
-     * Moon/Sun, B629) drives the whole field. {@link Cartesian3#ONE} from
+     * Moon and Sun) drives the whole field. {@link Cartesian3#ONE} from
      * orbit / when the atmosphere is hidden, making every star byte-
      * identical (pow(1, x) === 1). Consumed by the WebGL + WebGPU starfield
      * renderers. Undefined when the effect is disabled.
@@ -535,16 +535,16 @@ class FrameState {
     this.starZenithTransmittance = undefined;
 
     /**
-     * Eclipse / occultation state for the active logical {@link View}
-     * (C12-29 S1). Computed unconditionally when that View is prepared from
+     * Eclipse / occultation state for the active logical {@link View}.
+     * Computed unconditionally when that View is prepared from
      * the observer-camera-anchored dual-cone geometry of the solar disc
      * against the Earth limb and the lunar disc, in f64. Carries
      * `sunVisibleFraction` (the
      * limb-darkened surviving flux fraction the sun billboard fades by),
      * `earthOcclusionFraction`, `moonObscuration`, `moonPositionWC` (ECEF,
-     * for the S5 per-fragment umbra term) plus angular diagnostics. The
+     * for the per-fragment globe umbra term) plus angular diagnostics. The
      * `enabled` field mirrors `atmosphericConditions.lighting.enableEclipse`
-     * and gates only whether consumers APPLY the fraction — the physics is
+     * and gates only whether consumers apply the fraction — the physics is
      * always available for probes. This is a transient alias to one stable
      * object owned and mutated in place by the active View.
      * @type {object|undefined}
@@ -553,7 +553,7 @@ class FrameState {
 
     /**
      * Per-frame sun-billboard alpha multiplier derived from
-     * `eclipseState.sunVisibleFraction` (C12-29 S1). Exactly 1.0 — the
+     * `eclipseState.sunVisibleFraction`. Exactly 1.0 — the
      * multiplicative identity, hence byte-identical output — whenever the
      * effect is disabled or nothing occults the sun. Published by
      * {@link Sun#update} before the backend branch so the WebGL uniform and
@@ -563,8 +563,8 @@ class FrameState {
     this.sunEclipseAlpha = undefined;
 
     /**
-     * Resolved sun-disc bake appearance (C12-15 limb darkening + C12-16
-     * glare falloff), published by {@link Sun#update} before the backend
+     * Resolved sun-disc bake appearance, including limb darkening and glare
+     * falloff. Published by {@link Sun#update} before the backend
      * branch so the WebGL bake's uniforms and the WebGPU CPU bake read one
      * identical resolution. See `Scene/SunDiscAppearance.js`; the numeric
      * constants live in `Scene/SolarDiscModel.js`, the single source both
@@ -574,9 +574,9 @@ class FrameState {
     this.sunDiscAppearance = undefined;
 
     /**
-     * Whether the post-process chain that draws the C12-18 screen-space solar
+     * Whether the post-process chain that draws the screen-space solar
      * halo will run this frame — `scene.sunBloom` and not WebVR. Published by
-     * {@link Scene#updateEnvironment} BEFORE {@link Sun#update}, because the
+     * {@link Scene#updateEnvironment} before {@link Sun#update}, because the
      * halo-source decision must be made before the backend branch so both
      * bakes agree about whether the halo is still baked.
      * @type {boolean|undefined}
@@ -584,10 +584,10 @@ class FrameState {
     this.sunBloomActive = undefined;
 
     /**
-     * Resolved sun disc-size + halo-source state (C12-18, absorbing C11-160
-     * and C11-115), published by {@link Sun#update} before the backend branch.
+     * Resolved sun disc-size and halo-source state, published by
+     * {@link Sun#update} before the backend branch.
      * Carries the bake payload (`discEdge`, `bakeHaloGain`) consumed by
-     * `SunTextureFS.glsl` and the WebGPU CPU bake, AND the screen-space
+     * `SunTextureFS.glsl` and the WebGPU CPU bake, and the screen-space
      * payload (`centerX`, `centerY`, `limbPx`, `haloCoreRadii`,
      * `haloIntensity`, `haloColorR/G/B`) consumed by `SolarHalo.glsl` inside
      * {@link SunPostProcess} and by the WebGPU `SunHaloEffect`. See
@@ -598,8 +598,8 @@ class FrameState {
     this.sunHalo = undefined;
 
     /**
-     * Resolved angular solar-glare star washout (C12-27), published by
-     * {@link Scene#updateEnvironment} BEFORE the star cube map and the star
+     * Resolved angular solar-glare star washout, published by
+     * {@link Scene#updateEnvironment} before the star cube map and the star
      * sprite catalogue update, so all four shader consumers (WGSL + GLSL, cube
      * map + sprites) read one identical resolution. Carries the Sun's
      * direction in the TEME / inertial star frame plus the veiling-glare curve
@@ -612,28 +612,25 @@ class FrameState {
     this.solarGlareAppearance = undefined;
 
     /**
-     * The SAMPLABLE star cube map (C12-14), published by
-     * {@link CubeMapPanorama#update} for star maps only — i.e. by
-     * {@link SkyBox}, not by generic or Street View panoramas. Carries a
-     * backend-neutral descriptor plus the WebGL {@link CubeMap} or the WebGPU
-     * `GPUTexture` + `GPUTextureView`; see `Scene/StarCubeMapResource.js` for
-     * the frame (TEME, not Earth-fixed), the content caveat (the default
-     * variant is diffuse-only), the async availability rule, and the borrowed-
-     * ownership rule. **Nothing samples this yet** — it discharges the
-     * "samplable STAR cubemap" blocker recorded against `C11-163` (celestial
-     * water reflection), which is the intended consumer.
+     * Backend-neutral borrowed descriptor for the star panorama's cube map,
+     * published by {@link CubeMapPanorama#update} for star maps only. Carries
+     * the WebGL {@link CubeMap} or the WebGPU `GPUTexture` and
+     * `GPUTextureView`. Consumers must recheck `available` and obey the frame
+     * and ownership rules in `Scene/StarCubeMapResource.js`. The default
+     * diffuse-only variant has no resolved stars, and no renderer currently
+     * samples this field.
      * @type {object|undefined}
      */
     this.starCubeMap = undefined;
 
     /**
-     * Per-frame multiplier applied to every SUN-DRIVEN scene light and
-     * atmosphere intensity during a solar eclipse (C12-29 S2) — the scene
+     * Per-frame multiplier applied to every sun-driven scene light and
+     * atmosphere intensity during a solar eclipse — the scene
      * light colour (`UniformState`), the sky-atmosphere shell on both
      * backends, the globe's ground atmosphere and its fog (through the one
      * `tileProvider.atmosphereLightIntensity` mirror), and
      * `frameState.skyBrightness`. Derived from
-     * `eclipseState.moonObscuration` ONLY — never from `sunVisibleFraction`,
+     * `eclipseState.moonObscuration` only — never from `sunVisibleFraction`,
      * whose Earth-limb term saturates through twilight and all night and
      * would black out every sunset. Linear in the limb-darkened flux
      * fraction, floored on the ~5-lux twilight constant and carried through
@@ -646,9 +643,9 @@ class FrameState {
     this.eclipseSceneLightFactor = undefined;
 
     /**
-     * Per-fragment Moon-shadow block for the globe (C12-29 S5), owned by the
+     * Per-fragment Moon-shadow block for the globe, owned by the
      * active logical {@link View}. The geocentric body-ray payload is
-     * pass-camera-independent; its fit and S2 composition terms remain
+     * pass-camera-independent; its fit and scene-lighting composition remain
      * observer-dependent. `params.x === 0` is the inert shader gate.
      * This FrameState field is only a transient alias to the View-owned block.
      *
@@ -657,10 +654,11 @@ class FrameState {
     this.eclipseGlobeShadow = undefined;
 
     /**
-     * Internal same-logical-view memo for S5 terrain-bound classification.
-     * Each command owner prepares S5 against its exact retained or selected
-     * terrain set. A repeated owner call may reuse the already-published block
-     * only when both its surface radius and selection revision still match.
+     * Internal same-logical-view memo for terrain-bound eclipse classification.
+     * Each command owner prepares the classification against its exact retained
+     * or selected terrain set. A repeated owner call may reuse the
+     * already-published block only when both its surface radius and selection
+     * revision still match.
      *
      * @type {boolean}
      * @private
@@ -676,7 +674,8 @@ class FrameState {
     this.eclipseGlobeShadowSurfaceRadius = undefined;
 
     /**
-     * Selected-terrain generation paired with the refined S5 classification.
+     * Selected-terrain generation paired with the refined eclipse-shadow
+     * classification.
      * A retained mutable quadtree array can keep the same identity while its
      * contents change, so memoization uses the provider's generation instead.
      *
@@ -687,10 +686,10 @@ class FrameState {
 
     /**
      * Gain on the 360-degree horizon twilight band the sky-atmosphere shell
-     * adds during totality (C12-29 S6), as a multiple of the sky's own
+     * adds during totality, as a multiple of the sky's own
      * luminance along the same ray. Inside the umbra the observer is
      * surrounded by penumbra — the umbral track is only 100-160 km wide — so
-     * a sunset-coloured glow rims the horizon at EVERY azimuth. Ramps in over
+     * a sunset-coloured glow rims the horizon at every azimuth. Ramps in over
      * the last ~2% of obscuration (an annular eclipse cannot reach the onset,
      * correctly: no umbra, no glow) and fades out above the atmosphere.
      * Exactly 0.0 — hence a byte-identical shell — in every other frame and
@@ -700,11 +699,11 @@ class FrameState {
     this.eclipseHorizonTwilight = undefined;
 
     /**
-     * Canonical atmospheric conditions facade — forwarded once per frame
-     * from `scene.globe.atmosphericConditions`. Renderers read B-series
-     * toggles (sun/moon lighting, scattering occlusion, star modulation,
-     * volumetric fog, varying atmosphere density, cloud volumetrics,
-     * weather, night) through this single reference. Phase 1.1 forward.
+     * Canonical atmospheric conditions facade, published from
+     * `scene.globe.atmosphericConditions` while each logical View is prepared
+     * and before eclipse derivation. Renderers read sun and moon lighting,
+     * scattering occlusion, star modulation, volumetric fog, atmosphere
+     * density, cloud, weather, and night controls through this single reference.
      * Undefined when no globe is attached to the scene.
      * @type {AtmosphericConditions|undefined}
      */
@@ -722,23 +721,27 @@ class FrameState {
      * Sun direction in world coordinates, forwarded from
      * `uniformState.sunDirectionWC` once per frame. Renderers that cannot
      * reach the per-context `UniformState` (feature renderers, backend-
-     * agnostic scene code) read the sun direction from here. Phase 1.2.
+     * agnostic scene code) read the sun direction from here.
      * @type {Cartesian3|undefined}
      */
     this.sunDirectionWC = undefined;
 
     /**
-     * Moon direction in world coordinates, computed once per frame from
-     * the existing Simon 1994 lunar ephemeris (Moon.js). Phase 1.2 will
-     * populate this; Phase 1.1 leaves it undefined.
+     * Moon direction in world coordinates. {@link Moon#update} publishes it
+     * from the scene's celestial ephemeris sample, with the Simon 1994 lunar
+     * position as the fallback. Moon and atmospheric renderers read the current
+     * direction from here.
      * @type {Cartesian3|undefined}
      */
     this.moonDirectionWC = undefined;
 
     /**
-     * Moon phase fraction (0..1, 0 = new moon, 0.5 = full moon, 1 = back
-     * to new). Used by `Moon.wgsl` for lit hemisphere shading and
-     * earthshine intensity. Phase 1.2 populates; Phase 1.1 leaves undefined.
+     * Illuminated Moon fraction (0..1, 0 = new moon, 0.5 = quarter moon,
+     * 1 = full moon). {@link Moon#update} publishes the value derived from the
+     * current Sun and Moon directions
+     * and uses 1.0 when phase lighting is disabled. Scene resets the field
+     * before that update so a hidden Moon cannot leak a previous frame's value.
+     * Moon and atmospheric renderers consume it.
      * @type {number|undefined}
      */
     this.moonPhaseFraction = undefined;
@@ -775,7 +778,7 @@ class FrameState {
      * them, so shadow correctness does not disable camera visibility work.
      * @property {Set<DrawCommand>} prePvsCasterCommandSet Reusable dedupe
      * scratch for `prePvsCasterCommands`; cleared before publication.
-     * @property {DrawCommand[]} [casterCommands] C10-10 — the per-frame shadow-caster sublist collected during {@link View#createPotentiallyVisibleSet} (all `castShadows` commands in a shadowed pass, camera-visible or not). {@link SceneRenderer.executeShadowMapCastCommands} iterates this instead of re-scanning the full command list per shadow map. `undefined` when shadows are disabled this frame.
+     * @property {DrawCommand[]} [casterCommands] Per-frame shadow-caster sublist collected during {@link View#createPotentiallyVisibleSet}. It contains every `castShadows` command in a shadow-eligible pass, whether camera-visible or not. {@link SceneRenderer.executeShadowMapCastCommands} iterates this instead of re-scanning the full command list per shadow map. `undefined` when shadows are disabled this frame.
      */
 
     /**
@@ -810,7 +813,7 @@ class FrameState {
        */
       outOfView: true,
       /**
-       * C11-184 shadow-only side channel. Persistent and reset by length so
+       * Shadow-only side channel. Persistent and reset by length so
        * optional camera visibility filters never force casters back into the
        * camera command list.
        * @type {DrawCommand[]}
@@ -818,7 +821,7 @@ class FrameState {
       prePvsCasterCommands: [],
       prePvsCasterCommandSet: new Set(),
       /**
-       * C10-10 shadow-caster sublist; populated by the PVS walk when shadows
+       * Shadow-caster sublist populated by the PVS walk when shadows
        * are enabled, `undefined` otherwise.
        * @type {DrawCommand[]|undefined}
        * @default undefined
@@ -862,14 +865,11 @@ class FrameState {
     this.lights = undefined;
 
     /**
-     * Track V-A3 (NEW-ATMO-DERIVED-LIGHTING) — atmosphere-derived sky-
-     * irradiance ambient colour (linear RGB), published by Scene each frame
-     * ONLY when `aerialPerspective` is active (WebGPU). Consumers (the WebGPU
-     * model renderer) use it as the ambient floor in place of the flat
-     * neutral grey, so models pick up a plausible day/night-aware sky ambient
-     * consistent with the atmosphere-derived sun (`frameState.light`).
-     * Undefined when aerial perspective is off — consumers fall back to their
-     * existing neutral ambient. WebGL ignores it.
+     * Atmosphere-derived sky irradiance in linear RGB. Scene publishes it for
+     * WebGPU frames with aerial perspective, a {@link SunLight}, and valid Sun
+     * direction and camera position inputs. The WebGPU model renderer uses it
+     * for ambient lighting; otherwise the field is undefined and models use
+     * their neutral fallback. WebGL does not receive it.
      * @type {Cartesian3|undefined}
      */
     this.atmosphereSkyIrradiance = undefined;
@@ -905,12 +905,14 @@ class FrameState {
     this.useLogDepth = false;
 
     /**
-     * Whether temporal anti-aliasing is enabled this frame. Canonical
-     * per-frame mirror of `scene.taaEnabled`, published by
-     * `Scene.updateFrameState`. This is THE flag velocity-emission gates
-     * read (billboard/label/point/cloud/polyline/model/voxel/splat/...) —
-     * renderers must NOT reach back through a scene reference for it.
-     * (Batch 234, NEW-COLLECTIONS-TAA-GATE-DORMANT.)
+     * Whether temporal anti-aliasing is active this frame. Scene publishes the
+     * mirror of `scene.taaEnabled`; WebGPU velocity emitters and post-processing
+     * use it. False disables those paths, and the default is false.
+     *
+     * Read this mirror rather than reaching back through a scene reference:
+     * nothing assigns `frameState.scene`, so `frameState.scene?.taaEnabled`
+     * evaluates to undefined and quietly disables the velocity paths instead
+     * of failing.
      *
      * @type {boolean}
      * @default false
@@ -918,12 +920,9 @@ class FrameState {
     this.taaEnabled = false;
 
     /**
-     * The scene's snapshot-mode service for this frame. Canonical
-     * per-frame mirror of `scene.snapshotMode`, published by
-     * `Scene.updateFrameState`. Renderers that register snapshot
-     * freezables (moon, volumetric fog, render bundles) read THIS —
-     * never `frameState.scene`, which does not exist at runtime
-     * (Batch 244; same dormant-gate family as `taaEnabled` / Batch 234).
+     * The scene's snapshot-mode service for this frame. Scene publishes the
+     * service reference, and the WebGPU environment renderer uses it to
+     * register the Moon freezable without a Scene back-reference.
      *
      * @type {SnapshotModeService|undefined}
      * @default undefined
@@ -1001,31 +1000,21 @@ class FrameState {
     this.planarFillRequested = false;
 
     /**
-     * Phase 8a (Batch 80) — gates the depth-prepass + normal G-buffer
-     * scaffolding. Default false; flipped to true by `scene.deferredLighting`
-     * once the WebGPU backend supports it AND the scaffolding's downstream
-     * consumers (SSAO/SSR/deferred lighting) have been rewired to read
-     * from the G-buffer (Slice 2+).
-     *
-     * Slice 1 wires the flag through to `View.gBufferFramebuffer.update()`
-     * so the targets allocate when set; with the flag off the targets stay
-     * unallocated and the scaffolding has zero runtime cost.
-     *
-     * See `migration_doc/PHASE_8_SHADER_STRATEGY.md` and `WEBGPU_DEBUGGING_LOG.md`
-     * Batch 80 for the architectural decision and rollout plan.
+     * Whether WebGPU G-buffer consumers use populated normals this frame.
+     * Scene mirrors `scene.deferredLighting`. In MRT mode, fragment outputs
+     * populate the G-buffer; the compute fallback runs only outside MRT.
+     * WebGPU resource allocation is independent of this flag.
      * @type {boolean}
      * @private
      */
     this.useDeferredLighting = false;
 
     /**
-     * Phase 8a Slice 2c (Batch 89) — debug-only flag. When true, the
-     * WebGPU scene renderer replaces the production post-process chain
-     * with `WebGPUDebugGBufferOverlay`, which blits the G-buffer normal
-     * texture to the canvas as a normal-map visualization. Activated
-     * via `CesiumDebug.showGBufferNormals()` (which also flips
-     * `scene.deferredLighting = true` since the overlay requires the
-     * producer to have populated the G-buffer this frame).
+     * Whether WebGPU replaces the production post-process chain with the
+     * G-buffer normal diagnostic. The CesiumDebug command also enables
+     * `useDeferredLighting` so producers run. A sampled normal below the
+     * diagnostic's length threshold renders magenta, indicating an empty buffer
+     * or a failed texture read.
      * @type {boolean}
      * @private
      */

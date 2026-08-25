@@ -637,3 +637,10 @@ packages/engine/Source/Shaders/WebGPU/Compute/ComputeInstanceRender.wgsl
 packages/engine/Source/Renderer/WebGLComputeInstanceRenderer.js
 packages/engine/Source/Renderer/WebGPU/WebGPUComputeEngine.ts
 packages/engine/Source/Shaders/WebGPU/Compute/ComputeInstanceScaffold.wgsl
+# Scene frame-state, view/frustum, and shared WebGPU variant/depth seams.
+# Current constraints remain inline; historical dispositions live in the scene
+# architecture DEV notes and their owning ledgers.
+packages/engine/Source/Scene/FrameState.js
+packages/engine/Source/Scene/View.js
+packages/engine/Source/Renderer/WebGPU/WebGPUDerivedCommand.ts
+packages/engine/Source/Renderer/WebGPU/WebGPULogDepth.ts

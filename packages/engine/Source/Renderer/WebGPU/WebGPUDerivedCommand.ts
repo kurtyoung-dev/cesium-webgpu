@@ -1,91 +1,58 @@
 /// <reference types="@webgpu/types" />
 /**
- * WebGPU centralized pipeline-variant factory — the WGSL counterpart of
- * WebGL's `Scene/DerivedCommand.js`. Core SHIPPED Batch 248
- * (NEW-DERIVEDCOMMAND-VARIANT-FACTORY); was scaffolding until then.
+ * Central utilities for building WebGPU command and pipeline variants.
  *
- * The derived-command architecture has two halves:
+ * Renderer commands may expose a
+ * `derivedCommands.{picking,depth,shadows,logDepth,hdr}.*` structure that
+ * `selectCommandVariant` dispatches. This module owns the reusable construction
+ * half of that architecture:
  *
- * **Dispatch half — variant STRUCTURE + selection (lives elsewhere).**
- * Commands carry a `derivedCommands.{picking,depth,shadows,logDepth,hdr}.*`
- * structure and `selectCommandVariant` (WebGPUSceneRenderer.ts) dispatches
- * through it every frame for pick / depth / shadow / log-depth passes.
+ *   - {@link WebGPUDerivedCommand.deriveDescriptor} performs pure descriptor
+ *     derivation without mutating the base descriptor.
+ *   - {@link WebGPUDerivedCommand.resolveVariantPipeline} provides the shared
+ *     synchronous, asynchronous, or direct-create pipeline-resolution state
+ *     machine. A cache miss starts asynchronous creation and returns `null`, so
+ *     the caller skips the variant draw for that frame.
+ *   - {@link WebGPUDerivedCommand.deriveCommand} clones a command and stamps
+ *     overrides for consumers that attach variants to `derivedCommands.*`.
  *
- * **Factory half — THIS file.** In WebGL, DerivedCommand mutates
- * ShaderPrograms by injecting defines and replacing fragment shader code.
- * In WebGPU, a variant is a PIPELINE-DESCRIPTOR mutation (color targets,
- * depth-stencil state, multisample state, …) plus a shader-module /
- * entry-point swap, materialized through the central
- * `WebGPURenderPipelineCache` under a variant-keyed descriptor name:
+ * # Descriptor invariants
  *
- *   - {@link WebGPUDerivedCommand.deriveDescriptor} — pure descriptor
- *     derivation per {@link DerivedCommandType}. Never mutates the base
- *     descriptor; enforces the cross-renderer invariants centrally (below).
- *   - {@link WebGPUDerivedCommand.resolveVariantPipeline} — the shared
- *     sync → async → direct-create pipeline-resolution state machine every
- *     renderer previously hand-rolled (`tryResolve*Pipeline`). Returns the
- *     pipeline when cached, kicks off async creation and returns `null`
- *     when not (caller skips the variant draw for a frame).
- *   - {@link WebGPUDerivedCommand.deriveCommand} — command-level clone +
- *     override stamping for consumers that attach the variant command on
- *     `derivedCommands.*` for the dispatcher.
+ *   - Scene-framebuffer variants (`LOG_DEPTH`, `DEPTH_ONLY`) bake
+ *     `multisample.count` from `options.sceneFBSampleCount`. Offscreen variants
+ *     (`PICK`, `VELOCITY`) drop multisampling because their targets are
+ *     single-sample. A scene-pipeline sample count that differs from its pass
+ *     attachments makes the pipeline incompatible and invalidates the pass.
+ *   - Scene-framebuffer variants re-stamp their color targets through
+ *     `makeSceneFBTargets` so they match the current attachment shape,
+ *     including the MRT slot-1 placeholder, even when the base descriptor
+ *     predates an MRT attachment-shape change.
+ *   - `PICK` variants keep only color target zero and strip blending so pick
+ *     colors reach the single-attachment pick framebuffer byte-exact.
  *
- * # Centrally-enforced invariants
+ * # Cache identity
  *
- *   - **MSAA bake** — scene-FB variants (LOG_DEPTH, DEPTH_ONLY) bake
- *     `multisample.count` from `options.sceneFBSampleCount` (pass
- *     `context._msaaSamples`); a count-1 pipeline in the MSAA scene pass
- *     kills the whole pass (the Batch-228 Cloud bug class). Off-scene-FB
- *     variants (PICK, VELOCITY) DROP multisample entirely — the pick FBO
- *     and the rg16float velocity texture are always single-sample.
- *   - **Scene-FB target shape** — scene-FB variants re-stamp their color
- *     targets through `makeSceneFBTargets` so the variant always matches
- *     the CURRENT scene-FB attachment shape (MRT slot-1 placeholder),
- *     even if the base descriptor predates an MRT-mode flip.
- *   - **Pick target shape** — PICK variants keep ONLY slot 0 with blend
- *     stripped (pick colors must reach the FBO byte-exact) because the
- *     pick render pass has exactly one color attachment.
- *
- * # Variant-keyed cache names
- *
- * Derived descriptors are named `${base.name}::${kind}` (plus entry-point
- * markers when an entry point is swapped). The central pipeline cache keys
- * on `descriptor.name` + state fields but NOT on shader-module identity, so
- * the base name MUST uniquely identify the shader source variant — the
- * established convention of embedding the defines bitmask hex in the name
- * (`defines=0x..`) satisfies this; keep it for every adopter.
+ * Variant names include the base name, kind, and optional suffix or entry-point
+ * markers for diagnostics. Cache correctness also includes shader-module and
+ * entry-point identity plus structural pipeline state, so readable names are
+ * not the sole aliasing barrier.
  *
  * # Variant kinds
  *
- *   - {@link DerivedCommandType.PICK} — slot-0-only blend-stripped target,
- *     depth write forced on (configurable), multisample dropped. Supports
- *     both pick styles: same-module fragment-entry swap (the C-R9
- *     `fragmentPickMain` pattern) and whole-module swap (billboard's
- *     dedicated pick shader source).
- *   - {@link DerivedCommandType.VELOCITY} — single rg16float target,
- *     read-only depth (shares scene depth), optional appended vertex-buffer
- *     layouts for the one-frame-lagged previous-instance mirror (the
- *     Batch 143 motion-vector pattern).
- *   - {@link DerivedCommandType.LOG_DEPTH} — same scene-FB pass shape;
- *     swaps to the `LOG_DEPTH`-define shader module (callers preprocess via
- *     the module cache — see WebGPULogDepth.ts for gating) and/or swaps
- *     entry points. The NEW-COLLECTIONS-LOG-DEPTH epic consumes this kind.
- *   - {@link DerivedCommandType.DEPTH_ONLY} — writeMask 0 on every color
- *     target (shape preserved for pass-compat), depth write forced on.
- *   - {@link DerivedCommandType.HDR} / {@link DerivedCommandType.SHADOW} —
- *     NOT YET IMPLEMENTED; `deriveDescriptor` throws loudly. Tracked as
- *     follow-ups under NEW-DERIVEDCOMMAND-VARIANT-FACTORY in
- *     migration_doc/DEFERRED_WORK.md.
+ *   - {@link DerivedCommandType.PICK} uses a blend-stripped target, drops
+ *     multisampling, and forces depth writes by default. It supports both an
+ *     entry-point swap and a whole-module swap.
+ *   - {@link DerivedCommandType.VELOCITY} uses a single `rg16float` target,
+ *     read-only scene depth, and optional previous-instance vertex layouts.
+ *   - {@link DerivedCommandType.LOG_DEPTH} preserves the scene-framebuffer
+ *     shape while allowing a module or entry-point swap.
+ *   - {@link DerivedCommandType.DEPTH_ONLY} preserves target shape with a zero
+ *     write mask and forces depth writes.
+ *   - {@link DerivedCommandType.HDR} and {@link DerivedCommandType.SHADOW} are
+ *     reserved enum values; `deriveDescriptor` rejects them.
  *
- * # Adopters
- *
- *   - Billboard PICK (WebGPUBillboardRenderer.js, Batch 248) — replaced the
- *     hand-rolled `buildBillboardPickDescriptor`; the color/velocity/pick
- *     resolution all route through {@link resolveVariantPipeline}.
- *   - Next: the log-depth epic (every collection + globe pipeline), then
- *     incremental absorption of the remaining per-renderer pick/velocity/
- *     depth descriptor surgery (WebGPUPickCommandHelpers'
- *     `buildPickPipelineDescriptor` call sites are the natural candidates).
+ * Billboard pick is the current descriptor-derivation adopter. Other renderers
+ * retain local descriptor derivation.
  *
  * @private
  */
@@ -113,7 +80,7 @@ export enum DerivedCommandType {
  */
 export interface DeriveVariantOptions {
   /**
-   * Replace the shader module of BOTH stages (vertex + fragment). The
+   * Replace the shader module of both stages (vertex + fragment). The
    * billboard pick pattern: a dedicated pick shader source compiled at the
    * same defines as the color module. Overridden per-stage by
    * {@link vertexModule} / {@link fragmentModule} when both are given.
@@ -128,10 +95,9 @@ export interface DeriveVariantOptions {
   /** Swap the fragment entry point (e.g. `fragmentPickMain`). */
   fragmentEntryPoint?: string;
   /**
-   * Extra discriminator appended to the variant-keyed name. Required when
-   * the same (base, kind) pair is derived with different shader modules
-   * that aren't already distinguished by the base name (rare — the
-   * defines-in-name convention covers the standard cases).
+   * Extra name and cache-key discriminator for variants that need a readable
+   * distinction in diagnostics. Cache identity separately includes
+   * shader-module and entry-point identity.
    */
   nameSuffix?: string;
   /**
@@ -149,18 +115,16 @@ export interface DeriveVariantOptions {
    */
   forceDepthWriteEnabled?: boolean;
   /**
-   * PICK: the pick color-target format — REQUIRED for PICK derivation
-   * (NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE). Pass `context.pickPipelineFormat`,
-   * the context's sole byte-object-ID attachment authority. Inheriting the
-   * base slot-0 format was silently wrong in HDR: the scene target is a
-   * float format while the pick FBO stays an 8-bit unorm, so an inherited
-   * pick pipeline trips "Attachment state not compatible" and every pick
-   * returns undefined.
+   * PICK: the required pick color-target format. Pass
+   * `context.pickPipelineFormat`, because an HDR scene target may use a float
+   * format while the pick framebuffer uses an 8-bit unorm format. Inheriting
+   * the scene format would make the pipeline incompatible with the pick
+   * attachment.
    */
   pickFormat?: GPUTextureFormat;
   /**
-   * VELOCITY: the velocity texture format. Default `"rg16float"` — the
-   * scene-FB velocity target format (Batch 143 motion-vector pattern).
+   * VELOCITY: the velocity texture format. Default `"rg16float"`, the
+   * scene-framebuffer velocity target format.
    */
   velocityFormat?: GPUTextureFormat;
   /**
@@ -185,9 +149,9 @@ export interface VariantPipelineEntry {
 const EMPTY_OPTIONS: DeriveVariantOptions = {};
 
 /**
- * Build the variant-keyed descriptor name. Entry-point swaps are encoded
- * so two variants of the same kind with different entry points never alias
- * in the central cache (which keys on name + state, not module identity).
+ * Build a readable variant descriptor name. Entry-point swaps and an optional
+ * suffix remain visible in diagnostics; the cache separately keys module,
+ * entry-point, and structural pipeline identity.
  */
 function deriveVariantName(
   base: WebGPURenderPipelineDescriptor,
@@ -315,10 +279,9 @@ function derivePickDescriptor(
     );
   }
   if (options.pickFormat === undefined) {
-    // NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE — the pick target format must be
-    // stamped explicitly from `context.pickPipelineFormat`. Silently
-    // inheriting the base slot-0 (scene) format produced HDR pick pipelines
-    // targeting a float format against the 8-bit unorm pick attachment.
+    // Stamp the format from `context.pickPipelineFormat`. Inheriting the base
+    // scene format can pair an HDR float pipeline with the 8-bit unorm pick
+    // attachment.
     throw new Error(
       `WebGPUDerivedCommand.deriveDescriptor: PICK derivation for ` +
         `"${base.name}" requires options.pickFormat ` +
@@ -519,8 +482,8 @@ export class WebGPUDerivedCommand {
    * frame later it's ready). Falls back to direct synchronous creation when
    * `pipelineCache` is null (test harnesses / pre-cache contexts).
    *
-   * Generalizes the per-renderer `tryResolve*Pipeline` helpers (Batch 73
-   * pattern) — pass the renderer's cached {@link VariantPipelineEntry}.
+   * Pass the renderer's cached {@link VariantPipelineEntry}; the entry is the
+   * stable unit of the resolution state machine.
    */
   static resolveVariantPipeline(
     device: GPUDevice,
