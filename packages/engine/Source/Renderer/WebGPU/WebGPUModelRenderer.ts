@@ -2558,7 +2558,7 @@ function packLightUniforms(
     ibl?._webgpuMaxMipLevel ??
     ibl?._specularEnvironmentMapAtlas?._maximumMipmapLevel ??
     5.0;
-  data[15] = ibl?._sphericalHarmonicCoefficients ? 1.0 : 0.0;
+  data[15] = resolveModelIBLSource(model).hasActiveSH ? 1.0 : 0.0;
 
   // Punctual lights.
   // Merges `frameState.lights` (scene-level, world-space) with
@@ -4340,6 +4340,121 @@ interface ResolvedModelIBL {
 }
 
 /**
+ * The IBL sources a model resolves to, before the pipeline cache substitutes
+ * its neutral placeholders. `hasActiveSH` says whether the SH buffer chosen
+ * here is a coefficient-carrying buffer rather than a zeroed placeholder --
+ * the same distinction the shader draws when `sh.control.w` sends it to the
+ * analytic spherical-harmonics branch instead of the irradiance cubemap.
+ * @private
+ */
+interface ResolvedModelIBLSource {
+  diffuseView: GPUTextureView | null | undefined;
+  specularView: GPUTextureView | null | undefined;
+  sampler: GPUSampler | null | undefined;
+  shBuffer: GPUBuffer | null | undefined;
+  hasActiveSH: boolean;
+}
+
+/**
+ * Resolves which IBL sources a model uses, applying the same
+ * explicit-over-environment precedence WebGL's
+ * `ImageBasedLightingPipelineStage` applies to the same two sources.
+ *
+ * This is the one place spherical harmonics are decided. The buffer bound at
+ * binding 36 and the `iblHasSH` float packed into the model light uniforms
+ * both read this result, so they cannot come to describe different buffers.
+ * Re-deriving either from a raw `imageBasedLighting` field reintroduces that
+ * split, and because the shader gates on the buffer rather than the flag, the
+ * split is silent.
+ *
+ * The early return forces `hasActiveSH` false for a source set the caller will
+ * replace with placeholders: a placeholder SH buffer is inactive whatever the
+ * sources chose. A caller that substitutes placeholders has to keep its own
+ * test in step with that exit.
+ *
+ * Pure over `model` — `packLightUniforms` and {@link resolveModelIBL} run in no
+ * fixed order relative to one another, so neither may cache on behalf of the
+ * other.
+ * @private
+ */
+function resolveModelIBLSource(model: ModelLike): ResolvedModelIBLSource {
+  const ibl = model?._imageBasedLighting;
+  let specularView = ibl?._webgpuSpecularView;
+  let diffuseView = ibl?._webgpuDiffuseView;
+  let sampler = ibl?._webgpuSampler;
+  let shBuffer = ibl?._webgpuSHBuffer;
+
+  // Source precedence, mirroring WebGL's ImageBasedLightingPipelineStage:
+  //   specular = explicit specularEnvironmentMaps if configured,
+  //              else environmentMapManager.radianceCubeMap,
+  //              else the (black) default.
+  //   diffuse  = explicit SH if the user supplied coefficients,
+  //              else environmentMapManager irradiance / SH,
+  //              else the (low-gray) default.
+  //
+  // Presence of `_webgpuSpecularView` / `_webgpuDiffuseView` is not a usable
+  // test for "an explicit source is configured".
+  // `WebGPUImageBasedLighting.update` always resolves those to its 1x1 black
+  // specular and 30/255 gray diffuse placeholders when no explicit
+  // `specularEnvironmentMaps` is configured, so keying on definedness would
+  // let the placeholder shadow the env-manager's real atmosphere-derived IBL,
+  // leaving at-rest models with a flat gray ambient and no sky reflection.
+  // The placeholder must therefore count as "no explicit source", so that the
+  // env-manager wins exactly as it does on WebGL.
+  const hasExplicitSpecular =
+    defined(ibl?._specularEnvironmentCubeMap) &&
+    (ibl._webgpuMaxMipLevel ?? 0) > 0;
+  const hasExplicitDiffuse = ibl?._webgpuHasSH === true;
+  let hasActiveSH = hasExplicitDiffuse && defined(shBuffer);
+
+  const envManager = model?.environmentMapManager;
+  if (defined(envManager)) {
+    if (!hasExplicitDiffuse && defined(envManager._webgpuIBLDiffuseView)) {
+      diffuseView = envManager._webgpuIBLDiffuseView;
+      // Prefer the env-manager's atmosphere-derived SH-L2 coefficients,
+      // matching WebGL's czm_sphericalHarmonics diffuse-IBL path. The SH
+      // buffer's own `control.w` gate makes the shader evaluate SH instead
+      // of sampling the irradiance cubemap, which over-brightens the diffuse
+      // by roughly 20-30%, worst in blue. The irradiance cubemap above stays
+      // bound as the fallback for frames before the SH projection has run.
+      if (defined(envManager._webgpuSHBuffer)) {
+        shBuffer = envManager._webgpuSHBuffer;
+        hasActiveSH = true;
+      } else {
+        // No SH yet -- clear any default SH so the shader samples the
+        // irradiance cubemap (control.w stays 0 with the default buffer).
+        shBuffer = undefined;
+        hasActiveSH = false;
+      }
+    }
+    if (!hasExplicitSpecular && defined(envManager._webgpuIBLSpecularView)) {
+      specularView = envManager._webgpuIBLSpecularView;
+    }
+    if (defined(envManager._webgpuIBLSampler)) {
+      sampler = envManager._webgpuIBLSampler;
+    }
+  }
+
+  if (!defined(specularView) || !defined(diffuseView) || !defined(sampler)) {
+    return {
+      diffuseView,
+      specularView,
+      sampler,
+      shBuffer,
+      hasActiveSH: false,
+    };
+  }
+
+  return {
+    diffuseView,
+    specularView,
+    sampler,
+    shBuffer,
+    hasActiveSH,
+  };
+}
+
+/**
  * Resolves the per-model IBL identities from the model's `imageBasedLighting`
  * cache and environment-map manager, falling back to the pipeline cache's
  * neutral placeholders when the prefilter has not run yet.
@@ -4372,59 +4487,8 @@ function resolveModelIBL(
     ? lutView
     : pipelineCache.defaultBrdfLutView;
 
-  const ibl = model?._imageBasedLighting;
-  let specularView = ibl?._webgpuSpecularView;
-  let diffuseView = ibl?._webgpuDiffuseView;
-  let sampler = ibl?._webgpuSampler;
-  let shBuffer = ibl?._webgpuSHBuffer;
-
-  // Source precedence, mirroring WebGL's ImageBasedLightingPipelineStage:
-  //   specular = explicit specularEnvironmentMaps if configured,
-  //              else environmentMapManager.radianceCubeMap,
-  //              else the (black) default.
-  //   diffuse  = explicit SH if the user supplied coefficients,
-  //              else environmentMapManager irradiance / SH,
-  //              else the (low-gray) default.
-  //
-  // Presence of `_webgpuSpecularView` / `_webgpuDiffuseView` is not a usable
-  // test for "an explicit source is configured".
-  // `WebGPUImageBasedLighting.update` always resolves those to its 1x1 black
-  // specular and 30/255 gray diffuse placeholders when no explicit
-  // `specularEnvironmentMaps` is configured, so keying on definedness would
-  // let the placeholder shadow the env-manager's real atmosphere-derived IBL,
-  // leaving at-rest models with a flat gray ambient and no sky reflection.
-  // The placeholder must therefore count as "no explicit source", so that the
-  // env-manager wins exactly as it does on WebGL.
-  const hasExplicitSpecular =
-    defined(ibl?._specularEnvironmentCubeMap) &&
-    (ibl._webgpuMaxMipLevel ?? 0) > 0;
-  const hasExplicitDiffuse = ibl?._webgpuHasSH === true;
-
-  const envManager = model?.environmentMapManager;
-  if (defined(envManager)) {
-    if (!hasExplicitDiffuse && defined(envManager._webgpuIBLDiffuseView)) {
-      diffuseView = envManager._webgpuIBLDiffuseView;
-      // Prefer the env-manager's atmosphere-derived SH-L2 coefficients,
-      // matching WebGL's czm_sphericalHarmonics diffuse-IBL path. The SH
-      // buffer's own `control.w` gate makes the shader evaluate SH instead
-      // of sampling the irradiance cubemap, which over-brightens the diffuse
-      // by roughly 20-30%, worst in blue. The irradiance cubemap above stays
-      // bound as the fallback for frames before the SH projection has run.
-      if (defined(envManager._webgpuSHBuffer)) {
-        shBuffer = envManager._webgpuSHBuffer;
-      } else {
-        // No SH yet -- clear any default SH so the shader samples the
-        // irradiance cubemap (control.w stays 0 with the default buffer).
-        shBuffer = undefined;
-      }
-    }
-    if (!hasExplicitSpecular && defined(envManager._webgpuIBLSpecularView)) {
-      specularView = envManager._webgpuIBLSpecularView;
-    }
-    if (defined(envManager._webgpuIBLSampler)) {
-      sampler = envManager._webgpuIBLSampler;
-    }
-  }
+  const source = resolveModelIBLSource(model);
+  const { diffuseView, specularView, sampler, shBuffer } = source;
 
   if (!defined(specularView) || !defined(diffuseView) || !defined(sampler)) {
     // Neutral placeholder path — mid-grey ambient sampling so the FS doesn't
