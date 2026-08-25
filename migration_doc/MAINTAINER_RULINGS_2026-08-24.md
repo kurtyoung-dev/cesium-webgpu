@@ -596,3 +596,24 @@ octree-versus-PVS instrument over the canonical moving-altitude route must be bu
 first. The recommended alternative (amend the ledger to match the row and file the timing as its
 own row) was declined: the performance claim is the point of the row. The fix lands on its own
 merits with the row explicitly OPEN.
+
+---
+
+## R-2026-08-24-16 — `C15-G6` precedence: the asymmetric FAIL outranks that backend's own anti-vacuity structurals
+
+**Question.** Under `R-2026-08-24-14` the probe routed an all-background WebGPU frame (WebGL composing
+splats and globe, both backends holding at least one splat and one globe command, frames valid) to
+exit 3, because the same-backend `labels:zero-globe` and `labels:single-label-frame` anti-vacuity
+reasons outranked the asymmetric FAIL — the severest shape of the headline defect read as
+instrument blindness, the misread `R-2026-08-24-14` rejected.
+
+**Ruled (fifth sitting, ~21:55 ET).** When one backend composed zero splat pixels while the other
+backend's partition is valid and composed splat pixels, and the zero backend's settled frame proved
+its splat and globe draw commands exist, that backend's own zero-globe and single-label reasons are
+consequences of the same compose failure and do not demote the verdict: the run is FAIL (exit 1)
+with the asymmetric reason in the top-level failure list, and those reasons are published as
+diagnostics. Unrelated structurals — frame-dimension mismatch, an invalid partition, a corner
+precondition mismatch, an unproven settled frame on either backend, capture-contract or
+framing-agreement failures — still outrank both. The alternative (keep any-structural-wins and
+disclose it) was rejected for the reason `R-2026-08-24-14` already gave. A tooth pins the new
+precedence and an inertness mutant restoring the old one must be caught.
