@@ -409,6 +409,9 @@ class TimeDynamicPointCloud {
    */
   destroy() {
     unloadFrames(this);
+    this._pointCloudEyeDomeLighting =
+      this._pointCloudEyeDomeLighting &&
+      this._pointCloudEyeDomeLighting.destroy();
     this._clippingPlanes =
       this._clippingPlanes && this._clippingPlanes.destroy();
     this._pickId = this._pickId && this._pickId.destroy();

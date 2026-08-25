@@ -1509,6 +1509,9 @@ class Cesium3DTileset {
    * @see Cesium3DTileset#isDestroyed
    */
   destroy() {
+    this._pointCloudEyeDomeLighting =
+      this._pointCloudEyeDomeLighting &&
+      this._pointCloudEyeDomeLighting.destroy();
     this._tileDebugLabels =
       this._tileDebugLabels && this._tileDebugLabels.destroy();
     this._clippingPlanes =
