@@ -1,0 +1,43 @@
+DRAFT — NOT FOR APPLICATION WITHOUT NON-AUTHOR REVIEW.
+
+Target:   migration_doc/FORK_ARCHITECTURE_REMEDIATION_PLAN_2026-07-13.md, the FAR-107 row (:455-464)
+Ruling:   R-2026-08-24-1 (migration_doc/MAINTAINER_RULINGS_2026-08-24.md)
+Base:     main @ daaca4fde8 (Batch 1137)
+Verified: git apply --check clean at that tip; the repo file was not modified.
+
+Why a reviewer is required: FAR-107:457 reads "- **Size:** L; public-API review required",
+and EXECUTOR_LANE_CHARTER_2026-08-14.md:342 4.6 is "[HARD] Certification authors do not
+self-approve." (Note: FAR-107 itself carries NO [HARD] marker - that file contains none.
+The obligation comes from the two lines above, not from a marker on the row.)
+
+What changes, and what must not: only the Work bullet (:462) and the Rollback bullet (:464)
+are reworded, and one dated amendment bullet is appended. Every other byte of the row -
+heading, Size, Depends on, Audit coverage, Primary surfaces, Audit conclusion, Acceptance -
+is unchanged. The prohibition on stale substitution is NOT relaxed: it is narrowed in wording
+only where a proof of identity invariance over the reprojection uncertainty exists, and an
+unproven plateau serve is explicitly still stale substitution.
+
+Reviewer checklist:
+  1. Re-read :462 and :464 in the repo and confirm the - lines below match them byte-for-byte.
+  2. Confirm the + Work bullet still forbids serving without either a match or a proof.
+  3. Confirm "enumerated conditions" is honest: the plateau proof is depth-free only for the
+     rotation term (DECISION_PACKET_2026-08-18.md:541-542), so the amendment must not read as
+     licensing an unconditional serve.
+  4. Confirm no other bullet in the row is touched.
+  5. Return GO / NO-GO. A finding reopens ownership to the author (charter 4.6).
+
+--- a/migration_doc/FORK_ARCHITECTURE_REMEDIATION_PLAN_2026-07-13.md
++++ b/migration_doc/FORK_ARCHITECTURE_REMEDIATION_PLAN_2026-07-13.md
+@@ -459,9 +459,10 @@
+ - **Audit coverage:** H13
+ - **Primary surfaces:** Scene picking APIs/types, `Picking`, ray/most-detailed helpers, GraphicsContext readback capabilities, pick registries/decoders, docs/specs.
+ - **Audit conclusion (2026-07-14):** the current async-first direction is correct, but the implementation is not yet a coherent WebGPU picking architecture. Confirmed defects include one depth lifetime across independently projected object-pick frustums, arbitrary-ray helpers reading the synchronous cache before submitting their query, incomplete cache identities shared across object/metadata/voxel work, reuse of one mapping-pending staging buffer by overlapping sync/async reads, all `PickDepth` objects observing one overwritten packed texture, full-viewport/dead readback allocations, and eager per-feature pick-ID/texture realization during ordinary rendering. A bespoke `pickFromRay` pack or more coordinate-only stale-cache exceptions would preserve the underlying defects.
+-- **Work:** define an immutable `PickQuery` carrying source (window position or ray), mode (`hover | precise | drill`), width/limit/exclusions, requested output channels (object ID, feature ID, depth/position, metadata, voxel, and optional normal), and exact context/device/scene/view/camera/resource generations. Define `PickResult`, cancellation/supersession, and error semantics. Make async query APIs authoritative for screen, drill, position/depth, ray/most-detailed, metadata, voxel, and height/clamp families. Preserve exact WebGL synchronous behavior. A WebGPU synchronous call may return only an already-complete result whose entire query/generation identity matches; otherwise it reports a documented, feature-detectable unsupported state. Delete stale prior-frame/location/property/pass substitution.
++- **Work:** define an immutable `PickQuery` carrying source (window position or ray), mode (`hover | precise | drill`), width/limit/exclusions, requested output channels (object ID, feature ID, depth/position, metadata, voxel, and optional normal), and exact context/device/scene/view/camera/resource generations. Define `PickResult`, cancellation/supersession, and error semantics. Make async query APIs authoritative for screen, drill, position/depth, ray/most-detailed, metadata, voxel, and height/clamp families. Preserve exact WebGL synchronous behavior. A WebGPU synchronous call may return only an already-complete result whose entire query/generation identity either matches or is proven invariant over the reprojection uncertainty separating that result's frame from the call — the identity-plateau predicate, which establishes the required match by proof rather than by pose comparison and holds only under the enumerated conditions it carries; otherwise it reports a documented, feature-detectable unsupported state. Delete stale prior-frame/location/property/pass substitution: a serve whose plateau conditions are not proven at the call is stale substitution, not a plateau.
+ - **Acceptance:** backend-neutral oracle/specs cover cold first query, repeat, moved cursor/ray, same coordinate with changed metadata property or query family, scene/camera mutation, resize, request-render pause, multi-frustum, concurrent/cancelled/superseded requests, destroyed context, and device-generation change. No query returns another query's object/depth/metadata/voxel result; WebGL sync remains unchanged; every async family matches the CPU/WebGL oracle; public types and capability reporting expose the exact sync policy.
+-- **Rollback:** retain the WebGL sync implementation and a context-creation-only WebGPU executor switch during migration; stale substitution is never a rollback mode.
++- **Rollback:** retain the WebGL sync implementation and a context-creation-only WebGPU executor switch during migration; stale substitution is never a rollback mode, and neither is widening the identity-plateau predicate past its proven conditions.
++- **Amended 2026-08-24 — `R-2026-08-24-1`** ([MAINTAINER_RULINGS_2026-08-24.md](MAINTAINER_RULINGS_2026-08-24.md)): the **Work** and **Rollback** bullets above gained the identity-plateau condition; the pre-amendment wording is preserved verbatim in that ruling. The prohibition on stale substitution is not relaxed — it is narrowed in wording only where a proof of identity invariance over the reprojection uncertainty exists, and an unproven plateau serve remains stale substitution. No other clause of this row changed. Applied only after the non-author review this row's **Size** line requires.
+ 
+ #### FAR-108 — Effects state ownership and cache containment
+ 

@@ -1,11 +1,23 @@
-# Next Session Handoff — 2026-08-24 (tiered wave; main @ `daaca4fde8` plus the 2026-08-24 landing group)
+# Next Session Handoff — 2026-08-24 (tiered wave; the 2026-08-24 landing group, Batches 1138+)
 
 ## Read these first
+
+**If you are Codex Sol without an orchestrator, read
+[`SOL_CONTINUATION_BRIEF_2026-08-24.md`](SOL_CONTINUATION_BRIEF_2026-08-24.md) first.** It carries
+the rules that apply when no Fable or Opus session is holding the git writes, the environment
+traps observed 2026-08-20 to 2026-08-24 and their mitigations, the bounded work list that can be
+executed solo, and the landing runbook shape — all with premises re-derived from the code rather
+than relayed. This file stays the record of where the session stopped; that one says how to carry
+it forward alone.
 
 [`SESSION_CLOSEOUT_2026-08-21.md`](SESSION_CLOSEOUT_2026-08-21.md) is the resumable record of the
 previous session — Batches 1129–1137 landed and pushed, ten worker clones retired, and the machine
 lane's owed runs recorded. [`MAINTAINER_RULINGS_2026-08-24.md`](MAINTAINER_RULINGS_2026-08-24.md)
-records `R-2026-08-24-1` through `R-2026-08-24-11`, taken across two sittings on 2026-08-24. Queue
+records `R-2026-08-24-1` through `R-2026-08-24-16`, taken across **five** sittings on 2026-08-24
+(~15:45, ~16:35-16:40, ~18:20, ~21:00 and ~21:55 ET) — `-12` (evidence-library repair) through
+`-15` (the `C11-62` clause-(b) ledger clause) were recorded with Batch 1148, and `-16` (the
+`C15-G6` precedence ruling) rides Batch 1157. None of `-12`…`-16` is covered by the one-line
+summaries below. Queue
 rows and `DEFERRED_WORK.md` remain the status authorities; this file only says where the next
 session picks up and what is owed.
 
@@ -36,6 +48,37 @@ session picks up and what is owed.
    `R-2026-08-24-10`: `drillPick` adopts the readiness predicate).
 
 ## Working-tree state
+
+**Updated 2026-08-24 ~22:45 ET, after the group pushed — re-derive the tip before relying on this;
+it moved twice while this paragraph was being written.** `main` is at `bb15651f42` (**Batch 1157**,
+the `C15-G6` multi-frustum instrument) and is **pushed**; `git log origin/main..main` is empty and
+the index is clean. Batch 1150 landed at 21:27, Batches 1151 through 1156
+between 22:01 and 22:04 (the C16 clustered-lighting/compute-instance, scene/architecture-tail,
+pick-plumbing and post-process/effects shards, C13-41 SOL-4 commissioning, and the `Scene.js`
+shard), and Batch 1157 at 22:12. **One batch remains pending:** 1158, the Sol continuation brief
+and this file's head edit. Batches 1138 through 1150 had landed since this file's
+first draft: the moon-mip
+readiness repair, probe hygiene, the C16 clean-list ratchet repair, the doc-dirt slices, the two
+split-out lane F fixes, C12 EXIT-3, the governance record, the pre-push commit-timestamp guard,
+C16-08a, the C12-33 certification on block `20260824b`, the C11-62 octree revision-domain fix,
+and the C11-170 gate. The branch inventory is `main` plus
+`remotes/origin/main` and the read-only `upstream/*` refs — no local safety or feature branches.
+The working tree is **not** clean and was moving throughout: 68 porcelain entries at 21:42, 71 at
+21:51, 34 at 22:04 as the shards committed out of it, and **31 after Batch 1157**. Those 31
+enumerate as: lane F's held point-cloud package (25 paths — 23 code/probe, of which five are
+untracked engine modules and one an untracked spec, plus the
+`QUEUE_2026-08-09_CAMPAIGN18.md` hunk-1 and `WEBGPU_DEBUGGING_LOG.md` doc residue), lane P's held
+`verify-landing-compliance.mjs` + `.spec.mjs` pair, this file and
+`SOL_CONTINUATION_BRIEF_2026-08-24.md` (both Batch 1158), and two further untracked paths —
+`migration_doc/pending/` (the rescued FAR-107 amendment draft) and
+`CODEX_FABLE_OPUS_CHANGE_AUDIT_2026-08-17.md`, which
+nothing currently cites and which needs a disposition. Anything else is a stray.
+Eleven worker clones remain at `F:/Dev/GH/cesium-worker-lane1` through `-lane11`; lane7 is an
+empty husk, lane8 and lane10 are held by orphaned codex
+`node_repl.exe` sandbox processes, and lane11 is lane F with its 30-path package. Lanes 1, 2, 3,
+4, 5, 6 and 9 have landed their batches and are retirable now (lane6 was lane H, landed as 1157).
+Retire each only
+after its batch is pushed, evidence repatriated, junction first.
 
 The 51 held dirty paths at `daaca4fde8` were classified path-by-path and disentangled. The
 non-lane-F work lands in this group; **lane F — the 26-path C18-P point-cloud / EDL / GPU-LOD /

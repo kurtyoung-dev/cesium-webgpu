@@ -34,3 +34,4 @@ Tools/visual-regression/fixtures/nasa-svs-5073/*.prj -text
 Tools/visual-regression/fixtures/nasa-svs-5073/manifest.json text eol=lf
 Tools/visual-regression/fixtures/nasa-svs-5073/NOTICE.md text eol=lf
 Tools/visual-regression/fixtures/nasa-svs-5073/*.mjs text eol=lf
+migration_doc/pending/*.diff -text
