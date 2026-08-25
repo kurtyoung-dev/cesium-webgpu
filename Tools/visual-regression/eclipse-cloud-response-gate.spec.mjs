@@ -3144,7 +3144,7 @@ test("I32b a declared segment count its own per-frame telemetry does not support
     `data:text/javascript;base64,${Buffer.from(mutantSource).toString("base64")}`
   );
   const mutant = computeCost(accounting, mutantModule.computeRefreshCost);
-  // With the cross-check inert the run is STILL refused  but by the aggregate
+  // With the cross-check inert the run is STILL refused — but by the aggregate
   // comparison, and the number it names is the DERIVED total, not the declared
   // one. That is the proof the declared field never becomes operative: even
   // with its guard removed there is no path on which it is the denominator.
@@ -3228,7 +3228,7 @@ test("I32c a ledger that did not close names every counter that tripped, with it
 
   // R5 INERTNESS: drop readbackSkipCount from the table. The probe derives BOTH
   // its detection and its message from this one table, so a dropped counter
-  // stops being reported AND stops being detected  which is why the table is
+  // stops being reported AND stops being detected — which is why the table is
   // here and not embedded in the probe.
   const gateSource = fs
     .readFileSync(
@@ -4652,7 +4652,7 @@ test("J10b the beer floor caps the residue share, and the deck-like share exceed
   );
 
   // requiredResidueDim is DECREASING in share, so the ceiling is a FLOOR on the
-  // residue's own dimming  and that floor is ABOVE the measured deck ratio,
+  // residue's own dimming — and that floor is ABOVE the measured deck ratio,
   // which is why the deck alone cannot carry the excess.
   const locus = verdict.shadowResidueDimLocus;
   for (let i = 1; i < locus.length; i++) {

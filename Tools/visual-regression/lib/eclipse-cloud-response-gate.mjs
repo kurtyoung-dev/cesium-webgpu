@@ -1570,7 +1570,7 @@ function readRefreshCostRefreshWitness(segment, backend, label) {
   // Both backends retain one witness per frame, so the count this function
   // returns is DERIVED from the per-frame evidence and is what the cost
   // arithmetic divides by. `segment.refreshes` is cross-checked against it and
-  // is never itself operative  a probe cannot declare a denominator.
+  // is never itself operative — a probe cannot declare a denominator.
   const submissions = segment.refreshSubmissions;
   const frameIds = segment.refreshFrameIds;
   const wantsFrameIds = backend !== "webgl";
