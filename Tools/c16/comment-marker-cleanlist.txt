@@ -658,3 +658,6 @@ packages/engine/Source/Renderer/WebGPU/WebGPUUserPostProcessStage.ts
 packages/engine/Source/Renderer/WebGPU/WebGPUGBufferRenderer.ts
 packages/engine/Source/Renderer/WebGPU/WebGPUOIT.ts
 packages/engine/Source/Scene/GBufferFramebuffer.js
+# Scene architecture family. Current publication, ordering, and backend-routing
+# constraints remain beside the code.
+packages/engine/Source/Scene/Scene.js

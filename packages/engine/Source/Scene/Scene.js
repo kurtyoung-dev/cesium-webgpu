@@ -129,9 +129,8 @@ import {
   executeWebVRCommands,
 } from "./ViewportExecutor.js";
 
-// Track V-A3 — scratch for the local-up vector passed to the atmosphere-
-// derived lighting (camera position direction). Module-scope to avoid a
-// per-frame allocation.
+// Scratch storage keeps atmosphere-derived lighting allocation-free while it
+// uses the camera-position direction as the local up vector.
 const scratchAtmosphereUp = new Cartesian3();
 
 const requestRenderAfterFrame = function (scene) {
@@ -468,10 +467,9 @@ class Scene {
           `contextId=${context.id ?? "?"}`,
       );
     } else if (context.requiresSceneRenderer) {
-      // CRITICAL error — the context's backend contract requires a
-      // `SCENE_RENDERER` FR (it owns the canvas blit / post-process
-      // composite). Without it the canvas stays black. WebGPU sets this
-      // predicate; WebGL leaves it at the default `false`.
+      // A context that requires an alternate scene renderer also delegates
+      // canvas blitting and post-process composition to it. Without that
+      // renderer, the context cannot present the scene.
       console.error(
         `[Scene:${context.rendererType}] CRITICAL — scene renderer NOT CREATED. ` +
           `SCENE_RENDERER FR not found (key=${FeatureRendererKey.SCENE_RENDERER}). ` +
@@ -483,15 +481,10 @@ class Scene {
     // WebGL scenes don't use _alternateSceneRenderer — they run the
     // traditional executeCommand path in SceneRenderer.js. No log needed.
 
-    // B213-O2 (Batch 219) + B219-N4 (Batch 225 audit fix) — register
-    // HDR fallback listener so this scene's `_useHDRCanvasOutput`
-    // follows the canvas reality when the context's extended-
-    // toneMapping configure fails (e.g., older browser) and the
-    // context demotes itself to SDR. Each Scene attached to the
-    // context registers its own listener via the Set-based API so
-    // multi-scene-per-context configs (split-screen, PiP) all sync
-    // — the prior single-slot design only synced the last-installed
-    // scene.
+    // Keep this scene's canvas-output state synchronized when extended tone
+    // mapping configuration fails and the context falls back to SDR. Each
+    // scene registers independently because a context may be shared by
+    // multiple scenes.
     this._hdrFallbackUnsub = null;
     if (
       defined(context) &&
@@ -504,28 +497,19 @@ class Scene {
       });
     }
 
-    // NEW-WEBGPU-PIPELINE-READY-SIGNAL (Phase 1) — subscribe to the
-    // context's async resource monitor so this scene wakes itself up
-    // when an inflight WebGPU pipeline / shader / texture upload
-    // resolves after the scene has hibernated. WebGL contexts don't
-    // expose `asyncResources` (the field is undefined), so the
-    // optional chain skips the subscription entirely — WebGL paths
-    // pay zero overhead. The corresponding `pendingCount` read in the
-    // `shouldRender` gate is the defense-in-depth path that keeps
-    // frames rendering while inflight, even if the subscriber fan-out
-    // is dropped for any reason.
+    // Subscribe when the context exposes asynchronous resources so a resolved
+    // pipeline, shader, or texture request wakes a request-render scene. The
+    // pending-resource check below also keeps rendering active while
+    // foreground work remains.
     this._asyncResourceUnsub = null;
     const asyncResources = context?.asyncResources;
     if (
       defined(asyncResources) &&
       typeof asyncResources.subscribe === "function"
     ) {
-      // Phase 6 — pass `sceneId` so the monitor can filter events
-      // scoped to other scenes' work (multi-context split-screen).
-      // For tokens without an `ownerSceneIds` set (the default — most
-      // pipelines are shared across scenes attached to the same
-      // context), every subscriber fires regardless of `sceneId`,
-      // matching the Phase 1 behavior.
+      // Pass the scene identifier so owned work wakes only its scene. Tokens
+      // without owners represent resources shared by every scene on the
+      // context and notify every subscriber.
       this._asyncResourceUnsub = asyncResources.subscribe(
         (event) => {
           if (event.kind !== "resolved") {
@@ -552,23 +536,21 @@ class Scene {
     }
 
     /**
-     * The render scheduler manages layered sorting, material batching,
-     * and predictive sort queries. Sits above CesiumJS's 5 existing
-     * sorting mechanisms and unifies them.
+     * Manages layered sorting, material batching, and predictive sort
+     * queries for scene commands.
      * @type {RenderScheduler}
      * @private
      */
     this._renderScheduler = new RenderScheduler();
 
-    // SORT-11: Auto-configure octree root half-extent for the scene's ellipsoid
-    // This ensures non-Earth bodies (Moon, Mars) have correctly-sized octree bounds.
+    // Size the octree root from the scene ellipsoid so non-Earth bodies retain
+    // valid bounds.
     this._renderScheduler.octree.rootHalfExtent =
       this._ellipsoid.maximumRadius * 1.1;
 
-    // FAR-003 containment: the current GPU cull/HiZ/sort pipelines map
-    // results back to CPU command arrays and are not safe auto defaults.
-    // Publish the safe policy to the context before the first frame so lazy
-    // culler getters (including shadow paths) cannot allocate implicitly.
+    // GPU culling, Hi-Z, and sorting map results back to CPU command arrays and
+    // therefore remain disabled by default. Publish the policy before the
+    // first frame so lazy culler access cannot allocate those resources.
     this._gpuCullingHint = "never";
     if (typeof context.setGpuCullingHint === "function") {
       context.setGpuCullingHint("never");
@@ -851,10 +833,9 @@ class Scene {
      * and culling/refinement bugs without leaving the running scene.
      * </p>
      * <p>
-     * WebGPU only — the WebGL terrain pipeline does not currently expose a
-     * wireframe variant. The wireframe pipeline mirrors the production
-     * pipeline's vertex layout exactly so it works on every quantization
-     * + normal + WebMercator + stride combination.
+     * The WebGPU wireframe pipeline uses the same vertex layout as the
+     * production terrain pipeline, including quantization, normals,
+     * WebMercator coordinates, and stride. Other contexts ignore this flag.
      * </p>
      *
      * @type {boolean}
@@ -928,8 +909,7 @@ class Scene {
      * When <code>true</code>, the WebGPU globe surface renderer outputs
      * the eye-space surface normal as RGB color (remapped from [-1,1]
      * to [0,1]). Useful for verifying that vertex normals are interpolating
-     * correctly and that the WGF-5 normal-map shader chain produces
-     * sensible results.
+     * correctly through the normal-map shader chain.
      * </p>
      *
      * @type {boolean}
@@ -963,12 +943,10 @@ class Scene {
      * This property is for debugging only; it is not for production use.
      * <p>
      * When set to <code>true</code>, the WebGPU globe surface renderer
-     * dumps the next 4 tile updates to the console with the full imagery
-     * probe payload (encoding, stride, ready imagery state, texture
-     * coordinate rectangle, translation+scale, sample vertex UVs). Used
-     * for the BUG-11 imagery investigation. The flag latches at the
-     * 4-tile mark — set it back to <code>false</code> and re-set to
-     * <code>true</code> to capture another batch.
+     * logs the next four tile updates with their imagery diagnostics,
+     * including encoding, stride, readiness, texture coordinates,
+     * translation and scale, and sample vertex coordinates. The flag latches
+     * after four updates; toggle it off and on to start another capture.
      * </p>
      * <p>
      * Off by default; the diagnostic does nothing in normal renders.
@@ -1020,7 +998,7 @@ class Scene {
      * <p>
      * Eye-space distance window (meters) for the depth-as-color overlay. When
      * <code>debugDepthWindowMax &gt; debugDepthWindowMin</code>, the overlay
-     * (modes 3/4) spends the FULL color range on the linear-eye-z band
+     * (modes 3/4) spends the full color range on the linear-eye-z band
      * <code>[min, max]</code> instead of the whole <code>[near, far]</code>
      * range — so two near-identical depths (e.g. a building at 188.1 m vs the
      * terrain under it at 188.4 m) become distinct hues. Use
@@ -1042,14 +1020,11 @@ class Scene {
     /**
      * This property is for debugging only; it is not for production use.
      * <p>
-     * When <code>true</code>, the ellipsoid depth-plane render is skipped (both
-     * backends). The depth plane is drawn between the globe and 3D-Tiles when
-     * <code>clearGlobeDepth</code> is active (the default, since
-     * <code>depthTestAgainstTerrain</code> defaults false) so primitives on the
-     * globe backface aren't picked. This toggle bisects whether the depth plane
-     * is what occludes terrain-flush 3D-Tiles / b3dm on WebGPU (DEFERRED_WORK
-     * C-R9): if content reappears with this on, the depth plane writes a depth
-     * nearer than the content. Use {@link CesiumDebug#skipDepthPlane}.
+     * When <code>true</code>, omits the ellipsoid depth plane used with
+     * <code>clearGlobeDepth</code>. The plane prevents primitives behind the
+     * globe from being picked, and skipping it isolates whether its depth
+     * writes occlude terrain-flush content. Use
+     * {@link CesiumDebug#skipDepthPlane}.
      * </p>
      * @type {boolean}
      * @default false
@@ -1155,7 +1130,7 @@ class Scene {
       context: context,
       lightCamera: this._shadowMapCamera,
       enabled: options.shadows ?? false,
-      // `cascadesEnabled` stays at its default `true` on BOTH backends. It does
+      // `cascadesEnabled` stays at its default `true` on both backends. It does
       // not merely pick a pass count: it selects the whole directional-light
       // lifecycle — the orthographic light frustum, `fitShadowMapToScene`, the
       // below-horizon cull, terminator darkness fade, and the every-frame
@@ -1177,17 +1152,9 @@ class Scene {
     this.invertClassification = false;
 
     /**
-     * Phase 8a (Batch 80, Slice 2 — Batch 85, Slice 2b — Batch 86) —
-     * enables the depth-prepass + normal G-buffer producer pass on the
-     * WebGPU backend. When <code>true</code>, the scene runs an extra
-     * compute pass after the main scene render that reconstructs
-     * eye-space normals from the depth buffer and writes them into
-     * <code>view.gBufferFramebuffer</code>. Future Slice 4+ rewires
-     * SSAO / SSR / clustered lighting consumers to read from this
-     * G-buffer instead of reconstructing normals themselves.
-     *
-     * No-op on the WebGL backend (the WebGPU backend gates the producer
-     * on this flag + compute-shader capability).
+     * When <code>true</code>, WebGPU runs the depth-derived normal producer
+     * and writes eye-space normals to
+     * <code>view.gBufferFramebuffer</code>. WebGL ignores this option.
      *
      * @type {boolean}
      * @default false
@@ -1195,14 +1162,11 @@ class Scene {
     this.deferredLighting = false;
 
     /**
-     * Phase 8a Slice 2c (Batch 89) — debug toggle that replaces the
-     * production post-process chain with a fullscreen blit of
-     * `view.gBufferFramebuffer.normalRoughnessTexture` as a normal-map
-     * visualization. Activated via `CesiumDebug.showGBufferNormals()`.
-     *
-     * No-op on WebGL backend. Requires
-     * {@link Scene#deferredLighting} to be enabled for the G-buffer
-     * to populate this frame.
+     * Displays
+     * <code>view.gBufferFramebuffer.normalRoughnessTexture</code> as a
+     * normal-map visualization. Enable {@link Scene#deferredLighting} to
+     * populate the depth-derived G-buffer; enabling only this overlay uses the
+     * magenta missing-producer fallback. WebGL ignores this option.
      *
      * @type {boolean}
      * @default false
@@ -1241,28 +1205,21 @@ class Scene {
      */
     this.postProcessStages = new PostProcessStageCollection();
 
-    // ── WebGPU environmental effects (opt-in) ──
     this._enableSSR = false;
 
-    // Slice 5c-B Batch 123 — NPR outline pass (WebGPU only). Reads
-    // G-buffer slot 1 + scene depth, paints silhouette / crease edges.
-    // Off by default — hard outlines clash with the photorealistic
-    // globe presentation; opt-in via `scene.enableNPROutlines = true`.
+    // Requests the WebGPU outline pass, which uses scene depth and eye-space
+    // normals to paint silhouette and crease edges. It is opt-in because hard
+    // outlines conflict with the photorealistic globe presentation. WebGL
+    // ignores the option.
     this._enableNPROutlines = false;
 
-    // Slice 5c-B Batch 133 — screen-space contact shadows (WebGPU
-    // only). Reads G-buffer slot 1 + scene depth, marches the sun
-    // direction in eye-space and darkens fragments where a
-    // screen-space occluder is within the marched distance. Off by
-    // default — opt-in via `scene.enableContactShadows = true`.
+    // Requests screen-space contact shadows using scene depth, eye-space
+    // normals, and the Sun direction. WebGL ignores the option.
     this._enableContactShadows = false;
 
-    // Slice 5d Batch 150 — Forward+ clustered lighting. When true and
-    // `scene.lights.length > 0`, the WebGPU SceneRenderer dispatches
-    // the cluster-bounds + cluster-assign compute passes each frame
-    // and binds the resulting storage buffers to consumer material
-    // pipelines (Model PBR + Lit Mat shaders). Default false — opt-in.
-    // No-op on WebGL.
+    // Requests WebGPU clustered-light bounds and assignment passes when the
+    // scene has punctual lights, with their storage buffers exposed to
+    // participating material pipelines. WebGL ignores the option.
     this._clusteredLightingEnabled = false;
     this._enableWeather = false;
     this._weatherType = 0;
@@ -1275,10 +1232,8 @@ class Scene {
     this._performanceDisplay = undefined;
     this._debugVolume = undefined;
 
-    // C12-27 — reusable per-scene resolution of the angular solar-glare
-    // washout, filled by `updateEnvironment` and published on `frameState`.
-    // Per-Scene rather than module-scope so two Scenes (split-screen, mixed
-    // backends) never share one buffer.
+    // Keep the resolved solar-glare appearance per scene so concurrent scenes
+    // never share mutable scratch state.
     this._solarGlareAppearance = undefined;
 
     this._screenSpaceCameraController = new ScreenSpaceCameraController(this);
@@ -1303,9 +1258,8 @@ class Scene {
       isSkyAtmosphereVisible: false,
 
       clearGlobeDepth: false,
-      // C12-37 — reusable private handoff into Moon.update.  Kept on the
-      // environment state so the ordinary render hot path allocates no options
-      // object per frame.
+      // Reuse this private options object for Moon.update so the frame handoff
+      // remains allocation-free.
       moonDepthRouteState: {
         clearGlobeDepth: false,
       },
@@ -1355,14 +1309,10 @@ class Scene {
     this.taaEnabled = options.taaEnabled ?? false;
 
     /**
-     * C6-VELOCITY-MOTION-BLUR — when true (WebGPU only), a velocity-buffer
-     * motion-blur post-process smears fast-moving content along its
-     * screen-space velocity. Velocity is derived from the same data TAA
-     * consumes: the per-pixel model MRT velocity (object motion) and camera
-     * reprojection from depth (whole-scene camera motion). Best for fast
-     * camera pans / fly-to and CZML/animation playback. Opt-in, default off →
-     * byte-identical when off (the effect is never instantiated). No effect
-     * on WebGL.
+     * When <code>true</code>, WebGPU applies motion blur using geometry
+     * velocity for object motion and depth reprojection for camera motion. The
+     * disabled path does not instantiate the effect. WebGL ignores this
+     * option.
      *
      * @type {boolean}
      * @default false
@@ -1370,15 +1320,11 @@ class Scene {
     this.motionBlur = options.motionBlur ?? false;
 
     /**
-     * Track V-A2 (NEW-ATMO-AERIAL-PERSPECTIVE-POSTPROCESS) — when true (WebGPU
-     * only), a unified per-pixel aerial-perspective atmosphere post-process
-     * applies one depth-correct haze (transmittance extinction + inscatter)
-     * over the WHOLE scene (terrain, 3D tiles, glTF models, geometry),
-     * replacing the per-tile ground-atmosphere drape. Distant features dim,
-     * redden, and gain inscattered sky light exactly like real aerial
-     * perspective. The in-globe ground-atmosphere/fog drape is gated OFF while
-     * this is active so the two don't double-apply; the sky/atmosphere shell
-     * (WebGPUSkyAtmosphereRenderer) is left untouched. No effect on WebGL.
+     * When <code>true</code>, WebGPU applies depth-correct atmospheric
+     * extinction and inscatter across terrain, 3D Tiles, models, and geometry.
+     * The globe's local distance-haze drape is disabled to avoid applying haze
+     * twice, while the sky shell remains independent. WebGL ignores this
+     * option.
      *
      * @type {boolean}
      * @default false
@@ -1386,14 +1332,11 @@ class Scene {
     this.aerialPerspective = options.aerialPerspective ?? false;
 
     /**
-     * Item 2.3 (AERIAL-FROXEL) — when true (WebGPU only, and only while
-     * {@link Scene#aerialPerspective} is also true), the aerial-perspective
-     * atmosphere is evaluated from a pre-baked 32³ froxel volume (one trilinear
-     * fetch per pixel, Hillaire 2020) instead of the per-pixel analytic march.
-     * Decouples the cost from screen resolution and is temporally stable. Both
-     * flags default false → no aerial perspective at all in the parity default;
-     * turning this on with {@link Scene#aerialPerspective} on swaps the analytic
-     * march for the froxel fast path. No effect on WebGL.
+     * When <code>true</code> with {@link Scene#aerialPerspective}, WebGPU
+     * samples a 32 &times; 32 &times; 32 Hillaire 2020 froxel volume instead
+     * of evaluating the analytic atmosphere march per pixel. The post-process
+     * performs one trilinear volume lookup per pixel. Both options default to
+     * <code>false</code>. WebGL ignores this option.
      *
      * @type {boolean}
      * @default false
@@ -1419,9 +1362,8 @@ class Scene {
      * cascade texel density stays similar when the number of cascades
      * stays the same.
      *
-     * Change BEFORE enabling `useCascadedShadowMaps` — the texture is
-     * allocated on first CSM frame and will NOT re-allocate if the value
-     * changes later (future slice can add a re-allocation hook).
+     * Set this before enabling `useCascadedShadowMaps`; initialized CSM
+     * resources retain their allocation settings.
      *
      * Valid range: 256..4096. Values outside the range are clamped.
      *
@@ -1438,9 +1380,8 @@ class Scene {
      * false, each cascade is sampled with a single hardware-comparison
      * tap, producing hard aliased shadow edges.
      *
-     * Read once at CSM init time (the first CSM frame); like
-     * `cascadedShadowMapResolution`, change it BEFORE enabling
-     * `useCascadedShadowMaps`.
+     * Set this before enabling `useCascadedShadowMaps`; it is read during CSM
+     * initialization.
      *
      * @type {boolean}
      * @default true
@@ -1448,39 +1389,28 @@ class Scene {
     this.cascadedShadowMapSoftShadows =
       options.cascadedShadowMapSoftShadows ?? true;
 
-    // Bumped by subsystems that mutate scene-visible state in ways that
-    // invalidate frozen render bundles. Used by the snapshot/locked-orbit
-    // mode (future Phase 0.7) to know when to discard cached bundles.
-    // Currently bumped only by Cesium3DTilesInvalidationFeed.apply().
+    // This monotonic revision advances when scene-visible mutations invalidate
+    // frozen render bundles. Snapshot mode compares it with the captured
+    // baseline and thaws stale caches.
     this._snapshotVersion = 0;
 
-    // Adaptive visual quality coordinator. Disabled by default — features
-    // register probes/sinks against this surface so the auto-tuner (future
-    // phase) can scale them to hit a target framerate. See
-    // VisualPerformanceTargetService for the contract.
+    // The adaptive visual-quality coordinator exposes probe and sink
+    // registration through VisualPerformanceTargetService and is disabled by
+    // default.
     this._visualPerformanceTarget = new VisualPerformanceTargetService();
 
-    // Snapshot / locked-orbit mode coordinator. Disabled by default —
-    // freezable subsystems (WebGPURenderBundleManager in Phase 1+, fog
-    // froxel grids in Phase 2) register here so the service can ask
-    // them to freeze/thaw their caches in lockstep. Reconciles against
-    // `_snapshotVersion` (see below) to auto-thaw on invalidation.
+    // Freezable resources register with the snapshot-mode coordinator so their
+    // caches freeze and thaw together. The snapshot revision triggers
+    // invalidation.
     this._snapshotMode = new SnapshotModeService();
 
-    // Phase 2 perf benchmarking — backend-neutral trace recorder.
-    // Inactive by default; activated by `Scene.beginPerformanceTrace()`
-    // and ticked once per rendered frame between begin/end. While
-    // inactive its `sample()` is a one-comparison no-op so production
-    // scenes pay nothing.
+    // The backend-neutral performance recorder samples rendered frames only
+    // while a trace is active; the inactive path is a bounded no-op.
     this._performanceTracker = new PerformanceTracker();
 
-    // Phase 6 audit fix — primitive collection mutations now bump
-    // `_snapshotVersion` so SnapshotModeService.tick() can auto-thaw
-    // on the next frame. Without this, adding/removing entities or
-    // tilesets while frozen would silently leak the new state out
-    // of the bundle cache (or fail to render the new content at all).
-    // Cesium3DTilesInvalidationFeed.apply() also bumps this for tile
-    // refines; here we cover the coarser collection-level mutations.
+    // Primitive and ground-primitive collection changes advance the snapshot
+    // revision so frozen bundles thaw before added or removed content can
+    // become stale. Tile refinements use the same invalidation channel.
     const bumpSnapshotVersion = () => {
       this._snapshotVersion = (this._snapshotVersion ?? 0) + 1;
     };
@@ -1552,10 +1482,9 @@ class Scene {
     this._view = this._defaultView;
 
     // Deterministic late-construction failure point for transactional cleanup
-    // specs. This sits after both process-wide listeners and the default View
-    // have been created, which is the first point where all of the ownership
-    // edges involved in the historical leak coexist. Debug pragmas remove the
-    // hook from production bundles.
+    // specs. It follows creation of the process-wide listeners and default
+    // View so the rollback path exercises all of their ownership edges. Debug
+    // pragmas remove the hook from production bundles.
     //>>includeStart('debug', pragmas.debug);
     if (typeof options._constructionFailureForSpecs === "function") {
       options._constructionFailureForSpecs(
@@ -1570,14 +1499,10 @@ class Scene {
     this.highDynamicRange = false;
     this.gamma = 2.2;
 
-    // C12-28 (NEW-HDR-DEFAULT-ON-HDR-CAPABLE-DISPLAYS) — the assignment above
-    // is the historical hardcoded SDR base state and stays exactly as it was;
-    // display detection is what may lift it, and only on a display that can
-    // actually show the result. `_hdrUserSet` is cleared here because the
-    // constructor's own `highDynamicRange = false` went through the public
-    // setter and would otherwise count as an application override, pinning
-    // every scene to SDR forever. See `Scene/HdrDisplayCapability.js` for the
-    // decision rules; `Scene#hdrDisplayPolicy` is the escape hatch.
+    // Begin from the SDR base state. Display capability detection may enable
+    // HDR when the selected policy permits it, while an explicit application
+    // assignment remains authoritative. Clear the ownership flags because the
+    // constructor assignment uses the public setter.
     this._hdrUserSet = false;
     this._useHDRCanvasOutputUserSet = false;
     this._hdrDisplayPolicy = HdrDisplayPolicy.SCENE;
@@ -1604,14 +1529,10 @@ class Scene {
      */
     this.light = new SunLight();
 
-    // Track V-A3 (NEW-ATMO-DERIVED-LIGHTING) — a private SunLight whose
-    // colour/intensity is re-derived each frame from the atmosphere (sun
-    // transmittance) when `aerialPerspective` is enabled (WebGPU). Published
-    // as `frameState.light` ONLY while aerial perspective is on, so discrete
-    // models are lit by the same sun that produces the post-process haze. The
-    // user's `scene.light` is never mutated (turning aerial perspective off
-    // restores it untouched). The sky-irradiance ambient is published
-    // alongside on `frameState.atmosphereSkyIrradiance`.
+    // A private SunLight carries atmosphere-derived color and intensity while
+    // aerial perspective is enabled so model lighting and atmospheric haze
+    // remain coherent. The application-owned scene light remains unchanged,
+    // and sky irradiance is published separately.
     this._atmosphereDerivedLight = new SunLight();
     this._atmosphereSkyIrradiance = new Cartesian3(0.2, 0.2, 0.2);
 
@@ -1654,10 +1575,8 @@ class Scene {
      */
     this._enablePlanarFillId = false;
 
-    // Phase 0.3: wire canonical facades onto the Globe. Runs after
-    // `this.atmosphere`, `this.fog`, and `this.skyAtmosphere` are all set up
-    // because the facade reads from those during property access. See
-    // `Scene/AtmosphericConditions.js` and `Scene/GlobeWater.js`.
+    // Publish the canonical globe facades after atmosphere, fog, and sky
+    // objects exist because their accessors resolve those objects.
     if (defined(this._globe)) {
       this._globe._atmosphericConditions = new AtmosphericConditions(
         this,
@@ -1809,10 +1728,6 @@ class Scene {
     );
     return { ...result, countReferences: false };
   }
-
-  // ═══════════════════════════════════════════════════════════
-  // GETTERS AND SETTERS
-  // ═══════════════════════════════════════════════════════════
 
   /**
    * Gets the canvas element to which this scene is bound.
@@ -2048,9 +1963,8 @@ class Scene {
    * @readonly
    */
   get triangulationDebugSupported() {
-    // Backend-neutral probe. WebGL returns false (no utils module);
-    // WebGPU reports true once both its device and primitive-index-utils
-    // cache are ready. Scene.js no longer peeks at `_primitiveIndexUtilsCache`.
+    // WebGL reports false because it does not expose the primitive-index
+    // utility. WebGPU reports true only after the device and utility are ready.
     return this._context?.supportsTriangulationDebug === true;
   }
 
@@ -2074,22 +1988,17 @@ class Scene {
   }
 
   set globe(globe) {
-    // No-op when the new globe IS the current globe. `Viewer.createAsync`
-    // re-runs `CesiumWidget`'s constructor on the pre-initialized scene
-    // (passing the same `options.globe` instance), which used to land here
-    // and run `this._globe.destroy()` on the live globe before re-binding
-    // it — wiping `_surface` and crashing `updateGlobeListeners`'s call to
-    // `globe.imageryLayersUpdatedEvent` (`_surface.tileProvider`). Guarding
-    // here keeps WebGL parity intact (the WebGL path never re-assigned the
-    // same globe, so this branch was unreachable on it).
+    // Preserve a live globe when asynchronous widget initialization assigns
+    // the same instance. Destroying it before rebinding would erase surface
+    // state required by the globe listeners.
     if (this._globe === globe) {
       return;
     }
     this._globe = this._globe && this._globe.destroy();
     this._globe = globe;
 
-    // Phase 0.3: re-wire canonical facades on the new Globe. See
-    // `Scene/AtmosphericConditions.js` and `Scene/GlobeWater.js`.
+    // Rebind the canonical facades because their accessors resolve through the
+    // current globe.
     if (defined(globe)) {
       globe._atmosphericConditions = new AtmosphericConditions(this, globe);
       globe._water = new GlobeWater(this, globe);
@@ -2113,13 +2022,10 @@ class Scene {
   }
 
   /**
-   * Snapshot / locked-orbit mode coordinator. When enabled and entered,
-   * tells registered freezable subsystems (e.g. the WebGPU render
-   * bundle manager) to treat their current cache state as frozen for
-   * the duration of the snapshot, yielding a Babylon-style FAST mode
-   * speedup for static scenes (presentation mode, slow guided tours,
-   * inspection cameras). Auto-thaws when `scene._snapshotVersion`
-   * advances past the captured baseline. Disabled by default.
+   * Snapshot mode coordinator for static scenes. Registered freezable
+   * subsystems retain their cache state while a snapshot is active and thaw
+   * when `scene._snapshotVersion` advances beyond the captured baseline.
+   * Disabled by default.
    *
    * @type {object}
    * @readonly
@@ -2129,26 +2035,21 @@ class Scene {
   }
 
   /**
-   * Phase 6C — Notify the active snapshot that scene state has
-   * changed in a way that the version-counter / camera-delta paths
-   * can't catch on their own. Forces an auto-thaw of any active
-   * snapshot so cached bundles get rebuilt against the new state.
+   * Notifies the active snapshot that scene state changed outside the
+   * version-counter and camera-delta paths. This thaws frozen caches so they
+   * rebuild against the new state.
    *
    * Typical callers:
-   *   - User `postUpdate` listeners that mutate entity properties
-   *     (the snapshot service has no way to detect mutations
-   *     performed by JS handlers, so the contract is that the
-   *     handler calls `scene.markSnapshotDirty(reason)` when it
-   *     changes anything visible)
+   *   - User `postUpdate` listeners that mutate visible entity properties
    *   - Animation systems on first tick of a new clip
-   *   - The HDR / log-depth toggle (already wired internally —
-   *     listed here for completeness)
+   *   - HDR or logarithmic-depth changes
    *   - Volumetric fog quality dial changes mid-snapshot (the
    *     froxel grid resolution can't change inside a frozen frame)
    *
-   * Idempotent and safe to call when no snapshot is active. The
-   * `reason` is captured in `scene.snapshotMode.getStatistics()`
-   * for diagnostics.
+   * Callers that make changes the service cannot observe must call
+   * `scene.markSnapshotDirty(reason)`. The call is idempotent when no snapshot
+   * is active, and the reason is available from
+   * `scene.snapshotMode.getStatistics()` for diagnostics.
    *
    * @param {string} [reason] Human-readable reason for the dirty
    *   notification. Defaults to a generic placeholder.
@@ -2160,8 +2061,8 @@ class Scene {
   }
 
   /**
-   * Phase 6 debug surface — returns a structured diagnostic snapshot
-   * of the entire scene. Aggregates state from every subsystem with a
+   * Returns a structured diagnostic snapshot of the scene. Aggregates state
+   * from every subsystem with a
    * `getStatistics()` accessor: snapshot mode, VPT, the renderer
    * (bundle cache, fog, perf manager), the moon, and the current debug
    * toggles. Pure read; safe to call from any callback at any time.
@@ -2222,7 +2123,8 @@ class Scene {
                 ? null
                 : "no-sort-work-this-frame"
               : "contained-dead-command-stream",
-          // C9-08: default-path stable-material-ID maintenance is demand-gated.
+          // Stable material identifiers are maintained only while a consumer
+          // needs them, avoiding default-path scheduler work.
           materialIdMaintenance: {
             consumers: this._renderScheduler?.stableMaterialIdConsumers ?? 0,
             ranThisFrame:
@@ -2231,9 +2133,9 @@ class Scene {
             framesSkipped:
               this._renderScheduler?.materialIdMaintenanceSkips ?? 0,
           },
-          // C9-08: SceneOctree is opt-in; at defaults it does zero build work
-          // and never owns terrain/3D-Tiles/voxels (only OPAQUE/TRANSLUCENT
-          // primitive commands are octree-eligible).
+          // SceneOctree is opt-in and accepts only opaque or translucent
+          // primitive commands; terrain, 3D Tiles, and voxels never enter it.
+          // At default settings it is inactive and performs no build work.
           octree: {
             enabled: this._renderScheduler?.octree?.enabled === true,
             builtThisFrame: this._renderScheduler?.octree?.isBuilt === true,
@@ -2244,10 +2146,10 @@ class Scene {
         },
       },
       moon: null,
-      // C10-01: number of depth frustums the last frame split into. The default
-      // 3D scene collapses to 1 (WebGL parity) once BV-less Pass.ENVIRONMENT
-      // commands stop widening near/far in View.createPotentiallyVisibleSet; a
-      // regression that re-introduces a BV-less near/far widener shows up here.
+      // Report the current view's depth-frustum count. Environment commands
+      // without bounding volumes must not widen its near/far range, allowing
+      // the default 3D scene to use one frustum; the sky-only fallback may use
+      // two.
       frustums: {
         count: this._view?.frustumCommandsList?.length ?? 0,
       },
@@ -2294,9 +2196,8 @@ class Scene {
         snap.renderer = { error: String(e?.message ?? e) };
       }
     }
-    // C9-09-ATTACHMENT-DEMAND-REGISTRY — the canonical per-frame attachment
-    // demand record + actual measured scene-FB topology (WebGPU only; the
-    // method is absent on the WebGL context, so this stays null there).
+    // Report per-frame attachment demand and the measured scene-framebuffer
+    // topology when the context exposes those statistics.
     snap.attachmentDemand = null;
     if (
       defined(this._context) &&
@@ -2318,10 +2219,8 @@ class Scene {
         snap.moon = { error: String(e?.message ?? e) };
       }
     }
-    // Batch 217 — high-density GPU cull / HiZ / sort-keys diagnostics.
-    // Pulls per-frame effectiveness counters from the WebGPU scene
-    // renderer when present. WebGL has no equivalent path; the field
-    // simply stays absent.
+    // Include high-density GPU-culling, Hi-Z, and sort-key counters when the
+    // alternate renderer exposes them; otherwise leave the field absent.
     if (
       defined(this._alternateSceneRenderer) &&
       typeof this._alternateSceneRenderer.getHighDensityCullStats === "function"
@@ -2350,17 +2249,8 @@ class Scene {
   }
 
   /**
-   * Phase 6 debug surface — pretty-print the result of
-   * {@link Scene#getDebugSnapshot} to the console using grouped
-   * sections and `console.table()` for tabular sub-objects. Designed
-   * for ad-hoc developer use from DevTools or postUpdate callbacks.
-   *
-   * Quiet by default — calling this is the only way to see the dump.
-   * Production code should never call this on every frame.
-   */
-  /**
-   * Phase 2 perf benchmarking — start a trace. Records one sample per
-   * rendered frame between this call and {@link Scene#endPerformanceTrace}.
+   * Starts a performance trace with one sample per rendered frame until
+   * {@link Scene#endPerformanceTrace} is called.
    * Auto-ends when `options.frames` is reached (default 600).
    *
    * Pure read on the rendering side — sampling is bounded to a few
@@ -2383,8 +2273,8 @@ class Scene {
   }
 
   /**
-   * Phase 2 perf benchmarking — end the active trace and return the
-   * structured result. Returns `null` if no trace was started.
+   * Ends the active performance trace and returns its structured result, or
+   * `null` when no trace is active.
    *
    * @returns {object|null}
    */
@@ -2405,6 +2295,15 @@ class Scene {
     return this._performanceTracker;
   }
 
+  /**
+   * Pretty-prints the result of
+   * {@link Scene#getDebugSnapshot} to the console using grouped
+   * sections and `console.table()` for tabular sub-objects. Designed
+   * for ad-hoc developer use from DevTools or postUpdate callbacks.
+   *
+   * Calling this method is the only way to emit the dump. Avoid calling it on
+   * every frame.
+   */
   logDebugSnapshot() {
     const snap = this.getDebugSnapshot();
     const tag = `[CesiumJS:${snap.scene.backend}:${snap.scene.contextId ?? "?"}] DebugSnapshot frame=${snap.scene.frameNumber}`;
@@ -2434,11 +2333,9 @@ class Scene {
   }
 
   /**
-   * Monotonic counter bumped whenever a subsystem mutates scene-visible
-   * state in ways that invalidate cached/frozen render bundles. The future
-   * snapshot/locked-orbit mode (Phase 0.7) compares this against its cached
-   * value to know when to discard bundles. Currently bumped only by
-   * {@link Cesium3DTilesInvalidationFeed#apply}.
+   * Monotonic counter advanced by scene-visible mutations that invalidate
+   * frozen render bundles. Snapshot mode compares it with the captured value
+   * to decide when cached bundles must thaw.
    *
    * @type {number}
    * @readonly
@@ -2831,9 +2728,8 @@ class Scene {
   }
 
   /**
-   * Returns true if this scene is using the WebGPU renderer.
-   * Now uses the computed `isWebGPU` getter from the GraphicsContext base class.
-   * The Scene should not need know the specific renderer - if you are using this consider why and if there are alternatives.
+   * Returns true if this scene uses the WebGPU renderer. Prefer
+   * backend-neutral capabilities when the concrete renderer is not required.
    * @type {boolean}
    * @readonly
    * @private
@@ -2960,15 +2856,9 @@ class Scene {
       );
     }
     //>>includeEnd('debug');
-    // AUDIT_2026_05_02 C.11 — WebGPU scene renderer hard-codes its viewport
-    // to the full canvas (`setViewport(0, 0, _width, _height)`) and ignores
-    // `passState.viewport`, so the per-eye viewport split that
-    // `executeWebVRCommands` performs has no effect. Until the per-eye
-    // viewport plumb lands, fail loudly rather than silently producing
-    // single-eye full-canvas output that masquerades as stereo.
-    // Follow-up 2026-05-02: switched the gate from `isWebGPU` to the
-    // capability getter `supportsStereoViewport` (true on WebGL, false on
-    // WebGPU) per CLAUDE.md §2 backend-agnosticism rule.
+    // Reject stereo when the context cannot apply per-eye viewports; otherwise
+    // a full-canvas viewport would present one eye while appearing to be
+    // stereo. The capability gate keeps this independent of renderer identity.
     if (value && this._context?.supportsStereoViewport === false) {
       throw new DeveloperError(
         "scene.useWebVR is not yet supported on this backend. " +
@@ -3078,12 +2968,10 @@ class Scene {
   /**
    * Whether or not to use high dynamic range rendering.
    *
-   * C12-28 — the default is no longer hardcoded `false`: on a display that
-   * reports `(dynamic-range: high)`, and on a context that supports HDR
-   * ({@link Scene#highDynamicRangeSupported}), it defaults to `true` and
-   * follows the display if the window moves to another monitor. **Assigning
-   * this property ends the tracking** — the assigned value is then owned by
-   * the application and detection will never overwrite it. Set
+   * On a display that reports `(dynamic-range: high)`, a context that supports
+   * HDR ({@link Scene#highDynamicRangeSupported}) defaults to `true` and
+   * follows display changes. Assigning this property transfers ownership to
+   * the application, so display detection no longer overwrites it. Set
    * {@link Scene#hdrDisplayPolicy} to `'off'` to opt out of detection entirely
    * without pinning a value.
    *
@@ -3095,10 +2983,9 @@ class Scene {
   }
 
   set highDynamicRange(value) {
-    // C12-28 — an explicit assignment is an application override and is
-    // permanent, in BOTH directions. Recorded before the capability clamp
-    // below so that pinning `true` on a context that cannot do HDR still
-    // stops detection from later flipping it.
+    // Record application ownership before capability clamping so an explicit
+    // `true` assignment on a context without HDR support still stops display
+    // detection from changing the property.
     this._hdrUserSet = true;
     const context = this._context;
     const hdr =
@@ -3110,18 +2997,18 @@ class Scene {
   }
 
   /**
-   * C12-28 — how far this scene may act on the detected display capability.
+   * Controls which scene properties may follow the detected display
+   * capability.
    *
-   * - `'off'` — no detection; the pre-C12-28 hardcoded SDR default.
+   * - `'off'` — retain the current HDR values without applying display
+   *   detection.
    * - `'scene'` (default) — default {@link Scene#highDynamicRange} from the
    *   display. The scene renders into a float framebuffer and the normal SDR
    *   tonemap still runs on the way to the canvas.
    * - `'scene-and-canvas'` — additionally default
    *   {@link Scene#useHDRCanvasOutput}, which skips that tonemap and asks the
-   *   WebGPU canvas for extended range. Opt-in: it is the half that cannot be
-   *   validated without HDR hardware, and WebGL has no canvas-colour-space
-   *   equivalent (the flag is ignored there rather than blowing out an 8-bit
-   *   canvas).
+   *   WebGPU canvas for extended range. WebGL has no canvas-color-space
+   *   equivalent and ignores the flag.
    *
    * Changing this re-resolves immediately. Values the application has already
    * assigned are still never overwritten.
@@ -3159,8 +3046,7 @@ class Scene {
   }
 
   /**
-   * HDR-DISPLAY (Batch 200, canvas auto-configure Batch 206) — whether
-   * the post-process pipeline should skip the SDR tonemap stage and
+   * Whether the post-process pipeline should skip the SDR tonemap stage and
    * forward HDR-encoded scene color directly to the canvas. Useful on
    * HDR-capable displays (Apple Pro Display XDR, modern OLEDs, displays
    * in HDR-10 / Dolby Vision mode) where the OS / display handles the
@@ -3171,13 +3057,12 @@ class Scene {
    * framebuffer must be rgba16float so the HDR data actually exists
    * to forward). When either gate is off, standard tonemap runs.
    *
-   * **Batch 206:** the WebGPU canvas is now auto-configured to match.
-   * Setting this flag to `true` reconfigures the underlying
+   * Setting this flag to `true` reconfigures the underlying WebGPU
    * `GPUCanvasContext` with `format: 'rgba16float' + colorSpace:
    * 'display-p3' + toneMapping: { mode: 'extended' }` so the browser
    * forwards extended-range values to HDR-capable displays.
-   * ColorGrading and FXAA keep running under HDR with HDR-aware math
-   * (PARITY-HDR-PP-MATH): both stages switch to a Reinhard-compressed
+   * ColorGrading and FXAA keep running under HDR with HDR-aware math: both
+   * stages switch to a Reinhard-compressed
    * working space so the grade pivots and AA edge thresholds behave,
    * and their output stays linear HDR.
    *
@@ -3190,21 +3075,18 @@ class Scene {
   }
 
   set useHDRCanvasOutput(value) {
-    // C12-28 — as with `highDynamicRange`, an explicit assignment ends
-    // detection for this property. Recorded before the unchanged-value early
-    // return: assigning the value it already has is still an expression of
-    // intent, and detection must respect it.
+    // Record application ownership before the unchanged-value return because
+    // assigning the existing value still opts this property out of display
+    // detection.
     this._useHDRCanvasOutputUserSet = true;
     const next = value === true;
     if (this._useHDRCanvasOutput === next) {
       return;
     }
     this._useHDRCanvasOutput = next;
-    // HDR-DISPLAY (Batch 206) — push the change to the WebGPU context so
-    // the canvas configuration matches the producer-side flag. WebGL
-    // backend has no equivalent (`GPUCanvasContext.configure` is WebGPU-
-    // only); on WebGL the flag still controls the producer-side skip
-    // pattern but cannot widen the canvas color space.
+    // Keep the WebGPU canvas configuration synchronized with the
+    // producer-side flag. Contexts without canvas reconfiguration support
+    // cannot widen the output color space.
     const ctx = this._context;
     if (ctx && typeof ctx.setHDRCanvasOutput === "function") {
       ctx.setHDRCanvasOutput(next);
@@ -3212,7 +3094,7 @@ class Scene {
   }
 
   /**
-   * C12-28 — read the display capability once and subscribe to changes.
+   * Reads the display capability and subscribes to changes.
    *
    * The subscription is the load-bearing half: a laptop dragged onto an HDR
    * external monitor, or the OS HDR toggle, fires `change` on the media query
@@ -3244,7 +3126,7 @@ class Scene {
   }
 
   /**
-   * C12-28 — apply {@link resolveHdrDefault} to this scene.
+   * Applies {@link resolveHdrDefault} to this scene.
    *
    * Assignment goes through the public setters so the HDR-dirty bookkeeping
    * and the WebGPU canvas reconfigure both run exactly as they do for an
@@ -3286,25 +3168,18 @@ class Scene {
   }
 
   /**
-   * Batch 215 — opt-in hint that this scene will reach the
-   * high-density command count where the WebGPU GPU-side culling /
-   * occlusion / sort-key dispatchers (Batches 209-211) activate.
+   * Controls allocation and warm-up of WebGPU high-density GPU-culling,
+   * occlusion, and sort-key resources.
    *
-   * `'always'` triggers eager warm-up of the three compute pipelines
-   * + buffer pre-allocation at the next frame, amortizing the
-   * 5-50 ms pipeline-compile cost into a load frame instead of the
-   * first frame where the activation threshold crosses (which would
-   * otherwise produce a visible hitch).
+   * `'always'` eagerly warms the three compute pipelines and pre-allocates
+   * their buffers before the activation threshold is crossed.
    *
-   * `'auto'` keeps the lazy-init path — first activation
-   * crossing pays the compile cost, subsequent crossings are warm.
+   * `'auto'` initializes those resources when the activation threshold is
+   * first crossed.
    *
-   * `'never'` (Batch 225 wire-in) — fully disables the GPU
-   * dispatchers. The opaque + translucent gates short-circuit
-   * to false (`WebGPUSceneRenderer` already reads the scene
-   * hint), AND the context's lazy-getter chain refuses to
-   * allocate new auxiliary culler instances. Existing auxiliary
-   * instances are reaped by the context when the policy changes.
+   * `'never'` disables dispatch, prevents lazy allocation of auxiliary culler
+   * instances, and releases existing auxiliary instances when the policy
+   * changes.
    *
    * No-op on WebGL.
    *
@@ -3323,11 +3198,9 @@ class Scene {
     }
     this._gpuCullingHint = allowed;
     const ctx = this._context;
-    // Batch 225 (B219-N3 audit fix) — push the hint to the context
-    // so its lazy aux-culler getters honor 'never' too. Previously
-    // the hint was read only at the renderer's gate-update site;
-    // any code path that touched a getter directly would still
-    // burn VRAM even with 'never'.
+    // Publish the hint to the context so direct access through its lazy
+    // auxiliary-culler getters also respects `never` and cannot allocate
+    // resources behind the scene-level gate.
     if (ctx && typeof ctx.setGpuCullingHint === "function") {
       ctx.setGpuCullingHint(allowed);
     }
@@ -3454,17 +3327,10 @@ class Scene {
   }
 
   /**
-   * Slice 5d Batch 150 — Forward+ clustered lighting (WebGPU only).
-   *
-   * When true and the scene's `scene.lights` collection (or a glTF
-   * model's `lightsFromGltf`) contains punctual lights, the renderer
-   * dispatches per-frame cluster-bounds + cluster-assign compute
-   * passes and binds the resulting storage buffers to Model PBR's
-   * fragment shader. Per-pixel additive diffuse + specular from up
-   * to 1024 scene-wide lights, with at most 256 lights overlapping
-   * any one cluster.
-   *
-   * Default false. Has no effect on the WebGL renderer.
+   * Requests Forward+ clustered lighting when `scene.lights` or a model's
+   * `lightsFromGltf` contains punctual lights. WebGPU prepares cluster bounds
+   * and assignments for participating material pipelines, with up to 1024
+   * scene-wide lights and 256 lights per cluster. WebGL ignores this option.
    *
    * @type {boolean}
    * @default false
@@ -3633,10 +3499,6 @@ class Scene {
     return this._renderScheduler;
   }
 
-  // ═══════════════════════════════════════════════════════════
-  // METHODS
-  // ═══════════════════════════════════════════════════════════
-
   /**
    * Determines if a compressed texture format is supported.
    * @param {string} format The texture format. May be the name of the format or the WebGL extension name, e.g. s3tc or WEBGL_compressed_texture_s3tc.
@@ -3700,15 +3562,11 @@ class Scene {
     const hasDerivedCommands = defined(derivedCommands.originalCommand);
     const needsLogDepthDerivedCommands =
       useLogDepth && !hasLogDepthDerivedCommands;
-    // C12-37 — the ordinary WebGL Moon is an ENVIRONMENT command executed
-    // directly by EnvironmentRenderer, so it has never selected Scene's HDR
-    // derived shader.  The conditional physical-depth route must preserve
-    // that exact appearance when it moves the same command into OPAQUE.  If
-    // we derive HDR here, the Moon switches from its historical inline
-    // gamma/tonemap convention to the linear-HDR convention only while it is
-    // near enough to occlude Earth, causing a visible brightness pop.  Keep
-    // the base Moon program on both routes; WebGPU owns this convention in its
-    // native pipeline and never enters this WebGL-derived-command path.
+    // Keep the WebGL Moon's base program when its physical-depth route moves
+    // the command from the environment pass into the opaque pass. Deriving an
+    // HDR variant only on the depth route would switch gamma conventions and
+    // cause a brightness pop. WebGPU handles this convention in its native
+    // pipeline.
     const skipHdrDerivedCommand = command._moonPhysicalDepthRoute === true;
     const needsHdrCommands =
       useHdr && !skipHdrDerivedCommand && !hasHdrCommands;
@@ -3782,19 +3640,10 @@ class Scene {
       (hasLogDepthDerivedCommands || needsLogDepthDerivedCommands) &&
       !command.isWebGPUDrawCommand
     ) {
-      // Sibling guard to the depth-only check below: WebGPU draw
-      // commands lack the WebGL-style `shaderProgram.id`, and
-      // `DerivedCommand.createLogDepthCommand` shallow-clones the
-      // command into a raw WebGL `DrawCommand` whose `execute(context,
-      // passState)` recurses through `WebGPUContext.draw` and ends up
-      // calling `passEncoder.draw(WebGLDrawCommand, PassState)` —
-      // surfaced as "Value is not of type 'unsigned long'". WebGPU
-      // commands handle log-depth via their pipeline's WGSL fragment
-      // entrypoint instead, so the WebGL helper has nothing to do
-      // here. Migration Session 4b found this when the polyline
-      // renderer started attaching a pickCommand (which sets
-      // `derivedCommands` and made the log-depth derivation start
-      // running on the colorCommand).
+      // WebGPU draw commands lack the WebGL-style `shaderProgram.id`, and a
+      // WebGL log-depth clone would recurse into `WebGPUContext.draw` with an
+      // incompatible command. WebGPU pipelines provide their own WGSL
+      // log-depth entry point, so only WebGL commands use this helper.
       derivedCommands.logDepth = DerivedCommand.createLogDepthCommand(
         command,
         context,
@@ -3863,17 +3712,12 @@ class Scene {
     frameState.minimumDisableDepthTestDistance =
       this._minimumDisableDepthTestDistance;
     frameState.invertClassification = this.invertClassification;
-    // Phase 8a (Batch 86) — forward `scene.deferredLighting` to the
-    // frame-state flag the WebGPU backend reads to gate the G-buffer
-    // producer compute pass. WebGL backend ignores this; see Scene
-    // constructor docstring for the full lifecycle.
+    // Publish the deferred-lighting option so WebGPU can gate its
+    // depth-derived normal producer. WebGL ignores the value.
     frameState.useDeferredLighting = this.deferredLighting === true;
-    // Phase 8a Slice 2c (Batch 89) — forward debug-overlay toggle. The
-    // overlay requires the G-buffer to be populated, which means
-    // `deferredLighting` must also be true; CesiumDebug.showGBufferNormals()
-    // sets both. If a user sets `debugShowGBufferNormals = true`
-    // directly without enabling `deferredLighting`, the overlay's
-    // fallback path clears the canvas magenta with a console hint.
+    // Publish the normal-overlay toggle after the producer option. The
+    // depth-derived G-buffer requires `deferredLighting`; an overlay without a
+    // producer uses the magenta missing-producer fallback.
     frameState.debugShowGBufferNormals = this.debugShowGBufferNormals === true;
     frameState.useLogDepth =
       this._logDepthBuffer &&
@@ -3883,20 +3727,14 @@ class Scene {
       );
     frameState.highDynamicRange = this._hdr;
     frameState.light = this.light;
-    // Track V-A3 (NEW-ATMO-DERIVED-LIGHTING) — when the unified aerial-
-    // perspective atmosphere is active (WebGPU), derive the directional SUN
-    // light (colour + intensity) and a SKY-IRRADIANCE ambient from the
-    // atmosphere so discrete MODELS are lit by the SAME sun/sky that produces
-    // the post-process haze (the Takram talk's "light-source lighting for the
-    // ISS"). Terrain keeps the post-process Lambertian aerial-perspective
-    // (V-A2); models use light-source PBR via `frameState.light` — the mixed-
-    // lighting mask, both halves driven by one coherent atmosphere. Only the
-    // SunLight case is derived (the sun-direction model); a user-supplied
-    // DirectionalLight is left as-is. We never mutate `scene.light` — the
-    // derived values live on a private SunLight, swapped into `frameState`
-    // only while aerial perspective is on. The sun direction is the previous
-    // frame's `uniformState.sunDirectionWC` (one frame stale — visually
-    // indistinguishable at any sane sim rate, same trick as `computeSkyBrightness`).
+    // While WebGPU aerial perspective uses a SunLight, derive model PBR sun
+    // and sky lighting from the same atmosphere that supplies post-process
+    // extinction and inscatter to all scene pixels, including terrain and
+    // models. Custom lights and `scene.light` remain unchanged; derived values
+    // live only on the private FrameState light and sky-irradiance fields.
+    // The sun direction comes from `uniformState`, which this frame has not
+    // updated yet, so it lags by one frame — indistinguishable at any
+    // realistic simulation rate.
     frameState.atmosphereSkyIrradiance = undefined;
     if (
       this.aerialPerspective === true &&
@@ -3911,10 +3749,9 @@ class Scene {
         const baseIntensity = this.light.intensity ?? 2.0;
         const lightIntensity =
           this.skyAtmosphere?.atmosphereLightIntensity ?? 50.0;
-        // Local up = camera position direction (ECEF position normalized) —
-        // the surface normal under the camera. The sun zenith that drives the
-        // derived sun colour/intensity is measured against THIS, so it tracks
-        // the viewed site's time-of-day (not the pole axis).
+        // The normalized camera position is the local surface normal. Measuring
+        // the Sun zenith against it follows the viewed location's time of day
+        // instead of the ellipsoid's pole axis.
         const localUp = Cartesian3.normalize(cameraPos, scratchAtmosphereUp);
         const derived = computeAtmosphereDerivedLighting(
           sunDir,
@@ -3947,70 +3784,47 @@ class Scene {
     // list is not renderable while the owning globe is hidden.
     frameState.globeVisible = defined(this.globe) && this.globe.show;
     frameState.globeTranslucencyState = this._globeTranslucencyState;
-    // WGF-6: Per-frame debug flag for triangulation visualization. Feature
-    // renderers that opt in (Globe surface today, future BufferPrimitive +
-    // Model variants) read this and swap to a face-color fragment variant.
-    // Capability gating happens in the renderer — Scene only forwards intent.
-    // HDR enable (Session 65, 2026-05-11) — mirrors `Scene._hdr` onto
-    // frameState so downstream WebGPU packers (globe tile UB, etc.) can
-    // gate shader behavior on `scene.highDynamicRange` without reaching
-    // back through the scene reference. The WebGPU globe terrain drape
-    // branch needs this to skip the inline exp tonemap under HDR
-    // (matches WebGL's `#ifdef HDR` path in GlobeFS.glsl, where the
-    // tonemap is replaced with a saturation boost and final compression
-    // is deferred to the post-process chain).
+    // Publish HDR state so downstream packers can skip inline terrain
+    // tonemapping and leave final compression to the post-process chain.
     frameState.useHDR = this._hdr === true;
-    // Batch 234 (NEW-COLLECTIONS-TAA-GATE-DORMANT) — canonical per-frame
-    // TAA flag. The Batch-143/144 velocity-emission gates in the
-    // billboard/label/point/cloud/polyline renderers read
-    // `frameState.scene?.taaEnabled`, but `frameState.scene` is never
-    // populated, so velocity commands silently never emitted; the
-    // model/ground/vector-tile renderers read `frameState.taaEnabled`,
-    // which was equally unset. This single publication activates ALL of
-    // those gates from one backend-agnostic source of truth.
+    // Publish TAA state through FrameState so velocity emitters share one
+    // backend-neutral value.
     frameState.taaEnabled = this.taaEnabled === true;
-    // Track V-A2 (NEW-ATMO-AERIAL-PERSPECTIVE-POSTPROCESS) — canonical
-    // per-frame aerial-perspective flag. When on, the WebGPU globe surface UB
-    // packers gate the in-globe ground-atmosphere/fog drape OFF (same
-    // dormant-gate publication pattern as `taaEnabled`) so the unified
-    // aerial-perspective post-process is the SINGLE owner of distance haze and
-    // the two don't double-apply. Backend-agnostic source of truth — WebGL
-    // ignores it (no aerial-perspective post-process on that backend).
+    // Publish aerial-perspective state so WebGPU disables the globe's local
+    // distance-haze drape while the post-process owns extinction and inscatter,
+    // avoiding a double application. WebGL ignores the value.
     frameState.aerialPerspective = this.aerialPerspective === true;
-    // Batch 244 (NEW-TAA-EFFECT-NEVER-ADDED follow-on) — canonical
-    // per-frame snapshot-mode service reference, same dormant-gate
-    // family as `taaEnabled` above: WebGPUEnvironmentRenderer's moon
-    // freezable registration read `frameState.scene` (never populated)
-    // and silently never registered. Renderers read THIS field instead.
+    // Publish the snapshot-mode service through FrameState for environment
+    // renderer registrations.
     frameState.snapshotMode = this._snapshotMode;
+    // Publish triangulation intent for renderers that provide a face-color
+    // fragment variant; each renderer applies its own capability gate.
     frameState.debugShowTriangulation = this.debugShowTriangulation === true;
-    // Globe wireframe overlay (Tier 1 debug). Forwarded to the WebGPU globe
-    // surface renderer's wireframe pipeline path. WebGL renderers ignore.
+    // Forward the globe-wireframe toggle to the WebGPU surface renderer.
+    // WebGL renderers ignore it.
     frameState.debugShowGlobeWireframe = this.debugShowGlobeWireframe === true;
-    // Atmosphere scattering bypass (Tier 1 debug). Forwarded to the WebGPU
-    // sky atmosphere renderer; emits flat magenta over the shell when on.
+    // Forward the scattering-bypass toggle to the WebGPU sky-atmosphere
+    // renderer, which emits flat magenta over the shell when enabled.
     frameState.debugDisableAtmosphereScattering =
       this.debugDisableAtmosphereScattering === true;
-    // Cubemap face isolation (Tier 1 debug). Integer 0..6 forwarded to the
-    // WebGPU cubemap panorama renderer's params.z. 0 = production all-faces.
+    // Forward cubemap face isolation to the WebGPU panorama renderer. Zero
+    // selects all faces; values 1 through 6 select one face.
     frameState.debugShowCubeMapFace = this.debugShowCubeMapFace | 0;
-    // Tier 2 debug — terrain LOD color overlay (mutually exclusive with
-    // triangulation/normal modes; renderer picks one fragment variant).
+    // The terrain LOD overlay is mutually exclusive with triangulation and
+    // normal modes because the renderer selects one fragment variant.
     frameState.debugShowTerrainLOD = this.debugShowTerrainLOD === true;
-    // Tier 2 debug — eye-space normal as RGB.
+    // Publish the eye-space normal visualization toggle.
     frameState.debugShowTerrainNormals = this.debugShowTerrainNormals === true;
-    // Tier 2 debug — imagery layer isolation. -1 = production (all layers).
+    // A value of -1 disables imagery-layer isolation and renders all layers.
     // The terrain fragment shader applies this as a per-layer alpha mask.
     frameState.debugShowImageryLayer =
       typeof this.debugShowImageryLayer === "number"
         ? this.debugShowImageryLayer
         : -1;
-    // BUG-11 imagery probe — when true, the WebGPU globe surface
-    // renderer logs the next 4 tile updates with the full encoding +
-    // imagery state payload. Used for ad-hoc imagery debugging; off
-    // by default and self-quieting after the 4-tile latch.
+    // Publish the imagery diagnostic toggle. The WebGPU globe renderer logs at
+    // most four tile updates, and a false-to-true edge re-arms the capture.
     frameState.debugShowImageryProbe = this.debugShowImageryProbe === true;
-    // Tier 2 debug — depth-as-color overlay (replaces post-process chain).
+    // The depth-as-color overlay replaces the post-process chain.
     // Mode integer selects linearized vs raw vs combined visualization.
     frameState.debugShowDepthAsColor = this.debugShowDepthAsColor === true;
     frameState.debugDepthAsColorMode = this.debugDepthAsColorMode | 0;
@@ -4018,7 +3832,7 @@ class Scene {
     frameState.debugDepthWindowMin = this.debugDepthWindowMin || 0.0;
     frameState.debugDepthWindowMax = this.debugDepthWindowMax || 0.0;
     frameState.debugDepthWindowTurbo = this.debugDepthWindowTurbo !== false;
-    // Tier 2 debug — frustum / command visualization. WebGL's SceneRenderer
+    // Publish frustum and command visualization. WebGL's SceneRenderer
     // reads these directly from `scene.*` for the DebugInspector path, and
     // the WebGPU scene renderer reads them from `frameState.*` when deciding
     // whether to run `WebGPUDebugFrustumOverlay` after the main scene pass.
@@ -4088,11 +3902,11 @@ class Scene {
 
     // The central-body transform is a documented override point. The
     // Scene-owned Simon provider is Earth-fixed, so an override must retain
-    // the legacy derivation instead of publishing those Earth coordinates as
-    // central-body coordinates. Snapshot the decision and the function once
+    // the built-in Earth-fixed derivation instead of publishing those Earth
+    // coordinates as central-body coordinates. Snapshot the decision once
     // per logical frame so a mid-frame override/restoration cannot split main,
     // pick, and offscreen Views across two lineages. User-supplied providers
-    // remain authoritative ECEF inputs regardless of this legacy hook.
+    // remain authoritative ECEF inputs regardless of this override hook.
     if (
       this._celestialEphemerisTransformFrameNumber !== frameState.frameNumber
     ) {
@@ -4213,19 +4027,17 @@ class Scene {
       environmentState.moonCommand = undefined;
       environmentState.isSkyAtmosphereVisible = false;
       frameState.skyAtmosphereVisible = false;
-      // C12-27 — no celestial consumer runs on this path; leave the glare
-      // unpublished so a stale resolution can never be read.
+      // No celestial consumer runs on this path, so clear the glare resolution
+      // so later consumers cannot read stale state.
       frameState.solarGlareAppearance = undefined;
-      // C12-18 — same reasoning, and the halo needs it MORE than the glare
-      // does: a stale `sunHalo` still carries `visible: true` and a screen
-      // position, and the post-process consumers would paint it over a frame
-      // that draws no Sun at all.
+      // Clear the halo because stale state can retain a visible screen position
+      // and make post-process consumers paint a halo over a frame with no Sun.
       frameState.sunHalo = undefined;
       frameState.sunBloomActive = false;
     } else {
       // Resolve atmosphere applicability before any celestial consumer runs.
       // The constructor/show flag alone is not authoritative while a globe is
-      // still waiting for its first renderable tile. Both renderers now read
+      // still waiting for its first renderable tile. Both renderers read
       // this same-frame value, so extinction and default-on star modulation
       // never model an atmosphere shell that the scene has skipped.
       if (defined(skyAtmosphere)) {
@@ -4250,36 +4062,26 @@ class Scene {
           frameState.mode === SceneMode.MORPHING) &&
         environmentState.isReadyForAtmosphere;
 
-      // Batch 438 (4.4 SKY-MOON) — publish the moon ephemeris BEFORE the sky
-      // atmosphere update. `Moon.update` is what writes `frameState.moonDirectionWC`
-      // + `frameState.moonPhaseFraction`; previously it ran AFTER
-      // `skyAtmosphere.update` (further below), so the sky's inline dual-light
-      // moon march read a one-frame-stale (and, before ICRF settled, plain wrong)
-      // moon direction — the moon glow never matched the actual moon position.
-      // The moon DRAW command is still stored in environmentState and executed
-      // later in the render pipeline; only the ephemeris publish is hoisted, which
-      // is strictly better for every consumer (sky, fog, night lighting). The sun
-      // direction is unaffected (the sky reads it from uniformState, updated even
-      // earlier).
+      // Update the Moon before the sky atmosphere so sky, fog, and night
+      // lighting read the current direction and phase. Store its draw command
+      // for later execution; the Sun direction is already available through
+      // UniformState.
       // A hidden/absent Moon must not leave the previous frame's phase active
       // in default-on sky brightness. Keep the reusable direction storage but
       // reset its scalar contribution before the update; a visible Moon
       // overwrites it with current ephemeris data below.
       frameState.moonPhaseFraction = 0.0;
-      // C12-37 — resolve the existing clear rule before Moon.update so the
-      // backend-neutral route can decide whether it must compare against the
-      // packed pre-clear globe depth.  The same value is reused below; this is
-      // an ordering move, not a policy change.
+      // Resolve globe-depth clearing before Moon.update so its backend-neutral
+      // route can decide whether to compare against packed pre-clear depth.
+      // Reuse the same decision throughout the environment pipeline.
       environmentState.moonCommand = defined(this.moon)
         ? this.moon.update(frameState, environmentState.moonDepthRouteState)
         : undefined;
 
-      // Phase 1.3a / C12-29 S6 — derive brightness only after `Moon.update`
-      // has published the current frame's direction and phase. This matters
-      // under requestRenderMode and stepped clocks, where there may be no
-      // follow-up frame to repair a stale value. Scene supplies ellipsoidal
-      // height directly: no duplicate magnitude and no hard-coded Earth radius
-      // at the orbital atmospheric-column boundary.
+      // Derive brightness after Moon.update publishes the current direction
+      // and phase because request-render mode and stepped clocks may not
+      // provide another frame to repair stale values. Supply ellipsoidal height
+      // directly to avoid an Earth-specific radius at the atmospheric boundary.
       frameState.skyBrightness =
         computeSkyBrightness(
           frameState.context.uniformState.sunDirectionWC,
@@ -4289,19 +4091,16 @@ class Scene {
           frameState.camera?.positionCartographic?.height,
         ) * (frameState.eclipseSceneLightFactor ?? 1.0);
 
-      // C12-27 — angular solar-glare star washout. Resolved ONCE here, before
-      // `skyBox.update` (cube map) and `starField.update` (sprites), so all
-      // four shader consumers on both backends read one identical resolution
-      // instead of re-deriving the Sun's TEME direction each. Independent of
-      // `skyBrightness` above: that term models sky glow from the atmospheric
-      // column and is inert in orbit by design, while veiling glare travels
-      // with the observer — see `Scene/SolarGlareAppearance.js`.
+      // Resolve angular solar glare before skyBox.update and starField.update
+      // so every shader consumer reads one value instead of independently
+      // deriving the Sun direction. This remains separate from sky brightness:
+      // atmospheric-column glow is inert in orbit, while veiling glare follows
+      // the observer. See `Scene/SolarGlareAppearance.js`.
       if (!defined(this._solarGlareAppearance)) {
         this._solarGlareAppearance = createSolarGlareAppearance();
       }
-      // `frameState.eclipseState` is published by `prepareLogicalViewEclipse`
-      // at the tail of `updateFrameState`, which runs before this function —
-      // the publication-order coupling the C12-27 filing called out.
+      // updateFrameState publishes `frameState.eclipseState` before this
+      // function because glare resolution consumes the current eclipse state.
       frameState.solarGlareAppearance = readSolarGlareAppearance(
         frameState.atmosphericConditions?.lighting,
         frameState.context.uniformState.sunDirectionWC,
@@ -4332,11 +4131,10 @@ class Scene {
       environmentState.skyBoxCommand = defined(this.skyBox)
         ? this.skyBox.update(frameState, this._hdr)
         : undefined;
-      // Track V-C — bright-star catalog starfield (augments the cubemap).
-      // Driven here (not inside SkyBox.update) so its single reusable command
-      // is injected AFTER skyBoxCommand and BEFORE the atmosphere by both
-      // EnvironmentRenderer and SceneRenderer. The additive HDR stars land on
-      // top of the cubemap, then the atmosphere can still occlude them.
+      // Update the bright-star catalog separately from SkyBox so its reusable
+      // command executes after the cubemap and before the atmosphere. This
+      // draws additive HDR stars over the cubemap while preserving atmospheric
+      // occlusion.
       const starField =
         defined(this.skyBox) && defined(this.skyBox.starField)
           ? this.skyBox.starField
@@ -4344,31 +4142,20 @@ class Scene {
       const starCommand = defined(starField)
         ? starField.update(frameState)
         : undefined;
-      // Batch 761's environment-demand predicate reads this returned command,
-      // so it also guarantees a far frustum in WebGPU sky-only views without a
-      // duplicate command-list entry.
+      // The environment-demand predicate reads this returned command, which
+      // retains a far frustum for WebGPU sky-only views without duplicating the
+      // command-list entry.
       environmentState.starFieldCommand = starCommand;
-      // C12-18 (absorbs C11-160) — publish whether the post-process chain that
-      // draws the screen-space solar halo will run this frame, BEFORE
-      // `Sun.update` resolves the halo. `Sun.update` has no `scene` reference,
-      // and the decision must be made before the backend branch so both bakes
-      // see the same `bakeHaloGain`; this is the same publish-then-branch
-      // convention `skyAtmosphereVisible` uses a few lines above.
+      // Publish solar-halo post-process activity before Sun.update because Sun
+      // has no Scene reference. Resolve it before the backend branch so both
+      // halo paths use the same bake gain.
       //
-      // `scene.sunBloom` is the single switch on BOTH backends: it gates
-      // `SunPostProcess` (WebGL, `FramebufferOrchestrator`) and, since
-      // C11-160, the `SunHaloEffect` (WebGPU,
-      // `configureWebGPUPostProcessPipeline`). WebVR is excluded because the
-      // sun-bloom path is skipped there on WebGL and WebGPU rejects WebVR
-      // outright (`supportsStereoRendering`).
+      // `scene.sunBloom` controls both SunPostProcess on WebGL and
+      // SunHaloEffect on WebGPU. WebVR excludes the halo path.
       frameState.sunBloomActive =
         this.sunBloom === true && this._useWebVR !== true;
-      // STALENESS RESET, and it is load-bearing rather than tidy. `Sun.update`
-      // early-returns in 2D / MORPHING / non-render passes and when
-      // `sun.show` is false, so without this the LAST 3D frame's halo object
-      // — `visible: true`, at its old screen position — would still be on
-      // `frameState` and both consumers would happily paint it. Same reason
-      // `moonPhaseFraction` is reset above the Moon update.
+      // Reset before Sun.update because its early-return paths otherwise leave
+      // a visible halo and old screen position for post-process consumers.
       frameState.sunHalo = undefined;
       const sunCommands = defined(this.sun)
         ? this.sun.update(frameState, view.passState, this._hdr)
@@ -4379,21 +4166,17 @@ class Scene {
       environmentState.sunComputeCommand = defined(sunCommands)
         ? sunCommands.computeCommand
         : undefined;
-      // Batch 438 — `environmentState.moonCommand` is now assigned ABOVE (the
-      // Moon.update call was hoisted before skyAtmosphere.update so the sky reads
-      // a current-frame moon direction). Not re-run here.
     }
 
-    // `clearGlobeDepth` was resolved before Moon.update above so C12-37 can
-    // select its packed-depth comparison without a backend-specific Scene
-    // branch.  Continue using the identical value for the existing pipeline.
+    // Reuse the clear-depth decision resolved before Moon.update so its packed
+    // depth comparison and the remaining pipeline cannot diverge.
     const useDepthPlane = (environmentState.useDepthPlane =
       clearGlobeDepth &&
       this.mode === SceneMode.SCENE3D &&
       globeTranslucencyState.useDepthPlane &&
-      // Debug bisect (C-R9): skip the ellipsoid depth plane to test whether it
-      // occludes terrain-flush 3D-Tiles / b3dm. No-op in production (default
-      // false). Backend-agnostic — applies to WebGL + WebGPU identically.
+      // The debug toggle omits the ellipsoid depth plane to isolate whether its
+      // writes occlude terrain-flush content. Its default leaves both backend
+      // paths unchanged.
       this.debugSkipDepthPlane !== true);
     if (useDepthPlane) {
       // Update the depth plane that is rendered in 3D when the primitives are
@@ -4715,7 +4498,7 @@ class Scene {
     const frameState = this._frameState;
     frameState.newFrame = false;
 
-    // SORT-2: Reset per-frame sorting state (render layers, material batching, stats)
+    // Reset render-layer, material-batching, and sorting statistics each frame.
     this._renderScheduler.beginFrame();
 
     if (!defined(time)) {
@@ -4729,15 +4512,10 @@ class Scene {
       this._globeHeightDirty = true;
     }
 
-    // NEW-WEBGPU-PIPELINE-READY-SIGNAL (Phase 1+4) — defense-in-depth
-    // poll. The subscriber path (above, in the constructor) calls
-    // `requestRender()` directly when a pipeline resolves; this read
-    // keeps frames rendering while FOREGROUND async GPU work is inflight,
-    // in case a subscriber dispatch is missed. Background-priority
-    // tokens (Phase 4 warm-on-suspicion) are excluded so speculative
-    // pre-cooking doesn't burn user-visible frames — they still wake
-    // the scene on resolution via the subscriber path. Optional chain
-    // → `0` on WebGL contexts so non-WebGPU scenes pay nothing.
+    // Keep request-render scenes active while foreground asynchronous work is
+    // pending. Background work is excluded to avoid speculative frames, while
+    // its resolution can still wake the scene through the subscription. A
+    // context without the monitor contributes a zero count.
     const pendingAsyncResources =
       this._context?.asyncResources?.pendingForegroundCount ?? 0;
 
@@ -4772,11 +4550,9 @@ class Scene {
 
     if (shouldRender) {
       this._lastRenderTime = JulianDate.clone(time, this._lastRenderTime);
-      // Phase 6C — HDR / log-depth dirty flags invalidate cached
-      // bundles because the swap chain attachments those bundles were
-      // encoded against are about to be rebuilt with different
-      // formats. Mark the snapshot dirty BEFORE we clear the flags
-      // so the snapshot service has a chance to thaw on this frame.
+      // HDR and logarithmic-depth changes invalidate bundles encoded against
+      // the current swap-chain attachments. Mark the snapshot dirty before
+      // clearing the flags so the service can thaw during this frame.
       if (this._hdrDirty || this._logDepthBufferDirty) {
         const reason = this._hdrDirty
           ? "HDR mode changed — swap chain rebuild invalidates bundles"
@@ -4795,26 +4571,15 @@ class Scene {
       updateFrameNumber(this, frameNumber, time);
       frameState.newFrame = true;
 
-      // Phase 6 audit fix — service tick ordering. Snapshot mode runs
-      // FIRST so it can settle this frame's frozen state, THEN we
-      // forward the flag to VPT, THEN VPT ticks against the
-      // current-frame value. The previous order had VPT seeing last
-      // frame's stale flag, which meant one wasted measurement on the
-      // entry frame and one missed measurement on the thaw frame.
+      // Settle snapshot state before publishing it to the visual-performance
+      // target and ticking that service. This prevents an extra measurement on
+      // snapshot entry and a missed measurement on thaw.
       this._snapshotMode.tick(this);
       this._snapshotMode.tickCamera(this);
 
-      // Phase 6A — register the WebGPU render bundle manager as a
-      // freezable on first sight. The manager lives on the
-      // WebGPUContext, is lazy-allocated on first access, and may not
-      // exist on a WebGL-only scene (no-op in that case). Idempotent —
-      // re-registering with the same name overwrites the entry on the
-      // service's Map but the freezable contract is identical so the
-      // visible behavior doesn't change.
-      // `renderBundleManager` is a virtual getter on GraphicsContext —
-      // WebGL returns null, WebGPU returns its manager. No backend
-      // branch needed: if the manager is null the inner guard short-
-      // circuits, and registration is idempotent thanks to the flag.
+      // Register the render-bundle manager as a freezable when it first becomes
+      // available. GraphicsContext returns null when it has no manager, and the
+      // flag keeps registration idempotent without a renderer-identity branch.
       const ctx = frameState.context;
       if (ctx && !this._bundleManagerSnapshotRegistered) {
         const bundleMgr = ctx.renderBundleManager;
@@ -4827,15 +4592,12 @@ class Scene {
         }
       }
 
-      // Forward snapshot state to VPT BEFORE its tick so the auto-tuner
-      // pauses on the same frame the snapshot enters/thaws (instead of
-      // one frame late). The flag write is the cheapest possible
-      // coordination point — VPT just reads it and short-circuits.
+      // Publish snapshot state before the visual-performance tick so tuning
+      // pauses on the same frame that a snapshot enters or thaws.
       this._visualPerformanceTarget.snapshotMode = this._snapshotMode.isFrozen;
 
-      // VisualPerformanceTargetService tick — Phase 0 no-op past the
-      // contract guards. Now sees the CURRENT frame's snapshot flag
-      // (post-fix) instead of last frame's stale value.
+      // Tick after publishing the current snapshot state; the service applies
+      // its own contract guards.
       this._visualPerformanceTarget.tick(this);
     }
 
@@ -4876,9 +4638,9 @@ class Scene {
       this._performanceTracker.recordFrame();
     }
 
-    // Often used to trigger events (so don't want in trycatch) that the user
-    // might be subscribed to. Things like the tile load events, promises, etc.
-    // We don't want those events to resolve during the render loop because the events might add new primitives
+    // Keep subscribed events such as tile loads and promises outside the error
+    // wrapper, and resolve them after the render loop because callbacks may add
+    // primitives.
     callAfterRenderFunctions(this);
 
     if (shouldRender) {
@@ -4973,8 +4735,8 @@ class Scene {
    * </p>
    * <p>
    * <b>WebGPU note:</b> WebGPU has no synchronous GPU-to-CPU readback, so the
-   * synchronous <code>pick</code> reads back the pick buffer ASYNCHRONOUSLY and
-   * returns the PREVIOUS pick's result (one frame stale). This is transparent
+   * synchronous <code>pick</code> reads back the pick buffer asynchronously and
+   * returns the previous pick's result (one frame stale). This is transparent
    * for the continuous-hover pattern above (the cursor barely moves frame to
    * frame, so the prior result matches), but a <i>standalone</i>
    * <code>pick</code> at a fresh location returns <code>undefined</code> on its
@@ -5016,7 +4778,7 @@ class Scene {
    * </p>
    * <p>
    * <b>WebGPU note:</b> like {@link Scene#pick}, <code>snap</code> reads its
-   * framebuffer ASYNCHRONOUSLY and returns the most recent completed relevant
+   * framebuffer asynchronously and returns the most recent completed relevant
    * snap. With an unchanged rendered view, an exact query may reuse its recent
    * completed payload and a moving cursor may briefly reuse one whose search
    * region still overlaps the new one. Pixels are paired with the immutable
@@ -5100,15 +4862,10 @@ class Scene {
     if (!(voxelPrimitive instanceof VoxelPrimitive)) {
       return;
     }
-    // NS-VOXEL-PICK-FOOTPRINT-SPURIOUS-ROOT — gate cell construction on an
-    // actual ray-vs-bounds hit rather than the object-pick footprint. On WebGL
-    // `this.pick` already returns undefined off the rendered voxel surface, so
-    // this early-out is never reached for an off-box pixel (byte-identical).
-    // On WebGPU the object-pick footprint over-reports the whole box, and the
-    // synchronous object pick can still be a one-frame-stale in-box hit for an
-    // adjacent off-box pixel. Casting the current ray against the primitive's
-    // oriented bounding box rejects that stale footprint before launching the
-    // cell pass. The OBB is conservative, so a genuine surface hit passes.
+    // Require an actual ray-to-bounds hit rather than trusting the object-pick
+    // footprint. This rejects a stale off-box WebGPU hit before the cell pass;
+    // the conservative oriented box still admits every surface hit. WebGL
+    // already returns undefined away from the rendered voxel surface.
     if (!voxelPickRayHitsBounds(this, windowPosition, voxelPrimitive)) {
       return;
     }
@@ -5355,9 +5112,8 @@ class Scene {
   }
 
   /**
-   * C-R9-MODEL-PICK-TRANSLUCENT (Batch 192) — stutter-free hover-pick.
+   * Approximate asynchronous pick designed for continuous hover input.
    *
-   * Async pick variant designed for continuous hover-pick at 60fps.
    * Translucent (BLEND alphaMode) primitives use stochastic dither
    * (Interleaved Gradient Noise) to discard fragments based on their
    * effective alpha — a fragment with alpha=0.3 has a 30% chance of
@@ -5365,8 +5121,8 @@ class Scene {
    * converges to the correct alpha-weighted appearance over multi-
    * frame hover motion.
    *
-   * Cost: ~same as default `pickAsync` — single render pass, no extra
-   * MRT, no extra render-pass setup. Safe to fire every frame at 60fps.
+   * It uses one render pass, matching the pass count of `pickAsync`, and is
+   * intended for per-frame use at 60fps.
    *
    * Use `pickPreciseAsync` for click-pick scenarios where the user
    * wants deterministic "geometrically-closest translucent fragment
@@ -5399,20 +5155,16 @@ class Scene {
   }
 
   /**
-   * C-R9-MODEL-PICK-TRANSLUCENT (Batch 192) — deterministic precise pick.
-   *
-   * Async pick variant designed for click-pick scenarios where the
+   * Deterministic asynchronous pick designed for click input where the
    * user expects deterministic "geometrically-closest translucent
    * fragment wins" semantics. Translucent (BLEND alphaMode) primitives
    * route through a 2-pass pipeline pair (depth pre-pass + depth-EQUAL
    * color pass) sharing one render-pass setup so depth + stencil
    * persist between passes.
    *
-   * Cost: ~2× translucent rasterization on BLEND primitives that
-   * intersect the pick rect. Click-pick frequency makes this cost
-   * invisible to UX. Calling this on every hover frame is NOT
-   * supported and may stutter at 60fps on heavy scenes — use
-   * `pickHoverAsync` for continuous hover-pick.
+   * Translucent primitives that intersect the pick rectangle require roughly
+   * twice the rasterization work. Use `pickHoverAsync` for continuous hover
+   * input.
    *
    * On WebGL or scenes without translucent geometry, this method's
    * result is identical to `pickAsync`.
@@ -5434,17 +5186,9 @@ class Scene {
    */
   pickPreciseAsync(windowPosition, width, height) {
     this._webgpuPickPreciseEnabled = true;
-    // Batch 197 (B192-N2 fix) — first pickPreciseAsync call on this
-    // scene auto-enables WebGPU timestamp profiling. The defer
-    // mitigation (Batch 192 mitigation B) reads
-    // `performanceManager.frameTimings.totalGpuMs` to decide whether
-    // to push a precise pick to the next frame. Without timestamp
-    // profiling enabled, totalGpuMs stays at 0 and defer never fires
-    // — apps that exercise precise pick on heavy scenes would still
-    // stutter. Auto-enabling on first use opts the user in to the
-    // tiny per-frame profiler cost only when they're actually using
-    // precise pick (~negligible at the cost of a few timestamp-query
-    // operations per frame on supported devices).
+    // Enable timestamp profiling when precise picking is first requested. Its
+    // deferral decision reads `performanceManager.frameTimings.totalGpuMs`, so
+    // missing timings would prevent heavy precise picks from being deferred.
     const perfMgr = this.context?._performanceManager;
     if (perfMgr && perfMgr._config && !perfMgr._config.timestampProfiling) {
       perfMgr._config.timestampProfiling = true;
@@ -5551,10 +5295,6 @@ class Scene {
       width,
     );
   }
-
-  // ═══════════════════════════════════════════════════════════
-  // PICK CONVENIENCE APIS (FORK-36)
-  // ═══════════════════════════════════════════════════════════
 
   /**
    * Pick all objects at a screen position. Convenience wrapper around
@@ -5988,8 +5728,8 @@ function destroySceneResources(scene) {
   removeCallback("_featureRendererReadinessUnsub");
   removeCallback("_asyncResourceUnsub");
   removeCallback("_hdrFallbackUnsub");
-  // C12-28 — the media-query listener closes over this Scene and is owned by
-  // `window`, so it outlives the scene unless detached here.
+  // Detach the window-owned media-query listener because it closes over this
+  // Scene and otherwise outlives it.
   removeCallback("_hdrDisplayUnsub");
   removeCallback("_removeTerrainProviderReadyListener");
   removeCallback("_removeUpdateHeightCallback");
@@ -6035,8 +5775,8 @@ function destroySceneResources(scene) {
   }
   scene._view = undefined;
 
-  // FpsOverlay removes its own DOM, but preserve the historical container
-  // guard for subclasses/older overlays that only exposed the container.
+  // FpsOverlay removes its own DOM. Preserve the container guard for overlay
+  // implementations that expose only the container.
   const performanceContainer = scene._performanceContainer;
   scene._performanceContainer = undefined;
   if (defined(performanceContainer?.parentNode)) {
@@ -6110,25 +5850,6 @@ function destroySceneResources(scene) {
   }
 }
 
-// ═══════════════════════════════════════════════════════════════════
-// FILE-SCOPED HELPER FUNCTIONS AND CONSTANTS
-// (These rely on function hoisting or are declared before first use)
-// ═══════════════════════════════════════════════════════════════════
-
-/**
- * Phase 2 perf benchmarking — record one trace sample for the frame
- * that just rendered. Pulls bundle stats and snapshot state from the
- * central debug surface so all the per-subsystem getStatistics()
- * methods are exercised through one path.
- *
- * Called from `Scene.render()` only when a trace was active at the start of
- * the frame. The `_performanceTracker.sample()` call remains
- * no-op-when-inactive in case the trace is explicitly ended by a render event.
- *
- * @private
- * @param {Scene} scene
- * @param {number} cpuMs Full Scene.render() CPU wall time for this frame.
- */
 const scratchVoxelPickRay = new Ray();
 const scratchVoxelPickLocalRay = new Ray();
 const scratchVoxelPickInvAxes = new Matrix3();
@@ -6140,16 +5861,14 @@ const voxelPickUnitBox = {
 };
 
 /**
- * NS-VOXEL-PICK-FOOTPRINT-SPURIOUS-ROOT — return whether the pick ray at
- * `windowPosition` actually intersects the voxel primitive's oriented bounding
- * box. Used by {@link Scene#pickVoxel} to reject off-box picks that WebGPU's
- * object-pick footprint over-reports (WebGL's `this.pick` never reaches this
- * gate off the rendered surface, so the check is a no-op there).
+ * Returns whether the pick ray at `windowPosition` intersects the voxel
+ * primitive's oriented bounding box. {@link Scene#pickVoxel} uses this to
+ * reject off-box picks when an object-pick footprint is conservative.
  *
  * The ray is transformed into the box's unit-cube frame
  * (`halfAxes^-1 * (p - center)`), then intersected with the [-1, 1]^3 AABB. A
- * degenerate/absent OBB (or a non-invertible half-axes matrix) fails open —
- * the caller keeps its pre-existing behavior rather than dropping a real pick.
+ * An absent, degenerate, or non-invertible oriented box fails open so a malformed
+ * bound cannot discard a real pick.
  *
  * @private
  * @param {Scene} scene
@@ -6192,6 +5911,18 @@ function voxelPickRayHitsBounds(scene, windowPosition, voxelPrimitive) {
   return defined(interval) && interval.stop >= 0.0;
 }
 
+/**
+ * Records one performance-trace sample for the rendered frame. It reads bundle
+ * statistics and snapshot state through the central debug surface so subsystem
+ * statistics follow one path.
+ *
+ * Scene.render calls this only when a trace was active at frame start. The
+ * tracker still accepts an inactive call in case a render event ends the trace.
+ *
+ * @private
+ * @param {Scene} scene
+ * @param {number} cpuMs Full Scene.render() CPU wall time for this frame.
+ */
 function _samplePerformanceTrace(scene, cpuMs) {
   const tracker = scene._performanceTracker;
   if (!defined(tracker) || !tracker.active) {
@@ -6268,9 +5999,8 @@ function updateGlobeListeners(scene, globe) {
         requestRenderAfterFrame(scene),
       ),
     );
-    // Phase 6 audit fix — imagery/terrain mutations also bump
-    // `_snapshotVersion` so an active snapshot auto-thaws when the
-    // base layer changes underneath it.
+    // Advance the snapshot revision when imagery or terrain changes so an
+    // active snapshot thaws before rendering a different base layer.
     const bumpSnapshotVersion = function () {
       scene._snapshotVersion = (scene._snapshotVersion ?? 0) + 1;
     };
@@ -6340,19 +6070,10 @@ function updateDerivedCommands(scene, command, shadowsDirty) {
     }
   }
   if (!command.pickOnly && !command.isWebGPUDrawCommand) {
-    // WebGPU commands carry pre-built depth-only pipelines via the
-    // `WebGPUDerivedCommand` variant factory (dispatched through
-    // `selectCommandVariant` in `WebGPUSceneRenderer`). The WebGL helper
-    // here would `DrawCommand.shallowClone` the WebGPU command into a
-    // raw `DrawCommand`, which lacks `pipeline` / `indexBuffer` and
-    // crashes when re-dispatched through `WebGPUContext.draw` (the
-    // resulting `passEncoder.draw(DrawCommand, PassState)` call fails
-    // with "Value is not of type 'unsigned long'"). The WebGPU
-    // dispatcher has its own depth-only path so the guard is a pure
-    // skip — no replacement needed here. Migration Session 4b found
-    // this when wiring `attachPickToColorCommand` on the polyline
-    // renderer (which sets `derivedCommands` and made the depth
-    // derivation start running).
+    // WebGPU commands carry prebuilt depth-only variants. Passing one through
+    // the WebGL helper would shallow-clone it into a DrawCommand without the
+    // pipeline and index-buffer state required by WebGPUContext.draw, so only
+    // WebGL commands use this helper.
     derivedCommands.depth = DerivedCommand.createDepthOnlyDerivedCommand(
       scene,
       command,
@@ -6372,9 +6093,8 @@ function updateDerivedCommands(scene, command, shadowsDirty) {
 
   derivedCommands.originalCommand = command;
 
-  // C12-37 — preserve the byte-identical legacy WebGL Moon appearance when
-  // its physical-depth route changes pass ownership. See the matching dirty
-  // predicate in Scene.updateDerivedCommands above.
+  // Preserve the WebGL Moon's base-program appearance when its physical-depth
+  // route changes pass ownership. See the matching dirty predicate above.
   if (scene._hdr && command._moonPhysicalDepthRoute !== true) {
     derivedCommands.hdr = DerivedCommand.createHdrCommand(
       command,
@@ -6454,8 +6174,8 @@ function postPassesUpdate(scene) {
 
 const scratchBackgroundColor = new Color();
 
-// C12-29 S1 — hoisted so the per-frame eclipse update allocates nothing.
-// Every field is overwritten unconditionally at the call site below.
+// Reuse eclipse options to keep the per-frame update allocation-free. The call
+// site overwrites every field before use.
 const scratchEclipseOptions = {
   active: true,
   enabled: true,
@@ -6472,8 +6192,8 @@ const scratchEclipseOptions = {
 /**
  * Prepare camera-dependent eclipse state for the active logical View.
  *
- * C12-29 S1/S2/S6 — the mutable state belongs to `View`, while FrameState
- * exposes aliases for the active update/render path. This function is called
+ * Mutable state belongs to `View`, while FrameState exposes aliases for the
+ * active update and render path. This function is called
  * by `Scene.updateFrameState()` after the camera, occluder, mode, light, and
  * globe-translucency state are current, and therefore before every full
  * `UniformState.update(frameState)` entry (main render, pick, and offscreen
@@ -6482,17 +6202,18 @@ const scratchEclipseOptions = {
  *
  * The computation remains unconditional (a couple of dot products and two
  * asin in the common no-occlusion case, which early-outs before quadrature);
- * `enableEclipse` gates only whether consumers APPLY the result.
+ * `enableEclipse` gates only whether consumers apply the result.
  *
  * The Earth occluder is taken straight off `frameState.occluder` — the same
- * sphere `Scene.updateEnvironment` feeds to the legacy binary
+ * sphere `Scene.updateEnvironment` feeds to the binary
  * `Occluder.isBoundingSphereVisible` cull. Reading its radius reproduces every
  * `SceneUtilities.getOccluder` guard: 2D/Columbus view, a hidden globe, an
  * underground camera and a translucent globe all leave it undefined.
  *
- * SCENE3D ONLY: in 2D, Columbus view and MORPHING the camera is in projected
- * coordinates while the sun and moon are ECEF. Identity is the legacy and
- * frame-correct result in those modes.
+ * In 3D the inputs share world coordinates. In 2D, Columbus view, and
+ * morphing, the camera is in projected
+ * coordinates while the Sun and Moon are ECEF. Identity is the frame-correct
+ * result in those modes.
  *
  * Publication must precede `UniformState.update(frameState)`, because
  * UniformState consumes the scene-light factor and is re-entered by picking
@@ -6507,9 +6228,8 @@ function prepareLogicalViewEclipse(scene) {
   const frameState = scene._frameState;
   const view = frameState.view;
 
-  // Phase 1.1: forward the canonical atmospheric-conditions facade here so
-  // every logical-view preparation, including pick/offscreen paths, resolves
-  // the toggles before deriving eclipse state.
+  // Publish the canonical atmospheric-conditions facade before deriving
+  // eclipse state for every logical view, including pick and offscreen paths.
   frameState.atmosphericConditions = defined(scene.globe)
     ? scene.globe.atmosphericConditions
     : undefined;
@@ -6543,15 +6263,15 @@ function prepareLogicalViewEclipse(scene) {
     view._eclipseState,
     scratchEclipseOptions,
   );
-  // C12-29 S2 — ONE scalar every scene-dimming consumer reads. Exactly 1.0
-  // outside an enabled lunar eclipse.
+  // Publish one scalar for every scene-dimming consumer. It is 1.0 outside an
+  // enabled lunar eclipse.
   view._eclipseSceneLightFactor = getEclipseSceneLightFactor(
     frameState.eclipseState,
   );
   frameState.eclipseSceneLightFactor = view._eclipseSceneLightFactor;
 
-  // C12-29 S5 — a FrameState is reused across logical Views and mini-frames,
-  // so begin a fresh memo window and clear the prior View's transient alias.
+  // A FrameState is reused across logical views and mini-frames, so begin a
+  // fresh memo window and clear the prior view's transient alias.
   // Classification is deferred to the command owner that has the exact
   // terrain set: dynamic-environment capture uses its retained sources, the
   // main globe uses its current selection, and pick uses its rebuilt set.
@@ -6560,8 +6280,8 @@ function prepareLogicalViewEclipse(scene) {
   frameState.eclipseGlobeShadowSurfaceRadius = undefined;
   frameState.eclipseGlobeShadowSelectionRevision = undefined;
 
-  // C12-29 S6 — the 360-degree horizon-twilight gain. Exactly 0.0 outside
-  // near-totality and above the atmosphere.
+  // Publish the horizon-twilight gain, which is 0.0 outside near-totality and
+  // above the atmosphere.
   view._eclipseHorizonTwilight = getEclipseHorizonTwilightFactor(
     frameState.eclipseState,
   );
@@ -6580,7 +6300,6 @@ function render(scene) {
   setCpuScenePhase(scene, "frameState");
   scene.updateFrameState();
 
-  // ── Option B: Per-view context updating ──
   const viewContext = view.effectiveContext;
   if (viewContext && viewContext !== frameState.context) {
     frameState.context = viewContext;
@@ -6610,10 +6329,8 @@ function render(scene) {
 
   uniformState.update(frameState);
 
-  // Phase 1.2: forward sun direction (world coords) onto frameState so
-  // celestial / atmosphere renderers can read it without reaching into
-  // the per-context uniform state. Phase 1.3 atmosphere scattering also
-  // relies on this.
+  // Publish the world-space Sun direction so celestial and atmosphere
+  // renderers do not reach into per-context uniform state.
   frameState.sunDirectionWC = uniformState.sunDirectionWC;
 
   const shadowMap = scene.shadowMap;
@@ -6673,16 +6390,10 @@ function render(scene) {
     scene.globe.beginFrame(frameState);
   }
 
-  // Batch 110 — let the alternate scene renderer (WebGPU) recreate
-  // its framebuffer and bump the scene-pipeline-format generation
-  // BEFORE primitives' update methods run via `updateEnvironment` /
-  // the per-primitive update loop. Without this, a runtime HDR
-  // toggle (which flips scene FB between rgba16float and canvas
-  // format) wouldn't be visible to renderers like SkyAtmosphere
-  // that emit commands during the update phase — they'd cache
-  // pipelines targeting the OLD format and produce
-  // pipeline-vs-attachment mismatch warnings on the toggle frame.
-  // No-op on WebGL.
+  // Let the alternate renderer recreate its framebuffer and advance the
+  // pipeline-format generation before primitives update. This exposes an HDR
+  // format change to commands produced during the update phase and prevents
+  // pipeline-to-attachment mismatches. WebGL has no alternate renderer.
   if (scene._alternateSceneRenderer?.prepareFrame) {
     scene._alternateSceneRenderer.prepareFrame({
       scene: scene,
@@ -6693,7 +6404,7 @@ function render(scene) {
 
   scene.updateEnvironment();
 
-  // TAA: compute the sub-pixel sample offset before rendering. The effect
+  // Compute the TAA sub-pixel sample offset before rendering. The effect
   // stores explicit NDC (raster projection) and UV (resolve) representations.
   // The WebGPU scene renderer applies only the NDC value to its reusable
   // scratch frustum for each depth slice; the persistent camera-frustum cache
@@ -6709,13 +6420,8 @@ function render(scene) {
   // reconstructing world-space positions, which would lose ~1m FP32 at
   // Earth scale and produce catastrophic motion-vector errors during
   // orbital fly-to.
-  // Only the WebGPU SCENE_RENDERER FR instantiates an alternate scene
-  // renderer with a `_postProcess` pipeline that owns the TAA effect.
-  // On WebGL `_alternateSceneRenderer` is null, so the optional chain
-  // short-circuits and no TAA state is touched — no `isWebGPU` branch
-  // needed. (Prior revision chained through `scene._context?._alternateSceneRenderer`
-  // which is undefined because the field lives on the scene, not the
-  // context — TAA jitter silently never ran.)
+  // The alternate scene renderer owns the TAA effect. On WebGL the optional
+  // chain short-circuits because no alternate renderer exists.
   if (scene.taaEnabled) {
     const pipeline = scene._alternateSceneRenderer?._postProcess;
     const taa = pipeline?.taaEffect;
@@ -6744,11 +6450,10 @@ function render(scene) {
       const deltaY = currCam.y - prevCam.y;
       const deltaZ = currCam.z - prevCam.z;
 
-      // UniformState derives one validity result from the active View's last
-      // successfully presented frame. It covers first frame, teleport, morph,
-      // mode/map-projection changes, and perspective/orthographic flips. This
-      // replaces the old Scene-global projection latch, which aliased two
-      // logical Views and could not distinguish auxiliary uniform updates.
+      // UniformState derives validity from the active view's last successfully
+      // presented frame. It covers the first frame, teleports, morphs,
+      // mode/map-projection changes, and perspective/orthographic flips while
+      // keeping logical views independent.
       const historyInvalid =
         !us.temporalHistoryValid ||
         frameState._moonPhysicalDepthRouteChanged === true;
@@ -6760,7 +6465,7 @@ function render(scene) {
         taa.resetHistory();
       }
 
-      // historyValid is false until we've seen at least one frame; the TAA
+      // historyValid is false until at least one frame has been seen; the TAA
       // effect's own frameCounter also gates the blend, but keeping the
       // motion-vector flag independent lets the shader choose whether to
       // reproject or fall back to UV-identity on its own terms.
@@ -6775,12 +6480,10 @@ function render(scene) {
     }
   }
 
-  // C6-VELOCITY-MOTION-BLUR — feed the motion blur effect the same
-  // motion-vector state TAA uses, but INDEPENDENTLY of `scene.taaEnabled`
-  // (motion blur must work with TAA off). Gated on `scene.motionBlur` so the
-  // default-off path touches nothing. Only the WebGPU SCENE_RENDERER FR owns
-  // an `_alternateSceneRenderer._postProcess` pipeline with the effect slot;
-  // on WebGL the optional chain short-circuits and nothing runs.
+  // Feed motion blur the same motion-vector state as TAA without depending on
+  // `scene.taaEnabled`, so it also works when TAA is disabled. The
+  // default-disabled gate touches no effect state, and WebGL has no alternate
+  // post-process renderer.
   if (scene.motionBlur === true) {
     const mbPipeline = scene._alternateSceneRenderer?._postProcess;
     const mb = mbPipeline?.motionBlurEffect;
