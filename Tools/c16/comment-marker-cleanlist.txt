@@ -644,3 +644,10 @@ packages/engine/Source/Scene/FrameState.js
 packages/engine/Source/Scene/View.js
 packages/engine/Source/Renderer/WebGPU/WebGPUDerivedCommand.ts
 packages/engine/Source/Renderer/WebGPU/WebGPULogDepth.ts
+# Pick plumbing: the picking scene API, the WebGPU pick pass, its command
+# helpers, and the pick framebuffer. Current ordering, staleness, and copy
+# constraints remain inline.
+packages/engine/Source/Scene/Picking.js
+packages/engine/Source/Renderer/WebGPU/WebGPUSceneRendererPickPass.ts
+packages/engine/Source/Renderer/WebGPU/WebGPUPickCommandHelpers.ts
+packages/engine/Source/Renderer/WebGPU/WebGPUPickFramebuffer.ts

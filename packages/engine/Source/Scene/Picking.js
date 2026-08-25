@@ -111,21 +111,18 @@ class Picking {
   }
 
   /**
-   * C-R9-MODEL-PICK-TRANSLUCENT (Batch 192) — Option D / hover-pick
-   * entry. Promised contract: "guaranteed stutter-free at 60fps hover".
-   * Routes through `fragmentPickHoverMain` for BLEND primitives, which
-   * uses Interleaved Gradient Noise to discard translucent fragments
-   * stochastically (probability of survival = effective alpha). Result
-   * is approximate per-frame but converges to perceptually-correct
-   * over multi-frame hover motion.
+   * Performs an asynchronous pick for continuous hover interaction. On the
+   * WebGPU model path, BLEND primitives discard translucent fragments
+   * stochastically with survival probability equal to effective alpha, so an
+   * individual result is stochastic. Other renderer and primitive paths use
+   * the regular pick pipeline.
    *
-   * For OPAQUE / MASK alphaMode primitives this is identical to
-   * `pickAsync` (the factory delegates to the regular pick pipeline).
+   * OPAQUE and MASK models also use the regular pick pipeline.
    *
-   * Coalesce semantics (Batch 192 mitigation A): there is at most one
-   * physical hover pick in flight and one queued latest cursor. Callers in
-   * the active cycle receive that physical result as soon as it completes;
-   * callers arriving during the active cycle share the next cycle's promise.
+   * At most one physical hover pick is active and one latest-cursor cycle is
+   * queued. Callers in the active cycle receive that physical result when it
+   * completes; callers arriving during the active cycle share the queued
+   * cycle's promise.
    *
    * @param {Scene} scene
    * @param {Cartesian2} windowPosition
@@ -135,15 +132,12 @@ class Picking {
    * @returns {Promise<object|undefined>}
    */
   pickHoverAsync(scene, windowPosition, width, height, limit = 1) {
-    // C-R9-MODEL-PICK-TRANSLUCENT (Batch 192 mitigation A; Batch 194
-    // B192-N1 audit fix) — coalesce with a bounded two-slot scheduler.
-    //
-    // A trailing drain (wait for the cursor stream to become idle, then
-    // publish one result) starves callers when pointer events arrive faster
-    // than GPU readback. Instead, each completed physical pick publishes its
-    // own result. Requests received during it share one queued promise whose
-    // cursor and scalar arguments are overwritten in place with the latest
-    // values. No request-rate-sized queue or per-call args object is created.
+    // Waiting for the cursor stream to become idle would starve callers when
+    // pointer events arrive faster than GPU readback. Each physical pick
+    // therefore publishes when it completes. Requests received during it
+    // share one queued promise whose cursor and scalar arguments are
+    // overwritten in place with the latest values, bounding the queue and its
+    // allocations.
     if (!defined(this._inFlightHoverPick)) {
       this._activeHoverCursor = Cartesian2.clone(
         windowPosition,
@@ -265,28 +259,18 @@ class Picking {
   }
 
   /**
-   * C-R9-MODEL-PICK-TRANSLUCENT (Batch 192) — Option C / precise pick
-   * entry. Promised contract: "deterministic geometrically-closest
-   * translucent fragment wins". Routes BLEND primitives through a
-   * 2-pass pipeline pair (depth pre-pass + depth-EQUAL color pass)
-   * sharing one render-pass setup so depth + stencil persist between
-   * passes. OPAQUE / MASK alphaMode primitives go through the regular
-   * single-pass pick pipeline.
+   * Performs an asynchronous precise pick. On the WebGPU model path, BLEND
+   * primitives use a depth and stencil prepass followed by a depth-equal color
+   * pass in the same render pass. The persisted attachment state selects the
+   * geometrically closest translucent fragment deterministically. Other
+   * renderer and primitive paths use the regular single-pass pick pipeline.
    *
-   * Cost: ~2× translucent rasterization on BLEND primitives that
-   * intersect the pick rect. Click-pick frequency makes this cost
-   * invisible to UX. Calling this on every hover frame is NOT
-   * supported and may stutter at 60fps on heavy scenes — use
-   * `pickHoverAsync` for continuous hover-pick.
+   * Those BLEND models are rasterized twice. Use `pickHoverAsync` for
+   * continuous hover interaction.
    *
-   * Coalesce + defer (Batch 192 mitigations A + B):
-   * - If a previous `pickPreciseAsync` for this scene is still in
-   *   flight, the new request is queued (one outstanding precise pick
-   *   at a time per scene).
-   * - If the current frame's GPU work is already heavy (tracked via
-   *   `_lastFrameGpuMs`), the precise pick render is deferred to the
-   *   next frame to avoid stutter. Latency increases by one frame
-   *   (~16ms) but no stutter.
+   * A request arriving while a precise pick is active waits for that promise
+   * to settle. A high most-recently measured GPU frame cost can defer the next
+   * precise render until the next frame.
    *
    * @param {Scene} scene
    * @param {Cartesian2} windowPosition
@@ -296,31 +280,16 @@ class Picking {
    * @returns {Promise<object[]>}
    */
   async pickPreciseAsync(scene, windowPosition, width, height, limit = 1) {
-    // C-R9-MODEL-PICK-TRANSLUCENT (Batch 192) mitigation A — coalesce.
-    // One outstanding precise pick at a time per scene. If a click
-    // fires while another precise pick is mid-readback, the new
-    // request waits for the prior one to complete then runs. Avoids
-    // pile-up on rapid clicks.
+    // Wait for the currently active precise pick before starting this request.
     if (defined(this._inFlightPrecisePick)) {
       await this._inFlightPrecisePick.catch(() => {});
     }
 
-    // C-R9-MODEL-PICK-TRANSLUCENT (Batch 192 mitigation B; activated
-    // by Batch 197 B192-N2 timestamp-query wiring) — defer to next
-    // frame when GPU work is heavy.
-    //
-    // Reads `context.performanceManager.frameTimings.totalGpuMs` —
-    // populated by the WebGPU timestamp profiler when active. The
-    // first `Scene.pickPreciseAsync` call on a scene auto-enables
-    // timestamp profiling (see Scene.pickPreciseAsync); the perf-
-    // manager's own gating on `device.features.has('timestamp-query')`
-    // falls through to a 0 reading on devices that don't support it,
-    // in which case defer never fires (no stutter avoidance possible
-    // without timing info, but no false-positive defer either).
-    //
-    // Threshold (12ms) chosen so a 14ms-frame heavy scene still has
-    // 4ms+ for pick. Click-pick tolerates 16-33ms latency; stutter is
-    // unacceptable.
+    // The performance manager publishes the most recently measured GPU frame
+    // duration when timestamp queries are supported. Unsupported devices
+    // leave the reading at zero and do not take this deferral path. A reading
+    // above the 12 ms threshold waits for the next after-render callback before
+    // the precise pick starts.
     const heavyMs = 12;
     const ctx = scene.context;
     const lastFrameMs = ctx?._performanceManager?.frameTimings?.totalGpuMs ?? 0;
@@ -361,7 +330,8 @@ class Picking {
 
     const { frameState, defaultView } = scene;
     const { pickFramebuffer } = defaultView;
-    // Batch 187 (B184-D1 audit fix) — per-call rectangle instance.
+    // Each asynchronous request owns its rectangle so another pending request
+    // cannot overwrite shared scratch state.
     const drawingBufferRectangle = new BoundingRectangle();
     let pickError = noPickFrameError;
     try {
@@ -371,21 +341,11 @@ class Picking {
     } catch (error) {
       pickError = error;
     }
-    // Batch 191 (B187-D1 audit fix) — pickEnd MUST run BEFORE
-    // pickFramebuffer.endAsync() on WebGPU. `endAsync` synchronously
-    // creates a NEW command encoder, queues `copyTextureToBuffer`, and
-    // calls `device.queue.submit([encoder.finish()])` BEFORE returning
-    // its Promise. `pickEnd → endFrame()` is what submits the pick
-    // render's `_currentCommandEncoder`. If `pickEnd` runs AFTER
-    // `endAsync`, the readback encoder is submitted to the queue
-    // first, GPU executes it against an empty/stale colorTexture, and
-    // `mapAsync` resolves with prior-frame data.
-    //
-    // The Batch 187 attempt at this fix moved pickEnd "before the
-    // await" but didn't account for `endAsync`'s synchronous body
-    // running the submit before the await. The correct sequence:
-    //   pickBegin → pickEnd (submits pick render) → endAsync (queues
-    //   readback after pick render in submission order) → await.
+    // Complete the pick frame before invoking endAsync. The asynchronous
+    // method synchronously creates and submits its readback encoder before it
+    // returns a promise, while completePickFrame submits the pick render's
+    // current encoder. Invoking them in this order places the render before
+    // the readback in queue submission order.
     completePickFrame(scene, pickError);
     let pickedObjectsPromise;
     if (defined(pickFramebuffer.endAsync)) {
@@ -491,14 +451,11 @@ class Picking {
         pickError = error;
       }
 
-      // endFrame() MUST run before readCenterPixel() on WebGPU: it submits the
-      // voxel pass's command encoder to the queue. readCenterPixel arms its own
-      // copyTextureToBuffer readback (NEW-PICK-METADATA-READBACK); if it ran
-      // first the readback would be submitted ahead of the voxel render and
-      // decode a stale/cleared pixel (the same submission-order hazard the async
-      // pick path documents in _pickAsyncWithMode). On WebGL, endFrame() only
-      // unbinds the default framebuffer — the pick FBO content persists and
-      // readCenterPixel re-binds it explicitly — so the reorder is a no-op there.
+      // Submit the voxel pass before readCenterPixel arms its own readback;
+      // reversing that order would copy before the voxel render and decode a
+      // stale or cleared pixel. On WebGL, endFrame only unbinds the default
+      // framebuffer, and readCenterPixel explicitly rebinds the pick
+      // framebuffer whose contents persist.
       completePickFrame(scene, pickError);
       const voxelReadbackIdentity =
         voxelPrimitive?._getPickReadbackIdentity?.();
@@ -589,10 +546,8 @@ class Picking {
       pickError = error;
     }
 
-    // endFrame() before readCenterPixel() — submits the metadata pass so the
-    // WebGPU center-pixel readback (NEW-PICK-METADATA-READBACK) copies the
-    // just-rendered pixel rather than a stale one. No-op ordering on WebGL
-    // (see pickVoxelCoordinate for the full rationale).
+    // Submit the metadata pass before readCenterPixel arms its readback so the
+    // copy follows the render. See pickVoxelCoordinate for the WebGL ordering.
     try {
       completePickFrame(scene, pickError);
     } finally {
@@ -623,12 +578,10 @@ class Picking {
   }
 
   /**
-   * If the object under `windowPosition` is a GPU-resident compute-instance,
-   * return that instance's world position; otherwise undefined
-   * (NEW-COMPUTE-INSTANCE-PICKPOSITION). Stays domain-agnostic by duck-typing
-   * the pick record — a `{ collection, instanceIndex }` whose collection
-   * exposes `getInstanceWorldPosition(index, result)` — so no
-   * ComputeInstanceCollection import is needed here.
+   * If the front pick record has a collection and numeric instance index, and
+   * the collection exposes `getInstanceWorldPosition`, return that instance's
+   * world position; otherwise return undefined. Duck typing keeps Picking
+   * domain-agnostic.
    * @private
    */
   _pickComputeInstancePosition(scene, windowPosition, result) {
@@ -685,17 +638,11 @@ class Picking {
       return Cartesian3.clone(this._pickPositionCache[cacheKey], result);
     }
 
-    // GPU-resident instance pickPosition (NEW-COMPUTE-INSTANCE-PICKPOSITION).
-    // A ComputeInstanceCollection's positions live only in a GPU storage buffer
-    // (WebGPU) or are CPU-computed by its cpuKernel (WebGL2), so the depth
-    // reconstruction below — which unprojects the scene depth at the cursor —
-    // can't give the instance's OWN position (a dot is sub-pixel; its center
-    // rarely coincides with the sampled depth, and on WebGPU the translucent
-    // dots don't even write depth). Instead, pick the object under the cursor;
-    // if it is one of these instances, ask its collection to reconstruct the
-    // instance's world position directly. Duck-typed (collection exposes
-    // getInstanceWorldPosition + a numeric instanceIndex) so Picking stays
-    // domain-agnostic and avoids a hard ComputeInstanceCollection import.
+    // Depth unprojection need not recover a compute instance's center: a dot
+    // is sub-pixel, and translucent WebGPU dots do not write depth. Pick the
+    // object first and ask a duck-typed collection to reconstruct the selected
+    // instance's position directly; other objects fall through to the depth
+    // path below.
     const instancePosition = this._pickComputeInstancePosition(
       scene,
       windowPosition,
@@ -790,36 +737,23 @@ class Picking {
       return undefined;
     };
 
-    // NEW-PICK-WEBGPU-DEPTH-RECONSTRUCTION (Batch 252) — full-frustum log
-    // reconstruction for contexts without synchronous readback (WebGPU).
-    // ALL frustum slices there share ONE packed depth texture
-    // (WebGPUSceneRendererFrustumLoop's pick-depth copy of
-    // `globeDepth.globeDepthTexture`), and every depth producer encodes it
-    // LOGARITHMICALLY against the FULL camera frustum (Batches 249-251), not
-    // against per-slice near/far. Running the per-slice loop below against
-    // that texture is what produced the ~85,000 km antipode garbage of
-    // Batch 221. Instead: keep the cloned camera frustum's own near/far (the
-    // encode frustum — `scene.camera` is the persistent camera the WebGPU
-    // frustum loop encodes against) and let the `useLogDepth` branch of
-    // SceneTransforms.drawingBufferToWorldCoordinates reverse the log encode
-    // against `uniformState.currentFrustum`.
-    //
-    // The depth value is PickDepth's one-frame-stale async sync-cache
-    // (number|undefined — all consumers here are synchronous): the first
-    // query at a location returns undefined (callers fall back to ray
-    // picking, the pre-Batch-252 SAFE state) and arms the readback;
-    // subsequent queries converge within 1-2 frames.
+    // Contexts without synchronous readback share one packed depth texture
+    // across frustum slices. Its logarithmic values are encoded against the
+    // full persistent-camera frustum, not each slice, so reconstruct once
+    // with the untouched camera-frustum clone. PickDepth bridges asynchronous
+    // mapping to this synchronous caller with a coordinate- and frame-bounded
+    // previously completed value; a cold location returns undefined and arms
+    // its readback.
     if (!context.supportsSynchronousReadback) {
       if (
         numFrustums === 0 ||
         !frameState.useLogDepth ||
         !context.pickDepthFullFrustumLogEncode
       ) {
-        // Without the full-frustum log encode (kill switch off, or an
-        // orthographic/2D camera where useLogDepth is false) the shared
-        // packed texture holds per-slice hyperbolic depth, which has NO
-        // consistent single-texture reconstruction — keep the SAFE
-        // undefined → ray-pick fallback rather than a garbage position.
+        // With no rendered frustum, or without full-frustum logarithmic
+        // encoding, the shared texture has no consistent single-texture
+        // reconstruction. Return undefined rather than reconstructing with
+        // mismatched parameters.
         this._pickPositionCache[cacheKey] = undefined;
         return undefined;
       }
@@ -1119,16 +1053,13 @@ class Picking {
     }
     //>>includeEnd('debug');
 
-    // NEW-PICK-RAY-ASYNC (Phase 6) — on asynchronous-readback backends
-    // (WebGPU) the offscreen ray-render depth path cannot recover a position
-    // (the offscreen pick view's PickDepth instances never receive the packed
-    // globe-depth texture, and that texture is LOG-encoded against the MAIN
-    // camera frustum, not the offscreen one). Instead reuse the main scene's
-    // already-rendered depth via the Batch-252 pickPosition reconstruction:
-    // project the cartographic position into the live view, sample the surface
-    // under that pixel, and return its height. Same one-frame-stale sync-cache
-    // contract as pickPosition (cold query → undefined + arms readback →
-    // converges in 1-2 frames).
+    // On contexts without synchronous readback, the offscreen view's PickDepth
+    // instances do not receive the packed depth texture, and the shared
+    // texture is encoded for the live camera rather than the offscreen one.
+    // Project the target into the live view and sample its main-scene depth.
+    // This samples the camera ray rather than the geodetic-normal ray, so
+    // oblique views can drift. A cold depth query returns undefined and arms
+    // its bounded asynchronous readback.
     if (!scene.context.supportsSynchronousReadback) {
       const surface = this._reconstructHeightSurfaceWebGPU(scene, position);
       if (defined(surface)) {
@@ -1165,9 +1096,10 @@ class Picking {
     }
     //>>includeEnd('debug');
 
-    // NEW-PICK-RAY-ASYNC (Phase 6) — see sampleHeight above. Same main-scene
-    // depth reuse; clampToHeight returns the reconstructed surface Cartesian3
-    // directly instead of just its height.
+    // Reuse the live-view depth described in sampleHeight and return the
+    // reconstructed surface directly. Because that surface lies on the camera
+    // ray through the projected target, oblique views may not preserve the
+    // requested longitude and latitude.
     if (!scene.context.supportsSynchronousReadback) {
       const surface = this._reconstructHeightSurfaceWebGPU(scene, cartesian);
       if (defined(surface)) {
@@ -1192,24 +1124,18 @@ class Picking {
   }
 
   /**
-   * NEW-PICK-RAY-ASYNC (Phase 6) — WebGPU implementation of the
-   * sampleHeight / clampToHeight surface lookup. Reuses the main scene's
-   * already-rendered depth (the same packed log-depth texture pickPosition
-   * reads since Batch 252) rather than an offscreen ray render, which the
-   * async-readback backend cannot support.
+   * Implements the live-view surface lookup used by sampleHeight and
+   * clampToHeight on contexts without synchronous readback.
    *
-   * Given a target world/cartographic position, project it into the live
-   * camera view and reconstruct the rendered surface (globe/tileset) under
-   * that pixel via {@link Picking#pickPositionWorldCoordinates}. The returned
-   * surface lies on the camera ray through the projected pixel — for a
-   * position currently visible in the view this is the globe/tileset height
-   * at (approximately) that location. Inherits pickPosition's one-frame-stale
-   * sync cache: the first query at a new screen location returns
-   * <code>undefined</code> (and arms the async readback) and converges within
-   * 1-2 rendered frames.
+   * Projects a world or cartographic target into the live camera and
+   * reconstructs the rendered surface under that pixel through
+   * {@link Picking#pickPositionWorldCoordinates}. The target must project
+   * inside the canvas. The result lies on the camera ray through the projected
+   * pixel, not on the target's geodetic-normal ray, so oblique views can drift.
    *
-   * Returns <code>undefined</code> when the target is off-screen / behind the
-   * camera, or while the depth readback is still cold.
+   * A bounded previously completed depth value may be used. Returns
+   * <code>undefined</code> when the target is off-screen or behind the camera,
+   * or when the depth readback is cold; the cold query arms that readback.
    *
    * @param {Scene} scene
    * @param {Cartographic|Cartesian3} target Cartographic (sampleHeight) or
@@ -1622,7 +1548,7 @@ function computePickingDrawingBufferRectangle(
  * @param {PickFramebuffer|SnapFramebuffer} [options.framebuffer] The framebuffer to render into. Defaults to the view's pick framebuffer.
  * @param {boolean} [options.snap=false] If <code>true</code>, mark the pass as a snapping pass (sets <code>frameState.passes.snap</code>).
  * @param {"default"|"hover"|"precise"} [options.pickMode="default"] Selects the
- *        C-R9-MODEL-PICK-TRANSLUCENT pick variant (sets <code>frameState.passes.pickMode</code>).
+ *        default, stochastic-hover, or two-pass-precise pipeline (sets <code>frameState.passes.pickMode</code>).
  *
  * @private
  */
@@ -1662,6 +1588,8 @@ export function pickBegin(
 
   scene.jobScheduler.disableThisFrame();
   scene.updateFrameState();
+  // Restrict the culling volume to the pick rectangle so commands whose bounds
+  // do not intersect the cursor region stay out of every pick-variant pass.
   frameState.cullingVolume = getPickCullingVolume(
     scene,
     drawingBufferPosition,
@@ -1671,26 +1599,11 @@ export function pickBegin(
   );
   frameState.invertClassification = false;
   frameState.passes.pick = true;
-  // C-R9-MODEL-PICK-TRANSLUCENT (Batch 192) — pick variant routing.
-  // Default to "default" (B186 first-slice behavior); callers passing
-  // "hover" or "precise" opt into the second-slice variants. Cleared
-  // in pickEnd so subsequent default-pick frames don't carry stale mode.
+  // Select the requested variant for this frame. pickEnd resets the mode so a
+  // later ordinary pick cannot inherit it.
   frameState.passes.pickMode = options?.pickMode ?? "default";
   frameState.passes.snap = options?.snap ?? false;
   frameState.tilesetPassState = pickTilesetPassState;
-
-  // C-R9-MODEL-PICK-TRANSLUCENT (Batch 192) mitigation E — pick-rect
-  // screen-space cull tightening. The `getPickCullingVolume` call
-  // above already tightens the camera frustum to the screen-space
-  // pick rectangle. The scene's frustum-loop partition reads
-  // `frameState.cullingVolume` and excludes any command whose
-  // bounding sphere doesn't intersect the tightened volume — which
-  // for a 3×3 pick rect at the cursor means most commands skip BOTH
-  // pass 1 and pass 2 of the precise pick (and the dither pass of
-  // hover pick). For typical Cesium scenes (thousands of tiles), this
-  // drops the pick-time render cost by ~90-95% even before we get to
-  // per-pipeline render-pass overhead. Pure infrastructure reuse — no
-  // additional code needed for Batch 192.
 
   context.uniformState.update(frameState);
   scene.updateEnvironment();
@@ -1796,7 +1709,7 @@ const scratchOrthographicFrustum = new OrthographicFrustum();
 const scratchOrthographicOffCenterFrustum = new OrthographicOffCenterFrustum();
 const scratchPickPositionCartographic = new Cartographic();
 
-// NEW-PICK-RAY-ASYNC (Phase 6) — scratch for _reconstructHeightSurfaceWebGPU.
+// Scratch values for projecting and reconstructing the live-view height surface.
 const scratchReconstructHeightCartographic = new Cartographic();
 const scratchReconstructHeightAnchor = new Cartesian3();
 const scratchReconstructHeightWindow = new Cartesian2();
@@ -1898,10 +1811,9 @@ function drillPick(pickCallback, limit) {
   return results;
 }
 
-// Batch 184 (NEW-DRILLPICK-ASYNC) — async sibling of `drillPick`. The
-// pickCallback returns a Promise; iterations are awaited so each one
-// sees a fresh pick render rather than the in-flight previous frame
-// (the failure mode that made the sync path unreliable on WebGPU).
+// Await each pick before hiding its result and issuing the next. Each
+// iteration then renders after the preceding visibility changes and reads a
+// completed result rather than the prior iteration's in-flight frame.
 async function drillPickAsync(pickCallback, limit) {
   const results = [];
   const pickedPrimitives = [];

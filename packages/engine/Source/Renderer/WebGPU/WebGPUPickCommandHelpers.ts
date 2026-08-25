@@ -1,51 +1,16 @@
 /**
- * WebGPU Pick Command Helpers — shared lifecycle + descriptor utilities for
- * the per-renderer pick command pattern (C-R9 family).
+ * Shared lifecycle and descriptor utilities for WebGPU pick commands.
  *
- * Background (Batch 59 — Extract WebGPUPickCommandHelpers): five renderers
- * (Ellipsoid B30, Ground B31, GaussianSplat B31, Voxel B53, Model B54)
- * converged on the same recipe:
+ * The helpers cache per-primitive pick IDs, attach pick variants to color
+ * commands, clone compatible single-target pipeline descriptors, and clear
+ * cached IDs and destroy their registry entries during renderer teardown.
+ * Fragment shader bodies, uniform layouts, and readiness-aware pipeline-cache
+ * routing remain renderer-specific.
  *
- *   - Per-primitive (or per-glTF-primitive) `CesiumPickId` allocated on first
- *     render/pick frame, cached, and re-allocated whenever `primitive.id`
- *     changes (so a runtime `id` reassignment doesn't keep the stale color).
- *   - A pick render-pipeline that mirrors the color pipeline's layout +
- *     vertex stage + depth-stencil but swaps the fragment entry to a
- *     renderer-specific WGSL function (`fragmentPickMain` / `pickFS` /
- *     `samplePickAtRayMarchHit` / etc.) and disables blending so the pick
- *     color reaches the FBO byte-exact.
- *   - A `WebGPUDrawCommand` that shares everything except pipeline with the
- *     color command, wired onto `colorCommand.derivedCommands.picking
- *     .pickCommand` so the Batch 29 `selectCommandVariant` dispatcher in
- *     `WebGPUSceneRenderer.ts` swaps to it during pick passes.
- *   - Teardown that calls `pickId.destroy()` so the registry slot is
- *     reclaimed before the cache slot is dropped.
- *
- * **What is shared (extracted here):** the lifecycle + wiring boilerplate.
- *
- * **What stays per-renderer (NOT extracted):**
- *   - The WGSL pick fragment source (Voxel does ray-march, Splat does Gaussian
- *     evaluation, Model has alpha-mask discard, etc. — the entry signatures
- *     and bodies legitimately differ).
- *   - The UBO struct layout — every renderer has its own pickColor offset and
- *     companion fields.
- *   - The pipeline-cache routing (sync / async dance through
- *     `WebGPURenderPipelineCache`) — kept per-renderer because cache lookup
- *     timing is fused with the renderer's own ready-state machine.
- *
- * **Renderer that intentionally bypasses these helpers:**
- *   - `WebGPUModelRenderer.js` uses `WebGPUModelPipelineCache.getPickPipeline
- *     (alphaMode, doubleSided)` — a context-scoped cache that materializes
- *     the pick pipeline from a parameter pair rather than from a clonable
- *     descriptor, because the alpha-mask + double-sided combinatorics drive
- *     a small set of canonical pick pipelines shared across every Model
- *     primitive. Cloning each color descriptor would duplicate work the
- *     pipeline cache already coalesces.
- *
- *     Model still uses {@link ensurePickId} (with a string `idKey` to keep a
- *     map of per-primitive pickIds keyed by `nodeIdx_primIdx`) and
- *     {@link attachPickToColorCommand}, just not
- *     {@link buildPickPipelineDescriptor}.
+ * Model rendering uses a context-scoped pick-pipeline cache keyed by material
+ * and pipeline configuration rather than cloning each color descriptor. It
+ * lets matching primitives reuse one canonical pipeline while still sharing
+ * {@link ensurePickId} and {@link attachPickToColorCommand}.
  *
  * @private
  */
@@ -192,13 +157,9 @@ export function ensurePickId(
     idKey?: string;
     kind?: PickKind;
     /**
-     * DP-H46e — optional `detail` payload folded into the pick object so the
-     * backend-agnostic `Scene.pickMetadata` orchestration (which reads
-     * `pickedObject.detail.model.structuralMetadata`) and any other
-     * detail-consuming caller see the SAME shape WebGL's
-     * `PickingPipelineStage.buildPickObject` produces (`{ primitive, detail: {
-     * model, node, primitive } }`). Omitted by every existing caller so the
-     * pick object is byte-identical (`{ primitive, id }`) for them.
+     * Optional fields copied into the multi-ID pick object. Callers can attach
+     * backend-neutral detail such as the owning model used by structural
+     * metadata queries.
      */
     detail?: Record<string, PickTargetField>;
   },
@@ -330,12 +291,9 @@ export interface BuildPickPipelineDescriptorOptions {
    * When `true`, force the pick descriptor's `depthStencil.depthWriteEnabled`
    * to `true` regardless of the color descriptor's setting.
    *
-   * The Batch 30 Ellipsoid pick path uses `true` (pick fragments must paint
-   * into the pick depth target so subsequent pick draws back-clip correctly).
-   *
-   * Splat / Voxel / Ground all use `false` (their color paths don't write
-   * depth either — translucent or stencil-gated draws). Pass `false` for
-   * those.
+   * Enable this when later pick draws depend on prior fragments updating
+   * depth for back-clipping. Pass `false` for paths that intentionally keep
+   * depth writes disabled.
    *
    * Defaults to `true` to match the most common case (the descriptor is
    * cloned for an opaque-depth-style renderer).
@@ -347,21 +305,16 @@ export interface BuildPickPipelineDescriptorOptions {
  * Clone a color pipeline descriptor into a pick variant: same layout, same
  * vertex stage, same depthStencil shape — but the fragment entry swaps to
  * {@link pickFragmentEntry}, and the color targets are replaced by exactly
- * ONE explicit non-blended single-sample target stamped with
- * {@link pickFormat} (pick colors MUST reach the FBO byte-exact for
- * round-trip readback to work). `depthWriteEnabled` is overridden per
+ * one explicit non-blended single-sample target stamped with
+ * {@link pickFormat}. This keeps pick colors byte-exact for round-trip
+ * readback. `depthWriteEnabled` is overridden per
  * {@link options.forceDepthWriteEnabled}.
  *
- * NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE — {@link pickFormat} is REQUIRED and
- * callers must pass `context.pickPipelineFormat`, the context's sole
- * byte-object-ID attachment authority. The helper previously FILTERED the
- * color targets (dropping any `rgba16float` G-buffer slot), which silently
- * produced a zero-target pick pipeline in HDR (where slot 0 itself is
- * `rgba16float`) and inherited whatever slot-0 format remained otherwise.
- * Stamping is byte-identical in SDR (slot 0 == pickPipelineFormat) and
- * correct in HDR (LDR pick target for a float scene target).
+ * {@link pickFormat} is required and callers pass
+ * `context.pickPipelineFormat`, keeping byte-ID picking independent of the
+ * scene color format when high dynamic range rendering uses a float target.
  *
- * Returns a new descriptor; does NOT mutate the input. Safe to feed into
+ * Returns a new descriptor without mutating the input. Safe to feed into
  * `WebGPURenderPipelineCache.getPipeline()` or pass through `descriptorToGPU`.
  *
  * @param colorDescriptor - The color pipeline descriptor to clone.
@@ -394,13 +347,9 @@ export function buildPickPipelineDescriptor(
     );
   }
 
-  // NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE — the pick render pass has exactly
-  // ONE color attachment (the pick framebuffer's `context.pickPipelineFormat`
-  // texture). Stamp exactly one target: slot 0's writeMask is preserved,
-  // `blend` is dropped entirely (writeMask defaults to ALL when not
-  // specified, which is what we want for pick targets), and the format is
-  // the caller-supplied pick authority — NOT the scene slot-0 format, which
-  // diverges from the pick attachment in HDR.
+  // The pick render pass has one color attachment. Preserve the first defined
+  // target's write mask, remove blending, and stamp the caller's pick format
+  // rather than inheriting a potentially different scene color format.
   const slot0 = colorFragment.targets.find(
     (t): t is GPUColorTargetState => t !== null && t !== undefined,
   );
@@ -444,14 +393,9 @@ export function buildPickPipelineDescriptor(
     fragment: pickFragment,
     primitive: colorDescriptor.primitive,
     depthStencil: pickDepthStencil,
-    // Slice 5c-B Batch 118 — pick framebuffer is always single-sample
-    // (the pick FB doesn't use MSAA; pick reads back exact bytes from
-    // the rgba8unorm color attachment). Drop the color descriptor's
-    // multisample state entirely so the pick pipeline targets the
-    // single-sample pick pass even when color is MSAA. Previously the
-    // pick pipeline inherited color's multisample and would have
-    // tripped "Attachment state not compatible" at first pick attempt
-    // for any renderer using MSAA color + this helper.
+    // The pick framebuffer is single-sample. Omit the color descriptor's
+    // multisample state so this pipeline remains compatible when the color
+    // pass uses multisampling.
     multisample: undefined,
   };
 }
@@ -467,31 +411,20 @@ export interface DrawCommandWithDerivedSlot {
   derivedCommands?: {
     picking?: {
       pickCommand?: unknown;
-      // Batch 192 — C-R9-MODEL-PICK-TRANSLUCENT second-slice variants.
-      // Both are optional; primitives that opt into hover/precise pick
-      // populate them, others leave them undefined and the dispatcher
-      // falls back to the default `pickCommand`. Materialized only
-      // when `scene.pickHover()` / `scene.pickPrecise()` is called at
-      // least once on the scene (lazy pipeline allocation).
+      // Optional hover and precise variants. When absent, the dispatcher
+      // falls back to the default pick command. Renderers can materialize them
+      // lazily after pickHoverAsync or pickPreciseAsync is requested.
       pickHoverCommand?: unknown;
       pickPrecisePass1Command?: unknown;
       pickPrecisePass2Command?: unknown;
-      // C-R9-VOXEL-CELL-PICK — per-cell pick variant, dispatched ONLY during
-      // `passes.pickVoxel` (Scene.pickVoxel / pickVoxelCoordinate). Only
-      // voxel primitives populate it; every other command's pick dispatch is
-      // unchanged.
+      // Per-cell variant selected only while passes.pickVoxel is active.
       pickVoxelCommand?: unknown;
     };
-    // DP-H46e — metadata-pick slot. Materialized only during a
-    // `scene.pickMetadata` pass (frameState.pickingMetadata true); the
-    // dispatcher returns `pickMetadataCommand` ahead of the regular pick slot.
+    // Metadata variant selected while frameState.pickingMetadata is true.
     pickingMetadata?: {
       pickMetadataCommand?: unknown;
     };
-    // UP144-SNAP-WEBGPU (C11-212) — snapping-pass slot. Same key WebGL's
-    // `DerivedCommand.createSnapDerivedCommand` writes, so both backends'
-    // dispatchers read `derivedCommands.snapping.snapCommand`. Materialized
-    // only once an application has called `Scene.snap` at least once.
+    // Shared snapping slot, materialized lazily after Scene.snap is requested.
     snapping?: {
       snapCommand?: unknown;
     };
@@ -500,8 +433,7 @@ export interface DrawCommandWithDerivedSlot {
 
 /**
  * Wire a pick command onto the color command's `derivedCommands.picking`
- * slot so the Batch 29 `selectCommandVariant` dispatcher (in
- * `WebGPUSceneRenderer.ts`) swaps to it during pick passes.
+ * slot so `selectCommandVariant` selects it during pick passes.
  *
  * Idempotent — calling it more than once with the same arguments is a no-op
  * after the first call. Calling with a fresh pick command replaces the slot.
@@ -530,20 +462,18 @@ export function attachPickToColorCommand<TPick>(
 }
 
 /**
- * C-R9-MODEL-PICK-TRANSLUCENT (Batch 192) — second-slice pick variant
- * attachment. Wires the optional hover (Option D) and precise (Option C
- * 2-pass) pick commands onto the color command's picking slot.
+ * Wires optional hover and two-pass precise commands onto the color command's
+ * picking slot.
  *
- * Renderers call this AFTER `attachPickToColorCommand` populates the
- * default pick command. The dispatcher (`selectCommandVariant`) reads
+ * Renderers call this after `attachPickToColorCommand` populates the default
+ * pick command. The dispatcher reads
  * `frameState.passes.pickMode` to choose which variant fires:
  *
- *   - 'default' → existing pickCommand (B186 first slice)
- *   - 'hover'   → pickHoverCommand (Option D dither, falls back to
- *                 pickCommand if hover variant absent)
+ *   - 'default' → existing pickCommand
+ *   - 'hover'   → pickHoverCommand, falling back to pickCommand when absent
  *   - 'precise' → pickPrecisePass1Command + pickPrecisePass2Command
- *                 (sequenced same render pass; falls back to pickCommand
- *                 if precise variants absent — OPAQUE/MASK case)
+ *                 in the same render pass, falling back to pickCommand when
+ *                 precise variants are absent
  *
  * @private
  */
@@ -577,16 +507,14 @@ export function attachPickVariantsToColorCommand<TPick>(
 }
 
 /**
- * UP144-SNAP-WEBGPU (C11-212) — wire a snapping-pass command onto the color
- * command's `derivedCommands.snapping.snapCommand` slot so
+ * Wires a snapping-pass command onto the color command's
+ * `derivedCommands.snapping.snapCommand` slot so
  * `selectCommandVariant(..., snapVariant = true)` returns it during the payload
  * phase of a `Scene.snap` mini-frame.
  *
- * Deliberately a SEPARATE slot from `derivedCommands.picking`: the snap variant
- * targets the RGBA32F payload attachment, not the RGBA8 pick attachment, so a
- * pass that accidentally selected it would fail WebGPU's draw-time attachment
- * validation. Keeping the two families apart makes that mistake unrepresentable
- * rather than merely unlikely.
+ * The separate slot prevents object-pick commands, which target a byte-color
+ * attachment, from entering the rg32uint snap payload pass and failing
+ * draw-time attachment validation.
  *
  * Idempotent — replaces the slot on each call.
  *
@@ -614,13 +542,12 @@ export function attachSnapToColorCommand<TSnap>(
 }
 
 /**
- * C-R9-VOXEL-CELL-PICK — wire a per-cell voxel-pick command onto the color
- * command's `derivedCommands.picking.pickVoxelCommand` slot so the
+ * Wires a per-cell voxel-pick command onto the color command's
+ * `derivedCommands.picking.pickVoxelCommand` slot so the
  * `selectCommandVariant` dispatcher (in `WebGPUSceneRenderer.ts`) returns it
  * during a `Scene.pickVoxel` pass (`frameState.passes.pickVoxel === true`).
- * The variant packs {megatextureIndex, sampleIndex} per WebGL's
- * VoxelFS.glsl PICKING_VOXEL branch — distinct from the object-pick
- * `pickCommand` (u.pickColor), which stays untouched.
+ * The variant packs `{ megatextureIndex, sampleIndex }` separately from the
+ * ordinary object-pick command, which stays untouched.
  *
  * Idempotent — replaces the slot on each call.
  *
@@ -647,7 +574,7 @@ export function attachPickVoxelToColorCommand<TPick>(
 }
 
 /**
- * DP-H46e — wire a metadata-pick command onto the color command's
+ * Wires a metadata-pick command onto the color command's
  * `derivedCommands.pickingMetadata.pickMetadataCommand` slot so the
  * `selectCommandVariant` dispatcher (in `WebGPUSceneRenderer.ts`) returns it
  * during a `scene.pickMetadata` pass (`frameState.pickingMetadata === true`).

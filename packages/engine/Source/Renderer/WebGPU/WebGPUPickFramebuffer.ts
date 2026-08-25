@@ -21,10 +21,9 @@ import {
   type FeatureIdResolveResult,
 } from "./WebGPUFeatureIdTexture.js";
 
-// NEW-PICK-METADATA-READBACK (Batch 285) — no more than this many picks may
-// render before a typed center-pixel result expires. Coordinates and logical
-// rectangles are exact: a nearby pixel can be a different voxel or metadata
-// value and must arm its own readback rather than borrow its neighbor's bytes.
+// No more than this many pick passes may elapse before a typed center-pixel
+// result expires. Coordinates and logical rectangles match exactly because a
+// nearby pixel can represent a different voxel or metadata value.
 const CENTER_PIXEL_MAX_STALE_FRAMES = 4;
 // Distinct typed queries that may converge concurrently. A multi-property
 // `pickMetadata` sweep arms one readback per property inside a single task, so a
@@ -82,7 +81,7 @@ interface CenterPixelPendingRequest {
  * (`context.pickPipelineFormat`), otherwise WebGPU drops every
  * pick draw with "Attachment state of [RenderPipeline] is not compatible with
  * [RenderPassEncoder Pick render pass]" and the pick FBO stays empty — the
- * actual cause of FORK-34 (all picking returns undefined). Only 8-bit unorm
+ * actual cause of every pick returning undefined. Only 8-bit unorm
  * formats support the byte-readback path below; an HDR/float scene format
  * therefore uses an LDR rgba8unorm pick attachment and matching pipelines.
  * @private
@@ -153,7 +152,7 @@ function pickObjectsFromPixels(
       // blue = (key >> 16) & 0xff, ALPHA = (key >> 24) & 0xff. So every pick
       // id below 2^24 (i.e. essentially all of them) has alpha 0. The old
       // `a > 0` gate therefore rejected virtually every real pick — the true
-      // cause of FORK-34 once the pick pass itself was fixed. The cleared
+      // cause of the residual pick failure once the pass was fixed. The cleared
       // pick FBO is (0,0,0,0) → key 0, which `getObjectByPickColor` maps to
       // undefined (pick ids start at 1). Include alpha in the gate so valid
       // keys above 0x00ffffff remain decodable; this also prepares the path
@@ -726,14 +725,8 @@ export class WebGPUPickFramebuffer {
   private _nextReadbackSequence: number = 0;
   private _lastPublishedReadbackSequence: number = -1;
 
-  // NEW-WEBGPU-PICK-COLD-SYNC-STALENESS (Batch 361) — one-time latch for the
-  // cold-pick guidance warning. WebGPU has no synchronous readback, so the
-  // FIRST synchronous `scene.pick()` against a fresh pick FBO returns nothing
-  // (the async readback hasn't completed; there is no previous-frame result to
-  // return). This is intrinsic, not a bug — but a one-off / click-driven sync
-  // pick that comes back undefined is confusing, so we emit a single guidance
-  // line steering callers to `scene.pickAsync` (which awaits the readback).
-  // Latched so it fires exactly once per framebuffer, never per-frame.
+  // Limit the guidance diagnostic emitted when `end()` cannot serve an earlier
+  // matching readback to once per framebuffer.
   private _coldPickWarned: boolean = false;
   // True between submit-of-copyTextureToBuffer and the unmap that follows
   // mapAsync's resolution. While true, we must not encode another copy to
@@ -776,20 +769,14 @@ export class WebGPUPickFramebuffer {
   // unless resolveFeatureIdRecolorAsync() is explicitly called.
   private _featureIdTexture: WebGPUFeatureIdTexture | null = null;
 
-  // NEW-PICK-METADATA-READBACK (Batch 285) — center-pixel readback state for
-  // pickMetadata / pickVoxelCoordinate. These callers render their own pass
-  // into `_colorTexture` then call readCenterPixel() SYNCHRONOUSLY, so they
-  // cannot consume `_lastReadPixels` (which holds the most recent regular
-  // scene.pick() color pass — a STALE pixel from a different pass). Instead
-  // readCenterPixel arms its OWN 1x1 readback of the just-rendered center
-  // pixel and returns a one-frame-stale cache only for the exact typed query,
-  // rectangle, device/resource tuple, attachment, and owner version. A cold
-  // query is invalid (`undefined`), never a fabricated all-zero pixel.
+  // Metadata and voxel callers render their own pass, so they cannot consume
+  // `_lastReadPixels` from an ordinary object-pick pass. readCenterPixel arms
+  // a dedicated 1x1 readback and may synchronously serve a bounded previously
+  // completed value only when its typed query, rectangle, view, device,
+  // resource, attachment, and owner identity match. A cold query is undefined.
   //
-  // Cache slots and in-flight requests are BOTH keyed by that same structural
-  // identity, so distinct concurrent queries converge independently. The
-  // single-identity caller still costs one comparison: its entry stays at the
-  // head of the MRU list.
+  // Cache slots and in-flight requests use the same structural identity so
+  // distinct concurrent queries complete independently.
   private _centerPixelCacheEntries: CenterPixelCacheEntry[] = [];
   private _centerPendingRequests: CenterPixelPendingRequest[] = [];
   private _nextCenterReadbackSequence: number = 0;
@@ -863,7 +850,7 @@ export class WebGPUPickFramebuffer {
         ? Math.floor(rawHeight)
         : 1;
 
-    // Advance the staleness clock once per pick pass (NEW-PICK-METADATA-READBACK).
+    // Advance the center-pixel staleness clock once per pick pass.
     this._updateCount++;
     if (centerPixelDomain === undefined) {
       this._ordinaryPickViewProvenance = viewProvenance;
@@ -911,7 +898,7 @@ export class WebGPUPickFramebuffer {
     this._copyOffsetY = this._copyOriginTopY - this._pickOriginTopY;
 
     // The pick color attachment MUST match the pick pipelines' canonical
-    // target format or WebGPU drops every pick draw — FORK-34.
+    // target format or WebGPU drops every pick draw.
     const colorFormat = getWebGPUPickColorFormat(this._context);
 
     // Create or recreate render targets
@@ -1384,12 +1371,8 @@ export class WebGPUPickFramebuffer {
       encoder.copyTextureToBuffer(
         {
           texture: colorTexture,
-          // Read from the pick region, not the top-left corner — and convert
-          // the vertical origin (METADATA-TABLE-SOURCES, same conversion as
-          // readCenterPixel / C-R9-VOXEL-CELL-PICK): the caller's rectangle is
-          // GL-convention (`y` measured from the BOTTOM, per
-          // computePickingDrawingBufferRectangle) while `_colorTexture` is
-          // stored TOP-DOWN.
+          // Read the clipped region computed by begin(); its top-down origin
+          // already accounts for the caller's bottom-origin rectangle.
           origin: [region.copyOriginX, region.copyOriginTopY, 0],
         },
         {
@@ -1437,17 +1420,13 @@ export class WebGPUPickFramebuffer {
    * Read the center pixel of the pick rectangle.
    * Used for voxel coordinate picking and metadata picking.
    *
-   * NEW-PICK-METADATA-READBACK (Batch 285) — synchronized async readback.
-   * The metadata/voxel callers (Picking.pickMetadata / pickVoxelCoordinate)
-   * render their pass into `_colorTexture`, submit it via context.endFrame(),
-   * then call this SYNCHRONOUSLY expecting the just-rendered center pixel.
-   * Because WebGPU readback is async, we arm a fresh 1x1 readback of the
-   * current center pixel (guarded so a re-pick can't read a half-written
-   * buffer) and return a one-frame-stale cache keyed to the query coordinate
-   * + a frame stamp. A cold query returns `undefined` and arms the readback;
-   * the same exact query 1-2 frames later returns the correct value. This
-   * replaces the old `_lastReadPixels.slice()` which returned
-   * the STALE pixel from the most recent regular scene.pick() COLOR pass.
+   * Callers submit the metadata or voxel render pass before invoking this
+   * method so the copy is ordered after the draw.
+   *
+   * Each call arms or refreshes a 1x1 asynchronous readback and synchronously
+   * serves a previously completed value only when the full query identity and
+   * maximum-age checks pass. Distinct typed identities may overlap. A cold or
+   * expired query returns `undefined` while its readback is pending.
    */
   readCenterPixel(
     screenSpaceRectangle: CesiumBoundingRectangle,
@@ -1668,11 +1647,11 @@ export class WebGPUPickFramebuffer {
   /**
    * Asynchronously read a single RGBA8 pixel from `_colorTexture` at the
    * given texture coordinate, caching it for the next synchronous
-   * readCenterPixel() call. NEW-PICK-METADATA-READBACK (Batch 285).
+   * readCenterPixel() call.
    *
    * Uses a fresh staging buffer per readback (destroyed after unmap), so
-   * different typed queries may overlap safely. Monotonic request identity
-   * prevents an older completion from publishing over a newer request.
+   * different typed queries may overlap safely. A monotonic sequence per
+   * identity prevents an older completion from replacing a newer result.
    */
   private _readCenterPixelAsync(identity: CenterPixelReadbackIdentity): void {
     if (!this._centerPixelIdentityIsCurrent(identity)) {
@@ -1887,9 +1866,7 @@ export class WebGPUPickFramebuffer {
     encoder.copyTextureToBuffer(
       {
         texture: colorTexture,
-        // Copy from the pick region (see the paired comment on the async
-        // readback path above), with the same GL-bottom-origin → top-down
-        // vertical conversion (METADATA-TABLE-SOURCES).
+        // Copy the clipped region using the top-down origin computed by begin().
         origin: [region.copyOriginX, region.copyOriginTopY, 0],
       },
       {

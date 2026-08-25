@@ -1,42 +1,14 @@
 /**
- * Pick-pass orchestration extracted from `WebGPUSceneRenderer`.
+ * Orchestrates WebGPU pick and snap command passes across frustum slices.
  *
- * Batch 133 of the audit-recommended SceneRenderer decomposition. See
- * `migration_doc/WEBGPU_CONTEXT_DECOMPOSITION_PLAN.md` (SceneRenderer
- * candidate "Pick path") and
- * `migration_doc/BATCH_133_PLAN_PICK_PASS_EXTRACTION.md` for context.
+ * Frustum slices execute far to near. Pick ID color loads between slices,
+ * while depth and stencil clear because independently projected slice depths
+ * are not comparable. Commands route through `selectCommandVariant` so only
+ * the applicable pick command reaches the pass.
  *
- * Responsibilities:
- *   - Open a render pass against the WebGPU pick framebuffer that
- *     `WebGPUPickFramebuffer.begin()` published into
- *     `passState.framebuffer`.
- *   - Walk every frustum back-to-front and dispatch every pickable
- *     pass (GLOBE → 3D-tile → 3D-tile-classification → OPAQUE →
- *     TRANSLUCENT → VOXELS → GAUSSIAN_SPLATS). Each independently
- *     projected frustum gets its own render pass: ID color accumulates across
- *     slices while non-comparable depth/stencil is cleared for every slice.
- *   - For each command, route through `selectCommandVariant(...,
- *     isPickPass=true)` so commands carrying a `derivedCommands.picking`
- *     entry render their pick variant (writes pick IDs) instead of
- *     the base material.
- *   - End the pick pass and leave the pick mini-frame ready for
- *     `pickEnd → context.endFrame()` submission.
- *   - UP144-SNAP-WEBGPU (C11-212) — when `passState.framebuffer` is a
- *     `WebGPUSnapFramebuffer` (`_isWebGPUSnapFBO`), run each frustum slice
- *     TWICE: the ordinary pick sequence above into the snap FBO's occluder
- *     attachment (this is what populates depth, i.e. WebGL's depth-only
- *     fallback for snapless commands), then a payload pass into the RG32Uint
- *     snap attachment over that same depth, drawing only commands that carry
- *     `derivedCommands.snapping.snapCommand`.
- *
- * What it deliberately does NOT do:
- *   - Pick-FBO allocation lives in `WebGPUPickFramebuffer.ts`.
- *   - Pick-result decode runs after this returns, in
- *     `WebGPUPickFramebuffer.end()` / `Picking.js`.
- *
- * The host interface keeps the dependency arrow pointing
- * `WebGPUSceneRenderer → WebGPUSceneRendererPickPass`. The pick pass
- * reaches back via {@link PickPassHost.updateFrustumUniforms} only.
+ * A `WebGPUSnapFramebuffer` adds an occluder phase followed by an integer
+ * payload phase over the same slice depth. Framebuffer allocation and result
+ * decoding remain outside this module.
  *
  * @module WebGPUSceneRendererPickPass
  */
@@ -58,42 +30,22 @@ import {
 } from "./WebGPUSceneRenderer.js";
 
 /**
- * C10-12-PICK-DEPTH-PLANE-GATE-FLIP (2026-07-18) — ENABLED. The depth-plane
- * pick draw writes a horizon far-depth into the shared pick FBO so picks
- * BEYOND the visible terrain limb (behind the globe) are correctly occluded,
- * while front/visible picks still resolve. This closes C9-02B and audit P0-1.
+ * Enables the horizon depth-plane draw that occludes pick fragments behind
+ * the visible terrain limb.
  *
- * Why the gate was held OFF until now (kept for history): flipping it requires
- * the WHOLE native pick fleet to write log `@builtin(frag_depth)` against the
- * SAME full-frustum encode the depth plane uses. Before C10-11 every native
- * pick producer (globe/model/collection/primitive/voxel/ellipsoid/splat/buffer
- * pick shaders) wrote update-time camera-frustum HYPERBOLIC z. Hyperbolic depth
- * cannot discriminate the depth plane from a just-beyond-horizon marker at
- * 5,000 km (sub-ulp Δz), and a log-depth plane over a hyperbolic fleet
- * OVER-OCCLUDED every pick cohort across the globe disk (Run-1, 2026-07-16).
+ * Every producer sharing the pick depth attachment must use a comparable
+ * depth encoding and range. The plane uses the frame-stable full-camera pair;
+ * mixing logarithmic and hyperbolic depth makes its comparisons incoherent
+ * and can over-occlude visible fragments.
  *
- * Prerequisites now met:
- *  - Scene half (Batch 673): `WebGPUDepthPlane.update()` encodes log depth from
- *    the FULL camera frustum stash `uniformState._logDepthEncodeNearFar`, and
- *    the dedicated `_pickPipeline` writes log `frag_depth` from the same pair.
- *  - Fleet half (C10-11, Batch 709): every native pick producer writes log
- *    `frag_depth` against that same encode, gated on `isWebGPUPickLogDepthActive`
- *    (`WebGPUContext._pickLogDepthWriteEnabled`, default TRUE). The shared pick
- *    FBO is now uniformly log — coherent with the plane (INV-1/INV-2).
- *
- * Kill switch: set this back to `false` to disable ONLY the depth-plane pick
- * draw (the fleet stays log-encoded — harmless, WebGL-parity). The fleet-wide
- * kill switch is `WebGPUContext._pickLogDepthWriteEnabled = false`.
- * Verified by `probe-depth-plane-horizon-oracle.mjs` (normal/diagnostic-skip/
- * restored = on/off/restored discipline) at 20/500/5,000 km.
+ * Setting this constant to `false` disables only the plane draw.
+ * `WebGPUContext._pickLogDepthWriteEnabled` separately controls native pick
+ * producers.
  */
 const PICK_DEPTH_PLANE_ENABLED = true;
 
 /**
- * The SceneRenderer surface that the extracted pick pass reaches
- * back to. Today's only callback is the frustum-uniform refresh; the
- * interface gives us a single place to grow if more callbacks become
- * necessary.
+ * Host services used while encoding WebGPU pick passes.
  */
 export interface PickPassHost {
   _currentFrustumIndex: number;
@@ -124,23 +76,13 @@ export interface PickPassHost {
 }
 
 /**
- * NEW-WEBGPU-POINT-PICK-RESIDUAL (CO-16) — per-pass dispatch census for ONE
- * pick mini-frame.
+ * Debug-only per-pass census of commands binned, dispatched, or rejected by
+ * pick admission for one mini-frame.
  *
- * Three stacked defects have now been found in the WebGPU collection pick
- * chain (B914 pass binning, B739 pipeline key, and a standing residual), and
- * every one of them was argued about offline for at least a batch because the
- * chain publishes NOTHING observable between "the FR pushed a command" and
- * "the readback decoded a key". The two questions that actually discriminate
- * are: did the command reach the pick bin, and was it DISPATCHED or silently
- * skipped by `executePickBatch`'s admission test? This records both, per Pass,
- * for the pass that just ran — so a lane can name the death point in one run
- * instead of one batch.
- *
- * Pragma-stripped: this interface survives type-checking (types are erased,
- * not stripped) but every producer block below vanishes from release builds,
- * so the counters cost nothing in production. A consumer must therefore treat
- * `undefined` as "release build", never as "zero commands".
+ * The interface survives type checking because types are erased, while every
+ * producer block is removed from release builds by debug pragmas. Consumers
+ * must therefore interpret `undefined` as a release build, not as zero
+ * commands.
  */
 export interface PickPassCensusRow {
   /** Commands present in this Pass's frustum bin, summed over frustum slices. */
@@ -233,11 +175,9 @@ type WebGPUPickFBOShape = CesiumOpaqueFramebuffer & {
     texture: GPUTexture;
     view: GPUTextureView;
   } | null;
-  // UP144-SNAP-WEBGPU (C11-212) — present only on a `WebGPUSnapFramebuffer`.
-  // `snapColorView` is the RG32Uint payload attachment the second phase of each
-  // frustum slice renders into; `colorView`/`depthView` above are that object's
-  // occluder attachments, which the FIRST phase drives exactly as an ordinary
-  // pick pass would.
+  // A `WebGPUSnapFramebuffer` adds these members. Its ordinary color and depth
+  // views form the occluder phase; `snapColorView` is the `rg32uint` payload
+  // attachment used against the same depth in the second phase.
   _isWebGPUSnapFBO?: boolean;
   snapColorView?: GPUTextureView;
   resetSnapPayloadCoverage?: (renderPass: GPURenderPassEncoder) => void;
@@ -405,23 +345,14 @@ function beginPickRenderPass(
 }
 
 /**
- * UP144-SNAP-WEBGPU (C11-212) — open the SNAP PAYLOAD render pass for one
- * frustum slice.
+ * Opens the snap payload render pass for one frustum slice.
  *
- * Color is the compact RG32Uint payload attachment; depth/stencil is the SAME attachment
- * the occluder phase just wrote, loaded rather than cleared. That depth rejects
- * payload fragments behind current-slice snapless commands; the coverage-reset
- * draw below also erases any farther-slice payload at those pixels. WebGL runs
- * each snapless command's depth-only derived command inside its single snap
- * pass, which WebGPU cannot do because pipeline color-target formats are
- * validated against the pass's attachments at draw time.
- *
- * Payload color accumulates across slices (cleared once on the far slice,
- * loaded afterwards) exactly like the pick pass's ID color. Before drawing a
- * nearer slice, the framebuffer's coverage-reset draw zeros the accumulated
- * payload wherever this slice established depth; a nearer snapless winner can
- * therefore erase a farther snap hit. Depth is not stored past the payload
- * phase because the next slice clears it anyway.
+ * The pass loads the depth and stencil written by the occluder phase. Splitting
+ * the phases is required because ordinary pick target formats are incompatible
+ * with the integer payload attachment. Payload color loads across slices; the
+ * coverage-reset draw erases a farther payload wherever the nearer slice has
+ * established depth. Depth can be discarded after this phase because the next
+ * slice clears it.
  */
 function beginSnapPayloadRenderPass(
   context: WebGPUContext,
@@ -496,10 +427,8 @@ export function executePickPass(
   const numFrustums: number = frustumCommandsList.length;
   const { uniformState } = context;
 
-  // NEW-WEBGPU-POINT-PICK-RESIDUAL (CO-16) — arm the census BEFORE the
-  // zero-frustum early return, so "the pick pass ran and found no frustum" is
-  // distinguishable from "the pick pass never ran at all" (the latter leaves
-  // the previous generation in place, which the lane compares against).
+  // Reset before the zero-frustum return so a new empty generation is
+  // distinguishable from stale census data.
   //>>includeStart('debug', pragmas.debug);
   diagResetPickCensus(context, numFrustums);
   //>>includeEnd('debug');
@@ -513,13 +442,10 @@ export function executePickPass(
     return;
   }
 
-  // UP144-SNAP-WEBGPU (C11-212) — a `WebGPUSnapFramebuffer` sets BOTH markers.
-  // In snap mode every frustum slice runs twice: the ordinary pick sequence
-  // below (the OCCLUDER phase, unchanged, writing depth into the shared
-  // attachment), then a payload phase that draws only snap variants against
-  // that depth. `snapColorView` is required — without a payload attachment
-  // there is nothing to upgrade to, so fall back to the plain pick schedule
-  // rather than opening a pass with a null color view.
+  // A snap framebuffer supplies both discriminators and a payload view. Each
+  // slice first establishes occluder depth, then draws resolved snap variants
+  // against it. Without a payload view, retain the ordinary pick schedule
+  // rather than opening a null-target pass.
   const snapMode = pickFBO._isWebGPUSnapFBO === true && !!pickFBO.snapColorView;
   const resetSnapPayloadCoverage = pickFBO.resetSnapPayloadCoverage;
   if (
@@ -541,7 +467,7 @@ export function executePickPass(
   // command encoder yet. Create the off-screen pick mini-frame encoder (+ the
   // uniform-allocator page) here; `pickEnd → context.endFrame()` submits +
   // finalizes it. Without this the pick pass renders nothing and every
-  // scene.pick / pickAsync returns undefined (FORK-34). No-op if an encoder
+  // scene.pick / pickAsync returns undefined. No-op if an encoder
   // already exists (e.g. pick nested inside a normal frame).
   context.beginPickFrame?.();
   const encoder: GPUCommandEncoder | undefined = context._currentCommandEncoder;
@@ -758,12 +684,9 @@ export function executePickPass(
           execute(Pass.CESIUM_3D_TILE_CLASSIFICATION);
         }
 
-        // H-R3 (Batch 35) — VOXELS and GAUSSIAN_SPLATS pick passes. WebGL
-        // includes them in the pick-pass command list via
-        // `performIdPass`; WebGPU previously skipped them so voxel media
-        // and Gaussian splat primitives were unpickable. Commands without
-        // a pick variant fall through to the base command via
-        // `selectCommandVariant` (Batch 29), same as other passes.
+        // Voxel and Gaussian-splat bins participate in the pick schedule and
+        // use the same resolved-variant or dedicated-command admission rules
+        // as the other bins.
         const voxelCount = frustumCommands.indices[Pass.VOXELS] ?? 0;
         if (voxelCount > 1) {
           sortCommandsBackToFront(
@@ -827,9 +750,8 @@ export function executePickPass(
         endPickRenderPass(context, pickRenderPass);
       }
 
-      // UP144-SNAP-WEBGPU (C11-212) — payload phase for this slice. The
-      // occluder phase above has ended and stored its depth; open the RG32Uint
-      // payload pass over that same depth and draw only the snap variants.
+      // The occluder phase stored this slice's depth. Load that depth in the
+      // `rg32uint` payload pass and draw only resolved snap variants.
       if (snapMode) {
         const snapRenderPass: GPURenderPassEncoder = beginSnapPayloadRenderPass(
           context,
@@ -856,8 +778,7 @@ export function executePickPass(
           // packed-depth reopen would clear the depth the payload phase is
           // reading. Sorting already happened in the occluder phase, so the
           // command arrays are in the order this phase wants. The two edge
-          // passes join at the tail (UP144-SNAP-WEBGPU-EDGES, rationale
-          // below).
+          // passes execute last.
           executeSnapPayloadBatch(
             frustumCommands,
             Pass.GLOBE,
@@ -907,16 +828,11 @@ export function executePickPass(
             pickDynamicState,
           );
 
-          // UP144-SNAP-WEBGPU-EDGES — edge snap candidates. The edge
-          // emitter's commands live in the two edge passes (which the
-          // occluder phase never visits — edges carry no pick variant), and
-          // only commands whose `derivedCommands.snapping.snapCommand`
-          // resolved are drawn, so the strict admission above is unchanged.
-          // Deliberately LAST: an edge lies exactly on its surface's
-          // silhouette, so with the snap family's `less-equal` depth test the
-          // later edge draw wins the tie and stamps the edge-flagged payload
-          // over the surface hit — the WebGPU realization of WebGL's
-          // `u_isEdgePass = true` second model draw.
+          // Edge-emitter commands live in bins omitted by the occluder phase
+          // because they have no pick variant. Only resolved snap variants
+          // draw here, preserving the strict payload admission rule. Execute
+          // them last so `less-equal` lets an edge win a surface-depth tie and
+          // stamp the edge bit over the surface payload.
           executeSnapPayloadBatch(
             frustumCommands,
             Pass.CESIUM_3D_TILE_EDGES,
@@ -956,24 +872,14 @@ export function executePickPass(
 }
 
 /**
- * UP144-SNAP-WEBGPU (C11-212) — dispatch one pass's SNAP variants into the
- * payload render pass.
+ * Dispatches one pass's resolved snap variants into the payload render pass.
  *
- * Strictly narrower than {@link executePickBatch}: a command draws here ONLY
- * when `selectCommandVariant(..., snapVariant = true)` resolved it to a real
- * snap variant. Three consequences, all deliberate:
- *
- *   - A command with no snap payload is skipped rather than falling through to
- *     its base or pick command. Its pipeline targets an RGBA8 (or MRT scene)
- *     attachment, and WebGPU validates attachment state at draw time, so
- *     dispatching it would invalidate the whole snap command buffer — the
- *     FORK-34 failure mode. Its occlusion contribution was already made in the
- *     occluder phase.
- *   - `pickOnly` / `_isPickCommand` are NOT admission markers here (unlike the
- *     pick batch): those mark pipelines that target the PICK attachment, which
- *     is exactly what the payload pass must not receive.
- *   - The precise-pick 2-pass coordination has no snap analogue; snapping runs
- *     one draw per snappable command.
+ * This admission is narrower than {@link executePickBatch}. Only a native
+ * command resolved to a distinct snap variant can enter the integer payload
+ * pass. An unchanged selection supplies no admitted payload command, and the
+ * ordinary pick-only markers do not widen this admission because those
+ * pipelines target the ordinary pick attachment. Precise-pick pass-two
+ * coordination does not apply to snapping.
  */
 function executeSnapPayloadBatch(
   frustumCommands: CesiumFrustumCommands,
@@ -1026,9 +932,8 @@ function executePickBatch(
   }
   context.uniformState?.updatePass(passIndex);
 
-  // NEW-WEBGPU-POINT-PICK-RESIDUAL (CO-16) — census row for this Pass. Every
-  // read/write below sits inside a debug pragma, so `censusRow` does not exist
-  // at all in a release build.
+  // The binding and every access below sit inside debug pragmas, so
+  // `censusRow` does not exist in a release build.
   //>>includeStart('debug', pragmas.debug);
   const censusRow = diagPickCensusRow(context, passIndex);
   if (censusRow) {
@@ -1052,30 +957,15 @@ function executePickBatch(
       continue;
     }
 
-    // C-R2: pick pass consults derivedCommands.picking/pickingMetadata
-    // so commands that pre-built pick variants render those (pick color
-    // output, not base-material output) into the pick FBO. WebGPU-native
-    // feature renderers (Globe, GltfModel, GroundPrimitive) typically emit
-    // dedicated pick commands through their own path (flagged `pickOnly` /
-    // `_isPickCommand`) instead of populating derivedCommands.picking.
+    // Resolve the applicable picking or metadata variant. Native renderers
+    // may instead emit dedicated commands marked `pickOnly` or
+    // `_isPickCommand`.
     const dispatched = selectCommandVariant(command, scene, true);
 
-    // FORK-34 fix (Batch 207) — a command that `selectCommandVariant`
-    // returns UNCHANGED has no pick variant. In WebGPU a pipeline is
-    // validated against the render pass's attachment formats at draw time,
-    // so dispatching a base COLOR command (whose pipeline targets the MRT
-    // scene framebuffer) into the single-target pick render pass raises an
-    // "attachment state not compatible" validation error that invalidates
-    // the ENTIRE pick command buffer — discarding even the correctly-built
-    // pick variants, so every pick returns undefined. WebGL tolerates this
-    // (no attachment-count validation at draw time), which is why the old
-    // "fall through to the base command, same as WebGL" behavior was wrong
-    // for WebGPU. Skip such commands unless they are dedicated pick
-    // commands (`pickOnly`) whose pipelines already target the single pick
-    // attachment. The skipped base commands (globe tiles, the model's
-    // secondary translucent draw, edge/velocity draws) carry no pick ID,
-    // so dropping them loses no pick coverage — the geometry's real pick
-    // command is either its resolved variant or a sibling pickOnly draw.
+    // WebGPU validates pipeline targets against render-pass attachments at
+    // draw time. An unchanged base command can target the scene framebuffer
+    // and invalidate this single-target command buffer, so admit only native
+    // resolved variants or native dedicated-pick commands.
     const resolvedPickVariant = dispatched !== command;
     const cmdMarkers = command as {
       pickOnly?: boolean;
@@ -1132,22 +1022,10 @@ function executePickBatch(
 
     dispatched.execute(pickRenderPass, pickDynamicState);
 
-    // C-R9-MODEL-PICK-TRANSLUCENT (Batch 192) — Option C precise pick
-    // 2-pass coordination. When `pickMode === "precise"`, the dispatcher
-    // returns pass 1 (depth-only). Pass 2 (depth-EQUAL color winner)
-    // must follow within the SAME render pass so the depth + stencil
-    // attachments persist between passes. Per-primitive interleaving
-    // (prim1.pass1 → prim1.pass2 → prim2.pass1 → prim2.pass2) is the
-    // simplest correct ordering — pass 2's depth-EQUAL test compares
-    // against the depth pass 1 just wrote for THIS primitive, so a
-    // later primitive's pass 1 (closer depth) doesn't invalidate this
-    // primitive's pass 2 winner.
-    //
-    // Note: this per-primitive interleave is correct AS LONG AS pass 2
-    // runs immediately after the same primitive's pass 1. Cross-
-    // primitive ordering (which fragment ultimately writes pickColor at
-    // a given pixel) follows the standard depth-test winner — closer
-    // translucent fragment wins.
+    // For a precise pick, execute the matching depth/stencil pass and
+    // depth-equal color pass consecutively in the same render pass. The
+    // per-primitive interleave preserves the attachment state that the color
+    // pass tests, while ordinary depth testing selects the nearer survivor.
     if (
       scene.frameState?.passes?.pickMode === "precise" &&
       command.derivedCommands?.picking?.pickPrecisePass2Command
