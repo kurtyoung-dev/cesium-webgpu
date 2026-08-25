@@ -20,6 +20,10 @@
 > This document remains a **dispatch grouping only**. On any status conflict the campaign
 > queue row wins — that rule was always in force and the passage of time has only made it
 > load-bearing.
+>
+> **CURRENT CROSS-CAMPAIGN ORDER:** use
+> [`CAMPAIGN_PORTFOLIO_QUEUE.md`](CAMPAIGN_PORTFOLIO_QUEUE.md). It covers C11–C18,
+> the split C15 lanes, current WIP/browser limits, and the feature-priority frontier.
 
 Maintainer directive 2026-08-07: _"queue up the remaining work to close out the
 open campaigns … get everything queued into organized batches and just keep
