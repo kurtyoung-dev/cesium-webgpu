@@ -119,6 +119,40 @@ distinct code on timeout. For wall-clock waits (quiet-hours landing windows), a
 bounded clock-watcher background process whose completion notification wakes the
 orchestrator - never an unbounded sleep loop.
 
+### 5a. Quiescence is a liveness predicate, not an mtime predicate (added 2026-08-24)
+
+Three lane leads on 2026-08-24 independently hit the same false reading: an 8-sample mtime/size
+watch declared QUIESCED while the Codex worker was mid-way through its fleet anchor sweep,
+because that step writes only at batch boundaries; and a rollout file whose `mtime` was ~15
+minutes stale still carried events timestamped seconds earlier, so mtime alone would have
+read a live worker as dead. The predicate that held: (1) no `codex` command-runner / worker
+`node` process with the clone on its command line, AND (2) the worker's rollout
+(`~/.codex/sessions/<date>/rollout-*.jsonl`, matched by `cwd`) carries a `task_complete`
+event or has emitted nothing new for the watch window, AND (3) the in-scope files are
+stable across the window. Read the rollout's event stream, never `statSync` it. A long
+silence before the first write is normal for briefs that order a premise check and a
+full-fleet sweep before any edit (40 minutes was observed).
+
+Three refinements from the same evening, each established by a lane lead against a live
+worker: (a) Codex runs with proactive multi-agent delegation and FORKS child sessions into
+the same clone - child rollouts carry `forked_from_id` / `parent_thread_id` naming the
+dispatch thread and replay the brief as their opening message; they are the worker's own
+sub-agents, not duplicate dispatches, and they write to the same paths. Never kill them;
+completion is the PARENT rollout's `task_complete` plus every child complete or silent
+across the window, and the packet must disclose that the deliverable had concurrent
+authors. (b) The rollout file's `mtime` is itself unreliable (a 16:16 mtime carried
+21:14 events); the trustworthy signal is the last event's own timestamp and the event
+count. (c) The reliable per-clone process discriminator is the sandbox wrapper's
+`--command-cwd <clone>` argument; bare `codex.exe` carries no cwd, and `lane1` must not
+match `lane10`/`lane11`. Between tool calls the worker's process count reads zero, so a
+process check alone is a false negative - it only means something conjoined with stable
+event counts and stable files across the full window. (d) On Windows a rollout
+file that is being appended through an open handle reports `LastWriteTime` equal to its
+`CreationTime` until the handle closes, so even a multi-megabyte live rollout looks
+untouched to `stat`; and a worker that is deliberating (a long reasoning run) leaves its
+files still for minutes mid-task. Neither silence is completion. The terminal
+`task_complete` event and the in-file event timestamps are the only completion signals.
+
 ## 6. Fix rounds
 
 - Substantive findings go back to the SAME Sol session's clone as a fix-round

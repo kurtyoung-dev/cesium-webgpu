@@ -220,9 +220,9 @@ Jasmine spec could run through Karma on this machine.
 
 ### NEW-DEVSERVER-SERVES-DEV-BUILD-NOT-GULP-ARTIFACT
 
-**Status:** OPEN / HIGH — filed 2026-08-20; blocks frozen-build provenance until
-the acceptance lane names and enforces one artifact policy. Maintainer decision
-required.
+**Status:** OPEN / MEDIUM — policy RULED 2026-08-24 (`R-2026-08-24-2`); enforcement owed on
+three named probes. The maintainer decision this entry waited on has been taken; what remains
+is wiring, not design.
 
 **The mechanism.** In its default non-production mode, `server.js:62` names
 `Build/CesiumDev`, and `generateDevelopmentBuild()` at `server.js:77` passes
@@ -252,6 +252,44 @@ the maintainer must choose and the lane must encode it.
 provenance assertion binding fetched bytes to that declared artifact. Until
 then, a successful gulp build plus a green default-server probe cannot certify
 the same bundle.
+
+**POLICY CHOSEN — `R-2026-08-24-2` (2026-08-24), completing the provisional `R-2026-08-21-5`.**
+Frozen-build, certification and acceptance probes certify the **gulp artifact**
+`Build/CesiumUnminified`, served by the server's built-artifact mode, and must carry a
+**fail-closed** assertion that the bytes fetched over HTTP hash-match the on-disk artifact
+(`sha256` + byte length; a mismatch is an error, not a warning). Iteration and debugging runs
+may continue to use the development build. Option (b) of the fork above — certifying the
+`Build/CesiumDev`/in-memory output — is declined.
+
+**Prefer `--serve-built` to `--production`.** This entry predates the flag by hours and does not
+mention it: `server.js` gained `--serve-built` at Batch 1065 (`e9660aaf18`, 2026-08-20), the same
+day this entry was filed. It is the stronger mode because it **fail-closes on a missing artifact**
+(`server.js:37-49` throws rather than starting), whereas `--production` (`server.js:58-64`)
+returns the built directory with no existence check, so a stale or absent bundle degrades into
+mid-run 404s.
+
+**Already compliant (11 of 637 probe entry points).** Seven via the shared helper
+`validateServedEntryIdentities` (`Tools/visual-regression/lib/build-source-identity.mjs:193`):
+`probe-c12-29-s4-orbital-sunrise.mjs`, `probe-c12-29-s5-custom-ellipsoid.mjs`,
+`probe-c12-29-s5-multiview.mjs`, `probe-c12-29-s5-svs-footprint.mjs`,
+`probe-c12-29-s5-terrain-selection.mjs`, `probe-eclipse-cloud-response.mjs`,
+`probe-moon-globe-depth-occlusion.mjs`. Four via bespoke equivalents:
+`probe-c12-29-s5-replacement-device.mjs` (fail-closed in
+`lib/c12-29-s5-replacement-device-gate.mjs`), `probe-moon-mip-motion-edge.mjs`,
+`probe-cloud-u2-perf.mjs`, and `assess-c11-146-route.mjs` via `lib/c11-146-route-evidence.mjs`.
+
+**What still closes this entry:** the three frozen-build rows that do NOT compare served bytes —
+**C11-13** (`lib/c11-13-voxel-inside-camera-probe.mjs`, hashes local evidence snapshots only),
+**C11-90** (`lib/c11-90-primitive-restart-probe.mjs`, same shape; its `servedDemo` is a local
+path), and **C18-V2** (`capture-and-diff.mjs`, hashes PNGs and the setup source; its only
+`fetch` is a `data:` URL). The fourth T0 row, **C11-146**, already complies. Wire the shared
+helper into those three and this entry closes. Recorded honestly: the frozen-build program's
+claim to have run `--production` per `R-2026-08-21-5` is an operator claim that three of its
+four rows could not have falsified.
+
+**Line-citation drift in the mechanism paragraph above, not yet repaired:** `server.js:62` →
+now `:25`; `server.js:45-48` (`--production`) → now `:98-101`; `scripts/build.js:1944-1950` →
+that range is now `buildWorkspaceSpecBundle`, unrelated. `gulpfile.js:131-134` still resolves.
 
 ## 2026-08-14 HASH STAMP — un-cited mechanism landings in `cff0b76a2f..034c7f74d0` (fix SOL-1)
 

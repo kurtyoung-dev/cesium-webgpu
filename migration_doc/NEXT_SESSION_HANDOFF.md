@@ -1,4 +1,100 @@
-# Next Session Handoff — 2026-05-30 (Batches 179–185 — BufferPolygon fix, log-depth epic kickoff, textured-classifier fix)
+# Next Session Handoff — 2026-08-24 (tiered wave; main @ `daaca4fde8` plus the 2026-08-24 landing group)
+
+## Read these first
+
+[`SESSION_CLOSEOUT_2026-08-21.md`](SESSION_CLOSEOUT_2026-08-21.md) is the resumable record of the
+previous session — Batches 1129–1137 landed and pushed, ten worker clones retired, and the machine
+lane's owed runs recorded. [`MAINTAINER_RULINGS_2026-08-24.md`](MAINTAINER_RULINGS_2026-08-24.md)
+records `R-2026-08-24-1` through `R-2026-08-24-11`, taken across two sittings on 2026-08-24. Queue
+rows and `DEFERRED_WORK.md` remain the status authorities; this file only says where the next
+session picks up and what is owed.
+
+## The 2026-08-24 rulings in one line each
+
+1. **R-1 — FAR-107 is amended, not read-as-satisfied.** The identity-plateau predicate is encoded
+   into FAR-107's own Work and Rollback bullets. The drafted diff is **not applied**: FAR-107 is a
+   public-API-review item and charter §4.6 forbids self-approval, so it waits on a non-author
+   reviewer. Picking §8/§9 stay unbuilt until it lands.
+2. **R-2 — frozen-build artifact policy.** Certification and acceptance probes certify the gulp
+   artifact `Build/CesiumUnminified` served by the server's built-artifact mode, with a fail-closed
+   assertion that fetched bytes hash-match the artifact on disk. Eleven of 637 probe entry points
+   already comply; C11-13, C11-90 and C18-V2 do not, and wiring them closes
+   `NEW-DEVSERVER-SERVES-DEV-BUILD-NOT-GULP-ARTIFACT`.
+3. **R-3 — C13 ownership re-partition.** Codex Sol may build bounded, spec-verifiable C13
+   instrument and harness work under an Opus lane lead with a separate Opus station-3 review, the
+   orchestrator landing; C13 engine-semantic changes stay Opus-authored. Regularizes Batches 1131
+   and 1136.
+4. **R-4 — lane F is taken in its honest form.** The non-lane-F paths land on their own evidence;
+   the C18-P engine package gets its first station-3 review and lands only after its browser gates
+   run.
+5. **R-5 — C15-G9 is CLOSED as NOT REPRODUCED** on the current bundle after three runs at the
+   unchanged mutant-pinned 0.050% bar; the D1–D5 harness stays armed.
+6. **R-6/R-7/R-8 — picking §10 items 2, 3 and 4 are ruled** (single-texel sync capture by default
+   with a 33×33 opt-in; a tunable frame-age cap defaulting to 2 with `PickDepth` pulled to match;
+   declarative prewarm via `contextOptions.prewarmPicking` + `pickReadyEvent`). Items 5 and 6 were ruled in the second sitting
+   (`R-2026-08-24-9`: globe pick IDs on both backends behind an explicit `Globe.pickable` opt-in;
+   `R-2026-08-24-10`: `drillPick` adopts the readiness predicate).
+
+## Working-tree state
+
+The 51 held dirty paths at `daaca4fde8` were classified path-by-path and disentangled. The
+non-lane-F work lands in this group; **lane F — the 26-path C18-P point-cloud / EDL / GPU-LOD /
+Draco package — stays held**, because its terminal browser gates (C18-P2 per-format colour fixtures
+with negative controls, C18-P5 the real compressed-Draco gate) have not run. Its first station-3
+review is done and advisory: LAND-WITH-EDITS, with an eslint `eqeqeq` error, two EXIT-2
+classification entries owed in the same commit that tracks `WebGPUPointCloudEDLState.js`, four
+spec-teeth repairs, and two permanent-diagnostic gaps to fix in the author's next round. Two lane-F
+slices were split out and land now: the `_pointCloudEyeDomeLighting.destroy()` leak fix (both
+backends) and the register/instrument repair.
+
+Deliberately **not** landed, with reasons: the FAR-107 amendment (awaiting a non-author reviewer);
+`Tools/verify-landing-compliance.mjs` and its spec (6,151 lines, no station-3 review yet — and the
+spec writes and deletes files, so it must be run from a clone, never the shared tree); the
+`CAMPAIGN_STATE.md` root-precedence and §0/§0a pause hunks (superseded by `R-2026-08-17-0` and
+`-15` plus charter §0.4 — `CAMPAIGN_STATE.md` mirrors rulings, it is not their source); and the
+`WEBGPU_DEBUGGING_LOG.md` hunks, which mix landed lanes H and G with lane F material and assert a
+`C13-41` closure that `R-2026-08-14-1` vacated. They belong to lane F's landing, rewritten.
+
+## Owed to the machine lane (Edge — the executor owns all browser use)
+
+1. **Bundle refresh first.** `gulp buildCesiumDual` builds from the working tree, so every run
+   record must declare provenance as "tip `<sha>` + `<named dirty set>`". A dirty-tree run may never
+   claim source identity = tip.
+2. The **C12-33 moon-mip ten-run set** in both control modes, after the readiness-cascade repair
+   reaches the worktree and a second refresh. `sign-test-v1` is the design of record
+   (`R-2026-08-21-15`).
+3. **SOL-4 commissioning** and **C11-62 clause (b)**.
+4. Lane F's **C18-P2 / C18-P5** gates — both probes must be *authored*, not merely run — plus the
+   re-run of the existing EDL/LOD probes against the rewritten architecture and the Karma
+   `WebGPUPointCloudLODProcessorSpec` under `CHROME_BIN`→Edge.
+5. First runs for any instrument authored unrun this wave. The precedent stands: instrument lanes
+   land unrun and the machine lane earns the verdict.
+
+The C15-G9 re-run that the wave plan listed here is **discharged** by `R-2026-08-24-5`.
+
+## Standing debts recorded this wave
+
+- A **discriminating quiet-hours test for `Tools/pre-push-guard.mjs` is owed.** The 59/59 suite is
+  green either way: the sandbox sets no `GIT_AUTHOR_DATE`, so every fixture commit's timestamp
+  equals its push instant and no input can distinguish `includeCommitQuietHours: true` from
+  `false`. A fixed in-window weekday commit date with an out-of-window push, plus its inertness
+  mutation, is the missing test.
+- `verify-tracked-references.mjs` is **red at tip** with exactly five violations, all lane F's
+  (`pointcloud-voxel-public-correctness.spec.mjs` importing five untracked point-cloud modules). It
+  is an invariant to hold at five, not a green precondition, until lane F lands.
+- `verify-tooling-catalog --check` is red on four unrelated drifted rows, pre-existing at tip.
+
+## Superseded
+
+The C11-210 handoff that stood at the top of this file until 2026-08-24 described the work as
+"local, unlanded, and not complete". That is false: **C11-210 landed at Batch 1071
+(`806a7f2ce4`)** — native compute commands borrow the exact frame encoder. Its honest residuals
+(replacement-device / device-loss, pooled multi-context, WebVR and other offscreen variants) are
+carried by the Campaign 11 row and `DEFERRED_WORK.md`, which are the authorities for them.
+
+---
+
+# (Archived) Next Session Handoff — 2026-05-30 (Batches 179–185 — BufferPolygon fix, log-depth epic kickoff, textured-classifier fix)
 
 **Branch:** `main` only (local + origin in sync at `88b111e49c`). No safety / feature / worktree branches. Working tree carries only pre-existing root `Source/Shaders/WebGPU/Primitive/*.wgsl` build-output drift (regenerated material shaders that match canonical `packages/engine/Source` — NOT in-progress work; left uncommitted intentionally).
 

@@ -518,21 +518,77 @@ that stop the fork actively teaching a broken pattern in its published documenta
    *reconciliation* — it keeps "identity must match" by proving the identity is **invariant over the
    reprojection uncertainty** rather than by comparing poses. **Does that satisfy FAR-107, or must
    FAR-107 be amended?** This is the single ruling that unblocks the architecture.
+
+   **RULED 2026-08-24 — `R-2026-08-24-1`: FAR-107 is AMENDED, not read-as-satisfied.** ([MAINTAINER_RULINGS_2026-08-24.md](MAINTAINER_RULINGS_2026-08-24.md).)
+   The identity-plateau predicate is encoded into FAR-107's own **Work** and **Rollback** bullets as
+   an explicit condition: a synchronous WebGPU call may serve a result whose query/generation
+   identity is **proven invariant** over the reprojection uncertainty, and an unproven plateau serve
+   remains stale substitution. Stale substitution stays deleted; the prohibition is narrowed in
+   wording only where a proof exists. This supersedes `R-2026-08-21-2` item 1 ("satisfied, not
+   amended"), which was provisional by its file's own header.
+
+   **AMENDMENT PENDING REVIEW — do not treat this item as executed.** FAR-107's own `:457` reads
+   _"**Size:** L; public-API review required"_, and `EXECUTOR_LANE_CHARTER_2026-08-14.md` §4.6 is
+   _"[HARD] Certification authors do not self-approve."_ (FAR-107 itself carries no `[HARD]`
+   marker; the obligation rests on those two.) The drafted diff therefore lands only after an
+   independent non-author reviewer returns GO. Until it lands, **§8/§9 stay unbuilt** and
+   `R-2026-08-21-21` continues to hold the eleven amendments provisional until B1-B5 have run.
 2. **How wide should the synchronous capture aperture be, and who pays?** 33×33 costs ~4 KB per sync
    pick instead of 36 bytes. Acceptable on a continuous-hover path, or opt-in via a scene option?
+
+   **RULED 2026-08-24 — `R-2026-08-24-6`: single-texel by default, 33×33 opt-in.** ([MAINTAINER_RULINGS_2026-08-24.md](MAINTAINER_RULINGS_2026-08-24.md).)
+   A continuous-hover path is the common case and must not pay ~4 KB per pick — a ~114× readback
+   increase — for an aperture most callers never read. The wide aperture is a **declared**
+   capability: the scene option defaults to `false`, its cost is documented at the option, both
+   backends expose the same option, and a backend that cannot honour it says so through the
+   readiness union rather than silently narrowing.
 3. **What is the hard frame-age cap?** Proposed 2 — tighter than `PickDepth`'s 4 and Snap's 8,
    because pick returns an identity rather than an interpolable scalar. Fixed or tunable? Should S6
    pull `PickDepth` down to match?
+
+   **RULED 2026-08-24 — `R-2026-08-24-7`: tunable, default 2, and yes — pull `PickDepth` down.** ([MAINTAINER_RULINGS_2026-08-24.md](MAINTAINER_RULINGS_2026-08-24.md).)
+   The reasoning in the question is accepted as stated: an identity does not interpolate, so a
+   stale identity is wrong in a way a stale depth is merely imprecise. Two is the default because
+   that is the number the analysis derived; tunable because the right cap is a function of the
+   application's motion profile, which the engine cannot know. `PickDepth`'s window of 4 predates
+   this analysis and is not defended by it — bringing it to the same cap is S6's work and is
+   **ordered**, not merely permitted.
 4. **Imperative or declarative prewarm?** Upstream's idiom is a boolean option
    (`preloadWhenHidden`) plus an Event. Should `Scene.preparePickAsync()` be public, or should the
    public surface be `contextOptions.prewarmPicking: true` + `pickReadyEvent`?
+
+   **RULED 2026-08-24 — `R-2026-08-24-8`: declarative.** ([MAINTAINER_RULINGS_2026-08-24.md](MAINTAINER_RULINGS_2026-08-24.md).) The public surface is
+   `contextOptions.prewarmPicking` plus `pickReadyEvent`. It matches the upstream idiom this item
+   itself names, which is the fork's standing tie-breaker on public API shape; a declarative option
+   also states an intent the engine may satisfy however it likes, whereas a public
+   `preparePickAsync()` freezes a scheduling decision into the API surface. Whether an *internal*
+   `preparePickAsync` exists is an implementation matter this ruling does not govern.
 5. **Globe pick parity.** `Globe.pickable` is honored by WebGPU only (`Globe.js:114-117`), and the
    S5 gate encodes the divergence: `expectedPickKind = renderer === "webgpu" ? "globe" : "undefined"`
    (gate `lib:3526`). Should this work also mint globe pick IDs on WebGL so the backends agree, or is
    the divergence deliberate and permanent?
+
+   **RULED 2026-08-24 — `R-2026-08-24-9`: opt-in on BOTH backends, upstream default preserved.** ([MAINTAINER_RULINGS_2026-08-24.md](MAINTAINER_RULINGS_2026-08-24.md).)
+   Both backends mint globe pick IDs only behind an explicit `Globe.pickable` opt-in, and
+   upstream's default is preserved on both — `scene.pick` on a bare globe returns `undefined`
+   unless the application opts in. The divergence is retired by making **WebGL honour the flag**,
+   not by making WebGPU stop honouring it, and not by turning globe picking on by default on
+   either backend: minting IDs unconditionally is an observable behaviour change to every existing
+   application that picks through a globe expecting to hit what is behind it (Core Principle 1).
+   The S5 gate's `expectedPickKind = renderer === "webgpu" ? "globe" : "undefined"` divergence is
+   to be retired **when that lands** — until then the gate stays exactly as written, because a gate
+   that encodes a divergence must not be edited ahead of the behaviour it encodes.
 6. **Does the predicate govern `drillPick`?** Retiring the `isWebGPU` branch at `Picking.js:919`
    (P-7) means drillPick must either adopt the predicate or declare `unsupported` through the
    readiness union.
+
+   **RULED 2026-08-24 — `R-2026-08-24-10`: `drillPick` ADOPTS the predicate.** ([MAINTAINER_RULINGS_2026-08-24.md](MAINTAINER_RULINGS_2026-08-24.md).)
+   When the `isWebGPU` branch is retired (P-7), `drillPick` uses the same readiness predicate as
+   `pick`; it does **not** declare `unsupported` through the readiness union. Two picking entry
+   points with two readiness contracts is a seam that would have to be explained forever, and
+   `unsupported` is a claim about capability that is not true here — the capability exists, it is
+   the readiness that has to be waited on. This rides P-7 and is not a licence to retire the branch
+   ahead of the predicate's own landing.
 
 ---
 

@@ -35,6 +35,20 @@ tree, it is taken over, independently verified, and landed under orchestrator re
 743/754 takeover protocol). The C13 dispatch freeze is LIFTED. The mechanics in
 `campaign11_planning/guides/G10-charter-mechanics.md` remain the process reference.
 
+**RE-PARTITIONED 2026-08-24 — `R-2026-08-24-3`** ([MAINTAINER_RULINGS_2026-08-24.md](MAINTAINER_RULINGS_2026-08-24.md)).
+The ruling above reserved re-partitioning to the maintainer (_"the maintainer will handle any
+future re-partitioning"_); this is that reserved act, and it narrows Option B rather than
+replacing it. **Codex Sol MAY build bounded, spec-verifiable C13 instrument and harness work**
+under an Opus lane lead, with a **separate Opus station-3 review**, the orchestrator landing.
+**C13 engine-semantic changes remain Opus-authored**, and everything outside that carve-out stays
+under Option B as written. The Batch 743/754 takeover protocol is unchanged.
+
+This regularizes **Batch 1131** (`1c2161c8de`) and **Batch 1136** (`e2615ef8e2`), the SOL-4
+refresh-cost rounds, which were Sol-built under cross-family station-3 review. SOL-4 is C13
+territory — this queue's own `C13-41` exit condition names it — so those batches were a
+**deviation from Option B, disclosed in their commit messages but never reconciled here**. Both
+stand as landed; the reconciliation gap is what this stamp closes.
+
 ### 2026-08-02 Codex audit + rendered-tail overlay — ⚠ HISTORICAL, SUPERSEDED AT BATCH 866
 
 > **HISTORICAL — read for mechanism, not for status (banner added 2026-08-09, handover audit FIX 18).**

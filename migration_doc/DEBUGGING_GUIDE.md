@@ -1490,6 +1490,60 @@ When adding a debug branch:
 
 Every debug surface in this guide — both fork-added (`CesiumDebug`, `globeFragmentDebug`) and upstream (`scene.debug*`, `tileset.debug*`, `DebugCameraPrimitive`, `TileCoordinatesImageryProvider`) — is reachable from automated probes via Playwright's `page.evaluate()`. The pattern is the same for every probe; copy it instead of re-inventing.
 
+### Serving an attestable bundle (`--serve-built`)
+
+Certification and acceptance runs must attest the **gulp artifact**, not the dev server's
+in-memory build (`R-2026-08-24-2`, completing `R-2026-08-21-5`). Iteration and debugging runs may
+use the default development build.
+
+```powershell
+node server.js --serve-built --no-embeddings
+```
+
+**What it serves.** `Build/CesiumUnminified` straight off disk — the exact tree `npx gulp build`
+produced. The default mode instead serves `Build/CesiumDev` plus a separate incremental in-memory
+build, so hashing the disk bundle and fetching the same URL compares two different esbuild
+outputs.
+
+**Why this mode and not `--production`.** `--serve-built` **fail-closes**: it throws before
+binding a port if `Build/CesiumUnminified` or its `Cesium.js` is missing, telling you to run
+`npx gulp build` first (`server.js:37-49`). `--production` (`server.js:58-64`) performs no
+existence check, so a stale or absent bundle degrades into mid-run 404s that read as probe
+failures. `CESIUM_SERVE_BUILT=1` is equivalent to the flag.
+
+**`--no-embeddings` is inert in this mode** — harmless, and worth knowing so nobody hunts for its
+effect. The Sandcastle embeddings build is gated behind
+`artifactConfiguration.generateDevelopmentBuild` (`server.js:215`), which `--serve-built` sets
+false, so the flag only bites in the default dev mode.
+
+**The provenance gate.** Serving the right directory is an operator claim, not evidence. A
+certifying probe must additionally assert that the bytes it fetched hash-match the artifact on
+disk. Use the shared helper rather than re-rolling one: `validateServedEntryIdentities` from
+[`lib/build-source-identity.mjs`](../Tools/visual-regression/lib/build-source-identity.mjs) — it
+compares `sha256` + byte length per session label and fails closed with _"served runtime entry
+differs from the local start entry"_. Worked examples: `probe-eclipse-cloud-response.mjs` (shared
+helper) and `probe-cloud-u2-perf.mjs` (bespoke, throws). Without this assertion a green run proves
+the probe rendered _something_, not that it rendered the bundle under certification.
+
+**Refresh sequence.** The bundle is not rebuilt by the server in this mode, so refresh it yourself
+before a run whose evidence must bind to current source:
+
+```powershell
+npx gulp buildCesiumDual
+npx gulp build
+```
+
+`buildCesiumDual` produces the dual-backend `Build/Cesium{Unminified}`; `gulp build` refreshes the
+workspace bundles the server and specs resolve against. Restart the server after either — it reads
+the directory once at startup.
+
+**Provenance caveat.** `gulp buildCesiumDual` builds from the **working tree**, not from `HEAD`. If
+the tree is dirty, every run record must declare provenance as "tip `<sha>` + `<named dirty set>`";
+a dirty-tree run may never claim source identity = tip.
+
+**Host.** The dev server binds the hostname `localhost`, which resolves to `::1` first on this
+machine — use `http://localhost:8080`, **never** `http://127.0.0.1:8080`.
+
 ### Boilerplate (matches `probe-saved-view.mjs`)
 
 ```javascript

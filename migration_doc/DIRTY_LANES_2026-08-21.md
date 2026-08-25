@@ -42,6 +42,34 @@ sections (1078). The register below is what remains.
 
 ## Lane F — C18-P dedicated point-cloud renderer / EDL / GPU-LOD / Draco
 
+**DISPOSITION 2026-08-24 — `R-2026-08-24-4`: taken this wave in its honest form.**
+([MAINTAINER_RULINGS_2026-08-24.md](MAINTAINER_RULINGS_2026-08-24.md).) The 51-path held set is
+**disentangled rather than held whole**: the 25 non-lane-F paths land on their own evidence this
+wave, lane F's engine package gets its **first station-3 review, read-only and advisory**, and the
+**engine package lands only after its browser gates run** — C18-P2 per-format colour fixtures and
+negative controls, C18-P5 the real compressed-Draco gate — once the executor frees Edge. Landing
+the package now on the author's word was considered and declined; the row's own **"Gate: machine
+lane, not a ruling"** is why no ruling can substitute for the measurement.
+
+Two items were assigned to that review rather than left to the landing, and both are now
+discharged ahead of it: (1) the unclassified `enabled !== false` hit was classified as a
+**`non-celestial-alias`** — it reads `WebGPUDrawCommand.enabled`, the command-list execution flag,
+which the WebGL `DrawCommand` does not carry, so `undefined !== false` is a deliberate fail-open;
+its two classification entries must land in the same commit that tracks
+`WebGPUPointCloudEDLState.js`. (2) The register gap is closed —
+`NEW-PNTS-TYPEDARRAY-RETENTION-RECORD` now has its `FEATURE_INVENTORY.md` half alongside
+`DEFERRED_WORK.md:14175`, and lane M's held-out `finding-ownership-audit.spec.mjs` runs 8/8.
+The landing must still honour the two C18 queue guards (lane F does NOT discharge C18-P4; the
+C18-A1 recipe is re-derived post-landing).
+
+**Register correction:** this lane's inventory lists four untracked modules; there are **five** —
+`WebGPUPointCloudSharedLayouts.js` is the fifth, imported by
+`pointcloud-voxel-public-correctness.spec.mjs`, which is why `verify-tracked-references.mjs`
+reports five violations and not four.
+
+**Split out and landed separately (2026-08-24):** the `_pointCloudEyeDomeLighting.destroy()`
+leak fix in `Cesium3DTileset.js` and `TimeDynamicPointCloud.js` — six lines, correct at HEAD,
+benefiting **both** backends, and needing no browser gate.
 The largest lane (~4,500 lines): `WebGPUPointCloudRenderer.ts` (+1,170),
 `WebGPUPointCloudEyeDomeLighting.ts` (+1,430), `WebGPUPointCloudLODProcessor.ts`,
 `WebGPUDecoupledScan.ts`, the frustum-loop/3D-tile-pass EDL wiring
