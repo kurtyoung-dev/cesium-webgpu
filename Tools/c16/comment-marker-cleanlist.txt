@@ -1,4 +1,4 @@
-# Campaign 16 clean-list ratchet — read by Tools/c16/comment-marker-guard.mjs.
+# Campaign 16 clean-list ratchet  read by Tools/c16/comment-marker-guard.mjs.
 #
 # WHAT A LINE MEANS. Each entry is a repo-relative path, either an exact file
 # or a directory prefix (recursive). Everything an entry covers has been
@@ -26,7 +26,7 @@
 # grandfather row with no current finding is itself an error.
 #
 # Seed entries below are directories that were ALREADY marker-free when the
-# guard landed at C16-00 — measured, not assumed (188 files), so
+# guard landed at C16-00  measured, not assumed (188 files), so
 # --verify-cleanlist is a real check from day one rather than a vacuous one.
 # They are mostly untouched upstream trees; listing them means a future fork
 # edit cannot introduce the first marker into them unnoticed.
@@ -624,3 +624,16 @@ packages/engine/Source/Shaders/WebGPU/Compute/WeatherParticleRender.wgsl
 packages/engine/Source/Shaders/WebGPU/CubeMapPanorama.wgsl
 packages/engine/Source/Shaders/WebGPU/Environment/SkyAtmosphere.wgsl
 packages/engine/Source/Shaders/WebGPU/Shadow/ShadowReceiveCSM.wgsl
+# Clustered lighting and compute-instance families. Current bindings, precision,
+# fallback, and composition constraints remain inline.
+packages/engine/Source/Renderer/WebGPU/WebGPUClusteredLightingBGL.ts
+packages/engine/Source/Renderer/WebGPU/WebGPUClusteredLightingDispatcher.ts
+packages/engine/Source/Shaders/WebGPU/chunks/structs/ClusteredLighting.wgsl
+packages/engine/Source/Renderer/WebGPU/WebGPUClusterAssignRenderer.ts
+packages/engine/Source/Renderer/WebGPU/WebGPUClusterBoundsRenderer.ts
+packages/engine/Source/Scene/LightTypes.ts
+packages/engine/Source/Scene/ComputeInstanceCollection.js
+packages/engine/Source/Shaders/WebGPU/Compute/ComputeInstanceRender.wgsl
+packages/engine/Source/Renderer/WebGLComputeInstanceRenderer.js
+packages/engine/Source/Renderer/WebGPU/WebGPUComputeEngine.ts
+packages/engine/Source/Shaders/WebGPU/Compute/ComputeInstanceScaffold.wgsl

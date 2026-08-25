@@ -12,10 +12,9 @@ import {
   getWebGLInstanceWorldPosition,
 } from "../Renderer/WebGLComputeInstanceRenderer.js";
 
-// Registers the backend-agnostic WebGL2 compute-instance renderer on the
-// context once (idempotent — registerFeatureRenderer overwrites the same slot
-// but getFeatureRenderer short-circuits after the first registration). Lives
-// under Renderer/, so the scene file never reaches into Renderer/WebGPU/.
+// Registers the WebGL2 compute-instance renderer at most once per context.
+// Routing through the feature-renderer registry keeps WebGPU renderer
+// internals out of this scene module.
 function ensureWebGLComputeInstanceRenderer(context) {
   let fr = context.getFeatureRenderer(
     FeatureRendererKey.COMPUTE_INSTANCE_COLLECTION,
@@ -26,9 +25,8 @@ function ensureWebGLComputeInstanceRenderer(context) {
       {
         update: updateWebGLComputeInstanceCollection,
         destroy: destroyWebGLComputeInstanceResources,
-        // pickPosition over a compute-instance
-        // (NEW-COMPUTE-INSTANCE-PICKPOSITION) — re-runs the cpuKernel for the
-        // picked index (positions are CPU-computed on this backend).
+        // WebGL2 resolves pick positions by re-running the CPU kernel for the
+        // selected instance.
         getInstanceWorldPosition: getWebGLInstanceWorldPosition,
       },
     );
@@ -40,18 +38,15 @@ function ensureWebGLComputeInstanceRenderer(context) {
 }
 
 /**
- * A GPU-resident collection of N instances whose per-instance data lives in
- * a GPU storage buffer and is repopulated each frame by a USER-SUPPLIED
- * WGSL compute kernel (NEW-COMPUTE-INSTANCE-SYSTEM — the generalization of
- * the Batch-230 GPU-resident catalog; Phase 3 of the Large Dynamic Objects
- * roadmap).
+ * A collection of instances whose positions, colors, and sizes are generated
+ * from caller-defined parameters and simulation time. WebGPU invokes a
+ * caller-supplied WGSL compute kernel for each instance; WebGL2 can invoke an
+ * optional JavaScript CPU kernel with the same output contract.
  *
- * Unlike {@link PointPrimitiveCollection}, positions are never computed on
- * the CPU: the per-instance parameter floats upload to the GPU once
- * (re-uploaded only when the collection changes), the user kernel runs once
- * per instance per frame, and the instanced point draw reads the kernel's
- * output directly from GPU memory. The CPU's per-frame upload is one
- * scalar — the simulation time.
+ * On WebGPU, per-instance parameter floats are uploaded only when the
+ * collection changes. The user kernel writes instance records directly into
+ * GPU memory each frame, and the instanced point draw reads them without a CPU
+ * round trip. The only per-frame CPU upload is the simulation-time scalar.
  *
  * Simulation time is derived from <code>frameState.time</code> each frame,
  * as seconds elapsed since {@link ComputeInstanceCollection#epoch} (which
@@ -61,17 +56,17 @@ function ensureWebGLComputeInstanceRenderer(context) {
  *
  * <h4>Kernel contract</h4>
  *
- * <code>options.kernel</code> is a WGSL snippet that MUST define
+ * <code>options.kernel</code> is a WGSL snippet that must define
  *
  * <pre><code>fn csm_computeInstance(index: u32, time: f32) -> ComputeInstanceOut</code></pre>
  *
- * where the engine provides (stable, documented scaffolding — see
- * <code>Shaders/WebGPU/Compute/ComputeInstanceScaffold.wgsl</code>):
+ * where the engine supplies these stable declarations from
+ * <code>Shaders/WebGPU/Compute/ComputeInstanceScaffold.wgsl</code>:
  * <ul>
  *   <li><code>struct ComputeInstanceOut { position: vec3&lt;f32&gt;,
  *       positionLow: vec3&lt;f32&gt;, color: vec4&lt;f32&gt;,
  *       pixelSize: f32 }</code> — the kernel's return type.
- *       <code>position</code> is absolute ECEF meters (the RTE HIGH part);
+ *       <code>position</code> is absolute ECEF meters (the RTE high part);
  *       <code>positionLow</code> is the RTE low part (leave it zero for
  *       f32 kernels — the default — or fill it from df64 math for extended
  *       precision, see below); <code>color</code> is straight RGBA in
@@ -85,7 +80,7 @@ function ensureWebGLComputeInstanceRenderer(context) {
  *       constant from <code>options.floatsPerInstance</code>.</li>
  * </ul>
  *
- * The ENGINE wraps the snippet with the storage-buffer bindings, the
+ * The engine wraps the snippet with the storage-buffer bindings, the
  * dispatch entry point, the instance-count bounds check, and the RTE
  * (relative-to-eye) high/low split + output write — kernels never declare
  * bindings and never deal with RTE.
@@ -98,7 +93,7 @@ function ensureWebGLComputeInstanceRenderer(context) {
  * double-single (two-float, ~46-bit) <code>df64</code> helpers
  * (<code>csm_df64_add</code>, <code>csm_df64_mul</code>,
  * <code>csm_df64_sin</code>/<code>cos</code>, <code>csm_df64_split</code>)
- * and a <code>csm_emitDF64(x, y, z)</code> packer that fills BOTH the RTE
+ * and a <code>csm_emitDF64(x, y, z)</code> packer that fills both the RTE
  * high and low from three df64 position components. A kernel that
  * accumulates a precision-sensitive angle (e.g. mean anomaly over a long
  * propagation interval, where <code>time * meanMotion</code> overflows
@@ -113,26 +108,25 @@ function ensureWebGLComputeInstanceRenderer(context) {
  * or anything <code>csm_*</code>. The kernel and
  * <code>floatsPerInstance</code> are immutable after construction.
  *
- * <h4>WebGL2 fallback (NEW-COMPUTE-INSTANCE-WEBGL2-FALLBACK)</h4>
+ * <h4>WebGL2 fallback</h4>
  *
  * WebGL2 has no compute shaders, so the WGSL <code>kernel</code> cannot run
  * on that backend. Supply an optional <code>options.cpuKernel</code> — a JS
  * function <code>(out, index, timeSeconds, params) =&gt; void</code> that
- * writes the SAME per-instance result the WGSL kernel produces
+ * writes the same per-instance result the WGSL kernel produces
  * (<code>out.position</code> a Cartesian3-shaped <code>{x,y,z}</code> in
  * absolute ECEF meters, <code>out.color</code> a
  * <code>{red,green,blue,alpha}</code> in [0,1], <code>out.pixelSize</code> in
- * pixels) — and on a WebGL2 context the engine runs it over all instances
- * each frame, RTE-splits the positions with the same AGI high/low encode the
- * WebGPU records reconstruct against, and issues an instanced quad draw that
+ * pixels). On WebGL2 the engine runs it synchronously over all instances on
+ * the main thread each frame, RTE-splits the positions into the same high/low
+ * representation WebGPU consumes, and issues an instanced quad draw that
  * mirrors the WebGPU vertex layout. The two kernels share an element layout
- * by the CALLER's contract — the engine never transpiles the WGSL. Without a
- * <code>cpuKernel</code> the collection still renders nothing on WebGL2.
+ * by the caller's contract; the engine never transpiles WGSL. Without a
+ * <code>cpuKernel</code>, the collection renders nothing on WebGL2.
  *
- * <code>cpuKernel</code> is used ONLY on the non-compute backend; the WebGPU
- * leg always runs the GPU <code>kernel</code> and ignores it. A Worker + WASM
- * offload of the CPU kernel is a tracked enhancement
- * (NEW-COMPUTE-INSTANCE-WEBGL2-WORKER in migration_doc/DEFERRED_WORK.md).
+ * <code>cpuKernel</code> is used only on the non-compute backend; WebGPU
+ * always runs the WGSL <code>kernel</code> and ignores it. Worker or
+ * WebAssembly offload is not implemented.
  *
  * @alias ComputeInstanceCollection
  *
@@ -151,23 +145,23 @@ function ensureWebGLComputeInstanceRenderer(context) {
  *        renders one pick id per instance into the pick framebuffer, so a
  *        <code>scene.pick</code> over an instance returns a
  *        <code>{ collection, instanceIndex, primitive }</code> record
- *        (positions are GPU-resident, so picking is rasterized, not
- *        CPU-hit-tested). Set <code>false</code> to skip the per-instance
+ *        (picking uses the backend's rasterized pass rather than CPU hit
+ *        tests). Set <code>false</code> to skip the per-instance
  *        pick id allocation and the pick draw entirely.
  * @param {ComputeInstanceCollection.CpuKernel} [options.cpuKernel] Optional
  *        JS kernel <code>(out, index, timeSeconds, params) =&gt; void</code>
- *        used ONLY on the WebGL2 (non-compute) backend to produce the same
+ *        used only on the WebGL2 (non-compute) backend to produce the same
  *        per-instance result as the WGSL <code>kernel</code>. See the WebGL2
  *        fallback note above. Omit for a WebGPU-only collection.
  * @param {JulianDate} [options.epoch] The epoch that simulation time is
  *        measured from. Defaults to the first rendered frame's time.
  * @param {BoundingSphere} [options.boundingSphere] A user-supplied sphere
  *        (world/ECEF meters) that bounds every position the kernel can
- *        produce. Because positions are GPU-resident the engine cannot
- *        derive one. When supplied, the draw command carries it as its
+ *        produce. The engine cannot derive this bound from a time-varying
+ *        kernel. When supplied, the draw command carries it as its
  *        bounding volume and is frustum-culled / frustum-binned like any
  *        CPU primitive; when omitted the collection is never culled and
- *        bins into all frustums (the pre-Batch-235 behavior).
+ *        bins into all frustums.
  *
  * @example
  * // Instances on a vertical circle above the equator; one parameter lane
@@ -194,9 +188,8 @@ class ComputeInstanceCollection {
   constructor(options) {
     options = options ?? Frozen.EMPTY_OBJECT;
 
-    // Fail loudly in ALL builds (not pragma-stripped): a kernel without the
-    // entry function would otherwise surface as an opaque WGSL compile
-    // error deep inside the renderer.
+    // This check remains in release builds because a missing entry point
+    // otherwise surfaces later as an opaque WGSL compilation error.
     if (
       typeof options.kernel !== "string" ||
       !options.kernel.includes("csm_computeInstance")
@@ -227,8 +220,9 @@ class ComputeInstanceCollection {
 
     /**
      * When <code>true</code> the collection participates in {@link Scene#pick}
-     * via the GPU pick pass (one pick id per instance). Read by the WebGPU
-     * feature renderer each frame, so it can be toggled after construction.
+     * via a rasterized pick pass (one pick id per instance). Read by the
+     * active feature renderer each frame, so it can be toggled after
+     * construction.
      * @type {boolean}
      * @default true
      */
@@ -243,8 +237,7 @@ class ComputeInstanceCollection {
     //>>includeEnd('debug');
 
     this._kernel = options.kernel;
-    // WebGL2-only CPU fallback kernel (the WGSL `kernel` can't run without
-    // compute). Mutable post-construction so a demo can attach it after build.
+    // Used only by the non-compute backend and assignable through `cpuKernel`.
     this._cpuKernel = options.cpuKernel;
     this._floatsPerInstance = floatsPerInstance;
     this._epoch = defined(options.epoch)
@@ -264,8 +257,7 @@ class ComputeInstanceCollection {
     this._paramsData = new Float32Array(
       Math.max(count, 64) * floatsPerInstance,
     );
-    // Consumed by the feature renderer after each params upload
-    // (Phase-0 dirty-consume discipline — see _consumeDirtyState).
+    // Cleared by the feature renderer after it uploads the current parameters.
     this._catalogDirty = true;
     // Seconds since _epoch, computed from frameState.time each frame and
     // read by the feature renderer (the only per-frame CPU→GPU scalar).
@@ -298,7 +290,7 @@ class ComputeInstanceCollection {
   }
 
   /**
-   * The JS CPU fallback kernel used ONLY on the WebGL2 (non-compute) backend:
+   * The JS CPU fallback kernel used only on the WebGL2 (non-compute) backend:
    * <code>(out, index, timeSeconds, params) =&gt; void</code>. Writes
    * <code>out.position</code> ({x,y,z} ECEF meters), <code>out.color</code>
    * ({red,green,blue,alpha} in [0,1]) and <code>out.pixelSize</code> (px) to
@@ -347,8 +339,8 @@ class ComputeInstanceCollection {
   /**
    * A user-supplied sphere (world/ECEF meters) bounding every position the
    * kernel can produce, used as the draw command's bounding volume for
-   * frustum culling/binning. Positions are GPU-resident, so the engine
-   * cannot derive this — it is entirely the caller's contract. Assign
+   * frustum culling/binning. The engine cannot derive this bound from a
+   * time-varying kernel, so it is entirely the caller's contract. Assign
    * <code>undefined</code> to restore the never-culled behavior. The value
    * is cloned on assignment; mutate-and-reassign to update.
    * @type {BoundingSphere|undefined}
@@ -455,9 +447,8 @@ class ComputeInstanceCollection {
   }
 
   /**
-   * Consumed by the feature renderer after the params upload each frame so
-   * settled collections never re-upload (Phase-0 dirty-consume discipline —
-   * mirrors BillboardCollection._consumeDirtyState).
+   * Cleared by the feature renderer after a parameter upload so settled
+   * collections do not re-upload unchanged data.
    * @private
    */
   _consumeDirtyState() {
@@ -465,16 +456,15 @@ class ComputeInstanceCollection {
   }
 
   /**
-   * Reconstruct the WORLD position (absolute ECEF meters) of one instance
-   * (NEW-COMPUTE-INSTANCE-PICKPOSITION). Positions are produced by the kernel,
-   * not stored CPU-side on WebGPU, so this routes through the active backend's
-   * feature renderer:
+   * Reconstructs the world position (absolute ECEF meters) of one instance.
+   * Positions are produced by the kernel, so this routes through the active
+   * backend's feature renderer:
    * <ul>
    *   <li><b>WebGPU</b>: reads the instance's record slot back from the GPU
    *       position buffer via an async <code>copyBufferToBuffer</code> +
    *       <code>mapAsync</code>, bridged to this synchronous call by a
-   *       one-frame-stale per-index cache (the PickDepth pattern). The FIRST
-   *       call for an index returns <code>undefined</code> and ARMS the
+   *       one-frame-stale per-index cache. The first call for an index returns
+   *       <code>undefined</code> and starts the
    *       readback; subsequent calls for the same index converge within 1-2
    *       rendered frames.</li>
    *   <li><b>WebGL2</b>: re-runs the <code>cpuKernel</code> for the index at the
@@ -516,9 +506,8 @@ class ComputeInstanceCollection {
       return;
     }
 
-    // Shared scene logic BEFORE the backend branch (scene-logic-extractor
-    // pattern): derive simulation time from the scene clock so both
-    // backends agree on the time source.
+    // Derive simulation time before selecting a renderer so both backends use
+    // the scene clock.
     if (!defined(this._epoch)) {
       this._epoch = JulianDate.clone(frameState.time);
     }
@@ -533,15 +522,9 @@ class ComputeInstanceCollection {
       FeatureRendererKey.COMPUTE_INSTANCE_COLLECTION,
     );
 
-    // Non-compute backend (WebGL2 today): no compute-instance FR is registered
-    // by default — only a context that supports GPU compute shaders registers
-    // one. When a CPU fallback kernel is supplied, lazily register the
-    // backend-agnostic WebGL renderer — it lives under Renderer/ (NOT
-    // Renderer/WebGPU/), so this stays within the FeatureRenderer seam
-    // (CLAUDE.md §2). Gated on the `supportsComputeShaders` capability getter
-    // rather than `isWebGPU` per CLAUDE.md §2 — a future WebGL compute
-    // extension would flip the getter and skip the CPU fallback automatically.
-    // Without a cpuKernel the collection still renders nothing here.
+    // A non-compute context receives the WebGL renderer only when the
+    // collection supplies a CPU kernel. Capability detection and the
+    // feature-renderer registry keep backend selection out of scene logic.
     if (!fr && !context.supportsComputeShaders && defined(this._cpuKernel)) {
       fr = ensureWebGLComputeInstanceRenderer(context);
     }
@@ -549,12 +532,10 @@ class ComputeInstanceCollection {
     if (fr) {
       fr.update(this, frameState);
       this._featureRenderer = fr;
-      // Frame-stamp the context so Scene#pickPosition knows a pickable
-      // compute-instance is live this frame and only then runs the extra
-      // object-pick that reconstructs an instance's position
-      // (NEW-COMPUTE-INSTANCE-PICKPOSITION). Without this gate, pickPosition
-      // would run a pick pass on EVERY query even in scenes with no
-      // compute-instances, disrupting the globe depth-buffer pickPosition path.
+      // Stamp the context only when this frame can resolve compute-instance
+      // positions. Scene#pickPosition uses the stamp to avoid an extra object
+      // pick in scenes without pickable compute instances; running that pass
+      // unconditionally would disrupt globe depth-buffer reconstruction.
       if (
         this.allowPicking !== false &&
         typeof fr.getInstanceWorldPosition === "function"
@@ -564,10 +545,8 @@ class ComputeInstanceCollection {
       return;
     }
 
-    // No renderer for this backend (e.g. WebGL2 without a cpuKernel) — the
-    // collection renders nothing. NEW-COMPUTE-INSTANCE-WEBGL2-FALLBACK adds
-    // the cpuKernel path above; a Worker/WASM offload of it is tracked as
-    // NEW-COMPUTE-INSTANCE-WEBGL2-WORKER in migration_doc/DEFERRED_WORK.md.
+    // A backend without a registered renderer leaves the collection
+    // undisplayed. On WebGL2 this occurs when `cpuKernel` is undefined.
   }
 
   /**
@@ -580,7 +559,7 @@ class ComputeInstanceCollection {
   }
 
   /**
-   * Destroys the WebGPU resources held by this collection. Once destroyed,
+   * Destroys the renderer resources held by this collection. Once destroyed,
    * the object should not be used; calling any function other than
    * <code>isDestroyed</code> will result in a {@link DeveloperError}.
    *

@@ -1,9 +1,7 @@
-// ComputeInstanceScaffold.wgsl — engine scaffolding for user-supplied
-// compute-instance kernels (NEW-COMPUTE-INSTANCE-SYSTEM, Batch 231;
-// df64 precision helpers added Batch 277, NEW-ORBITAL-J2-KERNEL).
+// Engine-owned composition scaffold for user-supplied compute-instance kernels.
 //
-// This file is deliberately NOT a complete WGSL module.
-// `WebGPUComputeInstanceRenderer` composes the final compute module as
+// This source is intentionally not a complete WGSL module.
+// `WebGPUComputeInstanceRenderer` composes the final module as
 //
 //     <generated prologue: const FLOATS_PER_INSTANCE = Nu;>
 //   + <this file>
@@ -11,8 +9,9 @@
 //
 // WGSL module-scope declarations are order-independent, so the entry point
 // below can call `csm_computeInstance` before its definition appears in the
-// composed source. Composed modules are cached per kernel source (NOT under
-// a ShaderSourceId — user strings can't key the sourceId/defines cache).
+// composed source. Composed modules are cached per kernel source rather than
+// under a ShaderSourceId because user strings cannot key the sourceId/defines
+// cache.
 //
 // User-kernel contract (the full contract is documented on
 // `ComputeInstanceCollection`):
@@ -21,33 +20,32 @@
 //
 //   - `params: array<f32>` — the raw per-instance float lanes uploaded by
 //     the collection (re-uploaded only when the catalog is dirty). The lane
-//     layout is entirely the USER's business; index it as
+//     layout is entirely the user's responsibility; index it as
 //     `params[index * FLOATS_PER_INSTANCE + lane]`.
 //   - `FLOATS_PER_INSTANCE: u32` — injected by the engine prologue from the
 //     collection's `floatsPerInstance`.
-//   - The ENGINE owns the bindings, the dispatch entry point, the bounds
+//   - The engine owns the bindings, the dispatch entry point, the bounds
 //     check, and the RTE high/low split + output write — user kernels never
 //     declare bindings and never touch RTE.
 //   - All `csm_`-prefixed identifiers are engine-reserved; user kernels must
 //     not redeclare `ComputeInstanceOut`, `params`, or anything `csm_*`.
 //
-// ── RTE precision: f32 (default) vs df64 (opt-in) ───────────────────────
+// RTE precision: f32 by default, with optional df64.
 //
 // The output position is stored RTE-split as `positionHigh` + `positionLow`
 // (the render shader subtracts the encoded camera on the GPU —
 // translateRelativeToEye). A kernel has two ways to fill that:
 //
-//   (1) f32 (default, back-compatible): set only `out.position` (vec3<f32>).
+//   (1) f32 (default): set only `out.position` (vec3<f32>).
 //       The entry point writes `positionHigh = out.position`, and because
 //       `var out: ComputeInstanceOut;` zero-inits, `out.positionLow` stays
-//       (0,0,0). This is the original Batch-231 contract — an f32 absolute
-//       ECEF position with an always-zero low part (~meter error at
-//       planetary radii). Existing kernels need no changes.
+//       (0,0,0). An f32 absolute ECEF position with an always-zero low part
+//       has approximately meter-scale error at planetary radii.
 //
-//   (2) df64 (opt-in, Batch 277): when the kernel does its math in df64
+//   (2) df64 (opt-in): when the kernel does its math in df64
 //       (two-float / double-single — see helpers below), it can split each
 //       df64 position component into an exact f32 high + f32 low and set
-//       BOTH `out.position` (the highs) and `out.positionLow` (the lows).
+//       both `out.position` (the highs) and `out.positionLow` (the lows).
 //       `csm_emitDF64(x, y, z)` packs three df64 components into a fully
 //       populated `ComputeInstanceOut` (color/pixelSize still the kernel's
 //       to fill). This makes the RTE low part meaningful, removing the
@@ -55,10 +53,10 @@
 //       `time * meanMotion` angle arguments that lose f32 precision over a
 //       long propagation interval.
 //
-// The buffer layout, render shader, and entry point are IDENTICAL for both
+// The buffer layout, render shader, and entry point are identical for both
 // paths — df64 just fills a slot that f32 leaves zero. No pipeline changes.
 //
-// ── df64 (two-float / double-single) arithmetic ─────────────────────────
+// df64 (two-float / double-single) arithmetic.
 //
 // A df64 value is a `vec2<f32>` (hi, lo) representing hi + lo with the
 // invariant |lo| <= 0.5 * ulp(hi); it carries ~46 effective mantissa bits
@@ -85,7 +83,7 @@
 // can stay f32 — df64 is opt-in per quantity, not all-or-nothing.
 
 // Returned by the user kernel. `position` is absolute ECEF meters (the RTE
-// HIGH part); `positionLow` is the RTE low part (0 for f32 kernels, the
+// high part); `positionLow` is the RTE low part (0 for f32 kernels, the
 // df64 low for df64 kernels — see the RTE note above). `color` is straight
 // (non-premultiplied) RGBA in [0,1]; `pixelSize` is the dot diameter in px.
 struct ComputeInstanceOut {
@@ -95,7 +93,7 @@ struct ComputeInstanceOut {
   pixelSize: f32,
 };
 
-// ── df64 primitives (Dekker/Knuth error-free transformations) ──
+// df64 primitives use Dekker/Knuth error-free transformations.
 
 // Promote f32 -> df64.
 fn csm_df64(x: f32) -> vec2<f32> {
@@ -183,12 +181,12 @@ fn csm_df64_reducePi(a: vec2<f32>) -> vec2<f32> {
 }
 
 // sin/cos of a df64 angle. After df64 range reduction the reduced angle's
-// HIGH part is in [-pi, pi] and accurate to ~46 bits, so an f32 sin/cos of
+// high part is in [-pi, pi] and accurate to ~46 bits, so an f32 sin/cos of
 // (hi + lo) folded with the derivative correction recovers ~f32-of-a-tiny-
 // angle accuracy: sin(hi+lo) ~= sin(hi) + lo*cos(hi); cos(hi+lo) ~=
 // cos(hi) - lo*sin(hi). lo is tiny (< 1 ulp of hi) so the first-order term
-// is more than enough — the win is that `hi` no longer carries the f32
-// rounding of a huge pre-reduction argument.
+// is sufficient because `hi` no longer carries the f32 rounding of a huge
+// pre-reduction argument.
 fn csm_df64_sin(a: vec2<f32>) -> f32 {
   let r = csm_df64_reducePi(a);
   let s = sin(r.x);
@@ -212,7 +210,7 @@ fn csm_df64_split(a: vec2<f32>) -> vec2<f32> {
   return vec2<f32>(hi, lo);
 }
 
-// Pack three df64 position components into a ComputeInstanceOut with BOTH
+// Pack three df64 position components into a ComputeInstanceOut with both
 // the RTE high and low filled (color/pixelSize remain the kernel's to set).
 // This is the df64 emit helper referenced in the RTE note above.
 fn csm_emitDF64(x: vec2<f32>, y: vec2<f32>, z: vec2<f32>) -> ComputeInstanceOut {
@@ -225,7 +223,7 @@ fn csm_emitDF64(x: vec2<f32>, y: vec2<f32>, z: vec2<f32>) -> ComputeInstanceOut 
 }
 
 // GPU-resident per-instance record written by the entry point below and
-// vertex-pulled by `ComputeInstanceRender.wgsl` — the two structs MUST stay
+// vertex-pulled by `ComputeInstanceRender.wgsl`; the two structs must stay
 // in sync (64 bytes: vec3+pad, vec3+pad, vec4, f32+12 pad).
 struct CsmInstanceRecord {
   positionHigh: vec3<f32>,
@@ -256,9 +254,8 @@ fn computeInstanceMain(@builtin(global_invocation_id) gid: vec3<u32>) {
 
   let result = csm_computeInstance(i, csm_frame.timeSeconds);
 
-  // RTE high/low split — engine-owned. f32 kernels leave `positionLow`
-  // zero-initialized (the original contract); df64 kernels fill it via
-  // csm_emitDF64 so the low part is meaningful (Batch 277).
+  // RTE high/low split. f32 kernels leave `positionLow` zero-initialized;
+  // df64 kernels fill it through csm_emitDF64.
   csm_instances[i].positionHigh = result.position;
   csm_instances[i].positionLow = result.positionLow;
   csm_instances[i].color = result.color;

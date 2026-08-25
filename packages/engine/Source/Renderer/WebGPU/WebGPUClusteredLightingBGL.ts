@@ -1,70 +1,38 @@
 /// <reference types="@webgpu/types" />
 /**
- * WebGPUClusteredLightingBGL — Slice 5d Batch 152 (Batch 153 retarget).
+ * Per-device helpers for clustered-lighting resources in the effects bind
+ * group.
  *
- * Per-device helpers for the clustered-lighting bindings.
+ * Supported Windows D3D12 and Vulkan devices expose `maxBindGroups = 4`, so
+ * clustered lighting shares the effects group instead of allocating a fifth
+ * group. Bindings 18..22 contain the punctual-light records, cluster bounds,
+ * per-cluster counts and indices, and the parameter uniform. Binding 23
+ * contains the LTC lookup texture, and binding 25 contains area-light records.
+ * Binding 24 is unused because the lookup uses `textureLoad` without a sampler.
  *
- * # Group 3 (effects) merge — Batch 153
+ * All entries are fragment-visible because cluster lookup and light evaluation
+ * happen in the fragment stage.
+ * {@link CLUSTERED_LIGHTING_EFFECTS_BINDING_ENTRIES} supplies the layout
+ * entries, and
+ * {@link getClusteredLightingPlaceholders} supplies valid resources with zero
+ * active counts when no dispatcher resources are bound.
  *
- * Batch 152 originally targeted a new `@group(4)` BGL on consumer
- * pipelines (Model PBR + the 21 Lit Mat shaders). That approach was
- * reverted after `Tools/visual-regression/probe-device-limits.mjs`
- * confirmed Chromium-on-Windows caps `maxBindGroups` at 4 (both D3D12
- * + Vulkan backends), so a 5th group fails device creation outright.
- *
- * Batch 153 folds the 5 clustered-lighting bindings into the existing
- * `group 3` (effects) BGL at **bindings 18..22**:
- *
- *   binding 18 — clusterLights         : read-only storage
- *   binding 19 — clusterAABBs          : read-only storage
- *   binding 20 — perClusterLightCount  : read-only storage
- *   binding 21 — perClusterLightIndices: read-only storage
- *   binding 22 — clusterParams         : uniform (viewport + planes
- *                                                 + activeLightCount)
- *
- * Visibility = FRAGMENT only. None of these resources are needed in
- * the vertex stage — cluster lookup happens at fragment time using
- * fragCoord + viewZ.
- *
- * This file exports two helpers:
- *
- *   - {@link CLUSTERED_LIGHTING_EFFECTS_BINDING_ENTRIES} — the 5 BGL
- *     entries (bindings 18..22) ready to spread into the effects BGL
- *     entry list. WebGPUEffectsBindGroup.js consumes this so the
- *     binding numbers + visibility live in one place.
- *
- *   - {@link getClusteredLightingPlaceholders} — per-device tiny
- *     placeholder buffers for the 5 bindings. The placeholder
- *     `clusterParams` is zero-filled so `activeLightCount = 0` and
- *     the FS chunk's `evalClusteredLights(...)` early-outs without
- *     touching the storage slots. Used by the effects BGL's
- *     placeholder bind group AND by the active bind group when the
- *     scene's clustered-lighting dispatcher isn't running.
- *
- * # Legacy `@group(4)` helpers — DEPRECATED (kept for backward compat)
- *
- * `getClusteredLightingBGL` and `buildClusteredLightingBindGroup`
- * below are the original Batch 152 `@group(4)` helpers. They are
- * retained so the dispatcher's `consumerBindGroup` lazy getter still
- * compiles (the dispatcher pre-builds a bind group that's no longer
- * consumed — Batch 153 routes the bindings through the effects bind
- * group instead). Mark for removal once Lit Mat consumers (Batch 154+)
- * have all migrated and the dispatcher's getter is retired.
+ * `getClusteredLightingBGL` and `buildClusteredLightingBindGroup` support the
+ * dispatcher's `consumerBindGroup` compatibility getter. That getter creates a
+ * separate group-4 bind group; current consumer pipelines bind the shared
+ * effects group and do not consume it.
  *
  * @module WebGPUClusteredLightingBGL
  */
 
-// Stage carries spec-exact fallbacks for the GPUShaderStage bits, so this
-// module stays evaluable on hosts without WebGPU (Node require(),
-// FirefoxHeadless coverage) — the raw GPUShaderStage global does not exist
-// there and referencing it at module scope throws.
+// Use numeric stage fallbacks because `GPUShaderStage` is absent when this
+// module is evaluated on a host without WebGPU.
 import { Stage } from "./WebGPUBindGroupLayoutHelpers.js";
 
 /**
- * Starting binding index for clustered lighting on group 3 (effects).
+ * Starting binding index for clustered lighting in the effects group.
  * Effects bindings 0..17 are claimed by shadow/clip/SDF/atmosphere/CSM/
- * edges/cube-depth resources; 18..22 are the 5 clustered-lighting
- * slots added in Batch 153.
+ * edges/cube-depth resources; clustered-lighting resources start at 18.
  */
 export const CLUSTERED_LIGHTING_EFFECTS_BINDING_BASE = 18;
 
@@ -82,7 +50,7 @@ export const CLUSTERED_LIGHTING_GROUP_TOKEN = "__CL_GROUP__";
 /**
  * Substitute the `__CL_GROUP__` token in the ClusteredLighting chunk with
  * the concrete effects-group index for the consuming pipeline, ready to
- * prepend to the consumer's WGSL source. Batch 154 (Slice 5d).
+ * prepend to the consumer's WGSL source.
  *
  * @param chunkSource The raw ClusteredLighting chunk string (the generated
  *   `.js` export of `ClusteredLighting.wgsl`).
@@ -99,17 +67,14 @@ export function substituteClusteredLightingGroup(
 }
 
 /**
- * BGL entries for the 5 clustered-lighting bindings, ready to spread
- * into the effects BGL entry list. Bindings 18..22 — read-only storage
- * for clusterLights / clusterAABBs / perClusterLightCount /
- * perClusterLightIndices, plus a uniform buffer for clusterParams.
+ * Bind-group layout entries for clustered lighting, ready to spread into the
+ * effects layout. Bindings 18..21 are read-only storage for
+ * `clusterLights`, `clusterAABBs`, `perClusterLightCount`, and
+ * `perClusterLightIndices`. Binding 22 is the `clusterParams` uniform,
+ * binding 23 is the LTC lookup texture, and binding 25 is area-light storage.
  *
- * All FRAGMENT visibility — cluster lookup happens at fragment time.
- *
- * Effects BGL builder uses these directly so the binding numbers +
- * types live in one place; the WGSL chunk in
- * `Shaders/WebGPU/chunks/structs/ClusteredLighting.wgsl` must declare
- * the matching `@group(3) @binding(18..22)` slots.
+ * All entries are fragment-visible. The WGSL chunk declares the same binding
+ * numbers under the effects-group index supplied by the consuming pipeline.
  */
 export const CLUSTERED_LIGHTING_EFFECTS_BINDING_ENTRIES: ReadonlyArray<GPUBindGroupLayoutEntry> =
   [
@@ -138,17 +103,11 @@ export const CLUSTERED_LIGHTING_EFFECTS_BINDING_ENTRIES: ReadonlyArray<GPUBindGr
       visibility: Stage.FRAGMENT,
       buffer: { type: "uniform" },
     },
-    // C6-LTC-AREA-LIGHTS — analytic LTC area lights (WebGPU-only, opt-in).
-    // binding 23 — ltcLUT (64×64×2 rgba16float array texture)
-    // binding 25 — areaLights (read-only storage, ≤8 records)
-    // No dedicated sampler: the Model PBR fragment stage is already at the
-    // 16-sampler-per-stage limit, so the LUT is read with textureLoad +
-    // manual bilinear (see ltcSampleLUT in ClusteredLighting.wgsl). The
-    // texture uses sampleType "unfilterable-float" because textureLoad
-    // never filters — this also keeps it valid without a filtering sampler.
-    // Always present in the shared effects BGL; placeholders bound when
-    // no area lights exist so consumer pipelines validate against one
-    // layout and the FS early-outs via activeLightCount.y = 0.
+    // The LTC LUT uses `textureLoad` and manual bilinear interpolation because
+    // the Model PBR fragment stage already consumes the 16 available samplers.
+    // Its unfilterable-float sample type is valid without a filtering sampler.
+    // These entries remain in the shared layout; placeholders keep it valid
+    // when no area lights exist, and `activeLightCount.y = 0` gates all reads.
     {
       binding: 23,
       visibility: Stage.FRAGMENT,
@@ -162,22 +121,16 @@ export const CLUSTERED_LIGHTING_EFFECTS_BINDING_ENTRIES: ReadonlyArray<GPUBindGr
   ];
 
 /**
- * Per-device placeholder buffers for the clustered-lighting bindings.
- * `params` is zero-filled so `activeLightCount = 0`, which the FS chunk
- * reads as "early-out, do not sample the storage buffers".
- *
- * Used by:
- *   - the placeholder effects bind group (constructed eagerly at
- *     device init, before any dispatcher exists).
- *   - the active effects bind group when the scene either has no
- *     dispatcher yet OR `scene.clusteredLightingEnabled === false`.
+ * Per-device placeholder resources for clustered-lighting bindings.
+ * `params` is zero-filled so the fragment shader returns before reading the
+ * storage buffers or LTC texture.
  *
  * Storage buffer sizes must each be at least one element of the
  * matching WGSL array type, because WebGPU validates the bound buffer
  * size against the pipeline's derived `minBindingSize` for unsized
  * `array<T>` storage variables at draw time. With smaller placeholders
  * the validator rejects the pipeline ("buffer binding is too small")
- * even though the FS chunk would short-circuit on activeLightCount=0
+ * even though the fragment shader short-circuits on `activeLightCount = 0`
  * at execution time.
  *
  * Sizes per binding (match the WGSL declarations in
@@ -188,9 +141,8 @@ export const CLUSTERED_LIGHTING_EFFECTS_BINDING_ENTRIES: ReadonlyArray<GPUBindGr
  *   - perClusterLightCount  : `array<u32>`             — 4 B per element
  *   - perClusterLightIndices: `array<u32>`             — 4 B per element
  *   - params                : `ClusteredParams` uniform — 32 B
- *
- * Total: ~152 B per device. Cost is trivial compared to the dispatcher's
- * real allocations (~3.7 MB when in use).
+ *   - areaLights            : `array<LTCAreaLight>`     — 96 B per element
+ *   - ltcLUT                : 1×1×2 `rgba16float` placeholder texture
  */
 export interface ClusteredLightingPlaceholderBuffers {
   clusterLights: GPUBuffer;
@@ -198,8 +150,8 @@ export interface ClusteredLightingPlaceholderBuffers {
   perClusterLightCount: GPUBuffer;
   perClusterLightIndices: GPUBuffer;
   params: GPUBuffer;
-  // C6-LTC-AREA-LIGHTS placeholders (bindings 23, 25). No sampler —
-  // the LUT is read via textureLoad (see ClusteredLighting.wgsl).
+  // Bindings 23 and 25 use texture and storage placeholders. The LUT is read
+  // with `textureLoad`, so no sampler placeholder is required.
   ltcLUTView: GPUTextureView;
   areaLights: GPUBuffer;
   /** Retained so device-loss cleanup can destroy the placeholder texture. */
@@ -223,10 +175,9 @@ export function getClusteredLightingPlaceholders(
       size,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
-    // Zero-fill — when the FS chunk DOES read at activeLightCount > 0
-    // these would be garbage, but the placeholder path always has
-    // activeLightCount = 0 so the bytes never matter. Zero-init keeps
-    // the buffer in a deterministic state for debugging.
+    // Placeholder params keep both active counts at zero, so these bytes are
+    // never read by the shader. Zero initialization keeps diagnostic readback
+    // deterministic.
     device.queue.writeBuffer(buf, 0, new Uint8Array(size));
     return buf;
   };
@@ -238,10 +189,8 @@ export function getClusteredLightingPlaceholders(
   });
   device.queue.writeBuffer(params, 0, new Float32Array(8));
 
-  // C6-LTC-AREA-LIGHTS placeholders — a 1×1×2 rgba16float texture and one
-  // zeroed 96 B LTCAreaLight record. Bound at slots 23 / 25 so the BGL
-  // validates when no dispatcher/area-lights exist; never read because
-  // activeLightCount.y stays 0.
+  // A one-texel LUT in each layer and one zeroed 96-byte `LTCAreaLight` record
+  // satisfy bindings 23 and 25 while `activeLightCount.y` is zero.
   const ltcLUTTexture = device.createTexture({
     label: "LTC LUT placeholder (1x1x2 rgba16float)",
     size: { width: 1, height: 1, depthOrArrayLayers: 2 },
@@ -295,17 +244,14 @@ export function clearClusteredLightingPlaceholdersForDevice(
   _placeholderCache.delete(device);
 }
 
-// ===========================================================================
-// Legacy @group(4) helpers (Batch 152) — DEPRECATED, see module docstring
-// ===========================================================================
+// Compatibility group-4 helpers.
 
 const _legacyBglCache = new WeakMap<GPUDevice, GPUBindGroupLayout>();
 
 /**
- * @deprecated Batch 152 `@group(4)` BGL — kept for the dispatcher's
- * `consumerBindGroup` lazy getter which is no longer consumed by any
- * pipeline. Slated for removal after the Lit Mat consumers (Batch 154+)
- * migrate to the group-3 effects bindings.
+ * @deprecated Consumer pipelines bind clustered resources through the effects
+ * group. This layout serves the dispatcher's unconsumed `consumerBindGroup`
+ * compatibility getter.
  */
 export function getClusteredLightingBGL(device: GPUDevice): GPUBindGroupLayout {
   const cached = _legacyBglCache.get(device);
@@ -346,7 +292,8 @@ export function getClusteredLightingBGL(device: GPUDevice): GPUBindGroupLayout {
 }
 
 /**
- * @deprecated Batch 152 helper — see `getClusteredLightingBGL` note.
+ * @deprecated Creates the compatibility bind group described by
+ * `getClusteredLightingBGL`.
  */
 export function buildClusteredLightingBindGroup(
   device: GPUDevice,

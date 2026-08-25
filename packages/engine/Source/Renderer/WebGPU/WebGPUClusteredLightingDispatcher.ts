@@ -1,53 +1,23 @@
 /// <reference types="@webgpu/types" />
 /**
- * WebGPUClusteredLightingDispatcher — Slice 5d Batch 150.
+ * Per-frame orchestration for WebGPU Forward+ clustered lighting.
  *
- * Per-frame orchestrator that ties together the cluster-bounds +
- * cluster-assign compute renderers (Batches 147 + 148) and produces
- * the three storage buffers + one uniform that consumer pipelines
- * bind at `@group(4)` via the chunk in `ClusteredLighting.wgsl`
- * (Batch 149).
+ * The dispatcher accepts caller-selected world-space punctual and area lights,
+ * transforms them to eye space, and writes resources exposed through the
+ * shared effects bind group. Punctual lights run through the cluster-bounds and
+ * cluster-assignment compute passes. Area lights use a parallel storage buffer
+ * and are iterated directly by the fragment shader.
  *
- * # Per-frame responsibilities
+ * Cluster bounds are recomputed when the viewport, near or far plane, or
+ * projection changes. Assignment is recomputed when its light checksum changes
+ * or when new bounds invalidate the existing bins. A bounds change must reach
+ * the assignment pass even for a stationary camera because the assignment
+ * reads the bounds buffer.
  *
- * 1. Read `scene.clusteredLightingEnabled` + light collections
- *    (`scene.lights` + every `model.lightsFromGltf`).
- * 2. Skip dispatch when disabled OR zero lights — in that case the
- *    dispatcher still provides placeholder buffers so the consumer
- *    BGL is always satisfiable (avoids pipeline-variant explosion
- *    from runtime feature gating).
- * 3. Transform each world-space light to eye-space using the current
- *    view matrix. Positions: `view * pointWC`. Directions: `view *
- *    dirWC` (w=0). spotDirEC: same as direction.
- * 4. Dispatch ClusterBoundsRenderer (re-dispatches only when
- *    viewport / near / far / projection change).
- * 5. Dispatch ClusterAssignRenderer (re-dispatches when lights or
- *    view change, OR when the bounds pass re-dispatched — the
- *    assignment reads the AABBs, so a stationary-camera resize/FOV
- *    that only moves the bounds must still re-run assign; A7.2).
- * 6. Expose the four GPU buffers (clusterLights, clusterAABBs,
- *    perClusterLightCount, perClusterLightIndices) + the params
- *    uniform buffer so consumer pipelines can build their
- *    `@group(4)` bind groups.
- *
- * # The "always-bind-something" pattern
- *
- * Consumer pipelines have a fixed `@group(4)` BGL — adding/removing
- * a bind group at runtime requires rebuilding pipelines. Instead,
- * when clustered lighting is OFF or zero lights are active, the
- * dispatcher:
- *   - Skips the compute passes (cheap).
- *   - Sets `clusterParams.activeLightCount.x = 0` in the uniform,
- *     which makes `evalClusteredLights` early-out to vec3(0) in
- *     the FS chunk.
- *   - The storage buffers retain whatever previous-frame contents
- *     they had (or zeros on first frame from `device.createBuffer`).
- *     The FS never reads them when activeLightCount=0, so the
- *     contents don't matter.
- *
- * This keeps the consumer FS branch-light (one uniform compare to
- * skip the entire chain) and the consumer pipeline definition
- * static (no variant explosion).
+ * Disabled and empty punctual-light frames skip both compute passes. The
+ * parameter uniform carries zero active counts, so consumers return before
+ * reading stale storage contents. Keeping the resources and effects layout
+ * fixed avoids pipeline variants when lighting is toggled.
  *
  * @module WebGPUClusteredLightingDispatcher
  */
@@ -68,10 +38,9 @@ import { getLTCLUTBytes, LTC_LUT_SIZE } from "./WebGPULTCLUTData.js";
 // 256-byte minimum alignment.
 const PARAMS_UNIFORM_BYTES = 256;
 
-// LTC analytic area lights (C6-LTC-AREA-LIGHTS). WebGPU-only, opt-in.
-// A parallel storage buffer beside the clustered punctual path — NOT
-// clustered in v1 (iterated directly in the FS, gated on
-// activeLightCount.y). Struct stride 96 B = 6 vec4 = 24 floats.
+// Area lights use a parallel storage buffer rather than the punctual cluster
+// lists. The fragment shader iterates up to eight records when
+// `activeLightCount.y` is nonzero. Each record is 6 vec4, or 96 bytes.
 const MAX_AREA_LIGHTS = 8;
 const AREA_LIGHT_FLOATS = 24; // 6 vec4
 const AREA_LIGHT_STRIDE_BYTES = AREA_LIGHT_FLOATS * 4; // 96
@@ -82,9 +51,8 @@ const AREA_LIGHT_TYPE_RECT = 3;
 const AREA_LIGHT_TYPE_DISK = 4;
 
 /**
- * World-space area-light entry consumed by the dispatcher. The
- * SceneRenderer hook normalizes `RectAreaLight` / `DiskAreaLight` into
- * this shape.
+ * World-space area-light entry consumed by the dispatcher. The scene renderer
+ * normalizes `RectAreaLight` and `DiskAreaLight` instances into this shape.
  */
 export interface ClusterAreaLightInput {
   /** 3 = rect, 4 = disk (LightType.RECT_AREA / DISK_AREA). */
@@ -113,12 +81,8 @@ export interface ClusterAreaLightInput {
 }
 
 /**
- * Minimal interface for the world-space light entries this dispatcher
- * consumes. Matches the shape of `scene.lights.values` (LightCollection
- * entries) AND `model.lightsFromGltf[]` entries from GltfLoader.
- *
- * Caller-side: walk those two sources, normalize to this shape,
- * pass an array to `dispatch()`.
+ * World-space punctual-light entry consumed by the dispatcher. The caller
+ * selects and normalizes the active light sources before dispatch.
  */
 export interface ClusterLightingInputLight {
   /** 0 = directional, 1 = point, 2 = spot — matches LightType enum. */
@@ -145,8 +109,7 @@ export interface ClusterLightingInputLight {
 export interface ClusterLightingDispatchInputs {
   /** `scene.clusteredLightingEnabled` */
   enabled: boolean;
-  /** Active scene-wide light list (world-space) — concat of
-   * `scene.lights.values` + every visible `model.lightsFromGltf[]`. */
+  /** Active world-space punctual lights selected by the caller. */
   lights: ReadonlyArray<ClusterLightingInputLight>;
   viewportWidth: number;
   viewportHeight: number;
@@ -157,9 +120,8 @@ export interface ClusterLightingDispatchInputs {
   /** Column-major 16-element view matrix (camera world → eye space). */
   viewMatrix: ArrayLike<number>;
   /**
-   * Active area lights this frame (world-space). Empty/undefined ⇒ the
-   * LTC area-light path stays inert (areaLightCount = 0, FS early-out).
-   * C6-LTC-AREA-LIGHTS.
+   * Active world-space area lights. An empty or undefined list leaves
+   * `activeLightCount.y` at zero, so the fragment shader skips LTC evaluation.
    */
   areaLights?: ReadonlyArray<ClusterAreaLightInput>;
 }
@@ -175,7 +137,6 @@ export class WebGPUClusteredLightingDispatcher {
   private _lastActiveLightCount: number = 0;
   private _lastWrittenActiveLightCount: number = 0;
 
-  // ── LTC area lights (C6-LTC-AREA-LIGHTS) ──
   private readonly _areaLightsBuffer: GPUBuffer;
   private readonly _areaLightsData: Float32Array;
   private _lastAreaLightCount: number = 0;
@@ -188,8 +149,8 @@ export class WebGPUClusteredLightingDispatcher {
     this._device = device;
     this._bounds = new WebGPUClusterBoundsRenderer(device);
     this._assign = new WebGPUClusterAssignRenderer(device);
-    // Area-light storage buffer — allocated up front (768 B, trivial),
-    // zero-filled so a frame with no area lights reads cleanly.
+    // Allocate the 768-byte area-light buffer up front so its identity remains
+    // stable; zero initialization keeps inactive records deterministic.
     this._areaLightsBuffer = device.createBuffer({
       label: "LTC area lights",
       size: AREA_LIGHTS_BUFFER_BYTES,
@@ -206,24 +167,23 @@ export class WebGPUClusteredLightingDispatcher {
     this._paramsBuffer = device.createBuffer({
       label: "ClusteredLighting params",
       size: PARAMS_UNIFORM_BYTES,
-      // COPY_SRC enables probe-side readback for testing (cost is zero
-      // — buffer just lives in a different heap on some implementations).
+      // COPY_SRC permits asynchronous diagnostic readback of the parameter
+      // uniform.
       usage:
         GPUBufferUsage.UNIFORM |
         GPUBufferUsage.COPY_DST |
         GPUBufferUsage.COPY_SRC,
     });
     this._paramsData = new Float32Array(8); // 2 vec4 of actual content
-    // Initial state: 0 active lights (gates consumer FS early-out).
+    // Zero active counts gate both fragment-lighting paths.
     this._paramsData[5] = 0;
     device.queue.writeBuffer(this._paramsBuffer, 0, this._paramsData);
   }
 
   /**
-   * Public handles bound to consumer pipelines at `@group(4)`. These
-   * exist for the lifetime of the dispatcher even when no dispatch
-   * has happened yet — initial contents are device-cleared zeros
-   * which are safe for the consumer (gated by `activeLightCount`).
+   * Handles used to populate clustered-lighting entries in the shared effects
+   * bind group. They exist for the dispatcher's lifetime, and zero active
+   * counts gate reads before the first dispatch.
    */
   get clusterLightsBuffer(): GPUBuffer {
     return this._assign.lightStorageBuffer;
@@ -240,8 +200,6 @@ export class WebGPUClusteredLightingDispatcher {
   get paramsBuffer(): GPUBuffer {
     return this._paramsBuffer;
   }
-
-  // ── LTC area-light public handles (C6-LTC-AREA-LIGHTS) ──
 
   /** Storage buffer of packed eye-space LTCAreaLight records (768 B). */
   get areaLightsBuffer(): GPUBuffer {
@@ -271,9 +229,9 @@ export class WebGPUClusteredLightingDispatcher {
   }
 
   /**
-   * Create the LTC LUT array texture + sampler on first use. Two 64×64
-   * rgba16float layers uploaded from the embedded fp16 payloads
-   * (layer 0 = M⁻¹ terms, layer 1 = magnitude/Fresnel/sphere).
+   * Create the LTC LUT array texture on first use. The two 64×64
+   * `rgba16float` layers contain the inverse-matrix terms and the
+   * magnitude, Fresnel, and sphere terms.
    */
   private _ensureLTCLUT(): void {
     if (this._ltcTexture) {
@@ -302,26 +260,17 @@ export class WebGPUClusteredLightingDispatcher {
   }
 
   /**
-   * Lazy-built bind group for the clustered-lighting resources. Buffers
-   * don't change frame-to-frame (only their contents), so the bind group
-   * is built once per dispatcher and reused. Cleared if the dispatcher
-   * is destroyed.
+   * Lazily built group-4 compatibility bind group. Its buffer identities do
+   * not change between frames, so one instance is reused for the dispatcher's
+   * lifetime. Current consumer pipelines bind these resources through the
+   * shared effects group and do not read this getter.
    *
-   * Currently unconsumed — Batch 152 originally landed Model PBR + Lit
-   * Mat consumers at `@group(4)` but the platform's `maxBindGroups: 4`
-   * ceiling forced a revert. Batch 153 will merge clustered-lighting
-   * bindings into the existing group 3 (effects) BGL; at that point
-   * this getter's bind group will be subsumed by the effects bind group
-   * builder and the helper can be retired.
-   *
-   * The BGL itself comes from `getClusteredLightingBGL(device)`
-   * (Batch 152) — same per-device cached BGL shared across every
-   * consumer pipeline (provisional group slot).
+   * `getClusteredLightingBGL(device)` supplies the per-device cached layout.
    */
   private _consumerBindGroup: GPUBindGroup | null = null;
   get consumerBindGroup(): GPUBindGroup {
     if (!this._consumerBindGroup) {
-      // Touch the BGL so it's cached for consumer pipeline layouts.
+      // Ensure the compatibility layout is cached before building the group.
       getClusteredLightingBGL(this._device);
       this._consumerBindGroup = buildClusteredLightingBindGroup(this._device, {
         clusterLights: this.clusterLightsBuffer,
@@ -340,8 +289,9 @@ export class WebGPUClusteredLightingDispatcher {
    * consumer pipeline draws that bind the storage buffers).
    *
    * @returns the number of active lights packed this frame
-   * (clamped to `CLUSTER_MAX_LIGHTS`). When 0, no compute passes
-   * were issued — consumer FS will early-out via the uniform gate.
+   * (clamped to `CLUSTER_MAX_LIGHTS`). A return value of zero means no
+   * punctual-light compute passes were issued; area lights may still have
+   * been packed and evaluated.
    */
   dispatch(
     encoder: GPUCommandEncoder,
@@ -373,8 +323,8 @@ export class WebGPUClusteredLightingDispatcher {
 
     // Update the params uniform before compute work so consumers see the new
     // counts even when no compute pass is needed.
-    // .x = punctual clustered count (Batch 149 gate); .y = area-light
-    // count (C6-LTC-AREA-LIGHTS gate — was documented-unused).
+    // `activeLightCount.x` gates punctual clustered lights, and `.y` gates
+    // analytic area lights. The remaining lanes are reserved.
     const data = this._paramsData;
     data[0] = inputs.viewportWidth;
     data[1] = inputs.viewportHeight;
@@ -382,8 +332,8 @@ export class WebGPUClusteredLightingDispatcher {
     data[3] = inputs.far;
     // activeLightCount vec4 starts at data[4]: .x=data[4], .y=data[5],
     // .z=data[6], .w=data[7].
-    data[4] = activeCount; // .x — clustered punctual gate (Batch 149 FS)
-    data[5] = areaCount; // .y — LTC area-light gate (C6-LTC-AREA-LIGHTS FS)
+    data[4] = activeCount; // .x — clustered punctual-light gate
+    data[5] = areaCount; // .y — analytic area-light gate
     data[6] = 0;
     data[7] = 0;
     this._device.queue.writeBuffer(this._paramsBuffer, 0, data);
@@ -395,12 +345,9 @@ export class WebGPUClusteredLightingDispatcher {
       return 0;
     }
 
-    // Dispatch both compute passes. The bounds pass reports whether it
-    // re-dispatched (viewport / FOV / near-far changed); that signal is
-    // threaded into the assign pass so it re-runs even when the lights +
-    // view are unchanged — otherwise a stationary-camera resize/FOV
-    // leaves the per-cluster assignment bound to the stale AABBs
-    // (A7.2 — Q10 CLUSTERED-ASSIGN-BOUNDS-DIRTY).
+    // Thread the bounds pass's change signal into assignment. A viewport,
+    // projection, or near/far change makes the previous bins stale even when
+    // the eye-space light data is unchanged.
     const boundsChanged = this._bounds.dispatch(
       encoder,
       inputs.viewportWidth,
@@ -506,7 +453,7 @@ export class WebGPUClusteredLightingDispatcher {
    *   [8..11]  axisXEC.xyz (half-width vector), halfWidth
    *   [12..15] axisYEC.xyz (half-height vector), halfHeight
    *   [16..19] twoSided, cullRadius, reserved, reserved
-   *   [20..23] reserved (textured-emitter follow-up)
+   *   [20..23] reserved
    *
    * Axes are transformed as directions (w=0); center as a position
    * (w=1) — same eye-space convention as the punctual pack.

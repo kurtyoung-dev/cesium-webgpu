@@ -26,17 +26,13 @@ interface CachedComputePipeline {
 class WebGPUComputeEngine {
   private _device: GPUDevice;
   private _pipelineCache: Map<string, CachedComputePipeline>;
-  // Audit B.18 (Batch 132) -- optional central pipeline cache. When
-  // set (typically via `engine.centralPipelineCache = context.webgpuComputePipelineCache`
-  // after construction), pipeline creation routes through the central
-  // cache so split-screen / multi-context scenes share a single
-  // GPUComputePipeline per shader-source + layout key.
+  // Optional cache shared by compute-engine instances on the same device.
+  // Pipeline creation with an explicit layout routes through this cache.
   private _centralCache:
     import("./WebGPUComputePipelineCache.js").WebGPUComputePipelineCache | null;
-  // NEW-WEBGPU-PIPELINE-READY-SIGNAL — async resource monitor for the
-  // freeform `createPipelineAsync` factory path that bypasses the
-  // central cache. Set via the `asyncResourceMonitor` setter after
-  // construction (production sites do this in WebGPUContext).
+  // Optional monitor for the freeform `createPipelineAsync` path. Context
+  // engines attach their per-context monitor; standalone engines may leave it
+  // unset.
   private _monitor:
     import("./AsyncResourceMonitor.js").AsyncResourceMonitor | null = null;
   private _isDestroyed: boolean;
@@ -45,13 +41,9 @@ class WebGPUComputeEngine {
 
   /**
    * @param device - The GPUDevice to compile pipelines against.
-   * @param centralCache - Audit B.18 (Batch 132/134) -- optional
-   *   `WebGPUComputePipelineCache`. When supplied, pipeline creation
-   *   routes through the central cache for cross-instance dedup.
-   *   Production instantiation sites SHOULD pass
-   *   `context.webgpuComputePipelineCache` here (or set
-   *   `engine.centralPipelineCache = ...` afterward) -- the field is
-   *   `null` by default so unit-test instantiations stay isolated.
+   * @param centralCache - Optional `WebGPUComputePipelineCache`. When
+   *   supplied, pipeline creation with explicit layouts uses the shared cache.
+   *   Omit it to keep standalone and unit-test instances isolated.
    */
   constructor(
     device: GPUDevice,
@@ -72,11 +64,10 @@ class WebGPUComputeEngine {
   }
 
   /**
-   * Audit B.18 (Batch 132) -- attach the central
-   * `WebGPUComputePipelineCache` so subsequent `createPipeline` /
-   * `getOrCreatePipeline` / `_ensurePipeline` calls dedupe across
-   * compute-engine instances on the same device. Safe to set null to
-   * detach (test reset).
+   * Sets the shared `WebGPUComputePipelineCache`. Subsequent pipeline
+   * creation with explicit layouts deduplicates across compute-engine
+   * instances on the same device. Set this to `null` to use only the local
+   * cache.
    */
   set centralPipelineCache(
     cache:
@@ -92,9 +83,9 @@ class WebGPUComputeEngine {
   }
 
   /**
-   * NEW-WEBGPU-PIPELINE-READY-SIGNAL — install the monitor for the
-   * freeform `createPipelineAsync` path. Production callers wire this
-   * to `context.asyncResources` after construction.
+   * Sets the monitor for freeform asynchronous pipeline creation. A configured
+   * monitor receives begin, resolve, and reject events; standalone engines may
+   * leave it `null`.
    */
   set asyncResourceMonitor(
     monitor: import("./AsyncResourceMonitor.js").AsyncResourceMonitor | null,
@@ -168,9 +159,8 @@ class WebGPUComputeEngine {
       // Submit
       this._device.queue.submit([encoder.finish()]);
       submitted = true;
-      // Preserve the historical standalone API contract: a post callback
-      // error remains observable as a false return even though submission has
-      // already happened. The submitted guard prevents a false cancellation.
+      // A post callback error remains observable as a false return even after
+      // submission. The submitted guard prevents cancellation of queued work.
       command.postExecute?.();
 
       return true;
@@ -450,9 +440,8 @@ class WebGPUComputeEngine {
         })
       : "auto";
 
-    // Audit B.18 (Batch 132) -- prefer central cache for cross-instance
-    // dedup. Falls back to direct create when no central cache attached
-    // (tests, standalone usage).
+    // Explicit layouts can use the shared cache. Automatic layouts are created
+    // directly because the shared cache requires a concrete layout key.
     if (this._centralCache && pipelineLayout !== "auto") {
       return this._centralCache.getOrCreateSync({
         name: label ?? "ComputePipeline",
@@ -473,6 +462,7 @@ class WebGPUComputeEngine {
   /**
    * Creates a compute pipeline asynchronously for better performance.
    * Does not block the GPU or main thread during compilation.
+   * A configured monitor publishes begin, resolve, and reject events.
    */
   async createPipelineAsync(
     shaderSource: string,
@@ -546,7 +536,7 @@ class WebGPUComputeEngine {
         })
       : "auto";
 
-    // Audit B.18 (Batch 132) -- delegate to central cache when present.
+    // Route explicit layouts through the shared cache when present.
     let pipeline: GPUComputePipeline;
     if (this._centralCache && pipelineLayout !== "auto") {
       pipeline = this._centralCache.getOrCreateSync({
@@ -605,9 +595,8 @@ class WebGPUComputeEngine {
           })
         : "auto";
 
-      // Audit B.18 (Batch 132) -- central cache routing for the
-      // shader-module path too. The "auto" layout case skips the
-      // central cache because layout is required for the cache key.
+      // The shared cache requires an explicit pipeline layout, so automatic
+      // layouts remain local to this engine.
       if (this._centralCache && pipelineLayout !== "auto") {
         command.computePipeline = this._centralCache.getOrCreateSync({
           name: command.label,

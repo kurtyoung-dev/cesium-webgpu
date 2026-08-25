@@ -1,34 +1,11 @@
 /**
- * Light source classes for CesiumJS multi-light rendering.
- * Addresses upstream issue #8518 — currently CesiumJS only supports
- * one directional sun light.
+ * Light-source classes and collection packing for scene lighting.
  *
- * ## Light Types
- * - {@link DirectionalLight} — Parallel rays (sun, moon). Default.
- * - {@link PointLight} — Omni-directional (street lamps, explosions).
- * - {@link SpotLight} — Cone of light (flashlights, headlights).
+ * {@link LightCollection} stores up to eight directional, point, spot, or area
+ * lights. Its uniform pack contains enabled punctual lights in the layout
+ * consumed by `LightUniforms.wgsl`. Rectangular and disk area lights bypass
+ * that uniform and use the WebGPU clustered-lighting storage path.
  *
- * ## Usage
- * ```javascript
- * // Add lights to the scene
- * scene.lights.add(new Cesium.DirectionalLight({
- *   direction: new Cesium.Cartesian3(-1, -1, -1),
- *   color: Cesium.Color.WHITE,
- *   intensity: 1.0,
- * }));
- * scene.lights.add(new Cesium.PointLight({
- *   position: Cesium.Cartesian3.fromDegrees(-75.0, 40.0, 100.0),
- *   color: Cesium.Color.YELLOW,
- *   intensity: 2.0,
- *   range: 500.0,
- * }));
- * ```
- *
- * ## Shader Integration
- * The `LightUniforms.wgsl` struct is updated to support an array of lights.
- * Lit shaders loop over `lightCount` active lights in the uniform buffer.
- *
- * @see https://github.com/CesiumGS/cesium/issues/8518
  * @module Light
  */
 
@@ -36,10 +13,6 @@ import Cartesian3 from "../Core/Cartesian3.js";
 import Color from "../Core/Color.js";
 import defined from "../Core/defined.js";
 import CesiumMath from "../Core/Math.js";
-
-// ═══════════════════════════════════════════════════════════
-// LIGHT TYPE ENUM
-// ═══════════════════════════════════════════════════════════
 
 /**
  * The type of a light source. Maps to the `lightType` field in WGSL shaders.
@@ -53,9 +26,9 @@ const LightType = Object.freeze({
   /** Cone-shaped light (e.g., flashlight). */
   SPOT: 2,
   /**
-   * Rectangular analytic area light (LTC — WebGPU only, C6-LTC-AREA-LIGHTS).
-   * Add-only enum value; the legacy 8-light uniform {@link LightCollection#pack}
-   * skips area lights so the punctual path is untouched.
+   * Rectangular analytic area light evaluated with LTC by WebGPU Model PBR.
+   * {@link LightCollection#pack} skips area lights because the punctual
+   * uniform layout does not accept this record type.
    */
   RECT_AREA: 3,
   /** Elliptical/disk analytic area light (LTC — WebGPU only). */
@@ -63,10 +36,6 @@ const LightType = Object.freeze({
 });
 
 export { LightType };
-
-// ═══════════════════════════════════════════════════════════
-// LIGHT BASE CLASS
-// ═══════════════════════════════════════════════════════════
 
 /**
  * Base class for all light types in CesiumJS.
@@ -114,10 +83,6 @@ export class Light {
   }
 }
 
-// ═══════════════════════════════════════════════════════════
-// DIRECTIONAL LIGHT
-// ═══════════════════════════════════════════════════════════
-
 /**
  * A directional light source (e.g., sun, moon).
  * Emits parallel rays from a direction — no position or attenuation.
@@ -156,10 +121,6 @@ export class DirectionalLight extends Light {
     Cartesian3.normalize(this.direction, this.direction);
   }
 }
-
-// ═══════════════════════════════════════════════════════════
-// POINT LIGHT
-// ═══════════════════════════════════════════════════════════
 
 /**
  * A point light source (e.g., light bulb, street lamp).
@@ -234,10 +195,6 @@ export class PointLight extends Light {
     this.quadraticAttenuation = opts.quadraticAttenuation ?? 0.032;
   }
 }
-
-// ═══════════════════════════════════════════════════════════
-// SPOT LIGHT
-// ═══════════════════════════════════════════════════════════
 
 /**
  * A spot light source (e.g., flashlight, headlight).
@@ -318,25 +275,20 @@ export class SpotLight extends Light {
   }
 }
 
-// ═══════════════════════════════════════════════════════════
-// AREA LIGHTS (LTC — WebGPU only, C6-LTC-AREA-LIGHTS)
-// ═══════════════════════════════════════════════════════════
-
 /**
  * A rectangular analytic area light shaded with Linearly Transformed
- * Cosines (Heitz et al., SIGGRAPH 2016). Emits from a finite rectangle —
- * building windows, signage panels, softbox-style fills — with correct
- * soft shadow-free falloff and NO shadow map.
+ * Cosines (Heitz et al., SIGGRAPH 2016). The finite emitter produces smooth
+ * angular falloff without allocating or sampling a shadow map.
  *
- * WebGPU-only enhancement (opt-in, default-off): a scene renders
- * byte-identically until a `RectAreaLight` is added AND
- * `scene.clusteredLightingEnabled` is true. On the WebGL backend area
- * lights are ignored (documented no-op — see DEFERRED_WORK).
+ * The WebGPU Model PBR path evaluates area lights when clustered lighting is
+ * enabled; clustered lighting is disabled by default. WebGPU lit primitives and
+ * WebGL renderers ignore area lights. With no active area lights, the fragment
+ * shader returns before reading the LTC texture or area-light buffer.
  *
  * The rectangle is centered at `position`, faces `direction` (its normal),
  * with `up` giving the local +Y (height) axis; the +X (width) axis is
  * `cross(direction, up)`. `width`/`height` are the full edge lengths in
- * meters. `intensity` is emitter radiance (nits-like) — there is NO
+ * meters. `intensity` is emitter radiance (nits-like); there is no
  * inverse-square attenuation; falloff emerges from the shrinking solid
  * angle, matching the LTC radiometry.
  *
@@ -372,7 +324,7 @@ export class RectAreaLight extends Light {
   /**
    * Cull radius in meters. Fragments farther than this from the emitter
    * center are skipped (0 = never cull). Purely an optimization — does
-   * NOT attenuate intensity.
+   * not attenuate intensity.
    * @default 0.0
    */
   range: number;
@@ -412,8 +364,8 @@ export class RectAreaLight extends Light {
 
 /**
  * An elliptical (disk) analytic area light shaded with Linearly
- * Transformed Cosines. Same radiometry and opt-in/default-off semantics
- * as {@link RectAreaLight}; the emitter is an ellipse of radii
+ * Transformed Cosines. It uses the same backend and feature gate as
+ * {@link RectAreaLight}; the emitter is an ellipse of radii
  * `radiusX` (along cross(direction, up)) and `radiusY` (along up).
  * A circular disk uses `radiusX === radiusY`.
  *
@@ -474,10 +426,6 @@ export class DiskAreaLight extends Light {
     this.range = opts.range ?? 0.0;
   }
 }
-
-// ═══════════════════════════════════════════════════════════
-// LIGHT COLLECTION
-// ═══════════════════════════════════════════════════════════
 
 /** Maximum number of lights supported in the uniform buffer. */
 const MAX_LIGHTS = 8;
@@ -593,18 +541,16 @@ export class LightCollection {
    *
    * Total: 4 + MAX_LIGHTS * 20 = 164 floats = 656 bytes
    *
-   * Audit re-review (Batch 134) -- bumped per-light record from 16
-   * to 20 floats so spot lights can carry their forward direction in
-   * a vec3-aligned slot (offset 16). Pre-Batch-134 spots had no
-   * direction slot and the WGSL cone gate fell back to point
-   * falloff.
+   * A spot light's forward direction occupies floats 16..18 so the `vec3` is
+   * aligned to a 16-byte WGSL uniform slot. The cone attenuation reads this
+   * direction separately from the position at floats 0..2.
    *
    * @param result - Optional pre-allocated Float32Array
    * @returns Packed light data
    */
   pack(result?: Float32Array): Float32Array {
     const headerSize = 4; // lightCount + 3 padding
-    const lightsPerSlot = 20; // floats per light (Batch 134)
+    const lightsPerSlot = 20; // floats per light
     const totalSize = headerSize + MAX_LIGHTS * lightsPerSlot;
 
     if (!defined(result) || result!.length < totalSize) {
@@ -619,10 +565,9 @@ export class LightCollection {
       if (!light.enabled) {
         continue;
       }
-      // Area lights (RECT_AREA/DISK_AREA) are shaded analytically via the
-      // separate LTC area-light path (WebGPU clustered dispatcher), NOT
-      // this legacy punctual uniform buffer. Skip them so the punctual
-      // path stays byte-identical.
+      // Area lights use the clustered dispatcher's analytic storage path. Skip
+      // them so the header counts only record types accepted by the punctual
+      // uniform shader.
       if (light instanceof RectAreaLight || light instanceof DiskAreaLight) {
         continue;
       }
@@ -665,12 +610,8 @@ export class LightCollection {
         const sl = light as SpotLight;
         result![offset + 12] = sl.innerConeAngle;
         result![offset + 13] = sl.outerConeAngle;
-        // Audit re-review (Batch 134) -- spotDirection at offset
-        // 16-18 (vec3-aligned slot per WGSL uniform layout). Previous
-        // 16-float record had only two `_pad` slots at 14/15 -- not
-        // enough for a vec3 -- so the WGSL cone gate fell back to
-        // point falloff. Direction is normalized at construction
-        // time, so just copy.
+        // The WGSL `vec3` slot begins at float 16. Construction normalizes the
+        // direction before it is copied into floats 16..18.
         result![offset + 16] = sl.direction.x;
         result![offset + 17] = sl.direction.y;
         result![offset + 18] = sl.direction.z;

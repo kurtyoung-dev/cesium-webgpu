@@ -1,62 +1,29 @@
 /// <reference types="@webgpu/types" />
 /**
- * WebGPUClusterBoundsRenderer — Slice 5d Batch 137c.
+ * Computes eye-space AABBs for a 16×9×24 Forward+ cluster grid.
  *
- * NEW-GBUFFER-CONSUMER-CLUSTERED-LIGHTING step 3 (cluster bounds
- * compute pass). Owns a per-device pipeline + per-context resources
- * (uniform buffer + storage buffer) for the 16×9×24 Forward+ cluster
- * grid. Dispatches the `ClusterBounds.wgsl` compute shader to populate
- * eye-space AABBs for every cluster.
+ * Each dispatcher owns the uniform and storage buffers, while the stateless
+ * pipeline and bind-group layout are cached per device. Bounds depend on the
+ * viewport, near and far planes, and inverse projection. They are invariant
+ * under camera position and orientation, so unchanged inputs skip the compute
+ * pass.
  *
- * # When to dispatch
+ * The scene supplies one near/far pair spanning its outermost visible frustum.
+ * The resulting grid covers the full visible depth range rather than being
+ * rebuilt for each multi-frustum slice.
  *
- * Cluster bounds depend on `(viewport, frustum.near, frustum.far,
- * projection)`. They DO NOT depend on camera position or orientation
- * — eye-space cluster geometry is invariant under camera motion. So
- * the dispatcher caches the (viewport, near, far, projection) tuple
- * and skips re-dispatch when nothing relevant changed.
- *
- * Typical Cesium scene → re-dispatch happens at most:
- *   - Once on first frame
- *   - Each viewport resize
- *   - Each FOV change (rare — only on programmatic camera changes)
- *   - Each near/far update (frequent — multi-frustum splits land here)
- *
- * Multi-frustum poses an interesting case: each frustum slice has its
- * own (near, far) so the cluster grid would need to be re-bound per
- * slice. Today the renderer only ever runs one set of bounds at a
- * time — caller (step 5, the FS consumer) is responsible for
- * coordinating per-frustum re-dispatch if it needs to. This file just
- * makes the operation cheap when the inputs haven't changed.
- *
- * # Storage buffer layout
- *
- * `array<ClusterAABB, 3456>` where `ClusterAABB = { min: vec4<f32>,
- * max: vec4<f32> }` — 32 bytes per cluster × 3456 = 110592 bytes
- * (≈108 KiB). Well within the storage-buffer-binding limit (default
- * 128 MiB).
- *
- * Layout matches the WGSL struct exactly (vec4 alignment 16 bytes,
- * struct alignment 16 bytes). Consumers index by
- * `i = tileX + tileY*16 + sliceZ*16*9`.
- *
- * # Not yet wired
- *
- * This module is self-contained. Nothing in the rest of the renderer
- * calls into it as of Batch 137c — Batch 137d will hook it into the
- * per-frame render loop (gated on clustered-lighting being active)
- * and Batch 137e will bind the storage buffer to the Forward+ FS
- * consumer. Standalone construction + dispatch is testable via
- * `Tools/visual-regression/probe-cluster-bounds.mjs`.
+ * The output is `array<ClusterAABB, 3456>`. Each pair of aligned `vec4<f32>`
+ * values occupies 32 bytes, for a 110592-byte buffer, well below the default
+ * 128 MiB storage-binding limit. Consumers index it with
+ * `tileX + tileY * 16 + sliceZ * 16 * 9`.
  *
  * @module WebGPUClusterBoundsRenderer
  */
 
 import ClusterBoundsShader from "../../Shaders/WebGPU/Compute/ClusterBounds.js";
 
-// Grid constants — must match ClusterBounds.wgsl. Exposed for the
-// step 4 dispatcher (light-to-cluster assignment) so it can size its
-// own per-cluster light-count buffer to the same total.
+// Grid constants must match `ClusterBounds.wgsl`. The assignment renderer uses
+// the exported total to size its per-cluster output buffers.
 export const CLUSTER_TILE_COUNT_X = 16;
 export const CLUSTER_TILE_COUNT_Y = 9;
 export const CLUSTER_SLICE_COUNT_Z = 24;
@@ -137,13 +104,8 @@ function getPipelineCache(device: GPUDevice): ClusterBoundsPipelineCache {
 }
 
 /**
- * Per-renderer resources: the uniform buffer (cluster grid + frustum
- * config), the storage buffer (per-cluster AABBs), the bind group,
- * and the cached input tuple used for dirty tracking.
- *
- * One instance per scene. Held by the renderer (Batch 137d will own
- * it on `WebGPUSceneRenderer` or similar); a fresh probe just
- * constructs one and calls `dispatch()` directly.
+ * Per-dispatcher resources for cluster configuration, AABB output, and the
+ * cached input tuple used to skip redundant dispatches.
  */
 export class WebGPUClusterBoundsRenderer {
   private readonly _device: GPUDevice;
@@ -158,12 +120,9 @@ export class WebGPUClusterBoundsRenderer {
   private _cachedViewportH: number = -1;
   private _cachedNear: number = -1;
   private _cachedFar: number = -1;
-  // 16-float column-major projection matrix; compared element-wise.
-  // Stored as f64 (number[]) not Float32Array — f32 round-trip
-  // would truncate the incoming f64 projection values, and a
-  // subsequent `cached !== input` comparison would always be true
-  // because the f32-truncated cached value never equals its f64
-  // source. Pre-Batch-148 this dirty-tracking always missed.
+  // Keep the column-major projection cache as f64 `number[]` values. A
+  // `Float32Array` would round the input, so strict comparison against the
+  // caller's f64 values would report a change on every frame.
   private _cachedProjection: number[] = new Array(16).fill(0);
   private _firstDispatchDone: boolean = false;
 

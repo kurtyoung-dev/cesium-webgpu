@@ -1,7 +1,4 @@
-// ComputeInstanceRender.wgsl — instanced point rendering for GPU-resident
-// compute-instance collections (NEW-COMPUTE-INSTANCE-SYSTEM; renamed from
-// the Batch-230 OrbitalCatalogRender.wgsl when the orbital catalog was
-// generalized into the feature-agnostic compute-instance system).
+// Renders GPU-resident compute-instance collections as instanced points.
 //
 // Vertex-pulls per-instance position high/low + color + pixelSize from the
 // storage buffer that the composed compute module (ComputeInstanceScaffold
@@ -16,16 +13,16 @@
 // pattern), then projected with `mvpRelativeToEye`. Never materializes an
 // absolute world-space position in f32.
 //
-// `previousViewProjection` rides at the CameraUniforms tail per the DP-H41
-// (Batch 27) struct contract. TAA motion vectors (Batch 235): the renderer
-// ping-pongs two instance-record buffers — the kernel writes the CURRENT
-// buffer each frame and last frame's output buffer binds as `prevInstances`
-// (@binding(2), statically used only by the velocity entry points below, so
-// the color pipeline's two-entry bind group layout is unaffected). The
-// velocity pass rasterizes at the current position and outputs the NDC
-// delta into the rg16float velocity target (cloud/point/billboard pattern).
+// `previousViewProjection` occupies the CameraUniforms tail. For TAA motion
+// vectors, the renderer ping-pongs two instance-record buffers: the kernel
+// writes the current buffer each frame and last frame's output buffer binds as
+// `prevInstances` at @binding(3). Only the velocity entry points reference
+// that binding, so the color pipeline's two-entry bind group layout is
+// unaffected. The velocity pass rasterizes at the current position and outputs
+// the NDC delta into the rg16float velocity target (cloud/point/billboard
+// pattern).
 
-// MUST match `CsmInstanceRecord` in ComputeInstanceScaffold.wgsl
+// Must match `CsmInstanceRecord` in ComputeInstanceScaffold.wgsl
 // (64 bytes: vec3+pad, vec3+pad, vec4, f32+12 pad).
 struct InstanceRecord {
   positionHigh: vec3<f32>,
@@ -37,16 +34,15 @@ struct InstanceRecord {
 struct CameraUniforms {
   mvpRelativeToEye: mat4x4<f32>,         // bytes 0-63
   viewportSize: vec2<f32>,               // bytes 64-71
-  // Renderer-wide log depth (NEW-COLLECTIONS-LOG-DEPTH) — formerly `_padA`
-  // + `_pad0`; carry the encode frustum (near, far) + the factor
-  // (oneOverLog2FarDepthFromNearPlusOne). Packed unconditionally; only
-  // `//>>ifdef LOG_DEPTH` blocks read them. See WebGPULogDepth.ts.
+  // Log-depth encode frustum (near, far) and factor
+  // (oneOverLog2FarDepthFromNearPlusOne). Packed unconditionally; only the
+  // preprocessor-controlled log-depth paths read these fields.
   logDepthNearFar: vec2<f32>,            // bytes 72-79
   encodedCameraHigh: vec3<f32>,          // bytes 80-91 (+4 pad)
   logDepthFactor: f32,
   encodedCameraLow: vec3<f32>,           // bytes 96-107 (+4 pad)
   _pad1: f32,
-  // DP-H41 (Batch 27) — previous frame's viewProjection at the tail.
+  // Previous frame's view-projection matrix occupies the layout tail.
   previousViewProjection: mat4x4<f32>,   // bytes 112-175
 };
 
@@ -123,7 +119,7 @@ fn vertexMain(
 struct FragOutput {
   @location(0) color: vec4<f32>,
   //>>ifdef LOG_DEPTH
-  // Written for the depth TEST as well (frag_depth replaces rasterized z),
+  // Written for the depth test as well (frag_depth replaces rasterized z),
   // so dots test correctly against the globe's log depth at orbital range.
   @builtin(frag_depth) depth: f32,
   //>>endif
@@ -145,11 +141,10 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
   return out;
 }
 
-// ── GPU picking entry points (NEW-ORBITAL-GPU-PICKING) ──────────────────
 // Per-instance pick color, RGB-packed pick id in [0,1] (CPU-allocated via
 // context.createPickId, one id per instance index, uploaded to its own
-// storage buffer). Bound ONLY by the pick pipeline's two-entry bind group
-// (@binding(0) camera, @binding(1) instances, @binding(2) HERE); the color
+// storage buffer). Bound only by the pick pipeline's three-entry bind group
+// (@binding(0) camera, @binding(1) instances, @binding(2) here); the color
 // and velocity pipelines never statically reference this binding, so their
 // own bind group layouts are unaffected. The pick pass rasterizes the same
 // instanced quads as the color pass and writes the pick color byte-exact
@@ -221,13 +216,9 @@ fn fragmentPickMain(input: PickVertexOutput) -> PickFragOutput {
     discard;
   }
   var out: PickFragOutput;
-  // Pick color must reach the FBO BYTE-EXACT (RGBA) — no blend on the pick
-  // pipeline. The pick id is Color.fromRgba(key) packed little-endian across
-  // ALL FOUR channels (red=key&0xff, …, ALPHA=(key>>24)&0xff), and the
-  // readback decode reconstructs the key from all four bytes. Forcing alpha
-  // to 1.0 here would pack 0xff into the high key byte and the decoded key
-  // would miss every registered id (all keys < 2^24 have alpha 0). So write
-  // the pick color verbatim, including its (typically 0) alpha.
+  // Write the pick color without blending or alpha replacement. Pick ids pack
+  // the 32-bit key little-endian across RGBA; replacing the usually-zero alpha
+  // with 1.0 changes the high byte to 0xff and prevents lookup.
   out.color = input.pickColor;
   //>>ifdef LOG_DEPTH
   out.depth = csm_writeLogDepth(input.v_logDepth, camera.logDepthFactor);
@@ -235,8 +226,7 @@ fn fragmentPickMain(input: PickVertexOutput) -> PickFragOutput {
   return out;
 }
 
-// ── TAA velocity entry points (Batch 235) ──────────────────────────────
-// Previous frame's instance records — the OTHER half of the renderer's
+// Previous frame's instance records are the other half of the renderer's
 // ping-pong pair (last frame's kernel output buffer). Bound only by the
 // velocity pipeline's three-entry bind group; the color pipeline never
 // statically references this binding.
@@ -279,7 +269,7 @@ fn vertexVelocityMain(
   let prevWorld = vec4<f32>(prev.positionHigh + prev.positionLow, 1.0);
   let prevCenterClip = camera.previousViewProjection * prevWorld;
 
-  // Rasterize at the CURRENT-frame position so the velocity texture
+  // Rasterize at the current-frame position so the velocity texture
   // covers the same pixels the color pass touched (same quad expansion
   // as vertexMain).
   let size = max(inst.pixelSize, 1.0);

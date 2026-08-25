@@ -1,63 +1,40 @@
-// ClusteredLighting.wgsl — Forward+ FS consumer chunk.
+// Forward+ clustered-lighting fragment chunk.
 //
-// Slice 5d Batch 149, NEW-GBUFFER-CONSUMER-CLUSTERED-LIGHTING step 5.
+// Declares the effects-group resources, record layouts, cluster lookup, and
+// punctual and area-light evaluation used by consuming fragment shaders. The
+// cluster-bounds and cluster-assignment compute passes populate the storage
+// resources before consumer draws.
 //
-// Declares the bind group + structs + helpers a fragment shader needs
-// to read the per-cluster light data produced by ClusterBounds (Batch
-// 147) + ClusterAssign (Batch 148) compute passes, and evaluate the
-// per-light diffuse + specular contribution.
+// Supported Windows D3D12 and Vulkan devices expose four bind groups, so these
+// resources share the existing effects group. `__CL_GROUP__` is replaced with
+// the consuming pipeline's effects-group index before this chunk is prepended.
+// Model PBR uses group 3; primitive lit materials use group 2 or 3 depending on
+// whether a texture group is present.
 //
-// # Bind group convention — group 3 (effects) bindings 18..22
+// Effects bindings:
+//   18  punctual-light records
+//   19  cluster AABBs available to diagnostic consumers
+//   20  per-cluster light counts
+//   21  per-cluster light indices
+//   22  viewport, frustum planes, and active counts
+//   23  LTC lookup texture
+//   25  area-light records
 //
-// Originally drafted to land at `@group(4)` (the first slot after
-// the existing Camera / Material / Instance / Effects groups used
-// by Model PBR). That approach was reverted in Batch 152 after
-// `Tools/visual-regression/probe-device-limits.mjs` confirmed
-// Chromium-on-Windows caps `maxBindGroups` at 4 (both D3D12 +
-// Vulkan backends). Batch 153 folded the 5 bindings into the
-// existing group 3 (effects) BGL at bindings 18..22:
+// Binding 24 is unused because LTC sampling uses `textureLoad` and manual
+// bilinear interpolation without a sampler. The matching layout entries live
+// in `WebGPUClusteredLightingBGL.ts`.
 //
-//   @group(3) @binding(18) clusterLights         : storage<read>
-//   @group(3) @binding(19) clusterAABBs          : storage<read>  (debug)
-//   @group(3) @binding(20) perClusterLightCount  : storage<read>
-//   @group(3) @binding(21) perClusterLightIndices: storage<read>
-//   @group(3) @binding(22) clusterParams         : uniform
-//
-// The binding numbers live in
-// `WebGPUClusteredLightingBGL.ts → CLUSTERED_LIGHTING_EFFECTS_BINDING_ENTRIES`
-// (consumed by `WebGPUEffectsBindGroup.js` when building the BGL +
-// the active / placeholder bind groups). The chunk-marker pattern
-// matches Batch 165's csm_samplePointShadow pattern.
-//
-// # Cluster lookup math
-//
-// Each fragment computes its cluster index from screen position +
-// linearized depth:
+// Each fragment derives its cluster from screen position and logarithmic
+// eye-space depth:
 //   tileX  = floor(fragCoord.x / tileSizeX)
 //   tileY  = floor(fragCoord.y / tileSizeY)
 //   sliceZ = clampedLogDepth(viewZ, near, far)
 //   index  = tileX + tileY * 16 + sliceZ * 16 * 9
 //
-// Then iterates `perClusterLightCount[index]` lights via
-// `perClusterLightIndices[index * 256 + k]`.
-//
-// # Lighting model
-//
-// Cook-Torrance specular + Lambert diffuse — same shape as the Model
-// PBR's existing single-sun path so the additive contribution
-// composites cleanly with the sun.
-//
-// # Usage in a consuming shader
-//
-//   // @chunk structs/ClusteredLighting
-//   // ... rest of shader ...
-//   let clusterContribution = evalClusteredLights(
-//     positionEC, normalEC, viewDir, F0, roughness, baseColor,
-//   );
-//   finalColor = finalColor + clusterContribution;
-//
-// The chunk-marker pattern matches Batch 165's csm_samplePointShadow
-// pattern.
+// The fragment then traverses `perClusterLightCount[index]` entries through
+// `perClusterLightIndices[index * 256 + k]`. Punctual lights use Lambert
+// diffuse and Cook-Torrance specular so their additive contribution matches the
+// Model PBR direct-lighting shape.
 
 // Grid constants — must match WebGPUClusterBoundsRenderer.ts.
 const CL_TILE_COUNT_X: u32 = 16u;
@@ -91,28 +68,21 @@ struct ClusteredAABB {
 struct ClusteredParams {
   // .xy = viewport (width, height), .zw = (near, far)
   viewportAndPlanes: vec4<f32>,
-  // .x = clustered punctual light count (Batch 149 gate).
-  // .y = LTC analytic area-light count (C6-LTC-AREA-LIGHTS gate — was
-  //      documented-unused; carries areaLightCount now). .zw = unused.
-  // Kept here so consumers can early-out when no lights are active
-  // without reading perClusterLightCount / areaLights.
+  // `.x` is the punctual-light count, `.y` is the area-light count, and
+  // `.zw` are reserved. Consumers gate storage and texture reads on the counts.
   activeLightCount: vec4<f32>,
 };
 
-// ── C6-LTC-AREA-LIGHTS: analytic area lights (LTC) ──
+// Rectangular and disk area lights use linearly transformed cosines. The
+// `rgba16float` array texture contains inverse-matrix terms in layer 0 and
+// magnitude, Fresnel, and sphere terms in layer 1. A zero area-light count
+// returns before reading the LUT or storage buffer.
 //
-// Linearly-Transformed-Cosines rect/disk area lights, shaded with the
-// two 64x64 LUTs uploaded as a rgba16float texture_2d_array (layer 0 =
-// M^-1 terms, layer 1 = magnitude/Fresnel/horizon-sphere). WebGPU-only,
-// opt-in: `areaLights` is empty and activeLightCount.y = 0 by default,
-// so `evalLTCAreaLights` early-outs to vec3(0) and the whole path is a
-// single uniform compare when no area light exists.
-//
-// Method: Heitz, Dupuy, Hill, Neubelt — "Real-Time Polygonal-Light
-// Shading with Linearly Transformed Cosines", ACM TOG (Proc. SIGGRAPH
-// 2016) 35(4). LUTs + edge/cubic math derived from the authors'
-// reference implementation (github.com/selfshadow/ltc_code, permissive
-// BSD-style license — see fork LICENSE.md).
+// Reference: Heitz, Dupuy, Hill, and Neubelt, "Real-Time Polygonal-Light
+// Shading with Linearly Transformed Cosines," ACM TOG 35(4), 2016. The LUTs
+// and edge and cubic routines are adapted from the authors' reference
+// implementation at https://github.com/selfshadow/ltc_code; its BSD-style
+// license is reproduced in LICENSE.md.
 
 const LTC_LUT_SIZE_F: f32 = 64.0;
 const LTC_LUT_SCALE: f32 = 63.0 / 64.0;
@@ -129,36 +99,27 @@ struct LTCAreaLight {
   axisXEC: vec4<f32>,           // .xyz half-width vector (eye-space), .w = halfW
   axisYEC: vec4<f32>,           // .xyz half-height vector, .w = halfH
   paramsA: vec4<f32>,           // .x = twoSided, .y = cullRadius, .zw reserved
-  paramsB: vec4<f32>,           // reserved (textured-emitter follow-up)
+  paramsB: vec4<f32>,           // reserved
 };
 
-// NOTE: the group index is the literal token `__CL_GROUP__`, substituted
-// by the JS prepend site to match wherever the effects bind group landed
-// for the consuming pipeline. Model PBR always has effects at group 3;
-// primitive Mat*Lit shaders have it at group 2 (no texture group) or
-// group 3 (texture group occupies group 2). Bindings 18..22 are the
-// clustered-lighting slots on the shared effects BGL
-// (`CLUSTERED_LIGHTING_EFFECTS_BINDING_ENTRIES` in
-// `WebGPUClusteredLightingBGL.ts`). This file is a chunk — never compiled
-// standalone — so the non-numeric token is fine until substitution.
+// This source is never compiled alone. The prepend site replaces
+// `__CL_GROUP__` with the consuming pipeline's effects-group index before
+// shader-module creation.
 @group(__CL_GROUP__) @binding(18) var<storage, read> clusterLights: array<ClusteredLight>;
 @group(__CL_GROUP__) @binding(19) var<storage, read> clusterAABBs: array<ClusteredAABB>;
 @group(__CL_GROUP__) @binding(20) var<storage, read> perClusterLightCount: array<u32>;
 @group(__CL_GROUP__) @binding(21) var<storage, read> perClusterLightIndices: array<u32>;
 @group(__CL_GROUP__) @binding(22) var<uniform> clusterParams: ClusteredParams;
-// C6-LTC-AREA-LIGHTS — LUT array texture + area-light list. No dedicated
-// sampler: the Model PBR fragment stage is already at the 16-sampler
-// limit, so the LUT is read with `textureLoad` + manual bilinear
-// (ltcSampleLUT) — equivalent to a linear/clamp sampler, zero sampler cost.
+// The Model PBR fragment stage already consumes 16 samplers, so the LTC LUT
+// uses `textureLoad` and manual bilinear interpolation instead of a sampler.
 @group(__CL_GROUP__) @binding(23) var ltcLUT: texture_2d_array<f32>;
 @group(__CL_GROUP__) @binding(25) var<storage, read> areaLights: array<LTCAreaLight>;
 
 // Compute the cluster index for a fragment.
 //
-// `fragCoord` is the @builtin(position) value in the FS (window-
-// space). `viewZ` is the fragment's eye-space Z (with whatever sign
-// convention the projection uses — we take abs() so the depth
-// distribution math is convention-independent).
+// `fragCoord` is the fragment-stage `@builtin(position)` value in window
+// space. `abs(viewZ)` makes the depth distribution independent of the
+// projection's eye-space Z sign convention.
 fn clusterIndexFor(fragCoord: vec2<f32>, viewZ: f32) -> u32 {
   let viewport = clusterParams.viewportAndPlanes.xy;
   let near = clusterParams.viewportAndPlanes.z;
@@ -190,10 +151,10 @@ fn clusterLightCountAt(fragCoord: vec2<f32>, viewZ: f32) -> u32 {
 }
 
 // Lambert + Cook-Torrance per-light evaluation. Returns the additive
-// RGB contribution from ONE light. Caller iterates with
+// RGB contribution from one light. The caller iterates with
 // clusterLightCountAt + perClusterLightIndices indirection.
 //
-// All inputs in eye-space:
+// All inputs are in eye space:
 //   posEC      : fragment position in eye-space
 //   N          : surface normal (unit length) in eye-space
 //   V          : view direction (unit length) in eye-space — i.e.,
@@ -218,13 +179,12 @@ fn evalSingleClusteredLight(
   var attenuation: f32 = 1.0;
 
   if (lightType == CL_LIGHT_TYPE_DIRECTIONAL) {
-    // posOrDirEC.xyz IS the direction (already normalized at
-    // CPU pack time per the LightTypes.ts contract). Light comes
-    // FROM that direction → L = -dir.
+    // `posOrDirEC.xyz` is the direction, normalized by the CPU packing
+    // contract. Light arrives from that direction, so `L = -dir`.
     L = -light.posOrDirEC.xyz;
   } else {
-    // POINT or SPOT — posOrDirEC.xyz is the world-space position
-    // transformed to eye-space.
+    // Point and spot records contain a world-space position transformed to
+    // eye space.
     let toLight = light.posOrDirEC.xyz - posEC;
     let dist = length(toLight);
     if (dist < 1e-4) {
@@ -249,7 +209,7 @@ fn evalSingleClusteredLight(
     // Spot cone gate.
     if (lightType == CL_LIGHT_TYPE_SPOT) {
       let spotDir = normalize(light.spotDirEC.xyz);
-      // Angle between spot's forward and direction TO the fragment
+      // Angle between the spot's forward axis and direction to the fragment
       // (= -L since L points fragment→light). spot-forward.dot(-L) is
       // cosAngle from the cone axis to the fragment ray.
       let cosAngle = dot(spotDir, -L);
@@ -341,10 +301,6 @@ fn evalClusteredLights(
   return sum;
 }
 
-// ═══════════════════════════════════════════════════════════════════
-// C6-LTC-AREA-LIGHTS — LTC evaluation helpers
-// ═══════════════════════════════════════════════════════════════════
-
 // Fitted rational-polynomial replacement for the analytic edge integral
 // (avoids acos). The 1/(2*pi) normalization is baked into the fit.
 fn ltcIntegrateEdgeVec(v1: vec3<f32>, v2: vec3<f32>) -> vec3<f32> {
@@ -388,8 +344,8 @@ fn ltcSampleLUT(uv: vec2<f32>, layer: i32) -> vec4<f32> {
 }
 
 // Clip the quad to the upper hemisphere (z > 0). Returns the resulting
-// vertex count n ∈ {0,3,4,5}; L is rewritten in place. Direct port of
-// the reference 16-case config table.
+// vertex count n ∈ {0,3,4,5}; L is rewritten in place. The 16-case
+// configuration table is adapted from the cited reference implementation.
 fn ltcClipQuadToHorizon(L: ptr<function, array<vec3<f32>, 5>>) -> u32 {
   var config: i32 = 0;
   if ((*L)[0].z > 0.0) { config += 1; }
@@ -506,8 +462,9 @@ fn ltcEvaluateRect(
 }
 
 // Solve c3 x^3 + c2 x^2 + c1 x + c0 (coeff = vec4(c0,c1,c2,c3)) for the
-// three real roots. Port of the reference SolveCubic (extended
-// Blinn/Peters form). Note WGSL two-arg atan is atan2.
+// three real roots. `SolveCubic` is adapted from the cited reference
+// implementation's extended Blinn/Peters form. WGSL's two-argument `atan` is
+// `atan2`.
 fn ltcSolveCubic(coeffIn: vec4<f32>) -> vec3<f32> {
   var Coefficient = coeffIn;
   let cx = Coefficient.x;
@@ -582,8 +539,9 @@ fn ltcSolveCubic(coeffIn: vec4<f32>) -> vec3<f32> {
 }
 
 // Disk (ellipse) area-light form factor. `points` = 3 corners of the
-// ellipse bounding rect (p0,p1,p2). Port of the reference disk
-// LTC_Evaluate (analytic path; ground-truth MC path omitted).
+// ellipse bounding rect (p0,p1,p2). The analytic path is adapted from the
+// cited reference implementation's disk `LTC_Evaluate`; its Monte Carlo path
+// is not needed here.
 fn ltcEvaluateDisk(
   N: vec3<f32>, V: vec3<f32>, P: vec3<f32>, Minv: mat3x3<f32>,
   p0: vec3<f32>, p1: vec3<f32>, p2: vec3<f32>,
@@ -682,8 +640,9 @@ fn ltcEvaluateDisk(
 }
 
 // Iterate the active LTC area lights and accumulate their contribution.
-// Early-outs to vec3(0) when activeLightCount.y == 0 (default) — the
-// byte-identical opt-in gate. All inputs eye-space.
+// Returns vec3(0) when `activeLightCount.y == 0` before reading area-light
+// resources, leaving the caller's lighting result unchanged. All inputs are in
+// eye space.
 fn evalLTCAreaLights(
   posEC: vec3<f32>,
   N: vec3<f32>,
@@ -697,7 +656,7 @@ fn evalLTCAreaLights(
     return vec3<f32>(0.0);
   }
 
-  // LUT fetch is hoisted OUT of the per-light loop so it runs in uniform
+  // The LUT fetch stays outside the per-light loop so it runs in uniform
   // control flow. UV = (perceptualRoughness, sqrt(1 - NdotV)).
   let ndotv = clamp(dot(N, V), 0.0, 1.0);
   var uv = vec2<f32>(roughness, sqrt(1.0 - ndotv));
@@ -736,8 +695,8 @@ fn evalLTCAreaLights(
     // Corner winding chosen so the polygon's geometric normal equals the
     // packed emitter normal (+direction): a one-sided light emits toward
     // the side it faces. axisX = right = cross(direction, up), axisY = up,
-    // and cross(right, up) = -direction, so we wind as (-x-y, -x+y, +x+y,
-    // +x-y) to flip the geometric normal back to +direction.
+    // and cross(right, up) = -direction. The order (-x-y, -x+y, +x+y,
+    // +x-y) flips the geometric normal back to +direction.
     let corner0 = center - axisX - axisY;
     let corner1 = center - axisX + axisY;
     let corner2 = center + axisX + axisY;

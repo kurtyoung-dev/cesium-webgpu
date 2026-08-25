@@ -17,38 +17,32 @@ import ComputeInstanceWebGLPickVS from "../Shaders/ComputeInstanceWebGLPickVS.js
 import ComputeInstanceWebGLPickFS from "../Shaders/ComputeInstanceWebGLPickFS.js";
 
 /**
- * WebGL2 CPU-kernel fallback renderer for `ComputeInstanceCollection`
- * (NEW-COMPUTE-INSTANCE-WEBGL2-FALLBACK).
+ * WebGL2 CPU-kernel fallback renderer for `ComputeInstanceCollection`.
  *
- * WebGL2 has no compute shaders, so the user's WGSL `kernel` (the thing the
- * WebGPU backend dispatches each frame) cannot run here. This renderer is the
- * non-compute path: each frame it runs the collection's optional JS
- * `cpuKernel` — `(out, index, timeSeconds, params) => void`, writing
+ * WebGL2 has no compute shaders, so the user's WGSL `kernel` cannot run on
+ * this backend. Each frame this renderer synchronously runs the collection's
+ * optional JS `cpuKernel` on the main thread for every instance. The kernel
+ * has the signature `(out, index, timeSeconds, params) => void` and writes
  * `out.position` (a Cartesian3-shaped {x,y,z} in absolute ECEF meters),
- * `out.color` ({red,green,blue,alpha} in [0,1]) and `out.pixelSize` (px) — over
- * every instance on the main thread, RTE-splits each position with the SAME
- * AGI high/low encode the WebGPU scaffold's records reconstruct against
- * (`EncodedCartesian3`), packs the per-instance records into a dynamic vertex
- * buffer, and issues ONE instanced quad draw (`ComputeInstanceWebGLVS/FS`,
+ * `out.color` ({red,green,blue,alpha} in [0,1]) and `out.pixelSize` (px).
+ * The renderer RTE-splits each position with
+ * `EncodedCartesian3`, packs the records into a dynamic vertex buffer, and
+ * issues one instanced quad draw (`ComputeInstanceWebGLVS/FS`,
  * 6 verts × N instances) that mirrors `ComputeInstanceRender.wgsl`'s vertex
- * layout and quad expansion. Positions therefore land on screen at the same
- * place the WebGPU compute leg puts them (within f32 tolerance), and the dots
- * move purely from the per-frame `timeSeconds` scalar.
+ * layout and quad expansion. Matching WGSL and JavaScript kernels therefore
+ * land positions at the same screen location within f32 tolerance.
  *
- * Backend-agnostic seam: this module lives under `Renderer/` (NOT
- * `Renderer/WebGPU/`), so the WebGL `Context` can register it under
+ * This module lives under `Renderer/`, outside `Renderer/WebGPU/`, so the
+ * WebGL `Context` can register it under
  * `FeatureRendererKey.COMPUTE_INSTANCE_COLLECTION`. `ComputeInstanceCollection`
- * reaches it through `context.getFeatureRenderer(...)` exactly like the WebGPU
- * leg — the scene file never imports a backend renderer.
+ * reaches it through `context.getFeatureRenderer(...)` and does not access
+ * WebGPU renderer internals.
  *
- * When the collection has NO `cpuKernel`, this renderer renders nothing (the
- * historical WebGL behavior). The WGSL `kernel` is never interpreted on the
- * CPU — the two kernels share an element layout by the demo's contract, not by
- * the engine transpiling WGSL.
+ * When the collection has no `cpuKernel`, it renders nothing on WebGL2. The
+ * WGSL `kernel` is never interpreted on the CPU; the caller is responsible
+ * for keeping the two kernels' parameter layouts and results consistent.
  *
- * Main-thread is acceptable for v1; a Worker + the now-loadable WASM bridge
- * (createTaskProcessorWorker/transferable) is the tracked enhancement
- * (NEW-COMPUTE-INSTANCE-WEBGL2-WORKER in DEFERRED_WORK.md).
+ * Worker or WebAssembly offload is not implemented.
  *
  * @private
  */
@@ -63,7 +57,7 @@ const FLOATS_PER_RECORD = 11;
 // VB (createQuadVB in WebGPUComputeInstanceRenderer).
 const QUAD = new Float32Array([-1, -1, 1, -1, 1, 1, -1, -1, 1, 1, -1, 1]);
 
-// Attribute 0 MUST be the non-instanced quad corner: WebGL forbids attribute
+// Attribute 0 must be the non-instanced quad corner: WebGL forbids attribute
 // 0 from carrying an instanceDivisor. The four per-instance attributes follow.
 const attributeLocations = {
   quadPos: 0,
@@ -73,9 +67,8 @@ const attributeLocations = {
   pixelSize: 4,
 };
 
-// Pick VAO attribute layout (NEW-COMPUTE-INSTANCE-PICKPOSITION): same as the
-// color layout except `color` is replaced by the per-instance `pickColor` (the
-// instance's pick id). The pick VAO shares the quad buffer + the SAME instance
+// The pick VAO uses the color layout with `color` replaced by the
+// per-instance `pickColor`. It shares the quad buffer and instance
 // buffer for positionHigh/Low/pixelSize, and binds a separate pick-color
 // buffer for the pick id colors.
 const pickAttributeLocations = {
@@ -107,9 +100,8 @@ function getCache(collection) {
       renderState: undefined,
       command: undefined,
       lastInstanceCount: -1,
-      // Pick side (NEW-COMPUTE-INSTANCE-PICKPOSITION) — all lazy; built on the
-      // first pick pass. One createPickId per instance; the colors ride a
-      // per-instance attribute buffer the pick VAO binds.
+      // Pick resources are allocated on the first pick pass. Each instance has
+      // one pick id whose color is stored in a per-instance attribute buffer.
       pickIds: [], // Array<PickId>
       pickIdCount: -1,
       pickInstanceData: undefined, // Float32Array, FLOATS_PER_RECORD * capacity
@@ -169,7 +161,7 @@ function ensureInstanceResources(context, cache, count) {
   cache.instanceData = new Float32Array(capacity * FLOATS_PER_RECORD);
   cache.capacity = capacity;
 
-  // Destroy the old VAO FIRST — it OWNS the old instance buffer
+  // Destroy the old VAO first because it owns the old instance buffer
   // (vertexArrayDestroyable defaults true), so its destroy frees that buffer.
   // Recreating the instance buffer separately first would double-free it.
   cache.vertexArray = cache.vertexArray && cache.vertexArray.destroy();
@@ -239,8 +231,8 @@ function ensureInstanceResources(context, cache, count) {
   destroyPickGpuResources(cache);
 }
 
-// Pick uses a SEPARATE per-instance buffer (its own VertexArray owns it) so the
-// color VAO and pick VAO never both claim the instance buffer (double-free).
+// Picking uses a separate per-instance buffer owned by its VertexArray so the
+// color and pick VAOs never both claim the instance buffer.
 // The layout matches the color record (FLOATS_PER_RECORD) — positionHigh(3) +
 // positionLow(3) + pickColor(4) + pixelSize(1) — so packInstancesPick reuses
 // the same offsets the color shader expects, just with the pick id in the
@@ -326,9 +318,8 @@ function ensurePickShader(context, cache) {
     fragmentShaderSource: ComputeInstanceWebGLPickFS,
     attributeLocations: pickAttributeLocations,
   });
-  // Pick must be byte-exact: opaque, depth-tested, NO alpha blend (blending the
-  // pick color would corrupt the decoded key). Depth write on so a nearer dot
-  // wins the pick over a farther one.
+  // Picking is opaque and depth-tested with blending disabled because blending
+  // would corrupt the decoded key. Depth writes ensure a nearer dot wins.
   cache.pickRenderState = RenderState.fromCache({
     depthTest: { enabled: true, func: WebGLConstants.LEQUAL },
     depthMask: true,
@@ -356,7 +347,7 @@ function packInstances(collection, count, timeSeconds) {
     cpuKernel(out, i, timeSeconds, params);
 
     const o = i * FLOATS_PER_RECORD;
-    // AGI high/low split per component — the SAME encode the WebGPU records
+    // AGI high/low split per component — the same encode the WebGPU records
     // reconstruct against (czm_translateRelativeToEye subtracts the matching
     // encoded camera high/low). This gives the WebGL leg a meaningful low
     // part (better than the WGSL f32 kernel's low=0) while landing the dot at
@@ -383,17 +374,16 @@ function packInstances(collection, count, timeSeconds) {
 /**
  * Per-frame update entry — registered under
  * `FeatureRendererKey.COMPUTE_INSTANCE_COLLECTION` on the WebGL `Context`.
- * `ComputeInstanceCollection.update` derives `_simulationTimeSeconds` (the
- * scene-clock-relative sim time, the SAME source the WebGPU leg uses) BEFORE
- * routing here, so both backends animate from one time source.
+ * `ComputeInstanceCollection.update` derives `_simulationTimeSeconds` from
+ * the scene clock before routing here, so both backends animate from one time
+ * source.
  *
  * @param {ComputeInstanceCollection} collection
  * @param {FrameState} frameState
  * @private
  */
 function updateWebGLComputeInstanceCollection(collection, frameState) {
-  // No CPU kernel → nothing to render on WebGL2 (historical behavior). The
-  // WGSL `kernel` is never run on the CPU.
+  // WebGL2 renders nothing without a CPU kernel; it never runs the WGSL kernel.
   const cpuKernel = collection._cpuKernel;
   if (
     collection.show === false ||
@@ -420,12 +410,11 @@ function updateWebGLComputeInstanceCollection(collection, frameState) {
   const timeSeconds = collection._simulationTimeSeconds ?? 0;
   const boundingSphere = collection.boundingSphere;
 
-  // ── Pick pass (NEW-COMPUTE-INSTANCE-PICKPOSITION) ──
   // One createPickId per instance (the engine's domain-agnostic
   // { collection, instanceIndex, primitive } record — the demo maps index →
   // its object), packed into the pick instance buffer's color slot and
   // rasterized into the pick FBO so scene.pick decodes the instance under the
-  // cursor (the WebGL counterpart of the WebGPU Batch-279 pick path).
+  // cursor.
   if (pickPass) {
     pushWebGLPickCommand(
       context,
@@ -497,7 +486,7 @@ function destroyPickGpuResources(cache) {
   cache.pickCommand = undefined;
 }
 
-// Pack the per-instance PICK records (positionHigh/Low + pickColor + pixelSize)
+// Pack the per-instance pick records (positionHigh/Low + pickColor + pixelSize)
 // into the pick staging array. Reuses packInstances' RTE split + the color
 // kernel's pixelSize; the color slot carries the instance's pick id color.
 function packPickInstances(collection, cache, count, timeSeconds) {
@@ -594,14 +583,11 @@ const scratchPosKernelOut = {
 };
 
 /**
- * Reconstruct a picked instance's WORLD position (absolute ECEF meters) on
- * WebGL2 (NEW-COMPUTE-INSTANCE-PICKPOSITION). Unlike WebGPU — where positions
- * are GPU-resident and must be read back — the WebGL2 fallback computes every
- * position on the CPU each frame via `cpuKernel`. So pickPosition just RE-RUNS
- * the cpuKernel for the picked index at the current simulation time and returns
- * `out.position` directly: synchronous, deterministic, and exactly the value
- * the renderer packed into the instance buffer this frame (the kernel is a pure
- * function of index + time + params). No readback, no stale cache.
+ * Reconstructs a picked instance's world position (absolute ECEF meters) on
+ * WebGL2. Unlike WebGPU, where positions require readback, this path re-runs
+ * `cpuKernel` for the picked index at the current simulation time and returns
+ * `out.position` synchronously. The result matches the rendered position when
+ * the caller's kernel is deterministic for the same index, time, and parameters.
  *
  * @param {ComputeInstanceCollection} collection
  * @param {number} index The zero-based instance index (from scene.pick).
@@ -641,12 +627,11 @@ function destroyWebGLComputeInstanceResources(collection) {
   }
   // The quad buffer is flagged not-vertexArrayDestroyable, so neither VAO
   // destroy takes it; destroy it explicitly after both VAOs. Each VAO owns its
-  // OWN instance buffer (color VAO → instanceBuffer, pick VAO →
+  // own instance buffer (color VAO → instanceBuffer, pick VAO →
   // pickInstanceBuffer), so destroying the VAOs frees those.
   cache.vertexArray = cache.vertexArray && cache.vertexArray.destroy();
-  // Pick side (NEW-COMPUTE-INSTANCE-PICKPOSITION): free the per-instance pick
-  // ids (releases the context pickObjects entries) + the pick VAO/buffer +
-  // pick shader before the shared quad buffer goes.
+  // Free per-instance pick ids, the pick VAO and buffer, and the pick shader
+  // before destroying the shared quad buffer.
   destroyPickIds(cache);
   destroyPickGpuResources(cache);
   cache.pickShaderProgram =

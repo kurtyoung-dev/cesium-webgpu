@@ -1,60 +1,27 @@
 /// <reference types="@webgpu/types" />
 /**
- * WebGPUClusterAssignRenderer — Slice 5d Batch 148.
+ * Assigns eye-space punctual lights to a 16×9×24 Forward+ cluster grid.
  *
- * NEW-GBUFFER-CONSUMER-CLUSTERED-LIGHTING step 4 (light-to-cluster
- * assignment compute pass). Owns:
- *   - Per-device cached compute pipeline + BGL.
- *   - Per-renderer storage buffers for lights + per-cluster outputs.
- *   - CPU-side packing of `LightCollection` entries into the
- *     eye-space layout the compute shader expects.
+ * The renderer owns a per-device compute pipeline, a packed light buffer, and
+ * the per-cluster count and index outputs. The caller supplies the AABB buffer
+ * and eye-space light records. A change to the AABBs invalidates every bin even
+ * when the light checksum is unchanged, so `boundsChanged` bypasses the cache.
  *
- * # When to dispatch
+ * The cache checksum covers the light count and each record's eye-space
+ * position or direction and type. A frame whose lights differ only in color,
+ * intensity, range, attenuation or cone angle therefore hits the cache, and
+ * the freshly packed record is not uploaded until something else invalidates
+ * it.
  *
- * The assignment depends on:
- *   - The light list (positions, types, ranges) — changes when
- *     `scene.lights` is mutated OR when a glTF model with KHR_lights_
- *     punctual loads (`model.lightsFromGltf` changes).
- *   - The view matrix — positions / directions are transformed to
- *     eye-space CPU-side, so any camera motion invalidates the
- *     assignment.
+ * Storage layout:
+ *   - `lights`: 1024 records × 80 bytes = 80 KiB.
+ *   - `perClusterLightCount`: 3456 `u32` values = 13.5 KiB.
+ *   - `perClusterLightIndices`: 3456 × 256 `u32` values = 3.375 MiB.
  *
- * Re-dispatch IS ALSO required when the cluster bounds (Batch 147)
- * change even if the lights + view don't. The per-cluster light
- * assignment reads the eye-space cluster AABBs; when those AABBs are
- * recomputed (viewport resize / FOV change / near-far change) WITHOUT
- * any camera motion, the eye-space light positions are unchanged so
- * the light checksum matches — but the assignment against the *new*
- * bounds is stale. The caller signals this via the `boundsChanged`
- * argument to {@link WebGPUClusterAssignRenderer#dispatch}, which
- * overrides the light-checksum cache hit and forces a re-dispatch
- * (A7.2 fix — Q10 CLUSTERED-ASSIGN-BOUNDS-DIRTY, 2026-07-04). Before
- * this fix, a resize/FOV change with a stationary camera left stale
- * bins.
- *
- * Dirty tracking is via a content hash of (lightCount, lightDataSum,
- * viewMatrixSum) OR-ed with the caller's `boundsChanged` flag.
- * Computed each frame; skipped re-dispatch when both unchanged.
- * Cheap — ~16 + 80*N floats to sum.
- *
- * # Storage buffer layout
- *
- *   - `lights`: array<ClusteredLight, 1024> = 80 KiB.
- *     ClusteredLight (80 B): posOrDirEC(vec4) + colorAndIntensity(vec4)
- *     + rangeAndAtten(vec4) + coneAngles(vec4) + spotDirEC(vec4) = 5 vec4.
- *   - `perClusterLightCount`: array<u32, 3456> = ~13.5 KiB.
- *   - `perClusterLightIndices`: array<u32, 3456 * 256> = ~3.4 MiB.
- *
- * The cap of 256 lights per cluster matches toji's reference; the
- * 1024 scene-wide cap is the renderer's hard ceiling — scenes with
- * more lights need CPU-side spatial culling before dispatch.
- *
- * # Not yet wired
- *
- * Same as Batch 147 — standalone module; Batch 149 (step 137e) wires
- * the storage buffers to the Forward+ FS consumer. Probe in
- * `probe-cluster-assign.mjs` covers standalone dispatch + correctness
- * verification via storage buffer readback.
+ * The renderer clamps the scene-wide list to 1024 lights, so larger lists
+ * require caller-side spatial culling. The 256-light per-cluster cap matches
+ * Brandon Jones's WebGPU clustered-shading reference:
+ * https://github.com/toji/webgpu-clustered-shading.
  *
  * @module WebGPUClusterAssignRenderer
  */
@@ -81,8 +48,8 @@ export const CLUSTER_MAX_LIGHTS_PER_CLUSTER = 256;
 const CLUSTERED_LIGHT_BYTES = 80;
 const CLUSTERED_LIGHT_FLOATS = CLUSTERED_LIGHT_BYTES / 4;
 
-// Storage sizes — exported for downstream allocation (Batch 149 FS
-// consumer will bind these).
+// Exported storage sizes match the compute outputs consumed by fragment
+// pipelines.
 export const CLUSTER_LIGHT_STORAGE_BYTES =
   CLUSTER_MAX_LIGHTS * CLUSTERED_LIGHT_BYTES;
 export const CLUSTER_LIGHT_COUNT_STORAGE_BYTES = CLUSTER_TOTAL_COUNT * 4;
@@ -174,8 +141,7 @@ function getPipelineCache(device: GPUDevice): ClusterAssignPipelineCache {
 }
 
 /**
- * Simple light type enum — must match WGSL constants in
- * ClusterAssign.wgsl AND LightType in LightTypes.ts.
+ * Light type enum shared with `ClusterAssign.wgsl` and `LightTypes.ts`.
  */
 export const enum ClusteredLightType {
   Directional = 0,
@@ -185,9 +151,8 @@ export const enum ClusteredLightType {
 
 /**
  * CPU-side light record handed to {@link WebGPUClusterAssignRenderer
- * #dispatch}. All vectors must already be in EYE space — caller is
- * responsible for transforming the world-space `LightCollection` /
- * `lightsFromGltf` entries through the current view matrix.
+ * #dispatch}. All vectors must already be in eye space; the caller is
+ * responsible for applying the current view transform.
  *
  * Field meanings mirror the WGSL `ClusteredLight` struct one-to-one.
  */
@@ -215,15 +180,15 @@ export class WebGPUClusterAssignRenderer {
   private readonly _uniformBuffer: GPUBuffer;
   private readonly _perClusterCountBuffer: GPUBuffer;
   private readonly _perClusterIndicesBuffer: GPUBuffer;
-  // BindGroup is rebuilt on the first dispatch (we need a
-  // clusterAABBs buffer reference — caller passes it via dispatch()).
+  // The first dispatch supplies the cluster-AABB buffer needed to build this
+  // bind group.
   private _bindGroup: GPUBindGroup | null = null;
   private _lastClusterAABBs: GPUBuffer | null = null;
   // Scratch pack buffer for the per-light record stream.
   private readonly _lightPackBuffer: Float32Array;
   private readonly _uniformData: Uint32Array;
-  // Dirty tracking — content hash of (lightCount, lightPackChecksum)
-  // + viewMatrixChecksum. Re-dispatch only when this changes.
+  // Dirty tracking covers light count, eye-space position or direction, and
+  // light type. Bounds changes bypass this checksum.
   private _lastLightsChecksum: number = NaN;
   private _firstDispatchDone: boolean = false;
 
@@ -258,9 +223,7 @@ export class WebGPUClusterAssignRenderer {
     this._uniformData = new Uint32Array(64); // 256 bytes / 4
   }
 
-  /**
-   * Output handles — bound by the Forward+ FS consumer (Batch 149).
-   */
+  /** Per-cluster output handles consumed by Forward+ fragment shaders. */
   get perClusterLightCountBuffer(): GPUBuffer {
     return this._perClusterCountBuffer;
   }
@@ -274,14 +237,14 @@ export class WebGPUClusterAssignRenderer {
 
   /**
    * Pack the eye-space light defs into the GPU buffer + dispatch
-   * the compute. Idempotent when the packed contents match the
-   * previous dispatch AND the cluster bounds did not change.
+   * the compute. Idempotent when the light checksum matches the
+   * previous dispatch and the cluster bounds did not change.
    *
    * @param boundsChanged When true, the upstream cluster-bounds pass
    *   re-dispatched this frame (viewport / FOV / near-far changed), so
    *   the previous assignment is stale even if the light checksum
    *   matches. Forces a re-dispatch regardless of the light-checksum
-   *   cache. Defaults to false (light/view-only dirty tracking). A7.2.
+   *   cache. Defaults to false.
    * @returns true if a dispatch was issued; false on cache hit.
    */
   dispatch(
@@ -327,17 +290,15 @@ export class WebGPUClusterAssignRenderer {
       data[offset + 17] = sd?.y ?? 0;
       data[offset + 18] = sd?.z ?? 0;
       // [19] pad
-      // Checksum: lightweight sum of position + type. Sufficient for
-      // dirty tracking when callers update via the typical
-      // "world-space pose + view matrix" path.
+      // The cache key covers eye-space position or direction and type. Other
+      // packed fields do not independently invalidate this assignment.
       checksum +=
         (L.posOrDir.x + L.posOrDir.y * 1.31 + L.posOrDir.z * 1.71) * (i + 1) +
         L.type * 100 * (i + 1);
     }
 
-    // Dirty-tracking cache hit? A change in the cluster bounds
-    // (boundsChanged) invalidates the previous assignment even when the
-    // light checksum is unchanged (A7.2 — stationary-camera resize/FOV).
+    // A cluster-bounds change invalidates the previous assignment even when
+    // the light checksum is unchanged.
     if (
       !boundsChanged &&
       this._firstDispatchDone &&
