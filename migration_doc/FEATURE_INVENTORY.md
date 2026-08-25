@@ -1230,6 +1230,7 @@ Explicitly punted, gated on external dependencies, or research-stage. Sourced fr
 - Phase 8 §9.E memory — vertex quantization preservation, texture dedup, selective LOD reduction, half-precision materials, shared sampler/UBO pools, async eviction (Phase-8 §9.E)
 - Phase 8 §9.F threading — tile decode worker audit, traversal-on-worker, parallel multi-viewpoint LOD, cooperative loading (Phase-8 §9.F)
 - Phase 8 §9.G architecture — per-tile bundle cache, tileset hierarchical GPU state, LOD-independent vs LOD-specific data split, tileset readiness contract (Phase-8 §9.G)
+- PNTS decoded-geometry residency — `NEW-PNTS-TYPEDARRAY-RETENTION-RECORD` / FAR-204 (**OPEN DEBT, recorded; owned by the model-geometry residency vertical**) — when `context.requiresVertexTypedArrayRetention === true`, `PntsLoader.makeAttribute` retains the decoded payload on `attribute.typedArray` alongside the compatibility vertex buffer (`Scene/Model/PntsLoader.js:443`, `:708`), so a native-path PNTS can hold the decoded CPU bytes, the compatibility GPU buffer and the native GPU buffer for one payload; custom PNTS attributes follow the same law. This is an ownership and resident-memory finding, not permission to clear the field — 2D projection, picking, metadata, mutation and recovery still read it. Required direction and acceptance are recorded in `DEFERRED_WORK.md` under the same ID.
 
 ### D.3 glTF Models + KHR Extensions
 

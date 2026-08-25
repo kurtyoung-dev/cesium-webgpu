@@ -1837,15 +1837,34 @@ test("the masked !== false discovery has no unclassified leak", () => {
       `${classification.relativePath} classifies ${classification.identifier} to missing gate ${classification.gate}`,
     );
   }
+  const dualLightRelativePath =
+    "packages/engine/Source/Renderer/WebGPU/WebGPUSkyAtmosphereRenderer.js";
+  const dualLightUses = state.conventionUses.filter(
+    (use) =>
+      use.relativePath === dualLightRelativePath &&
+      use.identifier === "enableDualLightAtmosphere",
+  );
   assert.ok(
-    state.conventionUses.some(
-      (use) =>
-        use.relativePath ===
-          "packages/engine/Source/Renderer/WebGPU/WebGPUSkyAtmosphereRenderer.js" &&
-        use.identifier === "enableDualLightAtmosphere" &&
-        use.line === 413,
-    ),
-    "the prescribed discovery must catch WebGPUSkyAtmosphereRenderer.js:413",
+    dualLightUses.length > 0,
+    `the prescribed discovery must catch the enableDualLightAtmosphere convention in ${dualLightRelativePath}`,
+  );
+  // Anchor on the discovered line's TEXT, not on a line number: the previous
+  // literal 413 drifted off its statement and made this anti-vacuity check
+  // assert nothing about the file it names.
+  const dualLightLines = readSource(dualLightRelativePath).split("\n");
+  let dualLightAnchored = 0;
+  for (const use of dualLightUses) {
+    assert.match(
+      dualLightLines[use.line - 1] ?? "",
+      /enableDualLightAtmosphere\s*!==\s*false/,
+      `${dualLightRelativePath}:${use.line} must carry the convention the discovery reports there`,
+    );
+    dualLightAnchored++;
+  }
+  assert.equal(
+    dualLightAnchored,
+    dualLightUses.length,
+    "every discovered enableDualLightAtmosphere hit must be text-anchored",
   );
   assert.doesNotMatch(
     maskCommentsAndStrings("const embedded = `enableTemplateOnly !== false`;"),
