@@ -34,12 +34,23 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import vm from "node:vm";
 
 import {
   BAND_MEAN_CAPTURE_DELTA,
   BAND_MEAN_QUANTIZATION_HALF_STEP,
   CLOUD_SHADOW_BEER_FLOOR,
+  checkEmbeddedDrainClosureIsCanonical,
+  checkEmbeddedLedgerClosureIsCanonical,
+  describeRefreshCostDrainClosure,
   describeRefreshCostLedgerClosure,
+  extractEmbeddedDrainClosure,
+  extractEmbeddedLedgerClosure,
+  REFRESH_COST_DRAIN_CLOSURE_SOURCE,
+  REFRESH_COST_DRAIN_EXPECTATIONS,
+  REFRESH_COST_LEDGER_CLOSURE_BEGIN,
+  REFRESH_COST_LEDGER_CLOSURE_END,
+  REFRESH_COST_LEDGER_CLOSURE_SOURCE,
   REFRESH_COST_LEDGER_EXPECTATIONS,
   DECK_AERIAL_SHARE_CROSS_RUN,
   DECK_TONEMAP_ENTRY_CEILING,
@@ -886,6 +897,12 @@ function freshCostAccounting({
                 timedOut: false,
                 error: null,
               },
+              preDrain: {
+                drained: 1,
+                undrained: 0,
+                abandoned: 0,
+                timedOut: false,
+              },
               drain: {
                 drained: 0,
                 undrained: 0,
@@ -918,6 +935,7 @@ function freshCostAccounting({
               samplesMsByPass: {},
               invalidReason: gpuUnavailableReason,
               queueDrain: null,
+              preDrain: null,
               drain: null,
               results: null,
             },
@@ -2782,6 +2800,198 @@ test("I20 MUTATION an all-zero GPU differential at an undeclared resolution is a
   assert.doesNotMatch(REFRESH_COST_GPU_TIME_PROTOCOL.scopeNote, /LOWER BOUND/);
 });
 
+// D1-D4 exist because the pre-segment drain check refused pair 0 eclipse of the
+// depth-8 run while the drain it refused was published NOWHERE, so the artifact
+// could not say which of its three conditions had fired. The reading that an
+// EMPTY drain was being refused is wrong, and these teeth pin why: an empty
+// drain closes every counter below, so it was already admissible. Relaxing the
+// predicate would have changed nothing and left a real signal unexplained.
+
+test("D1 an empty or successful drain is admissible; a stalled or abandoned one is not", () => {
+  const clean = { drained: 0, undrained: 0, abandoned: 0, timedOut: false };
+
+  // The two CLEAN shapes. "Nothing to drain" and "drained successfully" differ
+  // only in `drained`, which is retained and deliberately not an expectation.
+  assert.equal(describeRefreshCostDrainClosure(clean), "");
+  assert.equal(describeRefreshCostDrainClosure({ ...clean, drained: 12 }), "");
+
+  // The three DIRTY shapes, each naming the counter that distinguishes it.
+  assert.equal(
+    describeRefreshCostDrainClosure({ ...clean, undrained: 2, timedOut: true }),
+    "timedOut=true, undrained=2",
+  );
+  assert.equal(
+    describeRefreshCostDrainClosure({ ...clean, abandoned: 3 }),
+    "abandoned=3",
+  );
+  assert.equal(describeRefreshCostDrainClosure(null), "drain absent");
+
+  // Executed through the real fold, not asserted against source text.
+  const foldWithPreDrain = (preDrain) => {
+    const accounting = setMandatoryPassCostsPerRefresh(
+      costInput(),
+      [1, 2, 3, 4],
+    );
+    const segment = accounting.segments.find(
+      (candidate) => candidate.gpuTime.valid,
+    );
+    assert.ok(segment);
+    segment.gpuTime.preDrain = preDrain;
+    return computeCost(accounting);
+  };
+
+  assert.equal(
+    foldWithPreDrain(clean).valid,
+    true,
+    "an empty drain closes every counter and must remain admissible",
+  );
+  assert.equal(
+    foldWithPreDrain({ ...clean, drained: 12 }).valid,
+    true,
+    "a drain that recovered work must be admissible",
+  );
+
+  const stalled = foldWithPreDrain({
+    ...clean,
+    undrained: 2,
+    timedOut: true,
+  });
+  assert.equal(stalled.valid, false);
+  assert.equal(stalled.msPerRefresh, null);
+  assert.match(
+    stalled.invalidReason,
+    /pre-segment GPU readback drain did not close \(timedOut=true, undrained=2\)/,
+  );
+
+  const abandoned = foldWithPreDrain({ ...clean, abandoned: 3 });
+  assert.equal(abandoned.valid, false);
+  assert.match(
+    abandoned.invalidReason,
+    /pre-segment GPU readback drain did not close \(abandoned=3\)/,
+  );
+
+  // Absent evidence is a FAILURE, not a skip. The shipped depth-8 artifact
+  // retained no pre-segment drain at all, which is the state that made its
+  // refusal impossible to re-derive.
+  const absent = foldWithPreDrain(null);
+  assert.equal(absent.valid, false);
+  assert.match(
+    absent.invalidReason,
+    /pre-segment GPU readback drain did not close \(drain absent\)/,
+  );
+});
+
+test("D2 the measured drain is refused by the same describer, naming its counter", () => {
+  const accounting = setMandatoryPassCostsPerRefresh(costInput(), [1, 2, 3, 4]);
+  const segment = accounting.segments.find(
+    (candidate) => candidate.gpuTime.valid,
+  );
+  assert.ok(segment);
+  segment.gpuTime.drain = {
+    drained: 4,
+    undrained: 1,
+    abandoned: 0,
+    timedOut: false,
+  };
+  const cost = computeCost(accounting);
+  assert.equal(cost.valid, false);
+  assert.match(
+    cost.invalidReason,
+    /measured GPU readback drain did not close \(undrained=1\)/,
+  );
+});
+
+test("D3 the drain check is REACHED, and its table is load-bearing both ways", async () => {
+  const gateSource = fs
+    .readFileSync(
+      path.join(here, "lib", "eclipse-cloud-response-gate.mjs"),
+      "utf8",
+    )
+    .replace(/\r\n/g, "\n");
+
+  const withStalledPreDrain = () => {
+    const accounting = setMandatoryPassCostsPerRefresh(
+      costInput(),
+      [1, 2, 3, 4],
+    );
+    const segment = accounting.segments.find(
+      (candidate) => candidate.gpuTime.valid,
+    );
+    assert.ok(segment);
+    segment.gpuTime.preDrain = {
+      drained: 0,
+      undrained: 2,
+      abandoned: 0,
+      timedOut: true,
+    };
+    return accounting;
+  };
+  assert.equal(computeCost(withStalledPreDrain()).valid, false);
+
+  // INERTNESS MUTANT: leave the code present but make the branch unreachable.
+  // Deleting the check is the easy mutation and a source-shaped tooth would
+  // survive it; this one only passes if the branch actually runs.
+  const guard = 'if (preDrainOffenders !== "") {';
+  assert.equal(gateSource.split(guard).length - 1, 1);
+  const inert = await import(
+    `data:text/javascript;base64,${Buffer.from(
+      gateSource.replace(guard, 'if (false && preDrainOffenders !== "") {'),
+    ).toString("base64")}`
+  );
+  assert.equal(
+    computeCost(withStalledPreDrain(), inert.computeRefreshCost).valid,
+    true,
+    "an inert pre-drain branch must let a stalled drain through — if this still refuses, the tooth is not reaching the branch it claims to test",
+  );
+
+  // ROW MUTANT: dropping a row must remove that counter from the message AND
+  // from the detection, not from only one of the two.
+  const abandonedRow =
+    '  Object.freeze({ counter: "abandoned", closed: 0 }),\n';
+  assert.equal(gateSource.split(abandonedRow).length - 1, 1);
+  const rowless = await import(
+    `data:text/javascript;base64,${Buffer.from(
+      gateSource.replace(abandonedRow, ""),
+    ).toString("base64")}`
+  );
+  assert.equal(
+    rowless.REFRESH_COST_DRAIN_EXPECTATIONS.length,
+    REFRESH_COST_DRAIN_EXPECTATIONS.length - 1,
+  );
+  assert.equal(
+    rowless.describeRefreshCostDrainClosure({
+      drained: 0,
+      undrained: 0,
+      abandoned: 3,
+      timedOut: false,
+    }),
+    "",
+    "dropping the row must drop detection of that counter, not just its name",
+  );
+});
+
+test("D4 the probe embeds the canonical drain describer, and drift is caught", () => {
+  const probe = fs
+    .readFileSync(path.join(here, "probe-eclipse-cloud-response.mjs"), "utf8")
+    .replace(/\r\n/g, "\n");
+  assert.deepEqual(checkEmbeddedDrainClosureIsCanonical(probe), []);
+  assert.equal(
+    extractEmbeddedDrainClosure(probe),
+    REFRESH_COST_DRAIN_CLOSURE_SOURCE,
+  );
+
+  const drifted = probe.replace(
+    "    ({ counter, closed }) => !Object.is(drain[counter], closed),",
+    "    ({ counter, closed }) => !Object.is(drain[counter], closed) && false,",
+  );
+  assert.notEqual(drifted, probe);
+  assert.deepEqual(checkEmbeddedDrainClosureIsCanonical(drifted), [
+    "the embedded drain-closure block has DRIFTED from " +
+      "lib/eclipse-cloud-response-gate.mjs — re-copy it rather than editing " +
+      "the probe's copy",
+  ]);
+});
+
 test("I21 every mandatory pass is summed into each per-refresh GPU figure", () => {
   const accounting = setMandatoryPassCostsPerRefresh(costInput(), [1, 2, 3, 4]);
   const sampledSegment = accounting.segments.find(
@@ -3298,7 +3508,363 @@ test("I32d the probe derives both the ledger check and its message from the shar
   );
   // The hand-written disjunction it replaced must not come back.
   assert.ok(!probe.includes("results.readbackSkipCount !== 0 ||"));
-  assert.ok(probe.includes("describeRefreshCostLedgerClosure,"));
+  // The call site is inside a `page.evaluate` callback, so the describer must
+  // NOT arrive as a Node import — the closure is dropped by the serialization
+  // and the call would raise ReferenceError before any measurement exists.
+  assert.ok(
+    !probe.includes(
+      `  describeRefreshCostLedgerClosure,${String.fromCharCode(10)}`,
+    ),
+    "the probe must not import a symbol it calls inside page.evaluate",
+  );
+  // It reaches the page as the embedded canonical block instead, and that
+  // block is generated from the same twelve-row table, so the single-source
+  // property the rest of this test pins survives the move in-page.
+  assert.deepEqual(checkEmbeddedLedgerClosureIsCanonical(probe), []);
+  assert.equal(
+    extractEmbeddedLedgerClosure(probe),
+    REFRESH_COST_LEDGER_CLOSURE_SOURCE,
+  );
+});
+
+function readEclipseCloudProbeForPageContract() {
+  return fs
+    .readFileSync(path.join(here, "probe-eclipse-cloud-response.mjs"), "utf8")
+    .replace(/\r\n/g, "\n");
+}
+
+function extractShippedPageLedgerClosure(probeSource) {
+  const callbackStart = "const RUN_IBL_SWEEP = async (cfg) => {";
+  const callbackEnd = "\nasync function openPage(";
+  assert.equal(
+    probeSource.split(callbackStart).length - 1,
+    1,
+    "the probe must define exactly one RUN_IBL_SWEEP callback",
+  );
+  assert.ok(
+    probeSource.includes("page.evaluate(RUN_IBL_SWEEP,"),
+    "RUN_IBL_SWEEP must be the callback shipped through page.evaluate",
+  );
+  for (const marker of [
+    REFRESH_COST_LEDGER_CLOSURE_BEGIN,
+    REFRESH_COST_LEDGER_CLOSURE_END,
+  ]) {
+    assert.equal(
+      probeSource.split(marker).length - 1,
+      1,
+      `the probe must contain exactly one ${marker} marker`,
+    );
+  }
+
+  const start = probeSource.indexOf(callbackStart);
+  const end = probeSource.indexOf(callbackEnd, start);
+  assert.ok(
+    end > start,
+    "the RUN_IBL_SWEEP callback must have a bounded source slice",
+  );
+  const embedded = extractEmbeddedLedgerClosure(probeSource.slice(start, end));
+  assert.notEqual(
+    embedded,
+    null,
+    "the probe must ship an extractable ledger-closure block into page scope",
+  );
+  return embedded;
+}
+
+function compilePageLedgerClosureSource(embeddedSource) {
+  const pageGlobal = {};
+  const pageRealm = vm.createContext(pageGlobal);
+  assert.equal(Object.getPrototypeOf(pageGlobal), Object.prototype);
+  assert.deepEqual(
+    Object.keys(pageGlobal),
+    [],
+    "the page realm must start from a bare object",
+  );
+  assert.equal(
+    vm.runInContext("typeof Object", pageRealm),
+    "function",
+    "the isolated context must still be a functioning JavaScript realm",
+  );
+  for (const binding of [
+    "require",
+    "module",
+    "exports",
+    "process",
+    "Buffer",
+    "assert",
+    "fs",
+    "path",
+    "test",
+    "vm",
+    "checkEmbeddedLedgerClosureIsCanonical",
+    "REFRESH_COST_LEDGER_CLOSURE_SOURCE",
+    "REFRESH_COST_LEDGER_EXPECTATIONS",
+    "describeRefreshCostLedgerClosure",
+  ]) {
+    assert.equal(
+      vm.runInContext(`typeof ${binding}`, pageRealm),
+      "undefined",
+      `the bare page realm must not inherit ${binding}`,
+    );
+  }
+
+  const runtime = vm.runInContext(
+    `${embeddedSource}\n({\n` +
+      "  describe:\n" +
+      '    typeof describeRefreshCostLedgerClosure === "function"\n' +
+      "      ? describeRefreshCostLedgerClosure\n" +
+      "      : undefined,\n" +
+      "  expectationCount:\n" +
+      '    typeof REFRESH_COST_LEDGER_EXPECTATIONS === "object"\n' +
+      "      ? REFRESH_COST_LEDGER_EXPECTATIONS.length\n" +
+      "      : null,\n" +
+      "});",
+    pageRealm,
+    {
+      filename: "probe-eclipse-cloud-response.mjs#refresh-cost-ledger-closure",
+    },
+  );
+  assert.equal(
+    typeof runtime.describe,
+    "function",
+    "the probe's embedded ledger describer must become callable in an otherwise bare page realm",
+  );
+  return runtime;
+}
+
+function closedRefreshCostLedger(expectations, frames) {
+  return Object.fromEntries(
+    expectations.map(({ counter, closed }) => [
+      counter,
+      closed === "frames" ? frames : closed,
+    ]),
+  );
+}
+
+function openRefreshCostLedgerValue(closed, frames) {
+  const expected = closed === "frames" ? frames : closed;
+  if (typeof expected === "boolean") {
+    return !expected;
+  }
+  if (typeof expected === "number") {
+    return expected + 1;
+  }
+  return `not-${String(expected)}`;
+}
+
+function assertPageLedgerClosureMatrix(
+  pageDescribe,
+  expectations,
+  nodeDescribe,
+  frames,
+) {
+  const closed = closedRefreshCostLedger(expectations, frames);
+  const pageClosed = pageDescribe(closed, frames);
+  assert.equal(pageClosed, nodeDescribe(closed, frames));
+  assert.equal(
+    pageClosed,
+    "",
+    "an all-closed page ledger must return empty text",
+  );
+
+  const pageAbsent = pageDescribe(42, frames);
+  assert.equal(pageAbsent, nodeDescribe(42, frames));
+  assert.equal(
+    pageAbsent,
+    "results absent",
+    "a non-object page ledger must name the absent results",
+  );
+
+  for (const { counter, closed: closedValue } of expectations) {
+    const broken = openRefreshCostLedgerValue(closedValue, frames);
+    const results = { ...closed, [counter]: broken };
+    const pageReason = pageDescribe(results, frames);
+    assert.equal(
+      pageReason,
+      nodeDescribe(results, frames),
+      `the page describer must match the Node describer for ${counter}`,
+    );
+    assert.equal(
+      pageReason,
+      `${counter}=${String(broken)}`,
+      `${counter} must be named with its value in page scope`,
+    );
+  }
+  return closed;
+}
+
+function assertShippedPageLedgerContract(probeSource) {
+  const runtime = compilePageLedgerClosureSource(
+    extractShippedPageLedgerClosure(probeSource),
+  );
+  const closed = assertPageLedgerClosureMatrix(
+    runtime.describe,
+    REFRESH_COST_LEDGER_EXPECTATIONS,
+    describeRefreshCostLedgerClosure,
+    100,
+  );
+  const canonicalFailures = checkEmbeddedLedgerClosureIsCanonical(probeSource);
+  assert.deepEqual(
+    canonicalFailures,
+    [],
+    canonicalFailures.join("\n") ||
+      "the probe's in-page ledger closure must stay canonical",
+  );
+  return { closed, runtime };
+}
+
+test("I32e the shipped ledger describer runs in a bare page realm and matches every Node reason", () => {
+  const probe = readEclipseCloudProbeForPageContract();
+  const { closed, runtime } = assertShippedPageLedgerContract(probe);
+  assert.equal(
+    runtime.expectationCount,
+    REFRESH_COST_LEDGER_EXPECTATIONS.length,
+  );
+
+  for (const [overrides, expected] of [
+    [
+      { frameCount: 86, readbackSkipCount: 14 },
+      "frameCount=86, readbackSkipCount=14",
+    ],
+    [
+      { frameCount: 63, readbackSkipCount: 37 },
+      "frameCount=63, readbackSkipCount=37",
+    ],
+  ]) {
+    const results = { ...closed, ...overrides };
+    assert.equal(
+      runtime.describe(results, 100),
+      describeRefreshCostLedgerClosure(results, 100),
+    );
+    assert.equal(runtime.describe(results, 100), expected);
+  }
+});
+
+test("I32f an unreachable in-page ledger block turns the page contract red", () => {
+  const probe = readEclipseCloudProbeForPageContract();
+  const begin = `  ${REFRESH_COST_LEDGER_CLOSURE_BEGIN}\n`;
+  const end = `  ${REFRESH_COST_LEDGER_CLOSURE_END}`;
+  assert.equal(probe.split(begin).length - 1, 1);
+  assert.equal(probe.split(end).length - 1, 1);
+  const originalEmbedded = extractShippedPageLedgerClosure(probe);
+  const inertProbe = probe
+    .replace(begin, `${begin}  if (false) {\n`)
+    .replace(end, `  }\n${end}`);
+  assert.notEqual(inertProbe, probe);
+  assert.ok(
+    extractShippedPageLedgerClosure(inertProbe).includes(originalEmbedded),
+    "the inertness mutant must retain the complete shipped block",
+  );
+  assert.throws(
+    () => assertShippedPageLedgerContract(inertProbe),
+    {
+      code: "ERR_ASSERTION",
+      message:
+        /the probe's embedded ledger describer must become callable in an otherwise bare page realm/,
+    },
+    "making the shipped block unreachable must turn the page contract red",
+  );
+});
+
+test("I32g page-table generation binds canonicality, detection, and message", async () => {
+  const probe = readEclipseCloudProbeForPageContract();
+  const readbackExpectation = REFRESH_COST_LEDGER_EXPECTATIONS.find(
+    ({ counter }) => counter === "readbackSkipCount",
+  );
+  assert.deepEqual(readbackExpectation, {
+    counter: "readbackSkipCount",
+    closed: 0,
+  });
+  const pageRow =
+    `    { counter: ${JSON.stringify(readbackExpectation.counter)}, ` +
+    `closed: ${JSON.stringify(readbackExpectation.closed)} },\n`;
+  assert.equal(probe.split(pageRow).length - 1, 1);
+  const rowlessProbe = probe.replace(pageRow, "");
+  assert.equal(rowlessProbe.length, probe.length - pageRow.length);
+  const canonicalDrift =
+    "the embedded ledger-closure block has DRIFTED from " +
+    "lib/eclipse-cloud-response-gate.mjs — re-copy it rather than editing " +
+    "the probe's copy";
+  assert.deepEqual(checkEmbeddedLedgerClosureIsCanonical(rowlessProbe), [
+    canonicalDrift,
+  ]);
+
+  const rowlessRuntime = compilePageLedgerClosureSource(
+    extractShippedPageLedgerClosure(rowlessProbe),
+  );
+  const closed = closedRefreshCostLedger(REFRESH_COST_LEDGER_EXPECTATIONS, 100);
+  assert.equal(
+    rowlessRuntime.describe(
+      { ...closed, frameCount: 86, readbackSkipCount: 14 },
+      100,
+    ),
+    "frameCount=86",
+    "removing one page-table row removes that counter from the message",
+  );
+  assert.equal(
+    rowlessRuntime.describe({ ...closed, readbackSkipCount: 1 }, 100),
+    "",
+    "removing one page-table row also removes detection of that counter",
+  );
+  assert.throws(
+    () => assertShippedPageLedgerContract(rowlessProbe),
+    {
+      code: "ERR_ASSERTION",
+      message:
+        /the page describer must match the Node describer for readbackSkipCount/,
+    },
+    "a one-row shipped-copy drift must turn the full page contract red",
+  );
+
+  const gateSource = fs
+    .readFileSync(
+      path.join(here, "lib", "eclipse-cloud-response-gate.mjs"),
+      "utf8",
+    )
+    .replace(/\r\n/g, "\n");
+  const gateRow =
+    `  Object.freeze({ counter: ${JSON.stringify(readbackExpectation.counter)}, ` +
+    `closed: ${JSON.stringify(readbackExpectation.closed)} }),\n`;
+  assert.equal(gateSource.split(gateRow).length - 1, 1);
+  const mutantModule = await import(
+    `data:text/javascript;base64,${Buffer.from(gateSource.replace(gateRow, "")).toString("base64")}`
+  );
+  assert.equal(
+    mutantModule.REFRESH_COST_LEDGER_EXPECTATIONS.length,
+    REFRESH_COST_LEDGER_EXPECTATIONS.length - 1,
+  );
+  assert.equal(
+    extractEmbeddedLedgerClosure(rowlessProbe),
+    mutantModule.REFRESH_COST_LEDGER_CLOSURE_SOURCE,
+  );
+  assert.deepEqual(
+    mutantModule.checkEmbeddedLedgerClosureIsCanonical(rowlessProbe),
+    [],
+  );
+  assert.equal(
+    rowlessRuntime.expectationCount,
+    mutantModule.REFRESH_COST_LEDGER_EXPECTATIONS.length,
+  );
+  assertPageLedgerClosureMatrix(
+    rowlessRuntime.describe,
+    mutantModule.REFRESH_COST_LEDGER_EXPECTATIONS,
+    mutantModule.describeRefreshCostLedgerClosure,
+    100,
+  );
+  assert.equal(
+    mutantModule.describeRefreshCostLedgerClosure(
+      { ...closed, frameCount: 86, readbackSkipCount: 14 },
+      100,
+    ),
+    "frameCount=86",
+  );
+  assert.equal(
+    mutantModule.describeRefreshCostLedgerClosure(
+      { ...closed, readbackSkipCount: 1 },
+      100,
+    ),
+    "",
+  );
 });
 
 test("I33 every invalid segment in the real ledger shape remains attributed", async () => {

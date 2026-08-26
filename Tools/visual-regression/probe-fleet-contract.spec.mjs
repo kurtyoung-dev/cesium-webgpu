@@ -58,6 +58,7 @@ import {
 } from "./lib/probe-fleet-contract.mjs";
 import { PROBE_CONTRACT_ALLOWLIST } from "./lib/probe-fleet-contract-allowlist.mjs";
 import { PROHIBITED_READER_ALLOWLIST } from "./lib/prohibited-reader-allowlist.mjs";
+import { analyzePageScopeClosures } from "./lib/page-scope-closure.mjs";
 import { analyzeProhibitedReader } from "./lib/prohibited-reader-rule.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -1253,4 +1254,313 @@ test("C19 MUTATION control: a repaired allowlist row turns C15 red", () => {
     PROHIBITED_READER_ALLOWLIST,
   );
   assert.deepEqual(repaired, [donor]);
+});
+
+// ---------------------------------------------------------------------------
+// G. The page-scope closure rule
+//
+// `page.evaluate(fn)` ships `fn.toString()`, not `fn`. A callback that
+// references a Node binding therefore raises `ReferenceError` on the first line
+// that reaches it, and nothing before that line runs. The rule was doctrine in
+// three places and was still violated on 2026-08-24 by
+// `probe-eclipse-cloud-response.mjs`, whose own header comment stated it two
+// thousand lines above the call that broke it. Doctrine did not hold; this does.
+//
+// SCOPE. Probes AND `lib/`, the same population the F4 prohibited-reader rule
+// uses, and for the same stated reason: a shared harness can fan one leak out
+// to every probe that imports it. Callbacks defined in a third module — the
+// `errorGateInit` shape, shipped by roughly seventy probes — are followed
+// through the import and analyzed in THEIR own scope, so widening the directory
+// walk further would buy nothing.
+//
+// COST. Roughly 10-13 s for ~720 files / ~13.6 MB / ~2,400 call sites: pure CPU
+// over source text, no browser, no network, no GPU, and deterministic. It is
+// the most expensive tooth in this file and is worth it — the defect it catches
+// costs a full commissioning run and produces no report at all.
+// ---------------------------------------------------------------------------
+
+const pageScopeFiles = [...probeFiles, ...prohibitedReaderLibraryFiles].sort();
+
+/** Fixtures for the analyzer's own self-test, as text — no filesystem. */
+const PAGE_SCOPE_HELPER = [
+  "export const HELPER_CONST = 7;",
+  "export function initFn() {",
+  "  window.__x = HELPER_CONST;",
+  "}",
+  "export function cleanInit() {",
+  "  window.__y = 1;",
+  "}",
+  "export const SETUP_TEXT = `window.__z = 1;`;",
+  "",
+].join("\n");
+
+const PAGE_SCOPE_FIXTURES = {
+  inline: {
+    leaks: ["OUTER"],
+    source: [
+      "const OUTER = 3;",
+      "const page = {};",
+      "await page.evaluate(() => {",
+      "  return OUTER + 1;",
+      "});",
+      "",
+    ].join("\n"),
+  },
+  byIdentifier: {
+    leaks: ["HELPER_CONST"],
+    source: [
+      'import { HELPER_CONST } from "./helper.mjs";',
+      "const RUN = async () => {",
+      "  const deep = () => HELPER_CONST;",
+      "  return deep();",
+      "};",
+      "const page = {};",
+      "await page.evaluate(RUN, {});",
+      "",
+    ].join("\n"),
+  },
+  acrossImport: {
+    leaks: ["HELPER_CONST"],
+    source: [
+      'import { initFn } from "./helper.mjs";',
+      "const page = {};",
+      "await page.addInitScript(initFn);",
+      "",
+    ].join("\n"),
+  },
+  forwarded: {
+    leaks: ["SCALE"],
+    source: [
+      "const SCALE = 2;",
+      "const page = {};",
+      "const apply = async (fn) => page.evaluate(fn);",
+      "await apply(() => SCALE * 2);",
+      "",
+    ].join("\n"),
+  },
+  enclosingFunction: {
+    leaks: ["local"],
+    source: [
+      "const page = {};",
+      "async function run() {",
+      "  const local = 5;",
+      "  return page.evaluate(() => local + 1);",
+      "}",
+      "await run();",
+      "",
+    ].join("\n"),
+  },
+  // The negative controls. Each of these is a shape a careless detector reports,
+  // and each is CORRECT code: a page alias that is not a page, a self-recursive
+  // named function expression whose name is rebound when the page re-parses it,
+  // an argument passed in rather than closed over, and the prescribed
+  // ship-source-as-TEXT form.
+  clean: {
+    leaks: [],
+    source: [
+      'import { cleanInit, SETUP_TEXT } from "./helper.mjs";',
+      "const page = {};",
+      "const CFG = { a: 1 };",
+      "await page.addInitScript(cleanInit);",
+      "await page.evaluate(SETUP_TEXT);",
+      "await page.evaluate((cfg) => cfg.a, CFG);",
+      "await page.evaluate(function NAMED(n) {",
+      "  return n > 0 ? NAMED(n - 1) : 0;",
+      "}, 3);",
+      "const tideModel = { evaluate: (t) => t };",
+      "tideModel.evaluate(CFG);",
+      "",
+    ].join("\n"),
+  },
+};
+
+const readPageScopeFixtureImport = (specifier) =>
+  specifier === "./helper.mjs" ? PAGE_SCOPE_HELPER : null;
+
+function analyzeFixture(name, analyze) {
+  return analyze(PAGE_SCOPE_FIXTURES[name].source, {
+    path: `${name}.mjs`,
+    readImport: readPageScopeFixtureImport,
+  });
+}
+
+test("G1: the closure analyzer detects every leak shape and no clean shape", () => {
+  for (const [name, fixture] of Object.entries(PAGE_SCOPE_FIXTURES)) {
+    const result = analyzeFixture(name, analyzePageScopeClosures);
+    assert.ok(result.parsed, `${name}: fixture did not parse`);
+    assert.deepEqual(
+      result.findings.map((finding) => finding.name).sort(),
+      [...fixture.leaks].sort(),
+      `${name}: ${JSON.stringify(result.violations)}`,
+    );
+    assert.deepEqual(
+      result.unresolvedCallbacks,
+      [],
+      `${name}: the analyzer stopped understanding a callback`,
+    );
+  }
+});
+
+test("G2: a leak is reported with the binding, its declaration and the call site", () => {
+  const result = analyzeFixture("byIdentifier", analyzePageScopeClosures);
+  assert.equal(result.findings.length, 1);
+  const [finding] = result.findings;
+  assert.equal(finding.name, "HELPER_CONST");
+  assert.equal(finding.line, 3);
+  assert.equal(finding.declaredLine, 1);
+  assert.equal(finding.declaredIn, "module");
+  assert.equal(finding.via, "evaluate->RUN");
+  assert.equal(finding.site, 7);
+  // The message names all three, because a bare "leak" sends the reader back to
+  // the file to find out WHICH binding and WHICH callback.
+  assert.match(result.violations[0], /HELPER_CONST/);
+  assert.match(result.violations[0], /declared at :1/);
+  assert.match(result.violations[0], /evaluate->RUN at :7/);
+});
+
+test("G3: the analyzer fails CLOSED on source it cannot parse", () => {
+  const broken = "const page = {};\nawait page.evaluate(() => { ;";
+  const result = analyzePageScopeClosures(broken, { path: "broken.mjs" });
+  assert.equal(result.parsed, false);
+  assert.equal(result.violations.length, 1);
+  assert.match(result.violations[0], /could not be parsed/);
+});
+
+test("G4: no probe or shared library ships a Node binding into a page", () => {
+  const offenders = [];
+  const unresolved = [];
+  let evalSites = 0;
+  for (const name of pageScopeFiles) {
+    const source = readProhibitedReaderFile(name);
+    const owner = dirname(join(HERE, name));
+    const result = analyzePageScopeClosures(source, {
+      path: `Tools/visual-regression/${name}`,
+      readImport: (specifier) => {
+        const target = resolve(owner, specifier);
+        try {
+          return readFileSync(target, "utf8");
+        } catch {
+          return null;
+        }
+      },
+    });
+    evalSites += result.evalSites;
+    offenders.push(...result.violations);
+    unresolved.push(...result.unresolvedCallbacks);
+  }
+
+  // The canary. If a Playwright rename, a prefilter bug or an analyzer
+  // regression ever made this tooth silent, the call-site count collapses
+  // before the offender list does — a guard that inspects nothing passes
+  // everything, which is the failure this whole rule exists to prevent.
+  assert.ok(
+    evalSites > 1000,
+    `only ${evalSites} page-callback sites found across ${pageScopeFiles.length} files — the analyzer stopped recognising them`,
+  );
+  assert.deepEqual(
+    unresolved,
+    [],
+    `The analyzer could not resolve a callback, so it cannot vouch for it. Make
+the callback a literal function, or ship its source as TEXT.
+Unresolved:\n  ${unresolved.join("\n  ")}`,
+  );
+  assert.deepEqual(
+    offenders,
+    [],
+    `A callback handed to page.evaluate/addInitScript is serialized and its Node
+closure is DROPPED, so each of these raises ReferenceError in the page the first
+time that line runs. Define the helper INSIDE the callback, or ship its source
+as embedded TEXT and pin it with a canonicality check — see
+lib/same-task-capture.mjs for the fleet's form.
+Offenders:\n  ${offenders.join("\n  ")}`,
+  );
+});
+
+/**
+ * Import a mutated copy of the analyzer.
+ *
+ * The module imports `acorn` by bare specifier, and a `data:` URL module has no
+ * package scope to resolve one from, so the specifier is rewritten to the
+ * absolute URL this spec resolves it to. That rewrite is not part of the
+ * mutation — it is what makes the mutant loadable at all.
+ *
+ * @param {(source: string) => string} mutate The mutation to apply.
+ * @returns {Promise<object>} The mutated module.
+ */
+async function importMutatedAnalyzer(mutate) {
+  const source = readFileSync(
+    join(HERE, "lib", "page-scope-closure.mjs"),
+    "utf8",
+  ).replaceAll("\r\n", "\n");
+  const bare = 'from "acorn";';
+  assert.equal(source.split(bare).length - 1, 1);
+  const loadable = source.replace(
+    bare,
+    `from ${JSON.stringify(import.meta.resolve("acorn"))};`,
+  );
+  const mutated = mutate(loadable);
+  assert.notEqual(mutated, loadable, "the mutation did not apply");
+  return import(
+    `data:text/javascript;base64,${Buffer.from(mutated).toString("base64")}`
+  );
+}
+
+test("G5 MUTATION control: an inert leak report turns G1 and G4 blind", async () => {
+  // Make the finding UNREACHABLE rather than deleting it: deletion is the easy
+  // mutation and a text-shaped assertion would survive it.
+  const guard = "      if (!owner || inside.has(owner)) {";
+  const mutant = await importMutatedAnalyzer((source) => {
+    assert.equal(source.split(guard).length - 1, 1);
+    return source.replace(
+      guard,
+      "      if (true || !owner || inside.has(owner)) {",
+    );
+  });
+
+  // Every positive fixture goes silent under the mutant, and the real module
+  // still reports it. Both halves matter: the first proves the assertion is
+  // load-bearing, the second proves the fixture is not simply broken.
+  let silenced = 0;
+  for (const [name, fixture] of Object.entries(PAGE_SCOPE_FIXTURES)) {
+    if (fixture.leaks.length === 0) {
+      continue;
+    }
+    silenced += 1;
+    assert.deepEqual(
+      analyzeFixture(name, mutant.analyzePageScopeClosures).findings,
+      [],
+      `${name}: the inert mutant still reported a leak`,
+    );
+    assert.equal(
+      analyzeFixture(name, analyzePageScopeClosures).findings.length,
+      fixture.leaks.length,
+      `${name}: the real analyzer stopped reporting its leak`,
+    );
+  }
+  assert.equal(silenced, 5, "the positive fixture set changed size");
+});
+
+test("G6 MUTATION control: a prefilter that skips everything collapses the canary", async () => {
+  const prefilter =
+    "  if (!EVAL_FAMILY_METHODS.some((method) => text.includes(method))) {";
+  const mutant = await importMutatedAnalyzer((source) => {
+    assert.equal(source.split(prefilter).length - 1, 1);
+    return source.replace(prefilter, "  if (true) {");
+  });
+  // Nothing is parsed, so nothing is ever found — exactly the silent-guard
+  // failure. G4's `evalSites` assertion is what notices.
+  let evalSites = 0;
+  for (const name of Object.keys(PAGE_SCOPE_FIXTURES)) {
+    const result = analyzeFixture(name, mutant.analyzePageScopeClosures);
+    evalSites += result.evalSites;
+    assert.deepEqual(result.findings, []);
+    assert.equal(result.skipped, true);
+  }
+  assert.equal(evalSites, 0);
+  const real = Object.keys(PAGE_SCOPE_FIXTURES).reduce(
+    (total, name) =>
+      total + analyzeFixture(name, analyzePageScopeClosures).evalSites,
+    0,
+  );
+  assert.ok(real > 0, "the real analyzer found no call sites in the fixtures");
 });

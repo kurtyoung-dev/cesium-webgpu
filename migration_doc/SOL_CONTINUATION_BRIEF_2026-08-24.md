@@ -487,7 +487,14 @@ change.
 spec-verifiable C13 instrument and harness work is yours**; C13 engine-semantic changes stay
 Opus-authored. This row is instrument work.
 
-**Deliverable 1 — the protocol-v4 first run.** Protocol v4 has never produced a report. The
+**Deliverable 1 — the protocol-v4 first run.** DISCHARGED 2026-08-25: protocol v4
+produced its first report that day — run `d6d15a71-fc5b-48e9-b071-ce627c61281b`,
+GATE FAIL / exit 1, `incomplete: false` — after an earlier attempt the same day exited
+2 on a module-scope import called from inside `page.evaluate`. All sixteen segments
+completed on both backends and cardinality came back exact at 275/275. The one
+engine-relevant red is `shadowContrastInvariant` at 1.0341102079879674; the
+refresh-cost lane is still unscored on readback-ring saturation, which makes
+**Deliverable 2 the remaining SOL-4 debt, not this run**. The
 commissioning batch's own message states the position honestly: the ~29 ms per-refresh figure
 holds only at or below 34 refreshes per 100 frames, from the four segments whose GPU timing was
 valid, and the two steepest segments are excluded by readback-ring saturation with the direction

@@ -176,7 +176,6 @@ import {
 import {
   BAND_MEAN_CAPTURE_DELTA,
   DECK_AERIAL_SHARE_CROSS_RUN,
-  describeRefreshCostLedgerClosure,
   ECLIPSE_CLOUD_BANDS,
   ECLIPSE_CLOUD_EXIT,
   ECLIPSE_CLOUD_GATE_PREDICATES,
@@ -2027,6 +2026,10 @@ const RUN_IBL_SWEEP = async (cfg) => {
     ? cfg.refreshCostProtocol.webgpuUnavailableReason
     : cfg.refreshCostProtocol.webglUnavailableReason;
   let profiler = null;
+  // The ring depth as OBSERVED after configuration, never as requested: a
+  // stale build, a clamp or a changed default has to reach the artifact as
+  // what actually ran, or the artifact quietly misattributes its own numbers.
+  let gpuRingDepth = null;
   if (timestampFeatureAvailable) {
     try {
       profiler = costContext.timestampProfiler;
@@ -2101,6 +2104,41 @@ const RUN_IBL_SWEEP = async (cfg) => {
   }
   if (gpuCaptureAvailable) {
     costContext.performanceManager.config.timestampProfiling = true;
+    // Drain BEFORE the resize, as setBufferCount's contract requires: it
+    // clears the counters while any readback still in flight stays counted as
+    // pending, and it discards `_pendingSubmissions` outright because their
+    // slot indices do not survive the resize. Resizing over a live tail is
+    // therefore the one way this probe can manufacture the very state its
+    // pre-segment drain check refuses — and pair 0 is the only segment whose
+    // pre-drain follows the resize, which is exactly where that check fired.
+    // The warmup legs above render the whole schedule on both legs, so the
+    // tail here is real rather than hypothetical.
+    await profiler.drainPendingReadbacks(
+      cfg.refreshCostProtocol.readbackTimeoutMs,
+    );
+    // The 3-slot ring saturated on the steep segments of the first
+    // protocol-v4 run. `beginFrame` refuses to arm a slot whose readback is
+    // still pending while `endFrame` advances unconditionally, so a capture
+    // holds slot i for its readback latency L and the ring returns to that
+    // slot every B frames: a capture rate r therefore bounds L <= B/r. The
+    // worst segment sampled 44 of 100 attempts through 3 slots, giving
+    // L <= 6.82 frames. Depth 7 covers that; 8 adds one frame because the
+    // segment straddled two device-rate regimes. The cost is ~6 KiB and 3
+    // GPU objects per slot, and only while profiling is on.
+    //
+    // Deliberately UNGUARDED. A build without `setBufferCount` throws here
+    // and the run dies loudly, which is the honest outcome: measuring at
+    // depth 3 while the artifact records 8 would be a lying artifact, and a
+    // still-saturated ring must keep the row red rather than hand back a
+    // mean whose survivorship bias points LOW.
+    profiler.setBufferCount(8);
+    const observedRingDepth =
+      typeof profiler.bufferCount === "number"
+        ? profiler.bufferCount
+        : profiler._bufferCount;
+    gpuRingDepth = Number.isFinite(observedRingDepth)
+      ? observedRingDepth
+      : null;
   }
 
   const awaitQueueCompletion = async () => {
@@ -2147,9 +2185,65 @@ const RUN_IBL_SWEEP = async (cfg) => {
     samplesMsByPass: {},
     invalidReason: gpuUnavailableReason,
     queueDrain: null,
+    preDrain: null,
     drain: null,
     results: null,
   });
+
+  // The ledger table and its describer run IN THE PAGE, so they are embedded
+  // here as text: `page.evaluate` serializes this callback and drops its Node
+  // closure, and a module-scope import would raise ReferenceError on the first
+  // timed segment. The text is generated from the one table in the gate module
+  // and pinned to it byte-for-byte by checkEmbeddedLedgerClosureIsCanonical, so
+  // detection and message still come from a single definition.
+  // ==BEGIN refresh-cost-ledger-closure==
+  const REFRESH_COST_LEDGER_EXPECTATIONS = [
+    { counter: "enabled", closed: true },
+    { counter: "attemptedFrameCount", closed: "frames" },
+    { counter: "frameCount", closed: "frames" },
+    { counter: "sampleLedgerBalanced", closed: true },
+    { counter: "readbackSkipCount", closed: 0 },
+    { counter: "failedReadbackCount", closed: 0 },
+    { counter: "emptyFrameCount", closed: 0 },
+    { counter: "lostSampleCount", closed: 0 },
+    { counter: "pendingReadbackCount", closed: 0 },
+    { counter: "unaccountedSampleCount", closed: 0 },
+    { counter: "invertedSampleCount", closed: 0 },
+    { counter: "droppedPassCount", closed: 0 },
+  ];
+  const describeRefreshCostLedgerClosure = (results, frames) => {
+    if (!results || typeof results !== "object") {
+      return "results absent";
+    }
+    return REFRESH_COST_LEDGER_EXPECTATIONS.filter(
+      ({ counter, closed }) =>
+        !Object.is(results[counter], closed === "frames" ? frames : closed),
+    )
+      .map(({ counter }) => `${counter}=${String(results[counter])}`)
+      .join(", ");
+  };
+  // ==END refresh-cost-ledger-closure==
+
+  // The drain describer travels the same way and for the same reason: the
+  // check runs IN THE PAGE, so the text is embedded here and pinned to the one
+  // table in the gate module by checkEmbeddedDrainClosureIsCanonical.
+  // ==BEGIN refresh-cost-drain-closure==
+  const REFRESH_COST_DRAIN_EXPECTATIONS = [
+    { counter: "timedOut", closed: false },
+    { counter: "undrained", closed: 0 },
+    { counter: "abandoned", closed: 0 },
+  ];
+  const describeRefreshCostDrainClosure = (drain) => {
+    if (!drain || typeof drain !== "object") {
+      return "drain absent";
+    }
+    return REFRESH_COST_DRAIN_EXPECTATIONS.filter(
+      ({ counter, closed }) => !Object.is(drain[counter], closed),
+    )
+      .map(({ counter }) => `${counter}=${String(drain[counter])}`)
+      .join(", ");
+  };
+  // ==END refresh-cost-drain-closure==
 
   const runCostSegment = async (pairIndex, leg, from, to) => {
     ac.lighting.enableEclipse = leg === "eclipse";
@@ -2371,13 +2465,17 @@ const RUN_IBL_SWEEP = async (cfg) => {
       }
       return total;
     });
-    if (
-      preDrain.timedOut ||
-      preDrain.undrained !== 0 ||
-      preDrain.abandoned !== 0
-    ) {
+    // An EMPTY drain closes every counter — `drainPendingReadbacks` returns
+    // all-zero/false from both of its empty paths — so "nothing to drain" has
+    // never tripped this and must not start. What trips it is `abandoned`
+    // (encoded, never handed to `afterSubmit()`) or `undrained`/`timedOut`
+    // (started, never finished), and the reason now says which.
+    const preDrainOffenders = describeRefreshCostDrainClosure(preDrain);
+    if (preDrainOffenders !== "") {
       invalidReasons.push(
-        segmentReason("the pre-segment GPU readback drain did not close"),
+        segmentReason(
+          `the pre-segment GPU readback drain did not close (${preDrainOffenders})`,
+        ),
       );
     }
     if (
@@ -2389,9 +2487,12 @@ const RUN_IBL_SWEEP = async (cfg) => {
         segmentReason("the measured GPU queue did not complete cleanly"),
       );
     }
-    if (drain.timedOut || drain.undrained !== 0 || drain.abandoned !== 0) {
+    const drainOffenders = describeRefreshCostDrainClosure(drain);
+    if (drainOffenders !== "") {
       invalidReasons.push(
-        segmentReason("the measured GPU readback drain did not close"),
+        segmentReason(
+          `the measured GPU readback drain did not close (${drainOffenders})`,
+        ),
       );
     }
     // The single detection AND the message come from one table in the gate
@@ -2489,6 +2590,7 @@ const RUN_IBL_SWEEP = async (cfg) => {
         samplesMsByPass,
         invalidReason: valid ? null : invalidReasons.join("; "),
         queueDrain,
+        preDrain,
         drain,
         results,
       },
@@ -2560,6 +2662,7 @@ const RUN_IBL_SWEEP = async (cfg) => {
         featureAvailable: timestampFeatureAvailable,
         available: gpuCaptureAvailable,
         unavailableReason: gpuCaptureAvailable ? null : gpuUnavailableReason,
+        ringDepth: gpuRingDepth,
         resolutionKnown: false,
         resolutionNs: null,
       },

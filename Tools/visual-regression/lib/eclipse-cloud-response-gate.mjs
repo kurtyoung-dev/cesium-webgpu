@@ -1514,6 +1514,245 @@ export function describeRefreshCostLedgerClosure(results, frames) {
     .join(", ");
 }
 
+/** Markers delimiting a probe's embedded copy of the closure describer. */
+export const REFRESH_COST_LEDGER_CLOSURE_BEGIN =
+  "// ==BEGIN refresh-cost-ledger-closure==";
+export const REFRESH_COST_LEDGER_CLOSURE_END =
+  "// ==END refresh-cost-ledger-closure==";
+
+/**
+ * The closure describer again, as in-page SOURCE TEXT.
+ *
+ * The check runs inside `page.evaluate`, and a Playwright page cannot import a
+ * Node ESM module: the callback is serialized and its closure is dropped, so a
+ * probe that CALLS the export above from inside that callback raises
+ * `ReferenceError: describeRefreshCostLedgerClosure is not defined` on the
+ * first timed segment — deterministically, before any measurement exists. That
+ * is how the first protocol-v4 commissioning run ended, with no report at all.
+ *
+ * The twelve-row table is GENERATED from `REFRESH_COST_LEDGER_EXPECTATIONS`
+ * rather than restated, so the single-source property survives the move into
+ * the page: dropping a row still removes that counter from the message AND
+ * from the detection, instead of removing it from only one of the two.
+ * `checkEmbeddedLedgerClosureIsCanonical` holds a probe's embedded copy to
+ * this text byte-for-byte, so the copy cannot drift from the table either.
+ *
+ * FORMATTING CONTRACT: every line must stay short enough that Prettier leaves
+ * it on one line at the deepest indentation a probe embeds it at (a
+ * `page.evaluate` callback adds 2-6 columns). A line Prettier wraps in the
+ * probe but not here reads as drift even though the code is identical.
+ */
+export const REFRESH_COST_LEDGER_CLOSURE_SOURCE = [
+  "const REFRESH_COST_LEDGER_EXPECTATIONS = [",
+  ...REFRESH_COST_LEDGER_EXPECTATIONS.map(
+    ({ counter, closed }) =>
+      `  { counter: ${JSON.stringify(counter)}, closed: ${JSON.stringify(closed)} },`,
+  ),
+  "];",
+  "const describeRefreshCostLedgerClosure = (results, frames) => {",
+  '  if (!results || typeof results !== "object") {',
+  '    return "results absent";',
+  "  }",
+  "  return REFRESH_COST_LEDGER_EXPECTATIONS.filter(",
+  "    ({ counter, closed }) =>",
+  '      !Object.is(results[counter], closed === "frames" ? frames : closed),',
+  "  )",
+  "    .map(({ counter }) => `${counter}=${String(results[counter])}`)",
+  '    .join(", ");',
+  "};",
+].join("\n");
+
+function extractMarkedProbeBlock(probeSource, begin, end) {
+  const text = String(probeSource ?? "").replace(/\r\n/g, "\n");
+  const start = text.indexOf(begin);
+  const finish = text.indexOf(end);
+  if (start < 0 || finish <= start) {
+    return null;
+  }
+  const block = text
+    .slice(start + begin.length, finish)
+    .replace(/^\n/, "")
+    .replace(/\n[ \t]*$/, "");
+  // Dedent before comparing: a probe embeds this inside a `page.evaluate`
+  // callback and indents it to match its surroundings, so the comparison is
+  // about the CODE and the canonical form is column-0.
+  const lines = block.split("\n");
+  const indents = lines
+    .filter((line) => line.trim().length > 0)
+    .map((line) => line.match(/^[ \t]*/u)[0]);
+  const common = indents.sort((a, b) => a.length - b.length)[0] ?? "";
+  return lines
+    .map((line) => (line.startsWith(common) ? line.slice(common.length) : line))
+    .join("\n");
+}
+
+/**
+ * Read a probe's embedded describer back out, dedented to column 0.
+ *
+ * @param {string} probeSource
+ * @returns {string|null} The block, or null when the probe embeds none.
+ */
+export function extractEmbeddedLedgerClosure(probeSource) {
+  return extractMarkedProbeBlock(
+    probeSource,
+    REFRESH_COST_LEDGER_CLOSURE_BEGIN,
+    REFRESH_COST_LEDGER_CLOSURE_END,
+  );
+}
+
+/**
+ * The embedded copy must be byte-identical to the generated source, so the
+ * in-page describer and the table it is generated from cannot diverge.
+ *
+ * @param {string} probeSource
+ * @returns {string[]} Failures; empty means the probe carries the canonical copy.
+ */
+export function checkEmbeddedLedgerClosureIsCanonical(probeSource) {
+  const embedded = extractEmbeddedLedgerClosure(probeSource);
+  if (embedded === null) {
+    return [
+      `the probe does not embed the ledger-closure describer — expected it between ${REFRESH_COST_LEDGER_CLOSURE_BEGIN} and ${REFRESH_COST_LEDGER_CLOSURE_END}`,
+    ];
+  }
+  if (embedded !== REFRESH_COST_LEDGER_CLOSURE_SOURCE) {
+    return [
+      "the embedded ledger-closure block has DRIFTED from " +
+        "lib/eclipse-cloud-response-gate.mjs — re-copy it rather than editing " +
+        "the probe's copy",
+    ];
+  }
+  return [];
+}
+
+/**
+ * Every readback-drain counter that must be closed for a drain to have closed,
+ * with the value that closes it.
+ *
+ * `drainPendingReadbacks` returns all four fields on EVERY path, including its
+ * two empty ones: the disabled-profiler early return and the
+ * nothing-outstanding early return both hand back
+ * `{ drained: 0, undrained: 0, abandoned: 0, timedOut: false }`. "There was no
+ * work to drain" is therefore NOT a failure and never was — it closes every
+ * counter below. The three states this table keeps apart are:
+ *
+ * - nothing to drain — every counter closed, and `drained === 0`;
+ * - drained successfully — every counter closed, and `drained > 0`;
+ * - did not close — `undrained > 0` or `timedOut` (readbacks that were started
+ *   and never finished), or `abandoned > 0` (submissions encoded but never
+ *   handed to `afterSubmit()`, so no readback was ever started for them).
+ *
+ * `drained` is deliberately absent from the table: it is the field that tells
+ * the first two states apart, so it is RETAINED rather than checked. Checking it
+ * would make an idle drain a failure; dropping it would make the artifact unable
+ * to say which of the two clean states occurred.
+ */
+export const REFRESH_COST_DRAIN_EXPECTATIONS = Object.freeze([
+  Object.freeze({ counter: "timedOut", closed: false }),
+  Object.freeze({ counter: "undrained", closed: 0 }),
+  Object.freeze({ counter: "abandoned", closed: 0 }),
+]);
+
+/**
+ * Name every drain counter that did not close, with its value.
+ *
+ * A bare "the drain did not close" cost a whole machine-lane run: the reason
+ * named no counter, and the drain it refused was never published at all, so the
+ * artifact could not say which of the three conditions had fired. The failure
+ * modes are not interchangeable — `abandoned` means work was encoded and never
+ * handed to `afterSubmit()`, while `undrained`/`timedOut` mean work was started
+ * and never finished — and they must not produce the same sentence.
+ *
+ * @param {object} drain One drain's retained counters.
+ * @returns {string} Comma-separated `name=value` pairs; empty when all closed.
+ */
+export function describeRefreshCostDrainClosure(drain) {
+  if (!drain || typeof drain !== "object") {
+    return "drain absent";
+  }
+  return REFRESH_COST_DRAIN_EXPECTATIONS.filter(
+    ({ counter, closed }) => !Object.is(drain[counter], closed),
+  )
+    .map(({ counter }) => `${counter}=${String(drain[counter])}`)
+    .join(", ");
+}
+
+/** Markers delimiting a probe's embedded copy of the drain describer. */
+export const REFRESH_COST_DRAIN_CLOSURE_BEGIN =
+  "// ==BEGIN refresh-cost-drain-closure==";
+export const REFRESH_COST_DRAIN_CLOSURE_END =
+  "// ==END refresh-cost-drain-closure==";
+
+/**
+ * The drain describer again, as in-page SOURCE TEXT, for the same reason the
+ * ledger describer above is duplicated: `page.evaluate` serializes its callback
+ * and drops the Node closure, so a probe that CALLS the export from inside that
+ * callback raises `ReferenceError` on the first timed segment.
+ *
+ * The table is GENERATED from `REFRESH_COST_DRAIN_EXPECTATIONS` rather than
+ * restated, so dropping a row removes that counter from the message AND from
+ * the detection instead of from only one of the two.
+ *
+ * FORMATTING CONTRACT: as with the ledger block, every line must stay short
+ * enough that Prettier leaves it on one line at the deepest indentation a probe
+ * embeds it at.
+ */
+export const REFRESH_COST_DRAIN_CLOSURE_SOURCE = [
+  "const REFRESH_COST_DRAIN_EXPECTATIONS = [",
+  ...REFRESH_COST_DRAIN_EXPECTATIONS.map(
+    ({ counter, closed }) =>
+      `  { counter: ${JSON.stringify(counter)}, closed: ${JSON.stringify(closed)} },`,
+  ),
+  "];",
+  "const describeRefreshCostDrainClosure = (drain) => {",
+  '  if (!drain || typeof drain !== "object") {',
+  '    return "drain absent";',
+  "  }",
+  "  return REFRESH_COST_DRAIN_EXPECTATIONS.filter(",
+  "    ({ counter, closed }) => !Object.is(drain[counter], closed),",
+  "  )",
+  "    .map(({ counter }) => `${counter}=${String(drain[counter])}`)",
+  '    .join(", ");',
+  "};",
+].join("\n");
+
+/**
+ * Read a probe's embedded drain describer back out, dedented to column 0.
+ *
+ * @param {string} probeSource
+ * @returns {string|null} The block, or null when the probe embeds none.
+ */
+export function extractEmbeddedDrainClosure(probeSource) {
+  return extractMarkedProbeBlock(
+    probeSource,
+    REFRESH_COST_DRAIN_CLOSURE_BEGIN,
+    REFRESH_COST_DRAIN_CLOSURE_END,
+  );
+}
+
+/**
+ * The embedded copy must be byte-identical to the generated source, so the
+ * in-page describer and the table it is generated from cannot diverge.
+ *
+ * @param {string} probeSource
+ * @returns {string[]} Failures; empty means the probe carries the canonical copy.
+ */
+export function checkEmbeddedDrainClosureIsCanonical(probeSource) {
+  const embedded = extractEmbeddedDrainClosure(probeSource);
+  if (embedded === null) {
+    return [
+      `the probe does not embed the drain-closure describer — expected it between ${REFRESH_COST_DRAIN_CLOSURE_BEGIN} and ${REFRESH_COST_DRAIN_CLOSURE_END}`,
+    ];
+  }
+  if (embedded !== REFRESH_COST_DRAIN_CLOSURE_SOURCE) {
+    return [
+      "the embedded drain-closure block has DRIFTED from " +
+        "lib/eclipse-cloud-response-gate.mjs — re-copy it rather than editing " +
+        "the probe's copy",
+    ];
+  }
+  return [];
+}
+
 /**
  * Prefix one segment-local refusal without duplicating a prefix already
  * retained by the probe.
@@ -1683,6 +1922,7 @@ function readRefreshCostGpuSegment(
       Object.keys(block.samplesMsByPass).length === 0 &&
       block.invalidReason === header.unavailableReason &&
       block.queueDrain === null &&
+      block.preDrain === null &&
       block.drain === null &&
       block.results === null;
     return unavailableIsExact
@@ -1824,6 +2064,7 @@ function readRefreshCostGpuSegment(
     };
   }
   const queueDrain = block.queueDrain;
+  const preDrain = block.preDrain;
   const drain = block.drain;
   const results = block.results;
   const counters = [
@@ -1836,13 +2077,28 @@ function readRefreshCostGpuSegment(
     "invertedSampleCount",
     "droppedPassCount",
   ];
+  const preDrainOffenders = describeRefreshCostDrainClosure(preDrain);
+  if (preDrainOffenders !== "") {
+    return {
+      schemaError: `${label} pre-segment GPU readback drain did not close (${preDrainOffenders})`,
+      valid: false,
+      totalMs: null,
+      invalidReason: null,
+    };
+  }
+  const drainOffenders = describeRefreshCostDrainClosure(drain);
+  if (drainOffenders !== "") {
+    return {
+      schemaError: `${label} measured GPU readback drain did not close (${drainOffenders})`,
+      valid: false,
+      totalMs: null,
+      invalidReason: null,
+    };
+  }
   if (
     queueDrain?.completed !== true ||
     queueDrain.timedOut !== false ||
     queueDrain.error !== null ||
-    drain?.timedOut !== false ||
-    drain.undrained !== 0 ||
-    drain.abandoned !== 0 ||
     results?.enabled !== true ||
     results.attemptedFrameCount !== frames ||
     results.frameCount !== frames ||
