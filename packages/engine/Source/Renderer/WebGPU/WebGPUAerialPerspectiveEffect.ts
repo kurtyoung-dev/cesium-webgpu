@@ -711,8 +711,8 @@ export class AerialPerspectiveEffect implements PostProcessEffect {
     if (!lutView) {
       return sourceView;
     }
-    // Item 2.2 (ENV-AERIAL-MS) — sky-view + MS LUT views, white placeholder
-    // until baked. With params1.z off they are never sampled (parity).
+    // Sky-view + MS LUT views use the white placeholder until baked. With
+    // params1.z off they are never sampled (parity).
     const skyViewView = this._skyViewView ?? this._placeholderView!;
     const msView = this._multipleScatterView ?? this._placeholderView!;
     // The real beer shadow map when active, else the white placeholder, which

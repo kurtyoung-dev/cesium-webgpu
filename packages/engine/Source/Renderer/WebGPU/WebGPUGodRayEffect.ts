@@ -173,10 +173,9 @@ export class GodRayEffect implements PostProcessEffect {
   }
 
   /**
-   * Update frustum near/far so depth linearization stays correct. C4-LOGDEPTH-
-   * PP-FRUSTUM-SLICEA adds the optional `logActive` flag (packed into
-   * `frustum.z`); when omitted the previous value is retained so existing
-   * callers stay byte-identical.
+   * Update frustum near/far so depth linearization stays correct. The optional
+   * `logActive` flag is packed into `frustum.z`; when omitted, the previous value
+   * is retained so existing callers stay byte-identical.
    */
   setFrustum(near: number, far: number, logActive?: boolean): void {
     if (typeof logActive === "boolean") {

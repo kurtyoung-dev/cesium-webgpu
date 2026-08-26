@@ -1,6 +1,6 @@
 // SSGIComposite — combine scene color with the denoised SSGI target.
 //
-// Fork-added Campaign-6 (C6-SSGI-DIFFUSE). Replaces AmbientOcclusionModulate
+// Replaces AmbientOcclusionModulate
 // when algorithm == "ssgi". Reads the scene color and the blurred SSGI target
 // (rgba16float: GI.rgb + AO.a) and produces:
 //

@@ -1,6 +1,6 @@
 // BilateralBlur1D — separable depth-aware blur for screen-space GI/AO.
 //
-// Fork-added Campaign-6 (C6-SSGI-DIFFUSE). Denoises the half/full-res SSGI
+// Denoises the half/full-res SSGI
 // target (rgba16float: GI.rgb + AO.a) without leaking across depth
 // discontinuities — a plain Gaussian would smear indirect light across
 // silhouette edges. Runs twice (H then V) between SSGIGenerate and

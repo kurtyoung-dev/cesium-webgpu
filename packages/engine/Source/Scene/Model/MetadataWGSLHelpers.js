@@ -310,7 +310,7 @@ function buildPropertyTextureUnpack(
     return `${wgslType}(${swizzle} * 255.0 + ${vecSplat(componentCount, "0.5")})`;
   }
 
-  // METADATA-UINT16-32 — multi-byte components (UINT16/UINT32/INT16/INT32/
+  // Reassemble multi-byte components (UINT16/UINT32/INT16/INT32/
   // FLOAT32 packed across 2/4 channels, keyed off the property's
   // componentType via `channelsPerComponent > 1`). Mirrors WebGL's
   // `MetadataClassProperty.unpackTextureInShader`: for each output component,
@@ -384,7 +384,7 @@ function buildUnpackBitsExpr(channelsExpr, channelCount) {
 }
 
 /**
- * METADATA-UINT16-32 — build the WGSL scalar expression that bit-reinterprets
+ * Build the WGSL scalar expression that bit-reinterprets
  * (and optionally normalizes) a reassembled raw `u32` bit pattern into the
  * property's scalar category. Shared by the property-TEXTURE multi-byte
  * unpacker ({@link buildPropertyTextureUnpack}) and the property-TABLE
@@ -482,8 +482,8 @@ function buildPropertyTableUnpack(sampleExpr, classProperty, wgslType) {
         .join(", ")})`;
     }
     const rawBits = buildUnpackBitsExpr(channelExpr, sliceComps.length);
-    // Shared bit-reinterpret / normalize (METADATA-UINT16-32 — same helper as
-    // the property-TEXTURE multi-byte unpacker, byte-identical emission).
+    // Shared bit reinterpretation / normalization — same helper as the
+    // property-TEXTURE multi-byte unpacker, with byte-identical emission.
     componentExprs.push(buildScalarFromRawBits(rawBits, classProperty));
   }
 

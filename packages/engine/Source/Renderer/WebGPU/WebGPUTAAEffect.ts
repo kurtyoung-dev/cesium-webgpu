@@ -377,13 +377,12 @@ export class WebGPUTAAEffect implements PostProcessEffect {
   private _cameraDelta: [number, number, number] = [0, 0, 0];
   private _motionVectorsValid = false;
 
-  // History ping-pong. Phase tracking is delegated to WebGPUParityManager
-  // (FEAT-SURVEY-07) — the manager owns the "current read / current write"
-  // decision for every history effect so individual consumers can't
-  // double-flip, miss-flip, or flip at the wrong point in their lifecycle.
-  // Current design: TAA owns its own manager (1 consumer, 1 slot); a later
-  // session can hoist the manager to the scene renderer so Hi-Z
-  // reprojection and auto-exposure share a single monotonic frame counter.
+  // History ping-pong. Phase tracking is delegated to WebGPUParityManager,
+  // which owns the "current read / current write" decision for every history
+  // effect so individual consumers can't double-flip, miss-flip, or flip at
+  // the wrong point in their lifecycle. TAA owns its own manager with one
+  // consumer and one slot; Hi-Z reprojection and auto-exposure do not share its
+  // monotonic frame counter.
   private _historyTextures: [GPUTexture | null, GPUTexture | null] = [
     null,
     null,

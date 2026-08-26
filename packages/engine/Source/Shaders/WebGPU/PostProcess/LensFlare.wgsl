@@ -1,7 +1,7 @@
 // Lens Flare post-processing effect — WGSL parity twin of
-// Shaders/PostProcessStages/LensFlare.glsl (WIRE-PP-LIBRARY-BUILTINS).
+// Shaders/PostProcessStages/LensFlare.glsl.
 //
-// Ported 1:1 from the GLSL: the space gate (`length(czm_viewerPositionWC)
+// Matches the GLSL behavior: the space gate (`length(czm_viewerPositionWC)
 // > 6 500 000` — flare is a pass-through below that, upstream #5932), the
 // sun-on-screen gate (NDC within ±1.1), the 4-ghost chromatic-distorted
 // chain, the halo, the earth-disk masking (isInEarth), and the

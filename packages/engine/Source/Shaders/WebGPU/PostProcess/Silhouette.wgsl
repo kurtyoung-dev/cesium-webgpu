@@ -25,7 +25,7 @@ fn fragmentMain(in: VertexOutput) -> @location(0) vec4<f32> {
   let scene = textureSample(sceneTexture, texSampler, in.uv);
   let silhouette = textureSample(silhouetteTexture, texSampler, in.uv);
 
-  // GLSL parity (WIRE-PP-LIBRARY-BUILTINS): Silhouette.glsl mixes the FULL
+  // GLSL parity: Silhouette.glsl mixes the FULL
   // vec4 (`mix(color, silhouetteColor, silhouetteColor.a)`), not just rgb.
   return mix(scene, silhouette, silhouette.a);
 }

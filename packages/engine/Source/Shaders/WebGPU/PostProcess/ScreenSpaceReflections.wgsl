@@ -201,12 +201,11 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
 
   let viewPos = reconstructViewPosition(uv, depth);
 
-  // AUDIT_2026_05_02 B.15 — when the host hasn't bound a real normal
-  // G-buffer (`flags.x < 0.5`), reconstruct the surface normal from
-  // neighbor-pixel view positions. This is a coarse approximation but
-  // produces visually plausible reflections on horizontal/vertical
-  // surfaces — far better than the all-noise sampled placeholder.
-  // FEAT-GAP-01 will replace this with a real normal G-buffer.
+  // When the host hasn't bound a real normal G-buffer (`flags.x < 0.5`),
+  // reconstruct the surface normal from neighbor-pixel view positions. This
+  // is a coarse approximation but produces visually plausible reflections on
+  // horizontal/vertical surfaces. Binding a real normal G-buffer would
+  // replace this reconstruction outright; none is produced yet.
   var normal: vec3<f32>;
   if (ssr.flags.x < 0.5) {
     let invRes = ssr.resolution.zw;

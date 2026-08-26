@@ -763,7 +763,7 @@ export class WebGPUPickFramebuffer {
   private _depthStagingBuffer: GPUBuffer | null = null;
   private _depthStagingBufferDevice: GPUDevice | null = null;
 
-  // R-2b UNIFIED-FEATURE-ID-TEXTURE — lazily-constructed helper that samples
+  // Lazily constructed helper that samples
   // `_colorTexture` (the unified, source-agnostic per-fragment feature-ID
   // G-buffer) inside a fullscreen post-process pass. Default-OFF: stays null
   // unless resolveFeatureIdRecolorAsync() is explicitly called.
@@ -2083,9 +2083,8 @@ export class WebGPUPickFramebuffer {
    * pass's color target, into which every source rasterizes its 24-bit
    * object/feature ID. `null` until the first `begin()` allocates it.
    *
-   * R-2b UNIFIED-FEATURE-ID-TEXTURE — exposed so post-process consumers can
-   * sample cross-source feature IDs inside a shader (historically the target
-   * was only ever read back on the CPU).
+   * Exposes the texture so post-process consumers can sample cross-source
+   * feature IDs inside a shader without a CPU readback.
    */
   get featureIdTexture(): GPUTexture | null {
     return this._colorTexture;
@@ -2097,15 +2096,14 @@ export class WebGPUPickFramebuffer {
   }
 
   /**
-   * R-2b UNIFIED-FEATURE-ID-TEXTURE — resolve the unified feature-ID G-buffer
+   * Resolve the unified feature-ID G-buffer
    * inside a fullscreen post-process pass and read the recolored result back.
    *
    * The most recent pick render (`scene.pick` / `scene.pickAsync`) must have
    * populated `_colorTexture`; this samples that shared, source-agnostic ID
    * target on the GPU, decodes each 24-bit key, and hashes it to a distinct
-   * color. Distinct colors at fragments covered by DIFFERENT sources prove that
-   * cross-source feature IDs are resolvable inside a PP pass — the enabling
-   * primitive for the R-2a cross-source attribute join.
+   * color. Each distinct ID yields a distinct color, so fragments from DIFFERENT
+   * sources remain distinguishable for downstream cross-source attribute joins.
    *
    * Default-OFF: constructs the helper lazily, so this is a no-op cost until an
    * app/probe calls it. Returns `null` if no pick target exists yet.
@@ -2126,14 +2124,13 @@ export class WebGPUPickFramebuffer {
   }
 
   /**
-   * R-2b UNIFIED-FEATURE-ID-TEXTURE (residual a — standing per-frame PP wiring).
    * Record the feature-ID recolor pass into a caller-provided per-frame command
    * encoder, sampling the unified pick-ID G-buffer and writing the recolor into
    * the helper's persistent output texture. Unlike
    * {@link resolveFeatureIdRecolorAsync} this performs NO separate submit and NO
    * CPU readback — the recolor lives inside the caller's own command stream and
    * its result view ({@link featureIdRecolorView}) is immediately sample-able by a
-   * downstream same-frame post-process stage (the R-2a cross-source join) or a
+   * downstream same-frame post-process stage, cross-source attribute join, or
    * feature-ID debug overlay.
    *
    * The most recent pick render (`scene.pick` / `scene.pickAsync`) must have
@@ -2263,7 +2260,7 @@ export class WebGPUPickFramebuffer {
     this._depthStagingBufferDevice = null;
     this._lastReadPixels = null;
     this._lastReadRegion = null;
-    // R-2b UNIFIED-FEATURE-ID-TEXTURE — release the resolve helper's output
+    // Release the resolve helper's output
     // texture + pipeline if one was ever constructed.
     if (this._featureIdTexture) {
       this._featureIdTexture.destroy();

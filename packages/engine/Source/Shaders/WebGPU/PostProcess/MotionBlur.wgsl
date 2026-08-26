@@ -1,4 +1,4 @@
-// MotionBlur.wgsl — Velocity-buffer motion blur (C6-VELOCITY-MOTION-BLUR)
+// MotionBlur.wgsl — Velocity-buffer motion blur
 //
 // Single fullscreen pass. For each pixel it computes a screen-space
 // velocity vector and gathers the scene color along that vector, smearing

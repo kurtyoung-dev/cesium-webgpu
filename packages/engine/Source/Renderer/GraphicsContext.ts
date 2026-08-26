@@ -615,7 +615,7 @@ export interface WebGPURendererOptions {
   hdrEnvironmentMap?: boolean;
 
   /**
-   * Item 1.3 (IBL-PREFILTER-HQ). `'parity'` (default) samples the source
+   * `'parity'` (default) samples the source
    * env cube at mip 0 in the radiance prefilter exactly as shipped.
    * `'high'` pre-generates a mip chain on the source cube and samples it
    * at a GGX-pdf-derived LOD (Karis/UE4), killing bright-sun firefly
@@ -625,7 +625,7 @@ export interface WebGPURendererOptions {
   iblPrefilterQuality?: "parity" | "high";
 
   /**
-   * Item 2.2 (ENV-AERIAL-MS). When true, BOTH the dynamic-environment-map
+   * When true, BOTH the dynamic-environment-map
    * procedural sky fill AND the aerial-perspective post-process source their
    * sky radiance from the sun-relative sky-view + multiple-scattering LUTs
    * (the same tables the visible SkyAtmosphere samples) instead of their own
@@ -823,7 +823,7 @@ export abstract class GraphicsContext {
    * after `id`, `rendererType`, and `canvas` are all initialized.
    *
    * Also verifies that the subclass implements all required abstract methods
-   * at runtime (FORK-27 fix). TypeScript enforces this at compile time for .ts
+   * at runtime. TypeScript enforces this at compile time for .ts
    * files, but Context.js is plain JavaScript — a missing method would fail
    * silently or with an unhelpful error. This catches it early.
    * @protected

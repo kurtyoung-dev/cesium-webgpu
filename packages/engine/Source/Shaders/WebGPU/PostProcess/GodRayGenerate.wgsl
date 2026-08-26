@@ -49,7 +49,7 @@ struct GodRayUniforms {
   //                    treated as sky (transparent to the ray)
   params1: vec4<f32>,
   // frustum: x = near, y = far (for depth linearization),
-  //          z = logActive (C4-LOGDEPTH-PP-SLICEB), w = unused
+  //          z = logActive, w = unused
   frustum: vec4<f32>,
 };
 
@@ -76,7 +76,7 @@ fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
   return out;
 }
 
-// C4-LOGDEPTH-PP-SLICEB — reverse a logarithmic depth sample to hyperbolic
+// Reverse a logarithmic depth sample to hyperbolic
 // window depth [0,1]. Byte-compatible with WebGL czm_reverseLogDepth.
 fn logDepthReverse(logZ: f32, near: f32, far: f32) -> f32 {
   if (far <= near) { return logZ; }
@@ -89,7 +89,7 @@ fn logDepthReverse(logZ: f32, near: f32, far: f32) -> f32 {
 fn linearizeDepth(raw: f32) -> f32 {
   let near = uniforms.frustum.x;
   let far = uniforms.frustum.y;
-  // C4-LOGDEPTH-PP-SLICEB — reverse log depth before linearizing when active.
+  // Reverse log depth before linearizing when active.
   var d = raw;
   if (uniforms.frustum.z > 0.5) {
     d = logDepthReverse(raw, near, far);

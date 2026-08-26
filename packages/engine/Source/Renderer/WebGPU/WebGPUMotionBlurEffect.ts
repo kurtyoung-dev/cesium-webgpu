@@ -1,6 +1,6 @@
 /// <reference types="@webgpu/types" />
 /**
- * WebGPU MotionBlurEffect (C6-VELOCITY-MOTION-BLUR)
+ * WebGPU MotionBlurEffect
  *
  * Velocity-buffer motion blur. A single fullscreen pass that gathers the
  * scene color along a per-pixel screen-space velocity vector, smearing

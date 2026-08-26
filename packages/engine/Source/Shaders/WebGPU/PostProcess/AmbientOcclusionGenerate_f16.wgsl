@@ -1,4 +1,4 @@
-// AmbientOcclusionGenerate — f16 variant (PARITY-F16-POSTPROCESS).
+// AmbientOcclusionGenerate — f16 variant.
 // Hand-tuned half-precision version of `AmbientOcclusionGenerate.wgsl`.
 // Selected when `context.useShaderF16` is true. Keep in sync with the
 // f32 reference.
@@ -35,7 +35,7 @@ struct SSAOUniforms {
 @group(0) @binding(3) var<uniform> uniforms: SSAOUniforms;
 @group(0) @binding(4) var gBufferNormalTexture: texture_2d<f32>;
 
-// C4-LOGDEPTH-PP-SLICEB — reverse a logarithmic depth sample to hyperbolic
+// Reverse a logarithmic depth sample to hyperbolic
 // window depth [0,1]. Kept in f32 (log2/exp2 overflow f16). Only invoked when
 // the renderer-wide log-depth flag is set (frustum.z >= 0.5).
 fn logDepthReverse(logZ: f32, near: f32, far: f32) -> f32 {
@@ -50,7 +50,7 @@ fn readDepth(uv: vec2<f32>) -> f32 {
   let raw = textureSampleLevel(depthTexture, texSampler, uv, 0.0).r;
   let near = uniforms.frustum.x;
   let far = uniforms.frustum.y;
-  // C4-LOGDEPTH-PP-SLICEB — reverse log depth before linearizing when active.
+  // Reverse log depth before linearizing when active.
   var d = raw;
   if (uniforms.frustum.z > 0.5) {
     d = logDepthReverse(raw, near, far);

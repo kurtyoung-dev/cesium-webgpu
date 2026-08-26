@@ -31,7 +31,7 @@ import {
   WebGPUPostProcessPipeline,
   TonemapMode,
 } from "./WebGPUPostProcessPipeline.js";
-// WIRE-PP-LIBRARY-BUILTINS — well-known PostProcessStageLibrary stage
+// Well-known PostProcessStageLibrary stage
 // names intercepted and substituted with their WGSL twins.
 import {
   getLibraryStageKey,
@@ -421,7 +421,7 @@ function configureWebGPUPostProcessPipeline(
   const cache = (collection._webgpuCache ??
     getDefaultCache()) as PostProcessCache;
 
-  // PARITY-F16-POSTPROCESS — resolve the f16 post-process opt-in once.
+  // Resolve the f16 post-process opt-in once.
   // True only when the scene's context both opted in (`useShaderF16`) and
   // the device granted `shader-f16`. Threaded into the multi-pass effects'
   // add* methods so they compile the hand-tuned f16 shader variants.
@@ -801,7 +801,7 @@ function configureWebGPUPostProcessPipeline(
       userStagesIdentityChanged(userStages, cache._userStagesRefs));
   if (listChanged) {
     pipeline.clearUserWGSLStages();
-    // WIRE-PP-LIBRARY-BUILTINS — intercepted library stages rebuild on
+    // Intercepted library stages rebuild on
     // the same add/remove trigger as user WGSL stages.
     pipeline.clearLibraryStages();
     cache._userStagesBuilt = false;
@@ -825,7 +825,7 @@ function configureWebGPUPostProcessPipeline(
       ) {
         continue;
       }
-      // WIRE-PP-LIBRARY-BUILTINS — intercept named PostProcessStageLibrary
+      // Intercept named PostProcessStageLibrary
       // built-ins (czm_black_and_white, czm_brightness, czm_night_vision,
       // czm_silhouette, czm_edge_detection_*, czm_lens_flare,
       // czm_depth_view) and substitute the pre-translated WGSL twin
@@ -915,7 +915,7 @@ function configureWebGPUPostProcessPipeline(
     (!Array.isArray(userStages) || userStages.length === 0)
   ) {
     pipeline.clearUserWGSLStages();
-    // WIRE-PP-LIBRARY-BUILTINS — drop intercepted library stages when the
+    // Drop intercepted library stages when the
     // user collection empties, mirroring the user-WGSL teardown.
     pipeline.clearLibraryStages();
     cache._userStagesBuilt = false;
@@ -923,8 +923,8 @@ function configureWebGPUPostProcessPipeline(
     cache._userStagesRefs = [];
   }
 
-  // WIRE-PP-LIBRARY-BUILTINS — per-frame sync for intercepted library
-  // built-ins. The (re)build above only fires on list-length changes, so
+  // Synchronize intercepted library built-ins each frame. The rebuild above
+  // only fires on list-length changes, so
   // `enabled` toggles and uniform edits on an already-added library stage
   // (e.g. `stage.uniforms.gradations = 8`) must be pushed every frame.
   // Cheap: a name-match walk over the (typically tiny) stage list; the
@@ -1097,7 +1097,7 @@ interface StageNodeLike {
 }
 
 /**
- * WIRE-PP-LIBRARY-BUILTINS — resolve the effective edge `color`/`length`
+ * Resolve the effective edge `color`/`length`
  * uniforms for a `czm_silhouette` stage.
  *
  * Single-stage form: the outer composite's `uniforms` alias points at the
@@ -1136,10 +1136,10 @@ function resolveSilhouetteEdgeUniforms(
 }
 
 /**
- * WIRE-PP-LIBRARY-BUILTINS — per-frame sync for intercepted
- * PostProcessStageLibrary built-ins. Walks the live collection stage
- * list and, for every stage whose name matches a wired library built-in,
- * pushes its `enabled` flag + uniform values + the frame context
+ * Synchronize intercepted PostProcessStageLibrary built-ins each frame. Walk
+ * the live collection stage list and, for every stage whose name matches a
+ * wired library built-in, push its `enabled` flag + uniform values + the frame
+ * context
  * (frameNumber for NightVision's animated noise, pixelRatio for
  * EdgeDetection's czm_pixelRatio-scaled texel offsets) into the
  * pipeline's matching library stage. No-op when no library stages were
@@ -1207,7 +1207,7 @@ function syncInterceptedLibraryStages(
 const LENS_FLARE_WGS84_MAX_RADIUS = 6378137.0;
 
 /**
- * WIRE-PP-LIBRARY-BUILTINS — CPU twin of the czm_* frame state the WebGL
+ * Compute the CPU twin of the czm_* frame state the WebGL
  * LensFlare shader reads from built-in uniforms:
  *
  *   - sun NDC position (czm_sunPositionWC → view → window → viewport-

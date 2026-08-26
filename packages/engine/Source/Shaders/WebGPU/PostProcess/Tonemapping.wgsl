@@ -13,7 +13,7 @@ struct TonemapUniforms {
   gamma: f32,
   mode: f32,     // 0=Reinhard, 1=ACES, 2=Filmic, 3=ModifiedReinhard, 4=PBRNeutral
   whitePoint: f32, // Used by Modified Reinhard (default 4.0)
-  // C6-TPDF-DITHER-FINAL — triangular-PDF dither amplitude applied AFTER
+  // Triangular-PDF dither amplitude applied AFTER
   // gamma, just before the 8-bit quantization at the eventual canvas blit.
   // 0.0 == OFF == byte-identical (the dither term multiplies to exactly 0).
   // Opt-in via `scene.ditherEnabled`. Effective in the HDR post-process
@@ -52,9 +52,8 @@ fn reinhardTonemap(color: vec3<f32>) -> vec3<f32> {
 
 // ACES Filmic — EXACT port of WebGL's czm_acesTonemapping
 // (Builtin/Functions/acesTonemapping.glsl, the Narkowicz fit variant Cesium
-// ships). C4-PLAIN-HDR-GAMMA-TAILS (b): the previous constants were the
-// *other* Narkowicz fit (a=2.51,b=0.03,…) which diverged from the WebGL
-// reference under `scene.postProcessStages.tonemapper = ACES`.
+// ships). The g/a/b/c/d constants below must match the WebGL reference under
+// `scene.postProcessStages.tonemapper = ACES`.
 fn acesTonemap(color: vec3<f32>) -> vec3<f32> {
   let g = 0.985;
   let a = 0.065;
@@ -67,8 +66,6 @@ fn acesTonemap(color: vec3<f32>) -> vec3<f32> {
 
 // Uncharted 2 Filmic (John Hable) — constants matched to WebGL's
 // FilmicTonemapping.glsl (A=0.22,B=0.30,C=0.10,D=0.20,E=0.01,F=0.30,W=11.2).
-// C4-PLAIN-HDR-GAMMA-TAILS (b): the previous A=0.15/B=0.50/E=0.02 constants
-// were a different Hable parameterization and diverged from the reference.
 fn uc2Curve(x: vec3<f32>) -> vec3<f32> {
   let A = 0.22; // Shoulder strength
   let B = 0.30; // Linear strength
@@ -130,7 +127,7 @@ fn inverseGamma(color: vec3<f32>, gamma: f32) -> vec3<f32> {
   return pow(max(color, vec3<f32>(0.0)), vec3<f32>(1.0 / gamma));
 }
 
-// C6-TPDF-DITHER-FINAL — scalar white-noise hash of the pixel coordinate.
+// Scalar white-noise hash of the pixel coordinate.
 // Hugo Elias / Dave Hoskins style fract-hash (public-domain technique);
 // used to seed two independent uniform samples for the triangular PDF.
 fn ditherHash12(p: vec2<f32>) -> f32 {

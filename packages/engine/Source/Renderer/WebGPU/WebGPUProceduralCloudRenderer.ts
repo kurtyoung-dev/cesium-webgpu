@@ -2516,8 +2516,8 @@ function ensureShadowResources(device: GPUDevice, cache: CloudCache): boolean {
   );
 }
 
-// CLOUD-LOD-R5 — (Re)allocate the 3-cascade shadow atlas + its cascade uniform
-// buffer. REUSES the single-map's pipeline + BGL (`ensureShadowResources` must
+// Allocate or reallocate the 3-cascade shadow atlas + its cascade uniform
+// buffer. Reuses the single-map's pipeline + BGL (`ensureShadowResources` must
 // have succeeded first — the caller guarantees this), so only the atlas target
 // and the 256-aligned uniform buffer are cascade-specific. The atlas stacks
 // `CLOUD_SHADOW_CASCADE_COUNT` square tiles vertically (tile 0 = top = finest).

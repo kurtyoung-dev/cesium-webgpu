@@ -1,4 +1,4 @@
-// GodRayGenerate — f16 variant (PARITY-F16-POSTPROCESS). Hand-tuned
+// GodRayGenerate — f16 variant. Hand-tuned
 // half-precision version of `GodRayGenerate.wgsl`. Selected when
 // `context.useShaderF16` is true. Keep in sync with the f32 reference.
 //
@@ -45,7 +45,7 @@ fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
   return out;
 }
 
-// C4-LOGDEPTH-PP-SLICEB — reverse log depth (kept f32; log2/exp2 overflow f16).
+// Reverse log depth (kept f32; log2/exp2 overflow f16).
 fn logDepthReverse(logZ: f32, near: f32, far: f32) -> f32 {
   if (far <= near) { return logZ; }
   let log2FarDepthFromNearPlusOne = log2((far - near) + 1.0);
@@ -57,7 +57,7 @@ fn logDepthReverse(logZ: f32, near: f32, far: f32) -> f32 {
 fn linearizeDepth(raw: f32) -> f32 {
   let near = uniforms.frustum.x;
   let far = uniforms.frustum.y;
-  // C4-LOGDEPTH-PP-SLICEB — reverse log depth before linearizing when active.
+  // Reverse log depth before linearizing when active.
   var d = raw;
   if (uniforms.frustum.z > 0.5) {
     d = logDepthReverse(raw, near, far);

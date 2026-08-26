@@ -1,22 +1,19 @@
-// R-2b UNIFIED-FEATURE-ID-TEXTURE — post-process resolve of the source-agnostic
+// Post-process resolve of the source-agnostic
 // per-fragment feature-ID G-buffer.
 //
 // The WebGPU pick pass (WebGPUSceneRendererPickPass) rasterizes a 24-bit object
-// / feature ID for EVERY source (globe, 3D-tile, model, voxel, Gaussian-splat)
-// into one shared rgba8 target. That target is therefore a source-agnostic,
-// per-fragment feature-ID texture — the exact thing R-2b needs, but historically
-// only ever READ BACK ON THE CPU (byte copy + registry lookup), never sampled
-// inside a shader.
+// or feature ID for EVERY source (globe, 3D-tile, model, voxel, Gaussian-splat)
+// into one shared rgba8 target. The target is therefore a source-agnostic,
+// per-fragment feature-ID texture.
 //
-// This fullscreen post-process pass proves the G-buffer is shader-resolvable: it
-// `textureLoad`s the ID at each fragment (nearest — IDs must never be filtered),
-// decodes the 24-bit key with the SAME little-endian byte order the CPU pick
+// This fullscreen post-process pass `textureLoad`s the ID at each fragment
+// (nearest — IDs must never be filtered), decodes the 24-bit key with the SAME
+// little-endian byte order the CPU pick
 // decode uses (r | g<<8 | b<<16, matching Color.fromRgba / bytesToRgba), and
 // recolors each distinct feature with a deterministic integer hash. Fragments
-// with id 0 (nothing drawn) stay black. A cross-source scene therefore paints
-// each source's covered pixels a distinct, ID-derived colour — the canonical
-// R-2b "feature-ID visualisation / selection-mask" primitive, entirely on the
-// GPU. Default-OFF: nothing dispatches this unless an app/probe calls
+// with id 0 (nothing drawn) stay black. A cross-source scene paints each
+// source's covered pixels a distinct, ID-derived colour entirely on the GPU.
+// Default-OFF: nothing dispatches this unless an app/probe calls
 // WebGPUPickFramebuffer.resolveFeatureIdRecolorAsync().
 
 @group(0) @binding(0) var idTexture: texture_2d<f32>;

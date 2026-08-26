@@ -176,8 +176,8 @@ export class ColdOpticsEffect implements PostProcessEffect {
   }
 
   /**
-   * Toggle the COLD-OPTICS-HQ advanced branch at runtime (folded into the next
-   * pack). `false` (default) keeps the byte-identical legacy halo + sun-dogs.
+   * Toggle the advanced branch at runtime. `false` (default) keeps the
+   * byte-identical legacy halo + sun-dogs.
    */
   setAdvanced(advanced: boolean): void {
     this._config.advanced = advanced;

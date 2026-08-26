@@ -1,4 +1,4 @@
-// AmbientOcclusionModulate — f16 variant (PARITY-F16-POSTPROCESS).
+// AmbientOcclusionModulate — f16 variant.
 // Hand-tuned half-precision version of `AmbientOcclusionModulate.wgsl`.
 // Selected when `context.useShaderF16` is true. Keep in sync with the
 // f32 reference.

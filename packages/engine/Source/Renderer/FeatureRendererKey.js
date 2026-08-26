@@ -136,7 +136,7 @@ const FeatureRendererKey = {
 
   // ── Vector 3D Tile classification renderers ──
   // WebGPU classifiers for the three Vector3DTile* feature families that
-  // ride the depth-sample architecture (ADR-2026-04-28) alongside
+  // ride the depth-sample architecture alongside
   // GROUND_PRIMITIVE / GROUND_POLYLINE:
   //   - VECTOR_3DTILE_PRIMITIVE        — extruded polygon classification
   //     (building footprints, admin boundaries).

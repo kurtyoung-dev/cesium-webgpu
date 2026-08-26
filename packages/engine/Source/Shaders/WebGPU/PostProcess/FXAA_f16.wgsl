@@ -1,5 +1,5 @@
-// FXAA post-process shader for WebGPU — f16 variant
-// (PARITY-F16-POSTPROCESS). Hand-tuned half-precision version of
+// FXAA post-process shader for WebGPU — f16 variant.
+// Hand-tuned half-precision version of
 // `FXAA.wgsl` (FXAA 3.11, Timothy Lottes). Selected when
 // `context.useShaderF16` is true. Keep in sync with the f32 reference.
 //
@@ -10,7 +10,7 @@
 // comparison and the final color blends are done in F16: inputs are SDR
 // [0, 1] so every intermediate is inside the f16 normal range.
 //
-// PARITY-HDR-PP-MATH — HDR (tonemap-bypass) mode, mirrored from the f32
+// HDR (tonemap-bypass) mode, mirrored from the f32
 // reference: when `params.hdrMode > 0.5` the edge-detection luminance is
 // computed on a Reinhard-compressed value (c / (1 + c)). The compression
 // runs in F32 — an f16 `1 + c` overflows to inf at the rgba16float peak

@@ -108,7 +108,7 @@ export const MARKER_RULES = Object.freeze([
   {
     id: "all-caps-fix-label",
     pattern:
-      /(?<![A-Z0-9_-])(?!(?:NEW|BUG|EPIC|FIX)-)[A-Z]{3,}(?:-[A-Z]{3,}){2,}(?![A-Z0-9_-])/g,
+      /(?<![A-Z0-9_-])(?!(?:NEW|BUG|EPIC|FIX)-)(?!(?:CC-BY-SA|YYYY-MM-DD)(?![A-Z0-9_-]))[A-Z][A-Z0-9]+(?:-[A-Z0-9]{2,}){2,}(?![A-Z0-9_-])/g,
     description:
       "Bare fix labels are development-history tags, not code constraints.",
     example: "POINT-SPRITE-SHAPE",
@@ -140,6 +140,12 @@ export const MARKER_RULES = Object.freeze([
       "Decorative emphasis glyphs (star, warning sign, tick, cross) do not " +
       "appear anywhere in upstream Cesium and identify a comment as ours.",
     example: "★ read this first",
+  },
+  {
+    id: "fork-id",
+    pattern: /\bFORK-\d+\b/g,
+    description: "Fork-defect row ids are tracker identifiers.",
+    example: "FORK-34 keeps synchronous picks on the current encoder.",
   },
 ]);
 

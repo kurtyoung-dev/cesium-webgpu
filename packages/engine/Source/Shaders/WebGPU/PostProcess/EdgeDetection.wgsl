@@ -1,11 +1,8 @@
 // EdgeDetection — depth-based Sobel edge detection.
 // WGSL parity twin of Shaders/PostProcessStages/EdgeDetection.glsl
-// (WIRE-PP-LIBRARY-BUILTINS): samples the scene DEPTH buffer with the
+// that samples the scene DEPTH buffer with the
 // upstream 3/10/3 Sobel kernel and emits
 // `vec4(color.rgb, len > length ? color.a : 0.0)` — the exact GLSL math.
-// (The pre-parity version of this file ran a luminance Sobel on the color
-// buffer; that never matched WebGL, which keys edges off depth
-// discontinuities.)
 //
 // Not ported: the CZM_SELECTED_FEATURE branch (per-feature `selected`
 // masking) — the WebGPU backend has no czm_selected equivalent yet, so

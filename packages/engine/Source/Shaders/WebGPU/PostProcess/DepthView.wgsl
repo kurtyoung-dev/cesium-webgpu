@@ -1,5 +1,5 @@
 // Depth visualization — WGSL parity twin of
-// Shaders/PostProcessStages/DepthView.glsl (WIRE-PP-LIBRARY-BUILTINS).
+// Shaders/PostProcessStages/DepthView.glsl.
 //
 // The GLSL stage emits `vec4(vec3(czm_readDepth(depthTexture, uv)), 1.0)`
 // — the depth buffer value as grayscale. On WebGPU the post-process chain

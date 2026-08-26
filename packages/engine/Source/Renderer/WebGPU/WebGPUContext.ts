@@ -4123,7 +4123,7 @@ export class WebGPUContext extends GraphicsContext {
   // createPickId() and getObjectByPickColor() are inherited from GraphicsContext.
   // The shared PickId class provides both `.color` (WebGL) and `.normalizedRgba`
   // (WebGPU) encodings. getObjectByPickColor handles both uint32 and {red,green,blue}
-  // calling conventions. No override needed. (FORK-35 fix)
+  // calling conventions. No override needed.
 
   /**
    * Default framebuffer for the context
@@ -7274,9 +7274,8 @@ export class WebGPUContext extends GraphicsContext {
   }
 
   // ====================================================================================
-  // Device Loss Recovery — FORK-1 fix: delegated to WebGPUDeviceLossRecovery
-  // Previously ~150 lines of duplicated inline logic. Now uses the standalone
-  // recovery module with the DeviceLossRecoveryHost interface pattern.
+  // Device Loss Recovery — delegated to WebGPUDeviceLossRecovery through the
+  // DeviceLossRecoveryHost interface.
   // ====================================================================================
 
   /**

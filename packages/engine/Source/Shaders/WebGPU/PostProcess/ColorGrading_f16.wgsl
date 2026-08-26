@@ -1,5 +1,4 @@
-// Color grading post-process shader for WebGPU — f16 variant
-// (PARITY-F16-POSTPROCESS).
+// Color grading post-process shader for WebGPU — f16 variant.
 //
 // Hand-tuned half-precision version of `ColorGrading.wgsl`, selected by
 // the post-process pipeline when `context.useShaderF16` is true (opt-in;
@@ -17,7 +16,7 @@
 // the input is clamped to the f16 range at the conversion boundary so no
 // downstream f16 multiply overflows.
 //
-// PARITY-HDR-PP-MATH — HDR (tonemap-bypass) mode, mirrored from the f32
+// HDR (tonemap-bypass) mode, mirrored from the f32
 // reference: when `params.hdrMode > 0.5` the exposed color is Reinhard-
 // compressed (c / (1 + c), computed in F32) into [0, 1) BEFORE the f16
 // grade, and the SDR clamp is replaced by the w / (1 - w) inversion

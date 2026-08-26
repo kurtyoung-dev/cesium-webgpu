@@ -592,7 +592,7 @@ export class WebGPUPostProcessPipeline {
     // than a sticky cache flag.
     this._taaEffect?.destroy();
     this._taaEffect = null;
-    // C6-VELOCITY-MOTION-BLUR — output texture is sized + formatted against
+    // The output texture is sized + formatted against
     // `_intermediateFormat`, so a resize / HDR toggle must drop it too. The
     // configure pass lazily re-adds it on the same frame (gate checks the
     // live slot).
@@ -751,14 +751,13 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
     const normalizedMode = normalizeTonemapMode(mode);
     const normalizedExposure = normalizeTonemapExposure(exposure);
     // Uniforms: exposure, gamma, mode, whitePoint
-    // C4-PLAIN-HDR-GAMMA-TAILS (b) — whitePoint defaults to 1.0 to match
-    // WebGL's ModifiedReinhardTonemapping `white` uniform (Color.WHITE →
-    // (1,1,1)); the operator now divides by `white` (not white²).
+    // `whitePoint` defaults to 1.0 to match WebGL's
+    // ModifiedReinhardTonemapping `white` uniform (Color.WHITE → (1,1,1));
+    // the operator divides by `white` (not white²).
     // Layout: [exposure, gamma, mode, whitePoint, ditherStrength, pad, pad, pad]
-    // C6-TPDF-DITHER-FINAL — ditherStrength defaults to 0.0 so the tonemap
-    // output is byte-identical to the pre-feature path until the caller opts
-    // in via setTonemapDither(). The three trailing pads keep the UBO 16-byte
-    // aligned (32 bytes total).
+    // `ditherStrength` defaults to 0.0, so the tonemap output is unchanged
+    // until the caller opts in via `setTonemapDither()`. The three trailing
+    // pads keep the UBO 16-byte aligned (32 bytes total).
     const uniforms = new Float32Array([
       normalizedExposure,
       gamma,
@@ -835,7 +834,7 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
   }
 
   /**
-   * C6-TPDF-DITHER-FINAL — set the triangular-PDF dither amplitude on the
+   * Set the triangular-PDF dither amplitude on the
    * tonemap stage. `strength` is in units of 8-bit LSBs (0 = off / byte-
    * identical, 1 = ±1 LSB peak triangular noise). Writes to the fifth float
    * (byte offset 16) of TonemapUniforms. No-op if the tonemap stage or device
@@ -877,12 +876,12 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
     if (this._colorGradingStage) return;
     const c = config ?? {};
     const uniforms = packColorGradingUniforms(c);
-    // PARITY-HDR-PP-MATH — seed the pipeline-managed hdrMode flag (float
+    // Seed the pipeline-managed hdrMode flag (float
     // index 7; the packer always writes 0 there) so a stage added while
     // HDR canvas output is already active starts in HDR-aware mode.
     uniforms[7] = this._hdrOutputMode ? 1.0 : 0.0;
     const stageFormat = this._intermediateFormat || canvasFormat;
-    // PARITY-F16-POSTPROCESS — pick the f16 variant when opted in; the
+    // Pick the f16 variant when opted in; the
     // f32 source is passed as the _compileStage fallback so a driver
     // that rejects the f16 module recovers gracefully. Byte-identical f32
     // path when useShaderF16 is false (fallback arg is undefined).
@@ -905,7 +904,7 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
   updateColorGradingUniforms(config: ColorGradingConfig): void {
     if (!this._colorGradingStage?.uniformBuffer || !this._device) return;
     const uniforms = packColorGradingUniforms(config);
-    // PARITY-HDR-PP-MATH — preserve the pipeline-managed hdrMode flag
+    // Preserve the pipeline-managed hdrMode flag
     // (float index 7); the packer writes 0 there and a full-block write
     // must not silently drop the stage out of HDR-aware mode.
     uniforms[7] = this._hdrOutputMode ? 1.0 : 0.0;
@@ -944,9 +943,8 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
     useShaderF16: boolean = false,
   ): void {
     if (this._fxaaStage) return;
-    // Float index 2 is FXAAUniforms.hdrMode (PARITY-HDR-PP-MATH; it was
-    // an unread pad that happened to carry the width). Index 3 stays an
-    // unread pad carrying the height.
+    // Float index 2 is FXAAUniforms.hdrMode. Index 3 is an unread pad carrying
+    // the height.
     const texelSize = new Float32Array([
       1.0 / this._width,
       1.0 / this._height,
@@ -954,7 +952,7 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
       this._height,
     ]);
     const stageFormat = this._intermediateFormat || canvasFormat;
-    // PARITY-F16-POSTPROCESS — f16 variant with f32 fallback. Default f32.
+    // Uses the f16 variant with an f32 fallback; f32 is the default.
     this._fxaaStage = this._compileStage(
       device,
       useShaderF16 ? "FXAA (f16)" : "FXAA",
@@ -1092,7 +1090,7 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
   ): void {
     if (this._bloomEffect) return;
     this._bloomEffect = new BloomEffect(config);
-    // PARITY-F16-POSTPROCESS — flag before initialize() so _createPipelines
+    // Set the flag before initialize() so _createPipelines
     // compiles the f16 variants. Default false = byte-identical f32.
     this._bloomEffect.useShaderF16 = useShaderF16;
     // Use the intermediate format, rgba16float under HDR, so bloom's
@@ -1171,7 +1169,7 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
   ): void {
     if (this._aoEffect) return;
     this._aoEffect = new AmbientOcclusionEffect(config);
-    // PARITY-F16-POSTPROCESS — default false = byte-identical f32.
+    // Defaults to false for a byte-identical f32 path.
     this._aoEffect.useShaderF16 = useShaderF16;
     // Intermediate format (rgba16float in HDR) — see addBloom. SDR = canvasFormat.
     this._aoEffect.initialize(
@@ -1275,9 +1273,9 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
   }
 
   /**
-   * WIRE-PP-LIBRARY-BUILTINS — per-frame sync for one intercepted library
-   * stage, matched by its collection-stage name. Pushes the live enabled
-   * flag, the stage's uniform values, and the frame context
+   * Synchronize one intercepted library stage each frame, matched by its
+   * collection-stage name. Push the live enabled flag, the stage's uniform
+   * values, and the frame context
    * (czm_frameNumber / czm_pixelRatio equivalents).
    */
   syncLibraryStage(
@@ -1297,7 +1295,7 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
   }
 
   /**
-   * WIRE-PP-LIBRARY-BUILTINS — drop all intercepted library stages.
+   * Drop all intercepted library stages.
    * Called by the configure step alongside `clearUserWGSLStages` when the
    * user collection's `_stages` array changes.
    */
@@ -1320,7 +1318,7 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
   ): void {
     if (this._dofEffect) return;
     this._dofEffect = new DepthOfFieldEffect(config);
-    // PARITY-F16-POSTPROCESS — default false = byte-identical f32.
+    // Defaults to false for a byte-identical f32 path.
     this._dofEffect.useShaderF16 = useShaderF16;
     // Intermediate format (rgba16float in HDR) — see addBloom. SDR = canvasFormat.
     this._dofEffect.initialize(
@@ -1872,14 +1870,14 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
     this._coldOpticsEffect?.resize(width, height);
     this._aerialPerspectiveEffect?.resize(width, height);
     this._motionBlurEffect?.resize(width, height);
-    // WIRE-PP-LIBRARY-BUILTINS — intercepted library built-ins own their
+    // Intercepted library built-ins own their
     // output (and silhouette-edge) intermediates; realloc on resize.
     for (const stage of this._libraryStages) {
       stage.resize(width, height);
     }
 
-    // Update FXAA texel size (index 2 = hdrMode, PARITY-HDR-PP-MATH —
-    // preserve it across the full-block resize write).
+    // Update FXAA texel size (index 2 = hdrMode — preserve it across the
+    // full-block resize write).
     if (this._fxaaStage?.uniformBuffer && this._device) {
       const texelSize = new Float32Array([
         1.0 / width,

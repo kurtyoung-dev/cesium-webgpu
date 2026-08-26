@@ -25,7 +25,7 @@ struct SolarHaloUniforms {
   // z     = pixels per solar radius.
   // w     = half-amplitude radius of the veil, in solar radii.
   geometry: vec4<f32>,
-  // xyz = per-channel atmospheric transmittance (C7-SUN-STARS-EXTINCTION),
+  // xyz = per-channel atmospheric transmittance,
   //       (1,1,1) from orbit / atmosphere hidden.
   // w   = amplitude x eclipse factor (CLT-C4); exactly 0 disables the add.
   tint: vec4<f32>,

@@ -409,7 +409,7 @@ fn fsVelocity(i: VelocityVOut) -> @location(0) vec2<f32> {
     bindGroupLayouts: [sharedBgl, depthSampleBgl],
   });
 
-  // Q15R-VECTOR3DTILE-CONTAINMENT-STENCIL — the stencil mark + color
+  // The stencil mark + color
   // pipelines need only the shared UBO/storage group; they never sample
   // the globe-depth texture (containment is decided by the hardware
   // stencil Z-fail against the BOUND depth buffer). A group(0)-only

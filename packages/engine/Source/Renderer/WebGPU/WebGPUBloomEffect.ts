@@ -13,7 +13,7 @@
 import BloomCompositeWGSL from "../../Shaders/WebGPU/PostProcess/BloomComposite.js";
 import BrightPassWGSL from "../../Shaders/WebGPU/PostProcess/BrightPass.js";
 import GaussianBlur1DWGSL from "../../Shaders/WebGPU/PostProcess/GaussianBlur1D.js";
-// PARITY-F16-POSTPROCESS — hand-tuned f16 variants, selected when the
+// Hand-tuned f16 variants, selected when the
 // effect's `useShaderF16` flag is set by the pipeline (opt-in + device
 // `shader-f16`). Default false → the f32 shaders above are used unchanged.
 import BloomCompositeF16WGSL from "../../Shaders/WebGPU/PostProcess/BloomComposite_f16.js";
@@ -95,7 +95,7 @@ export class BloomEffect implements PostProcessEffect {
   readonly name = "Bloom";
   enabled = true;
 
-  // PARITY-F16-POSTPROCESS — when true, `_createPipelines` compiles the
+  // When true, `_createPipelines` compiles the
   // `_f16` shader variants. Set by the pipeline before `initialize()`
   // (gated on context.useShaderF16 + device shader-f16). Default false =
   // byte-identical f32 path.

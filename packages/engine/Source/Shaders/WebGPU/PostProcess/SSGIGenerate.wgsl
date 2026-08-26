@@ -1,14 +1,14 @@
 // SSGIGenerate — Screen-Space Global Illumination (visibility bitmask / SSILVB).
 //
-// Fork-added Campaign-6 rendering enhancement (C6-SSGI-DIFFUSE). Opt-in,
-// default-off: reachable only when the AmbientOcclusion post-process stage is
-// enabled AND its `algorithm` uniform is set to "ssgi". When any other
+// Opt-in and default-off: reachable only when the AmbientOcclusion
+// post-process stage is enabled AND its `algorithm` uniform is set to "ssgi".
+// When any other
 // algorithm ("hbao"/"gtao") is selected, or the AO stage is disabled (the
 // default), this shader is never compiled or executed → byte-identical output.
 //
 // Structural superset of GTAOGenerate.wgsl: the same per-pixel slice/step
-// horizon scan, the same depth reconstruction (readDepth/logDepthReverse,
-// C4-LOGDEPTH-PP-SLICEB), the same random rotation. The delta vs GTAO:
+// horizon scan, the same depth reconstruction (readDepth/logDepthReverse),
+// the same random rotation. The delta vs GTAO:
 //   - replace the two horizon cosines with a 32-bit sector visibility bitmask
 //     (countOneBits over uniform angular sectors of the slice hemicircle), and
 //   - accumulate scene-color radiance for each newly-occluded sector, weighted
@@ -45,7 +45,7 @@ struct SSGIUniforms {
   params0: vec4<f32>,
   // x = sliceCount, y = 1/width, z = 1/height, w = randomTexSize
   params1: vec4<f32>,
-  // x = near, y = far, z = logActive (C4-LOGDEPTH-PP-SLICEB), w = unused
+  // x = near, y = far, z = logActive, w = unused
   frustum: vec4<f32>,
   // x = giIntensity, y = luminanceClamp, z = thicknessMin, w = thicknessK
   params2: vec4<f32>,

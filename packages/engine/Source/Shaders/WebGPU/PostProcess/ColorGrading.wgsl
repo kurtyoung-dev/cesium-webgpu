@@ -19,7 +19,7 @@
 // with a `texture_3d` at @binding(3) + a uniform flag to select
 // between the procedural path and the LUT lookup.
 //
-// PARITY-HDR-PP-MATH — HDR (tonemap-bypass) mode. When the scene runs
+// HDR (tonemap-bypass) mode. When the scene runs
 // with `useHDRCanvasOutput` the tonemap stage is bypassed and this
 // stage receives unbounded linear HDR in [0, ∞), where the SDR-tuned
 // pivots (contrast around 0.5, luminance windows over [0, 1], final

@@ -1,7 +1,7 @@
 // FXAA (Fast Approximate Anti-Aliasing) post-process shader for WebGPU
 // Based on FXAA 3.11 by Timothy Lottes (NVIDIA)
 //
-// PARITY-HDR-PP-MATH — HDR (tonemap-bypass) mode. The FXAA_REDUCE_* /
+// HDR (tonemap-bypass) mode. The FXAA_REDUCE_* /
 // FXAA_SPAN_MAX constants and the luma-keyed edge detection are tuned
 // for an SDR [0, 1] signal; on unbounded linear HDR a single bright
 // highlight dominates every luminance delta and the filter misfires.

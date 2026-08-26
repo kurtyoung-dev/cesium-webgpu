@@ -97,8 +97,8 @@ SceneMode2DPipelineStage.process = function (
   // built for the model — which still runs under WebGPU — does not
   // reference an absent 2D vertex buffer). This leaves the intact source
   // `positionAttribute.typedArray` and the computed `boundingSphere2D` as
-  // the substrate the WebGPU accurate-2D path (MORPH-MODEL-PROJECT2D /
-  // B11) consumes. WebGL (capability false) keeps its exact strip +
+  // the substrate consumed by the WebGPU accurate-2D path. WebGL
+  // (capability false) keeps its exact strip +
   // stub-buffer behavior and byte-identical shader output.
   if (frameState.context.requiresVertexTypedArrayRetention === true) {
     return;

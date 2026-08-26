@@ -40,7 +40,7 @@ struct TonemapUniforms {
   gamma: f32,
   mode: f32,        // 0=Reinhard, 1=ACES, 2=Filmic, 3=ModifiedReinhard, 4=PBRNeutral
   whitePoint: f32,  // Used by Modified Reinhard (default 4.0)
-  // C6-TPDF-DITHER-FINAL — see Tonemapping.wgsl. Kept binary-compatible with
+  // See Tonemapping.wgsl. Binary-compatible with
   // the f32 layout so the same packer feeds both. 0.0 == OFF == byte-identical.
   ditherStrength: f32,
   _pad0: f32,
@@ -75,7 +75,7 @@ fn reinhardTonemap(color: vec3<f16>) -> vec3<f16> {
 // ACES Filmic — EXACT port of WebGL's czm_acesTonemapping (the Narkowicz
 // fit variant Cesium ships). The constants are tiny and easily representable
 // in f16. Output is clamped to [0,1] which is well inside the f16 normal
-// range. C4-PLAIN-HDR-GAMMA-TAILS (b): matched to the f32 / GLSL reference.
+// range. Matched to the f32 / GLSL reference.
 fn acesTonemap(color: vec3<f16>) -> vec3<f16> {
   let g: f16 = 0.985h;
   let a: f16 = 0.065h;
@@ -87,7 +87,7 @@ fn acesTonemap(color: vec3<f16>) -> vec3<f16> {
 }
 
 // Uncharted 2 Filmic (John Hable) — constants matched to WebGL's
-// FilmicTonemapping.glsl. C4-PLAIN-HDR-GAMMA-TAILS (b).
+// FilmicTonemapping.glsl.
 fn uc2Curve(x: vec3<f16>) -> vec3<f16> {
   let A: f16 = 0.22h;
   let B: f16 = 0.30h;
@@ -112,7 +112,7 @@ fn filmicTonemap(color: vec3<f16>) -> vec3<f16> {
 // Modified Reinhard with white point — matches WebGL's
 // ModifiedReinhardTonemapping.glsl `(color*(1+color/white))/(1+color)` with
 // the raw white-point (default (1,1,1) → identity before gamma).
-// C4-PLAIN-HDR-GAMMA-TAILS (b): divide by `white`, not `white*white`.
+// Divide by `white`, not `white*white`.
 fn modifiedReinhardTonemap(color: vec3<f16>, white: f16) -> vec3<f16> {
   return (color * (vec3<f16>(1.0h) + color / white)) / (vec3<f16>(1.0h) + color);
 }
@@ -150,7 +150,7 @@ fn inverseGamma(color: vec3<f16>, gamma: f16) -> vec3<f16> {
   return pow(max(color, vec3<f16>(0.0h)), vec3<f16>(1.0h / gamma));
 }
 
-// C6-TPDF-DITHER-FINAL — dither computed in f32 (the display value is in
+// Dither computed in f32 (the display value is in
 // [0,1] and the dither is sub-LSB, so f16 precision would swamp it). See
 // Tonemapping.wgsl for the technique rationale.
 fn ditherHash12(p: vec2<f32>) -> f32 {

@@ -31,7 +31,7 @@
  * @private
  */
 import SSRShaderWGSL from "../../Shaders/WebGPU/PostProcess/ScreenSpaceReflections.js";
-// PARITY-F16-POSTPROCESS — hand-tuned f16 variant, selected when the
+// Hand-tuned f16 variant, selected when the
 // context opts in via `useShaderF16` AND the device granted `shader-f16`.
 import SSRShaderF16WGSL from "../../Shaders/WebGPU/PostProcess/ScreenSpaceReflections_f16.js";
 import {
@@ -100,7 +100,7 @@ function initializeSSRPipeline(
 ): void {
   if (cache.initialized) return;
 
-  // PARITY-F16-POSTPROCESS — pick the f16 variant only when the caller
+  // Pick the f16 variant only when the caller
   // confirmed both the opt-in flag and device support. The f16 SSR keeps
   // the entire ray-march + reconstruction in f32 (precision-critical) and
   // only narrows the final color blend, so output stays f32-identical
@@ -189,7 +189,7 @@ export function executeSSR(
   if (!device) return false;
 
   const cache = ensureSSRCache(context);
-  // PARITY-F16-POSTPROCESS — f16 only when opted in AND device-supported.
+  // Use f16 only when opted in and device-supported.
   const useF16 = !!context.useShaderF16 && !!context.hasFeature?.("shader-f16");
   initializeSSRPipeline(
     device,

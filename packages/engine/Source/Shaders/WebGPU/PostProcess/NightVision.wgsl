@@ -1,5 +1,5 @@
 // Night Vision post-processing effect — WGSL parity twin of
-// Shaders/PostProcessStages/NightVision.glsl (WIRE-PP-LIBRARY-BUILTINS).
+// Shaders/PostProcessStages/NightVision.glsl.
 // Matches the GLSL math exactly: animated hash noise seeded by the frame
 // number, added to the scene color, multiplied by pure green.
 

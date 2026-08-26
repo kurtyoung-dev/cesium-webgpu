@@ -274,8 +274,13 @@ test("ordinary engineering prose does not trip the grammar", () => {
   );
 });
 
-test("parity rows, alphabetic campaign labels, and bare fix labels are precise", () => {
+test("tracker ids, alphabetic campaign labels, and bare fix labels are precise", () => {
   const cases = [
+    {
+      ruleId: "fork-id",
+      examples: ["FORK-34", "FORK-99"],
+      counterExamples: ["FORK-NN", "FORK_34", "FORK-34A"],
+    },
     {
       ruleId: "parity-report-row-id",
       examples: ["Q13-PLAIN-HDR-GAMMA-CORE", "Q1-DEPTH24PLUS"],
@@ -300,15 +305,20 @@ test("parity rows, alphabetic campaign labels, and bare fix labels are precise",
     },
     {
       ruleId: "all-caps-fix-label",
-      examples: ["POINT-SPRITE-SHAPE", "PLAIN-HDR-GAMMA-CORE"],
+      examples: [
+        "POINT-SPRITE-SHAPE",
+        "PLAIN-HDR-GAMMA-CORE",
+        "PARITY-F16-POSTPROCESS",
+        "WIRE-PP-LIBRARY-BUILTINS",
+        "PARITY-FOO-POSTPROCESS",
+        "WIRE-XXX-LIBRARY-BUILTINS",
+      ],
       counterExamples: [
         "WELL-KNOWN",
-        "WGSL-IN-JS",
         "POINT_SPRITE_SHAPE",
         "identifier_POINT-SPRITE-SHAPE",
         "POINT-SPRITE-SHAPE_identifier",
         "NEW-WEBGPU-PIPELINE",
-        "AB-POINT-SPRITE-SHAPE",
       ],
     },
   ];
@@ -334,6 +344,23 @@ test("parity rows, alphabetic campaign labels, and bare fix labels are precise",
         `${ruleCase.ruleId} overmatched counter-example ${counterExample}`,
       );
     }
+  }
+});
+
+test("license, date-placeholder, and timestamp comments stay marker-free", () => {
+  for (const text of [
+    "CC-BY-SA",
+    "YYYY-MM-DD",
+    "2026-05-02",
+    "2012-08-01T00",
+    "9999-12-31T24",
+    "1980-08-01T00",
+  ]) {
+    assert.deepEqual(
+      scanSource("packages/engine/Source/Scene/Subject.js", `// ${text}\n`),
+      [],
+      `${text} is code-domain prose, not a development-history label`,
+    );
   }
 });
 
@@ -436,11 +463,11 @@ test("the shipped clean list and grandfather ratchets are current", async () => 
     covered > 0,
     "an empty clean list makes --verify-cleanlist prove nothing",
   );
-  assert.match(result.output, /41 grandfather rows/);
-  assert.match(result.output, /GRANDFATHERED 158 current findings/);
+  assert.match(result.output, /23 grandfather rows/);
+  assert.match(result.output, /GRANDFATHERED 126 current findings/);
 
   const grandfatherRows = await readGrandfatherList();
-  assert.equal(grandfatherRows.length, 41);
+  assert.equal(grandfatherRows.length, 23);
   assert.deepEqual(
     Object.fromEntries(
       [...new Set(grandfatherRows.map((row) => row.ruleId))]
@@ -452,7 +479,7 @@ test("the shipped clean list and grandfather ratchets are current", async () => 
     ),
     {
       "all-caps-fix-label": 18,
-      "campaign-row-id": 21,
+      "campaign-row-id": 3,
       "parity-report-row-id": 2,
     },
     "the grandfather rows must be the census-derived file/rule pairs",

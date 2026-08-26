@@ -62,33 +62,36 @@ is. What is checked is the substantive part: every fenced example below is
 required to be marker-free, and the worked example in §7 shows its tracker ids
 anonymized for that reason.
 
-| Rule id                | Matches                                             | Why it is banned                                          |
-| ---------------------- | --------------------------------------------------- | --------------------------------------------------------- |
-| `batch-id`             | `Batch \d`, `Batches \d`                            | Names a commit, not a constraint                          |
-| `campaign-row-id`      | `C\d{1,2}-\d+`, alphabetic `C\d{1,2}-` labels       | A queue row id; the queue is the authority                |
-| `parity-report-row-id` | `Q\d{1,2}-` parity-report labels                    | A parity-report row id; the report is the authority       |
-| `campaign-name`        | `Campaign \d`                                       | Dates the comment to a work programme                     |
-| `review-id`            | `C-R\d`                                             | Audit-round identifier                                    |
-| `dp-h-id`              | `DP-H\d`                                            | Design-point identifier                                   |
-| `far-id`               | `FAR-\d{3}`                                         | Containment-flag tracker identifier                       |
-| `takram`               | `TAKRAM`                                            | A reference-implementation codename used as a tag         |
-| `upstream-sync-id`     | `UP\d{3}-`                                          | Upstream-sync work-item identifier                        |
-| `cloud-unification-id` | `CLOUD-U\d`                                         | Work-item identifier                                      |
-| `deferred-work-id`     | `NEW-`, `BUG-`, `EPIC-`, `FIX-` prefixed ledger ids | Points at a backlog row, not at the code                  |
-| `all-caps-fix-label`   | Three or more hyphenated ALL-CAPS words             | A bare development-history label, not a code constraint   |
-| `numbered-bug-id`      | `BUG-\d`                                            | Debugging-log entry number                                |
-| `session-id`           | `Session \d`                                        | Dates the comment to a working session                    |
-| `tracker-document`     | Names of the campaign ledgers and queue files       | The code must stand on its own                            |
-| `decorative-glyph`     | U+2605, U+26A0, U+2705, U+274C and similar          | No glyph of this kind appears anywhere in upstream Cesium |
+| Rule id                | Matches                                                 | Why it is banned                                          |
+| ---------------------- | ------------------------------------------------------- | --------------------------------------------------------- |
+| `batch-id`             | `Batch \d`, `Batches \d`                                | Names a commit, not a constraint                          |
+| `campaign-row-id`      | `C\d{1,2}-\d+`, alphabetic `C\d{1,2}-` labels           | A queue row id; the queue is the authority                |
+| `parity-report-row-id` | `Q\d{1,2}-` parity-report labels                        | A parity-report row id; the report is the authority       |
+| `campaign-name`        | `Campaign \d`                                           | Dates the comment to a work programme                     |
+| `review-id`            | `C-R\d`                                                 | Audit-round identifier                                    |
+| `dp-h-id`              | `DP-H\d`                                                | Design-point identifier                                   |
+| `far-id`               | `FAR-\d{3}`                                             | Containment-flag tracker identifier                       |
+| `fork-id`              | `FORK-\d+`                                              | Fork-defect tracker identifier                            |
+| `takram`               | `TAKRAM`                                                | A reference-implementation codename used as a tag         |
+| `upstream-sync-id`     | `UP\d{3}-`                                              | Upstream-sync work-item identifier                        |
+| `cloud-unification-id` | `CLOUD-U\d`                                             | Work-item identifier                                      |
+| `deferred-work-id`     | `NEW-`, `BUG-`, `EPIC-`, `FIX-` prefixed ledger ids     | Points at a backlog row, not at the code                  |
+| `all-caps-fix-label`   | Three or more hyphenated ALL-CAPS/alphanumeric segments | A bare development-history label, not a code constraint   |
+| `numbered-bug-id`      | `BUG-\d`                                                | Debugging-log entry number                                |
+| `session-id`           | `Session \d`                                            | Dates the comment to a working session                    |
+| `tracker-document`     | Names of the campaign ledgers and queue files           | The code must stand on its own                            |
+| `decorative-glyph`     | U+2605, U+26A0, U+2705, U+274C and similar              | No glyph of this kind appears anywhere in upstream Cesium |
 
 Three more rules are part of the standard but are **not** machine-checked,
 because every regex for them produces false positives at a rate that teaches
 reviewers to ignore the tool:
 
 - **No ALL-CAPS emphasis.** Upstream uses sentence case. The narrow
-  `all-caps-fix-label` rule catches bare labels with three or more long
-  segments; ordinary emphasis remains a review judgement. If a point needs
-  emphasis, the sentence is not yet doing its job.
+  `all-caps-fix-label` rule catches bare labels with three or more segments of
+  at least two alphanumeric characters. It excludes the required `CC-BY-SA`
+  license identifier and the `YYYY-MM-DD` date placeholder; ordinary emphasis
+  remains a review judgement. If a point needs emphasis, the sentence is not
+  yet doing its job.
 - **No first person.** Not "we", "I", "our", and not "note to whoever picks
   this up". The reader is a maintainer, not an audience.
 - **No narrative.** No "this previously", "the first attempt", "turned out

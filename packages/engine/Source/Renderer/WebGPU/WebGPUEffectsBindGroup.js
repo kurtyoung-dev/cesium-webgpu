@@ -992,7 +992,7 @@ function getPlaceholderEffects(device) {
         resource: { buffer: clusteredPH.perClusterLightIndices },
       },
       { binding: 22, resource: { buffer: clusteredPH.params } },
-      // C6-LTC-AREA-LIGHTS placeholders (LUT texture + area-light buffer;
+      // Placeholders (LUT texture + area-light buffer;
       // no sampler — LUT read via textureLoad).
       { binding: 23, resource: clusteredPH.ltcLUTView },
       { binding: 25, resource: { buffer: clusteredPH.areaLights } },
@@ -1722,7 +1722,7 @@ function createEffectsBindGroup(device, frameState, options) {
     clusteredLighting?.perClusterLightIndices ??
     clusteredPH.perClusterLightIndices;
   const bClusterParams = clusteredLighting?.params ?? clusteredPH.params;
-  // C6-LTC-AREA-LIGHTS — LUT texture view / sampler / area-light buffer.
+  // LUT texture view / sampler / area-light buffer.
   // The dispatcher only builds the real LUT once an area light appears;
   // until then (and when no area lights are active) the per-device
   // placeholders are bound and the FS early-outs on activeLightCount.y=0.

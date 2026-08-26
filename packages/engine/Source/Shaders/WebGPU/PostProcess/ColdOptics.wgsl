@@ -91,7 +91,7 @@ struct ColdOpticsUniforms {
 @group(0) @binding(2) var texSampler: sampler;
 @group(0) @binding(3) var<uniform> uniforms: ColdOpticsUniforms;
 
-// COLD-OPTICS-HQ helpers (advanced branch only)
+// Helpers (advanced branch only)
 //
 // A spectrally-dispersed gaussian RING. The ice-crystal minimum-deviation
 // angle depends on wavelength (the prism disperses sunlight), so the R/G/B

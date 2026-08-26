@@ -655,7 +655,7 @@ export class WGSLShaderPreprocessor {
         allRefs.push(...csmRefs);
       }
 
-      // FORK-15 fix: Also resolve struct references transitively within chunks.
+      // Also resolve struct references transitively within chunks.
       // Without this, a chunk that references CameraUniforms or PBRMaterial
       // won't pull in the struct definition chunk, causing shader compilation failures.
       const structRefs = cleanCode.match(
