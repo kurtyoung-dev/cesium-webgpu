@@ -9,16 +9,12 @@
  */
 
 import EncodedCartesian3 from "../../Core/EncodedCartesian3.js";
+import BoundingSphere from "../../Core/BoundingSphere.js";
 import Matrix4 from "../../Core/Matrix4.js";
 import Cartesian3 from "../../Core/Cartesian3.js";
 import Pass from "../Pass.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
-import {
-  makeBindGroupLayout,
-  uniformBuffer,
-  Stage,
-} from "./WebGPUBindGroupLayoutHelpers.js";
-import { m4Values, gpuData } from "./webgpuTypeHelpers.js";
+import { gpuData } from "./webgpuTypeHelpers.js";
 import type { WebGPUPointCloudLODProcessorInstance } from "./WebGPUPointCloudLODProcessor.js";
 import { ShaderSourceId } from "./WebGPUShaderDefines.js";
 import { WebGPUShaderModuleCache } from "./WebGPUShaderModuleCache.js";
@@ -35,6 +31,13 @@ import type {
   WebGPURenderPipelineCache,
   WebGPURenderPipelineDescriptor,
 } from "./WebGPURenderPipelineCache.js";
+import { unpackPointCloudColor } from "../../Scene/PointCloudAttributeUtils.js";
+import {
+  createPointCloudRteHistory,
+  updatePointCloudRteHistory,
+} from "./WebGPUPointCloudRteHistory.js";
+import { getWebGPUPointCloudSharedLayouts } from "./WebGPUPointCloudSharedLayouts.js";
+import { updatePointCloudLodLocalFrame } from "./WebGPUPointCloudLodLocalFrame.js";
 
 // Per-device shader module cache so multiple PointClouds on the same
 // `GPUDevice` share one compiled `GPUShaderModule` per source.
@@ -93,8 +96,30 @@ function getPointCloudShaderModuleCache(
  * numeric shape.
  */
 interface PointCloudParsedContent {
-  positions?: Float32Array;
-  colors?: Uint8Array | Float32Array;
+  positions?:
+    | ArrayLike<number>
+    | {
+        typedArray?: ArrayLike<number>;
+        isQuantized?: boolean;
+        quantizedVolumeScale?: { x: number; y: number; z: number };
+        quantizedVolumeOffset?: { x: number; y: number; z: number };
+        quantizedRange?: number;
+      };
+  colors?:
+    | ArrayLike<number>
+    | {
+        typedArray?: ArrayLike<number>;
+        componentDatatype?: number;
+        componentCount?: number;
+        isRGB565?: boolean;
+        constantColor?: {
+          red: number;
+          green: number;
+          blue: number;
+          alpha: number;
+        };
+      };
+  rtcCenter?: CesiumCartesian3;
 }
 
 interface PointCloudLike {
@@ -104,14 +129,25 @@ interface PointCloudLike {
   _pointsLength?: number;
   enableGPULOD?: boolean;
   modelMatrix?: CesiumMatrix4;
-  lodFarDistance?: number;
   geometricError?: number;
+  /** Cull beyond this world distance; undefined uses camera far, while 0 is a Float32-safe disable sentinel. */
+  lodFarDistance?: number;
   // POINT-SPRITE-SHAPE — WebGL attenuation parity inputs (PointCloud.js).
   attenuation?: boolean;
   geometricErrorScale?: number;
   // True when a constant style pointSize is active — WebGL gives the style
   // priority over attenuation, so the attenuation clamp must be disabled.
   _webgpuStylePointSizeActive?: boolean;
+  _webgpuPointSize?: number;
+  _isRGB565?: boolean;
+  _isTranslucent?: boolean;
+  _constantColor?: { red: number; green: number; blue: number; alpha: number };
+  _highlightColor?: { red: number; green: number; blue: number; alpha: number };
+  _opaquePass?: number;
+  _cull?: boolean;
+  _webgpuLocalBoundingSphere?: CesiumBoundingSphere;
+  _boundingSphere?: CesiumBoundingSphere;
+  boundingSphere?: CesiumBoundingSphere;
   // Allow pass-through for anything else the buildInstanceBuffer /
   // frustum extraction paths read — keeps the typed surface minimal
   // while preserving the upstream escape hatch.
@@ -122,18 +158,29 @@ interface PointCloudPipelineEntry {
   descriptor: WebGPURenderPipelineDescriptor;
   pipeline: GPURenderPipeline | null;
   pending: boolean;
+  error?: unknown;
+  errorReported?: boolean;
 }
 
 interface PointCloudCache {
+  /** Exact GPU-resource ownership tuple; invalidated on device recovery. */
+  context: CesiumGraphicsContext;
+  device: GPUDevice;
+  resourceGeneration: number;
+  sharedLayouts: ReturnType<typeof getWebGPUPointCloudSharedLayouts>;
+  rteHistory: ReturnType<typeof createPointCloudRteHistory>;
+  uniformScratch: Float32Array;
   uniformBuffer: GPUBuffer | null;
   pipeline: GPURenderPipeline | null;
   shaderModule: GPUShaderModule | null;
   bindGroup: GPUBindGroup | null;
   quadVertexBuffer: GPUBuffer | null;
   instanceBuffer: GPUBuffer | null;
+  instanceAllowsStorage: boolean;
   instanceCount: number;
   command: CesiumAnyDrawCommand | null;
   initialized: boolean;
+  translucent: boolean;
   lastRevision: number;
 
   // C-R7-RENDERER-MIGRATION (Batch 74). Default-path pipeline now
@@ -152,15 +199,25 @@ interface PointCloudCache {
   // `instanceCountBuffer` is a 16-byte indirect draw arg buffer that
   // the LOD processor's visibleCount is copied into each frame.
   lodPipeline: GPURenderPipeline | null;
+  lodProcessor: WebGPUPointCloudLODProcessorInstance | null;
+  lodProcessorPromise: Promise<WebGPUPointCloudLODProcessorInstance> | null;
+  lodProcessorFailed: boolean;
   lodBindGroupLayout: GPUBindGroupLayout | null;
   lodStorageBindGroup: GPUBindGroup | null;
   lodIndirectBuffer: GPUBuffer | null;
   lodPositionsX: Float32Array | null;
   lodPositionsY: Float32Array | null;
   lodPositionsZ: Float32Array | null;
+  /** Reused local-space culling inputs; model motion only rewrites params. */
+  lodFrustumPlanes: Float32Array;
+  lodCameraPositionLocal: [number, number, number];
+  lodModelLinear: Float32Array;
+  lodRtcCenter: Cartesian3;
   lodUploadedRevision: number;
   lodCommand: CesiumAnyDrawCommand | null;
   lodActive: boolean;
+  defaultEdlSource: PointCloudEDLSource | null;
+  lodEdlSource: PointCloudEDLSource | null;
 
   // C-R7-RENDERER-MIGRATION (Batch 74) — same pattern for the LOD
   // pipeline. Held alongside the LOD pipeline slot so the resolve helper
@@ -197,6 +254,7 @@ interface PointCloudCache {
   // Lazy velocity pipeline. Builds the first frame TAA is on; cached
   // thereafter. Cleared on format invalidation.
   velocityPipelineEntry: PointCloudPipelineEntry | null;
+  velocityCommand: CesiumAnyDrawCommand | null;
 
   // Batch 169 - B.10 NEW-ADVANCED-MOTION-VECTORS LOD path. Parallel
   // storage buffer mirroring `instanceBuffer` with the PREVIOUS
@@ -208,6 +266,7 @@ interface PointCloudCache {
   // declares bindings 0-1, so a different BGL is needed). Resolved on
   // the first LOD-active TAA frame.
   lodVelocityPipelineEntry: PointCloudPipelineEntry | null;
+  lodVelocityCommand: CesiumAnyDrawCommand | null;
   lodVelocityBindGroup: GPUBindGroup | null;
   lodVelocityStorageBGL: GPUBindGroupLayout | null;
 
@@ -229,17 +288,19 @@ interface PointCloudCache {
   lodPrevBufferRevision: number | undefined;
 }
 
+let nextPointCloudLodOwnerId = 1;
+
 const POINT_CLOUD_WGSL = `
 struct VertexInput {
   @location(0) quadVertex: vec2<f32>,
   @location(1) positionHigh: vec3<f32>,
   @location(2) positionLow: vec3<f32>,
-  @location(3) colorAndSize: vec4<f32>,
+  @location(3) colorAndAlpha: vec4<f32>,
 };
 
 struct VertexOutput {
   @builtin(position) position: vec4<f32>,
-  @location(0) color: vec3<f32>,
+  @location(0) color: vec4<f32>,
   @location(1) pointUV: vec2<f32>,
   // FEAT-GAP-09 (Batch 103 audit fix) — point-center RTE position
   // for the aerial-perspective fog block. Per-quad-vertex spread is
@@ -265,19 +326,25 @@ struct Uniforms {
   // derived VS. 0 disables (2D / ortho / attenuation off) — the baked
   // per-point size is used as-is (formerly _pad2, layout unchanged).
   attenuation: f32,
-  // AUDIT_2026_05_02 B.9 (Batch 153) — DP-H41 prev viewProjection at the
-  // tail. Consumed by Batch 168's per-particle motion-vector pass.
-  prevViewProjection: mat4x4<f32>,
-  // Batch 168 - B.10 NEW-ADVANCED-MOTION-VECTORS. Model matrix (no
-  // translation zeroing) lifts prev model-space positions to world
-  // space before applying prevVP. CPU packs pointCloud.modelMatrix
-  // directly; static for typical 3D-Tiles content (modelMatrix locked
-  // at tile-content load) so velocity stays at zero in the common case.
+  // Previous-frame point-cloud RTE snapshot. It is paired with the previous
+  // model-space encoded camera at this struct's tail; no absolute f32 world
+  // position participates in velocity reprojection.
+  previousMvpRelativeToEye: mat4x4<f32>,
+  // Current model matrix is retained for current-frame world-direction fog
+  // inputs. Previous-frame velocity never reads it.
   modelMatrix: mat4x4<f32>,
   // C2-7 NEW-LOG-DEPTH-POINTCLOUD-PRODUCER. x=frustum near, y=frustum far,
   // z=oneOverLog2FarDepthFromNearPlusOne, w=useLogDepth flag (1.0 active,
   // 0.0 inert → byte-identical to the prior hyperbolic-z behavior).
   logDepth: vec4<f32>,
+  // POINT-CLOUD-COLOR-FORMATS — public PointCloud.color multiplier. Keeping
+  // this dynamic avoids rebuilding the immutable point-data buffer when an
+  // application changes highlight color or alpha.
+  highlightColor: vec4<f32>,
+  previousEncodedCameraHigh: vec3<f32>,
+  _pad3: f32,
+  previousEncodedCameraLow: vec3<f32>,
+  _pad4: f32,
 };
 
 @group(0) @binding(0) var<uniform> u: Uniforms;
@@ -326,7 +393,9 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   // gl_PointSize = min((u_geometricError / depth) * u_depthMultiplier,
   // u_pointSize). clipPos.w is the positive eye depth for a standard
   // perspective projection (= -positionEC.z in the WebGL VS).
-  var pointSize = input.colorAndSize.a * u.pointSizeMultiplier;
+  // The packed record's fourth color lane is true alpha. Point size is a
+  // per-cloud value in this renderer, so it lives in the already-dynamic UBO.
+  var pointSize = u.pointSizeMultiplier;
   if (u.attenuation > 0.0) {
     pointSize = min(u.attenuation / max(clipPos.w, 1.0e-6), pointSize);
   }
@@ -336,10 +405,12 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   fp.x = fp.x + input.quadVertex.x * px;
   fp.y = fp.y + input.quadVertex.y * py;
   output.position = fp;
-  output.color = input.colorAndSize.rgb;
+  output.color = input.colorAndAlpha * u.highlightColor;
   output.pointUV = input.quadVertex;
-  // FEAT-GAP-09 (Batch 103) — point-center RTE for fog block.
-  output.worldPos = posRTE;
+  // FEAT-GAP-09 (Batch 103) — rotate/scale the model-relative RTE vector
+  // into world space for the fog lookup. w=0 deliberately excludes the
+  // translation already represented by the camera-relative subtraction.
+  output.worldPos = (u.modelMatrix * vec4<f32>(posRTE, 0.0)).xyz;
   // C2-7 — log depth from the point CENTER (clipPos, not the spread corner);
   // clamp the final clip-z so the FS-written log depth isn't pre-empted.
   output.vLogDepth = csm_vertexLogDepth(clipPos, u.logDepth.x);
@@ -361,13 +432,15 @@ fn fragmentMain(input: VertexOutput) -> FragOut {
   // Bentley point-style extension, which this path doesn't implement).
   // Fill the whole quad opaquely to match; pointUV stays in the
   // varying contract for a future round/point-style opt-in.
-  var finalColor = vec4<f32>(input.color, 1.0);
+  var finalColor = input.color;
 
   // FEAT-GAP-09 (Batch 103) — Aerial-perspective fog blend.
   if (effects.atmosphereLutControl.x > 0.5) {
     let innerRadius = effects.atmosphereLutControl.y;
     let thickness = max(1.0, effects.atmosphereLutControl.z);
-    let cameraWC = u.encodedCameraHigh + u.encodedCameraLow;
+    // The model-space camera feeds only LUT direction and altitude, where metre-scale f32 error is imperceptible.
+    let cameraModel = u.encodedCameraHigh + u.encodedCameraLow;
+    let cameraWC = (u.modelMatrix * vec4<f32>(cameraModel, 1.0)).xyz;
     let viewDirWS = normalize(input.worldPos);
     let upDir = normalize(cameraWC);
     let cosViewZenith = clamp(dot(viewDirWS, upDir), -1.0, 1.0);
@@ -417,7 +490,7 @@ struct VelocityVertexInput {
   @location(0) quadVertex: vec2<f32>,
   @location(1) positionHigh: vec3<f32>,
   @location(2) positionLow: vec3<f32>,
-  @location(3) colorAndSize: vec4<f32>,
+  @location(3) colorAndAlpha: vec4<f32>,
   // Slot 1: prev-frame instance data — only positions matter.
   @location(4) prevPositionHigh: vec3<f32>,
   @location(5) prevPositionLow: vec3<f32>,
@@ -427,6 +500,7 @@ struct VelocityVertexOutput {
   @builtin(position) position: vec4<f32>,
   @location(0) currCenterClip: vec4<f32>,
   @location(1) prevCenterClip: vec4<f32>,
+  @location(2) alpha: f32,
 };
 
 @vertex
@@ -436,21 +510,18 @@ fn vertexVelocityMain(input: VelocityVertexInput) -> VelocityVertexOutput {
   let posRTE = (input.positionHigh - u.encodedCameraHigh)
              + (input.positionLow - u.encodedCameraLow);
   let currCenterClip = u.mvpRelativeToEye * vec4<f32>(posRTE, 1.0);
-  // Previous-frame center clip via full prev VP. Prev positions are in
-  // model space (same as current); lift to world space via current
-  // modelMatrix (acceptable approximation for the static-modelMatrix
-  // case which dominates 3D-Tiles point cloud content), then apply
-  // prevViewProjection to land in prev clip space.
-  let prevModelPos = vec4<f32>(
-    input.prevPositionHigh + input.prevPositionLow, 1.0,
-  );
-  let prevWorldPos = u.modelMatrix * prevModelPos;
-  let prevCenterClip = u.prevViewProjection * prevWorldPos;
+  // Previous-frame center clip uses the previous model/camera RTE snapshot.
+  // This remains precise at Earth scale and captures camera AND model motion.
+  let prevPosRTE =
+      (input.prevPositionHigh - u.previousEncodedCameraHigh)
+    + (input.prevPositionLow - u.previousEncodedCameraLow);
+  let prevCenterClip =
+    u.previousMvpRelativeToEye * vec4<f32>(prevPosRTE, 1.0);
   // Rasterize quad at the current center using the existing pixel-size
   // expansion so the velocity texture covers the same screen pixels.
   // POINT-SPRITE-SHAPE — same attenuation clamp as vertexMain so the
   // velocity quad stays coverage-identical to the color quad.
-  var pointSize = input.colorAndSize.a * u.pointSizeMultiplier;
+  var pointSize = u.pointSizeMultiplier;
   if (u.attenuation > 0.0) {
     pointSize = min(u.attenuation / max(currCenterClip.w, 1.0e-6), pointSize);
   }
@@ -462,11 +533,16 @@ fn vertexVelocityMain(input: VelocityVertexInput) -> VelocityVertexOutput {
   output.position = fp;
   output.currCenterClip = currCenterClip;
   output.prevCenterClip = prevCenterClip;
+  output.alpha = input.colorAndAlpha.a * u.highlightColor.a;
   return output;
 }
 
 @fragment
 fn fragmentVelocityMain(input: VelocityVertexOutput) -> @location(0) vec2<f32> {
+  // Invisible source/highlight-alpha points must not write motion into TAA.
+  if (input.alpha <= 0.0) {
+    discard;
+  }
   let curW = input.currCenterClip.w;
   let prevW = input.prevCenterClip.w;
   if (curW <= 0.0 || prevW <= 0.0) {
@@ -485,7 +561,7 @@ fn fragmentVelocityMain(input: VelocityVertexOutput) -> @location(0) vec2<f32> {
 // the point count is above POINT_COUNT_LOD_THRESHOLD.
 //
 // The storage buffer is the SAME 40-byte packed layout as the default
-// path's vertex buffer (posHigh(12) + posLow(12) + colorAndSize(16)).
+// path's vertex buffer (posHigh(12) + posLow(12) + color RGBA(16)).
 // WGSL's `array<vec3<f32>>` would add 16-byte alignment padding that
 // breaks that packing, so we declare the storage as `array<f32>` and
 // index manually at 10 floats per instance. This lets us reuse the
@@ -494,7 +570,7 @@ fn fragmentVelocityMain(input: VelocityVertexOutput) -> @location(0) vec2<f32> {
 const POINT_CLOUD_LOD_WGSL = `
 struct VertexOutput {
   @builtin(position) position: vec4<f32>,
-  @location(0) color: vec3<f32>,
+  @location(0) color: vec4<f32>,
   @location(1) pointUV: vec2<f32>,
   // FEAT-GAP-09 (Batch 104) — point-center RTE position for the
   // aerial-perspective fog block.
@@ -514,15 +590,17 @@ struct Uniforms {
   // POINT-SPRITE-SHAPE — attenuation scale; see the default-path
   // Uniforms comment (formerly _pad2, layout unchanged).
   attenuation: f32,
-  // AUDIT_2026_05_02 B.9 (Batch 153) — DP-H41 prev viewProjection.
-  prevViewProjection: mat4x4<f32>,
-  // Batch 168 - matches the default-path UBO layout. Used by the
-  // velocity VS (Batch 169) to lift prev model-space positions to
-  // world space; the regular LOD VS doesn't read it.
+  previousMvpRelativeToEye: mat4x4<f32>,
+  // Current-frame model matrix, used only for current fog/world directions.
   modelMatrix: mat4x4<f32>,
   // C2-7 NEW-LOG-DEPTH-POINTCLOUD-PRODUCER — x=near, y=far, z=factor,
   // w=useLogDepth flag. Matches the default-path UBO layout.
   logDepth: vec4<f32>,
+  highlightColor: vec4<f32>,
+  previousEncodedCameraHigh: vec3<f32>,
+  _pad3: f32,
+  previousEncodedCameraLow: vec3<f32>,
+  _pad4: f32,
 };
 
 @group(0) @binding(0) var<uniform> u: Uniforms;
@@ -535,7 +613,7 @@ struct Uniforms {
 // SSBO mirroring instanceData with the PREVIOUS frame's interleaved
 // positions, indexed identically by visibleIndices[iidx]. Same
 // 10-floats-per-point layout; only floats 0-5 (posHigh, posLow) are
-// read by the velocity VS — color/size are ignored. Bound at slot 2
+// read by the velocity VS — color/alpha are ignored. Bound at slot 2
 // alongside the regular LOD storage; the color pipeline doesn't
 // declare this binding (WGSL only requires declared bindings, the
 // BGL for both pipelines includes the slot).
@@ -594,17 +672,17 @@ fn vertexMainLOD(
     instanceData[base + 4u],
     instanceData[base + 5u],
   );
-  let color = vec3<f32>(
+  let color = vec4<f32>(
     instanceData[base + 6u],
     instanceData[base + 7u],
     instanceData[base + 8u],
+    instanceData[base + 9u],
   );
-  let size = instanceData[base + 9u];
   let posRTE = (positionHigh - u.encodedCameraHigh)
              + (positionLow - u.encodedCameraLow);
   let clipPos = u.mvpRelativeToEye * vec4<f32>(posRTE, 1.0);
   // POINT-SPRITE-SHAPE — WebGL attenuation parity (see default path).
-  var pointSize = size * u.pointSizeMultiplier;
+  var pointSize = u.pointSizeMultiplier;
   if (u.attenuation > 0.0) {
     pointSize = min(u.attenuation / max(clipPos.w, 1.0e-6), pointSize);
   }
@@ -614,10 +692,10 @@ fn vertexMainLOD(
   fp.x = fp.x + quadVertex.x * px;
   fp.y = fp.y + quadVertex.y * py;
   output.position = fp;
-  output.color = color;
+  output.color = color * u.highlightColor;
   output.pointUV = quadVertex;
   // FEAT-GAP-09 (Batch 104) — point-center RTE for fog block.
-  output.worldPos = posRTE;
+  output.worldPos = (u.modelMatrix * vec4<f32>(posRTE, 0.0)).xyz;
   // C2-7 — log depth from the point CENTER; clamp the final clip-z when active.
   output.vLogDepth = csm_vertexLogDepth(clipPos, u.logDepth.x);
   if (u.logDepth.w > 0.5) {
@@ -635,14 +713,16 @@ struct FragOut {
 fn fragmentMainLOD(input: VertexOutput) -> FragOut {
   // POINT-SPRITE-SHAPE — solid square to match WebGL gl_Points; see
   // fragmentMain in POINT_CLOUD_WGSL for the parity rationale.
-  var finalColor = vec4<f32>(input.color, 1.0);
+  var finalColor = input.color;
 
   // FEAT-GAP-09 (Batch 104) — Aerial-perspective fog blend. Same
   // body as the default POINT_CLOUD_WGSL::fragmentMain.
   if (effects.atmosphereLutControl.x > 0.5) {
     let innerRadius = effects.atmosphereLutControl.y;
     let thickness = max(1.0, effects.atmosphereLutControl.z);
-    let cameraWC = u.encodedCameraHigh + u.encodedCameraLow;
+    // The model-space camera feeds only LUT direction and altitude, where metre-scale f32 error is imperceptible.
+    let cameraModel = u.encodedCameraHigh + u.encodedCameraLow;
+    let cameraWC = (u.modelMatrix * vec4<f32>(cameraModel, 1.0)).xyz;
     let viewDirWS = normalize(input.worldPos);
     let upDir = normalize(cameraWC);
     let cosViewZenith = clamp(dot(viewDirWS, upDir), -1.0, 1.0);
@@ -693,6 +773,7 @@ struct VelocityVertexOutputLOD {
   @builtin(position) position: vec4<f32>,
   @location(0) currCenterClip: vec4<f32>,
   @location(1) prevCenterClip: vec4<f32>,
+  @location(2) alpha: f32,
 };
 
 @vertex
@@ -715,13 +796,11 @@ fn vertexVelocityMainLOD(
     instanceData[base + 4u],
     instanceData[base + 5u],
   );
-  let size = instanceData[base + 9u];
   let posRTE = (positionHigh - u.encodedCameraHigh)
              + (positionLow - u.encodedCameraLow);
   let currCenterClip = u.mvpRelativeToEye * vec4<f32>(posRTE, 1.0);
 
-  // Previous-frame center clip via prevVP × modelMatrix × prevModelPos.
-  // Prev positions live in the parallel SSBO at the SAME source index
+  // Previous positions live in the parallel SSBO at the SAME source index
   // (visibleIndices is regenerated each frame but the per-point
   // identity is stable across the LOD compaction — point i in the
   // base SSBO is point i in prev SSBO).
@@ -735,14 +814,16 @@ fn vertexVelocityMainLOD(
     prevInstanceData[base + 4u],
     prevInstanceData[base + 5u],
   );
-  let prevModelPos = vec4<f32>(prevPosHigh + prevPosLow, 1.0);
-  let prevWorldPos = u.modelMatrix * prevModelPos;
-  let prevCenterClip = u.prevViewProjection * prevWorldPos;
+  let prevPosRTE =
+      (prevPosHigh - u.previousEncodedCameraHigh)
+    + (prevPosLow - u.previousEncodedCameraLow);
+  let prevCenterClip =
+    u.previousMvpRelativeToEye * vec4<f32>(prevPosRTE, 1.0);
 
   // Rasterize quad at the current center using the existing pixel-size
   // expansion so the velocity texture covers the same screen pixels.
   // POINT-SPRITE-SHAPE — same attenuation clamp as vertexMainLOD.
-  var pointSize = size * u.pointSizeMultiplier;
+  var pointSize = u.pointSizeMultiplier;
   if (u.attenuation > 0.0) {
     pointSize = min(u.attenuation / max(currCenterClip.w, 1.0e-6), pointSize);
   }
@@ -754,11 +835,15 @@ fn vertexVelocityMainLOD(
   output.position = fp;
   output.currCenterClip = currCenterClip;
   output.prevCenterClip = prevCenterClip;
+  output.alpha = instanceData[base + 9u] * u.highlightColor.a;
   return output;
 }
 
 @fragment
 fn fragmentVelocityMainLOD(input: VelocityVertexOutputLOD) -> @location(0) vec2<f32> {
+  if (input.alpha <= 0.0) {
+    discard;
+  }
   let curW = input.currCenterClip.w;
   let prevW = input.prevCenterClip.w;
   if (curW <= 0.0 || prevW <= 0.0) {
@@ -778,10 +863,6 @@ fn fragmentVelocityMainLOD(input: VelocityVertexOutputLOD) -> @location(0) vec2<
 const POINT_COUNT_LOD_THRESHOLD = 50_000;
 
 const scratchEncoded = { high: new Cartesian3(), low: new Cartesian3() };
-const scratchMVP = new Matrix4();
-// RTE scratch: view×model with translation column zeroed, used to
-// build MVP correctly (must zero before projecting).
-const scratchMVRTE = new Matrix4();
 
 function createQuadVB(device: GPUDevice): GPUBuffer {
   const verts = new Float32Array([-1, -1, 1, -1, 1, 1, -1, -1, 1, 1, -1, 1]);
@@ -806,6 +887,8 @@ function buildPipelineDescriptor(
   device: GPUDevice,
   format: GPUTextureFormat,
   sampleCount: number,
+  translucent: boolean,
+  sharedLayouts: ReturnType<typeof getWebGPUPointCloudSharedLayouts>,
 ): {
   descriptor: WebGPURenderPipelineDescriptor;
   shaderModule: GPUShaderModule;
@@ -818,22 +901,12 @@ function buildPipelineDescriptor(
     0,
     "PointCloud shader",
   );
-  const bgl = makeBindGroupLayout(device, "PointCloud BGL", [
-    // C2-7 — VERTEX_FRAGMENT (was VERTEX): the FS now reads u.logDepth.z/.w for
-    // the renderer-wide log frag_depth write, so binding 0 must be visible to the
-    // fragment stage too (same class as the Batch-253 depth-plane [ld] BGL fix).
-    uniformBuffer(0, Stage.VERTEX_FRAGMENT),
-  ]);
-  // FEAT-GAP-09 (Batch 102) — append the shared effects BGL at slot 1
-  // so the WGSL fog block at @group(1) resolves. Shared layout
-  // cascades through to all PointCloud variants (LOD, velocity, EDL)
-  // since they reuse this descriptor's `layout` field.
-  const effectsBGL = getEffectsBindGroupLayout(device);
+  const bgl = sharedLayouts.uniformBindGroupLayout;
   const descriptor: WebGPURenderPipelineDescriptor = {
-    name: `PointCloud pipeline [${format}/ms=${sampleCount}]`,
-    layout: device.createPipelineLayout({
-      bindGroupLayouts: [bgl, effectsBGL],
-    }),
+    name: `PointCloud pipeline [${format}/ms=${sampleCount}/${
+      translucent ? "translucent" : "opaque"
+    }]`,
+    layout: sharedLayouts.defaultPipelineLayout,
     vertex: {
       module: shaderModule,
       entryPoint: "vertexMain",
@@ -875,22 +948,19 @@ function buildPipelineDescriptor(
     fragment: {
       module: shaderModule,
       entryPoint: "fragmentMain",
-      // Slice 5c-B Phase 1 (Batch 112) — scene-FB color target via
-      // helper. Verbatim blend preserves the (no-`operation`) shape.
-      // Used for BOTH default `fragmentMain` and LOD `fragmentMainLOD`
-      // color pipelines; velocity pipelines at lines ~836 + ~2107
-      // (rg16float) stay single-target.
-      targets: makeSceneFBTargets(format, {
-        blend: {
-          color: { srcFactor: "src-alpha", dstFactor: "one-minus-src-alpha" },
-          alpha: { srcFactor: "one", dstFactor: "one-minus-src-alpha" },
-        },
-      }),
+      // Opaque targets must omit blend entirely; WebGPU's fixed-function
+      // blend stage is only enabled for source/public alpha content.
+      targets: makeSceneFBTargets(
+        format,
+        translucent ? { translucent: true } : {},
+      ),
     },
     primitive: { topology: "triangle-list", cullMode: "none" },
     depthStencil: {
       format: "depth24plus-stencil8",
-      depthWriteEnabled: true,
+      // Match PointCloud.js RenderState: translucent points blend and test
+      // depth but do not write it; opaque points retain normal depth writes.
+      depthWriteEnabled: !translucent,
       // less-equal for planetary-scale precision robustness.
       depthCompare: "less-equal",
     },
@@ -912,22 +982,12 @@ function buildPipelineDescriptor(
  * @private
  */
 function buildVelocityPipelineDescriptor(
-  device: GPUDevice,
   shaderModule: GPUShaderModule,
-  bgl: GPUBindGroupLayout,
+  sharedLayouts: ReturnType<typeof getWebGPUPointCloudSharedLayouts>,
 ): WebGPURenderPipelineDescriptor {
-  // FEAT-GAP-09 (Batch 102) — match the color pipeline's 2-BGL layout
-  // (uniforms + effects). Velocity entry doesn't sample atmosphere
-  // bindings, but the layout shape must match what the WGSL module
-  // expects, so we append the effects BGL here too.
-  const effectsBGL = getEffectsBindGroupLayout(device);
-  const layout = device.createPipelineLayout({
-    label: "PointCloud velocity pipeline layout",
-    bindGroupLayouts: [bgl, effectsBGL],
-  });
   return {
     name: "PointCloud velocity pipeline",
-    layout,
+    layout: sharedLayouts.defaultPipelineLayout,
     vertex: {
       module: shaderModule,
       entryPoint: "vertexVelocityMain",
@@ -1044,6 +1104,12 @@ function tryResolvePointCloudPipeline(
   if (entry.pipeline) {
     return entry.pipeline;
   }
+  // A terminal async compile failure is surfaced by the owner's next update.
+  // Never restart it every frame; device/generation invalidation creates a
+  // fresh cache/entry and is the explicit retry boundary.
+  if (entry.error) {
+    return null;
+  }
   if (pipelineCache) {
     const sync = pipelineCache.getPipelineSync(entry.descriptor);
     if (sync) {
@@ -1059,8 +1125,12 @@ function tryResolvePointCloudPipeline(
           entry.pipeline = p;
           entry.pending = false;
         })
-        .catch(() => {
+        .catch((error: unknown) => {
           entry.pending = false;
+          entry.error = new Error(
+            `WebGPU point-cloud pipeline '${entry.descriptor.name}' failed to compile`,
+            { cause: error },
+          );
         });
     }
     return null;
@@ -1072,19 +1142,36 @@ function tryResolvePointCloudPipeline(
   return entry.pipeline;
 }
 
+function throwUnreportedPointCloudPipelineError(cache: PointCloudCache): void {
+  const entries = [
+    cache.pipelineEntry,
+    cache.lodPipelineEntry,
+    cache.velocityPipelineEntry,
+    cache.lodVelocityPipelineEntry,
+  ];
+  for (const entry of entries) {
+    if (entry?.error && entry.errorReported !== true) {
+      entry.errorReported = true;
+      throw entry.error;
+    }
+  }
+}
+
 function buildInstanceBuffer(
   device: GPUDevice,
   pointCloud: PointCloudLike,
-  modelMatrix: Matrix4 | CesiumMatrix4,
   allowStorage: boolean,
 ): {
   buffer: GPUBuffer;
   count: number;
-  // SOA world-space positions for the GPU LOD processor. Only populated
+  // SOA model-local positions for the GPU LOD processor. Only populated
   // when `allowStorage` is true — saves 12 MB/million points otherwise.
-  worldX: Float32Array | null;
-  worldY: Float32Array | null;
-  worldZ: Float32Array | null;
+  localX: Float32Array | null;
+  localY: Float32Array | null;
+  localZ: Float32Array | null;
+  rtcX: number;
+  rtcY: number;
+  rtcZ: number;
   // Batch 168 - retained interleaved instance data so the velocity
   // path can mirror it into the prev-instance GPU buffer per frame.
   // Same lifecycle as the GPU buffer (rebuilt on revision change).
@@ -1097,9 +1184,12 @@ function buildInstanceBuffer(
     return {
       buffer: device.createBuffer({ size: 40, usage: GPUBufferUsage.VERTEX }),
       count: 0,
-      worldX: null,
-      worldY: null,
-      worldZ: null,
+      localX: null,
+      localY: null,
+      localZ: null,
+      rtcX: 0.0,
+      rtcY: 0.0,
+      rtcZ: 0.0,
       instanceData: new Float32Array(0),
     };
   }
@@ -1125,6 +1215,14 @@ function buildInstanceBuffer(
   const colorAttr = parsedContent.colors as unknown as {
     typedArray?: ArrayLike<number>;
     componentDatatype?: number;
+    componentCount?: number;
+    isRGB565?: boolean;
+    constantColor?: {
+      red: number;
+      green: number;
+      blue: number;
+      alpha: number;
+    };
   } | null;
   const colors: ArrayLike<number> | null | undefined =
     colorAttr?.typedArray ??
@@ -1133,6 +1231,29 @@ function buildInstanceBuffer(
     colors instanceof Uint8Array ||
     colors instanceof Uint8ClampedArray ||
     (colorAttr != null && colorAttr.componentDatatype === 5121); // UNSIGNED_BYTE
+  const isRGB565 =
+    pointCloud._isRGB565 === true || colorAttr?.isRGB565 === true;
+  // PntsParser marks RGBA content translucent even when every alpha happens to
+  // be 255. Draco adds an explicit componentCount in the shared decode stage.
+  const colorComponentCount =
+    colorAttr?.componentCount ?? (pointCloud._isTranslucent === true ? 4 : 3);
+  const constantColor = colorAttr?.constantColor ??
+    pointCloud._constantColor ?? {
+      red: 0.25,
+      green: 0.25,
+      blue: 0.25,
+      alpha: 1,
+    };
+  const decodedColor = new Float32Array(4);
+  // Immutable descriptor shared by every point in this build. Keep it outside
+  // the million-point loop so format support does not add allocation churn.
+  const colorDecodeOptions = {
+    colors,
+    componentCount: colorComponentCount,
+    colorsAreBytes,
+    isRGB565,
+    constantColor,
+  };
 
   const pointCount = positions.length / 3;
 
@@ -1155,17 +1276,18 @@ function buildInstanceBuffer(
   const rtcY = rtc?.y ?? 0;
   const rtcZ = rtc?.z ?? 0;
 
-  // 40 bytes per instance: posHigh(12) + posLow(12) + colorAndSize(16)
+  // 40 bytes per instance: posHigh(12) + posLow(12) + color RGBA(16).
+  // Point size is per-cloud (not per-point) on this renderer and lives in the
+  // dynamic UBO, which leaves the fourth lane available for real alpha.
   const data = new Float32Array(pointCount * 10);
 
-  // World-space SOA arrays used by the LOD processor. Allocated only
+  // Immutable model-local SOA arrays used by the LOD processor. Allocated only
   // when the caller plans to potentially activate GPU LOD — the
   // storage adds 12 bytes/point in CPU memory which isn't free.
-  const worldX = allowStorage ? new Float32Array(pointCount) : null;
-  const worldY = allowStorage ? new Float32Array(pointCount) : null;
-  const worldZ = allowStorage ? new Float32Array(pointCount) : null;
+  const localX = allowStorage ? new Float32Array(pointCount) : null;
+  const localY = allowStorage ? new Float32Array(pointCount) : null;
+  const localZ = allowStorage ? new Float32Array(pointCount) : null;
 
-  const worldPosScratch = new Cartesian3();
   const srcPosScratch = new Cartesian3();
 
   for (let i = 0; i < pointCount; i++) {
@@ -1181,14 +1303,20 @@ function buildInstanceBuffer(
     srcPosScratch.y = sy + rtcY;
     srcPosScratch.z = sz + rtcZ;
 
-    // Transform to world space
-    Matrix4.multiplyByPoint(modelMatrix, srcPosScratch, worldPosScratch);
-    EncodedCartesian3.fromCartesian(worldPosScratch, scratchEncoded);
+    // RTE invariant: the interleaved draw record stays in model/local space.
+    // The shader subtracts a model-space camera and applies the cleaned
+    // view*model matrix exactly once. Baking world space here would apply the
+    // model again in color and velocity. The LOD SOA follows this same local
+    // invariant; its small per-frame params transform the camera/frustum.
+    EncodedCartesian3.fromCartesian(srcPosScratch, scratchEncoded);
 
-    if (worldX) {
-      worldX[i] = worldPosScratch.x;
-      worldY![i] = worldPosScratch.y;
-      worldZ![i] = worldPosScratch.z;
+    if (localX) {
+      // Keep the LOD SOA relative to RTC_CENTER. RTC is frequently an
+      // Earth-scale ECEF anchor; casting position+RTC to f32 here would erase
+      // centimetre-scale detail before the compute shader sees it.
+      localX[i] = sx;
+      localY![i] = sy;
+      localZ![i] = sz;
     }
 
     const off = i * 10;
@@ -1199,21 +1327,13 @@ function buildInstanceBuffer(
     data[off + 4] = scratchEncoded.low.y;
     data[off + 5] = scratchEncoded.low.z;
 
-    // Color (normalized) + size
-    if (colors && colors.length >= pointCount * 3) {
-      const cn = colorsAreBytes ? 1.0 / 255.0 : 1.0;
-      data[off + 6] = colors[i * 3] * cn;
-      data[off + 7] = colors[i * 3 + 1] * cn;
-      data[off + 8] = colors[i * 3 + 2] * cn;
-    } else {
-      data[off + 6] = 1.0;
-      data[off + 7] = 1.0;
-      data[off + 8] = 1.0;
-    }
-    // Effective per-point size published by `PointCloud.update` (style
-    // pointSize or attenuation max, scaled by pixelRatio). Falls back to a
-    // reasonable default when the standalone renderer path didn't set it.
-    data[off + 9] = (pointCloud._webgpuPointSize as number | undefined) ?? 3.0;
+    // Decode from the backend-neutral PNTS descriptor into reusable scratch;
+    // no per-point allocations and no format branches in the draw hot path.
+    unpackPointCloudColor(colorDecodeOptions, i, decodedColor);
+    data[off + 6] = decodedColor[0];
+    data[off + 7] = decodedColor[1];
+    data[off + 8] = decodedColor[2];
+    data[off + 9] = decodedColor[3];
   }
 
   // When GPU LOD might activate, OR in STORAGE usage so the same buffer
@@ -1236,9 +1356,12 @@ function buildInstanceBuffer(
   return {
     buffer,
     count: pointCount,
-    worldX,
-    worldY,
-    worldZ,
+    localX,
+    localY,
+    localZ,
+    rtcX,
+    rtcY,
+    rtcZ,
     // Batch 168 - hand the interleaved data back so the velocity path
     // can keep a CPU-side prev mirror across the rebuild boundary.
     instanceData: data,
@@ -1247,49 +1370,28 @@ function buildInstanceBuffer(
 
 function packUniforms(
   uniformState: CesiumUniformState,
+  rteHistory: ReturnType<typeof createPointCloudRteHistory>,
   modelMatrix: Matrix4 | CesiumMatrix4,
   logActive: boolean,
   drawingBufferWidth: number,
   drawingBufferHeight: number,
   attenuationScale: number,
+  pointSize: number,
+  highlightColor: { red: number; green: number; blue: number; alpha: number },
+  data: Float32Array,
 ): Float32Array {
-  // Batch 168 - bumped from 44 → 60 floats (240 bytes) to fit the
-  // trailing `modelMatrix: mat4x4<f32>` used by the velocity VS to
-  // lift prev model-space positions to world space. C2-7 - bumped to
-  // 64 floats (256 bytes — a perfect fit for the already-256-byte UBO)
-  // for the trailing `logDepth: vec4<f32>` (near/far/factor/useFlag).
-  const data = new Float32Array(64);
-  const view = uniformState.view;
-  const projection = uniformState.projection;
-
-  // RTE: zero the translation column of MV *before* multiplying by
-  // projection. Zeroing after the multiply wipes out projection's P23
-  // depth-mapping term. See
-  // `UniformStateComputations.cleanModelViewProjectionRelativeToEye`.
-  const mvRte = Matrix4.multiply(view, modelMatrix, scratchMVRTE);
-  mvRte[12] = 0;
-  mvRte[13] = 0;
-  mvRte[14] = 0;
-  const mvp = m4Values(Matrix4.multiply(projection, mvRte, scratchMVP));
-  for (let i = 0; i < 16; i++) {
-    data[i] = mvp[i];
-  }
-
-  const camWorld = uniformState.cameraPosition;
-  const invModel = Matrix4.inverse(modelMatrix, new Matrix4());
-  const camModel = Matrix4.multiplyByPoint(
-    invModel,
-    camWorld,
-    new Cartesian3(),
-  );
-  EncodedCartesian3.fromCartesian(camModel, scratchEncoded);
-  data[16] = scratchEncoded.high.x;
-  data[17] = scratchEncoded.high.y;
-  data[18] = scratchEncoded.high.z;
+  // 304-byte layout: current RTE snapshot, draw controls, previous RTE
+  // snapshot, current model (fog only), log/highlight, previous encoded camera.
+  const currentRte = rteHistory.current;
+  const previousRte = rteHistory.previous;
+  Matrix4.pack(currentRte.mvpRelativeToEye, data, 0);
+  data[16] = currentRte.encodedCameraHigh.x;
+  data[17] = currentRte.encodedCameraHigh.y;
+  data[18] = currentRte.encodedCameraHigh.z;
   data[19] = 0;
-  data[20] = scratchEncoded.low.x;
-  data[21] = scratchEncoded.low.y;
-  data[22] = scratchEncoded.low.z;
+  data[20] = currentRte.encodedCameraLow.x;
+  data[21] = currentRte.encodedCameraLow.y;
+  data[22] = currentRte.encodedCameraLow.z;
   data[23] = 0;
 
   // POINT-SPRITE-SHAPE — viewportSize must be the REAL render-target size.
@@ -1300,44 +1402,15 @@ function packUniforms(
   // canvases. The caller passes context.drawingBufferWidth/Height.
   data[24] = drawingBufferWidth;
   data[25] = drawingBufferHeight;
-  data[26] = 1.0; // pointSizeMultiplier
+  data[26] = pointSize;
   // POINT-SPRITE-SHAPE — per-point attenuation numerator (0 = disabled);
   // the shaders clamp min(attenuation / eyeDepth, bakedMaxSize).
   data[27] = attenuationScale;
 
-  // AUDIT_2026_05_02 B.9 (Batch 153) — DP-H41 prev viewProjection at floats
-  // 28..43. UniformState swaps `_previousViewProjection := viewProjection`
-  // at the END of `update()` AFTER returning the prior frame's value, so
-  // on frame N this slot holds frame N-1's VP. First frame falls through
-  // to identity.
-  const prevVP = (uniformState as { previousViewProjection?: Matrix4 })
-    .previousViewProjection;
-  if (prevVP) {
-    Matrix4.pack(prevVP, data, 28);
-  } else {
-    data[28] = 1;
-    data[29] = 0;
-    data[30] = 0;
-    data[31] = 0;
-    data[32] = 0;
-    data[33] = 1;
-    data[34] = 0;
-    data[35] = 0;
-    data[36] = 0;
-    data[37] = 0;
-    data[38] = 1;
-    data[39] = 0;
-    data[40] = 0;
-    data[41] = 0;
-    data[42] = 0;
-    data[43] = 1;
-  }
+  Matrix4.pack(previousRte.mvpRelativeToEye, data, 28);
 
-  // Batch 168 - modelMatrix at floats 44..59. The velocity VS lifts
-  // prev model-space positions to world space via this, then applies
-  // prevVP to land in prev clip space. CPU passes the Cesium
-  // `pointCloud.modelMatrix` directly (no translation zeroing - the
-  // velocity path needs the full transform, not the RTE-zeroed one).
+  // Current model matrix at floats 44..59 is only used to rotate relative
+  // vectors/reconstruct the current camera for atmosphere effects.
   Matrix4.pack(modelMatrix as Matrix4, data, 44);
 
   // C2-7 NEW-LOG-DEPTH-POINTCLOUD-PRODUCER — log-depth lanes at floats 60..63.
@@ -1361,7 +1434,121 @@ function packUniforms(
   data[61] = far;
   data[62] = factor;
   data[63] = logActive ? 1.0 : 0.0;
+  data[64] = highlightColor.red;
+  data[65] = highlightColor.green;
+  data[66] = highlightColor.blue;
+  data[67] = highlightColor.alpha;
+  data[68] = previousRte.encodedCameraHigh.x;
+  data[69] = previousRte.encodedCameraHigh.y;
+  data[70] = previousRte.encodedCameraHigh.z;
+  data[71] = 0.0;
+  data[72] = previousRte.encodedCameraLow.x;
+  data[73] = previousRte.encodedCameraLow.y;
+  data[74] = previousRte.encodedCameraLow.z;
+  data[75] = 0.0;
   return data;
+}
+
+function isPointCloudTranslucent(pointCloud: PointCloudLike): boolean {
+  return (
+    pointCloud._isTranslucent === true ||
+    (pointCloud._constantColor?.alpha ?? 1.0) < 1.0 ||
+    (pointCloud._highlightColor?.alpha ?? 1.0) < 1.0
+  );
+}
+
+/** Refresh the command's world-space sphere from backend-neutral local data. */
+function updatePointCloudBoundingVolume(
+  pointCloud: PointCloudLike,
+  modelMatrix: Matrix4 | CesiumMatrix4,
+): CesiumBoundingSphere | undefined {
+  const local = pointCloud._webgpuLocalBoundingSphere;
+  if (!local) {
+    return pointCloud.boundingSphere ?? pointCloud._boundingSphere;
+  }
+
+  const world = pointCloud._boundingSphere ?? new BoundingSphere();
+  BoundingSphere.transform(
+    local as BoundingSphere,
+    modelMatrix as Matrix4,
+    world as BoundingSphere,
+  );
+  pointCloud._boundingSphere = world;
+  return world;
+}
+
+/**
+ * Convert world-space camera/frustum inputs to the immutable SOA's model-local
+ * frame. Plane coefficients use `transpose(model) * plane`; the model's
+ * linear rows are also packed so the compute shader measures true world-space
+ * distance under rotation/non-uniform scale. Only these small arrays change
+ * when an animated model moves—point buffers remain untouched.
+ */
+function updatePointCloudLodLocalParams(
+  cache: PointCloudCache,
+  modelMatrix: Matrix4 | CesiumMatrix4,
+  cameraWorld: CesiumCartesian3,
+  frameState: CesiumFrameState,
+): void {
+  const rtc = cache.lodRtcCenter;
+  updatePointCloudLodLocalFrame(
+    modelMatrix,
+    cameraWorld,
+    frameState.cullingVolume?.planes,
+    rtc,
+    cache.lodCameraPositionLocal,
+    cache.lodFrustumPlanes,
+    cache.lodModelLinear,
+  );
+}
+
+/** Materialize one mutable LOD stream per PointCloud owner, off the hot path. */
+function ensurePointCloudLodOwnerStream(
+  pointCloud: PointCloudLike,
+  cache: PointCloudCache,
+  template: WebGPUPointCloudLODProcessorInstance | null,
+): WebGPUPointCloudLODProcessorInstance | null {
+  if (cache.lodProcessor) {
+    return cache.lodProcessor;
+  }
+  if (
+    !template?.isReady ||
+    cache.lodProcessorPromise ||
+    cache.lodProcessorFailed
+  ) {
+    return null;
+  }
+
+  const label = `PointCloud owner ${nextPointCloudLodOwnerId++}`;
+  const promise = template.createOwnerStream(label);
+  cache.lodProcessorPromise = promise;
+  promise
+    .then((processor) => {
+      // Device recovery or owner destruction may detach this cache while the
+      // immutable pipelines / deterministic scan worker materialize.
+      if (
+        pointCloud._webgpuCache !== cache ||
+        cache.lodProcessorPromise !== promise
+      ) {
+        processor.destroy();
+        return;
+      }
+      cache.lodProcessor = processor;
+      cache.lodProcessorPromise = null;
+      cache.lodUploadedRevision = -1;
+      cache.lodStorageBindGroup = null;
+      cache.lodVelocityBindGroup = null;
+    })
+    .catch(() => {
+      if (
+        pointCloud._webgpuCache === cache &&
+        cache.lodProcessorPromise === promise
+      ) {
+        cache.lodProcessorPromise = null;
+        cache.lodProcessorFailed = true;
+      }
+    });
+  return null;
 }
 
 function updateWebGPUPointCloud(
@@ -1371,37 +1558,78 @@ function updateWebGPUPointCloud(
   const context = frameState.context;
   const device: GPUDevice = context.device;
   const commandList = frameState.commandList;
+  const resourceGeneration =
+    (context as unknown as { resourceGeneration?: number })
+      .resourceGeneration ?? 0;
+
+  // Device recovery invalidates every owner resource, including buffers,
+  // bind groups, layouts, and commands. Anchor this cache to the exact
+  // (device, generation) tuple before any early return can publish stale GPU
+  // handles. Async pipeline resolution only mutates the now-detached cache.
+  const existingCache = pointCloud._webgpuCache as PointCloudCache | undefined;
+  if (
+    existingCache &&
+    (existingCache.device !== device ||
+      existingCache.resourceGeneration !== resourceGeneration)
+  ) {
+    destroyWebGPUPointCloudResources(pointCloud);
+  }
+
+  const sharedLayouts = getWebGPUPointCloudSharedLayouts(
+    device,
+    resourceGeneration,
+    getEffectsBindGroupLayout(device),
+  );
 
   if (!pointCloud._webgpuCache) {
     pointCloud._webgpuCache = {
+      context,
+      device,
+      resourceGeneration,
+      sharedLayouts,
+      rteHistory: createPointCloudRteHistory(),
+      uniformScratch: new Float32Array(76),
       uniformBuffer: null,
       pipeline: null,
       shaderModule: null,
       bindGroup: null,
       quadVertexBuffer: null,
       instanceBuffer: null,
+      instanceAllowsStorage: false,
       instanceCount: 0,
       command: null,
       initialized: false,
+      translucent: false,
       lastRevision: -1,
       lodPipeline: null,
+      lodProcessor: null,
+      lodProcessorPromise: null,
+      lodProcessorFailed: false,
       lodBindGroupLayout: null,
       lodStorageBindGroup: null,
       lodIndirectBuffer: null,
       lodPositionsX: null,
       lodPositionsY: null,
       lodPositionsZ: null,
+      lodFrustumPlanes: new Float32Array(24),
+      lodCameraPositionLocal: [0.0, 0.0, 0.0],
+      lodModelLinear: new Float32Array(12),
+      lodRtcCenter: new Cartesian3(),
       lodUploadedRevision: -1,
       lodCommand: null,
       lodActive: false,
+      defaultEdlSource: null,
+      lodEdlSource: null,
       // Batch 168 - velocity pipeline + prev-instance buffer (lazy).
       prevInstanceBuffer: null,
       instanceData: null,
       prevInstanceData: null,
       velocityPipelineEntry: null,
+      velocityCommand: null,
       // Batch 169 - LOD-path velocity (parallel SSBO + LOD velocity VS).
       lodPrevInstanceBuffer: null,
       lodVelocityPipelineEntry: null,
+      lodVelocityCommand: null,
       lodVelocityBindGroup: null,
       lodVelocityStorageBGL: null,
       // C10-09 - prev-buffer revision-skip.
@@ -1412,6 +1640,9 @@ function updateWebGPUPointCloud(
   }
 
   const cache = pointCloud._webgpuCache as PointCloudCache;
+  throwUnreportedPointCloudPipelineError(cache);
+  const translucent = isPointCloudTranslucent(pointCloud);
+  const cull = pointCloud._cull !== false;
   // Batch 110 — point cloud draws into scene FB; use scenePipelineFormat.
   const canvasFormat: GPUTextureFormat =
     (
@@ -1426,8 +1657,9 @@ function updateWebGPUPointCloud(
       ._scenePipelineFormatGeneration ?? 0;
   if (
     cache.initialized &&
-    (cache as unknown as { _pipelineFormatGeneration?: number })
-      ._pipelineFormatGeneration !== sceneGen
+    ((cache as unknown as { _pipelineFormatGeneration?: number })
+      ._pipelineFormatGeneration !== sceneGen ||
+      cache.translucent !== translucent)
   ) {
     cache.initialized = false;
     cache.pipelineEntry = null;
@@ -1462,10 +1694,14 @@ function updateWebGPUPointCloud(
   }
 
   if (!cache.initialized) {
-    cache.uniformBuffer = device.createBuffer({
-      size: 256,
-      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-    });
+    // Keep owner buffers across a pipeline-only rebuild (format or opacity
+    // transition). The previous path reallocated both on every invalidation.
+    if (!cache.uniformBuffer) {
+      cache.uniformBuffer = device.createBuffer({
+        size: 304,
+        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+      });
+    }
 
     // C-R7 (Batch 74) — descriptor + central pipeline cache. Two
     // PointCloud instances at the same canvas format share one pipeline.
@@ -1473,6 +1709,8 @@ function updateWebGPUPointCloud(
       device,
       canvasFormat,
       (context as unknown as { _msaaSamples?: number })._msaaSamples ?? 1,
+      translucent,
+      cache.sharedLayouts,
     );
     cache.pipelineEntry = {
       descriptor: built.descriptor,
@@ -1487,7 +1725,13 @@ function updateWebGPUPointCloud(
       entries: [{ binding: 0, resource: { buffer: cache.uniformBuffer } }],
     });
 
-    cache.quadVertexBuffer = createQuadVB(device);
+    if (!cache.quadVertexBuffer) {
+      cache.quadVertexBuffer = createQuadVB(device);
+    }
+    cache.translucent = translucent;
+    (
+      cache as unknown as { _pipelineFormatGeneration?: number }
+    )._pipelineFormatGeneration = sceneGen;
     cache.initialized = true;
   }
 
@@ -1514,35 +1758,66 @@ function updateWebGPUPointCloud(
   // them says no we stay on the existing VB-instanced path.
   const optIn = pointCloud.enableGPULOD === true;
   const pointCount = pointCloud._pointsLength ?? 0;
+  const lodSseDenominator = frameState.camera?.frustum?.sseDenominator;
+  const perspectiveLodProjection =
+    typeof lodSseDenominator === "number" &&
+    Number.isFinite(lodSseDenominator) &&
+    lodSseDenominator > 0.0;
+  // Apply the threshold before touching the context template, forking an owner
+  // stream, upgrading the instance buffer, or allocating world-position SOAs.
+  // Alpha blending requires back-to-front ordering. Atomic compaction is
+  // nondeterministic and the deterministic scan preserves source order, not
+  // depth order, so translucent clouds must retain the full renderer until a
+  // sorted/OIT LOD path exists.
+  const lodEligible =
+    optIn &&
+    cull &&
+    !translucent &&
+    perspectiveLodProjection &&
+    pointCount >= POINT_COUNT_LOD_THRESHOLD;
   // `context.pointCloudLOD` is typed as `object | null` on the
   // backend-agnostic `CesiumGraphicsContext` surface — cast to the real
   // processor interface at the boundary. Doing the cast here once
   // avoids scattering `as unknown as …` through the hot path below.
-  const lodProcessor = optIn
+  const lodTemplate = lodEligible
     ? ((context.pointCloudLOD as WebGPUPointCloudLODProcessorInstance | null) ??
       null)
     : null;
-  const lodPossible =
-    optIn && pointCount >= POINT_COUNT_LOD_THRESHOLD && lodProcessor !== null;
+  const lodProcessor = lodEligible
+    ? ensurePointCloudLodOwnerStream(pointCloud, cache, lodTemplate)
+    : null;
+  const lodPossible = lodEligible && lodProcessor !== null;
 
   // Rebuild instance data when point data changes. When LOD might be
   // active we need STORAGE usage on the buffer AND the SOA world-space
-  // arrays for the LOD processor; we speculatively build both whenever
-  // the opt-in flag is set so flipping enableGPULOD mid-session doesn't
-  // require a rebuild.
+  // arrays for the LOD processor. A false -> true toggle explicitly upgrades
+  // the immutable buffer to STORAGE usage even when point count is unchanged.
   const modelMatrix = pointCloud.modelMatrix ?? Matrix4.IDENTITY;
+  const boundingVolume = updatePointCloudBoundingVolume(
+    pointCloud,
+    modelMatrix,
+  );
   const revision = pointCount;
-  if (revision !== cache.lastRevision || !cache.instanceBuffer) {
+  const needsStorageUpgrade = lodEligible && !cache.instanceAllowsStorage;
+  if (
+    revision !== cache.lastRevision ||
+    !cache.instanceBuffer ||
+    needsStorageUpgrade
+  ) {
     if (cache.instanceBuffer) {
       cache.instanceBuffer.destroy();
     }
-    const result = buildInstanceBuffer(device, pointCloud, modelMatrix, optIn);
+    const result = buildInstanceBuffer(device, pointCloud, lodEligible);
     cache.instanceBuffer = result.buffer;
+    cache.instanceAllowsStorage = lodEligible;
     cache.instanceCount = result.count;
     cache.lastRevision = revision;
-    cache.lodPositionsX = result.worldX;
-    cache.lodPositionsY = result.worldY;
-    cache.lodPositionsZ = result.worldZ;
+    cache.lodPositionsX = result.localX;
+    cache.lodPositionsY = result.localY;
+    cache.lodPositionsZ = result.localZ;
+    cache.lodRtcCenter.x = result.rtcX;
+    cache.lodRtcCenter.y = result.rtcY;
+    cache.lodRtcCenter.z = result.rtcZ;
     // Batch 169 - track THIS frame's instance data. The velocity helper
     // promotes this to `prevInstanceData` AFTER its dispatch so next
     // frame's prev tracks the previous frame's data (PointPrimitive
@@ -1580,6 +1855,20 @@ function updateWebGPUPointCloud(
 
   // Per-frame uniforms
   const logActive = isWebGPULogDepthActive(context, frameState);
+  if (frameState.taaEnabled !== true) {
+    // Keep the most recent off-frame as the seed for a later re-enable; never
+    // calculate velocity across an arbitrarily long disabled interval.
+    cache.rteHistory.valid = false;
+  }
+  updatePointCloudRteHistory(
+    cache.rteHistory,
+    frameState.frameNumber,
+    frameState.camera ?? context.uniformState,
+    context.uniformState.view,
+    context.uniformState.projection,
+    context.uniformState.cameraPosition,
+    modelMatrix,
+  );
   // POINT-SPRITE-SHAPE — WebGL attenuation parity. Mirrors PointCloud.js
   // u_pointSizeAndTimeAndGeometricErrorAndDepthMultiplier.zw:
   // numerator = geometricError * geometricErrorScale *
@@ -1609,11 +1898,20 @@ function updateWebGPUPointCloud(
   }
   const uniforms = packUniforms(
     context.uniformState,
+    cache.rteHistory,
     modelMatrix,
     logActive,
     context.drawingBufferWidth,
     context.drawingBufferHeight,
     attenuationScale,
+    pointCloud._webgpuPointSize ?? 3.0,
+    pointCloud._highlightColor ?? {
+      red: 1.0,
+      green: 1.0,
+      blue: 1.0,
+      alpha: 1.0,
+    },
+    cache.uniformScratch,
   );
   device.queue.writeBuffer(cache.uniformBuffer!, 0, gpuData(uniforms));
 
@@ -1625,7 +1923,7 @@ function updateWebGPUPointCloud(
     cache.lodPositionsY &&
     cache.lodPositionsZ
   ) {
-    _runGPULODPath(
+    const enqueuedLod = _runGPULODPath(
       device,
       context,
       frameState,
@@ -1635,8 +1933,11 @@ function updateWebGPUPointCloud(
       pointCloud,
       modelMatrix,
       canvasFormat,
+      boundingVolume,
     );
-    return;
+    if (enqueuedLod) {
+      return;
+    }
   }
 
   // ── Default path (current behaviour, untouched) ──
@@ -1658,13 +1959,21 @@ function updateWebGPUPointCloud(
       vertexBuffers: [cache.quadVertexBuffer, cache.instanceBuffer],
       vertexCount: 6,
       instanceCount: cache.instanceCount,
-      pass: Pass.OPAQUE,
+      pass: translucent
+        ? Pass.TRANSLUCENT
+        : (pointCloud._opaquePass ?? Pass.OPAQUE),
+      boundingVolume,
+      cull,
     });
   } else {
-    (cache.command as { bindGroups?: GPUBindGroup[] }).bindGroups = [
-      cache.bindGroup,
-      effectsBG,
-    ];
+    const bindGroups = (cache.command as { bindGroups?: GPUBindGroup[] })
+      .bindGroups;
+    if (bindGroups) {
+      bindGroups[0] = cache.bindGroup!;
+      bindGroups[1] = effectsBG;
+    }
+    cache.command.boundingVolume = boundingVolume;
+    cache.command.cull = cull;
   }
 
   // Batch 168 - B.10 NEW-ADVANCED-MOTION-VECTORS. Maintain a
@@ -1687,12 +1996,24 @@ function updateWebGPUPointCloud(
   // behavior change; the EDL renderer only reads it when the user has turned
   // `pointCloudShading.eyeDomeLighting` on (default off), so the default draw
   // path is byte-identical whether or not this tag is present.
-  (cache.command as { _edlSource?: PointCloudEDLSource })._edlSource = {
-    uniformBuffer: cache.uniformBuffer,
-    quadVertexBuffer: cache.quadVertexBuffer,
-    instanceBuffer: cache.instanceBuffer,
-    instanceCount: cache.instanceCount,
+  const defaultEdlSource = cache.defaultEdlSource ?? {
+    uniformBuffer: null,
+    quadVertexBuffer: null,
+    instanceBuffer: null,
+    instanceCount: 0,
   };
+  defaultEdlSource.uniformBuffer = cache.uniformBuffer;
+  defaultEdlSource.device = device;
+  defaultEdlSource.resourceGeneration = resourceGeneration;
+  defaultEdlSource.quadVertexBuffer = cache.quadVertexBuffer;
+  defaultEdlSource.instanceBuffer = cache.instanceBuffer;
+  defaultEdlSource.instanceCount = cache.instanceCount;
+  defaultEdlSource.effectsBindGroup = effectsBG;
+  defaultEdlSource.effectsBindGroupLayout =
+    cache.sharedLayouts.effectsBindGroupLayout;
+  cache.defaultEdlSource = defaultEdlSource;
+  (cache.command as { _edlSource?: PointCloudEDLSource })._edlSource =
+    defaultEdlSource;
   // Re-enable the cached command every frame. The EDL renderer disables it
   // (sets `.enabled = false`) when it hijacks the draw into its off-screen
   // FBO; without this reset a point cloud would stay invisible after EDL is
@@ -1710,10 +2031,19 @@ function updateWebGPUPointCloud(
  * buffers — the EDL renderer never mutates them.
  */
 export interface PointCloudEDLSource {
+  device?: GPUDevice | null;
+  resourceGeneration?: number;
   uniformBuffer: GPUBuffer | null;
   quadVertexBuffer: GPUBuffer | null;
   instanceBuffer: GPUBuffer | null;
   instanceCount: number;
+  /** Active atmosphere/effects resources used by the normal color draw. */
+  effectsBindGroup?: GPUBindGroup | null;
+  effectsBindGroupLayout?: GPUBindGroupLayout | null;
+  /** LOD storage indirection; when present EDL replays drawIndirect. */
+  lodStorageBindGroup?: GPUBindGroup | null;
+  lodStorageBindGroupLayout?: GPUBindGroupLayout | null;
+  drawIndirectBuffer?: GPUBuffer | null;
 }
 
 /**
@@ -1736,11 +2066,13 @@ function attachPointCloudVelocityCommand(
 ): void {
   // Read the TAA flag from the same source the Collection renderers use.
   const taaEnabledThisFrame = frameState.taaEnabled === true;
-  if (!taaEnabledThisFrame && !cache.prevInstanceBuffer) {
+  if (!taaEnabledThisFrame) {
     if (cache.command) {
       (cache.command as { velocityCommand?: unknown }).velocityCommand =
         undefined;
     }
+    cache.prevInstanceData = cache.instanceData;
+    cache.prevBufferRevision = undefined;
     return;
   }
   if (!cache.instanceBuffer || cache.instanceCount === 0) {
@@ -1798,8 +2130,8 @@ function attachPointCloudVelocityCommand(
     // Identity (static geometry): the bytes we would upload already live in
     // `instanceBuffer` on the GPU. Seed `prevInstanceBuffer` from it ONCE
     // (GPU copy, zero CPU upload) then SKIP while the data revision is
-    // unchanged (INV-1). Geometry velocity is 0 either way; camera-induced
-    // velocity comes from `previousViewProjection`, untouched.
+    // unchanged (INV-1). Geometry velocity is 0 either way; camera/model
+    // motion comes from the cache-owned previous RTE snapshot.
     if (cache.prevBufferRevision !== cache.instanceDataRevision) {
       copyPointCloudBuffer(
         context,
@@ -1844,9 +2176,8 @@ function attachPointCloudVelocityCommand(
   if (!cache.velocityPipelineEntry && cache.shaderModule && cache.defaultBgl) {
     cache.velocityPipelineEntry = {
       descriptor: buildVelocityPipelineDescriptor(
-        device,
         cache.shaderModule,
-        cache.defaultBgl,
+        cache.sharedLayouts,
       ),
       pipeline: null,
       pending: false,
@@ -1873,8 +2204,8 @@ function attachPointCloudVelocityCommand(
     // doesn't sample atmosphere, but the pipeline layout includes the
     // effects BGL (shared with color).
     const velocityEffectsBG = getPlaceholderEffects(device).bindGroup;
-    (cache.command as { velocityCommand?: unknown }).velocityCommand =
-      new WebGPUDrawCommand({
+    if (!cache.velocityCommand) {
+      cache.velocityCommand = new WebGPUDrawCommand({
         pipeline: cache.velocityPipelineEntry.pipeline,
         bindGroups: [cache.bindGroup, velocityEffectsBG],
         vertexBuffers: [
@@ -1886,6 +2217,25 @@ function attachPointCloudVelocityCommand(
         instanceCount: cache.instanceCount,
         pass: Pass.OPAQUE,
       });
+    } else {
+      const velocityCommand = cache.velocityCommand as {
+        pipeline?: GPURenderPipeline;
+        bindGroups?: Array<GPUBindGroup | null>;
+        vertexBuffers?: Array<GPUBuffer | null>;
+        instanceCount?: number;
+      };
+      velocityCommand.pipeline = cache.velocityPipelineEntry.pipeline;
+      velocityCommand.bindGroups ??= [];
+      velocityCommand.bindGroups[0] = cache.bindGroup;
+      velocityCommand.bindGroups[1] = velocityEffectsBG;
+      velocityCommand.vertexBuffers ??= [];
+      velocityCommand.vertexBuffers[0] = cache.quadVertexBuffer;
+      velocityCommand.vertexBuffers[1] = cache.instanceBuffer;
+      velocityCommand.vertexBuffers[2] = cache.prevInstanceBuffer;
+      velocityCommand.instanceCount = cache.instanceCount;
+    }
+    (cache.command as { velocityCommand?: unknown }).velocityCommand =
+      cache.velocityCommand;
   } else if (cache.command) {
     (cache.command as { velocityCommand?: unknown }).velocityCommand =
       undefined;
@@ -1925,7 +2275,8 @@ function _runGPULODPath(
   pointCloud: PointCloudLike,
   modelMatrix: Matrix4 | CesiumMatrix4,
   canvasFormat: GPUTextureFormat,
-): void {
+  boundingVolume: CesiumBoundingSphere | undefined,
+): boolean {
   // Build the LOD pipeline + storage BGL lazily. Both are per-device
   // not per-instance, but storing them on the cache is simpler than
   // a device-keyed shared map and point cloud instances are typically
@@ -1941,6 +2292,8 @@ function _runGPULODPath(
       device,
       canvasFormat,
       (context as unknown as { _msaaSamples?: number })._msaaSamples ?? 1,
+      cache.translucent,
+      cache.sharedLayouts,
     );
     cache.lodPipelineEntry = {
       descriptor: built.descriptor,
@@ -1967,7 +2320,7 @@ function _runGPULODPath(
       cache.lodPipelineEntry,
     );
     if (!resolved) {
-      return;
+      return false;
     }
     cache.lodPipeline = resolved;
   }
@@ -2015,39 +2368,48 @@ function _runGPULODPath(
   if (!cache.lodStorageBindGroup) {
     // Processor not quite ready (async init still running). Fall back
     // to the default path by returning — caller pushes nothing here.
-    return;
+    return false;
   }
 
-  // Build the frustum planes in world space. The LOD processor tests
-  // `dot(plane.xyz, worldPos) + plane.w >= 0` per point.
-  const frustumPlanes = _extractFrustumPlanes(context.uniformState, frameState);
-
-  // Distance² thresholds derived from the camera/frustum far plane.
-  // These are coarse — tiles with per-tile geometricError can override
-  // by mutating pointCloud.lodDistances before the update.
-  const far =
-    pointCloud.lodFarDistance ?? frameState.camera?.frustum?.far ?? 1e7;
-  const lod0 = far * 0.1;
-  const lod1 = far * 0.25;
-  const lod2 = far * 0.5;
-  const lod3 = far;
-
   const camPos = context.uniformState.cameraPosition;
+  updatePointCloudLodLocalParams(cache, modelMatrix, camPos, frameState);
+
+  const sseDenominator = frameState.camera?.frustum?.sseDenominator;
+  const projectionScale =
+    typeof sseDenominator === "number" && sseDenominator > 0.0
+      ? context.drawingBufferHeight / sseDenominator
+      : context.drawingBufferHeight;
+  // Standalone point clouds may not carry a tile geometric error. Estimate a
+  // conservative mean spacing from the world-space bound instead of silently
+  // selecting one fixed LOD for the entire globe frustum.
+  const estimatedSpacing =
+    boundingVolume && cache.instanceCount > 0
+      ? (2.0 * boundingVolume.radius) / Math.cbrt(cache.instanceCount)
+      : 1.0;
+  const configuredGeometricError = pointCloud.geometricError ?? 0.0;
+  const geometricErrorScale = pointCloud.geometricErrorScale ?? 1.0;
+  const geometricError = Math.max(
+    (configuredGeometricError > 0.0
+      ? configuredGeometricError
+      : estimatedSpacing) * geometricErrorScale,
+    Number.EPSILON,
+  );
+  const lodFarDistance =
+    pointCloud.lodFarDistance ?? frameState.camera?.frustum?.far ?? 1e7;
   const frameEncoder = getAvailableFrameCommandEncoder(context);
   const encoder =
     frameEncoder ??
     device.createCommandEncoder({ label: "PointCloud LOD dispatch" });
   lodProcessor.dispatch(encoder, {
-    cameraPositionWC: [camPos.x, camPos.y, camPos.z],
-    lod0Distance2: lod0 * lod0,
-    lod1Distance2: lod1 * lod1,
-    lod2Distance2: lod2 * lod2,
-    lod3Distance2: lod3 * lod3,
-    frustumPlanes,
+    cameraPositionLocal: cache.lodCameraPositionLocal,
+    projectionScale,
+    targetPixelSpacing: Math.max(pointCloud._webgpuPointSize ?? 1.0, 1.0),
+    frustumPlanes: cache.lodFrustumPlanes,
     pointCount: cache.instanceCount,
     maxVisiblePoints: cache.instanceCount,
-    screenSpaceRadius: 1.0,
-    geometricError: pointCloud.geometricError ?? 0.0,
+    geometricError,
+    lodFarDistance,
+    modelLinear: cache.lodModelLinear,
   });
   // Copy the atomic visibleCount (first u32) into the indirect draw
   // arg's instanceCount slot (offset 4, length 4).
@@ -2083,18 +2445,26 @@ function _runGPULODPath(
       vertexBuffers: [cache.quadVertexBuffer],
       vertexCount: 6,
       instanceCount: 0, // filled by drawIndirect
-      pass: Pass.OPAQUE,
+      pass: cache.translucent
+        ? Pass.TRANSLUCENT
+        : (pointCloud._opaquePass ?? Pass.OPAQUE),
       drawIndirectBuffer: cache.lodIndirectBuffer,
+      boundingVolume,
+      cull: pointCloud._cull !== false,
     });
   } else {
     // FEAT-GAP-09 (Batch 104) — per-frame effects BG refresh on
     // cached command. Slot [2] is the LOD effects slot (after uniforms
     // at 0 and storage at 1).
-    (cache.lodCommand as { bindGroups?: GPUBindGroup[] }).bindGroups = [
-      cache.bindGroup,
-      cache.lodStorageBindGroup,
-      lodEffectsBG,
-    ];
+    const bindGroups = (cache.lodCommand as { bindGroups?: GPUBindGroup[] })
+      .bindGroups;
+    if (bindGroups) {
+      bindGroups[0] = cache.bindGroup!;
+      bindGroups[1] = cache.lodStorageBindGroup!;
+      bindGroups[2] = lodEffectsBG;
+    }
+    cache.lodCommand.boundingVolume = boundingVolume;
+    cache.lodCommand.cull = pointCloud._cull !== false;
   }
 
   // Batch 169 - LOD-path velocity emission. Mirrors the default-path
@@ -2102,9 +2472,39 @@ function _runGPULODPath(
   // pipeline lazily, attach `velocityCommand` to the lodCommand. The
   // TAA pass walks the command list for `cmd.velocityCommand` and
   // dispatches it via drawIndirect (same indirect buffer as color).
-  attachLODPointCloudVelocityCommand(device, context, frameState, cache);
+  attachLODPointCloudVelocityCommand(
+    device,
+    context,
+    frameState,
+    cache,
+    lodProcessor,
+  );
+
+  const lodEdlSource = cache.lodEdlSource ?? {
+    uniformBuffer: null,
+    quadVertexBuffer: null,
+    instanceBuffer: null,
+    instanceCount: 0,
+  };
+  lodEdlSource.uniformBuffer = cache.uniformBuffer;
+  lodEdlSource.device = device;
+  lodEdlSource.resourceGeneration = cache.resourceGeneration;
+  lodEdlSource.quadVertexBuffer = cache.quadVertexBuffer;
+  lodEdlSource.instanceBuffer = cache.instanceBuffer;
+  lodEdlSource.instanceCount = cache.instanceCount;
+  lodEdlSource.lodStorageBindGroup = cache.lodStorageBindGroup;
+  lodEdlSource.lodStorageBindGroupLayout = cache.lodBindGroupLayout;
+  lodEdlSource.drawIndirectBuffer = cache.lodIndirectBuffer;
+  lodEdlSource.effectsBindGroup = lodEffectsBG;
+  lodEdlSource.effectsBindGroupLayout =
+    cache.sharedLayouts.effectsBindGroupLayout;
+  cache.lodEdlSource = lodEdlSource;
+  (cache.lodCommand as { _edlSource?: PointCloudEDLSource })._edlSource =
+    lodEdlSource;
+  (cache.lodCommand as { enabled?: boolean }).enabled = true;
 
   commandList.push(cache.lodCommand);
+  return true;
 }
 
 /**
@@ -2124,13 +2524,16 @@ function attachLODPointCloudVelocityCommand(
   context: CesiumGraphicsContext,
   frameState: CesiumFrameState,
   cache: PointCloudCache,
+  lodProcessor: WebGPUPointCloudLODProcessorInstance,
 ): void {
   const taaEnabledThisFrame = frameState.taaEnabled === true;
-  if (!taaEnabledThisFrame && !cache.lodPrevInstanceBuffer) {
+  if (!taaEnabledThisFrame) {
     if (cache.lodCommand) {
       (cache.lodCommand as { velocityCommand?: unknown }).velocityCommand =
         undefined;
     }
+    cache.prevInstanceData = cache.instanceData;
+    cache.lodPrevBufferRevision = undefined;
     return;
   }
   if (!cache.instanceBuffer || cache.instanceCount === 0) {
@@ -2206,10 +2609,7 @@ function attachLODPointCloudVelocityCommand(
 
   // Lazy LOD velocity pipeline build.
   if (!cache.lodVelocityPipelineEntry && cache.lodDefaultBgl) {
-    const built = _buildLODVelocityPipelineDescriptor(
-      device,
-      cache.lodDefaultBgl,
-    );
+    const built = _buildLODVelocityPipelineDescriptor(cache.sharedLayouts);
     cache.lodVelocityPipelineEntry = {
       descriptor: built.descriptor,
       pipeline: null,
@@ -2249,15 +2649,7 @@ function attachLODPointCloudVelocityCommand(
     cache.instanceBuffer &&
     cache.lodPrevInstanceBuffer
   ) {
-    // Re-derive the visibleIndices buffer from the LOD processor by
-    // reading the regular bind group's buffer slot. Simpler: pull
-    // directly from context's pointCloudLOD processor.
-    const lodProcessor = (
-      context as unknown as {
-        pointCloudLOD?: WebGPUPointCloudLODProcessorInstance | null;
-      }
-    ).pointCloudLOD as WebGPUPointCloudLODProcessorInstance | null;
-    if (lodProcessor?.visibleIndicesBuffer) {
+    if (lodProcessor.visibleIndicesBuffer) {
       cache.lodVelocityBindGroup = device.createBindGroup({
         label: "PointCloud LOD velocity storage BG",
         layout: cache.lodVelocityStorageBGL,
@@ -2283,8 +2675,8 @@ function attachLODPointCloudVelocityCommand(
     // layout. Velocity entry doesn't sample atmosphere; placeholder is
     // safe — WGSL allows unused bindings.
     const lodVelocityEffectsBG = getPlaceholderEffects(device).bindGroup;
-    (cache.lodCommand as { velocityCommand?: unknown }).velocityCommand =
-      new WebGPUDrawCommand({
+    if (!cache.lodVelocityCommand) {
+      cache.lodVelocityCommand = new WebGPUDrawCommand({
         pipeline: cache.lodVelocityPipelineEntry.pipeline,
         bindGroups: [
           cache.bindGroup,
@@ -2297,6 +2689,24 @@ function attachLODPointCloudVelocityCommand(
         pass: Pass.OPAQUE,
         drawIndirectBuffer: cache.lodIndirectBuffer,
       });
+    } else {
+      const velocityCommand = cache.lodVelocityCommand as {
+        pipeline?: GPURenderPipeline;
+        bindGroups?: Array<GPUBindGroup | null>;
+        vertexBuffers?: Array<GPUBuffer | null>;
+        drawIndirectBuffer?: GPUBuffer;
+      };
+      velocityCommand.pipeline = cache.lodVelocityPipelineEntry.pipeline;
+      velocityCommand.bindGroups ??= [];
+      velocityCommand.bindGroups[0] = cache.bindGroup;
+      velocityCommand.bindGroups[1] = cache.lodVelocityBindGroup;
+      velocityCommand.bindGroups[2] = lodVelocityEffectsBG;
+      velocityCommand.vertexBuffers ??= [];
+      velocityCommand.vertexBuffers[0] = cache.quadVertexBuffer;
+      velocityCommand.drawIndirectBuffer = cache.lodIndirectBuffer;
+    }
+    (cache.lodCommand as { velocityCommand?: unknown }).velocityCommand =
+      cache.lodVelocityCommand;
   } else if (cache.lodCommand) {
     (cache.lodCommand as { velocityCommand?: unknown }).velocityCommand =
       undefined;
@@ -2328,6 +2738,8 @@ function _buildLODPipelineDescriptor(
   device: GPUDevice,
   format: GPUTextureFormat,
   sampleCount: number,
+  translucent: boolean,
+  sharedLayouts: ReturnType<typeof getWebGPUPointCloudSharedLayouts>,
 ): {
   descriptor: WebGPURenderPipelineDescriptor;
   bgl: GPUBindGroupLayout;
@@ -2340,39 +2752,13 @@ function _buildLODPipelineDescriptor(
     0,
     "PointCloud LOD shader",
   );
-  const bgl = makeBindGroupLayout(device, "PointCloud LOD uniform BGL", [
-    // C2-7 — VERTEX_FRAGMENT: fragmentMainLOD now reads u.logDepth (see the
-    // default-path PointCloud BGL fix).
-    uniformBuffer(0, Stage.VERTEX_FRAGMENT),
-  ]);
-  // Storage bind group — we use the helpers' storageBuffer readOnly
-  // shape so the layout matches `var<storage, read>`.
-  const storageBGL = device.createBindGroupLayout({
-    label: "PointCloud LOD storage BGL",
-    entries: [
-      {
-        binding: 0,
-        visibility: GPUShaderStage.VERTEX,
-        buffer: { type: "read-only-storage" },
-      },
-      {
-        binding: 1,
-        visibility: GPUShaderStage.VERTEX,
-        buffer: { type: "read-only-storage" },
-      },
-    ],
-  });
-  // FEAT-GAP-09 (Batch 104) — append the shared effects BGL at slot 2
-  // so the WGSL fog block at @group(2) resolves. Cascades to the LOD
-  // velocity pipeline since both reuse this descriptor's layout shape
-  // (LOD velocity adds it below independently because it builds its
-  // own pipeline layout from a different storageBGL).
-  const effectsBGL = getEffectsBindGroupLayout(device);
+  const bgl = sharedLayouts.uniformBindGroupLayout;
+  const storageBGL = sharedLayouts.lodStorageBindGroupLayout;
   const descriptor: WebGPURenderPipelineDescriptor = {
-    name: `PointCloud LOD Pipeline [${format}/ms=${sampleCount}]`,
-    layout: device.createPipelineLayout({
-      bindGroupLayouts: [bgl, storageBGL, effectsBGL],
-    }),
+    name: `PointCloud LOD Pipeline [${format}/ms=${sampleCount}/${
+      translucent ? "translucent" : "opaque"
+    }]`,
+    layout: sharedLayouts.lodPipelineLayout,
     vertex: {
       module: shaderModule,
       entryPoint: "vertexMainLOD",
@@ -2393,22 +2779,17 @@ function _buildLODPipelineDescriptor(
     fragment: {
       module: shaderModule,
       entryPoint: "fragmentMainLOD",
-      // Slice 5c-B Phase 1 (Batch 112) — scene-FB color target via
-      // helper. Verbatim blend preserves the (no-`operation`) shape.
-      // Used for BOTH default `fragmentMain` and LOD `fragmentMainLOD`
-      // color pipelines; velocity pipelines at lines ~836 + ~2107
-      // (rg16float) stay single-target.
-      targets: makeSceneFBTargets(format, {
-        blend: {
-          color: { srcFactor: "src-alpha", dstFactor: "one-minus-src-alpha" },
-          alpha: { srcFactor: "one", dstFactor: "one-minus-src-alpha" },
-        },
-      }),
+      // Match the default path: no blend state for opaque, standard alpha
+      // blending only for content whose effective color can be translucent.
+      targets: makeSceneFBTargets(
+        format,
+        translucent ? { translucent: true } : {},
+      ),
     },
     primitive: { topology: "triangle-list", cullMode: "none" },
     depthStencil: {
       format: "depth24plus-stencil8",
-      depthWriteEnabled: true,
+      depthWriteEnabled: !translucent,
       depthCompare: "less-equal",
     },
     // Match the scene framebuffer's MSAA sample count (see buildPipelineDescriptor).
@@ -2430,12 +2811,12 @@ function _buildLODPipelineDescriptor(
  * @private
  */
 function _buildLODVelocityPipelineDescriptor(
-  device: GPUDevice,
-  bgl: GPUBindGroupLayout,
+  sharedLayouts: ReturnType<typeof getWebGPUPointCloudSharedLayouts>,
 ): {
   descriptor: WebGPURenderPipelineDescriptor;
   storageBGL: GPUBindGroupLayout;
 } {
+  const device = sharedLayouts.device;
   const moduleCache = getPointCloudShaderModuleCache(device);
   const shaderModule = moduleCache.getOrCreate(
     ShaderSourceId.POINT_CLOUD_LOD,
@@ -2443,36 +2824,10 @@ function _buildLODVelocityPipelineDescriptor(
     0,
     "PointCloud LOD shader",
   );
-  const storageBGL = device.createBindGroupLayout({
-    label: "PointCloud LOD velocity storage BGL",
-    entries: [
-      {
-        binding: 0,
-        visibility: GPUShaderStage.VERTEX,
-        buffer: { type: "read-only-storage" },
-      },
-      {
-        binding: 1,
-        visibility: GPUShaderStage.VERTEX,
-        buffer: { type: "read-only-storage" },
-      },
-      {
-        binding: 2,
-        visibility: GPUShaderStage.VERTEX,
-        buffer: { type: "read-only-storage" },
-      },
-    ],
-  });
-  // FEAT-GAP-09 (Batch 104) — match the LOD color pipeline shape so
-  // the LOD velocity command can share bind-group cardinality with the
-  // LOD color command if needed. Velocity entries don't sample
-  // atmosphere; placeholder effects BG is bound at draw time.
-  const effectsBGL = getEffectsBindGroupLayout(device);
+  const storageBGL = sharedLayouts.lodVelocityStorageBindGroupLayout;
   const descriptor: WebGPURenderPipelineDescriptor = {
     name: "PointCloud LOD velocity pipeline",
-    layout: device.createPipelineLayout({
-      bindGroupLayouts: [bgl, storageBGL, effectsBGL],
-    }),
+    layout: sharedLayouts.lodVelocityPipelineLayout,
     vertex: {
       module: shaderModule,
       entryPoint: "vertexVelocityMainLOD",
@@ -2505,47 +2860,62 @@ function _buildLODVelocityPipelineDescriptor(
   return { descriptor, storageBGL };
 }
 
-/**
- * Extract six world-space frustum planes from the current camera as a
- * Float32Array of 24 floats (6 × vec4). Each plane is `(n.x, n.y, n.z, d)`
- * where the "inside" test is `dot(n, worldPos) + d >= 0`.
- */
-function _extractFrustumPlanes(
-  uniformState: CesiumUniformState,
-  frameState: CesiumFrameState,
-): Float32Array {
-  const out = new Float32Array(24);
-  const cullingVolume = frameState.cullingVolume;
-  const planes = cullingVolume?.planes;
-  if (planes && planes.length >= 6) {
-    for (let i = 0; i < 6; i++) {
-      const p = planes[i];
-      out[i * 4 + 0] = p.x;
-      out[i * 4 + 1] = p.y;
-      out[i * 4 + 2] = p.z;
-      out[i * 4 + 3] = p.w;
-    }
-  }
-  return out;
-  // Silence unused-import lint in case uniformState isn't consumed
-  // — kept in the signature for callers that want to compose against it.
-  void uniformState;
-}
-
 function destroyWebGPUPointCloudResources(pointCloud: PointCloudLike): void {
   const cache = pointCloud._webgpuCache as PointCloudCache | undefined;
   if (!cache) {
     return;
   }
+  // Detach an in-flight fork before clearing the owner cache; its completion
+  // handler observes the mismatch and destroys the late stream immediately.
+  cache.lodProcessorPromise = null;
+  cache.lodProcessor?.destroy();
+  cache.lodProcessor = null;
   cache.uniformBuffer?.destroy();
   cache.quadVertexBuffer?.destroy();
   cache.instanceBuffer?.destroy();
+  cache.prevInstanceBuffer?.destroy();
+  cache.lodPrevInstanceBuffer?.destroy();
   cache.lodIndirectBuffer?.destroy();
-  // Pipelines / bind groups / layouts are GC'd when references drop.
-  // The LOD processor itself lives on the WebGPUContext — don't destroy
-  // it here since it may be shared with other point clouds.
+  // Pipelines / bind groups / layouts are GC'd when references drop. The
+  // context template remains shared; only this owner's mutable LOD stream was
+  // destroyed above.
   pointCloud._webgpuCache = undefined;
 }
 
-export { updateWebGPUPointCloud, destroyWebGPUPointCloudResources };
-export default { updateWebGPUPointCloud, destroyWebGPUPointCloudResources };
+/** True only after this owner's current-generation resources can emit a draw. */
+function isWebGPUPointCloudReady(pointCloud: PointCloudLike): boolean {
+  const cache = pointCloud._webgpuCache as PointCloudCache | undefined;
+  const currentGeneration = cache
+    ? ((cache.context as unknown as { resourceGeneration?: number })
+        .resourceGeneration ?? 0)
+    : -1;
+  if (
+    !cache ||
+    cache.context.device !== cache.device ||
+    cache.resourceGeneration !== currentGeneration ||
+    !cache.initialized ||
+    !cache.uniformBuffer ||
+    !cache.bindGroup ||
+    !cache.quadVertexBuffer ||
+    !cache.instanceBuffer ||
+    !cache.pipeline
+  ) {
+    return false;
+  }
+  return (
+    cache.instanceCount === 0 ||
+    cache.command !== null ||
+    cache.lodCommand !== null
+  );
+}
+
+export {
+  updateWebGPUPointCloud,
+  isWebGPUPointCloudReady,
+  destroyWebGPUPointCloudResources,
+};
+export default {
+  updateWebGPUPointCloud,
+  isWebGPUPointCloudReady,
+  destroyWebGPUPointCloudResources,
+};

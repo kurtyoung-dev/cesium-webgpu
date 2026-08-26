@@ -1202,6 +1202,22 @@ const CONVENTION_SCAN_CLASSIFICATION = Object.freeze([
   },
   {
     relativePath:
+      "packages/engine/Source/Renderer/WebGPU/WebGPUPointCloudEDLState.js",
+    identifier: "enabled",
+    count: 1,
+    scope: "non-celestial-alias",
+    reason: "WebGPUDrawCommand.enabled command-list state",
+  },
+  {
+    relativePath:
+      "packages/engine/Source/Renderer/WebGPU/WebGPUPointCloudEyeDomeLighting.ts",
+    identifier: "enabled",
+    count: 1,
+    scope: "non-celestial-alias",
+    reason: "WebGPUDrawCommand.enabled command-list state",
+  },
+  {
+    relativePath:
       "packages/engine/Source/Renderer/WebGPU/WebGPUPostProcessStageCollection.ts",
     identifier: "enabled",
     count: 1,

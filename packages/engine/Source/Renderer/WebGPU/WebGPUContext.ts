@@ -5282,8 +5282,7 @@ export class WebGPUContext extends GraphicsContext {
     for (const culler of cascadeCullers) {
       continueFinalCleanupAfter(() => culler.destroy());
     }
-    const pointCloudLOD = this._pointCloudLOD;
-    this._pointCloudLOD = null;
+    const pointCloudLOD = this._detachPointCloudLOD();
     continueFinalCleanupAfter(() => pointCloudLOD?.destroy());
     const csmRenderer = this._csmRenderer;
     this._csmRenderer = null;
@@ -6309,6 +6308,9 @@ export class WebGPUContext extends GraphicsContext {
   public _gpuCullerByCascadeInitializing: Set<number> = new Set();
   private _pointCloudLOD: WebGPUPointCloudLODProcessorInstance | null = null;
   private _pointCloudLODInitializing: boolean = false;
+  private _pointCloudLODInitializationToken: number = 0;
+  private _pointCloudLODInitializationError: unknown = null;
+  private _pointCloudLODInitializationErrorReported: boolean = false;
   private _csmRenderer: WebGPUCSMRenderer | null = null;
 
   /**
@@ -7165,6 +7167,16 @@ export class WebGPUContext extends GraphicsContext {
    *
    * @returns The processor instance (may be mid-initialization — check .isReady)
    */
+  private _detachPointCloudLOD(): WebGPUPointCloudLODProcessorInstance | null {
+    this._pointCloudLODInitializationToken++;
+    this._pointCloudLODInitializing = false;
+    this._pointCloudLODInitializationError = null;
+    this._pointCloudLODInitializationErrorReported = false;
+    const processor = this._pointCloudLOD;
+    this._pointCloudLOD = null;
+    return processor;
+  }
+
   get pointCloudLOD(): WebGPUPointCloudLODProcessorInstance | null {
     if (this._isDeviceUnavailable) {
       return null;
@@ -7172,26 +7184,51 @@ export class WebGPUContext extends GraphicsContext {
     if (
       !this._pointCloudLOD &&
       this._device &&
-      !this._pointCloudLODInitializing
+      !this._pointCloudLODInitializing &&
+      !this._pointCloudLODInitializationError
     ) {
+      const device = this._device;
+      const resourceGeneration = this._deviceResourceGeneration;
+      const initializationToken = ++this._pointCloudLODInitializationToken;
       this._pointCloudLODInitializing = true;
-      import("./WebGPUPointCloudLODProcessor.js")
-        .then(({ WebGPUPointCloudLODProcessor }) => {
-          const proc = new WebGPUPointCloudLODProcessor(this._device!, {
+      void import("./WebGPUPointCloudLODProcessor.js")
+        .then(async ({ WebGPUPointCloudLODProcessor }) => {
+          const processor = new WebGPUPointCloudLODProcessor(device, {
             label: `ctx-${this._id}`,
             useDecoupledScan:
               this._options.useDeterministicPointCloudLOD ?? false,
             asyncResourceMonitor: this.asyncResources,
           });
-          return proc.initialize().then(() => {
-            // WebGPUPointCloudLODProcessor explicitly
-            // `implements WebGPUPointCloudLODProcessorInstance` — no cast
-            // needed when assigning the instance to the typed field.
-            this._pointCloudLOD = proc;
-            this._pointCloudLODInitializing = false;
-          });
+          try {
+            await processor.initialize();
+          } catch (error) {
+            processor.destroy();
+            throw error;
+          }
+
+          const tokenIsCurrent =
+            this._pointCloudLODInitializationToken === initializationToken;
+          if (
+            !tokenIsCurrent ||
+            this._device !== device ||
+            this._deviceResourceGeneration !== resourceGeneration ||
+            this._isDestroyed ||
+            this._isTerminallyLost
+          ) {
+            processor.destroy();
+            if (tokenIsCurrent) {
+              this._pointCloudLODInitializing = false;
+            }
+            return;
+          }
+
+          this._pointCloudLOD = processor;
+          this._pointCloudLODInitializing = false;
         })
         .catch((e: unknown) => {
+          if (this._pointCloudLODInitializationToken !== initializationToken) {
+            return;
+          }
           //>>includeStart('debug', pragmas.debug);
           console.warn(
             `[CesiumJS:webgpu:ctx-${this._id}] Point cloud LOD init failed:`,
@@ -7199,6 +7236,14 @@ export class WebGPUContext extends GraphicsContext {
           );
           //>>includeEnd('debug');
           this._pointCloudLODInitializing = false;
+          if (!this._pointCloudLODInitializationErrorReported) {
+            console.error(
+              `[CesiumJS:webgpu:ctx-${this._id}] Point cloud LOD initialization failed:`,
+              e,
+            );
+            this._pointCloudLODInitializationErrorReported = true;
+          }
+          this._pointCloudLODInitializationError = e;
         });
     }
     return this._pointCloudLOD;
@@ -7402,6 +7447,9 @@ export class WebGPUContext extends GraphicsContext {
       .register("computePipelineCache", () =>
         this._webgpuComputePipelineCache?.clear(),
       )
+      .register("pointCloudLOD", () => {
+        this._detachPointCloudLOD()?.destroy();
+      })
       // AUDIT_2026_05_02 C.3 — register orphan caches that hold GPU
       // handles. After device-loss recovery, cached bundles / buffers /
       // pipelines reference dead handles; not clearing them here means

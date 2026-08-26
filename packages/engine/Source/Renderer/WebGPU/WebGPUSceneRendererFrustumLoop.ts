@@ -42,9 +42,11 @@ import type { WebGPUSceneFramebuffer } from "./WebGPUSceneFramebuffer.js";
 import type { WebGPUTranslucentTileClassification } from "./WebGPUTranslucentTileClassification.js";
 import { getInvertClassificationDepthTexture } from "./WebGPUInvertClassification.js";
 import {
-  hasWebGPUPointCloudEDL,
-  renderFrustumWebGPUPointCloudEDL,
+  finalizeWebGPUPointCloudEDLFrame,
+  prepareWebGPUPointCloudEDLCommands,
+  renderWebGPUPointCloudEDLCommands,
 } from "./WebGPUPointCloudEyeDomeLighting.js";
+import { isSceneFBMrtMode } from "./WebGPUSceneFBTargetHelpers.js";
 import {
   sortCommandsBackToFront,
   sortGaussianSplatsBackToFront,
@@ -411,7 +413,31 @@ export function executeFrustumLoop(
       host._cpuPassProfiler.endPass("voxels");
     }
 
-    // Pass 8: OPAQUE
+    // Pass 8: OPAQUE. EDL preflight is deliberately bucket-local: only
+    // commands that belong to this frustum and whose replay/composite
+    // resources are ready are disabled. A pending/failed EDL resource leaves
+    // the original command enabled, so the normal draw remains fail-open.
+    const opaqueCommands = frustumCommands.commands[Pass.OPAQUE];
+    const opaqueCount: number = frustumCommands.indices[Pass.OPAQUE] ?? 0;
+    const sceneEDLTargetIdentity = context as unknown as object;
+    const sceneSampleCount = context._msaaSamples ?? 1;
+    const sceneTargetCount = isSceneFBMrtMode() ? 2 : 1;
+    let opaqueEDLCount = 0;
+    if (!picking && opaqueCount > 0) {
+      opaqueEDLCount = prepareWebGPUPointCloudEDLCommands(
+        context,
+        scene._frameState,
+        opaqueCommands,
+        opaqueCount,
+        Pass.OPAQUE,
+        i,
+        "scene",
+        sceneEDLTargetIdentity,
+        context.scenePipelineFormat,
+        sceneSampleCount,
+        sceneTargetCount,
+      );
+    }
     host._cpuPassProfiler.beginPass("opaque");
     try {
       host._executeOpaquePass(frustumCommands, config);
@@ -419,22 +445,26 @@ export function executeFrustumLoop(
       host._cpuPassProfiler.endPass("opaque");
     }
 
-    // PARITY-PC-EDL — Point Cloud Eye-Dome Lighting composite. Runs right
-    // after OPAQUE (where the point-cloud color commands would have drawn —
-    // they were disabled by `WebGPUPointCloudEyeDomeLighting.update` when EDL
-    // is on). Re-renders the recorded point clouds into an off-screen
-    // (color + packed-depth) framebuffer and alpha-blends the darkened-edge
-    // result back onto the scene FB. `hasWebGPUPointCloudEDL` is a single
-    // boolean read on the off path (no EDL point clouds → no-op).
-    if (!picking && hasWebGPUPointCloudEDL(context)) {
-      renderFrustumWebGPUPointCloudEDL(
+    // Composite only this frustum's OPAQUE EDL groups before depth repacking
+    // and translucency. Each processor is replayed/composited independently,
+    // preserving its strength/radius and stable update order.
+    if (opaqueEDLCount > 0) {
+      renderWebGPUPointCloudEDLCommands(
         context,
         scene._frameState,
+        opaqueCommands,
+        opaqueCount,
+        Pass.OPAQUE,
+        i,
+        "scene",
+        sceneEDLTargetIdentity,
+        context.scenePipelineFormat,
+        sceneSampleCount,
+        sceneTargetCount,
         () => {
           host._resumeScenePass(context);
           return context._currentRenderPassEncoder ?? null;
         },
-        context.scenePipelineFormat,
       );
     }
 
@@ -691,5 +721,15 @@ export function executeFrustumLoop(
         pickDepth.update(context, packedDepthTex);
       }
     }
+  }
+
+  // If EDL was toggled off or every candidate was culled this frame, release
+  // the full-resolution targets promptly while retaining small immutable
+  // pipelines for still-live processors.
+  if (!picking) {
+    finalizeWebGPUPointCloudEDLFrame(
+      context,
+      scene._frameState?.frameNumber ?? -1,
+    );
   }
 }

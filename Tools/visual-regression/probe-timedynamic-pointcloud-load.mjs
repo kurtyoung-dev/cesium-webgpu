@@ -34,10 +34,13 @@ async function capture(renderer) {
     if (m.type() === "error") errs.push(m.text());
   });
   page.on("pageerror", (e) => errs.push("PAGEERR:" + e.message));
-  await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}`, {
-    waitUntil: "domcontentloaded",
-    timeout: 90000,
-  });
+  await page.goto(
+    `${BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}&offline=true`,
+    {
+      waitUntil: "domcontentloaded",
+      timeout: 90000,
+    },
+  );
   await page.waitForFunction(() => !!window.viewer, { timeout: 90000 });
 
   const info = await page.evaluate(async () => {
@@ -84,16 +87,29 @@ async function capture(renderer) {
     v.clock.multiplier = 1.0;
     v.clock.canAnimate = true;
     v.clock.shouldAnimate = true;
+    // Exercise the renderer's RTE/model-space contract rather than certifying
+    // only the identity matrix. A rigid Earth-scale rotation plus translation
+    // catches world-packed positions paired with a model-space camera (and the
+    // velocity path accidentally applying the model transform twice).
+    const modelMatrix = C.Matrix4.fromRotationTranslation(
+      C.Matrix3.fromRotationZ(C.Math.toRadians(3.0)),
+      new C.Cartesian3(250.0, -400.0, 125.0),
+    );
     const pc = new C.TimeDynamicPointCloud({
       intervals,
       clock: v.clock,
       style: new C.Cesium3DTileStyle({ pointSize: 8 }),
+      modelMatrix,
     });
     s.primitives.add(pc);
 
-    const fixedBS = new C.BoundingSphere(
-      new C.Cartesian3(1215012.9, -4736312.85, 4081606.1),
-      4.1,
+    const fixedBS = C.BoundingSphere.transform(
+      new C.BoundingSphere(
+        new C.Cartesian3(1215012.9, -4736312.85, 4081606.1),
+        4.1,
+      ),
+      modelMatrix,
+      new C.BoundingSphere(),
     );
 
     let bsReadyFrame = -1;
@@ -118,6 +134,19 @@ async function capture(renderer) {
     }
     s.canvas.setAttribute("data-pc", "1");
     const bs = pc.boundingSphere;
+    const modelMatrixIsIdentity = C.Matrix4.equals(
+      pc.modelMatrix,
+      C.Matrix4.IDENTITY,
+    );
+    const modelRteCenterOffsetMeters = bs
+      ? C.Cartesian3.distance(bs.center, fixedBS.center)
+      : null;
+    const expectedRadius = fixedBS.radius;
+    const transformedModelRte =
+      !modelMatrixIsIdentity &&
+      modelRteCenterOffsetMeters !== null &&
+      isFinite(modelRteCenterOffsetMeters) &&
+      modelRteCenterOffsetMeters <= expectedRadius;
     return {
       rendererType: s.context.rendererType,
       bsReady: !!bs,
@@ -126,6 +155,10 @@ async function capture(renderer) {
       radiusFinite: bs ? isFinite(bs.radius) && bs.radius > 0 : false,
       totalMemoryUsageInBytes: pc.totalMemoryUsageInBytes,
       memFirstNonZeroFrame,
+      modelMatrixIsIdentity,
+      modelRteCenterOffsetMeters,
+      expectedRadius,
+      transformedModelRte,
     };
   });
 

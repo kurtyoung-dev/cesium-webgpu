@@ -72,6 +72,8 @@ class PointCloud {
     this._constantColor = Color.clone(Color.DARKGRAY);
     this._highlightColor = Color.clone(Color.WHITE);
     this._pointSize = 1.0;
+    this._webgpuStylePointSize = undefined;
+    this._webgpuStylePointSizeActive = false;
 
     this._rtcCenter = undefined;
     this._quantizedVolumeScale = undefined;
@@ -108,6 +110,8 @@ class PointCloud {
     this._mode = undefined;
 
     this._ready = false;
+    this._readyTransitionPending = false;
+    this._webgpuReadyStatePrepared = false;
     this._pointsLength = 0;
     this._geometryByteLength = 0;
 
@@ -129,6 +133,10 @@ class PointCloud {
     this.time = 0.0; // For styling
     this.shadows = ShadowMode.ENABLED;
     this._boundingSphere = undefined;
+    // Backend-neutral/model-local sphere retained for WebGPU command sorting.
+    // `_boundingSphere` remains the public world-space value and is refreshed
+    // from this sphere whenever `modelMatrix` changes.
+    this._webgpuLocalBoundingSphere = undefined;
 
     this.clippingPlanes = undefined;
     this.isClipped = false;
@@ -167,19 +175,36 @@ class PointCloud {
       context,
       FeatureRendererKey.POINT_CLOUD,
     );
+
+    // Draco is a shared CPU-content stage, not a WebGL realization stage.
+    // Run it before backend dispatch so the WebGPU renderer receives the same
+    // decoded descriptor as WebGL without constructing any WebGL GPU objects.
+    // The task processor keeps decode work off the draw hot path; update only
+    // polls its state and returns while the worker is active.
+    if (defined(this._error)) {
+      const error = this._error;
+      this._error = undefined;
+      throw error;
+    }
+    const decoding = decodeDraco(this);
+    if (decoding) {
+      return;
+    }
+
     const fr = readiness.kind === "ready" ? readiness.renderer : undefined;
     if (fr) {
       this._featureRenderer = fr;
       // The WebGPU feature renderer consumes `_parsedContent` directly and
       // builds its own GPU resources, so the WebGL `createResources` path
-      // below (which sets `_ready` + the bounding sphere) never runs. Mark
-      // the point cloud ready and derive its bounding sphere from the parsed
-      // positions the first time we see them so that consumers
+      // below never runs. Prepare metadata and derive the bounding sphere
+      // from parsed positions before realization; public ready is published
+      // only after this owner's current backend resources are usable so
+      // consumers
       // (`TimeDynamicPointCloud` frame-ready gating, `Cesium3DTileset`
       // bounding-volume, camera `zoomTo`) treat the cloud as loaded. Without
       // this the WebGPU point cloud never reports `ready`/`boundingSphere`
       // and the frame is never displayed.
-      if (!this._ready) {
+      if (!this._webgpuReadyStatePrepared) {
         computeWebGPUReadyState(this);
       }
       // Publish the effective per-point size (attenuation vs fixed pointSize,
@@ -194,43 +219,58 @@ class PointCloud {
       // clamp in the WebGPU shaders. Feature-dependent (non-constant)
       // pointSize expressions can't be evaluated CPU-side per point here —
       // fall back to the attenuation/fixed size like before.
-      // NOTE: read the public `style` property — the WebGL-path `_style`
-      // sync lives below the early return this branch takes.
-      const activeStyle = this.style ?? this._style;
-      let stylePointSize;
-      if (defined(activeStyle) && defined(activeStyle.pointSize)) {
-        try {
-          const evaluated = activeStyle.pointSize.evaluate(undefined);
-          if (typeof evaluated === "number" && isFinite(evaluated)) {
-            stylePointSize = evaluated;
+      // Read the public property directly so clearing a previously assigned
+      // style resets point-size state. Falling back to `_style` here would
+      // resurrect the stale style after `style = undefined`.
+      const activeStyle = this.style;
+      if (this._style !== activeStyle || this.styleDirty) {
+        // Preserve the public style lifecycle even though per-feature color
+        // styling is not yet realized by this dedicated WebGPU renderer. In
+        // particular, do not infer a render pass from color we do not render.
+        this._style = activeStyle;
+        this.styleDirty = false;
+        let stylePointSize;
+        if (defined(activeStyle) && defined(activeStyle.pointSize)) {
+          try {
+            const evaluated = activeStyle.pointSize.evaluate(undefined);
+            if (typeof evaluated === "number" && isFinite(evaluated)) {
+              stylePointSize = evaluated;
+            }
+          } catch (error) {
+            // Feature-dependent expression — keep the fallback path.
           }
-        } catch (error) {
-          // Feature-dependent expression — keep the fallback path.
         }
+        this._webgpuStylePointSize = stylePointSize;
+        this._webgpuStylePointSizeActive = defined(stylePointSize);
       }
-      this._webgpuStylePointSizeActive = defined(stylePointSize);
       this._webgpuPointSize =
-        (defined(stylePointSize)
-          ? stylePointSize
+        (this._webgpuStylePointSizeActive
+          ? this._webgpuStylePointSize
           : this.attenuation
             ? this.maximumAttenuation
             : this._pointSize) * frameState.pixelRatio;
       fr.update(this, frameState);
+      if (
+        !this._ready &&
+        !this._readyTransitionPending &&
+        typeof fr.isReady === "function" &&
+        fr.isReady(this)
+      ) {
+        this._readyTransitionPending = true;
+        frameState.afterRender.push(() => {
+          // Recheck because device loss between update and afterRender may
+          // detach the exact cache that made this owner usable.
+          if (fr.isReady(this)) {
+            this._ready = true;
+          }
+          this._readyTransitionPending = false;
+          return true;
+        });
+      }
       return;
     }
 
     if (readiness.kind !== "unsupported") {
-      return;
-    }
-
-    if (defined(this._error)) {
-      const error = this._error;
-      this._error = undefined;
-      throw error;
-    }
-
-    const decoding = decodeDraco(this, context);
-    if (decoding) {
       return;
     }
 
@@ -517,7 +557,8 @@ function getRandomValues(samplesLength) {
 }
 
 /**
- * Set the WebGPU-path `_ready` flag + bounding sphere from the parsed content.
+ * Prepare backend-neutral WebGPU metadata from parsed content. Public ready is
+ * published separately, after the backend reports usable draw resources.
  * The WebGL `createResources` path does this as a side-effect of building the
  * vertex arrays; the WebGPU feature-renderer path skips that, so we replicate
  * the minimum a consumer needs to treat the point cloud as loaded: a world-space
@@ -539,34 +580,42 @@ function computeWebGPUReadyState(pointCloud) {
     : typedArray.length / 3;
   pointCloud._pointsLength = pointsLength;
 
-  // Dequantize a copy for the bounding-sphere sample when POSITION_QUANTIZED.
-  let samplePositions = typedArray;
+  let boundingSphere;
   if (posAttr.isQuantized === true) {
-    const range =
-      defined(posAttr.quantizedRange) && posAttr.quantizedRange > 0
-        ? posAttr.quantizedRange
-        : (1 << 16) - 1;
     const scale = posAttr.quantizedVolumeScale ?? { x: 1, y: 1, z: 1 };
     const offset = posAttr.quantizedVolumeOffset ?? { x: 0, y: 0, z: 0 };
-    const decoded = new Float32Array(typedArray.length);
-    for (let i = 0; i < pointsLength; ++i) {
-      decoded[i * 3] = (typedArray[i * 3] / range) * scale.x + offset.x;
-      decoded[i * 3 + 1] = (typedArray[i * 3 + 1] / range) * scale.y + offset.y;
-      decoded[i * 3 + 2] = (typedArray[i * 3 + 2] / range) * scale.z + offset.z;
-    }
-    samplePositions = decoded;
+    Cartesian3.fromElements(offset.x, offset.y, offset.z, scratchMin);
+    Cartesian3.fromElements(
+      offset.x + scale.x,
+      offset.y + scale.y,
+      offset.z + scale.z,
+      scratchMax,
+    );
+    // Every decoded quantized point lies within these exact volume corners.
+    // This is O(1), conservative, and matches WebGL; random sampling could
+    // under-bound an extreme point and cause incorrect command culling.
+    boundingSphere = BoundingSphere.fromCornerPoints(scratchMin, scratchMax);
+    boundingSphere.radius += CesiumMath.EPSILON2;
+  } else {
+    // Metadata preparation runs once, off the draw hot path. Scan all points
+    // so an unsampled extreme can never sit outside the command culling bound.
+    boundingSphere = BoundingSphere.fromVertices(typedArray);
+    boundingSphere.radius += CesiumMath.EPSILON2;
   }
 
-  const boundingSphere =
-    computeApproximateBoundingSphereFromPositions(samplePositions);
-
-  // Local → world: RTC center offset then the model matrix.
+  // Keep the RTC-adjusted sphere in model/local space. The WebGPU renderer
+  // transforms it every frame so a dynamic model matrix updates command
+  // sorting/culling without rescanning point positions.
   const rtc = parsedContent.rtcCenter;
   if (defined(rtc)) {
     Cartesian3.add(boundingSphere.center, rtc, boundingSphere.center);
   }
-  BoundingSphere.transform(
+  pointCloud._webgpuLocalBoundingSphere = BoundingSphere.clone(
     boundingSphere,
+    pointCloud._webgpuLocalBoundingSphere,
+  );
+  BoundingSphere.transform(
+    pointCloud._webgpuLocalBoundingSphere,
     pointCloud.modelMatrix,
     boundingSphere,
   );
@@ -614,7 +663,7 @@ function computeWebGPUReadyState(pointCloud) {
   }
   pointCloud._geometryByteLength = geometryByteLength;
 
-  pointCloud._ready = true;
+  pointCloud._webgpuReadyStatePrepared = true;
 }
 
 function computeApproximateBoundingSphereFromPositions(positions) {
@@ -1482,14 +1531,14 @@ function createShaders(pointCloud, frameState, style) {
   }
 }
 
-function decodeDraco(pointCloud, context) {
+function decodeDraco(pointCloud) {
   if (pointCloud._decodingState === DecodingState.READY) {
     return false;
   }
   if (pointCloud._decodingState === DecodingState.NEEDS_DECODE) {
     const parsedContent = pointCloud._parsedContent;
     const draco = parsedContent.draco;
-    const decodePromise = DracoLoader.decodePointCloud(draco, context);
+    const decodePromise = DracoLoader.decodePointCloud(draco);
     if (defined(decodePromise)) {
       pointCloud._decodingState = DecodingState.DECODING;
       decodePromise
@@ -1553,6 +1602,13 @@ function decodeDraco(pointCloud, context) {
           if (defined(decodedPositions)) {
             parsedContent.positions = {
               typedArray: decodedPositions,
+              // Preserve Draco's quantization descriptor for backend-neutral
+              // CPU realization. WebGL reads the mirrored PointCloud fields;
+              // WebGPU reads this wrapper and dequantizes before RTE packing.
+              isQuantized: isQuantizedDraco,
+              quantizedRange: pointCloud._quantizedRange,
+              quantizedVolumeScale: pointCloud._quantizedVolumeScale,
+              quantizedVolumeOffset: pointCloud._quantizedVolumeOffset,
             };
           }
 
@@ -1560,6 +1616,9 @@ function decodeDraco(pointCloud, context) {
           if (defined(decodedColors)) {
             parsedContent.colors = {
               typedArray: decodedColors,
+              componentDatatype: ComponentDatatype.UNSIGNED_BYTE,
+              componentCount: defined(decodedRgba) ? 4 : 3,
+              isTranslucent: defined(decodedRgba),
             };
           }
 

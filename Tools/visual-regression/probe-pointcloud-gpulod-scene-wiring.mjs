@@ -113,6 +113,11 @@ const out = await page.evaluate(async () => {
       return { ready: false, labels: [] };
     }
 
+    // Fork the same owner-scoped stream used by the scene renderer. The
+    // context object is an immutable template; mutable positions/count/index
+    // buffers must never alias another cloud.
+    proc = await proc.createOwnerStream("integrated-probe-owner");
+
     const N = 60000; // above POINT_COUNT_LOD_THRESHOLD (50_000)
     const x = new Float32Array(N);
     const y = new Float32Array(N);
@@ -134,25 +139,25 @@ const out = await page.evaluate(async () => {
       return origBegin(desc);
     };
 
-    // Permissive params: every point LOD-0, box frustum passes all points.
+    // Permissive projected-error params: every point is LOD-0 and every local
+    // point is inside the box frustum.
     const planes = [
       1, 0, 0, 1e6, -1, 0, 0, 1e6, 0, 1, 0, 1e6, 0, -1, 0, 1e6, 0, 0, 1, 1e6, 0,
       0, -1, 1e6,
     ];
     proc.dispatch(encoder, {
-      cameraPositionWC: [0, 0, 0],
-      lod0Distance2: 1e30,
-      lod1Distance2: 1e30,
-      lod2Distance2: 1e30,
-      lod3Distance2: 1e30,
+      cameraPositionLocal: [0, 0, 0],
+      projectionScale: 1.0,
+      targetPixelSpacing: 1.0,
       frustumPlanes: planes,
       pointCount: N,
       maxVisiblePoints: N,
-      screenSpaceRadius: 1.0,
-      geometricError: 0.0,
+      geometricError: 1e9,
+      modelLinear: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0],
     });
     device.queue.submit([encoder.finish()]);
     await device.queue.onSubmittedWorkDone();
+    proc.destroy();
     return { ready: true, labels };
   }
 

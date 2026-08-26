@@ -37,12 +37,12 @@
 // a module system and we don't want a preprocessor step just for one
 // shared struct.
 struct LODParams {
-  cameraPositionWC: vec3<f32>,
+  cameraPositionLocal: vec3<f32>,
   _pad0: f32,
-  lod0Distance2: f32,
-  lod1Distance2: f32,
-  lod2Distance2: f32,
-  lod3Distance2: f32,
+  projectionScale: f32,
+  targetPixelSpacing: f32,
+  geometricError: f32,
+  lodFarDistance: f32,
   frustumPlane0: vec4<f32>,
   frustumPlane1: vec4<f32>,
   frustumPlane2: vec4<f32>,
@@ -51,8 +51,10 @@ struct LODParams {
   frustumPlane5: vec4<f32>,
   pointCount: u32,
   maxVisiblePoints: u32,
-  screenSpaceRadius: f32,
-  geometricError: f32,
+  _pad2: vec2<f32>,
+  modelLinear0: vec4<f32>,
+  modelLinear1: vec4<f32>,
+  modelLinear2: vec4<f32>,
 }
 
 @group(0) @binding(0) var<uniform> params: LODParams;
@@ -67,6 +69,9 @@ struct LODParams {
 @group(0) @binding(5) var<storage, read> prefix: array<u32>;
 // Final compacted list of visible point indices.
 @group(0) @binding(6) var<storage, read_write> visibleIndices: array<u32>;
+// Exact capped count consumed by drawIndirect. The last prefix lane writes it
+// during compactScanned so the uncapped scan total is never exposed.
+@group(0) @binding(7) var<storage, read_write> visibleCount: atomic<u32>;
 
 fn frustumTest(pos: vec3<f32>) -> bool {
   let planes = array<vec4<f32>, 6>(
@@ -82,9 +87,31 @@ fn frustumTest(pos: vec3<f32>) -> bool {
   return true;
 }
 
-fn distanceSquared(a: vec3<f32>, b: vec3<f32>) -> f32 {
-  let d = a - b;
-  return dot(d, d);
+fn worldCameraDistance(pos: vec3<f32>) -> f32 {
+  let localDelta = pos - params.cameraPositionLocal;
+  let worldDelta = vec3<f32>(
+    dot(params.modelLinear0.xyz, localDelta),
+    dot(params.modelLinear1.xyz, localDelta),
+    dot(params.modelLinear2.xyz, localDelta),
+  );
+  return length(worldDelta);
+}
+
+fn projectedSpacing(cameraDistance: f32) -> f32 {
+  return params.geometricError * params.projectionScale /
+    max(cameraDistance, 1e-4);
+}
+
+fn selectLOD(pos: vec3<f32>) -> u32 {
+  let cameraDistance = worldCameraDistance(pos);
+  if (params.lodFarDistance > 0.0 && cameraDistance > params.lodFarDistance) {
+    return 4u;
+  }
+  let ratio = projectedSpacing(cameraDistance) / max(params.targetPixelSpacing, 0.25);
+  if (ratio >= 4.0) { return 0u; }
+  if (ratio >= 2.0) { return 1u; }
+  if (ratio >= 1.0) { return 2u; }
+  return 3u;
 }
 
 // Identical to `shouldKeepAtLOD` in PointCloudLOD.wgsl — deterministic
@@ -114,17 +141,7 @@ fn tagVisible(@builtin(global_invocation_id) gid: vec3<u32>) {
 
   var isVisible: u32 = 0u;
   if (frustumTest(pos)) {
-    let dist2 = distanceSquared(pos, params.cameraPositionWC);
-    var lodLevel = 4u;
-    if (dist2 < params.lod0Distance2) {
-      lodLevel = 0u;
-    } else if (dist2 < params.lod1Distance2) {
-      lodLevel = 1u;
-    } else if (dist2 < params.lod2Distance2) {
-      lodLevel = 2u;
-    } else if (dist2 < params.lod3Distance2) {
-      lodLevel = 3u;
-    }
+    let lodLevel = selectLOD(pos);
     if (lodLevel < 4u && shouldKeepAtLOD(pointIndex, lodLevel)) {
       isVisible = 1u;
     }
@@ -141,6 +158,9 @@ fn compactScanned(@builtin(global_invocation_id) gid: vec3<u32>) {
   let pointIndex = gid.x;
   if (pointIndex >= params.pointCount) {
     return;
+  }
+  if (pointIndex + 1u == params.pointCount) {
+    atomicStore(&visibleCount, min(prefix[pointIndex], params.maxVisiblePoints));
   }
   if (flags[pointIndex] == 0u) {
     return;

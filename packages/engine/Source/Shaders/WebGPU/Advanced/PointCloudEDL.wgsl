@@ -8,7 +8,7 @@
 //
 // Inputs (from the off-screen FBO written by PointCloudEDLDepth.wgsl):
 //   colorTexture — point color (slot 0)
-//   depthTexture — r32float raw eye-space depth in metres (slot 1); 0 = background
+//   depthTexture — rg32float: eye-space metres + exact device depth (slot 1)
 //
 // The eye depth is read directly and fed through the neighbor-depth EDL
 // response identical in spirit to the WebGL PointCloudEyeDomeLighting.glsl
@@ -52,37 +52,67 @@ fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
 // isolated / silhouette points from being crushed to black — background
 // around a point is NOT treated as an infinitely-near occluder.
 //
-// `depthTexture` is the r32float eye-space-depth attachment written by
-// PointCloudEDLDepth.wgsl — `.r` is the raw positive eye depth in metres.
-fn neighborContribution(centerLog2: f32, uv: vec2<f32>) -> vec2<f32> {
-  let d = textureSampleLevel(depthTexture, edlSampler, uv, 0.0).r;
-  if (d <= 0.0) {
+// `depthTexture` is the rg32float attachment written by
+// PointCloudEDLDepth.wgsl — `.r` is raw positive eye depth in metres and `.g`
+// is the exact log/hyperbolic scene-device depth for the point.
+fn neighborContribution(
+  centerLog2: f32,
+  centerUv: vec2<f32>,
+  texelDirection: vec2<f32>,
+) -> vec2<f32> {
+  // WebGL samples the adjacent integer radii and interpolates their depths.
+  // Sampling once at a fractional coordinate with a nearest sampler instead
+  // snaps the radius and makes high-DPI/non-integer controls visibly jump.
+  let radius0 = floor(params.radius);
+  let radius1 = ceil(params.radius);
+  let depth0 = textureSampleLevel(
+    depthTexture, edlSampler, centerUv + texelDirection * radius0, 0.0,
+  ).r;
+  let depth1 = textureSampleLevel(
+    depthTexture, edlSampler, centerUv + texelDirection * radius1, 0.0,
+  ).r;
+  if (depth0 <= 0.0 || depth1 <= 0.0) {
     return vec2<f32>(0.0, 0.0); // background — ignore (clear-depth guard)
   }
+  let d = mix(depth0, depth1, fract(params.radius));
   let neighborLog2 = log2(max(d, 0.001));
   return vec2<f32>(max(0.0, centerLog2 - neighborLog2), 1.0);
 }
 
+struct CompositeOutput {
+  @location(0) color: vec4<f32>,
+  @builtin(frag_depth) depth: f32,
+}
+
 @fragment
-fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
-  // Background pixels contribute nothing — return fully transparent so the
-  // alpha-blend against the scene FB is a no-op there (WebGL discards).
-  let centerDepth = textureSampleLevel(depthTexture, edlSampler, input.uv, 0.0).r;
+fn fragmentMain(input: VertexOutput) -> CompositeOutput {
+  let centerDepthSample = textureSampleLevel(
+    depthTexture, edlSampler, input.uv, 0.0,
+  ).rg;
+  let centerDepth = centerDepthSample.r;
+  // A transparent return would still write full-screen depth. Discard the
+  // clear sentinel so non-point pixels leave scene color and depth untouched.
   if (centerDepth <= 0.0) {
-    return vec4<f32>(0.0);
+    discard;
   }
 
   let color = textureSampleLevel(colorTexture, edlSampler, input.uv, 0.0);
   let centerLog2 = log2(max(centerDepth, 0.001));
 
   // Sample the 4 axial neighbors (left/right/down/up) — matches WebGL.
-  let tx = params.texelSize.x * params.radius;
-  let ty = params.texelSize.y * params.radius;
   var responseAndCount = vec2<f32>(0.0, 0.0);
-  responseAndCount += neighborContribution(centerLog2, input.uv + vec2<f32>(-tx, 0.0));
-  responseAndCount += neighborContribution(centerLog2, input.uv + vec2<f32>( tx, 0.0));
-  responseAndCount += neighborContribution(centerLog2, input.uv + vec2<f32>(0.0, -ty));
-  responseAndCount += neighborContribution(centerLog2, input.uv + vec2<f32>(0.0,  ty));
+  responseAndCount += neighborContribution(
+    centerLog2, input.uv, vec2<f32>(-params.texelSize.x, 0.0),
+  );
+  responseAndCount += neighborContribution(
+    centerLog2, input.uv, vec2<f32>(params.texelSize.x, 0.0),
+  );
+  responseAndCount += neighborContribution(
+    centerLog2, input.uv, vec2<f32>(0.0, -params.texelSize.y),
+  );
+  responseAndCount += neighborContribution(
+    centerLog2, input.uv, vec2<f32>(0.0, params.texelSize.y),
+  );
 
   // Average over the VALID (non-background) neighbor count. When every
   // neighbor is background (a fully isolated point) count is 0 → no
@@ -92,5 +122,8 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   let shade = exp(-response * 300.0 * params.strength);
 
   // Alpha-blended composite back to the scene FB: shaded color, original alpha.
-  return vec4<f32>(color.rgb * shade, color.a);
+  return CompositeOutput(
+    vec4<f32>(color.rgb * shade, color.a),
+    centerDepthSample.g,
+  );
 }

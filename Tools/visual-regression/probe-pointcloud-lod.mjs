@@ -81,21 +81,20 @@ const out = await page.evaluate(async (wgslUrl) => {
   const MAX_VISIBLE = 256;
 
   // Params layout MUST match struct LODParams in PointCloudLOD.wgsl.
-  // 36 f32/u32 slots, 144 bytes, padded to 256.
+  // 48 f32/u32 slots, 192 bytes, padded to 256.
   const PARAMS_BYTES = 256;
   const f = new Float32Array(64);
   const u = new Uint32Array(f.buffer);
-  // cameraPositionWC = origin
+  // cameraPositionLocal = origin
   f[0] = 0;
   f[1] = 0;
   f[2] = 0;
   f[3] = 0;
-  // LOD distance² thresholds — make lod0Distance2 huge so EVERY point is
-  // LOD 0 (keep-all). The others just need to be >= lod0.
-  f[4] = 1e30; // lod0Distance2
-  f[5] = 1e30; // lod1Distance2
-  f[6] = 1e30; // lod2Distance2
-  f[7] = 1e30; // lod3Distance2
+  // Projected error is deliberately enormous so every point is LOD 0.
+  f[4] = 1.0; // projectionScale
+  f[5] = 1.0; // targetPixelSpacing
+  f[6] = 1e9; // geometricError
+  f[7] = 0.0;
   // 6 frustum planes at slots 8..31. Use planes that pass ALL points:
   // each plane normal·pos + w >= 0 for points near the origin. Six planes
   // of a generous axis-aligned box centered at origin, half-extent 1e6.
@@ -116,15 +115,19 @@ const out = await page.evaluate(async (wgslUrl) => {
   }
   u[32] = POINT_COUNT;
   u[33] = MAX_VISIBLE;
-  f[34] = 1.0; // screenSpaceRadius
-  f[35] = 0.0; // geometricError
+  f[34] = 0.0;
+  f[35] = 0.0;
+  // modelLinear rows = identity; local distance equals world distance.
+  f[36] = 1.0;
+  f[41] = 1.0;
+  f[46] = 1.0;
 
   // Positions: all within the box (so all 256 are visible at LOD 0).
   const posX = new Float32Array(POINT_COUNT);
   const posY = new Float32Array(POINT_COUNT);
   const posZ = new Float32Array(POINT_COUNT);
   for (let i = 0; i < POINT_COUNT; i++) {
-    // Small spread well inside the ±1e6 box and inside lod0 distance.
+    // Small spread well inside the ±1e6 box and projected LOD-0 threshold.
     posX[i] = (i - 128) * 10;
     posY[i] = 0;
     posZ[i] = 0;

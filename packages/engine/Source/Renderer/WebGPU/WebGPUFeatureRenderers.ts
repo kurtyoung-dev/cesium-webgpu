@@ -712,6 +712,7 @@ export function registerWebGPUFeatureRenderers(context: WebGPUContext): void {
       const mod = await import("./WebGPUPointCloudRenderer.js");
       return {
         update: mod.updateWebGPUPointCloud,
+        isReady: mod.isWebGPUPointCloudReady,
         destroy: mod.destroyWebGPUPointCloudResources,
       };
     },

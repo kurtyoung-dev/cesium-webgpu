@@ -52,6 +52,11 @@ import {
   getInvertClassificationSampleCount,
 } from "./WebGPUInvertClassification.js";
 import {
+  prepareWebGPUPointCloudEDLCommands,
+  renderWebGPUPointCloudEDLCommands,
+} from "./WebGPUPointCloudEyeDomeLighting.js";
+import { isSceneFBMrtMode } from "./WebGPUSceneFBTargetHelpers.js";
+import {
   executeBatch,
   executeBatchIndirect,
   type WebGPURenderFrameConfig,
@@ -71,6 +76,7 @@ export interface _3DTilePassesHost {
   _height: number;
   _tileIndirectStatus: TileIndirectStatus;
   _tileIndirectStatusFrame: number;
+  _currentFrustumIndex: number;
   _resumeScenePass(context: WebGPUContext): void;
 }
 
@@ -277,6 +283,53 @@ export function execute3DTilePasses(
       }
     }
   };
+
+  const tileCommands = frustumCommands.commands[Pass.CESIUM_3D_TILE];
+  const tileCount: number = frustumCommands.indices[Pass.CESIUM_3D_TILE] ?? 0;
+  const sceneTargetIdentity = context as unknown as object;
+  const sceneSampleCount = context._msaaSamples ?? 1;
+  const sceneTargetCount = isSceneFBMrtMode() ? 2 : 1;
+
+  /** Run tile-main into the ordinary scene target, with frustum-local EDL. */
+  const runSceneTileMain = (): void => {
+    const edlCount = config.picking
+      ? 0
+      : prepareWebGPUPointCloudEDLCommands(
+          context,
+          scene._frameState,
+          tileCommands,
+          tileCount,
+          Pass.CESIUM_3D_TILE,
+          host._currentFrustumIndex,
+          "scene",
+          sceneTargetIdentity,
+          context.scenePipelineFormat,
+          sceneSampleCount,
+          sceneTargetCount,
+        );
+    for (const passIndex of firstPasses) {
+      runPass(passIndex);
+    }
+    if (edlCount > 0) {
+      renderWebGPUPointCloudEDLCommands(
+        context,
+        scene._frameState,
+        tileCommands,
+        tileCount,
+        Pass.CESIUM_3D_TILE,
+        host._currentFrustumIndex,
+        "scene",
+        sceneTargetIdentity,
+        context.scenePipelineFormat,
+        sceneSampleCount,
+        sceneTargetCount,
+        () => {
+          host._resumeScenePass(context);
+          return context._currentRenderPassEncoder ?? null;
+        },
+      );
+    }
+  };
   // C-R8-EDGE-FBO (Batch 44) — Edges pass. Redirects
   // `Pass.CESIUM_3D_TILE_EDGES` into the dedicated edge MRT
   // framebuffer when the scene has edge visibility enabled. Mirrors
@@ -380,6 +433,12 @@ export function execute3DTilePasses(
 
     if (encoder && colorAttachment && depthAttachment) {
       const invertSamples = getInvertClassificationSampleCount(invertOwner);
+      const invertFormat =
+        (
+          invertOwner._webgpuCache as
+            { colorFormat?: GPUTextureFormat } | undefined
+        )?.colorFormat ?? context.scenePipelineFormat;
+      const invertTargetIdentity = invertOwner as unknown as object;
 
       // Pass 1: tile main passes (EDGES + CESIUM_3D_TILE) into invert
       // FBO (color + depth + stencil all clear).
@@ -392,10 +451,65 @@ export function execute3DTilePasses(
       if (tilePass) {
         tilePass.setViewport(0, 0, host._width, host._height, 0, 1);
         tilePass.setScissorRect(0, 0, host._width, host._height);
+        const invertEDLCount = config.picking
+          ? 0
+          : prepareWebGPUPointCloudEDLCommands(
+              context,
+              scene._frameState,
+              tileCommands,
+              tileCount,
+              Pass.CESIUM_3D_TILE,
+              host._currentFrustumIndex,
+              "invert",
+              invertTargetIdentity,
+              invertFormat,
+              invertSamples,
+              1,
+            );
         for (const passIndex of firstPasses) {
           runPass(passIndex);
         }
         context.endCurrentRenderPass?.();
+        if (invertEDLCount > 0) {
+          renderWebGPUPointCloudEDLCommands(
+            context,
+            scene._frameState,
+            tileCommands,
+            tileCount,
+            Pass.CESIUM_3D_TILE,
+            host._currentFrustumIndex,
+            "invert",
+            invertTargetIdentity,
+            invertFormat,
+            invertSamples,
+            1,
+            () => {
+              const edlColor =
+                buildInvertClassificationColorAttachment(invertOwner);
+              const edlDepth = buildInvertClassificationDepthStencilAttachment(
+                invertOwner,
+                "load",
+                "load",
+              );
+              if (!edlColor || !edlDepth) {
+                return null;
+              }
+              edlColor.loadOp = "load";
+              const edlTargetPass = context.beginRenderPass?.({
+                label: `InvertClassification EDL composite (${invertSamples}x)`,
+                colorAttachments: [edlColor],
+                depthStencilAttachment: edlDepth,
+              });
+              edlTargetPass?.setViewport(0, 0, host._width, host._height, 0, 1);
+              edlTargetPass?.setScissorRect(0, 0, host._width, host._height);
+              return edlTargetPass ?? null;
+            },
+          );
+          // Classification and globe-depth publication consume the invert
+          // target only after the point EDL composite has published its exact
+          // device depth and 3D-tile stencil bit.
+          context.endCurrentRenderPass?.();
+        }
       }
 
       // C-R8 (Batch 35) — depth update hook runs BETWEEN the tile
@@ -481,9 +595,7 @@ export function execute3DTilePasses(
       );
       //>>includeEnd('debug');
       host._resumeScenePass(context);
-      for (const passIndex of firstPasses) {
-        runPass(passIndex);
-      }
+      runSceneTileMain();
       if (hasTileMainCommands && onAfterTileMainPass) {
         onAfterTileMainPass();
       }
@@ -492,9 +604,7 @@ export function execute3DTilePasses(
       }
     }
   } else {
-    for (const passIndex of firstPasses) {
-      runPass(passIndex);
-    }
+    runSceneTileMain();
     // C-R8 (Batch 35) — depth update hook. Fires after the main 3D tile
     // pass so classification can read tile-augmented depth.
     if (hasTileMainCommands && onAfterTileMainPass) {

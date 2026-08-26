@@ -82,6 +82,12 @@ export interface WebGPUDecoupledScanOptions {
   maxSafeWorkgroups?: number;
 }
 
+/** Immutable shader artifacts that owner scanners may share on one device. */
+export interface WebGPUDecoupledScanSharedArtifacts {
+  pipeline: GPUComputePipeline;
+  bindGroupLayout: GPUBindGroupLayout;
+}
+
 /**
  * Thin runtime wrapper around the decoupled-lookback scan compute shader.
  * One instance per GPUDevice; re-use across frames and consumers.
@@ -140,46 +146,50 @@ export class WebGPUDecoupledScan {
    *   in rather than imported so the build-variant alias plugin can
    *   intercept the import in backend-agnostic builds if needed.
    */
-  async initialize(shaderCode: string): Promise<void> {
+  async initialize(
+    shaderCode: string,
+    sharedArtifacts?: WebGPUDecoupledScanSharedArtifacts,
+  ): Promise<void> {
     if (this._initialized) {
       return;
     }
 
-    const shaderModule = this._device.createShaderModule({
-      code: shaderCode,
-      label: `${this._label} Shader Module`,
-    });
+    if (sharedArtifacts) {
+      this._bindGroupLayout = sharedArtifacts.bindGroupLayout;
+      this._pipeline = sharedArtifacts.pipeline;
+    } else {
+      const shaderModule = this._device.createShaderModule({
+        code: shaderCode,
+        label: `${this._label} Shader Module`,
+      });
 
-    this._bindGroupLayout = makeBindGroupLayout(
-      this._device,
-      `${this._label} BindGroupLayout`,
-      [
-        // binding 0: params (uniform) — elementCount + padding
-        uniformBuffer(0, Stage.COMPUTE),
-        // binding 1: input (read-only storage)
-        storageBuffer(1, Stage.COMPUTE, { readOnly: true }),
-        // binding 2: output (read-write storage)
-        storageBuffer(2, Stage.COMPUTE),
-        // binding 3: partitions (read-write storage, atomics)
-        storageBuffer(3, Stage.COMPUTE),
-      ],
-    );
+      this._bindGroupLayout = makeBindGroupLayout(
+        this._device,
+        `${this._label} BindGroupLayout`,
+        [
+          uniformBuffer(0, Stage.COMPUTE),
+          storageBuffer(1, Stage.COMPUTE, { readOnly: true }),
+          storageBuffer(2, Stage.COMPUTE),
+          storageBuffer(3, Stage.COMPUTE),
+        ],
+      );
 
-    const pipelineLayout = this._device.createPipelineLayout({
-      label: `${this._label} PipelineLayout`,
-      bindGroupLayouts: [this._bindGroupLayout],
-    });
+      const pipelineLayout = this._device.createPipelineLayout({
+        label: `${this._label} PipelineLayout`,
+        bindGroupLayouts: [this._bindGroupLayout],
+      });
 
-    this._pipeline = await trackComputePipelineCreation(
-      this._monitor,
-      this._device,
-      {
-        label: `${this._label} Pipeline`,
-        layout: pipelineLayout,
-        compute: { module: shaderModule, entryPoint: "scan" },
-      },
-      "DecoupledScan",
-    );
+      this._pipeline = await trackComputePipelineCreation(
+        this._monitor,
+        this._device,
+        {
+          label: `${this._label} Pipeline`,
+          layout: pipelineLayout,
+          compute: { module: shaderModule, entryPoint: "scan" },
+        },
+        "DecoupledScan",
+      );
+    }
 
     this._paramsBuffer = this._device.createBuffer({
       label: `${this._label} Params`,
@@ -362,6 +372,15 @@ export class WebGPUDecoupledScan {
 
   get isDestroyed(): boolean {
     return this._isDestroyed;
+  }
+
+  get sharedArtifacts(): WebGPUDecoupledScanSharedArtifacts | undefined {
+    return this._pipeline && this._bindGroupLayout
+      ? {
+          pipeline: this._pipeline,
+          bindGroupLayout: this._bindGroupLayout,
+        }
+      : undefined;
   }
 
   destroy(): void {

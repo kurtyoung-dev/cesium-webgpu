@@ -19,16 +19,21 @@ function makeMockDevice(options = {}) {
       return { __isShaderModule: true, label: desc?.label };
     },
     createBindGroupLayout(desc) {
-      return { __isBGL: true, label: desc?.label };
+      return { __isBGL: true, label: desc?.label, entries: desc?.entries };
     },
     createPipelineLayout(desc) {
-      return { __isPL: true, label: desc?.label };
+      return {
+        __isPL: true,
+        label: desc?.label,
+        bindGroupLayouts: desc?.bindGroupLayouts,
+      };
     },
     createComputePipelineAsync(desc) {
       const p = {
         __isPipeline: true,
         label: desc.label,
         entryPoint: desc.compute?.entryPoint,
+        layout: desc.layout,
       };
       pipelines.push(p);
       return Promise.resolve(p);
@@ -47,7 +52,12 @@ function makeMockDevice(options = {}) {
       return buf;
     },
     createBindGroup(desc) {
-      const bg = { __isBG: true, label: desc.label, entries: desc.entries };
+      const bg = {
+        __isBG: true,
+        label: desc.label,
+        layout: desc.layout,
+        entries: desc.entries,
+      };
       bindGroups.push(bg);
       return bg;
     },
@@ -119,14 +129,14 @@ if (typeof globalThis.GPUShaderStage === "undefined") {
 
 function makeParams(pointCount, maxVisiblePoints) {
   return {
-    cameraPositionWC: [0, 0, 0],
-    lod0Distance2: 100,
-    lod1Distance2: 400,
-    lod2Distance2: 1600,
-    lod3Distance2: 6400,
+    cameraPositionLocal: [0, 0, 0],
+    projectionScale: 1000,
+    targetPixelSpacing: 1,
     frustumPlanes: new Float32Array(24),
     pointCount,
     maxVisiblePoints,
+    geometricError: 1,
+    modelLinear: new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0]),
   };
 }
 
@@ -144,7 +154,7 @@ describe("Renderer/WebGPU/WebGPUPointCloudLODProcessor", function () {
     });
 
     it("dispatch encodes a single compute pass", async function () {
-      const { device } = makeMockDevice();
+      const { device, writes } = makeMockDevice();
       const processor = new WebGPUPointCloudLODProcessor(device);
       await processor.initialize();
       processor.uploadPositions(
@@ -158,6 +168,52 @@ describe("Renderer/WebGPU/WebGPUPointCloudLODProcessor", function () {
       expect(encoder.passes[0]._dispatches).toEqual([{ x: 1, y: 1, z: 1 }]);
       expect(encoder.clears.length).toBe(1);
       expect(encoder.copies.length).toBe(0);
+      const paramsWrite = writes.find((write) =>
+        write.buffer.label?.endsWith("LODParams UB"),
+      );
+      expect(new Uint32Array(paramsWrite.source)[33]).toBe(4);
+    });
+
+    it("forks distinct mutable owner streams while sharing immutable compute artifacts", async function () {
+      const { device, pipelines, buffers, bindGroups } = makeMockDevice();
+      const template = new WebGPUPointCloudLODProcessor(device);
+      await template.initialize();
+      const pipelineCount = pipelines.length;
+      const ownerA = await template.createOwnerStream("Cloud A");
+      const ownerB = await template.createOwnerStream("Cloud B");
+      expect(pipelines.length).toBe(pipelineCount);
+
+      const positions = new Float32Array([0, 1, 2, 3]);
+      ownerA.uploadPositions(positions, positions, positions);
+      ownerB.uploadPositions(positions, positions, positions);
+      const encoderA = makeMockEncoder();
+      const encoderB = makeMockEncoder();
+      ownerA.dispatch(encoderA, makeParams(4, 4));
+      ownerB.dispatch(encoderB, makeParams(4, 4));
+
+      expect(encoderA.passes[0]._pipeline).toBe(encoderB.passes[0]._pipeline);
+      const bgA = encoderA.passes[0]._bindGroups[0].bg;
+      const bgB = encoderB.passes[0]._bindGroups[0].bg;
+      expect(bgA).not.toBe(bgB);
+      expect(bgA.layout).toBe(bgB.layout);
+      expect(ownerA.visibleCountBuffer).not.toBe(ownerB.visibleCountBuffer);
+      expect(ownerA.visibleIndicesBuffer).not.toBe(ownerB.visibleIndicesBuffer);
+      const aBuffers = buffers.filter((b) => b.label?.startsWith("Cloud A"));
+      const bBuffers = buffers.filter((b) => b.label?.startsWith("Cloud B"));
+      expect(aBuffers.length).toBeGreaterThan(4);
+      expect(bBuffers.length).toBeGreaterThan(4);
+      expect(
+        bindGroups.filter((bg) => bg.label?.startsWith("Cloud A")).length,
+      ).toBeGreaterThan(0);
+      expect(
+        bindGroups.filter((bg) => bg.label?.startsWith("Cloud B")).length,
+      ).toBeGreaterThan(0);
+
+      ownerA.destroy();
+      expect(aBuffers.every((buffer) => buffer.destroyed)).toBe(true);
+      expect(bBuffers.every((buffer) => !buffer.destroyed)).toBe(true);
+      ownerB.destroy();
+      template.destroy();
     });
   });
 
@@ -195,7 +251,46 @@ describe("Renderer/WebGPU/WebGPUPointCloudLODProcessor", function () {
       expect(labels.some((l) => /prefix$/.test(l))).toBe(true);
     });
 
-    it("dispatch encodes tag + scan + compact passes + prefix→visibleCount copy", async function () {
+    it("shares deterministic scan pipelines while isolating owner scratch", async function () {
+      const { device, pipelines, buffers } = makeMockDevice();
+      const template = new WebGPUPointCloudLODProcessor(device, {
+        useDecoupledScan: true,
+      });
+      await template.initialize();
+      const compileCount = pipelines.length;
+      const ownerA = await template.createOwnerStream("Scan A");
+      const ownerB = await template.createOwnerStream("Scan B");
+      expect(pipelines.length).toBe(compileCount);
+
+      const positions = new Float32Array(512);
+      ownerA.uploadPositions(positions, positions, positions);
+      ownerB.uploadPositions(positions, positions, positions);
+      const encoderA = makeMockEncoder();
+      const encoderB = makeMockEncoder();
+      ownerA.dispatch(encoderA, makeParams(512, 512));
+      ownerB.dispatch(encoderB, makeParams(512, 512));
+      const scanA = encoderA.passes.find(
+        (pass) => pass._pipeline?.entryPoint === "scan",
+      );
+      const scanB = encoderB.passes.find(
+        (pass) => pass._pipeline?.entryPoint === "scan",
+      );
+      expect(scanA._pipeline).toBe(scanB._pipeline);
+
+      const ownerABuffers = buffers.filter((b) =>
+        b.label?.startsWith("Scan A"),
+      );
+      const ownerBBuffers = buffers.filter((b) =>
+        b.label?.startsWith("Scan B"),
+      );
+      ownerA.destroy();
+      expect(ownerABuffers.every((buffer) => buffer.destroyed)).toBe(true);
+      expect(ownerBBuffers.every((buffer) => !buffer.destroyed)).toBe(true);
+      ownerB.destroy();
+      template.destroy();
+    });
+
+    it("dispatch encodes tag + scan + capped visible-count publication", async function () {
       const { device } = makeMockDevice();
       const processor = new WebGPUPointCloudLODProcessor(device, {
         useDecoupledScan: true,
@@ -210,12 +305,15 @@ describe("Renderer/WebGPU/WebGPUPointCloudLODProcessor", function () {
       processor.dispatch(encoder, makeParams(1024, 512));
       // Three compute passes: tagVisible, scan, compactScanned.
       expect(encoder.passes.length).toBe(3);
-      // Exactly one copyBufferToBuffer to promote prefix[N-1] → visibleCount[0].
-      expect(encoder.copies.length).toBe(1);
-      const copy = encoder.copies[0];
-      expect(copy.srcOff).toBe((1024 - 1) * 4);
-      expect(copy.dstOff).toBe(0);
-      expect(copy.size).toBe(4);
+      // compactScanned writes min(prefix[N-1], maxVisiblePoints) directly to
+      // the atomic count. Copying the raw prefix total would overrun indirect.
+      expect(encoder.copies.length).toBe(0);
+      const compact = encoder.passes.find(
+        (pass) => pass._pipeline?.entryPoint === "compactScanned",
+      );
+      expect(
+        compact._bindGroups[0].bg.entries.some((entry) => entry.binding === 7),
+      ).toBe(true);
     });
 
     it("dispatch is a no-op for zero-length input", async function () {

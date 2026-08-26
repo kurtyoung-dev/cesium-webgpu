@@ -68,7 +68,7 @@
  *   // Once per point set:
  *   lod.uploadPositions(posX, posY, posZ);
  *   // Each frame:
- *   lod.dispatch(encoder, { cameraPositionWC, frustumPlanes, ... });
+ *   lod.dispatch(encoder, { cameraPositionLocal, frustumPlanes, ... });
  *   // The indirect draw buffer of the point renderer reads
  *   // `lod.visibleCountBuffer` for the vertex count.
  *
@@ -96,34 +96,29 @@ import PointCloudLODScanCompactShader from "../../Shaders/WebGPU/Compute/PointCl
 import DecoupledLookbackScanShader from "../../Shaders/WebGPU/Compute/DecoupledLookbackScan.js";
 import { WebGPUDecoupledScan } from "./WebGPUDecoupledScan.js";
 
-/**
- * LOD band thresholds + budget. Distances are measured squared (matches
- * the WGSL uniform layout) so the shader can compare without sqrt.
- */
+/** Projected-error LOD controls and output budget. */
 export interface PointCloudLODDispatchParams {
-  /** Camera position in world coordinates */
-  cameraPositionWC: [number, number, number];
-  /** Distance² beyond which all points are culled */
-  lod3Distance2: number;
-  /** Distance² → LOD 2 (1/16 keep rate) */
-  lod2Distance2: number;
-  /** Distance² → LOD 1 (1/4 keep rate) */
-  lod1Distance2: number;
-  /** Distance² within which full detail is kept */
-  lod0Distance2: number;
+  /** Camera position in the immutable point SOA's model-local coordinates. */
+  cameraPositionLocal: [number, number, number];
+  /** Viewport projection scale, normally drawingBufferHeight/sseDenominator. */
+  projectionScale: number;
+  /** Desired minimum projected point spacing in physical pixels. */
+  targetPixelSpacing: number;
   /**
    * Six frustum planes as Cartesian4 (x,y,z = normal, w = -distance).
-   * Must be in world space to match the positionsX/Y/Z coords.
+   * Must be in model-local space to match the positionsX/Y/Z coords.
    */
   frustumPlanes: Float32Array | number[]; // 24 floats (6 × vec4)
   /** Total number of points to process */
   pointCount: number;
   /** Max points to output — hard cap to prevent overdraw */
   maxVisiblePoints: number;
-  /** Target minimum pixel spacing for density control */
-  screenSpaceRadius?: number;
-  /** Tile's geometric error (3D Tiles) for LOD refinement */
-  geometricError?: number;
+  /** Tile/point spacing in world units, used for projected-error LOD. */
+  geometricError: number;
+  /** Far-cull distance resolved by the renderer. */
+  lodFarDistance: number;
+  /** Three padded row vectors mapping a local delta to a world delta. */
+  modelLinear: Float32Array | number[]; // 12 floats (3 x vec4)
 }
 
 export interface PointCloudLODProcessorOptions {
@@ -177,6 +172,13 @@ export interface WebGPUPointCloudLODProcessorInstance {
     encoder: GPUCommandEncoder,
     params: PointCloudLODDispatchParams,
   ): void;
+  /**
+   * Create an owner-scoped stream. Immutable pipelines/layouts are shared;
+   * positions, visible indices/count, params, and compaction scratch are not.
+   */
+  createOwnerStream(
+    label: string,
+  ): Promise<WebGPUPointCloudLODProcessorInstance>;
   destroy(): void;
 }
 
@@ -187,8 +189,8 @@ export interface WebGPUPointCloudLODProcessorInstance {
 // pre-declared cap.
 
 // Layout MUST match `struct LODParams` in PointCloudLOD.wgsl.
-// 36 floats / u32s = 144 bytes, padded to 256 for UBO alignment.
-const PARAMS_FLOATS = 36;
+// 48 floats / u32s = 192 bytes, padded to 256 for UBO alignment.
+const PARAMS_FLOATS = 48;
 const PARAMS_BYTES = 256;
 const WORKGROUP_SIZE = 256;
 
@@ -380,26 +382,7 @@ export class WebGPUPointCloudLODProcessor implements WebGPUPointCloudLODProcesso
 
     this._pipelines = { main, mainSubgroups, preferredEntryPoint };
 
-    // Allocate the params UB — small, persistent, updated per dispatch.
-    this._paramsBuffer = this._device.createBuffer({
-      label: `${this._label} LODParams UB`,
-      size: PARAMS_BYTES,
-      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-    });
-
-    // Allocate the visibleCount atomic — 4 bytes + INDIRECT usage flag
-    // so a downstream `drawIndirect(visibleCountBuffer, 0)` works after
-    // a one-command `copyBufferToBuffer` from here into an indirect
-    // buffer (point cloud renderer's responsibility).
-    this._visibleCount = this._device.createBuffer({
-      label: `${this._label} visibleCount`,
-      size: 16, // 4 bytes of atomic + 12 bytes padding for 16-byte alignment
-      usage:
-        GPUBufferUsage.STORAGE |
-        GPUBufferUsage.COPY_SRC |
-        GPUBufferUsage.COPY_DST |
-        GPUBufferUsage.INDIRECT,
-    });
+    this._allocateOwnerBuffers();
 
     if (this._useDecoupledScan) {
       await this._initializeScanPath();
@@ -409,12 +392,78 @@ export class WebGPUPointCloudLODProcessor implements WebGPUPointCloudLODProcesso
   }
 
   /**
+   * Fork an owner-scoped stream from this initialized template. Pipeline and
+   * bind-group-layout objects are immutable and shared. All mutable buffers,
+   * bind groups, compaction state, and deterministic-scan scratch belong to
+   * the returned stream, so deferred draws from multiple clouds cannot alias.
+   */
+  async createOwnerStream(
+    label: string,
+  ): Promise<WebGPUPointCloudLODProcessorInstance> {
+    if (!this._initialized || !this._pipelines || !this._bindGroupLayout) {
+      throw new Error(`[${this._label}] createOwnerStream called before init`);
+    }
+
+    const owner = new WebGPUPointCloudLODProcessor(this._device, {
+      label,
+      useDecoupledScan: this._useDecoupledScan,
+      asyncResourceMonitor: this._monitor,
+    });
+    owner._bindGroupLayout = this._bindGroupLayout;
+    owner._pipelines = this._pipelines;
+    owner._allocateOwnerBuffers();
+
+    if (this._useDecoupledScan) {
+      // Tag/compact pipelines and their layout are immutable and shared. The
+      // scan engine itself owns mutable partition buffers, so each stream gets
+      // its own instance.
+      owner._scanBindGroupLayout = this._scanBindGroupLayout;
+      owner._scanTagPipeline = this._scanTagPipeline;
+      owner._scanCompactPipeline = this._scanCompactPipeline;
+      owner._scanner = new WebGPUDecoupledScan(this._device, {
+        label: `${label} Scan`,
+        asyncResourceMonitor: this._monitor,
+      });
+      try {
+        await owner._scanner.initialize(
+          DecoupledLookbackScanShader,
+          this._scanner?.sharedArtifacts,
+        );
+      } catch (error) {
+        owner.destroy();
+        throw error;
+      }
+    }
+
+    owner._initialized = true;
+    return owner;
+  }
+
+  /** Allocate the small always-present resources owned by one stream. */
+  private _allocateOwnerBuffers(): void {
+    this._paramsBuffer = this._device.createBuffer({
+      label: `${this._label} LODParams UB`,
+      size: PARAMS_BYTES,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    this._visibleCount = this._device.createBuffer({
+      label: `${this._label} visibleCount`,
+      size: 16,
+      usage:
+        GPUBufferUsage.STORAGE |
+        GPUBufferUsage.COPY_SRC |
+        GPUBufferUsage.COPY_DST |
+        GPUBufferUsage.INDIRECT,
+    });
+  }
+
+  /**
    * Build the scan-based tag + compact pipelines and the shared
    * DecoupledScan instance. Runs once at init when
    * `useDecoupledScan: true`.
    */
   private async _initializeScanPath(): Promise<void> {
-    // Bind group for PointCloudLODScanCompact.wgsl (7 bindings — see the
+    // Bind group for PointCloudLODScanCompact.wgsl (8 bindings — see the
     // shader's @group(0) declarations).
     this._scanBindGroupLayout = makeBindGroupLayout(
       this._device,
@@ -427,6 +476,7 @@ export class WebGPUPointCloudLODProcessor implements WebGPUPointCloudLODProcesso
         storageBuffer(4, Stage.COMPUTE),
         storageBuffer(5, Stage.COMPUTE, { readOnly: true }),
         storageBuffer(6, Stage.COMPUTE),
+        storageBuffer(7, Stage.COMPUTE),
       ],
     );
 
@@ -560,9 +610,8 @@ export class WebGPUPointCloudLODProcessor implements WebGPUPointCloudLODProcesso
         size: Math.max(16, capacity * 4),
         usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC,
       });
-      // Prefix buffer: needs COPY_SRC so we can copy prefix[N-1] into
-      // visibleCount after the scan, letting downstream drawIndirect
-      // reads see the total visible count without a CPU round-trip.
+      // Prefix remains COPY_SRC-capable for diagnostics/readback. The compact
+      // pass publishes its capped final value directly to visibleCount.
       this._prefixBuffer = this._device.createBuffer({
         label: `${this._label} prefix`,
         size: Math.max(16, capacity * 4),
@@ -639,7 +688,8 @@ export class WebGPUPointCloudLODProcessor implements WebGPUPointCloudLODProcesso
 
   /**
    * Scan-based compaction path: tagVisible → DecoupledScan → compactScanned
-   * → copy prefix[N-1] into visibleCount[0]. Produces a deterministic
+   * → publish min(prefix[N-1], maxVisiblePoints) into visibleCount[0].
+   * Produces a deterministic
    * output ordering (visibleIndices sorted by original point index).
    *
    * The tag and compact passes reuse the same bind group because they
@@ -681,16 +731,9 @@ export class WebGPUPointCloudLODProcessor implements WebGPUPointCloudLODProcesso
     compactPass.dispatchWorkgroups(workgroups, 1, 1);
     compactPass.end();
 
-    // The inclusive prefix's last entry equals total visible count. Copy
-    // that single u32 into the visibleCount buffer so downstream
-    // drawIndirect consumers see the count without a CPU round-trip.
-    encoder.copyBufferToBuffer(
-      this._prefixBuffer!,
-      (params.pointCount - 1) * 4,
-      this._visibleCount!,
-      0,
-      4,
-    );
+    // compactScanned's final invocation atomically publishes the capped
+    // prefix total into visibleCount. A raw prefix copy would expose an
+    // uncapped indirect vertex count even though index writes were clipped.
   }
 
   /**
@@ -700,27 +743,34 @@ export class WebGPUPointCloudLODProcessor implements WebGPUPointCloudLODProcesso
   private _writeParams(p: PointCloudLODDispatchParams): void {
     const f = this._paramsScratch;
     const u = this._paramsScratchU32;
-    // cameraPositionWC: vec3 + pad → slots 0-3
-    f[0] = p.cameraPositionWC[0];
-    f[1] = p.cameraPositionWC[1];
-    f[2] = p.cameraPositionWC[2];
+    // cameraPositionLocal: vec3 + pad → slots 0-3
+    f[0] = p.cameraPositionLocal[0];
+    f[1] = p.cameraPositionLocal[1];
+    f[2] = p.cameraPositionLocal[2];
     f[3] = 0;
-    // LOD distance² thresholds — order matches the struct
-    f[4] = p.lod0Distance2;
-    f[5] = p.lod1Distance2;
-    f[6] = p.lod2Distance2;
-    f[7] = p.lod3Distance2;
+    // Projected-error LOD controls — viewport and content scale both matter.
+    f[4] = p.projectionScale;
+    f[5] = p.targetPixelSpacing;
+    f[6] = p.geometricError;
+    f[7] = p.lodFarDistance;
     // 6 frustum planes — 24 floats at slots 8..31
     const planes = p.frustumPlanes;
     for (let i = 0; i < 24; i++) {
       f[8 + i] = planes[i] ?? 0;
     }
-    // Scalar tail at slots 32-35: pointCount (u32), maxVisiblePoints (u32),
-    // screenSpaceRadius (f32), geometricError (f32)
+    // Scalar tail at slots 32-35: counts + padding.
     u[32] = p.pointCount >>> 0;
-    u[33] = p.maxVisiblePoints >>> 0;
-    f[34] = p.screenSpaceRadius ?? 1.0;
-    f[35] = p.geometricError ?? 0.0;
+    u[33] = Math.min(
+      p.maxVisiblePoints >>> 0,
+      p.pointCount >>> 0,
+      this._positionsCapacity >>> 0,
+    );
+    f[34] = 0.0;
+    f[35] = 0.0;
+    const linear = p.modelLinear;
+    for (let i = 0; i < 12; i++) {
+      f[36 + i] = linear[i] ?? 0.0;
+    }
 
     this._device.queue.writeBuffer(
       this._paramsBuffer!,
@@ -769,6 +819,7 @@ export class WebGPUPointCloudLODProcessor implements WebGPUPointCloudLODProcesso
         { binding: 4, resource: { buffer: this._flagsBuffer! } },
         { binding: 5, resource: { buffer: this._prefixBuffer! } },
         { binding: 6, resource: { buffer: this._visibleIndices! } },
+        { binding: 7, resource: { buffer: this._visibleCount! } },
       ],
     });
   }
