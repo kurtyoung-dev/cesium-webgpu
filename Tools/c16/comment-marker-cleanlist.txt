@@ -661,3 +661,4 @@ packages/engine/Source/Scene/GBufferFramebuffer.js
 # Scene architecture family. Current publication, ordering, and backend-routing
 # constraints remain beside the code.
 packages/engine/Source/Scene/Scene.js
+packages/engine/Source/Scene/CesiumDebug.js

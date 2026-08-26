@@ -177,11 +177,10 @@ function installCesiumDebug(viewer) {
       // clobbered.
       scene.debugShowDepthAsColor = true;
 
-      // WebGL: the WebGPU flag above is a no-op on a WebGL context, so
-      // we ALSO install upstream's `czm_depth_view` post-process stage
-      // on the scene's PostProcessStageCollection. The stage samples the
-      // depth texture and outputs grayscale — the WebGL equivalent of
-      // WebGPUDebugDepthOverlay's linearized mode 0.
+      // WebGL ignores the flag above, so this command installs upstream's
+      // `czm_depth_view` post-process stage on the scene's
+      // PostProcessStageCollection. The stage samples the depth texture and
+      // outputs grayscale, matching WebGPUDebugDepthOverlay's linearized mode 0.
       if (!scene._context?.isWebGPU) {
         if (!webglDepthViewStage) {
           webglDepthViewStage = PostProcessStageLibrary.createDepthViewStage();
@@ -209,9 +208,9 @@ function installCesiumDebug(viewer) {
     },
 
     /**
-     * Show the depth buffer as a WINDOWED color overlay (WebGPU): spend the
-     * full Turbo color range on the eye-space distance band
-     * <code>[minMeters, maxMeters]</code>, so two near-identical depths get
+     * Show a WebGPU depth overlay whose full Turbo color range covers only the
+     * eye-space distance band <code>[minMeters, maxMeters]</code>, so two
+     * near-identical depths get
      * distinct hues (low = blue, mid = green, high = red). Use this when the
      * plain {@link CesiumDebug#showDepth} collapses everything to one shade —
      * e.g. a building flush on terrain at far ≈ 1e8. Pass
@@ -237,13 +236,12 @@ function installCesiumDebug(viewer) {
     },
 
     /**
-     * Skip the ellipsoid depth-plane render (debug bisect for C-R9 — terrain-
-     * flush 3D-Tiles / b3dm invisible on WebGPU). The depth plane is drawn
-     * between the globe and 3D-Tiles when <code>clearGlobeDepth</code> is active
-     * (the default). If content reappears with this ON, the depth plane is
-     * writing a depth nearer than the content and occluding it. Applies to both
-     * backends. Call with no arg / <code>true</code> to skip; <code>false</code>
-     * to restore.
+     * Skip the ellipsoid depth-plane render to isolate occlusion of
+     * terrain-flush content. When `clearGlobeDepth` is active, the plane
+     * renders after the globe-depth clear and before 3D Tiles and opaque
+     * primitives. Content that appears only while the plane is skipped was
+     * occluded by a nearer plane depth. This applies to both backends. Omit
+     * `on` or pass `true` to skip the plane; pass `false` to restore it.
      *
      * @param {boolean} [on=true]
      */
@@ -256,16 +254,15 @@ function installCesiumDebug(viewer) {
     },
 
     /**
-     * Phase 8a Slice 2c (Batch 89) — visualize the G-buffer normal
-     * texture as a fullscreen overlay. Surface normals are mapped
-     * `(n + 1) * 0.5` to RGB so the standard normal-map color
-     * convention applies: +X right is red, +Y up is green, +Z toward
-     * camera is blue. Magenta pixels are sentinels (sky, depth-clear,
-     * or high-gradient samples where the producer couldn't safely
-     * reconstruct a normal).
+     * Visualize the G-buffer normal texture as a fullscreen overlay.
+     * Nonzero samples are mapped with `(n + 1) * 0.5` so +X is red, +Y is
+     * green, and +Z toward the camera is blue. Magenta marks a zero or
+     * invalid sample, which can indicate sky or cleared depth, a normal
+     * reconstruction fallback, or a texture read that did not return the
+     * producer data.
      *
-     * Auto-enables `scene.deferredLighting` so the G-buffer producer
-     * actually runs this frame. WebGPU-only — no-op on WebGL.
+     * This command enables `scene.deferredLighting` so the G-buffer
+     * producer runs. The overlay is WebGPU-only; WebGL ignores it.
      */
     showGBufferNormals() {
       clearAllOverlays();
@@ -399,8 +396,8 @@ function installCesiumDebug(viewer) {
       };
 
       // Check post-process pipeline
-      // `_alternateSceneRenderer` lives on the Scene (see Scene.js:297),
-      // NOT the context. Read it off the scene.
+      // `_alternateSceneRenderer` is owned by the Scene rather than its
+      // context, so read it from `scene`.
       const renderer = scene._alternateSceneRenderer;
       if (renderer) {
         info.postProcess = !!renderer._postProcess;
@@ -558,10 +555,10 @@ function installCesiumDebug(viewer) {
           `avg=${results.frameAvgMs.toFixed(3)}ms frames=${results.frameCount}):`,
       );
       console.table(rows);
-      // C11-140 — a per-pass table is only trustworthy if the samples behind it
-      // are accounted for. Surface the two invariants next to the numbers so an
-      // unbalanced ledger or an overlapping-pass double-count is visible at the
-      // point of reading, not only in the probe artifact.
+      // Per-pass timings are trustworthy only when every attempted sample
+      // has a recorded outcome and overlapping intervals are not
+      // double-counted. Report both invariants beside the table so
+      // under-reporting is visible where the timings are read.
       if (!results.sampleLedgerBalanced) {
         console.error(
           `[CesiumDebug] GPU sample ledger does NOT close: ${results.unaccountedSampleCount} of ` +
@@ -580,16 +577,17 @@ function installCesiumDebug(viewer) {
     },
 
     /**
-     * C9-09-ATTACHMENT-DEMAND-REGISTRY — dump the canonical per-frame
-     * attachment-demand record and the ACTUAL measured scene-FB topology.
-     * WebGPU-only. Pass a boolean to set the conservative `forceSceneMRT`
-     * switch (its default `true` keeps today's always-MRT behavior until
-     * C9-10 lands the demand-driven flip).
+     * Report the canonical per-frame attachment-demand record and the
+     * measured scene-framebuffer topology. This command is WebGPU-only.
+     * `forceSceneMRT` defaults to `true`, preserving full MRT. Passing
+     * `true` retains that topology; passing `false` is refused and leaves
+     * the context unchanged because the renderer pipeline caches do not all
+     * distinguish framebuffer topologies.
      *
      * Usage:
-     *   CesiumDebug.attachmentDemand()        // dump current record + actual
-     *   CesiumDebug.attachmentDemand(false)   // BLOCKED until C9-10 (refused, no-op)
-     *   CesiumDebug.attachmentDemand(true)    // force full MRT (default)
+     *   CesiumDebug.attachmentDemand()        // report current state
+     *   CesiumDebug.attachmentDemand(false)   // refused; no state change
+     *   CesiumDebug.attachmentDemand(true)    // force full MRT
      */
     attachmentDemand(force) {
       const ctx = scene._context;
@@ -597,12 +595,12 @@ function installCesiumDebug(viewer) {
         console.warn("[CesiumDebug] attachmentDemand is WebGPU-only");
         return;
       }
-      // C9-AUDIT-P1-SWEEP (Batch 684): REFUSE the mid-session demand-driven
-      // MRT topology flip. The C9-10 block analysis proved a live
-      // `forceSceneMRT=false` flip unsafe until the 31-renderer topology-keyed
-      // pipeline-cache audit lands — a stale MRT-keyed pipeline replayed into
-      // a single-target pass corrupts the scene FB. Permanent warn (real
-      // hazard, no pragma); context state is left unchanged.
+      // A live MRT-to-single-target flip can reuse a pipeline cached for the
+      // old attachment layout, invalidating the pass and corrupting the
+      // scene framebuffer. Refuse the flip until every topology-dependent
+      // cache key includes the target layout. The warning is a runtime
+      // safety signal rather than debug-only instrumentation, and the
+      // context state must remain unchanged.
       if (force === false) {
         console.warn(
           "[CesiumDebug] attachmentDemand(false) is BLOCKED until C9-10 lands: " +
@@ -669,17 +667,16 @@ function installCesiumDebug(viewer) {
     },
 
     /**
-     * Dump high-density GPU cull / HiZ / sort-keys effectiveness
-     * (Batch 217). Shows the activation gate state, dispatch counts,
-     * and per-frame hit ratio so users can verify the threshold-gated
-     * dispatchers are actually pulling their weight on dense scenes.
+     * Report high-density WebGPU culling, Hi-Z, and sort-key
+     * effectiveness. The snapshot includes requested modes, containment
+     * activity and fallback state, threshold-gate state, dispatch counts,
+     * and the latest filtering ratios.
      *
-     *  - `active`: hysteresis state. True when count is keeping the
-     *    dispatcher engaged.
+     *  - `activeAnyFrustum`: whether threshold hysteresis is engaged for at
+     *    least one frustum.
      *  - `hitRatio`: fraction of input commands the GPU filter dropped.
-     *    Above ~0.2 means the dispatcher is paying for itself; near 0
-     *    means CPU cull was already tight enough.
-     *  - `dispatches`: lifetime count since context init.
+     *    Values near zero mean the CPU cull was already tight.
+     *  - `dispatches`: lifetime count since context initialization.
      */
     highDensityCull() {
       const renderer = scene._alternateSceneRenderer;
@@ -700,17 +697,18 @@ function installCesiumDebug(viewer) {
     },
 
     /**
-     * FORK-41 — toggle whether Hi-Z occlusion VISIBILITY is actually applied
-     * (occluded commands dropped). Default OFF: the Hi-Z pyramid build +
-     * OcclusionTest dispatch + readback still run when the density gate is
-     * active (so `highDensityCull()` shows live `hiZ` stats), but the result
-     * is inert (nothing dropped) until the OcclusionTest correctness gaps are
-     * resolved + probe-verified (see DEFERRED_WORK FORK-41). Pass `true` to
-     * enable command dropping for testing, `false` to restore the safe default.
+     * Toggle whether a produced Hi-Z visibility result may drop occluded
+     * commands. The contained default is `false` because each result is not
+     * yet tied to its producing frame, frustum, and command list.
      *
-     * @param {boolean} [on=true] Whether to drop occluded commands.
-     * @returns {boolean|null} The resulting enable state, or null if no WebGPU
-     *   renderer is active.
+     * This switch controls consumption only. Build, dispatch, and readback
+     * can run when `scene.gpuCullingHint` requests the producer and the
+     * command-count gate is active; a `"never"` producer mode prevents that
+     * work regardless of this switch.
+     *
+     * @param {boolean} [on=true] Whether a valid result may drop commands.
+     * @returns {boolean|null} The resulting enable state, or null if no
+     *   WebGPU renderer is active.
      */
     hiZConsume(on = true) {
       const renderer = scene._alternateSceneRenderer;
@@ -729,23 +727,19 @@ function installCesiumDebug(viewer) {
     },
 
     /**
-     * NEW-GPU-SORT-PIPELINE Phase 3 (C4-GPU-SORT-PIPELINE-PHASE3) —
-     * force-toggle whether the GPU-produced front-to-back sort order is
-     * applied to the opaque command list. `true` maps to the `"always"`
-     * consumer mode, `false` to `"never"` (the off-gate). The keygen +
-     * bitonic sort + readback always run when the density gate is active
-     * (so `highDensityCull()` shows live `gpuSortKeys` stats); this only
-     * toggles whether the resulting permutation reorders the commands.
-     * Reordering opaque commands is output-invariant (depth test resolves
-     * overlap), so this is byte-neutral for the final image — it exists
-     * for A/B probes that confirm the consumer applies the exact
-     * CPU-comparator order without a pixel change.
+     * Force the WebGPU opaque-sort mode to `"always"` (`true`) or
+     * `"never"` (`false`). The contained default is `"never"`, which
+     * disables key generation, bitonic sort, readback, and permutation
+     * consumption. Sort work also requires a scene GPU-culling producer
+     * mode and an active opaque-command-count gate.
      *
-     * The contained production default is `"never"`; use
-     * {@link CesiumDebug.gpuSortConsumeMode} to explicitly select
-     * `"auto"` for threshold characterization.
+     * A valid result is a permutation of the same opaque commands, so
+     * applying it changes early-Z cost rather than the final image. Invalid,
+     * stale, or unsupported results retain the CPU order. Use
+     * {@link CesiumDebug.gpuSortConsumeMode} to select a named mode.
      *
-     * @param {boolean} [on=true] Whether to apply the GPU sort order.
+     * @param {boolean} [on=true] Whether to request GPU sort production and
+     *   consumption.
      * @returns {boolean|null} The resulting enable state, or null if no
      *   WebGPU renderer is active.
      */
@@ -767,10 +761,11 @@ function installCesiumDebug(viewer) {
     },
 
     /**
-     * NS-GPU-SORT-NO-SCENE-WIRING — set the consumer activation MODE for
-     * the GPU front-to-back opaque sort. `"never"` is the contained
-     * default; `"auto"` applies whenever the opaque-command-count gate is
-     * active and `"always"` force-applies when a valid result exists.
+     * Set the WebGPU front-to-back opaque-sort mode. `"never"` is the
+     * contained default and disables both producer and consumer work.
+     * `"auto"` and `"always"` both request the same threshold-gated
+     * producer and apply a valid result; `"always"` does not bypass the
+     * opaque-command-count gate.
      *
      * @param {"auto"|"always"|"never"} [mode="never"] The consumer mode.
      * @returns {string|null} The resulting mode, or null if no WebGPU
@@ -791,16 +786,15 @@ function installCesiumDebug(viewer) {
     },
 
     /**
-     * FAR-003 — read or toggle the WebGPU MRT OIT safety-containment gate
-     * (`_webgpuOITEnabled`, contained production default `false`). The
-     * public `scene.orderIndependentTranslucency` option remains a REQUEST;
-     * this renderer-owned gate controls whether the contained WebGPU MRT
-     * implementation may allocate or execute. While the gate is off,
-     * translucency uses the complete alpha-blend fallback.
+     * Read or toggle the WebGPU MRT OIT safety gate. The public
+     * `scene.orderIndependentTranslucency` option is a request; this
+     * renderer-owned gate controls whether the WebGPU MRT implementation
+     * may allocate or execute. Its contained default is `false`, which uses
+     * the complete alpha-blend fallback.
      *
-     * Call with no argument to inspect requested-vs-active state without
-     * changing anything. A toggle takes effect on the next rendered frame
-     * (`active` reflects the most recent frame).
+     * Omit the argument to inspect requested and active state without a
+     * change. A new gate value takes effect on the next rendered frame, and
+     * `active` describes the most recent frame.
      *
      * @param {boolean} [enable] New gate state; omit to just report.
      * @returns {object|null} The webgpuOIT containment status
@@ -833,15 +827,14 @@ function installCesiumDebug(viewer) {
     },
 
     /**
-     * Dump the globe surface bind-group cache stats
-     * (NEW-GLOBE-BINDGROUP-CACHE, Batch 241). Healthy steady-state at a
-     * fixed camera: `lastFrameCreates` ~0 with a high `hitRate`. A
-     * sustained non-zero `lastFrameCreates` at a settled camera means
-     * the ring-allocator offsets (group 0) or texture identities
-     * (groups 1/2) are churning — see WEBGPU_DEBUGGING_LOG Batch 241.
+     * Report globe surface bind-group cache statistics. At a settled
+     * camera, healthy reuse has `lastFrameCreates` near zero and a high
+     * `hitRate`. Recurring group-0 creates mean the backing ring-buffer
+     * identities are rotating; recurring group-1 or group-2 creates mean
+     * their bound texture or buffer identities are changing.
      *
-     * Counters are debug-pragma'd: production builds report 0 for
-     * creates/hits (the cache still works; only the bookkeeping strips).
+     * Counter updates are inside debug build pragmas. Production builds
+     * therefore report zero creates and hits while the cache still operates.
      */
     globeBindGroups() {
       const cache = globalThis.__webgpuGlobeBindGroupCache;
@@ -857,15 +850,13 @@ function installCesiumDebug(viewer) {
     },
 
     /**
-     * C11-174 — dump the central render-pipeline cache and the
-     * post-process bind-group cache counters (hits/misses/hitRate).
-     * Pure exposure of bookkeeping the caches already maintain on their
-     * lookup paths — calling this adds no per-frame work.
+     * Report the central render-pipeline cache and post-process bind-group
+     * cache counters. This exposes bookkeeping already maintained on cache
+     * lookup paths and adds no per-frame work.
      *
-     * Healthy steady state: high hitRate on every row. A near-zero
-     * bind-group hitRate is the Batch-717 churn shape — resource
-     * identities (texture views, buffers) recreated every frame without
-     * a matching cache invalidation.
+     * High hit rates are healthy in a settled workload. A near-zero
+     * bind-group hit rate means bound-resource identities or another key
+     * input are changing between lookups and defeating reuse.
      *
      * Usage:
      *   CesiumDebug.cacheStats()
@@ -896,10 +887,10 @@ function installCesiumDebug(viewer) {
           hitRate: formatRate(pipeline.hitRate),
           size: pipeline.size,
           evicted: pipeline.evicted,
-          // wrongModuleHits: aliased hits served with a DIFFERENT shader
-          // module than requested. Aliasing RAISES hitRate, so this counter
-          // is the only self-diagnostic for key collisions; nonzero = a
-          // key-construction defect.
+          // `wrongModuleHits` counts aliased hits served by a shader module
+          // other than the requested one. Those false hits inflate `hitRate`,
+          // so this is the only counter that exposes key collisions; any
+          // nonzero value is a key-construction defect.
           wrongModuleHits: pipeline.wrongModuleHits ?? 0,
           detail: `created=${pipeline.created} pending=${pipeline.pending} max=${pipeline.maxSize}`,
         });
@@ -941,23 +932,20 @@ function installCesiumDebug(viewer) {
     },
 
     /**
-     * C13-02 — cloud CPU/GPU observability and temporal-cost counters.
+     * Report cloud CPU and GPU observability and temporal-cost counters.
+     * With no argument this is read-only. Pass a boolean to toggle CPU stage
+     * timing. Timing is off by default because the `performance.now()` pair
+     * around each stage is observable work; a toggle clears accumulated
+     * stage statistics so readings never span two configurations.
      *
-     * Read-only with no argument. Pass `true`/`false` to turn CPU STAGE TIMING
-     * on or off: it is off by default because a `performance.now()` pair
-     * straddling each stage is observable work on the shipped path, and
-     * C13-02 requires the instrumentation to be removable without changing the
-     * render result. Toggling clears the accumulated stage statistics so a
-     * later read cannot present numbers from a differently-configured run.
+     * Target sizes, dispatched pixels, pass counts, temporal-history
+     * outcomes, and weather-cache counters remain live because the renderer
+     * already maintains that bookkeeping.
      *
-     * The counters themselves (target sizes, dispatched pixels, pass counts,
-     * history accept/reject/reset, weather cache hits/misses/uploads/bytes)
-     * are always live — they are bookkeeping the renderer already pays for.
-     *
-     * `gpu` is present only when the adapter supports `timestamp-query` AND a
-     * readback has completed; it is the UNION of the cloud passes' GPU
-     * intervals, not their sum, so `cloudOverlapMs > 0` is a real finding
-     * (two cloud passes overlapped) rather than a rounding detail.
+     * `gpu` is available only after timestamp-query profiling is supported,
+     * enabled, and read back. Cloud GPU time is the union of pass intervals,
+     * not their sum, so a positive `cloudOverlapMs` means two intervals
+     * overlapped rather than exposing a rounding artifact.
      *
      * Usage:
      *   CesiumDebug.cloudStats()        // read
@@ -1004,9 +992,9 @@ function installCesiumDebug(viewer) {
           detail: `accepted=${clouds.reconstruction.historyAccepted} rejected=${clouds.reconstruction.historyRejected} reset=${clouds.reconstruction.historyReset} gen=${clouds.reconstruction.lifetime.generation}`,
         },
         {
-          // C13-09 — zeros here are the DEFAULT state (the set is opt-in), not
-          // a missing measurement. CesiumDebug.cloudReconstructionAttachments()
-          // prints the per-target contract.
+          // Zero attachment values are expected while the opt-in set is
+          // disabled; they are not a missing measurement.
+          // `cloudReconstructionAttachments()` reports the target contract.
           lane: "attachments",
           size: `${clouds.reconstruction.attachments.width}x${clouds.reconstruction.attachments.height}`,
           pixels: clouds.reconstruction.attachments.pixelsDispatched,
@@ -1058,23 +1046,22 @@ function installCesiumDebug(viewer) {
     },
 
     /**
-     * C13-09 — read or toggle the cloud RECONSTRUCTION ATTACHMENT set (front /
-     * transmittance-weighted depth, screen-space velocity, depth+coverage
-     * moments).
+     * Read or toggle the cloud reconstruction attachment set: front and
+     * transmittance-weighted depth, screen-space velocity, and
+     * depth-and-coverage moments.
      *
-     * DEFAULT OFF, and that is the shipped contract: with it off nothing is
-     * allocated and no pass is encoded, so the cloud lane is identical in
-     * pixels AND in cost. With it on the producer runs and the counters
-     * report, but NOTHING READS THE SET — the consumers are C13-10 (true
-     * 1/16-rate current-frame march) and C13-12 (motion/depth rejection,
-     * variance clipping, reactive history, wind-aware reprojection,
-     * disocclusion). So the composite is byte-identical either way, which is
-     * exactly what makes this safe to leave on while measuring.
+     * The set is off by default. While off, no attachment is allocated and
+     * no producer pass is encoded, so cloud pixels and cost are unchanged.
+     * With only attachment production enabled, the producer and counters
+     * run but no consumer reads the set, leaving the composite unchanged.
+     * `cloudReconstruction(true)` additionally enables march emission and
+     * temporal-resolve consumption, which may change the output.
      *
-     * The producer needs the half-resolution march target, so a tier that
-     * resolves `renderResScale === 1` (cinematic, or the `cloudQuality !== 64`
-     * escape hatch) produces nothing even when enabled. Set
-     * `cloudVolumetricQuality` to "low" or "medium" to exercise it.
+     * Production requires the half-resolution march target and a
+     * perspective, non-morphing frame. A tier with `renderResScale === 1`,
+     * including cinematic quality or the `cloudQuality !== 64` escape
+     * hatch, produces no attachments. Use `cloudVolumetricQuality` `"low"`
+     * or `"medium"` to exercise the producer.
      *
      * Usage:
      *   CesiumDebug.cloudReconstructionAttachments()      // read
@@ -1132,20 +1119,18 @@ function installCesiumDebug(viewer) {
     },
 
     /**
-     * C13-10 — toggle MARCH-EMITTED reconstruction and its first consumer.
+     * Toggle march-emitted reconstruction and its temporal-resolve
+     * consumer. This is a second switch above attachment production so the
+     * produced-but-unconsumed control state remains available.
      *
-     * A SECOND switch on top of `cloudReconstructionAttachments`, and the
-     * separation is the point: with only the attachments on, the set is
-     * produced and read by nobody (C13-09's state, and the reason its
-     * byte-identical acceptance leg still means something). With this on, the
-     * half-resolution march compiles the emission variant and writes the depth
-     * slot from its own per-sample accumulation, the producer reads that target
-     * instead of estimating, and the temporal resolve validates history against
-     * the set — so THE OUTPUT MAY CHANGE. That is the first time anything has
-     * consumed the attachments.
+     * When enabled, the half-resolution march writes depth from its own
+     * per-sample accumulation, the attachment pass reads that target and
+     * writes the remaining targets, and the temporal resolve validates
+     * history against the set. The output may therefore change.
      *
-     * Enabling implies the attachment set; disabling leaves it allocated so the
-     * two can be A/B'd without a reallocation between legs.
+     * Enabling also enables attachment production. Disabling leaves the
+     * attachment set allocated so comparisons do not require reallocation
+     * between legs.
      */
     cloudReconstruction(enabled) {
       const ctx = scene._context;
@@ -1249,7 +1234,10 @@ function installCesiumDebug(viewer) {
     },
 
     /**
-     * Trigger the BUG-11 imagery probe (next 4 tile updates dumped).
+     * Arm a four-tile imagery sample on the next false-to-true activation.
+     * A WebGPU debug build logs the first four visible tile-command
+     * preparations, including ready-layer, texture, and geometry state.
+     * WebGL and pragma-stripped production builds do not consume the flag.
      */
     logImageryProbe() {
       scene.debugShowImageryProbe = true;
@@ -1276,9 +1264,8 @@ function installCesiumDebug(viewer) {
      *   `DebugTileImageryProvider`, or `null` to remove the overlay.
      */
     tileDebugOverlay(options) {
-      // Look up the previously installed overlay (if any) so we can
-      // remove + re-add it idempotently. Stash the layer reference
-      // on the scene so repeated calls don't pile up overlays.
+      // The installed layer reference lives on the scene so replacement is
+      // idempotent and repeated calls cannot accumulate overlays.
       const tag = "_cesiumDebugTileOverlayLayer";
       const existing = scene[tag];
       if (existing) {
@@ -1319,8 +1306,8 @@ function installCesiumDebug(viewer) {
      *
      * A backend whose pick readback is asynchronous cannot answer a
      * synchronous `scene.pick()` from the pass it just rendered: the result
-     * comes from a readback armed by an EARLIER pick, or the gates decline and
-     * the call returns nothing. This dump is how you tell those apart.
+     * can only use a readback published by a prior pick. Otherwise the gates
+     * decline and the call returns nothing; this dump distinguishes the cases.
      *
      * Read it in this order:
      *  - `servedFresh` + `servedCached` vs `cold`. A hover that never leaves
@@ -1329,8 +1316,8 @@ function installCesiumDebug(viewer) {
      *    is fail-closed through camera motion, which is the designed
      *    behaviour, not a defect. `attachment-generation-changed` dominating
      *    means the pick attachment is being rebuilt under the picks.
-     *  - `age`. Staleness of a served result, counted in PICK PASSES. A steady
-     *    1 is the expected one-pick lag; a growing max means readbacks are
+     *  - `age`. Pick-pass lag of a served result. A steady 1 is the expected
+     *    one-pick lag; a growing max means readbacks are
      *    falling behind the pick rate.
      *  - `readbacksArmed` vs `readbacksPublished`, and `readbacksUnresolved`.
      *    A large unresolved count means maps are not coming back at all.
