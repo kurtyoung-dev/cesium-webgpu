@@ -427,9 +427,13 @@ Execution order top-to-bottom; sizes are estimates.
    loser. **This is the blocker Campaign 12's gate G1 is red on** — G1's
    `starEnergyRatio` currently measures the shell's alpha rather than the star
    modulation term, and the standing rule forbids attributing that lane until
-   this is decided. Because this epic is **unlaunched**, C12 cannot close G1
-   from inside C12: the maintainer must either rule D10 out of band or
-   explicitly accept **"G1 stays red at C12 close"**. Unlike the other rows
+   this is decided. **RULED 2026-08-21 (`R-2026-08-21-14`): the maintainer
+   accepted "G1 stays red at C12 close", on the condition — recorded as
+   SATISFIED — that proposed-C17 carries CLT-D10 as a named packet item. C12
+   closes with G1 explicitly red; CLT-D10 inherits that red and owns the fix.**
+   What that ruling did NOT decide is the canonicity itself, so the standing
+   rule still forbids attributing G1 Lane B's `starEnergyRatio` as a
+   star-modulation number until this row is decided. Unlike the other rows
    here, deferring this one has a cost that is already being paid.
 
 ## 8. Research provenance
@@ -491,7 +495,7 @@ dependency-ordered; sizes are audit estimates.
 | CLT-D7 | Sky-view LUT: per-frame camera-altitude bake | Bake sky-view+MS kernels every frame at true camera altitude; delete the altitude=0 limit and sun-dirty rebake machinery; retire the sky-inscatter-LUT scaffold note in DEFERRED_WORK. | LUT-vs-inline-march pixel diff under threshold at ground/10 km/100 km; animated-sunset timelapse shows no rebake hitch; GPU timing probe confirms <= 0.15 ms/frame bake. | S-M |
 | CLT-D8 | Aerial perspective certification + default ruling | Certify the aerial-perspective pass (+froxel) against the parity gate (deps D6/D7 so the haze matches the MS sky) and put the WebGPU default-on decision to the maintainer as a documented one-way enhancement (WebGL has no pass). | Sunset probe: distant terrain haze reddens with sun elevation; OFF leg byte-identical; froxel timing <= 0.15 ms; eclipse-coupling regression leg green. | M |
 | CLT-D9 | Sun-disc cross-limb extinction gradient | Evaluate the cached extinction integral at 3-5 tangent heights and interpolate across the disc in both sun shaders (discharges the deferral recorded on the C12-29 S4 row without expanding C12). | Horizon-sunset close-up probe: lower-limb/upper-limb red ratio gradient present on both backends; orbital band matches the S4 measured ramp. | M |
-| CLT-D10 | Shell-extent alpha canonicity (RULING) | Decide whether WebGL's fixed ray-exit clip or WebGPU's full-coverage shell is canonical for the tracked NEW-WEBGPU-SKYATMOSPHERE-SHELL-EXTENT-ALPHA parity delta, then conform the loser. | Anti-solar-side probe over a star-lit background: both backends' transmission profiles match the ruled canon. | S code, ruling-gated |
+| CLT-D10 | Shell-extent alpha canonicity (RULING) | Decide whether WebGL's fixed ray-exit clip or WebGPU's full-coverage shell is canonical for the tracked NEW-WEBGPU-SKYATMOSPHERE-SHELL-EXTENT-ALPHA parity delta, then conform the loser. **C12's dependency on this row was ruled 2026-08-21 (`R-2026-08-21-14`): C12 closes with G1 explicitly RED and this row inherits that red — the canonicity decision itself is still owed here.** | Anti-solar-side probe over a star-lit background: both backends' transmission profiles match the ruled canon. | S code, ruling-gated |
 
 **Execution-order notes:** D1 and D3 are independent and both feed the same
 scripted-sunset acceptance scene as CLT-A12 — build that probe once. D5

@@ -515,9 +515,14 @@ function spriteCriteria(name, m) {
  *
  * The certifying quantity is the modulation's OWN energy, `mean(OFF) -
  * mean(ON)`, measured within each backend and then compared across backends.
- * Differencing inside a backend cancels the sky-atmosphere shell (which is
- * identical in both legs, since the flag only reaches the star panorama), so a
- * shell-parity gap cannot masquerade as — or mask — a star-modulation gap.
+ * Differencing inside a backend cancels the shell's additive emitted colour,
+ * since the flag only reaches the star panorama. It does NOT cancel the
+ * shell's alpha, which multiplies the panorama behind it: where the two
+ * backends' shells differ in coverage, the surviving star energy differs
+ * before any modulation is applied, and this lane's ratio then measures that
+ * difference rather than the modulation term. Do not read the ratio as a
+ * star-modulation number until the shell-extent alpha canonicity question is
+ * decided.
  *
  * @param {object} lane
  * @returns {object}

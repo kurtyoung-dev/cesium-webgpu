@@ -189,24 +189,28 @@ a technique-only derivation; the standard's own tie-breaker is that an
 unnecessary entry costs a paragraph and a missing one is a defect that ships, so
 both entries are present.
 
-### L-11 — `Shaders/WebGPU/PostProcess/GodRayGenerate.wgsl` · PARTIAL
+### L-11 — `Shaders/WebGPU/PostProcess/GodRayGenerate.wgsl` · RESOLVED
 
 Mitchell's GPU Gems 3 radial blur is a published technique and needs a reference
 block only. The depth-gating variant is credited in the header to Orillusion's
 `GodRayPost.ts` — another engine, so a notice is owed. An **Orillusion** entry
-now exists in both files with the standard MIT body. **Outstanding:** the
-copyright line, which no in-repo source records. See §3.
+now exists in both files with the standard MIT body. **Closed 2026-08-10 (§7):**
+the copyright line — `Copyright (c) 2024 Orillusion`, MIT — was read from the
+upstream `LICENSE` and is transcribed verbatim in both `LICENSE.md` files.
 
-### L-12 — `Shaders/WebGPU/FlowFieldAdvect.wgsl` and `WebGPUFlowFieldRenderer.ts` · PARTIAL
+### L-12 — `Shaders/WebGPU/FlowFieldAdvect.wgsl` and `WebGPUFlowFieldRenderer.ts` · RESOLVED
 
 Two lineages, both credited in the shader header and neither previously in
 `LICENSE.md`: `mapbox/webgl-wind` (ISC) for the ping-pong particle-state
 integrator, and `RaymanNg/3D-Wind-Field` (MIT) for advancing that state in
 longitude and latitude against an ellipsoid. Entries for both now exist in both
 files. The NOAA GFS velocity samples the layer consumes are US-Government work
-and carry no notice obligation. **Outstanding:** both copyright lines. See §3.
+and carry no notice obligation. **Closed 2026-08-10 (§7):** both copyright lines
+— `Copyright (c) 2016, Mapbox` (ISC) and `Copyright (c) 2019 RaymanNg` (MIT) —
+were read from the upstream `LICENSE` files and are transcribed verbatim in both
+`LICENSE.md` files.
 
-### L-13, L-14, L-15, L-19, L-20 — the FFT ocean shaders · RESOLVED / PARTIAL
+### L-13, L-14, L-15, L-19, L-20 — the FFT ocean shaders · RESOLVED
 
 Five shaders under `Shaders/WebGPU/Ocean/` name three projects between them and
 none of the three appeared in `LICENSE.md`:
@@ -228,8 +232,11 @@ reference project's design, and the comment standard classes a shader chunk
 adapted from a reference renderer as owing an entry. **FFT-Ocean** (MIT,
 `(c) 2020 Ivan Pensionerov`) and **WebTide** (MIT,
 `(c) 2024 Barthelemy Paleologue`) are RESOLVED from copyright lines the fork's
-own `OceanIFFT.wgsl` header records. **OceanDemo** is PARTIAL — its copyright
-line is recorded nowhere in the repository. See §3.
+own `OceanIFFT.wgsl` header records. **OceanDemo** was PARTIAL until 2026-08-10,
+its copyright line being recorded nowhere in the repository; the 2026-08-10
+network pass (§7) read `Copyright (c) 2020 Ivan Pensionerov` from the upstream
+`LICENSE.md` — the port retains the FFT-Ocean author's line — and transcribed it
+verbatim into both `LICENSE.md` files. RESOLVED.
 
 `OceanInitialSpectrum.wgsl` is untouched: it states Tessendorf and Phillips as
 published equations with no code copied, which is a reference block and nothing
@@ -262,7 +269,7 @@ A hand-tuned half-precision mirror of `FXAA.wgsl`, itself FXAA 3.11 by Timothy
 Lottes. **NVIDIA GameWorks FXAA Shader** is present in the root `LICENSE.md`
 *and* already mirrored into `packages/engine/LICENSE.md`. Nothing owed.
 
-### L-18 — `Shaders/WebGPU/Compute/DecoupledLookbackScan.wgsl` · PARTIAL
+### L-18 — `Shaders/WebGPU/Compute/DecoupledLookbackScan.wgsl` · RESOLVED
 
 Merrill & Garland 2016 is a published algorithm and is already cited with a URL
 in the file. The header additionally credits the Vello `pathtag_scan` port, and
@@ -271,7 +278,9 @@ it — WebGPU forbids `storageBarrier` in the single-lane branch that does the
 walk, so the watchdog budget replacing it is this project's. A **Vello** entry
 now exists in both files. Vello is dual-licensed Apache-2.0 OR MIT and the
 Apache-2.0 half matches this project's licence, so the grant is unambiguous;
-what is outstanding is only the copyright line. See §3.
+the copyright line — `Copyright 2020 the Vello Authors`, from the upstream
+`LICENSE-MIT` — was read on 2026-08-10 (§7) and is transcribed verbatim in both
+`LICENSE.md` files. RESOLVED.
 
 ### L-21 — `Assets/WaterMask/ne10mLakes.bin` · RESOLVED
 
@@ -466,26 +475,28 @@ either point it at the reference block now in
 discharged by the `LICENSE.md` entries in every case; what is owed is the local
 citation quality, on the same instruction as above.
 
-## 3. Outstanding items, and exactly what closes each
+## 3. Outstanding items, and exactly what closes each — ALL FIVE CLOSED 2026-08-10 (§7)
 
 Every item below has a complete entry in both `LICENSE.md` files, stating what
-was taken, the licence identifier, and the standard permission body. What is
-missing in each case is one line: the upstream copyright statement, which this
-project has not read and will not guess.
+was taken, the licence identifier, and the standard permission body. What was
+missing in each case was one line: the upstream copyright statement, which this
+project had not read and would not guess. **The 2026-08-10 network pass recorded
+in §7 read all five and transcribed them verbatim into both files, so every row
+below is CLOSED; the table is kept as the record of what closed it.**
 
 | Item | Project | Licence | What closes it |
 | --- | --- | --- | --- |
-| L-11 | Orillusion | MIT | Transcribe the copyright line from `LICENSE` at <https://github.com/Orillusion/orillusion> |
-| L-12 | mapbox/webgl-wind | ISC | Transcribe the copyright line from `LICENSE` at <https://github.com/mapbox/webgl-wind> |
-| L-12 | RaymanNg/3D-Wind-Field | MIT | Transcribe the copyright line from `LICENSE` at <https://github.com/RaymanNg/3D-Wind-Field> |
-| L-13 | Popov72/OceanDemo | MIT | Transcribe the copyright line from `LICENSE` at <https://github.com/Popov72/OceanDemo> |
-| L-18 | linebender/vello | Apache-2.0 OR MIT | Transcribe the copyright line from the chosen half at <https://github.com/linebender/vello> |
+| ~~L-11~~ | Orillusion | MIT | ✅ **CLOSED 2026-08-10 (§7)** — `Copyright (c) 2024 Orillusion` transcribed verbatim into both `LICENSE.md` files from `LICENSE` at <https://github.com/Orillusion/orillusion> |
+| ~~L-12~~ | mapbox/webgl-wind | ISC | ✅ **CLOSED 2026-08-10 (§7)** — `Copyright (c) 2016, Mapbox` transcribed verbatim into both `LICENSE.md` files from `LICENSE` at <https://github.com/mapbox/webgl-wind> |
+| ~~L-12~~ | RaymanNg/3D-Wind-Field | MIT | ✅ **CLOSED 2026-08-10 (§7)** — `Copyright (c) 2019 RaymanNg` transcribed verbatim into both `LICENSE.md` files from `LICENSE` at <https://github.com/RaymanNg/3D-Wind-Field> |
+| ~~L-13~~ | Popov72/OceanDemo | MIT | ✅ **CLOSED 2026-08-10 (§7)** — `Copyright (c) 2020 Ivan Pensionerov` transcribed verbatim into both `LICENSE.md` files from `LICENSE.md` (branch `main`) at <https://github.com/Popov72/OceanDemo> |
+| ~~L-18~~ | linebender/vello | Apache-2.0 OR MIT | ✅ **CLOSED 2026-08-10 (§7)** — `Copyright 2020 the Vello Authors` transcribed verbatim into both `LICENSE.md` files from `LICENSE-MIT` at <https://github.com/linebender/vello>; the Apache-2.0 half remains the operative grant |
 | ~~L-01~~ | Mulberry32 | **CC0** | ✅ **CLOSED Batch 965 (`3c1d4c5a47`)** — explicit CC0 established by network pass; no grant to transcribe, no replacement to schedule. *(Stamped 2026-08-09, handover audit FIX 31.)* |
 | ~~L-23~~ | — | — | ✅ **CLOSED Batch 966 (`b446b662f1`, maintainer-directed)** — `wgslToJavaScript` mirrors the `@license` extraction. *(Stamped 2026-08-09, handover audit FIX 31.)* |
 
 None of these blocks release. Each entry already names the project, the licence
 and what was taken, which is what a redistributor needs in order to comply; the
-missing line is an attribution detail, not a permission.
+then-missing line was an attribution detail, not a permission, and it is now supplied.
 
 ## 4. What ships, and where
 
@@ -531,15 +542,15 @@ names a row that must be present in the generated `ThirdParty.json`.
     { "id": "L-06", "heading": "Lunar albedo map — NASA/GSFC Scientific Visualization Studio (CGI Moon Kit)", "files": ["root", "engine"], "status": "COVERED" },
     { "id": "L-10a", "heading": "three.js", "files": ["root", "engine"], "status": "RESOLVED" },
     { "id": "L-10b", "heading": "SSRT3", "files": ["root", "engine"], "status": "RESOLVED" },
-    { "id": "L-11", "heading": "Orillusion", "files": ["root", "engine"], "status": "PARTIAL" },
-    { "id": "L-12a", "heading": "webgl-wind", "files": ["root", "engine"], "status": "PARTIAL" },
-    { "id": "L-12b", "heading": "3D-Wind-Field", "files": ["root", "engine"], "status": "PARTIAL" },
+    { "id": "L-11", "heading": "Orillusion", "files": ["root", "engine"], "status": "RESOLVED" },
+    { "id": "L-12a", "heading": "webgl-wind", "files": ["root", "engine"], "status": "RESOLVED" },
+    { "id": "L-12b", "heading": "3D-Wind-Field", "files": ["root", "engine"], "status": "RESOLVED" },
     { "id": "L-13a", "heading": "FFT-Ocean", "files": ["root", "engine"], "status": "RESOLVED" },
     { "id": "L-13b", "heading": "WebTide", "files": ["root", "engine"], "status": "RESOLVED" },
-    { "id": "L-13c", "heading": "OceanDemo", "files": ["root", "engine"], "status": "PARTIAL" },
+    { "id": "L-13c", "heading": "OceanDemo", "files": ["root", "engine"], "status": "RESOLVED" },
     { "id": "L-16", "heading": "Linearly Transformed Cosines (LTC) area lights", "files": ["root", "engine"], "status": "RESOLVED" },
     { "id": "L-17", "heading": "NVIDIA GameWorks FXAA Shader", "files": ["root", "engine"], "status": "COVERED" },
-    { "id": "L-18", "heading": "Vello", "files": ["root", "engine"], "status": "PARTIAL" },
+    { "id": "L-18", "heading": "Vello", "files": ["root", "engine"], "status": "RESOLVED" },
     { "id": "L-21", "heading": "Inland-lake polygon mask — Natural Earth 1:10m Lakes", "files": ["root", "engine"], "status": "RESOLVED" },
     { "id": "L-22a", "heading": null, "files": [], "thirdPartyJson": "@spz-loader/core", "status": "RESOLVED" },
     { "id": "L-22b", "heading": null, "files": [], "thirdPartyJson": "@cesium/wasm-splats", "status": "RESOLVED" },

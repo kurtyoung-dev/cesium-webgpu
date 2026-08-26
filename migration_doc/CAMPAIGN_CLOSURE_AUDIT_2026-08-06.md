@@ -560,10 +560,17 @@ Two consequences worth stating plainly:
 - If closure is read literally (four gates + five conditions), C12 is roughly
   **10 bounded code rows and 6 acceptance runs** from closing, and `C12-29`'s residual
   moves to `DEFERRED_WORK` or a successor campaign.
-- If `C12-29` is treated as a de facto gate, C12 needs a replacement-device rig, a
-  NASA-SVS geospatial comparison, and multi-View/stereo execution — none of which are
-  scoped, and one of which (`supportsStereoViewport`) is explicitly recorded as *not
-  available* on WebGPU.
+- If `C12-29` is treated as a de facto gate, C12 needs replacement-device, NASA-SVS
+  geospatial and multi-View/stereo execution. **Corrected 2026-08-25:** all three
+  probes and their gate libraries are BUILT — `probe-c12-29-s5-replacement-device.mjs`,
+  `probe-c12-29-s5-svs-footprint.mjs` and `probe-c12-29-s5-multiview.mjs` all landed
+  2026-08-13, each with a `lib/c12-29-s5-*-gate.mjs` beside it; the replacement-device
+  harness repair followed at Batch 1104. What is missing is EXECUTION: replacement-device
+  and multiview have never run in a browser, and the NASA-SVS lane's single banked run
+  errored at exit 2. The WebGPU `supportsStereoViewport === false` return is the
+  multiview lane's certified expected policy, not an obstacle — its gate requires
+  `supportsStereoViewport === (renderer === "webgl")` and, on the WebGPU leg, the
+  accompanying `DeveloperError`.
 
 **Additionally:** exit condition 2's audit closes a *class* whose cloud-cover-occlusion
 half is coordinated with C13 (`:602`). So C12's exit gate has a real, if narrow,

@@ -48,8 +48,12 @@
 //   twice, with `enableStarBrightnessModulation` OFF then ON. The certifying
 //   quantity is the modulation's OWN energy, `mean(OFF) - mean(ON)`, taken
 //   within each backend and only then compared across backends: differencing
-//   inside a backend cancels the sky-atmosphere shell, so a shell-parity gap
-//   can neither masquerade as nor mask a star-modulation gap. The OFF/ON swing
+//   inside a backend cancels the shell's additive emitted colour, but NOT the
+//   shell's alpha, which multiplies the star panorama behind it — where the
+//   two backends' shells differ in coverage, the surviving star energy differs
+//   before any modulation is applied and this lane's ratio measures that
+//   difference instead. Do not read the ratio as a star-modulation number
+//   until the shell-extent alpha canonicity question is decided. The OFF/ON swing
 //   doubles as the non-vacuity control — a lane whose modulation term never
 //   moved a pixel is STRUCTURAL.
 //

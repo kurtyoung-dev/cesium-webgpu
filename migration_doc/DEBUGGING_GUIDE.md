@@ -566,18 +566,18 @@ Read exit 3 as "this run proves nothing", never as a soft fail — that distinct
 > executable count supersedes the historical 24-test count in the long-form
 > campaign narrative below.
 
-> **`sky-brightness-twilight.spec.mjs` — C12-34, the sky-brightness estimator's
+> **`sky-brightness-twilight.spec.mjs` — C12-36, the sky-brightness estimator's
 > twilight range (2026-08-02, 27/27).** `node --test
 > Tools/visual-regression/sky-brightness-twilight.spec.mjs`. Pure Node, no
 > browser: it EXECUTES `Scene/SkyBrightness.js` and (through
 > `lib/engine-ts-resolver.mjs`) `Scene/StarFieldMath.ts`, rather than
-> re-implementing either. Owns the C12-34 log-luminance model — the published
+> re-implementing either. Owns the C12-36 log-luminance model — the published
 > zenith twilight-photometry ladder (μ 8 at sunset, 14 at −6°, 19.7 at −12°,
 > 21.9 at −18°), the NELM perceptual transfer, the moon's `p^3.64` phase-flux
 > law, and the shared `computeCelestialElevationSine` single home that C15's
 > aurora night-gate will reuse. **Every metric is banded or pointwise, never a
 > sweep average** — the defect it guards is invisible to an aggregate, because
-> the pre-C12-34 estimator was bit-identical to the shipped one at BOTH ends of
+> the pre-C12-36 estimator was bit-identical to the shipped one at BOTH ends of
 > the range (deep night and full day) and differed only in the middle. Five
 > MUTATION tests feed the checks a deliberately broken estimator (the exact
 > legacy double-smoothstep, a binary day/night gate, a 1e-6 epsilon floor, a
@@ -588,12 +588,16 @@ Read exit 3 as "this run proves nothing", never as a soft fail — that distinct
 > exactly nothing, and the S2 high-sun totality product exactly
 > `ECLIPSE_TWILIGHT_FLOOR`. Run it after touching `SkyBrightness.js`,
 > `StarFieldMath.ts`'s modulation block, or the `STAR_MODULATION_*` pair.
-> Its companion Edge acceptance HAS since run — `probe-sky-twilight-range.mjs`
-> (Batch 824), described in the next block.
+> Its companion Edge acceptance has run twice — the Batch-824 engine leg, and
+> the post-repair, post-re-scope run at Batch 904 (`c810dbace2`) described in
+> the next block.
 
-> **`probe-sky-twilight-range.mjs` — C12-34 Edge acceptance for the twilight
-> range (2026-08-06 / Batch 824). ENGINE + CONTROL legs PASS; PIXELS leg reports
-> STRUCTURAL.** `node Tools/visual-regression/probe-sky-twilight-range.mjs`.
+> **`probe-sky-twilight-range.mjs` — C12-36 Edge acceptance for the twilight
+> range. ENGINE + CONTROL legs PASS on both backends; the star-PIXEL leg reports
+> STRUCTURAL at the positional reachability control (target box black), filed as
+> `TWILIGHT-STAR-REACHABILITY-BLACK-BOX`. Latest run Batch 904 (`c810dbace2`),
+> exit 3; the first run was 2026-08-06 / Batch 824.**
+> `node Tools/visual-regression/probe-sky-twilight-range.mjs`.
 > Three legs, and they are graded separately on purpose:
 >
 > - **ENGINE** — imports the SHIPPED `Scene/SkyBrightness.js` from the served
@@ -601,7 +605,7 @@ Read exit 3 as "this run proves nothing", never as a soft fail — that distinct
 >   elevations, then compares against the Batch-823 derivation. It reproduces
 >   EXACTLY to six decimals on BOTH backends: −20° 1.000000, −15° 0.604705,
 >   −9° 0.098257, −3° 0.006619, `webgl == webgpu` bit-for-bit, 0
->   console/device errors. **This leg is the acceptance claim for C12-34.**
+>   console/device errors. **This leg is the acceptance claim for C12-36.**
 > - **CONTROL** — the −20° byte-identical end, which must stay exactly
 >   1.000000 because the re-derivation is only allowed to move the middle of the
 >   range.
@@ -654,7 +658,7 @@ Read exit 3 as "this run proves nothing", never as a soft fail — that distinct
 > cannot distinguish "both legs certified" from "one leg measured nothing", and
 > this probe's own history is the case for the distinction).
 >
-> Four orchestrator instrument defects are recorded on the C12-34 queue row
+> Four orchestrator instrument defects are recorded on the C12-36 queue row
 > rather than here, but the first is worth repeating because it presented
 > exactly like a shipped feature that never took effect: **the module's
 > signature is POSITIONAL**, and an object-literal call trips its documented
@@ -662,7 +666,7 @@ Read exit 3 as "this run proves nothing", never as a soft fail — that distinct
 > do not compare sky BRIGHTNESS against STAR-MODULATION predictions, and do not
 > synthesize a sun for one leg while the renderer draws with the clock's — both
 > produce confident nonsense. Run it after touching `SkyBrightness.js` or the
-> star-modulation chain; see the C12-34 row in
+> star-modulation chain; see the C12-36 row in
 > `QUEUE_2026-07-19_CAMPAIGN12.md` for the pinned-clock elevation lanes.
 
 > **`vector-layer-draping.spec.mjs` — C11-213 / UP144-VECTOR-LAYER-WGSL,
