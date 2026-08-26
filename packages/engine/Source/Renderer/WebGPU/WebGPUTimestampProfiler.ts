@@ -110,6 +110,15 @@ export interface ProfilingResults extends DebugStatsObject {
   readonly droppedPassCount: number;
   /** Frames not sampled because a readback slot was still in use. */
   readonly readbackSkipCount: number;
+  /** Depth of the readback ring these results were sampled through. */
+  readonly bufferCount: number;
+  /**
+   * True when at least one frame went unsampled because the ring had no free
+   * slot. The retained samples are then drawn from the frames the ring could
+   * keep up with, so a mean over them is a mean over a subset selected by the
+   * cost it is measuring. Report it; never average past it.
+   */
+  readonly ringSaturated: boolean;
   /** Timestamp readbacks that rejected or could not be mapped. */
   readonly failedReadbackCount: number;
   /** Armed frames that wrote no timestamps because no timed pass ran. */
@@ -178,29 +187,108 @@ const MAX_PASSES_PER_FRAME = 128;
 const MAX_QUERIES = MAX_PASSES_PER_FRAME * 2;
 
 /**
+ * Default depth of the readback ring.
+ *
+ * The ring advances one slot per profiled frame, so a slot is revisited every
+ * `bufferCount` frames, while its `mapAsync` holds it for as long as the GPU
+ * takes to complete that frame's submission plus the map callback. Three slots
+ * therefore cover a readback latency of up to three frames and no more: enough
+ * for a workload whose per-frame GPU cost stays well inside the frame period,
+ * and not enough for one that does not.
+ *
+ * Depth is a measurement setting rather than a rendering one, so the default
+ * stays at the historical three. A context that arms the profiler for its own
+ * reasons allocates exactly what it did before, and a measurement that needs a
+ * deeper ring asks for one.
+ */
+const DEFAULT_BUFFER_COUNT = 3;
+
+/**
+ * Shallowest ring worth allocating. At a depth of one the single slot is
+ * revisited on the very next frame, so every frame after the first is skipped
+ * by construction; an instrument that cannot sample is worse than no
+ * instrument, so that depth is rejected rather than allowed to report zeroes.
+ */
+const MIN_BUFFER_COUNT = 2;
+
+/**
+ * Deepest ring allowed. Each slot costs one timestamp query set plus a resolve
+ * and a readback buffer of `MAX_QUERIES * 8` bytes each, so the ceiling bounds
+ * what a mistyped depth can allocate. It is not a claim that sixteen frames of
+ * readback latency are survivable.
+ */
+const MAX_BUFFER_COUNT = 16;
+
+/**
+ * Rejects a ring depth that cannot produce a usable measurement.
+ *
+ * Loud by design. A clamped depth would let a caller believe it had asked for
+ * headroom it did not get, and the sample loss that followed would read as
+ * device behaviour rather than as a caller error.
+ *
+ * @param count - Requested ring depth.
+ * @returns The validated depth.
+ */
+function validateBufferCount(count: number): number {
+  if (
+    !Number.isInteger(count) ||
+    count < MIN_BUFFER_COUNT ||
+    count > MAX_BUFFER_COUNT
+  ) {
+    throw new Error(
+      `WebGPUTimestampProfiler buffer count must be an integer in [${MIN_BUFFER_COUNT}, ${MAX_BUFFER_COUNT}]; received ${count}`,
+    );
+  }
+  return count;
+}
+
+/**
  * GPU timestamp profiler using WebGPU's timestamp-query feature.
  *
  * This profiler uses `timestampWrites` on render/compute passes (the modern API)
  * instead of the deprecated `GPUCommandEncoder.writeTimestamp()`.
  *
- * Uses triple-buffering to avoid GPU stalls:
+ * Readback runs through a ring of query sets so the render path never blocks:
  * - Frame N writes timestamps via timestampWrites
  * - After Frame N is submitted, mapAsync waits for its copy without blocking
  * - Later frames use the other slots while that readback is pending
+ *
+ * The ring is `bufferCount` slots deep and advances one slot per profiled
+ * frame, so a slot's readback has exactly that many frames to complete before
+ * the ring returns to it. A slot still held when its turn arrives costs the
+ * whole frame its timing: `beginFrame` leaves the frame unarmed, its passes run
+ * without `timestampWrites` at all, and `readbackSkipCount` records it. That is
+ * reported as `ringSaturated`, because the frames that survive such a ring are
+ * a subset selected by the very cost being measured.
  */
 export class WebGPUTimestampProfiler {
   private _device: GPUDevice;
   private _enabled: boolean = false;
 
-  // Triple-buffered frame states
+  // Readback ring, `_bufferCount` slots deep.
   private _frameStates: FrameQueryState[] = [];
   private _currentFrameIndex: number = 0;
-  private _bufferCount: number = 3;
+  private _bufferCount: number = DEFAULT_BUFFER_COUNT;
+  /**
+   * Slots dropped from the ring by a resize while their `mapAsync` was still
+   * outstanding. Destroying such a buffer immediately would reject the pending
+   * map with an outcome the sample ledger has no bucket for, so the readback's
+   * own completion path releases the slot instead; this set exists so
+   * `destroy()` can still sweep any that never settle.
+   */
+  private _retiredStates: Set<FrameQueryState> = new Set();
 
   // Current frame tracking
   private _nextQueryIndex: number = 0;
   private _currentPassRecords: PassQueryRecord[] = [];
   private _currentFrameAvailable: boolean = false;
+  /**
+   * Whether `beginFrame` has run without its matching `endFrame` yet.
+   * Distinct from `_currentFrameAvailable`, which stays set after
+   * `endFrame` and so answers whether the LAST frame was armed rather
+   * than whether a frame is open.
+   */
+  private _frameInProgress: boolean = false;
   private _currentFrameGeneration: number = 0;
 
   // Results storage
@@ -250,9 +338,19 @@ export class WebGPUTimestampProfiler {
    *
    * @param device - The GPU device (must have 'timestamp-query' feature)
    * @param hasTimestampFeature - Whether the device supports timestamp queries
+   * @param bufferCount - Readback ring depth. Defaults to the historical three;
+   *        raise it only for a measurement whose readback latency needs it.
    */
-  constructor(device: GPUDevice, hasTimestampFeature: boolean = false) {
+  constructor(
+    device: GPUDevice,
+    hasTimestampFeature: boolean = false,
+    bufferCount: number = DEFAULT_BUFFER_COUNT,
+  ) {
     this._device = device;
+    // Validated ahead of the feature check on purpose: a device without the
+    // feature is exactly where a bad depth would otherwise go unnoticed until
+    // it reached a device that has it.
+    this._bufferCount = validateBufferCount(bufferCount);
     this._enabled =
       hasTimestampFeature && device.features.has("timestamp-query");
 
@@ -260,7 +358,6 @@ export class WebGPUTimestampProfiler {
       return;
     }
 
-    // Create frame states (triple-buffered)
     for (let i = 0; i < this._bufferCount; i++) {
       this._frameStates.push(this._createFrameState(i));
     }
@@ -317,6 +414,7 @@ export class WebGPUTimestampProfiler {
     if (!this._currentFrameAvailable) {
       this._readbackSkipCount++;
     }
+    this._frameInProgress = true;
   }
 
   /**
@@ -432,6 +530,7 @@ export class WebGPUTimestampProfiler {
     // Advance to next frame state
     this._currentFrameIndex = (this._currentFrameIndex + 1) % this._bufferCount;
     this._attemptedFrames++;
+    this._frameInProgress = false;
   }
 
   /**
@@ -619,6 +718,13 @@ export class WebGPUTimestampProfiler {
       state.queryCount = 0;
       state.passRecords = [];
       state.readbackPending = false;
+      if (this._retiredStates.delete(state) && !this._isDestroyed) {
+        // A resize dropped this slot from the ring while its map was still
+        // in flight. The map has settled now, so the GPU objects can go.
+        state.querySet.destroy();
+        state.resolveBuffer.destroy();
+        state.readbackBuffer.destroy();
+      }
     }
   }
 
@@ -654,7 +760,12 @@ export class WebGPUTimestampProfiler {
 
   /**
    * Get the latest profiling results.
-   * Results are from N frames ago (where N = bufferCount) to avoid GPU stalls.
+   *
+   * Values come from the most recent readback to complete, so they lag the
+   * current frame by the readback latency rather than by the ring depth: a
+   * deeper ring does not make results staler, it leaves fewer frames
+   * unsampled. Check `ringSaturated` before averaging — when it is set, the
+   * mean is over the frames the ring managed to keep up with.
    */
   getResults(): ProfilingResults {
     const ledger = this._sampleLedger();
@@ -682,6 +793,8 @@ export class WebGPUTimestampProfiler {
         attemptedFrameCount: ledger.attempted,
         droppedPassCount: this._droppedPassCount,
         readbackSkipCount: ledger.skipped,
+        bufferCount: this._bufferCount,
+        ringSaturated: ledger.skipped > 0,
         failedReadbackCount: ledger.failed,
         emptyFrameCount: ledger.empty,
         lostSampleCount: ledger.lost,
@@ -733,6 +846,8 @@ export class WebGPUTimestampProfiler {
       attemptedFrameCount: ledger.attempted,
       droppedPassCount: this._droppedPassCount,
       readbackSkipCount: ledger.skipped,
+      bufferCount: this._bufferCount,
+      ringSaturated: ledger.skipped > 0,
       failedReadbackCount: ledger.failed,
       emptyFrameCount: ledger.empty,
       lostSampleCount: ledger.lost,
@@ -770,6 +885,7 @@ export class WebGPUTimestampProfiler {
 
   reset(): void {
     this._generation++;
+    this._frameInProgress = false;
     this._latestResults.clear();
     this._frameTimings = [];
     this._profiledPassTimings = [];
@@ -806,6 +922,79 @@ export class WebGPUTimestampProfiler {
     return this._latestFrameSamples;
   }
 
+  /** Depth of the readback ring, in frames. */
+  get bufferCount(): number {
+    return this._bufferCount;
+  }
+
+  /**
+   * Re-sizes the readback ring.
+   *
+   * The depth a workload needs is its readback latency measured in profiled
+   * frames: how long the GPU takes to finish a frame's submission and deliver
+   * the map callback, against how often the ring comes back to that slot. A
+   * caller that has measured its own worst case can raise the depth to cover
+   * it; a caller that has not should leave the default alone.
+   *
+   * Resizing discards the current measurement. Slot indices do not survive the
+   * resize, and pooling samples across two depths would mix two differently
+   * instrumented frame populations — a frame the ring cannot arm runs with no
+   * `timestampWrites` at all, so changing how often that happens changes what
+   * the surviving frames are.
+   *
+   * Drain first (`drainPendingReadbacks`). As with `reset()`, the counters are
+   * cleared while any readback still in flight remains counted as pending, so
+   * an undrained resize reads as an unbalanced ledger until it settles.
+   *
+   * @param count - Requested ring depth.
+   */
+  setBufferCount(count: number): void {
+    const next = validateBufferCount(count);
+    if (next === this._bufferCount) {
+      return;
+    }
+
+    // `beginFrame` may already have armed an OPEN frame against the ring
+    // being replaced. Its `endFrame` still counts an attempt, so that attempt
+    // needs the terminal outcome the arming would have carried — recorded
+    // after `reset()`, which zeroes the counters. A closed frame needs
+    // nothing: its outcome is already in the counters being cleared.
+    const armedAgainstOldRing =
+      this._frameInProgress && this._currentFrameAvailable;
+
+    const retiring = this._frameStates;
+    this._frameStates = [];
+    // Encoded but never handed to `afterSubmit()`, and their slot indices do
+    // not survive the resize, so no readback can ever be started for them.
+    this._pendingSubmissions = [];
+    this._bufferCount = next;
+    this.reset();
+    this._currentFrameIndex = 0;
+    this._currentFrameAvailable = false;
+    this._nextQueryIndex = 0;
+    this._currentPassRecords = [];
+    if (armedAgainstOldRing) {
+      this._readbackSkipCount++;
+    }
+
+    for (const state of retiring) {
+      if (state.readbackPending) {
+        this._retiredStates.add(state);
+        continue;
+      }
+      state.querySet.destroy();
+      state.resolveBuffer.destroy();
+      state.readbackBuffer.destroy();
+    }
+
+    if (!this._enabled) {
+      return;
+    }
+    for (let i = 0; i < this._bufferCount; i++) {
+      this._frameStates.push(this._createFrameState(i));
+    }
+  }
+
   /** Whether profiling is enabled. */
   get enabled(): boolean {
     return this._enabled;
@@ -826,6 +1015,14 @@ export class WebGPUTimestampProfiler {
       state.resolveBuffer.destroy();
       state.readbackBuffer.destroy();
     }
+    // Slots a resize retired whose readback never settled would otherwise
+    // outlive the profiler that allocated them.
+    for (const state of this._retiredStates) {
+      state.querySet.destroy();
+      state.resolveBuffer.destroy();
+      state.readbackBuffer.destroy();
+    }
+    this._retiredStates.clear();
     this._frameStates = [];
     this._latestResults.clear();
     this._frameTimings = [];
@@ -836,6 +1033,7 @@ export class WebGPUTimestampProfiler {
     this._pendingSubmissions = [];
     this._activeReadbacks.clear();
     this._currentFrameAvailable = false;
+    this._frameInProgress = false;
     this._generation++;
     this._enabled = false;
     this._isDestroyed = true;
