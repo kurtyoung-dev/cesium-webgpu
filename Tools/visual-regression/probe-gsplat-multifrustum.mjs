@@ -65,6 +65,36 @@
  * occlusion reader before any pixel is examined, so no topology record exists
  * at all and the artifact carries only the framing reason.
  *
+ * The scene is deliberately re-framed in depth. The framing library pins the
+ * camera - nadir, heading 0, at the range that makes the tower bounding sphere
+ * occupy a fixed fraction of viewport height - so the scene near plane is
+ * always `range - radius` and, at the forced ratio of 2, the first band
+ * boundary is always `2 * (range - radius)`. The tower asset's authored
+ * content stands 2,852 m above its own georeferenced origin; at that altitude
+ * the globe sits roughly 4 km from the camera while the tower sits 1.2 km from
+ * it, so the two occupy disjoint bands and the row's second clause - the splat
+ * cloud composing over the globe - cannot hold no matter how many frusta the
+ * first clause opens. The probe therefore translates the tileset along its
+ * local up until the camera sits one derived margin BELOW the first band
+ * boundary. Every globe bounding volume brackets the camera altitude along the
+ * view direction, so its near then falls in band 0 beside the splat and its
+ * inflated far opens band 1: both clauses hold at once, for every globe depth
+ * extent including none measurable at all, and without touching the camera
+ * the library pins.
+ *
+ * That margin is derived, not tuned. Its upper bound is the engine's own far
+ * inflation - `View.js updateFrustums` multiplies the scene far plane by
+ * `1.0 + CesiumMath.EPSILON2` - past which a globe with no measurable depth
+ * extent stops opening a second band; its lower bound is the bounding-volume
+ * centre offset the placement has to absorb. The landed constant is the
+ * midpoint, which maximises the symmetric offset tolerance.
+ *
+ * The retarget changes no projected geometry: the range derivation reads only
+ * the bounding-sphere radius and the field of view, both untouched by a
+ * translation, so the projected disc, its perimeter and every registration
+ * ratio below are byte-identical to the pre-retarget instrument. The
+ * disagreement bar does not move.
+ *
  * The landed range formula maps the configured fraction to NDC radius: the
  * tower bounding-sphere radius is 0.05 times viewport height and its diameter
  * is 0.1 times viewport height. At 1280 by 720, the corrected analytic disc is
@@ -135,6 +165,100 @@ const PROCESS_WATCHDOG_MS =
 // as an erratum after the corrected projection; neither analytic disc is a
 // measured splat-cloud footprint, and the uncalibrated bar does not move.
 export const MAX_LABEL_DISAGREEMENT_FRACTION = 0.0025;
+
+// `View.js updateFrustums` inflates the accumulated scene far plane by
+// `1.0 + CesiumMath.EPSILON2` before splitting it, and `CesiumMath.EPSILON2`
+// is 0.01. That inflation is what still opens a second band when the globe's
+// bounding volumes have no measurable depth extent at all.
+export const SCENE_FAR_INFLATION = 0.01;
+
+// Seat the camera this fraction below the first band boundary. Above
+// `1 - 1 / (1 + SCENE_FAR_INFLATION)` a zero-extent globe no longer inflates
+// past the boundary and the second band is lost; below the bounding-volume
+// centre offset the placement must absorb, the globe no longer reaches band 0
+// and the shared band is lost. The midpoint maximises the symmetric offset
+// tolerance, so this constant is derived from the engine rather than tuned
+// against a measurement.
+export const TOWER_BOUNDARY_MARGIN_FRACTION =
+  SCENE_FAR_INFLATION / (2 * (1 + SCENE_FAR_INFLATION));
+
+// How much of the placement's own offset budget the achieved tower altitude is
+// allowed to consume. A tenth leaves the budget itself intact while still
+// catching a move that never happened, which is off by the whole stand-off.
+export const TOWER_ALTITUDE_TOLERANCE_DIVISOR = 10;
+
+/**
+ * The altitude window the achieved tower placement has to land inside.
+ *
+ * Kept beside the derivation so the page that publishes the number and the
+ * evaluator that re-derives it cannot drift apart; the evaluator never judges
+ * against the published value.
+ */
+export function deriveTowerAltitudeToleranceMeters(
+  boundaryOffsetToleranceMeters,
+) {
+  return Number.isFinite(boundaryOffsetToleranceMeters)
+    ? boundaryOffsetToleranceMeters / TOWER_ALTITUDE_TOLERANCE_DIVISOR
+    : null;
+}
+
+/**
+ * Derive the tower altitude at which both row clauses hold simultaneously.
+ *
+ * Only the tower's altitude is free - the library pins heading, pitch, the
+ * viewport fraction and the range derivation - and moving the tower moves the
+ * camera with it, because the camera is placed relative to the tileset's
+ * bounding sphere. The scene near plane therefore stays `range - radius` and
+ * the first band boundary stays `2 * (range - radius)` whatever altitude is
+ * chosen, which is what makes a closed-form target possible.
+ */
+export function deriveGsplatTowerDepthRetarget(range, radius) {
+  if (
+    !Number.isFinite(range) ||
+    range <= 0 ||
+    !Number.isFinite(radius) ||
+    radius <= 0
+  ) {
+    return {
+      structural: ["retarget:framing-scalars-invalid"],
+      sceneNearMeters: null,
+      firstBandBoundaryMeters: null,
+      boundaryMarginFraction: TOWER_BOUNDARY_MARGIN_FRACTION,
+      boundaryOffsetToleranceMeters: null,
+      splatFarMeters: null,
+      targetCameraAltitudeMeters: null,
+      targetTowerAltitudeMeters: null,
+    };
+  }
+  const structural = [];
+  const sceneNearMeters = range - radius;
+  const firstBandBoundaryMeters = 2 * sceneNearMeters;
+  const splatFarMeters = range + radius;
+  const targetCameraAltitudeMeters =
+    firstBandBoundaryMeters * (1 - TOWER_BOUNDARY_MARGIN_FRACTION);
+  const targetTowerAltitudeMeters = targetCameraAltitudeMeters - range;
+  // The tower's own depth extent has to stay wholly inside band 0, otherwise
+  // the splat is binned into every band and stops being selectively binned.
+  if (!(splatFarMeters < firstBandBoundaryMeters)) {
+    structural.push("retarget:splat-extent-reaches-first-band-boundary");
+  }
+  // The whole bounding sphere has to clear the ellipsoid, or the tower is
+  // buried in the globe it is supposed to compose over.
+  if (!(targetTowerAltitudeMeters > radius)) {
+    structural.push("retarget:target-tower-altitude-below-bounding-radius");
+  }
+  return {
+    structural,
+    sceneNearMeters,
+    firstBandBoundaryMeters,
+    boundaryMarginFraction: TOWER_BOUNDARY_MARGIN_FRACTION,
+    boundaryOffsetToleranceMeters:
+      firstBandBoundaryMeters * TOWER_BOUNDARY_MARGIN_FRACTION,
+    splatFarMeters,
+    targetCameraAltitudeMeters,
+    targetTowerAltitudeMeters,
+  };
+}
 
 const BACKGROUND_REFERENCE = Object.freeze([16, 16, 20]);
 const GLOBE_REFERENCE = Object.freeze([38, 38, 44]);
@@ -431,6 +555,12 @@ const FRAMING_AGREEMENT_FIELDS = Object.freeze([
   "logarithmicDepthFarToNearRatio",
   "globeShown",
   "logDepthEnabled",
+  "firstBandBoundaryMeters",
+  "targetTowerAltitudeMeters",
+  "towerDepthRetargetTranslationMeters",
+  "towerAltitudeMeters",
+  "towerAltitudeToleranceMeters",
+  "towerDepthRetargetApplied",
 ]);
 
 function exactRgbTriple(actual, expected) {
@@ -496,6 +626,101 @@ export function compareGsplatBackendFraming(backends) {
         actual: runtime?.globeBaseColorRgb ?? null,
         expected: [...GLOBE_REFERENCE],
         reason: `${backend}:runtime:globe-base-rgb-mismatch`,
+      });
+    }
+    // The depth re-framing has three preconditions. Each one, when it fails,
+    // means the derived placement never described this frame, so the run is
+    // demoted at the framing layer before any pixel is examined - exactly like
+    // the other framing-layer reasons above, and without disturbing the
+    // R-2026-08-24-14/-16 label-layer routing.
+    const backendFraming = backends?.[backend]?.framing;
+    const towerDepthRetargetApplied =
+      backendFraming?.towerDepthRetargetApplied === true;
+    if (!towerDepthRetargetApplied) {
+      disagreements.push({
+        field: `framing.${backend}.towerDepthRetargetApplied`,
+        actual: backendFraming?.towerDepthRetargetApplied ?? null,
+        expected: true,
+        reason: `${backend}:framing:tower-depth-retarget-not-applied`,
+      });
+    }
+    // The page publishes the placement scalars, so the evaluator re-derives
+    // them here from the two quantities the framing library itself pins -
+    // `range` and `radius`, which `framing:not-far-nadir` already ties to the
+    // asset and the field of view - and judges against the re-derivation. A
+    // published target or tolerance is cross-checked, never trusted: widening
+    // the page's divisor would otherwise defang the altitude gate silently.
+    const derivedRetarget = deriveGsplatTowerDepthRetarget(
+      backendFraming?.range,
+      backendFraming?.radius,
+    );
+    const derivedTolerance = deriveTowerAltitudeToleranceMeters(
+      derivedRetarget.boundaryOffsetToleranceMeters,
+    );
+    const retargetScalarsDerived =
+      derivedRetarget.structural.length === 0 &&
+      Object.is(
+        backendFraming?.firstBandBoundaryMeters,
+        derivedRetarget.firstBandBoundaryMeters,
+      ) &&
+      Object.is(
+        backendFraming?.targetTowerAltitudeMeters,
+        derivedRetarget.targetTowerAltitudeMeters,
+      ) &&
+      Object.is(backendFraming?.towerAltitudeToleranceMeters, derivedTolerance);
+    if (!retargetScalarsDerived) {
+      disagreements.push({
+        field: `framing.${backend}.towerAltitudeToleranceMeters`,
+        actual: {
+          firstBandBoundaryMeters:
+            backendFraming?.firstBandBoundaryMeters ?? null,
+          targetTowerAltitudeMeters:
+            backendFraming?.targetTowerAltitudeMeters ?? null,
+          towerAltitudeToleranceMeters:
+            backendFraming?.towerAltitudeToleranceMeters ?? null,
+        },
+        expected: {
+          firstBandBoundaryMeters: derivedRetarget.firstBandBoundaryMeters,
+          targetTowerAltitudeMeters: derivedRetarget.targetTowerAltitudeMeters,
+          towerAltitudeToleranceMeters: derivedTolerance,
+        },
+        reason: `${backend}:framing:tower-altitude-tolerance-not-derived`,
+      });
+    }
+    // Only the achieved altitude is an observation; both sides of the
+    // comparison come from the re-derivation.
+    const targetTowerAltitude = derivedRetarget.targetTowerAltitudeMeters;
+    const towerAltitude = backendFraming?.towerAltitudeMeters;
+    const altitudeTolerance = derivedTolerance ?? Number.NaN;
+    const towerAltitudeOnTarget =
+      Number.isFinite(targetTowerAltitude) &&
+      Number.isFinite(towerAltitude) &&
+      Number.isFinite(altitudeTolerance) &&
+      Math.abs(towerAltitude - targetTowerAltitude) <= altitudeTolerance;
+    if (!towerAltitudeOnTarget) {
+      disagreements.push({
+        field: `framing.${backend}.towerAltitudeMeters`,
+        actual: towerAltitude ?? null,
+        expected: targetTowerAltitude ?? null,
+        reason: `${backend}:framing:tower-altitude-off-target`,
+      });
+    }
+    // The closed-form target is only valid while the tower owns the scene near
+    // plane. A globe bounding volume reaching closer moves every band boundary
+    // and voids the derivation.
+    const depthExtents = runtime?.depthExtents;
+    const globeNearMeters = depthExtents?.globe?.near;
+    const splatNearMeters = depthExtents?.gaussianSplats?.near;
+    const splatOwnsSceneNear =
+      Number.isFinite(globeNearMeters) &&
+      Number.isFinite(splatNearMeters) &&
+      splatNearMeters < globeNearMeters;
+    if (!splatOwnsSceneNear) {
+      disagreements.push({
+        field: `runtime.${backend}.depthExtents`,
+        actual: depthExtents ?? null,
+        expected: "splat near strictly closer than globe near",
+        reason: `${backend}:framing:scene-near-not-splat-owned`,
       });
     }
   }
@@ -1256,17 +1481,204 @@ async function acquirePageMeasurement({ renderer, assetUrl }) {
   }
   // ==END gsplat-multifrustum-page-instrument==
 
+  // ==BEGIN gsplat-multifrustum-page-retarget==
+  // `page.evaluate` ships only this function's source, so page scope holds
+  // none of this module's constants. Re-declare the inflation here - it is
+  // the same `CesiumMath.EPSILON2` the exported model reads - so the twin is
+  // self-contained and the spec can compile it with nothing injected.
+  const PAGE_SCENE_FAR_INFLATION = 0.01;
+  const TOWER_BOUNDARY_MARGIN_FRACTION =
+    PAGE_SCENE_FAR_INFLATION / (2 * (1 + PAGE_SCENE_FAR_INFLATION));
+  const PAGE_TOWER_ALTITUDE_TOLERANCE_DIVISOR = 10;
+
+  function deriveGsplatTowerDepthRetarget(range, radius) {
+    if (
+      !Number.isFinite(range) ||
+      range <= 0 ||
+      !Number.isFinite(radius) ||
+      radius <= 0
+    ) {
+      return {
+        structural: ["retarget:framing-scalars-invalid"],
+        sceneNearMeters: null,
+        firstBandBoundaryMeters: null,
+        boundaryMarginFraction: TOWER_BOUNDARY_MARGIN_FRACTION,
+        boundaryOffsetToleranceMeters: null,
+        splatFarMeters: null,
+        targetCameraAltitudeMeters: null,
+        targetTowerAltitudeMeters: null,
+      };
+    }
+    const structural = [];
+    const sceneNearMeters = range - radius;
+    const firstBandBoundaryMeters = 2 * sceneNearMeters;
+    const splatFarMeters = range + radius;
+    const targetCameraAltitudeMeters =
+      firstBandBoundaryMeters * (1 - TOWER_BOUNDARY_MARGIN_FRACTION);
+    const targetTowerAltitudeMeters = targetCameraAltitudeMeters - range;
+    // The tower's own depth extent has to stay wholly inside band 0, otherwise
+    // the splat is binned into every band and stops being selectively binned.
+    if (!(splatFarMeters < firstBandBoundaryMeters)) {
+      structural.push("retarget:splat-extent-reaches-first-band-boundary");
+    }
+    // The whole bounding sphere has to clear the ellipsoid, or the tower is
+    // buried in the globe it is supposed to compose over.
+    if (!(targetTowerAltitudeMeters > radius)) {
+      structural.push("retarget:target-tower-altitude-below-bounding-radius");
+    }
+    return {
+      structural,
+      sceneNearMeters,
+      firstBandBoundaryMeters,
+      boundaryMarginFraction: TOWER_BOUNDARY_MARGIN_FRACTION,
+      boundaryOffsetToleranceMeters:
+        firstBandBoundaryMeters * TOWER_BOUNDARY_MARGIN_FRACTION,
+      splatFarMeters,
+      targetCameraAltitudeMeters,
+      targetTowerAltitudeMeters,
+    };
+  }
+
+  const readTowerAltitudeMeters = (C, ellipsoid, tileset) => {
+    const center = tileset?.boundingSphere?.center;
+    if (!center) return null;
+    const carto = C.Cartographic.fromCartesian(
+      center,
+      ellipsoid,
+      new C.Cartographic(),
+    );
+    const height = carto?.height;
+    return Number.isFinite(height) ? height : null;
+  };
+
+  const applyGsplatTowerDepthRetarget = (C, ellipsoid, tileset, plan) => {
+    const derived = deriveGsplatTowerDepthRetarget(plan?.range, plan?.radius);
+    const structural = [...derived.structural];
+    const surveyedTowerAltitudeMeters = readTowerAltitudeMeters(
+      C,
+      ellipsoid,
+      tileset,
+    );
+    let translationMeters = null;
+    let applied = false;
+    if (structural.length === 0) {
+      if (surveyedTowerAltitudeMeters === null) {
+        structural.push("retarget:surveyed-tower-altitude-unreadable");
+      } else {
+        translationMeters =
+          derived.targetTowerAltitudeMeters - surveyedTowerAltitudeMeters;
+        const normal = ellipsoid.geodeticSurfaceNormal(
+          tileset.boundingSphere.center,
+          new C.Cartesian3(),
+        );
+        const offset = C.Cartesian3.multiplyByScalar(
+          normal,
+          translationMeters,
+          new C.Cartesian3(),
+        );
+        // Cesium3DTile.updateTransform pre-multiplies this against the
+        // tileset's own transform, so it is a world-space slide along the
+        // asset's local up. The bounding-sphere radius, and therefore the
+        // library's range derivation, are untouched by it.
+        tileset.modelMatrix = C.Matrix4.fromTranslation(
+          offset,
+          new C.Matrix4(),
+        );
+        applied = true;
+      }
+    }
+    return {
+      ...derived,
+      structural,
+      surveyedTowerAltitudeMeters,
+      translationMeters,
+      applied,
+    };
+  };
+
+  const measureGsplatPassDepthExtents = (scene, passes) => {
+    const camera = scene?.camera;
+    const commandList = scene?.frameState?.commandList;
+    const interval = { start: 0, stop: 0 };
+    const extents = {};
+    for (const name of Object.keys(passes)) {
+      const pass = passes[name];
+      let near = null;
+      let far = null;
+      let commands = 0;
+      let withoutBoundingVolume = 0;
+      if (Array.isArray(commandList) && camera) {
+        for (const command of commandList) {
+          if (command?.pass !== pass) continue;
+          commands++;
+          const volume = command.boundingVolume;
+          if (typeof volume?.computePlaneDistances !== "function") {
+            withoutBoundingVolume++;
+            continue;
+          }
+          // The same production read View.js uses to bin the command, so these
+          // extents are the numbers the frustum split actually saw.
+          const measured = volume.computePlaneDistances(
+            camera.positionWC,
+            camera.directionWC,
+            interval,
+          );
+          const start = measured?.start;
+          const stop = measured?.stop;
+          if (!Number.isFinite(start) || !Number.isFinite(stop)) continue;
+          near = near === null ? start : Math.min(near, start);
+          far = far === null ? stop : Math.max(far, stop);
+        }
+      }
+      extents[name] = { commands, withoutBoundingVolume, near, far };
+    }
+    return extents;
+  };
+  // ==END gsplat-multifrustum-page-retarget==
+
   const tileset = await C.Cesium3DTileset.fromUrl(assetUrl, {
     maximumScreenSpaceError: 1,
   });
   scene.primitives.add(tileset);
-  window.__c15G6Progress.phase = "framing";
+  window.__c15G6Progress.phase = "framing:survey";
+  // The first framing pass publishes the pinned range; the retarget consumes
+  // it, and the second pass re-aims that same pinned camera at the moved
+  // tileset. Both passes run the library helper unchanged, and nothing renders
+  // between them, so the terrain provider the first pass installs is replaced
+  // before it can issue a single tile request.
+  const surveyFraming = applyGsplatMultifrustumPageFraming(C, viewer, tileset);
+  window.__c15G6Progress.phase = "tower-depth-retarget";
+  const ellipsoid = scene.globe.ellipsoid;
+  const retarget = applyGsplatTowerDepthRetarget(
+    C,
+    ellipsoid,
+    tileset,
+    surveyFraming,
+  );
+  window.__c15G6Progress.phase = "framing:retargeted";
   const appliedFraming = applyGsplatMultifrustumPageFraming(C, viewer, tileset);
+  if (!Object.is(appliedFraming.range, surveyFraming.range)) {
+    retarget.structural.push("retarget:derived-range-changed");
+    retarget.applied = false;
+  }
   window.__c15G6Progress.phase = "settle";
   const settle = await settleGsplatMultifrustumPageFraming(C, viewer, tileset);
+  const towerAltitudeMeters = readTowerAltitudeMeters(C, ellipsoid, tileset);
+  const towerAltitudeToleranceMeters =
+    typeof retarget.boundaryOffsetToleranceMeters === "number"
+      ? retarget.boundaryOffsetToleranceMeters /
+        PAGE_TOWER_ALTITUDE_TOLERANCE_DIVISOR
+      : null;
   const framing = {
     ...appliedFraming,
     logDepthEnabled: settle.logDepthEnabled,
+    firstBandBoundaryMeters: retarget.firstBandBoundaryMeters,
+    targetTowerAltitudeMeters: retarget.targetTowerAltitudeMeters,
+    towerDepthRetargetTranslationMeters: retarget.translationMeters,
+    towerAltitudeMeters,
+    towerAltitudeToleranceMeters,
+    towerDepthRetargetApplied:
+      retarget.applied === true && retarget.structural.length === 0,
   };
 
   // ==BEGIN fused-snapshot-capture==
@@ -1328,12 +1740,23 @@ async function acquirePageMeasurement({ renderer, assetUrl }) {
     C.Pass.GLOBE,
     C.Pass.GAUSSIAN_SPLATS,
   );
+  // Band-standing-layer evidence, acquired from the same restored PVS state as
+  // the bands above and from no pixel. Without it an artifact can say the globe
+  // and the splat never shared a band but not say where either one sat, which
+  // is precisely what the 2026-08-25 first run could not report.
+  const depthExtents = measureGsplatPassDepthExtents(scene, {
+    globe: C.Pass.GLOBE,
+    gaussianSplats: C.Pass.GAUSSIAN_SPLATS,
+  });
+  const boundary = retarget.firstBandBoundaryMeters;
+  const globeExtent = depthExtents.globe;
   window.__c15G6Progress.phase = "measurement-complete";
   return {
     captures,
     framing,
     settle,
     control,
+    retarget,
     passes: {
       globe: C.Pass.GLOBE,
       gaussianSplats: C.Pass.GAUSSIAN_SPLATS,
@@ -1341,6 +1764,15 @@ async function acquirePageMeasurement({ renderer, assetUrl }) {
     runtime: {
       activeFrusta: bands.length,
       bands,
+      depthExtents,
+      // Published, never gated: when the derived placement misses, the library
+      // still owns the headline reason and this only says by how much.
+      firstBandBoundaryInsideGlobeDepthSpan:
+        Number.isFinite(boundary) &&
+        Number.isFinite(globeExtent?.near) &&
+        Number.isFinite(globeExtent?.far) &&
+        globeExtent.near <= boundary &&
+        boundary <= globeExtent.far,
       rendererType: String(scene.context?.rendererType ?? "").toLowerCase(),
       frameNumber: scene.frameState.frameNumber,
       waitedMs: settle.waitedMs,
@@ -1526,6 +1958,8 @@ function artifactWithStatus(status, fields) {
         "The probe forces logarithmicDepthFarToNearRatio=2 instead of the engine default 1e9.",
       flatGlobe:
         "The probe removes imagery, disables globe lighting/ground atmosphere, and installs ellipsoid terrain.",
+      towerDepthRetarget:
+        "The probe translates the tower tileset along its local up until the pinned nadir camera sits one derived margin below the first frustum boundary. At the asset's authored 2,852 m stand-off the globe and the splat occupy disjoint bands, so the row's two clauses cannot both hold; the margin is derived from the engine's own far inflation, and the retarget changes no projected geometry, so the registration and the bar are unmoved.",
       pageInstrumentPin:
         "The embedded declarations are token-and-behaviour pinned, not byte pinned, because repository formatting reflows them.",
       g3Interpretation:
@@ -1659,6 +2093,7 @@ export async function runGsplatMultifrustumProbe(options = {}) {
       const sessions = acquisition.sessions.map((session) => ({
         renderer: session.renderer,
         framing: session.measurement.framing,
+        retarget: session.measurement.retarget,
         settle: session.measurement.settle,
         control: session.measurement.control,
         passes: session.measurement.passes,

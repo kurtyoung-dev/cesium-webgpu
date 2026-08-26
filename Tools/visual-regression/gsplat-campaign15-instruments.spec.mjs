@@ -7,6 +7,7 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import vm from "node:vm";
 
 import {
   GSPLAT_CLASSIFICATION_CONFIG,
@@ -38,8 +39,13 @@ import { exitCodeForS5Status } from "./lib/verdict-exit-gate.mjs";
 import { purposeHeaderViolations } from "../lib/purpose-header.mjs";
 import {
   MAX_LABEL_DISAGREEMENT_FRACTION,
+  SCENE_FAR_INFLATION,
+  TOWER_BOUNDARY_MARGIN_FRACTION,
   compareGsplatBackendFraming,
+  TOWER_ALTITUDE_TOLERANCE_DIVISOR,
   deriveGsplatTopologyRegistration,
+  deriveGsplatTowerDepthRetarget,
+  deriveTowerAltitudeToleranceMeters,
   evaluateGsplatLabelTopology,
   evaluateGsplatMultifrustumProbeResult,
   partitionGsplatTopologyFrame,
@@ -56,6 +62,7 @@ const drawCommandPath = path.join(
   "packages/engine/Source/Renderer/WebGPU/WebGPUDrawCommand.ts",
 );
 const viewPath = path.join(root, "packages/engine/Source/Scene/View.js");
+const mathPath = path.join(root, "packages/engine/Source/Core/Math.js");
 const probePath = path.join(here, "probe-gsplat-classification-depth.mjs");
 const multifrustumProbePath = path.join(here, "probe-gsplat-multifrustum.mjs");
 const readNormalized = (file) =>
@@ -422,7 +429,11 @@ function compileFrustumExecutor(sources) {
     "defined",
     "FrustumCommands",
     `${sources.update}\nreturn updateFrustums;`,
-  )({ SCENE2D: 2 }, { EPSILON2: 0.0001 }, defined, FrustumCommandsStub);
+    // EPSILON2 is the real `CesiumMath.EPSILON2`. The G6 depth re-framing is
+    // derived from this exact inflation, so a stand-in value would make the
+    // sweep below prove something the engine does not do; a dedicated test
+    // pins it against Core/Math.js.
+  )({ SCENE2D: 2 }, { EPSILON2: 0.01 }, defined, FrustumCommandsStub);
   // Pass is injected even though only the wrong-pass mutant needs it.  That
   // lets the mutant execute and fail the same battery instead of failing to
   // compile for an irrelevant missing shim.
@@ -1040,10 +1051,52 @@ function framingInput() {
       fovyRadians,
       viewportHeightFraction,
       range: deriveFarNadirRange(radius, fovyRadians, viewportHeightFraction),
+      ...retargetFramingFields(
+        radius,
+        deriveFarNadirRange(radius, fovyRadians, viewportHeightFraction),
+      ),
     },
     backends: {
       webgl: framingBackend(),
       webgpu: framingBackend(),
+    },
+  };
+}
+
+// A well-framed record describes a scene the retarget already moved: the
+// derived target reached, within its own tolerance, and the retarget applied.
+function retargetFramingFields(radius, range) {
+  const retarget = deriveGsplatTowerDepthRetarget(range, radius);
+  return {
+    firstBandBoundaryMeters: retarget.firstBandBoundaryMeters,
+    targetTowerAltitudeMeters: retarget.targetTowerAltitudeMeters,
+    towerDepthRetargetTranslationMeters: -1755.0056,
+    towerAltitudeMeters: retarget.targetTowerAltitudeMeters,
+    towerAltitudeToleranceMeters: deriveTowerAltitudeToleranceMeters(
+      retarget.boundaryOffsetToleranceMeters,
+    ),
+    towerDepthRetargetApplied: true,
+  };
+}
+
+// Depth extents for a scene seated one derived margin below the boundary, with
+// the tower owning the near plane and the globe straddling the split.
+function matchingDepthExtents(radius, range) {
+  const retarget = deriveGsplatTowerDepthRetarget(range, radius);
+  const cameraAltitude = retarget.targetCameraAltitudeMeters;
+  const halfExtent = cameraAltitude * 0.19599;
+  return {
+    globe: {
+      commands: 24,
+      withoutBoundingVolume: 0,
+      near: cameraAltitude - halfExtent,
+      far: cameraAltitude + halfExtent,
+    },
+    gaussianSplats: {
+      commands: 1,
+      withoutBoundingVolume: 0,
+      near: retarget.sceneNearMeters,
+      far: retarget.splatFarMeters,
     },
   };
 }
@@ -1374,6 +1427,9 @@ function compileG6NodeModel(source) {
       "deriveGsplatTopologyRegistration," +
       "evaluateGsplatLabelTopology," +
       "compareGsplatBackendFraming," +
+      "deriveGsplatTowerDepthRetarget," +
+      "SCENE_FAR_INFLATION," +
+      "TOWER_BOUNDARY_MARGIN_FRACTION," +
       "evaluateGsplatMultifrustumProbeResult" +
       "};",
   )(GSPLAT_MULTIFRUSTUM_CONFIG, exitCodeForS5Status);
@@ -1634,13 +1690,17 @@ function g6ProbeResultInput(standing, overrides = {}) {
   };
 }
 
-function matchingRuntime(renderer) {
+function matchingRuntime(renderer, input = framingInput()) {
   const references = deriveGsplatTopologyRegistration(20, 20).labelPartition;
   return {
     rendererType: renderer,
     gpuGateArmedDevices: renderer === "webgpu" ? 1 : 0,
     backgroundColorRgb: [...references.backgroundRgb],
     globeBaseColorRgb: [...references.globeRgb],
+    depthExtents: matchingDepthExtents(
+      input.framing.radius,
+      input.framing.range,
+    ),
   };
 }
 
@@ -1651,7 +1711,7 @@ function matchingBackendRecords(input = framingInput()) {
       {
         framing: { ...input.framing },
         passes: { ...input.passes },
-        runtime: matchingRuntime(renderer),
+        runtime: matchingRuntime(renderer, input),
       },
     ]),
   );
@@ -2681,8 +2741,13 @@ test("G6 probe framing-record disagreement is structural before standing or pixe
   records.webgpu.framing.range = input.framing.range + 1;
   const agreement = compareGsplatBackendFraming(records);
   assert.equal(agreement.agree, false);
+  // The placement scalars are re-derived from `range`, so moving `range`
+  // alone also detaches them from it. Those two extra reasons are the
+  // re-derivation proving it is live rather than reading the published record.
   assert.deepEqual(agreement.structural, [
     "framing:backend-record-disagreement:range",
+    "webgpu:framing:tower-altitude-tolerance-not-derived",
+    "webgpu:framing:tower-altitude-off-target",
   ]);
   const result = evaluateGsplatMultifrustumProbeResult(
     g6ProbeResultInput(null, { framingAgreement: agreement }),
@@ -2903,6 +2968,946 @@ test("G6 probe R-2026-08-24-16 (j) mutant caught: the corner precondition routed
   );
   assert.equal(required.exitCode, 3);
   assert.equal(produced.exitCode, 1);
+});
+
+// ---------------------------------------------------------------------------
+// C15-G6 depth re-framing: the tower placement that makes both row clauses
+// hold at once, proved against the same real View source compiled above.
+// ---------------------------------------------------------------------------
+
+const G6_PAGE_RETARGET_BEGIN = "// ==BEGIN gsplat-multifrustum-page-retarget==";
+const G6_PAGE_RETARGET_END = "// ==END gsplat-multifrustum-page-retarget==";
+
+// The tower asset's authored geometry, read from the tileset the probe loads.
+const G6_TOWER_RADIUS = 38.47172686097959;
+const G6_TOWER_RANGE = 1185.246504193395;
+const G6_AUTHORED_TOWER_ALTITUDE = 2851.9544794224203;
+// Re-derived from the 2026-08-25 first run rather than assumed: the artifact's
+// scene far of 4876.749554450889, divided by the engine's far inflation and by
+// the camera altitude the authored placement produces, is a globe
+// bounding-volume half-extent of this fraction of that altitude. Replaying it
+// through the real View source below reproduces all three of that run's band
+// boundaries and its exact scene far.
+const G6_OBSERVED_GLOBE_HALF_EXTENT_FRACTION = 0.195993195531333;
+
+function retargetPvsFixture(globeSpan, splatSpan) {
+  const globe = {
+    pass: FRUSTUM_PASS.GLOBE,
+    boundingVolume: boundingVolume(globeSpan[0], globeSpan[1]),
+    castShadows: false,
+    executeInClosestFrustum: false,
+  };
+  const splat = {
+    pass: FRUSTUM_PASS.GAUSSIAN_SPLATS,
+    boundingVolume: boundingVolume(splatSpan[0], splatSpan[1]),
+    castShadows: false,
+    executeInClosestFrustum: false,
+  };
+  const view = {
+    frustumCommandsList: [],
+    _shadowCasters: [],
+    _commandExtents: [],
+    _shadowCasterSeen: new Set(),
+  };
+  const scene = {
+    frameState: {
+      camera: {
+        positionWC: {},
+        directionWC: {},
+        position: { z: 1_000 },
+        frustum: { near: 0.1, far: 1e10 },
+      },
+      commandList: [globe, splat],
+      shadowState: { shadowsEnabled: false, prePvsCasterCommands: [] },
+      mode: SCENE3D,
+      occluder: undefined,
+      cullingVolume: { planes: Array(6).fill(null) },
+      frustumSplits: [],
+      useLogDepth: true,
+    },
+    _computeCommandList: [],
+    _overlayCommandList: [],
+    debugShowFrustums: false,
+    logarithmicDepthFarToNearRatio: 2,
+    farToNearRatio: 1_000,
+    mode: SCENE3D,
+    nearToFarDistance2D: 1_000,
+    isVisible: () => true,
+    updateDerivedCommands: () => {},
+    _alternateSceneRenderer: {},
+  };
+  return { view, scene };
+}
+
+function realBands(globeSpan, splatSpan) {
+  const executor = compileFrustumExecutor(realFrustumSources);
+  const fixture = retargetPvsFixture(globeSpan, splatSpan);
+  executor.pvs.call(fixture.view, fixture.scene);
+  return fixture.view.frustumCommandsList.map((band, index) => ({
+    index,
+    near: band.near,
+    far: band.far,
+    globeIndex: band.indices[FRUSTUM_PASS.GLOBE],
+    splatIndex: band.indices[FRUSTUM_PASS.GAUSSIAN_SPLATS],
+  }));
+}
+
+// The three live clauses the framing library judges, restated over real bins.
+function rowClauseFailures(bands) {
+  const failures = [];
+  const splatBands = bands.filter((band) => band.splatIndex > 0).length;
+  if (bands.length < GSPLAT_MULTIFRUSTUM_CONFIG.minimumActiveFrusta) {
+    failures.push("active-frusta-below-2");
+  }
+  if (!bands.some((band) => band.splatIndex > 0 && band.globeIndex > 0)) {
+    failures.push("no-shared-globe-splat-band");
+  }
+  if (splatBands < 1 || splatBands >= bands.length) {
+    failures.push("bounded-splat-not-selectively-binned");
+  }
+  return failures;
+}
+
+// Every globe depth span the placement has to survive: half-extent fractions
+// from a bounding volume with no measurable depth at all up to one reaching
+// nearly half the camera altitude, each offset across the whole derived
+// bounding-volume-centre budget in both directions. The budget is open at its
+// lower end - a dedicated test below pins both of its edges - so the sweep
+// samples just inside it.
+const G6_GLOBE_HALF_EXTENT_FRACTIONS = [
+  0,
+  0.001,
+  0.005,
+  0.01,
+  0.02,
+  0.05,
+  0.1,
+  0.15,
+  G6_OBSERVED_GLOBE_HALF_EXTENT_FRACTION,
+  0.25,
+  0.3,
+  0.35,
+  0.4,
+  0.45,
+];
+
+function retargetSweepFailures(margin = TOWER_BOUNDARY_MARGIN_FRACTION) {
+  const sceneNear = G6_TOWER_RANGE - G6_TOWER_RADIUS;
+  const boundary = 2 * sceneNear;
+  const cameraAltitude = boundary * (1 - margin);
+  const tolerance = boundary * TOWER_BOUNDARY_MARGIN_FRACTION;
+  const splatSpan = [sceneNear, G6_TOWER_RANGE + G6_TOWER_RADIUS];
+  const offsets = [-0.999, -0.5, 0, 0.5, 0.999].map(
+    (factor) => tolerance * factor,
+  );
+  const failures = [];
+  for (const fraction of G6_GLOBE_HALF_EXTENT_FRACTIONS) {
+    for (const offset of offsets) {
+      const half = cameraAltitude * fraction;
+      const span = [
+        cameraAltitude - half + offset,
+        cameraAltitude + half + offset,
+      ];
+      const reasons = rowClauseFailures(realBands(span, splatSpan));
+      if (reasons.length > 0) {
+        failures.push({ fraction, offset: Number(offset.toFixed(4)), reasons });
+      }
+    }
+  }
+  return failures;
+}
+
+test("G6 retarget margin is derived from the engine far inflation, not tuned", () => {
+  const mathSource = readNormalized(mathPath);
+  assert.match(mathSource, /CesiumMath\.EPSILON2 = 0\.01;/u);
+  assert.equal(SCENE_FAR_INFLATION, 0.01);
+  // The inflation the margin is derived from must still be the one the engine
+  // applies, and must still be applied to the scene far plane before the split.
+  assert.match(updateFrustumsSource, /far \*= 1\.0 \+ CesiumMath\.EPSILON2;/u);
+  assert.equal(
+    TOWER_BOUNDARY_MARGIN_FRACTION,
+    SCENE_FAR_INFLATION / (2 * (1 + SCENE_FAR_INFLATION)),
+  );
+  // Both bounds of the feasible interval, and the constant at its midpoint.
+  const upper = 1 - 1 / (1 + SCENE_FAR_INFLATION);
+  assert.ok(TOWER_BOUNDARY_MARGIN_FRACTION > 0);
+  assert.ok(TOWER_BOUNDARY_MARGIN_FRACTION < upper);
+  assert.ok(
+    Math.abs(TOWER_BOUNDARY_MARGIN_FRACTION - upper / 2) < Number.EPSILON,
+  );
+});
+
+test("G6 the authored tower placement reproduces the 2026-08-25 disjoint-band run", () => {
+  const cameraAltitude = G6_AUTHORED_TOWER_ALTITUDE + G6_TOWER_RANGE;
+  const half = cameraAltitude * G6_OBSERVED_GLOBE_HALF_EXTENT_FRACTION;
+  const bands = realBands(
+    [cameraAltitude - half, cameraAltitude + half],
+    [G6_TOWER_RANGE - G6_TOWER_RADIUS, G6_TOWER_RANGE + G6_TOWER_RADIUS],
+  );
+  assert.equal(bands.length, 3);
+  assert.deepEqual(
+    bands.map((band) => [band.globeIndex, band.splatIndex]),
+    [
+      [0, 1],
+      [1, 0],
+      [1, 0],
+    ],
+  );
+  assert.equal(bands[0].near, 1146.7747773324154);
+  assert.equal(bands[1].near, 2293.549554664831);
+  assert.equal(bands[2].near, 4587.099109329662);
+  // The artifact's scene far, reproduced to within one unit in the last
+  // place of a double: the reproduction is arithmetic, not a re-recording.
+  const recordedSceneFar = 4876.749554450889;
+  assert.ok(
+    Math.abs(bands[2].far - recordedSceneFar) <=
+      Number.EPSILON * recordedSceneFar,
+    `scene far ${bands[2].far} is not the recorded ${recordedSceneFar}`,
+  );
+  // The row's first clause held and its second did not: that is the finding the
+  // first run reported, and it is a property of the placement.
+  assert.deepEqual(rowClauseFailures(bands), ["no-shared-globe-splat-band"]);
+});
+
+test("G6 the derived tower placement satisfies both row clauses for every globe depth span", () => {
+  const retarget = deriveGsplatTowerDepthRetarget(
+    G6_TOWER_RANGE,
+    G6_TOWER_RADIUS,
+  );
+  assert.deepEqual(retarget.structural, []);
+  assert.equal(
+    retarget.targetCameraAltitudeMeters,
+    retarget.firstBandBoundaryMeters * (1 - TOWER_BOUNDARY_MARGIN_FRACTION),
+  );
+  assert.equal(
+    retarget.targetTowerAltitudeMeters,
+    retarget.targetCameraAltitudeMeters - G6_TOWER_RANGE,
+  );
+  // The placement lowers the tower; the run that found the disjoint bands is
+  // what says by how much.
+  assert.ok(retarget.targetTowerAltitudeMeters < G6_AUTHORED_TOWER_ALTITUDE);
+  assert.deepEqual(retargetSweepFailures(), []);
+});
+
+test("G6 the derived margin is exactly the placement's offset budget", () => {
+  const sceneNear = G6_TOWER_RANGE - G6_TOWER_RADIUS;
+  const boundary = 2 * sceneNear;
+  const cameraAltitude = boundary * (1 - TOWER_BOUNDARY_MARGIN_FRACTION);
+  const tolerance = boundary * TOWER_BOUNDARY_MARGIN_FRACTION;
+  const splatSpan = [sceneNear, G6_TOWER_RANGE + G6_TOWER_RADIUS];
+  const at = (offset) => {
+    const depth = cameraAltitude + offset;
+    return rowClauseFailures(realBands([depth, depth], splatSpan));
+  };
+  // A globe bounding volume with no depth extent at all is the worst case: it
+  // is the only span that can sit wholly on one side of the boundary.
+  assert.deepEqual(at(0), []);
+  assert.deepEqual(at(-tolerance * 0.999), []);
+  assert.deepEqual(at(tolerance * 0.999), []);
+  // Below the budget the inflated far no longer clears the boundary, so the
+  // second band is never opened.
+  assert.deepEqual(at(-tolerance), [
+    "active-frusta-below-2",
+    "bounded-splat-not-selectively-binned",
+  ]);
+  // The upper edge is inclusive because insertIntoBin counts a command that
+  // touches a band boundary in both bands - the behaviour the View battery
+  // above pins as inclusive-boundary-overlap. One step past it, the globe
+  // clears band 0 entirely and the shared band is gone.
+  assert.deepEqual(at(tolerance), []);
+  assert.deepEqual(at(tolerance * 1.001), ["no-shared-globe-splat-band"]);
+});
+
+test("G6 retarget guards reject placements the derivation cannot serve", () => {
+  assert.deepEqual(deriveGsplatTowerDepthRetarget(Number.NaN, 1).structural, [
+    "retarget:framing-scalars-invalid",
+  ]);
+  assert.deepEqual(deriveGsplatTowerDepthRetarget(100, 0).structural, [
+    "retarget:framing-scalars-invalid",
+  ]);
+  // range === 3 * radius puts the splat's far extent exactly on the boundary.
+  assert.deepEqual(deriveGsplatTowerDepthRetarget(300, 100).structural, [
+    "retarget:splat-extent-reaches-first-band-boundary",
+    "retarget:target-tower-altitude-below-bounding-radius",
+  ]);
+  assert.deepEqual(deriveGsplatTowerDepthRetarget(301, 100).structural, [
+    "retarget:target-tower-altitude-below-bounding-radius",
+  ]);
+  assert.deepEqual(deriveGsplatTowerDepthRetarget(400, 100).structural, []);
+});
+
+function extractG6PageRetarget(source) {
+  return extractBetween(
+    source,
+    G6_PAGE_RETARGET_BEGIN,
+    G6_PAGE_RETARGET_END,
+    "G6 probe page retarget",
+  );
+}
+
+test("G6 probe embeds a retarget twin that matches the exported derivation", () => {
+  const source = g6ProbeSource();
+  const nodeModel = extractBetween(
+    source,
+    G6_NODE_MODEL_BEGIN,
+    G6_NODE_MODEL_END,
+    "G6 probe Node model",
+  );
+  const page = extractG6PageRetarget(source);
+  const anchor = "function deriveGsplatTowerDepthRetarget(";
+  assert.equal(occurrences(nodeModel, anchor), 1);
+  assert.equal(occurrences(page, anchor), 1);
+  assert.equal(
+    normalizeWhitespaceOutsideLiterals(
+      extractBalanced(page, anchor, "G6 embedded retarget"),
+    ),
+    normalizeWhitespaceOutsideLiterals(
+      extractBalanced(nodeModel, anchor, "G6 exported retarget"),
+    ),
+    "embedded retarget changed by more than formatter whitespace reflow",
+  );
+  // Behaviour, not only text: the page copy has to answer every fixture the
+  // exported model answers, including each guard.
+  // Nothing is injected: the embedded block must supply its own constants,
+  // because `page.evaluate` gives it nothing this module declares.
+  // eslint-disable-next-line no-new-func
+  const embedded = new Function(
+    page + "\nreturn deriveGsplatTowerDepthRetarget;",
+  )();
+  for (const [range, radius] of [
+    [G6_TOWER_RANGE, G6_TOWER_RADIUS],
+    [400, 100],
+    [300, 100],
+    [301, 100],
+    [Number.NaN, 1],
+    [100, 0],
+    [-5, 5],
+  ]) {
+    assert.deepEqual(
+      embedded(range, radius),
+      deriveGsplatTowerDepthRetarget(range, radius),
+      "embedded retarget disagreed at range=" + range + " radius=" + radius,
+    );
+  }
+});
+
+function compileG6PageRetarget(source) {
+  const block = extractG6PageRetarget(source);
+  // This browser-free spec compiles the extracted declarations so the page
+  // glue can be exercised without a browser. The probe sends declarations
+  // directly through page.evaluate and contains no runtime source evaluation.
+  // eslint-disable-next-line no-new-func
+  return new Function(
+    block +
+      "\nreturn {" +
+      "derive: deriveGsplatTowerDepthRetarget," +
+      "readAltitude: readTowerAltitudeMeters," +
+      "apply: applyGsplatTowerDepthRetarget," +
+      "measure: measureGsplatPassDepthExtents" +
+      "};",
+  )();
+}
+
+// A Cesium stand-in narrow enough that every call the glue makes is observable.
+function g6RetargetPageFixture(surveyedAltitude = G6_AUTHORED_TOWER_ALTITUDE) {
+  const normal = { x: 0, y: 0, z: 1, unit: true };
+  const calls = { normals: 0, translations: [] };
+  let altitude = surveyedAltitude;
+  const tileset = {
+    boundingSphere: {
+      center: { marker: "bs-center" },
+      radius: G6_TOWER_RADIUS,
+    },
+    modelMatrix: null,
+  };
+  const ellipsoid = {
+    geodeticSurfaceNormal(center, result) {
+      assert.equal(center, tileset.boundingSphere.center);
+      calls.normals++;
+      return Object.assign(result, normal);
+    },
+  };
+  const C = {
+    Cartesian3: class {},
+    Cartographic: class {},
+    Matrix4: class {},
+  };
+  C.Cartographic.fromCartesian = (center, suppliedEllipsoid, result) => {
+    assert.equal(center, tileset.boundingSphere.center);
+    assert.equal(suppliedEllipsoid, ellipsoid);
+    return Object.assign(result, { height: altitude });
+  };
+  C.Cartesian3.multiplyByScalar = (value, scalar, result) =>
+    Object.assign(result, {
+      x: value.x * scalar,
+      y: value.y * scalar,
+      z: value.z * scalar,
+    });
+  C.Matrix4.fromTranslation = (translation, result) =>
+    Object.assign(result, { translation: { ...translation } });
+  return {
+    C,
+    ellipsoid,
+    tileset,
+    calls,
+    // The move the page performs on the live tileset, mirrored so the
+    // post-retarget altitude read sees the tileset where the translation put it.
+    settle() {
+      const translation = tileset.modelMatrix?.translation;
+      if (translation) altitude = surveyedAltitude + translation.z;
+    },
+  };
+}
+
+test("G6 probe page retarget slides the tower along its surface normal to the derived altitude", () => {
+  const retargetPage = compileG6PageRetarget(g6ProbeSource());
+  const fixture = g6RetargetPageFixture();
+  const plan = { range: G6_TOWER_RANGE, radius: G6_TOWER_RADIUS };
+  const record = retargetPage.apply(
+    fixture.C,
+    fixture.ellipsoid,
+    fixture.tileset,
+    plan,
+  );
+  const expected = deriveGsplatTowerDepthRetarget(
+    G6_TOWER_RANGE,
+    G6_TOWER_RADIUS,
+  );
+  assert.deepEqual(record.structural, []);
+  assert.equal(record.applied, true);
+  assert.equal(record.surveyedTowerAltitudeMeters, G6_AUTHORED_TOWER_ALTITUDE);
+  assert.equal(
+    record.translationMeters,
+    expected.targetTowerAltitudeMeters - G6_AUTHORED_TOWER_ALTITUDE,
+  );
+  // The asset stands off; the placement is a descent, along the local up.
+  assert.ok(record.translationMeters < 0);
+  assert.equal(fixture.calls.normals, 1);
+  // Purely vertical in the local frame, and exactly the derived descent.
+  const translation = fixture.tileset.modelMatrix.translation;
+  assert.equal(Math.abs(translation.x), 0);
+  assert.equal(Math.abs(translation.y), 0);
+  assert.equal(translation.z, record.translationMeters);
+  // The altitude the run then publishes is the one the move produced.
+  fixture.settle();
+  assert.equal(
+    retargetPage.readAltitude(fixture.C, fixture.ellipsoid, fixture.tileset),
+    expected.targetTowerAltitudeMeters,
+  );
+});
+
+test("G6 probe page retarget refuses to move a tileset the derivation cannot serve", () => {
+  const retargetPage = compileG6PageRetarget(g6ProbeSource());
+  for (const plan of [
+    { range: 300, radius: 100 },
+    {},
+    { range: 1, radius: 1 },
+  ]) {
+    const fixture = g6RetargetPageFixture();
+    const record = retargetPage.apply(
+      fixture.C,
+      fixture.ellipsoid,
+      fixture.tileset,
+      plan,
+    );
+    assert.ok(record.structural.length > 0);
+    assert.equal(record.applied, false);
+    assert.equal(record.translationMeters, null);
+    assert.equal(fixture.tileset.modelMatrix, null);
+    assert.equal(fixture.calls.normals, 0);
+  }
+});
+
+test("G6 probe retarget mutant caught end-to-end: the tileset move made inert", () => {
+  // The scene mutation itself, not the record about it. If the modelMatrix
+  // write stops happening but the record still claims success, the tower stays
+  // at its authored stand-off and the altitude precondition is what notices.
+  const mutatedSource = mustReplaceOne(
+    g6ProbeSource(),
+    "        tileset.modelMatrix = C.Matrix4.fromTranslation(",
+    "        if (false)\n          tileset.modelMatrix = C.Matrix4.fromTranslation(",
+    "inert tileset move",
+  );
+  const retargetPage = compileG6PageRetarget(mutatedSource);
+  const fixture = g6RetargetPageFixture();
+  const record = retargetPage.apply(
+    fixture.C,
+    fixture.ellipsoid,
+    fixture.tileset,
+    {
+      range: G6_TOWER_RANGE,
+      radius: G6_TOWER_RADIUS,
+    },
+  );
+  // The record is still clean - that is the whole point of the mutant.
+  assert.deepEqual(record.structural, []);
+  assert.equal(record.applied, true);
+  assert.equal(fixture.tileset.modelMatrix, null);
+  fixture.settle();
+  const towerAltitudeMeters = retargetPage.readAltitude(
+    fixture.C,
+    fixture.ellipsoid,
+    fixture.tileset,
+  );
+  assert.equal(towerAltitudeMeters, G6_AUTHORED_TOWER_ALTITUDE);
+  const records = matchingBackendRecords();
+  for (const renderer of ["webgl", "webgpu"]) {
+    records[renderer].framing.towerAltitudeMeters = towerAltitudeMeters;
+  }
+  const agreement = compareGsplatBackendFraming(records);
+  assert.equal(agreement.agree, false);
+  for (const renderer of ["webgl", "webgpu"]) {
+    assert.ok(
+      agreement.structural.includes(
+        renderer + ":framing:tower-altitude-off-target",
+      ),
+    );
+  }
+});
+
+test("G6 probe page depth reader asks the bounding volumes what the View binning asks", () => {
+  const retargetPage = compileG6PageRetarget(g6ProbeSource());
+  const asked = [];
+  const observing = (start, stop) => ({
+    computePlaneDistances(position, direction, result) {
+      asked.push({ position, direction });
+      result.start = start;
+      result.stop = stop;
+      return result;
+    },
+  });
+  const positionWC = { marker: "positionWC" };
+  const directionWC = { marker: "directionWC" };
+  const scene = {
+    camera: { positionWC, directionWC, position: { marker: "position" } },
+    frameState: {
+      commandList: [
+        { pass: FRUSTUM_PASS.GLOBE, boundingVolume: observing(1_800, 2_500) },
+        { pass: FRUSTUM_PASS.GLOBE, boundingVolume: observing(2_100, 2_900) },
+        { pass: FRUSTUM_PASS.GLOBE, boundingVolume: undefined },
+        // Present but unable to answer: a presence check instead of the
+        // duck-type guard would call a missing method and TypeError in-page.
+        { pass: FRUSTUM_PASS.GLOBE, boundingVolume: { radius: 5 } },
+        {
+          pass: FRUSTUM_PASS.GAUSSIAN_SPLATS,
+          boundingVolume: observing(1_146, 1_223),
+        },
+        { pass: FRUSTUM_PASS.OVERLAY, boundingVolume: observing(1, 2) },
+      ],
+    },
+  };
+  const extents = retargetPage.measure(scene, {
+    globe: FRUSTUM_PASS.GLOBE,
+    gaussianSplats: FRUSTUM_PASS.GAUSSIAN_SPLATS,
+  });
+  assert.deepEqual(extents, {
+    globe: {
+      commands: 4,
+      withoutBoundingVolume: 2,
+      near: 1_800,
+      far: 2_900,
+    },
+    gaussianSplats: {
+      commands: 1,
+      withoutBoundingVolume: 0,
+      near: 1_146,
+      far: 1_223,
+    },
+  });
+  // Fidelity, not merely plausibility: View.js measures every command against
+  // the world-space camera position and direction, and so must this reader.
+  assert.equal(asked.length, 3);
+  assert.ok(asked.every((call) => call.position === positionWC));
+  assert.ok(asked.every((call) => call.direction === directionWC));
+});
+
+test("G6 probe page depth reader survives a frame with no commands at all", () => {
+  const retargetPage = compileG6PageRetarget(g6ProbeSource());
+  assert.deepEqual(
+    retargetPage.measure(
+      { camera: undefined, frameState: { commandList: undefined } },
+      {
+        globe: FRUSTUM_PASS.GLOBE,
+        gaussianSplats: FRUSTUM_PASS.GAUSSIAN_SPLATS,
+      },
+    ),
+    {
+      globe: { commands: 0, withoutBoundingVolume: 0, near: null, far: null },
+      gaussianSplats: {
+        commands: 0,
+        withoutBoundingVolume: 0,
+        near: null,
+        far: null,
+      },
+    },
+  );
+});
+
+// The globals a `page.evaluate` callback can actually see. Anything else the
+// embedded block references is a module-scope leak: it compiles and passes a
+// harness that supplies the binding, then throws ReferenceError in the browser.
+function bareGsplatPageContext() {
+  return vm.createContext({
+    Number,
+    Math,
+    Object,
+    Array,
+    String,
+    Boolean,
+    JSON,
+  });
+}
+
+test("G6 probe page retarget block is self-contained in a bare page scope", () => {
+  const block = extractG6PageRetarget(g6ProbeSource());
+  const context = bareGsplatPageContext();
+  // Executed, not merely parsed: the margin is read on the unconditional valid
+  // path, so a leak surfaces only when the derivation actually runs.
+  vm.runInContext(block, context);
+  const derived = JSON.parse(
+    vm.runInContext(
+      "JSON.stringify(deriveGsplatTowerDepthRetarget(" +
+        G6_TOWER_RANGE +
+        ", " +
+        G6_TOWER_RADIUS +
+        "))",
+      context,
+    ),
+  );
+  assert.deepEqual(
+    derived,
+    JSON.parse(
+      JSON.stringify(
+        deriveGsplatTowerDepthRetarget(G6_TOWER_RANGE, G6_TOWER_RADIUS),
+      ),
+    ),
+  );
+  // Every declaration the page flow calls has to survive the same scope.
+  for (const name of [
+    "readTowerAltitudeMeters",
+    "applyGsplatTowerDepthRetarget",
+    "measureGsplatPassDepthExtents",
+  ]) {
+    assert.equal(
+      vm.runInContext("typeof " + name, context),
+      "function",
+      name + " is not reachable from page scope",
+    );
+  }
+});
+
+test("G6 probe page-scope mutant caught: the embedded constants deleted", () => {
+  const mutated = mustReplaceOne(
+    g6ProbeSource(),
+    "  const PAGE_SCENE_FAR_INFLATION = 0.01;\n" +
+      "  const TOWER_BOUNDARY_MARGIN_FRACTION =\n" +
+      "    PAGE_SCENE_FAR_INFLATION / (2 * (1 + PAGE_SCENE_FAR_INFLATION));\n",
+    "",
+    "page constants deleted",
+  );
+  const block = extractG6PageRetarget(mutated);
+  const context = bareGsplatPageContext();
+  vm.runInContext(block, context);
+  assert.throws(
+    () =>
+      vm.runInContext(
+        "deriveGsplatTowerDepthRetarget(" +
+          G6_TOWER_RANGE +
+          ", " +
+          G6_TOWER_RADIUS +
+          ")",
+        context,
+      ),
+    (error) =>
+      error.name === "ReferenceError" &&
+      /TOWER_BOUNDARY_MARGIN_FRACTION/u.test(error.message),
+    "deleting the embedded constants must fail in page scope rather than close over the module",
+  );
+});
+
+test("G6 probe judges the tower altitude against a re-derived tolerance", () => {
+  const records = matchingBackendRecords();
+  assert.equal(compareGsplatBackendFraming(records).agree, true);
+  const expected = deriveTowerAltitudeToleranceMeters(
+    deriveGsplatTowerDepthRetarget(
+      records.webgl.framing.range,
+      records.webgl.framing.radius,
+    ).boundaryOffsetToleranceMeters,
+  );
+  assert.equal(records.webgl.framing.towerAltitudeToleranceMeters, expected);
+  // A page that publishes a wider window is caught by the re-derivation, and
+  // the widened window never reaches the altitude comparison.
+  for (const renderer of ["webgl", "webgpu"]) {
+    records[renderer].framing.towerAltitudeToleranceMeters = expected * 1e9;
+    records[renderer].framing.towerAltitudeMeters =
+      records[renderer].framing.targetTowerAltitudeMeters + 500;
+  }
+  const agreement = compareGsplatBackendFraming(records);
+  assert.equal(agreement.agree, false);
+  for (const renderer of ["webgl", "webgpu"]) {
+    assert.ok(
+      agreement.structural.includes(
+        renderer + ":framing:tower-altitude-tolerance-not-derived",
+      ),
+    );
+    assert.ok(
+      agreement.structural.includes(
+        renderer + ":framing:tower-altitude-off-target",
+      ),
+      "the widened window must not be believed",
+    );
+  }
+});
+
+test("G6 probe tolerance mutant caught: the page divisor widened to defang the gate", () => {
+  // The exact hole review found: the page published the window the evaluator
+  // judged against, so widening it there passed every test.
+  const mutated = mustReplaceOne(
+    g6ProbeSource(),
+    "  const PAGE_TOWER_ALTITUDE_TOLERANCE_DIVISOR = 10;",
+    "  const PAGE_TOWER_ALTITUDE_TOLERANCE_DIVISOR = 1e-9;",
+    "page tolerance divisor widened",
+  );
+  const retargetPage = compileG6PageRetarget(mutated);
+  const derived = deriveGsplatTowerDepthRetarget(
+    G6_TOWER_RANGE,
+    G6_TOWER_RADIUS,
+  );
+  const widened = derived.boundaryOffsetToleranceMeters / 1e-9;
+  assert.ok(widened > derived.boundaryOffsetToleranceMeters);
+  // The mutated page still derives the same placement - only the window moved.
+  assert.deepEqual(
+    retargetPage.derive(G6_TOWER_RANGE, G6_TOWER_RADIUS),
+    derived,
+  );
+  const records = matchingBackendRecords();
+  for (const renderer of ["webgl", "webgpu"]) {
+    records[renderer].framing.towerAltitudeToleranceMeters = widened;
+    records[renderer].framing.towerAltitudeMeters =
+      records[renderer].framing.targetTowerAltitudeMeters + 500;
+  }
+  const agreement = compareGsplatBackendFraming(records);
+  assert.equal(agreement.agree, false);
+  for (const renderer of ["webgl", "webgpu"]) {
+    assert.ok(
+      agreement.structural.includes(
+        renderer + ":framing:tower-altitude-tolerance-not-derived",
+      ),
+    );
+    assert.ok(
+      agreement.structural.includes(
+        renderer + ":framing:tower-altitude-off-target",
+      ),
+    );
+  }
+});
+
+test("G6 probe tolerance divisor has one Node source and one page source", () => {
+  assert.equal(TOWER_ALTITUDE_TOLERANCE_DIVISOR, 10);
+  const source = g6ProbeSource();
+  assert.equal(
+    occurrences(source, "export const TOWER_ALTITUDE_TOLERANCE_DIVISOR = 10;"),
+    1,
+  );
+  assert.equal(
+    occurrences(source, "const PAGE_TOWER_ALTITUDE_TOLERANCE_DIVISOR = 10;"),
+    1,
+  );
+  // Declared once and read once: the page arithmetic uses its own name rather
+  // than repeating the literal, so a drift shows up as a derivation reason.
+  assert.equal(occurrences(source, "PAGE_TOWER_ALTITUDE_TOLERANCE_DIVISOR"), 2);
+  assert.equal(
+    deriveTowerAltitudeToleranceMeters(100),
+    100 / TOWER_ALTITUDE_TOLERANCE_DIVISOR,
+  );
+  assert.equal(deriveTowerAltitudeToleranceMeters(Number.NaN), null);
+});
+
+test("G6 probe retarget scalars are cross-backend framing-agreement fields", () => {
+  for (const field of [
+    "firstBandBoundaryMeters",
+    "targetTowerAltitudeMeters",
+    "towerDepthRetargetTranslationMeters",
+    "towerAltitudeMeters",
+    "towerAltitudeToleranceMeters",
+    "towerDepthRetargetApplied",
+  ]) {
+    const records = matchingBackendRecords();
+    assert.equal(compareGsplatBackendFraming(records).agree, true);
+    records.webgpu.framing[field] =
+      typeof records.webgpu.framing[field] === "boolean"
+        ? !records.webgpu.framing[field]
+        : records.webgpu.framing[field] + 1;
+    const agreement = compareGsplatBackendFraming(records);
+    assert.equal(agreement.agree, false, field + " disagreement not caught");
+    assert.ok(
+      agreement.structural.includes(
+        "framing:backend-record-disagreement:" + field,
+      ),
+      field + " disagreement missing its reason",
+    );
+  }
+});
+
+// Each precondition, its live-failure fixture, and the reason it must publish.
+const g6RetargetPreconditions = [
+  {
+    name: "retarget never applied",
+    reason: "webgpu:framing:tower-depth-retarget-not-applied",
+    breakRecords: (records) => {
+      for (const renderer of ["webgl", "webgpu"]) {
+        records[renderer].framing.towerDepthRetargetApplied = false;
+      }
+    },
+    needle: "    if (!towerDepthRetargetApplied) {",
+    inert: "    if (false && !towerDepthRetargetApplied) {",
+  },
+  {
+    name: "tower did not reach the derived altitude",
+    reason: "webgpu:framing:tower-altitude-off-target",
+    breakRecords: (records) => {
+      for (const renderer of ["webgl", "webgpu"]) {
+        records[renderer].framing.towerAltitudeMeters =
+          records[renderer].framing.targetTowerAltitudeMeters + 500;
+      }
+    },
+    needle: "    if (!towerAltitudeOnTarget) {",
+    inert: "    if (false && !towerAltitudeOnTarget) {",
+  },
+  {
+    name: "a globe bounding volume owns the scene near plane",
+    reason: "webgpu:framing:scene-near-not-splat-owned",
+    breakRecords: (records) => {
+      for (const renderer of ["webgl", "webgpu"]) {
+        records[renderer].runtime.depthExtents.globe.near =
+          records[renderer].runtime.depthExtents.gaussianSplats.near - 1;
+      }
+    },
+    needle: "    if (!splatOwnsSceneNear) {",
+    inert: "    if (false && !splatOwnsSceneNear) {",
+  },
+];
+
+for (const precondition of g6RetargetPreconditions) {
+  test(
+    "G6 probe framing precondition is structural before pixels: " +
+      precondition.name,
+    () => {
+      const records = matchingBackendRecords();
+      assert.equal(compareGsplatBackendFraming(records).agree, true);
+      precondition.breakRecords(records);
+      const agreement = compareGsplatBackendFraming(records);
+      assert.equal(agreement.agree, false);
+      assert.ok(agreement.structural.includes(precondition.reason));
+      // A framing-layer reason gates standing, so no occlusion reader can run.
+      const result = evaluateGsplatMultifrustumProbeResult(
+        g6ProbeResultInput(null, { framingAgreement: agreement }),
+      );
+      assert.equal(result.status, "STRUCTURAL");
+      assert.equal(result.exitCode, exitCodeForS5Status("STRUCTURAL"));
+      assert.equal(result.topology, null);
+      assert.ok(result.structural.includes(precondition.reason));
+    },
+  );
+
+  test(
+    "G6 probe framing-precondition mutant caught: inert " + precondition.name,
+    () => {
+      const mutated = compileG6NodeModel(
+        mustReplaceOne(
+          g6ProbeSource(),
+          precondition.needle,
+          precondition.inert,
+          precondition.name,
+        ),
+      );
+      const records = matchingBackendRecords();
+      assert.equal(mutated.compareGsplatBackendFraming(records).agree, true);
+      precondition.breakRecords(records);
+      const agreement = mutated.compareGsplatBackendFraming(records);
+      assert.ok(
+        !agreement.structural.includes(precondition.reason),
+        "mutant must lose the reason it was made inert for",
+      );
+    },
+  );
+}
+
+// Perturbing the derived margin has to break the sweep, and break it at the end
+// of the tolerance range the perturbation actually threatens.
+const g6MarginMutants = [
+  {
+    name: "seat the camera exactly on the boundary",
+    margin: 0,
+    pinnedReason: "no-shared-globe-splat-band",
+    pinnedSigns: [1],
+  },
+  {
+    name: "halve the derived margin",
+    margin: TOWER_BOUNDARY_MARGIN_FRACTION / 2,
+    pinnedReason: "no-shared-globe-splat-band",
+    pinnedSigns: [1],
+  },
+  {
+    name: "double the derived margin",
+    margin: TOWER_BOUNDARY_MARGIN_FRACTION * 2,
+    pinnedReason: "active-frusta-below-2",
+    pinnedSigns: [-1, 0],
+  },
+  {
+    name: "widen the margin past the far inflation",
+    margin: 0.02,
+    pinnedReason: "active-frusta-below-2",
+    pinnedSigns: [-1, 0, 1],
+  },
+];
+
+for (const mutant of g6MarginMutants) {
+  test("G6 retarget margin mutant rejected: " + mutant.name, () => {
+    assert.deepEqual(
+      retargetSweepFailures(),
+      [],
+      "derived margin must pass before its mutant is meaningful",
+    );
+    const failures = retargetSweepFailures(mutant.margin);
+    assert.ok(failures.length > 0, "mutated margin must break the sweep");
+    assert.ok(
+      failures.every((failure) =>
+        failure.reasons.includes(mutant.pinnedReason),
+      ),
+      "every mutated failure must be " + mutant.pinnedReason,
+    );
+    assert.ok(
+      failures.every((failure) =>
+        mutant.pinnedSigns.includes(Math.sign(failure.offset)),
+      ),
+      "the mutated margin must fail on the budget edge it moved toward",
+    );
+  });
+}
+
+test("G6 retarget source mutant caught: the derived margin becomes a tuned literal", () => {
+  const mutated = compileG6NodeModel(
+    mustReplaceOne(
+      g6ProbeSource(),
+      "  SCENE_FAR_INFLATION / (2 * (1 + SCENE_FAR_INFLATION));",
+      "  0.02;",
+      "tuned margin literal",
+    ),
+  );
+  assert.notEqual(
+    mutated.TOWER_BOUNDARY_MARGIN_FRACTION,
+    TOWER_BOUNDARY_MARGIN_FRACTION,
+  );
+  assert.notEqual(
+    mutated.deriveGsplatTowerDepthRetarget(G6_TOWER_RANGE, G6_TOWER_RADIUS)
+      .targetTowerAltitudeMeters,
+    deriveGsplatTowerDepthRetarget(G6_TOWER_RANGE, G6_TOWER_RADIUS)
+      .targetTowerAltitudeMeters,
+  );
+  assert.ok(
+    retargetSweepFailures(mutated.TOWER_BOUNDARY_MARGIN_FRACTION).length > 0,
+  );
 });
 
 test("G6 probe R-2026-08-24-16 (k) a demoted run still publishes the consequence reasons, and only as diagnostics", () => {
