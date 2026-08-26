@@ -246,12 +246,14 @@ class Sun {
     // the fade below; keeping it also keeps the disabled position trivially
     // byte-identical and preserves the culling cost saving.
     //
-    // The fade multiplies alpha, not rgb. WebGL blends the sun `ALPHA_BLEND`
-    // (below), where dimming rgb produces a black disc over the sky, while
-    // WebGPU blends additively with source alpha
-    // (`WebGPUEnvironmentRenderer.js`). An alpha-only multiply fades
-    // correctly under both, so this does not have to be revisited if either
-    // blend mode changes.
+    // The fade multiplies alpha, not rgb. Both backends blend this billboard
+    // `ALPHA_BLEND` — `BlendingState.ALPHA_BLEND` below on WebGL, and the same
+    // `src-alpha` / `one-minus-src-alpha` pair in the sun pipeline
+    // `WebGPUEnvironmentRenderer.js` builds. Under that function alpha is the
+    // blend weight and dimming rgb instead paints a dark disc over the sky
+    // rather than fading the sun out of it. Alpha is the weight under an
+    // additive `src-alpha` function too, so the multiply stays correct if a
+    // backend's blend mode ever changes.
     //
     // Published to frameState before the backend branch so the WebGL uniform
     // and the WebGPU uniform buffer read one identical scalar.

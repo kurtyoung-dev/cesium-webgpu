@@ -129,7 +129,8 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
   // texture already carries the disc + glow halo + lens-flare (createSunTexture
   // replicates SunTextureFS.glsl); the previous extra exp() glow here was a
   // redundant second halo that over-brightened the (then disc-only) sun. The
-  // additive blend turns the white texel * alpha into a glowing sun over the sky.
+  // ALPHA_BLEND this pipeline is built with then composites the white texel
+  // over the sky in proportion to that alpha.
   var color = textureSample(tex, samp, i.uv);
   // czm_gammaCorrect parity (WebGL SunFS.glsl) — RGB→linear (pow(rgb, gamma))
   // when HDR is active so the sun composites correctly into the linear HDR
@@ -150,11 +151,12 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
   // from orbit / atmosphere hidden, so this is a byte-identical no-op there.
   color = vec4f(color.rgb * u.extinction, color.a);
   // Apply a continuous eclipse / occultation fade, the WGSL twin of
-  // SunFS.glsl's out_FragColor.a *= u_eclipseAlpha. ALPHA, not rgb: this
-  // pipeline blends additively with srcFactor src-alpha, so scaling alpha
-  // scales the whole additive contribution; it also fades correctly if
-  // the target instead uses ALPHA_BLEND. eclipseAlpha == 1.0 whenever
-  // nothing occults the sun or enableEclipse is off — an exact no-op.
+  // SunFS.glsl's out_FragColor.a *= u_eclipseAlpha. ALPHA, not rgb: alpha is
+  // the blend weight under this pipeline's ALPHA_BLEND, so scaling it fades
+  // the disc back into the sky, while scaling rgb would darken the disc in
+  // place. It is the weight under an additive src-alpha function too, so the
+  // fade survives a blend-mode change. eclipseAlpha == 1.0 whenever nothing
+  // occults the sun or enableEclipse is off — an exact no-op.
   color = vec4f(color.rgb, color.a * u.eclipseAlpha);
   return color;
 }`;
