@@ -30,6 +30,14 @@ import path from "path";
 import { launchLaneIfGated } from "./lib/backend-isolation-launch.mjs";
 
 const BASE = "http://localhost:8080"; // NOTE: server binds IPv6; 127.0.0.1 does NOT resolve
+
+// Opt-in determinism for callers that need a network-independent scene: the
+// CesiumViewer's `offline=true` mode drops world imagery and world terrain, so
+// tile count -- and every per-tile upload it drives -- stops moving with the
+// network. Unset, this is the empty string and the URL is the historical online
+// one, byte for byte. The C11-170 gate sets it for its children.
+const VIEWER_OFFLINE_QUERY =
+  process.env.PROBE_VIEWER_OFFLINE === "1" ? "&offline=true" : "";
 const OUT_DIR = "Tools/visual-regression/output";
 const WARMUP_FRAMES = 60;
 const MEASURE_FRAMES = 90;
@@ -237,14 +245,14 @@ async function runLane(browser, { name, url, globals, launchSelector }) {
     lanes.push(
       await runLane(browser, {
         name: "webgpu-solo",
-        url: `${BASE}/Apps/CesiumViewer/index.html?renderer=webgpu`,
+        url: `${BASE}/Apps/CesiumViewer/index.html?renderer=webgpu${VIEWER_OFFLINE_QUERY}`,
         globals: ["viewer"],
       }),
     );
     lanes.push(
       await runLane(browser, {
         name: "webgl-solo",
-        url: `${BASE}/Apps/CesiumViewer/index.html?renderer=webgl`,
+        url: `${BASE}/Apps/CesiumViewer/index.html?renderer=webgl${VIEWER_OFFLINE_QUERY}`,
         globals: ["viewer"],
       }),
     );

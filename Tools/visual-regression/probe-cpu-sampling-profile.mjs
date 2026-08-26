@@ -26,6 +26,14 @@ import path from "path";
 
 const BASE = "http://localhost:8080";
 const OUT_DIR = "Tools/visual-regression/output";
+
+// Opt-in determinism for callers that need a network-independent scene: the
+// CesiumViewer's `offline=true` mode drops world imagery and world terrain, so
+// tile count -- and every per-tile upload it drives -- stops moving with the
+// network. Unset, this is the empty string and the URL is the historical online
+// one, byte for byte. The C11-170 gate sets it for its children.
+const VIEWER_OFFLINE_QUERY =
+  process.env.PROBE_VIEWER_OFFLINE === "1" ? "&offline=true" : "";
 const SETTLE_MS = 12000;
 const WARMUP = 40;
 const argFrames = (() => {
@@ -83,7 +91,7 @@ async function profileBackend(browser, renderer) {
   const out = { renderer, ok: false };
   try {
     await page.goto(
-      `${BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}`,
+      `${BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}${VIEWER_OFFLINE_QUERY}`,
       {
         waitUntil: "domcontentloaded",
         timeout: 90000,

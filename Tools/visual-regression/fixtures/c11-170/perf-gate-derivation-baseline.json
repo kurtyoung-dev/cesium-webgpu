@@ -1,0 +1,1793 @@
+{
+  "fixture": "c11-170-perf-gate-derivation-baseline",
+  "schemaVersion": 1,
+  "immutable": true,
+  "purpose": "The read-only derivation baseline for the C11-170 performance-regression gate. Every frozen bar in PERF_GATE_BARS was derived from the four producer reports embedded here, and the gate spec recomputes each derivation from this file, so running the gate can never again re-base the evidence its own bars were derived from.",
+  "neverWriteHere": "Nothing writes this file at run time. The gate's live outputs live under Tools/visual-regression/output/ (gitignored, mutable); this fixture is checked in and read-only for every code path in the fleet. probe-perf-regression-gate.mjs enforces the separation with assertBaselineIsolation() and assertLiveWriteTarget().",
+  "recoveredOn": "2026-08-25",
+  "incident": {
+    "what": "The gate's banked baseline artifacts and its live-run outputs were the same four file paths under Tools/visual-regression/output/. The first acquire-mode run (2026-08-25, runId 63e71faa-8289-448f-b743-173937cb5610) therefore overwrote all four banked reports, and the spec's two banked-evidence tests went red because the gate had re-based its own negative controls.",
+    "mainTreeCopiesLost": true,
+    "recoveredFrom": "Three independent, byte-identical mirrors of the banked set taken during the Lane J authoring session (eol/lf, eol/crlf and mutate-mirror under the session scratchpad). All three agree on all four sha256 digests, which is what makes this a recovery rather than a reconstruction."
+  },
+  "provenanceLabels": {
+    "RECOVERED-VERBATIM": "The embedded report is the banked artifact byte for byte: re-serializing it with the recorded serialization reproduces the recorded sha256. Nothing is reconstructed.",
+    "RECOVERED-PROJECTED": "The banked artifact was recovered byte for byte but is embedded here as a LOSSY projection of only the field paths this gate reads. The full-file sha256 is recorded and is NOT re-derivable from this fixture; the projection carries its own digest instead."
+  },
+  "notRecovered": [
+    "The main-tree copies of all FOUR banked reports were overwritten by the 2026-08-25 acquire run, including Tools/visual-regression/output/performance/c11-169-whole-frame-phase-attribution.json. Their content is recovered here; their file identity in the main tree is not.",
+    "No acquire-mode gate artifact exists for the banked set. Both surviving banked-set gate artifacts (c11-170-perf-regression-gate.json at 2026-08-25T00:09:46.595Z and c11-170-perf-regression-gate.first-red.json at 2026-08-24T21:28:16.933Z) ran --adjudicate-only, which is capped at STRUCTURAL. The banked evidence was therefore never certified by an acquire run, and this fixture does not claim it was.",
+    "The four banked reports are NOT one co-ordinated run. Their in-file dates span 2026-07-19 (request, cpu) through 2026-07-22 (backend) to 2026-08-11 (frame). Signal E's spread therefore mixes observations taken weeks apart, which is a property of the banked derivation and is preserved here rather than repaired.",
+    "The body of the frame report outside the projected field paths is not embedded. Its full-file sha256 is recorded but cannot be re-derived from this fixture."
+  ],
+  "openObservations": [
+    "Signal A is a PRESENCE detector at this baseline, not a magnitude detector. The bar 0.193 is the smallest pct the banked profile published, so any resource-write family member that appears in the published top-20 at all is at or above 0.193 and trips the bar; a family member below the bar cannot be published. The presence-versus-magnitude semantics stay exactly as written by maintainer ruling (2026-08-25): run the clean control first, decide afterwards.",
+    "The profiler's visibility floor moves per run. The banked floor was 0.193; the 2026-08-25 run's floor was 0.237. A frozen bar at 0.193 is therefore at or below the live floor on such runs, which makes it at least as strict as presence and sometimes stricter. Recorded so the later decision has it; the instrument is unchanged.",
+    "THE BANKED SET WAS MEASURED ONLINE. All four reports were acquired against the CesiumViewer default scene with Ion World Imagery and World Terrain. From 2026-08-25 the gate pins its three CesiumViewer children to offline=true (no base layer, no terrain), so the next acquire run measures a DIFFERENT, deterministic scene. The frozen bars were NOT re-derived against that scene -- by ruling, no bar moves -- so the banked visibility floor and the banked E ratios are online measurements being applied to offline runs. The maintainer ruling sequences the clean offline control first and the presence-versus-magnitude decision after it.",
+    "The B/C leg of the derivation is a property of the numerator alone, not of the banked reports. 2/n < 3/n holds and 3/n < 3/n fails for every positive n, so re-deriving the Rule-of-Three shape from this fixture cannot distinguish one trial count from another; only a change to the numerator can move it. The same is true of the D leg, whose bar is the constant 0. Both are still checked, and both are mutation-tested against the runner rather than against this fixture.",
+    "recordedContext()'s laneNotAdjudicated.reason is a frozen prose string asserting the split lane is ok:false with Q2 UNKNOWN. That was true of the banked backend report and is NOT true of the 2026-08-25 report, whose split lane is ok:true with a populated Q2. It is a recorded note, not a bar or an adjudicated field, and it is left exactly as landed."
+  ],
+  "derivationNotes": {
+    "signalA": "maxPctExclusive = min(cpu.webgpuTopSelfTime[].pct) = 0.193, tied at index 18 (_createWaterOceanMaterialBindGroupInner @ index.js:353163) and index 19 ((garbage collector) @ (native):-1).",
+    "ruleOfThree": "numerator 3 over n read from each report; at the banked n = 90 the bound rejects the third event and tolerates the second.",
+    "signalD": "requiredWebglNonNull = 0 because addInitScript wraps getContext before page code, making the webgpu-solo tally a census rather than a sample.",
+    "signalE": "maxRatioInclusive = max(subject ratios) * (max(all) / min(all)) = 1.857 * (1.857 / 1.2) = 2.8737075, from backend 1.857, request 1.5 and the derivation-only cpu ratio 1.2 (medianRenderMs 1.2 over 1).",
+    "signalF": "canonical status passthrough; the banked frame report published status PASS with exitCode 0."
+  },
+  "provenance": {
+    "cpu": {
+      "relativePath": "Tools/visual-regression/output/cpu-sampling-profile.json",
+      "recovery": "RECOVERED-VERBATIM",
+      "sourceSha256": "7ebb2d20d9e4847f01909f03f0cb8044504f692e4f036a869c80db8d9ea0883e",
+      "sourceBytes": 6478,
+      "serialization": "JSON.stringify(report, null, 2)",
+      "selfVerifiable": true,
+      "inFileDate": "2026-07-19T18:02:46.511Z",
+      "mirrorsAgreeing": [
+        "eol/lf",
+        "eol/crlf",
+        "mutate-mirror"
+      ]
+    },
+    "request": {
+      "relativePath": "Tools/visual-regression/output/request-render-asymmetry-report.json",
+      "recovery": "RECOVERED-VERBATIM",
+      "sourceSha256": "7d85ff5531f470c1d3e826fdc7d8eb2e23e2cef275ccae537f41c5149008201e",
+      "sourceBytes": 12375,
+      "serialization": "JSON.stringify(report, null, 2)",
+      "selfVerifiable": true,
+      "inFileDate": "2026-07-19T18:01:56.109Z",
+      "mirrorsAgreeing": [
+        "eol/lf",
+        "eol/crlf",
+        "mutate-mirror"
+      ]
+    },
+    "backend": {
+      "relativePath": "Tools/visual-regression/output/backend-isolation-report.json",
+      "recovery": "RECOVERED-VERBATIM",
+      "sourceSha256": "6b56d8479936633fc67b5c175aaf4447ca82e6bf30f825ce0db3873ece6a4f7a",
+      "sourceBytes": 7948,
+      "serialization": "JSON.stringify(report, null, 2)",
+      "selfVerifiable": true,
+      "inFileDate": "2026-07-22T07:29:18.770Z",
+      "mirrorsAgreeing": [
+        "eol/lf",
+        "eol/crlf",
+        "mutate-mirror"
+      ]
+    },
+    "frame": {
+      "relativePath": "Tools/visual-regression/output/performance/c11-169-whole-frame-phase-attribution.json",
+      "recovery": "RECOVERED-PROJECTED",
+      "sourceSha256": "a5a2b43cf606cff11df0edc56c352556633113deb77b43083cf659a613da9839",
+      "sourceBytes": 838395,
+      "serialization": "JSON.stringify(report, null, 2) + newline",
+      "selfVerifiable": false,
+      "notSelfVerifiableBecause": "the embedded copy is a projection, so re-serializing it cannot reproduce sourceSha256; projectionSha256 below is the digest that CAN be re-derived from this fixture",
+      "projectionSha256": "91ef4ead89634966e4b0d72ff7c99781da96cd575af707c64c18188977324050",
+      "inFileGeneratedAt": "2026-08-11T09:28:44.566Z",
+      "mirrorsAgreeing": [
+        "eol/lf",
+        "eol/crlf",
+        "mutate-mirror"
+      ],
+      "retainedFieldPaths": [
+        "status",
+        "pass",
+        "exitCode",
+        "incomplete",
+        "failures",
+        "setup.profiler.available",
+        "errors.console",
+        "errors.page",
+        "route.frameRecords[].coverageRatio"
+      ],
+      "droppedTopLevelKeys": [
+        "contract",
+        "firstRed",
+        "instrumentationMode",
+        "negativeLanes",
+        "phaseInjectionControls",
+        "result"
+      ],
+      "note": "These are exactly the field paths adjudicateSignalF, consoleEvidence and coverageRatioMaximum read. A future signal that reads any other frame field will not find it here and must extend this projection rather than fall back to a live output path."
+    }
+  },
+  "reports": {
+    "cpu": {
+      "probe": "cpu-sampling-profile",
+      "date": "2026-07-19T18:02:46.511Z",
+      "frames": 120,
+      "webgpu": {
+        "medianRenderMs": 1.2,
+        "sampledTotalMs": 2408.617
+      },
+      "webgl": {
+        "medianRenderMs": 1,
+        "sampledTotalMs": 2394.271
+      },
+      "webgpuTopSelfTime": [
+        {
+          "fn": "(idle) @ (native):-1",
+          "ms": 1654.433,
+          "pct": 68.688
+        },
+        {
+          "fn": "(program) @ (native):-1",
+          "ms": 395.422,
+          "pct": 16.417
+        },
+        {
+          "fn": "createCameraUniformBuffer @ index.js:350773",
+          "ms": 11.594,
+          "pct": 0.481
+        },
+        {
+          "fn": "submit @ (native):-1",
+          "ms": 10.706,
+          "pct": 0.444
+        },
+        {
+          "fn": "beginRenderPass @ (native):-1",
+          "ms": 10.663,
+          "pct": 0.443
+        },
+        {
+          "fn": "createCommandEncoder @ (native):-1",
+          "ms": 10.5,
+          "pct": 0.436
+        },
+        {
+          "fn": "render @ index.js:410392",
+          "ms": 9.617,
+          "pct": 0.399
+        },
+        {
+          "fn": "computeModifiedModelView @ index.js:351169",
+          "ms": 9.279,
+          "pct": 0.385
+        },
+        {
+          "fn": "createTileCommands @ index.js:352551",
+          "ms": 8.234,
+          "pct": 0.342
+        },
+        {
+          "fn": "createTileUniformBuffer @ index.js:351373",
+          "ms": 8.136,
+          "pct": 0.338
+        },
+        {
+          "fn": "now @ (native):-1",
+          "ms": 7.554,
+          "pct": 0.314
+        },
+        {
+          "fn": "getCurrentTexture @ (native):-1",
+          "ms": 6.311,
+          "pct": 0.262
+        },
+        {
+          "fn": "addWebGPUDrawCommandsForTile @ index.js:277348",
+          "ms": 5.302,
+          "pct": 0.22
+        },
+        {
+          "fn": "resolveImageryProjection @ index.js:349106",
+          "ms": 5.266,
+          "pct": 0.219
+        },
+        {
+          "fn": "_getOrCreateFrameEffectsBindGroup @ index.js:352447",
+          "ms": 5.251,
+          "pct": 0.218
+        },
+        {
+          "fn": "createEffectsBindGroup @ index.js:317803",
+          "ms": 4.734,
+          "pct": 0.197
+        },
+        {
+          "fn": "executeFrustumLoop @ index.js:381350",
+          "ms": 4.689,
+          "pct": 0.195
+        },
+        {
+          "fn": "computeSimonMoon @ index.js:38959",
+          "ms": 4.666,
+          "pct": 0.194
+        },
+        {
+          "fn": "_createWaterOceanMaterialBindGroupInner @ index.js:353163",
+          "ms": 4.656,
+          "pct": 0.193
+        },
+        {
+          "fn": "(garbage collector) @ (native):-1",
+          "ms": 4.645,
+          "pct": 0.193
+        }
+      ],
+      "webglTopSelfTime": [
+        {
+          "fn": "(idle) @ (native):-1",
+          "ms": 1654.693,
+          "pct": 69.111
+        },
+        {
+          "fn": "(program) @ (native):-1",
+          "ms": 377.854,
+          "pct": 15.782
+        },
+        {
+          "fn": "continueDraw @ index.js:42570",
+          "ms": 13.854,
+          "pct": 0.579
+        },
+        {
+          "fn": "_setUniforms @ index.js:23800",
+          "ms": 11.14,
+          "pct": 0.465
+        },
+        {
+          "fn": "render @ index.js:410392",
+          "ms": 9.653,
+          "pct": 0.403
+        },
+        {
+          "fn": "addDrawCommandsForTile @ index.js:277560",
+          "ms": 8.623,
+          "pct": 0.36
+        },
+        {
+          "fn": "computeSimonMoon @ index.js:38959",
+          "ms": 5.745,
+          "pct": 0.24
+        },
+        {
+          "fn": "drawBuffers @ (native):-1",
+          "ms": 5.72,
+          "pct": 0.239
+        },
+        {
+          "fn": "bindVertexArray @ (native):-1",
+          "ms": 5.606,
+          "pct": 0.234
+        },
+        {
+          "fn": "addCreditToNextFrame @ index.js:267672",
+          "ms": 5.598,
+          "pct": 0.234
+        },
+        {
+          "fn": "update @ index.js:40232",
+          "ms": 5.499,
+          "pct": 0.23
+        },
+        {
+          "fn": "uniform3f @ (native):-1",
+          "ms": 4.971,
+          "pct": 0.208
+        }
+      ],
+      "webgpuSpecificHotspots": [
+        {
+          "fn": "(program) @ (native):-1",
+          "ms": 395.422,
+          "pct": 16.417,
+          "webglMs": 377.854,
+          "deltaMs": 17.568
+        },
+        {
+          "fn": "createCameraUniformBuffer @ index.js:350773",
+          "ms": 11.594,
+          "pct": 0.481,
+          "webglMs": 0,
+          "deltaMs": 11.594
+        },
+        {
+          "fn": "submit @ (native):-1",
+          "ms": 10.706,
+          "pct": 0.444,
+          "webglMs": 0,
+          "deltaMs": 10.706
+        },
+        {
+          "fn": "beginRenderPass @ (native):-1",
+          "ms": 10.663,
+          "pct": 0.443,
+          "webglMs": 0,
+          "deltaMs": 10.663
+        },
+        {
+          "fn": "createCommandEncoder @ (native):-1",
+          "ms": 10.5,
+          "pct": 0.436,
+          "webglMs": 0,
+          "deltaMs": 10.5
+        },
+        {
+          "fn": "computeModifiedModelView @ index.js:351169",
+          "ms": 9.279,
+          "pct": 0.385,
+          "webglMs": 0,
+          "deltaMs": 9.279
+        },
+        {
+          "fn": "createTileCommands @ index.js:352551",
+          "ms": 8.234,
+          "pct": 0.342,
+          "webglMs": 0,
+          "deltaMs": 8.234
+        },
+        {
+          "fn": "createTileUniformBuffer @ index.js:351373",
+          "ms": 8.136,
+          "pct": 0.338,
+          "webglMs": 0,
+          "deltaMs": 8.136
+        },
+        {
+          "fn": "getCurrentTexture @ (native):-1",
+          "ms": 6.311,
+          "pct": 0.262,
+          "webglMs": 0,
+          "deltaMs": 6.311
+        },
+        {
+          "fn": "addWebGPUDrawCommandsForTile @ index.js:277348",
+          "ms": 5.302,
+          "pct": 0.22,
+          "webglMs": 0,
+          "deltaMs": 5.302
+        },
+        {
+          "fn": "resolveImageryProjection @ index.js:349106",
+          "ms": 5.266,
+          "pct": 0.219,
+          "webglMs": 0,
+          "deltaMs": 5.266
+        },
+        {
+          "fn": "_getOrCreateFrameEffectsBindGroup @ index.js:352447",
+          "ms": 5.251,
+          "pct": 0.218,
+          "webglMs": 0,
+          "deltaMs": 5.251
+        },
+        {
+          "fn": "createEffectsBindGroup @ index.js:317803",
+          "ms": 4.734,
+          "pct": 0.197,
+          "webglMs": 0,
+          "deltaMs": 4.734
+        },
+        {
+          "fn": "executeFrustumLoop @ index.js:381350",
+          "ms": 4.689,
+          "pct": 0.195,
+          "webglMs": 0,
+          "deltaMs": 4.689
+        },
+        {
+          "fn": "_createWaterOceanMaterialBindGroupInner @ index.js:353163",
+          "ms": 4.656,
+          "pct": 0.193,
+          "webglMs": 0,
+          "deltaMs": 4.656
+        },
+        {
+          "fn": "(garbage collector) @ (native):-1",
+          "ms": 4.645,
+          "pct": 0.193,
+          "webglMs": 0,
+          "deltaMs": 4.645
+        },
+        {
+          "fn": "now @ (native):-1",
+          "ms": 7.554,
+          "pct": 0.314,
+          "webglMs": 3.317,
+          "deltaMs": 4.237
+        },
+        {
+          "fn": "imageryCacheKey @ index.js:349046",
+          "ms": 4.073,
+          "pct": 0.169,
+          "webglMs": 0,
+          "deltaMs": 4.073
+        },
+        {
+          "fn": "allocateAndWrite @ index.js:316795",
+          "ms": 3.648,
+          "pct": 0.151,
+          "webglMs": 0,
+          "deltaMs": 3.648
+        },
+        {
+          "fn": "getOrCreate @ index.js:351779",
+          "ms": 3.587,
+          "pct": 0.149,
+          "webglMs": 0,
+          "deltaMs": 3.587
+        }
+      ]
+    },
+    "request": {
+      "probe": "request-render-asymmetry",
+      "date": "2026-07-19T18:01:56.109Z",
+      "verdict": {
+        "Q_idle_asymmetry": "NOT-THE-CAUSE — pendingForegroundCount drained to 0 on all 90 idle frames (first=0).",
+        "idle_render_ms": {
+          "webgpu_median": 1.1,
+          "webgl_median": 1.2,
+          "ratio": 0.917,
+          "note": "requestRenderMode as shipped. A large ratio here can be idle-detection asymmetry, NOT throughput."
+        },
+        "honest_render_ms": {
+          "webgpu_median": 0.9,
+          "webgl_median": 0.6,
+          "ratio": 1.5,
+          "note": "requestRenderMode=false on BOTH: every call does real work. THIS is the apples-to-apples CPU cost ratio."
+        },
+        "interpretation": "WebGPU is at or better than parity per real frame."
+      },
+      "webgpu": {
+        "renderer": "webgpu",
+        "ok": true,
+        "laneA": {
+          "requestRenderMode": true,
+          "asyncResourcesPresent": true,
+          "pendingForegroundFirst": 0,
+          "pendingForegroundSeries": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "pendingForegroundNonZeroFrames": 0,
+          "pendingBackground": null,
+          "renderRequestedFrames": 0,
+          "renderMs": [
+            2.7000000001862645,
+            1.5,
+            1.5,
+            1.3999999999068677,
+            2.2000000001862645,
+            1.1999999997206032,
+            1.2999999998137355,
+            1.1999999997206032,
+            1.2000000001862645,
+            1.1000000000931323,
+            1.8000000002793968,
+            1.900000000372529,
+            1.5,
+            1.7999999998137355,
+            1.2999999998137355,
+            1.3999999999068677,
+            1.5,
+            1.6999999997206032,
+            1.1000000000931323,
+            1,
+            1.6999999997206032,
+            1.6000000000931323,
+            1.5,
+            1.3999999999068677,
+            1.3999999999068677,
+            1.3999999999068677,
+            2,
+            2.5,
+            2,
+            2,
+            1.2999999998137355,
+            0.900000000372529,
+            0.8999999999068677,
+            1.5,
+            1.7999999998137355,
+            1.2999999998137355,
+            1.1000000000931323,
+            1.5,
+            1,
+            1,
+            1.2999999998137355,
+            1,
+            1.1000000000931323,
+            1.2999999998137355,
+            2.2999999998137355,
+            1.5,
+            0.8999999999068677,
+            0.7999999998137355,
+            0.900000000372529,
+            0.900000000372529,
+            0.7999999998137355,
+            1.1000000000931323,
+            1.1000000000931323,
+            1,
+            1.1999999997206032,
+            0.8999999999068677,
+            0.8999999999068677,
+            0.7999999998137355,
+            1.3999999999068677,
+            1.3999999999068677,
+            1,
+            1,
+            0.8999999999068677,
+            1.2000000001862645,
+            0.8000000002793968,
+            0.7999999998137355,
+            0.7999999998137355,
+            0.8000000002793968,
+            0.8999999999068677,
+            0.7999999998137355,
+            0.7000000001862645,
+            0.8999999999068677,
+            0.8999999999068677,
+            1,
+            0.8000000002793968,
+            0.8000000002793968,
+            0.8999999999068677,
+            0.8999999999068677,
+            1.6000000000931323,
+            1.1000000000931323,
+            0.8000000002793968,
+            0.8999999999068677,
+            0.6999999997206032,
+            0.7999999998137355,
+            0.8000000002793968,
+            0.6999999997206032,
+            0.7000000001862645,
+            0.8999999999068677,
+            1,
+            0.8999999999068677
+          ]
+        },
+        "laneB": {
+          "requestRenderMode": false,
+          "renderMs": [
+            1.6999999997206032,
+            1.2999999998137355,
+            0.7999999998137355,
+            0.7999999998137355,
+            0.8999999999068677,
+            0.8999999999068677,
+            0.8000000002793968,
+            0.7000000001862645,
+            0.900000000372529,
+            0.900000000372529,
+            1.599999999627471,
+            0.8999999999068677,
+            0.8000000002793968,
+            0.7999999998137355,
+            1.400000000372529,
+            0.900000000372529,
+            1.1000000000931323,
+            0.8999999999068677,
+            0.8999999999068677,
+            1.099999999627471,
+            0.8999999999068677,
+            0.7000000001862645,
+            0.8000000002793968,
+            0.7000000001862645,
+            0.7999999998137355,
+            0.7999999998137355,
+            0.7999999998137355,
+            0.8000000002793968,
+            0.8999999999068677,
+            0.7000000001862645,
+            0.7000000001862645,
+            0.7999999998137355,
+            0.7999999998137355,
+            0.6999999997206032,
+            0.7999999998137355,
+            1,
+            0.6999999997206032,
+            0.7999999998137355,
+            0.900000000372529,
+            0.8999999999068677,
+            0.8999999999068677,
+            1.1999999997206032,
+            1,
+            0.7999999998137355,
+            0.7000000001862645,
+            0.8999999999068677,
+            1.5,
+            1.2999999998137355,
+            0.8999999999068677,
+            0.8000000002793968,
+            0.900000000372529,
+            2.7000000001862645,
+            0.7999999998137355,
+            0.8000000002793968,
+            0.8000000002793968,
+            1.1999999997206032,
+            1.5,
+            0.7000000001862645,
+            1.1000000000931323,
+            0.900000000372529,
+            0.8000000002793968,
+            0.8000000002793968,
+            1.2000000001862645,
+            0.8000000002793968,
+            1,
+            1.599999999627471,
+            0.8999999999068677,
+            0.8000000002793968,
+            0.900000000372529,
+            1.3000000002793968,
+            1.3000000002793968,
+            0.7999999998137355,
+            0.7999999998137355,
+            0.7000000001862645,
+            0.8000000002793968,
+            1.3999999999068677,
+            0.7000000001862645,
+            0.8000000002793968,
+            0.8999999999068677,
+            0.6000000000931323
+          ]
+        }
+      },
+      "webgl": {
+        "renderer": "webgl",
+        "ok": true,
+        "laneA": {
+          "requestRenderMode": true,
+          "asyncResourcesPresent": false,
+          "pendingForegroundFirst": null,
+          "pendingForegroundSeries": [
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null
+          ],
+          "pendingForegroundNonZeroFrames": 0,
+          "renderRequestedFrames": 0,
+          "renderMs": [
+            2.5,
+            1.8000000002793968,
+            1.8999999999068677,
+            1.6000000000931323,
+            1.6000000000931323,
+            1.3000000002793968,
+            1.400000000372529,
+            2.1999999997206032,
+            1.5,
+            1.6000000000931323,
+            1.400000000372529,
+            1.3999999999068677,
+            1.6000000000931323,
+            1.3999999999068677,
+            1.900000000372529,
+            1.6000000000931323,
+            1.1999999997206032,
+            1.400000000372529,
+            1.5,
+            1.3999999999068677,
+            1.1000000000931323,
+            1.5,
+            2.6000000000931323,
+            3.2000000001862645,
+            2.3999999999068677,
+            1.3999999999068677,
+            1.5,
+            2,
+            1.6000000000931323,
+            1.8999999999068677,
+            1.7000000001862645,
+            1.3999999999068677,
+            1.6999999997206032,
+            2,
+            1.7000000001862645,
+            1.3999999999068677,
+            2.8999999999068677,
+            1.2000000001862645,
+            1.5,
+            1.2999999998137355,
+            1.8000000002793968,
+            1.7999999998137355,
+            1.6999999997206032,
+            1.6000000000931323,
+            1.400000000372529,
+            1.400000000372529,
+            1,
+            1.1000000000931323,
+            1.1999999997206032,
+            0.6999999997206032,
+            1.1999999997206032,
+            1.099999999627471,
+            0.6999999997206032,
+            0.6999999997206032,
+            0.900000000372529,
+            0.8999999999068677,
+            0.8000000002793968,
+            1,
+            0.8000000002793968,
+            0.7999999998137355,
+            0.8000000002793968,
+            0.8999999999068677,
+            0.7000000001862645,
+            0.6999999997206032,
+            0.6999999997206032,
+            0.6999999997206032,
+            1.1000000000931323,
+            0.7000000001862645,
+            0.6999999997206032,
+            0.6999999997206032,
+            0.7000000001862645,
+            0.7000000001862645,
+            0.6000000000931323,
+            0.6999999997206032,
+            0.6000000000931323,
+            0.599999999627471,
+            0.5,
+            0.6000000000931323,
+            0.6000000000931323,
+            0.6000000000931323,
+            0.6000000000931323,
+            0.6000000000931323,
+            0.7000000001862645,
+            0.7000000001862645,
+            0.7999999998137355,
+            0.6000000000931323,
+            0.7000000001862645,
+            0.6000000000931323,
+            0.6000000000931323,
+            0.6999999997206032
+          ]
+        },
+        "laneB": {
+          "requestRenderMode": false,
+          "renderMs": [
+            0.6000000000931323,
+            0.6000000000931323,
+            0.6000000000931323,
+            0.7000000001862645,
+            0.599999999627471,
+            0.6000000000931323,
+            0.6000000000931323,
+            0.5,
+            0.6000000000931323,
+            0.599999999627471,
+            0.7999999998137355,
+            0.7000000001862645,
+            0.6000000000931323,
+            0.6000000000931323,
+            0.5,
+            0.5,
+            0.6000000000931323,
+            0.5,
+            0.5,
+            0.6000000000931323,
+            1,
+            0.900000000372529,
+            0.7000000001862645,
+            0.7000000001862645,
+            0.8999999999068677,
+            0.6000000000931323,
+            0.6000000000931323,
+            0.6000000000931323,
+            0.6000000000931323,
+            0.6000000000931323,
+            0.6000000000931323,
+            0.5,
+            0.6000000000931323,
+            0.6000000000931323,
+            0.7000000001862645,
+            0.5,
+            0.6000000000931323,
+            0.6000000000931323,
+            0.5,
+            0.599999999627471,
+            0.7000000001862645,
+            0.6000000000931323,
+            0.6000000000931323,
+            0.5,
+            0.6000000000931323,
+            0.6000000000931323,
+            0.5,
+            0.5,
+            0.6000000000931323,
+            0.599999999627471,
+            0.6000000000931323,
+            0.5,
+            0.6000000000931323,
+            0.599999999627471,
+            0.6000000000931323,
+            0.6000000000931323,
+            0.7999999998137355,
+            0.5,
+            0.5,
+            0.599999999627471,
+            0.599999999627471,
+            0.5,
+            0.6000000000931323,
+            0.5,
+            0.5,
+            0.5,
+            0.6000000000931323,
+            0.5,
+            0.5,
+            0.5,
+            0.5,
+            0.5,
+            0.6000000000931323,
+            0.6000000000931323,
+            0.6000000000931323,
+            0.5,
+            0.6000000000931323,
+            0.599999999627471,
+            0.6000000000931323,
+            0.7000000001862645
+          ]
+        }
+      }
+    },
+    "backend": {
+      "probe": "backend-isolation",
+      "date": "2026-07-22T07:29:18.770Z",
+      "base": "http://localhost:8080",
+      "verdicts": {
+        "Q1_webgl_running_in_webgpu_mode": "NO — zero WebGL getContext calls in webgpu mode",
+        "Q2_split_vs_solo": "UNKNOWN",
+        "webgpu_over_webgl_render_ms_ratio": 1.857,
+        "note": "ratio > 1 means WebGPU spends MORE ms per scene.render() than WebGL. This measures CPU wall-clock around render(), not GPU time."
+      },
+      "lanes": [
+        {
+          "name": "webgpu-solo",
+          "url": "http://localhost:8080/Apps/CesiumViewer/index.html?renderer=webgpu",
+          "ok": true,
+          "contexts": {
+            "totalGetContextCalls": 3,
+            "byKind": {
+              "webgpu": {
+                "count": 1,
+                "nonNull": 1,
+                "types": {
+                  "webgpu": 1
+                },
+                "samples": [
+                  {
+                    "type": "webgpu",
+                    "returnedNull": false,
+                    "threw": null,
+                    "canvasId": null,
+                    "canvasClass": null,
+                    "w": 1280,
+                    "h": 720,
+                    "stack": "    at _WebGPUContext._initialize (http://localhost:8080/Build/CesiumUnminified/index.js:400188:40) |     at async _WebGPUContext.create (http://localhost:8080/Build/CesiumUnminified/index.js:400137:11) |     at async Object.createWebGPU (http://localhost:8080/Build/CesiumUnminified/index.js:403756:16) |     at async ContextFactory.createContextWithDiagnostics (http://localhost:8080/Build/CesiumUnminified/index.js:403815:25) |     at async _Scene._createContextWithDiagnostics (http://localhost:8080/Build/CesiumUnminified/index.js:411238:25)"
+                  }
+                ]
+              },
+              "2d": {
+                "count": 2,
+                "nonNull": 2,
+                "types": {
+                  "2d": 2
+                },
+                "samples": [
+                  {
+                    "type": "2d",
+                    "returnedNull": false,
+                    "threw": null,
+                    "canvasId": null,
+                    "canvasClass": "cesium-timeline-tracks",
+                    "w": 10,
+                    "h": 1,
+                    "stack": "    at new Timeline (http://localhost:8080/Build/CesiumUnminified/index.js:437495:40) |     at new _Viewer (http://localhost:8080/Build/CesiumUnminified/index.js:439204:11) |     at Viewer.createAsync (http://localhost:8080/Build/CesiumUnminified/index.js:440210:14) |     at async createWebGPUViewer (http://localhost:8080/Apps/CesiumViewer/CesiumViewer.js:90:18) |     at async main (http://localhost:8080/Apps/CesiumViewer/CesiumViewer.js:346:22)"
+                  },
+                  {
+                    "type": "2d",
+                    "returnedNull": false,
+                    "threw": null,
+                    "canvasId": null,
+                    "canvasClass": null,
+                    "w": 1,
+                    "h": 1,
+                    "stack": "    at getImagePixels (http://localhost:8080/Build/CesiumUnminified/index.js:6134:24) |     at http://localhost:8080/Build/CesiumUnminified/index.js:8314:34"
+                  }
+                ]
+              }
+            },
+            "canvasCount": 2,
+            "viewerInfo": [
+              {
+                "global": "viewer",
+                "rendererType": "webgpu",
+                "isWebGPU": true,
+                "contextId": "1653de8d-e970-46a4-86e5-fc3c12323ab7",
+                "hasGlProperty": true
+              }
+            ]
+          },
+          "frameMs": {
+            "n": 90,
+            "median": 1.2999999998137355,
+            "p95": 1.6000000000931323,
+            "min": 0.8999999999068677,
+            "max": 3.2000000001862645,
+            "mean": 1.324444444425818
+          },
+          "perScene": [
+            {
+              "scene": "viewer",
+              "n": 90,
+              "median": 1.2999999998137355,
+              "p95": 1.6000000000931323,
+              "min": 0.8999999999068677,
+              "max": 3.2000000001862645,
+              "mean": 1.3188888888650885
+            }
+          ],
+          "consoleErrors": [
+            "RequestErrorEvent",
+            "Failed to load resource: net::ERR_NETWORK_ACCESS_DENIED",
+            "RequestErrorEvent",
+            "RequestErrorEvent",
+            "Failed to load resource: net::ERR_NETWORK_ACCESS_DENIED",
+            "RequestErrorEvent"
+          ]
+        },
+        {
+          "name": "webgl-solo",
+          "url": "http://localhost:8080/Apps/CesiumViewer/index.html?renderer=webgl",
+          "ok": true,
+          "contexts": {
+            "totalGetContextCalls": 3,
+            "byKind": {
+              "webgl": {
+                "count": 1,
+                "nonNull": 1,
+                "types": {
+                  "webgl2": 1
+                },
+                "samples": [
+                  {
+                    "type": "webgl2",
+                    "returnedNull": false,
+                    "threw": null,
+                    "canvasId": null,
+                    "canvasClass": null,
+                    "w": 1280,
+                    "h": 720,
+                    "stack": "    at getWebGLContext (http://localhost:8080/Build/CesiumUnminified/index.js:226207:28) |     at new Context (http://localhost:8080/Build/CesiumUnminified/index.js:226512:96) |     at _Scene._initialize (http://localhost:8080/Build/CesiumUnminified/index.js:410802:29) |     at new _Scene (http://localhost:8080/Build/CesiumUnminified/index.js:410769:16) |     at new CesiumWidget (http://localhost:8080/Build/CesiumUnminified/index.js:418408:15)"
+                  }
+                ]
+              },
+              "2d": {
+                "count": 2,
+                "nonNull": 2,
+                "types": {
+                  "2d": 2
+                },
+                "samples": [
+                  {
+                    "type": "2d",
+                    "returnedNull": false,
+                    "threw": null,
+                    "canvasId": null,
+                    "canvasClass": "cesium-timeline-tracks",
+                    "w": 10,
+                    "h": 1,
+                    "stack": "    at new Timeline (http://localhost:8080/Build/CesiumUnminified/index.js:437495:40) |     at new _Viewer (http://localhost:8080/Build/CesiumUnminified/index.js:439204:11) |     at createWebGLViewer (http://localhost:8080/Apps/CesiumViewer/CesiumViewer.js:68:18) |     at main (http://localhost:8080/Apps/CesiumViewer/CesiumViewer.js:340:21) |     at http://localhost:8080/Apps/CesiumViewer/CesiumViewer.js:523:1"
+                  },
+                  {
+                    "type": "2d",
+                    "returnedNull": false,
+                    "threw": null,
+                    "canvasId": null,
+                    "canvasClass": null,
+                    "w": 1,
+                    "h": 1,
+                    "stack": "    at getImagePixels (http://localhost:8080/Build/CesiumUnminified/index.js:6134:24) |     at http://localhost:8080/Build/CesiumUnminified/index.js:8314:34"
+                  }
+                ]
+              }
+            },
+            "canvasCount": 2,
+            "viewerInfo": [
+              {
+                "global": "viewer",
+                "rendererType": "webgl",
+                "isWebGPU": false,
+                "contextId": "aaa2fccb-8fd7-4e53-a6f7-8ae0d95feadb",
+                "hasGlProperty": true
+              }
+            ]
+          },
+          "frameMs": {
+            "n": 90,
+            "median": 0.7000000001862645,
+            "p95": 0.900000000372529,
+            "min": 0.39999999990686774,
+            "max": 1.3999999999068677,
+            "mean": 0.7022222222294658
+          },
+          "perScene": [
+            {
+              "scene": "viewer",
+              "n": 90,
+              "median": 0.7000000001862645,
+              "p95": 0.900000000372529,
+              "min": 0.39999999990686774,
+              "max": 1.3999999999068677,
+              "mean": 0.6955555555669384
+            }
+          ],
+          "consoleErrors": [
+            "RequestErrorEvent",
+            "RequestErrorEvent",
+            "Failed to load resource: net::ERR_NETWORK_ACCESS_DENIED",
+            "RequestErrorEvent",
+            "Failed to load resource: net::ERR_NETWORK_ACCESS_DENIED",
+            "RequestErrorEvent"
+          ]
+        },
+        {
+          "name": "split",
+          "url": "http://localhost:8080/Apps/WebGPUTest/split-screen-comparison.html",
+          "ok": false,
+          "error": "page.waitForFunction: Timeout 90000ms exceeded.",
+          "consoleErrors": []
+        }
+      ]
+    },
+    "frame": {
+      "probe": "c11-169-webgpu-whole-frame-phase-attribution",
+      "schemaVersion": 4,
+      "runId": "e07afdd3-67b6-41ab-aa09-a62ece40da6e",
+      "generatedAt": "2026-08-11T09:28:44.566Z",
+      "status": "PASS",
+      "pass": true,
+      "exitCode": 0,
+      "incomplete": false,
+      "failures": [],
+      "setup": {
+        "profiler": {
+          "available": true
+        }
+      },
+      "errors": {
+        "console": [],
+        "page": []
+      },
+      "route": {
+        "frameRecords": [
+          {
+            "coverageRatio": 0.07894736769869717
+          },
+          {
+            "coverageRatio": 0.07843137380940234
+          },
+          {
+            "coverageRatio": 0.07407407509610159
+          },
+          {
+            "coverageRatio": 0.03571428362356156
+          },
+          {
+            "coverageRatio": 0.03571428362356156
+          },
+          {
+            "coverageRatio": 0.027027025394321273
+          },
+          {
+            "coverageRatio": 0.04545454268366838
+          },
+          {
+            "coverageRatio": 0.06250000087311491
+          },
+          {
+            "coverageRatio": 0.07500000298023224
+          },
+          {
+            "coverageRatio": 0.05714285799435207
+          },
+          {
+            "coverageRatio": 0.12499999708961695
+          },
+          {
+            "coverageRatio": 0.033333336313565574
+          },
+          {
+            "coverageRatio": 0.05555556038463556
+          },
+          {
+            "coverageRatio": 0.07692307633525991
+          },
+          {
+            "coverageRatio": 0.11111111295076065
+          },
+          {
+            "coverageRatio": 0.09999999403953552
+          },
+          {
+            "coverageRatio": 0.04444444179534912
+          },
+          {
+            "coverageRatio": 0.052631581148832686
+          },
+          {
+            "coverageRatio": 0.027027025503168316
+          },
+          {
+            "coverageRatio": 0.06382978972993646
+          },
+          {
+            "coverageRatio": 0.062499996313514807
+          },
+          {
+            "coverageRatio": 0.07499999925494194
+          },
+          {
+            "coverageRatio": 0
+          },
+          {
+            "coverageRatio": 0.05555555210621269
+          },
+          {
+            "coverageRatio": 0.058823534825681416
+          },
+          {
+            "coverageRatio": 0
+          },
+          {
+            "coverageRatio": 0.04166667041782704
+          },
+          {
+            "coverageRatio": 0.06976744121574208
+          },
+          {
+            "coverageRatio": 0.035714286189450294
+          },
+          {
+            "coverageRatio": 0.04761904829483724
+          },
+          {
+            "coverageRatio": 0.0731707310868047
+          },
+          {
+            "coverageRatio": 0.07317073472123427
+          },
+          {
+            "coverageRatio": 0.11111111249084825
+          },
+          {
+            "coverageRatio": 0.05405405503367751
+          },
+          {
+            "coverageRatio": 0.03278688324359565
+          },
+          {
+            "coverageRatio": 0.06451612980755261
+          },
+          {
+            "coverageRatio": 0.09677419277309254
+          },
+          {
+            "coverageRatio": 0.07142857776409914
+          },
+          {
+            "coverageRatio": 0.05714285373687744
+          },
+          {
+            "coverageRatio": 0.04615384798783522
+          },
+          {
+            "coverageRatio": 0.07317072745237514
+          },
+          {
+            "coverageRatio": 0.05128204834296623
+          },
+          {
+            "coverageRatio": 0.04999999701976776
+          },
+          {
+            "coverageRatio": 0.028571431125913347
+          },
+          {
+            "coverageRatio": 0.03921568982649748
+          },
+          {
+            "coverageRatio": 0.1315789474716147
+          },
+          {
+            "coverageRatio": 0.0219780206824253
+          },
+          {
+            "coverageRatio": 0.06976744121574208
+          },
+          {
+            "coverageRatio": 0.07894736377733896
+          },
+          {
+            "coverageRatio": 0.02380952237347086
+          },
+          {
+            "coverageRatio": 0.05128205196783779
+          },
+          {
+            "coverageRatio": 0.0540540548159834
+          },
+          {
+            "coverageRatio": 0.011764706934199613
+          },
+          {
+            "coverageRatio": 0.03125000276486389
+          },
+          {
+            "coverageRatio": 0.09999999776482582
+          },
+          {
+            "coverageRatio": 0.023255812583451916
+          },
+          {
+            "coverageRatio": 0.051282048147027234
+          },
+          {
+            "coverageRatio": 0.029411764405109203
+          },
+          {
+            "coverageRatio": 0.03030302852419563
+          },
+          {
+            "coverageRatio": 0.06250000562674056
+          },
+          {
+            "coverageRatio": 0.043478264813161756
+          },
+          {
+            "coverageRatio": 0.13513513502628807
+          },
+          {
+            "coverageRatio": 0.08333333264346476
+          },
+          {
+            "coverageRatio": 0.027777780307295885
+          },
+          {
+            "coverageRatio": 0.03999999761581421
+          },
+          {
+            "coverageRatio": 0.08823529308642483
+          },
+          {
+            "coverageRatio": 0.1219512156118317
+          },
+          {
+            "coverageRatio": 0.04166666420900987
+          },
+          {
+            "coverageRatio": 0.037037034788576506
+          },
+          {
+            "coverageRatio": 0.04545454622423353
+          },
+          {
+            "coverageRatio": 0.02222222089767456
+          },
+          {
+            "coverageRatio": 0.04166666420900987
+          },
+          {
+            "coverageRatio": 0.0681818174121301
+          },
+          {
+            "coverageRatio": 0.02857142686843872
+          },
+          {
+            "coverageRatio": 0.07317073082087085
+          },
+          {
+            "coverageRatio": 0.06000000238418579
+          },
+          {
+            "coverageRatio": 0
+          },
+          {
+            "coverageRatio": 0.046511628632290164
+          },
+          {
+            "coverageRatio": 0.025641024171483114
+          },
+          {
+            "coverageRatio": 0.0833333364377419
+          },
+          {
+            "coverageRatio": 0.06818182079875765
+          },
+          {
+            "coverageRatio": 0.052631581011241164
+          },
+          {
+            "coverageRatio": 0.06000000238418579
+          },
+          {
+            "coverageRatio": 0.022222224209043715
+          },
+          {
+            "coverageRatio": 0.08695651962648944
+          },
+          {
+            "coverageRatio": 0.010526316730599655
+          },
+          {
+            "coverageRatio": 0.0441176466398895
+          },
+          {
+            "coverageRatio": 0.013698631367331756
+          },
+          {
+            "coverageRatio": 0.010752687534578606
+          },
+          {
+            "coverageRatio": 0.015384616760107188
+          },
+          {
+            "coverageRatio": 0.041095890019485354
+          },
+          {
+            "coverageRatio": 0.011363635690159295
+          },
+          {
+            "coverageRatio": 0.008510638424690733
+          },
+          {
+            "coverageRatio": 0.034188034688767195
+          },
+          {
+            "coverageRatio": 0.06194690285325377
+          },
+          {
+            "coverageRatio": 0.050000001986821495
+          },
+          {
+            "coverageRatio": 0.034482756553544824
+          },
+          {
+            "coverageRatio": 0.015151515373869485
+          },
+          {
+            "coverageRatio": 0.027397260693408552
+          },
+          {
+            "coverageRatio": 0.037037034890779245
+          },
+          {
+            "coverageRatio": 0.03999999761581421
+          },
+          {
+            "coverageRatio": 0.04081632708917306
+          },
+          {
+            "coverageRatio": 0.01807228986502109
+          },
+          {
+            "coverageRatio": 0.03030303071353061
+          },
+          {
+            "coverageRatio": 0.011627908004271525
+          },
+          {
+            "coverageRatio": 0.03448275826632197
+          },
+          {
+            "coverageRatio": 0.004975124079355943
+          },
+          {
+            "coverageRatio": 0.02222222200146428
+          },
+          {
+            "coverageRatio": 0.026548673628323024
+          },
+          {
+            "coverageRatio": 0.041095890019485354
+          },
+          {
+            "coverageRatio": 0.022988504408404067
+          },
+          {
+            "coverageRatio": 0.0175438594809554
+          },
+          {
+            "coverageRatio": 0.00952380895614624
+          },
+          {
+            "coverageRatio": 0.047619047619047616
+          },
+          {
+            "coverageRatio": 0.026315791847137865
+          },
+          {
+            "coverageRatio": 0.07999999821186066
+          },
+          {
+            "coverageRatio": 0.04999999701976776
+          },
+          {
+            "coverageRatio": 0.08695651990817489
+          },
+          {
+            "coverageRatio": 0.07692307604135142
+          },
+          {
+            "coverageRatio": 0.02777778019231778
+          },
+          {
+            "coverageRatio": 0.06521739376909566
+          },
+          {
+            "coverageRatio": 0.06299212575944267
+          },
+          {
+            "coverageRatio": 0.05825242662263508
+          },
+          {
+            "coverageRatio": 0.025641025077701007
+          },
+          {
+            "coverageRatio": 0.029702970019486262
+          },
+          {
+            "coverageRatio": 0.047619047619047616
+          },
+          {
+            "coverageRatio": 0.1337209300361191
+          },
+          {
+            "coverageRatio": 0.03759398497082998
+          },
+          {
+            "coverageRatio": 0.030303028489987276
+          },
+          {
+            "coverageRatio": 0.043478260447037016
+          },
+          {
+            "coverageRatio": 0.042735042724157235
+          },
+          {
+            "coverageRatio": 0.03260869531767242
+          },
+          {
+            "coverageRatio": 0.04
+          },
+          {
+            "coverageRatio": 0.04545454409989444
+          },
+          {
+            "coverageRatio": 0.030303029983752287
+          },
+          {
+            "coverageRatio": 0.05000000149011612
+          },
+          {
+            "coverageRatio": 0.03883495204623317
+          },
+          {
+            "coverageRatio": 0.056603773054426446
+          },
+          {
+            "coverageRatio": 0.06837606937753439
+          },
+          {
+            "coverageRatio": 0.06194690293494234
+          },
+          {
+            "coverageRatio": 0.052238805115382266
+          },
+          {
+            "coverageRatio": 0.05555555463573079
+          },
+          {
+            "coverageRatio": 0.043478261526831305
+          },
+          {
+            "coverageRatio": 0.05172413737733497
+          },
+          {
+            "coverageRatio": 0.052173912525177
+          },
+          {
+            "coverageRatio": 0.06481481510864773
+          },
+          {
+            "coverageRatio": 0.049019607828814725
+          },
+          {
+            "coverageRatio": 0.03571428628448321
+          },
+          {
+            "coverageRatio": 0.058823528810218406
+          },
+          {
+            "coverageRatio": 0.0370370366963612
+          },
+          {
+            "coverageRatio": 0.05999999940395355
+          },
+          {
+            "coverageRatio": 0.06542056240060046
+          },
+          {
+            "coverageRatio": 0.0666666669504983
+          },
+          {
+            "coverageRatio": 0.061224492247379705
+          },
+          {
+            "coverageRatio": 0.038834951990050076
+          },
+          {
+            "coverageRatio": 0.059829058794937315
+          },
+          {
+            "coverageRatio": 0.06086956547654193
+          },
+          {
+            "coverageRatio": 0.02631578988645876
+          },
+          {
+            "coverageRatio": 0.037735849640130915
+          },
+          {
+            "coverageRatio": 0.09259259249038984
+          },
+          {
+            "coverageRatio": 0.02222222089767456
+          },
+          {
+            "coverageRatio": 0.10526315562447683
+          },
+          {
+            "coverageRatio": 0.06249999941792339
+          },
+          {
+            "coverageRatio": 0.02941176303014623
+          },
+          {
+            "coverageRatio": 0.10344827462178206
+          },
+          {
+            "coverageRatio": 0.038461541988440526
+          },
+          {
+            "coverageRatio": 0.03333333134651184
+          },
+          {
+            "coverageRatio": 0.0800000011920929
+          },
+          {
+            "coverageRatio": 0.06896551812729852
+          },
+          {
+            "coverageRatio": 0.12499999844779572
+          },
+          {
+            "coverageRatio": 0.07407407509610159
+          },
+          {
+            "coverageRatio": 0.043478258052710564
+          },
+          {
+            "coverageRatio": 0.12499999844779572
+          },
+          {
+            "coverageRatio": 0.03571428362356156
+          },
+          {
+            "coverageRatio": 0.02380952237347086
+          },
+          {
+            "coverageRatio": 0.03703704030752509
+          },
+          {
+            "coverageRatio": 0.04444444179534912
+          },
+          {
+            "coverageRatio": 0.056603773054426446
+          },
+          {
+            "coverageRatio": 0.09090909460359368
+          },
+          {
+            "coverageRatio": 0
+          }
+        ]
+      }
+    }
+  }
+}

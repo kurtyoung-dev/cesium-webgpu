@@ -48,6 +48,18 @@ const FIRST_RED_OUTPUT_PATH = path.join(
   "c11-170-perf-regression-gate.first-red.json",
 );
 
+// The derivation baseline is CHECKED IN and read-only. It deliberately does not
+// live under `output/`: that tree is gitignored, is rewritten by every run, and
+// on 2026-08-25 an acquire run overwrote the four banked reports the frozen bars
+// were derived from, re-basing the gate's own negative controls. Baseline inputs
+// and live outputs are now separate trees, and `assertBaselineIsolation` below
+// refuses to let them become the same one again.
+const BASELINE_DIRECTORY = path.join(__dirname, "fixtures", "c11-170");
+const BASELINE_FIXTURE_PATH = path.join(
+  BASELINE_DIRECTORY,
+  "perf-gate-derivation-baseline.json",
+);
+
 const CLAIM_NOTE =
   "The C11-169 inputs are explicitly noncausal, noncertifying, and make no FPS, GPU, or uninstrumented performance claim. This gate detects the re-upload/churn class; it certifies nothing. A PASS is not evidence that WebGPU is fast, that GPU time is unchanged, or that any uninstrumented workload improved.";
 
@@ -93,18 +105,30 @@ const REPORT_DEFINITIONS = Object.freeze({
   }),
 });
 
+// Three of the four children boot Apps/CesiumViewer against Ion World Terrain,
+// so their tile count -- and therefore the `writeBuffer` volume Signal A reads
+// as a share of self time -- moves with the network. That is a live confound on
+// a frozen bar, so the gate pins those three to the viewer's deterministic
+// offline scene. The fourth already pins `offline=true` in its own URL. Unset,
+// the environment key changes nothing for any other consumer of these probes.
+const OFFLINE_ENV_KEY = "PROBE_VIEWER_OFFLINE";
+
 const ACQUISITION_DEFINITIONS = Object.freeze([
   Object.freeze({
     probe: "probe-backend-isolation.mjs",
     reportKey: "backend",
     argv: Object.freeze([]),
     legacyDiagnosticExit: true,
+    offlinePin: "gate-env",
+    offlinePinNote:
+      "both CesiumViewer solo lanes are pinned; the split-screen lane has no offline mode and is not adjudicated by this gate",
   }),
   Object.freeze({
     probe: "probe-request-render-asymmetry.mjs",
     reportKey: "request",
     argv: Object.freeze([]),
     legacyDiagnosticExit: true,
+    offlinePin: "gate-env",
   }),
   Object.freeze({
     probe: "probe-cpu-sampling-profile.mjs",
@@ -113,18 +137,115 @@ const ACQUISITION_DEFINITIONS = Object.freeze([
     // 150-frame default would silently change the instrument that supplies A.
     argv: Object.freeze(["--frames", "120"]),
     legacyDiagnosticExit: true,
+    offlinePin: "gate-env",
   }),
   Object.freeze({
     probe: "probe-webgpu-frame-breakdown.mjs",
     reportKey: "frame",
     argv: Object.freeze([]),
     legacyDiagnosticExit: false,
+    offlinePin: "self",
+    offlinePinNote:
+      "this probe already requests offline=true in its own scene URL, so the gate adds nothing",
   }),
 ]);
 
 const ACQUISITION_ORDER = Object.freeze(
   ACQUISITION_DEFINITIONS.map((entry) => entry.probe),
 );
+
+// Every path this gate is allowed to write, and every path its children are
+// expected to rewrite. Anything not on this list is somebody else's evidence.
+export const LIVE_WRITE_PATHS = Object.freeze([
+  OUTPUT_PATH,
+  FIRST_RED_OUTPUT_PATH,
+  ...Object.values(REPORT_DEFINITIONS).map((definition) => definition.path),
+]);
+
+function isInside(directory, candidate) {
+  const relative = path.relative(directory, candidate);
+  return (
+    relative !== "" && !relative.startsWith("..") && !path.isAbsolute(relative)
+  );
+}
+
+/**
+ * Enumerate every way a live-run path and the read-only baseline could be the
+ * same file or nest inside one another. Returns an empty array when the two
+ * trees are disjoint.
+ *
+ * @returns {string[]} One sentence per collision, empty when isolated.
+ */
+export function baselineCollisions() {
+  const baselineDirectory = path.resolve(BASELINE_DIRECTORY);
+  const baselineFixture = path.resolve(BASELINE_FIXTURE_PATH);
+  const outputDirectory = path.resolve(OUTPUT_DIRECTORY);
+  const collisions = [];
+  if (outputDirectory === baselineDirectory) {
+    collisions.push(
+      `the live output directory and the baseline directory are the same path ${outputDirectory}`,
+    );
+  }
+  if (isInside(outputDirectory, baselineDirectory)) {
+    collisions.push(
+      `the baseline directory ${baselineDirectory} is inside the live output directory ${outputDirectory}`,
+    );
+  }
+  if (isInside(baselineDirectory, outputDirectory)) {
+    collisions.push(
+      `the live output directory ${outputDirectory} is inside the baseline directory ${baselineDirectory}`,
+    );
+  }
+  for (const livePath of LIVE_WRITE_PATHS) {
+    const resolved = path.resolve(livePath);
+    if (resolved === baselineFixture) {
+      collisions.push(`live write target ${resolved} IS the baseline fixture`);
+    }
+    if (isInside(baselineDirectory, resolved)) {
+      collisions.push(
+        `live write target ${resolved} resolves inside the baseline directory ${baselineDirectory}`,
+      );
+    }
+    if (isInside(path.resolve(path.dirname(resolved)), baselineFixture)) {
+      collisions.push(
+        `the baseline fixture resolves inside the live write directory ${path.dirname(resolved)}`,
+      );
+    }
+  }
+  return collisions;
+}
+
+/**
+ * Refuse to run at all when a live-run path and a baseline path can collide.
+ * This is the structural half of the 2026-08-25 repair: the convention that
+ * baselines were not to be overwritten is what failed, so the gate now cannot
+ * start unless the two trees are provably disjoint.
+ */
+export function assertBaselineIsolation() {
+  const collisions = baselineCollisions();
+  if (collisions.length > 0) {
+    throw new RangeError(
+      `baseline/live path collision: ${collisions.join("; ")}`,
+    );
+  }
+}
+
+/**
+ * Refuse to write anywhere the gate has not declared as a live-run output.
+ *
+ * @param {string} target Absolute path the caller intends to write.
+ */
+export function assertLiveWriteTarget(target) {
+  const resolved = path.resolve(target);
+  const permitted = LIVE_WRITE_PATHS.some(
+    (livePath) => path.resolve(livePath) === resolved,
+  );
+  if (!permitted) {
+    throw new RangeError(
+      `refusing to write ${resolved}: not a declared live-run output of this gate`,
+    );
+  }
+}
 
 export const RESOURCE_WRITE_FAMILY = Object.freeze([
   "copyExternalImageToTexture",
@@ -217,6 +338,95 @@ const KNOWN_BLIND_SPOTS = Object.freeze([
     ]),
   }),
 ]);
+
+/**
+ * Re-derive every frozen bar from the reports it claims to have been derived
+ * from, and name each disagreement. This is the runner's own statement of what
+ * each constant MEANS, so the check can be mutated the way any other predicate
+ * can; the spec supplies the immutable baseline fixture as `reports`.
+ *
+ * It is deliberately a pure function of (reports, bars, family): it reads no
+ * file, so it can never be satisfied by whatever a run happened to leave on
+ * disk.
+ *
+ * @param {object} reports The four banked producer reports.
+ * @param {object} [bars] Bar table to check, defaulting to the frozen one.
+ * @param {string[]} [family] Resource-write family, defaulting to the frozen one.
+ * @returns {string[]} One sentence per disagreement, empty when every bar holds.
+ */
+export function derivationViolations(
+  reports,
+  bars = PERF_GATE_BARS,
+  family = RESOURCE_WRITE_FAMILY,
+) {
+  const violations = [];
+
+  // A: the bar is the smallest pct the profile publishes -- its visibility floor.
+  const publishedPcts = reports.cpu.webgpuTopSelfTime.map((row) => row.pct);
+  const minPublished = Math.min(...publishedPcts);
+  if (bars.signalA.maxPctExclusive !== minPublished) {
+    violations.push(
+      `A: bar ${bars.signalA.maxPctExclusive} is not the profile's smallest published pct ${minPublished}`,
+    );
+  }
+  // A: the Batch-717 culprit must remain a family member by name.
+  if (!family.includes("copyExternalImageToTexture")) {
+    violations.push(
+      "A: copyExternalImageToTexture left the resource-write family",
+    );
+  }
+
+  // B/C: at the banked trial count the bound must reject the third event and
+  // tolerate the second -- the Rule-of-Three shape, checked behaviourally.
+  const n = reports.request.webgpu.laneA.pendingForegroundSeries.length;
+  const bound = bars.ruleOfThree.numerator / n;
+  if (!(2 / n < bound)) {
+    violations.push(
+      `B/C: the bound ${bound} at n=${n} does not tolerate the second event`,
+    );
+  }
+  if (3 / n < bound) {
+    violations.push(
+      `B/C: the bound ${bound} at n=${n} does not reject the third event`,
+    );
+  }
+
+  // E: the frozen observations must still be the banked measurements, and the
+  // bar must still be max(subjects) scaled by the observed spread.
+  const observed = bars.signalE.observations.map((entry) => entry.value);
+  const banked = [
+    reports.backend.verdicts.webgpu_over_webgl_render_ms_ratio,
+    reports.request.verdict.honest_render_ms.ratio,
+    reports.cpu.webgpu.medianRenderMs / reports.cpu.webgl.medianRenderMs,
+  ];
+  if (
+    observed.length !== banked.length ||
+    observed.some((value, index) => value !== banked[index])
+  ) {
+    violations.push(
+      `E: frozen observations ${JSON.stringify(observed)} are not the banked measurements ${JSON.stringify(banked)}`,
+    );
+  }
+  const subjects = bars.signalE.observations
+    .filter((entry) => entry.subject)
+    .map((entry) => entry.value);
+  const derived =
+    Math.max(...subjects) * (Math.max(...observed) / Math.min(...observed));
+  if (bars.signalE.maxRatioInclusive !== derived) {
+    violations.push(
+      `E: bar ${bars.signalE.maxRatioInclusive} is not max(subjects) scaled by the observed spread ${derived}`,
+    );
+  }
+
+  // D: the census bar is zero because the instrument is a census, not a sample.
+  if (bars.signalD.requiredWebglNonNull !== 0) {
+    violations.push(
+      `D: the census bar is ${bars.signalD.requiredWebglNonNull}, not zero`,
+    );
+  }
+
+  return violations;
+}
 
 export function ruleOfThreeBound(n) {
   if (!Number.isInteger(n) || n <= 0) {
@@ -1062,6 +1272,10 @@ function provenance() {
     head: safeGitHead(REPOSITORY_ROOT) ?? null,
     sourceDirty: sourceDirty(),
     base: BASE,
+    baselineFixture: path
+      .relative(REPOSITORY_ROOT, BASELINE_FIXTURE_PATH)
+      .split(path.sep)
+      .join("/"),
     note: "source identity is HEAD plus any unlanded working-tree changes; a dirty tree may not be reported as identity = tip",
   };
 }
@@ -1080,10 +1294,12 @@ function serializeArtifact(artifact) {
 }
 
 function writeArtifact(artifact, preserveRed) {
+  assertLiveWriteTarget(OUTPUT_PATH);
   fs.mkdirSync(OUTPUT_DIRECTORY, { recursive: true });
   const serialized = serializeArtifact(artifact);
   fs.writeFileSync(OUTPUT_PATH, serialized);
   if (preserveRed && artifact.status !== "PASS") {
+    assertLiveWriteTarget(FIRST_RED_OUTPUT_PATH);
     preserveFirstRedEvidence(FIRST_RED_OUTPUT_PATH, serialized);
   }
   return serialized;
@@ -1208,6 +1424,10 @@ function spawnProbe(definition, active, acquisition, reportRecord) {
   const record = {
     probe: definition.probe,
     argv: [definition.probe, ...definition.argv],
+    offlinePin: definition.offlinePin,
+    ...(definition.offlinePinNote
+      ? { offlinePinNote: definition.offlinePinNote }
+      : {}),
     startedAt,
     exitCode: null,
     signal: null,
@@ -1224,7 +1444,13 @@ function spawnProbe(definition, active, acquisition, reportRecord) {
     const child = spawn(process.execPath, argv, {
       cwd: REPOSITORY_ROOT,
       stdio: "inherit",
-      env: { ...process.env, PROBE_BASE: BASE },
+      env: {
+        ...process.env,
+        PROBE_BASE: BASE,
+        ...(definition.offlinePin === "gate-env"
+          ? { [OFFLINE_ENV_KEY]: "1" }
+          : {}),
+      },
     });
     active.child = child;
     active.childRecord = record;
@@ -1396,6 +1622,10 @@ function parseMode(argv) {
 }
 
 export async function main(argv = process.argv.slice(2)) {
+  // Before anything is written: a run that could reach the baseline must not
+  // start. Ordering matters -- the first thing acquire mode does is write a
+  // RUNNING artifact.
+  assertBaselineIsolation();
   const provisionalMode = argv.includes("--adjudicate-only")
     ? "adjudicate-only"
     : "acquire";
@@ -1406,6 +1636,16 @@ export async function main(argv = process.argv.slice(2)) {
     provenance: provenance(),
     acquisition: {
       order: ACQUISITION_ORDER,
+      offlinePin: {
+        envKey: OFFLINE_ENV_KEY,
+        pinned: ACQUISITION_DEFINITIONS.filter(
+          (entry) => entry.offlinePin === "gate-env",
+        ).map((entry) => entry.probe),
+        selfPinned: ACQUISITION_DEFINITIONS.filter(
+          (entry) => entry.offlinePin === "self",
+        ).map((entry) => entry.probe),
+        why: "tile count varies with the network, and Signal A reads a resource-write share of self time against a frozen bar",
+      },
       preflight: { attempted: false },
       children: [],
     },
