@@ -40,7 +40,8 @@
 // USAGE
 //   node Tools/verify-landing-compliance.mjs            (npm run verify-landing)
 //       Default range: `<upstream>..HEAD` when the branch has an upstream,
-//       otherwise the last 20 commits.
+//       `origin/main..HEAD` when HEAD is detached and that ref exists, otherwise
+//       the last 20 commits. A branch with no upstream keeps the last-20 form.
 //   node Tools/verify-landing-compliance.mjs --range origin/main..HEAD
 //   node Tools/verify-landing-compliance.mjs --last 30
 //   node Tools/verify-landing-compliance.mjs --trusted-baseline-batch 1043
@@ -111,13 +112,14 @@ const POLICY_DEPENDENCY_MANIFEST = Object.freeze([
 ]);
 
 /**
- * Immutable minimum marker behavior. This baseline deliberately lives outside
+ * Immutable marker behavior. This baseline deliberately lives outside
  * MARKER_RULES: deleting a complete rule object together with its mutable
- * example must not make the grammar's own self-test vacuous. New self-tested
- * rules are allowed, but these ids, their relative order, global RegExp shape,
- * exact positive matches, and registered non-matches remain required. The
- * controls pin externally meaningful behavior rather than regex source text,
- * so an equivalent refactor or a compatible widening does not fail preflight.
+ * example must not make the grammar's own self-test vacuous. Every grammar
+ * rule must have a control in the same add-only order; those ids, global RegExp
+ * shape, exact positive matches, and registered non-matches remain required.
+ * The controls pin externally meaningful behavior rather than regex source
+ * text, so an equivalent refactor or a compatible widening does not fail
+ * preflight.
  */
 const REQUIRED_MARKER_RULE_CONTROLS = Object.freeze([
   Object.freeze({
@@ -158,6 +160,20 @@ const REQUIRED_MARKER_RULE_CONTROLS = Object.freeze([
       "C123-4",
       "C15-g6",
     ]),
+  }),
+  Object.freeze({
+    id: "parity-report-row-id",
+    positives: Object.freeze([
+      Object.freeze({
+        text: "Q13-PLAIN-HDR-GAMMA-CORE owns this",
+        matches: ["Q13-PLAIN-HDR-GAMMA-CORE"],
+      }),
+      Object.freeze({
+        text: "Q1-AA and Q99-Z9-CORE",
+        matches: ["Q1-AA", "Q99-Z9-CORE"],
+      }),
+    ]),
+    negatives: Object.freeze(["Q123-PLAIN", "Q13-plain", "Q13-", "XQ13-PLAIN"]),
   }),
   Object.freeze({
     id: "campaign-name",
@@ -283,6 +299,35 @@ const REQUIRED_MARKER_RULE_CONTROLS = Object.freeze([
     ]),
   }),
   Object.freeze({
+    id: "all-caps-fix-label",
+    positives: Object.freeze([
+      Object.freeze({
+        text: "POINT-SPRITE-SHAPE",
+        matches: ["POINT-SPRITE-SHAPE"],
+      }),
+      Object.freeze({
+        text: "PARITY-F16-POSTPROCESS",
+        matches: ["PARITY-F16-POSTPROCESS"],
+      }),
+      Object.freeze({
+        text: "WIRE-PP-LIBRARY-BUILTINS",
+        matches: ["WIRE-PP-LIBRARY-BUILTINS"],
+      }),
+      Object.freeze({
+        text: "PARITY-RTE-ELLIPSOID-AWARE",
+        matches: ["PARITY-RTE-ELLIPSOID-AWARE"],
+      }),
+      Object.freeze({ text: "FEAT-3DT2-03", matches: ["FEAT-3DT2-03"] }),
+    ]),
+    negatives: Object.freeze([
+      "CC-BY-SA",
+      "2026-05-02",
+      "2012-08-01T00",
+      "NEW-WEBGPU-PIPELINE-KEY",
+      "FIX-WEBGPU-PIPELINE-KEY",
+    ]),
+  }),
+  Object.freeze({
     id: "numbered-bug-id",
     positives: Object.freeze([
       Object.freeze({ text: "the BUG-12 clear loop", matches: ["BUG-12"] }),
@@ -368,6 +413,26 @@ const REQUIRED_MARKER_RULE_CONTROLS = Object.freeze([
       "error != null",
       "distance ± epsilon",
       "angle → radians",
+    ]),
+  }),
+  Object.freeze({
+    id: "fork-id",
+    positives: Object.freeze([
+      Object.freeze({
+        text: "FORK-34 keeps synchronous picks on the current encoder.",
+        matches: ["FORK-34"],
+      }),
+      Object.freeze({
+        text: "FORK-99 and FORK-123",
+        matches: ["FORK-99", "FORK-123"],
+      }),
+    ]),
+    negatives: Object.freeze([
+      "FORK",
+      "FORK-",
+      "fork-34",
+      "FORK-ABC",
+      "XFORK-34",
     ]),
   }),
 ]);
@@ -1021,13 +1086,17 @@ function validatePolicySemantics(policy) {
   }
 
   const ids = markerRules.map((rule) => rule?.id);
-  const projectedRequiredOrder = ids.filter((id) => requiredIds.includes(id));
-  requirePolicyValue(
-    failures,
-    "required-marker-rule-order",
-    projectedRequiredOrder,
-    requiredIds,
-  );
+  requirePolicyValue(failures, "required-marker-rule-order", ids, requiredIds);
+  for (const id of ids) {
+    if (!requiredIds.includes(id)) {
+      const label = JSON.stringify(id);
+      failures.push({
+        control: "marker-rule-control-coverage",
+        expected: `marker rule ${label} has a behavioral control`,
+        actual: `marker rule ${label} is uncontrolled; a control must be added for this rule id`,
+      });
+    }
+  }
   requirePolicyValue(
     failures,
     "marker-rule-ids-unique",
@@ -1996,7 +2065,7 @@ export function parseArgs(argv) {
  * Select the requested range before resolving either endpoint.
  *
  * @param {{range: string|null, last: number|null}} options Parsed options.
- * @returns {{baseRevision: string, headRevision: string, requested: string, kind: "range"|"last"|"default-upstream"|"default-last", count?: number}} Requested range.
+ * @returns {{baseRevision: string, headRevision: string, requested: string, kind: "range"|"last"|"default-upstream"|"default-last"|"default-detached-origin-main"|"default-detached-last", count?: number}} Requested range.
  */
 function selectRange(options) {
   if (options.range !== null) {
@@ -2029,12 +2098,32 @@ function selectRange(options) {
       kind: "default-upstream",
     };
   } catch (error) {
-    if (!isMissingUpstreamFailure(error)) {
+    const detachedHead = isDetachedHeadUpstreamFailure(error);
+    if (!detachedHead && !isMissingUpstreamFailure(error)) {
       throw error;
     }
     const upstreamObject = resolveQuietObject("@{u}^{commit}");
     if (upstreamObject !== null) {
       throw error;
+    }
+    if (detachedHead) {
+      const originMain = "refs/remotes/origin/main";
+      const originMainObject = resolveQuietObject(`${originMain}^{commit}`);
+      if (originMainObject !== null) {
+        return {
+          baseRevision: originMain,
+          headRevision: "HEAD",
+          requested: `${originMain}..HEAD (detached HEAD; using origin/main fallback)`,
+          kind: "default-detached-origin-main",
+        };
+      }
+      return {
+        baseRevision: `HEAD~${DEFAULT_LAST}`,
+        headRevision: "HEAD",
+        requested: `last ${DEFAULT_LAST} commit(s) (detached HEAD; origin/main fallback unavailable)`,
+        kind: "default-detached-last",
+        count: DEFAULT_LAST,
+      };
     }
     return {
       baseRevision: `HEAD~${DEFAULT_LAST}`,
@@ -2226,7 +2315,9 @@ function resolveRangeEndpoints(selection) {
   }
   if (unavailable.length > 0) {
     const reason =
-      selection.kind === "last" || selection.kind === "default-last"
+      selection.kind === "last" ||
+      selection.kind === "default-last" ||
+      selection.kind === "default-detached-last"
         ? `${selection.requested} exceeds the locally available commit history`
         : `selected revision endpoint(s) are unavailable: ${unavailable.join(", ")}`;
     return { unavailable, reason };
@@ -2799,6 +2890,9 @@ const MISSING_OBJECT_DIAGNOSTIC =
 const MISSING_UPSTREAM_DIAGNOSTIC =
   /(?:no upstream configured|no such branch|unknown revision.*@\{u\}|ambiguous argument ['"]?@\{u\})/iu;
 
+/** The detached-HEAD no-upstream diagnostic, which selects its own fallback. */
+const DETACHED_HEAD_UPSTREAM_DIAGNOSTIC = /HEAD does not point to a branch/iu;
+
 /** Return a Git subprocess's stderr as text without assuming its encoding. */
 function gitFailureText(error) {
   if (Buffer.isBuffer(error?.stderr)) {
@@ -2839,6 +2933,31 @@ function isMissingUpstreamFailure(error) {
   return (
     Number.isInteger(error?.status) &&
     MISSING_UPSTREAM_DIAGNOSTIC.test(gitFailureText(error))
+  );
+}
+
+/** Resolve one symbolic ref with the exact quiet-absence classification. */
+function resolveQuietSymbolicRef(name) {
+  try {
+    const resolved = git(["symbolic-ref", "--quiet", name]).trim();
+    if (resolved === "") {
+      throw new Error(`Git returned an empty symbolic ref target for ${name}`);
+    }
+    return resolved;
+  } catch (error) {
+    if (isQuietRevisionAbsence(error)) {
+      return null;
+    }
+    throw error;
+  }
+}
+
+/** Whether the upstream diagnostic is backed by a positively detached HEAD. */
+function isDetachedHeadUpstreamFailure(error) {
+  return (
+    Number.isInteger(error?.status) &&
+    DETACHED_HEAD_UPSTREAM_DIAGNOSTIC.test(gitFailureText(error)) &&
+    resolveQuietSymbolicRef("HEAD") === null
   );
 }
 
@@ -3750,7 +3869,9 @@ async function main() {
       [
         "verify-landing-compliance — re-check landed commits against the landing rules.",
         "",
-        "  --range <A..B>   verify this range (default: <upstream>..HEAD)",
+        "  --range <A..B>   verify this range",
+        "                    default: <upstream>..HEAD; detached HEAD prefers",
+        "                    origin/main..HEAD, then the last 20 commits",
         "  --last <N>       verify the last N commits",
         "  --trusted-baseline-batch <N>",
         "                    use an externally trusted complete-history batch baseline",

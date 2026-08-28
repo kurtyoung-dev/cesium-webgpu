@@ -39,6 +39,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+import { MARKER_RULES } from "./c16/lib/marker-grammar.mjs";
 import { parseArgs } from "./verify-landing-compliance.mjs";
 
 const ROOT = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
@@ -704,6 +705,13 @@ function createHistoryFixture(t, options = {}) {
   return { root, base: commitFixture(root, 100, "fixture baseline") };
 }
 
+/** Create enough immutable fixture ancestry for the default HEAD~20 range. */
+function createLongHistoryFixture(t) {
+  const { root, base } = createHistoryFixture(t, { cleanListed: true });
+  createDeepBaselineFixture(root, base, 21);
+  return { root, base, head: fixtureGit(root, ["rev-parse", "HEAD"]) };
+}
+
 /** Apply one asserted source mutation only to a disposable fixture policy. */
 function mutateFixturePolicy(root, relative, mutate) {
   const absolute = path.join(root, ...relative.split("/"));
@@ -741,6 +749,60 @@ function markerRuleSpan(source, id) {
       : source.lastIndexOf("  {", nextIdOffset);
   assert.ok(end > start, `missing marker rule end ${id}`);
   return { start, end, text: source.slice(start, end) };
+}
+
+/** Parse one trusted test regex literal without evaluating fixture source. */
+function parsePatternLiteral(patternLiteral) {
+  const closingSlash = patternLiteral.lastIndexOf("/");
+  assert.ok(
+    patternLiteral.startsWith("/") && closingSlash > 0,
+    `invalid marker pattern literal: ${patternLiteral}`,
+  );
+  return new RegExp(
+    patternLiteral.slice(1, closingSlash),
+    patternLiteral.slice(closingSlash + 1),
+  );
+}
+
+/** Return exact global matches without sharing mutable RegExp.lastIndex state. */
+function patternMatches(pattern, text) {
+  return Array.from(
+    text.matchAll(new RegExp(pattern.source, pattern.flags)),
+    (match) => match[0],
+  );
+}
+
+/** Replace one fixture pattern after proving the mutant changes a real control. */
+function replaceMarkerRulePattern(source, id, patternLiteral, control) {
+  const span = markerRuleSpan(source, id);
+  const patternStart = span.text.indexOf("    pattern:");
+  const descriptionStart = span.text.indexOf("    description:", patternStart);
+  assert.ok(patternStart >= 0 && descriptionStart > patternStart);
+  const newline = source.includes("\r\n") ? "\r\n" : "\n";
+  const rewritten =
+    span.text.slice(0, patternStart) +
+    `    pattern: ${patternLiteral},${newline}` +
+    span.text.slice(descriptionStart);
+  assert.notEqual(
+    rewritten,
+    span.text,
+    `marker pattern mutant was a no-op: ${id}`,
+  );
+  const realRule = MARKER_RULES.find((rule) => rule.id === id);
+  assert.ok(realRule, `missing real marker rule ${id}`);
+  const realMatches = patternMatches(realRule.pattern, control.text);
+  const mutantMatches = patternMatches(
+    parsePatternLiteral(patternLiteral),
+    control.text,
+  );
+  assert.deepEqual(realMatches, control.expected);
+  assert.deepEqual(mutantMatches, control.actual);
+  assert.notDeepEqual(
+    mutantMatches,
+    realMatches,
+    `marker pattern mutant was semantically equivalent on its control: ${id}`,
+  );
+  return source.slice(0, span.start) + rewritten + source.slice(span.end);
 }
 
 /** Delete one complete marker rule, including its mutable example. */
@@ -885,6 +947,130 @@ test("an empty range is STRUCTURAL, not a pass", () => {
   assert.match(result.output, /nothing was verified/);
 });
 
+test("detached HEAD uses origin/main when that fallback is available", (t) => {
+  const { root, base } = createHistoryFixture(t, { cleanListed: true });
+  writeFixture(root, SOURCE_PATH, "export const fixture = 1;\n");
+  const head = commitFixture(root, 101, "detached origin fallback control");
+  configureFixtureUpstream(root, base);
+  const upstream = fixtureGit(root, ["rev-parse", "--abbrev-ref", "@{u}"]);
+
+  const ordinary = verify(["--json"], { repoRoot: root });
+  assert.equal(ordinary.status, 0, ordinary.output);
+  assert.equal(reportOf(ordinary).requestedRange, `${upstream}..HEAD`);
+
+  fixtureGit(root, ["update-ref", "refs/remotes/origin/main", base]);
+  fixtureGit(root, ["checkout", "--quiet", "--detach"]);
+  const detached = verify(["--json"], { repoRoot: root });
+  assert.notEqual(detached.status, 2, detached.output);
+  assert.equal(detached.status, 0, detached.output);
+  const report = reportOf(detached);
+  assert.equal(
+    report.requestedRange,
+    "refs/remotes/origin/main..HEAD (detached HEAD; using origin/main fallback)",
+  );
+  assert.equal(report.rangeBase, base);
+  assert.equal(report.rangeHead, head);
+  assert.doesNotMatch(detached.output, /FAILED TO RUN/u);
+});
+
+test("detached HEAD names the last-20 fallback when origin/main is absent", (t) => {
+  const { root } = createHistoryFixture(t, { cleanListed: true });
+  const ordinary = verify(["--json"], { repoRoot: root });
+  assert.equal(ordinary.status, 3, ordinary.output);
+  assert.equal(
+    reportOf(ordinary).requestedRange,
+    "last 20 commit(s) (no upstream configured)",
+  );
+
+  fixtureGit(root, ["checkout", "--quiet", "--detach"]);
+  const detached = verify(["--json"], { repoRoot: root });
+  assert.notEqual(detached.status, 2, detached.output);
+  assert.equal(detached.status, 3, detached.output);
+  const report = reportOf(detached);
+  const requested =
+    "last 20 commit(s) (detached HEAD; origin/main fallback unavailable)";
+  assert.equal(report.requestedRange, requested);
+  assert.equal(
+    report.reason,
+    `${requested} exceeds the locally available commit history`,
+  );
+  assert.deepEqual(report.unavailableRevisions, ["HEAD~20"]);
+  assert.doesNotMatch(detached.output, /FAILED TO RUN/u);
+});
+
+test("detached HEAD ignores a local branch named origin/main", (t) => {
+  const { root, head } = createLongHistoryFixture(t);
+  const localBranchCommit = fixtureGit(root, ["rev-parse", "HEAD~2"]);
+  fixtureGit(root, ["branch", "origin/main", localBranchCommit]);
+  assert.equal(
+    fixtureGit(root, [
+      "for-each-ref",
+      "--format=%(refname)",
+      "refs/remotes/origin/main",
+    ]),
+    "",
+  );
+
+  fixtureGit(root, ["checkout", "--quiet", "--detach"]);
+  const fallbackBase = fixtureGit(root, ["rev-parse", "HEAD~20"]);
+  const result = verify(["--json"], { repoRoot: root });
+  assert.equal(result.status, 0, result.output);
+  const report = reportOf(result);
+  assert.equal(
+    report.requestedRange,
+    "last 20 commit(s) (detached HEAD; origin/main fallback unavailable)",
+  );
+  assert.equal(report.rangeBase, fallbackBase);
+  assert.notEqual(report.rangeBase, localBranchCommit);
+  assert.equal(report.rangeHead, head);
+  assert.doesNotMatch(result.output, /using origin\/main fallback/u);
+});
+
+test("detached HEAD ignores a tag named origin/main", (t) => {
+  const { root, head } = createLongHistoryFixture(t);
+  const tagCommit = fixtureGit(root, ["rev-parse", "HEAD~2"]);
+  fixtureGit(root, ["tag", "origin/main", tagCommit]);
+  assert.equal(
+    fixtureGit(root, [
+      "for-each-ref",
+      "--format=%(refname)",
+      "refs/remotes/origin/main",
+    ]),
+    "",
+  );
+
+  fixtureGit(root, ["checkout", "--quiet", "--detach"]);
+  const fallbackBase = fixtureGit(root, ["rev-parse", "HEAD~20"]);
+  const result = verify(["--json"], { repoRoot: root });
+  assert.equal(result.status, 0, result.output);
+  const report = reportOf(result);
+  assert.equal(
+    report.requestedRange,
+    "last 20 commit(s) (detached HEAD; origin/main fallback unavailable)",
+  );
+  assert.equal(report.rangeBase, fallbackBase);
+  assert.notEqual(report.rangeBase, tagCommit);
+  assert.equal(report.rangeHead, head);
+  assert.doesNotMatch(result.output, /using origin\/main fallback/u);
+});
+
+test("symbolic HEAD targeting a non-branch ref surfaces the Git failure", (t) => {
+  const { root, head } = createLongHistoryFixture(t);
+  fixtureGit(root, ["update-ref", "refs/tags/head-target", head]);
+  fixtureGit(root, ["symbolic-ref", "HEAD", "refs/tags/head-target"]);
+  assert.equal(
+    fixtureGit(root, ["symbolic-ref", "--quiet", "HEAD"]),
+    "refs/tags/head-target",
+  );
+
+  const result = verify(["--json"], { repoRoot: root });
+  assert.equal(result.status, 2, result.output);
+  assert.match(result.output, /FAILED TO RUN/u);
+  assert.match(result.output, /HEAD does not point to a branch/u);
+  assert.doesNotMatch(result.output, /detached HEAD/u);
+  assert.doesNotMatch(result.output, /verify-landing: PASS/u);
+});
+
 test("hermetic ordinary clean and failing marker controls diverge", (t) => {
   const tempBaseline = historyTempDirectories();
   const { root, base } = createHistoryFixture(t, { cleanListed: true });
@@ -948,15 +1134,15 @@ test("hermetic ordinary clean and failing marker controls diverge", (t) => {
   ]);
   assert.equal(
     cleanReport.policyDependencies.semanticControls.requiredMarkerRules,
-    14,
+    17,
   );
   assert.equal(
     cleanReport.policyDependencies.semanticControls.requiredMarkerPositiveCases,
-    36,
+    45,
   );
   assert.equal(
     cleanReport.policyDependencies.semanticControls.requiredMarkerNegativeCases,
-    63,
+    77,
   );
 
   writeFixture(
@@ -1202,6 +1388,91 @@ test("campaign-row controls reject narrow and overmatching regexes", async (t) =
   }
 });
 
+test("new marker controls reject narrowing and widening", async (t) => {
+  const mutants = [
+    {
+      name: "parity-report-row-id narrowing",
+      id: "parity-report-row-id",
+      pattern: String.raw`/\bQ\d{1,2}-[A-Z][A-Z-]+\b/g`,
+      control: "required-marker-positive:parity-report-row-id:1",
+      text: "Q1-AA and Q99-Z9-CORE",
+      expected: ["Q1-AA", "Q99-Z9-CORE"],
+      actual: ["Q1-AA"],
+    },
+    {
+      name: "parity-report-row-id widening",
+      id: "parity-report-row-id",
+      pattern: String.raw`/\bQ\d{1,3}-[A-Z][A-Z0-9-]+\b/g`,
+      control: "required-marker-negative:parity-report-row-id:0",
+      text: "Q123-PLAIN",
+      expected: [],
+      actual: ["Q123-PLAIN"],
+    },
+    {
+      name: "all-caps-fix-label narrowing",
+      id: "all-caps-fix-label",
+      pattern: String.raw`/(?<![A-Z0-9_-])(?!(?:NEW|BUG|EPIC|FIX)-)(?!(?:CC-BY-SA|YYYY-MM-DD)(?![A-Z0-9_-]))[A-Z][A-Z0-9]+(?:-[A-Z]{2,}){2,}(?![A-Z0-9_-])/g`,
+      control: "required-marker-positive:all-caps-fix-label:1",
+      text: "PARITY-F16-POSTPROCESS",
+      expected: ["PARITY-F16-POSTPROCESS"],
+      actual: [],
+    },
+    {
+      name: "all-caps-fix-label widening",
+      id: "all-caps-fix-label",
+      pattern: String.raw`/(?<![A-Z0-9_-])(?!(?:NEW|BUG|EPIC|FIX)-)(?!(?:CC-BY-SA|YYYY-MM-DD)(?![A-Z0-9_-]))[A-Z0-9][A-Z0-9]+(?:-[A-Z0-9]{2,}){2,}(?![A-Z0-9_-])/g`,
+      control: "required-marker-negative:all-caps-fix-label:1",
+      text: "2026-05-02",
+      expected: [],
+      actual: ["2026-05-02"],
+    },
+    {
+      name: "fork-id narrowing",
+      id: "fork-id",
+      pattern: String.raw`/\bFORK-\d{2}\b/g`,
+      control: "required-marker-positive:fork-id:1",
+      text: "FORK-99 and FORK-123",
+      expected: ["FORK-99", "FORK-123"],
+      actual: ["FORK-99"],
+    },
+    {
+      name: "fork-id widening",
+      id: "fork-id",
+      pattern: String.raw`/FORK-\d+\b/g`,
+      control: "required-marker-negative:fork-id:4",
+      text: "XFORK-34",
+      expected: [],
+      actual: ["FORK-34"],
+    },
+  ];
+
+  for (const mutant of mutants) {
+    await t.test(mutant.name, (subtest) => {
+      const { root, base } = createHistoryFixture(subtest, {
+        cleanListed: true,
+      });
+      writeFixture(root, SOURCE_PATH, "export const fixture = 1;\n");
+      const head = commitFixture(root, 101, `${mutant.name} control`);
+      mutateFixturePolicy(root, MARKER_GRAMMAR_PATH, (source) =>
+        replaceMarkerRulePattern(source, mutant.id, mutant.pattern, mutant),
+      );
+
+      const result = verify(["--range", `${base}..${head}`, "--json"], {
+        repoRoot: root,
+      });
+      assert.equal(result.status, 3, result.output);
+      const report = reportOf(result);
+      assert.deepEqual(report.brokenMarkerRules, []);
+      assert.equal(report.policyDependencies.stableAtEnd, null);
+      const failure = report.policySemanticFailures.find(
+        (entry) => entry.control === mutant.control,
+      );
+      assert.deepEqual(failure?.expected, mutant.expected);
+      assert.deepEqual(failure?.actual, mutant.actual);
+    });
+  }
+});
+
 test("a non-array marker-rules export is STRUCTURAL, not a verifier error", (t) => {
   const { root, base } = createHistoryFixture(t, { cleanListed: true });
   writeFixture(root, SOURCE_PATH, "export const fixture = 1;\n");
@@ -1358,27 +1629,42 @@ test("reordering required marker rules is STRUCTURAL", (t) => {
   );
 });
 
-test("a self-tested add-only marker rule remains an allowed superset", (t) => {
+test("an add-only marker rule without a behavioral control fails closed", (t) => {
   const { root, base } = createHistoryFixture(t, { cleanListed: true });
   writeFixture(root, SOURCE_PATH, "export const fixture = 1;\n");
   const head = commitFixture(root, 101, "add-only grammar inverse control");
+
+  const baseline = verify(["--range", `${base}..${head}`, "--json"], {
+    repoRoot: root,
+  });
+  assert.equal(baseline.status, 0, baseline.output);
+  assert.equal(
+    reportOf(baseline).policyDependencies.semanticControls.requiredMarkerRules,
+    17,
+  );
+
   mutateFixturePolicy(root, MARKER_GRAMMAR_PATH, addMarkerRule);
 
   const result = verify(["--range", `${base}..${head}`, "--json"], {
     repoRoot: root,
   });
-  assert.equal(result.status, 0, result.output);
+  assert.equal(result.status, 3, result.output);
   const report = reportOf(result);
-  assert.equal(report.ok, true);
-  assert.equal(report.policyDependencies.stableAtEnd, true);
-  assert.equal(
-    report.policyDependencies.markerRuleIds.at(-1),
-    "add-only-control",
+  assert.equal(report.structural, true);
+  assert.equal(report.policyDependencies.stableAtEnd, null);
+  assert.equal(report.markerRuleIds.at(-1), "add-only-control");
+  const coverage = report.policySemanticFailures.find(
+    (failure) => failure.control === "marker-rule-control-coverage",
   );
   assert.equal(
-    report.policyDependencies.semanticControls.requiredMarkerRules,
-    14,
+    coverage?.expected,
+    'marker rule "add-only-control" has a behavioral control',
   );
+  assert.equal(
+    coverage?.actual,
+    'marker rule "add-only-control" is uncontrolled; a control must be added for this rule id',
+  );
+  assert.doesNotMatch(result.output, /verify-landing: PASS/u);
 });
 
 test("LF-canonical policy identity is portable across worktree line endings", (t) => {
