@@ -463,11 +463,11 @@ test("the shipped clean list and grandfather ratchets are current", async () => 
     covered > 0,
     "an empty clean list makes --verify-cleanlist prove nothing",
   );
-  assert.match(result.output, /23 grandfather rows/);
-  assert.match(result.output, /GRANDFATHERED 126 current findings/);
+  assert.match(result.output, /22 grandfather rows/);
+  assert.match(result.output, /GRANDFATHERED 122 current findings/);
 
   const grandfatherRows = await readGrandfatherList();
-  assert.equal(grandfatherRows.length, 23);
+  assert.equal(grandfatherRows.length, 22);
   assert.deepEqual(
     Object.fromEntries(
       [...new Set(grandfatherRows.map((row) => row.ruleId))]
@@ -478,7 +478,7 @@ test("the shipped clean list and grandfather ratchets are current", async () => 
         ]),
     ),
     {
-      "all-caps-fix-label": 18,
+      "all-caps-fix-label": 17,
       "campaign-row-id": 3,
       "parity-report-row-id": 2,
     },

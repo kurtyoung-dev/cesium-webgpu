@@ -122,6 +122,27 @@ describe(
       expect(batchTexture.getShow(0)).toEqual(false);
     });
 
+    it("advances the feature resource revision only for show changes", function () {
+      const batchTexture = new BatchTexture({
+        owner: mockOwner,
+        featuresLength: 1,
+      });
+
+      expect(batchTexture._featureResourceRevision).toBe(0);
+
+      batchTexture.setShow(0, true);
+      expect(batchTexture._featureResourceRevision).toBe(0);
+
+      batchTexture.setShow(0, false);
+      expect(batchTexture._featureResourceRevision).toBe(1);
+
+      batchTexture.setShow(0, false);
+      expect(batchTexture._featureResourceRevision).toBe(1);
+
+      batchTexture.setShow(0, true);
+      expect(batchTexture._featureResourceRevision).toBe(2);
+    });
+
     it("setColor throws with invalid batchId", function () {
       const batchTexture = new BatchTexture({
         owner: mockOwner,
@@ -255,6 +276,56 @@ describe(
       expect(batchTexture.getColor(0, result)).toEqual(Color.WHITE);
       batchTexture.setColor(0, Color.YELLOW);
       expect(batchTexture.getColor(0, result)).toEqual(Color.YELLOW);
+    });
+
+    it("advances the feature resource revision only for color changes", function () {
+      const batchTexture = new BatchTexture({
+        owner: mockOwner,
+        featuresLength: 1,
+      });
+
+      expect(batchTexture._featureResourceRevision).toBe(0);
+
+      batchTexture.setColor(0, Color.WHITE);
+      expect(batchTexture._featureResourceRevision).toBe(0);
+
+      batchTexture.setColor(0, Color.YELLOW);
+      expect(batchTexture._featureResourceRevision).toBe(1);
+
+      batchTexture.setColor(0, Color.YELLOW);
+      expect(batchTexture._featureResourceRevision).toBe(1);
+
+      batchTexture.setColor(0, Color.WHITE);
+      expect(batchTexture._featureResourceRevision).toBe(2);
+    });
+
+    it("advances the feature resource revision for layout reconfiguration", function () {
+      const batchTexture = new BatchTexture({
+        owner: mockOwner,
+        featuresLength: 4,
+      });
+      const frameState = {
+        context: {
+          defaultTexture: undefined,
+          limits: {
+            maximumTextureSize: 2,
+          },
+        },
+        passes: {
+          pick: false,
+          postProcess: false,
+        },
+      };
+
+      batchTexture.update(mockTileset, frameState, false);
+      expect(batchTexture._featureResourceRevision).toBe(1);
+
+      batchTexture.update(mockTileset, frameState, false);
+      expect(batchTexture._featureResourceRevision).toBe(1);
+
+      frameState.context.limits.maximumTextureSize = 4;
+      batchTexture.update(mockTileset, frameState, false);
+      expect(batchTexture._featureResourceRevision).toBe(2);
     });
 
     it("preserves omitted pass-derived legacy pick texture demand", function () {

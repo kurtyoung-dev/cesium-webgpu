@@ -7,7 +7,6 @@
 packages/engine/Source/Renderer/WebGPU/cesium-js-types.d.ts	all-caps-fix-label  # 2026-08-21 grammar widening
 packages/engine/Source/Renderer/WebGPU/cesium-js-types.d.ts	campaign-row-id  # 2026-08-21 grammar widening
 packages/engine/Source/Renderer/WebGPU/WebGPUContext.ts	all-caps-fix-label  # 2026-08-21 grammar widening
-packages/engine/Source/Renderer/WebGPU/WebGPUModelFeatureId.js	all-caps-fix-label  # 2026-08-21 grammar widening
 packages/engine/Source/Renderer/WebGPU/WebGPUModelMetadata.js	all-caps-fix-label  # 2026-08-21 grammar widening
 packages/engine/Source/Renderer/WebGPU/WebGPUModelPipelineCache.ts	all-caps-fix-label  # 2026-08-21 grammar widening
 packages/engine/Source/Renderer/WebGPU/WebGPUModelTopology.ts	all-caps-fix-label  # 2026-08-21 grammar widening

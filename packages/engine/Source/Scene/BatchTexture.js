@@ -43,6 +43,7 @@ class BatchTexture {
     this._batchValues = undefined; // Per-feature RGBA (A is based on the color's alpha and feature's show property)
 
     this._batchValuesDirty = false;
+    this._featureResourceRevision = 0;
     this._batchTexture = undefined;
     this._defaultTexture = undefined;
 
@@ -108,7 +109,7 @@ class BatchTexture {
       const offset = batchId * 4 + 3;
       batchValues[offset] = show ? showAlphaProperties[propertyOffset + 1] : 0;
 
-      this._batchValuesDirty = true;
+      markFeatureResourcesChanged(this, true);
     }
   }
 
@@ -207,7 +208,7 @@ class BatchTexture {
         --this._translucentFeaturesLength;
       }
 
-      this._batchValuesDirty = true;
+      markFeatureResourcesChanged(this, true);
 
       if (defined(this._colorChangedCallback)) {
         this._colorChangedCallback(batchId, color);
@@ -296,21 +297,30 @@ class BatchTexture {
     }
 
     if (this._batchValuesDirty) {
-      this._batchValuesDirty = false;
+      const batchValues = this._batchValues;
+      const featureResourceRevision = this._featureResourceRevision;
+      let uploadSucceeded = false;
+      try {
+        // Create batch texture on-demand
+        if (!defined(this._batchTexture)) {
+          this._batchTexture = createTexture(this, context, batchValues);
 
-      // Create batch texture on-demand
-      if (!defined(this._batchTexture)) {
-        this._batchTexture = createTexture(this, context, this._batchValues);
-
-        // Make sure the tileset statistics are updated the frame when the
-        // batch texture is created.
-        if (defined(this._statistics)) {
-          this._statistics.batchTableByteLength +=
-            this._batchTexture.sizeInBytes;
+          // Make sure the tileset statistics are updated the frame when the
+          // batch texture is created.
+          if (defined(this._statistics)) {
+            this._statistics.batchTableByteLength +=
+              this._batchTexture.sizeInBytes;
+          }
         }
-      }
 
-      updateBatchTexture(this); // Apply per-feature show/color updates
+        updateBatchTexture(this); // Apply per-feature show/color updates
+        uploadSucceeded = true;
+      } finally {
+        this._batchValuesDirty =
+          !uploadSucceeded ||
+          this._batchValues !== batchValues ||
+          this._featureResourceRevision !== featureResourceRevision;
+      }
     }
   }
 
@@ -465,6 +475,16 @@ function configureTextureLayout(batchTexture, maximumTextureSize) {
   const height = Math.ceil(featuresLength / maximumTextureSize);
   const stepX = 1.0 / width;
   const stepY = 1.0 / height;
+  const requiredByteLength = width * height * 4;
+  const oldValues = batchTexture._batchValues;
+  const resizeBatchValues =
+    defined(oldValues) && oldValues.length !== requiredByteLength;
+  const recreateBatchTexture = defined(batchTexture._batchTexture);
+
+  markFeatureResourcesChanged(
+    batchTexture,
+    resizeBatchValues || (recreateBatchTexture && defined(oldValues)),
+  );
 
   batchTexture._textureDimensions = new Cartesian2(width, height);
   batchTexture._textureStep = new Cartesian4(
@@ -475,30 +495,33 @@ function configureTextureLayout(batchTexture, maximumTextureSize) {
   );
   batchTexture._textureMaximumSize = maximumTextureSize;
 
-  const requiredByteLength = width * height * 4;
-  const oldValues = batchTexture._batchValues;
-  if (defined(oldValues) && oldValues.length !== requiredByteLength) {
+  if (resizeBatchValues) {
     const resizedValues = new Uint8Array(requiredByteLength).fill(255);
     resizedValues.set(oldValues.subarray(0, requiredByteLength));
     batchTexture._batchValues = resizedValues;
-    batchTexture._batchValuesDirty = true;
   }
 
   // A changed device limit (for example after device recovery) changes the
   // packed resource layout. Recreate context-bound textures deterministically.
   const statistics = batchTexture._statistics;
-  if (defined(batchTexture._batchTexture)) {
+  if (recreateBatchTexture) {
     if (defined(statistics)) {
       statistics.batchTableByteLength -= batchTexture._batchTexture.sizeInBytes;
     }
     batchTexture._batchTexture = batchTexture._batchTexture.destroy();
-    batchTexture._batchValuesDirty = defined(batchTexture._batchValues);
   }
   if (defined(batchTexture._pickTexture)) {
     if (defined(statistics)) {
       statistics.batchTableByteLength -= batchTexture._pickTexture.sizeInBytes;
     }
     batchTexture._pickTexture = batchTexture._pickTexture.destroy();
+  }
+}
+
+function markFeatureResourcesChanged(batchTexture, batchValuesDirty) {
+  ++batchTexture._featureResourceRevision;
+  if (batchValuesDirty) {
+    batchTexture._batchValuesDirty = true;
   }
 }
 

@@ -303,6 +303,8 @@ Probes are instruments; the `*.spec.mjs` fleet is the **contract** layer, and it
 node --test Tools/visual-regression/<name>.spec.mjs
 ```
 
+Engine-side Node specs live at `packages/engine/Specs/Renderer/WebGPU/*Spec.mjs` and run via `npm run test-model-webgpu`. The pick-framebuffer stats spec included by that glob requires a built tree because it reaches a generated shader module.
+
 They are **browser-free unless the file says otherwise** — a spec asserts over pure functions, gate libraries, manifests and recorded artifacts, so it needs no dev server, no Edge and no GPU. That is also why the retirement ritual for an investigation probe is "bank the conclusion, then promote or archive": a probe proves something once, a spec keeps proving it. The census counts ~172 specs; this guide names only the ones you are likely to run by hand.
 
 **Exit codes are frozen fleet-wide, not per-probe convention.** Probes and gate libraries resolve their verdict through [lib/verdict-exit-gate.mjs](../Tools/visual-regression/lib/verdict-exit-gate.mjs), whose table is the single authority:

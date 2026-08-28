@@ -556,6 +556,7 @@ function buildPrimitiveGeometry(runtimePrimitive, source, gltfPrim) {
     // were stuck on the texture-only branch, which b3dm tilesets never
     // hit (they encode IDs as a vertex attribute, not a texture).
     featureId0Data: null,
+    featureId0SetIndex: -1,
 
     // Metadata
     vertexCount: 0,
@@ -570,8 +571,8 @@ function buildPrimitiveGeometry(runtimePrimitive, source, gltfPrim) {
     hasPropertyTables: false,
     hasPropertyTextures: false,
 
-    // Per-render annotations are deliberately absent from the immutable base.
-    // WebGPUModelRenderer writes these onto a reusable mutable view instead.
+    // Renderer-only annotations use neutral values on the immutable base.
+    featureId0Synthesized: false,
     metadataData: null,
     metadataClassHash: 0,
     metadataWGSL: null,
@@ -686,6 +687,11 @@ function buildPrimitiveGeometry(runtimePrimitive, source, gltfPrim) {
         // to f32 so the FS can read it as a flat varying without an
         // explicit integer-attribute pipeline path.
         result.featureId0Data = convertAttributeToFloat32(data, attr, 1, false);
+        result.featureId0SetIndex = Number.isInteger(attr.setIndex)
+          ? attr.setIndex
+          : semantic === "_FEATURE_ID_0"
+            ? 0
+            : -1;
         result.hasFeatureId0 = true;
         break;
     }
@@ -886,7 +892,9 @@ function resetPrimitiveGeometryView(view, baseGeometry) {
   // width that no longer describes `view.indexData`.
   view.indexSourceComponentBytes = baseGeometry.indexSourceComponentBytes;
   view.featureId0Data = baseGeometry.featureId0Data;
+  view.featureId0SetIndex = baseGeometry.featureId0SetIndex;
   view.hasFeatureId0 = baseGeometry.hasFeatureId0;
+  view.featureId0Synthesized = false;
   view.metadataData = null;
   view.metadataClassHash = 0;
   view.metadataWGSL = null;

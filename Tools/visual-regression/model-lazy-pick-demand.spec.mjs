@@ -85,6 +85,8 @@ function createHarness() {
     failPickUploadCount: 0,
     failPickViewCount: 0,
     failPromotionWriteCount: 0,
+    encoderEnlistments: [],
+    fences: [],
   };
 
   function createTexture(descriptor) {
@@ -150,10 +152,32 @@ function createHarness() {
           values: Array.from(data),
         });
       },
+      onSubmittedWorkDone() {
+        let resolveFence;
+        let rejectFence;
+        const promise = new Promise((resolve, reject) => {
+          resolveFence = resolve;
+          rejectFence = reject;
+        });
+        const fence = {
+          promise,
+          resolve: resolveFence,
+          reject: rejectFence,
+          settled: false,
+          queue: this,
+        };
+        state.fences.push(fence);
+        return promise;
+      },
     },
   };
   const context = {
     resourceGeneration: 0,
+    currentCommandEncoder: { label: "lazy-pick exact encoder" },
+    enqueueAfterCommandEncoderSubmit(encoder, callback) {
+      state.encoderEnlistments.push({ encoder, callback });
+      return true;
+    },
     createPickId(target, kind) {
       const index = state.pickIds.length + 1;
       const pickId = {
@@ -229,6 +253,26 @@ function createHarness() {
         modelCache,
         pickDemand,
       );
+    },
+    fireEncoderCallbacks(limit = Number.POSITIVE_INFINITY) {
+      const count = Math.min(limit, state.encoderEnlistments.length);
+      const enlistments = state.encoderEnlistments.splice(0, count);
+      for (let i = 0; i < enlistments.length; i++) {
+        enlistments[i].callback();
+      }
+      return enlistments;
+    },
+    async resolveFences(limit = Number.POSITIVE_INFINITY) {
+      const fences = state.fences
+        .filter((fence) => !fence.settled)
+        .slice(0, limit);
+      for (let i = 0; i < fences.length; i++) {
+        fences[i].settled = true;
+        fences[i].resolve();
+      }
+      await Promise.allSettled(fences.map((fence) => fence.promise));
+      await Promise.resolve();
+      return fences;
     },
     resizeFeatures(featuresLength) {
       batchTexture._featuresLength = featuresLength;
@@ -372,10 +416,17 @@ test("multiple primitives share one model texture and promote independently once
   assert.equal(harness.state.pickIds.length, 2);
 });
 
-test("same-count BatchTexture replacement rebuilds exact feature targets", () => {
+test("same-count BatchTexture replacement rebuilds exact feature targets", async () => {
   const harness = createHarness();
   const primCache = harness.makePrimitiveCache("p0");
-  harness.ensure(primCache, true);
+  const scheduledTextures = [];
+  harness.context.scheduleTextureDestroy = (texture) => {
+    scheduledTextures.push(texture);
+  };
+  const incumbent = harness.ensure(primCache, true);
+  const oldEntries = incumbent.featureIdEntries;
+  const oldBatchTexture = entry(oldEntries, 28).resource.texture;
+  const oldUniformBuffer = entry(oldEntries, 30).resource.buffer;
   const oldTexture = harness.modelCache._featurePickGPUTexture;
   const oldPickIds = harness.state.pickIds.slice();
   const { replacementBatchTexture, replacementFeatures } =
@@ -389,8 +440,12 @@ test("same-count BatchTexture replacement rebuilds exact feature targets", () =>
   );
   assert.notEqual(harness.modelCache._featurePickGPUTexture, oldTexture);
   assert.equal(harness.state.pickIds.length, 4);
-  assert.equal(oldTexture.destroyed, true);
-  assert.ok(oldPickIds.every((pickId) => pickId.destroyed));
+  assert.equal(oldBatchTexture.destroyed, false);
+  assert.equal(oldUniformBuffer.destroyed, false);
+  assert.equal(oldTexture.destroyed, false);
+  assert.ok(oldPickIds.every((pickId) => !pickId.destroyed));
+  assert.equal(scheduledTextures.length, 0);
+  assert.equal(harness.state.encoderEnlistments.length, 1);
   assert.equal(
     harness.modelCache._featurePickIds.get(0),
     harness.state.pickIds[2],
@@ -406,10 +461,31 @@ test("same-count BatchTexture replacement rebuilds exact feature targets", () =>
     harness.modelCache._featurePickGPUTexture,
   );
 
+  const [enlistment] = harness.fireEncoderCallbacks();
+  assert.equal(enlistment.encoder, harness.context.currentCommandEncoder);
+  assert.equal(harness.state.fences.length, 1);
+  assert.equal(oldBatchTexture.destroyed, false);
+  assert.equal(oldUniformBuffer.destroyed, false);
+  assert.equal(oldTexture.destroyed, false);
+  assert.equal(scheduledTextures.length, 0);
+
+  const [fence] = await harness.resolveFences();
+  assert.equal(fence.queue, harness.device.queue);
+  assert.equal(oldBatchTexture.destroyed, true);
+  assert.equal(oldUniformBuffer.destroyed, true);
+  assert.deepEqual(scheduledTextures, [oldTexture]);
+  assert.ok(oldPickIds.every((pickId) => pickId.destroyed));
+  assert.equal(oldTexture.destroyed, false);
+  scheduledTextures[0].destroy();
+  assert.equal(oldTexture.destroyed, true);
+
   const textureCount = harness.countTextures("Feature pick texture");
   harness.ensure(primCache, true);
   assert.equal(harness.state.pickIds.length, 4);
   assert.equal(harness.countTextures("Feature pick texture"), textureCount);
+  assert.equal(harness.state.encoderEnlistments.length, 0);
+  assert.equal(harness.state.fences.length, 1);
+  assert.equal(scheduledTextures.length, 1);
 });
 
 for (const failure of ["upload", "view", "uniform-write"]) {
@@ -458,7 +534,7 @@ for (const failure of ["upload", "view", "uniform-write"]) {
 }
 
 for (const failure of ["view", "uniform-write"]) {
-  test(`replacement ${failure} failure keeps the old two-primitive owner generation coherent`, () => {
+  test(`replacement ${failure} failure keeps the old two-primitive owner generation coherent`, async () => {
     const harness = createHarness();
     const firstPrimitive = harness.makePrimitiveCache("p0");
     const secondPrimitive = harness.makePrimitiveCache("p1");
@@ -469,6 +545,10 @@ for (const failure of ["view", "uniform-write"]) {
     harness.ensure(firstPrimitive, true);
     harness.ensure(secondPrimitive, true);
     const oldEntries = firstPrimitive._featureIdEntries;
+    const oldFirstBatchTexture = firstPrimitive._batchGPUTexture;
+    const oldFirstUniformBuffer = firstPrimitive._featureUniformBuffer;
+    const oldSecondBatchTexture = secondPrimitive._batchGPUTexture;
+    const oldSecondUniformBuffer = secondPrimitive._featureUniformBuffer;
     const oldTexture = firstPrimitive._featurePickBoundGPUTexture;
     const oldPickIds = harness.state.pickIds.slice();
 
@@ -489,6 +569,7 @@ for (const failure of ["view", "uniform-write"]) {
     assert.ok(oldPickIds.every((pickId) => retiredPickIds.has(pickId)));
     assert.ok(oldPickIds.every((pickId) => !pickId.destroyed));
     assert.equal(scheduledTextures.length, 0);
+    assert.equal(harness.state.encoderEnlistments.length, 0);
 
     const replacementTexture = harness.modelCache._featurePickGPUTexture;
     const retry = harness.ensure(firstPrimitive, true);
@@ -500,17 +581,50 @@ for (const failure of ["view", "uniform-write"]) {
     assert.equal(secondPrimitive._featurePickBoundGPUTexture, oldTexture);
     assert.ok(oldPickIds.every((pickId) => !pickId.destroyed));
     assert.equal(scheduledTextures.length, 0);
+    assert.equal(harness.state.encoderEnlistments.length, 1);
 
     harness.ensure(secondPrimitive, true);
+    assert.equal(harness.state.encoderEnlistments.length, 2);
+    assert.equal(scheduledTextures.length, 0);
+
+    const [firstEnlistment] = harness.fireEncoderCallbacks(1);
+    assert.equal(
+      firstEnlistment.encoder,
+      harness.context.currentCommandEncoder,
+    );
+    assert.equal(harness.state.fences.length, 1);
+    assert.equal(oldFirstBatchTexture.destroyed, false);
+    assert.equal(oldFirstUniformBuffer.destroyed, false);
+    await harness.resolveFences(1);
+    assert.equal(oldFirstBatchTexture.destroyed, true);
+    assert.equal(oldFirstUniformBuffer.destroyed, true);
+    assert.equal(oldSecondBatchTexture.destroyed, false);
+    assert.equal(oldSecondUniformBuffer.destroyed, false);
+    assert.equal(scheduledTextures.length, 0);
+    assert.ok(oldPickIds.every((pickId) => !pickId.destroyed));
+
+    const [secondEnlistment] = harness.fireEncoderCallbacks(1);
+    assert.equal(
+      secondEnlistment.encoder,
+      harness.context.currentCommandEncoder,
+    );
+    assert.equal(harness.state.fences.length, 2);
+    assert.equal(oldSecondBatchTexture.destroyed, false);
+    assert.equal(oldSecondUniformBuffer.destroyed, false);
+    await harness.resolveFences(1);
+    assert.equal(oldSecondBatchTexture.destroyed, true);
+    assert.equal(oldSecondUniformBuffer.destroyed, true);
     assert.deepEqual(scheduledTextures, [oldTexture]);
     assert.ok(oldPickIds.every((pickId) => pickId.destroyed));
     assert.equal(oldTexture.destroyed, false);
     assert.equal(harness.modelCache._retiredFeaturePickGenerations, undefined);
     assert.equal(harness.modelCache._featurePickIds.size, 2);
+    scheduledTextures[0].destroy();
+    assert.equal(oldTexture.destroyed, true);
   });
 }
 
-test("multi-primitive replacement defers the incumbent until the last marker migrates", () => {
+test("multi-primitive replacement defers the incumbent until the last marker migrates", async () => {
   const harness = createHarness();
   const firstPrimitive = harness.makePrimitiveCache("p0");
   const secondPrimitive = harness.makePrimitiveCache("p1");
@@ -521,39 +635,73 @@ test("multi-primitive replacement defers the incumbent until the last marker mig
 
   harness.ensure(firstPrimitive, true);
   harness.ensure(secondPrimitive, true);
+  const oldFirstBatchTexture = firstPrimitive._batchGPUTexture;
+  const oldFirstUniformBuffer = firstPrimitive._featureUniformBuffer;
+  const oldSecondBatchTexture = secondPrimitive._batchGPUTexture;
+  const oldSecondUniformBuffer = secondPrimitive._featureUniformBuffer;
   const oldTexture = harness.modelCache._featurePickGPUTexture;
+  const oldPickIds = harness.state.pickIds.slice();
 
   harness.resizeFeatures(3);
   harness.ensure(firstPrimitive, true);
   assert.equal(scheduledTextures.length, 0);
   assert.equal(oldTexture.destroyed, false);
   assert.equal(secondPrimitive._featurePickBoundGPUTexture, oldTexture);
+  assert.equal(harness.state.encoderEnlistments.length, 1);
+
+  const [firstEnlistment] = harness.fireEncoderCallbacks(1);
+  assert.equal(firstEnlistment.encoder, harness.context.currentCommandEncoder);
+  assert.equal(harness.state.fences.length, 1);
+  assert.equal(oldFirstBatchTexture.destroyed, false);
+  assert.equal(oldFirstUniformBuffer.destroyed, false);
+  await harness.resolveFences(1);
+  assert.equal(oldFirstBatchTexture.destroyed, true);
+  assert.equal(oldFirstUniformBuffer.destroyed, true);
+  assert.equal(scheduledTextures.length, 0);
+  assert.ok(oldPickIds.every((pickId) => !pickId.destroyed));
 
   harness.ensure(secondPrimitive, true);
+  assert.equal(harness.state.encoderEnlistments.length, 1);
+  assert.equal(scheduledTextures.length, 0);
+  const [secondEnlistment] = harness.fireEncoderCallbacks(1);
+  assert.equal(secondEnlistment.encoder, harness.context.currentCommandEncoder);
+  assert.equal(harness.state.fences.length, 2);
+  assert.equal(oldSecondBatchTexture.destroyed, false);
+  assert.equal(oldSecondUniformBuffer.destroyed, false);
+  await harness.resolveFences(1);
+  assert.equal(oldSecondBatchTexture.destroyed, true);
+  assert.equal(oldSecondUniformBuffer.destroyed, true);
   assert.deepEqual(scheduledTextures, [oldTexture]);
+  assert.ok(oldPickIds.every((pickId) => !pickId.destroyed));
+  assert.equal(harness.modelCache._featurePickIds.get(0), oldPickIds[0]);
+  assert.equal(harness.modelCache._featurePickIds.get(1), oldPickIds[1]);
+  assert.equal(harness.modelCache._featurePickIds.size, 3);
   assert.equal(oldTexture.destroyed, false);
   assert.equal(harness.modelCache._retiredFeaturePickGenerations, undefined);
 
   harness.ensure(firstPrimitive, true);
   harness.ensure(secondPrimitive, true);
   assert.equal(scheduledTextures.length, 1);
+  assert.equal(harness.state.encoderEnlistments.length, 0);
 
-  // Simulate WebGPUContext's post-submit settlement callback. No product path
-  // may destroy the borrowed texture before this point.
+  // The model-wide dense-pick scheduler owns this texture after both exact base
+  // generations have settled; its later submission callback destroys it.
   scheduledTextures[0].destroy();
   assert.equal(oldTexture.destroyed, true);
 });
 
-test("scheduler failure retains and retries the entire exact-owner generation", () => {
+test("dense-pick scheduler failure retains and retries its exact-owner generation", async () => {
   const harness = createHarness();
   const firstPrimitive = harness.makePrimitiveCache("p0");
   const secondPrimitive = harness.makePrimitiveCache("p1");
   let scheduleAttempts = 0;
-  harness.context.scheduleTextureDestroy = () => {
+  let acceptedTexture;
+  harness.context.scheduleTextureDestroy = (texture) => {
     scheduleAttempts++;
     if (scheduleAttempts === 1) {
       throw new Error("schedule failed");
     }
+    acceptedTexture = texture;
   };
 
   harness.ensure(firstPrimitive, true);
@@ -564,6 +712,19 @@ test("scheduler failure retains and retries the entire exact-owner generation", 
 
   harness.ensure(firstPrimitive, true);
   harness.ensure(secondPrimitive, true);
+  assert.equal(scheduleAttempts, 0);
+  assert.equal(harness.state.encoderEnlistments.length, 2);
+  const enlistments = harness.fireEncoderCallbacks();
+  assert.equal(enlistments.length, 2);
+  assert.ok(
+    enlistments.every(
+      (enlistment) =>
+        enlistment.encoder === harness.context.currentCommandEncoder,
+    ),
+  );
+  assert.equal(harness.state.fences.length, 2);
+  assert.equal(scheduleAttempts, 0);
+  await harness.resolveFences();
   assert.equal(scheduleAttempts, 1);
   assert.equal(
     harness.modelCache._retiredFeaturePickGenerations.get(oldTexture).size,
@@ -579,6 +740,11 @@ test("scheduler failure retains and retries the entire exact-owner generation", 
   assert.equal(harness.modelCache._retiredFeaturePickGenerations, undefined);
   assert.equal(harness.state.pickIds.length, 4);
   assert.equal(harness.countTextures("Feature pick texture"), textureCount);
+  assert.equal(harness.state.encoderEnlistments.length, 0);
+  assert.equal(acceptedTexture, oldTexture);
+  assert.equal(oldTexture.destroyed, false);
+  acceptedTexture.destroy();
+  assert.equal(oldTexture.destroyed, true);
 });
 
 test("teardown drains current and retained generations exactly once", () => {
@@ -630,6 +796,14 @@ function exactFunctionSlice(source, name) {
     }
   }
   assert.fail(`unterminated function ${name}`);
+}
+
+function exactFrozenArraySlice(source, name) {
+  const start = source.indexOf(`const ${name} = Object.freeze([`);
+  assert.notEqual(start, -1, `missing frozen array ${name}`);
+  const end = source.indexOf("]);", start);
+  assert.notEqual(end, -1, `unterminated frozen array ${name}`);
+  return source.slice(start, end + 3);
 }
 
 test("same-frame capture republish replaces the model entry without stale duplicates", async () => {
@@ -691,7 +865,10 @@ function enforceRendererPolicy(source) {
   );
   assert.match(update, /allowAllocate: pickDemand,/);
   assert.match(update, /detail: \{ model: model \},/);
-  assert.match(update, /cache,\s*pickDemand,\s*\)/);
+  assert.match(
+    update,
+    /cache,\s*pickDemand,\s*encodeFeatureIdCompatibilityToken\(\s*geometry\.hasFeatureId0,\s*geometry\.featureId0Synthesized,\s*\),/,
+  );
   assert.match(update, /if \(pickDemand && pickColor && !isClassifier\) \{/);
   assert.doesNotMatch(update, /passes\.pick\s*\|\|\s*passes\.render/);
   assert.match(captureUpsert, /if \(models\[i\]\.model === entry\.model\) \{/);
@@ -702,33 +879,276 @@ function enforceRendererPolicy(source) {
     /upsertModelCapturePublishEntry\(pub\.models, capturePublishEntry\);/,
   );
   assert.doesNotMatch(update, /pub\.models\.push\(capturePublishEntry\)/);
+  const ensureIndex = update.indexOf(
+    "const featureIdRes = ensureFeatureIdResources(",
+  );
+  const nullGuardIndex = update.indexOf(
+    "if (featureIdRes === null) {\n        continue;\n      }",
+  );
+  const commandContinuationIndex = update.indexOf(
+    "// Set instancing",
+    ensureIndex,
+  );
+  assert.ok(ensureIndex >= 0);
+  assert.ok(nullGuardIndex > ensureIndex);
+  assert.ok(commandContinuationIndex > nullGuardIndex);
 }
 
 function enforceFeaturePromotionPolicy(source) {
-  const retire = functionSlice(
+  const retire = exactFunctionSlice(
     source,
     "destroyUnboundRetiredFeaturePickGenerations",
   );
-  const promote = functionSlice(source, "promoteFeaturePickResources");
-  const ensure = functionSlice(source, "ensureFeatureIdResources");
-  const allocate = functionSlice(source, "ensurePerFeaturePickIds");
+  const promote = exactFunctionSlice(source, "promoteFeaturePickResources");
+  const candidate = exactFunctionSlice(
+    source,
+    "createFeatureResourceCandidate",
+  );
+  const attempt = exactFunctionSlice(source, "ensureFeatureIdResourcesAttempt");
+  const generation = exactFunctionSlice(
+    source,
+    "ensureFeatureIdResourcesGeneration",
+  );
+  const retireBase = exactFunctionSlice(
+    source,
+    "scheduleRetiredFeatureResourceGenerations",
+  );
+  const provenanceRegistry = exactFrozenArraySlice(
+    source,
+    "FEATURE_RESOURCE_PROVENANCE_KEYS",
+  );
+  const provenanceComparator = exactFunctionSlice(
+    source,
+    "sameFeatureResourceProvenance",
+  );
+  const matchPickGeneration = exactFunctionSlice(
+    source,
+    "featurePickGenerationMatchesInputs",
+  );
+  const livePickInputs = exactFunctionSlice(
+    source,
+    "featurePickInputsRemainCurrent",
+  );
+  const applyPickGeneration = exactFunctionSlice(
+    source,
+    "applyFeaturePickGeneration",
+  );
+  const destroyProvisionalPickGeneration = exactFunctionSlice(
+    source,
+    "destroyProvisionalFeaturePickGeneration",
+  );
+  const pickGenerationCurrent = exactFunctionSlice(
+    source,
+    "featurePickGenerationIsCurrent",
+  );
+  const primitivePromotionCurrent = exactFunctionSlice(
+    source,
+    "primitiveFeaturePromotionStillCurrent",
+  );
+  const applyResourceGeneration = exactFunctionSlice(
+    source,
+    "applyFeatureResourceGeneration",
+  );
+  const uploadedContentMatches = exactFunctionSlice(
+    source,
+    "uploadedFeatureResourceContentMatches",
+  );
+  const allocate = exactFunctionSlice(source, "ensurePerFeaturePickGeneration");
+  const wrapper = exactFunctionSlice(source, "ensurePerFeaturePickIds");
+  const assertContains = (slice, name, fragment) => {
+    assert.ok(slice.includes(fragment), name + " missing: " + fragment);
+  };
+
+  const requiredProvenanceKeys = [
+    "device",
+    "queue",
+    "resourceGeneration",
+    "compatibilityToken",
+    "pipelineCache",
+    "defaultTexture",
+    "defaultSampler",
+    "featureSampler",
+    "runtimeNode",
+    "nodeRevision",
+    "primitive",
+    "primitiveFeatureIds",
+    "selectedDomain",
+    "selectedSource",
+    "selectedKind",
+    "selectedRevision",
+    "selectedPropertyTableId",
+    "textureReader",
+    "cesiumTexture",
+    "stubNativeTexture",
+    "textureSourceRevision",
+    "featureTables",
+    "featureTable",
+    "featureTableRevision",
+    "batchTexture",
+    "batchTextureRevision",
+    "batchOwner",
+    "featuresLength",
+    "batchDimensions",
+    "batchStep",
+    "batchValues",
+    "batchValuesRevision",
+    "batchContentRevision",
+  ];
+  for (const key of requiredProvenanceKeys) {
+    assertContains(
+      provenanceRegistry,
+      "feature resource provenance registry",
+      `"${key}",`,
+    );
+  }
+  assertContains(
+    provenanceComparator,
+    "feature resource provenance comparator",
+    "for (let i = 0; i < FEATURE_RESOURCE_PROVENANCE_KEYS.length; i++) {",
+  );
+  assertContains(
+    provenanceComparator,
+    "feature resource provenance comparator",
+    "const key = FEATURE_RESOURCE_PROVENANCE_KEYS[i];",
+  );
+  assertContains(
+    provenanceComparator,
+    "feature resource provenance comparator",
+    "if (ignoreContent && FEATURE_RESOURCE_CONTENT_KEYS.includes(key)) {",
+  );
+  assertContains(
+    provenanceComparator,
+    "feature resource provenance comparator",
+    "if (!Object.is(left[key], right[key])) {",
+  );
+
+  const promotionCasIndexes = Array.from(
+    promote.matchAll(/primitiveFeaturePromotionStillCurrent\(/g),
+    (match) => match.index,
+  );
   const viewIndex = promote.indexOf("const featurePickView");
   const entriesIndex = promote.indexOf("const promotedEntries");
   const writeIndex = promote.indexOf("device.queue.writeBuffer(");
-  const publishIndex = promote.indexOf(
-    "primCache._featureIdEntries = promotedEntries;",
+  const generationEntriesIndex = promote.indexOf(
+    "generation.entries = promotedEntries;",
+  );
+  const boundTextureIndex = promote.indexOf(
+    "generation.featurePickBoundTexture = featurePickGeneration.texture;",
+  );
+  const boundGenerationIndex = promote.indexOf(
+    "generation.featurePickBoundGeneration = featurePickGeneration;",
+  );
+  const applyIndex = promote.indexOf(
+    "applyFeatureResourceGeneration(primCache, generation);",
+  );
+  const retireAfterPublishIndex = promote.indexOf(
+    "destroyUnboundRetiredFeaturePickGenerations(",
+    applyIndex,
   );
 
+  assert.equal(promotionCasIndexes.length, 3);
+  assert.ok(promotionCasIndexes[0] < viewIndex);
   assert.ok(viewIndex >= 0);
-  assert.ok(entriesIndex > viewIndex);
+  assert.ok(promotionCasIndexes[1] > viewIndex);
+  assert.ok(entriesIndex > promotionCasIndexes[1]);
   assert.ok(writeIndex > entriesIndex);
-  assert.ok(publishIndex > writeIndex);
+  assert.ok(promotionCasIndexes[2] > writeIndex);
+  assert.ok(generationEntriesIndex > promotionCasIndexes[2]);
+  assert.ok(boundTextureIndex > generationEntriesIndex);
+  assert.ok(boundGenerationIndex > boundTextureIndex);
+  assert.ok(applyIndex > boundGenerationIndex);
+  assert.ok(retireAfterPublishIndex > applyIndex);
   assert.match(promote, /const promotedEntries = currentEntries\.slice\(\);/);
   assert.match(promote, /binding: 31,\s*resource: featurePickView,/);
   assert.match(
     promote,
-    /primCache\._featurePickBoundGPUTexture = featurePickTexture;/,
+    /const featurePickView = featurePickGeneration\.texture\.createView\(\);\s*if \(\s*!primitiveFeaturePromotionStillCurrent\(/,
   );
+  assert.match(
+    promote,
+    /FEATURE_PICK_ENABLED_DATA,\s*\);\s*if \(\s*!primitiveFeaturePromotionStillCurrent\(/,
+  );
+  assertContains(
+    primitivePromotionCurrent,
+    "primitive promotion currentness",
+    "primCache._featureResourcesDestroyed !== true",
+  );
+  assertContains(
+    primitivePromotionCurrent,
+    "primitive promotion currentness",
+    "primCache._featureIdGeneration === generation",
+  );
+  assertContains(
+    primitivePromotionCurrent,
+    "primitive promotion currentness",
+    "(primCache._featureIdPublicationEpoch ?? 0) === publicationEpoch",
+  );
+  assertContains(
+    primitivePromotionCurrent,
+    "primitive promotion currentness",
+    "primCache._featureIdEntries === entries",
+  );
+  assertContains(
+    primitivePromotionCurrent,
+    "primitive promotion currentness",
+    "primCache._featureUniformBuffer === uniformBuffer",
+  );
+  assertContains(
+    primitivePromotionCurrent,
+    "primitive promotion currentness",
+    "generation?.entries === entries",
+  );
+  assertContains(
+    primitivePromotionCurrent,
+    "primitive promotion currentness",
+    "generation?.uniformBuffer === uniformBuffer",
+  );
+  assertContains(
+    primitivePromotionCurrent,
+    "primitive promotion currentness",
+    "featurePickGenerationIsCurrent(modelCache, featurePickGeneration)",
+  );
+  assertContains(
+    pickGenerationCurrent,
+    "pick generation currentness",
+    "cache?._featurePickResourcesDestroyed !== true",
+  );
+  assertContains(
+    pickGenerationCurrent,
+    "pick generation currentness",
+    "cache?._featurePickGeneration === generation",
+  );
+  assertContains(
+    pickGenerationCurrent,
+    "pick generation currentness",
+    "generation?.publicationEpoch",
+  );
+  assertContains(
+    pickGenerationCurrent,
+    "pick generation currentness",
+    "cache?._featurePickGPUTexture === generation?.texture",
+  );
+  assertContains(
+    pickGenerationCurrent,
+    "pick generation currentness",
+    "cache?._featurePickIds === generation?.pickIds",
+  );
+  assertContains(
+    applyResourceGeneration,
+    "feature resource publication",
+    "primCache._featurePickGPUTexture = generation?.featurePickBoundTexture;",
+  );
+  assertContains(
+    applyResourceGeneration,
+    "feature resource publication",
+    "primCache._featurePickBoundGPUTexture = generation?.featurePickBoundTexture;",
+  );
+  assertContains(
+    applyResourceGeneration,
+    "feature resource publication",
+    "primCache._featurePickBoundGeneration =\n    generation?.featurePickBoundGeneration;",
+  );
+
   assert.match(retire, /scheduleTextureDestroy\.call\(context, texture\);/);
   assert.ok(
     retire.indexOf("retiredGenerations.delete(texture);") >
@@ -739,10 +1159,158 @@ function enforceFeaturePromotionPolicy(source) {
       retire.indexOf("scheduleTextureDestroy.call(context, texture);"),
   );
   assert.match(retire, /else \{\s*try \{\s*texture\.destroy\(\);/);
-  assert.match(ensure, /uniformData\[10\] = 0\.0;/);
-  assert.match(ensure, /resource: fallbackTex\.createView\(\),/);
-  assert.match(ensure, /if \(pickPassActive === true\) \{/);
-  assert.doesNotMatch(ensure, /void pickPassActive/);
+  assert.match(candidate, /uniformData\[10\] = 0\.0;/);
+  assert.match(
+    candidate,
+    /resource: provenance\.defaultTexture\.createView\(\),/,
+  );
+  assert.match(attempt, /if \(pickPassActive === true/);
+  assert.doesNotMatch(attempt, /void pickPassActive/);
+  assert.match(
+    generation,
+    /ensureFeatureIdResourcesAttempt\([\s\S]*?pickPassActive,\s*compatibilityToken,\s*callerDepth,\s*\)/,
+  );
+  const reserveIndex = retireBase.indexOf(
+    "primCache._scheduledFeatureIdGenerations.add(generation);",
+  );
+  const enqueueIndex = retireBase.indexOf("enqueue.call(context, encoder");
+  assert.match(retireBase, /const encoder = context\?\.currentCommandEncoder;/);
+  assert.match(
+    retireBase,
+    /const enqueue = context\?\.enqueueAfterCommandEncoderSubmit;/,
+  );
+  assert.ok(reserveIndex >= 0);
+  assert.ok(enqueueIndex > reserveIndex);
+  assert.match(
+    retireBase,
+    /settlement = generation\.queue\.onSubmittedWorkDone\(\);/,
+  );
+  assert.match(
+    retireBase,
+    /settlement\.then\(\s*function \(\) \{[\s\S]*?destroyFeatureResourceGeneration\(generation\);/,
+  );
+  assert.match(
+    retireBase,
+    /primCache\._retiredFeatureIdGenerations\.add\(generation\);/,
+  );
+
+  const matchTerms = [
+    "defined(generation)",
+    "generation.destroyed !== true",
+    "generation.device === device",
+    "generation.queue === queue",
+    "generation.context === context",
+    "Object.is(generation.resourceGeneration, resourceGeneration)",
+    "generation.batchTexture === batchTexture",
+    "generation.owner === owner",
+    "generation.ownerGetFeature === ownerGetFeature",
+    "generation.createPickId === createPickId",
+    "generation.dimensions === dimensions",
+    "generation.featuresLength === featuresLength",
+    "generation.width === width",
+    "generation.height === height",
+  ];
+  for (const term of matchTerms) {
+    assertContains(matchPickGeneration, "pick generation input match", term);
+  }
+  assert.match(
+    allocate,
+    /featurePickGenerationMatchesInputs\(\s*incumbent,\s*device,\s*queue,\s*context,\s*resourceGeneration,\s*batchTexture,\s*owner,\s*ownerGetFeature,\s*createPickId,\s*dimensions,\s*width,\s*height,\s*featuresLength,\s*\)/,
+  );
+
+  const liveTerms = [
+    "cache._featurePickResourcesDestroyed !== true",
+    "cache._featurePickGeneration === incumbent",
+    "(cache._featurePickPublicationEpoch ?? 0) === publicationEpoch",
+    "device.queue === queue",
+    "context.createPickId === createPickId",
+    "Object.is(context.resourceGeneration, resourceGeneration)",
+    "batchTexture._owner === owner",
+    "owner?.getFeature === ownerGetFeature",
+    "batchTexture._featuresLength === featuresLength",
+    "batchTexture._textureDimensions === dimensions",
+    "dimensions.x === width",
+    "dimensions.y === height",
+  ];
+  for (const term of liveTerms) {
+    assertContains(livePickInputs, "live pick input CAS", term);
+  }
+  assert.match(
+    allocate,
+    /featurePickInputsRemainCurrent\(\s*cache,\s*incumbent,\s*publicationEpoch,\s*device,\s*queue,\s*context,\s*createPickId,\s*resourceGeneration,\s*batchTexture,\s*owner,\s*ownerGetFeature,\s*dimensions,\s*width,\s*height,\s*featuresLength,\s*\)/,
+  );
+
+  const capacityTerms = [
+    "const texelCount = width * height;",
+    "const byteLength = texelCount * 4;",
+    "!Number.isSafeInteger(width)",
+    "!Number.isSafeInteger(height)",
+    "!Number.isSafeInteger(texelCount)",
+    "texelCount < featuresLength",
+    "!Number.isSafeInteger(byteLength)",
+    "const data = new Uint8Array(byteLength);",
+    "size: [width, height, 1],",
+    "{ bytesPerRow: width * 4, rowsPerImage: height },",
+    "{ width, height, depthOrArrayLayers: 1 },",
+  ];
+  for (const term of capacityTerms) {
+    assertContains(allocate, "captured dense allocation", term);
+  }
+
+  const reuseTerms = [
+    "incumbent?.batchTexture === batchTexture",
+    "incumbent?.owner === owner",
+    "incumbent?.context === context",
+    "incumbent?.ownerGetFeature === ownerGetFeature",
+    "incumbent?.createPickId === createPickId",
+    "ownerGetFeature.call(owner, fid)",
+    'createPickId.call(context, target, "tile-feature")',
+    "canReusePreviousPickIds ? previousPickIds?.get(fid) : undefined",
+  ];
+  for (const term of reuseTerms) {
+    assertContains(allocate, "pick ID reuse provenance", term);
+  }
+
+  const createTextureIndex = allocate.indexOf("tex = device.createTexture(");
+  const uploadIndex = allocate.indexOf("device.queue.writeTexture(");
+  const uploadFailureCleanupIndex = allocate.indexOf(
+    "destroyProvisionalFeaturePickGeneration({",
+  );
+  const candidateIndex = allocate.indexOf("const candidate = {");
+  const liveCasIndex = allocate.indexOf("!featurePickInputsRemainCurrent(");
+  const staleCleanupIndex = allocate.indexOf(
+    "destroyProvisionalFeaturePickGeneration(candidate);",
+  );
+  const epochPublishIndex = allocate.indexOf(
+    "cache._featurePickPublicationEpoch = candidate.publicationEpoch;",
+  );
+  const detachCreatedIdsIndex = allocate.indexOf(
+    "candidate.createdPickIds = undefined;",
+  );
+  const applyPickIndex = allocate.indexOf(
+    "applyFeaturePickGeneration(cache, candidate);",
+  );
+  const retirementIndex = allocate.indexOf("const retiredPickIds = new Set();");
+  assert.ok(createTextureIndex >= 0);
+  assert.ok(uploadIndex > createTextureIndex);
+  assert.ok(uploadFailureCleanupIndex > uploadIndex);
+  assert.ok(candidateIndex > uploadFailureCleanupIndex);
+  assert.ok(liveCasIndex > candidateIndex);
+  assert.ok(staleCleanupIndex > liveCasIndex);
+  assert.ok(epochPublishIndex > staleCleanupIndex);
+  assert.ok(detachCreatedIdsIndex > epochPublishIndex);
+  assert.ok(applyPickIndex > detachCreatedIdsIndex);
+  assert.ok(retirementIndex > applyPickIndex);
+  assertContains(
+    allocate,
+    "pick generation publication",
+    "publicationEpoch: publicationEpoch + 1,",
+  );
+  assertContains(
+    allocate,
+    "pick generation stale candidate",
+    "return FEATURE_RESOURCE_RETRY;",
+  );
   assert.match(
     allocate,
     /const retiredGenerations =\s*cache\._retiredFeaturePickGenerations \?\?\s*\(cache\._retiredFeaturePickGenerations = new Map\(\)\);/,
@@ -755,23 +1323,130 @@ function enforceFeaturePromotionPolicy(source) {
     allocate,
     /for \(const pickId of retiredPickIds\) \{\s*generationPickIds\.add\(pickId\);\s*\}/,
   );
-  assert.match(
-    allocate,
-    /cache\._featurePickBatchTexture === batchTexture &&\s*cache\._featurePickFeaturesLength === featuresLength &&\s*cache\._featurePickTextureWidth === dimensions\.x &&\s*cache\._featurePickTextureHeight === dimensions\.y/,
-  );
-  assert.match(
-    allocate,
-    /const canReusePreviousPickIds =\s*cache\._featurePickBatchTexture === batchTexture;/,
-  );
-  assert.match(
-    allocate,
-    /let pid = canReusePreviousPickIds\s*\? previousPickIds\?\.get\(fid\)\s*: undefined;/,
-  );
-  assert.match(
-    allocate,
-    /cache\._featurePickBatchTexture = batchTexture;\s*cache\._featurePickFeaturesLength = featuresLength;\s*cache\._featurePickTextureWidth = dimensions\.x;\s*cache\._featurePickTextureHeight = dimensions\.y;/,
-  );
   assert.doesNotMatch(allocate, /previousTexture\.destroy\(\)/);
+
+  const pickAliases = [
+    "cache._featurePickGeneration = generation;",
+    "cache._featurePickIds = generation?.pickIds;",
+    "cache._featurePickGPUTexture = generation?.texture;",
+    "cache._featurePickBatchTexture = generation?.batchTexture;",
+    "cache._featurePickFeaturesLength = generation?.featuresLength;",
+    "cache._featurePickTextureWidth = generation?.width;",
+    "cache._featurePickTextureHeight = generation?.height;",
+    "cache._featurePickDevice = generation?.device;",
+    "cache._featurePickQueue = generation?.queue;",
+    "cache._featurePickContext = generation?.context;",
+    "cache._featurePickResourceGeneration = generation?.resourceGeneration;",
+    "cache._featurePickOwner = generation?.owner;",
+    "cache._featurePickCreatePickId = generation?.createPickId;",
+  ];
+  for (const alias of pickAliases) {
+    assertContains(
+      applyPickGeneration,
+      "pick generation publication alias",
+      alias,
+    );
+  }
+
+  const tombstoneIndex = destroyProvisionalPickGeneration.indexOf(
+    "candidate.destroyed = true;",
+  );
+  const captureTextureIndex = destroyProvisionalPickGeneration.indexOf(
+    "const texture = candidate.texture;",
+  );
+  const captureCreatedIdsIndex = destroyProvisionalPickGeneration.indexOf(
+    "const createdPickIds = candidate.createdPickIds;",
+  );
+  const detachTextureIndex = destroyProvisionalPickGeneration.indexOf(
+    "candidate.texture = undefined;",
+  );
+  const detachPickIdsIndex = destroyProvisionalPickGeneration.indexOf(
+    "candidate.pickIds = undefined;",
+  );
+  const detachCreatedIndex = destroyProvisionalPickGeneration.indexOf(
+    "candidate.createdPickIds = undefined;",
+  );
+  const destroyTextureIndex = destroyProvisionalPickGeneration.indexOf(
+    "texture?.destroy();",
+  );
+  const destroyCreatedIdsIndex = destroyProvisionalPickGeneration.indexOf(
+    "createdPickIds[i].destroy();",
+  );
+  const drainCreatedIdsIndex = destroyProvisionalPickGeneration.indexOf(
+    "createdPickIds.length = 0;",
+  );
+  assert.ok(tombstoneIndex >= 0);
+  assert.ok(captureTextureIndex > tombstoneIndex);
+  assert.ok(captureCreatedIdsIndex > captureTextureIndex);
+  assert.ok(detachTextureIndex > captureCreatedIdsIndex);
+  assert.ok(detachPickIdsIndex > detachTextureIndex);
+  assert.ok(detachCreatedIndex > detachPickIdsIndex);
+  assert.ok(destroyTextureIndex > detachCreatedIndex);
+  assert.ok(destroyCreatedIdsIndex > destroyTextureIndex);
+  assert.ok(drainCreatedIdsIndex > destroyCreatedIdsIndex);
+
+  assertContains(
+    candidate,
+    "feature resource upload witness",
+    "uploadedBatchValues: provenance.batchValues,",
+  );
+  assertContains(
+    candidate,
+    "feature resource upload witness",
+    "uploadedBatchContentRevision: provenance.batchContentRevision,",
+  );
+  assertContains(
+    uploadedContentMatches,
+    "uploaded content comparator",
+    "Object.is(generation.uploadedBatchValues, provenance.batchValues)",
+  );
+  assertContains(
+    uploadedContentMatches,
+    "uploaded content comparator",
+    "generation.uploadedBatchContentRevision",
+  );
+  assertContains(
+    uploadedContentMatches,
+    "uploaded content comparator",
+    "provenance.batchContentRevision",
+  );
+  assertContains(
+    attempt,
+    "uploaded content refresh gate",
+    "const uploadedContentChanged = !uploadedFeatureResourceContentMatches(",
+  );
+  assertContains(
+    attempt,
+    "uploaded content refresh gate",
+    "contentChanged || uploadedContentChanged || accepted.batchDirty === true",
+  );
+  const nativeRefreshIndex = attempt.indexOf("!updateBatchGPUTexture(");
+  const acceptedValuesIndex = attempt.indexOf(
+    "incumbent.uploadedBatchValues = accepted.batchValues;",
+  );
+  const acceptedRevisionIndex = attempt.indexOf(
+    "incumbent.uploadedBatchContentRevision = accepted.batchContentRevision;",
+  );
+  const postRefreshIndex = attempt.indexOf(
+    "const postRefresh = observeFeatureResourcePair(",
+  );
+  assert.ok(nativeRefreshIndex >= 0);
+  assert.ok(acceptedValuesIndex > nativeRefreshIndex);
+  assert.ok(acceptedRevisionIndex > acceptedValuesIndex);
+  assert.ok(postRefreshIndex > acceptedRevisionIndex);
+
+  assert.match(
+    wrapper,
+    /const generation = ensurePerFeaturePickGeneration\(\s*device,\s*primCache,\s*cache,\s*context,\s*model,\s*batchTexture,\s*\);/,
+  );
+  assert.match(
+    wrapper,
+    /return generation === FEATURE_RESOURCE_RETRY \? null : generation\?\.texture;/,
+  );
+  assert.doesNotMatch(
+    wrapper,
+    /createTexture|writeTexture|createPickId\.call|applyFeaturePickGeneration/,
+  );
 }
 
 function enforceFrontendOwnershipPolicy(
@@ -916,6 +1591,18 @@ function replaceOnce(source, before, after) {
   return result;
 }
 
+function replaceOnceInFunction(source, name, before, after) {
+  const originalFunction = exactFunctionSlice(source, name);
+  const mutatedFunction = replaceOnce(originalFunction, before, after);
+  return source.replace(originalFunction, mutatedFunction);
+}
+
+function replaceOnceInFrozenArray(source, name, before, after) {
+  const originalArray = exactFrozenArraySlice(source, name);
+  const mutatedArray = replaceOnce(originalArray, before, after);
+  return source.replace(originalArray, mutatedArray);
+}
+
 test("source contracts independently reject plausible eager-allocation mutants", () => {
   const rendererMutants = [
     replaceOnce(
@@ -933,13 +1620,57 @@ test("source contracts independently reject plausible eager-allocation mutants",
       "passes?.pick === true && !isClassifier && model.allowPicking !== false;",
       "passes?.pick === true && model.allowPicking !== false;",
     ),
+    replaceOnce(rendererSource, "encodeFeatureIdCompatibilityToken(", "(("),
+    replaceOnce(
+      rendererSource,
+      "if (featureIdRes === null) {\n        continue;\n      }",
+      "if (featureIdRes === null) {\n        void featureIdRes;\n      }",
+    ),
     replaceOnce(rendererSource, "models[i] = entry;", "models.push(entry);"),
   ];
   for (const mutant of rendererMutants) {
     assert.throws(() => enforceRendererPolicy(mutant));
   }
 
+  const provenanceKeyMutants = [
+    "device",
+    "queue",
+    "resourceGeneration",
+    "compatibilityToken",
+    "pipelineCache",
+    "defaultTexture",
+    "defaultSampler",
+    "runtimeNode",
+    "primitiveFeatureIds",
+    "selectedDomain",
+    "selectedSource",
+    "selectedPropertyTableId",
+    "textureReader",
+    "stubNativeTexture",
+    "featureTable",
+    "batchTexture",
+    "batchOwner",
+    "featuresLength",
+    "batchDimensions",
+    "batchStep",
+    "batchValues",
+    "batchContentRevision",
+  ].map((key) =>
+    replaceOnceInFrozenArray(
+      featureIdSource,
+      "FEATURE_RESOURCE_PROVENANCE_KEYS",
+      `  "${key}",\n`,
+      "",
+    ),
+  );
   const featureMutants = [
+    ...provenanceKeyMutants,
+    replaceOnceInFunction(
+      featureIdSource,
+      "sameFeatureResourceProvenance",
+      "for (let i = 0; i < FEATURE_RESOURCE_PROVENANCE_KEYS.length; i++) {",
+      "for (let i = 0; i < 0; i++) {",
+    ),
     replaceOnce(
       featureIdSource,
       "uniformData[10] = 0.0;",
@@ -947,8 +1678,8 @@ test("source contracts independently reject plausible eager-allocation mutants",
     ),
     replaceOnce(
       featureIdSource,
-      "primCache._featureIdEntries = promotedEntries;",
-      "primCache._featureIdEntries = currentEntries;",
+      "generation.entries = promotedEntries;",
+      "generation.entries = currentEntries;",
     ),
     replaceOnce(
       featureIdSource,
@@ -967,18 +1698,365 @@ test("source contracts independently reject plausible eager-allocation mutants",
     ),
     replaceOnce(
       featureIdSource,
-      "cache._featurePickBatchTexture === batchTexture &&",
-      "true &&",
+      "const encoder = context?.currentCommandEncoder;",
+      "const encoder = undefined;",
     ),
     replaceOnce(
       featureIdSource,
-      "const canReusePreviousPickIds =\n    cache._featurePickBatchTexture === batchTexture;",
-      "const canReusePreviousPickIds = true;",
+      "settlement = generation.queue.onSubmittedWorkDone();",
+      "settlement = Promise.resolve();",
     ),
     replaceOnce(
       featureIdSource,
-      "cache._featurePickTextureWidth === dimensions.x &&",
+      "primCache._scheduledFeatureIdGenerations.add(generation);",
+      "void generation;",
+    ),
+    replaceOnce(
+      featureIdSource,
+      "    } else {\n      primCache._retiredFeatureIdGenerations ??= new Set();\n      primCache._retiredFeatureIdGenerations.add(generation);\n    }",
+      "    } else {\n      primCache._retiredFeatureIdGenerations ??= new Set();\n      void generation;\n    }",
+    ),
+    replaceOnceInFunction(
+      featureIdSource,
+      "featurePickGenerationMatchesInputs",
+      "generation.device === device &&",
       "true &&",
+    ),
+    replaceOnceInFunction(
+      featureIdSource,
+      "featurePickGenerationMatchesInputs",
+      "generation.queue === queue &&",
+      "true &&",
+    ),
+    replaceOnceInFunction(
+      featureIdSource,
+      "featurePickGenerationMatchesInputs",
+      "generation.context === context &&",
+      "true &&",
+    ),
+    replaceOnceInFunction(
+      featureIdSource,
+      "featurePickGenerationMatchesInputs",
+      "Object.is(generation.resourceGeneration, resourceGeneration) &&",
+      "true &&",
+    ),
+    replaceOnceInFunction(
+      featureIdSource,
+      "featurePickGenerationMatchesInputs",
+      "generation.batchTexture === batchTexture &&",
+      "true &&",
+    ),
+    replaceOnceInFunction(
+      featureIdSource,
+      "featurePickGenerationMatchesInputs",
+      "generation.owner === owner &&",
+      "true &&",
+    ),
+    replaceOnceInFunction(
+      featureIdSource,
+      "featurePickGenerationMatchesInputs",
+      "generation.ownerGetFeature === ownerGetFeature &&",
+      "true &&",
+    ),
+    replaceOnceInFunction(
+      featureIdSource,
+      "featurePickGenerationMatchesInputs",
+      "generation.createPickId === createPickId &&",
+      "true &&",
+    ),
+    replaceOnceInFunction(
+      featureIdSource,
+      "featurePickGenerationMatchesInputs",
+      "generation.dimensions === dimensions &&",
+      "true &&",
+    ),
+    replaceOnceInFunction(
+      featureIdSource,
+      "featurePickGenerationMatchesInputs",
+      "generation.featuresLength === featuresLength &&",
+      "true &&",
+    ),
+    replaceOnceInFunction(
+      featureIdSource,
+      "featurePickGenerationMatchesInputs",
+      "generation.width === width &&",
+      "true &&",
+    ),
+    replaceOnceInFunction(
+      featureIdSource,
+      "featurePickGenerationMatchesInputs",
+      "generation.height === height",
+      "true",
+    ),
+    replaceOnceInFunction(
+      featureIdSource,
+      "ensurePerFeaturePickGeneration",
+      "texelCount < featuresLength ||",
+      "false ||",
+    ),
+    replaceOnceInFunction(
+      featureIdSource,
+      "ensurePerFeaturePickGeneration",
+      "    device.queue.writeTexture(\n      { texture: tex },",
+      "    void (\n      { texture: tex },",
+    ),
+    replaceOnceInFunction(
+      featureIdSource,
+      "ensurePerFeaturePickGeneration",
+      "incumbent?.owner === owner &&",
+      "true &&",
+    ),
+    replaceOnceInFunction(
+      featureIdSource,
+      "ensurePerFeaturePickGeneration",
+      "incumbent?.ownerGetFeature === ownerGetFeature &&",
+      "true &&",
+    ),
+    replaceOnceInFunction(
+      featureIdSource,
+      "ensurePerFeaturePickGeneration",
+      "incumbent?.createPickId === createPickId;",
+      "true;",
+    ),
+    replaceOnceInFunction(
+      featureIdSource,
+      "featurePickInputsRemainCurrent",
+      "cache._featurePickGeneration === incumbent &&",
+      "true &&",
+    ),
+    replaceOnceInFunction(
+      featureIdSource,
+      "featurePickInputsRemainCurrent",
+      "(cache._featurePickPublicationEpoch ?? 0) === publicationEpoch &&",
+      "true &&",
+    ),
+    replaceOnceInFunction(
+      featureIdSource,
+      "featurePickInputsRemainCurrent",
+      "device.queue === queue &&",
+      "true &&",
+    ),
+    replaceOnceInFunction(
+      featureIdSource,
+      "featurePickInputsRemainCurrent",
+      "context.createPickId === createPickId &&",
+      "true &&",
+    ),
+    replaceOnceInFunction(
+      featureIdSource,
+      "featurePickInputsRemainCurrent",
+      "Object.is(context.resourceGeneration, resourceGeneration) &&",
+      "true &&",
+    ),
+    replaceOnceInFunction(
+      featureIdSource,
+      "featurePickInputsRemainCurrent",
+      "batchTexture._owner === owner &&",
+      "true &&",
+    ),
+    replaceOnceInFunction(
+      featureIdSource,
+      "featurePickInputsRemainCurrent",
+      "owner?.getFeature === ownerGetFeature &&",
+      "true &&",
+    ),
+    replaceOnceInFunction(
+      featureIdSource,
+      "featurePickInputsRemainCurrent",
+      "batchTexture._featuresLength === featuresLength &&",
+      "true &&",
+    ),
+    replaceOnceInFunction(
+      featureIdSource,
+      "featurePickInputsRemainCurrent",
+      "batchTexture._textureDimensions === dimensions &&",
+      "true &&",
+    ),
+    replaceOnceInFunction(
+      featureIdSource,
+      "featurePickInputsRemainCurrent",
+      "dimensions.x === width &&",
+      "true &&",
+    ),
+    replaceOnceInFunction(
+      featureIdSource,
+      "featurePickInputsRemainCurrent",
+      "dimensions.y === height",
+      "true",
+    ),
+    replaceOnceInFunction(
+      featureIdSource,
+      "ensurePerFeaturePickGeneration",
+      "cache._featurePickPublicationEpoch = candidate.publicationEpoch;",
+      "void candidate.publicationEpoch;",
+    ),
+    replaceOnceInFunction(
+      featureIdSource,
+      "primitiveFeaturePromotionStillCurrent",
+      "primCache._featureResourcesDestroyed !== true &&",
+      "true &&",
+    ),
+    replaceOnceInFunction(
+      featureIdSource,
+      "primitiveFeaturePromotionStillCurrent",
+      "primCache._featureIdGeneration === generation &&",
+      "true &&",
+    ),
+    replaceOnceInFunction(
+      featureIdSource,
+      "primitiveFeaturePromotionStillCurrent",
+      "(primCache._featureIdPublicationEpoch ?? 0) === publicationEpoch &&",
+      "true &&",
+    ),
+    replaceOnceInFunction(
+      featureIdSource,
+      "primitiveFeaturePromotionStillCurrent",
+      "primCache._featureIdEntries === entries &&",
+      "true &&",
+    ),
+    replaceOnceInFunction(
+      featureIdSource,
+      "primitiveFeaturePromotionStillCurrent",
+      "primCache._featureUniformBuffer === uniformBuffer &&",
+      "true &&",
+    ),
+    replaceOnceInFunction(
+      featureIdSource,
+      "primitiveFeaturePromotionStillCurrent",
+      "generation?.entries === entries &&",
+      "true &&",
+    ),
+    replaceOnceInFunction(
+      featureIdSource,
+      "primitiveFeaturePromotionStillCurrent",
+      "generation?.uniformBuffer === uniformBuffer &&",
+      "true &&",
+    ),
+    replaceOnceInFunction(
+      featureIdSource,
+      "primitiveFeaturePromotionStillCurrent",
+      "featurePickGenerationIsCurrent(modelCache, featurePickGeneration)",
+      "true",
+    ),
+    replaceOnceInFunction(
+      featureIdSource,
+      "promoteFeaturePickResources",
+      "const featurePickView = featurePickGeneration.texture.createView();\n  if (\n    !primitiveFeaturePromotionStillCurrent(",
+      "const featurePickView = featurePickGeneration.texture.createView();\n  if (\n    false &&\n    !primitiveFeaturePromotionStillCurrent(",
+    ),
+    replaceOnceInFunction(
+      featureIdSource,
+      "promoteFeaturePickResources",
+      "    FEATURE_PICK_ENABLED_DATA,\n  );\n  if (\n    !primitiveFeaturePromotionStillCurrent(",
+      "    FEATURE_PICK_ENABLED_DATA,\n  );\n  if (\n    false &&\n    !primitiveFeaturePromotionStillCurrent(",
+    ),
+    replaceOnceInFunction(
+      featureIdSource,
+      "promoteFeaturePickResources",
+      "generation.featurePickBoundTexture = featurePickGeneration.texture;",
+      "generation.featurePickBoundTexture = undefined;",
+    ),
+    replaceOnceInFunction(
+      featureIdSource,
+      "promoteFeaturePickResources",
+      "generation.featurePickBoundGeneration = featurePickGeneration;",
+      "generation.featurePickBoundGeneration = undefined;",
+    ),
+    replaceOnceInFunction(
+      featureIdSource,
+      "applyFeatureResourceGeneration",
+      "primCache._featurePickBoundGeneration =\n    generation?.featurePickBoundGeneration;",
+      "primCache._featurePickBoundGeneration = undefined;",
+    ),
+    replaceOnceInFunction(
+      featureIdSource,
+      "destroyProvisionalFeaturePickGeneration",
+      "candidate.texture = undefined;",
+      "void candidate.texture;",
+    ),
+    replaceOnceInFunction(
+      featureIdSource,
+      "destroyProvisionalFeaturePickGeneration",
+      "candidate.pickIds = undefined;",
+      "void candidate.pickIds;",
+    ),
+    replaceOnceInFunction(
+      featureIdSource,
+      "destroyProvisionalFeaturePickGeneration",
+      "candidate.createdPickIds = undefined;",
+      "void candidate.createdPickIds;",
+    ),
+    replaceOnceInFunction(
+      featureIdSource,
+      "destroyProvisionalFeaturePickGeneration",
+      "texture?.destroy();",
+      "void texture;",
+    ),
+    replaceOnceInFunction(
+      featureIdSource,
+      "destroyProvisionalFeaturePickGeneration",
+      "createdPickIds[i].destroy();",
+      "void createdPickIds[i];",
+    ),
+    replaceOnceInFunction(
+      featureIdSource,
+      "createFeatureResourceCandidate",
+      "uploadedBatchValues: provenance.batchValues,",
+      "uploadedBatchValues: undefined,",
+    ),
+    replaceOnceInFunction(
+      featureIdSource,
+      "createFeatureResourceCandidate",
+      "uploadedBatchContentRevision: provenance.batchContentRevision,",
+      "uploadedBatchContentRevision: undefined,",
+    ),
+    replaceOnceInFunction(
+      featureIdSource,
+      "uploadedFeatureResourceContentMatches",
+      "Object.is(generation.uploadedBatchValues, provenance.batchValues)",
+      "true",
+    ),
+    replaceOnceInFunction(
+      featureIdSource,
+      "uploadedFeatureResourceContentMatches",
+      "Object.is(\n      generation.uploadedBatchContentRevision,\n      provenance.batchContentRevision,\n    )",
+      "true",
+    ),
+    replaceOnceInFunction(
+      featureIdSource,
+      "ensureFeatureIdResourcesAttempt",
+      "contentChanged || uploadedContentChanged || accepted.batchDirty === true",
+      "contentChanged || false || accepted.batchDirty === true",
+    ),
+    replaceOnceInFunction(
+      featureIdSource,
+      "ensureFeatureIdResourcesAttempt",
+      "incumbent.uploadedBatchValues = accepted.batchValues;",
+      "void accepted.batchValues;",
+    ),
+    replaceOnceInFunction(
+      featureIdSource,
+      "ensureFeatureIdResourcesAttempt",
+      "incumbent.uploadedBatchContentRevision = accepted.batchContentRevision;",
+      "void accepted.batchContentRevision;",
+    ),
+    replaceOnceInFunction(
+      featureIdSource,
+      "ensureFeatureIdResourcesAttempt",
+      "const postRefresh = observeFeatureResourcePair(",
+      "const postRefresh = void observeFeatureResourcePair(",
+    ),
+    replaceOnceInFunction(
+      featureIdSource,
+      "ensurePerFeaturePickIds",
+      "const generation = ensurePerFeaturePickGeneration(",
+      "const generation = void ensurePerFeaturePickGeneration(",
+    ),
+    replaceOnceInFunction(
+      featureIdSource,
+      "ensurePerFeaturePickIds",
+      "return generation === FEATURE_RESOURCE_RETRY ? null : generation?.texture;",
+      "return generation?.texture;",
     ),
   ];
   for (const mutant of featureMutants) {

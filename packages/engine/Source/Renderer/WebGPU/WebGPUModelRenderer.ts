@@ -67,6 +67,7 @@ import {
   ensureFeatureIdResources,
   destroyFeatureIdResources,
   destroyPerFeaturePickResources,
+  encodeFeatureIdCompatibilityToken,
   getSelectedImplicitFeatureId,
   synthesizeImplicitFeatureIdData,
 } from "./WebGPUModelFeatureId.js";
@@ -320,6 +321,8 @@ interface PrimitiveGeometry {
   joints0Data?: TypedArray | null;
   weights0Data?: Float32Array | null;
   featureId0Data?: Float32Array | null;
+  featureId0SetIndex: number;
+  featureId0Synthesized: boolean;
   metadataData?: TypedArray | null;
   metadataClassHash?: number;
   metadataWGSL?: string | null;
@@ -606,6 +609,16 @@ interface NodeCache extends Idl2DHost, ModelShadowCastUniformHost {
   jointBuffer?: GPUBufferOrNull;
   prevJointBuffer?: GPUBufferOrNull;
   instancingBuffer?: GPUBufferOrNull;
+  instanceCount?: number;
+  instancingProvenance?: Record<string, unknown>;
+  instancingProvenanceScratchPool?: Array<Record<string, unknown>>;
+  instancingProvenanceScratchDepth?: number;
+  instancingConvergenceDepth?: number;
+  instancingConvergenceRemaining?: number;
+  instancingResources?: InstancingResourcesLike;
+  instancingPublicationEpoch?: number;
+  instancingResourcesDestroyed?: boolean;
+  retiredInstancingBuffers?: Set<GPUBuffer>;
   jointBufferSize?: number;
   packedJointMatrices?: Float32Array | null;
   prevPackedJointMatrices?: Float32Array | null;
@@ -1085,6 +1098,11 @@ interface ModelRenderContext {
   device: GPUDevice;
   resourceGeneration?: number;
   onDeviceInvalidated?: (callback: () => void) => () => void;
+  currentCommandEncoder?: GPUCommandEncoder | null;
+  enqueueAfterCommandEncoderSubmit?: (
+    encoder: GPUCommandEncoder,
+    callback: (submitted: boolean) => void,
+  ) => boolean;
   enqueueTextureMipGeneration?: EnqueueMipFn;
   cancelTextureMipGeneration?: CancelMipFn;
   enqueueShadowReceiveUniformRefresh?: (
@@ -6186,11 +6204,17 @@ function updateWebGPUModel(
         nodeCache,
         runtimeNode,
         model as unknown as Parameters<typeof ensureInstancingResources>[3],
+        context as unknown as Parameters<typeof ensureInstancingResources>[4],
       ) as InstancingResourcesLike | undefined;
-      if (defined(instRes)) {
-        instanceCount = instRes.instanceCount;
-        instanceBuffer = instRes.storageBuffer;
+      if (!defined(instRes)) {
+        // A node that advertises instancing cannot fall through to the
+        // singleton/default-buffer path when its semantic snapshot is unstable
+        // or unavailable. Skip only this node; the empty capture publication
+        // above remains authoritative and healthy sibling nodes still render.
+        continue;
       }
+      instanceCount = instRes.instanceCount;
+      instanceBuffer = instRes.storageBuffer;
     }
 
     // Camera resources are realized only after the first pipeline-backed draw
@@ -6410,6 +6434,7 @@ function updateWebGPUModel(
         if (defined(synthesized)) {
           geometry.featureId0Data = synthesized;
           geometry.hasFeatureId0 = true;
+          geometry.featureId0Synthesized = true;
         }
       } else {
         geometryRecord.implicitFeatureIdSource = null;
@@ -6847,7 +6872,10 @@ function updateWebGPUModel(
       // `context`, the per-model `cache`, and a `pickPassActive` hint are
       // threaded through so `ensurePerFeaturePickIds` can allocate
       // per-feature pickIds. `featureIdRes.featureIdEntries` are entries
-      // (bindings 26-32) spliced into the merged group 1.
+      // (bindings 26-32) spliced into the merged group 1. `undefined` is the
+      // legitimate no-feature state; `null` means a transient or
+      // rebuild-required generation could not be published coherently, so this
+      // primitive must emit no command until a later update succeeds.
       let featureIdEntries = null;
       const featureIdRes = ensureFeatureIdResources(
         device,
@@ -6861,7 +6889,14 @@ function updateWebGPUModel(
         context,
         cache,
         pickDemand,
-      ) as FeatureIdResourcesLike | undefined;
+        encodeFeatureIdCompatibilityToken(
+          geometry.hasFeatureId0,
+          geometry.featureId0Synthesized,
+        ),
+      ) as FeatureIdResourcesLike | null | undefined;
+      if (featureIdRes === null) {
+        continue;
+      }
 
       // Set instancing and feature ID flags after packMaterialUniforms.
       {

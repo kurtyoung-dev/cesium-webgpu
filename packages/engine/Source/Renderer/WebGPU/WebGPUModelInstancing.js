@@ -2,9 +2,10 @@
  * Packs instance transforms into a GPU storage buffer for WebGPU model
  * rendering via EXT_mesh_gpu_instancing or i3dm.
  *
- * Instance transforms are static per glTF spec — they're computed once
- * from TRANSLATION/ROTATION/SCALE attributes and cached for the lifetime
- * of the model.
+ * Instance transforms and selected feature IDs are cached while their semantic
+ * provenance is stable. Runtime identity or opt-in revision changes rebuild a
+ * complete candidate transactionally and retire the replaced GPU buffer only
+ * after its exact encoder segment and queue work settle.
  *
  * Storage buffer layout: array&lt;InstanceTransform&gt;.
  *   Each instance is 24 floats / 96 bytes:
@@ -31,17 +32,353 @@
 import defined from "../../Core/defined.js";
 import EncodedCartesian3 from "../../Core/EncodedCartesian3.js";
 import ModelComponents from "../../Scene/ModelComponents.js";
-import ModelUtility from "../../Scene/Model/ModelUtility.js";
 import InstanceAttributeSemantic from "../../Scene/InstanceAttributeSemantic.js";
 
 // Per-instance storage stride. Must stay byte-consistent with the WGSL
 // `InstanceTransform` struct in ModelPBRComplete.wgsl and with the
 // default-buffer size in WebGPUModelPipelineCache.
 const FLOATS_PER_INSTANCE = 24;
+const INSTANCE_FEATURE_ID_NONE = 0;
+const INSTANCE_FEATURE_ID_ATTRIBUTE = 1;
+const INSTANCE_FEATURE_ID_IMPLICIT = 2;
+const INSTANCING_RETRY = Symbol("instancingRetry");
+const MAX_INSTANCING_CONVERGENCE_ATTEMPTS = 4;
+
+const INSTANCING_PROVENANCE_KEYS = Object.freeze([
+  "node",
+  "instances",
+  "instancesRevision",
+  "instanceCount",
+  "packedTransforms",
+  "packedTransformsRevision",
+  "packedTransformsLength",
+  "translationAttribute",
+  "translationAttributeRevision",
+  "translationData",
+  "translationDataRevision",
+  "translationDataLength",
+  "rotationAttribute",
+  "rotationAttributeRevision",
+  "rotationData",
+  "rotationDataRevision",
+  "rotationDataLength",
+  "scaleAttribute",
+  "scaleAttributeRevision",
+  "scaleData",
+  "scaleDataRevision",
+  "scaleDataLength",
+  "featureKind",
+  "featureSource",
+  "featureSourceRevision",
+  "propertyTableId",
+  "propertyTable",
+  "propertyTableRevision",
+  "propertyTableCount",
+  "featureAttribute",
+  "featureAttributeRevision",
+  "featureBuffer",
+  "featureData",
+  "featureDataRevision",
+  "featureDataLength",
+  "implicitOffset",
+  "implicitRepeat",
+]);
+
+const INSTANCING_REVISION_KEYS = Object.freeze([
+  "_webgpuMetadataRevision",
+  "_metadataRevision",
+  "metadataRevision",
+  "_webgpuGeometryRevision",
+  "_geometryRevision",
+  "geometryRevision",
+  "_webgpuGeneration",
+  "_generation",
+  "generation",
+]);
+
+const hasOwnProperty = Object.prototype.hasOwnProperty;
+const INSTANCING_ANCHOR_RESOLVED_PROPERTY = 0;
+const INSTANCING_ANCHOR_OWN_DESCRIPTOR = 1;
+const MAX_INSTANCING_PROTOTYPE_DEPTH = 64;
+const FEATURE_ID_ATTRIBUTE_PROTOTYPE =
+  ModelComponents.FeatureIdAttribute.prototype;
+const FEATURE_ID_IMPLICIT_RANGE_PROTOTYPE =
+  ModelComponents.FeatureIdImplicitRange.prototype;
 
 const scratchEncodeX = { high: 0.0, low: 0.0 };
 const scratchEncodeY = { high: 0.0, low: 0.0 };
 const scratchEncodeZ = { high: 0.0, low: 0.0 };
+
+/**
+ * Begin one tracked semantic observation. The retained arrays grow only when a
+ * new path shape is first seen; stable calls reuse their slots.
+ *
+ * @param {object} scratch
+ * @private
+ */
+function beginTrackedInstancingObservation(scratch) {
+  scratch.instancingAnchorSourceOwners ??= [];
+  scratch.instancingAnchorSourceKeys ??= [];
+  scratch.instancingAnchorDescriptorOwners ??= [];
+  scratch.instancingAnchorDescriptorKinds ??= [];
+  scratch.instancingAnchorSearchModes ??= [];
+  scratch.instancingAnchorGetters ??= [];
+  scratch.instancingAnchorSetters ??= [];
+  scratch.instancingAnchorValues ??= [];
+  scratch.instancingPrototypeAnchorOwners ??= [];
+  scratch.instancingPrototypeAnchorValues ??= [];
+
+  const previousAnchorCount = scratch.instancingAnchorCount ?? 0;
+  for (let i = 0; i < previousAnchorCount; i++) {
+    scratch.instancingAnchorSourceOwners[i] = undefined;
+    scratch.instancingAnchorSourceKeys[i] = undefined;
+    scratch.instancingAnchorDescriptorOwners[i] = undefined;
+    scratch.instancingAnchorGetters[i] = undefined;
+    scratch.instancingAnchorSetters[i] = undefined;
+    scratch.instancingAnchorValues[i] = undefined;
+  }
+
+  const previousPrototypeAnchorCount =
+    scratch.instancingPrototypeAnchorCount ?? 0;
+  for (let i = 0; i < previousPrototypeAnchorCount; i++) {
+    scratch.instancingPrototypeAnchorOwners[i] = undefined;
+    scratch.instancingPrototypeAnchorValues[i] = undefined;
+  }
+
+  scratch.instancingAnchorCount = 0;
+  scratch.instancingPrototypeAnchorCount = 0;
+  scratch.instancingAnchorsValid = true;
+}
+
+function retainTrackedInstancingDescriptor(
+  scratch,
+  owner,
+  key,
+  descriptorOwner,
+  descriptor,
+  searchMode,
+  observedValue,
+  valueWasRead,
+) {
+  const index = scratch.instancingAnchorCount++;
+  scratch.instancingAnchorSourceOwners[index] = owner;
+  scratch.instancingAnchorSourceKeys[index] = key;
+  scratch.instancingAnchorDescriptorOwners[index] = descriptorOwner;
+  scratch.instancingAnchorSearchModes[index] = searchMode;
+
+  if (!defined(descriptor)) {
+    scratch.instancingAnchorDescriptorKinds[index] = 0;
+    scratch.instancingAnchorGetters[index] = undefined;
+    scratch.instancingAnchorSetters[index] = undefined;
+    scratch.instancingAnchorValues[index] = undefined;
+  } else if (hasOwnProperty.call(descriptor, "value")) {
+    scratch.instancingAnchorDescriptorKinds[index] = 1;
+    scratch.instancingAnchorGetters[index] = undefined;
+    scratch.instancingAnchorSetters[index] = undefined;
+    scratch.instancingAnchorValues[index] = descriptor.value;
+    if (valueWasRead && !Object.is(observedValue, descriptor.value)) {
+      scratch.instancingAnchorsValid = false;
+    }
+  } else {
+    scratch.instancingAnchorDescriptorKinds[index] = 2;
+    scratch.instancingAnchorGetters[index] = descriptor.get;
+    scratch.instancingAnchorSetters[index] = descriptor.set;
+    scratch.instancingAnchorValues[index] = undefined;
+  }
+}
+
+/**
+ * Read one semantic property and retain its exact descriptor shape for the
+ * later non-invoking closure pass.
+ *
+ * Accessor-backed revision fields are intentionally allowed during the fill:
+ * their returned values participate in the two complete records, while any
+ * side effect on an earlier data-backed input is caught by the closure pass.
+ *
+ * @param {object} scratch
+ * @param {object} owner
+ * @param {string|number} key
+ * @returns {*}
+ * @private
+ */
+function readTrackedInstancingProperty(scratch, owner, key) {
+  if (!defined(owner)) {
+    return undefined;
+  }
+
+  const value = owner[key];
+  let descriptorOwner = owner;
+  let descriptor;
+  while (defined(descriptorOwner)) {
+    descriptor = Object.getOwnPropertyDescriptor(descriptorOwner, key);
+    if (defined(descriptor)) {
+      break;
+    }
+    descriptorOwner = Object.getPrototypeOf(descriptorOwner);
+  }
+  retainTrackedInstancingDescriptor(
+    scratch,
+    owner,
+    key,
+    descriptorOwner,
+    descriptor,
+    INSTANCING_ANCHOR_RESOLVED_PROPERTY,
+    value,
+    true,
+  );
+  return value;
+}
+
+/**
+ * Retain an own-descriptor decision without evaluating the property. Alias
+ * selection depends on absence as well as presence, so that decision must stay
+ * closed through every later getter in the observation.
+ *
+ * @param {object} scratch
+ * @param {object} owner
+ * @param {string} key
+ * @returns {boolean}
+ * @private
+ */
+function hasTrackedOwnInstancingProperty(scratch, owner, key) {
+  if (!defined(owner)) {
+    return false;
+  }
+  const descriptor = Object.getOwnPropertyDescriptor(owner, key);
+  retainTrackedInstancingDescriptor(
+    scratch,
+    owner,
+    key,
+    defined(descriptor) ? owner : undefined,
+    descriptor,
+    INSTANCING_ANCHOR_OWN_DESCRIPTOR,
+    undefined,
+    false,
+  );
+  return defined(descriptor);
+}
+
+/**
+ * Prefer the data-backed field used by Cesium's public getter, while retaining
+ * direct own data properties used by lightweight callers and focused harnesses.
+ *
+ * @param {object} scratch
+ * @param {object} owner
+ * @param {string} publicKey
+ * @param {string} backingKey
+ * @returns {*}
+ * @private
+ */
+function readTrackedInstancingAlias(scratch, owner, publicKey, backingKey) {
+  if (!defined(owner)) {
+    return undefined;
+  }
+  const key = hasTrackedOwnInstancingProperty(scratch, owner, backingKey)
+    ? backingKey
+    : publicKey;
+  return readTrackedInstancingProperty(scratch, owner, key);
+}
+
+function readTrackedInstancingPrototype(scratch, owner) {
+  const prototype = Object.getPrototypeOf(owner);
+  const index = scratch.instancingPrototypeAnchorCount++;
+  scratch.instancingPrototypeAnchorOwners[index] = owner;
+  scratch.instancingPrototypeAnchorValues[index] = prototype;
+  return prototype;
+}
+
+function trackedInstancingPrototypeChainIncludes(
+  scratch,
+  value,
+  expectedPrototype,
+) {
+  let owner = value;
+  for (
+    let depth = 0;
+    defined(owner) && depth < MAX_INSTANCING_PROTOTYPE_DEPTH;
+    depth++
+  ) {
+    const prototype = readTrackedInstancingPrototype(scratch, owner);
+    if (prototype === expectedPrototype) {
+      return true;
+    }
+    owner = prototype;
+  }
+  if (defined(owner)) {
+    scratch.instancingAnchorsValid = false;
+  }
+  return false;
+}
+
+/**
+ * Close an observation without invoking any live getter. Each retained
+ * data-property anchor must still hold the value captured during its fill.
+ *
+ * @param {object} scratch
+ * @returns {boolean}
+ * @private
+ */
+function trackedInstancingObservationClosed(scratch) {
+  if (scratch.instancingAnchorsValid !== true) {
+    return false;
+  }
+  const count = scratch.instancingAnchorCount;
+  const sourceOwners = scratch.instancingAnchorSourceOwners;
+  const sourceKeys = scratch.instancingAnchorSourceKeys;
+  const descriptorOwners = scratch.instancingAnchorDescriptorOwners;
+  const descriptorKinds = scratch.instancingAnchorDescriptorKinds;
+  const searchModes = scratch.instancingAnchorSearchModes;
+  const getters = scratch.instancingAnchorGetters;
+  const setters = scratch.instancingAnchorSetters;
+  const values = scratch.instancingAnchorValues;
+  for (let i = 0; i < count; i++) {
+    let descriptorOwner = sourceOwners[i];
+    let descriptor = Object.getOwnPropertyDescriptor(
+      descriptorOwner,
+      sourceKeys[i],
+    );
+    if (searchModes[i] === INSTANCING_ANCHOR_RESOLVED_PROPERTY) {
+      while (!defined(descriptor) && defined(descriptorOwner)) {
+        descriptorOwner = Object.getPrototypeOf(descriptorOwner);
+        if (defined(descriptorOwner)) {
+          descriptor = Object.getOwnPropertyDescriptor(
+            descriptorOwner,
+            sourceKeys[i],
+          );
+        }
+      }
+    } else if (!defined(descriptor)) {
+      descriptorOwner = undefined;
+    }
+    if (descriptorOwner !== descriptorOwners[i]) {
+      return false;
+    }
+    const kind = !defined(descriptor)
+      ? 0
+      : hasOwnProperty.call(descriptor, "value")
+        ? 1
+        : 2;
+    if (kind !== descriptorKinds[i]) {
+      return false;
+    }
+    if (
+      (kind === 1 && !Object.is(descriptor.value, values[i])) ||
+      (kind === 2 &&
+        (descriptor.get !== getters[i] || descriptor.set !== setters[i]))
+    ) {
+      return false;
+    }
+  }
+  const prototypeCount = scratch.instancingPrototypeAnchorCount;
+  const prototypeOwners = scratch.instancingPrototypeAnchorOwners;
+  const prototypeValues = scratch.instancingPrototypeAnchorValues;
+  for (let i = 0; i < prototypeCount; i++) {
+    if (Object.getPrototypeOf(prototypeOwners[i]) !== prototypeValues[i]) {
+      return false;
+    }
+  }
+  return true;
+}
 
 /**
  * Writes the linear (rotation+scale) 3x3 into the `linear` mat4x4 slot
@@ -127,38 +464,136 @@ function writeInstance(
  * @param {Model} [model] - The owning model, used to resolve the selected
  *   instance feature ID set. Optional so callers without instance metadata
  *   keep the same packed representation.
+ * @param {object} [context] - The active WebGPU context. Its exact command
+ *   encoder settlement hook owns submit-safe replacement retirement.
  * @returns {object|null} { storageBuffer, instanceCount } or null
  */
-function ensureInstancingResources(device, nodeCache, runtimeNode, model) {
-  // Already created — return cached
-  if (defined(nodeCache.instancingBuffer)) {
-    return {
-      storageBuffer: nodeCache.instancingBuffer,
-      instanceCount: nodeCache.instanceCount,
-    };
+function ensureInstancingResources(
+  device,
+  nodeCache,
+  runtimeNode,
+  model,
+  context,
+) {
+  const callerDepth = nodeCache.instancingConvergenceDepth ?? 0;
+  if (callerDepth === 0) {
+    nodeCache.instancingConvergenceRemaining =
+      MAX_INSTANCING_CONVERGENCE_ATTEMPTS;
   }
+  nodeCache.instancingConvergenceDepth = callerDepth + 1;
 
-  const node = runtimeNode.node || runtimeNode._node;
-  if (!defined(node) || !defined(node.instances)) {
+  try {
+    while ((nodeCache.instancingConvergenceRemaining ?? 0) > 0) {
+      nodeCache.instancingConvergenceRemaining--;
+      const result = ensureInstancingResourcesAttempt(
+        device,
+        nodeCache,
+        runtimeNode,
+        model,
+        context,
+      );
+      if (result !== INSTANCING_RETRY) {
+        return result;
+      }
+    }
+
+    // Persistent mutation is not a stable generation. Fail closed for this
+    // frame without retaining call-stack depth; a later frame may retry.
+    return null;
+  } finally {
+    if (callerDepth === 0) {
+      nodeCache.instancingConvergenceDepth = undefined;
+      nodeCache.instancingConvergenceRemaining = undefined;
+    } else {
+      nodeCache.instancingConvergenceDepth = callerDepth;
+    }
+  }
+}
+
+/**
+ * Performs one transactional observation/publication attempt.
+ *
+ * @returns {object|null|symbol}
+ * @private
+ */
+function ensureInstancingResourcesAttempt(
+  device,
+  nodeCache,
+  runtimeNode,
+  model,
+  context,
+) {
+  // A node cache is a single ownership lifecycle. Final teardown leaves a
+  // terminal tombstone so native destroy wrappers and in-flight candidates
+  // cannot resurrect resources into a cache the renderer is about to discard.
+  if (nodeCache.instancingResourcesDestroyed === true) {
     return null;
   }
 
-  const instances = node.instances;
-  const count = instances.attributes[0].count;
-  if (count <= 0) {
+  const liveProvenance = populateInstancingProvenance(
+    nodeCache,
+    model,
+    runtimeNode,
+  );
+  if (nodeCache.instancingResourcesDestroyed === true) {
     return null;
   }
+  if (!defined(liveProvenance)) {
+    return INSTANCING_RETRY;
+  }
+  const count = liveProvenance.instanceCount ?? 0;
+  if (!defined(liveProvenance.instances) || count <= 0) {
+    return null;
+  }
+  const currentBuffer = nodeCache.instancingBuffer;
+  const currentProvenance = nodeCache.instancingProvenance;
+  const publicationEpoch = nodeCache.instancingPublicationEpoch ?? 0;
+  if (
+    defined(currentBuffer) &&
+    instancingProvenanceMatches(currentProvenance, liveProvenance)
+  ) {
+    const crossedRetirementBoundary = scheduleRetiredInstancingBuffers(
+      device,
+      nodeCache,
+      context,
+    );
+    if (
+      !crossedRetirementBoundary ||
+      instancingGenerationMatchesLive(
+        nodeCache,
+        model,
+        runtimeNode,
+        currentBuffer,
+        currentProvenance,
+        publicationEpoch,
+      )
+    ) {
+      return nodeCache.instancingResourcesDestroyed === true
+        ? null
+        : nodeCache.instancingResources;
+    }
+    if (nodeCache.instancingResourcesDestroyed === true) {
+      return null;
+    }
+    return INSTANCING_RETRY;
+  }
 
-  // Resolve per-instance feature IDs for the model's selected instance
-  // feature ID set and transport them in the transform's pad slot (see
-  // writeInstance). A node without IDs that reference a property table
-  // returns `null`, leaving the pad at 0.
-  const instanceFeatureIds = defined(model)
-    ? resolveInstanceFeatureIds(model, node, count)
-    : null;
+  // Capture the miss before invoking device methods. A test device or wrapper
+  // may be re-entrant; the node-local scratch object remains free for that
+  // nested resolution without changing the candidate's publication tuple.
+  const candidateProvenance = captureInstancingProvenance(liveProvenance);
+  const instanceFeatureIds = createInstanceFeatureIds(
+    candidateProvenance,
+    count,
+  );
+  if (
+    !instancingCardinalityAllows(candidateProvenance, count, instanceFeatureIds)
+  ) {
+    return null;
+  }
 
   // Try the packed typed array cached by InstancingPipelineStage
-  const packedData = runtimeNode.transformsTypedArray;
+  const packedData = candidateProvenance.packedTransforms;
   let instanceData;
 
   if (defined(packedData)) {
@@ -169,8 +604,8 @@ function ensureInstancingResources(device, nodeCache, runtimeNode, model) {
     );
   } else {
     // Fallback: try to read from attribute typed arrays directly
-    instanceData = extractTransformsFromAttributes(
-      instances,
+    instanceData = extractTransformsFromProvenance(
+      candidateProvenance,
       count,
       instanceFeatureIds,
     );
@@ -179,23 +614,230 @@ function ensureInstancingResources(device, nodeCache, runtimeNode, model) {
   if (!defined(instanceData)) {
     return null;
   }
+  if (nodeCache.instancingResourcesDestroyed === true) {
+    return null;
+  }
 
   // Create GPU storage buffer (FLOATS_PER_INSTANCE-strided InstanceTransform)
   const bufferSize = instanceData.byteLength;
-  const storageBuffer = device.createBuffer({
-    label: `Instance transforms (${count} instances)`,
-    size: bufferSize,
-    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-  });
-  device.queue.writeBuffer(storageBuffer, 0, instanceData);
+  let storageBuffer;
+  try {
+    storageBuffer = device.createBuffer({
+      label: `Instance transforms (${count} instances)`,
+      size: bufferSize,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+    device.queue.writeBuffer(storageBuffer, 0, instanceData);
+  } catch (error) {
+    try {
+      storageBuffer?.destroy();
+    } catch {
+      // Preserve the allocation/upload error. This candidate was never visible.
+    }
+    throw error;
+  }
+
+  // Device wrappers may re-enter this ensure path while the candidate is
+  // being allocated or uploaded. Publish only if both the observed cache
+  // generation and the live semantic inputs are still current; otherwise the
+  // nested/newer call wins and this candidate never becomes externally
+  // reachable.
+  if (nodeCache.instancingResourcesDestroyed === true) {
+    try {
+      storageBuffer.destroy();
+    } catch {
+      // Final teardown owns the lifecycle; this candidate was never visible.
+    }
+    return null;
+  }
+
+  // Re-resolve the complete runtime tuple after the foreign device calls.
+  // Candidate materialization above consumed only captured provenance; this is
+  // the first live read after acceptance and therefore the CAS boundary.
+  let latestProvenance;
+  try {
+    latestProvenance = populateInstancingProvenance(
+      nodeCache,
+      model,
+      runtimeNode,
+    );
+  } catch (error) {
+    try {
+      storageBuffer.destroy();
+    } catch {
+      // Preserve the live-provenance error; the candidate was never visible.
+    }
+    throw error;
+  }
+  if (
+    nodeCache.instancingResourcesDestroyed === true ||
+    (nodeCache.instancingPublicationEpoch ?? 0) !== publicationEpoch ||
+    nodeCache.instancingBuffer !== currentBuffer ||
+    nodeCache.instancingProvenance !== currentProvenance ||
+    !defined(latestProvenance) ||
+    !instancingProvenanceMatches(candidateProvenance, latestProvenance)
+  ) {
+    try {
+      storageBuffer.destroy();
+    } catch {
+      // The unpublished candidate is unreachable; preserve the newer owner.
+    }
+    if (nodeCache.instancingResourcesDestroyed === true) {
+      return null;
+    }
+    return INSTANCING_RETRY;
+  }
 
   nodeCache.instancingBuffer = storageBuffer;
   nodeCache.instanceCount = count;
-
-  return {
-    storageBuffer: storageBuffer,
+  nodeCache.instancingProvenance = candidateProvenance;
+  nodeCache.instancingResources = {
+    storageBuffer,
     instanceCount: count,
   };
+  nodeCache.instancingPublicationEpoch = publicationEpoch + 1;
+  if (defined(currentBuffer)) {
+    nodeCache.retiredInstancingBuffers ??= new Set();
+    nodeCache.retiredInstancingBuffers.add(currentBuffer);
+  }
+  const crossedRetirementBoundary = scheduleRetiredInstancingBuffers(
+    device,
+    nodeCache,
+    context,
+  );
+  if (
+    !crossedRetirementBoundary ||
+    instancingGenerationMatchesLive(
+      nodeCache,
+      model,
+      runtimeNode,
+      storageBuffer,
+      candidateProvenance,
+      publicationEpoch + 1,
+    )
+  ) {
+    return nodeCache.instancingResourcesDestroyed === true
+      ? null
+      : nodeCache.instancingResources;
+  }
+  if (nodeCache.instancingResourcesDestroyed === true) {
+    return null;
+  }
+  return INSTANCING_RETRY;
+}
+
+function actualArrayCardinalityAllows(array, requiredLength) {
+  return (
+    defined(array) &&
+    Number.isInteger(array.length) &&
+    array.length >= requiredLength
+  );
+}
+
+function optionalActualArrayCardinalityAllows(array, requiredLength) {
+  return !defined(array) || actualArrayCardinalityAllows(array, requiredLength);
+}
+
+function capturedArrayCardinalityAllows(array, capturedLength, requiredLength) {
+  return (
+    actualArrayCardinalityAllows(array, requiredLength) &&
+    Number.isInteger(capturedLength) &&
+    capturedLength >= requiredLength
+  );
+}
+
+function optionalCapturedArrayCardinalityAllows(
+  array,
+  capturedLength,
+  requiredLength,
+) {
+  return (
+    !defined(array) ||
+    capturedArrayCardinalityAllows(array, capturedLength, requiredLength)
+  );
+}
+
+/**
+ * Checks that the accepted arrays can materialize every advertised instance.
+ * Captured lengths are the provenance witness; direct checks on those exact
+ * arrays keep the materializers safe from inconsistent array-like inputs.
+ *
+ * @param {object} provenance
+ * @param {number} count
+ * @param {Float32Array|null|undefined} featureIds
+ * @returns {boolean}
+ * @private
+ */
+function instancingCardinalityAllows(provenance, count, featureIds) {
+  if (!Number.isInteger(count) || count <= 0) {
+    return false;
+  }
+
+  const packedTransforms = provenance.packedTransforms;
+  if (defined(packedTransforms)) {
+    if (
+      !capturedArrayCardinalityAllows(
+        packedTransforms,
+        provenance.packedTransformsLength,
+        count * 12,
+      )
+    ) {
+      return false;
+    }
+  } else if (
+    !optionalCapturedArrayCardinalityAllows(
+      provenance.translationData,
+      provenance.translationDataLength,
+      count * 3,
+    ) ||
+    !optionalCapturedArrayCardinalityAllows(
+      provenance.rotationData,
+      provenance.rotationDataLength,
+      count * 4,
+    ) ||
+    !optionalCapturedArrayCardinalityAllows(
+      provenance.scaleData,
+      provenance.scaleDataLength,
+      count * 3,
+    )
+  ) {
+    return false;
+  }
+
+  if (
+    provenance.featureKind === INSTANCE_FEATURE_ID_ATTRIBUTE &&
+    ((!defined(provenance.featureData) && !defined(provenance.featureBuffer)) ||
+      !optionalCapturedArrayCardinalityAllows(
+        provenance.featureData,
+        provenance.featureDataLength,
+        count,
+      ))
+  ) {
+    return false;
+  }
+
+  if (provenance.featureKind === INSTANCE_FEATURE_ID_NONE) {
+    return !defined(featureIds);
+  }
+  if (
+    provenance.featureKind !== INSTANCE_FEATURE_ID_ATTRIBUTE &&
+    provenance.featureKind !== INSTANCE_FEATURE_ID_IMPLICIT
+  ) {
+    return false;
+  }
+  if (
+    provenance.featureKind === INSTANCE_FEATURE_ID_ATTRIBUTE &&
+    !defined(featureIds)
+  ) {
+    return (
+      !defined(provenance.featureData) && defined(provenance.featureBuffer)
+    );
+  }
+  return (
+    defined(featureIds) &&
+    Number.isInteger(featureIds.length) &&
+    featureIds.length >= count
+  );
 }
 
 /**
@@ -213,10 +855,17 @@ function ensureInstancingResources(device, nodeCache, runtimeNode, model) {
  * @param {number} count - Number of instances
  * @param {Float32Array|null} [featureIds] - Per-instance feature IDs to
  *   transport in the pad slot, or null.
- * @returns {Float32Array} FLOATS_PER_INSTANCE floats per instance
+ * @returns {Float32Array|null} FLOATS_PER_INSTANCE floats per instance, or null
  * @private
  */
 function expandPackedTransforms(packed, count, featureIds) {
+  const cardinalityAllows =
+    actualArrayCardinalityAllows(packed, count * 12) &&
+    optionalActualArrayCardinalityAllows(featureIds, count);
+  if (!cardinalityAllows) {
+    return null;
+  }
+
   const data = new Float32Array(count * FLOATS_PER_INSTANCE);
   for (let i = 0; i < count; i++) {
     const src = i * 12;
@@ -248,32 +897,30 @@ function expandPackedTransforms(packed, count, featureIds) {
 }
 
 /**
- * Fallback: extract transforms directly from instance attribute typed arrays.
- * Only works if typed arrays haven't been consumed yet.
+ * Fallback: expand the translation/rotation/scale arrays captured by the
+ * accepted provenance record. No live instance or attribute traversal is
+ * allowed here: a getter between acceptance and upload could otherwise mix
+ * bytes from one generation with another generation's provenance.
  *
- * @param {object} instances - node.instances from ModelComponents
+ * @param {object} provenance - accepted instancing provenance
  * @param {number} count
  * @param {Float32Array|null} [featureIds] - Per-instance feature IDs to
  *   transport in the pad slot, or null.
  * @returns {Float32Array|null} FLOATS_PER_INSTANCE floats per instance, or null
  * @private
  */
-function extractTransformsFromAttributes(instances, count, featureIds) {
-  const attrs = instances.attributes;
-  let translationData = null;
-  let rotationData = null;
-  let scaleData = null;
+function extractTransformsFromProvenance(provenance, count, featureIds) {
+  const translationData = provenance.translationData;
+  const rotationData = provenance.rotationData;
+  const scaleData = provenance.scaleData;
 
-  for (let i = 0; i < attrs.length; i++) {
-    const attr = attrs[i];
-    const semantic = attr.semantic;
-    if (semantic === "TRANSLATION" && defined(attr.typedArray)) {
-      translationData = attr.typedArray;
-    } else if (semantic === "ROTATION" && defined(attr.typedArray)) {
-      rotationData = attr.typedArray;
-    } else if (semantic === "SCALE" && defined(attr.typedArray)) {
-      scaleData = attr.typedArray;
-    }
+  const cardinalityAllows =
+    optionalActualArrayCardinalityAllows(translationData, count * 3) &&
+    optionalActualArrayCardinalityAllows(rotationData, count * 4) &&
+    optionalActualArrayCardinalityAllows(scaleData, count * 3) &&
+    optionalActualArrayCardinalityAllows(featureIds, count);
+  if (!cardinalityAllows) {
+    return null;
   }
 
   // Need at least translation (or all zero = identity position)
@@ -364,85 +1011,701 @@ function extractTransformsFromAttributes(instances, count, featureIds) {
 }
 
 /**
- * Resolves the per-instance feature IDs for the model's selected instance
- * feature ID set (`model.instanceFeatureIdLabel`, default
- * "instanceFeatureId_0"), matching WebGL's instancing feature-ID
- * attribute pipeline. Returns a `Float32Array(count)` — implicit ranges compute
- * `offset + floor(i / repeat)`; explicit `_FEATURE_ID_n` instance attributes are
- * read from their retained typed array. Returns `null` when the node carries no
- * instance feature ID set that references a property table, the only
- * implemented consumer, so unaffected instanced models keep a zero pad.
+ * Returns a mutation revision when a loader/runtime source exposes one.
+ * Identity remains the primary key; this opt-in revision catches in-place
+ * mutations without scanning potentially large typed arrays every frame.
  *
- * @param {Model} model
- * @param {object} node - the glTF node (carries `.instances`)
- * @param {number} count - instance count
- * @returns {Float32Array|null}
+ * @param {*} value
+ * @param {object} scratch
+ * @returns {*}
  * @private
  */
-function resolveInstanceFeatureIds(model, node, count) {
-  const instances = node.instances;
-  if (
-    !defined(instances) ||
-    !defined(instances.featureIds) ||
-    instances.featureIds.length === 0
-  ) {
-    return null;
+function getInstancingRevision(value, scratch) {
+  if (!defined(value)) {
+    return undefined;
   }
-  const selected = ModelUtility.getFeatureIdsByLabel(
-    instances.featureIds,
-    model.instanceFeatureIdLabel,
+  for (let i = 0; i < INSTANCING_REVISION_KEYS.length; i++) {
+    const revision = readTrackedInstancingProperty(
+      scratch,
+      value,
+      INSTANCING_REVISION_KEYS[i],
+    );
+    if (defined(revision)) {
+      return revision;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Resolve the runtime node through Cesium's data-backed `_node` field when
+ * present, or through a caller-owned `node` data property in focused/simple
+ * integrations.
+ *
+ * @param {object} scratch
+ * @param {object} runtimeNode
+ * @returns {object|undefined}
+ * @private
+ */
+function readTrackedRuntimeNode(scratch, runtimeNode) {
+  return readTrackedInstancingAlias(scratch, runtimeNode, "node", "_node");
+}
+
+/**
+ * Read the selected instance-feature label without invoking Model's public
+ * accessor when its canonical backing field is available.
+ *
+ * @param {object} scratch
+ * @param {Model} model
+ * @returns {*}
+ * @private
+ */
+function readTrackedInstanceFeatureIdLabel(scratch, model) {
+  return readTrackedInstancingAlias(
+    scratch,
+    model,
+    "instanceFeatureIdLabel",
+    "_instanceFeatureIdLabel",
   );
-  // Only transport IDs that key a property table, the sole implemented
-  // consumer of the instance-sourced `featureId0` varying. The same data
-  // lane is reserved for instanced styling and feature picking when those
-  // consumers are implemented.
-  if (!defined(selected) || !defined(selected.propertyTableId)) {
-    return null;
+}
+
+/**
+ * Resolve structural metadata through Model's data-backed scene-graph chain.
+ * Lightweight callers may instead expose a direct own `structuralMetadata`.
+ *
+ * @param {object} scratch
+ * @param {Model} model
+ * @returns {object|undefined}
+ * @private
+ */
+function readTrackedStructuralMetadata(scratch, model) {
+  if (!defined(model)) {
+    return undefined;
+  }
+  if (hasTrackedOwnInstancingProperty(scratch, model, "structuralMetadata")) {
+    return readTrackedInstancingProperty(scratch, model, "structuralMetadata");
+  }
+  if (hasTrackedOwnInstancingProperty(scratch, model, "_sceneGraph")) {
+    const sceneGraph = readTrackedInstancingProperty(
+      scratch,
+      model,
+      "_sceneGraph",
+    );
+    const components = readTrackedInstancingAlias(
+      scratch,
+      sceneGraph,
+      "components",
+      "_components",
+    );
+    return readTrackedInstancingProperty(
+      scratch,
+      components,
+      "structuralMetadata",
+    );
+  }
+  return readTrackedInstancingProperty(scratch, model, "structuralMetadata");
+}
+
+/**
+ * Tracked equivalent of ModelUtility.getFeatureIdsByLabel. Keeping selection in
+ * this one resolver lets the closure anchor every visited array entry and label
+ * without a second raw semantic implementation.
+ *
+ * @param {object} scratch
+ * @param {object[]} featureIds
+ * @param {*} label
+ * @returns {object|undefined}
+ * @private
+ */
+function findTrackedInstanceFeatureIdByLabel(scratch, featureIds, label) {
+  const length =
+    readTrackedInstancingProperty(scratch, featureIds, "length") ?? 0;
+  for (let i = 0; i < length; i++) {
+    const featureId = readTrackedInstancingProperty(scratch, featureIds, i);
+    if (
+      readTrackedInstancingProperty(scratch, featureId, "positionalLabel") ===
+        label ||
+      readTrackedInstancingProperty(scratch, featureId, "label") === label
+    ) {
+      return featureId;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Resolves the structural property table consumed by the selected instance
+ * source. This mirrors the metadata resolver's per-node law; the model-wide
+ * styling table may legitimately describe a different node.
+ *
+ * @param {object} scratch
+ * @param {Model} model
+ * @param {number|string} propertyTableId
+ * @returns {object|undefined}
+ * @private
+ */
+function findInstancePropertyTable(scratch, model, propertyTableId) {
+  const structuralMetadata = readTrackedStructuralMetadata(scratch, model);
+  const propertyTables = readTrackedInstancingAlias(
+    scratch,
+    structuralMetadata,
+    "propertyTables",
+    "_propertyTables",
+  );
+  if (!defined(propertyTables)) {
+    return undefined;
+  }
+  const length =
+    readTrackedInstancingProperty(scratch, propertyTables, "length") ?? 0;
+  if (
+    Number.isInteger(propertyTableId) &&
+    propertyTableId >= 0 &&
+    propertyTableId < length
+  ) {
+    const indexedTable = readTrackedInstancingProperty(
+      scratch,
+      propertyTables,
+      propertyTableId,
+    );
+    return (readTrackedInstancingAlias(
+      scratch,
+      indexedTable,
+      "count",
+      "_count",
+    ) ?? 0) > 0
+      ? indexedTable
+      : undefined;
+  }
+  for (let i = 0; i < length; i++) {
+    const propertyTable = readTrackedInstancingProperty(
+      scratch,
+      propertyTables,
+      i,
+    );
+    if (
+      defined(propertyTable) &&
+      (readTrackedInstancingAlias(scratch, propertyTable, "count", "_count") ??
+        0) > 0 &&
+      String(
+        readTrackedInstancingAlias(scratch, propertyTable, "id", "_id"),
+      ) === String(propertyTableId)
+    ) {
+      return propertyTable;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Populates one node-owned scratch record with every semantic input baked into
+ * the combined transform/feature-ID buffer. Retained scratch containers are
+ * reused after warmup; descriptor inspection cost remains measurement-owned.
+ *
+ * @param {object} nodeCache
+ * @param {Model} model
+ * @param {object} runtimeNode
+ * @returns {object|undefined} A stable snapshot, or undefined when a
+ *   synchronous mutation made the observation internally inconsistent.
+ * @private
+ */
+function populateInstancingProvenance(nodeCache, model, runtimeNode) {
+  const depth = nodeCache.instancingProvenanceScratchDepth ?? 0;
+  const pool =
+    nodeCache.instancingProvenanceScratchPool ??
+    (nodeCache.instancingProvenanceScratchPool = []);
+  const firstScratch = pool[depth] ?? (pool[depth] = {});
+  nodeCache.instancingProvenanceScratchDepth = depth + 1;
+  try {
+    const first = populateInstancingProvenanceRecord(
+      firstScratch,
+      model,
+      runtimeNode,
+    );
+    if (nodeCache.instancingResourcesDestroyed === true) {
+      return undefined;
+    }
+
+    // A separately retained complete observation closes its own tracked data
+    // anchors before equality. The comparison below therefore performs no live
+    // getter, selector, or source traversal.
+    const secondDepth = depth + 1;
+    const secondScratch = pool[secondDepth] ?? (pool[secondDepth] = {});
+    nodeCache.instancingProvenanceScratchDepth = secondDepth + 1;
+    const second = populateInstancingProvenanceRecord(
+      secondScratch,
+      model,
+      runtimeNode,
+    );
+    return nodeCache.instancingResourcesDestroyed !== true &&
+      trackedInstancingObservationClosed(first) &&
+      trackedInstancingObservationClosed(second) &&
+      instancingProvenanceMatches(first, second)
+      ? first
+      : undefined;
+  } finally {
+    nodeCache.instancingProvenanceScratchDepth =
+      nodeCache.instancingResourcesDestroyed === true ? undefined : depth;
+  }
+}
+
+/**
+ * Fills one depth-isolated provenance record. The wrapper above owns scratch
+ * acquisition/release so revision getters may synchronously re-enter ensure
+ * without overwriting an outer call's still-live comparison tuple.
+ *
+ * @param {object} scratch
+ * @param {Model} model
+ * @param {object} runtimeNode
+ * @returns {object}
+ * @private
+ */
+function populateInstancingProvenanceRecord(scratch, model, runtimeNode) {
+  beginTrackedInstancingObservation(scratch);
+  for (let i = 0; i < INSTANCING_PROVENANCE_KEYS.length; i++) {
+    scratch[INSTANCING_PROVENANCE_KEYS[i]] = undefined;
+  }
+  scratch.featureKind = INSTANCE_FEATURE_ID_NONE;
+  scratch.instanceCount = 0;
+
+  const node = readTrackedRuntimeNode(scratch, runtimeNode);
+  const instances = readTrackedInstancingProperty(scratch, node, "instances");
+  const attributes = readTrackedInstancingProperty(
+    scratch,
+    instances,
+    "attributes",
+  );
+  const firstAttribute = readTrackedInstancingProperty(scratch, attributes, 0);
+  const count =
+    readTrackedInstancingProperty(scratch, firstAttribute, "count") ?? 0;
+  scratch.node = node;
+  scratch.instances = instances;
+  scratch.instanceCount = count;
+  if (!defined(instances) || count <= 0) {
+    return scratch;
   }
 
-  const out = new Float32Array(count);
-  if (selected instanceof ModelComponents.FeatureIdImplicitRange) {
-    // EXT_instance_features implicit range: id = offset + floor(i / repeat).
-    const offset = selected.offset ?? 0;
-    const repeat = Math.max(1, selected.repeat ?? 1);
-    for (let i = 0; i < count; i++) {
-      out[i] = offset + Math.floor(i / repeat);
+  const packedTransforms = readTrackedInstancingProperty(
+    scratch,
+    runtimeNode,
+    "transformsTypedArray",
+  );
+  let translationAttribute;
+  let rotationAttribute;
+  let scaleAttribute;
+  if (!defined(packedTransforms)) {
+    const attributeCount =
+      readTrackedInstancingProperty(scratch, attributes, "length") ?? 0;
+    for (let i = 0; i < attributeCount; i++) {
+      const attribute = readTrackedInstancingProperty(scratch, attributes, i);
+      const semantic = readTrackedInstancingProperty(
+        scratch,
+        attribute,
+        "semantic",
+      );
+      if (semantic === "TRANSLATION") {
+        translationAttribute = attribute;
+      } else if (semantic === "ROTATION") {
+        rotationAttribute = attribute;
+      } else if (semantic === "SCALE") {
+        scaleAttribute = attribute;
+      }
     }
-    return out;
   }
-  if (selected instanceof ModelComponents.FeatureIdAttribute) {
-    // Explicit per-instance `_FEATURE_ID_n` attribute — find the instance
-    // attribute with the FEATURE_ID semantic at the set's setIndex and read
-    // its retained typed array.
-    const attr = findInstanceFeatureIdAttribute(instances, selected.setIndex);
-    if (!defined(attr) || !defined(attr.typedArray)) {
-      return null;
+
+  const translationData = readTrackedInstancingProperty(
+    scratch,
+    translationAttribute,
+    "typedArray",
+  );
+  const rotationData = readTrackedInstancingProperty(
+    scratch,
+    rotationAttribute,
+    "typedArray",
+  );
+  const scaleData = readTrackedInstancingProperty(
+    scratch,
+    scaleAttribute,
+    "typedArray",
+  );
+  scratch.instancesRevision = getInstancingRevision(instances, scratch);
+  scratch.packedTransforms = packedTransforms;
+  scratch.packedTransformsRevision = getInstancingRevision(
+    packedTransforms,
+    scratch,
+  );
+  scratch.packedTransformsLength = readTrackedInstancingProperty(
+    scratch,
+    packedTransforms,
+    "length",
+  );
+  scratch.translationAttribute = translationAttribute;
+  scratch.translationAttributeRevision = getInstancingRevision(
+    translationAttribute,
+    scratch,
+  );
+  scratch.translationData = translationData;
+  scratch.translationDataRevision = getInstancingRevision(
+    translationData,
+    scratch,
+  );
+  scratch.translationDataLength = readTrackedInstancingProperty(
+    scratch,
+    translationData,
+    "length",
+  );
+  scratch.rotationAttribute = rotationAttribute;
+  scratch.rotationAttributeRevision = getInstancingRevision(
+    rotationAttribute,
+    scratch,
+  );
+  scratch.rotationData = rotationData;
+  scratch.rotationDataRevision = getInstancingRevision(rotationData, scratch);
+  scratch.rotationDataLength = readTrackedInstancingProperty(
+    scratch,
+    rotationData,
+    "length",
+  );
+  scratch.scaleAttribute = scaleAttribute;
+  scratch.scaleAttributeRevision = getInstancingRevision(
+    scaleAttribute,
+    scratch,
+  );
+  scratch.scaleData = scaleData;
+  scratch.scaleDataRevision = getInstancingRevision(scaleData, scratch);
+  scratch.scaleDataLength = readTrackedInstancingProperty(
+    scratch,
+    scaleData,
+    "length",
+  );
+
+  const featureIds = readTrackedInstancingProperty(
+    scratch,
+    instances,
+    "featureIds",
+  );
+  if (!defined(model) || !defined(featureIds)) {
+    return scratch;
+  }
+  const selected = findTrackedInstanceFeatureIdByLabel(
+    scratch,
+    featureIds,
+    readTrackedInstanceFeatureIdLabel(scratch, model),
+  );
+  const propertyTableId = readTrackedInstancingProperty(
+    scratch,
+    selected,
+    "propertyTableId",
+  );
+  if (!defined(selected) || !defined(propertyTableId)) {
+    return scratch;
+  }
+  const propertyTable = findInstancePropertyTable(
+    scratch,
+    model,
+    propertyTableId,
+  );
+  if (!defined(propertyTable)) {
+    return scratch;
+  }
+
+  let featureAttribute;
+  let featureData;
+  let featureKind;
+  let implicitOffset;
+  let implicitRepeat;
+  if (
+    trackedInstancingPrototypeChainIncludes(
+      scratch,
+      selected,
+      FEATURE_ID_ATTRIBUTE_PROTOTYPE,
+    )
+  ) {
+    const setIndex = readTrackedInstancingProperty(
+      scratch,
+      selected,
+      "setIndex",
+    );
+    featureAttribute = findInstanceFeatureIdAttribute(
+      scratch,
+      instances,
+      setIndex,
+    );
+    featureData = readTrackedInstancingProperty(
+      scratch,
+      featureAttribute,
+      "typedArray",
+    );
+    featureKind = INSTANCE_FEATURE_ID_ATTRIBUTE;
+  } else if (
+    trackedInstancingPrototypeChainIncludes(
+      scratch,
+      selected,
+      FEATURE_ID_IMPLICIT_RANGE_PROTOTYPE,
+    )
+  ) {
+    featureKind = INSTANCE_FEATURE_ID_IMPLICIT;
+    const selectedOffset = readTrackedInstancingProperty(
+      scratch,
+      selected,
+      "offset",
+    );
+    const selectedRepeat = readTrackedInstancingProperty(
+      scratch,
+      selected,
+      "repeat",
+    );
+    implicitOffset = Number.isFinite(selectedOffset) ? selectedOffset : 0;
+    implicitRepeat = Number.isFinite(selectedRepeat)
+      ? Math.max(1, selectedRepeat)
+      : 1;
+  } else {
+    return scratch;
+  }
+
+  scratch.featureKind = featureKind;
+  scratch.featureSource = selected;
+  scratch.featureSourceRevision = getInstancingRevision(selected, scratch);
+  scratch.propertyTableId = propertyTableId;
+  scratch.propertyTable = propertyTable;
+  scratch.propertyTableRevision = getInstancingRevision(propertyTable, scratch);
+  scratch.propertyTableCount = readTrackedInstancingAlias(
+    scratch,
+    propertyTable,
+    "count",
+    "_count",
+  );
+  scratch.featureAttribute = featureAttribute;
+  scratch.featureAttributeRevision = getInstancingRevision(
+    featureAttribute,
+    scratch,
+  );
+  scratch.featureBuffer = readTrackedInstancingProperty(
+    scratch,
+    featureAttribute,
+    "buffer",
+  );
+  scratch.featureData = featureData;
+  scratch.featureDataRevision = getInstancingRevision(featureData, scratch);
+  scratch.featureDataLength = readTrackedInstancingProperty(
+    scratch,
+    featureData,
+    "length",
+  );
+  scratch.implicitOffset = implicitOffset;
+  scratch.implicitRepeat = implicitRepeat;
+  return scratch;
+}
+
+function captureInstancingProvenance(live) {
+  const captured = {};
+  for (let i = 0; i < INSTANCING_PROVENANCE_KEYS.length; i++) {
+    const key = INSTANCING_PROVENANCE_KEYS[i];
+    captured[key] = live[key];
+  }
+  return captured;
+}
+
+function instancingProvenanceMatches(captured, live) {
+  if (!defined(captured)) {
+    return false;
+  }
+  for (let i = 0; i < INSTANCING_PROVENANCE_KEYS.length; i++) {
+    const key = INSTANCING_PROVENANCE_KEYS[i];
+    if (!Object.is(captured[key], live[key])) {
+      return false;
     }
-    const values = attr.typedArray;
+  }
+  return true;
+}
+
+function instancingGenerationMatchesLive(
+  nodeCache,
+  model,
+  runtimeNode,
+  expectedBuffer,
+  expectedProvenance,
+  expectedEpoch,
+) {
+  if (nodeCache.instancingResourcesDestroyed === true) {
+    return false;
+  }
+  const liveProvenance = populateInstancingProvenance(
+    nodeCache,
+    model,
+    runtimeNode,
+  );
+  return (
+    nodeCache.instancingResourcesDestroyed !== true &&
+    defined(liveProvenance) &&
+    defined(liveProvenance.instances) &&
+    liveProvenance.instanceCount > 0 &&
+    nodeCache.instancingPublicationEpoch === expectedEpoch &&
+    nodeCache.instancingBuffer === expectedBuffer &&
+    nodeCache.instancingProvenance === expectedProvenance &&
+    instancingProvenanceMatches(expectedProvenance, liveProvenance)
+  );
+}
+
+/**
+ * Materializes the selected IDs only on a provenance miss.
+ *
+ * @param {object} provenance
+ * @param {number} count
+ * @returns {Float32Array|null|undefined}
+ * @private
+ */
+function createInstanceFeatureIds(provenance, count) {
+  if (provenance.featureKind === INSTANCE_FEATURE_ID_NONE) {
+    return null;
+  }
+  const out = new Float32Array(count);
+  if (provenance.featureKind === INSTANCE_FEATURE_ID_ATTRIBUTE) {
+    const values = provenance.featureData;
+    if (!defined(values)) {
+      return undefined;
+    }
     for (let i = 0; i < count; i++) {
       out[i] = values[i];
     }
     return out;
   }
-  return null;
+  const offset = provenance.implicitOffset;
+  const repeat = provenance.implicitRepeat;
+  for (let i = 0; i < count; i++) {
+    out[i] = offset + Math.floor(i / repeat);
+  }
+  return out;
+}
+
+/**
+ * Transfers retired buffers to the exact encoder segment that may have encoded
+ * their last capture/draw reference, then waits for all prior queue work before
+ * destruction. A rejected enlistment remains node-owned for a later retry.
+ *
+ * @param {GPUDevice} device
+ * @param {object} nodeCache
+ * @param {object} context
+ * @returns {boolean} Whether a pending retirement caused context/device
+ *   observation and therefore requires semantic revalidation before return.
+ * @private
+ */
+function scheduleRetiredInstancingBuffers(device, nodeCache, context) {
+  const retired = nodeCache.retiredInstancingBuffers;
+  if (!defined(retired) || retired.size === 0) {
+    return false;
+  }
+  const encoder = context?.currentCommandEncoder;
+  const enqueue = context?.enqueueAfterCommandEncoderSubmit;
+  if (!defined(encoder) || typeof enqueue !== "function") {
+    return true;
+  }
+  const queue = device.queue;
+  if (nodeCache.instancingResourcesDestroyed === true) {
+    return true;
+  }
+
+  // Snapshot the candidates because rejected transfers are restored after the
+  // foreign call. Iterating the live Set while deleting and re-adding its
+  // current element can revisit it indefinitely.
+  const pending = Array.from(retired);
+  for (let i = 0; i < pending.length; i++) {
+    if (nodeCache.instancingResourcesDestroyed === true) {
+      return true;
+    }
+    const buffer = pending[i];
+    if (!retired.delete(buffer)) {
+      continue;
+    }
+
+    // Reserve node ownership before crossing the foreign enqueue boundary.
+    // A synchronous teardown can now see either node-owned or scheduler-owned
+    // state, never both. A callback fired before enqueue returns is held until
+    // the boolean return commits the transfer.
+    let transferAccepted = false;
+    let callbackInvoked = false;
+    let callbackConsumed = false;
+    const settleAcceptedTransfer = function () {
+      if (!transferAccepted || !callbackInvoked || callbackConsumed) {
+        return;
+      }
+      callbackConsumed = true;
+      let settlement;
+      try {
+        settlement = queue.onSubmittedWorkDone();
+      } catch {
+        // A lost queue owns native reclamation.
+        return;
+      }
+      settlement.then(
+        function () {
+          try {
+            buffer.destroy();
+          } catch {
+            // Destruction is best-effort after ownership has settled.
+          }
+        },
+        function () {
+          // Device loss owns native reclamation; do not call into it again.
+        },
+      );
+    };
+
+    let accepted = false;
+    try {
+      accepted =
+        enqueue.call(context, encoder, function () {
+          callbackInvoked = true;
+          settleAcceptedTransfer();
+        }) === true;
+    } catch {
+      // Foreign context wrappers may reject enlistment by throwing.
+    }
+    if (accepted) {
+      transferAccepted = true;
+      settleAcceptedTransfer();
+      continue;
+    }
+
+    // A callback from a wrapper that returned false or threw never acquired
+    // ownership. Make any late invocation inert before restoring the node
+    // owner, or drain the reservation here if teardown ended that lifecycle.
+    callbackConsumed = true;
+    if (nodeCache.instancingResourcesDestroyed === true) {
+      try {
+        buffer.destroy();
+      } catch {
+        // Terminal cleanup is best-effort after foreign enlistment failure.
+      }
+    } else {
+      nodeCache.retiredInstancingBuffers ??= new Set();
+      nodeCache.retiredInstancingBuffers.add(buffer);
+    }
+  }
+  if (nodeCache.retiredInstancingBuffers === retired && retired.size === 0) {
+    nodeCache.retiredInstancingBuffers = undefined;
+  }
+  return true;
 }
 
 /**
  * Locates the instance attribute that backs an explicit instance
  * FeatureIdAttribute set (FEATURE_ID semantic and matching setIndex).
  *
+ * @param {object} scratch
  * @param {object} instances - node.instances
  * @param {number} setIndex
  * @returns {object|undefined}
  * @private
  */
-function findInstanceFeatureIdAttribute(instances, setIndex) {
-  const attrs = instances.attributes;
-  for (let i = 0; i < attrs.length; i++) {
-    const attr = attrs[i];
+function findInstanceFeatureIdAttribute(scratch, instances, setIndex) {
+  const attrs = readTrackedInstancingProperty(scratch, instances, "attributes");
+  const length = readTrackedInstancingProperty(scratch, attrs, "length") ?? 0;
+  for (let i = 0; i < length; i++) {
+    const attr = readTrackedInstancingProperty(scratch, attrs, i);
     if (
-      attr.semantic === InstanceAttributeSemantic.FEATURE_ID &&
-      attr.setIndex === setIndex
+      readTrackedInstancingProperty(scratch, attr, "semantic") ===
+        InstanceAttributeSemantic.FEATURE_ID &&
+      readTrackedInstancingProperty(scratch, attr, "setIndex") === setIndex
     ) {
       return attr;
     }
@@ -455,10 +1718,50 @@ function findInstanceFeatureIdAttribute(instances, setIndex) {
  * @param {object} nodeCache - Per-node cache
  */
 function destroyInstancingResources(nodeCache) {
-  const instancingBuffer = nodeCache.instancingBuffer;
+  if (nodeCache.instancingResourcesDestroyed === true) {
+    return;
+  }
+
+  // Publish the terminal state and advance the generation before invoking any
+  // native/foreign destroy method. This blocks both nested ensure calls from a
+  // destroy wrapper and stale candidates that were already allocating.
+  nodeCache.instancingResourcesDestroyed = true;
+  nodeCache.instancingPublicationEpoch =
+    (nodeCache.instancingPublicationEpoch ?? 0) + 1;
+
+  const buffers = new Set();
+  if (defined(nodeCache.instancingBuffer)) {
+    buffers.add(nodeCache.instancingBuffer);
+  }
+  const retired = nodeCache.retiredInstancingBuffers;
+  if (defined(retired)) {
+    for (const buffer of retired) {
+      buffers.add(buffer);
+    }
+  }
   nodeCache.instancingBuffer = undefined;
   nodeCache.instanceCount = undefined;
-  instancingBuffer?.destroy();
+  nodeCache.instancingProvenance = undefined;
+  nodeCache.instancingProvenanceScratchPool = undefined;
+  nodeCache.instancingProvenanceScratchDepth = undefined;
+  nodeCache.instancingResources = undefined;
+  nodeCache.retiredInstancingBuffers = undefined;
+
+  let firstDestroyError;
+  let hasDestroyError = false;
+  for (const buffer of buffers) {
+    try {
+      buffer.destroy();
+    } catch (error) {
+      if (!hasDestroyError) {
+        firstDestroyError = error;
+        hasDestroyError = true;
+      }
+    }
+  }
+  if (hasDestroyError) {
+    throw firstDestroyError;
+  }
 }
 
 export { ensureInstancingResources, destroyInstancingResources };

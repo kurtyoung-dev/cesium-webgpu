@@ -155,6 +155,7 @@
     "test-c16": "node --test Tools/c16/comment-marker-guard.spec.mjs Tools/c16/comment-only-diff.spec.mjs Tools/c16/verify-packaged-notices.spec.mjs Tools/c16/string-literal-marker-scan.spec.mjs",
     "lint-string-literal-markers": "node Tools/c16/string-literal-marker-scan.mjs",
     "test-build-infra": "node --test Tools/build-infra/wgsl-comment-strip.spec.mjs Tools/build-infra/empty-module-stub.spec.mjs scripts/__tests__/bundleVariantPlugin.spec.mjs",
+    "test-model-webgpu": "node --test \"packages/engine/Specs/Renderer/WebGPU/*Spec.mjs\"",
     "test-landing-rules": "node --test Tools/landing-rules.spec.mjs Tools/pre-push-guard.spec.mjs Tools/verify-landing-compliance.spec.mjs",
     "test-tooling-catalog": "node --test Tools/inject-purpose-headers.spec.mjs Tools/generate-tooling-catalog.spec.mjs Tools/visual-regression/purpose-header-contract.spec.mjs",
     "generate-tooling-catalog": "node Tools/generate-tooling-catalog-launcher.cjs",
