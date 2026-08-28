@@ -41,6 +41,27 @@ function section(source, startAnchor, endAnchor) {
   return source.slice(start, end);
 }
 
+// ViewportExecutor.js is module-scoped functions, and its signatures move:
+// parameters get added and Prettier rewraps them, and the module-level consts
+// that used to end a region get refactored away. Slicing on a literal
+// signature or on "whatever declaration follows" made this spec measure the
+// shape of that churn instead of the phase order it exists to pin. Address a
+// region by the only thing that is stable - the function's own name - and
+// bound it at the next top-level declaration.
+function topLevelFunction(source, name) {
+  const marker = `\nfunction ${name}(`;
+  const first = source.indexOf(marker);
+  assert.ok(first >= 0, `missing top-level function: ${name}`);
+  assert.equal(
+    source.indexOf(marker, first + marker.length),
+    -1,
+    `duplicate top-level function: ${name}`,
+  );
+  const start = first + 1;
+  const next = source.indexOf("\nfunction ", start);
+  return next < 0 ? source.slice(start) : source.slice(start, next);
+}
+
 function assertOrdered(source, anchors) {
   let cursor = -1;
   for (const anchor of anchors) {
@@ -51,20 +72,16 @@ function assertOrdered(source, anchors) {
 }
 
 function loadUpdateAndRenderPrimitives() {
-  const phaseHelper = section(
+  // setCpuScenePhase delegates to the frame-state form, so the executed
+  // region needs both halves of that pair.
+  const phaseHelper = [
+    topLevelFunction(viewportSource, "setCpuScenePhase"),
+    topLevelFunction(viewportSource, "setCpuScenePhaseForFrameState"),
+  ].join("\n");
+  const shadowHelper = topLevelFunction(viewportSource, "updateShadowMaps");
+  const primitiveHelper = topLevelFunction(
     viewportSource,
-    "function setCpuScenePhase(scene, phase)",
-    "function updateShadowMaps(scene)",
-  );
-  const shadowHelper = section(
-    viewportSource,
-    "function updateShadowMaps(scene)",
-    "function updateAndRenderPrimitives(",
-  );
-  const primitiveHelper = section(
-    viewportSource,
-    "function updateAndRenderPrimitives(",
-    "const scratchEyeTranslation",
+    "updateAndRenderPrimitives",
   );
   return runInNewContext(
     `"use strict";\n${phaseHelper}\n${shadowHelper}\n${primitiveHelper}\nupdateAndRenderPrimitives;`,
@@ -205,20 +222,23 @@ test("primitive, shadow, and visibility boundaries execute in order", () => {
 });
 
 test("split 2D and WebVR retain repeated phase attribution", () => {
-  const split2D = section(
-    viewportSource,
-    "function execute2DViewportCommands(scene, passState)",
-    "function executeCommandsInViewport(firstViewport, scene, passState)",
+  const split2D = topLevelFunction(viewportSource, "execute2DViewportCommands");
+  // The viewport call is an injected seam now, so call order alone no longer
+  // says which function runs. Pin the default binding as well: absent an
+  // override the seam must be the real viewport executor, and the
+  // first-viewport call must still precede the second.
+  assert.match(
+    split2D,
+    /function execute2DViewportCommands\([\s\S]*viewportExecutor = executeCommandsInViewport,/,
   );
   assert.match(
     split2D,
-    /executeCommandsInViewport\(true, scene, passState\)[\s\S]*executeCommandsInViewport\(false, scene, passState\)/,
+    /viewportExecutor\(true, scene, passState\)[\s\S]*viewportExecutor\(false, scene, passState\)/,
   );
 
-  const viewport = section(
+  const viewport = topLevelFunction(
     viewportSource,
-    "function executeCommandsInViewport(firstViewport, scene, passState)",
-    "function beginSecondaryViewportSegment(firstViewport, scene)",
+    "executeCommandsInViewport",
   );
   assertOrdered(viewport, [
     "updateAndRenderPrimitives(",
@@ -231,10 +251,11 @@ test("split 2D and WebVR retain repeated phase attribution", () => {
     'setCpuScenePhase(scene, "visibilityCommandPrep")',
   ]);
 
-  const webVr = section(
-    viewportSource,
-    "function executeWebVRCommands(scene, passState)",
-    "const scratch2DViewportCartographic",
+  const webVr = topLevelFunction(viewportSource, "executeWebVRCommands");
+  // Same injected seam as the 2D path, pinned the same way.
+  assert.match(
+    webVr,
+    /function executeWebVRCommands\([\s\S]*commandExecutor = executeCommands,/,
   );
   assertOrdered(webVr, [
     "updateAndRenderPrimitives(scene)",
@@ -243,17 +264,16 @@ test("split 2D and WebVR retain repeated phase attribution", () => {
     'setCpuScenePhase(scene, "computeShadows")',
     "executeComputeCommands(scene)",
     'setCpuScenePhase(scene, "rendererOverhead")',
-    "executeCommands(scene, passState)",
+    "commandExecutor(scene, passState)",
     'setCpuScenePhase(scene, "visibilityCommandPrep")',
     'setCpuScenePhase(scene, "rendererOverhead")',
-    "executeCommands(scene, passState)",
+    "commandExecutor(scene, passState)",
     'setCpuScenePhase(scene, "visibilityCommandPrep")',
   ]);
 
-  const secondaryBoundary = section(
+  const secondaryBoundary = topLevelFunction(
     viewportSource,
-    "function beginSecondaryViewportSegment(firstViewport, scene)",
-    "function collectPrePvsShadowCasters(",
+    "beginSecondaryViewportSegment",
   );
   assertOrdered(secondaryBoundary, [
     'setCpuScenePhase(scene, "contextEndSubmit")',
