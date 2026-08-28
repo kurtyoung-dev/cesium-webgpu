@@ -132,3 +132,15 @@ VW-L rows: umbral/penumbral geometry projected on the lunar disc with chromatic 
 coloring, moonlight dimming through the umbral window (an explicit, recorded amendment to
 the EclipseState solar-only contract), goldens pinned to the published 2026-08-28
 circumstances, and the new preset as the Edge acceptance scene.
+
+## R-2026-08-28-7 - Quiet hours temporarily lifted for 2026-08-28 (single day)
+
+Taken ~10:20 ET, in the maintainer's own words during the session: the maintainer took the
+day off and lifted the weekday quiet-hours window FOR TODAY ONLY - "Go ahead and land
+anything that we need to. This is a temporary lifting of the quiet hours. Quiet hours start
+again on Monday." Effect: commits and pushes on Friday 2026-08-28 daytime are authorized;
+the weekend was already unrestricted; the standing hard rule resumes unchanged on Monday
+2026-08-31. The pre-push landing guard has, by its own recorded design, no bypass flag -
+pushes under this lift use git's --no-verify, every NON-time rule is verified per commit
+via HOOK_EXPLAIN before each such push, and this ruling is the authorization the re-checked
+landed range points back to. The guard itself is NOT modified for a one-day exception.
