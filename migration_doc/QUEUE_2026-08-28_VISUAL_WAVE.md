@@ -279,6 +279,9 @@ brief carries premises re-verified at the cited `file:line` on the day it dispat
 | VW-N6 / VW-N7 / VW-N8 | pending (N6 after N3; N7 after N3/N4 land + rebuild; N8 after N3) |
 | VW-L1 | LANDED Batch 1224 - shared-seam disc appearance (backend-neutral premise verified); five-eclipse goldens with measured spreads; Danjon 1/85 defended against two alternatives on worst-case fit |
 | VW-L2 | LANDED Batch 1225 - MoonLight arm at the two SunLight-gate sites (EclipseState:700-713 citation REFUTED - those lines meant Moon-as-occulter); one law drives disc and light |
-| VW-N3 / VW-N4 | lane VN2 in flight (clone nightopt at bc3ebd6bb0) |
+| VW-N3 | LANDED Batch 1231 - globe.nightImagery default ON over the bundled pyramid; all three R-2026-08-28-3 bounds implemented (off = byte-identical, no injection into app-managed stacks, both backends structural). Decision half in an importable leaf; 8 mutants |
+| VW-N4 | LANDED Batch 1231 - globe.nightDarkness fallback with NO camera-distance fade (dark at street level); suppressed per tile under a live night layer; default REFUTED to 1.0 identity (the ruling governs over the briefed 0.15 - a live default would break byte-identity on opt-out); 0.15 is the documented tuning value for VW-N7 to calibrate; 9 mutants incl. two wrong-side killed by arithmetic |
+| VW-N7 spec | the lane pre-registered seven acceptance legs incl. the sensitivity anchor, the six-camera off-is-upstream comparison against a bc3ebd6bb0 capture, non-injection, street-altitude nightDarkness calibration sweep, and the no-double-darkening observation - see the VN2 packet; REBUILD REQUIRED before the sweep (build predates 1218-1231) |
+| VW-N8 note | new default-path imagery errorEvent in bundler setups without CESIUM_BASE_URL assets (graceful, no crash) - measure in the packaging row |
 | VW-L Edge legs | owed to tranche 3: 97.71% umbral coverage / 0.0452 disc luminance / red>=3x blue at greatest on the Porto Velho preset, MoonLight scene dimming to 4.52%, enableLunarEclipse=false as the void-check anchor |
 
