@@ -360,6 +360,7 @@ const workspaceSourceFiles = {
     "!packages/engine/Source/Core/globalTypes.js",
     // Internal named-export helpers; not part of the public engine barrel.
     "!packages/engine/Source/Scene/ViewTemporalHistory.js",
+    "!packages/engine/Source/Scene/GlobeNightImagery.js",
     "!packages/engine/Source/Workers/**",
     "packages/engine/Source/Workers/createTaskProcessorWorker.js",
     "!packages/engine/Source/ThirdParty/Workers/**.js",
