@@ -1177,11 +1177,13 @@ function addWebGPUDrawCommandsForTile(tileProvider, tile, frameState, fr) {
 
   if (shouldLog) {
     _webgpuTileDiagCount++;
+    //>>includeStart('debug', pragmas.debug);
     console.log(
       `[WebGPU:TileDraw] PROCEEDING — level=${tile.level} ` +
         `meshVerts=${mesh.vertices?.byteLength ?? "?"} ` +
         `meshIdx=${mesh.indices?.length ?? "?"}`,
     );
+    //>>includeEnd('debug');
   }
 
   // Per-device renderer: avoids device mismatch in multi-context (split-screen)

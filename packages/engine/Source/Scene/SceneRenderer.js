@@ -516,6 +516,7 @@ function executeCommands(scene, passState) {
             scene._envSkyBoxSeen = true;
           }
           scene._envDiagLogged = true;
+          //>>includeStart('debug', pragmas.debug);
           console.log(
             `[WebGPU:EnvInject] Injected ${envCount} env commands ` +
               `(${envFromCommandList} already in frustum from commandList). ` +
@@ -525,6 +526,7 @@ function executeCommands(scene, passState) {
               `moon=${envState.isMoonVisible} ` +
               `panoramas=${panoramaCommandList.length}`,
           );
+          //>>includeEnd('debug');
         }
 
         farthest.indices[Pass.ENVIRONMENT] = envIdx;

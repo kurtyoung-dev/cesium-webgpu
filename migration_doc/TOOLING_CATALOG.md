@@ -206,11 +206,11 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 
 | Metric | Value |
 |---|---|
-| Files in census | 1081 |
-| ACTIVE | 874 |
+| Files in census | 1083 |
+| ACTIVE | 876 |
 | INVESTIGATION | 195 |
 | NO @purpose HEADER | 12 |
-| Classes | probe 652, spec 214, other 98, lib 76, gate-lib 19, bake-tool 12, runner 6, fixture 4 |
+| Classes | probe 652, spec 216, other 98, lib 76, gate-lib 19, bake-tool 12, runner 6, fixture 4 |
 
 ### Tools/ (36)
 
@@ -292,7 +292,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
 | comment-scanner.mjs | lib | ACTIVE | 2026-08-16 | 10 | The one tokenizer both C16 instruments share (JS/TS/WGSL/GLSL comment vs code vs string), fail-closed, with semantic-comment retention rules. |
-| marker-grammar.mjs | lib | ACTIVE | 2026-08-25 | 10 | Machine-decidable half of the fork comment standard: the banned tracker-vocabulary regex rules (add-only ids) driven by the marker guard. |
+| marker-grammar.mjs | lib | ACTIVE | 2026-08-28 | 10 | Machine-decidable half of the fork comment standard: the banned tracker-vocabulary regex rules (add-only ids) driven by the marker guard. |
 
 ### Tools/lib/ (2)
 
@@ -350,7 +350,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | stbn-rng.mjs | bake-tool | ACTIVE | 2026-08-16 | 3 | Deterministic license-clean random stream for the STBN bake: AES-256-CTR over zeros keyed by SHA-256(seed), byte-identical across machines. |
 | stbn-spectrum.mjs | bake-tool | ACTIVE | 2026-08-16 | 5 | Fourier certification of an STBN volume (radial spatial spectrum, per-pixel temporal spectrum, cross-correlation) with mutants proving each bar fires. |
 
-### Tools/visual-regression/ (889)
+### Tools/visual-regression/ (891)
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
@@ -1170,6 +1170,8 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | sandcastle-batch-66-end-of-session-runner.mjs | other | INVESTIGATION | 2026-08-16 | 2 | End-of-session rerun of the Batch-66 Sandcastle sweep (direct scene.pick, pointer-error filtering) writing per-demo screenshots + report. |
 | sandcastle-batch-66-final-runner.mjs | other | INVESTIGATION | 2026-08-16 | 10 | Post-F1/F2/F3 rerun of the Batch-66 WebGPU Sandcastle sweep: every 'WebGPU *.html' demo headless, known artifacts filtered, JSON report. |
 | sandcastle-smoke.mjs | other | ACTIVE | 2026-08-16 | 6 | Standing Sandcastle CI blind-spot smoke: three local-resource WebGPU gallery demos gated on non-black, non-uniform, real device, zero errors. |
+| scene-debug-pragma-coverage.spec.mjs | spec | ACTIVE | 2026-08-28 | 0 | Pins which scene diagnostics are stripped from release builds and which must survive, by running the real production strip over the real sources. |
+| scene-derived-lighting-seam.spec.mjs | spec | ACTIVE | 2026-08-28 | 0 | Pins the atmosphere-derived scene lighting to the renderer seam: the shared scene code publishes one light for every backend, and the derived override reproduces the arithmetic it replaced. |
 | scene-octree-dirty-revision.spec.mjs | spec | ACTIVE | 2026-08-24 | 3 | Proves SceneOctree revision reuse, mutation rebuilds, and disabled/restored PVS behavior. |
 | scene-renderer-frame-seams.spec.mjs | spec | ACTIVE | 2026-08-28 | 0 | Guards the opaque-pass frame-start bookkeeping hoist, the viewport clamp's live-canvas bound, and the indirect run-of-one error report. |
 | settle-attribution.spec.mjs | spec | ACTIVE | 2026-08-16 | 2 | Guard spec for the settle-window attribution rule + first-complete-frame metric, so GPU-submit-bound windows never book main-thread credit. |

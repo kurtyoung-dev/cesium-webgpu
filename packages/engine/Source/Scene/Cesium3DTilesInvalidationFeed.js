@@ -160,9 +160,11 @@ class Cesium3DTilesInvalidationFeed {
         const entry = entries[i];
 
         if (entry.tilesetJson === true) {
+          //>>includeStart('debug', pragmas.debug);
           console.log(
             `[InvalidationFeed] tileset.json refetch requested for layer ${normalized} — Phase 2`,
           );
+          //>>includeEnd('debug');
           this._tilesetJsonRequests++;
           continue;
         }
