@@ -206,13 +206,13 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 
 | Metric | Value |
 |---|---|
-| Files in census | 1088 |
-| ACTIVE | 881 |
+| Files in census | 1089 |
+| ACTIVE | 882 |
 | INVESTIGATION | 195 |
 | NO @purpose HEADER | 12 |
-| Classes | probe 652, spec 220, other 99, lib 76, gate-lib 19, bake-tool 12, runner 6, fixture 4 |
+| Classes | probe 652, spec 220, other 100, lib 76, gate-lib 19, bake-tool 12, runner 6, fixture 4 |
 
-### Tools/ (37)
+### Tools/ (38)
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
@@ -225,6 +225,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | codex-mcp-launcher.mjs | other | ACTIVE | 2026-08-20 | 7 | Resolve the Codex CLI across its hash-versioned install directories and exec `codex mcp-server` for .mcp.json; stable across desktop-app updates. |
 | codex-preflight.mjs | other | ACTIVE | 2026-08-20 | 3 | Prove a Codex worker can actually run before a batch is dispatched: resolves the CLI, checks auth, and fires a minimal canary exec to detect quota exhaustion and report the reset time. |
 | collection-sentinels-check.mjs | other | ACTIVE | 2026-08-16 | 4 | Fast no-GPU smoke check of the three permanent fault sentinels in WebGPUCollectionRendererBase via in-memory esbuild transpile; <1s local run. |
+| derive-lunar-eclipse-circumstances.mjs | other | ACTIVE | 2026-08-28 | 1 | Derives lunar-eclipse contact times, umbral/penumbral magnitudes and the best-view sub-lunar point from the engine Simon1994 ephemeris; source of the eclipse-explorer lunar preset data and the VW-L golden fixtures. |
 | dev-server-artifact.spec.mjs | spec | ACTIVE | 2026-08-20 | 0 | Verify that the development server selects and validates the requested Cesium artifact without opening a socket. |
 | generate-tooling-catalog.mjs | other | ACTIVE | 2026-08-21 | 5 | Regenerates the TOOLING_CATALOG census section from @purpose/@status headers, git freshness and inbound refs; --check fails on drift. |
 | generate-tooling-catalog.spec.mjs | spec | ACTIVE | 2026-08-28 | 2 | Self-test for the catalog generator: marker containment, determinism, drift reporting and the no-header row. |
@@ -428,7 +429,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | coveragejson-antimeridian.spec.mjs | spec | ACTIVE | 2026-08-16 | 0 | C13-08: CoverageJSON cyclic-longitude unwrap through WeatherFieldGrid + WeatherTexPacker so antimeridian-crossing CRS84 axes parse right. |
 | cpu-frame-accounting.spec.mjs | spec | ACTIVE | 2026-08-16 | 2 | Deterministic-clock tests of WebGPUCpuPassProfiler whole-scene phase accounting (CPU_SCENE_PHASE_NAMES coverage, no wall-clock leakage). |
 | cpu-primitive-breakdown-policy.spec.mjs | spec | ACTIVE | 2026-08-16 | 1 | Policy guard for probe-c11-169-primitive-breakdown: first-red policy, detail controls, instrumentation evaluation and capture normalization vs source. |
-| cpu-scene-phase-integration.spec.mjs | spec | ACTIVE | 2026-08-16 | 2 | Pins the CPU scene-phase list agreement across Scene.js, ViewportExecutor.js and WebGPUSceneRenderer.ts (vm-executed source integration check). |
+| cpu-scene-phase-integration.spec.mjs | spec | ACTIVE | 2026-08-16 | 3 | Pins the CPU scene-phase list agreement across Scene.js, ViewportExecutor.js and WebGPUSceneRenderer.ts (vm-executed source integration check). |
 | cross-backend-sandcastle-runner.mjs | other | ACTIVE | 2026-08-16 | 7 | Runs every Sandcastle demo under WebGL then WebGPU via a Viewer shim injecting contextOptions.renderer, pixel-diffs the pair, writes per-demo reports. |
 | daynight-terminator-law.spec.mjs | spec | ACTIVE | 2026-08-16 | 3 | CLT-B1 Node half: transcribed laws vs shaders, calibration inversion, ramp classifier, structural exit codes — all mutant-rejected. |
 | debug-ground-polyline-color.mjs | other | INVESTIGATION | 2026-08-16 | 0 | Instruments the GroundPolyline renderer cache to find why per-instance color didn't reach the FS (dim-rectangle diagnosis, 2026-04-30). |
@@ -489,7 +490,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | mat-logdepth-encode-stash.spec.mjs | spec | ACTIVE | 2026-08-16 | 5 | Executes the real writeLogDepthTail packer to pin stash-first log-depth encoding for the Mat/Primitive family; replays the 2-primitive defect. |
 | model-3d-tile-state-packet.spec.mjs | spec | ACTIVE | 2026-08-16 | 0 | Behavioral tests for Model3DTileStatePacket: immutable packet reuse when broad tileset state is unchanged, refresh on real change. |
 | model-camera-arena.spec.mjs | spec | ACTIVE | 2026-08-16 | 2 | Bundles the real WebGPUModelCameraArena and pins offset alignment, per-frame reset, view isolation, plus call-site routing source checks. |
-| model-device-recovery.spec.mjs | spec | ACTIVE | 2026-08-16 | 0 | Device/resource-generation recovery contracts for native Models across renderer, pipeline cache, device resources and stub texture sources. |
+| model-device-recovery.spec.mjs | spec | ACTIVE | 2026-08-16 | 1 | Device/resource-generation recovery contracts for native Models across renderer, pipeline cache, device resources and stub texture sources. |
 | model-lazy-pick-demand.spec.mjs | spec | ACTIVE | 2026-08-28 | 4 | Contracts for lazy realization of native Model pick resources across renderer, feature-id, Model, feature table and batch texture sources. |
 | model-light-arena.spec.mjs | spec | ACTIVE | 2026-08-16 | 2 | Light-slice sibling of the camera-arena spec: pack-once-per-model-per-view light block, removal from per-primitive group-1, WGSL binding move. |
 | model-metadata-variant-key.spec.mjs | spec | ACTIVE | 2026-08-28 | 0 | Pins that two metadata (or customShader) classes at one material identity build distinct model pipeline keys, that the fold is byte-identical when no generated chunk applies, and that the fold is live rather than inert. |
@@ -1245,7 +1246,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | webgpu-shadow-receive-contract.spec.mjs | spec | ACTIVE | 2026-08-21 | 2 | Pins the sun-shadow fix: single cast-dispatch site + same-frame wipe guard, receive matrix reproduces the cast texel, naga-validated shaders. |
 | webgpu-snap-edge-payload.spec.mjs | spec | ACTIVE | 2026-08-16 | 5 | Contract for the edge tier of WebGPU Scene.snap: edge-flag payload encode, pick-color plumb into the edge UB, pipeline variant, strict admission. |
 | webgpu-snap-framebuffer-lifecycle.spec.mjs | spec | ACTIVE | 2026-08-16 | 0 | Behavioral lifecycle coverage of the real WebGPUSnapFramebuffer on GPU-shaped mocks; complements the source-contract snap-payload spec. |
-| webgpu-snap-payload.spec.mjs | spec | ACTIVE | 2026-08-16 | 1 | Contract for WebGPU Scene.snap payload: one encoding home (WebGPUSnapPayload.ts), rg32uint format agreement, spiral decode, naga validation. |
+| webgpu-snap-payload.spec.mjs | spec | ACTIVE | 2026-08-16 | 2 | Contract for WebGPU Scene.snap payload: one encoding home (WebGPUSnapPayload.ts), rg32uint format agreement, spiral decode, naga validation. |
 | webgpu-sun-bloom-mirror.spec.mjs | spec | ACTIVE | 2026-08-16 | 4 | Guard that both backends draw ONE sun glow: WebGPU tuning derived from SolarDiscModel not copied, shared constants, one flag, WebGL untouched. |
 | webgpu-voxel-resource-lifecycle.spec.mjs | spec | ACTIVE | 2026-08-21 | 2 | Drives real WebGPUVoxelResourceLifecycle exports (retain/release, atlas slot publish/retire/LRU, async-failure capture) plus structural pins. |
 

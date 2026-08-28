@@ -97,6 +97,138 @@ const ECLIPSE_PRESETS = Object.freeze(
       authorityUrl: "https://svs.gsfc.nasa.gov/5219/",
     },
     {
+      id: "solar-principe-eddington-1919",
+      label: "Solar — Roça Sundy, Príncipe (Eddington mid-totality)",
+      kind: "solar",
+      target: "sun",
+      location: "Roça Sundy plantation, Príncipe Island, São Tomé and Príncipe",
+      longitude: 7.3842,
+      latitude: 1.6694,
+      observerHeight: 150,
+      utc: "1919-05-29T14:15:36Z",
+      timeScale: "UTC",
+      localTime:
+        "14:15:36 GMT (UTC+0 — expedition timings recorded in G.M.T.; Príncipe civil time = GMT)",
+      eventStage:
+        "Mid-totality at Roça Sundy — the published site circumstances give totality from 14:13:05 to 14:18:07 G.M.T. (302 s = 5m02s), so the preset instant is the 14:15:36 midpoint; greatest eclipse globally was 13:08:34 UT1 with a 6m51s maximum duration (EclipseWise).",
+      totalityPathVerified: true,
+      windowSeconds: 600,
+      clockMultiplier: 20,
+      context:
+        "Eddington's station for the general-relativity eclipse: after a heavy morning thunderstorm (10:00–11:30, 'a remarkable occurrence at that time of year'), he photographed totality 'through cloud, much as the Moon often appears through cloud' — of 16 plates only two were usable, yielding a 1.61±0.31 arcsec deflection that confirmed Einstein over Newton.",
+      authority:
+        "Royal Society (Dyson, Eddington & Davidson 1920, quoted in Phil. Trans. A commentary)",
+      authorityUrl: "https://pmc.ncbi.nlm.nih.gov/articles/PMC4360090/",
+      contextAuthority: "Royal Observatory Greenwich",
+      contextAuthorityUrl:
+        "https://www.royalobservatorygreenwich.org/articles.php?article=1283",
+    },
+    {
+      id: "solar-carbondale-max-2017",
+      label: "Solar — Carbondale, USA (2017 max totality)",
+      kind: "solar",
+      target: "sun",
+      location:
+        "Saluki Stadium, Southern Illinois University, Carbondale, Illinois, USA",
+      longitude: -89.2203,
+      latitude: 37.7066,
+      observerHeight: 125,
+      utc: "2017-08-21T18:21:24Z",
+      timeScale: "UTC",
+      localTime: "13:21:24 CDT (UTC-5)",
+      eventStage:
+        "Observer maximum totality at Saluki Stadium — USNO local circumstances for 37.7066N -89.2203W h=125m: totality 18:20:04.3–18:22:45.0 UT, maximum eclipse 18:21:23.7 UT, duration of totality 2m40.7s, magnitude 1.013, Sun altitude 63.7 deg.",
+      totalityPathVerified: true,
+      windowSeconds: 600,
+      clockMultiplier: 20,
+      context:
+        "First leg of the 'Eclipse Crossroads of America': Carbondale sat near the point of greatest duration of the 2017 Great American Eclipse, and the same stadium fell inside totality again on 2024 Apr 8 — two total eclipses in under seven years.",
+      authority: "U.S. Naval Observatory (Astronomical Applications)",
+      authorityUrl:
+        "https://aa.usno.navy.mil/api/eclipses/solar/date?date=2017-08-21&coords=37.7066,-89.2203&height=125",
+      contextAuthority: "Southern Illinois University Eclipse",
+      contextAuthorityUrl: "https://eclipse.siu.edu/about-the-eclipse/",
+    },
+    {
+      id: "solar-albuquerque-annular-2023",
+      label: "Solar — Albuquerque, USA (annular maximum)",
+      kind: "solar",
+      target: "sun",
+      location: "Balloon Fiesta Park, Albuquerque, New Mexico, USA",
+      longitude: -106.5989,
+      latitude: 35.1917,
+      observerHeight: 1510,
+      utc: "2023-10-14T16:36:52Z",
+      timeScale: "UTC",
+      localTime: "10:36:52 MDT (UTC-6)",
+      eventStage:
+        "Observer maximum annularity at Balloon Fiesta Park — USNO site computation: annularity 16:34:28.1–16:39:17.1 UT (duration 4m 49.0s), maximum eclipse 16:36:51.6 UT, magnitude 0.973, obscuration 89.7%.",
+      totalityPathVerified: true,
+      windowSeconds: 600,
+      clockMultiplier: 20,
+      context:
+        "First annular preset: the 2023 'ring of fire' crossed Albuquerque during the International Balloon Fiesta, with the eclipse centerline passing nearly over the city and nearly five minutes of annularity above the launch field.",
+      authority: "US Naval Observatory (Astronomical Applications)",
+      authorityUrl:
+        "https://aa.usno.navy.mil/api/eclipses/solar/date?date=2023-10-14&coords=35.1917,-106.5989&height=1510",
+      contextAuthority: "NOAA NESDIS",
+      contextAuthorityUrl:
+        "https://www.nesdis.noaa.gov/news/watching-the-annular-eclipse-albuquerque-orbit",
+    },
+    {
+      id: "solar-carbondale-crossroads-2024",
+      label: "Solar — Carbondale, USA (2024 max totality)",
+      kind: "solar",
+      target: "sun",
+      location:
+        "Saluki Stadium, Southern Illinois University, Carbondale, Illinois, USA",
+      longitude: -89.2203,
+      latitude: 37.7066,
+      observerHeight: 125,
+      utc: "2024-04-08T19:01:14Z",
+      timeScale: "UTC",
+      localTime: "14:01:14 CDT (UTC-5)",
+      eventStage:
+        "Observer maximum totality at Saluki Stadium — USNO local circumstances for 37.7066N -89.2203W h=125m: totality 18:59:09.2–19:03:19.7 UT, maximum eclipse 19:01:13.6 UT, duration of totality 4m10.6s, magnitude 1.027, Sun altitude 56.7 deg.",
+      totalityPathVerified: true,
+      windowSeconds: 600,
+      clockMultiplier: 20,
+      context:
+        "Second leg of the 'Eclipse Crossroads of America': the 2024 path's centerline ran almost directly over Carbondale, giving Saluki Stadium 4+ minutes of totality seven years after the 2017 eclipse crossed the same ground.",
+      authority: "U.S. Naval Observatory (Astronomical Applications)",
+      authorityUrl:
+        "https://aa.usno.navy.mil/api/eclipses/solar/date?date=2024-04-08&coords=37.7066,-89.2203&height=125",
+      contextAuthority: "Southern Illinois University Eclipse",
+      contextAuthorityUrl: "https://eclipse.siu.edu/about-the-eclipse/",
+    },
+    {
+      id: "solar-luxor-max-2027",
+      label: "Solar — Luxor, Egypt (observer maximum)",
+      kind: "solar",
+      target: "sun",
+      location: "Luxor, Egypt (Luxor/Karnak temple district, Nile east bank)",
+      longitude: 32.64444,
+      latitude: 25.69667,
+      observerHeight: 89,
+      utc: "2027-08-02T10:05:26Z",
+      timeScale: "UTC",
+      localTime: "13:05:26 EEST (UTC+3)",
+      eventStage:
+        "Observer maximum eclipse at Luxor at 13:05:26 EEST (10:05:26 UTC), within a totality running C2 13:02:14 to C3 13:08:36 EEST — 6m22s of totality at magnitude 1.0361 with the Sun ~82 deg high (timeanddate contact table); EclipseWise lists greatest eclipse at 10:06:37.4 UT1 with maximum central duration 6m23.24s ~60 km southeast of Luxor.",
+      totalityPathVerified: true,
+      windowSeconds: 600,
+      clockMultiplier: 20,
+      context:
+        "The 2027 Aug 2 total eclipse delivers the longest land totality between 1991 and 2114, and its central line passes almost directly over Luxor — six-plus minutes of darkness above the Karnak and Luxor temples of ancient Thebes.",
+      authority:
+        "timeanddate contact table (via Wikipedia local-circumstances table)",
+      authorityUrl:
+        "https://en.wikipedia.org/wiki/Solar_eclipse_of_August_2,_2027",
+      contextAuthority: "EclipseWise (Fred Espenak)",
+      contextAuthorityUrl:
+        "https://eclipsewise.com/solar/SEprime/2001-2100/SE2027Aug02Tprime.html",
+    },
+    {
       id: "lunar-fairbanks-aurora-2025",
       label: "Lunar — Fairbanks-area + aurora (2025)",
       kind: "lunar",
@@ -168,6 +300,135 @@ const ECLIPSE_PRESETS = Object.freeze(
         "NAOJ total lunar eclipse and Uranus occultation overview",
       contextAuthorityUrl:
         "https://www.nao.ac.jp/astro/sky/2022/11-topics02.html",
+    },
+    {
+      id: "lunar-porto-velho-deep-partial-2026",
+      label: "Lunar — Porto Velho, Brazil (greatest, zenith)",
+      kind: "lunar",
+      target: "moon",
+      location: "Porto Velho, Rondônia, Brazil",
+      longitude: -63.9004,
+      latitude: -8.7612,
+      observerHeight: 90,
+      utc: "2026-08-28T04:12:00Z",
+      timeScale: "UTC",
+      localTime: "00:12:00 AMT (UTC−4)",
+      eventStage:
+        "Greatest deep partial eclipse; published circumstances place greatest near 04:12–04:13 UTC at umbral magnitude 0.9319 (about 96% of the disc inside the umbra), with the partial phase running 02:33–05:52 UTC",
+      totalPhaseVisible: false,
+      windowSeconds: 7200,
+      clockMultiplier: 240,
+      context:
+        "The sub-lunar point at greatest sits over Rondônia, so from Porto Velho the eclipsed Moon stands within a degree of the zenith — the best-placed view on Earth. The in-engine Simon1994 ephemeris independently places greatest at 04:11 UTC with the sub-lunar point at 9.4°S 63.1°W.",
+      authority: "NASA SVS deep-partial lunar eclipse circumstances",
+      authorityUrl: "https://svs.gsfc.nasa.gov/5672/",
+      contextAuthority: "EclipseWise prime-page circumstances cross-check",
+      contextAuthorityUrl:
+        "https://www.eclipsewise.com/lunar/LEprime/2001-2100/LE2026Aug28Pprime.html",
+    },
+    {
+      id: "lunar-fortaleza-supermoon-2015",
+      label: "Lunar — Fortaleza, Brazil (greatest eclipse)",
+      kind: "lunar",
+      target: "moon",
+      location: "Fortaleza, Ceará, Brazil",
+      longitude: -38.5267,
+      latitude: -3.7319,
+      observerHeight: 16,
+      utc: "2015-09-28T02:47:09Z",
+      timeScale: "UTC",
+      localTime: "23:47:09 BRT (UTC-3) on Sep 27 (Ceará observes no DST)",
+      eventStage:
+        "Greatest eclipse (geocentric — lunar eclipse stages are identical in UT worldwide) at 02:47:09.0 UT1 / 02:48:16.8 TD on 2015 Sep 28, umbral magnitude 1.27744 (penumbral 2.23071, gamma -0.32960, Saros 137), totality 71m55s from U2 02:11:03 to U3 03:23:32 UT1.",
+      totalPhaseVisible: true,
+      windowSeconds: 7200,
+      clockMultiplier: 240,
+      context:
+        "The 'supermoon eclipse': the Moon reached perigee about an hour before greatest eclipse, making this the largest totally-eclipsed Moon between 1982 and 2033. From Fortaleza the blood-red perigee Moon hung ~81-82 degrees high — nearly overhead — since the sub-lunar point at greatest (1.5N 45.3W) sat just off Brazil's north coast.",
+      authority: "EclipseWise (Fred Espenak)",
+      authorityUrl:
+        "https://www.eclipsewise.com/lunar/LEprime/2001-2100/LE2015Sep28Tprime.html",
+      contextAuthority: "EclipseWise (Fred Espenak) eclipse feature article",
+      contextAuthorityUrl:
+        "https://www.eclipsewise.com/lunar/LEnews/TLE2015Sep28/TLE2015Sep28.html",
+    },
+    {
+      id: "lunar-honolulu-super-blue-blood-2018",
+      label: "Lunar — Honolulu, USA (greatest eclipse)",
+      kind: "lunar",
+      target: "moon",
+      location: "Honolulu, Oahu, Hawaii, USA",
+      longitude: -157.8583,
+      latitude: 21.3069,
+      observerHeight: 6,
+      utc: "2018-01-31T13:29:51Z",
+      timeScale: "UTC",
+      localTime: "03:29:51 HST (UTC-10)",
+      eventStage:
+        "Greatest eclipse at 13:31:00.1 TD = 13:29:51.4 UT1 (EclipseWise), umbral magnitude 1.31671 (penumbral 2.29538), totality 76m43s from U2 12:51:25 UT to U3 14:08:08 UT, Saros 124.",
+      totalPhaseVisible: true,
+      windowSeconds: 7200,
+      clockMultiplier: 240,
+      context:
+        "The 'Super Blue Blood Moon' — a supermoon, blue moon, and total lunar eclipse coinciding for the first time visible from the US since 1866. Honolulu had one of the best seats on Earth: the fully eclipsed Moon stood ~51 degrees high in the pre-dawn western sky at 3:29 am HST, with the entire eclipse over before sunrise.",
+      authority: "EclipseWise (Fred Espenak)",
+      authorityUrl:
+        "https://eclipsewise.com/lunar/LEprime/2001-2100/LE2018Jan31Tprime.html",
+      contextAuthority: "EarthSky",
+      contextAuthorityUrl:
+        "https://earthsky.org/sky-archive/super-blue-moon-eclipse-on-january-31/",
+    },
+    {
+      id: "lunar-nyc-super-blood-wolf-2019",
+      label: "Lunar — New York City, USA (greatest eclipse)",
+      kind: "lunar",
+      target: "moon",
+      location: "Central Park, New York City, New York, USA",
+      longitude: -73.9654,
+      latitude: 40.7829,
+      observerHeight: 30,
+      utc: "2019-01-21T05:12:16Z",
+      timeScale: "UTC",
+      localTime: "00:12:16 EST (UTC-5), night of Jan 20-21",
+      eventStage:
+        "Greatest eclipse at 05:13:27.1 TD = 05:12:16 UT per NASA GSFC (EclipseWise: 05:12:18.0 UT1), umbral magnitude 1.1953 (EclipseWise 1.19657), with totality running U2 04:41:17 UT to U3 05:43:16 UT (1h01m59s).",
+      totalPhaseVisible: true,
+      windowSeconds: 7200,
+      clockMultiplier: 240,
+      context:
+        "The 'Super Blood Wolf Moon' — a total eclipse of a perigee full Moon watched by millions across the Americas; from New York the Moon hung nearly at meridian transit, about 70 degrees high, when it turned deep red at greatest eclipse just after midnight EST.",
+      authority: "NASA GSFC (Fred Espenak)",
+      authorityUrl:
+        "https://eclipse.gsfc.nasa.gov/LEplot/LEplot2001/LE2019Jan21T.pdf",
+      contextAuthority: "Space.com eclipse guide",
+      contextAuthorityUrl:
+        "https://www.space.com/42830-supermoon-blood-moon-total-lunar-eclipse-2019.html",
+    },
+    {
+      id: "lunar-mauna-kea-total-2026",
+      label: "Lunar — Mauna Kea, USA (greatest eclipse)",
+      kind: "lunar",
+      target: "moon",
+      location: "Mauna Kea summit (Mauna Kea Observatories), Hawaii, USA",
+      longitude: -155.4681,
+      latitude: 19.8206,
+      observerHeight: 4207,
+      utc: "2026-03-03T11:33:40Z",
+      timeScale: "UTC",
+      localTime: "01:33:40 HST (UTC-10)",
+      eventStage:
+        "Greatest eclipse at 11:33:40 UT1 (11:34:52 TD), umbral magnitude 1.15263, totality 58m58s from U2 11:03:54 to U3 12:02:53 UT1 (EclipseWise); Saros 133, sub-lunar point 6°24.1'N 170°36.9'W.",
+      totalPhaseVisible: true,
+      windowSeconds: 7200,
+      clockMultiplier: 240,
+      context:
+        "2026's other lunar eclipse — the 59-minute total 'blood moon' counterpart to the Aug 28 deep partial. The sub-lunar point at greatest eclipse is open mid-Pacific ocean, so the preset stands on Mauna Kea's 4,207 m observatory summit, where the fully eclipsed Moon hung roughly 70° high in some of Earth's best night sky at 1:33 a.m. Hawaii time.",
+      authority: "EclipseWise (Fred Espenak)",
+      authorityUrl:
+        "https://www.eclipsewise.com/lunar/LEprime/2001-2100/LE2026Mar03Tprime.html",
+      contextAuthority: "Hawai'i Public Radio",
+      contextAuthorityUrl:
+        "https://www.hawaiipublicradio.org/the-conversation/2026-02-27/hawaii-skies-total-lunar-eclipse-in-the-early-hours-of-march-3",
     },
   ].map(Object.freeze),
 );
