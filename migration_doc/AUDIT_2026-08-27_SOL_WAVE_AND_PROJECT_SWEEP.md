@@ -607,3 +607,18 @@ cache fix. Process result recorded plainly: three Sol review dispatches produced
 verdicts between them — buffered output died with aborts both times it was tried, incremental
 writes saved the one partial success, and the untested remedy is the lean brief (under 200 words,
 no governance preamble), now being validated by two live reviewers.
+
+**R4 closure and the review-sink diagnosis (2026-08-28, ~01:00).** The four held findings are all
+CONFIRMED by an Opus lean reviewer at the cited lines (S2-4 stale viewport publish, S2-6 same-frame
+readback pump under multi-frustum, S2-7 positional cull-flag reuse with a count-only guard, S2-8 the
+skipped frame-start bookkeeping whose absence S2-7's own correctness comment relies on) — C1's full
+ledger ends at 14 confirmed / 0 refuted. The Sol review sink finally has a root cause: the Codex
+lane AUTO-LOADS AGENTS.md plus a certification-audit skill on start, so even a 190-word lean brief
+lands in governance briefing — four Sol review dispatches tonight produced zero verdicts while two
+Opus lean reviewers produced complete, evidence-backed results in minutes. Review is Opus work
+until the Codex-side auto-load is tamed; Sol remains effective for bounded authoring and testing.
+Post-landing assurance on the multi-metric gate: two repairs hold strongly (eleven blind-census
+constructions all STRUCTURAL; the seam tooth survives an alternative deadening with seven reds),
+one is half-broken and queued as Q-27 with an end-to-end counterexample. Codex fan-out correction:
+rollouts in the shared session directory belong to MANY lanes — per-lane counts must filter by the
+rollout's writable root, not the window; D2 measured 10.5x for its own dispatches by that method.
