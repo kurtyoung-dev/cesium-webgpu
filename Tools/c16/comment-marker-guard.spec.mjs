@@ -347,10 +347,25 @@ test("tracker ids, alphabetic campaign labels, and bare fix labels are precise",
   }
 });
 
+// Both exclusions are FAMILIES, so the cases below are spread across each
+// family rather than repeating the one spelling that happens to occur today.
+// The comment standard requires license attribution, so a guard that ordered
+// the deletion of a `CC-BY-NC-SA` notice would be a defect in the guard.
 test("license, date-placeholder, and timestamp comments stay marker-free", () => {
   for (const text of [
+    "CC-BY",
     "CC-BY-SA",
+    "CC-BY-NC",
+    "CC-BY-ND",
+    "CC-BY-NC-SA",
+    "CC-BY-NC-ND",
+    "CC-BY-SA-4",
+    "CC-BY-NC-SA-4.0",
     "YYYY-MM-DD",
+    "YYYY-MM-DDTHH",
+    "YYYY-MM-DDTHH-MM",
+    "YYYY-MM-DDTHH-MM-SS",
+    "YYYY-MM-DDTHH-MM-SSZ",
     "2026-05-02",
     "2012-08-01T00",
     "9999-12-31T24",
@@ -360,6 +375,27 @@ test("license, date-placeholder, and timestamp comments stay marker-free", () =>
       scanSource("packages/engine/Source/Scene/Subject.js", `// ${text}\n`),
       [],
       `${text} is code-domain prose, not a development-history label`,
+    );
+  }
+});
+
+// The families must not swallow real labels that merely start the same way.
+// Widening an exclusion is only safe while the things it must NOT cover are
+// pinned alongside the things it must.
+test("the license and timestamp families do not shelter real labels", () => {
+  for (const text of [
+    "CC-BY-NC-FOO",
+    "CC-BY-SA-LABEL",
+    "YYYY-MM-DDTHH-ZONE",
+    "POINT-SPRITE-SHAPE",
+  ]) {
+    const findings = scanSource(
+      "packages/engine/Source/Scene/Subject.js",
+      `// ${text}\n`,
+    );
+    assert.ok(
+      findings.some((finding) => finding.ruleId === "all-caps-fix-label"),
+      `${text} must still read as a development-history label`,
     );
   }
 });

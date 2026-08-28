@@ -107,8 +107,17 @@ export const MARKER_RULES = Object.freeze([
   },
   {
     id: "all-caps-fix-label",
+    // Two hyphenated all-caps shapes are code-domain prose, not history, and
+    // are excluded by FAMILY rather than by listing the spellings that happen
+    // to occur today. Both families are open-ended in the real world, and the
+    // comment standard REQUIRES license attribution — a guard that ordered the
+    // deletion of a `CC-BY-NC-SA` notice would be worse than no guard:
+    //   - Creative Commons identifiers: `CC-BY` plus any run of the clause
+    //     suffixes NC / ND / SA and an optional version number.
+    //   - Date and timestamp placeholders: the `YYYY-MM-DD` placeholder, on its
+    //     own or continued with a `THH`, `THH-MM` or `THH-MM-SS` time part.
     pattern:
-      /(?<![A-Z0-9_-])(?!(?:NEW|BUG|EPIC|FIX)-)(?!(?:CC-BY-SA|YYYY-MM-DD)(?![A-Z0-9_-]))[A-Z][A-Z0-9]+(?:-[A-Z0-9]{2,}){2,}(?![A-Z0-9_-])/g,
+      /(?<![A-Z0-9_-])(?!(?:NEW|BUG|EPIC|FIX)-)(?!(?:CC-BY(?:-(?:NC|ND|SA))*(?:-\d+(?:\.\d+)?)?|YYYY-MM-DD(?:THH(?:-MM(?:-SS)?)?Z?)?)(?![A-Z0-9_-]))[A-Z][A-Z0-9]+(?:-[A-Z0-9]{2,}){2,}(?![A-Z0-9_-])/g,
     description:
       "Bare fix labels are development-history tags, not code constraints.",
     example: "POINT-SPRITE-SHAPE",
