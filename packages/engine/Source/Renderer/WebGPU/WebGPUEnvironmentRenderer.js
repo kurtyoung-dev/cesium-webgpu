@@ -92,7 +92,11 @@ struct Uniforms {
   // Sun position is dynamic uniform state, not vertex state. Keeping it here
   // lets one immutable six-corner buffer and one draw command survive every
   // clock tick while retaining encoded high/low RTE precision.
-  encodedSunHigh: vec3<f32>, _sunPad0: f32,
+  // The atmospheric alpha scale occupies the former \`_sunPad0\` pad at
+  // offset 140. The pad was already written (as 0.0) and already reserved by
+  // the 256-byte uniform buffer, so this is a rename plus a use, not a layout
+  // change: no stride, alignment, binding or bind-group-layout delta.
+  encodedSunHigh: vec3<f32>, atmosphereAlpha: f32,
   // The disc's LINEAR radiance occupies the former \`_sunPad1\` pad at
   // offset 156. Reusing this pad mirrors the conversion of \`_p2\` into
   // \`eclipseAlpha\`: the pad was already written (as 0.0) and already reserved
@@ -150,6 +154,9 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
   // extinction (dims + warms a low sun over the horizon). extinction == (1,1,1)
   // from orbit / atmosphere hidden, so this is a byte-identical no-op there.
   color = vec4f(color.rgb * u.extinction, color.a);
+  // Co-fade the blend weight with the strongest surviving atmospheric
+  // channel, while RGB retains the full chromatic extinction above.
+  color = vec4f(color.rgb, color.a * u.atmosphereAlpha);
   // Apply a continuous eclipse / occultation fade, the WGSL twin of
   // SunFS.glsl's out_FragColor.a *= u_eclipseAlpha. ALPHA, not rgb: alpha is
   // the blend weight under this pipeline's ALPHA_BLEND, so scaling it fades
@@ -662,7 +669,12 @@ function packSunUniforms(uniformData, frameState, glowFactor, gamma) {
   uniformData[32] = scratchEncodedPos.high.x;
   uniformData[33] = scratchEncodedPos.high.y;
   uniformData[34] = scratchEncodedPos.high.z;
-  uniformData[35] = 0.0;
+  // Atmospheric alpha at offset 35, byte 140. `Sun.update` publishes it
+  // before the backend branch, so this slot and WebGL's `u_atmosphereAlpha`
+  // always carry the same scalar. Falls back to 1.0, an exact identity, when
+  // the publisher has not run.
+  const atmosphereAlpha = frameState.sunAtmosphereAlpha;
+  uniformData[35] = typeof atmosphereAlpha === "number" ? atmosphereAlpha : 1.0;
   uniformData[36] = scratchEncodedPos.low.x;
   uniformData[37] = scratchEncodedPos.low.y;
   uniformData[38] = scratchEncodedPos.low.z;
@@ -828,16 +840,10 @@ function updateWebGPUSun(sun, frameState) {
         // command: SRC_ALPHA / ONE_MINUS_SRC_ALPHA for colour and
         // ONE / ONE_MINUS_SRC_ALPHA for alpha.
         //
-        // An additive blend (`src-alpha` / `one`) is not equivalent here. Its
-        // composite is `dst + src.rgb*src.a`, so a black billboard — which is
-        // what the sun becomes once atmospheric extinction drives its rgb to
-        // zero near the horizon — is an exact identity, while ALPHA_BLEND
-        // darkens the sky by `a*dst`. The two backends then disagree by a
-        // residual that appears only where the billboard is black.
-        //
-        // The eclipse fade is invariant to that choice by construction, since
-        // it scales alpha, which is the blend weight under both functions, and
-        // so is the disc/halo split for the same reason.
+        // An additive blend (`src-alpha` / `one`) is not equivalent here: it
+        // never attenuates the destination, while this blend matches WebGL's
+        // source-over composite. The atmospheric and eclipse fades both scale
+        // alpha, which is the source weight under either function.
         targets: makeSceneFBTargets(format, {
           blend: {
             color: {

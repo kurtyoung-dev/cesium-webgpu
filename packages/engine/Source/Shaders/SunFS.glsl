@@ -5,6 +5,10 @@ uniform sampler2D u_texture;
 // is hidden or the sun is viewed from orbit.
 uniform vec3 u_atmosphereExtinction;
 
+// Alpha co-fade derived from the strongest surviving channel of the same
+// atmospheric transmittance. Exactly 1.0 when that transmittance is identity.
+uniform float u_atmosphereAlpha;
+
 // Continuous eclipse / occultation fade: the limb-darkened fraction of the
 // solar disc the camera can still see, from `Scene/EclipseState.js`. Exactly
 // 1.0 when nothing occults the sun or `enableEclipse` is off, so the multiply
@@ -41,6 +45,10 @@ void main()
     // the (linear, when HDR) radiance so a low sun dims and warms as blue is
     // scattered out of the long slant path.
     out_FragColor.rgb *= u_atmosphereExtinction;
+    // Co-fade the blend weight with the atmospheric transmittance so an
+    // extincted disc reveals the sky behind it while retaining the full
+    // chromatic extinction above.
+    out_FragColor.a *= u_atmosphereAlpha;
     // Fade the disc and glow by the visible solar fraction. Applied to alpha
     // rather than rgb: alpha is the blend weight under both `ALPHA_BLEND`,
     // `dst = src.rgb*a + dst*(1 - a)`, and an additive `src-alpha` blend, so

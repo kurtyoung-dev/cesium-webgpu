@@ -1,5 +1,5 @@
 // solar-disc-model.spec.mjs — C12-15 / C12-16 / C12-17 (the C12 sun wave).
-// @purpose Pins SolarDiscModel as the one constants source for eclipse photometry + both sun-disc bakes: limb law, glare profile, byte-exact OFF toggles.
+// @purpose Pins SolarDiscModel as the constants source for eclipse photometry, both sun-disc bakes, and the atmospheric alpha co-fade derivation.
 // @status ACTIVE
 //
 // Pins, in pure Node with no browser:
@@ -36,7 +36,19 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "..", "..");
-const enginePath = (p) => path.join(root, "packages/engine/Source", p);
+const engineSource = path.join(root, "packages/engine/Source");
+const engineOverlay = process.env.CESIUM_ENGINE_SOURCE_OVERLAY
+  ? path.resolve(process.env.CESIUM_ENGINE_SOURCE_OVERLAY)
+  : undefined;
+const enginePath = (p) => {
+  if (engineOverlay) {
+    const candidate = path.join(engineOverlay, p);
+    if (fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+  return path.join(engineSource, p);
+};
 const readEngine = (p) => fs.readFileSync(enginePath(p), "utf8");
 const importEngine = (p) => import(pathToFileURL(enginePath(p)).href);
 
@@ -46,6 +58,138 @@ const GLOW_LENGTH_TS = 5.0;
 const HALF_EXTENT_RSUN = 1.0 + 2.0 * GLOW_LENGTH_TS;
 // bake `radius` for a distance of `rho` solar radii from the solar centre.
 const radiusAt = (rho) => rho / (Math.SQRT2 * HALF_EXTENT_RSUN);
+
+test("atmospheric alpha implements its documented finite and degenerate contract", async () => {
+  const M = await importEngine("Scene/SolarDiscModel.js");
+  const { default: Cartesian3 } = await importEngine("Core/Cartesian3.js");
+  const alpha = M.solarDiscAtmosphereAlpha;
+
+  assert.equal(M.default.solarDiscAtmosphereAlpha, alpha);
+  assert.ok(
+    Object.is(alpha({ x: 1.0, y: 1.0, z: 1.0 }), 1.0),
+    "identity transmittance must return exactly 1.0",
+  );
+
+  const plain = { x: 0.2, y: 0.7, z: 0.4 };
+  const cartesian = new Cartesian3(plain.x, plain.y, plain.z);
+  assert.equal(alpha(plain), 0.7, "plain-object channels use their maximum");
+  assert.equal(
+    alpha(cartesian),
+    alpha(plain),
+    "Cartesian3 and a plain object have the same contract",
+  );
+
+  for (const [name, transmittance, expected] of [
+    ["all-zero", { x: 0.0, y: 0.0, z: 0.0 }, 0.0],
+    ["all-negative", { x: -1.0, y: -2.0, z: -3.0 }, -1.0],
+    ["mixed-sign", { x: -1.0, y: 0.2, z: -3.0 }, 0.2],
+    ["upper-clamp-x", { x: 1.25, y: 0.8, z: 0.4 }, 1.0],
+    ["upper-clamp-y", { x: 0.8, y: 1.25, z: 0.4 }, 1.0],
+    ["upper-clamp-z", { x: 0.8, y: 0.4, z: 1.25 }, 1.0],
+  ]) {
+    assert.equal(alpha(transmittance), expected, name);
+  }
+
+  for (const [name, unreadable] of [
+    ["absent argument", undefined],
+    ["absent channels", {}],
+    ["partial NaN", { x: Number.NaN, y: 0.5, z: 0.25 }],
+    ["all NaN", { x: Number.NaN, y: Number.NaN, z: Number.NaN }],
+    ["+Infinity", { x: Number.POSITIVE_INFINITY, y: 0.5, z: 0.25 }],
+    ["-Infinity", { x: Number.NEGATIVE_INFINITY, y: 0.5, z: 0.25 }],
+  ]) {
+    assert.ok(
+      Object.is(alpha(unreadable), 1.0),
+      `${name} must take the exact 1.0 fallback`,
+    );
+  }
+});
+
+test("atmospheric alpha is monotone in every physical transmittance channel", async () => {
+  const { solarDiscAtmosphereAlpha: alpha } = await importEngine(
+    "Scene/SolarDiscModel.js",
+  );
+  const levels = [0.0, 0.0001, 0.01, 0.1, 0.4, 0.8, 1.0];
+  for (let axis = 0; axis < 3; axis++) {
+    const fixedAxes = [0, 1, 2].filter((candidate) => candidate !== axis);
+    for (const first of levels) {
+      for (const second of levels) {
+        let previous = -Infinity;
+        for (const value of levels) {
+          const channels = [0.0, 0.0, 0.0];
+          channels[fixedAxes[0]] = first;
+          channels[fixedAxes[1]] = second;
+          channels[axis] = value;
+          const got = alpha({
+            x: channels[0],
+            y: channels[1],
+            z: channels[2],
+          });
+          assert.ok(
+            got >= previous,
+            `axis ${axis} fell at ${value} with other channels ${first}, ${second}`,
+          );
+          previous = got;
+        }
+      }
+    }
+  }
+});
+
+test("atmospheric alpha follows shipped dawn transmittance", async () => {
+  const [
+    M,
+    atmosphereModule,
+    cartesianModule,
+    ellipsoidModule,
+    extinctionModule,
+  ] = await Promise.all([
+    importEngine("Scene/SolarDiscModel.js"),
+    importEngine("Scene/Atmosphere.js"),
+    importEngine("Core/Cartesian3.js"),
+    importEngine("Core/Ellipsoid.js"),
+    importEngine("Scene/computeAtmosphereExtinction.js"),
+  ]);
+  const Atmosphere = atmosphereModule.default;
+  const Cartesian3 = cartesianModule.default;
+  const Ellipsoid = ellipsoidModule.default;
+  const computeAtmosphereExtinction = extinctionModule.default;
+  const atmosphere = new Atmosphere();
+  const radius = Ellipsoid.default.maximumRadius;
+  const camera = new Cartesian3(radius, 0.0, 0.0);
+  const sunDistance = 1.496e11;
+  const scalars = [];
+
+  for (const altitudeDegrees of [0.1, 2.0, 5.0, 8.0, 10.0]) {
+    const altitude = (altitudeDegrees * Math.PI) / 180.0;
+    const sun = new Cartesian3(
+      camera.x + sunDistance * Math.sin(altitude),
+      sunDistance * Math.cos(altitude),
+      0.0,
+    );
+    const transmittance = computeAtmosphereExtinction(
+      new Cartesian3(),
+      camera,
+      sun,
+      atmosphere,
+      radius,
+    );
+    const expected = Math.min(
+      1.0,
+      Math.max(transmittance.x, transmittance.y, transmittance.z),
+    );
+    const got = M.solarDiscAtmosphereAlpha(transmittance);
+    assert.equal(got, expected);
+    assert.ok(got >= 0.0 && got < 1.0);
+    scalars.push(got);
+  }
+
+  for (let i = 1; i < scalars.length; i++) {
+    assert.ok(scalars[i] > scalars[i - 1]);
+  }
+  assert.ok(scalars[0] < 0.01);
+  assert.ok(scalars.at(-1) > 0.5);
+});
 
 test("limb-darkening law: endpoints, monotonicity, clamping", async () => {
   const M = await importEngine("Scene/SolarDiscModel.js");

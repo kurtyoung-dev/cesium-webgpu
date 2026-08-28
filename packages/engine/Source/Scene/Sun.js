@@ -20,6 +20,7 @@ import {
   createAtmosphereExtinctionCache,
 } from "./computeAtmosphereExtinction.js";
 import { getEclipseSunFactor } from "./EclipseState.js";
+import { solarDiscAtmosphereAlpha } from "./SolarDiscModel.js";
 import {
   createSunDiscAppearance,
   readSunDiscAppearance,
@@ -93,6 +94,10 @@ class Sun {
     this._atmosphereExtinction = Cartesian3.clone(Cartesian3.ONE);
     this._atmosphereExtinctionCache = createAtmosphereExtinctionCache();
 
+    // Alpha co-fade derived from the same atmospheric transmittance. Exactly
+    // 1.0 when that transmittance is the identity.
+    this._atmosphereAlpha = 1.0;
+
     // Continuous occlusion fade. 1.0, the multiplicative identity, whenever
     // nothing occults the sun or the effect is off, so the shader multiply is
     // byte-identical in those frames.
@@ -131,6 +136,9 @@ class Sun {
       },
       u_atmosphereExtinction: function () {
         return that._atmosphereExtinction;
+      },
+      u_atmosphereAlpha: function () {
+        return that._atmosphereAlpha;
       },
       u_eclipseAlpha: function () {
         return that._eclipseAlpha;
@@ -231,6 +239,9 @@ class Sun {
       extinction,
       this._atmosphereExtinction,
     );
+    const atmosphereAlpha = solarDiscAtmosphereAlpha(extinction);
+    frameState.sunAtmosphereAlpha = atmosphereAlpha;
+    this._atmosphereAlpha = atmosphereAlpha;
 
     // Continuous occlusion fade, which is what makes the sun set rather than
     // vanish.

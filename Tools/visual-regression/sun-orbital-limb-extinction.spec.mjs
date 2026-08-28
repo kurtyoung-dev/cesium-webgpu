@@ -1,6 +1,6 @@
 // sun-orbital-limb-extinction.spec.mjs — C12-29 slice S4 (orbital-sunrise
 // limb glow), VERIFICATION lane.
-// @purpose Measures that Sun.js's extinction integrator already yields the orbital-sunset reddening ramp; 16-sample rule vs 40k-sample oracle.
+// @purpose Measures the shipped orbital extinction ramp and behaviorally verifies the shared Sun atmospheric-alpha publication and WebGPU pack.
 // @status ACTIVE
 //
 // S4's brief said: "probe the EXISTING Sun.js extinction integrator first —
@@ -63,7 +63,19 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "..", "..");
-const enginePath = (p) => path.join(root, "packages/engine/Source", p);
+const engineSource = path.join(root, "packages/engine/Source");
+const engineOverlay = process.env.CESIUM_ENGINE_SOURCE_OVERLAY
+  ? path.resolve(process.env.CESIUM_ENGINE_SOURCE_OVERLAY)
+  : undefined;
+const enginePath = (p) => {
+  if (engineOverlay) {
+    const candidate = path.join(engineOverlay, p);
+    if (fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+  return path.join(engineSource, p);
+};
 const readEngine = (p) => fs.readFileSync(enginePath(p), "utf8");
 const importEngine = (p) => import(pathToFileURL(enginePath(p)).href);
 
@@ -155,6 +167,192 @@ async function fixture() {
 
   return { transmittanceAt, reference };
 }
+
+const shaderStubUrl = `data:text/javascript;base64,${Buffer.from(
+  'export default "";',
+).toString("base64")}`;
+
+async function importSunForBehavior() {
+  const shaderStubs = new Set([
+    "Shaders/SunFS.js",
+    "Shaders/SunTextureFS.js",
+    "Shaders/SunVS.js",
+  ]);
+  const source = readEngine("Scene/Sun.js").replace(
+    /from "(\.{1,2}\/[^"]+)";/g,
+    (statement, specifier) => {
+      const relative = path.posix.normalize(
+        path.posix.join("Scene", specifier),
+      );
+      const url = shaderStubs.has(relative)
+        ? shaderStubUrl
+        : pathToFileURL(enginePath(relative)).href;
+      return `from "${url}";`;
+    },
+  );
+  return import(
+    `data:text/javascript;base64,${Buffer.from(source).toString("base64")}`
+  );
+}
+
+function extractFunction(sourcePath, functionName) {
+  const source = readEngine(sourcePath).replace(/\r\n/g, "\n");
+  const start = source.indexOf(`function ${functionName}(`);
+  assert.ok(start > 0, `${functionName} must exist in ${sourcePath}`);
+  const end = source.indexOf("\n}", start);
+  assert.ok(end > start, `could not delimit ${functionName}`);
+  return source.slice(start, end + 2);
+}
+
+async function loadPackSunUniforms() {
+  const [
+    matrixModule,
+    encodedModule,
+    cartesianModule,
+    mathModule,
+    definedModule,
+  ] = await Promise.all([
+    importEngine("Core/Matrix4.js"),
+    importEngine("Core/EncodedCartesian3.js"),
+    importEngine("Core/Cartesian3.js"),
+    importEngine("Core/Math.js"),
+    importEngine("Core/defined.js"),
+  ]);
+  const Matrix4 = matrixModule.default;
+  const EncodedCartesian3 = encodedModule.default;
+  const Cartesian3 = cartesianModule.default;
+  const CesiumMath = mathModule.default;
+  const defined = definedModule.default;
+  const body = extractFunction(
+    "Renderer/WebGPU/WebGPUEnvironmentRenderer.js",
+    "packSunUniforms",
+  );
+  const declarations = `
+    const scratchModelView = new Matrix4();
+    const scratchMVRTE = new Matrix4();
+    const scratchMVPRTE = new Matrix4();
+    const scratchEncodedCamera = new EncodedCartesian3();
+    const scratchEncodedPos = new EncodedCartesian3();
+    const defaultSunPosition = Object.freeze(new Cartesian3(1.5e11, 0.0, 0.0));
+    const DEFAULT_SUN_ANGULAR_HALF_SIZE =
+      CesiumMath.SOLAR_RADIUS / 149597870700.0;
+  `;
+  // eslint-disable-next-line no-new-func
+  const makePack = new Function(
+    "Matrix4",
+    "EncodedCartesian3",
+    "Cartesian3",
+    "CesiumMath",
+    "defined",
+    `${declarations}\n${body}\nreturn packSunUniforms;`,
+  );
+  return makePack(Matrix4, EncodedCartesian3, Cartesian3, CesiumMath, defined);
+}
+
+async function publishDawnSunState() {
+  const [
+    sunModule,
+    atmosphereModule,
+    cartesianModule,
+    ellipsoidModule,
+    matrixModule,
+    sceneModeModule,
+  ] = await Promise.all([
+    importSunForBehavior(),
+    importEngine("Scene/Atmosphere.js"),
+    importEngine("Core/Cartesian3.js"),
+    importEngine("Core/Ellipsoid.js"),
+    importEngine("Core/Matrix4.js"),
+    importEngine("Scene/SceneMode.js"),
+  ]);
+  const Sun = sunModule.default;
+  const Atmosphere = atmosphereModule.default;
+  const Cartesian3 = cartesianModule.default;
+  const Ellipsoid = ellipsoidModule.default;
+  const Matrix4 = matrixModule.default;
+  const SceneMode = sceneModeModule.default;
+  const radius = Ellipsoid.default.maximumRadius;
+  const cameraPosition = new Cartesian3(radius, 0.0, 0.0);
+  const altitude = (5.0 * Math.PI) / 180.0;
+  const sunPosition = new Cartesian3(
+    cameraPosition.x + SUN_DISTANCE * Math.sin(altitude),
+    SUN_DISTANCE * Math.cos(altitude),
+    0.0,
+  );
+  let observedAtBackendBranch;
+  const featureRenderer = {
+    update(sun, state) {
+      observedAtBackendBranch = state.sunAtmosphereAlpha;
+      return { owner: sun };
+    },
+  };
+  const frameState = {
+    mode: SceneMode.SCENE3D,
+    passes: { render: true },
+    skyAtmosphereVisible: true,
+    atmosphere: new Atmosphere(),
+    camera: { positionWC: cameraPosition },
+    context: {
+      drawingBufferWidth: 1280,
+      drawingBufferHeight: 720,
+      uniformState: {
+        sunPositionWC: sunPosition,
+        view: Matrix4.IDENTITY,
+        projection: Matrix4.IDENTITY,
+      },
+      getFeatureRenderer() {
+        return featureRenderer;
+      },
+    },
+    eclipseState: undefined,
+    atmosphericConditions: undefined,
+    sunBloomActive: false,
+    useHDR: false,
+  };
+  const sun = new Sun();
+  sun.update(frameState, { viewport: { width: 1280, height: 720 } }, false);
+  return { frameState, observedAtBackendBranch, sun };
+}
+
+test("atmospheric alpha publishes before the backend branch and packs at offset 35", async () => {
+  // This executes the CPU derivation, Sun publication and WebGPU uniform pack.
+  // Node does not execute either fragment shader, so no pixel claim is made.
+  const { frameState, observedAtBackendBranch, sun } =
+    await publishDawnSunState();
+  const extinction = frameState.sunAtmosphereExtinction;
+  const expected = Math.min(
+    1.0,
+    Math.max(extinction.x, extinction.y, extinction.z),
+  );
+  assert.ok(expected > 0.0 && expected < 1.0);
+  const packSunUniforms = await loadPackSunUniforms();
+  const uniformData = new Float32Array(64);
+  packSunUniforms(uniformData, frameState, 1.0, 1.0);
+  assert.equal(uniformData[35], Math.fround(expected));
+  assert.notEqual(uniformData[35], 1.0);
+  assert.equal(frameState.sunAtmosphereAlpha, expected);
+  assert.equal(observedAtBackendBranch, expected);
+  assert.equal(sun._uniformMap.u_atmosphereAlpha(), expected);
+});
+
+test("atmospheric alpha pack fallback is identity for both absence forms", async () => {
+  const { frameState } = await publishDawnSunState();
+  const packSunUniforms = await loadPackSunUniforms();
+
+  const omitted = { ...frameState };
+  delete omitted.sunAtmosphereAlpha;
+  const omittedData = new Float32Array(64);
+  packSunUniforms(omittedData, omitted, 1.0, 1.0);
+  assert.equal(omittedData[35], 1.0);
+
+  const explicitUndefined = {
+    ...frameState,
+    sunAtmosphereAlpha: undefined,
+  };
+  const undefinedData = new Float32Array(64);
+  packSunUniforms(undefinedData, explicitUndefined, 1.0, 1.0);
+  assert.equal(undefinedData[35], 1.0);
+});
 
 test("S4: above the shell the orbital sun is EXACTLY unattenuated", async () => {
   const { transmittanceAt } = await fixture();

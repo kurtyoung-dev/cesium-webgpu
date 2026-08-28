@@ -521,6 +521,17 @@ class FrameState {
     this.sunAtmosphereExtinction = undefined;
 
     /**
+     * Per-frame atmospheric alpha scale for the Sun, derived from the
+     * strongest surviving channel of {@link FrameState#sunAtmosphereExtinction}.
+     * Exactly 1.0 when the transmittance is the identity, so the blend weight
+     * is unchanged when no extinction applies. Consumed by the WebGPU sun
+     * renderer; the WebGL path reads it via the {@link Sun} primitive's
+     * uniform.
+     * @type {number|undefined}
+     */
+    this.sunAtmosphereAlpha = undefined;
+
+    /**
      * Per-frame RGB atmospheric transmittance at the ZENITH for the
      * starfield. The star extinction is a per-direction analytic Bouguer
      * model — each star's slant transmittance is

@@ -704,6 +704,36 @@ function solarDiscHdrRadiance(useHdr, light) {
 }
 
 /**
+ * Derives the sun billboard's atmospheric alpha scale from its RGB
+ * transmittance. For finite physical transmittance (non-negative channels),
+ * this is `min(1, max(r, g, b))`, using the strongest surviving channel for
+ * the co-fade. Finite negative channels are outside the physical domain and
+ * follow that expression without a lower clamp.
+ *
+ * An all-zero transmittance fades the disc completely into the sky. Missing
+ * or non-finite input returns exactly 1.0 so an unreadable publication cannot
+ * silently remove the sun.
+ *
+ * @param {Cartesian3|object} [transmittance] Per-channel atmospheric
+ *        transmittance, with finite `x`, `y`, and `z` values.
+ * @returns {number} `min(1, max(x, y, z))` for finite input; otherwise 1.0.
+ * @private
+ */
+function solarDiscAtmosphereAlpha(transmittance) {
+  const red = transmittance?.x;
+  const green = transmittance?.y;
+  const blue = transmittance?.z;
+  if (
+    !Number.isFinite(red) ||
+    !Number.isFinite(green) ||
+    !Number.isFinite(blue)
+  ) {
+    return 1.0;
+  }
+  return Math.min(1.0, Math.max(red, green, blue));
+}
+
+/**
  * `avgLuminance` as `SunPostProcess` has always set it — "a guess at the
  * average luminance across the entire scene". Unchanged by this row: it is
  * the argument to `key()`, which is a scene-exposure heuristic, not a
@@ -1120,6 +1150,7 @@ const SolarDiscModel = Object.freeze({
   solarDiscDisplayCode,
   solarDiscLimbContrastCodes,
   solarDiscHdrRadiance,
+  solarDiscAtmosphereAlpha,
   sunBrightPassKey,
   solarBrightPassTuning,
   solarBloomBlurBufferSize,
@@ -1174,6 +1205,7 @@ export {
   solarDiscDisplayCode,
   solarDiscLimbContrastCodes,
   solarDiscHdrRadiance,
+  solarDiscAtmosphereAlpha,
   sunBrightPassKey,
   solarBrightPassTuning,
   solarBloomBlurBufferSize,

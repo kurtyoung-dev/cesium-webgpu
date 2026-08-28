@@ -510,6 +510,9 @@ interface CesiumFrameState {
   // C7-SUN-STARS-EXTINCTION — per-frame RGB transmittance along the camera→sun
   // ray (published by Sun.update). Undefined when the effect is disabled.
   sunAtmosphereExtinction?: CesiumCartesian3 | undefined;
+  // Per-frame Sun alpha co-fade derived from the strongest surviving channel
+  // of sunAtmosphereExtinction (published by Sun.update).
+  sunAtmosphereAlpha?: number | undefined;
   deltaTime: number;
   brdfLutGenerator: import("../GraphicsContext.js").Renderable | undefined;
   // Debug flags
