@@ -41,6 +41,74 @@ float softTerminatorMu0(float nDotL, float hardMu0, float softness)
 }
 #endif
 
+#ifdef LUNAR_ECLIPSE
+uniform vec3 u_lunarShadowAxis;
+uniform vec3 u_lunarShadowOffset;
+uniform float u_lunarUmbraRadius;
+uniform float u_lunarPenumbraRadius;
+
+// Fraction of the solar disc that Earth hides, at `radius` metres from the
+// shadow axis in this body's plane. Character-identical twin of
+// lunarShadowCoverage in Moon.wgsl; the JS reference and the derivation live
+// in Scene/LunarEclipseState.js.
+//
+// Written in units of the penumbral radius, where the projected solar disc has
+// radius (1 - u) / 2 and the projected Earth disc (1 + u) / 2 for an umbral
+// radius u. Their sum is 1 and their difference is u, so first contact falls
+// exactly on the penumbral radius and totality exactly on the umbral one.
+float lunarShadowCoverage(float radius, float umbraRadius, float penumbraRadius)
+{
+    if (penumbraRadius <= 0.0) {
+        return 0.0;
+    }
+    float inv = 1.0 / penumbraRadius;
+    float u = umbraRadius * inv;
+    float d = radius * inv;
+    float rs = 0.5 * (1.0 - u);
+    float re = 0.5 * (1.0 + u);
+    if (rs <= 0.0) {
+        return 0.0;
+    }
+    if (d >= 1.0) {
+        return 0.0;
+    }
+    if (d <= u) {
+        return 1.0;
+    }
+    // Reachable only for a negative umbral radius, i.e. a body beyond the tip
+    // of the umbral cone. Kept so the function is total.
+    if (d <= rs - re) {
+        return (re * re) / (rs * rs);
+    }
+    float dd = max(d, 1.0e-6);
+    float cosA = clamp((dd * dd + rs * rs - re * re) / (2.0 * dd * rs), -1.0, 1.0);
+    float cosB = clamp((dd * dd + re * re - rs * rs) / (2.0 * dd * re), -1.0, 1.0);
+    float a = acos(cosA);
+    float b = acos(cosB);
+    float area = rs * rs * (a - sin(a) * cosA) + re * re * (b - sin(b) * cosB);
+    return clamp(area / (3.141592653589793 * rs * rs), 0.0, 1.0);
+}
+
+// Per-channel brightness multiplier for a point `radius` metres from the
+// shadow axis. Twin of lunarShadowFactor in Moon.wgsl.
+//
+// The direct term is the unblocked fraction of the solar disc, achromatic
+// because nothing has filtered it. The copper term is sunlight refracted
+// through Earth's atmosphere: one Rayleigh optical depth that grows from the
+// umbral rim inward, applied per channel through the (550 / lambda)^4 ratios
+// at 650 / 550 / 450 nm, and faded in through the penumbra by the coverage
+// cube so the two terms hand over continuously at the rim.
+vec3 lunarShadowFactor(float radius, float umbraRadius, float penumbraRadius)
+{
+    float coverage = lunarShadowCoverage(radius, umbraRadius, penumbraRadius);
+    float illumination = 1.0 - coverage;
+    float depth = clamp(1.0 - radius / max(umbraRadius, 1.0), 0.0, 1.0);
+    float tau = 1.2 + (4.0 - 1.2) * depth;
+    float weight = 0.25 * coverage * coverage * coverage;
+    return vec3(illumination) + weight * exp(-tau * vec3(0.512622, 1.0, 2.23152));
+}
+#endif
+
 in vec3 v_positionEC;
 
 #ifdef LUNAR_EXPLICIT_GRADIENTS
@@ -225,6 +293,30 @@ vec4 computeEllipsoidColor(czm_ray ray, float intersection, float side)
 #endif
     float rawNdotL = max(dot(material.normal, earthshineLightDirEC), 0.0);
     litColor.rgb += vec3(0.4, 0.5, 0.7) * 0.08 * (1.0 - rawNdotL) * u_earthshinePhaseScale;
+#endif
+
+#ifdef LUNAR_ECLIPSE
+    // Earth's shadow, projected onto this fragment.
+    //
+    // The shadow is a pair of cones about one axis, so the only thing that
+    // varies across the disc is a fragment's perpendicular distance from that
+    // axis. Drop the along-axis component of the surface point, add the offset
+    // from the axis to the body's centre, and the length of what remains is
+    // that distance — the whole projection in three lines, in model space,
+    // where the centre is the origin.
+    //
+    // Applied to the composed colour rather than to the direct term alone.
+    // Earthshine is very nearly zero during a lunar eclipse anyway (the Moon
+    // is full, so Earth as seen from it is new), but with moon-phase modelling
+    // switched off it is a constant, and leaving it unshadowed would lift the
+    // umbra with a blue-grey haze instead of the copper that belongs there.
+    //
+    // Twin of the same block in Moon.wgsl. The state, both twins of the two
+    // functions above, and every constant in them live in
+    // Scene/LunarEclipseState.js.
+    vec3 shadowPositionMC = positionMC - dot(positionMC, u_lunarShadowAxis) * u_lunarShadowAxis;
+    float shadowRadius = length(u_lunarShadowOffset + shadowPositionMC);
+    litColor.rgb *= lunarShadowFactor(shadowRadius, u_lunarUmbraRadius, u_lunarPenumbraRadius);
 #endif
 
     return litColor;

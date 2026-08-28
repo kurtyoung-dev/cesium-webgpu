@@ -95,6 +95,10 @@ const CELESTIAL_FLAG_CLASSIFICATION = Object.freeze({
     scope: "audit-gate",
     gate: "enableEclipseHorizonTwilight",
   },
+  "lighting.enableLunarEclipse": {
+    scope: "audit-gate",
+    gate: "enableLunarEclipse",
+  },
   "skyAtmosphere.enableStarBrightnessModulation": {
     scope: "audit-gate",
     gate: "enableStarBrightnessModulation",
@@ -970,6 +974,55 @@ const AUDIT_GATES = Object.freeze([
     ],
   },
   {
+    flag: "enableLunarEclipse",
+    discoveryKey: "lighting.enableLunarEclipse",
+    kind: "BOTH-BACKEND",
+    chains: [
+      {
+        name: "Earth-shadow umbra and penumbra on the lunar disc",
+        resolvedQuantity:
+          "LunarEclipseState cone radii and shadow axis -> model-space axis/offset pair, or exactly zero radii",
+        chain:
+          "Scene.js -> LunarEclipseState -> Moon frameState publication -> WebGPU packer / EllipsoidPrimitive -> moon disc shaders",
+        plumbing: [
+          evidence(
+            "packages/engine/Source/Scene/Scene.js",
+            "frameState.lunarEclipse = updateLunarEclipseState(",
+          ),
+          evidence(
+            "packages/engine/Source/Scene/Moon.js",
+            "lighting.enableLunarEclipse !== false;",
+            "frameState.moonPenumbraRadius = penumbraRadius;",
+            "ellipsoidPrimitive.lunarShadowAxis = shadowAxisMC;",
+          ),
+          evidence(
+            "packages/engine/Source/Renderer/WebGPU/WebGPUEnvironmentRenderer.js",
+            "ud[91] = frameState.moonUmbraRadius ?? 0.0;",
+          ),
+          evidence(
+            "packages/engine/Source/Scene/EllipsoidPrimitive.js",
+            'fs.defines.push("LUNAR_ECLIPSE");',
+            "u_lunarPenumbraRadius: function () {",
+          ),
+        ],
+        wgslConsumers: [
+          evidence(
+            "packages/engine/Source/Shaders/WebGPU/Environment/Moon.wgsl",
+            "fn lunarShadowFactor(",
+            "color = color * lunarShadowFactor(shadowRadius, u.umbraRadius, u.penumbraRadius);",
+          ),
+        ],
+        glslConsumers: [
+          evidence(
+            "packages/engine/Source/Shaders/EllipsoidFS.glsl",
+            "vec3 lunarShadowFactor(float radius, float umbraRadius, float penumbraRadius)",
+            "litColor.rgb *= lunarShadowFactor(shadowRadius, u_lunarUmbraRadius, u_lunarPenumbraRadius);",
+          ),
+        ],
+      },
+    ],
+  },
+  {
     flag: "enableStarBrightnessModulation",
     discoveryKey: "skyAtmosphere.enableStarBrightnessModulation",
     kind: "BOTH-BACKEND",
@@ -1267,6 +1320,13 @@ const CONVENTION_SCAN_CLASSIFICATION = Object.freeze([
     count: 1,
     scope: "audit-gate",
     gate: "enableEclipseHorizonTwilight",
+  },
+  {
+    relativePath: "packages/engine/Source/Scene/Moon.js",
+    identifier: "enableLunarEclipse",
+    count: 1,
+    scope: "audit-gate",
+    gate: "enableLunarEclipse",
   },
   {
     relativePath: "packages/engine/Source/Scene/SunDiscAppearance.js",
@@ -1781,7 +1841,7 @@ function printAuditReport(state) {
 
 test("discovery classifies every default-true celestial flag in both leaves", () => {
   const state = buildAuditState();
-  assert.equal(state.discovered.length, 21, "the literal census must stay 21");
+  assert.equal(state.discovered.length, 22, "the literal census must stay 22");
   assert.ok(
     state.discovered.some((entry) => entry.leaf === "lighting"),
     "buildLighting discovery must not be empty",
@@ -1805,7 +1865,7 @@ test("discovery classifies every default-true celestial flag in both leaves", ()
   const discoveredGates = AUDIT_GATES.filter(
     (gate) => gate.discoveryKey !== undefined,
   );
-  assert.equal(discoveredGates.length, 21, "all 21 flags need gate rows");
+  assert.equal(discoveredGates.length, 22, "all 22 flags need gate rows");
   assert.deepEqual(
     [...auditedClassifications].sort(),
     discoveredGates.map((gate) => gate.flag).sort(),

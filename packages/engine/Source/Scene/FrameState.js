@@ -508,6 +508,38 @@ class FrameState {
     this.moonTerminatorSoftness = undefined;
 
     /**
+     * Earth's shadow axis and the axis-to-Moon-centre offset, expressed in
+     * the Moon's own model frame — the two vectors a disc shader needs to
+     * reduce a surface point to its distance from the shadow axis. Rotated
+     * out of {@link FrameState#lunarEclipse} by {@link Moon#update} so both
+     * backends shade from one conversion. `undefined` outside a lunar
+     * eclipse and in the `enableLunarEclipse = false` position.
+     * @type {Cartesian3|undefined}
+     */
+    this.moonShadowAxisMC = undefined;
+
+    /**
+     * @type {Cartesian3|undefined}
+     * @see FrameState#moonShadowAxisMC
+     */
+    this.moonShadowOffsetMC = undefined;
+
+    /**
+     * Umbral and penumbral radii of Earth's shadow in the Moon's plane,
+     * metres. Both are exactly 0.0 outside a lunar eclipse, and the penumbral
+     * one is the gate both shaders branch on, so the off position costs a
+     * single comparison rather than an arithmetic identity.
+     * @type {number|undefined}
+     */
+    this.moonUmbraRadius = undefined;
+
+    /**
+     * @type {number|undefined}
+     * @see FrameState#moonUmbraRadius
+     */
+    this.moonPenumbraRadius = undefined;
+
+    /**
      * Per-frame RGB atmospheric extinction (transmittance) for the Sun —
      * the fraction of sunlight, per channel, that survives the slant path
      * through the atmosphere to the camera along the camera→sun ray.
@@ -652,6 +684,21 @@ class FrameState {
      * @type {number|undefined}
      */
     this.eclipseSceneLightFactor = undefined;
+
+    /**
+     * Earth's shadow at the Moon — the LUNAR eclipse, as distinct from every
+     * other field here whose "eclipse" means the Moon crossing the Sun.
+     * Geocentric and observer-independent, so it is owned by the Scene rather
+     * than by a logical {@link View}, and recomputed from the frame's
+     * celestial ephemeris sample. `inProgress` is false on every frame where
+     * the Moon is not at least touching the penumbra, which is what every
+     * consumer short-circuits on; the shadow-cone radii, the disc fractions
+     * and the disc-averaged luminance are the published payload. See
+     * {@link updateLunarEclipseState}.
+     *
+     * @type {object|undefined}
+     */
+    this.lunarEclipse = undefined;
 
     /**
      * Per-fragment Moon-shadow block for the globe, owned by the

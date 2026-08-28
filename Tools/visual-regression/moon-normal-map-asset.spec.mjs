@@ -642,8 +642,8 @@ test("WebGPU moon normal upload matches the WebGL flipY convention", () => {
   // The uniform buffer grew add-only.
   assert.match(
     src,
-    /const MOON_UNIFORM_BUFFER_SIZE = 352;/,
-    "the moon UB must be 352 bytes (336 + the C12-25 normalStrength slot)",
+    /const MOON_UNIFORM_BUFFER_SIZE = 384;/,
+    "the moon UB must be 384 bytes (352 + the Earth-shadow block)",
   );
   assert.match(
     src,

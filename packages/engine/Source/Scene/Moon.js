@@ -363,6 +363,13 @@ class Moon {
     // Allocated once; never reallocated per frame.
     this._phaseAppearance = createMoonPhaseAppearance();
 
+    // Earth-shadow geometry rotated into this Moon's model frame. Per
+    // instance rather than module scratch: the WebGL primitive's uniform
+    // closures read these at draw time, which for a split-screen page is
+    // after the other scene's Moon has already run its own update.
+    this._shadowAxisMC = new Cartesian3();
+    this._shadowOffsetMC = new Cartesian3();
+
     // Backend-neutral physical-depth demand and exact command bounding
     // volume.  The demand is intentionally distinct from the route actually
     // emitted by a backend: WebGPU may keep returning the legacy ENVIRONMENT
@@ -720,6 +727,68 @@ class Moon {
     ellipsoidPrimitive.terminatorSoftness = phaseAppearance.softTerminator
       ? phaseAppearance.terminatorSoftness
       : undefined;
+
+    // Earth's shadow at the Moon, rotated into the frame both disc shaders
+    // already work in.
+    //
+    // The state Scene publishes is geocentric and in world coordinates; the
+    // shaders shade in the Moon's own model coordinates, where the disc's
+    // centre is the origin and a surface point is at most one lunar radius
+    // away. Converting here — once, on the CPU, in f64 — is what lets both
+    // shaders reduce the whole geometry to "how far is this point from the
+    // shadow axis", and it keeps the numbers small enough that f32 has room
+    // to spare: the largest quantity either shader sees is the penumbral
+    // radius at ~8.3e6 m, where a float still resolves under a metre.
+    //
+    // `rotation` maps model to world, so its transpose maps world to model.
+    // The moon centre is the model-space origin, which is why only the axis
+    // and the axis-to-centre offset need transforming and the surface point
+    // needs nothing.
+    const lunarEclipse = frameState.lunarEclipse;
+    const lunarEclipseEnabled =
+      defined(lighting) && lighting.enableLunarEclipse !== false;
+    let shadowAxisMC;
+    let shadowOffsetMC;
+    let umbraRadius = 0.0;
+    let penumbraRadius = 0.0;
+    if (
+      lunarEclipseEnabled &&
+      defined(lunarEclipse) &&
+      lunarEclipse.inProgress === true
+    ) {
+      const worldToModel = Matrix3.transpose(rotation, scratchShadowRotation);
+      shadowAxisMC = Matrix3.multiplyByVector(
+        worldToModel,
+        lunarEclipse.shadowAxisWC,
+        this._shadowAxisMC,
+      );
+      shadowOffsetMC = Matrix3.multiplyByVector(
+        worldToModel,
+        lunarEclipse.shadowOffsetWC,
+        this._shadowOffsetMC,
+      );
+      umbraRadius = lunarEclipse.umbraRadius;
+      penumbraRadius = lunarEclipse.penumbraRadius;
+    }
+
+    // A penumbral radius of exactly 0 is the off position on both backends:
+    // WebGPU skips its block on `penumbraRadius > 0.0`, and WebGL compiles
+    // the block out entirely when the axis is undefined, so neither backend
+    // executes an instruction outside a lunar eclipse.
+    // Published as the instance's own vectors rather than cloned into a
+    // FrameState slot: the WebGPU feature renderer packs them synchronously
+    // inside this same `update`, and the instance objects are already the
+    // split-screen-safe copies, so a clone would buy nothing and allocate on
+    // every frame of an eclipse.
+    frameState.moonShadowAxisMC = shadowAxisMC;
+    frameState.moonShadowOffsetMC = shadowOffsetMC;
+    frameState.moonUmbraRadius = umbraRadius;
+    frameState.moonPenumbraRadius = penumbraRadius;
+
+    ellipsoidPrimitive.lunarShadowAxis = shadowAxisMC;
+    ellipsoidPrimitive.lunarShadowOffset = shadowOffsetMC;
+    ellipsoidPrimitive.lunarUmbraRadius = umbraRadius;
+    ellipsoidPrimitive.lunarPenumbraRadius = penumbraRadius;
 
     // Backend-specific path — delegate to feature renderer if available
     const context = frameState.context;
@@ -1220,6 +1289,7 @@ const scratchInscatter = new Cartesian3();
 const scratchMoonToSun = new Cartesian3();
 const scratchSunFromMoon = new Cartesian3();
 const scratchMoonToCamera = new Cartesian3();
+const scratchShadowRotation = new Matrix3();
 const scratchCommandList = [];
 
 export default Moon;

@@ -563,9 +563,11 @@ test("WebGPU packs both at the reserved tail offsets, with identity fallbacks", 
     envRenderer,
     /ud\[86\] = frameState\.moonTerminatorSoftness \?\? 0\.0;/,
   );
-  // ADD-ONLY at the tail: the 352-byte buffer and every existing offset are
-  // unchanged, so no BGL/bind-group churn.
-  assert.match(envRenderer, /const MOON_UNIFORM_BUFFER_SIZE = 352;/);
+  // ADD-ONLY at the tail: every existing offset is unchanged, so no
+  // BGL/bind-group churn. The buffer itself has since grown 352 -> 384 for
+  // the Earth-shadow block, whose two vec3 members need a 16-byte aligned
+  // start.
+  assert.match(envRenderer, /const MOON_UNIFORM_BUFFER_SIZE = 384;/);
   assert.match(
     envRenderer,
     /ud\[84\] = frameState\.moonNormalMapStrength \?\? 0\.0;/,
@@ -599,8 +601,8 @@ const moonUniformBufferSize = Number(
 
 test("the moon UB's inline offset comments describe the SHIPPED tail", () => {
   // Ground truth, derived from the shipped code.
-  assert.equal(lastPackedMoonFloat, 86);
-  assert.equal(moonUniformBufferSize, 352);
+  assert.equal(lastPackedMoonFloat, 95);
+  assert.equal(moonUniformBufferSize, 384);
   assert.ok(
     lastPackedMoonFloat < moonUniformBufferSize / 4,
     "the pack must stay inside the allocation",
@@ -627,7 +629,7 @@ test("the moon UB's inline offset comments describe the SHIPPED tail", () => {
   );
   assert.match(
     allocation,
-    /ud\[86\]/,
+    /ud\[95\]/,
     "the allocation comment must name the last float the pack writes",
   );
   const advertisedBytes = [...allocation.matchAll(/(\d+) bytes/g)].map(

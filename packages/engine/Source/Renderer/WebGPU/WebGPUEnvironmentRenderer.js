@@ -308,13 +308,17 @@ const UNIFORM_BUFFER_SIZE = 256;
 // inverse model-view, the radii, two light directions, the celestial state,
 // the Phong tunables and the log-depth far plane, then the lunar BRDF flag at
 // byte 316, the in-scatter vec3 and opposition surge at 320..335, and the
-// relief strength and phase pair from byte 336.
+// relief strength and phase pair from byte 336, and the Earth-shadow axis and
+// offset with their two cone radii from byte 352.
 //
 // Growth is add-only at the tail and existing offsets stay frozen — the phase
 // fraction remains at float offset 67, byte 268 — because the `U` struct in
 // Moon.wgsl and `_packMoonUniforms` both address this buffer by absolute
-// offset, so moving one field silently reinterprets every field after it.
-const MOON_UNIFORM_BUFFER_SIZE = 352;
+// offset, so moving one field silently reinterprets every field after it. The
+// tail has grown twice: 336 to 352 for the relief and phase pair, and 352 to
+// 384 for the Earth-shadow block, whose two `vec3` members need a 16-byte
+// aligned start and so open at 352 rather than at the free float 87.
+const MOON_UNIFORM_BUFFER_SIZE = 384;
 const scratchModelView = new Matrix4();
 const scratchMVRTE = new Matrix4();
 const scratchMVPRTE = new Matrix4();
@@ -1811,11 +1815,11 @@ function updateWebGPUMoon(moon, frameState, commandList) {
   }
   cache._executedRoute = "legacy";
 
-  // Uniform buffer sized by `MOON_UNIFORM_BUFFER_SIZE`, currently 352 bytes /
-  // 88 floats, of which floats 0..86 are in use and 87 is tail padding. The
-  // size lives on that constant alone, and an add-only uniform appends after
-  // the last used float, which is `ud[86]` in `_packMoonUniforms`, not
-  // float 84.
+  // Uniform buffer sized by `MOON_UNIFORM_BUFFER_SIZE`, currently 384 bytes /
+  // 96 floats, of which floats 0..95 are addressed and 87 is interior padding
+  // that `vec3` alignment forces. The size lives on that constant alone, and
+  // an add-only uniform appends after the last used float, which is `ud[95]`
+  // in `_packMoonUniforms`.
   if (!defined(cache.uniformBuffer)) {
     cache.uniformBuffer = WebGPUBuffer.createUniformBuffer(
       device,
@@ -2204,6 +2208,11 @@ function pushPhysicalMoonCommand(moon, frameState, commandList, cache) {
  *   normalStrength     84      (relief strength; 0 = exact identity)
  *   earthshinePhase    85      (Earth-phase complement; 1 = identity)
  *   terminatorSoftness 86      (solar angular radius; 0 = identity)
+ *   pad                87      (vec3 alignment for the block below)
+ *   shadowAxisMC       88..90  (Earth-shadow axis, model space)
+ *   umbraRadius        91      (metres in the Moon's plane; 0 = identity)
+ *   shadowOffsetMC     92..94  (axis to Moon centre, model space)
+ *   penumbraRadius     95      (metres; 0 = the shader's inert gate)
  *
  * @private
  */
@@ -2340,6 +2349,28 @@ function _packMoonUniforms(
   // bind-group layout are unchanged.
   ud[85] = frameState.moonEarthshinePhaseScale ?? 1.0;
   ud[86] = frameState.moonTerminatorSoftness ?? 0.0;
+
+  // Earth's shadow at the Moon, offsets 88..95, bytes 352..383. Float 87 is
+  // left as padding: WGSL aligns a `vec3<f32>` to 16 bytes, so the block has
+  // to open at 352 and the free float at 348 cannot hold the first component.
+  //
+  // Both vectors arrive already rotated into the Moon's model frame by
+  // `Moon.update`, from the same geocentric state the WebGL twin's
+  // `u_lunarShadowAxis` pair reads, so neither backend re-derives an
+  // ephemeris. The `??` fallbacks are the inert position: a penumbral radius
+  // of exactly 0 is the gate `computeEllipsoidColor` branches on, so a frame
+  // outside a lunar eclipse skips the block entirely.
+  const shadowAxisMC = frameState.moonShadowAxisMC;
+  const shadowOffsetMC = frameState.moonShadowOffsetMC;
+  ud[87] = 0.0;
+  ud[88] = shadowAxisMC?.x ?? 0.0;
+  ud[89] = shadowAxisMC?.y ?? 0.0;
+  ud[90] = shadowAxisMC?.z ?? 0.0;
+  ud[91] = frameState.moonUmbraRadius ?? 0.0;
+  ud[92] = shadowOffsetMC?.x ?? 0.0;
+  ud[93] = shadowOffsetMC?.y ?? 0.0;
+  ud[94] = shadowOffsetMC?.z ?? 0.0;
+  ud[95] = defined(shadowAxisMC) ? (frameState.moonPenumbraRadius ?? 0.0) : 0.0;
 }
 
 /**
@@ -2411,9 +2442,9 @@ function getWebGPUMoonStatistics(moon) {
   const cache = moon._webgpuCache;
   // Pull the moon-specific uniforms back out of the packed buffer for a quick
   // view of what was pushed to the GPU last frame. The offsets here
-  // mirror `_packMoonUniforms()` (offsets 64..86 are the moon tail: 64..75 the
+  // mirror `_packMoonUniforms()` (offsets 64..95 are the moon tail: 64..75 the
   // base block, 76..83 the atmosphere and BRDF terms, 84 the relief strength,
-  // and 85/86 the phase pair).
+  // 85/86 the phase pair, and 88..95 the Earth-shadow block).
   //
   // The two routes own different uniform storage, so the reader follows the
   // route that actually emitted a command. Reporting `cache.uniformData` while
@@ -2455,6 +2486,19 @@ function getWebGPUMoonStatistics(moon) {
   // CPU-resolved numbers actually reached the GPU.
   const earthshinePhaseScale = defined(ud) && ud.length > 85 ? ud[85] : null;
   const terminatorSoftness = defined(ud) && ud.length > 86 ? ud[86] : null;
+  // Earth-shadow block as last pushed. The penumbral radius is the gate the
+  // shader branches on, so an acceptance probe can read it to tell a frame
+  // that skipped the block from one that ran it and found no shadow.
+  const lunarShadowAxisMC =
+    defined(ud) && ud.length > 90
+      ? Object.freeze({ x: ud[88], y: ud[89], z: ud[90] })
+      : null;
+  const lunarUmbraRadius = defined(ud) && ud.length > 91 ? ud[91] : null;
+  const lunarShadowOffsetMC =
+    defined(ud) && ud.length > 94
+      ? Object.freeze({ x: ud[92], y: ud[93], z: ud[94] })
+      : null;
+  const lunarPenumbraRadius = defined(ud) && ud.length > 95 ? ud[95] : null;
   const lifecycle = cache._moonTextureLifecycle;
   const albedoLifecycle = lifecycle?.channels?.albedo;
   const normalLifecycle = lifecycle?.channels?.normal;
@@ -2514,6 +2558,10 @@ function getWebGPUMoonStatistics(moon) {
     lunarBRDFOn,
     atmosphereInscatter: inscatter,
     oppositionSurge,
+    lunarShadowAxisMC,
+    lunarShadowOffsetMC,
+    lunarUmbraRadius,
+    lunarPenumbraRadius,
   });
 }
 

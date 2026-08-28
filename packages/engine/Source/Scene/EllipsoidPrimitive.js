@@ -38,6 +38,11 @@ const scratchExtinctionOne = new Cartesian3(1.0, 1.0, 1.0);
 // multiplicative one (C12-30).
 const scratchInscatterZero = new Cartesian3(0.0, 0.0, 0.0);
 
+// Placeholder shadow direction. Never reached in a live eclipse frame — the
+// define and the vectors are set in the same update — and paired with a
+// penumbral radius of 0, which is the shader's inert gate.
+const scratchShadowAxisFallback = new Cartesian3(0.0, 0.0, 1.0);
+
 /**
  * A renderable ellipsoid.  It can also draw spheres when the three {@link EllipsoidPrimitive#radii} components are equal.
  * <p>
@@ -256,6 +261,35 @@ class EllipsoidPrimitive {
     this._softTerminatorEnabled = false;
 
     /**
+     * Optional Earth-shadow geometry for a lunar eclipse, expressed in this
+     * primitive's own model frame: the unit shadow axis, the axis-to-centre
+     * offset, and the umbral and penumbral radii in the body's plane, metres.
+     * An `undefined` axis — the default, and the position {@link Moon}
+     * selects on every frame outside a lunar eclipse — compiles the whole
+     * shadow term out, so every other EllipsoidPrimitive consumer is
+     * byte-identical.
+     * @type {Cartesian3|undefined}
+     * @private
+     */
+    this.lunarShadowAxis = undefined;
+    /**
+     * @type {Cartesian3|undefined}
+     * @private
+     */
+    this.lunarShadowOffset = undefined;
+    /**
+     * @type {number|undefined}
+     * @private
+     */
+    this.lunarUmbraRadius = undefined;
+    /**
+     * @type {number|undefined}
+     * @private
+     */
+    this.lunarPenumbraRadius = undefined;
+    this._lunarEclipseEnabled = false;
+
+    /**
      * Optional tangent-space normal map (C12-25) perturbing the LIGHTING
      * normal in an east/north/up frame — the LOLA-derived lunar relief that
      * makes craters read near the terminator. A raw `Texture` rather than a
@@ -357,6 +391,23 @@ class EllipsoidPrimitive {
       },
       u_terminatorSoftness: function () {
         return that.terminatorSoftness ?? 0.0;
+      },
+      // Earth-shadow geometry. Only read when LUNAR_ECLIPSE is defined, which
+      // is driven by `defined(this.lunarShadowAxis)` in the same update()
+      // that recompiles. A penumbral radius of 0 is the shader's own inert
+      // position, so a frame that raced the define transition shades the
+      // legacy way rather than dividing by zero.
+      u_lunarShadowAxis: function () {
+        return that.lunarShadowAxis ?? scratchShadowAxisFallback;
+      },
+      u_lunarShadowOffset: function () {
+        return that.lunarShadowOffset ?? scratchShadowAxisFallback;
+      },
+      u_lunarUmbraRadius: function () {
+        return that.lunarUmbraRadius ?? 0.0;
+      },
+      u_lunarPenumbraRadius: function () {
+        return that.lunarPenumbraRadius ?? 0.0;
       },
       // C12-25. Only ever sampled when LUNAR_NORMAL_MAP is defined, which is
       // itself driven by `defined(this.lunarNormalMap)` in the same update()
@@ -543,6 +594,15 @@ class EllipsoidPrimitive {
       softTerminatorEnabled !== this._softTerminatorEnabled;
     this._softTerminatorEnabled = softTerminatorEnabled;
 
+    // Same define-toggle pattern. A lunar eclipse begins and ends at most a
+    // few times a year, so the two recompiles it costs are the right trade
+    // for a term that is otherwise absent from the program text; the axis,
+    // the offset and both radii move every frame as plain uniforms.
+    const lunarEclipseEnabled = defined(this.lunarShadowAxis);
+    const lunarEclipseChanged =
+      lunarEclipseEnabled !== this._lunarEclipseEnabled;
+    this._lunarEclipseEnabled = lunarEclipseEnabled;
+
     // C12-25 — same define-toggle pattern. Only the presence/absence of the
     // normal map recompiles; `lunarNormalStrength` is a plain per-frame
     // uniform, so a user animating it never triggers a shader rebuild.
@@ -587,6 +647,7 @@ class EllipsoidPrimitive {
       oppositionSurgeChanged ||
       earthshineChanged ||
       softTerminatorChanged ||
+      lunarEclipseChanged ||
       lunarNormalMapChanged ||
       lunarAlbedoExplicitGradientsChanged ||
       lunarNormalExplicitGradientsChanged ||
@@ -619,6 +680,9 @@ class EllipsoidPrimitive {
       }
       if (softTerminatorEnabled) {
         fs.defines.push("SOFT_TERMINATOR");
+      }
+      if (lunarEclipseEnabled) {
+        fs.defines.push("LUNAR_ECLIPSE");
       }
       if (lunarNormalMapEnabled) {
         fs.defines.push("LUNAR_NORMAL_MAP");

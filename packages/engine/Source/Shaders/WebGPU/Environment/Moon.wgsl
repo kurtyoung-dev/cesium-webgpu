@@ -99,10 +99,9 @@
 //   (sunDirMC, sceneLightDirMC) so the FS does no per-pixel matrix work
 //   for lighting.
 //
-// Uniform layout: a 352-byte budget. Members are appended at the tail and
-// every existing offset is frozen, which is what keeps the buffer size and
-// the bind-group layout stable across additions; `phaseFraction` sits at
-// byte 268.
+// Uniform layout: a 384-byte budget. Members are appended at the tail and
+// every existing offset is frozen, which is what keeps the bind-group layout
+// stable across additions; `phaseFraction` sits at byte 268.
 //
 // This file is the build source for Shaders/WebGPU/Environment/Moon.js, a
 // hand-written wrapper that `gulp build` regenerates via wgslToJavaScript.
@@ -189,6 +188,21 @@ struct U {
   // Exactly 0.0 when the toggle is off, which makes softTerminatorMu0 return
   // the legacy max(N·L, 0) bit-for-bit.
   terminatorSoftness: f32,                          // 344
+  _p11: f32,                                        // 348 (vec3 alignment)
+
+  // Earth's shadow at the Moon, in MODEL space: the unit shadow axis with the
+  // umbral radius in the Moon's plane beside it, then the axis-to-centre
+  // offset with the penumbral radius. Together they are everything the disc
+  // needs to reduce a surface point to its distance from the shadow axis.
+  //
+  // Both radii are exactly 0.0 outside a lunar eclipse and in the
+  // enableLunarEclipse = false position, and `penumbraRadius > 0.0` is the
+  // gate the fragment path branches on, so the off position costs one
+  // comparison rather than an arithmetic identity. Resolved once per frame by
+  // Scene/LunarEclipseState.js and rotated into model space by Scene/Moon.js,
+  // so the GLSL twin's u_lunarShadowAxis pair cannot disagree with it.
+  shadowAxisMC: vec3<f32>, umbraRadius: f32,        // 352..367
+  shadowOffsetMC: vec3<f32>, penumbraRadius: f32,   // 368..383
 };
 
 @group(0) @binding(0) var<uniform> u: U;
@@ -283,6 +297,68 @@ fn softTerminatorMu0(nDotL: f32, hardMu0: f32, softness: f32) -> f32 {
   let clamped = clamp(nDotL, -softness, softness);
   let t = clamped + softness;
   return max(nDotL - softness, 0.0) + t * t / (4.0 * softness);
+}
+
+// Fraction of the solar disc that Earth hides, at `radius` metres from the
+// shadow axis in the Moon's plane. Character-identical twin of
+// lunarShadowCoverage in EllipsoidFS.glsl; the JS reference and the derivation
+// live in Scene/LunarEclipseState.js.
+//
+// Written in units of the penumbral radius, where the projected solar disc has
+// radius (1 - u) / 2 and the projected Earth disc (1 + u) / 2 for an umbral
+// radius u. Their sum is 1 and their difference is u, so first contact falls
+// exactly on the penumbral radius and totality exactly on the umbral one — no
+// tolerance and nothing to tune.
+fn lunarShadowCoverage(radius: f32, umbraRadius: f32, penumbraRadius: f32) -> f32 {
+  if (penumbraRadius <= 0.0) {
+    return 0.0;
+  }
+  let inv = 1.0 / penumbraRadius;
+  let u = umbraRadius * inv;
+  let d = radius * inv;
+  let rs = 0.5 * (1.0 - u);
+  let re = 0.5 * (1.0 + u);
+  if (rs <= 0.0) {
+    return 0.0;
+  }
+  if (d >= 1.0) {
+    return 0.0;
+  }
+  if (d <= u) {
+    return 1.0;
+  }
+  // Reachable only for a negative umbral radius, i.e. a body beyond the tip of
+  // the umbral cone. Kept so the function is total.
+  if (d <= rs - re) {
+    return (re * re) / (rs * rs);
+  }
+  let dd = max(d, 1.0e-6);
+  let cosA = clamp((dd * dd + rs * rs - re * re) / (2.0 * dd * rs), -1.0, 1.0);
+  let cosB = clamp((dd * dd + re * re - rs * rs) / (2.0 * dd * re), -1.0, 1.0);
+  let a = acos(cosA);
+  let b = acos(cosB);
+  let area = rs * rs * (a - sin(a) * cosA) + re * re * (b - sin(b) * cosB);
+  return clamp(area / (3.141592653589793 * rs * rs), 0.0, 1.0);
+}
+
+// Per-channel brightness multiplier for a point `radius` metres from the
+// shadow axis. Twin of lunarShadowFactor in EllipsoidFS.glsl.
+//
+// The direct term is the unblocked fraction of the solar disc, achromatic
+// because nothing has filtered it. The copper term is sunlight refracted
+// through Earth's atmosphere — the light of every sunrise on Earth at once,
+// which has crossed a very long and very low path and lost its short
+// wavelengths to Rayleigh scattering. One optical depth grows from the umbral
+// rim inward, applied per channel through the (550 / lambda)^4 ratios at
+// 650 / 550 / 450 nm, and faded in through the penumbra by the coverage cube
+// so the two terms hand over continuously at the rim.
+fn lunarShadowFactor(radius: f32, umbraRadius: f32, penumbraRadius: f32) -> vec3<f32> {
+  let coverage = lunarShadowCoverage(radius, umbraRadius, penumbraRadius);
+  let illumination = 1.0 - coverage;
+  let depth = clamp(1.0 - radius / max(umbraRadius, 1.0), 0.0, 1.0);
+  let tau = 1.2 + (4.0 - 1.2) * depth;
+  let weight = 0.25 * coverage * coverage * coverage;
+  return vec3<f32>(illumination) + weight * exp(-tau * vec3<f32>(0.512622, 1.0, 2.23152));
 }
 
 // Phong lighting through a CsmMaterial. Matches czm_private_phong from
@@ -512,6 +588,29 @@ fn computeEllipsoidColor(
     let earthshine =
       vec3<f32>(0.4, 0.5, 0.7) * 0.08 * (1.0 - rawNdotL) * u.earthshinePhaseScale;
     color = color + earthshine;
+  }
+
+  // Earth's shadow, projected onto this fragment.
+  //
+  // The shadow is a pair of cones about one axis, so the only thing that
+  // varies across the disc is a fragment's perpendicular distance from that
+  // axis. Drop the along-axis component of the surface point, add the offset
+  // from the axis to the Moon's centre, and the length of what remains is that
+  // distance — the whole projection in three lines, and model space is already
+  // the frame where the centre is the origin.
+  //
+  // Applied to the composed colour rather than to the direct term alone.
+  // Earthshine is very nearly zero during a lunar eclipse anyway (the Moon is
+  // full, so Earth as seen from it is new), but with moon-phase modelling
+  // switched off it is a constant, and leaving it unshadowed would lift the
+  // umbra with a blue-grey haze instead of the copper that belongs there.
+  //
+  // Twin of the LUNAR_ECLIPSE block in EllipsoidFS.glsl.
+  if (u.penumbraRadius > 0.0) {
+    let alongAxis = dot(hitMC, u.shadowAxisMC);
+    let shadowPositionMC = hitMC - alongAxis * u.shadowAxisMC;
+    let shadowRadius = length(u.shadowOffsetMC + shadowPositionMC);
+    color = color * lunarShadowFactor(shadowRadius, u.umbraRadius, u.penumbraRadius);
   }
 
   return vec4<f32>(color, m.alpha);

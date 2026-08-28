@@ -51,6 +51,10 @@ import {
   getEclipseSceneLightFactor,
   updateEclipseState,
 } from "./EclipseState.js";
+import {
+  createLunarEclipseState,
+  updateLunarEclipseState,
+} from "./LunarEclipseState.js";
 import GlobeWater from "./GlobeWater.js";
 import VisualPerformanceTargetService from "../Services/VisualPerformanceTargetService.js";
 import SnapshotModeService from "../Services/SnapshotModeService.js";
@@ -1235,6 +1239,13 @@ class Scene {
     // Keep the resolved solar-glare appearance per scene so concurrent scenes
     // never share mutable scratch state.
     this._solarGlareAppearance = undefined;
+
+    // Earth's shadow at the Moon. Unlike the solar-eclipse outputs this one is
+    // purely geocentric — Sun, Earth and Moon, no observer — so it belongs to
+    // the Scene rather than to a logical View, and every logical view of a
+    // frame recomputes the identical numbers from the identical ephemeris
+    // sample.
+    this._lunarEclipseState = createLunarEclipseState();
 
     this._screenSpaceCameraController = new ScreenSpaceCameraController(this);
     this._cameraUnderground = false;
@@ -6153,6 +6164,16 @@ const scratchEclipseOptions = {
   earthOccluderRadius: undefined,
 };
 
+// The lunar-eclipse geometry needs only the two ephemeris positions and the
+// two body radii, so it carries its own options object rather than widening
+// the solar one with fields that path would never read.
+const scratchLunarEclipseOptions = {
+  sunPositionWC: undefined,
+  moonPositionWC: undefined,
+  earthRadius: 0.0,
+  moonRadius: CesiumMath.LUNAR_RADIUS,
+};
+
 /**
  * Prepare camera-dependent eclipse state for the active logical View.
  *
@@ -6227,12 +6248,38 @@ function prepareLogicalViewEclipse(scene) {
     view._eclipseState,
     scratchEclipseOptions,
   );
-  // Publish one scalar for every scene-dimming consumer. It is 1.0 outside an
-  // enabled lunar eclipse.
+  // Publish one scalar for every scene-dimming consumer. It is 1.0 whenever
+  // the Moon is not obscuring the Sun, which is every frame that is not a
+  // solar eclipse. Earth's shadow falling on the MOON is a different event
+  // with a different state object, published just below.
   view._eclipseSceneLightFactor = getEclipseSceneLightFactor(
     frameState.eclipseState,
   );
   frameState.eclipseSceneLightFactor = view._eclipseSceneLightFactor;
+
+  // Earth's shadow at the Moon. Runs on the same ephemeris sample as the
+  // solar state and, like it, computes unconditionally so a probe can read
+  // the geometry with the appearance switched off; `inProgress` is false on
+  // every frame outside a lunar eclipse and each consumer short-circuits on
+  // it. Suppressed entirely when the frame has no ephemeris sample, since the
+  // shadow must be measured against the same Moon position the disc is drawn
+  // at and a locally re-derived one could disagree.
+  if (defined(celestialEphemerisSample)) {
+    scratchLunarEclipseOptions.sunPositionWC =
+      celestialEphemerisSample.sunPositionWC;
+    scratchLunarEclipseOptions.moonPositionWC =
+      celestialEphemerisSample.moonPositionWC;
+    scratchLunarEclipseOptions.earthRadius =
+      frameState.mapProjection?.ellipsoid?.maximumRadius ??
+      Ellipsoid.default.maximumRadius;
+    scratchLunarEclipseOptions.moonRadius = CesiumMath.LUNAR_RADIUS;
+    frameState.lunarEclipse = updateLunarEclipseState(
+      scene._lunarEclipseState,
+      scratchLunarEclipseOptions,
+    );
+  } else {
+    frameState.lunarEclipse = undefined;
+  }
 
   // A FrameState is reused across logical views and mini-frames, so begin a
   // fresh memo window and clear the prior view's transient alias.

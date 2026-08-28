@@ -515,6 +515,15 @@ function buildLighting(globe) {
     // frame that is not a near-total eclipse, which makes the off position an
     // identity rather than merely close to one.
     enableEclipseHorizonTwilight: true,
+    // Earth's shadow projected onto the Moon's disc — the umbral bite and the
+    // copper of a total lunar eclipse. Defaults on, runs on both backends from
+    // one geocentric state (`Scene/LunarEclipseState.js`). The geometry is
+    // computed with the flag off as well, so tooling can read it either way;
+    // off simply withholds the shadow uniforms, and both shaders then skip
+    // the block on a penumbral radius of exactly 0 rather than multiplying
+    // through an identity. Inert on every frame outside a lunar eclipse by
+    // the same construction.
+    enableLunarEclipse: true,
   };
   Object.defineProperties(leaf, {
     lambertDiffuseMultiplier: {
