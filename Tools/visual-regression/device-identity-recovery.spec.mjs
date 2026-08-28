@@ -1,4 +1,7 @@
 /**
+ * @purpose Guards the device-loss recovery seams landed with the invalidation-bus predicate: the allocation-epoch resets and the dispatcher device-identity guards that stop consumers reusing work recorded against a dead device.
+ * @status ACTIVE
+ *
  * Device-identity gating across the subsystems that survive a device-loss
  * recovery.
  *

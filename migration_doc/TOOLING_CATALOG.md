@@ -206,11 +206,11 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 
 | Metric | Value |
 |---|---|
-| Files in census | 1079 |
-| ACTIVE | 872 |
+| Files in census | 1081 |
+| ACTIVE | 874 |
 | INVESTIGATION | 195 |
 | NO @purpose HEADER | 12 |
-| Classes | probe 652, spec 212, other 98, lib 76, gate-lib 19, bake-tool 12, runner 6, fixture 4 |
+| Classes | probe 652, spec 214, other 98, lib 76, gate-lib 19, bake-tool 12, runner 6, fixture 4 |
 
 ### Tools/ (36)
 
@@ -350,7 +350,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | stbn-rng.mjs | bake-tool | ACTIVE | 2026-08-16 | 3 | Deterministic license-clean random stream for the STBN bake: AES-256-CTR over zeros keyed by SHA-256(seed), byte-identical across machines. |
 | stbn-spectrum.mjs | bake-tool | ACTIVE | 2026-08-16 | 5 | Fourier certification of an STBN volume (radial spatial spectrum, per-pixel temporal spectrum, cross-correlation) with mutants proving each bar fires. |
 
-### Tools/visual-regression/ (887)
+### Tools/visual-regression/ (889)
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
@@ -430,6 +430,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | cross-backend-sandcastle-runner.mjs | other | ACTIVE | 2026-08-16 | 7 | Runs every Sandcastle demo under WebGL then WebGPU via a Viewer shim injecting contextOptions.renderer, pixel-diffs the pair, writes per-demo reports. |
 | daynight-terminator-law.spec.mjs | spec | ACTIVE | 2026-08-16 | 3 | CLT-B1 Node half: transcribed laws vs shaders, calibration inversion, ramp classifier, structural exit codes — all mutant-rejected. |
 | debug-ground-polyline-color.mjs | other | INVESTIGATION | 2026-08-16 | 0 | Instruments the GroundPolyline renderer cache to find why per-instance color didn't reach the FS (dim-rectangle diagnosis, 2026-04-30). |
+| device-identity-recovery.spec.mjs | spec | ACTIVE | 2026-08-28 | 0 | Guards the device-loss recovery seams landed with the invalidation-bus predicate: the allocation-epoch resets and the dispatcher device-identity guards that stop consumers reusing work recorded against a dead device. |
 | diag-b3dm-cmds.mjs | other | INVESTIGATION | 2026-08-16 | 0 | Dumps commandList contents during a b3dm tileset render to explain a uniform dark-gray WebGPU canvas. |
 | diag-b3dm-depth.mjs | other | INVESTIGATION | 2026-08-16 | 1 | Checks terrain-flush b3dm renders with globe SHOWN after the logDepthWriteActive multi-frustum fix; dumps frustum partition + globe-ON screenshot. |
 | diag-b3dm-webgpu.mjs | other | INVESTIGATION | 2026-08-16 | 0 | Deep WebGPU-only diagnostic for a black canvas despite a loaded b3dm tileset, ready model and populated primitive cache. |
@@ -482,6 +483,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | hdr-display-default.spec.mjs | spec | ACTIVE | 2026-08-16 | 2 | Acceptance for HDR-defaults-on on HDR displays: pins the pure decision function because headless Edge cannot synthesize (dynamic-range: high). |
 | j2-cpu-kernel.mjs | other | ACTIVE | 2026-08-16 | 4 | FP64 secular-J2 orbital propagator mirroring the demo's WGSL kernel; single source of truth for two orbital probes and the WebGL2 cpuKernel leg. |
 | logdepth-zfight-probe-contract.spec.mjs | spec | ACTIVE | 2026-08-16 | 0 | Browser-free contract pinning probe-logdepth-zfight's deterministic offline scene and retained terrain-depth policy. |
+| lut-consumer-device-identity.spec.mjs | spec | ACTIVE | 2026-08-28 | 0 | Guards the sky, fog and cloud consumers of the shared device-identity predicate so presence-only cache admission cannot survive a device recovery. |
 | mat-logdepth-encode-stash.spec.mjs | spec | ACTIVE | 2026-08-16 | 5 | Executes the real writeLogDepthTail packer to pin stash-first log-depth encoding for the Mat/Primitive family; replays the 2-primitive defect. |
 | model-3d-tile-state-packet.spec.mjs | spec | ACTIVE | 2026-08-16 | 0 | Behavioral tests for Model3DTileStatePacket: immutable packet reuse when broad tileset state is unchanged, refresh on real change. |
 | model-camera-arena.spec.mjs | spec | ACTIVE | 2026-08-16 | 2 | Bundles the real WebGPUModelCameraArena and pins offset alignment, per-frame reset, view isolation, plus call-site routing source checks. |
@@ -1325,7 +1327,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | determinism-kit.mjs | lib | ACTIVE | 2026-08-16 | 11 | Probe determinism kit: pinClock, settleTiles, dampSky, nRunMedian — neutralises the four measured sources of run-to-run drift in visual probes. |
 | eclipse-cloud-response-gate.mjs | gate-lib | ACTIVE | 2026-08-25 | 12 | C13-41 Edge-acceptance predicates with derived-never-fitted bands for deck lighting, cloud-shadow invariance, IBL bucket fills, and submitted-refresh cost. |
 | eclipse-fixture-constraints.mjs | lib | ACTIVE | 2026-08-16 | 5 | All-lane constraint set for eclipse-sky vantage selection: per-candidate predicates with named rejections after headline-only selection failed. |
-| engine-ts-resolver.mjs | lib | ACTIVE | 2026-08-16 | 22 | Node resolve hook rewriting engine-internal ./x.js specifiers to sibling .ts so specs can execute non-leaf engine TypeScript directly. |
+| engine-ts-resolver.mjs | lib | ACTIVE | 2026-08-16 | 24 | Node resolve hook rewriting engine-internal ./x.js specifiers to sibling .ts so specs can execute non-leaf engine TypeScript directly. |
 | fog-cheap-coverage-model.mjs | lib | ACTIVE | 2026-08-16 | 5 | Bit-faithful CPU twin of the fog cheap cloud-shadow noise gate at real ECEF magnitudes, importing the shipped normalisation and coverage response. |
 | globe-camera-track.mjs | lib | ACTIVE | 2026-08-16 | 13 | Shared orbit-to-ground camera route (plain serializable waypoints) used by both the visual parity probe and the performance campaign. |
 | globe-pipeline-readiness.mjs | lib | ACTIVE | 2026-08-16 | 5 | Pure scoring for the pipeline-readiness probe: snapshot summary, coverage-divergence scoring, non-vacuity; keys decoded via canonical parser. |

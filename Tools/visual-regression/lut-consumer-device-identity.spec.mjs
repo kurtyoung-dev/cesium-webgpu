@@ -1,4 +1,7 @@
 /**
+ * @purpose Guards the sky, fog and cloud consumers of the shared device-identity predicate so presence-only cache admission cannot survive a device recovery.
+ * @status ACTIVE
+ *
  * Device-identity gating for the three atmosphere-LUT consumers.
  *
  * Each of these caches hangs off an object that outlives a device-loss
