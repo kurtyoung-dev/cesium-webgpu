@@ -391,6 +391,8 @@ type PrimitiveDrawCommand = WebGPUDrawCommand & {
   _webgpuMatCache?: CacheLike;
   _webgpuMaterial?: MaterialLike;
   _webgpuMatShaderType?: string;
+  _webgpuMatTextureSlot?: number;
+  _webgpuMatTextureIsDepthFail?: boolean;
   _webgpuMaterialBuffer?: GPUBuffer;
   _webgpuMaterialUB?: MaterialUniformBufferLike;
   _webgpuMaterialUploadState?: MaterialUploadStateLike;
@@ -4285,6 +4287,61 @@ function ensureDepthFailMaterialTextureBindGroup(
   );
 }
 
+/**
+ * Re-adopts a material's image into the texture bind group a live command
+ * carries and swaps the refreshed group back into the command's texture slot.
+ *
+ * A Material queues a decoded image into `_loadedImages` at the tail of
+ * `Material.update` and copies it into `_imageSources` only at the head of the
+ * NEXT update, so a command built during the primitive's first complete frame
+ * is always built before the image is reachable. Command creation is one-shot —
+ * `Primitive.update` rebuilds only when the appearance, the material identity,
+ * the render-target format, or the device resources change — so without a
+ * per-frame refresh the texture bind group keeps its 1x1 placeholder for the
+ * life of the primitive and the material renders flat white. Materials whose
+ * image is an in-memory canvas (the elevation, slope, and aspect ramps, and the
+ * elevation band) always take that path; URL-backed images usually resolve
+ * before the geometry completes and so happen to be adopted at creation.
+ *
+ * The binding helper keys on image identity, so this rebuilds once on adoption
+ * and then early-returns, and it also picks up a later reassignment of the
+ * material's image uniform. The polyline material path runs the same refresh
+ * from its own per-frame updater.
+ * @private
+ */
+function refreshMaterialCommandTextureSlot(
+  command: PrimitiveDrawCommand,
+  context: CesiumGraphicsContext,
+  device: GPUDevice,
+) {
+  const cache = command._webgpuMatCache;
+  const slot = command._webgpuMatTextureSlot;
+  if (!defined(cache) || typeof slot !== "number") {
+    return;
+  }
+  const keys =
+    command._webgpuMatTextureIsDepthFail === true
+      ? DF_MAT_TEX_KEYS
+      : MAIN_MAT_TEX_KEYS;
+  ensureMaterialTextureBindGroup(
+    context,
+    device,
+    command._webgpuMaterial,
+    command._webgpuMatShaderType,
+    cache,
+    keys,
+  );
+  const bindGroup = cache[keys.bindGroup] as GPUBindGroup | undefined;
+  const bindGroups = command.bindGroups;
+  if (
+    defined(bindGroup) &&
+    defined(bindGroups) &&
+    bindGroups[slot] !== bindGroup
+  ) {
+    bindGroups[slot] = bindGroup;
+  }
+}
+
 // =========================================================================
 // Material Pipeline Creation
 // =========================================================================
@@ -5211,7 +5268,11 @@ function createWebGPUMaterialCommands(
 
     // Build bind group array: [camera, material, texture?, effects]
     const cmdBGs = [cache.cameraBindGroups[i], cache.materialBindGroup];
+    // Record where the texture group landed so the per-frame updater can
+    // replace it once the material's image drains into `_imageSources`.
+    let matTextureSlot: number | undefined;
     if (shaderInfo.needsTexture && defined(cache.textureBindGroup)) {
+      matTextureSlot = cmdBGs.length;
       cmdBGs.push(cache.textureBindGroup);
     }
     // The trailing effects slot matches the pipeline layout
@@ -5243,6 +5304,12 @@ function createWebGPUMaterialCommands(
     cmd._webgpuMaterialBuffer = cache.materialBuffer;
     cmd._webgpuMaterialUB = matUB;
     cmd._webgpuMaterialUploadState = cache.materialUploadState;
+    if (defined(matTextureSlot)) {
+      cmd._webgpuMatCache = cache;
+      cmd._webgpuMaterial = material;
+      cmd._webgpuMatShaderType = shaderInfo.type;
+      cmd._webgpuMatTextureSlot = matTextureSlot;
+    }
     // Material vertices use the same model-space high/low prefix as color
     // primitives and therefore share the transform-aware cast resource.
     configurePrimitiveShadowCastCommand(cmd, cache, (isLit ? 11 : 8) * 4);
@@ -5296,7 +5363,9 @@ function createWebGPUMaterialCommands(
       });
 
       const dfBGs = [cache.dfCameraBindGroups[i], cache.dfMaterialBindGroup];
+      let dfTextureSlot: number | undefined;
       if (cache.dfNeedsTexture && defined(cache.dfTextureBindGroup)) {
+        dfTextureSlot = dfBGs.length;
         dfBGs.push(cache.dfTextureBindGroup);
       }
       const dfEffectsPlaceholder = getPlaceholderEffects(device);
@@ -5326,6 +5395,13 @@ function createWebGPUMaterialCommands(
       // the last bind-group slot (no effects group is consumed there), so the
       // effects-slot refresh must skip it (else it clobbers the texture).
       dfCmd._noEffectsSlot = cache.dfNeedsTexture === true;
+      if (defined(dfTextureSlot)) {
+        dfCmd._webgpuMatCache = cache;
+        dfCmd._webgpuMaterial = depthFailMaterial;
+        dfCmd._webgpuMatShaderType = dfShaderInfo.type;
+        dfCmd._webgpuMatTextureSlot = dfTextureSlot;
+        dfCmd._webgpuMatTextureIsDepthFail = true;
+      }
       dfCmd._label = "depth-fail material pass";
       configurePrimitiveShadowCastCommand(dfCmd, cache, (dfIsLit ? 11 : 8) * 4);
       validCommands.push(dfCmd);
@@ -5503,6 +5579,11 @@ function updateWebGPUMaterialCommandUniforms(
       command._webgpuMaterialUploadState,
     );
   }
+
+  // Adopt the material's image the frame after it drains into
+  // `_imageSources`. The command was built before that could happen, so
+  // without this the texture slot keeps the 1x1 placeholder forever.
+  refreshMaterialCommandTextureSlot(command, context, device);
 
   // Swap the effects bind group for this frame so shadow-
   // receive / CSM bindings reach lit material + PBR shaders instead of
