@@ -50,6 +50,7 @@ import type {
   WebGPURenderPipelineCache,
   WebGPURenderPipelineDescriptor,
 } from "./WebGPURenderPipelineCache.js";
+import { WebGPUPipelineRequestGuard } from "./WebGPUPipelineRequestGuard.js";
 import {
   attachPickToColorCommand,
   buildPickPipelineDescriptor,
@@ -194,6 +195,9 @@ interface GaussianSplatCache {
   // the central cache and preserves the fall-through-to-null behavior. The
   // color and pick pipelines use the central cache.
   pipelineRequestPending: boolean;
+  // Standard and velocity descriptors share one pipeline-resource lifetime,
+  // so overlapping requests remain current until those resources are replaced.
+  pipelineRequestGuard: WebGPUPipelineRequestGuard<SplatPipelineResources>;
 
   // Motion-vector state maintains a one-frame-lagged copy of splat attributes:
   // `splatData` tracks the current upload, `prevSplatData` is promoted after
@@ -1397,24 +1401,33 @@ function tryResolveSplatPipelines(
       return true;
     }
     if (!cache.pipelineRequestPending) {
+      const requestToken = cache.pipelineRequestGuard.beginRequest(resources);
       cache.pipelineRequestPending = true;
       const work: Promise<unknown>[] = [
         pipelineCache.getPipeline(resources.colorDescriptor).then((p) => {
-          cache.pipeline = p;
+          cache.pipelineRequestGuard.publishIfCurrent(requestToken, () => {
+            cache.pipeline = p;
+          });
         }),
         pipelineCache.getPipeline(resources.pickDescriptor).then((p) => {
-          cache.pickPipeline = p;
+          cache.pipelineRequestGuard.publishIfCurrent(requestToken, () => {
+            cache.pickPipeline = p;
+          });
         }),
         pipelineCache
           .getPipeline(resources.depthWriteDescriptor)
           .then((p) => {
-            cache.depthWritePipeline = p;
+            cache.pipelineRequestGuard.publishIfCurrent(requestToken, () => {
+              cache.depthWritePipeline = p;
+            });
           })
           .catch(() => {
             // Depth-write variant failure is non-fatal — the color path
             // still works without it; classification-depth swap becomes
             // a no-op until the variant can be resolved.
-            cache.depthWritePipeline = null;
+            cache.pipelineRequestGuard.publishIfCurrent(requestToken, () => {
+              cache.depthWritePipeline = null;
+            });
           }),
       ];
       if (resources.oitDescriptor) {
@@ -1422,20 +1435,28 @@ function tryResolveSplatPipelines(
           pipelineCache
             .getPipeline(resources.oitDescriptor)
             .then((p) => {
-              cache.oitPipeline = p;
+              cache.pipelineRequestGuard.publishIfCurrent(requestToken, () => {
+                cache.oitPipeline = p;
+              });
             })
             .catch(() => {
               // OIT failure is non-fatal — the color pass still works.
-              cache.oitPipeline = null;
+              cache.pipelineRequestGuard.publishIfCurrent(requestToken, () => {
+                cache.oitPipeline = null;
+              });
             }),
         );
       }
       Promise.all(work)
         .then(() => {
-          cache.pipelineRequestPending = false;
+          cache.pipelineRequestGuard.publishIfCurrent(requestToken, () => {
+            cache.pipelineRequestPending = false;
+          });
         })
         .catch(() => {
-          cache.pipelineRequestPending = false;
+          cache.pipelineRequestGuard.publishIfCurrent(requestToken, () => {
+            cache.pipelineRequestPending = false;
+          });
         });
     }
     return false;
@@ -2082,6 +2103,8 @@ function updateWebGPUGaussianSplats(
       oitFallbackShaderCode: null,
       oitFallbackConfig: null,
       pipelineRequestPending: false,
+      pipelineRequestGuard:
+        new WebGPUPipelineRequestGuard<SplatPipelineResources>(),
       // Velocity slots are allocated lazily when temporal antialiasing is active.
       splatData: null,
       prevSplatData: null,
@@ -2168,6 +2191,7 @@ function updateWebGPUGaussianSplats(
         _pipelineResources?: SplatPipelineResources;
       }
     )._pipelineResources = undefined;
+    cache.pipelineRequestGuard.invalidate();
     // Cached pipeline objects and draw commands hold
     // pointers to old-format pipelines after the resources reset; the
     // resolver early-returns on the truthy slot check and leaves stale-
@@ -2894,7 +2918,7 @@ function updateWebGPUGaussianSplats(
   }
 
   // Maintain a one-frame-lagged mirror of the splat buffer for motion vectors.
-  attachSplatVelocityCommand(device, context, frameState, cache);
+  attachSplatVelocityCommand(device, context, frameState, resources!, cache);
 
   commandList.push(cache.command);
 }
@@ -2916,6 +2940,7 @@ function attachSplatVelocityCommand(
   device: GPUDevice,
   context: CesiumGraphicsContext,
   frameState: CesiumFrameState,
+  resources: SplatPipelineResources,
   cache: GaussianSplatCache,
 ): void {
   const taaEnabledThisFrame = frameState.taaEnabled === true;
@@ -3110,15 +3135,21 @@ function attachSplatVelocityCommand(
       if (sync) {
         cache.velocityPipeline = sync;
       } else {
+        const requestToken = cache.pipelineRequestGuard.beginRequest(resources);
+        const descriptor = cache.velocityPipelineDescriptor;
         cache.velocityPipelineRequestPending = true;
         pipelineCache
-          .getPipeline(cache.velocityPipelineDescriptor)
+          .getPipeline(descriptor)
           .then((p) => {
-            cache.velocityPipeline = p;
-            cache.velocityPipelineRequestPending = false;
+            cache.pipelineRequestGuard.publishIfCurrent(requestToken, () => {
+              cache.velocityPipeline = p;
+              cache.velocityPipelineRequestPending = false;
+            });
           })
           .catch(() => {
-            cache.velocityPipelineRequestPending = false;
+            cache.pipelineRequestGuard.publishIfCurrent(requestToken, () => {
+              cache.velocityPipelineRequestPending = false;
+            });
           });
       }
     } else {

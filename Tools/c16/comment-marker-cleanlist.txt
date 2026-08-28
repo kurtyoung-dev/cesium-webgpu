@@ -667,3 +667,4 @@ packages/engine/Source/Renderer/WebGPU/WebGPUSceneRendererFrustumLoop.ts
 packages/engine/Source/Renderer/WebGPU/WebGPUImageBasedLighting.ts
 packages/engine/Source/Scene/GroundPrimitive.js
 packages/engine/Source/Scene/Vector3DTileClampedPolylines.js
+packages/engine/Source/Renderer/WebGPU/WebGPUPipelineRequestGuard.ts
