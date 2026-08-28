@@ -108,6 +108,19 @@ corrected with it.
 The remaining ~30 medium and all low survivors are enumerated in §5 with their lane column reading
 QUEUED; they dispatch after Q-1…Q-10, batched by file so one Sol dispatch closes several small
 findings in the same module. C1's returning findings append here as a dated addendum.
+### Lane VQ-B landings (2026-08-28 ~13:20) - Batches 1227-1229: all four spec reds were drift, zero engine defects
+
+| | Row | Disposition |
+|---|---|---|
+| DISCHARGED | Q-42 | both reds were stale spec expectations, proven with the metadata-fold file committed-clean: the retirement test asserted the pre-deferral contract (deferred retirement is deliberate - eager destroy frees a texture a live bind group references), and the snap guard sliced from the wrong snap-mode conditional after a second one was added upstream of it (Batch 1227) |
+| DISCHARGED | Q-43 | signature-anchored slicing broke on a refactor; regions now addressed by function name with duplicate detection, two assertions strengthened (Batch 1228) |
+| DISCHARGED | Q-44 | evidence half observed (first hosted guards run, eight of nine healthy); red half fixed - the empty-range test measured the runner's depth-1 checkout, now hermetic with its own fixture plus an explicit shallow leg (Batch 1229). dev.yml exclusion comment corrected to the measured reasons |
+| DISCHARGED | Q-45 | evidence-only: both tooling-catalog checks green in a complete clean clone (exit 0 / 91-91); the earlier reds were transient census staleness closed by Batch 1215. CI wiring still blocked by the shallow-history refusal, now documented accurately in the workflow |
+| Q-52 | NEW | verify-landing-compliance.spec "hermetic" marker-controls test enumerates verify-landing temp dirs across the SHARED OS temp dir - reds whenever two lanes run the verifier concurrently (reproduced twice today, also by lane VQ-B). Repair shape: per-test TMPDIR env. Sol-bounded |
+| Q-53 | NEW | generate-tooling-catalog.spec A1-family (9 of 49 sandbox tests) red in DETACHED CLONES only - proven pre-existing by two independent lanes' swap-and-restore controls; green at the built main seat. Likely trust-boundary assumptions about the checkout shape. Investigate-low |
+| Q-54 | NEW | moon-mip-motion-certification path-backed certification test fails only under the 196-file parallel runner (OS-tmpdir contention at :1428); passes 24/24 standalone. Same hermeticity class as Q-52 |
+| DOCTRINE | Sol CLI-direct | background codex exec dispatches MUST redirect stdin from /dev/null (an open stdin blocks the CLI at "Reading additional input from stdin" with zero CPU - looks like a hung worker). AND: the governance-doc sink PERSISTS after the AGENTS.md slim - a retry session spent ~40 min reading AGENTS.md/worker-isolation docs without touching its target. The slimming hypothesis is REFUTED as a complete fix; bounded prompts remain necessary, and the sink needs its own investigation |
+
 ### Edge executor tranche 2 (2026-08-28 ~12:45) - evidence at output/edge-executor-2026-08-28-t2/ (RUNLOG 607 lines, 46 PNGs)
 
 Discharged: E-1 clustered lights GREEN against a glTF model (closes tranche-1's blind leg; per-channel response R+25.7/G+23.0/B+18.7 on a 0.000% determinism floor, both controls fired); Batch 1208's cloud morph-excursion leg GREEN (same-size reallocation case exercised inside MORPHING, marchPixels 139500, toggle anchor 9.816%); C12-14 star-cube Edge acceptance DISCHARGED (owed since Batch 865 - gate 41/41, eleven of twelve live contracts verified both backends; flip recorded in the C12 queue); Q-23 pixels GREEN across four sharp resizes but the discriminator is VOID on the default path (Scene.js:6316-6326 rebuilds passState.viewport every frame) - the 1198 clamp keeps its node-spec evidence.
