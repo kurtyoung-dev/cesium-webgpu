@@ -573,8 +573,8 @@ test("per-feature pick upload rolls back candidates and replacement retires old 
   assert.equal(primCache._featurePickGPUTexture, undefined);
 
   // A retry creates a complete transaction. Shrinking the feature table then
-  // reuses ID 0, retires IDs 1/2, and destroys the superseded texture only
-  // after the replacement upload is published.
+  // reuses ID 0 and retires IDs 1/2 onto the superseded texture's retirement
+  // record, which the drain releases once nothing binds it any more.
   destroyed.length = 0;
   createdPickIds.length = 0;
   rejectUpload = false;
@@ -631,7 +631,35 @@ test("per-feature pick upload rolls back candidates and replacement retires old 
   assert.equal(cache._featurePickGPUTexture, replacementTexture);
   assert.equal(cache._featurePickFeaturesLength, 1);
   assert.equal(primCache._featurePickGPUTexture, replacementTexture);
-  assert.deepEqual(destroyed, ["pick-1", "pick-2", "texture-1"]);
+
+  // Retirement is deferred, not eager. Destroying the superseded texture at
+  // replacement time would free memory a live bind group can still reference,
+  // so the replacement parks it with the registry entries it owned and the
+  // drain is what actually releases them. Nothing is destroyed here.
+  assert.deepEqual(destroyed, []);
+  const retired = cache._retiredFeaturePickGenerations;
+  assert.equal(retired.size, 1);
+  assert.deepEqual(Array.from(retired.get(firstTexture)), [
+    firstIds.get(1),
+    firstIds.get(2),
+  ]);
+
+  // Nothing parked survives teardown, and one throwing registry entry does not
+  // strand its siblings or either texture.
+  assert.throws(
+    () => destroyPerFeaturePickResources(cache),
+    /synthetic pick cleanup failure/,
+  );
+  assert.deepEqual(destroyed, [
+    "pick-0",
+    "pick-1",
+    "pick-2",
+    "texture-3",
+    "texture-1",
+  ]);
+  assert.equal(cache._retiredFeaturePickGenerations, undefined);
+  assert.equal(cache._featurePickIds, undefined);
+  assert.equal(cache._featurePickGPUTexture, undefined);
 });
 
 test("late async pipeline completions cannot republish after teardown", () => {

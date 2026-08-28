@@ -1253,11 +1253,23 @@ test("G7b: loaded snap payloads require the reset callback", () => {
 });
 
 test("G8: the payload phase omits the classification checkpoints", () => {
-  const start = pickPassSrc.indexOf("if (snapMode) {");
-  const body = pickPassSrc.slice(
-    start,
-    pickPassSrc.indexOf("completed = true;"),
-  );
+  // Locate the payload phase by the pass it opens, not by the first
+  // `if (snapMode)` in the file: the zero-frustum clear-only branch is also
+  // guarded that way and sits ahead of the occluder phase, so a first-match
+  // slice silently spans the classification checkpoints it is meant to
+  // exclude and the assertions below stop measuring anything.
+  const label = pickPassSrc.indexOf("`Snap payload pass frustum ${i}`");
+  assert.ok(label > 0, "the per-frustum snap payload pass label moved");
+  const start = pickPassSrc.lastIndexOf("if (snapMode) {", label);
+  assert.ok(start > 0, "the payload phase lost its snapMode guard");
+  const end = pickPassSrc.indexOf("completed = true;", label);
+  assert.ok(end > start, "the payload phase precedes no completion latch");
+  const body = pickPassSrc.slice(start, end);
+  // Exactly one guard in the slice. The label anchor already pins the start to
+  // the payload phase's own branch; a second guard inside it would mean a
+  // nested snapMode branch crept in and the region stopped being one phase.
+  assert.equal(body.split("if (snapMode) {").length - 1, 1);
+  assert.match(body, /resetSnapPayloadCoverage!\(snapRenderPass\)/);
   // Classification draws carry no snap payload, and their packed-depth reopen
   // would clear the depth the payload phase is reading.
   assert.doesNotMatch(body, /TERRAIN_CLASSIFICATION/);
