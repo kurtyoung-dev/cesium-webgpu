@@ -73,6 +73,7 @@ interface DynEnvMapManagerLike {
   enabled: boolean;
   shouldUpdate: boolean;
   _position: CesiumCartesian3;
+  maximumPositionEpsilon?: number;
   _shouldRegenerateShaders: boolean;
   _webgpuCache?: DynEnvMapCache;
   _cubemapSize?: number;
@@ -151,6 +152,11 @@ interface DynEnvMapCache {
   lastSunDirX: number;
   lastSunDirY: number;
   lastSunDirZ: number;
+  // Component-wise bookkeeping mirrors the upstream position setter. NaN
+  // sentinels make the first comparison request a fill.
+  lastPositionX: number;
+  lastPositionY: number;
+  lastPositionZ: number;
   // Compute pipeline for the procedural sky fill, plus its uniform buffer and
   // bind group. Kept on the cache so device creation costs are paid once.
   skyPipeline: GPUComputePipeline | null;
@@ -323,6 +329,7 @@ interface DynamicEnvironmentRefreshCommitState {
   captureSourceRevision: number;
   capturePosition: { x: number; y: number; z: number };
   sceneCaptureMode: number;
+  position: { x: number; y: number; z: number };
   sunDirection: { x: number; y: number; z: number };
   cloudCoverage: number;
   cloudRevision: number;
@@ -644,6 +651,9 @@ function commitDynamicEnvironmentRefresh(
   cache.lastSunDirX = state.sunDirection.x;
   cache.lastSunDirY = state.sunDirection.y;
   cache.lastSunDirZ = state.sunDirection.z;
+  cache.lastPositionX = state.position.x;
+  cache.lastPositionY = state.position.y;
+  cache.lastPositionZ = state.position.z;
   cache.lastSceneCaptureMode = state.sceneCaptureMode;
   cache.lastSceneCaptureSourceRevision = state.captureSourceRevision;
   cache.lastSceneCaptureResult = state.sceneCaptureResult;
@@ -850,6 +860,9 @@ function updatePreflightedWebGPUDynamicEnvironmentMap(
       lastSunDirX: NaN,
       lastSunDirY: NaN,
       lastSunDirZ: NaN,
+      lastPositionX: NaN,
+      lastPositionY: NaN,
+      lastPositionZ: NaN,
       skyPipeline: null,
       skyBGL: null,
       skyUniformBuffer: null,
@@ -1194,19 +1207,21 @@ function updatePreflightedWebGPUDynamicEnvironmentMap(
   // live state against committed `cache.last*` bookkeeping, never a consumed
   // edge, which is what makes a deferral lossless: the deferred path commits no
   // bookkeeping, so this identical expression re-evaluates true next frame.
-  const refreshRequested =
-    cache.needsUpdate ||
-    sunMoved ||
-    lutPathChanged ||
-    // Grouped with the sky-bake terms above rather than with the cloud terms
-    // below, because it is deliberately not march-gated.
-    eclipseEnvChanged ||
-    cloudCoverageMoved ||
-    cloudRevisionChanged ||
-    cloudMarchPathChanged ||
-    captureModeChanged ||
-    captureSourceStateChanged ||
-    captureRefresh;
+  const refreshRequested = isDynamicEnvironmentMapRefreshRequested(
+    manager,
+    cache,
+    {
+      sunMoved,
+      lutPathChanged,
+      eclipseEnvChanged,
+      cloudCoverageMoved,
+      cloudRevisionChanged,
+      cloudMarchPathChanged,
+      captureModeChanged,
+      captureSourceStateChanged,
+      captureRefresh,
+    },
+  );
 
   // A refresh is only deferrable while this manager still has valid, published
   // resources for its consumers to keep reading. Anything else requests
@@ -1370,6 +1385,11 @@ function updatePreflightedWebGPUDynamicEnvironmentMap(
           z: manager._position.z,
         },
         sceneCaptureMode,
+        position: {
+          x: manager._position.x,
+          y: manager._position.y,
+          z: manager._position.z,
+        },
         sunDirection: { x: sunDir.x, y: sunDir.y, z: sunDir.z },
         cloudCoverage: liveCloudCoverage,
         cloudRevision: liveCloudRevision,
@@ -1430,6 +1450,82 @@ function updatePreflightedWebGPUDynamicEnvironmentMap(
 // day/night progressions feel smooth, large enough that a stationary scene does
 // not burn a compute pass and IBL prefilter on every frame.
 const SUN_REFRESH_EPSILON_SQ = 0.005 * 0.005;
+
+// Match the upstream manager's documented position-refresh default.
+const DEFAULT_DYNAMIC_ENVIRONMENT_MAP_POSITION_EPSILON = 1000.0;
+
+interface DynamicEnvironmentRefreshGateState {
+  sunMoved: boolean;
+  lutPathChanged: boolean;
+  eclipseEnvChanged: boolean;
+  cloudCoverageMoved: boolean;
+  cloudRevisionChanged: boolean;
+  cloudMarchPathChanged: boolean;
+  captureModeChanged: boolean;
+  captureSourceStateChanged: boolean;
+  captureRefresh: boolean;
+}
+
+function shouldRefreshDynamicEnvironmentMapPosition(
+  cache: Pick<
+    DynEnvMapCache,
+    "lastPositionX" | "lastPositionY" | "lastPositionZ"
+  >,
+  position: Pick<CesiumCartesian3, "x" | "y" | "z"> | undefined,
+  maximumPositionEpsilon: number | undefined,
+): boolean {
+  if (!position) {
+    return false;
+  }
+
+  const epsilon =
+    maximumPositionEpsilon ?? DEFAULT_DYNAMIC_ENVIRONMENT_MAP_POSITION_EPSILON;
+  const componentEpsilon = epsilon > 0.0 ? epsilon : 0.0;
+  const epsilonSq = componentEpsilon * componentEpsilon;
+  const dx = position.x - cache.lastPositionX;
+  const dy = position.y - cache.lastPositionY;
+  const dz = position.z - cache.lastPositionZ;
+  // Comparisons against NaN are false, so the negation forces the first fill.
+  // The absolute guards preserve upstream semantics across square under/overflow.
+  return !(
+    dx * dx <= epsilonSq &&
+    Math.abs(dx) <= componentEpsilon &&
+    dy * dy <= epsilonSq &&
+    Math.abs(dy) <= componentEpsilon &&
+    dz * dz <= epsilonSq &&
+    Math.abs(dz) <= componentEpsilon
+  );
+}
+
+function isDynamicEnvironmentMapRefreshRequested(
+  manager: Pick<DynEnvMapManagerLike, "_position" | "maximumPositionEpsilon">,
+  cache: Pick<
+    DynEnvMapCache,
+    "needsUpdate" | "lastPositionX" | "lastPositionY" | "lastPositionZ"
+  >,
+  state: DynamicEnvironmentRefreshGateState,
+): boolean {
+  const positionMoved = shouldRefreshDynamicEnvironmentMapPosition(
+    cache,
+    manager._position,
+    manager.maximumPositionEpsilon,
+  );
+  return (
+    cache.needsUpdate ||
+    positionMoved ||
+    state.sunMoved ||
+    state.lutPathChanged ||
+    // Grouped with the sky-bake terms above rather than with the cloud terms
+    // below, because it is deliberately not march-gated.
+    state.eclipseEnvChanged ||
+    state.cloudCoverageMoved ||
+    state.cloudRevisionChanged ||
+    state.cloudMarchPathChanged ||
+    state.captureModeChanged ||
+    state.captureSourceStateChanged ||
+    state.captureRefresh
+  );
+}
 
 // Minimum cloud-coverage change that triggers an env-cube re-fill. 1/256 is one
 // rgba8 quantization step on the cube, so smaller moves are visually
@@ -2803,6 +2899,7 @@ function destroyWebGPUDynamicEnvironmentMapResources(
 }
 
 export {
+  DEFAULT_DYNAMIC_ENVIRONMENT_MAP_POSITION_EPSILON,
   preflightWebGPUDynamicEnvironmentMap,
   updatePreflightedWebGPUDynamicEnvironmentMap,
   updateWebGPUDynamicEnvironmentMap,
@@ -2812,6 +2909,8 @@ export {
   getOrCreateDynamicEnvironmentKernelPack,
   resetDynamicEnvironmentKernelPacksForSpecs,
   resolveSceneCaptureMode,
+  shouldRefreshDynamicEnvironmentMapPosition,
+  isDynamicEnvironmentMapRefreshRequested,
   shouldRefreshSceneCapture,
   shouldResetSceneCaptureHistory,
   updateSceneCaptureAttemptBookkeeping,

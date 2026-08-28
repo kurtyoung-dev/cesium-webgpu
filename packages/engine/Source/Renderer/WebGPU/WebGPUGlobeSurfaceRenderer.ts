@@ -40,7 +40,7 @@ import {
   buildPipelineDescriptor,
   descriptorToGPU,
 } from "./WebGPUGlobeSurfacePipelines.js";
-import { ShaderDefine } from "./WebGPUShaderDefines.js";
+import { ShaderDefine, ShaderDefineHi } from "./WebGPUShaderDefines.js";
 import {
   isWebGPULogDepthActive,
   isWebGPUPickLogDepthActive,
@@ -312,8 +312,9 @@ export class WebGPUGlobeSurfaceRenderer {
   // source is determined by the fabric (which is associated with the
   // type) and (b) Cesium's `MaterialCache` already deduplicates per-type.
   // Entry holds the assembled WGSL, the shader module, the UBO + its
-  // layout, and a sub-cache of GPURenderPipelines keyed on the geometry
-  // variant (one pipeline per stride/quantized/blend/etc combination).
+  // layout, and a sub-cache of GPURenderPipelines keyed on the geometry and
+  // render-target variant (one pipeline per stride/quantized/blend/format/
+  // sample-count combination).
   private _materialPipelineCache: Map<string, MaterialPipelineCacheEntry> =
     new Map();
   // Per-material texture cache. Cesium materials (e.g., ElevationRamp)
@@ -543,11 +544,14 @@ export class WebGPUGlobeSurfaceRenderer {
       // call site and group(4) bindings are included. The reduced-imagery bit
       // must ride along: on a default-limit device the material module would
       // otherwise declare all 16 dayTextures and mismatch the 1-slot group-1
-      // layout.
+      // layout. Enhanced ocean is a hi-word define; it must be supplied here
+      // because the material module replaces both ocean-aware production
+      // stages in the descriptor below.
       const preprocessed = preprocessWGSL(
         fullSource,
         ShaderDefine.MATERIAL_APPLY |
           (this._imageryReduced ? ShaderDefine.GLOBE_IMAGERY_REDUCED : 0),
+        this._enhancedOceanEnabled ? ShaderDefineHi.ENHANCED_OCEAN : 0,
       );
       const module = device.createShaderModule({
         label: `Globe material module ${material.type}`,
@@ -570,7 +574,8 @@ export class WebGPUGlobeSurfaceRenderer {
       this._materialPipelineCache.set(material.type, entry);
     }
 
-    // Geometry variant key — the same grammar as the base pipeline cache key,
+    // Geometry and render-target variant key — the same grammar as the base
+    // pipeline cache key,
     // minus the debug-fragment and translucent-back-face axes, whose variants
     // do not route through the material path, and minus clip-distances, which
     // the material path never requests. Built through the shared key module
@@ -589,6 +594,8 @@ export class WebGPUGlobeSurfaceRenderer {
       useClipDistances: false,
       disableCulling,
       defines,
+      targetFormat: this._canvasFormat,
+      sampleCount: this._sampleCount,
     });
 
     let pipeline = entry.pipelines.get(geomKey);
@@ -745,6 +752,7 @@ export class WebGPUGlobeSurfaceRenderer {
     this._wireframePipelineCache.clear();
     this._debugFragmentPipelineCache.clear();
     this._capturePipelineCache.clear();
+    this._materialPipelineCache.clear();
     // The clip-distances module map keys by the lo defines only; wipe it so the
     // next lookup rebuilds its base against the new `definesHi`.
     this._clipDistancesShaderModules.clear();
@@ -1168,7 +1176,7 @@ export class WebGPUGlobeSurfaceRenderer {
     // Invalidate cached pipelines when the scene-pipeline format generation has
     // changed, on an HDR or MSAA toggle. Globe terrain pipelines target the
     // scene framebuffer, so they must rebuild against the new color format.
-    // Clears the production, wireframe and debug-fragment caches.
+    // Clears the production, wireframe, debug-fragment and material caches.
     const ctxGen =
       (
         frameState.context as unknown as {
@@ -1203,6 +1211,7 @@ export class WebGPUGlobeSurfaceRenderer {
       this._pipelineCache.clear();
       this._wireframePipelineCache.clear();
       this._debugFragmentPipelineCache.clear();
+      this._materialPipelineCache.clear();
     }
 
     // Resolve the log-depth state from the shared gate every frame,

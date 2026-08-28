@@ -454,8 +454,9 @@ export function buildPipelineDescriptor(
   // env-map capture descriptor routes through this function, so both inherit
   // the marker.
   //
-  // The renderer-local caches carry the mask outright: every key
-  // `buildGlobePipelineCacheKey` builds ends with `|${defines.toString(16)}`.
+  // The renderer-local caches carry the mask outright: every key built in this
+  // module omits the optional material target axes and therefore ends with
+  // `|${defines.toString(16)}`.
   const ldLabel = logDepthOn ? ", ld=1" : "";
   // Keep the diagnostic name legible on the descriptor axes that tooling
   // compares. Use effective values so clamped strides and capture MSAA do not

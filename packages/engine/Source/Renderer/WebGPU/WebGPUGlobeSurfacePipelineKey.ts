@@ -8,7 +8,8 @@
  * ----------------------
  * The globe surface renderer keys four renderer-local maps (`_pipelineCache`,
  * `_capturePipelineCache`, `_debugFragmentPipelineCache`,
- * `_wireframePipelineCache`) with a hand-built string. For ~15 months the four
+ * `_wireframePipelineCache`) and each `_materialPipelineCache` entry's pipeline
+ * sub-map with this string. For ~15 months the four
  * public accessors on `WebGPUGlobeSurfaceRenderer` (`pipeline`,
  * `pipelineNoNormals`, `pipelineQuantized`, `pipelineQuantizedNoNormals`)
  * re-implemented that string from a stale copy of the format: they built
@@ -41,6 +42,8 @@
  *   [<debugMode> "_"]  Q|U  N|X  M|G  [B|O]  "_" <stride>
  *     ["_CD"] ["_NC"] ["_" PICK|TBF|DOB|DOF] ["_CAP_" <faceFormat>]
  *     "|" <defines-as-hex>
+ *     ["|@" ("f=" <uri-encoded-target-format> ["&s=" <sample-count>]
+ *            | "s=" <sample-count>)]
  * ```
  * - `Q`/`U` — quantized (BITS12) vs uncompressed terrain encoding
  * - `N`/`X` — vertex normals present vs absent
@@ -57,6 +60,10 @@
  * - The `|` tail is the `ShaderDefine` bitmask via `Number.toString(16)`,
  *   reproduced VERBATIM including the leading `-` a bit-31 define would
  *   produce. The parser accepts that sign so build/parse stay exact inverses.
+ * - The optional `|@` tail carries the material pipeline's color-target format
+ *   (`f`) and sample count (`s`). The format is URI-encoded, so separators in
+ *   an input cannot inject another field. Existing producers omit both fields
+ *   and therefore retain their byte-identical historical keys.
  *
  * @module WebGPUGlobeSurfacePipelineKey
  */
@@ -97,6 +104,10 @@ export interface GlobePipelineKeyFields {
   disableCulling: boolean;
   /** `ShaderDefine` bitmask. */
   defines: number;
+  /** Present when the pipeline key includes a color-target format axis. */
+  targetFormat?: GPUTextureFormat;
+  /** Present when the pipeline key includes a multisample-count axis. */
+  sampleCount?: number;
   /** Present for `capture` only. */
   captureFaceFormat?: string;
   /** Present for `debugFragment` only (the numeric `DebugFragmentMode`). */
@@ -116,6 +127,8 @@ export interface GlobePipelineKeySpec {
   disableCulling?: boolean;
   captureFaceFormat?: string;
   debugFragmentMode?: number;
+  targetFormat?: GPUTextureFormat;
+  sampleCount?: number;
 }
 
 /**
@@ -182,6 +195,29 @@ const SUFFIX_KIND: Record<string, GlobePipelineVariantKind> = {
   DOF: "depthOnlyFrontFace",
 };
 
+const TARGET_AXIS_PREFIX = "|@";
+const TARGET_AXIS_PATTERN = /^(?:f=([^&]+)(?:&s=([1-9]\d*))?|s=([1-9]\d*))$/;
+
+// Optional target axes are appended after the untouched legacy key. A single
+// canonical order plus URI encoding makes the suffix injective even for a
+// hostile runtime string containing every delimiter used here.
+function buildTargetAxisSuffix(spec: GlobePipelineKeySpec): string {
+  const parts: string[] = [];
+  if (spec.targetFormat !== undefined) {
+    if (spec.targetFormat.length === 0) {
+      throw new RangeError("targetFormat must not be empty");
+    }
+    parts.push(`f=${encodeURIComponent(spec.targetFormat)}`);
+  }
+  if (spec.sampleCount !== undefined) {
+    if (!Number.isSafeInteger(spec.sampleCount) || spec.sampleCount <= 0) {
+      throw new RangeError("sampleCount must be a positive safe integer");
+    }
+    parts.push(`s=${spec.sampleCount}`);
+  }
+  return parts.length === 0 ? "" : `${TARGET_AXIS_PREFIX}${parts.join("&")}`;
+}
+
 /**
  * Grammar above as one expression. Written to be an exact inverse of
  * {@link buildGlobePipelineCacheKey}; the contract spec round-trips every
@@ -206,21 +242,22 @@ export function buildGlobePipelineCacheKey(spec: GlobePipelineKeySpec): string {
   const norm = spec.hasNormals ? "N" : "X";
   const merc = spec.hasWebMercatorT ? "M" : "G";
   const definesHex = spec.defines.toString(16);
+  const targetAxisSuffix = buildTargetAxisSuffix(spec);
 
   // Wireframe predates the blend marker and never gained one: its overlay is
   // always drawn opaque over the color pass.
   if (spec.kind === "wireframe") {
-    return `${quant}${norm}${merc}_${spec.strideBytes}|${definesHex}`;
+    return `${quant}${norm}${merc}_${spec.strideBytes}|${definesHex}${targetAxisSuffix}`;
   }
 
   const blend = spec.isBlend ? "B" : "O";
 
   if (spec.kind === "capture") {
-    return `${quant}${norm}${merc}${blend}_${spec.strideBytes}_CAP_${spec.captureFaceFormat}|${definesHex}`;
+    return `${quant}${norm}${merc}${blend}_${spec.strideBytes}_CAP_${spec.captureFaceFormat}|${definesHex}${targetAxisSuffix}`;
   }
 
   if (spec.kind === "debugFragment") {
-    return `${spec.debugFragmentMode}_${quant}${norm}${merc}${blend}_${spec.strideBytes}|${definesHex}`;
+    return `${spec.debugFragmentMode}_${quant}${norm}${merc}${blend}_${spec.strideBytes}|${definesHex}${targetAxisSuffix}`;
   }
 
   const cdSuffix = spec.useClipDistances ? "_CD" : "";
@@ -229,7 +266,7 @@ export function buildGlobePipelineCacheKey(spec: GlobePipelineKeySpec): string {
   const ncSuffix =
     spec.kind === "color" && spec.disableCulling === true ? "_NC" : "";
 
-  return `${quant}${norm}${merc}${blend}_${spec.strideBytes}${cdSuffix}${ncSuffix}${KIND_SUFFIX[spec.kind]}|${definesHex}`;
+  return `${quant}${norm}${merc}${blend}_${spec.strideBytes}${cdSuffix}${ncSuffix}${KIND_SUFFIX[spec.kind]}|${definesHex}${targetAxisSuffix}`;
 }
 
 /**
@@ -242,7 +279,39 @@ export function buildGlobePipelineCacheKey(spec: GlobePipelineKeySpec): string {
 export function parseGlobePipelineCacheKey(
   key: string,
 ): GlobePipelineKeyFields | null {
-  const match = KEY_PATTERN.exec(key);
+  const targetAxisStart = key.indexOf(TARGET_AXIS_PREFIX);
+  const legacyKey =
+    targetAxisStart === -1 ? key : key.slice(0, targetAxisStart);
+  let targetFormat: GPUTextureFormat | undefined;
+  let sampleCount: number | undefined;
+  if (targetAxisStart !== -1) {
+    const axisText = key.slice(targetAxisStart + TARGET_AXIS_PREFIX.length);
+    const axisMatch = TARGET_AXIS_PATTERN.exec(axisText);
+    if (!axisMatch) {
+      return null;
+    }
+    const encodedTargetFormat = axisMatch[1];
+    if (encodedTargetFormat !== undefined) {
+      try {
+        const decoded = decodeURIComponent(encodedTargetFormat);
+        if (encodeURIComponent(decoded) !== encodedTargetFormat) {
+          return null;
+        }
+        targetFormat = decoded as GPUTextureFormat;
+      } catch {
+        return null;
+      }
+    }
+    const sampleCountText = axisMatch[2] ?? axisMatch[3];
+    if (sampleCountText !== undefined) {
+      sampleCount = Number.parseInt(sampleCountText, 10);
+      if (!Number.isSafeInteger(sampleCount)) {
+        return null;
+      }
+    }
+  }
+
+  const match = KEY_PATTERN.exec(legacyKey);
   if (!match) {
     return null;
   }
@@ -302,6 +371,12 @@ export function parseGlobePipelineCacheKey(
     disableCulling: nc !== undefined,
     defines,
   };
+  if (targetFormat !== undefined) {
+    fields.targetFormat = targetFormat;
+  }
+  if (sampleCount !== undefined) {
+    fields.sampleCount = sampleCount;
+  }
   if (kind === "capture") {
     fields.captureFaceFormat = captureFormat;
   }

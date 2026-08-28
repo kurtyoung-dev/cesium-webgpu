@@ -5,13 +5,10 @@
  * The renderer owns a per-device compute pipeline, a packed light buffer, and
  * the per-cluster count and index outputs. The caller supplies the AABB buffer
  * and eye-space light records. A change to the AABBs invalidates every bin even
- * when the light checksum is unchanged, so `boundsChanged` bypasses the cache.
+ * when the packed light data is unchanged, so `boundsChanged` bypasses the cache.
  *
- * The cache checksum covers the light count and each record's eye-space
- * position or direction and type. A frame whose lights differ only in color,
- * intensity, range, attenuation or cone angle therefore hits the cache, and
- * the freshly packed record is not uploaded until something else invalidates
- * it.
+ * Dirty tracking compares the light count and every packed float against the
+ * last upload, so cache hits can safely skip both the upload and assignment.
  *
  * Storage layout:
  *   - `lights`: 1024 records × 80 bytes = 80 KiB.
@@ -46,7 +43,33 @@ export const CLUSTER_MAX_LIGHTS_PER_CLUSTER = 256;
 // Per-light record size in bytes (matches ClusteredLight struct in
 // ClusterAssign.wgsl: 5 vec4 = 80 B).
 const CLUSTERED_LIGHT_BYTES = 80;
-const CLUSTERED_LIGHT_FLOATS = CLUSTERED_LIGHT_BYTES / 4;
+export const CLUSTERED_LIGHT_FLOATS = CLUSTERED_LIGHT_BYTES / 4;
+
+export function packedClusteredLightsChanged(
+  previousData: Float32Array,
+  previousLightCount: number,
+  currentData: Float32Array,
+  currentLightCount: number,
+): boolean {
+  if (previousLightCount !== currentLightCount) {
+    return true;
+  }
+
+  const packedFloatCount = currentLightCount * CLUSTERED_LIGHT_FLOATS;
+  if (
+    previousData.length < packedFloatCount ||
+    currentData.length < packedFloatCount
+  ) {
+    return true;
+  }
+
+  for (let i = 0; i < packedFloatCount; i++) {
+    if (!Object.is(previousData[i], currentData[i])) {
+      return true;
+    }
+  }
+  return false;
+}
 
 // Exported storage sizes match the compute outputs consumed by fragment
 // pipelines.
@@ -186,10 +209,9 @@ export class WebGPUClusterAssignRenderer {
   private _lastClusterAABBs: GPUBuffer | null = null;
   // Scratch pack buffer for the per-light record stream.
   private readonly _lightPackBuffer: Float32Array;
+  private readonly _lastUploadedLightData: Float32Array;
   private readonly _uniformData: Uint32Array;
-  // Dirty tracking covers light count, eye-space position or direction, and
-  // light type. Bounds changes bypass this checksum.
-  private _lastLightsChecksum: number = NaN;
+  private _lastUploadedLightCount: number = 0;
   private _firstDispatchDone: boolean = false;
 
   constructor(device: GPUDevice) {
@@ -220,6 +242,9 @@ export class WebGPUClusterAssignRenderer {
     this._lightPackBuffer = new Float32Array(
       CLUSTER_MAX_LIGHTS * CLUSTERED_LIGHT_FLOATS,
     );
+    this._lastUploadedLightData = new Float32Array(
+      CLUSTER_MAX_LIGHTS * CLUSTERED_LIGHT_FLOATS,
+    );
     this._uniformData = new Uint32Array(64); // 256 bytes / 4
   }
 
@@ -237,13 +262,13 @@ export class WebGPUClusterAssignRenderer {
 
   /**
    * Pack the eye-space light defs into the GPU buffer + dispatch
-   * the compute. Idempotent when the light checksum matches the
+   * the compute. Idempotent when the packed light data matches the
    * previous dispatch and the cluster bounds did not change.
    *
    * @param boundsChanged When true, the upstream cluster-bounds pass
    *   re-dispatched this frame (viewport / FOV / near-far changed), so
-   *   the previous assignment is stale even if the light checksum
-   *   matches. Forces a re-dispatch regardless of the light-checksum
+   *   the previous assignment is stale even if the packed light data
+   *   matches. Forces a re-dispatch regardless of the packed-light
    *   cache. Defaults to false.
    * @returns true if a dispatch was issued; false on cache hit.
    */
@@ -255,13 +280,9 @@ export class WebGPUClusterAssignRenderer {
   ): boolean {
     const clampedCount = Math.min(lights.length, CLUSTER_MAX_LIGHTS);
 
-    // Pack into the scratch float buffer + compute a checksum for
-    // dirty tracking.
+    // Pack into the scratch float buffer for dirty tracking.
     const data = this._lightPackBuffer;
     data.fill(0, 0, clampedCount * CLUSTERED_LIGHT_FLOATS);
-    let checksum = clampedCount * 1e6; // Mix the count into the hash so
-    // adding a light produces a different checksum even if the new
-    // light's data sums to zero.
     for (let i = 0; i < clampedCount; i++) {
       const offset = i * CLUSTERED_LIGHT_FLOATS;
       const L = lights[i];
@@ -290,23 +311,25 @@ export class WebGPUClusterAssignRenderer {
       data[offset + 17] = sd?.y ?? 0;
       data[offset + 18] = sd?.z ?? 0;
       // [19] pad
-      // The cache key covers eye-space position or direction and type. Other
-      // packed fields do not independently invalidate this assignment.
-      checksum +=
-        (L.posOrDir.x + L.posOrDir.y * 1.31 + L.posOrDir.z * 1.71) * (i + 1) +
-        L.type * 100 * (i + 1);
     }
 
-    // A cluster-bounds change invalidates the previous assignment even when
-    // the light checksum is unchanged.
-    if (
-      !boundsChanged &&
-      this._firstDispatchDone &&
-      checksum === this._lastLightsChecksum
-    ) {
+    // Cache hits skip the upload as well as assignment, so every packed float
+    // and the light count must match the last upload.
+    const lightsChanged = packedClusteredLightsChanged(
+      this._lastUploadedLightData,
+      this._lastUploadedLightCount,
+      data,
+      clampedCount,
+    );
+    if (!boundsChanged && this._firstDispatchDone && !lightsChanged) {
       return false;
     }
-    this._lastLightsChecksum = checksum;
+
+    const packedFloatCount = clampedCount * CLUSTERED_LIGHT_FLOATS;
+    for (let i = 0; i < packedFloatCount; i++) {
+      this._lastUploadedLightData[i] = data[i];
+    }
+    this._lastUploadedLightCount = clampedCount;
 
     // Upload light data + count.
     this._device.queue.writeBuffer(
@@ -314,7 +337,7 @@ export class WebGPUClusterAssignRenderer {
       0,
       data,
       0,
-      clampedCount * CLUSTERED_LIGHT_FLOATS,
+      packedFloatCount,
     );
     this._uniformData[0] = clampedCount;
     this._device.queue.writeBuffer(this._uniformBuffer, 0, this._uniformData);
