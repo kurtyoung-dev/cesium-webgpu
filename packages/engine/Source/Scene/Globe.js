@@ -25,7 +25,17 @@ import GlobeSurfaceShaderSet from "./GlobeSurfaceShaderSet.js";
 import LakeWaterClassificationProvider from "./WaterClassificationProvider.js";
 import GlobeSurfaceTileProvider from "./GlobeSurfaceTileProvider.js";
 import GlobeTranslucency from "./GlobeTranslucency.js";
+import ImageryLayer from "./ImageryLayer.js";
 import ImageryLayerCollection from "./ImageryLayerCollection.js";
+import TileMapServiceImageryProvider from "./TileMapServiceImageryProvider.js";
+import {
+  BUNDLED_NIGHT_IMAGERY_PATH,
+  NIGHT_IMAGERY_LAYER_OPTIONS,
+  NightImagerySource,
+  nightImageryAction,
+  nightImageryIsArmed,
+  resolveNightImageryRequest,
+} from "./GlobeNightImagery.js";
 import QuadtreePrimitive from "./QuadtreePrimitive.js";
 import SceneMode from "./SceneMode.js";
 import ShadowMode from "./ShadowMode.js";
@@ -218,6 +228,31 @@ class Globe {
     this.terminatorGlowStrength = 0.0;
 
     /**
+     * How dark the night side of the globe becomes where no imagery layer
+     * carries a day/night alpha pair. <code>1.0</code>, the default, is the
+     * multiplicative identity and leaves the surface exactly as upstream
+     * renders it; <code>0.0</code> is a black night side. The surface color is
+     * scaled by <code>mix(1.0, nightDarkness, nightBlend)</code> along the same
+     * dusk ramp the imagery day/night alpha uses.
+     * <p>
+     * This is the procedural fallback for globes with no night imagery, so it
+     * is suppressed per tile wherever a night layer is already blending: there
+     * the night appearance comes from the layer, and darkening it a second time
+     * would dim the city lights. It deliberately carries no camera-distance
+     * fade, unlike the {@link Globe#enableLighting} day/night diffuse, so the
+     * night side stays dark at street altitude as well as from orbit.
+     * </p>
+     * <p>
+     * Values outside <code>[0, 1]</code> are clamped, and non-finite values are
+     * treated as <code>1.0</code>, by the renderers.
+     * </p>
+     *
+     * @type {number}
+     * @default 1.0
+     */
+    this.nightDarkness = 1.0;
+
+    /**
      * A multiplier to adjust terrain lambert lighting.
      * This number is multiplied by the result of <code>czm_getLambertDiffuse</code> in GlobeFS.glsl.
      * This only takes effect when <code>enableLighting</code> is <code>true</code>.
@@ -365,6 +400,18 @@ class Globe {
     this._lakeWaterMask = false;
     this._lakeWaterClassificationProvider = undefined;
     this._lakeWaterMaskLoadPending = false;
+
+    // Auto-managed night imagery. The state record holds what the attached
+    // layer was built from, so an unchanged request is a no-op and a changed
+    // one destroys the old layer rather than stacking a second one on it.
+    this._nightImagery = true;
+    this._nightImageryExplicit = false;
+    this._ownsDefaultImageryStack = false;
+    this._nightImageryLayer = undefined;
+    this._nightImageryState = {
+      source: NightImagerySource.NONE,
+      provider: undefined,
+    };
 
     /**
      * When true, night-side imagery layers with nightAlpha > dayAlpha
@@ -738,6 +785,54 @@ class Globe {
     }
     // Rebuild tiles so toggling takes effect on already-loaded tiles.
     this._surface.invalidateAllTiles();
+  }
+
+  /**
+   * The night-side imagery blended in past the terminator.
+   * <p>
+   * <code>true</code>, the default, uses the night pyramid bundled with the
+   * library. An {@link ImageryProvider}, or a promise to one, uses that
+   * instead: a higher-resolution ion asset, for example. <code>false</code> or
+   * <code>undefined</code> attaches nothing and leaves the imagery stack
+   * exactly as upstream builds it.
+   * </p>
+   * <p>
+   * The layer is created and destroyed by this globe and is kept above the
+   * base layer, with a day alpha of zero and a night alpha of one so it is
+   * absent in daylight and covering past the terminator. The default applies
+   * only where this globe owns the default imagery stack; an application that
+   * supplies its own base layer, or builds the stack itself, never has a layer
+   * injected into it. Assigning this property is an explicit request and
+   * attaches the layer either way.
+   * </p>
+   *
+   * @type {boolean|ImageryProvider|Promise<ImageryProvider>}
+   * @default true
+   */
+  get nightImagery() {
+    return this._nightImagery;
+  }
+
+  set nightImagery(value) {
+    this._nightImageryExplicit = true;
+    this._nightImagery = value;
+  }
+
+  /**
+   * Whether this globe's imagery stack was created by the default base-layer
+   * path rather than by the application. Read by the night-imagery default,
+   * which must not inject a layer into a stack it does not own.
+   *
+   * @type {boolean}
+   * @default false
+   * @private
+   */
+  get ownsDefaultImageryStack() {
+    return this._ownsDefaultImageryStack;
+  }
+
+  set ownsDefaultImageryStack(value) {
+    this._ownsDefaultImageryStack = value === true;
   }
 
   /**
@@ -1151,6 +1246,8 @@ class Globe {
   beginFrame(frameState) {
     const surface = this._surface;
     const tileProvider = surface.tileProvider;
+
+    reconcileNightImagery(this);
     const terrainProvider = this.terrainProvider;
     const hasWaterMask =
       defined(terrainProvider) &&
@@ -1232,6 +1329,11 @@ class Globe {
         Number.isFinite(terminatorGlowStrength)
           ? Math.max(terminatorGlowStrength, 0.0)
           : 0.0;
+      const nightDarkness = this.nightDarkness;
+      tileProvider.nightDarkness =
+        typeof nightDarkness === "number" && Number.isFinite(nightDarkness)
+          ? CesiumMath.clamp(nightDarkness, 0.0, 1.0)
+          : 1.0;
       tileProvider.dynamicAtmosphereLighting = this.dynamicAtmosphereLighting;
       tileProvider.dynamicAtmosphereLightingFromSun =
         this.dynamicAtmosphereLightingFromSun;
@@ -1377,6 +1479,9 @@ class Globe {
    * @see Globe#isDestroyed
    */
   destroy() {
+    // The imagery collection outlives this globe, so the layer this globe
+    // added has to leave with it.
+    detachNightImageryLayer(this);
     this._surfaceShaderSet =
       this._surfaceShaderSet && this._surfaceShaderSet.destroy();
     this._surface = this._surface && this._surface.destroy();
@@ -1389,6 +1494,77 @@ class Globe {
     this._defaultCloudCollection =
       this._defaultCloudCollection && this._defaultCloudCollection.destroy();
     return destroyObject(this);
+  }
+}
+
+/**
+ * Brings the auto-managed night layer into agreement with
+ * {@link Globe#nightImagery}. Runs once per frame; every state but a genuine
+ * change costs one comparison.
+ *
+ * @param {Globe} globe
+ * @private
+ */
+function reconcileNightImagery(globe) {
+  const requested = resolveNightImageryRequest(
+    globe._nightImagery,
+    nightImageryIsArmed({
+      ownsDefaultImageryStack: globe._ownsDefaultImageryStack,
+      explicitlyRequested: globe._nightImageryExplicit,
+    }),
+  );
+  const action = nightImageryAction(globe._nightImageryState, requested);
+  if (action === "none") {
+    return;
+  }
+
+  if (action === "detach" || action === "replace") {
+    detachNightImageryLayer(globe);
+  }
+
+  if (action === "attach" || action === "replace") {
+    // The bundled pyramid's level range comes out of its tilemapresource.xml,
+    // so the provider never requests a level the asset does not contain.
+    const provider =
+      requested.source === NightImagerySource.BUNDLED
+        ? TileMapServiceImageryProvider.fromUrl(
+            buildModuleUrl(BUNDLED_NIGHT_IMAGERY_PATH),
+          )
+        : requested.provider;
+    const layer = ImageryLayer.fromProviderAsync(
+      provider,
+      NIGHT_IMAGERY_LAYER_OPTIONS,
+    );
+    globe._nightImageryLayer = layer;
+    globe._imageryLayerCollection.add(layer);
+  }
+
+  globe._nightImageryState = requested;
+}
+
+/**
+ * Removes and destroys the auto-managed night layer, if one is attached.
+ *
+ * @param {Globe} globe
+ * @private
+ */
+function detachNightImageryLayer(globe) {
+  const layer = globe._nightImageryLayer;
+  globe._nightImageryLayer = undefined;
+  globe._nightImageryState = {
+    source: NightImagerySource.NONE,
+    provider: undefined,
+  };
+  if (!defined(layer)) {
+    return;
+  }
+  // An application is free to remove the layer itself, which destroys it, and
+  // a second destroy on the same object throws.
+  if (
+    !globe._imageryLayerCollection.remove(layer, true) &&
+    !layer.isDestroyed()
+  ) {
+    layer.destroy();
   }
 }
 

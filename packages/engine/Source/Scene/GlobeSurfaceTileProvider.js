@@ -328,6 +328,10 @@ class GlobeSurfaceTileProvider {
     // Zero is the natural/parity identity; renderers branch before evaluating
     // the optional exponential glow term.
     this.terminatorGlowStrength = 0.0;
+    // Backend-neutral, per-frame mirror of Globe.nightDarkness. One is the
+    // multiplicative identity; renderers gate the term off entirely at that
+    // value, so the default globe pays nothing for it.
+    this.nightDarkness = 1.0;
     this.dynamicAtmosphereLighting = false;
     this.dynamicAtmosphereLightingFromSun = false;
     this.showGroundAtmosphere = false;

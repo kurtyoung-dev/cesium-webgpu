@@ -204,6 +204,7 @@ const surfaceShaderSetOptionsScratch = {
   applyGamma: undefined,
   applyAlpha: undefined,
   applyDayNightAlpha: undefined,
+  applyNightDarkness: undefined,
   applySplit: undefined,
   showReflectiveOcean: undefined,
   showOceanWaves: undefined,
@@ -717,6 +718,9 @@ function createTileUniformMap(frameState, globeSurfaceTileProvider) {
     u_terminatorGlowStrength: function () {
       return this.properties.terminatorGlowStrength;
     },
+    u_nightDarkness: function () {
+      return this.properties.nightDarkness;
+    },
     u_vectorSegmentTexture: function () {
       return (
         this.properties.vectorSegmentTexture ??
@@ -816,6 +820,7 @@ function createTileUniformMap(frameState, globeSurfaceTileProvider) {
       lambertDiffuseMultiplier: 0.0,
       vertexShadowDarkness: 0.0,
       terminatorGlowStrength: 0.0,
+      nightDarkness: 1.0,
       eclipseGlobeShadow: defaultEclipseGlobeShadow,
 
       vectorSegmentTexture: undefined,
@@ -1537,6 +1542,7 @@ function addDrawCommandsForTile(tileProvider, tile, frameState) {
   const lambertDiffuseMultiplier = tileProvider.lambertDiffuseMultiplier;
   const vertexShadowDarkness = tileProvider.vertexShadowDarkness;
   const terminatorGlowStrength = tileProvider.terminatorGlowStrength;
+  const nightDarkness = tileProvider.nightDarkness ?? 1.0;
 
   const hasWaterMask = tileProvider.hasWaterMask && defined(waterMaskTexture);
   const showReflectiveOcean = hasWaterMask && tileProvider.showWaterEffect;
@@ -1851,6 +1857,7 @@ function addDrawCommandsForTile(tileProvider, tile, frameState) {
     uniformMapProperties.lambertDiffuseMultiplier = lambertDiffuseMultiplier;
     uniformMapProperties.vertexShadowDarkness = vertexShadowDarkness;
     uniformMapProperties.terminatorGlowStrength = terminatorGlowStrength;
+    uniformMapProperties.nightDarkness = nightDarkness;
 
     const highlightFillTile =
       !defined(surfaceTile.vertexArray) &&
@@ -2227,6 +2234,12 @@ function addDrawCommandsForTile(tileProvider, tile, frameState) {
     surfaceShaderSetOptions.applyGamma = applyGamma;
     surfaceShaderSetOptions.applyAlpha = applyAlpha;
     surfaceShaderSetOptions.applyDayNightAlpha = applyDayNightAlpha;
+    // The procedural night fallback is the complement of the layer path: it
+    // runs on tiles where nothing is blending a day/night alpha, so the two
+    // are mutually exclusive per tile and the night side is darkened once.
+    // The WGSL twin conjoins the same two inputs at runtime.
+    surfaceShaderSetOptions.applyNightDarkness =
+      nightDarkness < 1.0 && !applyDayNightAlpha;
     surfaceShaderSetOptions.applySplit = applySplit;
     surfaceShaderSetOptions.enableFog = applyFog;
     surfaceShaderSetOptions.enableClippingPlanes = clippingPlanesEnabled;

@@ -206,11 +206,11 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 
 | Metric | Value |
 |---|---|
-| Files in census | 1096 |
-| ACTIVE | 889 |
+| Files in census | 1098 |
+| ACTIVE | 891 |
 | INVESTIGATION | 195 |
 | NO @purpose HEADER | 12 |
-| Classes | probe 652, spec 226, other 100, lib 76, gate-lib 19, bake-tool 13, runner 6, fixture 4 |
+| Classes | probe 652, spec 228, other 100, lib 76, gate-lib 19, bake-tool 13, runner 6, fixture 4 |
 
 ### Tools/ (39)
 
@@ -353,7 +353,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | stbn-rng.mjs | bake-tool | ACTIVE | 2026-08-16 | 3 | Deterministic license-clean random stream for the STBN bake: AES-256-CTR over zeros keyed by SHA-256(seed), byte-identical across machines. |
 | stbn-spectrum.mjs | bake-tool | ACTIVE | 2026-08-16 | 5 | Fourier certification of an STBN volume (radial spatial spectrum, per-pixel temporal spectrum, cross-correlation) with mutants proving each bar fires. |
 
-### Tools/visual-regression/ (899)
+### Tools/visual-regression/ (901)
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
@@ -430,7 +430,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | coveragejson-antimeridian.spec.mjs | spec | ACTIVE | 2026-08-16 | 0 | C13-08: CoverageJSON cyclic-longitude unwrap through WeatherFieldGrid + WeatherTexPacker so antimeridian-crossing CRS84 axes parse right. |
 | cpu-frame-accounting.spec.mjs | spec | ACTIVE | 2026-08-16 | 2 | Deterministic-clock tests of WebGPUCpuPassProfiler whole-scene phase accounting (CPU_SCENE_PHASE_NAMES coverage, no wall-clock leakage). |
 | cpu-primitive-breakdown-policy.spec.mjs | spec | ACTIVE | 2026-08-16 | 1 | Policy guard for probe-c11-169-primitive-breakdown: first-red policy, detail controls, instrumentation evaluation and capture normalization vs source. |
-| cpu-scene-phase-integration.spec.mjs | spec | ACTIVE | 2026-08-16 | 3 | Pins the CPU scene-phase list agreement across Scene.js, ViewportExecutor.js and WebGPUSceneRenderer.ts (vm-executed source integration check). |
+| cpu-scene-phase-integration.spec.mjs | spec | ACTIVE | 2026-08-28 | 3 | Pins the CPU scene-phase list agreement across Scene.js, ViewportExecutor.js and WebGPUSceneRenderer.ts (vm-executed source integration check). |
 | cross-backend-sandcastle-runner.mjs | other | ACTIVE | 2026-08-16 | 7 | Runs every Sandcastle demo under WebGL then WebGPU via a Viewer shim injecting contextOptions.renderer, pixel-diffs the pair, writes per-demo reports. |
 | daynight-terminator-law.spec.mjs | spec | ACTIVE | 2026-08-28 | 3 | CLT-B1 Node half: transcribed laws vs shaders, calibration inversion, ramp classifier, structural exit codes — all mutant-rejected. |
 | debug-ground-polyline-color.mjs | other | INVESTIGATION | 2026-08-16 | 0 | Instruments the GroundPolyline renderer cache to find why per-instance color didn't reach the FS (dim-rectangle diagnosis, 2026-04-30). |
@@ -474,6 +474,8 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | globe-daynight-normal-source.spec.mjs | spec | ACTIVE | 2026-08-28 | 3 | Pins that every WGSL globe day/night term reads the analytic geocentric normal, not the mesh v_normalEC whose constant decode flattened lighting. |
 | globe-daynight-ramp-law.spec.mjs | spec | ACTIVE | 2026-08-16 | 6 | Pins that GlobeTerrain.wgsl's day/night ramp and diffuse express GlobeFS.glsl's two laws, coefficients captured from both sources, with mutant tests. |
 | globe-material-pipeline-format-axis.spec.mjs | spec | NO @purpose HEADER | 2026-08-28 | 0 | — |
+| globe-night-darkness-fallback.spec.mjs | spec | ACTIVE | 2026-08-28 | 0 | Pins the procedural night-side darkening: one law on both backends, applied only where no night imagery layer is blending, with no camera-distance fade, and inert at its identity default. |
+| globe-night-imagery-option.spec.mjs | spec | ACTIVE | 2026-08-28 | 0 | Pins the night-imagery option: default on, never injected into an application-managed imagery stack, off is upstream, and the bundled pyramid's level range is the one its provider will derive. |
 | globe-night-lights-default.spec.mjs | spec | ACTIVE | 2026-08-20 | 1 | Verifies that durable Globe source defaults night lights to an opt-in feature. |
 | globe-night-ocean-sentinel.spec.mjs | spec | ACTIVE | 2026-08-16 | 1 | Pins the GLOBE_UB_UNSET (-1.0) sentinel that made enableNightLights=false reachable: OFF and default-ON no longer share the same 0.0 uniform encoding. |
 | globe-pipeline-key-contract.spec.mjs | spec | ACTIVE | 2026-08-16 | 4 | Pins the single-home globe pipeline cache-key builder/parser after the 15-month UNO_/UNMO_ producer-consumer drift; accessors + cache stats. |
@@ -497,7 +499,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | material-texture-late-adoption.spec.mjs | spec | ACTIVE | 2026-08-28 | 0 | Pins that the WebGPU primitive material path re-binds its texture after `Material.update` drains a late image into `_imageSources`, for the main and depth-fail slots, and proves the check is live rather than inert. |
 | model-3d-tile-state-packet.spec.mjs | spec | ACTIVE | 2026-08-16 | 0 | Behavioral tests for Model3DTileStatePacket: immutable packet reuse when broad tileset state is unchanged, refresh on real change. |
 | model-camera-arena.spec.mjs | spec | ACTIVE | 2026-08-16 | 2 | Bundles the real WebGPUModelCameraArena and pins offset alignment, per-frame reset, view isolation, plus call-site routing source checks. |
-| model-device-recovery.spec.mjs | spec | ACTIVE | 2026-08-16 | 1 | Device/resource-generation recovery contracts for native Models across renderer, pipeline cache, device resources and stub texture sources. |
+| model-device-recovery.spec.mjs | spec | ACTIVE | 2026-08-28 | 1 | Device/resource-generation recovery contracts for native Models across renderer, pipeline cache, device resources and stub texture sources. |
 | model-lazy-pick-demand.spec.mjs | spec | ACTIVE | 2026-08-28 | 4 | Contracts for lazy realization of native Model pick resources across renderer, feature-id, Model, feature table and batch texture sources. |
 | model-light-arena.spec.mjs | spec | ACTIVE | 2026-08-16 | 2 | Light-slice sibling of the camera-arena spec: pack-once-per-model-per-view light block, removal from per-primitive group-1, WGSL binding move. |
 | model-metadata-variant-key.spec.mjs | spec | ACTIVE | 2026-08-28 | 0 | Pins that two metadata (or customShader) classes at one material identity build distinct model pipeline keys, that the fold is byte-identical when no generated chunk applies, and that the fold is live rather than inert. |
@@ -1253,7 +1255,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | webgpu-shadow-receive-contract.spec.mjs | spec | ACTIVE | 2026-08-21 | 2 | Pins the sun-shadow fix: single cast-dispatch site + same-frame wipe guard, receive matrix reproduces the cast texel, naga-validated shaders. |
 | webgpu-snap-edge-payload.spec.mjs | spec | ACTIVE | 2026-08-16 | 5 | Contract for the edge tier of WebGPU Scene.snap: edge-flag payload encode, pick-color plumb into the edge UB, pipeline variant, strict admission. |
 | webgpu-snap-framebuffer-lifecycle.spec.mjs | spec | ACTIVE | 2026-08-16 | 0 | Behavioral lifecycle coverage of the real WebGPUSnapFramebuffer on GPU-shaped mocks; complements the source-contract snap-payload spec. |
-| webgpu-snap-payload.spec.mjs | spec | ACTIVE | 2026-08-16 | 2 | Contract for WebGPU Scene.snap payload: one encoding home (WebGPUSnapPayload.ts), rg32uint format agreement, spiral decode, naga validation. |
+| webgpu-snap-payload.spec.mjs | spec | ACTIVE | 2026-08-28 | 2 | Contract for WebGPU Scene.snap payload: one encoding home (WebGPUSnapPayload.ts), rg32uint format agreement, spiral decode, naga validation. |
 | webgpu-sun-bloom-mirror.spec.mjs | spec | ACTIVE | 2026-08-16 | 4 | Guard that both backends draw ONE sun glow: WebGPU tuning derived from SolarDiscModel not copied, shared constants, one flag, WebGL untouched. |
 | webgpu-voxel-resource-lifecycle.spec.mjs | spec | ACTIVE | 2026-08-21 | 2 | Drives real WebGPUVoxelResourceLifecycle exports (retain/release, atlas slot publish/retire/LRU, async-failure capture) plus structural pins. |
 

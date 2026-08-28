@@ -264,16 +264,21 @@ test("A5: the derivation sits ABOVE the day/night gate, which now has two arms",
   // instrument for the very divergence this change closed, so it is left
   // unedited and its lane REFUTES, exactly as lanes A and D have since the
   // ramp law was reconciled. Read lane C's metrics, not its verdict.
+  // The gate acquired a THIRD disjunct with the procedural night fallback,
+  // which needs the same ramp on exactly the tiles the second term leaves shut.
+  // Widened here rather than weakened: the claim is still that the gate opens
+  // on the imagery condition independently of lighting, and the fallback's own
+  // spec owns the third term and its mutants.
   assert.match(
     wgsl,
-    /if \(camera\.enableLighting > 0\.5 \|\| tile\.tileControls\.w > 0\.5\) \{\s*\n\s*dayFade = computeDayNightFade/,
-    "the day/night gate must open on EITHER globe lighting or a live " +
-      "per-tile day/night alpha, and the assignment must still be the first " +
-      "statement inside it",
+    /if \(camera\.enableLighting > 0\.5 \|\| tile\.tileControls\.w > 0\.5 \|\| tile\.hsbShift\.w < 1\.0\) \{\s*\n\s*dayFade = computeDayNightFade/,
+    "the day/night gate must open on globe lighting, a live per-tile " +
+      "day/night alpha, or the procedural night fallback, and the assignment " +
+      "must still be the first statement inside it",
   );
   const derivation = wgsl.indexOf("let dayNightNormalEC = normalize(");
   const gate = wgsl.indexOf(
-    "if (camera.enableLighting > 0.5 || tile.tileControls.w > 0.5) {",
+    "if (camera.enableLighting > 0.5 || tile.tileControls.w > 0.5 || tile.hsbShift.w < 1.0) {",
   );
   assert.ok(derivation > 0 && gate > 0);
   assert.ok(derivation < gate, "the derivation must precede the gate");
@@ -293,7 +298,7 @@ test("B1: the two WebGL lighting defines are mutually exclusive arms", () => {
 test("B2: WebGL's day/night term reads the ANALYTIC normal, per fragment", () => {
   assert.match(
     globeFs,
-    /#if defined\(SHOW_REFLECTIVE_OCEAN\) \|\| defined\(ENABLE_DAYNIGHT_SHADING\) \|\| defined\(HDR\) \|\| defined\(APPLY_DAY_NIGHT_ALPHA\)\n\s*vec3 normalMC = czm_geodeticSurfaceNormal\(v_positionMC, vec3\(0\.0\), vec3\(1\.0\)\);[^\n]*\n\s*vec3 normalEC = czm_normal3D \* normalMC;/,
+    /#if defined\(SHOW_REFLECTIVE_OCEAN\) \|\| defined\(ENABLE_DAYNIGHT_SHADING\) \|\| defined\(HDR\) \|\| defined\(APPLY_DAY_NIGHT_ALPHA\) \|\| defined\(APPLY_NIGHT_DARKNESS\)\n\s*vec3 normalMC = czm_geodeticSurfaceNormal\(v_positionMC, vec3\(0\.0\), vec3\(1\.0\)\);[^\n]*\n\s*vec3 normalEC = czm_normal3D \* normalMC;/,
     "the analytic normal must be computed wherever the day/night alpha is " +
       "asked for, not only in the lighting arm that used to be its only " +
       "consumer; otherwise the widened blend below references an undeclared " +
@@ -301,10 +306,10 @@ test("B2: WebGL's day/night term reads the ANALYTIC normal, per fragment", () =>
   );
   assert.match(
     globeFs,
-    /#ifdef APPLY_DAY_NIGHT_ALPHA\n\s*float nightBlend = 1\.0 - clamp\(czm_getLambertDiffuse\(czm_lightDirectionEC, normalEC\) \* 5\.0, 0\.0, 1\.0\);/,
+    /#if defined\(APPLY_DAY_NIGHT_ALPHA\) \|\| defined\(APPLY_NIGHT_DARKNESS\)\n\s*float nightBlend = 1\.0 - clamp\(czm_getLambertDiffuse\(czm_lightDirectionEC, normalEC\) \* 5\.0, 0\.0, 1\.0\);/,
     "the GLSL night blend must consume `normalEC` — the analytic one " +
       "computed two lines above, NOT a mesh varying — and must be gated on " +
-      "the imagery define ALONE, so it survives the vertex-lighting arm",
+      "imagery defines ALONE, so it survives the vertex-lighting arm",
   );
 });
 
@@ -635,8 +640,9 @@ test("E2: the day/night alpha no longer rides a lighting gate on either backend"
   assert.ok(gate, "the day/night gate block was not found");
   assert.equal(
     gate[1],
-    "camera.enableLighting > 0.5 || tile.tileControls.w > 0.5",
-    "the gate must be exactly the lighting-or-imagery pair",
+    "camera.enableLighting > 0.5 || tile.tileControls.w > 0.5 || tile.hsbShift.w < 1.0",
+    "the gate must be exactly lighting, the imagery condition, or the " +
+      "procedural night fallback — and nothing else",
   );
   assert.doesNotMatch(
     gate[0],
@@ -655,10 +661,20 @@ test("E2: the day/night alpha no longer rides a lighting gate on either backend"
   );
   assert.equal(
     (globeFs.match(/#ifdef APPLY_DAY_NIGHT_ALPHA/g) ?? []).length,
-    3,
-    "the imagery alpha has three APPLY_DAY_NIGHT_ALPHA sites: the uniform " +
-      "declarations, the sampleAndBlend multiply, and the nightBlend " +
-      "definition",
+    2,
+    "the imagery alpha has two APPLY_DAY_NIGHT_ALPHA-only sites: the uniform " +
+      "declarations and the sampleAndBlend multiply",
+  );
+  assert.equal(
+    (
+      globeFs.match(
+        /#if defined\(APPLY_DAY_NIGHT_ALPHA\) \|\| defined\(APPLY_NIGHT_DARKNESS\)/g,
+      ) ?? []
+    ).length,
+    1,
+    "the third site, the nightBlend definition, is shared with the " +
+      "procedural night fallback, which needs the same ramp where no " +
+      "day/night layer exists — one expression, two consumers",
   );
 });
 

@@ -1376,6 +1376,11 @@ interface CesiumGlobeTileProvider {
    * natural/parity identity and skips the optional shader work.
    */
   terminatorGlowStrength?: number;
+  /**
+   * Sanitized per-frame mirror of `Globe.nightDarkness`. One is the
+   * multiplicative identity and leaves the surface color untouched.
+   */
+  nightDarkness?: number;
   translucencyEnabled: boolean;
   /**
    * HSB shift fields mirrored from `Globe.atmosphere{Hue,Saturation,

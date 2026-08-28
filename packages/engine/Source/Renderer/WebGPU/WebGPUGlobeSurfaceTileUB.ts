@@ -779,7 +779,19 @@ export function createTileUniformBuffer(
     typeof tileProvider.brightnessShift === "number"
       ? tileProvider.brightnessShift
       : 0;
-  data[HSB_SHIFT_OFFSET + 3] = 0;
+  // The fourth HSB slot is alignment padding on a vec3 payload, not an HSB
+  // channel; it carries the procedural night-darkening multiplier. 1.0 is the
+  // multiplicative identity, which is also what a tile provider that never
+  // heard of the property resolves to. The suppression against
+  // `tileControls.w` is left to the shader so that both backends conjoin the
+  // same two inputs — WebGL at compile time, in its `APPLY_NIGHT_DARKNESS`
+  // define, and this one at runtime.
+  const nightDarkness = (tileProvider as { nightDarkness?: number })
+    .nightDarkness;
+  data[HSB_SHIFT_OFFSET + 3] =
+    typeof nightDarkness === "number" && Number.isFinite(nightDarkness)
+      ? Math.min(Math.max(nightDarkness, 0.0), 1.0)
+      : 1.0;
 
   // Ground-atmosphere control. Drives the no-fog ground-atmosphere drape path
   // in GlobeTerrain.wgsl, matching WebGL's `#else` branch in GlobeFS.glsl that

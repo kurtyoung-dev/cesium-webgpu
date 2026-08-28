@@ -420,7 +420,12 @@ struct TileUniforms {
   //   x = hueShift (-inf..+inf, wrapped via fract)
   //   y = saturationShift (-1..+1, clamped)
   //   z = brightnessShift (-1..+1, clamped)
-  //   w = padding
+  //   w = nightDarkness. Not an HSB channel: the vec3 payload above needs a
+  //       fourth scalar for alignment, and that scalar was written as a
+  //       constant zero and read nowhere. It now carries
+  //       `globe.nightDarkness`, clamped to [0, 1] CPU-side, with 1.0 the
+  //       multiplicative identity. Reusing it keeps every offset after this
+  //       member fixed, which a new member would not.
   hsbShift: vec4<f32>,
   // Ground-atmosphere drape control. WebGL delivers atmospheric color over
   // the planet disk through two paths: the fog branch close to the ground,
@@ -433,7 +438,8 @@ struct TileUniforms {
   //       GlobeFS.glsl line 391 — drives the final mix factor between
   //       imagery and atmosphere color)
   //   z = atmosphereLightIntensity
-  //   w = reserved
+  //   w = HDR flag (frameState.useHDR), the twin of GLSL's `#ifndef HDR`
+  //       around the ground-atmosphere and fog tonemap. Not free.
   groundAtmosphereControl: vec4<f32>,
   // WebGL's `u_initialColor`: `globe.baseColor` on the first pass, which is
   // what shows where no imagery is available, and transparent black on
@@ -4206,9 +4212,18 @@ fn fragmentMain(
   // twin of WebGL's `APPLY_DAY_NIGHT_ALPHA` define: both are raised per tile
   // when a layer's resolved day or night alpha differs from 1.0, so neither
   // backend pays for the ramp on a globe that never asked for it.
+  // `tile.hsbShift.w` is the third question and the complement of the second:
+  // the procedural night fallback runs where there is no night layer, so it
+  // needs the terminator on exactly the tiles the second term leaves shut.
+  // WebGL opens the same ramp on the same third condition, as the second
+  // alternative of its `nightBlend` guard.
+  //
+  // `computeDayNightFade` keeps its single call site. All three consumers read
+  // the one ramp; a second evaluation would be a second copy of a law that is
+  // contracted to exist exactly once.
   var dayFade: f32;
   var nightBlend: f32;
-  if (camera.enableLighting > 0.5 || tile.tileControls.w > 0.5) {
+  if (camera.enableLighting > 0.5 || tile.tileControls.w > 0.5 || tile.hsbShift.w < 1.0) {
     dayFade = computeDayNightFade(dayNightNormalEC, sunDir);
     nightBlend = 1.0 - dayFade;
   } else {
@@ -4748,6 +4763,28 @@ fn fragmentMain(
       eclipseAbsolute = globe_eclipseFragmentFactor(input.v_positionMC);
     }
     eclipseRelative = eclipseAbsolute * eclipseUniforms.params.y;
+  }
+
+  // Procedural night darkening, for globes with no night imagery.
+  // `tile.hsbShift.w` carries `globe.nightDarkness`; `tile.tileControls.w` is
+  // the day/night-alpha flag, and the suppression is the point of the pair:
+  // where a night layer is already blending, the night appearance comes from
+  // the layer, and darkening it a second time would dim the city lights. GLSL
+  // reaches the same two-input conjunction at compile time, as the
+  // `APPLY_NIGHT_DARKNESS` define.
+  //
+  // Ahead of the lighting branch rather than after it, because every term in
+  // that branch is a multiply while the terminator glow it ends with is an ADD:
+  // scattered light, which ground albedo must not dim. GlobeFS.glsl puts the
+  // twin ahead of its own three lighting arms for the same reason, which leaves
+  // the two backends the same product in the same order.
+  //
+  // No `lightingFade` mix, unlike the day/night diffuse inside the branch.
+  // That fade flat-lights the globe near the ground, which is upstream's
+  // behaviour for the LIGHTING term and the opposite of what this term exists
+  // to do.
+  if (tile.hsbShift.w < 1.0 && tile.tileControls.w < 0.5) {
+    color = color * mix(1.0, tile.hsbShift.w, nightBlend);
   }
 
   // Lambert diffuse lighting and shadow receive.

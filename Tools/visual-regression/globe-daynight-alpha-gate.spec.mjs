@@ -110,6 +110,25 @@ function anyLayerAsksForDayNight(layers) {
   );
 }
 
+// ─── the two gate literals, in one place ─────────────────────────────────────
+//
+// The day/night ramp gate is a disjunction, and its terms are independent
+// questions. Lighting is the first. The per-tile day/night-alpha flag is the
+// second, and it is the one this spec owns. The third, added when the
+// procedural night fallback landed, opens the same ramp on exactly the tiles
+// the second leaves shut — the fallback runs where there is no night layer —
+// and it has its own spec and its own mutants. The pins below moved with that
+// widening rather than being weakened by it: every behavioural claim here is
+// unchanged, and each literal appears once so the next widening is one line.
+const WGSL_GATE =
+  "if (camera.enableLighting > 0.5 || tile.tileControls.w > 0.5 || tile.hsbShift.w < 1.0) {";
+const WGSL_GATE_RE =
+  /if \(camera\.enableLighting > 0\.5 \|\| tile\.tileControls\.w > 0\.5 \|\| tile\.hsbShift\.w < 1\.0\) \{/;
+const GLSL_NIGHTBLEND_GUARD =
+  "#if defined(APPLY_DAY_NIGHT_ALPHA) || defined(APPLY_NIGHT_DARKNESS)";
+const GLSL_NIGHTBLEND_GUARD_RE =
+  /#if defined\(APPLY_DAY_NIGHT_ALPHA\) \|\| defined\(APPLY_NIGHT_DARKNESS\)\n\s*float nightBlend = 1\.0 - clamp\(/;
+
 // A night-lights layer as the epic will configure it, and a plain base layer.
 const NIGHT_LAYER = Object.freeze({ dayAlpha: 0.0, nightAlpha: 1.0 });
 const BASE_LAYER = Object.freeze({ dayAlpha: 1.0, nightAlpha: 1.0 });
@@ -196,7 +215,7 @@ test("A4: one non-default layer in a stack raises the condition for the whole ti
 test("B1: the nightBlend definition is guarded by APPLY_DAY_NIGHT_ALPHA only", () => {
   assert.match(
     glslCode,
-    /#ifdef APPLY_DAY_NIGHT_ALPHA\n\s*float nightBlend = 1\.0 - clamp\(/,
+    GLSL_NIGHTBLEND_GUARD_RE,
     "conjoining a lighting define here is what pinned nightBlend at 0 on the " +
       "default globe and on vertex-normal terrain",
   );
@@ -282,9 +301,10 @@ test("B5: the lighting arms themselves are untouched", () => {
 test("C1: the WGSL gate opens on lighting OR the per-tile alpha flag", () => {
   assert.match(
     wgslCode,
-    /if \(camera\.enableLighting > 0\.5 \|\| tile\.tileControls\.w > 0\.5\) \{\n\s*dayFade = computeDayNightFade\(dayNightNormalEC, sunDir\);\n\s*nightBlend = 1\.0 - dayFade;\n\s*\} else \{\n\s*dayFade = 1\.0;\n\s*nightBlend = 0\.0;\n\s*\}/,
+    /if \(camera\.enableLighting > 0\.5 \|\| tile\.tileControls\.w > 0\.5 \|\| tile\.hsbShift\.w < 1\.0\) \{\n\s*dayFade = computeDayNightFade\(dayNightNormalEC, sunDir\);\n\s*nightBlend = 1\.0 - dayFade;\n\s*\} else \{\n\s*dayFade = 1\.0;\n\s*nightBlend = 0\.0;\n\s*\}/,
     "the shut arm must still pin dayFade at 1.0 — that is the byte-identity " +
-      "guarantee for a globe with neither lighting nor a day/night layer",
+      "guarantee for a globe with neither lighting, a day/night layer, nor " +
+      "the procedural fallback",
   );
 });
 
@@ -361,9 +381,7 @@ function mutate(source, from, to) {
 
 /** The predicates under test, as functions of a source so mutants can run them. */
 function webgpuGateIsWidened(wgslSource) {
-  return /if \(camera\.enableLighting > 0\.5 \|\| tile\.tileControls\.w > 0\.5\) \{/.test(
-    stripLineComments(wgslSource),
-  );
+  return WGSL_GATE_RE.test(stripLineComments(wgslSource));
 }
 function webgpuFlagIsLive(tileUbSource) {
   return (
@@ -378,9 +396,7 @@ function webgpuFlagIsLive(tileUbSource) {
 function webglAlphaIsUngated(glslSource) {
   const code = stripLineComments(glslSource);
   return (
-    /#ifdef APPLY_DAY_NIGHT_ALPHA\n\s*float nightBlend = 1\.0 - clamp\(/.test(
-      code,
-    ) &&
+    GLSL_NIGHTBLEND_GUARD_RE.test(code) &&
     /#ifdef APPLY_DAY_NIGHT_ALPHA\n\s*textureAlpha \*= mix\(/.test(code) &&
     !/#if defined\(APPLY_DAY_NIGHT_ALPHA\) && defined\(ENABLE_DAYNIGHT_SHADING\)/.test(
       code,
@@ -389,11 +405,7 @@ function webglAlphaIsUngated(glslSource) {
 }
 
 test("D1: ABSENCE — the pristine WGSL gate is REJECTED", () => {
-  const mutant = mutate(
-    wgsl,
-    "if (camera.enableLighting > 0.5 || tile.tileControls.w > 0.5) {",
-    "if (camera.enableLighting > 0.5) {",
-  );
+  const mutant = mutate(wgsl, WGSL_GATE, "if (camera.enableLighting > 0.5) {");
   assert.equal(webgpuGateIsWidened(mutant), false);
 });
 
@@ -416,8 +428,8 @@ test("D2: INERTNESS — a flag that is packed but never true is REJECTED", () =>
 test("D3: INERTNESS — a gate that reads the flag and discards it is REJECTED", () => {
   const mutant = mutate(
     wgsl,
-    "if (camera.enableLighting > 0.5 || tile.tileControls.w > 0.5) {",
-    "if (camera.enableLighting > 0.5 || (tile.tileControls.w > 0.5 && false)) {",
+    WGSL_GATE,
+    "if (camera.enableLighting > 0.5 || (tile.tileControls.w > 0.5 && false) || tile.hsbShift.w < 1.0) {",
   );
   assert.equal(webgpuGateIsWidened(mutant), false);
 });
@@ -425,7 +437,7 @@ test("D3: INERTNESS — a gate that reads the flag and discards it is REJECTED",
 test("D4: ABSENCE — restoring either GLSL double guard is REJECTED", () => {
   const atDefinition = mutate(
     glsl,
-    "#ifdef APPLY_DAY_NIGHT_ALPHA\n    float nightBlend = 1.0 - clamp(",
+    `${GLSL_NIGHTBLEND_GUARD}\n    float nightBlend = 1.0 - clamp(`,
     "#if defined(APPLY_DAY_NIGHT_ALPHA) && defined(ENABLE_DAYNIGHT_SHADING)\n    float nightBlend = 1.0 - clamp(",
   );
   assert.equal(webglAlphaIsUngated(atDefinition), false);
@@ -456,11 +468,7 @@ test("D6: the WebGL guard must be dropped on BOTH backends or neither", () => {
   const glslOnly =
     webglAlphaIsUngated(glsl) &&
     !webgpuGateIsWidened(
-      mutate(
-        wgsl,
-        "if (camera.enableLighting > 0.5 || tile.tileControls.w > 0.5) {",
-        "if (camera.enableLighting > 0.5) {",
-      ),
+      mutate(wgsl, WGSL_GATE, "if (camera.enableLighting > 0.5) {"),
     );
   assert.equal(
     glslOnly,
@@ -471,11 +479,7 @@ test("D6: the WebGL guard must be dropped on BOTH backends or neither", () => {
   assert.equal(
     webglAlphaIsUngated(glsl) &&
       webgpuGateIsWidened(
-        mutate(
-          wgsl,
-          "if (camera.enableLighting > 0.5 || tile.tileControls.w > 0.5) {",
-          "if (camera.enableLighting > 0.5) {",
-        ),
+        mutate(wgsl, WGSL_GATE, "if (camera.enableLighting > 0.5) {"),
       ),
     false,
   );

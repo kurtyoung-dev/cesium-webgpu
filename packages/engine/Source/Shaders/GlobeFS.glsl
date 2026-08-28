@@ -137,6 +137,10 @@ uniform float u_vertexShadowDarkness;
 uniform float u_terminatorGlowStrength;
 #endif
 
+#ifdef APPLY_NIGHT_DARKNESS
+uniform float u_nightDarkness;
+#endif
+
 // Per-fragment lunar shadow on the globe. The two body vectors are a
 // geocentric, range-normalized differential:
 //   sun.xyz  = normalize(S), sun.w = 1 / length(S)
@@ -594,7 +598,7 @@ void main()
     float clipDistance = clip(gl_FragCoord, u_clippingPlanes, u_clippingPlanesMatrix);
 #endif
 
-#if defined(SHOW_REFLECTIVE_OCEAN) || defined(ENABLE_DAYNIGHT_SHADING) || defined(HDR) || defined(APPLY_DAY_NIGHT_ALPHA)
+#if defined(SHOW_REFLECTIVE_OCEAN) || defined(ENABLE_DAYNIGHT_SHADING) || defined(HDR) || defined(APPLY_DAY_NIGHT_ALPHA) || defined(APPLY_NIGHT_DARKNESS)
     vec3 normalMC = czm_geodeticSurfaceNormal(v_positionMC, vec3(0.0), vec3(1.0));   // normalized surface normal in model coordinates
     vec3 normalEC = czm_normal3D * normalMC;                                         // normalized surface normal in eye coordinates
 #endif
@@ -611,7 +615,12 @@ void main()
 // `normalEC` above is the analytic geocentric normal, per fragment, in every
 // arm. The mesh normal is not a substitute: it is absent on normal-less terrain
 // and, where it exists, carries terrain relief the terminator must not follow.
-#ifdef APPLY_DAY_NIGHT_ALPHA
+// The second alternative is the procedural night fallback, which needs the
+// same terminator position on tiles that carry no day/night layer at all —
+// which is exactly where the first alternative is absent. The two are mutually
+// exclusive per tile by construction, so only one consumer ever reads the ramp
+// on a given tile, and the ramp itself is one expression rather than two.
+#if defined(APPLY_DAY_NIGHT_ALPHA) || defined(APPLY_NIGHT_DARKNESS)
     float nightBlend = 1.0 - clamp(czm_getLambertDiffuse(czm_lightDirectionEC, normalEC) * 5.0, 0.0, 1.0);
 #else
     float nightBlend = 0.0;
@@ -802,12 +811,14 @@ void main()
 // The day/night imagery alpha is deliberately NOT one of the three variants
 // above. It is gated on APPLY_DAY_NIGHT_ALPHA alone, reads the analytic
 // geocentric normal in every arm, and therefore exists on vertex-normal terrain
-// and on the unlit default globe alike. WGSL matches that with a runtime pair,
-// `camera.enableLighting > 0.5 || tile.tileControls.w > 0.5`, whose second term
-// is packed from the same per-tile condition that raises this file's define.
-// Conjoining the alpha with a lighting define is what previously made a
-// dayAlpha = 0 night layer invisible everywhere WebGL took the vertex-lighting
-// arm.
+// and on the unlit default globe alike. WGSL matches that with a runtime
+// disjunction, `camera.enableLighting > 0.5 || tile.tileControls.w > 0.5 ||
+// tile.hsbShift.w < 1.0`, whose second term is packed from the same per-tile
+// condition that raises this file's define and whose third is the procedural
+// night fallback below, which needs the same ramp on tiles that carry no
+// day/night layer. Conjoining the alpha with a lighting define is what
+// previously made a dayAlpha = 0 night layer invisible everywhere WebGL took
+// the vertex-lighting arm.
 // The optional terminator appearance term below is now an exact GLSL/WGSL
 // twin, dynamically controlled by Globe.terminatorGlowStrength.
 //
@@ -816,6 +827,22 @@ void main()
 // from the shadow-map configuration. WGSL has no such cache, so it inlines
 // its three shadow paths (`globeComputeShadowFactor`, `*PointLight`, `*CSM`)
 // in the source and gates them at runtime in fragmentMain.
+
+// Procedural night darkening, for globes with no night imagery. It scales the
+// composited surface, so it goes ahead of the lighting arms rather than after
+// them: every arm below is a multiply, and the terminator glow that follows is
+// an ADD, which is scattered light and must not be dimmed by ground albedo.
+// Placed here the term is the same product on both backends, and the WGSL twin
+// sits immediately ahead of its own lighting branch for the same reason.
+//
+// Deliberately not mixed by the camera-distance fade. The
+// ENABLE_DAYNIGHT_SHADING diffuse below is flat-lit near the ground by design,
+// matching upstream; this term is what makes the night side dark at street
+// altitude, and a camera-distance fade would defeat its whole purpose.
+#ifdef APPLY_NIGHT_DARKNESS
+    color.rgb *= mix(1.0, u_nightDarkness, nightBlend);
+#endif
+
 #ifdef ENABLE_VERTEX_LIGHTING
     float diffuseIntensity = clamp(czm_getLambertDiffuse(czm_lightDirectionEC, normalize(v_normalEC)) * u_lambertDiffuseMultiplier + u_vertexShadowDarkness, 0.0, 1.0);
     vec4 finalColor = vec4(color.rgb * czm_lightColor * diffuseIntensity, color.a);

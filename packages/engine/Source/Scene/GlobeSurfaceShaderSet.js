@@ -82,6 +82,7 @@ class GlobeSurfaceShader {
  * @property {boolean} [applyGamma]
  * @property {boolean} [applyAlpha]
  * @property {boolean} [applyDayNightAlpha]
+ * @property {boolean} [applyNightDarkness]
  * @property {boolean} [applySplit]
  * @property {boolean} [hasWaterMask]
  * @property {boolean} [showReflectiveOcean]
@@ -214,6 +215,7 @@ class GlobeSurfaceShaderSet {
     const applyGamma = options.applyGamma;
     const applyAlpha = options.applyAlpha;
     const applyDayNightAlpha = options.applyDayNightAlpha;
+    const applyNightDarkness = options.applyNightDarkness;
     const applySplit = options.applySplit;
     const hasWaterMask = options.hasWaterMask;
     const showReflectiveOcean = options.showReflectiveOcean;
@@ -310,7 +312,8 @@ class GlobeSurfaceShaderSet {
       (enableEclipseGlobeShadow ? 0x200000000 : 0) +
       // Upstream assigned hasVectorLayer 0x200000000; the fork's eclipse flag
       // already owns that bit, so the vector layer takes the next one.
-      (hasVectorLayer ? 0x400000000 : 0);
+      (hasVectorLayer ? 0x400000000 : 0) +
+      (applyNightDarkness ? 0x800000000 : 0);
 
     let currentClippingShaderState = 0;
     if (defined(clippingPlanes) && clippingPlanes.length > 0) {
@@ -412,6 +415,9 @@ class GlobeSurfaceShaderSet {
       }
       if (applyDayNightAlpha) {
         fs.defines.push("APPLY_DAY_NIGHT_ALPHA");
+      }
+      if (applyNightDarkness) {
+        fs.defines.push("APPLY_NIGHT_DARKNESS");
       }
       if (hasWaterMask) {
         fs.defines.push("HAS_WATER_MASK");

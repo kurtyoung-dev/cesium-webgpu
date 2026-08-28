@@ -90,9 +90,19 @@ test("A1: the GLSL night-blend law is transcribed verbatim", () => {
   // pin has to hold now is that the alpha is guarded by the imagery define
   // ALONE. `dayFadeGlsl` above is unaffected — the LAW did not move, only the
   // condition under which it runs.
+  // The guard gained a second ALTERNATIVE when the procedural night fallback
+  // landed: that term needs the same ramp on tiles carrying no day/night layer,
+  // so the two consumers share one expression rather than copying a law that is
+  // contracted to exist once. What the pin holds is unchanged — no LIGHTING
+  // define may appear in this guard.
   assert.match(
     glsl,
-    /#ifdef APPLY_DAY_NIGHT_ALPHA\n\s*float nightBlend = 1\.0/,
+    /#if defined\(APPLY_DAY_NIGHT_ALPHA\) \|\| defined\(APPLY_NIGHT_DARKNESS\)\n\s*float nightBlend = 1\.0/,
+  );
+  assert.doesNotMatch(
+    glsl,
+    /#if[^\n]*(ENABLE_VERTEX_LIGHTING|ENABLE_DAYNIGHT_SHADING)[^\n]*\n\s*float nightBlend = 1\.0/,
+    "no lighting define may guard the night-blend law",
   );
   assert.doesNotMatch(
     glsl,

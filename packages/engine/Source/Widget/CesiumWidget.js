@@ -330,6 +330,7 @@ function configureCameraFrustum(widget) {
  * @param {boolean} [options.shouldAnimate=false] <code>true</code> if the clock should attempt to advance simulation time by default, <code>false</code> otherwise.
  * @param {Ellipsoid} [options.ellipsoid=Ellipsoid.default] The default ellipsoid.
  * @param {ImageryLayer|false} [options.baseLayer=ImageryLayer.fromWorldImagery()] The bottommost imagery layer applied to the globe. If set to <code>false</code>, no imagery provider will be added.
+ * @param {boolean|ImageryProvider|Promise<ImageryProvider>} [options.nightImagery=true] The night-side imagery blended in past the terminator, applied only to the default base-layer path. See {@link Globe#nightImagery}.
  * @param {TerrainProvider} [options.terrainProvider=new EllipsoidTerrainProvider(options.ellipsoid)] The terrain provider.
  * @param {Terrain} [options.terrain] A terrain object which handles asynchronous terrain provider. Can only specify if options.terrainProvider is undefined.
  * @param {SkyBox| false} [options.skyBox] The skybox used to render the stars. When <code>undefined</code> and the WGS84 ellipsoid used, the default stars are used. If set to <code>false</code>, no skyBox, Sun, or Moon will be added.
@@ -607,10 +608,21 @@ function CesiumWidget(container, options) {
     // Set the base imagery layer
     let baseLayer = options.baseLayer;
     if (options.globe !== false && baseLayer !== false) {
-      if (!defined(baseLayer)) {
+      const buildingDefaultBaseLayer = !defined(baseLayer);
+      if (buildingDefaultBaseLayer) {
         baseLayer = ImageryLayer.fromWorldImagery();
       }
       scene.imageryLayers.add(baseLayer);
+      // The night-imagery default reaches the imagery stack this widget built
+      // and no other. An application that supplied its own base layer keeps the
+      // stack it asked for, and can still opt in by name.
+      if (buildingDefaultBaseLayer) {
+        globe.ownsDefaultImageryStack = true;
+      }
+    }
+
+    if (options.globe !== false && defined(options.nightImagery)) {
+      globe.nightImagery = options.nightImagery;
     }
 
     // Set the terrain provider if one is provided.
