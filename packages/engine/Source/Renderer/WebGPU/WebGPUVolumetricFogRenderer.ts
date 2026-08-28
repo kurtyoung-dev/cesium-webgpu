@@ -48,6 +48,7 @@
 /// <reference types="@webgpu/types" />
 
 import Matrix4 from "../../Core/Matrix4.js";
+import { shouldRebuildForDevice } from "./WebGPUDeviceInvalidationBus.js";
 
 // Scratch matrices for the per-frame inverse view-projection
 // composition. The kernels need invVP for screen UV → world ray
@@ -586,6 +587,15 @@ class WebGPUVolumetricFogRenderer {
 
   constructor(device: GPUDevice) {
     this._device = device;
+  }
+
+  /**
+   * The device this renderer captured at construction. Exposed so the
+   * per-context cache can tell a live renderer from one left behind by a
+   * device-loss recovery, which reuses the context object the cache is keyed on.
+   */
+  get device(): GPUDevice {
+    return this._device;
   }
 
   /**
@@ -1944,6 +1954,20 @@ function getOrCreate(
   context: CesiumGraphicsContext,
 ): WebGPUVolumetricFogRenderer {
   let inst = _instances.get(context);
+  // The cache stays keyed on the context because that is what callers hold,
+  // but a context outlives the device it was created with: device-loss
+  // recovery hands the same object back with a replacement device. Presence
+  // alone would therefore return a renderer whose froxel volumes, pipelines
+  // and bind groups belong to the dead device.
+  if (inst && context.device && shouldRebuildForDevice(inst, context.device)) {
+    try {
+      inst.destroy();
+    } catch {
+      // A lost device can reject native teardown; the replacement still builds.
+    }
+    _instances.delete(context);
+    inst = undefined;
+  }
   if (!inst) {
     inst = new WebGPUVolumetricFogRenderer(context.device);
     _instances.set(context, inst);

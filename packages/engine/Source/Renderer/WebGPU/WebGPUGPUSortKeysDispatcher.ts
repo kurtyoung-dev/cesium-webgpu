@@ -143,6 +143,15 @@ export const SORT_MODE_BACK_TO_FRONT = 1;
 
 class WebGPUGPUSortKeysDispatcher {
   private _device: GPUDevice;
+
+  /**
+   * The device this dispatcher captured at construction. Exposed so the
+   * per-context cache can tell a live instance from one left behind by a
+   * device-loss recovery, which reuses the context object the cache is keyed on.
+   */
+  get device(): GPUDevice {
+    return this._device;
+  }
   private _resources: GPUSortKeysResources | null = null;
   private _shaderModule: GPUShaderModule | null = null;
   // NEW-GPU-SORT-PIPELINE Phase 2 (Batch 228) — bitonic sort module.
@@ -828,6 +837,7 @@ class WebGPUGPUSortKeysDispatcher {
 
 // ─── Feature renderer factory + entry points ───────────────────────
 
+import { shouldRebuildForDevice } from "./WebGPUDeviceInvalidationBus.js";
 import GPUSortKeysSource from "../../Shaders/WebGPU/Compute/GPUSortKeys.js";
 // The matching bitonic-sort shader consumes the 64-bit keys produced above.
 import BitonicSortU64Source from "../../Shaders/WebGPU/Compute/BitonicSortU64.js";
@@ -839,6 +849,20 @@ function getOrCreateDispatcher(context: {
 }): WebGPUGPUSortKeysDispatcher | null {
   if (!context || !context.device) return null;
   let inst = _instances.get(context);
+  // The cache stays keyed on the context because that is what callers hold,
+  // but a context outlives the device it was created with: device-loss
+  // recovery hands the same object back with a replacement device. Presence
+  // alone would therefore return a dispatcher whose pipelines and buffers
+  // belong to the dead device, so the cached value is revalidated too.
+  if (inst && shouldRebuildForDevice(inst, context.device)) {
+    try {
+      inst.destroy();
+    } catch {
+      // A lost device can reject native teardown; the replacement still builds.
+    }
+    _instances.delete(context);
+    inst = undefined;
+  }
   if (!inst) {
     inst = new WebGPUGPUSortKeysDispatcher(context.device);
     inst.setShaderSource(GPUSortKeysSource);

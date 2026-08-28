@@ -72,6 +72,15 @@ export interface EnsureResourcesHost {
   _debugDepthOverlay: WebGPUDebugDepthOverlay | null;
   _debugFrustumOverlay: WebGPUDebugFrustumOverlay | null;
 
+  // Allocation epochs for the compute-side caches. Written here only by the
+  // device-invalidation subscriber callback, which returns them to their
+  // pre-allocation values so the guards that read them stop reporting the dead
+  // device's allocations as current.
+  _hiZAllocated: boolean;
+  _hiZAllocatedFor: { width: number; height: number; capacity: number };
+  _sortKeysAllocatedFor: number;
+  _clusteredLightingDispatcher: { destroy(): void } | null;
+
   // Lifecycle state
   _initialized: boolean;
   _width: number;
@@ -193,6 +202,29 @@ export function ensureResources(
       host._debugDepthOverlay = null;
       host._debugFrustumOverlay = null;
       host._initialized = false;
+
+      // Allocation epochs are separate from the resource slots above: they are
+      // plain booleans and size records, so nulling a framebuffer does not
+      // reach them. Their guards compare against a requested size or count and
+      // stay satisfied across a recovery, which would skip the reallocation
+      // that the replacement device needs. Reset them to their pre-allocation
+      // values so the next frame rebuilds against the live device.
+      host._hiZAllocated = false;
+      host._hiZAllocatedFor = { width: 0, height: 0, capacity: 0 };
+      host._sortKeysAllocatedFor = 0;
+
+      // The clustered-lighting dispatcher captured the dead device at
+      // construction and is only rebuilt when this field is empty.
+      const clusteredLightingDispatcher = host._clusteredLightingDispatcher;
+      host._clusteredLightingDispatcher = null;
+      if (clusteredLightingDispatcher) {
+        try {
+          clusteredLightingDispatcher.destroy();
+        } catch {
+          // A lost device can reject native teardown; the field is already
+          // cleared, so the next frame builds a replacement regardless.
+        }
+      }
 
       // Clear per-object caches that are not covered by the subsystem registry.
       // A scene object removed from a primitive collection during recovery can

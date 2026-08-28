@@ -43,6 +43,7 @@
  *
  * @private
  */
+import { shouldRebuildForDevice } from "./WebGPUDeviceInvalidationBus.js";
 import ProceduralCloudsWGSL from "../../Shaders/WebGPU/Environment/ProceduralClouds.js";
 import CloudDensityDomainWGSL from "../../Shaders/WebGPU/Environment/CloudDensityDomain.js";
 import {
@@ -328,6 +329,13 @@ function cloudCameraPairIsFinite(
 }
 
 export interface CloudCache {
+  /**
+   * The device every handle below was created on. The cache hangs off the
+   * context, which survives device-loss recovery, so identity against the live
+   * device is what separates a usable cache from one full of dead handles.
+   * Null only before the first device-backed call populates the cache.
+   */
+  device: GPUDevice | null;
   pipeline: GPURenderPipeline | null;
   uniformBuffer: GPUBuffer | null;
   bindGroupLayout: GPUBindGroupLayout | null;
@@ -661,9 +669,28 @@ function createCloudAttachmentUniformInputs(): MutableCloudAttachmentUniformInpu
   };
 }
 
-function ensureCloudCache(context: CesiumGraphicsContext): CloudCache {
+// Exported alongside the other cloud-cache helpers so the device-identity
+// contract can be exercised without standing up a device; the render paths
+// remain its only production callers.
+export function ensureCloudCache(context: CesiumGraphicsContext): CloudCache {
+  // A recovered device reuses this context, so a surviving cache would pass a
+  // presence-only check while every pipeline, sampler, texture and bind group
+  // in it belongs to the device that was lost. Drop the whole cache in that
+  // case and let the normal lazy paths rebuild it; the shared teardown already
+  // knows the disposal order and clears the context slot.
+  const liveDevice = context.device ?? null;
+  const existing = context._cloudCache;
+  if (
+    existing &&
+    liveDevice !== null &&
+    existing.device !== null &&
+    shouldRebuildForDevice(existing as { device: GPUDevice }, liveDevice)
+  ) {
+    destroyProceduralCloudResources(context);
+  }
   if (!context._cloudCache) {
     context._cloudCache = {
+      device: liveDevice,
       pipeline: null,
       uniformBuffer: null,
       bindGroupLayout: null,
@@ -806,7 +833,14 @@ function ensureCloudCache(context: CesiumGraphicsContext): CloudCache {
       cpuStages: new CloudCpuStageAccumulator(),
     };
   }
-  return context._cloudCache;
+  // The first caller can arrive before the context has a device — the cache is
+  // still useful for the flag fields consumers set on it. Adopt the device as
+  // soon as one exists so the identity check above has something to compare.
+  const cache = context._cloudCache;
+  if (cache.device === null && liveDevice !== null) {
+    cache.device = liveDevice;
+  }
+  return cache;
 }
 
 /** Resolve the cloud march bind group from a bounded exact-identity cache. */
@@ -4425,6 +4459,7 @@ export function destroyProceduralCloudResources(
     cache.temporalConsumePipeline = null;
     cache.temporalConsumeBindGroupLayout = null;
     cache.initialized = false;
+    cache.device = null;
     context._cloudCache = undefined;
   }
 }

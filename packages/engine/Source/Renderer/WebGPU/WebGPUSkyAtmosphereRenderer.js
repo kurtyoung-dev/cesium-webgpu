@@ -15,6 +15,7 @@ import WebGPUBuffer from "./WebGPUBuffer.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
 import SkyAtmosphereWGSL from "../../Shaders/WebGPU/Environment/SkyAtmosphere.js";
 import { resolveSkyDynamicLighting } from "./WebGPUAtmosphereUniforms.js";
+import { shouldRebuildForDevice } from "./WebGPUDeviceInvalidationBus.js";
 // Scene-framebuffer target helper.
 import { makeSceneFBTargets } from "./WebGPUSceneFBTargetHelpers.js";
 import {
@@ -1014,10 +1015,34 @@ function updateWebGPUSkyAtmosphere(skyAtmosphere, frameState) {
   }
   //>>includeEnd('debug');
 
+  // The cache hangs off the Scene-side SkyAtmosphere, which survives a
+  // device-loss recovery. Its LUT-view comparisons below already notice when
+  // the performance manager hands back views from a replacement device, but
+  // the sampler, the 1x1 placeholder texture and the bind-group layouts are
+  // built once behind presence-only guards — so the rebuilt bind group would
+  // mix live views with dead-device entries. Drop the whole cache instead.
+  const existingCache = skyAtmosphere._webgpuCache;
+  if (
+    defined(existingCache) &&
+    defined(existingCache.device) &&
+    shouldRebuildForDevice(existingCache, device)
+  ) {
+    try {
+      destroyWebGPUSkyAtmosphereResources(skyAtmosphere);
+    } catch (e) {
+      // A lost device can reject native teardown; the cache slot still clears
+      // below so the replacement device gets freshly built resources.
+      skyAtmosphere._webgpuCache = undefined;
+      //>>includeStart('debug', pragmas.debug);
+      console.warn("[WebGPU:SkyAtmo] stale-device teardown failed:", e);
+      //>>includeEnd('debug');
+    }
+  }
   if (!defined(skyAtmosphere._webgpuCache)) {
     skyAtmosphere._webgpuCache = {};
   }
   const cache = skyAtmosphere._webgpuCache;
+  cache.device = device;
 
   // Invalidate cached pipelines when HDR or MSAA changes the scene target
   // generation. A pipeline retains its fragment format and would be invalid

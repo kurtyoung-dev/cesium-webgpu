@@ -14,6 +14,29 @@
  * @module WebGPUDeviceInvalidationBus
  */
 
+/**
+ * Whether a cache entry built for an earlier `GPUDevice` must be rebuilt
+ * against the live one.
+ *
+ * Device-loss recovery reuses the host objects a cache hangs from - the
+ * Context, a Scene-side object, a `WeakMap` keyed on either - so a
+ * presence-only guard (`if (cached)`) stays satisfied and the subsystem
+ * binds handles from the dead device into new-device bind groups. Identity
+ * against the live device is the check that distinguishes the two, and
+ * `null` reads as "rebuild" so a first call needs no separate branch.
+ *
+ * Typed on the device field alone so any cache struct carrying a `device`
+ * can consume it without a shared base type.
+ */
+export function shouldRebuildForDevice(
+  cached: { device: GPUDevice } | null | undefined,
+  liveDevice: GPUDevice,
+): boolean {
+  return (
+    cached === null || cached === undefined || cached.device !== liveDevice
+  );
+}
+
 export class WebGPUDeviceInvalidationBus {
   private listeners = new Set<() => void>();
   private contextIdProvider: () => string | undefined;

@@ -39,6 +39,7 @@ import {
   Stage,
 } from "./WebGPUBindGroupLayoutHelpers.js";
 import { ComputeTaskType } from "./WebGPUPerformanceManager.js";
+import { shouldRebuildForDevice } from "./WebGPUDeviceInvalidationBus.js";
 import type { ComputeTaskTypeValue } from "./WebGPUPerformanceManager.js";
 
 /**
@@ -128,7 +129,7 @@ export function shouldRebuildAtmosphereLUTResources(
   cached: Pick<AtmosphereLUTResources, "device"> | null,
   liveDevice: GPUDevice,
 ): boolean {
-  return cached === null || cached.device !== liveDevice;
+  return shouldRebuildForDevice(cached, liveDevice);
 }
 
 /**

@@ -1250,8 +1250,11 @@ export class WebGPUSceneRenderer {
   private _hiZDispatchCount: number = 0;
   private _hiZLastInput: number = 0;
   private _hiZLastFiltered: number = 0;
-  private _hiZAllocated: boolean = false;
-  private _hiZAllocatedFor = { width: 0, height: 0, capacity: 0 };
+  // Public by the file's underscore convention because the device-invalidation
+  // callback in WebGPUSceneRendererEnsureResources resets them through the
+  // EnsureResourcesHost shape.
+  public _hiZAllocated: boolean = false;
+  public _hiZAllocatedFor = { width: 0, height: 0, capacity: 0 };
   private _hiZSphereSoA: {
     centerX: Float32Array;
     centerY: Float32Array;
@@ -1286,7 +1289,8 @@ export class WebGPUSceneRenderer {
   private static readonly GPU_SORT_KEYS_THRESHOLD_LO = 4000;
   // Per-frustum gate state.
   private _gpuSortActiveByFrustum: Map<number, boolean> = new Map();
-  private _sortKeysAllocatedFor: number = 0;
+  // Public for the same reason as the Hi-Z allocation epoch above.
+  public _sortKeysAllocatedFor: number = 0;
   private _sortKeysSoA: {
     distanceSquared: Float32Array;
     renderLayers: Uint32Array;

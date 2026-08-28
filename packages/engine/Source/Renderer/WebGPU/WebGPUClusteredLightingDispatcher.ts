@@ -128,6 +128,15 @@ export interface ClusterLightingDispatchInputs {
 
 export class WebGPUClusteredLightingDispatcher {
   private readonly _device: GPUDevice;
+
+  /**
+   * The device this dispatcher captured at construction. Exposed so the
+   * SceneRenderer's cached reference can be told apart from one left behind by
+   * a device-loss recovery, which reuses the SceneRenderer instance.
+   */
+  get device(): GPUDevice {
+    return this._device;
+  }
   private readonly _bounds: WebGPUClusterBoundsRenderer;
   private readonly _assign: WebGPUClusterAssignRenderer;
   private readonly _paramsBuffer: GPUBuffer;

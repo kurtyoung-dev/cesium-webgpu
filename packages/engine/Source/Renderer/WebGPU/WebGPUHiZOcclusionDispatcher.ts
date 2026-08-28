@@ -158,6 +158,15 @@ function computeMipLevels(
 
 class WebGPUHiZOcclusionDispatcher {
   private _device: GPUDevice;
+
+  /**
+   * The device this dispatcher captured at construction. Exposed so the
+   * per-context cache can tell a live instance from one left behind by a
+   * device-loss recovery, which reuses the context object the cache is keyed on.
+   */
+  get device(): GPUDevice {
+    return this._device;
+  }
   // C-R7-COMPUTE-PIPELINE-CACHE (Batch 76) — captured at init time.
   private _computePipelineCache:
     | import("./WebGPUComputePipelineCache.js").WebGPUComputePipelineCache
@@ -978,6 +987,7 @@ class WebGPUHiZOcclusionDispatcher {
 // stays in `Source/Shaders/WebGPU/Compute/` and the build pipeline
 // owns the JS-wrapper generation.
 
+import { shouldRebuildForDevice } from "./WebGPUDeviceInvalidationBus.js";
 import HiZPyramidSource from "../../Shaders/WebGPU/Compute/HiZPyramid.js";
 import HiZPyramidFromDepthSource from "../../Shaders/WebGPU/Compute/HiZPyramidFromDepth.js";
 import OcclusionTestSource from "../../Shaders/WebGPU/Compute/OcclusionTest.js";
@@ -998,6 +1008,20 @@ function getOrCreateDispatcher(context: {
 }): WebGPUHiZOcclusionDispatcher | null {
   if (!context || !context.device) return null;
   let inst = _instances.get(context);
+  // The cache stays keyed on the context because that is what callers hold,
+  // but a context outlives the device it was created with: device-loss
+  // recovery hands the same object back with a replacement device. Presence
+  // alone would therefore return a dispatcher whose pipelines and buffers
+  // belong to the dead device, so the cached value is revalidated too.
+  if (inst && shouldRebuildForDevice(inst, context.device)) {
+    try {
+      inst.destroy();
+    } catch {
+      // A lost device can reject native teardown; the replacement still builds.
+    }
+    _instances.delete(context);
+    inst = undefined;
+  }
   if (!inst) {
     inst = new WebGPUHiZOcclusionDispatcher(context.device);
     inst.setHiZShaderSource(HiZPyramidSource);

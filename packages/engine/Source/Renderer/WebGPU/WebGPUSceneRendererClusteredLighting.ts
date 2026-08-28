@@ -30,6 +30,7 @@ import {
   type ClusterAreaLightInput,
   type ClusterLightingInputLight,
 } from "./WebGPUClusteredLightingDispatcher.js";
+import { shouldRebuildForDevice } from "./WebGPUDeviceInvalidationBus.js";
 import type { WebGPURenderFrameConfig } from "./WebGPUSceneRenderer.js";
 
 /** Buffer-handle bundle the dispatcher exposes to consumer pipelines. */
@@ -185,6 +186,18 @@ export function dispatchClusteredLighting(
   // Lazy-construct on the first enabled call — the device wasn't available at
   // SceneRenderer construction time. Disabled consumers use the effects
   // system's shared placeholder resources and do not need a dispatcher.
+  // A device-loss recovery reuses the SceneRenderer, so a dispatcher left over
+  // from the previous device is still referenced here and would pass a
+  // presence-only check while holding dead pipelines and buffers.
+  const cachedDispatcher = host._clusteredLightingDispatcher;
+  if (cachedDispatcher && shouldRebuildForDevice(cachedDispatcher, device)) {
+    host._clusteredLightingDispatcher = null;
+    try {
+      cachedDispatcher.destroy();
+    } catch {
+      // A lost device can reject native teardown; the replacement still builds.
+    }
+  }
   if (!host._clusteredLightingDispatcher) {
     host._clusteredLightingDispatcher = new WebGPUClusteredLightingDispatcher(
       device,
