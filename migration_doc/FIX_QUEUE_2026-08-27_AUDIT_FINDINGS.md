@@ -29,14 +29,14 @@ owed to the gated Edge executor. Every fix needs a behavioural test that kills a
 | Lane | Findings owned | Clone |
 |---|---|---|
 | A1 | `M-1`…`M-8` (model wave repair; M-1 fail-closed guard is the verdict driver) | cesium-audit-model |
-| A2 | sun-disc completion — the unlanded `solarDiscTransmittanceSplit` half; first task is tip-coherence | cesium-lane-sundisc2 |
-| A3 | `perf-metric-vector.mjs` + noise fixture integration (multi-metric ruling) | cesium-lane-metric |
+| A2 | sun-disc: round 1 correctly REFUSED the banked option-(B) patch (tip is coherent — 1164's engine change was comment-only; the hold was deliberate). The 2026-08-25 maintainer ruling selecting **option (A) co-fade** was transcript-verified and is now being implemented, both backends; dawn sweep stays the acceptance gate | cesium-lane-sundisc2 |
+| A3 | multi-metric vector: round 1 DO-NOT-LAND on four blockers (the scored axis passed a 1M-writes-in-1-frame storm; blindness scored PASS; unobserved production seam; unfalsifiable noise prose); round 2 repaired three with executed proof (spec 119/119) — fresh-Sol review in flight; blocker A's zero-count census is machine-lane-gated with the patch banked | cesium-lane-metric |
 | A4 | `F1-2` perf-manager teardown · `H1` IBL position gate · `H2` globe material cache · `E-1` clustered-light checksum | cesium-audit-fleet |
 | B1 | next C16 shard (`WebGPUSceneRendererFrustumLoop.ts` 42 markers + next-heaviest) | cesium-lane-c16shard |
-| B2 | `D-1`…`D-6`, `G-4` doc repairs (vacated closure, unbacked claims, mirror reconciliation) | cesium-audit-docs |
+| B2 | **LANDED, Batch 1174** — `D-1`…`D-6` + `G-4` repaired across ten documents; two survivors adjudicated deliberate (the register quotes the phrase as evidence; the C13 queue's narration is vacated by its own row cell) | done |
 | B3 | `O-8` three uncontrolled grammar rules · `O-9` detached-HEAD exit | cesium-audit-policy |
 | C1 | R-SOL claim promotion/kill + unread-region deep read (findings feed §5 on return) | cesium-lane-verify |
-| D1 | `P-1`…`P-9` prototype repairs under its own preregistration governance | cesium-audit-proto |
+| D1 | prototype: R9 authored + independently reviewed (CONDITIONAL, 17 corrections); lane found charter §1.1 binds and R8's RULING REQUEST was the right instrument. **Maintainer ruled 2026-08-27: per-spec cap 820→1,400 GRANTED; aggregate 1,340 stays BINDING** — R9 correction + repairs in flight | cesium-audit-proto |
 | D2 | `verify-clone-drained.mjs` (G-1 root cause) · `verify-orientation-mirror.mjs` (G-4 root cause) | cesium-lane-tools |
 | D3 | C14 readiness review · C17 scope refresh (proposals) | cesium-lane-plan |
 
@@ -85,6 +85,12 @@ corrected with it.
 | Q-8 | C16 grammar exclusions | `CC-BY-NC-SA` and `YYYY-MM-DDTHH` leak past the two-string lookahead; zero live occurrences, but the standard REQUIRES license attribution — `C16-R2` rider | Sol, bounded |
 | Q-9 | `ViewportQuad.js:187` + siblings | scene-logic-extractor inversions — shared post-branch logic under one backend's branch (fleet 1 backend-agnosticism survivors; full list in §5) | Sol per file |
 | Q-10 | `WebGPUSceneRenderer.ts` structure | three self-contained clusters with no orchestration role inline (5,009 lines) | Opus decomposition plan first |
+
+| Q-11 | `AGENTS.md` | the tracked worker-facing rules file carries none of the fork's CRITICAL technical rules — zero hits for positionHigh/positionLow, ShaderDefine add-only, pragma discipline, the C16 standard, backend agnosticism (`CLAUDE.md` is deliberately untracked, so clones receive only AGENTS.md). Verified 2026-08-27; surfaced when a lane noted the rules reached its worker only via the brief | Sol, bounded doc |
+| Q-12 | `.prettierignore` | `prettier --check` on `migration_doc/**` is VACUOUS — the ignore file unignores only eight trees and migration_doc is not one, so the command prints success while matching zero files. Every doc-batch "prettier clean" gate over migration_doc has been a false green | Sol, bounded |
+| Q-13 | node:test + mixed EOL | mixed CRLF/LF silently suppressed five test registrations in one spec (114→119 after normalization, zero code change) — a green suite over mixed EOL is partly vacuous; wants a structural guard (an EOL-consistency tooth in the fleet contract) | Opus design, then Sol |
+| Q-14 | `WebGPUPrimitiveCommands.ts:3624/:5093/:5181` | primitive camera buffers created once and never resized while flat/lit size is recomputed per frame — same family as A5-5 in a second file; pre-existing, sharpened by the A6 UBO growth | Sol, bounded (after A5-5/A6 land) |
+| Q-15 | `GlobeTerrain.wgsl` height fallback | the `HEIGHT_SENTINEL_UNAVAILABLE` branch uses the equatorial radius (0 m equator / −21,384.7 m poles) — currently DEAD from all six shipped entry points, filed for whenever a caller reaches it | observation, low |
 
 The remaining ~30 medium and all low survivors are enumerated in §5 with their lane column reading
 QUEUED; they dispatch after Q-1…Q-10, batched by file so one Sol dispatch closes several small

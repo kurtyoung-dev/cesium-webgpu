@@ -553,3 +553,31 @@ Nothing. All five Sol lanes and all three review fleets have reported.
 - The uncommitted wave is banked at
   `F:/Dev/GH/cesium-webgpu-worker-archive/2026-08-27-sol-uncommitted/` as `tracked.patch` plus
   `untracked.tar.gz` with a porcelain listing and base tip, because it exists nowhere in git.
+
+---
+
+## 15. Addendum — late-evening corrections and rulings (2026-08-27, post-Batch-1174)
+
+**Correction to §12/`G-1`'s sun-disc framing.** "Batch 1164 landed only half the fix" implied an
+accident. The lane that took the work proved otherwise: 1164's engine change was **comment-only**
+(0 non-comment changed lines), the rendering fix was **deliberately HELD by the C12-38 row** because
+every candidate changes WebGL's shipped sunrise/sunset appearance, and the banked patch implements
+option (B) — an unselected candidate. The 2026-08-25 maintainer ruling selecting **option (A)
+co-fade** was then re-verified verbatim from the session transcript; it had never been recorded in
+the row, and that recording gap — not a lost half-landing — is the defect. Option (A) is in
+implementation; option (B) stays banked-unselected. The G-1 harvest itself remains correct: the
+bytes were single-copy and needed banking regardless of disposition.
+
+**Maintainer ruling, 2026-08-27 (prototype caps, via R8's RULING REQUEST).** Per-spec cap
+820 → 1,400 **granted**; the 1,340 aggregate ceiling **stays binding** (the independent review
+proved it load-bearing — 1,940 would equal the sum of maxima and constrain nothing). Satisfies
+charter §1.1's measured-red rule through the instrument the charter names.
+
+**New systemic findings from the repair lanes**, queued in the fix queue (Q-11…Q-15): the tracked
+`AGENTS.md` carries none of the fork's CRITICAL technical rules, so worker clones receive them only
+when a brief inlines them; `prettier --check` over `migration_doc/**` is vacuous (ignore-file gap)
+and every such gate in doc batches has been a false green; mixed EOL silently suppressed five
+node:test registrations in one spec; the primitive camera buffers share A5-5's never-resized defect
+family in a second file; and an MCP idle-timeout abort does NOT terminate the codex session — one
+"killed" round was still writing 45 minutes later, so freeze-then-review must verify quiescence
+from event streams plus file stability, never from the tool returning.
