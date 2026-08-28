@@ -108,6 +108,16 @@ corrected with it.
 The remaining ~30 medium and all low survivors are enumerated in §5 with their lane column reading
 QUEUED; they dispatch after Q-1…Q-10, batched by file so one Sol dispatch closes several small
 findings in the same module. C1's returning findings append here as a dated addendum.
+### Session stop point for machine restart (2026-08-28 ~16:15) - Batch 1239 landed; two lanes preserved mid-flight
+
+| | Item | State |
+|---|---|---|
+| LANDED | Q-57 | FIXED Batch 1239 (magnification fade + continuous nightDarkness handover; the fade alone was proven insufficient - the suppression latch was the second half). Edge legs owed incl. the onset-altitude sweep with derived prediction. CORRECTION: the L3 bake measures 455.4 KB - INSIDE the R-2026-08-28-3 half-megabyte gate, not the ~2 MB the row assumed - so the deeper-bake decision is now a cheap maintainer call (halves texel size, full-fade altitude ~42 km -> ~21 km) |
+| PRESERVED | lane VF (Q-56/Q-58/Q-55) | stopped at its packet-digest step for the restart - NEAR-COMPLETE work in F:/Dev/GH/cesium-lane-deviceloss (dirty, do not reset). Resume: inspect the clone, re-run its gates, land. Rows stay OPEN until then |
+| PRESERVED | lane SW (Q-38b/38d/41/52/54/60 + sink experiment) | stopped mid-Q-60. Partial work in F:/Dev/GH/cesium-lane-solwave (dirty, stable across two hash samples). THREE Sol sessions created 15:55-15:56 died NON-TERMINAL (no task_complete, no surviving process) - treat as dead, inspect the clone for partial Sol writes before resuming. The project_doc_max_bytes=0 A/B sink experiment is UNFINISHED - re-run it on resume |
+| CLONES | retirement sweep | 11 retired on byte-proof or in-session hash-verified landing proof (w3b/w3c/w3d/w3e/w3f/w3g, elevramp, specreds, sunparity, nightblend, lunarshadow). cesium-lane-nightopt is landed-and-drained but EBUSY - delete after the restart releases the handle. KEPT: sundisc2 (FROZEN, maintainer-held), deviceloss + solwave (preserved work above), and eight older-wave clones (c16shard, cachefix, elev, enforce, metric, plan, tools, verify) for a post-restart drainage pass - their dirty files predate this session's hash proofs |
+| NOTE | restart hygiene | four stale codex processes from 08-26/08-27 clear with the restart; the Edge/dev-server slots are free; Build/ holds a genuine post-epic artifact at the current tip |
+
 ### Acceptance sweep + device-loss lane (2026-08-28 ~15:00) - Batches 1236 landed; sweep evidence at output/visual-wave-acceptance-2026-08-28/
 
 Device-loss cluster dispositions (Batch 1236): Q-46 FIXED (Edge re-verification pending - the T2-2 recipe must go 4-of-4 crash to 0-of-4); Q-47 FIXED WITH PREMISE CORRECTED (liveness, not identity - the globe cache is device-keyed and self-healing; the briefed sixth-family guard was refused as a guard for an absent mechanism); Q-49 CHARACTERIZED (window inherent to the API, measured 1.7 s, cheap suspicion signal landed for speculative pre-cooking only).
