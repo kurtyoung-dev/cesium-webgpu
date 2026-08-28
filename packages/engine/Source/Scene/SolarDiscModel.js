@@ -707,8 +707,16 @@ function solarDiscHdrRadiance(useHdr, light) {
  * Derives the sun billboard's atmospheric alpha scale from its RGB
  * transmittance. For finite physical transmittance (non-negative channels),
  * this is `min(1, max(r, g, b))`, using the strongest surviving channel for
- * the co-fade. Finite negative channels are outside the physical domain and
- * follow that expression without a lower clamp.
+ * the co-fade.
+ *
+ * Transmittance is the fraction of light surviving a path, so a negative
+ * channel is outside the physical domain: nothing the atmosphere model can
+ * produce is negative, and a negative arriving here means the caller is
+ * already wrong. The result is clamped at zero all the same, because this
+ * value is an ALPHA — a negative alpha does not fade the disc, it brightens
+ * the sky behind it, turning an upstream error into a lit artifact in the
+ * frame. The clamp is containment, not correction: it bounds the damage
+ * without pretending the input was meaningful.
  *
  * An all-zero transmittance fades the disc completely into the sky. Missing
  * or non-finite input returns exactly 1.0 so an unreadable publication cannot
@@ -716,7 +724,7 @@ function solarDiscHdrRadiance(useHdr, light) {
  *
  * @param {Cartesian3|object} [transmittance] Per-channel atmospheric
  *        transmittance, with finite `x`, `y`, and `z` values.
- * @returns {number} `min(1, max(x, y, z))` for finite input; otherwise 1.0.
+ * @returns {number} `min(1, max(0, x, y, z))` for finite input; otherwise 1.0.
  * @private
  */
 function solarDiscAtmosphereAlpha(transmittance) {
@@ -730,7 +738,7 @@ function solarDiscAtmosphereAlpha(transmittance) {
   ) {
     return 1.0;
   }
-  return Math.min(1.0, Math.max(red, green, blue));
+  return Math.min(1.0, Math.max(0.0, red, green, blue));
 }
 
 /**

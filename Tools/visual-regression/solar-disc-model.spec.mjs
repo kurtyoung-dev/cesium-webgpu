@@ -81,7 +81,10 @@ test("atmospheric alpha implements its documented finite and degenerate contract
 
   for (const [name, transmittance, expected] of [
     ["all-zero", { x: 0.0, y: 0.0, z: 0.0 }, 0.0],
-    ["all-negative", { x: -1.0, y: -2.0, z: -3.0 }, -1.0],
+    // A negative channel is outside the physical domain, and this return is
+    // an ALPHA: left unclamped it brightens the sky behind the disc instead
+    // of fading it, so the contract floors the result at zero.
+    ["all-negative", { x: -1.0, y: -2.0, z: -3.0 }, 0.0],
     ["mixed-sign", { x: -1.0, y: 0.2, z: -3.0 }, 0.2],
     ["upper-clamp-x", { x: 1.25, y: 0.8, z: 0.4 }, 1.0],
     ["upper-clamp-y", { x: 0.8, y: 1.25, z: 0.4 }, 1.0],
@@ -103,6 +106,57 @@ test("atmospheric alpha implements its documented finite and degenerate contract
       `${name} must take the exact 1.0 fallback`,
     );
   }
+});
+
+// The clamp this pins is containment for input that should never arrive, not a
+// correction that makes such input meaningful. What matters is the BOUND: an
+// alpha below zero brightens the sky behind the disc rather than fading it, so
+// no un-physical transmittance may produce one.
+test("atmospheric alpha is never negative for any finite transmittance", async () => {
+  const { solarDiscAtmosphereAlpha: alpha } = await importEngine(
+    "Scene/SolarDiscModel.js",
+  );
+
+  const levels = [-1e6, -1000, -1.0, -0.5, -1e-7, -0.0, 0.0, 1e-7, 0.5, 1.0];
+  let sawNegativeInput = false;
+  for (const x of levels) {
+    for (const y of levels) {
+      for (const z of levels) {
+        const got = alpha({ x, y, z });
+        assert.ok(
+          got >= 0.0,
+          `alpha(${x}, ${y}, ${z}) = ${got} — a negative alpha brightens the sky`,
+        );
+        assert.ok(got <= 1.0, `alpha(${x}, ${y}, ${z}) = ${got} exceeds 1`);
+
+        const peak = Math.max(x, y, z);
+        if (peak > 0.0) {
+          // Strictly inside the physical domain the clamp must be invisible.
+          assert.equal(
+            got,
+            Math.min(1.0, peak),
+            `alpha(${x}, ${y}, ${z}) must still be min(1, max channel)`,
+          );
+        } else {
+          if (peak < 0.0) {
+            sawNegativeInput = true;
+          }
+          // A non-positive peak fades the disc out completely. Zero is zero
+          // here: the clamp normalizes a negative zero to a positive one, and
+          // an alpha carries no sign.
+          assert.equal(got, 0.0, `alpha(${x}, ${y}, ${z}) must floor at 0`);
+          assert.ok(
+            !Object.is(got, -0.0),
+            `alpha(${x}, ${y}, ${z}) must not return a negative zero`,
+          );
+        }
+      }
+    }
+  }
+  assert.ok(
+    sawNegativeInput,
+    "the sweep must actually exercise negative input",
+  );
 });
 
 test("atmospheric alpha is monotone in every physical transmittance channel", async () => {
