@@ -277,5 +277,8 @@ brief carries premises re-verified at the cited `file:line` on the day it dispat
 | VW-N3 / VW-N4 | UNBLOCKED by N1+N2; dispatched to the re-armed night lane |
 | VW-N9 (new) | Dusk-slope scalar: REFUTED as briefed - a runtime slope cannot coexist with the frozen ramp law pinning the literal in three places. Lands only as its own row carrying a CLT-B4 amendment (single source of truth for the default, both backends' defaults asserted equal). Maintainer/orchestrator arming decision |
 | VW-N6 / VW-N7 / VW-N8 | pending (N6 after N3; N7 after N3/N4 land + rebuild; N8 after N3) |
-| VW-L1 / VW-L2 | lane in flight |
+| VW-L1 | LANDED Batch 1224 - shared-seam disc appearance (backend-neutral premise verified); five-eclipse goldens with measured spreads; Danjon 1/85 defended against two alternatives on worst-case fit |
+| VW-L2 | LANDED Batch 1225 - MoonLight arm at the two SunLight-gate sites (EclipseState:700-713 citation REFUTED - those lines meant Moon-as-occulter); one law drives disc and light |
+| VW-N3 / VW-N4 | lane VN2 in flight (clone nightopt at bc3ebd6bb0) |
+| VW-L Edge legs | owed to tranche 3: 97.71% umbral coverage / 0.0452 disc luminance / red>=3x blue at greatest on the Porto Velho preset, MoonLight scene dimming to 4.52%, enableLunarEclipse=false as the void-check anchor |
 
