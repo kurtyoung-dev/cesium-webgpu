@@ -200,29 +200,76 @@ WebGL's `sampleAndBlend` takes a **single** coordinate, `tileTextureCoordinates`
 
 ### Coordinate-space table
 
+> **State as of tip `2ede0a8c89`, i.e. AFTER the Batch-349 fix recorded below.**
+> Every row was re-derived against the shaders at that tip; the per-row provenance
+> follows the table. Until 2026-08-28 this table still described the PRE-fix state
+> and reported the WGSL rect test as `geoUV — WRONG`, which the shipped shader had
+> not done since Batch 349.
+
 | Coord / rect | Layer type | LOD | Space | WebGL uses | WGSL uses | Match |
 | --- | --- | --- | --- | --- | --- | --- |
-| per-vertex geoUV (`.xy`) | both | all | geographic [0,1] | `v_texCoords.xy` | `v_texCoords.xy` | ✅ |
-| per-vertex Mercator-V (`webMercatorT`, `.z`) | Web-Mercator | all | Mercator-Y [0,1] (precomputed attr; geoV fallback) | `v_texCoords.z` | `v_texCoords.z` (+NaN guard) | ✅ |
-| **texCoordsRect test** | **Web-Mercator** | **deep/interior** | **Mercator-V** | **Mercator-V (= sample)** | **`geoUV` — WRONG** | ❌ |
-| texCoordsRect test | Web-Mercator | low/base (fixup) | rect forced `(0,0,1,1)`; moot | Mercator-V | geoUV | ✅ (trivial) |
-| texCoordsRect test | geographic | all | geographic | geoUV | geoUV | ✅ |
-| texture sample | both | all | matches bound texture | `tileTexCoords` | `selectLayerUV` | ✅ |
+| per-vertex geoUV (`.xy`) | both | all | geographic [0,1] | `v_textureCoordinates.xy` | `v_textureCoordinates.xy` (+seam clamp) | ✅ |
+| per-vertex Mercator-V (`webMercatorT`, `.z`) | Web-Mercator | all | Mercator-Y [0,1] (precomputed attr; geoV fallback) | `v_textureCoordinates.z` | `v_textureCoordinates.z` (+NaN guard, +seam clamp) | ✅ |
+| texCoordsRect test | Web-Mercator | deep/interior | Mercator-V | Mercator-V (= sample) | per-layer `selectLayerUV` (= sample) | ✅ |
+| texCoordsRect test | Web-Mercator | low/base (fixup) | rect forced `(0,0,1,1)`; moot | Mercator-V | per-layer `selectLayerUV` | ✅ (moot) |
+| texCoordsRect test | geographic | all | geographic | geoUV | `selectLayerUV` returns geoUV | ✅ |
+| texture sample | both | all | matches bound texture | `tileTextureCoordinates` | `selectLayerUV` | ✅ |
 | cutoutRectangle test | both | all | geographic | geoUV | geoUV | ✅ |
-| textureTranslationAndScale | Web-Mercator | all | Mercator-V | Mercator-space | cached ts | ✅ |
+| textureTranslationAndScale | Web-Mercator | all | Mercator-V | Mercator-space | cached `layer.translationAndScale` | ✅ |
+
+**Provenance for the corrected rows** — verified at tip `2ede0a8c89`. WGSL paths are
+relative to `packages/engine/Source/Shaders/WebGPU/Globe/`; GLSL and JS paths to
+`packages/engine/Source/`.
+
+- **Rows 1-2 (per-vertex geoUV / Mercator-V).** Symbol corrected from `v_texCoords`
+  to the real varying name `v_textureCoordinates`, which both backends use:
+  `Shaders/GlobeFS.glsl:160` and `GlobeTerrain.wgsl:3846-3847`. The WGSL adds a
+  `clamp(..., 0, 1)` seam guard with no WebGL counterpart (`GlobeTerrain.wgsl:3838-3847`);
+  it moves a UV by at most ~1e-6 and exists to stop epsilon-overshoot at shared tile
+  boundaries from zeroing the step-mask. Benign, like the `sanitizeWebMercatorT` NaN
+  guard already noted (`GlobeTerrain.wgsl:846`, applied at `:1656`, `:1671`, `:1720` and `:1747`).
+- **Row 3 (texCoordsRect test, Web-Mercator, deep/interior).** The inverted row.
+  `applyImageryLayer` takes two UV parameters and tests the rect against the
+  SELECTED one: `texCoordsAlpha(texCoordsBoundsUV, layer.texCoordsRect)` at
+  `GlobeTerrain.wgsl:1977`, while the cutout keeps `boundsUV`. All 16 unrolled call
+  sites pass `(..., geoUV, uv, ...)` where `uv = selectLayerUV(geoUV, webMercT, useWMT)`
+  (`GlobeTerrain.wgsl:4233` and `:4239`, pattern repeated through `:4440`).
+  `selectLayerUV` is at `:1786`. WebGL's one-V rule is unchanged:
+  `GlobeSurfaceShaderSet.js:552` picks `textureCoordinates.xz` or `.xy` once and
+  `GlobeFS.glsl` uses that single `tileTextureCoordinates` for both the `step()`
+  mask (`:261,264`) and the sample (`:273`).
+- **Row 4 (texCoordsRect test, low/base fixup).** Same call-site evidence as row 3;
+  the WGSL cell said `geoUV` for the same stale reason. The V-space remains moot
+  here because the base-layer edge fixup forces the rect to full coverage, so the
+  Match cell is `✅ (moot)` rather than a claim about the coordinate.
+- **Row 5 (texCoordsRect test, geographic).** Unchanged in substance; the cell now
+  names the mechanism. `selectLayerUV` returns `geoUV` when `useWebMerc <= 0.5`
+  (`GlobeTerrain.wgsl:1786-1789`), so the geographic path is byte-identical to the
+  old wording.
+- **Row 6 (texture sample).** WebGL cell corrected from `tileTexCoords` to the real
+  parameter name `tileTextureCoordinates` (`GlobeFS.glsl:239`).
+- **Row 8 (textureTranslationAndScale).** WGSL cell corrected from `cached ts` to
+  the real field: `sampleImagery` applies `layer.translationAndScale.zw/.xy` to the
+  selected UV (`GlobeTerrain.wgsl:1765-1768`), matching WebGL's
+  `tileTextureCoordinates * scale + translation` (`GlobeFS.glsl:271-273`).
+
+Row 7 (`cutoutRectangle` test) was re-derived and left byte-identical: WebGL tests
+the cutout against `v_textureCoordinates.x/.y` (`GlobeSurfaceShaderSet.js:542`) and
+WGSL against `boundsUV`, which is `geoUV` at every call site
+(`GlobeTerrain.wgsl:2020`, `applyCutoutMask` at `:1860`).
 
 ### LOD / altitude behavior — the bug is latitude-gated, NOT LOD/altitude-gated
 
 `useWebMercatorT` is a function of the tile's **latitude range, not LOD**. Two LOD bands matter for the alpha mask:
 
-- **Low LOD / base layer:** the south/north/east/west fixup (next section) forces the rect to `(0,0,1,1)` full coverage. V-space is **moot** — any V passes. (Why the current geoUV bug is invisible at base LOD and at orbit.)
+- **Low LOD / base layer:** the south/north/east/west fixup (next section) forces the rect to `(0,0,1,1)` full coverage. V-space is **moot** — any V passes. (Why the geoUV bug that used to live here was invisible at base LOD and at orbit.)
 - **Deep LOD / non-base interior sub-tiles:** the rect carries genuine interior Mercator fractions (`texCoordsRect.y>0` or `.w<1`). V-space **matters** — a geographic-vs-Mercator test mismatch clips/leaks an alpha-mask edge. The discrepancy is **zero at the equator and grows poleward**.
 
 An empirical 4-altitude sweep (far-orbit / near-orbit / in-atmosphere / near-ground; ArcGIS + OSM + NaturalEarthII control; mid-latitude coastal view; PNG-confirmed) found the imagery **sample** is pixel-perfect WebGPU-vs-WebGL (0px cross-correlation, ~0.8% masked diff) at near/mid/deep LOD on both Mercator providers; the geographic control stays clean at all altitudes.
 
 > **STALE CLAIM CORRECTED (2026-07-02, GLOBE-POLAR-STRETCH):** this section previously concluded "the only WebGPU-vs-WebGL divergence at far-orbit is the globe-disc-framing + atmosphere-halo gap, not imagery projection." That was wrong. A quantified far-zoom repro (disc-normalized latitude-band profiling at lon −95 / lat 40 / h 25 Mm) showed the disc RIMS matched between backends while the imagery INSIDE was non-rigidly latitude-remapped (ice centroid 17.5 px equatorward, ice area +28%, 32.15% pixel mismatch). The cause was a genuine imagery-projection bug: the `ReprojectWebMercator.wgsl` double vertical flip warped every reprojected texture built from a non-equator-symmetric imagery tile (see the reprojection-compare section). The earlier sweep missed it because its mid-latitude coastal views sample the direct-Mercator (`useWebMercatorT=true`) path, and its far-orbit check only measured disc width — a rigid metric blind to the interior remap. Fixed 2026-07-02; `probe-globe-polar-stretch.mjs` now gates all three zoom bands with band-alignment metrics. The residual imagery-adjacent defect at far zoom is the WebGPU-only faint tile-seam lines (separate issue).
 
-The residual imagery defect the sweep did identify is the latitude-gated alpha-mask **test** coordinate above, which the equator-targeted probes do not exercise.
+The residual imagery defect the sweep did identify **was** the latitude-gated alpha-mask **test** coordinate above, which the equator-targeted probes do not exercise. It was fixed at Batch 349 — see “The fix” below — and the coordinate-space table records the post-fix state.
 
 ### Session-65 Batch-8 reconciliation (why geographic-V was once correct)
 
