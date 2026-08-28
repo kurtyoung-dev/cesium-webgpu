@@ -206,11 +206,11 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 
 | Metric | Value |
 |---|---|
-| Files in census | 1083 |
-| ACTIVE | 876 |
+| Files in census | 1085 |
+| ACTIVE | 878 |
 | INVESTIGATION | 195 |
 | NO @purpose HEADER | 12 |
-| Classes | probe 652, spec 216, other 98, lib 76, gate-lib 19, bake-tool 12, runner 6, fixture 4 |
+| Classes | probe 652, spec 218, other 98, lib 76, gate-lib 19, bake-tool 12, runner 6, fixture 4 |
 
 ### Tools/ (36)
 
@@ -350,7 +350,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | stbn-rng.mjs | bake-tool | ACTIVE | 2026-08-16 | 3 | Deterministic license-clean random stream for the STBN bake: AES-256-CTR over zeros keyed by SHA-256(seed), byte-identical across machines. |
 | stbn-spectrum.mjs | bake-tool | ACTIVE | 2026-08-16 | 5 | Fourier certification of an STBN volume (radial spatial spectrum, per-pixel temporal spectrum, cross-correlation) with mutants proving each bar fires. |
 
-### Tools/visual-regression/ (891)
+### Tools/visual-regression/ (893)
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
@@ -418,6 +418,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | cloud-refresh-skip.spec.mjs | spec | ACTIVE | 2026-08-16 | 4 | Pins the repair of the requestRenderMode frozen-frame defect that made both cloud-reconstruction probes count render calls as frames; mutant-checked. |
 | cloud-shadow-rte.spec.mjs | spec | ACTIVE | 2026-08-16 | 5 | C13-06 cloud shadow/mask/env-capture/atmosphere RTE contract: f64 frame-owner math, f32 WGS84-vs-spherical oracle, source ownership, naga validation. |
 | cloud-temporal-rte.spec.mjs | spec | ACTIVE | 2026-08-21 | 4 | Pins WebGPUCloudTemporalHistory reset classification (teleport, morph, deck bounds, scene mode...) and commit semantics vs the engine module. |
+| cloud-temporal-source-view.spec.mjs | spec | ACTIVE | 2026-08-28 | 0 | Pins that both cloud temporal bind-group pairs rebuild when the half-res target is replaced at an unchanged size, and that the check is live rather than inert. |
 | cloud-tour-sequences.spec.mjs | spec | ACTIVE | 2026-08-16 | 4 | C13-01 tour contract: fixture/sequence coverage per the queue row, pinned derived clocks, engine-export constants, probe capture discipline. |
 | cloud-u2-perf-evidence.spec.mjs | spec | ACTIVE | 2026-08-21 | 1 | Guards lib/cloud-u2-perf-evidence.mjs manifest assessment for C13-16 U2 perf evidence (no-regression / unchanged pass expectations, lane shapes). |
 | clustered-light-upload-invalidation.spec.mjs | spec | NO @purpose HEADER | 2026-08-28 | 0 | — |
@@ -490,6 +491,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | model-device-recovery.spec.mjs | spec | ACTIVE | 2026-08-16 | 0 | Device/resource-generation recovery contracts for native Models across renderer, pipeline cache, device resources and stub texture sources. |
 | model-lazy-pick-demand.spec.mjs | spec | ACTIVE | 2026-08-28 | 4 | Contracts for lazy realization of native Model pick resources across renderer, feature-id, Model, feature table and batch texture sources. |
 | model-light-arena.spec.mjs | spec | ACTIVE | 2026-08-16 | 2 | Light-slice sibling of the camera-arena spec: pack-once-per-model-per-view light block, removal from per-primitive group-1, WGSL binding move. |
+| model-metadata-variant-key.spec.mjs | spec | ACTIVE | 2026-08-28 | 0 | Pins that two metadata (or customShader) classes at one material identity build distinct model pipeline keys, that the fold is byte-identical when no generated chunk applies, and that the fold is live rather than inert. |
 | model-native-pipeline-stage-tax.spec.mjs | spec | ACTIVE | 2026-08-16 | 1 | Asserts which model pipeline stages are skipped when the native WebGPU renderer owns a primitive, pinning the stage-tax reduction. |
 | model-primitive-topology-sandcastle.spec.mjs | spec | ACTIVE | 2026-08-16 | 1 | Pins that the KHR primitive-restart Sandcastle demo survives the live WebGPU Viewer transform and remains valid module syntax. |
 | model-primitive-topology.spec.mjs | spec | ACTIVE | 2026-08-16 | 2 | Contract for glTF mode to WebGPU topology+stripIndexFormat mapping: atomic pair, LINE_LOOP/FAN expansion on real assets, restart legality. |
@@ -516,7 +518,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | perf-manager-teardown.spec.mjs | spec | NO @purpose HEADER | 2026-08-28 | 0 | — |
 | performance-workloads.spec.mjs | spec | ACTIVE | 2026-08-16 | 6 | Large browser-free contract suite over the performance-campaign lib surface: schedules, pacing, evidence, ledgers, URL and manifest validation. |
 | pick-frustum-math.spec.mjs | spec | ACTIVE | 2026-08-16 | 0 | Unit tests for the extracted PickFrustumMath drawing-buffer-to-frustum coordinate mapping and pick-frustum half extents. |
-| pipeline-key-aliasing.spec.mjs | spec | ACTIVE | 2026-08-16 | 17 | Guard for the pipeline-cache shader-identity fold: executes real caches over every ShaderDefine bit; mutation group re-inflicts the aliasing. |
+| pipeline-key-aliasing.spec.mjs | spec | ACTIVE | 2026-08-28 | 17 | Guard for the pipeline-cache shader-identity fold: executes real caches over every ShaderDefine bit; mutation group re-inflicts the aliasing. |
 | pointcloud-browser-gate-contract.spec.mjs | spec | ACTIVE | 2026-08-25 | 1 | Executes point-cloud browser-gate decision functions against raw synthetic counters and mutation teeth without launching a browser. |
 | pointcloud-voxel-public-correctness.spec.mjs | spec | ACTIVE | 2026-08-25 | 6 | Contracts over WebGPU point-cloud RTE history, shared layouts and the EDL state machinery (slot/stencil/pipeline-key correctness surface). |
 | probe-2d-blank-where.mjs | probe | INVESTIGATION | 2026-08-16 | 4 | BUG-3 localizer: screenshots SCENE2D on both backends and maps WHERE non-black pixels are (off-screen vs mis-scaled vs depth-failed vs sky-only). |

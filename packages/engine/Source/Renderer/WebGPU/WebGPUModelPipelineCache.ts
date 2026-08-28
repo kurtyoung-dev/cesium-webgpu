@@ -75,6 +75,10 @@ import { makeSceneFBTargets } from "./WebGPUSceneFBTargetHelpers.js";
 // that pairing at draw time rather than creation time, so a drift would surface
 // only when a snap actually runs.
 import { SNAP_PAYLOAD_FORMAT } from "./WebGPUSnapPayload.js";
+// The generated-chunk class axis of the pipeline key. Two primitives of one
+// model can share a material identity and still need different modules, because
+// the metadata and customShader chunks are generated per class.
+import { buildModelMetadataVariantKey } from "./WebGPUModelMetadataVariantKey.js";
 import { ShaderDefine, ShaderSourceId } from "./WebGPUShaderDefines.js";
 import { WebGPUShaderModuleCache } from "./WebGPUShaderModuleCache.js";
 // The central render-pipeline cache. The on-screen model colour pipeline
@@ -2800,13 +2804,17 @@ class WebGPUModelPipelineCache {
   }
 
   /**
-   * Appends the `:m34` discriminator to a pipeline-map key when the widened
-   * MAT3/MAT4 transport is active, so a MAT-transport primitive and a
-   * plain-metadata primitive sharing the same
-   * `(alphaMode, doubleSided, materialDefines)` identity in one per-model cache
-   * build distinct pipelines, since their vertex layouts and modules differ.
-   * Otherwise the key is returned unchanged, leaving cache behaviour untouched
-   * for every non-MAT-transport primitive.
+   * Discriminates a pipeline-map key by everything beyond the material identity
+   * that changes the compiled module: the widened MAT3/MAT4 metadata transport,
+   * whose vertex layout and module differ from plain metadata at the same
+   * `(alphaMode, doubleSided, materialDefines)` identity, and the generated
+   * metadata and customShader chunks, which are emitted per class and so make
+   * two primitives of one model compile differently at an identical material
+   * identity.
+   *
+   * Every pipeline map in this cache keys through here, so the fold is applied
+   * once for all of them. It is byte-identical for a primitive with neither a
+   * metadata class nor a customShader.
    *
    * @param {number|string} key base pipeline cache key
    * @param {number} md normalized materialDefines
@@ -2814,7 +2822,13 @@ class WebGPUModelPipelineCache {
    * @private
    */
   _metadataVariantKey(key: number | string, md: number): number | string {
-    return this._metadataSlotMode(md) === 2 ? `${key}:m34` : key;
+    return buildModelMetadataVariantKey(
+      key,
+      md,
+      this._metadataSlotMode(md),
+      this._metadataClassHash,
+      this._customShaderClassHash,
+    );
   }
 
   /**
@@ -3289,15 +3303,17 @@ class WebGPUModelPipelineCache {
       // `createRenderPipelineAsync` path, exactly as the globe's
       // `resolveGlobePipelineEntry` does. `name` carries the full variant key
       // so the central cache dedupes per
-      // (alphaMode, doubleSided, materialDefines, topology, metadataSlot), and
+      // (alphaMode, doubleSided, materialDefines, topology, metadataSlot,
+      // generated-chunk class), and
       // the format, sampleCount and vertex-layout fields feed the central key
       // too, so a scene-format change materializes a distinct entry rather than
       // colliding.
       const centralDesc: WebGPURenderPipelineDescriptor = {
         // The `ld=` segment names the log-depth axis in the key. `raw.label`
         // encodes only (alphaMode, doubleSided, forceDepthWrite), and `key`
-        // only (alphaMode, doubleSided, materialDefines, topology, :m34), so
-        // neither carries the LOG_DEPTH bit: that bit is folded into the shader
+        // only (alphaMode, doubleSided, materialDefines, topology, :m34, and
+        // the generated metadata/customShader class hashes where those chunks
+        // apply), so neither carries the LOG_DEPTH bit: it is folded into the
         // module via `effectiveDefines` from `this._logDepthEnabled`, not into
         // `md`. Separation of the two variants is guaranteed structurally,
         // because the central key folds `vertex.module` and `fragment.module`

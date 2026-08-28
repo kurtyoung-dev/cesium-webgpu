@@ -299,7 +299,9 @@ const NO_CENTRAL_CACHE = [
  * `buildColorPipelineDescriptor`) encodes only
  * (alphaMode, doubleSided, forceDepthWrite); `key` (`computeKey` /
  * `buildModelTopologyVariantKey` / `_metadataVariantKey`) encodes only
- * (alphaMode, doubleSided, materialDefines, topology, optional `:m34`).
+ * (alphaMode, doubleSided, materialDefines, topology, optional `:m34`, and —
+ * for a primitive carrying a generated metadata or customShader chunk — that
+ * chunk's class hashes, folded by `buildModelMetadataVariantKey`).
  * NEITHER carries LOG_DEPTH, because that bit is folded into the MODULE through
  * `effectiveDefines` from `this._logDepthEnabled` — which is not part of
  * `materialDefines`. `maybeUpdateForLogDepth` wipes `_pipelines` on a flip,
