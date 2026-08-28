@@ -581,3 +581,15 @@ node:test registrations in one spec; the primitive camera buffers share A5-5's n
 family in a second file; and an MCP idle-timeout abort does NOT terminate the codex session — one
 "killed" round was still writing 45 minutes later, so freeze-then-review must verify quiescence
 from event streams plus file stability, never from the tool returning.
+
+**C1 verification round (post-Batch-1175).** The R-SOL tier is closed: two counts confirmed
+exactly (the 942/1,118 spec-shape ratio; the 489-row bucket census), two corrected by one (48→47
+source-text sites; 9→8 unguarded .every() surfaces), the seven shared-mutable-baselines REFUTED in
+scope, and — important — **the proto lane's 55/108 self/external split is UNVERIFIABLE and must not
+be cited**, including where §5 of this document quotes 33.7%: a fully published convention yields
+4 SELF / 144 EXTERNAL / 15 AMBIGUOUS, and no construction reaches 55. The qualitative conclusion
+(self-reference concentrated in the topology and provenance gates) survives; the number does not.
+Also: nine of the docs lane's 25 CONTRADICTED rows record the O-3 unbuilt-clone artifact, not a
+contradiction — a classification error, honestly documented inside the rows themselves. C1's two
+new confirmed engine defects are queued as Q-16 and Q-17; its twelve single-source findings remain
+held out of every row pending the adversarial review round now running.
