@@ -222,8 +222,9 @@ bool inTranslucencyRectangle()
 //   imagery slots are unrolled at the call site in `fragmentMain`.
 // - This function returns `vec4(outColor, outAlpha)`; the WGSL returns a
 //   `LayerComposite { color, alpha, adjustedColor }` struct, because its
-//   night-lights emission path needs the post-effects color separately. Here
-//   night lights are handled downstream of `computeDayColor` instead.
+//   night-lights emission path needs the post-effects color separately. This
+//   shader has no night-lights emission path; the feature is WebGPU-only by
+//   its documented contract, so no downstream term exists here.
 // - Per-effect gating is `#ifdef APPLY_*` here and `if (abs(...) > eps)` in
 //   WGSL: this file relies on the pipeline cache to emit defines from which
 //   per-layer properties are non-default, while WGSL evaluates every effect

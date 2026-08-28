@@ -416,7 +416,7 @@ class Globe {
     /**
      * When true, night-side imagery layers with nightAlpha > dayAlpha
      * are treated as emissive city lights, boosted proportional to
-     * their luminance. Only active with enableLighting, and only on the WebGPU
+     * their luminance. Only on the WebGPU
      * renderer; the WebGL path ignores it.
      * The default is off for cross-backend parity; set this property to
      * <code>true</code> to opt in.

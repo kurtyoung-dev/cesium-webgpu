@@ -11274,7 +11274,7 @@ has explicit pixel-identity and moving CPU/GPU cost gates.
 
 ### NEW-LUNAR-ECLIPSE-EARTH-SHADOW-APPEARANCE
 
-**Status: OPEN / NEW RENDERING FEATURE.** Current Moon phase, BRDF, normal-map,
+**Status: SHIPPED (Batches 1224/1225, 2026-08-28; Edge pixel gate pending in the visual-wave acceptance sweep).** The description below is the pre-implementation record. Current Moon phase, BRDF, normal-map,
 earthshine, and sky-wash work does not render Earth's penumbra/umbra across the
 lunar disc or the copper/red atmospheric transmission seen during totality.
 This is independent of the solar-eclipse ground-umbra renderer and must not be
