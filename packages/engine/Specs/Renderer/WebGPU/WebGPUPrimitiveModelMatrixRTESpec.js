@@ -4,8 +4,12 @@ import Matrix4 from "../../../Source/Core/Matrix4.js";
 import Quaternion from "../../../Source/Core/Quaternion.js";
 import {
   LIT_CAMERA_BYTES,
+  LIT_ELLIPSOID_ONE_OVER_RADII_OFFSET,
+  LIT_ENCODED_CAMERA_WORLD_HIGH_OFFSET,
+  LIT_ENCODED_CAMERA_WORLD_LOW_OFFSET,
   LIT_INVERSE_VIEW_QUATERNION_OFFSET,
   LIT_LOG_DEPTH_OFFSET,
+  LIT_MODEL_MATRIX_COLUMN_0_OFFSET,
   LIT_PREVIOUS_VIEW_PROJECTION_OFFSET,
   writeRTEUniformsLit,
 } from "../../../Source/Renderer/WebGPU/WebGPUPrimitiveCommands.js";
@@ -150,13 +154,20 @@ describe("Renderer/WebGPU Primitive model-matrix RTE", function () {
     expect(Math.hypot(data[0], data[1], data[2], data[3])).toBeCloseTo(1.0, 6);
   });
 
-  it("keeps previous VP, quaternion, and log-depth tails disjoint", function () {
+  it("keeps the lit camera tail fields disjoint", function () {
     const data = new Float32Array(LIT_CAMERA_BYTES / 4);
     const previousViewProjection = Matrix4.fromTranslation(
       new Cartesian3(7.0, 8.0, 9.0),
       new Matrix4(),
     );
     const inverseViewRotation = Matrix3.fromRotationZ(0.5, new Matrix3());
+    const modelMatrix3 = Matrix3.fromRowMajorArray(
+      [2.0, 3.0, 5.0, 7.0, 11.0, 13.0, 17.0, 19.0, 23.0],
+      new Matrix3(),
+    );
+    const camWorldHigh = new Cartesian3(65536.0, -131072.0, 196608.0);
+    const camWorldLow = new Cartesian3(1.25, -2.5, 3.75);
+    const oneOverRadii = new Cartesian3(0.125, 0.25, 0.5);
     const identity = Matrix4.clone(Matrix4.IDENTITY, new Matrix4());
     const rte = {
       mvpRTE: identity,
@@ -164,6 +175,9 @@ describe("Renderer/WebGPU Primitive model-matrix RTE", function () {
       modelView: identity,
       camHigh: Cartesian3.ZERO,
       camLow: Cartesian3.ZERO,
+      modelMatrix3: modelMatrix3,
+      camWorldHigh: camWorldHigh,
+      camWorldLow: camWorldLow,
     };
     const uniformState = {
       frameState: undefined,
@@ -175,14 +189,21 @@ describe("Renderer/WebGPU Primitive model-matrix RTE", function () {
         y: 1002.0,
       },
       oneOverLog2FarDepthFromNearPlusOne: 0.125,
+      ellipsoid: {
+        oneOverRadii: oneOverRadii,
+      },
     };
 
     writeRTEUniformsLit(data, rte, uniformState);
 
-    expect(LIT_CAMERA_BYTES).toBe(336);
+    expect(LIT_CAMERA_BYTES).toBe(432);
     expect(LIT_PREVIOUS_VIEW_PROJECTION_OFFSET).toBe(60);
     expect(LIT_INVERSE_VIEW_QUATERNION_OFFSET).toBe(76);
     expect(LIT_LOG_DEPTH_OFFSET).toBe(80);
+    expect(LIT_ELLIPSOID_ONE_OVER_RADII_OFFSET).toBe(84);
+    expect(LIT_MODEL_MATRIX_COLUMN_0_OFFSET).toBe(88);
+    expect(LIT_ENCODED_CAMERA_WORLD_HIGH_OFFSET).toBe(100);
+    expect(LIT_ENCODED_CAMERA_WORLD_LOW_OFFSET).toBe(104);
 
     const packedPrevious = new Array(16);
     Matrix4.pack(previousViewProjection, packedPrevious);
@@ -201,8 +222,70 @@ describe("Renderer/WebGPU Primitive model-matrix RTE", function () {
     );
     expect(Math.hypot(q[0], q[1], q[2], q[3])).toBeCloseTo(1.0, 6);
     expect(
-      Array.from(data.subarray(LIT_LOG_DEPTH_OFFSET, LIT_CAMERA_BYTES / 4)),
+      Array.from(
+        data.subarray(
+          LIT_LOG_DEPTH_OFFSET,
+          LIT_ELLIPSOID_ONE_OVER_RADII_OFFSET,
+        ),
+      ),
     ).toEqual([2.0, 1002.0, 0.125, 0.0]);
+    expect(
+      Array.from(
+        data.subarray(
+          LIT_ELLIPSOID_ONE_OVER_RADII_OFFSET,
+          LIT_MODEL_MATRIX_COLUMN_0_OFFSET,
+        ),
+      ),
+    ).toEqual([0.125, 0.25, 0.5, 1.0]);
+    expect(
+      Array.from(
+        data.subarray(
+          LIT_MODEL_MATRIX_COLUMN_0_OFFSET,
+          LIT_ENCODED_CAMERA_WORLD_HIGH_OFFSET,
+        ),
+      ),
+    ).toEqual([
+      2.0, 7.0, 17.0, 0.0, 3.0, 11.0, 19.0, 0.0, 5.0, 13.0, 23.0, 0.0,
+    ]);
+    expect(
+      Array.from(
+        data.subarray(
+          LIT_ENCODED_CAMERA_WORLD_HIGH_OFFSET,
+          LIT_ENCODED_CAMERA_WORLD_LOW_OFFSET,
+        ),
+      ),
+    ).toEqual([65536.0, -131072.0, 196608.0, 0.0]);
+    expect(
+      Array.from(
+        data.subarray(
+          LIT_ENCODED_CAMERA_WORLD_LOW_OFFSET,
+          LIT_CAMERA_BYTES / Float32Array.BYTES_PER_ELEMENT,
+        ),
+      ),
+    ).toEqual([1.25, -2.5, 3.75, 0.0]);
+
+    const vector = new Cartesian3(7.0, -11.0, 13.0);
+    const expected = Matrix3.multiplyByVector(
+      modelMatrix3,
+      vector,
+      new Cartesian3(),
+    );
+    const matrixTail = data.subarray(
+      LIT_MODEL_MATRIX_COLUMN_0_OFFSET,
+      LIT_ENCODED_CAMERA_WORLD_HIGH_OFFSET,
+    );
+    const shaderProduct = new Cartesian3(
+      matrixTail[0] * vector.x +
+        matrixTail[4] * vector.y +
+        matrixTail[8] * vector.z,
+      matrixTail[1] * vector.x +
+        matrixTail[5] * vector.y +
+        matrixTail[9] * vector.z,
+      matrixTail[2] * vector.x +
+        matrixTail[6] * vector.y +
+        matrixTail[10] * vector.z,
+    );
+    expect(Cartesian3.equals(shaderProduct, expected)).toBe(true);
   });
 
   it("keeps the exact 24 lit shader families on the shared coordinate contract", function () {

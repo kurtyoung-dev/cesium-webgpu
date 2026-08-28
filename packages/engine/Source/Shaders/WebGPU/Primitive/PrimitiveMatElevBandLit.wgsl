@@ -42,15 +42,18 @@ struct CameraUniforms {
     lightDirection: vec4<f32>,
     previousViewProjection: mat4x4<f32>,
     inverseViewQuaternion: vec4<f32>,
-    //>>ifdef LOG_DEPTH
     // Renderer-wide log-depth parameters:
     //   x = frustum near, y = frustum far,
     //   z = oneOverLog2FarDepthFromNearPlusOne (the log-depth factor),
     //   w = reserved. Packed by WebGPUPrimitiveCommands.writeRTEUniformsLit
-    // into the 16-byte tail appended after inverseViewQuaternion
-    // (LIT_CAMERA_BYTES 320 -> 336). See WebGPULogDepth.ts.
+    // into the 16-byte block after inverseViewQuaternion.
     logDepth: vec4<f32>,
-    //>>endif
+    ellipsoidOneOverRadii: vec4<f32>,
+    modelMatrixColumn0: vec4<f32>,
+    modelMatrixColumn1: vec4<f32>,
+    modelMatrixColumn2: vec4<f32>,
+    encodedCameraWorldHigh: vec4<f32>,
+    encodedCameraWorldLow: vec4<f32>,
 }
 
 struct MaterialUniforms {
@@ -100,7 +103,12 @@ struct CSMParams {
 @group(3) @binding(11) var cascadeDepthArray: texture_depth_2d_array;
 @group(3) @binding(17) var pointLightCubeDepth: texture_depth_cube;
 
-const EARTH_RADIUS: f32 = 6371000.0;
+const WGS84_ONE_OVER_RADII: vec3<f32> = vec3<f32>(
+    1.0 / 6378137.0,
+    1.0 / 6378137.0,
+    1.0 / 6356752.314245179,
+);
+const MAX_FINITE_F32: f32 = 3.402823466e+38;
 
 //>>ifdef LOG_DEPTH
 // Renderer-wide log-depth helpers mirror the canonical definitions in
@@ -257,8 +265,39 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
     output.viewPosition = viewPosition;
     output.eyePosition = rotateEyeToWorld(viewPosition, camera.inverseViewQuaternion);
     output.texCoord = input.texCoord;
-    let worldPos = input.positionHigh + input.positionLow;
-    output.height = length(worldPos) - EARTH_RADIUS;
+    // The affine linear transform converts the model-space RTE delta before the
+    // encoded world camera restores the absolute position. Scaled ellipsoid space
+    // applies the active datum without subtracting planetary-scale values. The
+    // residual stays below 4.0 m on a 13-longitude, half-degree WGS84 grid for
+    // heights from -1 km to 500 km and camera separations from 1 km to 1,000 km;
+    // most of it is the scaled-space approximation itself (exact only for a
+    // sphere, peaking near mid-latitudes at altitude), not f32 rounding.
+    let modelMatrix3 = mat3x3<f32>(
+        camera.modelMatrixColumn0.xyz,
+        camera.modelMatrixColumn1.xyz,
+        camera.modelMatrixColumn2.xyz,
+    );
+    let worldPos =
+        modelMatrix3 * posRTE.xyz +
+        camera.encodedCameraWorldHigh.xyz +
+        camera.encodedCameraWorldLow.xyz;
+    let oneOverRadii = select(
+        WGS84_ONE_OVER_RADII,
+        camera.ellipsoidOneOverRadii.xyz,
+        camera.ellipsoidOneOverRadii.w > 0.0,
+    );
+    let scaledPosition = worldPos * oneOverRadii;
+    let scaledPositionLength = length(scaledPosition);
+    let safeScaledPositionLength = select(
+        1.0,
+        scaledPositionLength,
+        scaledPositionLength > 0.0,
+    );
+    let derivedHeight =
+        length(worldPos) * (1.0 - 1.0 / safeScaledPositionLength);
+    let heightIsFinite =
+        derivedHeight >= -MAX_FINITE_F32 && derivedHeight <= MAX_FINITE_F32;
+    output.height = select(0.0, derivedHeight, heightIsFinite);
 
     //>>ifdef LOG_DEPTH
     // Renderer-wide log depth: interpolate linear depthFromNearPlusOne and clamp

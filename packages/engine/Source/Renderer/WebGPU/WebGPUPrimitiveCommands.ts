@@ -21,6 +21,7 @@ import Cartesian2 from "../../Core/Cartesian2.js";
 import Cartesian3 from "../../Core/Cartesian3.js";
 import ComponentDatatype from "../../Core/ComponentDatatype.js";
 import defined from "../../Core/defined.js";
+import DeveloperError from "../../Core/DeveloperError.js";
 import EncodedCartesian3 from "../../Core/EncodedCartesian3.js";
 import GeometryAttribute from "../../Core/GeometryAttribute.js";
 import Matrix3 from "../../Core/Matrix3.js";
@@ -181,6 +182,9 @@ interface RTEMatrices {
   modelView: Matrix4;
   camHigh: Cartesian3;
   camLow: Cartesian3;
+  modelMatrix3: Matrix3;
+  camWorldHigh: Cartesian3;
+  camWorldLow: Cartesian3;
 }
 
 interface ShaderInfoLike {
@@ -430,6 +434,9 @@ declare global {
     gamma?: number;
     inverseViewRotation?: Matrix3;
     viewportOrthographic?: CesiumMatrix4;
+    readonly ellipsoid?: {
+      readonly oneOverRadii: Cartesian3;
+    };
   }
   interface CesiumGraphicsContext {
     readonly scenePipelineFormat?: GPUTextureFormat;
@@ -462,40 +469,51 @@ const scratchNormalMatrix = new Matrix4();
 const scratchInverseModel = new Matrix4();
 const scratchCameraPositionMC = new Cartesian3();
 const scratchEncodedCamera = new EncodedCartesian3();
+const scratchModelMatrix3 = new Matrix3();
+const scratchEncodedCameraWorld = new EncodedCartesian3();
 // Scratch for encoding a single vertex position
 const scratchEncodedPosition = new EncodedCartesian3();
-// RTE camera uniform scratch buffers (84 floats = 336 bytes max for lit with
-// prevVP + inverse-view quaternion + the renderer-wide log-depth tail).
-const scratchRTEUniformData = new Float32Array(84);
 
 // Camera-only UBO sizes, without material fields. Every layout carries a
 // previous-view-projection matrix for motion-vector reprojection. The flat
-// variant adds a 16-byte log-depth tail after it, so
+// variant adds a 16-byte log-depth tail followed by the elevation-material
+// world-position tail, so
 // the Flat material shaders (PrimitiveMat*Flat) and the unlit Basic shaders
 // can read `camera.logDepth` from their `//>>ifdef LOG_DEPTH` blocks. Packed
 // unconditionally by writeRTEUniformsFlat and remains inert until the log-depth
-// define is set (no shader struct declares the tail field otherwise and the
-// extra 16 bytes are simply unread). 160 -> 176.
-const FLAT_CAMERA_BYTES = 176; // mvpRTE(64) + camHigh(16) + camLow(16) + prevVP(64) + logDepth(16)
+// define is set. Only elevation materials declare the appended fields;
+// other layouts leave the appended bytes unread.
+const FLAT_CAMERA_BYTES = 272; // 192-byte flat head + modelMatrix3 columns(48) + world camera high/low(32)
+const FLAT_ELLIPSOID_ONE_OVER_RADII_OFFSET = 44;
+const FLAT_MODEL_MATRIX_COLUMN_0_OFFSET = 48;
+const FLAT_ENCODED_CAMERA_WORLD_HIGH_OFFSET = 60;
+const FLAT_ENCODED_CAMERA_WORLD_LOW_OFFSET = 64;
 // Lit variants append an always-present normalized inverse-view quaternion
 // after prevVP, followed by the 16-byte logDepth vec4 tail (near, far, factor,
-// reserved). The quaternion rotates eye-space positions back into world-axis
-// camera-relative space for shadow and atmosphere effects without carrying a
-// full matrix. Log depth is read only by the
+// reserved), followed by the elevation-material world-position tail. The quaternion rotates eye-space
+// positions back into world-axis camera-relative space for shadow and
+// atmosphere effects without carrying a full matrix. Log depth is read only by the
 // `//>>ifdef LOG_DEPTH` blocks in PrimitivePhongColor / PrimitivePhongTexturedColor
 // and other lit producers. The tail is packed unconditionally by
-// writeRTEUniformsLit; it is inert until the log-depth define is set because no
-// shader struct declares the tail field otherwise
-// and the extra 16 bytes are simply unread.
-const LIT_CAMERA_BYTES = 336; // ...prevVP(64) + inverseViewQuaternion(16) + logDepth(16)
+// writeRTEUniformsLit; fields that a shader does not declare remain unread.
+const LIT_CAMERA_BYTES = 432; // 352-byte lit head + modelMatrix3 columns(48) + world camera high/low(32)
 const LIT_PREVIOUS_VIEW_PROJECTION_OFFSET = 60;
 const LIT_INVERSE_VIEW_QUATERNION_OFFSET = 76;
 const LIT_LOG_DEPTH_OFFSET = 80;
+const LIT_ELLIPSOID_ONE_OVER_RADII_OFFSET = 84;
+const LIT_MODEL_MATRIX_COLUMN_0_OFFSET = 88;
+const LIT_ENCODED_CAMERA_WORLD_HIGH_OFFSET = 100;
+const LIT_ENCODED_CAMERA_WORLD_LOW_OFFSET = 104;
 // The 176-byte pick layout includes floats 40-43 for the flat log-depth tail.
 // Both GPU storage and scratch data derive from this constant, so the tail
 // cannot fall outside a shorter allocation. Hyperbolic pick shaders leave it
 // unread, matching the flat color layout.
 const PICK_CAMERA_BYTES = 176; // FLAT head (160) + logDepth vec4 tail (16)
+
+// RTE camera uniform scratch data follows the largest camera-only layout.
+const scratchRTEUniformData = new Float32Array(
+  LIT_CAMERA_BYTES / Float32Array.BYTES_PER_ELEMENT,
+);
 
 // The polyline-appearance camera buffer extends the flat RTE head with the
 // matrices needed for screen-space width expansion. Layout
@@ -986,8 +1004,8 @@ function ensureIndexBuffer(
 }
 
 /**
- * Computes RTE matrices and encoded camera for a given model matrix.
- * Returns { mvpRTE, modelViewRTE, modelView, camHigh, camLow }.
+ * Computes RTE matrices, the model linear transform, and encoded camera
+ * positions for a given model matrix.
  * @private
  */
 function computeRTEMatrices(
@@ -1017,6 +1035,8 @@ function computeRTEMatrices(
     scratchCameraPositionMC,
     scratchEncodedCamera,
   );
+  Matrix4.getMatrix3(modelMatrix, scratchModelMatrix3);
+  EncodedCartesian3.fromCartesian(camera.positionWC, scratchEncodedCameraWorld);
 
   return {
     mvpRTE: scratchMVPRTE,
@@ -1024,6 +1044,9 @@ function computeRTEMatrices(
     modelView: modelView,
     camHigh: scratchEncodedCamera.high,
     camLow: scratchEncodedCamera.low,
+    modelMatrix3: scratchModelMatrix3,
+    camWorldHigh: scratchEncodedCameraWorld.high,
+    camWorldLow: scratchEncodedCameraWorld.low,
   };
 }
 
@@ -1064,16 +1087,36 @@ function getHdrGammaLane(uniformState: CesiumUniformState) {
 }
 
 /**
- * Writes RTE uniform data for a flat (unlit) shader.
+ * Verifies that a camera-uniform destination can hold the selected layout.
+ * @private
+ */
+function assertUniformDataCapacity(
+  ud: Float32Array,
+  requiredBytes: number,
+  writerName: string,
+) {
+  //>>includeStart('debug', pragmas.debug);
+  const requiredFloats = requiredBytes / Float32Array.BYTES_PER_ELEMENT;
+  if (ud.length < requiredFloats) {
+    throw new DeveloperError(
+      `${writerName} requires ${requiredFloats} floats; received ${ud.length}.`,
+    );
+  }
+  //>>includeEnd('debug');
+}
+
+/**
+ * Writes the shared flat RTE head used by pick shaders.
  * Layout: mvpRTE(16) + camHigh(4) + camLow(4) + prevVP(16) +
  * logDepth(4) = 44 floats = 176 bytes.
  * @private
  */
-function writeRTEUniformsFlat(
+function writeRTEUniformsFlatHead(
   ud: Float32Array,
   rte: RTEMatrices,
   uniformState: CesiumUniformState,
 ) {
+  assertUniformDataCapacity(ud, PICK_CAMERA_BYTES, "writeRTEUniformsFlatHead");
   Matrix4.pack(rte.mvpRTE, ud, 0);
   ud[16] = rte.camHigh.x;
   ud[17] = rte.camHigh.y;
@@ -1094,6 +1137,32 @@ function writeRTEUniformsFlat(
   // The log-depth tail occupies floats 40-43 after the previous view-projection
   // matrix. Inert until the LOG_DEPTH define is set on the flat/basic pipeline.
   writeLogDepthTail(ud, 40, uniformState);
+}
+
+/**
+ * Writes the complete flat camera layout, including elevation-material world
+ * reconstruction data.
+ * @private
+ */
+function writeRTEUniformsFlat(
+  ud: Float32Array,
+  rte: RTEMatrices,
+  uniformState: CesiumUniformState,
+) {
+  assertUniformDataCapacity(ud, FLAT_CAMERA_BYTES, "writeRTEUniformsFlat");
+  writeRTEUniformsFlatHead(ud, rte, uniformState);
+  writeEllipsoidOneOverRadiiTail(
+    ud,
+    FLAT_ELLIPSOID_ONE_OVER_RADII_OFFSET,
+    uniformState,
+  );
+  writeModelToWorldPositionTail(
+    ud,
+    FLAT_MODEL_MATRIX_COLUMN_0_OFFSET,
+    FLAT_ENCODED_CAMERA_WORLD_HIGH_OFFSET,
+    FLAT_ENCODED_CAMERA_WORLD_LOW_OFFSET,
+    rte,
+  );
 }
 
 /**
@@ -1158,10 +1227,75 @@ function writeLogDepthTail(
 }
 
 /**
+ * Writes inverse ellipsoid radii followed by an explicit supplied flag.
+ * A zeroed or incomplete value selects the shader fallback instead of
+ * describing a degenerate ellipsoid. Full-layout writers validate capacity
+ * before reaching this tail; pick shaders use the separate flat-head writer.
+ * @private
+ */
+function writeEllipsoidOneOverRadiiTail(
+  ud: Float32Array,
+  offset: number,
+  uniformState: CesiumUniformState,
+) {
+  const ellipsoid = defined(uniformState) ? uniformState.ellipsoid : undefined;
+  const oneOverRadii = defined(ellipsoid) ? ellipsoid.oneOverRadii : undefined;
+  const supplied =
+    defined(oneOverRadii) &&
+    Number.isFinite(oneOverRadii.x) &&
+    Number.isFinite(oneOverRadii.y) &&
+    Number.isFinite(oneOverRadii.z) &&
+    oneOverRadii.x > 0.0 &&
+    oneOverRadii.y > 0.0 &&
+    oneOverRadii.z > 0.0;
+
+  ud[offset + 0] = supplied ? oneOverRadii.x : 0.0;
+  ud[offset + 1] = supplied ? oneOverRadii.y : 0.0;
+  ud[offset + 2] = supplied ? oneOverRadii.z : 0.0;
+  ud[offset + 3] = supplied ? 1.0 : 0.0;
+}
+
+/**
+ * Writes the affine model matrix's three linear columns and the encoded world
+ * camera position. The linear part retains model scale, which is required when
+ * transforming a model-space camera-relative vector into world space.
+ * @private
+ */
+function writeModelToWorldPositionTail(
+  ud: Float32Array,
+  matrixOffset: number,
+  cameraHighOffset: number,
+  cameraLowOffset: number,
+  rte: RTEMatrices,
+) {
+  // Matrix3 stores its nine elements in numeric index order but its type
+  // declares no index signature; ArrayLike is the honest runtime shape.
+  const matrix = rte.modelMatrix3 as unknown as ArrayLike<number>;
+  for (let column = 0; column < 3; ++column) {
+    const sourceOffset = column * 3;
+    const destinationOffset = matrixOffset + column * 4;
+    ud[destinationOffset + 0] = matrix[sourceOffset + 0];
+    ud[destinationOffset + 1] = matrix[sourceOffset + 1];
+    ud[destinationOffset + 2] = matrix[sourceOffset + 2];
+    ud[destinationOffset + 3] = 0.0;
+  }
+
+  ud[cameraHighOffset + 0] = rte.camWorldHigh.x;
+  ud[cameraHighOffset + 1] = rte.camWorldHigh.y;
+  ud[cameraHighOffset + 2] = rte.camWorldHigh.z;
+  ud[cameraHighOffset + 3] = 0.0;
+  ud[cameraLowOffset + 0] = rte.camWorldLow.x;
+  ud[cameraLowOffset + 1] = rte.camWorldLow.y;
+  ud[cameraLowOffset + 2] = rte.camWorldLow.z;
+  ud[cameraLowOffset + 3] = 0.0;
+}
+
+/**
  * Writes RTE uniform data for a lit (Phong/PBR) shader.
  * Layout: mvpRTE(16) + mvRTE(16) + normalMatrix(16) + camHigh(4) + camLow(4)
  *       + lightDir(4) + prevVP(16) + inverseViewQuaternion(4) + logDepth(4)
- *       = 84 floats = 336 bytes
+ *       + inverseRadii(4) + modelMatrix3 columns(12) + worldCamera(8)
+ *       = 108 floats = 432 bytes
  * @private
  */
 function writeRTEUniformsLit(
@@ -1169,6 +1303,7 @@ function writeRTEUniformsLit(
   rte: RTEMatrices,
   uniformState: CesiumUniformState,
 ) {
+  assertUniformDataCapacity(ud, LIT_CAMERA_BYTES, "writeRTEUniformsLit");
   Matrix4.pack(rte.mvpRTE, ud, 0);
   Matrix4.pack(rte.modelViewRTE, ud, 16);
   const normalMatrix = Matrix4.inverse(rte.modelView, scratchNormalMatrix);
@@ -1211,6 +1346,18 @@ function writeRTEUniformsLit(
   // The log-depth tail occupies floats 80-83.
   // Inert until the LOG_DEPTH define is set on the lit pipeline.
   writeLogDepthTail(ud, LIT_LOG_DEPTH_OFFSET, uniformState);
+  writeEllipsoidOneOverRadiiTail(
+    ud,
+    LIT_ELLIPSOID_ONE_OVER_RADII_OFFSET,
+    uniformState,
+  );
+  writeModelToWorldPositionTail(
+    ud,
+    LIT_MODEL_MATRIX_COLUMN_0_OFFSET,
+    LIT_ENCODED_CAMERA_WORLD_HIGH_OFFSET,
+    LIT_ENCODED_CAMERA_WORLD_LOW_OFFSET,
+    rte,
+  );
 }
 
 /**
@@ -1747,9 +1894,11 @@ function updateWebGPUCommandUniforms(
 // Pick Uniform Update (per frame)
 // =========================================================================
 
-// The pick scratch array accommodates the 176-byte flat camera layout,
-// including previous-view-projection and log-depth data; 64 floats leaves room.
-const scratchPickUniformData = new Float32Array(64);
+// The pick scratch array follows the 176-byte flat camera head exactly, so the
+// wider elevation-material tail remains outside layouts that do not declare it.
+const scratchPickUniformData = new Float32Array(
+  PICK_CAMERA_BYTES / Float32Array.BYTES_PER_ELEMENT,
+);
 
 /**
  * Updates the GPU uniform buffer for a WebGPU pick command with current camera matrices.
@@ -1780,9 +1929,10 @@ function updateWebGPUPickCommandUniforms(
     modelMatrix,
   );
 
-  // Write camera uniforms (flat layout for pick shaders)
+  // Pick shaders use only the shared 176-byte flat head. Keeping this call
+  // explicit prevents a wider material layout from being silently truncated.
   const ud = scratchPickUniformData;
-  writeRTEUniformsFlat(ud, rte, context.uniformState);
+  writeRTEUniformsFlatHead(ud, rte, context.uniformState);
   device.queue.writeBuffer(
     command._webgpuCameraBuffer,
     0,
@@ -3787,7 +3937,7 @@ function createWebGPUCommands(
       }
 
       const pickCameraData = new Float32Array(PICK_CAMERA_BYTES / 4);
-      writeRTEUniformsFlat(pickCameraData, rte, context.uniformState);
+      writeRTEUniformsFlatHead(pickCameraData, rte, context.uniformState);
       device.queue.writeBuffer(cache.pickCameraBuffers[i], 0, pickCameraData);
 
       cache.pickCameraBindGroups[i] = device.createBindGroup({
@@ -5195,7 +5345,7 @@ function createWebGPUMaterialCommands(
       }
 
       const pickCameraData = new Float32Array(PICK_CAMERA_BYTES / 4);
-      writeRTEUniformsFlat(pickCameraData, rte, context.uniformState);
+      writeRTEUniformsFlatHead(pickCameraData, rte, context.uniformState);
       device.queue.writeBuffer(cache.pickCameraBuffers[i], 0, pickCameraData);
 
       cache.pickCameraBindGroups[i] = device.createBindGroup({
@@ -5272,14 +5422,15 @@ function createWebGPUMaterialCommands(
 // =========================================================================
 
 // Scratch buffer for per-frame material camera uniform updates
-// 84 floats = 336 bytes for the lit/PBR camera UBO (mvpRTE+mvRTE+normalMatrix
-// +camHigh+camLow+lightDir+prevVP+inverseViewQuaternion+logDepth;
-// writeRTEUniformsLit writes through float 83). Sized for the larger of the two
+// 108 floats = 432 bytes for the lit/PBR camera UBO (mvpRTE+mvRTE+normalMatrix
+// +camHigh+camLow+lightDir+prevVP+inverseViewQuaternion+logDepth+inverseRadii
+// +modelMatrix3+worldCamera; writeRTEUniformsLit writes through float 107).
+// Sized for the larger of the two
 // layouts; flat/material shaders fit comfortably in the same scratch (flat
-// writes through float 43 for its own log-depth tail).
-// Mat*Lit/PBR read the LIT tail (floats 80-83), Mat*Flat read the FLAT tail
-// (floats 40-43); both inert until the LOG_DEPTH pipeline define is set.
-const scratchMaterialCameraData = new Float32Array(84);
+// writes through float 67 for its world-camera-low tail).
+const scratchMaterialCameraData = new Float32Array(
+  LIT_CAMERA_BYTES / Float32Array.BYTES_PER_ELEMENT,
+);
 
 /**
  * Updates camera matrices for a material/PBR draw command each frame.
@@ -5374,11 +5525,22 @@ export {
   updateWebGPUCommandUniforms,
   updateWebGPUMaterialCommandUniforms,
   updateWebGPUPickCommandUniforms,
+  writeRTEUniformsFlat,
   writeRTEUniformsLit,
+  FLAT_CAMERA_BYTES,
+  FLAT_ELLIPSOID_ONE_OVER_RADII_OFFSET,
+  FLAT_MODEL_MATRIX_COLUMN_0_OFFSET,
+  FLAT_ENCODED_CAMERA_WORLD_HIGH_OFFSET,
+  FLAT_ENCODED_CAMERA_WORLD_LOW_OFFSET,
+  PICK_CAMERA_BYTES,
   LIT_CAMERA_BYTES,
   LIT_PREVIOUS_VIEW_PROJECTION_OFFSET,
   LIT_INVERSE_VIEW_QUATERNION_OFFSET,
   LIT_LOG_DEPTH_OFFSET,
+  LIT_ELLIPSOID_ONE_OVER_RADII_OFFSET,
+  LIT_MODEL_MATRIX_COLUMN_0_OFFSET,
+  LIT_ENCODED_CAMERA_WORLD_HIGH_OFFSET,
+  LIT_ENCODED_CAMERA_WORLD_LOW_OFFSET,
   // Share the per-frame effects resolver with voxel, Gaussian-splat, and
   // point-cloud renderers, centralizing toggle hashing and placeholder fallback.
   _getOrCreateSharedPrimitiveEffectsBG as getOrCreateSharedAdvancedEffectsBG,
