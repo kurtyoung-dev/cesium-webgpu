@@ -636,3 +636,18 @@ in the brief, execute rather than read — produced five complete verdicts in mi
 Sol review dispatches produced verdicts only twice all night (A1's and A5-1's adversarial rounds,
 both of which changed their lane's outcome — the sink is real but not universal, and the
 difference appears to be bounded single-subject review briefs versus governance-heavy ones).
+
+**Edge executor session and the infra reset (2026-08-28 ~05:30).** The gated browser lane ran ten
+serial Edge jobs against the built tip: the C11-170 acquire measured the owed zero-count census
+(landed with the comparator as Batch 1196 - the banked patch carried a latent constant-bound
+defect that the spec's own shape test caught at application, repaired at the landing seat and
+disclosed), the dawn sweep confirmed the dark-hole repair on both backends without refuting the
+co-fade, and the splat cold-start passed with both vacuity controls fired. Its elevation probe
+refused a false green and instead found the ramp texture never binds on the WebGPU primitive path
+(Q-37, HIGH - Batch 1183's arithmetic is currently unobservable in pixels), plus three further
+findings filed. Separately the codex MCP server was found wedged at 4.2 GB since the 26th with no
+rollout created machine-wide after 03:24 - every wave-3 dispatch was sinking; it was killed after
+verifying nothing live existed, and all lanes were authorized one fresh dispatch with the
+no-session verification stated as the precondition. The never-re-dispatch rule gains its refinement:
+it protects against racing a LIVE session, so a dispatch that provably created no session may be
+retried once after an infra reset.

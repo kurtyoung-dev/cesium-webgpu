@@ -109,6 +109,20 @@ The remaining ~30 medium and all low survivors are enumerated in §5 with their 
 QUEUED; they dispatch after Q-1…Q-10, batched by file so one Sol dispatch closes several small
 findings in the same module. C1's returning findings append here as a dated addendum.
 
+### Edge executor session findings (2026-08-28 ~05:00) — evidence at output/edge-executor-2026-08-28/
+
+| | Locator | Finding | Shape |
+|---|---|---|---|
+| DISCHARGED | C11-170 blocker A | zero-count census measured (90 frames / 0 calls / 12 observable members); patch applied and landed Batch 1196 with the per-run bound derivation the shape test demanded | done |
+| DISCHARGED | C12-38 dark-hole repair | sample-7 discriminator moved +0.879/+0.875 luminance on both backends; PNGs read, hole gone, no new artifact; co-fade NOT refuted. Magnitude unmeasurable at this exposure (11/13 samples clip both centre and annulus to 1.0) | done; magnitude needs an HDR-exposure leg |
+| DISCHARGED | splat cold-start | GATE PASS exit 0, superseded=0, 0.000% cross-backend mismatch with BOTH vacuity controls fired (SH-off 2.5%, covariance-corruption 33.5%) | done; tower scene is the follow-up |
+| Q-37 | WebGPU ElevationRamp primitive texture binding | the ramp texture NEVER binds on the primitive path — WebGPU renders the 1x1 default (253,254,254) where WebGL renders the ramp (127,109,127); material side healthy, `_matPrimarySource` stays undefined after 60 frames. **BLOCKS Batch 1183's pixel confirmation** — the elevation arithmetic is currently unobservable | Opus-judgment, HIGH |
+| Q-38 | WebGPU ElevationContour line resolution | no discrete lines resolve (near-solid, unchanged by translucency); AND WebGL carries no `materialInput.height` for primitives at all (globe-only, `GlobeFS.glsl:747` sole assignment) — two candidate causes deliberately not guessed between | investigate with Q-37 |
+| Q-39 | sun below-horizon parity | at −2.246° WebGL culls the sun and renders night sky while WebGPU renders bright dawn sky WITH a disc — present in pre-fix captures, NOT a Batch-1184 regression | Sol-bounded once triaged |
+| Q-40 | sun-disc probe contract | `sunVisible` absent from all 13 rows (all scored:true incl. two below-horizon), plus a consistent ~−0.36° registered-vs-observed altitude offset — the expectation doc predicted this contract question | Sol-bounded |
+| OWED | H1 / H2 / F1-2 probes | not reached in the session; RUNLOG records exactly what each still owes | next executor tranche |
+| BLIND | E-1 clustered-light probe | the scene never entered the clustered path (position control also moved nothing) — re-run against a glTF model; two setup traps recorded (clusteredLightingEnabled defaults false; white albedo saturates) | next executor tranche |
+
 ### A5 close-out corrections and dossiers (2026-08-28 ~04:30)
 
 | | Locator | State |
