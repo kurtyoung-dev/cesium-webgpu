@@ -109,6 +109,35 @@ The remaining ~30 medium and all low survivors are enumerated in §5 with their 
 QUEUED; they dispatch after Q-1…Q-10, batched by file so one Sol dispatch closes several small
 findings in the same module. C1's returning findings append here as a dated addendum.
 
+### Wave-3 landings (2026-08-28 ~06:05) - Batches 1198-1211, all seven lanes closed
+
+All wave-3 lanes were Opus-direct under the A1 precedent (codex MCP server down for the entire
+wave; every lane verified no-session before falling back). Landed and pushed before quiet hours:
+
+| Lane | Batches | Discharges |
+|---|---|---|
+| W3-C frame seams | 1198 | Q-26 bookkeeping hoist, Q-23 viewport clamp (publish-early form REFUTED by executed counterexample), Q-2 run-of-one report |
+| W3-B device loss | 1199 (+1200 seat repair: @purpose headers + census) | device-loss epoch resets, five consumers on the shared identity predicate; sky-consumer premise corrected (sampler/layout gap, not LUT views); fog premise corrected (context-keyed shape) |
+| W3-F governance | 1201-1203 | Q-11 AGENTS.md carries the six rule families; Q-28 comparator subset-with-floor + C12-37 portfolio row aligned; IMAGERY_PROJECTION table corrected with per-row provenance |
+| W3-E four-pack | 1204-1207 | Q-1 isWebGPU seam (six goldens), Q-3 solar-disc floor, Q-4 CC/timestamp exclusion families (census byte-identical), Q-5 four fork diagnostics wrapped |
+| W3-D cloud/model | 1208-1209 | cloud temporal source-view keying (morph excursion), model pipeline metadata-class fold (13 sites, one method) |
+| W3-G hook + CI | 1210-1211 | pre-commit engine type gate (sentinel-keyed, skip line) + lint-staged status fix; nine build-free guards wired into a CI job with a hollow-job spec |
+
+Landing-seat notes: WebGPUSceneRenderer.ts three-way merged twice (1199 over 1198, 1204 over
+1199); comment-marker-guard.spec merged over 1195; package.json hand-merged over 1195 (JSON-
+validated); one Q-5 pragma wrap rides in 1204 (same edited region, disclosed in both messages).
+
+Filed, not fixed, by the lanes:
+
+| | Locator | Finding | Shape |
+|---|---|---|---|
+| Q-41 | SceneRenderer.js:51 + GlobeSurfaceTileProviderRendering.js (~1169) | two unwrapped interpolated console.warn diagnostics, same class as Q-5's targets but console.warn scope | Sol-bounded |
+| Q-42 | model-device-recovery.spec.mjs (1 fail) + webgpu-snap-payload.spec.mjs G8 (1 fail) | pre-existing at tip 2ede0a8c89, proven by pristine-file control; both read WebGPUModelPipelineCache.ts | investigate |
+| Q-43 | cpu-scene-phase-integration.spec.mjs (3/2) | pre-existing red at HEAD, identical with and without W3-C - measured at the landing seat | investigate |
+| Q-44 | .github/workflows/dev.yml guards job | first hosted Actions run is the owed evidence (validated structurally only); also verify-tracked-references Layer 2 is vacuous on a clean CI checkout (Layer 1 only) | watch next push's Actions run |
+| Q-45 | verify-tooling-catalog | exit 1 drift on the git-freshness column; test-tooling-catalog 82/91 - excluded from the CI guards job with reasons in the YAML | Opus-judgment |
+| OWED | pixel legs | device-loss injection probe (W3-B), cloud morph-excursion resize + two-metadata-class model (W3-D), Q-23/Q-26 pixel legs | next executor tranche |
+
 ### Edge executor session findings (2026-08-28 ~05:00) — evidence at output/edge-executor-2026-08-28/
 
 | | Locator | Finding | Shape |

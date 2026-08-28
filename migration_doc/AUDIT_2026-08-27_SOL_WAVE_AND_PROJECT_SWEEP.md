@@ -651,3 +651,15 @@ verifying nothing live existed, and all lanes were authorized one fresh dispatch
 no-session verification stated as the precondition. The never-re-dispatch rule gains its refinement:
 it protects against racing a LIVE session, so a dispatch that provably created no session may be
 retried once after an infra reset.
+
+**Wave-3 closed (2026-08-28 ~06:05, Batches 1198-1211).** All seven lanes returned complete and
+landed before quiet hours; the whole wave ran Opus-direct because the codex MCP server never
+respawned after the reset, and every lane stated that provenance in its commit rather than
+implying a review tier that did not run. Executed mutants stood in for the missing tier
+throughout - the wave's running total is above fifty killed mutants across the seven packets.
+Three briefed premises died on contact with the code and are recorded in the landing messages
+(the sky consumer's real gap, the fog cache shape, the publish-early viewport form); the
+W3-A prototype lane returned an honest INCOMPLETE with a masked pre-existing arity defect
+isolated by pristine-tree control - its landing and the two rulings it requests (the arity
+repair sits outside the sixteen preregistered rows; P-1's byte source needs a decision) are
+held for the orchestrator's next session rather than rushed into the closing window.
