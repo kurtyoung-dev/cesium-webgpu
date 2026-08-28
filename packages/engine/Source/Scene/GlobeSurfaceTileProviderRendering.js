@@ -33,6 +33,7 @@ import GlobeSurfaceTile from "./GlobeSurfaceTile.js";
 import ImageryLayer from "./ImageryLayer.js";
 import PerInstanceColorAppearance from "./PerInstanceColorAppearance.js";
 import Primitive from "./Primitive.js";
+import resolveImageryLayerValue from "./resolveImageryLayerValue.js";
 import SceneMode from "./SceneMode.js";
 import ShadowMode from "./ShadowMode.js";
 import TerrainFillMesh from "./TerrainFillMesh.js";
@@ -1942,6 +1943,10 @@ function addDrawCommandsForTile(tileProvider, tile, frameState) {
         CesiumMath.EPSILON3;
     colorCorrect = colorCorrect && (applyFog || showGroundAtmosphere);
 
+    // The callback arguments are the same for every layer on this tile, so
+    // the coordinates are built once rather than per property per layer.
+    const tileCoordinates = { level: tile.level, x: tile.x, y: tile.y };
+
     let applyBrightness = false;
     let applyContrast = false;
     let applyHue = false;
@@ -1988,53 +1993,102 @@ function addDrawCommandsForTile(tileProvider, tile, frameState) {
         tileImagery.useWebMercatorT;
 
       uniformMapProperties.dayTextureAlpha[numberOfDayTextures] =
-        imageryLayer.alpha;
+        resolveImageryLayerValue(
+          imageryLayer.alpha,
+          1.0,
+          frameState,
+          imageryLayer,
+          tileCoordinates,
+        );
       applyAlpha =
         applyAlpha ||
         uniformMapProperties.dayTextureAlpha[numberOfDayTextures] !== 1.0;
 
       uniformMapProperties.dayTextureNightAlpha[numberOfDayTextures] =
-        imageryLayer.nightAlpha;
+        resolveImageryLayerValue(
+          imageryLayer.nightAlpha,
+          1.0,
+          frameState,
+          imageryLayer,
+          tileCoordinates,
+        );
       applyDayNightAlpha =
         applyDayNightAlpha ||
         uniformMapProperties.dayTextureNightAlpha[numberOfDayTextures] !== 1.0;
 
       uniformMapProperties.dayTextureDayAlpha[numberOfDayTextures] =
-        imageryLayer.dayAlpha;
+        resolveImageryLayerValue(
+          imageryLayer.dayAlpha,
+          1.0,
+          frameState,
+          imageryLayer,
+          tileCoordinates,
+        );
       applyDayNightAlpha =
         applyDayNightAlpha ||
         uniformMapProperties.dayTextureDayAlpha[numberOfDayTextures] !== 1.0;
 
       uniformMapProperties.dayTextureBrightness[numberOfDayTextures] =
-        imageryLayer.brightness;
+        resolveImageryLayerValue(
+          imageryLayer.brightness,
+          ImageryLayer.DEFAULT_BRIGHTNESS,
+          frameState,
+          imageryLayer,
+          tileCoordinates,
+        );
       applyBrightness =
         applyBrightness ||
         uniformMapProperties.dayTextureBrightness[numberOfDayTextures] !==
           ImageryLayer.DEFAULT_BRIGHTNESS;
 
       uniformMapProperties.dayTextureContrast[numberOfDayTextures] =
-        imageryLayer.contrast;
+        resolveImageryLayerValue(
+          imageryLayer.contrast,
+          ImageryLayer.DEFAULT_CONTRAST,
+          frameState,
+          imageryLayer,
+          tileCoordinates,
+        );
       applyContrast =
         applyContrast ||
         uniformMapProperties.dayTextureContrast[numberOfDayTextures] !==
           ImageryLayer.DEFAULT_CONTRAST;
 
       uniformMapProperties.dayTextureHue[numberOfDayTextures] =
-        imageryLayer.hue;
+        resolveImageryLayerValue(
+          imageryLayer.hue,
+          ImageryLayer.DEFAULT_HUE,
+          frameState,
+          imageryLayer,
+          tileCoordinates,
+        );
       applyHue =
         applyHue ||
         uniformMapProperties.dayTextureHue[numberOfDayTextures] !==
           ImageryLayer.DEFAULT_HUE;
 
       uniformMapProperties.dayTextureSaturation[numberOfDayTextures] =
-        imageryLayer.saturation;
+        resolveImageryLayerValue(
+          imageryLayer.saturation,
+          ImageryLayer.DEFAULT_SATURATION,
+          frameState,
+          imageryLayer,
+          tileCoordinates,
+        );
       applySaturation =
         applySaturation ||
         uniformMapProperties.dayTextureSaturation[numberOfDayTextures] !==
           ImageryLayer.DEFAULT_SATURATION;
 
+      const gamma = resolveImageryLayerValue(
+        imageryLayer.gamma,
+        ImageryLayer.DEFAULT_GAMMA,
+        frameState,
+        imageryLayer,
+        tileCoordinates,
+      );
       uniformMapProperties.dayTextureOneOverGamma[numberOfDayTextures] =
-        1.0 / imageryLayer.gamma;
+        1.0 / gamma;
       applyGamma =
         applyGamma ||
         uniformMapProperties.dayTextureOneOverGamma[numberOfDayTextures] !==

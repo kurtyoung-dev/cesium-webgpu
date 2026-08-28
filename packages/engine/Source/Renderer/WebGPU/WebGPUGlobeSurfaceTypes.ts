@@ -354,51 +354,8 @@ export function computeGlobeImagerySlotCount(
     : 4;
 }
 
-/**
- * Resolve an `ImageryLayer` property that the public API documents as either a
- * scalar or a callback `(frameState, layer, x, y, level) => number`. Writing
- * a Function into a Float32Array produces NaN which propagates through the
- * shader's multiplicative blend and makes the layer disappear on WebGPU.
- *
- * The callback signature matches WebGL's `ImageryLayerFeatureGetter`
- * convention: imagery layers that use it (hover-fade, time-of-day fade,
- * elevation-based fade) rely on per-tile arguments, so the tile rectangle's
- * level/x/y are passed when available.
- *
- * @private
- */
-export function resolveImageryLayerValue(
-  value: unknown,
-  defaultValue: number,
-  frameState: CesiumFrameState,
-  layer: unknown,
-  tile?: { level: number; x: number; y: number; rectangle: CesiumRectangle },
-): number {
-  if (typeof value === "function") {
-    try {
-      const fn = value as (
-        fs: CesiumFrameState,
-        l: unknown,
-        x: number,
-        y: number,
-        level: number,
-      ) => number;
-      const resolved = fn(
-        frameState,
-        layer,
-        tile?.x ?? 0,
-        tile?.y ?? 0,
-        tile?.level ?? 0,
-      );
-      return typeof resolved === "number" && isFinite(resolved)
-        ? resolved
-        : defaultValue;
-    } catch {
-      return defaultValue;
-    }
-  }
-  return typeof value === "number" && isFinite(value) ? value : defaultValue;
-}
+// The implementation lives in Scene so the WebGL and WebGPU uniform packs share callback semantics.
+export { default as resolveImageryLayerValue } from "../../Scene/resolveImageryLayerValue.js";
 
 // Column-major 4×4 matrix multiply: result = a × b. All inputs and result
 // are stored as Float64Array of length 16 in column-major order (Cesium's

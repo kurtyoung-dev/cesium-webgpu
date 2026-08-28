@@ -206,11 +206,11 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 
 | Metric | Value |
 |---|---|
-| Files in census | 1090 |
-| ACTIVE | 883 |
+| Files in census | 1092 |
+| ACTIVE | 885 |
 | INVESTIGATION | 195 |
 | NO @purpose HEADER | 12 |
-| Classes | probe 652, spec 220, other 100, lib 76, gate-lib 19, bake-tool 13, runner 6, fixture 4 |
+| Classes | probe 652, spec 222, other 100, lib 76, gate-lib 19, bake-tool 13, runner 6, fixture 4 |
 
 ### Tools/ (39)
 
@@ -218,7 +218,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 |---|---|---|---|---|---|
 | audit-feature-renderers.mjs | other | ACTIVE | 2026-08-16 | 4 | Node audit that FeatureRendererKey enum, registerFeatureRenderer sites and getFeatureRenderer consumers stay mutually consistent; CI/pre-commit gate. |
 | backup-worker-deliverables.mjs | other | ACTIVE | 2026-08-20 | 1 | Export each worker clone's authored work as a self-contained, verified-appliable patch bundle so nothing depends on a clone surviving, while quiet hours forbid committing. |
-| bake-black-marble-pyramid.mjs | bake-tool | ACTIVE | — | 1 | Bakes the bundled offline night-imagery pyramid (Assets/Textures/BlackMarble) from a NASA Black Marble source image, mirroring the NaturalEarthII TMS geodetic layout tile for tile. |
+| bake-black-marble-pyramid.mjs | bake-tool | ACTIVE | 2026-08-28 | 1 | Bakes the bundled offline night-imagery pyramid (Assets/Textures/BlackMarble) from a NASA Black Marble source image, mirroring the NaturalEarthII TMS geodetic layout tile for tile. |
 | build-eot20-constituent-grid.mjs | other | ACTIVE | 2026-08-16 | 3 | Offline bake of the EOT20 ocean-tide constituent atlas into the TCG1 grid read by Core/TideConstituentGrid.js (CC BY 4.0, attribution mandated). |
 | build-geoid-undulation-grid.mjs | other | ACTIVE | 2026-08-16 | 4 | Bakes the bundled coarse EGM2008 geoid grid (egm2008-0p5deg.i16) consumed by Core/GeoidUndulationGrid.js for the ocean GEOID vertical datum. |
 | build-lake-water-mask.mjs | other | ACTIVE | 2026-08-16 | 4 | Converts Natural Earth 1:10m lakes polygons into the packed LWM1 binary bundled for LakeWaterClassificationProvider (globe.lakeWaterMask). |
@@ -353,7 +353,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | stbn-rng.mjs | bake-tool | ACTIVE | 2026-08-16 | 3 | Deterministic license-clean random stream for the STBN bake: AES-256-CTR over zeros keyed by SHA-256(seed), byte-identical across machines. |
 | stbn-spectrum.mjs | bake-tool | ACTIVE | 2026-08-16 | 5 | Fourier certification of an STBN volume (radial spatial spectrum, per-pixel temporal spectrum, cross-correlation) with mutants proving each bar fires. |
 
-### Tools/visual-regression/ (893)
+### Tools/visual-regression/ (895)
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
@@ -432,7 +432,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | cpu-primitive-breakdown-policy.spec.mjs | spec | ACTIVE | 2026-08-16 | 1 | Policy guard for probe-c11-169-primitive-breakdown: first-red policy, detail controls, instrumentation evaluation and capture normalization vs source. |
 | cpu-scene-phase-integration.spec.mjs | spec | ACTIVE | 2026-08-16 | 3 | Pins the CPU scene-phase list agreement across Scene.js, ViewportExecutor.js and WebGPUSceneRenderer.ts (vm-executed source integration check). |
 | cross-backend-sandcastle-runner.mjs | other | ACTIVE | 2026-08-16 | 7 | Runs every Sandcastle demo under WebGL then WebGPU via a Viewer shim injecting contextOptions.renderer, pixel-diffs the pair, writes per-demo reports. |
-| daynight-terminator-law.spec.mjs | spec | ACTIVE | 2026-08-16 | 3 | CLT-B1 Node half: transcribed laws vs shaders, calibration inversion, ramp classifier, structural exit codes — all mutant-rejected. |
+| daynight-terminator-law.spec.mjs | spec | ACTIVE | 2026-08-28 | 3 | CLT-B1 Node half: transcribed laws vs shaders, calibration inversion, ramp classifier, structural exit codes — all mutant-rejected. |
 | debug-ground-polyline-color.mjs | other | INVESTIGATION | 2026-08-16 | 0 | Instruments the GroundPolyline renderer cache to find why per-instance color didn't reach the FS (dim-rectangle diagnosis, 2026-04-30). |
 | device-identity-recovery.spec.mjs | spec | ACTIVE | 2026-08-28 | 0 | Guards the device-loss recovery seams landed with the invalidation-bus predicate: the allocation-epoch resets and the dispatcher device-identity guards that stop consumers reusing work recorded against a dead device. |
 | diag-b3dm-cmds.mjs | other | INVESTIGATION | 2026-08-16 | 0 | Dumps commandList contents during a b3dm tileset render to explain a uniform dark-gray WebGPU canvas. |
@@ -469,8 +469,9 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | environment-refresh-priority.spec.mjs | spec | ACTIVE | 2026-08-16 | 2 | Pins C11-193C same-frame dynamic-environment demand ordering in WebGPUEnvironmentRefreshCoordinator, GPU-free via esbuild-transpiled TS. |
 | finding-ownership-audit.spec.mjs | spec | ACTIVE | 2026-08-24 | 6 | Scans the migration_doc finding-source files for NEW-* IDs and enforces each has an ownership disposition (alias/placeholder/resolved). |
 | fog-cheap-coverage-gate.spec.mjs | spec | ACTIVE | 2026-08-16 | 6 | Pins the fog cheap-path cloud-shadow coverage gate: samples standardised onto the baked field's moments, with mutants and byte-neutrality. |
-| globe-daynight-normal-source.spec.mjs | spec | ACTIVE | 2026-08-16 | 3 | Pins that every WGSL globe day/night term reads the analytic geocentric normal, not the mesh v_normalEC whose constant decode flattened lighting. |
-| globe-daynight-ramp-law.spec.mjs | spec | ACTIVE | 2026-08-16 | 5 | Pins that GlobeTerrain.wgsl's day/night ramp and diffuse express GlobeFS.glsl's two laws, coefficients captured from both sources, with mutant tests. |
+| globe-daynight-alpha-gate.spec.mjs | spec | ACTIVE | 2026-08-28 | 0 | Pins that the imagery day/night alpha is gated on the per-tile alpha condition alone on BOTH backends, with the WebGPU flag derived from the same resolved values as the WebGL define, and mutants for absence and inertness. |
+| globe-daynight-normal-source.spec.mjs | spec | ACTIVE | 2026-08-28 | 3 | Pins that every WGSL globe day/night term reads the analytic geocentric normal, not the mesh v_normalEC whose constant decode flattened lighting. |
+| globe-daynight-ramp-law.spec.mjs | spec | ACTIVE | 2026-08-16 | 6 | Pins that GlobeTerrain.wgsl's day/night ramp and diffuse express GlobeFS.glsl's two laws, coefficients captured from both sources, with mutant tests. |
 | globe-material-pipeline-format-axis.spec.mjs | spec | NO @purpose HEADER | 2026-08-28 | 0 | — |
 | globe-night-lights-default.spec.mjs | spec | ACTIVE | 2026-08-20 | 1 | Verifies that durable Globe source defaults night lights to an opt-in feature. |
 | globe-night-ocean-sentinel.spec.mjs | spec | ACTIVE | 2026-08-16 | 1 | Pins the GLOBE_UB_UNSET (-1.0) sentinel that made enableNightLights=false reachable: OFF and default-ON no longer share the same 0.0 uniform encoding. |
@@ -485,6 +486,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | gsplat-frame-variance.spec.mjs | spec | ACTIVE | 2026-08-21 | 0 | Certifies the C15-G9 D1-D5 frame-variance model, probe contract, source predicate, and loud mutants. |
 | gsplat-harness.spec.mjs | spec | ACTIVE | 2026-08-16 | 9 | Mutation-tests the C15-G1 dual-mode gsplat gate so the absence/presence flip and blank-canvas parity can never go green vacuously. |
 | hdr-display-default.spec.mjs | spec | ACTIVE | 2026-08-16 | 2 | Acceptance for HDR-defaults-on on HDR displays: pins the pure decision function because headless Edge cannot synthesize (dynamic-range: high). |
+| imagery-layer-callback-values.spec.mjs | spec | ACTIVE | 2026-08-28 | 0 | Pins that every ImageryLayer property documented as scalar-or-callback resolves identically on both backends, executing the shared leaf over the documented contract and mutating the guard. |
 | j2-cpu-kernel.mjs | other | ACTIVE | 2026-08-16 | 4 | FP64 secular-J2 orbital propagator mirroring the demo's WGSL kernel; single source of truth for two orbital probes and the WebGL2 cpuKernel leg. |
 | logdepth-zfight-probe-contract.spec.mjs | spec | ACTIVE | 2026-08-16 | 0 | Browser-free contract pinning probe-logdepth-zfight's deterministic offline scene and retained terrain-depth policy. |
 | lut-consumer-device-identity.spec.mjs | spec | ACTIVE | 2026-08-28 | 0 | Guards the sky, fog and cloud consumers of the shared device-identity predicate so presence-only cache admission cannot survive a device recovery. |
