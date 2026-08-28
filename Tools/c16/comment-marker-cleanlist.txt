@@ -662,3 +662,8 @@ packages/engine/Source/Scene/GBufferFramebuffer.js
 # constraints remain beside the code.
 packages/engine/Source/Scene/Scene.js
 packages/engine/Source/Scene/CesiumDebug.js
+# WebGPU scene-frustum, image-based-lighting, and classification routing family.
+packages/engine/Source/Renderer/WebGPU/WebGPUSceneRendererFrustumLoop.ts
+packages/engine/Source/Renderer/WebGPU/WebGPUImageBasedLighting.ts
+packages/engine/Source/Scene/GroundPrimitive.js
+packages/engine/Source/Scene/Vector3DTileClampedPolylines.js

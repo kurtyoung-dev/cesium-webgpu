@@ -1,15 +1,11 @@
 /**
- * Multi-frustum dispatch loop extracted from
+ * Multi-frustum dispatch loop for
  * `WebGPUSceneRenderer.executeCommands`.
  *
- * Batch 140 of the audit-recommended SceneRenderer decomposition —
- * Slice C of the executeCommands four-slice plan (see
- * `migration_doc/BATCH_138_PLAN_EXECUTE_COMMANDS_SLICE_PLAN.md`).
+ * Walks the frustum list far to near and dispatches every per-frustum
+ * pass:
  *
- * This is the heart of the scene render: walks the frustum list
- * far-to-near and dispatches every per-frustum pass:
- *
- *   - 2D-jitter setup (SCENE2D mode only)
+ *   - SCENE2D per-frustum depth setup
  *   - capturedFrustumRanges bookkeeping for the debug overlay
  *   - frustum uniform refresh + currentFrustumIndex update
  *   - depth/stencil clear (gated on debugShowDepthAsColor)
@@ -20,16 +16,16 @@
  *   - 3D-tile chain with depth-update hook between main + classification
  *   - VOXELS sort + dispatch
  *   - OPAQUE pass
- *   - GAUSSIAN_SPLATS — deferred to OIT when supported, else inline
+ *   - GAUSSIAN_SPLATS — immediate draw or opt-in translucent staging
  *   - second frustum-uniform refresh (use exact near for translucent
  *     to avoid blending artifacts)
- *   - refraction capture (KHR_materials_transmission, Batch 107)
+ *   - KHR_materials_transmission refraction capture
  *   - TRANSLUCENT pass
- *   - translucent-depth pack for classification (Batch 47/61/78)
+ *   - packed translucent-depth publication for classification
  *   - per-frustum pick-depth copy
  *
- * The body has 7 callbacks into the SceneRenderer + 7 field reads/
- * writes — `FrustumLoopHost` interface enumerates the surface.
+ * `FrustumLoopHost` enumerates the SceneRenderer surface used by the
+ * loop.
  *
  * @module WebGPUSceneRendererFrustumLoop
  */
@@ -60,20 +56,20 @@ import {
 
 /**
  * SceneRenderer surface the frustum-loop helper reaches back to.
- * Field reads/writes on the left; method callbacks on the right.
+ * Fields precede method callbacks.
  */
 export interface FrustumLoopHost {
-  // ── Field reads ──
+  // Field reads
   _globeDepth: WebGPUGlobeDepth | null;
   _sceneFramebuffer: WebGPUSceneFramebuffer | null;
   _oit: WebGPUOIT | null;
   _translucentTileClassification: WebGPUTranslucentTileClassification | null;
   _cpuPassProfiler: WebGPUCpuPassProfiler;
-  // C7-SPLAT-DEPTH-COMPOSE — opt-in GS-WSR OIT deferral (default false =
-  // WebGL-parity inline execution). See the flag's doc on WebGPUSceneRenderer.
+  // OIT deferral for Gaussian splats is opt-in. The default value, false,
+  // keeps WebGL-parity inline execution. See the flag on WebGPUSceneRenderer.
   _splatOITDeferral: boolean;
 
-  // ── Field writes ──
+  // Field writes
   _capturedFrustumRanges: { near: number; far: number }[];
   _currentFrustumIndex: number;
   _deferredOITSplats: {
@@ -81,7 +77,7 @@ export interface FrustumLoopHost {
     count: number;
   } | null;
 
-  // ── Method callbacks ──
+  // Method callbacks
   _updateFrustumUniforms(
     uniformState: CesiumUniformState,
     near: number,
@@ -123,10 +119,10 @@ export interface FrustumLoopHost {
 
 /**
  * Walk the frustum list far-to-near and dispatch every per-frustum
- * pass. Caller (`executeCommands` on the SceneRenderer) is responsible
- * for the per-frame state reset + scene-FB pass redirect that runs
- * before this; and the post-frustum-tail (overlay, depth plane, env
- * effects, composite, velocity, post-process) runs after.
+ * pass. The caller, `WebGPUSceneRenderer.executeCommands`, handles the
+ * per-frame state reset and scene-framebuffer redirect before the loop,
+ * then runs overlays, the depth plane, environment effects, compositing,
+ * velocity, and post-processing afterward.
  *
  * @param host - The owning SceneRenderer.
  * @param config - Render-frame config from `executeCommands`.
@@ -144,72 +140,54 @@ export function executeFrustumLoop(
   const numFrustums = frustumCommandsList.length;
   const uniformState = context.uniformState;
 
-  // C-R8-SCENE2D-JITTER (Batch 36) — capture the initial 2D camera
-  // altitude before the frustum loop so we can offset per-frustum
-  // inside 2D mode. WebGL's `SceneRenderer.js:419,444-449` does this
-  // to compress the 2D near/far range into [1, far-near+1] so the
-  // ortho depth buffer has uniform precision across frustums instead
-  // of banding where tiles intersect a frustum boundary. `.position`
-  // lives on the real `Camera.js` instance (line 175) but isn't
-  // declared on the ambient `CesiumCamera` shape — cast to read.
+  // Retain the persistent camera altitude for multi-frustum SCENE2D.
+  // `SceneRenderer.js` shifts `camera.position.z` for each frustum,
+  // compresses its range to [1, far - near + 1], and calls
+  // `uniformState.update(frameState)` so orthographic depth precision
+  // remains uniform across slice boundaries. `Camera.position` is
+  // initialized in `Camera.js` but omitted from the ambient
+  // `CesiumCamera` shape, so cast to read it.
   const scene2DCamera = scene.camera as unknown as {
     position: { z: number };
   };
   const initialHeight2D =
     scene.mode === 2 /* SceneMode.SCENE2D */ ? scene2DCamera.position.z : 0;
 
-  // NEW-WEBGPU-GLOBE-CLASSIFY-DEPTH-PRECISION — capture the REAL camera frustum
-  // (near, far) the globe log-encodes the entire depth texture against, BEFORE
-  // the per-slice loop runs. CRITICAL: read `scene.camera` (the persistent
-  // camera, far ~1e10), NOT `scene._frameState.camera` — the multi-frustum
-  // machinery SLICES the frameState camera's frustum to per-band near/far
-  // (~5e5), which is NOT what the replayed globe command encoded with. The globe
-  // packs `uniformState.currentFrustum` (= scene.camera.frustum) at scene-update
-  // and replays unchanged, so scene.camera.frustum here equals its encode
-  // frustum exactly. Depth-sample classifiers read this via fstate.encodeFrustum
-  // to decode eye distance, then unproject with the per-slice projection.
+  // Publish the persistent camera frustum used to encode logarithmic globe
+  // depth before `_updateFrustumUniforms` replaces
+  // `UniformState.currentFrustum` with each slice. Depth-sampling classifiers
+  // decode eye distance with this encode range and unproject with the current
+  // slice projection.
   publishLogDepthEncodeNearFar(scene, uniformState);
 
-  // --- Multi-frustum loop: iterate from FAR to NEAR ---
-  // This matches the WebGL path in Scene.js which goes (numFrustums - 1 - i)
+  // Iterate far to near, matching `SceneRenderer.js`'s
+  // `numFrustums - i - 1` ordering.
   for (let i = 0; i < numFrustums; i++) {
     const index = numFrustums - i - 1;
     const frustumCommands = frustumCommandsList[index];
 
-    // C-R8-SCENE2D-JITTER (Batch 36) — 2D-mode per-frustum offset.
-    // Mirrors `SceneRenderer.js:444-449`: compress far-near to [1,
-    // far-near+1] and shift camera.z to keep ortho depth precision
-    // consistent across frustum boundaries.
+    // `SceneRenderer.js` applies the SCENE2D camera shift and range
+    // compression unconditionally. WebGPU applies it only with multiple
+    // frustums because a single-frustum shift moves `camera.position.z` to
+    // about 1 and lets the near plane clip the entire planar globe.
     let near;
     let far;
     if (scene.mode === 2 /* SceneMode.SCENE2D */ && numFrustums > 1) {
-      // C-R8-SCENE2D-JITTER (Batch 36) — only apply the camera-Z compress
-      // trick when there are multiple frustums. The trick shifts
-      // `camera.position.z` per-frustum to compress each band into a
-      // narrow [1, far-near+1] range so the ortho depth buffer keeps
-      // uniform precision across frustum boundaries. With a single
-      // frustum the shift drives the camera into the planar earth
-      // (z≈1) and every tile gets clipped by the near plane — blank
-      // viewport. Mirrors `SceneRenderer.js:444-449` which also has
-      // implicit multi-frustum behavior.
       scene2DCamera.position.z = initialHeight2D - frustumCommands.near + 1.0;
       far = Math.max(1.0, frustumCommands.far - frustumCommands.near);
       near = 1.0;
-      // After shifting the camera Z, refresh the view/projection state
-      // so the tile UBs pick up the new camera position. Mirrors WebGL
-      // `SceneRenderer.js:448` (`uniformState.update(frameState)`).
+      // Refresh the view and projection after shifting the camera so tile
+      // uniform buffers use the per-frustum position, matching
+      // `SceneRenderer.js`'s `uniformState.update(frameState)` call.
       const us = uniformState as unknown as {
         update: (fs: typeof scene._frameState) => void;
       };
       us.update?.(scene._frameState);
     } else if (scene.mode === 2 /* SceneMode.SCENE2D */) {
-      // Single-frustum SCENE2D — `frustumCommands` carries the slice
-      // of depth this band would render (e.g., 9.3 Mm → 11.4 Mm above
-      // the planar earth at default zoom), which would clip the
-      // entire earth out of the frustum. With only one frustum the
-      // band must cover the FULL visible range, so use the camera
-      // frustum's own near/far rather than the band-specific values.
-      // Mirrors WebGL's behavior in a single-band degenerate case.
+      // A single SCENE2D frustum uses the camera's full visible range
+      // because its potentially-visible-set band can exclude the planar
+      // globe. This deliberately diverges from `SceneRenderer.js`'s
+      // unconditional shift and compression.
       const camFrust = scene._frameState.camera?.frustum as
         { near?: number; far?: number } | undefined;
       near = camFrust?.near ?? frustumCommands.near;
@@ -224,7 +202,7 @@ export function executeFrustumLoop(
       far = frustumCommands.far;
     }
 
-    // Store the range indexed by the ORIGINAL frustum index (0 = nearest)
+    // Store the range by natural frustum index (0 = nearest)
     // so `WebGPUDebugFrustumOverlay` can match the WebGL DebugInspector
     // bitmask order. `index` already points to the natural order.
     host._capturedFrustumRanges[index] = {
@@ -239,22 +217,18 @@ export function executeFrustumLoop(
 
     // Clear depth/stencil per frustum (but not color — color accumulates across frustums).
     //
-    // EXCEPTION: when `debugShowDepthAsColor` is on, skip the inter-frustum
-    // clear (except before the very first iteration, so we start with a
-    // known-clean buffer). Without this, only the nearest frustum's
-    // geometry survives into the depth texture that the debug overlay
-    // samples — the user sees an all-cleared depth buffer at any camera
-    // altitude where the globe lives in the far frustum. Depth-test
-    // correctness is compromised for the debug frame (far-frustum geometry
-    // may incorrectly occlude near-frustum geometry through stale depth),
-    // but the viz is THE tool you'd reach for when something's wrong with
-    // depth anyway, so the tradeoff is intentional.
+    // When `debugShowDepthAsColor` is enabled, retain depth from earlier
+    // frustums after the initial clear so the overlay can sample the whole
+    // far-to-near range. Clearing every iteration leaves only the nearest
+    // frustum and can make a far-frustum globe appear absent. The diagnostic
+    // frame accepts stale far-frustum depth, which can incorrectly occlude
+    // nearer geometry.
     const debugDepthViz = scene?._frameState?.debugShowDepthAsColor === true;
     if (!debugDepthViz || i === 0) {
       host._clearDepthStencil(context);
     }
 
-    // Pass 0: ENVIRONMENT (sky, sun, moon, atmosphere) — once in farthest frustum
+    // Pass.ENVIRONMENT executes once in the farthest frustum.
     if (i === 0) {
       host._cpuPassProfiler.beginPass("environment");
       try {
@@ -270,7 +244,6 @@ export function executeFrustumLoop(
       }
     }
 
-    // Pass 2: GLOBE
     host._cpuPassProfiler.beginPass("globe");
     try {
       host._executeGlobePass(frustumCommands, config);
@@ -278,11 +251,10 @@ export function executeFrustumLoop(
       host._cpuPassProfiler.endPass("globe");
     }
 
-    // Copy globe depth for terrain clamping and picking.
-    // C-R8-GLOBE-DEPTH-ENABLE (Batch 42) — pass the scene framebuffer
-    // depth explicitly (that's where globe actually wrote). The
-    // internal `_outputTarget` fallback inside GlobeDepth is never
-    // written to by WebGPU scene code.
+    // Copy globe depth for terrain clamping and picking. Pass the scene
+    // framebuffer depth explicitly because WebGPU globe rendering writes
+    // there; `WebGPUGlobeDepth`'s `_outputTarget` fallback is not a
+    // scene-depth producer.
     if (host._globeDepth && config.useGlobeDepthFramebuffer) {
       const encoder: GPUCommandEncoder | undefined =
         context._currentCommandEncoder;
@@ -292,28 +264,25 @@ export function executeFrustumLoop(
         // End current render pass so the depth texture is available for reading
         context.endCurrentRenderPass?.();
         host._globeDepth.executeCopyDepth(encoder, depthSource);
-        // Resume the SCENE FRAMEBUFFER pass for subsequent commands —
+        // Resume the scene-framebuffer pass for subsequent commands,
         // not the canvas pass. `resumeDefaultRenderPass` would redirect
         // every following draw to the canvas swap-chain, leaving the
         // scene FB empty for the post-process chain to blit.
         host._resumeScenePass(context);
-        // C-R8-EDGE-INLINE — publish the packed-depth view on the
-        // context so model FS bind-group construction can sample
-        // globe depth without reaching back through the renderer
-        // hierarchy. C11-201 reuses the target-owned view; target recreation
-        // on resize/device generation supplies a new identity automatically.
+        // Publish target-owned packed-depth resources on the context so model
+        // fragment bind groups can sample globe depth without reaching through
+        // the renderer hierarchy. Target recreation on resize or device
+        // generation supplies a new view identity.
         const packedDepth = host._globeDepth.globeDepthTexture;
-        // Batch 139 (NEW-LABEL-SDF-BIND-GROUP-CACHING) — also publish
-        // the underlying texture. Keeping it available remains useful to
-        // consumers that own their own aspect/view policy, while ordinary
-        // effects can now key on the stable renderer-owned view directly.
+        // Also publish the underlying texture for consumers that own their
+        // aspect and view policy; ordinary effects key on the stable
+        // renderer-owned view.
         context._globeDepthTexture = packedDepth ?? null;
         context._globeDepthView =
           host._globeDepth.globeDepthTextureView ?? null;
       }
     }
 
-    // Pass 3: TERRAIN_CLASSIFICATION
     host._executePassCommands(
       frustumCommands,
       Pass.TERRAIN_CLASSIFICATION,
@@ -323,9 +292,9 @@ export function executeFrustumLoop(
     );
 
     // Clear globe depth if needed for primitives-on-top rendering.
-    // Same debug bypass as the inter-frustum clear above — we want the
-    // debug overlay to see globe + 3D-tiles depth together, not a buffer
-    // that was wiped mid-frustum.
+    // Use the same diagnostic-depth bypass as the inter-frustum clear so the
+    // overlay sees globe and 3D Tiles depth together rather than a
+    // mid-frustum clear.
     if (config.clearGlobeDepth && !debugDepthViz) {
       host._clearDepthStencil(context);
       if (config.useDepthPlane) {
@@ -333,18 +302,16 @@ export function executeFrustumLoop(
       }
     }
 
-    // Pass 4-7: 3D Tiles passes. C-R8 (Batch 35): pass a depth-update
-    // hook so `globeDepth.executeUpdateDepth` fires between the main
-    // `CESIUM_3D_TILE` pass and the classification passes — otherwise
-    // classification reads pre-tile terrain-only depth and Z-fights
-    // against 3D-tile surfaces.
+    // Run the 3D Tiles pass chain with a depth-update hook between the main
+    // tile pass and classification. `SceneRenderer.js` calls
+    // `globeDepth.executeUpdateDepth` after
+    // `performPass(Pass.CESIUM_3D_TILE)` and before classification so
+    // classifiers sample tile-augmented rather than terrain-only depth.
     //
-    // C-R8-INVERT-DEPTH-SOURCE (Batch 41): when invert classification
-    // is active, tile geometry wrote to the invert FBO's own depth
-    // (not scene depth), so the post-tile depth copy must sample
-    // THAT depth texture or downstream consumers see globe-only
-    // depth and Z-fight tiles. Mirrors the WebGL `depthStencilTexture`
-    // argument at `SceneRenderer.js:576`.
+    // Under invert classification, tile geometry writes the invert
+    // framebuffer's depth attachment. Pass that texture explicitly, matching
+    // `SceneRenderer.js`'s invert-classification branch; sampling scene depth
+    // would publish only globe depth and make classifiers z-fight tiles.
     host._cpuPassProfiler.beginPass("3dTiles");
     try {
       host._execute3DTilePasses(frustumCommands, config, () => {
@@ -352,13 +319,9 @@ export function executeFrustumLoop(
           const enc: GPUCommandEncoder | undefined =
             context._currentCommandEncoder;
           if (enc) {
-            // C-R8-GLOBE-DEPTH-ENABLE (Batch 42) — default depth source
-            // is the scene framebuffer's depth (that's where scene
-            // commands actually wrote depth). When invert is on, tile
-            // depth went into the invert FBO instead, so override
-            // with the invert depth texture. Mirrors WebGL's explicit
-            // `depthStencilTexture` argument at
-            // `SceneRenderer.js:549-553` (default) and `:576` (invert).
+            // Scene depth is the default explicit source. Invert
+            // classification overrides it with the invert framebuffer depth
+            // because the tile pass wrote there.
             let depthSource: GPUTexture | undefined =
               host._sceneFramebuffer?.colorTarget?.getDepthTexture();
             if (config.useInvertClassification) {
@@ -385,11 +348,10 @@ export function executeFrustumLoop(
       host._cpuPassProfiler.endPass("3dTiles");
     }
 
-    // C-R8 (Batch 35) — VOXELS moved before OPAQUE to match WebGL.
-    // `SceneRenderer.js:606` runs `performVoxelsPass` BEFORE
-    // `performPass(Pass.OPAQUE)`; previous WebGPU ordering ran voxels
-    // after OPAQUE which mis-ordered volumetric media against opaque
-    // depth. Back-to-front sort still applies.
+    // Keep Pass.VOXELS before Pass.OPAQUE so volumetric media are ordered
+    // against opaque depth. `SceneRenderer.js` runs `performVoxelsPass`
+    // before `performPass(Pass.OPAQUE)`. Sort voxel commands back to front
+    // before dispatch.
     {
       const voxCount: number = frustumCommands.indices[Pass.VOXELS];
       if (voxCount > 0) {
@@ -413,7 +375,7 @@ export function executeFrustumLoop(
       host._cpuPassProfiler.endPass("voxels");
     }
 
-    // Pass 8: OPAQUE. EDL preflight is deliberately bucket-local: only
+    // Pass.OPAQUE EDL preflight is deliberately bucket-local: only
     // commands that belong to this frustum and whose replay/composite
     // resources are ready are disabled. A pending/failed EDL resource leaves
     // the original command enabled, so the normal draw remains fail-open.
@@ -468,33 +430,22 @@ export function executeFrustumLoop(
       );
     }
 
-    // DP-H45 (Batch 257) — re-pack scene depth after the OPAQUE pass so
-    // pickPosition/pickFromRay over opaque Model/Primitive surfaces reads
-    // the model surface, not the globe behind it. OPAQUE models write into
-    // the scene-framebuffer depth, but nothing re-copied that depth into
-    // `globeDepthTexture` (the packed RGBA8 color texture that
-    // `pickDepth.update` reads at the end of this frustum, see L662). The
-    // post-globe `executeCopyDepth` (above) and post-3D-tiles
-    // `executeUpdateDepth` (above) both run BEFORE opaque, so without this
-    // block the picked depth is frozen at the pre-opaque (globe + tiles
-    // only) state. WebGL has no equivalent gap because its
-    // `pickDepth.update` samples the live shared depth attachment, which
-    // already contains opaque-model depth after `performPass(Pass.OPAQUE)`
-    // (`SceneRenderer.js:637` → `:656`). Mirrors the post-3D-tiles block
-    // above (endCurrentRenderPass → executeUpdateDepth(sceneFB depth) →
-    // _resumeScenePass). Gated on `!picking` to match the per-frustum
-    // pick-depth copy below (L662) — that copy runs on the NORMAL render
-    // frame, not the pick pass, so the depth must be repacked here on the
-    // same `!picking` frame whose `globeDepthTexture` feeds `pickDepth`.
+    // Repack scene depth after Pass.OPAQUE so `pickPosition` and `pickFromRay`
+    // over opaque Model and Primitive surfaces read the model rather than the
+    // globe behind it. Models write the scene-framebuffer depth attachment,
+    // while the preceding globe and 3D Tiles publications occur before opaque
+    // rendering. `SceneRenderer.js` passes the live
+    // `globeDepth.depthStencilTexture` to `pickDepth.update` after
+    // `performPass(Pass.OPAQUE)`; WebGPU updates the packed RGBA8 depth here
+    // before the per-frustum pick-depth copy at the end of the loop body. Both
+    // operations run on the non-picking frame.
     if (
       !picking &&
       host._globeDepth &&
       config.useGlobeDepthFramebuffer &&
       scene._picking &&
-      // Only repack when a pass after the preceding globe/tile publication
-      // could have changed the live depth attachment. The multi-frustum globe
-      // pick defect still reproduces with this gate removed, so it is tracked
-      // separately as a shared packed-depth lifetime issue.
+      // Repack only when opaque or voxel rendering, or the post-globe clear,
+      // could have changed the live depth attachment.
       ((frustumCommands.indices[Pass.OPAQUE] ?? 0) > 0 ||
         (frustumCommands.indices[Pass.VOXELS] ?? 0) > 0 ||
         (config.clearGlobeDepth && !debugDepthViz))
@@ -509,20 +460,12 @@ export function executeFrustumLoop(
       }
     }
 
-    // Pass 12: CESIUM_3D_TILE_EDGES_DIRECT (EDGES_ONLY mode).
-    // C-R8-EDGE-DISPLAY-MODE (§5 P2) — direct CAD-wireframe edges drawn
-    // straight onto the scene framebuffer ON TOP of opaque surfaces.
-    // Mirrors WebGL's `performCesium3DTileEdgesDirectPass` ordering —
-    // AFTER OPAQUE and BEFORE GAUSSIAN_SPLATS (`SceneRenderer.js:663-668`).
-    // Unlike `CESIUM_3D_TILE_EDGES` (which the 3D-tile dispatcher
-    // redirects into the MRT edge FBO for the Batch 44 composite), these
-    // commands carry the single-target edge pipeline and render on the
-    // active scene pass — no FBO redirect. Before this batch, slot-12
-    // commands were binned by the frustum sorter but never executed
-    // (the loop only ran VOXELS / OPAQUE / GAUSSIAN_SPLATS / TRANSLUCENT),
-    // so EDGES_ONLY models rendered nothing on WebGPU. `_executePassCommands`
-    // early-returns when the per-frustum slot-12 count is 0, so non-EDGES_ONLY
-    // frames pay no cost.
+    // Pass.CESIUM_3D_TILE_EDGES_DIRECT runs after Pass.OPAQUE and before
+    // Pass.GAUSSIAN_SPLATS, matching
+    // `performCesium3DTileEdgesDirectPass` in `SceneRenderer.js`. These CAD
+    // wireframe commands use a single-target pipeline on the active scene
+    // pass, unlike the optionally MRT-redirected Pass.CESIUM_3D_TILE_EDGES.
+    // `_executePassCommands` returns immediately when this bucket is empty.
     host._executePassCommands(
       frustumCommands,
       Pass.CESIUM_3D_TILE_EDGES_DIRECT,
@@ -531,17 +474,16 @@ export function executeFrustumLoop(
       passState,
     );
 
-    // Pass 11: GAUSSIAN_SPLATS
-    // GS-WSR: If the opt-in deferral flag is ARMED and OIT is available and
-    // splat commands have OIT variants, defer them to the translucent OIT
-    // pass for weighted-sum rendering. Otherwise (the WebGL-parity DEFAULT)
-    // render inline with standard alpha blending — WebGL executes splats
-    // inline in the scene pass, depth-tested against the scene depth, and
-    // never routes them through OIT. C7-SPLAT-DEPTH-COMPOSE: pre-fix the
-    // deferral was unconditional, and `executeTranslucentPass` early-returns
-    // when the frame has zero TRANSLUCENT commands, so the deferred splats
-    // were dropped every frame (presented as "the splat is occluded by the
-    // opaque globe"). See `_splatOITDeferral` on WebGPUSceneRenderer.
+    // Pass.GAUSSIAN_SPLATS stages the entire active splat prefix for later
+    // translucent handling when the opt-in flag is set, OIT reports support
+    // and is requested, the frame is not picking, and the first splat command
+    // has an OIT pipeline. The helper's OIT decision examines only ordinary
+    // Pass.TRANSLUCENT commands. When it does not encode an OIT accumulation
+    // pass, it sorts and executes the staged prefix inline. Once OIT runs,
+    // only staged commands with their own OIT pipeline are encoded. Splats
+    // that are not staged render inline here with standard alpha blending and
+    // scene-depth testing, matching WebGL. See `_splatOITDeferral` on
+    // WebGPUSceneRenderer.
     {
       const splatCommands = frustumCommands.commands[Pass.GAUSSIAN_SPLATS];
       const splatCount: number = frustumCommands.indices[Pass.GAUSSIAN_SPLATS];
@@ -554,16 +496,16 @@ export function executeFrustumLoop(
         splatCommands[0]?._oitPipeline;
 
       if (hasOITSplats) {
-        // Splats will be rendered in the OIT accumulation pass below
-        // by injecting them into the translucent command list.
-        // Store them for later use.
+        // The translucent pass owns this staged prefix; its OIT path executes
+        // only entries that carry an OIT pipeline.
         host._deferredOITSplats = {
           commands: splatCommands,
           count: splatCount,
         };
       } else {
         if (splatCount > 0) {
-          // GS uses alpha accumulation — non-OIT path must sort back-to-front.
+          // Gaussian splats use alpha accumulation, so the non-OIT path sorts
+          // back to front.
           // Splats use a box-center distance metric (see
           // `backToFrontSplats` in Scene/CommandSorter.js) rather than the
           // sphere `distanceSquaredTo` used by generic translucent geometry.
@@ -579,7 +521,8 @@ export function executeFrustumLoop(
       }
     }
 
-    // For translucent pass, use actual near to avoid blending artifacts
+    // Use the actual near plane for ordinary translucent commands to avoid
+    // blending artifacts.
     if (
       index !== 0 &&
       scene.mode !== 2 /* SceneMode.SCENE2D */ &&
@@ -601,20 +544,16 @@ export function executeFrustumLoop(
       );
     }
 
-    // C-R4-GLTF-KHR-TRANSMISSION (Batch 107) — refraction capture.
-    // Snapshots opaque-only scene color (after OPAQUE/MASK passes
-    // and after voxels/splats) into a dedicated refraction target so
-    // transmissive surfaces drawn in the TRANSLUCENT pass that
-    // follows can sample "the world behind this glass" without
-    // double-counting their own contribution. Gated on
-    // `context._sceneHasTransmission` (set by the model emitter when
-    // any primitive has FLAG_HAS_TRANSMISSION) so frames with no
-    // transmissive primitives pay zero cost. Runs every frustum so
-    // each transmissive draw sees the right per-frustum opaque
-    // backdrop.
+    // Capture accumulated scene color before Pass.TRANSLUCENT so transmissive
+    // surfaces can sample their backdrop without including their own
+    // contribution. The snapshot includes splats rendered immediately above
+    // but excludes splats staged for the later translucent handler, even if
+    // that handler ultimately flushes them inline. The capture is a no-op
+    // unless `context._sceneHasTransmission` is set, and each frustum records
+    // its current backdrop.
     host._captureRefractionScene(config);
 
-    // Pass 9: TRANSLUCENT (with OIT if enabled)
+    // Pass.TRANSLUCENT uses OIT when enabled and ready.
     host._cpuPassProfiler.beginPass("translucent");
     try {
       host._executeTranslucentPass(frustumCommands, config);
@@ -622,18 +561,14 @@ export function executeFrustumLoop(
       host._cpuPassProfiler.endPass("translucent");
     }
 
-    // C-R8-TRANSLUCENT-TILE-CLASS (Batch 47) — capture translucent
-    // depth into the dedicated depth target so classification
-    // primitives running in the next pass can clamp to the
-    // translucent surface. First-cut implementation: copy from the
-    // scene framebuffer's depth (over-broad — captures all
-    // translucent contributors, not just 3D-tile content).
-    // C-R8-TRANSLUCENT-DEPTH-MSAA (Batch 61) — MSAA scenes now
-    // packed via the multisampled-depth pack pipeline (sample 0
-    // resolve), no longer skipped. Runs every frustum so the
-    // classification reads the right per-frustum depth, but only
-    // the last frustum's depth survives into the composite
-    // (multi-frustum accumulation is `C-R8-TRANSLUCENT-MULTI-FRUSTUM`).
+    // After Pass.TRANSLUCENT, refresh the reusable packed depth view when this
+    // frustum has 3D Tiles classification commands and an eligible translucent
+    // request. Single-sample scenes copy live scene depth before packing;
+    // multisampled scenes pack sample 0 directly. Each qualifying frustum
+    // overwrites the same target. Classifiers bind that texture directly, so
+    // no color accumulation or composite is involved. Regular 3D Tiles
+    // classification for this frustum already ran earlier in the loop, so
+    // this publication cannot feed that same-frustum dispatch.
     const tcc = host._translucentTileClassification;
     const has3DTileClassification =
       (frustumCommands.indices[Pass.CESIUM_3D_TILE_CLASSIFICATION] ?? 0) > 0;
@@ -644,23 +579,22 @@ export function executeFrustumLoop(
       tcc.isSupported() &&
       host._sceneFramebuffer?.colorTarget
     ) {
-      // The scene depth texture is sampleable when single-sample.
-      // Capture happens via copyTextureToTexture so we need an
-      // active command encoder; end any current render pass first.
+      // Depth capture and packing record commands on the active command
+      // encoder outside the scene render pass, so end that pass first.
       const enc: GPUCommandEncoder | undefined = context._currentCommandEncoder;
       if (enc) {
-        // C-R8-TRANSLUCENT-DEPTH-ONLY (Batch 78) — gate the broad
-        // scene-depth copy on whether any TRANSLUCENT command in this
-        // frustum carries `depthForTranslucentClassification === true`.
-        // `Cesium3DTile.js:1084` sets that flag on translucent 3D-tile
-        // commands; nothing else in the engine sets it. When the
-        // frustum's classification list is non-empty but no flagged
-        // commands feed into the depth, the whole pack-depth pipeline
-        // would feed off useless data (label/billboard depth, etc.) —
-        // skipping it is correct. When at least one is flagged, the
-        // broad copy still runs (truly selective rendering needs the
-        // C-R8-TRANSLUCENT-MULTI-FRUSTUM per-frustum render pass
-        // restructure, where the depth-only pipeline variants land).
+        // Scan this frustum's Pass.TRANSLUCENT bucket for the capture flag.
+        // `Cesium3DTile.update` sets it on tile commands whose pass is
+        // `Pass.TRANSLUCENT` or `Pass.GAUSSIAN_SPLATS`. This loop does not scan
+        // `Pass.GAUSSIAN_SPLATS`, so a splat-only request does not trigger
+        // capture.
+        //
+        // The flag gates the full-texture capture; it does not select depth
+        // contributors. Once any scanned command requests capture, the source
+        // remains the shared post-translucent scene depth attachment. It
+        // includes every command that wrote depth and cannot recover
+        // translucent draws rendered without depth writes. No per-command
+        // depth-only pass executes here.
         const translucentCmds = frustumCommands.commands[Pass.TRANSLUCENT];
         const translucentCount =
           (frustumCommands.indices[Pass.TRANSLUCENT] ?? 0) >>> 0;
@@ -684,29 +618,24 @@ export function executeFrustumLoop(
           sceneDepthTex,
           flaggedCommandsPresent,
         );
-        // Pack the captured depth so classification pipelines can
-        // sample it as a regular texture. Internally early-exits when
-        // `_hasTranslucentDepth` is false (the gating above sets it).
+        // Pack captured depth into a texture that classification pipelines can
+        // sample. This exits internally when `_hasTranslucentDepth` is false.
         const opaqueSampleableView =
           host._sceneFramebuffer.colorTarget.getDepthSampleableView?.() ?? null;
         tcc.executePackDepth(enc, opaqueSampleableView);
-        // Migration Session 2 — publish the packed-translucent-depth
-        // view on the context so the depth-sample classifier
-        // (`WebGPUGroundPrimitiveRenderer`) can sample it instead of
-        // `_globeDepthView` for translucent-on-translucent
-        // classification. The getter returns `undefined` when no
-        // translucent depth was captured this frame, which we
-        // normalize to `null` so the consumer's existing null-check
-        // pattern works. The view is recreated each frame from the
-        // packed-depth texture; the classifier rebuilds its bind
-        // group when the view ref changes.
+        // Publish the packed view so WebGPUGroundPrimitiveRenderer can prefer
+        // it to `_globeDepthView` for translucent-on-translucent
+        // classification. A missing capture is published as null. The
+        // renderer-owned view remains stable until its target is recreated;
+        // classifiers rebuild bind groups when the source-view identity
+        // changes.
         context._packedTranslucentDepthView =
           tcc.packedTranslucentDepthView ?? null;
         host._resumeScenePass(context);
       }
     }
 
-    // Pick depth copy per frustum (for pickPosition support)
+    // Copy packed depth per frustum for pickPosition support.
     if (
       !picking &&
       config.useGlobeDepthFramebuffer &&
@@ -714,8 +643,9 @@ export function executeFrustumLoop(
       scene._picking
     ) {
       const pickDepth = scene._picking.getPickDepth(scene, index);
-      // Pass the packed-depth-as-color texture (RGBA8, from executeCopyDepth)
-      // so PickDepth can read it via buffer copy + mapAsync
+      // Pass the RGBA8 packed texture maintained by executeCopyDepth and
+      // executeUpdateDepth so PickDepth can read it via buffer copy and
+      // mapAsync.
       const packedDepthTex = host._globeDepth.globeDepthTexture;
       if (pickDepth && packedDepthTex) {
         pickDepth.update(context, packedDepthTex);

@@ -865,23 +865,21 @@ function updateAndQueueCommands(
 ) {
   // WebGPU path: delegate to the ground primitive feature renderer.
   //
-  // The renderer can emit either a 2-pass stencil pair (legacy, mark +
-  // paint) or a single depth-sample command (Migration Session 1 default
-  // — samples globe depth in the fragment shader instead of pre-marking
-  // stencil). The two paths are distinguished by `stencilCommand`:
-  // present means stencil mode, null means depth-sample. When both are
-  // present we push both; when only `colorCommand` is present we push
-  // just it. Returning neither falls through to the WebGL path.
+  // Depth sampling is the classifier path. Render commands sample packed
+  // translucent depth when available and otherwise globe depth; pick commands
+  // sample the pick-classification depth. A result with no color commands
+  // means a required pipeline, geometry stream, mode-specific attribute, or
+  // depth view is not ready, so this path renders nothing this frame and
+  // retries on the next frame. The optional `stencilCommand` is a compatibility
+  // slot; the current renderer leaves it null.
   const context = frameState.context;
   const fr = context.getFeatureRenderer(FeatureRendererKey.GROUND_PRIMITIVE);
   if (fr && fr.createCommands) {
     const result = fr.createCommands(groundPrimitive, frameState);
-    // AUDIT_2026_05_02 A.3 (Batch 146) — prefer the new
-    // `colorCommands[]` array shape so `classificationType: BOTH`
-    // primitives push both the TERRAIN_CLASSIFICATION and
-    // CESIUM_3D_TILE_CLASSIFICATION commands. Falls back to the
-    // legacy singular `colorCommand` slot for backwards compatibility
-    // with any future / external feature renderer that hasn't migrated.
+    // Prefer the array shape so every command emitted for
+    // `classificationType: BOTH` reaches the command list. The singular
+    // `colorCommand` slot remains a compatibility fallback for feature
+    // renderers that have not adopted the array shape.
     const hasArrayShape =
       result &&
       Array.isArray(result.colorCommands) &&
@@ -897,36 +895,30 @@ function updateAndQueueCommands(
       } else {
         frameState.commandList.push(result.colorCommand);
       }
-      // AUDIT_2026_05_02 A.2 (Batch 141, NEW-INVERT-CLASS-STENCIL-CLASSIFIER) —
-      // push the IGNORE_SHOW stencil-write command when invert classification
-      // is enabled this frame. The renderer only emits this for 3D Tile
-      // classification (not TERRAIN-only); when invert is off the WebGPU
-      // scene-renderer's classification dispatcher won't enter the
-      // CESIUM_3D_TILE_CLASSIFICATION_IGNORE_SHOW pass, so the command is
-      // a no-op anyway, but skipping the push avoids an unused command-
-      // list entry.
+      // Queue the renderer's 3D-Tile stencil-write command only while invert
+      // classification is active. Terrain-only primitives do not produce one.
       if (result.ignoreShowCommand && frameState.invertClassification) {
         frameState.commandList.push(result.ignoreShowCommand);
       }
       return;
     }
-    // Batch 164 (NEW-CLASSIFIER-GROUNDPRIM-2D-RENDERPASS) — the WebGPU
-    // backend handles GroundPrimitive EXCLUSIVELY through the feature
-    // renderer. Return here even when no commands were created; do NOT
-    // fall through to the WebGL command path below.
+    // Ground primitives on WebGPU are handled only by the feature renderer.
+    // Return even when it produced no commands; the WebGL path below builds
+    // ShaderProgram-based commands that do not execute on WebGPU.
     //
-    // The WebGL path's `updateAndQueueCommands` derives ShaderProgram-based
-    // commands that are no-ops on WebGPU in 3D, but in SCENE2D /
-    // COLUMBUS_VIEW its per-hemisphere command derivation throws
-    // `TypeError: Cannot set properties of undefined (setting 'owner')`
-    // mid-frame. That throw skips the scene renderer's `endFrame`, leaving
-    // the scene render pass open, so the NEXT frame's `beginFrame` cascades
-    // with `_beginDefaultRenderPass() called with an active render pass`
-    // and the Viewer halts rendering. The FR returns no commands here when
-    // (a) geometry is still building, or (b) a `_needs2DShader` primitive is
-    // skipped in 2D/CV (planar/spherical extents — pending the WGSL
-    // appearance2D path, NEW-GROUNDPRIM-TEXTURED-MATERIALS). Both cases are
-    // "render nothing this frame and retry next frame", never "run WebGL".
+    // In 2D or Columbus View, the alternate renderer leaves `_sp` and
+    // `_spColor` undefined. The queue path therefore mistakes a stencil
+    // command for the color command, selects its undefined `appearance2D`
+    // derivative, and throws while assigning its owner. `Scene.render` raises
+    // `renderError`, which stops `CesiumWidget`'s default render loop before
+    // `context.endFrame` can close the active render pass. If a caller
+    // continues rendering, the next default-pass open fails because that
+    // render pass is still active.
+    //
+    // The feature renderer can return no commands while pipelines or geometry
+    // are building, when the active mode's position attributes are absent, or
+    // until a classification depth view is published. Each case means render
+    // nothing this frame and retry on the next frame, never run WebGL.
     return;
   }
 

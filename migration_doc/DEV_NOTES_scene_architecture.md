@@ -95,3 +95,22 @@ Kept because the 5-50 ms pipeline-compilation range is not recorded in the
 current ledger or campaign queues. The rewritten JSDoc states only the current
 policy contract; this preserves the historical measurement for future warm-up
 tradeoff analysis.
+
+## WebGPUSceneRendererFrustumLoop.ts — SCENE2D single-frustum depth-band measurement
+
+Removed comment (frustum loop, SCENE2D branch), original text:
+
+> Single-frustum SCENE2D — `frustumCommands` carries the slice
+> of depth this band would render (e.g., 9.3 Mm → 11.4 Mm above
+> the planar earth at default zoom), which would clip the
+> entire earth out of the frustum. With only one frustum the
+> band must cover the FULL visible range, so use the camera
+> frustum's own near/far rather than the band-specific values.
+> Mirrors WebGL's behavior in a single-band degenerate case.
+
+Kept because the 9.3 Mm → 11.4 Mm band measurement at default 2D zoom appears in
+no ledger, queue, or guide — it is the only recorded magnitude for how far the
+band-specific near/far sits from the planar earth in the degenerate single-band
+case, and any future change to 2D frustum banding needs that magnitude to judge
+whether the full-visible-range override is still required. The rewritten comment
+states the current contract only.

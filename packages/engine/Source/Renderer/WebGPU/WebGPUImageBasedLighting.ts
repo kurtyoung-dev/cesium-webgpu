@@ -103,10 +103,10 @@ function createDefaultDiffuseCubemap(device: GPUDevice): {
  * Creates default SH buffer with zero coefficients (no irradiance).
  */
 function createDefaultSHBuffer(device: GPUDevice): GPUBuffer {
-  // Audit A.9 (Batch 130) -- 40 floats / 160 bytes total:
+  // 40 floats / 160 bytes total:
   //   - 0..35  : 9 SH coefficients (vec4 padding) -- all zero
   //   - 36..39 : control vec4 (.w == 1.0 when SH active; default 0)
-  // The shader's `SHUniforms` struct expects this exact layout.
+  // `ModelPBRComplete.wgsl::SHUniforms` uses this exact layout.
   const data = new Float32Array(40);
   const buffer = device.createBuffer({
     size: data.byteLength,
@@ -285,16 +285,18 @@ function invalidateCacheGeneration(ibl: CesiumImageBasedLighting): void {
 }
 
 /**
- * Ensure the authored `specularEnvironmentMaps` KTX2 cube is loaded + uploaded
- * to a WebGPU cube texture, then present it to the IBL consumer below in the
- * exact shape it reads (`specEnvMap.ready` + `_texture._webgpuTexture.view` +
- * `_version`). On WebGL this is `SpecularEnvironmentCubeMap.update()`, but that
- * builds a WebGL-only `CubeMap`; on WebGPU `ImageBasedLighting.update()`
- * FR-routes past it, so we own `_specularEnvironmentCubeMap` here.
+ * Ensure the authored `specularEnvironmentMaps` KTX2 cube is loaded and
+ * uploaded to a WebGPU cube texture, then present it to the IBL consumer below
+ * in the exact shape it reads (`specEnvMap.ready` +
+ * `_texture._webgpuTexture.view` + `_version`). On WebGL,
+ * `SpecularEnvironmentCubeMap.update()` builds a WebGL-only `CubeMap`. The
+ * WebGPU feature renderer bypasses that path, so this module owns
+ * `_specularEnvironmentCubeMap`.
  *
- * Idempotent + load-once: the KTX2 fetch/transcode runs a single time per URL.
- * A hard failure latches `_webgpuSpecularKTX2Failed` so it does NOT retry every
- * frame (the failure-retry spam loop that forced the Batch 369 revert).
+ * Idempotent while a request key is current: the KTX2 fetch/transcode starts
+ * once for each URL and transcode-target cache key. A hard failure latches
+ * `_webgpuSpecularKTX2Failed`, preventing a new request on every frame until
+ * the request key changes.
  */
 function ensureWebGPUSpecularSource(
   ibl: CesiumImageBasedLighting,
@@ -465,8 +467,8 @@ function updateWebGPUImageBasedLighting(
   // when those values or the active/inactive state actually change.
   updateSphericalHarmonics(device, cache, ibl.sphericalHarmonicCoefficients);
 
-  // C2-2 NEW-MODEL-IBL-KTX2-CUBEMAP-WEBGPU: load + upload the authored KTX2
-  // specular env map into a WebGPU cube and publish it as _specularEnvironmentCubeMap.
+  // Load and upload the authored KTX2 specular environment map into a WebGPU
+  // cube, then publish it as `_specularEnvironmentCubeMap`.
   ensureWebGPUSpecularSource(
     ibl,
     device,
@@ -486,8 +488,8 @@ function updateWebGPUImageBasedLighting(
       const sourceView = specEnvMap._texture?._webgpuTexture?.view;
 
       if (sourceView) {
-        // Run the IBL pipeline: irradiance + radiance generation.
-        // C-R7-COMPUTE-PIPELINE-CACHE (Batch 76) — pass the central cache.
+        // Supply the context-owned compute-pipeline cache; pipeline creation
+        // falls back to the device when the cache is unavailable.
         generateIBLMaps(
           device,
           cache,
@@ -523,7 +525,7 @@ function destroyWebGPUImageBasedLightingResources(
     destroyCacheResources(cache);
   }
 
-  // C2-2: tear down the authored KTX2 specular cube + reset the load latches.
+  // Tear down the authored KTX2 specular cube and reset its load state.
   destroyDeviceSpecularCube(ibl);
   ibl._webgpuSpecularKTX2Buffers = undefined;
   ibl._webgpuSpecularKTX2Url = undefined;

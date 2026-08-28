@@ -198,12 +198,9 @@ class Vector3DTileClampedPolylines {
       return;
     }
 
-    // Batch 114 — WebGPU path delegates to the
-    // VECTOR_3DTILE_CLAMPED_POLYLINE feature renderer. The renderer
-    // reads the worker-decoded shadow-volume attribute arrays directly
-    // off the primitive — `finishVertexArray` skips the WebGL
-    // VAO/buffer construction + array-null step on WebGPU so the FR
-    // has fresh CPU arrays to upload on its first call.
+    // A registered clamped-polyline feature renderer owns WebGPU resource
+    // creation and command emission from the worker-decoded shadow-volume
+    // arrays.
     const fr = context.getFeatureRenderer(
       FeatureRendererKey.VECTOR_3DTILE_CLAMPED_POLYLINE,
     );
@@ -217,10 +214,11 @@ class Vector3DTileClampedPolylines {
           for (let i = 0; i < colorCommands.length; i++) {
             frameState.commandList.push(colorCommands[i]);
           }
-          // AUDIT_2026_05_02 A.2 (Batch 141, NEW-INVERT-CLASS-STENCIL-CLASSIFIER) —
-          // push IGNORE_SHOW stencil-write commands when invert
-          // classification is on so the stencil-gated composite can
-          // distinguish classified vs unclassified tile pixels.
+          // When invert classification is active, queue the renderer's
+          // `ignoreShowCommands` after its color commands. Their
+          // `Pass.CESIUM_3D_TILE_CLASSIFICATION` tag routes them through the
+          // regular classification pass rather than the redirected ignore-show
+          // pass.
           if (
             frameState.invertClassification &&
             defined(result?.ignoreShowCommands)
@@ -279,8 +277,9 @@ class Vector3DTileClampedPolylines {
     this._va = this._va && this._va.destroy();
     this._sp = this._sp && this._sp.destroy();
 
-    // Batch 114 — release the WebGPU FR cache. `_lastFeatureRenderer` is
-    // captured during `update()` so we don't need a context handle here.
+    // Release the feature renderer's per-primitive GPU cache.
+    // `_lastFeatureRenderer` is retained during `update()` because
+    // `destroy()` has no context from which to resolve the renderer.
     if (defined(this._webgpuCache) && defined(this._lastFeatureRenderer)) {
       this._lastFeatureRenderer.destroy?.(this);
     }
@@ -479,11 +478,10 @@ function createVertexArray(polylines, context) {
 }
 
 function finishVertexArray(polylines, context) {
-  // Batch 114 — WebGPU path skips the WebGL VAO + buffer construction
-  // entirely. The decoded shadow-volume attribute arrays stay alive on
-  // the primitive so the WebGPU FR can upload them to GPU buffers on
-  // its first `update()` tick.
-  // Audit 2026-05-02: FR-key check rather than rendererType per CLAUDE.md §2.
+  // The feature renderer builds GPU buffers from the worker-decoded
+  // shadow-volume arrays. Skip WebGL VAO and buffer construction so those
+  // arrays remain available to that path. Test registry capability instead
+  // of renderer type so Scene code remains backend-agnostic.
   if (
     context.getFeatureRenderer(
       FeatureRendererKey.VECTOR_3DTILE_CLAMPED_POLYLINE,
@@ -748,12 +746,11 @@ function createShaders(primitive, context) {
     return;
   }
 
-  // BUILD-VAR-HAZARD-VECTOR3DTILE — see Vector3DTilePrimitive.js for
-  // the full rationale. Short version: webgpu-only bundle aliases
-  // GLSL strings to empty stubs; the compile below would crash. The
-  // VECTOR_3DTILE_CLAMPED_POLYLINE feature renderer (Batch 114) takes
-  // over when registered. Audit 2026-05-02: FR-key check per
-  // CLAUDE.md §2.
+  // WebGPU-only bundles replace GLSL shader modules with empty stubs. When
+  // the clamped-polyline feature renderer is registered, return before this
+  // WebGL fallback passes those stubs to `ShaderProgram.fromCache`. Test
+  // registry capability instead of renderer type so Scene code remains
+  // backend-agnostic.
   if (
     context.getFeatureRenderer(
       FeatureRendererKey.VECTOR_3DTILE_CLAMPED_POLYLINE,
