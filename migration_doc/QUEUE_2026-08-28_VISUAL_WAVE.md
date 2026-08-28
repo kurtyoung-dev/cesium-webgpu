@@ -264,3 +264,18 @@ ET, machine clock authoritative); workers never touch git/browsers/builds; one E
 time through the gated executor; C16 comment standard in all new code; both-backend parity
 for every renderer-agnostic feature; evidence repatriation before any clone reset; every
 brief carries premises re-verified at the cited `file:line` on the day it dispatches.
+
+---
+
+## Live status ledger (update on every landing; rows above are the frozen dispatch text)
+
+| Row | Status |
+|---|---|
+| VW-N1 | LANDED Batch 1217 - 42 tiles / 128 KB, orientation eye-verified at two levels |
+| VW-N2 | LANDED Batch 1218 - discharges CLT-B1 residual (c) from the WebGL side; four ratified pins inverted in place; terminator-law probe lane C now refutes BY DESIGN until its own re-baseline |
+| VW-N5 | LANDED Batch 1219 - widened to all eight scalar-or-callback properties through one shared leaf |
+| VW-N3 / VW-N4 | UNBLOCKED by N1+N2; dispatched to the re-armed night lane |
+| VW-N9 (new) | Dusk-slope scalar: REFUTED as briefed - a runtime slope cannot coexist with the frozen ramp law pinning the literal in three places. Lands only as its own row carrying a CLT-B4 amendment (single source of truth for the default, both backends' defaults asserted equal). Maintainer/orchestrator arming decision |
+| VW-N6 / VW-N7 / VW-N8 | pending (N6 after N3; N7 after N3/N4 land + rebuild; N8 after N3) |
+| VW-L1 / VW-L2 | lane in flight |
+
