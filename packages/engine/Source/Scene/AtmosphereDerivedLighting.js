@@ -1,4 +1,6 @@
 import Cartesian3 from "../Core/Cartesian3.js";
+import defined from "../Core/defined.js";
+import SunLight from "./SunLight.js";
 
 /**
  * AtmosphereDerivedLighting — derive the directional SUN light (colour +
@@ -276,8 +278,81 @@ function computeAtmosphereDerivedLighting(
   return result;
 }
 
+const scratchLocalUp = new Cartesian3();
+
+/**
+ * Resolve the atmosphere-derived sun light and sky-irradiance ambient for a
+ * scene and publish them on its frame state, replacing the plain sun light
+ * for this frame only.
+ *
+ * Deriving model sun and sky lighting from the same atmosphere that supplies
+ * post-process extinction and inscatter keeps terrain and models lit by one
+ * coherent source. `scene.light` and any custom light the user installed are
+ * left untouched; the derived values live only on the private frame-state
+ * light and sky-irradiance fields.
+ *
+ * The sun direction comes from `uniformState`, which the scene has not
+ * updated yet when this runs, so it lags by one frame — indistinguishable at
+ * any realistic simulation rate.
+ *
+ * Backends opt in by calling this; it is never invoked from shared scene
+ * code, so a backend that does not call it sees `frameState.light` exactly as
+ * the scene published it.
+ *
+ * @param {object} scene The scene whose frame state is being prepared. Reads
+ *   `aerialPerspective`, `light`, `camera`, `skyAtmosphere` and the private
+ *   `_context`, `_atmosphereDerivedLight` and `_atmosphereSkyIrradiance`
+ *   scratch it reuses across frames.
+ * @param {object} frameState The frame state to publish onto.
+ * @returns {boolean} True when the derived light was applied; false when the
+ *   scene is outside the derivation's domain and the frame state was left
+ *   untouched.
+ * @private
+ */
+function applySceneAtmosphereDerivedLighting(scene, frameState) {
+  if (scene.aerialPerspective !== true) {
+    return false;
+  }
+  const light = scene.light;
+  if (!(light instanceof SunLight)) {
+    return false;
+  }
+  const sunDirectionWC = scene._context?.uniformState?.sunDirectionWC;
+  const cameraPositionWC = scene.camera?.positionWC;
+  if (!defined(sunDirectionWC) || !defined(cameraPositionWC)) {
+    return false;
+  }
+
+  const altitude = scene.camera?.positionCartographic?.height ?? 0.0;
+  const baseIntensity = light.intensity ?? 2.0;
+  const lightIntensity = scene.skyAtmosphere?.atmosphereLightIntensity ?? 50.0;
+  // The normalized camera position is the local surface normal. Measuring the
+  // Sun zenith against it follows the viewed location's time of day instead of
+  // the ellipsoid's pole axis.
+  const localUp = Cartesian3.normalize(cameraPositionWC, scratchLocalUp);
+  const derived = computeAtmosphereDerivedLighting(
+    sunDirectionWC,
+    localUp,
+    altitude,
+    lightIntensity,
+    baseIntensity,
+  );
+
+  const derivedLight = scene._atmosphereDerivedLight;
+  derivedLight.color.red = derived.sunColor.x;
+  derivedLight.color.green = derived.sunColor.y;
+  derivedLight.color.blue = derived.sunColor.z;
+  derivedLight.color.alpha = 1.0;
+  derivedLight.intensity = derived.sunIntensity;
+  frameState.light = derivedLight;
+  Cartesian3.clone(derived.skyIrradiance, scene._atmosphereSkyIrradiance);
+  frameState.atmosphereSkyIrradiance = scene._atmosphereSkyIrradiance;
+  return true;
+}
+
 export default computeAtmosphereDerivedLighting;
 export {
+  applySceneAtmosphereDerivedLighting,
   RAYLEIGH_COEFFICIENT,
   MIE_COEFFICIENT,
   RAYLEIGH_SCALE_HEIGHT,

@@ -101,7 +101,6 @@ import SpecularEnvironmentCubeMap from "./SpecularEnvironmentCubeMap.js";
 import StencilConstants from "./StencilConstants.js";
 import { LightCollection } from "./LightTypes.js";
 import SunLight from "./SunLight.js";
-import computeAtmosphereDerivedLighting from "./AtmosphereDerivedLighting.js";
 import TweenCollection from "./TweenCollection.js";
 import View from "./View.js";
 import {
@@ -131,7 +130,6 @@ import {
 
 // Scratch storage keeps atmosphere-derived lighting allocation-free while it
 // uses the camera-position direction as the local up vector.
-const scratchAtmosphereUp = new Cartesian3();
 
 const requestRenderAfterFrame = function (scene) {
   return function () {
@@ -460,12 +458,14 @@ class Scene {
     );
     if (sceneRendererFR && sceneRendererFR.RendererClass) {
       this._alternateSceneRenderer = new sceneRendererFR.RendererClass();
+      //>>includeStart('debug', pragmas.debug);
       console.log(
         `[Scene:${context.rendererType}] ` +
           `alternate scene renderer CREATED — ` +
           `FR_KEY=${FeatureRendererKey.SCENE_RENDERER} ` +
           `contextId=${context.id ?? "?"}`,
       );
+      //>>includeEnd('debug');
     } else if (context.requiresSceneRenderer) {
       // A context that requires an alternate scene renderer also delegates
       // canvas blitting and post-process composition to it. Without that
@@ -3727,50 +3727,14 @@ class Scene {
       );
     frameState.highDynamicRange = this._hdr;
     frameState.light = this.light;
-    // While WebGPU aerial perspective uses a SunLight, derive model PBR sun
-    // and sky lighting from the same atmosphere that supplies post-process
-    // extinction and inscatter to all scene pixels, including terrain and
-    // models. Custom lights and `scene.light` remain unchanged; derived values
-    // live only on the private FrameState light and sky-irradiance fields.
-    // The sun direction comes from `uniformState`, which this frame has not
-    // updated yet, so it lags by one frame — indistinguishable at any
-    // realistic simulation rate.
     frameState.atmosphereSkyIrradiance = undefined;
-    if (
-      this.aerialPerspective === true &&
-      this.isWebGPU &&
-      this.light instanceof SunLight
-    ) {
-      const us = this._context?.uniformState;
-      const sunDir = us?.sunDirectionWC;
-      const cameraPos = this.camera?.positionWC;
-      if (defined(sunDir) && defined(cameraPos)) {
-        const altitude = this.camera?.positionCartographic?.height ?? 0.0;
-        const baseIntensity = this.light.intensity ?? 2.0;
-        const lightIntensity =
-          this.skyAtmosphere?.atmosphereLightIntensity ?? 50.0;
-        // The normalized camera position is the local surface normal. Measuring
-        // the Sun zenith against it follows the viewed location's time of day
-        // instead of the ellipsoid's pole axis.
-        const localUp = Cartesian3.normalize(cameraPos, scratchAtmosphereUp);
-        const derived = computeAtmosphereDerivedLighting(
-          sunDir,
-          localUp,
-          altitude,
-          lightIntensity,
-          baseIntensity,
-        );
-        const dl = this._atmosphereDerivedLight;
-        dl.color.red = derived.sunColor.x;
-        dl.color.green = derived.sunColor.y;
-        dl.color.blue = derived.sunColor.z;
-        dl.color.alpha = 1.0;
-        dl.intensity = derived.sunIntensity;
-        frameState.light = dl;
-        Cartesian3.clone(derived.skyIrradiance, this._atmosphereSkyIrradiance);
-        frameState.atmosphereSkyIrradiance = this._atmosphereSkyIrradiance;
-      }
-    }
+    // A backend may derive model sun and sky lighting from the atmosphere
+    // instead of the plain scene light. That decision belongs to the renderer,
+    // so the scene publishes its own light and offers the frame state to the
+    // alternate scene renderer, which is absent unless a backend registered
+    // one. Both optional calls are load-bearing: a renderer that predates the
+    // hook must stay callable.
+    this._alternateSceneRenderer?.updateDerivedLighting?.(this, frameState);
     frameState.lights = this.lights;
     frameState.cameraUnderground = this._cameraUnderground;
     // Publish current CSM intent before models, primitives, and globe commands

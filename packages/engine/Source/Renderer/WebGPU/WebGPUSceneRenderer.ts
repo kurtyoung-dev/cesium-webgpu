@@ -50,6 +50,7 @@ import {
   backToFrontSplats as _commandSorterBackToFrontSplats,
   frontToBack as _commandSorterFrontToBack,
 } from "../../Scene/CommandSorter.js";
+import { applySceneAtmosphereDerivedLighting } from "../../Scene/AtmosphereDerivedLighting.js";
 import FeatureRendererKey from "../FeatureRendererKey.js";
 import type { WebGPUContext } from "./WebGPUContext.js";
 import { WebGPUSceneFramebuffer } from "./WebGPUSceneFramebuffer.js";
@@ -1397,6 +1398,25 @@ export class WebGPUSceneRenderer {
    *   we need (scene + context + useHDR). Full config isn't built
    *   yet at this point in the frame.
    */
+  /**
+   * Derive this frame's sun light and sky-irradiance ambient from the
+   * atmosphere, in place of the scene's plain sun light.
+   *
+   * The scene publishes its own light and then offers the frame state here.
+   * Owning the decision in the renderer is what keeps the shared scene code
+   * free of a backend test: a backend that registers no scene renderer never
+   * reaches this, and its frame state keeps the light the scene published.
+   *
+   * @param scene The scene whose frame state is being prepared.
+   * @param frameState The frame state to publish onto.
+   */
+  updateDerivedLighting(
+    scene: CesiumScene,
+    frameState: CesiumFrameState,
+  ): void {
+    applySceneAtmosphereDerivedLighting(scene, frameState);
+  }
+
   prepareFrame(config: {
     scene: CesiumScene;
     context: WebGPUContext;
