@@ -7,6 +7,9 @@ import path from "node:path";
 
 import sharp from "sharp";
 
+import { validateServedEntryIdentities } from "./build-source-identity.mjs";
+import { exitCodeForS5Status } from "./verdict-exit-gate.mjs";
+
 export const OUTER_WATCHDOG_GRACE_MS = 30_000;
 const MAX_TIMER_MS = 2_147_483_647;
 export const WATCHDOG_MS = Number(process.env.C11_13_WATCHDOG_MS ?? 300_000);
@@ -81,7 +84,13 @@ const VIEWPORT = Object.freeze({ width: 960, height: 720 });
 const STABILITY_ATTEMPTS = 8;
 const STABILITY_STREAK = 3;
 const STABILITY_FRAMES = 8;
-const ENGINE_BUNDLE_PATHNAME = "/packages/engine/Build/Unminified/index.js";
+const RUNTIME_ENTRY_PATHNAME = "/Build/CesiumUnminified/index.js";
+const DEVELOPMENT_RUNTIME_ENTRY_PATHNAMES = new Set([
+  "/Source/Cesium.js",
+  "/packages/engine/Build/Unminified/index.js",
+  "/packages/engine/Build/Unminified/index-wgsl.js",
+  "/packages/widgets/Build/Unminified/index.js",
+]);
 const EXPECTED_WEBGPU_WARNING_RULES = Object.freeze([
   Object.freeze({
     id: "chromium-windows-power-preference",
@@ -107,7 +116,7 @@ export function classifyExpectedConsoleWarning(
     location.origin !== baseOrigin ||
     location.username !== "" ||
     location.password !== "" ||
-    location.pathname !== ENGINE_BUNDLE_PATHNAME ||
+    location.pathname !== RUNTIME_ENTRY_PATHNAME ||
     location.search !== "" ||
     location.hash !== ""
   ) {
@@ -268,6 +277,9 @@ const LOCAL_PATHS = Object.freeze({
   probeImplementation: path.resolve(
     "Tools/visual-regression/lib/c11-13-voxel-inside-camera-probe.mjs",
   ),
+  buildIdentityHelper: path.resolve(
+    "Tools/visual-regression/lib/build-source-identity.mjs",
+  ),
   rendererSource: path.resolve(
     "packages/engine/Source/Renderer/WebGPU/WebGPUVoxelRenderer.ts",
   ),
@@ -280,12 +292,7 @@ const LOCAL_PATHS = Object.freeze({
   rendererSpec: path.resolve(
     "packages/engine/Specs/Renderer/WebGPU/WebGPUVoxelRendererSpec.js",
   ),
-  cesiumEntry: path.resolve("Source/Cesium.js"),
-  engineBundle: path.resolve("packages/engine/Build/Unminified/index.js"),
-  engineWgslBundle: path.resolve(
-    "packages/engine/Build/Unminified/index-wgsl.js",
-  ),
-  widgetsBundle: path.resolve("packages/widgets/Build/Unminified/index.js"),
+  runtimeEntry: path.resolve("Build/CesiumUnminified/index.js"),
   widgetsCss: path.resolve("Build/CesiumUnminified/Widgets/widgets.css"),
 });
 
@@ -299,13 +306,7 @@ const TRACKED_RUNTIME_PATHS = new Map([
     "/Tools/visual-regression/fixtures/voxel-octree-l3.mjs",
     LOCAL_PATHS.providerFixture,
   ],
-  ["/Source/Cesium.js", LOCAL_PATHS.cesiumEntry],
-  ["/packages/engine/Build/Unminified/index.js", LOCAL_PATHS.engineBundle],
-  [
-    "/packages/engine/Build/Unminified/index-wgsl.js",
-    LOCAL_PATHS.engineWgslBundle,
-  ],
-  ["/packages/widgets/Build/Unminified/index.js", LOCAL_PATHS.widgetsBundle],
+  [RUNTIME_ENTRY_PATHNAME, LOCAL_PATHS.runtimeEntry],
   ["/Build/CesiumUnminified/Widgets/widgets.css", LOCAL_PATHS.widgetsCss],
 ]);
 
@@ -364,6 +365,129 @@ export function provenanceStable(start, end) {
   );
 }
 
+export function readTextBoundToFingerprint(
+  filePath,
+  expectedFingerprint,
+  operations = fs,
+) {
+  let bytes;
+  try {
+    const value = operations.readFileSync(filePath);
+    bytes = Buffer.isBuffer(value) ? value : Buffer.from(value);
+  } catch (error) {
+    return {
+      pass: false,
+      text: null,
+      expected: expectedFingerprint,
+      actual: {
+        exists: false,
+        bytes: null,
+        sha256: null,
+        error: error?.code ?? error?.message ?? String(error),
+      },
+      failures: ["bound text could not be read"],
+    };
+  }
+
+  const actual = {
+    exists: true,
+    bytes: bytes.length,
+    sha256: sha256(bytes),
+  };
+  const failures = [];
+  if (
+    expectedFingerprint?.exists !== true ||
+    !(expectedFingerprint?.bytes > 0) ||
+    !/^[0-9A-F]{64}$/u.test(expectedFingerprint?.sha256 ?? "")
+  ) {
+    failures.push("expected bound-text fingerprint is absent or invalid");
+  }
+  if (
+    actual.bytes !== expectedFingerprint?.bytes ||
+    actual.sha256 !== expectedFingerprint?.sha256
+  ) {
+    failures.push("bound text differs from its recorded fingerprint");
+  }
+  return {
+    pass: failures.length === 0,
+    text: bytes.toString("utf8"),
+    expected: expectedFingerprint,
+    actual,
+    failures,
+  };
+}
+
+export function assessServedBuildIdentity(runtimeResponses, localEntry) {
+  const responses = Array.isArray(runtimeResponses) ? runtimeResponses : [];
+  const observedResponses = responses.filter(
+    (response) => response?.pathname === RUNTIME_ENTRY_PATHNAME,
+  );
+  const entries = observedResponses.map((response) => ({
+    sessionLabel: response.backend,
+    ok: response.status === 200,
+    status: response.status,
+    byteLength: response.bytes,
+    sha256:
+      typeof response.sha256 === "string"
+        ? response.sha256.toLowerCase()
+        : response.sha256,
+    resourceType: response.resourceType,
+    search: response.search,
+    hash: response.hash,
+  }));
+  const assessment = validateServedEntryIdentities({
+    entries,
+    expectedLabels: [...BACKENDS],
+    localEntry: {
+      exists: localEntry?.exists,
+      byteLength: localEntry?.bytes,
+      sha256:
+        typeof localEntry?.sha256 === "string"
+          ? localEntry.sha256.toLowerCase()
+          : localEntry?.sha256,
+    },
+  });
+  const responseShapeReasons = entries.flatMap((entry) => {
+    const reasons = [];
+    if (entry.resourceType !== "script") {
+      reasons.push(
+        `${String(entry.sessionLabel)}: runtime entry resource type must be script`,
+      );
+    }
+    if (entry.search !== "" || entry.hash !== "") {
+      reasons.push(
+        `${String(entry.sessionLabel)}: runtime entry URL must not carry query or fragment state`,
+      );
+    }
+    return reasons;
+  });
+  const developmentEntryResponses = responses.filter(
+    (response) =>
+      response?.resourceType === "script" &&
+      DEVELOPMENT_RUNTIME_ENTRY_PATHNAMES.has(response?.pathname),
+  );
+  const developmentEntryReasons = developmentEntryResponses.map(
+    (response) =>
+      `${String(response.backend)}: unexpected development runtime entry ${String(response.pathname)}`,
+  );
+  const reasons = [
+    ...assessment.reasons,
+    ...responseShapeReasons,
+    ...developmentEntryReasons,
+  ];
+  return {
+    pass: reasons.length === 0,
+    ok: reasons.length === 0,
+    reasons,
+    expectedLabels: assessment.expectedLabels,
+    observedLabels: assessment.observedLabels,
+    pathname: RUNTIME_ENTRY_PATHNAME,
+    localEntry,
+    entries,
+    developmentEntryResponses,
+  };
+}
+
 export function assessBuildProvenance(provenance, sourceText, bundleText) {
   const failures = [];
   if (
@@ -383,9 +507,9 @@ export function assessBuildProvenance(provenance, sourceText, bundleText) {
       provenance?.rendererSource?.mtimeMs,
       provenance?.sceneRendererSource?.mtimeMs,
       provenance?.scenePassRedirectSource?.mtimeMs,
-    ].every((sourceMtime) => provenance?.engineBundle?.mtimeMs >= sourceMtime)
+    ].every((sourceMtime) => provenance?.runtimeEntry?.mtimeMs >= sourceMtime)
   ) {
-    failures.push("engine bundle predates a required renderer source");
+    failures.push("gulp runtime entry predates a required renderer source");
   }
   for (const sentinel of [
     "VOXEL_PROXY_REVERSED_FIRST_INDEX",
@@ -493,8 +617,66 @@ export function preserveFirstRed(
   }
 }
 
-function addCheck(checks, name, pass, actual, expected) {
-  checks.push({ name, pass: Boolean(pass), actual, expected });
+export function addCheck(
+  checks,
+  name,
+  pass,
+  actual,
+  expected,
+  failureStatus = "FAIL",
+) {
+  checks.push({
+    name,
+    pass: Boolean(pass),
+    actual,
+    expected,
+    failureStatus,
+  });
+}
+
+export function foldProbeChecks(checks) {
+  const failures = [];
+  if (!Array.isArray(checks) || checks.length === 0) {
+    failures.push({
+      name: "probe check collection is present and non-empty",
+      pass: false,
+      actual: checks,
+      expected: "a non-empty array of probe checks",
+      failureStatus: "STRUCTURAL",
+    });
+  } else {
+    for (const check of checks) {
+      if (!new Set(["FAIL", "STRUCTURAL"]).has(check?.failureStatus)) {
+        failures.push({
+          ...check,
+          pass: false,
+          actual: {
+            check: check?.actual,
+            invalidFailureStatus: check?.failureStatus,
+          },
+          expected: "failureStatus must be FAIL or STRUCTURAL",
+          failureStatus: "STRUCTURAL",
+        });
+      } else if (check.pass !== true) {
+        failures.push(check);
+      }
+    }
+  }
+  const structuralFailures = failures.filter(
+    (check) => check?.failureStatus === "STRUCTURAL",
+  );
+  const status =
+    structuralFailures.length > 0
+      ? "STRUCTURAL"
+      : failures.length > 0
+        ? "FAIL"
+        : "PASS";
+  return {
+    status,
+    exitCode: exitCodeForS5Status(status),
+    failures,
+    structuralFailures,
+  };
 }
 
 export function assessBackendAuthority(backend, authority, gate) {
@@ -1278,14 +1460,36 @@ async function installPageObservers(
       });
     }
     const localPath = TRACKED_RUNTIME_PATHS.get(parsed.pathname);
-    if (!localPath) return;
+    const resourceType = response.request().resourceType();
+    if (!localPath) {
+      if (
+        resourceType === "script" &&
+        DEVELOPMENT_RUNTIME_ENTRY_PATHNAMES.has(parsed.pathname)
+      ) {
+        runtimeResponses.push({
+          backend,
+          pathname: parsed.pathname,
+          search: parsed.search,
+          hash: parsed.hash,
+          status: response.status(),
+          resourceType,
+          bytes: null,
+          sha256: null,
+          forbiddenDevelopmentEntry: true,
+        });
+      }
+      return;
+    }
     const task = response
       .body()
       .then((body) => {
         runtimeResponses.push({
           backend,
           pathname: parsed.pathname,
+          search: parsed.search,
+          hash: parsed.hash,
           status: response.status(),
+          resourceType,
           bytes: body.length,
           sha256: sha256(body),
           localSha256: hashFile(localPath).sha256,
@@ -1465,7 +1669,12 @@ function collectRuntimeGateErrors(lanes, errors) {
   }
 }
 
-async function executeProbe(runDirectory, launchBrowser, browserControl) {
+async function executeProbe(
+  runDirectory,
+  launchBrowser,
+  browserControl,
+  startRuntimeEntry,
+) {
   const errors = createErrorLanes();
   const diagnostics = { allowedConsoleWarnings: [] };
   const runtimeResponses = [];
@@ -1593,6 +1802,7 @@ async function executeProbe(runDirectory, launchBrowser, browserControl) {
     );
 
     for (const [pathname, localPath] of TRACKED_RUNTIME_PATHS) {
+      if (pathname === RUNTIME_ENTRY_PATHNAME) continue;
       const matches = runtimeResponses.filter(
         (response) => response.pathname === pathname,
       );
@@ -1613,6 +1823,23 @@ async function executeProbe(runDirectory, launchBrowser, browserControl) {
         { responseCount: ">=1", status: 200, ...local },
       );
     }
+    const servedBuildIdentity = assessServedBuildIdentity(
+      runtimeResponses,
+      startRuntimeEntry,
+    );
+    addCheck(
+      result.checks,
+      "each backend consumed the exact gulp runtime entry",
+      servedBuildIdentity.pass,
+      servedBuildIdentity,
+      {
+        pathname: RUNTIME_ENTRY_PATHNAME,
+        sessions: [...BACKENDS],
+        responseCountPerSession: 1,
+        servedEqualsLocalStart: true,
+      },
+      "STRUCTURAL",
+    );
   } finally {
     if (context) {
       try {
@@ -1787,7 +2014,12 @@ export async function runVoxelInsideCameraProbe(launchBrowser) {
   };
   try {
     const result = await withWatchdog(
-      executeProbe(runDirectory, launchBrowser, browserControl),
+      executeProbe(
+        runDirectory,
+        launchBrowser,
+        browserControl,
+        startProvenance.runtimeEntry,
+      ),
       browserControl,
     );
     result.cleanup.watchdog = {
@@ -1804,18 +2036,48 @@ export async function runVoxelInsideCameraProbe(launchBrowser) {
       provenanceStable(startProvenance, endProvenance),
       { start: startProvenance, end: endProvenance },
       "all required start/end SHA-256 values identical",
+      "STRUCTURAL",
+    );
+    const rendererSourceRead = readTextBoundToFingerprint(
+      LOCAL_PATHS.rendererSource,
+      endProvenance.rendererSource,
+    );
+    const runtimeEntryRead = readTextBoundToFingerprint(
+      LOCAL_PATHS.runtimeEntry,
+      endProvenance.runtimeEntry,
     );
     const buildAssessment = assessBuildProvenance(
       endProvenance,
-      fs.readFileSync(LOCAL_PATHS.rendererSource, "utf8"),
-      fs.readFileSync(LOCAL_PATHS.engineBundle, "utf8"),
+      rendererSourceRead.text,
+      runtimeEntryRead.text,
     );
+    const buildFailures = [
+      ...rendererSourceRead.failures.map(
+        (failure) => `renderer source: ${failure}`,
+      ),
+      ...runtimeEntryRead.failures.map(
+        (failure) => `gulp runtime entry: ${failure}`,
+      ),
+      ...buildAssessment.failures,
+    ];
+    const { text: _rendererSourceText, ...rendererSourceReadEvidence } =
+      rendererSourceRead;
+    const { text: _runtimeEntryText, ...runtimeEntryReadEvidence } =
+      runtimeEntryRead;
     addCheck(
       result.checks,
       "served engine build contains and postdates the exact C11-13 source",
-      buildAssessment.pass,
-      { provenance: endProvenance, failures: buildAssessment.failures },
+      buildFailures.length === 0,
+      {
+        provenance: endProvenance,
+        boundReads: {
+          rendererSource: rendererSourceReadEvidence,
+          runtimeEntry: runtimeEntryReadEvidence,
+        },
+        failures: buildFailures,
+      },
       "fresh build with all four C11-13 source/build sentinels",
+      "STRUCTURAL",
     );
     const firstRedBeforeFinalize = firstRedFingerprint();
     addCheck(
@@ -1827,9 +2089,9 @@ export async function runVoxelInsideCameraProbe(launchBrowser) {
       { start: firstRedAtStart, end: firstRedBeforeFinalize },
       "identical existence, byte count, and SHA-256",
     );
-    const failures = result.checks.filter((check) => !check.pass);
-    const status = failures.length === 0 ? "PASS" : "FAIL";
-    exitCode = status === "PASS" ? 0 : 1;
+    const folded = foldProbeChecks(result.checks);
+    const { status, failures, structuralFailures } = folded;
+    exitCode = folded.exitCode;
     artifact = {
       schema: 1,
       campaign: "C11-13",
@@ -1847,6 +2109,7 @@ export async function runVoxelInsideCameraProbe(launchBrowser) {
       firstRedAtStart,
       ...result,
       failures,
+      structuralFailures,
     };
   } catch (error) {
     const message = error?.stack ?? String(error);

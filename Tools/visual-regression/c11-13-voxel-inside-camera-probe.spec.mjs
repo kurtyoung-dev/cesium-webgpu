@@ -5,6 +5,7 @@
 // Run: node --test Tools/visual-regression/c11-13-voxel-inside-camera-probe.spec.mjs
 
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -18,6 +19,7 @@ import {
   OUTER_WATCHDOG_GRACE_MS,
   PIXEL_TOLERANCES,
   WAYPOINTS,
+  addCheck,
   assessBackendAuthority,
   assessBuildProvenance,
   assessCommandSnapshot,
@@ -25,6 +27,7 @@ import {
   assessOutsideReturn,
   assessPixelEvidence,
   assessProviderEvidence,
+  assessServedBuildIdentity,
   assessWatchdogOrdering,
   assessWaypointSequence,
   atomicReplace,
@@ -34,11 +37,13 @@ import {
   decodeCanvasPngDataUrl,
   errorLanesAreEmpty,
   expectedConsoleWarningsAreValid,
+  foldProbeChecks,
   isBaseOrigin,
   normalizeCanvasClip,
   normalizeProbeBase,
   preserveFirstRed,
   provenanceStable,
+  readTextBoundToFingerprint,
   recordConsoleWarning,
   redactOutputPayload,
   withWatchdog,
@@ -108,10 +113,47 @@ function assessPhysicalProbePolicy(candidate) {
     candidate.html,
     /rel="icon" href="data:,"/u,
   );
+  const importMapBodies = [
+    ...candidate.html.matchAll(
+      /<script\s+type="importmap"\s*>([\s\S]*?)<\/script>/gu,
+    ),
+  ];
+  if (importMapBodies.length !== 1) {
+    failures.push("HTML must contain exactly one active import map");
+  } else {
+    try {
+      const importMap = JSON.parse(importMapBodies[0][1]);
+      if (
+        Object.keys(importMap).length !== 1 ||
+        Object.keys(importMap.imports ?? {}).length !== 1 ||
+        importMap.imports?.cesium !== "/Build/CesiumUnminified/index.js"
+      ) {
+        failures.push(
+          "HTML import map must contain only the gulp cesium entry",
+        );
+      }
+    } catch {
+      failures.push("HTML import map must be valid JSON");
+    }
+  }
+  for (const [name, text] of [
+    ["HTML", candidate.html],
+    ["harness", candidate.harness],
+  ]) {
+    if (
+      /\/Source\/Cesium\.js|\/packages\/(?:engine|widgets)\/Build\/Unminified/u.test(
+        text,
+      )
+    ) {
+      failures.push(
+        `${name} must not route certification through development modules`,
+      );
+    }
+  }
   requirePattern(
-    "HTML must import the unminified engine build",
-    candidate.html,
-    /packages\/engine\/Build\/Unminified\/index\.js/u,
+    "harness must consume the bare cesium import-map key",
+    candidate.harness,
+    /^import \* as Cesium from "cesium";$/mu,
   );
   requirePattern(
     "harness must import the in-tree L3 fixture",
@@ -236,9 +278,16 @@ function assessPhysicalProbePolicy(candidate) {
     "gpuErrors",
     "deviceLosses",
     "rendererSource",
-    "engineBundle",
+    "runtimeEntry",
+    "buildIdentityHelper",
     "providerFixture",
     "runtimeResponses",
+    "validateServedEntryIdentities",
+    "const resourceType = response.request().resourceType()",
+    "startProvenance.runtimeEntry",
+    "readTextBoundToFingerprint",
+    "DEVELOPMENT_RUNTIME_ENTRY_PATHNAMES",
+    "const folded = foldProbeChecks(result.checks)",
     "STABILITY_STREAK = 3",
     "createImmutable(runArtifact, artifactBytes)",
     "atomicReplace(CANONICAL_ARTIFACT, artifactBytes)",
@@ -265,6 +314,36 @@ function assessPhysicalProbePolicy(candidate) {
       failures.push(`probe implementation lost fail-closed token: ${token}`);
     }
   }
+  requirePattern(
+    "probe must fingerprint the exact gulp runtime entry",
+    candidate.implementation,
+    /runtimeEntry:\s*path\.resolve\("Build\/CesiumUnminified\/index\.js"\)/u,
+  );
+  requirePattern(
+    "probe must invoke the canonical served-entry validator",
+    candidate.implementation,
+    /const assessment = validateServedEntryIdentities\(\{[\s\S]{0,900}expectedLabels: \[\.\.\.BACKENDS\],[\s\S]{0,900}localEntry:/u,
+  );
+  requirePattern(
+    "served gulp identity failure must be structural",
+    candidate.implementation,
+    /"each backend consumed the exact gulp runtime entry"[\s\S]{0,900}"STRUCTURAL",\s*\);/u,
+  );
+  requirePattern(
+    "start/end provenance drift must be structural",
+    candidate.implementation,
+    /"source, build, probe, policy, harness, and provider bytes stayed stable"[\s\S]{0,900}"STRUCTURAL",\s*\);/u,
+  );
+  requirePattern(
+    "bound build provenance failure must be structural",
+    candidate.implementation,
+    /"served engine build contains and postdates the exact C11-13 source"[\s\S]{0,1800}"STRUCTURAL",\s*\);/u,
+  );
+  requirePattern(
+    "final sentinel reads must bind exact renderer and gulp bytes",
+    candidate.implementation,
+    /readTextBoundToFingerprint\(\s*LOCAL_PATHS\.rendererSource,[\s\S]{0,240}readTextBoundToFingerprint\(\s*LOCAL_PATHS\.runtimeEntry,/u,
+  );
   for (const token of [
     'channel: "msedge"',
     '"--enable-unsafe-webgpu"',
@@ -450,7 +529,13 @@ function passingWaypointResults() {
 test("physical probe source policy is complete and static mutants are rejected", () => {
   assert.deepEqual(assessPhysicalProbePolicy(sources), []);
   const mutants = [
+    ["html", "/Build/CesiumUnminified/index.js", "/Source/Cesium.js"],
     ["harness", "./fixtures/voxel-octree-l3.mjs", "./fixtures/wrong.mjs"],
+    [
+      "harness",
+      'import * as Cesium from "cesium";',
+      'import * as Cesium from "/Source/Cesium.js";',
+    ],
     ["harness", "useDefaultRenderLoop: false", "useDefaultRenderLoop: true"],
     ["harness", "velocity: commandEvidence(velocity)", "velocity: null"],
     ["harness", "scene.taaEnabled = false", "scene.taaEnabled = true"],
@@ -467,6 +552,31 @@ test("physical probe source policy is complete and static mutants are rejected",
     ],
     ["implementation", "bothNonVacuous", "bothCouldBeBlack"],
     ["implementation", "assessCommandSnapshot", "skipCommandSnapshot"],
+    [
+      "implementation",
+      'runtimeEntry: path.resolve("Build/CesiumUnminified/index.js")',
+      'runtimeEntry: path.resolve("packages/engine/Build/Unminified/index.js")',
+    ],
+    [
+      "implementation",
+      "const assessment = validateServedEntryIdentities({",
+      "const assessment = bypassServedEntryValidation({",
+    ],
+    [
+      "implementation",
+      "startProvenance.runtimeEntry",
+      "hashFile(LOCAL_PATHS.runtimeEntry)",
+    ],
+    [
+      "implementation",
+      "const resourceType = response.request().resourceType();",
+      'const resourceType = "script";',
+    ],
+    [
+      "implementation",
+      '"each backend consumed the exact gulp runtime entry",',
+      '"each backend consumed some runtime entry",',
+    ],
     ["implementation", '{ flag: "wx" }', '{ flag: "w" }'],
     [
       "implementation",
@@ -550,6 +660,22 @@ test("physical probe source policy is complete and static mutants are rejected",
       `${file} mutant ${before} must be rejected`,
     );
   }
+  const decoyRootWithActiveDevelopmentMap = {
+    ...sources,
+    html: sources.html
+      .replace(
+        '"cesium": "/Build/CesiumUnminified/index.js"',
+        '"cesium": "/Source/Cesium.js"',
+      )
+      .replace(
+        "</head>",
+        '<!-- inert decoy: "cesium": "/Build/CesiumUnminified/index.js" -->\n  </head>',
+      ),
+  };
+  assert.notDeepEqual(
+    assessPhysicalProbePolicy(decoyRootWithActiveDevelopmentMap),
+    [],
+  );
 });
 
 test("canvas capture freezes the final render in-task and validates exact dimensions", () => {
@@ -787,7 +913,7 @@ test("source/build/probe/provider provenance is exact, stable, and fresh", () =>
       sha256: "E".repeat(64),
       mtimeMs: 10,
     },
-    engineBundle: {
+    runtimeEntry: {
       exists: true,
       bytes: 10,
       sha256: "B".repeat(64),
@@ -825,6 +951,189 @@ test("source/build/probe/provider provenance is exact, stable, and fresh", () =>
     ).pass,
     false,
   );
+});
+
+test("final sentinel text is byte-bound and read failures stay declarative", () => {
+  const bytes = Buffer.from("bound sentinel text", "utf8");
+  const fingerprint = {
+    exists: true,
+    bytes: bytes.length,
+    sha256: createHash("sha256").update(bytes).digest("hex").toUpperCase(),
+  };
+  const operations = { readFileSync: () => bytes };
+  const baseline = readTextBoundToFingerprint(
+    "ignored",
+    fingerprint,
+    operations,
+  );
+  assert.equal(baseline.pass, true);
+  assert.equal(baseline.text, bytes.toString("utf8"));
+
+  assert.equal(
+    readTextBoundToFingerprint(
+      "ignored",
+      { ...fingerprint, sha256: "B".repeat(64) },
+      operations,
+    ).pass,
+    false,
+  );
+  assert.equal(
+    readTextBoundToFingerprint("ignored", fingerprint, {
+      readFileSync: () => Buffer.from("changed bytes", "utf8"),
+    }).pass,
+    false,
+  );
+  const absent = readTextBoundToFingerprint("ignored", fingerprint, {
+    readFileSync: () => {
+      const error = new Error("missing");
+      error.code = "ENOENT";
+      throw error;
+    },
+  });
+  assert.equal(absent.pass, false);
+  assert.equal(absent.actual.error, "ENOENT");
+});
+
+test("served gulp runtime identity is exact per backend and fail-closed", () => {
+  const localEntry = {
+    exists: true,
+    bytes: 100,
+    sha256: "A".repeat(64),
+  };
+  const response = (backend, overrides = {}) => ({
+    backend,
+    pathname: "/Build/CesiumUnminified/index.js",
+    search: "",
+    hash: "",
+    status: 200,
+    resourceType: "script",
+    bytes: localEntry.bytes,
+    sha256: localEntry.sha256,
+    ...overrides,
+  });
+  const valid = [
+    response("webgl"),
+    response("webgpu"),
+    response("webgl", {
+      pathname:
+        "/Tools/visual-regression/c11-13-voxel-inside-camera-harness.mjs",
+    }),
+    response("webgpu", {
+      pathname: "/Build/CesiumUnminified/Widgets/widgets.css",
+      resourceType: "stylesheet",
+    }),
+  ];
+  const baseline = assessServedBuildIdentity(valid, localEntry);
+  assert.equal(baseline.pass, true);
+  assert.deepEqual(baseline.observedLabels, ["webgl", "webgpu"]);
+  assert.equal(baseline.entries.length, 2);
+
+  const mutants = [
+    valid.filter((entry) => entry.backend !== "webgpu"),
+    [response("webgl"), response("webgl"), response("webgpu")],
+    [response("webgl"), response("vulkan")],
+    [response("webgl"), response("webgpu"), response("vulkan")],
+    [response("webgl"), response("webgpu", { status: 404 })],
+    [response("webgl"), response("webgpu", { sha256: "B".repeat(64) })],
+    [response("webgl"), response("webgpu", { bytes: 99 })],
+    [response("webgl"), response("webgpu", { bytes: 0 })],
+    [response("webgl"), response("webgpu", { sha256: "malformed" })],
+    [
+      response("webgl", { pathname: "/Source/Cesium.js" }),
+      response("webgpu", { pathname: "/Source/Cesium.js" }),
+    ],
+    [response("webgl"), response("webgpu", { resourceType: "fetch" })],
+    [response("webgl"), response("webgpu", { search: "?variant=dev" })],
+    [response("webgl"), response("webgpu", { hash: "#variant" })],
+    [
+      response("webgl"),
+      response("webgpu"),
+      response("webgl", { pathname: "/Source/Cesium.js" }),
+    ],
+  ];
+  for (const mutant of mutants) {
+    assert.equal(
+      assessServedBuildIdentity(mutant, localEntry).pass,
+      false,
+      `served-entry mutant ${JSON.stringify(mutant)} must fail`,
+    );
+  }
+  for (const invalidLocal of [
+    { ...localEntry, exists: false },
+    { ...localEntry, bytes: 0 },
+    { ...localEntry, sha256: "invalid" },
+    { ...localEntry, sha256: "B".repeat(64) },
+  ]) {
+    assert.equal(assessServedBuildIdentity(valid, invalidLocal).pass, false);
+  }
+});
+
+test("addCheck preserves default and structural failure tiers through folding", () => {
+  const productChecks = [];
+  addCheck(productChecks, "product failure", false, "actual", "expected");
+  const product = foldProbeChecks(productChecks);
+  assert.equal(product.exitCode, 1);
+  assert.equal(product.status, "FAIL");
+
+  const structuralChecks = [];
+  addCheck(
+    structuralChecks,
+    "structural failure",
+    false,
+    "actual",
+    "expected",
+    "STRUCTURAL",
+  );
+  const structural = foldProbeChecks(structuralChecks);
+  assert.equal(structural.exitCode, 3);
+  assert.equal(structural.status, "STRUCTURAL");
+});
+
+test("frozen-subject failures fold to STRUCTURAL without hiding product reds", () => {
+  for (const failureStatus of ["FAIL", "STRUCTURAL"]) {
+    assert.deepEqual(foldProbeChecks([{ pass: true, failureStatus }]), {
+      status: "PASS",
+      exitCode: 0,
+      failures: [],
+      structuralFailures: [],
+    });
+  }
+  const productOnly = foldProbeChecks([{ pass: false, failureStatus: "FAIL" }]);
+  assert.equal(productOnly.status, "FAIL");
+  assert.equal(productOnly.exitCode, 1);
+  assert.deepEqual(productOnly.structuralFailures, []);
+
+  const structuralOnly = foldProbeChecks([
+    { pass: false, failureStatus: "STRUCTURAL" },
+  ]);
+  assert.equal(structuralOnly.status, "STRUCTURAL");
+  assert.equal(structuralOnly.exitCode, 3);
+
+  const unknownFailureStatus = foldProbeChecks([
+    { pass: true, failureStatus: "STRUCUTRAL" },
+  ]);
+  assert.equal(unknownFailureStatus.status, "STRUCTURAL");
+  assert.equal(unknownFailureStatus.exitCode, 3);
+  assert.equal(unknownFailureStatus.structuralFailures.length, 1);
+
+  const mixed = foldProbeChecks([
+    { name: "measured voxel criterion", pass: false, failureStatus: "FAIL" },
+    {
+      name: "served gulp identity",
+      pass: false,
+      failureStatus: "STRUCTURAL",
+    },
+  ]);
+  assert.equal(mixed.status, "STRUCTURAL");
+  assert.equal(mixed.exitCode, 3);
+  assert.equal(mixed.failures.length, 2);
+  assert.equal(mixed.structuralFailures.length, 1);
+  assert.equal(foldProbeChecks(undefined).status, "STRUCTURAL");
+  const empty = foldProbeChecks([]);
+  assert.equal(empty.status, "STRUCTURAL");
+  assert.equal(empty.exitCode, 3);
+  assert.equal(empty.failures.length, 1);
+  assert.equal(empty.structuralFailures.length, 1);
 });
 
 test("artifact lifecycle is atomic, immutable, first-red write-once, and redacted", () => {
@@ -874,7 +1183,7 @@ test("origin, watchdog, and all error lanes are fail-closed", () => {
     assert.throws(() => normalizeProbeBase(invalid), /STRUCTURAL:/u);
   }
   assert.equal(
-    isBaseOrigin("/Source/Cesium.js", "http://localhost:8080"),
+    isBaseOrigin("/Build/CesiumUnminified/index.js", "http://localhost:8080"),
     true,
   );
   assert.equal(
@@ -910,8 +1219,7 @@ test("origin, watchdog, and all error lanes are fail-closed", () => {
 });
 
 test("only exact bounded WebGPU debug-build and Chromium warnings are diagnostic", () => {
-  const bundleUrl =
-    "http://localhost:8080/packages/engine/Build/Unminified/index.js";
+  const bundleUrl = "http://localhost:8080/Build/CesiumUnminified/index.js";
   const make = (text, overrides = {}) => ({
     backend: "webgpu",
     type: "warning",
@@ -1003,7 +1311,7 @@ test("only exact bounded WebGPU debug-build and Chromium warnings are diagnostic
     }),
     make(records[0].text, {
       location: {
-        url: "http://user:password@localhost:8080/packages/engine/Build/Unminified/index.js",
+        url: "http://user:password@localhost:8080/Build/CesiumUnminified/index.js",
       },
     }),
   ]) {
