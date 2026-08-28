@@ -108,6 +108,22 @@ corrected with it.
 The remaining ~30 medium and all low survivors are enumerated in §5 with their lane column reading
 QUEUED; they dispatch after Q-1…Q-10, batched by file so one Sol dispatch closes several small
 findings in the same module. C1's returning findings append here as a dated addendum.
+### Shutdown incident addendum (2026-08-28 ~16:45) - the retirement sweep caught lane VE mid-flight
+
+The clone-retirement sweep gutted cesium-lane-nightopt while the lane was still running its one
+disclosed in-flight background spec - a seat SEQUENCING ERROR: the lane packet said the
+footprint-gate rerun had not returned, and the sweep ran anyway. Cost: ZERO work lost (the
+packet was already landed as Batch 1239 via hash-verified copies before the sweep), and the
+lane independently reconstructed all eight files byte-exact and banked them with replay scripts
+at F:/Dev/GH/cesium-webgpu-backups/q57-nightopt-2026-08-28/ (redundant belt-and-braces; delete
+after Q-61 resolves). CLOSEOUT RULE HARDENED: a retirement sweep must confirm the owning lane
+has fully exited AND its packet discloses no in-flight runs - EBUSY during a sweep means STOP,
+not skip-and-continue.
+
+| | Locator | Finding | Shape |
+|---|---|---|---|
+| Q-61 | c12-29-s5-svs-footprint-gate test 48 | the dying clone run finished 47/1 with a REAL assertion failure (31 semantic source boundary / raw shaders map-excluded) - earlier reds were timeout-only. UNRESOLVED: could be caused by Batch 1239 shader edits (the pin inventories shader maps) or clone environment. A seat run on main post-1239 was started at shutdown; ITS VERDICT IS RESUME ITEM ZERO - if red on main, triage before any further shader landing | Opus-judgment, triage-first |
+
 ### Session stop point for machine restart (2026-08-28 ~16:15) - Batch 1239 landed; two lanes preserved mid-flight
 
 | | Item | State |
