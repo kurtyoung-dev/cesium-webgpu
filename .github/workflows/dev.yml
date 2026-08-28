@@ -33,6 +33,60 @@ jobs:
         run: npm exec --package=@ast-grep/cli --offline -- sg test
       - name: sg scan
         run: npm exec --package=@ast-grep/cli --offline -- sg scan --context 3
+  # Repo-local guard scripts, run on every push and pull request.
+  #
+  # These checks existed and were green for months without anything in CI
+  # running them, so a change that broke one only surfaced when somebody
+  # happened to run it by hand. This job closes that gap.
+  #
+  # There is deliberately NO build step here. Every wired guard reads tracked
+  # sources and repo configuration only, which is what makes this job fast and
+  # independent of the (multi-minute) engine build. `verify-tracked-references`
+  # belongs in this group for the same reason: it takes tracked-ness from
+  # `git ls-files` and existence from disk, so generated build output is
+  # irrelevant to it. A spec asserts the no-build property rather than trusting
+  # this comment.
+  #
+  # excluded, with the reason each was measured to fail here:
+  #   - verify-tooling-catalog: reports the committed census as DRIFTED against
+  #     the tree, on a row that differs only in the git-freshness column. That
+  #     column is environment-sensitive, so the check is red before any change
+  #     is made. Filed separately; wire it once the census is stable.
+  #   - test-tooling-catalog: 9 of its 91 tests fail in a clean tree, from the
+  #     same pre-existing red set. Same disposition.
+  #   - verify-landing: exits 3 STRUCTURAL ("contains no commits; nothing was
+  #     verified") whenever it cannot resolve a commit range. This workflow's
+  #     checkout sets no fetch-depth, so the runner gets the default shallow
+  #     depth-1 checkout — a single commit, with no range to verify. It is a
+  #     local and pre-push gate, not a hosted one.
+  guards:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: install node 22
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+      - name: npm install
+        run: npm install
+      - name: lint comment markers
+        run: npm run lint-comment-markers
+      - name: lint debug pragmas
+        run: npm run lint-debug-pragmas
+      - name: comment remediation tests
+        run: npm run test-c16
+      - name: landing rule tests
+        run: npm run test-landing-rules
+      - name: build infrastructure tests
+        run: npm run test-build-infra
+      - name: webgpu policy tests
+        run: npm run test-webgpu-policy
+      - name: audit feature renderers
+        run: npm run audit-feature-renderers
+      - name: collection sentinel checks
+        run: npm run collection-sentinels-check
+      - name: verify tracked references
+        run: npm run verify-tracked-references
   coverage:
     runs-on: ubuntu-latest
     env:

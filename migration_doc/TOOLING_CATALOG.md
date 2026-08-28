@@ -206,24 +206,25 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 
 | Metric | Value |
 |---|---|
-| Files in census | 1085 |
-| ACTIVE | 878 |
+| Files in census | 1088 |
+| ACTIVE | 881 |
 | INVESTIGATION | 195 |
 | NO @purpose HEADER | 12 |
-| Classes | probe 652, spec 218, other 98, lib 76, gate-lib 19, bake-tool 12, runner 6, fixture 4 |
+| Classes | probe 652, spec 220, other 99, lib 76, gate-lib 19, bake-tool 12, runner 6, fixture 4 |
 
-### Tools/ (36)
+### Tools/ (37)
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
-| audit-feature-renderers.mjs | other | ACTIVE | 2026-08-16 | 2 | Node audit that FeatureRendererKey enum, registerFeatureRenderer sites and getFeatureRenderer consumers stay mutually consistent; CI/pre-commit gate. |
+| audit-feature-renderers.mjs | other | ACTIVE | 2026-08-16 | 4 | Node audit that FeatureRendererKey enum, registerFeatureRenderer sites and getFeatureRenderer consumers stay mutually consistent; CI/pre-commit gate. |
 | backup-worker-deliverables.mjs | other | ACTIVE | 2026-08-20 | 1 | Export each worker clone's authored work as a self-contained, verified-appliable patch bundle so nothing depends on a clone surviving, while quiet hours forbid committing. |
 | build-eot20-constituent-grid.mjs | other | ACTIVE | 2026-08-16 | 3 | Offline bake of the EOT20 ocean-tide constituent atlas into the TCG1 grid read by Core/TideConstituentGrid.js (CC BY 4.0, attribution mandated). |
 | build-geoid-undulation-grid.mjs | other | ACTIVE | 2026-08-16 | 4 | Bakes the bundled coarse EGM2008 geoid grid (egm2008-0p5deg.i16) consumed by Core/GeoidUndulationGrid.js for the ocean GEOID vertical datum. |
 | build-lake-water-mask.mjs | other | ACTIVE | 2026-08-16 | 4 | Converts Natural Earth 1:10m lakes polygons into the packed LWM1 binary bundled for LakeWaterClassificationProvider (globe.lakeWaterMask). |
+| ci-guards.spec.mjs | spec | ACTIVE | 2026-08-28 | 1 | Asserts the CI guards job wires every build-free guard, stays build-free, and records why the excluded guards are excluded. |
 | codex-mcp-launcher.mjs | other | ACTIVE | 2026-08-20 | 7 | Resolve the Codex CLI across its hash-versioned install directories and exec `codex mcp-server` for .mcp.json; stable across desktop-app updates. |
 | codex-preflight.mjs | other | ACTIVE | 2026-08-20 | 3 | Prove a Codex worker can actually run before a batch is dispatched: resolves the CLI, checks auth, and fires a minimal canary exec to detect quota exhaustion and report the reset time. |
-| collection-sentinels-check.mjs | other | ACTIVE | 2026-08-16 | 2 | Fast no-GPU smoke check of the three permanent fault sentinels in WebGPUCollectionRendererBase via in-memory esbuild transpile; <1s local run. |
+| collection-sentinels-check.mjs | other | ACTIVE | 2026-08-16 | 4 | Fast no-GPU smoke check of the three permanent fault sentinels in WebGPUCollectionRendererBase via in-memory esbuild transpile; <1s local run. |
 | dev-server-artifact.spec.mjs | spec | ACTIVE | 2026-08-20 | 0 | Verify that the development server selects and validates the requested Cesium artifact without opening a socket. |
 | generate-tooling-catalog.mjs | other | ACTIVE | 2026-08-21 | 5 | Regenerates the TOOLING_CATALOG census section from @purpose/@status headers, git freshness and inbound refs; --check fails on drift. |
 | generate-tooling-catalog.spec.mjs | spec | ACTIVE | 2026-08-28 | 2 | Self-test for the catalog generator: marker containment, determinism, drift reporting and the no-header row. |
@@ -246,7 +247,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | verify-landing-compliance.spec.mjs | spec | ACTIVE | 2026-08-28 | 2 | Contract for the bypass detector against immutable history: known-bad C12-37 landing must red, known-good B1041-1043 landing must pass. |
 | verify-orientation-mirror.mjs | other | ACTIVE | 2026-08-28 | 1 | Fail closed when a status asserted by a reader-facing orientation document disagrees with, or cannot be resolved against, its campaign queue authority. |
 | verify-orientation-mirror.spec.mjs | spec | ACTIVE | 2026-08-28 | 0 | Prove the orientation-mirror verifier compares closed-vocabulary statuses, fails closed on unresolved references, honors reasoned allowlisting, and behaves identically on LF and CRLF inputs. |
-| verify-tracked-references.mjs | other | ACTIVE | 2026-08-21 | 10 | Asserts every node launch target in package.json/.mcp.json and every relative import in changed .mjs/.cjs/.js files resolves to a path the tree actually tracks. |
+| verify-tracked-references.mjs | other | ACTIVE | 2026-08-21 | 12 | Asserts every node launch target in package.json/.mcp.json and every relative import in changed .mjs/.cjs/.js files resolves to a path the tree actually tracks. |
 | verify-tracked-references.spec.mjs | spec | ACTIVE | 2026-08-21 | 0 | Contract for the tracked-reference guard: mutation controls where a tracked referrer points at an untracked target must red, and the all-tracked control must stay green. |
 | verify-worker-handoff.mjs | other | ACTIVE | 2026-08-20 | 2 | Mechanically validate a worker clone before review: lease compliance, no git writes, no conflict artifacts, header and comment-marker rules, and execution of every spec the worker added. |
 | wasm-encode-benchmark.mjs | other | ACTIVE | 2026-08-16 | 6 | Node CPU micro-benchmark of the WASM batch_rte_encode kernel vs the scalar JS fround twin, with byte-identity and fallback trip-wire asserts. |
@@ -1374,19 +1375,21 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | webgpu-model-preparation-evidence.mjs | lib | ACTIVE | 2026-08-16 | 2 | Accumulates and validates WebGPU model preparation/demand counters as measurement-window evidence for performance workloads. |
 | wgsl-variant.mjs | lib | ACTIVE | 2026-08-16 | 10 | Exposes the engine's real WGSL preprocessor and define registry so specs validate the exact variant text pipelines compile, not raw ifdef source. |
 
-### scripts/ (2)
+### scripts/ (3)
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
+| engineTypeCheck.mjs | other | ACTIVE | 2026-08-28 | 3 | Runs the engine project type check when the tree is built, and prints an explicit skip line when it is not. |
 | patchEslintSeatbelt.mjs | other | ACTIVE | 2026-08-16 | 3 | postinstall patch normalizing eslint-seatbelt path keys to forward slashes so the committed POSIX seatbelt.tsv grandfathers on Windows. |
 | run-build-no-tsc.mjs | runner | ACTIVE | 2026-08-16 | 8 | Dev build helper: converts WGSL then runs buildEngine/buildWidgets/buildCesium (development, unminified, sourcemapped) skipping tsc. |
 
-### scripts/__tests__/ (5)
+### scripts/__tests__/ (6)
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
 | bundleVariantPlugin.spec.mjs | spec | ACTIVE | 2026-08-21 | 4 | Exercises the build-variant alias plugin's onResolve decision matrix, compat exemption allowlist, re-entry guard and decision cache, no esbuild. |
 | createIndexJs.spec.mjs | spec | ACTIVE | 2026-08-16 | 0 | Regression that the generated engine index omits private named-export temporal-history helpers yet still esbuild-bundles cleanly. |
+| engineTypeCheck.spec.mjs | spec | ACTIVE | 2026-08-28 | 1 | Proves the engine type check runs only in a built tree, propagates failure, announces every skip, and stays tied to the build artifact and the hook. |
 | karmaTestRun.spec.mjs | spec | ACTIVE | 2026-08-16 | 2 | Static coverage of the Gulp/Karma completion bridge via a fake Karma server: strict result config, retries, disconnect/error exit codes. |
 | shaderSourceToJavaScript.spec.mjs | spec | ACTIVE | 2026-08-16 | 1 | Contract for the shader source-to-JS-module serializer: literal escapes, quotes, CRLF/lone-CR/U+2028 round-trips through real ESM evaluation. |
 | specBundleFreshness.spec.mjs | spec | ACTIVE | 2026-08-16 | 2 | Coverage of the spec-bundle freshness sentinel: added/removed/changed spec files must flip the manifest comparison stale and name the offender. |
