@@ -706,6 +706,16 @@ function eclipseSceneLightCurve(obscuration, autoExposure) {
  * black out every sunset and the day side seen from a night-side orbital
  * camera. The module header derives that.
  *
+ * SOLAR ONLY, and deliberately so. Every quantity this module computes is
+ * about the Moon standing in front of the Sun; the "lunar obscuration" above
+ * names the Moon as the OCCULTER, not a lunar eclipse. Earth's shadow falling
+ * on the Moon dims a different light — the Moon's own reflected sunlight — and
+ * its multiplier is {@link getLunarEclipseMoonlightFactor} below, which the
+ * same two consumers apply under the complementary light-type gate. Neither
+ * factor may be substituted for the other: applying this one during a lunar
+ * eclipse would darken a fully sunlit scene, and applying that one during a
+ * solar eclipse would do nothing at all.
+ *
  * @param {object|undefined} state
  * @returns {number} in [ECLIPSE_TWILIGHT_FLOOR, 1]
  * @private
@@ -719,6 +729,50 @@ function getEclipseSceneLightFactor(state) {
     return 1.0;
   }
   return eclipseSceneLightCurve(obscuration, state.autoExposure === true);
+}
+
+/**
+ * The multiplier a MOONLIGHT-driven scene light is scaled by while Earth's
+ * shadow is on the Moon — the lunar arm of the contract stated above.
+ *
+ * The quantity is the Moon's disc-averaged brightness relative to an
+ * uneclipsed full Moon, integrated by `Scene/LunarEclipseState.js` over the
+ * same per-point law the two moon disc shaders evaluate per fragment. That
+ * shared law is the point: a separately tuned dimming curve here would let the
+ * rendered disc and the light it casts disagree about how eclipsed the Moon
+ * is, which is exactly the artefact a viewer notices — a coppery Moon lighting
+ * the ground as brightly as a full one.
+ *
+ * No radiometric floor. Unlike the solar curve, which floors on the ~5-lux
+ * twilight constant because a total solar eclipse is never actually dark, this
+ * one needs none: the refracted umbral light is part of the law being
+ * integrated, so the factor bottoms out near 0.026 at central totality rather
+ * than reaching zero.
+ *
+ * Returns exactly 1.0 — the multiplicative identity — when no lunar eclipse is
+ * in progress, when the state is absent, and in the
+ * `atmosphericConditions.lighting.enableLunarEclipse = false` position, which
+ * is the same gate the disc appearance reads. Consumers additionally
+ * short-circuit on `=== 1.0`, so a scene lit by moonlight on any other night
+ * is untouched by construction rather than by arithmetic.
+ *
+ * @param {object|undefined} state `frameState.lunarEclipse`.
+ * @param {object} [lighting] The `atmosphericConditions.lighting` leaf.
+ * @returns {number} in (0, 1]
+ * @private
+ */
+function getLunarEclipseMoonlightFactor(state, lighting) {
+  if (defined(lighting) && lighting.enableLunarEclipse === false) {
+    return 1.0;
+  }
+  if (!defined(state) || state.inProgress !== true) {
+    return 1.0;
+  }
+  const factor = state.discLuminanceFactor;
+  if (typeof factor !== "number" || !(factor > 0.0) || factor > 1.0) {
+    return 1.0;
+  }
+  return factor;
 }
 
 // The constants below parameterise the 360-degree horizon twilight of a total
@@ -937,6 +991,7 @@ export {
   updateEclipseState,
   getEclipseSunFactor,
   getEclipseSceneLightFactor,
+  getLunarEclipseMoonlightFactor,
   eclipseSceneLightCurve,
   getEclipseHorizonTwilightFactor,
   computeHorizonTwilightStrength,

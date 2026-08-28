@@ -106,6 +106,11 @@ import ShadowMode from "../../Scene/ShadowMode.js";
 // the scene sun, exactly as `UniformState` gates its own multiply. `SunLight`
 // is a two-import leaf (Color, Frozen), so this cannot introduce a cycle.
 import SunLight from "../../Scene/SunLight.js";
+// The lunar arm's gate and its resolver. `MoonLight` is the same two-import
+// leaf as `SunLight`, and `EclipseState` imports only Core plus two Scene
+// leaves, so neither introduces a cycle.
+import MoonLight from "../../Scene/MoonLight.js";
+import { getLunarEclipseMoonlightFactor } from "../../Scene/EclipseState.js";
 // Shared silhouette-ID counter. WebGL's ModelSilhouettePipelineStage assigns
 // `model._silhouetteId` from this static counter; on WebGPU the same stage runs
 // during the shared scene-graph draw-command build, so the assignment here is
@@ -975,6 +980,13 @@ declare global {
     // The per-frame eclipse dimming multiplier published by `Scene.render`.
     // Exactly 1.0 outside a solar eclipse.
     eclipseSceneLightFactor?: number;
+    // Earth's shadow at the Moon, published by `Scene.updateFrameState`. Only
+    // the disc-averaged brightness is read here; the full shape is documented
+    // on `FrameState#lunarEclipse`.
+    lunarEclipse?: {
+      inProgress?: boolean;
+      discLuminanceFactor?: number;
+    } | null;
     scene?: {
       _webgpuPickHoverEnabled?: boolean;
       [key: string]: unknown;
@@ -2508,11 +2520,26 @@ function packLightUniforms(
   // because `Scene._atmosphereDerivedLight` is itself a `SunLight`, which is
   // what keeps the WebGPU aerial-perspective sub-case in step with the plain
   // one.
+  //
+  // The `MoonLight` arm is the lunar half of the same contract, and it exists
+  // here for exactly the reason the solar half does: `ModelPBRComplete.wgsl`
+  // reads none of the `csm_lightColor*` uniforms, so without this multiply a
+  // scene lit by an eclipsed Moon would show WebGPU models at full brightness
+  // over a globe the shared uniform source had already dimmed. Mutually
+  // exclusive with the solar arm by light type — the Moon in front of the Sun
+  // dims a `SunLight`, Earth in front of the Sun as seen from the Moon dims a
+  // `MoonLight`, and neither event touches the other's light.
   const eclipseFactorRaw = frameState.eclipseSceneLightFactor;
-  const eclipseFactor =
+  let eclipseFactor =
     light instanceof SunLight && typeof eclipseFactorRaw === "number"
       ? eclipseFactorRaw
       : 1.0;
+  if (light instanceof MoonLight) {
+    eclipseFactor = getLunarEclipseMoonlightFactor(
+      frameState.lunarEclipse,
+      frameState.atmosphericConditions?.lighting,
+    );
+  }
 
   if (lightColor) {
     data[4] = lightColor.red * eclipseFactor;

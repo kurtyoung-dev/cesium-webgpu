@@ -410,7 +410,13 @@ interface CesiumFrameState {
           // datum, which the shader subtracts bit-exactly.
           surfaceRelativeAltitude?: boolean;
         };
-        lighting?: { enabled?: boolean; moonIntensity?: number };
+        lighting?: {
+          enabled?: boolean;
+          moonIntensity?: number;
+          // Earth's shadow on the lunar disc, and the moonlight dimming that
+          // rides with it. Default on; the false position withholds both.
+          enableLunarEclipse?: boolean;
+        };
         varyingAtmosphereDensity?:
           | number
           | { enabled?: boolean; noiseScale?: number; noiseStrength?: number };

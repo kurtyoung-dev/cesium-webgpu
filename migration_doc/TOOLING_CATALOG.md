@@ -206,11 +206,11 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 
 | Metric | Value |
 |---|---|
-| Files in census | 1094 |
-| ACTIVE | 887 |
+| Files in census | 1096 |
+| ACTIVE | 889 |
 | INVESTIGATION | 195 |
 | NO @purpose HEADER | 12 |
-| Classes | probe 652, spec 224, other 100, lib 76, gate-lib 19, bake-tool 13, runner 6, fixture 4 |
+| Classes | probe 652, spec 226, other 100, lib 76, gate-lib 19, bake-tool 13, runner 6, fixture 4 |
 
 ### Tools/ (39)
 
@@ -353,7 +353,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | stbn-rng.mjs | bake-tool | ACTIVE | 2026-08-16 | 3 | Deterministic license-clean random stream for the STBN bake: AES-256-CTR over zeros keyed by SHA-256(seed), byte-identical across machines. |
 | stbn-spectrum.mjs | bake-tool | ACTIVE | 2026-08-16 | 5 | Fourier certification of an STBN volume (radial spatial spectrum, per-pixel temporal spectrum, cross-correlation) with mutants proving each bar fires. |
 
-### Tools/visual-regression/ (897)
+### Tools/visual-regression/ (899)
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
@@ -399,7 +399,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | celestial-g2-gate.spec.mjs | spec | ACTIVE | 2026-08-16 | 4 | Guards the G2 star-PSF gate: display-transform inversion round-trip, PSF discrimination vs the old truncated Gaussian, composition rules, via mutants. |
 | celestial-g3-gate.spec.mjs | spec | ACTIVE | 2026-08-21 | 6 | Guards the G3 Milky-Way cubemap gate: arcmin/px definition pinning, orthogonal structure metrics, T3 adversarial rejection, real-byte format arm. |
 | celestial-g4-gate.spec.mjs | spec | ACTIVE | 2026-08-16 | 3 | Guards the G4 sun/moon gate: thresholds re-derived from shipped Scene modules, synthetic-frame recovery proofs, eight aimed mutants each rejected. |
-| celestial-gate-class-audit.spec.mjs | spec | NO @purpose HEADER | 2026-08-25 | 4 | — |
+| celestial-gate-class-audit.spec.mjs | spec | NO @purpose HEADER | 2026-08-28 | 4 | — |
 | celestial-metrics.spec.mjs | spec | ACTIVE | 2026-08-16 | 2 | Trust anchor for lib/celestial-metrics.mjs: each metric (census, contrast tail, chroma, falloff, magnitude fidelity) run on closed-form images. |
 | celestial-uniform-offsets.spec.mjs | spec | ACTIVE | 2026-08-16 | 2 | Derives WGSL uniform-layout offsets for the star cubemap + sprite buffers from struct source and pins the JS packers' flat indices against them. |
 | cloud-coverage-response.spec.mjs | spec | ACTIVE | 2026-08-16 | 4 | Pins the CLOUD-LOW-COVERAGE-CUTOFF fix: baked base-field support, monotone coverage response on the CPU twin, exact high-anchor preservation. |
@@ -490,6 +490,8 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | imagery-layer-callback-values.spec.mjs | spec | ACTIVE | 2026-08-28 | 0 | Pins that every ImageryLayer property documented as scalar-or-callback resolves identically on both backends, executing the shared leaf over the documented contract and mutating the guard. |
 | j2-cpu-kernel.mjs | other | ACTIVE | 2026-08-16 | 4 | FP64 secular-J2 orbital propagator mirroring the demo's WGSL kernel; single source of truth for two orbital probes and the WebGL2 cpuKernel leg. |
 | logdepth-zfight-probe-contract.spec.mjs | spec | ACTIVE | 2026-08-16 | 0 | Browser-free contract pinning probe-logdepth-zfight's deterministic offline scene and retained terrain-depth policy. |
+| lunar-eclipse-earth-shadow.spec.mjs | spec | ACTIVE | 2026-08-28 | 0 | Pins the shadow-cone geometry against five published eclipses, proves the WGSL/GLSL/JS coverage law is one function in three languages, and states the appearance properties that reject four wrong implementations. |
+| lunar-moonlight-dimming.spec.mjs | spec | ACTIVE | 2026-08-28 | 0 | Proves moonlight dims by the eclipsed Moon's own disc brightness, that the solar arm stays exactly 1.0 throughout a lunar eclipse, and that the two arms are mutually exclusive by light type on both backends. |
 | lut-consumer-device-identity.spec.mjs | spec | ACTIVE | 2026-08-28 | 0 | Guards the sky, fog and cloud consumers of the shared device-identity predicate so presence-only cache admission cannot survive a device recovery. |
 | mat-logdepth-encode-stash.spec.mjs | spec | ACTIVE | 2026-08-16 | 5 | Executes the real writeLogDepthTail packer to pin stash-first log-depth encoding for the Mat/Primitive family; replays the 2-primitive defect. |
 | material-texture-late-adoption.spec.mjs | spec | ACTIVE | 2026-08-28 | 0 | Pins that the WebGPU primitive material path re-binds its texture after `Material.update` drains a late image into `_imageSources`, for the main and depth-fail slots, and proves the check is live rather than inert. |
@@ -509,10 +511,10 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | moon-mip-lod-shader.spec.mjs | spec | ACTIVE | 2026-08-21 | 4 | Structural WGSL contract for Moon derivative/LOD sampling, asserted per @fragment entry point: exactly one ellipsoid hit shaded, explicit gradients, no duplicated color evaluation. |
 | moon-mip-motion-certification.spec.mjs | spec | ACTIVE | 2026-08-24 | 4 | Certification-pipeline contracts for the narrower C12-33 shimmer envelope: honest non-claim, minimum sensitivity, immutable evidence, review, and finalization. |
 | moon-mip-motion-probe-contract.spec.mjs | spec | ACTIVE | 2026-08-24 | 1 | Contract over the C12-33 shimmer-envelope probe: honest scope, frame analysis, exit codes, evidence paths, and minimum paired sensitivity. |
-| moon-normal-map-asset.spec.mjs | spec | ACTIVE | 2026-08-16 | 7 | Pins the bundled lunar normal map bytes/format, crater-relief polarity, 1/cos(lat) derivation math, both-backend wiring and LICENSE provenance. |
+| moon-normal-map-asset.spec.mjs | spec | ACTIVE | 2026-08-28 | 7 | Pins the bundled lunar normal map bytes/format, crater-relief polarity, 1/cos(lat) derivation math, both-backend wiring and LICENSE provenance. |
 | moon-normal-strength-policy.spec.mjs | spec | ACTIVE | 2026-08-16 | 0 | Behavioral contract for backend-neutral resolveMoonNormalMapStrength defaults and clamping, run against a real Moon instance under Node. |
 | moon-phase-gate.spec.mjs | spec | ACTIVE | 2026-08-16 | 4 | Regression tripwire: the Moon.wgsl whole-disc phaseGate multiplier stays deleted; C12-21 scaffolding and naga validation preserved. |
-| moon-phase-terminator.spec.mjs | spec | ACTIVE | 2026-08-16 | 3 | Cross-language equivalence of softTerminatorMu0 (WGSL/GLSL/JS to 1e-15) plus property predicates proven against four wrong implementations. |
+| moon-phase-terminator.spec.mjs | spec | ACTIVE | 2026-08-28 | 3 | Cross-language equivalence of softTerminatorMu0 (WGSL/GLSL/JS to 1e-15) plus property predicates proven against four wrong implementations. |
 | moon-webgl-explicit-gradients.spec.mjs | spec | ACTIVE | 2026-08-16 | 1 | Structural GLSL contract: Moon UV derivatives execute before miss discards under LUNAR_EXPLICIT_GRADIENTS on the WebGL path. |
 | moon-webgl-mip-policy.spec.mjs | spec | ACTIVE | 2026-08-16 | 0 | Behavioral tests of the WebGL moon mip policy: NPOT mip generation under WebGL2, trilinear/linear sampler selection, mip level counts. |
 | moon-webgl-texture-lifecycle.spec.mjs | spec | ACTIVE | 2026-08-16 | 0 | Behavioral tests of the WebGL moon texture lifecycle: channel commit/reconcile, publish/retire ordering and upload-source release accounting. |

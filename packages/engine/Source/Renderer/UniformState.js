@@ -14,6 +14,8 @@ import OrthographicFrustum from "../Core/OrthographicFrustum.js";
 import Transforms from "../Core/Transforms.js";
 import SceneMode from "../Scene/SceneMode.js";
 import SunLight from "../Scene/SunLight.js";
+import MoonLight from "../Scene/MoonLight.js";
+import { getLunarEclipseMoonlightFactor } from "../Scene/EclipseState.js";
 import {
   isViewTemporalHistoryValid,
   readViewTemporalHistory,
@@ -989,6 +991,49 @@ class UniformState {
         eclipseSceneLightFactor,
         this._lightColor,
       );
+    }
+
+    // The lunar arm of the same contract: Earth's shadow dimming the MOON,
+    // for a scene the Moon is lighting.
+    //
+    // A different event and a different gate. The factor above is the Moon
+    // standing in front of the Sun, and it applies to a `SunLight`; this one
+    // is Earth standing in front of the Sun as seen from the Moon, and it
+    // applies to a `MoonLight`. The two are mutually exclusive by light type,
+    // which is what keeps a lunar eclipse from darkening a sunlit scene — the
+    // Sun is entirely unaffected by one, and the day side of the Earth does
+    // not dim because the Moon has gone red.
+    //
+    // The multiplier is the Moon's disc-averaged brightness under the same
+    // per-point law both moon disc shaders evaluate, so the rendered disc and
+    // the light it casts cannot disagree about how eclipsed the Moon is.
+    //
+    // AFTER the LDR clamp for the same reason the solar arm is: `_lightColor`
+    // is `_lightColorHdr` renormalised so its brightest channel is at most 1,
+    // and a pre-clamp multiply would be swallowed by that renormalisation
+    // until the factor fell below 1/intensity.
+    //
+    // `MoonLight` is opt-in (`scene.light = new Cesium.MoonLight()`), so this
+    // branch is not reached in a default scene at all; combined with the
+    // `!== 1.0` guard, every frame that is not a moonlit lunar eclipse is
+    // untouched by construction.
+    if (light instanceof MoonLight) {
+      const moonlightFactor = getLunarEclipseMoonlightFactor(
+        frameState.lunarEclipse,
+        frameState.atmosphericConditions?.lighting,
+      );
+      if (moonlightFactor !== 1.0) {
+        Cartesian3.multiplyByScalar(
+          this._lightColorHdr,
+          moonlightFactor,
+          this._lightColorHdr,
+        );
+        Cartesian3.multiplyByScalar(
+          this._lightColor,
+          moonlightFactor,
+          this._lightColor,
+        );
+      }
     }
 
     // Multi-light: pack additional lights from LightCollection
