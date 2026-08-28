@@ -4212,11 +4212,12 @@ fn fragmentMain(
   // twin of WebGL's `APPLY_DAY_NIGHT_ALPHA` define: both are raised per tile
   // when a layer's resolved day or night alpha differs from 1.0, so neither
   // backend pays for the ramp on a globe that never asked for it.
-  // `tile.hsbShift.w` is the third question and the complement of the second:
-  // the procedural night fallback runs where there is no night layer, so it
-  // needs the terminator on exactly the tiles the second term leaves shut.
-  // WebGL opens the same ramp on the same third condition, as the second
-  // alternative of its `nightBlend` guard.
+  // `tile.hsbShift.w` is the third question, and it is the complement of the
+  // second rather than its negation: the procedural night fallback supplies the
+  // share of the night side the layers leave uncovered, so it needs the
+  // terminator wherever it is not already scaled back to the identity — which
+  // includes tiles the second term also opens. WebGL opens the same ramp on the
+  // same third condition, as the second alternative of its `nightBlend` guard.
   //
   // `computeDayNightFade` keeps its single call site. All three consumers read
   // the one ramp; a second evaluation would be a second copy of a law that is
@@ -4765,13 +4766,18 @@ fn fragmentMain(
     eclipseRelative = eclipseAbsolute * eclipseUniforms.params.y;
   }
 
-  // Procedural night darkening, for globes with no night imagery.
-  // `tile.hsbShift.w` carries `globe.nightDarkness`; `tile.tileControls.w` is
-  // the day/night-alpha flag, and the suppression is the point of the pair:
-  // where a night layer is already blending, the night appearance comes from
-  // the layer, and darkening it a second time would dim the city lights. GLSL
-  // reaches the same two-input conjunction at compile time, as the
-  // `APPLY_NIGHT_DARKNESS` define.
+  // Procedural night darkening, for the share of the night side no imagery
+  // layer covers.
+  //
+  // `tile.hsbShift.w` carries `globe.nightDarkness` already scaled by that
+  // share on the CPU: where a night layer covers the night side completely the
+  // scale resolves to 1.0 and this guard shuts, because the night appearance
+  // comes from the layer there and darkening it a second time would dim the
+  // city lights; where the layer has faded out — below the deepest level its
+  // pyramid contains, one texel would otherwise cover a whole tile — the full
+  // darkness comes back; and in between the two hand over continuously instead
+  // of stepping. GLSL reads the same scaled uniform and derives its
+  // `APPLY_NIGHT_DARKNESS` define from it at compile time.
   //
   // Ahead of the lighting branch rather than after it, because every term in
   // that branch is a multiply while the terminator glow it ends with is an ADD:
@@ -4783,7 +4789,7 @@ fn fragmentMain(
   // That fade flat-lights the globe near the ground, which is upstream's
   // behaviour for the LIGHTING term and the opposite of what this term exists
   // to do.
-  if (tile.hsbShift.w < 1.0 && tile.tileControls.w < 0.5) {
+  if (tile.hsbShift.w < 1.0) {
     color = color * mix(1.0, tile.hsbShift.w, nightBlend);
   }
 

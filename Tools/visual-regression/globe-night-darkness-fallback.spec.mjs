@@ -15,11 +15,20 @@
 //   • WHICH SIDE. Darkening must follow the night fraction. Applied to the
 //     complement it darkens the sunlit hemisphere, which is a plausible typo
 //     and a catastrophic one; a deletion mutant does not find it.
-//   • WHERE IT RUNS. It is a FALLBACK. Where a night layer is already blending
-//     — the Black Marble pyramid, or any layer with a day/night alpha pair —
-//     the night appearance comes from that layer, and darkening the composite
-//     again dims the city lights. The two conditions are complementary per
-//     tile, and both backends must conjoin the same two inputs.
+//   • WHERE IT RUNS. It is a FALLBACK, and its share is the share of the night
+//     side the imagery leaves uncovered. Where a night layer covers the tile's
+//     night side completely — the Black Marble pyramid at its own resolution,
+//     or any layer with a day/night alpha pair at full night opacity — the
+//     night appearance comes from that layer and darkening the composite again
+//     dims the city lights, so the fallback scales to the multiplicative
+//     identity and its define never fires. Where the layer covers none of it —
+//     no day/night layer at all, or one the magnification fade has retired
+//     below the deepest level its pyramid contains — the full darkness applies.
+//     Partial coverage is the continuous interpolation of those two, so the two
+//     mechanisms hand over without a step at the boundary, and both backends
+//     must read the SAME scaled scalar rather than each conjoining its own
+//     pair. The boolean suppression this row shipped with survives exactly as
+//     the two endpoints of that scale.
 //   • HOW FAR. The day/night DIFFUSE is mixed toward full brightness by a
 //     camera-distance fade, so a globe seen from the ground is flat-lit; that
 //     is upstream's behaviour and this row does not touch it. The fallback
@@ -283,26 +292,42 @@ test("B4: the WGSL scalar rides the HSB pad, and the tile buffer did not grow", 
 
 // ─── C. the arming conjunction, same two inputs on both backends ─────────────
 
-/** WebGL's derivation, transcribed; C1 pins the transcription against source. */
-function webglArmed(darkness, dayNightAlphaActive) {
-  return darkness < 1.0 && !dayNightAlphaActive;
+/**
+ * The scaled darkness both packs compute, transcribed; C1 and C2 pin the
+ * transcription against each source. `coverage` is the largest night-side
+ * opacity any day/night layer resolves to on the tile.
+ */
+function effectiveDarkness(darkness, coverage) {
+  return 1.0 + (darkness - 1.0) * (1.0 - Math.min(Math.max(coverage, 0), 1));
+}
+
+/** WebGL arms its compile-time define off that one number. */
+function webglArmed(darkness, coverage) {
+  return effectiveDarkness(darkness, coverage) < 1.0;
 }
 
 /**
- * WebGPU's, likewise; C2 pins it. The float round-trip is deliberate: the flag
- * reaches the shader as a packed 1.0 or 0.0 and is read back with a threshold,
- * so this is the comparison the GPU actually performs.
+ * WebGPU's, likewise. The float round trip is deliberate: the scalar reaches
+ * the shader packed into a Float32Array slot and is read back with the same
+ * threshold, so this is the comparison the GPU actually performs.
  */
-function webgpuArmed(darkness, dayNightAlphaActive) {
-  const packedFlag = dayNightAlphaActive ? 1.0 : 0.0;
-  return darkness < 1.0 && packedFlag < 0.5;
+function webgpuArmed(darkness, coverage) {
+  const packed = Math.fround(effectiveDarkness(darkness, coverage));
+  return packed < 1.0;
 }
 
-test("C1: WebGL derives the define from the darkness AND the absence of a layer", () => {
+test("C1: WebGL scales the darkness by the uncovered share and arms off that", () => {
   assert.match(
     tileRendering,
-    /surfaceShaderSetOptions\.applyNightDarkness =\s*nightDarkness < 1\.0 && !applyDayNightAlpha;/,
-    "the fallback runs where the layer path does not, and nowhere else",
+    /const effectiveNightDarkness =\s*1\.0 \+\s*\(nightDarkness - 1\.0\) \*\s*\(1\.0 - CesiumMath\.clamp\(nightLayerCoverage, 0\.0, 1\.0\)\);/,
+    "the fallback supplies what the layers leave uncovered",
+  );
+  assert.match(
+    tileRendering,
+    /uniformMapProperties\.nightDarkness = effectiveNightDarkness;\s*surfaceShaderSetOptions\.applyNightDarkness = effectiveNightDarkness < 1\.0;/,
+    "the uniform the shader multiplies by and the define that gates it must " +
+      "come from the one number, or a tile can be armed on a value it will " +
+      "not receive",
   );
   assert.match(
     shaderSet,
@@ -310,30 +335,57 @@ test("C1: WebGL derives the define from the darkness AND the absence of a layer"
   );
 });
 
-test("C2: WGSL conjoins the same two inputs at runtime", () => {
+test("C2: WGSL reads the same scaled scalar, with no second input of its own", () => {
   assert.match(
     wgslCode,
-    /if \(tile\.hsbShift\.w < 1\.0 && tile\.tileControls\.w < 0\.5\) \{\n\s*color = color \* mix\(1\.0, tile\.hsbShift\.w, nightBlend\);\n\s*\}/,
-    "`tileControls.w` is the day/night-alpha flag; the fallback is its " +
-      "complement, so the night side is darkened once and not twice",
+    /if \(tile\.hsbShift\.w < 1\.0\) \{\n\s*color = color \* mix\(1\.0, tile\.hsbShift\.w, nightBlend\);\n\s*\}/,
+    "the coverage is folded into the packed scalar on the CPU, so the shader " +
+      "guard is the same `< 1.0` test WebGL's define is derived from",
+  );
+  assert.doesNotMatch(
+    wgslCode,
+    /tile\.hsbShift\.w < 1\.0 && tile\.tileControls\.w/,
+    "re-conjoining the day/night-alpha flag here would shut the fallback on " +
+      "every tile a faded night layer still marks, which is the defect the " +
+      "scaling exists to close",
+  );
+  assert.match(
+    tileUb,
+    /data\[HSB_SHIFT_OFFSET \+ 3\] =\s*1\.0 \+\s*\(sanitizedNightDarkness - 1\.0\) \*\s*\(1\.0 - Math\.min\(Math\.max\(nightLayerCoverage, 0\.0\), 1\.0\)\);/,
   );
 });
 
 test("C3: the two derivations agree over the whole input space", () => {
+  const coverages = [0, 0.001, 0.25, 0.5, 0.75, 0.999, 1, 1.5, -0.5];
   for (const darkness of [0, 0.15, 0.5, 0.999, 1, 1.0]) {
-    for (const active of [false, true]) {
+    for (const coverage of coverages) {
       assert.equal(
-        webglArmed(darkness, active),
-        webgpuArmed(darkness, active),
-        `backends disagree at darkness=${darkness} active=${active}`,
+        webglArmed(darkness, coverage),
+        webgpuArmed(darkness, coverage),
+        `backends disagree at darkness=${darkness} coverage=${coverage}`,
       );
     }
   }
-  // And the table itself is the intended one.
-  assert.equal(webglArmed(0.15, false), true, "no layer, darkness set: armed");
-  assert.equal(webglArmed(0.15, true), false, "a night layer suppresses it");
-  assert.equal(webglArmed(1.0, false), false, "the identity arms nothing");
-  assert.equal(webglArmed(1.0, true), false);
+  // The boolean law this row shipped with is the two endpoints, unchanged.
+  assert.equal(webglArmed(0.15, 0), true, "no coverage, darkness set: armed");
+  assert.equal(
+    webglArmed(0.15, 1),
+    false,
+    "a layer covering the night side suppresses it",
+  );
+  assert.equal(webglArmed(1.0, 0), false, "the identity arms nothing");
+  assert.equal(webglArmed(1.0, 1), false);
+  // And the middle is a genuine interpolation rather than a rounded endpoint,
+  // which is what removes the step at the fade boundary.
+  assertClose(effectiveDarkness(0.15, 0.5), 0.575, "half covered, half dark");
+  assertClose(effectiveDarkness(0.0, 0.75), 0.75, "a quarter uncovered");
+  // Monotone in coverage: more layer, less fallback, with no reversal.
+  let previous = -Infinity;
+  for (let i = 0; i <= 20; i++) {
+    const value = effectiveDarkness(0.15, i * 0.05);
+    assert.ok(value >= previous, "the handover must not reverse");
+    previous = value;
+  }
 });
 
 test("C4: the new shader-set flag bit collides with nothing", () => {
@@ -408,7 +460,7 @@ function mutate(source, from, to) {
 function wgslTermIsLive(source) {
   const code = stripLineComments(source);
   return (
-    /if \(tile\.hsbShift\.w < 1\.0 && tile\.tileControls\.w < 0\.5\) \{\n\s*color = color \* mix\(1\.0, tile\.hsbShift\.w, nightBlend\);\n\s*\}/.test(
+    /if \(tile\.hsbShift\.w < 1\.0\) \{\n\s*color = color \* mix\(1\.0, tile\.hsbShift\.w, nightBlend\);\n\s*\}/.test(
       code,
     ) && lawDarkensNight(source, WGSL_TERM_RE)
   );
@@ -435,15 +487,37 @@ function lawDarkensNight(source, regex) {
   return Math.abs(m(-1) - 0.15) <= EPSILON && Math.abs(m(1) - 1) <= EPSILON;
 }
 function defineIsReachable(renderingSource) {
-  return /surfaceShaderSetOptions\.applyNightDarkness =\s*nightDarkness < 1\.0 && !applyDayNightAlpha;/.test(
+  return /surfaceShaderSetOptions\.applyNightDarkness = effectiveNightDarkness < 1\.0;/.test(
     renderingSource,
   );
 }
 function packIsLive(tileUbSource) {
   return (
-    /data\[HSB_SHIFT_OFFSET \+ 3\] =\s*typeof nightDarkness === "number"/.test(
+    /const sanitizedNightDarkness =\s*typeof nightDarkness === "number"/.test(
       tileUbSource,
-    ) && !/data\[HSB_SHIFT_OFFSET \+ 3\] = 1\.0;/.test(tileUbSource)
+    ) &&
+    /data\[HSB_SHIFT_OFFSET \+ 3\] =\s*1\.0 \+\s*\(sanitizedNightDarkness - 1\.0\) \*/.test(
+      tileUbSource,
+    ) &&
+    !/data\[HSB_SHIFT_OFFSET \+ 3\] = 1\.0;/.test(tileUbSource)
+  );
+}
+/**
+ * The suppression half of the law, on each backend: a coverage term that can
+ * never be anything but zero leaves the fallback darkening a night side a layer
+ * is already painting, which is the double darkening this row exists to avoid.
+ * Absence mutants do not find it — every symbol is still present.
+ */
+function coverageIsLive(renderingSource, tileUbSource) {
+  return (
+    /\(1\.0 - CesiumMath\.clamp\(nightLayerCoverage, 0\.0, 1\.0\)\)/.test(
+      renderingSource,
+    ) &&
+    /nightLayerCoverage = Math\.max\(/.test(renderingSource) &&
+    /\(1\.0 - Math\.min\(Math\.max\(nightLayerCoverage, 0\.0\), 1\.0\)\)/.test(
+      tileUbSource,
+    ) &&
+    /if \(nightSideOpacity > nightLayerCoverage\) \{/.test(tileUbSource)
   );
 }
 
@@ -459,8 +533,8 @@ test("E1: ABSENCE — deleting the WGSL multiply is REJECTED", () => {
 test("E2: INERTNESS — a WGSL guard that can never open is REJECTED", () => {
   const mutant = mutate(
     wgsl,
-    "if (tile.hsbShift.w < 1.0 && tile.tileControls.w < 0.5) {",
-    "if (false && tile.hsbShift.w < 1.0 && tile.tileControls.w < 0.5) {",
+    "if (tile.hsbShift.w < 1.0) {",
+    "if (false && tile.hsbShift.w < 1.0) {",
   );
   assert.equal(wgslTermIsLive(mutant), false);
 });
@@ -510,8 +584,8 @@ test("E6: WRONG SIDE — a GLSL term on the day side is REJECTED", () => {
 test("E7: INERTNESS — a define that is derived but never true is REJECTED", () => {
   const mutant = mutate(
     tileRendering,
-    "    surfaceShaderSetOptions.applyNightDarkness =\n      nightDarkness < 1.0 && !applyDayNightAlpha;",
-    "    surfaceShaderSetOptions.applyNightDarkness =\n      false && nightDarkness < 1.0 && !applyDayNightAlpha;",
+    "    surfaceShaderSetOptions.applyNightDarkness = effectiveNightDarkness < 1.0;",
+    "    surfaceShaderSetOptions.applyNightDarkness = false;",
   );
   assert.equal(defineIsReachable(mutant), false);
 });
@@ -523,12 +597,50 @@ test("E8: INERTNESS — a pack pinned at the identity is REJECTED", () => {
   const mutant = mutate(
     tileUb,
     `  data[HSB_SHIFT_OFFSET + 3] =
-    typeof nightDarkness === "number" && Number.isFinite(nightDarkness)
-      ? Math.min(Math.max(nightDarkness, 0.0), 1.0)
-      : 1.0;`,
+    1.0 +
+    (sanitizedNightDarkness - 1.0) *
+      (1.0 - Math.min(Math.max(nightLayerCoverage, 0.0), 1.0));`,
     "  data[HSB_SHIFT_OFFSET + 3] = 1.0;",
   );
   assert.equal(packIsLive(mutant), false);
+});
+
+test("E8a: INERTNESS — a WebGL coverage term pinned at zero is REJECTED", () => {
+  // The suppression half, which absence mutants cannot reach: the scale is
+  // still computed, the define still derived, and every tile with a night
+  // layer is darkened a second time on top of the layer's own city lights.
+  const mutant = mutate(
+    tileRendering,
+    "(1.0 - CesiumMath.clamp(nightLayerCoverage, 0.0, 1.0));",
+    "(1.0 - CesiumMath.clamp(0.0, 0.0, 1.0));",
+  );
+  assert.equal(coverageIsLive(mutant, tileUb), false);
+});
+
+test("E8b: INERTNESS — a WebGPU coverage term pinned at zero is REJECTED", () => {
+  const mutant = mutate(
+    tileUb,
+    "(1.0 - Math.min(Math.max(nightLayerCoverage, 0.0), 1.0));",
+    "(1.0 - Math.min(Math.max(0.0, 0.0), 1.0));",
+  );
+  assert.equal(coverageIsLive(tileRendering, mutant), false);
+});
+
+test("E8c: INERTNESS — a coverage accumulator that never rises is REJECTED", () => {
+  // The other end of the same failure: the term is read, but nothing ever
+  // writes it, so a covering layer never suppresses anything.
+  const webgl = mutate(
+    tileRendering,
+    "        nightLayerCoverage = Math.max(",
+    "        nightLayerCoverage = Math.min(",
+  );
+  assert.equal(coverageIsLive(webgl, tileUb), false);
+  const webgpu = mutate(
+    tileUb,
+    "if (nightSideOpacity > nightLayerCoverage) {",
+    "if (false && nightSideOpacity > nightLayerCoverage) {",
+  );
+  assert.equal(coverageIsLive(tileRendering, webgpu), false);
 });
 
 test("E9: the mutants are DISCRIMINATING — the real sources pass every predicate", () => {
@@ -536,6 +648,7 @@ test("E9: the mutants are DISCRIMINATING — the real sources pass every predica
   assert.equal(glslTermIsLive(glsl), true);
   assert.equal(defineIsReachable(tileRendering), true);
   assert.equal(packIsLive(tileUb), true);
+  assert.equal(coverageIsLive(tileRendering, tileUb), true);
 });
 
 test("E10: no source file was written — every mutation was in memory", () => {

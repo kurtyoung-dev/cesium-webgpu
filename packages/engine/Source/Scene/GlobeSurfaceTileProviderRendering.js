@@ -29,6 +29,7 @@ import Pass from "../Renderer/Pass.js";
 import VertexArray from "../Renderer/VertexArray.js";
 import FeatureRendererKey from "../Renderer/FeatureRendererKey.js";
 import { createEclipseGlobeShadow } from "./EclipseGlobeShadow.js";
+import { resolveNightImageryFade } from "./GlobeNightImagery.js";
 import GlobeSurfaceTile from "./GlobeSurfaceTile.js";
 import ImageryLayer from "./ImageryLayer.js";
 import PerInstanceColorAppearance from "./PerInstanceColorAppearance.js";
@@ -1857,7 +1858,6 @@ function addDrawCommandsForTile(tileProvider, tile, frameState) {
     uniformMapProperties.lambertDiffuseMultiplier = lambertDiffuseMultiplier;
     uniformMapProperties.vertexShadowDarkness = vertexShadowDarkness;
     uniformMapProperties.terminatorGlowStrength = terminatorGlowStrength;
-    uniformMapProperties.nightDarkness = nightDarkness;
 
     const highlightFillTile =
       !defined(surfaceTile.vertexArray) &&
@@ -1961,6 +1961,12 @@ function addDrawCommandsForTile(tileProvider, tile, frameState) {
     let applyGamma = false;
     let applyAlpha = false;
     let applyDayNightAlpha = false;
+    // How much of this tile's night side the imagery stack actually covers, as
+    // the largest night-side opacity any day/night layer resolves to here. The
+    // procedural fallback below is scaled by the complement, so the night side
+    // is darkened once whether the darkening comes from a layer or from the
+    // fallback, and neither doubles the other.
+    let nightLayerCoverage = 0.0;
     let applySplit = false;
     let applyCutout = false;
     let applyColorToAlpha = false;
@@ -1991,6 +1997,21 @@ function addDrawCommandsForTile(tileProvider, tile, frameState) {
           imageryLayer._calculateTextureTranslationAndScale(tile, tileImagery);
       }
 
+      // Below the deepest level the bundled night pyramid contains, a single
+      // one of its texels covers the whole terrain tile and replaces the scene
+      // under it with one flat colour. The fade retires the layer across the
+      // last few levels where it still carries structure within a tile; once it
+      // reaches zero the layer is not packed at all, so the tile renders exactly
+      // as it would with no night layer attached and the procedural fallback
+      // takes the night side back.
+      const nightImageryFade = resolveNightImageryFade(
+        imageryLayer,
+        tileImagery,
+      );
+      if (nightImageryFade === 0.0) {
+        continue;
+      }
+
       uniformMapProperties.dayTextures[numberOfDayTextures] = texture;
       uniformMapProperties.dayTextureTranslationAndScale[numberOfDayTextures] =
         tileImagery.textureTranslationAndScale;
@@ -2019,6 +2040,13 @@ function addDrawCommandsForTile(tileProvider, tile, frameState) {
           imageryLayer,
           tileCoordinates,
         );
+      // The night layer retires with magnification; every other layer resolves
+      // a factor of exactly 1.0, so for them this multiply is the identity and
+      // the slot keeps the bytes it had. It lands before the define is derived
+      // from the slot, so the shader variant and the value it blends can never
+      // disagree.
+      uniformMapProperties.dayTextureNightAlpha[numberOfDayTextures] *=
+        nightImageryFade;
       applyDayNightAlpha =
         applyDayNightAlpha ||
         uniformMapProperties.dayTextureNightAlpha[numberOfDayTextures] !== 1.0;
@@ -2034,6 +2062,22 @@ function addDrawCommandsForTile(tileProvider, tile, frameState) {
       applyDayNightAlpha =
         applyDayNightAlpha ||
         uniformMapProperties.dayTextureDayAlpha[numberOfDayTextures] !== 1.0;
+
+      // Only a layer that asked for a day/night pair covers the night side; a
+      // pair still at (1, 1) is an ordinary layer and covers day and night
+      // alike, which is not what the fallback is the complement of. The slots
+      // are read back rather than the properties, so a callback-valued alpha
+      // and the resolution fade are both already in the number.
+      if (
+        uniformMapProperties.dayTextureDayAlpha[numberOfDayTextures] !== 1.0 ||
+        uniformMapProperties.dayTextureNightAlpha[numberOfDayTextures] !== 1.0
+      ) {
+        nightLayerCoverage = Math.max(
+          nightLayerCoverage,
+          uniformMapProperties.dayTextureNightAlpha[numberOfDayTextures] *
+            uniformMapProperties.dayTextureAlpha[numberOfDayTextures],
+        );
+      }
 
       uniformMapProperties.dayTextureBrightness[numberOfDayTextures] =
         resolveImageryLayerValue(
@@ -2235,11 +2279,18 @@ function addDrawCommandsForTile(tileProvider, tile, frameState) {
     surfaceShaderSetOptions.applyAlpha = applyAlpha;
     surfaceShaderSetOptions.applyDayNightAlpha = applyDayNightAlpha;
     // The procedural night fallback is the complement of the layer path: it
-    // runs on tiles where nothing is blending a day/night alpha, so the two
-    // are mutually exclusive per tile and the night side is darkened once.
-    // The WGSL twin conjoins the same two inputs at runtime.
-    surfaceShaderSetOptions.applyNightDarkness =
-      nightDarkness < 1.0 && !applyDayNightAlpha;
+    // supplies the share of the night side the layers leave uncovered, so the
+    // night side is darkened once and a layer that half-covers it is topped up
+    // rather than either doubled or ignored. Full coverage resolves to the
+    // multiplicative identity, which is what shuts the define, so the old
+    // boolean suppression survives as the endpoint of the same expression. The
+    // WGSL twin reads this one scaled value instead of conjoining two inputs.
+    const effectiveNightDarkness =
+      1.0 +
+      (nightDarkness - 1.0) *
+        (1.0 - CesiumMath.clamp(nightLayerCoverage, 0.0, 1.0));
+    uniformMapProperties.nightDarkness = effectiveNightDarkness;
+    surfaceShaderSetOptions.applyNightDarkness = effectiveNightDarkness < 1.0;
     surfaceShaderSetOptions.applySplit = applySplit;
     surfaceShaderSetOptions.enableFog = applyFog;
     surfaceShaderSetOptions.enableClippingPlanes = clippingPlanesEnabled;

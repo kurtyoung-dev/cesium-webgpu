@@ -617,10 +617,11 @@ void main()
 // arm. The mesh normal is not a substitute: it is absent on normal-less terrain
 // and, where it exists, carries terrain relief the terminator must not follow.
 // The second alternative is the procedural night fallback, which needs the
-// same terminator position on tiles that carry no day/night layer at all —
-// which is exactly where the first alternative is absent. The two are mutually
-// exclusive per tile by construction, so only one consumer ever reads the ramp
-// on a given tile, and the ramp itself is one expression rather than two.
+// same terminator position wherever the layers leave part of the night side
+// uncovered — every tile that carries no day/night layer, and also the tiles
+// where one has faded out with magnification. Both alternatives can be present
+// on the same tile, and the ramp is one expression rather than two, so the two
+// consumers read the same terminator position.
 #if defined(APPLY_DAY_NIGHT_ALPHA) || defined(APPLY_NIGHT_DARKNESS)
     float nightBlend = 1.0 - clamp(czm_getLambertDiffuse(czm_lightDirectionEC, normalEC) * 5.0, 0.0, 1.0);
 #else
@@ -816,8 +817,8 @@ void main()
 // disjunction, `camera.enableLighting > 0.5 || tile.tileControls.w > 0.5 ||
 // tile.hsbShift.w < 1.0`, whose second term is packed from the same per-tile
 // condition that raises this file's define and whose third is the procedural
-// night fallback below, which needs the same ramp on tiles that carry no
-// day/night layer. Conjoining the alpha with a lighting define is what
+// night fallback below, which needs the same ramp wherever the layers leave the
+// night side uncovered. Conjoining the alpha with a lighting define is what
 // previously made a dayAlpha = 0 night layer invisible everywhere WebGL took
 // the vertex-lighting arm.
 // The optional terminator appearance term below is now an exact GLSL/WGSL
@@ -829,7 +830,11 @@ void main()
 // its three shadow paths (`globeComputeShadowFactor`, `*PointLight`, `*CSM`)
 // in the source and gates them at runtime in fragmentMain.
 
-// Procedural night darkening, for globes with no night imagery. It scales the
+// Procedural night darkening, for the share of the night side that no imagery
+// layer covers. `u_nightDarkness` arrives already scaled by that share, so a
+// night layer covering the tile completely leaves the uniform at 1.0 and the
+// define unset, a layer faded out by magnification gives back the full
+// darkness, and the two hand over continuously in between. It scales the
 // composited surface, so it goes ahead of the lighting arms rather than after
 // them: every arm below is a multiply, and the terminator glow that follows is
 // an ADD, which is scattered light and must not be dimmed by ground albedo.

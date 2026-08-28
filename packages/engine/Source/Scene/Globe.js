@@ -30,6 +30,7 @@ import ImageryLayerCollection from "./ImageryLayerCollection.js";
 import TileMapServiceImageryProvider from "./TileMapServiceImageryProvider.js";
 import {
   BUNDLED_NIGHT_IMAGERY_PATH,
+  markNightImageryLayer,
   NIGHT_IMAGERY_LAYER_OPTIONS,
   NightImagerySource,
   nightImageryAction,
@@ -1535,6 +1536,11 @@ function reconcileNightImagery(globe) {
       provider,
       NIGHT_IMAGERY_LAYER_OPTIONS,
     );
+    // The resolution fade past the pyramid's deepest level belongs to the layer
+    // the globe attached on its own behalf. A layer an application built with
+    // the same day/night pair has chosen its own resolution and must render
+    // exactly what it asks for at every altitude.
+    markNightImageryLayer(layer);
     globe._nightImageryLayer = layer;
     globe._imageryLayerCollection.add(layer);
   }
