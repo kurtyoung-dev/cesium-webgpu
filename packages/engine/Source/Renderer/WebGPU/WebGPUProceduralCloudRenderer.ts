@@ -125,6 +125,7 @@ import {
   CLOUD_MARCH_EMITTED_SLOT,
   CLOUD_OWNED_ATTACHMENTS,
   cloudAttachmentsNeedAllocation,
+  cloudBindGroupsNeedRebuild,
   commitCloudAttachmentGeneration,
   createCloudAttachmentGeneration,
   packCloudAttachmentUniforms,
@@ -409,6 +410,11 @@ export interface CloudCache {
   // half-resolution or history views are reallocated, so the temporal path
   // selects by parity and allocates no bind group per frame.
   temporalBindGroups: [GPUBindGroup | null, GPUBindGroup | null];
+  /**
+   * Half-resolution view the resolve groups above were built against, so a
+   * target replaced at an unchanged size is not bound after it is destroyed.
+   */
+  temporalBindGroupSourceView: GPUTextureView | null;
   temporalUniformBuffer: GPUBuffer | null;
   temporalUniformData: Float32Array;
   temporalSampler: GPUSampler | null;
@@ -609,6 +615,8 @@ export interface CloudCache {
   temporalConsumeBindGroupLayout: GPUBindGroupLayout | null;
   /** One consuming bind group per history READ parity, as the base path has. */
   temporalConsumeBindGroups: [GPUBindGroup | null, GPUBindGroup | null];
+  /** Half-resolution view the consuming groups were built against. */
+  temporalConsumeBindGroupSourceView: GPUTextureView | null;
   /** Attachment generation the consuming bind groups were built under. */
   temporalConsumeAttachmentGeneration: number;
   /** True when the emitting march actually ran this frame. */
@@ -732,6 +740,7 @@ export function ensureCloudCache(context: CesiumGraphicsContext): CloudCache {
       temporalPipeline: null,
       temporalBindGroupLayout: null,
       temporalBindGroups: [null, null],
+      temporalBindGroupSourceView: null,
       temporalUniformBuffer: null,
       temporalUniformData: new Float32Array(TEMPORAL_UNIFORM_FLOATS),
       temporalSampler: null,
@@ -826,6 +835,7 @@ export function ensureCloudCache(context: CesiumGraphicsContext): CloudCache {
       temporalConsumePipeline: null,
       temporalConsumeBindGroupLayout: null,
       temporalConsumeBindGroups: [null, null],
+      temporalConsumeBindGroupSourceView: null,
       temporalConsumeAttachmentGeneration: 0,
       reconstructionEmittedThisFrame: false,
       reconstructionConsumedThisFrame: false,
@@ -1452,8 +1462,10 @@ function ensureTemporalResources(
     cache.temporalHeight = halfH;
     cache.temporalRead = 0;
     cache.temporalBindGroups = [null, null];
+    cache.temporalBindGroupSourceView = null;
     // The consuming groups reference the same history views.
     cache.temporalConsumeBindGroups = [null, null];
+    cache.temporalConsumeBindGroupSourceView = null;
     cache.temporalConsumeAttachmentGeneration = 0;
     // History contents are undefined after (re)allocation — seed identity next frame.
     cache.temporalFirstFrame = true;
@@ -1513,7 +1525,11 @@ function ensureTemporalResources(
     cache.temporalSampler &&
     cache.temporalHistoryView[0] &&
     cache.temporalHistoryView[1] &&
-    (!cache.temporalBindGroups[0] || !cache.temporalBindGroups[1])
+    cloudBindGroupsNeedRebuild(
+      cache.temporalBindGroups,
+      cache.temporalBindGroupSourceView,
+      cache.halfView,
+    )
   ) {
     for (let readIndex = 0; readIndex < 2; readIndex++) {
       cache.temporalBindGroups[readIndex] = device.createBindGroup({
@@ -1530,6 +1546,7 @@ function ensureTemporalResources(
         ],
       });
     }
+    cache.temporalBindGroupSourceView = cache.halfView;
   }
 
   // The consuming resolve, built alongside the base pipeline rather than
@@ -1620,8 +1637,11 @@ function ensureCloudTemporalConsumeBindGroups(
     return false;
   }
   if (
-    !cache.temporalConsumeBindGroups[0] ||
-    !cache.temporalConsumeBindGroups[1] ||
+    cloudBindGroupsNeedRebuild(
+      cache.temporalConsumeBindGroups,
+      cache.temporalConsumeBindGroupSourceView,
+      cache.halfView,
+    ) ||
     cache.temporalConsumeAttachmentGeneration !== generation
   ) {
     for (let readIndex = 0; readIndex < 2; readIndex++) {
@@ -1640,6 +1660,7 @@ function ensureCloudTemporalConsumeBindGroups(
       });
     }
     cache.temporalConsumeAttachmentGeneration = generation;
+    cache.temporalConsumeBindGroupSourceView = cache.halfView;
   }
   return (
     !!cache.temporalConsumeBindGroups[0] && !!cache.temporalConsumeBindGroups[1]
@@ -1672,6 +1693,7 @@ function releaseCloudAttachmentResources(cache: CloudCache): void {
   cache.attachmentEmitBindGroupSourceView = null;
   cache.attachmentEmitBindGroupDepthView = null;
   cache.temporalConsumeBindGroups = [null, null];
+  cache.temporalConsumeBindGroupSourceView = null;
   cache.temporalConsumeAttachmentGeneration = 0;
   cache.reconstructionEmittedThisFrame = false;
   cache.reconstructionConsumedThisFrame = false;
@@ -4393,6 +4415,7 @@ export function destroyProceduralCloudResources(
     cache.temporalPipeline = null;
     cache.temporalBindGroupLayout = null;
     cache.temporalBindGroups = [null, null];
+    cache.temporalBindGroupSourceView = null;
     cache.temporalSampler = null;
     cache.temporalHistoryState = createCloudTemporalHistoryState();
     cache.temporalHistorySample = createCloudTemporalHistorySample();

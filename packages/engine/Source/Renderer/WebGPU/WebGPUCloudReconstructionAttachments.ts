@@ -830,3 +830,42 @@ export function classifyCloudReconstructionHistory(
   }
   return CloudHistoryRejection.NONE;
 }
+
+/**
+ * Whether a bind-group pair must be rebuilt before it is submitted again.
+ *
+ * A bind group captures the texture views it was built from by identity, never
+ * by size. The half-resolution cloud target is destroyed and recreated whenever
+ * the resolved half size changes, so a pair built against one target and a
+ * target of the same dimensions allocated afterwards reference different GPU
+ * resources while comparing equal on every dimension a size check can observe.
+ *
+ * That gap is reachable. The temporal history is only re-examined on frames
+ * that run temporal reprojection, and the projection regimes that suspend it —
+ * an orthographic frustum, or a morph between scene modes — do not suspend the
+ * half-resolution march. A half-resolution target that changes size during such
+ * an excursion and changes back before it ends leaves the recorded history size
+ * matching the live one, so a size-keyed check sees nothing to do while both
+ * pairs still hold views into textures that were destroyed partway through.
+ *
+ * Presence alone is therefore not a sufficient key, and neither is size. The
+ * recorded source view is what closes the gap: it is the only thing that
+ * distinguishes a target from its own replacement.
+ *
+ * @param {ReadonlyArray<GPUBindGroup|null>} groups the pair, null where unbuilt
+ * @param {GPUTextureView|null} recordedSourceView view the pair was built from
+ * @param {GPUTextureView|null} currentSourceView view the pair would bind now
+ * @returns {boolean} true when the pair must be rebuilt before use
+ */
+export function cloudBindGroupsNeedRebuild(
+  groups: ReadonlyArray<GPUBindGroup | null>,
+  recordedSourceView: GPUTextureView | null,
+  currentSourceView: GPUTextureView | null,
+): boolean {
+  for (let i = 0; i < groups.length; i++) {
+    if (!groups[i]) {
+      return true;
+    }
+  }
+  return recordedSourceView !== currentSourceView;
+}
