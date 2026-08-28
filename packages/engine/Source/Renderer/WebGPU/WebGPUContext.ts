@@ -5248,6 +5248,10 @@ export class WebGPUContext extends GraphicsContext {
     continueFinalCleanupAfter(() => mipmapGenerator?.destroy());
 
     // Destroy advanced infrastructure singletons
+    const performanceManager = this._performanceManager;
+    this._performanceManager = null;
+    this._performanceManagerConfig = null;
+    continueFinalCleanupAfter(() => performanceManager?.destroy());
     const renderBundleManager = this._renderBundleManager;
     this._renderBundleManager = null;
     continueFinalCleanupAfter(() => renderBundleManager?.destroy());
@@ -6245,6 +6249,7 @@ export class WebGPUContext extends GraphicsContext {
   private _indirectDrawManager: WebGPUIndirectDrawManager | null = null;
   private _bufferMapper: WebGPUBufferMapper | null = null;
   private _performanceManager: WebGPUPerformanceManager | null = null;
+  private _performanceManagerConfig: PerformanceConfig | null = null;
   // Mutable bind-group state is context-owned because every cached
   // group references pages from this context's uniform allocator. Immutable
   // cameraBGL remains shared through WebGPUModelDeviceResources.
@@ -6377,7 +6382,9 @@ export class WebGPUContext extends GraphicsContext {
         this as unknown as ConstructorParameters<
           typeof WebGPUPerformanceManager
         >[0],
+        this._performanceManagerConfig ?? undefined,
       );
+      this._performanceManagerConfig = null;
     }
     return this._performanceManager;
   }
@@ -7448,6 +7455,14 @@ export class WebGPUContext extends GraphicsContext {
       )
       .register("pointCloudLOD", () => {
         this._detachPointCloudLOD()?.destroy();
+      })
+      .register("performanceManager", () => {
+        const performanceManager = this._performanceManager;
+        if (performanceManager) {
+          this._performanceManagerConfig = { ...performanceManager.config };
+          this._performanceManager = null;
+          performanceManager.destroy();
+        }
       })
       // AUDIT_2026_05_02 C.3 — register orphan caches that hold GPU
       // handles. After device-loss recovery, cached bundles / buffers /

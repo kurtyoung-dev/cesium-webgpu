@@ -35,7 +35,16 @@ import GBufferNormalsFromDepthMSAASource from "../../Shaders/WebGPU/Compute/GBuf
 
 const WORKGROUP_SIZE = 8;
 
+function tryDestroyGpuBuffer(buffer: GPUBuffer): void {
+  try {
+    buffer.destroy();
+  } catch {
+    // A lost device can reject native teardown; replacement still proceeds.
+  }
+}
+
 export interface GBufferComputeResources {
+  device: GPUDevice;
   uniformsBuffer: GPUBuffer;
   uniformsData: Float32Array;
   // Single-sample and multisample depth use separate resource sets because
@@ -70,8 +79,13 @@ export function ensureGBufferComputeResources(
   host: GBufferComputeHost,
   device: GPUDevice,
 ): GBufferComputeResources | null {
-  if (host._gbufferComputeResources) {
-    return host._gbufferComputeResources;
+  const cached = host._gbufferComputeResources;
+  if (cached?.device === device) {
+    return cached;
+  }
+  if (cached) {
+    host._gbufferComputeResources = null;
+    tryDestroyGpuBuffer(cached.uniformsBuffer);
   }
   if (!host._context.supportsComputeShaders) {
     return null;
@@ -89,6 +103,7 @@ export function ensureGBufferComputeResources(
   });
 
   host._gbufferComputeResources = {
+    device,
     uniformsBuffer,
     uniformsData,
     bindGroupLayout: null,

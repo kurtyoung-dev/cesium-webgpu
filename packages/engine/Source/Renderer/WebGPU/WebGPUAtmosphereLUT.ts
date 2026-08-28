@@ -46,6 +46,7 @@ import type { ComputeTaskTypeValue } from "./WebGPUPerformanceManager.js";
  * changes for one don't churn the other.
  */
 export interface AtmosphereLUTResources {
+  device: GPUDevice;
   transmittance: GPUTexture;
   transmittanceView: GPUTextureView;
   inscatter: GPUTexture;
@@ -92,6 +93,44 @@ export interface AtmosphereLUTResources {
   transmittanceHeight: number;
 }
 
+function tryDestroyGpuResource(resource: GPUTexture | GPUBuffer): void {
+  try {
+    resource.destroy();
+  } catch {
+    // A lost device can reject native teardown; remaining resources still drain.
+  }
+}
+
+export function destroyAtmosphereLUTResources(
+  resources: AtmosphereLUTResources | null,
+): void {
+  if (!resources) {
+    return;
+  }
+
+  const ownedResources: (GPUTexture | GPUBuffer)[] = [
+    resources.transmittance,
+    resources.inscatter,
+    resources.moonTransmittance,
+    resources.moonInscatter,
+    resources.multipleScatter,
+    resources.irradiance,
+    resources.skyView,
+    resources.paramsBuffer,
+    resources.moonParamsBuffer,
+  ];
+  for (const resource of ownedResources) {
+    tryDestroyGpuResource(resource);
+  }
+}
+
+export function shouldRebuildAtmosphereLUTResources(
+  cached: Pick<AtmosphereLUTResources, "device"> | null,
+  liveDevice: GPUDevice,
+): boolean {
+  return cached === null || cached.device !== liveDevice;
+}
+
 /**
  * Subset of `WebGPUPerformanceManager` reached by the atmosphere LUT helpers.
  * The renderer exposes these members using its underscore-public convention.
@@ -131,16 +170,19 @@ export function ensureAtmosphereLUTResources(
   // the legacy inscatter view remains unchanged.
   skyViewView: GPUTextureView;
 } | null {
-  if (host._atmosphereLutResources) {
+  const cached = host._atmosphereLutResources;
+  if (!shouldRebuildAtmosphereLUTResources(cached, device)) {
     return {
-      transmittanceView: host._atmosphereLutResources.transmittanceView,
-      inscatterView: host._atmosphereLutResources.inscatterView,
-      moonTransmittanceView: host._atmosphereLutResources.moonTransmittanceView,
-      moonInscatterView: host._atmosphereLutResources.moonInscatterView,
-      multipleScatterView: host._atmosphereLutResources.multipleScatterView,
-      skyViewView: host._atmosphereLutResources.skyViewView,
+      transmittanceView: cached!.transmittanceView,
+      inscatterView: cached!.inscatterView,
+      moonTransmittanceView: cached!.moonTransmittanceView,
+      moonInscatterView: cached!.moonInscatterView,
+      multipleScatterView: cached!.multipleScatterView,
+      skyViewView: cached!.skyViewView,
     };
   }
+  host._atmosphereLutResources = null;
+  destroyAtmosphereLUTResources(cached);
 
   // Standard LUT dimensions per Bruneton & Neyret / Hillaire conventions.
   // Transmittance is 256×64. Inscatter folds altitude and sun zenith into
@@ -225,6 +267,7 @@ export function ensureAtmosphereLUTResources(
   });
 
   host._atmosphereLutResources = {
+    device,
     transmittance,
     transmittanceView: transmittance.createView(),
     inscatter,

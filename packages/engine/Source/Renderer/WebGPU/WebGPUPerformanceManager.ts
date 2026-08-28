@@ -44,6 +44,7 @@ import {
   ensureAtmosphereLUTResources as ensureAtmosphereLUTResourcesHelper,
   dispatchAtmosphereLUT as dispatchAtmosphereLUTHelper,
   dispatchAtmosphereExtendedLUT as dispatchAtmosphereExtendedLUTHelper,
+  destroyAtmosphereLUTResources,
 } from "./WebGPUAtmosphereLUT.js";
 import type { AtmosphereLUTResources } from "./WebGPUAtmosphereLUT.js";
 import type {
@@ -255,6 +256,16 @@ const DEFAULT_CONFIG: PerformanceConfig = {
  */
 function isTileIndirectDrawRequested(value: unknown): boolean {
   return value === true || value === "auto" || value === "always";
+}
+
+function tryDestroyGpuResource(
+  resource: { destroy(): void } | null | undefined,
+): void {
+  try {
+    resource?.destroy();
+  } catch {
+    // A lost device can reject native teardown; remaining resources still drain.
+  }
 }
 
 /**
@@ -1620,6 +1631,14 @@ export class WebGPUPerformanceManager {
   }
 
   destroy(): void {
+    const atmosphereLutResources = this._atmosphereLutResources;
+    const gbufferComputeResources = this._gbufferComputeResources;
+    this._atmosphereLutResources = null;
+    this._gbufferComputeResources = null;
+
+    tryDestroyGpuResource(gbufferComputeResources?.uniformsBuffer);
+    destroyAtmosphereLUTResources(atmosphereLutResources);
+
     this._staticTileBundleKeys.clear();
     this._computePipelines.clear();
   }
