@@ -182,7 +182,7 @@ are recorded complete **inside the plan itself** and must not be re-briefed:
 
 | Row | State per the plan | Evidence |
 |---|---|---|
-| `CLT-B1` | **SUPERSEDED — do not schedule.** Only residual finding (c) survives: the vertex-normal gating split, which needs a provider with `hasVertexNormals === true` and is therefore an Ion/network lane | `:219-230` |
+| `CLT-B1` | **SUPERSEDED — do not schedule.** Residual finding (c), the vertex-normal gating split, is **DISCHARGED at Batch 1218** (`2c1c8aee24`): the WebGL day/night alpha now rides `APPLY_DAY_NIGHT_ALPHA` alone at both of its sites, so it survives `ENABLE_VERTEX_LIGHTING` and no longer needs a `hasVertexNormals === true` provider — the Ion/network lane it was waiting on is not required. Nothing in `CLT-B1` remains open | `:219-230` |
 | `CLT-B2` | **DONE — Batch 913.** The `enableNightLights = false` no-op on WebGPU is fixed: enable is carried explicitly via a new `GLOBE_UB_UNSET = -1.0` law; the `oceanFoamThreshold` sibling was a **live** instance of the same hole and was fixed in-slice; four further latent siblings fixed | `:231-242`, `:90-101` |
 | `CLT-B3` | Implementation **complete and landed**; the terminator-specific both-backend **browser acceptance remains**. Its containment should be reconciled with C12 exit-gate item 2 — same class, one owner not two | `:243-257`, `:391-392` |
 | `CLT-B4` | **COMPLETE**, acceptance met at run 3. The day/night ramp law is now **one contract on both backends** | `:258-292` |

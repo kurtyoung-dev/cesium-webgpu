@@ -58,6 +58,22 @@ be drawn by WebGPU instead of WebGL2, chosen per `Viewer` at construction time.
   their known gaps — in
   [`migration_doc/FEATURE_INVENTORY.md`](migration_doc/FEATURE_INVENTORY.md).
 
+**The night side looks like night, out of the box.** Upstream draws day imagery
+at full brightness at midnight; this fork does not. `globe.nightImagery`
+defaults to `true`, which attaches an auto-managed imagery layer over the NASA
+Black Marble night pyramid bundled with the library — 42 tiles, 132 KB, no
+network and no Cesium ion token — so a `Viewer` constructed with no options at
+all fades day imagery through the dusk ramp into city lights past the
+terminator. It does not wait for `enableLighting`: the day/night blend is driven
+by the layer's own day/night alpha pair on both backends, so an unlit globe and
+vertex-normal terrain both show it. Hand the property an `ImageryProvider` (or a
+promise to one) to substitute a higher-resolution night layer, or set it to
+`false` for byte-identical upstream behaviour. Where no night layer covers a
+tile, `globe.nightDarkness` darkens the surface procedurally along that same
+ramp — with no camera-distance fade, so midnight stays dark at street altitude
+as well as from orbit — and on WebGPU `globe.enableNightLights` treats the night
+layer as emissive so city cores glow.
+
 **Relationship to upstream.** The fork tracks
 [CesiumGS/cesium](https://github.com/CesiumGS/cesium) releases and is currently
 synced to **v1.144**. Preserving WebGL behaviour is a hard rule: upstream files
@@ -383,16 +399,17 @@ requires actually reaches the published artifacts.
 
 ### Datasets & assets
 
-| Source                                                                                                                                        | Used for                                                                     |
-| --------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
-| [NASA/GSFC Scientific Visualization Studio — The Tycho Catalog Skymap](https://svs.gsfc.nasa.gov/3572/)                                       | The star-map cube faces, and the diffuse Milky Way variant derived from them |
-| [NASA/GSFC SVS — CGI Moon Kit](https://svs.gsfc.nasa.gov/4720/)                                                                               | The lunar albedo map and the normal map derived from LOLA elevation          |
-| NASA LRO LROC team, Arizona State University — [WAC mosaic](http://wms.lroc.asu.edu/lroc/view_rdr/WAC_HAPKE_NORMALIZED)                       | The mosaic underlying that albedo map                                        |
-| ESA — Hipparcos and Tycho-2 catalogues                                                                                                        | The catalogues the star map was rendered from                                |
-| [Yale Bright Star Catalogue, 5th revised edition](https://heasarc.gsfc.nasa.gov/W3Browse/star-catalog/bsc5p.html), served by NASA HEASARC     | The bright-star catalogue the point starfield draws                          |
-| U.S. National Geospatial-Intelligence Agency — EGM2008                                                                                        | The bundled geoid undulation grid                                            |
-| [Natural Earth](https://www.naturalearthdata.com/) — 1:10m Lakes, via [natural-earth-vector](https://github.com/nvkelso/natural-earth-vector) | The inland-lake water mask                                                   |
-| NOAA — Global Forecast System                                                                                                                 | Sample wind velocity fields for the flow-field layer                         |
+| Source                                                                                                                                                                          | Used for                                                                                          |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| [NASA/GSFC Scientific Visualization Studio — The Tycho Catalog Skymap](https://svs.gsfc.nasa.gov/3572/)                                                                         | The star-map cube faces, and the diffuse Milky Way variant derived from them                      |
+| [NASA/GSFC SVS — CGI Moon Kit](https://svs.gsfc.nasa.gov/4720/)                                                                                                                 | The lunar albedo map and the normal map derived from LOLA elevation                               |
+| NASA LRO LROC team, Arizona State University — [WAC mosaic](http://wms.lroc.asu.edu/lroc/view_rdr/WAC_HAPKE_NORMALIZED)                                                         | The mosaic underlying that albedo map                                                             |
+| ESA — Hipparcos and Tycho-2 catalogues                                                                                                                                          | The catalogues the star map was rendered from                                                     |
+| [Yale Bright Star Catalogue, 5th revised edition](https://heasarc.gsfc.nasa.gov/W3Browse/star-catalog/bsc5p.html), served by NASA HEASARC                                       | The bright-star catalogue the point starfield draws                                               |
+| [NASA Earth Observatory / NOAA NGDC — Black Marble](https://eoimages.gsfc.nasa.gov/images/imagerecords/144000/144898/BlackMarble_2016_3km.jpg) (Suomi NPP VIIRS Day/Night Band) | The bundled Earth-at-night pyramid, attached by default (public domain; the credit is a courtesy) |
+| U.S. National Geospatial-Intelligence Agency — EGM2008                                                                                                                          | The bundled geoid undulation grid                                                                 |
+| [Natural Earth](https://www.naturalearthdata.com/) — 1:10m Lakes, via [natural-earth-vector](https://github.com/nvkelso/natural-earth-vector)                                   | The inland-lake water mask                                                                        |
+| NOAA — Global Forecast System                                                                                                                                                   | Sample wind velocity fields for the flow-field layer                                              |
 
 _Assembled from the attribution census run over every fork-changed file, and
 kept in step with `LICENSE.md` by `Tools/c16/verify-packaged-notices.mjs`. If a

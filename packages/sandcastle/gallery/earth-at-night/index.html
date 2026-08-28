@@ -1,6 +1,73 @@
 <style>
   @import url(../templates/bucket.css);
+  #toolbar {
+    background: rgba(42, 42, 42, 0.8);
+    padding: 4px;
+    border-radius: 4px;
+  }
+  #toolbar table td {
+    padding: 2px 6px;
+  }
+  #backendNote {
+    max-width: 22rem;
+    padding: 4px 6px;
+    font-size: 12px;
+    line-height: 1.35;
+  }
 </style>
 <div id="cesiumContainer" class="fullSize"></div>
 <div id="loadingOverlay"><h1>Loading...</h1></div>
-<div id="toolbar"></div>
+<div id="toolbar">
+  <table>
+    <tbody>
+      <tr>
+        <td>Night imagery</td>
+        <td>
+          <select data-bind="value: nightImagery">
+            <option value="bundled">Bundled Black Marble</option>
+            <option value="ion">Cesium ion asset 3812</option>
+            <option value="off">Off — procedural only</option>
+          </select>
+        </td>
+      </tr>
+      <tr>
+        <td>Night darkness</td>
+        <td>
+          <input
+            type="range"
+            min="0.05"
+            max="1"
+            step="0.01"
+            data-bind="value: nightDarkness, valueUpdate: 'input'"
+          />
+        </td>
+      </tr>
+      <tr>
+        <td>Dynamic lighting</td>
+        <td><input type="checkbox" data-bind="checked: dynamicLighting" /></td>
+      </tr>
+      <tr>
+        <td>Emissive city lights</td>
+        <td>
+          <input
+            type="checkbox"
+            data-bind="checked: enableNightLights, enable: isWebGPU"
+          />
+        </td>
+      </tr>
+      <tr>
+        <td>City-light intensity</td>
+        <td>
+          <input
+            type="range"
+            min="0"
+            max="6"
+            step="0.1"
+            data-bind="value: nightIntensity, valueUpdate: 'input', enable: isWebGPU"
+          />
+        </td>
+      </tr>
+    </tbody>
+  </table>
+  <div id="backendNote"></div>
+</div>

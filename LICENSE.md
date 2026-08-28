@@ -1445,6 +1445,16 @@ The `t5` faces are the `t5` variant, which SVS describes as *"the Milky Way is v
 
 **Terms.** As with the albedo above, this is NASA content produced by a NASA centre from data returned by a NASA mission instrument, and is not subject to copyright protection in the United States. NASA's media guidelines permit reuse without a licence fee and impose no share-alike condition; the credits are given because NASA requests attribution as a courtesy. LOLA's elevation products are distributed through the Planetary Data System without licence conditions. No third-party non-commercial-licensed data is incorporated, so the star-map entry's risk analysis does not apply here. NASA does not indemnify, and NASA's endorsement may not be implied.
 
+### Earth night-lights imagery — NASA Earth Observatory / NOAA NGDC (Black Marble)
+
+**Files:** 42 JPEG tiles totalling **131,373 bytes**, plus a 787-byte `tilemapresource.xml`, under `packages/engine/Source/Assets/Textures/BlackMarble/{0,1,2}/{x}/{y}.jpg`. This is the default night-imagery layer: `packages/engine/Source/Scene/Globe.js` attaches it through `TileMapServiceImageryProvider` whenever `Globe#nightImagery` is `true`, which is its default. Bundled offline; no tile is fetched from the network.
+
+**Product:** NASA's *Black Marble* Earth-at-night composite (Suomi NPP VIIRS Day/Night Band). The bundled pyramid is a downsampled EPSG:4326 geodetic TMS derivation — levels 0–2, 256 px tiles, JPEG quality 80, laid out exactly like `packages/engine/Source/Assets/Textures/NaturalEarthII` — of `BlackMarble_2016_3km.jpg` (SHA-256 `230aac448ae68c358be433dd518888cccb3a85ccf66f7b44326441c324ad6725`), retrieved from <https://eoimages.gsfc.nasa.gov/images/imagerecords/144000/144898/BlackMarble_2016_3km.jpg>. The derivation is reproducible with `Tools/bake-black-marble-pyramid.mjs`, which records that hash and the encoder version; the same provenance is repeated in the asset folder's own README. The full-resolution source is **not** bundled.
+
+**Terms.** This is NASA imagery: a work of the U.S. Government, not subject to copyright protection in the United States, and in the public domain. No attribution obligation and no share-alike condition attaches. NASA does not indemnify, and NASA's endorsement may not be implied.
+
+**Credit (courtesy, not a licence condition):** NASA Earth Observatory / NOAA NGDC (Suomi NPP VIIRS Black Marble).
+
 ### Geoid undulation grid — EGM2008 (NGA)
 
 **File:** `packages/engine/Source/Assets/Geoid/egm2008-0p5deg.i16` (520,594 bytes; consumed by `packages/engine/Source/Core/GeoidUndulationGrid.js` when the ocean vertical datum resolves to `GEOID` — see `packages/engine/Source/Core/VerticalDatum.js`). Fetched lazily at runtime, so applications that never enable a geoid datum never download it.
