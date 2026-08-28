@@ -277,7 +277,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
 | comment-marker-guard.mjs | other | ACTIVE | 2026-08-21 | 15 | C16 lint guard scanning engine/widgets Source for banned tracker-marker vocabulary, with a clean-list ratchet; lint-staged + one-shot modes. |
-| comment-marker-guard.spec.mjs | spec | ACTIVE | 2026-08-25 | 4 | node:test contract for the C16 marker guard: rules still match (self-test vs broken rule), scope does not overreach, ratchet honest both ways. |
+| comment-marker-guard.spec.mjs | spec | ACTIVE | 2026-08-28 | 4 | node:test contract for the C16 marker guard: rules still match (self-test vs broken rule), scope does not overreach, ratchet honest both ways. |
 | comment-only-diff.mjs | other | ACTIVE | 2026-08-16 | 6 | Binding gate of every C16 rewrite batch: strips comments from both sides of a diff to a canonical form and requires the remaining code identical. |
 | comment-only-diff.spec.mjs | spec | ACTIVE | 2026-08-16 | 1 | Mutant suite for the comment-only-diff gate: every rejected mutant is paired with the nearest legitimate edit that must be accepted. |
 | spec-anchor-sweep.mjs | other | ACTIVE | 2026-08-20 | 3 | Reports grammar, comment-only, and containment-locator anchors from spec literals against explicitly supplied source files. |
@@ -366,7 +366,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | c11-14-webgl-anisotropy-tangent-fallback.spec.mjs | spec | ACTIVE | 2026-08-21 | 0 | Executes the WebGL anisotropy tangent-frame branches extracted from the live shader and requires the tangent-less fallback to match both WebGPU anisotropy paths. |
 | c11-146-route-evidence.spec.mjs | spec | ACTIVE | 2026-08-16 | 1 | Contract + mutants for the C11-146 route-evidence policy: provenance fingerprinting, artifact assessment, first-red preservation, CLI wiring. |
 | c11-168-direct-model-ablation-policy.spec.mjs | spec | ACTIVE | 2026-08-16 | 1 | Browser-free policy + mutant suite for the C11-168 direct-model ablation causal discriminator: leg config, invocation shape, child-process handling. |
-| c11-170-perf-regression-gate.spec.mjs | spec | NO @purpose HEADER | 2026-08-27 | 1 | — |
+| c11-170-perf-regression-gate.spec.mjs | spec | NO @purpose HEADER | 2026-08-28 | 1 | — |
 | c11-188-translucent-twin-node-matrix.spec.mjs | spec | ACTIVE | 2026-08-21 | 0 | Execute the real material packer through both live call sites so the twin differs only by pass class. |
 | c11-19-globe-pipeline-name-axes.spec.mjs | spec | ACTIVE | 2026-08-21 | 0 | Execute the real globe descriptor builder and keep its diagnostic name complete without changing non-name behavior. |
 | c11-205-owner-attribution-policy.spec.mjs | spec | ACTIVE | 2026-08-16 | 2 | Contract + mutants for C11-205 owner-attribution evidence: collector, lock records, first-red decisions, pair comparability, runner wiring. |
@@ -486,7 +486,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | model-3d-tile-state-packet.spec.mjs | spec | ACTIVE | 2026-08-16 | 0 | Behavioral tests for Model3DTileStatePacket: immutable packet reuse when broad tileset state is unchanged, refresh on real change. |
 | model-camera-arena.spec.mjs | spec | ACTIVE | 2026-08-16 | 2 | Bundles the real WebGPUModelCameraArena and pins offset alignment, per-frame reset, view isolation, plus call-site routing source checks. |
 | model-device-recovery.spec.mjs | spec | ACTIVE | 2026-08-16 | 0 | Device/resource-generation recovery contracts for native Models across renderer, pipeline cache, device resources and stub texture sources. |
-| model-lazy-pick-demand.spec.mjs | spec | ACTIVE | 2026-08-20 | 4 | Contracts for lazy realization of native Model pick resources across renderer, feature-id, Model, feature table and batch texture sources. |
+| model-lazy-pick-demand.spec.mjs | spec | ACTIVE | 2026-08-28 | 4 | Contracts for lazy realization of native Model pick resources across renderer, feature-id, Model, feature table and batch texture sources. |
 | model-light-arena.spec.mjs | spec | ACTIVE | 2026-08-16 | 2 | Light-slice sibling of the camera-arena spec: pack-once-per-model-per-view light block, removal from per-primitive group-1, WGSL binding move. |
 | model-native-pipeline-stage-tax.spec.mjs | spec | ACTIVE | 2026-08-16 | 1 | Asserts which model pipeline stages are skipped when the native WebGPU renderer owns a primitive, pinning the stage-tax reduction. |
 | model-primitive-topology-sandcastle.spec.mjs | spec | ACTIVE | 2026-08-16 | 1 | Pins that the KHR primitive-restart Sandcastle demo survives the live WebGPU Viewer transform and remains valid module syntax. |
@@ -548,7 +548,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | probe-attachment-demand-registry.mjs | probe | ACTIVE | 2026-08-16 | 6 | Acceptance that the per-frame attachmentDemand record matches actual scene-FB behavior for default frame + each G-buffer consumer, observe-only. |
 | probe-b3dm-noglobe.mjs | probe | INVESTIGATION | 2026-08-16 | 4 | Minimal check that the BatchTableHierarchy b3dm tileset renders on WebGPU with the globe removed from the picture. |
 | probe-b3dm-render-edge.mjs | probe | ACTIVE | 2026-08-16 | 5 | Re-verifies the stale NEW-BG-CONSOLIDATION claim: b3dm renders non-black on Edge WebGPU and matches WebGL, ellipsoid terrain to rule out occlusion. |
-| probe-backend-isolation.mjs | probe | INVESTIGATION | 2026-08-27 | 7 | Answered 2026-07-19 maintainer questions: is a WebGL context still created in webgpu mode, and does split-screen cost what solo costs. |
+| probe-backend-isolation.mjs | probe | INVESTIGATION | 2026-08-27 | 8 | Answered 2026-07-19 maintainer questions: is a WebGL context still created in webgpu mode, and does split-screen cost what solo costs. |
 | probe-batch65-state.mjs | probe | ACTIVE | 2026-08-16 | 3 | State dump proving mercator-vs-geographic texture bind decisions stay in lock-step with cached translation/scale at 4 views. |
 | probe-bathymetry-state.mjs | probe | ACTIVE | 2026-08-16 | 2 | Boots the Sandcastle Bathymetry demo on forced-WebGPU via the renderer-override shim and dumps console/page state. |
 | probe-bb-cv-diag.mjs | probe | ACTIVE | 2026-08-16 | 3 | Reproducer measuring magenta billboard coverage in steady 3D/2D/CV, globe off — bisects the billboard quad-size parity defect vs morph gaps. |
@@ -972,7 +972,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | probe-particle-sample.mjs | probe | ACTIVE | 2026-08-16 | 2 | Runs the Particle System Sandcastle demo per backend (Viewer-override shim) and samples the canvas to check particles render on WebGPU |
 | probe-pass-counts.mjs | probe | ACTIVE | 2026-08-16 | 3 | Diagnostic: dumps per-pass command counts from frustumCommandsList on WebGPU (which Cesium passes have commands, which are empty) |
 | probe-perf-baseline.mjs | probe | INVESTIGATION | 2026-08-16 | 1 | Campaign-8 perf baseline: load-time + steady-state idle FPS, WebGL vs WebGPU, on the default globe |
-| probe-perf-regression-gate.mjs | probe | ACTIVE | 2026-08-27 | 5 | Runs the four performance diagnostics sequentially and detects the measured resource-write/churn regression class without making a certification claim. |
+| probe-perf-regression-gate.mjs | probe | ACTIVE | 2026-08-27 | 6 | Runs the four performance diagnostics sequentially and detects the measured resource-write/churn regression class without making a certification claim. |
 | probe-perinstance-diffuse.mjs | probe | ACTIVE | 2026-08-16 | 3 | Parity gate: lit PerInstanceColorAppearance luminance on WebGPU within 8% of WebGL (fixed light, top-down, shadows/fog off) |
 | probe-phase12-bugbash.mjs | probe | ACTIVE | 2026-08-16 | 6 | Gate for four B304 fixes: imagery-projection single-source, uploadImageSource observability, raySphere precision, billboard updateMode order |
 | probe-phong-render.mjs | probe | INVESTIGATION | 2026-08-16 | 2 | Bring-up diagnostic: does a lit Phong box render at all on WebGPU (brightness + device errors + scene-FB MRT state dump) |
@@ -1183,7 +1183,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | spec-cesium-viewer-dev-ui.spec.mjs | spec | ACTIVE | 2026-08-16 | 0 | CesiumViewer start contract: dev chrome built only under devUi (absent, not hidden), bare URL resolves WebGPU non-strict, fleet URLs stable. |
 | spec-cesium-viewer-loading-parity.spec.mjs | spec | ACTIVE | 2026-08-16 | 0 | Loading-presentation parity: the async WebGPU viewer path adds no chrome of its own; the page indicator hides at first rendered frame on both. |
 | spec-offline-isolation.spec.mjs | spec | ACTIVE | 2026-08-16 | 2 | C11-134: pins the external-URL classifier (fail-closed) and the online-lane quarantine so network suites skip with a reason offline. |
-| splat-pipeline-request-guard.spec.mjs | spec | ACTIVE | — | 0 | Prove stale Gaussian-splat pipeline promises cannot publish after resource invalidation. |
+| splat-pipeline-request-guard.spec.mjs | spec | ACTIVE | 2026-08-28 | 0 | Prove stale Gaussian-splat pipeline promises cannot publish after resource invalidation. |
 | star-catalog-depth.spec.mjs | spec | ACTIVE | 2026-08-16 | 3 | C12-09 acceptance for the deepened BrightStarCatalog: count/magnitude bands, MAG_CUTOFF = faintest row, no duplicates, sha256 provenance. |
 | star-point-census-live.spec.mjs | spec | ACTIVE | 2026-08-16 | 2 | Standing discriminator: the star point census was mis-calibrated for live frames (strict local-max tie at the NDC-origin pixel corner). |
 | starfield-psf.spec.mjs | spec | ACTIVE | 2026-08-16 | 4 | C12-05..08 analytic acceptance: CPU reference of the Moffat core+wing PSF and linear-Pogson mapping; WGSL/GLSL constant lockstep. |
@@ -1338,7 +1338,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | ocean-tide-datum-model.mjs | lib | ACTIVE | 2026-08-16 | 5 | Published NOAA/ephemeris constants plus verdict logic accepting the geoid-anchor defect fix and the equilibrium-tide feature together. |
 | owned-resource-transaction.mjs | lib | ACTIVE | 2026-08-16 | 2 | Dependency-free browser-safe helper that swaps an explicitly-owned resource transactionally (rollback on install failure, exactly-once destroy). |
 | page-scope-closure.mjs | lib | ACTIVE | 2026-08-25 | 3 | Source-text analyzer finding bindings referenced inside a page.evaluate-family callback but declared outside it; fails closed on anything it cannot parse. |
-| perf-metric-vector.mjs | lib | ACTIVE | 2026-08-27 | 5 | Builds and adjudicates the C11-170 multi-metric resource-write vector - churn call counts, self time, wall-clock dispersion, allocation and memory - so that no performance verdict rests on one number. |
+| perf-metric-vector.mjs | lib | ACTIVE | 2026-08-28 | 5 | Builds and adjudicates the C11-170 multi-metric resource-write vector - churn call counts, self time, wall-clock dispersion, allocation and memory - so that no performance verdict rests on one number. |
 | performance-campaign-utils.mjs | lib | ACTIVE | 2026-08-16 | 12 | Statistics/diff toolkit for the performance campaign: percentiles, counter-label diffs, run quality/stability, pacing and evidence summaries. |
 | performance-viewer-url.mjs | lib | ACTIVE | 2026-08-16 | 5 | One-function helper building the offline CesiumViewer URL with the renderer query param for performance runs. |
 | performance-workload-manifest.mjs | lib | ACTIVE | 2026-08-16 | 4 | AJV draft-07 validation of the performance workload manifest against the checked-in schema, shared so contract and runner accept one shape. |

@@ -649,8 +649,24 @@ export function executeBatchIndirect(
       try {
         executeWebGPUCommand(head, scene, context, passState);
       } catch (e: unknown) {
-        // ignored — head will simply be missing from the frame
-        void e;
+        // A run of one still failed to draw, so report it through the same
+        // deduped channel as the non-batchable head above. Swallowing it here
+        // made an identical throw silent at every log level purely because
+        // the command happened not to merge with a neighbour.
+        const warned = _getWarnedCommands(context);
+        const label =
+          head?.owner?.constructor?.name ??
+          head?.constructor?.name ??
+          "unknown";
+        const msg = (e as Error).message;
+        const key = `${label}:${msg?.substring(0, 60)}`;
+        if (!warned.has(key)) {
+          warned.add(key);
+          context.log?.(
+            "warn",
+            `Indirect path command failed (${label}): ${msg}`,
+          );
+        }
       }
       runStart = runEnd;
       continue;
@@ -1526,6 +1542,16 @@ export class WebGPUSceneRenderer {
         viewport?: { x: number; y: number; width: number; height: number };
       }
     ).viewport;
+    // Bound against the LIVE canvas, not the cached resource pair. The cache
+    // is republished by `_ensureResources`, which runs later in this same
+    // method, so on the first frame after a resize it still holds the
+    // previous extent — too large after a shrink, which is precisely the
+    // overrun this clamp exists to prevent. `prepareFrame` has already
+    // rebuilt the scene framebuffer at the current canvas size by this point.
+    const clampCanvas: HTMLCanvasElement | OffscreenCanvas | undefined =
+      context._canvas;
+    const clampWidth = clampCanvas?.width ?? this._width;
+    const clampHeight = clampCanvas?.height ?? this._height;
     if (vp) {
       this._viewportX = Math.max(0, vp.x | 0);
       this._viewportY = Math.max(0, vp.y | 0);
@@ -1537,17 +1563,17 @@ export class WebGPUSceneRenderer {
       // writes nothing this frame and recovers next.
       this._viewportWidth = Math.max(
         0,
-        Math.min(this._width - this._viewportX, vp.width | 0),
+        Math.min(clampWidth - this._viewportX, vp.width | 0),
       );
       this._viewportHeight = Math.max(
         0,
-        Math.min(this._height - this._viewportY, vp.height | 0),
+        Math.min(clampHeight - this._viewportY, vp.height | 0),
       );
     } else {
       this._viewportX = 0;
       this._viewportY = 0;
-      this._viewportWidth = this._width;
-      this._viewportHeight = this._height;
+      this._viewportWidth = clampWidth;
+      this._viewportHeight = clampHeight;
     }
 
     // --- PICK PASS: Render to pick framebuffer ---
@@ -2228,30 +2254,7 @@ export class WebGPUSceneRenderer {
     this._lastContext = context as WebGPUContext;
     const commands = frustumCommands.commands[Pass.OPAQUE];
     const count: number = frustumCommands.indices[Pass.OPAQUE];
-    if (count === 0) {
-      return;
-    }
-    context.uniformState?.updatePass(Pass.OPAQUE);
 
-    // Threshold-gated GPU culling is reserved for very large opaque batches.
-    // CPU culling already runs upstream in `Scene.updateFrameState`,
-    // but at the 10K-instance scale the GPU-side fine-grained re-test
-    // (frustum from gpuCuller, occlusion from HiZ) still cuts draw-
-    // call dispatch. The 1-frame readback latency is acceptable at
-    // high densities — visibility doesn't flip frame-to-frame fast
-    // enough for popping to be visible. Below the gpuCuller threshold
-    // (count < 256) every helper returns the input array untouched,
-    // so this path is a no-op for typical scenes.
-    //
-    // Pick passes skip GPU culling and hierarchical-Z filtering. Picking must
-    // test every command the CPU
-    // pass produced, including ones GPU culling would mark as
-    // occluded — users can pick objects that are visually behind
-    // others (e.g., through transparent overlays). Mismatching the
-    // filter sets between render and pick produces ghost picks where
-    // a visually-clicked pixel maps to the wrong (or no) feature.
-    let activeCommands = commands as CesiumAnyDrawCommand[];
-    let activeCount = count;
     // Run frame-start bookkeeping at the top of every opaque pass, even when
     // the GPU cull gate is closed. This serves two purposes:
     //   1. Reset stats accumulators when frustum 0 starts a new
@@ -2288,6 +2291,31 @@ export class WebGPUSceneRenderer {
       trimMap(this._gpuSortActiveByFrustum);
       trimMap(this._lastCullResultsByFrustum);
     }
+
+    if (count === 0) {
+      return;
+    }
+    context.uniformState?.updatePass(Pass.OPAQUE);
+
+    // Threshold-gated GPU culling is reserved for very large opaque batches.
+    // CPU culling already runs upstream in `Scene.updateFrameState`,
+    // but at the 10K-instance scale the GPU-side fine-grained re-test
+    // (frustum from gpuCuller, occlusion from HiZ) still cuts draw-
+    // call dispatch. The 1-frame readback latency is acceptable at
+    // high densities — visibility doesn't flip frame-to-frame fast
+    // enough for popping to be visible. Below the gpuCuller threshold
+    // (count < 256) every helper returns the input array untouched,
+    // so this path is a no-op for typical scenes.
+    //
+    // Pick passes skip GPU culling and hierarchical-Z filtering. Picking must
+    // test every command the CPU
+    // pass produced, including ones GPU culling would mark as
+    // occluded — users can pick objects that are visually behind
+    // others (e.g., through transparent overlays). Mismatching the
+    // filter sets between render and pick produces ghost picks where
+    // a visually-clicked pixel maps to the wrong (or no) feature.
+    let activeCommands = commands as CesiumAnyDrawCommand[];
+    let activeCount = count;
 
     // Each frustum keeps its own hysteresis state so
     // a 3-frustum scene with (2400, 500, 800) commands no longer
