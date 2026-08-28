@@ -82,6 +82,7 @@
  * @module WebGPUDevicePool
  */
 
+import { markDeviceLost } from "./WebGPUDeviceInvalidationBus.js";
 import { WebGPUFeatureFlags, DESIRED_FEATURES } from "./WebGPUFeatureFlags.js";
 import { RendererInitializationError } from "../RendererType.js";
 
@@ -488,16 +489,22 @@ export class WebGPUDevicePool {
     // capability sets.
     //
     // Acknowledged race window: between the browser's internal
-    // device-loss decision and the resolution of `device.lost`
-    // (microtask), `isLost` reads false. A concurrent `acquireDevice`
-    // landing in this window grabs the dying device as a sharing
-    // candidate. WebGPU's API gives no synchronous "device dying"
-    // signal; the lost Promise IS the only signal and it resolves on
-    // the microtask queue. In practice the window is sub-microsecond
-    // (Promises resolve before subsequent JS turns) and the affected
-    // context's own `device.lost` handler will trigger recovery the
-    // next tick. We accept the window as an unfixable artifact of the
-    // WebGPU async loss model.
+    // device-loss decision and the resolution of `device.lost`, `isLost`
+    // reads false. A concurrent `acquireDevice` landing in this window grabs
+    // the dying device as a sharing candidate. WebGPU's API gives no
+    // synchronous "device dying" signal; the lost Promise IS the only signal
+    // the specification defines.
+    //
+    // The window is NOT sub-microsecond, which an earlier reading of this
+    // assumed. On a real GPU-process termination the implementation keeps the
+    // handle alive while it tears down: measured on Chromium/Windows, pipeline
+    // creation on the dead device began rejecting 1.7 s before the lost
+    // promise settled. The earliest in-page evidence is therefore a
+    // non-validation rejection from a creation call, which the pipeline caches
+    // publish as a suspicion; see `markDeviceSuspect`. Sharing decisions still
+    // wait for the promise - a suspicion is not grounds for refusing to hand
+    // out a device - so the window remains, now with its real duration
+    // recorded.
     if (this._primaryDevice && !this._primaryDevice.isLost) {
       const featureLevelMatches =
         this._primaryDevice.featureLevel === requestedFeatureLevel;
@@ -850,6 +857,12 @@ export class WebGPUDevicePool {
     // correct since the underlying GPUDevice is already destroyed by
     // the browser).
     device.lost.then((info) => {
+      // The pool's own `isLost` answers "may this device still be shared".
+      // The registry answers "may anything still be built on it", which
+      // producers that never see a `PooledDevice` also need. A pooled device
+      // that reaches loss through the pool alone - no context recovering on it
+      // - is published here rather than only in the recovery handler.
+      markDeviceLost(device);
       pooled.isLost = true;
       pooled.lostReason = info.message;
       if (!pooled.isIntentionallyDestroyed) {

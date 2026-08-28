@@ -11,6 +11,13 @@
  */
 
 import type { AsyncResourceMonitor } from "./AsyncResourceMonitor.js";
+import {
+  clearDeviceSuspect,
+  isDeviceFailureSignal,
+  isDeviceLost,
+  isDeviceSuspect,
+  markDeviceSuspect,
+} from "./WebGPUDeviceInvalidationBus.js";
 
 /**
  * Stable integer identity for GPU objects that participate in pipeline
@@ -438,6 +445,10 @@ export class WebGPURenderPipelineCache {
   // null (e.g., test harnesses that construct the cache standalone),
   // the cache still works — just without the wakeup signal.
   private monitor: AsyncResourceMonitor | null;
+  // One line per cache is enough to attribute a dead-device refusal. The
+  // scene keeps requesting pipelines every frame for as long as recovery
+  // takes, so an unthrottled report would bury the loss itself.
+  private lostDeviceRefusalReported = false;
 
   // Statistics
   private stats = {
@@ -632,6 +643,13 @@ export class WebGPURenderPipelineCache {
     descriptor: WebGPURenderPipelineDescriptor,
     variant?: PipelineVariant,
   ): void {
+    // Speculative work is the one thing that can be dropped on a suspicion
+    // rather than a fact: nothing on screen is waiting for it, and the next
+    // frame asks again. A device that is known lost, or that just failed the
+    // way a dying device fails, gets no pre-cooking.
+    if (isDeviceLost(this.device) || isDeviceSuspect(this.device)) {
+      return;
+    }
     const key = this.generateCacheKey(descriptor, variant);
     if (this.cache.has(key) || this.pendingPipelines.has(key)) {
       return;
@@ -712,6 +730,25 @@ export class WebGPURenderPipelineCache {
     descriptor: WebGPURenderPipelineDescriptor,
     variant?: PipelineVariant,
   ): Promise<GPURenderPipeline> {
+    // A lost device still accepts creation calls and still rejects them, one
+    // per request, for as long as the scene keeps drawing - which is until
+    // recovery publishes a replacement, not until the loss is noticed. Refuse
+    // here instead: callers already handle a rejection from this path, and the
+    // work they skip is work that could not have succeeded.
+    if (isDeviceLost(this.device)) {
+      if (!this.lostDeviceRefusalReported) {
+        this.lostDeviceRefusalReported = true;
+        console.error(
+          `${this.logPrefix} Device lost - refusing pipeline creation ` +
+            `(first refusal: "${descriptor.name}"). Pipelines resume on the ` +
+            `replacement device.`,
+        );
+      }
+      throw new Error(
+        `Cannot create pipeline "${descriptor.name}": the GPUDevice is lost.`,
+      );
+    }
+
     const pipelineDescriptor = this.buildPipelineDescriptor(
       descriptor,
       variant,
@@ -721,8 +758,18 @@ export class WebGPURenderPipelineCache {
       // Use async pipeline creation for better performance
       const pipeline =
         await this.device.createRenderPipelineAsync(pipelineDescriptor);
+      // A completed creation is proof the device is answering, which is the
+      // only evidence that withdraws an earlier suspicion.
+      clearDeviceSuspect(this.device);
       return pipeline;
     } catch (error) {
+      // A validation rejection describes the descriptor or the shader and
+      // would happen on any device. Anything else is the device answering
+      // badly, and on a GPU-process termination it is the first thing the page
+      // sees - well before the lost promise settles.
+      if (isDeviceFailureSignal(error)) {
+        markDeviceSuspect(this.device);
+      }
       console.error(
         `${this.logPrefix} Failed to create pipeline "${descriptor.name}":`,
         error,

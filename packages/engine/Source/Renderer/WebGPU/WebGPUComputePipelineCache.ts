@@ -59,6 +59,12 @@
  */
 
 import type { AsyncResourceMonitor } from "./AsyncResourceMonitor.js";
+import {
+  clearDeviceSuspect,
+  isDeviceFailureSignal,
+  isDeviceLost,
+  markDeviceSuspect,
+} from "./WebGPUDeviceInvalidationBus.js";
 import { webgpuObjectIdentity } from "./WebGPURenderPipelineCache.js";
 
 /**
@@ -129,6 +135,8 @@ export class WebGPUComputePipelineCache {
   private logPrefix: string;
   // See the render-pipeline cache for the wakeup-event rationale.
   private monitor: AsyncResourceMonitor | null;
+  // Throttle to one report per cache; see the render-pipeline cache.
+  private lostDeviceRefusalReported = false;
 
   // Layout-identity table: maps a `GPUPipelineLayout` (or the literal
   // string "auto") to a stable integer the cache key can include. Built
@@ -315,6 +323,29 @@ export class WebGPUComputePipelineCache {
   private async createPipelineAsync(
     descriptor: WebGPUComputePipelineDescriptor,
   ): Promise<GPUComputePipeline> {
+    // A lost device rejects every creation it is handed, one per request, for
+    // as long as consumers keep asking. Refuse before the call so the loss
+    // costs one rejection per request rather than a round trip to a wire whose
+    // backing process is gone.
+    //
+    // `getOrCreateSync` deliberately keeps no such guard: its signature has no
+    // failure channel, and throwing from a synchronous call site mid-frame
+    // would turn a degraded frame into a broken one. It creates at most one
+    // pipeline per key, and the cache is dropped on recovery.
+    if (isDeviceLost(this.device)) {
+      if (!this.lostDeviceRefusalReported) {
+        this.lostDeviceRefusalReported = true;
+        console.error(
+          `${this.logPrefix} Device lost - refusing pipeline creation ` +
+            `(first refusal: "${descriptor.name}"). Pipelines resume on the ` +
+            `replacement device.`,
+        );
+      }
+      throw new Error(
+        `Cannot create pipeline "${descriptor.name}": the GPUDevice is lost.`,
+      );
+    }
+
     const gpuDesc: GPUComputePipelineDescriptor = {
       label: descriptor.name,
       layout: descriptor.layout,
@@ -327,8 +358,14 @@ export class WebGPUComputePipelineCache {
 
     try {
       const pipeline = await this.device.createComputePipelineAsync(gpuDesc);
+      clearDeviceSuspect(this.device);
       return pipeline;
     } catch (error) {
+      // Same reading as the render cache: a validation rejection is about the
+      // shader, anything else is about the device.
+      if (isDeviceFailureSignal(error)) {
+        markDeviceSuspect(this.device);
+      }
       console.error(
         `${this.logPrefix} Failed to create pipeline "${descriptor.name}":`,
         error,

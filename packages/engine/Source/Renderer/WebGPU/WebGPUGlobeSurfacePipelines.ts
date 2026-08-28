@@ -24,6 +24,7 @@
  * @module WebGPUGlobeSurfacePipelines
  */
 
+import { isDeviceLost } from "./WebGPUDeviceInvalidationBus.js";
 import { ShaderDefine } from "./WebGPUShaderDefines.js";
 import { buildGlobePipelineCacheKey } from "./WebGPUGlobeSurfacePipelineKey.js";
 import {
@@ -626,7 +627,13 @@ export function resolveGlobePipelineEntry(
     }
     return null;
   }
-  // Fallback — direct synchronous creation.
+  // Fallback — direct synchronous creation. Skipped on a lost device: the
+  // caller already treats a null pipeline as "not ready this frame" and omits
+  // the tile, which is the same degradation an uncompiled variant produces.
+  if (isDeviceLost(host._device)) {
+    entry.pending = false;
+    return null;
+  }
   entry.pipeline = host._device!.createRenderPipeline(
     descriptorToGPU(entry.descriptor),
   );
@@ -671,7 +678,9 @@ export function resolveCapturePipelineEntrySync(
     }
   }
   // Not cached → build synchronously so this capture frame can draw terrain.
-  if (!host._device) {
+  // A lost device reads the same as an absent one here: the capture face keeps
+  // the sky-only composite until a live device can draw terrain into it.
+  if (!host._device || isDeviceLost(host._device)) {
     return null;
   }
   entry.pipeline = host._device.createRenderPipeline(
@@ -972,7 +981,7 @@ export function selectPickPipeline(
   // central cache is present, and is cheap here: the WGSL module is already
   // compiled for the color pipeline, so this only assembles the pipeline
   // object, once per variant, cached in `entry.pipeline`.
-  if (!entry.pipeline && host._device) {
+  if (!entry.pipeline && host._device && !isDeviceLost(host._device)) {
     try {
       entry.pipeline = host._device.createRenderPipeline(
         descriptorToGPU(entry.descriptor),

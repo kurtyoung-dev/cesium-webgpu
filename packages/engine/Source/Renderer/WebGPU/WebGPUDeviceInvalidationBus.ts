@@ -37,6 +37,119 @@ export function shouldRebuildForDevice(
   );
 }
 
+/**
+ * Devices whose `lost` promise has resolved.
+ *
+ * WebGPU publishes loss only as a promise, so nothing in the engine can ask
+ * synchronously whether the device it is about to record work against is still
+ * alive. Between the loss and the moment recovery publishes a replacement,
+ * every producer that reads `context.device` still sees a handle that looks
+ * usable, and keeps allocating against it. One shared registry lets the first
+ * subsystem to observe the loss answer that question for all of them.
+ *
+ * A `WeakSet` holds the entry no longer than the device itself, and a
+ * replacement device is simply absent from it, so the answer flips back the
+ * instant recovery swaps the handle - no flag to clear and no epoch to bump.
+ */
+const lostDevices = new WeakSet<GPUDevice>();
+
+/**
+ * Devices that have failed an operation the way a dying device fails, keyed to
+ * when they last did so.
+ *
+ * A GPU-process termination is visible to pipeline creation well before
+ * `device.lost` settles: the create rejects with a non-validation error while
+ * the lost promise is still pending. That rejection is the earliest signal the
+ * page has, but it is a suspicion rather than a fact - a driver can reject one
+ * create and stay healthy - so it expires after
+ * {@link DEVICE_SUSPECT_WINDOW_MS} and any success clears it. Nothing that
+ * rendering depends on may be gated on it; only speculative work.
+ */
+const suspectDevices = new WeakMap<GPUDevice, number>();
+
+/**
+ * How long one unexplained failure keeps a device under suspicion. Long enough
+ * to cover the observed gap between the first dead-device rejection and the
+ * lost promise settling, short enough that a false positive costs at most one
+ * skipped round of speculative pre-cooking.
+ */
+export const DEVICE_SUSPECT_WINDOW_MS = 1000;
+
+/**
+ * Record that a device is gone. Called from every `device.lost` handler,
+ * before any other work, so the answer is available to producers running in
+ * the same task as the handler.
+ */
+export function markDeviceLost(device: GPUDevice | null | undefined): void {
+  if (device) {
+    lostDevices.add(device);
+  }
+}
+
+/**
+ * Whether `device` has been reported lost. A missing device reads as not
+ * lost: absence of a device is a separate condition callers already test, and
+ * conflating the two would make a not-yet-initialized context look broken.
+ */
+export function isDeviceLost(device: GPUDevice | null | undefined): boolean {
+  return device !== null && device !== undefined && lostDevices.has(device);
+}
+
+/**
+ * Flag a device that just failed in a way a live device does not. Ignored once
+ * the device is known lost - the stronger fact is already recorded.
+ */
+export function markDeviceSuspect(
+  device: GPUDevice | null | undefined,
+  nowMs: number = Date.now(),
+): void {
+  if (device && !lostDevices.has(device)) {
+    suspectDevices.set(device, nowMs);
+  }
+}
+
+/** Withdraw suspicion. Any successful operation on the device clears it. */
+export function clearDeviceSuspect(device: GPUDevice | null | undefined): void {
+  if (device) {
+    suspectDevices.delete(device);
+  }
+}
+
+/**
+ * Whether `device` failed recently enough that speculative work should wait.
+ * Expiry is evaluated on read rather than by a timer so the registry owns no
+ * scheduling and a page that stops rendering leaves nothing pending.
+ */
+export function isDeviceSuspect(
+  device: GPUDevice | null | undefined,
+  nowMs: number = Date.now(),
+): boolean {
+  if (!device) {
+    return false;
+  }
+  const since = suspectDevices.get(device);
+  if (since === undefined) {
+    return false;
+  }
+  if (nowMs - since >= DEVICE_SUSPECT_WINDOW_MS) {
+    suspectDevices.delete(device);
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Whether a rejected GPU operation implicates the device rather than the work
+ * submitted to it. A `GPUPipelineError` with reason `"validation"` means the
+ * descriptor or the shader is wrong and would fail on any device; everything
+ * else - an internal pipeline error, a bare `Error` from a wire that has lost
+ * its backing process - is a statement about the device.
+ */
+export function isDeviceFailureSignal(error: unknown): boolean {
+  const reason = (error as { reason?: unknown } | null | undefined)?.reason;
+  return reason !== "validation";
+}
+
 export class WebGPUDeviceInvalidationBus {
   private listeners = new Set<() => void>();
   private contextIdProvider: () => string | undefined;

@@ -101,7 +101,10 @@ import {
 // `WebGPUContextWebGLStubInit.ts`.
 import { createWebGLCompatibilityStub } from "./WebGLCompatibilityStub.js";
 import { buildWebGLCompatibilityStubFor } from "./WebGPUContextWebGLStubInit.js";
-import { WebGPUDeviceInvalidationBus } from "./WebGPUDeviceInvalidationBus.js";
+import {
+  isDeviceLost,
+  WebGPUDeviceInvalidationBus,
+} from "./WebGPUDeviceInvalidationBus.js";
 import { WebGPUResourceCacheRegistry } from "./WebGPUResourceCacheRegistry.js";
 import { WebGPUFeatureFlags } from "./WebGPUFeatureFlags.js";
 import { WebGPUDevicePool } from "./WebGPUDevicePool.js";
@@ -2011,9 +2014,45 @@ export class WebGPUContext extends GraphicsContext {
     return this._isDestroyed;
   }
 
-  /** Rendering is unavailable before or after physical context teardown. */
+  /**
+   * Rendering is unavailable before or after physical context teardown, and
+   * for as long as the device this context holds is the one that was lost.
+   *
+   * A recovery in progress leaves `_isDestroyed` and `_isTerminallyLost`
+   * false - it is trying to succeed - and leaves `_device` pointing at the
+   * dead handle until it has a replacement to publish. Without the identity
+   * term, every frame between the loss and that replacement records a whole
+   * scene, allocates against it and submits it to a device whose backing
+   * process is gone, for as long as recovery takes.
+   *
+   * The term clears itself. Recovery publishes the replacement device before
+   * it re-initializes anything on it, so the promotion hooks and every frame
+   * after them read available again with no flag to reset.
+   */
   private get _isDeviceUnavailable(): boolean {
-    return this._isDestroyed || this._isTerminallyLost;
+    return (
+      this._isDestroyed || this._isTerminallyLost || isDeviceLost(this._device)
+    );
+  }
+
+  /**
+   * Report the first frame declined for each lost device. Keyed on the device
+   * rather than a boolean so a second loss in the same session is reported
+   * again; throttled because the scene keeps asking for frames throughout
+   * recovery and an unthrottled line would bury the loss that caused it.
+   */
+  private _lostDeviceFrameReportedFor: GPUDevice | null = null;
+
+  private _reportDeclinedFrameOnLostDevice(): void {
+    const device = this._device;
+    if (!device || this._lostDeviceFrameReportedFor === device) {
+      return;
+    }
+    this._lostDeviceFrameReportedFor = device;
+    console.error(
+      `[CesiumJS:webgpu:${this._id}] Device lost - declining frames until ` +
+        `recovery publishes a replacement device.`,
+    );
   }
 
   /**
@@ -2066,6 +2105,15 @@ export class WebGPUContext extends GraphicsContext {
    * ```
    */
   beginFrame(): void {
+    // A lost device is neither a caller error nor a destroyed context. The
+    // scene keeps driving frames while recovery runs, and each one has to be
+    // declined rather than thrown at: the debug branch below would turn every
+    // frame of the recovery window into an exception out of the render loop.
+    if (isDeviceLost(this._device)) {
+      this._reportDeclinedFrameOnLostDevice();
+      return;
+    }
+
     if (this._isDeviceUnavailable) {
       //>>includeStart('debug', pragmas.debug);
       throw new DeveloperError(
@@ -2454,10 +2502,15 @@ export class WebGPUContext extends GraphicsContext {
     target: WebGPUPassTarget = "external",
   ): GPURenderPassEncoder | null {
     if (!this._currentCommandEncoder) {
-      this.log(
-        "warn",
-        "beginRenderPass: No command encoder — call beginFrame() first",
-      );
+      // Declining the frame is the expected state while the device is lost,
+      // and every pass of every declined frame arrives here. The loss is
+      // already reported once; repeating it per pass would bury it.
+      if (!isDeviceLost(this._device)) {
+        this.log(
+          "warn",
+          "beginRenderPass: No command encoder — call beginFrame() first",
+        );
+      }
       return null;
     }
 

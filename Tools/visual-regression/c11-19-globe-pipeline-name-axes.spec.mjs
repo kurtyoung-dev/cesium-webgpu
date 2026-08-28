@@ -142,6 +142,10 @@ function getClipDistancesShaderModuleHelper(host, defines) {
 }
 const buildGlobePipelineCacheKey = (options) => JSON.stringify(options);
 const descriptorToGPU = (d) => d;
+// The extracted selectors consult the device-liveness registry before any
+// direct creation. This suite is about descriptor naming, so the fake devices
+// it drives are always live; liveness has its own suite.
+const isDeviceLost = () => false;
 ${functionSource}
 ${pickFunctionSource}
 ${globePickFunctionSource}

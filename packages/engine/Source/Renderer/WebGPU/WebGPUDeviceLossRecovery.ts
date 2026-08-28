@@ -12,6 +12,7 @@
 
 /// <reference types="@webgpu/types" />
 
+import { markDeviceLost } from "./WebGPUDeviceInvalidationBus.js";
 import { WebGPUDevicePool } from "./WebGPUDevicePool.js";
 
 // ============================================================================
@@ -278,6 +279,15 @@ export class WebGPUDeviceLossRecovery {
    */
   setupHandler(device: GPUDevice): void {
     device.lost.then((info: GPUDeviceLostInfo) => {
+      // First, before any branch that can return: every producer that still
+      // holds this handle - the pipeline caches, the frame gate, the renderers
+      // reached through the context - decides what to do by asking whether it
+      // is lost. Publishing it here means none of them can record work against
+      // it in the tasks that follow, including the terminal paths below, where
+      // recovery never runs and the handle would otherwise look usable until
+      // teardown finishes.
+      markDeviceLost(device);
+
       const reason = (info.reason as string) ?? "unknown";
       const message = info.message ?? "Device lost";
 
