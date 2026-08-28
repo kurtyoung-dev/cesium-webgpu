@@ -421,6 +421,19 @@ rows in particular need their acceptance derived from the *behaviour*, not from 
 
 ## 8. What this document does NOT know
 
+**How this document was verified  and where that verification stops.** Every commit hash
+cited here was resolved with `git log --no-walk` and its subject checked against the row it
+is attributed to (26 hashes, all resolving  including one, `f7c617304d`, whose subject
+carries a stale pre-renumbering ID, which is why the queue and not the subject is the
+warrant). The load-bearing status quotes were read at their cited lines. Source claims 
+the corona sweep, `enableNightSkyDimming`, the unminted `CLT-C6` rows  were re-derived
+against current code. **What did not happen: an independent adversarial fact-check by a
+second reviewer.** That round was dispatched and did not return. So these citations have had
+one careful pass, not two  and a single reviewer checking their own document is exactly the
+weaker form this fork's own instrument doctrine warns about. It is also how the `CLT-C4`
+error survived into the first draft. Treat the citations as good leads that have been
+checked once.
+
 **Not verified because it needs a machine lane:**
 
 - **No measurement was taken for this refresh.** No build, no browser, no probe was run. Every

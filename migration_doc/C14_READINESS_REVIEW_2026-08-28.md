@@ -489,6 +489,17 @@ their evidence. No implementation.
 
 Written so the next reader does not mistake this review's confidence for coverage.
 
+**How this document was verified  and where that verification stops.** Every commit hash
+cited here was resolved with `git log --no-walk` and its subject checked against the row it
+is attributed to (26 hashes, all resolving). The load-bearing status quotes were read at
+their cited lines, and six ruling citations were corrected after the first draft put them on
+the wrong lines. Code claims were re-derived by reading the current source, not by trusting
+the 2026-07-24 plan. **What did not happen: an independent adversarial fact-check by a second
+reviewer.** That round was dispatched and did not return. So these citations have had one
+careful pass, not two  and a single reviewer checking their own document is exactly the
+weaker form this fork's own instrument doctrine warns about. Treat the citations as good
+leads that have been checked once.
+
 **Not verified because it needs a machine lane (browser/hardware):**
 
 - Every performance number in the plan and in this document is either historical or
