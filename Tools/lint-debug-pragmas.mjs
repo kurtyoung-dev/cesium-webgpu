@@ -37,12 +37,13 @@ const SCAN_DIR = path.join(
 const args = new Set(process.argv.slice(2));
 const emitJson = args.has("--json");
 
-// console methods that must be pragma-wrapped. console.error is intentionally
-// excluded — real errors must always reach the console.
-const FLAGGED_METHODS = ["log", "warn", "debug", "info"];
+// Include console.error in the match so its permanent policy is an explicit,
+// testable branch rather than an omission from the expression.
+const CONSOLE_METHODS = ["log", "warn", "debug", "info", "error"];
 const CONSOLE_RE = new RegExp(
-  `\\bconsole\\.(?:${FLAGGED_METHODS.join("|")})\\s*\\(`,
+  `\\bconsole\\.(${CONSOLE_METHODS.join("|")})\\s*\\(`,
 );
+const ALLOW_MARKER_RE = /^\s*\/\/\s*lint-debug-pragmas-allow\b/;
 
 const PRAGMA_START_RE =
   /\/\/>>includeStart\(\s*['"]debug['"]\s*,\s*pragmas\.debug\s*\)/;
@@ -62,7 +63,7 @@ async function collectFiles(dir) {
   return out;
 }
 
-function findOffenders(source, relPath) {
+export function findOffenders(source, relPath) {
   const lines = source.split(/\r?\n/);
   const offenders = [];
   let depth = 0; // nesting depth of open debug-pragma blocks
@@ -89,21 +90,30 @@ function findOffenders(source, relPath) {
 
     const guarded = depth > 0;
 
-    // Explicit opt-out for intentional PERMANENT sentinels that CLAUDE.md says
-    // must stay unguarded even though they are console.warn (e.g. device-loss
-    // recovery-attempt failures). Marker on the console line itself or the line
-    // directly above it.
-    const allowed =
-      /lint-debug-pragmas-allow/.test(line) ||
-      (i > 0 && /lint-debug-pragmas-allow/.test(lines[i - 1]));
+    const match = line.match(CONSOLE_RE);
+    const method = match?.[1];
+    const permanentlyVisible = method === "error";
 
-    if (CONSOLE_RE.test(line) && !guarded && !isCommentLine && !allowed) {
-      const m = line.match(CONSOLE_RE);
+    // Only console.warn may use the explicit marker. Errors are already
+    // permanent by method, while log, debug, and info calls are removable
+    // diagnostics and must not survive production merely because a marker was
+    // copied nearby. Requiring a standalone comment immediately above the call
+    // also prevents message text from granting its own exemption.
+    const allowed =
+      method === "warn" && i > 0 && ALLOW_MARKER_RE.test(lines[i - 1]);
+
+    if (
+      match &&
+      !guarded &&
+      !isCommentLine &&
+      !permanentlyVisible &&
+      !allowed
+    ) {
       offenders.push({
         file: relPath,
         line: i + 1,
         text: line.trim(),
-        method: m ? m[0] : "console",
+        method: match[0],
       });
     }
 
@@ -155,7 +165,13 @@ async function main() {
   process.exit(allOffenders.length === 0 ? 0 : 1);
 }
 
-main().catch((err) => {
-  console.error(err);
-  process.exit(2);
-});
+const isDirectInvocation =
+  process.argv[1] !== undefined &&
+  path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+
+if (isDirectInvocation) {
+  main().catch((err) => {
+    console.error(err);
+    process.exit(2);
+  });
+}

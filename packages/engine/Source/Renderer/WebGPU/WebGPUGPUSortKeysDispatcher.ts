@@ -828,10 +828,8 @@ class WebGPUGPUSortKeysDispatcher {
 
 // ─── Feature renderer factory + entry points ───────────────────────
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 import GPUSortKeysSource from "../../Shaders/WebGPU/Compute/GPUSortKeys.js";
-// Batch 228 — bitonic-sort-over-u64 source paired with the keygen.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+// The matching bitonic-sort shader consumes the 64-bit keys produced above.
 import BitonicSortU64Source from "../../Shaders/WebGPU/Compute/BitonicSortU64.js";
 
 const _instances = new WeakMap<object, WebGPUGPUSortKeysDispatcher>();

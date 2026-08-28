@@ -663,6 +663,7 @@ export class WebGPUGlobeSurfaceRenderer {
     if (this._imageryReduced) {
       // Permanent rather than debug-pragma'd: a degraded layout on a real user
       // device is something a bug report needs to show.
+      // lint-debug-pragmas-allow: this device-layout degradation must remain visible
       console.warn(
         `[CesiumJS:WebGPU] Globe imagery layout reduced to ` +
           `${this._imagerySlotCount} slot(s)/pass: device ` +

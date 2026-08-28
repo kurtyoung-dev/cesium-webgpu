@@ -978,13 +978,8 @@ class WebGPUHiZOcclusionDispatcher {
 // stays in `Source/Shaders/WebGPU/Compute/` and the build pipeline
 // owns the JS-wrapper generation.
 
-// `any` on the imports because the generated JS wrappers don't have
-// d.ts types. They're plain string exports.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 import HiZPyramidSource from "../../Shaders/WebGPU/Compute/HiZPyramid.js";
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 import HiZPyramidFromDepthSource from "../../Shaders/WebGPU/Compute/HiZPyramidFromDepth.js";
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 import OcclusionTestSource from "../../Shaders/WebGPU/Compute/OcclusionTest.js";
 import {
   makeBindGroupLayout,

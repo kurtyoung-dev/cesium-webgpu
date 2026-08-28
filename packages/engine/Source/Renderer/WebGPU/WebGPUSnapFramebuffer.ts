@@ -769,6 +769,7 @@ export class WebGPUSnapFramebuffer {
     // WebGPU readback contract, not a missing feature.
     if (!this._coldSnapWarned) {
       this._coldSnapWarned = true;
+      // lint-debug-pragmas-allow: this one-shot cold-snap warning explains an empty result
       console.warn(
         "[CesiumJS:WebGPU] Scene.snap() has no completed readback near this " +
           "query yet because WebGPU reads the snap buffer asynchronously. " +

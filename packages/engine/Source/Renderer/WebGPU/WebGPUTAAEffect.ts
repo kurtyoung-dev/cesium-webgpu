@@ -18,7 +18,6 @@
 import type { PostProcessEffect } from "./WebGPUPostProcessEffects.js";
 import type { DebugStatsObject } from "../GraphicsContext.js";
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 import TAASource from "../../Shaders/WebGPU/PostProcess/TAA.js";
 import {
   makeBindGroupLayout,

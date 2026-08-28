@@ -67,6 +67,53 @@ const LAUNCHER_REL = "Tools/generate-tooling-catalog-launcher.cjs";
 const SCRIPT = path.join(ROOT, ...LAUNCHER_REL.split("/"));
 const GENERATOR = path.join(ROOT, "Tools", "generate-tooling-catalog.mjs");
 
+function listToolingFilesFromCandidateGit(root = ROOT) {
+  const result = spawnSync(
+    "git",
+    ["ls-files", "-z", "--cached", "--", "Tools", "scripts"],
+    {
+      cwd: root,
+      env: { ...process.env, GIT_NO_REPLACE_OBJECTS: "1" },
+      encoding: "utf8",
+      maxBuffer: 256 * 1024 * 1024,
+    },
+  );
+  assert.equal(
+    result.status,
+    0,
+    result.stderr || result.error?.message || "git ls-files failed",
+  );
+  return result.stdout
+    .split("\0")
+    .filter((rel) => rel.endsWith(".mjs"))
+    .sort();
+}
+
+function assertToolingCensusAgreement(files, independentlyDerivedFiles) {
+  assert.equal(
+    files.length,
+    independentlyDerivedFiles.length,
+    "the generator and independent candidate-index census counts disagree",
+  );
+}
+
+function readFrozenToolingCensus(root, fixturePath) {
+  return withFrozenCandidateIndex((subject) => {
+    const files = listToolingFiles();
+    const independentlyDerivedFiles = listToolingFilesFromCandidateGit(
+      subject.root,
+    );
+    assertToolingCensusAgreement(files, independentlyDerivedFiles);
+    return {
+      fixtureTracked: new Set(
+        listTrackedPaths(["Tools", "scripts"], subject.root),
+      ).has(fixturePath),
+      generatorCount: files.length,
+      independentCount: independentlyDerivedFiles.length,
+    };
+  }, root);
+}
+
 function createCandidateSandbox() {
   const root = mkdtempSync(path.join(tmpdir(), "catalog-index-mutant-"));
   const gitDir = path.join(root, "git");
@@ -475,19 +522,73 @@ const census = () => (censusCache ??= collectCensus());
 
 test("A1: the census covers the whole tooling library", () => {
   const files = listToolingFiles();
-  assert.equal(files.length, 1024, "the prospective .mjs census changed");
+  const independentlyDerivedFiles = listToolingFilesFromCandidateGit();
+  assertToolingCensusAgreement(files, independentlyDerivedFiles);
+  // Both derivations ultimately depend on Git. This coarse floor catches an
+  // empty or severely partial result even if both Git calls agree.
+  assert.ok(
+    files.length >= 1000,
+    "the .mjs census collapsed below its established four-digit scale",
+  );
   assert.ok(files.every((f) => f.endsWith(".mjs")));
   assert.ok(files.includes("Tools/generate-tooling-catalog.mjs"));
   assert.equal(
     files.includes(LAUNCHER_REL),
     false,
-    "the CommonJS trust boundary must not create a thousandth .mjs row",
+    "the CommonJS launcher must stay outside the .mjs census",
   );
   assert.ok(files.some((f) => f.startsWith("scripts/")));
   assert.deepEqual(files, [...files].sort(), "the file list is not sorted");
   const tracked = new Set(listTrackedPaths(["Tools", "scripts"]));
   assert.ok(files.every((file) => tracked.has(file)));
   assert.ok(tracked.has(LAUNCHER_REL), "the launcher is not candidate-tracked");
+});
+
+test("A1: the derived count follows staged candidate-index changes", (t) => {
+  assert.throws(
+    () => assertToolingCensusAgreement(["Tools/example.mjs"], []),
+    /independent candidate-index census counts disagree/u,
+  );
+
+  const sandbox = createCandidateSandbox();
+  const fixturePath = "Tools/tooling-catalog-count-fixture.mjs";
+  try {
+    withCandidateProcessEnvironment(sandbox, () => {
+      const before = readFrozenToolingCensus(sandbox.root, fixturePath);
+      assert.equal(before.fixtureTracked, false);
+
+      const fixtureOid = writeCandidateBlob(
+        sandbox,
+        "// @purpose Exercises candidate-index census derivation.\n" +
+          "// @status ACTIVE\n",
+      );
+      updateCandidateEntry(sandbox, fixturePath, "100644", fixtureOid);
+
+      const added = readFrozenToolingCensus(sandbox.root, fixturePath);
+      assert.equal(added.fixtureTracked, true);
+      assert.equal(added.generatorCount, before.generatorCount + 1);
+      assert.equal(added.independentCount, before.independentCount + 1);
+
+      const remove = spawnSync(
+        "git",
+        ["update-index", "--force-remove", "--", fixturePath],
+        { cwd: sandbox.root, env: sandbox.env, encoding: "utf8" },
+      );
+      assert.equal(remove.status, 0, remove.stderr);
+
+      const restored = readFrozenToolingCensus(sandbox.root, fixturePath);
+      assert.equal(restored.fixtureTracked, false);
+      assert.equal(restored.generatorCount, before.generatorCount);
+      assert.equal(restored.independentCount, before.independentCount);
+      t.diagnostic(
+        `derived census counts: ${before.generatorCount}/${before.independentCount} -> ` +
+          `${added.generatorCount}/${added.independentCount} -> ` +
+          `${restored.generatorCount}/${restored.independentCount}`,
+      );
+    });
+  } finally {
+    rmSync(sandbox.root, { recursive: true, force: true });
+  }
 });
 
 test("A1a: sanctioned commands start at the closed candidate module graph", () => {

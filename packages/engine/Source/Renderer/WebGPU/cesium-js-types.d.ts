@@ -24,7 +24,6 @@
 // preventing primitive assignment. Property access requires explicit
 // narrowing via `as` casts, which is the correct behavior for opaque
 // cross-language boundaries.
-// eslint-disable-next-line @typescript-eslint/no-empty-object-type
 type CesiumOpaqueObject = object;
 type CesiumOpaqueTexture = CesiumOpaqueObject;
 // Framebuffer is one of: WebGPU render-target wrapper (method-based),

@@ -260,6 +260,7 @@ function tryResolvePhysicalMoonPipeline(device, pipelineCache, entry) {
     entry.failed = true;
     if (entry.failureReported !== true) {
       entry.failureReported = true;
+      // lint-debug-pragmas-allow: this latched warning exposes a physical-depth fallback
       console.warn(
         "[WebGPU:Moon] physical-depth pipeline failed; retaining the legacy ENVIRONMENT route:",
         error && error.message ? error.message : error,

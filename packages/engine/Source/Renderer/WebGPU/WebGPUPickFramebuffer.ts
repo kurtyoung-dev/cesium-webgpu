@@ -1286,6 +1286,7 @@ export class WebGPUPickFramebuffer {
     // empty; it never repeats once the readback warms.)
     if (!this._coldPickWarned) {
       this._coldPickWarned = true;
+      // lint-debug-pragmas-allow: this one-shot cold-pick warning explains an empty result
       console.warn(
         "[CesiumJS:WebGPU] scene.pick() returned no result on its first call " +
           "because WebGPU reads the pick buffer asynchronously (one-frame " +

@@ -5,15 +5,28 @@ import reactHooks from "eslint-plugin-react-hooks";
 import { reactRefresh } from "eslint-plugin-react-refresh";
 import tseslint from "typescript-eslint";
 import seatbelt from "eslint-seatbelt";
+import { SeatbeltFile } from "eslint-seatbelt/api";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+const seatbeltToRelativePath = SeatbeltFile.prototype.toRelativePath;
+
+// The ratchet file is shared by Windows and Linux, so normalize lookup keys
+// even when a worker reuses dependencies whose postinstall step ran elsewhere.
+SeatbeltFile.prototype.toRelativePath = function (filename) {
+  return seatbeltToRelativePath.call(this, filename).replaceAll("\\", "/");
+};
 
 export default [
   tseslint.configs.base,
   {
     ignores: [
+      // Gitignored evidence store - probe artifacts, not repository code.
+      "Tools/visual-regression/output/",
+      // Untracked prototype with its own preregistered lint cycle; joins the
+      // repository gate when it is tracked.
+      "Tools/patch-prototype/",
       "**/Build/",
       "Documentation/**/*",
       "Source/*",
@@ -137,6 +150,25 @@ export default [
       ],
       // Disallow e.g. `new Cartesian3.fromDegrees(...)`; invalid with ES6 classes.
       "new-cap": ["error", { capIsNew: true }],
+    },
+  },
+  ...[...tseslint.configs.recommended].map((config) => ({
+    ...config,
+    files: ["packages/*/Source/**/*.ts"],
+  })),
+  {
+    files: ["packages/*/Source/**/*.ts"],
+    plugins: { "eslint-seatbelt": seatbelt },
+    processor: seatbelt.processors.seatbelt,
+    settings: {
+      seatbelt: {
+        seatbeltFile: join(__dirname, "eslint.seatbelt.tsv"),
+      },
+    },
+    rules: {
+      // The recommended backlog is pinned per file and rule so a new
+      // violation fails while existing issues can be retired incrementally.
+      "eslint-seatbelt/configure": "error",
     },
   },
   ...[...tseslint.configs.recommended].map((config) => ({

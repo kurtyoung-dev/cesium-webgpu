@@ -119,7 +119,6 @@ import {
 
 // Phase 3 — GPU point cloud bitonic sort.
 import { WebGPUPointCloudSortDispatcher } from "./WebGPUPointCloudSortDispatcher.js";
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 import PointCloudSortSource from "../../Shaders/WebGPU/Compute/PointCloudSort.js";
 
 // ── Shadow / Ground ──

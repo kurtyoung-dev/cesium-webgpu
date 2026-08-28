@@ -1007,7 +1007,6 @@ export class WebGPUContext extends GraphicsContext {
   public logShaderCompilation: boolean = false;
 
   // Vertex array object methods (WebGL compat stubs — noop functions)
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- WebGL compat noop stubs with varied signatures
   public glCreateVertexArray: (() => object) | null = null;
   public glBindVertexArray: ((...args: unknown[]) => void) | null = null;
   public glDeleteVertexArray: ((...args: unknown[]) => void) | null = null;

@@ -2639,7 +2639,6 @@ export class WebGPUSceneRenderer {
       if (!this._gbufferProducerWarnedNoDepth) {
         this._gbufferProducerWarnedNoDepth = true;
         //>>includeStart('debug', pragmas.debug);
-        // eslint-disable-next-line no-console
         console.warn(
           "[Phase8a] G-buffer producer skipped: scene depth not sampleable. " +
             "Set `msaaSamples: 1` on the Viewer/Scene to enable. " +

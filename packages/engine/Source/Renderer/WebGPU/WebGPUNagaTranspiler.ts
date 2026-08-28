@@ -129,7 +129,6 @@ async function loadNaga(): Promise<NagaModule | null> {
       if (typeof mod.glsl_to_wgsl !== "function") {
         _nagaUnavailable = true;
         //>>includeStart('debug', pragmas.debug);
-        // eslint-disable-next-line no-console
         console.warn(
           "[WebGPU:Naga] naga-wasm loaded but glsl_to_wgsl is missing — " +
             "the vendored build may be stale. Rebuild via " +
@@ -146,7 +145,6 @@ async function loadNaga(): Promise<NagaModule | null> {
         normalize_wgsl: mod.normalize_wgsl,
       };
       //>>includeStart('debug', pragmas.debug);
-      // eslint-disable-next-line no-console
       console.log(
         "[WebGPU:Naga] naga-wasm initialized — GLSL→WGSL transpilation enabled",
       );
@@ -155,7 +153,6 @@ async function loadNaga(): Promise<NagaModule | null> {
     } catch (err) {
       _nagaUnavailable = true;
       //>>includeStart('debug', pragmas.debug);
-      // eslint-disable-next-line no-console
       console.warn(
         "[WebGPU:Naga] naga-wasm not available — the vendored blob at " +
           "Source/ThirdParty/naga-wasm/ may be missing. Rebuild via " +

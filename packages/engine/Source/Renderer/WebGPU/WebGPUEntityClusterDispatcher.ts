@@ -44,7 +44,6 @@ import {
 } from "./WebGPUBindGroupLayoutHelpers.js";
 import { getAvailableFrameCommandEncoder } from "./WebGPUFrameCommandEncoder.js";
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 import EntityClusterGridGPUSource from "../../Shaders/WebGPU/Compute/EntityClusterGridGPU.js";
 
 const PARAMS_BYTES = 32; // 8 × 4 bytes (u32 pointCount/gridCols/gridRows + f32 cellSize/originX/originY + 2 pad)
