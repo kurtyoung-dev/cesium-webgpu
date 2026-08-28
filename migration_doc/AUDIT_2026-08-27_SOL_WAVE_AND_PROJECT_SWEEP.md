@@ -622,3 +622,17 @@ constructions all STRUCTURAL; the seam tooth survives an alternative deadening w
 one is half-broken and queued as Q-27 with an end-to-end counterexample. Codex fan-out correction:
 rollouts in the shared session directory belong to MANY lanes — per-lane counts must filter by the
 rollout's writable root, not the window; D2 measured 10.5x for its own dispatches by that method.
+
+**R9 GO and the review-formula validation (2026-08-28 ~04:30).** The prototype's repair
+preregistration converged through five rounds — 17 findings, then 9, then 3, then 1, then one
+four-word clause — with every closure verified by independent recomputation or execution, twice
+catching the frozen evidence command unable to execute and once catching the maintainer ruling
+propagated to the header but contradicted in four operative sections. The reviewer declined to
+sign the discharge over one measured-false sentence and pre-committed the GO on its correction;
+the closing verification matched the GO image exactly. Two sentences now on the record: the
+fresh-architecture-review requirement is discharged, and the ruling's two arms are propagated
+end-to-end. Process: the working review formula — Opus-direct, governance conclusions supplied
+in the brief, execute rather than read — produced five complete verdicts in minutes each, while
+Sol review dispatches produced verdicts only twice all night (A1's and A5-1's adversarial rounds,
+both of which changed their lane's outcome — the sink is real but not universal, and the
+difference appears to be bounded single-subject review briefs versus governance-heavy ones).
