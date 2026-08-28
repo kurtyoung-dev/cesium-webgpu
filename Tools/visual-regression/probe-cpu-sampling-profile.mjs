@@ -83,6 +83,25 @@ function aggregate(profile) {
   return { rows, totalMs: totalUs / 1000 };
 }
 
+// The retention axis of the C11-170 metric vector (multi-metric ruling,
+// 2026-08-25). No banked report in this fleet carried a memory observation of
+// any kind, so the question "did this change retain more?" had no instrument at
+// all. This one costs a single CDP round trip on a session the profiler already
+// holds open. A failure degrades to an absent field, which the gate adjudicates
+// as blindness -- never as a pass.
+async function heapMetrics(client) {
+  try {
+    const { metrics } = await client.send("Performance.getMetrics");
+    const byName = new Map(metrics.map((m) => [m.name, m.value]));
+    return {
+      jsHeapUsedBytes: byName.get("JSHeapUsedSize") ?? null,
+      jsHeapTotalBytes: byName.get("JSHeapTotalSize") ?? null,
+    };
+  } catch (e) {
+    return { error: String((e && e.message) || e).slice(0, 200) };
+  }
+}
+
 async function profileBackend(browser, renderer) {
   const context = await browser.newContext({
     viewport: { width: 1280, height: 720 },
@@ -121,6 +140,8 @@ async function profileBackend(browser, renderer) {
 
     const client = await page.context().newCDPSession(page);
     await client.send("Profiler.enable");
+    await client.send("Performance.enable").catch(() => {});
+    const heapBefore = await heapMetrics(client);
     await client.send("Profiler.setSamplingInterval", { interval: 100 }); // 100us
     await client.send("Profiler.start");
 
@@ -144,6 +165,7 @@ async function profileBackend(browser, renderer) {
     }, MEASURE);
 
     const { profile } = await client.send("Profiler.stop");
+    const heapAfter = await heapMetrics(client);
     await client.detach().catch(() => {});
 
     const agg = aggregate(profile);
@@ -152,6 +174,38 @@ async function profileBackend(browser, renderer) {
     out.top = agg.rows
       .slice(0, 30)
       .map((r) => ({ fn: r.fn, ms: r3(r.ms), pct: r3(r.pct) }));
+    // Allocation is read from the WHOLE aggregate, not from the published
+    // slice. On 2026-08-25 the garbage-collector row fell out of the top 20 and
+    // the allocation axis went censored: absent became indistinguishable from a
+    // real drop, and the censoring bound (< 0.04863 ms/frame) sat ABOVE the
+    // banked value (0.03871 ms/frame), so it could not discriminate at all.
+    // Publishing the row separately uncensors the axis without touching the
+    // top-list depth that defines Signal A's floor.
+    const gcRow = agg.rows.find(
+      (r) => r.fn.split(" @ ", 1)[0] === "(garbage collector)",
+    );
+    if (gcRow) {
+      out.allocation = {
+        gcSelfMs: r3(gcRow.ms),
+        gcSelfPct: r3(gcRow.pct),
+        source: "full-aggregate",
+      };
+    }
+    if (
+      Number.isFinite(heapBefore?.jsHeapUsedBytes) &&
+      Number.isFinite(heapAfter?.jsHeapUsedBytes)
+    ) {
+      out.memory = {
+        jsHeapUsedBytesBefore: heapBefore.jsHeapUsedBytes,
+        jsHeapUsedBytesAfter: heapAfter.jsHeapUsedBytes,
+        jsHeapTotalBytesAfter: Number.isFinite(heapAfter.jsHeapTotalBytes)
+          ? heapAfter.jsHeapTotalBytes
+          : null,
+      };
+    } else {
+      out.memoryError =
+        heapBefore?.error ?? heapAfter?.error ?? "CDP reported no JS heap size";
+    }
     out.ok = true;
   } catch (e) {
     out.error = String((e && e.message) || e).slice(0, 400);
@@ -191,11 +245,17 @@ async function profileBackend(browser, renderer) {
     webgpu: {
       medianRenderMs: r3(gpu?.timing?.median),
       sampledTotalMs: gpu?.sampledTotalMs,
+      allocation: gpu?.allocation,
+      memory: gpu?.memory,
+      memoryError: gpu?.memoryError,
       error: gpu?.error,
     },
     webgl: {
       medianRenderMs: r3(gl?.timing?.median),
       sampledTotalMs: gl?.sampledTotalMs,
+      allocation: gl?.allocation,
+      memory: gl?.memory,
+      memoryError: gl?.memoryError,
       error: gl?.error,
     },
     webgpuTopSelfTime: gpu?.top?.slice(0, 20),
@@ -222,6 +282,19 @@ async function profileBackend(browser, renderer) {
   console.log(`\n=== WebGPU-SPECIFIC hotspots (delta vs WebGL) ===`);
   for (const r of webgpuSpecific.slice(0, 15))
     console.log(`  +${String(r.deltaMs).padStart(9)} ms  ${r.fn}`);
+  console.log("\n=== allocation and memory (multi-metric axes) ===");
+  for (const [label, lane] of [
+    ["webgpu", gpu],
+    ["webgl", gl],
+  ]) {
+    const alloc = lane?.allocation
+      ? `gc ${lane.allocation.gcSelfMs} ms (${lane.allocation.gcSelfPct} %)`
+      : "gc UNOBSERVED";
+    const mem = lane?.memory
+      ? `heap ${lane.memory.jsHeapUsedBytesBefore} -> ${lane.memory.jsHeapUsedBytesAfter} bytes`
+      : `heap UNOBSERVED (${lane?.memoryError ?? "no reading"})`;
+    console.log(`  ${label}: ${alloc}   |   ${mem}`);
+  }
   if (gpu?.error) console.log("webgpu error:", gpu.error);
   if (gl?.error) console.log("webgl error:", gl.error);
   console.log(`\n[full report: ${outPath}]`);

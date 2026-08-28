@@ -1,0 +1,155 @@
+{
+  "fixture": "c11-170-perf-metric-noise",
+  "schemaVersion": 1,
+  "immutable": true,
+  "recordedOn": "2026-08-25",
+  "purpose": "The checked-in noise characterisation for the C11-170 metric vector. Every claim PERF_METRIC_NOISE makes about how a metric behaves between identical runs is re-derived from the observations recorded here by noiseViolations(), so the noise statements are mutation-testable rather than prose. It lives outside Tools/visual-regression/output/ for the same reason the derivation baseline does: a run must never be able to rewrite the evidence its own claims rest on.",
+  "neverWriteHere": "Nothing writes this file at run time. The gate's live outputs are frozen in LIVE_WRITE_PATHS and assertLiveWriteTarget refuses every other destination.",
+  "ruling": "Maintainer, 2026-08-25: all performance testing in this fork must be multi-metric. Never gate, judge or report a performance change on a single number. Carry call counts, timings, memory and allocation together, publish them all even when only some are scored, and state each metric's noise behaviour beside its bar.",
+  "provenanceLabels": {
+    "ARTIFACT-BACKED": "The observation is read out of a file that exists in this repository tree today, named below, and can be recomputed from it.",
+    "REPORTED-NOT-ARTIFACT-BACKED": "The value was reported by the machine lane that ran the arm. Its own cpu-sampling-profile.json was overwritten by the NEXT arm -- the single-output-path defect this row repaired on the same day -- so it cannot be recomputed in this tree. It is recorded with that limitation stated rather than dressed up as evidence."
+  },
+  "notRecovered": [
+    "The per-arm cpu-sampling-profile.json for each of the six control arms. Each run wrote the same path, so only the last survives, and the last was itself overwritten by the 2026-08-25 11:47 gate acquisition.",
+    "The per-arm idle and program shares. Only the RANGE of idle share across the arms was reported (42.8 % to 61.6 %), so familyShareOfNamedWorkPct cannot be recomputed for the control arms and the idle-normalisation claim is stated as a MECHANISM confirmed on the two artifact-backed profiles, never as a result measured on the control set.",
+    "Whether the six arms are one uninterrupted sequence on an otherwise idle machine. Only their reported order is recorded."
+  ],
+  "controlArms": [
+    {
+      "order": 1,
+      "tree": "dirty",
+      "familySelfPct": 0.981,
+      "metric": "A-webgpu observed: resource-write family share of total sampled self time",
+      "provenance": "REPORTED-NOT-ARTIFACT-BACKED"
+    },
+    {
+      "order": 2,
+      "tree": "dirty",
+      "familySelfPct": 0.831,
+      "metric": "A-webgpu observed: resource-write family share of total sampled self time",
+      "provenance": "REPORTED-NOT-ARTIFACT-BACKED"
+    },
+    {
+      "order": 3,
+      "tree": "dirty",
+      "familySelfPct": 0.718,
+      "metric": "A-webgpu observed: resource-write family share of total sampled self time",
+      "provenance": "REPORTED-NOT-ARTIFACT-BACKED"
+    },
+    {
+      "order": 4,
+      "tree": "clean",
+      "familySelfPct": 1.017,
+      "metric": "A-webgpu observed: resource-write family share of total sampled self time",
+      "provenance": "REPORTED-NOT-ARTIFACT-BACKED"
+    },
+    {
+      "order": 5,
+      "tree": "dirty",
+      "familySelfPct": 0.551,
+      "metric": "A-webgpu observed: resource-write family share of total sampled self time",
+      "provenance": "REPORTED-NOT-ARTIFACT-BACKED"
+    },
+    {
+      "order": 6,
+      "tree": "clean",
+      "familySelfPct": 0.599,
+      "metric": "A-webgpu observed: resource-write family share of total sampled self time",
+      "provenance": "REPORTED-NOT-ARTIFACT-BACKED"
+    }
+  ],
+  "artifactBackedArms": [
+    {
+      "label": "banked-derivation-baseline",
+      "date": "2026-07-19T18:02:46.511Z",
+      "tree": "unrecorded",
+      "scene": "online (default Ion imagery and World Terrain)",
+      "familySelfPct": 0,
+      "idlePct": 68.688,
+      "programPct": 16.417,
+      "namedWorkPct": 14.894999999999996,
+      "visibilityFloorPct": 0.193,
+      "frames": 120,
+      "provenance": "ARTIFACT-BACKED",
+      "source": "Tools/visual-regression/fixtures/c11-170/perf-gate-derivation-baseline.json -> reports.cpu",
+      "sourceSha256": "7ebb2d20d9e4847f01909f03f0cb8044504f692e4f036a869c80db8d9ea0883e"
+    },
+    {
+      "label": "first-acquire-run",
+      "date": "2026-08-25T15:47:22.839Z",
+      "tree": "dirty",
+      "scene": "online (this run predates the offline pin)",
+      "familySelfPct": 0.534,
+      "idlePct": 51.411,
+      "programPct": 22.428,
+      "namedWorkPct": 26.160999999999998,
+      "visibilityFloorPct": 0.237,
+      "frames": 120,
+      "provenance": "ARTIFACT-BACKED",
+      "source": "Tools/visual-regression/output/cpu-sampling-profile.json (gitignored) and output/performance/c11-170-perf-regression-gate.json runId 63e71faa-8289-448f-b743-173937cb5610",
+      "note": "This arm is NOT part of the control set: it is the pre-repair acquire run whose FAIL opened the question. It is recorded because it is the only self-time observation in this tree that can be recomputed alongside the banked one."
+    }
+  ],
+  "familySelfMsObservations": [
+    {
+      "label": "first-acquire-run",
+      "writeBufferMs": 13.151,
+      "provenance": "ARTIFACT-BACKED",
+      "source": "Tools/visual-regression/output/cpu-sampling-profile.json, webgpuTopSelfTime writeBuffer @ (native):-1"
+    },
+    {
+      "label": "control-arms-minimum",
+      "writeBufferMs": 13.8,
+      "provenance": "REPORTED-NOT-ARTIFACT-BACKED"
+    },
+    {
+      "label": "control-arms-maximum",
+      "writeBufferMs": 26.7,
+      "provenance": "REPORTED-NOT-ARTIFACT-BACKED"
+    }
+  ],
+  "soleCarrier": {
+    "claim": "writeBuffer is the ONLY resource-write family member observed on either backend across every arm, and no member of the texture sub-family appears in either published top list. The Batch-717 signature - copyExternalImageToTexture, uploadImageSource, writeTexture, texImage2D/3D, texSubImage2D/3D, createTexture - is absent.",
+    "artifactBacked": "Confirmed on the 2026-08-25 profile in this tree and on the banked 2026-07-19 profile in the derivation fixture.",
+    "consequence": "Lane F is exonerated by this evidence: the elevated Signal A reading is carried entirely by per-frame uniform buffer writes, which are the expected steady-state behaviour, not by an image re-upload storm."
+  },
+  "idleShareRange": {
+    "minPct": 42.8,
+    "maxPct": 61.6,
+    "provenance": "REPORTED-NOT-ARTIFACT-BACKED",
+    "note": "The range the machine lane reported across the six control arms. The two artifact-backed profiles sit at 68.688 % and 51.411 %, so the reported range is consistent with them but is not the same measurement."
+  },
+  "derived": {
+    "cleanMean": 0.8079999999999999,
+    "cleanN": 2,
+    "dirtyMean": 0.77025,
+    "dirtyN": 4,
+    "armsOverlap": true,
+    "spreadRatio": 1.8457350272232302,
+    "minimumAchievablePValue": 0.06666666666666667,
+    "msSwingRatio": 2.030263858261729,
+    "msNote": "The ABSOLUTE cost swings as much as the share does: writeBuffer self time ranged 13.151 ms to 26.7 ms across the observed arms. sampledTotalMs is near-constant across runs (2408.617 ms banked, 2462.308 ms live), so pct and ms move together and neither raw axis is stable on its own. That is the ruling in one line: one number cannot answer this.",
+    "note": "cleanMean and dirtyMean round to the 0.808 and 0.770 the machine lane reported. The arms overlap in BOTH directions, and the design's smallest achievable one-sided p-value already exceeds alpha = 0.05, so the control could not have separated the arms even if they had been perfectly separated."
+  },
+  "namedWorkMechanism": {
+    "claim": "The self-time share moves with idle share because it is a share of TOTAL sampled wall time, of which named work is a minority. Normalising by named work removes that term.",
+    "evidence": {
+      "bankedNamedWorkPct": 14.894999999999996,
+      "liveNamedWorkPct": 26.160999999999998,
+      "namedWorkRatio": 1.7563611950318903,
+      "bankedIdlePct": 68.688,
+      "liveIdlePct": 51.411,
+      "idleRatio": 1.3360564859660384,
+      "visibilityFloorRatio": 1.2279792746113989
+    },
+    "limitation": "Both observations are ARTIFACT-BACKED, but they are two runs, not a distribution, and one of them has a family share of exactly 0. The mechanism is demonstrated; the STABILISATION it implies for familyShareOfNamedWorkPct is a prediction the machine lane must confirm over at least three runs per arm before the normalised axis may be scored."
+  },
+  "dispersionBoundInstability": {
+    "boundFromBankedReports": 1.9151785715284921,
+    "boundFromLiveReports": 2.2458332559714727,
+    "maxSubjectRatioLive": 1.7499999627470975,
+    "utilisationOfBankedBoundByLiveRun": 0.9137528942538414,
+    "note": "The SAME Signal-E construction applied to the 2026-08-25 reports yields a bound 17 % higher than the banked one, and the live run already consumes 91.4 % of the banked bound. An n=1 derived bound on this axis is not fit to gate; the axis is published and its bound recorded as provisional."
+  }
+}

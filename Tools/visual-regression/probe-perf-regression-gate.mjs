@@ -27,6 +27,12 @@ import {
   preserveFirstRedEvidence,
   safeGitHead,
 } from "./lib/build-source-identity.mjs";
+import {
+  adjudicateMetricVector,
+  metricVector,
+  PERF_METRIC_BARS,
+  PERF_METRIC_NOISE,
+} from "./lib/perf-metric-vector.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -58,6 +64,14 @@ const BASELINE_DIRECTORY = path.join(__dirname, "fixtures", "c11-170");
 const BASELINE_FIXTURE_PATH = path.join(
   BASELINE_DIRECTORY,
   "perf-gate-derivation-baseline.json",
+);
+// The multi-metric noise characterisation (maintainer ruling, 2026-08-25). It
+// sits in the same read-only directory as the derivation baseline, so the
+// directory containment legs of `baselineCollisions` already refuse any live
+// write that could reach it; nothing further is needed to protect it.
+export const NOISE_FIXTURE_PATH = path.join(
+  BASELINE_DIRECTORY,
+  "perf-metric-noise-2026-08-25.json",
 );
 
 const CLAIM_NOTE =
@@ -1253,6 +1267,75 @@ export function adjudicatePerfRegressionGate(input) {
   };
 }
 
+/**
+ * The multi-metric gate (maintainer ruling, 2026-08-25): never gate, judge or
+ * report a performance change on a single number.
+ *
+ * Signal A is NOT retired -- the ruling is explicitly BOTH -- so this composes
+ * AROUND `adjudicatePerfRegressionGate` rather than inside it, leaving that
+ * function and every frozen bar byte-identical. The metric signals are appended
+ * and the final status is recomposed with the same precedence the core uses:
+ * ERROR beats FAIL beats STRUCTURAL beats PASS.
+ *
+ * A missing axis is STRUCTURAL, never a skip. That is deliberate and it has a
+ * cost: until the churn census and the heap reading have been acquired once by
+ * a machine run, this gate cannot reach PASS. A gate that is blind on four of
+ * five axes must not claim a performance verdict, which is the whole content of
+ * the ruling.
+ *
+ * @param {object} input The gate input.
+ * @returns {object} The core adjudication, extended with the metric vector.
+ */
+export function adjudicateMultiMetricGate(input) {
+  const core = adjudicatePerfRegressionGate(input);
+  const vector = metricVector(input?.reports ?? {}, RESOURCE_WRITE_FAMILY);
+  const metricSignals = adjudicateMetricVector(
+    { ...input, vector },
+    {
+      reportProblem: (key) => reportProblem(input, key),
+      ruleOfThreeNumerator: PERF_GATE_BARS.ruleOfThree.numerator,
+    },
+  );
+
+  const structuralReasons = [...core.structuralReasons];
+  const failures = [...core.failures];
+  let errored = false;
+  for (const signal of metricSignals) {
+    if (signal.verdict === "STRUCTURAL") {
+      structuralReasons.push(`${signal.id}: ${signal.reason}`);
+    }
+    if (signal.verdict === "FAIL") {
+      failures.push(`${signal.id}: ${signal.reason}`);
+    }
+    if (signal.verdict === "ERROR") {
+      errored = true;
+    }
+  }
+
+  let status;
+  if (core.status === "ERROR" || errored) {
+    status = "ERROR";
+  } else if (core.status === "FAIL" || failures.length > 0) {
+    status = "FAIL";
+  } else if (core.status === "STRUCTURAL" || structuralReasons.length > 0) {
+    status = "STRUCTURAL";
+  } else {
+    status = "PASS";
+  }
+
+  return {
+    ...core,
+    status,
+    exitCode: exitCodeForS5Status(status),
+    signals: [...core.signals, ...metricSignals],
+    failures,
+    structuralReasons,
+    metricVector: vector,
+    metricBars: PERF_METRIC_BARS,
+    metricNoise: PERF_METRIC_NOISE,
+  };
+}
+
 function sourceDirty() {
   try {
     return (
@@ -1283,7 +1366,7 @@ function provenance() {
 function claims() {
   return {
     detects:
-      "the CPU-visible GPU-resource-write, async non-drain, render-request churn, backend contamination, coarse same-run CPU-ratio, frame-accounting, and retained sentinel signatures of the re-upload/churn defect class",
+      "the CPU-visible GPU-resource-write, async non-drain, render-request churn, backend contamination, coarse same-run CPU-ratio, frame-accounting, and retained sentinel signatures of the re-upload/churn defect class, carried as a METRIC VECTOR (per-frame call counts, self and wall-clock timings, allocation and memory) rather than a single number",
     certifies: null,
     note: CLAIM_NOTE,
   };
@@ -1320,6 +1403,9 @@ function baseArtifact(context, status, exitCode, incomplete) {
     acquisition: context.acquisition,
     signals: [],
     bars: PERF_GATE_BARS,
+    metricBars: PERF_METRIC_BARS,
+    metricNoise: PERF_METRIC_NOISE,
+    metricVector: null,
     knownBlindSpots: KNOWN_BLIND_SPOTS,
     recorded: {
       splitLaneAdjudicated: false,
@@ -1338,6 +1424,9 @@ function finalArtifact(context, adjudication) {
     generatedAt: new Date().toISOString(),
     signals: adjudication.signals,
     bars: adjudication.bars,
+    metricBars: adjudication.metricBars ?? PERF_METRIC_BARS,
+    metricNoise: adjudication.metricNoise ?? PERF_METRIC_NOISE,
+    metricVector: adjudication.metricVector ?? null,
     knownBlindSpots: adjudication.knownBlindSpots,
     recorded: adjudication.recorded,
     failures: adjudication.failures,
@@ -1600,6 +1689,17 @@ function printSignalTable(artifact) {
       `${signal.id}\t${signal.verdict}\tobserved=${JSON.stringify(signal.observed)}\tbar=${JSON.stringify(signal.bar)}\t${signal.reason}`,
     );
   }
+  if (artifact.metricVector) {
+    console.log("=== published metric axes (scored and unscored) ===");
+    for (const signal of artifact.signals.filter((entry) =>
+      entry.id.startsWith("M"),
+    )) {
+      console.log(
+        `${signal.id}\t${signal.kind}\t${signal.verdict}\t${signal.metric}`,
+      );
+      console.log(`\tnoise: ${signal.noise ?? "uncharacterised"}`);
+    }
+  }
   console.log(`FINAL\t${artifact.status}\texit=${artifact.exitCode}`);
   console.log(`[c11-170-perf-gate] CLAIMS ${artifact.claims.note}`);
   if (artifact.status === "PASS") {
@@ -1748,7 +1848,7 @@ export async function main(argv = process.argv.slice(2)) {
       }
     }
 
-    const adjudication = adjudicatePerfRegressionGate({
+    const adjudication = adjudicateMultiMetricGate({
       mode: context.mode,
       reports,
       reportProblems,

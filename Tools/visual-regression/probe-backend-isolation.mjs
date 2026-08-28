@@ -28,6 +28,7 @@ import { chromium } from "playwright";
 import fs from "fs";
 import path from "path";
 import { launchLaneIfGated } from "./lib/backend-isolation-launch.mjs";
+import { RESOURCE_WRITE_SUBFAMILIES } from "./lib/perf-metric-vector.mjs";
 
 const BASE = "http://localhost:8080"; // NOTE: server binds IPv6; 127.0.0.1 does NOT resolve
 
@@ -41,6 +42,20 @@ const VIEWER_OFFLINE_QUERY =
 const OUT_DIR = "Tools/visual-regression/output";
 const WARMUP_FRAMES = 60;
 const MEASURE_FRAMES = 90;
+
+// The resource-write census (C11-170 multi-metric ruling, 2026-08-25). Signal A
+// reads a SHARE OF SELF TIME, which moves about 2x between identical runs with
+// idle share; the defect the row exists for -- Batch 717's re-upload storm -- is
+// a COUNT, and a count does not move with how quiet the machine was. These are
+// the prototypes a page-scope hook can reach; anything not found on one of them
+// is reported as unwrappable rather than silently counted as zero.
+const CENSUS_HOLDERS = Object.freeze([
+  "GPUQueue",
+  "GPUDevice",
+  "GPUCommandEncoder",
+  "WebGL2RenderingContext",
+  "WebGLRenderingContext",
+]);
 
 // ── HARD watchdog: force-exit if anything hangs (machine safety) ──
 const HARD_LIMIT_MS = 240000;
@@ -72,7 +87,10 @@ function summarize(arr) {
 const r3 = (x) => (x == null ? null : Math.round(x * 1000) / 1000);
 
 // Runs before ANY page script — catches every getContext call.
-const INSTRUMENT = () => {
+// The census is installed on the same pass. Its family lists and holder names
+// arrive as SERIALIZED ARGUMENTS, never through a closure: an addInitScript
+// callback is stringified and its Node scope is dropped.
+const INSTRUMENT = (census) => {
   window.__ctxCalls = [];
   const orig = HTMLCanvasElement.prototype.getContext;
   HTMLCanvasElement.prototype.getContext = function (type, ...rest) {
@@ -101,6 +119,44 @@ const INSTRUMENT = () => {
     }
     return result;
   };
+
+  const counts = {};
+  const wrapped = [];
+  const unwrappable = [];
+  const restores = [];
+  for (const name of census.texture.concat(census.buffer)) {
+    let hooks = 0;
+    for (const holderName of census.holders) {
+      const holder = window[holderName];
+      const proto = holder && holder.prototype;
+      if (!proto || typeof proto[name] !== "function") continue;
+      const original = proto[name];
+      // `arguments` forwarding, not a rest parameter: a rest parameter
+      // allocates an array on every call to a hot graphics entry point.
+      proto[name] = function () {
+        counts[name] = (counts[name] || 0) + 1;
+        return original.apply(this, arguments);
+      };
+      restores.push(() => {
+        proto[name] = original;
+      });
+      wrapped.push(holderName + "." + name);
+      hooks++;
+    }
+    if (hooks === 0) unwrappable.push(name);
+  }
+  window.__rwCounts = counts;
+  window.__rwWrapped = wrapped;
+  window.__rwUnwrappable = unwrappable;
+  window.__rwSnapshot = () => Object.assign({}, counts);
+  // The census wraps hot entry points, so it is UNINSTALLED before the timing
+  // window runs. Counting and timing in the same window would tax the very
+  // wall-clock numbers signal E-1 and the dispersion axis read.
+  window.__rwRestore = () => {
+    for (const restore of restores) restore();
+    restores.length = 0;
+    return true;
+  };
 };
 
 async function waitForViewer(page, globalName, timeoutMs = 90000) {
@@ -111,6 +167,80 @@ async function waitForViewer(page, globalName, timeoutMs = 90000) {
     },
     globalName,
     { timeout: timeoutMs },
+  );
+}
+
+// Drive explicit renders and COUNT resource writes per frame. Deliberately
+// separate from timeRenders: this loop runs with the census installed and
+// publishes no timing, and timeRenders runs after the census is uninstalled and
+// publishes no counts. Neither perturbs the other.
+async function censusRenders(page, globalNames, warmup, measure, census) {
+  return page.evaluate(
+    async ({ names, warmup, measure, subfamilies }) => {
+      if (typeof window.__rwSnapshot !== "function") {
+        return { error: "the resource-write census was never installed" };
+      }
+      const viewers = names.map((n) => window[n]).filter(Boolean);
+      if (!viewers.length)
+        return { error: "no viewers found for " + names.join(",") };
+      const scenes = viewers.map((v) => v.scene);
+      const sum = (snapshot, group) => {
+        let total = 0;
+        for (const name of group) total += snapshot[name] || 0;
+        return total;
+      };
+      for (let i = 0; i < warmup; i++) {
+        for (const s of scenes) {
+          try {
+            s.render();
+          } catch (e) {
+            /* keep going; the lane reports console errors */
+          }
+        }
+        await new Promise((r) => requestAnimationFrame(r));
+      }
+      let previous = window.__rwSnapshot();
+      const texturePerFrame = [];
+      const bufferPerFrame = [];
+      for (let i = 0; i < measure; i++) {
+        for (const s of scenes) {
+          try {
+            s.render();
+          } catch (e) {
+            /* keep going; the lane reports console errors */
+          }
+        }
+        const current = window.__rwSnapshot();
+        texturePerFrame.push(
+          sum(current, subfamilies.texture) -
+            sum(previous, subfamilies.texture),
+        );
+        bufferPerFrame.push(
+          sum(current, subfamilies.buffer) - sum(previous, subfamilies.buffer),
+        );
+        previous = current;
+        await new Promise((r) => requestAnimationFrame(r));
+      }
+      const totals = {};
+      const final = window.__rwSnapshot();
+      for (const name of subfamilies.texture.concat(subfamilies.buffer)) {
+        if (final[name]) totals[name] = final[name];
+      }
+      return {
+        frames: measure,
+        warmupFrames: warmup,
+        texturePerFrame,
+        bufferPerFrame,
+        textureCallsTotal: texturePerFrame.reduce((a, b) => a + b, 0),
+        bufferCallsTotal: bufferPerFrame.reduce((a, b) => a + b, 0),
+        textureFramesNonZero: texturePerFrame.filter((n) => n > 0).length,
+        bufferFramesNonZero: bufferPerFrame.filter((n) => n > 0).length,
+        totalsCumulative: totals,
+        wrapped: window.__rwWrapped || [],
+        unwrappable: window.__rwUnwrappable || [],
+      };
+    },
+    { names: globalNames, warmup, measure, subfamilies: census },
   );
 }
 
@@ -202,7 +332,11 @@ async function runLane(browser, { name, url, globals, launchSelector }) {
   const context = await browser.newContext({
     viewport: { width: 1280, height: 720 },
   });
-  await context.addInitScript(INSTRUMENT);
+  await context.addInitScript(INSTRUMENT, {
+    texture: RESOURCE_WRITE_SUBFAMILIES.texture,
+    buffer: RESOURCE_WRITE_SUBFAMILIES.buffer,
+    holders: CENSUS_HOLDERS,
+  });
   const page = await context.newPage();
   const consoleErrors = [];
   page.on("console", (m) => {
@@ -216,6 +350,40 @@ async function runLane(browser, { name, url, globals, launchSelector }) {
     // Let terrain/imagery settle so we are not timing tile loads.
     await page.waitForTimeout(6000);
     lane.contexts = await inspectContexts(page, globals);
+    const census = await censusRenders(
+      page,
+      globals,
+      WARMUP_FRAMES,
+      MEASURE_FRAMES,
+      {
+        texture: RESOURCE_WRITE_SUBFAMILIES.texture,
+        buffer: RESOURCE_WRITE_SUBFAMILIES.buffer,
+      },
+    );
+    if (census.error) {
+      lane.resourceWritesError = census.error;
+    } else {
+      lane.resourceWrites = {
+        frames: census.frames,
+        warmupFrames: census.warmupFrames,
+        textureCallsTotal: census.textureCallsTotal,
+        textureFramesNonZero: census.textureFramesNonZero,
+        bufferCallsTotal: census.bufferCallsTotal,
+        bufferFramesNonZero: census.bufferFramesNonZero,
+        bufferPerFrame: census.bufferPerFrame,
+        texturePerFrame: census.texturePerFrame,
+        totals: census.totalsCumulative,
+        wrapped: census.wrapped,
+        unwrappable: census.unwrappable,
+        note: "counted with the census installed and the timing window not yet started; uploadImageSource is a module-internal Cesium helper with no page-scope prototype and is reported as unwrappable rather than counted as zero",
+      };
+    }
+    // Uninstall before timing so the wall-clock axes are unperturbed.
+    lane.resourceWriteCensusRestored = await page
+      .evaluate(() =>
+        typeof window.__rwRestore === "function" ? window.__rwRestore() : false,
+      )
+      .catch(() => false);
     const t = await timeRenders(page, globals, WARMUP_FRAMES, MEASURE_FRAMES);
     if (t.error) {
       lane.timingError = t.error;
