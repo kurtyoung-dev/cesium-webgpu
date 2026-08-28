@@ -1,11 +1,25 @@
 #!/usr/bin/env sh
 
-# Step 1: lint-staged handles eslint + prettier on staged files (fast, per-file)
-node_modules/.bin/lint-staged
+# Step 1: lint-staged handles eslint + prettier on staged files (fast, per-file).
+# The status is checked explicitly. Without it the hook falls through to the
+# steps below, and a lint failure lands whenever those happen to pass — sh
+# reports only the LAST command's status.
+node_modules/.bin/lint-staged || exit 1
 
-# Step 2: Run tsc ONCE after formatting is applied — catches type errors
-# before they land. Uses --noEmit so no output files are generated.
-# This replaces the per-file tsc that was in engine/lint-staged.config.js
-# (which caused timeouts on large changesets because tsc ignores file
-# arguments and always checks the whole project anyway).
-npx tsc --noEmit
+# Step 2: type-check the root project. Its tsconfig `include` is `scripts/*.js`
+# with `checkJs` off, so this covers the build scripts that opt in via
+# `// @ts-check` — NOT the engine sources. Uses --noEmit so no output files are
+# generated. This replaces the per-file tsc that was in
+# engine/lint-staged.config.js (which caused timeouts on large changesets
+# because tsc ignores file arguments and always checks the whole project
+# anyway).
+npx tsc --noEmit || exit 1
+
+# Step 3: type-check the engine project — the sources this fork actually
+# changes. It only runs in a tree that has been built, because the engine
+# imports shader modules the build generates, and a fresh clone has none of
+# them; unconditional, this would block every commit made before the first
+# build. When it skips it prints a line saying so, since a silent skip reads
+# exactly like a passing check. The unconditional full check is CI's:
+# .github/workflows/dev.yml runs `npm run tsc` after `npm run build`.
+node scripts/engineTypeCheck.mjs
