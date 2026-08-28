@@ -1,0 +1,216 @@
+# Fix queue — every finding from the 2026-08-27 audit evening
+
+**Date:** 2026-08-27, quiet hours open
+**Source of truth for the findings:** [AUDIT_2026-08-27_SOL_WAVE_AND_PROJECT_SWEEP.md](AUDIT_2026-08-27_SOL_WAVE_AND_PROJECT_SWEEP.md) (Batch 1170) plus the three fleet journals, from which §5's tables are machine-extracted — 97 adversarially-verified survivors (2 critical, 11 high, 30 medium, 54 low), zero reconstructed from memory.
+**Tip at authoring:** `41aad98761` (Batch 1172)
+**Purpose:** the single dispatch view for turning tonight's findings into landed fixes. Every finding is either IN FLIGHT (a lane owns it now), WAVE 2 (dispatched with this document), or QUEUED (wave 3+, dispatch as lanes free). This document tracks dispatch state only — the audit register keeps the evidence, and the campaign queues stay the status authorities for their rows.
+
+## 0. Worker-shape guidance for dispatchers
+
+Codex Sol 5.6 takes bounded, single-deliverable, spec-verifiable fixes — one finding family per
+dispatch. Opus leads take the brief, verify its premises against the live tree first (a queue row
+is a lead, not a premise), run the mandated pipeline (Sol writes → a separate fresh Sol dispatch
+reviews adversarially → Sol tests → Opus reviews last), and return a landing packet. Workers never
+run git writes, browsers, or builds; every rendering-adjacent fix states its pixel verification as
+owed to the gated Edge executor. Every fix needs a behavioural test that kills an inertness mutant
+(`if (false && …)`), never only an absence mutant.
+
+## 1. Already resolved tonight
+
+| Finding | Resolution |
+|---|---|
+| `G-1` critical — single-copy work in two clones | HARVESTED to `cesium-webgpu-worker-archive/2026-08-27-critical-single-copy/`; landing owed via lanes A2/A3; clones frozen until then |
+| `O-6` — landing gate fails its own semantic controls | LANDED, Batch 1172 (behavioural controls; exit 3 → clean) |
+| `O-7` — latent TypeError on the gate's diagnosis path | LANDED, Batch 1172 |
+| `I-1`/`I-2` — probe exit tier enforced only by regex; zero-check vacuity | LANDED, Batch 1171 |
+
+## 2. IN FLIGHT — owned by a running lane tonight
+
+| Lane | Findings owned | Clone |
+|---|---|---|
+| A1 | `M-1`…`M-8` (model wave repair; M-1 fail-closed guard is the verdict driver) | cesium-audit-model |
+| A2 | sun-disc completion — the unlanded `solarDiscTransmittanceSplit` half; first task is tip-coherence | cesium-lane-sundisc2 |
+| A3 | `perf-metric-vector.mjs` + noise fixture integration (multi-metric ruling) | cesium-lane-metric |
+| A4 | `F1-2` perf-manager teardown · `H1` IBL position gate · `H2` globe material cache · `E-1` clustered-light checksum | cesium-audit-fleet |
+| B1 | next C16 shard (`WebGPUSceneRendererFrustumLoop.ts` 42 markers + next-heaviest) | cesium-lane-c16shard |
+| B2 | `D-1`…`D-6`, `G-4` doc repairs (vacated closure, unbacked claims, mirror reconciliation) | cesium-audit-docs |
+| B3 | `O-8` three uncontrolled grammar rules · `O-9` detached-HEAD exit | cesium-audit-policy |
+| C1 | R-SOL claim promotion/kill + unread-region deep read (findings feed §5 on return) | cesium-lane-verify |
+| D1 | `P-1`…`P-9` prototype repairs under its own preregistration governance | cesium-audit-proto |
+| D2 | `verify-clone-drained.mjs` (G-1 root cause) · `verify-orientation-mirror.mjs` (G-4 root cause) | cesium-lane-tools |
+| D3 | C14 readiness review · C17 scope refresh (proposals) | cesium-lane-plan |
+
+## 3. WAVE 2 — dispatched with this document
+
+**Lane A5 — renderer-local cache invalidation cluster** (clone `cesium-lane-cachefix`). The defect
+class fleet 3 hit twenty-plus times, concentrated in three files; one Sol dispatch per family:
+
+| | Locator | Defect |
+|---|---|---|
+| A5-1 | `WebGPUGaussianSplatRenderer.ts:1403`, `:3113` | async pipeline promises land unguarded after the invalidation sweep; cold-start legacy-layout promises overwrite the packed commit, 64-byte decode of 32-byte records, no further request ever issued |
+| A5-2 | `WebGPUProceduralCloudRenderer.ts:1482`, `:1591` | temporal bind groups keep a destroyed half-res view across an A→B→A resize; the correct identity-compare pattern exists at `:1741` in the same file |
+| A5-3 | `WebGPUModelRenderer.ts:3964`, `:3361`, `:3388` | customShader add/swap never invalidates the primitive cache (new shader silently never compiles); removal destroys a UBO still referenced at binding 50 |
+| A5-4 | `WebGPUModelRenderer.ts:3245` | display pipeline maps keyed without generated-chunk class hashes — two primitives with different metadata classes share one pipeline |
+| A5-5 | `WebGPUModelRenderer.ts:5039` | per-geometry camera UB created once at 176 or 336 bytes from `isLit`, never resized — a flat→lit shader flip writes 336 bytes into a 176-byte buffer |
+
+**Lane A6 — elevation-material height derivation** (clone `cesium-lane-elev`): `F1-3` — six
+`PrimitiveMatElev{Ramp,Band,Contour}{Flat,Lit}.wgsl` shaders subtract a hardcoded mean-sphere
+`EARTH_RADIUS 6371000.0` and publish it as height above the ellipsoid (+7,137 m equator /
+−14,248 m poles), and the same lines discard the correct `posRTE` for a raw
+`positionHigh + positionLow` sum. One defect, one fix, six files; fork-added capability so WebGL is
+not at risk, but the justifying comment cites a WebGL behaviour that does not exist and must be
+corrected with it.
+
+**Lane E1 — rule enforcement teeth** (clone `cesium-lane-enforce`):
+
+| | Finding | Repair |
+|---|---|---|
+| E1-1 | `F1-1` — pre-commit `npx tsc --noEmit` type-checks zero engine files while its comment claims coverage | point the hook at the real per-project checks |
+| E1-2 | `G-2` — engine/widgets `.ts` matches no eslint config; ~270 files unlinted; eleven `no-explicit-any` suppressions annotate a linter that never ran; `--quiet` hides the warning | add the config block behind a `--max-warnings` ratchet |
+| E1-3 | `G-3` — twelve fork guards run in no CI workflow and no hook | one CI step running the whole-tree-safe guards |
+| E1-4 | `G-3b` — `lint-debug-pragmas.mjs` exits 1 on four deliberately-permanent warn sites and cannot be armed | an honoured `permanent-diagnostic` marker, then wire it |
+| E1-5 | tooling-catalog spec test A1 pins the census at a literal 1024 — red at the pristine tip | derive the count, prove with a mutation |
+
+## 4. QUEUED — wave 3, dispatch as lanes free (priority order)
+
+| | Locator | Defect | Shape |
+|---|---|---|---|
+| Q-1 | `Scene.js:3741` | Scene branches on `isWebGPU` to overwrite the shared `frameState.light` — direct P2 violation in the file both backends share | Sol, bounded |
+| Q-2 | `WebGPUSceneRenderer.ts:651` | run-of-one indirect-draw branch swallows a command throw with zero output; the sibling branch 60 lines up reports the identical throw | Sol, bounded |
+| Q-3 | `WebGPUPostProcessPipeline.ts:1856` | every canvas resize destroys all effects and recompiles their shaders | Opus judgment (resize protocol) |
+| Q-4 | `IMAGERY_PROJECTION.md:207` | the canonical doc's summary table inverts the shipped WGSL truth across nine citations — CLAUDE.md calls drift here worse than a projection bug | Sol, doc + verification |
+| Q-5 | 3 sites in `Scene/` | unwrapped interpolated `console.log` costing work in production | Sol, bounded |
+| Q-6 | probe-lane exit-mapping cluster | runtime/device faults fold to FAIL/1 not ERROR/2; pre-try setup escapes the exit mapper; stack-substring tier classification | Opus design, then Sol |
+| Q-7 | `verify-tracked-references.mjs` | cannot distinguish absent-because-unbuilt from absent-because-broken; fails closed on any changed spec in an unbuilt clone | Sol, bounded |
+| Q-8 | C16 grammar exclusions | `CC-BY-NC-SA` and `YYYY-MM-DDTHH` leak past the two-string lookahead; zero live occurrences, but the standard REQUIRES license attribution — `C16-R2` rider | Sol, bounded |
+| Q-9 | `ViewportQuad.js:187` + siblings | scene-logic-extractor inversions — shared post-branch logic under one backend's branch (fleet 1 backend-agnosticism survivors; full list in §5) | Sol per file |
+| Q-10 | `WebGPUSceneRenderer.ts` structure | three self-contained clusters with no orchestration role inline (5,009 lines) | Opus decomposition plan first |
+
+The remaining ~30 medium and all low survivors are enumerated in §5 with their lane column reading
+QUEUED; they dispatch after Q-1…Q-10, batched by file so one Sol dispatch closes several small
+findings in the same module. C1's returning findings append here as a dated addendum.
+
+## 5. Machine-generated survivor tables (from the three fleet journals, complete)
+
+Every CONFIRMED or PLAUSIBLE verdict from the three adversarial-verification fleets,
+severity as corrected by the verifier. `Lane` names the worker lane that owns the fix
+tonight; `QUEUED` rows dispatch in wave 3 as lanes free up. Fleet-3 locators that begin
+with a bare `:line` are inside the file named at the row's start.
+
+### CRITICAL (2)
+
+| Source | Status | Locator | Finding | Lane |
+|---|---|---|---|---|
+| fleet2 | CONFIRMED | F:/Dev/GH/cesium-worker-c11170/Tools/visual-regression/lib/perf-metric-vector.mjs:1 | cesium-worker-c11170 holds the 1262-line perf-metric-vector.mjs discharging the 2026-08-25 multi-metric ruling, absent from tip and from main's working copy | A3 (in flight) |
+| fleet2 | CONFIRMED | F:/Dev/GH/cesium-worker-sundisc/packages/engine/Source/Scene/SolarDiscModel.js:757 | cesium-worker-sundisc holds an 82-line `solarDiscTransmittanceSplit` implementation that exists in no commit, not in main's tip, and not in main's uncommitted worktree | A2 (in flight) |
+
+### HIGH (11)
+
+| Source | Status | Locator | Finding | Lane |
+|---|---|---|---|---|
+| fleet1 | CONFIRMED | packages/engine/Source/Renderer/WebGPU/WebGPUPerformanceManager.ts:1622 | WebGPUPerformanceManager.destroy() clears only two Maps; its 7 atmosphere-LUT textures + 2 uniform buffers are never destroyed, never registered in _cacheRegistry, and the manager is never destroyed b | A4 (in flight) |
+| fleet1 | CONFIRMED | packages/engine/Source/Shaders/WebGPU/Primitive/PrimitiveMatElevRampFlat.wgsl:76 | Six elevation shaders subtract a hardcoded mean-sphere radius 6371000.0 and call the result height above the ellipsoid, biasing it +7137 m at the equator and -14248 m at the poles | A6 (wave 2) |
+| fleet2 | CONFIRMED | eslint.config.js:14, :55-63, :142-147; packages/engine/Source/Renderer/WebGPU/WebGPUShader | The `any` ban has no lint tooth on engine TypeScript — and empirically the gap is far larger: engine/widgets .ts files match NO eslint config at all, so zero rules run on them. | E1 (wave 2) |
+| fleet3 | CONFIRMED | WebGPUDynamicEnvironm:1197 | The WebGPU environment-map refresh gate has no `manager._position` term reachable in the default configuration, so a moving Model/Cesium3DTileset keeps an IBL cube baked for its old location; WebGL re | QUEUED |
+| fleet3 | CONFIRMED | WebGPUGlobeSurfaceRen:1203 | Scene-format/MSAA generation change clears three pipeline caches but not `_materialPipelineCache`, so globe-material pipelines keep the old color format and sample count. | A4 (in flight) |
+| fleet3 | CONFIRMED | WebGPUGaussianSplatRe:1403 | In-flight pipeline promises write into cache.pipeline / cache.pickPipeline with no generation or resources-identity guard, so pipelines compiled for a superseded format/log-depth/layout/SH axis can la | A5 (wave 2) |
+| fleet3 | CONFIRMED | WebGPUProceduralCloud:1482 | Temporal resolve bind groups capture cache.halfView but are only invalidated on a half-res *size* change, so a size A -> B -> A cycle taken while the temporal gate is off leaves both groups bound to a | A5 (wave 2) |
+| fleet3 | CONFIRMED | WebGPUModelPipelineCa:3245 | Display pipeline maps are keyed without the generated-chunk class hashes, so two primitives of one Model with different metadata classes but the same material identity share one pipeline and one compi | QUEUED |
+| fleet3 | CONFIRMED | WebGPUModelRenderer.t:3361 | Removing or swapping a native-WGSL CustomShader destroys `cache._customShader.uboBuffer` while the memoized `primCache.textureEntries` (and the merged group-1 bind group built from it) still reference | A5 (wave 2) |
+| fleet3 | CONFIRMED | WebGPUModelRenderer.t:3964 | Adding or swapping a CustomShader never invalidates the primitive cache, so `materialDefines` and `_customShaderWGSL` keep first-frame values and the new shader silently never compiles. | A5 (wave 2) |
+| fleet3 | CONFIRMED | WebGPUPrimitiveComman:5039 | Material path: per-geometry camera UB created once at 176 or 336 bytes from `isLit`, never resized, so a flat->lit shader flip writes 336 bytes into a 176-byte buffer | QUEUED |
+
+### MEDIUM (30)
+
+| Source | Status | Locator | Finding | Lane |
+|---|---|---|---|---|
+| fleet1 | CONFIRMED | migration_doc/IMAGERY_PROJECTION.md:150 | Nine file:line citations in IMAGERY_PROJECTION.md point at unrelated code (offsets of 200-2200 lines) | QUEUED |
+| fleet1 | CONFIRMED | migration_doc/IMAGERY_PROJECTION.md:207 | IMAGERY_PROJECTION.md:207 canonical table still marks the WGSL texCoordsRect alpha-mask test as `geoUV — WRONG ❌`, contradicting the shipped WGSL and the doc's own two "fix LANDED" notes | QUEUED |
+| fleet1 | CONFIRMED | packages/engine/Source/Renderer/WebGPU/WebGPUPostProcessPipeline.ts:1858 | Every canvas size change destroys and recreates all complex post-process effects, and their pipelines are rebuilt through createFullscreenPipeline, which calls createShaderModule/createRenderPipeline  | QUEUED |
+| fleet1 | CONFIRMED | packages/engine/Source/Renderer/WebGPU/WebGPUSceneRenderer.ts:3736 | WebGPUSceneRenderer.ts is 5,009 lines interleaving frame/pass orchestration with three self-contained clusters (GPU culling+HiZ+sort-keys, debug overlays, stats/telemetry) that have no orchestration r | QUEUED |
+| fleet1 | CONFIRMED | packages/engine/Source/Renderer/WebGPU/WebGPUSceneRenderer.ts:651 | WebGPUSceneRenderer.ts:647-656 — the run-of-one branch of executeBatchIndirect swallows an executeWebGPUCommand throw with zero output at any log level, while the sibling branch 60 lines above reports | QUEUED |
+| fleet1 | CONFIRMED | packages/engine/Source/Scene/Cesium3DTilesInvalidationFeed.js:163 | Cesium3DTilesInvalidationFeed.js:163 — unwrapped interpolated console.log inside the per-entry apply loop | QUEUED |
+| fleet1 | CONFIRMED | packages/engine/Source/Scene/Scene.js:3741 | Scene.js:3741 branches on this.isWebGPU to replace the backend-agnostic frameState.light, diverging published scene state per backend | QUEUED |
+| fleet1 | CONFIRMED | packages/engine/Source/Scene/Scene.js:463 | Scene.js:463 — unwrapped init-time console.log with template interpolation on every WebGPU Scene construction | QUEUED |
+| fleet1 | CONFIRMED | packages/engine/Source/Shaders/WebGPU/Primitive/PrimitiveMatElevRampFlat.wgsl:115 | Six elevation-material vertex shaders reconstruct world position with the banned positionHigh + positionLow sum before differencing against a ~6.4e6 constant | A6 (wave 2) |
+| fleet1 | CONFIRMED | tsconfig.json:2 | Root tsconfig include is ["scripts/*.js"], so the documented `npx tsc --noEmit` — which is exactly what the husky pre-commit hook runs — type-checks ZERO engine files while exiting 0 | E1 (wave 2) |
+| fleet2 | CONFIRMED | .github/workflows/*.yml; package.json:149-176; .husky/pre-commit, .husky/pre-push | Twelve fork-specific guard scripts exist as npm/Tools entry points and none is invoked by any GitHub Actions workflow; only local git hooks enforce them. | E1 (wave 2) |
+| fleet2 | CONFIRMED | f:/Dev/GH/cesium-webgpu/CLAUDE.md:12 and migration_doc/CAMPAIGN_STATE.md:34 vs migration_d | CLAUDE.md asserts C11-181 is NOT COMPLETE and that 'the queue row keeps it open', but the named queue row and the ledger both record it COMPLETE with a 2026-08-09 administrative close | B2 (in flight) |
+| fleet2 | CONFIRMED | F:/Dev/GH/cesium-worker-c11170/Tools/visual-regression/output/performance/c11-170-perf-reg | c11170 is the only clone with un-repatriated evidence artifacts under Tools/visual-regression/output (6 files); the other eight clones are genuinely empty | A3 (in flight) |
+| fleet2 | CONFIRMED | F:/Dev/GH/cesium-worker-g6frame/Tools/visual-regression/probe-gsplat-multifrustum.mjs | cesium-worker-g6frame carries ~318 lines of gsplat probe methodology present in the clone and absent from tip | D2 (in flight) |
+| fleet2 | CONFIRMED | migration_doc/CAMPAIGN_PORTFOLIO_QUEUE.md:133,224 vs migration_doc/QUEUE_2026-07-23_CAMPAI | CAMPAIGN_PORTFOLIO_QUEUE.md still records C13-41 / C12-29 S3 as COMPLETE and 'no longer blocks C12' while both status-authority queues record it REOPENED with the closure VACATED | B2 (in flight) |
+| fleet2 | CONFIRMED | packages/engine/Specs/Scene/Cesium3DTileBatchTableSpec.js:21 | Cesium3DTileBatchTableSpec.js is xdescribe'd (1,200 lines, 57 it) while the class is live in Source including two WebGPU renderers | QUEUED |
+| fleet2 | CONFIRMED | Tools/lint-debug-pragmas.mjs:155; package.json:149 | The debug-pragma linter is unwired and currently exits 1 on four deliberately-permanent console.warn sites it has no way to exempt. | E1 (wave 2) |
+| fleet3 | CONFIRMED | WebGPUVoxelRenderer.t:1101 | fragmentPickMain (object pick) still ray-marches the camera-centered phantom box while the color and cell-pick marches use u.cameraPositionProxy, so object-pick hit/miss is decided from unrelated samp | QUEUED |
+| fleet3 | CONFIRMED | WebGPUGaussianSplatRe:1545 | The legacy comparator's re-sort throttle tests camera direction only, omitting the camera-position term its own comment and the cited WebGL predicate both carry, so a camera that translates without ro | A5 (wave 2) |
+| fleet3 | CONFIRMED | WebGPUProceduralCloud:1591 | The consuming temporal bind groups are keyed on the attachment generation only, and that counter does not advance when halfView is reallocated at an unchanged size, so binding 0 goes stale by a second | A5 (wave 2) |
+| fleet3 | CONFIRMED | WebGPUPrimitiveComman:2917 | Color path: `hasDepthFail` omitted from the pipeline-rebuild predicate that exclusively builds the depth-fail pipeline, so a late `depthFailAppearance` assignment silently renders nothing on WebGPU | QUEUED |
+| fleet3 | CONFIRMED | WebGPUVoxelRenderer.t:3011 | VoxelPrimitive.nearestSampling is read only inside the one-time init block, so runtime toggling is a silent no-op on WebGPU while WebGL re-applies it every frame. | QUEUED |
+| fleet3 | CONFIRMED | WebGPUPrimitiveComman:3069 | Color path bakes cull mode from `appearance.closed` / `renderState.cull.enabled` into the cached pipeline but omits both from the rebuild predicate, while the material path's gate keys on `appearanceC | QUEUED |
+| fleet3 | CONFIRMED | WebGPUModelPipelineCa:3421 | `_errorPipelines` bakes presentation format, depth format and sample count but is never cleared outside destroy(), so a post-toggle failure serves a stale-format magenta pipeline into the freshly-wipe | QUEUED |
+| fleet3 | CONFIRMED | WebGPUVoxelRenderer.t:3583 | stepSize, maxSteps and densityThreshold are hardcoded UBO literals, so VoxelPrimitive.stepSizeMultiplier is a silent no-op on WebGPU. | QUEUED |
+| fleet3 | CONFIRMED | WebGPUSceneRenderer.t:3769 | GPU frustum cull drops un-cullable commands (no boundingVolume / cull===false) because their sphere slot stays all-zero | QUEUED |
+| fleet3 | CONFIRMED | WebGPUSceneRenderer.t:3836 | Previous-frame cull flags are matched to this frame's command list by count alone, so churn at constant length misapplies flags positionally | QUEUED |
+| fleet3 | PLAUSIBLE | WebGPUSceneRenderer.t:3978 | Translucent cull has no readback-in-flight guard and shares one culler across frustums; second same-frame prepareReadback maps a slot the open encoder still writes | QUEUED |
+| fleet3 | CONFIRMED | WebGPUModelPipelineCa:4182 | The capture-pipeline key omits the split / model-color / silhouette render-mode bits and `_capturePipelines` is never wiped, so a runtime toggle leaves the env-capture pass on the pre-toggle module in | QUEUED |
+| fleet3 | CONFIRMED | WebGPUModelRenderer.t:6672 | CustomShader TEXTURE uniforms that resolve asynchronously are never upgraded from the white placeholder, because the deferred-texture poll covers only glTF material slots. | A5 (wave 2) |
+
+### LOW (54)
+
+| Source | Status | Locator | Finding | Lane |
+|---|---|---|---|---|
+| fleet1 | CONFIRMED | migration_doc/DEBUGGING_GUIDE.md:209 | Five live CesiumDebug commands missing from DEBUGGING_GUIDE.md's command table; four appear nowhere in the file | QUEUED |
+| fleet1 | CONFIRMED | package.json:48 | package.json sideEffects './Source/Cesium*.js' rationale (protecting a setGlobalDefaultRenderer bootstrap) no longer matches the generated barrels | QUEUED |
+| fleet1 | PLAUSIBLE | packages/engine/Source/Renderer/WebGPU/RenderCommand.js:24 | RenderCommand.js is backend-neutral but missing from WEBGPU_COMPAT_EXEMPTIONS, so it becomes the throwing stub in webgl-only builds | QUEUED |
+| fleet1 | PLAUSIBLE | packages/engine/Source/Renderer/WebGPU/RenderStateToPipelineVariant.ts:383 | applyPerEncoderState skips setStencilReference when the reference is 0, leaking the previous draw's reference | QUEUED |
+| fleet1 | CONFIRMED | packages/engine/Source/Renderer/WebGPU/WebGPUAmbientOcclusionEffect.ts:933 | AmbientOcclusionEffect.updateConfig() destroys 2 of the 4 uniform buffers that _createUniforms() then reassigns, orphaning _blurHUniforms and _blurVUniforms — latent, no caller today. | QUEUED |
+| fleet1 | CONFIRMED | packages/engine/Source/Renderer/WebGPU/WebGPUContext.ts:1 | 54 of 272 files under Renderer/WebGPU exceed 1,000 lines (210,107 lines total) with no decomposition entry in DEFERRED_WORK.md, while genuinely exempt large files are correctly exempt | QUEUED |
+| fleet1 | CONFIRMED | packages/engine/Source/Renderer/WebGPU/WebGPUContext.ts:5177 | WebGPUContext.ts is 7,747 lines with ~9 responsibilities; companion-file seam applied only to the smallest clusters, and a new resource-owning subsystem must be wired into three separate teardown path | QUEUED |
+| fleet1 | CONFIRMED | packages/engine/Source/Renderer/WebGPU/WebGPUContextCullerPool.ts:104 | WebGPUContextCullerPool.ts:104 — all four lazy GPU-culler getters leave the outer import("./WebGPUGPUCuller.js").then(...) without a .catch, so a rejection is unhandled and permanently latches the ini | QUEUED |
+| fleet1 | PLAUSIBLE | packages/engine/Source/Renderer/WebGPU/WebGPUDrawCommand.ts:590 | Bundle fast path returns before applyPerEncoderState, dropping the command's own per-encoder state | QUEUED |
+| fleet1 | PLAUSIBLE | packages/engine/Source/Renderer/WebGPU/WebGPUDrawCommand.ts:716 | WebGPUDrawCommand.clone() omits depthForTranslucentClassification, classificationDepthPipeline, drawIndirectBuffer/Offset, bundle and enabled | D2 (in flight) |
+| fleet1 | PLAUSIBLE | packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceShaders.ts:189 | getDebugFragmentShaderModule preprocesses at definesHi=0 while its clip-distances sibling deliberately threads definesHi, so a debug pipeline pairs a hi-aware vertex module with a hi-blind fragment mo | QUEUED |
+| fleet1 | PLAUSIBLE | packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceTileUB.ts:499 | WebGPUGlobeSurfaceTileUB.ts:499 — pragma-wrapped console.error for a condition its own comment says renders the globe black | QUEUED |
+| fleet1 | CONFIRMED | packages/engine/Source/Renderer/WebGPU/WebGPUGroundPolylineRenderer.js:2367 | Paired load/error listeners on an HTMLImageElement material source are both registered {once:true} but neither is removed when the other fires, retaining the renderer's material cache for the element' | QUEUED |
+| fleet1 | CONFIRMED | packages/engine/Source/Renderer/WebGPU/WebGPUGroundPrimitiveRenderer.js:1961 | createWebGPUGroundPrimitiveCommands is an 867-line function spanning six phases; resolveDepthSampleBindGroup is a closure over ~40 locals so the depth-source selection can only be verified by pixel pr | QUEUED |
+| fleet1 | CONFIRMED | packages/engine/Source/Renderer/WebGPU/WebGPUPostProcessPipeline.ts:1863 | The ten per-effect ?.resize() calls in WebGPUPostProcessPipeline.resize() are provably no-ops because the initialize() call on the preceding line nulls every one of those fields. | QUEUED |
+| fleet1 | PLAUSIBLE | packages/engine/Source/Renderer/WebGPU/WebGPURenderBundleManager.ts:402 | WebGPURenderBundleManager.ts:402-419 — _recordBundleWithValidation pushes a validation scope then runs a caller-supplied record callback and encoder.finish() with no try/finally, leaking the scope on  | QUEUED |
+| fleet1 | PLAUSIBLE | packages/engine/Source/Renderer/WebGPU/WebGPUSceneRenderer.ts:2805 | WebGPUSceneRenderer.ts:2805 — InvertClassification composite skip warning is debug-only | QUEUED |
+| fleet1 | CONFIRMED | packages/engine/Source/Renderer/WebGPU/WebGPUShaderDefines.ts:23 | WebGPUShaderDefines.ts registry header justifies the bit-31 reservation with a pipelineKeyWithDepthFlag fold that no longer exists, contradicting the same file at :905 and the helper's own docstring | QUEUED |
+| fleet1 | CONFIRMED | packages/engine/Source/Renderer/WebGPU/WebGPUShaderDefines.ts:249 | ShaderDefine bits 10 (STOCHASTIC_DITHER_ALPHA) and 11 (STENCIL_PICK_WINNER) carry `Consumers:` lines naming WGSL gates that were never authored; the feature shipped as separate entry points instead | QUEUED |
+| fleet1 | PLAUSIBLE | packages/engine/Source/Renderer/WebGPU/WebGPUShadowMapRenderer.js:693 | WebGPUShadowMapRenderer.js:693 — pragma-stripped warning for unregistered shadow-cast vertex stride | QUEUED |
+| fleet1 | PLAUSIBLE | packages/engine/Source/Renderer/WebGPU/WebGPUViewportQuad.ts:353 | WebGPUViewportQuad.createBindGroupFromUniformMap takes `Record<string, () => any>` when the correct union ViewportQuadUniformValue is declared 226 lines above in the same file | QUEUED |
+| fleet1 | CONFIRMED | packages/engine/Source/Scene/CesiumDebug.js:63 | CesiumDebug.help() omits seven of the object's own live methods despite advertising "list all commands" | QUEUED |
+| fleet1 | CONFIRMED | packages/engine/Source/Scene/GlobeSurfaceShaderSet.js:1086 | GlobeSurfaceShaderSet.js:1086 uses a raw context.isWebGPU term that is redundant with the WebGL-only capability tested two lines later | QUEUED |
+| fleet1 | CONFIRMED | packages/engine/Source/Scene/SceneRenderer.js:519 | SceneRenderer.js:519 — unwrapped seven-interpolation env-inject console.log guarded only by a JS latch | QUEUED |
+| fleet1 | CONFIRMED | packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl:1974 | GlobeTerrain.wgsl applyImageryLayer docstring cites GlobeFS.glsl by line number and is off by ~48 lines | QUEUED |
+| fleet1 | PLAUSIBLE | scripts/bundleVariantPlugin.js:222 | WebGLCompatibilityStub exemption's 'works in ANY variant' invariant is false because its six Stubs/* dependencies are not exempt | QUEUED |
+| fleet1 | CONFIRMED | scripts/bundleVariantPlugin.js:285 | WEBGPU_COMPAT_EXEMPTIONS substring matching silently also exempts WebGPUModelMetadataCache.js | QUEUED |
+| fleet1 | PLAUSIBLE | Tools/visual-regression/c12-29-s5-custom-ellipsoid-gate.spec.mjs:6045 | c12-29-s5 spec test returns before asserting when its probe file is missing — an assertion-free early return on absent evidence | QUEUED |
+| fleet2 | PLAUSIBLE | .clinerules:516; migration_doc/UPSTREAM_MERGE_2026-06_CHANGELOG.md:215-247 | The documented 'prefer --theirs then re-add WebGPU' conflict step no longer applies to the decomposed high-churn files | QUEUED |
+| fleet2 | CONFIRMED | .github/workflows/dev.yml:23-35; .github/workflows/prod.yml:28-40; .husky/pre-commit; .hus | No licensing guard runs in CI or any git hook; verify-packaged-notices and buildThirdParty are manual-only | E1 (wave 2) |
+| fleet2 | CONFIRMED | .gitignore:43-44; .github/workflows/dev.yml:21,31; package.json:115 | No committed lockfile while ~90 caret ranges feed a CI type-check gate | E1 (wave 2) |
+| fleet2 | CONFIRMED | CHANGES.md:3, CHANGES.md:12, CHANGES.md:18 | CHANGES.md fork section header is fixed at 2026-07-16 but accumulates entries landed weeks later, above the 1.144 section | QUEUED |
+| fleet2 | PLAUSIBLE | CLAUDE.md RTE / parity / evidence-repatriation / multi-metric sections; packages/engine/So | Four further rules have no tool; the ShaderDefine add-only ordering in particular has no bit-value snapshot spec. | D2 (in flight) |
+| fleet2 | CONFIRMED | F:/Dev/GH/cesium-audit-fleet git diff --numstat 6d5d8b1f07 HEAD -- packages/engine/Source | 533 upstream-owned engine files carry ~115k lines of divergence from the merged upstream tip - the standing hand-resolution surface | QUEUED |
+| fleet2 | PLAUSIBLE | F:/Dev/GH/cesium-webgpu git reflog show upstream/main; migration_doc/WEBGPU_MIGRATION_STAT | upstream/main tracking ref last fetched 2026-08-08, tip dated 2026-08-03, so fork's real divergence is unmeasured | QUEUED |
+| fleet2 | CONFIRMED | git log -1 --format='%b' 4f0dbc3c8c (also 77d9d2f520, 46ad90befd, 254b4a332a); Tools/landi | Four correctly-prefixed, correctly-attributed batches landed with a body consisting solely of the Co-Authored-By trailer — including Batch 1036, the commit that landed the charter rule requiring non-e | QUEUED |
+| fleet2 | CONFIRMED | git log HEAD~150..HEAD | Tools/landing-rules.mjs evaluateCommits({includeCommitQuietHours: | A 13-commit block from Fri 2026-08-14 (cd656255e9..034c7f74d0) fails all four landing rules simultaneously — batch-prefix, body, co-author-trailer and commit-quiet-hours — accounting for 52 of the 56  | QUEUED |
+| fleet2 | CONFIRMED | gulpfile.js:386-390; packages/engine/package.json:14-24,32-33; packages/engine/LICENSE.md | wasm_splats_bg.wasm is copied into the @cesium/engine tarball with no notice in packages/engine/LICENSE.md, unlike every peer prepare-copied binary | QUEUED |
+| fleet2 | CONFIRMED | migration_doc/DEFERRED_WORK.md:1273,1299 and migration_doc/QUEUE_2026-08-09_CAMPAIGN18.md: | Two ledger 'near line N' self-pointers (9285, 512) have drifted onto unrelated sections, and QUEUE_2026-08-09_CAMPAIGN18.md forwards both verbatim | B2 (in flight) |
+| fleet2 | CONFIRMED | packages/engine/Source/Renderer/WebGPU/WebGPUModelRenderer.ts; repo-wide wc -l sweep | The ~1000-line decomposition guidance is unmeasured and 162 engine source files exceed it, the largest at 9,015 lines. | A5 (wave 2) |
+| fleet2 | PLAUSIBLE | packages/engine/Source/Scene/Model/MetadataWGSLPipelineStage.js:60; scripts/bundleVariantP | Backend agnosticism has no static import-graph check — but the one violation offered as proof of live decay is a documented, engineered build-plugin exemption. | QUEUED |
+| fleet2 | CONFIRMED | packages/engine/Specs/Renderer/WebGPU/WebGPUTextureSpec.js:198 | WebGPUTextureSpec 'writes pixel data to a 2D texture' asserts nothing — no expect() in the body | QUEUED |
+| fleet2 | CONFIRMED | Tools/verify-landing-compliance.mjs:138-164 (resolveRange), :74 (DEFAULT_LAST=20), package | The after-the-fact detector has no grandfather floor at Batch 1045, so a widened --last N sweep reports permanently unfixable historical violations. | B3 (in flight) |
+| fleet3 | PLAUSIBLE | WebGPUPrimitiveComman:1013 | computeRTEMatrices takes view/projection from uniformState but the RTE origin from frameState.camera, so the color pack and the shadow-cast pack disagree on which camera is authoritative | QUEUED |
+| fleet3 | CONFIRMED | WebGPUSceneRenderer.t:1515 | Comment claims _scene is cleared at the end of executeCommands; it is not, and destroy() does not clear it either | QUEUED |
+| fleet3 | CONFIRMED | WebGPUProceduralCloud:2051 | cache.weatherTexture and cache.noiseFallbackTexture are allocated here but never destroyed, including in the otherwise meticulous destroyProceduralCloudResources. | A5 (wave 2) |
+| fleet3 | CONFIRMED | WebGPUDynamicEnvironm:2183 | Under SCENE_LIGHT the bake reads `uniformState.lightDirectionWC` while the gate watches only `sunDirectionWC`, so an app-animated scene light with a static sun never re-bakes the cube — real, but WebG | QUEUED |
+| fleet3 | CONFIRMED | WebGPUGaussianSplatRe:2411 | The source-withdrawal retirement branch is gated on cache.layoutPacked, so a legacy-layout producer that clears its payload keeps drawing the previous cloud from the still-resident GPU buffer. | A5 (wave 2) |
+| fleet3 | CONFIRMED | WebGPUGaussianSplatRe:2922 | The TAA-off early-out is unreachable because cache.prevSplatBuffer is unconditionally allocated as a placeholder during init, so the motion-vector path runs with TAA disabled; the consequences, howeve | A5 (wave 2) |
+| fleet3 | CONFIRMED | WebGPUGlobeSurfaceRen:2955 | `destroy()` never releases `_materialPipelineCache`, so the per-material-type uniform buffer is never destroyed. | A4 (in flight) |
+| fleet3 | CONFIRMED | WebGPUPrimitiveComman:3171 | Placeholder material UB reallocated on every pipeline rebuild without destroying the previous buffer | QUEUED |
+| fleet3 | CONFIRMED | Cesium3DTileset.js:3327 | processTiles double-decrements numberOfTilesProcessing when a tileLoad listener throws, permanently latching tilesLoaded false | QUEUED |
+| fleet3 | CONFIRMED | Scene.js:5771 | _specularEnvironmentCubeMap is Scene-owned but absent from the destroySceneResources ownedResources list | QUEUED |
+| fleet3 | PLAUSIBLE | Scene.js:5890 | try/catch around Matrix3.inverse is inert in release builds, so a degenerate voxel OBB fails closed instead of open | QUEUED |
+
