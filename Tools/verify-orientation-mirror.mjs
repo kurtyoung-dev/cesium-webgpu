@@ -43,6 +43,18 @@
  * Bold text is only a location signal after the closed vocabulary agrees. It
  * is never itself evidence that arbitrary uppercase prose is a status.
  *
+ * COMPARISON. Status sets are compared subset-compatibly, not for equality.
+ * A mirror legitimately summarizes, so it may state FEWER terms than its
+ * authority: a portfolio row reading COMPLETE against a queue row reading
+ * COMPLETE / IMPLEMENTED / VERIFIED / LANDED is terser, not wrong. Two things
+ * remain contradictions and still fail. First, a mirror may not state a term
+ * its authority does not state — COMPLETE against an authority that says only
+ * RESOLVED / LANDED asserts a disposition nobody granted. Second, a mirror may
+ * not DROP an open-state term (`OPEN_STATE_TERMS`): omitting REOPENED from
+ * COMPLETE / REOPENED is precisely the drift this verifier exists to catch, so
+ * the tolerance for verbosity stops at the terms that decide whether a row is
+ * finished.
+ *
  * Usage:
  *   node Tools/verify-orientation-mirror.mjs [--repo <path>]
  *        [--mirror <doc>...] [--allowlist <file>] [--json]
@@ -784,6 +796,50 @@ function statusKey(status) {
   return [...status.terms].sort(bytewise).join("\u0000");
 }
 
+/**
+ * Terms whose presence in the authority changes the disposition of a row.
+ * A mirror that omits one of these is not summarizing, it is contradicting:
+ * the drift this verifier exists to catch is a mirror calling work finished
+ * while its queue still holds the row open.
+ */
+export const OPEN_STATE_TERMS = Object.freeze([
+  "NOT STARTED",
+  "NOT COMPLETE",
+  "IN PROGRESS",
+  "PARTIAL",
+  "OPEN",
+  "REOPENED",
+  "VACATED",
+  "BLOCKED",
+  "DEFERRED",
+  "WITHDRAWN",
+  "PENDING",
+  "HELD",
+]);
+
+const OPEN_STATE_SET = new Set(OPEN_STATE_TERMS);
+
+/**
+ * Subset-compatible comparison. A mirror legitimately summarizes, so it may
+ * state fewer terms than its authority. It may never state a term the
+ * authority does not state, and it may never drop an open-state term.
+ */
+function statusesAgree(mirrorTerms, queueTerms) {
+  const queue = new Set(queueTerms);
+  for (const term of mirrorTerms) {
+    if (!queue.has(term)) {
+      return false;
+    }
+  }
+  const mirror = new Set(mirrorTerms);
+  for (const term of queueTerms) {
+    if (OPEN_STATE_SET.has(term) && !mirror.has(term)) {
+      return false;
+    }
+  }
+  return true;
+}
+
 function resolveQueueRow(rowId, queues) {
   const candidates = [];
   const sliceReference = splitSliceReference(rowId);
@@ -1081,9 +1137,7 @@ function verify(options) {
       );
       continue;
     }
-    const mirrorKey = statusKey(claim.status);
-    const queueKey = statusKey({ terms: resolution.queue.statusTerms });
-    if (mirrorKey !== queueKey) {
+    if (!statusesAgree(claim.status.terms, resolution.queue.statusTerms)) {
       recordDisagreement(findings, makeFinding("disagree", claim, resolution));
       continue;
     }

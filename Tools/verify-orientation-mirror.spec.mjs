@@ -32,7 +32,7 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const TOOL = process.env.ORIENTATION_MIRROR_TOOL
@@ -268,6 +268,65 @@ const MIXED_DUPLICATE_CONFIG = Object.freeze({
       queueBody([
         { rowId: "C11-26", status: "COMPLETE" },
         { rowId: "C11-26", status: "FROBNICATED" },
+      ]),
+    ),
+  ],
+});
+/**
+ * Q-28 comparison fixtures. The mirror grammar is not what these exercise:
+ * each pairs a well-formed mirror claim with a well-formed authority and
+ * differs only in how the two status SETS relate.
+ */
+const OPEN_STATE_TERMS_EXPECTED = Object.freeze([
+  "NOT STARTED",
+  "NOT COMPLETE",
+  "IN PROGRESS",
+  "PARTIAL",
+  "OPEN",
+  "REOPENED",
+  "VACATED",
+  "BLOCKED",
+  "DEFERRED",
+  "WITHDRAWN",
+  "PENDING",
+  "HELD",
+]);
+
+const SUBSET_AGREEMENT_CONFIG = Object.freeze({
+  mirrorDoc: "migration_doc/CAMPAIGN_STATE.md",
+  mirrorBody: "- `C11-27` is **COMPLETE**.\n",
+  queues: [
+    queueFile(
+      11,
+      queueBody([
+        {
+          rowId: "C11-27",
+          status: "COMPLETE / IMPLEMENTED / VERIFIED / LANDED",
+        },
+      ]),
+    ),
+  ],
+});
+
+const OMITTED_OPEN_STATE_CONFIG = Object.freeze({
+  mirrorDoc: "migration_doc/CAMPAIGN_STATE.md",
+  mirrorBody: "- `C11-28` is **COMPLETE**.\n",
+  queues: [
+    queueFile(
+      11,
+      queueBody([{ rowId: "C11-28", status: "COMPLETE / REOPENED" }]),
+    ),
+  ],
+});
+
+const INVENTED_TERM_CONFIG = Object.freeze({
+  mirrorBody:
+    "1. **C11-29 — COMPLETE / EDGE VERIFIED:** synthetic mirror claim.\n",
+  queues: [
+    queueFile(
+      11,
+      queueBody([
+        { rowId: "C11-29", status: "RESOLVED / LANDED / EDGE VERIFIED" },
       ]),
     ),
   ],
@@ -917,6 +976,71 @@ test("non-status tables admit only positively parsed status cells", () => {
     },
   );
 });
+test("B-Q28-1 a mirror may state fewer terms than its authority", () => {
+  withFixture(SUBSET_AGREEMENT_CONFIG, (fixture) => {
+    assertPass(runCli(fixture), 1);
+  });
+});
+
+test("B-Q28-2 a mirror may not drop an open-state term", () => {
+  for (const eol of ["\n", "\r\n"]) {
+    withFixture({ ...OMITTED_OPEN_STATE_CONFIG, eol }, (fixture) => {
+      assertOneFinding(runCli(fixture), {
+        verdict: "disagree",
+        rowId: "C11-28",
+        mirrorStatus: "COMPLETE",
+        queueStatus: "COMPLETE + REOPENED",
+      });
+    });
+  }
+});
+
+test("B-Q28-3 a mirror may not state a term its authority does not", () => {
+  withFixture(INVENTED_TERM_CONFIG, (fixture) => {
+    assertOneFinding(runCli(fixture), {
+      verdict: "disagree",
+      rowId: "C11-29",
+      mirrorStatus: "COMPLETE + EDGE VERIFIED",
+      queueStatus: "RESOLVED + LANDED + EDGE VERIFIED",
+    });
+  });
+});
+
+test("B-Q28-4 dropping any open-state term disagrees", () => {
+  for (const term of OPEN_STATE_TERMS_EXPECTED) {
+    withFixture(
+      {
+        mirrorDoc: "migration_doc/CAMPAIGN_STATE.md",
+        mirrorBody: "- `C11-30` is **LANDED**.\n",
+        queues: [
+          queueFile(
+            11,
+            queueBody([{ rowId: "C11-30", status: `LANDED / ${term}` }]),
+          ),
+        ],
+      },
+      (fixture) => {
+        assertOneFinding(runCli(fixture), {
+          verdict: "disagree",
+          rowId: "C11-30",
+          mirrorStatus: "LANDED",
+          queueStatus: `LANDED + ${term}`,
+        });
+      },
+    );
+  }
+});
+
+// The loop above can only be as strong as its term list. Pin that list to
+// the registry the tool actually consults, so deleting a term from the
+// registry fails here instead of silently shrinking the loop's coverage.
+test("B-Q28-5 the open-state registry is exactly the pinned list", async () => {
+  const module = await import(pathToFileURL(TOOL).href);
+  assert.deepEqual(
+    [...module.OPEN_STATE_TERMS],
+    [...OPEN_STATE_TERMS_EXPECTED],
+  );
+});
 
 test("B-P2-1 setup-time exceptions cannot leak a fixture root", () => {
   let createdRoot;
@@ -1208,6 +1332,62 @@ function mutateParserBehavior(source, behavior, mode) {
     );
   }
 
+  if (behavior === "subset") {
+    const pattern =
+      / {2}const queue = new Set\(queueTerms\);\r?\n {2}for \(const term of mirrorTerms\) \{\r?\n {4}if \(!queue\.has\(term\)\) \{\r?\n {6}return false;\r?\n {4}\}\r?\n {2}\}/gu;
+    if (mode === "absence") {
+      return replaceUnique(
+        source,
+        pattern,
+        ["  const queue = new Set(queueTerms);", "  void queue;"].join(eol),
+        behavior,
+      );
+    }
+    return replaceUnique(
+      source,
+      pattern,
+      [
+        "  const queue = new Set(queueTerms);",
+        "  for (const term of mirrorTerms) {",
+        "    const asserted = queue.has(term);",
+        "    void asserted;",
+        "    if (false && !queue.has(term)) {",
+        "      return false;",
+        "    }",
+        "  }",
+      ].join(eol),
+      behavior,
+    );
+  }
+
+  if (behavior === "open-state") {
+    const pattern =
+      / {2}const mirror = new Set\(mirrorTerms\);\r?\n {2}for \(const term of queueTerms\) \{\r?\n {4}if \(OPEN_STATE_SET\.has\(term\) && !mirror\.has\(term\)\) \{\r?\n {6}return false;\r?\n {4}\}\r?\n {2}\}/gu;
+    if (mode === "absence") {
+      return replaceUnique(
+        source,
+        pattern,
+        ["  const mirror = new Set(mirrorTerms);", "  void mirror;"].join(eol),
+        behavior,
+      );
+    }
+    return replaceUnique(
+      source,
+      pattern,
+      [
+        "  const mirror = new Set(mirrorTerms);",
+        "  for (const term of queueTerms) {",
+        "    const dropped = OPEN_STATE_SET.has(term) && !mirror.has(term);",
+        "    void dropped;",
+        "    if (false && dropped) {",
+        "      return false;",
+        "    }",
+        "  }",
+      ].join(eol),
+      behavior,
+    );
+  }
+
   if (behavior === "mixed-duplicate") {
     const pattern =
       / {2}if \(!everyCandidateResolved \|\| keys\.size !== 1\) \{/gu;
@@ -1405,6 +1585,28 @@ const PARSER_MUTATIONS = [
       rowId: "C11-26",
       mirrorStatus: "COMPLETE",
       queueStatus: "COMPLETE <> <unresolved>",
+    },
+  },
+  {
+    fixtureName: "B-Q28-3 invented mirror term",
+    behavior: "subset",
+    fixture: INVENTED_TERM_CONFIG,
+    expected: {
+      verdict: "disagree",
+      rowId: "C11-29",
+      mirrorStatus: "COMPLETE + EDGE VERIFIED",
+      queueStatus: "RESOLVED + LANDED + EDGE VERIFIED",
+    },
+  },
+  {
+    fixtureName: "B-Q28-2 dropped open-state term",
+    behavior: "open-state",
+    fixture: OMITTED_OPEN_STATE_CONFIG,
+    expected: {
+      verdict: "disagree",
+      rowId: "C11-28",
+      mirrorStatus: "COMPLETE",
+      queueStatus: "COMPLETE + REOPENED",
     },
   },
 ].flatMap((mutation) =>

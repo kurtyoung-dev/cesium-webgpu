@@ -125,8 +125,8 @@ that critical path through C12-29 S3.
 
 Execute in this order where dependencies permit:
 
-1. **C12-37 — COMPLETE / EDGE VERIFIED:** the 15-path product/tool packet landed
-   as `6d4a2376fc`; independently audited run
+1. **C12-37 — RESOLVED / LANDED / EDGE VERIFIED:** the 15-path product/tool
+   packet landed as `6d4a2376fc`; independently audited run
    `1f437ee9-37e5-4d17-94a1-a269e81679ab` is PASS / exit 0 on both backends.
    Its report and 72 verified PNGs are preserved under shared-library manifest
    `33CEE1FB9E1304234DA8743D952D34204FCFE2621885C0383FBAABA6E9113F17`.
