@@ -1,0 +1,45 @@
+{
+  "fixture": "perf-metric-texture-call-rate-zero-census",
+  "immutable": true,
+  "provenance": {
+    "acquiredBy": "dedicated Edge executor",
+    "acquiredAt": "2026-08-28T08:52:06.911Z",
+    "gitHead": "0db2ff47ffb415343e091a660f787a9e559d6421",
+    "gateRunId": "5ab7c854-b8ca-4f6b-a426-16e1bc98ce36",
+    "probe": "probe-backend-isolation.mjs (via probe-perf-regression-gate.mjs acquire)",
+    "scene": "pinned offline CesiumViewer (PROBE_VIEWER_OFFLINE=1)",
+    "backend": "webgpu"
+  },
+  "frames": 90,
+  "textureCallsTotal": 0,
+  "textureFramesNonZero": 0,
+  "textureCallsPerFrame": 0,
+  "bufferCallsPerFrame": 19.88888888888889,
+  "wrappedTextureMembers": [
+    "copyExternalImageToTexture",
+    "writeTexture",
+    "copyBufferToTexture",
+    "copyTextureToTexture",
+    "createTexture",
+    "texImage2D",
+    "texSubImage2D",
+    "texImage3D",
+    "texSubImage3D",
+    "compressedTexImage2D",
+    "compressedTexSubImage2D",
+    "texStorage2D"
+  ],
+  "unwrappableTextureMembers": [
+    "uploadImageSource"
+  ],
+  "companion": {
+    "webgl": {
+      "frames": 90,
+      "textureCallsTotal": 0,
+      "textureCallsPerFrame": 0,
+      "bufferCallsPerFrame": 1.988888888888889
+    }
+  },
+  "derivedBound": 0.03333333333333333,
+  "derivedBoundNote": "churnBound(frames=90, ruleOfThree.numerator=3) = 3/90. Derived from the census frame count, not chosen."
+}

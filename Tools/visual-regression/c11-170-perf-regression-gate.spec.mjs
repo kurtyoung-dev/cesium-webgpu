@@ -27,6 +27,7 @@ import {
   allocationMetrics,
   churnBound,
   memoryMetrics,
+  M1_TEXTURE_CALLS_PER_FRAME_BOUND_PLACEHOLDER,
   metricBarViolations,
   metricVector,
   minimumAchievablePValue,
@@ -70,6 +71,13 @@ const BASELINE_FIXTURE_PATH = path.join(
   "fixtures",
   "c11-170",
   "perf-gate-derivation-baseline.json",
+);
+
+const MEASURED_CALL_RATE_FIXTURE_PATH = path.join(
+  HERE,
+  "fixtures",
+  "c11-170",
+  "perf-metric-texture-call-rate-zero-census.json",
 );
 
 // WHY THIS IS A FIXTURE AND NOT A REPORT PATH. Until 2026-08-25 these tests read
@@ -1687,6 +1695,27 @@ test("M1 coverage: zero wrapped texture members is STRUCTURAL, while one wrapped
   assert.equal(measured.verdict, "PASS");
   assert.equal(measured.observed.rate, 0);
   assert.deepEqual(measured.observed.wrappedTextureMembers, ["writeTexture"]);
+});
+
+test("M1 calls-per-frame bound requires the owed measured zero-count census", () => {
+  assert.equal(
+    fs.existsSync(MEASURED_CALL_RATE_FIXTURE_PATH),
+    true,
+    `owed acquire run: run probe-backend-isolation.mjs on the pinned offline scene and bank its measured zero-count texture call-rate census at ${MEASURED_CALL_RATE_FIXTURE_PATH}`,
+  );
+  const fixture = readJson(MEASURED_CALL_RATE_FIXTURE_PATH);
+  assert.equal(fixture.immutable, true);
+  assert.ok(Number.isInteger(fixture.frames) && fixture.frames > 0);
+  assert.equal(fixture.textureCallsTotal, 0);
+  assert.ok(
+    Array.isArray(fixture.wrappedTextureMembers) &&
+      fixture.wrappedTextureMembers.length > 0,
+    "the owed census must prove the texture counter was observable",
+  );
+  assert.equal(
+    M1_TEXTURE_CALLS_PER_FRAME_BOUND_PLACEHOLDER,
+    churnBound(fixture.frames, PERF_GATE_BARS.ruleOfThree.numerator),
+  );
 });
 
 test("M1 coverage tooth: an inert observability guard lets total texture blindness pass", async () => {
