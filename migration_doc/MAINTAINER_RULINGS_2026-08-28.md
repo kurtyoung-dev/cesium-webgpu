@@ -62,3 +62,73 @@ weakest evidence form.
 premise correction (R-2026-08-28-1) and the SPEC_IMPORTS/topology extension (this ruling) as
 its two exhibits, is reviewed under the pre-commitment pattern, and re-freezes R9 before
 stage-2's P-1 arm executes.
+
+---
+
+## Second sitting, ~07:45 ET - the visual wave
+
+Three further rulings were taken the same morning, during visual-wave planning against
+`main` @ `1f724e17b6` (Batch 1213), after the backlog sweep (14-agent workflow: 321
+candidates, 121 at impact >= 4, 24 premise-verified) and the night-side code investigation
+recorded in [QUEUE_2026-08-28_VISUAL_WAVE.md](QUEUE_2026-08-28_VISUAL_WAVE.md). Operative.
+
+## R-2026-08-28-3 - Night-side rendering defaults ON, with a bundled public-domain night pyramid
+
+**Question.** The day/night machinery (per-layer day/night alpha ramp, WebGPU night-lights
+emission, procedural darkening) is landed but gated behind `enableLighting = false` and no
+night texture ships, so the night side renders as full-bright day imagery by default.
+
+**Ruling: library default ON.** After the Night-Earth epic decouples the night blend from
+`enableLighting` and adds the `globe.nightImagery` convenience, the night appearance is the
+DEFAULT in this fork - a deliberate, recorded divergence from upstream default behaviour,
+ruled by the maintainer with the bundling questions answered in session: the night layer
+ships OFFLINE like Natural Earth II does (`Assets/Textures/NaturalEarthII` is 540 KB / 42
+tiles, levels 0-2, TileMapServiceImageryProvider over buildModuleUrl), sourced from NASA
+Black Marble (Suomi NPP VIIRS composite) which is US-government PUBLIC DOMAIN - legally
+clean to bundle in an MIT repository, with a courtesy attribution line (NASA Earth
+Observatory / NOAA NGDC) in the asset folder and README. **Size gate:** the bundled pyramid
+at levels 0-2 is expected at or under ~0.5 MB (night JPEG compresses better than day); a
+deeper level 3 variant (~2 MB) may ship only if the wave re-measures all three build
+variants and the maintainer accepts the delta. No implicit network fetch: the default layer
+is the bundled pyramid; ion asset 3812 (Black Marble 2017, higher resolution) stays an
+opt-in swap for token holders.
+
+**Compatibility bounds, stated now so the epic cannot drift:** the WebGL backend must show
+the same default night appearance (both-backends-simultaneously per the parity principle);
+`globe.nightImagery = false` (or undefined provider) must restore byte-identical upstream
+behaviour; and existing applications that already manage their own imagery layers must not
+have a night layer injected into a non-default imagery stack - the default applies to the
+default base-layer path only.
+
+## R-2026-08-28-4 - Visual wave composition: the Night-Earth epic arms alone
+
+Of the four lanes offered (Night-Earth epic; C12 close-out sprint; celestial water
+reflection C11-163; vegetation V1), the maintainer armed the **Night-Earth epic only** for
+this wave. The other three are STAGED in the wave queue with their premises verified and
+their gates recorded, not armed. Nothing in this ruling modifies R4 (aurora hold), the C14
+launch bar, or any campaign gate.
+
+## R-2026-08-28-5 - Two maintainer sessions scheduled
+
+Both maintainer-only items are scheduled for the next working session: the Milky Way
+4096/face re-bake ordered by R-2026-08-10-4 (a manual maintainer session; also C12 exit-gate
+item G3, so executing it advances the C12 close-out even though that lane is not armed), and
+the four C11-163 celestial-water-reflection sub-decisions (C11 queue section 7.0), taken
+together so the water lane is dispatchable the moment it arms.
+
+## R-2026-08-28-6 - The lunar Earth-shadow appearance arms in the visual wave
+
+Taken ~08:45 ET, third sitting of the morning, when the maintainer asked for a demo preset
+recreating the 2026-08-28 deep partial lunar eclipse (the previous night's event). The
+preset landed in the eclipse-explorer gallery, engine-ephemeris-derived and cross-checked
+against NASA SVS 5672 and EclipseWise: greatest 04:12 UTC, umbral magnitude 0.9319,
+partial phase 02:33-05:52 UTC, best spot Porto Velho, Rondonia, Brazil (Moon at the zenith,
+sub-lunar point 9.4S 63.1W at greatest). Confronted with the disclosed gap that nothing
+renders Earth's shadow ON the lunar disc (NEW-LUNAR-ECLIPSE-EARTH-SHADOW-APPEARANCE, OPEN,
+premise-verified in the morning sweep) and that EclipseState's scene-light factor is
+solar-only by contract, the maintainer ruled: **arm the Earth-shadow appearance in this
+wave**, amending R-2026-08-28-4's Night-Earth-only composition. The wave queue gains the
+VW-L rows: umbral/penumbral geometry projected on the lunar disc with chromatic umbral
+coloring, moonlight dimming through the umbral window (an explicit, recorded amendment to
+the EclipseState solar-only contract), goldens pinned to the published 2026-08-28
+circumstances, and the new preset as the Edge acceptance scene.
