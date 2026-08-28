@@ -47,18 +47,24 @@ jobs:
   # irrelevant to it. A spec asserts the no-build property rather than trusting
   # this comment.
   #
-  # excluded, with the reason each was measured to fail here:
-  #   - verify-tooling-catalog: reports the committed census as DRIFTED against
-  #     the tree, on a row that differs only in the git-freshness column. That
-  #     column is environment-sensitive, so the check is red before any change
-  #     is made. Filed separately; wire it once the census is stable.
-  #   - test-tooling-catalog: 9 of its 91 tests fail in a clean tree, from the
-  #     same pre-existing red set. Same disposition.
-  #   - verify-landing: exits 3 STRUCTURAL ("contains no commits; nothing was
-  #     verified") whenever it cannot resolve a commit range. This workflow's
-  #     checkout sets no fetch-depth, so the runner gets the default shallow
-  #     depth-1 checkout — a single commit, with no range to verify. It is a
-  #     local and pre-push gate, not a hosted one.
+  # excluded, with the reason each was measured to fail here (re-measured
+  # 2026-08-28 after the census stabilized - the earlier drift reasons are
+  # superseded):
+  #   - verify-tooling-catalog: refuses outright on this job's checkout. The
+  #     freshness column reads real commit dates, so the tool rejects a
+  #     truncated history as an ineligible subject ("candidate Git history is
+  #     shallow", exit 3 STRUCTURAL) before comparing anything. Wiring it needs
+  #     fetch-depth: 0, plus a ritual that regenerates the census in any commit
+  #     touching Tools/ or scripts/ - the advisory allowance covers only the
+  #     head commit's own files, so drift across two consecutive tooling
+  #     commits reds the check.
+  #   - test-tooling-catalog: green in a complete clone (91/91). It runs the
+  #     launcher against this repository ~49 times, so it inherits the shallow
+  #     refusal above - not a red set.
+  #   - verify-landing: a local and pre-push gate. It resolves the
+  #     monotonic-batch baseline from full history before counting a range, so
+  #     on a depth-1 checkout every invocation is STRUCTURAL regardless of
+  #     range.
   guards:
     runs-on: ubuntu-latest
     steps:

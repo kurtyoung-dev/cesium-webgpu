@@ -940,11 +940,51 @@ test("a third range component is rejected rather than silently ignored", () => {
   assert.doesNotMatch(result.output, /verify-landing: PASS/);
 });
 
-test("an empty range is STRUCTURAL, not a pass", () => {
-  const result = verify(["--range", "HEAD..HEAD"]);
-  assert.equal(result.status, 3);
+test("an empty range is STRUCTURAL, not a pass", (t) => {
+  // Measured on an own fixture, never on the working checkout. A shallow
+  // checkout - the default depth-1 clone a hosted runner produces - resolves
+  // the incomplete-ancestry baseline reason before the range is ever counted,
+  // so reading this rule off the host repository reports the environment
+  // instead of the rule.
+  const { root } = createHistoryFixture(t, { cleanListed: true });
+  writeFixture(root, SOURCE_PATH, "export const fixture = 1;\n");
+  commitFixture(root, 101, "second commit so a depth-1 clone truncates");
+  assert.equal(
+    fixtureGit(root, ["rev-parse", "--is-shallow-repository"]),
+    "false",
+  );
+
+  const result = verify(["--range", "HEAD..HEAD"], { repoRoot: root });
+  assert.equal(result.status, 3, result.output);
   assert.match(result.output, /STRUCTURAL/);
   assert.match(result.output, /nothing was verified/);
+  assert.doesNotMatch(result.output, /verify-landing: PASS/);
+
+  // Same empty range, truncated ancestry: the stated reason moves from
+  // emptiness to shallowness, but the verdict must never become a pass.
+  const cloneParent = mkdtempSync(path.join(tmpdir(), "landing-empty-range-"));
+  t.after(() => rmSync(cloneParent, { recursive: true, force: true }));
+  const shallow = path.join(cloneParent, "repo");
+  fixtureGit(cloneParent, [
+    "clone",
+    "--quiet",
+    "--no-local",
+    "--depth",
+    "1",
+    root,
+    shallow,
+  ]);
+  assert.equal(
+    fixtureGit(shallow, ["rev-parse", "--is-shallow-repository"]),
+    "true",
+  );
+  const shallowResult = verify(["--range", "HEAD..HEAD"], {
+    repoRoot: shallow,
+  });
+  assert.equal(shallowResult.status, 3, shallowResult.output);
+  assert.match(shallowResult.output, /STRUCTURAL/);
+  assert.match(shallowResult.output, /ancestry is shallow/);
+  assert.doesNotMatch(shallowResult.output, /verify-landing: PASS/);
 });
 
 test("detached HEAD uses origin/main when that fallback is available", (t) => {
