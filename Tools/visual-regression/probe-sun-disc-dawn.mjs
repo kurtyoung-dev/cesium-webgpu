@@ -4,9 +4,12 @@
  * @purpose Acquire a dual-backend dawn sweep of the solar disc and publish per-sample disc-centre versus disc-annulus luminance and chroma ratios with WebGL as the parity control.
  * @status ACTIVE
  *
- * This file is acquisition only. IT HAS NEVER BEEN RUN. Its landing claims no
- * verdict, and only an authorized machine-lane run against an already-served
- * build can earn one. The probe starts no server and builds nothing.
+ * This file is acquisition only. Its landing claimed no verdict, and only an
+ * authorized machine-lane run against an already-served build can earn one. The
+ * probe starts no server and builds nothing. Two full thirteen-sample two-backend
+ * runs exist as of 2026-08-28; the "never been run" claim this paragraph used to
+ * carry is retired here so a reader does not treat a paired acquisition as
+ * blindness.
  *
  * THE SUBJECT. A maintainer screenshot dated 2026-08-24 shows a small dark,
  * brownish spot at the centre of the rendered solar disc, inside the bright
@@ -53,12 +56,38 @@
  * the altitude the ENGINE reports at each sample and the gate scores those,
  * so a window that has drifted reads as blindness rather than as a finding.
  *
- * BELOW-HORIZON SAMPLES ARE EXCLUDED, NOT FAILED. The sweep deliberately
- * begins below the local horizon, where the engine culls the sun outright.
- * Those samples publish `sunVisible: false` and carry a null ratio; the gate
- * excludes them from scoring and requires the two backends to AGREE about
- * which samples they are, because a visibility disagreement is itself a parity
- * finding rather than noise.
+ * BELOW-HORIZON SAMPLES ARE EXCLUDED, NOT FAILED — AND THE ENGINE'S CULL FLAG
+ * IS NOT WHAT EXCLUDES THEM. The sweep deliberately begins below the local
+ * horizon. This paragraph used to assert that such a sample publishes
+ * `sunVisible: false`; the 2026-08-28 acquisition measured
+ * `isSunVisible === true` on all thirteen samples of BOTH legs, because
+ * `Scene.updateEnvironment` culls only when the sun's six-solar-radii glow
+ * sphere lies entirely inside the Earth occluder's cone — a far deeper
+ * condition than the disc being occulted. The probe therefore publishes the
+ * geometry the exclusion is actually made of: the sun's own angular radius, the
+ * geocentric radius under the site and the site's geodetic height. The gate
+ * derives the horizon dip from those and scores a sample only when the WHOLE
+ * disc clears it, still requiring the two backends to AGREE about which samples
+ * those are, because a disagreement there is a parity finding rather than noise.
+ *
+ * THE GLOBE MUST BE ON SCREEN BEFORE THE FIRST CAPTURE. The disc is composited
+ * over whatever the frame already holds, and at the lowest samples that is the
+ * Earth. On WebGPU a globe tile whose pipeline variant is not yet resident is
+ * skipped entirely for that frame, and `globe.tilesLoaded` — which this probe
+ * used to settle on — reports tile residency, not pipeline residency. The
+ * 2026-08-28 acquisition captured a globe-less WebGPU frame beside a complete
+ * WebGL one at the two lowest samples and published the difference as a 0.10
+ * parity delta about the sun. The sweep now spends a bounded readiness gate on
+ * a binned `Pass.GLOBE` command once per leg, at the lowest-sun view where the
+ * globe fills the frame, and a leg that never reaches it reports blindness.
+ *
+ * THE REGISTERED ALTITUDES ARE FRAME-DEPENDENT. `Simon1994EphemerisProvider`
+ * takes the ICRF branch when the IAU-2006 XYS chunks have loaded and the
+ * TEME/pseudo-fixed fallback when they have not. The two differ at this epoch by
+ * the precession accumulated since J2000, measured as -0.359 to -0.363 deg
+ * across this sweep, so a no-server derivation and a served browser disagree by
+ * that much on every sample. The probe publishes which branch was live at each
+ * sample so the difference reads as provenance rather than as drift.
  *
  * THE PAGE INSTRUMENT IS EXTRACTABLE AND SELF-CONTAINED. Every helper the page
  * needs is declared INSIDE the evaluate callback between the page-instrument
@@ -86,6 +115,8 @@ import {
   SUN_DISC_DAWN_BAR,
   SUN_DISC_DAWN_FIELD_OF_VIEW_DEGREES,
   SUN_DISC_DAWN_LIMB_REFERENCE_RATIO,
+  SUN_DISC_DAWN_READINESS,
+  SUN_DISC_DAWN_READINESS_WORST_CASE_MS,
   SUN_DISC_DAWN_REGIONS,
   SUN_DISC_DAWN_RENDERERS,
   SUN_DISC_DAWN_REPORTED_INSTANT_ISO,
@@ -111,7 +142,13 @@ const defaultOutputRoot = path.resolve(
     path.join(toolDirectory, "output/sun-disc-dawn"),
 );
 
-const RUN_WATCHDOG_MS = 420_000;
+// The fuse must outlast the worst case the readiness gate can spend, or a
+// slow-but-honest cold pipeline would look like a hung run. Derived rather than
+// written down, so raising the budget cannot quietly outgrow its own bound.
+const RUN_WATCHDOG_MS = Math.max(
+  420_000,
+  SUN_DISC_DAWN_READINESS_WORST_CASE_MS + 180_000,
+);
 const BROWSER_LAUNCH_TIMEOUT_MS = 60_000;
 const SESSION_CLOSE_TIMEOUT_MS = 15_000;
 const BROWSER_CLOSE_TIMEOUT_MS = 30_000;
@@ -121,9 +158,6 @@ const PROCESS_WATCHDOG_MS =
   BROWSER_CLOSE_TIMEOUT_MS +
   60_000;
 
-/** Frames the page may spend waiting for tiles before it captures anyway. */
-const MAX_SETTLE_FRAMES = 90;
-
 /** The plain-JSON framing the page instrument is handed. */
 const PAGE_CONFIG = Object.freeze({
   site: SUN_DISC_DAWN_SITE,
@@ -131,7 +165,7 @@ const PAGE_CONFIG = Object.freeze({
   regions: SUN_DISC_DAWN_REGIONS,
   fieldOfViewDegrees: SUN_DISC_DAWN_FIELD_OF_VIEW_DEGREES,
   viewport: SUN_DISC_DAWN_VIEWPORT,
-  maxSettleFrames: MAX_SETTLE_FRAMES,
+  readiness: SUN_DISC_DAWN_READINESS,
 });
 
 const stableJson = (value) => `${JSON.stringify(value, null, 2)}\n`;
@@ -505,6 +539,64 @@ async function acquirePageMeasurement({ renderer, config }) {
       azimuthDegrees: ((azimuth * 180) / Math.PI + 360) % 360,
     };
   };
+  // Commands the scene has binned into the GLOBE pass, summed over the frustum
+  // list. Zero both when no tile is visible AND when every visible tile was
+  // skipped for an unresolved pipeline, which is exactly why it, and not
+  // `tilesLoaded`, is the readiness signal. Backend-neutral: both renderers bin
+  // into the same list. The pass index arrives as an argument so this stays a
+  // total function over plain data with no engine barrel of its own.
+  const countGlobeCommands = (scene, globePassIndex) => {
+    if (!Number.isInteger(globePassIndex)) {
+      return null;
+    }
+    const view = scene && scene._view;
+    const binned = view && view.frustumCommandsList;
+    if (!binned) {
+      return null;
+    }
+    let total = 0;
+    for (let index = 0; index < binned.length; index++) {
+      const slots = binned[index] && binned[index].indices;
+      total += slots ? slots[globePassIndex] | 0 : 0;
+    }
+    return total;
+  };
+
+  // Bounded, wall-clock wait for the globe to reach the screen.
+  //
+  // LOADING side only — nothing is read here, so yielding is safe, and it is
+  // also mandatory: a WebGPU pipeline promise cannot settle without one. The
+  // caller supplies a sleep that elapses REAL time rather than an animation
+  // frame, because a headless page that is not compositing still has to let
+  // that promise land.
+  //
+  // `tilesLoaded` is kept as a term but is not the signal: it reports tile
+  // residency, and a resident tile with no resident pipeline draws nothing.
+  const awaitGlobeReady = async (
+    scene,
+    globePassIndex,
+    renderFrame,
+    sleep,
+    now,
+    timeoutMs,
+    pollMs,
+  ) => {
+    const started = now();
+    let frames = 0;
+    let ready = false;
+    let commands = null;
+    while (now() - started < timeoutMs) {
+      renderFrame();
+      frames++;
+      commands = countGlobeCommands(scene, globePassIndex);
+      if (scene?.globe?.tilesLoaded === true && commands > 0) {
+        ready = true;
+        break;
+      }
+      await sleep(pollMs);
+    }
+    return { ready, frames, commands, waitedMs: Math.round(now() - started) };
+  };
   // ==END sun-disc-dawn-page-instrument==
 
   // ==BEGIN fused-snapshot-capture==
@@ -567,6 +659,45 @@ async function acquirePageMeasurement({ renderer, config }) {
   const north = basis(1);
   const up = basis(2);
 
+  // The GLOBE pass slot the readiness signal indexes. If that export ever moves,
+  // `indices[undefined]` is NaN, `| 0` makes it zero, and the gate would time
+  // out on EVERY leg while looking like a real finding. Say so instead.
+  const globePassIndex =
+    C.Pass && Number.isInteger(C.Pass.GLOBE) ? C.Pass.GLOBE : null;
+  if (globePassIndex === null) {
+    harnessErrors.push("page:pass-globe-not-an-integer");
+  }
+
+  // The horizon the below-horizon exclusion is actually made of, read off the
+  // engine's own ellipsoid rather than written down here: the geocentric radius
+  // under the site, and the site's geodetic height. The gate derives the dip
+  // from the pair, so the probe publishes measurements and no judgement.
+  const ellipsoid = scene.globe?.ellipsoid ?? C.Ellipsoid.default;
+  const siteSurface = ellipsoid.scaleToGeodeticSurface(
+    sitePosition,
+    new C.Cartesian3(),
+  );
+  const localEarthRadiusMeters = siteSurface
+    ? C.Cartesian3.magnitude(siteSurface)
+    : null;
+  const siteCarto = C.Cartographic.fromCartesian(
+    sitePosition,
+    ellipsoid,
+    new C.Cartographic(),
+  );
+  const siteHeightMeters = siteCarto ? siteCarto.height : null;
+  if (localEarthRadiusMeters === null || siteHeightMeters === null) {
+    harnessErrors.push("page:site-horizon-geometry-unreadable");
+  }
+
+  // One readiness spend per leg, filled in at the lowest-sun sample below.
+  let globeReadiness = {
+    ready: false,
+    frames: 0,
+    commands: null,
+    waitedMs: 0,
+  };
+
   const startMs = Date.parse(config.sweep.startIso);
   const samples = [];
 
@@ -588,6 +719,7 @@ async function acquirePageMeasurement({ renderer, config }) {
       sunPositionWC.z - sitePosition.z,
     ];
     const aim = localAltitudeAzimuth(east, north, up, relative);
+    const sunDistanceMeters = Math.hypot(relative[0], relative[1], relative[2]);
     if (!Number.isFinite(aim.altitudeDegrees)) {
       reasons.push("sun-direction-unreadable");
     }
@@ -601,12 +733,31 @@ async function acquirePageMeasurement({ renderer, config }) {
       },
     });
 
+    // The globe has to be on screen before anything is composited over it, and
+    // on WebGPU that is a PIPELINE question rather than a tile question. Spend
+    // the readiness budget once, here, at the lowest-sun view — the sweep uses
+    // one terrain encoding and therefore one pipeline variant, and this is the
+    // only view in the sweep the globe fills.
+    if (index === 0) {
+      globeReadiness = await awaitGlobeReady(
+        scene,
+        globePassIndex,
+        () => {
+          scene.render(time);
+        },
+        (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+        () => performance.now(),
+        config.readiness.initialTimeoutMs,
+        config.readiness.pollMs,
+      );
+    }
+
     // Yield ONLY on the loading side. The capture below renders and freezes a
     // PNG in one task, with no yield between the final render and the read.
-    for (let frame = 0; frame < config.maxSettleFrames; frame++) {
-      if (scene.globe.tilesLoaded === true) {
-        break;
-      }
+    // A FIXED settle, not an exit on `tilesLoaded`: that flag was already true
+    // at every sample after the first, so the loop it used to guard ran zero
+    // frames and the sweep captured whatever the previous view had left.
+    for (let frame = 0; frame < config.readiness.settleFrames; frame++) {
       scene.render(time);
       await new Promise((resolve) => requestAnimationFrame(resolve));
     }
@@ -670,6 +821,29 @@ async function acquirePageMeasurement({ renderer, config }) {
         sunVisible: environmentState
           ? environmentState.isSunVisible === true
           : null,
+        // The sun's own angular radius, from the engine's solar radius and the
+        // distance the frame actually used. The gate subtracts it from the
+        // altitude so a disc the Earth has bitten into is excluded rather than
+        // measured against globe pixels in its own annulus.
+        solarAngularRadiusDegrees: sunDistanceMeters
+          ? C.Math.toDegrees(
+              Math.asin(Math.min(1, C.Math.SOLAR_RADIUS / sunDistanceMeters)),
+            )
+          : null,
+        localEarthRadiusMeters,
+        siteHeightMeters,
+        // Which inertial-to-fixed branch the ephemeris took this frame. The two
+        // differ at this epoch by the precession accumulated since J2000, so a
+        // registration derived without the XYS chunks and an acquisition served
+        // with them disagree by about a third of a degree on every sample.
+        icrfFrameResolved:
+          typeof C.Transforms?.computeIcrfToFixedMatrix === "function"
+            ? C.Transforms.computeIcrfToFixedMatrix(time) !== undefined
+            : null,
+        globeReady: globeReadiness.ready === true,
+        globeReadyWaitMs: globeReadiness.waitedMs,
+        globeReadyFrames: globeReadiness.frames,
+        globeCommands: countGlobeCommands(scene, globePassIndex),
         geometryValid,
         centerX,
         centerY,
@@ -711,6 +885,9 @@ async function acquirePageMeasurement({ renderer, config }) {
       ),
       imageryLayerCount: scene.imageryLayers?.length ?? null,
       frameNumber: scene.frameState.frameNumber,
+      globeReadiness,
+      localEarthRadiusMeters,
+      siteHeightMeters,
     },
   };
 }
@@ -898,7 +1075,11 @@ function artifactWithStatus(status, fields) {
       offlineScene:
         "The viewer runs in offline mode: no imagery and no terrain. The sky atmosphere is left on and asserted, because it gates the engine's sun extinction path.",
       belowHorizonSamples:
-        "Samples where the engine culls the sun publish sunVisible false and carry a null ratio; they are excluded from scoring, and a visibility disagreement between backends is itself a parity finding.",
+        "A sample is scored only when the engine reports the sun visible AND the whole disc clears the local horizon derived from the published site geometry. The engine's own cull is a six-solar-radii bounding-sphere test and stays true well below the horizon, so it alone would score a below-horizon sample as sky over sky; a disagreement between backends about which samples those are is itself a parity finding.",
+      globeReadiness:
+        "The readiness gate waits for at least one binned Pass.GLOBE command before the first capture, once per leg. tilesLoaded reports tile residency, not pipeline residency, and on WebGPU a tile whose pipeline variant is not yet resident is skipped entirely - a leg that captured before that lands is compositing the disc over an empty frame.",
+      ephemerisFrame:
+        "icrfFrameResolved records which inertial-to-fixed branch Simon1994EphemerisProvider took. The ICRF branch carries precession and nutation and the TEME fallback does not, so at this epoch the two disagree by about -0.36 degrees of solar altitude on every sample of this sweep.",
       luminanceSpace:
         "Luminance is Rec.709 over the display-referred framebuffer bytes, not a linear radiance.",
       reportedInstant: SUN_DISC_DAWN_REPORTED_INSTANT_ISO,

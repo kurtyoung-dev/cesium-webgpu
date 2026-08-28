@@ -36,14 +36,20 @@ import {
   SUN_DISC_DAWN_BAR,
   SUN_DISC_DAWN_LIMB_COEFFICIENTS,
   SUN_DISC_DAWN_LIMB_REFERENCE_RATIO,
+  SUN_DISC_DAWN_READINESS,
+  SUN_DISC_DAWN_READINESS_WORST_CASE_MS,
   SUN_DISC_DAWN_REGIONS,
   SUN_DISC_DAWN_RENDERERS,
+  SUN_DISC_DAWN_SITE,
   SUN_DISC_DAWN_SWEEP,
   SUN_DISC_DAWN_VIEWPORT,
   centreAnnulusChromaRatio,
   centreAnnulusRatio,
   evaluateSunDiscDawnSweep,
+  horizonDipDegrees,
   meanLimbIntensity,
+  sampleIsScored,
+  sunAboveLocalHorizon,
 } from "./lib/sun-disc-dawn-gate.mjs";
 import { exitCodeForS5Status } from "./lib/verdict-exit-gate.mjs";
 
@@ -103,6 +109,33 @@ const SWEEP_EXTINCTION = Object.freeze([
   Object.freeze({ altitude: 10.17, rgb: [2.3e-1, 1.22e-1, 3.3e-2] }),
 ]);
 
+/**
+ * The site horizon geometry, as the engine's own ellipsoid resolves it at the
+ * registered site.
+ *
+ * Not free literals: `A4` re-derives the geocentric radius from the WGS84
+ * semi-axes read out of `Core/Ellipsoid.js`, ties the height to the registered
+ * site, and ties the solar semi-diameter to `CesiumMath.SOLAR_RADIUS` read out
+ * of `Core/Math.js` over the Earth-Sun distance range. The values themselves
+ * are what the 2026-08-28 sweep's scene publishes.
+ */
+const ACQUIRED_SITE_GEOMETRY = Object.freeze({
+  localEarthRadiusMeters: 6371122.716467735,
+  siteHeightMeters: 1175.3399698570242,
+  solarAngularRadiusDegrees: 0.2635835,
+});
+
+/**
+ * The solar altitudes the 2026-08-28 acquisition recorded, in degrees, on BOTH
+ * legs. Used to prove the horizon predicate classifies the real sweep the way
+ * its own pixels do rather than only the way a synthetic fixture does.
+ */
+const ACQUIRED_ALTITUDES = Object.freeze([
+  -2.245848016361972, -1.2559537011925765, -0.2628795, 0.7331951, 1.7320999,
+  2.7336648, 3.7377237, 4.744114952721395, 5.7526758, 6.7632497, 7.7756813,
+  8.7898151, 9.8054993,
+]);
+
 function luminanceOf([r, g, b]) {
   return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
 }
@@ -146,6 +179,19 @@ function makeSample(index, options = {}) {
       sunAltitudeDegrees: options.altitude ?? entry.altitude,
       sunAzimuthDegrees: 80,
       sunVisible: "sunVisible" in options ? options.sunVisible : visible,
+      solarAngularRadiusDegrees:
+        options.solarAngularRadiusDegrees ??
+        ACQUIRED_SITE_GEOMETRY.solarAngularRadiusDegrees,
+      localEarthRadiusMeters:
+        options.localEarthRadiusMeters ??
+        ACQUIRED_SITE_GEOMETRY.localEarthRadiusMeters,
+      siteHeightMeters:
+        options.siteHeightMeters ?? ACQUIRED_SITE_GEOMETRY.siteHeightMeters,
+      globeReady: options.globeReady ?? true,
+      globeReadyWaitMs: 0,
+      globeReadyFrames: 1,
+      globeCommands: options.globeCommands ?? 21,
+      icrfFrameResolved: options.icrfFrameResolved ?? true,
       geometryValid: options.geometryValid ?? true,
       centerX: 640,
       centerY: 360,
@@ -222,6 +268,69 @@ test("A1: the limb coefficients are the engine's, not a private copy", () => {
   assert.equal(read("A0"), SUN_DISC_DAWN_LIMB_COEFFICIENTS.a0);
   assert.equal(read("A1"), SUN_DISC_DAWN_LIMB_COEFFICIENTS.a1);
   assert.equal(read("A2"), SUN_DISC_DAWN_LIMB_COEFFICIENTS.a2);
+});
+
+test("A4: the fixture's horizon geometry is derived from the engine, not written down", () => {
+  const ellipsoidSource = fs.readFileSync(
+    path.join(REPO, "packages/engine/Source/Core/Ellipsoid.js"),
+    "utf8",
+  );
+  const wgs84 =
+    /Ellipsoid\.WGS84 = Object\.freeze\(\s*new Ellipsoid\(([0-9.]+), ([0-9.]+), ([0-9.]+)\)/.exec(
+      ellipsoidSource,
+    );
+  assert.ok(wgs84, "the WGS84 semi-axes are not where this test reads them");
+  const a = Number(wgs84[1]);
+  const b = Number(wgs84[3]);
+
+  // Geocentric radius of the ellipsoid surface under a geodetic latitude: the
+  // prime-vertical radius of curvature carried through the parametric point.
+  const phi = (SUN_DISC_DAWN_SITE.latitudeDegrees * Math.PI) / 180;
+  const eccentricitySquared = 1 - (b * b) / (a * a);
+  const primeVertical =
+    a / Math.sqrt(1 - eccentricitySquared * Math.sin(phi) * Math.sin(phi));
+  const x = primeVertical * Math.cos(phi);
+  const z = primeVertical * (1 - eccentricitySquared) * Math.sin(phi);
+  const derived = Math.hypot(x, z);
+  assert.ok(
+    Math.abs(derived - ACQUIRED_SITE_GEOMETRY.localEarthRadiusMeters) < 1e-6,
+    `derived ${derived} vs fixture ${ACQUIRED_SITE_GEOMETRY.localEarthRadiusMeters}`,
+  );
+  assert.ok(b < derived && derived < a, "the radius must lie between the axes");
+
+  assert.equal(
+    ACQUIRED_SITE_GEOMETRY.siteHeightMeters,
+    SUN_DISC_DAWN_SITE.heightMeters,
+    "the fixture height must be the registered site height",
+  );
+
+  // The solar semi-diameter is tied to the engine's own solar radius over the
+  // Earth-Sun distance range, so it cannot drift into an arbitrary number.
+  const mathSource = fs.readFileSync(
+    path.join(REPO, "packages/engine/Source/Core/Math.js"),
+    "utf8",
+  );
+  const solar = /CesiumMath\.SOLAR_RADIUS = ([0-9.e+]+);/.exec(mathSource);
+  assert.ok(solar, "SOLAR_RADIUS is not where this test reads it");
+  const distance =
+    Number(solar[1]) /
+    Math.sin(
+      (ACQUIRED_SITE_GEOMETRY.solarAngularRadiusDegrees * Math.PI) / 180,
+    );
+  assert.ok(
+    distance > 1.46e11 && distance < 1.53e11,
+    `implied Earth-Sun distance ${distance} m is outside the annual range`,
+  );
+
+  // The dip the whole exclusion turns on, stated once so a change to the
+  // derivation shows up here rather than only as a reclassified sample.
+  const dip = horizonDipDegrees(
+    ACQUIRED_SITE_GEOMETRY.localEarthRadiusMeters,
+    ACQUIRED_SITE_GEOMETRY.siteHeightMeters,
+  );
+  assert.ok(Math.abs(dip - -1.1004695) < 1e-6, `dip ${dip}`);
+  assert.equal(horizonDipDegrees(Number.NaN, 1), null);
+  assert.equal(horizonDipDegrees(6371000, Number.NaN), null);
 });
 
 test("A2: the shipped law puts the centre ABOVE the limb, so a sub-unity ratio is an inversion", () => {
@@ -499,8 +608,6 @@ test("D5: legs that disagree about WHICH samples carry a disc are blind", () => 
 
 test("D6: below-horizon samples are excluded from scoring, not treated as blindness", () => {
   const legs = healthyLeg();
-  assert.equal(legs[0].observed.sunVisible, false);
-  assert.equal(legs[1].observed.sunVisible, true);
   const result = evaluateSunDiscDawnSweep(evidenceOf(legs, healthyLeg()), {
     bar: DERIVED_BAR,
   });
@@ -508,7 +615,116 @@ test("D6: below-horizon samples are excluded from scoring, not treated as blindn
   assert.equal(result.status, "PASS");
   assert.equal(result.measurements.webgl[0].scored, false);
   assert.equal(result.measurements.webgl[0].centreAnnulusRatio, null);
-  assert.equal(result.measurements.webgl[1].scored, true);
+  assert.equal(result.measurements.webgl[2].scored, true);
+});
+
+test("D7: a sample the ENGINE calls visible below the horizon is still excluded", () => {
+  // The acquisition measured isSunVisible true on all thirteen rows of both
+  // legs, so this is the shape the real instrument produces - not a contrived
+  // one. The engine flag is deliberately left true here.
+  const legs = healthyLeg({
+    perSample: { 0: { sunVisible: true, visible: true } },
+  });
+  assert.equal(legs[0].observed.sunVisible, true);
+  assert.equal(sampleIsScored(legs[0]), false);
+  const result = evaluateSunDiscDawnSweep(evidenceOf(legs, legs), {
+    bar: DERIVED_BAR,
+  });
+  assert.deepEqual(result.structural, []);
+  assert.equal(result.measurements.webgl[0].scored, false);
+  assert.equal(result.measurements.webgl[0].sunVisible, true);
+  assert.equal(result.measurements.webgl[0].sunAboveLocalHorizon, false);
+});
+
+test("D8: the acquired sweep is classified the way its own pixels are", () => {
+  // Samples 0 and 1 are the two whose WebGL frames carry globe INSIDE the disc
+  // window (100 % and 49.4 % of the frame); sample 2's window is clear.
+  const classify = (altitude) =>
+    sunAboveLocalHorizon({
+      sunAltitudeDegrees: altitude,
+      ...ACQUIRED_SITE_GEOMETRY,
+    });
+  assert.equal(classify(ACQUIRED_ALTITUDES[0]), false);
+  assert.equal(classify(ACQUIRED_ALTITUDES[1]), false);
+  for (let index = 2; index < ACQUIRED_ALTITUDES.length; index++) {
+    assert.equal(
+      classify(ACQUIRED_ALTITUDES[index]),
+      true,
+      `sample ${index} at ${ACQUIRED_ALTITUDES[index]} deg`,
+    );
+  }
+  // The nearest row to the threshold clears it by far more than the modelling
+  // error the dip derivation admits, so no row's classification is marginal.
+  const threshold =
+    horizonDipDegrees(
+      ACQUIRED_SITE_GEOMETRY.localEarthRadiusMeters,
+      ACQUIRED_SITE_GEOMETRY.siteHeightMeters,
+    ) + ACQUIRED_SITE_GEOMETRY.solarAngularRadiusDegrees;
+  const margins = ACQUIRED_ALTITUDES.map((altitude) =>
+    Math.abs(altitude - threshold),
+  );
+  assert.ok(
+    Math.min(...margins) > 0.4,
+    `nearest margin ${Math.min(...margins)}`,
+  );
+});
+
+test("D9: a leg that never got its globe on screen is blind, not scored", () => {
+  const blind = healthyLeg({ globeReady: false });
+  const result = evaluateSunDiscDawnSweep(evidenceOf(healthyLeg(), blind), {
+    bar: DERIVED_BAR,
+  });
+  assert.equal(result.status, "STRUCTURAL");
+  assert.deepEqual(result.failures, []);
+  assert.ok(result.structural.includes("webgpu:sample0:globe-not-ready"));
+});
+
+test("D10: an acquisition without the horizon geometry is unreadable, not permissive", () => {
+  const stripped = healthyLeg().map((sample) => {
+    const observed = { ...sample.observed };
+    delete observed.solarAngularRadiusDegrees;
+    return { ...sample, observed };
+  });
+  assert.equal(sunAboveLocalHorizon(stripped[6].observed), null);
+  assert.equal(sampleIsScored(stripped[6]), false);
+  const result = evaluateSunDiscDawnSweep(evidenceOf(healthyLeg(), stripped), {
+    bar: DERIVED_BAR,
+  });
+  assert.equal(result.status, "STRUCTURAL");
+  assert.ok(
+    result.structural.includes("webgpu:sample6:horizon-geometry-unreadable"),
+  );
+});
+
+test("D11: every measurement row publishes the terms its verdict was formed from", () => {
+  const result = evaluateSunDiscDawnSweep(
+    evidenceOf(healthyLeg(), healthyLeg()),
+    { bar: DERIVED_BAR },
+  );
+  for (const renderer of SUN_DISC_DAWN_RENDERERS) {
+    for (const row of result.measurements[renderer]) {
+      for (const field of [
+        "sunVisible",
+        "sunAboveLocalHorizon",
+        "solarAngularRadiusDegrees",
+        "horizonDipDegrees",
+        "geometryValid",
+        "globeReady",
+        "globeCommands",
+        "icrfFrameResolved",
+      ]) {
+        assert.ok(
+          Object.hasOwn(row, field),
+          `row ${renderer}:${row.index} does not publish ${field}`,
+        );
+      }
+      assert.equal(
+        row.scored,
+        row.sunVisible === true && row.sunAboveLocalHorizon === true,
+        `row ${renderer}:${row.index} scored does not follow from its own terms`,
+      );
+    }
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -553,7 +769,8 @@ async function withPageInstrument(use) {
   );
   const file = path.join(HERE, `${PAGE_MODULE_PREFIX}${randomUUID()}.mjs`);
   const exports =
-    "export { measureDiscRegions, localAltitudeAzimuth, relativeLuminance };";
+    "export { measureDiscRegions, localAltitudeAzimuth, relativeLuminance, " +
+    "countGlobeCommands, awaitGlobeReady };";
   try {
     fs.writeFileSync(file, `${block}\n${exports}\n`, { flag: "wx" });
     const module = await import(
@@ -663,6 +880,107 @@ test("E3: the page altitude helper agrees with the sweep window it was written f
   });
 });
 
+/** A scene stub whose binned GLOBE count is whatever the test says it is. */
+function fakeScene(tilesLoaded, globeSlot, counts) {
+  return {
+    globe: { tilesLoaded },
+    _view: {
+      frustumCommandsList: counts.map((count) => ({
+        indices: { [globeSlot]: count },
+      })),
+    },
+  };
+}
+
+test("E6: the readiness counter reads the GLOBE slot across the whole frustum list", async () => {
+  await withPageInstrument(async ({ countGlobeCommands }) => {
+    const slot = 2;
+    assert.equal(countGlobeCommands(fakeScene(true, slot, [3, 4, 0]), slot), 7);
+    assert.equal(countGlobeCommands(fakeScene(true, slot, []), slot), 0);
+    // A pass index that is not an integer would index `undefined`, and `| 0`
+    // would report a confident zero. It must report "unreadable" instead.
+    assert.equal(
+      countGlobeCommands(fakeScene(true, slot, [3]), undefined),
+      null,
+    );
+    assert.equal(countGlobeCommands({}, slot), null);
+  });
+});
+
+test("E7: readiness waits on a binned globe command, never on tilesLoaded alone", async () => {
+  await withPageInstrument(async ({ awaitGlobeReady }) => {
+    const slot = 2;
+    // A virtual clock, so the bound is exercised without spending it.
+    let clock = 0;
+    const now = () => clock;
+    const sleep = (ms) =>
+      new Promise((resolve) => {
+        clock += ms;
+        resolve();
+      });
+
+    // Tiles resident, pipeline not: the WebGPU shape the acquisition hit. The
+    // gate must spend its whole budget and report NOT ready.
+    let renders = 0;
+    const starved = await awaitGlobeReady(
+      fakeScene(true, slot, [0, 0]),
+      slot,
+      () => {
+        renders++;
+      },
+      sleep,
+      now,
+      1000,
+      50,
+    );
+    assert.equal(starved.ready, false);
+    assert.equal(starved.commands, 0);
+    assert.ok(starved.waitedMs >= 1000, `waited ${starved.waitedMs}`);
+    assert.ok(renders > 1, "the gate must keep rendering while it waits");
+
+    // The command lands part way through: ready, early, and with the frames it
+    // actually spent recorded.
+    clock = 0;
+    let polls = 0;
+    const landing = {
+      globe: { tilesLoaded: true },
+      _view: { frustumCommandsList: [{ indices: { [slot]: 0 } }] },
+    };
+    const arrived = await awaitGlobeReady(
+      landing,
+      slot,
+      () => {
+        polls++;
+        if (polls === 4) {
+          landing._view.frustumCommandsList[0].indices[slot] = 21;
+        }
+      },
+      sleep,
+      now,
+      10_000,
+      50,
+    );
+    assert.equal(arrived.ready, true);
+    assert.equal(arrived.commands, 21);
+    assert.equal(arrived.frames, 4);
+    assert.ok(arrived.waitedMs < 10_000);
+
+    // Commands binned but tiles still streaming is also not ready: both terms
+    // are load-bearing.
+    clock = 0;
+    const streaming = await awaitGlobeReady(
+      fakeScene(false, slot, [21]),
+      slot,
+      () => {},
+      sleep,
+      now,
+      500,
+      50,
+    );
+    assert.equal(streaming.ready, false);
+  });
+});
+
 test("E4: the page instrument closes over NO Node-scope binding of the probe", () => {
   const source = probeSource();
   const block = extractMarkedBlock(
@@ -749,6 +1067,62 @@ test("F3: the probe claims no allowlist row on either fleet ratchet", () => {
     !PURPOSE_HEADER_ALLOWLIST.includes("lib/sun-disc-dawn-gate.mjs"),
     "the header allowlist is closed and shrink-only",
   );
+});
+
+/**
+ * Failures in the sweep's readiness contract, as a pure function of the source.
+ *
+ * @param {string} source The probe source.
+ * @returns {string[]} Contract failures; empty when the contract holds.
+ */
+function checkSweepReadinessContract(source) {
+  const failures = [];
+  if (/tilesLoaded\s*===\s*true\s*\)\s*\{\s*break/u.test(source)) {
+    failures.push("the sweep settles by exiting on tilesLoaded alone");
+  }
+  if (!/globeReadiness = await awaitGlobeReady\(/u.test(source)) {
+    failures.push("the sweep never spends the readiness gate");
+  }
+  if (
+    !/RUN_WATCHDOG_MS = Math\.max\([\s\S]{0,120}?SUN_DISC_DAWN_READINESS_WORST_CASE_MS/u.test(
+      source,
+    )
+  ) {
+    failures.push("the run fuse is not derived from the readiness budget");
+  }
+  return failures;
+}
+
+test("P1: the sweep waits on the globe pipeline, not on tile residency", () => {
+  assert.deepEqual(checkSweepReadinessContract(probeSource()), []);
+});
+
+test("P2 MUTATION control: the old tilesLoaded settle is detected if it returns", () => {
+  const settle =
+    "    for (let frame = 0; frame < config.readiness.settleFrames; frame++) {";
+  const regressed = probeSource().replace(
+    settle,
+    [
+      settle,
+      "      if (scene.globe.tilesLoaded === true) {",
+      "        break;",
+      "      }",
+    ].join("\n"),
+  );
+  assert.notEqual(regressed, probeSource());
+  assert.deepEqual(checkSweepReadinessContract(regressed), [
+    "the sweep settles by exiting on tilesLoaded alone",
+  ]);
+});
+
+test("P3: the readiness budget is bounded and both legs fit the registered fuse", () => {
+  assert.equal(
+    SUN_DISC_DAWN_READINESS_WORST_CASE_MS,
+    SUN_DISC_DAWN_RENDERERS.length * SUN_DISC_DAWN_READINESS.initialTimeoutMs,
+  );
+  assert.ok(SUN_DISC_DAWN_READINESS.initialTimeoutMs >= 30_000);
+  assert.ok(SUN_DISC_DAWN_READINESS.pollMs > 0);
+  assert.ok(SUN_DISC_DAWN_READINESS.settleFrames >= 1);
 });
 
 // ---------------------------------------------------------------------------
@@ -922,9 +1296,14 @@ test("G3 coverage/weakened-band: relaxing the required band un-blinds a short sw
 });
 
 test("G4 coverage/inert-family: making the coverage family unreachable un-blinds it", async () => {
+  // A ONE-degree shift, not three: it still fails the registered upper bound,
+  // and it leaves ten rows above the local horizon so the sweep can reach a
+  // scored verdict once the coverage family is made unreachable. A three-degree
+  // shift puts every row below the horizon, and an unscored sweep folds
+  // NOT-PROVEN rather than FAIL, which would test the wrong thing.
   const short = extinctedLeg().map((sample, index) =>
     makeSample(index, {
-      altitude: sample.observed.sunAltitudeDegrees - 3,
+      altitude: sample.observed.sunAltitudeDegrees - 1,
       discBytes: SWEEP_EXTINCTION[index].rgb.map((c) => c * 255),
     }),
   );
@@ -1102,6 +1481,56 @@ test("G8 bar/derived-pending is load-bearing: filling in a bound changes the ver
         evidenceOf(healthyLeg(), healthyLeg()),
       );
       assert.equal(shipped.status, "STRUCTURAL");
+    },
+  );
+});
+
+test("G10 horizon/inert-term: without it the engine's own flag scores a below-horizon sample", async () => {
+  const legs = healthyLeg({
+    perSample: { 0: { sunVisible: true, visible: true } },
+  });
+  const before = evaluateSunDiscDawnSweep(evidenceOf(legs, legs), {
+    bar: DERIVED_BAR,
+  });
+  assert.equal(before.measurements.webgl[0].scored, false);
+  await withMutant(
+    (source) =>
+      replaceExactlyOnce(
+        source,
+        "    sunAboveLocalHorizon(sample?.observed) === true",
+        "    !(false && sunAboveLocalHorizon(sample?.observed) !== true)",
+      ),
+    async (module) => {
+      const result = module.evaluateSunDiscDawnSweep(evidenceOf(legs, legs), {
+        bar: DERIVED_BAR,
+      });
+      assert.equal(
+        result.measurements.webgl[0].scored,
+        true,
+        "the horizon term is what excluded the below-horizon sample",
+      );
+    },
+  );
+});
+
+test("G11 readiness/inert-read: without it a globe-less leg is scored as if it had one", async () => {
+  const blind = healthyLeg({ globeReady: false });
+  const evidence = evidenceOf(healthyLeg(), blind);
+  const before = evaluateSunDiscDawnSweep(evidence, { bar: DERIVED_BAR });
+  assert.equal(before.status, "STRUCTURAL");
+  await withMutant(
+    (source) =>
+      replaceExactlyOnce(
+        source,
+        "  if (observed.globeReady !== true) {",
+        "  if (false && observed.globeReady !== true) {",
+      ),
+    async (module) => {
+      const result = module.evaluateSunDiscDawnSweep(evidence, {
+        bar: DERIVED_BAR,
+      });
+      assert.deepEqual(result.structural, []);
+      assert.equal(result.status, "PASS");
     },
   );
 });

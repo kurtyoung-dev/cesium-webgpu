@@ -73,6 +73,28 @@ export const SUN_DISC_DAWN_REPORTED_INSTANT_ISO = "2026-08-24T23:01:41Z";
  * trusting this derivation, and the coverage predicate below scores the
  * recorded values. A window that no longer spans the band is blindness, not a
  * failure of the subject.
+ *
+ * THOSE TWO NUMBERS ARE FRAME-DEPENDENT, and the derivation above is the
+ * TEME-fallback branch. `Simon1994EphemerisProvider.compute` asks
+ * `Transforms.computeIcrfToFixedMatrix` for the inertial-to-fixed rotation and
+ * falls back to `computeTemeToPseudoFixedMatrix` when the IAU-2006 XYS chunks
+ * have not loaded. A lane with no server for those chunks always takes the
+ * fallback, which carries Earth rotation but neither precession nor nutation; a
+ * browser served from localhost loads them and takes the ICRF branch. At this
+ * epoch the two branches differ by the precession accumulated since J2000, and
+ * the 2026-08-28 acquisition measured that difference as -0.3592 deg at the
+ * first sample drifting to -0.3629 deg at the last, identically on both
+ * backends. Re-evaluating the thirteen instants offline reproduces the derived
+ * table to 1e-6 deg on the TEME branch and the acquired altitudes to 1e-6 deg
+ * on the ICRF branch, so the offset is the transform branch and nothing else -
+ * not refraction, which varies strongly across this altitude band, and not a
+ * disc-centre versus limb convention, which cannot move a registration.
+ *
+ * The band below keeps its registered values, because a registered bound is not
+ * moved to accommodate an observation. Record only that the +9.5 deg upper
+ * requirement carries less margin against the acquired altitudes (0.31 deg)
+ * than the branch offset it is blind to, so a sweep that moves this window must
+ * re-derive the band on the branch it will actually run under.
  */
 export const SUN_DISC_DAWN_SWEEP = Object.freeze({
   startIso: "2026-08-24T22:10:00Z",
@@ -89,6 +111,42 @@ export const SUN_DISC_DAWN_VIEWPORT = Object.freeze({
   width: 1280,
   height: 720,
 });
+
+/**
+ * The readiness budget for the globe this sweep is composited against.
+ *
+ * On WebGPU a globe tile whose pipeline variant is not already resident is not
+ * drawn at all in that frame: the surface renderer asks the central cache for a
+ * pipeline synchronously, gets null on a miss, and skips the tile, so no
+ * `Pass.GLOBE` command is binned until an asynchronous creation lands. WebGL
+ * compiles its program at execute time and has no analogue. `tilesLoaded`
+ * reports TILE residency and says nothing about pipeline residency, so a settle
+ * loop that exits on it captures a globe-less WebGPU frame beside a complete
+ * WebGL one - which is what the 2026-08-28 acquisition did. Its published
+ * 0.1030 and 0.1048 parity deltas at the two lowest samples are that missing
+ * globe, not anything about the sun. The measured cost of one cold variant
+ * elsewhere in the fleet is about 1.9 s.
+ *
+ * The gate is spent ONCE per leg, at the lowest-sun view where the globe fills
+ * the frame, because the sweep uses one terrain encoding and therefore one
+ * pipeline variant. It is deliberately not spent per sample: with the camera
+ * tracking a sun ten degrees up, no globe tile intersects a 3 deg frustum at
+ * all, so a per-sample "at least one globe command" test would read an ordinary
+ * empty sky as blindness.
+ */
+export const SUN_DISC_DAWN_READINESS = Object.freeze({
+  initialTimeoutMs: 45_000,
+  pollMs: 50,
+  settleFrames: 8,
+});
+
+/**
+ * Worst-case wall clock the readiness gate can add to a run, both legs
+ * included. The probe sizes its own run watchdog from this rather than from a
+ * literal, so the budget cannot quietly outgrow the fuse that bounds it.
+ */
+export const SUN_DISC_DAWN_READINESS_WORST_CASE_MS =
+  SUN_DISC_DAWN_RENDERERS.length * SUN_DISC_DAWN_READINESS.initialTimeoutMs;
 
 /**
  * The vertical field of view the probe forces, in degrees.
@@ -224,6 +282,71 @@ function finiteNonNegative(value) {
   return typeof value === "number" && Number.isFinite(value) && value >= 0;
 }
 
+/** Degrees per radian, so the derivations below carry no bare literal. */
+const DEGREES_PER_RADIAN = 180 / Math.PI;
+
+/**
+ * Dip of the local horizon below the local horizontal, in degrees.
+ *
+ * Negative by construction: an observer at height `h` over a body of radius
+ * `R` sees the horizon at `-acos(R / (R + h))`. Both terms are published by
+ * the probe from the engine's own ellipsoid rather than written here as
+ * literals, so this stays a derivation over measured inputs.
+ *
+ * The site sits on an ellipsoid, so `R` is the geocentric radius under the
+ * site while `h` is the geodetic height, and the two are measured along
+ * directions that differ by the deviation of the vertical - about 0.18 deg at
+ * this latitude. The resulting error in the dip is under 0.002 deg, two orders
+ * below the solar semi-diameter it is compared against, and the nearest sample
+ * in this sweep sits 0.4 deg from the threshold.
+ *
+ * @param {number} localEarthRadiusMeters Geocentric radius under the site.
+ * @param {number} heightMeters Site height above the ellipsoid.
+ * @returns {number|null} The dip in degrees, or null when a term is unreadable.
+ */
+export function horizonDipDegrees(localEarthRadiusMeters, heightMeters) {
+  if (
+    !finitePositive(localEarthRadiusMeters) ||
+    !finiteNonNegative(heightMeters)
+  ) {
+    return null;
+  }
+  const ratio =
+    localEarthRadiusMeters / (localEarthRadiusMeters + heightMeters);
+  return -Math.acos(Math.min(1, Math.max(-1, ratio))) * DEGREES_PER_RADIAN;
+}
+
+/**
+ * Whether the WHOLE solar disc clears the local horizon at one sample.
+ *
+ * The bar is "fully above", not "centre above", because the measurement regions
+ * lie INSIDE the disc - the core out to 0.35 of the limb radius and the annulus
+ * from 0.7 to 1.0. A disc the Earth has bitten into fills part of that annulus
+ * with globe pixels rather than sky, so the sun's own semi-diameter is
+ * subtracted before the comparison. Against the 2026-08-28 acquisition the
+ * predicate reproduces the pixels exactly: the two samples whose WebGL frames
+ * carry globe inside the disc window are the two samples it excludes.
+ *
+ * @param {object} observed One sample's observation record.
+ * @returns {boolean|null} True when the whole disc clears the horizon; null when unreadable.
+ */
+export function sunAboveLocalHorizon(observed) {
+  const altitude = observed?.sunAltitudeDegrees;
+  const semiDiameter = observed?.solarAngularRadiusDegrees;
+  const dip = horizonDipDegrees(
+    observed?.localEarthRadiusMeters,
+    observed?.siteHeightMeters,
+  );
+  if (
+    !Number.isFinite(altitude) ||
+    !finiteNonNegative(semiDiameter) ||
+    dip === null
+  ) {
+    return null;
+  }
+  return altitude - semiDiameter >= dip;
+}
+
 /**
  * Centre-over-annulus luminance ratio for one sample.
  *
@@ -272,16 +395,30 @@ export function centreAnnulusChromaRatio(sample) {
 /**
  * Whether one sample carries a solar disc the lane is expected to measure.
  *
- * The sweep deliberately opens below the local horizon, where the engine culls
- * the sun outright. Such a sample is not blindness and not a failure; it is a
- * sample with no subject in it, and it is excluded from scoring rather than
- * scored as a ratio of sky against sky.
+ * The sweep deliberately opens below the local horizon, where the disc the
+ * instrument measures is behind the Earth. Such a sample is not blindness and
+ * not a failure; it is a sample with no subject in it, and it is excluded from
+ * scoring rather than scored as a ratio of sky against sky.
+ *
+ * THE ENGINE'S OWN VISIBILITY FLAG IS NOT THAT TEST, AND CANNOT BE.
+ * `Scene.updateEnvironment` culls the sun only when its SIX-SOLAR-RADII glow
+ * bounding sphere lies entirely inside the Earth occluder's horizon cone, which
+ * is a far deeper condition than the disc being occulted. The 2026-08-28
+ * acquisition measured `isSunVisible === true` on all thirteen samples of both
+ * legs, including the two below the horizon - so a predicate resting on that
+ * flag alone scores a below-horizon sample as sky over sky, which is precisely
+ * the outcome this function's own prose says it prevents. The flag is retained
+ * as a necessary term, because a culled sun genuinely has no disc, and the
+ * geometric horizon test is added as the sufficient one.
  *
  * @param {object} sample One acquired sample record.
  * @returns {boolean} True when the sample should be scored.
  */
 export function sampleIsScored(sample) {
-  return sample?.observed?.sunVisible === true;
+  return (
+    sample?.observed?.sunVisible === true &&
+    sunAboveLocalHorizon(sample?.observed) === true
+  );
 }
 
 /**
@@ -314,6 +451,19 @@ export function sampleStructuralReasons(renderer, index, sample) {
   }
   if (typeof observed.sunVisible !== "boolean") {
     reasons.push(`${where}:sun-visibility-unreadable`);
+  }
+  // Without these the horizon test silently degenerates to the engine's own
+  // cull flag, which is the defect the predicate above exists to close. An
+  // acquisition that does not publish them is unreadable, not permissive.
+  if (sunAboveLocalHorizon(observed) === null) {
+    reasons.push(`${where}:horizon-geometry-unreadable`);
+  }
+  // The disc is composited over whatever the frame already holds, so a leg that
+  // never got its globe on screen is measuring a different scene from the leg
+  // that did. Read on EVERY sample, scored or not: the excluded low samples are
+  // exactly the ones whose frames the globe should fill.
+  if (observed.globeReady !== true) {
+    reasons.push(`${where}:globe-not-ready`);
   }
   if (
     observed.frame?.width !== SUN_DISC_DAWN_VIEWPORT.width ||
@@ -571,10 +721,26 @@ function buildMeasurements(evidence) {
   for (const renderer of SUN_DISC_DAWN_RENDERERS) {
     measurements[renderer] = evidence.samples[renderer].map((sample) => {
       const scored = sampleIsScored(sample);
+      // Publish every term `scored` was formed from. A row that says only
+      // "scored: true" cannot be audited from the artifact, and the 2026-08-28
+      // acquisition is exactly that: thirteen rows all scored, none carrying
+      // the visibility the flag was read from.
       return {
         index: sample.index,
         requestedIso: sample.requestedIso,
         sunAltitudeDegrees: sample.observed.sunAltitudeDegrees,
+        sunVisible: sample.observed.sunVisible ?? null,
+        sunAboveLocalHorizon: sunAboveLocalHorizon(sample.observed),
+        solarAngularRadiusDegrees:
+          sample.observed.solarAngularRadiusDegrees ?? null,
+        horizonDipDegrees: horizonDipDegrees(
+          sample.observed.localEarthRadiusMeters,
+          sample.observed.siteHeightMeters,
+        ),
+        geometryValid: sample.observed.geometryValid ?? null,
+        globeReady: sample.observed.globeReady ?? null,
+        globeCommands: sample.observed.globeCommands ?? null,
+        icrfFrameResolved: sample.observed.icrfFrameResolved ?? null,
         scored,
         centreAnnulusRatio: scored ? centreAnnulusRatio(sample) : null,
         centreAnnulusChromaRatio: scored
