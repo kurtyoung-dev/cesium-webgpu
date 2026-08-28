@@ -619,8 +619,11 @@ Dynamic Ocean & Wind remains separately planned and blocked by ~~O5~~ **R1**.
 > **and** 13 to all be done") no longer holds. **R1 sets a pragmatic bar: C12
 > complete + C13 Gate B green.** C13 **Gate B CLOSED at Batch 866**, so the only
 > remaining C14 precondition is **C12 completion** — which, per `R-2026-08-10-1`,
-> is the MAXIMAL C12 gate. `C13-41` / C12-29 S3 and S4 closed 2026-08-12; S5
-> and the remaining C12 exit tail still hold that gate. C11-137 certification stays
+> is the MAXIMAL C12 gate. `C13-41` / C12-29 S3 is REOPENED per
+> `R-2026-08-14-1`, with its machine state vacated from `closed` to `reopened`
+> by `R-2026-08-17-7`, and therefore still holds that maximal C12 gate. S4
+> remains COMPLETE / EDGE VERIFIED 2026-08-12; S5 and the remaining C12 exit
+> tail still hold that gate. C11-137 certification stays
 > HELD and C11/C13 remain honestly open (R2); neither blocks C14 any more. This
 > sentence's *intent* — Campaign 15 grants no authority to start Campaign 14 —
 > is unchanged.

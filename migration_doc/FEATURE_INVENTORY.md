@@ -981,7 +981,7 @@ This table is the current EXIT-3 classification overlay for the historical celes
 | `C12-25` LOLA terminator relief | Batch 811 (`f232adfc0c`) | Gate recorded PASS at Batch 813 (`e0900290b7`). |
 | `C12-21` / `C12-22` earthshine and soft terminator | Batch 858 (`2cb7d29fec`) | Edge acceptance discharged by the section-0 G4 close, Batch 984 (`943e13b571`). |
 | `C12-29 S1` / `S2` / `S6` | Batches 760 (`53dde8b1d5`), 764 (`142f55ff5b`), and 770 (`0679b0e456`) | Slice-specific shipped entries only; this does not alter open S5. |
-| `C12-29 S3` / `C13-41` | Batch 871 (`2cb4090b16`) | Closing evidence packet `9c043987a5`; S3 is recorded COMPLETE / EDGE VERIFIED. |
+| `C12-29 S3` / `C13-41` | Batch 871 (`2cb4090b16`) | Historical closing evidence packet `9c043987a5`; under `R-2026-08-14-1`, `R-2026-08-17-7`, and `QUEUE_2026-07-23_CAMPAIGN13.md:718`, the S3 / C13-41 row is REOPENED, so the packet does not close it. |
 | `C12-18` true-size Sun disc / screen halo | Batch 906 (`ca964bc1da`) | Accepted with the G4 close, Batch 984 (`943e13b571`). |
 | `C12-19` HDR Sun | Batch 937 (`794ece043a`) | Edge-delta obligation discharged at Batch 994 (`0697b93a5b`). |
 | `C12-34` WebGPU sun-bloom mirror | Batch 967 (`68bf6e78d4`) | Accepted with the G4 close, Batch 984 (`943e13b571`). |
@@ -1402,12 +1402,23 @@ Explicitly punted, gated on external dependencies, or research-stage. Sourced fr
 
 ## Maintenance
 
-- **C13-41 / C12-29 S3 status correction (2026-08-12):** the eclipse-driven
-  cloud-lighting, shadow, and IBL slice is **SHIPPED / EDGE VERIFIED**, not
-  pending. Landing-equivalent run
-  `b5e3f63c-94c6-4204-8706-dd30eabd2eaf` passed 30/30 and the exact selective
-  packet landed as `9c043987a5`. The raw post-cloud contrast ratio `1.034120`
-  is report-only under the replacement terrain-shadow decrement model. CLT-B3's
+- **Historical C13-41 / C12-29 S3 result (2026-08-12; status superseded by
+  `R-2026-08-14-1`):** the eclipse-driven cloud-lighting, shadow, and IBL slice
+  was recorded as **SHIPPED / EDGE VERIFIED**, not pending, in that superseded
+  status record. As `QUEUE_2026-07-19_CAMPAIGN12.md:36` records,
+  landing-equivalent run `b5e3f63c-94c6-4204-8706-dd30eabd2eaf` genuinely
+  passed 30/30 then-current predicates and the exact selective packet landed as
+  `9c043987a5`. Under `R-2026-08-14-1`, `R-2026-08-17-7`, and
+  `QUEUE_2026-07-23_CAMPAIGN13.md:718`, the row is now REOPENED and those
+  historical facts do not close it. Under `R-2026-08-14-1` and
+  `Tools/visual-regression/lib/eclipse-cloud-response-gate.mjs:3486-3500`, the
+  replacement terrain-shadow decrement model remains separately scored, while
+  the raw post-cloud contrast ratio `1.034120` is scored by the operative
+  `shadowContrastInvariant` gate against `[0.97, 1.03]`; it lies outside that
+  band, and
+  `Tools/visual-regression/eclipse-cloud-response-gate.spec.mjs:6620-6622`
+  records it as the currently failing predicate, so a fresh passing measurement
+  is owed. `QUEUE_2026-07-19_CAMPAIGN12.md:36` also records that CLT-B3's
   separate terminator-specific both-backend browser gate remains open.
 
 - **When you ship a feature** that resolves a WIP entry, move it from §C to §B (and update its tag from SCAFFOLDED to SHIPPED).

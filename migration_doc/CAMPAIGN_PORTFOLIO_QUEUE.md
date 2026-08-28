@@ -130,11 +130,13 @@ Execute in this order where dependencies permit:
    `1f437ee9-37e5-4d17-94a1-a269e81679ab` is PASS / exit 0 on both backends.
    Its report and 72 verified PNGs are preserved under shared-library manifest
    `33CEE1FB9E1304234DA8743D952D34204FCFE2621885C0383FBAABA6E9113F17`.
-2. **C13-41 / C12-29 S3 — COMPLETE:** the landing-equivalent redesigned-control
-   run is green (30/30, run `b5e3f63c-94c6-4204-8706-dd30eabd2eaf`) and the
-   exact selective packet landed as `9c043987a5`. S3 no longer blocks C12;
-   CLT-B3's terminator-specific both-backend acceptance remains a separate open
-   gate.
+2. **C13-41 / C12-29 S3 — REOPENED:** `R-2026-08-14-1` reopened
+   the row, and `R-2026-08-17-7` vacated its machine state `closed` →
+   `reopened`; S3 remains on the C14 critical path through C12. The historical
+   landing-equivalent redesigned-control run was a genuine PASS / 30/30 (run
+   `b5e3f63c-94c6-4204-8706-dd30eabd2eaf`), and its exact selective packet landed as
+   `9c043987a5`; that superseded result does not close S3. CLT-B3's
+   terminator-specific both-backend acceptance remains a separate open gate.
 3. **C12-29 S4 — COMPLETE / EDGE VERIFIED; S5 remains open:** S4 browser
    acceptance is green and archived (PASS/0, run
    `6a3eac44-f4b8-477d-b21b-6062de6aaf19`), and its exact independently

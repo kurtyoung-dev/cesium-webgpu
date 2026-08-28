@@ -8,6 +8,1174 @@ This block is the current authority for `C11-168`, `C11-169`, and `C11-205`
 where older aggregate rows below disagree. It does not close any row or earn a
 performance claim.
 
+### 2026-08-27 C11-13 frozen-build provenance repair — PREREGISTERED
+
+`R-2026-08-24-2` requires every frozen-build certification probe to consume the
+gulp artifact under `Build/CesiumUnminified` and fail closed unless the served
+entry is byte-identical to that on-disk artifact. C11-13 does not yet satisfy
+that ruling: its browser import map still resolves `cesium` through
+`/Source/Cesium.js`, then loads the package development bundles. Its existing
+response hashes prove those development paths were served unchanged; they do
+not prove that either browser session consumed the gulp entry.
+
+**Bounded repair lease:**
+
+- `Tools/visual-regression/c11-13-voxel-inside-camera-harness.html`
+- `Tools/visual-regression/lib/c11-13-voxel-inside-camera-probe.mjs`
+- `Tools/visual-regression/c11-13-voxel-inside-camera-probe.spec.mjs`
+- this queue stamp
+
+**Acceptance locked before implementation:** the harness imports exactly
+`/Build/CesiumUnminified/index.js`; the probe fingerprints that exact local
+entry at start and end; each of the `webgl` and `webgpu` sessions contributes
+exactly one successful served-entry identity; the shared
+`validateServedEntryIdentities` helper proves byte length and SHA-256 equality
+against the start identity; source-to-build freshness and the existing C11-13
+sentinels are evaluated against the browser-consumed gulp entry; and mutations
+for a missing session, duplicate session, wrong status, wrong length, wrong
+hash, wrong pathname, stale build, and inert/source-routed import map each turn
+the focused suite red. Existing waypoint, pixel, command, watchdog, error-lane,
+cleanup, and first-red contracts must remain green and unchanged in meaning.
+
+**Honest remainder:** this is an instrument/provenance repair only. It does not
+run a build or browser, recertify the 2026-08-21 artifact, close either preserved
+ten-probe battery red, or change a product criterion. After offline validation
+and independent review, one clean gulp/`--serve-built` browser run remains owed.
+
+**2026-08-27 source-only result — VALIDATED, NOT CERTIFIED:** the bounded repair
+now routes the harness solely through the gulp entry, binds each backend's exact
+script response to the run-start disk fingerprint with the canonical helper,
+rejects alternate development entries, hashes the exact final sentinel text it
+evaluates, and folds missing, drifting, or malformed subject identity to
+`STRUCTURAL`/3 without dropping any retained product red. The focused policy and
+mutant suite is **16/16 PASS**; separate ESLint invocations for the implementation
+and spec, Prettier check for all four leased paths, and `git diff --check` are
+green. The broader `voxel-inside-camera-policy.spec.mjs` remains **5/6** because
+its current-main strict-TypeScript composition emits existing engine-source
+errors outside this lease; no file read by that failing subtest is modified by
+this repair. No build, browser, GPU, network, evidence publication, or Git write
+was run. The clean gulp/`--serve-built` browser certification run remains owed.
+
+**2026-08-27 independent source review — GO:** an independent read-only worker
+rehash-matched the frozen harness, implementation, spec, and queue tuple against
+`aa9409432dae07ce65341304a6b2b2b226d62309` / tree
+`e22636ddbeb16147a3cd555b9df0aaa3b11465cc`, reproduced the 16/16 focused PASS
+plus syntax, per-file ESLint, Prettier, and diff checks, and reported zero
+unresolved findings. This GO covers source-only handoff; it is not browser
+certification and does not discharge the clean gulp/`--serve-built` run.
+
+### 2026-08-27 C11-202 instance-feature selection invalidation — PREREGISTERED
+
+The adjacent P1 remainder in the canonical C11-202 row is confirmed for native
+WebGPU instancing: `ensureInstancingResources` returns a cached per-node buffer
+before it re-resolves `model.instanceFeatureIdLabel`. A label/source transition
+therefore leaves the old feature IDs in the `translationHigh.w` pad shared by
+every primitive of the node, even though the frontend has reset draw commands.
+
+**Bounded source lease:**
+
+- `packages/engine/Source/Renderer/WebGPU/WebGPUModelInstancing.js`
+- `packages/engine/Source/Renderer/WebGPU/WebGPUModelRenderer.ts`
+- `packages/engine/Specs/Renderer/WebGPU/WebGPUModelInstancingSpec.mjs`
+- this serialized queue stamp
+
+The giant renderer keeps only the `NodeCache` type and context wiring; feature
+selection, provenance, candidate publication, retirement, and teardown stay in
+the focused instancing module. `WebGPUContext` remains read-only: its existing
+exact-encoder submission callback is the lifetime primitive this slice consumes.
+
+**Acceptance locked before implementation:** resolve the selected source before
+the current-buffer fast path. Semantic provenance covers the instance container
+and count; transform backing identity/revision; selected source identity, kind,
+and revision; its matched structural property-table identity/count/revision;
+explicit attribute and typed-array identity/length/revision; or normalized
+implicit offset/repeat. The raw label string is not itself a cache key: aliases
+that resolve to the same semantic source reuse the exact buffer. A supported
+source is live when its `propertyTableId` resolves to a non-empty structural
+property table by the extension's numeric array index (with an ID-match fallback
+for non-indexed compatibility data); it is deliberately not compared with global
+`model.featureTableId`, which may describe another node's styling selection.
+**Pre-freeze premise correction:** the first design review proposed requiring a
+modern property-table `id` and `class`. The implementation audit rejected that
+predicate before validation: legacy i3dm constructs its valid table 0 without
+either field while its instance source points to numeric table 0. The indexed
+law above preserves that shipped shape, and the focused suite locks it.
+
+Initial explicit and implicit sources must pack exact IDs at float offsets
+`19 + 24n`, including `offset + floor(n / repeat)`. Explicit A→B,
+explicit↔implicit, valid→none, none→valid, backing-array replacement, table
+replacement, and transform-source replacement each publish one coherent new
+buffer per node. Stable provenance performs no allocation/upload/retirement and
+reuses the exact current buffer. Candidate creation and upload complete before
+publication; either failure destroys only the unpublished candidate, preserves
+the exact incumbent/provenance/retired set, and remains retryable.
+
+After successful publication, the incumbent enters an unscheduled retired set.
+Ownership transfers only if the existing context accepts a callback for the
+exact captured command encoder. Both submitted and abandoned callbacks wait on
+the captured device queue's `onSubmittedWorkDone()` before destruction, because
+an earlier Scene2D/readback segment may already have submitted an old capture
+record. Enlistment refusal or throw keeps the old buffer for a later stable-frame
+retry without reallocating the current generation; queue-settlement rejection
+follows the existing device-loss policy and drops the stale owner without a
+native destroy call. Teardown first detaches and deduplicates the current plus
+unscheduled retired buffers, attempts every destroy despite individual throws,
+is idempotent, and never also destroys scheduler-owned generations.
+
+The focused suite must make the old existence-only fast path, incomplete
+provenance keys, wrong implicit arithmetic, stale valid→none bytes, premature
+publication, inline retirement, dropped/reallocated enlistment failures, missing
+GPU-completion fence, unpinned recovery device, and teardown double-destroy turn
+red. Existing identity-keyed merged-group coverage must continue to prove both
+current and previous instance bindings rebuild together; renderer inspection
+must retain the shadow-cast buffer refresh and the empty capture upsert before
+instance resolution, so an old capture record can be already encoded but cannot
+remain future-reachable.
+
+**Honest remainder / terminal for this wave:** source-only validation and an
+independent frozen-tuple review; no build, browser, GPU, evidence, network, or
+Git write is authorized by this stamp. A later real WebGPU run must exercise the
+existing instanced-box explicit/implicit labels and prove pixels, errors, exact
+allocation/upload counts, capture replay, and cleanup. Primitive
+`featureIdLabel` replacement lifetime, simultaneous multi-explicit attributes,
+async feature-pick readback ownership, and broader primitive-cache retirement
+remain open. This slice cannot close C11-202 or earn a performance claim.
+
+**2026-08-27 source-only result — VALIDATED, NOT BROWSER-CERTIFIED:** the
+instancing module now re-resolves semantic provenance before its cache hit,
+reuses one retained result record on stable frames, builds and uploads a complete
+candidate before atomic publication, and retires replaced buffers through the
+exact captured encoder followed by the captured queue's GPU-completion fence.
+Rejected/throwing enlistment remains node-owned and retryable without rebuilding
+the current generation; accepted ownership is excluded from model teardown, and
+detached teardown deduplicates and drains every node-owned generation
+best-effort. Renderer changes are limited to cache/context types and the one
+context argument.
+
+The first implementation audit caught and repaired the preregistered modern-table
+assumption before validation: numeric property-table array indexing now preserves
+legacy i3dm table 0 even when that table has no `id` or `class`; no global
+`model.featureTableId` equality was introduced. The focused real-module pure
+Node suite is **10/10 PASS**, covering explicit/implicit/none transitions, label
+aliases, every retained provenance family, legacy table shape, transactional
+create/write failures, exact-encoder and GPU-fence ordering, enlistment retry,
+pinned queue ownership, device-loss rejection, and exact-once teardown. Source
+syntax, separate implementation/spec ESLint, Prettier over all four leased paths,
+strict source-comment policy, and `git diff --check` are green. Both
+`npx tsc --noEmit` and
+`npx tsc --project packages/engine/tsconfig.json --noEmit` exit 0.
+
+No build, browser, GPU, network, evidence publication, or Git write was run.
+Existing browser/Karma merged-bind-group coverage was inspected but not executed;
+the real explicit/implicit instanced-box pixel/capture/cleanup run remains owed.
+Primitive feature-label lifetime and every other honest remainder above remain
+open, and C11-202 stays PARTIAL.
+
+**2026-08-27 independent review round 1 — NO-GO (P0 0 / P1 1 /
+P2 0):** the reviewer terminally matched the four-file frozen tuple and
+reproduced every declared source gate, but a new nested-call control exposed a
+stale-publication race. A re-entrant `device.createBuffer` wrapper changed the
+live label from explicit source A to B and invoked the same ensure path; the
+nested call correctly published B, after which the outer call overwrote it with
+its already-built A candidate and retired the newer B buffer. The observed live
+label was `b` while the published IDs were `[1, 2]` instead of `[9, 8]`. This is
+a product P1 despite the otherwise-green 10/10 suite, so the first tuple earns
+no approval.
+
+**Repair predicate locked before revalidation:** every miss captures the
+node-local publication epoch and incumbent tuple before any device call. A
+candidate may publish only if that epoch and tuple are unchanged **and** a
+fresh semantic-provenance resolution still matches the candidate. A superseded
+outer candidate is never published or added to retirement: it is destroyed as
+unpublished work, then the ensure path reuses or rebuilds the newest live
+generation. The focused suite must reproduce the exact A→nested-B sequence,
+retain B as the current buffer/result, destroy only stale outer A, enqueue no
+retirement for B, and keep the existing allocation/upload failure laws green.
+
+**2026-08-27 repair result — REVALIDATED, NEW FREEZE REQUIRED:** the node cache
+now carries a publication epoch. Each miss retains the observed epoch, buffer,
+and provenance record; after allocation/upload it re-resolves the full live
+semantic provenance and performs the locked tuple/epoch comparison before any
+publication field changes. A superseded candidate is destroyed unpublished and
+the ensure path converges on the latest live state. The exact nested A→B case
+now returns the nested B result and `[9, 8]` IDs, destroys only outer A, retains
+B at zero destroy calls, and creates no retirement callback. The focused suite
+is **11/11 PASS** after formatting. Source/spec syntax, separate source/spec
+ESLint, four-path Prettier, strict source-comment policy, and `git diff --check`
+are green; both root and engine-project TypeScript commands exit 0. The first
+NO-GO remains part of the run record and no approval is inferred from repair.
+No build, browser, GPU, network, evidence publication, or Git write was run.
+
+**2026-08-27 independent review round 2 — NO-GO (P0 0 / P1 1 /
+P2 0):** the reviewer matched the repaired four-file tuple and confirmed the
+outer-A/nested-B publication race fixed, then an epoch-reset control exposed a
+distinct teardown resurrection. The teardown path detached the current tuple
+and reset its publication epoch before invoking native buffer destruction. A
+destroy wrapper that re-entered the ensure path therefore published a fresh
+buffer into the detached node cache after teardown had already captured its
+destruction set. The production model disposer then discarded that node cache,
+making the resurrected native owner unreachable. All 11 focused tests and every
+declared source gate were otherwise green; the tuple earns no approval.
+
+**Second repair predicate locked before revalidation:** final node teardown
+publishes a terminal lifecycle tombstone and advances, never resets, the
+node-local publication epoch before invoking any foreign destroy method. An
+ensure call that observes the tombstone returns null without allocating. An
+already-active candidate that encounters teardown is destroyed unpublished and
+must not recurse into a new generation. Focused controls must cover an incumbent
+native destroy re-entering ensure, teardown during candidate allocation/upload,
+and repeated teardown remaining allocation-free, idempotent, and exact-once.
+Recovery, if later required, must create a new node-cache lifecycle rather than
+clearing this terminal owner state.
+
+**2026-08-27 second repair result — REVALIDATED, NEW FREEZE REQUIRED:** the
+per-node owner now publishes instancingResourcesDestroyed before collecting or
+destroying any native owner and advances the monotonic publication epoch
+instead of resetting it. Every ensure boundary observes the terminal state.
+An already-active candidate that loses the lifecycle comparison is destroyed
+unpublished and returns null without recursion. Stable-hit and newly-published
+paths also return null if foreign retirement enlistment terminally tears down
+the owner.
+
+The focused real-module suite is **14/14 PASS**. It retains the repaired
+outer-A/nested-B control and adds separate controls for native buffer
+destruction re-entering ensure, teardown during candidate allocation, teardown
+during candidate upload with an incumbent, and repeated teardown. Those controls
+prove no post-teardown allocation, no resurrection, monotonic epochs, no
+retirement enlistment, and exact-once destruction of every incumbent and
+unpublished candidate. Source/spec syntax, separate source/spec ESLint,
+four-path Prettier, strict source-comment policy, and diff hygiene are green.
+Both root and engine-project TypeScript commands exit 0. The two independent
+NO-GO records remain immutable history and no approval is inferred from this
+repair. No build, browser, GPU, network, evidence publication, or Git write was
+run.
+
+**2026-08-27 independent review round 3 — NO-GO (P0 0 / P1 2 /
+P2 0):** the reviewer matched the second-repair tuple, confirmed both earlier
+P1s fixed, and reproduced all 14 focused controls, but two new transaction
+boundaries remained open. First, the post-upload provenance check re-read live
+labels and backing objects through the original node and count snapshot. A
+count-only 2-to-3 mutation therefore published two instances, and a whole
+runtime-node replacement published the old source IDs, without a nested ensure
+or epoch change. Second, retirement left the old buffer in the node-owned set
+until after the foreign enqueue returned true. An enqueue wrapper that recorded
+the callback, terminally tore down the node, then returned true let teardown
+destroy the old buffer once and the later queue settlement destroy it again.
+Every declared source gate was otherwise green; the tuple earns no approval.
+
+**Third repair predicate locked before revalidation:** after allocation/upload,
+publication re-resolves the current runtime node, instance container, and
+first-attribute count rather than reusing any pre-device-call snapshot. A
+count-only mutation and a whole-node replacement each supersede and destroy the
+stale candidate, then converge on exact current IDs without requiring nested
+publication. Retirement reserves/removes node ownership before invoking the
+foreign enqueue. A true return commits the reservation to the callback; false
+or throw restores it when the lifecycle remains live, while terminal teardown
+drains the reservation exactly once. A callback invoked synchronously before
+the enqueue return remains inert until that return commits ownership, and any
+callback paired with false or throw stays inert. Re-entrant teardown may destroy
+current and other node-owned buffers but never the reserved generation.
+
+**2026-08-27 third repair result — REVALIDATED, NEW FREEZE REQUIRED:** the
+post-upload transaction now resolves the current runtime node, instance
+container, and first-attribute count after both foreign device calls. It
+destroys a superseded candidate unpublished and recursively converges only while
+the node-cache lifecycle remains live. The retirement scheduler snapshots its
+pending set, removes each generation before enqueue, and uses a return-value
+commit latch so a synchronous callback cannot acquire ownership before the
+foreign call returns. Failed transfers restore a live owner or drain a terminal
+reservation; successful transfers remain disjoint from teardown.
+
+The focused real-module suite is **18/18 PASS**. New no-nested-ensure controls
+change only count during candidate allocation and replace the whole runtime node
+during candidate upload; both destroy the stale candidate and publish exact
+current IDs on retry. The retirement controls make enqueue invoke its callback
+before returning, trigger terminal teardown, and cover true, false, and throw.
+They prove exact-once current/reserved destruction, one pinned queue fence only
+after a true commit, inert callbacks after false/throw, stable retry when the
+lifecycle stays live, and no double-destroy on repeated teardown. All earlier
+provenance, legacy, failure, epoch, capture, and lifetime controls remain green.
+
+Source/spec syntax, separate source/spec ESLint, four-path Prettier, strict
+source-comment policy, and diff hygiene are green. Both root and engine-project
+TypeScript commands exit 0. The three independent NO-GO records remain
+immutable history and no approval is inferred from this repair. No build,
+browser, GPU, network, evidence publication, or Git write was run.
+
+**2026-08-27 parallel lifecycle review of round-4 tuple — NO-GO (P0 0 /
+P1 1 / P2 0):** a second read-only reviewer hash-matched the tuple and
+reproduced 18/18, then found that provenance population reused one node-owned
+scratch record across synchronous re-entry. A transform revision getter swapped
+backing A to B, invoked nested ensure so B published, restored A, and returned.
+The nested call overwrote the outer scratch before the outer call captured its
+epoch/current tuple; the outer stable-hit comparison therefore returned B while
+the live backing was A. The next ordinary call repaired it, proving a one-frame
+stale result rather than harmless eventual convergence. The tuple earns no
+approval.
+
+**Fourth repair predicate locked before revalidation:** provenance scratch is a
+node-local reusable pool indexed by synchronous population depth. Ordinary
+stable frames reuse depth zero without allocation; nested getters acquire a
+different record and release it in a finally block, including throwing getters.
+The exact A-to-nested-B-to-A control must return and publish A in the outer call,
+retain distinct A/B bytes, and allocate no third buffer on the next stable call.
+Final teardown clears the pool and depth state. A getter failure during the
+post-upload live recheck must destroy only the unpublished candidate, preserve
+the original error and incumbent tuple, leave depth balanced, and remain
+retryable.
+
+**2026-08-27 independent review round 4 — NO-GO (P0 0 / P1 2 /
+P2 0):** the primary reviewer independently confirmed the shared-scratch
+finding above and found a second stale-return boundary. With A retained after a
+refused retirement and B current, the next stable B call crossed the foreign
+enqueue boundary. That wrapper accepted A's callback but changed the live label
+back to A before returning. The ensure path returned B without another semantic
+resolution; the same exposure existed after a newly published replacement.
+Exact output retained live label A with returned IDs from B and no third
+allocation. The reviewer hash-stopped when the accepted scratch repair changed
+the tuple, so no approval or mixed-tuple gate claim was issued.
+
+**Fifth repair predicate locked before revalidation:** provenance population
+keeps its depth slot reserved through a second read of every advertised revision
+and a raw-anchor recheck of node, instances, count, packed/fallback transforms,
+selected source/table, explicit backing, and implicit parameters. A late getter
+that changes an earlier anchor makes the snapshot unstable; pre-candidate work
+retries directly, while post-upload work destroys the unpublished candidate
+before retry. The retirement scheduler reports whether it crossed a potentially
+foreign boundary. Both stable-hit and newly-published paths then re-resolve a
+stable semantic snapshot and compare buffer, provenance identity, and monotonic
+epoch before returning. A wrapper that changes B back to A must converge on A
+within that same outer call on both paths, and the following stable call must
+allocate nothing.
+
+**2026-08-27 fifth repair result — REVALIDATED, NEW FREEZE REQUIRED:** each
+active provenance population now owns one reusable depth slot through its
+complete fill, revision re-read, and raw-anchor validation. Nested ensures use a
+different slot; ordinary calls reuse depth zero, and teardown clears the pool.
+Unstable pre-candidate observations retry without native allocation. Unstable
+post-upload observations destroy the unpublished candidate while preserving a
+thrown getter error or converging on the new live tuple.
+
+Retirement scheduling now reports every pending-retirement context/device
+boundary. Before either a stable hit or a newly published generation returns,
+the ensure path re-resolves a stable snapshot and compares exact buffer,
+provenance record, and publication epoch. A foreign enqueue that changes B back
+to A therefore causes the same outer call to publish/return A; callbacks already
+accepted for older generations retain their disjoint submit-safe ownership.
+
+The focused real-module suite is **22/22 PASS**. It adds exact byte-decoded
+A-to-nested-B-to-A scratch isolation; post-upload getter throw cleanup; a late
+revision getter changing packed-transform A to B; and foreign B-to-A mutation
+across both stable-hit and new-publication retirement paths. Stable follow-up
+calls reuse the scratch pool and current GPU buffer with no allocation/upload.
+All earlier label/source/table/backing, legacy i3dm, transactional failure,
+count/node replacement, terminal teardown, callback-commit, queue-fence,
+capture, merged-binding, and shadow controls remain green.
+
+Source/spec syntax, separate source/spec ESLint, four-path Prettier, strict
+source-comment policy, and diff hygiene are green. Both root and engine-project
+TypeScript commands exit 0. All prior NO-GO records remain immutable history
+and no approval is inferred from this repair. No build, browser, GPU, network,
+evidence publication, or Git write was run.
+
+**2026-08-27 round-5 convergence review — NO-GO (P0 0 / P1 2 /
+P2 0):** two read-only reviewers independently found that an unstable
+provenance observation returned a recursive retry with no bound. An alternating
+runtime-node getter exhausted the JavaScript stack after thousands of
+allocation-free observations. A second control made each initial observation
+stable but each post-upload observation inconsistent; before its test sentinel
+stopped at 20 retries, the path had created, uploaded, and destroyed 20
+unpublished candidates exactly once without ever publishing. Eventual cleanup
+was correct, but unbounded CPU/stack/GPU churn is a product P1 and the tuple
+earns no approval.
+
+The primary reviewer then found a second P1 before hash-stop: revision checks
+completed before a final raw-anchor getter. That getter mutated packed bytes and
+their revision in place while returning the same node, identity, and length.
+The path published revision 1 and uploaded translation 1 while live bytes were
+translation 100 at revision 2. Adding one more revision read would merely move
+the last foreign boundary; acceptance needs consecutive complete observations
+whose final comparison performs no live reads.
+
+**Sixth repair predicate locked before revalidation:** one node-local
+convergence budget of four attempts covers initial snapshot instability,
+post-upload supersession, post-retirement semantic change, and synchronous
+nested ensure calls. It is shared across re-entry rather than reset by each
+call or phase, implemented as an iterative retry loop, and cleared in a finally
+block on success, null, or throw. Exhaustion returns null for that frame,
+publishes no unstable candidate, preserves any incumbent ownership, and leaves
+scratch depth balanced; the next frame starts a fresh budget. Exact controls
+must bound an alternating-node source with zero GPU allocation, recover on the
+next stable call, and prove persistent nested getter re-entry cannot create an
+independent unbounded retry tree.
+
+Each attempt acquires two separately retained depth-pool records and fills two
+complete provenance observations, including runtime-node identity. Only a
+plain-record equality walk follows the second observation; no live getter runs
+after the acceptance decision's last captured input. Disagreement consumes the
+shared convergence budget. The exact final-node-getter control mutates packed
+translation and revision in place during the second observation; the stale
+candidate must be destroyed, the retry must publish revision 2/translation 100,
+and no stale revision-1 generation may become current. The duplicate raw
+resolver is removed so feature/table/attribute selection has one implementation.
+The stale module header is corrected to describe mutable semantic provenance.
+
+**2026-08-27 sixth repair result — REVALIDATED, NEW FREEZE REQUIRED:** the
+ensure path now owns one node-local scalar budget of four attempts across initial
+observation, candidate publication, retirement revalidation, and synchronous
+nested ensure calls. Retry is iterative; every exit clears the budget fields in
+a `finally` block. A permanently alternating runtime-node getter therefore
+returns null after exactly eight node reads with zero buffer creates or writes,
+balanced depth, and a two-record warm scratch pool. The next stable call receives
+a fresh budget and creates/uploads exactly one current generation. Nested getter
+re-entry shares that same bound and also exits with every convergence/scratch
+field balanced.
+
+Each attempt now captures two separate complete provenance observations,
+including runtime-node identity, then compares only those plain records. The
+final-node-getter control mutates one retained packed array in place from
+translation 1/revision 1 to translation 100/revision 2 during the second
+observation. The revision-1 candidate is destroyed unpublished; retry publishes
+only revision 2/translation 100, with two creates, two writes, and no destruction
+of the current generation. The duplicate raw resolver has been removed and the
+module lifetime header now describes transactional mutable-provenance handling.
+
+The focused real-module suite is **25/25 PASS** after formatting. Source/spec
+syntax, separate source/spec ESLint, four-path Prettier, strict source-comment
+policy, and `git diff --check` are green. Both root and engine-project
+TypeScript no-emit commands exit 0. Every preceding NO-GO remains immutable
+history and no approval is inferred from this repair. No build, browser, GPU,
+network, evidence publication, or Git write was run.
+
+**2026-08-27 independent review round 6 — NO-GO (P0 0 / P1 3 /
+P2 1):** three read-only reviewers terminally hash-matched the four-file tuple,
+reproduced 25/25 and every declared source gate, and retained every earlier
+repair, but found three open product boundaries.
+
+First, accepted provenance was not the sole candidate input. Packed
+materialization re-read `runtimeNode.transformsTypedArray`, and the fallback
+path re-traversed live instance attributes. A getter returned A for both
+accepted observations, transient B only for packing, then A for post-upload
+validation. The path permanently published B translation 100 under A
+provenance/live translation 1; the next stable call reused the wrong buffer.
+
+Second, two finite getter-driven observations do not create a linearization
+point by themselves. A late revision getter in observation two changed an
+earlier-captured packed source A to B while both plain records still compared
+equal. Stable-hit, initial-publication, and replacement-publication controls
+each returned the prior generation for one call while live translation was 100;
+the following call repaired it. A third live observation would only move the
+last foreign boundary.
+
+Third, convergence exhaustion was not draw-fail-closed. The ensure path
+correctly returned null after four unstable attempts, eight node reads, and zero
+GPU work, but the renderer retained `instanceBuffer=null` /
+`instanceCount=1`, omitted the instancing flag, selected the singleton shadow
+layout, and still emitted a one-instance command. A genuinely instanced node
+could therefore render at the identity/default transform during its unstable
+frame.
+
+The bounded budget itself passed additional exhaustion, nested-reentry,
+incumbent-preservation, callback/fence, and exact-once destruction mutants. The
+P2 is honest measurement debt: after two-record warmup, 1,000 stable calls
+allocated/uploaded nothing, but none/implicit/explicit modes still perform
+4/8/12 revision reads, up to two label/attribute scans, and two 36-key equality
+walks per call; CPU/heap cost is unmeasured and no performance claim is earned.
+
+**Seventh repair predicate locked before revalidation:** candidate transform and
+feature-ID bytes consume only the accepted captured provenance. Packed
+materialization uses its captured packed array; fallback materialization uses
+its captured translation/rotation/scale arrays. No runtime-node, instance, or
+attribute traversal may occur between snapshot acceptance and the post-upload
+CAS.
+
+Every semantic fill routes through one retained tracked-read mechanism. Each
+scratch record retains owner/key/value anchors without stable-frame allocation.
+After each complete observation, a descriptor-only closure checks every tracked
+data property, array entry, and known accessor backing field without invoking a
+getter. Any late getter side effect that replaces an earlier node, instance,
+transform, feature source/data, property table, attribute, count, label, or
+revision-bearing data field makes that observation unstable and consumes the
+shared four-attempt budget. Only two individually closed records may enter the
+plain-record equality walk, and no live selector/getter runs after closure.
+
+Renderer consumption is equally fail-closed: when a node advertises instancing
+and source-only ensure returns null, that node emits zero color, pick, shadow,
+capture-replay, silhouette, translucent, classifier, or velocity commands for
+the frame; the already-published empty capture record remains authoritative.
+Focused controls must cover late-final-getter mutation for none, implicit, and
+explicit sources across stable, initial, and replacement paths; transient packed
+and fallback reads after acceptance; exact bounded recovery; and source-proven
+zero command emission instead of singleton fallback. All prior 25 controls and
+the full source gate set remain required.
+
+**2026-08-27 round-7 pre-freeze advisory — RED RETAINED (P0 0 / P1 2 /
+P2 2):** the first expanded candidate was 31/31, but fresh read-only source and
+test advisers found two further product boundaries before freeze. Backing-field
+selection used untracked own-property presence, so a late getter could add
+`_node`, `_instanceFeatureIdLabel`, `_sceneGraph`, `_components`,
+`_propertyTables`, `_count`, or `_id` after the public path had been selected.
+Feature-source kind still used raw `instanceof`, so a late getter could change
+the selected object's prototype after classification. In either case both plain
+records could retain the old semantic decision. The P2 findings were incomplete
+matrix/inertness coverage and an unsupported exact zero-heap interpretation:
+descriptor inspection may allocate even though the retained scratch containers
+are reused. This was not a frozen tuple and earns no approval, but the defects
+are product/test reds and are not discarded merely because they were found
+before terminal review.
+
+**2026-08-27 seventh repair result — REVALIDATED, FREEZE PENDING THE
+QUIET-HOURS GIT CHECK:** alias choice now retains the exact own descriptor whose
+presence or absence selected each public/backing path. Closure re-fetches that
+own descriptor without falling through to a prototype. Feature-kind resolution
+walks and retains a bounded 64-edge prototype chain instead of using raw
+`instanceof`; both complete records are filled before either record's descriptor
+and prototype anchors close, and only then enter plain equality. Candidate
+transform and feature bytes still consume only captured provenance. Renderer
+exhaustion still skips the exact failed instanced node before camera and
+primitive traversal while leaving warmup, non-instanced, and sibling-node paths
+reachable.
+
+The focused real-module suite is **34/34 PASS** after formatting. Its full
+none/implicit/explicit × initial/stable/replacement matrix observes exact getter
+read counts **6/8/12**, create/write deltas **1/1/2**, and final publication
+epochs **1/2/3**, with no immediate native destruction and exact final
+transform/ID ownership. Separate controls make a late private-backing addition
+and explicit-to-implicit prototype change retry to the new semantic source.
+Persistent post-upload instability consumes the shared four-attempt budget with
+exactly **16** revision reads, four creates, four writes, and four unpublished
+candidate destroys while preserving the incumbent tuple/epoch; a stable next
+frame recovers with **6** reads and one coherent create/write. Captured packed
+and fallback inputs, data-to-accessor closure, prior lifecycle/retirement laws,
+and all earlier controls remain green. Renderer source-contract mutants that
+replace the node-local `continue`, inert the null guard, or remove either outer
+instancing/warmup conjunct each turn the test red, and the first capture push is
+non-vacuously pinned after the guard.
+
+Fresh post-repair advisers report **P0 0 / P1 0**. Their remaining
+non-measurement P2 was closed before freeze: beginning a shorter observation now
+clears the previously active source, descriptor, getter/setter, value, and
+prototype object slots before the retained arrays are reused, so superseded
+objects are not pinned until node teardown. The post-upload exhaustion control
+also asserts that the incumbent is the sole retired buffer and that the
+recovered live buffer has zero native destroys.
+
+Source/spec syntax, instancing-source/spec ESLint, four-path Prettier, strict
+source-comment policy, and both root and engine-project TypeScript no-emit gates
+exit 0. The renderer path is explicitly ignored by the available ESLint config
+and is covered by TypeScript plus the source-contract test; that warning is not
+misreported as renderer lint coverage. The current `git diff --check` remains
+owed because the active weekday quiet-hours instruction prohibits every Git
+invocation, including read-only checks. No build, browser, GPU, network,
+evidence publication, deletion, or Git action was run. Descriptor/prototype
+inspection cost remains unmeasured; no zero-heap, CPU, GPU, FPS, or browser claim
+is earned. Freeze and independent exact-tuple review follow only after this
+stamp is formatted, revalidated, and the permitted Git check is green.
+
+**2026-08-27 independent source review round 7 — GO (P0 0 / P1 0 /
+P2 1):** a fresh read-only reviewer matched the exact frozen four-path tuple,
+reproduced the 34/34 focused suite plus syntax, source/spec ESLint, four-path
+Prettier, strict comment policy, and both TypeScript no-emit gates, and carried
+every prior finding forward. Candidate materialization, filled-then-closed
+observations, alias/prototype closure, bounded convergence, retirement ownership,
+renderer fail-closed ordering, the full mode/path matrix, exhaustion recovery,
+and all biting renderer mutants are approved for this source-only slice. The
+remaining P2 is measurement debt for the descriptor/prototype and two-observation
+stable path; no CPU, heap, FPS, browser, or GPU claim is earned. The exact tuple
+was terminally unchanged: instancing source
+`75691cf75307c0dc9faaa3b75ec7e1a47c5b54c0f2c3d52452e5f12a4b60ebb1`,
+renderer `7648f75aa90da620a0627f0c2feb5a40940022b87726a1fe7e8d1f69cb5951d2`,
+spec `56303d31944296dacd135ef7999670bf807cf0f41ed1d4a13a065d1d643e87b0`,
+and queue `2ff2b837bfc7c119f5e31d6c9c653408374f70a6761abdcfd4fe4cdfbf860c2b`.
+The weekday quiet-hours Git/provenance check, clean validation manifest, and
+real WebGPU certification remain owed; this GO is not landing authorization.
+
+### 2026-08-27 C11-202 selected-feature resource generations Wave 1 —
+PREREGISTERED
+
+This serial wave begins only after the round-7 instancing source GO above. Two
+read-only scouts confirmed three current P1 families. First, an existing
+`_featureIdEntries` array bypasses selected source, table, BatchTexture
+owner/layout/content, device, and resource-generation resolution. Second, cold
+construction may publish a partial bundle when one required texture upload
+returns null, while later buffer/view failure can leak provisional owners.
+Third, stable batch styling refresh swallows `writeTexture` failure and clears
+`_batchValuesDirty`, permanently suppressing retry. The existing 16/16 lazy-pick
+suite remains green because its replacement controls primarily prove dense-pick
+binding 31, not base styling binding 28 and the feature uniform together.
+
+**Bounded Wave-1 source lease:**
+
+- `packages/engine/Source/Renderer/WebGPU/WebGPUModelFeatureId.js`
+- `packages/engine/Source/Renderer/WebGPU/WebGPUModelRenderer.ts`
+- `packages/engine/Source/Scene/BatchTexture.js`
+- `packages/engine/Specs/Scene/BatchTextureSpec.js`
+- `packages/engine/Specs/Renderer/WebGPU/WebGPUModelFeatureIdSpec.js`
+- new
+  `packages/engine/Specs/Renderer/WebGPU/WebGPUModelFeatureSelectionInvalidationSpec.mjs`
+- `Tools/visual-regression/model-lazy-pick-demand.spec.mjs`
+- `Tools/c16/comment-marker-grandfather.txt` (strict-comment ratchet rider only)
+- `Tools/c16/comment-marker-guard.spec.mjs` (ratchet census assertions only)
+- this serialized queue stamp
+
+`WebGPUModelMetadataCache.js` and the now-approved instancing module remain
+read-only. Whole-primitive layout/WGSL/pipeline regeneration is Wave 2, not a
+reason to widen this lease silently.
+
+**Locked Wave-1 predicate:** one coherent primitive generation owns its exact
+entries-array identity, flags, feature texture and ownership bit, batch texture,
+feature uniform, semantic provenance, device/resource generation, publication
+epoch, and retirement disposition. Semantic provenance is the resolved source,
+not raw label spelling, and includes instance-first domain/selector identity and
+revision, exact selected source identity/kind/revision and relevant scalar
+fields, texture reader/source/native realization, selected feature-table and
+BatchTexture owner identities/revisions, feature count, dimensions/step,
+authoritative value-array identity/content revision, pipeline defaults, and a
+renderer-supplied compatibility token. The owned `BatchTexture` mutation path
+must advance a monotonic content/layout revision before either backend can
+consume its dirty bit.
+
+Every cold miss or semantic replacement fills and closes two complete tracked
+observations, compares only closed records, builds solely from accepted captured
+inputs, and CAS-publishes only if the incumbent tuple and epoch remain exact
+after all user/native boundaries. One shared four-attempt budget covers nested
+re-entry and post-upload revalidation. A complete candidate publishes atomically;
+required feature/batch texture, buffer, upload, or view failure publishes
+nothing and destroys each provisional owned resource once. An exact stable tuple
+returns the same entries identity with zero allocation, upload, publication,
+retirement, or merged-bind-group rebuild. Alias-only label changes that resolve
+to the same source are stable.
+
+In-place style-content change writes the retained batch texture exactly once,
+updates the generation's content revision, and clears dirty only after success.
+Failure leaves the generation stale and retryable even if WebGL already consumed
+the shared dirty bit; the affected primitive emits no command on that call.
+Compatible A→B, A→none, none→A, same-count owner, dimensions/step, unavailable→
+ready texture, borrowed↔owned, and device/resource-generation transitions either
+publish the complete current generation or fail closed. A renderer-visible null
+disposition skips that exact primitive before color, pick, shadow, capture,
+silhouette, translucent, classifier, and velocity emission; undefined remains
+the legitimate no-feature result. Any transition outside the supplied
+compatibility token also returns the fail-closed disposition and records the
+Wave-2 remainder rather than binding stale or fabricated resources.
+
+Replaced private textures and uniform buffers become node-owned retired
+generations. Ownership is reserved before exact-current-encoder enlistment;
+accepted callbacks wait on the captured old queue's `onSubmittedWorkDone` before
+exact-once native destruction. False/throwing enlistment is restored for stable
+retry, synchronous callback-before-return cannot double-own, rejection drops
+references without calling a lost device, and teardown tombstones/advances the
+epoch before detaching and best-effort draining only current or node-owned
+resources. Borrowed stub/default/model-wide dense-pick resources are never
+destroyed by this owner.
+
+The focused real-module suite must prove exact cold attribute/implicit/texture
+counts; the semantic transition matrix; bindings 26/28/31, decoded uniform
+fields, flags, entry identity, and ownership; successful/failed content refresh;
+partial-construction rollback; getter/native re-entry A→B; bounded exhaustion and
+recovery; teardown/enqueue/callback/fence/rejection laws; device/generation
+pinning; sibling isolation; and stable zero-work. Mutants must restore the
+existence-only hit, omit each provenance family or the compatibility token, key
+raw labels, invert instance precedence, use untracked alias/prototype decisions,
+publish early/partial/live bytes, clear dirty after failure, let outer A overwrite
+nested B, mutate entries in place, destroy inline/use a frame-wide scheduler,
+reserve after enqueue, use the new queue, skip/reject the fence incorrectly, or
+continue command emission after null. The existing 16/16 lazy-pick suite and
+round-7 34/34 instancing suite remain required regression gates.
+
+**Wave-1 source run ledger — 2026-08-27, pre-freeze:** the first author
+invocation of the new real-module suite passed 14/17. Two failures were harness
+defects (a stub returned a fresh texture wrapper on every observation, and the
+renderer contract looked for the wrong local identifier). The third was a valid
+product red: teardown detached and cleared the retired-generation set before
+iterating it, so the old A feature texture survived A→B replacement. The
+teardown order was repaired without weakening the assertion. The author then
+expanded the renderer mutants and reran 20/20 PASS. Root independently fixed two
+mechanical lint findings, ran Prettier, and reproduced `node --check`, per-file
+ESLint, and the same focused suite at 20/20 PASS (exit 0).
+
+The pre-migration invocation of
+`node --test Tools/visual-regression/model-lazy-pick-demand.spec.mjs` remains
+banked at 10/16 PASS. Cases 4/10/11 still encode frame-wide
+`scheduleTextureDestroy` ownership instead of exact captured-encoder enlistment;
+cases 8/9 exposed replacement promotion before publication and are product-fixed
+but not yet rerun in that harness; case 15 inspects the now-thin exported wrapper
+instead of the generation/candidate implementation. This measured red remains
+operative until the preregistered harness migration and rerun; it is not
+reclassified as a product PASS.
+
+The first post-migration lazy-pick invocation completed syntax, ESLint, and
+formatting cleanly but measured 14/16 PASS. Case 10 proved both primitive base
+generations stayed live through their exact callbacks and died only after their
+captured-queue fences, then correctly transferred the old dense texture to its
+separate scheduler; the test incorrectly required the first two PickIds to die
+even though same-owner 2→3 growth deliberately reuses them in the current
+registry. Case 16 had one non-biting harness mutant: its unqualified replacement
+hit the earlier helper occurrence of
+`_retiredFeatureIdGenerations.add(generation)` rather than the rejected-enlistment
+restore inside `scheduleRetiredFeatureResourceGenerations`. These are two
+harness reds, not hidden product passes; the 14/16 invocation remains banked.
+
+After correcting only those two harness defects, the second migrated invocation
+passed 16/16 (exit 0). It now proves that primitive-local batch textures and
+uniform buffers remain live before callback and before fence, destroy only after
+the captured old queue settles, keep the old dense texture pinned until every
+primitive marker settles, then transfer that dense texture through its separate
+scheduler. Same-owner count growth preserves the reused PickIds, stable repeats
+add no enlistment, and all renderer/feature/frontend mutants bite. Node syntax,
+per-file ESLint, and Prettier are green for the migrated spec.
+
+**Integrated pre-review gate — 2026-08-27:** the current Wave-1 suite passes
+20/20, the migrated lazy-pick regression passes 16/16, and the unchanged
+round-7 instancing regression passes 34/34. Node syntax checks pass for every
+leased JavaScript/MJS path; ESLint exits 0 for the matching JavaScript/MJS
+paths; Prettier reports every leased source/spec/queue path formatted. ESLint
+explicitly warns that `WebGPUModelRenderer.ts` is ignored because no matching
+configuration is supplied, so this record does not claim ESLint coverage for
+that TypeScript file. Both `npx tsc --noEmit` and
+`npx tsc --project packages/engine/tsconfig.json --noEmit` exit 0 and Prettier
+covers the renderer. No build, browser, GPU, network, evidence publication, or
+Git action was run.
+
+**2026-08-27 adversarial source review — NO-GO (P0 0 / P1 5 / P2 1):**
+the pre-freeze reviewer found five required repairs. (1) Selected-source
+`propertyTableId` is observed but table/BatchTexture resolution still follows
+only `model.featureTableId`, permitting a primitive or instance source to bind a
+different table. (2) The dense-pick cache hit omits device, resource generation,
+and in-place owner identity, so recovery or owner-only transitions may reuse
+stale texture/PickIds. (3) Dense-pick allocation/publication and primitive
+promotion lack an incumbent/epoch CAS around native and owner callbacks, so
+reentry may overwrite a nested newer publication or leak/alias generations. (4)
+An outer in-place batch upload can overwrite a nested newer upload, then stamp
+the old bytes with the new provenance. (5) Required batch-resource failure can
+destroy an owned feature texture and fall into a catch that destroys it again if
+the first destroy throws. The P2 is inherited WebGL `BatchTexture.update`
+clearing dirty before a create/copy that may fail; it is outside the current
+WebGPU source lease unless adjudication makes it necessary. Existing tests miss
+these cases because table ids are uniform, pick is inactive in transition and
+reentry cases, and no throwing-destroy or upload-reentry control exists. This
+NO-GO reopens implementation; the green pre-review gates do not certify the
+tuple.
+
+**NO-GO repair predicates — locked before the adversarial red run:** the exact
+selected source's defined non-negative integer `propertyTableId` selects that
+indexed model feature table; only an undefined selected id may use the legacy
+`model.featureTableId` fallback, and an invalid defined id fails closed. The
+model-wide dense-pick generation keys the exact device, queue, resource
+generation, BatchTexture, owner, feature count, and dimensions; every miss is a
+captured candidate with an epoch/incumbent CAS, and rollback destroys only its
+new texture/IDs. Primitive binding-31 promotion likewise CASes the exact base
+generation, entries, buffer, epoch, and dense generation across view/write
+boundaries. Reentry that publishes B makes an outer A stale and unable to
+overwrite or alias B. Retained content upload tracks the bytes/revision actually
+written; stale outer X after nested Y must trigger a final Y upload before a
+green return. Partial candidate cleanup detaches provisional ownership before
+calling a possibly throwing destroy, so every owner sees at most one destroy
+call. The focused suite must add biting selected-table, owner/device/generation,
+model-wide pick reentry, primitive-promotion reentry, retained-upload reentry,
+and throwing-destroy controls; none may be weakened to existence-only checks.
+
+**Adversarial red run — 2026-08-27, valid product FAIL:** syntax, per-file
+ESLint, and Prettier completed, then the expanded real-module suite passed 20/26
+and failed exactly six preregistered controls. Selected table 1 decoded feature
+count 2 from legacy table 0 instead of 3. An in-place owner transition reused
+the same dense texture/PickIds. Nested revision 2 uploaded bytes 197 before the
+outer revision-1 write overwrote them with bytes 31 and returned green. A
+throwing provisional feature-texture destroy was called twice. Model-wide pick
+reentry left current PickIds targeting outer owner A instead of nested owner B.
+Primitive promotion reentry split the published entries alias from the current
+generation and restored source-A binding 26 over nested source B. These six reds
+are the operative repair acceptance; the prior 20/20 is superseded for freeze.
+
+**First repair run — 2026-08-27, 25/26 PASS:** the full dense owner/device/
+resource-generation tuple, both reentry CAS controls, retained-upload final-byte
+witness, and exact-once throwing rollback are green. The sole remaining valid
+red is the selected-table invalid-index branch: defined id 7 currently publishes
+an empty no-feature generation and returns `undefined` instead of returning
+fail-closed `null` while preserving the selected-table incumbent. Syntax,
+per-file ESLint, and Prettier are green; this run remains FAIL until that explicit
+invalid-reference distinction is repaired.
+
+**Second repair run — 2026-08-27, 26/26 PASS:** a defined invalid selected
+table id now returns fail-closed `null` before publication, while undefined
+retains the legacy model-table fallback. All six operative P1 controls are now
+green: exact selected table/style/pick ownership; dense owner/device/resource
+generation; actual uploaded-content revision; throwing cleanup at most once;
+model-wide dense candidate CAS; and primitive binding-31 CAS with coherent
+generation aliases. Node syntax, per-file ESLint, and Prettier pass. This is an
+author repair result, not the required fresh independent frozen-tuple review.
+
+**Wave-1 WebGL retry rider — preregistered before control implementation:** the
+adversarial P2 is included in this wave because `BatchTexture.js` and its spec
+are already leased and the dirty/content revision is shared provenance consumed
+by both backends. For an existing batch texture whose first `copyFrom` throws,
+the update throws without clearing `_batchValuesDirty`; the next update retries
+exactly once, succeeds, and clears it. For a successful `copyFrom` that
+reentrantly changes show/color, the completed update must not clear the newer
+dirty revision or replaced value-array identity; one subsequent update uploads
+the current values and clears dirty only when both captured witnesses remain
+exact. Texture-creation failure follows the same retry law, while a texture that
+was successfully created before a later copy failure remains counted once and is
+reused by the retry. The focused Node suite adds the two existing-texture
+controls before product repair. The present pre-upload-clear implementation is
+expected to fail the throwing-copy retry control while preserving a mutation
+made during `copyFrom`; a mutant that restores that early clear must keep the
+first control red, and a separate mutant that clears unconditionally after a
+successful copy must make the reentrant-revision control red. No browser or
+backend-performance claim follows from this source-only rider.
+
+**WebGL retry rider first run — 2026-08-27, valid product FAIL at 27/28:**
+Node syntax, per-file ESLint, and two-path Prettier exit 0. The new throwing
+`copyFrom` control observes exactly the preregistered defect: the call throws
+after one copy attempt but `_batchValuesDirty` is false, so the required retry
+is suppressed. The revision and array-identity reentry cases are green on the
+current pre-clear implementation, establishing the behavior that a naïve
+unconditional post-copy clear would regress. This 27/28 result remains banked;
+the product repair must make the throw retryable without weakening either
+reentry witness.
+
+**WebGL retry rider first repair verification invocation — mixed / lint
+ERROR:** the repaired focused suite passes 28/28, including `setShow`,
+`setColor`, and value-array-identity reentry; source/spec syntax and three-path
+Prettier exit 0. Two concurrent direct ESLint invocations emitted no diagnostics
+but did not terminate after two bounded waits and were interrupted, each exiting
+1. This invocation makes no ESLint PASS claim; the lint processes are banked as
+tool ERROR and must be rerun serially under a hard watchdog before freeze.
+
+**WebGL retry rider lint rerun and source result — 2026-08-27, 28/28
+PASS:** the first attempted watchdog wrapper failed to parse its inline Node
+program and exited 1 before launching ESLint; that wrapper invocation is banked
+as tool ERROR, not a lint result. Direct serial ESLint then exited 0 separately
+for `BatchTexture.js` and the focused spec. Together with the already-green
+syntax and three-path Prettier checks, the 28/28 focused run proves that failed
+WebGL copy remains dirty/retryable, stable retry clears exactly once, show/color
+revision or array-identity drift remains dirty, and a third stable call performs
+zero upload. This is still an author source result, not independent review or
+browser/WebGL certification.
+
+**Pre-freeze advisory round 2 — NO-GO (P0 0 / P1 1 / P2 2):** the
+canonical dense generation captures the dimensions object but rereads mutable
+`x`/`y` after `getFeature`/`createPickId`/native callbacks. Its final CAS checks
+object identity and positivity, not the scalar extent that allocated the byte
+array, so an in-place resize can publish mixed allocation, descriptor, upload,
+and generation widths. This is an operative P1. The first P2 is that an already
+cached generation does not key the exact `context.createPickId` function and may
+reuse registry IDs across an in-place factory change. The second is bounded
+multi-table churn: two stable primitives selecting different property tables
+share one model-wide dense slot and can alternate replacements. That topology
+belongs to the already-explicit simultaneous-multiple-set Wave-2 remainder and
+is recorded rather than silently widening Wave 1.
+
+**Round-2 repair predicates — locked before the scalar red run:** capture
+validated positive integer dense width/height once, require capacity at least
+the feature count, use only those scalars for allocation, texture creation,
+upload layout/extent, and generation metadata, and require the live same-object
+dimensions still have both exact scalars at final CAS. A same-object resize from
+2x1 to 3x1 during the first `createPickId` must destroy the coherent 2x1 loser
+once, converge on and publish only a coherent 3x1 generation, and never expose a
+3x1 upload backed by 2x1 bytes. Invalid or undersized extents fail closed without
+publication. The dense tuple also captures the exact `createPickId` function;
+cache hit, ID reuse, and final CAS all require it. An in-place factory change
+must rebuild texture and IDs against the new factory. Additional green controls
+must exercise primitive reentry after uniform `writeBuffer`, not only
+`createView`, and assert the losing dense texture as well as its new PickIds are
+destroyed exactly once. Independent mutants must omit scalar CAS, capacity,
+factory hit/reuse, post-write CAS, or losing-texture cleanup one at a time and
+turn the relevant policy/control red.
+
+**Round-2 adversarial red run — 2026-08-27, valid product FAIL at 28/31:**
+the focused suite fails exactly the three new product controls. A same-object
+2x1→3x1 callback mutation creates only one dense texture, proving the 2x1 byte
+allocation was published under the later 3x1 extent. A 1x1 extent for two
+features publishes instead of failing closed. Replacing `context.createPickId`
+hits the incumbent instead of rebuilding IDs and texture. The new post-uniform-
+write primitive CAS case and exact-once losing-dense-texture assertion are
+green. Syntax and two-path Prettier exit 0. Per-file ESLint separately exits 1
+on one harness-only `no-unused-vars` finding for the first callback parameter;
+that mechanical red is retained and must be corrected without changing any
+product assertion before repair validation.
+
+**Round-2 repair run — 2026-08-27, 31/31 PASS:** the dense allocator now
+captures validated positive integer width/height once, rejects insufficient
+capacity, uses only captured scalars through allocation/descriptor/upload/
+generation construction, and requires the same live scalars at CAS. The exact
+`createPickId` factory participates in hit, reuse, generation provenance, and
+teardown aliases. The focused suite proves a coherent destroyed 2x1 loser then
+coherent live 3x1 replacement, fail-closed invalid extents, factory replacement
+with fresh texture/IDs, both primitive promotion callback boundaries, and
+exact-once losing texture/ID cleanup. Source/spec syntax, serial per-file ESLint,
+and three-path Prettier exit 0. This remains an author source result; the legacy
+source-policy suite, combined regressions, freeze, and fresh independent review
+are still owed.
+
+**Canonical dense source-policy migration — preregistered before rerun:** the
+legacy 16-test suite still slices `ensurePerFeaturePickIds`, now only a
+texture-return compatibility wrapper, and asserts removed flat cache fields.
+Its current rerun is expected to be a harness/source-policy red rather than a
+new product red. The migration must instead slice the canonical hit, live-CAS,
+publication, provisional-cleanup, current-generation, primitive-CAS,
+generation-allocation, wrapper, promotion, and candidate-preparation helpers.
+It must require the full device/queue/context/resource-generation/BatchTexture/
+owner/owner-method/factory/dimensions/scalar/count tuple; validated capacity;
+captured-scalar allocation and upload; incumbent and publication-epoch CAS;
+factory-safe ID reuse; detach-before-destroy rollback; primitive checks after
+view and uniform-write boundaries; exact bound-generation publication; actual
+uploaded-values/revision witnesses; and wrapper-only RETRY-to-null plus texture
+projection. Existing dense-retirement, exact current-encoder enlistment,
+captured old-queue fence, restoration, and registry-release assertions and
+mutants remain unchanged. Independent inertness mutants remove owner, device,
+resource generation, factory, width/height CAS, incumbent/epoch CAS, primitive
+dense-token CAS, uploaded witness, or provisional detachment one at a time; each
+must bite before the migrated suite can return green.
+
+**Canonical dense source-policy pre-migration run — 2026-08-27, 14/16
+FAIL:** all fourteen runtime/behavior tests remain green. The policy test fails
+because direct primitive `_featureIdEntries` publication no longer exists, and
+the mutant test fails while constructing that same removed anchor before it can
+exercise later obsolete flat-field mutants. This is the expected harness/policy
+red, not a product regression. Node syntax, per-file ESLint, and two-path
+Prettier exit 0. The 14/16 run remains banked until the preregistered canonical
+helper and inertness migration is green.
+
+**Canonical dense source-policy first migrated run — 2026-08-27, 14/16
+FAIL:** all fourteen runtime/behavior tests remain green. The new policy test's
+sole red is harness ownership: it looked for the actual-upload witness in the
+bounded retry wrapper `ensureFeatureIdResourcesGeneration`, while the native
+refresh and accepted witness live in its canonical one-attempt helper
+`ensureFeatureIdResourcesAttempt`. The mutant test still fails while constructing
+the intentionally obsolete direct `_featureIdEntries` publication anchor. Node
+syntax and serial ESLint exit 0; Prettier exits 1 on the unformatted migration.
+No product red is inferred, and this 14/16 result remains part of the run record.
+
+**Canonical dense source-policy first complete run — 2026-08-27, 16/16 PASS
+with formatting red:** all fourteen runtime behaviors, the canonical source
+policy, and its function-scoped independent mutant matrix pass. The matrix bites
+the full generation tuple, capacity and captured upload, exact owner/factory ID
+reuse, live incumbent/epoch CAS, three primitive publication boundaries,
+detach-before-destroy cleanup, actual-upload witnesses, and thin wrapper while
+retaining the prior byte-40, retirement, current-encoder, and queue-fence
+controls. Node syntax and serial ESLint exit 0; Prettier exits 1. This invocation
+therefore makes no all-gates-green or freeze claim until formatting and the full
+suite are rerun.
+
+**Canonical dense source-policy formatted rerun — 2026-08-27, 16/16 PASS:** all
+fourteen runtime behaviors, the canonical source policy, and every independent
+mutant pass after repository formatting. Node syntax, serial ESLint, and
+Prettier all exit 0. The suite now follows the canonical generation helpers and
+contains no direct primitive-publication or obsolete flat-cache policy anchor;
+the historical retirement/current-encoder/captured-queue controls remain live.
+This is an author result; the combined wave gate and a fresh exact-tuple review
+remain required before freeze approval.
+
+**Wave-1 integrated pre-freeze gate — 2026-08-27, SOURCE PASS:** the selected
+resource suite passes 31/31, canonical lazy-pick passes 16/16, preserved
+instancing passes 34/34, and the complete comment-ratchet suite passes 20/20
+(101/101 total). Eight leased/dependency JavaScript and MJS paths pass Node
+syntax and serial per-file ESLint. Prettier passes all ten checked source, spec,
+Tools, renderer-TypeScript, and queue paths. The two-product-source strict
+comment scan reports zero findings, errors, and warnings. Root and engine-project
+TypeScript no-emit both exit 0; the renderer TypeScript path is covered there and
+is not misreported as ESLint-covered. No build, browser, GPU, network, evidence
+publication, or Git action was run. Exact tuple freeze and fresh independent
+review remain required; real backend certification remains owed.
+
+**Wave-1 exact source freeze — 2026-08-27:** the first read-only manifest command
+computed the tuple but exited 1 because this PowerShell runtime lacks the invoked
+single-argument .NET JSON-serializer overload; it emitted no usable manifest and
+changed no file. The supported native serializer rerun exited 0 and froze the
+following exact path/hash/byte/EOL tuple. `crlf/lf` are newline counts; every
+listed path has zero bare CR. The clean-list's one LF is preserved dependency
+state, not normalized by this wave.
+
+| Path | SHA-256 | Bytes | crlf/lf |
+| --- | --- | ---: | ---: |
+| `packages/engine/Source/Renderer/WebGPU/WebGPUModelFeatureId.js` | `c0c219979726470f70dc5a12e7d3f060c2384a4eebb41e8a3800f721b99fda2a` | 96280 | 3210/0 |
+| `packages/engine/Source/Renderer/WebGPU/WebGPUModelRenderer.ts` | `cc8e0a8adeee6725bbea305cb8b5b83742dfabe5ab1da9ccedc2b30baced0d79` | 380497 | 9043/0 |
+| `packages/engine/Source/Scene/BatchTexture.js` | `4a2ac91cd1c0bfed94234c464bdaddf925a0dac3fb299f45a4b2967463dc4ae7` | 20484 | 633/0 |
+| `packages/engine/Specs/Scene/BatchTextureSpec.js` | `20d6cc5750af09df5146fd24c40d30f92a0ebb363c01f2a0ce66ef2848a08322` | 14041 | 422/0 |
+| `packages/engine/Specs/Renderer/WebGPU/WebGPUModelFeatureIdSpec.js` | `1b9cd445d96c400c08fd751224bc3c924d4d83fe691145bb0a00c6c26a2ac24f` | 27013 | 736/0 |
+| `packages/engine/Specs/Renderer/WebGPU/WebGPUModelFeatureSelectionInvalidationSpec.mjs` | `499979dc608617c5dac215d57889005b5eb3c716a10726fe0d185c0cc066c69f` | 60835 | 0/1873 |
+| `Tools/visual-regression/model-lazy-pick-demand.spec.mjs` | `4e8b70fe47e969936164654ecf4e21deb07f5166e3e113d8fa80dfa0bcc088b3` | 67583 | 0/1973 |
+| `Tools/c16/comment-marker-grandfather.txt` | `2ed5b4ccc5ef564aa19211aee211d445c953222824926dbcb3951f20959ffa16` | 2788 | 28/0 |
+| `Tools/c16/comment-marker-guard.spec.mjs` | `b16d62d8db7b9e0086285c4a519da364b80be991f6670aea09d1eefeff53ec45` | 24984 | 733/0 |
+| `Tools/c16/comment-marker-guard.mjs` | `c76d05212097a6a87d300151a7e67c1339dc20189d9c82330cecaec34b9d1f97` | 26990 | 791/0 |
+| `Tools/c16/comment-marker-cleanlist.txt` | `ddef9e35a81da23d0c7d18153e2bef6c90ea1e08917c2dd97ae30ec4cafcf1c5` | 42522 | 663/1 |
+| `Tools/c16/lib/marker-grammar.mjs` | `0fb3fbe8d3e2968c77e76a321309ac5e0e164f748754fcc6ef0093e8c008d0f6` | 7752 | 204/0 |
+| `packages/engine/Source/Renderer/WebGPU/WebGPUModelInstancing.js` | `75691cf75307c0dc9faaa3b75ec7e1a47c5b54c0f2c3d52452e5f12a4b60ebb1` | 51349 | 1632/0 |
+| `packages/engine/Specs/Renderer/WebGPU/WebGPUModelInstancingSpec.mjs` | `56303d31944296dacd135ef7999670bf807cf0f41ed1d4a13a065d1d643e87b0` | 56962 | 0/1698 |
+
+This freeze is source-only. The queue hash is computed after this formatted
+stamp and supplied separately to the fresh reviewer so the ledger cannot
+self-reference a pre-stamp byte sequence.
+
+**Independent Wave-1 source reviews — 2026-08-27, CONFLICTING VERDICTS;
+terminal NO-GO (P0 0 / P1 3 / P2 0):** Galadriel terminally matched all fourteen
+frozen rows plus post-stamp queue
+`f6b02b18bd30096c064300bc7add92b8e594a561305f9d14efc9bb4482b18cbb`,
+reproduced the 31/31, 16/16, 34/34, and 20/20 suites, all eight syntax and serial
+ESLint paths, ten-path Prettier, zero-finding strict comment gate, and both
+TypeScript projects, and returned a broad SOURCE-ONLY GO with no new finding.
+That review is retained. A second fresh review independently matched the same
+hashes and core suites; its first escaped ESLint wrapper was a tool ERROR and a
+later aggregate emitted only five results, so it reran all eight paths as
+separate serial calls and observed exit 0. Its dedicated read-only mutant audit
+then returned NO-GO on three missing preregistered proof families:
+
+1. **P1 — primitive provenance-family omission mutants are missing.** The base
+   provenance registry is compared, but no mutant independently drops a
+   selector/source, texture realization, selected table/BatchTexture, or
+   pipeline/default family. In particular, the selected-table runtime control
+   changes both `propertyTableId` and a revision, so a missing
+   `selectedPropertyTableId` registry key can be masked.
+2. **P1 — the WebGL retry rider is incomplete.** The frozen runtime controls use
+   a preinstalled texture and do not cover `createTexture` failure or prove a
+   newly created texture/statistics owner is retained and reused after a later
+   `copyFrom` failure. The preregistered `WEBGL-DIRTY-EARLY-CLEAR` and
+   `WEBGL-DIRTY-POSTCOPY-UNCONDITIONAL` source mutants are also absent.
+3. **P1 — losing-resource destruction mutants are missing.** Runtime controls
+   witness loser cleanup and policy pins detach-before-destroy ordering, but no
+   mutant independently inerts `texture?.destroy()` or
+   `createdPickIds[i].destroy()`.
+
+These are evidence/test-contract findings, not confirmed product defects. The
+NO-GO controls, the frozen approval is revoked, and no landing authority exists.
+A new author pass must add the exact missing controls/mutants without weakening
+any existing assertion, bank any resulting product red, rerun the complete gate,
+and create a new tuple for fresh independent review.
+
+**Three-P1 evidence repair — PREREGISTERED before spec edits:** product source
+remains unchanged unless a new control exposes a real behavior red. The focused
+real-module suite grows from 31 to 34 tests. A narrow esbuild test seam replaces
+only `BatchTexture`'s imported `Texture` dependency while executing the real
+`BatchTexture.js` module. One control forces the first constructor to throw and
+requires dirty=true, no published texture/statistics charge, then exactly one
+successful construction/copy/statistics charge on retry and zero third-call
+work. A second lets construction/statistics succeed but throws the first
+`copyFrom`; it requires the exact created texture and one statistics charge to
+remain, retry via that same texture with no second construction/charge, dirty to
+clear only on exact success, and a zero-work third call. A source-policy control
+then constructs independent `WEBGL-DIRTY-EARLY-CLEAR` and
+`WEBGL-DIRTY-POSTCOPY-UNCONDITIONAL` mutants; each must make the policy red while
+the live source remains green.
+
+The canonical 16-test lazy-pick suite retains all behavior and prior mutants. Its
+policy now slices `FEATURE_RESOURCE_PROVENANCE_KEYS` and
+`sameFeatureResourceProvenance`, requires the registry-driven exact-key loop,
+and pins representative members independently across device/queue/generation,
+compatibility/pipeline/defaults, runtime/primitive/selector/source,
+texture-realization, feature-table/BatchTexture owner, dimensions/step/count,
+and values/content-revision families. Function-scoped or exact registry mutants
+remove each representative family or inert the registry loop one at a time; all
+must bite. Two additional function-scoped mutants independently inert the
+provisional losing texture destroy and created-PickId destroy; the existing
+detach/order policy and runtime exact-once controls must reject both. Acceptance
+is focused 34/34 plus canonical 16/16 with syntax, serial ESLint, and Prettier
+green before the 34/34 instancing and 20/20 comment-ratchet regressions are
+rejoined. Any product red is banked and repaired separately; no browser or
+performance claim follows.
+
+**Three-P1 evidence repair first validation — 2026-08-27, behavior PASS with
+static red:** the first patch transport for the test-only virtual Texture module
+failed before editing because its embedded template literal terminated the
+transport string; the delimiter-safe retry landed the same design. The focused
+suite then passed 34/34 and canonical lazy-pick passed 16/16, with both syntax
+checks green. No new product red was exposed and product source remained
+unchanged. Lazy-pick ESLint exited 0; focused ESLint exited 1 only on
+`prefer-template` for the generated data URL, and two-path Prettier exited 1.
+This invocation makes no all-static-gates-green claim.
+
+**Three-P1 evidence repair formatted rerun — 2026-08-27, TOUCHED-SCOPE PASS:**
+after the one-line template-literal style correction and repository formatting,
+focused passes 34/34 and canonical lazy-pick passes 16/16. Both Node syntax,
+both separate serial ESLint invocations, and two-path Prettier exit 0. The new
+real-module WebGL controls prove constructor-failure retry and created-owner/
+statistics reuse after copy failure; both dirty-policy mutants bite. The
+canonical policy now rejects exact provenance-family omissions, an inert
+registry comparator, and independent losing-texture/PickId destruction mutants.
+No product source changed in this repair.
+
+**USER-DIRECTED LANE PAUSE HANDOFF — 2026-08-27:** stop here; do not begin a
+new wave, new freeze/review, Git action, commit, build, browser/GPU run, network
+publication, or evidence publication until the maintainer resumes the goal. The
+first frozen tuple remains rejected by the recorded three-P1 NO-GO. The current
+validated author deltas are the two specs below plus this queue stamp:
+
+- `WebGPUModelFeatureSelectionInvalidationSpec.mjs` — SHA-256
+  `de56b76c8f8b3aa45e7ce3308ed8342ba8a88040474634106e4b2a044f016087`,
+  69,562 bytes, LF 2,105, CRLF/bare-CR 0.
+- `Tools/visual-regression/model-lazy-pick-demand.spec.mjs` — raw on-disk
+  CRLF worktree form: SHA-256
+  `db5f99967f4ad585f7260f455dfa15f48a91f4a3271cac9f7dc211b5b59248f9`, 73,303 bytes,
+  CRLF 2,108, lone-LF 0, lone-CR 0; the 2026-08-27 pause session's
+  LF-normalised form was SHA-256
+  `09389f22114ff95717a68e1bd9ea3a4365502cb162ec524643ca0f36306bb233`, 71,195 bytes,
+  LF 2,108, CRLF 0, lone-CR 0. Direct CRLF-to-LF normalization reproduces that
+  LF tuple byte-for-byte, so the difference is EOL-only, not content; a fresh
+  raw-byte freeze and independent review are owed before landing.
+
+On resume, first verify these two hashes and reread the newest ruling/state. Then
+run the complete joined source gate: focused 34/34, lazy-pick 16/16, instancing
+34/34, and comment-ratchet 20/20 (104/104), followed by all leased/dependency
+syntax, serial ESLint, Prettier including this queue, strict source comments, and
+both TypeScript no-emit projects. Only a green joined gate may create a new exact
+tuple for a fresh independent audit. Git provenance/diff/landing comes after
+that review and only under then-current hours/authorization. Real WebGL/WebGPU
+pixels, picked properties, recovery, async readback, multi-table topology, and
+performance certification remain explicitly open; C11-202 remains PARTIAL.
+
+**Strict source-comment guard pre-repair — 2026-08-27, FAIL:**
+`node Tools/c16/comment-marker-guard.mjs --strict` over the two touched product
+sources exited 1 on exactly one historical marker in
+`WebGPUModelFeatureId.js:979`: `[all-caps-fix-label]
+PARITY-METADATA-TABLE-INSTANCE-SOURCE`. This is touched-source comment debt, not
+a product-test failure, and it remains part of the run record. Freeze requires a
+seamless prose replacement plus a green strict rerun; the finding is not
+de-scored or omitted because it predates this wave.
+
+**Strict source-comment guard first rerun — 2026-08-27, still FAIL:** the prose
+replacement leaves zero marker occurrences, but strict mode exits 1 because the
+now-clean file/rule pair still has a stale row in
+`Tools/c16/comment-marker-grandfather.txt`. Source syntax and serial ESLint exit
+0. Prettier exits 1 on the new comment wrapping. This invocation makes neither a
+strict-guard nor formatting PASS claim.
+
+**Strict-comment ratchet rider — PREREGISTERED:** the bounded lease expands only
+to `Tools/c16/comment-marker-grandfather.txt` and the census assertions in
+`Tools/c16/comment-marker-guard.spec.mjs`. Remove exactly the stale
+`WebGPUModelFeatureId.js` / `all-caps-fix-label` pair and update its derived
+census from 23 to 22 rows, 18 to 17 all-caps pairs, and 126 to 125 current
+findings. Scanner grammar, severity, clean-list scope, and every other exception
+remain byte-for-byte unchanged. Acceptance is a formatted touched source, zero
+strict findings/stale rows on the two product sources, and a green complete
+comment-guard spec; any other ratchet delta or weakened assertion is a failure.
+
+**Strict-comment ratchet first complete run — 2026-08-27, 19/20 FAIL:** the
+two-source strict scan exits 0 with zero markers, zero stale rows, and 22 exact
+grandfather pairs. Source/spec syntax and serial ESLint exit 0. The complete
+guard spec reports its sole failure in the exact occurrence census: the live
+`--verify-cleanlist` result is 122 current findings, not the preregistered 125
+estimate; all 22 pairs remain live. This proves three other occurrences inside
+still-valid pairs had already self-cleaned, rather than exposing another stale
+pair. Spec Prettier also exits 1 after the assertion edit. The observed,
+fail-closed acceptance is therefore corrected to assert exactly 122 live
+findings, retain the 22/17 pair census, format the spec, and rerun all gates; the
+19/20 result is not discarded.
+
+**Strict-comment ratchet final run — 2026-08-27, PASS:** the exact two-source
+strict scan exits 0 with zero markers, zero errors, zero warnings, and 22 live
+grandfather pairs. The complete guard suite passes 20/20 and its exact census
+asserts 122 current findings; source/spec syntax, serial ESLint, and two-path
+Prettier all exit 0. Only the stale `WebGPUModelFeatureId.js` exception was
+removed, and only the derived census assertions changed; scanner grammar,
+severity, clean-list scope, and every other exception remain unchanged.
+
+**Explicit remainders:** `_FEATURE_ID_1+` and simultaneous multiple explicit
+sets; any vertex-layout, implicit-synthesis, metadata WGSL/class, pipeline, or
+whole-command regeneration; overlapping async pick-readback ownership and
+delayed PickId release; browser/WebGPU/WebGL parity pixels and picked properties;
+capture/shadow/Scene2D/multiview evidence; device-loss/recovery certification;
+and CPU/heap/GPU/performance measurement. Wave 1 cannot close C11-202.
+
 - **`C11-205` measurement gates remain green; its shared campaign-runner and
   route-prime policy changes landed in Batch 1032 (`be0683c60d`).** The
   lifecycle, exact-work, API-attribution, and six-pair uninstrumented causal

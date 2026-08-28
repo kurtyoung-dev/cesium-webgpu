@@ -2233,13 +2233,27 @@ When unsure where something fits: pick the closest existing section rather than 
 ### C13-41 eclipse-cloud probe closure (2026-08-12)
 
 The historical `probe-eclipse-cloud-response.mjs` inventory row above preserves
-the probe's original pre-registration and six-run investigation. Its current
-authoritative result is landing-equivalent run
-`b5e3f63c-94c6-4204-8706-dd30eabd2eaf`: PASS / exit 0, 30/30 predicates,
-report SHA-256
+the probe's original pre-registration and six-run investigation. As
+`QUEUE_2026-07-19_CAMPAIGN12.md:36` records, its 2026-08-12 landing-equivalent
+run `b5e3f63c-94c6-4204-8706-dd30eabd2eaf` was a genuine PASS / exit 0 with
+30/30 then-current predicates and report SHA-256
 `DD9BA7DCAC0434B91C0F88EFFA4804F3F1CB99747D888B5449B2A483236E70EE`.
-The redesigned fresh-session deck-free control is lit and settled, and the
-terrain-shadow decrement model passes. The raw post-cloud ratio `1.034120` is
-reported-only. The exact selective packet landed as `9c043987a5`, closing
-C13-41 / C12-29 S3. This run does not close CLT-B3's separate terminator-specific
-WebGL/WebGPU browser gate.
+Under `R-2026-08-14-1`, `R-2026-08-17-7`, and
+`QUEUE_2026-07-23_CAMPAIGN13.md:718`, that historical result does not close
+the now-REOPENED C13-41 / C12-29 S3 row; fresh operative
+`shadowContrastInvariant` plus banked refresh-cost evidence remains owed. As
+`QUEUE_2026-07-19_CAMPAIGN12.md:36` records, nothing is erased: the exact
+selective packet landed as `9c043987a5`. The state-isolated deck-free control
+was recorded as lit and settled, and
+`QUEUE_2026-07-23_CAMPAIGN13.md:803-805` records the terrain-shadow decrement
+model as passing, while
+`Tools/visual-regression/lib/eclipse-cloud-response-gate.mjs:3486-3491` keeps
+that model as a separately scored diagnostic. Under `R-2026-08-14-1` and
+`Tools/visual-regression/lib/eclipse-cloud-response-gate.mjs:1032-1035,3492-3500`,
+the raw post-cloud ratio `1.034120` is scored by the operative
+`shadowContrastInvariant` gate against `[0.97, 1.03]`; it lies outside that
+band, and
+`Tools/visual-regression/eclipse-cloud-response-gate.spec.mjs:6620-6622`
+records it as the currently failing predicate, so a fresh passing measurement
+is owed. `QUEUE_2026-07-19_CAMPAIGN12.md:36` also records that CLT-B3's
+separate terminator-specific WebGL/WebGPU browser gate remains open.

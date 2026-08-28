@@ -18241,6 +18241,62 @@ remain authoritative.
   re-upload. Focused Edge recovery: **3/3** (17,876 skipped), including injected
   destroy failure.
 
+### Cloud correctness and hot-path work
+
+- Exact no-cloud semantics are now scalar depth `-1` in the CPU weighted-depth
+  twin and `depth=(-1,-1)` plus invalid velocity in the WGSL attachment writer.
+  Positive tiny alpha retains the previous continuous midpoint behavior.
+  Attachment contracts: **42/42**.
+- The primary plus three cascade cloud-shadow bind groups use a bounded
+  four-slot exact-identity cache. Stable resources therefore avoid four
+  `createBindGroup` calls per frame without changing passes, draws, targets,
+  formats, shadows, or cloud behavior. Cache leaf: **3/3**; focused
+  attachment-plus-cache union: **45/45**.
+- C13-16 U2 morphology is **LOCAL/UNCOMMITTED**. Its canonical model now pins
+  the same constant `BASE_FIELD_MEAN` pivot as WGSL instead of silently taking
+  the richer dynamic `gateMeanQuantile(cEff)` default. Fresh exact-law scores:
+  CIRRUS **1.702**, CIRRUS/CUMULUS **2.035**, gate-E **1.619/1.119**, gate-D
+  90 degrees at **1.432x**, opacity **+3.2%/-13.2%**, fixture tail **-12.7%**,
+  and predicted ground fraction **~0.00244** vs 0.002. Executable/source
+  mutations now reject discarded budget results, wrong
+  budget->height->carve->erosion order, identity helpers, and visible/light/
+  shadow call-graph divergence. No uniform, default, pass, resource, allocation,
+  or extra hot-path lookup was added. Browser visual acceptance and mandatory
+  interleaved performance A/B remain owed.
+- The `base >= full` proof is limited to normalized `erosionLo` in `[0,1)`.
+  Public erosion-strength overrides remain unvalidated and unchanged in this
+  slice; `C13-16-EROSION-STRENGTH-RANGE-CONTRACT` is filed to decide compatible
+  range enforcement and cover endpoints/invalid values on both density routes.
+
+### Voxel and dedicated TimeDynamicPointCloud correctness
+
+- `VoxelPrimitive.ready` is renderer-neutral again. WebGPU readiness requires
+  initialization, real root upload, color/pick pipelines, and a usable command;
+  the public signal publishes once through `afterRender`. The offline paired
+  voxel probe passes at **0.986 footprint IoU**, color L1 **0**, all sampled
+  occupancy cells correct, and zero errors.
+- Draco decode is a shared asynchronous CPU stage before backend realization.
+  RGB, RGBA/alpha, RGB565, and `CONSTANT_RGBA` use an allocation-free reusable
+  decoder; alpha occupies the existing point record's fourth color lane while
+  point size moves to the dynamic uniform.
+- Adversarial review caught and fixed four follow-on mistakes before landing:
+  unrealized `style.color` no longer changes pass/depth state; translucent
+  commands bypass EDL like WebGL; opaque pipelines omit blending; transparent
+  points write no TAA velocity. Default and LOD commands carry transformed world
+  bounds for culling/sorting, style point-size evaluation is revision-cached,
+  previous-frame buffers are destroyed, and caches invalidate on the exact
+  device/generation tuple.
+- The RTE invariant is model/local positions plus model-space encoded camera and
+  translation-cleaned `projection*view*model`, applied once. Per-point world-position arrays
+  exist only in the optional LOD-culling SOA. The strengthened browser probe
+  applies a 3-degree Earth-scale rotation plus translation and passes: WebGPU
+  **32,419** content pixels, 165 KB of source-geometry memory/eviction
+  accounting, a 4.063 m bound, and zero errors. WebGL reported the same
+  accounting and bound in that run, but the verdict does not yet gate
+  cross-backend placement or full GPU residency. Default-RGB sprite parity
+  remains **0.15%** raw / **0%** downsampled; the
+  attenuation lane is **0.19%** raw / **0.12%** downsampled.
+
 ### Natural lighting and the reported sky glow
 
 - The formerly WebGPU-only terrain terminator band is an explicit paired
@@ -18266,6 +18322,23 @@ remain authoritative.
   is in-tree at HEAD. The stated remainders stay open: the full C12 acceptance
   sweep, the exact reported-camera reproduction, and CLT-B3's terminator-specific
   both-backend browser acceptance.]*
+
+### Integrated evidence and honest remainder
+
+- `npm run build`: green (GLSL/WGSL generation, TypeScript, engine/widgets and
+  combined bundles).
+- Full `Tools/visual-regression/*.spec.mjs` pure-Node fleet: **3,105/3,105**.
+- Campaign-16 semantic/tooling suite: **68/68**.
+- Bloom parity: default changed-pixel coverage ratio WebGPU/WebGL **1.12x**,
+  glow-only and dimmed controls responsive, zero errors.
+
+No max-FPS improvement is claimed from structural allocation counters. The
+performance credit still requires the counterbalanced moving multi-altitude
+camera route; an idle soak is invalid under request-render mode. Also still
+open: C18 per-format browser fixtures/mutations, a real compressed Draco lane,
+C18-V2 baseline promotion/non-vacuity, C18-P1's seven-repeat tint lane,
+C11-213 gate F, the terminator-specific reported-camera acceptance, and the
+separately pre-registered cloud-morphology visual campaign.
 
 ## C12-37 — Moon/globe physical-depth ordering (2026-08-10; LANDED 2026-08-12)
 
@@ -18766,3 +18839,70 @@ This append-only entry supersedes only the older C11-193A/B/C `local/uncommitted
 Commit `b20234a16b` lands the reviewed 18-file A/B/C packet: persistent manager-local output graphs, exact Scene-encoder submit-owned settlement, and the retained same-frame demand-priority coordinator/bounded drain. Pre-landing gates remain Node **56/56**, focused Edge/Karma **31/31**, C11-193B browser **19/19**, C11-193C browser **29/29**, TypeScript/build green, and independent review **P0=0/P1=0**.
 
 Still open: moving-camera causal/FPS attribution; persistent HQ reuse; replacement-device/device-loss, multiview, reentrant lifetime, invalid shared-manager/cross-context, and malformed custom-Scene certification; inherited raw-cubemap exceptional recovery; residual descriptor/lookups; diagnostic telemetry allocation; and GPU-completion certification. Do not rerun unchanged evidence or claim an FPS win.
+
+## C12/C13 current-source evidence session — one clean build, three preserved outcomes (2026-08-12)
+
+One fresh detached evidence-worktree build produced served entry/map SHA-256
+`E49370212931733D12A6813DBED22550FDA44E0E55792E0E3019DA9BAC2D27DA` /
+`D20374BCD894349CBDFFFA1AE0B09818ADA430F4207BE9C5899D8092C67125A8`.
+The engine TypeScript gate passed; post-build C13/S5 provenance contracts were
+**202/202**; C12-37 focused Edge/Karma was nonempty and green at **4/4** Moon
+route, **1/1** WebGPU physical-pipeline routing, and **13/13** conservative
+shadow/PVS filtering. The server returned the entry byte-for-byte and was
+stopped after the serialized lane; ports 8090/8091 were clear afterward.
+
+**Historical C13-41 / C12-29 S3 result (2026-08-12; status superseded by
+`R-2026-08-14-1`):** `QUEUE_2026-07-23_CAMPAIGN13.md:718` vacates that
+former closure reconciliation. As `QUEUE_2026-07-19_CAMPAIGN12.md:36`
+records, run
+`b5e3f63c-94c6-4204-8706-dd30eabd2eaf` was a genuine PASS / exit 0 with
+**30/30** then-current gating predicates true and no structural, unscored,
+parity, page, GPU, cleanup, or provenance fault; its canonical and immutable
+report is 346,189 bytes, SHA-256
+`DD9BA7DCAC0434B91C0F88EFFA4804F3F1CB99747D888B5449B2A483236E70EE`.
+The state-isolated deck-free control is lit/settled and dims by the published
+factor; `QUEUE_2026-07-23_CAMPAIGN13.md:803-805` records that the terrain-shadow
+decrement model passes, and
+`Tools/visual-regression/lib/eclipse-cloud-response-gate.mjs:3486-3491` keeps
+that model as a separately scored diagnostic. Under `R-2026-08-14-1` and
+`Tools/visual-regression/lib/eclipse-cloud-response-gate.mjs:1032-1035,3492-3500`,
+the raw post-cloud composite reading `1.034120` is scored by the operative
+`shadowContrastInvariant` gate against `[0.97, 1.03]`; it lies outside that
+band, and
+`Tools/visual-regression/eclipse-cloud-response-gate.spec.mjs:6620-6622`
+records it as the currently failing predicate, so a fresh passing measurement
+is owed. Shared-library manifest:
+`29BAB780D344BDFF0D31B737471D4766E8447AF0203F8E7B606AA35999D26F4`.
+Under `R-2026-08-14-1`, `R-2026-08-17-7`, and
+`QUEUE_2026-07-23_CAMPAIGN13.md:718`, this historical gate result does not
+close the now-REOPENED row; fresh operative `shadowContrastInvariant` plus
+banked refresh-cost evidence remains owed. As
+`QUEUE_2026-07-19_CAMPAIGN12.md:36` records, the exact selective packet landed
+as `9c043987a5`; the same queue line records that the separate CLT-B3
+terminator-specific both-backend browser gate remains open.
+
+**C12-37: harness FAIL, no product verdict.** Run
+`bca0fd5b-901e-426c-902e-4c83fbdcaff5` is FAIL / exit 1; canonical and
+immutable report are 236,586 bytes, SHA-256
+`6025C2388F1386780FE54356438D2F478CFFB8EC636FCF6E319A19BD9E2D97CA`.
+The revised route-preserving controls failed: WebGPU hit a clipping-plane
+texture destroy TypeError and WebGL's combined/clipped control expectations did
+not match emitted route semantics. The downstream missing WebGPU provenance is
+abort fallout. Its 36 UUID PNGs and report are preserved under shared-library
+manifest `496A4DF98446C3300C38E35EA2DDE4078B383CB7CA4E7769411052D7D56D4D23`.
+Repair the two-file control harness and independently review it before exactly
+one further run; do not change or land the Moon product mechanism from this red.
+
+**C12-29 S5 first shard: operational ERROR, no terrain verdict.** Run
+`730e09e9-6728-4258-bddb-72905c420d8c` exited 2 before a session with exact
+`webgl S5 page timeout`; its 572-byte immutable report has SHA-256
+`C3CBB826516125081684DFE6F3F8E0D0BCB4F78978CE87AB1AC2FB7A2B0D2DEF`
+and shared-library manifest
+`1A5DAE68E0E252D06D5987EB5589ABBA33C341D05CF911B4F8CB59981AF939F3`.
+Localize and persist the exact A-H phase/request state, repair only a proven
+harness flow defect, and do not auto-rerun.
+
+After all three publications, the external append-only visual-evidence library
+verifies **valid=true** with no reasons, warnings, or orphans. It now holds 12
+immutable publications; the live per-worktree output directories remain
+transactional scratch rather than being junctioned or bidirectionally mirrored.

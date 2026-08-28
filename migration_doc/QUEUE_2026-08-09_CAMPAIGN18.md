@@ -183,6 +183,28 @@ real-world usage (3D Tiles PNTS) silently loses features on WebGPU.
   publishes through `afterRender`. The paired offline voxel probe passes at
   **0.986 IoU**, color L1 **0**, with all sampled cells correct and zero errors.
   Baseline promotion and non-vacuity mutations still own closure.
+- `C18-P2`: RGB, RGBA/alpha, RGB565 and `CONSTANT_RGBA` decoding is implemented
+  in the dedicated path with translucent pass/depth parity for default and LOD
+  commands. The per-format fixture/mutation matrix remains the row's terminal
+  gate. `C18-P1` remains separate until its seven-repeat nondeterminism lane
+  passes. The 2026-08-27 session records the first paired browser run at
+  **0.15%** raw mismatch with near-unity channel gains. Until a run ID and
+  recoverable report/PNG artifact are cited, this remains reported browser
+  evidence and the artifact citation is owed. Adversarial review also corrected the
+  adjacent dedicated renderer: one model/local RTE invariant across draw/LOD/
+  velocity, transformed world command bounds, no opaque blend tax, transparent
+  velocity discard, WebGL-matched translucent EDL skip, cached point-size style
+  evaluation, exact device/generation invalidation, and complete TAA-buffer
+  teardown. The same 2026-08-27 session records a translated+rotated Earth-scale
+  browser lane as passing on both backends with equal 165 KB source-geometry
+  memory accounting, 4.063 m bounds, and zero errors; until its run ID and
+  recoverable artifact are cited, this remains reported browser evidence only,
+  and its verdict does not yet gate cross-backend placement or full GPU residency. Unsupported
+  `style.color` still remains a separate feature gap and deliberately does not
+  mutate pass/depth state before the shader can render it.
+- `C18-P5`: Draco decode now runs as the shared asynchronous CPU stage before
+  backend realization. Source/order contracts are green; a real compressed
+  fixture with bounded ready/render evidence is still owed.
 
 **Recorded but deliberately NOT rowed here.** The audit's §2b table also shows
 `normalShading` / `backFaceCulling` unsupported on the dedicated path (no
