@@ -593,3 +593,17 @@ Also: nine of the docs lane's 25 CONTRADICTED rows record the O-3 unbuilt-clone 
 contradiction — a classification error, honestly documented inside the rows themselves. C1's two
 new confirmed engine defects are queued as Q-16 and Q-17; its twelve single-source findings remain
 held out of every row pending the adversarial review round now running.
+
+**C1 closure (2026-08-28, post-Batch-1177).** Final mission tally across both parts: five
+worker-reported claims confirmed exactly, two corrected by one count each, one refuted, one marked
+unverifiable/do-not-cite, and the docs lane's CONTRADICTED bucket measured 36% unsound (nine of 25
+rows are the O-3 unbuilt-clone artifact, reproduced independently). Over 14,024 previously-unread
+renderer lines: ten findings CONFIRMED and personally spot-checked, zero refuted, four held
+single-source pending one more review. Two entered the queue immediately (Q-19 device-recovery
+generation resets, HIGH, same class as F1-2 — the third subsystem confirmed to survive device loss
+holding dead-device objects; Q-20 translucent cull bracket). The six S1 findings were synthesised
+into ONE structural row (Q-18) rather than six patches, on the precedent of the central pipeline
+cache fix. Process result recorded plainly: three Sol review dispatches produced five usable
+verdicts between them — buffered output died with aborts both times it was tried, incremental
+writes saved the one partial success, and the untested remedy is the lean brief (under 200 words,
+no governance preamble), now being validated by two live reviewers.
