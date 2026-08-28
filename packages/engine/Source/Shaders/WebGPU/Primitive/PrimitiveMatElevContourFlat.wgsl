@@ -173,7 +173,13 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     //>>ifdef LOG_DEPTH
     g_fragLogDepth = input.v_logDepth;
     //>>endif
-    let distToContour = input.height % material.spacing;
+    // WGSL `%` on floats is a truncated remainder that carries the dividend's
+    // sign, so below the ellipsoid it returns a negative distance and the line
+    // test below is satisfied by every fragment, filling the surface solid. The
+    // GLSL reference uses `mod` and the fabric's own WGSL port uses the floored
+    // form; both stay in [0, spacing) on either side of the datum.
+    let distToContour =
+        input.height - material.spacing * floor(input.height / material.spacing);
     // Use screen-space derivatives for width-independent contour lines
     let dxc = abs(dpdx(input.height));
     let dyc = abs(dpdy(input.height));
