@@ -48,10 +48,13 @@
 //     inline `dayNightNdotL * 0.88 + ambient`), because the NORMAL-SOURCE
 //     obligation is about which normal each consumer reads, not which
 //     expression it evaluates.
-//   • CLT-B1 finding (c) — WebGPU still APPLIES the ramp on vertex-normal
-//     terrain where WebGL gates it off. Needs a `hasVertexNormals === true`
-//     provider to decide at pixels (row
-//     `CLT-B1-VERTEX-NORMAL-LANE-NEEDS-A-NETWORK-LANE`).
+//   • CLT-B1 finding (c) — WebGPU applying the ramp on vertex-normal terrain
+//     where WebGL gated it off — is CLOSED, and closed from the WebGL side:
+//     the day/night imagery alpha no longer rides a lighting define on
+//     either backend. Sections A5, B2 and E2 were INVERTED with that change
+//     and now pin the reconciled shape; each carries its own reasoning. The
+//     vertex-normal PIXEL lane is untouched and still wants a
+//     `hasVertexNormals === true` provider.
 //   • `computeAtmosphereColor` still takes the MESH normal (section A4). It is a
 //     WGSL-only fog/atmosphere approximation with no GLSL twin that takes a
 //     surface normal at all, so there is no WebGL law to match and moving it
@@ -253,21 +256,25 @@ test("A4: the fix did NOT over-apply — mesh-normal terms keep the mesh normal"
   );
 });
 
-test("A5: the derivation sits ABOVE the enableLighting gate", () => {
-  // Not cosmetic. `probe-daynight-terminator-law.mjs`'s lane C decides finding
-  // (c)'s static half with
+test("A5: the derivation sits ABOVE the day/night gate, which now has two arms", () => {
+  // `probe-daynight-terminator-law.mjs`'s lane C decides finding (c)'s static
+  // half with
   //   /if \(camera\.enableLighting > 0\.5\) \{\s*\n\s*dayFade = computeDayNightFade/
-  // so a `let` inserted between the brace and the assignment would silently
-  // turn that lane's `webgpu_dayFadeGate` metric false and push a spurious
-  // failure into an unrelated lane.
+  // and that regex now goes FALSE, deliberately: the probe is the acceptance
+  // instrument for the very divergence this change closed, so it is left
+  // unedited and its lane REFUTES, exactly as lanes A and D have since the
+  // ramp law was reconciled. Read lane C's metrics, not its verdict.
   assert.match(
     wgsl,
-    /if \(camera\.enableLighting > 0\.5\) \{\s*\n\s*dayFade = computeDayNightFade/,
-    "lane C's static gate regex no longer matches — the probe would report a " +
-      "shape change that did not happen",
+    /if \(camera\.enableLighting > 0\.5 \|\| tile\.tileControls\.w > 0\.5\) \{\s*\n\s*dayFade = computeDayNightFade/,
+    "the day/night gate must open on EITHER globe lighting or a live " +
+      "per-tile day/night alpha, and the assignment must still be the first " +
+      "statement inside it",
   );
   const derivation = wgsl.indexOf("let dayNightNormalEC = normalize(");
-  const gate = wgsl.indexOf("if (camera.enableLighting > 0.5) {");
+  const gate = wgsl.indexOf(
+    "if (camera.enableLighting > 0.5 || tile.tileControls.w > 0.5) {",
+  );
   assert.ok(derivation > 0 && gate > 0);
   assert.ok(derivation < gate, "the derivation must precede the gate");
 });
@@ -286,13 +293,18 @@ test("B1: the two WebGL lighting defines are mutually exclusive arms", () => {
 test("B2: WebGL's day/night term reads the ANALYTIC normal, per fragment", () => {
   assert.match(
     globeFs,
-    /#if defined\(SHOW_REFLECTIVE_OCEAN\) \|\| defined\(ENABLE_DAYNIGHT_SHADING\) \|\| defined\(HDR\)\n\s*vec3 normalMC = czm_geodeticSurfaceNormal\(v_positionMC, vec3\(0\.0\), vec3\(1\.0\)\);[^\n]*\n\s*vec3 normalEC = czm_normal3D \* normalMC;/,
+    /#if defined\(SHOW_REFLECTIVE_OCEAN\) \|\| defined\(ENABLE_DAYNIGHT_SHADING\) \|\| defined\(HDR\) \|\| defined\(APPLY_DAY_NIGHT_ALPHA\)\n\s*vec3 normalMC = czm_geodeticSurfaceNormal\(v_positionMC, vec3\(0\.0\), vec3\(1\.0\)\);[^\n]*\n\s*vec3 normalEC = czm_normal3D \* normalMC;/,
+    "the analytic normal must be computed wherever the day/night alpha is " +
+      "asked for, not only in the lighting arm that used to be its only " +
+      "consumer; otherwise the widened blend below references an undeclared " +
+      "identifier and the program fails to compile",
   );
   assert.match(
     globeFs,
-    /#if defined\(APPLY_DAY_NIGHT_ALPHA\) && defined\(ENABLE_DAYNIGHT_SHADING\)\n\s*float nightBlend = 1\.0 - clamp\(czm_getLambertDiffuse\(czm_lightDirectionEC, normalEC\) \* 5\.0, 0\.0, 1\.0\);/,
-    "the GLSL night blend must consume `normalEC` — the analytic one computed " +
-      "two lines above, NOT a mesh varying",
+    /#ifdef APPLY_DAY_NIGHT_ALPHA\n\s*float nightBlend = 1\.0 - clamp\(czm_getLambertDiffuse\(czm_lightDirectionEC, normalEC\) \* 5\.0, 0\.0, 1\.0\);/,
+    "the GLSL night blend must consume `normalEC` — the analytic one " +
+      "computed two lines above, NOT a mesh varying — and must be gated on " +
+      "the imagery define ALONE, so it survives the vertex-lighting arm",
   );
 });
 
@@ -607,20 +619,46 @@ test("E1: the +0.5 ramp offset (CLT-B4) is GONE — closed at Batch 925, CO-18",
   assert.equal(wgslLaw(0) - glslLaw(0), 0);
 });
 
-test("E2: WebGPU still applies the ramp on vertex-normal terrain (finding (c))", () => {
-  // The day/night gate reads `camera.enableLighting` only — there is no
-  // `camera.lighting.z` (hasVertexNormals) arm on it, which is exactly the
-  // divergence CLT-B1 finding (c) records and this row did not close.
+test("E2: the day/night alpha no longer rides a lighting gate on either backend", () => {
+  // The inversion of the old finding-(c) pin. That divergence was WebGPU
+  // applying the ramp where WebGL gated it off; it closed from the WebGL
+  // side, by dropping the lighting conjunction there, so what has to be
+  // pinned now is that neither backend re-acquires such a gate.
+  //
+  // WebGPU: the gate opens on the imagery condition as well as on lighting,
+  // and takes no vertex-normal arm — `camera.lighting.z` selects the
+  // DIFFUSE's arm and has no business on the imagery alpha.
   const gate =
-    /var dayFade: f32;\s*var nightBlend: f32;\s*if \(camera\.enableLighting > 0\.5\) \{[\s\S]{0,200}?\n\s*\}/.exec(
+    /var dayFade: f32;\s*var nightBlend: f32;\s*if \(([^)]*)\) \{[\s\S]{0,200}?\n\s*\}/.exec(
       wgslCode,
     );
   assert.ok(gate, "the day/night gate block was not found");
+  assert.equal(
+    gate[1],
+    "camera.enableLighting > 0.5 || tile.tileControls.w > 0.5",
+    "the gate must be exactly the lighting-or-imagery pair",
+  );
   assert.doesNotMatch(
     gate[0],
     /camera\.lighting\.z/,
-    "if a vertex-normal arm landed on the day/night gate, finding (c) is " +
-      "resolved and the CLT plan must say so",
+    "a vertex-normal arm on the day/night alpha is the same divergence in " +
+      "the other direction",
+  );
+  // WebGL: neither lighting define may guard the imagery alpha, at either of
+  // its two sites — the nightBlend definition and the sampleAndBlend
+  // multiply.
+  assert.doesNotMatch(
+    globeFs,
+    /#if defined\(APPLY_DAY_NIGHT_ALPHA\) && defined\(ENABLE_DAYNIGHT_SHADING\)/,
+    "the double guard is what made a dayAlpha = 0 night layer invisible on " +
+      "vertex-normal terrain and on the unlit default globe",
+  );
+  assert.equal(
+    (globeFs.match(/#ifdef APPLY_DAY_NIGHT_ALPHA/g) ?? []).length,
+    3,
+    "the imagery alpha has three APPLY_DAY_NIGHT_ALPHA sites: the uniform " +
+      "declarations, the sampleAndBlend multiply, and the nightBlend " +
+      "definition",
   );
 });
 

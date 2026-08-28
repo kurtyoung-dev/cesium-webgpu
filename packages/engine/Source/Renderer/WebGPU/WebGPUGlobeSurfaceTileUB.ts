@@ -159,6 +159,11 @@ export function createTileUniformBuffer(
   // carry defaults (alpha 0), so the shader's `count` gate is the only thing
   // keeping them from contributing.
   let layerCount = 0;
+  // Raised when any layer on this tile asks to fade across the terminator.
+  // WebGL derives the same condition from the same resolved values and turns it
+  // into the APPLY_DAY_NIGHT_ALPHA define; here it becomes a uniform, because
+  // the WGSL selects its arms at runtime rather than at compile time.
+  let dayNightAlphaActive = false;
 
   for (
     let i = 0;
@@ -389,6 +394,11 @@ export function createTileUniformBuffer(
       layer,
       tile,
     );
+    // Read back the slots rather than the properties: a callback has already
+    // been resolved here, and it is the resolved number the shader will blend.
+    if (data[dnFloatBase + 0] !== 1.0 || data[dnFloatBase + 1] !== 1.0) {
+      dayNightAlphaActive = true;
+    }
 
     layerCount++;
   }
@@ -742,13 +752,17 @@ export function createTileUniformBuffer(
   //        that layer index (0..15 within the current pass) and skips
   //        the rest of the imagery composite. -1 = production behavior.
   //   .z = optional terminator glow strength; 0 = natural/parity identity
-  //   .w = reserved
+  //   .w = dayNightAlphaActive — 1.0 when a layer on this tile carries a
+  //        day/night alpha away from 1.0. The fragment shader opens the
+  //        day/night fade on it independently of camera.enableLighting, so a
+  //        night imagery layer is visible on an unlit globe. Zero on every
+  //        default globe, where all layers resolve to (1, 1).
   data[TILE_CONTROLS_OFFSET + 0] = tile?.level ?? 0;
   const isolate = frameState.debugShowImageryLayer;
   data[TILE_CONTROLS_OFFSET + 1] =
     typeof isolate === "number" && isolate >= 0 ? isolate : -1;
   data[TILE_CONTROLS_OFFSET + 2] = tileProvider.terminatorGlowStrength ?? 0.0;
-  data[TILE_CONTROLS_OFFSET + 3] = 0;
+  data[TILE_CONTROLS_OFFSET + 3] = dayNightAlphaActive ? 1.0 : 0.0;
 
   // HSB shift. Mirrors WebGL GlobeFS.glsl `u_hsbShift`. `Globe.update()` copies
   // `Globe.atmosphereHueShift/Saturation/Brightness` onto the tile

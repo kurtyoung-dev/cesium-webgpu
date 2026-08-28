@@ -405,7 +405,13 @@ struct TileUniforms {
   //   y = isolateImageryLayer — index 0..15 to render alone, or -1 for all
   //                              (read by fragmentMain when set)
   //   z = optional terminator-glow strength; 0 is the natural/parity identity
-  //   w = reserved
+  //   w = dayNightAlphaActive — 1.0 when at least one imagery layer on this
+  //       tile carries a day/night alpha away from 1.0. The twin of WebGL's
+  //       per-tile `APPLY_DAY_NIGHT_ALPHA` define, which
+  //       `GlobeSurfaceTileProviderRendering` derives from the same resolved
+  //       per-layer values. It opens the day/night fade independently of
+  //       `camera.enableLighting`, so a night imagery layer reads as night on
+  //       a globe that is otherwise unlit.
   tileControls: vec4<f32>,
   // Globe hue/saturation/brightness shift. When any channel
   // is non-zero (|shift| > 0.001) the final composite color is
@@ -1976,10 +1982,12 @@ fn applyImageryLayer(
   // layer rectangle, 1 inside.
   let texCoordsMask = texCoordsAlpha(texCoordsBoundsUV, layer.texCoordsRect);
 
-  // Day/night alpha. GLSL gates this on `APPLY_DAY_NIGHT_ALPHA &&
-  // ENABLE_DAYNIGHT_SHADING` defines (line 219-221). WGSL evaluates
-  // unconditionally; CPU-side packer writes (1, 1) when day/night
-  // alpha isn't enabled per layer, making the mix a no-op (always 1.0).
+  // Day/night alpha. GLSL gates this on the `APPLY_DAY_NIGHT_ALPHA` define
+  // alone, raised per tile when a layer's resolved day or night alpha differs
+  // from 1.0. WGSL evaluates unconditionally; the CPU-side packer writes
+  // (1, 1) when day/night alpha isn't enabled per layer, making the mix a
+  // no-op (always 1.0), and `dayFade` itself is pinned to 1.0 upstream unless
+  // the same per-tile condition holds.
   let dayNightAlphaValue = mix(dayNightAlpha.y, dayNightAlpha.x, dayFade);
 
   // colorToAlpha key. GLSL line 230-234: `#ifdef APPLY_COLOR_TO_ALPHA`
@@ -4153,19 +4161,18 @@ fn fragmentMain(
   //     `normalize(v_positionMC)` — then `normalEC = czm_normal3D * normalMC`,
   //     per fragment. The day/night alpha at `:600` and the day/night diffuse
   //     both consume that analytic normal.
-  //   • vertex normals → `ENABLE_VERTEX_LIGHTING`, and the day/night term does
-  //     not exist at all: `GlobeFS.glsl:600`'s `#if defined(APPLY_DAY_NIGHT_ALPHA)
-  //     && defined(ENABLE_DAYNIGHT_SHADING)` fails, so `nightBlend = 0.0`.
+  //   • vertex normals → `ENABLE_VERTEX_LIGHTING`, which drives the DIFFUSE
+  //     from the mesh normal. The imagery day/night alpha does not follow that
+  //     split: it is gated on `APPLY_DAY_NIGHT_ALPHA` alone and reads the same
+  //     analytic normal in both arms, so the ramp exists on vertex-normal
+  //     terrain too, on both backends.
   // Recomputing analytically without a gate needs no new `ShaderDefine` bit:
   // the expression sits at `//>>ifdef` depth 0 and expands identically under
   // every define set.
   //
-  // One divergence remains open: on vertex-normal terrain this still applies
-  // the ramp where WebGL gates it off entirely. Feeding the analytic normal
-  // there keeps that divergence to a single axis — whether the term exists at
-  // all — rather than compounding it with a normal WebGL never computes. The
-  // VERTEX_LIGHTING Lambert below keeps `normal`, because that term really is
-  // WebGL's mesh-normal term.
+  // The VERTEX_LIGHTING Lambert below keeps `normal`, because that term really
+  // is WebGL's mesh-normal term. Only the day/night alpha is analytic on both
+  // backends and in every lighting arm.
   //
   // SPACE. `camera.modifiedModelView`'s upper-3×3 is the view rotation (RTE
   // only offsets the translation column), so a `w = 0` transform reproduces
@@ -4181,19 +4188,27 @@ fn fragmentMain(
   );
 
   // Day/night fade factor: 0 = night, 1 = day.
-  // Gated on `camera.enableLighting`. The WebGL GlobeFS
-  // applies day/night shading inside `#ifdef ENABLE_DAYNIGHT_SHADING`,
-  // which the JS-side pragma extractor only emits when
-  // `globe.enableLighting === true`. With the default `enableLighting
-  // = false`, WebGL skips the fade entirely and renders the globe as
-  // uniformly daylit. The WGSL was applying the fade unconditionally,
-  // making the night side ~4x darker than WebGL across every default-
-  // configured demo (measured via probe-saved-view.mjs: WebGL/WebGPU
-  // brightness ratio 4.221, mostly accounted for by the night
-  // hemisphere being shaded down).
+  //
+  // Two independent conditions open it, and they answer different questions.
+  //
+  // `camera.enableLighting` is the lighting question. The WebGL GlobeFS applies
+  // day/night shading inside `#ifdef ENABLE_DAYNIGHT_SHADING`, which the
+  // JS-side pragma extractor only emits when `globe.enableLighting === true`.
+  // With the default `enableLighting = false` WebGL skips the fade and renders
+  // the globe uniformly daylit; applying it unconditionally here made the night
+  // side roughly four times darker than WebGL on every default-configured demo.
+  //
+  // `tile.tileControls.w` is the imagery question, and it is not derivable from
+  // the first. A layer that asks to be visible only at night — the day/night
+  // alpha pair — needs the terminator even on an unlit globe, because without
+  // it `dayFade` is pinned at 1.0, the pair collapses to `dayAlpha`, and a
+  // `dayAlpha = 0` night layer is invisible at every longitude. The flag is the
+  // twin of WebGL's `APPLY_DAY_NIGHT_ALPHA` define: both are raised per tile
+  // when a layer's resolved day or night alpha differs from 1.0, so neither
+  // backend pays for the ramp on a globe that never asked for it.
   var dayFade: f32;
   var nightBlend: f32;
-  if (camera.enableLighting > 0.5) {
+  if (camera.enableLighting > 0.5 || tile.tileControls.w > 0.5) {
     dayFade = computeDayNightFade(dayNightNormalEC, sunDir);
     nightBlend = 1.0 - dayFade;
   } else {

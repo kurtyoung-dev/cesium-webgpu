@@ -81,10 +81,23 @@ test("A1: the GLSL night-blend law is transcribed verbatim", () => {
     /float nightBlend = 1\.0 - clamp\(czm_getLambertDiffuse\(czm_lightDirectionEC, normalEC\) \* 5\.0, 0\.0, 1\.0\);/,
     "GlobeFS.glsl's night-blend law changed — update dayFadeGlsl with it",
   );
-  // And it is guarded by both defines, which is finding (c)'s static half.
+  // The guard is INVERTED, on the same grounds as A2 below. This assertion
+  // used to require the double guard, because that guard WAS finding (c)'s
+  // static half: the alpha rode `ENABLE_DAYNIGHT_SHADING`, which WebGL emits
+  // only on normal-less terrain and only when lighting is on, so a night
+  // layer was invisible on the fork's own vertex-normal viewer and on the
+  // default unlit globe. Finding (c) is closed from that side, so what the
+  // pin has to hold now is that the alpha is guarded by the imagery define
+  // ALONE. `dayFadeGlsl` above is unaffected — the LAW did not move, only the
+  // condition under which it runs.
   assert.match(
     glsl,
-    /#if defined\(APPLY_DAY_NIGHT_ALPHA\) && defined\(ENABLE_DAYNIGHT_SHADING\)\n\s*float nightBlend = 1\.0/,
+    /#ifdef APPLY_DAY_NIGHT_ALPHA\n\s*float nightBlend = 1\.0/,
+  );
+  assert.doesNotMatch(
+    glsl,
+    /#if defined\(APPLY_DAY_NIGHT_ALPHA\) && defined\(ENABLE_DAYNIGHT_SHADING\)/,
+    "the double guard is back, and with it finding (c)",
   );
 });
 

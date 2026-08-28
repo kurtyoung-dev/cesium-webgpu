@@ -264,7 +264,7 @@ vec4 sampleAndBlend(
     alphaMultiplier = step(vec2(0.0), textureCoordinateRectangle.pq - tileTextureCoordinates);
     textureAlpha = textureAlpha * alphaMultiplier.x * alphaMultiplier.y;
 
-#if defined(APPLY_DAY_NIGHT_ALPHA) && defined(ENABLE_DAYNIGHT_SHADING)
+#ifdef APPLY_DAY_NIGHT_ALPHA
     textureAlpha *= mix(textureDayAlpha, textureNightAlpha, nightBlend);
 #endif
 
@@ -594,12 +594,24 @@ void main()
     float clipDistance = clip(gl_FragCoord, u_clippingPlanes, u_clippingPlanesMatrix);
 #endif
 
-#if defined(SHOW_REFLECTIVE_OCEAN) || defined(ENABLE_DAYNIGHT_SHADING) || defined(HDR)
+#if defined(SHOW_REFLECTIVE_OCEAN) || defined(ENABLE_DAYNIGHT_SHADING) || defined(HDR) || defined(APPLY_DAY_NIGHT_ALPHA)
     vec3 normalMC = czm_geodeticSurfaceNormal(v_positionMC, vec3(0.0), vec3(1.0));   // normalized surface normal in model coordinates
     vec3 normalEC = czm_normal3D * normalMC;                                         // normalized surface normal in eye coordinates
 #endif
 
-#if defined(APPLY_DAY_NIGHT_ALPHA) && defined(ENABLE_DAYNIGHT_SHADING)
+// The day/night imagery alpha is gated on APPLY_DAY_NIGHT_ALPHA alone, and
+// deliberately not on either lighting define. The two answer different
+// questions: the lighting defines say whether the globe is SHADED, while a
+// layer carrying a day/night alpha pair is asking to be VISIBLE on one side of
+// the terminator. Conjoining them made a night layer invisible on any terrain
+// that reports vertex normals, because that terrain takes ENABLE_VERTEX_LIGHTING
+// and never emits ENABLE_DAYNIGHT_SHADING — and it made the pair inert on the
+// default unlit globe, where neither define is emitted at all.
+//
+// `normalEC` above is the analytic geocentric normal, per fragment, in every
+// arm. The mesh normal is not a substitute: it is absent on normal-less terrain
+// and, where it exists, carries terrain relief the terminator must not follow.
+#ifdef APPLY_DAY_NIGHT_ALPHA
     float nightBlend = 1.0 - clamp(czm_getLambertDiffuse(czm_lightDirectionEC, normalEC) * 5.0, 0.0, 1.0);
 #else
     float nightBlend = 0.0;
@@ -787,11 +799,15 @@ void main()
 // file multiplies by `czm_lightColor`, and it reads the vertex-lighting
 // uniforms as `camera.lighting.x` / `.y`.
 //
-// One divergence is open rather than shape-only:
-// - Day/night imagery alpha: this file emits ENABLE_VERTEX_LIGHTING instead
-//   of ENABLE_DAYNIGHT_SHADING when the terrain has vertex normals (see
-//   `GlobeSurfaceShaderSet.js`), so the day/night alpha does not exist there
-//   at all, while WGSL still applies the ramp.
+// The day/night imagery alpha is deliberately NOT one of the three variants
+// above. It is gated on APPLY_DAY_NIGHT_ALPHA alone, reads the analytic
+// geocentric normal in every arm, and therefore exists on vertex-normal terrain
+// and on the unlit default globe alike. WGSL matches that with a runtime pair,
+// `camera.enableLighting > 0.5 || tile.tileControls.w > 0.5`, whose second term
+// is packed from the same per-tile condition that raises this file's define.
+// Conjoining the alpha with a lighting define is what previously made a
+// dayAlpha = 0 night layer invisible everywhere WebGL took the vertex-lighting
+// arm.
 // The optional terminator appearance term below is now an exact GLSL/WGSL
 // twin, dynamically controlled by Globe.terminatorGlowStrength.
 //
