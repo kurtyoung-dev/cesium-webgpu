@@ -108,6 +108,12 @@ corrected with it.
 The remaining ~30 medium and all low survivors are enumerated in §5 with their lane column reading
 QUEUED; they dispatch after Q-1…Q-10, batched by file so one Sol dispatch closes several small
 findings in the same module. C1's returning findings append here as a dated addendum.
+### Seat handoff to Codex written; the Codex usage reset makes it the orchestrator of record (2026-08-29 18:05 machine clock)
+
+| | Row | Disposition |
+|---|---|---|
+| HANDOFF | migration_doc/CODEX_HANDOFF_2026-08-29.md (Batch 1321; copy in cesium-webgpu-worker-archive/handoff-2026-08-29/ beside every banked patch, review and apply tool - 70 files) | maintainer: Codex usage reset, Claude nearly exhausted; the seat moves to Codex. The document is self-contained because ~/.codex was reset and CLAUDE.md is gitignored: project in one screen, reading order, READY TO LAND (Q130, Q120, Q-88, Q-142, DM-07, Q-130-b - nothing blocked by review, all held by the 8080 hold) with the exact per-batch gates and the rebuild, HELD items with their release conditions (tranches 3e-F/A/B/C, wave-end gate, Q-141, DX-14, DX-01, decompositions, Q-130-c, DX-12, the held skybox tier files), the decision sheet, the Codex operating rules learned today (pasted turns, no file reads, node over PowerShell, region replacements, one Edge, origin guard, quiet hours Monday), artifact locations, pitfalls, and what Claude does on return |
+
 ### MS-04 closed negative by a Sol premise check (2026-08-29 17:02 machine clock)
 
 | | Row | Disposition |
