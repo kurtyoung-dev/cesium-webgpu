@@ -108,6 +108,14 @@ corrected with it.
 The remaining ~30 medium and all low survivors are enumerated in §5 with their lane column reading
 QUEUED; they dispatch after Q-1…Q-10, batched by file so one Sol dispatch closes several small
 findings in the same module. C1's returning findings append here as a dated addendum.
+### Wave DX queued next by maintainer directive; the catalog's five pending rulings answered (2026-08-29 ~21:45 machine clock)
+
+| | Row | Disposition |
+|---|---|---|
+| R-2026-08-29-3 | RULED (maintainer): do all of the organisation, decomposition, deduplication and other improvements; queue them to run next | recorded in the rulings doc (sixth sitting) and as queue section 6a WAVE DX (13 rows, dispatch order DX-05 -> DX-03 -> DX-01 -> DX-02 -> DX-04 -> DX-06 -> DX-11 -> DX-12 -> DX-07..10); it also rules TOOLING_CATALOG M1-M5 per their recommendations |
+| WAVE DX | QUEUED NEXT (after Q-145 / DM-07 / DM-01 land) | DX-01 probe runtime (Opus, M); DX-02 anti-re-accretion contract (Sonnet); DX-03 archive the ~35 HIGH files (Sonnet); DX-04 MED census (Sol) then move (Sonnet); DX-05 exemplars + instrument-defect promotion (Sonnet, XS); DX-06 dedup by family in batches (Sonnet); DX-07..10 decompositions of the eleven >1,000-line renderer files (Opus, held on their owning lanes and on Opus capacity); DX-11 stable-citation convention; DX-12 spec-homes measured pass (executes Q-139-D1); DX-13 ledger rotation PROPOSED. Gates M-DX-1 (runner names) and M-DX-2 (rotation) |
+| Probe tracking | ANSWERED | the maintainer asked whether a probe-tracking doc exists: yes - TOOLING_CATALOG.md (generated 2026-08-15 by a 16-agent audit, regenerated at every landing: 1,012 files, 799 ACTIVE, 186 investigation artifacts, family map, supersession chains, archive candidates, org proposal) and the DEBUGGING_GUIDE probe inventory. What was missing was the execution of its M1-M5, now ruled |
+
 ### Re-reviews: both revisions returned again on narrower grounds; DM-01 corrected and banked (2026-08-29 ~21:00 machine clock)
 
 | | Row | Disposition |
