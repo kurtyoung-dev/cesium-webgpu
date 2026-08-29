@@ -108,6 +108,17 @@ corrected with it.
 The remaining ~30 medium and all low survivors are enumerated in §5 with their lane column reading
 QUEUED; they dispatch after Q-1…Q-10, batched by file so one Sol dispatch closes several small
 findings in the same module. C1's returning findings append here as a dated addendum.
+### Engine window complete: five reviewed batches landed, rebuild running (2026-08-29 18:24 machine clock)
+
+| | Row | Disposition |
+|---|---|---|
+| Q120 | LANDED (Batch 1325) - globe first-frame pipeline prewarm at the end of prepareFrame; Galadriel's B1-B5 applied; the probe re-applied onto the Batch-1294 version | gates green: prewarm 6/6, readiness 9/9, pipeline-readiness 52/52, aliasing 63/63, black-rule 5/5. Maintainer decision still open: prewarm scope {28 B, 32 B} vs 'keep all three' |
+| Q-88 | LANDED (Batch 1326) - ocean per-frame ArrayBuffers -> cache scratch; spec 1/1; runner home test-readiness | byte identity is the Edge leg (tranche 3e-F) |
+| Q-142 | LANDED (Batch 1327) default-ON (WEBGPU_AO_FULL_SAMPLE_PATTERN = true) - the four-fault AO lockstep; specs 4/4 + 3/3; naga OK; runner home test-blend-parity | gate M-03: if the maintainer wants default-off, flip the one constant; tranche C owes the WebGPU-vs-WebGL capture pair and the disclosed frame-time delta |
+| DM-07 | LANDED (Batch 1328) - the four pick counters, no logic change; spec 16/16; guide updated; runner home test-readiness | Q-141 may now be briefed against them (Opus); tranche C reads Scene.getDebugSnapshot().renderer.modelPick |
+| REBUILD | npx gulp build + npm run build-sandcastle running at 18:24 | then: tranche 3e-F (SC2 sweep re-run + Q-120/130/131/132 legs with PointLight + S5 probes + Q-135/Q-137 confirmations), tranche A (Q-148 + EAN-01 certification + Pippin acceptance), tranche B (Q-143 on probe-aec-perf), tranche C (Q-141/Q-142 legs), then the first wave-end gate (npm run wave-end-gate -- --wave wave1). Executors: Opus per the handoff, or the Codex seat |
+| Q-130-b | still BANKED (not in this window) | lands after the Q-130-c disposition (five CSM sites under the globe material's module-wide diagnostic off) so its one red leg is honest |
+
 ### Engine window opens: Q130 lands with two seat corrections and two seat mistakes (2026-08-29 18:15 machine clock)
 
 | | Row | Disposition |

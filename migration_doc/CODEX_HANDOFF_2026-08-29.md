@@ -49,6 +49,9 @@ audit and 65 evidence files). Both are also archived under `F:/Dev/GH/cesium-web
 
 ## 3. State right now (tip `0c9955c4c2`, Batch 1320)
 
+> **UPDATE 18:24 ET (Batches 1322-1328):** the maintainer lifted the 8080 hold and the seat landed the window: Q130 (1322, with two seat type fixes; 1323 undid a directory-wide stage that had swept the held sky-box files; 1324 widened the q131 proof's window), Q120 (1325), Q-88 (1326), Q-142 (1327, default-ON, gate M-03 open), DM-07 (1328). §3a below is now history; the rebuild is running; §3b's tranches are the next work, in the order listed. Q-130-b remains banked behind Q-130-c.
+
+
 Landed today (Batches 1292–1320): the research dispatch queue; Earth at Night demo repairs (Q-146/147,
 EAN-03/04) and the default-off star-map/HDR/intensity controls (EAN-01); the Sandcastle2 **origin guard**
 (Q-145 — every browser run of the built app must go through `createGuardedPage` / `openSandcastle2Url` in
