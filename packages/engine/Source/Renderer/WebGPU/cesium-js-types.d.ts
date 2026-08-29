@@ -328,6 +328,11 @@ interface CesiumFrameState {
   graphicsContext: CesiumGraphicsContext;
   commandList: CesiumAnyDrawCommand[];
   panoramaCommandList: CesiumAnyDrawCommand[];
+  /**
+   * Count of draws a producer wanted to emit this frame and could not because
+   * a resource was not ready. Reset per frame by `Scene.updateFrameState`.
+   */
+  commandsDeferred: number;
   shadowMaps: CesiumShadowMap[];
   mode: number;
   morphTime: number;

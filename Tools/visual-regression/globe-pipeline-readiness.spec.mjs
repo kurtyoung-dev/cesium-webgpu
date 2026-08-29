@@ -158,23 +158,38 @@ test("step 1: the sync createRenderPipeline fallback is gated on the ABSENCE of 
   );
 });
 
-test("step 4: an unresolved globe pipeline still skips the tile with no counter", () => {
+test("step 4: an unresolved globe pipeline skips the tile, and the skip is now counted", () => {
   const src = readEngine(
     "packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceRenderer.ts",
   );
   assert.ok(
-    /if\s*\(\s*!\s*pipeline\s*\)\s*\{\s*continue\s*;\s*\}/.test(src),
+    /if\s*\(\s*!\s*pipeline\s*\)\s*\{[^}]*continue\s*;\s*\}/.test(src),
     "the per-tile skip is gone",
   );
-  // The probe reports selected-tile count as an UPPER BOUND on skipped tiles
-  // precisely because no counter exists here. If one is ever added, the probe
-  // should read it instead — and this test is where that gets noticed.
-  const skipIdx = src.search(/if\s*\(\s*!\s*pipeline\s*\)\s*\{\s*continue/);
+  // THIS TEST WAS INVERTED. It used to require the ABSENCE of a counter here,
+  // and said so: "if one is ever added, the probe should read it instead — and
+  // this test is where that gets noticed". One was added. The skipped pass is
+  // recorded and published to `frameState.commandsDeferred`, which
+  // `Scene#renderReady` reads, so the probe no longer has to report the
+  // selected-tile count as an upper bound on skipped tiles: it can read the
+  // exact figure off the frame state. The pin now protects the counter instead
+  // of its absence.
+  // Anchored on the `continue`: the file has other `if (!pipeline)` guards
+  // that return rather than skip a pass, and the first of them precedes this
+  // one.
+  const skipIdx = src.search(
+    /if\s*\(\s*!\s*pipeline\s*\)\s*\{[^}]*continue\s*;/,
+  );
   const window = src.slice(Math.max(0, skipIdx - 400), skipIdx + 200);
   assert.ok(
-    !/\+\+\s*\w*[Ss]kip|skipped\s*(\+\+|\+=)/.test(window),
-    "a skip counter appears to exist now — the probe should read it directly " +
-      "instead of reporting selected-tile count as an upper bound",
+    /deferredPasses\s*\+\+/.test(window),
+    "the skipped pass is no longer counted — a caller polling readiness would " +
+      "stop on a frame with a hole in it",
+  );
+  assert.ok(
+    /commandsDeferred/.test(src),
+    "the per-tile skip count is no longer published to the frame state, so " +
+      "nothing outside the renderer can see a partially drawn tile",
   );
 });
 

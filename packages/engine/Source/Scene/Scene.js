@@ -2682,6 +2682,50 @@ class Scene {
   }
 
   /**
+   * Whether the frame most recently rendered by this scene drew everything it
+   * had selected to draw.
+   *
+   * <code>true</code> when the last rendered frame emitted every draw command
+   * its producers wanted (<code>FrameState#commandsDeferred</code> is zero) and
+   * the rendering backend is not still creating a resource a frame is waiting
+   * on (<code>GraphicsContext#pendingResourceCount</code> is zero).
+   *
+   * This is the missing half of <code>scene.globe.tilesLoaded</code>, not a
+   * replacement for it. <code>tilesLoaded</code> reports that the globe's tile
+   * load queues are empty -- which is also true before the globe has queued
+   * anything, and stays true while a selected tile's GPU resources are still
+   * being built. A backend that creates pipelines asynchronously can therefore
+   * hold <code>tilesLoaded === true</code>, publish a non-empty command list,
+   * and still leave part of the view undrawn. Wait on both:
+   *
+   * <pre><code>
+   * while (!(scene.globe.tilesLoaded &amp;&amp; scene.renderReady)) {
+   *   scene.requestRender();
+   *   scene.render();
+   * }
+   * </code></pre>
+   *
+   * The <code>requestRender</code> is not decoration. Inflight asynchronous
+   * work already holds a request-render scene awake on its own, but a draw
+   * deferred for a reason that started no asynchronous work does not, and a
+   * poll that only calls <code>render()</code> would spin against a scene that
+   * has decided it has nothing to redraw.
+   *
+   * Read it after <code>render()</code>: it describes the frame that was just
+   * produced, and on a scene that has never rendered it reads <code>true</code>
+   * because nothing has been deferred and nothing is inflight.
+   *
+   * @type {boolean}
+   * @readonly
+   */
+  get renderReady() {
+    return (
+      this._frameState.commandsDeferred === 0 &&
+      (this._context?.pendingResourceCount ?? 0) === 0
+    );
+  }
+
+  /**
    * Gets the simulation time when the scene was last rendered. Returns <code>undefined</code>
    * if the scene has not yet been rendered.
    *
@@ -3707,6 +3751,11 @@ class Scene {
     frameState.commandList.length = 0;
     frameState.shadowMaps.length = 0;
     frameState.panoramaCommandList.length = 0;
+    // Reset with the command list it counts against: producers add to it while
+    // they fill `commandList`, and `renderReady` reads the pair after the
+    // frame. Carrying it over would report a settled frame as incomplete
+    // forever.
+    frameState.commandsDeferred = 0;
     frameState.brdfLutGenerator = this._brdfLutGenerator;
     frameState.environmentMap = this.skyBox && this.skyBox._cubeMap;
     frameState.mode = this._mode;
@@ -4492,8 +4541,7 @@ class Scene {
     // pending. Background work is excluded to avoid speculative frames, while
     // its resolution can still wake the scene through the subscription. A
     // context without the monitor contributes a zero count.
-    const pendingAsyncResources =
-      this._context?.asyncResources?.pendingForegroundCount ?? 0;
+    const pendingAsyncResources = this._context?.pendingResourceCount ?? 0;
 
     // Determine if should render a new frame in request render mode
     let shouldRender =

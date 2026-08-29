@@ -206,11 +206,11 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 
 | Metric | Value |
 |---|---|
-| Files in census | 1131 |
-| ACTIVE | 924 |
+| Files in census | 1133 |
+| ACTIVE | 926 |
 | INVESTIGATION | 195 |
 | NO @purpose HEADER | 12 |
-| Classes | probe 652, spec 255, other 102, lib 79, gate-lib 20, bake-tool 13, runner 6, fixture 4 |
+| Classes | probe 653, spec 256, other 102, lib 79, gate-lib 20, bake-tool 13, runner 6, fixture 4 |
 
 ### Tools/ (41)
 
@@ -355,7 +355,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | stbn-rng.mjs | bake-tool | ACTIVE | 2026-08-16 | 3 | Deterministic license-clean random stream for the STBN bake: AES-256-CTR over zeros keyed by SHA-256(seed), byte-identical across machines. |
 | stbn-spectrum.mjs | bake-tool | ACTIVE | 2026-08-16 | 5 | Fourier certification of an STBN volume (radial spatial spectrum, per-pixel temporal spectrum, cross-correlation) with mutants proving each bar fires. |
 
-### Tools/visual-regression/ (927)
+### Tools/visual-regression/ (929)
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
@@ -390,7 +390,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | c12-29-s5-multiview-gate.spec.mjs | spec | ACTIVE | 2026-08-16 | 2 | Gate spec for the C12-29 S5 multiview certification: phases, renderer set, WebGPU VR error contract, evidence lifecycle and lock/watchdog wiring. |
 | c12-29-s5-multiview-source-preflight.spec.mjs | spec | ACTIVE | 2026-08-29 | 0 | Q-99 — regression coverage for the multiview probe's new |
 | c12-29-s5-replacement-device-gate.spec.mjs | spec | ACTIVE | 2026-08-29 | 2 | Certifies the S5 eclipse-shadow replacement-device evidence pipeline: schemas, phases, ledger/provenance validators, gate fold of its probe+lib pair. |
-| c12-29-s5-replacement-device-preflight-refusal.spec.mjs | spec | ACTIVE | — | 0 | Q-116 — regression coverage for the replacement-device S5 probe's |
+| c12-29-s5-replacement-device-preflight-refusal.spec.mjs | spec | ACTIVE | 2026-08-29 | 0 | Q-116 — regression coverage for the replacement-device S5 probe's |
 | c12-29-s5-svs-footprint-gate.spec.mjs | spec | ACTIVE | 2026-08-16 | 4 | node:test half of the NASA/SVS umbra-footprint certification triple (probe + gate-lib + spec) for the S5 eclipse globe shadow. |
 | c12-29-s5-terrain-selection-gate.spec.mjs | spec | ACTIVE | 2026-08-16 | 2 | Certifies the S5 terrain-selection evidence gate: v4-v9 schema migrations, page-diagnostic validation, canonical capture checks, exit-code fold. |
 | c12-31-aureole-gate.spec.mjs | spec | ACTIVE | 2026-08-16 | 3 | node:test half of the C12-31 L1-L4 sky-aureole certification triple (probe-sky-aureole-anchor + gate lib + spec). |
@@ -484,6 +484,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | environment-refresh-priority.spec.mjs | spec | ACTIVE | 2026-08-16 | 2 | Pins C11-193C same-frame dynamic-environment demand ordering in WebGPUEnvironmentRefreshCoordinator, GPU-free via esbuild-transpiled TS. |
 | finding-ownership-audit.spec.mjs | spec | ACTIVE | 2026-08-24 | 6 | Scans the migration_doc finding-source files for NEW-* IDs and enforces each has an ownership disposition (alias/placeholder/resolved). |
 | fog-cheap-coverage-gate.spec.mjs | spec | ACTIVE | 2026-08-16 | 6 | Pins the fog cheap-path cloud-shadow coverage gate: samples standardised onto the baked field's moments, with mutants and byte-neutrality. |
+| globe-cold-start-readiness.spec.mjs | spec | ACTIVE | — | 0 | Pins the backend-neutral readiness query, the deferred-command count that makes an undrawn globe tile observable, and the init-time prewarm that lets the first tile find its pipeline already built. |
 | globe-contour-pixel-ratio-parity.spec.mjs | spec | ACTIVE | 2026-08-29 | 1 | Evaluates the contour line-width threshold taken from the live ElevationContour fabric's WGSL body against the threshold parsed out of ElevationContourMaterial.glsl over an envelope of device pixel ratios, derives the byte offset the globe camera struct puts the ratio at, and executes the globe camera packer's write sequence to check the ratio lands on that same slot. |
 | globe-daynight-alpha-gate.spec.mjs | spec | ACTIVE | 2026-08-29 | 1 | Pins that the imagery day/night alpha is gated on the per-tile alpha condition alone on BOTH backends, with the WebGPU flag derived from the same resolved values as the WebGL define, and mutants for absence and inertness. |
 | globe-daynight-normal-source.spec.mjs | spec | ACTIVE | 2026-08-28 | 3 | Pins that every WGSL globe day/night term reads the analytic geocentric normal, not the mesh v_normalEC whose constant decode flattened lighting. |
@@ -647,7 +648,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | probe-c12-29-s5-custom-ellipsoid.mjs | probe | ACTIVE | 2026-08-16 | 9 | Runtime certification that a custom oblate ellipsoid renders and derives identically on serial fresh WebGL and WebGPU contexts; write-once evidence |
 | probe-c12-29-s5-dense-cost.mjs | probe | ACTIVE | 2026-08-29 | 5 | Dense ACTIVE/INACTIVE eclipse-lane cost characterization: 24 child Node processes, each one fresh Edge running one 600-frame condition in frozen order |
 | probe-c12-29-s5-multiview.mjs | probe | ACTIVE | 2026-08-29 | 7 | Logical-View/stereo policy certification: offscreen ray View, WebGL two-eye VR executor, WebGPU synchronous unsupported-path rejection |
-| probe-c12-29-s5-replacement-device.mjs | probe | ACTIVE | 2026-08-21 | 11 | Genuine device-loss recovery certification via Chromium GPU-process termination (never destroy()); 'destroyed' losses archived STRUCTURAL not recovery |
+| probe-c12-29-s5-replacement-device.mjs | probe | ACTIVE | 2026-08-29 | 11 | Genuine device-loss recovery certification via Chromium GPU-process termination (never destroy()); 'destroyed' losses archived STRUCTURAL not recovery |
 | probe-c12-29-s5-svs-footprint.mjs | probe | ACTIVE | 2026-08-16 | 6 | Absolute NASA-SVS 5073 eclipse geospatial-footprint acceptance over the vendored four-row fixture + local QuantizedMesh, serial WebGL/WebGPU |
 | probe-c12-29-s5-terrain-selection.mjs | probe | ACTIVE | 2026-08-16 | 5 | Real-terrain/selection acceptance: fill-to-real transitions, x2 radius law, async picking, env-map capture over local QuantizedMesh, both backends |
 | probe-c9-14-ground-atmo-stage.mjs | probe | INVESTIGATION | 2026-08-16 | 3 | Before/after self-diff captures (ground/horizon/orbit) proving the globe ground-atmosphere Nishita march runs in exactly one shader stage |
@@ -871,6 +872,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | probe-globe-bindgroup-cache.mjs | probe | ACTIVE | 2026-08-16 | 7 | Gates the globe per-tile bind-group cache: creations settle to ~0, spike+resettle on pan, globe visibly renders, zero validation errors |
 | probe-globe-bundle-cost.mjs | probe | INVESTIGATION | 2026-08-16 | 5 | TEMP A/B measurement of the inline globe render-bundle's per-frame CPU cost — the decision input for the cache-vs-drop call |
 | probe-globe-clippoly-geodetic.mjs | probe | ACTIVE | 2026-08-16 | 4 | Globe clipping-polygon parity: the polygon hole must exist on both backends and the clip boundary must align (geodetic SDF convention fix) |
+| probe-globe-cold-start-readiness.mjs | probe | ACTIVE | — | 1 | Measures whether a settle gated on the new readiness predicate ends with a drawn frame, and what the globe's first non-empty command list costs on each backend. |
 | probe-globe-default-limits.mjs | probe | ACTIVE | 2026-08-16 | 7 | Gates globe rendering on a device pinned to WebGPU default limits (16 sampled textures): reduced 4-slot imagery layout + multi-pass blend path |
 | probe-globe-effects-handle-toggle.mjs | probe | ACTIVE | 2026-08-16 | 4 | Oracle for the per-frame globe-effects bind-group memo: clipping ON-OFF-ON must carve, restore, and re-carve terrain with zero stale-handle errors |
 | probe-globe-farzoom.mjs | probe | INVESTIGATION | 2026-08-16 | 2 | Diagnostic re-bucketing of the far-zoom 'GPU brighter' interior blobs with ground atmosphere toggled, attributing drape vs imagery mip/LOD-bias |
@@ -1343,7 +1345,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | c12-29-s5-dense-cost-gate.mjs | gate-lib | ACTIVE | 2026-08-16 | 8 | Frozen experiment and fail-closed fold for the S5 dense ACTIVE/INACTIVE cost characterization (v3 schema, SHA-pinned workload). |
 | c12-29-s5-multiview-gate.mjs | gate-lib | ACTIVE | 2026-08-16 | 5 | Frozen policy for the S5 same-context logical-View A->B->A shard; explicitly must not be cited as proof of engine multi-View scheduling. |
 | c12-29-s5-replacement-device-capture.mjs | lib | ACTIVE | 2026-08-28 | 6 | Fail-closed AST/dataflow proof plus strict persisted-PNG decode for the replacement-device certification probe. |
-| c12-29-s5-replacement-device-gate.mjs | gate-lib | ACTIVE | 2026-08-21 | 8 | Fail-closed acceptance for S5 replacement-device recovery after genuine Chromium GPU-process termination (v8 semantic-attestation/candidate-recovery schemas). |
+| c12-29-s5-replacement-device-gate.mjs | gate-lib | ACTIVE | 2026-08-29 | 8 | Fail-closed acceptance for S5 replacement-device recovery after genuine Chromium GPU-process termination (v8 semantic-attestation/candidate-recovery schemas). |
 | c12-29-s5-svs-footprint-gate.mjs | gate-lib | ACTIVE | 2026-08-16 | 7 | Gate library for the S5 NASA-SVS-5073 eclipse-footprint certification shard, pairing its probe and spec. |
 | c12-29-s5-terrain-selection-gate.mjs | gate-lib | ACTIVE | 2026-08-16 | 4 | Frozen inputs, exact terrain-radius arithmetic, evidence-shape checks and verdict folding for S5's first final-certification shard (v10 schema). |
 | c12-31-aureole-gate.mjs | gate-lib | ACTIVE | 2026-08-16 | 3 | Gate-predicate library for the C12-31 sky-aureole certification lane, pairing probe-sky-aureole-anchor with its spec. |

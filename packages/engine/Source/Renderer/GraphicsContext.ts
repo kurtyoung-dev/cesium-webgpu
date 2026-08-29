@@ -1111,6 +1111,36 @@ export abstract class GraphicsContext {
     return undefined;
   }
 
+  /**
+   * Number of asynchronous GPU resource creations the backend is still waiting
+   * on, counting only work a frame is actively blocked by. A frame rendered
+   * while this is non-zero may be missing draws whose resources have not
+   * materialized yet.
+   *
+   * The base implementation returns 0 and the WebGL `Context` inherits it:
+   * every WebGL resource this covers -- shader link, texture upload, buffer
+   * write -- completes inside the call that requests it, so a WebGL frame is
+   * never waiting on one. `WebGPUContext` overrides it with its async-resource
+   * monitor's foreground inflight count, covering render and compute pipeline
+   * creation, shader-module compiles, texture uploads, image decodes and
+   * buffer maps.
+   *
+   * Speculative pre-cooking (`WebGPURenderPipelineCache.warm`) registers as
+   * background priority and is deliberately excluded: nothing on screen waits
+   * for it, so counting it would report a scene as never ready while a warm
+   * queue drains.
+   *
+   * Read it together with `FrameState.commandsDeferred` rather than alone.
+   * This counter answers "is the backend still cooking something"; the frame
+   * state counter answers "did this frame actually drop a draw". A producer
+   * can drop a draw for a reason that is not asynchronous -- a mesh whose
+   * buffers are not built yet -- and an asynchronous resource can be inflight
+   * for a producer that still drew everything it wanted this frame.
+   */
+  get pendingResourceCount(): number {
+    return 0;
+  }
+
   // ═══════════════════════════════════════════════════════════
   // ABSTRACT: CANVAS & DIMENSIONS
   // ═══════════════════════════════════════════════════════════

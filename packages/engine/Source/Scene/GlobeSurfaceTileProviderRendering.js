@@ -1160,6 +1160,29 @@ function warmUpGlobeRenderer(context) {
   }
 }
 
+/**
+ * Record that a tile the quadtree had already selected for rendering produced
+ * no draw command this frame.
+ *
+ * Every call site below is a resource that a later frame can supply -- a mesh
+ * whose buffers are not built, a device that has not been handed over yet, a
+ * pipeline still compiling -- so the tile is deferred, not rejected. The count
+ * is what lets `Scene#renderReady` distinguish "the load queues are empty"
+ * from "every selected tile drew", which `Globe#tilesLoaded` cannot: the load
+ * queues are empty for a tile whose terrain and imagery are fully loaded and
+ * whose pipeline is still cooking.
+ *
+ * Partially drawn tiles -- some imagery passes emitted, some skipped -- are
+ * counted inside the renderer instead, per skipped pass, because only the
+ * renderer can see them.
+ *
+ * @param {FrameState} frameState The frame state to record against.
+ * @private
+ */
+function noteDeferredTile(frameState) {
+  frameState.commandsDeferred = (frameState.commandsDeferred ?? 0) + 1;
+}
+
 let _webgpuTileDiagCount = 0;
 function addWebGPUDrawCommandsForTile(tileProvider, tile, frameState, fr) {
   const surfaceTile = tile.data;
@@ -1193,6 +1216,7 @@ function addWebGPUDrawCommandsForTile(tileProvider, tile, frameState, fr) {
       );
       //>>includeEnd('debug');
     }
+    noteDeferredTile(frameState);
     return;
   }
 
@@ -1205,6 +1229,7 @@ function addWebGPUDrawCommandsForTile(tileProvider, tile, frameState, fr) {
       console.warn("[WebGPU:TileDraw] SKIP — no device");
       //>>includeEnd('debug');
     }
+    noteDeferredTile(frameState);
     return;
   }
 
@@ -1221,6 +1246,7 @@ function addWebGPUDrawCommandsForTile(tileProvider, tile, frameState, fr) {
       );
       //>>includeEnd('debug');
     }
+    noteDeferredTile(frameState);
     return;
   }
 
@@ -1296,6 +1322,12 @@ function addWebGPUDrawCommandsForTile(tileProvider, tile, frameState, fr) {
     // callback of its own. WebGL has no asynchronous pipeline class, so empty
     // there genuinely means nothing to draw, and re-rendering would not change
     // that.
+    //
+    // The wakeup makes the tile appear on a LATER frame; it does not make THIS
+    // frame complete. Record the tile as deferred so a caller polling
+    // `Scene#renderReady` keeps rendering until it lands, instead of screen-
+    // shotting the hole.
+    noteDeferredTile(frameState);
     return;
   }
 

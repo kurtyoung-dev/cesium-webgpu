@@ -13,6 +13,9 @@
 
 #### Additions :tada:
 
+- Added `Scene#renderReady`, which reports whether the frame most recently rendered drew everything the scene had selected to draw. It is the missing half of `Globe#tilesLoaded`: the tile load queues can be empty — before the globe has queued anything, and while a selected tile's GPU resources are still being built — so on a backend that creates pipelines asynchronously `tilesLoaded` can be `true`, the command list non-empty, and part of the view still undrawn. Wait on both when capturing or measuring a settled frame.
+- Added `GraphicsContext#pendingResourceCount`, the backend-neutral count of asynchronous GPU resource creations a frame is waiting on. WebGL always answers `0` (every resource it needs is created inside the call that needs it); WebGPU answers with its async-resource monitor's foreground inflight count, excluding speculative pre-warming.
+- Added `FrameState#commandsDeferred`, the per-frame count of draw commands a producer wanted to emit and could not because a resource was not ready. Reset each frame alongside `commandList`; stays `0` for the whole of a WebGL frame.
 - Explicit `renderer: 'webgpu'` graceful fallback to WebGL has been RESTORED per the fork charter (warn + fall back when WebGPU is unavailable). The strict hard-fail behavior is available via the new opt-in `strictRenderer: true` context option; invalid renderer strings throw only in debug builds (release warns and resolves to AUTO).
 
 ## 1.144 - 2026-08-01

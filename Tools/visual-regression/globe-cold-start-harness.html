@@ -1,0 +1,266 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Globe cold-start readiness harness</title>
+    <link rel="stylesheet" href="/Build/CesiumUnminified/Widgets/widgets.css" />
+    <style>
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        background: #000;
+        overflow: hidden;
+      }
+      #cesiumContainer {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 1024px;
+        height: 640px;
+      }
+    </style>
+  </head>
+  <body data-globe-cold-start-harness="owned-no-autostart-v1">
+    <div id="cesiumContainer"></div>
+    <script type="module">
+      // Harness for probe-globe-cold-start-readiness.mjs. Owns no timing policy
+      // of its own beyond what the probe asks for: the default render loop is
+      // off and every frame is an explicit forceRender at a pinned clock, so a
+      // settle count is a count of frames the probe asked for rather than of
+      // frames the browser happened to schedule.
+      window.CESIUM_BASE_URL = "/Build/CesiumUnminified/";
+      import * as Cesium from "/Build/CesiumUnminified/index.js";
+      window.Cesium = Cesium;
+
+      window.__errors = [];
+      window.addEventListener("error", (e) =>
+        window.__errors.push(`window.error: ${e.message || String(e)}`),
+      );
+      window.addEventListener("unhandledrejection", (e) =>
+        window.__errors.push(`unhandledrejection: ${String(e.reason)}`),
+      );
+
+      window.__build = async function (options) {
+        try {
+          const viewer = await Cesium.Viewer.createAsync(
+            document.getElementById("cesiumContainer"),
+            {
+              contextOptions: { renderer: options.renderer },
+              useBrowserRecommendedResolution: false,
+            },
+          );
+          window.viewer = viewer;
+          const scene = viewer.scene;
+          viewer.useDefaultRenderLoop = false;
+          scene.globe.enableLighting = false;
+          if (options.terrain === true) {
+            // Awaited here rather than through `Viewer.createAsync`'s terrain
+            // option: that path leaves `scene.globe.terrainProvider` undefined
+            // when createAsync resolves, and a probe sampling state at that
+            // moment measures the ellipsoid.
+            scene.terrainProvider =
+              await Cesium.CesiumTerrainProvider.fromIonAssetId(1, {
+                requestWaterMask: false,
+                requestVertexNormals: true,
+              });
+          }
+          return {
+            ok: true,
+            rendererType: scene.context.rendererType,
+            isWebGPU: scene.context.isWebGPU,
+            // Present only on a build that carries the readiness signal. A
+            // false here is the probe's own before/after discriminator.
+            hasRenderReady: typeof scene.renderReady === "boolean",
+            hasPendingResourceCount:
+              typeof scene.context.pendingResourceCount === "number",
+            terrainReady: !!scene.globe.terrainProvider,
+            canvasWidth: scene.drawingBufferWidth,
+            canvasHeight: scene.drawingBufferHeight,
+          };
+        } catch (e) {
+          const message = String(e && e.stack ? e.stack : e);
+          window.__errors.push(`build: ${message}`);
+          return { ok: false, error: message };
+        }
+      };
+
+      window.__stripWidgets = function () {
+        for (const selector of [
+          ".cesium-viewer-toolbar",
+          ".cesium-viewer-animationContainer",
+          ".cesium-viewer-timelineContainer",
+          ".cesium-viewer-bottom",
+        ]) {
+          for (const node of document.querySelectorAll(selector)) {
+            node.style.display = "none";
+          }
+        }
+        return true;
+      };
+
+      window.__setView = function (view) {
+        window.viewer.camera.setView({
+          destination: Cesium.Cartesian3.fromDegrees(
+            view.longitude,
+            view.latitude,
+            view.height,
+          ),
+          orientation: {
+            heading: Cesium.Math.toRadians(view.heading ?? 0),
+            pitch: Cesium.Math.toRadians(view.pitch ?? -90),
+            roll: 0,
+          },
+        });
+        return true;
+      };
+
+      // Multi-metric snapshot of everything a cold start is spending. Read
+      // between settle rounds, never inside the frame loop.
+      window.__metrics = function () {
+        const scene = window.viewer.scene;
+        const context = scene.context;
+        const cache = context.webgpuPipelineCache;
+        const telemetry = context.isWebGPU
+          ? context.asyncResourceTelemetry
+          : undefined;
+        const snapshot = telemetry ? telemetry.snapshot() : undefined;
+        const perKind = snapshot ? snapshot.perKind : undefined;
+        const memory = performance.memory;
+        return {
+          pipelineCache: cache
+            ? {
+                hits: cache.getStats().hits,
+                misses: cache.getStats().misses,
+                created: cache.getStats().created,
+                pending: cache.getStats().pending,
+                size: cache.getStats().size,
+                wrongModuleHits: cache.getStats().wrongModuleHits,
+              }
+            : null,
+          async: snapshot
+            ? {
+                renderPipelines: perKind["render-pipeline"],
+                shaderModules: perKind["shader-module"],
+                textureUploads: perKind["texture-upload"],
+                imageDecodes: perKind["image-decode"],
+                aggregate: snapshot.aggregate,
+              }
+            : null,
+          pendingResourceCount:
+            typeof context.pendingResourceCount === "number"
+              ? context.pendingResourceCount
+              : null,
+          usedJSHeapBytes: memory ? memory.usedJSHeapSize : null,
+        };
+      };
+
+      // One settle round.
+      //
+      //   gate "legacy"    — `globe.tilesLoaded && commandList.length > 0`,
+      //                      the predicate the 3e-B tranche used and the one
+      //                      that stopped on a frame with a black near field.
+      //   gate "readiness" — the same, plus `scene.renderReady`.
+      //
+      // Both record the same series, so one page can produce the before and
+      // the after without a rebuild between them.
+      window.__settle = async function (arg) {
+        const scene = window.viewer.scene;
+        const time = Cesium.JulianDate.fromIso8601(arg.iso);
+        const deadline = performance.now() + (arg.budgetMs ?? 60000);
+        const started = performance.now();
+        let frames = 0;
+        let ready = 0;
+        let firstNonEmpty = -1;
+        let commands = -1;
+        let peakDeferred = 0;
+        // Sampled AT the first non-empty command list, not at end of round.
+        // The cold-start question is what the globe had spent by the moment it
+        // could first draw; an end-of-round sample answers a different
+        // question and cannot discriminate a prewarm that landed from one
+        // that was built against the wrong key.
+        let metricsAtFirstNonEmpty = null;
+        let wallMsAtFirstNonEmpty = -1;
+        while (performance.now() < deadline) {
+          // A request is issued every frame so a deferred draw that started no
+          // asynchronous work cannot leave a request-render scene asleep while
+          // the probe polls it.
+          scene.requestRender();
+          scene.forceRender(time);
+          frames++;
+          commands = scene.frameState.commandList.length;
+          const deferred = scene.frameState.commandsDeferred ?? 0;
+          if (deferred > peakDeferred) {
+            peakDeferred = deferred;
+          }
+          if (commands > 0 && firstNonEmpty < 0) {
+            firstNonEmpty = frames;
+            wallMsAtFirstNonEmpty = Math.round(performance.now() - started);
+            metricsAtFirstNonEmpty = window.__metrics();
+          }
+          const renderReady =
+            arg.gate === "legacy" ? true : scene.renderReady !== false;
+          if (scene.globe.tilesLoaded && commands > 0 && renderReady) {
+            ready++;
+            if (ready >= 8 && frames >= (arg.minFrames ?? 60)) {
+              break;
+            }
+          } else {
+            ready = 0;
+          }
+          await new Promise((r) => setTimeout(r, 8));
+        }
+        return {
+          gate: arg.gate,
+          frames,
+          firstNonEmpty,
+          commands,
+          wallMs: Math.round(performance.now() - started),
+          tilesLoaded: scene.globe.tilesLoaded,
+          renderReady: scene.renderReady ?? null,
+          commandsDeferred: scene.frameState.commandsDeferred ?? null,
+          peakCommandsDeferred: peakDeferred,
+          wallMsAtFirstNonEmpty,
+          metricsAtFirstNonEmpty,
+          metrics: window.__metrics(),
+        };
+      };
+
+      // Black fraction of the bottom third of a PNG the probe captured with a
+      // Playwright element screenshot. Decoding in the page keeps the probe
+      // dependency-free; capturing in the page does not work for a WebGPU
+      // canvas, which is why the bytes arrive from outside.
+      window.__blackBottomThird = async function (base64) {
+        const image = new Image();
+        await new Promise((resolveImage, rejectImage) => {
+          image.onload = resolveImage;
+          image.onerror = rejectImage;
+          image.src = `data:image/png;base64,${base64}`;
+        });
+        const canvas = document.createElement("canvas");
+        canvas.width = image.width;
+        canvas.height = image.height;
+        const context2d = canvas.getContext("2d", {
+          willReadFrequently: true,
+        });
+        context2d.drawImage(image, 0, 0);
+        const y0 = Math.floor(image.height * 0.66);
+        const data = context2d.getImageData(
+          0,
+          y0,
+          image.width,
+          image.height - y0,
+        ).data;
+        let pixels = 0;
+        let black = 0;
+        for (let i = 0; i < data.length; i += 4) {
+          pixels++;
+          if (data[i] < 8 && data[i + 1] < 8 && data[i + 2] < 8) {
+            black++;
+          }
+        }
+        return { pixels, black, blackFraction: +(black / pixels).toFixed(6) };
+      };
+    </script>
+  </body>
+</html>

@@ -348,6 +348,10 @@ const EXEMPT = new Map([
     "WebGPUGlobeSurfaceWireframe.ts",
     "debug overlay: never ORs LOG_DEPTH into its defines, so its module never varies on the axis",
   ],
+  [
+    "WebGPUGlobeSurfaceShaders.ts",
+    "the shader-module factory: compiles modules and names none of the pipelines that consume them; its LOG_DEPTH mention is the init-time module prewarm list, whose masks must match what WebGPUGlobeSurfacePipelines.ts later requests",
+  ],
   ["cesium-js-types.d.ts", "ambient type declarations only"],
 ]);
 

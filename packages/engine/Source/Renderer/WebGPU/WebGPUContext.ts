@@ -7199,6 +7199,20 @@ export class WebGPUContext extends GraphicsContext {
   }
 
   /**
+   * Backend-neutral readiness query declared on `GraphicsContext`, answered
+   * here from the async-resource monitor's foreground inflight count.
+   *
+   * Reads `_asyncResources` directly rather than through the `asyncResources`
+   * getter: that getter constructs the monitor on first touch, and a readiness
+   * poll must not be what brings a monitor (and its telemetry subscriber) into
+   * existence on a context that never issued asynchronous work. No monitor
+   * means no inflight tokens, which is 0.
+   */
+  override get pendingResourceCount(): number {
+    return this._asyncResources?.pendingForegroundCount ?? 0;
+  }
+
+  /**
    * Per-context async-resource telemetry. Attached eagerly when the monitor is
    * first created — see the `asyncResources` getter — so events fired before
    * the first read are not lost. Survives device loss for the same reason the

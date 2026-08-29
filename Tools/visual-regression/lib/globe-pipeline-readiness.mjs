@@ -457,7 +457,11 @@ export const MECHANISM_PINS = Object.freeze([
   {
     file: "packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceRenderer.ts",
     name: "an unresolved pipeline skips the tile",
-    pattern: /if\s*\(\s*!\s*pipeline\s*\)\s*\{\s*continue\s*;\s*\}/,
+    // The skip now records the pass it dropped before continuing, so the
+    // pattern admits the counter between the brace and the `continue`. The
+    // step it pins is unchanged: an unresolved pipeline still draws nothing
+    // this frame.
+    pattern: /if\s*\(\s*!\s*pipeline\s*\)\s*\{[^}]*continue\s*;\s*\}/,
     why: "step 4 — the tile draws nothing this frame",
   },
   {

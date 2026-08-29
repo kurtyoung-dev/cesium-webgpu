@@ -1282,6 +1282,13 @@ export class WebGPUGlobeSurfaceRenderer {
     const totalLayers = readyLayers.length;
     const passCount = Math.max(1, Math.ceil(totalLayers / imagerySlots));
     const commands: TileDrawDescriptor[] = [];
+    // Passes this tile wanted and could not build, because the pipeline the
+    // pass needs is still materializing. Published to
+    // `frameState.commandsDeferred` at the bottom of this method, but only
+    // when at least one pass did build: a tile that produced nothing at all
+    // returns null, and the scene-layer caller counts that whole tile once, so
+    // publishing here as well would double-count it.
+    let deferredPasses = 0;
     if (logicalCounters) {
       logicalCounters.readyLayers =
         (logicalCounters.readyLayers ?? 0) + totalLayers;
@@ -1526,6 +1533,7 @@ export class WebGPUGlobeSurfaceRenderer {
         );
       }
       if (!pipeline) {
+        deferredPasses++;
         continue;
       }
 
@@ -1968,6 +1976,14 @@ export class WebGPUGlobeSurfaceRenderer {
     if (logicalCounters) {
       logicalCounters.passDescriptors =
         (logicalCounters.passDescriptors ?? 0) + commands.length;
+    }
+    if (deferredPasses > 0 && commands.length > 0) {
+      // Partially drawn tile: some imagery passes are on screen and some are
+      // not. `Scene.renderReady` reads this so a frame missing an imagery
+      // blend pass is not reported as complete. The whole-tile case is counted
+      // by the caller against the null return below.
+      const fs = frameState as unknown as { commandsDeferred?: number };
+      fs.commandsDeferred = (fs.commandsDeferred ?? 0) + deferredPasses;
     }
     return commands.length > 0 ? commands : null;
   }

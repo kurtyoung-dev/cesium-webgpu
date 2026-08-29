@@ -95,6 +95,25 @@ class FrameState {
     this.panoramaCommandList = [];
 
     /**
+     * Number of draw commands a producer wanted to emit this frame and could
+     * not, because a resource the command needs was not ready yet. Reset to
+     * zero at the top of every frame alongside <code>commandList</code>.
+     *
+     * A non-zero value means the frame on screen is missing geometry that the
+     * scene had already selected for drawing -- the globe's black near field
+     * while a terrain pipeline is still compiling, for instance. It is the
+     * direct observable that separates "the tile load queues are empty"
+     * (<code>Globe#tilesLoaded</code>) from "every selected tile actually
+     * drew".
+     *
+     * Producers on a backend that creates every resource synchronously never
+     * increment it, so it stays zero for the whole of a WebGL frame.
+     *
+     * @type {number}
+     */
+    this.commandsDeferred = 0;
+
+    /**
      * An array of shadow maps.
      * @type {ShadowMap[]}
      */

@@ -109,9 +109,22 @@ export function initShaderCache(host: ShaderFactoryHost, code: string): void {
   const reducedBit = host._imageryReduced
     ? ShaderDefine.GLOBE_IMAGERY_REDUCED
     : 0;
+  // LOG_DEPTH rides both entries because it is on in the configuration this
+  // prewarm exists to serve. `buildPipelineDescriptor` ORs the bit from
+  // `host._logDepthEnabled`, which tracks `frameState.useLogDepth`, which
+  // `Scene` sets from `scene.logarithmicDepthBuffer` -- itself defaulting to
+  // `context.fragmentDepth`, true on WebGPU -- for every non-orthographic
+  // frustum. Warming the mask without the bit warmed two modules the default
+  // scene never requests and left the module it does request to compile on the
+  // render path, which is the cost this list was added to remove.
+  //
+  // The non-log-depth pair is not warmed alongside: an orthographic frustum or
+  // an explicitly disabled log-depth buffer compiles its modules lazily, as
+  // both variants did before.
   const prewarmSets: readonly number[] = [
-    reducedBit, // production terrain without geodetic normals
-    ShaderDefine.GEODETIC_NORMAL | reducedBit, // exaggerated terrain
+    ShaderDefine.LOG_DEPTH | reducedBit, // production terrain without geodetic normals
+    // exaggerated terrain
+    ShaderDefine.GEODETIC_NORMAL | ShaderDefine.LOG_DEPTH | reducedBit,
   ];
   host._shaderModuleCache.prewarm(
     ShaderSourceId.GLOBE_TERRAIN,
