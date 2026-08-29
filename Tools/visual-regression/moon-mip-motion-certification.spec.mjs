@@ -1421,9 +1421,18 @@ test("published bytes are real PNGs and decoded primitives defeat coordinated re
   );
 });
 
+// This is the only test in the file that declares a budget, and it is the only
+// one that can therefore time out. It costs 118 s of the file's 195 s when it
+// runs alone on an eight-core host, almost all of it sharp decodes and hash
+// folds. The suite runner schedules os.availableParallelism() spec FILES at
+// once, so under a full sweep this test competes for those same cores with
+// seven other files and its wall time scales with the oversubscription. The
+// old 300 s budget left only a 2.5x factor and expired under the sweep while
+// passing standalone - a false red about the runner, not about the product.
+// 900 s carries a 7.6x factor over the measured cost.
 test(
   "path-backed certification reloads, refolds, topology-checks, and atomically commits PASS",
-  { timeout: 300_000 },
+  { timeout: 900_000 },
   async (t) => {
     const workspace = await mkdtemp(join(tmpdir(), "c12-33-path-pass-"));
     const evidenceRoot = join(workspace, "evidence-library");
