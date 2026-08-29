@@ -108,6 +108,17 @@ corrected with it.
 The remaining ~30 medium and all low survivors are enumerated in §5 with their lane column reading
 QUEUED; they dispatch after Q-1…Q-10, batched by file so one Sol dispatch closes several small
 findings in the same module. C1's returning findings append here as a dated addendum.
+### Wave 1 dispatch begins: four ruling-free lanes on fresh clones; engine landings still held (2026-08-29 ~14:50 machine clock)
+
+| | Row | Disposition |
+|---|---|---|
+| Merry (Q-145) | DISPATCHED ~14:40 (Sonnet, clone cesium-lane-merry at 175a6da855) | Sandcastle2 origin-rewrite helper + REFUSAL on origin mismatch, wired into sandcastle2-renderer-gate.mjs and the sweep probe, proven with a local stub server that redirects to a dead port; holds the single Edge slot for its Playwright leg (never 8080/8081); DEBUGGING_GUIDE registration. Precondition for tranches A/B/C |
+| Pippin (Q-146 + Q-147 + EAN-03 + EAN-04) | DISPATCHED ~14:42 (Sonnet, clone cesium-lane-pippin) | one demo commit: clock.shouldAnimate moved onto the dynamicLighting observable alone (coupling kept, other four controls detached), startTime/stopTime bracketed around the pinned instant (timeline needle visible), yaml aligned to both-renderer emissive lights, Night-darkness slider annotated not disabled, toolbar collapsed by default so it no longer covers ~28% of the canvas. NO BROWSER in the lane (Merry holds the slot); Node text-lift spec with an inertness mutant; the browser acceptance (both backends, incl. Celeborn's five-step DevTools script) is tranche A's |
+| Bilbo (DM-07) | DISPATCHED ~14:45 (Sonnet, clone cesium-lane-bilbo) | four pragma-wrapped counters through getDebugSnapshot (primitives skipped by the ready gate per frame, pick commands emitted per frame, getPickPipeline calls, summed createPickPipeline wall time), DEBUGGING_GUIDE registration, spec reading the snapshot object with an if-false mutant; NO logic change (a logic change re-tiers the row). The discriminator Q-141 needs before it is briefed |
+| Boromir (Q-142) | DISPATCHED ~14:48 (Opus, clone cesium-lane-boromir) | the AO bridge four-fault lockstep: correct uniform key (stepSize -> stepCount), WGSL clamps removed or raised to the WebGL twin's practical maximum, divisor moved with the executed loop, f16 and GTAO texts in step; WebGL untouched as the reference; a one-line landing switch for gate M-03 (default-on vs default-off define, add-only bit); bridge spec asserting the value reaching the consumer + a wgsl-mini-eval sample-pattern parity spec + naga validation; expected cost disclosed multi-metric; the capture pair is tranche C |
+| Evidence | REPATRIATED | Treebeard (6 files) and Quickbeam (67 files, 8.1 MB) evidence copied into main's gitignored Tools/visual-regression/output/lane-<name>-2026-08-29/ and both lanes archived under cesium-webgpu-worker-archive/<clone>/2026-08-29/ (13 + 129 files) - the clones can now be retired after the queue's cross-references are confirmed to point at the archive copies |
+| Sequencing | HELD | Q-141 waits for DM-07 (hard dependency); EAN-01 (demo star-map + HDR control) dispatches next round; tranche A (Q-148 + EAN-01 certification) and tranche B (Q-143 with DM-02..DM-06 legs) dispatch only after Merry lands - one Edge job at a time; all engine landings (Q120, Q130, Q-88, then DM-07/Q-142) wait for the maintainer's 8080 hold to lift |
+
 ### The research dispatch queue lands: both memos packaged into waves, plus the meshlet / mesh-shading track in the maintainer's order (2026-08-29 ~14:00 machine clock)
 
 | | Row | Disposition |
