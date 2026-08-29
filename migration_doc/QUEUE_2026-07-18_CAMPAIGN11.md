@@ -3020,7 +3020,7 @@ guide commissioning; benchmark-lane workload-file identity (`C11-64`); the absen
 (`C11-59`); **and the 4 CELESTIAL sub-decisions below.** The former clouds-weather guide gap is no
 longer C11-deferred work because that cluster transferred to C13.
 
-**The 4 `C11-163` CELESTIAL-WATER-REFLECTION sub-decisions (deferred to when the epic is scheduled):**
+**The 4 `C11-163` CELESTIAL-WATER-REFLECTION sub-decisions - RESOLVED 2026-08-28 by `R-2026-08-28-11` (MAINTAINER_RULINGS_2026-08-28.md): 1 = (B) prototype then port to (A); 2 = (ii) reduced moonglade GLSL twin; 3 = (d) existing SkyBox Tycho cubemap (C12-14); 4 = S5a first. The epic is ARMED (R-2026-08-28-10); the original deferred text follows as the record:**
 
 1. **Target ocean:** (A) globe water-mask "enhanced ocean" (`computeEnhancedOcean`, the default shipping
    path) vs (B) opt-in FFT `OceanSurface.wgsl` (cleaner prototype host). Dossier §1 recommends prototype

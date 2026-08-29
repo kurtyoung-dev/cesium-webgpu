@@ -183,3 +183,25 @@ taken in the sitting that follows, and the R9 amendment round arms under the rev
 pre-commitment pattern carrying the two exhibits of R-2026-08-28-1 and -2. Vegetation V1
 stays staged.
 
+## R-2026-08-28-11 - The four C11-163 celestial-water-reflection sub-decisions
+
+Taken ~22:05 ET in the same sitting, discharging the conditional arming of R-2026-08-28-10 and
+the scheduled decision session of R-2026-08-28-5. The C11 queue section 7.0 block that
+deferred them is flipped to RESOLVED with these values:
+
+1. Target ocean: prototype in the opt-in FFT OceanSurface path, then port to the default
+   enhanced-ocean water-mask path (dossier section 1) - the feature must reach the default ocean.
+2. Parity stance: a reduced moonglade GLSL twin ships on the enhanced ocean (dossier's (ii)),
+   NOT the WebGPU-only declaration - consistent with the same sitting's city-lights parity
+   ruling; day glint and star reflections may remain WebGPU-first with the GLSL twin
+   carrying the moon glint.
+3. Star source: the existing SkyBox Tycho cubemap exposed by C12-14 (Edge-accepted 2026-08-28,
+   tranche 2), accepting Milky-Way-only under the default variant and resolved stars under
+   the un-blurred TYCHO_T5 variant; the C11-163-CUBEMAP-HAS-NO-RESOLVED-STARS finding stands
+   as the recorded limitation, not a blocker.
+4. Cloud occlusion: S5a - reuse the sun-view beer-shadow-map as the proxy first; S5b (a
+   moon-view map) is a follow-up row.
+
+The row's other standing terms are unchanged: opt-in, default OFF, byte-identical off, no new
+define bit, not reversed-Z-coupled, S0 day-sun-glint audit/unify front of line.
+

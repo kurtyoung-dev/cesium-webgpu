@@ -288,4 +288,5 @@ brief carries premises re-verified at the cited `file:line` on the day it dispat
 | VW-N11 (new, R-2026-08-28-9) | enableNightLights default ON + WebGL emission parity (WGSL branch is the reference; amends the WebGPU-only contract) - lane NV |
 | VW-N7 tranche 3a | Edge executor running Batch 1239's six legs + the onset-altitude sweep on the post-1239 build |
 | STAGED -> ARMED (R-2026-08-28-10) | C12 close-out sprint (lane C12X), celestial water reflection C11-163 (conditional on its four sub-decisions), R9 amendment round (author + pre-committed reviewer). Vegetation V1 stays staged |
+| C11-163 (R-2026-08-28-11) | sub-decisions RESOLVED: FFT-prototype-then-port / reduced moonglade GLSL twin / SkyBox Tycho cube / S5a. Lane CW dispatched; S0 day-sun-glint audit first |
 
