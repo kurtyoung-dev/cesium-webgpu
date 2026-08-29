@@ -11,22 +11,33 @@ import * as Cesium from "cesium";
 // first — the day/night blend is driven by the alpha pair itself rather than by
 // whether the globe is being shaded.
 //
-// `createAsync` rather than `new Viewer` only because acquiring a WebGPU device
-// is asynchronous; with no options it still takes the build's default backend,
-// which is what makes the WebGPU-only control further down reachable at all.
-const viewer = await Cesium.Viewer.createAsync("cesiumContainer");
-
-const scene = viewer.scene;
-const globe = scene.globe;
-
 // A fixed instant so the terminator lands in a known place: the Americas are on
 // the night side and the ramp runs down the eastern Pacific. Dynamic lighting
 // starts the clock, and 4000x makes the terminator sweep in a few seconds.
-viewer.clock.currentTime = Cesium.JulianDate.fromIso8601(
-  "2026-03-21T02:00:00Z",
-);
-viewer.clock.multiplier = 4000;
-viewer.clock.shouldAnimate = false;
+//
+// Built as a Clock up front, with startTime/stopTime already bracketing the
+// pinned instant, rather than assigned onto the default clock after
+// construction: the widget zooms the timeline to clock.startTime/stopTime
+// exactly once, at construction. An unbracketed default clock spans
+// [now, now + 1 day], which does not contain a fixed March date, so the
+// timeline has no visible track for the needle to sit on.
+const clock = new Cesium.Clock({
+  startTime: Cesium.JulianDate.fromIso8601("2026-03-21T00:00:00Z"),
+  stopTime: Cesium.JulianDate.fromIso8601("2026-03-22T00:00:00Z"),
+  currentTime: Cesium.JulianDate.fromIso8601("2026-03-21T02:00:00Z"),
+  multiplier: 4000,
+  shouldAnimate: false,
+});
+
+// `createAsync` rather than `new Viewer` only because acquiring a WebGPU device
+// is asynchronous; apart from the clock view model, it still takes the build's
+// default backend.
+const viewer = await Cesium.Viewer.createAsync("cesiumContainer", {
+  clockViewModel: new Cesium.ClockViewModel(clock),
+});
+
+const scene = viewer.scene;
+const globe = scene.globe;
 
 scene.camera.setView({
   destination: Cesium.Cartesian3.fromDegrees(-95.0, 25.0, 24000000.0),
@@ -75,11 +86,22 @@ const viewModel = {
 Cesium.knockout.track(viewModel);
 const toolbar = document.getElementById("toolbar");
 Cesium.knockout.applyBindings(viewModel, toolbar);
-for (const name in viewModel) {
-  if (viewModel.hasOwnProperty(name)) {
-    Cesium.knockout.getObservable(viewModel, name).subscribe(updateGlobe);
-  }
+
+// Four of the five controls share this subscriber; `dynamicLighting` does
+// not (see `updateDynamicLighting` below), so none of the four can reach the
+// clock as a side effect of sharing a subscription list with the checkbox
+// that is actually supposed to drive it.
+for (const name of [
+  "nightImagery",
+  "nightDarkness",
+  "enableNightLights",
+  "nightIntensity",
+]) {
+  Cesium.knockout.getObservable(viewModel, name).subscribe(updateGlobe);
 }
+Cesium.knockout
+  .getObservable(viewModel, "dynamicLighting")
+  .subscribe(updateDynamicLighting);
 
 function updateGlobe() {
   globe.nightImagery = resolveNightImagery(viewModel.nightImagery);
@@ -89,18 +111,26 @@ function updateGlobe() {
   // fade, so the night side stays dark at street altitude as well as from orbit.
   globe.nightDarkness = Number(viewModel.nightDarkness);
 
-  // Lit terrain and a running clock. The night imagery no longer depends on it.
-  const dynamicLighting = Boolean(viewModel.dynamicLighting);
-  globe.enableLighting = dynamicLighting;
-  viewer.clock.shouldAnimate = dynamicLighting;
-
   // Treats the night layer as emissive, boosted by its own luminance, so city
   // cores glow rather than merely being visible. On by default, on both
   // renderers.
   globe.enableNightLights = Boolean(viewModel.enableNightLights);
   globe.nightIntensity = Number(viewModel.nightIntensity);
 }
+
+// Lit terrain and a running clock, coupled exactly the way the demo this one
+// is ported from couples them: checking the box resumes a paused clock,
+// unchecking it pauses a running one. Scoped to its own subscriber, on its
+// own observable, so that coupling lives only on the checkbox instead of
+// firing every time any of the other four controls change.
+function updateDynamicLighting() {
+  const dynamicLighting = Boolean(viewModel.dynamicLighting);
+  globe.enableLighting = dynamicLighting;
+  viewer.clock.shouldAnimate = dynamicLighting;
+}
+
 updateGlobe();
+updateDynamicLighting();
 
 const note = document.getElementById("backendNote");
 note.textContent = `Renderer: ${rendererType} — emissive city lights are live on both renderers.`;

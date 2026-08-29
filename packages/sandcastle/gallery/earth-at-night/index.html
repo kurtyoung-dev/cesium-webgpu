@@ -5,8 +5,22 @@
     padding: 4px;
     border-radius: 4px;
   }
+  /* Collapsed by default (no `open` attribute below): the five controls stay
+     off screen until a viewer expands the disclosure. The summary and backend
+     note remain visible. */
+  #toolbar summary {
+    cursor: pointer;
+    padding: 2px 4px;
+    font-weight: bold;
+  }
   #toolbar table td {
     padding: 2px 6px;
+  }
+  #nightDarknessNote {
+    font-size: 11px;
+    line-height: 1.3;
+    opacity: 0.85;
+    padding: 0 6px 4px;
   }
   #backendNote {
     max-width: 22rem;
@@ -18,53 +32,65 @@
 <div id="cesiumContainer" class="fullSize"></div>
 <div id="loadingOverlay"><h1>Loading...</h1></div>
 <div id="toolbar">
-  <table>
-    <tbody>
-      <tr>
-        <td>Night imagery</td>
-        <td>
-          <select data-bind="value: nightImagery">
-            <option value="bundled">Bundled Black Marble</option>
-            <option value="ion">Cesium ion asset 3812</option>
-            <option value="off">Off — procedural only</option>
-          </select>
-        </td>
-      </tr>
-      <tr>
-        <td>Night darkness</td>
-        <td>
-          <input
-            type="range"
-            min="0.05"
-            max="1"
-            step="0.01"
-            data-bind="value: nightDarkness, valueUpdate: 'input'"
-          />
-        </td>
-      </tr>
-      <tr>
-        <td>Dynamic lighting</td>
-        <td><input type="checkbox" data-bind="checked: dynamicLighting" /></td>
-      </tr>
-      <tr>
-        <td>Emissive city lights</td>
-        <td>
-          <input type="checkbox" data-bind="checked: enableNightLights" />
-        </td>
-      </tr>
-      <tr>
-        <td>City-light intensity</td>
-        <td>
-          <input
-            type="range"
-            min="0"
-            max="6"
-            step="0.1"
-            data-bind="value: nightIntensity, valueUpdate: 'input'"
-          />
-        </td>
-      </tr>
-    </tbody>
-  </table>
+  <details>
+    <summary>Controls</summary>
+    <table>
+      <tbody>
+        <tr>
+          <td>Night imagery</td>
+          <td>
+            <select data-bind="value: nightImagery">
+              <option value="bundled">Bundled Black Marble</option>
+              <option value="ion">Cesium ion asset 3812</option>
+              <option value="off">Off — procedural only</option>
+            </select>
+          </td>
+        </tr>
+        <tr>
+          <td>Night darkness</td>
+          <td>
+            <input
+              type="range"
+              min="0.05"
+              max="1"
+              step="0.01"
+              data-bind="value: nightDarkness, valueUpdate: 'input'"
+            />
+          </td>
+        </tr>
+        <tr>
+          <td colspan="2" id="nightDarknessNote">
+            No visible effect at these defaults: the bundled Black Marble layer
+            covers the whole night side (nightAlpha 1), which overrides this
+            floor everywhere it applies. Set "Night imagery" to Off to see it.
+          </td>
+        </tr>
+        <tr>
+          <td>Dynamic lighting</td>
+          <td>
+            <input type="checkbox" data-bind="checked: dynamicLighting" />
+          </td>
+        </tr>
+        <tr>
+          <td>Emissive city lights</td>
+          <td>
+            <input type="checkbox" data-bind="checked: enableNightLights" />
+          </td>
+        </tr>
+        <tr>
+          <td>City-light intensity</td>
+          <td>
+            <input
+              type="range"
+              min="0"
+              max="6"
+              step="0.1"
+              data-bind="value: nightIntensity, valueUpdate: 'input'"
+            />
+          </td>
+        </tr>
+      </tbody>
+    </table>
+  </details>
   <div id="backendNote"></div>
 </div>

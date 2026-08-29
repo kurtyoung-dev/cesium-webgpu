@@ -248,3 +248,18 @@ seat downloads and bakes (network), the executor runs the G3 gate and the decisi
 measurement in Edge, and the maintainer keeps the appearance eyeball and the protocol
 decision. The C12-33 countersign stays a maintainer item.
 
+## Sixth sitting, 2026-08-29 ~17:30 ET - the proof bar and the wave-end gate
+
+## R-2026-08-29-1 - Proof bar by change class
+
+**Context.** The seat reported, and the maintainer confirmed, that most of the day's effort goes into `.mjs` specs, probes, instruments and reviews rather than engine code: the 2026-08-29 census (Batch 1297) counts 279 node specs of which 243 have no runner, and a 32-byte allocation hoist (Q-88) carried a 275-line spec, a mutant and an Edge leg. The verification tax is deliberate and has paid (it caught the residency-counter mix-up, the injected landing switch in a Sol spec, and the audit bar that went green over 27 faint specks), but it is over-calibrated for changes that cannot regress a pixel.
+
+**Ruling (maintainer, verbatim agreement with the seat's proposal):** keep the full bar for engine, parity and shader changes; drop specs for docs, comments and demo text (review plus a capture is enough); write no spec without a runner home (Q-139-D1 governs the homes); and prefer probes that measure the feature over specs that certify the brief.
+
+**How it binds.** (a) ENGINE / PARITY / SHADER rows: behaviour spec + inertness mutant + separate review + the Edge leg the row names - unchanged. (b) TOOLS rows: a spec only where the tool has logic worth pinning and a runner home exists; otherwise the review is the proof. (c) DOCS / COMMENTS / DEMO-TEXT rows: review and, where visual, one capture pair; no spec. (d) Every new spec names the npm script that runs it in its packet; a spec with no home is a blocker at review. (e) When a probe can measure the feature directly, the probe is the acceptance and the spec is optional. Principle 10 still applies to whatever proof is written: assert behaviour, never source text.
+
+## R-2026-08-29-2 - Wave-end smoke test and visual-regression pass
+
+**Ruling (maintainer):** "We should also have a general smoke test and a visual regression pass that we keep up to date. We don't need to run this with every change or batch but rather when we finish major waves that include multiple batches."
+
+**How it binds.** A canonical wave-end gate is kept current and run by an Edge executor at the close of every multi-batch wave (not per batch): (1) the variant smoke test (`Tools/variant-smoke-test.mjs` - all three bundles load, no console errors, a frame renders); (2) the Sandcastle2 sweep on both renderers over the pinned-demo census; (3) the visual-regression capture-and-diff over the baseline scenes (`Tools/visual-regression/capture-and-diff.mjs`), with baselines refreshed deliberately (a `--update` is its own reviewed commit that names why each changed scene changed). The gate's output is banked under `Tools/visual-regression/output/wave-end/<wave>/` and cited in the wave's closing ledger row. Q-152 builds the single runbook script that chains the three with the served-build preflight and the Sandcastle2 origin rewrite; until it lands, the three are run by hand from their existing entry points. A wave is not closed in the ledger without this gate's receipt.

@@ -1,6 +1,6 @@
 legacyId: Earth at Night.html
 title: Earth at Night
-description: "The night side ships turned on: a Viewer built with no options at all blends the bundled NASA Black Marble pyramid in past the terminator. Swap it for the higher-resolution Cesium ion asset or switch it off for the procedural nightDarkness fallback, and on WebGPU make the city lights emissive."
+description: "The night side ships turned on: the Viewer blends the bundled NASA Black Marble pyramid in past the terminator. Swap it for the higher-resolution Cesium ion asset or switch it off for the procedural nightDarkness fallback, and toggle the emissive city lights — live on both renderers."
 labels:
   - Imagery
   - Lighting

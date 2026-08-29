@@ -910,6 +910,8 @@ Twenty-four numbered decisions. **`M-15` is deliberately unassigned** so that `M
 10. **Evidence repatriation before any clone is reset or deleted** (SR-11). The Treebeard and Quickbeam lanes both hold probes, logs and JSON that exist nowhere in main: copy them into main's gitignored `Tools/visual-regression/output/` preserving each probe's subdirectory layout, **before** the clones are touched. `DM-01` and `Q-148` then land the rebuilt instruments as tracked tools.
 11. **Instrument doctrine, carried:** WebGPU canvas captures are Playwright **element** screenshots only (in-page `drawImage` returns transparent); GPU timing is interleaved A/B in one session; readiness is `Scene.renderReady`, not `tilesLoaded`; idle-soak FPS is invalid under request-render mode.
 12. **GitHub quiet hours** — no commit, no push, no visible GitHub activity on weekdays 07:00–19:00 ET. Hold work as uncommitted worktree state and land after 19:00. `date` on the machine is authoritative.
+13. **Proof bar by change class (R-2026-08-29-1).** Engine/parity/shader rows keep the full bar; tools rows carry a spec only with logic worth pinning and a runner home; docs, comments and demo text carry review plus a capture, no spec; a spec with no runner home is a review blocker; a probe that measures the feature is the preferred acceptance.
+14. **Wave-end gate (R-2026-08-29-2).** Every multi-batch wave closes with the variant smoke test, the Sandcastle2 sweep on both renderers and the visual-regression capture-and-diff (baselines refreshed deliberately), run by an Edge executor and banked under `Tools/visual-regression/output/wave-end/<wave>/`. Not per batch. `Q-152` builds the chained runbook.
 
 ---
 

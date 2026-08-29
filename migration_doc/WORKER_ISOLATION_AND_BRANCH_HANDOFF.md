@@ -649,3 +649,14 @@ from Fangorn (Treebeard, Quickbeam, Bregalad). The Fable orchestrator seat is Ga
 authoritative registry of used names lives in the seat's memory file
 `feedback_tolkien_worker_names.md` and is checked before every dispatch; when a pool runs dry
 it is extended from the same legendarium, never from another author.
+
+### 8f. Proof bar by change class, and the wave-end gate (maintainer rulings R-2026-08-29-1/2)
+
+Engine, parity and shader rows keep the full bar: behaviour spec, inertness mutant, separate
+review, the named Edge leg. Tools rows carry a spec only where there is logic worth pinning AND
+a runner home; docs, comments and demo text carry review plus one capture where visual, no spec.
+A spec with no npm runner home is a review blocker. Where a probe can measure the feature
+directly, the probe is the acceptance. Separately, every multi-batch wave closes with the
+wave-end gate (variant smoke test + Sandcastle2 sweep on both renderers + visual-regression
+capture-and-diff against deliberately refreshed baselines), run by an Edge executor and banked
+under `Tools/visual-regression/output/wave-end/<wave>/`; it is not run per batch.
