@@ -108,6 +108,24 @@ corrected with it.
 The remaining ~30 medium and all low survivors are enumerated in §5 with their lane column reading
 QUEUED; they dispatch after Q-1…Q-10, batched by file so one Sol dispatch closes several small
 findings in the same module. C1's returning findings append here as a dated addendum.
+### Post-restart resume (2026-08-28 21:30) - codex session GC lands; VF stop-note corrected
+
+CORRECTION to the stop record: lane VF was NOT near-complete. After the restart its clone holds
+only three untracked specs (moonlight-scene-light, moon-onscreen-oracle,
+pipeline-cache-invalidation-subscriptions) - no engine edit persisted. The specs are the
+contract; lane VF2 re-implements against them (Q-56/Q-58/Q-55 stay OPEN). Lane SW2 resumes the
+six unreviewed drafts plus Q-54/Q-38b and owns the project_doc_max_bytes=0 sink A/B.
+
+CODEX SESSION GC POLICY (maintainer directive, replaces the wholesale wipe): Tools/
+codex-session-gc.mjs scopes by the rollout session_meta cwd - only sessions under this
+project's clone roots are ever candidates; other projects' history is reported as a count and
+never touched (5 such sessions detected and preserved on first run). Procedure: every lane
+packet lists the Sol session ids it created; after the batch lands AND pushes, the seat runs
+--delete-ids over that list; a periodic --older-than 48 --delete sweep catches strays;
+NON-TERMINAL sessions (no task_complete) are protected by default because they may hold
+unharvested worker output, and are deleted only by explicit id once their salvage is landed
+or abandoned. Deletion goes through codex delete <id> so the CLI index stays consistent.
+
 ### Shutdown incident addendum (2026-08-28 ~16:45) - the retirement sweep caught lane VE mid-flight
 
 The clone-retirement sweep gutted cesium-lane-nightopt while the lane was still running its one
