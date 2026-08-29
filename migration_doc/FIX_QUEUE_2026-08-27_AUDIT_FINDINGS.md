@@ -108,6 +108,12 @@ corrected with it.
 The remaining ~30 medium and all low survivors are enumerated in §5 with their lane column reading
 QUEUED; they dispatch after Q-1…Q-10, batched by file so one Sol dispatch closes several small
 findings in the same module. C1's returning findings append here as a dated addendum.
+### DX-14 parked after two pasted turns: the archive plan still does not reach the document (2026-08-29 17:00 machine clock)
+
+| | Row | Disposition |
+|---|---|---|
+| DX-14 | PARKED, BANKED (scratchpad/land-dx14: generator patch, spec 3/3, the regenerated catalog for comparison) - re-tiered to OPUS-JUDGMENT | after the second pasted correction the launcher still regenerates the census region byte-identically (one row changed) and --check reports the catalog current, so the ARCHIVE PLAN renderer is wired to a path the managed render does not take; one unused variable persists. A 2,100-line generator with a launcher-driven managed region is beyond the fully-pasted Sol shape (the seat cannot paste the whole file and the launcher's spawn path together). Next: an Opus session with the generator open, or the seat when Claude budget allows. DX-03/DX-04 stay blocked on it; the maintainer's go is still owed before anything lands |
+
 ### EAN-01 lands default-off: the demo can now pick its star map and exposure (2026-08-29 16:58 machine clock)
 
 | | Row | Disposition |
