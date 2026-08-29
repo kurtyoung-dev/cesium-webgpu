@@ -108,6 +108,13 @@ corrected with it.
 The remaining ~30 medium and all low survivors are enumerated in §5 with their lane column reading
 QUEUED; they dispatch after Q-1…Q-10, batched by file so one Sol dispatch closes several small
 findings in the same module. C1's returning findings append here as a dated addendum.
+### Q-130-b banked with one regression and one new finding (2026-08-29 16:50 machine clock)
+
+| | Row | Disposition |
+|---|---|---|
+| Q-130-b | BANKED (scratchpad/land-q130b; lands after Q130, with the A7 fix) | Sol (Hamfast, fully pasted) extracted the analyzer into lib/wgsl-derivative-uniformity.mjs and hardened it for the four shapes; with Q130's shader fixes copied into the scratch tree the spec is 23/25: the four new fixtures and the clean fixtures pass, BUT A7 ('a vertex entry point is out of scope') regressed - the hardened analyzer now reports inside vertex-stage code, which must stay out of scope - and B1 fails on real tree files (next row). The A7 fix is a bounded correction turn before landing |
+| Q-130-c | NEW FINDING (Opus-judgment; surfaced per the maintainer's directive) | the hardened analyzer flags five live sites the original guard and Elrond's scan did not: csm_clipByPolygons.wgsl:46 and :72 (textureSample after a conditional return at :32 / :64) and csm_effects.wgsl:21, :38 (textureSampleCompare after conditional returns at :19 / :32) and :73 (csm_sampleShadowMapPCF under conditional-return control from :56 and a non-uniform if at :72). These shaders compile today, so either the conditions are provably uniform (uniform-buffer reads - then the analyzer's uniformity rule is too coarse and needs a uniform-source allowlist) or the modules carry a relaxed derivative_uniformity diagnostic and the sites are genuine hazards on stricter drivers. Determine which per site before Q-130-b lands; do not silence the analyzer to make B1 green |
+
 ### Timestamp correction: the seat's section times after ~13:30 were estimates that ran ahead of the machine clock (2026-08-29 16:35 machine clock, authoritative)
 
 | | Row | Disposition |
