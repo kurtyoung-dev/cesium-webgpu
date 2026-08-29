@@ -108,6 +108,15 @@ corrected with it.
 The remaining ~30 medium and all low survivors are enumerated in §5 with their lane column reading
 QUEUED; they dispatch after Q-1…Q-10, batched by file so one Sol dispatch closes several small
 findings in the same module. C1's returning findings append here as a dated addendum.
+### Seat Karma confirmations (2026-08-29 07:43 machine clock)
+
+| | Row | Disposition |
+|---|---|---|
+| Q-118 | CLOSED (seat-confirmed) | `gulp test --includeName Camera`: Executed 359 of 18318, SUCCESS, 0 failed (was 4 failed at 3e-C) |
+| Q-119 + Q-83 | CLOSED (seat-confirmed) | `gulp test --includeName ZZZNOMATCH` x3: exit 3, 3, 3 (was 0, 3, 3), message `includeName selected 0 runnable specs (pattern: ZZZNOMATCH, 18318 spec(s) reported skipped)` on every run |
+| Q-113 | CLOSED | readiness spec test 13 green on main after Batch 1287 |
+| BUILD | fresh for 3e-E | `gulp test` leaves the test build on disk; `npx gulp build` re-run at the seat after the confirmations |
+
 ### Edge tranche 3e-D (2026-08-29 ~07:20 exit; 3 h 6 min) - the night fade at the pixel, the Sandcastle2 sweep; packet output/EDGE_TRANCHE_3E_D_PACKET_2026-08-29.md (892 lines)
 
 | | Row | Disposition |
