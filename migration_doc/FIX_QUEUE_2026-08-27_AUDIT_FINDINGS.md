@@ -108,6 +108,12 @@ corrected with it.
 The remaining ~30 medium and all low survivors are enumerated in §5 with their lane column reading
 QUEUED; they dispatch after Q-1…Q-10, batched by file so one Sol dispatch closes several small
 findings in the same module. C1's returning findings append here as a dated addendum.
+### Q-130-c: the diagnostic-off is documented and deliberate; the finding narrows to its breadth (2026-08-29 16:42 machine clock)
+
+| | Row | Disposition |
+|---|---|---|
+| Q-130-c rationale | RECORDED for fairness (the seat's previous row read as if the relaxation were unexplained) | WebGPUGlobeMaterial.ts:372-381 documents why: the globe FS has conditional discard / early-return branches (clipping planes, clipping polygons, cartographic-rect limit, alpha test) that the uniformity analyser sees as non-uniform, while some materials (ElevationContour, Bathymetry demo) call dpdx/dpdy for contour widths - a false positive there, because fragments that discard never write the derivative. The finding therefore narrows to breadth: a module-scope directive silences every future genuine violation in the globe material and its included chunks (the five CSM sites among them). Disposition options: keep the directive but make the hardened analyzer the gate for that module with a reasoned allow-list per site; or restructure the CSM sample sites (sample before branching) so the directive can be narrowed. Opus-judgment, unchanged |
+
 ### Q-130-c: the shadow-map chunks compile under a relaxed diagnostic (2026-08-29 16:41 machine clock)
 
 | | Row | Disposition |
