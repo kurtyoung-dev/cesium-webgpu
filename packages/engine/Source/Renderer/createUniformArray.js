@@ -266,6 +266,8 @@ class UniformArrayFloatVec4 {
 
     this.value = new Array(length);
     this._value = new Float32Array(length * 4);
+    // One-shot latch for the overflow report in `set()`.
+    this._overflowReported = false;
 
     this._gl = gl;
     this._location = locations[0];
@@ -295,6 +297,27 @@ class UniformArrayFloatVec4 {
     // sandcastles tripped this every frame on WebGL.
     if (ArrayBuffer.isView(value)) {
       const arraybuffer = this._value;
+      if (value.length > arraybuffer.length) {
+        // The producer packed more elements than the linked GLSL array holds.
+        // `Float32Array.set` would throw `RangeError: offset is out of bounds`
+        // from inside the draw call and stop the whole scene, so report the
+        // mismatch by name and upload the prefix the shader can actually
+        // address. This is a real defect in whoever owns the layout — a
+        // permanent error, not a debug diagnostic.
+        if (!this._overflowReported) {
+          this._overflowReported = true;
+          console.error(
+            `[CesiumJS] Uniform array "${this.name}" received ${value.length} floats but the linked shader array holds ${arraybuffer.length}. Uploading the addressable prefix; the extra values are dropped.`,
+          );
+        }
+        // Copy the addressable prefix element by element: `value` may be a
+        // plain array or a typed array, and only the prefix is uploaded.
+        for (let i = 0; i < arraybuffer.length; i++) {
+          arraybuffer[i] = value[i];
+        }
+        this._gl.uniform4fv(this._location, arraybuffer);
+        return;
+      }
       let changed = arraybuffer.length !== value.length;
       if (!changed) {
         for (let k = 0; k < value.length; k++) {

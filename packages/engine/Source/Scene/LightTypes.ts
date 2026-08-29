@@ -431,6 +431,34 @@ export class DiskAreaLight extends Light {
 const MAX_LIGHTS = 8;
 
 /**
+ * Floats in the pack header: light count plus three pad slots, one vec4.
+ * Exported so the GLSL declaration and the CPU staging buffer are sized from
+ * the packer rather than from a repeated literal.
+ */
+export const LIGHT_PACK_HEADER_FLOATS = 4;
+
+/**
+ * Floats each packed light occupies: five vec4 slots. The fifth carries the
+ * spot direction on its own 16-byte boundary, which is why this is 20 and not
+ * the 16 a naive read of {@link czm_lightData} would suggest.
+ */
+export const FLOATS_PER_PACKED_LIGHT = 20;
+
+/**
+ * Total floats {@link LightCollection#pack} writes: header plus MAX_LIGHTS
+ * slots, whether or not every slot is filled.
+ */
+export const LIGHT_PACK_FLOATS =
+  LIGHT_PACK_HEADER_FLOATS + MAX_LIGHTS * FLOATS_PER_PACKED_LIGHT;
+
+/**
+ * `czm_lightsData` array length in vec4 elements. A GLSL uniform array shorter
+ * than this cannot receive the packed buffer at all — `UniformArrayFloatVec4`
+ * copies into a Float32Array sized by the linked array length.
+ */
+export const LIGHT_PACK_VEC4_COUNT = LIGHT_PACK_FLOATS / 4;
+
+/**
  * A collection of lights that can be attached to a Scene.
  * Manages the list of active lights and provides data for the
  * GPU uniform buffer.
@@ -549,9 +577,9 @@ export class LightCollection {
    * @returns Packed light data
    */
   pack(result?: Float32Array): Float32Array {
-    const headerSize = 4; // lightCount + 3 padding
-    const lightsPerSlot = 20; // floats per light
-    const totalSize = headerSize + MAX_LIGHTS * lightsPerSlot;
+    const headerSize = LIGHT_PACK_HEADER_FLOATS;
+    const lightsPerSlot = FLOATS_PER_PACKED_LIGHT;
+    const totalSize = LIGHT_PACK_FLOATS;
 
     if (!defined(result) || result!.length < totalSize) {
       result = new Float32Array(totalSize);

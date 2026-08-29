@@ -54,7 +54,10 @@ fn logDepthReverse(logZ: f32, near: f32, far: f32) -> f32 {
 }
 
 fn readDepth(uv: vec2<f32>) -> f32 {
-  let raw = textureSample(depthTexture, texSampler, uv).r;
+  // Explicit LOD: the depth attachment is single-mip, and this helper runs
+  // from the horizon loop, past the far-plane early return — implicit-
+  // derivative sampling is only legal from uniform control flow.
+  let raw = textureSampleLevel(depthTexture, texSampler, uv, 0.0).r;
   let near = uniforms.frustum.x;
   let far = uniforms.frustum.y;
   // Reverse log depth before linearizing when active.
@@ -236,7 +239,7 @@ fn fragmentMain(in: VertexOutput) -> @location(0) vec4<f32> {
   // Same random texture as HBAO (R channel = 0..1 angle fraction).
   let randomUV = fract(screenCoord / max(randomTexSize, 1.0));
   let randAngle =
-    textureSample(randomTexture, texSampler, randomUV).r * 2.0 * PI;
+    textureSampleLevel(randomTexture, texSampler, randomUV, 0.0).r * 2.0 * PI;
   let dirStep = PI / f32(directionCount);
 
   // Step size in pixels — scale by 1/depth so near pixels sample

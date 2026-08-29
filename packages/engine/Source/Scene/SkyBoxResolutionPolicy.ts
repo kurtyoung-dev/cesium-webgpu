@@ -40,7 +40,8 @@
  * - `TYCHO_T5` — 2048/face, JPEG q90 4:4:4, baked by `Tools/skybox-bake/`.
  * - `TYCHO_T5_DIFFUSE` — 2048/face, same bake, low-passed; the default variant.
  *
- * **No 4096 faces exist in the tree.** The bake reprojects to a 4096 master
+ * **The 4096 tier is bundled for both t5 variants** (the opt-in tier of the
+ * star-map ruling). The bake reprojects to a 4096 master
  * and lanczos3-downsamples to 2048 (`Tools/skybox-bake/skybox-manifest.json`
  * `encode.masterSize = 4096`, `encode.faceSize = 2048`), so the opt-in tier is
  * reproducible but not bundled. This module is the seam that makes installing
@@ -129,9 +130,17 @@ export const SKYBOX_BUNDLED_TIERS: SkyBoxBundledTierTable = Object.freeze({
   }),
   TYCHO_T5: Object.freeze({
     "2048": Object.freeze({ faceSize: 2048, prefixSuffix: "" }),
+    "4096": Object.freeze({
+      faceSize: 4096,
+      prefixSuffix: SKYBOX_OPT_IN_TIER_PREFIX_SUFFIX,
+    }),
   }),
   TYCHO_T5_DIFFUSE: Object.freeze({
     "2048": Object.freeze({ faceSize: 2048, prefixSuffix: "" }),
+    "4096": Object.freeze({
+      faceSize: 4096,
+      prefixSuffix: SKYBOX_OPT_IN_TIER_PREFIX_SUFFIX,
+    }),
   }),
 });
 

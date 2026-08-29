@@ -43,6 +43,10 @@
  */
 
 import Pass from "../../Renderer/Pass.js";
+import {
+  bindEdgePipelinesForPass,
+  type EdgeRetargetableCommand,
+} from "./WebGPUEdgeVisibilityEmitter.js";
 import type { WebGPUContext } from "./WebGPUContext.js";
 import type { WebGPUEdgeFramebuffer } from "./WebGPUEdgeFramebuffer.js";
 import {
@@ -354,6 +358,17 @@ export function execute3DTilePasses(
       if (edgePass) {
         edgePass.setViewport(0, 0, host._width, host._height, 0, 1);
         edgePass.setScissorRect(0, 0, host._width, host._height);
+        // The MRT pass is now open: bind the three-target variant on every
+        // emitter command before any of them records a draw.
+        bindEdgePipelinesForPass(
+          // Every command in the edges pass is an edge command; the emitter's
+          // variants are optional on it and the binder skips commands without them.
+          frustumCommands.commands[Pass.CESIUM_3D_TILE_EDGES] as ReadonlyArray<
+            EdgeRetargetableCommand | undefined
+          >,
+          edgeCommandCount,
+          true,
+        );
         runPass(Pass.CESIUM_3D_TILE_EDGES);
         context.endCurrentRenderPass?.();
       }
@@ -373,6 +388,15 @@ export function execute3DTilePasses(
     // `_enableEdgeVisibility` this frame, or allocation raced with
     // resize). Run on the current scene target — visually equivalent
     // to the pre-Batch-44 path; no edge textures are populated.
+    bindEdgePipelinesForPass(
+      // Every command in the edges pass is an edge command; the emitter's
+      // variants are optional on it and the binder skips commands without them.
+      frustumCommands.commands[Pass.CESIUM_3D_TILE_EDGES] as ReadonlyArray<
+        EdgeRetargetableCommand | undefined
+      >,
+      edgeCommandCount,
+      false,
+    );
     runPass(Pass.CESIUM_3D_TILE_EDGES);
     context._edgeColorView = null;
     context._edgeIdView = null;

@@ -4372,10 +4372,21 @@ class Scene {
 
     let tilesetRemoveCallbacks = {};
     const createPrimitiveEventListener = (primitive) => {
+      // Test the tileset marker BEFORE any tileset-only lifecycle call.
+      // `scene.primitives` is a heterogeneous collection: the only member
+      // API the collection itself requires per frame is `update`, and a
+      // user-authored custom primitive (the shape both the Custom Primitive
+      // and Multiple Shadows gallery demos use) supplies nothing else.
+      // `isDestroyed` reaches through the marker on a destroyed tileset
+      // because `destroyObject` leaves accessor properties untouched, so
+      // the destroyed-tileset skip is unchanged. Matches the ordering the
+      // other two walkers over this collection already use —
+      // `SceneUtilities.getMaxPrimitiveHeight` and
+      // `PickingRayHelpers.getTilesets`.
       if (
         ignore3dTiles ||
-        primitive.isDestroyed() ||
-        !primitive.isCesium3DTileset
+        !primitive.isCesium3DTileset ||
+        primitive.isDestroyed()
       ) {
         return;
       }
@@ -4401,7 +4412,9 @@ class Scene {
     );
     const removeRemovedListener =
       this.primitives.primitiveRemoved.addEventListener((primitive) => {
-        if (primitive.isDestroyed() || !primitive.isCesium3DTileset) {
+        // Same ordering rule as the add listener above: a removed non-tileset
+        // primitive is not required to implement `isDestroyed`.
+        if (!primitive.isCesium3DTileset || primitive.isDestroyed()) {
           return;
         }
         if (defined(tilesetRemoveCallbacks[primitive.id])) {

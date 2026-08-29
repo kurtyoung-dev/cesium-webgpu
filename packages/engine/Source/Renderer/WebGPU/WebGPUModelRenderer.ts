@@ -8506,20 +8506,14 @@ function updateWebGPUModel(
             snapLogNear,
           );
 
-          // Pick the MRT pipeline when the scene's edge framebuffer
-          // redirect is active, otherwise the single-target variant so
-          // edges draw safely onto the regular one-attachment scene
-          // framebuffer. This tracks `scene._enableEdgeVisibility`, the
-          // same flag that gates `_edgeFramebuffer` allocation in
-          // `WebGPUSceneRendererEnsureResources`. The transient case
-          // where `_enableEdgeVisibility` flips on this frame but the
-          // FBO has not finished allocating resolves naturally: the
-          // 3D-tile dispatcher falls back to the scene FB pass when
-          // `edgeFB.isReady` is false, and because the pipeline was
-          // selected for the MRT layout, validation catches it. One
-          // frame of clipped edges on toggle is not visually critical;
-          // the mismatch that matters is the steady-state case where
-          // edge visibility is off entirely.
+          // The pipeline chosen here is provisional. It follows
+          // scene._enableEdgeVisibility, the flag that also gates the edge
+          // framebuffer allocation in WebGPUSceneRendererEnsureResources, but the
+          // flag can flip and the framebuffer can still be allocating after this
+          // command is built. The 3D-tile pass dispatcher therefore re-selects the
+          // variant at execution time from the framebuffer the pass is actually
+          // bound to (bindEdgePipelinesForPass in WebGPUEdgeVisibilityEmitter), so
+          // an MRT pipeline can never reach a single-target pass or vice versa.
           const sceneForEdge = frameState?.scene;
           const edgeVisibilityOn = sceneForEdge?._enableEdgeVisibility === true;
 
@@ -8564,6 +8558,16 @@ function updateWebGPUModel(
             cull: model._cull ?? true,
             ...nonColorShadowFlags,
           });
+          // The pass this command lands in is not decided until the
+          // 3D-tile dispatcher runs, later in the same frame. Carry both
+          // attachment variants so it can bind the matching one; the
+          // EDGES_ONLY command goes to a pass that is never redirected, so
+          // it keeps the single-target pipeline it was built with.
+          if (!edgesOnly) {
+            edgeCmd._edgeMrtPipeline = cache.edgeEmitterCache.pipeline;
+            edgeCmd._edgeSceneFBPipeline =
+              cache.edgeEmitterCache.pipelineSingleTarget;
+          }
           commandList.push(edgeCmd);
 
           // Snapping-pass edge variant. Same draw args as the edge color

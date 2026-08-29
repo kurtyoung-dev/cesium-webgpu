@@ -394,6 +394,18 @@ class WebGPUDrawCommand {
   classificationDepthPipeline?: GPURenderPipeline;
 
   /**
+   * Edge-emitter attachment variants. A `CESIUM_3D_TILE_EDGES` command is
+   * built during primitive traversal, before the frame decides whether the
+   * edge MRT framebuffer will be opened, so it carries both pipelines and the
+   * 3D-tile dispatcher binds the one matching the pass it opens
+   * (`bindEdgePipelinesForPass`). Undefined on every other command.
+   */
+  _edgeMrtPipeline?: GPURenderPipeline | null;
+
+  /** Scene-framebuffer sibling of {@link _edgeMrtPipeline}. */
+  _edgeSceneFBPipeline?: GPURenderPipeline | null;
+
+  /**
    * Per-bind-group late-binding resolvers. See
    * `WebGPUDrawCommandOptions.bindGroupResolvers` for the contract. Indexed by
    * `@group` binding number; absent entries

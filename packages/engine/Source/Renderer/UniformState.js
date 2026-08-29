@@ -15,6 +15,7 @@ import Transforms from "../Core/Transforms.js";
 import SceneMode from "../Scene/SceneMode.js";
 import SunLight from "../Scene/SunLight.js";
 import MoonLight from "../Scene/MoonLight.js";
+import { LIGHT_PACK_FLOATS } from "../Scene/LightTypes.js";
 import { getLunarEclipseMoonlightFactor } from "../Scene/EclipseState.js";
 import {
   isViewTemporalHistoryValid,
@@ -226,7 +227,9 @@ class UniformState {
     this._lightColorHdr = new Cartesian3();
 
     this._lightCount = 0;
-    this._lightsData = new Float32Array(132);
+    // Sized from the packer so `LightCollection.pack` never has to reallocate
+    // and never hands `czm_lightsData` more floats than the GLSL array holds.
+    this._lightsData = new Float32Array(LIGHT_PACK_FLOATS);
 
     this._pass = undefined;
     this._mode = undefined;
@@ -1071,7 +1074,12 @@ class UniformState {
     const lights = frameState.lights;
     if (defined(lights) && lights.length > 0) {
       this._lightsData = lights.pack(this._lightsData);
-      this._lightCount = lights.enabledCount;
+      // The header slot records how many lights `pack` actually wrote, which
+      // is not `enabledCount`: area lights are enabled but are served by the
+      // clustered path and occupy no punctual slot. The shader's loop bound
+      // must agree with the buffer it reads, so take the count from the
+      // buffer.
+      this._lightCount = this._lightsData[0];
     } else {
       this._lightCount = 0;
     }

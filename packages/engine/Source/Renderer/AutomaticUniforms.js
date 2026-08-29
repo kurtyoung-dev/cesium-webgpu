@@ -1,6 +1,7 @@
 import Cartesian3 from "../Core/Cartesian3.js";
 import Matrix4 from "../Core/Matrix4.js";
 import WebGLConstants from "../Core/WebGLConstants.js";
+import { LIGHT_PACK_VEC4_COUNT } from "../Scene/LightTypes.js";
 
 const viewerPositionWCScratch = new Cartesian3();
 
@@ -1385,23 +1386,28 @@ const AutomaticUniforms = {
 
   /**
    * Packed multi-light data from the scene's LightCollection as a vec4 array.
-   * Layout: 1 vec4 header (lightCount + pad) + up to 8 lights × 4 vec4s each = 33 vec4s.
-   * Each light occupies 4 vec4s:
-   *   vec4[0]: (type, pad, pad, pad)
-   *   vec4[1]: (direction/position.xyz, pad)
-   *   vec4[2]: (color.rgb, pad)
-   *   vec4[3]: (intensity, range, innerConeAngle, outerConeAngle)
+   * Layout: 1 vec4 header (lightCount + pad) + up to 8 lights × 5 vec4s each.
+   * Each light occupies 5 vec4s:
+   *   vec4[0]: (direction/position.xyz, type)
+   *   vec4[1]: (color.rgb, intensity)
+   *   vec4[2]: (range, constantAtt, linearAtt, quadraticAtt)
+   *   vec4[3]: (innerConeAngle, outerConeAngle, pad, pad)
+   *   vec4[4]: (spotDirection.xyz, pad)
+   * The array length comes from LightCollection.pack() rather than a literal:
+   * a shorter declaration cannot receive the packed buffer, because
+   * UniformArrayFloatVec4 copies into a Float32Array sized by the linked
+   * array length and Float32Array.set throws on overflow.
    * Use with czm_lightData struct and czm_computeAttenuation/czm_computeSpotCone builtins.
    *
    * @example
    * // GLSL declaration
-   * uniform vec4 czm_lightsData[33];
+   * uniform vec4 czm_lightsData[41];
    *
    * @see UniformState#lightsData
    * @see czm_lightCount
    */
   czm_lightsData: new AutomaticUniform({
-    size: 33,
+    size: LIGHT_PACK_VEC4_COUNT,
     datatype: WebGLConstants.FLOAT_VEC4,
     getValue: function (uniformState) {
       return uniformState.lightsData;

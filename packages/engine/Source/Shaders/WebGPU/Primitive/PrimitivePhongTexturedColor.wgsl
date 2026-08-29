@@ -399,6 +399,15 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
     g_fragLogDepth = input.v_logDepth;
     //>>endif
 
+    // Screen-space gradients for the base-colour sample, taken here at
+    // fragment entry while control flow is still uniform. WGSL permits
+    // implicit-derivative sampling only from uniform control flow, and the
+    // clipping-edge branch below returns for some invocations and not
+    // others, so a plain textureSample after it is a shader-creation error.
+    // Same discipline as the terrain shader's geoUV_dx / geoUV_dy pair.
+    let texCoordDx = dpdx(input.texCoord);
+    let texCoordDy = dpdy(input.texCoord);
+
     // Clipping plane discard (early out)
     if (clipByPlanes(input.viewPosition)) { discard; }
 
@@ -427,7 +436,15 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
         }
     }
 
-    let texColor = textureSample(colorTexture, textureSampler, input.texCoord);
+    // textureSampleGrad is the only WGSL sampling function that both selects
+    // a mip level and is legal after non-uniform control flow.
+    let texColor = textureSampleGrad(
+        colorTexture,
+        textureSampler,
+        input.texCoord,
+        texCoordDx,
+        texCoordDy
+    );
     let baseColor = texColor * input.color;
 
     let normal = normalize(input.worldNormal);

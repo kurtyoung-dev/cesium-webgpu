@@ -1386,6 +1386,64 @@ export function ensureEdgeEmitterSnapPipeline(
   return cache.pipelineSnap;
 }
 
+/**
+ * A slot-4 edge draw command carries both attachment variants of the emitter
+ * pipeline so the dispatcher can bind whichever one matches the pass it is
+ * about to open.
+ */
+export interface EdgeRetargetableCommand {
+  pipeline: GPURenderPipeline;
+  /** Three-target variant, valid only inside the edge MRT framebuffer pass. */
+  _edgeMrtPipeline?: GPURenderPipeline | null;
+  /** Scene-framebuffer variant, valid only on the ordinary scene target. */
+  _edgeSceneFBPipeline?: GPURenderPipeline | null;
+}
+
+/**
+ * Bind the emitter pipeline variant whose colour targets match the render pass
+ * that is about to execute these commands.
+ *
+ * The producer (`WebGPUModelRenderer`) builds the edge command during primitive
+ * traversal, before `Scene._enableEdgeVisibility` is flipped on for the frame
+ * and before the edge framebuffer is allocated, so the variant it picks is a
+ * guess about a decision the dispatcher has not made yet. On the first frame a
+ * model with edges renders, the guess is wrong in one direction (single-target
+ * pipeline, MRT pass); when the framebuffer allocation lags the flag it is
+ * wrong in the other. Selecting here — from the pass the dispatcher has just
+ * chosen — removes the guess instead of narrowing the window.
+ *
+ * Commands that carry no variants (non-emitter edge commands) are left alone.
+ *
+ * @param commands The frustum's command array for the edges pass.
+ * @param count Number of live entries at the head of `commands`.
+ * @param useMrt True when the commands will run inside the edge MRT pass.
+ * @returns How many commands were retargeted.
+ */
+export function bindEdgePipelinesForPass(
+  commands: ReadonlyArray<EdgeRetargetableCommand | undefined>,
+  count: number,
+  useMrt: boolean,
+): number {
+  let retargeted = 0;
+  for (let i = 0; i < count; ++i) {
+    const command = commands[i];
+    if (!command) {
+      continue;
+    }
+    const wanted = useMrt
+      ? command._edgeMrtPipeline
+      : command._edgeSceneFBPipeline;
+    if (!wanted) {
+      continue;
+    }
+    if (command.pipeline !== wanted) {
+      command.pipeline = wanted;
+    }
+    retargeted++;
+  }
+  return retargeted;
+}
+
 export interface EdgePrimitiveResources {
   vertexBuffer: GPUBuffer;
   indexBuffer: GPUBuffer;

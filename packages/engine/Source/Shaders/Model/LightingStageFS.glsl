@@ -54,12 +54,14 @@ vec3 addClearcoatReflection(vec3 baseLayerColor, vec3 position, vec3 lightDirect
 
 /**
  * Unpack a single light from the czm_lightsData vec4 array.
- * Layout: 1 vec4 header + 4 vec4s per light (matching LightCollection.pack()).
+ * Layout: 1 vec4 header + 5 vec4s per light, matching LightCollection.pack().
+ * The fifth vec4 carries the spot direction on its own 16-byte boundary; this
+ * struct has no field for it yet, so it is stepped over rather than read.
  */
 czm_lightData czm_unpackLight(int index)
 {
     czm_lightData light;
-    int base = 1 + index * 4; // skip 1-vec4 header
+    int base = 1 + index * 5; // skip 1-vec4 header
     vec4 v0 = czm_lightsData[base];
     vec4 v1 = czm_lightsData[base + 1];
     vec4 v2 = czm_lightsData[base + 2];
