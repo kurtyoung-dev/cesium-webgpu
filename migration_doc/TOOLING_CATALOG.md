@@ -206,13 +206,13 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 
 | Metric | Value |
 |---|---|
-| Files in census | 1141 |
+| Files in census | 1143 |
 | ACTIVE | 931 |
 | INVESTIGATION | 195 |
-| NO @purpose HEADER | 15 |
-| Classes | probe 653, spec 263, other 102, lib 80, gate-lib 20, bake-tool 13, runner 6, fixture 4 |
+| NO @purpose HEADER | 17 |
+| Classes | probe 653, spec 264, other 103, lib 80, gate-lib 20, bake-tool 13, runner 6, fixture 4 |
 
-### Tools/ (42)
+### Tools/ (44)
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
@@ -243,6 +243,8 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | provision-worker-clone-junctions.spec.mjs | spec | NO @purpose HEADER | 2026-08-29 | 1 | — |
 | provision-worker-clone.mjs | other | ACTIVE | 2026-08-29 | 3 | Provision a worker clone with the governance git cannot deliver, create the local main ref the handoff diff needs, and REFUSE if any routed authority is unreachable. |
 | run-far200-shadow-self-test.mjs | runner | ACTIVE | 2026-08-16 | 2 | Thin bootstrap: esbuild-bundles Tools/far200-shadow-self-test.ts and executes it via a data: URL import. |
+| spec-runner-census.mjs | other | NO @purpose HEADER | — | 3 | — |
+| spec-runner-census.spec.mjs | spec | NO @purpose HEADER | — | 1 | — |
 | upstream-regression-check.mjs | other | ACTIVE | 2026-08-16 | 7 | Standalone Node re-verification of eight ported upstream fixes (imagery-layers guard, parseUrl, octDecode arg order, etc.); exit 0 = all hold. |
 | variant-smoke-test.mjs | other | ACTIVE | 2026-08-16 | 24 | Playwright smoke test of each build variant's IIFE bundle (dual/webgl-only/webgpu-only): Viewer constructs, frames render, zero console errors. |
 | verify-clone-drained.mjs | other | ACTIVE | 2026-08-28 | 2 | Fail closed unless a worker clone has no recoverable work outside the authority repository. |
@@ -385,7 +387,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | c11-90-primitive-restart-harness.spec.mjs | spec | ACTIVE | 2026-08-16 | 2 | Contract for the C11-90 harness + probe pair: topology expectations, backend/shape authority, watchdog ordering, probe-fleet contract membership. |
 | c12-11-star-catalog-gate.spec.mjs | spec | NO @purpose HEADER | 2026-08-21 | 3 | — |
 | c12-29-s4-orbital-sunrise-gate.spec.mjs | spec | ACTIVE | 2026-08-16 | 2 | Gate spec for C12-29 S4 orbital-sunrise certification: band/anchor constants, independent extinction oracle, artifact shape, probe route wiring. |
-| c12-29-s5-canonical-hash-parity.spec.mjs | spec | NO @purpose HEADER | — | 1 | — |
+| c12-29-s5-canonical-hash-parity.spec.mjs | spec | NO @purpose HEADER | 2026-08-29 | 1 | — |
 | c12-29-s5-custom-ellipsoid-gate.spec.mjs | spec | ACTIVE | 2026-08-16 | 4 | Gate spec for the C12-29 S5 custom-ellipsoid certification: geometry oracles, eclipse bindings, cross-backend derivation, v6 gate fold, mutants. |
 | c12-29-s5-dense-cost-gate.spec.mjs | spec | ACTIVE | 2026-08-16 | 3 | Gate spec for the C12-29 S5 dense-cost certification: schedule/workload validation, long-task selection, legacy + superseded schema folds, sentinels. |
 | c12-29-s5-dense-cost-structural-refusal.spec.mjs | spec | ACTIVE | 2026-08-29 | 1 | Q-96 — regression coverage for the dense-cost probe's structural |
@@ -487,7 +489,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | finding-ownership-audit.spec.mjs | spec | ACTIVE | 2026-08-24 | 6 | Scans the migration_doc finding-source files for NEW-* IDs and enforces each has an ownership disposition (alias/placeholder/resolved). |
 | fog-cheap-coverage-gate.spec.mjs | spec | ACTIVE | 2026-08-16 | 6 | Pins the fog cheap-path cloud-shadow coverage gate: samples standardised onto the baked field's moments, with mutants and byte-neutrality. |
 | globe-cold-start-black-rule.spec.mjs | spec | NO @purpose HEADER | 2026-08-29 | 2 | — |
-| globe-cold-start-readiness.spec.mjs | spec | ACTIVE | 2026-08-29 | 1 | Pins the backend-neutral readiness query, the deferred-command count that makes an undrawn globe tile observable, and the init-time prewarm that lets the first tile find its pipeline already built. |
+| globe-cold-start-readiness.spec.mjs | spec | ACTIVE | 2026-08-29 | 2 | Pins the backend-neutral readiness query, the deferred-command count that makes an undrawn globe tile observable, and the init-time prewarm that lets the first tile find its pipeline already built. |
 | globe-contour-pixel-ratio-parity.spec.mjs | spec | ACTIVE | 2026-08-29 | 1 | Evaluates the contour line-width threshold taken from the live ElevationContour fabric's WGSL body against the threshold parsed out of ElevationContourMaterial.glsl over an envelope of device pixel ratios, derives the byte offset the globe camera struct puts the ratio at, and executes the globe camera packer's write sequence to check the ratio lands on that same slot. |
 | globe-daynight-alpha-gate.spec.mjs | spec | ACTIVE | 2026-08-29 | 1 | Pins that the imagery day/night alpha is gated on the per-tile alpha condition alone on BOTH backends, with the WebGPU flag derived from the same resolved values as the WebGL define, and mutants for absence and inertness. |
 | globe-daynight-normal-source.spec.mjs | spec | ACTIVE | 2026-08-28 | 3 | Pins that every WGSL globe day/night term reads the analytic geocentric normal, not the mesh v_normalEC whose constant decode flattened lighting. |
@@ -1350,7 +1352,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | c12-29-s5-custom-ellipsoid-gate.mjs | gate-lib | ACTIVE | 2026-08-16 | 8 | Frozen v7 contract plus independent f64/stepwise-f32 eclipse oracle for the S5 custom-ellipsoid certification; refuses self-attested evidence. |
 | c12-29-s5-dense-cost-gate.mjs | gate-lib | ACTIVE | 2026-08-16 | 8 | Frozen experiment and fail-closed fold for the S5 dense ACTIVE/INACTIVE cost characterization (v3 schema, SHA-pinned workload). |
 | c12-29-s5-multiview-gate.mjs | gate-lib | ACTIVE | 2026-08-16 | 5 | Frozen policy for the S5 same-context logical-View A->B->A shard; explicitly must not be cited as proof of engine multi-View scheduling. |
-| c12-29-s5-replacement-device-capture.mjs | lib | ACTIVE | 2026-08-28 | 7 | Fail-closed AST/dataflow proof plus strict persisted-PNG decode for the replacement-device certification probe. |
+| c12-29-s5-replacement-device-capture.mjs | lib | ACTIVE | 2026-08-29 | 7 | Fail-closed AST/dataflow proof plus strict persisted-PNG decode for the replacement-device certification probe. |
 | c12-29-s5-replacement-device-gate.mjs | gate-lib | ACTIVE | 2026-08-29 | 8 | Fail-closed acceptance for S5 replacement-device recovery after genuine Chromium GPU-process termination (v8 semantic-attestation/candidate-recovery schemas). |
 | c12-29-s5-svs-footprint-gate.mjs | gate-lib | ACTIVE | 2026-08-16 | 7 | Gate library for the S5 NASA-SVS-5073 eclipse-footprint certification shard, pairing its probe and spec. |
 | c12-29-s5-terrain-selection-gate.mjs | gate-lib | ACTIVE | 2026-08-16 | 4 | Frozen inputs, exact terrain-radius arithmetic, evidence-shape checks and verdict folding for S5's first final-certification shard (v10 schema). |
@@ -1439,7 +1441,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
 | bundleVariantPlugin.spec.mjs | spec | ACTIVE | 2026-08-21 | 4 | Exercises the build-variant alias plugin's onResolve decision matrix, compat exemption allowlist, re-entry guard and decision cache, no esbuild. |
-| createIndexJs.spec.mjs | spec | ACTIVE | 2026-08-16 | 0 | Regression that the generated engine index omits private named-export temporal-history helpers yet still esbuild-bundles cleanly. |
+| createIndexJs.spec.mjs | spec | ACTIVE | 2026-08-16 | 1 | Regression that the generated engine index omits private named-export temporal-history helpers yet still esbuild-bundles cleanly. |
 | engineTypeCheck.spec.mjs | spec | ACTIVE | 2026-08-28 | 1 | Proves the engine type check runs only in a built tree, propagates failure, announces every skip, and stays tied to the build artifact and the hook. |
 | ensureCesiumTypeDefinitions.spec.mjs | spec | ACTIVE | 2026-08-29 | 1 | Coverage for the missing-type-defs decision logic AND the gulpfile.apps.js |
 | karmaTestRun.spec.mjs | spec | ACTIVE | 2026-08-29 | 3 | Static coverage of the Gulp/Karma completion bridge via a fake Karma server: strict result config, retries, disconnect/error exit codes. |

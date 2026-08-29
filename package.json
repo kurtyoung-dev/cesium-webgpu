@@ -161,7 +161,7 @@
     "tsc-engine": "node scripts/engineTypeCheck.mjs",
     "test-model-webgpu": "node --test \"packages/engine/Specs/Renderer/WebGPU/*Spec.mjs\"",
     "test-sandcastle": "node --test \"packages/sandcastle/Specs/*.spec.mjs\" Tools/visual-regression/sandcastle2-renderer-gate.spec.mjs Tools/visual-regression/sandcastle2-pinned-demos.spec.mjs",
-    "test-landing-rules": "node --test Tools/landing-rules.spec.mjs Tools/pre-push-guard.spec.mjs Tools/verify-landing-compliance.spec.mjs Tools/provision-worker-clone-junctions.spec.mjs",
+    "test-landing-rules": "node --test Tools/landing-rules.spec.mjs Tools/pre-push-guard.spec.mjs Tools/verify-landing-compliance.spec.mjs Tools/provision-worker-clone-junctions.spec.mjs Tools/spec-runner-census.spec.mjs",
     "test-tooling-catalog": "node --test Tools/inject-purpose-headers.spec.mjs Tools/generate-tooling-catalog.spec.mjs Tools/visual-regression/purpose-header-contract.spec.mjs",
     "generate-tooling-catalog": "node Tools/generate-tooling-catalog-launcher.cjs",
     "verify-tooling-catalog": "node Tools/generate-tooling-catalog-launcher.cjs --check",
@@ -194,7 +194,8 @@
     "cspell": "npx cspell lint -c .vscode/cspell.json --unique --no-progress",
     "test-scene-node": "node --test packages/engine/Specs/Scene/PickingApiDocsSpec.mjs packages/engine/Specs/Scene/PickingMostDetailedSupportSpec.mjs packages/engine/Specs/Scene/ScreenSpaceCameraControllerSceneShapeSpec.mjs",
     "test-blend-parity": "node --test Tools/visual-regression/webgpu-blend-table-parity.spec.mjs Tools/visual-regression/material-appearance-blend-parity.spec.mjs",
-    "test-readiness": "node --test Tools/visual-regression/globe-cold-start-readiness.spec.mjs Tools/visual-regression/globe-cold-start-black-rule.spec.mjs"
+    "test-readiness": "node --test Tools/visual-regression/globe-cold-start-readiness.spec.mjs Tools/visual-regression/globe-cold-start-black-rule.spec.mjs",
+    "spec-census": "node Tools/spec-runner-census.mjs"
   },
   "engines": {
     "node": ">=22.0.0"

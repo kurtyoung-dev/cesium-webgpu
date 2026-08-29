@@ -108,6 +108,13 @@ corrected with it.
 The remaining ~30 medium and all low survivors are enumerated in §5 with their lane column reading
 QUEUED; they dispatch after Q-1…Q-10, batched by file so one Sol dispatch closes several small
 findings in the same module. C1's returning findings append here as a dated addendum.
+### Q-139 census: 243 of 279 node specs have no runner (2026-08-29 ~10:50 machine clock)
+
+| | Row | Disposition |
+|---|---|---|
+| Q-139 | CENSUS LANDED (Batch 1297): Tools/spec-runner-census.mjs (+ npm run spec-census; --strict exits 3; --json) | RESULT on main: 279 tracked node --test specs, 36 homed by a package.json script, 243 ORPHANED - the entire Tools/visual-regression fleet minus the handful wired this morning, plus packages/engine/Specs/Core/*Spec.mjs (astronomy/eclipse) and scripts/__tests__/createIndexJs.spec.mjs. Karma (gulp test) runs the Jasmine *Spec.js suites, not these. Sol's spec 2/2 incl. its glob-matcher mutant; the seat spot-checked homed rows (sandcastle2-renderer-gate -> test-sandcastle, packages/sandcastle/Specs glob) and orphan rows. Proposed homes are printed, never applied: test-visual-regression-node (~200 specs), test-engine-node, test-scene-node, test-build-infra, test-s5 |
+| Q-139-D1 | MAINTAINER DECISION | adopt the proposed runner scripts? Before that a measured pass is needed: run every orphan once on a BUILT main (many read generated files: GlobeFS.js, Build/ bundles) and record pass/fail + wall time per spec, so the new scripts are green and bounded on day one rather than a 243-file red wall. Proposed as a Sonnet/Sol lane (bounded, no judgement) once the engine window has closed and the build is fresh |
+
 ### Galadriel's Q120 verdict, two maintainer-requested lanes dispatched, ten clones retired (2026-08-29 ~10:30 machine clock)
 
 | | Row | Disposition |
