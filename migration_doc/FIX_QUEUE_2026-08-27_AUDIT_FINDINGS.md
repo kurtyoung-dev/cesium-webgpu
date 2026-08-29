@@ -108,6 +108,12 @@ corrected with it.
 The remaining ~30 medium and all low survivors are enumerated in §5 with their lane column reading
 QUEUED; they dispatch after Q-1…Q-10, batched by file so one Sol dispatch closes several small
 findings in the same module. C1's returning findings append here as a dated addendum.
+### Build repaired - Batch 1274 (2026-08-29 ~01:42 machine clock): the CW2 leaf broke the generated barrel
+
+| | Row | Disposition |
+|---|---|---|
+| BUILD | FIXED | `npx gulp build` failed at the seat after Batch 1273: `packages/engine/index.js:601` re-exported `default` from `Scene/CelestialWaterReflection.js`, which has named exports only - the same class as the GlobeNightImagery barrel defect of Batch 1233. Fix: the leaf joins the barrel exclusion list in `scripts/build.js` beside GlobeNightImagery; build green (Cesium.js 27,715,559 B, md5 e9224f24f71f), tree servable again. WHY THE GATES MISSED IT: worker clones never build (by rule) and the seat's landing gates were tsc/eslint/prettier/specs/catalog - none generates the barrel. RULE: any batch that ADDS a file under packages/engine/Source runs `npx gulp build` at the seat before commit (the barrel generator assumes a default export); the executor's Q-95 finding (gulp test cleans the bundle before its build) made the failure unservable rather than merely red |
+
 ### Edge tranche 3e-A (2026-08-29 ~02:00 machine clock exit) - Q-71 pixel-confirmed; S5 browser probes still owed; packet output/EDGE_TRANCHE_3E_A_PACKET_2026-08-29.md
 
 | | Row | Disposition |
