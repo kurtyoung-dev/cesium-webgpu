@@ -485,11 +485,12 @@ const scratchEncodedPosition = new EncodedCartesian3();
 // unconditionally by writeRTEUniformsFlat and remains inert until the log-depth
 // define is set. Only elevation materials declare the appended fields;
 // other layouts leave the appended bytes unread.
-const FLAT_CAMERA_BYTES = 272; // 192-byte flat head + modelMatrix3 columns(48) + world camera high/low(32)
+const FLAT_CAMERA_BYTES = 288; // 192-byte flat head + modelMatrix3 columns(48) + world camera high/low(32) + pixel-ratio tail(16)
 const FLAT_ELLIPSOID_ONE_OVER_RADII_OFFSET = 44;
 const FLAT_MODEL_MATRIX_COLUMN_0_OFFSET = 48;
 const FLAT_ENCODED_CAMERA_WORLD_HIGH_OFFSET = 60;
 const FLAT_ENCODED_CAMERA_WORLD_LOW_OFFSET = 64;
+const FLAT_PIXEL_RATIO_OFFSET = 68;
 // Lit variants append an always-present normalized inverse-view quaternion
 // after prevVP, followed by the 16-byte logDepth vec4 tail (near, far, factor,
 // reserved), followed by the elevation-material world-position tail. The quaternion rotates eye-space
@@ -498,7 +499,7 @@ const FLAT_ENCODED_CAMERA_WORLD_LOW_OFFSET = 64;
 // `//>>ifdef LOG_DEPTH` blocks in PrimitivePhongColor / PrimitivePhongTexturedColor
 // and other lit producers. The tail is packed unconditionally by
 // writeRTEUniformsLit; fields that a shader does not declare remain unread.
-const LIT_CAMERA_BYTES = 432; // 352-byte lit head + modelMatrix3 columns(48) + world camera high/low(32)
+const LIT_CAMERA_BYTES = 448; // 352-byte lit head + modelMatrix3 columns(48) + world camera high/low(32) + pixel-ratio tail(16)
 const LIT_PREVIOUS_VIEW_PROJECTION_OFFSET = 60;
 const LIT_INVERSE_VIEW_QUATERNION_OFFSET = 76;
 const LIT_LOG_DEPTH_OFFSET = 80;
@@ -506,6 +507,7 @@ const LIT_ELLIPSOID_ONE_OVER_RADII_OFFSET = 84;
 const LIT_MODEL_MATRIX_COLUMN_0_OFFSET = 88;
 const LIT_ENCODED_CAMERA_WORLD_HIGH_OFFSET = 100;
 const LIT_ENCODED_CAMERA_WORLD_LOW_OFFSET = 104;
+const LIT_PIXEL_RATIO_OFFSET = 108;
 // The 176-byte pick layout includes floats 40-43 for the flat log-depth tail.
 // Both GPU storage and scratch data derive from this constant, so the tail
 // cannot fall outside a shorter allocation. Hyperbolic pick shaders leave it
@@ -1165,6 +1167,7 @@ function writeRTEUniformsFlat(
     FLAT_ENCODED_CAMERA_WORLD_LOW_OFFSET,
     rte,
   );
+  writePixelRatioTail(ud, FLAT_PIXEL_RATIO_OFFSET, uniformState);
 }
 
 /**
@@ -1293,11 +1296,51 @@ function writeModelToWorldPositionTail(
 }
 
 /**
+ * Resolves the device pixel ratio the way `czm_pixelRatio` does for GLSL:
+ * from `UniformState` when it carries one, otherwise from the frame state,
+ * otherwise 1.0.
+ * @private
+ */
+function resolvePixelRatio(uniformState: CesiumUniformState): number {
+  if (defined(uniformState) && typeof uniformState.pixelRatio === "number") {
+    return uniformState.pixelRatio;
+  }
+  if (
+    defined(uniformState) &&
+    defined(uniformState.frameState) &&
+    typeof uniformState.frameState.pixelRatio === "number"
+  ) {
+    return uniformState.frameState.pixelRatio;
+  }
+  return 1.0;
+}
+
+/**
+ * Writes the pixel-ratio tail (vec4: ratio, reserved x3) starting at float
+ * index `offset`. Screen-space material widths are authored in CSS pixels,
+ * so a material that converts one to device pixels must scale by this the
+ * way the GLSL materials scale by `czm_pixelRatio`. Packed unconditionally;
+ * layouts whose shaders do not declare the field leave it unread.
+ * @private
+ */
+function writePixelRatioTail(
+  ud: Float32Array,
+  offset: number,
+  uniformState: CesiumUniformState,
+) {
+  ud[offset + 0] = resolvePixelRatio(uniformState);
+  ud[offset + 1] = 0.0;
+  ud[offset + 2] = 0.0;
+  ud[offset + 3] = 0.0;
+}
+
+/**
  * Writes RTE uniform data for a lit (Phong/PBR) shader.
  * Layout: mvpRTE(16) + mvRTE(16) + normalMatrix(16) + camHigh(4) + camLow(4)
  *       + lightDir(4) + prevVP(16) + inverseViewQuaternion(4) + logDepth(4)
  *       + inverseRadii(4) + modelMatrix3 columns(12) + worldCamera(8)
- *       = 108 floats = 432 bytes
+ *       + pixelRatio(4)
+ *       = 112 floats = 448 bytes
  * @private
  */
 function writeRTEUniformsLit(
@@ -1360,6 +1403,7 @@ function writeRTEUniformsLit(
     LIT_ENCODED_CAMERA_WORLD_LOW_OFFSET,
     rte,
   );
+  writePixelRatioTail(ud, LIT_PIXEL_RATIO_OFFSET, uniformState);
 }
 
 /**
@@ -1498,13 +1542,7 @@ function writeRTEUniformsPolyline(
   Matrix4.pack(scratchViewportOrtho, ud, 56);
   Matrix4.pack(rte.modelViewRTE, ud, 72);
 
-  const pixelRatio =
-    defined(uniformState) && typeof uniformState.pixelRatio === "number"
-      ? uniformState.pixelRatio
-      : defined(uniformState.frameState) &&
-          typeof uniformState.frameState.pixelRatio === "number"
-        ? uniformState.frameState.pixelRatio
-        : 1.0;
+  const pixelRatio = resolvePixelRatio(uniformState);
   const frustum =
     defined(uniformState) && defined(uniformState.currentFrustum)
       ? uniformState.currentFrustum
@@ -5613,6 +5651,7 @@ export {
   FLAT_MODEL_MATRIX_COLUMN_0_OFFSET,
   FLAT_ENCODED_CAMERA_WORLD_HIGH_OFFSET,
   FLAT_ENCODED_CAMERA_WORLD_LOW_OFFSET,
+  FLAT_PIXEL_RATIO_OFFSET,
   PICK_CAMERA_BYTES,
   LIT_CAMERA_BYTES,
   LIT_PREVIOUS_VIEW_PROJECTION_OFFSET,
@@ -5622,6 +5661,7 @@ export {
   LIT_MODEL_MATRIX_COLUMN_0_OFFSET,
   LIT_ENCODED_CAMERA_WORLD_HIGH_OFFSET,
   LIT_ENCODED_CAMERA_WORLD_LOW_OFFSET,
+  LIT_PIXEL_RATIO_OFFSET,
   // Share the per-frame effects resolver with voxel, Gaussian-splat, and
   // point-cloud renderers, centralizing toggle hashing and placeholder fallback.
   _getOrCreateSharedPrimitiveEffectsBG as getOrCreateSharedAdvancedEffectsBG,

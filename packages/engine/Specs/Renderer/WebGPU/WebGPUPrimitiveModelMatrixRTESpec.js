@@ -7,6 +7,7 @@ import {
   LIT_ELLIPSOID_ONE_OVER_RADII_OFFSET,
   LIT_ENCODED_CAMERA_WORLD_HIGH_OFFSET,
   LIT_ENCODED_CAMERA_WORLD_LOW_OFFSET,
+  LIT_PIXEL_RATIO_OFFSET,
   LIT_INVERSE_VIEW_QUATERNION_OFFSET,
   LIT_LOG_DEPTH_OFFSET,
   LIT_MODEL_MATRIX_COLUMN_0_OFFSET,
@@ -196,7 +197,7 @@ describe("Renderer/WebGPU Primitive model-matrix RTE", function () {
 
     writeRTEUniformsLit(data, rte, uniformState);
 
-    expect(LIT_CAMERA_BYTES).toBe(432);
+    expect(LIT_CAMERA_BYTES).toBe(448);
     expect(LIT_PREVIOUS_VIEW_PROJECTION_OFFSET).toBe(60);
     expect(LIT_INVERSE_VIEW_QUATERNION_OFFSET).toBe(76);
     expect(LIT_LOG_DEPTH_OFFSET).toBe(80);
@@ -204,6 +205,7 @@ describe("Renderer/WebGPU Primitive model-matrix RTE", function () {
     expect(LIT_MODEL_MATRIX_COLUMN_0_OFFSET).toBe(88);
     expect(LIT_ENCODED_CAMERA_WORLD_HIGH_OFFSET).toBe(100);
     expect(LIT_ENCODED_CAMERA_WORLD_LOW_OFFSET).toBe(104);
+    expect(LIT_PIXEL_RATIO_OFFSET).toBe(108);
 
     const packedPrevious = new Array(16);
     Matrix4.pack(previousViewProjection, packedPrevious);

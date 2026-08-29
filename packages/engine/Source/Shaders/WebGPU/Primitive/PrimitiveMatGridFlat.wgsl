@@ -138,8 +138,13 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     var scaled = fract(material.lineCount * st - material.lineOffset);
     scaled = abs(scaled - floor(scaled + vec2<f32>(0.5)));
     const fuzz = 1.2;
-    // lineThickness is in pixels (Material.js default 1.0). The grid camera
-    // uniform buffer does not carry czm_pixelRatio, so this path assumes 1.0.
+    // lineThickness is in pixels (Material.js default 1.0), and the GLSL
+    // reference multiplies it by czm_pixelRatio. The flat camera buffer now
+    // carries that ratio, but this shader cannot read it yet: its logDepth
+    // field sits inside an //>>ifdef, so every field after it would land at a
+    // define-dependent offset. Lifting logDepth out the way the elevation
+    // shaders did is what unblocks it. Until then this path assumes 1.0 and
+    // draws thin lines on a high-density display.
     let thicknessPx = material.lineThickness * 1.0 - vec2<f32>(1.0);
     // dF = per-fragment UV footprint (Cozzi & Ring, Listing 4.13). GLSL uses
     // max(|dFdx|,|dFdy|) per axis — replicate exactly (not the fwidth sum).

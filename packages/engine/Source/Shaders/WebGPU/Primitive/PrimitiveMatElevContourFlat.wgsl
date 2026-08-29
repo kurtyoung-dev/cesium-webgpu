@@ -42,6 +42,9 @@ struct CameraUniforms {
     modelMatrixColumn2: vec4<f32>,
     encodedCameraWorldHigh: vec4<f32>,
     encodedCameraWorldLow: vec4<f32>,
+    // x = device pixel ratio (`czm_pixelRatio`), y-w reserved. Packed by
+    // WebGPUPrimitiveCommands.writePixelRatioTail.
+    pixelRatio: vec4<f32>,
 }
 
 // MaterialUniforms field order must match Material.ElevationContourType
@@ -183,7 +186,11 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     // Use screen-space derivatives for width-independent contour lines
     let dxc = abs(dpdx(input.height));
     let dyc = abs(dpdy(input.height));
-    let dF = max(dxc, dyc) * material.width;
+    // Line width is authored in CSS pixels. The GLSL reference scales the
+    // screen-space derivative by `czm_pixelRatio` before comparing, so on a
+    // device-pixel-ratio 2 display the band is twice as many device pixels
+    // wide. Dropping the factor halves the drawn line.
+    let dF = max(dxc, dyc) * camera.pixelRatio.x * material.width;
     let alpha = select(0.0, 1.0, distToContour < dF);
     var finalColor = vec4<f32>(material.color.rgb, material.color.a * alpha);
 

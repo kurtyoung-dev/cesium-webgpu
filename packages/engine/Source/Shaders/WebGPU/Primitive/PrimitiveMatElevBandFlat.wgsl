@@ -48,6 +48,11 @@ struct CameraUniforms {
     modelMatrixColumn2: vec4<f32>,
     encodedCameraWorldHigh: vec4<f32>,
     encodedCameraWorldLow: vec4<f32>,
+    // x = device pixel ratio (`czm_pixelRatio`), y-w reserved. Packed by
+    // WebGPUPrimitiveCommands.writePixelRatioTail. Declared by every elevation
+    // material so the six share one camera layout; only the contour materials
+    // read it.
+    pixelRatio: vec4<f32>,
 }
 
 // Material uniforms for ElevationBand are empty today — the band

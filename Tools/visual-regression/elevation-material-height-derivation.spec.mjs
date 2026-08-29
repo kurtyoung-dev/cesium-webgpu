@@ -106,6 +106,10 @@ const PRODUCER_FUNCTIONS = new Set([
   "assertUniformDataCapacity",
   "writeEllipsoidOneOverRadiiTail",
   "writeModelToWorldPositionTail",
+  // The pixel-ratio tail is written by the same producer, so it is lifted with
+  // the rest: a tail that overlapped the head would show up in this spec.
+  "resolvePixelRatio",
+  "writePixelRatioTail",
   "writeRTEUniformsFlat",
 ]);
 
@@ -1206,9 +1210,20 @@ test("the flat writer appends the tail after the shared head without disturbing 
   );
   assert.deepEqual(
     Array.from(
-      data.subarray(producer.FLAT_ENCODED_CAMERA_WORLD_HIGH_OFFSET, floats),
+      data.subarray(
+        producer.FLAT_ENCODED_CAMERA_WORLD_HIGH_OFFSET,
+        producer.FLAT_PIXEL_RATIO_OFFSET,
+      ),
     ),
     [65536.0, -131072.0, 196608.0, 0.0, 1.25, -2.5, 3.75, 0.0],
+  );
+  // The pixel-ratio tail closes the layout. This uniform state carries no
+  // ratio, so the lane holds the documented 1.0 default and its three
+  // reserved floats stay zero; what the lane holds for a real ratio is the
+  // contour pixel-ratio gate's subject.
+  assert.deepEqual(
+    Array.from(data.subarray(producer.FLAT_PIXEL_RATIO_OFFSET, floats)),
+    [1.0, 0.0, 0.0, 0.0],
   );
   for (let index = floats; index < data.length; ++index) {
     assert.equal(

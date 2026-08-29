@@ -179,9 +179,12 @@ async function loadRenderer(root) {
     "class DeveloperError extends Error {}",
     "const pragmas = { debug: true };",
     // Orthogonal to the texture decision: camera math, the shadow-cast
-    // transform, the material UBO upload and the effects slot.
-    "const FLAT_CAMERA_BYTES = 272;",
-    "const LIT_CAMERA_BYTES = 432;",
+    // transform, the material UBO upload and the effects slot. The two sizes
+    // only have to be large enough for the scratch array the lifted code
+    // allocates; they mirror the renderer's constants so a reader is not
+    // misled about the real layout.
+    "const FLAT_CAMERA_BYTES = 288;",
+    "const LIT_CAMERA_BYTES = 448;",
     "const scratchMaterialCameraData = new Float32Array(LIT_CAMERA_BYTES / 4);",
     "const computeRTEMatrices = () => ({});",
     "const _refreshPrimitiveShadowCastTransform = () => {};",
