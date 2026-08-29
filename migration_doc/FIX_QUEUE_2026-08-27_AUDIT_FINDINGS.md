@@ -108,6 +108,24 @@ corrected with it.
 The remaining ~30 medium and all low survivors are enumerated in §5 with their lane column reading
 QUEUED; they dispatch after Q-1…Q-10, batched by file so one Sol dispatch closes several small
 findings in the same module. C1's returning findings append here as a dated addendum.
+### Late-evening landings + Edge tranche 3b (2026-08-29 ~00:30) - Batches 1252-1261
+
+Landed: CW S0/S1 (1252/1253 - GGX sun glint + moonglade on the FFT ocean), NV (1254 - nightDarkness conditional default 0.15 + city lights default ON with a GLSL emission twin; 1255 seat repair), SW2 (1256-1261: Q-41 four wraps + the SceneRenderer release-build every-frame warn, Q-38d three floored-remainder sites, Q-60 at the right depth (the toString constants, not the gate), Q-52 private TMPDIR + decoy, Q-54 premise REFUTED -> timeout re-derived from measurement, Q-38b primitive camera pixel-ratio lane FLAT 272->288 / LIT 432->448). Sink A/B RESULT: -c project_doc_max_bytes=0 KILLS the governance sink (subject A first exec = target file; subject B without the flag spent its first eleven execs reading AGENTS.md and the governance chain) - the flag is now mandatory on every Sol dispatch.
+
+| | Row | Disposition |
+|---|---|---|
+| DETERMINATION | C11-163 port target | under R-11 item 1: the default globe ocean is the CLASSIC arm (enableEnhancedOcean defaults false; the dossier was wrong), and the sun glint exists twice in GlobeTerrain.wgsl - the port lands on BOTH arms (lane CW2) |
+| CORRECTED | star catalog size | BrightStarCatalog.count is 2,868 (STRIDE 4), not the 263 quoted from the Batch-313 inventory row - the splat design of R-11a is the only viable shape by three orders of magnitude |
+| CONFIRMED | Q-46 | tranche 3b: genuine GPU-process loss crash 4-of-4 -> 0-of-4; attribution failuresOnDeviceMarkedLost 5 -> 0; blind window 1.4 s carrying only the two unavoidable pre-knowledge calls |
+| Q-65 | NEW HIGH | successor to Q-46: recovery completes at DEVICE level (device #1 -> #3, healthy, gen 0 -> 1) but the render loop stops permanently with the terminal-loss DeveloperError from _WebGPUContext.clear - initialized=false, clusteredDispatcher=null, sky/cloud caches still on the dead device. 4 of 4. The post-recovery frame is the widget DOM over a black canvas. Also: the refusal sentinel never fires because nothing is attempted (assertion 5 of 1236 unobservable) | Opus-judgment, HIGH |
+| CONFIRMED | Q-63 / VW-N7 L3 | level-3 onset re-measure GREEN (texel counts exactly doubled, band one level deeper, both backends exact). Q-63 blur band RELOCATED not removed: brightening flip unchanged at 500->340 km; peak moved 170 -> 85 km and grew +60 -> +94; 170 km is now the worst frame. Open lever: NIGHT_IMAGERY_FADE_FULL_TEXELS = 8 |
+| Q-64 | NEW MEDIUM | night fade produces hard tile-level banding where adjacent terrain levels straddle the knee (42 km, both backends, 69.1% on-vs-off; layer-off twin clean) | Opus-judgment |
+| Q-62 | MIXED | catalog reachable and physically correct (2,868 stars, Sirius within 6 px, Pogson liveness, WebGL/WebGPU byte-identical IoU 1.000; C12-11 harness A-G all true, exit 3 = prerequisites only) BUT the July twilight black box REPRODUCES exactly: sun -20 deg, vmag-2.14 box peaks 0.0 both backends, while the probe header documents a vmag-3.6 star anchoring at 15/255 - a sharp contradiction to investigate | Opus-judgment |
+| Q-66 | NEW | Tools/lint-debug-pragmas.mjs scans Renderer/WebGPU only; every Q-41 site was in Scene/. First count: 106 unguarded console.* lines across 477 Scene/*.js files, mostly upstream sites needing triage not wraps. Rider on E1-3/E1-4 | investigate |
+| Q-67 | NEW | Q-38b globe half OPEN: the fabric WGSL port (Material.js) hardcodes pixel ratio 1.0 and the globe surface camera UB has no pixel-ratio lane; PrimitiveMatGridFlat.wgsl also blocked on lifting logDepth out of its ifdef | Sol-bounded once designed |
+| Q-68 | NEW | NV's unmasked emission carried exactly (WGSL reference): a masked layer still emits on both backends - both-backends follow-up; also globe-night-imagery-option F-section mutates GlobeNightImagery.js on disk while the fade spec asserts it unchanged (cross-spec race under the parallel runner) | Sol-bounded |
+| DOCTRINE | executor + seat | never REBUILD while an Edge session runs (a mid-sweep build would split legs across two engines with no signal in the captures); the seat lands engine files during a sweep only because the executor serves the gulp artifact - the bundle md5 re-check at end of run is now required in every RUNLOG. Closeout inventories must include git stash list. Landing sequences chain commits on the gate EXIT CODE, never on a read of the output |
+
 ### Lane VF2 + R9 amendment author (2026-08-28 ~23:20) - Batches 1248-1250
 
 | | Row | Disposition |
