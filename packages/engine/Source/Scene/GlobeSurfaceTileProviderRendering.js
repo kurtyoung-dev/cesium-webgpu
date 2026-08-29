@@ -1162,6 +1162,7 @@ function addWebGPUDrawCommandsForTile(tileProvider, tile, frameState, fr) {
   if (!mesh || !mesh.vertices || !mesh.indices) {
     if (shouldLog) {
       _webgpuTileDiagCount++;
+      //>>includeStart('debug', pragmas.debug);
       console.warn(
         `[WebGPU:TileDraw] SKIP — no mesh data. ` +
           `hasSurfaceTile=${!!surfaceTile} ` +
@@ -1174,6 +1175,7 @@ function addWebGPUDrawCommandsForTile(tileProvider, tile, frameState, fr) {
           `meshIndices=${!!mesh?.indices} ` +
           `level=${tile.level}`,
       );
+      //>>includeEnd('debug');
     }
     return;
   }
@@ -1183,7 +1185,9 @@ function addWebGPUDrawCommandsForTile(tileProvider, tile, frameState, fr) {
   if (!device) {
     if (shouldLog) {
       _webgpuTileDiagCount++;
+      //>>includeStart('debug', pragmas.debug);
       console.warn("[WebGPU:TileDraw] SKIP — no device");
+      //>>includeEnd('debug');
     }
     return;
   }
@@ -1193,11 +1197,13 @@ function addWebGPUDrawCommandsForTile(tileProvider, tile, frameState, fr) {
   if (!shaderCode || shaderCode.length === 0) {
     if (shouldLog) {
       _webgpuTileDiagCount++;
+      //>>includeStart('debug', pragmas.debug);
       console.warn(
         `[WebGPU:TileDraw] SKIP — no shader code. ` +
           `hasGetShaderCode=${typeof fr.getShaderCode} code=${typeof shaderCode} ` +
           `len=${shaderCode?.length}`,
       );
+      //>>includeEnd('debug');
     }
     return;
   }

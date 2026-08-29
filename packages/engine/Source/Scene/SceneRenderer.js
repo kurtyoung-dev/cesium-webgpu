@@ -47,9 +47,11 @@ function appendUniqueEnvironmentCommand(
     return length + 1;
   }
 
+  //>>includeStart('debug', pragmas.debug);
   if (defined(command) && !scene._envDiagLogged) {
     console.warn(`[WebGPU:EnvInject] ${label} skipped: no execute method`);
   }
+  //>>includeEnd('debug');
   return length;
 }
 

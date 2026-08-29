@@ -70,6 +70,37 @@ const STRIPPED = [
     neighbours: ["_webgpuTileDiagCount++;"],
   },
   {
+    // Every SKIP diagnostic in this function is throttled by a counter that
+    // must outlive the strip, and the messages themselves interpolate.
+    file: "GlobeSurfaceTileProviderRendering.js",
+    marker: "[WebGPU:TileDraw] SKIP — no mesh data.",
+    neighbours: [
+      "_webgpuTileDiagCount++;",
+      "surfaceTile.fill = new TerrainFillMesh(tile);",
+    ],
+  },
+  {
+    file: "GlobeSurfaceTileProviderRendering.js",
+    marker: "[WebGPU:TileDraw] SKIP — no device",
+    neighbours: ["_webgpuTileDiagCount++;", "const device = context.device;"],
+  },
+  {
+    file: "GlobeSurfaceTileProviderRendering.js",
+    marker: "[WebGPU:TileDraw] SKIP — no shader code.",
+    neighbours: [
+      "_webgpuTileDiagCount++;",
+      "const shaderCode = fr.getShaderCode ? fr.getShaderCode() : undefined;",
+    ],
+  },
+  {
+    // The sibling EnvInject diagnostic above sets the flag this one reads,
+    // and that assignment is itself debug-only: unwrapped, this warning
+    // fires on every frame of a release build.
+    file: "SceneRenderer.js",
+    marker: "skipped: no execute method",
+    neighbours: ["return length + 1;"],
+  },
+  {
     file: "Cesium3DTilesInvalidationFeed.js",
     marker: "[InvalidationFeed] tileset.json refetch requested",
     neighbours: ["this._tilesetJsonRequests++;", "continue;"],
