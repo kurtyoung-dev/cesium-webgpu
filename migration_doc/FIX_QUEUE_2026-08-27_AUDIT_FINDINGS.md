@@ -108,6 +108,15 @@ corrected with it.
 The remaining ~30 medium and all low survivors are enumerated in §5 with their lane column reading
 QUEUED; they dispatch after Q-1…Q-10, batched by file so one Sol dispatch closes several small
 findings in the same module. C1's returning findings append here as a dated addendum.
+### Re-reviews: both revisions returned again on narrower grounds; DM-01 corrected and banked (2026-08-29 ~21:00 machine clock)
+
+| | Row | Disposition |
+|---|---|---|
+| Q-145 revision 2 | RETURNED by Finrod's re-review (Sol, pasted, no file reads) | continuity accepted (persistent framenavigated listener, memoised guard per page); NOT FIXED: probe-sandcastle2-ports.mjs exempts itself and still calls bare goto; PARTIAL: the spec proves the guarded opener but not every path, the guide overstates the unawaited-navigation guarantee; NEW: probe-sandcastle2-webgpu-start closes the browser around the guarded page.close on its error path (leak/bypass), the close wrapper asserts before detaching and a close rejection can replace the named refusal, the spec's subprocess leg can pass on the unhandled rejection without executing the close assertion. Merry resumed for revision 3 |
+| DM-07 revision 2 | RETURNED by Denethor's re-review (Sol, pasted) | blockers 1-3 FIXED (frame-boundary reset at WebGPUContext.ts:2193-2199; timer scoped to device.createRenderPipeline; assertions through the snapshot via getRendererStatistics); blocker 4 PARTIAL (the spec still wraps extracted text in a new function instead of executing the real updateWebGPUModel path); NEW: DEBUGGING_GUIDE lists four fields but the snapshot also publishes countersFrameNumber. Bilbo resumed for revision 3 |
+| DM-01 | CORRECTED (Frodo-the-second, Sol, fully pasted, zero file reads) and BANKED (scratchpad/land-dm01) | element screenshot per cell; buildCellReport extracted as an exported pure report seam used by runCell and tested with a three-pass fixture plus a seam-summing mutant; behavioural tests for every exported decision function; spec 14/14 (the seat made the mutant needle whitespace-tolerant after prettier wrapped the call). Lands with Q-145 (imports its helper) |
+| Sol turns, evening tally | 6 reviews (all returned real defects), 2 corrections succeeded when fully pasted (DM-01, Pippin B4), 2 failed when allowed to read files (Merry, Bilbo corrections) | the no-file-reads template is now the default for every directed turn |
+
 ### Three Sol reviews returned; two Sol correction turns failed by shape; corrections go back to the authoring lanes (2026-08-29 ~19:30 machine clock)
 
 | | Row | Disposition |
