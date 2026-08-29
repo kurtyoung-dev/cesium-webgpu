@@ -57,6 +57,26 @@ export const DECK_FREE_TERMINATOR_GLOW_COLOR = Object.freeze([
 export const DECK_FREE_TERMINATOR_GLOW_EXPONENT = 40;
 export const DECK_FREE_TERMINATOR_GLOW_STRENGTH = 0.15;
 
+// The procedural night-side floor. It is a THIRD consumer of the terminator
+// ramp this diagnostic already exercises, and it multiplies the composited
+// surface AHEAD of the lighting arms, so a diagnostic patch held at
+// N·L <= 0.12 carries it almost in full. The control pins the public property
+// rather than inheriting whatever the engine currently defaults to, so a moved
+// default shows up as a pin that has to be changed on purpose instead of as a
+// silently stale expectation.
+export const DECK_FREE_DIAGNOSTIC_NIGHT_DARKNESS = 0.15;
+
+// A second pinned floor, captured once at the darkest rung while the
+// diagnostic light is still installed. Two floors under one N·L are what keep
+// the term a measured quantity rather than a constant the model absorbs: a
+// surface that ignored the uniform would return the same pixel twice.
+export const DECK_FREE_DIAGNOSTIC_NIGHT_DARKNESS_ALTERNATE = 0.6;
+
+// Every imagery layer is removed before the control captures anything, so the
+// night-layer share this fallback is the complement of is zero by
+// construction, and the effective floor is the pinned floor itself.
+export const DECK_FREE_EXPECTED_NIGHT_LAYER_COVERAGE = 0;
+
 const REC709_LUMA = Object.freeze([0.2126, 0.7152, 0.0722]);
 
 const clamp01 = (value) => Math.min(1, Math.max(0, value));
@@ -94,18 +114,92 @@ export function computeDeckFreeTerminatorGlowLuma(
   );
 }
 
-/** Full expected luma of the fixed grey directional diagnostic surface. */
+/**
+ * Independently execute the shipped night-side ramp, the complement of the
+ * imagery day/night alpha rather than of the DAYNIGHT diffuse: it is the bare
+ * `clamp(N·L * 5, 0, 1)` with no `+ 0.3` and no camera-distance mix.
+ */
+export function computeDeckFreeNightBlend(ndotl) {
+  if (!Number.isFinite(ndotl)) {
+    return null;
+  }
+  return 1 - clamp01(Math.max(ndotl, 0) * 5);
+}
+
+/**
+ * Independently execute the CPU-side fold that scales the procedural floor by
+ * the share of the night side the imagery layers leave uncovered. Full
+ * coverage resolves to the multiplicative identity, which is the value that
+ * shuts the shader's own guard.
+ */
+export function computeDeckFreeEffectiveNightDarkness(
+  nightDarkness,
+  nightLayerCoverage,
+) {
+  if (
+    !Number.isFinite(nightDarkness) ||
+    !Number.isFinite(nightLayerCoverage) ||
+    nightDarkness < 0 ||
+    nightDarkness > 1
+  ) {
+    return null;
+  }
+  return 1 + (nightDarkness - 1) * (1 - clamp01(nightLayerCoverage));
+}
+
+/**
+ * Independently execute the procedural night-darkening multiplier the surface
+ * carries before any lighting arm runs.
+ */
+export function computeDeckFreeNightDarkeningMultiplier(
+  ndotl,
+  effectiveNightDarkness,
+) {
+  const nightBlend = computeDeckFreeNightBlend(ndotl);
+  if (
+    !Number.isFinite(nightBlend) ||
+    !Number.isFinite(effectiveNightDarkness) ||
+    effectiveNightDarkness < 0 ||
+    effectiveNightDarkness > 1
+  ) {
+    return null;
+  }
+  return 1 + (effectiveNightDarkness - 1) * nightBlend;
+}
+
+/**
+ * Full expected luma of the fixed grey directional diagnostic surface.
+ *
+ * The order is the shipped one and it is load-bearing. The night-darkening
+ * multiplier scales the composited surface first, the DAYNIGHT diffuse and the
+ * custom light colour multiply that product, and only then does the terminator
+ * glow ADD — scattered light, which no ground albedo term may dim. Both
+ * dialects place the three terms in exactly that order.
+ *
+ * `effectiveNightDarkness` is required, not defaulted: the term entered the
+ * shipped fragment while this model still read `base * diffuse + glow`, and a
+ * defaulted identity would let the same omission return silently.
+ */
 export function computeDeckFreeDirectionalDiagnosticLuma(
   ndotl,
   lightingFade,
   terminatorGlowStrength,
+  effectiveNightDarkness,
 ) {
   const diffuse = computeDeckFreeDayNightDiffuse(ndotl, lightingFade);
   const glow = computeDeckFreeTerminatorGlowLuma(ndotl, terminatorGlowStrength);
-  if (!Number.isFinite(diffuse) || !Number.isFinite(glow)) {
+  const nightDarkening = computeDeckFreeNightDarkeningMultiplier(
+    ndotl,
+    effectiveNightDarkness,
+  );
+  if (
+    !Number.isFinite(diffuse) ||
+    !Number.isFinite(glow) ||
+    !Number.isFinite(nightDarkening)
+  ) {
     return null;
   }
-  return DECK_FREE_RAW_BASE_COLOR_LUMA * diffuse + glow;
+  return DECK_FREE_RAW_BASE_COLOR_LUMA * nightDarkening * diffuse + glow;
 }
 
 /**
@@ -118,6 +212,7 @@ export function computeDeckFreeDiagnosticFrame(
   longitudeDegrees,
   ndotlTarget,
   terminatorGlowStrength,
+  effectiveNightDarkness,
 ) {
   if (
     !Number.isFinite(latitudeDegrees) ||
@@ -125,7 +220,8 @@ export function computeDeckFreeDiagnosticFrame(
     !Number.isFinite(ndotlTarget) ||
     ndotlTarget < 0 ||
     ndotlTarget >= 1 ||
-    !Number.isFinite(terminatorGlowStrength)
+    !Number.isFinite(terminatorGlowStrength) ||
+    !Number.isFinite(effectiveNightDarkness)
   ) {
     return null;
   }
@@ -155,6 +251,11 @@ export function computeDeckFreeDiagnosticFrame(
     ndotlTarget,
     terminatorGlowStrength,
   );
+  const nightBlend = computeDeckFreeNightBlend(ndotlTarget);
+  const nightDarkeningMultiplier = computeDeckFreeNightDarkeningMultiplier(
+    ndotlTarget,
+    effectiveNightDarkness,
+  );
   return {
     normalWC,
     eastWC,
@@ -164,10 +265,14 @@ export function computeDeckFreeDiagnosticFrame(
     diffuse,
     terminatorGlowStrength,
     terminatorGlowLuma,
+    nightBlend,
+    effectiveNightDarkness,
+    nightDarkeningMultiplier,
     diagnosticLuma: computeDeckFreeDirectionalDiagnosticLuma(
       ndotlTarget,
       DECK_FREE_EXPECTED_LIGHTING_FADE,
       terminatorGlowStrength,
+      effectiveNightDarkness,
     ),
   };
 }
@@ -279,6 +384,28 @@ const lightingFadeEvidenceIsLive = (evidence) => {
     inDistance === DECK_FREE_LIGHTING_FADE_IN_DISTANCE &&
     independentlyExpectedFade === DECK_FREE_EXPECTED_LIGHTING_FADE &&
     reportedExpectedFade === independentlyExpectedFade
+  );
+};
+
+/**
+ * Whether the night-darkening term the surface carries is the control's pin
+ * rather than whatever the engine happens to default to, and whether the
+ * coverage input that scales it is pinned at zero by the removed imagery.
+ *
+ * The LAW stays Node-side; only its two configuration inputs are observed,
+ * which is the same division `lightingFadeEvidenceIsLive` draws.
+ */
+const nightDarkeningEvidenceIsLive = (evidence, expectedNightDarkness) => {
+  const publicValue = finiteMean(evidence?.publicValue);
+  const tileProviderValue = finiteMean(evidence?.tileProviderValue);
+  // No layer is what pins the coverage share at zero; the two are different
+  // quantities that only happen to share a value here.
+  if (evidence?.imageryLayerCount !== 0) {
+    return false;
+  }
+  return (
+    publicValue === expectedNightDarkness &&
+    tileProviderValue === expectedNightDarkness
   );
 };
 
@@ -412,6 +539,16 @@ export function foldDeckFreeControlSessions(options) {
     if (!lightingFadeEvidenceIsLive(report.lighting?.lightingFade)) {
       reasons.push(
         `${expected.label}: top-level lighting fade is not the live probe pin (out 0, in 1, independently expected fade 1)`,
+      );
+    }
+    if (
+      !nightDarkeningEvidenceIsLive(
+        report.nightDarkening,
+        DECK_FREE_DIAGNOSTIC_NIGHT_DARKNESS,
+      )
+    ) {
+      reasons.push(
+        `${expected.label}: top-level night-darkening pin is not restored to ${DECK_FREE_DIAGNOSTIC_NIGHT_DARKNESS} on a globe with zero imagery layers`,
       );
     }
     const priorTerminatorGlowStrength = finiteMean(
@@ -739,6 +876,10 @@ export function foldDeckFreeControlSessions(options) {
         diagnosticSite?.longitudeDegrees,
         ndotlTarget,
         DECK_FREE_DIAGNOSTIC_TERMINATOR_GLOW_STRENGTH,
+        computeDeckFreeEffectiveNightDarkness(
+          DECK_FREE_DIAGNOSTIC_NIGHT_DARKNESS,
+          DECK_FREE_EXPECTED_NIGHT_LAYER_COVERAGE,
+        ),
       );
       if (
         diagnostic?.target !== expectedRung.target ||
@@ -809,7 +950,11 @@ export function foldDeckFreeControlSessions(options) {
         diagnostic?.lighting?.eclipseStateEnabled !== expected.eclipseEnabled ||
         diagnostic?.lighting?.eclipseStateValid !== true ||
         diagnostic?.lighting?.enableEclipseGlobeShadow !== false ||
-        !lightingFadeEvidenceIsLive(diagnostic?.lighting?.lightingFade)
+        !lightingFadeEvidenceIsLive(diagnostic?.lighting?.lightingFade) ||
+        !nightDarkeningEvidenceIsLive(
+          diagnostic?.nightDarkening,
+          DECK_FREE_DIAGNOSTIC_NIGHT_DARKNESS,
+        )
       ) {
         reasons.push(
           `${expected.label}: rung ${rungIndex} directional diagnostic read-back does not preserve the fixed control state`,
@@ -963,12 +1108,21 @@ export function foldDeckFreeControlSessions(options) {
   // conservative evidence tolerance without moving any product band.
   const diagnosticPixelTolerance = captureDelta * 2;
   const nonVacuityReasons = [];
+  const pinnedEffectiveNightDarkness = computeDeckFreeEffectiveNightDarkness(
+    DECK_FREE_DIAGNOSTIC_NIGHT_DARKNESS,
+    DECK_FREE_EXPECTED_NIGHT_LAYER_COVERAGE,
+  );
+  const alternateEffectiveNightDarkness = computeDeckFreeEffectiveNightDarkness(
+    DECK_FREE_DIAGNOSTIC_NIGHT_DARKNESS_ALTERNATE,
+    DECK_FREE_EXPECTED_NIGHT_LAYER_COVERAGE,
+  );
   const directionalDiagnostic = expectedLadder.map((expected, index) => {
     const expectedFrame = computeDeckFreeDiagnosticFrame(
       diagnosticSite?.latitudeDegrees,
       diagnosticSite?.longitudeDegrees,
       DECK_FREE_DIAGNOSTIC_NDOTL_TARGETS[index],
       DECK_FREE_DIAGNOSTIC_TERMINATOR_GLOW_STRENGTH,
+      pinnedEffectiveNightDarkness,
     );
     const offA = finiteMean(
       byLabel["off-a"]?.directionalDiagnosticRungs?.[index]?.mean,
@@ -1052,6 +1206,9 @@ export function foldDeckFreeControlSessions(options) {
       ndotlTarget: DECK_FREE_DIAGNOSTIC_NDOTL_TARGETS[index],
       expectedDiffuse: expectedFrame?.diffuse ?? null,
       expectedTerminatorGlowLuma: expectedFrame?.terminatorGlowLuma ?? null,
+      expectedNightBlend: expectedFrame?.nightBlend ?? null,
+      expectedNightDarkeningMultiplier:
+        expectedFrame?.nightDarkeningMultiplier ?? null,
       expectedOff,
       expectedOn,
       offA,
@@ -1087,11 +1244,84 @@ export function foldDeckFreeControlSessions(options) {
       }
     }
   }
+
+  // The night-darkening flow-through leg. Rung 0 sits at N·L = 0, where the
+  // ramp is fully night and the floor reaches the surface undiluted, so the
+  // same fragment captured under a second pinned floor must move by the
+  // predicted amount. Without this leg the floor is a constant the closed form
+  // could absorb — which is exactly how the term entered the shipped fragment
+  // without the model noticing.
+  const alternateNightDarknessFrame = computeDeckFreeDiagnosticFrame(
+    diagnosticSite?.latitudeDegrees,
+    diagnosticSite?.longitudeDegrees,
+    DECK_FREE_DIAGNOSTIC_NDOTL_TARGETS[0],
+    DECK_FREE_DIAGNOSTIC_TERMINATOR_GLOW_STRENGTH,
+    alternateEffectiveNightDarkness,
+  );
+  const expectedAlternateLuma = finiteMean(
+    alternateNightDarknessFrame?.diagnosticLuma,
+  );
+  const nightDarknessFlowThrough = DECK_FREE_CONTROL_SESSION_PLAN.map(
+    (planned) => {
+      const report = byLabel[planned.label];
+      const leg = report?.nightDarknessAlternate;
+      const measured = finiteMean(leg?.mean);
+      const primary = finiteMean(report?.directionalDiagnosticRungs?.[0]?.mean);
+      const pinIsLive = nightDarkeningEvidenceIsLive(
+        leg?.nightDarkening,
+        DECK_FREE_DIAGNOSTIC_NIGHT_DARKNESS_ALTERNATE,
+      );
+      const followsLaw =
+        Number.isFinite(measured) &&
+        Number.isFinite(expectedAlternateLuma) &&
+        Math.abs(measured - expectedAlternateLuma) <= diagnosticPixelTolerance;
+      const separationFromPrimary =
+        Number.isFinite(measured) && Number.isFinite(primary)
+          ? Math.abs(measured - primary)
+          : null;
+      const separates =
+        Number.isFinite(separationFromPrimary) &&
+        separationFromPrimary > diagnosticPixelTolerance;
+      if (
+        leg?.captureRole !== "diagnostic-directional-night-darkness" ||
+        leg?.diagnosticOnly !== true ||
+        leg?.ndotlTarget !== DECK_FREE_DIAGNOSTIC_NDOTL_TARGETS[0] ||
+        !(leg?.samples > 0) ||
+        !pinIsLive
+      ) {
+        nonVacuityReasons.push(
+          `${planned.label}: the alternate night-darkness leg is absent, mislabelled, or not pinned to ${DECK_FREE_DIAGNOSTIC_NIGHT_DARKNESS_ALTERNATE}`,
+        );
+      }
+      if (!followsLaw) {
+        nonVacuityReasons.push(
+          `${planned.label}: alternate night-darkness pixels ${String(measured)} do not execute the night floor ${DECK_FREE_DIAGNOSTIC_NIGHT_DARKNESS_ALTERNATE} within ${diagnosticPixelTolerance} (expected ${String(expectedAlternateLuma)})`,
+        );
+      }
+      if (!separates) {
+        nonVacuityReasons.push(
+          `${planned.label}: the two pinned night floors are not resolvable in the pixels (separation ${String(separationFromPrimary)}, limit ${diagnosticPixelTolerance}); the surface is not reading the uniform`,
+        );
+      }
+      return {
+        label: planned.label,
+        nightDarkness: DECK_FREE_DIAGNOSTIC_NIGHT_DARKNESS_ALTERNATE,
+        expected: expectedAlternateLuma,
+        measured,
+        primary,
+        separationFromPrimary,
+        pinIsLive,
+        followsLaw,
+        separates,
+      };
+    },
+  );
+
   const litSurfaceNonVacuous = nonVacuityReasons.length === 0;
   reasons.push(...nonVacuityReasons);
 
   return {
-    schema: "c13-41-deckfree-control-v5",
+    schema: "c13-41-deckfree-control-v6",
     stateIsolated: isolationReasons.length === 0,
     structuralReasons: reasons,
     isolationReasons,
@@ -1106,7 +1336,10 @@ export function foldDeckFreeControlSessions(options) {
     offASpread,
     offBSpread,
     diagnosticPixelTolerance,
+    pinnedEffectiveNightDarkness,
+    alternateEffectiveNightDarkness,
     directionalDiagnostic,
+    nightDarknessFlowThrough,
     litSurfaceNonVacuous,
     rungs,
     sessions: reports,

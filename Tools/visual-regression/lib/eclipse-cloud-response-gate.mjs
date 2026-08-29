@@ -3483,7 +3483,7 @@ export function judgeEclipseCloudResponse(run) {
     // second Edge run, and the ceiling could only report the SYMPTOM.
     v.deckFreeControlStateIsolated =
       deckFreeControl?.stateIsolated === true &&
-      deckFreeControl?.schema === "c13-41-deckfree-control-v5";
+      deckFreeControl?.schema === "c13-41-deckfree-control-v6";
     if (!v.deckFreeControlStateIsolated) {
       markBlind(
         "deck-free",

@@ -182,6 +182,8 @@ import {
 } from "./lib/build-source-identity.mjs";
 import {
   DECK_FREE_CONTROL_SESSION_PLAN,
+  DECK_FREE_DIAGNOSTIC_NIGHT_DARKNESS,
+  DECK_FREE_DIAGNOSTIC_NIGHT_DARKNESS_ALTERNATE,
   DECK_FREE_DIAGNOSTIC_TERMINATOR_GLOW_STRENGTH,
   DECK_FREE_DIAGNOSTIC_NDOTL_TARGETS,
   DECK_FREE_DIRECTIONAL_LIGHT_INTENSITY,
@@ -1409,6 +1411,20 @@ const RUN_DECK_FREE_CONTROL_SESSION = async (cfg) => {
   // Node fold; no engine default or product scene is changed.
   scene.globe.lightingFadeOutDistance = cfg.lightingFadeOutDistance;
   scene.globe.lightingFadeInDistance = cfg.lightingFadeInDistance;
+  // The procedural night floor multiplies the composited surface ahead of every
+  // lighting arm, so the diagnostic patch carries it and the Node fold has to
+  // model it. Pinning the public property rather than inheriting the engine
+  // default keeps the closed form honest when the default moves; the fold reads
+  // both the public value and the tile provider's per-frame mirror back and
+  // re-derives the coverage fold itself. Every imagery layer is already gone,
+  // so the night-layer share is zero and the effective floor is the pin.
+  scene.globe.nightDarkness = cfg.diagnosticNightDarkness;
+  const readNightDarkening = () => ({
+    publicValue: scene.globe.nightDarkness ?? null,
+    tileProviderValue:
+      scene.globe._surface?.tileProvider?.nightDarkness ?? null,
+    imageryLayerCount: scene.globe.imageryLayers?.length ?? null,
+  });
   const ac = scene.globe?.atmosphericConditions;
   if (!ac?.lighting || !("enableEclipse" in ac.lighting)) {
     return {
@@ -1662,6 +1678,7 @@ const RUN_DECK_FREE_CONTROL_SESSION = async (cfg) => {
   const readiness = await pin.awaitGlobeReady(C, firstTime, 400, 60000);
   const rungs = [];
   const directionalDiagnosticRungs = [];
+  let nightDarknessAlternate = null;
   for (let rungIndex = 0; rungIndex < cfg.ladder.length; rungIndex++) {
     const rung = cfg.ladder[rungIndex];
     const julian = C.JulianDate.fromIso8601(rung.iso);
@@ -1708,7 +1725,34 @@ const RUN_DECK_FREE_CONTROL_SESSION = async (cfg) => {
       terminatorGlowStrength: scene.globe.terminatorGlowStrength ?? null,
       terminatorGlowTileProviderStrength:
         readTerminatorGlowStrength().tileProviderStrength,
+      nightDarkening: readNightDarkening(),
     });
+
+    // NIGHT-DARKNESS FLOW-THROUGH. Rung 0 holds N·L at zero, where the night
+    // ramp is fully closed and the floor reaches the surface undiluted. The
+    // same fragment, same light, same camera, under a second pinned floor: a
+    // surface that never read the uniform returns the first pixel again, so
+    // this is what stops the floor being a constant the closed form absorbs.
+    if (rungIndex === 0) {
+      scene.globe.nightDarkness = cfg.diagnosticNightDarknessAlternate;
+      await pin.settle(julian, cfg.settleMs);
+      const alternateReduced = diagnosticBandMean(
+        await pin.capture(julian, false),
+      );
+      nightDarknessAlternate = {
+        target: rung.target,
+        iso: rung.iso,
+        captureRole: "diagnostic-directional-night-darkness",
+        diagnosticOnly: true,
+        ndotlTarget,
+        mean: alternateReduced.mean,
+        samples: alternateReduced.samples,
+        nightDarkening: readNightDarkening(),
+        light: readLight(true),
+        terminatorGlowStrength: scene.globe.terminatorGlowStrength ?? null,
+      };
+      scene.globe.nightDarkness = cfg.diagnosticNightDarkness;
+    }
 
     // SCORED FACTOR CAPTURE. Always replace the custom light with a fresh
     // SunLight, restore the real-Sun camera, and settle/render before reading a
@@ -1766,11 +1810,13 @@ const RUN_DECK_FREE_CONTROL_SESSION = async (cfg) => {
       priorStrength: priorTerminatorGlowStrength,
       ...readTerminatorGlowStrength(),
     },
+    nightDarkening: readNightDarkening(),
     pins,
     dials,
     globeReadiness: { control: readiness },
     rungs,
     directionalDiagnosticRungs,
+    nightDarknessAlternate,
   };
 };
 
@@ -3729,6 +3775,9 @@ export async function runEclipseCloudResponseProbe() {
               directionalLightIntensity: DECK_FREE_DIRECTIONAL_LIGHT_INTENSITY,
               diagnosticTerminatorGlowStrength:
                 DECK_FREE_DIAGNOSTIC_TERMINATOR_GLOW_STRENGTH,
+              diagnosticNightDarkness: DECK_FREE_DIAGNOSTIC_NIGHT_DARKNESS,
+              diagnosticNightDarknessAlternate:
+                DECK_FREE_DIAGNOSTIC_NIGHT_DARKNESS_ALTERNATE,
               sunLightIntensity: DECK_FREE_SUN_LIGHT_INTENSITY,
             }),
         );

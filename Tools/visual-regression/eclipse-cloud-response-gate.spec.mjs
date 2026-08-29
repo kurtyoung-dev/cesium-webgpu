@@ -127,9 +127,12 @@ import {
   DECK_FREE_CONTROL_SESSION_PLAN,
   DECK_FREE_DEFAULT_TERMINATOR_GLOW_STRENGTH,
   DECK_FREE_DIAGNOSTIC_NDOTL_TARGETS,
+  DECK_FREE_DIAGNOSTIC_NIGHT_DARKNESS,
+  DECK_FREE_DIAGNOSTIC_NIGHT_DARKNESS_ALTERNATE,
   DECK_FREE_DIAGNOSTIC_TERMINATOR_GLOW_STRENGTH,
   DECK_FREE_DIRECTIONAL_LIGHT_INTENSITY,
   DECK_FREE_EXPECTED_LIGHTING_FADE,
+  DECK_FREE_EXPECTED_NIGHT_LAYER_COVERAGE,
   DECK_FREE_LIGHT_COLOR,
   DECK_FREE_LIGHTING_FADE_IN_DISTANCE,
   DECK_FREE_LIGHTING_FADE_OUT_DISTANCE,
@@ -141,6 +144,7 @@ import {
   computeDeckFreeDayNightDiffuse,
   computeDeckFreeDirectionalDiagnosticLuma,
   computeDeckFreeDiagnosticFrame,
+  computeDeckFreeEffectiveNightDarkness,
   computeDeckFreeLightingFade,
   computeDeckFreeTerminatorGlowLuma,
   foldDeckFreeControlSessions,
@@ -463,6 +467,23 @@ const DECK_FREE_DIAGNOSTIC_SITE = Object.freeze({
   longitudeDegrees: -24,
 });
 
+const deckFreePinnedEffectiveNightDarkness =
+  computeDeckFreeEffectiveNightDarkness(
+    DECK_FREE_DIAGNOSTIC_NIGHT_DARKNESS,
+    DECK_FREE_EXPECTED_NIGHT_LAYER_COVERAGE,
+  );
+const deckFreeAlternateEffectiveNightDarkness =
+  computeDeckFreeEffectiveNightDarkness(
+    DECK_FREE_DIAGNOSTIC_NIGHT_DARKNESS_ALTERNATE,
+    DECK_FREE_EXPECTED_NIGHT_LAYER_COVERAGE,
+  );
+
+const deckFreeNightDarkeningEvidence = (nightDarkness) => ({
+  publicValue: nightDarkness,
+  tileProviderValue: nightDarkness,
+  imageryLayerCount: 0,
+});
+
 const deckFreeLightingFadeEvidence = () => {
   const cameraDistance = 6_362_245;
   const outDistance = DECK_FREE_LIGHTING_FADE_OUT_DISTANCE;
@@ -524,6 +545,9 @@ const freshDeckFreeSessions = (rungs) =>
       captureSequence: "directional-diagnostic-then-fresh-sun-scored",
       lighting: { lightingFade: deckFreeLightingFadeEvidence() },
       light: deckFreeLightReadback("SunLight", false),
+      nightDarkening: deckFreeNightDarkeningEvidence(
+        DECK_FREE_DIAGNOSTIC_NIGHT_DARKNESS,
+      ),
       terminatorGlow: {
         supported: true,
         priorStrength: DECK_FREE_DEFAULT_TERMINATOR_GLOW_STRENGTH,
@@ -569,6 +593,7 @@ const freshDeckFreeSessions = (rungs) =>
           DECK_FREE_DIAGNOSTIC_SITE.longitudeDegrees,
           ndotlTarget,
           DECK_FREE_DIAGNOSTIC_TERMINATOR_GLOW_STRENGTH,
+          deckFreePinnedEffectiveNightDarkness,
         );
         return {
           target: rung.target,
@@ -592,6 +617,7 @@ const freshDeckFreeSessions = (rungs) =>
             ndotlTarget,
             DECK_FREE_EXPECTED_LIGHTING_FADE,
             DECK_FREE_DIAGNOSTIC_TERMINATOR_GLOW_STRENGTH,
+            deckFreePinnedEffectiveNightDarkness,
           ),
           samples: 20000,
           eclipseEnabled: planned.eclipseEnabled,
@@ -615,8 +641,40 @@ const freshDeckFreeSessions = (rungs) =>
           terminatorGlowStrength: DECK_FREE_DIAGNOSTIC_TERMINATOR_GLOW_STRENGTH,
           terminatorGlowTileProviderStrength:
             DECK_FREE_DIAGNOSTIC_TERMINATOR_GLOW_STRENGTH,
+          nightDarkening: deckFreeNightDarkeningEvidence(
+            DECK_FREE_DIAGNOSTIC_NIGHT_DARKNESS,
+          ),
         };
       }),
+      nightDarknessAlternate: {
+        target: rungs[0].target,
+        iso: rungs[0].iso,
+        captureRole: "diagnostic-directional-night-darkness",
+        diagnosticOnly: true,
+        ndotlTarget: DECK_FREE_DIAGNOSTIC_NDOTL_TARGETS[0],
+        mean: computeDeckFreeDirectionalDiagnosticLuma(
+          DECK_FREE_DIAGNOSTIC_NDOTL_TARGETS[0],
+          DECK_FREE_EXPECTED_LIGHTING_FADE,
+          DECK_FREE_DIAGNOSTIC_TERMINATOR_GLOW_STRENGTH,
+          deckFreeAlternateEffectiveNightDarkness,
+        ),
+        samples: 20000,
+        nightDarkening: deckFreeNightDarkeningEvidence(
+          DECK_FREE_DIAGNOSTIC_NIGHT_DARKNESS_ALTERNATE,
+        ),
+        light: deckFreeLightReadback(
+          "DirectionalLight",
+          true,
+          computeDeckFreeDiagnosticFrame(
+            DECK_FREE_DIAGNOSTIC_SITE.latitudeDegrees,
+            DECK_FREE_DIAGNOSTIC_SITE.longitudeDegrees,
+            DECK_FREE_DIAGNOSTIC_NDOTL_TARGETS[0],
+            DECK_FREE_DIAGNOSTIC_TERMINATOR_GLOW_STRENGTH,
+            deckFreePinnedEffectiveNightDarkness,
+          ).emittedDirectionWC,
+        ),
+        terminatorGlowStrength: DECK_FREE_DIAGNOSTIC_TERMINATOR_GLOW_STRENGTH,
+      },
     };
   });
 
@@ -4109,9 +4167,13 @@ test("F2 the probe follows the pinning doctrine it documents", () => {
 
   const captureAudit = eclipseCaptureStaticFailures(probe);
   assert.deepEqual(captureAudit.failures, []);
+  // 5 -> 6 (Q-78): the deck-free session gained ONE deliberate capture, the
+  // night-darkness flow-through leg at rung 0 — same light, same camera, a
+  // second pinned floor. It goes through `pin.capture` like every other site,
+  // so the boundary is unchanged; only the count moved.
   assert.equal(
     captureAudit.directPinCaptures,
-    5,
+    6,
     "every direct pin capture site stays inside the AST-enforced boundary",
   );
   assert.match(
@@ -4195,9 +4257,10 @@ test("F2b the eclipse-local AST guard rejects floating, readback, and extra-capt
       "extra documentary capture",
     ),
   );
+  // 6 -> 7 with the Q-78 flow-through leg in the baseline.
   assert.equal(
     extraDocumentaryCapture.directPinCaptures,
-    6,
+    7,
     "a second documentary capture cannot hide behind an awaited call",
   );
   assert.ok(
@@ -6463,33 +6526,93 @@ test("K8 the complete DirectionalLight discriminator rejects omitted terms, Sun 
   assert.equal(saturatedRealSunVerdict.maximumRawDistance, 0);
   assert.equal(saturatedRealSunVerdict.litSurfaceNonVacuous, true);
 
-  // The exact fresh-v3 artifact (run bef98b53, SHA-256 63ab81ab...b20293)
-  // executes the full source expression, not baseColor*diffuse alone. The
-  // independent model explains every rung to <0.0012 without a band change.
-  const freshV3Observed = [
-    0.3146870588234545, 0.4667945098038767, 0.6099576470587704,
-    0.7514533333337392,
+  // The observed artifact, re-pointed at the CURRENT shipped fragment.
+  //
+  // The earlier pin was the fresh-v3 run bef98b53 (SHA-256 63ab81ab...b20293),
+  // whose four means were 0.3146870588234545 / 0.4667945098038767 /
+  // 0.6099576470587704 / 0.7514533333337392 — the same four rungs before the
+  // procedural night floor reached the surface. Those numbers are kept here as
+  // history, not as an expectation: they are what a globe with the floor at
+  // the identity renders, and the floor is no longer at the identity.
+  //
+  // These are Edge tranche 3d (2026-08-29, `--serve-built`, served md5 ==
+  // disk md5), WebGPU, four ABBA sessions, ON and OFF bit-identical:
+  // `output/edge-tranche3d-2026-08-29/J4-eclipse-cloud-response-report.json`
+  // → `webgpuCloudLanes.deckFreeControl.directionalDiagnostic[i].offA`.
+  // The closed form with the floor explains all four to < 0.0016.
+  const observedShipped = [
+    0.1146870588235741, 0.20012784313720947, 0.3315262745099332,
+    0.5094329411766432,
   ];
-  const freshV3 = freshDeckFreeSessions(run.cloudLanes.rungs);
-  for (const session of freshV3) {
-    for (let index = 0; index < freshV3Observed.length; index++) {
-      session.directionalDiagnosticRungs[index].mean = freshV3Observed[index];
+  const observed = freshDeckFreeSessions(run.cloudLanes.rungs);
+  for (const session of observed) {
+    for (let index = 0; index < observedShipped.length; index++) {
+      session.directionalDiagnosticRungs[index].mean = observedShipped[index];
     }
   }
-  const freshV3Verdict = fold(freshV3);
-  assert.equal(freshV3Verdict.diagnosticPixelTolerance, 0.008);
-  assert.equal(freshV3Verdict.litSurfaceNonVacuous, true);
+  const observedVerdict = fold(observed);
+  assert.equal(observedVerdict.diagnosticPixelTolerance, 0.008);
+  assert.equal(observedVerdict.litSurfaceNonVacuous, true);
   assert.deepEqual(
-    freshV3Verdict.directionalDiagnostic.map((entry) =>
+    observedVerdict.directionalDiagnostic.map((entry) =>
       Number(entry.expectedOff.toFixed(6)),
     ),
-    [0.31549, 0.467381, 0.611103, 0.750964],
+    [0.11549, 0.200714, 0.331103, 0.510964],
   );
   assert.ok(
-    freshV3Verdict.directionalDiagnostic.every(
+    observedVerdict.directionalDiagnostic.every(
       (entry, index) =>
-        Math.abs(entry.expectedOff - freshV3Observed[index]) < 0.0012,
+        Math.abs(entry.expectedOff - observedShipped[index]) < 0.0016,
     ),
+  );
+  // The stale closed form misses every one of those rungs by more than 0.2 —
+  // twenty-five times the band. This is the Q-78 red, reproduced.
+  assert.ok(
+    observedVerdict.directionalDiagnostic.every((entry, index) => {
+      const stale =
+        DECK_FREE_RAW_BASE_COLOR_LUMA * entry.expectedDiffuse +
+        entry.expectedTerminatorGlowLuma;
+      return stale - observedShipped[index] > 0.2;
+    }),
+  );
+
+  // Mutant: an oracle that omits the night floor is the stale expectation, and
+  // it must be rejected against those same observed pixels.
+  const missingNightFloor = freshDeckFreeSessions(run.cloudLanes.rungs);
+  for (const session of missingNightFloor) {
+    for (const diagnostic of session.directionalDiagnosticRungs) {
+      const frame = computeDeckFreeDiagnosticFrame(
+        DECK_FREE_DIAGNOSTIC_SITE.latitudeDegrees,
+        DECK_FREE_DIAGNOSTIC_SITE.longitudeDegrees,
+        diagnostic.ndotlTarget,
+        DECK_FREE_DIAGNOSTIC_TERMINATOR_GLOW_STRENGTH,
+        deckFreePinnedEffectiveNightDarkness,
+      );
+      diagnostic.mean =
+        DECK_FREE_RAW_BASE_COLOR_LUMA * frame.diffuse +
+        frame.terminatorGlowLuma;
+      assert.ok(diagnostic.mean > 0 && diagnostic.samples > 0);
+    }
+  }
+  const missingNightFloorVerdict = fold(missingNightFloor);
+  assert.equal(missingNightFloorVerdict.litSurfaceNonVacuous, false);
+  assert.match(
+    missingNightFloorVerdict.nonVacuityReasons.join("\n"),
+    /do not execute DAYNIGHT diffuse/,
+  );
+
+  // Converse: a surface that ignores the night uniform returns the primary
+  // pixel under the alternate pin, and the flow-through leg catches it.
+  const deafToNightUniform = freshDeckFreeSessions(run.cloudLanes.rungs);
+  for (const session of deafToNightUniform) {
+    session.nightDarknessAlternate.mean =
+      session.directionalDiagnosticRungs[0].mean;
+  }
+  const deafVerdict = fold(deafToNightUniform);
+  assert.equal(deafVerdict.litSurfaceNonVacuous, false);
+  assert.match(
+    deafVerdict.nonVacuityReasons.join("\n"),
+    /not resolvable in the pixels/,
   );
 
   // Mutant: an oracle that omits the additive glow would recreate the false
@@ -6503,8 +6626,12 @@ test("K8 the complete DirectionalLight discriminator rejects omitted terms, Sun 
         DECK_FREE_DIAGNOSTIC_SITE.longitudeDegrees,
         diagnostic.ndotlTarget,
         DECK_FREE_DIAGNOSTIC_TERMINATOR_GLOW_STRENGTH,
+        deckFreePinnedEffectiveNightDarkness,
       );
-      diagnostic.mean = DECK_FREE_RAW_BASE_COLOR_LUMA * frame.diffuse;
+      diagnostic.mean =
+        DECK_FREE_RAW_BASE_COLOR_LUMA *
+        frame.nightDarkeningMultiplier *
+        frame.diffuse;
       assert.ok(diagnostic.mean > 0 && diagnostic.samples > 0);
     }
   }
@@ -7031,6 +7158,20 @@ test("K11 baseColor, fade, and exact light classes are read back on every fresh 
   assert.equal(DECK_FREE_TERMINATOR_GLOW_STRENGTH, 0.15);
   assert.equal(DECK_FREE_DEFAULT_TERMINATOR_GLOW_STRENGTH, 0);
   assert.equal(DECK_FREE_DIAGNOSTIC_TERMINATOR_GLOW_STRENGTH, 1);
+  assert.equal(DECK_FREE_DIAGNOSTIC_NIGHT_DARKNESS, 0.15);
+  assert.equal(DECK_FREE_DIAGNOSTIC_NIGHT_DARKNESS_ALTERNATE, 0.6);
+  assert.equal(DECK_FREE_EXPECTED_NIGHT_LAYER_COVERAGE, 0);
+  // The night floor is REQUIRED, not defaulted: it entered the shipped
+  // fragment while this closed form still read `base * diffuse + glow`, and a
+  // defaulted identity is exactly how that omission would return.
+  assert.equal(
+    computeDeckFreeDirectionalDiagnosticLuma(
+      0,
+      DECK_FREE_EXPECTED_LIGHTING_FADE,
+      DECK_FREE_DIAGNOSTIC_TERMINATOR_GLOW_STRENGTH,
+    ),
+    null,
+  );
   assert.deepEqual(
     DECK_FREE_DIAGNOSTIC_NDOTL_TARGETS.map((ndotl) =>
       Number(
@@ -7038,10 +7179,11 @@ test("K11 baseColor, fade, and exact light classes are read back on every fresh 
           ndotl,
           DECK_FREE_EXPECTED_LIGHTING_FADE,
           DECK_FREE_DIAGNOSTIC_TERMINATOR_GLOW_STRENGTH,
+          deckFreePinnedEffectiveNightDarkness,
         ).toFixed(6),
       ),
     ),
-    [0.31549, 0.467381, 0.611103, 0.750964],
+    [0.11549, 0.200714, 0.331103, 0.510964],
   );
   assert.equal(
     computeDeckFreeTerminatorGlowLuma(
@@ -7183,6 +7325,7 @@ test("K11 baseColor, fade, and exact light classes are read back on every fresh 
     DECK_FREE_DIAGNOSTIC_SITE.longitudeDegrees,
     DECK_FREE_DIAGNOSTIC_NDOTL_TARGETS[0],
     DECK_FREE_DIAGNOSTIC_TERMINATOR_GLOW_STRENGTH,
+    deckFreePinnedEffectiveNightDarkness,
   );
   staleDirectionalAtScore[1].rungs[0].light = deckFreeLightReadback(
     "DirectionalLight",
