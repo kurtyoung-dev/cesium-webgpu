@@ -108,6 +108,15 @@ corrected with it.
 The remaining ~30 medium and all low survivors are enumerated in §5 with their lane column reading
 QUEUED; they dispatch after Q-1…Q-10, batched by file so one Sol dispatch closes several small
 findings in the same module. C1's returning findings append here as a dated addendum.
+### Engine window opens: Q130 lands with two seat corrections and two seat mistakes (2026-08-29 18:15 machine clock)
+
+| | Row | Disposition |
+|---|---|---|
+| 8080 HOLD | LIFTED by the maintainer | the engine window runs: Q130 (Batch 1322) -> Q120 -> Q-88 -> Q-142 -> DM-07 -> gulp build + build-sandcastle, then the tranches |
+| Q130 / Q-130 / Q-131 / Q-132 / Q-132b | LANDED (Batch 1322) | two tsc errors on main that the clone review did not see (main had not moved on those files, so they were the lane's): the edges-pass call sites passed CesiumAnyDrawCommand[] to a binder typed on the optional-variant interface (seat: cast at both call sites with the type import), and the uniform-overflow path called subarray on a value that may be a plain array (seat: element-wise prefix copy). Gates after the fixes: tsc non-TS2307 0, eslint 0, C16 0, q130 18/18, q132 19/19, pipeline-key-aliasing 63/63, purpose-header 18/18 |
+| SEAT DEFECT 1 | FIXED (Batch 1323) | git add packages swept the HELD 4096 sky-box tier (twelve textures + SkyBoxResolutionPolicy.ts) into 1322; 1323 removes the textures from the index and restores the policy file; the held edit stays in the worktree for the tier ruling. Rule restated: stage by explicit path, never a directory, while held files exist |
+| SEAT DEFECT 2 | FIXED (Batch 1324) | 1322 was committed from a manual gate tail that skipped the scripted spec gate, so q131-edge-pipeline-matches-pass landed 15/16: its C2 leg slices 400 characters after the fallback comment and the cast pushed the third argument out of the window - a source-shape assertion (Principle 10 weakness, noted); the window is widened with the reason in a comment, 16/16. Rule restated: the landing script's gates are the gates; no manual tails |
+
 ### Seat handoff to Codex written; the Codex usage reset makes it the orchestrator of record (2026-08-29 18:05 machine clock)
 
 | | Row | Disposition |

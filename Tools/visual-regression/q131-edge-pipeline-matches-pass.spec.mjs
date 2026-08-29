@@ -292,7 +292,10 @@ test("C2: the scene-FB fallback branch binds the single-target variant", () => {
     "// to the pre-Batch-44 path; no edge textures are populated.",
   );
   assert.ok(fallback > 0, "the fallback branch comment moved");
-  const region = DISPATCHER.slice(fallback, fallback + 400);
+  // The call now carries a typed cast and a comment; the window must reach
+  // the third argument. A wider window keeps this a behaviour check on the
+  // fallback branch rather than a pin on its exact layout.
+  const region = DISPATCHER.slice(fallback, fallback + 900);
   assert.match(region, /bindEdgePipelinesForPass\(/);
   assert.match(region, /\bfalse,/);
 });
