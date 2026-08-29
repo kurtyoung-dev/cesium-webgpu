@@ -328,9 +328,12 @@ test("C4: the pyramid is the Natural Earth II layout, tile for tile", () => {
     format: /<TileFormat ([^/]*)\/>/.exec(xml)?.[1],
     bbox: /<BoundingBox ([^/]*)\/>/.exec(xml)?.[1],
     origin: /<Origin ([^/]*)\/>/.exec(xml)?.[1],
-    orders: tileSetOrders(xml),
   });
   assert.deepEqual(shape(night), shape(day));
+  // The night pyramid is one level deeper than NE2 since the level-three bake
+  // (R-2026-08-28-8); NE2's levels must be a prefix of it, not equal to it.
+  const dayOrders = tileSetOrders(day);
+  assert.deepEqual(tileSetOrders(night).slice(0, dayOrders.length), dayOrders);
 });
 
 test("C5: the provider derives its maximumLevel from that last order", () => {
