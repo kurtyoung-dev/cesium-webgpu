@@ -385,17 +385,26 @@ function resolvePublicationArtifact(manifestPath, expected) {
   };
 }
 
-function loadPrerequisites(options) {
+// Exported (Q-96) so the schema-pin fix can be exercised directly against
+// on-disk fixture publications, with no server and no browser — the same
+// resolution path `runCoordinator` calls before it launches any leg.
+export function loadPrerequisites(options) {
   const prerequisites = {
     terrain: resolvePublicationArtifact(options.terrainPublication, {
       kind: "terrain",
       producer: "c12-29-s5-terrain-selection",
       schema: "c12-29-s5-terrain-selection-evidence-v10",
     }),
+    // Q-96 — this pin must track lib/c12-29-s5-dense-cost-gate.mjs's
+    // C12_29_S5_DENSE_PREREQUISITES.nasa.schema exactly. It was left at v4
+    // when ruling R-2026-08-14-8 (Batch 1048) advanced the gate to v5, so no
+    // NASA-SVS artifact could ever satisfy both this check and
+    // validateC1229S5DensePrerequisites below — resolvePublicationArtifact
+    // requires v4, the validator requires v5.
     nasa: resolvePublicationArtifact(options.nasaPublication, {
       kind: "nasa",
       producer: "c12-29-s5-svs-footprint",
-      schema: "c12-29-s5-svs-5073-footprint-evidence-v4",
+      schema: "c12-29-s5-svs-5073-footprint-evidence-v5",
     }),
   };
   const validation = validateC1229S5DensePrerequisites(prerequisites);
@@ -3643,7 +3652,20 @@ async function runCoordinator(options) {
       sha256: sha256(workloadBytes),
       value: workload,
     },
-    prerequisites,
+    // Q-96 — `prerequisites` is still its `null` initializer whenever the
+    // structural refusal fired before `loadPrerequisites` returned (missing
+    // publication, schema mismatch, etc.). `campaignShapeReasons` in the gate
+    // lib requires `isObject(report.prerequisites)` unconditionally — even
+    // for a STRUCTURAL report — so a bare `null` failed
+    // `validateC1229S5DenseFinalArtifact` ("campaign envelope differs")
+    // AFTER `foldC1229S5DenseCostGate` had already correctly computed
+    // status: "STRUCTURAL"/exitCode: 3, turning a legitimate structural
+    // refusal into an uncaught exception with no published artifact and the
+    // owned RUNNING lock never released. The two-key shape below satisfies
+    // both `isObject` and `validateDensePrerequisites`'s `exactKeys` check,
+    // so the fold's own reasons (a `null` terrain/nasa correctly fails
+    // `validatePrerequisite`) reach the published report intact.
+    prerequisites: prerequisites ?? { terrain: null, nasa: null },
     prerequisitesSha256,
     provenance: {
       stable: sameProvenance(startValue, endValue),

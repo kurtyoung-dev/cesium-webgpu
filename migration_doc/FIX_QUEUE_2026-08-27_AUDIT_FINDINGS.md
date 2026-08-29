@@ -108,6 +108,16 @@ corrected with it.
 The remaining ~30 medium and all low survivors are enumerated in §5 with their lane column reading
 QUEUED; they dispatch after Q-1…Q-10, batched by file so one Sol dispatch closes several small
 findings in the same module. C1's returning findings append here as a dated addendum.
+### INSTR2 LANDED - Batch 1279 (2026-08-29 ~03:35 machine clock): Q-95, Q-96, Q-98, Q-99
+
+| | Row | Disposition |
+|---|---|---|
+| Q-95 | FIXED (executor confirmation owed: gulp test on a stale-barrel tree keeps the bundle after a failed build and regenerates the barrel) | gulp test builds the engine barrel like build and passes clean:false so a failed test build cannot delete a servable bundle (wipe extracted to prepareCesiumOutputDirectory; release output byte-identical - no caller passes clean); test-build-infra widened to all safe scripts/__tests__ specs (52/52) |
+| Q-96 | FIXED | dense-cost NASA-SVS schema pin v4 -> v5 + the prerequisites:null validator bug; structural refusal writes a REFUSED artifact and releases the lock on every ACCEPTED status (the :~3690 strand for other invalid artifacts is pre-existing, recorded) |
+| Q-98 | FIXED | lib/served-build-preflight.mjs compares Cesium.js AND the Sandcastle2 importmap bundle served-vs-disk; body read now inside the guard (truncated response -> ok:false, 6/6); documented in DEBUGGING_GUIDE --serve-built |
+| Q-99 | FIXED | multiview refuses before launchBrowser on source-identity drift via the existing artifact/lock machinery; positive path proven (matching map reaches launch; always-refuse mutant red); test 5 harness dependence removed - the probe gained an additive `buildSourceMapPath` injection seam (unreviewed but additive; default = the real path; no existing caller changes) and the test stages a decoy matching build at the real path while pointing the probe at an asserted-absent injected path (7/7 with and without an ambient build; ignored-seam mutant reproduces the seat's red) |
+| LANDING | gates | apply --3way clean; all hashes ok; lane specs 25/25 across four files; test-build-infra 52/52; eslint/prettier 0; FULL BUILD green at the seat (build script changed; md5 dea8ee793241 then 3cb2a44ca89c with Q-62); catalog regenerated after staging |
+
 ### Q-62 LANDED - Batch 1278 (2026-08-29 ~03:30 machine clock): the sky shell no longer erases the stars at night
 
 | | Row | Disposition |

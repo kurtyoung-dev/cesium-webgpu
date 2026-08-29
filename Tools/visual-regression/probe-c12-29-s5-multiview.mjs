@@ -1628,12 +1628,42 @@ function sourcePathsByName() {
   );
 }
 
-function collectC1229S5MultiviewProvenanceSnapshot() {
+/**
+ * Q-99 — decides whether a collected `buildSourceIdentity` snapshot
+ * (`inspectBuildSourceIdentity`'s return value) permits launching a browser,
+ * or must refuse first. Pure and synchronous — no fs, no network, no
+ * browser — so the decision is unit-testable in isolation from the rest of
+ * `runC1229S5MultiviewProbe`, which needs a live build and a live server to
+ * exercise end to end.
+ *
+ * @param {object} buildSourceIdentity
+ * @returns {{ok: boolean, reasons: Array<string>}}
+ */
+export function evaluateC1229S5MultiviewSourcePreflight(buildSourceIdentity) {
+  if (buildSourceIdentity?.ok === true) {
+    return { ok: true, reasons: [] };
+  }
+  const reasons = Array.isArray(buildSourceIdentity?.reasons)
+    ? buildSourceIdentity.reasons
+    : ["build source identity is missing or malformed"];
+  return { ok: false, reasons };
+}
+
+// The coordinator's fix (post-review): `sourceMapPath` is now a
+// parameter, not a closed-over module constant, so a caller can point the
+// preflight at a path that is DETERMINISTICALLY absent/drifted regardless
+// of whether the real `Build/CesiumUnminified/index.js.map` happens to
+// exist in the tree the test runs in. Defaults to the module's real build
+// path, so every caller that does not override it keeps today's exact
+// behavior (production callers never pass an override).
+function collectC1229S5MultiviewProvenanceSnapshot(
+  sourceMapPath = buildSourceMapPath,
+) {
   return {
     local: snapshotEvidenceFiles(sourcePathsByName()),
     servedEntry: fingerprintEvidenceFile(buildEntryPath),
     buildSourceIdentity: inspectBuildSourceIdentity({
-      sourceMapPath: buildSourceMapPath,
+      sourceMapPath,
       sourceFiles: C12_29_S5_MULTIVIEW_BUILD_SOURCE_FILES.map((file) =>
         path.join(repositoryRoot, file),
       ),
@@ -4291,6 +4321,13 @@ export async function runC1229S5MultiviewProbe(options = {}) {
     options.launchBrowser ??
     ((launchOptions) => chromium.launch(launchOptions));
   const runId = options.runId ?? randomUUID();
+  // Narrow test-only injection seam (post-review fix): overrides which
+  // source map the build-source-identity preflight reads, so a test can
+  // simulate "build absent"/"build drifted" deterministically instead of
+  // depending on whether this tree happens to have a real build on disk.
+  // Production callers never pass this; it defaults to the real path.
+  const buildSourceMapPathForRun =
+    options.buildSourceMapPath ?? buildSourceMapPath;
   const paths = createC1229S5MultiviewArtifactPaths(
     runId,
     options.outputDirectory,
@@ -4309,7 +4346,38 @@ export async function runC1229S5MultiviewProbe(options = {}) {
   try {
     ownership = beginC1229S5MultiviewEvidenceRun(paths, runId, operations);
     const startedAt = ownership.running.startedAt;
-    const start = collectC1229S5MultiviewProvenanceSnapshot();
+    const start = collectC1229S5MultiviewProvenanceSnapshot(
+      buildSourceMapPathForRun,
+    );
+    // Q-99 — refuse BEFORE launching a browser when the served build
+    // disagrees with the current source tree. `start.buildSourceIdentity`
+    // (inspectBuildSourceIdentity, shared with the replacement-device probe)
+    // was already being collected here, but only ever folded into the final
+    // report's descriptive `provenance` field — a mismatch was recorded, not
+    // enforced, so the probe launched two browsers against a build the
+    // source tree had already moved past (the exact hazard the
+    // replacement-device preflight caught mid-tranche at Batch 1270, when
+    // this probe's own preflight would have stayed silent). Throwing here,
+    // before `browser` is assigned, routes through the SAME catch-all at the
+    // bottom of this function that every other multiview failure uses: it
+    // publishes a structured ERROR artifact (createC1229S5MultiviewErrorArtifact)
+    // and releases the owned RUNNING lock, because `ownership` is already
+    // set and `browser` is still undefined.
+    const sourcePreflight = evaluateC1229S5MultiviewSourcePreflight(
+      start.buildSourceIdentity,
+    );
+    if (!sourcePreflight.ok) {
+      const preflightError = new Error(
+        `[structural] build source preflight failed: ${sourcePreflight.reasons.join("; ")}`,
+      );
+      preflightError.c1229MultiviewDiagnostic = {
+        renderer: null,
+        stage: "preflight",
+        timeoutMs: options.watchdogMs ?? WATCHDOG_MS,
+        page: null,
+      };
+      throw preflightError;
+    }
     browser = await launchBrowser({
       channel: process.env.PROBE_BROWSER_CHANNEL || "msedge",
       headless: process.env.PROBE_HEADED !== "1",
@@ -4356,7 +4424,9 @@ export async function runC1229S5MultiviewProbe(options = {}) {
     const closing = browser;
     browser = undefined;
     const browserCleanup = await closeBrowserOrThrow(closing);
-    const end = collectC1229S5MultiviewProvenanceSnapshot();
+    const end = collectC1229S5MultiviewProvenanceSnapshot(
+      buildSourceMapPathForRun,
+    );
     const provenance = composeC1229S5MultiviewProvenance(start, end, sessions);
     for (const session of sessions) delete session.servedEntry;
     const report = {

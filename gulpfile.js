@@ -1024,8 +1024,28 @@ export async function test() {
         await buildWidgets({});
       }
     } else {
+      // Q-95 — the combined lane bundles `Source/Cesium.js`, whose bare
+      // `@cesium/engine` / `@cesium/widgets` specifiers resolve straight to
+      // `packages/engine/index.js` / `packages/widgets/index.js` on disk (the
+      // workspace symlink, not a Build/ output). `buildCesium` regenerates the
+      // Cesium.js barrel itself on every call but never touches those package
+      // barrels, so a source file added/removed since the last full `gulp
+      // build` leaves them disagreeing and esbuild fails with "No matching
+      // export". Regenerate both first, exactly as the plain `build` task
+      // does (`buildEngine` then `buildWidgets` then `buildCesium`).
+      await buildEngine({});
+      await buildWidgets({});
       await buildCesium({
         iife: true,
+        // Q-95 — `buildCesium` otherwise wipes `outputDirectory` up front and
+        // rebuilds into the empty directory; if the rebuild throws (as above)
+        // before writing Cesium.js/index.js/index.js.map, the tree is left
+        // with no servable bundle at all even though earlier steps in the
+        // same call already repopulated ThirdParty/Widgets/Workers into the
+        // wiped directory. `clean: false` keeps the last successful build's
+        // files on disk — and therefore servable — until this run's own
+        // write succeeds and overwrites them.
+        clean: false,
       });
     }
   }

@@ -2004,6 +2004,37 @@ export const buildWidgets = async (options) => {
 };
 
 /**
+ * Q-95 — prepares `outputDirectory` for a `buildCesium` rebuild: wipes it
+ * up front when `clean` is true (today's default — every existing caller:
+ * `build`, `buildRelease`, `buildAllVariants`, `buildWatch`), or merely
+ * ensures it exists when `clean` is false, leaving whatever is already
+ * there for the steps that follow to overwrite as each one succeeds.
+ *
+ * `gulp test`'s combined lane passes `clean: false` because a build that
+ * throws partway through (e.g. `bundleCesiumJs`, on a barrel that
+ * disagrees with a freshly-regenerated `Source/Cesium.js`) used to leave
+ * `outputDirectory` with no `Cesium.js`/`index.js`/`index.js.map` at all —
+ * even though the CSS/workers steps that ran earlier in the SAME call had
+ * already repopulated `ThirdParty/`, `Widgets/`, `Workers/` into the
+ * directory this function had just wiped — so a failed test build left the
+ * tree unservable rather than merely red.
+ *
+ * Kept as small, pure filesystem logic — no esbuild, no network — so it is
+ * unit-testable without invoking a real build
+ * (`scripts/__tests__/prepareCesiumOutputDirectory.spec.mjs`).
+ *
+ * @param {string} outputDirectory
+ * @param {boolean} clean
+ */
+export function prepareCesiumOutputDirectory(outputDirectory, clean) {
+  if (clean) {
+    rimraf.sync(outputDirectory);
+  } else {
+    mkdirp.sync(outputDirectory);
+  }
+}
+
+/**
  * Build CesiumJS.
  *
  * @param {object} options
@@ -2019,6 +2050,7 @@ export const buildWidgets = async (options) => {
  * @param {BundleVariant} [options.variant="dual"] Which backend variant to bundle.
  * @param {boolean} [options.skipSharedAssets=false] When true, skips workers/CSS/specs/static-asset rebuilds — used by `buildAllVariants` after the dual variant has populated the shared output dirs.
  * @param {boolean} [options.metafile=false] When true, esbuild emits `metafile.json` next to the ESM bundle for use with `scripts/analyzeBuild.js`.
+ * @param {boolean} [options.clean=true] True to delete `outputDirectory` before rebuilding into it. Q-95 — pass `false` to keep the previous successful build's files (and therefore a servable bundle) on disk if this call throws before it finishes writing a replacement; every step that produces output still overwrites same-named files on success, so a clean rebuild still picks up newly added files. The only cost of `false` is that output for a REMOVED source file can linger until the next `clean: true` build.
  */
 export async function buildCesium(options) {
   const development = options.development ?? true;
@@ -2044,6 +2076,7 @@ export async function buildCesium(options) {
   // on the variant — namely the consolidated JS bundle — and the
   // gulp task copies the shared output dirs after.
   const skipSharedAssets = options.skipSharedAssets ?? false;
+  const clean = options.clean ?? true;
 
   // Generate Build folder to place build artifacts.
   mkdirp.sync("Build");
@@ -2074,7 +2107,7 @@ export async function buildCesium(options) {
       "Build",
       `Cesium${variantDirSuffix}${!minify ? "Unminified" : ""}`,
     );
-  rimraf.sync(outputDirectory);
+  prepareCesiumOutputDirectory(outputDirectory, clean);
 
   await writeFile(
     "Build/package.json",

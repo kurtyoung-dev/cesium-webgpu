@@ -1551,6 +1551,27 @@ a dirty-tree run may never claim source identity = tip.
 **Host.** The dev server binds the hostname `localhost`, which resolves to `::1` first on this
 machine — use `http://localhost:8080`, **never** `http://127.0.0.1:8080`.
 
+**Sandcastle2 pages need a SECOND preflight (Q-98).** Everything above proves
+`/Build/CesiumUnminified/Cesium.js` is attestable. A Sandcastle2 demo page never loads that file —
+`Apps/Sandcastle2/templates/bucket.html`'s importmap resolves `@cesium/engine` to
+`packages/engine/Build/Unminified/index.js`, a different route served through a different mechanism
+(the default dev server's in-memory esbuild context; a plain static disk read under `--serve-built`).
+A lane that preflights only the main bundle and then drives a Sandcastle2 demo (`eclipse-explorer`,
+any `packages/sandcastle/gallery/**` entry) has verified bytes the page never imports — this is what
+Edge tranche 3e-A's Q-3E-A-5 finding named. Use
+[`Tools/visual-regression/lib/served-build-preflight.mjs`](../Tools/visual-regression/lib/served-build-preflight.mjs)
+instead of re-rolling a `curl` + `md5sum` diagnostic (`diag-replacement-preflight.mjs` under
+`Tools/visual-regression/output/edge-tranche3e-a-2026-08-29/` is exactly that one-off, now
+superseded): `preflightServedBuildArtifacts({origin, repositoryRoot})` fetches
+`DEFAULT_SERVED_BUILD_ARTIFACTS` — `Build/CesiumUnminified/Cesium.js` **and**
+`packages/engine/Build/Unminified/index.js` — and md5-compares each to the same repo-relative path
+on disk, returning `{ok, artifacts}` with a per-artifact `{disk, served, match}` breakdown. `ok` is
+false if either artifact is stale, missing, or unreachable. Pass a narrower or wider `artifacts` list
+for a probe with different needs; `inspectServedBuildArtifact` checks one artifact at a time when a
+probe wants to fold the result into its own report shape rather than use the roll-up. Unit tests:
+`Tools/visual-regression/served-build-preflight.spec.mjs` (match / mismatch / missing, driven against
+a real loopback `node:http` server — no browser, no dev server).
+
 ### Boilerplate (matches `probe-saved-view.mjs`)
 
 ```javascript
