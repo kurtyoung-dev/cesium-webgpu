@@ -108,14 +108,20 @@ corrected with it.
 The remaining ~30 medium and all low survivors are enumerated in §5 with their lane column reading
 QUEUED; they dispatch after Q-1…Q-10, batched by file so one Sol dispatch closes several small
 findings in the same module. C1's returning findings append here as a dated addendum.
-### Q-152 wave-end gate runbook lands; Q-130-b in flight (2026-08-30 ~00:10 machine clock)
+### Timestamp correction: the seat's section times after ~13:30 were estimates that ran ahead of the machine clock (2026-08-29 16:35 machine clock, authoritative)
+
+| | Row | Disposition |
+|---|---|---|
+| CLOCK | CORRECTED | the machine clock read 16:33 EDT when the seat's headers said '2026-08-30 ~00:10'; 12 section headers written after the extension restart carried estimated times up to seven hours ahead (commit timestamps are correct). Headers are re-labelled from git commit times; every '~' time from ~13:35 onward is approximate to the commit that followed it. Rule restated for the seat: run date before writing a timestamp, never estimate |
+
+### Q-152 wave-end gate runbook lands; Q-130-b in flight (2026-08-29 ~16:30 machine clock)
 
 | | Row | Disposition |
 |---|---|---|
 | Q-152 | LANDED (Batch 1311; directed Sol fully pasted, seat-corrected, tools class) | Tools/wave-end-gate.mjs (npm run wave-end-gate): --wave required; refuses (exit 3, named reason) without a served build passing the preflight on both bundles, when the origin-rewrite helper is absent, or when --update-baselines is given without --reason; runs variant-smoke-test, the Sandcastle2 sweep per renderer and capture-and-diff as children with captured exit codes and wall time; writes output/wave-end/<wave>/receipt.json + summary.md with tip, served md5s, steps, baseline-update reason and a PASS/FAIL/REFUSED verdict; exits 0/2/3. Pure decisions exported; spec 7/7 incl. the reason-check mutant; runner home test-landing-rules. Seat corrections: Sol resolved the two helper modules at Tools/lib/ instead of Tools/visual-regression/lib/ (three sites) - fixed; dry-run now refuses on the preflight as designed when no served build is up. Its first real run is Wave 1's close-out after the engine window |
 | Q-130-b | directed Sol turn running (Hamfast; the first attempt was fed the wrong file by the seat's grep and correctly refused) | the analyzer lives inside q130-wgsl-derivative-uniformity.spec.mjs in the frozen q130 clone; the turn extracts it to lib/wgsl-derivative-uniformity.mjs, hardens it for the four missed shapes, and rewrites the spec with fixtures + a mutant; banks to land right after Q130 |
 
-### DM-07 passes review and is banked for the engine window; DX-11 closed by the seat (2026-08-29 ~23:40 machine clock)
+### DM-07 passes review and is banked for the engine window; DX-11 closed by the seat (2026-08-29 ~16:15 machine clock)
 
 | | Row | Disposition |
 |---|---|---|
@@ -124,13 +130,13 @@ findings in the same module. C1's returning findings append here as a dated adde
 | DX-11 | CLOSED (seat, docs) | stable-citation convention added to WORKER_ISOLATION_AND_BRANCH_HANDOFF.md 8f: briefs, cards and reviews cite file + function-or-unique-line, with the line number as a secondary hint; the Wave DX decompositions make raw line numbers meaningless |
 | Wave 1 close-out | what remains before the wave-end gate can run | engine window (Q130, Q120, Q-88, Q-142, DM-07) -> gulp build + build-sandcastle -> tranche 3e-F, tranche A (Q-148 + EAN-01 certification + Pippin browser acceptance), tranche B (Q-143 on probe-aec-perf), tranche C (Q-141/Q-142 legs), then the first wave-end gate receipt (R-2026-08-29-2; Q-152 runbook or the three tools by hand) |
 
-### Fix-up: the DM-01 probe landed without its purpose header (2026-08-29 ~23:20 machine clock)
+### Fix-up: the DM-01 probe landed without its purpose header (2026-08-29 ~16:05 machine clock)
 
 | | Row | Disposition |
 |---|---|---|
 | Batch 1307 defect | FIXED (Batch 1309) | Tools/visual-regression/probe-aec-perf.mjs landed without the @purpose / @status header the fleet contract (ruling M4) requires, so purpose-header-contract went 16/18 (C2 offender + C5 count 661 vs 662). The seat's landing gates for a NEW probe did not include the contract spec; the header is added and the contract is 18/18 again. Landing checklist amended: any batch that adds a probe-*.mjs or lib/*-gate.mjs runs purpose-header-contract.spec.mjs before commit (recorded in memory). A DX-class miss surfaced per the maintainer's directive: the gate exists but was not wired into the landing procedure - DX-02 (anti-re-accretion contract) should make it part of test-landing-rules so the seat cannot skip it |
 
-### Wave DX starts: DX-05 lands, DX-03 finds the catalog stale, DM-07 revision 3 delivered (2026-08-29 ~23:10 machine clock)
+### Wave DX starts: DX-05 lands, DX-03 finds the catalog stale, DM-07 revision 3 delivered (2026-08-29 ~16:00 machine clock)
 
 | | Row | Disposition |
 |---|---|---|
@@ -139,7 +145,7 @@ findings in the same module. C1's returning findings append here as a dated adde
 | DX-14 | PROPOSED to the maintainer (per the surface-issues directive) | regenerate TOOLING_CATALOG.md from git ls-files with status derived from each file's @purpose status tag (the M2 generator), list the BROKEN_STALE and archive-candidate files by exact path, and make the wave-end gate fail when the catalog and the tree disagree; then DX-03/DX-04 plan against truth | Sol-directed (bounded), awaiting go |
 | DM-07 revision 3 (Bilbo) | DELIVERED ~23:05: 16/16, the spec now executes the real updateWebGPUModel end to end; frozen; Denethor's pasted re-review running | LANE CLAIMS until the re-review |
 
-### Q-145 and DM-01 land (Batch 1307): the Sandcastle2 origin guard and the rebuilt AEC probe (2026-08-29 ~22:30 machine clock)
+### Q-145 and DM-01 land (Batch 1307): the Sandcastle2 origin guard and the rebuilt AEC probe (2026-08-29 ~15:45 machine clock)
 
 | | Row | Disposition |
 |---|---|---|
@@ -147,7 +153,7 @@ findings in the same module. C1's returning findings append here as a dated adde
 | DM-01 | LANDED (Batch 1307) | Tools/visual-regression/probe-aec-perf.mjs (Sol-authored, Sol-reviewed RETURN, Sol-corrected fully pasted): one page load per streaming lever applied before the first tileset and timed to Scene.renderReady; per-Pass command counts through an exported buildCellReport seam; one validated pick reused on both backends; interleaved backends; served-build preflight + origin-guard refusals (exit 3); element screenshot per cell; JSON + markdown receipts. Spec 14/14 incl. the seam-summing mutant. Runner home: test-readiness. Tranche B (Q-143) may now be briefed on it |
 | Wave 1 remaining | DM-07 revision 3 (Bilbo) in progress; Q-141 waits for it; Q-142 banked; Q-148 (tranche A) and Q-143 (tranche B) need a rebuilt served tree (Pippin's demo + Q-145 landed since the 07:44 build) - both wait for the engine window | the engine window itself waits for the maintainer's 8080 signal |
 
-### Wave DX queued next by maintainer directive; the catalog's five pending rulings answered (2026-08-29 ~21:45 machine clock)
+### Wave DX queued next by maintainer directive; the catalog's five pending rulings answered (2026-08-29 ~15:30 machine clock)
 
 | | Row | Disposition |
 |---|---|---|
@@ -155,7 +161,7 @@ findings in the same module. C1's returning findings append here as a dated adde
 | WAVE DX | QUEUED NEXT (after Q-145 / DM-07 / DM-01 land) | DX-01 probe runtime (Opus, M); DX-02 anti-re-accretion contract (Sonnet); DX-03 archive the ~35 HIGH files (Sonnet); DX-04 MED census (Sol) then move (Sonnet); DX-05 exemplars + instrument-defect promotion (Sonnet, XS); DX-06 dedup by family in batches (Sonnet); DX-07..10 decompositions of the eleven >1,000-line renderer files (Opus, held on their owning lanes and on Opus capacity); DX-11 stable-citation convention; DX-12 spec-homes measured pass (executes Q-139-D1); DX-13 ledger rotation PROPOSED. Gates M-DX-1 (runner names) and M-DX-2 (rotation) |
 | Probe tracking | ANSWERED | the maintainer asked whether a probe-tracking doc exists: yes - TOOLING_CATALOG.md (generated 2026-08-15 by a 16-agent audit, regenerated at every landing: 1,012 files, 799 ACTIVE, 186 investigation artifacts, family map, supersession chains, archive candidates, org proposal) and the DEBUGGING_GUIDE probe inventory. What was missing was the execution of its M1-M5, now ruled |
 
-### Re-reviews: both revisions returned again on narrower grounds; DM-01 corrected and banked (2026-08-29 ~21:00 machine clock)
+### Re-reviews: both revisions returned again on narrower grounds; DM-01 corrected and banked (2026-08-29 ~15:15 machine clock)
 
 | | Row | Disposition |
 |---|---|---|
@@ -164,7 +170,7 @@ findings in the same module. C1's returning findings append here as a dated adde
 | DM-01 | CORRECTED (Frodo-the-second, Sol, fully pasted, zero file reads) and BANKED (scratchpad/land-dm01) | element screenshot per cell; buildCellReport extracted as an exported pure report seam used by runCell and tested with a three-pass fixture plus a seam-summing mutant; behavioural tests for every exported decision function; spec 14/14 (the seat made the mutant needle whitespace-tolerant after prettier wrapped the call). Lands with Q-145 (imports its helper) |
 | Sol turns, evening tally | 6 reviews (all returned real defects), 2 corrections succeeded when fully pasted (DM-01, Pippin B4), 2 failed when allowed to read files (Merry, Bilbo corrections) | the no-file-reads template is now the default for every directed turn |
 
-### Three Sol reviews returned; two Sol correction turns failed by shape; corrections go back to the authoring lanes (2026-08-29 ~19:30 machine clock)
+### Three Sol reviews returned; two Sol correction turns failed by shape; corrections go back to the authoring lanes (2026-08-29 ~14:55 machine clock)
 
 | | Row | Disposition |
 |---|---|---|
@@ -172,14 +178,14 @@ findings in the same module. C1's returning findings append here as a dated adde
 | Q-145 (Merry) / DM-07 (Bilbo) | corrections moved back to the authoring Sonnet lanes | the directed-Sol correction turns for both spent their entire budget re-reading files through pwsh Get-Content -Raw and emitted no deliverable; the Sonnet lanes were resumed by message with their reviewers' exact blockers (review files scratchpad/review-merry.md, review-bilbo.md) |
 | SOL SHAPE RULE | recorded (memory + this ledger) | directed Sol at xhigh succeeds on BOUNDED rows and on station-3 REVIEWS (five reviews today, real defects each time) and fails on cross-file CORRECTIONS against a returned review. The codex CLI runs commands through PowerShell on Windows, so every read is a whole-file Get-Content -Raw; the template now says: everything you need is pasted, do not read files; if unavoidable, node -e with fs.readFileSync on a line range. Maintainer's question answered: yes, prefer node everywhere, avoid pwsh-shaped tasks for Sol |
 
-### Pippin lands (Batch 1303); Merry RETURNED by Sol review and re-run; the two rulings recorded (2026-08-29 ~18:00 machine clock)
+### Pippin lands (Batch 1303); Merry RETURNED by Sol review and re-run; the two rulings recorded (2026-08-29 ~14:35 machine clock)
 
 | | Row | Disposition |
 |---|---|---|
 | Q-146 + Q-147 + EAN-03 + EAN-04 | LANDED (Batch 1303) after Gloredhel's directed-Sol review: LAND-WITH-FIXES, four blockers all applied | the clock write moved onto the dynamicLighting subscriber alone (coupling kept, four controls detached); a Clock constructed up front with startTime/stopTime bracketing the pinned instant and handed to the Viewer via clockViewModel (timeline needle on the visible track); yaml and comments no longer claim WebGPU-only lights or a no-options Viewer; the Night-darkness slider annotated (engine untouched); the toolbar wrapped in a collapsed details element (summary + backend note remain visible). Blocker 4 (the clock spec only parsed literals) fixed by a second Sol turn: the spec now lifts the real Clock construction and the Viewer.createAsync call site and drives them against a stub Cesium namespace; the mutant reproduces the original all-controls shape. Specs 12/12 (three files, wired into test-sandcastle); eslint/prettier/C16 clean. Browser acceptance (both backends, incl. Celeborn's five-step DevTools script) is tranche A's, behind Q-145. Refuted packet claims recorded by the reviewer: 'main.js was already correct' (a WebGPU-only comment remained), 'yaml matched the Viewer construction', 'summary is the only visible panel content', and 'no build was run' (the manifest spec rebuilds the gallery list) |
 | Q-145 (Merry) | RETURNED by Finrod's directed-Sol review; correction turn running (Merry-the-second, Sol xhigh) | blockers: the refusal was one-shot and await-dependent (250 ms quiet-window heuristic, bucket check only once); two openers still construct the Sandcastle2 URL without the helper (probe-sandcastle2-ports.mjs, probe-sandcastle2-webgpu-start.mjs); the spec did not prove the integration; the guide text overstated the helper. Correction: continuous per-navigation listener + fail-closed assertNoOriginBreach in the page factory, all openers wired, integration spec with the deletion mutant |
 
-### Two maintainer rulings: the proof bar by change class, and a wave-end smoke + visual-regression gate (2026-08-29 ~17:30 machine clock)
+### Two maintainer rulings: the proof bar by change class, and a wave-end smoke + visual-regression gate (2026-08-29 ~14:20 machine clock)
 
 | | Row | Disposition |
 |---|---|---|
@@ -187,7 +193,7 @@ findings in the same module. C1's returning findings append here as a dated adde
 | R-2026-08-29-2 | RULED (maintainer) | a general smoke test and a visual-regression pass kept current and run at the end of major multi-batch waves, not per batch: variant smoke test + Sandcastle2 sweep (both renderers) + capture-and-diff over the baseline scenes with deliberate baseline refreshes; banked under Tools/visual-regression/output/wave-end/<wave>/; a wave does not close without the receipt |
 | Q-152 | NEW (tooling) - wave-end gate runbook | Tools/wave-end-gate.mjs chaining Tools/variant-smoke-test.mjs, the Sandcastle2 sweep probe on both renderers and Tools/visual-regression/capture-and-diff.mjs behind the served-build preflight and the Q-145 origin rewrite; one JSON receipt + markdown summary under output/wave-end/<wave>/; --update-baselines refuses unless a reason string is given and records it; exit 0 / 2 / 3. Wave 1 of the research queue is the first wave it closes | Sol-directed (bounded) after Q-145 lands |
 
-### Directed Sol delivers Q-142 and DM-01; Merry and Pippin deliver; reviews go to Sol (2026-08-29 ~17:00 machine clock)
+### Directed Sol delivers Q-142 and DM-01; Merry and Pippin deliver; reviews go to Sol (2026-08-29 ~14:05 machine clock)
 
 | | Row | Disposition |
 |---|---|---|
@@ -196,7 +202,7 @@ findings in the same module. C1's returning findings append here as a dated adde
 | Merry (Q-145) | DELIVERED ~16:40 (packet _lane-out/LANDING_PACKET_MERRY.md); frozen; directed Sol station-3 review running (reviewer name Finrod) | LANE CLAIMS until reviewed |
 | Pippin (Q-146/147/EAN-03/04) | DELIVERED ~16:05 (packet _lane-out/LANDING_PACKET_PIPPIN.md); frozen (hashes banked); directed Sol station-3 review running (reviewer name Gloredhel) | LANE CLAIMS until reviewed |
 
-### Extension restart interrupted Wave 1; lanes salvaged and resumed; the budget directive moves bounded work and reviews to directed Sol (2026-08-29 ~15:40 machine clock)
+### Extension restart interrupted Wave 1; lanes salvaged and resumed; the budget directive moves bounded work and reviews to directed Sol (2026-08-29 ~13:35 machine clock)
 
 | | Row | Disposition |
 |---|---|---|
