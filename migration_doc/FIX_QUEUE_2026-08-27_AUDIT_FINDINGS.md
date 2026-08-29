@@ -108,6 +108,12 @@ corrected with it.
 The remaining ~30 medium and all low survivors are enumerated in §5 with their lane column reading
 QUEUED; they dispatch after Q-1…Q-10, batched by file so one Sol dispatch closes several small
 findings in the same module. C1's returning findings append here as a dated addendum.
+### MS-04 closed negative by a Sol premise check (2026-08-29 17:02 machine clock)
+
+| | Row | Disposition |
+|---|---|---|
+| MS-04 | CLOSED-NEGATIVE | the card said the device pool requests a fixed maxStorageBufferBindingSize that can exceed the adapter's; the pasted Sol turn (Rosie) refused to write a fix and quoted WebGPUDevicePool.ts: requiredLimits[name] = Math.min(adapterValue, cap) - the request is already adaptive. The card was drafted from a stale reading by the queue-authoring workflow; the queue's status row is updated. Lesson recorded: queue cards authored by research agents are LEADS - the dispatcher pastes the cited code into the brief and asks the worker to refute the premise first (this turn's prompt did, and it worked) |
+
 ### DX-14 parked after two pasted turns: the archive plan still does not reach the document (2026-08-29 17:00 machine clock)
 
 | | Row | Disposition |

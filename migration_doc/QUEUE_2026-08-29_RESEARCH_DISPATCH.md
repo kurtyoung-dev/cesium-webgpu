@@ -127,7 +127,7 @@ Every engineering row additionally owes a separate **OPUS-REVIEW** dispatch befo
 | `MS-01` | Capability seam + standards canary + placement decision | SONNET-BOUNDED | XS | QUEUED | `MS-00` | M0 |
 | `MS-02` | WGSL mesh/task stage scaffold | OPUS-JUDGMENT | S (L if it grows) | HELD (M-17 / G-B) | `MS-00`, `MS-01` | M0 |
 | `MS-03` | Licence and provenance determination pass | OPUS-JUDGMENT | S | QUEUED | — | M1 |
-| `MS-04` | `maxStorageBufferBindingSize` adaptive limit cap | SONNET-BOUNDED | XS | QUEUED | — | M1 |
+| `MS-04` | `maxStorageBufferBindingSize` adaptive limit cap | SONNET-BOUNDED | XS | CLOSED-NEGATIVE (premise refuted 2026-08-29: the pool already requests min(adapter, cap)) |  | M1 |
 | `MS-05` | meshoptimizer dependency floor + lockfile reconciliation | OPUS-JUDGMENT | XS | QUEUED | `MS-03` | M1 |
 | `MS-06` | Meshlet data layout freeze (one layout, both paths) | OPUS-JUDGMENT | S | QUEUED | `MS-00`, `MS-03` | M1 |
 | `MS-07` | Layout encoder / validator (pure, browser-free) | SOL-DIRECTED | S | QUEUED | `MS-06` | M1 |
