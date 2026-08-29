@@ -206,13 +206,13 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 
 | Metric | Value |
 |---|---|
-| Files in census | 1134 |
-| ACTIVE | 927 |
+| Files in census | 1139 |
+| ACTIVE | 931 |
 | INVESTIGATION | 195 |
-| NO @purpose HEADER | 12 |
-| Classes | probe 653, spec 257, other 102, lib 79, gate-lib 20, bake-tool 13, runner 6, fixture 4 |
+| NO @purpose HEADER | 13 |
+| Classes | probe 653, spec 261, other 102, lib 80, gate-lib 20, bake-tool 13, runner 6, fixture 4 |
 
-### Tools/ (41)
+### Tools/ (42)
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
@@ -223,7 +223,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | build-geoid-undulation-grid.mjs | other | ACTIVE | 2026-08-16 | 4 | Bakes the bundled coarse EGM2008 geoid grid (egm2008-0p5deg.i16) consumed by Core/GeoidUndulationGrid.js for the ocean GEOID vertical datum. |
 | build-lake-water-mask.mjs | other | ACTIVE | 2026-08-16 | 4 | Converts Natural Earth 1:10m lakes polygons into the packed LWM1 binary bundled for LakeWaterClassificationProvider (globe.lakeWaterMask). |
 | ci-guards.spec.mjs | spec | ACTIVE | 2026-08-28 | 1 | Asserts the CI guards job wires every build-free guard, stays build-free, and records why the excluded guards are excluded. |
-| codex-mcp-launcher.mjs | other | ACTIVE | 2026-08-20 | 7 | Resolve the Codex CLI across its hash-versioned install directories and exec `codex mcp-server` for .mcp.json; stable across desktop-app updates. |
+| codex-mcp-launcher.mjs | other | ACTIVE | 2026-08-20 | 8 | Resolve the Codex CLI across its hash-versioned install directories and exec `codex mcp-server` for .mcp.json; stable across desktop-app updates. |
 | codex-preflight.mjs | other | ACTIVE | 2026-08-20 | 3 | Prove a Codex worker can actually run before a batch is dispatched: resolves the CLI, checks auth, and fires a minimal canary exec to detect quota exhaustion and report the reset time. |
 | codex-session-gc.mjs | other | ACTIVE | 2026-08-28 | 1 | Project-scoped garbage collection for codex CLI session rollouts: lists, and on request deletes, only the sessions whose recorded cwd is under this project's worker roots, so other projects' history is never touched. |
 | collection-sentinels-check.mjs | other | ACTIVE | 2026-08-16 | 4 | Fast no-GPU smoke check of the three permanent fault sentinels in WebGPUCollectionRendererBase via in-memory esbuild transpile; <1s local run. |
@@ -240,7 +240,8 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | lint-debug-pragmas.spec.mjs | spec | ACTIVE | 2026-08-28 | 0 | Proves debug-console calls stay removable unless a narrowly marked warning must remain visible. |
 | pre-push-guard.mjs | other | ACTIVE | 2026-08-24 | 12 | Git-aware driver behind .husky/pre-push: enforces batch-prefix/body/trailer/quiet-hours on every outgoing agent commit; fail-closed, no bypass flag. |
 | pre-push-guard.spec.mjs | spec | ACTIVE | 2026-08-16 | 2 | End-to-end wiring contract: hook fires on push, not on fetch/pull, and is POSIX-sh clean, exercised in a throwaway temp repository. |
-| provision-worker-clone.mjs | other | ACTIVE | 2026-08-21 | 1 | Provision a worker clone with the governance git cannot deliver, create the local main ref the handoff diff needs, and REFUSE if any routed authority is unreachable. |
+| provision-worker-clone-junctions.spec.mjs | spec | NO @purpose HEADER | 2026-08-29 | 1 | — |
+| provision-worker-clone.mjs | other | ACTIVE | 2026-08-29 | 3 | Provision a worker clone with the governance git cannot deliver, create the local main ref the handoff diff needs, and REFUSE if any routed authority is unreachable. |
 | run-far200-shadow-self-test.mjs | runner | ACTIVE | 2026-08-16 | 2 | Thin bootstrap: esbuild-bundles Tools/far200-shadow-self-test.ts and executes it via a data: URL import. |
 | upstream-regression-check.mjs | other | ACTIVE | 2026-08-16 | 7 | Standalone Node re-verification of eight ported upstream fixes (imagery-layers guard, parseUrl, octDecode arg order, etc.); exit 0 = all hold. |
 | variant-smoke-test.mjs | other | ACTIVE | 2026-08-16 | 24 | Playwright smoke test of each build variant's IIFE bundle (dual/webgl-only/webgpu-only): Viewer constructs, frames render, zero console errors. |
@@ -355,7 +356,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | stbn-rng.mjs | bake-tool | ACTIVE | 2026-08-16 | 3 | Deterministic license-clean random stream for the STBN bake: AES-256-CTR over zeros keyed by SHA-256(seed), byte-identical across machines. |
 | stbn-spectrum.mjs | bake-tool | ACTIVE | 2026-08-16 | 5 | Fourier certification of an STBN volume (radial spatial spectrum, per-pixel temporal spectrum, cross-correlation) with mutants proving each bar fires. |
 
-### Tools/visual-regression/ (930)
+### Tools/visual-regression/ (932)
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
@@ -496,7 +497,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | globe-night-lights-default.spec.mjs | spec | ACTIVE | 2026-08-28 | 1 | Pins the durable Globe source default for night lights: shipped ON, with JSDoc that says so. |
 | globe-night-lights-emission.spec.mjs | spec | ACTIVE | 2026-08-29 | 0 | Pins city-light emission as ONE law on two shaders: the same gate, the same luminance, the same product and the same unset sentinel on both backends, reachable at the shipped defaults, and inert for a layer that is not a night layer. |
 | globe-night-ocean-sentinel.spec.mjs | spec | ACTIVE | 2026-08-28 | 1 | Pins the GLOBE_UB_UNSET (-1.0) sentinel that made enableNightLights=false reachable: OFF and default-ON no longer share the same 0.0 uniform encoding. |
-| globe-ocean-wave-clock.spec.mjs | spec | ACTIVE | — | 0 | Executes the globe water-mask ocean's wave-clock law, the WebGPU packer's own phase expression and the GLSL twin's, pinning that scene seconds drive both dialects at the historical rate and that the frame counter cannot reach either. |
+| globe-ocean-wave-clock.spec.mjs | spec | ACTIVE | 2026-08-29 | 0 | Executes the globe water-mask ocean's wave-clock law, the WebGPU packer's own phase expression and the GLSL twin's, pinning that scene seconds drive both dialects at the historical rate and that the frame counter cannot reach either. |
 | globe-pipeline-key-contract.spec.mjs | spec | ACTIVE | 2026-08-29 | 4 | Pins the single-home globe pipeline cache-key builder/parser after the 15-month UNO_/UNMO_ producer-consumer drift; accessors + cache stats. |
 | globe-pipeline-readiness.spec.mjs | spec | ACTIVE | 2026-08-29 | 2 | Scoring tests plus engine mechanism pins for probe-globe-pipeline-readiness; a pin failure means the traced path changed, not the instrument. |
 | globe-use-log-depth.spec.mjs | spec | ACTIVE | 2026-08-16 | 8 | Pins that the globe resolves the shared isWebGPULogDepthActive gate so orthographic modes never mix log and hyperbolic encodings in one depth buffer. |
@@ -515,7 +516,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | lunar-moonlight-dimming.spec.mjs | spec | ACTIVE | 2026-08-28 | 0 | Proves moonlight dims by the eclipsed Moon's own disc brightness, that the solar arm stays exactly 1.0 throughout a lunar eclipse, and that the two arms are mutually exclusive by light type on both backends. |
 | lut-consumer-device-identity.spec.mjs | spec | ACTIVE | 2026-08-28 | 0 | Guards the sky, fog and cloud consumers of the shared device-identity predicate so presence-only cache admission cannot survive a device recovery. |
 | mat-logdepth-encode-stash.spec.mjs | spec | ACTIVE | 2026-08-16 | 5 | Executes the real writeLogDepthTail packer to pin stash-first log-depth encoding for the Mat/Primitive family; replays the 2-primitive defect. |
-| material-appearance-blend-parity.spec.mjs | spec | ACTIVE | 2026-08-29 | 1 | Constructs real MaterialAppearance instances over real Materials, reads the render state the WebGL command path would carry, and runs the lifted WebGPU blend derivation and scene-framebuffer target builder against those same render states, so an appearance that blends on one backend and writes opaque on the other fails here. |
+| material-appearance-blend-parity.spec.mjs | spec | ACTIVE | 2026-08-29 | 2 | Constructs real MaterialAppearance instances over real Materials, reads the render state the WebGL command path would carry, and runs the lifted WebGPU blend derivation and scene-framebuffer target builder against those same render states, so an appearance that blends on one backend and writes opaque on the other fails here. |
 | material-texture-late-adoption.spec.mjs | spec | ACTIVE | 2026-08-28 | 0 | Pins that the WebGPU primitive material path re-binds its texture after `Material.update` drains a late image into `_imageSources`, for the main and depth-fail slots, and proves the check is live rather than inert. |
 | model-3d-tile-state-packet.spec.mjs | spec | ACTIVE | 2026-08-16 | 0 | Behavioral tests for Model3DTileStatePacket: immutable packet reuse when broad tileset state is unchanged, refresh on real change. |
 | model-camera-arena.spec.mjs | spec | ACTIVE | 2026-08-29 | 3 | Bundles the real WebGPUModelCameraArena and pins offset alignment, per-frame reset, view isolation, plus call-site routing source checks. |
@@ -924,7 +925,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | probe-khr-lights-punctual.mjs | probe | ACTIVE | 2026-08-16 | 4 | Verifies KHR_lights_punctual extraction: 3 lights resolved per-node into model.lightsFromGltf and packed into the per-model light UBO without errors |
 | probe-khr-meshopt.mjs | probe | ACTIVE | 2026-08-16 | 4 | v1.143 merge acceptance: KHR_meshopt_compression assets load via the lazy MeshoptDecoder, render on both backends, and stay under the parity threshold |
 | probe-ktx2-transcoder-formats.mjs | probe | ACTIVE | 2026-08-16 | 4 | Standing regression guard that loadKTX2 requires the per-context immutable ktx2TranscodeTargets record and resolves a real .ktx2 on WebGPU |
-| probe-lake-water-mask.mjs | probe | ACTIVE | 2026-08-16 | 6 | Acceptance for opt-in globe.lakeWaterMask (Natural Earth lake polygons OR-composited into the water mask): off-gate, effect, and parity legs |
+| probe-lake-water-mask.mjs | probe | ACTIVE | 2026-08-29 | 6 | Acceptance for opt-in globe.lakeWaterMask (Natural Earth lake polygons OR-composited into the water mask): off-gate, effect, and parity legs |
 | probe-large-lake-water.mjs | probe | INVESTIGATION | 2026-08-16 | 5 | Root-caused flat Great Lakes by querying the terrain provider's waterMask directly at lake/ocean/land points, plus a render check on both backends |
 | probe-limb-halo-width.mjs | probe | ACTIVE | 2026-08-16 | 6 | Gates isolated SkyAtmosphere shell limb-width parity, and reports (no gate) the tracked ground-atmosphere drape limb residual on the full scene |
 | probe-litmat-mrt.mjs | probe | ACTIVE | 2026-08-16 | 5 | Extruded lit-material polygon through WebGPUPrimitiveCommands: zero device errors and a measurable deferred/AO signal from the polygon's MRT writes |
@@ -1186,7 +1187,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | probe-webgpu-frame-breakdown.mjs | probe | ACTIVE | 2026-08-16 | 7 | C11-169 exact CPU frame-accounting gate: per-frame conservation (total = passes + phases + unattributed) over the shared track; negative lanes. |
 | probe-webgpu-grey.mjs | probe | INVESTIGATION | 2026-08-16 | 4 | Quick diagnostic that opened the split-screen page and captured console errors + debug snapshot chasing the all-grey regression. |
 | probe-webgpu-model-shadow-command-graph.mjs | probe | ACTIVE | 2026-08-16 | 1 | C11-184 runtime companion: inspects Model's WebGPU command graph at the PVS boundary — caster layouts, variant isolation, zero idle UB churn. |
-| probe-webgpu-ocean-waves.mjs | probe | ACTIVE | 2026-08-16 | 2 | Acceptance for the WebGPU bright/flat ocean bug: ocean brightness and spatial wave variance vs WebGL at a low-oblique daytime coastal view. |
+| probe-webgpu-ocean-waves.mjs | probe | ACTIVE | 2026-08-29 | 2 | Acceptance for the WebGPU bright/flat ocean bug: ocean brightness and spatial wave variance vs WebGL at a low-oblique daytime coastal view. |
 | probe-webgpu-reinit-switch.mjs | probe | ACTIVE | 2026-08-16 | 4 | Acceptance for the re-init lifecycle bug: WebGL-WebGPU-WebGL-WebGPU switches; gates the second WebGPU frame being non-black. |
 | probe-webgpu-tile-popping.mjs | probe | ACTIVE | 2026-08-16 | 2 | Acceptance for the stale tile-buffer-cache fix: counts intra-frame black wedges during a cold LOD zoom; WebGPU must not exceed WebGL. |
 | probe-wgs84-alphadbg.mjs | probe | INVESTIGATION | 2026-08-16 | 3 | One-off debug: sampled tex.a values after the Batch-56 alpha=1 force in the WebGPU imagery-reprojection fragment shader. |
@@ -1211,7 +1212,8 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | sandcastle-batch-66-end-of-session-runner.mjs | other | INVESTIGATION | 2026-08-16 | 2 | End-of-session rerun of the Batch-66 Sandcastle sweep (direct scene.pick, pointer-error filtering) writing per-demo screenshots + report. |
 | sandcastle-batch-66-final-runner.mjs | other | INVESTIGATION | 2026-08-16 | 10 | Post-F1/F2/F3 rerun of the Batch-66 WebGPU Sandcastle sweep: every 'WebGPU *.html' demo headless, known artifacts filtered, JSON report. |
 | sandcastle-smoke.mjs | other | ACTIVE | 2026-08-29 | 8 | Standing Sandcastle CI blind-spot smoke: three local-resource WebGPU gallery demos gated on non-black, non-uniform, real device, zero errors. |
-| sandcastle2-renderer-gate.spec.mjs | spec | ACTIVE | 2026-08-29 | 1 | Contract spec for the Sandcastle2 backend sweep helpers: id enumeration against the real gallery, URL construction, and the requested-vs-actual renderer predicate. |
+| sandcastle2-pinned-demos.spec.mjs | spec | ACTIVE | 2026-08-29 | 1 | Contract spec for the pinned-demo census: exact derived count against the real gallery, per-kind classification correctness, and the naive-scan defect the census fixes. |
+| sandcastle2-renderer-gate.spec.mjs | spec | ACTIVE | 2026-08-29 | 2 | Contract spec for the Sandcastle2 backend sweep helpers: id enumeration against the real gallery, URL construction, and the requested-vs-actual renderer predicate. |
 | scene-debug-pragma-coverage.spec.mjs | spec | ACTIVE | 2026-08-28 | 0 | Pins which scene diagnostics are stripped from release builds and which must survive, by running the real production strip over the real sources. |
 | scene-derived-lighting-seam.spec.mjs | spec | ACTIVE | 2026-08-28 | 0 | Pins the atmosphere-derived scene lighting to the renderer seam: the shared scene code publishes one light for every backend, and the derived override reproduces the arithmetic it replaced. |
 | scene-octree-dirty-revision.spec.mjs | spec | ACTIVE | 2026-08-24 | 3 | Proves SceneOctree revision reuse, mutation rebuilds, and disabled/restored PVS behavior. |
@@ -1276,6 +1278,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | weather-regional-tails.spec.mjs | spec | ACTIVE | 2026-08-16 | 1 | Contract for the rendered-tail browser probe: cyclic CoverageJSON parse, fused capture, policy rejecting duplicated antimeridian band. |
 | webgl-snap-multifrustum.spec.mjs | spec | ACTIVE | 2026-08-16 | 1 | Source pins for WebGL Scene.snap occluders in DerivedCommand/Scene/SceneRenderer: depth-only reuse, zero color write, blending off, depthMask. |
 | webgl-vs-webgpu-pixel-check.mjs | other | INVESTIGATION | 2026-08-16 | 0 | Test-infra sanity check from the canvas-black-screen investigation: do non-black pixels reach toDataURL on each backend at all? |
+| webgpu-blend-table-parity.spec.mjs | spec | ACTIVE | 2026-08-29 | 2 | Runs the real lifted WebGPU blend translation from RenderStateToPipelineVariant.ts over every named Scene/BlendingState.js state and compares it against an independently written WebGL-enum-to-GPU oracle, so a blend factor or equation that translates differently on WebGPU than the WebGL state declares fails here. |
 | webgpu-cloud-shadow-bind-group-cache.spec.mjs | spec | ACTIVE | 2026-08-16 | 1 | Drives the real WebGPUCloudShadowBindGroupCache on a fake device: per-slot dedupe, descriptor identity, invalidation on resource change. |
 | webgpu-clustered-zero-light-dispatch.spec.mjs | spec | ACTIVE | 2026-08-21 | 0 | Proves settled zero-light frames avoid redundant params writes and compute passes. |
 | webgpu-dynamic-environment-recovery.spec.mjs | spec | ACTIVE | 2026-08-16 | 1 | Source-anchored pins that dynamic environment-map caches are owned by one device generation and recover across manager/capture/Scene wiring. |
@@ -1325,7 +1328,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | derive-umbra-lo-shard.mjs | fixture | ACTIVE | 2026-08-16 | 2 | Deterministically crops four hash-verified umbra_lo records from NASA SVS 5073 into the pinned C12-29 S5 eclipse-footprint fixture shard. |
 | nasa-svs-5073-shapefile.mjs | fixture | ACTIVE | 2026-08-16 | 5 | Dependency-free ESRI Shapefile Polygon + dBASE reader for the SVS 5073 umbra fixture, parseable by node --test and same-origin browser probes alike. |
 
-### Tools/visual-regression/lib/ (90)
+### Tools/visual-regression/lib/ (91)
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
@@ -1401,7 +1404,8 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | representative-performance-content.mjs | lib | ACTIVE | 2026-08-16 | 10 | Builds and validates the local procedural terrain+models+tiles representative scene configuration for offline performance workloads. |
 | representative-tileset-request-ledger.mjs | lib | ACTIVE | 2026-08-16 | 6 | Event-sourced ledger of tileset content requests (issue/terminal events, byte totals, hashes) with cross-run comparison for perf evidence. |
 | same-task-capture.mjs | lib | ACTIVE | 2026-08-16 | 49 | Canonical capture primitives that keep render+readback in one task (WebGL clears, WebGPU invalidates after present), plus embed-drift validators. |
-| sandcastle2-renderer-gate.mjs | gate-lib | ACTIVE | 2026-08-29 | 3 | Pure helpers for the Sandcastle2 backend sweep: gallery id enumeration, URL construction, and the "the demo really ran the requested renderer" predicate. |
+| sandcastle2-pinned-demos.mjs | lib | ACTIVE | 2026-08-29 | 1 | Derive, comment-aware, which gallery demos construct their Viewer/CesiumWidget with an explicit contextOptions.renderer, and classify HOW (Q-133). |
+| sandcastle2-renderer-gate.mjs | gate-lib | ACTIVE | 2026-08-29 | 5 | Pure helpers for the Sandcastle2 backend sweep: gallery id enumeration, URL construction, and the "the demo really ran the requested renderer" predicate. |
 | served-build-preflight.mjs | lib | ACTIVE | 2026-08-29 | 3 | Q-98 — fetch one or more served build artifacts and compare each to |
 | settle-attribution.mjs | lib | ACTIVE | 2026-08-16 | 6 | First-complete-frame metric plus the rule that stable-time credit requires a main-thread long-task reduction (GPU-bound settles book none). |
 | solar-bloom-glow.mjs | lib | ACTIVE | 2026-08-16 | 6 | Forward model of the sun bloom's additive glow-on-disc so differential disc measurements carry the non-cancelling bloom term correctly. |
@@ -1428,13 +1432,14 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | patchEslintSeatbelt.mjs | other | ACTIVE | 2026-08-16 | 3 | postinstall patch normalizing eslint-seatbelt path keys to forward slashes so the committed POSIX seatbelt.tsv grandfathers on Windows. |
 | run-build-no-tsc.mjs | runner | ACTIVE | 2026-08-16 | 8 | Dev build helper: converts WGSL then runs buildEngine/buildWidgets/buildCesium (development, unminified, sourcemapped) skipping tsc. |
 
-### scripts/__tests__/ (7)
+### scripts/__tests__/ (8)
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
 | bundleVariantPlugin.spec.mjs | spec | ACTIVE | 2026-08-21 | 4 | Exercises the build-variant alias plugin's onResolve decision matrix, compat exemption allowlist, re-entry guard and decision cache, no esbuild. |
 | createIndexJs.spec.mjs | spec | ACTIVE | 2026-08-16 | 0 | Regression that the generated engine index omits private named-export temporal-history helpers yet still esbuild-bundles cleanly. |
 | engineTypeCheck.spec.mjs | spec | ACTIVE | 2026-08-28 | 1 | Proves the engine type check runs only in a built tree, propagates failure, announces every skip, and stays tied to the build artifact and the hook. |
+| ensureCesiumTypeDefinitions.spec.mjs | spec | ACTIVE | 2026-08-29 | 1 | Coverage for the missing-type-defs decision logic AND the gulpfile.apps.js |
 | karmaTestRun.spec.mjs | spec | ACTIVE | 2026-08-29 | 3 | Static coverage of the Gulp/Karma completion bridge via a fake Karma server: strict result config, retries, disconnect/error exit codes. |
 | prepareCesiumOutputDirectory.spec.mjs | spec | ACTIVE | 2026-08-29 | 2 | Regression that `clean:false` never removes files already on disk while `clean:true` still wipes the directory, so a failed rebuild cannot leave a served bundle directory both wiped and unreplaced. |
 | shaderSourceToJavaScript.spec.mjs | spec | ACTIVE | 2026-08-16 | 2 | Contract for the shader source-to-JS-module serializer: literal escapes, quotes, CRLF/lone-CR/U+2028 round-trips through real ESM evaluation. |
