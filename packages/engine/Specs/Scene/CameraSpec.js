@@ -1031,6 +1031,191 @@ describe("Scene/Camera", function () {
     expect(camera.up).toEqualEpsilon(up, CesiumMath.EPSILON6);
   });
 
+  function localVerticalFrame(destination) {
+    const zenith = Ellipsoid.WGS84.geodeticSurfaceNormal(
+      destination,
+      new Cartesian3(),
+    );
+    const east = Cartesian3.normalize(
+      Cartesian3.cross(Cartesian3.UNIT_Z, destination, new Cartesian3()),
+      new Cartesian3(),
+    );
+    const north = Cartesian3.normalize(
+      Cartesian3.cross(zenith, east, new Cartesian3()),
+      new Cartesian3(),
+    );
+    return { zenith: zenith, east: east, north: north };
+  }
+
+  it("setView with a direction close to the local zenith", function () {
+    scene.mode = SceneMode.SCENE3D;
+
+    // A body a degree or so from the observer's zenith is the aim an eclipse
+    // view asks for, and it is where an orientation carried as heading, pitch
+    // and roll runs out of conditioning: the azimuth has to survive even though
+    // the horizontal part of the direction has nearly vanished.
+    const destination = Cartesian3.fromDegrees(-63.9004, -8.7612, 90.0);
+    const frame = localVerticalFrame(destination);
+    const offset = CesiumMath.toRadians(1.18);
+
+    // the same tilt taken on either side of the zenith
+    [1.0, -1.0].forEach(function (side) {
+      const direction = Cartesian3.normalize(
+        Cartesian3.add(
+          Cartesian3.multiplyByScalar(
+            frame.zenith,
+            Math.cos(offset),
+            new Cartesian3(),
+          ),
+          Cartesian3.multiplyByScalar(
+            frame.east,
+            side * Math.sin(offset),
+            new Cartesian3(),
+          ),
+          new Cartesian3(),
+        ),
+        new Cartesian3(),
+      );
+      const right = Cartesian3.normalize(
+        Cartesian3.cross(direction, frame.zenith, new Cartesian3()),
+        new Cartesian3(),
+      );
+      const up = Cartesian3.normalize(
+        Cartesian3.cross(right, direction, new Cartesian3()),
+        new Cartesian3(),
+      );
+
+      // the same aim with the horizon tilted, which is the other half of the
+      // request a heading/pitch/roll round trip loses near the vertical
+      const roll = CesiumMath.toRadians(30.0);
+      const rolledUp = Cartesian3.normalize(
+        Cartesian3.add(
+          Cartesian3.multiplyByScalar(up, Math.cos(roll), new Cartesian3()),
+          Cartesian3.multiplyByScalar(right, Math.sin(roll), new Cartesian3()),
+          new Cartesian3(),
+        ),
+        new Cartesian3(),
+      );
+
+      [up, rolledUp].forEach(function (requestedUp) {
+        camera.constrainedAxis = Cartesian3.UNIT_Z;
+        camera.setView({
+          destination: destination,
+          orientation: {
+            direction: direction,
+            up: requestedUp,
+          },
+        });
+
+        expect(
+          Cartesian3.angleBetween(camera.directionWC, direction),
+        ).toBeLessThan(1.0e-10);
+        expect(Cartesian3.angleBetween(camera.upWC, requestedUp)).toBeLessThan(
+          1.0e-10,
+        );
+      });
+    });
+  });
+
+  it("setView with a direction along the local vertical", function () {
+    scene.mode = SceneMode.SCENE3D;
+
+    // Straight up and straight down are the one orientation where heading and
+    // roll are the same rotation, so which split of the two reproduces the view
+    // is not observable and only the delivered basis can be asserted.
+    const destination = Cartesian3.fromDegrees(-63.9004, -8.7612, 90.0);
+    const frame = localVerticalFrame(destination);
+
+    camera.constrainedAxis = Cartesian3.UNIT_Z;
+
+    const down = Cartesian3.negate(frame.zenith, new Cartesian3());
+    camera.setView({
+      destination: destination,
+      orientation: {
+        direction: down,
+        up: frame.north,
+      },
+    });
+    expect(Cartesian3.angleBetween(camera.directionWC, down)).toBeLessThan(
+      1.0e-10,
+    );
+    expect(Cartesian3.angleBetween(camera.upWC, frame.north)).toBeLessThan(
+      1.0e-10,
+    );
+
+    camera.setView({
+      destination: destination,
+      orientation: {
+        direction: frame.zenith,
+        up: frame.north,
+      },
+    });
+    expect(
+      Cartesian3.angleBetween(camera.directionWC, frame.zenith),
+    ).toBeLessThan(1.0e-10);
+    expect(Cartesian3.angleBetween(camera.upWC, frame.north)).toBeLessThan(
+      1.0e-10,
+    );
+  });
+
+  it("rotateDown with a constrained axis stops short of the axis", function () {
+    const startAngle = CesiumMath.toRadians(10.0);
+    camera.position = new Cartesian3(
+      Math.sin(startAngle),
+      0.0,
+      Math.cos(startAngle),
+    );
+    camera.direction = Cartesian3.negate(
+      Cartesian3.normalize(camera.position, new Cartesian3()),
+      new Cartesian3(),
+    );
+    camera.up = Cartesian3.normalize(
+      Cartesian3.cross(Cartesian3.UNIT_Y, camera.direction, new Cartesian3()),
+      new Cartesian3(),
+    );
+    camera.right = Cartesian3.cross(
+      camera.direction,
+      camera.up,
+      new Cartesian3(),
+    );
+    camera.constrainedAxis = Cartesian3.UNIT_Z;
+
+    camera.rotateDown(startAngle + CesiumMath.toRadians(30.0));
+
+    expect(
+      Cartesian3.angleBetween(camera.position, Cartesian3.UNIT_Z),
+    ).toEqualEpsilon(CesiumMath.EPSILON4, CesiumMath.EPSILON9);
+  });
+
+  it("rotateDown without a constrained axis is not clamped", function () {
+    const startAngle = CesiumMath.toRadians(10.0);
+    camera.position = new Cartesian3(
+      Math.sin(startAngle),
+      0.0,
+      Math.cos(startAngle),
+    );
+    camera.direction = Cartesian3.negate(
+      Cartesian3.normalize(camera.position, new Cartesian3()),
+      new Cartesian3(),
+    );
+    camera.up = Cartesian3.normalize(
+      Cartesian3.cross(Cartesian3.UNIT_Y, camera.direction, new Cartesian3()),
+      new Cartesian3(),
+    );
+    camera.right = Cartesian3.cross(
+      camera.direction,
+      camera.up,
+      new Cartesian3(),
+    );
+    camera.constrainedAxis = undefined;
+
+    camera.rotateDown(startAngle + CesiumMath.toRadians(30.0));
+
+    expect(
+      Cartesian3.angleBetween(camera.position, Cartesian3.UNIT_Z),
+    ).toEqualEpsilon(CesiumMath.toRadians(30.0), CesiumMath.EPSILON9);
+  });
+
   it("worldToCameraCoordinates throws without cartesian", function () {
     expect(function () {
       camera.worldToCameraCoordinates();

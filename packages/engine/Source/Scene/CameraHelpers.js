@@ -24,7 +24,7 @@ import Quaternion from "../Core/Quaternion.js";
 import Ray from "../Core/Ray.js";
 import Rectangle from "../Core/Rectangle.js";
 import Transforms from "../Core/Transforms.js";
-import { getHeading, getPitch, getRoll } from "./CameraInternals.js";
+import { getHeading, getPitch } from "./CameraInternals.js";
 import MapMode2D from "./MapMode2D.js";
 import SceneMode from "./SceneMode.js";
 
@@ -202,9 +202,46 @@ export function directionUpToHeadingPitchRoll(
 
   const right = Cartesian3.cross(direction, up, scratchToHPRRight);
 
-  result.heading = getHeading(direction, up);
   result.pitch = getPitch(direction);
-  result.roll = getRoll(direction, up, right);
+
+  // setView3D rebuilds the basis from this triple as
+  //   direction = (cos(pitch)sin(heading), cos(pitch)cos(heading), sin(pitch))
+  // with the roll appearing as the tilt of `right` out of the local horizontal,
+  // so taking the azimuth from `direction` and the roll from `right` inverts
+  // that for every orientation which still has a horizontal direction component.
+  // The camera's own heading getter cannot work this way - a straight-down view
+  // has no usable horizontal component - so it reads the azimuth off `up`
+  // throughout a wide band around the local vertical, which drops the roll and,
+  // for a view pointed above the horizon, names an azimuth half a turn from the
+  // one asked for. An explicit direction has to survive the round trip, so
+  // invert the rebuild directly rather than reusing the getters.
+  // The roll below divides `up` by a quantity of the order of the zenith angle,
+  // and a caller's near-vertical `up` carries absolute error around 1e-8, so
+  // the threshold must keep the horizontal component well above that noise:
+  // 1e-12 on the squared magnitude admits directions from a microradian off the
+  // vertical, where the roll is stable, and leaves only the vertical itself to
+  // the fallback.
+  const horizontalMagnitudeSquared =
+    direction.x * direction.x + direction.y * direction.y;
+  if (horizontalMagnitudeSquared > CesiumMath.EPSILON12) {
+    result.heading =
+      CesiumMath.TWO_PI -
+      CesiumMath.zeroToTwoPi(
+        Math.atan2(direction.y, direction.x) - CesiumMath.PI_OVER_TWO,
+      );
+    result.roll = CesiumMath.zeroToTwoPi(
+      Math.atan2(-right.z, up.z) + CesiumMath.TWO_PI,
+    );
+  } else {
+    // Along the local vertical the azimuth survives only in `up`, and heading
+    // and roll become the same rotation, so all of it goes into heading. Which
+    // azimuth `up` stands for flips with the hemisphere the view points into.
+    result.heading = getHeading(direction, up);
+    result.roll = 0.0;
+    if (direction.z > 0.0) {
+      result.heading = CesiumMath.zeroToTwoPi(result.heading + CesiumMath.PI);
+    }
+  }
 
   return result;
 }
