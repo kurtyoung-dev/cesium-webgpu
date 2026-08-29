@@ -261,10 +261,20 @@ describe("Renderer/WebGPU Primitive model-matrix RTE", function () {
       Array.from(
         data.subarray(
           LIT_ENCODED_CAMERA_WORLD_LOW_OFFSET,
-          LIT_CAMERA_BYTES / Float32Array.BYTES_PER_ELEMENT,
+          LIT_PIXEL_RATIO_OFFSET,
         ),
       ),
     ).toEqual([1.25, -2.5, 3.75, 0.0]);
+    // The pixel-ratio lane sits between the world-camera low half and the end
+    // of the block, so the low half is bounded by its own successor offset
+    // rather than by the block size.
+    expect(
+      LIT_PIXEL_RATIO_OFFSET - LIT_ENCODED_CAMERA_WORLD_LOW_OFFSET,
+    ).toEqual(4);
+    expect(
+      LIT_CAMERA_BYTES / Float32Array.BYTES_PER_ELEMENT -
+        LIT_PIXEL_RATIO_OFFSET,
+    ).toEqual(4);
 
     const vector = new Cartesian3(7.0, -11.0, 13.0);
     const expected = Matrix3.multiplyByVector(
