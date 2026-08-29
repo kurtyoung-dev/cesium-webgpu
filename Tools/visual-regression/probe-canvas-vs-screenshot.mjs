@@ -2,7 +2,7 @@
 // Compare bytes read via getImageData vs bytes captured via page.screenshot
 // on the SAME canvas state. If they differ, Playwright headless screenshot
 // applies a transform that getImageData does not.
-// @purpose Instrument self-check: compares getImageData bytes vs page.screenshot of the same canvas state to detect Playwright capture transforms
+// @purpose Instrument self-check: compares getImageData bytes vs page.screenshot of the same canvas state to detect Playwright capture transforms — EXEMPLAR: retained live as the technique reference (M5)
 // @status INVESTIGATION
 
 import { chromium } from "playwright";

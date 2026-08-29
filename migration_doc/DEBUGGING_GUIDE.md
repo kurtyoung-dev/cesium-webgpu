@@ -1200,6 +1200,51 @@ Fix SOL-5 owns the watchdog/close repair and extending the contract to `lib/*-ga
 
 The verification and instrument rules earned on 2026-07-25 and 2026-08-08 — same-task capture, canvas-element PNGs, pinned clocks, helpers inside `page.evaluate`, interleaved A/B for GPU timing, reference-disagreement = STRUCTURAL, and the WebGPU-canvas capture rule (Playwright element screenshots ONLY; in-page `drawImage` reads transparent even in the same task) — are banked in **[ORCHESTRATION_HANDBOOK.md](ORCHESTRATION_HANDBOOK.md) §7 (Verification and instrument doctrine)**. That is the authority; this guide covers tools and procedures, the handbook covers method. Read it before building any new probe.
 
+#### Instrument-defect lessons (from archived probes)
+
+Treat the capture path as part of the system under test.
+A suspicious frame is not evidence of a renderer defect until the
+capture instrument has demonstrated that the scene fully materialized.
+
+##### Rule: distrust readiness signals at far-camera views
+
+**Symptom.** WebGPU captures show a black or partial globe with dark
+radial “cage” or “ring” bands at far-camera distances.
+
+**False conclusion.** The renderer has a distance-related precision,
+RTC, clipping, or globe-geometry defect.
+
+**Executor rule.** When a far-camera artifact appears, isolate one view,
+disable changing scene inputs, and use a long fixed-frame settle without
+an early exit before judging renderer output.
+
+**Exposing check.** Capture both backends after the same fixed settle.
+A clean globe after 600 frames, despite earlier readiness signals,
+proves that pipelines or tiles were still materializing.
+
+**Provenance.** `probe-farcam-isolation`.
+
+##### Rule: never use `tilesLoaded` alone as a capture gate
+
+**Symptom.** A nominally ready WebGPU frame contains dark radial wedge
+gaps consistent with coarse tiles whose shared edges appear mismatched.
+
+**False conclusion.** The wedge gaps are a real rendering regression or
+evidence that the precision fix failed.
+
+**Executor rule.** Pair readiness flags with a fixed long settle and
+observed refinement evidence; do not stop merely because
+`scene.globe.tilesLoaded` becomes true.
+
+**Exposing check.** Log the rendered tile-level histogram during the
+settle and compare the final capture. If the histogram moves toward
+finer levels while the gaps fill in, the defect was in probe timing.
+
+**Provenance.** `probe-h12-longsettle`.
+
+A renderer defect may be filed only after the artifact survives these
+instrument checks under equivalent, fully materialized capture states.
+
 ### Instrument-defect case files
 
 Two investigations are kept as *case files* rather than as runnable gates. Both times a capture artifact was mistaken for a render bug; both times the discriminating test cost less than the fix that was about to be written. The files themselves are historical artifacts and may move under `archive/` — the lesson is the part that has to survive.

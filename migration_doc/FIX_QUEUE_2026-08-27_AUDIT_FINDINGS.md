@@ -108,6 +108,15 @@ corrected with it.
 The remaining ~30 medium and all low survivors are enumerated in §5 with their lane column reading
 QUEUED; they dispatch after Q-1…Q-10, batched by file so one Sol dispatch closes several small
 findings in the same module. C1's returning findings append here as a dated addendum.
+### Wave DX starts: DX-05 lands, DX-03 finds the catalog stale, DM-07 revision 3 delivered (2026-08-29 ~23:10 machine clock)
+
+| | Row | Disposition |
+|---|---|---|
+| DX-05 | LANDED (Batch 1308; directed Sol, fully pasted; seat-reviewed under R-2026-08-29-1 docs class) | DEBUGGING_GUIDE gains 'Instrument-defect lessons (from archived probes)': two executor rules (distrust readiness signals at far-camera views; never use tilesLoaded alone as a capture gate), each with symptom, false conclusion, executor rule, exposing check and provenance; probe-farcam-isolation and probe-h12-longsettle marked ARCHIVED-CANDIDATE with a pointer to the subsection; probe-cloud-cone-parity (stash A/B) and probe-canvas-vs-screenshot (raw readback) marked EXEMPLAR retained live (M5-B). Purpose-header contract green |
+| DX-03 | FINDING, move deferred | the fully-pasted Sol plan (Bregalad) resolved the catalog's HIGH set against git ls-files: the eight codemods already live under Tools/archive/ and scripts/archive/, the named investigation probes (diff-fog-ms, diff-multideck, probe-gpu-tex, probe-dp46a-metadata, sandcastle-batch-66-runner) are no longer tracked, moon-albedo-bake/work and output/ are gitignored, and the seven BROKEN_STALE probes are not named in the catalog's per-file rows - only probe-polyline-geodesic (repoint its doc reference first) is a real remaining move. The TOOLING_CATALOG (generated 2026-08-15) is STALE against the tree; DX-03 cannot execute honestly until it is regenerated |
+| DX-14 | PROPOSED to the maintainer (per the surface-issues directive) | regenerate TOOLING_CATALOG.md from git ls-files with status derived from each file's @purpose status tag (the M2 generator), list the BROKEN_STALE and archive-candidate files by exact path, and make the wave-end gate fail when the catalog and the tree disagree; then DX-03/DX-04 plan against truth | Sol-directed (bounded), awaiting go |
+| DM-07 revision 3 (Bilbo) | DELIVERED ~23:05: 16/16, the spec now executes the real updateWebGPUModel end to end; frozen; Denethor's pasted re-review running | LANE CLAIMS until the re-review |
+
 ### Q-145 and DM-01 land (Batch 1307): the Sandcastle2 origin guard and the rebuilt AEC probe (2026-08-29 ~22:30 machine clock)
 
 | | Row | Disposition |

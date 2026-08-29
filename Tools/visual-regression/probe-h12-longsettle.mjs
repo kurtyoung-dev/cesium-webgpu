@@ -5,7 +5,7 @@
  * a coarse-LOD frame (level-0/1 tiles, shared edges disagree → gaps) BEFORE the
  * fine tiles + pipelines materialize, because scene.globe.tilesLoaded goes
  * vacuously true on WebGPU?
- * @purpose Answered whether the 12 Mm 'cage' (dark radial wedge gaps) was a real render defect or a coarse-LOD probe-settle artifact via a fixed long settle
+ * @purpose Answered whether the 12 Mm 'cage' (dark radial wedge gaps) was a real render defect or a coarse-LOD probe-settle artifact via a fixed long settle — ARCHIVED-CANDIDATE: lesson promoted to DEBUGGING_GUIDE.md, “Instrument-defect lessons (from archived probes)”.
  * @status INVESTIGATION
  *
  * METHOD: boot WebGPU, set the EXACT h12 down atmoOff view, then render a FIXED

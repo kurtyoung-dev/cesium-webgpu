@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * RE-TEST the far-camera distances in ISOLATION with a LONG FIXED settle.
- * @purpose Long-fixed-settle retest of far-camera views proving the 'cage/ring' was a partially-materialized capture artifact, not a precision bug.
+ * @purpose Long-fixed-settle retest of far-camera views proving the 'cage/ring' was a partially-materialized capture artifact, not a precision bug. — ARCHIVED-CANDIDATE: lesson promoted to DEBUGGING_GUIDE.md, “Instrument-defect lessons (from archived probes)”.
  * @status INVESTIGATION
  *
  * Discovery: the farcam-distortion sweep captures WebGPU on a PARTIALLY-
