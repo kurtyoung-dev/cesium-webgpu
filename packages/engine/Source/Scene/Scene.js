@@ -91,6 +91,7 @@ import {
 import InvertClassification from "./InvertClassification.js";
 import JobScheduler from "./JobScheduler.js";
 import MapMode2D from "./MapMode2D.js";
+import MoonLight from "./MoonLight.js";
 import Picking from "./Picking.js";
 import PostProcessStageCollection from "./PostProcessStageCollection.js";
 import PrimitiveCollection from "./PrimitiveCollection.js";
@@ -6349,6 +6350,16 @@ function render(scene) {
     if (!defined(scene.light) || scene.light instanceof SunLight) {
       Cartesian3.negate(
         uniformState.sunDirectionWC,
+        scene._shadowMapCamera.direction,
+      );
+    } else if (scene.light instanceof MoonLight) {
+      // Negated for the same reason the sun arm is: the shadow camera looks
+      // ALONG the light's travel, while the published direction points back
+      // at the light. Without this arm a MoonLight fell to the generic branch,
+      // where cloning an undefined source returns undefined without writing —
+      // so the shadow camera silently kept the previous light's direction.
+      Cartesian3.negate(
+        uniformState.moonDirectionWC,
         scene._shadowMapCamera.direction,
       );
     } else {

@@ -21,6 +21,17 @@
 // brightness under the same per-point law the two disc shaders evaluate, which
 // is what stops the rendered disc and the light it casts from disagreeing.
 //
+// WHAT THIS SPEC CANNOT SEE, and where that is covered. Everything below
+// about `UniformState` is a SOURCE-TEXT pin plus the pure resolver. Both
+// were true of a branch nothing could reach: when this spec was written a
+// `MoonLight` threw out of the direction branch further up `update`, so the
+// arm pinned here had never executed once. Text pins cannot detect that,
+// and this one did not. The reachability half is
+// `moonlight-scene-light.spec.mjs`, which drives the real `update` with a
+// real `MoonLight` and asserts the product that comes out. Keep the pins
+// here — they hold the ORDERING against the LDR clamp, which the executable
+// spec does not — but do not read them as evidence the arm runs.
+//
 // LINE ENDINGS: this repo checks out CRLF. Every source read below is
 // normalised to `\n` first.
 //
@@ -343,7 +354,12 @@ test("UniformState applies the lunar arm after the LDR clamp", () => {
   // Both channels, exactly as the solar arm does: `_lightColor` is the LDR
   // renormalisation of `_lightColorHdr`, and dimming only one desynchronises
   // the two.
-  const armAt = uniformState.indexOf("if (light instanceof MoonLight) {");
+  // Anchored on the following line as well as the condition: the direction
+  // branch for the same light type appears earlier in `update` and contains
+  // this same condition text, so the bare substring selects the wrong arm.
+  const armAt = uniformState.search(
+    /\n {4}if \(light instanceof MoonLight\) \{\n {6}const moonlightFactor/,
+  );
   assert.ok(armAt > 0);
   const arm = uniformState.slice(armAt, armAt + 900);
   assert.match(arm, /this\._lightColorHdr,\n\s*moonlightFactor,/);

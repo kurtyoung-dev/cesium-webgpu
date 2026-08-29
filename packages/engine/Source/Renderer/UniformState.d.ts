@@ -60,6 +60,7 @@ declare class UniformState {
   readonly sunDirectionEC: Cartesian3;
   readonly sunDirectionWC: Cartesian3;
   readonly sunPositionWC: Cartesian3;
+  readonly moonDirectionWC: Cartesian3;
   readonly moonDirectionEC: Cartesian3;
   readonly lightDirectionEC: Cartesian3;
   readonly lightDirectionWC: Cartesian3;

@@ -217,6 +217,7 @@ class UniformState {
     this._sunPositionColumbusView = new Cartesian3();
     this._sunDirectionWC = new Cartesian3();
     this._sunDirectionEC = new Cartesian3();
+    this._moonDirectionWC = new Cartesian3();
     this._moonDirectionEC = new Cartesian3();
 
     this._lightDirectionWC = new Cartesian3();
@@ -622,6 +623,10 @@ class UniformState {
     return this._sunDirectionEC;
   }
 
+  get moonDirectionWC() {
+    return this._moonDirectionWC;
+  }
+
   get moonDirectionEC() {
     return this._moonDirectionEC;
   }
@@ -905,6 +910,32 @@ class UniformState {
       );
       this._lightDirectionEC = Cartesian3.clone(
         this._sunDirectionEC,
+        this._lightDirectionEC,
+      );
+    } else if (light instanceof MoonLight) {
+      // `MoonLight`, like `SunLight`, is a marker: it carries colour and
+      // intensity but no per-instance direction, because the direction is
+      // ephemeris rather than user state. The generic arm below negates
+      // `light.direction`, so without this branch assigning one to
+      // `scene.light` threw on its first frame and everything downstream of
+      // the branch — the lunar dimming a few dozen lines on included — could
+      // never run.
+      //
+      // Taken from the directions computed for this frame rather than from
+      // `frameState.moonDirectionWC`: that field belongs to `Moon.update`,
+      // which returns before publishing when the Moon is hidden and so leaves
+      // the previous frame's vector in place. Switching off the Moon's
+      // billboard must not freeze the light that Moon casts.
+      //
+      // No negation. Both directions already point at the Moon, which is the
+      // sense `czm_lightDirectionWC` is documented in and the sense the sun
+      // arm above clones.
+      this._lightDirectionWC = Cartesian3.clone(
+        this._moonDirectionWC,
+        this._lightDirectionWC,
+      );
+      this._lightDirectionEC = Cartesian3.clone(
+        this._moonDirectionEC,
         this._lightDirectionEC,
       );
     } else {

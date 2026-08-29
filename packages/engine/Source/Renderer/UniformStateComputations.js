@@ -204,6 +204,20 @@ function setSunAndMoonDirections(uniformState, frameState) {
       );
     Matrix3.multiplyByVector(transformMatrix, position, position);
   }
+
+  // World space is captured from this unrotated fixed-frame position, into a
+  // separate output, before the view rotation below. Normalising in place or
+  // un-rotating afterwards would both move the low bits of the eye-space
+  // vector that existing shader consumers already sample.
+  //
+  // Published here rather than left to `frameState.moonDirectionWC`, which
+  // `Moon.update` writes: Scene calls `uniformState.update` first and
+  // `updateEnvironment` — and so `Moon.update` — some eighty lines later, and
+  // that method returns without publishing when the Moon is hidden. A scene
+  // light reading it would be a frame behind at best and frozen at worst.
+  // Both are the same quantity, from the same sample.
+  Cartesian3.normalize(position, uniformState._moonDirectionWC);
+
   Matrix3.multiplyByVector(uniformState.viewRotation3D, position, position);
   Cartesian3.normalize(position, position);
 

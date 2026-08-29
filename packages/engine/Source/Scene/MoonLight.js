@@ -5,10 +5,18 @@ import Frozen from "../Core/Frozen.js";
  * A directional light source that originates from the Moon.
  * <p>
  * <b>Marker class.</b> Like {@link SunLight}, <code>MoonLight</code> carries
- * no per-instance direction — renderers distinguish it from other light types
- * via <code>light instanceof MoonLight</code> and read the current ephemeris
- * direction from <code>frameState.moonDirectionWC</code>, which is populated
- * once per frame by {@link Moon#update} from Simon 1994 lunar positions.
+ * no per-instance direction: the direction is ephemeris rather than user
+ * state. {@link UniformState} recognises the type and supplies the frame's
+ * lunar direction, which reaches shaders through <code>czm_lightDirectionWC</code>
+ * and <code>czm_lightDirectionEC</code> like any other scene light's, and is
+ * published alongside as {@link UniformState#moonDirectionWC}.
+ * </p>
+ * <p>
+ * That direction is derived from the frame's own lunar ephemeris rather than
+ * read from <code>frameState.moonDirectionWC</code>: the latter belongs to
+ * {@link Moon#update}, which returns before publishing when the Moon is
+ * hidden, so a light sourced from it would freeze whenever the Moon's
+ * billboard was switched off.
  * </p>
  * <p>
  * This class is <b>not</b> assigned to <code>scene.light</code> automatically.
