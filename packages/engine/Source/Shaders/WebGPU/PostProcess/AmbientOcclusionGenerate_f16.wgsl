@@ -26,6 +26,7 @@ struct SSAOUniforms {
   params0: vec4<f32>,
   params1: vec4<f32>,
   frustum: vec4<f32>,
+  // x = full-sample-pattern landing switch; yzw = padding
   _pad: vec4<f32>,
 };
 
@@ -127,17 +128,27 @@ fn fragmentMain(in: VertexOutput) -> @location(0) vec4<f32> {
 
   // AO accumulation narrowed to f16 (bounded sum of [0,1] contributions).
   var ao: f16 = 0.0h;
-  let stepLen = lengthCap / f32(stepCount);
+  let fullSamplePattern = uniforms._pad.x > 0.5;
+  // Keep this policy byte-for-byte parallel with the f32 HBAO variant.
+  var executedDirectionCount = directionCount;
+  var executedStepCount = stepCount;
+  if (!fullSamplePattern) {
+    executedDirectionCount = min(directionCount, 8);
+    executedStepCount = min(stepCount, 16);
+  }
 
-  for (var d: i32 = 0; d < directionCount; d = d + 1) {
-    if (d >= 8) { break; }
+  let stepLenDenominator = select(
+    stepCount,
+    executedStepCount,
+    fullSamplePattern,
+  );
+  let stepLen = lengthCap / f32(stepLenDenominator);
 
+  for (var d: i32 = 0; d < executedDirectionCount; d = d + 1) {
     let angle = (f32(d) + randomVal.x) * PI / f32(directionCount);
     let dir2D = vec2<f32>(cos(angle), sin(angle));
 
-    for (var s: i32 = 1; s <= stepCount; s = s + 1) {
-      if (s > 16) { break; }
-
+    for (var s: i32 = 1; s <= executedStepCount; s = s + 1) {
       let sampleOffset = dir2D * (f32(s) * stepLen + randomVal.y);
       let sampleCoord = screenCoord + sampleOffset;
       let samplePos = pixelToEye(sampleCoord);
@@ -154,7 +165,12 @@ fn fragmentMain(in: VertexOutput) -> @location(0) vec4<f32> {
     }
   }
 
-  ao = ao / f16(f32(directionCount * stepCount));
+  let executedSampleCount = executedDirectionCount * executedStepCount;
+  if (fullSamplePattern) {
+    ao = f16(f32(ao) / f32(executedSampleCount));
+  } else {
+    ao = ao / f16(f32(directionCount * stepCount));
+  }
   ao = clamp(1.0h - ao * f16(intensity), 0.0h, 1.0h);
 
   let aoF32 = f32(ao);

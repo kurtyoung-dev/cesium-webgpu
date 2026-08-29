@@ -31,6 +31,7 @@ import {
   WebGPUPostProcessPipeline,
   TonemapMode,
 } from "./WebGPUPostProcessPipeline.js";
+import { WEBGPU_AO_FULL_SAMPLE_PATTERN } from "./WebGPUAmbientOcclusionEffect.js";
 // Well-known PostProcessStageLibrary stage
 // names intercepted and substituted with their WGSL twins.
 import {
@@ -709,6 +710,15 @@ function configureWebGPUPostProcessPipeline(
       rawAlgo === "gtao" || rawAlgo === "hbao" || rawAlgo === "ssgi"
         ? rawAlgo
         : "hbao";
+    // Keep the bridge and shader loop policy on the same landing switch. The
+    // false branch preserves the historical stepSize read and 4x4 defaults.
+    const aoStepCount = WEBGPU_AO_FULL_SAMPLE_PATTERN
+      ? numU(ao?.uniforms?.stepCount, 32)
+      : numU(ao?.uniforms?.stepSize, 4);
+    const aoDirectionCount = numU(
+      ao?.uniforms?.directionCount,
+      WEBGPU_AO_FULL_SAMPLE_PATTERN ? 8 : 4,
+    );
     pipeline.addAmbientOcclusion(
       device,
       canvasFormat,
@@ -717,8 +727,8 @@ function configureWebGPUPostProcessPipeline(
         intensity: numU(ao?.uniforms?.intensity, 3.0),
         bias: numU(ao?.uniforms?.bias, 0.1),
         lengthCap: numU(ao?.uniforms?.lengthCap, 0.26),
-        stepCount: numU(ao?.uniforms?.stepSize, 4),
-        directionCount: numU(ao?.uniforms?.directionCount, 4),
+        stepCount: aoStepCount,
+        directionCount: aoDirectionCount,
         ambientOcclusionOnly: Boolean(
           ao?.uniforms?.ambientOcclusionOnly ?? false,
         ),

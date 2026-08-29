@@ -61,6 +61,15 @@ import type { WebGPUPassTimestampProvider } from "./WebGPUPerformanceManager.js"
  *     Visibility Bitmask" (The Visual Computer 2023, arXiv:2301.11376) — the
  *     visibility-bitmask technique, reimplemented without copied source.
  */
+/**
+ * Landing switch for Q-142's WebGL-parity AO sample pattern.
+ *
+ * True reads the library's directionCount/stepCount uniforms and lets HBAO
+ * execute their full product. False preserves the historical stepSize read,
+ * 4x4 defaults, 8x16 shader caps, original step length, and unclamped divisor.
+ */
+export const WEBGPU_AO_FULL_SAMPLE_PATTERN = true;
+
 export type AOAlgorithm = "hbao" | "gtao" | "ssgi";
 
 export interface AmbientOcclusionConfig {
@@ -69,8 +78,8 @@ export interface AmbientOcclusionConfig {
   intensity?: number; // AO intensity (default 3.0)
   bias?: number; // Depth bias to avoid self-occlusion (default 0.1)
   lengthCap?: number; // Max sample radius in eye space (default 0.26)
-  stepCount?: number; // Radial steps per direction (default 4)
-  directionCount?: number; // Number of sample directions (default 4)
+  stepCount?: number; // Radial steps per direction (default 32; legacy 4)
+  directionCount?: number; // Sample directions (default 8; legacy 4)
   blurSigma?: number; // Blur sigma (default 2.0)
   ambientOcclusionOnly?: boolean; // Debug: show AO only
 
@@ -179,8 +188,9 @@ export class AmbientOcclusionEffect implements PostProcessEffect {
       intensity: config.intensity ?? 3.0,
       bias: config.bias ?? 0.1,
       lengthCap: config.lengthCap ?? 0.26,
-      stepCount: config.stepCount ?? 4,
-      directionCount: config.directionCount ?? 4,
+      stepCount: config.stepCount ?? (WEBGPU_AO_FULL_SAMPLE_PATTERN ? 32 : 4),
+      directionCount:
+        config.directionCount ?? (WEBGPU_AO_FULL_SAMPLE_PATTERN ? 8 : 4),
       blurSigma: config.blurSigma ?? 2.0,
       ambientOcclusionOnly: config.ambientOcclusionOnly ?? false,
       // SSGI-specific defaults.
@@ -863,7 +873,10 @@ export class AmbientOcclusionEffect implements PostProcessEffect {
       return;
     }
 
-    // Generate: intensity, bias, lengthCap, stepCount | directionCount, 1/w, 1/h, randomTexSize | near, far, 0, 0 | pad
+    // Generate: intensity, bias, lengthCap, stepCount |
+    // directionCount, 1/w, 1/h, randomTexSize |
+    // near, far, logActive, useGBufferNormal |
+    // fullSamplePattern, 0, 0, 0
     this._generateUniforms = createUniformBuffer(
       device,
       "AO-Generate-UB",
@@ -880,7 +893,7 @@ export class AmbientOcclusionEffect implements PostProcessEffect {
         10000.0,
         0.0,
         0.0,
-        0.0,
+        WEBGPU_AO_FULL_SAMPLE_PATTERN ? 1.0 : 0.0,
         0.0,
         0.0,
         0.0,
