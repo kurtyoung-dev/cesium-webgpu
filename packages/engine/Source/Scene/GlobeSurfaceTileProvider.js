@@ -323,6 +323,11 @@ class GlobeSurfaceTileProvider {
     this.waterClassificationProvider = undefined;
     this.oceanNormalMap = undefined;
     this.zoomedOutOceanSpecularIntensity = 0.5;
+    // Backend-neutral, per-frame mirror of the water-mask ocean's wave phase in
+    // scene seconds, resolved by `Globe.beginFrame` from the scene clock. Zero
+    // is the phase origin, so a provider that never received a frame draws the
+    // sea the first frame would have drawn rather than an undefined one.
+    this.oceanWaveSeconds = 0.0;
     this.enableLighting = false;
     // Backend-neutral, per-frame mirror of Globe.terminatorGlowStrength.
     // Zero is the natural/parity identity; renderers branch before evaluating

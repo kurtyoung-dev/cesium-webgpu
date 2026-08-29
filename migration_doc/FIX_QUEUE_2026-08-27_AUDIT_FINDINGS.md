@@ -108,6 +108,14 @@ corrected with it.
 The remaining ~30 medium and all low survivors are enumerated in §5 with their lane column reading
 QUEUED; they dispatch after Q-1…Q-10, batched by file so one Sol dispatch closes several small
 findings in the same module. C1's returning findings append here as a dated addendum.
+### Q-107 LANDED - Batch 1288: the globe ocean keeps the scene clock
+
+| | Row | Disposition |
+|---|---|---|
+| Q-107 | FIXED (Edge-pending: 3e-E J3 six legs incl. the displacement rate leg and CW2 leg A byte-identity) | Scene/GlobeOceanWaveClock.js shares Q-73's resolver + epoch clone + continue-not-teleport fallback; phase = elapsed scene seconds x OCEAN_WAVE_NOMINAL_FPS 60 (rate bit-for-bit; 0 mismatches over 100,000 s); WGSL unchanged (TIME_OFFSET keeps its quantity via OCEAN_WAVE_SECOND_SPEED 9.0, wrapped at 16000); WebGL gains u_oceanWaveSeconds; epoch read from the shared pin, adopted privately when unpinned (review-endorsed); the 320,000-frame repeat gone; new spec 30/30 with delivery assertions (both severance mutants red); barrel exclusion for the new leaf added by the lane |
+| Q-107-D1 | CLOSED by review | private holder kept |
+| LANDING | gates | apply --3way (GlobeSurfaceTileProviderRendering.js merged behind Q-101, disjoint), new leaf + spec copied hash-verified, syntax + eslint + prettier + C16 + tsc, ocean/celestial battery, FULL BUILD at the seat (new Source leaf), catalog after staging |
+
 ### Q118 lane LANDED - Batch 1287: Q-118, Q-113, Q-119
 
 | | Row | Disposition |

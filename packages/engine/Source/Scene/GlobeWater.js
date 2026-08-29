@@ -55,6 +55,26 @@ class GlobeWater {
   }
 
   /**
+   * The FFT surface's pinned simulation epoch, or <code>undefined</code>,
+   * WITHOUT creating the ocean sub-facade.
+   *
+   * The globe's own water-mask ocean reads this every rendered frame so that a
+   * single pin fixes both seas. The sub-facade is created lazily, and reading
+   * the public accessor to find out whether anything had been pinned would
+   * create it for every scene that draws a globe — so this asks the field
+   * instead. That is safe rather than merely cheap: the only way to pin an
+   * epoch is through <code>scene.globe.water.ocean</code>, which creates the
+   * sub-facade on the way, so an absent sub-facade is proof that no pin exists.
+   *
+   * @type {JulianDate|undefined}
+   * @readonly
+   * @private
+   */
+  get pinnedOceanSimulationEpoch() {
+    return this._ocean?.simulationEpoch;
+  }
+
+  /**
    * The sea-level vertical datum the FFT ocean surface anchors to — one of
    * {@link VerticalDatum} (`"AUTO"` | `"ELLIPSOID"` | `"GEOID"`). Delegates to
    * `scene.globe.water.ocean.verticalDatum`.

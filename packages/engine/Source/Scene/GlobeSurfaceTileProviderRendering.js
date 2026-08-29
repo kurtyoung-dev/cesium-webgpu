@@ -526,6 +526,9 @@ function createTileUniformMap(frameState, globeSurfaceTileProvider) {
     u_zoomedOutOceanSpecularIntensity: function () {
       return this.properties.zoomedOutOceanSpecularIntensity;
     },
+    u_oceanWaveSeconds: function () {
+      return this.properties.oceanWaveSeconds;
+    },
     u_oceanNormalMap: function () {
       return this.properties.oceanNormalMap;
     },
@@ -803,6 +806,7 @@ function createTileUniformMap(frameState, globeSurfaceTileProvider) {
       initialColor: new Cartesian4(0.0, 0.0, 0.5, 1.0),
       fillHighlightColor: new Color(0.0, 0.0, 0.0, 0.0),
       zoomedOutOceanSpecularIntensity: 0.5,
+      oceanWaveSeconds: 0.0,
       oceanNormalMap: undefined,
       lightingFadeDistance: new Cartesian2(6500000.0, 9000000.0),
       nightFadeDistance: new Cartesian2(10000000.0, 40000000.0),
@@ -1912,6 +1916,12 @@ function addDrawCommandsForTile(tileProvider, tile, frameState) {
       tileProvider.atmosphereMieAnisotropy;
     uniformMapProperties.zoomedOutOceanSpecularIntensity =
       tileProvider.zoomedOutOceanSpecularIntensity;
+    // The wave clock, in scene seconds, mirrored from the same per-frame value
+    // the WebGPU tile uniform buffer packs. `GlobeFS.glsl` scales it by the
+    // nominal frame rate the two wave-speed constants were tuned against, so
+    // one second of scene time advances the sea by what sixty frames did.
+    uniformMapProperties.oceanWaveSeconds =
+      tileProvider.oceanWaveSeconds ?? 0.0;
 
     const frontFaceAlphaByDistanceFinal = cameraUnderground
       ? backFaceAlphaByDistance

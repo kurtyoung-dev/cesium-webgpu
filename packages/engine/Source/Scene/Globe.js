@@ -44,6 +44,10 @@ import {
   CELESTIAL_DEFAULT_ROUGHNESS,
   CELESTIAL_DEFAULT_SUN_INTENSITY,
 } from "./CelestialWaterReflection.js";
+import {
+  advanceGlobeOceanWaveClock,
+  createGlobeOceanWaveClock,
+} from "./GlobeOceanWaveClock.js";
 import QuadtreePrimitive from "./QuadtreePrimitive.js";
 import SceneMode from "./SceneMode.js";
 import ShadowMode from "./ShadowMode.js";
@@ -655,6 +659,11 @@ class Globe {
     // are all built.
     this._atmosphericConditions = undefined;
     this._water = undefined;
+
+    // The water-mask ocean's wave phase, in scene seconds. Owned here because
+    // it is backend-agnostic: `beginFrame` resolves it above the point where
+    // the two renderers diverge and both read the one number.
+    this._oceanWaveClock = createGlobeOceanWaveClock();
   }
 
   /**
@@ -1526,6 +1535,20 @@ class Globe {
       tileProvider.oceanCelestialSunIntensity = this.oceanCelestialSunIntensity;
       tileProvider.oceanCelestialMoonIntensity =
         this.oceanCelestialMoonIntensity;
+
+      // The wave phase belongs to the clock the scene is showing, not to how
+      // many times the renderer has been called, and it is resolved HERE — once
+      // per rendered frame, above the point where the two backends diverge — so
+      // that the WebGL uniform and the WebGPU tile uniform buffer cannot carry
+      // different seas. WebGL reads it as `u_oceanWaveSeconds`; the WebGPU
+      // packer converts the same number into the phase its wave march marches
+      // on. The epoch is the FFT surface's, so one pin fixes both seas, and it
+      // is asked for without creating that surface's sub-facade.
+      tileProvider.oceanWaveSeconds = advanceGlobeOceanWaveClock(
+        this._oceanWaveClock,
+        frameState,
+        this._water?.pinnedOceanSimulationEpoch,
+      );
 
       // Ground atmosphere needs no separate WebGPU pass — it is shaded inside
       // GlobeTerrain.wgsl (csm_computeGroundAtmosphereScattering plus

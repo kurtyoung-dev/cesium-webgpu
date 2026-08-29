@@ -1358,6 +1358,13 @@ interface CesiumGlobeTileProvider {
   enableEnhancedOcean?: boolean;
   oceanNormalMap: CesiumOpaqueTexture | undefined;
   /**
+   * Elapsed SCENE seconds the water-mask ocean's wave phase advances on,
+   * resolved once per rendered frame by `Globe.beginFrame` and read by both
+   * backends: WebGL as the `u_oceanWaveSeconds` uniform, WebGPU through the
+   * tile uniform buffer's time slot.
+   */
+  oceanWaveSeconds?: number;
+  /**
    * Mirrored raw from `Globe`, never pre-gated. `enableEnhancedOcean`
    * carries the enable; `WebGPUGlobeSurfaceTileUB` owns the encoding of "off"
    * and "unset" (`resolveGlobeTunable` / `GLOBE_UB_UNSET`). Optional because a

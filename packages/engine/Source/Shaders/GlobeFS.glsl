@@ -154,6 +154,13 @@ uniform float u_zoomedOutOceanSpecularIntensity;
 
 #ifdef SHOW_OCEAN_WAVES
 uniform sampler2D u_oceanNormalMap;
+// Elapsed SCENE seconds the wave march advances on, resolved once per rendered
+// frame by Scene/GlobeOceanWaveClock.js and mirrored into the WebGPU tile
+// uniform buffer from the same value, so the two backends cannot show different
+// seas at one instant. It replaces czm_frameNumber, which made the wave rate
+// whatever the frame rate happened to be, left a paused clock churning, and
+// gave two pages that had rendered different numbers of frames different seas.
+uniform float u_oceanWaveSeconds;
 #endif
 
 #if defined(ENABLE_DAYNIGHT_SHADING) || defined(GROUND_ATMOSPHERE)
@@ -1365,6 +1372,16 @@ const float oceanFrequencyHighAltitude = 125000.0;
 const float oceanAnimationSpeedHighAltitude = 0.008;
 const float oceanOneOverAmplitudeHighAltitude = 1.0 / 2.0;
 
+// The two animation speeds above are per FRAME: the clock they were tuned
+// against was czm_frameNumber, at an assumed sixty hertz. The phase now arrives
+// as scene seconds, so this converts back to that frame count and the two
+// constants keep their meaning. It is the assumption made explicit, not a new
+// tuning knob — one second of scene time at clock speed one advances the waves
+// by exactly what sixty frames did. Its twin is OCEAN_WAVE_NOMINAL_FPS in
+// Scene/GlobeOceanWaveClock.js, which the WebGPU packer folds into the same
+// conversion; globe-ocean-wave-clock.spec.mjs holds the two equal.
+const float oceanWaveNominalFramesPerSecond = 60.0;
+
 // Ocean-wave footprint LOD, twinned with the physical-wavelength march in
 // GlobeTerrain.wgsl's `sampleOceanWaveNormals`. This path already mip-averages
 // — `czm_getWaterNoise` samples through `texture()`, so the LOD is automatic —
@@ -1557,13 +1574,19 @@ vec4 computeWaterColor(vec3 positionEyeCoordinates, vec2 textureCoordinates, vec
     }
     else
     {
+        // The wave clock, expressed in the frames the two speeds below were
+        // tuned against. Both layers read this one value, so they cannot drift
+        // apart, and it is a function of the scene clock alone: a held clock
+        // holds the sea whatever the render loop is doing.
+        float waveClockFrames = u_oceanWaveSeconds * oceanWaveNominalFramesPerSecond;
+
         // high altitude waves
-        float time = czm_frameNumber * oceanAnimationSpeedHighAltitude;
+        float time = waveClockFrames * oceanAnimationSpeedHighAltitude;
         vec4 noise = czm_getWaterNoise(u_oceanNormalMap, textureCoordinates * oceanFrequencyHighAltitude, time, 0.0);
         vec3 normalTangentSpaceHighAltitude = vec3(noise.xy, noise.z * oceanOneOverAmplitudeHighAltitude);
 
         // low altitude waves
-        time = czm_frameNumber * oceanAnimationSpeedLowAltitude;
+        time = waveClockFrames * oceanAnimationSpeedLowAltitude;
         noise = czm_getWaterNoise(u_oceanNormalMap, textureCoordinates * oceanFrequencyLowAltitude, time, 0.0);
         vec3 normalTangentSpaceLowAltitude = vec3(noise.xy, noise.z * oceanOneOverAmplitudeLowAltitude);
 

@@ -96,14 +96,21 @@ async function captureFrames(
   const out = [];
   for (let f = 0; f < frames; f++) {
     if (f > 0) {
-      // Mirror the LIVE user scenario: play the clock forward at a realistic
-      // ~real-time rate (deterministic: fixed per-frame delta over a fixed
-      // frame count) so the globe re-renders each frame on BOTH backends.
-      // WebGL churns the ocean via `czm_frameNumber` (per rendered frame);
-      // the WebGPU fix now mirrors that via `frameState.frameNumber`. The
-      // small clock delta (~1.5 s total) contributes almost nothing to the
-      // OLD clock-seconds path (octave shift ~0.018) but the frame-driven
-      // fix advances the phase strongly — that difference is what we assert.
+      // Mirror the LIVE user scenario: re-render the globe each frame on BOTH
+      // backends while the clock is stepped forward at a realistic rate.
+      //
+      // READ THE SETUP BEFORE TRUSTING THE STEP. Both backends now churn the
+      // ocean off elapsed SCENE seconds (`Scene/GlobeOceanWaveClock.js`), but
+      // `scene.render()` called with NO ARGUMENT defaults its time to
+      // `JulianDate.now()` (`Scene.js`), so the 1.5 s written into
+      // `clock.currentTime` below never reaches `frameState.time` on the frames
+      // this loop drives: what the shader actually sees is wall-clock elapsed
+      // time. To make the stepped clock the quantity under test, the render
+      // call has to carry it — `v.scene.render(v.clock.currentTime)` — which is
+      // not changed here because this lane cannot run a browser to verify it.
+      //
+      // What the probe still measures either way is that the sea MOVES between
+      // captures on both backends, which is what its assertion reads.
       await page.evaluate(
         async ({ clockIso, frames, dtSec }) => {
           const v = window.viewer;

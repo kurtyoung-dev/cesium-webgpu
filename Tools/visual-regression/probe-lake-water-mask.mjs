@@ -115,16 +115,26 @@ async function capture(browser, renderer, view, lakeMaskOn, outPath) {
       )) {
         el.style.display = "none";
       }
-      // Settle tiles under a held clock, then FREEZE the frame number —
-      // BOTH backends drive the water-wave phase off
-      // `frameState.frameNumber` (GlobeFS `czm_frameNumber *
-      // oceanAnimationSpeed*`, WebGPU `WebGPUGlobeSurfaceTileUB`
-      // waveTime), so pinning it makes water pixels deterministic across
-      // runs and phase-aligned across backends. The pin starts only after
-      // 400 unpinned settle frames — per-frame tile/imagery logic keys on
-      // frame-number ADVANCE, so tiles must finish loading first.
-      // (`scene.render()` increments from the pinned value, so every
-      // pinned frame renders with czm_frameNumber = 12346.)
+      // Settle tiles, then FREEZE the frame number. The frame pin is kept
+      // because per-frame tile and imagery logic keys on frame-number ADVANCE,
+      // which is also why it starts only after 400 unpinned settle frames.
+      //
+      // IT NO LONGER PINS THE WATER, and neither does the line below it.
+      // Both backends now take the wave phase from elapsed SCENE seconds
+      // (`Scene/GlobeOceanWaveClock.js`, reaching GlobeFS as
+      // `u_oceanWaveSeconds` and the WebGPU tile uniform buffer as its time
+      // slot) — but `scene.render()` called with NO ARGUMENT defaults its time
+      // to `JulianDate.now()` (`Scene.js`), so on every frame this loop drives,
+      // the phase advances at WALL-CLOCK rate and `v.clock.currentTime` never
+      // reaches `frameState.time` at all. The widget's own loop, which keeps
+      // running after this evaluate returns, does pass the clock
+      // (`CesiumWidget.prototype.render` -> `scene.render(clock.tick())`), and
+      // that clock advances too.
+      //
+      // A probe that wants a PINNED sea has to hand the time to the renderer:
+      // `v.scene.render(v.clock.currentTime)` on the frames it drives, and the
+      // default render loop stopped. That change is not made here because this
+      // lane cannot run a browser to verify it.
       for (let i = 0; i < 500; i++) {
         v.clock.currentTime = JulianDate.fromIso8601(clockIso);
         if (i >= 400) {

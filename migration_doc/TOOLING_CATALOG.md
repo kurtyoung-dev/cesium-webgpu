@@ -206,11 +206,11 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 
 | Metric | Value |
 |---|---|
-| Files in census | 1133 |
-| ACTIVE | 926 |
+| Files in census | 1134 |
+| ACTIVE | 927 |
 | INVESTIGATION | 195 |
 | NO @purpose HEADER | 12 |
-| Classes | probe 653, spec 256, other 102, lib 79, gate-lib 20, bake-tool 13, runner 6, fixture 4 |
+| Classes | probe 653, spec 257, other 102, lib 79, gate-lib 20, bake-tool 13, runner 6, fixture 4 |
 
 ### Tools/ (41)
 
@@ -355,7 +355,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | stbn-rng.mjs | bake-tool | ACTIVE | 2026-08-16 | 3 | Deterministic license-clean random stream for the STBN bake: AES-256-CTR over zeros keyed by SHA-256(seed), byte-identical across machines. |
 | stbn-spectrum.mjs | bake-tool | ACTIVE | 2026-08-16 | 5 | Fourier certification of an STBN volume (radial spatial spectrum, per-pixel temporal spectrum, cross-correlation) with mutants proving each bar fires. |
 
-### Tools/visual-regression/ (929)
+### Tools/visual-regression/ (930)
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
@@ -496,7 +496,8 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | globe-night-lights-default.spec.mjs | spec | ACTIVE | 2026-08-28 | 1 | Pins the durable Globe source default for night lights: shipped ON, with JSDoc that says so. |
 | globe-night-lights-emission.spec.mjs | spec | ACTIVE | 2026-08-29 | 0 | Pins city-light emission as ONE law on two shaders: the same gate, the same luminance, the same product and the same unset sentinel on both backends, reachable at the shipped defaults, and inert for a layer that is not a night layer. |
 | globe-night-ocean-sentinel.spec.mjs | spec | ACTIVE | 2026-08-28 | 1 | Pins the GLOBE_UB_UNSET (-1.0) sentinel that made enableNightLights=false reachable: OFF and default-ON no longer share the same 0.0 uniform encoding. |
-| globe-pipeline-key-contract.spec.mjs | spec | ACTIVE | 2026-08-16 | 4 | Pins the single-home globe pipeline cache-key builder/parser after the 15-month UNO_/UNMO_ producer-consumer drift; accessors + cache stats. |
+| globe-ocean-wave-clock.spec.mjs | spec | ACTIVE | — | 0 | Executes the globe water-mask ocean's wave-clock law, the WebGPU packer's own phase expression and the GLSL twin's, pinning that scene seconds drive both dialects at the historical rate and that the frame counter cannot reach either. |
+| globe-pipeline-key-contract.spec.mjs | spec | ACTIVE | 2026-08-29 | 4 | Pins the single-home globe pipeline cache-key builder/parser after the 15-month UNO_/UNMO_ producer-consumer drift; accessors + cache stats. |
 | globe-pipeline-readiness.spec.mjs | spec | ACTIVE | 2026-08-29 | 2 | Scoring tests plus engine mechanism pins for probe-globe-pipeline-readiness; a pin failure means the traced path changed, not the instrument. |
 | globe-use-log-depth.spec.mjs | spec | ACTIVE | 2026-08-16 | 8 | Pins that the globe resolves the shared isWebGPULogDepthActive gate so orthographic modes never mix log and hyperbolic encodings in one depth buffer. |
 | gpu-timestamp-readback-ring-depth.spec.mjs | spec | ACTIVE | 2026-08-25 | 0 | Pins the GPU timestamp profiler's readback-ring depth behaviour: a workload at the measured worst-case latency retains every sample at a sufficient depth, and a ring that saturates at any depth still reports the loss instead of averaging past it. |
@@ -1416,7 +1417,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | weather-probe-pinning.mjs | lib | ACTIVE | 2026-08-21 | 24 | Shared weather-probe determinism pins, ALL READ BACK from the live scene and the packed cloud uniform buffer, plus the canonical immutable same-frame capture; a pin that did not take is STRUCTURAL, never a product verdict. |
 | weather-regional-tail-evidence.mjs | lib | ACTIVE | 2026-08-16 | 2 | Fixture and pass/fail policy for the C13-08 rendered antimeridian weather-tail probe, mutation-tested against its two target regressions. |
 | webgpu-model-preparation-evidence.mjs | lib | ACTIVE | 2026-08-16 | 2 | Accumulates and validates WebGPU model preparation/demand counters as measurement-window evidence for performance workloads. |
-| wgsl-mini-eval.mjs | lib | ACTIVE | 2026-08-29 | 7 | Parses and evaluates the arithmetic subset of WGSL (let bindings, one guarded return, scalar and vec3 arithmetic, a fixed builtin set) so specs can run a shader function straight from the shipped source. |
+| wgsl-mini-eval.mjs | lib | ACTIVE | 2026-08-29 | 8 | Parses and evaluates the arithmetic subset of WGSL (let bindings, one guarded return, scalar and vec3 arithmetic, a fixed builtin set) so specs can run a shader function straight from the shipped source. |
 | wgsl-variant.mjs | lib | ACTIVE | 2026-08-16 | 10 | Exposes the engine's real WGSL preprocessor and define registry so specs validate the exact variant text pipelines compile, not raw ifdef source. |
 
 ### scripts/ (3)

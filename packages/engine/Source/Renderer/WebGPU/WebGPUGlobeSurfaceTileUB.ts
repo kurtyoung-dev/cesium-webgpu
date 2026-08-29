@@ -100,6 +100,7 @@ import {
   DEFAULT_LIGHTING_FADE_OUT_DISTANCE,
 } from "./WebGPUGlobeLightingFade.js";
 import SceneMode from "../../Scene/SceneMode.js";
+import { OCEAN_WAVE_NOMINAL_FPS } from "../../Scene/GlobeOceanWaveClock.js";
 import { writeUniformSlice } from "./WebGPUGlobeSurfaceCameraUB.js";
 import { getActiveDebugSentinel } from "./WebGPUGlobeFragmentDebug.js";
 import {
@@ -110,8 +111,25 @@ import {
 /**
  * Per-frame increment for the deterministic ocean-wave animation clock.
  * Exported for the wrap-continuity regression spec; it is not public API.
+ *
+ * "Frame" here is the NOMINAL frame the wave rate was tuned against, not a
+ * render-loop tick: the clock advances with scene time now, and
+ * `OCEAN_WAVE_SECOND_SPEED` below is this increment at that nominal rate.
  */
 export const OCEAN_WAVE_FRAME_SPEED = 0.15;
+
+/**
+ * Phase advance per SECOND of scene time, in the units the wave march marches
+ * on.
+ *
+ * Derived, never tuned: it is the historical per-frame increment taken at the
+ * nominal frame rate its value was chosen against, so one second of scene time
+ * at clock speed one advances the sea by exactly what sixty frames used to.
+ * `OCEAN_WAVE_NOMINAL_FPS` is shared with `GlobeFS.glsl`, whose own conversion
+ * is spelled with the same number.
+ */
+export const OCEAN_WAVE_SECOND_SPEED =
+  OCEAN_WAVE_FRAME_SPEED * OCEAN_WAVE_NOMINAL_FPS;
 
 /**
  * Every ocean-advection component multiplied by this period is an integer.
@@ -640,22 +658,22 @@ export function createTileUniformBuffer(
     GLOBE_UB_UNSET,
   );
 
-  // Ocean wave animation clock, driven from `frameState.frameNumber` to mirror
-  // WebGL's `czm_frameNumber`, which drives `computeWaterColor`'s wave
-  // sampling as `time = czm_frameNumber * oceanAnimationSpeed`
-  // (GlobeFS.glsl L800/805). WebGL animates on every rendered frame regardless
-  // of the scene clock, so a paused or slow clock still shows churning ocean.
-  // Deriving the phase from `frameState.time` (JulianDate seconds) instead
-  // advances the wave UV by only ~0.012/s at the WGSL octave coefficients
-  // (`sampleOceanWaveNormals` 0.012/0.008/0.03), which reads as frozen next to
-  // WebGL's per-frame churn and stops entirely when the clock is paused.
+  // Ocean wave animation clock, in scene seconds, mirroring WebGL's
+  // `computeWaterColor`, which samples the same water at
+  // `time = u_oceanWaveSeconds * oceanWaveNominalFramesPerSecond *
+  // oceanAnimationSpeed`. `Globe.beginFrame` resolves the seconds once for both
+  // backends, so the two cannot show different seas at one instant; this slot
+  // converts them into the units the wave march marches on and nothing else.
   //
-  // `frameNumber` is constant across all views of one `scene.render()`, so
-  // there is no per-view phase drift the way there is with
-  // `performance.now()`, and it is deterministic for a fixed warm-up frame
-  // count, which regression captures depend on. `OCEAN_WAVE_FRAME_SPEED` is
-  // the per-frame phase increment fed into the octave coefficients, tuned for
-  // a gentle, WebGL-comparable churn.
+  // The clock used to be `frameState.frameNumber`, mirroring WebGL's
+  // `czm_frameNumber` deliberately. It made the wave rate whatever the frame
+  // rate happened to be, left a paused clock churning, and gave a same-settings
+  // A/B on this ocean no byte-identical form at all: two frames of one pinned
+  // clock differed by construction, and the phase below only returned to a
+  // given value every 320 000 frames, the smallest whole frame count for which
+  // `n × 0.15` is a multiple of 16000. The seconds are a pure function of
+  // `frameState.time`, so every logical view of one `scene.render()` still
+  // resolves the same phase, and a pinned clock repeats it exactly.
   //
   // The modulus is 16000, not 1e6. The WGSL march does `fract(t × velocity)`
   // per octave, and with `t` up to 1e6 the largest advection `t × 0.03 ≈ 3e4`
@@ -663,11 +681,13 @@ export function createTileUniformBuffer(
   // ripple animation stutters near the top of the range. 16000 keeps
   // `t × 0.03 ≤ 480` (ulp ~3e-5, far below the step) and is commensurate with
   // every shader advection rate: 16000 × {0.008, 0.012, 0.018, 0.03} is
-  // integral. The wrap at ~107k frames, about 30 minutes at 60 fps, therefore
-  // lands on the same texture phase rather than a visible pop.
-  const frameNumber = frameState?.frameNumber ?? 0;
+  // integral. The wrap, now at ~1778 s of scene time rather than ~107k frames,
+  // therefore lands on the same texture phase rather than a visible pop — and
+  // lands there exactly, because the seconds are continuous and the wrap no
+  // longer has to fall on a whole frame.
+  const oceanWaveSeconds = tileProvider?.oceanWaveSeconds ?? 0.0;
   const waveTime =
-    (frameNumber * OCEAN_WAVE_FRAME_SPEED) % OCEAN_WAVE_TIME_PERIOD;
+    (oceanWaveSeconds * OCEAN_WAVE_SECOND_SPEED) % OCEAN_WAVE_TIME_PERIOD;
   data[TIME_OFFSET] = waveTime;
   //>>includeStart('debug', pragmas.debug);
   // `CesiumDebug.globeFragmentDebug(name)`, or setting
