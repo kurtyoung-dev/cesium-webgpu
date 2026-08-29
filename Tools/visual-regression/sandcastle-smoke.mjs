@@ -83,8 +83,14 @@ import {
   evaluateRendererGate,
   evaluateWithDeadline,
   isNoViewerId,
+  openSandcastle2Url,
   readRendererStateInPage,
 } from "./lib/sandcastle2-renderer-gate.mjs";
+import {
+  OriginRewriteRefusal,
+  computeSandcastle2Origins,
+  createGuardedPage,
+} from "./lib/sandcastle2-origin-rewrite.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const OUTPUT_DIR = path.join(__dirname, "output", "sandcastle-smoke");
@@ -94,6 +100,15 @@ const NAV_TIMEOUT_MS = 60000;
 const RETRY_ATTEMPTS = 3;
 const RETRY_WAIT_MS = 4000;
 const MIN_DISTINCT = 8;
+// The built app the --sandcastle2 sweep drives is served on two origins — the
+// app shell (BASE) and a mirror the run/bucket iframe loads from (main port +
+// 1, the build's own convention — see server.js's `sandcastlePort` option).
+// Both are baked into the built bundle at build time; the sweep never trusts
+// the baked value and always rewrites+asserts against the ports it actually
+// launched on (`sandcastle2-origin-rewrite.mjs`).
+const SANDCASTLE2_BUCKET_BASE =
+  process.env.PROBE_SANDCASTLE_BASE ||
+  `http://localhost:${Number(new URL(BASE).port || 80) + 1}`;
 
 // minNonBlackPct: ~half the healthy baseline measured 2026-06-12
 // (visually confirmed from the saved captures, not just the numbers):
@@ -385,12 +400,9 @@ function parseSweepArgs(argv) {
 }
 
 // The bucket runs the demo in its own iframe, on its own origin. Everything the
-// gate reads lives in THAT document, not in the app shell.
-function findBucketFrame(page) {
-  return (
-    page.frames().find((f) => f.url().includes("templates/bucket.html")) ?? null
-  );
-}
+// gate reads lives in THAT document, not in the app shell. `findBucketFrame`
+// itself now lives in `sandcastle2-origin-rewrite.mjs`, shared with the
+// origin guard so both agree on what counts as the bucket frame.
 
 // The deadline helper and its sentinel live in the gate library — it needs only
 // a duck-typed `.evaluate()`, so keeping it there is what lets a unit test hand
@@ -400,7 +412,20 @@ async function runSweepDemo(browser, id, options) {
   const context = await browser.newContext({
     viewport: { width: 1024, height: 768 },
   });
-  const page = await context.newPage();
+  // createGuardedPage (not a bare context.newPage()) is what makes the
+  // origin guard fail CLOSED for this function: even though every call
+  // below IS awaited, the wrapped close() below is the backstop that turns
+  // a breach the try/catch missed (or one still in flight when this
+  // function's own cleanup runs) into a loud refusal instead of a silent
+  // page.close().
+  const origins = computeSandcastle2Origins({
+    servedPort: new URL(BASE).port,
+    bucketPort: new URL(SANDCASTLE2_BUCKET_BASE).port,
+    hostname: new URL(BASE).hostname,
+  });
+  const page = await createGuardedPage(context, origins, {
+    label: `sandcastle2 sweep (${id}, ${options.renderer})`,
+  });
   page.setDefaultTimeout(NAV_TIMEOUT_MS);
 
   const errors = [];
@@ -454,58 +479,72 @@ async function runSweepDemo(browser, id, options) {
     pngPath: null,
   };
 
-  try {
-    await page.goto(url, {
-      waitUntil: "domcontentloaded",
-      timeout: NAV_TIMEOUT_MS,
-    });
+  // Set from either the try body's catch or the close-time fail-closed check
+  // below — whichever finds a structural refusal first. Kept OUTSIDE the
+  // try/catch/finally so a close-time throw in `finally` can never silently
+  // replace one already found in the try body: both are captured as data,
+  // and whichever was found FIRST is what actually gets thrown, at the very
+  // end, after cleanup has definitely finished.
+  let structuralRefusal = null;
 
-    // Wait for the demo frame to exist at all. A run where the app never
-    // mounts a bucket times out here and is reported as such, rather than
-    // being scored against a canvas that was never created.
-    await page.waitForFunction(
-      () => document.querySelectorAll("iframe").length > 0,
-      { timeout: NAV_TIMEOUT_MS },
+  try {
+    // Installs the response rewrite on this page's context, navigates under
+    // the persistent origin guard, and waits for the run/bucket frame under
+    // the SAME guard extended with the bucket origin. A run where the app
+    // never mounts a bucket times out inside this call
+    // (BUCKET_FRAME_TIMEOUT, folded into a per-demo FAIL below) and is
+    // reported as such, rather than being scored against a canvas that was
+    // never created; either the page or the bucket frame settling on the
+    // WRONG origin is the structural refusal this whole module exists for,
+    // and is captured (not swallowed) below.
+    const { bucketFrame: frame } = await openSandcastle2Url(
+      page,
+      {
+        base: BASE,
+        bucketBase: SANDCASTLE2_BUCKET_BASE,
+        id,
+        renderer: options.renderer,
+        standalone: options.standalone,
+      },
+      {
+        gotoOptions: { timeout: NAV_TIMEOUT_MS },
+        timeoutMs: NAV_TIMEOUT_MS,
+      },
     );
     await page.waitForTimeout(SETTLE_MS);
 
-    const frame = findBucketFrame(page);
-    if (!frame) {
-      result.errors.push("probe: no bucket frame on the page");
-    } else {
-      const state = await evaluateWithDeadline(
-        frame,
-        readRendererStateInPage,
-        EVALUATE_TIMEOUT_MS,
+    const state = await evaluateWithDeadline(
+      frame,
+      readRendererStateInPage,
+      EVALUATE_TIMEOUT_MS,
+    );
+    if (state === EVALUATE_TIMEOUT) {
+      result.timedOut = true;
+      result.errors.push(
+        `probe: the demo frame did not answer within ${EVALUATE_TIMEOUT_MS}ms`,
       );
-      if (state === EVALUATE_TIMEOUT) {
-        result.timedOut = true;
-        result.errors.push(
-          `probe: the demo frame did not answer within ${EVALUATE_TIMEOUT_MS}ms`,
-        );
-      } else {
-        result.rendererGate = evaluateRendererGate({
-          contexts: state.contexts,
-          requested: options.renderer,
-          expectNoViewer,
-        });
-        if (state.note) {
-          result.rendererGate.reason = `${result.rendererGate.reason} (${state.note})`;
-        }
-        result.frameGate = evaluateFrameGate(state.frameNumbers, {
-          expectNoViewer,
-        });
+    } else {
+      result.rendererGate = evaluateRendererGate({
+        contexts: state.contexts,
+        requested: options.renderer,
+        expectNoViewer,
+      });
+      if (state.note) {
+        result.rendererGate.reason = `${result.rendererGate.reason} (${state.note})`;
       }
+      result.frameGate = evaluateFrameGate(state.frameNumbers, {
+        expectNoViewer,
+      });
+    }
 
-      if (options.captureAll || result.rendererGate?.ok === false) {
-        // Capture on failure by default: a full-gallery pass would otherwise
-        // write 338 screenshots for a run where nothing is wrong.
-        const canvas = await frame.$("canvas");
-        if (canvas) {
-          const png = await canvas.screenshot({ type: "png" });
-          await fs.writeFile(pngPath, png);
-          result.pngPath = pngPath;
-        }
+    if (options.captureAll || result.rendererGate?.ok === false) {
+      // Capture on failure by default: a full-gallery pass would otherwise
+      // write 338 screenshots for a run where nothing is wrong.
+      const canvas = await frame.$("canvas");
+      if (canvas) {
+        const png = await canvas.screenshot({ type: "png" });
+        await fs.writeFile(pngPath, png);
+        result.pngPath = pngPath;
       }
     }
 
@@ -531,11 +570,44 @@ async function runSweepDemo(browser, id, options) {
     // measurement, not a verdict about which backend it ran.
     result.outcome = result.ok ? "PASS" : result.timedOut ? "TIMEOUT" : "FAIL";
   } catch (err) {
-    result.errors.push(`probe: ${String(err?.message || err)}`);
-    result.outcome = result.timedOut ? "TIMEOUT" : "FAIL";
+    // An origin mismatch (the page or the bucket frame settled somewhere
+    // other than requested) is not a per-demo finding — it means this run is
+    // not measuring the server it thinks it is, and every result so far and
+    // after is suspect. Captured (not thrown here — see `structuralRefusal`
+    // above) so the sweep aborts once cleanup below has actually finished,
+    // instead of racing a close-time throw in `finally` that could otherwise
+    // replace this one. `BUCKET_FRAME_TIMEOUT` is the one refusal code that
+    // stays per-demo: it means this demo never mounted a bucket at all (the
+    // pre-existing "no bucket frame" finding), which is a demo defect, not
+    // an origin problem.
+    if (
+      err instanceof OriginRewriteRefusal &&
+      err.code !== "BUCKET_FRAME_TIMEOUT"
+    ) {
+      structuralRefusal = err;
+    } else {
+      result.errors.push(`probe: ${String(err?.message || err)}`);
+      result.outcome = result.timedOut ? "TIMEOUT" : "FAIL";
+    }
   } finally {
-    await page.close().catch(() => {});
+    // page.close() is the WRAPPED close createGuardedPage installed: it
+    // fail-closes on a breach recorded after the try/catch above already
+    // ran, or on a guarded navigation that was somehow still in flight. A
+    // refusal found HERE only becomes `structuralRefusal` if the try body
+    // did not already find one — the try body's own finding always wins,
+    // exactly like `createGuardedPage`'s own "refusal beats cleanup error"
+    // rule one level up.
+    try {
+      await page.close();
+    } catch (closeErr) {
+      if (!structuralRefusal && closeErr instanceof OriginRewriteRefusal) {
+        structuralRefusal = closeErr;
+      }
+    }
     await context.close().catch(() => {});
+  }
+  if (structuralRefusal) {
+    throw structuralRefusal;
   }
   return result;
 }
@@ -586,7 +658,24 @@ async function runSandcastle2Sweep(argv) {
     `sandcastle2 sweep: ${ids.length} demos, renderer=${options.renderer}, page=${options.standalone ? "standalone" : "index"}`,
   );
   for (let i = 0; i < ids.length; i++) {
-    const r = await runSweepDemo(browser, ids[i], options);
+    let r;
+    try {
+      r = await runSweepDemo(browser, ids[i], options);
+    } catch (err) {
+      if (err instanceof OriginRewriteRefusal) {
+        // A per-demo result cannot represent this: the run is not measuring
+        // the server it was asked to measure, so every earlier result in
+        // this sweep is suspect too. Refuse the whole sweep instead of
+        // reporting the rest as if nothing happened — this is the deliverable
+        // the origin guard exists for, not an ordinary probe failure.
+        console.log(
+          `\nREFUSED: sandcastle2 sweep aborted at demo ${i + 1}/${ids.length} (${ids[i]}) — ${err.code}: ${err.reason}`,
+        );
+        await browser.close();
+        return 2;
+      }
+      throw err;
+    }
     if (r.outcome === "TIMEOUT") {
       timeouts.push(r);
     } else if (!r.ok) {

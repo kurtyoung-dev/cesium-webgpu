@@ -206,11 +206,11 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 
 | Metric | Value |
 |---|---|
-| Files in census | 1146 |
-| ACTIVE | 934 |
+| Files in census | 1150 |
+| ACTIVE | 936 |
 | INVESTIGATION | 195 |
-| NO @purpose HEADER | 17 |
-| Classes | probe 653, spec 267, other 103, lib 80, gate-lib 20, bake-tool 13, runner 6, fixture 4 |
+| NO @purpose HEADER | 19 |
+| Classes | probe 654, spec 269, other 103, lib 81, gate-lib 20, bake-tool 13, runner 6, fixture 4 |
 
 ### Tools/ (44)
 
@@ -243,7 +243,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | provision-worker-clone-junctions.spec.mjs | spec | NO @purpose HEADER | 2026-08-29 | 1 | — |
 | provision-worker-clone.mjs | other | ACTIVE | 2026-08-29 | 3 | Provision a worker clone with the governance git cannot deliver, create the local main ref the handoff diff needs, and REFUSE if any routed authority is unreachable. |
 | run-far200-shadow-self-test.mjs | runner | ACTIVE | 2026-08-16 | 2 | Thin bootstrap: esbuild-bundles Tools/far200-shadow-self-test.ts and executes it via a data: URL import. |
-| spec-runner-census.mjs | other | NO @purpose HEADER | 2026-08-29 | 3 | — |
+| spec-runner-census.mjs | other | NO @purpose HEADER | 2026-08-29 | 4 | — |
 | spec-runner-census.spec.mjs | spec | NO @purpose HEADER | 2026-08-29 | 1 | — |
 | upstream-regression-check.mjs | other | ACTIVE | 2026-08-16 | 7 | Standalone Node re-verification of eight ported upstream fixes (imagery-layers guard, parseUrl, octDecode arg order, etc.); exit 0 = all hold. |
 | variant-smoke-test.mjs | other | ACTIVE | 2026-08-16 | 26 | Playwright smoke test of each build variant's IIFE bundle (dual/webgl-only/webgpu-only): Viewer constructs, frames render, zero console errors. |
@@ -358,7 +358,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | stbn-rng.mjs | bake-tool | ACTIVE | 2026-08-16 | 3 | Deterministic license-clean random stream for the STBN bake: AES-256-CTR over zeros keyed by SHA-256(seed), byte-identical across machines. |
 | stbn-spectrum.mjs | bake-tool | ACTIVE | 2026-08-16 | 5 | Fourier certification of an STBN volume (radial spatial spectrum, per-pixel temporal spectrum, cross-correlation) with mutants proving each bar fires. |
 
-### Tools/visual-regression/ (937)
+### Tools/visual-regression/ (940)
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
@@ -464,9 +464,9 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | diff-two-pngs.mjs | other | ACTIVE | 2026-08-16 | 1 | General CLI pixel-exact PNG diff with optional bottom-crop and exit 0 iff zero drift; the byte-identity gate tool of the diff family. |
 | disable-skyatmo-probe-wgl.mjs | other | INVESTIGATION | 2026-08-16 | 0 | WebGL twin of disable-skyatmo-probe: disables skyAtmosphere/groundAtmosphere/fog/skyBox and captures, for dark-sky layer attribution. |
 | disable-skyatmo-probe.mjs | other | INVESTIGATION | 2026-08-16 | 0 | Disables skyAtmosphere/groundAtmosphere/fog/skyBox on WebGPU and captures, isolating which environment layer caused the dark-sky bug. |
-| earth-at-night-demo-clock.spec.mjs | spec | ACTIVE | — | 1 | Q-146: prove the earth-at-night demo's clock coupling is scoped to |
-| earth-at-night-gallery-manifest.spec.mjs | spec | ACTIVE | — | 1 | Q-147: assert the built Sandcastle2 gallery manifest carries no |
-| earth-at-night-toolbar-collapsed.spec.mjs | spec | ACTIVE | — | 1 | EAN-04: prove the earth-at-night toolbar's collapsed-by-default |
+| earth-at-night-demo-clock.spec.mjs | spec | ACTIVE | 2026-08-29 | 1 | Q-146: prove the earth-at-night demo's clock coupling is scoped to |
+| earth-at-night-gallery-manifest.spec.mjs | spec | ACTIVE | 2026-08-29 | 1 | Q-147: assert the built Sandcastle2 gallery manifest carries no |
+| earth-at-night-toolbar-collapsed.spec.mjs | spec | ACTIVE | 2026-08-29 | 1 | EAN-04: prove the earth-at-night toolbar's collapsed-by-default |
 | earth-pixel-probe.mjs | other | INVESTIGATION | 2026-08-16 | 0 | Loads CesiumViewer once per backend at one pinned camera and samples RGB at fixed screen points (center/ocean/continent/sky) to quantify color shift. |
 | eclipse-cloud-ibl-response.spec.mjs | spec | ACTIVE | 2026-08-28 | 6 | C13-41 (C12-29 S3 rider): pins seven exact-1.0 non-eclipse identity sites, rejects the S2 scene-factor shadow substitution, both env-bake halves. |
 | eclipse-cloud-response-gate.spec.mjs | spec | ACTIVE | 2026-08-29 | 13 | Pure-Node half of C13-41's Edge acceptance: derives bucket fills and submitted-refresh cost, and mutant-checks every fold predicate. |
@@ -574,6 +574,8 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | probe-2dcv-verify.mjs | probe | INVESTIGATION | 2026-08-16 | 5 | BUG-3 visual verification: instant-morphs to 2D and CV on both backends, screenshots plus pixel stats behind the WebGPU error gate. |
 | probe-adapter-limits-quick.mjs | probe | ACTIVE | 2026-08-16 | 1 | Fast dump of four key GPUAdapter limits (vertex buffers/attributes, bind groups, max buffer size) from the viewer page in one default Edge config. |
 | probe-adapter-limits.mjs | probe | ACTIVE | 2026-08-16 | 2 | Dumps WebGPU adapter limits across multiple Chromium launch configs (DXGI vs explicit Vulkan vs high-performance) to find the best-limit path. |
+| probe-aec-perf.mjs | probe | NO @purpose HEADER | — | 3 | — |
+| probe-aec-perf.spec.mjs | spec | NO @purpose HEADER | — | 2 | — |
 | probe-aerial-froxel.mjs | probe | ACTIVE | 2026-08-16 | 5 | Acceptance for the froxel 3D-LUT aerial-perspective fast path: renders, far-band haze signature, distinct from OFF, analytic parity path intact. |
 | probe-aerial-lut-primitive.mjs | probe | ACTIVE | 2026-08-16 | 4 | Verifies primitives' effects bind group actually forwards the aerial-perspective LUT: polyline must fog with atmosphere ON vs OFF, not stay same. |
 | probe-aerial-perspective.mjs | probe | ACTIVE | 2026-08-16 | 9 | Acceptance for the unified aerial-perspective post-process: renders, contributes, depth-correct far-band haze, no double-darkening, no GPU errors. |
@@ -881,7 +883,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | probe-globe-bindgroup-cache.mjs | probe | ACTIVE | 2026-08-16 | 7 | Gates the globe per-tile bind-group cache: creations settle to ~0, spike+resettle on pan, globe visibly renders, zero validation errors |
 | probe-globe-bundle-cost.mjs | probe | INVESTIGATION | 2026-08-16 | 5 | TEMP A/B measurement of the inline globe render-bundle's per-frame CPU cost — the decision input for the cache-vs-drop call |
 | probe-globe-clippoly-geodetic.mjs | probe | ACTIVE | 2026-08-16 | 4 | Globe clipping-polygon parity: the polygon hole must exist on both backends and the clip boundary must align (geodetic SDF convention fix) |
-| probe-globe-cold-start-readiness.mjs | probe | ACTIVE | 2026-08-29 | 2 | Measures whether a settle gated on the new readiness predicate ends with a drawn frame, and what the globe's first non-empty command list costs on each backend. |
+| probe-globe-cold-start-readiness.mjs | probe | ACTIVE | 2026-08-29 | 3 | Measures whether a settle gated on the new readiness predicate ends with a drawn frame, and what the globe's first non-empty command list costs on each backend. |
 | probe-globe-default-limits.mjs | probe | ACTIVE | 2026-08-16 | 7 | Gates globe rendering on a device pinned to WebGPU default limits (16 sampled textures): reduced 4-slot imagery layout + multi-pass blend path |
 | probe-globe-effects-handle-toggle.mjs | probe | ACTIVE | 2026-08-16 | 4 | Oracle for the per-frame globe-effects bind-group memo: clipping ON-OFF-ON must carve, restore, and re-carve terrain with zero stale-handle errors |
 | probe-globe-farzoom.mjs | probe | INVESTIGATION | 2026-08-16 | 2 | Diagnostic re-bucketing of the far-zoom 'GPU brighter' interior blobs with ground atmosphere toggled, attributing drape vs imagery mip/LOD-bias |
@@ -1092,8 +1094,8 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | probe-sampleheight-webgpu.mjs | probe | ACTIVE | 2026-08-16 | 7 | Asserts sampleHeight/clampToHeight work on WebGPU via main-scene-depth reuse (cold-cache converges) with WebGL behavior unchanged. |
 | probe-sandcastle-bulk-legacy.mjs | probe | ACTIVE | 2026-08-16 | 2 | Gates DataSourceDisplay bulk vs legacy visualizer callbacks: lane classification correct and bulk << legacy per-frame cost, on the real build. |
 | probe-sandcastle-scene-capture.mjs | probe | ACTIVE | 2026-08-16 | 1 | Replays the Scene Capture Reflections demo body against CesiumViewer; capture records publish when ON, zero when OFF, 0 errors. |
-| probe-sandcastle2-ports.mjs | probe | INVESTIGATION | 2026-08-16 | 2 | One-off diagnosis loading the same Sandcastle2 demo on the outer :8080 app origin vs inner :8081 bucket origin and comparing. |
-| probe-sandcastle2-webgpu-start.mjs | probe | ACTIVE | 2026-08-16 | 2 | Acceptance for the Sandcastle2 frozen-module crash: Mars demo loads on both renderers, no 'Cannot assign to property Viewer', canvas renders. |
+| probe-sandcastle2-ports.mjs | probe | INVESTIGATION | 2026-08-16 | 4 | One-off diagnosis loading the same Sandcastle2 demo, through the guarded opener, on the outer app origin vs directly on the inner bucket origin, and comparing. |
+| probe-sandcastle2-webgpu-start.mjs | probe | ACTIVE | 2026-08-16 | 4 | Acceptance for the Sandcastle2 frozen-module crash: Mars demo loads on both renderers, no 'Cannot assign to property Viewer', canvas renders. |
 | probe-saved-view.mjs | probe | ACTIVE | 2026-08-16 | 16 | Loads user-reported saved-view URLs and captures WebGL vs WebGPU side-by-side; the canonical capture+diff template for view-specific bugs. |
 | probe-scene-capture-cardinal.mjs | probe | INVESTIGATION | 2026-08-16 | 4 | Ground-truth cardinal check for globe env capture: per-face on-screen camera replicas vs captured cube faces, detecting E/W swap or mirror. |
 | probe-scene-capture-off.mjs | probe | ACTIVE | 2026-08-16 | 4 | OFF-parity gate for env scene capture: both default-false flags mean no capture sources, no extra GPU pass, canvas unchanged vs WebGL baseline. |
@@ -1218,7 +1220,8 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | run-regression-sweep.mjs | runner | INVESTIGATION | 2026-08-16 | 0 | Batch-146 sequential sweep of the Batches 134-145 probe arc, parsing stdout tails for PASS/FAIL markers — a did-the-arc-break-anything check. |
 | sandcastle-batch-66-end-of-session-runner.mjs | other | INVESTIGATION | 2026-08-16 | 2 | End-of-session rerun of the Batch-66 Sandcastle sweep (direct scene.pick, pointer-error filtering) writing per-demo screenshots + report. |
 | sandcastle-batch-66-final-runner.mjs | other | INVESTIGATION | 2026-08-16 | 10 | Post-F1/F2/F3 rerun of the Batch-66 WebGPU Sandcastle sweep: every 'WebGPU *.html' demo headless, known artifacts filtered, JSON report. |
-| sandcastle-smoke.mjs | other | ACTIVE | 2026-08-29 | 8 | Standing Sandcastle CI blind-spot smoke: three local-resource WebGPU gallery demos gated on non-black, non-uniform, real device, zero errors. |
+| sandcastle-smoke.mjs | other | ACTIVE | 2026-08-29 | 9 | Standing Sandcastle CI blind-spot smoke: three local-resource WebGPU gallery demos gated on non-black, non-uniform, real device, zero errors. |
+| sandcastle2-origin-rewrite.spec.mjs | spec | ACTIVE | — | 2 | Proves the persistent, continuous origin guard (not a one-shot check): a fake-page unit proof of a later redirect being caught, a real-browser proof through the WIRED integration path (openSandcastle2Url, opened via createGuardedPage), the app's own redirect to a dead baked origin producing a captured connection-error request failure followed by an ORIGIN_MISMATCH refusal on the resulting error page (B(c)) — distinct from a directly-dead requested url, which fails as a plain connection error (B(c-direct)) — an in-flight navigation refusing page.close() with NAVIGATION_UNVERIFIED, a fire-and-forget navigation still refusing at page-close via a subprocess with an explicit close-time sentinel, and the comparison mutant killing leg (b). |
 | sandcastle2-pinned-demos.spec.mjs | spec | ACTIVE | 2026-08-29 | 1 | Contract spec for the pinned-demo census: exact derived count against the real gallery, per-kind classification correctness, and the naive-scan defect the census fixes. |
 | sandcastle2-renderer-gate.spec.mjs | spec | ACTIVE | 2026-08-29 | 2 | Contract spec for the Sandcastle2 backend sweep helpers: id enumeration against the real gallery, URL construction, and the requested-vs-actual renderer predicate. |
 | scene-debug-pragma-coverage.spec.mjs | spec | ACTIVE | 2026-08-28 | 0 | Pins which scene diagnostics are stripped from release builds and which must survive, by running the real production strip over the real sources. |
@@ -1335,7 +1338,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | derive-umbra-lo-shard.mjs | fixture | ACTIVE | 2026-08-16 | 2 | Deterministically crops four hash-verified umbra_lo records from NASA SVS 5073 into the pinned C12-29 S5 eclipse-footprint fixture shard. |
 | nasa-svs-5073-shapefile.mjs | fixture | ACTIVE | 2026-08-16 | 5 | Dependency-free ESRI Shapefile Polygon + dBASE reader for the SVS 5073 umbra fixture, parseable by node --test and same-origin browser probes alike. |
 
-### Tools/visual-regression/lib/ (91)
+### Tools/visual-regression/lib/ (92)
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
@@ -1411,9 +1414,10 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | representative-performance-content.mjs | lib | ACTIVE | 2026-08-16 | 10 | Builds and validates the local procedural terrain+models+tiles representative scene configuration for offline performance workloads. |
 | representative-tileset-request-ledger.mjs | lib | ACTIVE | 2026-08-16 | 6 | Event-sourced ledger of tileset content requests (issue/terminal events, byte totals, hashes) with cross-run comparison for perf evidence. |
 | same-task-capture.mjs | lib | ACTIVE | 2026-08-16 | 49 | Canonical capture primitives that keep render+readback in one task (WebGL clears, WebGPU invalidates after present), plus embed-drift validators. |
+| sandcastle2-origin-rewrite.mjs | lib | ACTIVE | — | 9 | Reusable Playwright helper for every opener of the built Sandcastle2 app: rewrites the build-time-baked outer/inner origin strings the app's own responses carry, and attaches a persistent per-navigation guard (main frame + bucket/run frame) that throws a named, distinguishable refusal the instant any navigation lands off the requested origin — checked synchronously at every guard call AND automatically at page close, so a caller that never awaits a navigation call is still refused. |
 | sandcastle2-pinned-demos.mjs | lib | ACTIVE | 2026-08-29 | 1 | Derive, comment-aware, which gallery demos construct their Viewer/CesiumWidget with an explicit contextOptions.renderer, and classify HOW (Q-133). |
-| sandcastle2-renderer-gate.mjs | gate-lib | ACTIVE | 2026-08-29 | 5 | Pure helpers for the Sandcastle2 backend sweep: gallery id enumeration, URL construction, and the "the demo really ran the requested renderer" predicate. |
-| served-build-preflight.mjs | lib | ACTIVE | 2026-08-29 | 3 | Q-98 — fetch one or more served build artifacts and compare each to |
+| sandcastle2-renderer-gate.mjs | gate-lib | ACTIVE | 2026-08-29 | 10 | Pure helpers for the Sandcastle2 backend sweep: gallery id enumeration, URL construction, and the "the demo really ran the requested renderer" predicate. |
+| served-build-preflight.mjs | lib | ACTIVE | 2026-08-29 | 4 | Q-98 — fetch one or more served build artifacts and compare each to |
 | settle-attribution.mjs | lib | ACTIVE | 2026-08-16 | 6 | First-complete-frame metric plus the rule that stable-time credit requires a main-thread long-task reduction (GPU-bound settles book none). |
 | solar-bloom-glow.mjs | lib | ACTIVE | 2026-08-16 | 6 | Forward model of the sun bloom's additive glow-on-disc so differential disc measurements carry the non-cancelling bloom term correctly. |
 | star-contribution-census.mjs | lib | ACTIVE | 2026-08-29 | 3 | One home for the positional star-reachability control: luma planes, the absolute-frame census and the stars-on-minus-off difference census. |

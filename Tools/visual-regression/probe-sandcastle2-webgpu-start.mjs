@@ -15,12 +15,31 @@
 //   (b) the bucket demo finished loading (no lingering sandcastle-loading overlay)
 //       and a canvas exists with some non-black pixels (it actually renders),
 //   (c) WebGL still works the same way.
+//
+// Opens the built app through `sandcastle2-origin-rewrite.mjs` /
+// `openSandcastle2Url` — the built bundle bakes a top-level redirect to
+// whatever origins it was built with, so a bare `page.goto` here would risk
+// silently landing on whatever server happens to be running on the baked
+// origin instead of the one this run asked for. `PROBE_BASE`/
+// `PROBE_SANDCASTLE_BASE` select the run's own ports; neither defaults to
+// 8080/8081.
+//
+// Usage: PROBE_BASE=http://localhost:8134 node Tools/visual-regression/probe-sandcastle2-webgpu-start.mjs
 
 import { chromium } from "playwright";
 import fs from "fs";
 import path from "path";
 
-const BASE = "http://localhost:8080";
+import {
+  createGuardedPage,
+  OriginRewriteRefusal,
+} from "./lib/sandcastle2-origin-rewrite.mjs";
+import { openSandcastle2Url } from "./lib/sandcastle2-renderer-gate.mjs";
+
+const BASE = process.env.PROBE_BASE || "http://localhost:8134";
+const BUCKET_BASE =
+  process.env.PROBE_SANDCASTLE_BASE ||
+  `http://localhost:${Number(new URL(BASE).port || 80) + 1}`;
 const OUT_DIR = "Tools/visual-regression/output";
 const DEMO_ID = "mars";
 
@@ -63,122 +82,177 @@ async function run(rendererMode) {
     ["sandcastle/settings", settingsJson(rendererMode)],
   );
 
-  const page = await context.newPage();
+  // `createGuardedPage` attaches the persistent origin guard before the page
+  // ever navigates, and wraps `close()` to assert no breach was ever
+  // recorded. `browser.close()` does NOT invoke the JavaScript-level
+  // `page.close()` wrapper — it tears the browser process down directly — so
+  // every exit path below closes the PAGE (through the wrapper) before
+  // closing the browser, never the other way around and never browser-only.
+  const page = await createGuardedPage(context, {
+    servedOrigin: new URL(BASE).origin,
+    bucketOrigin: new URL(BUCKET_BASE).origin,
+  });
   const messages = [];
   const record = (t, text) => messages.push({ t, text });
   page.on("console", (m) => record(m.type(), m.text()));
   page.on("pageerror", (e) => record("pageerror", e.message));
 
-  const url = `${BASE}/Apps/Sandcastle2/index.html?id=${DEMO_ID}`;
-  await page.goto(url, { waitUntil: "domcontentloaded" });
+  // Set from either the navigation catch below or the close-time fail-closed
+  // check in `finally` — whichever finds a structural refusal first. A
+  // refusal found in the try body always wins over one `page.close()` finds
+  // during cleanup (the same "refusal beats a cleanup-time throw" rule
+  // `createGuardedPage` itself follows), and either way it is thrown only
+  // AFTER cleanup has actually finished, at the very end of this function.
+  let structuralRefusal = null;
+  let cleanupError = null;
+  let result;
 
-  // Wait for the nested bucket iframe (served from the inner origin :8081).
-  let bucketFrame = null;
-  const deadline = Date.now() + 20000;
-  while (Date.now() < deadline) {
-    bucketFrame = page.frames().find((f) => /bucket\.html/.test(f.url()));
-    if (bucketFrame) {
-      break;
-    }
-    await page.waitForTimeout(250);
-  }
-  if (!bucketFrame) {
-    await browser.close();
-    return {
-      rendererMode,
-      ok: false,
-      reason: "bucket iframe never appeared",
-      messages,
-    };
-  }
-
-  // Give the demo time to run (module load + Viewer construction + first frames).
-  await page.waitForTimeout(9000);
-
-  // Loading overlay gone + a canvas exists inside the bucket frame.
-  let frameState = {
-    hasCanvas: false,
-    loading: true,
-    nonBlackFrac: 0,
-    mean: 0,
-  };
   try {
-    frameState = await bucketFrame.evaluate(() => ({
-      hasCanvas: !!document.querySelector("canvas"),
-      loading: document.body.classList.contains("sandcastle-loading"),
-    }));
-  } catch (e) {
-    frameState.error = String(e);
-  }
-
-  const outPng = path.join(
-    OUT_DIR,
-    `sandcastle2-${rendererMode}-${DEMO_ID}.png`,
-  );
-  await page.screenshot({ path: outPng });
-
-  // Live GPU canvases don't preserve their drawing buffer, so reading them back
-  // yields black. Instead measure "does it render" from a rasterized element
-  // screenshot of the bucket iframe, decoded back into a 2D canvas (a PNG raster,
-  // not a live GPU surface, so getImageData is reliable).
-  try {
-    const shot = await page.locator("iframe.fullFrame").first().screenshot();
-    const dataUrl = `data:image/png;base64,${shot.toString("base64")}`;
-    const stats = await page.evaluate(async (url) => {
-      const img = new Image();
-      await new Promise((res, rej) => {
-        img.onload = res;
-        img.onerror = rej;
-        img.src = url;
-      });
-      const w = 240;
-      const h = 160;
-      const c = document.createElement("canvas");
-      c.width = w;
-      c.height = h;
-      const ctx = c.getContext("2d");
-      ctx.drawImage(img, 0, 0, w, h);
-      const data = ctx.getImageData(0, 0, w, h).data;
-      let nonBlack = 0;
-      let sum = 0;
-      const total = w * h;
-      for (let i = 0; i < data.length; i += 4) {
-        const lum = data[i] + data[i + 1] + data[i + 2];
-        sum += lum;
-        if (lum > 24) {
-          nonBlack++;
-        }
+    let bucketFrame;
+    try {
+      const opened = await openSandcastle2Url(
+        page,
+        {
+          base: BASE,
+          bucketBase: BUCKET_BASE,
+          id: DEMO_ID,
+          renderer: rendererMode,
+        },
+        { timeoutMs: 20000 },
+      );
+      bucketFrame = opened.bucketFrame;
+    } catch (error) {
+      if (error instanceof OriginRewriteRefusal) {
+        // Distinct from "bucket iframe never appeared": this means the page
+        // (or the bucket frame) landed on a server nobody asked for, which
+        // this run cannot recover from — surfaced plainly rather than
+        // reported as an ordinary FAIL a retry might paper over.
+        structuralRefusal = error;
+      } else {
+        result = {
+          rendererMode,
+          ok: false,
+          reason: `bucket iframe never appeared: ${String(error?.message ?? error)}`,
+          messages,
+        };
       }
-      return { nonBlackFrac: nonBlack / total, mean: sum / total / 3 };
-    }, dataUrl);
-    frameState.nonBlackFrac = stats.nonBlackFrac;
-    frameState.mean = stats.mean;
-  } catch (e) {
-    frameState.shotError = String(e);
+    }
+
+    if (!structuralRefusal && !result) {
+      // Give the demo time to run (module load + Viewer construction + first frames).
+      await page.waitForTimeout(9000);
+
+      // Loading overlay gone + a canvas exists inside the bucket frame.
+      let frameState = {
+        hasCanvas: false,
+        loading: true,
+        nonBlackFrac: 0,
+        mean: 0,
+      };
+      try {
+        frameState = await bucketFrame.evaluate(() => ({
+          hasCanvas: !!document.querySelector("canvas"),
+          loading: document.body.classList.contains("sandcastle-loading"),
+        }));
+      } catch (e) {
+        frameState.error = String(e);
+      }
+
+      const outPng = path.join(
+        OUT_DIR,
+        `sandcastle2-${rendererMode}-${DEMO_ID}.png`,
+      );
+      await page.screenshot({ path: outPng });
+
+      // Live GPU canvases don't preserve their drawing buffer, so reading them
+      // back yields black. Instead measure "does it render" from a rasterized
+      // element screenshot of the bucket iframe, decoded back into a 2D canvas
+      // (a PNG raster, not a live GPU surface, so getImageData is reliable).
+      try {
+        const shot = await page
+          .locator("iframe.fullFrame")
+          .first()
+          .screenshot();
+        const dataUrl = `data:image/png;base64,${shot.toString("base64")}`;
+        const stats = await page.evaluate(async (url) => {
+          const img = new Image();
+          await new Promise((res, rej) => {
+            img.onload = res;
+            img.onerror = rej;
+            img.src = url;
+          });
+          const w = 240;
+          const h = 160;
+          const c = document.createElement("canvas");
+          c.width = w;
+          c.height = h;
+          const ctx = c.getContext("2d");
+          ctx.drawImage(img, 0, 0, w, h);
+          const data = ctx.getImageData(0, 0, w, h).data;
+          let nonBlack = 0;
+          let sum = 0;
+          const total = w * h;
+          for (let i = 0; i < data.length; i += 4) {
+            const lum = data[i] + data[i + 1] + data[i + 2];
+            sum += lum;
+            if (lum > 24) {
+              nonBlack++;
+            }
+          }
+          return { nonBlackFrac: nonBlack / total, mean: sum / total / 3 };
+        }, dataUrl);
+        frameState.nonBlackFrac = stats.nonBlackFrac;
+        frameState.mean = stats.mean;
+      } catch (e) {
+        frameState.shotError = String(e);
+      }
+
+      const assignErr = messages.filter((m) =>
+        /Cannot assign to property/i.test(m.text),
+      );
+      const typeErrs = messages.filter(
+        (m) =>
+          (m.t === "error" || m.t === "pageerror") &&
+          /TypeError/i.test(m.text) &&
+          !/ion|fetch|network|token|401|403|404/i.test(m.text),
+      );
+
+      result = {
+        rendererMode,
+        outPng,
+        frameState,
+        assignErr,
+        typeErrs,
+        errorCount: messages.filter(
+          (m) => m.t === "error" || m.t === "pageerror",
+        ).length,
+        messages,
+      };
+    }
+  } finally {
+    try {
+      await page.close();
+    } catch (closeErr) {
+      if (closeErr instanceof OriginRewriteRefusal) {
+        structuralRefusal ??= closeErr;
+      } else {
+        cleanupError ??= closeErr;
+      }
+    }
+    try {
+      await browser.close();
+    } catch (closeErr) {
+      cleanupError ??= closeErr;
+    }
   }
 
-  await browser.close();
-
-  const assignErr = messages.filter((m) =>
-    /Cannot assign to property/i.test(m.text),
-  );
-  const typeErrs = messages.filter(
-    (m) =>
-      (m.t === "error" || m.t === "pageerror") &&
-      /TypeError/i.test(m.text) &&
-      !/ion|fetch|network|token|401|403|404/i.test(m.text),
-  );
-
-  return {
-    rendererMode,
-    outPng,
-    frameState,
-    assignErr,
-    typeErrs,
-    errorCount: messages.filter((m) => m.t === "error" || m.t === "pageerror")
-      .length,
-    messages,
-  };
+  if (structuralRefusal) {
+    throw structuralRefusal;
+  }
+  if (cleanupError) {
+    throw cleanupError;
+  }
+  return result;
 }
 
 (async () => {
@@ -189,7 +263,16 @@ async function run(rendererMode) {
   let pass = true;
   for (const mode of ["webgpu", "webgl"]) {
     console.log(`\n=== Sandcastle2 [${mode}] demo=${DEMO_ID} ===`);
-    const r = await run(mode);
+    let r;
+    try {
+      r = await run(mode);
+    } catch (error) {
+      if (error instanceof OriginRewriteRefusal) {
+        console.log(`\nREFUSED: [${mode}] ${error.code}: ${error.reason}`);
+        process.exit(2);
+      }
+      throw error;
+    }
     if (r.ok === false) {
       console.log(`  FAIL: ${r.reason}`);
       pass = false;

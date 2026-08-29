@@ -17,9 +17,27 @@
 // do not. Keeping id enumeration, URL construction and the scoring predicate
 // out here means they can be unit-tested in plain Node, so a change to the gate
 // is not gated on having a GPU.
+//
+// ONE EXCEPTION: {@link openSandcastle2Url} below does take a live `Page`. The
+// built app this module's urls point at bakes a top-level redirect to whatever
+// origins it was built with (see `sandcastle2-origin-rewrite.mjs`), so opening
+// one of those urls with a bare `page.goto` can silently land on a server
+// nobody asked for. `openSandcastle2Url` installs the response rewrite on the
+// page's `BrowserContext`, navigates under the persistent origin guard, AND
+// waits for the run/bucket frame under the SAME guard extended with the
+// bucket origin — every opener of the built app should call this one function
+// rather than duplicating (or partially missing) that sequence per probe.
 
 import { readdirSync, existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+
+import {
+  computeSandcastle2Origins,
+  getOrCreateOriginGuard,
+  gotoWithOriginGuard,
+  installOriginRewrite,
+  waitForBucketFrameOriginGuard,
+} from "./sandcastle2-origin-rewrite.mjs";
 
 /** Renderer selections the sweep can request for a single pane. */
 export const SWEEPABLE_RENDERERS = ["webgl", "webgpu"];
@@ -197,6 +215,101 @@ export function buildSandcastle2Url({
   url.searchParams.set("id", id);
   url.searchParams.set("renderer", renderer);
   return url.toString();
+}
+
+/**
+ * Build a Sandcastle2 demo url and open it fully guarded, in one call: installs
+ * the response rewrite on the page's `BrowserContext` (idempotent — safe even
+ * if the context already has it), navigates under the persistent origin guard,
+ * and (unless `navigation.waitForBucket` is `false`) waits for the run/bucket
+ * frame under the SAME guard extended with the bucket origin. Every opener of
+ * the built app should call this instead of a bare
+ * `page.goto(buildSandcastle2Url(...))` — the built app can redirect itself
+ * away from `urlOptions.base` (see `sandcastle2-origin-rewrite.mjs`), and this
+ * is what turns that into a loud, continuously-checked refusal instead of a
+ * probe that silently drives whatever server the redirect happened to land on,
+ * or one that only checked the top-level page and never the bucket iframe.
+ *
+ * `urlOptions.bucketBase` defaults to `urlOptions.base`'s port + 1 — the
+ * build's own convention for the run/mirror server (`server.js`'s
+ * `sandcastlePort` option) — but should be passed explicitly whenever a
+ * caller's dev server was started with a non-default one.
+ *
+ * `urlOptions.bakedServedOrigin` / `urlOptions.bakedBucketOrigin` default to
+ * `sandcastle2-origin-rewrite.mjs`'s `DEFAULT_BAKED_SERVED_ORIGIN` /
+ * `DEFAULT_BAKED_BUCKET_ORIGIN` (`http://localhost:8080` / `:8081`) — what
+ * `server.js` bakes in by default. Pass them explicitly for a build produced
+ * with a non-default `--port` / `--sandcastlePort`.
+ *
+ * @param {import("playwright").Page} page
+ * @param {Parameters<typeof buildSandcastle2Url>[0] & {bucketBase?: string, bakedServedOrigin?: string, bakedBucketOrigin?: string}} urlOptions Forwarded to {@link buildSandcastle2Url}; the rest are this function's own additions.
+ * @param {object} [navigation]
+ * @param {object} [navigation.gotoOptions] Forwarded to `page.goto`.
+ * @param {number} [navigation.quietMs] Forwarded to the guard's quiet-wait.
+ * @param {number} [navigation.timeoutMs] Forwarded to the guard's quiet-wait AND (when waiting for the bucket) its appearance timeout.
+ * @param {boolean} [navigation.waitForBucket] Defaults to `true` — every Sandcastle2 demo, viewer-less ones included, mounts the run/bucket iframe.
+ * @returns {Promise<{url: string, finalUrl: string, bucketFrame: import("playwright").Frame|null, bucketFinalUrl: string|null, assertNoOriginBreach: () => void}>}
+ * @throws {import("./sandcastle2-origin-rewrite.mjs").OriginRewriteRefusal} If the page (or the bucket frame) does not settle on the requested origin.
+ */
+export async function openSandcastle2Url(page, urlOptions, navigation = {}) {
+  const url = buildSandcastle2Url(urlOptions);
+  const base = new URL(urlOptions.base);
+  const bucketBase = urlOptions.bucketBase
+    ? new URL(urlOptions.bucketBase)
+    : new URL(`${base.protocol}//${base.hostname}:${Number(base.port) + 1}`);
+  const origins = computeSandcastle2Origins({
+    servedPort: base.port,
+    bucketPort: bucketBase.port,
+    hostname: base.hostname,
+    ...(urlOptions.bakedServedOrigin && {
+      bakedServedOrigin: urlOptions.bakedServedOrigin,
+    }),
+    ...(urlOptions.bakedBucketOrigin && {
+      bakedBucketOrigin: urlOptions.bakedBucketOrigin,
+    }),
+  });
+  const label = `sandcastle2 opener (${urlOptions.id ?? "?"}, ${urlOptions.renderer ?? "?"})`;
+
+  await installOriginRewrite(page.context(), origins);
+
+  const { finalUrl } = await gotoWithOriginGuard(page, url, {
+    origins,
+    gotoOptions: navigation.gotoOptions,
+    quietMs: navigation.quietMs,
+    timeoutMs: navigation.timeoutMs,
+    label,
+  });
+
+  if (navigation.waitForBucket === false) {
+    return {
+      url,
+      finalUrl,
+      bucketFrame: null,
+      bucketFinalUrl: null,
+      // The guard instance is memoized per-page (`getOrCreateOriginGuard`),
+      // so re-deriving it here (rather than closing over a reference from
+      // `gotoWithOriginGuard`'s return value) always reads the SAME live
+      // state `gotoWithOriginGuard` populated above.
+      assertNoOriginBreach: () =>
+        getOrCreateOriginGuard(page, { origins, label }).assertNoOriginBreach(),
+    };
+  }
+
+  const { frame, finalUrl: bucketFinalUrl } =
+    await waitForBucketFrameOriginGuard(page, {
+      origins,
+      timeoutMs: navigation.timeoutMs,
+      label,
+    });
+
+  return {
+    url,
+    finalUrl,
+    bucketFrame: frame,
+    bucketFinalUrl,
+    assertNoOriginBreach: () =>
+      getOrCreateOriginGuard(page, { origins, label }).assertNoOriginBreach(),
+  };
 }
 
 /**

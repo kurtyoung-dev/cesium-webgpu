@@ -108,6 +108,14 @@ corrected with it.
 The remaining ~30 medium and all low survivors are enumerated in §5 with their lane column reading
 QUEUED; they dispatch after Q-1…Q-10, batched by file so one Sol dispatch closes several small
 findings in the same module. C1's returning findings append here as a dated addendum.
+### Q-145 and DM-01 land (Batch 1307): the Sandcastle2 origin guard and the rebuilt AEC probe (2026-08-29 ~22:30 machine clock)
+
+| | Row | Disposition |
+|---|---|---|
+| Q-145 | LANDED (Batch 1307) after three Sol reviews (Finrod): revision 3 fixed 4 of 5 items; the seat applied the reviewer's exact text for the last two (probe-sandcastle2-webgpu-start: preserve cleanup errors and throw the origin refusal first; probe-sandcastle2-ports: capture the browser-close error, print the legs, then throw) | lib/sandcastle2-origin-rewrite.mjs: persistent framenavigated guard on top-level and bucket frames, memoised per page, fail-closed page factory (createGuardedPage / openSandcastle2Url / gotoWithOriginGuard), close wrapper that captures the refusal, closes, rechecks, detaches and throws the refusal ahead of cleanup errors; every opener of the built app in Tools/visual-regression goes through it (renderer gate, sandcastle-smoke, the two sandcastle2 diagnostic probes). Spec 37/37 incl. the stub-server legs (a)/(b)/(c), the subprocess close-refusal leg and the deletion mutant; renderer-gate spec 29/29. Runner home: test-sandcastle. EXECUTOR PRECONDITION for every tranche brief: open the built app only through createGuardedPage/openSandcastle2Url on a non-8080 port; a run that lands on another origin refuses by design |
+| DM-01 | LANDED (Batch 1307) | Tools/visual-regression/probe-aec-perf.mjs (Sol-authored, Sol-reviewed RETURN, Sol-corrected fully pasted): one page load per streaming lever applied before the first tileset and timed to Scene.renderReady; per-Pass command counts through an exported buildCellReport seam; one validated pick reused on both backends; interleaved backends; served-build preflight + origin-guard refusals (exit 3); element screenshot per cell; JSON + markdown receipts. Spec 14/14 incl. the seam-summing mutant. Runner home: test-readiness. Tranche B (Q-143) may now be briefed on it |
+| Wave 1 remaining | DM-07 revision 3 (Bilbo) in progress; Q-141 waits for it; Q-142 banked; Q-148 (tranche A) and Q-143 (tranche B) need a rebuilt served tree (Pippin's demo + Q-145 landed since the 07:44 build) - both wait for the engine window | the engine window itself waits for the maintainer's 8080 signal |
+
 ### Wave DX queued next by maintainer directive; the catalog's five pending rulings answered (2026-08-29 ~21:45 machine clock)
 
 | | Row | Disposition |
