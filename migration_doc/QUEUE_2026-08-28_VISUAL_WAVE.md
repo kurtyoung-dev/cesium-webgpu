@@ -286,7 +286,7 @@ brief carries premises re-verified at the cited `file:line` on the day it dispat
 | VW-L Edge legs | owed to tranche 3: 97.71% umbral coverage / 0.0452 disc luminance / red>=3x blue at greatest on the Porto Velho preset, MoonLight scene dimming to 4.52%, enableLunarEclipse=false as the void-check anchor |
 | VW-N10 (new, R-2026-08-28-8) | nightDarkness default 0.15 + level-three pyramid (455 KB) - lane NV |
 | VW-N11 (new, R-2026-08-28-9) | enableNightLights default ON + WebGL emission parity (WGSL branch is the reference; amends the WebGPU-only contract) - lane NV |
-| VW-N7 tranche 3a | Edge executor running Batch 1239's six legs + the onset-altitude sweep on the post-1239 build |
+| VW-N7 tranche 3a | GREEN, all six legs (2026-08-28 ~22:40; evidence output/edge-tranche3a-2026-08-28/): street default 241.87 -> 76.94 BYTE-IDENTICAL to the night-off control; street nd0.15 -> 11.51 byte-identical to the calibration control; orbit byte-unchanged (WebGPU 0%, WebGL inside its 0.021% floor); onset table matched prediction exactly (fade 1.0 >= 340 km, 0.741 @170, 0.259 @85, 0 <= 42 km) with both backends agreeing at every altitude; negative control byte-identical. MEASURED ON THE 3-LEVEL PYRAMID (Batch 1244 landed mid-run) - the table is the baseline; the level-3 band is derived at half these altitudes and is tranche 3b's first leg |
 | STAGED -> ARMED (R-2026-08-28-10) | C12 close-out sprint (lane C12X), celestial water reflection C11-163 (conditional on its four sub-decisions), R9 amendment round (author + pre-committed reviewer). Vegetation V1 stays staged |
 | C11-163 (R-2026-08-28-11) | sub-decisions RESOLVED: FFT-prototype-then-port / reduced moonglade GLSL twin / SkyBox Tycho cube / S5a. Lane CW dispatched; S0 day-sun-glint audit first |
 

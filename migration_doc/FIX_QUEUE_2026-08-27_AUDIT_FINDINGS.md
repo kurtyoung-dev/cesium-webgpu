@@ -108,6 +108,14 @@ corrected with it.
 The remaining ~30 medium and all low survivors are enumerated in §5 with their lane column reading
 QUEUED; they dispatch after Q-1…Q-10, batched by file so one Sol dispatch closes several small
 findings in the same module. C1's returning findings append here as a dated addendum.
+### Edge tranche 3a (2026-08-28 ~22:40) - Batch 1239 pixel-confirmed on all six legs
+
+| | Row | Disposition |
+|---|---|---|
+| CONFIRMED | Q-57 / VW-N7 | see the wave ledger row; before/after PNGs: visual-wave-acceptance-2026-08-28/webgl-midnight-street-on-nd1.png (cream wash) vs edge-tranche3a-2026-08-28/webgl-midnight-street-on-nd1.png (sharp scene) |
+| Q-63 | NEW | least-legible altitude sits just ABOVE the fade band: on-vs-off luma flips from darkening to brightening between 500 and 340 km and peaks +60 at 170 km while the layer is still at fade 1.0 - an illegible blur where the off-control is a sharp regional view. Pre-existing (orbit byte-unchanged proves 1239 did not cause it). Batch 1244's deeper pyramid halves every altitude; the live question is whether NIGHT_IMAGERY_FADE_FULL_TEXELS = 8 is the right upper knee. Measure on the level-3 build before touching the knee | executor 3b, then Opus if the knee moves |
+| NOTE | pyramid size bookkeeping | the ruled 455 KB is the JPEG payload of all 170 tiles (what a client downloads); the 829 KB seen on disk is filesystem cluster allocation over 170 small files. The size gate is about payload; 455 KB stands |
+
 ### Q-61 RESOLVED + star-reachability leg queued (2026-08-28 22:25)
 
 | | Row | Disposition |
