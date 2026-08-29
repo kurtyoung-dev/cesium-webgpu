@@ -132,6 +132,10 @@ interface OceanCache {
   twiddleParamsBuffer: GPUBuffer | null;
   timeParamsBuffer: GPUBuffer | null;
   mergeParamsBuffer: GPUBuffer | null;
+  // Reused 32-byte CPU scratch for time parameters.
+  timeParamsScratch: ArrayBuffer | null;
+  // Reused 32-byte CPU scratch for merge parameters.
+  mergeParamsScratch: ArrayBuffer | null;
   stepBuffers: GPUBuffer[]; // [0..7]
   // Render side
   gridVertexBuffer: GPUBuffer | null;
@@ -694,6 +698,8 @@ function updateWebGPUOcean(
       twiddleParamsBuffer: null,
       timeParamsBuffer: null,
       mergeParamsBuffer: null,
+      timeParamsScratch: new ArrayBuffer(32),
+      mergeParamsScratch: new ArrayBuffer(32),
       stepBuffers: [],
       gridVertexBuffer: null,
       gridIndexBuffer: null,
@@ -803,7 +809,7 @@ function updateWebGPUOcean(
       : cache.simulationSeconds + FALLBACK_FRAME_SECONDS;
   const timeSpeed = p._timeSpeed ?? 1.0;
   const time = cache.simulationSeconds * timeSpeed;
-  const timeBuf = new ArrayBuffer(32);
+  const timeBuf = cache.timeParamsScratch!;
   const tu = new Uint32Array(timeBuf);
   const tf = new Float32Array(timeBuf);
   tu[0] = N;
@@ -812,7 +818,7 @@ function updateWebGPUOcean(
   tf[4] = time;
   device.queue.writeBuffer(cache.timeParamsBuffer!, 0, timeBuf);
 
-  const mergeBuf = new ArrayBuffer(32);
+  const mergeBuf = cache.mergeParamsScratch!;
   const mu = new Uint32Array(mergeBuf);
   const mf = new Float32Array(mergeBuf);
   mu[0] = N;
@@ -1097,6 +1103,9 @@ function destroyWebGPUOceanResources(primObj: unknown): void {
   cache.timeParamsBuffer?.destroy();
   cache.mergeParamsBuffer?.destroy();
   cache.stepBuffers?.forEach((b) => b?.destroy());
+  // CPU-only ArrayBuffers need no other cleanup; drop their references.
+  cache.timeParamsScratch = null;
+  cache.mergeParamsScratch = null;
   p._webgpuCache = undefined;
 }
 

@@ -206,11 +206,11 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 
 | Metric | Value |
 |---|---|
-| Files in census | 1158 |
+| Files in census | 1159 |
 | ACTIVE | 944 |
 | INVESTIGATION | 195 |
-| NO @purpose HEADER | 19 |
-| Classes | probe 654, spec 275, other 104, lib 82, gate-lib 20, bake-tool 13, runner 6, fixture 4 |
+| NO @purpose HEADER | 20 |
+| Classes | probe 654, spec 276, other 104, lib 82, gate-lib 20, bake-tool 13, runner 6, fixture 4 |
 
 ### Tools/ (46)
 
@@ -360,7 +360,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | stbn-rng.mjs | bake-tool | ACTIVE | 2026-08-16 | 3 | Deterministic license-clean random stream for the STBN bake: AES-256-CTR over zeros keyed by SHA-256(seed), byte-identical across machines. |
 | stbn-spectrum.mjs | bake-tool | ACTIVE | 2026-08-16 | 5 | Fourier certification of an STBN volume (radial spatial spectrum, per-pixel temporal spectrum, cross-correlation) with mutants proving each bar fires. |
 
-### Tools/visual-regression/ (945)
+### Tools/visual-regression/ (946)
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
@@ -509,7 +509,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | globe-night-ocean-sentinel.spec.mjs | spec | ACTIVE | 2026-08-28 | 1 | Pins the GLOBE_UB_UNSET (-1.0) sentinel that made enableNightLights=false reachable: OFF and default-ON no longer share the same 0.0 uniform encoding. |
 | globe-ocean-wave-clock.spec.mjs | spec | ACTIVE | 2026-08-29 | 0 | Executes the globe water-mask ocean's wave-clock law, the WebGPU packer's own phase expression and the GLSL twin's, pinning that scene seconds drive both dialects at the historical rate and that the frame counter cannot reach either. |
 | globe-pipeline-key-contract.spec.mjs | spec | ACTIVE | 2026-08-29 | 4 | Pins the single-home globe pipeline cache-key builder/parser after the 15-month UNO_/UNMO_ producer-consumer drift; accessors + cache stats. |
-| globe-pipeline-prewarm.spec.mjs | spec | ACTIVE | — | 3 | Replays the runtime MSAA sample-count sequencing a context and its scene renderer produce, and requires the globe's first pipeline requests to be served by the warm rather than compiled on the render path. |
+| globe-pipeline-prewarm.spec.mjs | spec | ACTIVE | 2026-08-29 | 3 | Replays the runtime MSAA sample-count sequencing a context and its scene renderer produce, and requires the globe's first pipeline requests to be served by the warm rather than compiled on the render path. |
 | globe-pipeline-readiness.spec.mjs | spec | ACTIVE | 2026-08-29 | 2 | Scoring tests plus engine mechanism pins for probe-globe-pipeline-readiness; a pin failure means the traced path changed, not the instrument. |
 | globe-use-log-depth.spec.mjs | spec | ACTIVE | 2026-08-16 | 8 | Pins that the globe resolves the shared isWebGPULogDepthActive gate so orthographic modes never mix log and hyperbolic encodings in one depth buffer. |
 | gpu-timestamp-readback-ring-depth.spec.mjs | spec | ACTIVE | 2026-08-25 | 0 | Pins the GPU timestamp profiler's readback-ring depth behaviour: a workload at the measured worst-case latency retains every sample at a sufficient depth, and a ring that saturates at any depth still reports the loss instead of averaging past it. |
@@ -558,6 +558,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | moonlight-scene-light.spec.mjs | spec | ACTIVE | 2026-08-28 | 1 | Proves a MoonLight scene light produces a real ephemeris direction through the live UniformState.update, that the moon eye-space direction is unchanged by it, and that the lunar dimming arm downstream is therefore reachable. |
 | nasa-svs-5073-umbra-fixture.spec.mjs | spec | ACTIVE | 2026-08-16 | 1 | Offline pin of the exact cropped NASA SVS 5073 umbra_lo shapefile shard (byte hashes, optional full-source reconstruction); no rendering. |
 | ocean-datum.spec.mjs | spec | ACTIVE | 2026-08-16 | 4 | Analytic trust anchor for the datum probe: table sanity, regression/classifier correctness, exit-code mapping, probe-model drift check. |
+| ocean-per-frame-scratch.spec.mjs | spec | NO @purpose HEADER | — | 3 | — |
 | ocean-simulation-clock.spec.mjs | spec | ACTIVE | 2026-08-29 | 0 | Executes the FFT surface's simulation-clock law and the renderer's own time expression out of the shipped source, pinning that a held clock freezes the sea and a running one advances it at real rate. |
 | ocean-tide-datum.spec.mjs | spec | ACTIVE | 2026-08-16 | 7 | Pins the bundled EGM2008 grid, equilibrium TideModel phase/amplitude physics, geoid-then-tide composition order and the exact-zero off-contract. |
 | ocean-wave-lod.spec.mjs | spec | ACTIVE | 2026-08-16 | 6 | Extracts ocean-wave march constants from WGSL/GLSL/TS and pins integer-repeat lockstep, fade-band parity, amplitude fade, f32 precision bounds. |
@@ -1393,7 +1394,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | determinism-kit.mjs | lib | ACTIVE | 2026-08-16 | 11 | Probe determinism kit: pinClock, settleTiles, dampSky, nRunMedian — neutralises the four measured sources of run-to-run drift in visual probes. |
 | eclipse-cloud-response-gate.mjs | gate-lib | ACTIVE | 2026-08-29 | 14 | C13-41 Edge-acceptance predicates with derived-never-fitted bands for deck lighting, cloud-shadow invariance, IBL bucket fills, and submitted-refresh cost. |
 | eclipse-fixture-constraints.mjs | lib | ACTIVE | 2026-08-16 | 5 | All-lane constraint set for eclipse-sky vantage selection: per-candidate predicates with named rejections after headline-only selection failed. |
-| engine-stub-bundler.mjs | lib | ACTIVE | — | 4 | Bundles an engine entry module through esbuild with a named allowlist kept real and every other import stubbed, so specs can execute real engine code under fakes. |
+| engine-stub-bundler.mjs | lib | ACTIVE | 2026-08-29 | 4 | Bundles an engine entry module through esbuild with a named allowlist kept real and every other import stubbed, so specs can execute real engine code under fakes. |
 | engine-ts-resolver.mjs | lib | ACTIVE | 2026-08-16 | 31 | Node resolve hook rewriting engine-internal ./x.js specifiers to sibling .ts so specs can execute non-leaf engine TypeScript directly. |
 | fog-cheap-coverage-model.mjs | lib | ACTIVE | 2026-08-16 | 5 | Bit-faithful CPU twin of the fog cheap cloud-shadow noise gate at real ECEF magnitudes, importing the shipped normalisation and coverage response. |
 | globe-camera-track.mjs | lib | ACTIVE | 2026-08-16 | 13 | Shared orbit-to-ground camera route (plain serializable waypoints) used by both the visual parity probe and the performance campaign. |
