@@ -108,6 +108,15 @@ corrected with it.
 The remaining ~30 medium and all low survivors are enumerated in §5 with their lane column reading
 QUEUED; they dispatch after Q-1…Q-10, batched by file so one Sol dispatch closes several small
 findings in the same module. C1's returning findings append here as a dated addendum.
+### DM-07 passes review and is banked for the engine window; DX-11 closed by the seat (2026-08-29 ~23:40 machine clock)
+
+| | Row | Disposition |
+|---|---|---|
+| DM-07 | LAND (Denethor's third pasted re-review: items A and B FIXED, no new blocking) - BANKED for the engine window (scratchpad/land-dm07: engine patch, guide patch, spec, review) | four pragma-wrapped counters published through Scene.getDebugSnapshot().renderer.modelPick (skipped-by-ready-gate per frame, pick commands emitted per frame, getPickPipeline calls, summed createPickPipeline wall time, plus countersFrameNumber), reset once at the renderer frame boundary (WebGPUContext.ts), timer scoped to device.createRenderPipeline; spec 16/16 executes the real updateWebGPUModel end to end with the if-false mutant red; DEBUGGING_GUIDE lists every field. Lands with the engine window; then Q-141 can be briefed against the counters and tranche C reads them |
+| Q-141 | UNBLOCKED for briefing, HELD for capacity | the fix (decouple pick emission from colour-pipeline readiness) is cross-file engine judgement - Opus per the queue; under the budget directive it waits for Opus capacity rather than being forced through a Sol turn |
+| DX-11 | CLOSED (seat, docs) | stable-citation convention added to WORKER_ISOLATION_AND_BRANCH_HANDOFF.md 8f: briefs, cards and reviews cite file + function-or-unique-line, with the line number as a secondary hint; the Wave DX decompositions make raw line numbers meaningless |
+| Wave 1 close-out | what remains before the wave-end gate can run | engine window (Q130, Q120, Q-88, Q-142, DM-07) -> gulp build + build-sandcastle -> tranche 3e-F, tranche A (Q-148 + EAN-01 certification + Pippin browser acceptance), tranche B (Q-143 on probe-aec-perf), tranche C (Q-141/Q-142 legs), then the first wave-end gate receipt (R-2026-08-29-2; Q-152 runbook or the three tools by hand) |
+
 ### Fix-up: the DM-01 probe landed without its purpose header (2026-08-29 ~23:20 machine clock)
 
 | | Row | Disposition |

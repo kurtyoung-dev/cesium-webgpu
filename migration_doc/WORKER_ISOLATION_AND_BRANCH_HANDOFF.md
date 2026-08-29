@@ -660,3 +660,10 @@ directly, the probe is the acceptance. Separately, every multi-batch wave closes
 wave-end gate (variant smoke test + Sandcastle2 sweep on both renderers + visual-regression
 capture-and-diff against deliberately refreshed baselines), run by an Edge executor and banked
 under `Tools/visual-regression/output/wave-end/<wave>/`; it is not run per batch.
+
+
+**Stable citations (DX-11, 2026-08-29).** Briefs, queue cards and reviews cite `file` plus the
+function name or a unique line of text, with the line number as a secondary hint only
+(`WebGPUModelRenderer.ts` `attachPickToColorCommand(` ~:7606). Line numbers drift at every
+landing and the Wave DX decompositions will move whole regions; a citation that cannot be
+re-found by text is a Principle 10 defect in the brief.
