@@ -622,3 +622,30 @@ Rules:
 - Retirement of a clone waits for the same two conditions (see 8c and the 2026-08-29 water-clone
   incident): a clone is quiescent only when the lane AND every reviewer that entered it have no
   live children; test with a root rename before rm.
+
+### 8e. Worker naming - every agent is a Tolkien character (maintainer directive, 2026-08-29)
+
+The maintainer tracks a dozen concurrent lanes by name; row ids and agent ids are not
+memorable, a character is. From 2026-08-29 every dispatched worker, reviewer, executor and
+scoping agent carries a unique name from Tolkien's legendarium, and that name IS the lane's
+identity everywhere it appears:
+
+- the Agent description prefix (`Samwise: lane INSTR4 - Q-127/129/133`);
+- the clone directory (`F:/Dev/GH/cesium-lane-samwise`);
+- the packet filename (`_lane-out/LANDING_PACKET_SAMWISE.md`) and review filename;
+- every ledger row (`| Samwise (INSTR4) | ... |`) and every status line to the maintainer.
+
+Rules: a name belongs to one lane for its whole life (dispatch -> review -> landing ->
+retirement); a resumed agent keeps its name; a new lane never reuses a name already in the
+registry, even after retirement, so the ledger stays unambiguous. Names are drawn by role so
+the name also signals the tier: Opus lane leads from the Men and Elves of the West (Aragorn,
+Faramir, Boromir, Eomer, Theoden, Beregond, Glorfindel, Elendil, Gil-galad, Beren, Turin, ...);
+Opus station-3 reviewers from the wise (Elrond, Galadriel, Cirdan, Celeborn, Thranduil,
+Erestor); Edge executors from the keen-eyed and the Company (Legolas, Eowyn, Gwaihir, Bard,
+Beorn, Radagast, Thorin, Balin, Dwalin, Gimli, Gloin, Oin, Bifur, Bofur, Bombur, Dain); Sonnet
+bounded workers from the Shire (Samwise, Frodo, Merry, Pippin, Bilbo, Fredegar, Folco, Hamfast,
+Rosie, Barliman, Tom Bombadil, Goldberry, Farmer Maggot); read-only scoping and drainage agents
+from Fangorn (Treebeard, Quickbeam, Bregalad). The Fable orchestrator seat is Gandalf. The
+authoritative registry of used names lives in the seat's memory file
+`feedback_tolkien_worker_names.md` and is checked before every dispatch; when a pool runs dry
+it is extended from the same legendarium, never from another author.
