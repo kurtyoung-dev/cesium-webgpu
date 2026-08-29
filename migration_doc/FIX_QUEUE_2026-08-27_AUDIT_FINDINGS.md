@@ -108,6 +108,31 @@ corrected with it.
 The remaining ~30 medium and all low survivors are enumerated in §5 with their lane column reading
 QUEUED; they dispatch after Q-1…Q-10, batched by file so one Sol dispatch closes several small
 findings in the same module. C1's returning findings append here as a dated addendum.
+### Edge tranche 3e-D (2026-08-29 ~07:20 exit; 3 h 6 min) - the night fade at the pixel, the Sandcastle2 sweep; packet output/EDGE_TRANCHE_3E_D_PACKET_2026-08-29.md (892 lines)
+
+| | Row | Disposition |
+|---|---|---|
+| PROVENANCE | clean | both bundle md5s identical start to end; source identity HELD (Batches 1283-1285 landed during the tranche and touched only Tools/ + migration_doc/ - the Q-114 rule worked) |
+| NIGHTFADE J0 | GREEN - first compile of both dialects | 0 errors, 0 shader fatals on both backends (two pre-existing warnings); six defaults live and identical (nightImagery true, nightDarkness 0.15, enableNightLights true, nightIntensity 2.5, fade distances); globe draws at every altitude |
+| Q-63 | CLOSED at the pixel (J1) | onset sweep both backends agree to 4 dp on every row: fade 1.0 at >= 1000 km, 0.879-0.902 at 500 km (D3 tripwire > 0.85 PASSES at all 18 associations), 0.508-0.543 at 340 km, 0.20 at 250, ~0 at 170, 0 below - the predictions of the law confirmed. NIGHTFADE-D1 frames banked: 340 km reads well; 500 km is 10.03% pure white and the discriminator shows the clipping is ENTIRELY the emission arm (lights off -> 0.000%) - Q-123 |
+| Q-64 | CLOSED at the pixel (J4/J5) | 42 km seam: before 20.60 at x = 868 (reproducing the review's 19.61 at the same column), after 0 - byte-identical on both backends; 170 km 2.53 -> 0.045; 340 km unchanged ~2.54 (no seam there); no periodic tile hairline anywhere; the 250 km row has a one-column dark spike inside a single terrain level (Q-124) |
+| J3 street | GREEN, 12/12 byte-identical | 20 km / 2 km vs the banked 3a AND 3b captures plus four at shipped defaults vs 3a/3c - the FIX-1 2-ULP concern closed at the pixel |
+| J2 orbit | AMBER (Q-122) | WebGPU 149 px / 0.016168% / maxDelta 37, WebGL 282 px / 0.0306% / maxDelta 37, the five largest-delta pixels numerically IDENTICAL on both backends; nightImagery=false at orbit byte-identical across 3a/3c/this build; enableNightLights=false leaves 147 of 149; no pixel below luma 32 moved - a real, small, shared engine change in the layer-composite/coverage path (not the emission) that the 'weight exactly 1.0 at orbit' argument did not cover. WebGL orbit is not bit-reproducible run to run (138 px noise floor, pre-existing: 3a shows 196/12) - Q-126 |
+| J7 | GREEN 182/182 | node battery on the built tree incl. eclipse-globe-umbra-rte (first run on a built tree) |
+| SC2 J8 | run complete; gate (ii) READABLE; totals instrument-dominated | 676 rows all FAIL on one console error - `404 /Source/Cesium.d.ts`, a file gulpfile.js:1469 writes and this tree lacks (Q-127); set aside, 318/338 (webgpu) and 329/338 (webgl) are clean. SC2-D2 CONFIRMED-FORCED: 29 of 30 self-pinned demos report OK on webgl under &renderer=webgl (source scan finds 30 pinned, not 32 - Q-133). Real demo defects: `viewerless` builds no viewer but is not in NO_VIEWER_IDS (Q-129); custom-primitive-dev + multiple-shadows-dev throw primitive.isDestroyed is not a function on both backends (Q-132); WebGPU-only: frustum-dev invalid ShaderModule phongTextured (Q-130), styled-gltf-lines-dev + multifrustum-snapping-dev GPU validation error EdgeEmitter-Pipeline-SingleTarget vs the 4x edge pass (Q-131); WebGL-only: webgpu-clustered-lighting RangeError offset out of bounds (Q-132b). The renderer gate flaked at full sweep length (9 of 15 WebGPU verdicts) - Q-128. The harness killed the backgrounded 338x2 sweep at 272/338; completed in chunks |
+| Q-122 | NEW | orbit view not byte-unchanged by the night-fade law (0.016% both backends, identical pixels) - locate the layer-composite/coverage term that moved at weight 1.0 | Opus-judgment |
+| Q-123 | ANSWERED | 500 km frame clips 10% pure white - entirely the emission arm (nightIntensity 2.5 at that footprint); the maintainer's NIGHTFADE-D1 eyeball decides whether emission needs a footprint-aware ceiling | maintainer |
+| Q-124 | NEW | isolated dark column at 250 km (41.09 -> 35.40 -> 40.92) inside one terrain level - not an LOD seam | Sol-bounded (investigate) |
+| Q-125 | NEW | the nadir track cannot exercise the LOD-invariance claim (one level in frame); an oblique gate is the honest form | executor doctrine |
+| Q-126 | NEW | WebGL orbit not bit-reproducible run to run (138-196 px floor, maxDelta 12) - pre-existing | Opus-judgment |
+| Q-127 | NEW HIGH (instrument) | `/Source/Cesium.d.ts` 404 blocks the SC2 gate on every demo: gulpfile.js:1469 writes it in some task the served tree did not run; either build-ts before the sweep or the gate suppresses that one request | Sol-bounded |
+| Q-128 | NEW | SC2 renderer gate flaky at full sweep length (9 of 15 WebGPU verdicts were flake) | Opus-judgment |
+| Q-129 | NEW | NO_VIEWER_IDS stale: `viewerless` builds no viewer on both backends | Sol-bounded |
+| Q-130 | NEW | frustum-dev: invalid ShaderModule 'phongTextured Shader' on WebGPU | Opus-judgment |
+| Q-131 | NEW | styled-gltf-lines-dev + multifrustum-snapping-dev: GPU validation error EdgeEmitter-Pipeline-SingleTarget vs the 4x edge pass (attachment mismatch) | Opus-judgment |
+| Q-132 | NEW | custom-primitive-dev + multiple-shadows-dev throw `primitive.isDestroyed is not a function` and stop rendering on BOTH backends; webgpu-clustered-lighting RangeError offset out of bounds on WebGL | Opus-judgment |
+| Q-133 | NEW | pinned-demo count is 30, not 32 (SC2 packet arithmetic) | doc |
+
 ### Q-107 LANDED - Batch 1288: the globe ocean keeps the scene clock
 
 | | Row | Disposition |
