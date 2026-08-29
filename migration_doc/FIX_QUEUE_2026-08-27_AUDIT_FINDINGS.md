@@ -108,6 +108,16 @@ corrected with it.
 The remaining ~30 medium and all low survivors are enumerated in §5 with their lane column reading
 QUEUED; they dispatch after Q-1…Q-10, batched by file so one Sol dispatch closes several small
 findings in the same module. C1's returning findings append here as a dated addendum.
+### Lane VF2 + R9 amendment author (2026-08-28 ~23:20) - Batches 1248-1250
+
+| | Row | Disposition |
+|---|---|---|
+| FIXED (Edge-pending) | Q-56 | MoonLight is a real light on both backends (Batch 1248): world-space moon direction captured beside the eye-space one, non-negated light arm, shadow-camera arm; the Batch-1225 dimming arm is now REACHABLE and its spec honestly re-pinned. Edge leg: MoonLight scene light dims to 4.518% at greatest on the Porto Velho preset, both backends, enableLunarEclipse=false as the anchor |
+| REFUTED -> PRESCRIPTION | Q-58 | probe-setup, not engine: a bare scene.render() renders at the WALL CLOCK interleaved with frozen-clock frames, so the diagnostic aimed 146 degrees off. Executable recipe pinned in moon-onscreen-oracle.spec (Batch 1249): pass the clock to every render, aim from the published sample at the position with geodetic up, 6-degree fov, re-aim after clock changes, count disc pixels not isMoonVisible, moon.show=false vacuity control |
+| FIXED x8 | Q-55 | the leak was in EIGHT lazy getters, not two; one DeviceInvalidationSlot registry + onDeviceInvalidatedOnce (Batch 1250); a slot-collision mutant is caught only by the all-fields-nulled assertion |
+| DOCTRINE | closeout inventory | the previous VF lane's engine edits were in a git STASH the shutdown inventory never checked - clone inventories must include git stash list; the stash is redundant with 1248 and is dropped at clone retirement |
+| R9A | amendment authored | _lane-d1-out/R9A1_d0640778.md (45,697 B) with a 15-predicate reviewer pre-commitment block; REVIEWER dispatched (pass 1 = the preregistration itself). MATERIAL RISK for a ruling: the mutant family measures 1,030 lexical LF against an 802 allowance (228 over) before any repair line - a Freeze-C stop, not rescored; the stage-1 drift (R9A-02) is disclosed as the authorized preimage pending the reviewer's concurrence. Stage-1 packet banked in file form beside it |
+
 ### Edge tranche 3a (2026-08-28 ~22:40) - Batch 1239 pixel-confirmed on all six legs
 
 | | Row | Disposition |
