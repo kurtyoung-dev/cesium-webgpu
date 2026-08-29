@@ -108,7 +108,13 @@ corrected with it.
 The remaining ~30 medium and all low survivors are enumerated in §5 with their lane column reading
 QUEUED; they dispatch after Q-1…Q-10, batched by file so one Sol dispatch closes several small
 findings in the same module. C1's returning findings append here as a dated addendum.
-### Q-130-b complete but for Q-130-c; the CSM evidence gathered (2026-08-29 17:05 machine clock)
+### Q-130-c: the shadow-map chunks compile under a relaxed diagnostic (2026-08-29 16:41 machine clock)
+
+| | Row | Disposition |
+|---|---|---|
+| Q-130-c | EVIDENCE (seat grep; Opus disposition still owed) | WebGPUGlobeMaterial.ts:372-381 prepends diagnostic(off, derivative_uniformity) to the WHOLE globe material module - the only derivative_uniformity mention in the tree - so the five CSM sites the hardened analyzer flags (csm_clipByPolygons.wgsl textureSample at :46/:72 after early returns at :32/:64; csm_effects.wgsl textureSampleCompare at :21/:38 after returns at :19/:32, and csm_sampleShadowMapPCF at :73 under the :56 return and the non-uniform if at :72 'effects.shadowSoftShadows > 0.5') are NOT validated by naga/Dawn today: the analyzer is the only thing that sees them. Disposition needed per site: (a) the early-return conditions read uniform-buffer values only -> genuinely uniform, allow-list with the reason and teach the analyzer a uniform-source rule; (b) they read varyings/texture values -> a real hazard masked by the diagnostic - restructure (sample first, branch after) and consider narrowing the diagnostic to the sites that need it. Either way the module-wide diagnostic(off) is itself a finding: it hides every future violation in the globe material |
+
+### Q-130-b complete but for Q-130-c; the CSM evidence gathered (2026-08-29 16:40 machine clock)
 
 | | Row | Disposition |
 |---|---|---|
