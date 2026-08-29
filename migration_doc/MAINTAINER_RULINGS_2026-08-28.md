@@ -144,3 +144,42 @@ the weekend was already unrestricted; the standing hard rule resumes unchanged o
 pushes under this lift use git's --no-verify, every NON-time rule is verified per commit
 via HOOK_EXPLAIN before each such push, and this ruling is the authorization the re-checked
 landed range points back to. The guard itself is NOT modified for a one-day exception.
+
+---
+
+## Fourth sitting, ~21:45 ET - post-restart resumption
+
+Three rulings taken after the machine restart, in answer to the questions the visual wave's
+acceptance sweep and the lane packets returned. Operative.
+
+## R-2026-08-28-8 - Night values ratified: nightDarkness 0.15 and the level-three pyramid
+
+The acceptance sweep measured 0.15 as the street-altitude darkness that reads as night without
+crushing detail (sampled over one bright city; the tranche-3a onset sweep confirms in pixels),
+and the deeper bake measured 455.4 KB - inside the half-megabyte gate of R-2026-08-28-3, not
+the ~2 MB the queue row assumed. Both ratified: globe.nightDarkness defaults to 0.15 for the
+procedural-only mode (the identity-default reasoning of Batch 1231 is superseded for the
+DEFAULT only; nightImagery false must still restore byte-identical upstream behaviour, which
+the continuous handover of Batch 1239 preserves because a globe with no night layer and
+nightDarkness at its default is the fork's chosen default, not upstream's - the byte-identity
+bound applies to the explicit opt-out path, restated here so the two are not confused), and
+the bundled pyramid ships at levels zero through three (455 KB), halving the texel size and
+lowering the full-fade altitude from ~42 km to ~21 km.
+
+## R-2026-08-28-9 - City lights default ON, with WebGL parity
+
+The WebGPU emissive night-lights branch (enableNightLights, WebGPU-only by its ratified
+contract) turns ON by default now that night imagery is default-on, and the ratified
+WebGPU-only contract is amended: WebGL gains a mirroring emission term so both backends glow.
+Queued as wave row VW-N11. The parity principle governs the implementation - one law, two
+shaders, the WGSL branch is the reference.
+
+## R-2026-08-28-10 - Three staged lanes arm; vegetation stays staged
+
+Amending R-2026-08-28-4: the C12 close-out sprint arms (the gate to the aurora hold and the
+dynamic-ocean launch bar; the G3 re-bake remains a maintainer session per R-2026-08-28-5), the
+celestial water reflection lane C11-163 arms CONDITIONALLY on its four sub-decisions being
+taken in the sitting that follows, and the R9 amendment round arms under the reviewer
+pre-commitment pattern carrying the two exhibits of R-2026-08-28-1 and -2. Vegetation V1
+stays staged.
+

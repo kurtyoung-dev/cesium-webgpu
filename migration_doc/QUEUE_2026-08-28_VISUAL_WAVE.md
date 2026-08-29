@@ -284,4 +284,8 @@ brief carries premises re-verified at the cited `file:line` on the day it dispat
 | VW-N7 spec | the lane pre-registered seven acceptance legs incl. the sensitivity anchor, the six-camera off-is-upstream comparison against a bc3ebd6bb0 capture, non-injection, street-altitude nightDarkness calibration sweep, and the no-double-darkening observation - see the VN2 packet; REBUILD REQUIRED before the sweep (build predates 1218-1231) |
 | VW-N8 note | new default-path imagery errorEvent in bundler setups without CESIUM_BASE_URL assets (graceful, no crash) - measure in the packaging row |
 | VW-L Edge legs | owed to tranche 3: 97.71% umbral coverage / 0.0452 disc luminance / red>=3x blue at greatest on the Porto Velho preset, MoonLight scene dimming to 4.52%, enableLunarEclipse=false as the void-check anchor |
+| VW-N10 (new, R-2026-08-28-8) | nightDarkness default 0.15 + level-three pyramid (455 KB) - lane NV |
+| VW-N11 (new, R-2026-08-28-9) | enableNightLights default ON + WebGL emission parity (WGSL branch is the reference; amends the WebGPU-only contract) - lane NV |
+| VW-N7 tranche 3a | Edge executor running Batch 1239's six legs + the onset-altitude sweep on the post-1239 build |
+| STAGED -> ARMED (R-2026-08-28-10) | C12 close-out sprint (lane C12X), celestial water reflection C11-163 (conditional on its four sub-decisions), R9 amendment round (author + pre-committed reviewer). Vegetation V1 stays staged |
 

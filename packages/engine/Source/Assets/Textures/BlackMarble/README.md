@@ -13,7 +13,7 @@ Provenance (reproducible bake):
 - Source URL:
   <https://eoimages.gsfc.nasa.gov/images/imagerecords/144000/144898/BlackMarble_2016_3km.jpg>
 - Bake: node Tools/bake-black-marble-pyramid.mjs
-  (quality 80, maxLevel 2, sharp 0.34.5)
+  (quality 80, maxLevel 3, sharp 0.34.5)
 
 Layout mirrors ../NaturalEarthII: EPSG:4326 geodetic TMS, 256px JPEG tiles,
 {z}/{x}/{y}.jpg with y=0 at the southern edge.
