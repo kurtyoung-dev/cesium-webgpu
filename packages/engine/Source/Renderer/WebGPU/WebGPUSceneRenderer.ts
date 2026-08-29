@@ -158,6 +158,11 @@ export interface WebGPURenderFrameConfig {
 }
 
 // --------------- Module-level helpers ---------------
+// How many frames the globe pipeline prewarm keeps trying for. The context's
+// init-time renderer warm lands through a dynamic import of its own, so a very
+// early frame can find no renderer yet; a scene that will never have one — no
+// globe, or a WebGL context — stops asking after this many.
+const GLOBE_PIPELINE_WARM_MAX_ATTEMPTS = 8;
 
 // A module-level weak map keeps warning state per context without adding
 // ad-hoc properties or `as any` casts to the context itself.
@@ -1058,6 +1063,9 @@ export class WebGPUSceneRenderer {
   // invalidation. A null sentinel would skip the change detection
   // on the very frame the bridge first takes effect.
   public _lastMsaaSamples: number = 1;
+  // Frames the globe pipeline prewarm has been attempted on. Bounded so a
+  // scene that never produces a warmable globe stops asking.
+  private _globePipelineWarmAttempts: number = 0;
   private _depthPlaneWarned: boolean = false;
 
   // ── Debug log-once guards (pragma-stripped in production) ──
@@ -1535,6 +1543,55 @@ export class WebGPUSceneRenderer {
       // polylines, etc.) refresh on the next frame.
       context.renderBundleManager?.invalidateAll?.();
     }
+
+    // Everything a globe pipeline bakes is settled by this point: the sample
+    // count was written above, and the scene framebuffer has published the
+    // colour format the globe will target. Offer the variants a globe draws
+    // first to the shared cache. The offer goes through a dynamic import, so
+    // the work starts once this frame's synchronous half has unwound - it is
+    // ahead of the first tile that asks for a pipeline because a cold globe
+    // publishes no tile commands for many frames, not because it runs earlier
+    // inside this one.
+    this._warmGlobePipelines(scene, context);
+  }
+
+  /**
+   * Offer the globe's first-frame pipeline variants to the shared cache, once.
+   *
+   * Reached through a dynamic import for the same reason the context's
+   * init-time renderer warm is: a static edge from this directory into
+   * `Scene/` would make the renderer eagerly depend on the scene module graph.
+   * The import resolves in a microtask on a module the globe has already
+   * loaded, and the work it starts is background priority, so no part of this
+   * is on the path to the first drawn frame.
+   *
+   * Retried for a bounded number of frames rather than latched on the first
+   * call: the context's init-time warm creates the device-keyed renderer
+   * through a dynamic import of its own, and a frame that arrives before that
+   * promise settles finds nothing to warm. A scene with no globe never
+   * succeeds and stops after the cap.
+   *
+   * @param scene The scene whose frame is being prepared.
+   * @param context The context being rendered into.
+   */
+  private _warmGlobePipelines(
+    scene: CesiumScene,
+    context: WebGPUContext,
+  ): void {
+    if (this._globePipelineWarmAttempts >= GLOBE_PIPELINE_WARM_MAX_ATTEMPTS) {
+      return;
+    }
+    this._globePipelineWarmAttempts++;
+    void import("../../Scene/GlobeSurfaceTileProviderRendering.js")
+      .then((module) => {
+        const warmed = module.warmUpGlobePipelines(context, scene);
+        if (warmed > 0) {
+          this._globePipelineWarmAttempts = GLOBE_PIPELINE_WARM_MAX_ATTEMPTS;
+        }
+      })
+      .catch(() => {
+        // Speculative: the render path builds every variant it needs anyway.
+      });
   }
 
   /**

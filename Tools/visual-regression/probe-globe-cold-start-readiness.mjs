@@ -326,6 +326,11 @@ for (const cell of cells) {
     // put while settleFrames stays high, the remaining cost is scheduling.
     pipelinesCreated: at?.pipelineCache?.created ?? null,
     pipelineCacheMisses: at?.pipelineCache?.misses ?? null,
+    // A pre-cook shows up here rather than as one fewer miss: a warm counts a
+    // miss of its own when it starts the build, so the tile that finds the
+    // pipeline already there turns into a HIT. Zero hits at the first
+    // non-empty command list means the globe compiled its own.
+    pipelineCacheHits: at?.pipelineCache?.hits ?? null,
     renderPipelinesResolved: at?.async?.renderPipelines?.resolvedCount ?? null,
     renderPipelineMeanMs: at?.async?.renderPipelines?.meanMs ?? null,
     shaderModulesResolved: at?.async?.shaderModules?.resolvedCount ?? null,
@@ -362,6 +367,7 @@ for (const [id, value] of Object.entries(firstCommand)) {
     `${id}: frames=${value.settleFrames} ms=${value.wallMs} ` +
       `pipelinesCreated=${value.pipelinesCreated} ` +
       `misses=${value.pipelineCacheMisses} ` +
+      `hits=${value.pipelineCacheHits} ` +
       `renderPipelines=${value.renderPipelinesResolved}` +
       `@${value.renderPipelineMeanMs}ms ` +
       `modules=${value.shaderModulesResolved} ` +

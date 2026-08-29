@@ -1165,6 +1165,49 @@ function warmUpGlobeRenderer(context) {
 }
 
 /**
+ * Pre-cook the globe pipeline variants a first frame draws with, once the
+ * scene's requested MSAA sample count and colour format have been written onto
+ * the context.
+ *
+ * <code>warmUpGlobeRenderer</code> compiles the terrain shader modules at
+ * context init, which is as early as they can be compiled. A pipeline bakes
+ * more than a module: the colour format and the sample count are part of it,
+ * and the sample count is still the context's own default at init, so a
+ * pipeline built there is built under a key nothing later asks for. The
+ * alternate scene renderer therefore calls this once the frame has written the
+ * scene's request and published the scene colour format onto the context, and
+ * the globe's own caches are untouched — only the shared pipeline cache is
+ * seeded.
+ *
+ * A no-op on WebGL (no <code>device</code>), on a scene with no globe, and
+ * while the device-keyed renderer has not been created yet; the caller retries
+ * for a bounded number of frames.
+ *
+ * @param {GraphicsContext} context The context being rendered into.
+ * @param {Scene} scene The scene whose frame is being prepared.
+ * @returns {number} How many variants were offered to the pipeline cache.
+ * @private
+ */
+function warmUpGlobePipelines(context, scene) {
+  const device = context && context.device;
+  if (!device || !defined(scene) || !defined(scene.globe)) {
+    return 0;
+  }
+  const renderer = _webgpuGlobeRenderers.get(device);
+  if (
+    !defined(renderer) ||
+    renderer.isDestroyed() ||
+    !renderer.isInitialized ||
+    typeof renderer.prewarmDefaultPipelines !== "function"
+  ) {
+    return 0;
+  }
+  return renderer.prewarmDefaultPipelines(context, scene.frameState, {
+    enhancedOcean: scene.globe.enableEnhancedOcean === true,
+  });
+}
+
+/**
  * Record that a tile the quadtree had already selected for rendering produced
  * no draw command this frame.
  *
@@ -2590,6 +2633,7 @@ export {
   isGroundAtmosphereCompanionDistance,
   clipRectangleAntimeridian,
   warmUpGlobeRenderer,
+  warmUpGlobePipelines,
 };
 
 // Namespace default export for build system barrel compatibility
@@ -2608,5 +2652,6 @@ const GlobeSurfaceTileProviderRendering = {
   isGroundAtmosphereCompanionDistance,
   clipRectangleAntimeridian,
   warmUpGlobeRenderer,
+  warmUpGlobePipelines,
 };
 export default GlobeSurfaceTileProviderRendering;

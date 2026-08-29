@@ -560,6 +560,111 @@ export function buildPipelineDescriptor(
 }
 
 /**
+ * One entry of {@link DEFAULT_GLOBE_PIPELINE_PREWARM}: the vertex-layout axes
+ * of a globe pipeline, as `TerrainEncoding` reports them for the meshes a
+ * globe draws before any of its own terrain has arrived.
+ */
+export interface GlobePipelinePrewarmVariant {
+  /** Human-readable name of the meshes this entry covers, for diagnostics. */
+  readonly label: string;
+  /** `TerrainQuantization.BITS12` rather than `NONE`. */
+  readonly isQuantized: boolean;
+  /** The encoding carries oct-encoded vertex normals. */
+  readonly hasNormals: boolean;
+  /** The encoding carries the Web Mercator texture coordinate. */
+  readonly hasWebMercatorT: boolean;
+  /** `TerrainEncoding.stride` in bytes. */
+  readonly strideBytes: number;
+}
+
+/**
+ * The vertex layouts a globe asks for on its first frames, measured from the
+ * encodings the terrain paths construct rather than assumed.
+ *
+ * A globe draws fill meshes before any of its own terrain has arrived, and it
+ * refines outward from the root tiles as terrain loads, so the first non-empty
+ * command list is unquantized in every configuration:
+ * `TerrainEncoding` selects `BITS12` only when the larger of a tile's
+ * east-north-up extent and its height range fits inside 4095 metres, which
+ * takes refinement to roughly level 13, and a tile that deep cannot be
+ * selected before its ancestors' terrain has loaded.
+ *
+ *   - 28 bytes — `position3DAndHeight` + `u,v` + `webMercatorT`, no normals.
+ *     `TerrainFillMesh` fills levels 1 through 3 with a constant-height
+ *     heightmap, and `HeightmapTerrainData` never carries vertex normals, so
+ *     this is the layout of the very first fill on any provider. It is also
+ *     what `EllipsoidTerrainProvider` produces at every coarse level.
+ *   - 32 bytes — the same plus one oct-encoded normal. `TerrainFillMesh`
+ *     builds its own encoding with vertex normals from level 4 down, and a
+ *     quantized-mesh provider asked for vertex normals reports this layout for
+ *     its coarse tiles.
+ *
+ * Both entries are opaque, cull-back, no clip distances and no geodetic
+ * surface normals — exaggeration is off by default, and the first colour pass
+ * of a tile is never the blend variant. `selectPipeline` warms the blend
+ * counterpart itself on the first opaque request, so this list does not.
+ */
+export const DEFAULT_GLOBE_PIPELINE_PREWARM: readonly GlobePipelinePrewarmVariant[] =
+  [
+    {
+      label: "constant-height fills and coarse heightmap tiles",
+      isQuantized: false,
+      hasNormals: false,
+      hasWebMercatorT: true,
+      strideBytes: 28,
+    },
+    {
+      label: "fill meshes and coarse tiles with vertex normals",
+      isQuantized: false,
+      hasNormals: true,
+      hasWebMercatorT: true,
+      strideBytes: 32,
+    },
+  ];
+
+/**
+ * Start background creation of every {@link DEFAULT_GLOBE_PIPELINE_PREWARM}
+ * variant against the host's current scene-target state.
+ *
+ * The descriptors come from {@link buildPipelineDescriptor}, the same factory
+ * `selectPipeline` uses, so the warmed key and the requested key cannot drift:
+ * every axis the central cache reads — the colour format, the sample count in
+ * both the descriptor name and `multisample`, the shader modules the define
+ * mask selected, the vertex layout, the depth state — is produced once, by one
+ * function, from the host the render path will read.
+ *
+ * `warm` registers background-priority tokens, so nothing here holds
+ * `pendingResourceCount` open or delays the first drawn frame, and it is
+ * idempotent: a variant already cached or already in flight is skipped.
+ *
+ * @returns The number of variants offered to the cache.
+ */
+export function warmDefaultPipelines(
+  host: PipelineHost,
+  cache: WebGPURenderPipelineCache,
+): number {
+  let offered = 0;
+  for (const variant of DEFAULT_GLOBE_PIPELINE_PREWARM) {
+    cache.warm(
+      buildPipelineDescriptor(
+        host,
+        variant.isQuantized,
+        variant.hasNormals,
+        variant.hasWebMercatorT,
+        false,
+        variant.strideBytes,
+        DebugFragmentMode.NONE,
+        false,
+        false,
+        false,
+      ),
+    );
+    offered++;
+  }
+  return offered;
+}
+
+/**
  * Convert the cache-friendly descriptor back into the WebGPU descriptor shape,
  * for the fallback path where no central cache is available. Pure function —
  * does not need the host.

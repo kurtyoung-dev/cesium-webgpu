@@ -39,6 +39,7 @@ import {
   selectCapturePipeline as selectCapturePipelineHelper,
   buildPipelineDescriptor,
   descriptorToGPU,
+  warmDefaultPipelines as warmDefaultPipelinesHelper,
 } from "./WebGPUGlobeSurfacePipelines.js";
 import { ShaderDefine, ShaderDefineHi } from "./WebGPUShaderDefines.js";
 import {
@@ -145,6 +146,19 @@ interface GlobeEffectsHandleSnapshot {
 type GlobeEffectsMemoContext = {
   _globeEffectsHandle?: GlobeEffectsHandleSnapshot | null;
 };
+
+/**
+ * The pieces of the context's scene-target state the globe pipeline prewarm
+ * reads. Structural rather than the whole context type, so the prewarm names
+ * exactly what it depends on and stays callable from the scene-side helper
+ * that has only a `GraphicsContext` in hand.
+ */
+interface GlobePrewarmContext {
+  readonly _logDepthWriteEnabled?: boolean;
+  readonly _msaaSamples?: number;
+  readonly scenePipelineFormat?: GPUTextureFormat;
+  readonly webgpuPipelineCache?: WebGPURenderPipelineCache | null;
+}
 
 /**
  * WebGPU Globe Surface Renderer
@@ -699,6 +713,54 @@ export class WebGPUGlobeSurfaceRenderer {
 
   get isInitialized(): boolean {
     return this._isInitialized;
+  }
+
+  /**
+   * Pre-cook the pipeline variants this globe draws with on its first frames,
+   * against the scene-target state the frame has just settled on.
+   *
+   * A pipeline bakes the colour format and the MSAA sample count, and the
+   * sample count twice: into `multisample`, and into the descriptor name the
+   * central cache keys on. Neither is known when the context finishes
+   * initializing — a context's sample count is its own default until the scene
+   * renderer writes the scene's requested count at the top of the first frame —
+   * so a warm placed at init produces pipelines under a key nothing ever asks
+   * for. The caller is that write's own frame, which is the earliest point the
+   * request is knowable. It is not ahead of that frame's own tile path - the
+   * caller reaches this through a dynamic import, so the work starts after the
+   * frame's synchronous half - it is ahead of the first tile that wants a
+   * pipeline, which a cold globe does not produce for many frames.
+   *
+   * The colour format, sample count, log-depth state and central cache are
+   * adopted here exactly as `createTileCommands` adopts them, and the
+   * descriptors are built by the factory the render path uses, so a warmed key
+   * and a requested key cannot drift. The renderer-local caches are left
+   * untouched: the first frame's scene-format generation check still runs and
+   * still clears them.
+   *
+   * @param context The context whose scene target this globe draws into.
+   * @param frameState The frame state carrying this frame's depth decision.
+   * @param options Scene state the context does not carry.
+   * @returns The number of variants offered to the central cache.
+   */
+  prewarmDefaultPipelines(
+    context: GlobePrewarmContext | null | undefined,
+    frameState: { readonly useLogDepth?: boolean } | null | undefined,
+    options?: { readonly enhancedOcean?: boolean },
+  ): number {
+    if (!this._isInitialized || !this._device || !context) {
+      return 0;
+    }
+    const cache = context.webgpuPipelineCache ?? null;
+    if (!cache) {
+      return 0;
+    }
+    this._centralPipelineCache = cache;
+    this._canvasFormat = context.scenePipelineFormat ?? this._canvasFormat;
+    this._sampleCount = context._msaaSamples ?? 1;
+    this._logDepthEnabled = isWebGPULogDepthActive(context, frameState);
+    this._applyEnhancedOceanState(options?.enhancedOcean === true);
+    return warmDefaultPipelinesHelper(this, cache);
   }
 
   // Shader-module cache accessors. The bodies live in
