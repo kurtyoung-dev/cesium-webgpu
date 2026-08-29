@@ -108,6 +108,12 @@ corrected with it.
 The remaining ~30 medium and all low survivors are enumerated in §5 with their lane column reading
 QUEUED; they dispatch after Q-1…Q-10, batched by file so one Sol dispatch closes several small
 findings in the same module. C1's returning findings append here as a dated addendum.
+### EAN-01 lands default-off: the demo can now pick its star map and exposure (2026-08-29 16:58 machine clock)
+
+| | Row | Disposition |
+|---|---|---|
+| EAN-01 (ledger B1) | LANDED default-off (Batch 1318; demo class under R-2026-08-29-1: review + spec, certification is tranche A) | three controls inside the collapsed toolbar - Star map (TYCHO_T5_DIFFUSE default = engine default; TYCHO_T5 = un-blurred resolved stars, applied via the documented public API: set SkyBox.defaultVariant, destroy the previous sky box, createEarthSkyBox), HDR + bloom (off; flips scene.highDynamicRange and postProcessStages.bloom.enabled together), Star-field intensity (initialised from scene.skyBox.starField.intensity - the public setter - when wired). At defaults no engine state changes at load; none of the three reaches the clock. Directed Sol (Fredegar) authored it twice: the first pass rewrote the lines the landed Q-146 clock proof lifts (0/6); the pasted correction preserved them, and the seat removed the last break - a scene read inside the lifted viewModel literal - and replaced a private-field reach (_starField._intensity) with the public property. Specs: star-controls 6/6 (seat mutant: removing the destroy call -> 4/6), clock 6/6, toolbar 4/4, manifest 2/2; test-sandcastle 90/90; purpose-header contract 18/18. The default flip to TYCHO_T5 + HDR is a separate one-line commit conditioned on tranche A's certification (>= 300 point-like maxima at the demo default and view 6, byte-identical frame when returned to the default) |
+
 ### DX-14 prepared but not yet emitting; EAN-01's first pass broke the landed clock spec and is being corrected (2026-08-29 16:50 machine clock)
 
 | | Row | Disposition |

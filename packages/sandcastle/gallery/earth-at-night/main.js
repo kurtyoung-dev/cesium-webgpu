@@ -83,6 +83,14 @@ const viewModel = {
   nightIntensity: 2.5,
 };
 
+// EAN-01 star-control defaults: begin.
+Object.assign(viewModel, {
+  starMap: Cesium.SkyBox?.defaultVariant ?? "TYCHO_T5_DIFFUSE",
+  hdrBloom: false,
+  starFieldIntensity: 1.0,
+});
+// EAN-01 star-control defaults: end.
+
 Cesium.knockout.track(viewModel);
 const toolbar = document.getElementById("toolbar");
 Cesium.knockout.applyBindings(viewModel, toolbar);
@@ -131,6 +139,41 @@ function updateDynamicLighting() {
 
 updateGlobe();
 updateDynamicLighting();
+
+// Wired after the lighting setup so the clock coupling above stays exactly as
+// the Q-146 proof lifts it; these controls never reach the clock.
+wireStarControls(viewModel, viewer.scene);
+
+// EAN-01 star-control wiring: begin.
+function wireStarControls(viewModel, scene) {
+  // Show the engine's current value; reading it changes nothing.
+  viewModel.starFieldIntensity = scene.skyBox?.starField?.intensity ?? 1.0;
+  Cesium.knockout.getObservable(viewModel, "starMap").subscribe(updateStarMap);
+  Cesium.knockout
+    .getObservable(viewModel, "hdrBloom")
+    .subscribe(updateHdrBloom);
+  Cesium.knockout
+    .getObservable(viewModel, "starFieldIntensity")
+    .subscribe(updateStarFieldIntensity);
+
+  function updateStarMap() {
+    const previousSkyBox = scene.skyBox;
+    Cesium.SkyBox.defaultVariant = Cesium.SkyBox.Variant[viewModel.starMap];
+    previousSkyBox.destroy();
+    scene.skyBox = Cesium.SkyBox.createEarthSkyBox();
+  }
+
+  function updateHdrBloom() {
+    const enabled = Boolean(viewModel.hdrBloom);
+    scene.highDynamicRange = enabled;
+    scene.postProcessStages.bloom.enabled = enabled;
+  }
+
+  function updateStarFieldIntensity() {
+    scene.skyBox.starField.intensity = Number(viewModel.starFieldIntensity);
+  }
+}
+// EAN-01 star-control wiring: end.
 
 const note = document.getElementById("backendNote");
 note.textContent = `Renderer: ${rendererType} — emissive city lights are live on both renderers.`;
