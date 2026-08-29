@@ -298,7 +298,13 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
     g_fragLogDepth = input.v_logDepth;
     //>>endif
     let uv = input.texCoord * material.repeat;
-    let checker = (floor(uv.x) + floor(uv.y)) % 2.0;
+    let cx = floor(uv.x);
+    let cy = floor(uv.y);
+    // WGSL `%` on floats is a truncated remainder that carries the dividend's
+    // sign, so a negative repeat factor or a negative texture coordinate would
+    // flip the squares against the GLSL reference, which uses `mod`. The
+    // floored form below stays in [0, 2.0) for either sign.
+    let checker = (cx + cy) - 2.0 * floor((cx + cy) / 2.0);
     let baseColor = select(material.lightColor, material.darkColor, checker > 0.5);
 
     let normal = normalize(input.worldNormal);

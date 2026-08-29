@@ -153,7 +153,12 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
     let maskIndex: f32 = floor(dashPosition * MASK_LENGTH);
     let maskTest: f32 = floor(material.dashPattern / pow(2.0, maskIndex));
     var fragColor: vec4<f32>;
-    if ((maskTest % 2.0) < 1.0) {
+    // WGSL `%` on floats is a truncated remainder that carries the dividend's
+    // sign; the GLSL reference uses `mod`, which is floored and stays in
+    // [0, 2.0) for either sign. Every non-negative dash pattern keeps
+    // `maskTest` non-negative, so the two forms agree today - the floored
+    // form is what keeps them agreeing if one ever does not.
+    if ((maskTest - 2.0 * floor(maskTest / 2.0)) < 1.0) {
         fragColor = material.gapColor;
     } else {
         fragColor = material.color;
