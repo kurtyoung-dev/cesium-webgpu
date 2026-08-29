@@ -1726,7 +1726,9 @@ Snapshot fields worth knowing: `snap.attachmentDemand` (C9-09 scene-FB topology)
 3D scene is `1` on both backends, matching WebGL, since BV-less `Pass.ENVIRONMENT` commands no
 longer widen near/far. A value of `2` on a default 3D frame means a BV-less near/far widener has
 regressed — see `probe-frustum-count-3d.mjs`). `scene.numberOfFrustums` is the live getter for the
-same value.
+same value. On WebGPU, `snap.renderer.modelPick` (`DM-07`) carries the model pick-emission
+counters — see the "Model pick-emission counters" note under **Picking bugs** below; the key is
+absent from a production bundle.
 
 ```javascript
 const snapshot = await page.evaluate(() => window.viewer.scene.getDebugSnapshot());
@@ -2234,6 +2236,18 @@ Picking can't be probed via screenshot — the picked feature is returned in JS,
 For metadata pick (3D Tiles), additional probes use `scene.pickMetadata()` and check the returned property values.
 
 The pick framebuffer is its own render path. **There is currently NO instrument for it** — `CesiumDebug.snapshot()` does NOT report pick state (`Scene.getDebugSnapshot()` has no `pick` key), and `WebGPUPickFramebuffer` carries no counters at all. Building one is stage S0 of [`PICKING_ARCHITECTURE_STATE_2026-08-17.md`](PICKING_ARCHITECTURE_STATE_2026-08-17.md). Until it lands, an empty pick cannot be distinguished from a declined-cache or not-yet-ready pick from the console. Pick failures often show up as "scene.pick returns undefined" without any visible artifact — the failure is in the depth blit or the pick texture, not the main render. **[Landed Batch 1075 (`d4fa0ecf48`), 2026-08-20: stage S0 shipped — `WebGPUPickFramebuffer` now stamps readback regions with the pick clock and publishes served/cold/decline counters via `getStatistics()`, surfaced as `CesiumDebug.pick(reset?)`; S1 moved Viewer selection/tracking to `scene.pickAsync`. The "currently NO instrument" sentence describes the pre-S0 state. The ViewerSelectionAsyncSpec Karma leg ran tonight in the machine lane: 15/15; the browser acceptance rerun stays owed.]**
+
+**Model pick-emission counters (`DM-07`, 2026-08-29):** the pick FBO readback side above (`CesiumDebug.pick()`) is instrumented, but the *upstream* side — whether a model primitive can even build a pick command this frame — was not. `WebGPUModelRenderer.ts` and `WebGPUModelPipelineCache.ts` now publish five pragma-stripped (production-absent) fields — four counters plus `countersFrameNumber` — through `scene.getDebugSnapshot().renderer.modelPick`:
+
+- `readyGateSkipsThisFrame` — primitives skipped this frame because the on-screen colour pipeline (`primCache.pipeline`, built via `createRenderPipelineAsync`) had not resolved yet. The ready gate lives at `WebGPUModelRenderer.ts` around the `if (!defined(activePipeline)) { continue; }` line; a skipped primitive never reaches pick-command construction either.
+- `pickCommandsEmittedThisFrame` — pick draw commands actually built and attached via `attachPickToColorCommand` this frame.
+- `countersFrameNumber` — the `WebGPUContext._frameCount` value for which the two per-frame counters above are current.
+- `getPickPipelineCalls` — cumulative (not per-frame) calls to `WebGPUModelPipelineCache#getPickPipeline`.
+- `createPickPipelineWallTimeMs` — cumulative (not per-frame) wall time, in milliseconds, spent inside the synchronous `device.createRenderPipeline` call `createPickPipeline` makes on a cache miss.
+
+`readyGateSkipsThisFrame` and `pickCommandsEmittedThisFrame` reset in `WebGPUContext.beginFrame()` immediately after `this._frameCount` increments — the SAME point the renderer already resets `_drawCallCount`/`_triangleCount` — never lazily on the first counted event; `countersFrameNumber` is set by that same reset call. The two `getPickPipeline`/`createPickPipeline` fields are running sums across the session, since a synchronous pick-pipeline build is a rare per-identity event rather than a per-frame one. All five are `undefined` (the whole `modelPick` key is absent from the snapshot) in a production bundle — check for the key's presence before reading, the same contract every other lazily-populated `getRendererStatistics()` field carries. The counters are process-wide, not per-`WebGPUContext`: the per-`Model` pipeline-cache instance that owns the storage has no handle back to the context that calls into it. In a split-screen session running two `WebGPUContext`s, only the two cumulative fields (`getPickPipelineCalls`, `createPickPipelineWallTimeMs`) sum across both contexts' model-pick activity; the two per-frame fields do not — either context's own `beginFrame()` resets the SAME shared per-frame storage, so a per-frame reading is only meaningful with one WebGPU context active. Spec: [`webgpu-pick-emission-counters.spec.mjs`](../Tools/visual-regression/webgpu-pick-emission-counters.spec.mjs).
+
+These counters are the discriminator for the `Q-141` picks-during-streaming hypothesis: if `readyGateSkipsThisFrame` is non-zero and tracks `snap.renderer.pipelineCache.pending` while a tileset streams, the ready gate is starving pick emission during exactly the window a WebGL twin has no such gate; if skips stay near zero while the pick hit rate is still low, the miss belongs elsewhere (the pick FBO's cold-path/stale-readback behaviour, not this gate).
 
 ---
 

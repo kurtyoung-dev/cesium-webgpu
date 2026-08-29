@@ -136,7 +136,10 @@ import {
   type ModelViewLightSlice,
   type WebGPUModelCameraArena,
 } from "./WebGPUModelCameraArena.js";
-import WebGPUModelPipelineCache from "./WebGPUModelPipelineCache.js";
+import WebGPUModelPipelineCache, {
+  recordModelPickCommandEmitted,
+  recordModelPickReadyGateSkip,
+} from "./WebGPUModelPipelineCache.js";
 import { createEffectsBindGroup } from "./WebGPUEffectsBindGroup.js";
 import { ShaderDefine } from "./WebGPUShaderDefines.js";
 import {
@@ -7212,6 +7215,9 @@ function updateWebGPUModel(
       // silhouette paths build their pipelines synchronously, so only the
       // normal color path can be null here.
       if (!defined(activePipeline)) {
+        //>>includeStart('debug', pragmas.debug);
+        recordModelPickReadyGateSkip();
+        //>>includeEnd('debug');
         continue;
       }
 
@@ -7604,6 +7610,9 @@ function updateWebGPUModel(
           pipeline: primCache.pickPipeline,
         });
         attachPickToColorCommand(webgpuCmd, pickCmd);
+        //>>includeStart('debug', pragmas.debug);
+        recordModelPickCommandEmitted();
+        //>>includeEnd('debug');
 
         // Snapping-pass variant. Same draw args as every pick variant, with
         // only the pipeline differing, so the snap draw rasterizes exactly the

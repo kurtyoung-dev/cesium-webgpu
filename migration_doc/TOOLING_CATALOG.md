@@ -206,11 +206,11 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 
 | Metric | Value |
 |---|---|
-| Files in census | 1161 |
-| ACTIVE | 944 |
+| Files in census | 1162 |
+| ACTIVE | 945 |
 | INVESTIGATION | 195 |
 | NO @purpose HEADER | 22 |
-| Classes | probe 654, spec 278, other 104, lib 82, gate-lib 20, bake-tool 13, runner 6, fixture 4 |
+| Classes | probe 654, spec 279, other 104, lib 82, gate-lib 20, bake-tool 13, runner 6, fixture 4 |
 
 ### Tools/ (46)
 
@@ -360,7 +360,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | stbn-rng.mjs | bake-tool | ACTIVE | 2026-08-16 | 3 | Deterministic license-clean random stream for the STBN bake: AES-256-CTR over zeros keyed by SHA-256(seed), byte-identical across machines. |
 | stbn-spectrum.mjs | bake-tool | ACTIVE | 2026-08-16 | 5 | Fourier certification of an STBN volume (radial spatial spectrum, per-pixel temporal spectrum, cross-correlation) with mutants proving each bar fires. |
 
-### Tools/visual-regression/ (948)
+### Tools/visual-regression/ (949)
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
@@ -1296,8 +1296,8 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | weather-regional-tails.spec.mjs | spec | ACTIVE | 2026-08-16 | 1 | Contract for the rendered-tail browser probe: cyclic CoverageJSON parse, fused capture, policy rejecting duplicated antimeridian band. |
 | webgl-snap-multifrustum.spec.mjs | spec | ACTIVE | 2026-08-16 | 1 | Source pins for WebGL Scene.snap occluders in DerivedCommand/Scene/SceneRenderer: depth-only reuse, zero color write, blending off, depthMask. |
 | webgl-vs-webgpu-pixel-check.mjs | other | INVESTIGATION | 2026-08-16 | 0 | Test-infra sanity check from the canvas-black-screen investigation: do non-black pixels reach toDataURL on each backend at all? |
-| webgpu-ao-sample-pattern-parity.spec.mjs | spec | NO @purpose HEADER | — | 1 | — |
-| webgpu-ao-uniform-bridge.spec.mjs | spec | NO @purpose HEADER | — | 1 | — |
+| webgpu-ao-sample-pattern-parity.spec.mjs | spec | NO @purpose HEADER | 2026-08-29 | 1 | — |
+| webgpu-ao-uniform-bridge.spec.mjs | spec | NO @purpose HEADER | 2026-08-29 | 1 | — |
 | webgpu-blend-table-parity.spec.mjs | spec | ACTIVE | 2026-08-29 | 2 | Runs the real lifted WebGPU blend translation from RenderStateToPipelineVariant.ts over every named Scene/BlendingState.js state and compares it against an independently written WebGL-enum-to-GPU oracle, so a blend factor or equation that translates differently on WebGPU than the WebGL state declares fails here. |
 | webgpu-cloud-shadow-bind-group-cache.spec.mjs | spec | ACTIVE | 2026-08-16 | 1 | Drives the real WebGPUCloudShadowBindGroupCache on a fake device: per-slot dedupe, descriptor identity, invalidation on resource change. |
 | webgpu-clustered-zero-light-dispatch.spec.mjs | spec | ACTIVE | 2026-08-21 | 0 | Proves settled zero-light frames avoid redundant params writes and compute passes. |
@@ -1305,6 +1305,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | webgpu-frame-accounting-policy.spec.mjs | spec | ACTIVE | 2026-08-16 | 2 | Guard for the frame-breakdown probe's accounting: phase names match the engine profiler, coverage/overlap validity, request-render suppression. |
 | webgpu-ibl-sh-signal.spec.mjs | spec | ACTIVE | 2026-08-24 | 2 | Keep the packed model IBL flag aligned with the spherical-harmonics buffer selected for binding. |
 | webgpu-pick-center-identity.spec.mjs | spec | ACTIVE | 2026-08-21 | 7 | Fake-device coverage of WebGPUPickFramebuffer/PickPass readback identity: map/unmap lifecycle, per-identity pixel decode, voxel pick pins. |
+| webgpu-pick-emission-counters.spec.mjs | spec | ACTIVE | — | 2 | Pins the four pragma-stripped counters (ready-gate skips, pick |
 | webgpu-pick-miniframe-clear-guard.spec.mjs | spec | ACTIVE | 2026-08-16 | 1 | Pins that standalone WebGPU pick mini-frames reset their own clear-loop budget: beginPickFrame resets counters and creates its encoder. |
 | webgpu-shadow-receive-contract.spec.mjs | spec | ACTIVE | 2026-08-21 | 2 | Pins the sun-shadow fix: single cast-dispatch site + same-frame wipe guard, receive matrix reproduces the cast texel, naga-validated shaders. |
 | webgpu-snap-edge-payload.spec.mjs | spec | ACTIVE | 2026-08-16 | 5 | Contract for the edge tier of WebGPU Scene.snap: edge-flag payload encode, pick-color plumb into the edge UB, pipeline variant, strict admission. |

@@ -40,6 +40,13 @@ import ShaderCache from "../ShaderCache.js";
 import TextureCache from "../TextureCache.js";
 import { WebGPUShaderCache } from "./WebGPUShaderCache.js";
 import { WebGPURenderPipelineCache } from "./WebGPURenderPipelineCache.js";
+// Debug-only WebGPU model pick-emission counters surfaced by
+// `getRendererStatistics()`, plus the per-frame reset `beginFrame()` calls
+// below. Pragma-stripped in production; see `WebGPUModelPipelineCache.ts`.
+import {
+  getModelPickDebugCounters,
+  resetModelPickDebugCountersForFrame,
+} from "./WebGPUModelPipelineCache.js";
 // Type-only: bind-group cache counters surfaced by
 // `getRendererStatistics()`. No runtime dependency on the cache module.
 import type { BindGroupCacheStats } from "./WebGPUBindGroupCache.js";
@@ -2186,6 +2193,9 @@ export class WebGPUContext extends GraphicsContext {
     this._drawCallCount = 0;
     this._triangleCount = 0;
     this._frameCount++;
+    //>>includeStart('debug', pragmas.debug);
+    resetModelPickDebugCountersForFrame(this._frameCount);
+    //>>includeEnd('debug');
     this._environmentDemandRegistry.beginFrame(this._deviceResourceGeneration);
     this._environmentRefreshCoordinator.beginFrame(
       this._deviceResourceGeneration,
@@ -6917,6 +6927,21 @@ export class WebGPUContext extends GraphicsContext {
       } catch (e) {
         stats.pipelineCache = { error: String((e as Error)?.message ?? e) };
       }
+    }
+    // Debug-only WebGPU model pick-emission counters (pragma-stripped in
+    // production, see `WebGPUModelPipelineCache.ts`): primitives skipped by
+    // the ready gate because their colour pipeline was still compiling,
+    // pick commands actually emitted, `getPickPipeline` call volume, and
+    // the summed wall time spent inside the synchronous pick-pipeline
+    // builder. Absent in a production bundle, matching every other
+    // lazily-populated field here.
+    try {
+      const modelPick = getModelPickDebugCounters();
+      if (modelPick) {
+        stats.modelPick = { ...modelPick };
+      }
+    } catch (e) {
+      stats.modelPick = { error: String((e as Error)?.message ?? e) };
     }
     // Cloud CPU and GPU observability. The counters are bookkeeping the
     // cloud renderer already pays for on its own encode path; this is pure

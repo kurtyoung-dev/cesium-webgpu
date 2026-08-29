@@ -1166,6 +1166,138 @@ function createSilhouetteColorPipeline(
 }
 
 /**
+ * Debug-only aggregate counters for the WebGPU model pick-emission path:
+ * how many primitives skip their pick command because the on-screen colour
+ * pipeline is still compiling, how many pick draw commands are actually
+ * emitted, how often {@link WebGPUModelPipelineCache#getPickPipeline} is
+ * called, and the summed wall time spent inside the synchronous
+ * {@link createPickPipeline} builder below. Every read and write of this
+ * object is confined to a `pragmas.debug` block, so the storage and its
+ * reads/writes disappear from a production bundle; the snapshot accessor at
+ * the bottom of this section remains in production as an
+ * always-`undefined`-returning fallback (see its own docstring).
+ *
+ * The counters are process-wide rather than per `WebGPUContext`: the
+ * per-`Model` pipeline cache instance that calls into these has no handle
+ * back to the context that owns it, so a per-context split would need a
+ * context reference threaded through this class's constructor. That is a
+ * larger change than this instrumentation makes; a process-wide count is
+ * still meaningful for the single-context sessions these counters are read
+ * from today.
+ */
+interface WebGPUModelPickDebugCounters {
+  /** Primitives skipped this frame because their colour pipeline had not resolved yet. */
+  readyGateSkipsThisFrame: number;
+  /** Pick draw commands emitted this frame. */
+  pickCommandsEmittedThisFrame: number;
+  /**
+   * The frame number the two per-frame fields above are current for. Set by
+   * {@link resetModelPickDebugCountersForFrame}, called once per frame from
+   * `WebGPUContext#beginFrame`. A published, if secondary, field: it is what
+   * lets a caller confirm the two per-frame counters above are being read
+   * for the frame they expect rather than a stale one.
+   */
+  countersFrameNumber: number;
+  /** Cumulative calls to {@link WebGPUModelPipelineCache#getPickPipeline}. */
+  getPickPipelineCalls: number;
+  /** Cumulative wall time, in milliseconds, spent inside {@link createPickPipeline}. */
+  createPickPipelineWallTimeMs: number;
+}
+
+//>>includeStart('debug', pragmas.debug);
+const modelPickDebugCounters: WebGPUModelPickDebugCounters = {
+  readyGateSkipsThisFrame: 0,
+  pickCommandsEmittedThisFrame: 0,
+  countersFrameNumber: -1,
+  getPickPipelineCalls: 0,
+  createPickPipelineWallTimeMs: 0,
+};
+//>>includeEnd('debug');
+
+/**
+ * Rolls the two per-frame counters over to zero for `frameNumber`. Called
+ * exactly once per frame, from `WebGPUContext#beginFrame` immediately after
+ * `this._frameCount++` — the renderer's existing per-frame-statistics reset
+ * point (the same place `_drawCallCount` and `_triangleCount` reset). NOT
+ * called from the record functions below: resetting lazily, only when an
+ * event happens to occur, would leave a frame with zero ready-gate skips and
+ * zero pick emissions still showing the PREVIOUS frame's nonzero values —
+ * exactly backwards for a counter whose zero is itself informative.
+ */
+function resetModelPickDebugCountersForFrame(frameNumber: number): void {
+  //>>includeStart('debug', pragmas.debug);
+  modelPickDebugCounters.countersFrameNumber = frameNumber;
+  modelPickDebugCounters.readyGateSkipsThisFrame = 0;
+  modelPickDebugCounters.pickCommandsEmittedThisFrame = 0;
+  //>>includeEnd('debug');
+}
+
+/**
+ * Records one primitive skipped by the ready gate this frame — its colour
+ * pipeline was still compiling, so no pick command could be built for it
+ * either. Frame rollover is handled entirely by
+ * {@link resetModelPickDebugCountersForFrame} at the renderer's frame
+ * boundary; this function only ever increments.
+ */
+function recordModelPickReadyGateSkip(): void {
+  //>>includeStart('debug', pragmas.debug);
+  modelPickDebugCounters.readyGateSkipsThisFrame++;
+  //>>includeEnd('debug');
+}
+
+/**
+ * Records one pick draw command emitted this frame. Frame rollover is
+ * handled entirely by {@link resetModelPickDebugCountersForFrame} at the
+ * renderer's frame boundary; this function only ever increments.
+ */
+function recordModelPickCommandEmitted(): void {
+  //>>includeStart('debug', pragmas.debug);
+  modelPickDebugCounters.pickCommandsEmittedThisFrame++;
+  //>>includeEnd('debug');
+}
+
+/** Records one {@link WebGPUModelPipelineCache#getPickPipeline} call. */
+function recordGetPickPipelineCall(): void {
+  //>>includeStart('debug', pragmas.debug);
+  modelPickDebugCounters.getPickPipelineCalls++;
+  //>>includeEnd('debug');
+}
+
+/** Adds one {@link createPickPipeline} build's wall time to the running sum. */
+function recordCreatePickPipelineWallTime(elapsedMs: number): void {
+  //>>includeStart('debug', pragmas.debug);
+  modelPickDebugCounters.createPickPipelineWallTimeMs += elapsedMs;
+  //>>includeEnd('debug');
+}
+
+/**
+ * Snapshot accessor consumed by `WebGPUContext#getRendererStatistics`. The
+ * storage above and every read/write of it are confined to
+ * `pragmas.debug` blocks and so disappear from a production bundle; THIS
+ * FUNCTION remains in production, as a fallback that always returns
+ * `undefined` once its own `pragmas.debug` block is stripped — callers
+ * already treat every `getRendererStatistics` field as optional for exactly
+ * this reason (the field is simply absent from the published snapshot in
+ * production, never present-but-wrong).
+ */
+function getModelPickDebugCounters(): WebGPUModelPickDebugCounters | undefined {
+  //>>includeStart('debug', pragmas.debug);
+  return { ...modelPickDebugCounters };
+  //>>includeEnd('debug');
+  return undefined;
+}
+
+export {
+  getModelPickDebugCounters,
+  recordCreatePickPipelineWallTime,
+  recordGetPickPipelineCall,
+  recordModelPickCommandEmitted,
+  recordModelPickReadyGateSkip,
+  resetModelPickDebugCountersForFrame,
+};
+export type { WebGPUModelPickDebugCounters };
+
+/**
  * The pick pipeline. It mirrors `createPipeline` for vertex stage, layout and
  * depth state, but its fragment entry is `fragmentPickMain`, which writes
  * `material.pickColor`, and it has no blend: the pick framebuffer must receive
@@ -1224,7 +1356,18 @@ function createPickPipeline(
   const label = `Model PBR pick [alpha=${alphaMode},ds=${doubleSided}]${
     pickLogActive ? " [ld]" : ""
   }`;
-  return device.createRenderPipeline({
+  // Timed here, not at the `getPickPipeline` call site: every argument above
+  // this point — including the caller's `_getOrCreateShaderModule` and
+  // `_getOrCreatePipelineLayout` calls, which happen before this function is
+  // even entered, since JS evaluates a call's arguments before the call —
+  // has already run by the time control reaches this line. Starting the
+  // timer here, and reading it back immediately before `return`, wraps only
+  // the synchronous `device.createRenderPipeline` call this function makes,
+  // which is the one that can be expensive.
+  //>>includeStart('debug', pragmas.debug);
+  const pickPipelineBuildStart = performance.now();
+  //>>includeEnd('debug');
+  const pipeline = device.createRenderPipeline({
     label,
     layout: pipelineLayout,
     vertex: {
@@ -1256,6 +1399,10 @@ function createPickPipeline(
       depthCompare: "less-equal",
     },
   });
+  //>>includeStart('debug', pragmas.debug);
+  recordCreatePickPipelineWallTime(performance.now() - pickPipelineBuildStart);
+  //>>includeEnd('debug');
+  return pipeline;
 }
 
 /**
@@ -3720,6 +3867,9 @@ class WebGPUModelPipelineCache {
     doubleSided: boolean,
     materialDefines: number,
   ) {
+    //>>includeStart('debug', pragmas.debug);
+    recordGetPickPipelineCall();
+    //>>includeEnd('debug');
     const md = this._normalizeMaterialDefines(materialDefines);
     const topology = this._primitiveTopology;
     const key = this._metadataVariantKey(
@@ -3736,6 +3886,14 @@ class WebGPUModelPipelineCache {
     // The flat-magenta error pipeline emits the scene-FB G-buffer target shape and
     // can't be a drop-in here (pick draws into the single-target pick FBO); a pick
     // error fallback needs its own pick-FBO-shaped error pipeline.
+    //
+    // Wall time is recorded inside `createPickPipeline` itself, around only
+    // its own `device.createRenderPipeline` call — not here, where it would
+    // also capture the two calls immediately below (`_getOrCreateShaderModule`,
+    // `_getOrCreatePipelineLayout`), since JS evaluates a call's arguments,
+    // left to right, before the call. Timing from out here would measure
+    // those two lookups as if they were part of the synchronous pipeline
+    // build, which they are not.
     pipeline = createPickPipeline(
       this._device,
       // The pick-gated module: its LOG_DEPTH state follows the pick-fleet
