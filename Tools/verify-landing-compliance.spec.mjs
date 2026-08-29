@@ -74,9 +74,14 @@ const KNOWN_BAD_RANGE = "6d4a2376fc~1..4d43ee6015";
 /** Batches 1041-1043: prefixed, bodied, trailered, no marker errors. */
 const KNOWN_GOOD_RANGE = "4c9b559411~3..4c9b559411";
 
-/** Current verifier-owned private-history temp directory names. */
-function historyTempDirectories() {
-  return readdirSync(tmpdir(), { withFileTypes: true })
+/**
+ * Current verifier-owned private-history temp directory names.
+ *
+ * @param {string} directory Directory to enumerate.
+ * @returns {string[]} Matching directory names.
+ */
+function historyTempDirectories(directory) {
+  return readdirSync(directory, { withFileTypes: true })
     .filter(
       (entry) =>
         entry.isDirectory() && entry.name.startsWith("verify-landing-history-"),
@@ -110,7 +115,7 @@ function rangeAvailable(range) {
  * Run the verifier.
  *
  * @param {string[]} args Arguments.
- * @param {{repoRoot?: string, gitFaultPhase?: string, policyRacePhase?: "start"|"end"|"end-graph"|"aba", historyRacePhase?: "shallow"|"graft"|"private-shallow"|"private-graft"|"private-config"|"private-ref"}} [options] Fixture options.
+ * @param {{repoRoot?: string, tempDir?: string, gitFaultPhase?: string, policyRacePhase?: "start"|"end"|"end-graph"|"aba", historyRacePhase?: "shallow"|"graft"|"private-shallow"|"private-graft"|"private-config"|"private-ref"}} [options] Fixture options.
  * @returns {{status: number, output: string}} Result.
  */
 function verify(args, options = {}) {
@@ -143,6 +148,13 @@ function verify(args, options = {}) {
     encoding: "utf8",
     env: {
       ...process.env,
+      ...(options.tempDir === undefined
+        ? {}
+        : {
+            TMPDIR: options.tempDir,
+            TEMP: options.tempDir,
+            TMP: options.tempDir,
+          }),
       ...(options.gitFaultPhase === undefined
         ? {}
         : { VERIFY_LANDING_GIT_FAULT_PHASE: options.gitFaultPhase }),
@@ -1112,16 +1124,21 @@ test("symbolic HEAD targeting a non-branch ref surfaces the Git failure", (t) =>
 });
 
 test("hermetic ordinary clean and failing marker controls diverge", (t) => {
-  const tempBaseline = historyTempDirectories();
+  const verifierTempDir = mkdtempSync(
+    path.join(tmpdir(), "verify-landing-test-"),
+  );
+  t.after(() => rmSync(verifierTempDir, { recursive: true, force: true }));
+  const tempBaseline = historyTempDirectories(verifierTempDir);
   const { root, base } = createHistoryFixture(t, { cleanListed: true });
   writeFixture(root, SOURCE_PATH, "export const fixture = 1;\n");
   const clean = commitFixture(root, 101, "ordinary clean control");
   const requestedRange = `${base.slice(0, 12)}..HEAD`;
   const cleanResult = verify(["--range", requestedRange, "--json"], {
     repoRoot: root,
+    tempDir: verifierTempDir,
   });
   assert.equal(cleanResult.status, 0, cleanResult.output);
-  assert.deepEqual(historyTempDirectories(), tempBaseline);
+  assert.deepEqual(historyTempDirectories(verifierTempDir), tempBaseline);
   const cleanReport = reportOf(cleanResult);
   assert.equal(cleanReport.ok, true);
   assert.equal(cleanReport.requestedRange, requestedRange);
@@ -1193,14 +1210,47 @@ test("hermetic ordinary clean and failing marker controls diverge", (t) => {
   const failing = commitFixture(root, 102, "ordinary failing control");
   const failingResult = verify(["--range", `${clean}..${failing}`, "--json"], {
     repoRoot: root,
+    tempDir: verifierTempDir,
   });
   assert.equal(failingResult.status, 1, failingResult.output);
-  assert.deepEqual(historyTempDirectories(), tempBaseline);
+  assert.deepEqual(historyTempDirectories(verifierTempDir), tempBaseline);
   const failingReport = reportOf(failingResult);
   assert.equal(failingReport.ok, false);
   assert.equal(failingReport.markerGuard.errors.length, 1);
   assert.equal(failingReport.markerGuard.errors[0].commit, failing);
   assert.equal(failingReport.markerGuard.errors[0].cleanListed, true);
+});
+
+test("concurrent foreign verifier history directories cannot perturb the hermeticity control", (t) => {
+  const verifierTempDir = mkdtempSync(
+    path.join(tmpdir(), "verify-landing-test-"),
+  );
+  t.after(() => rmSync(verifierTempDir, { recursive: true, force: true }));
+  const decoyDir = mkdtempSync(path.join(tmpdir(), "verify-landing-history-"));
+  t.after(() => rmSync(decoyDir, { recursive: true, force: true }));
+  const decoyName = path.basename(decoyDir);
+
+  assert.ok(
+    historyTempDirectories(tmpdir()).includes(decoyName),
+    "the contention reproduction did not take effect",
+  );
+  const privateBaseline = historyTempDirectories(verifierTempDir);
+  assert.ok(!privateBaseline.includes(decoyName));
+  assert.deepEqual(privateBaseline, []);
+
+  const { root, base } = createHistoryFixture(t, { cleanListed: true });
+  writeFixture(root, SOURCE_PATH, "export const fixture = 1;\n");
+  commitFixture(root, 101, "ordinary clean control");
+  const requestedRange = `${base.slice(0, 12)}..HEAD`;
+  const result = verify(["--range", requestedRange, "--json"], {
+    repoRoot: root,
+    tempDir: verifierTempDir,
+  });
+  assert.equal(result.status, 0, result.output);
+  assert.equal(reportOf(result).ok, true);
+
+  assert.deepEqual(historyTempDirectories(verifierTempDir), []);
+  assert.ok(historyTempDirectories(tmpdir()).includes(decoyName));
 });
 
 test("a same-commit clean-list addition enforces that commit's marked source", (t) => {
