@@ -138,6 +138,10 @@ SceneTransforms.worldWithEyeOffsetToWindowCoordinates = function (
   viewport.height = canvas.clientHeight;
 
   const camera = scene.camera;
+  // Unguarded on purpose: a Scene either finishes construction with a graphics
+  // context or rethrows, and the only path that clears the context clears the
+  // frame state first — so a scene that got past the frame-state read above
+  // still has its context. Scene-shaped test doubles must supply one.
   const clipSpaceConvention = scene.context.clipSpaceConvention;
   let cameraCentered = false;
 

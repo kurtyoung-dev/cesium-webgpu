@@ -508,6 +508,51 @@ test("B2. a bit-31 define round-trips including its sign", () => {
   assert.equal(parseGlobePipelineCacheKey(key).defines, defines);
 });
 
+test("B3. input that is not a key at all answers null, it does not throw", () => {
+  // The parser's consumers are diagnostic surfaces, most of them JavaScript,
+  // reading keys out of maps and snapshots where a missing entry is a normal
+  // outcome. `parseGlobePipelineCacheKey(undefined)` asks the same question as
+  // `parseGlobePipelineCacheKey("not a key")` — "is this a globe pipeline
+  // key?" — and both answers are no. Throwing takes the diagnostic down for
+  // exactly the case it exists to report.
+  const notKeys = [
+    null,
+    undefined,
+    42,
+    0,
+    NaN,
+    true,
+    false,
+    {},
+    [],
+    ["UNMO_28|0"],
+    () => "UNMO_28|0",
+    Symbol("UNMO_28|0"),
+    123n,
+    new Map(),
+    // An object whose `toString` would produce a valid key if the parser ever
+    // coerced instead of checking the type.
+    { toString: () => "UNMO_28|0" },
+    // A String object is not the primitive the grammar is defined over.
+    new String("UNMO_28|0"),
+  ];
+  for (const notKey of notKeys) {
+    assert.equal(
+      parseGlobePipelineCacheKey(notKey),
+      null,
+      `expected null for ${String(typeof notKey)}`,
+    );
+  }
+
+  // Called with no argument at all — the shape a JavaScript consumer produces
+  // when it forgets a parameter.
+  assert.equal(parseGlobePipelineCacheKey(), null);
+
+  // The rejection must be about the type, not about the text: the same key as
+  // a primitive string still parses.
+  assert.equal(parseGlobePipelineCacheKey("UNMO_28|0").kind, "color");
+});
+
 test("C. the four stale getter keys are unproducible and unparseable", () => {
   // THE DEFECT, pinned. These are the exact strings the four accessors asked
   // for from 2026-04-04 to 2026-08-01.
@@ -821,6 +866,30 @@ test("F2. aliasing-adjacent entries are visible as distinct rows sharing a name"
     shared.filter((row) => row.pipeline).map((row) => row.pipeline),
   );
   assert.ok(distinctPipelines.size > 1);
+});
+
+test("F3. a non-string map key is reported, not thrown on", () => {
+  // A Map takes any value as a key. If the listing API ever meets one — a
+  // fixture, a replayed snapshot, a renderer that keys a map by something
+  // other than the key string — it must stay a reporting surface: the row is
+  // present with `fields: null`, the same signal an unreadable string gets.
+  const cache = makeSyntheticCache();
+  const before = cache.size;
+  cache.set(undefined, {
+    descriptor: { name: "Globe terrain (no key)" },
+    pipeline: P.junk,
+    pending: false,
+  });
+
+  const rows = listGlobePipelineVariants(cache, "pipeline");
+  assert.equal(rows.length, before + 1, "nothing may be dropped");
+  const row = rows.find((candidate) => candidate.key === undefined);
+  assert.equal(row.fields, null);
+  assert.equal(row.pipeline, P.junk);
+
+  // The semantic lookup skips it instead of failing the whole query, so one
+  // unreadable entry cannot hide every readable one behind it.
+  assert.equal(findGlobePipelineVariant(cache, { kind: "pick" }), P.pick);
 });
 
 // ═══════════════════════════════════════════════════════════════════════

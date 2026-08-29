@@ -36,6 +36,13 @@
  * cannot explain is how the original defect stayed invisible behind green
  * dashboards; an unparseable row is a visible signal that the format moved.
  *
+ * "Does not understand" covers the input's type as well as its text. A caller
+ * that hands the parser a missing or non-string value — a JavaScript diagnostic
+ * reading a map entry that is not there, a probe replaying a stored key that
+ * failed to load — is asking the same question, and gets the same `null`
+ * answer. Throwing there would take down a diagnostic surface for the case it
+ * exists to report.
+ *
  * KEY GRAMMAR (all four maps)
  * ---------------------------
  * ```
@@ -272,13 +279,24 @@ export function buildGlobePipelineCacheKey(spec: GlobePipelineKeySpec): string {
 /**
  * Parse a renderer-local globe pipeline cache key.
  *
+ * The parameter is `unknown` because the consumers are diagnostic surfaces,
+ * most of them JavaScript, that read keys out of maps and snapshots where a
+ * missing entry is a normal outcome. Anything that is not a string is not a
+ * key, and is reported through the same `null` channel as text that does not
+ * match the grammar.
+ *
  * @param key the stored key
- * @returns the resolved fields, or `null` when `key` does not match the
- *   grammar — callers MUST surface that rather than substituting a guess.
+ * @returns the resolved fields, or `null` when `key` is not a string or does
+ *   not match the grammar — callers MUST surface that rather than substituting
+ *   a guess.
  */
 export function parseGlobePipelineCacheKey(
-  key: string,
+  key: unknown,
 ): GlobePipelineKeyFields | null {
+  if (typeof key !== "string") {
+    return null;
+  }
+
   const targetAxisStart = key.indexOf(TARGET_AXIS_PREFIX);
   const legacyKey =
     targetAxisStart === -1 ? key : key.slice(0, targetAxisStart);

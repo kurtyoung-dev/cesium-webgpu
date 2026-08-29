@@ -108,6 +108,15 @@ corrected with it.
 The remaining ~30 medium and all low survivors are enumerated in §5 with their lane column reading
 QUEUED; they dispatch after Q-1…Q-10, batched by file so one Sol dispatch closes several small
 findings in the same module. C1's returning findings append here as a dated addendum.
+### Q118 lane LANDED - Batch 1287: Q-118, Q-113, Q-119
+
+| | Row | Disposition |
+|---|---|---|
+| Q-118 | FIXED (seat Karma confirmation owed: `gulp test --includeName Camera` 359/359) | fixture, not engine guard: MockScene gains ClipSpaceConvention.WEBGL (the frozen singleton; restores pre-Batch-656 math exactly) + an invariant comment at the deref; node twin 3/3 that reproduces the four failures; `test-scene-node` script added for the three build-independent engine node specs |
+| Q-113 | FIXED | parseGlobePipelineCacheKey returns null for non-string input via the module's own not-a-globe-key channel; readiness spec test 13 green |
+| Q-119 | FIXED (seat confirmation owed: `--includeName ZZZNOMATCH` x3 all exit 3) | classification waits for all three Karma signals under a watchdog that arms ONLY for a single run (never in `gulp test --debug`, which keeps a headed browser alive); exit code set once at the end; 13 harness scenarios incl. a watch-mode control asserting pending / no warning / profile intact; 6 mutants red |
+| LANDING | gates | apply --3way (gulpfile.js onto the landed INSTR2/INSTR test task, comment-only), syntax + eslint + prettier + C16 + tsc, specs, test-build-infra, FULL BUILD at the seat, catalog after staging; reviewer scratch archived and excluded |
+
 ### Q-101/Q-102 LANDED - Batch 1286: Scene.renderReady + the LOG_DEPTH module-mask fix
 
 | | Row | Disposition |

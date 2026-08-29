@@ -625,6 +625,287 @@ async function run() {
     );
   }
 
+  // ───────────────────────────────────────────────────────────────────────
+  // Q-119 — the verdict must not depend on which signal arrived last.
+  //
+  // Three byte-identical `gulp test --includeName ZZZNOMATCH` runs exited 0,
+  // 3 and 3. The exit code was being decided by the state that happened to
+  // have arrived when Karma's done callback fired: a `run_complete` or a
+  // terminal `browser_complete_with_no_more_retries` that landed a moment
+  // later turned a zero-match (3) into a generic acceptance failure (1), and
+  // a done callback that never arrived at all left this promise pending — the
+  // Gulp task never settled, no exit code was ever set, and the process
+  // exited 0 with nothing printed. That last one is the 0.
+  //
+  // These fixtures drive the same zero-executed run under every arrival order
+  // and require ONE verdict from all of them. The controls below require that
+  // the verdict is still earned: a disconnect, a genuine suite failure and a
+  // passing run each keep their own outcome.
+  // ───────────────────────────────────────────────────────────────────────
+  {
+    const newBrowser = () =>
+      createBrowser({ id: "ordering", fullName: "Edge Headless (ordering)" });
+    const zeroExecuted = () => zeroExecutedResults();
+
+    async function settleOutcome(scenario, { config, ...options } = {}) {
+      const captured = { error: [], warn: [] };
+      const realError = console.error;
+      const realWarn = console.warn;
+      console.error = (message) => captured.error.push(String(message));
+      console.warn = (message) => captured.warn.push(String(message));
+
+      let outcome = { kind: "pending", captured };
+      const settled = runKarmaTestServer(
+        makeFakeKarmaServer(scenario),
+        config ?? {},
+        {
+          nameFilter: "ZZZNOMATCH",
+          lateEventGraceMs: 20,
+          doneCallbackTimeoutMs: 60,
+          ...options,
+        },
+      )
+        .then(() => {
+          outcome = { kind: "resolved", captured };
+        })
+        .catch((error) => {
+          outcome = {
+            kind:
+              error instanceof IncludeNameZeroMatchError
+                ? "zero-match"
+                : "generic",
+            message: error.message,
+            captured,
+          };
+        });
+
+      try {
+        // A budget, not a wait: whatever the outcome is, it must be reached
+        // well inside this. Exceeding it IS the pending failure.
+        await Promise.race([
+          settled,
+          new Promise((resolveRace) => setTimeout(resolveRace, 1000)),
+        ]);
+      } finally {
+        console.error = realError;
+        console.warn = realWarn;
+      }
+      return outcome;
+    }
+
+    const orderings = {
+      "canonical: lifecycle, run_complete, done": (server, done) => {
+        const browser = newBrowser();
+        server.emit("browser_register", browser);
+        server.emit("browser_start", browser, { total: 0 });
+        server.emit("browser_complete_with_no_more_retries", browser);
+        server.emit("run_complete", [browser], zeroExecuted());
+        done(1);
+      },
+      "done before run_complete": (server, done) => {
+        const browser = newBrowser();
+        server.emit("browser_register", browser);
+        server.emit("browser_start", browser, { total: 0 });
+        server.emit("browser_complete_with_no_more_retries", browser);
+        done(1);
+        server.emit("run_complete", [browser], zeroExecuted());
+      },
+      "done before the terminal browser_complete": (server, done) => {
+        const browser = newBrowser();
+        server.emit("browser_register", browser);
+        server.emit("browser_start", browser, { total: 0 });
+        server.emit("run_complete", [browser], zeroExecuted());
+        done(1);
+        server.emit("browser_complete_with_no_more_retries", browser);
+      },
+      "the terminal browser_complete a tick after done": (server, done) => {
+        const browser = newBrowser();
+        server.emit("browser_register", browser);
+        server.emit("browser_start", browser, { total: 0 });
+        server.emit("run_complete", [browser], zeroExecuted());
+        done(1);
+        setTimeout(
+          () => server.emit("browser_complete_with_no_more_retries", browser),
+          5,
+        );
+      },
+      "run_complete a tick after done": (server, done) => {
+        const browser = newBrowser();
+        server.emit("browser_register", browser);
+        server.emit("browser_start", browser, { total: 0 });
+        server.emit("browser_complete_with_no_more_retries", browser);
+        done(1);
+        setTimeout(
+          () => server.emit("run_complete", [browser], zeroExecuted()),
+          5,
+        );
+      },
+      "done carries 0 while the counts are zero": (server, done) => {
+        const browser = newBrowser();
+        server.emit("browser_register", browser);
+        server.emit("browser_start", browser, { total: 0 });
+        server.emit("browser_complete_with_no_more_retries", browser);
+        server.emit("run_complete", [browser], zeroExecuted());
+        done(0);
+      },
+      "done fires twice with different codes": (server, done) => {
+        const browser = newBrowser();
+        server.emit("browser_register", browser);
+        server.emit("browser_start", browser, { total: 0 });
+        server.emit("browser_complete_with_no_more_retries", browser);
+        server.emit("run_complete", [browser], zeroExecuted());
+        done(1);
+        done(0);
+      },
+      "done never arrives at all": (server) => {
+        const browser = newBrowser();
+        server.emit("browser_register", browser);
+        server.emit("browser_start", browser, { total: 0 });
+        server.emit("browser_complete_with_no_more_retries", browser);
+        server.emit("run_complete", [browser], zeroExecuted());
+      },
+    };
+
+    // Every ordering is measured BEFORE anything is asserted, so a failure
+    // reports the whole map — which is the actual finding. Asserting inside
+    // the loop would stop at the first divergent ordering and hide the one
+    // that never settles at all.
+    const verdicts = {};
+    const announced = {};
+    for (const [name, scenario] of Object.entries(orderings)) {
+      const outcome = await settleOutcome(scenario);
+      verdicts[name] = outcome.kind;
+      announced[name] = outcome.captured.error.some((line) =>
+        line.includes("includeName selected 0 runnable specs"),
+      );
+    }
+
+    const oneVerdict = Object.fromEntries(
+      Object.keys(orderings).map((name) => [name, "zero-match"]),
+    );
+    assert.deepEqual(
+      verdicts,
+      oneVerdict,
+      "the same zero-executed run must reach the same verdict under every " +
+        'arrival order ("pending" is the silent exit 0: no verdict, no exit ' +
+        "code, no output)",
+    );
+    assert.deepEqual(
+      announced,
+      Object.fromEntries(Object.keys(orderings).map((name) => [name, true])),
+      "every ordering must still print the unmistakable line",
+    );
+
+    // The missing done callback is an anomaly even though the run is fully
+    // described without it, so it is reported rather than absorbed silently.
+    const withoutDone = await settleOutcome(
+      orderings["done never arrives at all"],
+    );
+    assert.ok(
+      withoutDone.captured.warn.some((line) =>
+        line.includes("never invoked its done callback"),
+      ),
+      "classifying without the done callback must say so",
+    );
+
+    // Controls. A verdict that every ordering reaches is only worth having if
+    // it is still earned.
+    const disconnected = await settleOutcome((server, done) => {
+      const browser = newBrowser();
+      browser.disconnectsCount = 1;
+      server.emit("browser_register", browser);
+      server.emit("browser_start", browser, { total: 0 });
+      server.emit("browser_complete_with_no_more_retries", browser);
+      server.emit("run_complete", [browser], zeroExecuted());
+      done(1);
+    });
+    assert.equal(
+      disconnected.kind,
+      "generic",
+      "a disconnect riding along with an empty suite is not a zero-match",
+    );
+
+    const realFailure = await settleOutcome((server, done) => {
+      const browser = newBrowser();
+      server.emit("browser_register", browser);
+      server.emit("browser_start", browser, { total: 0 });
+      server.emit("browser_complete_with_no_more_retries", browser);
+      server.emit(
+        "run_complete",
+        [browser],
+        createResults({ success: 10, failed: 2, exitCode: 1 }),
+      );
+      done(1);
+    });
+    assert.equal(
+      realFailure.kind,
+      "generic",
+      "a genuinely failing suite keeps the generic acceptance error",
+    );
+
+    const passing = await settleOutcome((server, done) => {
+      const browser = newBrowser();
+      server.emit("browser_register", browser);
+      server.emit("browser_start", browser, { total: 1 });
+      server.emit("browser_complete_with_no_more_retries", browser);
+      server.emit("run_complete", [browser], createResults({ success: 12 }));
+      done(0);
+    });
+    assert.equal(passing.kind, "resolved", "a passing run still resolves");
+
+    // A run that produces no signal at all must not be reported as anything:
+    // the watchdog is armed by `run_complete`, so there is nothing to classify
+    // from, and inventing a verdict here would be the opposite defect.
+    const silent = await settleOutcome(() => {});
+    assert.equal(
+      silent.kind,
+      "pending",
+      "a server that emits nothing must not be given a verdict",
+    );
+
+    // `gulp test --debug` runs with `singleRun: false`, and Karma's executor
+    // emits `run_complete` after EVERY run — watch-mode runs included — while
+    // only a single run goes on to `_close` and therefore to the done
+    // callback. Pending is the CORRECT outcome there: the headed browser is
+    // meant to stay up until the developer closes it. A watchdog that armed
+    // anyway would classify a live session about thirty seconds in, reject a
+    // debug run that is not failing, print a shutdown warning where none
+    // applies, and — because the classification also reaps the Edge profile —
+    // delete the profile directory the browser is running out of.
+    const watchProfile = path.join(
+      tmpdir(),
+      `karma-edge-${Date.now() + 3}-${process.pid}`,
+    );
+    await mkdir(watchProfile, { recursive: true });
+    try {
+      const watchMode = await settleOutcome(
+        (server) => {
+          const browser = newBrowser();
+          server.emit("browser_register", browser);
+          server.emit("browser_start", browser, { total: 0 });
+          server.emit("browser_complete_with_no_more_retries", browser);
+          server.emit("run_complete", [browser], zeroExecuted());
+        },
+        { config: { ...edgeProfileConfig(watchProfile), singleRun: false } },
+      );
+      // All three observations are taken before anything is asserted, so a
+      // regression reports every way it harmed the session rather than only
+      // the first.
+      assert.deepEqual(
+        {
+          verdict: watchMode.kind,
+          warnings: watchMode.captured.warn.length,
+          profileSurvives: await pathExists(watchProfile),
+        },
+        { verdict: "pending", warnings: 0, profileSurvives: true },
+        "a watch-mode session must be left running, unwarned, with the " +
+          "browser profile it is running out of still on disk",
+      );
+    } finally {
+      await rm(watchProfile, { recursive: true, force: true });
+    }
+  }
+
   console.log("karmaTestRun policy: all checks passed");
 }
 

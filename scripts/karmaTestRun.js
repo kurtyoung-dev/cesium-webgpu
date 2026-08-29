@@ -301,12 +301,31 @@ export class IncludeNameZeroMatchError extends Error {
  *   infrastructure failure) can branch on that class. That state does NOT
  *   mean "the pattern matched no suite" specifically — it also covers a
  *   pattern that matched only specs Karma reports as skipped.
+ * @param {number} [options.lateEventGraceMs=250] How long to keep collecting
+ *   Karma events after the done callback arrives, before classifying. Karma
+ *   calls `done` from `_close`, which it triggers FROM its own `run_complete`
+ *   listener, so the normal order is run_complete first — but the classifier
+ *   must not depend on that, because reading a half-arrived state is how the
+ *   same run produced different exit codes on different attempts.
+ * @param {number} [options.doneCallbackTimeoutMs=30000] How long to wait for
+ *   Karma's done callback after `run_complete` before classifying without it.
+ *   Karma's shutdown (`emitExitAsync`, then closing the web server) sits
+ *   between the two, and a shutdown that never completes used to leave this
+ *   promise pending forever: Gulp's task never settled, no exit code was ever
+ *   set, and the process exited 0 as if the run had passed. Applies to a
+ *   single run only: with `config.singleRun === false` no done callback is
+ *   coming by design and the promise is left pending on purpose.
  * @returns {Promise<void>} Resolves only when the accepted run completes.
  */
 export function runKarmaTestServer(
   KarmaServer,
   config,
-  { failTaskOnError = true, nameFilter } = {},
+  {
+    failTaskOnError = true,
+    nameFilter,
+    lateEventGraceMs = 250,
+    doneCallbackTimeoutMs = 30000,
+  } = {},
 ) {
   return new Promise((resolve, reject) => {
     const state = {
@@ -318,12 +337,24 @@ export function runKarmaTestServer(
     };
     const profileDirectories = getEdgeProfileDirectories(config);
     let finalizing = false;
+    let armedTimer;
+    let armedWindow;
+    let doneExitCode;
+    let doneCallbackSeen = false;
+
+    const clearArmedClassification = () => {
+      if (armedTimer !== undefined) {
+        clearTimeout(armedTimer);
+        armedTimer = undefined;
+      }
+    };
 
     const finalize = async (exitCode, startError) => {
       if (finalizing) {
         return;
       }
       finalizing = true;
+      clearArmedClassification();
 
       const { failures, emptySuiteCleanly, skippedCount } =
         getCompletionFailures(state, exitCode, failTaskOnError);
@@ -373,13 +404,88 @@ export function runKarmaTestServer(
       resolve();
     };
 
+    // Classification is armed by a signal and runs on a timer, never inline in
+    // the handler that happened to arrive last. Two windows, one mechanism:
+    //   - `run_complete` arms the long watchdog. If Karma's done callback never
+    //     comes, the run is still fully described by `run_complete`'s own
+    //     results (they carry the same exit code Karma would have passed), so
+    //     the run is classified rather than left pending forever.
+    //   - the done callback arms the short grace window, which supersedes the
+    //     watchdog. It exists so an event Karma emits immediately AFTER done —
+    //     a terminal `browser_complete_with_no_more_retries`, a late
+    //     `run_complete` — is part of the state the classifier reads, instead
+    //     of being the difference between exit 3 and exit 1 on two runs of the
+    //     same command.
+    // Once the grace window is armed nothing re-arms it, so a stream of late
+    // events cannot postpone the verdict indefinitely.
+    // Every path into `finalize` goes through here so that a throw inside it
+    // rejects this promise instead of surfacing as an unhandled rejection with
+    // the promise left pending — which is the same silent-exit-0 shape as a
+    // done callback that never arrives.
+    const settle = (exitCode, startError) => {
+      if (
+        !doneCallbackSeen &&
+        startError === undefined &&
+        state.run !== undefined
+      ) {
+        // Permanent, not a debug aid: the run is being classified from a
+        // shutdown Karma never finished, and whoever reads the exit code
+        // deserves to know which signal it came from.
+        console.warn(
+          "Karma never invoked its done callback; classifying the run from " +
+            "run_complete's own results.",
+        );
+      }
+      finalize(exitCode, startError).catch((error) => {
+        reject(error);
+      });
+    };
+
+    const armClassification = (window, delayMs) => {
+      if (finalizing || armedWindow === "grace") {
+        return;
+      }
+      clearArmedClassification();
+      armedWindow = window;
+      armedTimer = setTimeout(
+        () => {
+          armedTimer = undefined;
+          settle(doneExitCode, undefined);
+        },
+        Math.max(0, delayMs),
+      );
+    };
+
+    // Nothing further is expected once `run_complete` has named its browsers
+    // and every one of them has its full lifecycle: the grace window would
+    // only add latency to the overwhelmingly common case. The classification
+    // is still deferred by one turn of the event loop, so an event Karma emits
+    // synchronously after calling `done` is admitted either way.
+    const runLooksComplete = () => {
+      if (state.run === undefined) {
+        return false;
+      }
+      const browsers = browserCollectionToArray(state.run.browsers);
+      return (
+        browsers.length > 0 &&
+        browsers.every(
+          (browser) =>
+            state.registeredBrowsers.has(browser) &&
+            state.startedBrowsers.has(browser) &&
+            state.completedBrowsers.has(browser),
+        )
+      );
+    };
+
     let server;
     try {
       server = new KarmaServer(config, function doneCallback(exitCode) {
-        void finalize(exitCode);
+        doneCallbackSeen = true;
+        doneExitCode = exitCode;
+        armClassification("grace", runLooksComplete() ? 0 : lateEventGraceMs);
       });
     } catch (error) {
-      void finalize(undefined, error);
+      settle(undefined, error);
       return;
     }
 
@@ -409,15 +515,33 @@ export function runKarmaTestServer(
     });
     server.on("run_complete", (browsers, results) => {
       state.run = { browsers, results };
+      // The done callback's exit code and `results.exitCode` are the same
+      // number in Karma (`_close(results.exitCode)` is what eventually calls
+      // `done`), so a run described by `run_complete` can be classified with
+      // or without the callback.
+      if (doneExitCode === undefined) {
+        doneExitCode = results?.exitCode;
+      }
+      // ONLY for a single run. Karma emits `run_complete` from
+      // `lib/executor.js` after EVERY run, watch-mode runs included, but only
+      // a single run goes on to `_close` and therefore to the done callback:
+      // `gulp test --debug` sets `singleRun: false` and deliberately leaves
+      // the promise pending so the headed browser stays up for as long as the
+      // developer wants it. Arming there would tear that session down ~30 s in
+      // — the classification also reaps the Edge profile directory the live
+      // browser is running out of.
+      if (config?.singleRun !== false) {
+        armClassification("watchdog", doneCallbackTimeoutMs);
+      }
     });
 
     try {
       const startResult = server.start();
       Promise.resolve(startResult).catch((error) => {
-        void finalize(undefined, error);
+        settle(undefined, error);
       });
     } catch (error) {
-      void finalize(undefined, error);
+      settle(undefined, error);
     }
   });
 }

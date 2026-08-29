@@ -1,6 +1,7 @@
 import {
   Cartesian2,
   Cartesian3,
+  ClipSpaceConvention,
   combine,
   Ellipsoid,
   FeatureDetection,
@@ -41,6 +42,14 @@ describe("Scene/ScreenSpaceCameraController", function () {
     this.screenSpaceCameraController = undefined;
     this.cameraUnderground = false;
     this.globeHeight = 0.0;
+    // A zoom that targets a picked world position projects that position back
+    // to window coordinates, and SceneTransforms reads the clip-space
+    // convention from the scene's graphics context to pick the projection
+    // matrix. Every real Scene has a context; mock the WebGL default a
+    // Context reports so the Columbus-view and underground zoom paths can run.
+    this.context = {
+      clipSpaceConvention: ClipSpaceConvention.WEBGL,
+    };
   }
 
   function MockGlobe(ellipsoid) {

@@ -191,7 +191,8 @@
     "deploy-set-version": "gulp deploySetVersion",
     "prettier": "prettier --write \"**/*\"",
     "prettier-check": "prettier --check \"**/*\"",
-    "cspell": "npx cspell lint -c .vscode/cspell.json --unique --no-progress"
+    "cspell": "npx cspell lint -c .vscode/cspell.json --unique --no-progress",
+    "test-scene-node": "node --test packages/engine/Specs/Scene/PickingApiDocsSpec.mjs packages/engine/Specs/Scene/PickingMostDetailedSupportSpec.mjs packages/engine/Specs/Scene/ScreenSpaceCameraControllerSceneShapeSpec.mjs"
   },
   "engines": {
     "node": ">=22.0.0"

@@ -1211,6 +1211,13 @@ export async function test() {
       // specs" line; give this case its own exit code rather than gulp's
       // generic failure path. Real failures are unaffected — they still
       // throw below and take the exact exit-1 path they always have.
+      //
+      // This is the only assignment: the task returns immediately after it,
+      // and gulp-cli forces an exit code only on failure (`exit(1)` in
+      // `lib/versioned/^5.0.0/index.js`), letting a successful run exit with
+      // whatever `process.exitCode` holds. Nothing here re-asserts the code
+      // at process exit, because a later assignment would be a genuinely
+      // worse failure and must not be masked by this one.
       process.exitCode = 3;
       return;
     }
