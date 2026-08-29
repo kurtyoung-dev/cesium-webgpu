@@ -225,6 +225,19 @@ export default [
     },
   },
   {
+    // The .mjs specs under a package are pure-Node `node --test` drivers, not
+    // Karma/jasmine browser specs; they need the Node globals the block above
+    // deliberately does not grant.
+    files: ["packages/**/Specs/**/*.mjs"],
+    languageOptions: {
+      sourceType: "module",
+      ecmaVersion: 2023,
+      globals: {
+        ...globals.node,
+      },
+    },
+  },
+  {
     files: ["Specs/e2e/**/*"],
     languageOptions: {
       globals: {

@@ -52,6 +52,12 @@ import {
 } from "./ConsoleMirror.tsx";
 import { SettingsModal } from "./SettingsModal.tsx";
 import { LeftPanel, SettingsContext } from "./SettingsContext.ts";
+import {
+  RENDERER_URL_PARAM,
+  readRendererOverride,
+  resolveRendererMode,
+  type RendererMode,
+} from "./util/rendererSelection.ts";
 import { MetadataPopover } from "./MetadataPopover.tsx";
 import { SharePopover } from "./SharePopover.tsx";
 import { RendererToggle } from "./RendererToggle.tsx";
@@ -121,6 +127,36 @@ function AppBarButton({
 
 function App() {
   const { settings, updateSettings } = useContext(SettingsContext);
+
+  // A ?renderer= selection overrides the stored setting for this page load only
+  // and is never written back, so a pinned link or a headless sweep cannot
+  // silently reconfigure the visitor's editor. Read once at mount: later
+  // in-app navigation rewrites the query string for the gallery id, and the
+  // backend must not change underfoot when it does.
+  const [rendererOverride, setRendererOverride] = useState<RendererMode | null>(
+    () => readRendererOverride(),
+  );
+  const rendererMode = resolveRendererMode(
+    rendererOverride,
+    settings.rendererMode,
+  );
+
+  // Using the toggle retires the override and persists the choice, so the
+  // control stays authoritative even on a URL-pinned load. The parameter is
+  // dropped from the address bar in the same step; leaving it would resurrect
+  // the override on the next reload and make the URL disagree with the toggle.
+  const setRendererMode = useCallback(
+    (mode: RendererMode) => {
+      setRendererOverride(null);
+      updateSettings({ rendererMode: mode });
+      const url = new URL(window.location.href);
+      if (url.searchParams.has(RENDERER_URL_PARAM)) {
+        url.searchParams.delete(RENDERER_URL_PARAM);
+        window.history.replaceState({}, "", url.toString());
+      }
+    },
+    [updateSettings],
+  );
   const rightSideRef = useRef<ViewerConsoleStackRef>(null);
   const consoleCollapsedHeight = 33;
   const [consoleExpanded, setConsoleExpanded] = useState(false);
@@ -305,6 +341,12 @@ function App() {
     const standaloneUrl = `${getBaseUrl().replace("index.html", "")}standalone.html`;
 
     const url = new URL(standaloneUrl);
+    if (rendererOverride !== null) {
+      // Only propagate a URL-pinned mode. The stored setting already reaches the
+      // standalone page through same-origin localStorage, so forwarding it too
+      // would add a parameter that changes nothing.
+      url.searchParams.set(RENDERER_URL_PARAM, rendererOverride);
+    }
     const currentId = searchParams.get("id");
     if (currentId && !codeState.dirty) {
       url.searchParams.set("id", currentId);
@@ -528,7 +570,7 @@ function App() {
           Standalone <Icon href={windowPopout} />
         </Button>
         <Divider aria-orientation="vertical" />
-        <RendererToggle />
+        <RendererToggle mode={rendererMode} onChange={setRendererMode} />
         <div className="flex-spacer"></div>
         <SandcastlePopover
           disclosure={
@@ -670,7 +712,7 @@ function App() {
                   code={codeState.committedCode}
                   html={codeState.committedHtml}
                   runNumber={codeState.runNumber}
-                  rendererMode={settings.rendererMode}
+                  rendererMode={rendererMode}
                   showFps={settings.showFps}
                   highlightLine={() => {}}
                   appendConsole={appendConsole}

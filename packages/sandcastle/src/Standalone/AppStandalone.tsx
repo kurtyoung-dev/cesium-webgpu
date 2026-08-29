@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useRef, useState, useTransition } from "react";
+import {
+  useCallback,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+  useTransition,
+} from "react";
 import { useGalleryItemStore } from "../Gallery/GalleryItemStore";
 import { Bucket, BucketPlaceholder } from "../Bucket";
 import { Root } from "@stratakit/foundations";
@@ -21,9 +28,26 @@ import {
   defaultJsCode,
   useCodeState,
 } from "../util/useCodeState";
+import { SettingsContext } from "../SettingsContext";
+import {
+  readRendererOverride,
+  resolveRendererMode,
+} from "../util/rendererSelection";
 
 function AppStandalone() {
   const galleryItemStore = useGalleryItemStore({ withoutSearch: true });
+
+  // The standalone page has no renderer control of its own, so it takes the
+  // same answer the editor would: ?renderer= first, then the stored setting,
+  // then the product default. Read once at mount - this page never rewrites
+  // its own query string, but popstate reloads must not swap the backend under
+  // a running viewer either.
+  const { settings } = useContext(SettingsContext);
+  const [rendererOverride] = useState(() => readRendererOverride());
+  const rendererMode = resolveRendererMode(
+    rendererOverride,
+    settings.rendererMode,
+  );
   const loadFromUrl = galleryItemStore.useLoadFromUrl();
   const [initialized, setInitialized] = useState(false);
   const [isLoadPending, startLoadPending] = useTransition();
@@ -147,7 +171,7 @@ function AppStandalone() {
               code={codeState.committedCode}
               html={codeState.committedHtml}
               runNumber={codeState.runNumber}
-              rendererMode="webgl"
+              rendererMode={rendererMode}
               showFps={false}
               highlightLine={() => {
                 /* We don't have an editor to even highlight */

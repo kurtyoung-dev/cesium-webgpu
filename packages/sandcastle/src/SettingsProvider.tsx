@@ -6,8 +6,7 @@ import {
   SettingsContext,
 } from "./SettingsContext";
 import { useLocalStorage } from "react-use";
-
-const validRendererModes = ["webgl", "webgpu", "split"];
+import { isRendererMode } from "./util/rendererSelection";
 
 export function SettingsProvider({ children }: { children: ReactNode }) {
   const [settings, updateSettings] = useLocalStorage<Settings>(
@@ -44,9 +43,11 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
           fontSize = initialSettings.fontSize;
         }
 
+        // Sanitize on load: stored JSON is user-editable and can also carry a
+        // mode from a build that knew a name this one does not.
         let rendererMode =
           parsedValue.rendererMode ?? initialSettings.rendererMode;
-        if (!validRendererModes.includes(rendererMode)) {
+        if (!isRendererMode(rendererMode)) {
           rendererMode = initialSettings.rendererMode;
         }
 

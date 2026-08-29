@@ -160,6 +160,7 @@
     "test-build-infra": "node --test Tools/build-infra/wgsl-comment-strip.spec.mjs Tools/build-infra/empty-module-stub.spec.mjs Tools/ci-guards.spec.mjs scripts/__tests__/bundleVariantPlugin.spec.mjs scripts/__tests__/engineTypeCheck.spec.mjs scripts/__tests__/karmaTestRun.spec.mjs scripts/__tests__/prepareCesiumOutputDirectory.spec.mjs scripts/__tests__/shaderSourceToJavaScript.spec.mjs scripts/__tests__/specBundleFreshness.spec.mjs",
     "tsc-engine": "node scripts/engineTypeCheck.mjs",
     "test-model-webgpu": "node --test \"packages/engine/Specs/Renderer/WebGPU/*Spec.mjs\"",
+    "test-sandcastle": "node --test \"packages/sandcastle/Specs/*.spec.mjs\" Tools/visual-regression/sandcastle2-renderer-gate.spec.mjs",
     "test-landing-rules": "node --test Tools/landing-rules.spec.mjs Tools/pre-push-guard.spec.mjs Tools/verify-landing-compliance.spec.mjs",
     "test-tooling-catalog": "node --test Tools/inject-purpose-headers.spec.mjs Tools/generate-tooling-catalog.spec.mjs Tools/visual-regression/purpose-header-contract.spec.mjs",
     "generate-tooling-catalog": "node Tools/generate-tooling-catalog-launcher.cjs",

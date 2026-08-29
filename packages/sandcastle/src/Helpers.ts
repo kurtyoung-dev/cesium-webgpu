@@ -1,125 +1,125 @@
 import { deflate, inflate } from "pako";
 
 /**
- * Generate a preamble that patches Cesium.Viewer for WebGPU mode and enables FPS display.
+ * The name of the synchronous-construction helper the renderer preamble
+ * installs on `globalThis` and the code transform calls into.
+ */
+const SYNC_HELPER = "__sandcastleConstruct";
+
+/**
+ * The two constructors a Sandcastle demo can build a globe with, in the two
+ * spellings the gallery uses: fully qualified off the namespace import, and
+ * bare from a destructured `const { Viewer } = Cesium;`.
  *
- * For WebGPU: the code transform (see `transformCodeForRenderer`) rewrites
- * `new Cesium.Viewer(...)` calls into `await Cesium.Viewer.createAsync(...)`, and this
- * preamble patches the static `Viewer.createAsync` to inject `renderer: "webgpu"`. Since
- * sandcastle code runs as ES modules (which support top-level await), the async conversion
- * works transparently.
+ * The trailing `\(` is what keeps `new CustomViewer(` and `new CesiumWidgetFoo(`
+ * out of the match — only an exact constructor name immediately followed by its
+ * argument list is rewritten.
+ */
+const CONSTRUCTORS: { pattern: RegExp; expression: string }[] = [
+  { pattern: /new\s+Cesium\.Viewer\s*\(/g, expression: "Cesium.Viewer" },
+  { pattern: /new\s+Viewer\s*\(/g, expression: "Viewer" },
+  {
+    pattern: /new\s+Cesium\.CesiumWidget\s*\(/g,
+    expression: "Cesium.CesiumWidget",
+  },
+  { pattern: /new\s+CesiumWidget\s*\(/g, expression: "CesiumWidget" },
+];
+
+/**
+ * Generate the preamble that makes demo code run on the renderer Sandcastle
+ * actually selected, and enables the FPS display.
  *
- * For FPS: patches Viewer creation to enable `scene.debugShowFramesPerSecond` after init.
+ * WHY A PREAMBLE AT ALL. The synchronous constructors support WebGL only — the
+ * engine throws `DeveloperError` for any other `contextOptions.renderer`,
+ * because a WebGPU device can only be acquired asynchronously. So WebGPU needs
+ * `createAsync`, which the code transform rewrites demo call sites into, and
+ * this preamble is what injects the renderer into those factories. Demo source
+ * is never edited on disk.
  *
- * IMPORTANT — the module namespace is frozen: `await import("cesium")` yields an ES-module
- * namespace exotic object whose bindings are read-only. Assigning to a property of it (e.g.
- * `_Cesium.Viewer = proxy`) throws `TypeError: Cannot assign to property "Viewer" of
- * [object Module]` and aborts the whole demo module — that is why WebGPU demos would get stuck
- * on "Loading...". We therefore ONLY mutate the Viewer *class object* (its writable static
- * members such as `createAsync`), never the namespace binding, and route the synchronous
- * `new Cesium.Viewer(...)` FPS path through a code transform + a `globalThis` helper instead.
+ * WHY WEBGL GETS A PREAMBLE TOO. Without one, a demo that names a renderer in
+ * its own source outranks the selection: demos pinning `renderer: "webgpu"`
+ * render WebGPU even in the WebGL pane — which makes a split-screen comparison
+ * vacuous, since both panes then show the same backend — and a demo that pins it
+ * on a *synchronous* constructor throws outright. Forcing the selected renderer
+ * in both directions is what makes the toggle, the split view and the
+ * `?renderer=` parameter mean what they say.
+ *
+ * WHY IT IS EMITTED AS TWO LINES REGARDLESS OF MODE. The preamble is prepended
+ * to the demo body, so every line it occupies shifts the line numbers reported
+ * back to the editor for runtime errors. Two lines is what the no-op case has
+ * always cost, so the block is folded onto the second line and the offset stays
+ * both small and identical in every mode.
+ *
+ * IMPORTANT — the module namespace is frozen: `await import("cesium")` yields an
+ * ES-module namespace exotic object whose bindings are read-only. Assigning to a
+ * property of it (e.g. `_Cesium.Viewer = proxy`) throws `TypeError: Cannot
+ * assign to property "Viewer" of [object Module]` and aborts the whole demo
+ * module — that is why WebGPU demos would get stuck on "Loading...". We
+ * therefore ONLY mutate the constructor *class objects* (their writable static
+ * members such as `createAsync`), never the namespace binding, and route
+ * synchronous construction through a `globalThis` helper instead.
  */
 function buildRendererPreamble(
   renderer: "webgl" | "webgpu",
   showFps: boolean,
 ): string {
-  const parts: string[] = [];
+  const statements = [
+    `const _Cesium = await import("cesium");`,
+    `const _renderer = ${JSON.stringify(renderer)};`,
+    `const _showFps = ${showFps};`,
+    // Force the selection over whatever the demo asked for, rather than merging
+    // under it: a demo-supplied renderer is exactly the value that has to lose.
+    `const _withRenderer = (options) => ({ ...options, contextOptions: { ...(options && options.contextOptions), renderer: _renderer } });`,
+    // Demos keep their viewer in a local const, so nothing else can reach it.
+    // Publishing every construction gives devtools the same handle the page
+    // already gets for the Cesium namespace, and gives a headless check a way
+    // to ask which backend a demo actually ended up on.
+    `const _afterCreate = (instance) => { if (_showFps && instance && instance.scene) { instance.scene.debugShowFramesPerSecond = true; } (globalThis.__sandcastleInstances ??= []).push(instance); return instance; };`,
+    `const _patchCreateAsync = (ctor) => { if (!ctor || typeof ctor.createAsync !== "function") { return; } const _original = ctor.createAsync; ctor.createAsync = async function (container, options, onProgress) { return _afterCreate(await _original.call(ctor, container, _withRenderer(options), onProgress)); }; };`,
+    `_patchCreateAsync(_Cesium.Viewer);`,
+    `_patchCreateAsync(_Cesium.CesiumWidget);`,
+    `globalThis.${SYNC_HELPER} = function (Ctor, container, options, ...rest) { return _afterCreate(new Ctor(container, _withRenderer(options), ...rest)); };`,
+  ];
 
-  parts.push(`// --- Sandcastle Renderer Preamble ---`);
-
-  if (renderer === "webgpu" || showFps) {
-    parts.push(`
-{
-  const _Cesium = await import("cesium");
-  const _OriginalCreateAsync = _Cesium.Viewer.createAsync;
-  const _renderer = "${renderer}";
-  const _showFps = ${showFps};
-
-  // Patch the STATIC createAsync to inject the renderer option + FPS. Mutating a
-  // property of the Viewer class object is allowed; the module namespace itself is
-  // frozen, so we must never assign to _Cesium.Viewer (that throws and aborts the demo).
-  _Cesium.Viewer.createAsync = async function(container, options) {
-    options = options || {};
-    if (_renderer === "webgpu") {
-      options.contextOptions = { ...options.contextOptions, renderer: "webgpu" };
-    }
-    const viewer = await _OriginalCreateAsync.call(_Cesium.Viewer, container, options);
-    if (_showFps && viewer && viewer.scene) {
-      viewer.scene.debugShowFramesPerSecond = true;
-    }
-    return viewer;
-  };
-
-  // WebGL + FPS demos build the Viewer synchronously via "new Cesium.Viewer(...)".
-  // The code transform rewrites those call sites to this helper so we can enable the
-  // FPS counter without reassigning the frozen module namespace binding. (WebGPU sync
-  // sites are instead rewritten to "await Cesium.Viewer.createAsync(...)", handled above.)
-  if (_showFps && _renderer !== "webgpu") {
-    globalThis.__sandcastleFpsViewer = function(...args) {
-      const viewer = new _Cesium.Viewer(...args);
-      if (viewer && viewer.scene) {
-        viewer.scene.debugShowFramesPerSecond = true;
-      }
-      return viewer;
-    };
-  }
-}
-`);
-  }
-
-  parts.push(`// --- End Sandcastle Renderer Preamble ---`);
-  return parts.join("\n");
+  return `// --- Sandcastle Renderer Preamble ---
+{ ${statements.join(" ")} } /* --- End Sandcastle Renderer Preamble --- */`;
 }
 
 /**
- * Transform sandcastle code so the Viewer is built the way the active renderer needs.
+ * Transform sandcastle code so the viewer is built the way the active renderer
+ * needs, without editing the demo on disk.
  *
- * WebGPU (requires async construction):
- * - Replace `new Cesium.Viewer(` with `await Cesium.Viewer.createAsync(`
- * - Replace `new Viewer(` with `await Viewer.createAsync(` (for destructured imports)
+ * WebGPU requires asynchronous construction, so every synchronous call site
+ * becomes an awaited factory call:
+ * - `new Cesium.Viewer(` -> `await Cesium.Viewer.createAsync(`
+ * - `new Cesium.CesiumWidget(` -> `await Cesium.CesiumWidget.createAsync(`
+ * - and the bare, destructured spellings of both
  *
- * WebGL + FPS (stays synchronous, but must route through the preamble helper so the FPS
- * counter can be enabled without touching the frozen `cesium` module namespace):
- * - Replace `new Cesium.Viewer(` / `new Viewer(` with `globalThis.__sandcastleFpsViewer(`
+ * Demo bodies are injected as `<script type="module">`, so top-level `await` is
+ * legal by construction, including at column 0.
  *
- * When renderer is WebGL and FPS is off, the code is returned unchanged (byte-identical).
+ * WebGL stays synchronous but still routes through the preamble helper, so the
+ * selected renderer overrides any renderer the demo names for itself and the
+ * FPS counter can be enabled without touching the frozen module namespace:
+ * - `new Cesium.Viewer(` -> `globalThis.__sandcastleConstruct(Cesium.Viewer, `
  */
 function transformCodeForRenderer(
   code: string,
   renderer: "webgl" | "webgpu",
-  showFps: boolean,
 ): string {
-  if (renderer === "webgpu") {
-    // Match "new Cesium.Viewer(" — the most common pattern in sandcastle demos
-    let transformed = code.replace(
-      /new\s+Cesium\.Viewer\s*\(/g,
-      "await Cesium.Viewer.createAsync(",
-    );
-
-    // Also match bare "new Viewer(" for demos that destructure: const { Viewer } = Cesium;
-    // Be careful not to match things like "new CustomViewer(" — only standalone "Viewer"
+  let transformed = code;
+  for (const { pattern, expression } of CONSTRUCTORS) {
+    // These are module-level /g regexes reused across calls; `replace` resets
+    // lastIndex itself, but resetting here keeps that independent of it.
+    pattern.lastIndex = 0;
     transformed = transformed.replace(
-      /new\s+Viewer\s*\(/g,
-      "await Viewer.createAsync(",
+      pattern,
+      renderer === "webgpu"
+        ? `await ${expression}.createAsync(`
+        : `globalThis.${SYNC_HELPER}(${expression}, `,
     );
-
-    return transformed;
   }
-
-  if (showFps) {
-    // WebGL + FPS: wrap synchronous construction in the preamble helper.
-    let transformed = code.replace(
-      /new\s+Cesium\.Viewer\s*\(/g,
-      "globalThis.__sandcastleFpsViewer(",
-    );
-    transformed = transformed.replace(
-      /new\s+Viewer\s*\(/g,
-      "globalThis.__sandcastleFpsViewer(",
-    );
-    return transformed;
-  }
-
-  return code;
+  return transformed;
 }
 
 export function embedInSandcastleTemplate(
@@ -137,11 +137,11 @@ export function embedInSandcastleTemplate(
     imports += `import Sandcastle from "Sandcastle";\n`;
   }
 
-  // Build renderer preamble (patches Viewer for WebGPU / FPS)
+  // Build renderer preamble (forces the active renderer, enables FPS)
   const preamble = buildRendererPreamble(renderer, showFps);
 
-  // Transform synchronous Viewer construction as needed for the active renderer / FPS.
-  const processedCode = transformCodeForRenderer(code, renderer, showFps);
+  // Transform viewer construction as needed for the active renderer.
+  const processedCode = transformCodeForRenderer(code, renderer);
 
   return `${addExtraLine ? "\n" : ""}${preamble}
 ${processedCode}

@@ -108,6 +108,18 @@ corrected with it.
 The remaining ~30 medium and all low survivors are enumerated in §5 with their lane column reading
 QUEUED; they dispatch after Q-1…Q-10, batched by file so one Sol dispatch closes several small
 findings in the same module. C1's returning findings append here as a dated addendum.
+### SC2 LANDED - Batch 1281 (2026-08-29 ~04:15 machine clock): Sandcastle2 can select its backend by URL, everywhere
+
+| | Row | Disposition |
+|---|---|---|
+| Q-94b | FIXED (Edge-pending: the 338-id certification sweep, 3e-D J8, after the Sandcastle2 app is rebuilt) | `?renderer=webgl|webgpu` with URL > stored > DEFAULT_RENDERER_MODE, invalid ignored with a warn (empty value = absent, silent), never persisted; the toggle shows the running backend and using it retires the override; forwarded to the standalone route only when an override is live (`src/util/rendererSelection.ts` + 14 node tests) |
+| Q-94c | FIXED | standalone/share route wrapped in SettingsProvider and resolving identically |
+| Q-94d | FIXED | Helpers.ts transforms `new Cesium.CesiumWidget(` too (createAsync confirmed at CesiumWidget.js ~777-812), both spellings; the WebGL pane emits its own 2-line preamble forcing renderer webgl (2 lines in every mode/FPS combo); 338/338 parse in both modes reproduced by the reviewer; the three webgpu-* catalog demos read ?renderer= from the bucket iframe (no query string) so no collision |
+| Q-94a | ONE-TOKEN FLIP, not flipped | DEFAULT_RENDERER_MODE is a named constant; the toggle's '(default)' marker derives from it |
+| SC2 gate (ii) | LANDED, unrun | `sandcastle-smoke.mjs --sandcastle2` + `lib/sandcastle2-renderer-gate.mjs`: every live context must report the requested renderer (via GraphicsContext.registry in the bucket frame) + a frameNumber gate (main had none); NO_VIEWER_IDS = [timeline] INVERTS both scorers (C2a re-derives the list from the demo bodies; C2b proves inversion not exemption); evaluateWithDeadline 20 s -> a distinct TIMEOUT outcome (D2a-d); dry-run over 338 ids exit 0; `npm run test-sandcastle` added |
+| LANDING | gates | apply --3way with two merges (package.json against INSTR2's test-build-infra widening; DEBUGGING_GUIDE against INSTR2's --serve-built section), zero conflicts; sandcastle tsc 0; 56/56 across the three specs; eslint 0; prettier 0; C16 0; catalog regenerated after staging (+2 rows as the reviewer said). The Sandcastle2 APP is NOT rebuilt (Edge 3e-C running) - `npm run build-sandcastle` with the post-tranche rebuild |
+| SC2-D2 | PENDING MAINTAINER | landed WITH the single-mode force (reviewer-recommended); the pane marker is not built; confinement costs ~10 lines if preferred |
+
 ### NIGHTFADE LANDED - Batch 1280 (2026-08-29 ~04:00 machine clock): the night fade becomes texels per screen pixel, per fragment
 
 | | Row | Disposition |

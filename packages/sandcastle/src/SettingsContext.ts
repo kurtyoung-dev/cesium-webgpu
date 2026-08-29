@@ -1,4 +1,8 @@
 import { createContext } from "react";
+import {
+  DEFAULT_RENDERER_MODE,
+  type RendererMode,
+} from "./util/rendererSelection";
 
 export type AvailableFontId =
   "droid-sans" | "fira-code" | "cascadia-code" | "jetbrains-mono";
@@ -31,7 +35,13 @@ export const availableFonts: Record<AvailableFontId, FontDefinition> = {
 };
 
 export type LeftPanel = "editor" | "gallery";
-export type RendererMode = "webgl" | "webgpu" | "split";
+
+// The renderer vocabulary and the product default live in a leaf module so the
+// URL/settings precedence rules can be exercised without pulling React into the
+// test bundle. They are re-exported here because the settings context is where
+// the rest of the app already looks for them.
+export type { RendererMode };
+export { DEFAULT_RENDERER_MODE };
 
 export type Settings = {
   theme: "dark" | "light";
@@ -51,7 +61,7 @@ export const initialSettings: Settings = {
   fontLigatures: false,
   defaultPanel: "gallery",
   embeddingSearch: true,
-  rendererMode: "webgl",
+  rendererMode: DEFAULT_RENDERER_MODE,
   showFps: false,
 };
 
