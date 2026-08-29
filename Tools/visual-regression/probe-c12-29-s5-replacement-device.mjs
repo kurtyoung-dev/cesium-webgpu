@@ -28,6 +28,8 @@ import {
   C12_29_S5_REPLACEMENT_POLICY_EXTERNALS,
   C12_29_S5_REPLACEMENT_POLICY_FILES,
   C12_29_S5_REPLACEMENT_POLICY_ROOTS,
+  C12_29_S5_REPLACEMENT_PREFLIGHT_REFUSAL_SCHEMA,
+  C12_29_S5_REPLACEMENT_PREFLIGHT_REFUSAL_RECEIPT_SCHEMA,
   C12_29_S5_REPLACEMENT_PROVENANCE_SCHEMA,
   C12_29_S5_REPLACEMENT_RUNNING_SCHEMA,
   C12_29_S5_REPLACEMENT_RUNTIME_DIAGNOSTICS_SCHEMA,
@@ -47,6 +49,7 @@ import {
   validateC1229S5ReplacementFinalArtifact,
   validateC1229S5ReplacementPageProgress,
   validateC1229S5ReplacementPreflightProvenance,
+  validateC1229S5ReplacementPreflightRefusalArtifact,
 } from "./lib/c12-29-s5-replacement-device-gate.mjs";
 import {
   C12_29_S5_REPLACEMENT_CAPTURE_TRANSACTION_SCHEMA,
@@ -134,6 +137,19 @@ export function createC1229S5ReplacementArtifactPaths(
     latest: path.join(directory, "latest.json"),
     lock: path.join(directory, "active.lock.json"),
     finalizing: path.join(directory, "finalizing.receipt.json"),
+    // Q-116 — a run whose PREFLIGHT itself is invalid (source-identity
+    // drift, an unclosed policy boundary, ...) never legitimately begins:
+    // `beginC1229S5ReplacementEvidenceRun` requires a VALID preflight before
+    // it hands out `active.lock.json`/`latest.json` authority, by design (an
+    // invalid preflight must not bind the canonical lock to a preflightSha256
+    // it does not honestly certify). These two paths are the write-once,
+    // runId-scoped destination for that case: no CAS contention with the
+    // lock/latest chain above, because nothing above was ever claimed.
+    refusal: path.join(directory, `${runId}.preflight-refusal.json`),
+    refusalReceipt: path.join(
+      directory,
+      `${runId}.preflight-refusal.receipt.json`,
+    ),
     receipts: Object.freeze({
       priorLatest: path.join(directory, `${runId}.prior-latest.receipt`),
       runningRelease: path.join(directory, `${runId}.running.release.receipt`),
@@ -3208,13 +3224,135 @@ async function collectProvenanceStart(
   };
   provenance.preflightSha256 =
     deriveC1229S5ReplacementPreflightSha256(provenance);
+  // Q-116 — this used to `throw` here on an invalid preflight (source-
+  // identity drift, an unclosed policy boundary, a served/local mismatch,
+  // ...). The caller had not yet acquired the RUNNING lock at that point
+  // (`beginC1229S5ReplacementEvidenceRun` runs AFTER this returns), so the
+  // throw reached the generic catch-all with `ownership` still `undefined`
+  // and its `if (!ownership || ...) throw error;` re-threw uncaught — a
+  // legitimate structural refusal with no published artifact. Returning the
+  // verdict instead of throwing lets the caller build and WRITE a refusal
+  // artifact for this exact case (`buildC1229S5ReplacementPreflightRefusalArtifact`
+  // / `writeC1229S5ReplacementPreflightRefusal`, below) rather than crashing.
   const valid = validateC1229S5ReplacementPreflightProvenance(provenance);
-  if (!valid.ok) {
+  return { provenance, valid };
+}
+
+/**
+ * Builds the structured artifact for a preflight that refused before any
+ * RUNNING lock existed. Pure and synchronous: everything it reads was
+ * already collected by `collectProvenanceStart`, so this is unit-testable
+ * against a hand-built `provenance`/`valid` pair with no filesystem, network,
+ * or browser (Q-116).
+ *
+ * @param {string} runId
+ * @param {object} provenance The (invalid) provenance `collectProvenanceStart` collected.
+ * @param {{ok: boolean, reasons: Array<string>}} valid Its validation verdict.
+ * @returns {object} A self-describing STRUCTURAL artifact — reasons, and the
+ *   identity deltas / build-vs-tree tuples the reasons are about.
+ */
+export function buildC1229S5ReplacementPreflightRefusalArtifact(
+  runId,
+  provenance,
+  valid,
+) {
+  return {
+    schema: C12_29_S5_REPLACEMENT_PREFLIGHT_REFUSAL_SCHEMA,
+    runId,
+    status: "STRUCTURAL",
+    incomplete: true,
+    exitCode: exitCodeForC1229S5ReplacementStatus("STRUCTURAL"),
+    // Q-116 (N7, station-3 review) — non-reproducible by construction, so a
+    // second build+write attempt under the SAME runId produces different
+    // bytes and `writeOnceExact` throws (the uncaught-crash shape this row
+    // removed, resurfacing at a narrower seam). Unreachable in production
+    // today: `runId = options.runId ?? randomUUID()` in
+    // `runC1229S5ReplacementDeviceProbe`, and the CLI never passes
+    // `--run-id`, so no caller can retry under a fixed runId. Latent, not
+    // live — noted here rather than dropped, since the timestamp has real
+    // diagnostic value for a human reading the artifact later.
+    refusedAt: new Date().toISOString(),
+    reasons: [...(valid?.reasons ?? [])],
+    gitHead: provenance?.gitHead ?? null,
+    preflightSha256: provenance?.preflightSha256 ?? null,
+    // The build/tree tuples: each entry names one source file's current
+    // on-disk identity next to what the served build's source map embeds.
+    buildSourceIdentity: provenance?.buildSourceIdentity ?? null,
+    policyBoundary: provenance?.policyBoundary
+      ? { closed: provenance.policyBoundary.closed }
+      : null,
+    sourceBoundaryStart: provenance?.sourceBoundaryStart
+      ? { allExact: provenance.sourceBoundaryStart.allExact }
+      : null,
+    buildEntryMatchesServed: provenance?.buildEntryMatchesServed ?? null,
+    servedMatchesLocal: provenance?.servedMatchesLocal ?? null,
+  };
+}
+
+/**
+ * Writes the preflight-refusal artifact and its receipt to their write-once,
+ * runId-scoped paths. Neither path participates in the lock/`latest.json` CAS
+ * chain (no ownership was ever claimed for this run), so this needs no
+ * `ownership` object and touches no shared state another run could contend
+ * for (Q-116).
+ *
+ * @param {object} paths From {@link createC1229S5ReplacementArtifactPaths}.
+ * @param {object} artifact From {@link buildC1229S5ReplacementPreflightRefusalArtifact}.
+ * @param {object} [operations] Filesystem operations (test seam).
+ * @returns {object} Shaped like {@link finalizeC1229S5ReplacementEvidence}'s
+ *   return value so callers (`runC1229S5ReplacementDeviceProbe`'s own CLI
+ *   reporter) can read `publication.archive`/`publication.sha256` uniformly.
+ */
+export function writeC1229S5ReplacementPreflightRefusal(
+  paths,
+  artifact,
+  operations = fs,
+) {
+  // Q-116 (N4, station-3 review) — dense-cost refuses to publish an invalid
+  // final artifact (`validateC1229S5DenseFinalArtifact`); this write-once
+  // path had no equivalent, so a malformed artifact would be permanently
+  // baked at its path with nothing to catch it. Refuse BEFORE any write.
+  const validity = validateC1229S5ReplacementPreflightRefusalArtifact(artifact);
+  if (!validity.ok) {
     throw new Error(
-      `replacement-device preflight provenance failed: ${valid.reasons.join("; ")}`,
+      `refusing invalid preflight refusal artifact: ${validity.reasons.join("; ")}`,
     );
   }
-  return provenance;
+  operations.mkdirSync(paths.directory, { recursive: true });
+  const artifactBytes = jsonBytes(artifact);
+  writeOnceExact(
+    paths.refusal,
+    artifactBytes,
+    "replacement-device preflight refusal artifact",
+    operations,
+  );
+  const receipt = {
+    schema: C12_29_S5_REPLACEMENT_PREFLIGHT_REFUSAL_RECEIPT_SCHEMA,
+    runId: artifact.runId,
+    status: artifact.status,
+    exitCode: artifact.exitCode,
+    reasons: artifact.reasons,
+    archive: paths.refusal,
+    archiveByteLength: artifactBytes.byteLength,
+    archiveSha256: sha256(artifactBytes),
+  };
+  const receiptBytes = jsonBytes(receipt);
+  writeOnceExact(
+    paths.refusalReceipt,
+    receiptBytes,
+    "replacement-device preflight refusal receipt",
+    operations,
+  );
+  return {
+    archive: paths.refusal,
+    latest: null,
+    byteLength: artifactBytes.byteLength,
+    sha256: sha256(artifactBytes),
+    images: [],
+    receipt: paths.refusalReceipt,
+    receiptByteLength: receiptBytes.byteLength,
+    receiptSha256: sha256(receiptBytes),
+  };
 }
 
 function finishProvenance(provenance) {
@@ -3896,6 +4034,29 @@ export async function runC1229S5ReplacementDeviceProbe(options = {}) {
   const launchBrowser =
     options.launchBrowser ??
     ((launchOptions) => chromium.launch(launchOptions));
+  // Q-116 — narrow test-only injection seam, mirroring `options.launchBrowser`
+  // above and the `options.buildSourceMapPath` precedent in the multiview
+  // probe's Q-99 fix. `collectProvenanceStart` reads the real served build,
+  // the real source tree and (via `servedIdentity`) a real running dev
+  // server, none of which a unit test controls; overriding it lets a test
+  // exercise the refuse-vs-proceed branch below deterministically — with a
+  // fabricated drifted or matching `{provenance, valid}` — without any of
+  // those dependencies. Defaults to the real function, so every production
+  // caller (including this file's own CLI `main()`) is unaffected.
+  const collectProvenanceStartFn =
+    options.collectProvenanceStart ?? collectProvenanceStart;
+  // Q-116 — same rationale, for the step immediately after: proving the
+  // POSITIVE path ("a matching preflight reaches the launch call") needs
+  // `beginC1229S5ReplacementEvidenceRun` to succeed, which needs a provenance
+  // object satisfying every field `validateC1229S5ReplacementPreflightProvenance`
+  // checks (`localStart`/`served`/`sourceBoundaryStart`/... in the shape
+  // `collectLocalFiles`/`servedIdentity`/a real dev server actually produce).
+  // Overriding this narrow seam lets a test assert the CONTROL FLOW this fix
+  // changes — refuse-vs-proceed — without also having to reconstruct that
+  // unrelated, already-covered lock-acquisition machinery byte for byte.
+  const beginEvidenceRunFn =
+    options.beginC1229S5ReplacementEvidenceRun ??
+    beginC1229S5ReplacementEvidenceRun;
   const runId = options.runId ?? randomUUID();
   const paths = createC1229S5ReplacementArtifactPaths(
     runId,
@@ -3923,17 +4084,39 @@ export async function runC1229S5ReplacementDeviceProbe(options = {}) {
       headless: process.env.PROBE_HEADED !== "1",
       args: [C12_29_S5_REPLACEMENT_CONFIG.launchFlag],
     };
-    provenance = await collectProvenanceStart(
+    const collected = await collectProvenanceStartFn(
       baseIdentity,
       launch,
       captureSourceProof,
     );
-    ownership = beginC1229S5ReplacementEvidenceRun(
-      paths,
-      runId,
-      provenance,
-      operations,
-    );
+    if (!collected.valid.ok) {
+      // Q-116 — the preflight itself refused: no run legitimately began
+      // (see the comment on `collectProvenanceStart`'s return), so there is
+      // no RUNNING lock to acquire or release for this exit and no browser
+      // is launched. Write the refusal artifact + receipt and return —
+      // `browser` stays `undefined`, so the `finally` below is a no-op, and
+      // this `return` bypasses the generic `catch` entirely rather than
+      // routing an invalid-preflight refusal through machinery built for
+      // errors that occur AFTER a lock exists.
+      const refusalArtifact = buildC1229S5ReplacementPreflightRefusalArtifact(
+        runId,
+        collected.provenance,
+        collected.valid,
+      );
+      const publication = writeC1229S5ReplacementPreflightRefusal(
+        paths,
+        refusalArtifact,
+        operations,
+      );
+      return {
+        artifact: refusalArtifact,
+        publication,
+        paths,
+        refused: true,
+      };
+    }
+    provenance = collected.provenance;
+    ownership = beginEvidenceRunFn(paths, runId, provenance, operations);
     const resumed = resumeC1229S5ReplacementEvidenceCandidate(
       paths,
       ownership,

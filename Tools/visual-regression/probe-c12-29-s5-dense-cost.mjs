@@ -305,12 +305,64 @@ function sameProvenance(start, end) {
   );
 }
 
+// Q-117 — this probe's `--terrain-publication`/`--nasa-publication` manifests
+// have NEVER existed anywhere in this fork's history: `git log --all` over
+// `Tools/visual-regression/output/c12-29-s5-terrain-selection` and
+// `.../c12-29-s5-svs-footprint`, and `git log --all -S` over the schema
+// strings below, find only the SOURCE commits that define the schema
+// constants — never a committed manifest or evidence JSON. That is expected,
+// not a regression: `output/` is gitignored probe-owned scratch space
+// (`visual-evidence-library.mjs`'s own header), and the certified publication
+// this probe consumes is a distinct, EXTERNAL artifact produced by archiving
+// a prerequisite probe's run into the content-addressed evidence library —
+// per `migration_doc/DEBUGGING_GUIDE.md`, this probe is fleet-contract RED
+// with "zero banked runs", so no such publication has ever been produced in
+// this lineage either. Fabricating one is out of scope (Q-117's own
+// constraint) and impossible to do honestly: the schema requires a real
+// PASS/exitCode 0/certificationEligible run this worker cannot produce
+// (browser + a current build + a live server). The fix is this function's own
+// job: refuse with the exact acquisition step, not a bare "is required".
+function c1229S5DenseAcquisitionStep(expected) {
+  return (
+    `to produce a "${expected.kind}" publication for --${expected.kind}-publication:\n` +
+    `  1) node Tools/visual-regression/probe-${expected.producer}.mjs ` +
+    `(writes its own run artifact under Tools/visual-regression/output/${expected.producer}/, ` +
+    `requires a running loopback server and a current Build/CesiumUnminified)\n` +
+    "  2) node Tools/visual-regression/visual-evidence-library.mjs archive " +
+    `--producer ${expected.producer} --run-id <the run's runId> ` +
+    "--status PASS --exit-code 0 " +
+    "--artifact <path to that run's final JSON artifact> " +
+    "(PASS/0 are literal; --status and --exit-code are required by " +
+    "validateCommandOptions and decide certificationEligible — omitting " +
+    "either makes the command usage-error and, even if run with other " +
+    "values, produces a manifest this same preflight would refuse. Writes " +
+    "manifest.json into the content-addressed evidence library; " +
+    "see visual-evidence-library.mjs --help for --library-root)\n" +
+    `  3) pass that manifest.json as --${expected.kind}-publication`
+  );
+}
+
 function resolvePublicationArtifact(manifestPath, expected) {
   if (!manifestPath)
     throw new Error(
-      `[structural] ${expected.kind} publication manifest is required`,
+      `[structural] ${expected.kind} publication manifest is required — ` +
+        `it is an external, never-generated-in-this-tree artifact (Q-117), ` +
+        `${c1229S5DenseAcquisitionStep(expected)}`,
     );
-  const manifestBytes = fs.readFileSync(manifestPath);
+  let manifestBytes;
+  try {
+    manifestBytes = fs.readFileSync(manifestPath);
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      throw new Error(
+        `[structural] ${expected.kind} publication manifest does not exist ` +
+          `at ${manifestPath} — it is an external, never-generated-in-this-tree ` +
+          `artifact (Q-117), ${c1229S5DenseAcquisitionStep(expected)}`,
+        { cause: error },
+      );
+    }
+    throw error;
+  }
   const manifest = JSON.parse(manifestBytes.toString("utf8"));
   if (
     manifest.schema !== "cesium-visual-evidence-publication/v2" ||

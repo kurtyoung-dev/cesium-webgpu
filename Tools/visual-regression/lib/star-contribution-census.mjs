@@ -47,6 +47,131 @@ export const DIFFERENCE_CENSUS_OPTIONS = Object.freeze({
   collectSources: true,
 });
 
+// ─────────────────── STAR REACHABILITY DIFFERENCE-PEAK FLOOR (Q-115) ────────
+//
+// `probe-sky-twilight-range.mjs`'s STAR REACHABILITY control reads the box
+// census's `peakMax` at the control lane's target star (`differencePeak` in
+// the probe's console output). Before this floor existed, an Edge executor
+// graded that number by eye against an ad hoc "8", reverse-engineered from
+// the probe's OWN unrelated whole-frame `addedPixels()` metric (threshold 24
+// on an RGB CHANNEL SUM, which a roughly-achromatic star clears only once its
+// Rec.709 LUMA is around 24/3 = 8) rather than from this control's own
+// framing. That number does not belong here: the control's box census and the
+// whole-frame added-pixel count measure the same star through two different
+// arithmetic paths that happen to share no derivation.
+//
+// REPAIRED post-B1-review (station-3 pass 1). The first version of this floor
+// re-applied atmospheric extinction under a second name. What Node CAN
+// compute and what it CANNOT are kept strictly separate below:
+//
+//   1. STAR_PEAK_LUMA_AT_CONTROL_ELEVATION (21.2) — the control lane's target
+//      star (vmag 2.14, camera 500 m, sun -20 deg, target elevation 30.73
+//      deg), analytic PSF peak AFTER the shipped per-star atmospheric
+//      (Bouguer/airmass) extinction, BEFORE the sky shell composites over it.
+//      Independently reproduced twice: the Q-62 review pass's root-cause
+//      script (`peak luma 21.20`) and `sky-shell-star-occlusion.spec.mjs`'s
+//      shipped-source chain (`computeAtmosphereExtinction` + `StarFieldMath`
+//      + `BrightStarCatalog` at this exact geometry), both landing at
+//      21.1969-21.20. THE EXTINCTION IS ALREADY INSIDE THIS NUMBER: the
+//      computed ratio at this elevation is 0.41544 (51.023 un-extinguished ->
+//      21.1969), not the header's rounded "roughly a third" (0.3333) — and
+//      either way, it must not be applied a second time to reach the floor.
+//      An earlier version of this file did exactly that under the name
+//      `RENDER_TIME_RESIDUAL_FACTOR`, borrowing the header's rounded prose
+//      figure as if it were a second, independent quantity. At the CORRECT
+//      (computed) extinction ratio the resulting floor would have been 7.31,
+//      which the tranche's own banked measurement of 6.07 fails — the same
+//      class of false-fail this row exists to remove, just smaller.
+//   2. STAR_REACHABILITY_RESIDUAL_FRACTION (0.14) — a DECLARED SAFETY FACTOR,
+//      not a physical quantity. What actually separates the analytic peak
+//      above from what a real render puts on screen is sub-pixel quad
+//      coverage / antialiasing at the star's screen footprint — a rasterizer
+//      quantity Node cannot compute without a GPU, which is exactly why this
+//      claim needs a browser probe. The only render-side data point this
+//      fork has ever banked is tranche 3e-C's `differencePeak` of 6.07 on
+//      BOTH backends, i.e. an observed fraction of 6.07 / 21.1969 = 0.2864 of
+//      the analytic peak. That single observation is treated as an UPPER
+//      BOUND the floor must clear, never as the source of the floor's
+//      magnitude: 0.14 is roughly half of 0.2864, so a correct fix whose
+//      antialiasing differs — a different driver, a different MSAA/resolve
+//      path — has headroom to land anywhere from 0 up to about double the
+//      one banked observation before this floor would false-fail it.
+//   3. QUANTIZATION_HALF_CODE (0.5) — one 8-bit sample's rounding error.
+//
+//   floor = 21.2 * 0.14 - 0.5 = 2.968 - 0.5 = 2.468 — well below the single
+//   banked observation (6.07) and well above both the fully-erased pre-fix
+//   state (0.0) and the modelled shell-composite residual (~0.095,
+//   `sky-shell-star-occlusion.spec.mjs`'s "the shell composite is what the
+//   difference census sees"). No fitted assertion is made about this floor's
+//   distance from any single measurement — that was the B1 review's finding
+//   against the first version of this derivation, and the replacement
+//   assertions (in `sky-shell-star-occlusion.spec.mjs`) check only the class
+//   separation and the stated headroom, never a specific gap to 6.07.
+
+/** @see the derivation block above. */
+export const STAR_PEAK_LUMA_AT_CONTROL_ELEVATION = 21.2;
+/** @see the derivation block above — a declared safety factor, not physics. */
+export const STAR_REACHABILITY_RESIDUAL_FRACTION = 0.14;
+/** @see the derivation block above. */
+export const QUANTIZATION_HALF_CODE = 0.5;
+
+/**
+ * Derives the STAR REACHABILITY control's `differencePeak` floor (Q-115,
+ * repaired post-B1-review). Pure function of its inputs — every default is a
+ * named, documented constant above, never the probe's own measured value —
+ * so it can be unit-tested against the pre-fix (0.0), the modelled shell
+ * composite (~0.095), and the banked post-fix (6.07) measurements without a
+ * browser.
+ *
+ * @param {object} [inputs] Override any term for testing; all default to the
+ *   derived-from-the-header constants above.
+ * @param {number} [inputs.starPeakLuma] Analytic, atmosphere-extinguished
+ *   peak luma of the control lane's target star (extinction is already
+ *   inside this value — do not multiply it by an extinction ratio again).
+ * @param {number} [inputs.residualFraction] Declared safety factor applied to
+ *   `starPeakLuma`; NOT a physical quantity — see the derivation block.
+ * @param {number} [inputs.quantizationHalfCode] 8-bit rounding-error margin.
+ * @returns {number} The `differencePeak` floor, in 8-bit luma codes.
+ */
+export function deriveStarReachabilityFloor({
+  starPeakLuma = STAR_PEAK_LUMA_AT_CONTROL_ELEVATION,
+  residualFraction = STAR_REACHABILITY_RESIDUAL_FRACTION,
+  quantizationHalfCode = QUANTIZATION_HALF_CODE,
+} = {}) {
+  return starPeakLuma * residualFraction - quantizationHalfCode;
+}
+
+/**
+ * The floor at its documented defaults, precomputed so callers (and their
+ * console output) do not each re-derive it.
+ */
+export const STAR_REACHABILITY_DIFFERENCE_PEAK_FLOOR =
+  deriveStarReachabilityFloor();
+
+/**
+ * Whether a difference census resolved the star field's OWN contribution AT
+ * the target: available, positionally resolved within tolerance, AND its
+ * peak clears the Q-115 floor. Extracted so the probe's gate and its unit
+ * tests share one boolean instead of the probe re-deriving it inline.
+ *
+ * @param {object|null} census A `censusAtTargetDifference` result.
+ * @param {number} [floor] Difference-peak floor; defaults to
+ *   {@link STAR_REACHABILITY_DIFFERENCE_PEAK_FLOOR}.
+ * @returns {boolean} True only when every condition holds.
+ */
+export function isStarReachable(
+  census,
+  floor = STAR_REACHABILITY_DIFFERENCE_PEAK_FLOOR,
+) {
+  return (
+    !!census &&
+    census.available === true &&
+    census.resolvedAtTarget === true &&
+    Number.isFinite(census.peakMax) &&
+    census.peakMax >= floor
+  );
+}
+
 /**
  * Rec.709 luma of an RGBA box, in the stored 8-bit domain the detector expects.
  *

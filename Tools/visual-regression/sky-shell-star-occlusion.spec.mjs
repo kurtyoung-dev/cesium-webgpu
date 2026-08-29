@@ -50,6 +50,8 @@
 
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -849,9 +851,18 @@ test("PARITY MUTATION: a divergent WGSL ramp is caught by the same grid", () => 
 // The probe itself cannot run here (it launches a browser at module load), so
 // the claim it makes is unit-tested through the shared module both import.
 
+const STAR_CENSUS_REL =
+  "Tools/visual-regression/lib/star-contribution-census.mjs";
+
 const {
   DIFFERENCE_CENSUS_OPTIONS,
   STAR_AIM_TOLERANCE_PX,
+  STAR_PEAK_LUMA_AT_CONTROL_ELEVATION,
+  STAR_REACHABILITY_RESIDUAL_FRACTION,
+  QUANTIZATION_HALF_CODE,
+  STAR_REACHABILITY_DIFFERENCE_PEAK_FLOOR,
+  deriveStarReachabilityFloor,
+  isStarReachable,
   censusAtTarget,
   censusAtTargetDifference,
 } = await import("./lib/star-contribution-census.mjs");
@@ -960,6 +971,287 @@ test("PROBE CONTROL: the probe consumes the shared module, not a private copy", 
   assert.ok(
     !/function censusAtTargetDifference/.test(probe),
     "the probe must not carry its own copy of the detector wrapper",
+  );
+});
+
+// ═════════ 4b. Q-115: the STAR REACHABILITY differencePeak floor ════════════
+//
+// The old reachability path had no floor of its own on `differencePeak`; an
+// executor graded it by eye against "8", reverse-engineered from the probe's
+// unrelated whole-frame `addedPixels()` metric. This section unit-tests the
+// REPLACEMENT floor's arithmetic, its rejection of the pre-fix measurement,
+// its acceptance (with margin) of the post-fix measurement, and — via a
+// MUTATION — that removing the peak check from the gate is something these
+// tests would actually catch.
+
+test("Q-115: the derived floor matches the framing's own documented arithmetic", () => {
+  // Recomputed independently of the module's own expression so this is a
+  // real check on the FORMULA, not a restatement of it.
+  assert.equal(STAR_PEAK_LUMA_AT_CONTROL_ELEVATION, 21.2);
+  assert.equal(STAR_REACHABILITY_RESIDUAL_FRACTION, 0.14);
+  assert.equal(QUANTIZATION_HALF_CODE, 0.5);
+  const expected = 21.2 * 0.14 - 0.5;
+  assert.ok(
+    Math.abs(deriveStarReachabilityFloor() - expected) < 1e-9,
+    `derived floor ${deriveStarReachabilityFloor()} != independently computed ${expected}`,
+  );
+  assert.ok(
+    Math.abs(STAR_REACHABILITY_DIFFERENCE_PEAK_FLOOR - expected) < 1e-9,
+    "the precomputed export must match the same defaults",
+  );
+});
+
+// B2 (station-3 review, pass 1) — the residual fraction is a DECLARED SAFETY
+// FACTOR under the single banked render observation, never derived from it
+// and never pinned to a specific gap from it. An earlier version of this
+// floor re-applied the framing's own extinction ratio under a second name
+// (`RENDER_TIME_RESIDUAL_FACTOR = 1/3`) — extinction is already inside
+// `STAR_PEAK_LUMA_AT_CONTROL_ELEVATION` (the computed ratio at this
+// elevation is 0.41544, from the shipped `computeAtmosphereExtinction` +
+// `StarFieldVS.glsl` airmass law, re-run below) — and at that CORRECT ratio
+// the floor would have been 7.31, which the tranche's own banked
+// `differencePeak` of 6.07 FAILS. The `Math.abs(floor - 6) < 0.5` and
+// `margin > 0.3` assertions this test replaces pinned the row's own "close
+// to 6" instruction and the tranche's own single measurement in place as
+// contract — the exact Principle-10 trap this review found.
+test("Q-115 (B2): the residual fraction is materially below the single banked observation, and the floor has headroom by construction", () => {
+  const spacePeakLuma = 51.023; // analytic PSF peak with NO extinction applied
+  const computedExtinctionRatio = 21.1969 / spacePeakLuma;
+  assert.ok(
+    Math.abs(computedExtinctionRatio - 0.41544) < 1e-3,
+    `computed extinction ratio drifted: ${computedExtinctionRatio}`,
+  );
+  // The floor a WRONG re-application of that computed ratio would give —
+  // proof, not assertion, that the honest arithmetic fails the single banked
+  // measurement it must admit, which is why this floor is a stated safety
+  // factor instead.
+  const wrongDoubleExtinctionFloor = 21.1969 * computedExtinctionRatio - 1.5;
+  assert.ok(
+    wrongDoubleExtinctionFloor > 6.07,
+    `expected the double-extinction floor (${wrongDoubleExtinctionFloor.toFixed(2)}) ` +
+      "to exceed the banked measurement (6.07) — if it does not, the case " +
+      "for treating the residual as a safety factor rather than physics " +
+      "no longer holds and this test itself needs review",
+  );
+
+  const bankedObservationFraction = 6.07 / 21.1969;
+  assert.ok(
+    Math.abs(bankedObservationFraction - 0.2864) < 1e-3,
+    `banked observation fraction drifted: ${bankedObservationFraction}`,
+  );
+  assert.ok(
+    STAR_REACHABILITY_RESIDUAL_FRACTION < bankedObservationFraction,
+    `the residual fraction (${STAR_REACHABILITY_RESIDUAL_FRACTION}) must sit ` +
+      "materially below the single banked observation " +
+      `(${bankedObservationFraction.toFixed(4)}), or a correct fix with ` +
+      "different antialiasing could false-fail exactly as the pre-review " +
+      "1/3 value would have",
+  );
+
+  // Headroom by construction: the floor sits at or below HALF the single
+  // banked observation, so it cannot be a fit to that observation and has
+  // room to admit a correct fix whose residual differs materially from it.
+  assert.ok(
+    STAR_REACHABILITY_DIFFERENCE_PEAK_FLOOR <= 6.07 / 2,
+    `floor ${STAR_REACHABILITY_DIFFERENCE_PEAK_FLOOR} must sit at or below ` +
+      "half the single banked observation (6.07)",
+  );
+});
+
+test("Q-115: explicit inputs override every term independently", () => {
+  assert.equal(
+    deriveStarReachabilityFloor({
+      starPeakLuma: 30,
+      residualFraction: 0.5,
+      quantizationHalfCode: 1,
+    }),
+    30 * 0.5 - 1,
+  );
+  assert.equal(
+    deriveStarReachabilityFloor({ starPeakLuma: 0 }),
+    0 * STAR_REACHABILITY_RESIDUAL_FRACTION - QUANTIZATION_HALF_CODE,
+  );
+});
+
+test("Q-115: tranche 3e-C's PRE-FIX differencePeak (0.0) fails the gate", () => {
+  // The exact shape `censusAtTargetDifference` returns for a fully-erased
+  // star: a flat, identical stars-on/stars-off pair at the target position.
+  const erased = censusAtTargetDifference(
+    syntheticBox(0, 0),
+    syntheticBox(0, 0),
+  );
+  assert.equal(erased.available, true);
+  assert.equal(erased.peakMax, 0, "pre-fix differencePeak must be 0.0");
+  assert.equal(erased.resolvedAtTarget, false);
+  assert.equal(
+    isStarReachable(erased),
+    false,
+    "a zeroed star must not clear the reachability gate",
+  );
+  // And directly against the packet's own reported shape, in case the census
+  // geometry ever changes what an erased box looks like.
+  assert.equal(
+    isStarReachable({ available: true, resolvedAtTarget: false, peakMax: 0.0 }),
+    false,
+  );
+});
+
+// B2 (station-3 review) — the pre-fix state is not the only "star not really
+// there" case worth checking: the MODELLED shell composite (the same
+// computation "PROBE CONTROL: the shell composite is what the difference
+// census sees" above exercises — the fully-erased star's actual surviving
+// luma under the pre-fix shell alpha, ~0.095, not a clean 0.0) must also fail
+// the gate. Reusing that test's own formula rather than a fresh literal.
+test("Q-115 (B2): the modelled shell-composite residual (~0.095) also fails the gate", () => {
+  const alpha = (ATMOSPHERE_THICKNESS - SITE_HEIGHT) / ATMOSPHERE_THICKNESS;
+  const modelledResidual = STAR_PEAK_LUMA_AT_CONTROL_ELEVATION * (1 - alpha);
+  assert.ok(
+    Math.abs(modelledResidual - 0.0946) < 1e-3,
+    `modelled shell-composite residual drifted: ${modelledResidual}`,
+  );
+  assert.ok(
+    modelledResidual < STAR_REACHABILITY_DIFFERENCE_PEAK_FLOOR,
+    `the modelled residual (${modelledResidual.toFixed(4)}) must sit below ` +
+      `the floor (${STAR_REACHABILITY_DIFFERENCE_PEAK_FLOOR})`,
+  );
+  const on = syntheticBox(0, modelledResidual);
+  const off = syntheticBox(0, 0);
+  const composite = censusAtTargetDifference(on, off);
+  assert.equal(
+    isStarReachable(composite),
+    false,
+    "the modelled shell-composite residual must not clear the reachability gate",
+  );
+});
+
+test("Q-115: tranche 3e-C's POST-FIX differencePeak (6.07) clears the gate", () => {
+  assert.equal(
+    isStarReachable({
+      available: true,
+      resolvedAtTarget: true,
+      peakMax: 6.07,
+    }),
+    true,
+  );
+  // Headroom by construction (see the B2 test above), not a fitted gap to
+  // this one measurement — `assert.ok(margin > 0.3)` is exactly the trap the
+  // station-3 review found: it pinned the tranche's own single observation
+  // in place as contract.
+  assert.ok(STAR_REACHABILITY_DIFFERENCE_PEAK_FLOOR <= 6.07 / 2);
+});
+
+test("Q-115: a positionally-resolved but dim source is REJECTED by the new peak floor", () => {
+  // Distinguishes the NEW check from the OLD `resolvedAtTarget`-only gate: a
+  // synthetic star bright enough to register as a resolved point source
+  // (amplitude 2 clears the census's own minPeak of 1) but below the B2 floor
+  // (2.468) must still fail reachability.
+  const dim = censusAtTargetDifference(syntheticBox(0, 2), syntheticBox(0, 0));
+  assert.equal(dim.resolvedAtTarget, true, "amplitude 2 must still resolve");
+  assert.ok(dim.peakMax < STAR_REACHABILITY_DIFFERENCE_PEAK_FLOOR);
+  assert.equal(isStarReachable(dim), false);
+
+  const bright = censusAtTargetDifference(
+    syntheticBox(0, 21),
+    syntheticBox(0, 0),
+  );
+  assert.ok(bright.peakMax >= STAR_REACHABILITY_DIFFERENCE_PEAK_FLOOR);
+  assert.equal(isStarReachable(bright), true);
+});
+
+test("Q-115: an unavailable or unresolved census is rejected regardless of peak", () => {
+  assert.equal(
+    isStarReachable({ available: false, resolvedAtTarget: true, peakMax: 999 }),
+    false,
+  );
+  assert.equal(
+    isStarReachable({ available: true, resolvedAtTarget: false, peakMax: 999 }),
+    false,
+  );
+  assert.equal(isStarReachable(null), false);
+});
+
+/**
+ * Import a MUTATED copy of `star-contribution-census.mjs` from a temp dir.
+ * The module's own relative import of the shared detector is rewritten to an
+ * absolute `file://` URL so the mutant still resolves it from its temp
+ * location; the detector itself is untouched.
+ *
+ * @param {(src: string) => string} mutate Source transform.
+ * @param {string} label Description for the vacuity guard.
+ * @returns {Promise<object>} The mutant module namespace.
+ */
+async function importMutatedStarCensus(mutate, label) {
+  const file = path.join(root, STAR_CENSUS_REL);
+  const original = (await readFile(file, "utf8")).split("\r\n").join("\n");
+  const detectorUrl = pathToFileURL(
+    path.join(root, "Tools/skybox-bake/starmap-census.mjs"),
+  ).href;
+  const rehomed = original.replace(
+    '"../../skybox-bake/starmap-census.mjs"',
+    JSON.stringify(detectorUrl),
+  );
+  assert.notEqual(
+    rehomed,
+    original,
+    "the import rehoming did not apply — its target text has moved",
+  );
+  const mutated = mutate(rehomed);
+  assert.notEqual(
+    mutated,
+    rehomed,
+    `the ${label} mutation did not change ${STAR_CENSUS_REL} — its target ` +
+      "text has moved, so this MUTATION test would pass vacuously",
+  );
+  const dir = await mkdtemp(path.join(tmpdir(), "cesium-star-reach-"));
+  const out = path.join(dir, "MutantStarCensus.mjs");
+  await writeFile(out, mutated, "utf8");
+  try {
+    return await import(pathToFileURL(out).href);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+test("Q-115 MUTATION: dropping the peak-floor clause readmits the erased star", async () => {
+  const mutant = await importMutatedStarCensus(
+    (src) =>
+      src.replace(
+        "Number.isFinite(census.peakMax) &&\n    census.peakMax >= floor",
+        "true",
+      ),
+    "peak-floor removal",
+  );
+  const dim = mutant.censusAtTargetDifference(
+    syntheticBox(0, 3),
+    syntheticBox(0, 0),
+  );
+  // Under the shipped code this is REJECTED (previous test). Under the
+  // mutant, with the peak clause gone, it is wrongly accepted — proving the
+  // clause this suite exercises is load-bearing.
+  assert.equal(
+    mutant.isStarReachable(dim),
+    true,
+    "the mutant must readmit the dim source once the peak floor is removed",
+  );
+});
+
+test("Q-115: the probe imports the shared floor/gate, not private copies", () => {
+  const probe = read("Tools/visual-regression/probe-sky-twilight-range.mjs");
+  assert.match(probe, /STAR_REACHABILITY_DIFFERENCE_PEAK_FLOOR/);
+  assert.match(probe, /isStarReachable/);
+  assert.match(
+    probe,
+    /const starsVisible = isStarReachable\(glCensus\) && isStarReachable\(gpuCensus\);/,
+  );
+  assert.ok(
+    !/function isStarReachable/.test(probe),
+    "the probe must not carry its own copy of the reachability gate",
+  );
+  // The old ad hoc floor path (whole-frame addedPixels() feeding starsVisible)
+  // must be gone from the reachability gate itself.
+  assert.ok(
+    !/starsVisible =[\s\S]{0,400}glStars\[0\] > 0/.test(probe),
+    "starsVisible must no longer read the whole-frame addedPixels() metric",
   );
 });
 

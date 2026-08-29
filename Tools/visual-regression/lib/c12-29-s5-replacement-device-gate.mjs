@@ -44,6 +44,16 @@ export const C12_29_S5_REPLACEMENT_SOURCE_BOUNDARY_SCHEMA =
   "c12-29-s5-replacement-device-source-map-boundary-v1";
 export const C12_29_S5_REPLACEMENT_RUNNING_SCHEMA =
   "c12-29-s5-replacement-device-running-authority-v2";
+// Q-116 (N5, station-3 review) — moved here from the probe to match every
+// other schema this contract enumerates: the gate lib owns schema identity,
+// the probe imports it. A preflight refusal (no RUNNING lock ever
+// acquired — see the comment on `collectProvenanceStart` in the probe) is a
+// distinct artifact/receipt pair from `C12_29_S5_REPLACEMENT_SCHEMA`, which
+// describes a run that DID acquire the lock.
+export const C12_29_S5_REPLACEMENT_PREFLIGHT_REFUSAL_SCHEMA =
+  "c12-29-s5-replacement-device-preflight-refusal-v1";
+export const C12_29_S5_REPLACEMENT_PREFLIGHT_REFUSAL_RECEIPT_SCHEMA =
+  "c12-29-s5-replacement-device-preflight-refusal-receipt-v1";
 
 export const C12_29_S5_REPLACEMENT_PHASES = Object.freeze([
   "control.before",
@@ -299,6 +309,9 @@ export const C12_29_S5_REPLACEMENT_CONTRACT = Object.freeze({
     policyBoundary: C12_29_S5_REPLACEMENT_POLICY_BOUNDARY_SCHEMA,
     sourceBoundary: C12_29_S5_REPLACEMENT_SOURCE_BOUNDARY_SCHEMA,
     sampler: C12_29_S5_REPLACEMENT_SAMPLER_SCHEMA,
+    preflightRefusal: C12_29_S5_REPLACEMENT_PREFLIGHT_REFUSAL_SCHEMA,
+    preflightRefusalReceipt:
+      C12_29_S5_REPLACEMENT_PREFLIGHT_REFUSAL_RECEIPT_SCHEMA,
   }),
   sampler: Object.freeze({
     schema: C12_29_S5_REPLACEMENT_SAMPLER_SCHEMA,
@@ -1597,6 +1610,107 @@ export function validateC1229S5ReplacementPreflightProvenance(value) {
   };
   const complete = validateC1229S5ReplacementProvenance(completed);
   reasons.push(...complete.reasons);
+  return { ok: reasons.length === 0, reasons };
+}
+
+// Q-116 (N4, station-3 review) — dense-cost's structural-refusal contract
+// runs `validateC1229S5DenseFinalArtifact` and refuses to publish an invalid
+// report; the replacement-device preflight-refusal artifact had no validator
+// at all and was written write-once, so a malformed one would be permanently
+// baked at its path. This closes that gap with the same exact-keys shape
+// discipline every other validator in this file uses.
+const PREFLIGHT_REFUSAL_KEYS = Object.freeze([
+  "schema",
+  "runId",
+  "status",
+  "incomplete",
+  "exitCode",
+  "refusedAt",
+  "reasons",
+  "gitHead",
+  "preflightSha256",
+  "buildSourceIdentity",
+  "policyBoundary",
+  "sourceBoundaryStart",
+  "buildEntryMatchesServed",
+  "servedMatchesLocal",
+]);
+
+/**
+ * Validates a preflight-refusal artifact
+ * ({@link C12_29_S5_REPLACEMENT_PREFLIGHT_REFUSAL_SCHEMA}) before it is
+ * written. Deliberately narrower than
+ * {@link validateC1229S5ReplacementFinalArtifact}: this artifact describes a
+ * run that never acquired the RUNNING lock, so it carries none of the
+ * `control`/`webgpu`/`cleanup` fields a completed or errored run does.
+ *
+ * @param {unknown} value Candidate artifact.
+ * @returns {{ok: boolean, reasons: Array<string>}}
+ */
+export function validateC1229S5ReplacementPreflightRefusalArtifact(value) {
+  const reasons = [];
+  const materialized = materializedForValidation(
+    value,
+    reasons,
+    "preflight refusal artifact",
+  );
+  if (materialized === null) {
+    return { ok: false, reasons };
+  }
+  if (!exactKeys(materialized, PREFLIGHT_REFUSAL_KEYS)) {
+    reasons.push("preflight refusal artifact shape is invalid");
+  }
+  if (materialized.schema !== C12_29_S5_REPLACEMENT_PREFLIGHT_REFUSAL_SCHEMA) {
+    reasons.push("preflight refusal artifact schema is invalid");
+  }
+  if (!isC1229S5ReplacementUuidV4(materialized.runId)) {
+    reasons.push("preflight refusal artifact runId is invalid");
+  }
+  if (materialized.status !== "STRUCTURAL") {
+    reasons.push("preflight refusal artifact status must be STRUCTURAL");
+  }
+  if (materialized.incomplete !== true) {
+    reasons.push("preflight refusal artifact must be incomplete");
+  }
+  if (
+    materialized.exitCode !== exitCodeForC1229S5ReplacementStatus("STRUCTURAL")
+  ) {
+    reasons.push(
+      "preflight refusal artifact exitCode does not match its status",
+    );
+  }
+  if (
+    typeof materialized.refusedAt !== "string" ||
+    Number.isNaN(Date.parse(materialized.refusedAt))
+  ) {
+    reasons.push(
+      "preflight refusal artifact refusedAt is not a valid timestamp",
+    );
+  }
+  if (!stringArray(materialized.reasons) || materialized.reasons.length === 0) {
+    reasons.push(
+      "preflight refusal artifact reasons must be a non-empty string array",
+    );
+  }
+  if (
+    materialized.gitHead !== null &&
+    (typeof materialized.gitHead !== "string" ||
+      materialized.gitHead.length === 0)
+  ) {
+    reasons.push("preflight refusal artifact gitHead is invalid");
+  }
+  if (
+    materialized.preflightSha256 !== null &&
+    !SHA256.test(materialized.preflightSha256)
+  ) {
+    reasons.push("preflight refusal artifact preflightSha256 is invalid");
+  }
+  if (
+    materialized.buildSourceIdentity !== null &&
+    typeof materialized.buildSourceIdentity !== "object"
+  ) {
+    reasons.push("preflight refusal artifact buildSourceIdentity is invalid");
+  }
   return { ok: reasons.length === 0, reasons };
 }
 

@@ -90,8 +90,10 @@ import { chromium } from "playwright";
 // `sky-shell-star-occlusion.spec.mjs`.
 import {
   STAR_AIM_TOLERANCE_PX,
+  STAR_REACHABILITY_DIFFERENCE_PEAK_FLOOR,
   censusAtTarget,
   censusAtTargetDifference,
+  isStarReachable,
 } from "./lib/star-contribution-census.mjs";
 
 // Machine-safety watchdog (Batch 861+ fleet sweep). A probe that wedges holds a
@@ -142,6 +144,35 @@ const RENDERED_ELEVATION_MIN_SPREAD_DEG = 2.0;
 // enough that the detector's 5 px background ring is never clamped against an
 // edge, small enough that the payload is ~26 KB rather than a whole frame.
 const CENSUS_BOX_HALF_PX = 40;
+//
+// ⚠ REPAIRED 2026-08-29 (Q-115) — the `differencePeak` value this control
+// reports used to have no floor of its own: reachability instead fell through
+// to the unrelated whole-frame `addedPixels()` metric below (threshold 24 on
+// an RGB SUM), which an Edge executor reverse-engineered as "differencePeak
+// >= 8" by eye rather than from this control's own framing. That floor was
+// mis-derived for a star this header already documents is heavily
+// extinguished. The floor is now `STAR_REACHABILITY_DIFFERENCE_PEAK_FLOOR`
+// (2.468) imported from `lib/star-contribution-census.mjs`.
+//
+// ⚠ CORRECTED post-B1-review (station-3 pass 1) — a first version of this
+// floor re-applied this header's "roughly a third" extinction figure a
+// SECOND time, on top of the ~21.2-luma peak that is already the
+// POST-extinction value (the computed extinction ratio at this elevation is
+// 0.41544, not the header's rounded 0.3333, and either way it must not be
+// applied twice). At the correct computed ratio the resulting floor would
+// have been 7.31, which fails the tranche's own banked measurement of 6.07 —
+// the exact false-fail class this row exists to remove. The floor is now a
+// DECLARED SAFETY FACTOR (0.14) applied to the extinguished peak, stated as
+// roughly half of the one banked render observation (6.07 / 21.1969 =
+// 0.2864) rather than derived from it, plus one 8-bit quantization
+// half-code. Full derivation, with the arithmetic, lives beside
+// `deriveStarReachabilityFloor` in the shared module — ONE HOME, not
+// transcribed here. Unit-tested in `sky-shell-star-occlusion.spec.mjs`
+// against the pre-fix erased state (0.0), the modelled shell-composite
+// residual (~0.095), and tranche 3e-C's banked post-fix measurement (6.07) —
+// with no assertion pinning the floor's distance from any single
+// measurement, which was the B1 finding against the first version.
+//
 // The positional claim, and why it runs on the difference image, live in
 // `lib/star-contribution-census.mjs` — including the tolerance imported above.
 
@@ -651,13 +682,12 @@ const glCensus = censusAtTargetDifference(gl.controlBox, gl.controlBoxOff);
 const gpuCensus = censusAtTargetDifference(gpu.controlBox, gpu.controlBoxOff);
 const glAbsoluteCensus = censusAtTarget(gl.controlBox);
 const gpuAbsoluteCensus = censusAtTarget(gpu.controlBox);
-const starsVisible =
-  glCensus.available === true &&
-  gpuCensus.available === true &&
-  glCensus.resolvedAtTarget === true &&
-  gpuCensus.resolvedAtTarget === true &&
-  glStars[0] > 0 &&
-  gpuStars[0] > 0;
+// Q-115: reachability is now the box census's OWN peak against the derived
+// floor (`isStarReachable`), not the unrelated whole-frame `addedPixels()`
+// metric (`glStars`/`gpuStars` below) that an executor previously read as a
+// de facto "differencePeak >= 8". `glStars`/`gpuStars` remain the metric for
+// the separate monotonic-ordering claim across all four lanes, unaffected.
+const starsVisible = isStarReachable(glCensus) && isStarReachable(gpuCensus);
 let pixelStructuralReason = null;
 if (!renderedSunTracked) {
   // Strictly ahead of `starsVisible`: if the frames were not drawn at their
@@ -729,6 +759,9 @@ const reachabilityLine = (run, difference, absolute) =>
     differencePeak: Number.isFinite(difference.peakMax)
       ? Number(difference.peakMax.toFixed(2))
       : null,
+    differencePeakFloor: Number(
+      STAR_REACHABILITY_DIFFERENCE_PEAK_FLOOR.toFixed(4),
+    ),
     absolutePeak: Number.isFinite(absolute.peakMax)
       ? Number(absolute.peakMax.toFixed(2))
       : null,
