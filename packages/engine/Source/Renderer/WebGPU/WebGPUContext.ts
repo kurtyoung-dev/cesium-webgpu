@@ -239,6 +239,25 @@ interface EncodedTextureMipBatch {
   resourceGeneration: number;
 }
 
+// Slots for the device-bound lazy getters below: each one nulls its field on
+// invalidation and rebuilds on the next access, so each needs one retained
+// handler rather than a fresh closure per rebuild. Two getters must never share
+// a slot — they would share a handler, and only one field would be dropped.
+//
+// `asyncResources` is deliberately absent. Its field is reset rather than
+// nulled, so its lazy branch runs exactly once and it never re-subscribes.
+const DeviceInvalidationSlot = Object.freeze({
+  RENDER_BUNDLE_MANAGER: 0,
+  COMPUTE_ENGINE: 1,
+  TIMESTAMP_PROFILER: 2,
+  STORAGE_BUFFER_POOL: 3,
+  INDIRECT_DRAW_MANAGER: 4,
+  BUFFER_MAPPER: 5,
+  RENDER_PIPELINE_CACHE: 6,
+  COMPUTE_PIPELINE_CACHE: 7,
+});
+const DEVICE_INVALIDATION_SLOT_COUNT = 8;
+
 const EXTERNAL_IMAGE_COPY_DESTINATION_FORMATS = new Set<GPUTextureFormat>([
   "r8unorm",
   "r16float",
@@ -637,6 +656,7 @@ export class WebGPUContext extends GraphicsContext {
   public _postProcessCacheStatsSource: PostProcessCacheStatsSource | null =
     null;
   private _webgpuComputePipelineCache: WebGPUComputePipelineCache | null = null;
+  private _invalidationHandlers: (() => void)[] | undefined;
   // Per-context registry of inflight async GPU work. Lazily initialized via
   // the `asyncResources` getter so a context that never triggers async work
   // pays nothing. It survives device loss with its subscribers attached;
@@ -6442,6 +6462,23 @@ export class WebGPUContext extends GraphicsContext {
   }
 
   /**
+   * The invalidation bus deduplicates by callback identity, so a slot must
+   * reuse the same function on every rebuild or each recovery leaks a closure.
+   */
+  private onDeviceInvalidatedOnce(slot: number, handler: () => void): void {
+    const handlers = (this._invalidationHandlers ??= new Array(
+      DEVICE_INVALIDATION_SLOT_COUNT,
+    ));
+    const existing = handlers[slot];
+    if (existing === undefined) {
+      handlers[slot] = handler;
+      this.onDeviceInvalidated(handler);
+      return;
+    }
+    this.onDeviceInvalidated(existing);
+  }
+
+  /**
    * Render bundle manager for caching static geometry draw calls.
    * Pre-encodes draw commands for terrain tiles, buildings, etc.
    * Gives 50-80% CPU reduction for static geometry.
@@ -6459,9 +6496,12 @@ export class WebGPUContext extends GraphicsContext {
       this._renderBundleManager = new WebGPURenderBundleManager(this._device);
       // Bundles hold references to pipelines and buffers that are invalid
       // after device loss. Drop them.
-      this.onDeviceInvalidated(() => {
-        this._renderBundleManager = null;
-      });
+      this.onDeviceInvalidatedOnce(
+        DeviceInvalidationSlot.RENDER_BUNDLE_MANAGER,
+        () => {
+          this._renderBundleManager = null;
+        },
+      );
     }
     return this._renderBundleManager;
   }
@@ -6488,10 +6528,13 @@ export class WebGPUContext extends GraphicsContext {
         this.webgpuComputePipelineCache ?? undefined,
       );
       this._computeEngine.asyncResourceMonitor = this.asyncResources;
-      this.onDeviceInvalidated(() => {
-        this._computeEngine?.destroy();
-        this._computeEngine = null;
-      });
+      this.onDeviceInvalidatedOnce(
+        DeviceInvalidationSlot.COMPUTE_ENGINE,
+        () => {
+          this._computeEngine?.destroy();
+          this._computeEngine = null;
+        },
+      );
     }
     return this._computeEngine;
   }
@@ -6973,9 +7016,12 @@ export class WebGPUContext extends GraphicsContext {
         this.hasFeature("timestamp-query"),
       );
       // Query sets are device-scoped; drop on loss.
-      this.onDeviceInvalidated(() => {
-        this._timestampProfiler = null;
-      });
+      this.onDeviceInvalidatedOnce(
+        DeviceInvalidationSlot.TIMESTAMP_PROFILER,
+        () => {
+          this._timestampProfiler = null;
+        },
+      );
     }
     return this._timestampProfiler;
   }
@@ -6991,9 +7037,12 @@ export class WebGPUContext extends GraphicsContext {
     if (!this._storageBufferPool && this._device) {
       this._storageBufferPool = new WebGPUStorageBufferPool(this._device);
       // Pooled buffers are bound to the dead device.
-      this.onDeviceInvalidated(() => {
-        this._storageBufferPool = null;
-      });
+      this.onDeviceInvalidatedOnce(
+        DeviceInvalidationSlot.STORAGE_BUFFER_POOL,
+        () => {
+          this._storageBufferPool = null;
+        },
+      );
     }
     return this._storageBufferPool;
   }
@@ -7009,9 +7058,12 @@ export class WebGPUContext extends GraphicsContext {
     if (!this._indirectDrawManager && this._device) {
       this._indirectDrawManager = new WebGPUIndirectDrawManager(this._device);
       // The indirect-args staging buffer is device-scoped.
-      this.onDeviceInvalidated(() => {
-        this._indirectDrawManager = null;
-      });
+      this.onDeviceInvalidatedOnce(
+        DeviceInvalidationSlot.INDIRECT_DRAW_MANAGER,
+        () => {
+          this._indirectDrawManager = null;
+        },
+      );
     }
     return this._indirectDrawManager;
   }
@@ -7027,7 +7079,7 @@ export class WebGPUContext extends GraphicsContext {
     if (!this._bufferMapper && this._device) {
       this._bufferMapper = new WebGPUBufferMapper(this._device);
       // The staging and readback caches hold device buffers.
-      this.onDeviceInvalidated(() => {
+      this.onDeviceInvalidatedOnce(DeviceInvalidationSlot.BUFFER_MAPPER, () => {
         this._bufferMapper = null;
       });
     }
@@ -7068,9 +7120,12 @@ export class WebGPUContext extends GraphicsContext {
       );
       // Drop the pipeline cache on device loss so the next access rebuilds
       // against the recovered device.
-      this.onDeviceInvalidated(() => {
-        this._webgpuPipelineCache = null;
-      });
+      this.onDeviceInvalidatedOnce(
+        DeviceInvalidationSlot.RENDER_PIPELINE_CACHE,
+        () => {
+          this._webgpuPipelineCache = null;
+        },
+      );
     }
     return this._webgpuPipelineCache;
   }
@@ -7097,9 +7152,12 @@ export class WebGPUContext extends GraphicsContext {
         this._id,
         this.asyncResources,
       );
-      this.onDeviceInvalidated(() => {
-        this._webgpuComputePipelineCache = null;
-      });
+      this.onDeviceInvalidatedOnce(
+        DeviceInvalidationSlot.COMPUTE_PIPELINE_CACHE,
+        () => {
+          this._webgpuComputePipelineCache = null;
+        },
+      );
     }
     return this._webgpuComputePipelineCache;
   }
