@@ -229,9 +229,14 @@ test("B1: the nightBlend definition is guarded by APPLY_DAY_NIGHT_ALPHA only", (
 test("B2: the sampleAndBlend multiply is guarded the same way", () => {
   // Both sites must move together: guarding the definition alone would leave a
   // correctly-computed nightBlend that no layer ever consumes.
+  //
+  // Structural rather than adjacent: the night alpha the blend reads is scaled
+  // by the fragment's own magnification first, so statements sit between the
+  // guard and the blend. What this spec owns is that the blend is inside the
+  // block, which the excluded preprocessor directive is what pins.
   assert.match(
     glslCode,
-    /#ifdef APPLY_DAY_NIGHT_ALPHA\n\s*textureAlpha \*= mix\(textureDayAlpha, textureNightAlpha, nightBlend\);/,
+    /#ifdef APPLY_DAY_NIGHT_ALPHA[^#]*?textureAlpha \*= mix\(textureDayAlpha, effectiveNightAlpha, nightBlend\);/,
   );
 });
 
@@ -397,7 +402,7 @@ function webglAlphaIsUngated(glslSource) {
   const code = stripLineComments(glslSource);
   return (
     GLSL_NIGHTBLEND_GUARD_RE.test(code) &&
-    /#ifdef APPLY_DAY_NIGHT_ALPHA\n\s*textureAlpha \*= mix\(/.test(code) &&
+    /#ifdef APPLY_DAY_NIGHT_ALPHA[^#]*?textureAlpha \*= mix\(/.test(code) &&
     !/#if defined\(APPLY_DAY_NIGHT_ALPHA\) && defined\(ENABLE_DAYNIGHT_SHADING\)/.test(
       code,
     )
@@ -443,8 +448,8 @@ test("D4: ABSENCE — restoring either GLSL double guard is REJECTED", () => {
   assert.equal(webglAlphaIsUngated(atDefinition), false);
   const atMultiply = mutate(
     glsl,
-    "#ifdef APPLY_DAY_NIGHT_ALPHA\n    textureAlpha *= mix(",
-    "#if defined(APPLY_DAY_NIGHT_ALPHA) && defined(ENABLE_DAYNIGHT_SHADING)\n    textureAlpha *= mix(",
+    "#ifdef APPLY_DAY_NIGHT_ALPHA\n    // A night layer retires with magnification",
+    "#if defined(APPLY_DAY_NIGHT_ALPHA) && defined(ENABLE_DAYNIGHT_SHADING)\n    // A night layer retires with magnification",
   );
   assert.equal(
     webglAlphaIsUngated(atMultiply),

@@ -573,6 +573,8 @@ class GlobeSurfaceShaderSet {
               ${applyAlpha ? `u_dayTextureAlpha[${i}]` : "1.0"},\n\
               ${applyDayNightAlpha ? `u_dayTextureNightAlpha[${i}]` : "1.0"},\n\
               ${applyDayNightAlpha ? `u_dayTextureDayAlpha[${i}]` : "1.0"},\n\
+              u_dayTextureUseWebMercatorT[${i}] ? v_textureCoordinates.xz : v_textureCoordinates.xy,\n\
+              ${applyDayNightAlpha ? `u_dayTextureNightFadeTilePixels[${i}]` : "0.0"},\n\
               ${applyBrightness ? `u_dayTextureBrightness[${i}]` : "0.0"},\n\
               ${applyContrast ? `u_dayTextureContrast[${i}]` : "0.0"},\n\
               ${applyHue ? `u_dayTextureHue[${i}]` : "0.0"},\n\
@@ -595,7 +597,7 @@ class GlobeSurfaceShaderSet {
         // the composite above falls back to.
         if (applyNightLights) {
           computeDayColor += `\
-          color.rgb = applyNightLightsEmission(color.rgb, g_nightLightsLayerColor, nightBlend, u_dayTextureNightAlpha[${i}], u_dayTextureDayAlpha[${i}]);\n`;
+          color.rgb = applyNightLightsEmission(color.rgb, g_nightLightsLayerColor, nightBlend, u_dayTextureNightAlpha[${i}], u_dayTextureDayAlpha[${i}], g_nightImageryFade);\n`;
         }
       }
 

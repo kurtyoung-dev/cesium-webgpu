@@ -371,7 +371,15 @@ struct ImageryLayer {
   // SplitDirection: -1 = LEFT (only show when fragX < splitPosition),
   // 0 = NONE (always show), +1 = RIGHT (only show when fragX > splitPosition).
   split: f32,
-  _layerPad: f32,
+  // The imagery tile size, in pixels, this layer's magnification fade is
+  // measured against, and 0 for a layer that does not fade. Multiplied by
+  // translationAndScale.zw it gives imagery texels per unit of tile texture
+  // coordinate, which is what turns a screen-space UV derivative into a texel
+  // footprint. Zero is the sentinel for a layer that never fades, and it agrees
+  // with the arithmetic it short-circuits: a zero tile size makes the footprint
+  // zero, and a footprint that is not positive is the unmeasurable case the law
+  // already answers with full strength.
+  nightFadeTilePixels: f32,
 };
 
 // Maximum imagery layers per draw call. WebGPU minimum guarantee for
@@ -1946,10 +1954,94 @@ fn applySplitMask(splitDir: f32, fragX: f32, splitPositionPx: f32) -> f32 {
 //   5. brightness → contrast → hue → saturation (WebGL sequence)
 // Returns updated (color, alpha) and the post-effects "adjusted" color so
 // callers can route it through `applyNightLightsEmission` for emission.
+// Screen footprints, in imagery texels per screen pixel, between which a night
+// layer fades out, and the width of that band in octaves. Exact twins of the
+// three constants in Shaders/GlobeFS.glsl and of the ones
+// Scene/GlobeNightImagery.js exports, which is what the packers and the specs
+// read.
+const NIGHT_IMAGERY_FADE_FULL_TEXELS_PER_PIXEL: f32 = 1.0 / 16.0;
+const NIGHT_IMAGERY_FADE_ZERO_TEXELS_PER_PIXEL: f32 = 1.0 / 64.0;
+const NIGHT_IMAGERY_FADE_BAND_OCTAVES: f32 = 2.0;
+
+// A night layer's share of its own night alpha at a given magnification.
+//
+// Smoothstep over log2 of the footprint, because magnification travels in
+// halvings: a ramp linear in texels would spend most of its travel in the first
+// octave and step hard through the last.
+//
+// The clamp is what makes both endpoints exact. At the near knee the ratio is
+// the band width, so t is exactly 1 and the weight is exactly 1.0 — anything
+// less re-renders every view the layer is composed for. At the far knee t is
+// exactly 0 and the weight is exactly 0.0; a weight that merely approaches zero
+// leaves an opaque layer opaque and the wash survives, dimmer.
+//
+// A footprint that is not a positive number returns full strength rather than
+// zero: an unmeasurable magnification must leave the layer exactly as it renders
+// today, not erase it. The comparison is written on the positive side so a NaN
+// footprint takes that arm.
+//
+// Exact twin of GlobeFS.glsl's nightImageryMagnificationFade, term for term and
+// constant for constant, and of the JavaScript the packers and the specs read;
+// the three are executed against each other numerically rather than compared by
+// eye.
+fn nightImageryMagnificationFade(texelsPerPixel: f32) -> f32 {
+  let clamped = clamp(texelsPerPixel, NIGHT_IMAGERY_FADE_ZERO_TEXELS_PER_PIXEL, NIGHT_IMAGERY_FADE_FULL_TEXELS_PER_PIXEL);
+  let t = log2(clamped / NIGHT_IMAGERY_FADE_ZERO_TEXELS_PER_PIXEL) / NIGHT_IMAGERY_FADE_BAND_OCTAVES;
+  let weight = t * t * (3.0 - 2.0 * t);
+  if (texelsPerPixel > 0.0) {
+    return weight;
+  }
+  return 1.0;
+}
+
+// The weight for one layer on one fragment, from that fragment's own footprint.
+//
+// The footprint is the screen-space Jacobian of the layer's texel coordinates,
+// and it is the same number on both sides of a terrain LOD seam: a tile one
+// level finer carries half the texels across twice the terrain detail but is
+// also half the size on screen, so texels per screen pixel cancels the level
+// out. That is what makes this weight continuous where a texel count per tile
+// steps.
+//
+// The derivatives are of the RAW tile UV, not the seam-clamped one. The clamp
+// moves UVs by about 1e-6, but it can collapse both lanes of an edge quad onto
+// the same value, and a zero footprint reads as unmeasurable and returns the
+// layer at full strength — a bright hairline around every tile in the band.
+//
+// The more magnified direction governs, so a layer is never credited with
+// structure it only has in one direction.
+//
+// A layer that does not fade carries a zero tile size and takes the early
+// return. Its footprint would be zero, which the law already answers with full
+// strength, so the branch changes no pixel - it keeps two square roots and a
+// logarithm off every layer of every globe that has no night imagery, in the
+// hottest fragment shader the engine has.
+//
+// Twin of GlobeFS.glsl's nightImageryFadeWeight. The one divergence the two
+// shading languages force: this half must take its derivatives at fragment
+// entry while control flow is still uniform and receives them as parameters,
+// where the GLSL half may differentiate in place.
+fn nightImageryFadeWeight(rawTileUV_dx: vec2<f32>, rawTileUV_dy: vec2<f32>, scale: vec2<f32>, tilePixels: f32) -> f32 {
+  if (tilePixels <= 0.0) {
+    return 1.0;
+  }
+  let texelScale = scale * tilePixels;
+  let footprintX = length(rawTileUV_dx * texelScale);
+  let footprintY = length(rawTileUV_dy * texelScale);
+  return nightImageryMagnificationFade(min(footprintX, footprintY));
+}
+
 struct LayerComposite {
   color: vec3<f32>,
   alpha: f32,
   adjustedColor: vec3<f32>,  // post-effects, used for night-lights emission
+  // The magnification weight this layer resolved on this fragment, and the
+  // night-side opacity it therefore covers. The procedural fallback is scaled
+  // by the complement of the largest coverage any layer reports, and the
+  // night-lights emission is scaled by the weight, so both hand over at exactly
+  // the rate the layer itself thins out at.
+  nightFade: f32,
+  nightCoverage: f32,
 };
 
 // The GLSL counterpart is `Shaders/GlobeFS.glsl::sampleAndBlend` (lines
@@ -2022,6 +2114,8 @@ fn applyImageryLayer(
   splitPositionPx: f32,
   dayNightAlpha: vec2<f32>,
   dayFade: f32,
+  rawTileUV_dx: vec2<f32>,
+  rawTileUV_dy: vec2<f32>,
 ) -> LayerComposite {
   // texCoordsRect bounds mask. GLSL: vec2 `step()` × textureAlpha at
   // lines 213-217 of sampleAndBlend. The mask is 0 outside the per-
@@ -2034,7 +2128,22 @@ fn applyImageryLayer(
   // (1, 1) when day/night alpha isn't enabled per layer, making the mix a
   // no-op (always 1.0), and `dayFade` itself is pinned to 1.0 upstream unless
   // the same per-tile condition holds.
-  let dayNightAlphaValue = mix(dayNightAlpha.y, dayNightAlpha.x, dayFade);
+  // A night layer retires with magnification, per fragment: past the deepest
+  // level its pyramid contains one of its texels spreads over more and more of
+  // the screen, and beyond a point it is a flat wash replacing the scene rather
+  // than an image of it. Every other layer packs a zero tile size, which makes
+  // the footprint zero and the weight exactly 1.0, so this is the identity for
+  // them and the blend is the one they had.
+  let nightFade = nightImageryFadeWeight(rawTileUV_dx, rawTileUV_dy, layer.translationAndScale.zw, layer.nightFadeTilePixels);
+  let effectiveNightAlpha = dayNightAlpha.y * nightFade;
+  let dayNightAlphaValue = mix(effectiveNightAlpha, dayNightAlpha.x, dayFade);
+
+  // Only a layer that asked for a day/night pair covers the night side; a pair
+  // still at (1, 1) is an ordinary layer covering day and night alike, which is
+  // not what the procedural fallback is the complement of. The layer's own alpha
+  // rather than its rectangle mask, matching the GLSL twin.
+  let nightCoverage = select(0.0, effectiveNightAlpha * layer.alpha,
+    dayNightAlpha.x != 1.0 || dayNightAlpha.y != 1.0);
 
   // colorToAlpha key. GLSL line 230-234: `#ifdef APPLY_COLOR_TO_ALPHA`
   // zeros alpha where (R, G, B) ≈ key color. WGSL evaluates unconditionally
@@ -2120,7 +2229,7 @@ fn applyImageryLayer(
   let outAlphaSafe = max(outAlpha, 1e-7);
   let outColor = mix(prevColor * prevAlpha, adjusted, sourceAlpha) / outAlphaSafe;
 
-  return LayerComposite(outColor, max(outAlpha, 0.0), adjusted);
+  return LayerComposite(outColor, max(outAlpha, 0.0), adjusted, nightFade, nightCoverage);
 }
 
 // Perceptual luminance.
@@ -2281,6 +2390,12 @@ fn applyNightLightsEmission(
   nightBlend: f32,   // 0 = day, 1 = full night
   nightAlpha: f32,
   dayAlpha: f32,
+  // The alpha pair the gate reads is the layer's own, before magnification:
+  // what makes a layer city lights is how it was configured, not how close the
+  // camera is. This scales the emission instead, so the lights thin out with
+  // the layer that carries them rather than snapping off when the faded alpha
+  // crosses the gate.
+  magnificationFade: f32,
 ) -> vec3<f32> {
   // Only apply emission when nightAlpha exceeds dayAlpha (night lights layer)
   let isNightLayer = step(dayAlpha + 0.01, nightAlpha);
@@ -2288,7 +2403,7 @@ fn applyNightLightsEmission(
   let nightIntensity = getNightIntensity();
   // Emissive boost: brighten city lights on the night side
   // Higher luminance = stronger glow (city cores glow more)
-  let emission = layerColor * lum * nightBlend * nightIntensity * isNightLayer;
+  let emission = layerColor * lum * nightBlend * nightIntensity * isNightLayer * magnificationFade;
   return color + emission;
 }
 
@@ -4152,6 +4267,16 @@ fn fragmentMain(
   // `geoUV_dx`/`geoUV_dy` are hoisted.
   let vectorUV_dx = dpdx(input.v_textureCoordinates.xy);
   let vectorUV_dy = dpdy(input.v_textureCoordinates.xy);
+  // The night layer's magnification fade differentiates the same raw varying,
+  // for the same reason: the seam clamp can collapse both lanes of an edge quad
+  // onto one value, and a zero footprint reads as unmeasurable and returns the
+  // layer at full strength — a bright hairline around every tile in the band.
+  // The Mercator-sampled V is the raw varying's own third component here, where
+  // webMercUV_dx above takes the clamped one for mip selection.
+  let rawGeoUV_dx = vectorUV_dx;
+  let rawGeoUV_dy = vectorUV_dy;
+  let rawWebMercUV_dx = vec2<f32>(vectorUV_dx.x, dpdx(input.v_textureCoordinates.z));
+  let rawWebMercUV_dy = vec2<f32>(vectorUV_dy.x, dpdy(input.v_textureCoordinates.z));
 
   // Helper: select geographic V or webMercatorT per layer.
   // Matches WebGL's u_dayTextureUseWebMercatorT. Packed 4 layers
@@ -4467,8 +4592,9 @@ fn fragmentMain(
   // `tile.hsbShift.w` is the third question, and it is the complement of the
   // second rather than its negation: the procedural night fallback supplies the
   // share of the night side the layers leave uncovered, so it needs the
-  // terminator wherever it is not already scaled back to the identity — which
-  // includes tiles the second term also opens. WebGL opens the same ramp on the
+  // terminator wherever a floor below 1.0 has been asked for at all — which
+  // includes tiles the second term also opens, and tiles where the share the
+  // layers cover is only resolved per fragment further down. WebGL opens the same ramp on the
   // same third condition, as the second alternative of its `nightBlend` guard.
   //
   // `computeDayNightFade` keeps its single call site. All three consumers read
@@ -4499,6 +4625,14 @@ fn fragmentMain(
   // contributes to the composite.
   let isolate = i32(tile.tileControls.y);
 
+  // The largest night-side opacity any imagery layer resolves on this fragment.
+  // The procedural darkening below supplies the complement, so the night side is
+  // darkened once whether the darkening comes from a layer or from the fallback.
+  // Per fragment because the magnification fade producing it is: two adjacent
+  // terrain tiles a level apart carry the same magnification and must hand over
+  // at the same rate, which a per-tile scalar cannot express.
+  var nightImageryCoverage = 0.0;
+
   // Pixel-space split position (in framebuffer coords, matches @builtin(position).x).
   let splitPositionPx = tile.splitPosition;
   let fragX = input.position.x;
@@ -4519,9 +4653,12 @@ fn fragmentMain(
     let tex = sampleImagery(dayTexture0, texSampler, uv, layer, uv_dx, uv_dy);
     let dna = tile.dayNightAlpha[0].xy;
     let mask = select(0.0, 1.0, isolate < 0 || isolate == 0);
-    let r = applyImageryLayer(color, alpha, tex, geoUV, uv, layer, mask, fragX, splitPositionPx, dna, dayFade);
+    let rawUV_dx = selectLayerUVDerivative(rawGeoUV_dx, rawWebMercUV_dx, useWMT);
+    let rawUV_dy = selectLayerUVDerivative(rawGeoUV_dy, rawWebMercUV_dy, useWMT);
+    let r = applyImageryLayer(color, alpha, tex, geoUV, uv, layer, mask, fragX, splitPositionPx, dna, dayFade, rawUV_dx, rawUV_dy);
     color = r.color; alpha = r.alpha;
-    color = applyNightLightsEmission(color, r.adjustedColor, nightBlend, dna.y, dna.x);
+    nightImageryCoverage = max(nightImageryCoverage, r.nightCoverage);
+    color = applyNightLightsEmission(color, r.adjustedColor, nightBlend, dna.y, dna.x, r.nightFade);
   }
   if (count >= 2u) {
     let layer = tile.layers[1];
@@ -4532,9 +4669,12 @@ fn fragmentMain(
     let tex = sampleImagery(dayTexture1, texSampler, uv, layer, uv_dx, uv_dy);
     let dna = tile.dayNightAlpha[0].zw;
     let mask = select(0.0, 1.0, isolate < 0 || isolate == 1);
-    let r = applyImageryLayer(color, alpha, tex, geoUV, uv, layer, mask, fragX, splitPositionPx, dna, dayFade);
+    let rawUV_dx = selectLayerUVDerivative(rawGeoUV_dx, rawWebMercUV_dx, useWMT);
+    let rawUV_dy = selectLayerUVDerivative(rawGeoUV_dy, rawWebMercUV_dy, useWMT);
+    let r = applyImageryLayer(color, alpha, tex, geoUV, uv, layer, mask, fragX, splitPositionPx, dna, dayFade, rawUV_dx, rawUV_dy);
     color = r.color; alpha = r.alpha;
-    color = applyNightLightsEmission(color, r.adjustedColor, nightBlend, dna.y, dna.x);
+    nightImageryCoverage = max(nightImageryCoverage, r.nightCoverage);
+    color = applyNightLightsEmission(color, r.adjustedColor, nightBlend, dna.y, dna.x, r.nightFade);
   }
   if (count >= 3u) {
     let layer = tile.layers[2];
@@ -4545,9 +4685,12 @@ fn fragmentMain(
     let tex = sampleImagery(dayTexture2, texSampler, uv, layer, uv_dx, uv_dy);
     let dna = tile.dayNightAlpha[1].xy;
     let mask = select(0.0, 1.0, isolate < 0 || isolate == 2);
-    let r = applyImageryLayer(color, alpha, tex, geoUV, uv, layer, mask, fragX, splitPositionPx, dna, dayFade);
+    let rawUV_dx = selectLayerUVDerivative(rawGeoUV_dx, rawWebMercUV_dx, useWMT);
+    let rawUV_dy = selectLayerUVDerivative(rawGeoUV_dy, rawWebMercUV_dy, useWMT);
+    let r = applyImageryLayer(color, alpha, tex, geoUV, uv, layer, mask, fragX, splitPositionPx, dna, dayFade, rawUV_dx, rawUV_dy);
     color = r.color; alpha = r.alpha;
-    color = applyNightLightsEmission(color, r.adjustedColor, nightBlend, dna.y, dna.x);
+    nightImageryCoverage = max(nightImageryCoverage, r.nightCoverage);
+    color = applyNightLightsEmission(color, r.adjustedColor, nightBlend, dna.y, dna.x, r.nightFade);
   }
   if (count >= 4u) {
     let layer = tile.layers[3];
@@ -4558,9 +4701,12 @@ fn fragmentMain(
     let tex = sampleImagery(dayTexture3, texSampler, uv, layer, uv_dx, uv_dy);
     let dna = tile.dayNightAlpha[1].zw;
     let mask = select(0.0, 1.0, isolate < 0 || isolate == 3);
-    let r = applyImageryLayer(color, alpha, tex, geoUV, uv, layer, mask, fragX, splitPositionPx, dna, dayFade);
+    let rawUV_dx = selectLayerUVDerivative(rawGeoUV_dx, rawWebMercUV_dx, useWMT);
+    let rawUV_dy = selectLayerUVDerivative(rawGeoUV_dy, rawWebMercUV_dy, useWMT);
+    let r = applyImageryLayer(color, alpha, tex, geoUV, uv, layer, mask, fragX, splitPositionPx, dna, dayFade, rawUV_dx, rawUV_dy);
     color = r.color; alpha = r.alpha;
-    color = applyNightLightsEmission(color, r.adjustedColor, nightBlend, dna.y, dna.x);
+    nightImageryCoverage = max(nightImageryCoverage, r.nightCoverage);
+    color = applyNightLightsEmission(color, r.adjustedColor, nightBlend, dna.y, dna.x, r.nightFade);
   }
   //>>ifdef GLOBE_IMAGERY_REDUCED
   // Reduced layout
@@ -4577,9 +4723,12 @@ fn fragmentMain(
     let tex = sampleImagery(dayTexture4, texSampler, uv, layer, uv_dx, uv_dy);
     let dna = tile.dayNightAlpha[2].xy;
     let mask = select(0.0, 1.0, isolate < 0 || isolate == 4);
-    let r = applyImageryLayer(color, alpha, tex, geoUV, uv, layer, mask, fragX, splitPositionPx, dna, dayFade);
+    let rawUV_dx = selectLayerUVDerivative(rawGeoUV_dx, rawWebMercUV_dx, useWMT);
+    let rawUV_dy = selectLayerUVDerivative(rawGeoUV_dy, rawWebMercUV_dy, useWMT);
+    let r = applyImageryLayer(color, alpha, tex, geoUV, uv, layer, mask, fragX, splitPositionPx, dna, dayFade, rawUV_dx, rawUV_dy);
     color = r.color; alpha = r.alpha;
-    color = applyNightLightsEmission(color, r.adjustedColor, nightBlend, dna.y, dna.x);
+    nightImageryCoverage = max(nightImageryCoverage, r.nightCoverage);
+    color = applyNightLightsEmission(color, r.adjustedColor, nightBlend, dna.y, dna.x, r.nightFade);
   }
   if (count >= 6u) {
     let layer = tile.layers[5];
@@ -4590,9 +4739,12 @@ fn fragmentMain(
     let tex = sampleImagery(dayTexture5, texSampler, uv, layer, uv_dx, uv_dy);
     let dna = tile.dayNightAlpha[2].zw;
     let mask = select(0.0, 1.0, isolate < 0 || isolate == 5);
-    let r = applyImageryLayer(color, alpha, tex, geoUV, uv, layer, mask, fragX, splitPositionPx, dna, dayFade);
+    let rawUV_dx = selectLayerUVDerivative(rawGeoUV_dx, rawWebMercUV_dx, useWMT);
+    let rawUV_dy = selectLayerUVDerivative(rawGeoUV_dy, rawWebMercUV_dy, useWMT);
+    let r = applyImageryLayer(color, alpha, tex, geoUV, uv, layer, mask, fragX, splitPositionPx, dna, dayFade, rawUV_dx, rawUV_dy);
     color = r.color; alpha = r.alpha;
-    color = applyNightLightsEmission(color, r.adjustedColor, nightBlend, dna.y, dna.x);
+    nightImageryCoverage = max(nightImageryCoverage, r.nightCoverage);
+    color = applyNightLightsEmission(color, r.adjustedColor, nightBlend, dna.y, dna.x, r.nightFade);
   }
   if (count >= 7u) {
     let layer = tile.layers[6];
@@ -4603,9 +4755,12 @@ fn fragmentMain(
     let tex = sampleImagery(dayTexture6, texSampler, uv, layer, uv_dx, uv_dy);
     let dna = tile.dayNightAlpha[3].xy;
     let mask = select(0.0, 1.0, isolate < 0 || isolate == 6);
-    let r = applyImageryLayer(color, alpha, tex, geoUV, uv, layer, mask, fragX, splitPositionPx, dna, dayFade);
+    let rawUV_dx = selectLayerUVDerivative(rawGeoUV_dx, rawWebMercUV_dx, useWMT);
+    let rawUV_dy = selectLayerUVDerivative(rawGeoUV_dy, rawWebMercUV_dy, useWMT);
+    let r = applyImageryLayer(color, alpha, tex, geoUV, uv, layer, mask, fragX, splitPositionPx, dna, dayFade, rawUV_dx, rawUV_dy);
     color = r.color; alpha = r.alpha;
-    color = applyNightLightsEmission(color, r.adjustedColor, nightBlend, dna.y, dna.x);
+    nightImageryCoverage = max(nightImageryCoverage, r.nightCoverage);
+    color = applyNightLightsEmission(color, r.adjustedColor, nightBlend, dna.y, dna.x, r.nightFade);
   }
   if (count >= 8u) {
     let layer = tile.layers[7];
@@ -4616,9 +4771,12 @@ fn fragmentMain(
     let tex = sampleImagery(dayTexture7, texSampler, uv, layer, uv_dx, uv_dy);
     let dna = tile.dayNightAlpha[3].zw;
     let mask = select(0.0, 1.0, isolate < 0 || isolate == 7);
-    let r = applyImageryLayer(color, alpha, tex, geoUV, uv, layer, mask, fragX, splitPositionPx, dna, dayFade);
+    let rawUV_dx = selectLayerUVDerivative(rawGeoUV_dx, rawWebMercUV_dx, useWMT);
+    let rawUV_dy = selectLayerUVDerivative(rawGeoUV_dy, rawWebMercUV_dy, useWMT);
+    let r = applyImageryLayer(color, alpha, tex, geoUV, uv, layer, mask, fragX, splitPositionPx, dna, dayFade, rawUV_dx, rawUV_dy);
     color = r.color; alpha = r.alpha;
-    color = applyNightLightsEmission(color, r.adjustedColor, nightBlend, dna.y, dna.x);
+    nightImageryCoverage = max(nightImageryCoverage, r.nightCoverage);
+    color = applyNightLightsEmission(color, r.adjustedColor, nightBlend, dna.y, dna.x, r.nightFade);
   }
   if (count >= 9u) {
     let layer = tile.layers[8];
@@ -4629,9 +4787,12 @@ fn fragmentMain(
     let tex = sampleImagery(dayTexture8, texSampler, uv, layer, uv_dx, uv_dy);
     let dna = tile.dayNightAlpha[4].xy;
     let mask = select(0.0, 1.0, isolate < 0 || isolate == 8);
-    let r = applyImageryLayer(color, alpha, tex, geoUV, uv, layer, mask, fragX, splitPositionPx, dna, dayFade);
+    let rawUV_dx = selectLayerUVDerivative(rawGeoUV_dx, rawWebMercUV_dx, useWMT);
+    let rawUV_dy = selectLayerUVDerivative(rawGeoUV_dy, rawWebMercUV_dy, useWMT);
+    let r = applyImageryLayer(color, alpha, tex, geoUV, uv, layer, mask, fragX, splitPositionPx, dna, dayFade, rawUV_dx, rawUV_dy);
     color = r.color; alpha = r.alpha;
-    color = applyNightLightsEmission(color, r.adjustedColor, nightBlend, dna.y, dna.x);
+    nightImageryCoverage = max(nightImageryCoverage, r.nightCoverage);
+    color = applyNightLightsEmission(color, r.adjustedColor, nightBlend, dna.y, dna.x, r.nightFade);
   }
   if (count >= 10u) {
     let layer = tile.layers[9];
@@ -4642,9 +4803,12 @@ fn fragmentMain(
     let tex = sampleImagery(dayTexture9, texSampler, uv, layer, uv_dx, uv_dy);
     let dna = tile.dayNightAlpha[4].zw;
     let mask = select(0.0, 1.0, isolate < 0 || isolate == 9);
-    let r = applyImageryLayer(color, alpha, tex, geoUV, uv, layer, mask, fragX, splitPositionPx, dna, dayFade);
+    let rawUV_dx = selectLayerUVDerivative(rawGeoUV_dx, rawWebMercUV_dx, useWMT);
+    let rawUV_dy = selectLayerUVDerivative(rawGeoUV_dy, rawWebMercUV_dy, useWMT);
+    let r = applyImageryLayer(color, alpha, tex, geoUV, uv, layer, mask, fragX, splitPositionPx, dna, dayFade, rawUV_dx, rawUV_dy);
     color = r.color; alpha = r.alpha;
-    color = applyNightLightsEmission(color, r.adjustedColor, nightBlend, dna.y, dna.x);
+    nightImageryCoverage = max(nightImageryCoverage, r.nightCoverage);
+    color = applyNightLightsEmission(color, r.adjustedColor, nightBlend, dna.y, dna.x, r.nightFade);
   }
   if (count >= 11u) {
     let layer = tile.layers[10];
@@ -4655,9 +4819,12 @@ fn fragmentMain(
     let tex = sampleImagery(dayTexture10, texSampler, uv, layer, uv_dx, uv_dy);
     let dna = tile.dayNightAlpha[5].xy;
     let mask = select(0.0, 1.0, isolate < 0 || isolate == 10);
-    let r = applyImageryLayer(color, alpha, tex, geoUV, uv, layer, mask, fragX, splitPositionPx, dna, dayFade);
+    let rawUV_dx = selectLayerUVDerivative(rawGeoUV_dx, rawWebMercUV_dx, useWMT);
+    let rawUV_dy = selectLayerUVDerivative(rawGeoUV_dy, rawWebMercUV_dy, useWMT);
+    let r = applyImageryLayer(color, alpha, tex, geoUV, uv, layer, mask, fragX, splitPositionPx, dna, dayFade, rawUV_dx, rawUV_dy);
     color = r.color; alpha = r.alpha;
-    color = applyNightLightsEmission(color, r.adjustedColor, nightBlend, dna.y, dna.x);
+    nightImageryCoverage = max(nightImageryCoverage, r.nightCoverage);
+    color = applyNightLightsEmission(color, r.adjustedColor, nightBlend, dna.y, dna.x, r.nightFade);
   }
   if (count >= 12u) {
     let layer = tile.layers[11];
@@ -4668,9 +4835,12 @@ fn fragmentMain(
     let tex = sampleImagery(dayTexture11, texSampler, uv, layer, uv_dx, uv_dy);
     let dna = tile.dayNightAlpha[5].zw;
     let mask = select(0.0, 1.0, isolate < 0 || isolate == 11);
-    let r = applyImageryLayer(color, alpha, tex, geoUV, uv, layer, mask, fragX, splitPositionPx, dna, dayFade);
+    let rawUV_dx = selectLayerUVDerivative(rawGeoUV_dx, rawWebMercUV_dx, useWMT);
+    let rawUV_dy = selectLayerUVDerivative(rawGeoUV_dy, rawWebMercUV_dy, useWMT);
+    let r = applyImageryLayer(color, alpha, tex, geoUV, uv, layer, mask, fragX, splitPositionPx, dna, dayFade, rawUV_dx, rawUV_dy);
     color = r.color; alpha = r.alpha;
-    color = applyNightLightsEmission(color, r.adjustedColor, nightBlend, dna.y, dna.x);
+    nightImageryCoverage = max(nightImageryCoverage, r.nightCoverage);
+    color = applyNightLightsEmission(color, r.adjustedColor, nightBlend, dna.y, dna.x, r.nightFade);
   }
   if (count >= 13u) {
     let layer = tile.layers[12];
@@ -4681,9 +4851,12 @@ fn fragmentMain(
     let tex = sampleImagery(dayTexture12, texSampler, uv, layer, uv_dx, uv_dy);
     let dna = tile.dayNightAlpha[6].xy;
     let mask = select(0.0, 1.0, isolate < 0 || isolate == 12);
-    let r = applyImageryLayer(color, alpha, tex, geoUV, uv, layer, mask, fragX, splitPositionPx, dna, dayFade);
+    let rawUV_dx = selectLayerUVDerivative(rawGeoUV_dx, rawWebMercUV_dx, useWMT);
+    let rawUV_dy = selectLayerUVDerivative(rawGeoUV_dy, rawWebMercUV_dy, useWMT);
+    let r = applyImageryLayer(color, alpha, tex, geoUV, uv, layer, mask, fragX, splitPositionPx, dna, dayFade, rawUV_dx, rawUV_dy);
     color = r.color; alpha = r.alpha;
-    color = applyNightLightsEmission(color, r.adjustedColor, nightBlend, dna.y, dna.x);
+    nightImageryCoverage = max(nightImageryCoverage, r.nightCoverage);
+    color = applyNightLightsEmission(color, r.adjustedColor, nightBlend, dna.y, dna.x, r.nightFade);
   }
   if (count >= 14u) {
     let layer = tile.layers[13];
@@ -4694,9 +4867,12 @@ fn fragmentMain(
     let tex = sampleImagery(dayTexture13, texSampler, uv, layer, uv_dx, uv_dy);
     let dna = tile.dayNightAlpha[6].zw;
     let mask = select(0.0, 1.0, isolate < 0 || isolate == 13);
-    let r = applyImageryLayer(color, alpha, tex, geoUV, uv, layer, mask, fragX, splitPositionPx, dna, dayFade);
+    let rawUV_dx = selectLayerUVDerivative(rawGeoUV_dx, rawWebMercUV_dx, useWMT);
+    let rawUV_dy = selectLayerUVDerivative(rawGeoUV_dy, rawWebMercUV_dy, useWMT);
+    let r = applyImageryLayer(color, alpha, tex, geoUV, uv, layer, mask, fragX, splitPositionPx, dna, dayFade, rawUV_dx, rawUV_dy);
     color = r.color; alpha = r.alpha;
-    color = applyNightLightsEmission(color, r.adjustedColor, nightBlend, dna.y, dna.x);
+    nightImageryCoverage = max(nightImageryCoverage, r.nightCoverage);
+    color = applyNightLightsEmission(color, r.adjustedColor, nightBlend, dna.y, dna.x, r.nightFade);
   }
   if (count >= 15u) {
     let layer = tile.layers[14];
@@ -4707,9 +4883,12 @@ fn fragmentMain(
     let tex = sampleImagery(dayTexture14, texSampler, uv, layer, uv_dx, uv_dy);
     let dna = tile.dayNightAlpha[7].xy;
     let mask = select(0.0, 1.0, isolate < 0 || isolate == 14);
-    let r = applyImageryLayer(color, alpha, tex, geoUV, uv, layer, mask, fragX, splitPositionPx, dna, dayFade);
+    let rawUV_dx = selectLayerUVDerivative(rawGeoUV_dx, rawWebMercUV_dx, useWMT);
+    let rawUV_dy = selectLayerUVDerivative(rawGeoUV_dy, rawWebMercUV_dy, useWMT);
+    let r = applyImageryLayer(color, alpha, tex, geoUV, uv, layer, mask, fragX, splitPositionPx, dna, dayFade, rawUV_dx, rawUV_dy);
     color = r.color; alpha = r.alpha;
-    color = applyNightLightsEmission(color, r.adjustedColor, nightBlend, dna.y, dna.x);
+    nightImageryCoverage = max(nightImageryCoverage, r.nightCoverage);
+    color = applyNightLightsEmission(color, r.adjustedColor, nightBlend, dna.y, dna.x, r.nightFade);
   }
   if (count >= 16u) {
     let layer = tile.layers[15];
@@ -4720,9 +4899,12 @@ fn fragmentMain(
     let tex = sampleImagery(dayTexture15, texSampler, uv, layer, uv_dx, uv_dy);
     let dna = tile.dayNightAlpha[7].zw;
     let mask = select(0.0, 1.0, isolate < 0 || isolate == 15);
-    let r = applyImageryLayer(color, alpha, tex, geoUV, uv, layer, mask, fragX, splitPositionPx, dna, dayFade);
+    let rawUV_dx = selectLayerUVDerivative(rawGeoUV_dx, rawWebMercUV_dx, useWMT);
+    let rawUV_dy = selectLayerUVDerivative(rawGeoUV_dy, rawWebMercUV_dy, useWMT);
+    let r = applyImageryLayer(color, alpha, tex, geoUV, uv, layer, mask, fragX, splitPositionPx, dna, dayFade, rawUV_dx, rawUV_dy);
     color = r.color; alpha = r.alpha;
-    color = applyNightLightsEmission(color, r.adjustedColor, nightBlend, dna.y, dna.x);
+    nightImageryCoverage = max(nightImageryCoverage, r.nightCoverage);
+    color = applyNightLightsEmission(color, r.adjustedColor, nightBlend, dna.y, dna.x, r.nightFade);
   }
   //>>endif
 
@@ -5021,15 +5203,18 @@ fn fragmentMain(
   // Procedural night darkening, for the share of the night side no imagery
   // layer covers.
   //
-  // `tile.hsbShift.w` carries `globe.nightDarkness` already scaled by that
-  // share on the CPU: where a night layer covers the night side completely the
-  // scale resolves to 1.0 and this guard shuts, because the night appearance
-  // comes from the layer there and darkening it a second time would dim the
-  // city lights; where the layer has faded out — below the deepest level its
-  // pyramid contains, one texel would otherwise cover a whole tile — the full
+  // `tile.hsbShift.w` carries `globe.nightDarkness`, the floor the fallback
+  // aims at. The share the layers actually cover is `nightImageryCoverage`,
+  // resolved per fragment while they composited: where a night layer covers the
+  // night side completely the term resolves to 1.0, because the night
+  // appearance comes from the layer there and darkening it a second time would
+  // dim the city lights; where the layer has faded out — past the deepest level
+  // its pyramid contains, where one texel spreads across the screen — the full
   // darkness comes back; and in between the two hand over continuously instead
-  // of stepping. GLSL reads the same scaled uniform and derives its
-  // `APPLY_NIGHT_DARKNESS` define from it at compile time.
+  // of stepping, including across a terrain LOD seam, which a share folded from
+  // one tile's texel count could not. GLSL reads the same floor and resolves
+  // the same per-fragment share, and derives its `APPLY_NIGHT_DARKNESS` define
+  // from the floor alone.
   //
   // Ahead of the lighting branch rather than after it, because every term in
   // that branch is a multiply while the terminator glow it ends with is an ADD:
@@ -5042,7 +5227,17 @@ fn fragmentMain(
   // behaviour for the LIGHTING term and the opposite of what this term exists
   // to do.
   if (tile.hsbShift.w < 1.0) {
-    color = color * mix(1.0, tile.hsbShift.w, nightBlend);
+    // Written as a mix rather than as `1 + (floor - 1) * (1 - coverage)`
+    // because only this form is EXACT at both ends in f32. That one reaches the
+    // floor through a subtract and a multiply, and at the shipped 0.15 the round
+    // trip lands two units in the last place low - on every fragment no night
+    // layer covers, which is every street-altitude frame and every globe that
+    // switched the night imagery off. This returns the floor's own bits at zero
+    // coverage and exactly 1.0 at full coverage, so the uncovered path is the
+    // identity of what the packer sent and the covered path is the identity of
+    // the colour underneath it.
+    let effectiveNightDarkness = mix(tile.hsbShift.w, 1.0, clamp(nightImageryCoverage, 0.0, 1.0));
+    color = color * mix(1.0, effectiveNightDarkness, nightBlend);
   }
 
   // Lambert diffuse lighting and shadow receive.

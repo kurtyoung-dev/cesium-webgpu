@@ -108,6 +108,29 @@ corrected with it.
 The remaining ~30 medium and all low survivors are enumerated in §5 with their lane column reading
 QUEUED; they dispatch after Q-1…Q-10, batched by file so one Sol dispatch closes several small
 findings in the same module. C1's returning findings append here as a dated addendum.
+### NIGHTFADE LANDED - Batch 1280 (2026-08-29 ~04:00 machine clock): the night fade becomes texels per screen pixel, per fragment
+
+| | Row | Disposition |
+|---|---|---|
+| Q-63 + Q-64 | FIXED (Edge-pending: J0 = the FIRST COMPILE of both dialects, blocking; J1 onset sweep; J2 orbit byte-identity vs the banked 3c capture; J3 street; J4/J5 column-profile seam step <= 4.0 at 42 km vs 19.61 before; J6; J7 incl. eclipse-globe-umbra-rte) | the per-tile texel-count fade (blind to screen size and to LOD) replaced by rho = texels per screen pixel from the raw tile-UV derivatives at the fragment, smoothstep over log2 between 16 px/texel (full) and 64 (zero); >= 1000 km exactly 1.0 so orbit is unchanged by arithmetic; LOD-invariant by construction (Q-64); fallback coverage moved to the shader with the reviewer's `mix(floor, 1.0, clamp(cov,0,1))` so the shipped 0.15 returns its own bits at zero coverage (2-ULP drift removed) - C2d/C2e execute the share RHS of both shaders under both lowerings; emission carries the weight; tile UB `_layerPad` -> `nightFadeTilePixels` (24 floats, no offset moves); knee 1/16 & 1/64 kept (reviewer concurs). Landed via git apply --3way: one conflict, in the wgsl-mini-eval.mjs HEADER COMMENT only (Q-62's ?:/select paragraph vs the fade lane's vec2 paragraph) - merged by hand keeping both; code merged clean (6 grammar hits). Seat naga check: the three existing define-sweep specs that naga-validate GlobeTerrain.wgsl ran GREEN on the edited shader in the clone (76/76). Gates at the seat: 11-spec battery 343/343, eslint 0, prettier 0, C16 0, tsc 0, catalog regenerated after staging. NOT BUILT (Edge 3e-C running - no rebuild permitted); rebuild + 3e-D J0 owed |
+| NIGHTFADE-D1 | PENDING MAINTAINER eyeball on J1 | knee 1/16 & 1/64 landed as the reviewer-endorsed default; 500 km at 0.876 is the tripwire (D3 > 0.85) |
+
+### SC2 review LAND-WITH-FIXES; SC2-D2 recommendation on the record (2026-08-29 ~03:55 machine clock)
+
+| | Row | Disposition |
+|---|---|---|
+| SC2 review | LAND-WITH-FIXES (`cesium-lane-sc2/_lane-out/SC2_REVIEW_PASS1.md`, 738 lines); lead applying, lane frozen after | app-side Q-94a/b/c/d correct, no defect found; re-baselined after the empty-value fix (22-string probe: A3/A4 silent, 19 rows byte-identical). B1: the certification sweep can never exit 0 - `timeline` builds no viewer so both scorers fail closed with no allowlist -> exported NO_VIEWER_IDS inverting both scorers (assertion, not skip). N2: unbounded frame.evaluate -> per-demo TIMEOUT outcome. Packet corrections: force exposure is 32 demos (28 literal pins + 3 param-defaulted + earth-at-night) plus webgpu-depth-of-field throwing -> working; test-tooling-catalog 82/91; the two new Tools files DO add census rows once staged (catalog reads git ls-files --cached) - seat regenerates after staging as always. Independent: 338/338 parse both modes; preamble exactly 2 lines in all four mode/FPS combos; legacy smoke gate byte-preserved; main's smoke file has zero frameNumber occurrences (the memo was wrong, the lane right) |
+| SC2-D2 | PENDING MAINTAINER - reviewer recommends ACCEPT the force in single mode | with the force, `?renderer=webgl` is one uniform predicate over 338 ids; without it the WebGL certification leg is permanently red for 32 demos and needs a per-demo expected-renderer table that cannot tell an intended pin from an accidental fallback; 'pin wins' would re-create the exact D4 defect this lane removed and leave webgpu-depth-of-field broken. Recommended mitigation: a 'renderer pinned/overridden' marker in the pane (not built - awaits the ruling); confinement to the split pane costs ~10 lines (2 prop types, 3 Bucket.tsx call sites, 1 Helpers.ts param) if the maintainer prefers it |
+| Q-110 | NEW (review F1) | `webgpu-depth-of-field` pins renderer:webgpu in a SYNC constructor's options and throws at the product default; fixed as a side effect of SC2 - add a gallery lint rejecting `renderer:` inside a sync `new Cesium.Viewer(`/`CesiumWidget(` options object | Sol-bounded |
+| Q-111 | NEW (review F5) | four demos carry now-dead self-selection code reading the bucket iframe's always-empty query string | Sol-bounded (cleanup) |
+
+### Edge tranche 3e-C dispatched; clone retirements (2026-08-29 ~03:45 machine clock)
+
+| | Row | Disposition |
+|---|---|---|
+| EDGE 3e-C | DISPATCHED on build 3cb2a44ca89c (= tip d7cde37900 + the held 4096 tier); no rebuild while it runs | J0 preflight with the new served-build helper on BOTH bundles; J1 Q-62 twilight probe (differencePeak >= 8, starPx > 0, STRUCTURAL -> PASS; leg 2 replaced; leg 4 isolates Q-109); J2 Q-62-D1 appearance A/B for the maintainer - four clocks x zenith/anti-solar, both backends, eyeball frame sun +10 anti-solar, mismatch vs the enableLighting=true sky, plus a sun -9 anti-solar pair for Q-109; J3 the S5 BROWSER probes (dense-cost, multiview, replacement-device) with the Batch 1279 instruments; J4 Q-95 confirmation LAST (gulp test regenerates the barrel; the bundle survives a failed build; zero-match baseline exit recorded pre-Q-83) |
+| CLONES | instr2 landed + archived (14 files) but its root is still held open - retire when the rename test passes, never force; q62 landed + archived (22 files), KEPT until 3e-C has read its packet | live: instr (pass 2), nightfade (fixes), sc2 (review), q78, q101 |
+
 ### INSTR2 LANDED - Batch 1279 (2026-08-29 ~03:35 machine clock): Q-95, Q-96, Q-98, Q-99
 
 | | Row | Disposition |

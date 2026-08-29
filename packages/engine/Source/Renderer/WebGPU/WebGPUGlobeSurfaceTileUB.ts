@@ -9,7 +9,8 @@
  *   - Per-imagery-layer block (16 layers × 24 floats): translationAndScale,
  *     texCoordsRectangle, colorToAlpha (rgb + threshold), cutoutRectangle
  *     (in tile-UV), alpha/brightness/contrast/saturation,
- *     hue/oneOverGamma/split.
+ *     hue/oneOverGamma/split, and the tile size the layer's night-imagery
+ *     magnification fade is measured against.
  *   - dayNightAlpha[8] vec4 array (packed 2 layers per vec4).
  *   - useWebMercatorTLayer[4] vec4 array (packed 4 layers per vec4).
  *   - Scalars: layerCount, fog density/offset/minBrightness, water-mask
@@ -84,7 +85,10 @@ import { clipRectangleAntimeridian } from "../../Scene/GlobeSurfaceTileProviderR
 // The night layer's resolution fade is one law for both backends, so it lives
 // in the Scene leaf the WebGL packer reads and is imported here rather than
 // restated. Backend-neutral pure function.
-import { resolveNightImageryFade } from "../../Scene/GlobeNightImagery.js";
+import {
+  nightImageryTileIsRetired,
+  resolveNightImageryFadeTilePixels,
+} from "../../Scene/GlobeNightImagery.js";
 // WebGL's day/night camera-distance lighting fade lives in its own leaf for
 // the same reason as `WebGPUGlobeTunables`: the packer, the shader and the
 // Node spec that cross-checks both against `GlobeFS.glsl` all need to read one
@@ -168,13 +172,6 @@ export function createTileUniformBuffer(
   // into the APPLY_DAY_NIGHT_ALPHA define; here it becomes a uniform, because
   // the WGSL selects its arms at runtime rather than at compile time.
   let dayNightAlphaActive = false;
-  // How much of this tile's night side the imagery stack actually covers, as
-  // the largest night-side opacity any day/night layer resolves to here. The
-  // procedural fallback is scaled by the complement, so the night side is
-  // darkened once whether the darkening comes from a layer or from the
-  // fallback. WebGL derives the same number from the same resolved slots.
-  let nightLayerCoverage = 0;
-
   for (
     let i = 0;
     i < passLayers.length && layerCount < MAX_IMAGERY_LAYERS;
@@ -188,15 +185,12 @@ export function createTileUniformBuffer(
 
     // Below the deepest level the bundled night pyramid contains, one of its
     // texels covers the whole terrain tile and replaces the scene under it with
-    // a single flat colour. The fade retires the layer across the last few
-    // levels where it still carries structure within a tile; at zero the layer
-    // takes no slot at all, so the tile packs exactly as it would with no night
-    // layer attached and the procedural fallback takes the night side back.
-    const nightImageryFade = resolveNightImageryFade(
-      imagery.imageryLayer,
-      tileImagery,
-    );
-    if (nightImageryFade === 0.0) {
+    // a single flat colour. The magnification fade itself is a per-fragment
+    // weight the shader resolves; this is the bound past which no fragment of
+    // this tile can carry any, so the layer takes no slot at all and the tile
+    // packs exactly as it would with no night layer attached, with the
+    // procedural fallback taking the night side back.
+    if (nightImageryTileIsRetired(imagery.imageryLayer, tileImagery)) {
       continue;
     }
 
@@ -380,7 +374,10 @@ export function createTileUniformBuffer(
     // pow when |oneOverGamma - 1| < 1e-4 so default fast-path is free.
     data[baseOffset + 21] = gammaResolved !== 0 ? 1.0 / gammaResolved : 1.0;
     data[baseOffset + 22] = splitResolved;
-    data[baseOffset + 23] = 0;
+    // The tile size the layer's magnification fade is measured against. Zero
+    // for every layer the globe did not attach itself, which is the sentinel
+    // that leaves the shader's weight at exactly 1.0 for them.
+    data[baseOffset + 23] = resolveNightImageryFadeTilePixels(layer);
 
     // useWebMercatorT (packed 4 layers per vec4). Bit i in the layer
     // sequence maps to component (i % 4) of vec4 (i / 4).
@@ -418,30 +415,10 @@ export function createTileUniformBuffer(
       layer,
       tile,
     );
-    // The night layer retires with magnification; every other layer resolves a
-    // factor of exactly 1.0, so for them this multiply is the identity and the
-    // slot keeps the bytes it had. It lands before the flag below is read back
-    // off the slot, so the runtime gate and the value it blends can never
-    // disagree. WebGL applies the same factor to the same slot in the same
-    // order.
-    data[dnFloatBase + 1] *= nightImageryFade;
     // Read back the slots rather than the properties: a callback has already
     // been resolved here, and it is the resolved number the shader will blend.
     if (data[dnFloatBase + 0] !== 1.0 || data[dnFloatBase + 1] !== 1.0) {
       dayNightAlphaActive = true;
-    }
-
-    // Only a layer that asked for a day/night pair covers the night side; a
-    // pair still at (1, 1) is an ordinary layer covering day and night alike,
-    // which is not what the procedural fallback is the complement of. The
-    // opacity is the packed night alpha — resolution fade and callback already
-    // in it — times the layer's own alpha slot.
-    const nightSideOpacity =
-      data[dnFloatBase + 0] === 1.0 && data[dnFloatBase + 1] === 1.0
-        ? 0
-        : data[dnFloatBase + 1] * data[baseOffset + 16];
-    if (nightSideOpacity > nightLayerCoverage) {
-      nightLayerCoverage = nightSideOpacity;
     }
 
     layerCount++;
@@ -828,23 +805,22 @@ export function createTileUniformBuffer(
   // multiplicative identity, which is also what a tile provider that never
   // heard of the property resolves to.
   //
-  // The suppression against the layer path is folded in here rather than left
-  // to the shader: the fallback supplies the share of the night side the layers
-  // leave uncovered, so full coverage scales it back to the identity — which is
-  // the value that shuts the shader's own guard — and partial coverage tops the
-  // night side up instead of doubling it or ignoring it. WebGL folds the same
-  // product into `u_nightDarkness` and derives its `APPLY_NIGHT_DARKNESS`
-  // define from the result, so both backends read one scaled number.
+  // The suppression against the layer path is NOT folded in here: the fallback
+  // supplies the share of the night side the layers leave uncovered, and that
+  // share is a per-fragment quantity because the magnification fade producing it
+  // is one — folded from a single tile's texel count it steps across a terrain
+  // LOD seam, where the magnification itself does not. So the floor travels and
+  // the shader resolves the share while the layers composite; full coverage
+  // still leaves the term at the identity. WebGL packs the same floor into
+  // `u_nightDarkness` and derives its `APPLY_NIGHT_DARKNESS` define from it, so
+  // both backends read one number and resolve one share.
   const nightDarkness = (tileProvider as { nightDarkness?: number })
     .nightDarkness;
   const sanitizedNightDarkness =
     typeof nightDarkness === "number" && Number.isFinite(nightDarkness)
       ? Math.min(Math.max(nightDarkness, 0.0), 1.0)
       : 1.0;
-  data[HSB_SHIFT_OFFSET + 3] =
-    1.0 +
-    (sanitizedNightDarkness - 1.0) *
-      (1.0 - Math.min(Math.max(nightLayerCoverage, 0.0), 1.0));
+  data[HSB_SHIFT_OFFSET + 3] = sanitizedNightDarkness;
 
   // Ground-atmosphere control. Drives the no-fog ground-atmosphere drape path
   // in GlobeTerrain.wgsl, matching WebGL's `#else` branch in GlobeFS.glsl that

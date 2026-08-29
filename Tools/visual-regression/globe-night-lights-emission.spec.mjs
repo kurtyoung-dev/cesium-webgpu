@@ -147,14 +147,22 @@ function emissionLawFrom(source, patterns) {
      * The shipped law as a function. `packedIntensity` is the number the CPU
      * wrote into the slot, so the sentinel arm is part of what is executed.
      */
-    emission(layerColor, nightBlend, nightAlpha, dayAlpha, packedIntensity) {
+    emission(
+      layerColor,
+      nightBlend,
+      nightAlpha,
+      dayAlpha,
+      packedIntensity,
+      magnificationFade = 1,
+    ) {
       const isNightLayer = dayAlpha + epsilon <= nightAlpha ? 1 : 0;
       const lum =
         layerColor[0] * rgb[0] +
         layerColor[1] * rgb[1] +
         layerColor[2] * rgb[2];
       const intensity = packedIntensity < 0 ? fallback : packedIntensity;
-      const scale = lum * nightBlend * intensity * isNightLayer;
+      const scale =
+        lum * nightBlend * intensity * isNightLayer * magnificationFade;
       return [
         layerColor[0] * scale,
         layerColor[1] * scale,
@@ -290,9 +298,32 @@ test("A3: the product multiplies the same five things on both backends", () => {
     "isNightLayer",
     "layerColor",
     "lum",
+    "magnificationFade",
     "nightBlend",
     "nightIntensity",
   ]);
+});
+
+test("A3b: the magnification weight scales the emission on both backends", () => {
+  // The sixth factor, executed rather than counted. A layer that has thinned
+  // out with magnification must take its lights with it: leaving them at full
+  // strength while the layer behind them fades is what turned a wash into a
+  // brighter wash.
+  for (const source of [wgsl, glsl]) {
+    const law = emissionLawFrom(
+      source,
+      source === wgsl ? WGSL_PATTERNS : GLSL_PATTERNS,
+    );
+    const full = law.emission([0.9, 0.85, 0.6], 1, 1, 0, 2.5, 1)[0];
+    const half = law.emission([0.9, 0.85, 0.6], 1, 1, 0, 2.5, 0.5)[0];
+    const gone = law.emission([0.9, 0.85, 0.6], 1, 1, 0, 2.5, 0)[0];
+    assert.ok(full > 0, `${law.name}: the emitting case must emit`);
+    assert.ok(
+      Math.abs(half - full * 0.5) < 1e-12,
+      `${law.name}: half the weight, half the emission`,
+    );
+    assert.equal(gone, 0, `${law.name}: a retired layer emits nothing`);
+  }
 });
 
 // ─── B. the gate is the alpha pair ───────────────────────────────────────────
@@ -536,7 +567,7 @@ test("D2: WebGL compiles the term for a globe that asked for nothing", () => {
   );
   assert.match(
     shaderSet,
-    /if \(applyNightLights\) \{\s*computeDayColor \+= `\\\n\s*color\.rgb = applyNightLightsEmission\(color\.rgb, g_nightLightsLayerColor, nightBlend, u_dayTextureNightAlpha\[\$\{i\}\], u_dayTextureDayAlpha\[\$\{i\}\]\);\\n`;\s*\}/,
+    /if \(applyNightLights\) \{\s*computeDayColor \+= `\\\n\s*color\.rgb = applyNightLightsEmission\(color\.rgb, g_nightLightsLayerColor, nightBlend, u_dayTextureNightAlpha\[\$\{i\}\], u_dayTextureDayAlpha\[\$\{i\}\], g_nightImageryFade\);\\n`;\s*\}/,
     "the define must actually generate a call, per layer",
   );
   // ...and the generated call must sit inside the per-layer loop rather than
@@ -557,8 +588,15 @@ test("D3: the emitting WebGL variant can only exist where its uniforms do", () =
   // that combination, so it is pinned as a property rather than as text.
   assert.match(
     glsl,
-    /#ifdef APPLY_DAY_NIGHT_ALPHA\nuniform float u_dayTextureNightAlpha\[TEXTURE_UNITS\];\nuniform float u_dayTextureDayAlpha\[TEXTURE_UNITS\];\n#endif/,
+    /#ifdef APPLY_DAY_NIGHT_ALPHA\nuniform float u_dayTextureNightAlpha\[TEXTURE_UNITS\];\nuniform float u_dayTextureDayAlpha\[TEXTURE_UNITS\];\n/,
   );
+  for (const name of ["u_dayTextureNightAlpha", "u_dayTextureDayAlpha"]) {
+    assert.equal(
+      (glsl.match(new RegExp(`uniform float ${name}\\[`, "g")) ?? []).length,
+      1,
+      `${name} must be declared once, behind the define`,
+    );
+  }
   const derive = tileRendering.match(
     /surfaceShaderSetOptions\.applyNightLights =\s*([^;]+);/,
   );
@@ -589,7 +627,7 @@ test("D3: the emitting WebGL variant can only exist where its uniforms do", () =
 test("D4: WebGPU runs the term on every unrolled layer slot", () => {
   const calls =
     stripLineComments(wgsl).match(
-      /color = applyNightLightsEmission\(color, r\.adjustedColor, nightBlend, dna\.y, dna\.x\);/g,
+      /color = applyNightLightsEmission\(color, r\.adjustedColor, nightBlend, dna\.y, dna\.x, r\.nightFade\);/g,
     ) ?? [];
   assert.equal(
     calls.length,
@@ -732,7 +770,7 @@ test("E0: the verdict is TRUE on the shipped tree", () => {
 test("E1: ABSENCE — the GLSL emission term deleted", () => {
   withMutation(
     GLSL_PATH,
-    "    float nightIntensity = nightLightsIntensity();\n    vec3 emission = layerColor * lum * nightBlend * nightIntensity * isNightLayer;\n    return color + emission;",
+    "    float nightIntensity = nightLightsIntensity();\n    vec3 emission = layerColor * lum * nightBlend * nightIntensity * isNightLayer * magnificationFade;\n    return color + emission;",
     "    return color;",
     false,
   );

@@ -23,16 +23,18 @@
 // properties that hold with room to spare rather than bit-level equality with
 // a device.
 //
-// Supported: `let` / `var` bindings, a single guarded early `return`, a final
+// Supported: `let` / `var` bindings, guarded early `return`s, a final
 // `return`, unary minus, `+ - * /`, comparisons, `&&`, `||`, the conditional
-// operator `c ? a : b`, member access, `vec3<f32>` construction, and the
-// builtins listed in `BUILTINS`.
+// operator `c ? a : b`, member access, `vec2<f32>` and `vec3<f32>`
+// construction, and the builtins listed in `BUILTINS`. A `vec2` is a 3-vector
+// with a zero third component, so `length` and the component-wise operators
+// read it correctly.
 //
 // WHY THE CONDITIONAL OPERATOR IS HERE. A shader inertness image works by
 // putting the pre-fix text back on a copy of the source and re-running the same
 // reader over it. Without `?:` and `select`, a reverted GLSL ternary or WGSL
 // `select` made the reader THROW, so the image went red by parser failure
-// rather than by a measured value — which cannot distinguish "the fix is load
+// rather than by a measured value - which cannot distinguish "the fix is load
 // bearing" from "the mutant is unreadable". Both spellings evaluate now, so a
 // mutation image reports the number the reverted shader would produce.
 //
@@ -162,6 +164,7 @@ const BUILTINS = {
   min: (a, b) => Math.min(a, b),
   abs: (a) => Math.abs(a),
   sqrt: (a) => Math.sqrt(a),
+  log2: (a) => Math.log2(a),
   pow: (a, b) => Math.pow(a, b),
   clamp: (v, lo, hi) => Math.min(Math.max(v, lo), hi),
   smoothstep: (edge0, edge1, x) => {
@@ -341,6 +344,13 @@ function evaluate(node, env) {
     }
     case "call": {
       const args = node.args.map((a) => evaluate(a, env));
+      if (node.name === "vec2") {
+        // A 2-vector is a 3-vector with a zero third component, so `length`
+        // and the component-wise operators read it with no special case.
+        return args.length === 1
+          ? vec(args[0], args[0], 0)
+          : vec(args[0], args[1], 0);
+      }
       if (node.name === "vec3") {
         return args.length === 1
           ? vec(args[0], args[0], args[0])

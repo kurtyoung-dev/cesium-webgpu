@@ -30,7 +30,10 @@ import VertexArray from "../Renderer/VertexArray.js";
 import FeatureRendererKey from "../Renderer/FeatureRendererKey.js";
 import { resolveCelestialWaterTail } from "./CelestialWaterReflection.js";
 import { createEclipseGlobeShadow } from "./EclipseGlobeShadow.js";
-import { resolveNightImageryFade } from "./GlobeNightImagery.js";
+import {
+  nightImageryTileIsRetired,
+  resolveNightImageryFadeTilePixels,
+} from "./GlobeNightImagery.js";
 import GlobeSurfaceTile from "./GlobeSurfaceTile.js";
 import ImageryLayer from "./ImageryLayer.js";
 import PerInstanceColorAppearance from "./PerInstanceColorAppearance.js";
@@ -610,6 +613,9 @@ function createTileUniformMap(frameState, globeSurfaceTileProvider) {
     u_dayTextureDayAlpha: function () {
       return this.properties.dayTextureDayAlpha;
     },
+    u_dayTextureNightFadeTilePixels: function () {
+      return this.properties.dayTextureNightFadeTilePixels;
+    },
     u_dayTextureBrightness: function () {
       return this.properties.dayTextureBrightness;
     },
@@ -819,6 +825,7 @@ function createTileUniformMap(frameState, globeSurfaceTileProvider) {
       dayTextureAlpha: [],
       dayTextureNightAlpha: [],
       dayTextureDayAlpha: [],
+      dayTextureNightFadeTilePixels: [],
       dayTextureBrightness: [],
       dayTextureContrast: [],
       dayTextureHue: [],
@@ -2013,12 +2020,6 @@ function addDrawCommandsForTile(tileProvider, tile, frameState) {
     let applyGamma = false;
     let applyAlpha = false;
     let applyDayNightAlpha = false;
-    // How much of this tile's night side the imagery stack actually covers, as
-    // the largest night-side opacity any day/night layer resolves to here. The
-    // procedural fallback below is scaled by the complement, so the night side
-    // is darkened once whether the darkening comes from a layer or from the
-    // fallback, and neither doubles the other.
-    let nightLayerCoverage = 0.0;
     let applySplit = false;
     let applyCutout = false;
     let applyColorToAlpha = false;
@@ -2051,16 +2052,12 @@ function addDrawCommandsForTile(tileProvider, tile, frameState) {
 
       // Below the deepest level the bundled night pyramid contains, a single
       // one of its texels covers the whole terrain tile and replaces the scene
-      // under it with one flat colour. The fade retires the layer across the
-      // last few levels where it still carries structure within a tile; once it
-      // reaches zero the layer is not packed at all, so the tile renders exactly
-      // as it would with no night layer attached and the procedural fallback
-      // takes the night side back.
-      const nightImageryFade = resolveNightImageryFade(
-        imageryLayer,
-        tileImagery,
-      );
-      if (nightImageryFade === 0.0) {
+      // under it with one flat colour. The magnification fade itself is a
+      // per-fragment weight the shader resolves; this is the bound past which no
+      // fragment of this tile can carry any, so the layer is not packed at all
+      // and the tile renders exactly as it would with no night layer attached,
+      // with the procedural fallback taking the night side back.
+      if (nightImageryTileIsRetired(imageryLayer, tileImagery)) {
         continue;
       }
 
@@ -2092,13 +2089,6 @@ function addDrawCommandsForTile(tileProvider, tile, frameState) {
           imageryLayer,
           tileCoordinates,
         );
-      // The night layer retires with magnification; every other layer resolves
-      // a factor of exactly 1.0, so for them this multiply is the identity and
-      // the slot keeps the bytes it had. It lands before the define is derived
-      // from the slot, so the shader variant and the value it blends can never
-      // disagree.
-      uniformMapProperties.dayTextureNightAlpha[numberOfDayTextures] *=
-        nightImageryFade;
       applyDayNightAlpha =
         applyDayNightAlpha ||
         uniformMapProperties.dayTextureNightAlpha[numberOfDayTextures] !== 1.0;
@@ -2115,21 +2105,11 @@ function addDrawCommandsForTile(tileProvider, tile, frameState) {
         applyDayNightAlpha ||
         uniformMapProperties.dayTextureDayAlpha[numberOfDayTextures] !== 1.0;
 
-      // Only a layer that asked for a day/night pair covers the night side; a
-      // pair still at (1, 1) is an ordinary layer and covers day and night
-      // alike, which is not what the fallback is the complement of. The slots
-      // are read back rather than the properties, so a callback-valued alpha
-      // and the resolution fade are both already in the number.
-      if (
-        uniformMapProperties.dayTextureDayAlpha[numberOfDayTextures] !== 1.0 ||
-        uniformMapProperties.dayTextureNightAlpha[numberOfDayTextures] !== 1.0
-      ) {
-        nightLayerCoverage = Math.max(
-          nightLayerCoverage,
-          uniformMapProperties.dayTextureNightAlpha[numberOfDayTextures] *
-            uniformMapProperties.dayTextureAlpha[numberOfDayTextures],
-        );
-      }
+      // The tile size the layer's magnification fade is measured against. Zero
+      // for every layer the globe did not attach itself, which is the sentinel
+      // that leaves the shader's weight at exactly 1.0 for them.
+      uniformMapProperties.dayTextureNightFadeTilePixels[numberOfDayTextures] =
+        resolveNightImageryFadeTilePixels(imageryLayer);
 
       uniformMapProperties.dayTextureBrightness[numberOfDayTextures] =
         resolveImageryLayerValue(
@@ -2333,16 +2313,14 @@ function addDrawCommandsForTile(tileProvider, tile, frameState) {
     // The procedural night fallback is the complement of the layer path: it
     // supplies the share of the night side the layers leave uncovered, so the
     // night side is darkened once and a layer that half-covers it is topped up
-    // rather than either doubled or ignored. Full coverage resolves to the
-    // multiplicative identity, which is what shuts the define, so the old
-    // boolean suppression survives as the endpoint of the same expression. The
-    // WGSL twin reads this one scaled value instead of conjoining two inputs.
-    const effectiveNightDarkness =
-      1.0 +
-      (nightDarkness - 1.0) *
-        (1.0 - CesiumMath.clamp(nightLayerCoverage, 0.0, 1.0));
-    uniformMapProperties.nightDarkness = effectiveNightDarkness;
-    surfaceShaderSetOptions.applyNightDarkness = effectiveNightDarkness < 1.0;
+    // rather than either doubled or ignored. The floor travels here; the share
+    // the layers cover is resolved per FRAGMENT while they composite, because
+    // the magnification fade producing it is a per-fragment weight and a value
+    // folded from one tile's texel count steps across a terrain LOD seam. Full
+    // coverage still resolves the shader's term to the multiplicative identity,
+    // so a fragment a night layer covers is not darkened twice.
+    uniformMapProperties.nightDarkness = nightDarkness;
+    surfaceShaderSetOptions.applyNightDarkness = nightDarkness < 1.0;
     // City-light emission. The define is conjoined with the day/night alpha
     // condition because the emission gate compares a layer's night alpha
     // against its day alpha, and without that condition the generated call

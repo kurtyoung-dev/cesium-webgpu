@@ -364,7 +364,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | attachment-demand-registry.spec.mjs | spec | ACTIVE | 2026-08-16 | 5 | Pure-Node spec of computeAttachmentDemand (esbuild-transpiled TS): full 2^6 reader matrix + conservative-force + observe-only contracts. |
 | backend-isolation-lane-contract.spec.mjs | spec | ACTIVE | 2026-08-20 | 0 | Pin the backend-isolation split lane to the page's explicit launch and readiness contract. |
 | bug-11-imagery-probe.mjs | other | INVESTIGATION | 2026-08-16 | 1 | Early diagnostic dumping the per-tile imagery probe (debugShowImageryProbe) + canvas sample to discriminate three hypothesized BUG-11 root causes. |
-| build-source-identity.spec.mjs | spec | ACTIVE | — | 1 | Q-99 — regression coverage for the shared build-vs-source-tree |
+| build-source-identity.spec.mjs | spec | ACTIVE | 2026-08-29 | 1 | Q-99 — regression coverage for the shared build-vs-source-tree |
 | c11-13-public-voxel-pick-convergence.spec.mjs | spec | ACTIVE | 2026-08-16 | 1 | node:test contract for the public voxel-pick convergence state machine (two identical consecutive cells = stable; undefined never converges). |
 | c11-13-voxel-inside-camera-harness.mjs | other | ACTIVE | 2026-08-16 | 3 | Browser-side ESM harness driving a voxel octree scene through inside/outside-volume camera waypoints on either backend for the C11-13 probe. |
 | c11-13-voxel-inside-camera-probe.spec.mjs | spec | ACTIVE | 2026-08-27 | 3 | Browser-free policy + mutant suite for the physical Edge inside-camera voxel probe: waypoint sequence, pixel/command evidence, watchdog ordering. |
@@ -386,9 +386,9 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | c12-29-s4-orbital-sunrise-gate.spec.mjs | spec | ACTIVE | 2026-08-16 | 2 | Gate spec for C12-29 S4 orbital-sunrise certification: band/anchor constants, independent extinction oracle, artifact shape, probe route wiring. |
 | c12-29-s5-custom-ellipsoid-gate.spec.mjs | spec | ACTIVE | 2026-08-16 | 4 | Gate spec for the C12-29 S5 custom-ellipsoid certification: geometry oracles, eclipse bindings, cross-backend derivation, v6 gate fold, mutants. |
 | c12-29-s5-dense-cost-gate.spec.mjs | spec | ACTIVE | 2026-08-16 | 3 | Gate spec for the C12-29 S5 dense-cost certification: schedule/workload validation, long-task selection, legacy + superseded schema folds, sentinels. |
-| c12-29-s5-dense-cost-structural-refusal.spec.mjs | spec | ACTIVE | — | 0 | Q-96 — regression coverage for the dense-cost probe's structural |
+| c12-29-s5-dense-cost-structural-refusal.spec.mjs | spec | ACTIVE | 2026-08-29 | 0 | Q-96 — regression coverage for the dense-cost probe's structural |
 | c12-29-s5-multiview-gate.spec.mjs | spec | ACTIVE | 2026-08-16 | 2 | Gate spec for the C12-29 S5 multiview certification: phases, renderer set, WebGPU VR error contract, evidence lifecycle and lock/watchdog wiring. |
-| c12-29-s5-multiview-source-preflight.spec.mjs | spec | ACTIVE | — | 0 | Q-99 — regression coverage for the multiview probe's new |
+| c12-29-s5-multiview-source-preflight.spec.mjs | spec | ACTIVE | 2026-08-29 | 0 | Q-99 — regression coverage for the multiview probe's new |
 | c12-29-s5-replacement-device-gate.spec.mjs | spec | ACTIVE | 2026-08-21 | 2 | Certifies the S5 eclipse-shadow replacement-device evidence pipeline: schemas, phases, ledger/provenance validators, gate fold of its probe+lib pair. |
 | c12-29-s5-svs-footprint-gate.spec.mjs | spec | ACTIVE | 2026-08-16 | 4 | node:test half of the NASA/SVS umbra-footprint certification triple (probe + gate-lib + spec) for the S5 eclipse globe shadow. |
 | c12-29-s5-terrain-selection-gate.spec.mjs | spec | ACTIVE | 2026-08-16 | 2 | Certifies the S5 terrain-selection evidence gate: v4-v9 schema migrations, page-diagnostic validation, canonical capture checks, exit-code fold. |
@@ -488,7 +488,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | globe-daynight-ramp-law.spec.mjs | spec | ACTIVE | 2026-08-16 | 6 | Pins that GlobeTerrain.wgsl's day/night ramp and diffuse express GlobeFS.glsl's two laws, coefficients captured from both sources, with mutant tests. |
 | globe-material-pipeline-format-axis.spec.mjs | spec | NO @purpose HEADER | 2026-08-28 | 0 | — |
 | globe-night-darkness-fallback.spec.mjs | spec | ACTIVE | 2026-08-28 | 1 | Pins the procedural night-side darkening: one law on both backends, applied only where no night imagery layer is blending, with no camera-distance fade, and inert at its identity default. |
-| globe-night-imagery-magnification-fade.spec.mjs | spec | ACTIVE | 2026-08-28 | 0 | Pins the night layer's retirement past the deepest level its pyramid contains: full strength while a tile still resolves many texels, exactly nothing once one texel would cover the tile, identical on both backends, and inert for every layer the globe did not attach. |
+| globe-night-imagery-magnification-fade.spec.mjs | spec | ACTIVE | 2026-08-28 | 0 | Executes the night layer's magnification fade out of all three shipped copies - the JavaScript leaf, the WGSL globe shader and the GLSL one - holds them equal, pins both endpoints exactly, and proves the weight is continuous across a terrain LOD seam rather than stepping at it. |
 | globe-night-imagery-option.spec.mjs | spec | ACTIVE | 2026-08-28 | 2 | Pins the night-imagery option: default on, never injected into an application-managed imagery stack, off is upstream, and the bundled pyramid's level range is the one its provider will derive. |
 | globe-night-lights-default.spec.mjs | spec | ACTIVE | 2026-08-28 | 1 | Pins the durable Globe source default for night lights: shipped ON, with JSDoc that says so. |
 | globe-night-lights-emission.spec.mjs | spec | ACTIVE | 2026-08-28 | 0 | Pins city-light emission as ONE law on two shaders: the same gate, the same luminance, the same product and the same unset sentinel on both backends, reachable at the shipped defaults, and inert for a layer that is not a night layer. |
@@ -643,8 +643,8 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | probe-c11-90-primitive-restart-split.mjs | probe | ACTIVE | 2026-08-16 | 3 | Thin retained entry point running the C11-90 primitive-restart WebGL2-vs-WebGPU harness from lib/c11-90-primitive-restart-probe.mjs |
 | probe-c12-29-s4-orbital-sunrise.mjs | probe | ACTIVE | 2026-08-16 | 4 | Certifying 400 km orbital-sunrise acceptance: 181 pinned one-second samples in normal + blend-neutral lanes, fail-closed write-once evidence lifecycle |
 | probe-c12-29-s5-custom-ellipsoid.mjs | probe | ACTIVE | 2026-08-16 | 9 | Runtime certification that a custom oblate ellipsoid renders and derives identically on serial fresh WebGL and WebGPU contexts; write-once evidence |
-| probe-c12-29-s5-dense-cost.mjs | probe | ACTIVE | 2026-08-16 | 5 | Dense ACTIVE/INACTIVE eclipse-lane cost characterization: 24 child Node processes, each one fresh Edge running one 600-frame condition in frozen order |
-| probe-c12-29-s5-multiview.mjs | probe | ACTIVE | 2026-08-16 | 7 | Logical-View/stereo policy certification: offscreen ray View, WebGL two-eye VR executor, WebGPU synchronous unsupported-path rejection |
+| probe-c12-29-s5-dense-cost.mjs | probe | ACTIVE | 2026-08-29 | 5 | Dense ACTIVE/INACTIVE eclipse-lane cost characterization: 24 child Node processes, each one fresh Edge running one 600-frame condition in frozen order |
+| probe-c12-29-s5-multiview.mjs | probe | ACTIVE | 2026-08-29 | 7 | Logical-View/stereo policy certification: offscreen ray View, WebGL two-eye VR executor, WebGPU synchronous unsupported-path rejection |
 | probe-c12-29-s5-replacement-device.mjs | probe | ACTIVE | 2026-08-21 | 10 | Genuine device-loss recovery certification via Chromium GPU-process termination (never destroy()); 'destroyed' losses archived STRUCTURAL not recovery |
 | probe-c12-29-s5-svs-footprint.mjs | probe | ACTIVE | 2026-08-16 | 6 | Absolute NASA-SVS 5073 eclipse geospatial-footprint acceptance over the vendored four-row fixture + local QuantizedMesh, serial WebGL/WebGPU |
 | probe-c12-29-s5-terrain-selection.mjs | probe | ACTIVE | 2026-08-16 | 5 | Real-terrain/selection acceptance: fill-to-real transitions, x2 radius law, async picking, env-map capture over local QuantizedMesh, both backends |
@@ -1209,7 +1209,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | scene-derived-lighting-seam.spec.mjs | spec | ACTIVE | 2026-08-28 | 0 | Pins the atmosphere-derived scene lighting to the renderer seam: the shared scene code publishes one light for every backend, and the derived override reproduces the arithmetic it replaced. |
 | scene-octree-dirty-revision.spec.mjs | spec | ACTIVE | 2026-08-24 | 3 | Proves SceneOctree revision reuse, mutation rebuilds, and disabled/restored PVS behavior. |
 | scene-renderer-frame-seams.spec.mjs | spec | ACTIVE | 2026-08-29 | 0 | Guards the opaque-pass frame-start bookkeeping hoist, the viewport clamp's live-canvas bound, and the indirect run-of-one error report. |
-| served-build-preflight.spec.mjs | spec | ACTIVE | — | 1 | Q-98 — regression coverage for the served-vs-disk build preflight |
+| served-build-preflight.spec.mjs | spec | ACTIVE | 2026-08-29 | 1 | Q-98 — regression coverage for the served-vs-disk build preflight |
 | settle-attribution.spec.mjs | spec | ACTIVE | 2026-08-16 | 2 | Guard spec for the settle-window attribution rule + first-complete-frame metric, so GPU-submit-bound windows never book main-thread credit. |
 | sgp4-cpu-kernel.mjs | other | ACTIVE | 2026-08-16 | 5 | Demo/probe-owned CPU FP64 near-earth SGP4 kernel mirroring the WGSL kernel, shaped as a ComputeInstanceCollection cpuKernel (42-lane layout). |
 | sgp4-kernel.mjs | other | ACTIVE | 2026-08-16 | 4 | Demo/probe-owned SGP4 GPU artifacts: param-lane packer with df64 secular rates + the WGSL df64 time-update kernel string. |
@@ -1394,7 +1394,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | representative-performance-content.mjs | lib | ACTIVE | 2026-08-16 | 10 | Builds and validates the local procedural terrain+models+tiles representative scene configuration for offline performance workloads. |
 | representative-tileset-request-ledger.mjs | lib | ACTIVE | 2026-08-16 | 6 | Event-sourced ledger of tileset content requests (issue/terminal events, byte totals, hashes) with cross-run comparison for perf evidence. |
 | same-task-capture.mjs | lib | ACTIVE | 2026-08-16 | 49 | Canonical capture primitives that keep render+readback in one task (WebGL clears, WebGPU invalidates after present), plus embed-drift validators. |
-| served-build-preflight.mjs | lib | ACTIVE | — | 3 | Q-98 — fetch one or more served build artifacts and compare each to |
+| served-build-preflight.mjs | lib | ACTIVE | 2026-08-29 | 3 | Q-98 — fetch one or more served build artifacts and compare each to |
 | settle-attribution.mjs | lib | ACTIVE | 2026-08-16 | 6 | First-complete-frame metric plus the rule that stable-time credit requires a main-thread long-task reduction (GPU-bound settles book none). |
 | solar-bloom-glow.mjs | lib | ACTIVE | 2026-08-16 | 6 | Forward model of the sun bloom's additive glow-on-disc so differential disc measurements carry the non-cancelling bloom term correctly. |
 | star-contribution-census.mjs | lib | ACTIVE | 2026-08-29 | 2 | One home for the positional star-reachability control: luma planes, the absolute-frame census and the stars-on-minus-off difference census. |
@@ -1409,7 +1409,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | weather-probe-pinning.mjs | lib | ACTIVE | 2026-08-21 | 24 | Shared weather-probe determinism pins, ALL READ BACK from the live scene and the packed cloud uniform buffer, plus the canonical immutable same-frame capture; a pin that did not take is STRUCTURAL, never a product verdict. |
 | weather-regional-tail-evidence.mjs | lib | ACTIVE | 2026-08-16 | 2 | Fixture and pass/fail policy for the C13-08 rendered antimeridian weather-tail probe, mutation-tested against its two target regressions. |
 | webgpu-model-preparation-evidence.mjs | lib | ACTIVE | 2026-08-16 | 2 | Accumulates and validates WebGPU model preparation/demand counters as measurement-window evidence for performance workloads. |
-| wgsl-mini-eval.mjs | lib | ACTIVE | 2026-08-29 | 4 | Parses and evaluates the arithmetic subset of WGSL (let bindings, one guarded return, scalar and vec3 arithmetic, a fixed builtin set) so specs can run a shader function straight from the shipped source. |
+| wgsl-mini-eval.mjs | lib | ACTIVE | 2026-08-29 | 6 | Parses and evaluates the arithmetic subset of WGSL (let bindings, one guarded return, scalar and vec3 arithmetic, a fixed builtin set) so specs can run a shader function straight from the shipped source. |
 | wgsl-variant.mjs | lib | ACTIVE | 2026-08-16 | 10 | Exposes the engine's real WGSL preprocessor and define registry so specs validate the exact variant text pipelines compile, not raw ifdef source. |
 
 ### scripts/ (3)
@@ -1428,7 +1428,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | createIndexJs.spec.mjs | spec | ACTIVE | 2026-08-16 | 0 | Regression that the generated engine index omits private named-export temporal-history helpers yet still esbuild-bundles cleanly. |
 | engineTypeCheck.spec.mjs | spec | ACTIVE | 2026-08-28 | 1 | Proves the engine type check runs only in a built tree, propagates failure, announces every skip, and stays tied to the build artifact and the hook. |
 | karmaTestRun.spec.mjs | spec | ACTIVE | 2026-08-16 | 3 | Static coverage of the Gulp/Karma completion bridge via a fake Karma server: strict result config, retries, disconnect/error exit codes. |
-| prepareCesiumOutputDirectory.spec.mjs | spec | ACTIVE | — | 2 | Regression that `clean:false` never removes files already on disk while `clean:true` still wipes the directory, so a failed rebuild cannot leave a served bundle directory both wiped and unreplaced. |
+| prepareCesiumOutputDirectory.spec.mjs | spec | ACTIVE | 2026-08-29 | 2 | Regression that `clean:false` never removes files already on disk while `clean:true` still wipes the directory, so a failed rebuild cannot leave a served bundle directory both wiped and unreplaced. |
 | shaderSourceToJavaScript.spec.mjs | spec | ACTIVE | 2026-08-16 | 2 | Contract for the shader source-to-JS-module serializer: literal escapes, quotes, CRLF/lone-CR/U+2028 round-trips through real ESM evaluation. |
 | specBundleFreshness.spec.mjs | spec | ACTIVE | 2026-08-16 | 3 | Coverage of the spec-bundle freshness sentinel: added/removed/changed spec files must flip the manifest comparison stale and name the offender. |
 

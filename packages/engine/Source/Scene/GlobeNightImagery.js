@@ -26,34 +26,74 @@ export const NIGHT_IMAGERY_LAYER_OPTIONS = Object.freeze({
 });
 
 /**
- * The texel counts, measured across one terrain tile, between which the night
- * layer fades out.
+ * The screen footprints, in imagery texels per screen pixel, between which the
+ * night layer fades out.
  *
- * A bundled pyramid stops at a fixed deepest level, so every terrain tile below
- * that level resolves to the same imagery texel spread over a smaller and
- * smaller footprint. Tile selection holds a rendered terrain tile at roughly a
- * constant size on screen, so the texel count across a tile is also the texel
- * size on screen: around eight texels the layer still carries structure within
- * the tile, and at one texel it is a single flat colour covering the whole
- * tile, which replaces the scene beneath it instead of lighting it.
+ * A bundled pyramid stops at a fixed deepest level, so descending past it
+ * spreads one of its texels over more and more screen pixels. Past some
+ * magnification the layer is no longer an image of anything: it is a flat wash
+ * that replaces the scene beneath it instead of lighting it. Both numbers below
+ * are read off that transition rather than chosen - a regional view at sixteen
+ * screen pixels per texel still reads as a map of city lights, and at
+ * sixty-four the frame is a featureless smear over a scene that is sharp with
+ * the layer switched off.
  *
- * The pair is expressed in texels rather than in levels so that it does not
- * change meaning when the pyramid is rebaked deeper or when a caller supplies a
- * provider whose tiles are not 256 pixels: a deeper pyramid moves the same
- * texel counts to a lower altitude, which is exactly the effect a deeper bake
- * is bought for.
+ * The pair is a SCREEN footprint, not a count of texels across a terrain tile.
+ * A tile's texel count is blind to how large that tile is on screen, and two
+ * adjacent tiles one level apart differ by exactly a factor of two in that
+ * size - so a texel count reports two different magnifications for the same
+ * one, and the seam between the tiles becomes a step. Texels per screen pixel
+ * is the same number on both sides of that seam, because it is a property of
+ * the imagery and the camera rather than of the terrain tessellation. It also
+ * varies continuously WITHIN a tile, which is why the weight is evaluated per
+ * fragment in the two globe shaders rather than once per tile here.
  *
  * @private
  */
-export const NIGHT_IMAGERY_FADE_FULL_TEXELS = 8.0;
+export const NIGHT_IMAGERY_FADE_FULL_TEXELS_PER_PIXEL = 1.0 / 16.0;
 
 /**
- * The lower end of the same pair: one texel across the tile, which is the
+ * The far end of the same pair: one texel per sixty-four screen pixels, the
  * magnification at which the layer stops being an image of anything.
  *
  * @private
  */
-export const NIGHT_IMAGERY_FADE_ZERO_TEXELS = 1.0;
+export const NIGHT_IMAGERY_FADE_ZERO_TEXELS_PER_PIXEL = 1.0 / 64.0;
+
+/**
+ * The width of the band, in octaves of magnification, which is what the ramp
+ * below travels in. Derived from the pair rather than chosen independently, so
+ * moving either knee cannot leave the ramp reaching its endpoint early or late.
+ *
+ * @private
+ */
+export const NIGHT_IMAGERY_FADE_BAND_OCTAVES = Math.log2(
+  NIGHT_IMAGERY_FADE_FULL_TEXELS_PER_PIXEL /
+    NIGHT_IMAGERY_FADE_ZERO_TEXELS_PER_PIXEL,
+);
+
+/**
+ * How many texels a terrain tile must still span before the layer is retired
+ * for that tile outright.
+ *
+ * This is a culling bound, not the fade's zero point: the fade itself is a
+ * per-fragment weight the shaders evaluate, and a tile dropped here takes no
+ * texture slot at all, so it packs exactly as it would with no night layer
+ * attached. The bound has to be conservative in one direction only - it must
+ * never drop a tile whose fragments would still carry weight, because a dropped
+ * tile beside a weighted one is the seam the per-fragment weight exists to
+ * remove.
+ *
+ * One texel across the tile is that bound. A fragment's footprint is the tile's
+ * texel count divided by the tile's size on screen, and terrain selection holds
+ * a rendered tile at hundreds of pixels across for any screen-space-error
+ * target an application plausibly sets; at one texel across the tile the
+ * footprint is therefore already past the far knee by a wide margin, on every
+ * fragment of that tile.
+ *
+ * @private
+ */
+export const NIGHT_IMAGERY_RETIRE_TEXELS_ACROSS_TILE = 1.0;
 
 /**
  * Tile size assumed for a provider that does not report one. Every tiling
@@ -67,29 +107,40 @@ const NIGHT_IMAGERY_ASSUMED_TILE_PIXELS = 256;
 /**
  * The night layer's share of its own night alpha at a given magnification.
  *
- * Smoothstep over log2 of the texel count, because magnification is halving:
- * a linear ramp in texels would spend most of its travel in the first level and
- * step hard through the last.
+ * Smoothstep over log2 of the footprint, because magnification travels in
+ * halvings: a ramp linear in texels would spend most of its travel in the first
+ * octave and step hard through the last.
  *
- * A non-finite count returns full strength rather than zero — an unmeasurable
- * magnification must leave the layer exactly as it renders today, not erase it.
+ * The clamp is what makes both endpoints exact. At the near knee the ratio is
+ * the band width, so `t` is exactly 1 and the weight is exactly 1.0 - anything
+ * less re-renders every view the layer is composed for. At the far knee `t` is
+ * exactly 0 and the weight is exactly 0.0; a weight that merely approaches zero
+ * leaves an opaque layer opaque and the wash survives, dimmer.
  *
- * @param {number} texelsAcrossTile Imagery texels spanning the terrain tile.
+ * A footprint that is not a positive number returns full strength rather than
+ * zero - an unmeasurable magnification must leave the layer exactly as it
+ * renders today, not erase it. The comparison is written on the positive side
+ * so a NaN footprint takes that arm.
+ *
+ * Exact twin of `nightImageryMagnificationFade` in
+ * `Shaders/WebGPU/Globe/GlobeTerrain.wgsl` and in `Shaders/GlobeFS.glsl`; the
+ * three are executed against each other numerically rather than compared by
+ * eye.
+ *
+ * @param {number} texelsPerPixel Imagery texels spanned by one screen pixel.
  * @returns {number} A factor in <code>[0, 1]</code> for the layer's night alpha.
  * @private
  */
-export function nightImageryMagnificationFade(texelsAcrossTile) {
-  // Written as a negated comparison so a NaN count takes this arm.
-  if (!(texelsAcrossTile < NIGHT_IMAGERY_FADE_FULL_TEXELS)) {
-    return 1.0;
-  }
-  if (texelsAcrossTile <= NIGHT_IMAGERY_FADE_ZERO_TEXELS) {
-    return 0.0;
-  }
+export function nightImageryMagnificationFade(texelsPerPixel) {
+  const clamped = Math.min(
+    Math.max(texelsPerPixel, NIGHT_IMAGERY_FADE_ZERO_TEXELS_PER_PIXEL),
+    NIGHT_IMAGERY_FADE_FULL_TEXELS_PER_PIXEL,
+  );
   const t =
-    Math.log2(texelsAcrossTile / NIGHT_IMAGERY_FADE_ZERO_TEXELS) /
-    Math.log2(NIGHT_IMAGERY_FADE_FULL_TEXELS / NIGHT_IMAGERY_FADE_ZERO_TEXELS);
-  return t * t * (3.0 - 2.0 * t);
+    Math.log2(clamped / NIGHT_IMAGERY_FADE_ZERO_TEXELS_PER_PIXEL) /
+    NIGHT_IMAGERY_FADE_BAND_OCTAVES;
+  const weight = t * t * (3.0 - 2.0 * t);
+  return texelsPerPixel > 0.0 ? weight : 1.0;
 }
 
 /**
@@ -119,39 +170,76 @@ export function isNightImageryLayer(layer) {
 }
 
 /**
- * The fade factor to apply to one layer's resolved night alpha on one tile.
+ * The imagery tile size, in pixels, one layer's magnification fade is measured
+ * against on this globe - and zero for every layer the globe did not attach
+ * itself.
+ *
+ * The shaders need one number per layer to turn a screen-space UV derivative
+ * into a texel footprint, and this is it: multiplied by the layer's own
+ * translation and scale it gives texels per unit of tile texture coordinate, in
+ * whichever coordinate space the bound texture is sampled in. Zero is the
+ * sentinel for a layer that never fades; the shaders short-circuit on it to keep
+ * two square roots and a logarithm off a layer that cannot fade, and the
+ * shortcut agrees with the arithmetic - a zero tile size makes the footprint
+ * zero, and a footprint that is not positive is exactly the unmeasurable case
+ * the law already answers with full strength.
+ *
+ * The magnification fade is a property of the default night layer, not of the
+ * day/night alpha pair: an application that hand-builds a layer with the same
+ * pair has chosen its own resolution and its own alphas, and must keep
+ * rendering exactly what it asks for.
+ *
+ * The smaller of the two tile dimensions governs, so a layer is never credited
+ * with structure it only has in one direction.
+ *
+ * @param {ImageryLayer} layer The layer being packed.
+ * @returns {number} A tile size in pixels, or <code>0</code>.
+ * @private
+ */
+export function resolveNightImageryFadeTilePixels(layer) {
+  if (!isNightImageryLayer(layer)) {
+    return 0.0;
+  }
+  const provider = layer.imageryProvider;
+  return Math.min(
+    tilePixels(provider?.tileWidth),
+    tilePixels(provider?.tileHeight),
+  );
+}
+
+/**
+ * Whether one layer has magnified past carrying anything at all on one tile, so
+ * the tile can be packed as though the layer were not attached.
  *
  * <code>textureTranslationAndScale</code> holds the terrain tile's extent as a
  * fraction of the imagery tile's, in whichever coordinate space the bound
  * texture is sampled in, so multiplying it by the source tile's pixel count
  * gives the texel count across the terrain tile on that axis without reading
- * the GPU texture — which the two backends hold in different places. The more
- * magnified axis governs, so a layer is never credited with structure it only
- * has in one direction.
+ * the GPU texture - which the two backends hold in different places. The more
+ * magnified axis governs.
+ *
+ * The comparison is written so a NaN count keeps the layer: an unmeasurable
+ * magnification must leave the tile exactly as it renders today.
  *
  * @param {ImageryLayer} layer The layer being packed.
  * @param {TileImagery} tileImagery The tile/imagery association being packed.
- * @returns {number} A factor in <code>[0, 1]</code>; exactly 1.0 for every
- *          layer the globe did not attach itself.
+ * @returns {boolean} <code>true</code> when the layer contributes nothing here.
  * @private
  */
-export function resolveNightImageryFade(layer, tileImagery) {
+export function nightImageryTileIsRetired(layer, tileImagery) {
   if (!isNightImageryLayer(layer)) {
-    return 1.0;
+    return false;
   }
   const translationAndScale = tileImagery?.textureTranslationAndScale;
   if (!defined(translationAndScale)) {
-    return 1.0;
+    return false;
   }
   const provider = layer.imageryProvider;
-  const tilePixelsX = tilePixels(provider?.tileWidth);
-  const tilePixelsY = tilePixels(provider?.tileHeight);
-  return nightImageryMagnificationFade(
-    Math.min(
-      translationAndScale.z * tilePixelsX,
-      translationAndScale.w * tilePixelsY,
-    ),
+  const texelsAcrossTile = Math.min(
+    translationAndScale.z * tilePixels(provider?.tileWidth),
+    translationAndScale.w * tilePixels(provider?.tileHeight),
   );
+  return texelsAcrossTile <= NIGHT_IMAGERY_RETIRE_TEXELS_ACROSS_TILE;
 }
 
 function tilePixels(value) {

@@ -12,6 +12,103 @@ uniform float u_dayTextureAlpha[TEXTURE_UNITS];
 #ifdef APPLY_DAY_NIGHT_ALPHA
 uniform float u_dayTextureNightAlpha[TEXTURE_UNITS];
 uniform float u_dayTextureDayAlpha[TEXTURE_UNITS];
+// The imagery tile size, in pixels, each layer's magnification fade is measured
+// against, and zero for every layer that does not fade. Multiplied by the
+// layer's own translation and scale it gives imagery texels per unit of tile
+// texture coordinate, which is what turns a screen-space UV derivative into a
+// texel footprint. Zero is the sentinel for a layer that never fades, and it
+// agrees with the arithmetic it short-circuits: a zero tile size makes the
+// footprint zero, and a footprint that is not positive is the unmeasurable case
+// the law already answers with full strength.
+uniform float u_dayTextureNightFadeTilePixels[TEXTURE_UNITS];
+
+// Screen footprints, in imagery texels per screen pixel, between which a night
+// layer fades out, and the width of that band in octaves. Exact twins of the
+// three constants in Shaders/WebGPU/Globe/GlobeTerrain.wgsl and of the ones
+// Scene/GlobeNightImagery.js exports, which is what the packers and the specs
+// read.
+const float NIGHT_IMAGERY_FADE_FULL_TEXELS_PER_PIXEL = 1.0 / 16.0;
+const float NIGHT_IMAGERY_FADE_ZERO_TEXELS_PER_PIXEL = 1.0 / 64.0;
+const float NIGHT_IMAGERY_FADE_BAND_OCTAVES = 2.0;
+
+// The magnification weight the last sampleAndBlend call resolved. Same carrier
+// pattern, and the same reason, as g_nightLightsLayerColor below: the emission
+// is applied on the statement after the composite call that wrote it, and
+// widening the composite's return would rewrite every generated call site
+// including the ones that never emit.
+float g_nightImageryFade = 1.0;
+
+// A night layer's share of its own night alpha at a given magnification.
+//
+// Smoothstep over log2 of the footprint, because magnification travels in
+// halvings: a ramp linear in texels would spend most of its travel in the first
+// octave and step hard through the last.
+//
+// The clamp is what makes both endpoints exact. At the near knee the ratio is
+// the band width, so t is exactly 1 and the weight is exactly 1.0 — anything
+// less re-renders every view the layer is composed for. At the far knee t is
+// exactly 0 and the weight is exactly 0.0; a weight that merely approaches zero
+// leaves an opaque layer opaque and the wash survives, dimmer.
+//
+// A footprint that is not a positive number returns full strength rather than
+// zero: an unmeasurable magnification must leave the layer exactly as it renders
+// today, not erase it. The comparison is written on the positive side so a NaN
+// footprint takes that arm.
+//
+// Exact twin of GlobeTerrain.wgsl's nightImageryMagnificationFade, term for term
+// and constant for constant, and of the JavaScript the packers and the specs
+// read; the three are executed against each other numerically rather than
+// compared by eye.
+float nightImageryMagnificationFade(float texelsPerPixel)
+{
+    float clamped = clamp(texelsPerPixel, NIGHT_IMAGERY_FADE_ZERO_TEXELS_PER_PIXEL, NIGHT_IMAGERY_FADE_FULL_TEXELS_PER_PIXEL);
+    float t = log2(clamped / NIGHT_IMAGERY_FADE_ZERO_TEXELS_PER_PIXEL) / NIGHT_IMAGERY_FADE_BAND_OCTAVES;
+    float weight = t * t * (3.0 - 2.0 * t);
+    if (texelsPerPixel > 0.0)
+    {
+        return weight;
+    }
+    return 1.0;
+}
+
+// The weight for one layer on one fragment, from that fragment's own footprint.
+//
+// The footprint is the screen-space Jacobian of the layer's texel coordinates,
+// and it is the same number on both sides of a terrain LOD seam: a tile one
+// level finer carries half the texels across twice the terrain detail but is
+// also half the size on screen, so texels per screen pixel cancels the level
+// out. That is what makes this weight continuous where a texel count per tile
+// steps.
+//
+// The RAW tile UV is differentiated, not the seam-clamped one. The clamp moves
+// UVs by about 1e-6, but it can collapse both lanes of an edge quad onto the
+// same value, and a zero footprint reads as unmeasurable and returns the layer
+// at full strength — a bright hairline around every tile in the band.
+//
+// The more magnified direction governs, so a layer is never credited with
+// structure it only has in one direction.
+//
+// A layer that does not fade carries a zero tile size and takes the early
+// return. Its footprint would be zero, which the law already answers with full
+// strength, so the branch changes no pixel - it keeps two square roots and a
+// logarithm off every layer of every globe that has no night imagery, in the
+// hottest fragment shader the engine has.
+//
+// Twin of GlobeTerrain.wgsl's nightImageryFadeWeight. The one divergence the
+// two shading languages force: WGSL must take its derivatives at fragment entry
+// while control flow is still uniform and receives them as parameters, where
+// this function may differentiate in place.
+float nightImageryFadeWeight(vec2 rawTileTextureCoordinates, vec2 scale, float tilePixels)
+{
+    if (tilePixels <= 0.0)
+    {
+        return 1.0;
+    }
+    vec2 texelScale = scale * tilePixels;
+    float footprintX = length(dFdx(rawTileTextureCoordinates) * texelScale);
+    float footprintY = length(dFdy(rawTileTextureCoordinates) * texelScale);
+    return nightImageryMagnificationFade(min(footprintX, footprintY));
+}
 #endif
 
 #ifdef APPLY_SPLIT
@@ -141,6 +238,19 @@ uniform float u_terminatorGlowStrength;
 uniform float u_nightDarkness;
 #endif
 
+// The largest night-side opacity any imagery layer resolved on this fragment.
+//
+// The procedural night darkening is the complement of the layer path: it
+// supplies the share of the night side the layers leave uncovered, so the night
+// side is darkened once whether the darkening comes from a layer or from the
+// fallback. That share is a per-FRAGMENT quantity because the magnification
+// fade producing it is one: two adjacent terrain tiles a level apart carry the
+// same magnification and must hand over at the same rate, which a per-tile
+// scalar cannot express — it reports two values a factor of two apart and the
+// seam between the tiles steps. Initialized because a fill tile with no imagery
+// layers writes it nowhere.
+float g_nightImageryCoverage = 0.0;
+
 #ifdef APPLY_CELESTIAL_WATER
 // The moonglade's three resolved controls.
 //   x = base microfacet roughness of the near water, already clamped
@@ -248,17 +358,23 @@ float nightLightsIntensity()
 // luminance weights are written out rather than taken from `czm_luminance`,
 // whose weights are the older (0.2125, 0.7154, 0.0721) triple and would put the
 // two backends a fraction of a percent apart on every emitting texel.
+// The alpha pair the gate reads is the layer's own, before magnification: what
+// makes a layer city lights is how it was configured, not how close the camera
+// is. The magnification weight scales the emission instead, so the lights thin
+// out with the layer that carries them rather than snapping off when the faded
+// alpha crosses the gate.
 vec3 applyNightLightsEmission(
     vec3 color,
     vec3 layerColor,
     float nightBlend,
     float nightAlpha,
-    float dayAlpha)
+    float dayAlpha,
+    float magnificationFade)
 {
     float isNightLayer = step(dayAlpha + 0.01, nightAlpha);
     float lum = dot(layerColor, vec3(0.2126, 0.7152, 0.0722));
     float nightIntensity = nightLightsIntensity();
-    vec3 emission = layerColor * lum * nightBlend * nightIntensity * isNightLayer;
+    vec3 emission = layerColor * lum * nightBlend * nightIntensity * isNightLayer * magnificationFade;
     return color + emission;
 }
 #endif
@@ -318,6 +434,8 @@ vec4 sampleAndBlend(
     float textureAlpha,
     float textureNightAlpha,
     float textureDayAlpha,
+    vec2 rawTileTextureCoordinates,
+    float nightFadeTilePixels,
     float textureBrightness,
     float textureContrast,
     float textureHue,
@@ -327,6 +445,12 @@ vec4 sampleAndBlend(
     vec4 colorToAlpha,
     float nightBlend)
 {
+    // Captured before the rectangle mask below, because the fallback's coverage
+    // is the layer's own night-side opacity rather than its coverage of this
+    // fragment's rectangle — the same product the packers folded on the CPU
+    // before the weight became a per-fragment quantity.
+    float layerAlpha = textureAlpha;
+
     // This crazy step stuff sets the alpha to 0.0 if this following condition is true:
     //    tileTextureCoordinates.s < textureCoordinateRectangle.s ||
     //    tileTextureCoordinates.s > textureCoordinateRectangle.p ||
@@ -341,7 +465,26 @@ vec4 sampleAndBlend(
     textureAlpha = textureAlpha * alphaMultiplier.x * alphaMultiplier.y;
 
 #ifdef APPLY_DAY_NIGHT_ALPHA
-    textureAlpha *= mix(textureDayAlpha, textureNightAlpha, nightBlend);
+    // A night layer retires with magnification, per fragment: past the deepest
+    // level its pyramid contains one of its texels spreads over more and more of
+    // the screen, and beyond a point it is a flat wash replacing the scene rather
+    // than an image of it. Every other layer packs a zero tile size, which makes
+    // the footprint zero and the weight exactly 1.0, so this is the identity for
+    // them and the blend is the one they had.
+    g_nightImageryFade = nightImageryFadeWeight(
+        rawTileTextureCoordinates,
+        textureCoordinateTranslationAndScale.zw,
+        nightFadeTilePixels);
+    float effectiveNightAlpha = textureNightAlpha * g_nightImageryFade;
+    textureAlpha *= mix(textureDayAlpha, effectiveNightAlpha, nightBlend);
+
+    // Only a layer that asked for a day/night pair covers the night side; a pair
+    // still at (1, 1) is an ordinary layer covering day and night alike, which is
+    // not what the procedural fallback is the complement of.
+    if (textureDayAlpha != 1.0 || textureNightAlpha != 1.0)
+    {
+        g_nightImageryCoverage = max(g_nightImageryCoverage, effectiveNightAlpha * layerAlpha);
+    }
 #endif
 
     vec2 translation = textureCoordinateTranslationAndScale.xy;
@@ -910,22 +1053,35 @@ void main()
 // in the source and gates them at runtime in fragmentMain.
 
 // Procedural night darkening, for the share of the night side that no imagery
-// layer covers. `u_nightDarkness` arrives already scaled by that share, so a
-// night layer covering the tile completely leaves the uniform at 1.0 and the
-// define unset, a layer faded out by magnification gives back the full
-// darkness, and the two hand over continuously in between. It scales the
-// composited surface, so it goes ahead of the lighting arms rather than after
-// them: every arm below is a multiply, and the terminator glow that follows is
-// an ADD, which is scattered light and must not be dimmed by ground albedo.
-// Placed here the term is the same product on both backends, and the WGSL twin
-// sits immediately ahead of its own lighting branch for the same reason.
+// layer covers. `u_nightDarkness` is the floor the fallback aims at; the share
+// the layers actually cover is `g_nightImageryCoverage`, resolved per fragment
+// while the layers were composited, so full coverage leaves this term at the
+// multiplicative identity, a layer faded out by magnification gives back the
+// full darkness, and the two hand over continuously in between — including
+// across a terrain LOD seam, which a coverage folded from one tile's texel
+// count could not. It scales the composited surface, so it goes ahead of the
+// lighting arms rather than after them: every arm below is a multiply, and the
+// terminator glow that follows is an ADD, which is scattered light and must not
+// be dimmed by ground albedo. Placed here the term is the same product on both
+// backends, and the WGSL twin sits immediately ahead of its own lighting branch
+// for the same reason.
 //
 // Deliberately not mixed by the camera-distance fade. The
 // ENABLE_DAYNIGHT_SHADING diffuse below is flat-lit near the ground by design,
 // matching upstream; this term is what makes the night side dark at street
 // altitude, and a camera-distance fade would defeat its whole purpose.
 #ifdef APPLY_NIGHT_DARKNESS
-    color.rgb *= mix(1.0, u_nightDarkness, nightBlend);
+    // Written as a mix rather than as `1 + (floor - 1) * (1 - coverage)`
+    // because only this form is EXACT at both ends in f32. That one reaches the
+    // floor through a subtract and a multiply, and at the shipped 0.15 the round
+    // trip lands two units in the last place low - on every fragment no night
+    // layer covers, which is every street-altitude frame and every globe that
+    // switched the night imagery off. This returns the floor's own bits at zero
+    // coverage and exactly 1.0 at full coverage, so the uncovered path is the
+    // identity of what the packer sent and the covered path is the identity of
+    // the colour underneath it.
+    float effectiveNightDarkness = mix(u_nightDarkness, 1.0, clamp(g_nightImageryCoverage, 0.0, 1.0));
+    color.rgb *= mix(1.0, effectiveNightDarkness, nightBlend);
 #endif
 
 #ifdef ENABLE_VERTEX_LIGHTING
