@@ -575,20 +575,36 @@ test("the sky WGSL still passes naga validation", async () => {
 
 // ───────────────────── 4. what must not move ───────────────────────────────
 
-test("the day/night alpha gates are untouched on both backends", () => {
-  // This is what keeps the C12-29 eclipse suites green: the enum VALUE stays
-  // NONE in the default scene, so the alpha ramp stays disabled exactly as it
-  // was. Remapping NONE to SUNLIGHT would have changed the shell's opacity and
-  // with it the totality star reveal, the skybox occlusion and the S6 twilight.
+test("the day/night alpha ramps read the selected light on both backends", () => {
+  // The ramps used to be gated on `enum != NONE`, which left the natural-sky
+  // mode pinned at permanent-day OPACITY while its COLOUR followed the
+  // astronomical Sun. A ground camera's shell then stayed opaque all night and
+  // alpha-blended the star cubemap and the catalogue sprites — both drawn
+  // before the atmosphere — below one 8-bit code. The gate is gone: both ramps
+  // dot against the same light direction the colour is computed from, which is
+  // inert in the "lit from directly above" mode (its light IS the normalized
+  // position, so the dot is 1.0) and is a real day/night ramp everywhere else.
   pin(
     skyAtmosphereCommon,
-    /float\s+nightAlpha\s*=\s*\(u_radiiAndDynamicAtmosphereColor\.z\s*!=\s*0\.0\)/,
-    "GLSL night alpha gate",
+    /float\s+nightAlpha\s*=\s*clamp\(dot\(normalize\(positionWC\),\s*lightDirection\),\s*0\.0,\s*1\.0\);/,
+    "GLSL night alpha ramp",
+  );
+  assert.ok(
+    !/u_radiiAndDynamicAtmosphereColor\.z\s*!=\s*0\.0/.test(
+      skyAtmosphereCommon,
+    ),
+    "the GLSL night-alpha enum gate must stay removed",
   );
   pin(
     skyAtmosphereWgsl,
-    /let\s+isDynamic\s*=\s*u\.radiiAndDynamicAtmosphere\.z\s*!=\s*0\.0;/,
-    "WGSL night alpha gate",
+    /var\s+nightAlpha\s*=\s*clamp\(dot\(normalize\(skyPoint\),\s*lightDirWC\),\s*0\.0,\s*1\.0\);/,
+    "WGSL night alpha ramp",
+  );
+  assert.ok(
+    !/let\s+isDynamic\s*=\s*u\.radiiAndDynamicAtmosphere\.z\s*!=\s*0\.0;/.test(
+      skyAtmosphereWgsl,
+    ),
+    "the WGSL night-alpha enum gate must stay removed",
   );
   pin(
     skyAtmosphereWgsl,
@@ -598,10 +614,10 @@ test("the day/night alpha gates are untouched on both backends", () => {
 });
 
 test("in LEGACY_OVERHEAD the night-alpha term is still exactly 1.0", () => {
-  // Both gates read `enum != 0`, so enum 3 takes the DYNAMIC branch. That is
-  // only safe because the legacy light direction IS the normalized position, so
-  // the dot product the branch computes is 1.0 identically — the new mode
-  // reproduces the historical alpha without touching the pinned gate text.
+  // This is the whole reason the ramps need no enum test: enum 3's light
+  // direction IS the normalized position, so the dot product the ramp computes
+  // is 1.0 identically and the compatibility mode keeps its historical
+  // permanent-day opacity without a branch.
   for (const sample of upperHemisphere(15)) {
     const positionWC = shellExit(sample.dir);
     const lightDir = selectSkyLightDirection(

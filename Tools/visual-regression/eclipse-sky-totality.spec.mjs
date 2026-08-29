@@ -226,28 +226,42 @@ test("obs-1: the sky resolver prefers the instance value and falls back cleanly"
 });
 
 test("obs-1: the WGSL alpha path that made the divergence visible is unchanged", () => {
-  // The mechanism: with the enum at NONE, `isDynamic` is false, `nightAlpha`
-  // is pinned at 1.0, and a ground camera's `altitudeOpacity` is 1.0, so
-  // `alpha = mix(finalColor.b, 1.0, 1.0)` is exactly 1.0 — an opaque shell.
-  // These three lines are what the fix re-enables; if any of them is
-  // rewritten the root-cause story in the debugging log stops describing the
-  // code and this test says so.
-  assert.match(
-    skyAtmosphereWgsl,
-    /let isDynamic = u\.radiiAndDynamicAtmosphere\.z != 0\.0;/,
+  // The obs-1 mechanism was the RESOLVER: the WebGPU shell re-resolved the
+  // enum and got NONE where Scene had resolved SCENE_LIGHT, and under the enum
+  // test that used to guard the ramp, NONE pinned `nightAlpha` at 1.0 and made
+  // a ground camera's shell opaque. The resolver contract above is still the
+  // claim; what changed underneath it is that the enum test is GONE — the ramp
+  // now reads the same light direction the colour is computed from, so the
+  // "lit from directly above" arm is the only one that still lands on 1.0, and
+  // it does so because its light direction is `normalize(skyPoint)` rather
+  // than because of a branch. Both spellings are pinned so a rewrite of either
+  // half surfaces here.
+  assert.ok(
+    !/let isDynamic = u\.radiiAndDynamicAtmosphere\.z != 0\.0;/.test(
+      skyAtmosphereWgsl,
+    ),
+    "the enum test on the WGSL day/night ramp must stay removed",
   );
   assert.match(
     skyAtmosphereWgsl,
-    /clamp\(dot\(normalize\(skyPoint\), lightDirWC\), 0\.0, 1\.0\),/,
+    /var nightAlpha = clamp\(dot\(normalize\(skyPoint\), lightDirWC\), 0\.0, 1\.0\);/,
   );
+  assert.match(skyAtmosphereWgsl, /lightDirWC = normalize\(skyPoint\);/);
   assert.match(
     skyAtmosphereWgsl,
     /let alpha = mix\(finalColor\.b, 1\.0, opacity\);/,
   );
   // WebGL's twin, same shape, same file it always lived in.
+  const glslCommon = read(
+    "packages/engine/Source/Shaders/SkyAtmosphereCommon.glsl",
+  );
   assert.match(
-    read("packages/engine/Source/Shaders/SkyAtmosphereCommon.glsl"),
-    /float nightAlpha = \(u_radiiAndDynamicAtmosphereColor\.z != 0\.0\)/,
+    glslCommon,
+    /float nightAlpha = clamp\(dot\(normalize\(positionWC\), lightDirection\), 0\.0, 1\.0\);/,
+  );
+  assert.ok(
+    !/u_radiiAndDynamicAtmosphereColor\.z != 0\.0/.test(glslCommon),
+    "the enum test on the GLSL day/night ramp must stay removed",
   );
 });
 

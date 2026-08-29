@@ -98,7 +98,18 @@ void computeAtmosphereScattering(vec3 positionWC, vec3 lightDirection, out vec3 
     float atmosphereOuterRadius = atmosphereInnerRadius + ATMOSPHERE_THICKNESS;
     opacity = clamp((atmosphereOuterRadius - cameraHeight) / (atmosphereOuterRadius - atmosphereInnerRadius), 0.0, 1.0);
 
-    // Alter alpha based on time of day (0.0 = night , 1.0 = day)
-    float nightAlpha = (u_radiiAndDynamicAtmosphereColor.z != 0.0) ? clamp(dot(normalize(positionWC), lightDirection), 0.0, 1.0) : 1.0;
+    // Alter alpha based on time of day (0.0 = night , 1.0 = day).
+    //
+    // The ramp reads the SAME `lightDirection` the colour above was computed
+    // from, so a shell coloured by the astronomical Sun is also opened and
+    // closed by it. There is deliberately no enum test here: the "lit from
+    // directly above" compatibility mode passes `normalize(positionWC)` as its
+    // light direction, so the dot below is 1.0 and the ramp is inert in that
+    // mode, reproducing its historical permanent-day opacity exactly. Before
+    // this, the natural-sky mode shared that permanent-day pin while being
+    // coloured by the real Sun, so a ground camera's shell stayed opaque all
+    // night and alpha-blended the star cubemap and the catalogue sprites —
+    // both drawn before the atmosphere — down below one 8-bit code.
+    float nightAlpha = clamp(dot(normalize(positionWC), lightDirection), 0.0, 1.0);
     opacity *= pow(nightAlpha, 0.5);
 }

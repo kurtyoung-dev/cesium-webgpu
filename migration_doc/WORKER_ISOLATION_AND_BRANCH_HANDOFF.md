@@ -599,3 +599,26 @@ reports - into the main repo's gitignored Tools/visual-regression/output/ folder
 preserving the probe's own subdirectory layout. Certification-grade artifacts
 additionally bank in the immutable cesium-webgpu-visual-evidence repository as
 before. A clone reset that discards unrepatriated evidence is a handoff defect.
+
+### 8d. A lane under review is read-only for everyone (added 2026-08-29)
+
+Three times on the night of 2026-08-28/29 a lane's worktree was written while its station-3
+reviewer was still measuring it: once by the lead waking on a late verifier result (CW2), once by
+the lead fixing a defect the reviewer's own probe surfaced (SC2), and once by the lead applying
+fixes the seat relayed after the reviewer's FIRST stop notification while the reviewer's background
+job was still finishing and its report was not yet on disk (Q-62). Every case was benign by
+content; none was benign by process - a review that certifies bytes which no longer exist is
+worse than no review, and nothing in the workflow would have caught a write to the fixed line.
+
+Rules:
+
+- From reviewer dispatch until (a) the reviewer's report file exists on disk and (b) the reviewer
+  reports no live background children, the lane's clone is READ-ONLY for the lead, for the seat,
+  and for the reviewer outside its declared scratch directory.
+- The seat relays review fixes to the lead only after (a) and (b); the lead acknowledges the
+  freeze explicitly before any reviewer is dispatched.
+- Every reviewer re-hashes the reviewed tuple set at the END of its pass and reports any drift as
+  a finding; the seat re-hashes every deliverable file against the reviewed tuple before landing.
+- Retirement of a clone waits for the same two conditions (see 8c and the 2026-08-29 water-clone
+  incident): a clone is quiescent only when the lane AND every reviewer that entered it have no
+  live children; test with a root rename before rm.

@@ -39,11 +39,23 @@
 // against a pre-DR-01 floor measures the REMOVED CUBEMAP, not the catalogue" —
 // the precondition is now POSITIONAL and ZERO-BARRED: the darkest lane must
 // resolve a point source AT the projected position of the brightest catalogue
-// star in frame, on both backends, using the shared detector at its UNCHANGED
-// floor. The `a - b > 24` difference bar is NOT loosened: it is a difference
-// metric feeding the MONOTONIC-ORDERING claim, not a census, and lowering it
-// would admit dither. What it is not is a reachability control, which is the
-// job it was doing.
+// star in frame, on both backends. The `a - b > 24` difference bar is NOT
+// loosened: it is a difference metric feeding the MONOTONIC-ORDERING claim, not
+// a census, and lowering it would admit dither. What it is not is a
+// reachability control, which is the job it was doing.
+//
+// ⚠ THE CONTROL WAS RUN ON THE ABSOLUTE FRAME AND COULD NOT BE SATISFIED HERE.
+// The shared detector's `minPeak` of 40 exists to separate a resolved star from
+// the diffuse cube map, and the same module's note derives that only stars
+// brighter than vmag 2.56 clear it — in SPACE. This lane's camera is 500 m off
+// the ground, where the shipped per-star extinction cuts a star at 30 degrees
+// elevation to roughly a third, moving the bar past vmag 1.5; the brightest
+// star an anti-solar 60-degree frame contains at the control instant is vmag
+// 2.14, whose peak lands near 21 luma. So the control asserted a proposition
+// the framing cannot deliver, and a miss read as "the star field drew nothing".
+// It now censuses the STARS-ON minus STARS-OFF difference of the same pinned
+// instant, where the cube map and the sky shell cancel and the honest bar is
+// zero. The absolute census is still computed and printed beside it.
 //
 // ⚠ REPAIRED 2026-08-07 — THE PIXELS LEG USED TO RENDER AT THE WALL CLOCK.
 // `useDefaultRenderLoop = false` (below) kills `CesiumWidget.render()`, which is
@@ -71,10 +83,16 @@
 // Env:   PROBE_BASE (default http://localhost:8080)
 
 import { chromium } from "playwright";
-// ONE HOME for the resolved-point-source detector. The same module the skybox
-// bake and `probe-stars-catalog.mjs` use, at its UNCHANGED thresholds — the
-// re-scope moves the CLAIM (from a fitted count to a position), not the floor.
-import { pointSourceCensus } from "../skybox-bake/starmap-census.mjs";
+// ONE HOME for the resolved-point-source claim. The census itself is the same
+// module the skybox bake and `probe-stars-catalog.mjs` use, at its UNCHANGED
+// geometry; the shared wrapper here owns the absolute-frame form and the
+// stars-on-minus-off difference form, and is unit-tested in
+// `sky-shell-star-occlusion.spec.mjs`.
+import {
+  STAR_AIM_TOLERANCE_PX,
+  censusAtTarget,
+  censusAtTargetDifference,
+} from "./lib/star-contribution-census.mjs";
 
 // Machine-safety watchdog (Batch 861+ fleet sweep). A probe that wedges holds a
 // headless Edge + GPU process alive indefinitely; `unref` keeps the timer from
@@ -124,44 +142,8 @@ const RENDERED_ELEVATION_MIN_SPREAD_DEG = 2.0;
 // enough that the detector's 5 px background ring is never clamped against an
 // edge, small enough that the payload is ~26 KB rather than a whole frame.
 const CENSUS_BOX_HALF_PX = 40;
-// How far the resolved source may sit from the star's PROJECTED position.
-// Both the projection and the render consume the same catalogue row through the
-// same TEME->pseudo-fixed transform at the same instant, so the only legitimate
-// error is sub-pixel rounding plus the detector's plateau tie-break; 3 px is
-// generous for both and far tighter than the ~14 px spacing at which a
-// neighbouring star could be mistaken for the target in this field.
-const STAR_AIM_TOLERANCE_PX = 3;
-
-// Rec.709 luma of an RGBA box, in the stored 8-bit domain the detector expects.
-function censusAtTarget(box) {
-  if (!box) {
-    return { available: false };
-  }
-  const plane = new Float32Array(box.w * box.h);
-  for (let p = 0; p < plane.length; p++) {
-    const i = 4 * p;
-    plane[p] =
-      0.2126 * box.data[i] +
-      0.7152 * box.data[i + 1] +
-      0.0722 * box.data[i + 2];
-  }
-  const res = pointSourceCensus(plane, box.w, box.h, { collectSources: true });
-  let nearestPx = Infinity;
-  for (const s of res.sources ?? []) {
-    const d = Math.hypot(s.x - box.centerX, s.y - box.centerY);
-    if (d < nearestPx) {
-      nearestPx = d;
-    }
-  }
-  return {
-    available: true,
-    count: res.count,
-    peakMax: res.peakMax,
-    strongest: res.strongest,
-    nearestPx,
-    resolvedAtTarget: nearestPx <= STAR_AIM_TOLERANCE_PX,
-  };
-}
+// The positional claim, and why it runs on the difference image, live in
+// `lib/star-contribution-census.mjs` — including the tolerance imported above.
 
 async function run(renderer) {
   const browser = await chromium.launch({
@@ -447,6 +429,7 @@ async function runWith(browser, renderer) {
 
       const out = [];
       let controlBox = null;
+      let controlBoxOff = null;
       let controlTarget = null;
       for (const lane of lanes) {
         const jd = solveClock(lane.elevationDeg);
@@ -495,13 +478,18 @@ async function runWith(browser, renderer) {
 
         // Reachability control, CONTROL lane only: the darkest lane is the one
         // whose star field must be present for the monotonic-ordering claim to
-        // mean anything. Ships a box around the brightest in-frame catalogue
-        // star so the shared detector can run in Node against its unchanged
-        // thresholds — the probe does not re-implement the census.
+        // mean anything. Ships BOTH boxes around the brightest in-frame
+        // catalogue star — stars-on and stars-off at the same instant — so the
+        // shared detector can run in Node over their difference, where the cube
+        // map and the sky shell cancel. The probe does not re-implement the
+        // census.
         if (lane.control === true) {
           controlTarget = brightestInFrameStar(jd);
           controlBox = controlTarget
             ? extractBox(withStars.image, controlTarget.x, controlTarget.y)
+            : null;
+          controlBoxOff = controlTarget
+            ? extractBox(without.image, controlTarget.x, controlTarget.y)
             : null;
         }
 
@@ -550,7 +538,17 @@ async function runWith(browser, renderer) {
         lanes: out,
         deviceErrs,
         controlBox,
+        controlBoxOff,
         controlTarget,
+        // Configuration diagnostics. The sky shell is drawn AFTER the star
+        // field with alpha blending, so whatever alpha it resolves to is a
+        // multiplier on every star already in the frame, and the shell's
+        // day/night ramp is selected by this enum. Recorded, never gated, so a
+        // structural exit names the configuration it happened under.
+        skyDynamicLighting: s.skyAtmosphere?.dynamicLighting ?? null,
+        globeEnableLighting: s.globe?.enableLighting ?? null,
+        starIntensityScale:
+          s.skyBox?.starField?._effectiveIntensityScale ?? null,
       };
     },
     { lanes: LANES, view: VIEW, censusBoxHalf: CENSUS_BOX_HALF_PX },
@@ -638,12 +636,21 @@ const monotonic = (a) => a[0] >= a[1] && a[1] >= a[2] && a[2] >= a[3];
 // it as a pass would be a false green.
 //
 // RE-SCOPED FOR DR-01 (see the header): the old form was `>= 50` added pixels,
-// a floor fitted to the pre-DR-01 cube map. It is now POSITIONAL and
-// zero-barred — a resolved point source AT the brightest in-frame catalogue
-// star's projected position, plus a bare "the sprite layer added something at
-// all". Nothing about the detector's thresholds moved.
-const glCensus = censusAtTarget(gl.controlBox);
-const gpuCensus = censusAtTarget(gpu.controlBox);
+// a floor fitted to the pre-DR-01 cube map. It is POSITIONAL and zero-barred —
+// a resolved point source AT the brightest in-frame catalogue star's projected
+// position, plus a bare "the sprite layer added something at all".
+//
+// The census now runs on the STARS-ON minus STARS-OFF difference of the same
+// pinned instant rather than on the absolute frame (see the note beside
+// `censusAtTargetDifference`): a ground camera's per-star extinction puts the
+// brightest star an anti-solar 60-degree frame can contain BELOW the shared
+// detector's absolute floor, which is a property of the framing rather than of
+// the star field, so the absolute form asserted something the scene could not
+// deliver. The absolute census is still computed and reported.
+const glCensus = censusAtTargetDifference(gl.controlBox, gl.controlBoxOff);
+const gpuCensus = censusAtTargetDifference(gpu.controlBox, gpu.controlBoxOff);
+const glAbsoluteCensus = censusAtTarget(gl.controlBox);
+const gpuAbsoluteCensus = censusAtTarget(gpu.controlBox);
 const starsVisible =
   glCensus.available === true &&
   gpuCensus.available === true &&
@@ -665,20 +672,28 @@ if (!renderedSunTracked) {
     "leg and the engine leg described different scenes";
 } else if (!starsVisible) {
   pixelPass = null; // structural
-  const describe = (name, c, target, added) =>
+  const describe = (name, run, difference, absolute, target, added) =>
     `${name}: ` +
-    (c.available
+    (difference.available
       ? `target vmag ${target?.vmag ?? "?"} at (${target?.x ?? "?"},${target?.y ?? "?"}), ` +
-        `census ${c.count} source(s), nearest ${Number.isFinite(c.nearestPx) ? c.nearestPx.toFixed(2) : "none"} px ` +
-        `(tolerance ${STAR_AIM_TOLERANCE_PX}), box peak luma ${c.peakMax?.toFixed?.(1)}, ` +
-        `strongest contrast ${c.strongest?.toFixed?.(1)}, addedPixels ${added}`
+        `difference census ${difference.count} source(s), nearest ${Number.isFinite(difference.nearestPx) ? difference.nearestPx.toFixed(2) : "none"} px ` +
+        `(tolerance ${STAR_AIM_TOLERANCE_PX}), difference peak ${difference.peakMax?.toFixed?.(2)}, ` +
+        `absolute box peak luma ${absolute.peakMax?.toFixed?.(1)}, addedPixels ${added}, ` +
+        `sky enum ${run.skyDynamicLighting}, globe.enableLighting ${run.globeEnableLighting}, ` +
+        `star intensityScale ${run.starIntensityScale}`
       : "no in-frame catalogue star was found to aim the control at");
   pixelStructuralReason =
-    "the darkest lane resolved NO catalogue star at its projected position, so " +
-    "this leg measured a sky whose star field it cannot confirm was drawn " +
-    "(instrument gap, NOT a product verdict; the ENGINE leg above is " +
-    `unaffected) — ${describe("webgl", glCensus, gl.controlTarget, glStars[0])}; ` +
-    `${describe("webgpu", gpuCensus, gpu.controlTarget, gpuStars[0])}`;
+    "the darkest lane resolved NO star contribution at the target's projected " +
+    "position, so this leg measured a sky whose star field it cannot confirm " +
+    "was drawn. A zero DIFFERENCE peak means nothing the star field drew " +
+    "reached the frame: either the sprites were not drawn (check the reported " +
+    "intensityScale) or something composited over them — the sky shell is " +
+    "drawn after the star field with alpha blending, so its alpha multiplies " +
+    "every star already in the frame, and the reported sky enum selects which " +
+    "day/night ramp that alpha uses. Instrument-or-composite, NOT a product " +
+    "verdict on the star field; the ENGINE leg above is unaffected — " +
+    `${describe("webgl", gl, glCensus, glAbsoluteCensus, gl.controlTarget, glStars[0])}; ` +
+    `${describe("webgpu", gpu, gpuCensus, gpuAbsoluteCensus, gpu.controlTarget, gpuStars[0])}`;
 } else if (!monotonic(glStars) || !monotonic(gpuStars)) {
   pixelPass = false;
 }
@@ -704,11 +719,29 @@ console.log(
         : "FAIL"
   } gl=${JSON.stringify(glStars)} gpu=${JSON.stringify(gpuStars)}`,
 );
+const reachabilityLine = (run, difference, absolute) =>
+  JSON.stringify({
+    target: run.controlTarget?.vmag ?? null,
+    count: difference.count ?? null,
+    nearestPx: Number.isFinite(difference.nearestPx)
+      ? Number(difference.nearestPx.toFixed(2))
+      : null,
+    differencePeak: Number.isFinite(difference.peakMax)
+      ? Number(difference.peakMax.toFixed(2))
+      : null,
+    absolutePeak: Number.isFinite(absolute.peakMax)
+      ? Number(absolute.peakMax.toFixed(2))
+      : null,
+    skyEnum: run.skyDynamicLighting,
+    enableLighting: run.globeEnableLighting,
+    intensityScale: run.starIntensityScale,
+  });
 console.log(
-  `STAR REACHABILITY (control lane resolves a catalogue star AT its projected ` +
-    `position, tolerance ${STAR_AIM_TOLERANCE_PX} px): ${starsVisible ? "PASS" : "STRUCTURAL"} ` +
-    `gl=${JSON.stringify({ target: gl.controlTarget?.vmag ?? null, count: glCensus.count ?? null, nearestPx: Number.isFinite(glCensus.nearestPx) ? Number(glCensus.nearestPx.toFixed(2)) : null })} ` +
-    `gpu=${JSON.stringify({ target: gpu.controlTarget?.vmag ?? null, count: gpuCensus.count ?? null, nearestPx: Number.isFinite(gpuCensus.nearestPx) ? Number(gpuCensus.nearestPx.toFixed(2)) : null })}`,
+  `STAR REACHABILITY (control lane resolves the star field's OWN contribution ` +
+    `AT the target's projected position, tolerance ${STAR_AIM_TOLERANCE_PX} px): ` +
+    `${starsVisible ? "PASS" : "STRUCTURAL"} ` +
+    `gl=${reachabilityLine(gl, glCensus, glAbsoluteCensus)} ` +
+    `gpu=${reachabilityLine(gpu, gpuCensus, gpuAbsoluteCensus)}`,
 );
 console.log(
   `RENDER-TIME (the frames were drawn at the lanes' solved instants): ${

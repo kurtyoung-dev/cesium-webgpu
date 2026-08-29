@@ -251,10 +251,12 @@ class SkyAtmosphere {
       ellipsoid.maximumRadius * outerEllipsoidScale;
     radiiAndDynamicAtmosphereColor.y = ellipsoid.maximumRadius;
 
-    // The `DynamicAtmosphereLightingType` enum for this frame. C12-31: value 0
-    // (NONE) no longer means "treat the sun as always directly overhead" for
-    // the sky shell — only the explicit LEGACY_OVERHEAD (3) does. The value
-    // still gates the day/night alpha ramp exactly as before.
+    // The `DynamicAtmosphereLightingType` enum for this frame. Value 0 (NONE)
+    // does not mean "treat the sun as always directly overhead" for the sky
+    // shell — only the explicit LEGACY_OVERHEAD (3) does. The enum selects the
+    // shell's light DIRECTION; it no longer gates the day/night alpha ramp,
+    // which dots against whichever direction was selected. LEGACY_OVERHEAD is
+    // inert in that ramp because its direction is the shell point itself.
     radiiAndDynamicAtmosphereColor.z = 0;
 
     this._radiiAndDynamicAtmosphereColor = radiiAndDynamicAtmosphereColor;
@@ -326,9 +328,12 @@ class SkyAtmosphere {
    * frame — `DynamicAtmosphereLightingType.fromGlobeFlags(globe)` when a globe
    * exists, `scene.atmosphere.dynamicLighting` otherwise. WebGL reads it
    * through `u_radiiAndDynamicAtmosphereColor.z`; the WebGPU feature renderer
-   * reads it here (C12-29 S6 / obs-1 — it previously re-resolved
-   * `scene.atmosphere.dynamicLighting` itself and so never saw the globe
-   * flags, leaving the WGSL shell's day/night alpha term permanently disabled).
+   * reads it here — it previously re-resolved `scene.atmosphere.dynamicLighting`
+   * itself and so never saw the globe flags, which back when the ramp was gated
+   * on this enum left the WGSL shell's day/night alpha term permanently
+   * disabled. The ramp no longer reads the enum, so the same mismatch now
+   * surfaces as the wrong light direction and the wrong LUT eligibility
+   * instead.
    *
    * @type {number}
    * @readonly

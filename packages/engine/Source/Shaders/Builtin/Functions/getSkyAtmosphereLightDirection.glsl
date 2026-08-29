@@ -27,10 +27,20 @@
  *
  * Terrain lighting and natural sky lighting are separate concerns: turning
  * `globe.enableLighting` off must not silently replace the sky's Sun. Keeping
- * the ENUM VALUE at NONE (rather than remapping it to SUNLIGHT) is deliberate —
- * the `!= NONE` day/night alpha gate in `SkyAtmosphereCommon.glsl` and its WGSL
- * twin stay exactly as they were, so this changes the sky's COLOR anchor only,
- * never its opacity.
+ * the ENUM VALUE at NONE (rather than remapping it to SUNLIGHT) is deliberate:
+ * NONE names "natural sky, no scene light source", and the way back to the
+ * historical look is LEGACY_OVERHEAD rather than a second enum.
+ *
+ * The day/night alpha ramp in `SkyAtmosphereCommon.glsl` and its WGSL twin read
+ * this same returned direction instead of testing the enum, so a shell coloured
+ * by the astronomical Sun is also opened and closed by it. The ramp is inert in
+ * LEGACY_OVERHEAD by construction — that arm's light direction IS
+ * `normalize(positionWC)`, so the ramp's own dot is 1.0 — which is how the
+ * compatibility mode keeps its permanent-day opacity. While the enum test was
+ * still in place, the natural-sky mode was coloured by the real Sun but pinned
+ * to permanent-day OPACITY, so a ground camera's shell stayed opaque through
+ * the night and alpha-blended the star cubemap and the catalogue sprites, both
+ * drawn before the atmosphere, down below one 8-bit code.
  *
  * WGSL twin: the `isLegacyOverhead` block in
  * `Shaders/WebGPU/Environment/SkyAtmosphere.wgsl`.

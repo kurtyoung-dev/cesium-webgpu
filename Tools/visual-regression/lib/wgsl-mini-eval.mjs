@@ -24,8 +24,17 @@
 // a device.
 //
 // Supported: `let` / `var` bindings, a single guarded early `return`, a final
-// `return`, unary minus, `+ - * /`, comparisons, `&&`, `||`, member access,
-// `vec3<f32>` construction, and the builtins listed in `BUILTINS`.
+// `return`, unary minus, `+ - * /`, comparisons, `&&`, `||`, the conditional
+// operator `c ? a : b`, member access, `vec3<f32>` construction, and the
+// builtins listed in `BUILTINS`.
+//
+// WHY THE CONDITIONAL OPERATOR IS HERE. A shader inertness image works by
+// putting the pre-fix text back on a copy of the source and re-running the same
+// reader over it. Without `?:` and `select`, a reverted GLSL ternary or WGSL
+// `select` made the reader THROW, so the image went red by parser failure
+// rather than by a measured value — which cannot distinguish "the fix is load
+// bearing" from "the mutant is unreadable". Both spellings evaluate now, so a
+// mutation image reports the number the reverted shader would produce.
 //
 // A deliberately small interpreter for the subset the glint functions use:
 // `let` bindings, one guarded early return, arithmetic, member access, and the
@@ -56,6 +65,7 @@ const PUNCT = [
   "=",
   ".",
   ":",
+  "?",
 ];
 
 /**
@@ -164,6 +174,11 @@ const BUILTINS = {
     const l = Math.sqrt(a.x * a.x + a.y * a.y + a.z * a.z);
     return vec(a.x / l, a.y / l, a.z / l);
   },
+  // WGSL argument order: the FALSE value first, then the true value, then the
+  // condition. The GLSL twin of the same law is written `c ? a : b`, which the
+  // parser lowers to the same node, so one reader executes both spellings.
+  select: (falseValue, trueValue, condition) =>
+    condition ? trueValue : falseValue,
 };
 
 /**
@@ -175,6 +190,10 @@ const BUILTINS = {
  */
 function parseExpression(tokens, start) {
   let pos = start;
+  // Forward reference: `primary` parses parenthesised and argument
+  // sub-expressions, and both may contain a conditional, which is defined below
+  // it. Assigned once, before any parsing happens.
+  let ternary;
   const peek = () => tokens[pos];
   const eat = (text) => {
     if (tokens[pos]?.text !== text) {
@@ -194,7 +213,7 @@ function parseExpression(tokens, start) {
       node = { type: "num", value: Number(tok.text) };
     } else if (tok.text === "(") {
       pos += 1;
-      const inner = or();
+      const inner = ternary();
       eat(")");
       node = inner;
     } else if (tok.text === "-") {
@@ -215,7 +234,7 @@ function parseExpression(tokens, start) {
         const args = [];
         if (peek()?.text !== ")") {
           for (;;) {
-            args.push(or());
+            args.push(ternary());
             if (peek()?.text === ",") {
               pos += 1;
               continue;
@@ -267,7 +286,22 @@ function parseExpression(tokens, start) {
   const and = () => binary(cmp, ["&&"]);
   const or = () => binary(and, ["||"]);
 
-  const node = or();
+  // Right-associative, lowest precedence, same shape as GLSL's `?:`. `select`
+  // is its WGSL spelling and arrives through `BUILTINS` as an ordinary call.
+  function conditional() {
+    const test = or();
+    if (peek()?.text !== "?") {
+      return test;
+    }
+    pos += 1;
+    const consequent = conditional();
+    eat(":");
+    const alternate = conditional();
+    return { type: "cond", test, consequent, alternate };
+  }
+  ternary = conditional;
+
+  const node = conditional();
   return { node, next: pos };
 }
 
@@ -298,6 +332,12 @@ function evaluate(node, env) {
         throw new Error(`no member ${node.name}`);
       }
       return obj[node.name];
+    }
+    case "cond": {
+      const test = evaluate(node.test, env);
+      return test
+        ? evaluate(node.consequent, env)
+        : evaluate(node.alternate, env);
     }
     case "call": {
       const args = node.args.map((a) => evaluate(a, env));

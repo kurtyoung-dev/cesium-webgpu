@@ -780,9 +780,11 @@ fn skyColorForRay(rayOrigin: vec3<f32>, rayDir: vec3<f32>) -> vec4<f32> {
   // `czm_getSkyAtmosphereLightDirection` helper. `NONE` and `SUNLIGHT` use the
   // astronomical sun, while `SCENE_LIGHT` uses the scene direction packed in
   // `sunDirectionWC`. `LEGACY_OVERHEAD` alone uses per-fragment local up and
-  // therefore cannot use a LUT baked for one direction. Keep the enum value
-  // unchanged because the day-night alpha ramp distinguishes `NONE` from the
-  // dynamically lit modes.
+  // therefore cannot use a LUT baked for one direction. The day/night alpha
+  // ramp below no longer reads this enum at all — it dots against whichever
+  // direction is selected here — so the reason to keep the value unchanged is
+  // now `lutEligible` a few lines down, which keys on it, plus the
+  // `isLegacyOverhead` selection itself.
   let dynamicLighting = u.radiiAndDynamicAtmosphere.z;
   let isLegacyOverhead = dynamicLighting > 2.5;
   var lightDirWC: vec3<f32>;
@@ -955,14 +957,15 @@ fn skyColorForRay(rayOrigin: vec3<f32>, rayDir: vec3<f32>) -> vec4<f32> {
     0.0,
     1.0,
   );
-  // nightAlpha: 1.0 on day side, 0.0 on night side. Only applied when
-  // dynamic atmosphere lighting is enabled (radiiAndDynamicAtmosphere.z != 0).
-  let isDynamic = u.radiiAndDynamicAtmosphere.z != 0.0;
-  var nightAlpha = select(
-    1.0,
-    clamp(dot(normalize(skyPoint), lightDirWC), 0.0, 1.0),
-    isDynamic,
-  );
+  // nightAlpha: 1.0 on day side, 0.0 on night side. Twin of the same line in
+  // `SkyAtmosphereCommon.glsl`, including the absence of an enum test: the
+  // "lit from directly above" mode sets `lightDirWC = normalize(skyPoint)`
+  // above, so the dot is 1.0 and the ramp is inert there, which is what keeps
+  // that mode's historical permanent-day opacity exact. Every other mode is
+  // ramped by the light it is coloured by; the natural-sky mode used to be
+  // pinned at permanent day, leaving a ground camera's shell opaque all night
+  // over the cubemap and the catalogue sprites.
+  var nightAlpha = clamp(dot(normalize(skyPoint), lightDirWC), 0.0, 1.0);
   // Inline moon scattering must also raise night-side opacity; otherwise its
   // color disappears against a transparent sky after sunset. Use the brighter
   // body-side term, scaled by moon phase, while the dual-light gate is enabled.

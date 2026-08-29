@@ -9,11 +9,11 @@ const DynamicAtmosphereLightingType = {
   /**
    * Do not select a scene light source for dynamic atmosphere lighting.
    * <p>
-   * The <b>sky atmosphere</b> is lit by the astronomical sun in this mode
-   * (C12-31): terrain lighting and natural sky lighting are separate concerns,
-   * so turning <code>globe.enableLighting</code> off must not replace the sky's
-   * sun. The day/night alpha ramp still stays disabled here, exactly as before
-   * — only the color's light direction is affected.
+   * The <b>sky atmosphere</b> is lit by the astronomical sun in this mode:
+   * terrain lighting and natural sky lighting are separate concerns, so turning
+   * <code>globe.enableLighting</code> off must not replace the sky's sun. The
+   * sky's day/night alpha ramp follows that same sun, so the shell fades out on
+   * the unlit side here exactly as it does in the dynamically lit modes.
    * </p>
    * <p>
    * The ground-atmosphere/fog stage on models and the dynamic environment map
@@ -45,13 +45,15 @@ const DynamicAtmosphereLightingType = {
   /**
    * Light every atmosphere effect from directly above the sample being shaded
    * &mdash; the historical appearance of
-   * {@link DynamicAtmosphereLightingType.NONE} before C12-31, kept as an
-   * explicit, named compatibility mode.
+   * {@link DynamicAtmosphereLightingType.NONE}, kept as an explicit, named
+   * compatibility mode.
    * <p>
    * The substituted direction is a different "sun overhead" at every sample, so
    * the Mie forward-scattering peak follows the viewer rather than the sun. That
    * is not physical; it is offered only so an application that depends on the
-   * old look can opt back into it.
+   * old look can opt back into it. Because the sky's day/night alpha ramp reads
+   * the same substituted direction, this mode also keeps the historical
+   * permanent-day sky opacity: the ramp's own dot product is 1 everywhere.
    * </p>
    *
    * @type {number}

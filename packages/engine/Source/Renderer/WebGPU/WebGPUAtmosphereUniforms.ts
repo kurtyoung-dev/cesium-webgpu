@@ -116,10 +116,14 @@ export interface SkyDynamicLightingSource {
  *
  * WebGL's `u_radiiAndDynamicAtmosphereColor.z` reads that stored value, so
  * WebGPU must do the same. Re-resolving from `frameState.atmosphere` in a globe
- * scene can produce `NONE` while the instance contains `SCENE_LIGHT`. That
- * makes the WGSL shell's per-fragment `nightAlpha` a constant 1.0 and the
- * ground-level shell fully opaque, hiding the sky-box cube map and star-catalog
- * command rendered behind the atmosphere. The moon and sun render after the
+ * scene can produce `NONE` while the instance contains `SCENE_LIGHT`. When the
+ * day/night ramp was still gated on that enum, the mismatch pinned the WGSL
+ * shell's per-fragment `nightAlpha` at a constant 1.0 and left the ground-level
+ * shell fully opaque, hiding the sky-box cube map and the star-catalog command
+ * drawn behind it — that is the shape the resolver bug took, and the ramp no
+ * longer reads the enum, so it can no longer take that shape. The mismatch
+ * still matters: it picks the wrong light DIRECTION for the shell's colour and
+ * its ramp, and it moves LUT eligibility. The moon and sun render after the
  * atmosphere and are unaffected by that ordering.
  *
  * The `frameState` fallback covers a caller that passes no instance at all
@@ -127,10 +131,13 @@ export interface SkyDynamicLightingSource {
  * reached `updateEnvironment`: the `SkyAtmosphere` constructor initializes the
  * slot to `0`, so that instance reports `NONE` and takes the instance path.
  *
- * The resolved value controls both the sky's day/night alpha and its light
- * direction. WGSL uses `u.sunDirectionWC` for every mode except the explicit
- * `LEGACY_OVERHEAD` (3) compatibility mode. The alpha gate remains keyed to
- * `dynamicLighting != 0`.
+ * The resolved value controls the sky's light direction, and through it the
+ * day/night alpha. WGSL uses `u.sunDirectionWC` for every mode except the
+ * explicit `LEGACY_OVERHEAD` (3) compatibility mode. There is no separate alpha
+ * gate on the enum any more: the ramp dots against the selected direction, so
+ * `LEGACY_OVERHEAD` is inert in it (its direction is the shell point) and every
+ * other mode is ramped by the light it is coloured by. The enum still steers
+ * LUT eligibility.
  *
  * @param skyAtmosphere the `SkyAtmosphere` instance being packed, if any
  * @param frameState the current frame state
