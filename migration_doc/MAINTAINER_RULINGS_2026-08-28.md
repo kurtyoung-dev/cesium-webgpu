@@ -216,3 +216,35 @@ the reflected view direction, so roughness broadens the glints through the mip c
 per-fragment loop over the catalog. A sharp lobe for first-magnitude stars is an optional
 refinement. The C12-14 handles remain borrowed and unmodified. Lane CW's S2 slice carries it.
 
+---
+
+## Fifth sitting, 2026-08-29 ~01:00 ET - the prototype amendment and the last exit gate
+
+## R-2026-08-28-12 - R9 amendment: four families, and the exhibits certified through their own path first
+
+The pre-committed reviewer of amendment R9A1 returned RULING-NEEDED on two questions and
+the maintainer answered both. The budget: both test families breach their 802-line
+allowance at every possible partition (measured floors 852 and 909 over a 335-line shared
+kernel), so no re-partition or support-module move fits the 1,340 coupled ceiling that stays
+binding from the 08/27 denial - the lever is FOUR families, no adjudication cut, each family
+re-derived with headroom. The exhibits: because the source gate checks the line caps before
+the import pins, the two ruled exhibits (arity repair, SPEC_IMPORTS + topology) are
+unobservable until the decomposition lands - so the amendment first adds a scoped
+certification path that observes the pins outside the cap gates without weakening them, the
+exhibits are certified and land ahead of the decomposition (round 2a), and the four-family
+decomposition with the cap repair follows (round 2b). The reviewer's six fixes to R9A1 are
+adopted. Round 2 is authored under the same pre-commitment pattern.
+
+## R-2026-08-28-13 - G3 re-bake delegated to the gated executor under the runbook
+
+R-2026-08-28-5 scheduled the Milky Way 4096/face re-bake as a maintainer session. The
+maintainer rules it delegable if the runbook allows, and the seat's reading is that it
+does: R-2026-08-10-4 constrains the DECISION PROTOCOL (Option A first, fallbacks B and C
+staged, DR-01 undecided until the bake's twinkle result is known), not the hands that run
+the bake, and the bake pipeline in Tools/skybox-bake is fully reproducible - a SHA-pinned
+NASA SVS 3572 source, a deterministic transfer and reprojection, a 4096 emit path already
+present in the tool, and a data-only tier install per C12-12. Delegation shape: the landing
+seat downloads and bakes (network), the executor runs the G3 gate and the decision-protocol
+measurement in Edge, and the maintainer keeps the appearance eyeball and the protocol
+decision. The C12-33 countersign stays a maintainer item.
+

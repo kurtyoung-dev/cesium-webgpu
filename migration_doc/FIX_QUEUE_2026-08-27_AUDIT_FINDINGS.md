@@ -108,6 +108,16 @@ corrected with it.
 The remaining ~30 medium and all low survivors are enumerated in §5 with their lane column reading
 QUEUED; they dispatch after Q-1…Q-10, batched by file so one Sol dispatch closes several small
 findings in the same module. C1's returning findings append here as a dated addendum.
+### C12 close-out lane landed + rulings R-12/R-13 (2026-08-29 ~01:15) - Batches 1263-1264
+
+| | Row | Disposition |
+|---|---|---|
+| LANDED | C12X intake | close-out set with true blockers and owners recorded in the C12 queue: S3 cond. 2 has a MECHANISM (a display-encoded residue cannot dim by F; fog eliminated by the fixture's own pins; the cloud in-shader Reinhard + display-space lerp is the live instance) with a pre-registered exposure-sweep discriminator; EXIT-2 DISCHARGED (class audit 6/6 with lane-F landed); Q-61 re-confirmed not reproducing; two S5 instrument reds repaired (one was the same Q-60 defect SW2 landed - the landed version stands) |
+| Q-69 | NEW | GlobeTerrain.wgsl subsequent-imagery-pass early return (~:4491) exits BEFORE the eclipse multiply, cast shadow and atmosphere block - with the night layer now default-ON the default globe plausibly gains a term an eclipse cannot dim | Opus-judgment |
+| Q-70 | NEW | three S5 gates hash Shaders/GlobeFS.js (gitignored build output) - ENOENT on every fresh clone; and two S5 gates need >25 min (svs-footprint) / ~26 min (dense-cost) so bounded lanes misread timeouts as reds (the Q-61 origin). Narrow the provenance inputs or document the build prerequisite; give the long gates a stated budget | Sol-bounded |
+| EDGE 3d | C12X jobs | E1 exposure-sweep discriminator (lane B deepest rung, two exposures; shadowContrastRatioAtDeepest must rise by a(F)=F(L+1)/(FL+1)); E2 SOL-4 refresh-cost depth-8 lane; E3 S5 matrix (dense-cost, multiview, replacement-device) with per-lane watchdogs above 25 min and a build preflight |
+| RULED | R-12 / R-13 | R9: four families + exhibit-certification path first (R9A2 author dispatched). G3 re-bake DELEGATED under the runbook: seat downloads + bakes the 4096 tier, executor runs the G3 gate, maintainer keeps the eyeball + decision protocol |
+
 ### Late-evening landings + Edge tranche 3b (2026-08-29 ~00:30) - Batches 1252-1261
 
 Landed: CW S0/S1 (1252/1253 - GGX sun glint + moonglade on the FFT ocean), NV (1254 - nightDarkness conditional default 0.15 + city lights default ON with a GLSL emission twin; 1255 seat repair), SW2 (1256-1261: Q-41 four wraps + the SceneRenderer release-build every-frame warn, Q-38d three floored-remainder sites, Q-60 at the right depth (the toString constants, not the gate), Q-52 private TMPDIR + decoy, Q-54 premise REFUTED -> timeout re-derived from measurement, Q-38b primitive camera pixel-ratio lane FLAT 272->288 / LIT 432->448). Sink A/B RESULT: -c project_doc_max_bytes=0 KILLS the governance sink (subject A first exec = target file; subject B without the flag spent its first eleven execs reading AGENTS.md and the governance chain) - the flag is now mandatory on every Sol dispatch.
