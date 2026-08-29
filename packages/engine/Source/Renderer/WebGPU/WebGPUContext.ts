@@ -2056,6 +2056,39 @@ export class WebGPUContext extends GraphicsContext {
   }
 
   /**
+   * The subset of unavailability no caller can wait out. A destroyed context
+   * and a device whose recovery was abandoned are both permanent, so reaching
+   * the GPU through either is a caller defect and keeps its debug exception.
+   *
+   * A device that is only lost is deliberately excluded. Recovery publishes a
+   * replacement within seconds and every cache rebuilds against it on the next
+   * frame, so a frame arriving mid-recovery has to be declined rather than
+   * thrown at - the render loop that would deliver the recovered frame is the
+   * same one an exception here tears down for good.
+   */
+  private get _isDeviceTerminallyUnavailable(): boolean {
+    return this._isDestroyed || this._isTerminallyLost;
+  }
+
+  /**
+   * Raise the caller-defect error for the permanent states only, so a caller
+   * can pair it with a plain `return` and decline a recoverable loss. The
+   * whole body is debug-only: a production build declines either way rather
+   * than throwing out of a frame.
+   */
+  private _throwIfDeviceTerminallyUnavailable(): void {
+    //>>includeStart('debug', pragmas.debug);
+    if (this._isDeviceTerminallyUnavailable) {
+      throw new DeveloperError(
+        this._isDestroyed
+          ? "Context has been destroyed."
+          : "Context's WebGPU device is terminally lost.",
+      );
+    }
+    //>>includeEnd('debug');
+  }
+
+  /**
    * Report the first frame declined for each lost device. Keyed on the device
    * rather than a boolean so a second loss in the same session is reported
    * again; throttled because the scene keeps asking for frames throughout
@@ -2135,13 +2168,7 @@ export class WebGPUContext extends GraphicsContext {
     }
 
     if (this._isDeviceUnavailable) {
-      //>>includeStart('debug', pragmas.debug);
-      throw new DeveloperError(
-        this._isDestroyed
-          ? "Context has been destroyed."
-          : "Context's WebGPU device is terminally lost.",
-      );
-      //>>includeEnd('debug');
+      this._throwIfDeviceTerminallyUnavailable();
       return;
     }
 
@@ -3263,13 +3290,7 @@ export class WebGPUContext extends GraphicsContext {
 
   endFrame(): void {
     if (this._isDeviceUnavailable) {
-      //>>includeStart('debug', pragmas.debug);
-      throw new DeveloperError(
-        this._isDestroyed
-          ? "Context has been destroyed."
-          : "Context's WebGPU device is terminally lost.",
-      );
-      //>>includeEnd('debug');
+      this._throwIfDeviceTerminallyUnavailable();
       return;
     }
 
@@ -3856,13 +3877,7 @@ export class WebGPUContext extends GraphicsContext {
    */
   draw(drawCommand: CesiumDrawCommand, passState?: CesiumPassState): void {
     if (this._isDeviceUnavailable) {
-      //>>includeStart('debug', pragmas.debug);
-      throw new DeveloperError(
-        this._isDestroyed
-          ? "Context has been destroyed."
-          : "Context's WebGPU device is terminally lost.",
-      );
-      //>>includeEnd('debug');
+      this._throwIfDeviceTerminallyUnavailable();
       return;
     }
 
@@ -4388,13 +4403,7 @@ export class WebGPUContext extends GraphicsContext {
 
   clear(clearCommand: CesiumClearCommand, passState?: CesiumPassState): void {
     if (this._isDeviceUnavailable) {
-      //>>includeStart('debug', pragmas.debug);
-      throw new DeveloperError(
-        this._isDestroyed
-          ? "Context has been destroyed."
-          : "Context's WebGPU device is terminally lost.",
-      );
-      //>>includeEnd('debug');
+      this._throwIfDeviceTerminallyUnavailable();
       return;
     }
 
@@ -5823,13 +5832,7 @@ export class WebGPUContext extends GraphicsContext {
     copySize?: GPUExtent3D,
   ): boolean {
     if (this._isDeviceUnavailable) {
-      //>>includeStart('debug', pragmas.debug);
-      throw new DeveloperError(
-        this._isDestroyed
-          ? "Context has been destroyed."
-          : "Context's WebGPU device is terminally lost.",
-      );
-      //>>includeEnd('debug');
+      this._throwIfDeviceTerminallyUnavailable();
       return false;
     }
     //>>includeStart('debug', pragmas.debug);

@@ -95,6 +95,7 @@ import {
   setupSceneFramebufferRenderPass,
   buildMrtSlot1Attachment,
 } from "./WebGPUSceneRendererPassRedirect.js";
+import { isDeviceLost } from "./WebGPUDeviceInvalidationBus.js";
 import { isSceneFBMrtMode } from "./WebGPUSceneFBTargetHelpers.js";
 import { resetPerFrameState } from "./WebGPUSceneRendererFrameReset.js";
 import { executeFrustumLoop } from "./WebGPUSceneRendererFrustumLoop.js";
@@ -1424,7 +1425,11 @@ export class WebGPUSceneRenderer {
   }): void {
     const { context } = config;
     const device: GPUDevice | undefined = context._device;
-    if (!device) {
+    // A device whose loss has been published backs nothing: every texture this
+    // hook would allocate is invalid on arrival, and recovery replaces the
+    // handle within seconds. Declining is the same answer as having no device
+    // at all, and it keeps the rest of the frame off the dead one.
+    if (!device || isDeviceLost(device)) {
       return;
     }
 
@@ -1543,6 +1548,14 @@ export class WebGPUSceneRenderer {
   }
   executeCommands(config: WebGPURenderFrameConfig): void {
     const { scene, context, passState, picking } = config;
+    // The context declines every encoder, clear and draw while its device is
+    // lost, so the whole pass chain below would record into nothing. Decline
+    // the frame as a unit instead: one guard is auditable where a hundred
+    // downstream null checks are not, and no pass can raise out of a render
+    // loop that has to survive to deliver the recovered frame.
+    if (isDeviceLost(context._device)) {
+      return;
+    }
     this._lastContext = context;
     this._lastOITRequested = config.useOIT === true;
     this._webgpuOITActiveThisFrame = false;

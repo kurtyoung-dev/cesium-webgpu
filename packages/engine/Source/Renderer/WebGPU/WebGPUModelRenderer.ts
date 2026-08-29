@@ -119,6 +119,7 @@ import { getLunarEclipseMoonlightFactor } from "../../Scene/EclipseState.js";
 import ModelSilhouettePipelineStage from "../../Scene/Model/ModelSilhouettePipelineStage.js";
 import EdgeDisplayMode from "../../Scene/EdgeDisplayMode.js";
 import WebGPUBuffer from "./WebGPUBuffer.js";
+import { isDeviceLost } from "./WebGPUDeviceInvalidationBus.js";
 import { WebGPUMipmapGenerator } from "./WebGPUMipmapGenerator.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
 import type { WebGPUPipelineConfig } from "./WebGPUDrawCommand.js";
@@ -1497,12 +1498,17 @@ function isIdentityMatrix4(m: ArrayLike<number>) {
  * mutable owner may come from the device-shared pipeline cache.
  *
  * Returns null — the documented degradation, where callers skip the draw —
- * when the arena getter reports a dead device (`WebGPUContext.modelCameraArena`
- * is null exactly while the context is destroyed or terminally lost, and
- * nothing can render there anyway). A null arena on a context whose device
- * still claims to be healthy, or a context that has no arena property at all,
- * remains a loud structural error: that is a wiring failure feeding an active
- * model draw, not a device lifecycle state.
+ * when the arena getter reports a dead device. That getter returns null on
+ * exactly three states: destroyed, terminally lost, and a device whose loss
+ * has been published while recovery runs. The third is the one that matters
+ * most here, because it is transient and its frames keep arriving: a model
+ * drawn during the recovery window must skip, not raise out of the render loop
+ * that has to survive to draw the recovered frame.
+ *
+ * A null arena on a context whose device still claims to be healthy, or a
+ * context that has no arena property at all, remains a loud structural error:
+ * that is a wiring failure feeding an active model draw, not a device
+ * lifecycle state.
  */
 function resolveModelCameraArenaOwner(
   frameState: CesiumFrameState,
@@ -1515,7 +1521,9 @@ function resolveModelCameraArenaOwner(
   if (
     context !== undefined &&
     context.modelCameraArena === null &&
-    (context._isDestroyed === true || context._isTerminallyLost === true)
+    (context._isDestroyed === true ||
+      context._isTerminallyLost === true ||
+      isDeviceLost(context.device))
   ) {
     return null;
   }

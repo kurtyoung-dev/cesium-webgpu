@@ -231,6 +231,14 @@ export function ensureResources(
       // remain reachable while holding handles from the invalid device, so the
       // scene graph is walked immediately.
       clearPerObjectCaches(scene);
+
+      // Invalidation fires only from the recovery hook, and only after the
+      // replacement device has been published - so this is the moment a new
+      // device exists and nothing has drawn on it. Everything nulled above is
+      // rebuilt by the next frame, and under request-render mode there is no
+      // other reason for one: without this the canvas keeps the black it was
+      // left with until some unrelated input asks for a redraw.
+      scene?.requestRender?.();
     });
   }
 

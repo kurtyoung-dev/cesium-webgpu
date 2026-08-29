@@ -108,6 +108,16 @@ corrected with it.
 The remaining ~30 medium and all low survivors are enumerated in §5 with their lane column reading
 QUEUED; they dispatch after Q-1…Q-10, batched by file so one Sol dispatch closes several small
 findings in the same module. C1's returning findings append here as a dated addendum.
+### Q-65 LANDED - Batch 1270 (2026-08-29 ~01:15 machine clock)
+
+| | Row | Disposition |
+|---|---|---|
+| Q-65 | FIXED (Edge-pending) | station-3 review LAND-WITH-FIXES, every fix in the landing procedure, none in the diff (`cesium-lane-q65/_lane-out/Q65_REVIEW_PASS1.md`). Root cause and the premise correction CONFIRMED: the frame arriving DURING the ~1.4 s recovery window hit `_isDeviceUnavailable`'s conflation of recoverable loss with terminal, and CesiumWidget._onRenderError killed the loop with no re-arm; the successor device and the eight-getter rebuild were already GREEN on pristine main. Ordering answered precisely: the fix PREVENTS the kill, it does not re-arm after one (Scene.requestRender never touches _useDefaultRenderLoop). Refinement: the five entry-point throws were already pragma-gated, so RELEASE builds already declined silently - the five-site change alters debug builds only; the genuinely new runtime behaviour is the two scene-renderer guards, the model-arena liveness arm (`resolveModelCameraArenaOwner`, a non-pragma Error = the release-build twin) and the requestRender re-request. Harness class BOUNDED not sampled: `isDeviceLost` is a real WeakSet.has, only whole-module stubbing can fake it, exactly one spec did (repaired; re-stubbing it in memory sends legs 2a/2b red). The loosened HEAD spec passes 34/34 FALSELY against the lane source - the slice-tightening was measured-necessary. 7 files +112/-49; new spec 12/12; 59/59 across the three specs at the seat; tsc 0 non-TS2307; eslint/prettier/C16 0; TOOLING_CATALOG regenerated after staging (also clears main's 8 drifted rows) |
+| RECIPE | Q-65 Edge recipe amended | leg 9's first message is NOT a discriminator (beginFrame reports before clear() throws, so it fires pre-fix too); leg 9's second message is record-only (the globe self-guards at WebGPUGlobeSurfacePipelines.ts:630-636 before reaching the sentinel, so its absence in the globe-only leg is expected). Recipe: Edge + --enable-gpu-benchmarking, ?renderer=webgpu, chrome.gpuBenchmarking.terminateGpuProcessNormally() (never device.destroy()), three legs + terminal-path negative control; deviceLossState / resourceGeneration are non-discriminators |
+| Q-84 | NEW | `WebGPUContext.createSync` still throws on a RECOVERABLE loss (production-visible); no in-engine frame-path caller (PickFramebuffer uses Sync.create, WebGL-only) - record the asymmetry; extend when a caller appears | Sol-bounded |
+| Q-85 | NEW | pre-existing null-PBO dereference in `PickFramebuffer.js:83-105` surfaces as a misleading 'Async Picking Request Timeout' | Opus-judgment |
+| Q-86 | NEW | multi-context device recovery is untested (the recovery path is exercised for one context only) | executor recipe + spec |
+
 ### Edge tranche 3d (2026-08-29 ~03:00 exit) - G3 on the 4096 tier, C12X E2/E3, Q-62, Karma; evidence output/edge-tranche3d-2026-08-29/ (65 files) + EDGE_TRANCHE_3D_PACKET_2026-08-29.md
 
 | | Row | Disposition |

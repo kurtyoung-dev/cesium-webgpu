@@ -75,6 +75,14 @@ const { default: Pass } = await import(
   pathToFileURL(resolve(engineWebGPU, "../Pass.js")).href
 );
 
+// Two dependencies are bundled for real rather than stubbed: `Pass.js` for the
+// pass indices, and `WebGPUDeviceInvalidationBus.js` for the device-liveness
+// registry the frame entry points consult. Both are dependency-free. The
+// liveness one has to be real because the stub below answers every call with a
+// truthy Proxy, which would make `isDeviceLost(context._device)` true for a
+// context that never had a device - the renderer would decline every frame in
+// this file and the behavioural assertions would be measuring the stub.
+//
 // Each stubbed dependency is generated as a REAL ES module exporting exactly
 // the names the renderer imports from it. A CommonJS proxy is not usable here:
 // esbuild's interop materialises the namespace by copying the module's OWN
@@ -155,8 +163,9 @@ function stubFor(specifier) {
 }
 
 /**
- * Bundles the renderer with every dependency stubbed except the real `Pass`,
- * optionally through a source mutation, and imports the result.
+ * Bundles the renderer with every dependency stubbed except the real `Pass`
+ * and the real device-liveness registry, optionally through a source mutation,
+ * and imports the result.
  *
  * @param {(source: string) => string} [mutate] Source rewrite.
  * @param {string} [label] Name used in the did-it-change assertion.
@@ -195,6 +204,9 @@ async function importRenderer(mutate, label) {
               return undefined;
             }
             if (args.path.endsWith("/Pass.js")) {
+              return undefined;
+            }
+            if (args.path.endsWith("/WebGPUDeviceInvalidationBus.js")) {
               return undefined;
             }
             return { path: args.path, namespace: "stub" };

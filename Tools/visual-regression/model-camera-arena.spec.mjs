@@ -946,16 +946,26 @@ test("posture: the resolver is the hoisted declaration the bundle re-exports", (
 test("posture: the skip predicate matches the arena getter's null condition", () => {
   // The renderer degrades on EXACTLY the states that make the getter return
   // null. Pinning both halves in one place is what keeps them from drifting:
-  // if `_isDeviceUnavailable` grows a third term, this fails and forces the
+  // if `_isDeviceUnavailable` grows a fourth term, this fails and forces the
   // renderer's predicate to grow with it — otherwise the new lifecycle state
   // would hit the loud throw instead of the documented degradation.
+  //
+  // The slice ends at this getter's own closing brace rather than at a later
+  // landmark: the class also carries a terminal-only companion predicate whose
+  // body is the two-term expression this test used to pin, so a slice running
+  // past the getter would match the companion and pass while the predicate
+  // under test drifted.
+  const unavailableStart = contextSource.indexOf(
+    "private get _isDeviceUnavailable()",
+  );
+  assert.notEqual(unavailableStart, -1);
   const unavailable = contextSource.slice(
-    contextSource.indexOf("private get _isDeviceUnavailable()"),
-    contextSource.indexOf("get device(): GPUDevice | null"),
+    unavailableStart,
+    contextSource.indexOf("\n  }", unavailableStart),
   );
   assert.match(
     unavailable,
-    /return this\._isDestroyed \|\| this\._isTerminallyLost;/,
+    /this\._isDestroyed \|\| this\._isTerminallyLost \|\| isDeviceLost\(this\._device\)/,
   );
   const arenaGetter = contextSource.slice(
     contextSource.indexOf("get modelCameraArena()"),
@@ -971,6 +981,10 @@ test("posture: the skip predicate matches the arena getter's null condition", ()
   );
   assert.match(resolver, /context\._isDestroyed === true/);
   assert.match(resolver, /context\._isTerminallyLost === true/);
+  // The liveness term is the transient one, and the only one whose frames keep
+  // arriving. A resolver covering only the two permanent flags throws out of
+  // the render loop on the first model frame of a recovery window.
+  assert.match(resolver, /isDeviceLost\(context\.device\)/);
   // The loud path is still reachable — the degradation did not replace it.
   assert.match(
     resolver,
