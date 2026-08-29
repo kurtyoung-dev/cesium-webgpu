@@ -108,6 +108,13 @@ corrected with it.
 The remaining ~30 medium and all low survivors are enumerated in §5 with their lane column reading
 QUEUED; they dispatch after Q-1…Q-10, batched by file so one Sol dispatch closes several small
 findings in the same module. C1's returning findings append here as a dated addendum.
+### Q-130-b complete but for Q-130-c; the CSM evidence gathered (2026-08-29 17:05 machine clock)
+
+| | Row | Disposition |
+|---|---|---|
+| Q-130-b | A7 FIXED (Hamfast, pasted correction: functions reachable only from vertex/compute entry points are out of scope, chunks analysed as fragment code); spec 24/25 with Q130's shaders present - the one red is B1 on the five CSM sites, i.e. Q-130-c, not a regression. BANKED (scratchpad/land-q130b); lands after Q130 once Q-130-c is dispositioned so B1 is honestly green or honestly allow-listed with a reason |
+| Q-130-c evidence | gathered by the seat (grep only) | diagnostics: packages/engine/Source/Shaders/WebGPU/chunks/functions/csm_effects.wgsl:0 packages/engine/Source/Shaders/WebGPU/chunks/functions/csm_clipByPolygons.wgsl:0 ; csm_clipByPolygons:32 =  return false; // No polygon clipping active; :64 =  return 1.0; // Far from any edge; csm_effects:19 =  return 1.0;; :32 =  return 1.0;; :56 =  return 1.0;; :72 =  if (effects.shadowSoftShadows > 0.5) {; tree-wide derivative_uniformity mentions: 2 files |
+
 ### Q-130-b banked with one regression and one new finding (2026-08-29 16:50 machine clock)
 
 | | Row | Disposition |
