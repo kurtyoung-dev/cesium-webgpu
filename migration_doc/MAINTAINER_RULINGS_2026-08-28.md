@@ -205,3 +205,14 @@ deferred them is flipped to RESOLVED with these values:
 The row's other standing terms are unchanged: opt-in, default OFF, byte-identical off, no new
 define bit, not reversed-Z-coupled, S0 day-sun-glint audit/unify front of line.
 
+## R-2026-08-28-11a - Amendment: every catalog star reflects, via a splat into the reflection source
+
+Taken ~22:25 ET when the maintainer asked whether the bright-star catalog (263 BSC5 stars rendered
+as HDR sprites on both backends) would reflect on water. Under item 3 of R-2026-08-28-11 alone it
+would not: the default star cube carries no resolved stars and sprites are not samplable. Ruled:
+ALL catalog stars reflect, and the implementation must be the cheap shape - rasterize the same
+sprites into a small mip-mapped reflection source beside the Milky Way band and sample it with
+the reflected view direction, so roughness broadens the glints through the mip chain - never a
+per-fragment loop over the catalog. A sharp lobe for first-magnitude stars is an optional
+refinement. The C12-14 handles remain borrowed and unmodified. Lane CW's S2 slice carries it.
+

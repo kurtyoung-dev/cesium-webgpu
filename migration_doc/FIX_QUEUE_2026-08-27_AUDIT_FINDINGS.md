@@ -108,6 +108,13 @@ corrected with it.
 The remaining ~30 medium and all low survivors are enumerated in §5 with their lane column reading
 QUEUED; they dispatch after Q-1…Q-10, batched by file so one Sol dispatch closes several small
 findings in the same module. C1's returning findings append here as a dated addendum.
+### Q-61 RESOLVED + star-reachability leg queued (2026-08-28 22:25)
+
+| | Row | Disposition |
+|---|---|---|
+| RESOLVED | Q-61 | c12-29-s5-svs-footprint-gate is 57/57 on main post-1239 - the 47/1 in the dying VE clone was clone-environment, not the street fix. VE reconstruction bank deleted (landing was hash-verified) |
+| Q-62 | NEW | bright-star catalog reachability: the July TWILIGHT-STAR-REACHABILITY-BLACK-BOX diagnostic (a mag-2.1 star box black at sun -20 deg, Batch 904) is still open; run probe-stars-catalog.mjs at the current tip on both backends in the next Edge tranche so the star field carries a fresh verdict before the water lane depends on it | executor, tranche 3b |
+
 ### Post-restart resume (2026-08-28 21:30) - codex session GC lands; VF stop-note corrected
 
 CORRECTION to the stop record: lane VF was NOT near-complete. After the restart its clone holds
