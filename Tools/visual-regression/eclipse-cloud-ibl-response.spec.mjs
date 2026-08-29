@@ -648,16 +648,39 @@ test("D3 WebGPU environment: the bake dims AND the gate can see it", () => {
     webgpuEnvManager,
     /const eclipseEnvChanged =[^;]*wantMarch/,
   );
+  // Grouped with the sky-bake terms, NOT inside the capture run — the
+  // `webgpu-dynamic-environment-recovery` guard pins that run's adjacency.
+  //
+  // The disjunction was hoisted out of the caller into
+  // `isDynamicEnvironmentMapRefreshRequested`, which now receives a state
+  // object, so this assertion reads the ordering off the HELPER's own chain
+  // and then separately proves the caller still hands the term over. The
+  // previous form pinned the caller's `||` layout and went stale silently the
+  // moment the predicate moved — the shape it was matching no longer existed
+  // anywhere, so the ordering claim it protects was unguarded. The claim is
+  // unchanged: `eclipseEnvChanged` sits AFTER `lutPathChanged` and BEFORE the
+  // cloud terms, because it is deliberately not march-gated, and C13-41's
+  // refresh accounting reads it as one of the disjuncts.
+  const helperStart = webgpuEnvManager.indexOf(
+    "function isDynamicEnvironmentMapRefreshRequested(",
+  );
+  assert.ok(helperStart > 0, "the refresh predicate helper must exist");
   const predicate = webgpuEnvManager.slice(
+    helperStart,
+    webgpuEnvManager.indexOf("\n}\n", helperStart) + 3,
+  );
+  assert.match(
+    predicate,
+    /state\.lutPathChanged \|\|\n(\s*\/\/[^\n]*\n)*\s*state\.eclipseEnvChanged \|\|\n\s*state\.cloudCoverageMoved \|\|/,
+  );
+  // A helper with the right chain, reached with the term omitted, would be
+  // inert. The call site has to pass it.
+  const callSite = webgpuEnvManager.slice(
     webgpuEnvManager.indexOf("const refreshRequested ="),
     webgpuEnvManager.indexOf("// A refresh is only deferrable"),
   );
-  // Grouped with the sky-bake terms, NOT inside the capture run — the
-  // `webgpu-dynamic-environment-recovery` guard pins that run's adjacency.
-  assert.match(
-    predicate,
-    /lutPathChanged \|\|\n(\s*\/\/[^\n]*\n)*\s*eclipseEnvChanged \|\|\n\s*cloudCoverageMoved \|\|/,
-  );
+  assert.match(callSite, /isDynamicEnvironmentMapRefreshRequested\(/);
+  assert.match(callSite, /\n\s*eclipseEnvChanged,\n/);
 
   // The bucket is part of the submit-owned transaction. Encoding captures it
   // in the provisional commit state only after the complete fill; it is not
