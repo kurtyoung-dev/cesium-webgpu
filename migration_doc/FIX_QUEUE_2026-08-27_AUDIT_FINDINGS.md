@@ -108,6 +108,13 @@ corrected with it.
 The remaining ~30 medium and all low survivors are enumerated in §5 with their lane column reading
 QUEUED; they dispatch after Q-1…Q-10, batched by file so one Sol dispatch closes several small
 findings in the same module. C1's returning findings append here as a dated addendum.
+### Q-152 wave-end gate runbook lands; Q-130-b in flight (2026-08-30 ~00:10 machine clock)
+
+| | Row | Disposition |
+|---|---|---|
+| Q-152 | LANDED (Batch 1311; directed Sol fully pasted, seat-corrected, tools class) | Tools/wave-end-gate.mjs (npm run wave-end-gate): --wave required; refuses (exit 3, named reason) without a served build passing the preflight on both bundles, when the origin-rewrite helper is absent, or when --update-baselines is given without --reason; runs variant-smoke-test, the Sandcastle2 sweep per renderer and capture-and-diff as children with captured exit codes and wall time; writes output/wave-end/<wave>/receipt.json + summary.md with tip, served md5s, steps, baseline-update reason and a PASS/FAIL/REFUSED verdict; exits 0/2/3. Pure decisions exported; spec 7/7 incl. the reason-check mutant; runner home test-landing-rules. Seat corrections: Sol resolved the two helper modules at Tools/lib/ instead of Tools/visual-regression/lib/ (three sites) - fixed; dry-run now refuses on the preflight as designed when no served build is up. Its first real run is Wave 1's close-out after the engine window |
+| Q-130-b | directed Sol turn running (Hamfast; the first attempt was fed the wrong file by the seat's grep and correctly refused) | the analyzer lives inside q130-wgsl-derivative-uniformity.spec.mjs in the frozen q130 clone; the turn extracts it to lib/wgsl-derivative-uniformity.mjs, hardens it for the four missed shapes, and rewrites the spec with fixtures + a mutant; banks to land right after Q130 |
+
 ### DM-07 passes review and is banked for the engine window; DX-11 closed by the seat (2026-08-29 ~23:40 machine clock)
 
 | | Row | Disposition |
