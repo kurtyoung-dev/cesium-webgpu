@@ -39,6 +39,12 @@ function GlobeWaterOcean(scene, globe) {
   this._tideEnabled = true;
   this._tideExaggeration = 1.0;
   this._tideCallback = undefined;
+  // Celestial reflection. Off by default: while it is off the shader draws
+  // the highlight it always drew and the uniform tail stays zeroed.
+  this._celestialReflection = false;
+  this._celestialRoughness = 0.06;
+  this._celestialSunIntensity = 1.0;
+  this._celestialMoonIntensity = 0.35;
 }
 
 /**
@@ -91,6 +97,10 @@ Object.defineProperties(GlobeWaterOcean.prototype, {
           tideEnabled: this._tideEnabled,
           tideExaggeration: this._tideExaggeration,
           tideCallback: this._tideCallback,
+          celestialReflection: this._celestialReflection,
+          celestialRoughness: this._celestialRoughness,
+          celestialSunIntensity: this._celestialSunIntensity,
+          celestialMoonIntensity: this._celestialMoonIntensity,
           globe: this._globe ?? this._scene?.globe,
         });
         prefetchGeoid(this);
@@ -227,6 +237,103 @@ Object.defineProperties(GlobeWaterOcean.prototype, {
       this._tideCallback = v;
       if (defined(this._primitive)) {
         this._primitive._tideCallback = v;
+      }
+    },
+  },
+
+  /**
+   * Whether the water reflects the sky's light sources through a microfacet
+   * lobe instead of the historical Blinn-Phong highlight. Default `false`.
+   *
+   * The switch is a uniform value, not a shader define, because the same lobe
+   * serves the night-side terms and both have to turn on without a
+   * recompile. While it is `false` the uniform tail the feature occupies is
+   * written as exact zeros — the value it carried before the feature existed
+   * — and the shader takes its historical branch, so the default look is
+   * unchanged.
+   *
+   * @memberof GlobeWaterOcean.prototype
+   * @type {boolean}
+   * @default false
+   */
+  celestialReflection: {
+    get: function () {
+      return this._celestialReflection;
+    },
+    set: function (v) {
+      this._celestialReflection = v === true;
+      if (defined(this._primitive)) {
+        this._primitive._celestialReflection = this._celestialReflection;
+      }
+    },
+  },
+
+  /**
+   * Base microfacet roughness of the water at the near patch, clamped to
+   * `[0.02, 1]`. Smaller values tighten the glitter path toward a mirror;
+   * larger ones spread it. The shader raises this further with distance,
+   * where the wave slope stops being resolvable, so this is the near value
+   * rather than a whole-surface one. Read only while
+   * {@link GlobeWaterOcean#celestialReflection} is `true`.
+   *
+   * @memberof GlobeWaterOcean.prototype
+   * @type {number}
+   * @default 0.06
+   */
+  celestialRoughness: {
+    get: function () {
+      return this._celestialRoughness;
+    },
+    set: function (v) {
+      this._celestialRoughness = v;
+      if (defined(this._primitive)) {
+        this._primitive._celestialRoughness = v;
+      }
+    },
+  },
+
+  /**
+   * Multiplier on the reflected solar disc, floored at 0. Read only while
+   * {@link GlobeWaterOcean#celestialReflection} is `true`.
+   *
+   * @memberof GlobeWaterOcean.prototype
+   * @type {number}
+   * @default 1.0
+   */
+  celestialSunIntensity: {
+    get: function () {
+      return this._celestialSunIntensity;
+    },
+    set: function (v) {
+      this._celestialSunIntensity = v;
+      if (defined(this._primitive)) {
+        this._primitive._celestialSunIntensity = v;
+      }
+    },
+  },
+
+  /**
+   * Multiplier on the reflected lunar disc, floored at 0 and applied before
+   * the Moon's illuminated fraction and the night ramp — so a new Moon and a
+   * daylit sea both stay dark whatever this is set to. Read only while
+   * {@link GlobeWaterOcean#celestialReflection} is `true`.
+   *
+   * It is an appearance dial rather than a photometric ratio: the ocean's
+   * radiance is not calibrated in physical units, so the true four-millionths
+   * of sunlight that full moonlight carries would render as nothing.
+   *
+   * @memberof GlobeWaterOcean.prototype
+   * @type {number}
+   * @default 0.35
+   */
+  celestialMoonIntensity: {
+    get: function () {
+      return this._celestialMoonIntensity;
+    },
+    set: function (v) {
+      this._celestialMoonIntensity = v;
+      if (defined(this._primitive)) {
+        this._primitive._celestialMoonIntensity = v;
       }
     },
   },

@@ -68,7 +68,10 @@ const LOG2N = 8;
 const WG = 8; // workgroup size per axis
 const DISPATCH = N / WG; // 32
 const CAMERA_UNIFORM_FLOATS = 44;
-const OCEAN_UNIFORM_FLOATS = 40; // 160 bytes (10 vec4)
+// 192 bytes (12 vec4). The last two vec4 carry the celestial-reflection
+// tail, which is written as exact zeros while the reflection is off, so the
+// values the shader reads are unchanged from before the tail existed.
+const OCEAN_UNIFORM_FLOATS = 48;
 
 const _renderShaderModuleCaches = new WeakMap<
   GPUDevice,
@@ -166,6 +169,14 @@ interface OceanPrimitiveLike {
   _uvOffsetX?: number;
   _uvOffsetY?: number;
   _sunDirection?: Cartesian3;
+  _celestialEnable?: number;
+  _celestialResolvedRoughness?: number;
+  _celestialResolvedSunIntensity?: number;
+  _celestialSinAngularRadius?: number;
+  _celestialMoonDirection?: { x: number; y: number; z: number };
+  _celestialMoonPhase?: number;
+  _celestialResolvedMoonIntensity?: number;
+  _celestialMoonSinAngularRadius?: number;
   _invRadius?: number;
   _deepColor?: { x: number; y: number; z: number };
   _shallowColor?: { x: number; y: number; z: number };
@@ -976,6 +987,23 @@ function updateWebGPUOcean(
   od[33] = p._uvOffsetY ?? 0.0;
   od[34] = 1.0 / N; // texelSize
   od[35] = p._detailScale ?? 1.0;
+  // Celestial-reflection tail. The primitive resolves these ahead of the
+  // backend branch and publishes all four as exactly 0 while the reflection
+  // is off, which is what the tail held before the feature existed -- so an
+  // off ocean writes byte-identical uniform data.
+  od[36] = p._celestialEnable ?? 0.0;
+  od[37] = p._celestialResolvedRoughness ?? 0.0;
+  od[38] = p._celestialResolvedSunIntensity ?? 0.0;
+  od[39] = p._celestialSinAngularRadius ?? 0.0;
+  const moon = p._celestialMoonDirection ?? { x: 0.0, y: 0.0, z: 0.0 };
+  od[40] = moon.x;
+  od[41] = moon.y;
+  od[42] = moon.z;
+  od[43] = p._celestialMoonPhase ?? 0.0;
+  od[44] = p._celestialResolvedMoonIntensity ?? 0.0;
+  od[45] = p._celestialMoonSinAngularRadius ?? 0.0;
+  od[46] = 0.0;
+  od[47] = 0.0;
   device.queue.writeBuffer(cache.oceanUniformBuffer!, 0, od);
 
   // ── Draw command ──

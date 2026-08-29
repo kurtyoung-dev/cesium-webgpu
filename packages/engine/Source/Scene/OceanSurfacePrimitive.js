@@ -77,6 +77,19 @@ import FeatureRendererKey from "../Renderer/FeatureRendererKey.js";
  *   replacing the built-in {@link TideModel}.
  * @param {Globe} [options.globe] Owning globe, read only for its
  *   `terrainProvider` when the datum is `AUTO`.
+ * @param {boolean} [options.celestialReflection=false] Whether the water
+ *   reflects the sky's light sources through a microfacet lobe instead of
+ *   the historical Blinn-Phong highlight. Off writes a zeroed uniform tail
+ *   and leaves the shader on its historical branch.
+ * @param {number} [options.celestialRoughness=0.06] Base microfacet
+ *   roughness of the water at the near patch, clamped to [0.02, 1]. Larger
+ *   values spread the glitter path; the shader raises it further with
+ *   distance as the wave slope stops being resolvable.
+ * @param {number} [options.celestialSunIntensity=1] Multiplier on the
+ *   reflected solar disc. Only read while `celestialReflection` is true.
+ * @param {number} [options.celestialMoonIntensity=0.35] Multiplier on the
+ *   reflected lunar disc, before the illuminated fraction and the night
+ *   ramp. An appearance dial, not a photometric ratio.
  */
 function OceanSurfacePrimitive(options) {
   options = options ?? Frozen.EMPTY_OBJECT;
@@ -122,6 +135,20 @@ function OceanSurfacePrimitive(options) {
   this._uvOffsetY = 0.0;
   this._sunDirection = new Cartesian3(0.0, 0.0, 1.0);
   this._invRadius = 1.0 / 6371000.0;
+  this._celestialReflection = options.celestialReflection === true;
+  this._celestialRoughness =
+    options.celestialRoughness ?? CELESTIAL_DEFAULT_ROUGHNESS;
+  this._celestialSunIntensity = options.celestialSunIntensity ?? 1.0;
+  this._celestialMoonIntensity =
+    options.celestialMoonIntensity ?? CELESTIAL_DEFAULT_MOON_INTENSITY;
+  this._celestialEnable = 0.0;
+  this._celestialResolvedRoughness = 0.0;
+  this._celestialResolvedSunIntensity = 0.0;
+  this._celestialSinAngularRadius = 0.0;
+  this._celestialMoonDirection = { x: 0.0, y: 0.0, z: 0.0 };
+  this._celestialMoonPhase = 0.0;
+  this._celestialResolvedMoonIntensity = 0.0;
+  this._celestialMoonSinAngularRadius = 0.0;
   this._paramsDirty = true;
 
   // Fixed anchor reference (A0) + its ENU basis for world-anchored UVs.
@@ -145,6 +172,118 @@ function OceanSurfacePrimitive(options) {
   this._anchorHeightM = 0.0;
 
   this._webgpuCache = undefined;
+}
+
+// Sine of the Sun's mean angular radius, 959.63 arcseconds. The reflected disc
+// has a finite width, and the shader uses this to put a floor under the
+// microfacet lobe so smooth water cannot collapse the glint to a spike. Each
+// body carries its own: the two discs are famously close, and relying on that
+// coincidence would be relying on a coincidence.
+const CELESTIAL_SUN_SIN_ANGULAR_RADIUS = 0.0046524;
+// Sine of the Moon's mean angular radius, 932.58 arcseconds.
+const CELESTIAL_MOON_SIN_ANGULAR_RADIUS = 0.0045213;
+// Default weight of the reflected lunar disc. Full moonlight is about four
+// millionths of noon sunlight, which is not what this number is: the ocean's
+// radiance is not calibrated in physical units, so this is an appearance dial
+// chosen to read as moonlight beside the tone-mapped night water rather than
+// a ratio derived from illuminance. Deriving it belongs with an HDR-calibrated
+// ocean radiance, which does not exist yet.
+const CELESTIAL_DEFAULT_MOON_INTENSITY = 0.35;
+// Base roughness of the near patch, and the range the shader shares.
+const CELESTIAL_DEFAULT_ROUGHNESS = 0.06;
+const CELESTIAL_MIN_ROUGHNESS = 0.02;
+const CELESTIAL_MAX_ROUGHNESS = 1.0;
+
+/**
+ * Resolve the celestial-reflection tail of the ocean uniform buffer.
+ *
+ * Returns the tail's values in packing order. Every one of them is exactly 0
+ * while the feature is off -- not merely small. Nothing the shader reads
+ * therefore differs from what it read before the tail existed, and the fragment
+ * stays on the historical highlight it has always drawn.
+ *
+ * Extracted from `update` and exported by name so the off contract can be
+ * executed by a node spec rather than asserted, without standing up a WebGPU
+ * context -- the same split `computeSeaLevelOffset` already makes.
+ *
+ * @param {OceanSurfacePrimitive} primitive The primitive.
+ * @param {FrameState} [frameState] The frame state, read for the Moon's
+ *   direction and illuminated fraction. Absent means no Moon.
+ * @returns {{enable: number, roughness: number, sunIntensity: number, sinAngularRadius: number, moonDirection: object, moonPhase: number, moonIntensity: number, moonSinAngularRadius: number}}
+ *   The packed tail.
+ * @private
+ */
+function resolveCelestialReflection(primitive, frameState) {
+  if (primitive._celestialReflection !== true) {
+    return {
+      enable: 0.0,
+      roughness: 0.0,
+      sunIntensity: 0.0,
+      sinAngularRadius: 0.0,
+      moonDirection: { x: 0.0, y: 0.0, z: 0.0 },
+      moonPhase: 0.0,
+      moonIntensity: 0.0,
+      moonSinAngularRadius: 0.0,
+    };
+  }
+
+  const requestedRoughness = primitive._celestialRoughness;
+  const roughness = Number.isFinite(requestedRoughness)
+    ? Math.min(
+        Math.max(requestedRoughness, CELESTIAL_MIN_ROUGHNESS),
+        CELESTIAL_MAX_ROUGHNESS,
+      )
+    : CELESTIAL_DEFAULT_ROUGHNESS;
+
+  // A negative multiplier would subtract light from the water rather than
+  // dim the disc, so the floor is 0 and not the default.
+  const requestedIntensity = primitive._celestialSunIntensity;
+  const sunIntensity = Number.isFinite(requestedIntensity)
+    ? Math.max(requestedIntensity, 0.0)
+    : 1.0;
+
+  // The Moon. `Scene` clears the illuminated fraction every frame and only a
+  // Moon that actually updated writes it back, so a zero fraction is the
+  // engine's own statement that there is no Moon this frame -- while the
+  // direction beside it may still hold the last one's. Zeroing the direction
+  // on that signal is what keeps a stale bearing from steering a glint.
+  const moonPhase = frameState?.moonPhaseFraction;
+  const moonDirection = frameState?.moonDirectionWC;
+  let moonX = 0.0;
+  let moonY = 0.0;
+  let moonZ = 0.0;
+  let phase = 0.0;
+  if (defined(moonDirection) && Number.isFinite(moonPhase) && moonPhase > 0.0) {
+    const magnitude = Math.sqrt(
+      moonDirection.x * moonDirection.x +
+        moonDirection.y * moonDirection.y +
+        moonDirection.z * moonDirection.z,
+    );
+    if (magnitude > 0.0 && Number.isFinite(magnitude)) {
+      // The shader consumes this direction without normalising it, so the
+      // unit length is this seam's obligation.
+      moonX = moonDirection.x / magnitude;
+      moonY = moonDirection.y / magnitude;
+      moonZ = moonDirection.z / magnitude;
+      phase = Math.min(moonPhase, 1.0);
+    }
+  }
+
+  const requestedMoonIntensity = primitive._celestialMoonIntensity;
+  const moonIntensity = Number.isFinite(requestedMoonIntensity)
+    ? Math.max(requestedMoonIntensity, 0.0)
+    : CELESTIAL_DEFAULT_MOON_INTENSITY;
+
+  return {
+    enable: 1.0,
+    roughness: roughness,
+    sunIntensity: sunIntensity,
+    sinAngularRadius: CELESTIAL_SUN_SIN_ANGULAR_RADIUS,
+    moonDirection: { x: moonX, y: moonY, z: moonZ },
+    moonPhase: phase,
+    moonIntensity: moonIntensity,
+    moonSinAngularRadius: CELESTIAL_MOON_SIN_ANGULAR_RADIUS,
+  };
 }
 
 const scratchSubpoint = new Cartesian3();
@@ -329,6 +468,16 @@ OceanSurfacePrimitive.prototype.update = function (frameState) {
     Cartesian3.normalize(this._sunDirection, this._sunDirection);
   }
 
+  const celestial = resolveCelestialReflection(this, frameState);
+  this._celestialEnable = celestial.enable;
+  this._celestialResolvedRoughness = celestial.roughness;
+  this._celestialResolvedSunIntensity = celestial.sunIntensity;
+  this._celestialSinAngularRadius = celestial.sinAngularRadius;
+  this._celestialMoonDirection = celestial.moonDirection;
+  this._celestialMoonPhase = celestial.moonPhase;
+  this._celestialResolvedMoonIntensity = celestial.moonIntensity;
+  this._celestialMoonSinAngularRadius = celestial.moonSinAngularRadius;
+
   const fr = context.getFeatureRenderer(FeatureRendererKey.FFT_OCEAN);
   if (defined(fr)) {
     fr.update(this, frameState);
@@ -358,10 +507,10 @@ OceanSurfacePrimitive.prototype.destroy = function () {
   return destroyObject(this);
 };
 
-// Named side export so `Tools/visual-regression/ocean-tide-datum.spec.mjs` can
-// pin the composition ORDER (geoid -> tide*exaggeration -> the vertical
-// exaggeration map) and the exact-zero off-contract without standing up a
-// WebGPU context. The off-contract claim is the kind that must be proven, not
-// asserted; `@internal`, not public API.
-export { computeSeaLevelOffset };
+// Named side exports so node specs can pin the composition ORDER of the
+// sea-level offset (geoid -> tide*exaggeration -> the vertical exaggeration
+// map) and the exact-zero off-contract of the celestial-reflection tail,
+// without standing up a WebGPU context. Both off-contract claims are the kind
+// that must be proven, not asserted; `@internal`, not public API.
+export { computeSeaLevelOffset, resolveCelestialReflection };
 export default OceanSurfacePrimitive;
