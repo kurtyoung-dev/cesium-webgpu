@@ -108,6 +108,13 @@ corrected with it.
 The remaining ~30 medium and all low survivors are enumerated in §5 with their lane column reading
 QUEUED; they dispatch after Q-1…Q-10, batched by file so one Sol dispatch closes several small
 findings in the same module. C1's returning findings append here as a dated addendum.
+### Q-135 instrument landed; a pre-existing S5 gate red surfaces while proving it (2026-08-29 ~10:05 machine clock)
+
+| | Row | Disposition |
+|---|---|---|
+| Q-135 | INSTRUMENT LANDED (Batch 1295); row stays OPEN until the S5 replacement-device probe attests on an Edge tranche | Sol (directed) changed the NODE side, one line: executedSha256 now hashes the raw measurement slice exactly as it is serialised into page.evaluate (text.slice(measure.start, measure.end)) instead of the de-indented sourceNode(text, measure) - the page constructor and Function.prototype.toString preserve the raw indentation, so the shipped hash and the executed hash are the same bytes. Sol's spec c12-29-s5-canonical-hash-parity.spec.mjs 3/3 constructs the function the way the page does and asserts hash equality; the seat's mutant (restore the dedented line) turns it 1/3. Refusal spec 7/7 unchanged. Not wired: no runner carries the S5 refusal or gate specs either (Q-139) |
+| Q-140 | NEW (tooling gate, pre-existing) | c12-29-s5-replacement-device-gate.spec.mjs subtest 5 'derived policy and source-map closures reject omitted helper and product-byte mutants' is RED on main (36/37, expected true / actual false) with and without the Q-135 change, and in an unbuilt clone it fails earlier on the generated GlobeFS.js. A mutant-rejection test failing means a mutant may be surviving the gate - establish since when (bisect against the landed batches that touched the S5 lib) and whether the surviving mutant is the omitted-helper or the product-byte one | Opus-judgment |
+
 ### Directed Sol round two: Q-88 verified and banked, Q-137 instrument landed (2026-08-29 ~09:45 machine clock)
 
 | | Row | Disposition |

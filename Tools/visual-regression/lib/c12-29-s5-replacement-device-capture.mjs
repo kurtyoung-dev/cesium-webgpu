@@ -1849,7 +1849,7 @@ export function analyzeC1229S5ReplacementCaptureSource(source) {
         phaseSnapshotCalls: phaseSnapshotCallsV3.length,
         phaseSnapshotLabels: phaseSnapshotLabelsV3,
         finishCalls: finishCalls.length,
-        executedSha256: sha256(sourceNode(text, measure)),
+        executedSha256: sha256(text.slice(measure.start, measure.end)),
       },
       fused: {
         beginMarkerCount: fusedBeginCount,
