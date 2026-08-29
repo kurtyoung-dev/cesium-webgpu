@@ -25,21 +25,86 @@ import { join } from "node:path";
 export const SWEEPABLE_RENDERERS = ["webgl", "webgpu"];
 
 /**
+ * Strip `//` and `/* *\/` comments from a JS source string while leaving
+ * string and template-literal CONTENTS untouched (so a URL like
+ * `"http://…"` or a template literal containing `//` is not mistaken for a
+ * comment). Matches a comment or a string/template literal and blanks only
+ * the former; used before scanning demo bodies for real construction calls
+ * so a call mentioned in an explanatory comment does not count as one that
+ * actually runs (Q-129 — see {@link deriveNoViewerIds}).
+ *
+ * Not a full tokenizer (a `/` inside a regex literal, or a comment marker
+ * inside a nested `${...}` template expression, can still confuse it), but
+ * the gallery's demo bodies are simple enough that this is sufficient in
+ * practice — every gallery file's derived viewer-less classification below
+ * is checked against a real filesystem read of the current gallery.
+ *
+ * @param {string} source Raw JS source text.
+ * @returns {string} The same text with comments blanked out.
+ */
+export function stripJsSourceComments(source) {
+  return source.replace(
+    /\/\/.*|\/\*[\s\S]*?\*\/|'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*"|`(?:\\.|[^`\\])*`/g,
+    (match) => (match[0] === "/" ? "" : match),
+  );
+}
+
+/** The construction regex {@link deriveNoViewerIds} tests against comment-stripped source. */
+const VIEWER_CONSTRUCTION_PATTERN =
+  /new\s+(Cesium\.)?(Viewer|CesiumWidget)\s*\(|(Viewer|CesiumWidget)\.createAsync/;
+
+/**
+ * Derive, from the gallery itself, which demo ids build no viewer and so no
+ * graphics context. A demo counts as viewer-less only when NO real (i.e.
+ * comment-stripped) Viewer/CesiumWidget construction — qualified or bare,
+ * synchronous or `createAsync` — appears in its `main.js`.
+ *
+ * Comment-stripping matters: `packages/sandcastle/gallery/viewerless/main.js`
+ * documents `new Cesium.Viewer("cesiumContainer")` in a COMMENTED-OUT line
+ * (`//const viewer = new Cesium.Viewer("cesiumContainer");`) to show what a
+ * reader would add. A derivation that scans raw source text (as this
+ * function's predecessor did — the inline regex this replaces, formerly
+ * duplicated in sandcastle2-renderer-gate.spec.mjs's "C2a" test) matches that
+ * commented-out text and wrongly concludes `viewerless` constructs a viewer,
+ * which is exactly why it was missing from {@link NO_VIEWER_IDS} (Q-129).
+ *
+ * @param {string} galleryDir Absolute path to `packages/sandcastle/gallery`.
+ * @param {{includeDevelopment?: boolean}} [options] Forwarded to {@link enumerateGalleryIds}.
+ * @returns {string[]} Sorted ids that build no viewer.
+ */
+export function deriveNoViewerIds(galleryDir, options = {}) {
+  const ids = enumerateGalleryIds(galleryDir, options);
+  return ids
+    .filter((id) => {
+      const source = readFileSync(join(galleryDir, id, "main.js"), "utf8");
+      return !VIEWER_CONSTRUCTION_PATTERN.test(stripJsSourceComments(source));
+    })
+    .sort();
+}
+
+/**
  * Gallery ids that legitimately build no viewer, and so no graphics context.
  *
- * `timeline` constructs `Timeline` and `Animation` widgets straight from the
- * engine and never builds a `Viewer` or a `CesiumWidget`, so no backend is ever
- * selected for it. It is the only one: scanning every gallery `main.js` body for
- * any Viewer/CesiumWidget construction — qualified or bare, synchronous or
- * `createAsync` — returns exactly this id and no other.
+ * Re-derived from the gallery bodies via {@link deriveNoViewerIds}
+ * (comment-aware — see that function's docs for why comment-blindness
+ * matters) rather than hand-maintained:
+ *
+ *   - `timeline` constructs `Timeline` and `Animation` widgets straight from
+ *     the engine and never builds a `Viewer` or a `CesiumWidget`, so no
+ *     backend is ever selected for it.
+ *   - `viewerless` is a deliberately bare Sandcastle template: its only
+ *     mention of `new Cesium.Viewer(...)` is a commented-out line showing
+ *     what a reader would uncomment, so no viewer is ever actually built.
  *
  * These ids are NOT skipped. Both scorers INVERT for them: the demo must report
  * zero contexts and zero rendered frames, and must still load without errors. A
  * viewer appearing here is as much a finding as a viewer missing elsewhere — it
  * means this list has gone stale — which is why the entry is an assertion rather
- * than an exemption.
+ * than an exemption. `sandcastle2-renderer-gate.spec.mjs`'s "C2a" test asserts
+ * this literal array equals a fresh call to {@link deriveNoViewerIds} against
+ * the real gallery, so the two cannot drift apart silently.
  */
-export const NO_VIEWER_IDS = ["timeline"];
+export const NO_VIEWER_IDS = ["timeline", "viewerless"];
 
 /**
  * Whether a gallery id is expected to build no viewer.

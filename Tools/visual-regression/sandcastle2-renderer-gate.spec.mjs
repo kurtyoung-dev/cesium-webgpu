@@ -26,6 +26,7 @@ import {
   NO_VIEWER_IDS,
   SWEEPABLE_RENDERERS,
   buildSandcastle2Url,
+  deriveNoViewerIds,
   enumerateGalleryIds,
   evaluateFrameGate,
   evaluateRendererGate,
@@ -33,6 +34,7 @@ import {
   isDevelopmentDemo,
   isNoViewerId,
   readRendererStateInPage,
+  stripJsSourceComments,
 } from "./lib/sandcastle2-renderer-gate.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -208,13 +210,34 @@ test("C6 the sweepable set is the two single-pane backends", () => {
 // --- Group C2: demos that legitimately build no viewer ---------------------
 
 test("C2a the no-viewer list is derived from the gallery, not asserted about it", () => {
-  // Re-derived here from the demo bodies, so the list cannot quietly go stale:
-  // a new viewer-less demo fails this until someone adds it, and a listed demo
-  // that grows a viewer fails it until someone removes it.
-  const ids = enumerateGalleryIds(GALLERY_DIR);
+  // Re-derived here from the demo bodies via the SAME function the lib
+  // exports (deriveNoViewerIds), so the list cannot quietly go stale: a new
+  // viewer-less demo fails this until someone adds it, and a listed demo
+  // that grows a viewer fails it until someone removes it. Prior to Q-129
+  // this test carried its OWN copy of the construction regex applied to raw
+  // (non-comment-stripped) source, which is why it missed `viewerless` —
+  // that demo's only "construction" is a commented-out example line. Using
+  // the shared, comment-aware derivation here means this test and the
+  // runtime sweep can never derive two different answers.
+  const viewerless = deriveNoViewerIds(GALLERY_DIR);
+  assert.deepEqual([...NO_VIEWER_IDS].sort(), viewerless);
+  for (const id of NO_VIEWER_IDS) {
+    assert.equal(isNoViewerId(id), true, id);
+  }
+  assert.equal(isNoViewerId("hello-world"), false);
+});
+
+test("C2a-mutant a comment-blind derivation wrongly excludes viewerless (proves the fix matters)", () => {
+  // Reproduces the exact defect Q-129 fixed: apply the construction regex to
+  // RAW source (no comment-stripping) the way the old inline C2a derivation
+  // did. `viewerless`'s commented-out `new Cesium.Viewer(...)` line makes it
+  // match "constructs a viewer" under the naive scan, so it drops out of the
+  // naive derivation's viewer-less set — which is why NO_VIEWER_IDS (now
+  // correctly including "viewerless") disagrees with the naive result.
   const construction =
     /new\s+(Cesium\.)?(Viewer|CesiumWidget)\s*\(|(Viewer|CesiumWidget)\.createAsync/;
-  const viewerless = ids
+  const ids = enumerateGalleryIds(GALLERY_DIR);
+  const naiveViewerless = ids
     .filter(
       (id) =>
         !construction.test(
@@ -222,11 +245,28 @@ test("C2a the no-viewer list is derived from the gallery, not asserted about it"
         ),
     )
     .sort();
-  assert.deepEqual([...NO_VIEWER_IDS].sort(), viewerless);
-  for (const id of NO_VIEWER_IDS) {
-    assert.equal(isNoViewerId(id), true, id);
-  }
-  assert.equal(isNoViewerId("hello-world"), false);
+  assert.ok(
+    !naiveViewerless.includes("viewerless"),
+    "the naive (comment-blind) scan must still misclassify viewerless as having a viewer",
+  );
+  assert.notDeepEqual([...NO_VIEWER_IDS].sort(), naiveViewerless);
+
+  // And the specific mechanism: stripping comments first changes the verdict
+  // for viewerless's main.js from "matches" to "does not match".
+  const viewerlessSource = readFileSync(
+    join(GALLERY_DIR, "viewerless", "main.js"),
+    "utf8",
+  );
+  assert.equal(
+    construction.test(viewerlessSource),
+    true,
+    "raw source matches (the bug)",
+  );
+  assert.equal(
+    construction.test(stripJsSourceComments(viewerlessSource)),
+    false,
+    "comment-stripped source does not match (the fix)",
+  );
 });
 
 test("C2b a no-viewer demo passes ONLY when it reports zero contexts", () => {

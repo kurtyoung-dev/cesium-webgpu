@@ -120,6 +120,18 @@ if (!fs.statSync(path.join(clonePath, ".git")).isDirectory()) {
   process.exit(2);
 }
 
+if (VERIFY_ONLY) {
+  const workspaceModules = provisionNodeModulesJunctions({
+    sourceRepo,
+    clonePath,
+    verifyOnly: true,
+  });
+  notes.push(...workspaceModules.reports);
+  for (const relativePath of workspaceModules.missingWorkspaceNodeModules) {
+    fail(`workspace package node_modules missing from clone: ${relativePath}`);
+  }
+}
+
 // --- provision -------------------------------------------------------------
 if (!VERIFY_ONLY) {
   for (const entry of PROVISION) {
@@ -166,33 +178,13 @@ if (!VERIFY_ONLY) {
   // ESM resolver walks it exactly as it would a real directory. Not fatal if it
   // fails — plenty of briefs need no npm script — but the note tells the
   // orchestrator which kind of dispatch this clone can carry.
-  const cloneModules = path.join(clonePath, "node_modules");
-  if (fs.existsSync(cloneModules)) {
-    notes.push("node_modules already present");
-  } else {
-    const sourceModules = path.resolve(sourceRepo, "node_modules");
-    if (!fs.existsSync(sourceModules)) {
-      notes.push(
-        "no node_modules in the source repo — this clone cannot run npm-script gates",
-      );
-    } else {
-      try {
-        if (process.platform === "win32") {
-          execFileSync(
-            "cmd",
-            ["/c", "mklink", "/J", cloneModules, sourceModules],
-            { stdio: "ignore" },
-          );
-        } else {
-          fs.symlinkSync(sourceModules, cloneModules, "dir");
-        }
-        notes.push("linked node_modules from the source repo");
-      } catch (error) {
-        notes.push(
-          `could not link node_modules (${error?.message ?? error}) — this clone cannot run npm-script gates`,
-        );
-      }
-    }
+  const workspaceModules = provisionNodeModulesJunctions({
+    sourceRepo,
+    clonePath,
+  });
+  notes.push(...workspaceModules.reports);
+  for (const relativePath of workspaceModules.missingWorkspaceNodeModules) {
+    fail(`workspace package node_modules missing from clone: ${relativePath}`);
   }
 
   // The ThirdParty WASM binaries (splats, Draco, zip) are UNTRACKED build
@@ -295,3 +287,112 @@ if (JSON_MODE) {
 
 // 0 ready, 1 not ready. A worker must not be dispatched on a non-zero exit.
 process.exit(problems.length === 0 ? 0 : 1);
+
+export function provisionNodeModulesJunctions({
+  sourceRepo,
+  clonePath,
+  verifyOnly = false,
+  fs: fsOps = fs,
+  execFileSync: run = execFileSync,
+  platform = process.platform,
+}) {
+  const reports = [];
+  const missingWorkspaceNodeModules = [];
+  const isDirectory = (candidate) => {
+    try {
+      return fsOps.statSync(candidate).isDirectory();
+    } catch {
+      return false;
+    }
+  };
+
+  const provisionTarget = (target) => {
+    const present = target.workspace
+      ? isDirectory(target.clone)
+      : fsOps.existsSync(target.clone);
+    if (present) {
+      reports.push(
+        target.workspace
+          ? `${target.label} present`
+          : "node_modules already present",
+      );
+      return;
+    }
+
+    if (!fsOps.existsSync(target.source)) {
+      reports.push(
+        "no node_modules in the source repo — this clone cannot run npm-script gates",
+      );
+      return;
+    }
+
+    if (verifyOnly) {
+      reports.push(`${target.label} missing`);
+      missingWorkspaceNodeModules.push(target.label);
+      return;
+    }
+
+    try {
+      if (target.workspace) {
+        fsOps.mkdirSync(path.dirname(target.clone), { recursive: true });
+      }
+      if (platform === "win32") {
+        run("cmd", ["/c", "mklink", "/J", target.clone, target.source], {
+          stdio: "ignore",
+        });
+      } else {
+        fsOps.symlinkSync(target.source, target.clone, "dir");
+      }
+      reports.push(
+        target.workspace
+          ? `${target.label} provisioned`
+          : "linked node_modules from the source repo",
+      );
+    } catch (error) {
+      if (target.workspace) {
+        reports.push(
+          `${target.label} missing (could not provision: ${error?.message ?? error})`,
+        );
+        missingWorkspaceNodeModules.push(target.label);
+      } else {
+        reports.push(
+          `could not link node_modules (${error?.message ?? error}) — this clone cannot run npm-script gates`,
+        );
+      }
+    }
+  };
+
+  if (!verifyOnly) {
+    provisionTarget({
+      source: path.resolve(sourceRepo, "node_modules"),
+      clone: path.join(clonePath, "node_modules"),
+      workspace: false,
+    });
+  }
+
+  const packagesDir = path.resolve(sourceRepo, "packages");
+  if (!fsOps.existsSync(packagesDir)) {
+    return { reports, missingWorkspaceNodeModules };
+  }
+
+  const packageNames = fsOps
+    .readdirSync(packagesDir, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name)
+    .sort((left, right) => left.localeCompare(right));
+
+  for (const packageName of packageNames) {
+    const sourceModules = path.join(packagesDir, packageName, "node_modules");
+    if (!isDirectory(sourceModules)) {
+      continue;
+    }
+    provisionTarget({
+      label: path.posix.join("packages", packageName, "node_modules"),
+      source: sourceModules,
+      clone: path.join(clonePath, "packages", packageName, "node_modules"),
+      workspace: true,
+    });
+  }
+
+  return { reports, missingWorkspaceNodeModules };
+}

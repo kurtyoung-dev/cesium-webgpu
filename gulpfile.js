@@ -1437,7 +1437,13 @@ function processEngineSource(definitionsPath, source) {
   return newSource;
 }
 
-function createTypeScriptDefinitions() {
+// Exported (not just used internally by buildTs) so gulpfile.apps.js's
+// buildSandcastle task can require it on demand via
+// scripts/ensureCesiumTypeDefinitions.js — Sandcastle2 needs Source/Cesium.d.ts
+// for its Monaco type hints, but `build()` above never calls buildTs (Q-127:
+// a served tree built with plain `gulp build` + `build-sandcastle` never got
+// the file, so every Sandcastle2 demo 404'd fetching it).
+export function createTypeScriptDefinitions() {
   // Run jsdoc with tsd-jsdoc to generate an initial Cesium.d.ts file.
   execSync("npx jsdoc --configure Tools/jsdoc/ts-conf.json", {
     stdio: "inherit",

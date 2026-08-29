@@ -7,6 +7,8 @@ import { buildSandcastleApp } from "./scripts/buildSandcastle.js";
 import { mkdirp } from "mkdirp";
 import { bundleWorkers, defaultESBuildOptions } from "./scripts/build.js";
 import { build as esbuild } from "esbuild";
+import { ensureCesiumTypeDefinitions } from "./scripts/ensureCesiumTypeDefinitions.js";
+import { createTypeScriptDefinitions } from "./gulpfile.js";
 
 const isProduction = process.env.PROD === "true";
 
@@ -154,6 +156,11 @@ export async function buildSandcastle() {
 
   const noEmbeddings =
     !argv.embeddings || !!process.env.SANDCASTLE_NO_EMBEDDINGS;
+
+  // Q-127: Sandcastle2's Monaco type hints fetch Source/Cesium.d.ts, which
+  // plain `gulp build` never produces (see scripts/ensureCesiumTypeDefinitions.js
+  // for the full trace). Generate it here, once, only when the tree lacks it.
+  await ensureCesiumTypeDefinitions({ generate: createTypeScriptDefinitions });
 
   return buildSandcastleApp({
     outputToBuildDir: isProduction,
