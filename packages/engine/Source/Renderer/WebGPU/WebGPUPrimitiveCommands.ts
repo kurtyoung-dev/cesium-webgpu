@@ -89,7 +89,10 @@ import PrimitiveDepthFailColorSource from "../../Shaders/WebGPU/Primitive/Primit
 // active render-pass topology. Centralizing slot zero, normal-roughness, blend,
 // and write-mask options keeps descriptors and cache keys consistent.
 import { makeSceneFBTargets } from "./WebGPUSceneFBTargetHelpers.js";
-import type { CesiumRenderStateLike } from "./RenderStateToPipelineVariant.js";
+import {
+  renderStateToBlendState,
+  type CesiumRenderStateLike,
+} from "./RenderStateToPipelineVariant.js";
 import { writeNormalizedInverseViewQuaternion } from "./WebGPUPrimitiveCameraQuaternion.js";
 import {
   configurePrimitiveShadowCastCommand,
@@ -316,6 +319,11 @@ interface CacheLike extends PrimitiveShadowCastHost {
   oitShaderCode?: string;
   oitDefaultCullMode?: GPUCullMode;
   translucent?: boolean;
+  // Serialized form of the color blend the material pipeline was built with,
+  // so an appearance that changes its blending rebuilds instead of serving a
+  // pipeline whose blend is baked from the previous state.
+  materialBlendKey?: string;
+  dfMaterialBlendKey?: string;
   twoPasses?: boolean;
   primitiveTopology?: string;
   appearanceClosed?: boolean;
@@ -2481,6 +2489,7 @@ function createPolylineMaterialPipeline(
   vertexLayout: VertexLayoutLike,
   translucent: boolean,
   needsTexture: boolean,
+  blend: GPUBlendState | undefined,
 ) {
   const cameraBGL = makeBindGroupLayout(device, "Polyline Mat Camera BGL", [
     uniformBuffer(0, GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT),
@@ -2533,6 +2542,7 @@ function createPolylineMaterialPipeline(
       entryPoint: "fragmentMain",
       targets: makeSceneFBTargets(canvasFormat, {
         translucent,
+        blend,
         emitsGBuffer: false,
       }),
     },
@@ -2607,6 +2617,16 @@ function createPolylineMaterialAppearanceCommands(
 
   const shaderChanged = cache.shaderType !== shaderInfo.type;
   const translucentChanged = cache.translucent !== translucent;
+  // A polyline material that declares itself opaque still leaves the alpha
+  // blend the appearance's constructor installed, exactly as the surface
+  // material path does; read the blend from the render state rather than from
+  // the translucency flag.
+  const polylineBlend = resolveAppearanceBlend(
+    appearance?.renderState,
+    translucent,
+  );
+  const polylineBlendKey = blendCacheKey(polylineBlend);
+  const blendChanged = cache.materialBlendKey !== polylineBlendKey;
   // Scene log depth is a shader and pipeline axis.
   const logDepthActive = isWebGPULogDepthActive(context, frameState);
   const logDepthChanged = cache.logDepthEnabled !== logDepthActive;
@@ -2620,11 +2640,13 @@ function createPolylineMaterialAppearanceCommands(
     !defined(cache.pipeline) ||
     shaderChanged ||
     translucentChanged ||
+    blendChanged ||
     logDepthChanged ||
     formatGenChanged
   ) {
     cache.shaderType = shaderInfo.type;
     cache.translucent = translucent;
+    cache.materialBlendKey = polylineBlendKey;
     cache.logDepthEnabled = logDepthActive;
     cache.pipelineFormatGeneration = sceneFormatGen;
 
@@ -2649,6 +2671,7 @@ function createPolylineMaterialAppearanceCommands(
       vertexLayout,
       translucent,
       shaderInfo.needsTexture === true,
+      polylineBlend,
     );
     // Force the texture bind group to rebuild against the new layout.
     cache.textureBindGroup = undefined;
@@ -4385,6 +4408,58 @@ function refreshMaterialCommandTextureSlot(
 // =========================================================================
 
 /**
+ * Resolves the color blend a material pipeline must bake so its output matches
+ * the render state the WebGL twin builds for the same appearance.
+ *
+ * `Appearance.isTranslucent` answers with the material's own translucency once
+ * a material is present, so an appearance constructed `translucent: true`
+ * still answers `false` whenever its material declares itself opaque — every
+ * elevation material does. `Appearance.getRenderState` then forces
+ * `depthMask` back on but leaves the alpha blend the constructor already put
+ * on `Appearance#renderState`, so WebGL blends that draw and honours the
+ * material's alpha. Baking the pipeline blend from the flag alone drops the
+ * blend, and a material whose "not on a line" answer is alpha 0 fills its
+ * whole surface with the line colour instead of disappearing.
+ *
+ * Returns `undefined` for the translucent case, where the caller's
+ * `translucent: true` already selects the standard alpha blend, and for an
+ * appearance whose render state does not blend at all.
+ *
+ * @private
+ */
+function resolveAppearanceBlend(
+  renderState: CesiumRenderStateLike | undefined,
+  translucent: boolean,
+): GPUBlendState | undefined {
+  if (translucent) {
+    return undefined;
+  }
+  return renderStateToBlendState(renderState);
+}
+
+/**
+ * Serializes a blend descriptor into a pipeline-cache discriminator. `none`
+ * and a real blend must not compare equal, or a cached opaque pipeline is
+ * served to an appearance that has since started blending.
+ *
+ * @private
+ */
+function blendCacheKey(blend: GPUBlendState | undefined): string {
+  if (!blend) {
+    return "none";
+  }
+  const { color, alpha } = blend;
+  return [
+    color.srcFactor,
+    color.dstFactor,
+    color.operation,
+    alpha.srcFactor,
+    alpha.dstFactor,
+    alpha.operation,
+  ].join(",");
+}
+
+/**
  * Creates (or reuses) the GPU pipeline for a material shader.
  * @private
  */
@@ -4399,6 +4474,7 @@ function createMaterialPipelineAndCache(
   primitiveTopology: GPUPrimitiveTopology,
   appearanceClosed: boolean,
   logDepthActive: boolean,
+  blend: GPUBlendState | undefined,
 ) {
   const topology = primitiveTopology ?? "triangle-list";
   const closedClosed = appearanceClosed === true;
@@ -4408,9 +4484,11 @@ function createMaterialPipelineAndCache(
   // Rebuild when the scene-framebuffer format generation changes because the
   // color target is pipeline state.
   const sceneFormatGen = context._scenePipelineFormatGeneration ?? 0;
+  const blendKey = blendCacheKey(blend);
   if (
     cache.shaderType === shaderInfo.type &&
     cache.translucent === translucent &&
+    cache.materialBlendKey === blendKey &&
     cache.primitiveTopology === topology &&
     cache.appearanceClosed === closedClosed &&
     cache.logDepthEnabled === logDepth &&
@@ -4420,6 +4498,7 @@ function createMaterialPipelineAndCache(
   }
   cache.shaderType = shaderInfo.type;
   cache.translucent = translucent;
+  cache.materialBlendKey = blendKey;
   cache.primitiveTopology = topology;
   cache.appearanceClosed = closedClosed;
   cache.logDepthEnabled = logDepth;
@@ -4508,7 +4587,7 @@ function createMaterialPipelineAndCache(
     fragment: {
       module: cache.shaderModule.module,
       entryPoint: "fragmentMain",
-      targets: makeSceneFBTargets(canvasFormat, { translucent }),
+      targets: makeSceneFBTargets(canvasFormat, { translucent, blend }),
     },
     primitive: {
       topology,
@@ -4566,6 +4645,7 @@ function createMaterialDepthFailPipeline(
   primitiveTopology: GPUPrimitiveTopology,
   logDepthActive: boolean,
   dfCullMode: GPUCullMode,
+  blend: GPUBlendState | undefined,
 ) {
   const topology = primitiveTopology ?? "triangle-list";
   const logDepth = logDepthActive === true;
@@ -4573,9 +4653,11 @@ function createMaterialDepthFailPipeline(
   // The depth-fail twin bakes the scene-framebuffer format, so a
   // generation change rebuilds it.
   const sceneFormatGen = context._scenePipelineFormatGeneration ?? 0;
+  const blendKey = blendCacheKey(blend);
   if (
     cache.dfShaderType === shaderInfo.type &&
     cache.dfTranslucent === translucent &&
+    cache.dfMaterialBlendKey === blendKey &&
     cache.dfPrimitiveTopology === topology &&
     cache.dfLogDepthEnabled === logDepth &&
     cache.dfCullMode === cullMode &&
@@ -4586,6 +4668,7 @@ function createMaterialDepthFailPipeline(
   }
   cache.dfShaderType = shaderInfo.type;
   cache.dfTranslucent = translucent;
+  cache.dfMaterialBlendKey = blendKey;
   cache.dfPrimitiveTopology = topology;
   cache.dfLogDepthEnabled = logDepth;
   cache.dfCullMode = cullMode;
@@ -4664,7 +4747,7 @@ function createMaterialDepthFailPipeline(
     fragment: {
       module: cache.dfShaderModule.module,
       entryPoint: "fragmentMain",
-      targets: makeSceneFBTargets(canvasFormat, { translucent }),
+      targets: makeSceneFBTargets(canvasFormat, { translucent, blend }),
     },
     primitive: {
       topology,
@@ -4946,6 +5029,15 @@ function createWebGPUMaterialCommands(
   const closedAndCulled =
     appearance?.closed === true && !cullExplicitlyDisabled;
 
+  // An opaque-declared material on a translucent-constructed appearance still
+  // blends on WebGL, because `Appearance.getRenderState` never clears the
+  // blend its constructor installed. Read that blend rather than inferring one
+  // from the translucency flag.
+  const appearanceBlend = resolveAppearanceBlend(
+    appearance?.renderState,
+    translucent,
+  );
+
   const shaderChanged = createMaterialPipelineAndCache(
     cache,
     device,
@@ -4957,6 +5049,7 @@ function createWebGPUMaterialCommands(
     matPrimitiveTopology,
     closedAndCulled,
     logDepthActive,
+    appearanceBlend,
   );
 
   // Bind a real material texture or the context's 1×1 white fallback. Check on
@@ -5022,6 +5115,13 @@ function createWebGPUMaterialCommands(
         ? "back"
         : "none";
 
+    // The depth-fail render state IS `_depthFailAppearance.getRenderState()`,
+    // so its blend comes from the depth-fail appearance, not the main one.
+    const dfBlend = resolveAppearanceBlend(
+      depthFailAppearance?.renderState,
+      translucent,
+    );
+
     const dfShaderChanged = createMaterialDepthFailPipeline(
       cache,
       device,
@@ -5033,6 +5133,7 @@ function createWebGPUMaterialCommands(
       matPrimitiveTopology,
       logDepthActive,
       dfCullMode,
+      dfBlend,
     );
 
     // Bind the depthFail material texture (if its shader is textured) into the

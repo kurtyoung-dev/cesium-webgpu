@@ -390,11 +390,19 @@ export function createCameraUniformBuffer(
   data[offset++] = cyHigh;
   data[offset++] = czHigh;
   data[offset++] = ellipsoidInverseRadii.z;
-  // center3DLow (vec3 + pad)
+  // center3DLow (vec3) + pixelRatio (f32).
+  //
+  // The trailing slot after a vec3 was padding; it now carries the device
+  // pixel ratio, the WGSL counterpart of GLSL's `czm_pixelRatio` automatic
+  // uniform, so a globe material can convert a CSS-pixel width into device
+  // pixels the way its GLSL source does. Reusing the pad rather than
+  // appending keeps `CAMERA_UNIFORM_FLOATS` and every tail offset unchanged.
+  // The value is 1.0 on an ordinary display, which is what the field
+  // previously held as padding, so the default globe is unaffected.
   data[offset++] = cxLow;
   data[offset++] = cyLow;
   data[offset++] = czLow;
-  data[offset++] = 0;
+  data[offset++] = uniformState.pixelRatio ?? 1.0;
 
   // sunDirectionEC (vec3) + enableLighting (f32).
   //

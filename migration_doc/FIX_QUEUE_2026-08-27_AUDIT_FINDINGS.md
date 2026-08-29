@@ -108,6 +108,16 @@ corrected with it.
 The remaining ~30 medium and all low survivors are enumerated in §5 with their lane column reading
 QUEUED; they dispatch after Q-1…Q-10, batched by file so one Sol dispatch closes several small
 findings in the same module. C1's returning findings append here as a dated addendum.
+### Q-74 LANDED - Batch 1272 (2026-08-29 ~01:35 machine clock)
+
+| | Row | Disposition |
+|---|---|---|
+| Q-74 | FIXED (Edge-pending) | class fix: WebGPU material pipelines now read the colour-target blend from appearance.renderState (the object WebGL uses) instead of isTranslucent() alone - the discarded contour alpha was being written as opaque colour, and every default-constructed appearance on the ten translucent:false materials was mis-blended (translucent defaults to true). Aliasing closed by a primitive-local materialBlendKey (the material path bypasses WebGPURenderPipelineCache). Globe fabric pixelRatio 1.0 -> czm_pixelRatio() through a lane carved from _pad2b at float 63 (no offset moves; CAMERA_UNIFORM_FLOATS is 244 from the CW2 tail, and the spec prose now says THIS lane did not grow it). Landed via git apply --3way on top of Batch 1271: zero conflicts on the three shared globe-UB files; both 232 pins moved to 244. Gates: 93/93 across the four affected specs (blend-parity 8, globe-ratio 10 incl. 4 if(false) mutants, celestial-water-globe-port, eclipse-globe-umbra-rte); eslint 0; prettier 0; C16 0; tsc 0; catalog regenerated after staging. Edge legs OWED (3e-B): primitive scene + globe scene WITH TERRAIN, useBrowserRecommendedResolution:false + in-page precondition, dpr 1 vs 2, both backends; polyline-material pixel evidence |
+| Q-89 | NEW | depth-fail translucency conflation in the WebGPU material pipelines (pre-existing; shrunk, not removed, by Q-74) | Opus-judgment |
+| Q-90 | NEW | polyline-material pipeline received the blend class fix by construction with no pixel evidence - Edge leg | executor 3e-B |
+| Q-91 | NEW | independent check of the WebGPU blend-state table against WebGL BlendingState for every named state (the Q-74 spec covers the appearance path only) | Sol-bounded |
+| Q-92 | NEW | PrimitiveMatGrid* WGSL keep a hardcoded 1.0 pixel-ratio stand-in; their comments record the blocker (a conditional logDepth field would make later offsets define-dependent) | Opus-judgment |
+
 ### CW2 LANDED - Batch 1271 (2026-08-29 ~01:30 machine clock): celestial reflection on the default globe ocean, both arms + the GLSL twin; Q-73 clock
 
 | | Row | Disposition |

@@ -65,7 +65,12 @@ struct CameraUniforms {
   center3DHigh: vec3<f32>,
   ellipsoidInverseRadiiZ: f32,
   center3DLow: vec3<f32>,
-  _pad2b: f32,
+  // Device pixel ratio, the WGSL counterpart of the `czm_pixelRatio`
+  // automatic uniform. It reuses the padding slot after `center3DLow`, so the
+  // buffer keeps its float count and every tail offset stays put. Read it
+  // through `czm_pixelRatio()`: globe materials whose widths are authored in
+  // CSS pixels scale by it exactly as their GLSL sources do.
+  pixelRatio: f32,
   sunDirectionEC: vec3<f32>,
   enableLighting: f32,
   scaleAndBias: mat4x4<f32>,
@@ -1031,6 +1036,17 @@ fn czm_getDefaultMaterial(input: czm_MaterialInput) -> czm_Material {
   m.emission = vec3<f32>(0.0, 0.0, 0.0);
   m.alpha = 1.0;
   return m;
+}
+
+// Device pixel ratio, the accessor form of GLSL's `czm_pixelRatio` automatic
+// uniform. A fabric's WGSL body is spliced into this module, so a material can
+// call this without naming the globe's camera binding; a host that later
+// splices fabric WGSL elsewhere supplies its own definition of the same name.
+// A line width authored in CSS pixels must be scaled by it before it is
+// compared against a screen-space derivative, or the line draws at half its
+// reference width on a ratio-2 display.
+fn czm_pixelRatio() -> f32 {
+  return camera.pixelRatio;
 }
 
 // Vector form of gamma-correct on a single vec3.

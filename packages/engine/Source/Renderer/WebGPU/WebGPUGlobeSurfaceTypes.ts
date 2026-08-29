@@ -40,7 +40,7 @@ export interface GlobePipelineEntry {
 //   48  -  51  encodedCameraHigh (vec3 + ellipsoid inverse radius x)
 //   52  -  55  encodedCameraLow (vec3 + ellipsoid inverse radius y)
 //   56  -  59  center3DHigh (vec3 + ellipsoid inverse radius z)
-//   60  -  63  center3DLow (vec3 + pad)
+//   60  -  63  center3DLow (vec3) + pixelRatio (czm_pixelRatio, was padding)
 //   64  -  67  sunDirectionEC (vec3) + enableLighting
 //   68  -  83  scaleAndBias (mat4, quantized-mesh decompression)
 //   84  -  87  minMaxHeight (vec2) + ellipsoidRadius + pad

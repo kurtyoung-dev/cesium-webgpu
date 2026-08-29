@@ -250,6 +250,40 @@ function colorMaskToGPUWriteMask(
 }
 
 /**
+ * Translate a WebGL `renderState.blending` descriptor into the equivalent
+ * {@link GPUBlendState}, or `undefined` when that state does not blend.
+ *
+ * A pipeline that bakes its color-target blend from a boolean translucency
+ * flag can read the blend WebGL would actually have applied instead, which is
+ * not always the same answer. `Appearance.getRenderState` forces alpha
+ * blending on for a translucent appearance but never turns it off for an
+ * opaque one, so an appearance constructed with `translucent: true` keeps the
+ * alpha blend its constructor put on `Appearance#renderState` even when the
+ * material it carries reports itself opaque.
+ */
+export function renderStateToBlendState(
+  renderState: CesiumRenderStateLike | undefined,
+): GPUBlendState | undefined {
+  const blending = renderState?.blending;
+  if (!blending?.enabled) {
+    return undefined;
+  }
+  return {
+    color: {
+      srcFactor: glBlendFactorToGPU(blending.functionSourceRgb) ?? "one",
+      dstFactor: glBlendFactorToGPU(blending.functionDestinationRgb) ?? "zero",
+      operation: glBlendEquationToGPU(blending.equationRgb) ?? "add",
+    },
+    alpha: {
+      srcFactor: glBlendFactorToGPU(blending.functionSourceAlpha) ?? "one",
+      dstFactor:
+        glBlendFactorToGPU(blending.functionDestinationAlpha) ?? "zero",
+      operation: glBlendEquationToGPU(blending.equationAlpha) ?? "add",
+    },
+  };
+}
+
+/**
  * Map WebGL `renderState` to a {@link PipelineVariant} suitable for
  * {@link WebGPURenderPipelineCache.buildPipeline}. The returned variant
  * carries only fields that actually differ from the underlying pipeline
@@ -300,23 +334,10 @@ export function renderStateToPipelineVariant(
   }
 
   const blending = renderState.blending;
-  if (blending?.enabled) {
-    const blend: GPUBlendState = {
-      color: {
-        srcFactor: glBlendFactorToGPU(blending.functionSourceRgb) ?? "one",
-        dstFactor:
-          glBlendFactorToGPU(blending.functionDestinationRgb) ?? "zero",
-        operation: glBlendEquationToGPU(blending.equationRgb) ?? "add",
-      },
-      alpha: {
-        srcFactor: glBlendFactorToGPU(blending.functionSourceAlpha) ?? "one",
-        dstFactor:
-          glBlendFactorToGPU(blending.functionDestinationAlpha) ?? "zero",
-        operation: glBlendEquationToGPU(blending.equationAlpha) ?? "add",
-      },
-    };
+  const blend = renderStateToBlendState(renderState);
+  if (blend) {
     variant.blend = blend;
-    if (blending.color) {
+    if (blending?.color) {
       variant.blendConstant = {
         r: blending.color.red ?? 0,
         g: blending.color.green ?? 0,

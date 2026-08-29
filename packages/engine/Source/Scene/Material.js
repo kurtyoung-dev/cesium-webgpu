@@ -1208,8 +1208,10 @@ Material._materialCache.addMaterial(Material.ElevationContourType, {
     source: ElevationContourMaterial,
     // WGSL direct port. WebGPU always has derivatives so the GLSL
     // `#if defined(GL_OES_standard_derivatives)` branch always takes
-    // the dpdx/dpdy path here. czm_pixelRatio is a constant 1.0 in the
-    // WGSL build (renderer reports it via materialInput when needed).
+    // the dpdx/dpdy path here. `czm_pixelRatio()` is the accessor the host
+    // module supplies for the GLSL automatic uniform of the same name; the
+    // width is authored in CSS pixels, so dropping it draws the line at half
+    // its reference width on a device-pixel-ratio 2 display.
     wgsl: {
       source:
         "fn czm_getMaterial(materialInput: czm_MaterialInput) -> czm_Material {\n" +
@@ -1217,7 +1219,7 @@ Material._materialCache.addMaterial(Material.ElevationContourType, {
         "  let distanceToContour = materialInput.height - spacing * floor(materialInput.height / spacing);\n" +
         "  let dxc = abs(dpdx(materialInput.height));\n" +
         "  let dyc = abs(dpdy(materialInput.height));\n" +
-        "  let dF = max(dxc, dyc) * 1.0 * width;\n" +
+        "  let dF = max(dxc, dyc) * czm_pixelRatio() * width;\n" +
         "  let a = select(0.0, 1.0, distanceToContour < dF);\n" +
         "  let outColor = czm_gammaCorrect4(vec4<f32>(color.rgb, a * color.a));\n" +
         "  material.diffuse = outColor.rgb;\n" +
