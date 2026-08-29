@@ -49,10 +49,7 @@
       <tr>
         <td>Emissive city lights</td>
         <td>
-          <input
-            type="checkbox"
-            data-bind="checked: enableNightLights, enable: isWebGPU"
-          />
+          <input type="checkbox" data-bind="checked: enableNightLights" />
         </td>
       </tr>
       <tr>
@@ -63,7 +60,7 @@
             min="0"
             max="6"
             step="0.1"
-            data-bind="value: nightIntensity, valueUpdate: 'input', enable: isWebGPU"
+            data-bind="value: nightIntensity, valueUpdate: 'input'"
           />
         </td>
       </tr>

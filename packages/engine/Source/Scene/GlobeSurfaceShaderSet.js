@@ -83,6 +83,7 @@ class GlobeSurfaceShader {
  * @property {boolean} [applyAlpha]
  * @property {boolean} [applyDayNightAlpha]
  * @property {boolean} [applyNightDarkness]
+ * @property {boolean} [applyNightLights]
  * @property {boolean} [applySplit]
  * @property {boolean} [hasWaterMask]
  * @property {boolean} [showReflectiveOcean]
@@ -216,6 +217,7 @@ class GlobeSurfaceShaderSet {
     const applyAlpha = options.applyAlpha;
     const applyDayNightAlpha = options.applyDayNightAlpha;
     const applyNightDarkness = options.applyNightDarkness;
+    const applyNightLights = options.applyNightLights;
     const applySplit = options.applySplit;
     const hasWaterMask = options.hasWaterMask;
     const showReflectiveOcean = options.showReflectiveOcean;
@@ -313,7 +315,8 @@ class GlobeSurfaceShaderSet {
       // Upstream assigned hasVectorLayer 0x200000000; the fork's eclipse flag
       // already owns that bit, so the vector layer takes the next one.
       (hasVectorLayer ? 0x400000000 : 0) +
-      (applyNightDarkness ? 0x800000000 : 0);
+      (applyNightDarkness ? 0x800000000 : 0) +
+      (applyNightLights ? 0x1000000000 : 0);
 
     let currentClippingShaderState = 0;
     if (defined(clippingPlanes) && clippingPlanes.length > 0) {
@@ -418,6 +421,9 @@ class GlobeSurfaceShaderSet {
       }
       if (applyNightDarkness) {
         fs.defines.push("APPLY_NIGHT_DARKNESS");
+      }
+      if (applyNightLights) {
+        fs.defines.push("APPLY_NIGHT_LIGHTS");
       }
       if (hasWaterMask) {
         fs.defines.push("HAS_WATER_MASK");
@@ -573,6 +579,17 @@ class GlobeSurfaceShaderSet {
           computeDayColor +=
             "\
           color = czm_branchFreeTernary(texelUnclipped, cutoutAndColorResult, color);\n";
+        }
+        // Emission is ADDED to the composite, once per layer, immediately
+        // after that layer is composited - the same position the WGSL twin
+        // occupies in its unrolled loop, and after the cutout ternary so a
+        // cutout texel resolves the same way on both backends. The define
+        // implies `applyDayNightAlpha`, so the alpha pair the gate reads is
+        // always the real per-layer uniform here rather than the 1.0 literal
+        // the composite above falls back to.
+        if (applyNightLights) {
+          computeDayColor += `\
+          color.rgb = applyNightLightsEmission(color.rgb, g_nightLightsLayerColor, nightBlend, u_dayTextureNightAlpha[${i}], u_dayTextureDayAlpha[${i}]);\n`;
         }
       }
 

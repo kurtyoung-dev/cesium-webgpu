@@ -32,13 +32,11 @@ scene.camera.setView({
   destination: Cesium.Cartesian3.fromDegrees(-95.0, 25.0, 24000000.0),
 });
 
-// The emissive city-light branch is WebGPU-only by contract: it reads a value
-// the WebGPU globe tile uniforms carry and the GLSL globe never declared, so on
-// WebGL the two controls below are inert rather than approximated. Say which
-// backend is running instead of hiding the controls, because "why did nothing
-// happen" is the question this demo would otherwise leave behind.
+// Both renderers run the same emission law, so the two city-light controls
+// below act the same way whichever backend this page picked. The renderer is
+// still named underneath, because a demo about appearance should say what drew
+// it.
 const rendererType = scene.context.rendererType;
-const isWebGPU = rendererType === "webgpu";
 
 // The ion night asset is created once and reused. The globe compares the
 // provider it was handed against the one already attached, so handing it a
@@ -61,16 +59,17 @@ function resolveNightImagery(choice) {
 
 const viewModel = {
   nightImagery: "bundled",
-  // The engine default is 1.0 — the multiplicative identity, so a globe that
-  // opts out of night imagery renders exactly as it always did. 0.15 is the
-  // documented tuning value and the interesting one to start on here: the
-  // darkening is suppressed per tile wherever the night layer is already
-  // blending, so this slider does nothing until night imagery is switched off.
+  // The engine's own default, and the value the acceptance sweep measured as
+  // the street-altitude darkness that reads as night without crushing detail.
+  // Assigning it here is the explicit path, so the slider applies whatever
+  // night imagery is doing — though from orbit, where the night layer covers
+  // the night side outright, the fallback is scaled back to the identity and
+  // moving it does nothing until the camera descends far enough for the layer
+  // to fade.
   nightDarkness: 0.15,
   dynamicLighting: false,
-  enableNightLights: false,
+  enableNightLights: true,
   nightIntensity: 2.5,
-  isWebGPU: isWebGPU,
 };
 
 Cesium.knockout.track(viewModel);
@@ -96,13 +95,12 @@ function updateGlobe() {
   viewer.clock.shouldAnimate = dynamicLighting;
 
   // Treats the night layer as emissive, boosted by its own luminance, so city
-  // cores glow rather than merely being visible.
+  // cores glow rather than merely being visible. On by default, on both
+  // renderers.
   globe.enableNightLights = Boolean(viewModel.enableNightLights);
   globe.nightIntensity = Number(viewModel.nightIntensity);
 }
 updateGlobe();
 
 const note = document.getElementById("backendNote");
-note.textContent = isWebGPU
-  ? `Renderer: ${rendererType} — emissive city lights are live.`
-  : `Renderer: ${rendererType} — the emissive city-light controls are WebGPU-only and do nothing here. Pass contextOptions: { renderer: "webgpu" } to createAsync above and run again to see them.`;
+note.textContent = `Renderer: ${rendererType} — emissive city lights are live on both renderers.`;

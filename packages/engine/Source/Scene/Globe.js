@@ -31,10 +31,12 @@ import TileMapServiceImageryProvider from "./TileMapServiceImageryProvider.js";
 import {
   BUNDLED_NIGHT_IMAGERY_PATH,
   markNightImageryLayer,
+  NIGHT_DARKNESS_DEFAULT,
   NIGHT_IMAGERY_LAYER_OPTIONS,
   NightImagerySource,
   nightImageryAction,
   nightImageryIsArmed,
+  resolveNightDarkness,
   resolveNightImageryRequest,
 } from "./GlobeNightImagery.js";
 import QuadtreePrimitive from "./QuadtreePrimitive.js";
@@ -228,30 +230,12 @@ class Globe {
      */
     this.terminatorGlowStrength = 0.0;
 
-    /**
-     * How dark the night side of the globe becomes where no imagery layer
-     * carries a day/night alpha pair. <code>1.0</code>, the default, is the
-     * multiplicative identity and leaves the surface exactly as upstream
-     * renders it; <code>0.0</code> is a black night side. The surface color is
-     * scaled by <code>mix(1.0, nightDarkness, nightBlend)</code> along the same
-     * dusk ramp the imagery day/night alpha uses.
-     * <p>
-     * This is the procedural fallback for globes with no night imagery, so it
-     * is suppressed per tile wherever a night layer is already blending: there
-     * the night appearance comes from the layer, and darkening it a second time
-     * would dim the city lights. It deliberately carries no camera-distance
-     * fade, unlike the {@link Globe#enableLighting} day/night diffuse, so the
-     * night side stays dark at street altitude as well as from orbit.
-     * </p>
-     * <p>
-     * Values outside <code>[0, 1]</code> are clamped, and non-finite values are
-     * treated as <code>1.0</code>, by the renderers.
-     * </p>
-     *
-     * @type {number}
-     * @default 1.0
-     */
-    this.nightDarkness = 1.0;
+    // The night-side floor, and whether the application chose it. The pair is
+    // what lets the shipped default differ from upstream while an explicit
+    // opt-out from the fork's night appearance still restores upstream exactly;
+    // `resolveNightDarkness` holds that decision.
+    this._nightDarkness = NIGHT_DARKNESS_DEFAULT;
+    this._nightDarknessExplicit = false;
 
     /**
      * A multiplier to adjust terrain lambert lighting.
@@ -415,12 +399,15 @@ class Globe {
     };
 
     /**
-     * When true, night-side imagery layers with nightAlpha > dayAlpha
-     * are treated as emissive city lights, boosted proportional to
-     * their luminance. Only on the WebGPU
-     * renderer; the WebGL path ignores it.
-     * The default is off for cross-backend parity; set this property to
-     * <code>true</code> to opt in.
+     * When true, night-side imagery layers with nightAlpha > dayAlpha are
+     * treated as emissive city lights, boosted proportional to their luminance.
+     * Both renderers apply the same emission law, so the night side glows the
+     * same way whichever backend is in use.
+     * <p>
+     * The emission is added per layer, on top of the composited surface, and
+     * only for a layer whose resolved night alpha exceeds its day alpha - an
+     * ordinary layer, which covers day and night alike, contributes none.
+     * </p>
      * <p>
      * Setting this to <code>false</code> produces zero emission. The enable and
      * {@link Globe#nightIntensity} travel as separate signals precisely so that
@@ -428,9 +415,9 @@ class Globe {
      * collide with the shader's unset sentinel and render as the default 2.5.
      * </p>
      * @type {boolean}
-     * @default false
+     * @default true
      */
-    this.enableNightLights = false;
+    this.enableNightLights = true;
 
     /**
      * Multiplier for night-side city light emission brightness.
@@ -817,6 +804,49 @@ class Globe {
   set nightImagery(value) {
     this._nightImageryExplicit = true;
     this._nightImagery = value;
+  }
+
+  /**
+   * How dark the night side of the globe becomes where no imagery layer carries
+   * a day/night alpha pair. <code>0.0</code> is a black night side;
+   * <code>1.0</code> is the multiplicative identity and leaves the surface
+   * exactly as upstream renders it. The surface color is scaled by
+   * <code>mix(1.0, nightDarkness, nightBlend)</code> along the same dusk ramp
+   * the imagery day/night alpha uses.
+   * <p>
+   * This is the procedural fallback for globes with no night imagery, so it is
+   * suppressed per tile in proportion to how much of the night side a night
+   * layer already covers: there the night appearance comes from the layer, and
+   * darkening it a second time would dim the city lights. It deliberately
+   * carries no camera-distance fade, unlike the {@link Globe#enableLighting}
+   * day/night diffuse, so the night side stays dark at street altitude as well
+   * as from orbit.
+   * </p>
+   * <p>
+   * The default applies while this globe's own night appearance is in play, and
+   * resolves instead to <code>1.0</code> wherever {@link Globe#nightImagery}
+   * has been set to a value that attaches no layer of the globe's own -
+   * <code>false</code>, or nothing at all - so switching night imagery off
+   * restores upstream's globe rather than leaving a procedurally darkened one
+   * behind. An assigned value here is a request and applies either way, which
+   * is how a globe with no night imagery at all still gets a dark night side on
+   * request.
+   * </p>
+   * <p>
+   * Values outside <code>[0, 1]</code> are clamped, and non-finite values are
+   * treated as <code>1.0</code>.
+   * </p>
+   *
+   * @type {number}
+   * @default 0.15
+   */
+  get nightDarkness() {
+    return this._nightDarkness;
+  }
+
+  set nightDarkness(value) {
+    this._nightDarknessExplicit = true;
+    this._nightDarkness = value;
   }
 
   /**
@@ -1330,11 +1360,11 @@ class Globe {
         Number.isFinite(terminatorGlowStrength)
           ? Math.max(terminatorGlowStrength, 0.0)
           : 0.0;
-      const nightDarkness = this.nightDarkness;
-      tileProvider.nightDarkness =
-        typeof nightDarkness === "number" && Number.isFinite(nightDarkness)
-          ? CesiumMath.clamp(nightDarkness, 0.0, 1.0)
-          : 1.0;
+      tileProvider.nightDarkness = resolveNightDarkness(
+        this._nightDarkness,
+        this._nightDarknessExplicit,
+        this._nightImagery,
+      );
       tileProvider.dynamicAtmosphereLighting = this.dynamicAtmosphereLighting;
       tileProvider.dynamicAtmosphereLightingFromSun =
         this.dynamicAtmosphereLightingFromSun;

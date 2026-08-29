@@ -141,6 +141,24 @@ uniform float u_terminatorGlowStrength;
 uniform float u_nightDarkness;
 #endif
 
+#ifdef APPLY_NIGHT_LIGHTS
+uniform float u_nightIntensity;
+
+// The post-effects colour of the layer `sampleAndBlend` was last called with.
+//
+// Emission needs the layer's own colour, not the composite it was blended into,
+// and it needs it after the per-layer effects chain rather than as sampled. The
+// WGSL twin returns that colour as a third struct member; this function already
+// returns its one vec4, and widening its signature would rewrite every
+// generated call site including the ones that never emit. A file-scope carrier
+// written under this define keeps the emitting variant's cost to the variant
+// that emits, and the value is consumed on the next statement after the call
+// that wrote it. Initialized because a global without one has no defined value
+// until the first composite writes it, and a fill tile with no imagery layers
+// generates no write at all.
+vec3 g_nightLightsLayerColor = vec3(0.0);
+#endif
+
 // Per-fragment lunar shadow on the globe. The two body vectors are a
 // geocentric, range-normalized differential:
 //   sun.xyz  = normalize(S), sun.w = 1 / length(S)
@@ -193,6 +211,43 @@ float interpolateByDistance(vec4 nearFarScalar, float distance)
 }
 #endif
 
+#ifdef APPLY_NIGHT_LIGHTS
+// Resolves the emission multiplier the CPU packed.
+//
+// Exact twin of `GlobeTerrain.wgsl`'s `getNightIntensity()`: a negative slot
+// means the CPU supplied no value and the shader's own default stands, while
+// zero is a real value - Globe.nightIntensity is documented as "no emission" at
+// zero - and must survive. The enable travels separately for that reason.
+float nightLightsIntensity()
+{
+    return u_nightIntensity < 0.0 ? 2.5 : u_nightIntensity;
+}
+
+// Emissive night lights: a layer whose night alpha exceeds its day alpha is
+// city lights, and is added on top of the composite in proportion to its own
+// luminance so that bright cores glow more than their outskirts.
+//
+// Exact twin of `Shaders/WebGPU/Globe/GlobeTerrain.wgsl`'s
+// `applyNightLightsEmission`, term for term and constant for constant; the two
+// are executed against each other numerically rather than compared by eye. The
+// luminance weights are written out rather than taken from `czm_luminance`,
+// whose weights are the older (0.2125, 0.7154, 0.0721) triple and would put the
+// two backends a fraction of a percent apart on every emitting texel.
+vec3 applyNightLightsEmission(
+    vec3 color,
+    vec3 layerColor,
+    float nightBlend,
+    float nightAlpha,
+    float dayAlpha)
+{
+    float isNightLayer = step(dayAlpha + 0.01, nightAlpha);
+    float lum = dot(layerColor, vec3(0.2126, 0.7152, 0.0722));
+    float nightIntensity = nightLightsIntensity();
+    vec3 emission = layerColor * lum * nightBlend * nightIntensity * isNightLayer;
+    return color + emission;
+}
+#endif
+
 #if defined(UNDERGROUND_COLOR) || defined(TRANSLUCENT) || defined(APPLY_MATERIAL)
 vec4 alphaBlend(vec4 sourceColor, vec4 destinationColor)
 {
@@ -222,9 +277,10 @@ bool inTranslucencyRectangle()
 //   imagery slots are unrolled at the call site in `fragmentMain`.
 // - This function returns `vec4(outColor, outAlpha)`; the WGSL returns a
 //   `LayerComposite { color, alpha, adjustedColor }` struct, because its
-//   night-lights emission path needs the post-effects color separately. This
-//   shader has no night-lights emission path; the feature is WebGPU-only by
-//   its documented contract, so no downstream term exists here.
+//   night-lights emission path needs the post-effects color separately. Both
+//   backends now carry that path; this one hands the post-effects color to it
+//   through the `g_nightLightsLayerColor` carrier rather than by widening the
+//   return, so the non-emitting variants keep the signature they had.
 // - Per-effect gating is `#ifdef APPLY_*` here and `if (abs(...) > eps)` in
 //   WGSL: this file relies on the pipeline cache to emit defines from which
 //   per-layer properties are non-default, while WGSL evaluates every effect
@@ -320,6 +376,14 @@ vec4 sampleAndBlend(
 
 #ifdef APPLY_SATURATION
     color = czm_saturation(color, textureSaturation);
+#endif
+
+#ifdef APPLY_NIGHT_LIGHTS
+    // Clamped, matching the WGSL twin's `adjusted`, which clamps here and feeds
+    // the clamped value to its emission. The clamp is emission-local: the
+    // composite below keeps reading the unclamped `color` it always read, so
+    // this line changes no pixel of the non-emitting path.
+    g_nightLightsLayerColor = clamp(color, 0.0, 1.0);
 #endif
 
     float sourceAlpha = alpha * textureAlpha;

@@ -46,10 +46,13 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import {
   BUNDLED_NIGHT_IMAGERY_PATH,
+  NIGHT_DARKNESS_DEFAULT,
+  NIGHT_DARKNESS_IDENTITY,
   NIGHT_IMAGERY_LAYER_OPTIONS,
   NightImagerySource,
   nightImageryAction,
   nightImageryIsArmed,
+  resolveNightDarkness,
   resolveNightImageryRequest,
 } from "../../packages/engine/Source/Scene/GlobeNightImagery.js";
 
@@ -278,13 +281,15 @@ test("C2: the declared level range is the range that is on disk", () => {
     .map((entry) => Number(entry.name))
     .sort((a, b) => a - b);
   assert.deepEqual(orders, levelsOnDisk, "declared levels vs levels on disk");
-  assert.deepEqual(orders, [0, 1, 2]);
+  // Levels 0-3 since the level-three bake ratified by R-2026-08-28-8 (Batch
+  // 1244): 170 tiles at 455 KB of JPEG payload, inside the ruled gate.
+  assert.deepEqual(orders, [0, 1, 2, 3]);
 });
 
 test("C3: every tile the geodetic grid implies exists, and nothing else does", () => {
   // Level L of a 2:1 geodetic scheme is 2^(L+1) columns by 2^L rows, y up.
   let total = 0;
-  for (const level of [0, 1, 2]) {
+  for (const level of [0, 1, 2, 3]) {
     const columns = 2 ** (level + 1);
     const rows = 2 ** level;
     const dir = path.join(root, ASSET_DIR, String(level));
@@ -309,7 +314,7 @@ test("C3: every tile the geodetic grid implies exists, and nothing else does", (
     );
     total += found.size;
   }
-  assert.equal(total, 42, "the pyramid is 42 tiles");
+  assert.equal(total, 170, "the pyramid is 170 tiles (levels 0-3)");
 });
 
 test("C4: the pyramid is the Natural Earth II layout, tile for tile", () => {
@@ -420,6 +425,41 @@ test("E1: with the option off no layer exists, so neither backend's gate rises",
   assert.equal(
     stack.some((l) => l.dayAlpha !== 1.0 || l.nightAlpha !== 1.0),
     false,
+  );
+});
+
+test("E2: off is upstream in the OTHER term the night appearance owns", () => {
+  // The layer is one of two things this option now switches off. The
+  // procedural night-darkening fallback ships a darkening default, so an
+  // unassigned floor on a globe that never declined the fork's night
+  // appearance darkens — and "off is upstream" would be a false claim if this
+  // option did not take that default back with it.
+  //
+  // The floor is the whole of it: 1.0 is the multiplicative identity, so a
+  // globe resolving to it renders what upstream renders, and 0.15 does not.
+  assert.equal(
+    resolveNightDarkness(NIGHT_DARKNESS_DEFAULT, false, false),
+    NIGHT_DARKNESS_IDENTITY,
+    "switching night imagery off must give the identity floor back",
+  );
+  assert.equal(
+    resolveNightDarkness(NIGHT_DARKNESS_DEFAULT, false, true),
+    NIGHT_DARKNESS_DEFAULT,
+    "and must not be the answer for a globe that never declined it",
+  );
+  // The two halves of the same option: every value that makes this row's own
+  // resolver attach nothing must also give the identity floor back.
+  for (const declined of [false, undefined, null]) {
+    assert.deepEqual(resolveNightImageryRequest(declined, true), OFF);
+    assert.equal(
+      resolveNightDarkness(NIGHT_DARKNESS_DEFAULT, false, declined),
+      NIGHT_DARKNESS_IDENTITY,
+    );
+  }
+  assert.notEqual(
+    NIGHT_DARKNESS_DEFAULT,
+    NIGHT_DARKNESS_IDENTITY,
+    "a default equal to the identity would make this test vacuous",
   );
 });
 

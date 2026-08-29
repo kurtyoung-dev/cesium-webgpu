@@ -7,10 +7,14 @@
 //   A globe with no night imagery renders its night side as brightly as its
 //   day side. The fallback scales the composited surface toward a configurable
 //   floor as the sun goes below the horizon, and does nothing at all when that
-//   floor is 1.0 — which is the default, so a scene that never asked for the
-//   feature is unchanged.
+//   floor is 1.0.
 //
-// Three properties carry the whole row, and each fails differently:
+//   WHICH floor a scene gets by default is the fourth property below, and it is
+//   the one that moved. The floor is no longer 1.0 unconditionally: this fork
+//   ships a dark night side, and the identity is what an application gets back
+//   when it declines the fork's night appearance outright.
+//
+// Four properties carry the whole row, and each fails differently:
 //
 //   • WHICH SIDE. Darkening must follow the night fraction. Applied to the
 //     complement it darkens the sunlit hemisphere, which is a plausible typo
@@ -34,6 +38,16 @@
 //     is upstream's behaviour and this row does not touch it. The fallback
 //     deliberately has no such fade — being dark at street altitude is the
 //     point of it — so the two terms must not share a mix.
+//   • WHOSE CHOICE IT IS. An assigned value is the application's and applies
+//     wherever it is set, including on a globe with no night imagery at all —
+//     the configuration the property was added for — so a default that
+//     swallowed it would be a silent no-op of an explicit request. An
+//     unassigned value is the fork's, and the fork darkens only while its own
+//     night appearance is in play: nightImagery set to false says the
+//     application wants upstream's globe, and it must get upstream's globe
+//     exactly rather than a procedurally darkened one. Nothing weaker counts as
+//     declining — an application that merely builds its own imagery stack, and
+//     so is never injected into, has said nothing about the night side.
 //
 // WHAT THIS SPEC IS FOR. It EXECUTES the darkening law read out of both shader
 // sources rather than describing it, so "the night side gets darker" is checked
@@ -49,9 +63,18 @@
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
+
+import {
+  NIGHT_DARKNESS_DEFAULT,
+  NIGHT_DARKNESS_IDENTITY,
+  NightImagerySource,
+  resolveNightDarkness,
+  resolveNightImageryRequest,
+} from "../../packages/engine/Source/Scene/GlobeNightImagery.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "..", "..");
@@ -60,6 +83,20 @@ function read(relativePath) {
   return fs
     .readFileSync(path.join(root, relativePath), "utf8")
     .replace(/\r\n/g, "\n");
+}
+
+/**
+ * The two line endings, spelled from character codes.
+ *
+ * Section F writes a source file back to disk, and this tree is CRLF. A needle
+ * written with bare newlines cannot match a CRLF file, so a mutation that
+ * missed its target would report a green it never earned.
+ */
+const LF = String.fromCharCode(10);
+const CRLF = String.fromCharCode(13) + LF;
+
+function sha256(buffer) {
+  return crypto.createHash("sha256").update(buffer).digest("hex");
 }
 
 const WGSL_PATH =
@@ -185,27 +222,96 @@ test("A3: it is monotone across dusk — no band, no reversal", () => {
   }
 });
 
-test("A4: the default value is the exact multiplicative identity", () => {
-  // This is the byte-identity guarantee, expressed as arithmetic: at the
-  // documented default no N·L produces a factor other than 1, so a scene that
-  // never set the property cannot change colour even if the term were live.
+test("A4: the identity floor is still exactly inert, wherever it comes from", () => {
+  // The byte-identity guarantee, expressed as arithmetic: at a floor of 1.0 no
+  // N·L produces a factor other than 1, so a globe that resolves to the
+  // identity cannot change colour even though the term is compiled.
   const m = multiplierFrom(wgsl, WGSL_TERM_RE, 1.0);
   for (const ndotl of GRID) {
     // Exact, not approximate: `a + (b - a) * t` with a === b is `a + 0 * t`,
     // which is `a` for every finite t in IEEE 754. That is what makes the
-    // default path byte-identical rather than merely close.
+    // opt-out path byte-identical rather than merely close.
     assert.equal(m(ndotl), 1, `identity must hold at N·L = ${ndotl}`);
   }
-  assert.match(
-    globe,
-    /this\.nightDarkness = 1\.0;/,
-    "Globe must default the property to the identity",
+  assert.equal(
+    NIGHT_DARKNESS_IDENTITY,
+    1,
+    "the name the code uses for that floor must BE that floor",
   );
+  // The per-frame mirror still starts at the identity: it is read on frames
+  // before Globe.update has resolved anything into it, and a provider that
+  // never heard of the property must not darken.
   assert.match(
     tileProvider,
     /this\.nightDarkness = 1\.0;/,
-    "and so must the backend-neutral per-frame mirror",
+    "the backend-neutral per-frame mirror starts inert",
   );
+});
+
+test("A4b: the SHIPPED default darkens, and only the opt-out gives it back", () => {
+  // The claim is about behaviour, not about a literal: run the shipped
+  // resolution over the whole reachable state space and read the floors off it.
+  //
+  // A globe that never touched either property is the fork's default path and
+  // must darken; every value nightImagery can hold except false is still that
+  // path, INCLUDING the application-managed stack the globe never injects a
+  // layer into, because building your own imagery is not a statement about the
+  // night side.
+  const provider = { url: "https://example.invalid/night" };
+  const stillTheForkDefault = [true, provider, Promise.resolve(provider)];
+  for (const request of stillTheForkDefault) {
+    assert.equal(
+      resolveNightDarkness(NIGHT_DARKNESS_DEFAULT, false, request),
+      NIGHT_DARKNESS_DEFAULT,
+      "an unassigned floor must darken while the fork's night path is in play",
+    );
+  }
+  assert.ok(
+    NIGHT_DARKNESS_DEFAULT < 1,
+    "a shipped default that did not darken would make the whole row inert",
+  );
+  // ...and the values that ARE a statement about the night side. The two halves
+  // of the night appearance switch off together: whatever makes the layer
+  // resolve to "attach nothing" on the globe's own account must also give the
+  // identity floor back, or an application that switched night imagery off
+  // would still be looking at a procedurally darkened globe.
+  for (const declined of [false, undefined, null]) {
+    assert.equal(
+      resolveNightDarkness(NIGHT_DARKNESS_DEFAULT, false, declined),
+      NIGHT_DARKNESS_IDENTITY,
+      `declining with ${String(declined)} must restore upstream exactly`,
+    );
+    assert.deepEqual(
+      resolveNightImageryRequest(declined, true),
+      { source: NightImagerySource.NONE, provider: undefined },
+      "and must be a value the layer half also declines",
+    );
+  }
+  // Executed against each other, not asserted twice: the two halves must agree
+  // on every value the property accepts, including the ones that attach.
+  for (const request of [...stillTheForkDefault, false, undefined, null]) {
+    const layerAttaches =
+      resolveNightImageryRequest(request, true).source !==
+      NightImagerySource.NONE;
+    const floorDarkens =
+      resolveNightDarkness(NIGHT_DARKNESS_DEFAULT, false, request) !==
+      NIGHT_DARKNESS_IDENTITY;
+    assert.equal(
+      layerAttaches,
+      floorDarkens,
+      `the two halves disagree for ${String(request)}`,
+    );
+  }
+  // An assigned value is a request and survives the opt-out, which is what
+  // keeps procedural-only darkening reachable.
+  for (const floor of [0, 0.15, 0.5, 1]) {
+    assert.equal(
+      resolveNightDarkness(floor, true, false),
+      floor,
+      "an assigned floor must apply even with night imagery off",
+    );
+    assert.equal(resolveNightDarkness(floor, true, true), floor);
+  }
 });
 
 test("A5: a WRONG-SIDE term is a different function, so the law can detect it", () => {
@@ -439,10 +545,45 @@ test("D2: the WebGPU pack writes the identity for a provider that has no propert
 });
 
 test("D3: Globe sanitizes the same way before the mirror is read", () => {
+  // The sanitizer moved into the shared leaf when the default became
+  // conditional, because the default and the sanitizing became one decision and
+  // splitting them across two files is how they drift. The pin follows it: what
+  // matters is that ONE resolution stands between the public property and the
+  // mirror both backends read.
   assert.match(
     globe,
-    /tileProvider\.nightDarkness =\s*typeof nightDarkness === "number" && Number\.isFinite\(nightDarkness\)\s*\?\s*CesiumMath\.clamp\(nightDarkness, 0\.0, 1\.0\)\s*:\s*1\.0;/,
+    /tileProvider\.nightDarkness = resolveNightDarkness\(\s*this\._nightDarkness,\s*this\._nightDarknessExplicit,\s*this\._nightImagery,\s*\);/,
   );
+  // Executed, not read: D2 pins the clamp the WebGPU packer applies to the SAME
+  // mirror, so the two must agree on every value the property accepts.
+  const webgpuClamp = (value) =>
+    typeof value === "number" && Number.isFinite(value)
+      ? Math.min(Math.max(value, 0.0), 1.0)
+      : 1.0;
+  const reachable = [
+    -1,
+    -0.0001,
+    0,
+    0.15,
+    0.5,
+    1,
+    1.0001,
+    2,
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    Number.NEGATIVE_INFINITY,
+    undefined,
+    null,
+    "0.5",
+    {},
+  ];
+  for (const value of reachable) {
+    assert.equal(
+      resolveNightDarkness(value, true, true),
+      webgpuClamp(value),
+      `the two sanitizers disagree at ${String(value)}`,
+    );
+  }
 });
 
 // ─── E. MUTANTS — absence, inertness, and the wrong side ─────────────────────
@@ -667,4 +808,185 @@ test("E10: no source file was written — every mutation was in memory", () => {
       `${relativePath} changed under the spec`,
     );
   }
+});
+
+// ─── F. MUTANTS for the DEFAULT — the leaf's own source, executed ───────────
+//
+// Section E mutates shader and packer TEXT in memory, because what it checks is
+// a law read out of that text. The default is a different kind of claim: it is
+// a decision taken by a function, so it has to be IMPORTED and RUN rather than
+// pattern-matched, and a mutant has to change what the import returns.
+//
+// The mutant therefore runs against a private copy of the leaf, written outside
+// the repository with its two relative imports rewritten to absolute URLs. Not
+// for tidiness: the tracked file is read at module load by several specs in
+// this fleet and mutated by another, so a mutant that wrote it would race any
+// concurrent run and hand some other spec a source neither of them chose. The
+// copy is byte-identical to the shipped leaf, verified below, so what executes
+// is still the shipped decision — and this spec writes nothing inside the tree
+// at all, which F8 checks.
+
+const LEAF_PATH = "packages/engine/Source/Scene/GlobeNightImagery.js";
+const leafAbsolute = path.join(root, LEAF_PATH);
+const leafOriginal = fs.readFileSync(leafAbsolute);
+const leafOriginalHash = sha256(leafOriginal);
+const leafSourceDirectory = path.dirname(leafAbsolute);
+const leafScratch = fs.mkdtempSync(
+  path.join(os.tmpdir(), "globe-night-darkness-"),
+);
+
+process.on("exit", () => {
+  fs.rmSync(leafScratch, { recursive: true, force: true });
+});
+
+let leafMutantSerial = 0;
+
+/**
+ * Write one mutated copy of the leaf outside the tree and import it.
+ *
+ * The relative specifiers are rewritten rather than the file relocated inside
+ * the package, so nothing untracked is ever created next to the source. A
+ * mutation whose needle does not match throws, so a mutant that silently missed
+ * cannot report the green it never earned.
+ */
+async function withMutatedLeaf(from, to, assertion) {
+  const source = leafOriginal.toString("utf8").replaceAll(CRLF, LF);
+  assert.ok(
+    source.includes(from),
+    `mutation precondition failed: "${from.slice(0, 60)}..."`,
+  );
+  leafMutantSerial += 1;
+  const mutated = source
+    .replace(from, to)
+    .replaceAll(
+      /from "(\.\.\/[^"]+)"/g,
+      (whole, specifier) =>
+        `from "${pathToFileURL(path.resolve(leafSourceDirectory, specifier)).href}"`,
+    );
+  const copy = path.join(leafScratch, `leaf-${leafMutantSerial}.mjs`);
+  fs.writeFileSync(copy, mutated);
+  assertion(await import(pathToFileURL(copy).href));
+}
+
+test("F0: the executed copy is the shipped leaf, minus the mutation", async () => {
+  // Anti-vacuity for the whole section: an unmutated copy must import and must
+  // agree with the tracked module, or every mutant below would be probing
+  // something other than what ships.
+  const shipped = await import(pathToFileURL(leafAbsolute).href);
+  await withMutatedLeaf(
+    "export const NIGHT_DARKNESS_DEFAULT = 0.15;",
+    "export const NIGHT_DARKNESS_DEFAULT = 0.15;\n",
+    (copy) => {
+      assert.equal(copy.NIGHT_DARKNESS_DEFAULT, shipped.NIGHT_DARKNESS_DEFAULT);
+      assert.equal(
+        copy.NIGHT_DARKNESS_IDENTITY,
+        shipped.NIGHT_DARKNESS_IDENTITY,
+      );
+      for (const request of [true, false, undefined, null, {}]) {
+        assert.equal(
+          copy.resolveNightDarkness(0.4, false, request),
+          shipped.resolveNightDarkness(0.4, false, request),
+        );
+      }
+    },
+  );
+});
+
+/**
+ * The whole default decision as one verdict over the reachable state space.
+ *
+ * Every mutant below must flip it, and the control must not.
+ */
+function defaultVerdict(leaf) {
+  const provider = { url: "https://example.invalid/night" };
+  const darkensWhenInPlay = [true, provider].every(
+    (request) =>
+      leaf.resolveNightDarkness(leaf.NIGHT_DARKNESS_DEFAULT, false, request) <
+      1,
+  );
+  const restoresOnDecline = [false, undefined, null].every(
+    (request) =>
+      leaf.resolveNightDarkness(leaf.NIGHT_DARKNESS_DEFAULT, false, request) ===
+      1,
+  );
+  const honoursAnAssignment = [0, 0.3, 1].every(
+    (floor) => leaf.resolveNightDarkness(floor, true, false) === floor,
+  );
+  return darkensWhenInPlay && restoresOnDecline && honoursAnAssignment;
+}
+
+test("F1: the shipped leaf satisfies the verdict the mutants must break", async () => {
+  const leaf = await import(pathToFileURL(leafAbsolute).href);
+  assert.equal(defaultVerdict(leaf), true);
+});
+
+test("F2: ABSENCE — the opt-out arm removed", async () => {
+  await withMutatedLeaf(
+    `    return nightImageryIsDeclined(nightImagery)
+      ? NIGHT_DARKNESS_IDENTITY
+      : NIGHT_DARKNESS_DEFAULT;`,
+    "    return NIGHT_DARKNESS_DEFAULT;",
+    (leaf) => assert.equal(defaultVerdict(leaf), false),
+  );
+});
+
+test("F3: INVERTED — the two arms swapped", async () => {
+  // The plausible typo, and the one no absence mutant finds: every symbol is
+  // still there, and the globe darkens exactly where it must not.
+  await withMutatedLeaf(
+    `      ? NIGHT_DARKNESS_IDENTITY
+      : NIGHT_DARKNESS_DEFAULT;`,
+    `      ? NIGHT_DARKNESS_DEFAULT
+      : NIGHT_DARKNESS_IDENTITY;`,
+    (leaf) => assert.equal(defaultVerdict(leaf), false),
+  );
+});
+
+test("F4: SWALLOWED — an assigned floor stops being a request", async () => {
+  await withMutatedLeaf("  if (explicit !== true) {", "  if (true) {", (leaf) =>
+    assert.equal(defaultVerdict(leaf), false),
+  );
+});
+
+test("F5: REVERTED — the shipped default back at the identity", async () => {
+  // Inert rather than absent: the whole mechanism still runs and darkens
+  // nothing, which is what this row was asked to change.
+  await withMutatedLeaf(
+    "export const NIGHT_DARKNESS_DEFAULT = 0.15;",
+    "export const NIGHT_DARKNESS_DEFAULT = 1.0;",
+    (leaf) => assert.equal(defaultVerdict(leaf), false),
+  );
+});
+
+test("F6: HALF-DECLINED — only the literal false counts as declining", async () => {
+  // The state that would leave an application which switched night imagery off
+  // looking at a procedurally darkened globe anyway.
+  await withMutatedLeaf(
+    "  return nightImagery === false || !defined(nightImagery);",
+    "  return nightImagery === false;",
+    (leaf) => assert.equal(defaultVerdict(leaf), false),
+  );
+});
+
+test("F7: the mutants are discriminating, not merely destructive", async () => {
+  // A control on the same lines: a change that cannot alter the decision must
+  // leave the verdict standing, or F2-F6 would only be proving the file can be
+  // broken.
+  await withMutatedLeaf(
+    "export function nightImageryIsDeclined(nightImagery) {",
+    "export function nightImageryIsDeclined(nightImagery /* the request */) {",
+    (leaf) => assert.equal(defaultVerdict(leaf), true),
+  );
+});
+
+test("F8: nothing inside the tree was written", () => {
+  assert.equal(
+    sha256(fs.readFileSync(leafAbsolute)),
+    leafOriginalHash,
+    "the tracked leaf must be untouched — mutants run on a copy outside it",
+  );
+  assert.ok(
+    !leafScratch.startsWith(root),
+    "the mutant copies must live outside the repository",
+  );
 });

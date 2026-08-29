@@ -206,11 +206,11 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 
 | Metric | Value |
 |---|---|
-| Files in census | 1109 |
-| ACTIVE | 902 |
+| Files in census | 1110 |
+| ACTIVE | 903 |
 | INVESTIGATION | 195 |
 | NO @purpose HEADER | 12 |
-| Classes | probe 652, spec 236, other 102, lib 77, gate-lib 19, bake-tool 13, runner 6, fixture 4 |
+| Classes | probe 652, spec 237, other 102, lib 77, gate-lib 19, bake-tool 13, runner 6, fixture 4 |
 
 ### Tools/ (41)
 
@@ -355,7 +355,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | stbn-rng.mjs | bake-tool | ACTIVE | 2026-08-16 | 3 | Deterministic license-clean random stream for the STBN bake: AES-256-CTR over zeros keyed by SHA-256(seed), byte-identical across machines. |
 | stbn-spectrum.mjs | bake-tool | ACTIVE | 2026-08-16 | 5 | Fourier certification of an STBN volume (radial spatial spectrum, per-pixel temporal spectrum, cross-correlation) with mutants proving each bar fires. |
 
-### Tools/visual-regression/ (909)
+### Tools/visual-regression/ (910)
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
@@ -482,8 +482,9 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | globe-night-darkness-fallback.spec.mjs | spec | ACTIVE | 2026-08-28 | 1 | Pins the procedural night-side darkening: one law on both backends, applied only where no night imagery layer is blending, with no camera-distance fade, and inert at its identity default. |
 | globe-night-imagery-magnification-fade.spec.mjs | spec | ACTIVE | 2026-08-28 | 0 | Pins the night layer's retirement past the deepest level its pyramid contains: full strength while a tile still resolves many texels, exactly nothing once one texel would cover the tile, identical on both backends, and inert for every layer the globe did not attach. |
 | globe-night-imagery-option.spec.mjs | spec | ACTIVE | 2026-08-28 | 1 | Pins the night-imagery option: default on, never injected into an application-managed imagery stack, off is upstream, and the bundled pyramid's level range is the one its provider will derive. |
-| globe-night-lights-default.spec.mjs | spec | ACTIVE | 2026-08-20 | 1 | Verifies that durable Globe source defaults night lights to an opt-in feature. |
-| globe-night-ocean-sentinel.spec.mjs | spec | ACTIVE | 2026-08-16 | 1 | Pins the GLOBE_UB_UNSET (-1.0) sentinel that made enableNightLights=false reachable: OFF and default-ON no longer share the same 0.0 uniform encoding. |
+| globe-night-lights-default.spec.mjs | spec | ACTIVE | 2026-08-28 | 1 | Pins the durable Globe source default for night lights: shipped ON, with JSDoc that says so. |
+| globe-night-lights-emission.spec.mjs | spec | ACTIVE | 2026-08-28 | 0 | Pins city-light emission as ONE law on two shaders: the same gate, the same luminance, the same product and the same unset sentinel on both backends, reachable at the shipped defaults, and inert for a layer that is not a night layer. |
+| globe-night-ocean-sentinel.spec.mjs | spec | ACTIVE | 2026-08-28 | 1 | Pins the GLOBE_UB_UNSET (-1.0) sentinel that made enableNightLights=false reachable: OFF and default-ON no longer share the same 0.0 uniform encoding. |
 | globe-pipeline-key-contract.spec.mjs | spec | ACTIVE | 2026-08-16 | 4 | Pins the single-home globe pipeline cache-key builder/parser after the 15-month UNO_/UNMO_ producer-consumer drift; accessors + cache stats. |
 | globe-pipeline-readiness.spec.mjs | spec | ACTIVE | 2026-08-16 | 2 | Scoring tests plus engine mechanism pins for probe-globe-pipeline-readiness; a pin failure means the traced path changed, not the instrument. |
 | globe-use-log-depth.spec.mjs | spec | ACTIVE | 2026-08-16 | 8 | Pins that the globe resolves the shared isWebGPULogDepthActive gate so orthographic modes never mix log and hyperbolic encodings in one depth buffer. |

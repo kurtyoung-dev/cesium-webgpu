@@ -441,13 +441,46 @@ test("D2: the other four ocean getters have no live consumer at HEAD", () => {
   assert.equal(fresnelCalls.length, 1, "fresnelSchlick gained a caller");
 });
 
-test("D3: the WebGL globe has no matching sentinel to fix", () => {
-  // The night-lights emission and the enhanced-ocean styling are WebGPU-only
-  // additions; `GlobeFS.glsl` has no `nightIntensity` and no equivalent
-  // 0-means-default uniform, so the parity obligation for this row is
-  // discharged by there being no GLSL twin — not by leaving one unfixed.
+test("D3: the WebGL globe's night-lights sentinel reads the same way", () => {
+  // This test used to discharge the parity obligation by there being no GLSL
+  // twin to fix. There is one now: night-lights emission ships on both
+  // backends, so the sentinel it inherits has to be the SAME sentinel, and the
+  // obligation is discharged by the two agreeing rather than by absence.
+  //
+  // Executed, not compared by eye — the two are read out of their own sources
+  // and run against each other over the whole reachable domain, including the
+  // two values the collision was about.
   const glsl = read("packages/engine/Source/Shaders/GlobeFS.glsl");
-  assert.doesNotMatch(glsl, /nightIntensity/);
+  const glslArm = glsl.match(
+    /return u_nightIntensity ([^;]+) \? ([\d.]+) : u_nightIntensity;/,
+  );
+  assert.ok(glslArm, "GlobeFS.glsl must resolve the slot with a guarded arm");
+  assert.equal(glslArm[1], "< 0.0", "the guard must be the negative half-line");
+  const wgslArm = wgslCode.match(
+    /fn getNightIntensity\(\) -> f32 \{\s*let n = tile\.nightOceanParams\.x;\s*return select\(n, ([\d.]+), n < 0\.0\);\s*\}/,
+  );
+  assert.ok(wgslArm, "the WGSL getter must still take the same shape");
+  assert.equal(
+    glslArm[2],
+    wgslArm[1],
+    "both backends must substitute the same built-in default",
+  );
+  const fallback = Number(wgslArm[1]);
+  const resolve = (n) => (n < 0 ? fallback : n);
+  for (const packed of [-1, -0.5, 0, 0.5, 2.5, 10]) {
+    assert.equal(
+      resolve(packed),
+      packed < 0 ? fallback : packed,
+      `the shared law must not move at ${packed}`,
+    );
+  }
+  // The two values the collision was about: a real zero survives as zero, and
+  // only the negative marker reaches the default.
+  assert.equal(resolve(0), 0, "zero is a value, not an absence");
+  assert.equal(resolve(-1), fallback, "the marker is the only absence");
+
+  // The enhanced-ocean tunables remain WebGPU-only, so their half of this row
+  // is still discharged by absence.
   assert.doesNotMatch(
     glsl,
     /oceanFoamThreshold|oceanDarkening|oceanReflectivity/,

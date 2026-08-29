@@ -22,8 +22,8 @@
  * legitimate zero — `Globe.nightIntensity = 0` is documented as "no emission",
  * a foam threshold of 0 is "foam everywhere" — so an off value written as
  * `0.0` aliases onto default-on and the real zero becomes unreachable. That
- * aliasing is what would make `globe.enableNightLights = false` a visual no-op
- * on WebGPU and the ratified "default off, keep the toggle" contract vacuous.
+ * aliasing is what would make `globe.enableNightLights = false` a visual no-op,
+ * which for a feature that ships ON is the only state the toggle has to offer.
  *
  * The marker is negative because each of these tunables is a magnitude over a
  * non-negative domain (intensity, reflectivity, threshold, darkening,
@@ -33,8 +33,8 @@
  * "unset".
  *
  * With the shipped defaults the CPU writes the real value
- * (`nightIntensity = 2.5`), so the shader takes the pass-through arm and the
- * emitted value is bit-identical either way.
+ * (`nightIntensity = 2.5`, with the enable ON), so the shader takes the
+ * pass-through arm and the emitted value is bit-identical either way.
  * `globe-night-ocean-sentinel.spec.mjs` enumerates every reachable
  * (enable, value) pair.
  */

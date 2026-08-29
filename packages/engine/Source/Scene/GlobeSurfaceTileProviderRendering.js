@@ -189,6 +189,21 @@ const cornerPositionsScratch = [
 
 const otherPassesInitialColor = new Cartesian4(0.0, 0.0, 0.0, 0.0);
 
+/**
+ * The "no value supplied" marker for the night-lights intensity uniform.
+ *
+ * Negative because the tunable is a magnitude over a non-negative domain, so
+ * the negative half-line is unreachable from the API and free to carry "unset";
+ * `GlobeFS.glsl`'s `nightLightsIntensity()` substitutes its own default for it.
+ * Zero cannot carry that meaning, because zero is a real, documented value.
+ *
+ * The same number is `GLOBE_UB_UNSET` on the WebGPU side. It is restated here
+ * rather than imported: that module lives under `Renderer/WebGPU`, which the
+ * webgl-only bundle variant replaces with a throwing stub, so a Scene file
+ * importing it would break that build. The two are held equal by execution.
+ */
+const NIGHT_LIGHTS_UNSET = -1.0;
+
 const defaultUndergroundColor = Color.TRANSPARENT;
 const defaultUndergroundColorAlphaByDistance = new NearFarScalar();
 const groundAtmosphereCompanionMinimumDistanceRatio = 0.75;
@@ -206,6 +221,7 @@ const surfaceShaderSetOptionsScratch = {
   applyAlpha: undefined,
   applyDayNightAlpha: undefined,
   applyNightDarkness: undefined,
+  applyNightLights: undefined,
   applySplit: undefined,
   showReflectiveOcean: undefined,
   showOceanWaves: undefined,
@@ -722,6 +738,9 @@ function createTileUniformMap(frameState, globeSurfaceTileProvider) {
     u_nightDarkness: function () {
       return this.properties.nightDarkness;
     },
+    u_nightIntensity: function () {
+      return this.properties.nightIntensity;
+    },
     u_vectorSegmentTexture: function () {
       return (
         this.properties.vectorSegmentTexture ??
@@ -822,6 +841,7 @@ function createTileUniformMap(frameState, globeSurfaceTileProvider) {
       vertexShadowDarkness: 0.0,
       terminatorGlowStrength: 0.0,
       nightDarkness: 1.0,
+      nightIntensity: NIGHT_LIGHTS_UNSET,
       eclipseGlobeShadow: defaultEclipseGlobeShadow,
 
       vectorSegmentTexture: undefined,
@@ -1544,6 +1564,23 @@ function addDrawCommandsForTile(tileProvider, tile, frameState) {
   const vertexShadowDarkness = tileProvider.vertexShadowDarkness;
   const terminatorGlowStrength = tileProvider.terminatorGlowStrength;
   const nightDarkness = tileProvider.nightDarkness ?? 1.0;
+  // The enable and the value arrive as separate signals and are kept that way,
+  // because the shader reads a negative slot as "the CPU configured nothing"
+  // and Globe.nightIntensity is documented as no emission at zero. Folding the
+  // two into one number would make off and default-on the same float.
+  //
+  // This is the WebGL half of one law. The WebGPU half is
+  // `resolveGlobeTunable(nightLightsOn, nightIntensity, 0.0)` in
+  // `WebGPUGlobeSurfaceTileUB`, reached through the same two mirrored
+  // properties; the two are executed against each other over the whole
+  // reachable (enable, value) grid rather than trusted to look alike.
+  const nightLightsOn = tileProvider.enableNightLights !== false;
+  const rawNightIntensity = tileProvider.nightIntensity;
+  const nightIntensity = !nightLightsOn
+    ? 0.0
+    : typeof rawNightIntensity === "number" && isFinite(rawNightIntensity)
+      ? rawNightIntensity
+      : NIGHT_LIGHTS_UNSET;
 
   const hasWaterMask = tileProvider.hasWaterMask && defined(waterMaskTexture);
   const showReflectiveOcean = hasWaterMask && tileProvider.showWaterEffect;
@@ -2291,6 +2328,15 @@ function addDrawCommandsForTile(tileProvider, tile, frameState) {
         (1.0 - CesiumMath.clamp(nightLayerCoverage, 0.0, 1.0));
     uniformMapProperties.nightDarkness = effectiveNightDarkness;
     surfaceShaderSetOptions.applyNightDarkness = effectiveNightDarkness < 1.0;
+    // City-light emission. The define is conjoined with the day/night alpha
+    // condition because the emission gate compares a layer's night alpha
+    // against its day alpha, and without that condition the generated call
+    // sites pass the 1.0 literals - a pair that can never open the gate. So a
+    // tile with no day/night layer compiles the shader upstream emits, which is
+    // what keeps a globe with the night appearance switched off byte-identical.
+    uniformMapProperties.nightIntensity = nightIntensity;
+    surfaceShaderSetOptions.applyNightLights =
+      nightLightsOn && applyDayNightAlpha;
     surfaceShaderSetOptions.applySplit = applySplit;
     surfaceShaderSetOptions.enableFog = applyFog;
     surfaceShaderSetOptions.enableClippingPlanes = clippingPlanesEnabled;

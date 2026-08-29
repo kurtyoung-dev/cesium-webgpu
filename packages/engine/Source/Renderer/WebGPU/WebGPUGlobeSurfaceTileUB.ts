@@ -759,9 +759,9 @@ export function createTileUniformBuffer(
   // `.enableEnhancedOcean`, both mirrored by `Globe.update()`) and the value
   // slot carries only a value. Collapsing the two into one number by writing
   // `0.0` on the off path makes `globe.enableNightLights = false` render as
-  // default-on, because `getNightIntensity()` reads `0.0` as "use 2.5", and
-  // leaves the ratified "default off, keep the toggle" contract with no
-  // reachable off state.
+  // default-on, because `getNightIntensity()` reads `0.0` as "use 2.5". With
+  // the feature shipping ON, that is the whole of the toggle: an off state that
+  // renders as on leaves the property with nothing to do.
   //
   // The two features answer "what does off mean" differently, which is why
   // `resolveGlobeTunable` takes the off value explicitly:

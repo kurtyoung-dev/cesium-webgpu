@@ -1255,6 +1255,15 @@ const CONVENTION_SCAN_CLASSIFICATION = Object.freeze([
   },
   {
     relativePath:
+      "packages/engine/Source/Scene/GlobeSurfaceTileProviderRendering.js",
+    identifier: "enableNightLights",
+    count: 1,
+    scope: "delegated-getter",
+    reason:
+      "the WebGL half of the same flag, reading the same mirror by the same convention so the two backends resolve the intensity identically",
+  },
+  {
+    relativePath:
       "packages/engine/Source/Renderer/WebGPU/WebGPUPointCloudEDLState.js",
     identifier: "enabled",
     count: 1,

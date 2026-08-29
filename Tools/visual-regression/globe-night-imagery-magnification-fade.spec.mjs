@@ -24,8 +24,14 @@
 //   • IT IS SCOPED. The fade belongs to the layer the globe attached on its own
 //     behalf. An application that hand-builds a layer with the same day/night
 //     pair has chosen its own resolution and its own alphas, and must keep
-//     rendering exactly what it asks for at every altitude — which is also what
-//     keeps a globe with no night layer byte-identical to upstream.
+//     rendering exactly what it asks for at every altitude.
+//
+//   The aside this note used to carry — that the scoping is also what keeps a
+//   globe with no night layer byte-identical to upstream — is no longer true
+//   and is corrected here rather than left to age: the procedural fallback now
+//   ships a darkening default, so a globe with no night layer is upstream only
+//   where the application has declined the fork's night appearance outright.
+//   That condition belongs to globe-night-darkness-fallback, which executes it.
 //
 // WHAT THIS SPEC IS FOR. It EXECUTES the law out of the shipped module, and it
 // reads the magnification off the SHIPPED pyramid's own tilemapresource.xml
@@ -254,11 +260,12 @@ test("B2: every altitude the layer is composed for keeps it at full strength", (
 });
 
 test("B3: the defect's own altitudes get exactly nothing", () => {
-  // Terrain level 10 is where one of the deepest level's texels first covers a
+  // With the level-three pyramid ratified by R-2026-08-28-8 (Batch 1244), terrain
+  // level 11 is where one of the deepest level's texels first covers a
   // whole tile; every level below it is more magnified still. Street views sit
   // far down this range, which is where the wash was measured.
   const layer = nightLayerAt();
-  for (let level = 10; level <= 20; level += 1) {
+  for (let level = 11; level <= 20; level += 1) {
     assert.ok(
       texelsAcrossTerrainTile(level) <= NIGHT_IMAGERY_FADE_ZERO_TEXELS,
       `precondition: level ${level} must be at or past one texel per tile`,
@@ -276,7 +283,8 @@ test("B4: the handover is two whole levels wide, and strictly decreasing", () =>
   // and the next, and narrow enough that it is gone before the tiles it would
   // wash out are on screen.
   const layer = nightLayerAt();
-  const band = [8, 9].map((level) =>
+  // The two-level band sits one level deeper on the level-three pyramid.
+  const band = [9, 10].map((level) =>
     resolveNightImageryFade(layer, tileImageryAt(level)),
   );
   assert.ok(

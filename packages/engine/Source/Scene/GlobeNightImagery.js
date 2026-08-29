@@ -161,6 +161,88 @@ function tilePixels(value) {
 }
 
 /**
+ * The night-side floor the procedural darkening fallback aims at on the fork's
+ * own default path.
+ *
+ * Measured rather than chosen: it is the street-altitude darkness that reads as
+ * night over a bright city without crushing the detail underneath it. It is the
+ * companion of default-on night imagery rather than an independent default,
+ * because the two hand over to each other continuously - the layer covers the
+ * night side from orbit, magnification retires it on the way down, and this
+ * floor is what the fallback supplies in its place.
+ *
+ * @private
+ */
+export const NIGHT_DARKNESS_DEFAULT = 0.15;
+
+/**
+ * The floor that leaves the surface exactly as upstream renders it.
+ *
+ * `mix(1.0, 1.0, t)` is `1.0` for every finite `t` in IEEE 754, so this value
+ * makes the whole darkening term the multiplicative identity rather than merely
+ * a small change - which is what lets an opt-out be called byte-identical.
+ *
+ * @private
+ */
+export const NIGHT_DARKNESS_IDENTITY = 1.0;
+
+/**
+ * The night-side floor one globe renders with this frame.
+ *
+ * Two separate questions meet here, and conflating them is what would break the
+ * opt-out guarantee:
+ *
+ * <ul>
+ *   <li>An assigned value is a request, and is honoured whatever else the globe
+ *       is doing - including on a globe with night imagery switched off, which
+ *       is the procedural-only configuration this property exists for.</li>
+ *   <li>An unassigned value is the fork choosing on the application's behalf.
+ *       The fork chooses a dark night side while its own night appearance is in
+ *       play, and chooses upstream's while it is not. What counts as declining
+ *       that appearance is exactly what makes
+ *       {@link resolveNightImageryRequest} attach nothing on its own account -
+ *       <code>false</code>, or an absent value - so the two halves of the night
+ *       appearance switch off together instead of one outliving the other. An
+ *       application that merely builds its own imagery stack, and so is never
+ *       injected into, has said nothing about the night side and still gets the
+ *       fork's default.</li>
+ * </ul>
+ *
+ * @param {number} value The public property value.
+ * @param {boolean} explicit Whether the property has been assigned.
+ * @param {boolean|ImageryProvider|Promise<ImageryProvider>} nightImagery The
+ *        night-imagery request this globe holds.
+ * @returns {number} A floor in <code>[0, 1]</code>.
+ * @private
+ */
+export function resolveNightDarkness(value, explicit, nightImagery) {
+  if (explicit !== true) {
+    return nightImageryIsDeclined(nightImagery)
+      ? NIGHT_DARKNESS_IDENTITY
+      : NIGHT_DARKNESS_DEFAULT;
+  }
+  return typeof value === "number" && isFinite(value)
+    ? Math.min(Math.max(value, 0.0), 1.0)
+    : NIGHT_DARKNESS_IDENTITY;
+}
+
+/**
+ * Whether a night-imagery request is the application declining the fork's night
+ * appearance rather than configuring it.
+ *
+ * The same two values {@link resolveNightImageryRequest} treats as "attach
+ * nothing", read here so a request that switches the layer off cannot leave the
+ * procedural half of the same appearance running.
+ *
+ * @param {boolean|ImageryProvider|Promise<ImageryProvider>} nightImagery
+ * @returns {boolean}
+ * @private
+ */
+export function nightImageryIsDeclined(nightImagery) {
+  return nightImagery === false || !defined(nightImagery);
+}
+
+/**
  * Where the night layer, if any, comes from.
  *
  * @private
