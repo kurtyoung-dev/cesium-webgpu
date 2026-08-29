@@ -108,6 +108,14 @@ corrected with it.
 The remaining ~30 medium and all low survivors are enumerated in §5 with their lane column reading
 QUEUED; they dispatch after Q-1…Q-10, batched by file so one Sol dispatch closes several small
 findings in the same module. C1's returning findings append here as a dated addendum.
+### Directed Sol round two: Q-88 verified and banked, Q-137 instrument landed (2026-08-29 ~09:45 machine clock)
+
+| | Row | Disposition |
+|---|---|---|
+| Q-88 | VERIFIED in the scratch clone, BANKED for the engine window (not landed - engine hold while the maintainer tests on 8080) | Sol's region replacements applied cleanly to main-tip WebGPUOceanRenderer.ts: the two 32-byte per-frame ArrayBuffers (time and merge parameter staging) become cache-lifetime scratch (allocated with the per-device cache, nulled at teardown; CPU memory, so device loss needs nothing else), writes and offsets unchanged. Sol's spec ocean-per-frame-scratch.spec.mjs 1/1: lifts the writers with esbuild, drives them 5x through a recording device, asserts 2 allocations at cache creation then zero, identical buffer identity on every writeBuffer, hand-computed bytes for two time inputs, and its own allocation mutant; the seat's independent inertness mutant (re-introduce the allocation in the engine file) turns it red. Multi-metric: 2 allocations x 32 B per frame removed (120/s at 60 Hz); timing unmeasured, no pixel change expected (byte identity is the Edge leg). Note: the spec resolves the engine file from process.cwd(), so it runs from the repo root only. Patch + spec: scratchpad/land-q88/ |
+| Q-137 | INSTRUMENT LANDED (Batch 1294); row stays OPEN until an Edge run confirms Cape Point passes | the cold-start probe's absolute rule (blackFraction === 0) becomes scene-aware: the first readiness-gated frame is compared with a settled reference captured by the same page and camera N frames later (round 1 reused, --settled-frames default 60) and passes when it carries no more black than the reference within --black-tolerance-pp (default 0.5 pp), with commandsDeferred === 0 kept; the rule lives in an exported pure decideReadinessVerdict so it is liftable; verdicts and the printed line carry blackFraction / settledBlackFraction / blackDelta / tolerance. Spec globe-cold-start-black-rule.spec.mjs 5/5 incl. a flipped-comparison mutant. Runner: new test-readiness script (readiness + black-rule specs; the readiness spec had no runner home either - Q-139 census grows) |
+| Q-135 | directed turn still running at 09:45 (1,864 log lines, one region so far) | verify on return: apply to the scratch clone, run the refusal spec (7/7 baseline) and Sol's parity spec, then the S5 replacement-device probe on the next Edge tranche is the closing evidence |
+
 ### Three station-3 verdicts, one lane packet, and the tools batch that follows them (2026-08-29 ~09:10 machine clock; landed as Batch 1292 at 09:15)
 
 | | Row | Disposition |

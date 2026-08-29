@@ -193,7 +193,8 @@
     "prettier-check": "prettier --check \"**/*\"",
     "cspell": "npx cspell lint -c .vscode/cspell.json --unique --no-progress",
     "test-scene-node": "node --test packages/engine/Specs/Scene/PickingApiDocsSpec.mjs packages/engine/Specs/Scene/PickingMostDetailedSupportSpec.mjs packages/engine/Specs/Scene/ScreenSpaceCameraControllerSceneShapeSpec.mjs",
-    "test-blend-parity": "node --test Tools/visual-regression/webgpu-blend-table-parity.spec.mjs Tools/visual-regression/material-appearance-blend-parity.spec.mjs"
+    "test-blend-parity": "node --test Tools/visual-regression/webgpu-blend-table-parity.spec.mjs Tools/visual-regression/material-appearance-blend-parity.spec.mjs",
+    "test-readiness": "node --test Tools/visual-regression/globe-cold-start-readiness.spec.mjs Tools/visual-regression/globe-cold-start-black-rule.spec.mjs"
   },
   "engines": {
     "node": ">=22.0.0"

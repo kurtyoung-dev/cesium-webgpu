@@ -5,14 +5,12 @@
 //
 // ── WHAT IT ANSWERS ─────────────────────────────────────────────────────────
 //
-//   Q-101. A settle round gated on `globe.tilesLoaded && commandList.length > 0`
-//          ended, at the slab view, with tilesLoaded true, 56 commands and
-//          73.6 % of the bottom third of the canvas black; a second round took
-//          it to 69 commands and 0 %. The claim under test is that the same
-//          first round, gated additionally on `scene.renderReady`, ends at
-//          0 % — because a tile whose pipeline is still compiling now raises
-//          `frameState.commandsDeferred`, and an inflight pipeline raises
-//          `context.pendingResourceCount`.
+//   Q-101. The first round gated on `scene.renderReady` captures the frame at
+//          which readiness first reports true. Its black fraction is compared
+//          with a settled reference captured from the same page and camera a
+//          configurable number of frames later. It passes when it has no more
+//          black than that reference within tolerance and
+//          `frameState.commandsDeferred` is zero.
 //
 //   Q-102. WebGPU published its first non-empty command list on settle frame
 //          295 at the slab view and 325 at Cape Point, against WebGL's 24 and
@@ -76,6 +74,7 @@
 //   node Tools/visual-regression/probe-globe-cold-start-readiness.mjs
 //   node Tools/visual-regression/probe-globe-cold-start-readiness.mjs --runs 3
 //   node Tools/visual-regression/probe-globe-cold-start-readiness.mjs --headed
+//   node Tools/visual-regression/probe-globe-cold-start-readiness.mjs --settled-frames 60 --black-tolerance-pp 0.5
 
 import { chromium } from "playwright";
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -88,9 +87,55 @@ const harness =
   "http://localhost:8080/Tools/visual-regression/globe-cold-start-harness.html";
 
 const argv = process.argv.slice(2);
+
+function readNonNegativeNumberOption(name, fallback) {
+  const index = argv.indexOf(name);
+  if (index === -1) {
+    return fallback;
+  }
+
+  const value = Number(argv[index + 1]);
+  if (!Number.isFinite(value) || value < 0) {
+    throw new TypeError(`${name} must be a non-negative number`);
+  }
+  return value;
+}
+
 const headed = argv.includes("--headed");
-const runsIndex = argv.indexOf("--runs");
-const runs = runsIndex === -1 ? 1 : Number(argv[runsIndex + 1]);
+const runs = readNonNegativeNumberOption("--runs", 1);
+if (!Number.isInteger(runs) || runs < 1) {
+  throw new TypeError("--runs must be a positive integer");
+}
+
+const settledReferenceFrames = readNonNegativeNumberOption(
+  "--settled-frames",
+  60,
+);
+if (!Number.isInteger(settledReferenceFrames) || settledReferenceFrames < 1) {
+  throw new TypeError("--settled-frames must be a positive integer");
+}
+
+// blackFraction is a fraction, so 0.5 percentage points is represented as
+// 0.005 in verdicts and comparisons.
+const blackTolerance =
+  readNonNegativeNumberOption("--black-tolerance-pp", 0.5) / 100;
+
+export function decideReadinessVerdict({
+  blackFraction,
+  settledBlackFraction,
+  commandsDeferred,
+  tolerance,
+}) {
+  const blackDelta = blackFraction - settledBlackFraction;
+  return {
+    blackFraction,
+    settledBlackFraction,
+    blackDelta,
+    tolerance,
+    commandsDeferred,
+    pass: blackDelta <= tolerance + Number.EPSILON && commandsDeferred === 0,
+  };
+}
 
 // The two 3e-B views, unchanged. The slab view is where the black near field
 // was measured; Cape Point is where the 325-vs-23 first-command gap was.
@@ -185,7 +230,9 @@ async function runCell(browser, renderer, view, gate, run) {
       iso: view.iso,
       gate,
       budgetMs: 60000,
-      minFrames: 60,
+      // Round zero remains the first-ready measurement. Round one is the
+      // existing later capture reused as its settled reference.
+      minFrames: round === 1 ? settledReferenceFrames : 60,
     });
     const name = `${view.id}-${renderer}-${gate}-run${run}-r${round}`;
     const buffer = await page
@@ -236,20 +283,32 @@ await browser.close();
 
 // ── verdicts ────────────────────────────────────────────────────────────────
 //
-// Q-101 is a pass/fail: with the readiness gate, the FIRST round must end at
-// 0 % black on both backends and at both views. Q-102 is a measurement, and is
+// Q-101 is a pass/fail: the FIRST readiness-gated round is compared with the
+// second round, captured from the same page and camera after at least
+// settledReferenceFrames additional frames. Q-102 is a measurement and is
 // reported rather than gated — a threshold on a network-bound number would be
 // a coin flip.
 const verdicts = [];
 for (const cell of cells) {
   const first = cell.rounds[0];
   if (cell.gate === "readiness") {
+    const settledReference = cell.rounds[1];
+    if (!settledReference) {
+      throw new Error(
+        `no settled reference was captured for ${cell.view}/${cell.renderer}/run${cell.run}`,
+      );
+    }
+
     verdicts.push({
       id: `${cell.view}/${cell.renderer}/run${cell.run}`,
-      claim: "Q-101 — the first readiness-gated round ends with a drawn frame",
-      blackFraction: first.black.blackFraction,
-      commandsDeferred: first.commandsDeferred,
-      pass: first.black.blackFraction === 0 && first.commandsDeferred === 0,
+      claim:
+        "Q-101 — the first readiness-gated frame matches the settled scene",
+      ...decideReadinessVerdict({
+        blackFraction: first.black.blackFraction,
+        settledBlackFraction: settledReference.black.blackFraction,
+        commandsDeferred: first.commandsDeferred,
+        tolerance: blackTolerance,
+      }),
     });
   }
 }
@@ -291,7 +350,10 @@ console.log("\n── Q-101 ──");
 for (const verdict of verdicts) {
   console.log(
     `${verdict.pass ? "PASS" : "FAIL"} ${verdict.id} ` +
-      `black=${verdict.blackFraction} deferred=${verdict.commandsDeferred}`,
+      `blackFraction=${verdict.blackFraction} ` +
+      `settledBlackFraction=${verdict.settledBlackFraction} ` +
+      `blackDelta=${verdict.blackDelta} tolerance=${verdict.tolerance} ` +
+      `commandsDeferred=${verdict.commandsDeferred}`,
   );
 }
 console.log("\n── Q-102 (state AT the first non-empty command list) ──");
