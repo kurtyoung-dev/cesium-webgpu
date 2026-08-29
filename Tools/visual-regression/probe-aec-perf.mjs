@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+// @purpose AEC design-model performance probe: one page load per streaming lever, timed to Scene.renderReady, per-pass command counts, one validated pick reused on both backends, served-build preflight and origin-guard refusals, element screenshots, multi-metric receipts.
+// @status ACTIVE
 // DM-01 — isolated AEC streaming/performance probe.
 //
 // Preconditions:

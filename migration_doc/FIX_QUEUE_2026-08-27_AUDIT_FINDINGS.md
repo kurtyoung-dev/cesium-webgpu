@@ -108,6 +108,12 @@ corrected with it.
 The remaining ~30 medium and all low survivors are enumerated in §5 with their lane column reading
 QUEUED; they dispatch after Q-1…Q-10, batched by file so one Sol dispatch closes several small
 findings in the same module. C1's returning findings append here as a dated addendum.
+### Fix-up: the DM-01 probe landed without its purpose header (2026-08-29 ~23:20 machine clock)
+
+| | Row | Disposition |
+|---|---|---|
+| Batch 1307 defect | FIXED (Batch 1309) | Tools/visual-regression/probe-aec-perf.mjs landed without the @purpose / @status header the fleet contract (ruling M4) requires, so purpose-header-contract went 16/18 (C2 offender + C5 count 661 vs 662). The seat's landing gates for a NEW probe did not include the contract spec; the header is added and the contract is 18/18 again. Landing checklist amended: any batch that adds a probe-*.mjs or lib/*-gate.mjs runs purpose-header-contract.spec.mjs before commit (recorded in memory). A DX-class miss surfaced per the maintainer's directive: the gate exists but was not wired into the landing procedure - DX-02 (anti-re-accretion contract) should make it part of test-landing-rules so the seat cannot skip it |
+
 ### Wave DX starts: DX-05 lands, DX-03 finds the catalog stale, DM-07 revision 3 delivered (2026-08-29 ~23:10 machine clock)
 
 | | Row | Disposition |

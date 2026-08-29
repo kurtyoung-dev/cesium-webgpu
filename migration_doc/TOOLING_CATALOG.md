@@ -207,9 +207,9 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | Metric | Value |
 |---|---|
 | Files in census | 1150 |
-| ACTIVE | 936 |
+| ACTIVE | 937 |
 | INVESTIGATION | 195 |
-| NO @purpose HEADER | 19 |
+| NO @purpose HEADER | 18 |
 | Classes | probe 654, spec 269, other 103, lib 81, gate-lib 20, bake-tool 13, runner 6, fixture 4 |
 
 ### Tools/ (44)
@@ -574,7 +574,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | probe-2dcv-verify.mjs | probe | INVESTIGATION | 2026-08-16 | 5 | BUG-3 visual verification: instant-morphs to 2D and CV on both backends, screenshots plus pixel stats behind the WebGPU error gate. |
 | probe-adapter-limits-quick.mjs | probe | ACTIVE | 2026-08-16 | 1 | Fast dump of four key GPUAdapter limits (vertex buffers/attributes, bind groups, max buffer size) from the viewer page in one default Edge config. |
 | probe-adapter-limits.mjs | probe | ACTIVE | 2026-08-16 | 2 | Dumps WebGPU adapter limits across multiple Chromium launch configs (DXGI vs explicit Vulkan vs high-performance) to find the best-limit path. |
-| probe-aec-perf.mjs | probe | NO @purpose HEADER | 2026-08-29 | 3 | — |
+| probe-aec-perf.mjs | probe | ACTIVE | 2026-08-29 | 3 | AEC design-model performance probe: one page load per streaming lever, timed to Scene.renderReady, per-pass command counts, one validated pick reused on both backends, served-build preflight and origin-guard refusals, element screenshots, multi-metric receipts. |
 | probe-aec-perf.spec.mjs | spec | NO @purpose HEADER | 2026-08-29 | 2 | — |
 | probe-aerial-froxel.mjs | probe | ACTIVE | 2026-08-16 | 5 | Acceptance for the froxel 3D-LUT aerial-perspective fast path: renders, far-band haze signature, distinct from OFF, analytic parity path intact. |
 | probe-aerial-lut-primitive.mjs | probe | ACTIVE | 2026-08-16 | 4 | Verifies primitives' effects bind group actually forwards the aerial-perspective LUT: polyline must fog with atmosphere ON vs OFF, not stay same. |
@@ -668,7 +668,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | probe-camera-track.mjs | probe | ACTIVE | 2026-08-16 | 11 | Connected orbit-to-ground camera track capturing + diffing both backends at each waypoint to surface tile-streaming/LOD artifacts along motion |
 | probe-canvas-format.mjs | probe | INVESTIGATION | 2026-08-16 | 1 | Dumps WebGPU canvas/presentation format, HDR flags and post-process stage state from a live viewer |
 | probe-canvas-timing.mjs | probe | INVESTIGATION | 2026-08-16 | 2 | Samples canvas pixel/CSS dimensions every 100 ms during Sandcastle boot to trace resize timing per renderer |
-| probe-canvas-vs-screenshot.mjs | probe | INVESTIGATION | 2026-08-16 | 2 | Instrument self-check: compares getImageData bytes vs page.screenshot of the same canvas state to detect Playwright capture transforms — EXEMPLAR: retained live as the technique reference (M5) |
+| probe-canvas-vs-screenshot.mjs | probe | INVESTIGATION | 2026-08-29 | 2 | Instrument self-check: compares getImageData bytes vs page.screenshot of the same canvas state to detect Playwright capture transforms — EXEMPLAR: retained live as the technique reference (M5) |
 | probe-celestial-extinction-cache.mjs | probe | ACTIVE | 2026-08-16 | 4 | C9-06 close-out acceptance: cached sun/moon extinction bit-equals uncached physics, dusk warm-keep kills star pop-in, backends agree to exact IEEE-754 |
 | probe-celestial-extinction-revision-gate.mjs | probe | ACTIVE | 2026-08-16 | 3 | Proves shared sun/star extinction is cached by exact physical inputs and the daytime star gate exits before feature-renderer/cache/draw work |
 | probe-celestial-gates.mjs | probe | ACTIVE | 2026-08-25 | 24 | Campaign 12 celestial gate harness: measured G1-G4 star-field gates on both backends with cubemap/sprite source-split and in-column modulation lanes |
@@ -689,7 +689,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | probe-cloud-ambient.mjs | probe | ACTIVE | 2026-08-16 | 3 | W2 sky-ambient/ground-bounce gate: shadow-side p10 luminance lifted into band and cloud tops bluer than bottoms; single-run PASS bars |
 | probe-cloud-banding.mjs | probe | ACTIVE | 2026-08-16 | 6 | C13-36 ray-start-jitter quality oracle: OFF-subtracted coherent-band metric on provenance-locked before/after pairs; fails closed on stale companions |
 | probe-cloud-clockbind.mjs | probe | ACTIVE | 2026-08-16 | 3 | Proves cloud advection is scene-clock-bound: identical frames at a frozen clock across wall time, different frames for clock times 3 h apart |
-| probe-cloud-cone-parity.mjs | probe | INVESTIGATION | 2026-08-16 | 2 | B436 zero-drift landing gate: one deterministic cinematic-tier capture, byte-compared across pre/post-436 builds via git stash — EXEMPLAR: retained live as the technique reference (M5) |
+| probe-cloud-cone-parity.mjs | probe | INVESTIGATION | 2026-08-29 | 2 | B436 zero-drift landing gate: one deterministic cinematic-tier capture, byte-compared across pre/post-436 builds via git stash — EXEMPLAR: retained live as the technique reference (M5) |
 | probe-cloud-config.mjs | probe | ACTIVE | 2026-08-16 | 2 | Weather-config foundation gate: cloud appearance dials are live without rebuild and unset defaults reproduce the pre-config frame |
 | probe-cloud-density-domain.mjs | probe | ACTIVE | 2026-08-16 | 5 | C13-37 baked-density periodicity oracle: same-build legacy/new density-domain x baked/live x midpoint/IGN factorial, failing closed on encoder timing |
 | probe-cloud-depth-occlusion.mjs | probe | INVESTIGATION | 2026-08-16 | 2 | B409 A/B (stash pair) showing the cloud raymarch clamps at scene depth so far-side clouds no longer bleed through the globe disc |
@@ -855,7 +855,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | probe-exaggeration-3d.mjs | probe | ACTIVE | 2026-08-16 | 5 | SCENE3D vertical-exaggeration didn't-break guard after the B362 switch to the WebGL attribute-based height offset; oblique Himalaya EXAG=10. |
 | probe-exaggeration-cv.mjs | probe | ACTIVE | 2026-08-16 | 7 | Columbus-view / morph vertical exaggeration ungated in GlobeTerrain.wgsl: WebGPU CV relief must match WebGL instead of rendering flat. |
 | probe-farcam-distortion.mjs | probe | INVESTIGATION | 2026-08-16 | 4 | Reproduces far-camera globe distortion + mesh tear: height/pitch/atmosphere sweep with disc-silhouette ratio and concave-bite tear detection. |
-| probe-farcam-isolation.mjs | probe | INVESTIGATION | 2026-08-16 | 5 | Long-fixed-settle retest of far-camera views proving the 'cage/ring' was a partially-materialized capture artifact, not a precision bug. — ARCHIVED-CANDIDATE: lesson promoted to DEBUGGING_GUIDE.md, “Instrument-defect lessons (from archived probes)”. |
+| probe-farcam-isolation.mjs | probe | INVESTIGATION | 2026-08-29 | 5 | Long-fixed-settle retest of far-camera views proving the 'cage/ring' was a partially-materialized capture artifact, not a precision bug. — ARCHIVED-CANDIDATE: lesson promoted to DEBUGGING_GUIDE.md, “Instrument-defect lessons (from archived probes)”. |
 | probe-fb-after-draws.mjs | probe | INVESTIGATION | 2026-08-16 | 2 | Hooks render-pass end to copy the scene FB texture to a readback buffer, proving whether draws write pixels or get trashed downstream. |
 | probe-fb-config.mjs | probe | INVESTIGATION | 2026-08-16 | 1 | Dumps framebuffer/context configuration state from a forced-WebGPU Hello World load via the legacy Sandcastle shim. |
 | probe-feature-id-texture.mjs | probe | ACTIVE | 2026-08-16 | 5 | Unified per-fragment feature-ID G-buffer resolvable in-shader: FeatureIdResolve.wgsl recolors globe + billboard IDs to distinct colors. |
@@ -912,7 +912,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | probe-gsplat-frame-variance.mjs | probe | INVESTIGATION | 2026-08-21 | 4 | Runs pre-registered D1-D5 gsplat variance discriminators without changing the mutant-pinned 0.050% bar. |
 | probe-gsplat-multifrustum.mjs | probe | ACTIVE | 2026-08-25 | 2 | Acquire counter-grounded multi-frustum tower/globe evidence and lazily score the dual-backend splat/globe/background label partition. |
 | probe-gsplat-parity.mjs | probe | ACTIVE | 2026-08-16 | 9 | Dual-mode gsplat harness: certifies attributable WebGPU absence pre-G3, scores presence with --expect-webgpu; exit-gate instrument for GSPLAT rows |
-| probe-h12-longsettle.mjs | probe | INVESTIGATION | 2026-08-16 | 3 | Answered whether the 12 Mm 'cage' (dark radial wedge gaps) was a real render defect or a coarse-LOD probe-settle artifact via a fixed long settle — ARCHIVED-CANDIDATE: lesson promoted to DEBUGGING_GUIDE.md, “Instrument-defect lessons (from archived probes)”. |
+| probe-h12-longsettle.mjs | probe | INVESTIGATION | 2026-08-29 | 3 | Answered whether the 12 Mm 'cage' (dark radial wedge gaps) was a real render defect or a coarse-LOD probe-settle artifact via a fixed long settle — ARCHIVED-CANDIDATE: lesson promoted to DEBUGGING_GUIDE.md, “Instrument-defect lessons (from archived probes)”. |
 | probe-hdr-canvas-output-decomp.mjs | probe | ACTIVE | 2026-08-16 | 2 | Acceptance for the WebGPUContext canvas-config extraction: SDR off-gate, HDR toggle via extracted setHDRCanvasOutput, fallback-listener API behavior |
 | probe-hdr-pick-format-closure.mjs | probe | ACTIVE | 2026-08-16 | 5 | Fleet-wide object-ID pick matrix across SDR/HDR, MSAA 1/4, runtime HDR flip and resize: every family must return its exact owner with zero errors |
 | probe-hdr-pp-math.mjs | probe | ACTIVE | 2026-08-16 | 6 | Gates HDR-aware ColorGrading+FXAA on the tonemap-bypass path: SDR byte-identical vs baseline, stages run in HDR with tonemap absent, WGSL compiles |
@@ -1214,7 +1214,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | probe-wireframe-verify.mjs | probe | ACTIVE | 2026-08-16 | 3 | Acceptance for the WebGPU debugShowWireframe fix: wireframe draws an imagery-colored line mesh (not black), settled by frame-signature stability. |
 | prohibited-reader-allowlist.spec.mjs | spec | ACTIVE | 2026-08-21 | 0 | Enforce the measured prohibited-reader allowlist as a shrink-only ratchet. |
 | prohibited-reader-rule.spec.mjs | spec | NO @purpose HEADER | 2026-08-20 | 0 | — |
-| purpose-header-contract.spec.mjs | spec | ACTIVE | 2026-08-21 | 8 | Contract spec for maintainer ruling M4: every probe and gate library must carry a readable @purpose/@status header. |
+| purpose-header-contract.spec.mjs | spec | ACTIVE | 2026-08-21 | 9 | Contract spec for maintainer ruling M4: every probe and gate library must carry a readable @purpose/@status header. |
 | refresh-cost-multi-metric.spec.mjs | spec | ACTIVE | 2026-08-29 | 0 | Independent behavioural + canonicity coverage of Q-80's deltaOrNull/sumLegMultiMetric/available-guard formulas, which live inside a page.evaluate callback and cannot be imported. |
 | run-performance-campaign.mjs | runner | ACTIVE | 2026-08-16 | 27 | The performance characterization runner: consumes performance-workloads.json, records Scene.render CPU samples + GPU timestamps; never FPS. |
 | run-regression-sweep.mjs | runner | INVESTIGATION | 2026-08-16 | 0 | Batch-146 sequential sweep of the Batches 134-145 probe arc, parsing stdout tails for PASS/FAIL markers — a did-the-arc-break-anything check. |
