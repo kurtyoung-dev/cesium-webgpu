@@ -14367,6 +14367,92 @@ Instrumented on real Edge while certifying the request-render convergence contra
 
 **NEW-WEBGPU-DESCRIPTOR-NAME-AXIS-FLEET-AUDIT.** `C11-19` completed the descriptor-name axis set for the GLOBE pipeline producer only. The same class question - does every name-bearing pipeline descriptor carry all the axes that distinguish its variants, now that aliasing is structurally prevented by the module-identity fold - is unanswered for the other producers (model, polyline, point, billboard, voxel, splat, post-process). This is a readability/diagnosability sweep, not a correctness emergency: `describeCacheKey()` and devtools labels are only as good as the marker fleet. One bounded audit pass over `WebGPU*Renderer` descriptor-name construction sites, patterned on the c11-19 spec's extract-and-execute harness.
 
+## 2026-08-28 - NEW-SUBSEQUENT-PASS-IMAGERY-SKIPS-ECLIPSE-AND-CLOUD-SHADOW (filed by the C12 close-out sprint, lane C12X, at `a3aef4c2dd`) — **OPEN, premise-verified at source on both backends, deliberately NOT fixed in the filing lane.**
+
+`Shaders/WebGPU/Globe/GlobeTerrain.wgsl:4491-4494` returns early for subsequent
+imagery passes — `if (isSubsequentPass) { return makeFragOutput(vec4<f32>(color, alpha), normalEC); }`
+— and that return is BEFORE the eclipse multiply at `:4857` / `:4879`, before the
+cloud cast-shadow multiply at `:4897`, and before the ground-atmosphere / fog
+block at `:5044-5120`. The night-lights emission those passes carry is additive
+(`return color + emission`, `:2251`). **Consequence: in a scene whose globe uses
+more than one imagery pass, the second and later passes are neither eclipse-dimmed
+nor cloud-shadowed.** WebGL reaches the same end by a different route — it has no
+cloud-ground-shadow factor at all, and its imagery is eclipse-scaled at
+`GlobeFS.glsl:891-896` — so the divergence to check is the eclipse half, not the
+shadow half.
+
+**Why this is filed now.** `R-2026-08-28-3` / `-8` / `-9` made a bundled night
+imagery layer and its city lights DEFAULT ON. If that ships as a second imagery
+pass, the fork's DEFAULT globe now carries a term that an eclipse cannot dim and a
+cloud cannot shadow. That is an eclipse-correctness question in its own right,
+independent of any gate.
+
+**Its other role.** It is a second admissible locus for the `C13-41`
+shadow-contrast excess: an entirely un-dimmed residue (dim exactly 1.0) closes the
+two-term arithmetic at a share of about 0.04, well inside the beer-floor ceiling of
+0.32266890343992366 — as does the display-encoded fog term at a share of about 0.09
+to 0.13. **The banked run cannot separate them**: the predicted contrast ratio is
+invariant along the curve `share × (residueDim − terrainDim) = compositeDim −
+terrainDim`, so both hypotheses reproduce the same 1.0341. The pre-registered
+fog-off collapse leg in `lib/eclipse-cloud-response-gate.mjs` discriminates the fog
+locus specifically; an imagery-pass-count leg would be needed to discriminate this
+one.
+
+**Not fixed here, for three stated reasons.** (1) Whether the C13-41 fixture uses
+multiple imagery passes cannot be settled offline — the probe reads back an offline
+globe. (2) The correct disposition on both backends is a design question about
+where the eclipse factor belongs in the imagery composite, not a one-line patch.
+(3) Nothing in the C12 exit gate authorises an engine change to the imagery path
+from a close-out lane. Adjacent un-shadowable, un-eclipsed terms found in the same
+audit and worth the same look: the underground tint (`GlobeTerrain.wgsl:5299-5302`),
+vector polyline colour (`:3796-3798`), the post-cloud HSB offsets (`:5357-5359`),
+and on WebGL the fill highlight (`GlobeFS.glsl:943`).
+
+
+**⚠ CORRECTED THE SAME DAY, BY THE CHECK THIS ENTRY SAID COULD NOT BE MADE OFFLINE.** The
+paragraph above offered this term as "a second admissible locus" for the `C13-41`
+shadow-contrast excess and said the fixture's imagery-pass count could not be settled
+offline. It can be, and it is settled AGAINST that role: `pinScene` removes every imagery
+layer (`Tools/visual-regression/lib/weather-probe-pinning.mjs:542`), so the banked lane-B
+run has no subsequent imagery pass and this term is absent from it entirely. The same pins
+exclude the fog/ground-atmosphere locus (`:560-563`). The live residue for that row is the
+Reinhard-tonemapped ProceduralClouds composite (`ProceduralClouds.wgsl:2643-2644`,
+`:2658`); see the 2026-08-28 close-out sprint intake stamp in
+[QUEUE_2026-07-19_CAMPAIGN12.md](QUEUE_2026-07-19_CAMPAIGN12.md) and test M10 of
+`eclipse-cloud-response-gate.spec.mjs`, which reads both pins out of source and fails if
+either is reversed.
+
+**THE ENTRY ITSELF IS UNAFFECTED AND STANDS ON ITS OWN.** Its subject was never that gate:
+it is that subsequent-pass imagery skips the eclipse multiply and the cloud cast shadow in
+ANY scene that uses more than one imagery pass, which the default night layer of
+`R-2026-08-28-3`/`-8`/`-9` now plausibly makes the common case. Losing its supporting role
+in a gate investigation removes a reason to look at it soon; it removes no part of the
+finding.
+
+## 2026-08-28 - NEW-C12-29-S5-GATES-REQUIRE-A-BUILD-AND-EXCEED-A-BOUNDED-LANE (filed by the C12 close-out sprint, lane C12X) — **OPEN, instrument/preflight only, no product claim.**
+
+Two independent obstacles make the `C12-29` S5 node gates unrunnable as-is on a
+fresh clone, and both have already caused a status misreading.
+
+1. **They need a build.** Three S5 gates hash
+   `packages/engine/Source/Shaders/GlobeFS.js`, a gitignored build output —
+   `lib/c12-29-s5-dense-cost-gate.mjs:314-315` names it explicitly as the
+   `generated` half of a `raw` / `generated` pair beside `GlobeFS.glsl`. That is
+   deliberate for a provenance gate, but it is undeclared: on a clone that has not
+   run `npx gulp build` the gate ENOENTs inside a test body instead of declaring a
+   missing precondition. It belongs in the lane preflight.
+2. **Two of them cannot be run to completion in a bounded lane.**
+   `c12-29-s5-svs-footprint-gate.spec.mjs` did not finish in 25 minutes;
+   `c12-29-s5-dense-cost-gate.spec.mjs` needs about 26 minutes, finishing 40/40 when
+   given 40. A gate that cannot be
+   run to completion has its reds misread as timeouts and its timeouts misread as
+   reds — which is exactly what happened: a reported `47/1` failure of its
+   source-boundary pin did not reproduce, and the pin passes in isolation at
+   `a3aef4c2dd`.
+
+Neither is a product defect and neither discharges or blocks an S5 browser lane.
+Filed so the next lane preflights rather than rediscovers.
+
 ## 2026-08-21 - NEW-SOL4-REFRESH-COST-BELOW-WALLCLOCK-RESOLUTION (filed at Batch 1124, C13-41 SOL-4) — **RULED `R-2026-08-21-24`: both (bank the honest record; re-instrument on GPU timestamps — Sol package in flight).** **Batch 1131: the GPU-timestamp lane LANDED (protocol v2, spec 138/138). Review finding carried here: the only labelled refresh pass is `DynEnvMap Sky Fill` — `WebGPUDynamicEnvironmentMapManager.ts` encodes per refresh one sky-fill dispatch, then `runIBLPrefilter` → `WebGPUIBLPipeline.dispatchIrradianceConvolution` (6 dispatches) and `dispatchRadiancePrefilter` (36), then `runSphericalHarmonicProjection` (1), all without `timestampWrites`, and `withComputePassTimestamps` keys on the descriptor label so unlabeled passes would collapse into one bucket. The figure is therefore declared a LOWER BOUND (`scope: sky-cube-bake-only`) and an exactly-zero differential at undeclared resolution is INVALID. NEXT (round 2): label the irradiance, radiance-prefilter, SH-projection and temporal-blend passes and make the lane sum a declared pass set; until then the WebGPU cost stays a bound.** **Batch 1136: round 2 LANDED — all five refresh passes labelled and routed through `withComputePassTimestamps` (`WebGPUDynamicEnvironmentMapManager.ts` descriptors, `WebGPUIBLPipeline.ts` optional provider threaded through one `beginIBLComputePass` helper; authored IBL passes nothing and cannot alias); lane protocol v3 over the declared pass set with the sum re-derived by the gate. Remaining exclusions, inert at defaults: two encoder-level cube copies in the temporal path (no timestampWrites possible) and the optional scene-capture render pass (timeable via `withRenderPassTimestamps`, deliberately not). The WebGPU cost becomes a FIGURE only when the Edge commissioning run executes; until then this entry stays open as a bound.**
 
 The fresh interleaved ABBA refresh-cost measurement (`probe-eclipse-cloud-response`, 801-frame 0 -> 0.9 -> 0 sweep, 8 pairs per leg, 272 environment fills on the eclipse leg) banks a WebGL cost (3.342 then 2.714 ms per refresh across two runs) but cannot attribute a WebGPU cost: in both runs the NO-refresh control leg was the slower one (5982 vs 5418 ms, then 5092 vs 4958 ms), so the differential is negative and the probe honestly refuses to print a cost. The effect is not machine contention (run 5 had no orchestration load and the sign repeated). Both WebGPU legs run at ~6.5 ms per frame against WebGL's ~1.2, and a 272-fill cost of the historical 1.607 ms order (~440 ms) sits inside the observed 134-564 ms leg-to-leg drift; the busy-leg-faster sign is the signature of a GPU power-state down-clock on the idler leg. Disposition owed by ruling (RULING_REQUESTS_2026-08-21 item 12) because R-2026-08-14-1 made the banked cost an operative C13-41 exit prerequisite: re-instrument the cost lane on GPU timestamp queries (`gpuPassCost` exists), or rule the WebGPU refresh cost below wall-clock resolution. Separately worth its own look: the ~5x per-frame WebGPU-vs-WebGL wall time in this eclipse/cloud fixture is a measurement the U2 regression ledger should be read against.

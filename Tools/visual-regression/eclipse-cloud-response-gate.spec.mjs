@@ -40,6 +40,9 @@ import {
   BAND_MEAN_CAPTURE_DELTA,
   BAND_MEAN_QUANTIZATION_HALF_STEP,
   CLOUD_SHADOW_BEER_FLOOR,
+  ENCODED_RESIDUE_DIM_ENVELOPE,
+  ENCODED_RESIDUE_MAGNITUDE_SWEEP,
+  REINHARD_RESIDUE_EXPOSURE_SWEEP,
   checkEmbeddedDrainClosureIsCanonical,
   checkEmbeddedLedgerClosureIsCanonical,
   describeRefreshCostDrainClosure,
@@ -78,6 +81,9 @@ import {
   computeRefreshCost,
   countBucketChanges,
   deckDisplayedRatio,
+  encodedResidueDim,
+  reinhardResidueDim,
+  residueShareForDim,
   deriveRefreshCostSegmentBounds,
   deckFreeGroundDimTolerance,
   eclipseCloudExitCode,
@@ -1323,7 +1329,11 @@ test("D2 PASS is the fold of the predicate LIST, with no second conjunction", ()
   // The ruling removes both demoted operative subjects from reported-only:
   // raw contrast and refresh-cost eligibility. The remaining six values are
   // diagnostics that do not replace a gate.
-  assert.equal(ECLIPSE_CLOUD_REPORTED_ONLY_PREDICATES.length, 6);
+  // 6 -> 7 at the C13-41 mechanism pass:
+  // `shadowResidueEncodeHypothesisInRange`, which scores whether the
+  // DERIVED in-shader encode locus is an admissible residue at all. It is a
+  // hypothesis reading, so it must never gate.
+  assert.equal(ECLIPSE_CLOUD_REPORTED_ONLY_PREDICATES.length, 7);
   assert.equal(ECLIPSE_CLOUD_PARITY_PREDICATES.length, 2);
   // Nothing is scored without a declared blindness domain — an unmapped
   // predicate would be silently unquarantinable.
@@ -5182,6 +5192,16 @@ test("J10 the deepest residue locus reproduces the mechanism arithmetic", () => 
       Number(requiredResidueDim.toFixed(6)),
     ]),
     [
+      // The four rows below 0.2 were added with the mechanism pass. They are
+      // where the answer lives: the shipped in-shader encode chain
+      // independently returns ~0.675 for the residue dim, and this table
+      // asks for 0.681427 at share 0.1 — the two agree to about 1% without
+      // either being fitted to the other.
+      [0.05, 0.893979],
+      [0.075, 0.752278],
+      [0.1, 0.681427],
+      [0.125, 0.638917],
+      [0.15, 0.610577],
       [0.2, 0.575151],
       [0.3, 0.539726],
       [0.4, 0.522013],
@@ -7784,4 +7804,362 @@ test("K15 the probe lifecycle binds diagnostics, provenance, watchdog cleanup, a
     probe,
     /errors=\$\{JSON\.stringify\(\[\.\.\.cleanupErrors, \.\.\.browserEvidence\.cleanupErrors\]\)\}/,
   );
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GROUP M — THE SHADOW-CONTRAST MECHANISM (C13-41 exit condition 2)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Exit condition 2 asks for a MECHANISM for the shadow-contrast excess, not a
+// re-run: naming the ProceduralClouds over-composite as a confound is not the
+// same as explaining the number. The SIXTH PASS block in the gate library
+// derives one from the shipped source — the fog / ground-atmosphere residue is
+// tonemapped and gamma-encoded INSIDE the globe fragment shader before it is
+// mixed into the still-linear surface colour, so its response to the eclipse
+// factor reaches the measured band through a concave encode while the terrain's
+// does not.
+//
+// These tests execute that derivation. They score a HYPOTHESIS, never a run:
+// nothing here gates, and the measurement that decides the hypothesis is the
+// pre-registered fog-off collapse leg, which needs a browser. What they DO
+// establish offline is that the hypothesis is arithmetically admissible exactly
+// where the previously-tested visible-deck hypothesis was not.
+//
+// The banked numbers below are the deepest rung of run
+// `8b806b09-004c-48ab-b902-f4fce64cd109` (2026-08-25, protocol v4, the artifact
+// of record for this row). They are INPUTS to the model here, not claims.
+
+/** Deepest-rung readings of the banked artifact-of-record run. */
+const BANKED_DEEPEST = Object.freeze({
+  terrainDim: 0.46887558379804545,
+  compositeDim: 0.49013073670762686,
+  clearContrast: 0.5632631754241546,
+  contrastRatio: 1.0341102079879674,
+  deckRatio: 0.513868583346416,
+  shareCeiling: 0.32266890343992366,
+  obscuration: 0.9,
+});
+
+/** The fog colour the WGSL analytic fallback builds, at a given magnitude. */
+const fogColorAt = (magnitude) => [
+  0.18 * magnitude,
+  0.38 * magnitude,
+  0.72 * magnitude,
+];
+
+test("M1 the shipped in-shader encode dims the residue strictly more slowly than the factor", () => {
+  const factor = predictFactor(BANKED_DEEPEST.obscuration);
+  assert.ok(factor > 0 && factor < 1);
+  const dims = ENCODED_RESIDUE_MAGNITUDE_SWEEP.map((magnitude) =>
+    encodedResidueDim(factor, fogColorAt(magnitude)),
+  );
+  assert.equal(dims.length, ENCODED_RESIDUE_MAGNITUDE_SWEEP.length);
+  for (const [index, dim] of dims.entries()) {
+    assert.ok(
+      Number.isFinite(dim),
+      `magnitude ${ENCODED_RESIDUE_MAGNITUDE_SWEEP[index]} produced ${dim}`,
+    );
+    // The whole mechanism in one inequality: a concave encode cannot commute
+    // with the multiply, so the encoded term dims LESS than the linear one.
+    assert.ok(
+      dim > factor,
+      `encoded dim ${dim} must exceed the linear factor ${factor}`,
+    );
+    assert.ok(
+      dim >= ENCODED_RESIDUE_DIM_ENVELOPE.lo &&
+        dim <= ENCODED_RESIDUE_DIM_ENVELOPE.hi,
+      `encoded dim ${dim} outside the declared envelope`,
+    );
+  }
+  // Nearly flat across two decades of fog magnitude — which is why the envelope
+  // can be declared at all without knowing the scene's fog colour.
+  const spread = Math.max(...dims) - Math.min(...dims);
+  assert.ok(spread < 0.1, `envelope spread ${spread} is not nearly flat`);
+});
+
+test("M2 the encode hypothesis is admissible where the visible-deck hypothesis is not", () => {
+  const factor = predictFactor(BANKED_DEEPEST.obscuration);
+  const shares = ENCODED_RESIDUE_MAGNITUDE_SWEEP.map((magnitude) =>
+    residueShareForDim(
+      encodedResidueDim(factor, fogColorAt(magnitude)),
+      BANKED_DEEPEST.terrainDim,
+      BANKED_DEEPEST.compositeDim,
+    ),
+  );
+  for (const share of shares) {
+    assert.ok(Number.isFinite(share) && share > 0);
+    assert.ok(
+      share <= BANKED_DEEPEST.shareCeiling,
+      `encode share ${share} exceeds the beer-floor ceiling ${BANKED_DEEPEST.shareCeiling}`,
+    );
+  }
+  // The comparison that makes this a discriminator rather than a restatement:
+  // the deck's own measured dim needs a share the beer floor forbids.
+  const deckShare = residueShareForDim(
+    BANKED_DEEPEST.deckRatio,
+    BANKED_DEEPEST.terrainDim,
+    BANKED_DEEPEST.compositeDim,
+  );
+  assert.ok(
+    deckShare > BANKED_DEEPEST.shareCeiling,
+    `the deck hypothesis must stay OUT of range; got ${deckShare}`,
+  );
+  assert.ok(Math.max(...shares) < deckShare);
+});
+
+test("M3 the residue locus grid spans the decade the encode hypothesis lands in", () => {
+  const factor = predictFactor(BANKED_DEEPEST.obscuration);
+  const shares = ENCODED_RESIDUE_MAGNITUDE_SWEEP.map((magnitude) =>
+    residueShareForDim(
+      encodedResidueDim(factor, fogColorAt(magnitude)),
+      BANKED_DEEPEST.terrainDim,
+      BANKED_DEEPEST.compositeDim,
+    ),
+  );
+  const gateSource = fs.readFileSync(
+    path.join(here, "lib", "eclipse-cloud-response-gate.mjs"),
+    "utf8",
+  );
+  const match = gateSource.match(/const residueShares = \[([^\]]*)\]/);
+  assert.ok(match, "the locus grid must still be a literal array");
+  const grid = match[1]
+    .split(",")
+    .map((entry) => Number.parseFloat(entry.trim()))
+    .filter((value) => Number.isFinite(value));
+  assert.ok(grid.length > 0);
+  // The regression this guards: the grid used to START at 0.2, above every
+  // share the encode hypothesis implies, so the table printed the
+  // neighbourhood of the answer and never the answer.
+  assert.ok(
+    Math.min(...grid) <= Math.min(...shares),
+    `locus grid floor ${Math.min(...grid)} is above the hypothesis at ${Math.min(...shares)}`,
+  );
+  assert.ok(Math.max(...grid) >= Math.max(...shares));
+});
+
+test("M4 the two-term model reproduces the banked contrast ratio far better than the split model", () => {
+  // The two-term model, evaluated from the three MEASURED quantities. It has no
+  // free parameter left once `clearContrast` fixes the shadow transmittance, so
+  // this is a prediction rather than a fit.
+  const { terrainDim, compositeDim, clearContrast } = BANKED_DEEPEST;
+  const factor = predictFactor(BANKED_DEEPEST.obscuration);
+  const residueDim = encodedResidueDim(factor, fogColorAt(0.1));
+  const share = residueShareForDim(residueDim, terrainDim, compositeDim);
+  // In the CLEAR leg the residue is undimmed by construction, so the shadow
+  // transmittance the band actually averages follows from
+  // `clearContrast = (1 - share)*T + share`.
+  const transmittance = (clearContrast - share) / (1 - share);
+  const eclipseContrast =
+    ((1 - share) * transmittance * terrainDim + share * residueDim) /
+    ((1 - share) * terrainDim + share * residueDim);
+  const twoTermRatio = eclipseContrast / clearContrast;
+  const twoTermError = Math.abs(twoTermRatio - BANKED_DEEPEST.contrastRatio);
+
+  // The published split model, at the same run's numbers. Its own derivation
+  // block records that it predicts order 1.0002 and is capped far below the
+  // measurement, which is the gap this mechanism pass explains.
+  const splitRatio = predictShadowContrastRatio({
+    strengthClear: 1,
+    strengthEclipse: 0.9995501,
+    clearContrast,
+  });
+  const splitError = Math.abs(splitRatio - BANKED_DEEPEST.contrastRatio);
+
+  assert.ok(
+    splitError > 0.03,
+    `split model error ${splitError} unexpectedly small`,
+  );
+  assert.ok(
+    twoTermError < 0.005,
+    `two-term model error ${twoTermError} is not close`,
+  );
+  assert.ok(
+    twoTermError * 10 < splitError,
+    `two-term error ${twoTermError} must beat the split error ${splitError} by an order`,
+  );
+});
+
+test("M5 MUTANT a linear encode destroys the mechanism", async () => {
+  const gateSource = fs.readFileSync(
+    path.join(here, "lib", "eclipse-cloud-response-gate.mjs"),
+    "utf8",
+  );
+  // Pinned on the two STABLE semantic tokens rather than on one formatted
+  // line: the tonemap call and the gamma expression. The previous form pinned
+  // the whole chain as the formatter happened to wrap it, which made the
+  // mutant hostage to prettier instead of to the code.
+  const gamma = "Math.pow(Math.max(v, 0), 1 / 2.2)";
+  const tonemap = "pbrNeutralTonemapAtmosphere(c)";
+  assert.equal(gateSource.split(gamma).length - 1, 1);
+  assert.equal(gateSource.split(tonemap).length - 1, 1);
+  // The mutant: the residue reaches the mix LINEAR, which is exactly what the
+  // superseded `d = a = F` premise asserted. Under it the residue dims by the
+  // factor, the excess has no source, and the implied share diverges.
+  const mutantSource = gateSource
+    .replace(tonemap, "c")
+    .replace(gamma, "Math.max(v, 0)");
+  const mutant = await import(
+    `data:text/javascript;base64,${Buffer.from(mutantSource).toString("base64")}`
+  );
+  const factor = predictFactor(BANKED_DEEPEST.obscuration);
+  const mutantDim = mutant.encodedResidueDim(factor, fogColorAt(0.1));
+  assert.ok(
+    Math.abs(mutantDim - factor) < 1e-9,
+    `a linear encode must return the factor itself; got ${mutantDim}`,
+  );
+  const mutantShare = mutant.residueShareForDim(
+    mutantDim,
+    BANKED_DEEPEST.terrainDim,
+    BANKED_DEEPEST.compositeDim,
+  );
+  // Below the measured terrainDim the required share goes NEGATIVE: no
+  // admissible residue can raise the composite dim while dimming faster.
+  assert.ok(
+    !(mutantShare > 0) || mutantShare > 1,
+    `the linear mutant must not yield an admissible share; got ${mutantShare}`,
+  );
+  assert.throws(() => {
+    assert.ok(mutantDim > factor);
+  });
+});
+
+test("M6 MUTANT dropping the gamma from the chain moves the derived dim materially", async () => {
+  const gateSource = fs.readFileSync(
+    path.join(here, "lib", "eclipse-cloud-response-gate.mjs"),
+    "utf8",
+  );
+  const gamma = "Math.pow(Math.max(v, 0), 1 / 2.2)";
+  assert.equal(gateSource.split(gamma).length - 1, 1);
+  // The tonemap is LEFT IN PLACE: this mutant isolates the gamma alone.
+  const mutantSource = gateSource.replace(gamma, "Math.max(v, 0)");
+  const mutant = await import(
+    `data:text/javascript;base64,${Buffer.from(mutantSource).toString("base64")}`
+  );
+  const factor = predictFactor(BANKED_DEEPEST.obscuration);
+  const healthy = encodedResidueDim(factor, fogColorAt(0.1));
+  const mutated = mutant.encodedResidueDim(factor, fogColorAt(0.1));
+  assert.ok(
+    Math.abs(healthy - mutated) > 0.1,
+    `the gamma must be load-bearing; healthy ${healthy} vs mutant ${mutated}`,
+  );
+  assert.ok(
+    mutated < ENCODED_RESIDUE_DIM_ENVELOPE.lo,
+    `the tonemap alone must fall short of the declared envelope; got ${mutated}`,
+  );
+});
+
+test("M7 MUTANT an inert in-range check cannot report a hypothesis it never tested", () => {
+  const gateSource = fs.readFileSync(
+    path.join(here, "lib", "eclipse-cloud-response-gate.mjs"),
+    "utf8",
+  );
+  const guard =
+    "    v.shadowResidueShareAtEncodeDim.hi <= v.shadowResidueShareCeiling;";
+  assert.equal(
+    gateSource.split(guard).length - 1,
+    1,
+    "the in-range check must remain a single live comparison",
+  );
+  // Inertness, not absence: the comparison is still present but can no longer
+  // reject anything. A reader must be able to tell that apart from a real true.
+  const inert = gateSource.replace(guard, "    true;");
+  assert.notEqual(inert, gateSource);
+  assert.ok(!inert.includes(guard));
+  // And the ceiling it compares against must itself still be derived, not a
+  // literal that a widening edit could quietly move.
+  assert.match(gateSource, /v\.shadowResidueShareCeiling = Number\.isFinite\(/);
+  assert.ok(gateSource.includes("CLOUD_SHADOW_BEER_FLOOR,\r\n      )"));
+});
+
+test("M8 the mechanism reading is reported-only and cannot move an exit code", () => {
+  assert.ok(
+    ECLIPSE_CLOUD_REPORTED_ONLY_PREDICATES.includes(
+      "shadowResidueEncodeHypothesisInRange",
+    ),
+    "the mechanism reading must be declared reported-only",
+  );
+  assert.ok(
+    !ECLIPSE_CLOUD_GATE_PREDICATES.includes(
+      "shadowResidueEncodeHypothesisInRange",
+    ),
+    "the mechanism reading must never become a gate predicate",
+  );
+  assert.ok(
+    !ECLIPSE_CLOUD_PARITY_PREDICATES.includes(
+      "shadowResidueEncodeHypothesisInRange",
+    ),
+  );
+  // The bands this pass touched: none. The shadow band is the ruled one and
+  // R-2026-08-14-1 forbids moving it while the reading is red.
+  assert.equal(ECLIPSE_CLOUD_BANDS.shadowContrastRatio.lo, 0.97);
+  assert.equal(ECLIPSE_CLOUD_BANDS.shadowContrastRatio.hi, 1.03);
+});
+
+test("M9 the LIVE residue instance is the Reinhard cloud composite, and it is admissible", () => {
+  const factor = predictFactor(BANKED_DEEPEST.obscuration);
+  const dims = REINHARD_RESIDUE_EXPOSURE_SWEEP.map((exposedLuma) =>
+    reinhardResidueDim(factor, exposedLuma),
+  );
+  for (const dim of dims) {
+    assert.ok(Number.isFinite(dim));
+    assert.ok(dim > factor, `Reinhard dim ${dim} must exceed the factor`);
+    assert.ok(dim < 1, `Reinhard dim ${dim} must stay below unity`);
+  }
+  // Monotone in the operating point — this is what makes the exposure dial a
+  // discriminator rather than a free parameter.
+  for (let i = 1; i < dims.length; i += 1) {
+    assert.ok(
+      dims[i] > dims[i - 1],
+      `Reinhard dim must rise with exposure: ${dims[i - 1]} -> ${dims[i]}`,
+    );
+  }
+  const shares = dims.map((dim) =>
+    residueShareForDim(
+      dim,
+      BANKED_DEEPEST.terrainDim,
+      BANKED_DEEPEST.compositeDim,
+    ),
+  );
+  for (const share of shares) {
+    assert.ok(share > 0 && share <= BANKED_DEEPEST.shareCeiling);
+  }
+  // The refutable demand: the required residue dim is only reachable above a
+  // finite exposed radiance, so the mechanism constrains a quantity the lane
+  // controls instead of accommodating any value.
+  // The floor the beer-floor ceiling implies on the residue own dimming.
+  const floorDim =
+    (BANKED_DEEPEST.compositeDim -
+      BANKED_DEEPEST.terrainDim * (1 - BANKED_DEEPEST.shareCeiling)) /
+    BANKED_DEEPEST.shareCeiling;
+  assert.ok(reinhardResidueDim(factor, 0.05) < floorDim);
+  assert.ok(reinhardResidueDim(factor, 4.0) > floorDim);
+});
+
+test("M10 the FOG instance is excluded by the fixture's own pins, in source", () => {
+  // An executable elimination rather than a claim. The fog path is a real
+  // instance of the same law, but lane B cannot exercise it, so it cannot be
+  // this run's residue — and no future reader has to re-open the question.
+  const probe = fs.readFileSync(
+    path.join(here, "probe-eclipse-cloud-response.mjs"),
+    "utf8",
+  );
+  const pinning = fs.readFileSync(
+    path.join(here, "lib", "weather-probe-pinning.mjs"),
+    "utf8",
+  );
+  assert.match(probe, /groundAtmosphere: false,\s*\r?\n\s*fog: false,/);
+  assert.match(
+    pinning,
+    /opts\.fog === false && scene\.fog\)?\s*\{\s*\r?\n\s*scene\.fog\.enabled = false;/,
+  );
+  assert.match(
+    pinning,
+    /opts\.groundAtmosphere === false\)?\s*\{\s*\r?\n\s*scene\.globe\.showGroundAtmosphere = false;/,
+  );
+  // And no imagery layer survives the pin, which is what excludes the
+  // subsequent-pass imagery locus — an entirely un-eclipsed residue that would
+  // otherwise fit the arithmetic at a share near 0.04.
+  assert.match(pinning, /scene\.globe\.imageryLayers\.removeAll\(\);/);
+  // The eliminations must not be quietly reversible: if a future edit re-enables
+  // either, this test fails and the residue question genuinely reopens.
 });

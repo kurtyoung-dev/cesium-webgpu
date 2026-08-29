@@ -293,6 +293,295 @@ export const CLOUD_SHADOW_BEER_FLOOR = 0.35;
 // reported historical diagnosis; the raw invariant and the independently
 // replicated decrement model each retain their own verdict.
 
+// ─────────────────────────────────────────────────────────────────────────────
+// SIXTH PASS — WHY `a(F)` IS NOT `F`: THE RESIDUE IS DISPLAY-ENCODED IN-SHADER
+// (C13-41 exit condition 2 — the mechanism, derived from the shipped source)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// The block above sets `d = a = F` and concludes that F cancels. That premise is
+// true in LINEAR RADIANCE and false in the space the band is actually measured
+// in, and the difference is the whole excess.
+//
+// Read the globe fragment shader in order. The shadowable term is multiplied by
+// the factor and then by the cast shadow, and it reaches the framebuffer LINEAR
+// — the scene-wide tonemap runs later, in post-process:
+//
+//   GlobeTerrain.wgsl:4853  color = color * diffuse * camera.lightColor.rgb;
+//   GlobeTerrain.wgsl:4857  color = color * select(eclipseAbsolute, eclipseRelative, …);
+//   GlobeTerrain.wgsl:4897  color = color * sampleCloudGroundShadow(…);
+//
+// The residue does not. The fog / ground-atmosphere colour IS dimmed by the same
+// factor — the publication's claim is honoured — but it is then tonemapped and
+// gamma-encoded INSIDE this shader, and only afterwards mixed into the
+// still-linear surface colour:
+//
+//   GlobeTerrain.wgsl:5056  groundAtmoColor = groundAtmoColor * select(eclipseAbsolute, eclipseRelative, …);
+//   GlobeTerrain.wgsl:5112  fogColor = pbrNeutralTonemapAtmosphere(fogColor);
+//   GlobeTerrain.wgsl:5113  fogColor = pow(max(fogColor, vec3<f32>(0.0)), vec3<f32>(1.0 / 2.2));
+//   GlobeTerrain.wgsl:5120  color = mix(color, fogColor, fogAmount);
+//
+// WebGL does the same, at GlobeFS.glsl:1025 (`groundAtmosphereColor.rgb *=
+// eclipseRelative`), :1039-1040 (`czm_pbrNeutralTonemapping` then
+// `czm_inverseGamma`, both inside `#ifndef HDR`) and :1043 (`czm_fog`). This is
+// INHERITED UPSTREAM SHAPE, identical on both backends. It is not a WebGPU
+// defect and nothing here proposes changing it. What it changes is the MODEL:
+// the band is 8-bit display luma, and one of the two terms arrives at the mix
+// already encoded.
+//
+// A concave encode does not commute with a multiply. Dimming the fog by `F` in
+// linear radiance and then encoding it delivers, at the mix,
+//
+//   a(F) = luma(encode(F * L)) / luma(encode(L))      >  F
+//
+// where `encode` is `pbrNeutralTonemapAtmosphere` followed by a 1/2.2 power.
+// {@link encodedResidueDim} evaluates exactly that chain. It has NO free
+// parameter to fit: the only input beside `F` is the fog colour's magnitude, and
+// the answer is nearly flat in it — over two decades of magnitude at the banked
+// deepest-rung factor the chain returns `a` inside
+// {@link ENCODED_RESIDUE_DIM_ENVELOPE} against `F` ≈ 0.4642, i.e. the residue
+// dims roughly 40% more slowly than the terrain.
+//
+// THAT CLOSES THE ARITHMETIC THE ROW LEFT OPEN. With `r` the residue's luma
+// share of the clear unshadowed band, the two-term model requires
+//
+//   compositeDim = terrainDim*(1 - r) + a*r
+//     ⇒  r * (a - terrainDim) = compositeDim - terrainDim
+//
+// and the banked deepest rung (`terrainDim` 0.46887558379804545,
+// `compositeDim` 0.49013073670762686) puts the right-hand side at 0.02125515.
+// Over the envelope that is a share `r` of roughly 0.09 to 0.13 — comfortably
+// inside the beer-floor ceiling of 0.32266890343992366, where the visible-deck
+// hypothesis needed 0.4724 and was OUT of range. The mechanism class the row
+// left standing ("an un-shadowable residue dimming more slowly than the
+// terrain") now has a named locus, and that locus is quantitatively admissible
+// exactly where the deck was not.
+//
+// WHAT THIS DOES NOT DO, STATED PLAINLY.
+//
+//  - It does not identify `r` from the banked numbers. The predicted contrast
+//    ratio is INVARIANT along the curve `r*(a - terrainDim) = const`: given
+//    `terrainDim`, `compositeDim` and `clearContrast` the two-term model fixes
+//    the ratio with no freedom left, so this lane's three numbers cannot
+//    separate `a` from `r`. `a` is supplied HERE from the shipped encode chain
+//    rather than fitted, which is the only reason the pair is falsifiable.
+//  - The two-term algebra treats the scene-wide post-process encode as locally
+//    linear across the band. It is not exactly linear, so the share above is an
+//    ORDER, not a figure. The direction is what survives that approximation:
+//    one term enters the mix encoded and the other does not, and no encode
+//    applied to their sum afterwards can undo that asymmetry.
+//  - It does not confirm that this fixture takes the fog branch.
+//    `tile.fogDensity > 0.0` and `tile.groundAtmosphereControl.w < 0.5` are
+//    runtime conditions no offline derivation can settle.
+//  - It therefore grants NO verdict and moves NO band. Everything it adds is
+//    reported-only, exactly like the locus it extends.
+//
+// THE ONE MEASUREMENT THAT DECIDES IT — pre-registered here so that a later run
+// cannot be read as a fit. Re-run lane B's deepest rung with the fog term
+// removed and nothing else changed (`scene.fog.enabled = false`, or
+// `fogDensity` driven to zero). If this mechanism is the excess, the residue's
+// dominant contributor leaves the band and `shadowContrastRatioAtDeepest` must
+// COLLAPSE from 1.0341102079879674 toward the published split model's own
+// prediction — `predictShadowContrastRatio` at that run's strengths, order
+// 1.0002 to 1.0008 — and land inside [0.97, 1.03]. If it stays near 1.034 the
+// mechanism is REFUTED and the residue is something that survives fog removal.
+// A partial move says fog is one contributor among several and the share splits
+// accordingly. This is a COLLAPSE test, not a value match, which is what makes
+// it robust to the scene-encode approximation noted above.
+
+// ── CORRECTION, SAME PASS: THE FOG INSTANCE IS PINNED OFF IN THIS FIXTURE ───
+//
+// The law above is right and the instance named above is WRONG FOR THIS LANE,
+// and the probe settles it in its own source rather than at runtime. Lane B
+// pins the scene with `{ groundAtmosphere: false, fog: false, sky: false }`
+// (`probe-eclipse-cloud-response.mjs:734-736`), and `pinScene` answers those by
+// setting `scene.globe.showGroundAtmosphere = false` and `scene.fog.enabled =
+// false` (`lib/weather-probe-pinning.mjs:560-563`) and by removing every
+// imagery layer (`:542`). So in the banked run:
+//
+//   - `tile.fogDensity` is 0 and `groundAtmosphereControl.x` is 0, so NEITHER
+//     the fog branch NOR the far-atmosphere drape executes. The fog term cannot
+//     be the residue here.
+//   - there are no imagery layers at all, so subsequent-pass imagery — which
+//     returns before the eclipse multiply, the cast shadow and the atmosphere
+//     block (`GlobeTerrain.wgsl:4491-4494`) and would otherwise be an entirely
+//     un-dimmed residue — is absent too.
+//
+// Both eliminations are worth more than the guess they replace: they close two
+// candidate loci by construction, on the fixture's own pins, so no future run
+// has to re-open either.
+//
+// WHAT IS STILL LIVE IS THE TERM THE ROW ALREADY NAMED — and it has the same
+// shape. ProceduralClouds tonemaps its own contribution INSIDE the cloud
+// shader, then composites the result over the still-linear globe:
+//
+//   ProceduralClouds.wgsl:2643  let exposed = weightedColor * cloud.exposure;
+//   ProceduralClouds.wgsl:2644  let toneMapped = exposed / (exposed + vec3<f32>(1.0));
+//   ProceduralClouds.wgsl:2658  var hazed = mix(toneMapped, cloud.aerialColor, aerial);
+//
+// The source says so in its own words at `:2651-2652`: "Both operands are LDR —
+// the post-tonemap color against the packed horizon tint — so the lerp stays in
+// display space." That is the encode-before-composite asymmetry again, with a
+// Reinhard curve in place of the fog path's tonemap-then-gamma. The row's
+// phrase for this residue — "ProceduralClouds' independently tone-mapped
+// over-composite" — is now mechanised rather than merely named.
+//
+// REINHARD MAKES THE PREDICTION SHARPER, because its dim depends on the
+// operating point in a closed form. With `R(x) = x / (x + 1)`,
+//
+//   a(F) = R(F*L) / R(L) = F * (L + 1) / (F*L + 1)
+//
+// which rises from `F` at `L → 0` to 1 at `L → ∞`. {@link reinhardResidueDim}
+// evaluates it. At the banked factor the required residue dim of 0.5347 is
+// reached only for an exposed cloud radiance `L` above roughly 0.35, so the
+// mechanism makes a REFUTABLE demand on a quantity the lane already controls.
+//
+// THE CORRECTED DECIDING MEASUREMENT — this supersedes the fog-off leg proposed
+// above, which this fixture cannot run because fog is already off. `cloud.exposure`
+// is a live dial, and it MOVES `L` and therefore moves `a(F)` along a known
+// curve. Re-run lane B's deepest rung at two separated exposures with nothing
+// else changed. The mechanism predicts `shadowContrastRatioAtDeepest` rises with
+// exposure (a brighter operating point pushes the Reinhard response further from
+// linear) and does so by the amount `a(F)` prescribes at each point; a reading
+// that does not move with exposure REFUTES the cloud-composite locus, and a
+// reading that moves the other way refutes the curve. This is still a
+// direction-and-magnitude test rather than a single value match, so it survives
+// the scene-wide encode approximation stated above.
+//
+// The fog function is KEPT, and not because it was written: `scene.fog` is on by
+// default in ordinary scenes, so the fog instance of this law is live everywhere
+// EXCEPT here, and any future lane that does not pin fog off inherits it.
+
+/** Exposed cloud radiances {@link reinhardResidueDim} is characterised over. */
+export const REINHARD_RESIDUE_EXPOSURE_SWEEP = Object.freeze([
+  0.5, 1.0, 2.0, 4.0,
+]);
+
+/**
+ * The eclipse dimming an in-shader Reinhard-tonemapped residue delivers at the
+ * composite: `R(F*L) / R(L)` with `R(x) = x / (x + 1)`, the curve
+ * `ProceduralClouds.wgsl:2644` applies to the cloud colour before it is
+ * composited over the linear globe. DERIVED, never fitted.
+ *
+ * @param {number} factor The eclipse scene-light factor `F`.
+ * @param {number} exposedLuma The cloud colour's exposed radiance `L`.
+ * @returns {number|null} `a(F)`, or null on non-finite input.
+ */
+export function reinhardResidueDim(factor, exposedLuma) {
+  if (!Number.isFinite(factor) || !(factor > 0)) {
+    return null;
+  }
+  if (!Number.isFinite(exposedLuma) || !(exposedLuma > 0)) {
+    return null;
+  }
+  const reinhard = (value) => value / (value + 1);
+  const clear = reinhard(exposedLuma);
+  if (!(clear > 0)) {
+    return null;
+  }
+  return reinhard(factor * exposedLuma) / clear;
+}
+
+/** The fog colour magnitudes {@link encodedResidueDim} is characterised over. */
+export const ENCODED_RESIDUE_MAGNITUDE_SWEEP = Object.freeze([
+  0.02, 0.05, 0.1, 0.2, 0.4, 0.8,
+]);
+
+/**
+ * The envelope `encodedResidueDim` returns across
+ * {@link ENCODED_RESIDUE_MAGNITUDE_SWEEP} at the banked deepest-rung factor.
+ * This characterises the FOG instance of the law, which lane B pins off — it
+ * is retained because ordinary scenes leave `scene.fog` enabled and inherit
+ * it. The live reading for this lane comes from {@link reinhardResidueDim}.
+ * Reported-only, and deliberately WIDE: it is a derived characterisation of the
+ * shipped encode chain, never a gate band.
+ */
+export const ENCODED_RESIDUE_DIM_ENVELOPE = Object.freeze({
+  lo: 0.62,
+  hi: 0.71,
+});
+
+/**
+ * The WGSL `pbrNeutralTonemapAtmosphere` of
+ * `Shaders/WebGPU/Globe/GlobeTerrain.wgsl:2909-2922`, transcribed. Its WebGL
+ * peer is `czm_pbrNeutralTonemapping`; both run on the fog colour inside the
+ * globe fragment shader, before the fog is mixed into the surface colour.
+ *
+ * @param {number[]} rgb Linear radiance triple.
+ * @returns {number[]} the tonemapped triple.
+ */
+export function pbrNeutralTonemapAtmosphere(rgb) {
+  const startCompression = 0.8 - 0.04;
+  const desaturation = 0.15;
+  const x = Math.min(rgb[0], Math.min(rgb[1], rgb[2]));
+  const offset = x < 0.08 ? x - 6.25 * x * x : 0.04;
+  let c = rgb.map((v) => v - offset);
+  const peak = Math.max(c[0], Math.max(c[1], c[2]));
+  if (peak < startCompression) {
+    return c;
+  }
+  const d = 1.0 - startCompression;
+  const newPeak = 1.0 - (d * d) / (peak + d - startCompression);
+  c = c.map((v) => v * (newPeak / peak));
+  const g = 1.0 - 1.0 / (desaturation * (peak - newPeak) + 1.0);
+  return c.map((v) => v * (1.0 - g) + newPeak * g);
+}
+
+/**
+ * The eclipse dimming an in-shader display-encoded residue actually delivers at
+ * the measured band: `luma(encode(F*L)) / luma(encode(L))`, with `encode` the
+ * shipped tonemap-then-gamma chain and `luma` the Rec.709 weighting the probe's
+ * `bandMean` uses. DERIVED, never fitted — see the SIXTH PASS block above.
+ *
+ * @param {number} factor The eclipse scene-light factor `F`.
+ * @param {number[]} fogColorLinear Linear fog/ground-atmosphere colour.
+ * @returns {number|null} `a(F)`, or null on non-finite input.
+ */
+export function encodedResidueDim(factor, fogColorLinear) {
+  if (!Number.isFinite(factor) || !(factor > 0)) {
+    return null;
+  }
+  if (!Array.isArray(fogColorLinear) || fogColorLinear.length !== 3) {
+    return null;
+  }
+  if (!fogColorLinear.every((v) => Number.isFinite(v) && v >= 0)) {
+    return null;
+  }
+  const encode = (c) =>
+    pbrNeutralTonemapAtmosphere(c).map((v) =>
+      Math.pow(Math.max(v, 0), 1 / 2.2),
+    );
+  const luma = (c) => 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+  const clear = luma(encode(fogColorLinear));
+  if (!(clear > 0)) {
+    return null;
+  }
+  return luma(encode(fogColorLinear.map((v) => v * factor))) / clear;
+}
+
+/**
+ * The residue luma share the two-term model requires for a given residue dim:
+ * `r = (compositeDim - terrainDim) / (residueDim - terrainDim)`.
+ *
+ * @param {number} residueDim The residue's own eclipse dim `a`.
+ * @param {number} terrainDim The shadowable term's measured dim.
+ * @param {number} compositeDim The whole unshadowed band's measured dim.
+ * @returns {number|null}
+ */
+export function residueShareForDim(residueDim, terrainDim, compositeDim) {
+  if (
+    !Number.isFinite(residueDim) ||
+    !Number.isFinite(terrainDim) ||
+    !Number.isFinite(compositeDim)
+  ) {
+    return null;
+  }
+  const denominator = residueDim - terrainDim;
+  if (!(Math.abs(denominator) > 0)) {
+    return null;
+  }
+  return (compositeDim - terrainDim) / denominator;
+}
+
 /**
  * The ambient/direct-split prediction for the eclipse contrast ratio, in closed
  * form. See the block above: the split `x` and the beer transmittance `tau`
@@ -1239,6 +1528,15 @@ export const ECLIPSE_CLOUD_REPORTED_ONLY_PREDICATES = Object.freeze([
   // score the same ambiguity twice and would fail a run in the exact shape where
   // the deck-present band is the contaminated one.
   "deckFreeGroundRetentionLegsAgreeReportedOnly",
+  // The C13-41 mechanism pass. Whether the residue share implied by the
+  // DERIVED in-shader encode dim sits inside the beer-floor ceiling, i.e.
+  // whether the display-encoded fog term is an admissible locus for the
+  // shadow-contrast excess at all. Reported-only because it scores a
+  // HYPOTHESIS about the residue, not the run: a false reading refutes the
+  // encode locus and says nothing about whether the engine behaved. The
+  // measurement that decides the hypothesis is the pre-registered fog-off
+  // collapse leg described in the SIXTH PASS block, not this reading.
+  "shadowResidueEncodeHypothesisInRange",
 ]);
 
 /**
@@ -3697,7 +3995,13 @@ export function judgeEclipseCloudResponse(run) {
     };
   });
   const deepestShadowDims = v.shadowContrastModel.at(-1) ?? null;
-  const residueShares = [0.2, 0.3, 0.4, 0.5, 0.6, 0.7];
+  // Extended below 0.2 at the C13-41 mechanism pass: the encode-derived
+  // hypothesis lands near 0.1, i.e. UNDER the grid this table used to start
+  // at, so the instrument tabulated the neighbourhood of the answer and
+  // never the answer. The upper shares are retained unchanged.
+  const residueShares = [
+    0.05, 0.075, 0.1, 0.125, 0.15, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7,
+  ];
   v.shadowResidueDimLocus = residueShares.map((share) => ({
     share,
     requiredResidueDim:
@@ -3736,6 +4040,45 @@ export function judgeEclipseCloudResponse(run) {
         1 - CLOUD_SHADOW_BEER_FLOOR,
       )
     : null;
+  // ── THE ENCODE-DERIVED RESIDUE HYPOTHESIS — reported, not gated ───────────
+  // See the SIXTH PASS block. `a` is DERIVED from the shipped in-shader encode
+  // chain rather than fitted, so the share it implies is a prediction this lane
+  // can be wrong about. The envelope is carried as a pair because the chain is
+  // nearly, but not exactly, flat in the fog colour's magnitude.
+  // The LIVE instance for this fixture is the Reinhard-tonemapped cloud
+  // composite, not the fog path: lane B pins fog and the ground atmosphere
+  // OFF, so the fog instance of this law cannot execute here. See the
+  // CORRECTION subsection of the SIXTH PASS block for the pin citations and
+  // for why both eliminations are kept on the record.
+  const encodeDims = REINHARD_RESIDUE_EXPOSURE_SWEEP.map((exposedLuma) =>
+    reinhardResidueDim(deepestShadowDims?.factor ?? null, exposedLuma),
+  ).filter((value) => Number.isFinite(value));
+  v.shadowResidueEncodeDim =
+    encodeDims.length > 0
+      ? { lo: Math.min(...encodeDims), hi: Math.max(...encodeDims) }
+      : null;
+  const encodeShares = encodeDims
+    .map((dim) =>
+      residueShareForDim(
+        dim,
+        deepestShadowDims?.terrainDim ?? null,
+        deepestShadowDims?.compositeDim ?? null,
+      ),
+    )
+    .filter((value) => Number.isFinite(value));
+  v.shadowResidueShareAtEncodeDim =
+    encodeShares.length > 0
+      ? { lo: Math.min(...encodeShares), hi: Math.max(...encodeShares) }
+      : null;
+  // The discriminating comparison, and the reason this reading exists: the
+  // visible-deck hypothesis needs a share ABOVE the beer-floor ceiling and is
+  // therefore out of range, while the encode hypothesis needs one below it.
+  // Reported-only — a false reading here refutes a HYPOTHESIS, never the run.
+  v.shadowResidueEncodeHypothesisInRange =
+    v.shadowResidueShareAtEncodeDim !== null &&
+    Number.isFinite(v.shadowResidueShareCeiling) &&
+    v.shadowResidueShareAtEncodeDim.lo > 0 &&
+    v.shadowResidueShareAtEncodeDim.hi <= v.shadowResidueShareCeiling;
   // Agreement within the determinism bracket, which is the tightest difference
   // this instrument can resolve at all. FALSE on the fourth run's numbers by
   // design — see the reported-only list for why it does not gate.
@@ -3836,6 +4179,9 @@ export function judgeEclipseCloudResponse(run) {
     residueDimLocus: v.shadowResidueDimLocus,
     residueShareAtDeckRatio: v.shadowResidueShareAtDeckRatio,
     residueShareCeiling: v.shadowResidueShareCeiling,
+    residueEncodeDim: v.shadowResidueEncodeDim,
+    residueShareAtEncodeDim: v.shadowResidueShareAtEncodeDim,
+    residueEncodeHypothesisInRange: v.shadowResidueEncodeHypothesisInRange,
     decrementModelAtDeepest: v.shadowDecrementModelAtDeepest,
     groundOnly: v.shadowGroundOnly,
     groundRetention: v.shadowGroundRetentionRatio,
