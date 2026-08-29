@@ -108,6 +108,13 @@ corrected with it.
 The remaining ~30 medium and all low survivors are enumerated in §5 with their lane column reading
 QUEUED; they dispatch after Q-1…Q-10, batched by file so one Sol dispatch closes several small
 findings in the same module. C1's returning findings append here as a dated addendum.
+### DX-14 prepared but not yet emitting; EAN-01's first pass broke the landed clock spec and is being corrected (2026-08-29 16:50 machine clock)
+
+| | Row | Disposition |
+|---|---|---|
+| DX-14 | PREPARED, BANKED (scratchpad/land-dx14: 580-line generator patch + spec 3/3), awaiting the maintainer's go AND one more correction | Sol (Beorn, fully pasted) added @status-tag columns, a deriveArchivePlan census, an ARCHIVE PLAN renderer, the historical-report retitle and a --check verdict to Tools/generate-tooling-catalog.mjs; the spec proves the plan rows, dispositions and the --check decision on a synthetic list. But regenerating through the launcher changed only two rows: the new section is rendered by a function the managed-census path does not reach (the catalog's BEGIN/END GENERATED CENSUS region is the only region the launcher rewrites), so the ARCHIVE PLAN and the retitle never appear in the document; one unused variable remains for eslint. A second pasted turn must route the section inside renderCensus's managed region (or add a second managed region with markers) |
+| EAN-01 | first Sol pass (Fredegar) delivered the three default-off controls with a 6/6 spec, but its main.js rewrite broke the LANDED Q-146 clock spec (0/6: the text-lift anchors no longer match) and its spec has a no-new-func lint error; scratch restored; a pasted correction turn is running that must keep the original clock wiring byte-for-byte and add the controls as new blocks | not landed; lands default-off after the clock spec is 6/6 again, certification stays tranche A |
+
 ### Q-130-c: the diagnostic-off is documented and deliberate; the finding narrows to its breadth (2026-08-29 16:42 machine clock)
 
 | | Row | Disposition |
