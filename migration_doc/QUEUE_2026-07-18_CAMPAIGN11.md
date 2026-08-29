@@ -3026,6 +3026,8 @@ Edge tranche 3c (2026-08-28 ~23:10) first pixel evidence for the FFT prototype (
 
 **Slice 1 LANDED at Batch 1271 (2026-08-29):** the celestial reflection reaches the globe water-mask ocean on both preprocessor arms with the reduced GLSL moonglade twin (sub-decisions 1 and 2 executed); one law in three shaders, one CPU leaf, off exact on both backends. Slice 2 (star splat into the reflection cube, sub-decision 3) and slice 3 (S5a sun-view shadow map, sub-decision 4) remain OPEN - S5a needs a WebGPU bind-group layout change scoped as its own lane. Edge legs A-F owed to tranche 3e-B.
 
+Edge tranche 3e-B (2026-08-29) pixel-confirmed slice 1 on the default globe ocean: sun glint fades out exactly as the moonglade fades in across the terminator (maxDelta 236/249/2 vs 4/62/108), present on both preprocessor arms, the WebGL twin peaks identically (108/62), hiding the Moon returns the off frame to the floor. Literal off byte-identity is unsatisfiable on the globe ocean because its wave phase is frame-count driven on both backends by deliberate mirror (Q-107: adopt the simulation clock or record frame-locking as the control).
+
 1. **Target ocean:** (A) globe water-mask "enhanced ocean" (`computeEnhancedOcean`, the default shipping
    path) vs (B) opt-in FFT `OceanSurface.wgsl` (cleaner prototype host). Dossier §1 recommends prototype
    in (B) → port to (A).
