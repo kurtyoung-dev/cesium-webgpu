@@ -108,6 +108,24 @@ corrected with it.
 The remaining ~30 medium and all low survivors are enumerated in §5 with their lane column reading
 QUEUED; they dispatch after Q-1…Q-10, batched by file so one Sol dispatch closes several small
 findings in the same module. C1's returning findings append here as a dated addendum.
+### Q-94 premise CORRECTED by scoping; lane sc2 dispatched (2026-08-29 ~02:25 machine clock)
+
+| | Row | Disposition |
+|---|---|---|
+| Q-94 | PREMISE CORRECTED - downgraded from HIGH engine/gallery gap to a settings-layer lane (`migration_doc/Q94_SANDCASTLE2_WEBGPU_SCOPING_2026-08-29.md`) | the runner-transparent mechanism ALREADY SHIPS: `packages/sandcastle/src/Helpers.ts:92-102` rewrites `new Cesium.Viewer(` -> `await Cesium.Viewer.createAsync(` when the active renderer is webgpu (and :30-52 injects contextOptions.renderer); demo bodies run as inline module scripts so top-level await is legal; the regex applied to all 303 sync demos parses 303/303 clean. Engine behaviour verified: sync construction with renderer webgpu/auto THROWS a live DeveloperError (RendererType.ts:227-243, called from Viewer.js:615 / CesiumWidget.js:415 / Scene.js:285) - never a silent fallback. The 3e-A probe that raised the row rewrote main.js over the wire to inject contextOptions, BYPASSING Helpers.ts, so it never exercised the transform. Per-demo transform (303 files) and engine deferred-context (500+ LOC, breaks every sync scene.context read) both REJECTED for this lane |
+| Q-94a | NEW (product call - MAINTAINER) | Sandcastle2 defaults rendererMode to webgl (src/SettingsContext.ts:54) while the README says the viewer starts on WebGPU - flipping the default exposes unfixed parity bugs (exposure, not breakage); decide knowingly |
+| Q-94b | NEW - HIGHEST VALUE, dispatched | no `?renderer=` URL parameter (src/App.tsx:303-317 reads only id): headless probes cannot select WebGPU by URL - the verification enabler |
+| Q-94c | NEW - dispatched | standalone/share page hardcodes rendererMode=webgl (src/Standalone/AppStandalone.tsx:150) - WebGPU unreachable there |
+| Q-94d | NEW - dispatched | `new Cesium.CesiumWidget(` is not transformed (gallery/cesium-widget) - silently WebGL while the toggle reads WebGPU; also in SPLIT mode the WebGL pane emits no preamble so the 29 self-pinned webgpu demos render WebGPU in BOTH panes (the diff is vacuous) |
+| CERTIFICATION | gate (ii) | after Q-94b lands: sweep all 338 ids at ?id=<id>&renderer=webgpu asserting zero console errors, `scene.context.rendererType === webgpu` (the NEW assertion that would have caught Q-94d), frameNumber > 1, non-uniform screenshot - gates i/iii/iv exist in sandcastle-smoke.mjs |
+
+### Lane instr2 dispatched + Q-94 scoping (2026-08-29 ~02:10 machine clock)
+
+| | Row | Disposition |
+|---|---|---|
+| DISPATCHED | `cesium-lane-instr2` (Sonnet; main at da4f2e6821) | Q-95 gulp test barrel + clean-before-build; Q-96 dense-cost schema v4/v5 + refusal artifact + lock release; Q-98 served-build preflight covering the Sandcastle2 importmap bundle; Q-99 source-identity preflight extracted and adopted by the other S5 probes |
+| SCOPING | Q-94 (303/336 gallery demos construct new Cesium.Viewer synchronously; cannot run WebGPU) | read-only scoping agent dispatched: inventory, the mechanical transform, whether the Sandcastle2 runner can wrap construction instead of editing every main.js, risk, and an estimate - for the maintainer to decide the lane shape |
+
 ### R9A5 authored + pass 4 GO-WITH-FIXES; round 2a COMPLETE pending the placement fill-in (2026-08-29 ~01:55 machine clock)
 
 | | Row | Disposition |
