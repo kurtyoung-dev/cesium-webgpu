@@ -108,6 +108,13 @@ corrected with it.
 The remaining ~30 medium and all low survivors are enumerated in §5 with their lane column reading
 QUEUED; they dispatch after Q-1…Q-10, batched by file so one Sol dispatch closes several small
 findings in the same module. C1's returning findings append here as a dated addendum.
+### Extension restart interrupted Wave 1; lanes salvaged and resumed; the budget directive moves bounded work and reviews to directed Sol (2026-08-29 ~15:40 machine clock)
+
+| | Row | Disposition |
+|---|---|---|
+| INTERRUPTION | the Claude Code extension restarted at ~15:20 with four lanes live | audit of the clones: Merry had the helper + gate wiring on disk (no spec/packet), Pippin the three demo files + spec (no packet), Bilbo the engine counter edits + guide (no spec/packet), Boromir nothing; main clean at 2fc55daf56; no stray servers on 809x; the msedge processes present are the maintainer's own session on 8080 (untouched). Merry, Pippin and Bilbo were resumed by message with their transcripts intact and told to re-read their files from disk first |
+| BUDGET DIRECTIVE | maintainer, ~15:30: 22% codex left, 10% Claude left - use Sol 5.6 Ultra workers or Sol runs solo | applied: every bounded row and every station-3 review is a DIRECTED Sol turn first (codex 0.151.0, gpt-5.6-sol at model_reasoning_effort=xhigh - no 'ultra' model id exists, canaried); Claude Opus only for Edge executors, landing judgement and the seat; Sonnet only to resume cheap partial lanes. Boromir's Opus lane is not resumed; Q-142 re-runs as a directed Sol turn (excerpts of all five files + the GLSL twin + the card pasted, region-replacement output, two specs) applied by the seat in the boromir clone |
+
 ### Wave 1 dispatch begins: four ruling-free lanes on fresh clones; engine landings still held (2026-08-29 ~14:50 machine clock)
 
 | | Row | Disposition |
