@@ -518,8 +518,24 @@ export function sampleC1229S5ReplacementRgba(
 // Function#toString is the executable source copied into page.evaluate. The
 // probe's exact marker block and the AST-selected executed declaration must both
 // equal this value before a RUNNING record can be created.
-export const C12_29_S5_REPLACEMENT_SAMPLER_SOURCE =
-  sampleC1229S5ReplacementRgba.toString();
+//
+// The result is normalized to LF because Function#toString reproduces the
+// function's source bytes verbatim: on a checkout whose working tree carries
+// CRLF endings it returns carriage returns, while every value it is compared
+// against is LF. The probe text is normalized before it is parsed, and the
+// sibling fused constant is a template literal, whose cooked value the
+// language itself normalizes. Without this the two can never be equal on such
+// a checkout and the comparison reports a source-identity failure that is
+// really a line-ending difference. Normalizing the executable text is the
+// right depth for that: the identity being proved belongs to the source, not
+// to the checkout that happens to hold it.
+function canonicalExecutableSource(fn) {
+  return fn.toString().replace(/\r\n/g, "\n");
+}
+
+export const C12_29_S5_REPLACEMENT_SAMPLER_SOURCE = canonicalExecutableSource(
+  sampleC1229S5ReplacementRgba,
+);
 export const C12_29_S5_REPLACEMENT_SAMPLER_SOURCE_SHA256 = sha256(
   C12_29_S5_REPLACEMENT_SAMPLER_SOURCE,
 );
@@ -527,7 +543,7 @@ export const C12_29_S5_REPLACEMENT_FUSED_SOURCE_SHA256 = sha256(
   FUSED_SNAPSHOT_CAPTURE_SOURCE,
 );
 export const C12_29_S5_REPLACEMENT_RUNTIME_ATTESTOR_SOURCE =
-  installC1229S5ReplacementRuntimeAttestor.toString();
+  canonicalExecutableSource(installC1229S5ReplacementRuntimeAttestor);
 export const C12_29_S5_REPLACEMENT_RUNTIME_ATTESTOR_SOURCE_SHA256 = sha256(
   C12_29_S5_REPLACEMENT_RUNTIME_ATTESTOR_SOURCE,
 );
