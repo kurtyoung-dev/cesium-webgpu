@@ -108,6 +108,14 @@ corrected with it.
 The remaining ~30 medium and all low survivors are enumerated in §5 with their lane column reading
 QUEUED; they dispatch after Q-1…Q-10, batched by file so one Sol dispatch closes several small
 findings in the same module. C1's returning findings append here as a dated addendum.
+### Three Sol reviews returned; two Sol correction turns failed by shape; corrections go back to the authoring lanes (2026-08-29 ~19:30 machine clock)
+
+| | Row | Disposition |
+|---|---|---|
+| DM-01 (probe rebuild) | RETURNED by Ecthelion's directed-Sol review (3 blockers) | no element screenshot captured; the spec exercised the aggregator but not the runtime report seam (a pass-summing probe could pass); exported decision functions had no behavioural coverage. Correction turn (Frodo-the-second, Sol xhigh) running with the probe, spec and review fully pasted and file reads forbidden |
+| Q-145 (Merry) / DM-07 (Bilbo) | corrections moved back to the authoring Sonnet lanes | the directed-Sol correction turns for both spent their entire budget re-reading files through pwsh Get-Content -Raw and emitted no deliverable; the Sonnet lanes were resumed by message with their reviewers' exact blockers (review files scratchpad/review-merry.md, review-bilbo.md) |
+| SOL SHAPE RULE | recorded (memory + this ledger) | directed Sol at xhigh succeeds on BOUNDED rows and on station-3 REVIEWS (five reviews today, real defects each time) and fails on cross-file CORRECTIONS against a returned review. The codex CLI runs commands through PowerShell on Windows, so every read is a whole-file Get-Content -Raw; the template now says: everything you need is pasted, do not read files; if unavoidable, node -e with fs.readFileSync on a line range. Maintainer's question answered: yes, prefer node everywhere, avoid pwsh-shaped tasks for Sol |
+
 ### Pippin lands (Batch 1303); Merry RETURNED by Sol review and re-run; the two rulings recorded (2026-08-29 ~18:00 machine clock)
 
 | | Row | Disposition |
