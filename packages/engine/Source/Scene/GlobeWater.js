@@ -225,6 +225,71 @@ class GlobeWater {
   set darkening(v) {
     this._globe.oceanDarkening = v;
   }
+
+  /**
+   * Reflects the Sun and the Moon on the globe's water through a microfacet
+   * lobe instead of the classic Phong highlight. Delegates to
+   * `globe.oceanCelestialReflection`.
+   *
+   * <p>
+   * This configures the water the globe draws from its water mask. The opt-in
+   * FFT surface has its own switch at
+   * <code>scene.globe.water.ocean.celestialReflection</code>; the two resolve
+   * through one shared law but are enabled independently, because a scene can
+   * show both oceans at once.
+   * </p>
+   * @type {boolean}
+   * @default false
+   */
+  get celestialReflection() {
+    return this._globe.oceanCelestialReflection;
+  }
+
+  set celestialReflection(v) {
+    this._globe.oceanCelestialReflection = v;
+  }
+
+  /**
+   * Base microfacet roughness of the near water. Delegates to
+   * `globe.oceanCelestialRoughness`.
+   * @type {number}
+   * @default 0.06
+   */
+  get celestialRoughness() {
+    return this._globe.oceanCelestialRoughness;
+  }
+
+  set celestialRoughness(v) {
+    this._globe.oceanCelestialRoughness = v;
+  }
+
+  /**
+   * Multiplier on the reflected solar disc. Delegates to
+   * `globe.oceanCelestialSunIntensity`.
+   * @type {number}
+   * @default 1
+   */
+  get celestialSunIntensity() {
+    return this._globe.oceanCelestialSunIntensity;
+  }
+
+  set celestialSunIntensity(v) {
+    this._globe.oceanCelestialSunIntensity = v;
+  }
+
+  /**
+   * Multiplier on the reflected lunar disc. Delegates to
+   * `globe.oceanCelestialMoonIntensity`.
+   * @type {number}
+   * @default 0.35
+   */
+  get celestialMoonIntensity() {
+    return this._globe.oceanCelestialMoonIntensity;
+  }
+
+  set celestialMoonIntensity(v) {
+    this._globe.oceanCelestialMoonIntensity = v;
+  }
 }
 
 export default GlobeWater;

@@ -28,11 +28,17 @@
 // the off arm's source text is byte-for-byte the historical highlight and the
 // off uniform tail is exact zeros.
 //
-// THE AUDIT GROUP IS LOAD-BEARING. Group F pins what the OTHER three water
-// glint laws do today — two in `GlobeTerrain.wgsl` and one in `GlobeFS.glsl`,
-// all of them the shininess-10 Phong lobe. They are recorded as facts under
-// test so that the port of this lobe onto the globe ocean has to come here and
-// change them deliberately, instead of leaving a stale claim behind.
+// THE AUDIT GROUP IS LOAD-BEARING, AND HAS BEEN PAID OUT. Group F pinned what
+// the OTHER three water glint laws did before the port — two in
+// `GlobeTerrain.wgsl` and one in `GlobeFS.glsl`, all of them the shininess-10
+// Phong lobe — so that the port could not land while leaving a stale claim
+// behind. The port has since landed, and the pins moved with it rather than
+// around it: F1 and F3 now record that the microfacet lobe reaches BOTH globe
+// ocean arms with the Phong lobe kept as its off path, and F2 records that the
+// WebGL twin keeps its Phong Sun and has gained the reduced moonglade. What
+// those laws now DO is measured in `celestial-water-globe-port.spec.mjs`; what
+// remains here is the audit's own claim — that the four laws are accounted for
+// and none was quietly abandoned.
 //
 // CRLF: this repo checks out with `core.autocrlf=true`; every reader below
 // normalises line endings before matching.
@@ -651,44 +657,76 @@ test("E4 the enable float is read nowhere else", () => {
   assert.equal(reads, 1, "one gate, one read");
 });
 
-// ───────── F. the pre-port state of the other three water glint laws ─────────
+// ───────── F. the four water glint laws, all accounted for ──────────────────
 
-test("F1 the globe ocean still carries the shininess-10 Phong lobe, twice", () => {
+test("F1 the globe ocean carries the microfacet lobe in both arms, over its Phong off path", () => {
   const globeWgsl = read(GLOBE_WGSL_PATH);
-  const reflects = (globeWgsl.match(/reflect\(-sunDirEC, waterNormal\)/g) ?? [])
-    .length;
+  // The Phong lobe is still there, twice, because it is now the OFF path
+  // rather than the only law. This half of the pin has not moved: what the
+  // globe draws with the feature switched off must still be what it always
+  // drew, and that is this text.
   assert.equal(
-    reflects,
+    (globeWgsl.match(/reflect\(-sunDirEC, waterNormal\)/g) ?? []).length,
     2,
-    "the enhanced and classic branches each hold one Phong glint",
+    "the enhanced and classic branches each still hold their Phong glint",
   );
   assert.equal(
     (globeWgsl.match(/, 0\.0\), 10\.0\)/g) ?? []).length,
     2,
     "both must still use the shininess-10 exponent",
   );
+  // The half that moved: the port landed, on both arms. The classic arm is the
+  // one a default globe compiles — Globe.enableEnhancedOcean defaults false —
+  // so a port that reached only the enhanced arm would have been unreachable
+  // from a default scene, which is what makes the count of two load-bearing.
   assert.ok(
-    !globeWgsl.includes("celestialGlint"),
-    "the microfacet lobe has not been ported to the globe ocean yet — when it is, this pin moves deliberately",
+    globeWgsl.includes("fn celestialGlint"),
+    "the microfacet lobe must now exist on the globe ocean",
+  );
+  assert.equal(
+    (globeWgsl.match(/computeCelestialWaterSpecular\(/g) ?? []).length,
+    3,
+    "one definition and one call in each of the two ocean arms",
   );
 });
 
-test("F2 the WebGL twin still carries the same Phong lobe", () => {
+test("F2 the WebGL twin keeps its Phong Sun and has gained the moonglade", () => {
   const glsl = read(GLOBE_GLSL_PATH);
+  // Unmoved: the daytime lobe on this backend is still the classic one. The
+  // ruling that armed the port kept the day glint WebGPU-first.
   assert.match(
     glsl,
     /czm_getSpecular\(czm_lightDirectionEC, normalizedPositionToEyeEC, normalEC, 10\.0\)/,
   );
+  // Moved: the reduced twin ships, and it is the Moon only.
+  assert.ok(
+    glsl.includes("computeCelestialWaterMoonSpecular"),
+    "the reduced moonglade twin must exist on WebGL",
+  );
+  assert.ok(
+    glsl.includes("czm_moonDirectionEC"),
+    "and must reflect the Moon's own direction",
+  );
 });
 
 test("F3 the divergence between the two oceans is recorded, not assumed", () => {
-  // Three laws exist today: shininess-10 Phong on the globe ocean in both
-  // backends, shininess-200 Blinn-Phong on the FFT ocean when the reflection is
-  // off, and the microfacet lobe on the FFT ocean when it is on. The first two
-  // are unchanged by this work; only the third is new. This test states that as
-  // a fact so the port cannot land while quietly leaving one of them behind.
+  // Four laws exist today, and each one is named here so none can be quietly
+  // abandoned or quietly duplicated:
+  //   - the FFT ocean OFF: shininess-200 Blinn-Phong, the historical highlight;
+  //   - the FFT ocean ON: the microfacet lobe with the moonglade;
+  //   - the globe ocean OFF: shininess-10 Phong, twice, one per styling arm;
+  //   - the globe ocean ON: the same microfacet lobe, in both arms, with the
+  //     WebGL twin carrying its night half.
+  // The two oceans now share ONE microfacet law rather than each carrying its
+  // own; celestial-water-globe-port.spec.mjs holds the copies equal.
   const globeWgsl = read(GLOBE_WGSL_PATH);
-  assert.ok(globeWgsl.includes("10.0)"), "globe: Phong 10");
+  const glsl = read(GLOBE_GLSL_PATH);
+  assert.ok(globeWgsl.includes("10.0)"), "globe off: Phong 10");
   assert.ok(oceanWgsl.includes("200.0)"), "FFT off: Blinn-Phong 200");
   assert.ok(oceanWgsl.includes("fn celestialGlint"), "FFT on: microfacet");
+  assert.ok(globeWgsl.includes("fn celestialGlint"), "globe on: microfacet");
+  assert.ok(
+    glsl.includes("float celestialGlint"),
+    "WebGL twin: the same microfacet lobe, moon only",
+  );
 });

@@ -258,6 +258,30 @@ struct CameraUniforms {
   //     project `v_positionRTE`. 0 keeps the absolute matrices and
   //     `v_positionMC` for the planar scene modes. z, w reserved.
   cloudShadowCascadeParams: vec4<f32>,
+  // Celestial water reflection: the microfacet Sun glint and the moonglade the
+  // FFT ocean carries in `Ocean/OceanSurface.wgsl`, ported here so the same
+  // law reaches the globe's own water rather than only the opt-in surface.
+  //
+  //   celestialControl.x = enable. Exactly 0 unless
+  //       `Globe.oceanCelestialReflection` is set, and both ocean branches
+  //       then take the historical shininess-10 Phong lobe they always drew.
+  //                   .y = base microfacet roughness of the near water.
+  //                   .z = multiplier on the reflected solar disc.
+  //                   .w = sine of the Sun's angular radius.
+  //   celestialMoonDirectionAndPhase.xyz = unit direction to the Moon in EYE
+  //       coordinates, or exactly zero on a frame that draws no Moon. The zero
+  //       vector needs no companion flag: it drives the glint's own horizon
+  //       test and the rise gate to zero on its own.
+  //                                  .w  = illuminated fraction, 0 at new Moon.
+  //   celestialMoonControl.x = multiplier on the reflected lunar disc.
+  //                       .y = sine of the Moon's angular radius.
+  //                       .z, .w = reserved.
+  //
+  // All-zero by default, so `celestialControl.x > 0.0` is closed and the
+  // render is byte-identical to what it was before this tail existed.
+  celestialControl: vec4<f32>,
+  celestialMoonDirectionAndPhase: vec4<f32>,
+  celestialMoonControl: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> camera: CameraUniforms;
@@ -2488,6 +2512,184 @@ fn computeSubsurfaceScattering(
   return sssColor * scatter * rimFactor;
 }
 
+// Celestial reflection on the globe's water: the microfacet Sun glint and the
+// moonglade.
+//
+// This is the same law the FFT ocean runs in `Ocean/OceanSurface.wgsl`,
+// carried here so it reaches the water the globe draws by default rather than
+// only the opt-in surface. The two shaders are separate modules and cannot
+// share a function, so the bodies below are held identical to that file's by
+// `celestial-water-globe-port.spec.mjs`, which normalises the one deliberate
+// difference: this file already declares `PI`, so the constant is reused
+// instead of a second copy under the celestial prefix.
+//
+// A light source of finite angular size cannot produce a specular lobe
+// narrower than its own disc, however smooth the water is. Evaluating
+// Cook-Torrance against the direction to the source alone collapses the lobe
+// to a sub-pixel spike as the roughness falls, which reads as a flickering dot
+// rather than a glitter path, so the microfacet roughness is given a floor
+// derived from the source's angular radius.
+//
+// The floor is half the angular radius because the microfacet that reflects a
+// given direction lies half way between the light and the view: a spread of
+// theta across the light direction is a spread of theta/2 across the half
+// vector. The energy renormalisation that usually accompanies this widening is
+// deliberately omitted -- it compensates for shifting the light to a
+// representative point on the source, which this evaluation does not do, and
+// applying it anyway drives the smooth-water highlight to zero.
+//
+// Reference: Cook and Torrance 1982 for the microfacet reflectance model,
+// Walter et al. 2007 for the GGX distribution and the Smith shadowing term,
+// and Karis 2013 for the Schlick approximation of Smith-GGX and the
+// spherical-light roughness widening.
+//
+// Fresnel reflectance of sea water at normal incidence, refractive index 1.333.
+const CELESTIAL_WATER_F0: f32 = 0.02;
+// Half-vector factor described above.
+const CELESTIAL_DISC_WIDEN: f32 = 0.5;
+// Roughness floor, and the growth of roughness with distance. The wave march
+// resolves less of the slope the further the fragment is, and the unresolved
+// slope is exactly what a microfacet roughness stands for, so the far band
+// self-roughens into a wider, dimmer path while the near water keeps a tight
+// sparkle. On this ocean the resolved-slope proxy is `waveIntensity`, the
+// same 70 km to 1000 km quintic fade the Phong lobe is modulated by, which is
+// 1 near the surface and 0 at orbit; the FFT twin uses its patch amplitude
+// fade, which has the same sense.
+const CELESTIAL_MIN_ROUGHNESS: f32 = 0.02;
+const CELESTIAL_DISTANCE_ROUGHEN: f32 = 0.25;
+// Warm white of the reflected solar disc, unchanged from the Phong highlight
+// this replaces, so enabling the feature changes the shape of the glint and
+// not its hue.
+const CELESTIAL_SUN_TINT: vec3<f32> = vec3<f32>(1.0, 0.98, 0.9);
+// Warm grey of the reflected lunar disc. Moonlight only looks blue-white
+// because the dark-adapted eye loses colour, and a blue tint here would fight
+// the water's own deep colour rather than sit on it.
+const CELESTIAL_MOON_TINT: vec3<f32> = vec3<f32>(0.95, 0.93, 0.85);
+// The Moon has to clear this much of the sky before its reflection is drawn.
+// Sine of five degrees: below it the disc is refracted, extinguished and
+// usually behind whatever is on the horizon, and a reflection there reads as
+// a bug rather than as moonlight.
+const CELESTIAL_MOON_RISE_SIN: f32 = 0.0871557;
+// Half-width of the terminator's soft band, as the sine of the Sun's altitude.
+// Sine of three degrees, which is a little wider than civil twilight, so the
+// night terms arrive over a few minutes of sweep instead of switching on.
+const CELESTIAL_NIGHT_BAND_SIN: f32 = 0.0523360;
+
+// How much of the night has fallen at this point on the surface: 1 well after
+// sunset, 0 well before it, ramped smoothly across the terminator.
+//
+// The altitude is measured against the surface's own geodetic up rather than
+// against the wave normal. A wave facet tilts by tens of degrees, so gating on
+// it would make the terminator flicker with the swell.
+fn celestialNightGate(up: vec3<f32>, sunDir: vec3<f32>) -> f32 {
+  let sunAltitude = dot(up, sunDir);
+  return 1.0 - smoothstep(
+    -CELESTIAL_NIGHT_BAND_SIN, CELESTIAL_NIGHT_BAND_SIN, sunAltitude);
+}
+
+// GGX/Trowbridge-Reitz normal distribution.
+fn celestialDistributionGGX(nDotH: f32, alpha: f32) -> f32 {
+  let a2 = alpha * alpha;
+  let d = nDotH * nDotH * (a2 - 1.0) + 1.0;
+  return a2 / max(PI * d * d, 1.0e-8);
+}
+
+// Schlick approximation of the Smith-GGX masking term, one direction.
+fn celestialSmithG1(nDotX: f32, alpha: f32) -> f32 {
+  let k = alpha * 0.5;
+  return nDotX / max(nDotX * (1.0 - k) + k, 1.0e-6);
+}
+
+// Reflected radiance of a celestial disc of angular radius `sinAngularRadius`,
+// per unit source radiance. Zero wherever the source or the eye is below the
+// surface's own horizon, so the caller needs no separate visibility term.
+fn celestialGlint(
+  normal: vec3<f32>,
+  viewDir: vec3<f32>,
+  lightDir: vec3<f32>,
+  roughness: f32,
+  sinAngularRadius: f32,
+) -> f32 {
+  let nDotL = dot(normal, lightDir);
+  let nDotV = dot(normal, viewDir);
+  if (nDotL <= 0.0 || nDotV <= 0.0) {
+    return 0.0;
+  }
+  let halfVector = normalize(lightDir + viewDir);
+  let nDotH = max(dot(normal, halfVector), 0.0);
+  let vDotH = max(dot(viewDir, halfVector), 0.0);
+  let alpha = roughness * roughness;
+  let alphaPrime = clamp(
+    alpha + CELESTIAL_DISC_WIDEN * sinAngularRadius, alpha, 1.0);
+  let d = celestialDistributionGGX(nDotH, alphaPrime);
+  let f =
+    CELESTIAL_WATER_F0 + (1.0 - CELESTIAL_WATER_F0) * pow(1.0 - vDotH, 5.0);
+  let g =
+    celestialSmithG1(nDotV, alphaPrime) * celestialSmithG1(nDotL, alphaPrime);
+  // The cosine of the reflectance equation cancels the nDotL of the microfacet
+  // denominator, leaving 4 * nDotV.
+  return d * f * g / max(4.0 * nDotV, 1.0e-4);
+}
+
+// The whole celestial specular contribution for one water fragment: the solar
+// disc while it is day here, the lunar disc while it is night, handed over
+// across the terminator by complementary weights so neither is counted twice
+// and no seam frame appears between them.
+//
+// `upEC` is the analytic ellipsoid surface normal the caller already holds,
+// the same vector `computeEnhancedOcean` receives as `normalEC` and builds
+// its ENU frame from, not the wave-perturbed `waterNormal` the two glints are
+// evaluated against.
+//
+// The water mask is the only modulation carried over from the Phong lobe this
+// replaces. The zoomed-out and near specular-intensity pair is deliberately
+// not: those two numbers calibrate the Phong law's amplitude, and the
+// microfacet lobe carries its own Fresnel and its own intensity dials
+// (`celestialControl.z`, `celestialMoonControl.x`).
+fn computeCelestialWaterSpecular(
+  waterNormal: vec3<f32>,
+  viewDir: vec3<f32>,
+  sunDirEC: vec3<f32>,
+  upEC: vec3<f32>,
+  waveIntensity: f32,
+  waterMaskValue: f32,
+) -> vec3<f32> {
+  let roughness = clamp(
+    camera.celestialControl.y +
+      (1.0 - waveIntensity) * CELESTIAL_DISTANCE_ROUGHEN,
+    CELESTIAL_MIN_ROUGHNESS,
+    1.0);
+  let nightGate = celestialNightGate(upEC, sunDirEC);
+  let dayGate = 1.0 - nightGate;
+
+  let sunGlint = celestialGlint(
+    waterNormal,
+    viewDir,
+    sunDirEC,
+    roughness,
+    camera.celestialControl.w);
+  let sunContribution =
+    CELESTIAL_SUN_TINT * sunGlint * camera.celestialControl.z * dayGate;
+
+  // The moonglade. A zero moon direction carries itself to zero through both
+  // terms, and the illuminated fraction closes the last of it as the Moon goes
+  // new, so no branch is needed to suppress the term.
+  let moonDir = camera.celestialMoonDirectionAndPhase.xyz;
+  let moonRiseGate =
+    smoothstep(0.0, CELESTIAL_MOON_RISE_SIN, dot(upEC, moonDir));
+  let moonGlint = celestialGlint(
+    waterNormal,
+    viewDir,
+    moonDir,
+    roughness,
+    camera.celestialMoonControl.y);
+  let moonContribution =
+    CELESTIAL_MOON_TINT * moonGlint * camera.celestialMoonControl.x *
+    camera.celestialMoonDirectionAndPhase.w * moonRiseGate * nightGate;
+
+  return (sunContribution + moonContribution) * waterMaskValue;
+}
+
 // Full enhanced ocean rendering pipeline, following WebGL
 // `computeWaterColor` semantics: `color = imageryColor + diffuseHighlight +
 // ... + specular`, so imagery is preserved and highlights are added to it.
@@ -2678,6 +2880,13 @@ fn computeEnhancedOcean(
   // The 26e9 debug sentinel skips this term so its share of the below-surface
   // residual can be measured in isolation. Production, below tile.time 1e6,
   // always takes it.
+  let positionToEyeECLength = length(positionEC);
+  let waveFadeY = clamp(
+    (positionToEyeECLength - 70000.0) / (1000000.0 - 70000.0),
+    0.0,
+    1.0,
+  );
+  let waveIntensity = pow(1.0 - waveFadeY, 5.0);
   if (!globe_debugBypassActive(26.0e9)) {
     let toReflectedLight = reflect(-sunDirEC, waterNormal);
     let specularIntensity = pow(max(dot(toReflectedLight, viewDir), 0.0), 10.0);
@@ -2689,16 +2898,27 @@ fn computeEnhancedOcean(
     // `oceanSpecularIntensity = 0.5`.
     let zoomedOutSpec: f32 = camera.lighting.w;
     let nearSpec: f32 = 0.5;
-    let positionToEyeECLength = length(positionEC);
-    let waveFadeY = clamp(
-      (positionToEyeECLength - 70000.0) / (1000000.0 - 70000.0),
-      0.0,
-      1.0,
-    );
-    let waveIntensity = pow(1.0 - waveFadeY, 5.0);
     let surfaceReflectance =
       mix(zoomedOutSpec, nearSpec, waveIntensity) * waterMaskValue;
     oceanContribution += vec3<f32>(specularIntensity * surfaceReflectance);
+  }
+
+  // Celestial reflection, chosen at runtime by the enable float rather than by
+  // a shader define: the microfacet lobe shares its evaluation with the
+  // night-side moonglade, both have to be switchable without recompiling, and
+  // the define budget is exhausted. While the float is zero the Phong lobe
+  // above is the whole specular story, exactly as it was before this arrived.
+  // It sits outside the debug-sentinel branch on purpose — that sentinel exists
+  // to measure the Phong term's share of a residual, and a term it was written
+  // before cannot belong to that measurement.
+  if (camera.celestialControl.x > 0.0) {
+    oceanContribution += computeCelestialWaterSpecular(
+      waterNormal,
+      viewDir,
+      sunDirEC,
+      normalEC,
+      waveIntensity,
+      waterMaskValue);
   }
 
   // Foam: white overlay on steep wave crests (additive on top of imagery).
@@ -2772,11 +2992,27 @@ fn computeEnhancedOcean(
   let classicSurfaceReflectance =
     mix(camera.lighting.w, 0.5, classicWaveIntensity) * waterMaskValue;
   let classicSpecular = classicSpecularIntensity * classicSurfaceReflectance;
+  // Celestial reflection, the same runtime-gated addition the enhanced arm
+  // above carries. Both arms take it because only one of them is ever
+  // compiled: `ENHANCED_OCEAN` is a preprocessor define and
+  // `Globe.enableEnhancedOcean` defaults false, so the classic branch here is
+  // the ocean a default globe actually draws. Porting one arm would have left
+  // the feature unreachable from the default scene.
   // Non-HDR composition: imagery + all three highlight terms (GlobeFS L875).
-  return baseColor +
+  var classicColor = baseColor +
     classicDiffuseHighlight +
     classicNonDiffuseHighlight +
     vec3<f32>(classicSpecular);
+  if (camera.celestialControl.x > 0.0) {
+    classicColor += computeCelestialWaterSpecular(
+      waterNormal,
+      viewDir,
+      sunDirEC,
+      normalEC,
+      classicWaveIntensity,
+      waterMaskValue);
+  }
+  return classicColor;
 //>>endif
 }
 

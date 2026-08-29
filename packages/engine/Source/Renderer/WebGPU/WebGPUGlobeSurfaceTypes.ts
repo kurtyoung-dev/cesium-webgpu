@@ -173,7 +173,14 @@ export interface GlobePipelineEntry {
 // in cloudShadowControl.w. All-zero unless the opt-in `cloudShadowCascades`
 // tier rendered the cascade atlas this frame, so the single-map path
 // (cloudShadowControl.w < 1.5) is byte-identical.
-export const CAMERA_UNIFORM_FLOATS = 232;
+//
+// Celestial water reflection: celestialControl (vec4, offsets 232-235) +
+// celestialMoonDirectionAndPhase (vec4, offsets 236-239) +
+// celestialMoonControl (vec4, offsets 240-243). Appended at the tail, so every
+// offset above is unmoved. All-zero unless `Globe.oceanCelestialReflection`
+// is set, which keeps the shader's `celestialControl.x > 0.0` gate closed and
+// both ocean branches on the Phong lobe they have always drawn.
+export const CAMERA_UNIFORM_FLOATS = 244;
 export const CAMERA_UNIFORM_BYTES = CAMERA_UNIFORM_FLOATS * 4;
 
 // TileUniforms layout.

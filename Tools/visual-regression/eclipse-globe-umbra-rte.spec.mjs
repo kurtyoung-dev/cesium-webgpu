@@ -1704,12 +1704,23 @@ test("WebGPU uses a dedicated third dynamic UBO without widening CameraUniforms"
   assert.match(eclipseUniforms, /export const ECLIPSE_UNIFORM_FLOATS = 16;/);
   assert.match(eclipseUniforms, /allocator\?\.allocationEpoch/);
   assert.match(ringAllocator, /get allocationEpoch\(\): number/);
-  assert.match(types, /export const CAMERA_UNIFORM_FLOATS = 232;/);
+  // The camera struct is 244 floats: 232 for everything this spec's own row
+  // relies on, plus the twelve-float celestial-water tail appended after
+  // `cloudShadowCascadeParams` at offsets 232, 236 and 240. That append moved
+  // no existing offset -- the previous last member ended on a sixteen-byte
+  // boundary, so nothing before it shifted and no implicit padding appeared.
+  //
+  // This number tracks the struct's WIDTH, and only a member that GROWS it
+  // moves it. A lane that carves a live field out of one of the reserved
+  // padding slots below leaves it exactly where it is, which is the whole
+  // point of spending padding rather than appending -- so read a change here
+  // as a new tail, never as a repurposed pad.
+  assert.match(types, /export const CAMERA_UNIFORM_FLOATS = 244;/);
   assert.doesNotMatch(types, /CAMERA_UNIFORM_FLOATS = 248/);
 
   // Three formerly-padding f32 lanes after vec3 fields are offsets 51, 55,
-  // and 59. Reusing them keeps the 232-float layout and every tail offset
-  // stable while supplying the rendered ellipsoid to the fragment stage.
+  // and 59. Reusing them keeps every tail offset stable and the float count
+  // unchanged while supplying the rendered ellipsoid to the fragment stage.
   assert.deepEqual([3 * 16 + 3, 3 * 16 + 7, 3 * 16 + 11], [51, 55, 59]);
   const wgslCameraStart = terrainShader.indexOf("struct CameraUniforms");
   const wgslCameraEnd = terrainShader.indexOf("};", wgslCameraStart);

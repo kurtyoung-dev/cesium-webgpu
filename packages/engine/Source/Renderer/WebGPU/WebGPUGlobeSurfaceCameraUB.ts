@@ -37,11 +37,17 @@ import WebMercatorProjection from "../../Core/WebMercatorProjection.js";
 // polygons / cartographic limit) rather than replicating the condition here,
 // which would drift. Backend-neutral pure function.
 import { isUndergroundVisible } from "../../Scene/GlobeSurfaceTileProviderRendering.js";
+// The celestial-reflection control law, shared with the FFT ocean. Same
+// direction of import as `isUndergroundVisible` above, and for the same
+// reason: the law is backend-neutral and belongs where both oceans can reach
+// it, not duplicated into the packer.
+import { resolveCelestialWaterTail } from "../../Scene/CelestialWaterReflection.js";
 import { m4Values } from "./webgpuTypeHelpers.js";
 import { assertCameraRTERoundTrip } from "./WebGPURTEAssertions.js";
 import { recordLogDepthEncoder } from "./WebGPULogDepth.js";
 import {
   CAMERA_UNIFORM_BYTES,
+  CAMERA_UNIFORM_FLOATS,
   multiplyMat4ColumnMajor,
 } from "./WebGPUGlobeSurfaceTypes.js";
 // The shared cloud-shadow RTE frame owner.
@@ -68,10 +74,17 @@ const projectedTileRect = { x: 0, y: 0, z: 0, w: 0 } as {
 const rtc2D = { x: 0, y: 0, z: 0 } as { x: number; y: number; z: number };
 
 /**
+ * Width of the celestial-water tail, in floats: three vec4 lanes.
+ *
+ * @private
+ */
+export const CELESTIAL_WATER_FLOATS = 12;
+
+/**
  * The renderer surface the camera-UB packer reaches into.
  *
  *   - `_cameraUniformData`: the reusable Float32Array scratch buffer
- *     sized to `CAMERA_UNIFORM_FLOATS` (232 floats). Filled in by the
+ *     sized to `CAMERA_UNIFORM_FLOATS` (244 floats). Filled in by the
  *     packer and uploaded via `writeUniformSlice`.
  *   - `_cameraMvpScratch`: Float64Array of length 16 used to compute
  *     `projection × modifiedModelView` for the 2D/CV/Morphing path.
@@ -1091,6 +1104,30 @@ export function createCameraUniformBuffer(
     data[offset++] = 0.0;
   }
 
+  // Celestial water reflection (232-243). Off is exact: every one of the
+  // twelve floats is positive zero unless `Globe.oceanCelestialReflection` is
+  // set, so the shader gate stays shut and the ocean branches read nothing
+  // they did not read before this tail existed.
+  //
+  // The resolver is shared with the FFT ocean rather than re-derived here:
+  // both oceans clamp the same way, floor the same intensities and zero the
+  // same stale-Moon bearing, and two copies of that would drift.
+  writeCelestialWaterTail(data, offset, tileProvider, uniformState, frameState);
+  offset += CELESTIAL_WATER_FLOATS;
+
+  // The packer walks one cursor through a struct declared in a different file
+  // and a different language. A lane added to the WGSL struct without a
+  // matching write here leaves the tail reading whatever the previous frame's
+  // allocation left behind, which is a live-looking value rather than a zero,
+  // and nothing else in the pipeline would say so.
+  //>>includeStart('debug', pragmas.debug);
+  if (offset !== CAMERA_UNIFORM_FLOATS) {
+    console.error(
+      `[CesiumJS:webgpu] Terrain camera UB wrote ${offset} floats, but CameraUniforms declares ${CAMERA_UNIFORM_FLOATS}`,
+    );
+  }
+  //>>includeEnd('debug');
+
   // Stash the exact near/far this globe command log-encodes the whole depth
   // texture against onto the shared uniformState, the one object that crosses
   // the GraphicsContext boundary to the depth-sample classifier's
@@ -1123,6 +1160,60 @@ export function createCameraUniformBuffer(
     bufferSize,
     "Terrain camera UB",
   );
+}
+
+/**
+ * Write the celestial-water reflection tail into the globe's camera uniform
+ * buffer.
+ *
+ * The twelve floats are exactly positive zero while the feature is off, so the
+ * shader's `celestialControl.x > 0.0` gate stays shut and both ocean branches
+ * evaluate exactly the arithmetic they evaluated before this tail existed.
+ *
+ * The Moon is supplied in EYE coordinates because that is the frame
+ * `computeEnhancedOcean` shades in: it receives `normalEC`, builds its ENU
+ * frame from it, and evaluates every glint against an eye-space view
+ * direction. The FFT surface asks the same resolver for a world-space Moon
+ * because its shader works in world space. Neither frame is resolved here; the
+ * caller states which one it wants and the shared law does the rest.
+ *
+ * @param data The camera-UB scratch array.
+ * @param offset First float index of the tail.
+ * @param tileProvider The globe tile provider carrying the mirrored controls.
+ * @param uniformState The frame's uniform state, read for the eye-space Moon.
+ * @param frameState The frame state, read for the illuminated fraction.
+ * @private
+ */
+export function writeCelestialWaterTail(
+  data: Float32Array,
+  offset: number,
+  tileProvider: CesiumGlobeTileProvider | undefined,
+  uniformState: CesiumUniformState | undefined,
+  frameState: CesiumFrameState | undefined,
+): void {
+  const tail = resolveCelestialWaterTail(
+    {
+      enabled: tileProvider?.oceanCelestialReflection === true,
+      roughness: tileProvider?.oceanCelestialRoughness,
+      sunIntensity: tileProvider?.oceanCelestialSunIntensity,
+      moonIntensity: tileProvider?.oceanCelestialMoonIntensity,
+    },
+    uniformState?.moonDirectionEC,
+    frameState?.moonPhaseFraction,
+  );
+
+  data[offset + 0] = tail.enable;
+  data[offset + 1] = tail.roughness;
+  data[offset + 2] = tail.sunIntensity;
+  data[offset + 3] = tail.sinAngularRadius;
+  data[offset + 4] = tail.moonDirection.x;
+  data[offset + 5] = tail.moonDirection.y;
+  data[offset + 6] = tail.moonDirection.z;
+  data[offset + 7] = tail.moonPhase;
+  data[offset + 8] = tail.moonIntensity;
+  data[offset + 9] = tail.moonSinAngularRadius;
+  data[offset + 10] = 0.0;
+  data[offset + 11] = 0.0;
 }
 
 /**

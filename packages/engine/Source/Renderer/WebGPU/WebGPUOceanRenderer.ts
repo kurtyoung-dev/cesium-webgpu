@@ -58,6 +58,12 @@ import { isWebGPULogDepthActive } from "./WebGPULogDepth.js";
 import { WebGPUShaderModuleCache } from "./WebGPUShaderModuleCache.js";
 import { makeSceneFBTargets } from "./WebGPUSceneFBTargetHelpers.js";
 import { getAvailableFrameCommandEncoder } from "./WebGPUFrameCommandEncoder.js";
+// The simulation clock law. It lives beside the surface it belongs to rather
+// than here, so a node spec can execute it without standing up a device — the
+// same split `computeSeaLevelOffset` and `resolveCelestialReflection` already
+// make, and the same direction of import the globe's camera-UB packer uses for
+// `isUndergroundVisible`.
+import { resolveOceanSimulationSeconds } from "../../Scene/OceanSurfacePrimitive.js";
 import type {
   WebGPURenderPipelineCache,
   WebGPURenderPipelineDescriptor,
@@ -92,6 +98,12 @@ interface OceanCache {
   initialized: boolean;
   paramsDirty: boolean;
   frameNumber: number;
+  /**
+   * The last wave phase, in seconds, this surface was advanced to. Carried so
+   * a frame that arrives without a clock can continue from where the clock
+   * left off instead of restarting on an unrelated origin.
+   */
+  simulationSeconds: number;
   // Simulation textures
   noiseTexture: GPUTexture | null;
   h0Texture: GPUTexture | null;
@@ -161,6 +173,14 @@ interface OceanPrimitiveLike {
   _foamStrength?: number;
   _detailScale?: number;
   _timeSpeed?: number;
+  /**
+   * The instant the wave phase counts from, a `JulianDate`. Undefined until
+   * the first frame that carries a scene time, which adopts it; a caller may
+   * pin it to make the surface reproducible across pages. Typed structurally
+   * rather than as the class, so this interface keeps its existing shape of
+   * describing the surface by the fields the renderer touches.
+   */
+  _simulationEpoch?: object;
   // per-frame anchor state (packed by the primitive)
   _anchor?: Cartesian3;
   _east?: Cartesian3;
@@ -623,6 +643,13 @@ function tryResolveRenderPipeline(
   return true;
 }
 
+/**
+ * How far a clockless frame advances the wave phase: one frame at the nominal
+ * sixty hertz, which is the rate the surface ran at before it was given a
+ * clock. Only reached when `frameState.time` is absent.
+ */
+const FALLBACK_FRAME_SECONDS = 1.0 / 60.0;
+
 function updateWebGPUOcean(
   primObj: unknown,
   frameState: CesiumFrameState,
@@ -642,6 +669,7 @@ function updateWebGPUOcean(
       initialized: false,
       paramsDirty: true,
       frameNumber: 0,
+      simulationSeconds: 0,
       noiseTexture: null,
       h0Texture: null,
       twiddleTexture: null,
@@ -754,7 +782,27 @@ function updateWebGPUOcean(
     );
   }
 
-  const time = (cache.frameNumber * (p._timeSpeed ?? 1.0)) / 60.0;
+  // Wave phase advances with SCENE time, not with the render loop.
+  //
+  // A frame that carries no time at all — an off-frame or direct update — has
+  // no clock to read, and the phase carries on from where the clock left it,
+  // one nominal frame at a time. It must NOT fall back to the frame counter:
+  // that counter has an origin of its own, unrelated to the clock's, so
+  // switching to it teleports the sea by however far the two have diverged,
+  // and switching back teleports it again. Continuing is the only choice that
+  // costs nothing and jumps nothing. When the clock returns it is authoritative
+  // and the phase resumes from it, which is a correction rather than a jump:
+  // the clock is what the sea is a function of.
+  //
+  // The rate is unchanged either way: one second of scene time at speed 1
+  // advances the phase by the same 1.0 that sixty frames used to.
+  const elapsedSeconds = resolveOceanSimulationSeconds(p, frameState);
+  cache.simulationSeconds =
+    elapsedSeconds !== undefined
+      ? elapsedSeconds
+      : cache.simulationSeconds + FALLBACK_FRAME_SECONDS;
+  const timeSpeed = p._timeSpeed ?? 1.0;
+  const time = cache.simulationSeconds * timeSpeed;
   const timeBuf = new ArrayBuffer(32);
   const tu = new Uint32Array(timeBuf);
   const tf = new Float32Array(timeBuf);

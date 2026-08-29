@@ -1372,6 +1372,17 @@ interface CesiumGlobeTileProvider {
   oceanReflectivity?: number;
   oceanFoamThreshold?: number;
   oceanDarkening?: number;
+  /**
+   * Mirrored raw from `Globe.oceanCelestialReflection` and its three dials.
+   * The enable travels separately from the values, as everywhere else on this
+   * provider; `WebGPUGlobeSurfaceCameraUB` hands all four to the shared
+   * resolver in `Scene/CelestialWaterReflection`, which owns what off means
+   * (exact zeros across the whole tail).
+   */
+  oceanCelestialReflection?: boolean;
+  oceanCelestialRoughness?: number;
+  oceanCelestialSunIntensity?: number;
+  oceanCelestialMoonIntensity?: number;
   nightFadeOutDistance: number;
   nightFadeInDistance: number;
   hasWaterMask: boolean;

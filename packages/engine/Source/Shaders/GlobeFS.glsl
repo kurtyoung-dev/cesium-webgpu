@@ -141,6 +141,21 @@ uniform float u_terminatorGlowStrength;
 uniform float u_nightDarkness;
 #endif
 
+#ifdef APPLY_CELESTIAL_WATER
+// The moonglade's three resolved controls.
+//   x = base microfacet roughness of the near water, already clamped
+//   y = multiplier on the reflected lunar disc, already floored at 0
+//   z = illuminated fraction of the lunar disc, 0 on a frame with no Moon
+//   w = reserved
+// Resolved CPU-side by Scene/CelestialWaterReflection, the same law the WebGPU
+// camera uniform buffer packs its tail from, so the two backends cannot drift
+// in what "off" or "unset" means. The direction to the Moon is not carried
+// here: czm_moonDirectionEC is an ephemeris quantity UniformState recomputes
+// every frame, so it is never stale, and z closes the term on a frame that
+// draws no Moon.
+uniform vec4 u_oceanCelestialMoon;
+
+#endif
 #ifdef APPLY_NIGHT_LIGHTS
 uniform float u_nightIntensity;
 
@@ -1229,6 +1244,120 @@ float oceanOctaveLodWeight(float repeatsPerPixel)
     return 1.0 - smoothstep(OCEAN_OCTAVE_FADE_LO, OCEAN_OCTAVE_FADE_HI, repeatsPerPixel);
 }
 
+#ifdef APPLY_CELESTIAL_WATER
+// The reduced celestial-reflection twin: the moonglade only.
+//
+// The WGSL ocean in Shaders/WebGPU/Globe/GlobeTerrain.wgsl reflects both discs
+// through this lobe and hands them over across the terminator. This backend
+// carries the night half. The daytime glint stays the shininess-10 Phong lobe
+// below, which is the classic law both backends have always drawn and which
+// this function does not touch, so a scene with the feature on shows the same
+// moonglade on both backends and its own familiar daytime sun path on each.
+//
+// Every constant and every line of arithmetic below is the twin of the WGSL
+// block of the same names; celestial-water-globe-port.spec.mjs holds the two
+// texts equal after a documented syntax normalisation, so an edit to one that
+// is not made to the other fails rather than silently diverging.
+//
+// Reference: Cook and Torrance 1982 for the microfacet reflectance model,
+// Walter et al. 2007 for the GGX distribution and the Smith shadowing term,
+// and Karis 2013 for the Schlick approximation of Smith-GGX and the
+// spherical-light roughness widening.
+
+// Fresnel reflectance of sea water at normal incidence, refractive index 1.333.
+const float CELESTIAL_WATER_F0 = 0.02;
+// A light source of finite angular size cannot produce a lobe narrower than
+// its own disc. The microfacet that reflects a given direction lies half way
+// between the light and the view, so a spread of theta across the light
+// direction is a spread of theta/2 across the half vector.
+const float CELESTIAL_DISC_WIDEN = 0.5;
+// Roughness floor, and the growth of roughness with distance: the wave march
+// resolves less of the slope the further the fragment is, and the unresolved
+// slope is what a microfacet roughness stands for.
+const float CELESTIAL_MIN_ROUGHNESS = 0.02;
+const float CELESTIAL_DISTANCE_ROUGHEN = 0.25;
+// Warm grey of the reflected lunar disc. Moonlight only looks blue-white
+// because the dark-adapted eye loses colour.
+const vec3 CELESTIAL_MOON_TINT = vec3(0.95, 0.93, 0.85);
+// Sine of the Moon's mean angular radius, 932.58 arcseconds.
+const float CELESTIAL_MOON_SIN_ANGULAR_RADIUS = 0.0045213;
+// Sine of five degrees: the Moon has to clear this much of the sky before its
+// reflection is drawn.
+const float CELESTIAL_MOON_RISE_SIN = 0.0871557;
+// Sine of three degrees, a little wider than civil twilight, so the night term
+// arrives over a few minutes of sweep instead of switching on.
+const float CELESTIAL_NIGHT_BAND_SIN = 0.0523360;
+
+// How much of the night has fallen here: 1 well after sunset, 0 well before it.
+// Measured against the surface's own geodetic up rather than the wave normal,
+// which tilts by tens of degrees and would flicker the terminator with the
+// swell.
+float celestialNightGate(vec3 up, vec3 sunDir)
+{
+    float sunAltitude = dot(up, sunDir);
+    return 1.0 - smoothstep(-CELESTIAL_NIGHT_BAND_SIN, CELESTIAL_NIGHT_BAND_SIN, sunAltitude);
+}
+
+// GGX/Trowbridge-Reitz normal distribution.
+float celestialDistributionGGX(float nDotH, float alpha)
+{
+    float a2 = alpha * alpha;
+    float d = nDotH * nDotH * (a2 - 1.0) + 1.0;
+    return a2 / max(czm_pi * d * d, 1.0e-8);
+}
+
+// Schlick approximation of the Smith-GGX masking term, one direction.
+float celestialSmithG1(float nDotX, float alpha)
+{
+    float k = alpha * 0.5;
+    return nDotX / max(nDotX * (1.0 - k) + k, 1.0e-6);
+}
+
+// Reflected radiance of a celestial disc of angular radius sinAngularRadius,
+// per unit source radiance. Zero wherever the source or the eye is below the
+// surface's own horizon, so the caller needs no separate visibility term.
+float celestialGlint(vec3 normal, vec3 viewDir, vec3 lightDir, float roughness, float sinAngularRadius)
+{
+    float nDotL = dot(normal, lightDir);
+    float nDotV = dot(normal, viewDir);
+    if (nDotL <= 0.0 || nDotV <= 0.0)
+    {
+        return 0.0;
+    }
+    vec3 halfVector = normalize(lightDir + viewDir);
+    float nDotH = max(dot(normal, halfVector), 0.0);
+    float vDotH = max(dot(viewDir, halfVector), 0.0);
+    float alpha = roughness * roughness;
+    float alphaPrime = clamp(alpha + CELESTIAL_DISC_WIDEN * sinAngularRadius, alpha, 1.0);
+    float d = celestialDistributionGGX(nDotH, alphaPrime);
+    float f = CELESTIAL_WATER_F0 + (1.0 - CELESTIAL_WATER_F0) * pow(1.0 - vDotH, 5.0);
+    float g = celestialSmithG1(nDotV, alphaPrime) * celestialSmithG1(nDotL, alphaPrime);
+    // The cosine of the reflectance equation cancels the nDotL of the
+    // microfacet denominator, leaving 4 * nDotV.
+    return d * f * g / max(4.0 * nDotV, 1.0e-4);
+}
+
+// The moonglade for one water fragment.
+//
+// upEC is the ellipsoid surface normal in eye coordinates, which the caller
+// already holds as the up column of its ENU frame: enuToEye * (0, 0, 1). The
+// glint itself is evaluated against the wave-perturbed normal.
+//
+// The illuminated fraction closes the term as the Moon goes new, the rise gate
+// closes it while the Moon is on the horizon where its disc is refracted and
+// extinguished, and the night gate closes it in daylight. The water mask is
+// the same modulation the Phong lobe beside it carries.
+vec3 computeCelestialWaterMoonSpecular(vec3 waterNormal, vec3 viewDir, vec3 sunDirEC, vec3 upEC, float waveIntensity, float maskValue)
+{
+    float roughness = clamp(u_oceanCelestialMoon.x + (1.0 - waveIntensity) * CELESTIAL_DISTANCE_ROUGHEN, CELESTIAL_MIN_ROUGHNESS, 1.0);
+    float nightGate = celestialNightGate(upEC, sunDirEC);
+    vec3 moonDir = czm_moonDirectionEC;
+    float moonRiseGate = smoothstep(0.0, CELESTIAL_MOON_RISE_SIN, dot(upEC, moonDir));
+    float moonGlint = celestialGlint(waterNormal, viewDir, moonDir, roughness, CELESTIAL_MOON_SIN_ANGULAR_RADIUS);
+    return CELESTIAL_MOON_TINT * moonGlint * u_oceanCelestialMoon.y * u_oceanCelestialMoon.z * moonRiseGate * nightGate * maskValue;
+}
+
+#endif
 vec4 computeWaterColor(vec3 positionEyeCoordinates, vec2 textureCoordinates, vec2 tcDx, vec2 tcDy, mat3 enuToEye, vec4 imageryColor, float maskValue, float fade)
 {
     vec3 positionToEyeEC = -positionEyeCoordinates;
@@ -1337,6 +1466,22 @@ vec4 computeWaterColor(vec3 positionEyeCoordinates, vec2 textureCoordinates, vec
     vec3 color = imageryColor.rgb + diffuseHighlight + nonDiffuseHighlight + specular;
 #endif
 
+#ifdef APPLY_CELESTIAL_WATER
+    // Added after the composition rather than inside it, for two reasons. With
+    // the feature off, everything above is upstream's source unchanged, so the
+    // shader the driver compiles is upstream's shader. With it on, the term
+    // escapes the HDR arm's imagery-dependent amplifier — which the WGSL twin
+    // does not apply to its own celestial terms either, so the two backends
+    // agree on what the moonglade is worth.
+    //
+    // enuToEye's third column is the ellipsoid surface normal in eye
+    // coordinates: the frame's own up, exactly what the WGSL twin receives as
+    // normalEC. Passing the local normalEC instead would gate the terminator on
+    // the wave facet, which tilts by tens of degrees and would flicker the
+    // whole ocean between day and night with the swell.
+    color += computeCelestialWaterMoonSpecular(normalEC, normalizedPositionToEyeEC, czm_lightDirectionEC, enuToEye[2], waveIntensity, maskValue);
+
+#endif
     return vec4(color, imageryColor.a);
 }
 

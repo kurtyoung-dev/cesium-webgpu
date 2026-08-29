@@ -2,7 +2,14 @@ import Color from "../Core/Color.js";
 import defined from "../Core/defined.js";
 import GeoidUndulationGrid from "../Core/GeoidUndulationGrid.js";
 import VerticalDatum from "../Core/VerticalDatum.js";
-import OceanSurfacePrimitive from "./OceanSurfacePrimitive.js";
+import {
+  CELESTIAL_DEFAULT_MOON_INTENSITY,
+  CELESTIAL_DEFAULT_ROUGHNESS,
+  CELESTIAL_DEFAULT_SUN_INTENSITY,
+} from "./CelestialWaterReflection.js";
+import OceanSurfacePrimitive, {
+  cloneSimulationEpoch,
+} from "./OceanSurfacePrimitive.js";
 
 /**
  * The opt-in FFT spectral ocean sub-facade, accessed as
@@ -42,9 +49,10 @@ function GlobeWaterOcean(scene, globe) {
   // Celestial reflection. Off by default: while it is off the shader draws
   // the highlight it always drew and the uniform tail stays zeroed.
   this._celestialReflection = false;
-  this._celestialRoughness = 0.06;
-  this._celestialSunIntensity = 1.0;
-  this._celestialMoonIntensity = 0.35;
+  this._celestialRoughness = CELESTIAL_DEFAULT_ROUGHNESS;
+  this._celestialSunIntensity = CELESTIAL_DEFAULT_SUN_INTENSITY;
+  this._celestialMoonIntensity = CELESTIAL_DEFAULT_MOON_INTENSITY;
+  this._simulationEpoch = undefined;
 }
 
 /**
@@ -101,6 +109,7 @@ Object.defineProperties(GlobeWaterOcean.prototype, {
           celestialRoughness: this._celestialRoughness,
           celestialSunIntensity: this._celestialSunIntensity,
           celestialMoonIntensity: this._celestialMoonIntensity,
+          simulationEpoch: this._simulationEpoch,
           globe: this._globe ?? this._scene?.globe,
         });
         prefetchGeoid(this);
@@ -242,6 +251,11 @@ Object.defineProperties(GlobeWaterOcean.prototype, {
   },
 
   /**
+   * WebGPU only, like the surface it configures: the FFT ocean's update
+   * returns immediately on a WebGL context, so this switch has no WebGL
+   * counterpart. The globe's own water-mask ocean carries the feature on both
+   * backends under {@link GlobeWater#celestialReflection}.
+   *
    * Whether the water reflects the sky's light sources through a microfacet
    * lobe instead of the historical Blinn-Phong highlight. Default `false`.
    *
@@ -264,6 +278,43 @@ Object.defineProperties(GlobeWaterOcean.prototype, {
       this._celestialReflection = v === true;
       if (defined(this._primitive)) {
         this._primitive._celestialReflection = this._celestialReflection;
+      }
+    },
+  },
+
+  /**
+   * The instant the wave simulation counts from. Leave it undefined — the
+   * default — and the surface adopts the first frame's scene time, so its wave
+   * phase begins at zero and advances with the clock from there. That is a
+   * phase origin, not a calm: the spectrum is already fully developed at phase
+   * zero, so the sea has its waves from the first frame and simply starts
+   * evolving from a repeatable point rather than from an arbitrary clock
+   * offset.
+   *
+   * <p>
+   * Pin it to make the surface reproducible: two viewers showing the same
+   * scene time with the same epoch show the same sea, whatever either one has
+   * rendered before. That is what a capture needs, and it is the honest form
+   * of frame-locking — the surface is frozen because the clock is, not because
+   * the renderer was called the same number of times.
+   * </p>
+   *
+   * @memberof GlobeWaterOcean.prototype
+   * @type {JulianDate|undefined}
+   * @default undefined
+   */
+  simulationEpoch: {
+    get: function () {
+      return this._simulationEpoch;
+    },
+    set: function (v) {
+      // Copied, not kept: the two instants a caller is most likely to pin to —
+      // `viewer.clock.currentTime` and `frameState.time` — are both rewritten
+      // in place by the engine, and holding either reference would make the
+      // epoch chase the clock and freeze the sea.
+      this._simulationEpoch = cloneSimulationEpoch(v);
+      if (defined(this._primitive)) {
+        this._primitive._simulationEpoch = cloneSimulationEpoch(v);
       }
     },
   },

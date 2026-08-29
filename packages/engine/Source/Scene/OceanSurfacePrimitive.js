@@ -6,12 +6,19 @@ import destroyObject from "../Core/destroyObject.js";
 import Ellipsoid from "../Core/Ellipsoid.js";
 import Frozen from "../Core/Frozen.js";
 import GeoidUndulationGrid from "../Core/GeoidUndulationGrid.js";
+import JulianDate from "../Core/JulianDate.js";
 import Matrix4 from "../Core/Matrix4.js";
 import TideModel from "../Core/TideModel.js";
 import Transforms from "../Core/Transforms.js";
 import VerticalDatum from "../Core/VerticalDatum.js";
 import VerticalExaggeration from "../Core/VerticalExaggeration.js";
 import FeatureRendererKey from "../Renderer/FeatureRendererKey.js";
+import {
+  CELESTIAL_DEFAULT_MOON_INTENSITY,
+  CELESTIAL_DEFAULT_ROUGHNESS,
+  CELESTIAL_DEFAULT_SUN_INTENSITY,
+  resolveCelestialWaterTail,
+} from "./CelestialWaterReflection.js";
 
 /**
  * An opt-in GPU FFT spectral ocean surface. A camera-anchored ENU grid patch is
@@ -138,7 +145,8 @@ function OceanSurfacePrimitive(options) {
   this._celestialReflection = options.celestialReflection === true;
   this._celestialRoughness =
     options.celestialRoughness ?? CELESTIAL_DEFAULT_ROUGHNESS;
-  this._celestialSunIntensity = options.celestialSunIntensity ?? 1.0;
+  this._celestialSunIntensity =
+    options.celestialSunIntensity ?? CELESTIAL_DEFAULT_SUN_INTENSITY;
   this._celestialMoonIntensity =
     options.celestialMoonIntensity ?? CELESTIAL_DEFAULT_MOON_INTENSITY;
   this._celestialEnable = 0.0;
@@ -172,27 +180,75 @@ function OceanSurfacePrimitive(options) {
   this._anchorHeightM = 0.0;
 
   this._webgpuCache = undefined;
+  // Simulation epoch. Undefined means "adopt the first frame's scene time",
+  // which gives a freshly enabled ocean a repeatable phase origin instead of
+  // whatever offset the clock happens to be at. It is an origin, not a calm:
+  // the spectrum is fully developed at phase zero. A caller may pin it — a
+  // capture that has to reproduce one surface across two pages does exactly
+  // that — and clearing it re-adopts on the next frame.
+  this._simulationEpoch = cloneSimulationEpoch(options.simulationEpoch);
 }
 
-// Sine of the Sun's mean angular radius, 959.63 arcseconds. The reflected disc
-// has a finite width, and the shader uses this to put a floor under the
-// microfacet lobe so smooth water cannot collapse the glint to a spike. Each
-// body carries its own: the two discs are famously close, and relying on that
-// coincidence would be relying on a coincidence.
-const CELESTIAL_SUN_SIN_ANGULAR_RADIUS = 0.0046524;
-// Sine of the Moon's mean angular radius, 932.58 arcseconds.
-const CELESTIAL_MOON_SIN_ANGULAR_RADIUS = 0.0045213;
-// Default weight of the reflected lunar disc. Full moonlight is about four
-// millionths of noon sunlight, which is not what this number is: the ocean's
-// radiance is not calibrated in physical units, so this is an appearance dial
-// chosen to read as moonlight beside the tone-mapped night water rather than
-// a ratio derived from illuminance. Deriving it belongs with an HDR-calibrated
-// ocean radiance, which does not exist yet.
-const CELESTIAL_DEFAULT_MOON_INTENSITY = 0.35;
-// Base roughness of the near patch, and the range the shader shares.
-const CELESTIAL_DEFAULT_ROUGHNESS = 0.06;
-const CELESTIAL_MIN_ROUGHNESS = 0.02;
-const CELESTIAL_MAX_ROUGHNESS = 1.0;
+/**
+ * Copy an epoch a caller supplied, so this surface owns it.
+ *
+ * The obvious things to pin an epoch to are `viewer.clock.currentTime` and
+ * `frameState.time`, and the engine rewrites BOTH of those in place rather
+ * than replacing them. An epoch holding either reference would advance with the
+ * clock, the elapsed time would stay at zero, and the surface would freeze —
+ * the same failure the adoption path clones to avoid, arriving through the door
+ * marked "pinned". Copying here makes the pin mean what it says.
+ *
+ * @param {object} [epoch] The caller's instant, or undefined to re-adopt.
+ * @returns {object|undefined} An instant this surface owns.
+ * @private
+ */
+function cloneSimulationEpoch(epoch) {
+  return defined(epoch) ? JulianDate.clone(epoch) : undefined;
+}
+
+/**
+ * Seconds of SCENE time elapsed since this surface's simulation epoch.
+ *
+ * The FFT surface is a simulation, so its phase belongs to the clock the scene
+ * is showing, not to how many times the renderer has been called. Driving it
+ * from a frame counter divided by an assumed sixty hertz made the surface
+ * frame-rate dependent, unpinnable — a paused clock still evolved it — and
+ * decoupled from every other time-dependent thing in the scene. It also made
+ * any capture that was not frame-locked meaningless, because two pages that
+ * had rendered a different number of frames were showing different seas.
+ *
+ * The epoch is adopted from the first frame that carries a time and then kept,
+ * so the returned value starts at zero and advances with the clock: a pinned
+ * clock returns the same number every frame and a running one advances at real
+ * rate. Adoption clones once; every later frame is a subtraction and allocates
+ * nothing.
+ *
+ * @param {{_simulationEpoch?: object}} primitive The surface, or anything
+ *   carrying its epoch field: the law reads and writes nothing else. The field
+ *   holds a {@link JulianDate}, typed structurally so the WebGPU renderer's own
+ *   view of the surface satisfies it without importing the class, and marked
+ *   optional because a surface that has not adopted an epoch yet is the
+ *   ordinary first-frame case rather than an error.
+ * @param {FrameState} [frameState] The frame state.
+ * @returns {number|undefined} Elapsed scene seconds, or <code>undefined</code>
+ *   when the frame carries no time — the caller's signal to take its own
+ *   fallback rather than to guess an epoch.
+ * @private
+ */
+function resolveOceanSimulationSeconds(primitive, frameState) {
+  const now = frameState?.time;
+  if (!defined(now)) {
+    return undefined;
+  }
+  let epoch = primitive._simulationEpoch;
+  if (!defined(epoch)) {
+    epoch = JulianDate.clone(now);
+    primitive._simulationEpoch = epoch;
+    return 0.0;
+  }
+  return JulianDate.secondsDifference(now, epoch);
+}
 
 /**
  * Resolve the celestial-reflection tail of the ocean uniform buffer.
@@ -201,6 +257,12 @@ const CELESTIAL_MAX_ROUGHNESS = 1.0;
  * while the feature is off -- not merely small. Nothing the shader reads
  * therefore differs from what it read before the tail existed, and the fragment
  * stays on the historical highlight it has always drawn.
+ *
+ * The law itself lives in {@link module:CelestialWaterReflection}, shared with
+ * the globe's own water-mask ocean, which packs the same eight values into its
+ * camera uniform buffer. This function is the FFT surface's adapter onto it:
+ * it names which properties carry the controls and supplies the Moon in WORLD
+ * coordinates, which is the frame `OceanSurface.wgsl` evaluates in.
  *
  * Extracted from `update` and exported by name so the off contract can be
  * executed by a node spec rather than asserted, without standing up a WebGPU
@@ -214,76 +276,16 @@ const CELESTIAL_MAX_ROUGHNESS = 1.0;
  * @private
  */
 function resolveCelestialReflection(primitive, frameState) {
-  if (primitive._celestialReflection !== true) {
-    return {
-      enable: 0.0,
-      roughness: 0.0,
-      sunIntensity: 0.0,
-      sinAngularRadius: 0.0,
-      moonDirection: { x: 0.0, y: 0.0, z: 0.0 },
-      moonPhase: 0.0,
-      moonIntensity: 0.0,
-      moonSinAngularRadius: 0.0,
-    };
-  }
-
-  const requestedRoughness = primitive._celestialRoughness;
-  const roughness = Number.isFinite(requestedRoughness)
-    ? Math.min(
-        Math.max(requestedRoughness, CELESTIAL_MIN_ROUGHNESS),
-        CELESTIAL_MAX_ROUGHNESS,
-      )
-    : CELESTIAL_DEFAULT_ROUGHNESS;
-
-  // A negative multiplier would subtract light from the water rather than
-  // dim the disc, so the floor is 0 and not the default.
-  const requestedIntensity = primitive._celestialSunIntensity;
-  const sunIntensity = Number.isFinite(requestedIntensity)
-    ? Math.max(requestedIntensity, 0.0)
-    : 1.0;
-
-  // The Moon. `Scene` clears the illuminated fraction every frame and only a
-  // Moon that actually updated writes it back, so a zero fraction is the
-  // engine's own statement that there is no Moon this frame -- while the
-  // direction beside it may still hold the last one's. Zeroing the direction
-  // on that signal is what keeps a stale bearing from steering a glint.
-  const moonPhase = frameState?.moonPhaseFraction;
-  const moonDirection = frameState?.moonDirectionWC;
-  let moonX = 0.0;
-  let moonY = 0.0;
-  let moonZ = 0.0;
-  let phase = 0.0;
-  if (defined(moonDirection) && Number.isFinite(moonPhase) && moonPhase > 0.0) {
-    const magnitude = Math.sqrt(
-      moonDirection.x * moonDirection.x +
-        moonDirection.y * moonDirection.y +
-        moonDirection.z * moonDirection.z,
-    );
-    if (magnitude > 0.0 && Number.isFinite(magnitude)) {
-      // The shader consumes this direction without normalising it, so the
-      // unit length is this seam's obligation.
-      moonX = moonDirection.x / magnitude;
-      moonY = moonDirection.y / magnitude;
-      moonZ = moonDirection.z / magnitude;
-      phase = Math.min(moonPhase, 1.0);
-    }
-  }
-
-  const requestedMoonIntensity = primitive._celestialMoonIntensity;
-  const moonIntensity = Number.isFinite(requestedMoonIntensity)
-    ? Math.max(requestedMoonIntensity, 0.0)
-    : CELESTIAL_DEFAULT_MOON_INTENSITY;
-
-  return {
-    enable: 1.0,
-    roughness: roughness,
-    sunIntensity: sunIntensity,
-    sinAngularRadius: CELESTIAL_SUN_SIN_ANGULAR_RADIUS,
-    moonDirection: { x: moonX, y: moonY, z: moonZ },
-    moonPhase: phase,
-    moonIntensity: moonIntensity,
-    moonSinAngularRadius: CELESTIAL_MOON_SIN_ANGULAR_RADIUS,
-  };
+  return resolveCelestialWaterTail(
+    {
+      enabled: primitive._celestialReflection === true,
+      roughness: primitive._celestialRoughness,
+      sunIntensity: primitive._celestialSunIntensity,
+      moonIntensity: primitive._celestialMoonIntensity,
+    },
+    frameState?.moonDirectionWC,
+    frameState?.moonPhaseFraction,
+  );
 }
 
 const scratchSubpoint = new Cartesian3();
@@ -507,10 +509,18 @@ OceanSurfacePrimitive.prototype.destroy = function () {
   return destroyObject(this);
 };
 
-// Named side exports so node specs can pin the composition ORDER of the
-// sea-level offset (geoid -> tide*exaggeration -> the vertical exaggeration
-// map) and the exact-zero off-contract of the celestial-reflection tail,
-// without standing up a WebGPU context. Both off-contract claims are the kind
-// that must be proven, not asserted; `@internal`, not public API.
-export { computeSeaLevelOffset, resolveCelestialReflection };
+// Named side exports so node specs can execute three laws without standing up
+// a WebGPU context: the composition ORDER of the sea-level offset (geoid ->
+// tide*exaggeration -> the vertical exaggeration map), the exact-zero
+// off-contract of the celestial-reflection tail, and the simulation clock the
+// wave phase advances on. All three are the kind of claim that must be proven
+// rather than asserted, and the third is additionally the renderer's own
+// dependency — it imports the clock from here rather than carrying a copy.
+// `@internal`, not public API.
+export {
+  cloneSimulationEpoch,
+  computeSeaLevelOffset,
+  resolveCelestialReflection,
+  resolveOceanSimulationSeconds,
+};
 export default OceanSurfacePrimitive;

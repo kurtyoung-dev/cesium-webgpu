@@ -39,6 +39,11 @@ import {
   resolveNightDarkness,
   resolveNightImageryRequest,
 } from "./GlobeNightImagery.js";
+import {
+  CELESTIAL_DEFAULT_MOON_INTENSITY,
+  CELESTIAL_DEFAULT_ROUGHNESS,
+  CELESTIAL_DEFAULT_SUN_INTENSITY,
+} from "./CelestialWaterReflection.js";
 import QuadtreePrimitive from "./QuadtreePrimitive.js";
 import SceneMode from "./SceneMode.js";
 import ShadowMode from "./ShadowMode.js";
@@ -459,6 +464,75 @@ class Globe {
      * @default false
      */
     this.enableEnhancedOcean = false;
+
+    /**
+     * When true, the globe's water reflects the Sun and the Moon through a
+     * microfacet lobe rather than the classic Phong highlight: a Cook-Torrance
+     * glint whose width has a floor set by the reflecting body's own angular
+     * radius, so a mirror-calm sea shows a disc instead of a flickering point,
+     * and a moonglade that arrives as the Sun sets and fades as it rises.
+     * <p>
+     * The two lights hand over across the terminator through complementary
+     * weights, so neither is counted twice and no seam frame appears between
+     * them. The Moon's contribution is additionally weighted by its
+     * illuminated fraction and by a five-degree rise gate, and vanishes
+     * entirely on a frame that draws no Moon.
+     * </p>
+     * <p>
+     * Off by default, and off is exact: every uniform the feature reads is
+     * positive zero while it is false, so the water renders the highlight it
+     * has always rendered. It applies to the globe's water-mask ocean under
+     * both styling models — {@link Globe#enableEnhancedOcean} selects how the
+     * water is coloured, not which glint law it uses.
+     * </p>
+     * <p>
+     * On WebGL the reduced twin ships: the moonglade is reflected, the daytime
+     * Sun glint stays the classic Phong lobe. The opt-in FFT ocean at
+     * <code>scene.globe.water.ocean</code> carries the same feature under its
+     * own <code>celestialReflection</code> property, resolved by the same law.
+     * </p>
+     * @type {boolean}
+     * @default false
+     */
+    this.oceanCelestialReflection = false;
+
+    /**
+     * Base microfacet roughness of the near water, clamped to [0.02, 1].
+     * Only read while {@link Globe#oceanCelestialReflection} is true.
+     * <p>
+     * The shader grows this with distance: a single wave-normal tap resolves
+     * less of the slope the further the fragment is, and the unresolved slope
+     * is exactly what a microfacet roughness stands for, so the far band
+     * self-roughens into a wider, dimmer path while the near water keeps a
+     * tight sparkle. That growth is a proxy for the lost slope, not a
+     * filtered normal distribution.
+     * </p>
+     * @type {number}
+     * @default 0.06
+     */
+    this.oceanCelestialRoughness = CELESTIAL_DEFAULT_ROUGHNESS;
+
+    /**
+     * Multiplier on the reflected solar disc. Floored at 0, because a negative
+     * multiplier would subtract light from the water rather than dim the disc.
+     * Only read while {@link Globe#oceanCelestialReflection} is true.
+     * @type {number}
+     * @default 1
+     */
+    this.oceanCelestialSunIntensity = CELESTIAL_DEFAULT_SUN_INTENSITY;
+
+    /**
+     * Multiplier on the reflected lunar disc. Floored at 0.
+     * Only read while {@link Globe#oceanCelestialReflection} is true.
+     * <p>
+     * The default is an appearance dial, not photometry: full moonlight is
+     * about four millionths of noon sunlight, and the ocean's radiance is not
+     * calibrated in physical units, so the true ratio would render as nothing.
+     * </p>
+     * @type {number}
+     * @default 0.35
+     */
+    this.oceanCelestialMoonIntensity = CELESTIAL_DEFAULT_MOON_INTENSITY;
 
     /**
      * Deep ocean water color (RGB). Blended with imagery on water surfaces.
@@ -1441,6 +1515,17 @@ class Globe {
       tileProvider.oceanReflectivity = this.oceanReflectivity;
       tileProvider.oceanFoamThreshold = this.oceanFoamThreshold;
       tileProvider.oceanDarkening = this.oceanDarkening;
+      // The enable and the three dials travel separately, exactly as the
+      // night-lights pair above does, and for the same reason: the shared
+      // resolver in `CelestialWaterReflection` owns what off looks like, and
+      // it answers "all eight floats are exactly zero". Folding the enable in
+      // here — writing 0 for an intensity, say — would make off and a
+      // deliberate zero dial the same 32 bits on the way to the shader.
+      tileProvider.oceanCelestialReflection = this.oceanCelestialReflection;
+      tileProvider.oceanCelestialRoughness = this.oceanCelestialRoughness;
+      tileProvider.oceanCelestialSunIntensity = this.oceanCelestialSunIntensity;
+      tileProvider.oceanCelestialMoonIntensity =
+        this.oceanCelestialMoonIntensity;
 
       // Ground atmosphere needs no separate WebGPU pass — it is shaded inside
       // GlobeTerrain.wgsl (csm_computeGroundAtmosphereScattering plus

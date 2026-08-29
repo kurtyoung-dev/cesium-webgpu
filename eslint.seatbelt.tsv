@@ -166,7 +166,6 @@
 "packages/engine/Source/Renderer/WebGPU/WebGPUGlobeFragmentDebug.ts"	"curly"	2
 "packages/engine/Source/Renderer/WebGPU/WebGPUGlobeMaterial.ts"	"curly"	19
 "packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceCameraUB.ts"	"curly"	14
-"packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceCameraUB.ts"	"no-useless-assignment"	2
 "packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceRenderer.ts"	"curly"	24
 "packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceRenderer.ts"	"no-duplicate-imports"	3
 "packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceRenderer.ts"	"no-useless-assignment"	1

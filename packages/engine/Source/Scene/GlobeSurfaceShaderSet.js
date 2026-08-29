@@ -84,6 +84,7 @@ class GlobeSurfaceShader {
  * @property {boolean} [applyDayNightAlpha]
  * @property {boolean} [applyNightDarkness]
  * @property {boolean} [applyNightLights]
+ * @property {boolean} [applyCelestialWater]
  * @property {boolean} [applySplit]
  * @property {boolean} [hasWaterMask]
  * @property {boolean} [showReflectiveOcean]
@@ -218,6 +219,7 @@ class GlobeSurfaceShaderSet {
     const applyDayNightAlpha = options.applyDayNightAlpha;
     const applyNightDarkness = options.applyNightDarkness;
     const applyNightLights = options.applyNightLights;
+    const applyCelestialWater = options.applyCelestialWater;
     const applySplit = options.applySplit;
     const hasWaterMask = options.hasWaterMask;
     const showReflectiveOcean = options.showReflectiveOcean;
@@ -316,7 +318,8 @@ class GlobeSurfaceShaderSet {
       // already owns that bit, so the vector layer takes the next one.
       (hasVectorLayer ? 0x400000000 : 0) +
       (applyNightDarkness ? 0x800000000 : 0) +
-      (applyNightLights ? 0x1000000000 : 0);
+      (applyNightLights ? 0x1000000000 : 0) +
+      (applyCelestialWater ? 0x2000000000 : 0);
 
     let currentClippingShaderState = 0;
     if (defined(clippingPlanes) && clippingPlanes.length > 0) {
@@ -424,6 +427,9 @@ class GlobeSurfaceShaderSet {
       }
       if (applyNightLights) {
         fs.defines.push("APPLY_NIGHT_LIGHTS");
+      }
+      if (applyCelestialWater) {
+        fs.defines.push("APPLY_CELESTIAL_WATER");
       }
       if (hasWaterMask) {
         fs.defines.push("HAS_WATER_MASK");

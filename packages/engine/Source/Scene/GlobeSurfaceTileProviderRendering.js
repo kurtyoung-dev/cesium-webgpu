@@ -28,6 +28,7 @@ import DrawCommand from "../Renderer/DrawCommand.js";
 import Pass from "../Renderer/Pass.js";
 import VertexArray from "../Renderer/VertexArray.js";
 import FeatureRendererKey from "../Renderer/FeatureRendererKey.js";
+import { resolveCelestialWaterTail } from "./CelestialWaterReflection.js";
 import { createEclipseGlobeShadow } from "./EclipseGlobeShadow.js";
 import { resolveNightImageryFade } from "./GlobeNightImagery.js";
 import GlobeSurfaceTile from "./GlobeSurfaceTile.js";
@@ -222,6 +223,7 @@ const surfaceShaderSetOptionsScratch = {
   applyDayNightAlpha: undefined,
   applyNightDarkness: undefined,
   applyNightLights: undefined,
+  applyCelestialWater: undefined,
   applySplit: undefined,
   showReflectiveOcean: undefined,
   showOceanWaves: undefined,
@@ -741,6 +743,9 @@ function createTileUniformMap(frameState, globeSurfaceTileProvider) {
     u_nightIntensity: function () {
       return this.properties.nightIntensity;
     },
+    u_oceanCelestialMoon: function () {
+      return this.properties.oceanCelestialMoon;
+    },
     u_vectorSegmentTexture: function () {
       return (
         this.properties.vectorSegmentTexture ??
@@ -842,6 +847,10 @@ function createTileUniformMap(frameState, globeSurfaceTileProvider) {
       terminatorGlowStrength: 0.0,
       nightDarkness: 1.0,
       nightIntensity: NIGHT_LIGHTS_UNSET,
+      // Scratch, rewritten in place each frame like every other Cartesian on
+      // this properties bag. The zeros are what an unconfigured frame reads,
+      // and the define is not emitted in that state anyway.
+      oceanCelestialMoon: new Cartesian4(0.0, 0.0, 0.0, 0.0),
       eclipseGlobeShadow: defaultEclipseGlobeShadow,
 
       vectorSegmentTexture: undefined,
@@ -2343,6 +2352,45 @@ function addDrawCommandsForTile(tileProvider, tile, frameState) {
     uniformMapProperties.nightIntensity = nightIntensity;
     surfaceShaderSetOptions.applyNightLights =
       nightLightsOn && applyDayNightAlpha;
+
+    // The reduced celestial-water twin: the moonglade, on the water this
+    // backend already reflects a Phong Sun in. The three controls are resolved
+    // by the same law the WebGPU camera-UB tail uses, so an off state, a
+    // clamped roughness or a floored intensity cannot mean two different
+    // things on the two backends.
+    //
+    // The resolved direction is deliberately not packed: the shader reads
+    // czm_moonDirectionEC, an ephemeris quantity UniformState recomputes every
+    // frame and which therefore cannot go stale the way the frame-state vector
+    // can. The direction is still handed to the resolver, because that is what
+    // makes the illuminated fraction below zero out on a frame that draws no
+    // Moon — the same guard the WebGPU tail relies on, reaching the shader
+    // through the phase rather than through the bearing.
+    //
+    // The define is conjoined with showReflectiveOcean because the whole
+    // function it lands in lives under SHOW_REFLECTIVE_OCEAN; without that
+    // condition a tile with no water mask would compile a uniform and a
+    // hundred lines of law that nothing calls, and stop being upstream's
+    // shader while the feature is off.
+    const celestialTail = resolveCelestialWaterTail(
+      {
+        enabled: tileProvider.oceanCelestialReflection === true,
+        roughness: tileProvider.oceanCelestialRoughness,
+        sunIntensity: tileProvider.oceanCelestialSunIntensity,
+        moonIntensity: tileProvider.oceanCelestialMoonIntensity,
+      },
+      frameState.moonDirectionWC,
+      frameState.moonPhaseFraction,
+    );
+    Cartesian4.fromElements(
+      celestialTail.roughness,
+      celestialTail.moonIntensity,
+      celestialTail.moonPhase,
+      0.0,
+      uniformMapProperties.oceanCelestialMoon,
+    );
+    surfaceShaderSetOptions.applyCelestialWater =
+      celestialTail.enable > 0.0 && showReflectiveOcean;
     surfaceShaderSetOptions.applySplit = applySplit;
     surfaceShaderSetOptions.enableFog = applyFog;
     surfaceShaderSetOptions.enableClippingPlanes = clippingPlanesEnabled;

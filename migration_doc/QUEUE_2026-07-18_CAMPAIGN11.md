@@ -3024,6 +3024,8 @@ longer C11-deferred work because that cluster transferred to C13.
 
 Edge tranche 3c (2026-08-28 ~23:10) first pixel evidence for the FFT prototype (Batches 1252/1253): the same-settings anchor first moved 66.08% (VOID) because the FFT surface evolves on frame count, not simulation time (Q-73); frame-locked at frameNumber 46 the control is byte-identical, the enable float moves 1.044% / maxDelta 245, off returns byte-identical, and `moon.show=false` returns the ON frame byte-identically to OFF - the moonglade is the Moon's. Premise on the record: the FFT ocean and `celestialReflection` are WebGPU-only today, so the CW legs have no WebGL reference until the reduced GLSL twin (sub-decision 2) lands.
 
+**Slice 1 LANDED at Batch 1271 (2026-08-29):** the celestial reflection reaches the globe water-mask ocean on both preprocessor arms with the reduced GLSL moonglade twin (sub-decisions 1 and 2 executed); one law in three shaders, one CPU leaf, off exact on both backends. Slice 2 (star splat into the reflection cube, sub-decision 3) and slice 3 (S5a sun-view shadow map, sub-decision 4) remain OPEN - S5a needs a WebGPU bind-group layout change scoped as its own lane. Edge legs A-F owed to tranche 3e-B.
+
 1. **Target ocean:** (A) globe water-mask "enhanced ocean" (`computeEnhancedOcean`, the default shipping
    path) vs (B) opt-in FFT `OceanSurface.wgsl` (cleaner prototype host). Dossier §1 recommends prototype
    in (B) → port to (A).
