@@ -11,6 +11,7 @@ import { access, mkdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
+  IncludeNameZeroMatchError,
   runKarmaTestServer,
   strictKarmaResultConfig,
 } from "../karmaTestRun.js";
@@ -278,6 +279,247 @@ async function run() {
       ),
       /without executing any browser tests/,
       "an empty suite cannot satisfy the completion contract",
+    );
+  }
+
+  // Q-83: a `--includeName`/`--grep` pattern under which zero specs EXECUTE
+  // produces a SPECIFIC real Karma signal -- `results.success + results.failed
+  // === 0` AND `results.exitCode === 1` AND the done-callback exit code is
+  // `1` too. Karma's own `calculateExitCode`
+  // (node_modules/karma/lib/browser_collection.js) returns 1, never 0, for a
+  // zero-executed run whenever `failOnEmptyTestSuite` is set, and this file
+  // pins that true via `strictKarmaResultConfig`. A fixture using `exitCode:
+  // 0` (this file's `createResults` default) is a state real Karma cannot
+  // produce for this case and would certify nothing; every case below uses
+  // the real shape (station-3 review pass 1: the original four cases used
+  // `exitCode: 0` and so never reached `runKarmaTestServer`'s reclassification
+  // branch at all -- exercised only via the mutation battery further below).
+  // The two must still be DISTINGUISHABLE to a caller so a typo'd filter
+  // isn't confused with a genuine test failure. `nameFilter` is the
+  // discriminator.
+
+  function zeroExecutedResults(overrides = {}) {
+    return createResults({
+      success: 0,
+      failed: 0,
+      skipped: 17422,
+      exitCode: 1,
+      ...overrides,
+    });
+  }
+
+  {
+    // The clean case: nameFilter supplied, nothing else wrong, on the REAL
+    // zero-executed Karma signal (exitCode 1 on both results and the done
+    // callback) -> the dedicated error class, not the generic one.
+    await assert.rejects(
+      runKarmaTestServer(
+        makeFakeKarmaServer((server, done) => {
+          emitCompleteLifecycle(server, done, {
+            results: zeroExecutedResults(),
+            exitCode: 1,
+          });
+        }),
+        {},
+        { nameFilter: "NoSuchSuiteAnywhere" },
+      ),
+      (error) => {
+        assert.ok(
+          error instanceof IncludeNameZeroMatchError,
+          "must reject with IncludeNameZeroMatchError, not the generic error",
+        );
+        assert.match(error.message, /includeName selected 0 runnable specs/);
+        assert.match(error.message, /NoSuchSuiteAnywhere/);
+        assert.match(error.message, /17422 spec\(s\) reported skipped/);
+        // Neither the old, refuted wording nor its own retracted "regular
+        // expression" claim may reappear (station-3 review pass 1).
+        assert.doesNotMatch(error.message, /matched 0 suites/);
+        assert.doesNotMatch(
+          error.message,
+          /is a regular expression tested against/,
+        );
+        assert.match(error.message, /ESCAPED-LITERAL SUBSTRING/);
+        assert.equal(error.code, "INCLUDE_NAME_ZERO_MATCH");
+        return true;
+      },
+      "a name filter under which zero specs executed is its own distinguishable error, on the REAL Karma exit-1 signal",
+    );
+  }
+
+  {
+    // Without a nameFilter, the same real zero-executed signal stays the
+    // GENERIC error -- the reclassification must not swallow the ordinary
+    // empty-suite case.
+    await assert.rejects(
+      runKarmaTestServer(
+        makeFakeKarmaServer((server, done) => {
+          emitCompleteLifecycle(server, done, {
+            results: zeroExecutedResults(),
+            exitCode: 1,
+          });
+        }),
+        {},
+        {},
+      ),
+      (error) => {
+        assert.equal(
+          error instanceof IncludeNameZeroMatchError,
+          false,
+          "an unfiltered empty suite must not be reclassified",
+        );
+        assert.match(error.message, /without executing any browser tests/);
+        assert.doesNotMatch(error.message, /selected 0 runnable specs/);
+        return true;
+      },
+      "a real zero-executed run with no nameFilter keeps the generic acceptance error",
+    );
+  }
+
+  {
+    // A nameFilter is supplied, but the run ALSO had a real problem
+    // (disconnected browser) alongside the real zero-executed signal: the
+    // single-cause gate must fall through to the generic error, not hide
+    // the disconnect behind "selected 0 runnable specs".
+    const browser = createBrowser({
+      disconnectsCount: 1,
+      lastResult: { disconnected: true, error: false },
+    });
+    await assert.rejects(
+      runKarmaTestServer(
+        makeFakeKarmaServer((server, done) => {
+          emitCompleteLifecycle(server, done, {
+            browser,
+            results: zeroExecutedResults(),
+            exitCode: 1,
+          });
+        }),
+        {},
+        { nameFilter: "SomePattern" },
+      ),
+      (error) => {
+        assert.equal(
+          error instanceof IncludeNameZeroMatchError,
+          false,
+          "a disconnect alongside a zero-executed result must not be hidden as a zero-match",
+        );
+        assert.match(error.message, /disconnected during the run/);
+        return true;
+      },
+      "a nameFilter cannot mask a real infrastructure failure riding with it",
+    );
+  }
+
+  {
+    // The empty-suite reclassification is unconditional on failTaskOnError,
+    // matching the existing "opt-out never permits an empty run" contract.
+    await assert.rejects(
+      runKarmaTestServer(
+        makeFakeKarmaServer((server, done) => {
+          emitCompleteLifecycle(server, done, {
+            results: zeroExecutedResults(),
+            exitCode: 1,
+          });
+        }),
+        {},
+        { failTaskOnError: false, nameFilter: "AnotherPattern" },
+      ),
+      (error) => error instanceof IncludeNameZeroMatchError,
+      "failTaskOnError:false does not exempt a real zero-executed run either",
+    );
+  }
+
+  {
+    // Pins the `validCounts` conjunct of `emptySuiteCleanly` (station-3
+    // review pass 1, mutation M5: forcing `getCompletionFailures` to always
+    // return `emptySuiteCleanly: true` regardless of its real computation).
+    // `success + failed === 0` here too (-1 + 1), so a check that only
+    // looked at the SUM would misclassify this as zero-executed; only
+    // `validCounts` catches it. Exit codes are left at 0 (the default) --
+    // NOT 1 -- so `expectedExitCode` is satisfied by the `code === 0`
+    // disjunct regardless of `validCounts`/`emptySuiteExpected`, and exactly
+    // one failure string is pushed ("malformed browser test counts"),
+    // giving `failures.length === 1`. That means the `failures.length === 1`
+    // gate (M2) does NOT save this case on its own -- only `validCounts`
+    // inside `emptySuiteCleanly` does, so under M5 this run would incorrectly
+    // become an `IncludeNameZeroMatchError` while the real code correctly
+    // keeps it generic.
+    await assert.rejects(
+      runKarmaTestServer(
+        makeFakeKarmaServer((server, done) => {
+          emitCompleteLifecycle(server, done, {
+            results: createResults({ success: -1, failed: 1 }),
+          });
+        }),
+        {},
+        { nameFilter: "AnyPattern" },
+      ),
+      (error) => {
+        assert.equal(
+          error instanceof IncludeNameZeroMatchError,
+          false,
+          "malformed counts must never be reclassified as a zero-match, even with a nameFilter and a single failure string",
+        );
+        assert.match(error.message, /malformed browser test counts/);
+        return true;
+      },
+      "malformed counts summing to zero are not a zero-match -- pins the validCounts conjunct of emptySuiteCleanly (M5)",
+    );
+  }
+
+  // M2 (dropping the `failures.length === 1` gate from `isPureZeroMatch &&
+  // failures.length === 1`): the one scenario that gate uniquely covers is
+  // `removeEdgeProfileDirectories` genuinely failing (a real `fs.rm`
+  // rejection) while `getCompletionFailures` independently reports
+  // `emptySuiteCleanly: true` -- every OTHER push into `failures` is tied
+  // 1:1 to one of `emptySuiteCleanly`'s own conjuncts, so this cleanup push
+  // (which happens strictly after `getCompletionFailures` returns) is
+  // architecturally the only gap. Three techniques (open write handle,
+  // read-only chmod, NUL-byte path) all failed to construct it (station-3
+  // review pass 1). Station-3 review pass 2 found a fourth that works:
+  // holding the profile directory as THIS PROCESS'S OWN CWD -- Windows
+  // refuses to remove a directory that is the current working directory
+  // (EBUSY). POSIX permits removing the CWD, so this only discriminates on
+  // win32; CI is ubuntu-latest (`.github/workflows/dev.yml`), so the case is
+  // guarded and records a truthful skip there rather than running a
+  // technique that would not discriminate.
+  if (process.platform === "win32") {
+    const profileDirectory = path.join(
+      tmpdir(),
+      `karma-edge-${Date.now()}-${process.pid}`,
+    );
+    await mkdir(profileDirectory, { recursive: true });
+    const originalCwd = process.cwd();
+    process.chdir(profileDirectory);
+    try {
+      await assert.rejects(
+        runKarmaTestServer(
+          makeFakeKarmaServer((server, done) => {
+            emitCompleteLifecycle(server, done, {
+              results: zeroExecutedResults(),
+              exitCode: 1,
+            });
+          }),
+          edgeProfileConfig(profileDirectory),
+          { nameFilter: "AnyPattern" },
+        ),
+        (error) => {
+          assert.equal(
+            error instanceof IncludeNameZeroMatchError,
+            false,
+            "a genuine Edge-profile-cleanup failure alongside a zero-executed result must not be hidden as a zero-match -- pins the failures.length===1 gate (M2)",
+          );
+          assert.match(error.message, /Could not remove the Edge test profile/);
+          return true;
+        },
+        "holding the profile directory as this process's CWD makes cleanup genuinely fail (Windows EBUSY, resource busy or locked), which the failures.length===1 gate must not swallow into a false zero-match",
+      );
+    } finally {
+      process.chdir(originalCwd);
+      await rm(profileDirectory, { recursive: true, force: true });
+    }
+  } else {
+    console.log(
+      `M2 CWD-hold case: skipped (windows-only technique; process.platform is "${process.platform}")`,
     );
   }
 

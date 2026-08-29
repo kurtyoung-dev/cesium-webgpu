@@ -1413,7 +1413,28 @@ test("derived policy and source-map closures reject omitted helper and product-b
   );
 
   const boundary = collectC1229S5ReplacementSourceBoundary();
-  assert.equal(boundary.sourceMapEntryCount, 2202);
+  // NOT a pin on the whole build's total module count (Q-81): that count
+  // drifts with every unrelated engine landing — an executor run measured
+  // 2202 against a build that had drifted to 2207 with nothing in this gate
+  // touched, redding the gate on work it has no stake in. What the gate
+  // actually needs is that its OWN named root files — a fixed, narrow set
+  // this module exports — are all present and byte-exact in the current
+  // build. That set's size changes only when this file's own export is
+  // edited, never as a side effect of unrelated work elsewhere in the tree.
+  assert.equal(
+    C12_29_S5_REPLACEMENT_SOURCE_FILES.length,
+    27,
+    "the replacement-device root file list changed size — update this pin deliberately",
+  );
+  assert.equal(
+    boundary.rootsPresent,
+    true,
+    "every named replacement-device root file must be embedded in the build source map",
+  );
+  assert.ok(
+    boundary.sourceMapEntryCount >= C12_29_S5_REPLACEMENT_SOURCE_FILES.length,
+    "the whole-build source map must contain at least the replacement-device root files",
+  );
   assert.equal(boundary.allExact, true);
   const productPath = path.join(
     repositoryRoot,
@@ -1435,6 +1456,90 @@ test("derived policy and source-map closures reject omitted helper and product-b
     ),
     true,
   );
+});
+
+/**
+ * A minimal, internally-consistent v3 source map + matching `readFileSync`
+ * stub, built entirely from `paths` — no real `Build/` output is read. This
+ * exercises `collectC1229S5ReplacementSourceBoundary`'s real resolution and
+ * root-presence logic (Q-81) through its documented `operations` injection
+ * seam, independent of whatever the repository's actual build state is.
+ *
+ * ZERO POWER OVER THE NAMES THEMSELVES: the synthetic map is built FROM the
+ * same `paths` the assertions below check against, so it is self-consistent
+ * for any list of names — including a list of names that are wrong for the
+ * REAL build (station-3 review, Q-81 pass 1: the lane initially "corrected"
+ * `C12_29_S5_REPLACEMENT_SOURCE_FILES` to the raw `.glsl`/`.wgsl` shader
+ * paths, which this test happily passed, while main's real build source map
+ * only ever contains the build-generated, gitignored `.js` forms those
+ * shaders compile to — `packages/engine/.gitignore:5`,
+ * `lib/c12-29-s5-dense-cost-gate.mjs`'s `..._RAW_GENERATED_PAIRS`). This test
+ * proves the RESOLUTION/PRESENCE LOGIC; it can never catch a wrong root
+ * name — only a real build's source map (or a fixture independently derived
+ * from one) can do that.
+ */
+function syntheticSourceBoundaryOperations(paths) {
+  const sourceMapPath = path.join(
+    repositoryRoot,
+    "Build/CesiumUnminified/index.js.map",
+  );
+  const sources = paths.map((file) => `../../${file}`);
+  const sourcesContent = paths.map((file) => `// synthetic body for ${file}`);
+  const sourceMapBytes = Buffer.from(
+    JSON.stringify({ version: 3, sourceRoot: "", sources, sourcesContent }),
+  );
+  const contentByResolvedPath = new Map(
+    paths.map((file, index) => [
+      path.join(repositoryRoot, file),
+      Buffer.from(sourcesContent[index]),
+    ]),
+  );
+  return {
+    readFileSync(file) {
+      const resolved = path.resolve(String(file));
+      if (resolved === sourceMapPath) {
+        return sourceMapBytes;
+      }
+      const content = contentByResolvedPath.get(resolved);
+      if (content === undefined) {
+        const error = new Error(`ENOENT (synthetic): ${resolved}`);
+        error.code = "ENOENT";
+        throw error;
+      }
+      return content;
+    },
+  };
+}
+
+test("Q-81: root-presence is keyed on the named set, not the whole-build total, and reds when a named module is dropped", () => {
+  const allRootsBoundary = collectC1229S5ReplacementSourceBoundary(
+    syntheticSourceBoundaryOperations([
+      ...C12_29_S5_REPLACEMENT_SOURCE_FILES,
+      // An unrelated extra "build" entry the whole-build total would count —
+      // proves the fixed assertions key off the NAMED set, not the total.
+      "packages/engine/Source/Core/defined.js",
+    ]),
+  );
+  assert.equal(allRootsBoundary.rootsPresent, true);
+  assert.equal(allRootsBoundary.allExact, true);
+  assert.equal(
+    allRootsBoundary.sourceMapEntryCount,
+    C12_29_S5_REPLACEMENT_SOURCE_FILES.length + 1,
+    "the synthetic whole-build total includes the one extra unrelated file",
+  );
+
+  const droppedRoot = C12_29_S5_REPLACEMENT_SOURCE_FILES[0];
+  const missingRootBoundary = collectC1229S5ReplacementSourceBoundary(
+    syntheticSourceBoundaryOperations(
+      C12_29_S5_REPLACEMENT_SOURCE_FILES.filter((file) => file !== droppedRoot),
+    ),
+  );
+  assert.equal(
+    missingRootBoundary.rootsPresent,
+    false,
+    `dropping ${droppedRoot} from the build must be caught, not silently pass`,
+  );
+  assert.equal(missingRootBoundary.allExact, false);
 });
 
 test("both renderer lanes reject vacuous black grids and non-960 images", () => {

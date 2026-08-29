@@ -41,6 +41,23 @@
 // makes the run STRUCTURAL; it is never printed as a negative cost or replaced
 // with those historical estimates.
 //
+// Q-80 (2026-08-29): the refresh-cost lane (this is "SOL-4" in dispatch
+// docs) published timing only, in violation of the maintainer's multi-metric
+// rule — never judge performance on one number; carry counts, timings,
+// memory and allocations together, each with its own noise behaviour stated
+// beside it. `refreshCost.segments[].memory`/`.allocations` and the
+// leg-summed `refreshCost.memory`/`.allocations` aggregates now carry a
+// heap-usage delta (`performance.memory`, Chromium-only) and a genuine
+// allocation count (the environment-target pool's buffer/depth create
+// counters, WebGPU-only) alongside the existing wall/GPU timing — see the
+// `refresh-cost-multi-metric` block below `runCostSegment` for the samplers
+// and their noise notes. Neither is scored (no budget is pre-registered for
+// either, same as timing's own `refreshCostMeasured`), and both were wired
+// without a browser available to this lane (no Playwright access) — an Edge
+// run is what actually fills real numbers into these fields; the schema and
+// the noise documentation are what an executor packet should quote them
+// against.
+//
 // ─────────────────────────────────────────────────────────────────────────────
 // AIMING vs GATING — the discriminator is never built from what it discriminates
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2245,9 +2262,142 @@ const RUN_IBL_SWEEP = async (cfg) => {
   };
   // ==END refresh-cost-drain-closure==
 
+  // ==BEGIN refresh-cost-multi-metric==
+  // Q-80: the timing-only report violated the multi-metric performance rule
+  // (never judge on one number; carry counts, timings, memory and
+  // allocations together, each with its own noise behaviour stated beside
+  // it). Neither sampler below is scored — there is no pre-registered budget
+  // for either, same as `refreshCostMeasured` itself only requires a real
+  // number, not a threshold — they are published alongside the existing
+  // wall/GPU timing so a reader (or a future budget-setting ruling) has them.
+  const sampleHeapMemory = () => {
+    // Chromium-only, non-standard (`performance.memory`); undefined on
+    // Firefox/WebKit and in some cross-origin-isolated contexts. Absence is
+    // reported, never treated as zero.
+    const memory = performance.memory;
+    if (
+      !memory ||
+      !Number.isFinite(memory.usedJSHeapSize) ||
+      !Number.isFinite(memory.totalJSHeapSize) ||
+      !Number.isFinite(memory.jsHeapSizeLimit)
+    ) {
+      return {
+        available: false,
+        usedJSHeapSizeBytes: null,
+        totalJSHeapSizeBytes: null,
+        jsHeapSizeLimitBytes: null,
+      };
+    }
+    return {
+      available: true,
+      usedJSHeapSizeBytes: memory.usedJSHeapSize,
+      totalJSHeapSizeBytes: memory.totalJSHeapSize,
+      jsHeapSizeLimitBytes: memory.jsHeapSizeLimit,
+    };
+  };
+  // NOISE: `performance.memory` is a coarse JS-heap snapshot, not a true
+  // allocation counter — a GC landing between the "before" and "after"
+  // sample can shrink or invert an otherwise-real delta, and unrelated page
+  // activity (this probe's own bookkeeping, a background timer) shares the
+  // same heap. Treat `heapDeltaBytes` as a noisy, single-sample FLOOR on net
+  // retained growth across the segment, never as a per-refresh figure.
+  const HEAP_MEMORY_NOISE_NOTE =
+    "performance.memory delta across the segment; GC between the before/after " +
+    "samples can hide or invert real growth, and unrelated page activity " +
+    "shares the same heap — a noisy floor on net retained growth, not a " +
+    "true allocation count or a per-refresh figure";
+
+  const sampleAllocationCounters = () => {
+    // The environment-target-pool buffer/depth create counters are a GENUINE
+    // allocation count (not a proxy) for exactly the code path this lane
+    // measures — but they exist only on the WebGPU context; WebGL has no
+    // equivalent pool telemetry.
+    if (!isWebGPU) {
+      return {
+        available: false,
+        reason: "WebGL has no environment-target-pool allocation telemetry",
+        bufferCreates: null,
+        depthCreates: null,
+        bufferDestroys: null,
+        depthDestroys: null,
+      };
+    }
+    const stats = costContext.getEnvironmentTargetPoolStats?.();
+    if (!stats) {
+      return {
+        available: false,
+        reason:
+          "getEnvironmentTargetPoolStats returned no snapshot (pool not yet created)",
+        bufferCreates: null,
+        depthCreates: null,
+        bufferDestroys: null,
+        depthDestroys: null,
+      };
+    }
+    return {
+      available: true,
+      reason: null,
+      bufferCreates: stats.bufferCreates,
+      depthCreates: stats.depthCreates,
+      bufferDestroys: stats.bufferDestroys,
+      depthDestroys: stats.depthDestroys,
+    };
+  };
+  // NOISE: the pool is scoped to the whole `GPUDevice`/resourceGeneration,
+  // not to this probe alone — a create/destroy delta is exact when this
+  // probe owns the page exclusively (its normal invocation) but would
+  // over-count if another consumer of the same context allocated
+  // environment-refresh targets concurrently.
+  const ALLOCATION_COUNTER_NOISE_NOTE =
+    "context-scoped bufferCreates/depthCreates delta from the environment " +
+    "target pool; exact when this probe owns the page exclusively (its " +
+    "normal invocation), would over-count if another consumer of the same " +
+    "GPUDevice allocated environment-refresh targets concurrently";
+
+  const deltaOrNull = (before, after, field) =>
+    before?.available && after?.available ? after[field] - before[field] : null;
+
+  const sampleCostMultiMetric = () => ({
+    memory: sampleHeapMemory(),
+    allocations: sampleAllocationCounters(),
+  });
+
+  const finishCostMultiMetric = (before) => {
+    const after = sampleCostMultiMetric();
+    return {
+      memory: {
+        before: before.memory,
+        after: after.memory,
+        heapDeltaBytes: deltaOrNull(
+          before.memory,
+          after.memory,
+          "usedJSHeapSizeBytes",
+        ),
+        noiseNote: HEAP_MEMORY_NOISE_NOTE,
+      },
+      allocations: {
+        before: before.allocations,
+        after: after.allocations,
+        bufferCreatesDelta: deltaOrNull(
+          before.allocations,
+          after.allocations,
+          "bufferCreates",
+        ),
+        depthCreatesDelta: deltaOrNull(
+          before.allocations,
+          after.allocations,
+          "depthCreates",
+        ),
+        noiseNote: ALLOCATION_COUNTER_NOISE_NOTE,
+      },
+    };
+  };
+  // ==END refresh-cost-multi-metric==
+
   const runCostSegment = async (pairIndex, leg, from, to) => {
     ac.lighting.enableEclipse = leg === "eclipse";
     pin.renderAt(C.JulianDate.fromIso8601(schedule[from].iso)); // untimed
+    const multiMetricBefore = sampleCostMultiMetric();
     const segmentPrefix = `pair ${pairIndex} ${leg}:`;
     const segmentReason = (reason) =>
       reason.startsWith(segmentPrefix) ? reason : `${segmentPrefix} ${reason}`;
@@ -2390,6 +2540,7 @@ const RUN_IBL_SWEEP = async (cfg) => {
         refreshFrameIds,
         refreshSubmissions,
         gpuTime: unavailableGpuTime(),
+        ...finishCostMultiMetric(multiMetricBefore),
       };
     }
 
@@ -2594,6 +2745,7 @@ const RUN_IBL_SWEEP = async (cfg) => {
         drain,
         results,
       },
+      ...finishCostMultiMetric(multiMetricBefore),
     };
   };
 
@@ -2646,6 +2798,23 @@ const RUN_IBL_SWEEP = async (cfg) => {
     costSegments
       .filter((segment) => segment.leg === leg)
       .reduce((total, segment) => total + segment.gpuTime.totalMs, 0);
+  // Q-80 multi-metric aggregation, mirroring `sumLeg`/`sumGpuLeg`: null the
+  // WHOLE leg total the moment one segment's sample was unavailable, rather
+  // than silently summing over a hole — a partial sum next to a full-looking
+  // field name is worse than an explicit null.
+  const sumLegMultiMetric = (leg, group, deltaField) => {
+    const legSegments = costSegments.filter((segment) => segment.leg === leg);
+    if (
+      legSegments.length === 0 ||
+      legSegments.some((segment) => segment[group][deltaField] === null)
+    ) {
+      return null;
+    }
+    return legSegments.reduce(
+      (total, segment) => total + segment[group][deltaField],
+      0,
+    );
+  };
   const refreshCost = {
     protocol: {
       version: cfg.refreshCostProtocol.version,
@@ -2704,6 +2873,60 @@ const RUN_IBL_SWEEP = async (cfg) => {
     controlFills: sumLeg("control", "fills"),
     eclipseRefreshes: sumLeg("eclipse", "refreshes"),
     controlRefreshes: sumLeg("control", "refreshes"),
+    // Q-80: memory and allocation counts, published alongside timing per the
+    // multi-metric rule — never scored (no pre-registered budget exists for
+    // either, same reason `refreshCostMeasured` below only checks a real
+    // number came back). Each per-segment sample already carries its own
+    // noise note; these are the leg-summed deltas for the aggregate reader.
+    memory: {
+      // `every` on an empty array is vacuously true (Q-80 review pass 1);
+      // require at least one segment so an empty run reports `false`, not a
+      // misleadingly-true `available` alongside null totals.
+      available:
+        costSegments.length > 0 &&
+        costSegments.every((segment) => segment.memory.heapDeltaBytes !== null),
+      eclipseHeapDeltaBytes: sumLegMultiMetric(
+        "eclipse",
+        "memory",
+        "heapDeltaBytes",
+      ),
+      controlHeapDeltaBytes: sumLegMultiMetric(
+        "control",
+        "memory",
+        "heapDeltaBytes",
+      ),
+      noiseNote: HEAP_MEMORY_NOISE_NOTE,
+    },
+    allocations: {
+      // Same empty-array guard as `memory.available` above (Q-80 review
+      // pass 1).
+      available:
+        costSegments.length > 0 &&
+        costSegments.every(
+          (segment) => segment.allocations.bufferCreatesDelta !== null,
+        ),
+      eclipseBufferCreatesDelta: sumLegMultiMetric(
+        "eclipse",
+        "allocations",
+        "bufferCreatesDelta",
+      ),
+      controlBufferCreatesDelta: sumLegMultiMetric(
+        "control",
+        "allocations",
+        "bufferCreatesDelta",
+      ),
+      eclipseDepthCreatesDelta: sumLegMultiMetric(
+        "eclipse",
+        "allocations",
+        "depthCreatesDelta",
+      ),
+      controlDepthCreatesDelta: sumLegMultiMetric(
+        "control",
+        "allocations",
+        "depthCreatesDelta",
+      ),
+      noiseNote: ALLOCATION_COUNTER_NOISE_NOTE,
+    },
     // Retain the full alternating ledger for the gate's cost function. Inline
     // eclipse-minus-control arithmetic would erase the ordering evidence and
     // let sequential A/B drift impersonate refresh cost.

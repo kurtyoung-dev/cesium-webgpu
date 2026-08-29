@@ -206,11 +206,11 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 
 | Metric | Value |
 |---|---|
-| Files in census | 1128 |
-| ACTIVE | 921 |
+| Files in census | 1129 |
+| ACTIVE | 922 |
 | INVESTIGATION | 195 |
 | NO @purpose HEADER | 12 |
-| Classes | probe 652, spec 252, other 102, lib 79, gate-lib 20, bake-tool 13, runner 6, fixture 4 |
+| Classes | probe 652, spec 253, other 102, lib 79, gate-lib 20, bake-tool 13, runner 6, fixture 4 |
 
 ### Tools/ (41)
 
@@ -355,7 +355,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | stbn-rng.mjs | bake-tool | ACTIVE | 2026-08-16 | 3 | Deterministic license-clean random stream for the STBN bake: AES-256-CTR over zeros keyed by SHA-256(seed), byte-identical across machines. |
 | stbn-spectrum.mjs | bake-tool | ACTIVE | 2026-08-16 | 5 | Fourier certification of an STBN volume (radial spatial spectrum, per-pixel temporal spectrum, cross-correlation) with mutants proving each bar fires. |
 
-### Tools/visual-regression/ (924)
+### Tools/visual-regression/ (925)
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
@@ -488,7 +488,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | globe-daynight-ramp-law.spec.mjs | spec | ACTIVE | 2026-08-16 | 6 | Pins that GlobeTerrain.wgsl's day/night ramp and diffuse express GlobeFS.glsl's two laws, coefficients captured from both sources, with mutant tests. |
 | globe-material-pipeline-format-axis.spec.mjs | spec | NO @purpose HEADER | 2026-08-28 | 0 | — |
 | globe-night-darkness-fallback.spec.mjs | spec | ACTIVE | 2026-08-29 | 1 | Pins the procedural night-side darkening: one law on both backends, applied only where no night imagery layer is blending, with no camera-distance fade, and inert at its identity default. |
-| globe-night-imagery-magnification-fade.spec.mjs | spec | ACTIVE | 2026-08-29 | 0 | Executes the night layer's magnification fade out of all three shipped copies - the JavaScript leaf, the WGSL globe shader and the GLSL one - holds them equal, pins both endpoints exactly, and proves the weight is continuous across a terrain LOD seam rather than stepping at it. |
+| globe-night-imagery-magnification-fade.spec.mjs | spec | ACTIVE | 2026-08-29 | 1 | Executes the night layer's magnification fade out of all three shipped copies - the JavaScript leaf, the WGSL globe shader and the GLSL one - holds them equal, pins both endpoints exactly, and proves the weight is continuous across a terrain LOD seam rather than stepping at it. |
 | globe-night-imagery-option.spec.mjs | spec | ACTIVE | 2026-08-28 | 2 | Pins the night-imagery option: default on, never injected into an application-managed imagery stack, off is upstream, and the bundled pyramid's level range is the one its provider will derive. |
 | globe-night-lights-default.spec.mjs | spec | ACTIVE | 2026-08-28 | 1 | Pins the durable Globe source default for night lights: shipped ON, with JSDoc that says so. |
 | globe-night-lights-emission.spec.mjs | spec | ACTIVE | 2026-08-29 | 0 | Pins city-light emission as ONE law on two shaders: the same gate, the same luminance, the same product and the same unset sentinel on both backends, reachable at the shipped defaults, and inert for a layer that is not a night layer. |
@@ -807,7 +807,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | probe-draw-calls.mjs | probe | INVESTIGATION | 2026-08-16 | 2 | Instruments GPURenderPassEncoder to count real GPU draw calls vs silent no-ops — early 'are commands reaching the encoder?' bisection. |
 | probe-draw-pipeline-labels.mjs | probe | INVESTIGATION | 2026-08-16 | 1 | Hooks setPipeline + draw to record which labeled pipelines actually draw during the scene FB pass. |
 | probe-dusk-terminator.mjs | probe | ACTIVE | 2026-08-16 | 6 | Day/night terminator regression: pinned equinox clock, lit-vs-unlit hemisphere luminance ratio validates lightDirectionEC + nightAmbient floor. |
-| probe-eclipse-cloud-response.mjs | probe | ACTIVE | 2026-08-25 | 16 | C13-41 Edge acceptance: eclipse-driven cloud radiance ratio, shadow contrast, IBL bucket-fill count, and submitted-refresh cost. |
+| probe-eclipse-cloud-response.mjs | probe | ACTIVE | 2026-08-25 | 17 | C13-41 Edge acceptance: eclipse-driven cloud radiance ratio, shadow contrast, IBL bucket-fill count, and submitted-refresh cost. |
 | probe-eclipse-globe-shadow.mjs | probe | ACTIVE | 2026-08-16 | 6 | C12-29 S5 browser proof: lunar shadow evaluated per globe fragment — visible/local during the 2024-04-08 eclipse, inert a day later, both backends. |
 | probe-eclipse-scene-dimming.mjs | probe | ACTIVE | 2026-08-16 | 9 | C12-29 S2: scene-light + atmosphere dimming via eclipseSceneLightFactor, measured as within-step off/on/autoexposure luminance ratios. |
 | probe-eclipse-sky-totality.mjs | probe | ACTIVE | 2026-08-16 | 5 | C12-29 S6 sky half: totality sky via algebraic recoveries — shell alpha from dual-background renders, star reveal, E3 flip, horizon twilight. |
@@ -1200,12 +1200,13 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | prohibited-reader-allowlist.spec.mjs | spec | ACTIVE | 2026-08-21 | 0 | Enforce the measured prohibited-reader allowlist as a shrink-only ratchet. |
 | prohibited-reader-rule.spec.mjs | spec | NO @purpose HEADER | 2026-08-20 | 0 | — |
 | purpose-header-contract.spec.mjs | spec | ACTIVE | 2026-08-21 | 8 | Contract spec for maintainer ruling M4: every probe and gate library must carry a readable @purpose/@status header. |
+| refresh-cost-multi-metric.spec.mjs | spec | ACTIVE | — | 0 | Independent behavioural + canonicity coverage of Q-80's deltaOrNull/sumLegMultiMetric/available-guard formulas, which live inside a page.evaluate callback and cannot be imported. |
 | run-performance-campaign.mjs | runner | ACTIVE | 2026-08-16 | 27 | The performance characterization runner: consumes performance-workloads.json, records Scene.render CPU samples + GPU timestamps; never FPS. |
 | run-regression-sweep.mjs | runner | INVESTIGATION | 2026-08-16 | 0 | Batch-146 sequential sweep of the Batches 134-145 probe arc, parsing stdout tails for PASS/FAIL markers — a did-the-arc-break-anything check. |
 | sandcastle-batch-66-end-of-session-runner.mjs | other | INVESTIGATION | 2026-08-16 | 2 | End-of-session rerun of the Batch-66 Sandcastle sweep (direct scene.pick, pointer-error filtering) writing per-demo screenshots + report. |
 | sandcastle-batch-66-final-runner.mjs | other | INVESTIGATION | 2026-08-16 | 10 | Post-F1/F2/F3 rerun of the Batch-66 WebGPU Sandcastle sweep: every 'WebGPU *.html' demo headless, known artifacts filtered, JSON report. |
-| sandcastle-smoke.mjs | other | ACTIVE | 2026-08-16 | 8 | Standing Sandcastle CI blind-spot smoke: three local-resource WebGPU gallery demos gated on non-black, non-uniform, real device, zero errors. |
-| sandcastle2-renderer-gate.spec.mjs | spec | ACTIVE | — | 1 | Contract spec for the Sandcastle2 backend sweep helpers: id enumeration against the real gallery, URL construction, and the requested-vs-actual renderer predicate. |
+| sandcastle-smoke.mjs | other | ACTIVE | 2026-08-29 | 8 | Standing Sandcastle CI blind-spot smoke: three local-resource WebGPU gallery demos gated on non-black, non-uniform, real device, zero errors. |
+| sandcastle2-renderer-gate.spec.mjs | spec | ACTIVE | 2026-08-29 | 1 | Contract spec for the Sandcastle2 backend sweep helpers: id enumeration against the real gallery, URL construction, and the requested-vs-actual renderer predicate. |
 | scene-debug-pragma-coverage.spec.mjs | spec | ACTIVE | 2026-08-28 | 0 | Pins which scene diagnostics are stripped from release builds and which must survive, by running the real production strip over the real sources. |
 | scene-derived-lighting-seam.spec.mjs | spec | ACTIVE | 2026-08-28 | 0 | Pins the atmosphere-derived scene lighting to the renderer seam: the shared scene code publishes one light for every backend, and the derived override reproduces the arithmetic it replaced. |
 | scene-octree-dirty-revision.spec.mjs | spec | ACTIVE | 2026-08-24 | 3 | Proves SceneOctree revision reuse, mutation rebuilds, and disabled/restored PVS behavior. |
@@ -1337,7 +1338,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | c12-11-star-catalog-gate.mjs | gate-lib | ACTIVE | 2026-08-21 | 4 | Fail-closed contract, verdict fold, PNG envelope and artifact validation for the C12-11 star-catalog lane; the probe cannot self-attest. |
 | c12-29-s4-orbital-sunrise-gate.mjs | gate-lib | ACTIVE | 2026-08-16 | 3 | Frozen constants and deterministic verdict arithmetic for the C12-29 S4 orbital-sunrise limb-glow acceptance; browser driver owns capture only. |
 | c12-29-s5-custom-ellipsoid-gate.mjs | gate-lib | ACTIVE | 2026-08-16 | 8 | Frozen v7 contract plus independent f64/stepwise-f32 eclipse oracle for the S5 custom-ellipsoid certification; refuses self-attested evidence. |
-| c12-29-s5-dense-cost-gate.mjs | gate-lib | ACTIVE | 2026-08-16 | 7 | Frozen experiment and fail-closed fold for the S5 dense ACTIVE/INACTIVE cost characterization (v3 schema, SHA-pinned workload). |
+| c12-29-s5-dense-cost-gate.mjs | gate-lib | ACTIVE | 2026-08-16 | 8 | Frozen experiment and fail-closed fold for the S5 dense ACTIVE/INACTIVE cost characterization (v3 schema, SHA-pinned workload). |
 | c12-29-s5-multiview-gate.mjs | gate-lib | ACTIVE | 2026-08-16 | 5 | Frozen policy for the S5 same-context logical-View A->B->A shard; explicitly must not be cited as proof of engine multi-View scheduling. |
 | c12-29-s5-replacement-device-capture.mjs | lib | ACTIVE | 2026-08-28 | 5 | Fail-closed AST/dataflow proof plus strict persisted-PNG decode for the replacement-device certification probe. |
 | c12-29-s5-replacement-device-gate.mjs | gate-lib | ACTIVE | 2026-08-21 | 7 | Fail-closed acceptance for S5 replacement-device recovery after genuine Chromium GPU-process termination (v8 semantic-attestation/candidate-recovery schemas). |
@@ -1395,7 +1396,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | representative-performance-content.mjs | lib | ACTIVE | 2026-08-16 | 10 | Builds and validates the local procedural terrain+models+tiles representative scene configuration for offline performance workloads. |
 | representative-tileset-request-ledger.mjs | lib | ACTIVE | 2026-08-16 | 6 | Event-sourced ledger of tileset content requests (issue/terminal events, byte totals, hashes) with cross-run comparison for perf evidence. |
 | same-task-capture.mjs | lib | ACTIVE | 2026-08-16 | 49 | Canonical capture primitives that keep render+readback in one task (WebGL clears, WebGPU invalidates after present), plus embed-drift validators. |
-| sandcastle2-renderer-gate.mjs | gate-lib | ACTIVE | — | 2 | Pure helpers for the Sandcastle2 backend sweep: gallery id enumeration, URL construction, and the "the demo really ran the requested renderer" predicate. |
+| sandcastle2-renderer-gate.mjs | gate-lib | ACTIVE | 2026-08-29 | 3 | Pure helpers for the Sandcastle2 backend sweep: gallery id enumeration, URL construction, and the "the demo really ran the requested renderer" predicate. |
 | served-build-preflight.mjs | lib | ACTIVE | 2026-08-29 | 3 | Q-98 — fetch one or more served build artifacts and compare each to |
 | settle-attribution.mjs | lib | ACTIVE | 2026-08-16 | 6 | First-complete-frame metric plus the rule that stable-time credit requires a main-thread long-task reduction (GPU-bound settles book none). |
 | solar-bloom-glow.mjs | lib | ACTIVE | 2026-08-16 | 6 | Forward model of the sun bloom's additive glow-on-disc so differential disc measurements carry the non-cancelling bloom term correctly. |

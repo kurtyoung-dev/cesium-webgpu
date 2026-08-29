@@ -108,6 +108,16 @@ corrected with it.
 The remaining ~30 medium and all low survivors are enumerated in §5 with their lane column reading
 QUEUED; they dispatch after Q-1…Q-10, batched by file so one Sol dispatch closes several small
 findings in the same module. C1's returning findings append here as a dated addendum.
+### INSTR LANDED - Batch 1282 (2026-08-29 ~04:25 machine clock): Q-87, Q-81 (spec half), Q-83, Q-80
+
+| | Row | Disposition |
+|---|---|---|
+| Q-87 | FIXED | the option spec mutates a scratch copy in os.tmpdir with rewritten imports that resolve the SAME module records; 3x parallel with the fade spec green; tracked file hash unchanged; 5 files/run, 0 leftovers |
+| Q-81 | FIXED (spec half only; the lib change was REFUTED and reverted) | whole-build count pin replaced by the named 27-file root set (length 27, rootsPresent, entryCount >= 27 - no literal count, so unrelated landings cannot red it); the .js shader names in the lib are build-generated gitignored files and stay |
+| Q-83 | FIXED (Edge-pending: a real `gulp test --includeName ZZZNOMATCH` must exit 3 with the 'selected 0 runnable specs' line) | IncludeNameZeroMatchError + emptySuiteExpected (mirrors suiteFailureOptOut) so Karma's real exit-1-for-empty-suite with zero counts and a supplied filter is classified as zero-match -> exit 3; every other exit path byte-identical; message reports skipped count + effective pattern and no longer claims regex/suite semantics (plain patterns are escaped-literal substrings); harness on the real shape + a 5th validCounts case + a win32-guarded CWD-hold fixture; mutants M1/M2/M3/M5 all red |
+| Q-80 | FIXED | refreshCost carries performance.memory heap delta + real WebGPUEnvironmentTargetPool allocation counts per segment and per leg with noise notes, unscored; `available` false on empty costSegments; refresh-cost-multi-metric.spec 19/19 with canonicity pins for the formulas (they live in a page.evaluate closure), the call-site count, the before-sample and all four leg-wiring blocks (P3/P4 red); prettier and the spec now agree on the same bytes |
+| LANDING | gates | apply --3way with ONE merge (gulpfile.js onto INSTR2's landed test task; both behaviours present, syntax ok); 5-spec battery 308/309 - the 1 = replacement-device gate test 5 'product-byte mutants', which fails IDENTICALLY on main's HEAD version of the spec because the build's source map (03:29) predates Batch 1280's shader landing (03:39): stale build vs tree, the build-freshness sensitivity the reviewer flagged - re-run after the post-3e-C rebuild; test-build-infra 52/52 (now includes the Karma harness spec); eslint 0; prettier 0; catalog regenerated after staging |
+
 ### SC2 LANDED - Batch 1281 (2026-08-29 ~04:15 machine clock): Sandcastle2 can select its backend by URL, everywhere
 
 | | Row | Disposition |

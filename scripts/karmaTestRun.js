@@ -87,12 +87,37 @@ function formatBrowser(browser) {
   return browser?.fullName ?? browser?.name ?? browser?.id ?? "unknown browser";
 }
 
+/**
+ * @typedef {object} CompletionFailures
+ * @property {string[]} failures Human-readable reasons the run is not accepted.
+ * @property {boolean} emptySuiteCleanly True when the ONLY thing wrong with an
+ *   otherwise fully-completed, single-cause run is that zero browser tests
+ *   executed — i.e. every browser finished its lifecycle normally, no
+ *   infrastructure or disconnect/error signal fired, and the aggregate counts
+ *   are valid but sum to zero (Karma's own exit code 1 for this exact case,
+ *   under the pinned `failOnEmptyTestSuite: true`, is treated as expected,
+ *   not as an additional failure). This is the signal a `--includeName`/
+ *   `--grep` pattern under which zero specs EXECUTED produces (Q-83) — which
+ *   includes both "matched no spec name" and "matched only specs Karma
+ *   reports as skipped"; it cannot tell those apart. Computed independently
+ *   of `failures`'s text so a caller can react to the SHAPE of the failure,
+ *   not by pattern-matching a message.
+ * @property {number|null} skippedCount Karma's reported `results.skipped`
+ *   count, when the run produced aggregate results and it was an integer;
+ *   `null` otherwise. Cannot disambiguate a zero-match run from a
+ *   matched-only-skipped-specs run (a real zero-match sets it to the whole
+ *   spec count too), but is worth surfacing to whoever reads the message.
+ */
+
+/**
+ * @returns {CompletionFailures}
+ */
 function getCompletionFailures(state, exitCode, failTaskOnError) {
   const failures = [];
   const run = state.run;
   if (run === undefined) {
     failures.push("Karma's done callback fired before a run_complete event.");
-    return failures;
+    return { failures, emptySuiteCleanly: false, skippedCount: null };
   }
 
   const runBrowsers = browserCollectionToArray(run.browsers);
@@ -100,6 +125,7 @@ function getCompletionFailures(state, exitCode, failTaskOnError) {
     failures.push("run_complete reported no captured browsers.");
   }
 
+  let everyBrowserLifecycleClean = runBrowsers.length > 0;
   for (const browser of runBrowsers) {
     const missingEvents = [];
     if (!state.registeredBrowsers.has(browser)) {
@@ -117,12 +143,15 @@ function getCompletionFailures(state, exitCode, failTaskOnError) {
           ", ",
         )}).`,
       );
+      everyBrowserLifecycleClean = false;
     }
     if (browser?.disconnectsCount > 0 || browser?.lastResult?.disconnected) {
       failures.push(`${formatBrowser(browser)} disconnected during the run.`);
+      everyBrowserLifecycleClean = false;
     }
     if (browser?.lastResult?.error) {
       failures.push(`${formatBrowser(browser)} reported a browser error.`);
+      everyBrowserLifecycleClean = false;
     }
   }
 
@@ -131,6 +160,7 @@ function getCompletionFailures(state, exitCode, failTaskOnError) {
   }
 
   const results = run.results;
+  let emptySuiteCleanly = false;
   if (results === undefined || results === null) {
     failures.push("run_complete did not provide aggregate results.");
   } else {
@@ -161,23 +191,94 @@ function getCompletionFailures(state, exitCode, failTaskOnError) {
 
     const suiteFailureOptOut =
       !failTaskOnError && validCounts && failedCount > 0;
+    // Karma's own `calculateExitCode` (node_modules/karma/lib/browser_collection.js)
+    // returns 1 -- not 0 -- for a completed run with zero executed tests
+    // whenever `failOnEmptyTestSuite` is set, which `strictKarmaResultConfig`
+    // pins true. Both the aggregate `results.exitCode` and the done-callback
+    // `exitCode` carry that 1. Treat it as EXPECTED, the same way
+    // `suiteFailureOptOut` already treats its own opt-out 1, so an empty-suite
+    // run is reported through its dedicated "Karma completed without
+    // executing any browser tests." failure alone -- without this, the exit-
+    // code checks below ALSO fire, `exitCodesClean` is never true for an empty
+    // suite, and `emptySuiteCleanly` (and therefore the Q-83 zero-match
+    // reclassification in `runKarmaTestServer`) can never be reached.
+    const emptySuiteExpected = validCounts && successCount + failedCount === 0;
+    const expectedExitCode = (code) =>
+      code === 0 ||
+      (suiteFailureOptOut && code === 1) ||
+      (emptySuiteExpected && code === 1);
+    let exitCodesClean = true;
     if (!Number.isInteger(results.exitCode)) {
       failures.push("run_complete reported a malformed exit code.");
-    } else if (
-      results.exitCode !== 0 &&
-      !(suiteFailureOptOut && results.exitCode === 1)
-    ) {
+      exitCodesClean = false;
+    } else if (!expectedExitCode(results.exitCode)) {
       failures.push(`run_complete reported exit code ${results.exitCode}.`);
+      exitCodesClean = false;
     }
 
     if (!Number.isInteger(exitCode)) {
       failures.push("Karma's done callback reported a malformed exit code.");
-    } else if (exitCode !== 0 && !(suiteFailureOptOut && exitCode === 1)) {
+      exitCodesClean = false;
+    } else if (!expectedExitCode(exitCode)) {
       failures.push(`Karma's done callback reported exit code ${exitCode}.`);
+      exitCodesClean = false;
     }
+
+    emptySuiteCleanly =
+      everyBrowserLifecycleClean &&
+      state.infrastructureFailures.length === 0 &&
+      !results.disconnected &&
+      !results.error &&
+      validCounts &&
+      successCount + failedCount === 0 &&
+      exitCodesClean;
   }
 
-  return failures;
+  return {
+    failures,
+    emptySuiteCleanly,
+    skippedCount: Number.isInteger(results?.skipped) ? results.skipped : null,
+  };
+}
+
+/**
+ * Raised instead of the generic acceptance error when a `--includeName` /
+ * `--grep` pattern left zero specs EXECUTED (Karma's success+failed===0
+ * signal) and nothing else about the run was wrong (Q-83). Both cases used
+ * to reject with the same generic Error and the same eventual process exit
+ * code, so a typo'd filter and a genuine failing suite were indistinguishable
+ * from the exit code or from grepping CI log tails for anything other than
+ * the exact English sentence.
+ *
+ * NOT the same claim as "the pattern matched no suite": Karma's signal
+ * cannot tell that apart from "the pattern matched only specs Karma reports
+ * as skipped" (`xit()`/`xdescribe()`/pending, or specs this fork's
+ * offline/WebGPU lanes truthfully skip when their prerequisite is absent) —
+ * both land in `results.skipped`, not `success` or `failed`. The message
+ * says so and reports the skipped count when Karma provided one.
+ */
+export class IncludeNameZeroMatchError extends Error {
+  constructor(pattern, skippedCount) {
+    const skippedText = Number.isInteger(skippedCount)
+      ? `, ${skippedCount} spec(s) reported skipped`
+      : "";
+    super(
+      `includeName selected 0 runnable specs (pattern: ${JSON.stringify(pattern ?? "")}${skippedText}). ` +
+        "--includeName/--grep is compared against each spec's full Jasmine " +
+        "name (its describe-block path plus the it() name): a PLAIN pattern " +
+        "is matched as an ESCAPED-LITERAL SUBSTRING of that name, not a " +
+        "regular expression — only a pattern written as /pattern/flags is a " +
+        "live regex. The pattern reported above is the post-strip EFFECTIVE " +
+        "one (a trailing 'Spec' and/or '.js' is stripped before matching). " +
+        "Zero specs ran because either the pattern matched no spec name, or " +
+        "it matched only specs Karma reports as skipped — check both before " +
+        "assuming a typo: a suite's describe(...)/it(...) text, and whether " +
+        "this fork's offline or WebGPU lane is truthfully skipping on this " +
+        "machine.",
+    );
+    this.name = "IncludeNameZeroMatchError";
+    this.code = "INCLUDE_NAME_ZERO_MATCH";
+  }
 }
 
 /**
@@ -188,12 +289,24 @@ function getCompletionFailures(state, exitCode, failTaskOnError) {
  * @param {object} config Parsed Karma configuration.
  * @param {object} [options] Run options.
  * @param {boolean} [options.failTaskOnError=true] Reject on a non-zero suite exit. Infrastructure failures always reject.
+ * @param {string} [options.nameFilter] The `--includeName`/`--grep` pattern
+ *   this run was launched with, if any. When supplied AND the run completes
+ *   with an otherwise-clean zero-EXECUTED-test result (every browser's
+ *   lifecycle finished normally, no infrastructure/disconnect/error signal,
+ *   valid counts summing to zero, Karma's own exit-1-for-empty-suite treated
+ *   as expected rather than an extra failure), the rejection is an
+ *   {@link IncludeNameZeroMatchError} instead of the generic acceptance error
+ *   (Q-83) — callers that want a distinct process exit code for "the filter
+ *   selected zero runnable specs" (as opposed to a genuine suite/
+ *   infrastructure failure) can branch on that class. That state does NOT
+ *   mean "the pattern matched no suite" specifically — it also covers a
+ *   pattern that matched only specs Karma reports as skipped.
  * @returns {Promise<void>} Resolves only when the accepted run completes.
  */
 export function runKarmaTestServer(
   KarmaServer,
   config,
-  { failTaskOnError = true } = {},
+  { failTaskOnError = true, nameFilter } = {},
 ) {
   return new Promise((resolve, reject) => {
     const state = {
@@ -212,7 +325,18 @@ export function runKarmaTestServer(
       }
       finalizing = true;
 
-      const failures = getCompletionFailures(state, exitCode, failTaskOnError);
+      const { failures, emptySuiteCleanly, skippedCount } =
+        getCompletionFailures(state, exitCode, failTaskOnError);
+      // Captured BEFORE the start-error unshift and the cleanup push below,
+      // so a startup failure or a profile-cleanup failure riding alongside
+      // an empty result always falls through to the generic path — only a
+      // SINGLE-CAUSE empty-EXECUTED-tests run is eligible to be reclassified
+      // as a filter that selected zero runnable specs.
+      const isPureZeroMatch =
+        startError === undefined &&
+        emptySuiteCleanly &&
+        typeof nameFilter === "string" &&
+        nameFilter.length > 0;
       if (startError !== undefined) {
         failures.unshift(`Karma server failed to start: ${String(startError)}`);
       }
@@ -226,6 +350,19 @@ export function runKarmaTestServer(
       }
 
       if (failures.length > 0) {
+        if (isPureZeroMatch && failures.length === 1) {
+          const zeroMatchError = new IncludeNameZeroMatchError(
+            nameFilter,
+            skippedCount,
+          );
+          // The unmistakable line: distinct wording from every other
+          // acceptance failure, and printed unconditionally so it survives
+          // even if a caller only inspects stdout/stderr rather than the
+          // rejected error's class or `.code`.
+          console.error(zeroMatchError.message);
+          reject(zeroMatchError);
+          return;
+        }
         reject(
           new Error(
             `Karma test run was not accepted:\n- ${failures.join("\n- ")}`,

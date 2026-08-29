@@ -27,10 +27,18 @@
 // the widget, which pull the shader modules — is pinned structurally, and the
 // bundled asset is checked against the file system rather than against prose.
 //
-// A NOTE ON MUTANTS. Section F mutates the leaf ON DISK and re-imports it, so
-// the mutant is the module the runtime would load rather than a string. Every
-// mutation restores from the original bytes in a `finally` and asserts the
-// SHA-256 matches, and the last test re-checks the digest independently.
+// A NOTE ON MUTANTS. Section F mutates the leaf's SOURCE TEXT and writes the
+// mutant to a SCRATCH COPY outside the repo, then imports THAT copy — never
+// the tracked file — so the mutant is still the module the runtime would
+// load rather than a string, without racing the sibling spec
+// (`globe-night-imagery-magnification-fade.spec.mjs`) that hashes this same
+// tracked path under `node --test`'s parallel worker pool (Q-87: an in-place
+// write/import/restore here gave that sibling pass/fail/fail across three
+// parallel runs). The scratch copy's two relative imports are rewritten to
+// absolute file URLs so it still resolves without living next to its
+// dependencies. Every mutation removes its scratch file in a `finally` and
+// asserts the TRACKED file's SHA-256 is unchanged, and the last test
+// re-checks the digest independently.
 //
 // LINE ENDINGS: this repo checks out CRLF. Every source read is normalised to
 // `\n` first — a spec anchored on a bare `\n` false-greens on a CRLF checkout.
@@ -40,6 +48,7 @@
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -88,6 +97,22 @@ const NE2_DIR = "packages/engine/Source/Assets/Textures/NaturalEarthII";
 const leafAbsolute = path.join(root, LEAF_PATH);
 const leafOriginal = fs.readFileSync(leafAbsolute);
 const leafOriginalHash = sha256(leafOriginal);
+
+// Absolute URLs for the leaf's own two imports, so a scratch copy written
+// anywhere on disk (never next to `Core/`) still resolves them. Neither file
+// is ever mutated by this spec.
+const CORE_CHECK_URL = pathToFileURL(
+  path.join(root, "packages/engine/Source/Core/Check.js"),
+).href;
+const CORE_DEFINED_URL = pathToFileURL(
+  path.join(root, "packages/engine/Source/Core/defined.js"),
+).href;
+
+function withAbsoluteImports(source) {
+  return source
+    .replace('from "../Core/Check.js"', `from "${CORE_CHECK_URL}"`)
+    .replace('from "../Core/defined.js"', `from "${CORE_DEFINED_URL}"`);
+}
 
 const globe = read(GLOBE_PATH);
 const widget = read(WIDGET_PATH);
@@ -508,9 +533,14 @@ function defaultPathDerivationIsLive(source) {
 let mutantSerial = 0;
 
 /**
- * Mutate the leaf on disk, import the mutated module, and restore the original
- * bytes. The restore is in a `finally` and is verified by digest, so a throw
- * inside the assertion cannot leave the tree dirty.
+ * Mutate the leaf's source text and import the mutant from a SCRATCH COPY —
+ * the tracked file at `leafAbsolute` is never written. Earlier revisions of
+ * this spec wrote the mutant in place (write, import, restore-in-`finally`),
+ * which raced `globe-night-imagery-magnification-fade.spec.mjs` hashing the
+ * same tracked path when both specs ran under one `node --test` invocation
+ * (Q-87). The scratch file still IS the module the runtime loads (imported
+ * by file URL, not read as a string), so it discriminates the same mutants;
+ * it just never lives at the path the sibling spec is watching.
  */
 async function withMutatedLeaf(from, to, assertion) {
   const text = leafOriginal.toString("utf8");
@@ -518,17 +548,20 @@ async function withMutatedLeaf(from, to, assertion) {
     text.includes(from),
     `mutation precondition failed: "${from.slice(0, 60)}..."`,
   );
-  fs.writeFileSync(leafAbsolute, text.replace(from, to));
+  mutantSerial += 1;
+  const scratchPath = path.join(
+    os.tmpdir(),
+    `GlobeNightImagery.mutant-${process.pid}-${mutantSerial}-${Date.now()}.mjs`,
+  );
+  fs.writeFileSync(scratchPath, withAbsoluteImports(text.replace(from, to)));
   try {
-    mutantSerial += 1;
-    const url = `${pathToFileURL(leafAbsolute).href}?mutant=${mutantSerial}`;
-    assertion(await import(url));
+    assertion(await import(pathToFileURL(scratchPath).href));
   } finally {
-    fs.writeFileSync(leafAbsolute, leafOriginal);
+    fs.rmSync(scratchPath, { force: true });
     assert.equal(
       sha256(fs.readFileSync(leafAbsolute)),
       leafOriginalHash,
-      "the leaf was not restored byte-exactly",
+      "the tracked leaf must never be touched by a mutation test",
     );
   }
 }

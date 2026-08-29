@@ -17,6 +17,7 @@ import { build as esbuild } from "esbuild";
 import { createInstrumenter } from "istanbul-lib-instrument";
 
 import {
+  IncludeNameZeroMatchError,
   runKarmaTestServer,
   strictKarmaResultConfig,
 } from "./scripts/karmaTestRun.js";
@@ -965,6 +966,30 @@ export async function coverage() {
 }
 
 // Cache contexts for successive calls to test
+//
+// --includeName=<pattern> / --grep=<pattern> (aliases of the same value,
+// `--includeName` preferred): a SUITE-NAME filter, not a file filter. The
+// value is stripped of a trailing 'Spec' and/or '.js' (the effective
+// pattern), then handed to karma-jasmine as `--grep`. A PLAIN pattern is
+// matched as an ESCAPED-LITERAL SUBSTRING of each spec's FULL Jasmine name
+// (the `describe(...)` path joined with the `it(...)` name) -- it is NOT a
+// regular expression unless written as `/pattern/flags`, in which case that
+// IS used as a live RegExp. Either way the match is against the Jasmine
+// name, never the source file it lives in, a test "category", or the module
+// under test.
+// A supplied pattern under which zero specs EXECUTE (Karma's own
+// success+failed===0 signal) is distinguished from a real suite failure --
+// see Q-83 / `scripts/karmaTestRun.js`'s `IncludeNameZeroMatchError`, which
+// makes this task exit 3, never the same exit code (1) a genuine test
+// failure produces. That signal cannot tell "matched no spec name" apart
+// from "matched only specs Karma reports as skipped" (xit()/xdescribe()/
+// pending, or specs this fork's offline/WebGPU lanes truthfully skip when
+// their prerequisite is absent) -- the error message says so and reports
+// the skipped count when Karma provided one.
+// --include=<category> / --exclude=<category>: a DIFFERENT, coarser filter —
+// `Specs/customizeJasmine.js` wraps `describe(name, suite, category)` and
+// compares that third `category` argument, unrelated to --includeName's
+// name-substring/regex matching.
 export async function test() {
   const enableAllBrowsers = argv.all ? true : false;
   const includeCategory = argv.include ? argv.include : "";
@@ -1171,7 +1196,26 @@ export async function test() {
     { promiseConfig: true, throwErrors: true },
   );
 
-  return runKarmaTestServer(karma.Server, config, { failTaskOnError });
+  try {
+    return await runKarmaTestServer(karma.Server, config, {
+      failTaskOnError,
+      nameFilter: grep,
+    });
+  } catch (error) {
+    if (error instanceof IncludeNameZeroMatchError) {
+      // Q-83: a `--includeName`/`--grep` pattern under which zero specs
+      // EXECUTED used to reject exactly like a real test failure, so both
+      // exited 1 and a typo'd filter was indistinguishable from a genuine
+      // red suite in CI logs or calling scripts. `runKarmaTestServer`
+      // already printed the unmistakable "includeName selected 0 runnable
+      // specs" line; give this case its own exit code rather than gulp's
+      // generic failure path. Real failures are unaffected — they still
+      // throw below and take the exact exit-1 path they always have.
+      process.exitCode = 3;
+      return;
+    }
+    throw error;
+  }
 }
 
 /**
