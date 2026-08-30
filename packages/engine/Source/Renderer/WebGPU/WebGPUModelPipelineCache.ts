@@ -1167,9 +1167,10 @@ function createSilhouetteColorPipeline(
 
 /**
  * Debug-only aggregate counters for the WebGPU model pick-emission path:
- * how many primitives skip their pick command because the on-screen colour
+ * how many primitives skip their on-screen colour command because its
  * pipeline is still compiling, how many pick draw commands are actually
- * emitted, how often {@link WebGPUModelPipelineCache#getPickPipeline} is
+ * emitted independently, how often
+ * {@link WebGPUModelPipelineCache#getPickPipeline} is
  * called, and the summed wall time spent inside the synchronous
  * {@link createPickPipeline} builder below. Every read and write of this
  * object is confined to a `pragmas.debug` block, so the storage and its
@@ -1186,7 +1187,7 @@ function createSilhouetteColorPipeline(
  * from today.
  */
 interface WebGPUModelPickDebugCounters {
-  /** Primitives skipped this frame because their colour pipeline had not resolved yet. */
+  /** Primitive colour commands skipped because their pipeline had not resolved yet. */
   readyGateSkipsThisFrame: number;
   /** Pick draw commands emitted this frame. */
   pickCommandsEmittedThisFrame: number;
@@ -1233,9 +1234,10 @@ function resetModelPickDebugCountersForFrame(frameNumber: number): void {
 }
 
 /**
- * Records one primitive skipped by the ready gate this frame — its colour
- * pipeline was still compiling, so no pick command could be built for it
- * either. Frame rollover is handled entirely by
+ * Records one primitive whose colour command was skipped by the ready gate
+ * this frame because its colour pipeline was still compiling. An independently
+ * emitted pick command does not change that colour-skip count. Frame rollover
+ * is handled entirely by
  * {@link resetModelPickDebugCountersForFrame} at the renderer's frame
  * boundary; this function only ever increments.
  */

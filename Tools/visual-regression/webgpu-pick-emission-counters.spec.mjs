@@ -14,11 +14,9 @@
 // ── WHAT THIS IS ABOUT ──────────────────────────────────────────────────────
 //
 // A WebGPU model primitive whose on-screen colour pipeline is still cooking
-// (`createRenderPipelineAsync` has not resolved) is skipped for the frame by
-// a ready gate in `WebGPUModelRenderer.ts` — and because the pick command is
-// built as a by-product of the same per-primitive pass, a skipped primitive
-// never gets a pick command either. This file pins the four counters that
-// make that distinction observable:
+// (`createRenderPipelineAsync` has not resolved) must still provide the
+// synchronous pick carrier needed by a demanded ordinary or metadata pick.
+// This file pins the four counters that make that distinction observable:
 //
 //   1. readyGateSkipsThisFrame  — primitives skipped by the ready gate.
 //   2. pickCommandsEmittedThisFrame — pick draw commands actually built.
@@ -105,6 +103,7 @@ const PIPELINE_CACHE_PATH = resolve(
   "WebGPUModelPipelineCache.ts",
 );
 const WEBGPU_CONTEXT_PATH = resolve(engineWebGPU, "WebGPUContext.ts");
+const PICK_HELPERS_PATH = resolve(engineWebGPU, "WebGPUPickCommandHelpers.ts");
 
 /**
  * Reads a source file and normalises its line terminators, so anchors in
@@ -121,7 +120,6 @@ async function readSource(path) {
 // preconditions) and the WCX0 wiring check. Mutation tests re-read their
 // target file fresh inside `bundleReal`'s `overrides` handling, so a
 // mutation never touches these.
-const MODEL_RENDERER_SOURCE = await readSource(MODEL_RENDERER_PATH);
 const WEBGPU_CONTEXT_SOURCE = await readSource(WEBGPU_CONTEXT_PATH);
 
 // Node has no native WebGPU implementation, so it defines none of the
@@ -315,6 +313,7 @@ const BARREL_SOURCE = [
   '} from "./WebGPUModelPipelineCache.js";',
   'export { MODEL_TOPOLOGY_TRIANGLE_LIST } from "./WebGPUModelTopology.js";',
   'export { updateWebGPUModel } from "./WebGPUModelRenderer.js";',
+  'export { selectCommandVariant } from "./WebGPUSceneRenderer.js";',
   'export { default as BoundingSphere } from "../../Core/BoundingSphere.js";',
   'export { default as Cartesian3 } from "../../Core/Cartesian3.js";',
   'export { default as Matrix4 } from "../../Core/Matrix4.js";',
@@ -572,7 +571,9 @@ function makeBarePipelineCache(namespace, device, getPipelineImpl) {
   c._logDepthEnabled = false;
   c._primitiveTopology = namespace.MODEL_TOPOLOGY_TRIANGLE_LIST;
   c._pickPipelines = new Map();
+  c._classificationPipelines = new Map();
   c._pipelines = new Map();
+  c._sampleCount = 1;
   c._metadataMatTransport = false;
   c._metadataClassHash = 0;
   c._customShaderClassHash = 0;
@@ -650,16 +651,30 @@ function makeBarePipelineCache(namespace, device, getPipelineImpl) {
  * @param {boolean} [doubleSided=false] The primitive's material.doubleSided.
  * @returns {object} The runtime primitive.
  */
-function makeMinimalRuntimePrimitive(doubleSided = false) {
+function makeMinimalRuntimePrimitive(
+  doubleSided = false,
+  metadata = false,
+  alphaMode,
+) {
+  const attributes = [
+    {
+      semantic: "POSITION",
+      typedArray: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+    },
+  ];
+  if (metadata) {
+    attributes.push({
+      name: "_TEMPERATURE",
+      semantic: "_TEMPERATURE",
+      type: "SCALAR",
+      componentDatatype: "FLOAT",
+      typedArray: new Float32Array([10, 20, 30]),
+    });
+  }
   return {
     primitive: {
-      attributes: [
-        {
-          semantic: "POSITION",
-          typedArray: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
-        },
-      ],
-      material: { doubleSided },
+      attributes,
+      material: { doubleSided, alphaMode },
     },
   };
 }
@@ -680,7 +695,7 @@ function makeMinimalRuntimePrimitive(doubleSided = false) {
  *   {@link makeMinimalRuntimePrimitive}.
  * @returns {object} The model fixture.
  */
-function makeMinimalModel(device, pipelineCache, runtimePrimitives) {
+function makeMinimalModel(device, pipelineCache, runtimePrimitives, metadata) {
   const modelWebGPUCache = {
     device,
     resourceGeneration: 1,
@@ -710,6 +725,38 @@ function makeMinimalModel(device, pipelineCache, runtimePrimitives) {
     silhouetteSize: 0,
     modelMatrix: undefined,
     allowPicking: true,
+    structuralMetadata: metadata
+      ? {
+          propertyAttributes: [
+            {
+              properties: {
+                temperature: {
+                  attribute: "_TEMPERATURE",
+                  classProperty: {
+                    id: "temperature",
+                    type: "SCALAR",
+                    componentType: "FLOAT32",
+                    valueType: "FLOAT32",
+                    normalized: false,
+                    isArray: false,
+                    isVariableLengthArray: false,
+                    arrayLength: undefined,
+                    hasValueTransform: false,
+                    offset: undefined,
+                    scale: undefined,
+                    isGpuCompatible() {
+                      return true;
+                    },
+                  },
+                  hasValueTransform: false,
+                  offset: undefined,
+                  scale: undefined,
+                },
+              },
+            },
+          ],
+        }
+      : undefined,
     _webgpuCache: modelWebGPUCache,
     _sceneGraph: {
       _runtimeNodes: [{ runtimePrimitives }],
@@ -738,7 +785,7 @@ function makeMinimalModel(device, pipelineCache, runtimePrimitives) {
  * @param {boolean} pick Whether `frameState.passes.pick` is `true`.
  * @returns {object} The frameState fixture.
  */
-function makeMinimalFrameState(namespace, context, pick) {
+function makeMinimalFrameState(namespace, context, pick, options = {}) {
   function plane(x, y, z, w) {
     return { x, y, z, w };
   }
@@ -749,7 +796,16 @@ function makeMinimalFrameState(namespace, context, pick) {
     mode: namespace.SceneModeEnum.SCENE3D,
     frameNumber: 1,
     cameraUnderground: false,
-    passes: { render: true, pick, pickVoxel: false, offscreen: false },
+    passes: {
+      render: true,
+      pick,
+      pickVoxel: false,
+      offscreen: false,
+      ...options.passes,
+    },
+    pickingMetadata: options.pickingMetadata,
+    pickedMetadataInfo: options.pickedMetadataInfo,
+    scene: options.scene,
     shadowMaps: [],
     cullingVolume: {
       planes: [
@@ -1222,23 +1278,7 @@ test("C4 the timer wraps only createPickPipeline: a caller-side dependency looku
 // ── function through the real per-node/per-primitive loop, real ready ──
 // ── gate, and real pick-command construction. ──────────────────────────────
 
-test("F0 both call sites this row added are present in the real WebGPUModelRenderer.ts, ready gate before pick emission — cheap precondition before the expensive real-execution tests below", () => {
-  const readyIdx = MODEL_RENDERER_SOURCE.indexOf(
-    "recordModelPickReadyGateSkip();",
-  );
-  const emitIdx = MODEL_RENDERER_SOURCE.indexOf(
-    "recordModelPickCommandEmitted();",
-  );
-  assert.notEqual(readyIdx, -1, "the ready-gate call site has moved");
-  assert.notEqual(emitIdx, -1, "the pick-emission call site has moved");
-  assert.ok(
-    readyIdx < emitIdx,
-    "the ready gate must run before pick-command emission in the same " +
-      "per-primitive pass",
-  );
-});
-
-test("F1 a primitive whose colour pipeline has not resolved is skipped: readyGateSkipsThisFrame increments, no command is emitted, read through the real updateWebGPUModel + snapshot chain", async () => {
+test("F1 a pending colour pipeline with ordinary pick demand emits exactly one non-null native pickOnly carrier and records it through the snapshot", async () => {
   const namespace = await importBarrel();
   const { device } = makeFakeDevice();
   const context = makeBareContext(namespace, device);
@@ -1252,17 +1292,30 @@ test("F1 a primitive whose colour pipeline has not resolved is skipped: readyGat
 
   namespace.updateWebGPUModel(model, frameState);
 
+  assert.equal(frameState.commandList.length, 1);
+  const [carrier] = frameState.commandList;
+  assert.equal(carrier.pickOnly, true);
+  assert.ok(
+    carrier.pipeline,
+    "the pending pick carrier must have a real synchronous pipeline",
+  );
   assert.equal(
-    frameState.commandList.length,
-    0,
-    "a primitive whose colour pipeline is still cooking must emit no command at all — not even a pick-only one",
+    carrier.derivedCommands?.picking?.pickCommand,
+    undefined,
+    "the carrier itself is the one ordinary-pick payload; attaching another one duplicates work",
   );
   const modelPick = readModelPickThroughSnapshot(namespace, context);
-  assert.equal(modelPick.readyGateSkipsThisFrame, 1);
-  assert.equal(modelPick.pickCommandsEmittedThisFrame, 0);
+  assert.deepEqual(modelPick, {
+    readyGateSkipsThisFrame: 1,
+    pickCommandsEmittedThisFrame: 1,
+    countersFrameNumber: 1,
+    getPickPipelineCalls: 1,
+    createPickPipelineWallTimeMs: modelPick.createPickPipelineWallTimeMs,
+  });
+  assert.ok(modelPick.createPickPipelineWallTimeMs >= 0);
 });
 
-test("F2 a primitive with a resolved colour pipeline, in a pick-demand frame, emits a colour command and builds a REAL pick pipeline via a real device.createRenderPipeline call", async () => {
+test("F2 a resolved colour pipeline keeps one colour carrier with one non-null ordinary pick derivative — no duplicate top-level pick command", async () => {
   const namespace = await importBarrel();
   const { device, pipelines } = makeFakeDevice();
   const context = makeBareContext(namespace, device);
@@ -1279,6 +1332,11 @@ test("F2 a primitive with a resolved colour pipeline, in a pick-demand frame, em
   namespace.updateWebGPUModel(model, frameState);
 
   assert.equal(frameState.commandList.length, 1);
+  const [colorCommand] = frameState.commandList;
+  assert.equal(colorCommand.pickOnly, false);
+  assert.ok(colorCommand.pipeline);
+  assert.ok(colorCommand.derivedCommands?.picking?.pickCommand?.pipeline);
+  assert.equal(colorCommand.derivedCommands.picking.pickCommand.pickOnly, true);
   assert.equal(
     pipelines.length,
     1,
@@ -1296,7 +1354,7 @@ test("F2 a primitive with a resolved colour pipeline, in a pick-demand frame, em
   );
 });
 
-test("F3 a mixed frame across two primitives of one model: one skipped, one emitted, in the same per-frame counters", async () => {
+test("F3 a mixed pending/resolved frame emits one carrier per primitive, never skips demanded pending picking, and counts two payloads", async () => {
   const namespace = await importBarrel();
   const { device } = makeFakeDevice();
   const context = makeBareContext(namespace, device);
@@ -1324,20 +1382,163 @@ test("F3 a mixed frame across two primitives of one model: one skipped, one emit
 
   namespace.updateWebGPUModel(model, frameState);
 
-  assert.equal(
-    frameState.commandList.length,
-    1,
-    "only the second primitive (resolved pipeline) emits a command",
+  assert.equal(frameState.commandList.length, 2);
+  assert.equal(frameState.commandList[0].pickOnly, true);
+  assert.equal(frameState.commandList[1].pickOnly, false);
+  assert.ok(frameState.commandList[0].pipeline);
+  assert.ok(
+    frameState.commandList[1].derivedCommands?.picking?.pickCommand?.pipeline,
   );
   const modelPick = readModelPickThroughSnapshot(namespace, context);
   assert.deepEqual(modelPick, {
     readyGateSkipsThisFrame: 1,
-    pickCommandsEmittedThisFrame: 1,
+    pickCommandsEmittedThisFrame: 2,
     countersFrameNumber: 1,
-    getPickPipelineCalls: 1,
+    getPickPipelineCalls: 2,
     createPickPipelineWallTimeMs: modelPick.createPickPipelineWallTimeMs,
   });
   assert.ok(modelPick.createPickPipelineWallTimeMs >= 0);
+});
+
+test("F3a a pending metadata pass uses its metadata derivative through the real dispatcher and never falls back to an ordinary pick payload", async () => {
+  const namespace = await importBarrel();
+  const { device } = makeFakeDevice();
+  const context = makeBareContext(namespace, device);
+  namespace.resetModelPickDebugCountersForFrame(1);
+  const pipelineCache = makeBarePipelineCache(namespace, device, () => null);
+  pipelineCache.setMetadataPickWGSL = () => {};
+  pipelineCache.getPickMetadataPipeline = () => ({
+    __kind: "metadataPickPipeline",
+  });
+  const model = makeMinimalModel(
+    device,
+    pipelineCache,
+    [makeMinimalRuntimePrimitive(false, true)],
+    true,
+  );
+  const scene = { highDynamicRange: false };
+  const frameState = makeMinimalFrameState(namespace, context, true, {
+    pickingMetadata: true,
+    pickedMetadataInfo: { propertyName: "temperature" },
+    scene,
+  });
+  scene.frameState = frameState;
+
+  namespace.updateWebGPUModel(model, frameState);
+
+  assert.equal(frameState.commandList.length, 1);
+  const [carrier] = frameState.commandList;
+  assert.equal(carrier.pickOnly, true);
+  const metadataCommand =
+    carrier.derivedCommands?.pickingMetadata?.pickMetadataCommand;
+  assert.ok(
+    metadataCommand?.pipeline,
+    "metadata demand needs a non-null metadata derivative",
+  );
+  assert.equal(
+    carrier.derivedCommands?.picking?.pickCommand,
+    undefined,
+    "metadata dispatch must not attach a duplicate derived ordinary-pick payload",
+  );
+  assert.strictEqual(
+    namespace.selectCommandVariant(carrier, scene, true),
+    metadataCommand,
+    "the real dispatcher must select the metadata derivative, not the carrier or ordinary pick",
+  );
+  const modelPick = readModelPickThroughSnapshot(namespace, context);
+  assert.equal(modelPick.readyGateSkipsThisFrame, 1);
+  assert.equal(modelPick.pickCommandsEmittedThisFrame, 1);
+});
+
+test("F3b no pick demand, allowPicking=false, and classifiers allocate no pick payload or pick counters", async () => {
+  const cases = [
+    {
+      name: "no demand",
+      configure(model) {
+        model.allowPicking = true;
+      },
+      pick: false,
+    },
+    {
+      name: "allowPicking false",
+      configure(model) {
+        model.allowPicking = false;
+      },
+      pick: true,
+    },
+    {
+      name: "classifier",
+      configure(model) {
+        model.classificationType = 0;
+      },
+      pick: true,
+    },
+  ];
+  for (const scenario of cases) {
+    const namespace = await importBarrel();
+    const { device } = makeFakeDevice();
+    const context = makeBareContext(namespace, device);
+    namespace.resetModelPickDebugCountersForFrame(1);
+    const pipelineCache = makeBarePipelineCache(namespace, device, () => null);
+    const model = makeMinimalModel(device, pipelineCache, [
+      makeMinimalRuntimePrimitive(),
+    ]);
+    scenario.configure(model);
+    const frameState = makeMinimalFrameState(namespace, context, scenario.pick);
+    namespace.updateWebGPUModel(model, frameState);
+    for (const command of frameState.commandList) {
+      assert.equal(
+        command.pickOnly,
+        false,
+        `${scenario.name} must not emit a pickOnly carrier`,
+      );
+      assert.equal(command.derivedCommands?.picking?.pickCommand, undefined);
+    }
+    const modelPick = readModelPickThroughSnapshot(namespace, context);
+    assert.equal(modelPick.pickCommandsEmittedThisFrame, 0, scenario.name);
+    assert.equal(modelPick.getPickPipelineCalls, 0, scenario.name);
+  }
+});
+
+test("F3c resolved pick preserves snap and precise-pass-2 derivatives without creating a second carrier", async () => {
+  const namespace = await importBarrel();
+  const { device } = makeFakeDevice();
+  const context = makeBareContext(namespace, device);
+  namespace.resetModelPickDebugCountersForFrame(1);
+  const pipelineCache = makeBarePipelineCache(namespace, device, () => ({
+    __kind: "colorPipeline",
+  }));
+  pipelineCache.getDepthWritePipeline = () => ({
+    __kind: "depthWritePipeline",
+  });
+  pipelineCache.getSnapPipeline = () => ({ __kind: "snapPipeline" });
+  pipelineCache.getPickPrecisePass1Pipeline = () => ({
+    __kind: "precisePass1Pipeline",
+  });
+  pipelineCache.getPickPrecisePass2Pipeline = () => ({
+    __kind: "precisePass2Pipeline",
+  });
+  const model = makeMinimalModel(device, pipelineCache, [
+    makeMinimalRuntimePrimitive(false, false, "BLEND"),
+  ]);
+  const frameState = makeMinimalFrameState(namespace, context, true, {
+    passes: { snap: true, pickMode: "precise" },
+    scene: { _webgpuPickPreciseEnabled: true },
+  });
+  namespace.updateWebGPUModel(model, frameState);
+  assert.equal(frameState.commandList.length, 1);
+  const [colorCommand] = frameState.commandList;
+  assert.ok(colorCommand.derivedCommands?.snapping?.snapCommand?.pipeline);
+  assert.ok(
+    colorCommand.derivedCommands?.picking?.pickPrecisePass1Command?.pipeline,
+  );
+  assert.ok(
+    colorCommand.derivedCommands?.picking?.pickPrecisePass2Command?.pipeline,
+  );
+  assert.equal(
+    colorCommand.derivedCommands.picking.pickPrecisePass2Command.pickOnly,
+    true,
+  );
 });
 
 /**
@@ -1435,8 +1636,18 @@ test("F5 mutant: the SAME assertion F2 uses fails when the real pick-emission ca
   const nominal = await importBarrel();
   assertPickEmissionRecordedByRealUpdate(nominal);
 
-  const original = "recordModelPickCommandEmitted();";
-  const inert = "if (false) { recordModelPickCommandEmitted(); }";
+  const original = [
+    "        attachPickToColorCommand(webgpuCmd, pickCmd);",
+    "        //>>includeStart('debug', pragmas.debug);",
+    "        recordModelPickCommandEmitted();",
+    "        //>>includeEnd('debug');",
+  ].join("\n");
+  const inert = [
+    "        attachPickToColorCommand(webgpuCmd, pickCmd);",
+    "        //>>includeStart('debug', pragmas.debug);",
+    "        if (false) { recordModelPickCommandEmitted(); }",
+    "        //>>includeEnd('debug');",
+  ].join("\n");
   const mutated = await importBarrel([
     {
       path: MODEL_RENDERER_PATH,
@@ -1444,7 +1655,7 @@ test("F5 mutant: the SAME assertion F2 uses fails when the real pick-emission ca
       mutate: (source) => {
         assert.ok(
           source.includes(original),
-          "the pick-emission call-site anchor has moved",
+          "the resolved-color pick-emission call-site anchor has moved",
         );
         return source.replace(original, inert);
       },
@@ -1458,5 +1669,102 @@ test("F5 mutant: the SAME assertion F2 uses fails when the real pick-emission ca
       "command and the real pick-pipeline build (asserted inside the same " +
       "function, before the counter check) still succeed; only the counter " +
       "call site is unreachable",
+  );
+});
+
+test("F6 mutant: making the dedicated pending carrier append unreachable makes the pending ordinary-pick assertion red", async () => {
+  function assertPendingCarrier(namespace) {
+    const { device } = makeFakeDevice();
+    const context = makeBareContext(namespace, device);
+    namespace.resetModelPickDebugCountersForFrame(1);
+    const pipelineCache = makeBarePipelineCache(namespace, device, () => null);
+    const model = makeMinimalModel(device, pipelineCache, [
+      makeMinimalRuntimePrimitive(),
+    ]);
+    const frameState = makeMinimalFrameState(namespace, context, true);
+    namespace.updateWebGPUModel(model, frameState);
+    assert.equal(frameState.commandList.length, 1);
+    assert.equal(frameState.commandList[0].pickOnly, true);
+    assert.ok(frameState.commandList[0].pipeline);
+  }
+
+  const nominal = await importBarrel();
+  assertPendingCarrier(nominal);
+  const append = "frameState.commandList.push(pendingPickCommand);";
+  const mutated = await importBarrel([
+    {
+      path: MODEL_RENDERER_PATH,
+      label: "inert-pending-pick-carrier-append",
+      mutate: (source) => {
+        assert.ok(
+          source.includes(append),
+          "the dedicated pending-carrier append anchor has moved",
+        );
+        return source.replace(append, `if (false) { ${append} }`);
+      },
+    },
+  ]);
+  assert.throws(
+    () => assertPendingCarrier(mutated),
+    /AssertionError|strict/i,
+    "RED required: making the real pending-carrier append unreachable must break the same ordinary-pick assertion",
+  );
+});
+
+test("F7 mutant: making the real metadata attachment inert makes metadata dispatch fall back instead of selecting the derivative", async () => {
+  async function assertPendingMetadataDispatch(namespace) {
+    const { device } = makeFakeDevice();
+    const context = makeBareContext(namespace, device);
+    const pipelineCache = makeBarePipelineCache(namespace, device, () => null);
+    pipelineCache.setMetadataPickWGSL = () => {};
+    pipelineCache.getPickMetadataPipeline = () => ({
+      __kind: "metadataPickPipeline",
+    });
+    const model = makeMinimalModel(
+      device,
+      pipelineCache,
+      [makeMinimalRuntimePrimitive(false, true)],
+      true,
+    );
+    const scene = { highDynamicRange: false };
+    const frameState = makeMinimalFrameState(namespace, context, true, {
+      pickingMetadata: true,
+      pickedMetadataInfo: { propertyName: "temperature" },
+      scene,
+    });
+    scene.frameState = frameState;
+    namespace.updateWebGPUModel(model, frameState);
+    assert.equal(frameState.commandList.length, 1);
+    const [carrier] = frameState.commandList;
+    const metadataCommand =
+      carrier.derivedCommands?.pickingMetadata?.pickMetadataCommand;
+    assert.ok(metadataCommand?.pipeline);
+    assert.equal(carrier.derivedCommands?.picking?.pickCommand, undefined);
+    assert.strictEqual(
+      namespace.selectCommandVariant(carrier, scene, true),
+      metadataCommand,
+    );
+  }
+
+  const nominal = await importBarrel();
+  await assertPendingMetadataDispatch(nominal);
+  const attachment = "derived.pickingMetadata = { pickMetadataCommand };";
+  const mutated = await importBarrel([
+    {
+      path: PICK_HELPERS_PATH,
+      label: "inert-pending-metadata-attachment",
+      mutate: (source) => {
+        assert.ok(
+          source.includes(attachment),
+          "the metadata attachment anchor has moved",
+        );
+        return source.replace(attachment, `if (false) { ${attachment} }`);
+      },
+    },
+  ]);
+  await assert.rejects(
+    () => assertPendingMetadataDispatch(mutated),
+    /AssertionError|strict/i,
+    "RED required: the same metadata-dispatch assertion must reject after its real attachment is made unreachable",
   );
 });

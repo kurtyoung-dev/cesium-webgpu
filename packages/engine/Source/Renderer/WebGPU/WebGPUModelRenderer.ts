@@ -7206,9 +7206,11 @@ function updateWebGPUModel(
 
       // Ready gate. The on-screen color pipeline (`primCache.pipeline`) is
       // compiled via `createRenderPipelineAsync` and is null while the variant
-      // is still cooking. Skip this primitive's draw for the cooking frame; a
-      // null pipeline must never be bound, since `WebGPUDrawCommand` requires
-      // one and a null `setPipeline` is a validation error. The per-frame
+      // is still cooking. Skip this primitive's color draw for the cooking
+      // frame; a null pipeline must never be bound, since `WebGPUDrawCommand`
+      // requires one and a null `setPipeline` is a validation error. A demanded
+      // pick may still use its synchronous pipeline after the shared draw
+      // resources are prepared below. The per-frame
       // refetch guard above re-polls `primCache.pipeline`, so the draw appears
       // within one frame of the async compile landing, matching the globe's
       // `resolveGlobePipelineEntry` skip-a-frame behavior. The classifier and
@@ -7218,7 +7220,9 @@ function updateWebGPUModel(
         //>>includeStart('debug', pragmas.debug);
         recordModelPickReadyGateSkip();
         //>>includeEnd('debug');
-        continue;
+        if (!pickDemand || !defined(pickColor) || suppressSurfaceForEdgesOnly) {
+          continue;
+        }
       }
 
       // Prepare the exact RTE camera block at the first command that consumes
@@ -7314,6 +7318,188 @@ function updateWebGPUModel(
           nodeCameraBG = nodeBinding.bindGroup;
           nodeCameraOffsets = nodeBinding.dynamicOffsets;
         }
+      }
+
+      // A pending color pipeline does not block a demanded pick: pick variants
+      // are created synchronously and consume the same prepared geometry and
+      // bind groups. The ordinary pick command is the top-level carrier so the
+      // dispatcher can submit it directly without a duplicate ordinary-pick
+      // derivative. Color-only command construction remains deferred until the
+      // asynchronous pipeline resolves.
+      if (!defined(activePipeline)) {
+        if (!defined(primCache.pickPipeline)) {
+          primCache.pickPipeline = pipelineCache.getPickPipeline(
+            matInfo.alphaMode,
+            matInfo.isDoubleSided,
+            primCache.materialDefines | 0,
+          );
+        }
+        const pendingPrimaryPass = drawPasses[0];
+        const pendingSharedPickDrawArgs = {
+          bindGroups: [
+            nodeCameraBG,
+            mergedMaterialBG,
+            mergedInstanceBG,
+            cache.effectsBG,
+          ],
+          bindGroupDynamicOffsets: [
+            nodeCameraOffsets,
+            undefined,
+            undefined,
+            undefined,
+          ],
+          vertexBuffers: vertexBuffers,
+          indexBuffer: primCache.indexBuffer || undefined,
+          indexCount: primCache.indexCount || 0,
+          indexFormat: primCache.indexFormat || "uint16",
+          vertexCount: primCache.vertexCount || 0,
+          instanceCount: instanceCount,
+          pass: pendingPrimaryPass,
+          owner: model,
+          boundingVolume: commandBoundingVolume,
+          modelMatrix: modelMatrix,
+          cull: model._cull ?? true,
+          renderState: modelRenderState,
+          pickOnly: true,
+          ...nonColorShadowFlags,
+        };
+        const pendingPickCommand: ModelDrawCommand = new WebGPUDrawCommand({
+          ...pendingSharedPickDrawArgs,
+          pipeline: primCache.pickPipeline,
+        });
+
+        if (frameState?.passes?.snap === true) {
+          if (!defined(primCache.snapPipeline)) {
+            primCache.snapPipeline = pipelineCache.getSnapPipeline(
+              matInfo.alphaMode,
+              matInfo.isDoubleSided,
+              primCache.materialDefines | 0,
+            );
+          }
+          const pendingSnapCommand = new WebGPUDrawCommand({
+            ...pendingSharedPickDrawArgs,
+            pipeline: primCache.snapPipeline,
+          });
+          attachSnapToColorCommand(pendingPickCommand, pendingSnapCommand);
+        }
+
+        const pendingScene = frameState?.scene;
+        if (pendingScene?._webgpuPickHoverEnabled === true) {
+          if (!defined(primCache.pickHoverPipeline)) {
+            primCache.pickHoverPipeline = pipelineCache.getPickHoverPipeline(
+              matInfo.alphaMode,
+              matInfo.isDoubleSided,
+              primCache.materialDefines | 0,
+            );
+          }
+          const pendingHoverCommand = new WebGPUDrawCommand({
+            ...pendingSharedPickDrawArgs,
+            pipeline: primCache.pickHoverPipeline,
+          });
+          attachPickVariantsToColorCommand(pendingPickCommand, {
+            hoverPick: pendingHoverCommand,
+          });
+        }
+
+        if (pendingScene?._webgpuPickPreciseEnabled === true) {
+          if (!defined(primCache.pickPrecisePass1Pipeline)) {
+            primCache.pickPrecisePass1Pipeline =
+              pipelineCache.getPickPrecisePass1Pipeline(
+                matInfo.alphaMode,
+                matInfo.isDoubleSided,
+                primCache.materialDefines | 0,
+              );
+          }
+          if (
+            matInfo.alphaMode === AlphaModes.BLEND &&
+            !defined(primCache.pickPrecisePass2Pipeline)
+          ) {
+            primCache.pickPrecisePass2Pipeline =
+              pipelineCache.getPickPrecisePass2Pipeline(
+                matInfo.alphaMode,
+                matInfo.isDoubleSided,
+                primCache.materialDefines | 0,
+              );
+          }
+          const pendingPreciseRenderState = {
+            ...modelRenderState,
+            stencilTest: { reference: 1 },
+          };
+          const pendingPrecisePass1Command = new WebGPUDrawCommand({
+            ...pendingSharedPickDrawArgs,
+            pipeline: primCache.pickPrecisePass1Pipeline,
+            renderState: pendingPreciseRenderState,
+          });
+          const pendingPrecisePass2Command = defined(
+            primCache.pickPrecisePass2Pipeline,
+          )
+            ? new WebGPUDrawCommand({
+                ...pendingSharedPickDrawArgs,
+                pipeline: primCache.pickPrecisePass2Pipeline,
+                renderState: pendingPreciseRenderState,
+              })
+            : undefined;
+          attachPickVariantsToColorCommand(pendingPickCommand, {
+            precisePass1: pendingPrecisePass1Command,
+            precisePass2: pendingPrecisePass2Command,
+          });
+        }
+
+        let pendingMetadataAttached = false;
+        const pendingPickedMetadataInfo = frameState.pickedMetadataInfo;
+        const pendingPrimitiveHasMetadata =
+          (primCache.materialDefines &
+            (ShaderDefine.MODEL_HAS_METADATA |
+              ShaderDefine.MODEL_HAS_PROPERTY_TEXTURES |
+              ShaderDefine.MODEL_HAS_PROPERTY_TABLES)) !==
+          0;
+        if (
+          frameState.pickingMetadata === true &&
+          defined(pendingPickedMetadataInfo) &&
+          pendingPrimitiveHasMetadata &&
+          defined(glTFPrimitive) &&
+          defined(primCache._metadataWGSL)
+        ) {
+          const pendingPickWGSL = generateMetadataPickWGSL(
+            model as unknown as Parameters<typeof generateMetadataPickWGSL>[0],
+            glTFPrimitive,
+            pendingPickedMetadataInfo.propertyName,
+            runtimeNode,
+          );
+          if (defined(pendingPickWGSL)) {
+            pipelineCache.setMetadataPickWGSL(
+              pendingPickWGSL.wgsl,
+              pendingPickWGSL.classHash,
+            );
+            const pendingMetadataPipeline =
+              pipelineCache.getPickMetadataPipeline(
+                matInfo.alphaMode,
+                matInfo.isDoubleSided,
+                primCache.materialDefines | 0,
+              );
+            const pendingMetadataCommand = new WebGPUDrawCommand({
+              ...pendingSharedPickDrawArgs,
+              pipeline: pendingMetadataPipeline,
+            });
+            attachPickMetadataToColorCommand(
+              pendingPickCommand,
+              pendingMetadataCommand,
+            );
+            pendingMetadataAttached = true;
+          }
+        }
+
+        // A metadata pass must not admit an ordinary carrier when this
+        // primitive cannot provide the requested metadata derivative.
+        if (frameState.pickingMetadata === true && !pendingMetadataAttached) {
+          continue;
+        }
+
+        frameState.commandList.push(pendingPickCommand);
+        //>>includeStart('debug', pragmas.debug);
+        recordModelPickCommandEmitted();
+        //>>includeEnd('debug');
+        continue;
       }
 
       // The stencil-write pipeline needs the model's stencil reference
