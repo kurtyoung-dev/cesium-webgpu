@@ -130,7 +130,12 @@ and can commit pure line-ending churn.
 It replays a previous resolution automatically — including a previously **wrong** one. Do not enable
 it in worker clones.
 
-### 4.6 Special handling — the rules
+### 4.6 Special handling — historical rules, superseded
+
+> **SUPERSEDED 2026-08-18 by `R-2026-08-18-28`.** The six rules below preserve the
+> original branch-commit design rationale; they are not worker instructions. A worker never
+> rebases or merges, and `HEAD` stays at the dispatch base. The worker reports base drift; an
+> explicitly authorized orchestrator owns candidate materialization, integration, and revalidation.
 
 1. **Rebase only inside the worker's own clone, and only before handoff.** Once the orchestrator has
    fetched the tip (§5 step 8), the branch is frozen. A rebase after that point invalidates the
@@ -154,6 +159,13 @@ it in worker clones.
 Every step names the assertion that proves it happened. *A step without an assertion is a wish* —
 the patch flow failed precisely because nothing asserted that the staged set matched the claimed set.
 
+> **SUPERSESSION — 2026-08-18.** The branch-tip and clean-worker-tree descriptions below preserve
+> the rationale of the original handoff model; they are not current worker instructions.
+> `R-2026-08-18-28` requires a worker to make no Git write, leave `HEAD` at the dispatch base, and
+> leave authored leased paths dirty for orchestrator verification and commit from the orchestrator's
+> own tree. The worker reports verbatim `git status --porcelain -uall`, which enumerates every
+> untracked file, instead of handing off a worker commit or an empty status.
+
 | # | Actor | Action | Assertion |
 |---|---|---|---|
 | **0** | orchestrator | **Capacity preflight** — `node Tools/codex-preflight.mjs` | exits **0 READY**. On **1 EXHAUSTED** do not dispatch; the output carries the server's reset time. (On 2026-08-17 this reported `resets Aug 19th, 2026 11:31 PM`.) |
@@ -162,13 +174,13 @@ the patch flow failed precisely because nothing asserted that the staged set mat
 | 3 | orchestrator | `git branch sol/<row>-<slug>-b<sha10>-<yyyy-mm-dd> main`, then `git clone --no-hardlinks --branch <branch> <main> <clone>` | `git check-ref-format --branch` exits 0; in the clone `.git` is a **directory** (`test -d`); `rev-parse HEAD` equals the tip; `status --porcelain` empty |
 | 4 | orchestrator | Provision governance + evidence: confirm `AGENTS.md` and `.agents/skills/**` present; copy artifacts to `<clone>/_review/` with a SHA-256 manifest | `AGENTS.md`'s four routed paths resolve **in the clone**; the reviewer rehashes every `_review/` file on arrival and halts on mismatch |
 | 5 | orchestrator | Scope the Codex sandbox to this clone only; confirm the blanket `f:\dev\gh` trust entry is gone | the sandbox log's processed-write-root count equals the declared roots, and the banked escape-probe result shows writes to `<main>/.git` refused (§10.1) |
-| 6 | **worker** | Work inside the lease. Commit on the branch. **No push, no `npm install`, no build, no browser** | `git status --porcelain` in the clone is **EMPTY** at handoff — this is the untracked-file catcher, and it is only assertable *because* the clone is clean |
-| 7 | **worker** | File a mechanical handoff report: branch, 40-hex tip, base, `git diff --stat main...HEAD`, verbatim `status --porcelain`, and every `node --test` exit code | every claim in the narrative names a path that appears in the reported `diff --stat` |
-| 8 | orchestrator | `git fetch <clone> <branch>:<branch>`, then `git merge-tree --write-tree main <tip>` (computes the merge as objects, no index or worktree side effects) | fetched tip equals the reported tip; `merge-tree` exits 0 (verified: git 2.55.0.windows.3 returns a tree OID even with 140 dirty paths) |
-| 9 | orchestrator | **Clean-clone smoke**: clone the tip alone into a temp dir, run `Tools/verify-tracked-references.mjs` plus every npm script the landing claim names | every command exits 0, codes recorded into the §1.7 validation manifest. **This is the only step that catches the untracked-dependency class** |
-| 10 | orchestrator | Read `git diff main...<branch>` **in full**; reconcile against the report. Never review the body in isolation | every path cited in the narrative appears in `diff --name-only main...<branch>`, and every path in that list is inside the lease. Anything outside the lease **blocks** |
-| 11 | orchestrator | In the landing clone, after 19:00 ET: `git merge --squash <branch>` then `git commit`. **No `git add` between merge and commit** | `Tools/verify-landing-content.mjs` proves staged set === branch diff set; `date` outside quiet hours; `npm run verify-landing -- --last 1` green (**an explicit range is required** — a bare invocation currently verifies 0 commits) |
-| 12 | orchestrator | Push from the landing tree; tag `safety-worker-<row>-<sha10>` at the branch tip; close the ledger row to REAPED | `git rev-list --count --merges` is 0; the tag resolves; `verify-branch-inventory` exits 0 |
+| 6 | **worker** | Work inside the lease. **Never run a Git write**: no commit, stash, checkout, restore, reset, merge, or rebase. Leave authored paths dirty. **No push, no `npm install`, no build, no browser** | `rev-parse HEAD` equals the dispatch base. At handoff, copy `git status --porcelain -uall` verbatim into the report; it enumerates every untracked file and every authored path must be inside the lease |
+| 7 | **worker** | File a mechanical handoff report: branch, 40-hex base and 40-hex `HEAD` (which must match), verbatim `status --porcelain -uall`, tracked-path `git diff --stat`, and every `node --test` exit code | every tracked claim in the narrative names a path in the reported diff; every untracked claim names its individual `??` path in the verbatim porcelain report |
+| 8 | orchestrator | Run `node Tools/verify-worker-handoff.mjs <clone> --lease <path>… --base <base>`, then read the dirty leased paths in full. Only the orchestrator moves verified contents into its own landing tree and commits them | the verifier reports the worker branch unmoved at the base, reports authored tracked and untracked paths, and rejects a path outside the lease or no authored change |
+| 9 | orchestrator | **Clean-clone smoke**: in a temporary clean clone at the dispatch base, reproduce the verified worker contents and run `Tools/verify-tracked-references.mjs` plus every npm script the landing claim names | the temporary clone's changed-path set equals the verified worker report; every command exits 0, codes recorded into the §1.7 validation manifest. **This is the only step that catches the untracked-dependency class** |
+| 10 | orchestrator | Read the worker's reported `git diff` and verbatim `status --porcelain -uall` **in full**, then reconcile the landing-tree candidate against both. Never review the body in isolation | every candidate path appears in the verified worker report and is inside the lease. Anything outside the lease **blocks** |
+| 11 | orchestrator | In the landing clone, after explicit landing authority and the clean-clone smoke, stage and commit exactly the reviewed candidate materialized from the frozen worker tuple. Do not stage a path or byte outside that tuple | the staged path set and bytes equal the frozen authored tuple; `date` is outside quiet hours; `npm run verify-landing -- --last 1` is green (**an explicit range is required** — a bare invocation currently verifies 0 commits) |
+| 12 | orchestrator | When the current task explicitly authorizes the tag and push, push from the landing tree; tag `safety-worker-<row>-<sha10>` at the orchestrator-authored landing commit; close the ledger row to REAPED | `git rev-list --count --merges` is 0; the tag resolves to the landing commit; branch-inventory assertions are recorded manually until `verify-branch-inventory` exists |
 
 **Landing tree.** Main carries 140 dirty paths, so `git merge --squash` there aborts on any
 overlapping path (B1041 overlapped 5 of 5). Land in a separate clean clone with hooks pinned:
@@ -202,9 +214,10 @@ Pinning to main's absolute shim directory makes the guard fire without any `npm 
 
 
 ### 6.1 Staged-set equality — *the* successor to the failed mechanism
-`set(git diff --cached --name-only)` must equal `set(git diff --name-only main...<branch>)` after
-`git merge --squash`, with **no `git add` in between**; and every path named in the commit body must
-be in that set. **New: `Tools/verify-landing-content.mjs`.**
+`set(git diff --cached --name-only)` must equal the frozen worker tuple's authored-path set after
+the orchestrator materializes the reviewed candidate; every staged byte must match that tuple, and
+every path named in the commit body must be in that set. `Tools/verify-landing-content.mjs` remains
+proposed; until it exists, the orchestrator records this comparison as manual.
 
 ### 6.2 Tracked-reference resolution
 For every `node <path>` in `package.json` scripts and every relative import in changed
@@ -229,8 +242,10 @@ dates) **never runs at push**. Line 177 checks only `new Date()` — the push in
 Asserts `git rev-list --count --merges` is 0. Closes the two rule-skip holes in §3 at once.
 
 ### 6.6 Worker-tree cleanliness
-The handoff report must carry verbatim `git status --porcelain` and it must be empty. Catches an
-un-`add`-ed file at source — the launcher shape, inside the new flow.
+The handoff report must carry verbatim `git status --porcelain -uall`; it is expected to enumerate
+the worker's dirty authored paths, including each untracked file. An empty authored set means the
+worker produced nothing, while a path outside the lease blocks the handoff. This catches the
+untracked-launcher shape at source instead of hiding it behind a worker commit.
 
 ### 6.7 Branch-inventory detector — six assertions
 (1) every `refs/heads` ref except `main` has a ledger row; (2) every OPEN row is inside its age budget
@@ -243,9 +258,9 @@ on five unregistered `.claude/worktrees/*` directories that `git branch -a`, `gi
 `git status` (`.gitignore:56`) all miss. Run at three moments: dispatch, reap, session start.
 
 ### 6.8 Body-claim path binding
-Reject any landing whose body cites a file absent from the branch diff, or any branch that touched a
-path outside its lease. The commit message is otherwise unconstrained by the diff — even with no
-patch subset, a body can still describe work the tree does not contain.
+Reject any landing whose body cites a file absent from the frozen authored tuple or whose candidate
+contains a path outside its lease. The commit message is otherwise unconstrained by the candidate
+diff — a body can still describe work the tree does not contain.
 
 ---
 
@@ -253,18 +268,20 @@ patch subset, a body can still describe work the tree does not contain.
 
 1. Work only inside your **declared path lease**. Touching a path outside it blocks the landing.
 2. **Never run a git write.** No commit, stash, checkout, restore, reset. Work in your tree and
-   leave it dirty; the orchestrator fetches your branch and commits from its own tree.
+   leave it dirty; the orchestrator verifies the frozen authored tuple and commits the exact reviewed
+   candidate from its own tree.
    *(Amended 2026-08-18 by `R-2026-08-18-28`, restoring `ORCHESTRATION_HANDBOOK.md:61` `[HARD]`. The
    earlier wording here said "commit freely" and contradicted both the handbook and `R-13`/`-19`,
    leaving three tracked documents disagreeing — which deadlocks a worker that is told to stop and
    report conflicts rather than choose.)*
 3. **Never run `npm install`, a build, or a browser** in your clone.
-4. Your `git status --porcelain` must be **empty** at handoff. An un-`add`-ed file is invisible to
-   the branch and will be lost.
-5. Rebase only per §4.6, and re-run everything afterwards.
-6. **Never cite a SHA from an unlanded branch.**
-7. Your handoff report is mechanical, not narrative: every claim must name a path that appears in
-   your own `git diff --stat`.
+4. At handoff, report `git status --porcelain -uall` verbatim. Your leased authored paths remain
+   dirty; every untracked file must appear individually in that output.
+5. Do not rebase or merge. `HEAD` remains exactly at the dispatch base through handoff.
+6. Report the dispatch base as the base, never as a worker-produced revision.
+7. Your handoff report is mechanical, not narrative: every tracked claim must name a path that
+   appears in your own `git diff --stat`, and every untracked claim must name its individual path in
+   the verbatim porcelain report.
 8. If you cannot finish, stop and write the handoff. A bounded partial with an honest report is worth
    more than an unbounded sprint — see `CODEX_SOL_OPERATING_BRIEF.md` §2.
 
