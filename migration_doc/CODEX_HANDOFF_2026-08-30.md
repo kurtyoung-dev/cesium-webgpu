@@ -10,8 +10,15 @@ authority grant, certification receipt, queue replacement, or permission to land
 `a64954b94507fa29762964f3d410517ddd765e9e` (Batch 1329). Main was 11 commits ahead
 and zero behind. Those 11 commits are local-only relative to `origin/main`. **No commit
 after Batch 1329 is on `origin/main`, and root made no push in this handoff.** Other
-pre-existing remote lane refs are identified below. No push is authorized by this
-handoff.
+pre-existing remote state is limited here to the one identified Q-152 lane ref. No
+push is authorized by this handoff.
+
+**Publication boundary.** The observation cutoff above is immutable. This handoff was
+materialized later as local-only commit `a904c2e475` (Batch 1341), whose only changed
+path was this file. That is the only main commit between observed main `807ca41b` and
+the handoff publication commit; main was then 12 commits ahead and zero behind
+`origin/main`. Post-cutoff activity is excluded from the cutoff claims unless it is
+explicitly listed in section 12.
 
 Read this with [AGENTS.md](../AGENTS.md), the
 [executor charter](EXECUTOR_LANE_CHARTER_2026-08-14.md),
@@ -34,6 +41,7 @@ remain the status authorities.
 | DX-15 removal | Preregistered preparation only; explicit C11-107 retirement sign-off absent; NO-GO to delete, implement, run Edge, land, or certify |
 | Browser/build/evidence | Edge remained root-gated; no wave-end receipt or browser certification was produced |
 | Push | No root push for the 11-commit local main range, the two committed side worktrees, or either active isolated lane; the Q-152 clone already tracks a remote lane ref |
+| Handoff publication after cutoff | `a904c2e475` changed only this handoff; local main then 12 ahead and zero behind `origin/main`; not pushed |
 
 ## 2. Committed main work in the window
 
@@ -57,6 +65,12 @@ ancestor of current main, not necessarily pushed.
 | `5f306497` unnumbered docs | local main only | Normalized research-queue encoding and added Maglor record; not Batch 1337. |
 | `b1ce3823` unnumbered docs | local main only | Registered held DX cleanup work including DX-15; not Batch 1339. |
 | `807ca41b` Batch 1340 | local main only | Added read-only WGSL/GLSL watcher race audit. Source-confirmed NO-GO for serialization claims; no watcher/generator/build/server/test ran; see [Gandalf](branches/gandalf--watch-build-scheduler-race-audit.md). |
+
+The documentation publication immediately after the window was:
+
+| Commit | Disposition | Accomplishment and proof boundary |
+| --- | --- | --- |
+| `a904c2e475` Batch 1341 | local main only; after cutoff | Materialized this 400-line handoff as its sole changed path. It made main 12 commits ahead and zero behind `origin/main`; it was not pushed and did not change the cutoff snapshot. |
 
 Two numbered commits exist on other local refs but are **not ancestors of main**:
 
@@ -94,16 +108,36 @@ review records, and twelve new 4096 skybox JPGs.
 This is mixed pre-existing/concurrent state. Do not attribute by proximity or sweep it
 into a candidate. Bounded facts only:
 
-- Q130 Phase A is frozen, prior-review GO, durable-record review pending, **not landed**.
+- Q130 Phase A is frozen and **not landed**. Finrod returned GO for the exact durable
+  documentation/landing packet; the live queue still says review pending and needs an
+  add-only status update. That GO is not fresh certification and does not close
+  Q-130-c2 or either generator-durability carry-forward.
   Its exact nine-path tuple and retained 35/37 expected red, final 37/37,
   `test-build-infra` 102/102, and shadow contract 20/20 are in
-  [Aegnor](branches/aegnor--q130-phase-a-source-fleet-cleanliness.md). Q-130-c2 and stale
-  standalone-generator authority remain open.
+  [Aegnor](branches/aegnor--q130-phase-a-source-fleet-cleanliness.md), with the bounded
+  review in [Finrod](branches/reviews/finrod--q130-phase-a-source-fleet-cleanliness-review.md).
+  Q-130-c2 and stale standalone-generator authority remain open.
 - The twelve 4096 skybox assets/policy paths remain held; their presence grants no
   staging or certification.
 - Rust is an uncommitted, separately governed program; section 7 controls its status.
 - P0A/P0B records and `Tools/patch-prototype/**` are present but are not attributed as
   completed 24-hour work without a current reviewed landing record.
+
+### Banked launcher ERRORs at cutoff
+
+- FeatureRenderer strict-baseline attempt A1 is an `ERROR`, not PASS or FAIL:
+  `spawnSync npm.cmd` returned `EINVAL` before npm or the audit process existed. The
+  complete record reports zero audit children and no product measurement. A retry/A2
+  and Phase B remain held. A2 additionally requires an exact frozen, independently
+  certified native-supervisor tuple that provides kernel-bound descendant and
+  terminal-quiescence evidence. The current Rust supervisor is **NOT CERTIFIED**;
+  Node, PowerShell, cmd, and npm wrappers are not substitutes. See
+  [Arwen](branches/arwen--feature-renderer-ci-strict-gate.md).
+- Q130 standalone-generator expected-red attempt A1 is an `ERROR`, not a product red:
+  cross-drive executable handling formed an invalid path and `statSync` returned
+  `ENOENT` before a child, TAP stream, or product measurement existed. A2 and generator
+  deletion remain held; see
+  [Faramir](branches/faramir--q130-standalone-wgsl-generator-authority-removal.md).
 
 ## 4. Isolated clones and local worktrees
 
@@ -123,6 +157,10 @@ collateral, and inherited dirt must not be swept in.
 Accepted V5 expected-red: 38 total, 31 old green, exactly seven new semantic reds. This
 is test-first evidence only. No aggregate acceptance, real child, parent gate, build,
 browser, Edge, receipt, or publication occurred.
+
+The clone-local append-only record is
+`F:/Dev/GH/cesium-lane-maedhros-q152-h1-20260830/migration_doc/branches/maedhros--q152-h1-variant-child-result.md`.
+It is intentionally recorded as a local path rather than a main-tree link.
 
 ### Session-GC active clone
 
@@ -159,6 +197,10 @@ sentries remained unchanged. These are source claims only: a distinct tester and
 reviewer are still required, and no V9 validation, catalog regeneration, or receipt
 exists. Dirty `package.json` remains inherited unless later proved otherwise.
 
+The clone-local append-only record is
+`F:/Dev/GH/cesium-lane-elrond-session-gc-20260830/migration_doc/branches/elrond--codex-session-gc-boundary-safety.md`.
+It is intentionally recorded as a local path rather than a main-tree link.
+
 ### Retained local trees
 
 The Gandalf Q-12 and Thorin receipt side worktrees are described in section 2. Maedhros
@@ -171,8 +213,9 @@ new accomplishments in this window.
 - **Q-152 H0:** exact pure contract independently GO, but an orphan-helper landing is
   prohibited; first consumer, focused integration, existing npm runner, complete
   assembly freeze, and new review remain mandatory.
-- **Q130 Phase A:** frozen source/static tuple with prior GO; durable record review and
-  destination landing remain held; Q-130-c2 and generator durability remain open.
+- **Q130 Phase A:** Finrod returned GO for the exact durable documentation/landing
+  packet. The live-queue add-only update and destination landing remain held;
+  Q-130-c2 and generator durability remain open.
 - **DX-15 / C11-107:**
   [preregistration](DX15_TRANSLUCENT_CLASSIFICATION_COMPOSITE_SCAFFOLD_REMOVAL_PREREGISTRATION_2026-08-30.md)
   is preparation only. No deletion, code, Edge, evidence, landing, or certification.
@@ -185,15 +228,22 @@ new accomplishments in this window.
 - **Rust behavioral hardening:**
   [preregistration](RUST_PROCESS_SUPERVISOR_V1_BEHAVIORAL_HARDENING_PREREGISTRATION_2026-08-30.md)
   is source/planning only. Its W1/P1 and later V1/V2 phases remain blocked by the
-  supply-chain gate. No behavioral Cargo suite or platform certification ran under it.
+  supply-chain gate. Retained V1 review NO-GOs include missing exact working-directory
+  binding for the W1/P1 commands, missing Unix terminal hard-link/link-count binding,
+  and missing immutable loaded-runner-image provenance. The V2 narrow supersession
+  preregisters those corrections, but both exact-tuple V2 reviews remain prerequisites;
+  no implementation or execution authority exists. No behavioral Cargo suite or
+  platform certification ran under it.
 - **Rust durable inverse V3:**
   [preregistration](RUST_PROCESS_SUPERVISOR_SUPPLY_CHAIN_DURABLE_INVERSE_PREREGISTRATION_2026-08-30.md)
   defines the nested evidence topology but grants no execution. Durable V1 reviewers
   Mithrellas/Pengolodh and durable V2 reviewers Círdan/Aredhel all returned NO-GO. V3 is
-  preregistration, not approved execution or a recovered receipt. A predicate
-  source candidate froze at 14,923 bytes /
+  preregistration, not approved execution or a recovered receipt. A predicate source
+  candidate was session-reported at 14,923 bytes /
   `e40e7fe3047d1f3bf63a2e58fcaf9fc6ece62d2d362d3419956fd89149e6ecaa`;
-  author static GO only, independent Erestor review pending, never executed or imported.
+  the candidate attribution and Erestor review status were uncommitted session reports,
+  not a tracked source-freeze/review artifact that a fresh checkout can independently
+  recompute. It was never executed or imported.
   Recorder, adapter, launcher, V3 source-freeze record, and every V1/V2/V3 evidence leaf
   remain absent. The predicate author/lease is not yet identified in a tracked record;
   that provenance gap must be closed before execution authority.
@@ -239,6 +289,13 @@ new accomplishments in this window.
 - Q130: 35/37 baseline retained; no allowlist or de-scoring.
 - Batch 1332 landing compliance: missing co-author trailer remains a visible historical
   red for every range containing that commit.
+
+### Banked launcher ERRORs, not product results
+
+- Arwen A1: `spawnSync npm.cmd` returned `EINVAL`; zero audit children, no audit result,
+  no product measurement, and no retry or Phase-B release.
+- Faramir A1: cross-drive launcher path construction led to `ENOENT`; zero child/TAP
+  product measurement, and no A2 or generator-deletion release.
 
 ## 7. Rust supervisor status — NOT CERTIFIED
 
@@ -304,6 +361,10 @@ evidence-linked operator guide and obtain a separate documentation review.
 8. **Landing history:** Batch 1332's missing co-author trailer remains immutable;
    unnumbered docs commits do not impersonate Batches 1337/1339, which live only on
    other refs.
+9. **FeatureRenderer strict gate:** A1 is a launcher `ERROR` with no audit child or
+   product verdict. A2 and Phase B remain held.
+10. **Q130 standalone generator:** A1 is a launcher `ERROR` with no child/TAP product
+    verdict. A2 and generator deletion remain held.
 
 ## 9. Active agents and lanes during handoff drafting
 
@@ -323,6 +384,15 @@ evidence-linked operator guide and obtain a separate documentation review.
 No active lane may mutate another lane's frozen tuple, inherited dirt, branch, clone,
 evidence path, or process state.
 
+Canonical task/session identifiers for the cutoff actor table were not durably retained
+in tracked repository evidence; its Tolkien names are session attributions. Post-cutoff
+identifiers retained by the current session include
+`/root/fingolfin_q152_test_lead`,
+`/root/celebrimbor_rust_inverse_sources`,
+`/root/elrond_session_gc_implementation`,
+`/root/thranduil_rust_build_certification/galadriel_matrix_review`, and
+`/root/aragorn_supply_v3_review_lead/mandos_supply_history_review`.
+
 ### External session environment — uncommitted and non-authoritative
 
 After the approximately 150 GB Codex cache cleanup, the user restored the session's
@@ -340,26 +410,35 @@ cleanup, reset, restart, or configuration replacement before relying on concurre
 
 These are recorded next steps, **not current authority to run them**.
 
+| Lane | Lease / frozen state | Reviewer lifecycle | Upstream state | Retained process report at cutoff |
+| --- | --- | --- | --- | --- |
+| Q-152 H1 | Beren held the production-source-only lease; accepted V5 test/handoff collateral was frozen while the source remained the repair target | A new complete-assembly review was owed after repair/freeze | Clone branch tracked the same-named origin ref at 0/0 | No lane-owned live child reported |
+| Session-GC | Elrond's V9 source/spec tuple was frozen; execution, catalog, receipt, and landing leases remained closed | Thingol/Melian reviewed only the V9 preregistration; distinct tester and implementation reviewer owed | Clone had no upstream shown and was 10 ahead of `origin/main` | No lane-owned live child reported |
+| Rust durable inverse | Untracked main-tree program; tracked V3 preregistration but no tracked predicate source-freeze artifact at cutoff | Session-reported source review was not reproducible tracked evidence; four-source and evidence reviews owed | No branch/upstream publication; uncommitted | No product or Cargo child reported |
+| Q130 Phase A | Exact nine-path tuple frozen; no open writer lease and no landing yet | Finrod GO applies only to the durable documentation/landing packet | Uncommitted main-tree assembly | No lane-owned live child reported |
+| FeatureRenderer strict gate | A1 append-only `ERROR`; A2 tuple unfrozen and Phase-B writer lease closed | Pre-A1 physical-record review GO; corrected A2 freeze/review still owed | Uncommitted Arwen record on main tree | Zero audit children in A1; no survivor reported |
+| Q130 standalone generator | A1 append-only `ERROR`; A2 held; generator-deletion lease closed | A2 physical freeze and fresh review owed | Uncommitted Faramir record on main tree | Zero product children in A1; no survivor reported |
+| DX-15 | Preregistration only; no deletion/writer/Edge lease | Retirement sign-off and later review sequence owed | Local-main documentation state only | No lane-owned live child reported |
+| Q-12 / Q-152 receipt side refs | Clean committed tuples; root alone controls destination materialization | Existing reviews do not authorize merge or push | `d37b1f3c` and `f0121cfd` remain off main and unpushed | No lane-owned live child reported |
+
 1. **Before any integration:** root re-inventories branch/worktree/dirty state,
    collision-audits exact paths, rehashes frozen tuples, and reconciles active agents.
    No worker performs Git writes.
-2. **Session-GC:** a distinct tester may run the exact focused spec only after root
-   verifies the V9 tuple/sentries and grants Node authority; then freeze all
-   validation/collateral receipts and obtain a different independent reviewer. Catalog
-   regeneration and landing require their own authority. Any byte change creates a new
-   record version and invalidates the current candidate review.
-3. **Q-152 H1:** finish the seven-red source repair, rerun only the preregistered focused
-   checks under root authority, freeze source/spec/handoff, then obtain a distinct
-   review. Do not run the aggregate, child processes, browser, or evidence lane until
-   each prerequisite receives explicit release.
+2. **Session-GC:** post-cutoff section 12 supersedes the cutoff plan. Two independent
+   V11 record reviews must return GO before any prospective spec-only repair. No test,
+   catalog regeneration, receipt, product, or landing action is released.
+3. **Q-152 H1:** post-cutoff section 12 supersedes the cutoff plan. Only read-only V6
+   static forensics is released; it must be followed by a reviewed V7 before any edit
+   or run. Aggregate, child, browser, evidence, landing, and certification work remains
+   held.
 4. **Q-152 H0:** assemble unchanged H0 with its first real consumer, focused integration
    coverage, and an existing package runner in a new lease; freeze and review the
    entire assembly before landing.
-5. **Rust:** finish Erestor's source review. No Cargo command is released while the
-   supply chain is NO-GO. Durable V3 record reviews, dependency-ordered creation of the
-   remaining three sources, a four-source freeze/security/lifecycle review, exact
-   one-use run authority, physical evidence review, and separately preregistered
-   Cargo/build/test work are serial gates.
+5. **Rust:** post-cutoff section 12 supersedes the cutoff plan. The exact 18,000-byte
+   predicate requires fresh independent static review before any further source or
+   execution work. No Cargo command is released while the supply chain is NO-GO.
+   Remaining-source creation, four-source review, one-use execution, physical evidence
+   review, and separately preregistered Cargo/build/test work remain serial gates.
 6. **DX-15:** obtain explicit C11-107/G6 Q2d Principle-7 sign-off before opening a
    writer lease. Then follow the preregistered resource/pixel/mutant/review sequence;
    only the designated Edge steward runs the browser matrix.
@@ -368,8 +447,9 @@ These are recorded next steps, **not current authority to run them**.
    wrappers, inherited `package.json`, or foreign main dirt by directory sweep.
 8. **Push:** current state is NO PUSH. A future push needs explicit user authority,
    current quiet-hours/ruling reconciliation, exact range checks, clean landing
-   receipts, correct identity, and disclosure that main currently contains 11 unpushed
-   commits while Batches 1337/1339 are on other refs.
+   receipts, and correct identity. The cutoff snapshot contained 11 unpushed main
+   commits; after local-only publication `a904c2e475`, main contains 12. Batches
+   1337/1339 remain on other refs.
 
 ## 11. Source and evidence index
 
@@ -377,10 +457,25 @@ These are recorded next steps, **not current authority to run them**.
 - [Live fix queue](FIX_QUEUE_2026-08-27_AUDIT_FINDINGS.md)
 - [Research dispatch queue](QUEUE_2026-08-29_RESEARCH_DISPATCH.md)
 - [Active workflow snapshot](branches/ACTIVE_WORKFLOW_WAVE_2026-08-29.md)
+- [Arwen FeatureRenderer strict-gate record](branches/arwen--feature-renderer-ci-strict-gate.md)
+- [Faramir Q130 standalone-generator record](branches/faramir--q130-standalone-wgsl-generator-authority-removal.md)
+- [Faramir explicit-lease handoff record](branches/faramir--handoff-verifier-explicit-lease.md)
+- [Finrod Q130 durable-packet review](branches/reviews/finrod--q130-phase-a-source-fleet-cleanliness-review.md)
+- [Maglor research-queue encoding record](branches/maglor--research-queue-encoding-normalization.md)
+- [Théoden handoff-procedure drift record](branches/theoden--dx-handoff-procedure-drift.md)
+- [Beregond procedure review](branches/reviews/beregond--handoff-procedure-review.md)
+- [Haleth procedure review](branches/reviews/haleth--handoff-procedure-review.md)
+- [Beregond destination review](branches/reviews/beregond--handoff-procedure-destination-review.md)
+- [Haleth destination review](branches/reviews/haleth--handoff-procedure-destination-review.md)
+- [Aragorn handoff-verifier review](branches/reviews/aragorn--handoff-verifier-review.md)
+- [Imrahil Batch-1331 bookkeeping review](branches/reviews/imrahil--batch-1331-bookkeeping-review.md)
 - [Tuor Q-152 safety record](branches/tuor--q-152-wave-end-gate-repair.md)
 - [Maedhros H0 record](branches/maedhros--q152-child-result-contract.md)
+- [Curufin H0 review](branches/reviews/curufin--q152-child-result-contract-review.md)
 - [Beren Q-152 EOL record](branches/beren--q152-wave-end-mutant-eol.md)
+- [Faramir Q-152 EOL review](branches/reviews/faramir--q152-wave-end-mutant-eol-review.md)
 - [Elros Q-141 record](branches/elros--q141-pick-during-pipeline-readiness.md)
+- [Glorfindel Q-141 review](branches/reviews/glorfindel--q141-pick-during-pipeline-readiness-review.md)
 - [Aegnor Q130 record](branches/aegnor--q130-phase-a-source-fleet-cleanliness.md)
 - [Gandalf watcher audit](branches/gandalf--watch-build-scheduler-race-audit.md)
 - [DX-15 preregistration](DX15_TRANSLUCENT_CLASSIFICATION_COMPOSITE_SCAFFOLD_REMOVAL_PREREGISTRATION_2026-08-30.md)
@@ -389,12 +484,55 @@ These are recorded next steps, **not current authority to run them**.
 - [Rust behavioral-hardening preregistration](RUST_PROCESS_SUPERVISOR_V1_BEHAVIORAL_HARDENING_PREREGISTRATION_2026-08-30.md)
 - [Denethor Rust supply-chain review](branches/reviews/denethor--rust-process-supervisor-supply-chain-review.md)
 
-## 12. Negative-action declaration
+The Q-152 receipt side ref `f0121cfd` contains the not-on-main path
+`migration_doc/branches/thorin--q152-landing-rules-receipt.md`. The two active
+clone-local records are listed with absolute local paths in section 4; neither is
+represented as a tracked main-tree link.
 
-The documentation workers ran no Git command, Node, npm, Cargo, rustc, build, test,
-browser, server, network, process/session enumeration, external publication, reset,
-cleanup, clone retirement, or push. Root ran bounded read-only Git status/log/ref/worktree
-inventory and filesystem hashes, then used `apply_patch` to create only this handoff.
-No Git write, commit, push, code edit, queue/state/ruling/catalog change, existing-record
-rewrite, browser/build/test run, or evidence publication was performed for this
-documentation task.
+## 12. Post-cutoff addendum — later 2026-08-30 activity
+
+These facts occurred after the 18:18:07 ET observation cutoff and after, or while
+auditing, the `a904c2e475` publication. They do not revise the cutoff inventory.
+
+- **Q-152 H1 V6:** the preregistered one-shot focused sequence reached command 4 and
+  stopped on exit 1: 38 total, 35 pass, three fail. Failure 9 is a stale six-read oracle
+  against the required nine-read continuity path; failure 29 is a readiness mutation
+  needle that no longer finds its target; the third failure lies in tests 13–27 but its
+  exact identity is unknown because transported TAP was truncated. Commands 5–7 did
+  not run and there was no retry. The V6 record is 112,313 bytes /
+  `F7A036CAD42A24F9AEB2D2336880134DBED23EF002F6C5C237A1C3BD4A7B5D54`.
+  After V6 froze, Galadriel independently returned record-only GO on that exact tuple.
+  The later review is session-retained; it does not approve the candidate, execution,
+  aggregate, evidence, landing, or certification.
+- **Session-GC V9–V11:** the one V9 baseline run exited 1 with 85 total, 81 pass, three
+  fail, and one Windows POSIX skip. All three failures were synthetic fake-child argv
+  expectations: Node exposed an absolute path for the fixture named `delete`, while the
+  parent-child audit still proved the literal `["delete", id]` production argv. Three
+  assertion corrections were then made before a new preregistration, a recorded
+  process-order violation; the changed spec stayed quarantined and un-retested. V10
+  received two NO-GOs: its mutant schedule was not one executable total order, and its
+  replacement control overwrote the same file object rather than creating a distinct
+  replacement. V11 now freezes a single M01–M54 schedule and a prospective distinct-
+  object spec repair in the append-only clone record: 119,484 bytes /
+  `C9372B7AB28E72E80DE618DC15F49B81573237B059382ABE47CE439BC478C89F`.
+  V11 is unreviewed and grants no edit, test, quality, product, or landing authority.
+- **Rust durable-inverse predicate:** static review first identified pre-decode ceiling,
+  syntax-severity, and callback-nonce gaps; a first source-only repair closed those but
+  a follow-up review found the required malformed-validator-routing self-control still
+  absent. A second unexecuted source-only repair now freezes at exactly 18,000 bytes /
+  `6E8B59A981DFD381BA11B5E17021984089B1188DC1CF795FE77F8142CBB7FDE5` /
+  170 LF, zero CR, no BOM, terminal LF, with the missing three-identity routing control
+  added. Fresh independent static review remains required. Recorder, adapter, launcher,
+  execution, Cargo, platform certification, and supported-user documentation remain
+  held.
+
+## 13. Negative-action declaration
+
+The original documentation workers and the later completeness-audit team ran no Git
+command, Node, npm, Cargo, rustc, build, test, browser, server, network, external
+publication, reset, cleanup, clone retirement, or push. Their bounded read-only helpers
+terminated and left no review-owned live/background children. Root used read-only Git
+and filesystem inspection, then `apply_patch` only on this handoff and its README index
+entry. No product-code edit, queue/state/ruling/catalog change, existing lane-record
+rewrite, browser/build/test run, evidence publication, or push was performed for the
+documentation correction.
