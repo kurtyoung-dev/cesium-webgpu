@@ -2,6 +2,7 @@
 
 - Recorded by: root orchestrator
 - Recorded at: `2026-08-29T22:25:32-04:00`
+- Tuor-only superseding update: `2026-08-30T01:03:42-04:00`; every other lane remains at the original snapshot time.
 - Common dispatch base: `a64954b94507fa29762964f3d410517ddd765e9e`
 - Certification claim: none
 - Push authority: none; every branch below is local-only.
@@ -12,7 +13,7 @@ This snapshot points to live leases and prevents a restart, cleanup, or clone-re
 
 | Stable lane | State | Active or last actors | Clone | Reset-safe boundary |
 |---|---|---|---|---|
-| Tuor | ACTIVE / UNFROZEN | Beren lead; Celebrimbor writer; Idril test authority; Lúthien contract authority | `F:/Dev/GH/cesium-lane-tuor-q152-20260829` | source and spec are moving; structured checkpoint, freeze, review, and quiescence remain owed |
+| Tuor | LOCAL FAIL-CLOSED SAFETY LANDED / PROCESS VIOLATION RECORDED / NOT CERTIFIED / Q-152 OPEN | Beren lead; Celebrimbor writer; Idril test authority; Turgon and Nimrodel reviewers | `F:/Dev/GH/cesium-lane-tuor-q152-20260829` | Batch 1332 `fff7e02072adf95f88e23a43bec113f214e3e05b`; exact main tuple and landing record are in `tuor--q-152-wave-end-gate-repair.md#local-fail-closed-safety-landing-stamp`; required result remains STRUCTURAL / exit 3 / zero spawns; no wave-end receipt; missing-trailer process red retained; clone and branch remain protected pending tracked disposition and root quiescence |
 | Maedhros | ACTIVE / UNFROZEN | Maedhros lead; Maglor writer; Caranthir tester; Curufin reviewer | `F:/Dev/GH/cesium-lane-maedhros-child-contract-20260829` | both deliverables were absent at the last root checkpoint; no tuple or review exists |
 | Faramir | ACTIVE / UNFROZEN | Faramir lead; Samwise writer; Meriadoc test designer; Aragorn reviewer | `F:/Dev/GH/cesium-lane-faramir-handoff-verifier-20260829` | draft is moving; root validation and frozen review remain owed |
 | Théoden | FROZEN / LANDING HELD | Théoden lead; Éomer writer; Beregond and Haleth reviewers | `F:/Dev/GH/cesium-lane-theoden-handoff-doc-20260829` | candidate is 47,773 bytes / SHA-256 `ED02F2906D1FACA0C79311352DF7A1A2E7FB5CD31F5764D6B7D6560B85BF3F07`; literal review artifacts and a repaired verifier run remain owed |
@@ -24,7 +25,8 @@ Faramir's first direct spec run wrote only test-owned temporary Git fixtures but
 - No clone or branch above may be reset, restored, retired, deleted, renamed, reused, or reaped.
 - No active lane may enter review until its writer stops, its exact tuple is frozen, and root confirms all lane processes are quiescent.
 - No frozen lane may land until required reviewer reports are stored as immutable artifacts and terminal hashes match.
-- Tuor remains held on provenance-bound typed results from the variant, Sandcastle, and capture children. Maedhros is only the shared-contract slice; consumer integration and runner wiring remain separate held work.
+- Tuor's fail-closed source safety repair is locally landed, but Q-152 and Wave 1 remain held on source provenance, typed current-run children, complete served-subject binding, descendant quiescence, capture/baseline approval, immutable receipt lifecycle, operational runbook repair, and a real gate/evidence run. No wave-end receipt exists, and Batch 1332's missing-trailer process red remains immutable.
+- Maedhros is only the shared-contract slice; consumer integration and runner wiring remain separate held work.
 - Théoden remains held on Faramir's explicit-lease verifier repair and durable Beregond/Haleth report banking.
 - Fingolfin, Thingol, Beren's first partial, and Maedhros's earlier scoping reports currently exist only in the session transcript. Do not claim them as tracked evidence or reconstruct them from summaries; literal packet bytes must be recovered or their absence recorded.
 - The cache-resident `feedback_tolkien_worker_names.md` registry is missing. Treat all names observed in current leases and packets as used, do not allocate another name, and recover a tracked registry before opening a new lane.
@@ -32,7 +34,7 @@ Faramir's first direct spec run wrote only test-owned temporary Git fixtures but
 
 ## Root checkout and branches
 
-The main checkout contains pre-existing user work plus Git-clean raw worktree materializations that can overlap a lease even when porcelain is empty. In particular, the Tuor gate/spec and Faramir verifier paths have different raw bytes from their untouched same-base clone counterparts, consistent with but not yet proven to be checkout line-ending conversion. Those root bytes are foreign target input, not worker output. Before transfer or assembly, root must compare the HEAD blob, both worktree byte tuples, line-ending convention, and semantic patch; raw file copying is held. Never assume all root work lies outside the leases, and never clean, restore, reset, stage, or move foreign root bytes as part of workflow landing. Active root-created local branches:
+The main checkout contains pre-existing user work plus Git-clean raw worktree materializations that can overlap a lease even when porcelain is empty. For Tuor, the collision and line-ending hold was discharged only for the exact post-assembly main tuple recorded in its handoff; that record grants no authority to copy, reset, retire, delete, or reuse any other bytes or clone. The Faramir boundary in this paragraph remains the original snapshot and is not refreshed by the Tuor-only update. Never assume all root work lies outside the leases, and never clean, restore, reset, stage, or move foreign root bytes as part of workflow landing. Active root-created local branches:
 
 - `sol/q-152-wave-end-gate-repair-ba64954b945-2026-08-29`
 - `sol/q152-child-result-contract-ba64954b945-2026-08-29`

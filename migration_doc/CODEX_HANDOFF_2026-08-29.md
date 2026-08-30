@@ -51,6 +51,10 @@ audit and 65 evidence files). Both are also archived under `F:/Dev/GH/cesium-web
 
 > **UPDATE 18:24 ET (Batches 1322-1328):** the maintainer lifted the 8080 hold and the seat landed the window: Q130 (1322, with two seat type fixes; 1323 undid a directory-wide stage that had swept the held sky-box files; 1324 widened the q131 proof's window), Q120 (1325), Q-88 (1326), Q-142 (1327, default-ON, gate M-03 open), DM-07 (1328). §3a below is now history; the rebuild is running; §3b's tranches are the next work, in the order listed. Q-130-b remains banked behind Q-130-c.
 
+> **Q-152 FAIL-CLOSED SAFETY UPDATE (Batch 1332, `fff7e02072adf95f88e23a43bec113f214e3e05b`):** the landed safety tuple is **not certified** and intentionally returns STRUCTURAL / exit 3 with zero child spawns. The §3b predecessor command `npm run wave-end-gate -- --wave wave1` omits mandatory source-commit, dirty-state, and source-identity provenance; it is not an operational certification invocation, cannot close Wave 1, and produced no wave-end receipt. No replacement command is authorized yet.
+>
+> **LANDING-PROCESS RED:** postcommit `npm run verify-landing -- --last 1` failed solely because Batch 1332 omitted the required `Co-Authored-By: Name <email>` trailer. R-2026-08-14-4 forbids rewriting the landed commit, so the red remains visible and is recorded in the queue and Tuor handoff. It neither certifies nor de-scores the reviewed fail-closed safety result. The next commit restores the established OpenAI Codex trailer; any range containing Batch 1332 remains red.
+
 
 Landed today (Batches 1292–1320): the research dispatch queue; Earth at Night demo repairs (Q-146/147,
 EAN-03/04) and the default-off star-map/HDR/intensity controls (EAN-01); the Sandcastle2 **origin guard**
@@ -98,7 +102,7 @@ After the six: `npx gulp build` → `npm run build-sandcastle` → commit the le
 | Edge tranche **A** (Q-148 star-instrument repair + EAN-01 certification + Pippin's browser acceptance incl. Celeborn §2's five-step DevTools script) | the rebuild | same |
 | Edge tranche **B** (Q-143 corrected design-model measurement on `probe-aec-perf.mjs`, with DM-02..06 legs) | the rebuild | same; **one Edge job at a time** |
 | Edge tranche **C** (Q-141/Q-142 browser legs) | DM-07 + Q-142 landed | after the rebuild |
-| First **wave-end gate** run (`npm run wave-end-gate -- --wave wave1`) | the tranches | closes Wave 1 (R-2026-08-29-2); bank the receipt and cite it in the ledger |
+| First **wave-end gate** run | **BLOCKED** — the predecessor command is incomplete and must fail closed STRUCTURAL / exit 3 with zero spawns | Resume only after separately reviewed provenance, child-result, served-subject, descendant-quiescence, capture/baseline, immutable-publication-lifecycle, and runbook repairs; then run the exact authorized invocation, bank its receipt, and cite it in the queue. |
 | **Q-141** metadata picking under streaming (decouple pick emission from colour-pipeline readiness) | DM-07 landed; Opus-judgement | when Opus capacity exists — it is cross-file engine judgement, not a pasted-Sol shape |
 | **DX-14** catalog archive plan (`handoff-2026-08-29/land-dx14/`) | parked: two pasted Sol turns could not route the section into the launcher-managed region | an engineer with the generator open; **maintainer's go still owed**; DX-03/DX-04 wait behind it |
 | **DX-01** probe runtime, **DX-07..10** decompositions of the eleven >1,000-line files, **Q-130-c**, **MS-00** mesh-shading spike | Opus capacity / owning lanes | see queue §6a and §6 |

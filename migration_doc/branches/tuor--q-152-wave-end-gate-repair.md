@@ -1,6 +1,6 @@
 # Tuor — Q-152 wave-end gate repair lease
 
-- Status: **FINAL MAIN DESTINATION FROZEN / GO for fail-closed safety landing only / NOT CERTIFIED / NOT LANDED**
+- Status: **LOCAL FAIL-CLOSED SAFETY LANDED (Batch 1332) / NOT CERTIFIED / Q-152 OPEN / POSTCOMMIT PROCESS VIOLATION RECORDED**
 - Lane identity: Tuor — unchanged for dispatch, review, landing, and retirement.
 - Tier-2 owner: Beren
 - Final writer: Celebrimbor
@@ -11,13 +11,13 @@
 - Clone: `F:/Dev/GH/cesium-lane-tuor-q152-20260829`
 - Final destination: shared main checkout `F:/Dev/GH/cesium-webgpu`
 - Destination review snapshot: HEAD `8406dc80f0875881977e0ec61a75a02e6442a55e`, tree `b88c04b7dc1af38a3934dbe446b277186cb8e9d7`.
-- Landing commit and stamp: **not assigned**.
+- Landing commit and stamp: Batch 1332, `fff7e02072adf95f88e23a43bec113f214e3e05b`; detailed stamp below.
 - Landing authority: root orchestrator only, limited to the exact reviewed fail-closed safety destination.
 - Push authority: **none**.
-- Reap when: the safety tuple is landed or declined, its disposition is repatriated, and root verifies lane and review quiescence; target 2026-09-05.
+- Reap when: a later tracked disposition explicitly authorizes retirement and root verifies lane and review quiescence; target 2026-09-05.
 - Disk budget: 2 GiB.
 
-The destination-review HEAD and tree identify the pre-landing inspection boundary. They are not a future commit SHA, landing stamp, or statement that the change has landed.
+The destination-review HEAD and tree identify the pre-landing inspection boundary. They are not the landing commit; the exact local safety landing is recorded below.
 
 ## Declared path set
 
@@ -26,11 +26,11 @@ The destination-review HEAD and tree identify the pre-landing inspection boundar
 
 The declared set was clean in the main checkout at dispatch and did not overlap another open lease. Celebrimbor was the sole implementation writer after the incremental resume and wrote only these paths in the isolated clone. Root alone materialized the reviewed change into main. Workers never owned Git, commit, landing, push, build, browser, server, evidence, installation, or external-state authority.
 
-## Exact final main destination
+## Exact landed main safety destination
 
-This is the only current pre-landing source tuple:
+This is the exact locally landed fail-closed safety source tuple:
 
-| Path | Lines | Bytes | SHA-256 | HEAD numstat |
+| Path | Lines | Bytes | SHA-256 | Destination-review HEAD numstat |
 | --- | ---: | ---: | --- | ---: |
 | `Tools/wave-end-gate.mjs` | 1,936 | 54,670 | `F900CF8BE5B0242DED847D1FA6878E55D51E0EF263B03F707CED738C7C2C294B` | `1475/368` |
 | `Tools/wave-end-gate.spec.mjs` | 1,245 | 38,149 | `3EA2BF304DBCF829C570C2B61140E494F7A3B842255C3D75B12367630D897A23` | `1154/77` |
@@ -119,7 +119,7 @@ The required current outcome is **STRUCTURAL / exit 3 with zero spawns**. PASS f
 10. Mandatory Prettier produced the LF intermediate destination. ESLint then required removal of exactly the unused `decidePreSpawnBindability` spec import.
 11. Root validated the final destination with Prettier, diff check, ESLint, syntax 0/0, and 29/29 focused tests.
 12. Turgon and Nimrodel independently reviewed the final main materialization and exact lint-only delta and banked the destination addenda above.
-13. No worker acquired Git, commit, push, certification, browser, build, evidence, ledger, runbook, or retirement authority. No landing commit or stamp has been assigned.
+13. No worker acquired Git, commit, push, certification, browser, build, evidence, ledger, runbook, or retirement authority. Root later assigned the Batch 1332 commit and stamp recorded below after the exact reviewed packet landed; that assignment conferred no worker authority.
 
 ## Open certification and operational blockers
 
@@ -160,10 +160,10 @@ All blockers below remain open. The destination safety GO neither resolves nor w
 ### Runbook, ruling, and ledger
 
 - `package.json` invokes only `node Tools/wave-end-gate.mjs`; it does not derive or supply the authoritative source tuple.
-- `migration_doc/CODEX_HANDOFF_2026-08-29.md` still shows `npm run wave-end-gate -- --wave wave1`, omitting all three mandatory source arguments. It fails closed as STRUCTURAL and is not an operational certification invocation.
-- `migration_doc/FIX_QUEUE_2026-08-27_AUDIT_FINDINGS.md` still describes the predecessor PASS/FAIL/REFUSED and 0/2/3 topology and cannot support the repaired tuple.
+- `migration_doc/CODEX_HANDOFF_2026-08-29.md` now marks the predecessor `npm run wave-end-gate -- --wave wave1` invocation blocked because it omits all three mandatory source arguments. It fails closed as STRUCTURAL and is not an operational certification invocation.
+- `migration_doc/FIX_QUEUE_2026-08-27_AUDIT_FINDINGS.md` preserves the predecessor PASS/FAIL/REFUSED and 0/2/3 entry as history and records Batch 1332 only as a partial fail-closed safety landing.
 - `R-2026-08-29-2` still requires a banked canonical wave-end receipt before wave closure. This repair safely refuses and has produced no such receipt.
-- Runner, current CODEX handoff/runbook, and ledger repairs require separate orchestrator authority.
+- Runner and operational runbook repairs require separate orchestrator authority.
 
 ### Missing runtime and evidence scope
 
@@ -171,13 +171,25 @@ All blockers below remain open. The destination safety GO neither resolves nor w
 - No build, server, browser, Edge, network, capture, artifact publication, or wave-end evidence was produced.
 - No served subject, device lifecycle, browser cleanup, descendant quiescence, canonical receipt, or wave closure was observed.
 
-## Pre-landing boundary
+## Local fail-closed safety landing stamp
 
-The exact final main tuple may be considered only for a root-controlled **fail-closed safety landing**. It must not be described as Q-152 completion, wave certification, an operational runbook, or an evidence receipt.
+- Local batch and commit: Batch 1332; `fff7e02072adf95f88e23a43bec113f214e3e05b`.
+- Main destination tuple: `Tools/wave-end-gate.mjs` — 54,670 bytes / `F900CF8BE5B0242DED847D1FA6878E55D51E0EF263B03F707CED738C7C2C294B`; `Tools/wave-end-gate.spec.mjs` — 38,149 bytes / `3EA2BF304DBCF829C570C2B61140E494F7A3B842255C3D75B12367630D897A23`.
+- Assembly: root collision-audited current main, reconciled the line-ending/materialization difference, applied the reviewed semantic patch through root-owned Git discipline, removed one exact unused spec import after ESLint, and rehashed the final destination. No raw-file-copy authority is implied.
+- Precommit validation and review: Prettier, diff check, ESLint, and syntax checks exited 0; the focused specification passed 29/29; Turgon and Nimrodel returned GO only for the exact fail-closed safety tuple; Elrond and Imrahil returned GO for the exact seven-path source/review landing packet. All committed source and review hashes survived the hook.
+- Postcommit validation: `node Tools/verify-tracked-references.mjs --rev HEAD` passed with zero violations or advisories. The index was empty, pre-existing user work was restored, and the two pre-existing safety stashes remained unchanged.
+- Scope: fail-closed safety only. Required behavior remains STRUCTURAL / exit 3 / zero child spawns. No real gate or child ran, no wave-end evidence was produced, and no receipt exists. Every certification and operational blocker listed above remains open.
+- Authority: no certification, Wave 1 closure, push, reset, retirement, deletion, reap, clone reuse, evidence publication, browser/server/network, or external authority.
 
-Before landing, root must terminally rehash the two destination files and four banked review documents, confirm review and worker quiescence, collision-audit the then-current main paths, and stage only the intended destination and authorized governance records. Any source byte, path, HEAD-relative numstat, or behavior change requires a new freeze and independent review. The actual landing commit SHA and stamp may be recorded only after the commit exists. Push remains unauthorized unless the maintainer separately grants it.
+### Postcommit process finding
 
-Certification must resume through separately authorized child, provenance, served-subject, lifecycle, runbook, ledger, build, browser, and evidence lanes, followed by a new freeze and independent certification review. This handoff grants none of that authority.
+`npm run verify-landing -- --last 1` exited 1 because Batch 1332 omitted the standing `Co-Authored-By: Name <email>` trailer. That was the sole reported commit-rule violation; the marker guard was clean. Per R-2026-08-14-4, the landed commit is not amended, rebased, reset, or otherwise rewritten. The verifier is not weakened or allowlisted, the red remains visible for every range containing Batch 1332, and the next commit restores the established `Co-Authored-By: OpenAI Codex <noreply@openai.com>` process. This attribution failure neither changes the landed bytes nor reinterprets the independent safety verdict.
+
+## Landed safety boundary and resume protocol
+
+The exact final main tuple is landed only as a **fail-closed safety repair**. It must not be described as Q-152 completion, wave certification, an operational runbook, or an evidence receipt. Any future source byte, path, behavior, provenance contract, or executable plan change requires a new freeze and independent review.
+
+Certification must resume through separately authorized child, provenance, served-subject, lifecycle, runbook, ledger, build, browser, and evidence lanes, followed by a new freeze and independent certification review. The local clone and branch remain protected until tracked disposition explicitly authorizes retirement and root confirms quiescence. Push remains unauthorized unless the maintainer separately grants it.
 
 ## Quiescence and negative-action declaration
 
