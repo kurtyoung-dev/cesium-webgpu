@@ -105,6 +105,9 @@ const changed = porcelain
   .map((l) => l.slice(3).trim().replace(/^"|"$/g, ""))
   .filter((p) => !p.startsWith("_review/"));
 
+const inLease = (p) =>
+  leases.some((l) => p === l || p.startsWith(l.endsWith("/") ? l : `${l}/`));
+
 // Provisioned reference is not the worker's output — see provision-worker-clone.
 const PROVISIONED = new Set([
   "AGENTS.md",
@@ -112,15 +115,15 @@ const PROVISIONED = new Set([
   "migration_doc/MAINTAINER_RULINGS_2026-08-17.md",
   "migration_doc/WORKER_ISOLATION_AND_BRANCH_HANDOFF.md",
 ]);
-const authored = changed.filter((p) => !PROVISIONED.has(p));
+// Ignore provisioner drift unless the path is explicitly leased. Once leased,
+// the same path is worker output and must pass every handoff check below.
+const authored = changed.filter((p) => !PROVISIONED.has(p) || inLease(p));
 
 if (authored.length === 0) {
   fail("no authored changes — the worker produced nothing");
 }
 
 // --- 3. lease compliance ---------------------------------------------------
-const inLease = (p) =>
-  leases.some((l) => p === l || p.startsWith(l.endsWith("/") ? l : `${l}/`));
 for (const p of authored) {
   if (!inLease(p)) {
     fail(`outside the declared lease: ${p}`);
