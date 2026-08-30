@@ -109,6 +109,12 @@ The remaining ~30 medium and all low survivors are enumerated in §5 with their 
 QUEUED; they dispatch after Q-1…Q-10, batched by file so one Sol dispatch closes several small
 findings in the same module. C1's returning findings append here as a dated addendum.
 
+### Q-152 wave-end mutation harness becomes EOL-robust; certification remains open (2026-08-30 03:44 EDT)
+
+| | Row | Disposition |
+|---|---|---|
+| Q-152 | PARTIAL — MUTATION HARNESS REPAIR LANDED (Batch 1336); **NOT CERTIFIED; OPEN** | Batch 1336 repairs only the newline-sensitive `importBarrierMutant` in `Tools/wave-end-gate.spec.mjs`, using an exact-one-target, newline-free mutation of the shared pre-spawn predicate while retaining all 29 tests. The historical 25/29 and 28/29 reds are retained; the final focused run passed 29/29, with syntax, ESLint, Prettier, C16, scoped diff, and zero-survivor checks green. No real wave-end gate, aggregate landing-rules runner, product child, build, server, browser, Edge, capture, publication, or evidence run occurred. The H1 first-consumer assembly remains HELD until one terminating aggregate run exits 0, its full tuple is refrozen, and a fresh independent complete-assembly review returns GO. Durable records: `migration_doc/branches/beren--q152-wave-end-mutant-eol.md` and `migration_doc/branches/reviews/faramir--q152-wave-end-mutant-eol-review.md`. |
+
 ### Q-152 fail-closed safety repair lands; certification remains open (2026-08-30 00:55 EDT)
 
 | | Row | Disposition |

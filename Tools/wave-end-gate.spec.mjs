@@ -197,14 +197,13 @@ function importBarrierMutant() {
       new URL("./wave-end-gate.mjs", import.meta.url),
       "utf8",
     );
-    const barrier =
-      'step?.bindability?.phase === "pre-spawn" &&\n      step.bindability.bindable !== true,';
-    let mutant = sourceText.replace(barrier, `false &&\n      ${barrier}`);
-    assert.notEqual(
-      mutant,
-      sourceText,
-      "pre-spawn barrier mutation must apply",
+    const barrier = 'step?.bindability?.phase === "pre-spawn"';
+    assert.equal(
+      sourceText.split(barrier).length - 1,
+      1,
+      "shared pre-spawn predicate mutation must have exactly one target",
     );
+    let mutant = sourceText.replace(barrier, "false");
 
     const verdictUrl = new URL(
       "./visual-regression/lib/verdict-exit-gate.mjs",
