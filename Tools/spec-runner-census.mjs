@@ -106,14 +106,20 @@ function tokenizeCommand(command) {
   let value = "";
   let quote = null;
   let quoted = false;
+  let unquoted = false;
   let started = false;
 
   const pushToken = () => {
     if (started) {
-      tokens.push({ value, quoted });
+      tokens.push({
+        value,
+        quoted,
+        entirelyQuoted: quoted && !unquoted,
+      });
     }
     value = "";
     quoted = false;
+    unquoted = false;
     started = false;
   };
 
@@ -161,44 +167,204 @@ function tokenizeCommand(command) {
       value += command[index + 1];
       index += 1;
       started = true;
+      unquoted = true;
       continue;
     }
 
     value += character;
     started = true;
+    unquoted = true;
   }
 
   pushToken();
   return tokens;
 }
 
-function parseNodeTestCommand(command) {
+const SAFE_NPM_SCRIPT_NAME = /^[A-Za-z0-9][A-Za-z0-9:._-]*$/u;
+const ATTACHED_VALUE_FLAG = /^--[A-Za-z0-9][A-Za-z0-9-]*=.+$/u;
+const UNSUPPORTED_UNQUOTED_CHARACTERS = new Set([
+  "|",
+  ";",
+  "<",
+  ">",
+  "(",
+  ")",
+  "[",
+  "]",
+  "{",
+  "}",
+  "#",
+]);
+
+// npm selects different shells by platform, so only shared AND-list syntax is
+// eligible for static runner discovery.
+function splitPortableAndList(command) {
+  if (typeof command !== "string" || command.length === 0) {
+    return null;
+  }
+
+  const parts = [];
+  let partStart = 0;
+  let quoted = false;
+
+  for (let index = 0; index < command.length; index += 1) {
+    const character = command[index];
+
+    if (
+      (/\s/u.test(character) && character !== " " && character !== "\t") ||
+      character === "'" ||
+      character === "\\" ||
+      character === "$" ||
+      character === "`" ||
+      character === "^" ||
+      character === "%" ||
+      character === "!"
+    ) {
+      return null;
+    }
+
+    if (character === '"') {
+      quoted = !quoted;
+      continue;
+    }
+
+    if (quoted) {
+      continue;
+    }
+
+    if (character === "&") {
+      if (command[index + 1] !== "&") {
+        return null;
+      }
+
+      const part = command.slice(partStart, index).trim();
+      if (!part) {
+        return null;
+      }
+      parts.push(part);
+      partStart = index + 2;
+      index += 1;
+      continue;
+    }
+
+    if (UNSUPPORTED_UNQUOTED_CHARACTERS.has(character)) {
+      return null;
+    }
+  }
+
+  if (quoted) {
+    return null;
+  }
+
+  const finalPart = command.slice(partStart).trim();
+  if (!finalPart) {
+    return null;
+  }
+  parts.push(finalPart);
+
+  return parts;
+}
+
+function isNpmPrecheck(tokens, scriptNames, runnerName) {
+  const scriptName = tokens[2]?.value;
+
+  // Referenced scripts remain opaque; only declaration and direct self-reference
+  // are checked before attributing a later direct test segment.
+  return (
+    tokens.length === 3 &&
+    tokens.every((token) => !token.quoted) &&
+    tokens[0].value === "npm" &&
+    tokens[1].value === "run" &&
+    SAFE_NPM_SCRIPT_NAME.test(scriptName) &&
+    scriptNames.has(scriptName) &&
+    scriptName !== runnerName
+  );
+}
+
+function isPortableSelector(token) {
+  const value = token.value;
+
   if (
-    typeof command !== "string" ||
-    !/^\s*node\s+--test(?:\s|$)/u.test(command)
+    !value ||
+    (token.quoted && !token.entirelyQuoted) ||
+    (!token.quoted && value.startsWith("~")) ||
+    value.includes("?") ||
+    path.posix.isAbsolute(value) ||
+    /^[A-Za-z]:/u.test(value) ||
+    value.split("/").includes("..")
+  ) {
+    return false;
+  }
+
+  return !value.includes("*") || token.quoted;
+}
+
+function parseNodeTestPart(tokens) {
+  if (
+    tokens[0]?.quoted ||
+    tokens[0]?.value !== "node" ||
+    tokens[1]?.quoted ||
+    tokens[1]?.value !== "--test"
   ) {
     return null;
   }
 
-  const tokens = tokenizeCommand(command);
-  if (tokens[0]?.value !== "node" || tokens[1]?.value !== "--test") {
-    return null;
-  }
-
   const selectors = [];
-  const shellOperators = new Set(["&", "&&", "|", "||", ";"]);
+  let optionsEnded = false;
 
   for (const token of tokens.slice(2)) {
-    if (shellOperators.has(token.value)) {
-      break;
-    }
-    if (token.value === "--" || token.value.startsWith("-")) {
+    if (!optionsEnded && !token.quoted && token.value === "--") {
+      optionsEnded = true;
       continue;
     }
+
+    if (!optionsEnded && token.value.startsWith("-")) {
+      if (!token.quoted && ATTACHED_VALUE_FLAG.test(token.value)) {
+        continue;
+      }
+      return null;
+    }
+
+    if (!isPortableSelector(token)) {
+      return null;
+    }
+
     selectors.push(token);
   }
 
   return selectors;
+}
+
+export function parseNodeTestCommand(
+  command,
+  { scriptNames = new Set(), runnerName } = {},
+) {
+  const parts = splitPortableAndList(command);
+  if (parts === null) {
+    return null;
+  }
+
+  const selectors = [];
+  let foundNodeTest = false;
+
+  for (const part of parts) {
+    const tokens = tokenizeCommand(part);
+    const nodeSelectors = parseNodeTestPart(tokens);
+
+    if (nodeSelectors !== null) {
+      foundNodeTest = true;
+      selectors.push(...nodeSelectors);
+      continue;
+    }
+
+    if (!foundNodeTest && isNpmPrecheck(tokens, scriptNames, runnerName)) {
+      continue;
+    }
+
+    return null;
+  }
+
+  return foundNodeTest ? selectors : null;
 }
 
 function selectorMatchesFile(selector, file, cwd) {
@@ -348,10 +514,15 @@ export function runCensus({
     ),
   ].sort();
 
-  const runnerScripts = Object.entries(parsedPackageJson.scripts ?? {})
+  const scripts = parsedPackageJson.scripts ?? {};
+  const scriptNames = new Set(Object.keys(scripts));
+  const runnerScripts = Object.entries(scripts)
     .map(([name, command]) => ({
       name,
-      selectors: parseNodeTestCommand(command),
+      selectors: parseNodeTestCommand(command, {
+        scriptNames,
+        runnerName: name,
+      }),
     }))
     .filter((runner) => runner.selectors !== null);
 
