@@ -28,7 +28,11 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { languageForPath, tokenize } from "./lib/comment-scanner.mjs";
+import {
+  languageForPath,
+  lineStarts as collectLineStarts,
+  tokenize,
+} from "./lib/comment-scanner.mjs";
 import { findMarkers, selfTestRules } from "./lib/marker-grammar.mjs";
 
 const ROOT = path.resolve(fileURLToPath(new URL("../..", import.meta.url)));
@@ -109,13 +113,7 @@ function toDisplayPath(file) {
 }
 
 function lineStarts(source) {
-  const starts = [0];
-  for (let index = 0; index < source.length; index += 1) {
-    if (source[index] === "\n") {
-      starts.push(index + 1);
-    }
-  }
-  return starts;
+  return collectLineStarts(source);
 }
 
 function lineIndexAt(starts, offset) {

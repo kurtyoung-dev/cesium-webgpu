@@ -774,7 +774,7 @@ function tokenizeShader(source, nestingBlockComments) {
  * @param {string} source File text.
  * @returns {number[]} Ascending line-start offsets.
  */
-function lineStarts(source) {
+export function lineStarts(source) {
   const starts = [0];
   for (let i = 0; i < source.length; i++) {
     if (source[i] === "\n") {

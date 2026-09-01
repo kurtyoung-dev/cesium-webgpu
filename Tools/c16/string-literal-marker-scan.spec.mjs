@@ -96,6 +96,154 @@ test("a clean file stays clean while comments and regex anchors are excluded", a
   });
 });
 
+test("mixed newlines and UTF-16 offsets have stable locator output", async () => {
+  await withTempDirectory(async (directory) => {
+    const fixtureName = "locator-fixture.ts";
+    const subject = path.join(directory, fixtureName);
+    const source =
+      'const lf = "ordinary";\n' +
+      'const crlf = "still ordinary";\r\n' +
+      'const later = "😀 Batch 47 and Session 65";\n';
+    await fs.writeFile(subject, source, "utf8");
+
+    const expectedFinding = {
+      file: fixtureName,
+      line: 3,
+      column: 19,
+      excerpt: 'const later = "😀 Batch 47 and Session 65";',
+      literalKinds: ["string"],
+      ruleIds: ["batch-id", "session-id"],
+      matches: ["Batch 47", "Session 65"],
+    };
+    const expectedReport = {
+      filesScanned: 1,
+      filesWithFindings: 1,
+      findingLines: 1,
+      findings: [expectedFinding],
+    };
+
+    const textResult = runScanner(SCANNER, [fixtureName], directory);
+    assert.equal(
+      textResult.status,
+      1,
+      `mixed-newline fixture was missed\nstdout:\n${textResult.stdout}\nstderr:\n${textResult.stderr}`,
+    );
+    assert.equal(textResult.stderr, "");
+    assert.equal(
+      textResult.stdout,
+      [
+        `${fixtureName}:3:19 [batch-id,session-id] ${expectedFinding.excerpt}`,
+        "string-literal-marker-scan: 1 marker-bearing literal line in 1 file (1 scanned)",
+        "",
+      ].join("\n"),
+    );
+
+    const jsonResult = runScanner(SCANNER, [fixtureName, "--json"], directory);
+    assert.equal(
+      jsonResult.status,
+      1,
+      `JSON scan lost the fixture marker\nstdout:\n${jsonResult.stdout}\nstderr:\n${jsonResult.stderr}`,
+    );
+    assert.equal(jsonResult.stderr, "");
+    assert.equal(
+      jsonResult.stdout,
+      `${JSON.stringify(expectedReport, null, 2)}\n`,
+    );
+    assert.deepEqual(JSON.parse(jsonResult.stdout), expectedReport);
+  });
+});
+
+test("mutation control: canonical newline collection determines later locators", async () => {
+  await withTempDirectory(async (directory) => {
+    const scannerSource = await fs.readFile(SCANNER, "utf8");
+    const commentScannerSource = await fs.readFile(COMMENT_SCANNER, "utf8");
+    const mutationAnchor = "starts.push(i + 1);";
+    assert.equal(
+      commentScannerSource.split(mutationAnchor).length - 1,
+      1,
+      "the canonical newline mutation anchor must occur exactly once",
+    );
+    const mutantCommentScannerSource = commentScannerSource.replace(
+      mutationAnchor,
+      'starts.push(i + (source[i - 1] === "\\r" ? 2 : 1));',
+    );
+
+    const mutantScanner = path.join(
+      directory,
+      "string-literal-marker-scan.mjs",
+    );
+    const mutantLib = path.join(directory, "lib");
+    await fs.mkdir(mutantLib);
+    await Promise.all([
+      fs.writeFile(mutantScanner, scannerSource, "utf8"),
+      fs.writeFile(
+        path.join(mutantLib, "comment-scanner.mjs"),
+        mutantCommentScannerSource,
+        "utf8",
+      ),
+      fs.copyFile(MARKER_GRAMMAR, path.join(mutantLib, "marker-grammar.mjs")),
+    ]);
+
+    const fixtureName = "locator-fixture.ts";
+    const subject = path.join(directory, fixtureName);
+    await fs.writeFile(
+      subject,
+      'const lf = "ordinary";\n' +
+        'const crlf = "still ordinary";\r\n' +
+        'const later = "😀 Batch 47 and Session 65";\n',
+      "utf8",
+    );
+
+    const live = runScanner(SCANNER, [fixtureName, "--json"], directory);
+    assert.equal(
+      live.status,
+      1,
+      `the live scanner must detect both markers\n${live.stdout}${live.stderr}`,
+    );
+    const mutant = runScanner(
+      mutantScanner,
+      [fixtureName, "--json"],
+      directory,
+    );
+    assert.equal(
+      mutant.status,
+      1,
+      `the locator mutant must preserve marker detection\n${mutant.stdout}${mutant.stderr}`,
+    );
+    assert.equal(mutant.stderr, "");
+
+    const liveReport = JSON.parse(live.stdout);
+    const mutantReport = JSON.parse(mutant.stdout);
+    assert.deepEqual(liveReport.findings, [
+      {
+        file: fixtureName,
+        line: 3,
+        column: 19,
+        excerpt: 'const later = "😀 Batch 47 and Session 65";',
+        literalKinds: ["string"],
+        ruleIds: ["batch-id", "session-id"],
+        matches: ["Batch 47", "Session 65"],
+      },
+    ]);
+    assert.deepEqual(mutantReport.findings, [
+      {
+        file: fixtureName,
+        line: 3,
+        column: 18,
+        excerpt: 'onst later = "😀 Batch 47 and Session 65";',
+        literalKinds: ["string"],
+        ruleIds: ["batch-id", "session-id"],
+        matches: ["Batch 47", "Session 65"],
+      },
+    ]);
+    assert.notDeepEqual(
+      mutantReport,
+      liveReport,
+      "the canonical newline mutant must corrupt the exact locator",
+    );
+  });
+});
+
 test("mutation control: a scanner whose grammar check is false misses the planted marker", async () => {
   await withTempDirectory(async (directory) => {
     const scannerSource = await fs.readFile(SCANNER, "utf8");
