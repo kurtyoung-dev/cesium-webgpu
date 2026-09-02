@@ -1,3 +1,5 @@
+import "./installWebGPUTestConstants.js";
+
 import Cartesian3 from "../../../Source/Core/Cartesian3.js";
 import Cartographic from "../../../Source/Core/Cartographic.js";
 import ComponentDatatype from "../../../Source/Core/ComponentDatatype.js";
@@ -64,31 +66,6 @@ import {
 // returns tagged sentinels and records descriptor arguments — so this runs in
 // any Karma browser regardless of WebGPU support.
 // ─────────────────────────────────────────────────────────────────────────────
-
-// The renderer modules (and their bind-group-layout helper) read these WebGPU
-// global constants at module-evaluation / call time. Provide spec-stable values
-// matching the WebGPU spec so usage bitmasks resolve on hosts without WebGPU.
-if (typeof globalThis.GPUShaderStage === "undefined") {
-  globalThis.GPUShaderStage = {
-    VERTEX: 0x1,
-    FRAGMENT: 0x2,
-    COMPUTE: 0x4,
-  };
-}
-if (typeof globalThis.GPUBufferUsage === "undefined") {
-  globalThis.GPUBufferUsage = {
-    MAP_READ: 0x0001,
-    MAP_WRITE: 0x0002,
-    COPY_SRC: 0x0004,
-    COPY_DST: 0x0008,
-    INDEX: 0x0010,
-    VERTEX: 0x0020,
-    UNIFORM: 0x0040,
-    STORAGE: 0x0080,
-    INDIRECT: 0x0100,
-    QUERY_RESOLVE: 0x0200,
-  };
-}
 
 // Recording stub GPUDevice. Each `create*` returns a tagged sentinel; the buffer
 // sentinel carries the descriptor `size` so `WebGPUDrawCommand.detectIndexFormat`

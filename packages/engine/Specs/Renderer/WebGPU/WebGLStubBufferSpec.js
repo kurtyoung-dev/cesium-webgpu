@@ -1,16 +1,10 @@
+import "./installWebGPUTestConstants.js";
+
 import {
   BUFFER_CONSTANTS,
   createBufferStubs,
   WebGLStubBufferRegistry,
 } from "../../../Source/Renderer/WebGPU/Stubs/WebGLStubBuffer.js";
-
-if (typeof globalThis.GPUBufferUsage === "undefined") {
-  globalThis.GPUBufferUsage = {
-    COPY_DST: 0x0008,
-    INDEX: 0x0010,
-    VERTEX: 0x0020,
-  };
-}
 
 describe("Renderer/WebGPU/Stubs/WebGLStubBuffer", function () {
   const GL_ARRAY_BUFFER = 0x8892;

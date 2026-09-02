@@ -1,16 +1,6 @@
-import WebGPUTimestampProfiler from "../../../Source/Renderer/WebGPU/WebGPUTimestampProfiler.js";
+import "./installWebGPUTestConstants.js";
 
-if (typeof globalThis.GPUBufferUsage === "undefined") {
-  globalThis.GPUBufferUsage = {
-    MAP_READ: 0x0001,
-    COPY_SRC: 0x0004,
-    COPY_DST: 0x0008,
-    QUERY_RESOLVE: 0x0200,
-  };
-}
-if (typeof globalThis.GPUMapMode === "undefined") {
-  globalThis.GPUMapMode = { READ: 0x0001, WRITE: 0x0002 };
-}
+import WebGPUTimestampProfiler from "../../../Source/Renderer/WebGPU/WebGPUTimestampProfiler.js";
 
 // ── Test fixtures ───────────────────────────────────────────────────
 //

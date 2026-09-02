@@ -1,21 +1,7 @@
+import "./installWebGPUTestConstants.js";
+
 import { WebGPUSnapFramebuffer } from "../../../Source/Renderer/WebGPU/WebGPUSnapFramebuffer.js";
 import { packSnapDepthAndEdge } from "../../../Source/Renderer/WebGPU/WebGPUSnapPayload.js";
-
-if (typeof globalThis.GPUTextureUsage === "undefined") {
-  globalThis.GPUTextureUsage = {
-    RENDER_ATTACHMENT: 0x10,
-    COPY_SRC: 0x01,
-  };
-}
-if (typeof globalThis.GPUBufferUsage === "undefined") {
-  globalThis.GPUBufferUsage = {
-    COPY_DST: 0x08,
-    MAP_READ: 0x01,
-  };
-}
-if (typeof globalThis.GPUMapMode === "undefined") {
-  globalThis.GPUMapMode = { READ: 0x01 };
-}
 
 function makeView(windowX, overrides = {}) {
   return Object.freeze({
