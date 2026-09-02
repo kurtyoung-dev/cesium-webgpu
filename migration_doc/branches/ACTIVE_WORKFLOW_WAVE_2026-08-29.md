@@ -32,16 +32,67 @@ Faramir's first direct spec run wrote only test-owned temporary Git fixtures but
 - The cache-resident `feedback_tolkien_worker_names.md` registry is missing. Treat all names observed in current leases and packets as used, do not allocate another name, and recover a tracked registry before opening a new lane.
 - The designated Edge lane remains closed. No browser, server, build, capture, evidence publication, baseline update, push, or deletion is authorized by this snapshot.
 
-## Root checkout and branches
+## Root checkout, branches and worktrees
 
-The main checkout contains pre-existing user work plus Git-clean raw worktree materializations that can overlap a lease even when porcelain is empty. For Tuor, the collision and line-ending hold was discharged only for the exact post-assembly main tuple recorded in its handoff; that record grants no authority to copy, reset, retire, delete, or reuse any other bytes or clone. The Faramir boundary in this paragraph remains the original snapshot and is not refreshed by the Tuor-only update. Never assume all root work lies outside the leases, and never clean, restore, reset, stage, or move foreign root bytes as part of workflow landing. Active root-created local branches:
+Refreshed 2026-09-02 from the DX-19 salvage audit
+(`branches/DX19_BRANCH_WORKTREE_SALVAGE_AUDIT_2026-09-02.md`, ruling R-2026-09-02-21) against
+`main` = `59c1e4f1d5`. This block supersedes the four-branch list and the one-line worktree
+sentence recorded on 2026-08-29, and it supersedes Appendix A of `CODEX_HANDOFF_2026-09-01.md`,
+three of whose rows quote main-lineage equivalents rather than the real branch tips. `refs.txt` in
+`cesium-webgpu-worker-archive/pre-reconstruct-backup-2026-09-01/` is the accurate frozen record.
 
-- `sol/q-152-wave-end-gate-repair-ba64954b945-2026-08-29`
-- `sol/q152-child-result-contract-ba64954b945-2026-08-29`
-- `sol/verify-handoff-explicit-lease-ba64954b945-2026-08-29`
-- `sol/dx-handoff-doc-drift-ba64954b945-2026-08-29`
+The main checkout still contains pre-existing user work plus Git-clean raw worktree
+materializations that can overlap a lease even when porcelain is empty. Never clean, restore,
+reset, stage, or move foreign root bytes as part of workflow landing.
 
-Three pre-existing detached evidence/certification worktrees also remain untouched: `cesium-webgpu-cert-s5-3cbb82885fc7`, `cesium-webgpu-evidence`, and `cesium-webgpu-evidence-v9`.
+### The nine local heads besides `main`
+
+Every unique commit on these refs is banked in
+`cesium-webgpu-worker-archive/pre-reconstruct-backup-2026-09-01/local-history.bundle` (verified OK;
+it requires `a64954b945`, which is on `origin/main`). Every lane branch is additionally duplicated
+in a standalone clone with its own object database, so retiring a ref here does not reach any lane.
+
+| Head | Tip | Unique vs main | DX-19 disposition |
+|---|---|---|---|
+| `sol/dx-handoff-doc-drift-ba64954b945-2026-08-29` | `a64954b945` | none | RETIRE NOW |
+| `sol/q-152-wave-end-gate-repair-ba64954b945-2026-08-29` | `a64954b945` | none (landed as Batch 1332) | RETIRE NOW |
+| `sol/q152-child-result-contract-ba64954b945-2026-08-29` | `a64954b945` | none | RETIRE NOW |
+| `sol/verify-handoff-explicit-lease-ba64954b945-2026-08-29` | `a64954b945` | none | RETIRE NOW |
+| `sol/q152-h1-variant-consumer-b806fc36ca4-2026-08-30` | `806fc36ca4` | none (≡ Batches 1330–1335) | RETIRE NOW |
+| `sol/q152-aggregate-receipt-233fa5be340-2026-08-30` | `233fa5be34` | none (≡ Batches 1330–1336) | RETIRE NOW |
+| `sol/session-gc-boundary-b1ce-2026-08-30` | `b1ce382375` | none (tree ≡ main's Batch 1339 `b429c5b518`) | RETIRE with its worktree |
+| `sol/q12-prettier-reachability-233fa-2026-08-30` | `d37b1f3cb6` | Batch 1337, one `.prettierignore` line — DROPPED by R-2026-09-02-11 | RETIRE NOW |
+| `sol/q152-landing-receipt-233fa-2026-08-30` | `f0121cfd8d` | Thorin's "Batch 1339", 5,396 insertions — PARKED | RETIRE NOW (patch banked, byte-verified) |
+
+### The six non-`main` worktrees
+
+| Worktree | HEAD | Unique material | DX-19 disposition |
+|---|---|---|---|
+| `cesium-lane-elrond-session-gc-20260830` | `b1ce382375` | none — its 2 modified + 2 untracked paths are byte-identical to `worker-archive/codex-session-gc-2026-09-01/` | RETIRE after re-confirming the four hashes |
+| `cesium-lane-gandalf-q12-prettier-20260830` | `d37b1f3cb6`, clean | none | RETIRE NOW |
+| `cesium-lane-thorin-q152-receipt-20260830` | `f0121cfd8d`, clean | none | RETIRE NOW |
+| `cesium-webgpu-cert-s5-3cbb82885fc7` | `034c7f74d0` detached, ancestor of main, clean | none — its 50 files / 95 MB already sit in main's `Tools/visual-regression/output/cert-s5-runs/` (50/50 SHA-256) | RETIRE NOW |
+| `cesium-webgpu-evidence` | `f38acf65f6` detached, ancestor of main | 48 probe artefacts (3.25 MB) + a 177 KB uncommitted diff | RETIRE AFTER BANKING (audit §5.1, §5.2) |
+| `cesium-webgpu-evidence-v9` | `99abefdc26` detached, ancestor of main | a 40 KB uncommitted diff only; its 24 output files are all in the immutable archive | RETIRE AFTER BANKING (audit §5.3) |
+
+Retiring all six reclaims ~6.1 GB.
+
+### Standing holds this refresh does NOT lift
+
+- The lane table above (Tuor, Maedhros, Faramir, Théoden) and its "Holds and missing durable
+  evidence" section stand unchanged. A head being an empty pointer says nothing about its lane's
+  review, landing, or certification state.
+- No clone may be reset, retired, or deleted under this block. The 22 sibling repositories are
+  DX-20 (R-2026-09-02-22, census `branches/DX20_SIBLING_REPOSITORY_CENSUS_2026-09-02.md`);
+  `cesium-worker-g6frame` is banked before anything else happens to it and `cesium-lane-sundisc2`
+  stays frozen. In particular, retiring the Turgon and Tuor **heads** is safe, but their **clones**
+  hold unbanked work (the aggregate-run receipt; a 268-line wave-end-gate residual) and must be
+  drained under DX-20 first.
+- `cesium-webgpu-worker-archive/pre-reconstruct-backup-2026-09-01/` is NO-DELETE. It is now the only
+  durable custody of the pre-reconstruction main tip `dda8569016`, which is unreferenced (the
+  `safety-pre-reconstruct-2026-09-01` tag is gone) and survives otherwise only in `main`'s reflog.
+- The designated Edge lane, browser, server, build, capture, publication, baseline-update and push
+  authorities are unchanged by this refresh.
 
 ## Restart protocol
 
