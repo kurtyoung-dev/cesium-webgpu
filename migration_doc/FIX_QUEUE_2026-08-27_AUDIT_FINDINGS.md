@@ -1430,3 +1430,39 @@ with a bare `:line` are inside the file named at the row's start.
 | fleet3 | CONFIRMED | Cesium3DTileset.js:3327 | processTiles double-decrements numberOfTilesProcessing when a tileLoad listener throws, permanently latching tilesLoaded false | QUEUED |
 | fleet3 | CONFIRMED | Scene.js:5771 | _specularEnvironmentCubeMap is Scene-owned but absent from the destroySceneResources ownedResources list | QUEUED |
 | fleet3 | PLAUSIBLE | Scene.js:5890 | try/catch around Matrix3.inverse is inert in release builds, so a degenerate voxel OBB fails closed instead of open | QUEUED |
+
+## Wave 2026-09-02 landings and the second wave (2026-09-02 05:50 ET)
+
+**Landed from the first wave (all pushed, one gated commit per lane, explicit-path staging from an empty index):**
+
+| Batch | Lane | Row | What landed |
+| --- | --- | --- | --- |
+| 1367 | Handir | C16-10 | point-cloud / compute renderer comment shard, history banked in migration_doc |
+| 1368 | Gelmir | C13-41 exit condition 2 | eclipse cloud-response gate exposure-sweep discriminator (`eclipse-cloud-response-gate.mjs` + spec) |
+| 1369 | Annael | C12-38 | sun-disc dawn instrument derives its bar from an unclipped sweep and refuses one it cannot trust |
+| 1370 | Finwe | Q-143 / DM-09 | the corrected residency measurement (E-1 instrument) - first run names the stall (pipeline-creation-bound) |
+| 1371 | Olwe | probe-aec-perf (R-2026-09-02-25) | first-traversal observation moves to `postRender`; Nimloth GO; F1 queued as `DM-10` |
+| 1372 | Amrod | DX-14 | catalog generator: fail-closed, tag-derived ARCHIVE PLAN, purpose-header helper in `Tools/lib`; catalog regenerated against the staged index |
+| 1373 | Finduilas | DM-08 | WebGPU post-process config sync (AO runtime config propagation, DoF) - engine, gulp build + engine type check gates |
+| 1374 | Elwe | Q-141 (readback half) | `WebGPUPickTransientReadback.ts` - sync-readback warm-up; the first-candidate miss stays unattributed |
+
+Still open from the first wave: Amras DX-01 LANDED (Batch 1377); Brandir Q-20/48/50 LANDED (Batch 1375). Edge legs owed to Eowyn on a rebuilt served clone (one job at a time): Finduilas AO probe, Elwe `probe-q141-pick-readback.mjs`, Gelmir exposure sweep, Annael dawn acquisition, Olwe full 16-cell run; then C15-G7 after `C15-G7a`/`C15-G7b` land; the Q130 byte-identity legs stay inside the wave-end tranche (R-2026-09-02-3).
+
+**Runbook defect fixed before landing:** the seat's lane-landing script computed the next batch number from `origin/main..HEAD`; with everything pushed the range is empty, `grep` exits 1 and `pipefail` aborted the script before applying anything. It now derives the number from the last sixty subjects and refuses if none carries a batch number.
+
+**Second wave dispatched 05:50 ET (Fable 5.1 seat, Opus station-3 review, Sonnet refuters, one fix round, re-review; clones `cesium-lane-<name>-20260902` provisioned from Batch 1371):**
+
+| Lane | Row | Tier | Brief in one line |
+| --- | --- | --- | --- |
+| Turin | `Q-143` / `DM-09` fix | Opus engine | why ~15 WebGPU model pipelines take ~90 s to create while the CPU idles; fix in the renderer layer, full bar, diagnosis-only allowed if larger than one lane |
+| Indis | `C15-G7a` | Opus engine | gsplat classification: depth variant never selected, colour never reaches shading, unclipped shadow volume |
+| Narvi | `C15-G7b` | Sonnet | probe framing from the tower's own extent + refusal under a mask floor |
+| Amandil | `DX-21` | Opus (Rust) | audit, rename to chelate in one pass, TEST_PLAN fix, 1.94.0 pin, improve without shrinking - in the relocated local repository |
+| Miriel | `DX-16` | Sonnet | `Tools/lib/png-rgba.mjs` with golden-byte identity, two consumers |
+| Ioreth | `DX-17` | Sonnet | `attachPageDiagnostics` with separate arrays and an ownership-safe detach, two consumers |
+| Bergil | `DX-18` | Sonnet | `mutateOrFail` fast spec home + one `terminateC11168ChildTree` |
+| Aredhel | `DX-22` | Sonnet (docs) | tracked `CAMPAIGN_STATE.md` as the campaign-level authority; CLAUDE.md pointer text delivered for the seat |
+| Erendis | `DX-23` | Sonnet (docs) | README index: lane-records section, the unindexed documents, a dated currency claim |
+| Vardamir | `DX-24` | Sonnet | CI report of reused batch numbers (report-only, its own workflow file) |
+
+Held back deliberately: `DX-02` and `DX-06` wait for `DX-01` (Amras) to land; `DX-12` needs a fresh build under the seat's standing permission and runs after the engine landings; `DX-25` (Codex configuration narrowing) waits for the Codex app to be closed.

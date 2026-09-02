@@ -110,7 +110,8 @@ certification.
 | `Q-142` | AO bridge reads `stepSize`; clamps and divisor compound it | OPUS-JUDGMENT | S–M | LANDED (Batch 1327, WEBGPU_AO_FULL_SAMPLE_PATTERN = true) - gate M-03 open | — | 1 |
 | `Q-149` | Moon modulation: limiting-magnitude floor | OPUS-JUDGMENT | S | HELD (`Q-148`) | `Q-148` | 2 |
 | `DM-08` | WebGPU AO has no runtime config propagation | OPUS-JUDGMENT | S | QUEUED (Q-142 landed Batch 1327; M-03 open; carries the found-but-unfiled updateConfig two-of-four-buffers leak) | `Q-142` | 2 |
-| `DM-09` | WebGPU tile-content residency starves the frame loop | OPUS-JUDGMENT | L | HELD (`Q-143`, M-04) | `Q-143` | 2 |
+| `DM-09` | WebGPU tile-content residency starves the frame loop | OPUS-JUDGMENT | L | MEASURED (Batch 1370 instrument, E-1 run 2026-09-02 04:03-04:12 ET): pipeline-creation-bound in both orders - see the DM-09 section; FIX DISPATCHED wave 2 (Turin, Opus engine; diagnosis-first, full bar; E-1 re-run is the acceptance) | `Q-143` | 2 |
+| `DM-10` | `probe-aec-perf` streaming-readiness criterion: receipts must not time an unloaded scene | SONNET-BOUNDED | S | QUEUED (Nimloth F1, Batch 1371 review) | `DM-01` | 2 |
 | `DM-10` | ~2.4 GB unaccounted WebGPU JS heap | OPUS-JUDGMENT | M | HELD (`Q-143`) | `Q-143` | 2 |
 | `DM-11` | Pick pipelines build synchronously in a per-`Model` cache | OPUS-JUDGMENT | M | HELD (`DM-07`, `Q-143`, `Q-141`, M-05) | `DM-07`, `Q-143`, `Q-141` | 2 |
 | `DM-12` | Elide unused scene-FB MRT slot 1 + MSAA colour resolves | OPUS-JUDGMENT | M | HELD (`Q-143`/`DM-04`) | `Q-143`, `DM-04` | 2 |
@@ -156,7 +157,7 @@ certification.
 | `MS-24` | Sandcastle demo | SONNET-BOUNDED | S | HELD (`C11-168`) | `MS-10`, `MS-13`, `MS-15` | M7 |
 | `MS-25` | Edge acceptance tranche | OPUS-EDGE-EXECUTOR | M | HELD (`C11-168`) | `MS-10`–`MS-15`, `MS-24` | M7 |
 | `MS-26` | Track close-out review | OPUS-REVIEW | S | HELD (`MS-25`) | `MS-25` | M7 |
-| `DX-01` | One probe runtime for the fleet | OPUS-JUDGMENT | M | QUEUED — NEXT (Opus lead; capacity exists under R-2026-09-02-24) | `Q-145` (landed) | DX |
+| `DX-01` | One probe runtime for the fleet | OPUS-JUDGMENT | M | RETURNED twice, LANDED (Batch 1377); Amras (Opus), reviewer Meneldor | `Q-145` (landed) | DX |
 | `DX-02` | Anti-re-accretion contract (status tag + runtime lint) | SONNET-BOUNDED | S | QUEUED (after `DX-01`) | `DX-01` | DX |
 | `DX-03` | HIGH-set singleton disposition after catalog repair | SONNET-BOUNDED | S | QUEUED (after `DX-14`, released by R-2026-09-02-6) | `DX-14` repair completion and explicit maintainer release | DX |
 | `DX-04` | MED set: per-file grep census, then archive | SOL-DIRECTED + SONNET-BOUNDED | S + S | QUEUED (after `DX-14` and `DX-03`) | `DX-14` repair completion and explicit maintainer release, `DX-03`; `DX-05` landed | DX |
@@ -169,23 +170,24 @@ certification.
 | `DX-11` | Stable citations convention | seat (docs) | XS | CLOSED (Batch 1310; `c59d2bafd61efbbca765daf536c040b1f63c502c`) | — | DX |
 | `DX-12` | Spec homes measured pass (executes Q-139-D1) | SONNET-BOUNDED | S | QUEUED (R-2026-09-02-16 ratified the seven runner families; fresh build under the standing permission of R-24) | build | DX |
 | `DX-13` | Ledger rotation | — | — | QUEUED (R-2026-09-02-15) | — | DX |
-| `DX-14` | Tooling-catalog archive-plan generator | OPUS-JUDGMENT | M | QUEUED (released to an Opus lead under a bounded lease, R-2026-09-02-6; the generator must stop ignoring parser errors) | live-ledger DX-14 section | DX |
+| `DX-14` | Tooling-catalog archive-plan generator | OPUS-JUDGMENT | M | LANDED (Batch 1372; Amrod, reviewed GO; the catalog regenerates against the staged index, fail-closed, ARCHIVE PLAN tag-derived) | live-ledger DX-14 section | DX |
 | `DX-15` | Retire inline translucent-classification color/composite scaffold (`C11-107` alias/tail) | OPUS-JUDGMENT | M | PREREGISTRATION / PREPARATION ONLY; HELD (G6 Q2d) | `C11-107`; explicit Principle-7 sign-off | DX |
-| `DX-16` | PNG/CRC32 helper: `Tools/lib/png-rgba.mjs` (`crc32`, `pngChunk`, `encodeRgbaPng`) with golden-byte identity, two consumers first (27 near-duplicate encoders censused; `capture-and-diff.mjs` and `probe-reproject-baseline.mjs` excluded) | SONNET-BOUNDED | S | QUEUED (R-2026-09-02-17) | `DX-01` runtime preferred, not required | DX |
-| `DX-17` | `attachPageDiagnostics(page, options)`: separate console/page-error arrays and an ownership-safe `detach()`, two low-risk consumers first; the WebGPU error gate stays specialised | SONNET-BOUNDED | S | QUEUED (R-2026-09-02-17) | — | DX |
-| `DX-18` | `mutateOrFail` fast spec home + the three-way `terminateC11168ChildTree` consolidation | SONNET-BOUNDED | S | QUEUED | Batch 1352 | DX |
+| `DX-16` | PNG/CRC32 helper: `Tools/lib/png-rgba.mjs` (`crc32`, `pngChunk`, `encodeRgbaPng`) with golden-byte identity, two consumers first (27 near-duplicate encoders censused; `capture-and-diff.mjs` and `probe-reproject-baseline.mjs` excluded) | SONNET-BOUNDED | S | DISPATCHED wave 2 (Miriel, Sonnet; two consumers first; Amras's unlanded paths excluded). LANDING NOTE: Brandir's lane (LANDED (Batch 1375)) added another encoder, `Tools/visual-regression/lib/pnglite.mjs`, after Miriel's clone was cut - the helper must absorb it at landing or in the next DX-06 batch, never coexist with it | `DX-01` runtime preferred, not required | DX |
+| `DX-17` | `attachPageDiagnostics(page, options)`: separate console/page-error arrays and an ownership-safe `detach()`, two low-risk consumers first; the WebGPU error gate stays specialised | SONNET-BOUNDED | S | DISPATCHED wave 2 (Ioreth, Sonnet; two consumers first; the WebGPU error gate stays specialised) | — | DX |
+| `DX-18` | `mutateOrFail` fast spec home + the three-way `terminateC11168ChildTree` consolidation | SONNET-BOUNDED | S | DISPATCHED wave 2 (Bergil, Sonnet) | Batch 1352 | DX |
 | `DX-19` | Branch and worktree salvage audit (original intention, anything worth keeping, visual evidence, scripts) → refresh `branches/ACTIVE_WORKFLOW_WAVE_2026-08-29.md` → retire only what is truly unneeded | OPUS-JUDGMENT (audit) + seat (sweep) | S | DONE (Batches 1363, 1365: audit landed, inventory refreshed from it, 53 items banked at zero mismatches, six worktrees and nine heads retired; one worktree and one head remain) | — | DX |
 | `DX-20` | Sibling-repository census (22 clones) and two-phase retirement; `cesium-worker-g6frame` banked first, `cesium-lane-sundisc2` stays frozen | SONNET-BOUNDED (census) + seat | S | DONE (Batch 1362 census; 155 items banked at zero mismatches; twenty repositories retired ~24.5 GB; HELD: `cesium-worker-sundisc` pending the sundisc/sundisc2 reconciliation ruling, `cesium-lane-sundisc2` frozen, `cesium-audit-proto` active) | `DX-19` | DX |
-| `DX-21` | Rust supervisor: relocate to `F:/Dev/GH/cesium-process-supervisor`, audit, review and improve without shrinking, rename to **chelate** as one prefix, fix `TEST_PLAN.md` :60/:63, pin 1.94.0 | OPUS-JUDGMENT (Rust) | M | QUEUED (R-2026-09-02-13) | — | DX |
-| `DX-22` | Tracked `CAMPAIGN_STATE.md` as the sole campaign-status authority; CLAUDE.md's campaign section becomes a pointer; joins the doc-truth sweep | SONNET-BOUNDED (docs) | S | QUEUED (R-2026-09-02-14) | — | DX |
-| `DX-23` | `migration_doc/README.md` index: LIVE lane-records section, the 123 unindexed documents, a dated currency claim | SONNET-BOUNDED (docs) | XS | QUEUED | — | DX |
-| `DX-24` | CI report of reused batch numbers on push (report-only) | SONNET-BOUNDED | XS | QUEUED (R-2026-09-02-12) | — | DX |
+| `DX-21` | Rust supervisor: relocate to `F:/Dev/GH/cesium-process-supervisor`, audit, review and improve without shrinking, rename to **chelate** as one prefix, fix `TEST_PLAN.md` :60/:63, pin 1.94.0 | OPUS-JUDGMENT (Rust) | M | DISPATCHED wave 2 (Amandil, Opus) in the relocated local repository F:/Dev/GH/cesium-process-supervisor (baseline commit = byte-identical copy of the never-tracked in-tree prototype, 2026-09-02 05:07 ET; directory rename to chelate, the fork-side pointer and the in-tree removal are seat actions after review) | — | DX |
+| `DX-22` | Tracked `CAMPAIGN_STATE.md` as the sole campaign-status authority; CLAUDE.md's campaign section becomes a pointer; joins the doc-truth sweep | SONNET-BOUNDED (docs) | S | DISPATCHED wave 2 (Aredhel, Sonnet; CLAUDE.md pointer text delivered as a file for the seat, CLAUDE.md being gitignored) | — | DX |
+| `DX-23` | `migration_doc/README.md` index: LIVE lane-records section, the 123 unindexed documents, a dated currency claim | SONNET-BOUNDED (docs) | XS | DISPATCHED wave 2 (Erendis, Sonnet) | — | DX |
+| `DX-24` | CI report of reused batch numbers on push (report-only) | SONNET-BOUNDED | XS | DISPATCHED wave 2 (Vardamir, Sonnet; new workflow file, dev.yml untouched) | — | DX |
 | `DX-25` | Codex config: `provision-worker-clone.mjs` writes an explicit trust entry per Cesium clone, then the `f:\dev\gh` root trust is narrowed and the 1.7 GB log store pruned — Codex keeps its ability to branch and clone | seat | XS | HELD (Codex app closed) (R-2026-09-02-23) | — | DX |
 | `DX-26` | Wave-end gate repair: run the runnable legs and record the third STRUCTURAL; derive `--source-identity`; retire the spec-seam receipt validation; annotate the catalog row meanwhile (executes R-2026-09-02-9; `Q-152` stays the status authority) | OPUS-JUDGMENT | M | QUEUED | Batch 1332/1336 | DX |
 | `DX-27` | Guard repair rows: Fëanor (accept `HEAD`/OID local refs, restore the deletion's old tip, 49/49, then the shallow-history hardening) and Idril (four fail-closed assertions) | SONNET-BOUNDED | S + S | QUEUED (R-2026-09-02-10; drafts banked at `cesium-webgpu-worker-archive/guard-drafts-2026-09-01/`) | Batch 1354 | DX |
 | `DX-28` | Lunar-bake and staged-Git-read primitive families | research | — | HELD (research-only until exact contracts, leases, runner homes and acceptance matrices are preregistered) | — | DX |
 | `DX-29` | Screenshot/artifact-writer consolidation and the Batch-66 final/end-of-session runner family | research | — | HELD (provenance review; runner names encode evidence cutoffs) | — | DX |
 | `DX-30` | `.prettierignore` opens with `*`, so a Prettier check on a scratch path passes vacuously; verify the premise, then make scratch-path checks explicit in the landing runbook | SONNET-BOUNDED | XS | QUEUED (verify premise first) | — | DX |
+| `DX-31` | Decompose `Tools/visual-regression/lib/probe-runtime.mjs` (994 lines after DX-01 round 3) and `probe-runtime.spec.mjs` (1,547 lines) into focused modules and spec files under the same runner home, behaviour byte-identical | SONNET-BOUNDED | S | QUEUED (flagged by lane Amras, packet §10.8; the ~1,000-line rule; lands after `DX-01`) | `DX-01` | DX |
 | `DM-N1`…`DM-N11` | Eleven design-model non-levers | — | — | CLOSED-NEGATIVE | — | §7 |
 | `EAN-X1`…`EAN-X6` | Six Earth-at-Night closures and hand-offs | — | — | CLOSED-NEGATIVE | — | §7 |
 
@@ -391,6 +393,13 @@ Every row here has an unknown or void numerator today. None is briefed before it
 - **Depends on:** `Q-143` (hard). **Ruling touched:** owned by `C11-168` (`QUEUE_2026-07-18_CAMPAIGN11.md:2003`); adjacent to `F5-02`. **Gate:** **M-04** (funding).
 - **Acceptance:** **defined by what `Q-143`'s CPU sampling profile names as the main-thread consumer. Until the profile exists this row has no acceptance criterion and must not be briefed.** When it does: before/after on time-to-`Scene.renderReady` and `scene.frameNumber` accrual over a fixed wall-clock window, both backends, interleaved, multi-metric, plus element screenshots proving no content is lost.
 - **Binds:** SR-1, SR-5, SR-6, SR-7 (two hypotheses already failed — the third is briefed from the profile, not from code reading), SR-8, SR-10. **Source:** D1 Wave 3 `DM-09`; memo V-1/V-3/V-4, §3b E-4.
+
+### `DM-10` — `probe-aec-perf` streaming-readiness criterion
+
+- **Origin:** Nimloth's station-3 review of Batch 1371 (finding F1, non-blocking, queued as its own row).
+- **Finding:** the probe's readiness loop breaks on `Scene.renderReady` after one forced frame; in the eight-tileset AEC scene that is true on the very first frame with zero tile content loaded (`framesToRenderReady: 1` in both control runs). Receipts therefore time, and take per-pass counts, frame p50–p95 and heap from, an unloaded scene; `__aecFindPick` never waits for content, so `pick-position-not-found` is the likely next refusal on the full CLI path.
+- **Disposition:** QUEUED. No DM-01 receipt is cited as AEC perf evidence until a real streaming-readiness criterion lands (content selected and uploaded for every created tileset, or a settle on `tilesLoaded` with a bounded wait and a refusal when it does not settle). The Batch 1371 fix (observe the first traversal on `postRender`) stands: it corrected the observation point, not the readiness criterion.
+- **Acceptance:** the 16-cell run on a fresh served build with the new criterion shows non-zero content residency at readiness for every cell that is not refused, and the receipt records the criterion it used.
 
 ### `DM-10` — ~2.4 GB of unaccounted WebGPU JS heap on a dense-tileset scene
 
