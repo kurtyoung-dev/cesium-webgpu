@@ -41,6 +41,10 @@ import { readFile } from "node:fs/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { register } from "node:module";
 import path from "node:path";
+import {
+  f32BytesEqual,
+  installWasmFetchShim,
+} from "./wasm-subrange-loader.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "..");
@@ -82,28 +86,6 @@ function assert(name, cond, detail) {
   }
 }
 
-// Reuse the subrange-check fetch shim verbatim so the glue's fetch(URL) resolves
-// the on-disk .wasm bytes under Node (file:// fetch is unsupported by undici).
-function installWasmFetchShim(wasmBytes) {
-  const realFetch = globalThis.fetch;
-  globalThis.fetch = async (input) => {
-    const url =
-      typeof input === "string" ? input : (input?.href ?? String(input));
-    if (url.includes("cesium_wasm_bg.wasm")) {
-      return new Response(wasmBytes, {
-        headers: { "Content-Type": "application/wasm" },
-      });
-    }
-    if (realFetch) {
-      return realFetch(input);
-    }
-    throw new Error(`Unexpected fetch in benchmark: ${url}`);
-  };
-  return () => {
-    globalThis.fetch = realFetch;
-  };
-}
-
 /** Deterministic ECEF-scale positions with sub-meter fractions (stresses the split). */
 function makePositions(n) {
   const a = new Float64Array(n * 3);
@@ -113,20 +95,6 @@ function makePositions(n) {
     a[i * 3 + 2] = (i % 2 === 0 ? 1 : -1) * (5500000.25 + i * 0.0625);
   }
   return a;
-}
-
-function f32BytesEqual(a, b) {
-  if (a.length !== b.length) {
-    return false;
-  }
-  const ua = new Uint8Array(a.buffer, a.byteOffset, a.byteLength);
-  const ub = new Uint8Array(b.buffer, b.byteOffset, b.byteLength);
-  for (let i = 0; i < ua.length; i++) {
-    if (ua[i] !== ub[i]) {
-      return false;
-    }
-  }
-  return true;
 }
 
 /** Median of an array of numbers. */
@@ -160,7 +128,9 @@ async function main() {
   );
 
   const wasmBytes = await readFile(wasmBinPath);
-  const restoreFetch = installWasmFetchShim(wasmBytes);
+  // Reuse the subrange-check fetch shim verbatim so the glue's fetch(URL) resolves
+  // the on-disk .wasm bytes under Node (file:// fetch is unsupported by undici).
+  const restoreFetch = installWasmFetchShim(wasmBytes, "benchmark");
 
   const { default: WasmRTEBridge } = await import(
     pathToFileURL(bridgePath).href

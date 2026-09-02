@@ -36,6 +36,10 @@ import { readFile } from "node:fs/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { register } from "node:module";
 import path from "node:path";
+import {
+  f32BytesEqual,
+  installWasmFetchShim,
+} from "./wasm-subrange-loader.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "..");
@@ -67,41 +71,6 @@ function check(name, cond, detail) {
   }
 }
 
-/**
- * Shim globalThis.fetch so the wasm-bindgen glue's `fetch(URL)` resolves
- * the .wasm bytes from disk. Returns a minimal Response-like object that
- * the glue's __wbg_load path accepts (it checks `instanceof Response`,
- * which fails here, so it falls through to `await module.arrayBuffer()`).
- *
- * Node 20 ships a global Response/fetch (undici); fetching file:// is not
- * supported, hence the shim. We only intercept the cesium wasm URL.
- */
-function installWasmFetchShim(wasmBytes) {
-  const realFetch = globalThis.fetch;
-  globalThis.fetch = async (input) => {
-    const url =
-      typeof input === "string" ? input : (input?.href ?? String(input));
-    if (url.includes("cesium_wasm_bg.wasm")) {
-      // Plain object (NOT a real Response) so the glue's
-      // `module instanceof Response` check is false and it takes the
-      // `WebAssembly.instantiate(module, imports)` branch on the
-      // resolved value... but __wbg_load awaits the module first, so we
-      // must resolve to something whose arrayBuffer() yields the bytes.
-      // Returning a real Response built from the bytes is simplest.
-      return new Response(wasmBytes, {
-        headers: { "Content-Type": "application/wasm" },
-      });
-    }
-    if (realFetch) {
-      return realFetch(input);
-    }
-    throw new Error(`Unexpected fetch in unit check: ${url}`);
-  };
-  return () => {
-    globalThis.fetch = realFetch;
-  };
-}
-
 /** Deterministic spread of f64 positions covering +/-, large, and fractional. */
 function makePositions(n) {
   const a = new Float64Array(n * 3);
@@ -126,20 +95,6 @@ function froundEncode(positions, srcOffset, count, outHigh, outLow, dstOffset) {
   }
 }
 
-function f32BytesEqual(a, b) {
-  if (a.length !== b.length) {
-    return false;
-  }
-  const ua = new Uint8Array(a.buffer, a.byteOffset, a.byteLength);
-  const ub = new Uint8Array(b.buffer, b.byteOffset, b.byteLength);
-  for (let i = 0; i < ua.length; i++) {
-    if (ua[i] !== ub[i]) {
-      return false;
-    }
-  }
-  return true;
-}
-
 async function main() {
   // Redirect the bridge's build-layout-relative wasm glue import to the
   // canonical glue so the REAL bridge runs under raw node.
@@ -149,7 +104,7 @@ async function main() {
   );
 
   const wasmBytes = await readFile(wasmBinPath);
-  const restoreFetch = installWasmFetchShim(wasmBytes);
+  const restoreFetch = installWasmFetchShim(wasmBytes, "unit check");
 
   const { default: WasmRTEBridge } = await import(
     pathToFileURL(bridgePath).href

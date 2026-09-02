@@ -1,6 +1,8 @@
 /**
- * ESM resolve hook for wasm-subrange-encode-check.mjs.
- * @purpose ESM resolve hook redirecting WasmRTEBridge's build-layout wasm-glue specifier to the on-disk glue so the wasm Node checks run the real bridge.
+ * Shared WASM sub-range harness for wasm-subrange-encode-check.mjs and
+ * wasm-encode-benchmark.mjs: the ESM resolve hook, the fetch shim, and the
+ * on-disk locations of the glue and the binary.
+ * @purpose ESM resolve hook redirecting WasmRTEBridge's build-layout wasm-glue specifier to the on-disk glue, plus the file-URL fetch shim and the glue/wasm path helpers, so the wasm Node checks and the benchmark run the real bridge.
  * @status ACTIVE
  *
  * The canonical WasmRTEBridge.js (packages/engine/Source/Scene/) imports the
@@ -12,9 +14,61 @@
  *
  * Pure resolution redirect — no transform — so the REAL glue + REAL bridge
  * code under test execute unchanged.
+ *
+ * This module is installed with `module.register()`, which evaluates it on
+ * the loader thread as well as importing it on the main thread: the two
+ * realms do not share state. Anything added here must stay stateless, or be
+ * prepared to be initialised twice.
  */
 import { fileURLToPath, pathToFileURL } from "node:url";
 import path from "node:path";
+
+/**
+ * Shim globalThis.fetch so the wasm-bindgen glue's `fetch(URL)` resolves the
+ * .wasm bytes from disk. Node 20 ships a global fetch (undici) that does not
+ * support file:// URLs, hence the shim; only the cesium wasm URL is
+ * intercepted. The glue's __wbg_load path awaits the module first and then
+ * checks `instanceof Response`; resolving to a real Response built from the
+ * bytes is the simplest value whose arrayBuffer() yields them.
+ *
+ * @param {Uint8Array} wasmBytes The .wasm bytes to serve.
+ * @param {string} unexpectedFetchContext Named in the error thrown for any other URL
+ *   when no real fetch exists to fall through to.
+ * @returns {() => void} Restores the original global fetch.
+ */
+export function installWasmFetchShim(wasmBytes, unexpectedFetchContext) {
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (input) => {
+    const url =
+      typeof input === "string" ? input : (input?.href ?? String(input));
+    if (url.includes("cesium_wasm_bg.wasm")) {
+      return new Response(wasmBytes, {
+        headers: { "Content-Type": "application/wasm" },
+      });
+    }
+    if (realFetch) {
+      return realFetch(input);
+    }
+    throw new Error(`Unexpected fetch in ${unexpectedFetchContext}: ${url}`);
+  };
+  return () => {
+    globalThis.fetch = realFetch;
+  };
+}
+
+export function f32BytesEqual(a, b) {
+  if (a.length !== b.length) {
+    return false;
+  }
+  const ua = new Uint8Array(a.buffer, a.byteOffset, a.byteLength);
+  const ub = new Uint8Array(b.buffer, b.byteOffset, b.byteLength);
+  for (let i = 0; i < ua.length; i++) {
+    if (ua[i] !== ub[i]) {
+      return false;
+    }
+  }
+  return true;
+}
 
 const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
