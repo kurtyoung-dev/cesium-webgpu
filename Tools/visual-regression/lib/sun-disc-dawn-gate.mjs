@@ -160,6 +160,51 @@ export const SUN_DISC_DAWN_READINESS_WORST_CASE_MS =
 export const SUN_DISC_DAWN_FIELD_OF_VIEW_DEGREES = 3;
 
 /**
+ * The unclipped-exposure leg (C12-38 instrument gap, 2026-09-02).
+ *
+ * THE PROBLEM THIS CLOSES. The sweep's first two acquisitions (2026-08-28)
+ * ran with the scene's own default, `scene.highDynamicRange === false`. Under
+ * that path `SunFS.glsl`'s `u_discRadiance` is pinned at exactly `1.0` and the
+ * frame reaches the canvas through a hard `clamp(linear)` rather than a
+ * tonemap curve, so any channel the extincted composite pushes past display
+ * white lands on the framebuffer's own ceiling, 255, indistinguishable from
+ * "brighter than 255" — a measurement of the clamp, not of the scene. Ten of
+ * the retained thirteen-sample runs' disc-centre and disc-annulus regions
+ * read exactly that ceiling, which is why `SUN_DISC_DAWN_BAR` could not be
+ * derived from them (see the probe's module header).
+ *
+ * THE FIX IS AN EXISTING, SHIPPED, PARITY-MATCHED SCENE KNOB, NOT AN ENGINE
+ * CHANGE. `scene.highDynamicRange = true` activates the engine's own
+ * true-solar-radiance path (`SolarDiscModel.solarDiscHdrRadiance`, ceilinged
+ * at `SOLAR_DISC_RADIANCE_CONTRAST_CEILING` ~2.0148x) and routes the frame
+ * through the PBR-Neutral tonemap instead of the hard clamp;
+ * `scene.postProcessStages.exposure` multiplies the linear colour BEFORE that
+ * tonemap curve runs (`PbrNeutralTonemapping.glsl`: `color *= exposure`),
+ * moving a would-be-saturated frame back into the curve's separable range.
+ * Both properties are public `Scene`/`PostProcessStageCollection` API,
+ * mirrored into the WebGPU tonemapping pipeline by
+ * `WebGPUPostProcessStageCollection.ts` for parity, so applying them from the
+ * probe requires no `packages/*Source` edit.
+ *
+ * WHY `0.125`. Not a fresh guess: it is `DISC_BRACKET_EXPOSURES[1]` in
+ * `celestial-g4-gate.mjs`, the bracket step the SIBLING sun-disc lane already
+ * established for this exact billboard's own saturation problem. Reusing it
+ * keeps one exposure convention across the celestial instrument family
+ * instead of two lanes independently guessing at the same billboard.
+ *
+ * WHAT THIS DOES NOT CLAIM. `0.125` is not proven sufficient against a real
+ * frame — no browser has run it. If a real acquisition still reports a
+ * clipped region at this exposure, `sampleStructuralReasons`' clip check
+ * (below) refuses that run to STRUCTURAL rather than silently scoring a
+ * saturated mean; the next iteration should lower `value` or bracket it,
+ * never widen the clip check to let a saturated pixel back into a mean.
+ */
+export const SUN_DISC_DAWN_EXPOSURE = Object.freeze({
+  highDynamicRange: true,
+  value: 0.125,
+});
+
+/**
  * Region geometry, as fractions of the sun's projected limb radius.
  *
  * The centre core stops well inside the limb and the annulus starts well
@@ -427,9 +472,20 @@ export function sampleIsScored(sample) {
  * @param {string} renderer Backend label.
  * @param {number} index Sample index.
  * @param {object} sample The sample record.
+ * @param {object} [expectedExposure] The exposure config this LEG was
+ *        acquired under. Defaults to {@link SUN_DISC_DAWN_EXPOSURE}, the
+ *        pre-registered value; a caller that ran the probe with `--exposure`
+ *        passes the config the run actually requested (published as
+ *        `artifact.exposureConfig`) so a deliberate override is not scored
+ *        against the wrong number.
  * @returns {string[]} Structural reasons; empty when the sample is readable.
  */
-export function sampleStructuralReasons(renderer, index, sample) {
+export function sampleStructuralReasons(
+  renderer,
+  index,
+  sample,
+  expectedExposure = SUN_DISC_DAWN_EXPOSURE,
+) {
   const where = `${renderer}:sample${index}`;
   if (sample === null || typeof sample !== "object") {
     return [`${where}:absent`];
@@ -471,6 +527,24 @@ export function sampleStructuralReasons(renderer, index, sample) {
   ) {
     reasons.push(`${where}:frame-dimensions`);
   }
+  // The unclipped-exposure leg (`SUN_DISC_DAWN_EXPOSURE`) is a page-level
+  // scene setting the probe applies once and republishes, read LIVE off the
+  // scene, on every sample (`acquirePageMeasurement`'s `observed.exposure`).
+  // Published is not the same as CHECKED: before this, an HDR write an
+  // unsupported context silently refused — or a leg that never reached the
+  // call at all — acquired a clipped SDR sweep beside a tonemapped one, and
+  // the parity family compared two different tone curves with no reason
+  // raised. Checked here, on the same "blindness outranks everything"
+  // footing as `frame-dimensions` three lines up, against whichever exposure
+  // THIS leg was actually registered under (the caller's `expectedExposure`),
+  // not always the module default, so a deliberate `--exposure` override does
+  // not read as a fault.
+  if (
+    observed.exposure?.highDynamicRange !== expectedExposure.highDynamicRange ||
+    observed.exposure?.value !== expectedExposure.value
+  ) {
+    reasons.push(`${where}:exposure-leg-not-applied`);
+  }
   // Everything below describes a DISC. A sample the engine culled has none,
   // so demanding one there would convert an ordinary pre-sunrise frame into
   // blindness and take the whole sweep down with it.
@@ -502,6 +576,18 @@ export function sampleStructuralReasons(renderer, index, sample) {
       if (!finiteNonNegative(record[channel])) {
         reasons.push(`${where}:${region}-${channel}-unreadable`);
       }
+    }
+    // A clipped region's mean is not a measurement of the composite; it is a
+    // measurement of the framebuffer's own ceiling (see
+    // `SUN_DISC_DAWN_EXPOSURE`). Refused on the same "blindness outranks
+    // everything" footing as `annulus-black` two lines below — clipping is
+    // that check's mirror image, saturated white in place of true black —
+    // and for the same reason: a ratio built from either extreme measures the
+    // capture, not the scene. Gated on an explicit `true` so evidence that
+    // predates this check (every existing fixture, which never sets the
+    // field) reads as not-clipped rather than as unreadable.
+    if (record.clipped === true) {
+      reasons.push(`${where}:${region}-clipped`);
     }
   }
   if (
@@ -689,10 +775,15 @@ function scoreMaximumFamily(id, subject, observations, bound) {
  * @param {object} evidence The probe's acquisition record.
  * @param {object} [options] Scoring options.
  * @param {object} [options.bar] A derived bar replacing {@link SUN_DISC_DAWN_BAR}.
+ * @param {object} [options.expectedExposure] The exposure config the sweep
+ *        was acquired under, replacing {@link SUN_DISC_DAWN_EXPOSURE}. Pass
+ *        `artifact.exposureConfig` when re-scoring a run that used
+ *        `--exposure`.
  * @returns {object} The verdict, its exit code, the families and the reasons.
  */
 export function evaluateSunDiscDawnSweep(evidence, options = {}) {
   const bar = options.bar ?? SUN_DISC_DAWN_BAR;
+  const expectedExposure = options.expectedExposure ?? SUN_DISC_DAWN_EXPOSURE;
   const structural = sweepStructuralReasons(evidence);
   // The shape check runs first and alone: the per-sample and coverage readers
   // index into the two legs, so running them over a malformed evidence object
@@ -700,7 +791,9 @@ export function evaluateSunDiscDawnSweep(evidence, options = {}) {
   if (structural.length === 0) {
     for (const renderer of SUN_DISC_DAWN_RENDERERS) {
       evidence.samples[renderer].forEach((sample, index) => {
-        structural.push(...sampleStructuralReasons(renderer, index, sample));
+        structural.push(
+          ...sampleStructuralReasons(renderer, index, sample, expectedExposure),
+        );
       });
     }
     structural.push(...coverageReasons(evidence));
@@ -748,6 +841,13 @@ function buildMeasurements(evidence) {
           : null,
         centreLuminance: sample.regions?.centre?.meanLuminance ?? null,
         annulusLuminance: sample.regions?.annulus?.meanLuminance ?? null,
+        // Published even when NOT scored: a below-horizon sample has no
+        // regions to clip, so this stays `false` rather than `null` there,
+        // and a reader of the artifact can see clip status without cross
+        // referencing `structural` reason strings.
+        centreClipped: sample.regions?.centre?.clipped === true,
+        annulusClipped: sample.regions?.annulus?.clipped === true,
+        exposure: sample.observed?.exposure ?? null,
         extinction: sample.observed.extinction ?? null,
       };
     });
@@ -838,4 +938,283 @@ function foldVerdict({ bar, structural, families, measurements }) {
     status,
     exitCode: exitCodeForS5Status(status),
   };
+}
+
+// ---------------------------------------------------------------------------
+// Bar derivation — from an acquired, unclipped WebGL sweep, never from WebGPU
+// ---------------------------------------------------------------------------
+
+/**
+ * Safety margin subtracted from a derived bar's own worst reading.
+ *
+ * `1.0` (luminance) and the sweep's own worst chroma ratio are noiseless
+ * ideals; a real acquisition is not. Antialiasing at the limb, sub-pixel
+ * rounding of the measured disc centre against `SUN_DISC_DAWN_REGIONS`, and
+ * 8-bit PNG requantization each move a genuinely healthy sample's ratio by a
+ * small amount either side of its ideal. 3% is not tuned against any
+ * acquired sweep — over a mid-tone (~128) framebuffer code, one 8-bit step is
+ * ~1/128 = 0.78% of relative luminance, so 3% is about four codes of margin,
+ * comfortably above single-code rounding without being loose enough to hide
+ * the inversion this row exists to catch (the pre-fix mechanism moves the
+ * ratio by tens of percent — see the queue row's own worked example).
+ */
+export const SUN_DISC_DAWN_BAR_DERIVATION_MARGIN = 0.03;
+
+/**
+ * Minimum scored WebGL samples a derivation will run over. Below this the
+ * single worst reading would carry the entire bar, which cannot be told apart
+ * from noise picking one bad sample.
+ */
+export const SUN_DISC_DAWN_BAR_DERIVATION_MINIMUM_SAMPLES = 3;
+
+/**
+ * Sample index of the row's own pre-registered discriminator sample
+ * (+5.11 deg solar altitude — `SWEEP_EXTINCTION`/`SUN_DISC_DAWN_SWEEP` index
+ * 7 in the acquisition, see `sun-disc-dawn-gate.spec.mjs`). Extinction there
+ * is mild, so the "disc brighter than its own background" precondition the
+ * luminance floor below rests on is expected to hold — unlike the low end of
+ * the sweep, where a genuinely extincted disc COULD legitimately read dimmer
+ * than its own aureole in a correct render.
+ */
+export const SUN_DISC_DAWN_BAR_DERIVATION_DISCRIMINATOR_INDEX = 7;
+
+/**
+ * `maximumParityDelta` for a derived bar.
+ *
+ * NOT derived from the sweep's own scatter. This sweep has one capture per
+ * altitude, so there is no repeated-measurement variance to read a parity
+ * tolerance off; the sample-to-sample spread of the ratio ACROSS the sweep is
+ * dominated by the sun's own altitude-driven brightness change (order-unity
+ * over the swept band) and would be a wildly loose stand-in for
+ * backend-to-backend noise AT ONE sample. Absent a principled per-sweep
+ * source, this inherits the tolerance `sun-disc-dawn-gate.spec.mjs`'s own
+ * fixtures already treat as reasonable for this measurement (`DERIVED_BAR`).
+ */
+export const SUN_DISC_DAWN_BAR_DERIVATION_PARITY_DELTA = 0.02;
+
+function finiteValues(entries, key) {
+  return entries
+    .map((entry) => entry?.[key])
+    .filter((value) => typeof value === "number" && Number.isFinite(value));
+}
+
+/**
+ * Derive the FAIL bar from an ALREADY-ACQUIRED, unclipped WebGL sweep.
+ *
+ * Pre-registered before any browser run of this landing exists, so the bound
+ * a WebGPU leg is judged against is fixed before that sweep's own numbers are
+ * known — the row's own pre-registration: "the FAIL bar comes from the first
+ * WebGL sweep and never from a WebGPU sweep". The caller passes
+ * `measurements.webgl` from one `evaluateSunDiscDawnSweep` run of a WebGL
+ * acquisition (any bar works for that first pass — the measurements do not
+ * depend on it, only `structural`/`status` do) into this function, then
+ * re-scores the SAME paired evidence — WebGL as parity control, WebGPU as
+ * subject — against the result. {@link rescoreSunDiscDawnArtifact} does that
+ * second step over a probe's own JSON artifact.
+ *
+ * WHY `1.0` IS THE STARTING POINT FOR THE LUMINANCE RATIO, NOT A TUNED
+ * NUMBER. The shipped limb-darkening law is brightest at the centre and falls
+ * to `a0` at the limb (module header), so a composite over any sky brighter
+ * than black cannot read below 1 at the centre WHILE THE DISC ITSELF IS
+ * BRIGHTER THAN ITS BACKGROUND — `SUN_DISC_DAWN_LIMB_REFERENCE_RATIO` is that
+ * statement's black-sky case. `minimumCentreAnnulusRatio` is therefore the
+ * LESSER of that physical floor and the sweep's own worst reading net of
+ * {@link SUN_DISC_DAWN_BAR_DERIVATION_MARGIN}, so a healthy sweep's own noise
+ * sets how much slack the bar carries without the bar ever demanding more
+ * than the law itself guarantees.
+ *
+ * THE CHROMA RATIO GETS NO SUCH FLOOR. The luminance argument above rests on
+ * a monotone law in the shipped `a0/a1/a2` coefficients; nothing in this
+ * module proves an equivalent inequality for centre-vs-limb blue-over-red, so
+ * `minimumCentreAnnulusChromaRatio` is the sweep's own worst chroma reading
+ * net of the same margin and nothing more — purely empirical, not capped at
+ * 1.0.
+ *
+ * A CAVEAT THIS FUNCTION FLAGS RATHER THAN PAPERS OVER: the "disc brighter
+ * than background" precondition the luminance floor rests on need not hold at
+ * every scored altitude — a sufficiently extincted, low-sun disc COULD
+ * legitimately read dimmer than the sky around it even in a correct render.
+ * This derivation still reduces over EVERY scored sample for the bar VALUE
+ * itself (consistent with how `scoreMinimumFamily` already applies one global
+ * floor to every scored sample, unchanged by this row), so a worst reading
+ * contributed by such a sample still sets the bar's magnitude. Scoping the
+ * ACCEPTANCE FAMILIES themselves (not just this derivation) to a control
+ * window remains a real option this lane leaves for review rather than
+ * deciding unilaterally, because it changes established, spec-covered
+ * scoring behaviour beyond what deriving a bar value requires.
+ *
+ * THE REFUSAL THAT CAVEAT WOULD OTHERWISE HIDE (C12-38 instrument gap,
+ * 2026-09-02). Reducing over every sample is conservative for a HEALTHY
+ * source — the derived bar can only end up looser, never falsely strict —
+ * but it is not conservative for an INVERTED one: `Math.min(1.0, worst * (1
+ * - margin))` reduces to `worst * (1 - margin)` the instant `worst` drops
+ * under 1, so a WebGL source that has ALREADY inverted the shipped law
+ * derives a bar at the defect's own magnitude, and every family — including
+ * the very one built to catch that inversion — passes against it. The row's
+ * own text predicts exactly this ("the mechanism is shared scene code plus
+ * two twin shaders, so WebGL is expected to show it too"), so this is not a
+ * hypothetical. Rather than testing every altitude, where a legitimately
+ * extincted low sample must NOT be treated as a fault (the caveat above),
+ * this refuses only on the row's own pre-registered discriminator sample
+ * (+5.11 deg, {@link SUN_DISC_DAWN_BAR_DERIVATION_DISCRIMINATOR_INDEX}): a
+ * source whose discriminator ratio has itself crossed the physical floor
+ * cannot be trusted to derive a bar at all, and this function returns
+ * `usable: false` instead. WHEN THE DISCRIMINATOR SAMPLE ISN'T PRESENT in the
+ * readable set, this refusal cannot fire and the derivation falls back to
+ * the whole-sweep reduction unguarded — a residual gap of the same "flagged,
+ * not hidden" kind as the caveat above, not a claim that every possible
+ * inverted source is caught.
+ *
+ * REFUSES (`usable: false`) rather than deriving over too few readable
+ * samples, because a bar built from one or two readings cannot be told apart
+ * from a bar built from noise.
+ *
+ * @param {object[]} webglMeasurements `measurements.webgl` from a WebGL-only
+ *        `evaluateSunDiscDawnSweep` evaluation — an array of
+ *        `{index, scored, centreAnnulusRatio, centreAnnulusChromaRatio}`
+ *        records (or any array shaped the same way, which is what the
+ *        fixtures below exercise this with).
+ * @param {object} [options] Derivation options.
+ * @param {number} [options.marginRel] Overrides
+ *        {@link SUN_DISC_DAWN_BAR_DERIVATION_MARGIN}.
+ * @param {number} [options.minimumSamples] Overrides
+ *        {@link SUN_DISC_DAWN_BAR_DERIVATION_MINIMUM_SAMPLES}.
+ * @param {number} [options.maximumParityDelta] Overrides
+ *        {@link SUN_DISC_DAWN_BAR_DERIVATION_PARITY_DELTA}.
+ * @param {number} [options.discriminatorIndex] Overrides
+ *        {@link SUN_DISC_DAWN_BAR_DERIVATION_DISCRIMINATOR_INDEX}.
+ * @returns {{usable:boolean,bar:object|null,terms:object|null,reason:string|null}}
+ */
+export function deriveSunDiscDawnBarFromWebGLSweep(
+  webglMeasurements,
+  options = {},
+) {
+  const marginRel = options.marginRel ?? SUN_DISC_DAWN_BAR_DERIVATION_MARGIN;
+  const minimumSamples =
+    options.minimumSamples ?? SUN_DISC_DAWN_BAR_DERIVATION_MINIMUM_SAMPLES;
+  const maximumParityDelta =
+    options.maximumParityDelta ?? SUN_DISC_DAWN_BAR_DERIVATION_PARITY_DELTA;
+  const discriminatorIndex =
+    options.discriminatorIndex ??
+    SUN_DISC_DAWN_BAR_DERIVATION_DISCRIMINATOR_INDEX;
+  const scored = Array.isArray(webglMeasurements)
+    ? webglMeasurements.filter((entry) => entry?.scored === true)
+    : [];
+  const ratios = finiteValues(scored, "centreAnnulusRatio");
+  const chromas = finiteValues(scored, "centreAnnulusChromaRatio");
+  if (
+    scored.length < minimumSamples ||
+    ratios.length < minimumSamples ||
+    chromas.length < minimumSamples
+  ) {
+    return {
+      usable: false,
+      bar: null,
+      terms: {
+        scoredSamples: scored.length,
+        readableRatios: ratios.length,
+        readableChromas: chromas.length,
+        minimumSamples,
+      },
+      reason: "sun-disc-dawn-bar:too-few-readable-webgl-samples",
+    };
+  }
+  const discriminator = scored.find(
+    (entry) => entry?.index === discriminatorIndex,
+  );
+  const discriminatorRatio = discriminator?.centreAnnulusRatio;
+  if (
+    typeof discriminatorRatio === "number" &&
+    Number.isFinite(discriminatorRatio) &&
+    discriminatorRatio < 1.0 // the physical floor the luminance argument above rests on
+  ) {
+    return {
+      usable: false,
+      bar: null,
+      terms: {
+        scoredSamples: scored.length,
+        readableRatios: ratios.length,
+        readableChromas: chromas.length,
+        discriminatorIndex,
+        discriminatorRatio,
+      },
+      reason: "sun-disc-dawn-bar:webgl-source-below-limb-law-floor",
+    };
+  }
+  const worstRatio = Math.min(...ratios);
+  const worstChroma = Math.min(...chromas);
+  const minimumCentreAnnulusRatio = Math.min(1.0, worstRatio * (1 - marginRel));
+  const minimumCentreAnnulusChromaRatio = worstChroma * (1 - marginRel);
+  return {
+    usable: true,
+    bar: Object.freeze({
+      status: "DERIVED-FROM-WEBGL-SWEEP",
+      derivedFrom: `${scored.length} scored WebGL samples of the acquired sweep, margin ${marginRel}`,
+      minimumCentreAnnulusRatio,
+      minimumCentreAnnulusChromaRatio,
+      maximumParityDelta,
+    }),
+    terms: {
+      scoredSamples: scored.length,
+      worstRatio,
+      worstChroma,
+      marginRel,
+      discriminatorIndex,
+      discriminatorRatio: discriminatorRatio ?? null,
+    },
+    reason: null,
+  };
+}
+
+/**
+ * Second pass of the C12-38 acceptance procedure: derive the FAIL bar from an
+ * already-acquired artifact's own WebGL leg and re-score the SAME paired
+ * evidence against it.
+ *
+ * Pure — no filesystem, no network. {@link
+ * ../rescore-sun-disc-dawn.mjs} is the CLI a runbook invokes; it does nothing
+ * but read a JSON file and hand it to this function, so the logic worth
+ * pinning lives here rather than being duplicated into an untested wrapper.
+ *
+ * @param {object} artifact A `probe-sun-disc-dawn.mjs` run artifact — reads
+ *        `artifact.measurements.webgl` (to derive the bar),
+ *        `artifact.sessions[].{renderer,samples}` (to reconstruct the
+ *        evidence {@link evaluateSunDiscDawnSweep} was built to score), and
+ *        `artifact.exposureConfig` (the exposure the run was actually
+ *        acquired under, when the probe ran with `--exposure`).
+ * @param {object} [options] Forwarded to
+ *        {@link deriveSunDiscDawnBarFromWebGLSweep}. `options.expectedExposure`
+ *        overrides `artifact.exposureConfig` for the re-score pass.
+ * @returns {{rescored:boolean,derivation:object,evaluation:object|null}}
+ */
+export function rescoreSunDiscDawnArtifact(artifact, options = {}) {
+  const derivation = deriveSunDiscDawnBarFromWebGLSweep(
+    artifact?.measurements?.webgl,
+    options,
+  );
+  if (!derivation.usable) {
+    return { rescored: false, derivation, evaluation: null };
+  }
+  const sessions = Object.fromEntries(
+    (Array.isArray(artifact?.sessions) ? artifact.sessions : []).map(
+      (session) => [session?.renderer, session],
+    ),
+  );
+  const evidence = {
+    samples: Object.fromEntries(
+      SUN_DISC_DAWN_RENDERERS.map((renderer) => [
+        renderer,
+        sessions[renderer]?.samples ?? null,
+      ]),
+    ),
+  };
+  const expectedExposure =
+    options.expectedExposure ??
+    artifact?.exposureConfig ??
+    SUN_DISC_DAWN_EXPOSURE;
+  const evaluation = evaluateSunDiscDawnSweep(evidence, {
+    bar: derivation.bar,
+    expectedExposure,
+  });
+  return { rescored: true, derivation, evaluation };
 }

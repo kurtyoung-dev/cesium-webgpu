@@ -23,7 +23,25 @@
  * lane runs no browsers, so no WebGL sweep exists and every bound in
  * `SUN_DISC_DAWN_BAR` is null. The scorer reads a null bound as "no standing
  * to pass or fail" and folds the run to STRUCTURAL — it does not read it as
- * "everything passed". The first machine-lane sweep is what derives the bar.
+ * "everything passed". The first machine-lane sweep is what derives the bar,
+ * via `deriveSunDiscDawnBarFromWebGLSweep` /
+ * `rescoreSunDiscDawnArtifact` (`lib/sun-disc-dawn-gate.mjs`) — pre-registered
+ * here, before that sweep's own numbers are known.
+ *
+ * THE PRIOR SWEEPS COULD NOT REACH THAT BAR EITHER WAY: THEY CLIPPED. The two
+ * retained 2026-08-28 acquisitions ran at the scene's own default,
+ * `highDynamicRange === false`, where the frame reaches the canvas through a
+ * hard `clamp(linear)` rather than a tonemap curve. Ten of their thirteen
+ * samples read a disc region at EXACTLY the framebuffer's ceiling — a
+ * measurement of the clamp, not of the scene, and therefore not something a
+ * bar can legally derive from. This landing adds the UNCLIPPED-EXPOSURE LEG
+ * (`SUN_DISC_DAWN_EXPOSURE`, applied by `applyUnclippedExposureLeg` below):
+ * HDR on, a reduced `postProcessStages.exposure`, both public `Scene` API
+ * mirrored into the WebGPU tonemapping pipeline, so no engine change and no
+ * backend asymmetry. A region that STILL clips at the new exposure is refused
+ * (`sampleStructuralReasons`' `-clipped` check folds the whole run
+ * STRUCTURAL) rather than silently averaged in — a clipped sample is refused,
+ * not scored.
  *
  * THE WebGL LEG IS A PARITY CONTROL, NOT A HEALTH REFERENCE. Both backends
  * draw this billboard from one shared scene-level resolution and two twin
@@ -113,6 +131,7 @@ import {
 } from "./lib/same-task-capture.mjs";
 import {
   SUN_DISC_DAWN_BAR,
+  SUN_DISC_DAWN_EXPOSURE,
   SUN_DISC_DAWN_FIELD_OF_VIEW_DEGREES,
   SUN_DISC_DAWN_LIMB_REFERENCE_RATIO,
   SUN_DISC_DAWN_READINESS,
@@ -158,15 +177,36 @@ const PROCESS_WATCHDOG_MS =
   BROWSER_CLOSE_TIMEOUT_MS +
   60_000;
 
-/** The plain-JSON framing the page instrument is handed. */
-const PAGE_CONFIG = Object.freeze({
-  site: SUN_DISC_DAWN_SITE,
-  sweep: SUN_DISC_DAWN_SWEEP,
-  regions: SUN_DISC_DAWN_REGIONS,
-  fieldOfViewDegrees: SUN_DISC_DAWN_FIELD_OF_VIEW_DEGREES,
-  viewport: SUN_DISC_DAWN_VIEWPORT,
-  readiness: SUN_DISC_DAWN_READINESS,
-});
+/**
+ * Build the plain-JSON framing the page instrument is handed.
+ *
+ * A FUNCTION, not a frozen module constant, so `--exposure` can register a
+ * different exposure VALUE for one run without touching `SUN_DISC_DAWN_EXPOSURE`
+ * — the row's own pre-registered default stays exactly what it was, and the
+ * override is a runtime knob for an executor who hits a `*-clipped` fold, not
+ * a second silent guess baked into the source.
+ *
+ * @param {object} [exposureOverrides] Fields merged over
+ *        {@link SUN_DISC_DAWN_EXPOSURE} — `{ value }` from `--exposure`.
+ * @returns {object} The frozen page config.
+ */
+export function buildPageConfig(exposureOverrides = {}) {
+  return Object.freeze({
+    site: SUN_DISC_DAWN_SITE,
+    sweep: SUN_DISC_DAWN_SWEEP,
+    regions: SUN_DISC_DAWN_REGIONS,
+    fieldOfViewDegrees: SUN_DISC_DAWN_FIELD_OF_VIEW_DEGREES,
+    viewport: SUN_DISC_DAWN_VIEWPORT,
+    readiness: SUN_DISC_DAWN_READINESS,
+    exposure: Object.freeze({
+      ...SUN_DISC_DAWN_EXPOSURE,
+      ...exposureOverrides,
+    }),
+  });
+}
+
+/** The plain-JSON framing the page instrument is handed, at the pre-registered exposure. */
+const PAGE_CONFIG = buildPageConfig();
 
 const stableJson = (value) => `${JSON.stringify(value, null, 2)}\n`;
 
@@ -448,6 +488,26 @@ async function acquirePageMeasurement({ renderer, config }) {
   const relativeLuminance = (r, g, b) =>
     (0.2126 * r + 0.7152 * g + 0.0722 * b) * RECIPROCAL_255;
 
+  // Apply the unclipped-exposure leg (`SUN_DISC_DAWN_EXPOSURE`). A small,
+  // pure state-setter over the two public properties involved, so the
+  // browser-free spec can execute it against a plain fake `scene` object and
+  // assert the exact writes rather than grep the probe source for the
+  // property names — the anti-pattern this file's own header warns against.
+  // Guards `postProcessStages` rather than assuming it: the property does
+  // not exist until the first render has run.
+  const applyUnclippedExposureLeg = (targetScene, exposureConfig) => {
+    targetScene.highDynamicRange = exposureConfig.highDynamicRange;
+    const hdrApplied =
+      targetScene.highDynamicRange === exposureConfig.highDynamicRange;
+    let exposureApplied = false;
+    if (targetScene.postProcessStages) {
+      targetScene.postProcessStages.exposure = exposureConfig.value;
+      exposureApplied =
+        targetScene.postProcessStages.exposure === exposureConfig.value;
+    }
+    return { hdrApplied, exposureApplied };
+  };
+
   // Region means over one immutable snapshot. `centerY` arrives in the GL
   // convention the engine publishes it in — y UP from the bottom-left — while
   // ImageData rows run top-down, so the flip happens here once and is recorded
@@ -464,7 +524,14 @@ async function acquirePageMeasurement({ renderer, config }) {
     const annulusInner = limbPx * regions.annulusInnerFraction;
     const annulusOuter = limbPx * regions.annulusOuterFraction;
     const centerYFromTop = height - 1 - centerYFromBottom;
-    const accumulate = () => ({ pixels: 0, r: 0, g: 0, b: 0, luminance: 0 });
+    const accumulate = () => ({
+      pixels: 0,
+      r: 0,
+      g: 0,
+      b: 0,
+      luminance: 0,
+      clippedPixels: 0,
+    });
     const centre = accumulate();
     const annulus = accumulate();
     const lowX = Math.max(0, Math.floor(centerX - annulusOuter) - 1);
@@ -497,6 +564,16 @@ async function acquirePageMeasurement({ renderer, config }) {
         bucket.g += g;
         bucket.b += b;
         bucket.luminance += relativeLuminance(r, g, b);
+        // A channel at the framebuffer's own maximum code cannot be told
+        // apart from "brighter than the display range" — the region mean it
+        // feeds is then a measurement of "at least this bright", which is
+        // not what a centre-versus-annulus ratio needs. Counted per pixel so
+        // `finish` can flag the region rather than silently average a
+        // saturated code in with the rest (`SUN_DISC_DAWN_EXPOSURE`,
+        // `sampleStructuralReasons`'s `-clipped` check).
+        if (r >= 255 || g >= 255 || b >= 255) {
+          bucket.clippedPixels += 1;
+        }
       }
     }
     const finish = (bucket) => ({
@@ -506,6 +583,14 @@ async function acquirePageMeasurement({ renderer, config }) {
       meanB: bucket.pixels > 0 ? bucket.b / bucket.pixels : Number.NaN,
       meanLuminance:
         bucket.pixels > 0 ? bucket.luminance / bucket.pixels : Number.NaN,
+      clippedPixels: bucket.clippedPixels,
+      // Published beside `clippedPixels` so a near-miss (one saturated pixel
+      // of 1,500) and a total wash (every pixel saturated) both read from the
+      // artifact rather than collapsing to the same boolean; `clipped` stays
+      // the zero-tolerance gate predicate reads.
+      clippedFraction:
+        bucket.pixels > 0 ? bucket.clippedPixels / bucket.pixels : 0,
+      clipped: bucket.pixels > 0 && bucket.clippedPixels > 0,
     });
     return {
       centre: finish(centre),
@@ -632,6 +717,20 @@ async function acquirePageMeasurement({ renderer, config }) {
   scene.sun.show = true;
   scene.globe.show = true;
   scene.skyAtmosphere.show = true;
+
+  // UNCLIPPED-EXPOSURE LEG (C12-38 instrument, 2026-09-02). Applied once, for
+  // the whole sweep — this run carries one leg, not several sharing a page,
+  // so there is no "leave the exposure behind for the next leg" hazard the
+  // celestial capture harness documents for its own multi-leg pages. See
+  // `SUN_DISC_DAWN_EXPOSURE` for why HDR + a reduced exposure is what closes
+  // the clipping gap rather than a fresh engine change.
+  const exposureLeg = applyUnclippedExposureLeg(scene, config.exposure);
+  if (!exposureLeg.hdrApplied) {
+    harnessErrors.push("page:exposure-leg-hdr-not-applied");
+  }
+  if (!exposureLeg.exposureApplied) {
+    harnessErrors.push("page:exposure-leg-value-not-applied");
+  }
 
   const frustum = scene.camera.frustum;
   const fovApplied = typeof frustum.fov === "number";
@@ -853,6 +952,13 @@ async function acquirePageMeasurement({ renderer, config }) {
         bakeHaloGain: halo?.bakeHaloGain ?? null,
         discRadiance: halo?.discRadiance ?? null,
         useHdr: scene.highDynamicRange === true,
+        // Read live rather than trusted from `config`, so a run where
+        // something else touched these mid-sweep is caught by its own
+        // published evidence instead of by an assumption.
+        exposure: {
+          highDynamicRange: scene.highDynamicRange === true,
+          value: scene.postProcessStages?.exposure ?? null,
+        },
         limbDarkening: appearance
           ? { a0: appearance.a0, a1: appearance.a1, a2: appearance.a2 }
           : null,
@@ -877,6 +983,7 @@ async function acquirePageMeasurement({ renderer, config }) {
     harnessErrors,
     runtime: {
       rendererType: String(scene.context?.rendererType ?? "").toLowerCase(),
+      exposureLeg,
       fovApplied,
       fieldOfViewRadians: fovApplied ? scene.camera.frustum.fov : null,
       requestRenderMode: scene.requestRenderMode === true,
@@ -892,7 +999,13 @@ async function acquirePageMeasurement({ renderer, config }) {
   };
 }
 
-async function runBackend(browser, renderer, base, owned) {
+async function runBackend(
+  browser,
+  renderer,
+  base,
+  owned,
+  pageConfig = PAGE_CONFIG,
+) {
   const session = { renderer, measurement: null, cleanup: null };
   let context;
   let page;
@@ -944,7 +1057,7 @@ async function runBackend(browser, renderer, base, owned) {
     owned.phase = `${renderer}:measure`;
     const measurement = await page.evaluate(acquirePageMeasurement, {
       renderer,
-      config: PAGE_CONFIG,
+      config: pageConfig,
     });
     owned.phase = `${renderer}:diagnostics`;
     const gpuGate =
@@ -994,11 +1107,18 @@ async function runBackend(browser, renderer, base, owned) {
   }
 }
 
-async function acquireBothBackends(browser, base, owned) {
+async function acquireBothBackends(
+  browser,
+  base,
+  owned,
+  pageConfig = PAGE_CONFIG,
+) {
   const result = { sessions: [], cleanup: { complete: false } };
   try {
     for (const renderer of SUN_DISC_DAWN_RENDERERS) {
-      result.sessions.push(await runBackend(browser, renderer, base, owned));
+      result.sessions.push(
+        await runBackend(browser, renderer, base, owned, pageConfig),
+      );
     }
     return result;
   } finally {
@@ -1070,6 +1190,7 @@ function artifactWithStatus(status, fields) {
       webglLegRole:
         "The WebGL leg is a PARITY CONTROL, not a health reference. Two agreeing legs far from limbLawReferenceRatio is a shared-engine reading, not agreement that the disc is correct.",
       narrowFieldOfView: `The probe forces camera.frustum.fov to ${SUN_DISC_DAWN_FIELD_OF_VIEW_DEGREES} degrees; at the engine default of 60 the solar disc spans about 3 px of radius and cannot carry the metric.`,
+      unclippedExposureLeg: `scene.highDynamicRange = ${SUN_DISC_DAWN_EXPOSURE.highDynamicRange}, scene.postProcessStages.exposure = ${SUN_DISC_DAWN_EXPOSURE.value} by default, applied once for the whole sweep; see the artifact's own top-level exposureConfig for the value THIS run actually used (--exposure overrides it, e.g. to retry a run that clipped). See SUN_DISC_DAWN_EXPOSURE for why: the scene's SDR default hard-clamps rather than tonemaps, which is why two 2026-08-28 acquisitions clipped 10 of 13 samples to exactly the framebuffer ceiling. A region that still clips at this exposure is refused (STRUCTURAL), not silently averaged in — retry with a lower --exposure.`,
       sunTrackingCamera:
         "The camera re-aims at the sun's own azimuth and altitude at every sample so a narrow frame keeps the disc centred across the sweep.",
       offlineScene:
@@ -1095,6 +1216,13 @@ function artifactWithStatus(status, fields) {
  * Acquire and score one dawn sweep.
  *
  * @param {object} [options] Run options.
+ * @param {number} [options.exposureValue] Overrides
+ *        `SUN_DISC_DAWN_EXPOSURE.value` for this run only (`--exposure` on
+ *        the CLI) — HDR itself stays forced on. Use it to retry a run that
+ *        folded STRUCTURAL on a `*-clipped` reason at the pre-registered
+ *        value; the acquired artifact's own `exposureConfig` field records
+ *        whichever value was actually used, and the gate scores each leg
+ *        against that recorded value, not always the module default.
  * @returns {Promise<object>} The artifact, its quiescence and its publication.
  */
 export async function runSunDiscDawnProbe(options = {}) {
@@ -1105,6 +1233,10 @@ export async function runSunDiscDawnProbe(options = {}) {
   const startedAt = new Date().toISOString();
   const source = operations.readFileSync(probeSourcePath, "utf8");
   const capturePreflight = inspectSunDiscDawnCaptureContract(source);
+  const pageConfig =
+    options.exposureValue === undefined
+      ? PAGE_CONFIG
+      : buildPageConfig({ value: options.exposureValue });
   const owned = {
     browser: undefined,
     context: undefined,
@@ -1137,7 +1269,7 @@ export async function runSunDiscDawnProbe(options = {}) {
       owned.browser = browser;
       quiescent = false;
       const acquisition = await withSunDiscDawnWatchdog(
-        () => acquireBothBackends(browser, options.base, owned),
+        () => acquireBothBackends(browser, options.base, owned, pageConfig),
         () => cleanupOwned(owned),
         options.watchdogMs ?? RUN_WATCHDOG_MS,
       );
@@ -1161,6 +1293,7 @@ export async function runSunDiscDawnProbe(options = {}) {
       };
       const evaluation = evaluateSunDiscDawnSweep(evidence, {
         bar: options.bar ?? SUN_DISC_DAWN_BAR,
+        expectedExposure: pageConfig.exposure,
       });
       const harnessErrors = acquisition.sessions.flatMap((session) =>
         (session.measurement?.harnessErrors ?? []).map(
@@ -1173,6 +1306,7 @@ export async function runSunDiscDawnProbe(options = {}) {
         completedAt: new Date().toISOString(),
         captureContract: { ...capturePreflight, writeOnce: true },
         bar: evaluation.bar,
+        exposureConfig: pageConfig.exposure,
         limbLawReferenceRatio: evaluation.limbLawReferenceRatio,
         families: evaluation.families,
         measurements: evaluation.measurements,
@@ -1237,16 +1371,38 @@ export async function runSunDiscDawnProbe(options = {}) {
 function usage() {
   console.log(
     "Usage: node Tools/visual-regression/probe-sun-disc-dawn.mjs " +
-      "[--base URL] [--output-directory DIR] [--headed]\n\n" +
-      "Requires an already-running loopback server and a current Build/CesiumUnminified build.",
+      "[--base URL] [--output-directory DIR] [--headed] [--exposure VALUE]\n\n" +
+      "Requires an already-running loopback server and a current Build/CesiumUnminified build.\n\n" +
+      `--exposure overrides SUN_DISC_DAWN_EXPOSURE.value (default ${SUN_DISC_DAWN_EXPOSURE.value}) ` +
+      "for one run — retry lower if the sweep folds STRUCTURAL on a *-clipped reason. " +
+      "HDR stays forced on regardless.",
   );
 }
 
-function parseArguments(argv) {
+/**
+ * Parses one `--exposure` value: a finite, strictly-positive multiplier.
+ * `postProcessStages.exposure` is read back and compared for equality by the
+ * gate (`SUN_DISC_DAWN_EXPOSURE`/`sampleStructuralReasons`), so a value that
+ * cannot round-trip through that comparison (NaN, zero, negative) is refused
+ * here rather than acquiring a whole sweep that can only fold blind.
+ *
+ * @param {string} raw The `--exposure` argument's text.
+ * @returns {number} The parsed value.
+ */
+export function parseExposureValue(raw) {
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new Error(`--exposure must be a finite positive number, got ${raw}`);
+  }
+  return value;
+}
+
+export function parseArguments(argv) {
   const parsed = {
     base: validateLoopbackBase(defaultBase),
     outputRoot: defaultOutputRoot,
     headed: false,
+    exposureValue: undefined,
   };
   for (let index = 0; index < argv.length; index++) {
     const argument = argv[index];
@@ -1263,6 +1419,8 @@ function parseArguments(argv) {
       parsed.outputRoot = path.resolve(nextValue());
     } else if (argument === "--headed") {
       parsed.headed = true;
+    } else if (argument === "--exposure") {
+      parsed.exposureValue = parseExposureValue(nextValue());
     } else if (argument === "--help") {
       usage();
       process.exit(exitCodeForS5Status("PASS"));

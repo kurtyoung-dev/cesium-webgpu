@@ -33,7 +33,17 @@ import {
 import { PROBE_CONTRACT_ALLOWLIST } from "./lib/probe-fleet-contract-allowlist.mjs";
 import { PURPOSE_HEADER_ALLOWLIST } from "./lib/purpose-header-allowlist.mjs";
 import {
+  buildPageConfig,
+  parseArguments,
+  parseExposureValue,
+} from "./probe-sun-disc-dawn.mjs";
+import {
   SUN_DISC_DAWN_BAR,
+  SUN_DISC_DAWN_BAR_DERIVATION_DISCRIMINATOR_INDEX,
+  SUN_DISC_DAWN_BAR_DERIVATION_MARGIN,
+  SUN_DISC_DAWN_BAR_DERIVATION_MINIMUM_SAMPLES,
+  SUN_DISC_DAWN_BAR_DERIVATION_PARITY_DELTA,
+  SUN_DISC_DAWN_EXPOSURE,
   SUN_DISC_DAWN_LIMB_COEFFICIENTS,
   SUN_DISC_DAWN_LIMB_REFERENCE_RATIO,
   SUN_DISC_DAWN_READINESS,
@@ -45,9 +55,11 @@ import {
   SUN_DISC_DAWN_VIEWPORT,
   centreAnnulusChromaRatio,
   centreAnnulusRatio,
+  deriveSunDiscDawnBarFromWebGLSweep,
   evaluateSunDiscDawnSweep,
   horizonDipDegrees,
   meanLimbIntensity,
+  rescoreSunDiscDawnArtifact,
   sampleIsScored,
   sunAboveLocalHorizon,
 } from "./lib/sun-disc-dawn-gate.mjs";
@@ -146,13 +158,14 @@ function composite(discBytes, alpha) {
   );
 }
 
-function regionRecord(bytes, pixels) {
+function regionRecord(bytes, pixels, extra = {}) {
   return {
     pixels,
     meanR: bytes[0],
     meanG: bytes[1],
     meanB: bytes[2],
     meanLuminance: luminanceOf(bytes),
+    ...extra,
   };
 }
 
@@ -201,6 +214,12 @@ function makeSample(index, options = {}) {
       bakeHaloGain: 0,
       discRadiance: 1,
       useHdr: false,
+      // Defaults to the pre-registered leg so every existing fixture reads as
+      // correctly-exposed without setting the field itself (the same
+      // opt-in-to-break-it shape `centreClipped`/`annulusClipped` already
+      // use, J3's own rationale). `options.exposure` overrides it for the
+      // fixtures that specifically exercise the exposure-leg check.
+      exposure: options.exposure ?? { ...SUN_DISC_DAWN_EXPOSURE },
       limbDarkening: { ...SUN_DISC_DAWN_LIMB_COEFFICIENTS },
       extinction: { r: entry.rgb[0], g: entry.rgb[1], b: entry.rgb[2] },
       frame: { ...SUN_DISC_DAWN_VIEWPORT },
@@ -208,8 +227,16 @@ function makeSample(index, options = {}) {
     },
     regions: visible
       ? {
-          centre: regionRecord(centreBytes, options.centrePixels ?? pixels),
-          annulus: regionRecord(annulusBytes, options.annulusPixels ?? pixels),
+          centre: regionRecord(
+            centreBytes,
+            options.centrePixels ?? pixels,
+            options.centreClipped ? { clipped: true, clippedPixels: 1 } : {},
+          ),
+          annulus: regionRecord(
+            annulusBytes,
+            options.annulusPixels ?? pixels,
+            options.annulusClipped ? { clipped: true, clippedPixels: 1 } : {},
+          ),
         }
       : null,
     reasons: options.reasons ?? [],
@@ -770,7 +797,7 @@ async function withPageInstrument(use) {
   const file = path.join(HERE, `${PAGE_MODULE_PREFIX}${randomUUID()}.mjs`);
   const exports =
     "export { measureDiscRegions, localAltitudeAzimuth, relativeLuminance, " +
-    "countGlobeCommands, awaitGlobeReady };";
+    "countGlobeCommands, awaitGlobeReady, applyUnclippedExposureLeg };";
   try {
     fs.writeFileSync(file, `${block}\n${exports}\n`, { flag: "wx" });
     const module = await import(
@@ -978,6 +1005,145 @@ test("E7: readiness waits on a binned globe command, never on tilesLoaded alone"
       50,
     );
     assert.equal(streaming.ready, false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// H. The unclipped-exposure leg (C12-38 instrument gap, 2026-09-02)
+// ---------------------------------------------------------------------------
+
+test("H1: SUN_DISC_DAWN_EXPOSURE turns HDR on and reduces exposure below 1", () => {
+  assert.equal(SUN_DISC_DAWN_EXPOSURE.highDynamicRange, true);
+  assert.ok(
+    SUN_DISC_DAWN_EXPOSURE.value > 0 && SUN_DISC_DAWN_EXPOSURE.value < 1,
+    `expected an under-1 exposure, got ${SUN_DISC_DAWN_EXPOSURE.value}`,
+  );
+});
+
+test("H2: applyUnclippedExposureLeg writes both public properties and reports what it wrote", async () => {
+  await withPageInstrument(async ({ applyUnclippedExposureLeg }) => {
+    const scene = {
+      highDynamicRange: false,
+      postProcessStages: { exposure: 1.0 },
+    };
+    const result = applyUnclippedExposureLeg(scene, SUN_DISC_DAWN_EXPOSURE);
+    assert.equal(scene.highDynamicRange, true);
+    assert.equal(
+      scene.postProcessStages.exposure,
+      SUN_DISC_DAWN_EXPOSURE.value,
+    );
+    assert.deepEqual(result, { hdrApplied: true, exposureApplied: true });
+  });
+});
+
+test("H3: applyUnclippedExposureLeg reports the exposure write as unattempted, never crashes, when postProcessStages does not exist yet", async () => {
+  await withPageInstrument(async ({ applyUnclippedExposureLeg }) => {
+    const scene = { highDynamicRange: false };
+    const result = applyUnclippedExposureLeg(scene, SUN_DISC_DAWN_EXPOSURE);
+    assert.equal(scene.highDynamicRange, true);
+    assert.deepEqual(result, { hdrApplied: true, exposureApplied: false });
+  });
+});
+
+test("H4 MUTATION control: an exposure write that silently fails is detected as unapplied", async () => {
+  await withPageInstrument(async ({ applyUnclippedExposureLeg }) => {
+    // A scene whose `highDynamicRange` setter refuses the write (e.g. a
+    // context that does not support HDR) — the healthy assertion above is
+    // that `hdrApplied` reads the property back rather than trusting the
+    // assignment, and this fixture is what makes that check live.
+    const scene = {
+      _hdr: false,
+      get highDynamicRange() {
+        return this._hdr;
+      },
+      set highDynamicRange(_value) {
+        // Refuses the write — models an unsupported context.
+      },
+      postProcessStages: { exposure: 1.0 },
+    };
+    const result = applyUnclippedExposureLeg(scene, SUN_DISC_DAWN_EXPOSURE);
+    assert.equal(result.hdrApplied, false);
+  });
+});
+
+test("I1: measureDiscRegions reports a region unclipped when no channel reaches 255", async () => {
+  await withPageInstrument(async ({ measureDiscRegions }) => {
+    const width = 128;
+    const height = 128;
+    const centerX = 64;
+    const centerYFromBottom = 64;
+    const limbPx = 40;
+    const frame = syntheticFrame(width, height, () => [200, 190, 180]);
+    const measured = measureDiscRegions(
+      frame,
+      centerX,
+      centerYFromBottom,
+      limbPx,
+      SUN_DISC_DAWN_REGIONS,
+    );
+    assert.equal(measured.centre.clipped, false);
+    assert.equal(measured.centre.clippedPixels, 0);
+    assert.equal(measured.centre.clippedFraction, 0);
+    assert.equal(measured.annulus.clipped, false);
+    assert.equal(measured.annulus.clippedPixels, 0);
+    assert.equal(measured.annulus.clippedFraction, 0);
+  });
+});
+
+test("I2: measureDiscRegions flags a region clipped when any channel saturates, and counts the pixels", async () => {
+  await withPageInstrument(async ({ measureDiscRegions }) => {
+    const width = 128;
+    const height = 128;
+    const centerX = 64;
+    const centerYFromTop = 64;
+    const limbPx = 40;
+    // Pure white inside the centre core; a warm but unsaturated annulus.
+    const frame = syntheticFrame(width, height, (x, y) => {
+      const dx = x + 0.5 - centerX;
+      const dy = y + 0.5 - centerYFromTop;
+      const radius = Math.sqrt(dx * dx + dy * dy);
+      return radius <= limbPx * SUN_DISC_DAWN_REGIONS.centreOuterFraction
+        ? [255, 255, 255]
+        : [200, 190, 180];
+    });
+    const centerYFromBottom = height - 1 - centerYFromTop;
+    const measured = measureDiscRegions(
+      frame,
+      centerX,
+      centerYFromBottom,
+      limbPx,
+      SUN_DISC_DAWN_REGIONS,
+    );
+    assert.equal(measured.centre.clipped, true);
+    assert.equal(measured.centre.clippedPixels, measured.centre.pixels);
+    // Every centre pixel is [255,255,255] — a total wash, not a near-miss —
+    // so the fraction the gate would need to distinguish the two is exactly 1.
+    assert.equal(measured.centre.clippedFraction, 1);
+    assert.equal(measured.annulus.clipped, false);
+    assert.equal(measured.annulus.clippedPixels, 0);
+    assert.equal(measured.annulus.clippedFraction, 0);
+  });
+});
+
+test("I3: a single saturated channel is enough to flag a pixel clipped, not just a saturated white", async () => {
+  await withPageInstrument(async ({ measureDiscRegions }) => {
+    const width = 128;
+    const height = 128;
+    const centerX = 64;
+    const centerYFromTop = 64;
+    const limbPx = 40;
+    // Blue alone saturates; red/green stay mid-tone. A byte-max check on the
+    // WHOLE pixel (e.g. requiring all three channels at 255) would miss this.
+    const frame = syntheticFrame(width, height, () => [120, 120, 255]);
+    const centerYFromBottom = height - 1 - centerYFromTop;
+    const measured = measureDiscRegions(
+      frame,
+      centerX,
+      centerYFromBottom,
+      limbPx,
+      SUN_DISC_DAWN_REGIONS,
+    );
+    assert.equal(measured.centre.clipped, true);
   });
 });
 
@@ -1368,8 +1534,14 @@ test("G6 sampling/inert-family: making the per-sample reader unreachable un-blin
     (source) =>
       replaceExactlyOnce(
         source,
-        "        structural.push(...sampleStructuralReasons(renderer, index, sample));",
-        "        structural.push(...(false ? sampleStructuralReasons(renderer, index, sample) : []));",
+        "        structural.push(\n" +
+          "          ...sampleStructuralReasons(renderer, index, sample, expectedExposure),\n" +
+          "        );",
+        "        structural.push(\n" +
+          "          ...(false\n" +
+          "            ? sampleStructuralReasons(renderer, index, sample, expectedExposure)\n" +
+          "            : []),\n" +
+          "        );",
       ),
     async (module) => {
       const result = module.evaluateSunDiscDawnSweep(
@@ -1540,4 +1712,548 @@ test("G9: the sweep registration the probe ships is the one the gate scores", ()
   assert.deepEqual([...SUN_DISC_DAWN_RENDERERS], ["webgl", "webgpu"]);
   assert.equal(SUN_DISC_DAWN_SWEEP.stepMinutes, 5);
   assert.equal(SUN_DISC_DAWN_SWEEP.startIso, "2026-08-24T22:10:00Z");
+});
+
+// ---------------------------------------------------------------------------
+// J. A clipped sample is refused, not silently included (C12-38 instrument)
+// ---------------------------------------------------------------------------
+
+test("J1: a clipped centre region refuses the whole sweep to STRUCTURAL", () => {
+  const legs = healthyLeg({ perSample: { 7: { centreClipped: true } } });
+  const evidence = evidenceOf(legs, legs);
+  const result = evaluateSunDiscDawnSweep(evidence, { bar: DERIVED_BAR });
+  assert.equal(result.status, "STRUCTURAL");
+  assert.ok(
+    result.structural.includes("webgl:sample7:centre-clipped"),
+    JSON.stringify(result.structural),
+  );
+});
+
+test("J2: a clipped annulus region is refused the same way as a clipped centre", () => {
+  const legs = healthyLeg({ perSample: { 9: { annulusClipped: true } } });
+  const evidence = evidenceOf(legs, legs);
+  const result = evaluateSunDiscDawnSweep(evidence, { bar: DERIVED_BAR });
+  assert.equal(result.status, "STRUCTURAL");
+  assert.ok(
+    result.structural.includes("webgl:sample9:annulus-clipped"),
+    JSON.stringify(result.structural),
+  );
+});
+
+test("J3: pre-existing fixtures are unaffected — clip refusal is opt-in on an explicit `clipped: true`, not re-derived from raw bytes", () => {
+  // `healthyLeg()`'s default disc is [255,255,255] over a bright dawn sky, so
+  // several of its own composited bytes ARE 255 without anyone setting
+  // `clipped`. If the check read `meanR/meanG/meanB` directly instead of the
+  // explicit field, every one of this file's existing PASS fixtures would
+  // have started failing the moment this row landed.
+  const result = evaluateSunDiscDawnSweep(
+    evidenceOf(healthyLeg(), healthyLeg()),
+    {
+      bar: DERIVED_BAR,
+    },
+  );
+  assert.deepEqual(result.structural, []);
+  assert.equal(result.status, "PASS");
+});
+
+test("J4 MUTATION: a clipped sample must be refused, not silently included", async () => {
+  const legs = healthyLeg({ perSample: { 7: { centreClipped: true } } });
+  const evidence = evidenceOf(legs, legs);
+  const before = evaluateSunDiscDawnSweep(evidence, { bar: DERIVED_BAR });
+  assert.equal(before.status, "STRUCTURAL");
+  await withMutant(
+    (source) =>
+      replaceExactlyOnce(
+        source,
+        "    if (record.clipped === true) {\n      reasons.push(`${where}:${region}-clipped`);\n    }",
+        "    if (false && record.clipped === true) {\n      reasons.push(`${where}:${region}-clipped`);\n    }",
+      ),
+    async (module) => {
+      const result = module.evaluateSunDiscDawnSweep(evidence, {
+        bar: DERIVED_BAR,
+      });
+      assert.deepEqual(
+        result.structural,
+        [],
+        "the clipped sample survived silently once the check was made inert",
+      );
+      assert.equal(result.status, "PASS");
+    },
+  );
+});
+
+// ---------------------------------------------------------------------------
+// K. Deriving the FAIL bar from an acquired WebGL sweep, never from WebGPU
+// ---------------------------------------------------------------------------
+
+test("K1: the derivation refuses rather than guess, with too few readable WebGL samples", () => {
+  const sparse = [
+    { scored: true, centreAnnulusRatio: 1.2, centreAnnulusChromaRatio: 1.1 },
+    {
+      scored: false,
+      centreAnnulusRatio: null,
+      centreAnnulusChromaRatio: null,
+    },
+  ];
+  assert.ok(sparse.length < SUN_DISC_DAWN_BAR_DERIVATION_MINIMUM_SAMPLES);
+  const derivation = deriveSunDiscDawnBarFromWebGLSweep(sparse);
+  assert.equal(derivation.usable, false);
+  assert.equal(derivation.bar, null);
+  assert.equal(
+    derivation.reason,
+    "sun-disc-dawn-bar:too-few-readable-webgl-samples",
+  );
+});
+
+test("K2: the derived ratio bound is the sweep's own worst scored reading net of the margin, capped at the physical 1.0 floor", () => {
+  const measurements = [
+    { scored: true, centreAnnulusRatio: 1.4, centreAnnulusChromaRatio: 1.3 },
+    { scored: true, centreAnnulusRatio: 1.1, centreAnnulusChromaRatio: 0.95 },
+    { scored: true, centreAnnulusRatio: 0.98, centreAnnulusChromaRatio: 0.9 },
+    {
+      scored: false,
+      centreAnnulusRatio: null,
+      centreAnnulusChromaRatio: null,
+    },
+  ];
+  const derivation = deriveSunDiscDawnBarFromWebGLSweep(measurements);
+  assert.equal(derivation.usable, true);
+  const margin = SUN_DISC_DAWN_BAR_DERIVATION_MARGIN;
+  assert.ok(
+    Math.abs(derivation.bar.minimumCentreAnnulusRatio - 0.98 * (1 - margin)) <
+      1e-12,
+  );
+  assert.ok(
+    Math.abs(
+      derivation.bar.minimumCentreAnnulusChromaRatio - 0.9 * (1 - margin),
+    ) < 1e-12,
+  );
+  assert.equal(
+    derivation.bar.maximumParityDelta,
+    SUN_DISC_DAWN_BAR_DERIVATION_PARITY_DELTA,
+  );
+  assert.equal(derivation.bar.status, "DERIVED-FROM-WEBGL-SWEEP");
+  assert.equal(derivation.terms.scoredSamples, 3);
+});
+
+test("K2b: the luminance floor never exceeds 1.0 even when every reading sits above it; the chroma floor carries no such cap", () => {
+  const measurements = [
+    { scored: true, centreAnnulusRatio: 1.6, centreAnnulusChromaRatio: 1.5 },
+    { scored: true, centreAnnulusRatio: 1.5, centreAnnulusChromaRatio: 1.4 },
+    { scored: true, centreAnnulusRatio: 1.45, centreAnnulusChromaRatio: 1.35 },
+  ];
+  const derivation = deriveSunDiscDawnBarFromWebGLSweep(measurements);
+  assert.equal(derivation.bar.minimumCentreAnnulusRatio, 1.0);
+  assert.ok(
+    derivation.bar.minimumCentreAnnulusChromaRatio > 1.0,
+    `expected the uncapped chroma floor above 1.0, got ${derivation.bar.minimumCentreAnnulusChromaRatio}`,
+  );
+});
+
+test("K3: a bar derived from a healthy WebGL sweep accepts a healthy WebGPU leg and rejects an inverted one", () => {
+  const webglOnly = evaluateSunDiscDawnSweep(
+    evidenceOf(healthyLeg(), healthyLeg()),
+    { bar: DERIVED_BAR },
+  );
+  const derivation = deriveSunDiscDawnBarFromWebGLSweep(
+    webglOnly.measurements.webgl,
+  );
+  assert.equal(derivation.usable, true);
+
+  const healthyPass = evaluateSunDiscDawnSweep(
+    evidenceOf(healthyLeg(), healthyLeg()),
+    { bar: derivation.bar },
+  );
+  assert.equal(healthyPass.status, "PASS");
+
+  const invertedFail = evaluateSunDiscDawnSweep(
+    evidenceOf(healthyLeg(), extinctedLeg()),
+    { bar: derivation.bar },
+  );
+  assert.equal(invertedFail.status, "FAIL");
+});
+
+test("K4 MUTATION: without the margin term a noise-free derivation would demand exactly the sweep's worst reading, with zero slack", async () => {
+  const measurements = [
+    { scored: true, centreAnnulusRatio: 0.98, centreAnnulusChromaRatio: 0.9 },
+    { scored: true, centreAnnulusRatio: 1.2, centreAnnulusChromaRatio: 1.1 },
+    { scored: true, centreAnnulusRatio: 1.3, centreAnnulusChromaRatio: 1.2 },
+  ];
+  const before = deriveSunDiscDawnBarFromWebGLSweep(measurements);
+  assert.ok(before.bar.minimumCentreAnnulusRatio < 0.98);
+  await withMutant(
+    (source) =>
+      replaceExactlyOnce(
+        source,
+        "1.0, worstRatio * (1 - marginRel));",
+        "1.0, worstRatio * (1 - 0));",
+      ),
+    async (module) => {
+      const mutated = module.deriveSunDiscDawnBarFromWebGLSweep(measurements);
+      assert.equal(mutated.bar.minimumCentreAnnulusRatio, 0.98);
+    },
+  );
+});
+
+// K5/K6: review finding BLOCKING-1, 2026-09-02. Reproduced by the reviewer
+// against the real retained pre-fix artifact: a WebGL source that has ALREADY
+// inverted the shipped law derives a bar at the defect's own magnitude, and
+// every family — including the one built to catch that inversion — passes.
+// `worstRatio 0.037` in that reproduction stood in for a defective disc-centre
+// reading at the row's own discriminator sample; K5 pins the same shape with
+// the discriminator explicitly at index 7.
+
+test("K5: a discriminator sample that has already inverted the shipped law refuses the derivation, not just loosens it", () => {
+  const measurements = [
+    {
+      index: 2,
+      scored: true,
+      centreAnnulusRatio: 1.3,
+      centreAnnulusChromaRatio: 1.2,
+    },
+    {
+      index: 5,
+      scored: true,
+      centreAnnulusRatio: 1.25,
+      centreAnnulusChromaRatio: 1.15,
+    },
+    // The pre-registered discriminator (+5.11 deg), inverted — the C12-38
+    // defect's own shape, not a low-altitude extinction reading.
+    {
+      index: SUN_DISC_DAWN_BAR_DERIVATION_DISCRIMINATOR_INDEX,
+      scored: true,
+      centreAnnulusRatio: 0.037,
+      centreAnnulusChromaRatio: 0.9,
+    },
+    {
+      index: 9,
+      scored: true,
+      centreAnnulusRatio: 1.1,
+      centreAnnulusChromaRatio: 1.05,
+    },
+  ];
+  const derivation = deriveSunDiscDawnBarFromWebGLSweep(measurements);
+  assert.equal(derivation.usable, false);
+  assert.equal(derivation.bar, null);
+  assert.equal(
+    derivation.reason,
+    "sun-disc-dawn-bar:webgl-source-below-limb-law-floor",
+  );
+  assert.equal(derivation.terms.discriminatorIndex, 7);
+  assert.equal(derivation.terms.discriminatorRatio, 0.037);
+
+  // Confirms the finding's own reproduction is closed: this exact source no
+  // longer certifies the defect through rescoreSunDiscDawnArtifact either.
+  const artifact = {
+    measurements: { webgl: measurements, webgpu: measurements },
+    sessions: [
+      { renderer: "webgl", samples: [] },
+      { renderer: "webgpu", samples: [] },
+    ],
+  };
+  const rescored = rescoreSunDiscDawnArtifact(artifact);
+  assert.equal(rescored.rescored, false);
+  assert.equal(rescored.evaluation, null);
+});
+
+test("K5b: a source whose worst reading dips under 1 AWAY from the discriminator still derives normally — the refusal is scoped, not a blanket floor", () => {
+  // Same shape as K2 (worst reading 0.98, no index at all — the existing
+  // in-isolation derivation contract) plus an explicit, healthy discriminator
+  // reading, proving the new refusal does not fire on ordinary near-1 noise.
+  const measurements = [
+    {
+      index: 1,
+      scored: true,
+      centreAnnulusRatio: 1.4,
+      centreAnnulusChromaRatio: 1.3,
+    },
+    {
+      index: 3,
+      scored: true,
+      centreAnnulusRatio: 1.1,
+      centreAnnulusChromaRatio: 0.95,
+    },
+    {
+      index: 4,
+      scored: true,
+      centreAnnulusRatio: 0.98,
+      centreAnnulusChromaRatio: 0.9,
+    },
+    {
+      index: SUN_DISC_DAWN_BAR_DERIVATION_DISCRIMINATOR_INDEX,
+      scored: true,
+      centreAnnulusRatio: 1.2,
+      centreAnnulusChromaRatio: 1.1,
+    },
+  ];
+  const derivation = deriveSunDiscDawnBarFromWebGLSweep(measurements);
+  assert.equal(derivation.usable, true);
+  const margin = SUN_DISC_DAWN_BAR_DERIVATION_MARGIN;
+  assert.ok(
+    Math.abs(derivation.bar.minimumCentreAnnulusRatio - 0.98 * (1 - margin)) <
+      1e-12,
+  );
+});
+
+test("K6 MUTATION: the discriminator floor refusal must fire, not silently derive a bar at the defect's own magnitude", async () => {
+  const measurements = [
+    {
+      index: 2,
+      scored: true,
+      centreAnnulusRatio: 1.3,
+      centreAnnulusChromaRatio: 1.2,
+    },
+    {
+      index: SUN_DISC_DAWN_BAR_DERIVATION_DISCRIMINATOR_INDEX,
+      scored: true,
+      centreAnnulusRatio: 0.037,
+      centreAnnulusChromaRatio: 0.9,
+    },
+    {
+      index: 9,
+      scored: true,
+      centreAnnulusRatio: 1.1,
+      centreAnnulusChromaRatio: 1.05,
+    },
+  ];
+  const before = deriveSunDiscDawnBarFromWebGLSweep(measurements);
+  assert.equal(before.usable, false);
+  await withMutant(
+    (source) =>
+      replaceExactlyOnce(
+        source,
+        "  if (\n" +
+          '    typeof discriminatorRatio === "number" &&\n' +
+          "    Number.isFinite(discriminatorRatio) &&\n" +
+          "    discriminatorRatio < 1.0 // the physical floor the luminance argument above rests on\n" +
+          "  ) {",
+        "  if (\n" +
+          "    false &&\n" +
+          '    typeof discriminatorRatio === "number" &&\n' +
+          "    Number.isFinite(discriminatorRatio) &&\n" +
+          "    discriminatorRatio < 1.0 // the physical floor the luminance argument above rests on\n" +
+          "  ) {",
+      ),
+    async (module) => {
+      const mutated = module.deriveSunDiscDawnBarFromWebGLSweep(measurements);
+      assert.equal(
+        mutated.usable,
+        true,
+        "the inverted discriminator sample derived a usable bar once the refusal was made inert",
+      );
+      assert.ok(
+        mutated.bar.minimumCentreAnnulusRatio < 0.04,
+        `expected the bar to collapse to the defect's own magnitude, got ${mutated.bar.minimumCentreAnnulusRatio}`,
+      );
+    },
+  );
+});
+
+// ---------------------------------------------------------------------------
+// L. Rescoring an acquired artifact against its own derived bar
+// ---------------------------------------------------------------------------
+
+function fakeArtifact(webglSamples, webgpuSamples, bar = DERIVED_BAR) {
+  const evaluation = evaluateSunDiscDawnSweep(
+    evidenceOf(webglSamples, webgpuSamples),
+    { bar },
+  );
+  return {
+    measurements: evaluation.measurements,
+    sessions: [
+      { renderer: "webgl", samples: webglSamples },
+      { renderer: "webgpu", samples: webgpuSamples },
+    ],
+  };
+}
+
+test("L1: rescoreSunDiscDawnArtifact reconstructs the paired evidence and matches a direct re-evaluation", () => {
+  const artifact = fakeArtifact(healthyLeg(), extinctedLeg());
+  const result = rescoreSunDiscDawnArtifact(artifact);
+  assert.equal(result.rescored, true);
+  assert.equal(result.evaluation.status, "FAIL");
+
+  const direct = evaluateSunDiscDawnSweep(
+    evidenceOf(healthyLeg(), extinctedLeg()),
+    { bar: result.derivation.bar },
+  );
+  assert.deepEqual(result.evaluation, direct);
+});
+
+test("L2: rescoreSunDiscDawnArtifact propagates a refused derivation rather than guessing a bar", () => {
+  const artifact = {
+    measurements: {
+      webgl: [
+        {
+          scored: true,
+          centreAnnulusRatio: 1.2,
+          centreAnnulusChromaRatio: 1.1,
+        },
+      ],
+      webgpu: [],
+    },
+    sessions: [],
+  };
+  const result = rescoreSunDiscDawnArtifact(artifact);
+  assert.equal(result.rescored, false);
+  assert.equal(result.evaluation, null);
+  assert.equal(result.derivation.usable, false);
+});
+
+// ---------------------------------------------------------------------------
+// M. The exposure leg is CHECKED, not just published (C12-38 fix round,
+//    review finding BLOCKING-2, 2026-09-02)
+// ---------------------------------------------------------------------------
+//
+// Review's own reproduction: mutating the probe so the exposure leg is never
+// applied left `sun-disc-dawn-gate.spec.mjs` at 80/80 green, because nothing
+// read `observed.exposure` — published per sample, consumed by no predicate.
+// A leg whose HDR write was silently refused therefore acquired a clipped SDR
+// sweep beside a tonemapped one and the parity family compared two different
+// tone curves with no reason raised. M1/M3 pin the fix; M2 pins that a
+// deliberate `--exposure` retry (`options.expectedExposure`) is not itself
+// read as that same fault.
+
+test("M1: a leg whose observed exposure does not match the expected config refuses the whole sweep to STRUCTURAL", () => {
+  const legs = healthyLeg({
+    perSample: {
+      3: { exposure: { highDynamicRange: false, value: 1 } },
+    },
+  });
+  const result = evaluateSunDiscDawnSweep(evidenceOf(legs, healthyLeg()), {
+    bar: DERIVED_BAR,
+  });
+  assert.equal(result.status, "STRUCTURAL");
+  assert.ok(
+    result.structural.includes("webgl:sample3:exposure-leg-not-applied"),
+    JSON.stringify(result.structural),
+  );
+});
+
+test("M2: a run acquired at a deliberate --exposure override is not penalized once the gate is told what that run used", () => {
+  const override = Object.freeze({ highDynamicRange: true, value: 0.06 });
+  const legs = healthyLeg({ exposure: override });
+  const result = evaluateSunDiscDawnSweep(evidenceOf(legs, legs), {
+    bar: DERIVED_BAR,
+    expectedExposure: override,
+  });
+  assert.deepEqual(result.structural, []);
+  assert.equal(result.status, "PASS");
+
+  // The other direction: the SAME override evidence scored against the
+  // module default (i.e. the executor forgot to pass expectedExposure) is
+  // correctly refused, proving M2's PASS came from the option, not from the
+  // check being a no-op.
+  const unaware = evaluateSunDiscDawnSweep(evidenceOf(legs, legs), {
+    bar: DERIVED_BAR,
+  });
+  assert.equal(unaware.status, "STRUCTURAL");
+  assert.ok(
+    unaware.structural.some((reason) =>
+      reason.endsWith(":exposure-leg-not-applied"),
+    ),
+  );
+});
+
+test("M3 MUTATION: an unapplied exposure leg must be refused, not silently included", async () => {
+  const legs = healthyLeg({
+    perSample: {
+      3: { exposure: { highDynamicRange: false, value: 1 } },
+    },
+  });
+  const evidence = evidenceOf(legs, healthyLeg());
+  const before = evaluateSunDiscDawnSweep(evidence, { bar: DERIVED_BAR });
+  assert.equal(before.status, "STRUCTURAL");
+  await withMutant(
+    (source) =>
+      replaceExactlyOnce(
+        source,
+        "  if (\n" +
+          "    observed.exposure?.highDynamicRange !== expectedExposure.highDynamicRange ||\n" +
+          "    observed.exposure?.value !== expectedExposure.value\n" +
+          "  ) {\n" +
+          "    reasons.push(`${where}:exposure-leg-not-applied`);\n" +
+          "  }",
+        "  if (\n" +
+          "    false &&\n" +
+          "    (observed.exposure?.highDynamicRange !== expectedExposure.highDynamicRange ||\n" +
+          "      observed.exposure?.value !== expectedExposure.value)\n" +
+          "  ) {\n" +
+          "    reasons.push(`${where}:exposure-leg-not-applied`);\n" +
+          "  }",
+      ),
+    async (module) => {
+      const result = module.evaluateSunDiscDawnSweep(evidence, {
+        bar: DERIVED_BAR,
+      });
+      assert.deepEqual(
+        result.structural,
+        [],
+        "the unapplied exposure leg survived silently once the check was made inert",
+      );
+      assert.equal(result.status, "PASS");
+    },
+  );
+});
+
+test("M4: rescoreSunDiscDawnArtifact reads exposureConfig off the artifact so a --exposure run is not misscored", () => {
+  const override = Object.freeze({ highDynamicRange: true, value: 0.06 });
+  const legs = healthyLeg({ exposure: override });
+  const evaluation = evaluateSunDiscDawnSweep(evidenceOf(legs, legs), {
+    bar: DERIVED_BAR,
+    expectedExposure: override,
+  });
+  const artifact = {
+    measurements: evaluation.measurements,
+    exposureConfig: override,
+    sessions: [
+      { renderer: "webgl", samples: legs },
+      { renderer: "webgpu", samples: legs },
+    ],
+  };
+  const result = rescoreSunDiscDawnArtifact(artifact);
+  assert.equal(result.rescored, true);
+  assert.deepEqual(result.evaluation.structural, []);
+});
+
+// ---------------------------------------------------------------------------
+// N. The --exposure retry knob (review finding FIX, non-blocking, 2026-09-02)
+// ---------------------------------------------------------------------------
+//
+// The probe's own clip refusal was zero-tolerance with no way for an executor
+// to retry at a lower exposure short of editing a frozen constant. This
+// section pins the pure config/argument builders the retry knob is made of;
+// the browser-launching `runSunDiscDawnProbe` path itself is exercised only
+// by a real run, per this file's own precedent for E/P-series helpers.
+
+test("N1: buildPageConfig defaults to the pre-registered exposure and forces HDR regardless of the override", () => {
+  const defaultConfig = buildPageConfig();
+  assert.deepEqual(defaultConfig.exposure, SUN_DISC_DAWN_EXPOSURE);
+
+  const overridden = buildPageConfig({ value: 0.06 });
+  assert.equal(overridden.exposure.highDynamicRange, true);
+  assert.equal(overridden.exposure.value, 0.06);
+  assert.notEqual(overridden.exposure.value, SUN_DISC_DAWN_EXPOSURE.value);
+
+  // Every other field is untouched by the override.
+  assert.equal(overridden.site, SUN_DISC_DAWN_SITE);
+  assert.equal(overridden.sweep, SUN_DISC_DAWN_SWEEP);
+});
+
+test("N2: parseExposureValue accepts a finite positive number and refuses anything a live scene write could not use", () => {
+  assert.equal(parseExposureValue("0.06"), 0.06);
+  assert.equal(parseExposureValue("1"), 1);
+  for (const bad of ["0", "-1", "abc", "NaN", "Infinity", ""]) {
+    assert.throws(
+      () => parseExposureValue(bad),
+      /--exposure must be a finite positive number/,
+      `expected ${JSON.stringify(bad)} to be refused`,
+    );
+  }
+});
+
+test("N3: parseArguments wires --exposure through to exposureValue and defaults it to undefined", () => {
+  assert.equal(parseArguments([]).exposureValue, undefined);
+  assert.equal(parseArguments(["--exposure", "0.06"]).exposureValue, 0.06);
+  assert.throws(() => parseArguments(["--exposure"]), /requires a value/);
 });
