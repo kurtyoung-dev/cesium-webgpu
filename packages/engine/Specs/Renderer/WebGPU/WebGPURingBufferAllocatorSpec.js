@@ -1,35 +1,5 @@
 import { WebGPURingBufferAllocator } from "../../../Source/Renderer/WebGPU/WebGPURingBufferAllocator.js";
-
-// Mock GPUBuffer / GPUDevice that records buffer creations and queue writes.
-// The allocator never actually executes GPU work — it only sub-allocates byte
-// ranges from buffers it asked the device to create — so we can run the full
-// suite without a real device. This keeps the spec environment-portable
-// (Jasmine in headless Node, Karma, browsers without WebGPU).
-function makeMockDevice() {
-  const created = [];
-  const writes = [];
-  const device = {
-    createBuffer(desc) {
-      const buffer = {
-        size: desc.size,
-        usage: desc.usage,
-        label: desc.label,
-        destroyed: false,
-        destroy() {
-          this.destroyed = true;
-        },
-      };
-      created.push(buffer);
-      return buffer;
-    },
-    queue: {
-      writeBuffer(buffer, offset, source, srcOffset, byteLength) {
-        writes.push({ buffer, offset, source, srcOffset, byteLength });
-      },
-    },
-  };
-  return { device, created, writes };
-}
+import { createRecordingWebGPUBufferDevice } from "./createRecordingWebGPUBufferDevice.js";
 
 // The allocator references the global GPUBufferUsage enum on construction
 // when the caller doesn't pass an explicit `usage`. Provide a numeric stand-in
@@ -51,7 +21,7 @@ if (typeof globalThis.GPUBufferUsage === "undefined") {
 
 describe("Renderer/WebGPU/WebGPURingBufferAllocator", function () {
   it("pre-creates `pageCount` pages on construction", function () {
-    const { device, created } = makeMockDevice();
+    const { device, created } = createRecordingWebGPUBufferDevice();
     // The constructor's only observable side-effect is the device.createBuffer
     // calls it makes for each page; the allocator itself isn't read here.
     const allocator = new WebGPURingBufferAllocator(device, {
@@ -66,7 +36,7 @@ describe("Renderer/WebGPU/WebGPURingBufferAllocator", function () {
   });
 
   it("rotates to the next page on each beginFrame", function () {
-    const { device } = makeMockDevice();
+    const { device } = createRecordingWebGPUBufferDevice();
     const alloc = new WebGPURingBufferAllocator(device, {
       pageSize: 4096,
       pageCount: 3,
@@ -83,7 +53,7 @@ describe("Renderer/WebGPU/WebGPURingBufferAllocator", function () {
   });
 
   it("advances an allocation epoch even when the ring wraps to the same page", function () {
-    const { device } = makeMockDevice();
+    const { device } = createRecordingWebGPUBufferDevice();
     const alloc = new WebGPURingBufferAllocator(device, {
       pageSize: 4096,
       pageCount: 3,
@@ -105,7 +75,7 @@ describe("Renderer/WebGPU/WebGPURingBufferAllocator", function () {
   });
 
   it("aligns offsets to minAlignment and sizes to 4 bytes", function () {
-    const { device } = makeMockDevice();
+    const { device } = createRecordingWebGPUBufferDevice();
     const alloc = new WebGPURingBufferAllocator(device, {
       pageSize: 8192,
       pageCount: 2,
@@ -130,7 +100,7 @@ describe("Renderer/WebGPU/WebGPURingBufferAllocator", function () {
   });
 
   it("creates an overflow page when the current page is full", function () {
-    const { device, created } = makeMockDevice();
+    const { device, created } = createRecordingWebGPUBufferDevice();
     const alloc = new WebGPURingBufferAllocator(device, {
       pageSize: 512,
       pageCount: 2,
@@ -149,7 +119,7 @@ describe("Renderer/WebGPU/WebGPURingBufferAllocator", function () {
   });
 
   it("tracks peak usage across frames", function () {
-    const { device } = makeMockDevice();
+    const { device } = createRecordingWebGPUBufferDevice();
     const alloc = new WebGPURingBufferAllocator(device, {
       pageSize: 4096,
       pageCount: 2,
@@ -171,7 +141,7 @@ describe("Renderer/WebGPU/WebGPURingBufferAllocator", function () {
   });
 
   it("allocateAndWrite stages typed arrays until flush", function () {
-    const { device, writes } = makeMockDevice();
+    const { device, writes } = createRecordingWebGPUBufferDevice();
     const alloc = new WebGPURingBufferAllocator(device, {
       pageSize: 4096,
       pageCount: 2,
@@ -194,7 +164,7 @@ describe("Renderer/WebGPU/WebGPURingBufferAllocator", function () {
   });
 
   it("coalesces multiple allocations on one page into one queue write", function () {
-    const { device, writes } = makeMockDevice();
+    const { device, writes } = createRecordingWebGPUBufferDevice();
     const alloc = new WebGPURingBufferAllocator(device, {
       pageSize: 4096,
       pageCount: 2,
@@ -213,7 +183,7 @@ describe("Renderer/WebGPU/WebGPURingBufferAllocator", function () {
   });
 
   it("flushes every dirty page when staged writes overflow", function () {
-    const { device, writes } = makeMockDevice();
+    const { device, writes } = createRecordingWebGPUBufferDevice();
     const alloc = new WebGPURingBufferAllocator(device, {
       pageSize: 512,
       pageCount: 2,
@@ -235,7 +205,7 @@ describe("Renderer/WebGPU/WebGPURingBufferAllocator", function () {
   });
 
   it("does not upload unwritten tail padding from a wider binding", function () {
-    const { device, writes } = makeMockDevice();
+    const { device, writes } = createRecordingWebGPUBufferDevice();
     const alloc = new WebGPURingBufferAllocator(device, {
       pageSize: 4096,
       pageCount: 2,

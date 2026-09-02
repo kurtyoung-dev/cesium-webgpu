@@ -2,6 +2,7 @@ import {
   WebGPUStorageBufferPool,
   default as DefaultExport,
 } from "../../../Source/Renderer/WebGPU/WebGPUStorageBufferPool.js";
+import { createRecordingWebGPUBufferDevice } from "./createRecordingWebGPUBufferDevice.js";
 
 // ── Test fixtures ───────────────────────────────────────────────────
 //
@@ -51,37 +52,8 @@ if (typeof globalThis.GPUBufferUsage === "undefined") {
   };
 }
 
-// Recording mock device: every createBuffer hands back a plain object with
-// a destroy() spy, and queue.writeBuffer logs its args. The pool never
-// reads anything back off the buffer except .destroy(), so this is enough.
-function makeMockDevice() {
-  const created = [];
-  const writes = [];
-  const device = {
-    createBuffer(desc) {
-      const buffer = {
-        size: desc.size,
-        usage: desc.usage,
-        label: desc.label,
-        destroyed: false,
-        destroy() {
-          this.destroyed = true;
-        },
-      };
-      created.push(buffer);
-      return buffer;
-    },
-    queue: {
-      writeBuffer(buffer, offset, source, srcOffset, byteLength) {
-        writes.push({ buffer, offset, source, srcOffset, byteLength });
-      },
-    },
-  };
-  return { device, created, writes };
-}
-
 function makePool(options) {
-  const { device, created, writes } = makeMockDevice();
+  const { device, created, writes } = createRecordingWebGPUBufferDevice();
   const pool = new WebGPUStorageBufferPool(device, options);
   return { pool, created, writes };
 }
