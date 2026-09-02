@@ -21,6 +21,26 @@ const COMMENT_SCANNER = fileURLToPath(
 const MARKER_GRAMMAR = fileURLToPath(
   new URL("./lib/marker-grammar.mjs", import.meta.url),
 );
+const LOCATOR_FIXTURE_NAME = "locator-fixture.ts";
+const LOCATOR_SOURCE =
+  'const lf = "ordinary";\n' +
+  'const crlf = "still ordinary";\r\n' +
+  'const later = "😀 Batch 47 and Session 65";\n';
+const LOCATOR_FINDING = {
+  file: LOCATOR_FIXTURE_NAME,
+  line: 3,
+  column: 19,
+  excerpt: 'const later = "😀 Batch 47 and Session 65";',
+  literalKinds: ["string"],
+  ruleIds: ["batch-id", "session-id"],
+  matches: ["Batch 47", "Session 65"],
+};
+const LOCATOR_REPORT = {
+  filesScanned: 1,
+  filesWithFindings: 1,
+  findingLines: 1,
+  findings: [LOCATOR_FINDING],
+};
 
 function runScanner(scanner, args, cwd = ROOT) {
   return spawnSync(process.execPath, [scanner, ...args], {
@@ -39,6 +59,10 @@ async function withTempDirectory(run) {
   } finally {
     await fs.rm(directory, { recursive: true, force: true });
   }
+}
+
+function assertUniqueAnchor(source, anchor, message) {
+  assert.equal(source.split(anchor).length - 1, 1, message);
 }
 
 test("the scanner self-test is green", () => {
@@ -98,31 +122,10 @@ test("a clean file stays clean while comments and regex anchors are excluded", a
 
 test("mixed newlines and UTF-16 offsets have stable locator output", async () => {
   await withTempDirectory(async (directory) => {
-    const fixtureName = "locator-fixture.ts";
-    const subject = path.join(directory, fixtureName);
-    const source =
-      'const lf = "ordinary";\n' +
-      'const crlf = "still ordinary";\r\n' +
-      'const later = "😀 Batch 47 and Session 65";\n';
-    await fs.writeFile(subject, source, "utf8");
+    const subject = path.join(directory, LOCATOR_FIXTURE_NAME);
+    await fs.writeFile(subject, LOCATOR_SOURCE, "utf8");
 
-    const expectedFinding = {
-      file: fixtureName,
-      line: 3,
-      column: 19,
-      excerpt: 'const later = "😀 Batch 47 and Session 65";',
-      literalKinds: ["string"],
-      ruleIds: ["batch-id", "session-id"],
-      matches: ["Batch 47", "Session 65"],
-    };
-    const expectedReport = {
-      filesScanned: 1,
-      filesWithFindings: 1,
-      findingLines: 1,
-      findings: [expectedFinding],
-    };
-
-    const textResult = runScanner(SCANNER, [fixtureName], directory);
+    const textResult = runScanner(SCANNER, [LOCATOR_FIXTURE_NAME], directory);
     assert.equal(
       textResult.status,
       1,
@@ -132,13 +135,17 @@ test("mixed newlines and UTF-16 offsets have stable locator output", async () =>
     assert.equal(
       textResult.stdout,
       [
-        `${fixtureName}:3:19 [batch-id,session-id] ${expectedFinding.excerpt}`,
+        `${LOCATOR_FIXTURE_NAME}:3:19 [batch-id,session-id] ${LOCATOR_FINDING.excerpt}`,
         "string-literal-marker-scan: 1 marker-bearing literal line in 1 file (1 scanned)",
         "",
       ].join("\n"),
     );
 
-    const jsonResult = runScanner(SCANNER, [fixtureName, "--json"], directory);
+    const jsonResult = runScanner(
+      SCANNER,
+      [LOCATOR_FIXTURE_NAME, "--json"],
+      directory,
+    );
     assert.equal(
       jsonResult.status,
       1,
@@ -147,9 +154,182 @@ test("mixed newlines and UTF-16 offsets have stable locator output", async () =>
     assert.equal(jsonResult.stderr, "");
     assert.equal(
       jsonResult.stdout,
-      `${JSON.stringify(expectedReport, null, 2)}\n`,
+      `${JSON.stringify(LOCATOR_REPORT, null, 2)}\n`,
     );
-    assert.deepEqual(JSON.parse(jsonResult.stdout), expectedReport);
+    assert.deepEqual(JSON.parse(jsonResult.stdout), LOCATOR_REPORT);
+  });
+});
+
+test("mutation controls: canonical line lookup is reached through the adapter", async () => {
+  await withTempDirectory(async (directory) => {
+    const scannerSource = await fs.readFile(SCANNER, "utf8");
+    const commentScannerSource = await fs.readFile(COMMENT_SCANNER, "utf8");
+    const canonicalAnchor = "return low + 1;";
+    const adapterAnchor = "return canonicalLineOf(starts, offset) - 1;";
+    assertUniqueAnchor(
+      commentScannerSource,
+      canonicalAnchor,
+      "the canonical line lookup mutation anchor must occur exactly once",
+    );
+    assertUniqueAnchor(
+      scannerSource,
+      adapterAnchor,
+      "the line-index adapter mutation anchor must occur exactly once",
+    );
+
+    const mutantCommentScannerSource = commentScannerSource.replace(
+      canonicalAnchor,
+      "return low;",
+    );
+    const inertScannerSource = scannerSource.replace(
+      adapterAnchor,
+      [
+        "let low = 0;",
+        "  let high = starts.length;",
+        "  while (low < high) {",
+        "    const middle = (low + high) >>> 1;",
+        "    if (starts[middle] <= offset) {",
+        "      low = middle + 1;",
+        "    } else {",
+        "      high = middle;",
+        "    }",
+        "  }",
+        "  return low - 1;",
+      ].join("\n"),
+    );
+
+    const mutantScanner = path.join(directory, "canonical-mutant-scan.mjs");
+    const inertScanner = path.join(directory, "inert-delegation-scan.mjs");
+    const mutantLib = path.join(directory, "lib");
+    await fs.mkdir(mutantLib);
+    await Promise.all([
+      fs.writeFile(mutantScanner, scannerSource, "utf8"),
+      fs.writeFile(inertScanner, inertScannerSource, "utf8"),
+      fs.writeFile(
+        path.join(mutantLib, "comment-scanner.mjs"),
+        mutantCommentScannerSource,
+        "utf8",
+      ),
+      fs.copyFile(MARKER_GRAMMAR, path.join(mutantLib, "marker-grammar.mjs")),
+      fs.writeFile(
+        path.join(directory, LOCATOR_FIXTURE_NAME),
+        LOCATOR_SOURCE,
+        "utf8",
+      ),
+    ]);
+
+    const corruptedReport = {
+      ...LOCATOR_REPORT,
+      findings: [
+        {
+          ...LOCATOR_FINDING,
+          line: 2,
+          column: 51,
+          excerpt: 'const crlf = "still ordinary";',
+        },
+      ],
+    };
+    const mutant = runScanner(
+      mutantScanner,
+      [LOCATOR_FIXTURE_NAME, "--json"],
+      directory,
+    );
+    assert.equal(
+      mutant.status,
+      1,
+      `the canonical lookup mutant must preserve marker detection\n${mutant.stdout}${mutant.stderr}`,
+    );
+    assert.equal(mutant.stderr, "");
+    assert.equal(
+      mutant.stdout,
+      `${JSON.stringify(corruptedReport, null, 2)}\n`,
+    );
+    assert.deepEqual(JSON.parse(mutant.stdout), corruptedReport);
+
+    const inert = runScanner(
+      inertScanner,
+      [LOCATOR_FIXTURE_NAME, "--json"],
+      directory,
+    );
+    assert.equal(
+      inert.status,
+      1,
+      `the inert delegation control must preserve marker detection\n${inert.stdout}${inert.stderr}`,
+    );
+    assert.equal(inert.stderr, "");
+    assert.equal(inert.stdout, `${JSON.stringify(LOCATOR_REPORT, null, 2)}\n`);
+    assert.deepEqual(JSON.parse(inert.stdout), LOCATOR_REPORT);
+    assert.notDeepEqual(
+      JSON.parse(mutant.stdout),
+      JSON.parse(inert.stdout),
+      "the canonical mutant must affect only the scanner that uses the live adapter",
+    );
+  });
+});
+
+test("mutation control: the zero-based adapter offset determines locators", async () => {
+  await withTempDirectory(async (directory) => {
+    const scannerSource = await fs.readFile(SCANNER, "utf8");
+    const adapterAnchor = "return canonicalLineOf(starts, offset) - 1;";
+    assertUniqueAnchor(
+      scannerSource,
+      adapterAnchor,
+      "the line-index adapter mutation anchor must occur exactly once",
+    );
+    const mutantSource = scannerSource.replace(
+      adapterAnchor,
+      "return canonicalLineOf(starts, offset) - 2;",
+    );
+
+    const mutantScanner = path.join(
+      directory,
+      "string-literal-marker-scan.mjs",
+    );
+    const mutantLib = path.join(directory, "lib");
+    await fs.mkdir(mutantLib);
+    await Promise.all([
+      fs.writeFile(mutantScanner, mutantSource, "utf8"),
+      fs.copyFile(COMMENT_SCANNER, path.join(mutantLib, "comment-scanner.mjs")),
+      fs.copyFile(MARKER_GRAMMAR, path.join(mutantLib, "marker-grammar.mjs")),
+      fs.writeFile(
+        path.join(directory, LOCATOR_FIXTURE_NAME),
+        LOCATOR_SOURCE,
+        "utf8",
+      ),
+    ]);
+
+    const corruptedReport = {
+      ...LOCATOR_REPORT,
+      findings: [
+        {
+          ...LOCATOR_FINDING,
+          line: 2,
+          column: 51,
+          excerpt: 'const crlf = "still ordinary";',
+        },
+      ],
+    };
+    const mutant = runScanner(
+      mutantScanner,
+      [LOCATOR_FIXTURE_NAME, "--json"],
+      directory,
+    );
+    assert.equal(
+      mutant.status,
+      1,
+      `the adapter mutant must preserve marker detection\n${mutant.stdout}${mutant.stderr}`,
+    );
+    assert.equal(mutant.stderr, "");
+    assert.equal(
+      mutant.stdout,
+      `${JSON.stringify(corruptedReport, null, 2)}\n`,
+    );
+    assert.deepEqual(JSON.parse(mutant.stdout), corruptedReport);
+    assert.notDeepEqual(
+      JSON.parse(mutant.stdout),
+      LOCATOR_REPORT,
+      "the adapter mutant must corrupt the exact locator",
+    );
   });
 });
 
@@ -158,9 +338,9 @@ test("mutation control: canonical newline collection determines later locators",
     const scannerSource = await fs.readFile(SCANNER, "utf8");
     const commentScannerSource = await fs.readFile(COMMENT_SCANNER, "utf8");
     const mutationAnchor = "starts.push(i + 1);";
-    assert.equal(
-      commentScannerSource.split(mutationAnchor).length - 1,
-      1,
+    assertUniqueAnchor(
+      commentScannerSource,
+      mutationAnchor,
       "the canonical newline mutation anchor must occur exactly once",
     );
     const mutantCommentScannerSource = commentScannerSource.replace(
@@ -184,17 +364,14 @@ test("mutation control: canonical newline collection determines later locators",
       fs.copyFile(MARKER_GRAMMAR, path.join(mutantLib, "marker-grammar.mjs")),
     ]);
 
-    const fixtureName = "locator-fixture.ts";
-    const subject = path.join(directory, fixtureName);
-    await fs.writeFile(
-      subject,
-      'const lf = "ordinary";\n' +
-        'const crlf = "still ordinary";\r\n' +
-        'const later = "😀 Batch 47 and Session 65";\n',
-      "utf8",
-    );
+    const subject = path.join(directory, LOCATOR_FIXTURE_NAME);
+    await fs.writeFile(subject, LOCATOR_SOURCE, "utf8");
 
-    const live = runScanner(SCANNER, [fixtureName, "--json"], directory);
+    const live = runScanner(
+      SCANNER,
+      [LOCATOR_FIXTURE_NAME, "--json"],
+      directory,
+    );
     assert.equal(
       live.status,
       1,
@@ -202,7 +379,7 @@ test("mutation control: canonical newline collection determines later locators",
     );
     const mutant = runScanner(
       mutantScanner,
-      [fixtureName, "--json"],
+      [LOCATOR_FIXTURE_NAME, "--json"],
       directory,
     );
     assert.equal(
@@ -214,28 +391,17 @@ test("mutation control: canonical newline collection determines later locators",
 
     const liveReport = JSON.parse(live.stdout);
     const mutantReport = JSON.parse(mutant.stdout);
-    assert.deepEqual(liveReport.findings, [
-      {
-        file: fixtureName,
-        line: 3,
-        column: 19,
-        excerpt: 'const later = "😀 Batch 47 and Session 65";',
-        literalKinds: ["string"],
-        ruleIds: ["batch-id", "session-id"],
-        matches: ["Batch 47", "Session 65"],
-      },
-    ]);
-    assert.deepEqual(mutantReport.findings, [
-      {
-        file: fixtureName,
-        line: 3,
-        column: 18,
-        excerpt: 'onst later = "😀 Batch 47 and Session 65";',
-        literalKinds: ["string"],
-        ruleIds: ["batch-id", "session-id"],
-        matches: ["Batch 47", "Session 65"],
-      },
-    ]);
+    assert.deepEqual(liveReport, LOCATOR_REPORT);
+    assert.deepEqual(mutantReport, {
+      ...LOCATOR_REPORT,
+      findings: [
+        {
+          ...LOCATOR_FINDING,
+          column: 18,
+          excerpt: 'onst later = "😀 Batch 47 and Session 65";',
+        },
+      ],
+    });
     assert.notDeepEqual(
       mutantReport,
       liveReport,

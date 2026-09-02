@@ -791,7 +791,7 @@ export function lineStarts(source) {
  * @param {number} offset Character offset.
  * @returns {number} Line number, 1-based.
  */
-function lineOf(starts, offset) {
+export function lineOf(starts, offset) {
   let low = 0;
   let high = starts.length - 1;
   while (low < high) {

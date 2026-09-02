@@ -30,6 +30,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   languageForPath,
+  lineOf as canonicalLineOf,
   lineStarts as collectLineStarts,
   tokenize,
 } from "./lib/comment-scanner.mjs";
@@ -117,17 +118,7 @@ function lineStarts(source) {
 }
 
 function lineIndexAt(starts, offset) {
-  let low = 0;
-  let high = starts.length;
-  while (low < high) {
-    const middle = (low + high) >>> 1;
-    if (starts[middle] <= offset) {
-      low = middle + 1;
-    } else {
-      high = middle;
-    }
-  }
-  return low - 1;
+  return canonicalLineOf(starts, offset) - 1;
 }
 
 function lineExcerpt(source, starts, lineIndex) {
