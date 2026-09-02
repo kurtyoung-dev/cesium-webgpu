@@ -195,6 +195,7 @@
     "test-scene-node": "node --test packages/engine/Specs/Scene/PickingApiDocsSpec.mjs packages/engine/Specs/Scene/PickingMostDetailedSupportSpec.mjs packages/engine/Specs/Scene/ScreenSpaceCameraControllerSceneShapeSpec.mjs",
     "test-blend-parity": "node --test Tools/visual-regression/webgpu-blend-table-parity.spec.mjs Tools/visual-regression/material-appearance-blend-parity.spec.mjs Tools/visual-regression/webgpu-ao-uniform-bridge.spec.mjs Tools/visual-regression/webgpu-ao-sample-pattern-parity.spec.mjs Tools/visual-regression/webgpu-ao-runtime-config-propagation.spec.mjs",
     "test-readiness": "node --test Tools/visual-regression/globe-cold-start-readiness.spec.mjs Tools/visual-regression/globe-cold-start-black-rule.spec.mjs Tools/visual-regression/probe-aec-perf.spec.mjs Tools/visual-regression/aec-residency-e1.spec.mjs Tools/visual-regression/ocean-per-frame-scratch.spec.mjs Tools/visual-regression/webgpu-pick-emission-counters.spec.mjs Tools/visual-regression/webgpu-pick-sync-readback-warmup.spec.mjs Tools/visual-regression/probe-q141-pick-readback.spec.mjs",
+    "test-engine-node": "node --test Tools/visual-regression/translucent-cull-render-pass-bracket.spec.mjs",
     "spec-census": "node Tools/spec-runner-census.mjs",
     "wave-end-gate": "node Tools/wave-end-gate.mjs"
   },

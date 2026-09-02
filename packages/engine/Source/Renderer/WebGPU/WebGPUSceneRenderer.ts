@@ -3994,10 +3994,8 @@ export class WebGPUSceneRenderer {
     // particle-heavy scene with 50 opaque + 5000 translucent commands
     // correctly fires the translucent cull even though the opaque
     // gate stayed off. Each frustum maintains its own hysteresis.
-    // Translucent culling is more hazardous than opaque culling
-    // because this call site can run inside an active render pass. It is
-    // therefore reachable only through the explicit `always` force mode;
-    // `auto` remains opaque-only characterization.
+    // Reachable only through the explicit `always` force mode; `auto`
+    // remains opaque-only characterization.
     const hint = (
       config.scene as { gpuCullingHint?: "auto" | "always" | "never" }
     ).gpuCullingHint;
@@ -4023,12 +4021,24 @@ export class WebGPUSceneRenderer {
     if (!cv || !cv.planes || cv.planes.length === 0) {
       return { commands, count };
     }
+    // `gpuCullCommandsForTranslucent` records a `beginComputePass` on the
+    // frame encoder, exactly like the opaque cull and the HiZ/sort compute
+    // dispatches above. Calling it while the scene render pass is still open
+    // is a "CommandEncoder is locked while RenderPassEncoder is open"
+    // validation error that invalidates the whole command buffer, and this
+    // call site runs while that pass is open. Bracket it the same way the
+    // opaque cull does: end the current pass, dispatch, then resume the
+    // scene pass (loadOp:load) so the caller's OIT accumulation / alpha sort
+    // continues on an unbroken framebuffer.
+    const wgpuCtx = config.context;
+    wgpuCtx.endCurrentRenderPass?.();
     const filtered = this.gpuCullCommandsForTranslucent(
       commands,
-      config.context as WebGPUContext,
+      wgpuCtx,
       cv,
       count,
     );
+    this._resumeScenePass(wgpuCtx);
     if (filtered === commands) {
       return { commands, count };
     }

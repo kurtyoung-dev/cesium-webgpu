@@ -10,17 +10,21 @@
 // namespace by copying the module's OWN property names, and a Proxy has none,
 // so every named import would arrive undefined.
 //
-// Three specs import this file. Two use `bundle`:
+// Four specs import this file. Three use `bundle`:
 // `globe-cold-start-readiness.spec.mjs` and `globe-pipeline-prewarm.spec.mjs`,
 // and for those two sharing keeps their stubbing identical - both build real
 // pipeline-cache keys, and a divergence in what each stubs would leave one
 // spec asserting a key shape the other, and the runtime, does not produce.
-// The third, `webgpu-pick-emission-counters.spec.mjs`, imports only
-// `mutateOrFail`. Sharing does not unify module graphs: each `bundle` call on
-// a different entry source yields its own copy of the engine modules, so a
-// key from one spec is never comparable with a key from the other. A spec
-// that needs its warm and its request to share one module cache gets that by
-// bundling both through a single entry, not from this file.
+// `translucent-cull-render-pass-bracket.spec.mjs` also calls `bundle`, but on
+// a different entry (`WebGPUSceneRenderer.ts`, `real: []`) for an unrelated
+// assertion (render-pass ordering, not pipeline-cache keys), so it has no
+// stubbing-identity constraint with the other two. The fourth,
+// `webgpu-pick-emission-counters.spec.mjs`, imports only `mutateOrFail`.
+// Sharing does not unify module graphs: each `bundle` call on a different
+// entry source yields its own copy of the engine modules, so a key from one
+// spec is never comparable with a key from the other. A spec that needs its
+// warm and its request to share one module cache gets that by bundling both
+// through a single entry, not from this file.
 
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
