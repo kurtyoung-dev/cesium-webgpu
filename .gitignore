@@ -96,3 +96,13 @@ __pycache__/
 # under Documentation/Images/webgpu-fork/, the run reports are not.
 /Tools/readme-screenshots/output/
 /_review/
+
+# Codex seat scratch: Rust build targets and evidence staging written into the
+# repo tree during the 2026-08-30/31 process-supervisor lanes (926 MB, 4,577
+# files at the 2026-09-01 audit). Never landable; a directory-level `git add`
+# would sweep it without this rule.
+/.codex-tmp/
+
+# Chromium's crash-handler log, written to the current directory whenever Edge
+# is launched from the repo root (Playwright probes, the built-in browser).
+/debug.log
