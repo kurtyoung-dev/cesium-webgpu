@@ -429,7 +429,16 @@ window.__aecBuild = async function (input) {
     };
   }
 
-  scene.postUpdate.addEventListener(captureFirstTraversal);
+  // Scene.postUpdate fires before this frame's primitives traversal runs
+  // (Scene.render raises postUpdate, then only afterward calls the private
+  // render() that walks each tileset and writes .statistics), so a listener
+  // here always reads the PREVIOUS frame's counts. renderReady can go true
+  // after the very first forced frame -- nothing is GPU-pending before any
+  // tile has been selected for upload -- so the loop can exit after exactly
+  // one iteration, giving this listener exactly one call with pre-traversal
+  // (still-zero) statistics. Listening on postRender instead reads the
+  // statistics this same frame's traversal just wrote.
+  scene.postRender.addEventListener(captureFirstTraversal);
 
   const fixedTime = Cesium.JulianDate.clone(viewer.clock.currentTime);
   const readyStartedAt = performance.now();
@@ -452,7 +461,7 @@ window.__aecBuild = async function (input) {
     });
   }
 
-  scene.postUpdate.removeEventListener(captureFirstTraversal);
+  scene.postRender.removeEventListener(captureFirstTraversal);
 
   if (!becameReady) {
     return {

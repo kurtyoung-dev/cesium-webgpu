@@ -550,3 +550,163 @@ test("mutant subtest: summing passes at the runtime report seam goes red", async
     );
   });
 });
+
+// Q141-live-run-refusal (2026-09-02): the harness's readiness loop breaks the
+// instant scene.renderReady is true, and on a cold page that happens after
+// exactly one forced frame -- nothing is GPU-pending before any tile has
+// been selected for upload. captureFirstTraversal must therefore read
+// *that same frame's* traversal statistics, not the previous frame's, or it
+// only ever gets one call and that call is always stale. Confirmed live
+// against the real served build and the real 8-tileset AEC leg in
+// Tools/visual-regression/output/aec-perf-diagnosis-2026-09-02/.
+
+function extractReadinessLoopSource() {
+  const moduleUrl = new URL("./probe-aec-perf.mjs", import.meta.url);
+  const source = readFileSync(moduleUrl, "utf8");
+  const needle =
+    /function sceneFrameNumber\(\) \{[\s\S]*?scene\.postRender\.removeEventListener\(captureFirstTraversal\);/u;
+  const matches = source.match(new RegExp(needle, "gu"));
+
+  assert.equal(
+    matches?.length,
+    1,
+    "readiness-loop extraction needle must match exactly once",
+  );
+
+  return matches[0];
+}
+
+test("captureFirstTraversal is wired to postRender, not postUpdate", () => {
+  const loopSource = extractReadinessLoopSource();
+
+  assert.match(
+    loopSource,
+    /scene\.postRender\.addEventListener\(captureFirstTraversal\);/u,
+  );
+  assert.match(
+    loopSource,
+    /scene\.postRender\.removeEventListener\(captureFirstTraversal\);/u,
+  );
+  assert.doesNotMatch(loopSource, /scene\.postUpdate\./u);
+});
+
+// Builds a fake Scene whose event order matches the real engine's proven
+// order (see the diagnosis README): forceRender() raises postUpdate BEFORE
+// writing this frame's tileset statistics, then raises postRender AFTER --
+// and renderReady goes true after that same first frame, exactly as the
+// real 8-tileset AEC leg does. The readiness loop only ever gets one
+// opportunity to observe a traversal; which event it listens on decides
+// whether that one opportunity lands before or after the statistics write.
+function buildFakeScene() {
+  const listeners = { postUpdate: new Set(), postRender: new Set() };
+  const tilesets = [
+    {
+      title: "Google",
+      tileset: { statistics: {}, maximumScreenSpaceError: 16 },
+    },
+    {
+      title: "Architecture",
+      tileset: { statistics: {}, maximumScreenSpaceError: 16 },
+    },
+  ];
+  let renderReadyValue = false;
+  let frameNumber = 0;
+
+  const scene = {
+    frameNumber: 0,
+    postUpdate: {
+      addEventListener: (fn) => listeners.postUpdate.add(fn),
+      removeEventListener: (fn) => listeners.postUpdate.delete(fn),
+    },
+    postRender: {
+      addEventListener: (fn) => listeners.postRender.add(fn),
+      removeEventListener: (fn) => listeners.postRender.delete(fn),
+    },
+    requestRender() {},
+    forceRender() {
+      for (const fn of [...listeners.postUpdate]) {
+        fn();
+      }
+      frameNumber += 1;
+      scene.frameNumber = frameNumber;
+      for (const entry of tilesets) {
+        entry.tileset.statistics = { visited: 27, selected: 0 };
+      }
+      renderReadyValue = true;
+      for (const fn of [...listeners.postRender]) {
+        fn();
+      }
+    },
+    get renderReady() {
+      return renderReadyValue;
+    },
+  };
+
+  return { scene, tilesets };
+}
+
+async function runExtractedReadinessLoop(loopSource) {
+  const audit = { sequence: [], firstTraversal: null };
+  let sequenceNumber = 0;
+  function mark(name) {
+    sequenceNumber += 1;
+    audit.sequence.push({ order: sequenceNumber, name });
+    return sequenceNumber;
+  }
+
+  const { scene, tilesets } = buildFakeScene();
+  const Cesium = { JulianDate: { clone: (value) => value } };
+  const viewer = { clock: { currentTime: "fixed-time" } };
+  const input = { timeoutMs: 50 };
+
+  // data: URL + dynamic import, matching the mutant-subtest pattern already
+  // used above in this file, runs the extracted source as real module code
+  // instead of the Function constructor (no-new-func).
+  const moduleSource = `export async function runLoop(Cesium, scene, viewer, input, audit, mark, tilesets) {
+${loopSource}
+  return audit.firstTraversal;
+}
+`;
+  const moduleUrl =
+    "data:text/javascript;base64," +
+    Buffer.from(moduleSource).toString("base64");
+  const mod = await import(moduleUrl);
+
+  return mod.runLoop(Cesium, scene, viewer, input, audit, mark, tilesets);
+}
+
+test("readiness-loop behaviour: postRender observes this frame's traversal, postUpdate misses it", async () => {
+  const realLoopSource = extractReadinessLoopSource();
+  const firstTraversal = await runExtractedReadinessLoop(realLoopSource);
+
+  assert.notEqual(firstTraversal, null);
+  assert.equal(firstTraversal.sceneFrameNumber, 1);
+  assert.deepEqual(
+    firstTraversal.maximumScreenSpaceErrorByTileset.map((row) => row.title),
+    ["Google", "Architecture"],
+  );
+
+  const mutantLoopSource = realLoopSource
+    .replaceAll(
+      "scene.postRender.addEventListener(captureFirstTraversal);",
+      "scene.postUpdate.addEventListener(captureFirstTraversal);",
+    )
+    .replaceAll(
+      "scene.postRender.removeEventListener(captureFirstTraversal);",
+      "scene.postUpdate.removeEventListener(captureFirstTraversal);",
+    );
+
+  assert.notEqual(
+    mutantLoopSource,
+    realLoopSource,
+    "postRender -> postUpdate mutation needle must remain live",
+  );
+
+  const mutantFirstTraversal =
+    await runExtractedReadinessLoop(mutantLoopSource);
+  assert.equal(
+    mutantFirstTraversal,
+    null,
+    "reverting to postUpdate must reproduce the first-traversal-not-observed refusal",
+  );
+});
