@@ -5,12 +5,86 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { stripWgslComments, wgslModuleContents } from "../../scripts/build.js";
+import {
+  constructRegex as constructPluginRegex,
+  escapeCharacters,
+} from "../rollup-plugin-strip-pragma/regex.js";
+import {
+  constructRegex,
+  stripWgslComments,
+  wgslModuleContents,
+} from "../../scripts/build.js";
+
+const punctuationPragma = "x+y?";
+
+function pragmaBlock(prefix, pragma, body) {
+  return [
+    `//>>${prefix}Start('${pragma}', pragmas.${pragma});`,
+    body,
+    `//>>${prefix}End('${pragma}');`,
+    "",
+  ].join("\n");
+}
 
 const realShaderPath = new URL(
   "../../packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl",
   import.meta.url,
 );
+
+function assertPunctuationEscape(escape) {
+  const pattern = new RegExp(`^${escape(punctuationPragma)}$`);
+  assert.equal(pattern.test(punctuationPragma), true);
+  assert.equal(pattern.test("xy"), false);
+}
+
+test("the pragma helper preserves direct output and error semantics", () => {
+  assert.equal(escapeCharacters(punctuationPragma), "x\\+y\\?");
+  assert.throws(() => escapeCharacters(42), TypeError);
+});
+
+test("the punctuation escape contract rejects an inert helper", () => {
+  assertPunctuationEscape(escapeCharacters);
+  assert.throws(() => assertPunctuationEscape((token) => token), {
+    code: "ERR_ASSERTION",
+  });
+});
+
+test("both pragma consumers treat punctuation as literal token text", () => {
+  const source = `${pragmaBlock(
+    "include",
+    punctuationPragma,
+    "removed();",
+  )}retained();\n`;
+
+  assert.equal(
+    source.replace(constructRegex(punctuationPragma, false), ""),
+    "retained();\n",
+  );
+  assert.equal(
+    source.replace(constructPluginRegex(punctuationPragma), ""),
+    "retained();\n",
+  );
+});
+
+test("the build consumer preserves ordinary include and exclude boundaries", () => {
+  const includeBlock = pragmaBlock("include", "debug", "includeOnly();");
+  const excludeBlock = pragmaBlock("exclude", "debug", "excludeOnly();");
+  const retained = "retained();\n";
+  const source = `${includeBlock}${excludeBlock}${retained}`;
+
+  assert.equal(
+    source.replace(constructRegex("debug", false), ""),
+    `${excludeBlock}${retained}`,
+  );
+  assert.equal(
+    source.replace(constructPluginRegex("debug"), ""),
+    `${excludeBlock}${retained}`,
+  );
+  assert.equal(
+    source.replace(constructRegex("debug", true), ""),
+    `${includeBlock}${retained}`,
+  );
+});
 
 test("wgslModuleContents leaves unminified modules byte-identical", () => {
   const source = [

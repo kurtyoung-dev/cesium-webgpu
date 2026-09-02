@@ -15,6 +15,7 @@ import glslStripComments from "glsl-strip-comments";
 import gulp from "gulp";
 import { rimraf } from "rimraf";
 
+import { escapeCharacters } from "../Tools/rollup-plugin-strip-pragma/regex.js";
 import { bundleVariantPlugin } from "./bundleVariantPlugin.js";
 import { stampSpecBundleManifest } from "./specBundleFreshness.js";
 
@@ -41,11 +42,6 @@ async function getCopyrightHeader() {
     "utf8",
   );
   return copyrightHeaderTemplate.replace("${version}", await getVersion());
-}
-
-/** @param {string} token */
-function escapeCharacters(token) {
-  return token.replace(/[\-\[\]\/\{\}\(\)\*\+\?\.\\\^\$\|]/g, "\\$&");
 }
 
 /**
