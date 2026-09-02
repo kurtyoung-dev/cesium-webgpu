@@ -58,7 +58,7 @@ jobs:
   #     touching Tools/ or scripts/ - the advisory allowance covers only the
   #     head commit's own files, so drift across two consecutive tooling
   #     commits reds the check.
-  #   - test-tooling-catalog: green in a complete clone (91/91). It runs the
+  #   - test-tooling-catalog: green in a complete clone (104/104). It runs the
   #     launcher against this repository ~49 times, so it inherits the shallow
   #     refusal above - not a red set.
   #   - verify-landing: a local and pre-push gate. It resolves the

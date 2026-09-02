@@ -41,12 +41,17 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   BEGIN_MARKER,
   END_MARKER,
+  archivePlanAnchor,
+  archivePlanRows,
   catalogCheckExitCode,
   classify,
   collectCensus,
   describeDrift,
   describeDriftDetailed,
+  inboundRefSources,
+  inboundRefs,
   isReferenceSourcePath,
+  isUnderArchiveDirectory,
   listTrackedPaths,
   listToolingFiles,
   parseCandidateIndexEntries,
@@ -2155,6 +2160,7 @@ test("C6: table cells cannot break the table", () => {
           notes: "",
         },
       ],
+      archivePlan: [],
       byDirectory: new Map([
         [
           "Tools/",
@@ -2346,4 +2352,266 @@ test("D7: --check cannot be bypassed by combining it with --stdout", () => {
   assert.equal(result.status, 2);
   assert.equal(result.stdout, "");
   assert.match(result.stderr, /mutually exclusive/u);
+});
+
+// --- E: the census refuses what it cannot read, and plans what it can -----
+
+const PLAN_ALLOWLIST =
+  "Tools/visual-regression/lib/probe-fleet-contract-allowlist.mjs";
+
+const planRow = (file, status) => ({ file, status });
+
+function planFixture(entries, references = {}) {
+  const rows = [
+    planRow(PLAN_ALLOWLIST, "ACTIVE"),
+    ...entries.map(([file, status]) => planRow(file, status)),
+  ];
+  const refSources = new Map(
+    rows.map((row) => [row.file, new Set(references[row.file] ?? [])]),
+  );
+  return { rows, refSources };
+}
+
+test("E1: a census header the parser cannot read is STRUCTURAL, not a blank row", () => {
+  // A header that never closes its comment used to be indistinguishable in the
+  // published table from a file that simply has no header: both rendered "NO
+  // @purpose HEADER". The census must refuse a subject it cannot read rather
+  // than publish a guess about it.
+  const sandbox = createCandidateSandbox();
+  const fixture = "Tools/tooling-catalog-malformed-header-fixture.mjs";
+  const catalogBefore = readFileSync(CATALOG, "utf8");
+  try {
+    // The launcher executes the CANDIDATE-INDEX blobs, never the worktree, so
+    // an unstaged repair is invisible to it. Stage the runtime under test.
+    for (const rel of [
+      "Tools/generate-tooling-catalog.mjs",
+      "Tools/lib/purpose-header.mjs",
+    ]) {
+      updateCandidatePath(
+        sandbox,
+        rel,
+        readFileSync(path.join(ROOT, ...rel.split("/")), "utf8"),
+      );
+    }
+    const malformed = [
+      "/*",
+      " * A header block that is never closed.",
+      " * @purpose Deliberately malformed fixture for the fail-closed census.",
+      " * @status ACTIVE",
+      "export const value = 1;",
+      "",
+    ].join("\n");
+    const oid = writeCandidateBlob(sandbox, malformed);
+    updateCandidateEntry(sandbox, fixture, "100644", oid);
+
+    const run = runCandidate(sandbox, ["--check"]);
+    assert.equal(run.status, 3, run.stderr);
+    assert.match(run.stderr, /header block comment is never closed/u);
+    assert.match(run.stderr, /malformed-header-fixture/u);
+    assert.equal(
+      readFileSync(CATALOG, "utf8"),
+      catalogBefore,
+      "a refused census must not have touched the catalog",
+    );
+  } finally {
+    rmSync(sandbox.root, { recursive: true, force: true });
+  }
+});
+
+test("E2: the plan states the preconditions a move has to clear", () => {
+  const fixture = planFixture(
+    [
+      ["Tools/visual-regression/probe-clean.mjs", "INVESTIGATION"],
+      ["Tools/visual-regression/probe-cited.mjs", "INVESTIGATION"],
+      ["Tools/visual-regression/probe-listed.mjs", "ARCHIVED-CANDIDATE"],
+      ["Tools/visual-regression/archive/probe-done.mjs", "INVESTIGATION"],
+      ["Tools/visual-regression/probe-live.mjs", "ACTIVE"],
+    ],
+    {
+      "Tools/visual-regression/probe-cited.mjs": [
+        "migration_doc/DEBUGGING_GUIDE.md",
+        "migration_doc/archive/OLD_REPORT.md",
+      ],
+      "Tools/visual-regression/probe-listed.mjs": [PLAN_ALLOWLIST],
+      "Tools/visual-regression/archive/probe-done.mjs": [
+        "migration_doc/archive/OLD_REPORT.md",
+      ],
+    },
+  );
+  const plan = archivePlanRows(fixture.rows, fixture.refSources);
+
+  assert.deepEqual(
+    plan.map((row) => [row.file, row.disposition]),
+    [
+      ["Tools/visual-regression/archive/probe-done.mjs", "ALREADY-ARCHIVED"],
+      ["Tools/visual-regression/probe-cited.mjs", "REPOINT-FIRST"],
+      ["Tools/visual-regression/probe-clean.mjs", "MOVE"],
+      ["Tools/visual-regression/probe-listed.mjs", "ALLOWLIST-EDIT-THEN-MOVE"],
+    ],
+    "an ACTIVE file is not a candidate, and every candidate is graded",
+  );
+
+  const cited = plan.find((row) => row.file.endsWith("probe-cited.mjs"));
+  assert.equal(cited.live, 1);
+  assert.equal(cited.archived, 1);
+  assert.equal(cited.allowlisted, false);
+
+  const listed = plan.find((row) => row.file.endsWith("probe-listed.mjs"));
+  assert.equal(
+    listed.live,
+    0,
+    "an allowlist row is reported as itself, not as a live citation",
+  );
+  assert.equal(listed.allowlisted, true);
+});
+
+test("E3: a census without the allowlist cannot publish a plan", () => {
+  // The allowlist membership column is derived from one pinned path. If that
+  // path leaves the census the column silently reads 'no' for every row and
+  // the plan understates the work, so the plan refuses instead.
+  const refSources = new Map([
+    ["Tools/visual-regression/probe-clean.mjs", new Set()],
+  ]);
+  assert.throws(
+    () =>
+      archivePlanRows(
+        [planRow("Tools/visual-regression/probe-clean.mjs", "INVESTIGATION")],
+        refSources,
+      ),
+    /fleet-contract allowlist .* is not in the census/u,
+  );
+});
+
+test("E4: plan anchors come from the path, never from the row position", () => {
+  const forward = planFixture([
+    ["Tools/visual-regression/probe-a.mjs", "INVESTIGATION"],
+    ["Tools/visual-regression/probe-b.mjs", "INVESTIGATION"],
+  ]);
+  const reversed = planFixture([
+    ["Tools/visual-regression/probe-b.mjs", "INVESTIGATION"],
+    ["Tools/visual-regression/probe-a.mjs", "INVESTIGATION"],
+  ]);
+  const anchorsOf = (fixture) =>
+    new Map(
+      archivePlanRows(fixture.rows, fixture.refSources).map((row) => [
+        row.file,
+        row.anchor,
+      ]),
+    );
+  assert.deepEqual([...anchorsOf(forward)], [...anchorsOf(reversed)]);
+  assert.equal(
+    archivePlanAnchor("Tools/visual-regression/probe-a.mjs"),
+    "ap-tools-visual-regression-probe-a-mjs",
+  );
+
+  // Two paths that slug to one anchor would give two rows one citation.
+  const colliding = planFixture([
+    ["Tools/visual-regression/probe-a.mjs", "INVESTIGATION"],
+    ["Tools/visual-regression/probe.a.mjs", "INVESTIGATION"],
+  ]);
+  assert.throws(
+    () => archivePlanRows(colliding.rows, colliding.refSources),
+    /is claimed by both/u,
+  );
+});
+
+test("E5: only a parent directory named archive marks a file retired", () => {
+  assert.equal(isUnderArchiveDirectory("Tools/archive/old.mjs"), true);
+  assert.equal(
+    isUnderArchiveDirectory("Tools/visual-regression/archive/old.mjs"),
+    true,
+  );
+  assert.equal(
+    isUnderArchiveDirectory("Tools/visual-regression/probe-archive.mjs"),
+    false,
+    "a file merely NAMED archive has not been retired",
+  );
+  assert.equal(isUnderArchiveDirectory("Tools/archive.mjs"), false);
+});
+
+test("E6: the plan renders inside the generated region", () => {
+  // It is derived, not authored. Outside the markers the launcher would never
+  // rewrite it and it would go stale exactly like the hand-maintained index
+  // that this generator replaced.
+  const region = renderCensus(census(), "\n");
+  const at = region.indexOf("## Archive plan");
+  assert.ok(at > 0, "the plan section is missing from the rendered region");
+  assert.ok(at > region.indexOf(BEGIN_MARKER));
+  assert.ok(at < region.indexOf(END_MARKER));
+
+  const split = splitCatalog(`# Prose above\n\n${region}\n\nProse below\n`);
+  assert.notEqual(split, null);
+  assert.ok(split.region.includes("## Archive plan"));
+  assert.ok(!split.after.includes("## Archive plan"));
+});
+
+test("E7: every census reference is accounted for by exactly one column", () => {
+  // live + archived + the allowlist row must reconstruct the census Refs
+  // column. If they do not, the plan is quietly dropping or double-counting a
+  // citation and its dispositions cannot be trusted.
+  const data = census();
+  const refsByFile = new Map(data.rows.map((row) => [row.file, row.refs]));
+  assert.ok(data.archivePlan.length > 0, "the real tree has no candidates");
+  for (const row of data.archivePlan) {
+    assert.equal(
+      row.live + row.archived + (row.allowlisted ? 1 : 0),
+      refsByFile.get(row.file),
+      `${row.file} reference accounting disagrees with the census`,
+    );
+  }
+});
+
+test("E9: a census with no archive plan cannot be rendered", () => {
+  // Rendering an empty section when the producer forgot the plan would delete
+  // it from the document without a single failing gate.
+  // eslint-disable-next-line no-unused-vars
+  const { archivePlan, ...withoutPlan } = census();
+  assert.throws(
+    () => renderCensus(withoutPlan, "\n"),
+    /carries no archive plan/u,
+  );
+});
+
+test("E8: reference counts are the sizes of the reference-source sets", () => {
+  const files = listToolingFiles();
+  const sources = inboundRefSources(files);
+  const counts = inboundRefs(files, sources);
+  assert.equal(counts.size, files.length);
+  for (const file of files) {
+    assert.equal(counts.get(file), sources.get(file).size);
+    assert.ok(
+      !sources.get(file).has(file),
+      "a file must not count as its own inbound reference",
+    );
+  }
+});
+
+test("E10: plan order is code-unit, so the table does not depend on ICU", () => {
+  // The rendered table is byte-compared by --check. `localeCompare` and
+  // code-unit order genuinely disagree on these two paths, so ordering by
+  // collation would let a small-ICU or differently-collated Node reorder every
+  // row with no source change - reported as structural drift with nothing in
+  // the diff to explain it.
+  // Synthetic paths: naming two REAL census files here would raise their own
+  // inbound-reference counts and move rows in the table this spec certifies.
+  const lower = "scripts/archive/dx14-order-fixture.mjs";
+  const upper = "Tools/archive/dx14-order-fixture.mjs";
+  assert.notEqual(
+    Math.sign(lower.localeCompare(upper)),
+    lower < upper ? -1 : 1,
+    "fixture is void unless the two orders actually disagree on this pair",
+  );
+
+  const fixture = planFixture([
+    [lower, "INVESTIGATION"],
+    [upper, "INVESTIGATION"],
+  ]);
+  const order = archivePlanRows(fixture.rows, fixture.refSources).map(
+    (row) => row.file,
+  );
+  assert.deepEqual(order, [...order].sort(), "rows must be in code-unit order");
+  assert.ok(
+    order.indexOf(upper) < order.indexOf(lower),
+    "uppercase Tools/ sorts before lowercase scripts/ by code unit",
+  );
 });

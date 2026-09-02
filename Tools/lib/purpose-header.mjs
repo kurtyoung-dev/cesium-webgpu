@@ -59,6 +59,15 @@ export const AUDIT_STATUS_TO_HEADER = Object.freeze({
   UNKNOWN: null,
 });
 
+/**
+ * Stable codes for the parse failures this grammar can report. Consumers
+ * branch on these; the message text beside them is for humans and may be
+ * reworded without breaking a caller.
+ */
+export const HEADER_ERROR_UNTERMINATED = "unterminated-header";
+export const HEADER_ERROR_DUPLICATE_TAG = "duplicate-tag";
+export const HEADER_ERROR_STATUS_VOCABULARY = "status-vocabulary";
+
 /** Tags this grammar recognises. Unknown `@foo` lines are ignored, not errors. */
 export const PURPOSE_TAGS = Object.freeze([
   "purpose",
@@ -232,18 +241,29 @@ export function locateHeaderBlock(lines) {
 /**
  * Read the header tags out of a file.
  *
+ * `errors` carries the human-readable parse failures and `errorDetails` the
+ * same failures with a stable `code`, so a caller can act on a CLASS of
+ * failure without matching on message text. Message-prefix sniffing is how a
+ * reworded error silently stops being handled.
+ *
  * @param {string} source File text.
  * @returns {{block: object, tags: Map<string, {value: string, line: number}>,
  *   purpose: string|null, status: string|null, className: string|null,
- *   supersededBy: string|null, note: string|null, errors: string[]}} Parse.
+ *   supersededBy: string|null, note: string|null, errors: string[],
+ *   errorDetails: {code: string, message: string}[]}} Parse.
  */
 export function parsePurposeHeader(source) {
   const lines = splitLines(source);
   const block = locateHeaderBlock(lines);
   const tags = new Map();
   const errors = [];
+  const errorDetails = [];
+  const fail = (code, message) => {
+    errors.push(message);
+    errorDetails.push({ code, message });
+  };
   if (block.kind === "unterminated") {
-    errors.push("header block comment is never closed");
+    fail(HEADER_ERROR_UNTERMINATED, "header block comment is never closed");
   }
   if (block.start >= 0) {
     for (let i = block.start; i <= block.end && i < lines.length; i++) {
@@ -257,7 +277,10 @@ export function parsePurposeHeader(source) {
         continue;
       }
       if (tags.has(name)) {
-        errors.push(`duplicate @${name} in the header block`);
+        fail(
+          HEADER_ERROR_DUPLICATE_TAG,
+          `duplicate @${name} in the header block`,
+        );
         continue;
       }
       tags.set(name, { value: m[2].trim(), line: i });
@@ -265,7 +288,8 @@ export function parsePurposeHeader(source) {
   }
   const status = tags.get("status")?.value ?? null;
   if (status !== null && !PURPOSE_STATUSES.includes(status)) {
-    errors.push(
+    fail(
+      HEADER_ERROR_STATUS_VOCABULARY,
       `@status "${status}" is not one of ${PURPOSE_STATUSES.join(" | ")}`,
     );
   }
@@ -278,6 +302,7 @@ export function parsePurposeHeader(source) {
     supersededBy: tags.get("supersededBy")?.value ?? null,
     note: tags.get("note")?.value ?? null,
     errors,
+    errorDetails,
   };
 }
 
@@ -391,8 +416,11 @@ export function injectPurposeHeader(source, fields) {
       error: "header block comment is never closed",
     };
   }
-  if (parsed.errors.some((e) => e.startsWith("duplicate"))) {
-    return { text: source, action: "failed", error: parsed.errors[0] };
+  const duplicate = parsed.errorDetails.find(
+    (detail) => detail.code === HEADER_ERROR_DUPLICATE_TAG,
+  );
+  if (duplicate) {
+    return { text: source, action: "failed", error: duplicate.message };
   }
 
   const purposeTag = parsed.tags.get("purpose");
@@ -476,13 +504,26 @@ export function injectPurposeHeader(source, fields) {
  * Fails CLOSED, in the same spirit as the rest of the fleet contract: a header
  * this parser cannot read is reported as a violation, so an exotic spelling
  * lands in the allowlist where a reviewer sees it rather than passing silently.
+ * That promise was only half kept - the parse failures the grammar already
+ * records were dropped on the floor, so a header block that never closes, or
+ * one carrying the same tag twice, passed as compliant as long as the first
+ * spelling of each tag happened to be readable.
  *
  * @param {string} source File text.
  * @returns {string[]} Violations, empty when the file complies.
  */
 export function purposeHeaderViolations(source) {
-  const parsed = parsePurposeHeader(source);
-  const violations = [];
+  let parsed;
+  try {
+    parsed = parsePurposeHeader(source);
+  } catch (error) {
+    return [`the header cannot be parsed: ${error?.message ?? error}`];
+  }
+  // The vocabulary failure is reported below in the wording this contract has
+  // always used; every other parse failure is surfaced verbatim.
+  const violations = parsed.errorDetails
+    .filter((detail) => detail.code !== HEADER_ERROR_STATUS_VOCABULARY)
+    .map((detail) => detail.message);
   if (parsed.purpose === null) {
     violations.push("no @purpose header");
   } else if (normalizePurpose(parsed.purpose).length < 12) {

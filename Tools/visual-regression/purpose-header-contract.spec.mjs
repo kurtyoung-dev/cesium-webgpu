@@ -197,6 +197,56 @@ test("A6 mutant: a @status outside the vocabulary is detected", () => {
   }
 });
 
+test("A6a mutant: an unterminated header block is a violation, not a pass", () => {
+  // The grammar has always RECORDED this failure; the contract dropped it on
+  // the floor. A block comment that never closes swallows the rest of the
+  // file, so the tags it appears to carry are not a header anyone can review.
+  const src = [
+    "/*",
+    " * probe-example.mjs - a title.",
+    " * @purpose Reproduces the example artifact at the saved view and diffs it.",
+    " * @status ACTIVE",
+    'import { chromium } from "playwright";',
+    "",
+  ].join("\n");
+  const parsed = parsePurposeHeader(src);
+  assert.equal(
+    parsed.purpose,
+    "Reproduces the example artifact at the saved view and diffs it.",
+  );
+  assert.equal(parsed.status, "ACTIVE");
+  assert.deepEqual(purposeHeaderViolations(src), [
+    "header block comment is never closed",
+  ]);
+});
+
+test("A6b mutant: a duplicated tag is a violation, not a first-wins pass", () => {
+  const src = COMPLIANT_LINE.replace(
+    "// @status ACTIVE",
+    "// @status ACTIVE\n// @status INVESTIGATION",
+  );
+  assert.notEqual(src, COMPLIANT_LINE, "mutation did not apply");
+  const parsed = parsePurposeHeader(src);
+  assert.equal(
+    parsed.status,
+    "ACTIVE",
+    "the first spelling still wins the value",
+  );
+  assert.deepEqual(purposeHeaderViolations(src), [
+    "duplicate @status in the header block",
+  ]);
+});
+
+test("A6c: a parse failure carries a stable code beside its message", () => {
+  // Consumers branch on the code; the message is for humans and may be
+  // reworded without silently disabling a caller that matched on its text.
+  const src = COMPLIANT_LINE.replace("@status ACTIVE", "@status MOSTLY_FINE");
+  assert.deepEqual(
+    parsePurposeHeader(src).errorDetails.map((detail) => detail.code),
+    ["status-vocabulary"],
+  );
+});
+
 test("A7 mutant: tags below the header block do NOT register", () => {
   // Fails CLOSED on purpose. A declaration that can hide anywhere in a
   // 2000-line probe is a declaration no reviewer can find, and the generator

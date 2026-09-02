@@ -28,6 +28,18 @@
 // or only the git freshness column, so a reader can tell a real drift from a
 // batch that touched a probe without regenerating.
 //
+// A header the parser can SEE but cannot READ is a different case, and it is
+// a refusal rather than a row: an unterminated block comment, a duplicated
+// tag, or a `@status` outside the known vocabulary exits 3 (STRUCTURAL) with
+// every offending path named. Publishing it as `NO @purpose HEADER` would say
+// the file declared nothing, when in fact it declared something unreadable.
+// The cost is that one bad `@status` spelling in any one of the census files
+// refuses the whole catalog for both `generate` and `--check`, so the typo has
+// to be fixed before either can run. The fleet contract deliberately grades the
+// same class more softly - `purposeHeaderViolations` reports an unknown
+// `@status` as an ordinary per-file violation - because it is auditing files,
+// while the census is certifying a published artifact.
+//
 // USAGE
 //   node Tools/generate-tooling-catalog-launcher.cjs            # rewrite
 //   node Tools/generate-tooling-catalog-launcher.cjs --check    # check
@@ -37,7 +49,9 @@
 //   0  written, or --check found no drift
 //   1  --check found drift
 //   2  the generator itself failed
-//   3  STRUCTURAL: candidate binding/markers/scope cannot certify a census
+//   3  STRUCTURAL: candidate binding/markers/scope cannot certify a census,
+//      or a census file's header exists but cannot be parsed (offending
+//      paths are named on stderr)
 
 import { execFileSync, spawnSync } from "node:child_process";
 import {
@@ -107,6 +121,25 @@ export const END_MARKER = "<!-- END GENERATED CENSUS -->";
 /** Directories whose `.mjs` files make up the tooling library. */
 const CENSUS_ROOTS = Object.freeze(["Tools", "scripts"]);
 
+/** The path segment that marks a tool already retired out of the live fleet. */
+const ARCHIVE_SEGMENT = "archive";
+
+/**
+ * The pinned fleet-contract census. A probe listed there cannot be moved by a
+ * bare `git mv`: `probe-fleet-contract.spec.mjs` fails on a stale row, so the
+ * row has to be deleted in the same change. The archive plan reports that
+ * membership as its own column rather than folding it into the live-reference
+ * count, where it would mark every listed probe as still referenced.
+ */
+const FLEET_CONTRACT_ALLOWLIST =
+  "Tools/visual-regression/lib/probe-fleet-contract-allowlist.mjs";
+
+/** Header statuses that nominate a census file for the archive plan. */
+const ARCHIVE_PLAN_STATUSES = Object.freeze([
+  "INVESTIGATION",
+  "ARCHIVED-CANDIDATE",
+]);
+
 /** Where an inbound reference to a tooling file can legitimately come from. */
 const REF_ROOTS = Object.freeze([
   "Tools",
@@ -117,6 +150,24 @@ const REF_ROOTS = Object.freeze([
 
 /** Single files outside those roots that also reference tooling by path. */
 const REF_FILES = Object.freeze(["package.json", "lint-staged.config.js"]);
+
+/**
+ * Compare two strings by UTF-16 code unit.
+ *
+ * Every ordering that reaches the rendered census goes through here rather
+ * than locale collation. The rendered region is byte-compared by `--check`,
+ * so a collation-dependent order would let a small-ICU or differently
+ * collated Node reorder rows with no source change at all - reported as
+ * structural drift with nothing in the diff to explain it. Code-unit order is
+ * the same everywhere Node runs.
+ *
+ * @param {string} a First value.
+ * @param {string} b Second value.
+ * @returns {number} Negative, zero or positive.
+ */
+function byCodeUnit(a, b) {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
 
 /**
  * The catalog quotes every file name in its own census, so counting itself
@@ -1231,9 +1282,9 @@ export function resolveReferenceToken(source, rawToken, byPath, byBase) {
  * scans per file and does not finish in a usable time.
  *
  * @param {string[]} files Census files, repo-relative.
- * @returns {Map<string, number>} Path -> number of distinct referencing files.
+ * @returns {Map<string, Set<string>>} Path -> the distinct files naming it.
  */
-export function inboundRefs(files) {
+export function inboundRefSources(files) {
   const byPath = new Set(files);
   const byBase = new Map();
   for (const file of files) {
@@ -1249,7 +1300,7 @@ export function inboundRefs(files) {
   );
   const sourceText = readTrackedFiles(sources);
 
-  const counts = new Map(files.map((f) => [f, 0]));
+  const referencedBy = new Map(files.map((f) => [f, new Set()]));
   const token = /[A-Za-z0-9_./\\-]*[A-Za-z0-9_-]\.mjs/g;
   for (const source of sources) {
     if (REF_EXCLUDED.includes(source)) {
@@ -1271,11 +1322,122 @@ export function inboundRefs(files) {
     }
     for (const hit of hits) {
       if (hit !== source) {
-        counts.set(hit, (counts.get(hit) ?? 0) + 1);
+        referencedBy.get(hit)?.add(source);
       }
     }
   }
-  return counts;
+  return referencedBy;
+}
+
+/**
+ * Count inbound references to each tooling file.
+ *
+ * @param {string[]} files Census files, repo-relative.
+ * @param {Map<string, Set<string>>} [sources] Precomputed reference sources, so
+ *   a caller that also needs the identities scans the tree once.
+ * @returns {Map<string, number>} Path -> number of distinct referencing files.
+ */
+export function inboundRefs(files, sources = inboundRefSources(files)) {
+  return new Map(files.map((file) => [file, sources.get(file)?.size ?? 0]));
+}
+
+/**
+ * Whether a path already sits inside an `archive/` directory.
+ *
+ * Only directory segments count: a file whose own NAME contains `archive` has
+ * not been retired, and reading it as retired would drop it out of the plan.
+ *
+ * @param {string} rel Repo-relative, slash-separated path.
+ * @returns {boolean} True when a parent directory is exactly `archive`.
+ */
+export function isUnderArchiveDirectory(rel) {
+  return rel.split("/").slice(0, -1).includes(ARCHIVE_SEGMENT);
+}
+
+/**
+ * The stable anchor a plan row is cited by.
+ *
+ * Derived from the path, never from the row's position, so a citation written
+ * today still resolves after the plan grows, shrinks or reorders. Line numbers
+ * do not survive a regeneration; this does.
+ *
+ * @param {string} rel Repo-relative path.
+ * @returns {string} Anchor id, without the leading `#`.
+ */
+export function archivePlanAnchor(rel) {
+  const slug = rel
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return `ap-${slug}`;
+}
+
+/**
+ * Derive the archive plan from census rows and their reference identities.
+ *
+ * The plan does NOT re-derive the analyst's HIGH/MED confidence grades - those
+ * are a human judgement recorded in the report above the markers. It derives
+ * the mechanical preconditions ruling M1 attaches to any move: what still
+ * names the file from live code and docs, what names it only from an already
+ * archived document (breakage contained to `archive/`), and whether the
+ * fleet-contract allowlist carries a row that has to be deleted in the same
+ * change. A disposition is what remains once those are settled.
+ *
+ * @param {object[]} rows Census rows.
+ * @param {Map<string, Set<string>>} refSources Path -> files naming it.
+ * @returns {object[]} Plan rows, sorted by path.
+ */
+export function archivePlanRows(rows, refSources) {
+  if (!rows.some((row) => row.file === FLEET_CONTRACT_ALLOWLIST)) {
+    throw new CandidateStructureError(
+      `the fleet-contract allowlist ${FLEET_CONTRACT_ALLOWLIST} is not in the census; ` +
+        "the archive plan cannot report which candidates carry an allowlist row",
+    );
+  }
+  const plan = [];
+  const anchors = new Map();
+  for (const row of rows) {
+    if (!ARCHIVE_PLAN_STATUSES.includes(row.status)) {
+      continue;
+    }
+    let live = 0;
+    let archived = 0;
+    let allowlisted = false;
+    for (const source of refSources.get(row.file) ?? []) {
+      if (source === FLEET_CONTRACT_ALLOWLIST) {
+        allowlisted = true;
+      } else if (isUnderArchiveDirectory(source)) {
+        archived += 1;
+      } else {
+        live += 1;
+      }
+    }
+    const anchor = archivePlanAnchor(row.file);
+    const clash = anchors.get(anchor);
+    if (clash !== undefined) {
+      throw new CandidateStructureError(
+        `archive-plan anchor ${anchor} is claimed by both ${clash} and ${row.file}; ` +
+          "two rows cannot share one citation",
+      );
+    }
+    anchors.set(anchor, row.file);
+    plan.push({
+      anchor,
+      file: row.file,
+      status: row.status,
+      live,
+      archived,
+      allowlisted,
+      disposition: isUnderArchiveDirectory(row.file)
+        ? "ALREADY-ARCHIVED"
+        : live > 0
+          ? "REPOINT-FIRST"
+          : allowlisted
+            ? "ALLOWLIST-EDIT-THEN-MOVE"
+            : "MOVE",
+    });
+  }
+  return plan.sort((a, b) => byCodeUnit(a.file, b.file));
 }
 
 /**
@@ -1295,24 +1457,43 @@ function cell(text) {
 /**
  * Build the census rows for every file in scope.
  *
- * @returns {{rows: object[], byDirectory: Map<string, object[]>}} Census data.
+ * Fails CLOSED on a header the parser cannot read. The previous catch-all
+ * turned an unterminated comment, a duplicated tag or a status outside the
+ * vocabulary into the same row a file with no header at all gets, so a
+ * malformed header was published as an absent one and nobody could tell the
+ * two apart. A census that cannot read its subject must refuse, not guess.
+ *
+ * @returns {{rows: object[], byDirectory: Map<string, object[]>,
+ *   archivePlan: object[]}} Census data.
  */
 export function collectCensus(head = "HEAD", historyEnv = process.env) {
   const files = listToolingFiles();
   const toolingText = readTrackedFiles(files);
   const dates = lastTouchDates(head, historyEnv);
-  const refs = inboundRefs(files);
+  const refSources = inboundRefSources(files);
+  const refs = inboundRefs(files, refSources);
   const rows = [];
+  const headerFailures = [];
   for (const file of files) {
+    const source = toolingText.get(file);
+    if (source === undefined) {
+      headerFailures.push(`${file}: candidate index blob is unavailable`);
+      continue;
+    }
     let parsed;
     try {
-      const source = toolingText.get(file);
-      if (source === undefined) {
-        throw new Error(`missing index blob for ${file}`);
-      }
       parsed = parsePurposeHeader(source);
-    } catch {
-      parsed = { purpose: null, status: null, className: null };
+    } catch (error) {
+      headerFailures.push(
+        `${file}: the header parser threw - ${error?.message ?? error}`,
+      );
+      continue;
+    }
+    if (parsed.errors.length > 0) {
+      for (const message of parsed.errors) {
+        headerFailures.push(`${file}: ${message}`);
+      }
+      continue;
     }
     const notes = [parsed.supersededBy, parsed.note]
       .filter(Boolean)
@@ -1332,6 +1513,16 @@ export function collectCensus(head = "HEAD", historyEnv = process.env) {
       notes,
     });
   }
+  if (headerFailures.length > 0) {
+    const shown = headerFailures.slice(0, 10).join("; ");
+    const rest =
+      headerFailures.length > 10
+        ? ` (+${headerFailures.length - 10} more)`
+        : "";
+    throw new CandidateStructureError(
+      `${headerFailures.length} census header(s) cannot be read: ${shown}${rest}`,
+    );
+  }
   const byDirectory = new Map();
   for (const row of rows) {
     if (!byDirectory.has(row.directory)) {
@@ -1339,7 +1530,11 @@ export function collectCensus(head = "HEAD", historyEnv = process.env) {
     }
     byDirectory.get(row.directory).push(row);
   }
-  return { rows, byDirectory };
+  return {
+    rows,
+    byDirectory,
+    archivePlan: archivePlanRows(rows, refSources),
+  };
 }
 
 /**
@@ -1380,7 +1575,7 @@ export function renderCensus(census, eol) {
   }
   push(
     `| Classes | ${[...classCounts]
-      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+      .sort((a, b) => b[1] - a[1] || byCodeUnit(a[0], b[0]))
       .map(([name, count]) => `${name} ${count}`)
       .join(", ")} |`,
   );
@@ -1390,7 +1585,7 @@ export function renderCensus(census, eol) {
     const rows = census.byDirectory
       .get(directory)
       .slice()
-      .sort((a, b) => a.base.localeCompare(b.base));
+      .sort((a, b) => byCodeUnit(a.base, b.base));
     push(`### ${directory} (${rows.length})`);
     push("");
     push("| File | Class | Status | Touched | Refs | Purpose |");
@@ -1405,8 +1600,72 @@ export function renderCensus(census, eol) {
     }
     push("");
   }
+  renderArchivePlan(census.archivePlan, push);
   push(END_MARKER);
   return lines.join(eol);
+}
+
+/**
+ * Render the archive plan into the census region.
+ *
+ * It belongs INSIDE the markers because it is derived, not authored: the
+ * launcher rewrites only this region, so a section rendered anywhere else
+ * would be written once by hand and then quietly go stale - the exact failure
+ * the generated census exists to prevent.
+ *
+ * @param {object[]} plan Rows from {@link archivePlanRows}.
+ * @param {(line: string) => void} push Line sink.
+ */
+function renderArchivePlan(plan, push) {
+  if (!Array.isArray(plan)) {
+    throw new CandidateStructureError(
+      "the census carries no archive plan; the region must not be rendered " +
+        "without one, or the plan silently disappears from the document",
+    );
+  }
+  push("## Archive plan");
+  push("");
+  push(
+    "Every census file whose own header reads `INVESTIGATION` or `ARCHIVED-CANDIDATE`, with the " +
+      "mechanical preconditions a move has to satisfy first. This is the input to the archive rows; " +
+      "it does not reproduce the analyst report's HIGH/MED confidence grades above, which are a " +
+      "human judgement rather than anything the tree can be asked. " +
+      "**Live refs** are the distinct files naming this one from outside any `archive/` directory - " +
+      "repoint those before moving. **Archived refs** name it only from an already archived document, " +
+      "so the breakage stays inside `archive/`. **Allowlist row** means the pinned fleet-contract " +
+      "census lists this probe, and that row must be deleted in the same change or the contract spec " +
+      "fails on it. Cite a row by its anchor (`#ap-…`), never by line number - the table is " +
+      "regenerated and line numbers do not survive it.",
+  );
+  push("");
+
+  const dispositions = new Map();
+  for (const row of plan) {
+    dispositions.set(
+      row.disposition,
+      (dispositions.get(row.disposition) ?? 0) + 1,
+    );
+  }
+  push("| Disposition | Files |");
+  push("|---|---|");
+  push(`| Candidates in plan | ${plan.length} |`);
+  for (const [disposition, count] of [...dispositions].sort()) {
+    push(`| ${cell(disposition)} | ${count} |`);
+  }
+  push("");
+
+  push(
+    "| Row | Path | Status | Live refs | Archived refs | Allowlist row | Disposition |",
+  );
+  push("|---|---|---|---|---|---|---|");
+  for (const row of plan) {
+    push(
+      `| <a id="${row.anchor}"></a>[#](#${row.anchor}) | ${cell(row.file)} | ` +
+        `${cell(row.status)} | ${row.live} | ${row.archived} | ` +
+        `${row.allowlisted ? "yes" : "no"} | ${cell(row.disposition)} |`,
+    );
+  }
+  push("");
 }
 
 /**
