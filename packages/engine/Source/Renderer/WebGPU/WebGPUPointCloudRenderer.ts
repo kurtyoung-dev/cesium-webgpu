@@ -24,7 +24,7 @@ import {
 } from "./WebGPUEffectsBindGroup.js";
 import { getOrCreateSharedAdvancedEffectsBG } from "./WebGPUPrimitiveCommands.js";
 import { isWebGPULogDepthActive } from "./WebGPULogDepth.js";
-// Slice 5c-B Phase 1 (Batch 112) — scene-FB target helper.
+// Scene-FB target helper.
 import { makeSceneFBTargets } from "./WebGPUSceneFBTargetHelpers.js";
 import { getAvailableFrameCommandEncoder } from "./WebGPUFrameCommandEncoder.js";
 import type {
@@ -41,7 +41,6 @@ import { updatePointCloudLodLocalFrame } from "./WebGPUPointCloudLodLocalFrame.j
 
 // Per-device shader module cache so multiple PointClouds on the same
 // `GPUDevice` share one compiled `GPUShaderModule` per source.
-// (C-R7-SHADER-MODULE-DEDUP, Batch 74.)
 const _pointCloudShaderModuleCaches = new WeakMap<
   GPUDevice,
   WebGPUShaderModuleCache
@@ -132,7 +131,7 @@ interface PointCloudLike {
   geometricError?: number;
   /** Cull beyond this world distance; undefined uses camera far, while 0 is a Float32-safe disable sentinel. */
   lodFarDistance?: number;
-  // POINT-SPRITE-SHAPE — WebGL attenuation parity inputs (PointCloud.js).
+  // WebGL attenuation parity inputs (PointCloud.js).
   attenuation?: boolean;
   geometricErrorScale?: number;
   // True when a constant style pointSize is active — WebGL gives the style
@@ -183,10 +182,9 @@ interface PointCloudCache {
   translucent: boolean;
   lastRevision: number;
 
-  // C-R7-RENDERER-MIGRATION (Batch 74). Default-path pipeline now
-  // resolves through `webgpuPipelineCache`; the entry slot holds the
-  // descriptor + the in-flight tracking flag. Two PointCloud instances
-  // sharing the same canvas format now share a single pipeline.
+  // Default-path pipeline resolves through `webgpuPipelineCache`; the entry
+  // slot holds the descriptor + the in-flight tracking flag. Two PointCloud
+  // instances sharing the same canvas format now share a single pipeline.
   pipelineEntry: PointCloudPipelineEntry | null;
   defaultBgl: GPUBindGroupLayout | null;
 
@@ -219,19 +217,18 @@ interface PointCloudCache {
   defaultEdlSource: PointCloudEDLSource | null;
   lodEdlSource: PointCloudEDLSource | null;
 
-  // C-R7-RENDERER-MIGRATION (Batch 74) — same pattern for the LOD
-  // pipeline. Held alongside the LOD pipeline slot so the resolve helper
-  // can re-resolve every frame until the pipeline materializes.
+  // Same pattern for the LOD pipeline. Held alongside the LOD pipeline slot so
+  // the resolve helper can re-resolve every frame until the pipeline
+  // materializes.
   lodPipelineEntry: PointCloudPipelineEntry | null;
   lodDefaultBgl: GPUBindGroupLayout | null;
 
-  // Batch 168 - B.10 NEW-ADVANCED-MOTION-VECTORS (PointCloud).
-  // Per-particle prev-position mirror of `instanceBuffer` so the velocity
-  // VS reads (current, previous) position pairs from two parallel
-  // 40-byte instance streams. Same lifecycle as PointPrimitive's
-  // `prevInstanceBuffer` (Batch 148): captured before the GPU instance
-  // upload, retained one-frame-lagged. NULL when no animated point cloud
-  // has been seen on this device yet (TAA off-path stays cheap).
+  // Per-particle prev-position mirror of `instanceBuffer` so the velocity VS
+  // reads (current, previous) position pairs from two parallel 40-byte instance
+  // streams. Same lifecycle as PointPrimitive's `prevInstanceBuffer`: captured
+  // before the GPU instance upload, retained one-frame-lagged. NULL when no
+  // animated point cloud has been seen on this device yet (TAA off-path stays
+  // cheap).
   prevInstanceBuffer: GPUBuffer | null;
   // CPU-side reference to THIS frame's instance data — the
   // interleaved Float32Array `buildInstanceBuffer` produced. Set on
@@ -245,7 +242,7 @@ interface PointCloudCache {
   // `instanceData` so velocity = 0 at startup. After every successful
   // velocity dispatch, the helper assigns `prevInstanceData =
   // instanceData` so next frame's prev tracks the PREVIOUS frame's
-  // data (PointPrimitive Batch 148 pattern). For the typical static
+  // data (the PointPrimitive velocity pattern). For the typical static
   // 3D-Tiles point cloud both refs point at the same Float32Array so
   // velocity stays zero; for animated content where each frame
   // re-runs `buildInstanceBuffer`, this captures the actual per-frame
@@ -256,9 +253,8 @@ interface PointCloudCache {
   velocityPipelineEntry: PointCloudPipelineEntry | null;
   velocityCommand: CesiumAnyDrawCommand | null;
 
-  // Batch 169 - B.10 NEW-ADVANCED-MOTION-VECTORS LOD path. Parallel
-  // storage buffer mirroring `instanceBuffer` with the PREVIOUS
-  // frame's interleaved data. Same 40-byte stride; only positions
+  // LOD-path parallel storage buffer mirroring `instanceBuffer` with the
+  // PREVIOUS frame's interleaved data. Same 40-byte stride; only positions
   // (floats 0-5) are read by the LOD velocity VS.
   lodPrevInstanceBuffer: GPUBuffer | null;
   // Lazy LOD velocity pipeline. Has its own descriptor (storageBGL
@@ -270,14 +266,13 @@ interface PointCloudCache {
   lodVelocityBindGroup: GPUBindGroup | null;
   lodVelocityStorageBGL: GPUBindGroupLayout | null;
 
-  // C10-09-VELOCITY-PREV-BUFFER-GPU-COPY. Monotonic counter bumped at every
-  // site that (re)writes `instanceBuffer` CONTENT (the single rebuild site —
-  // the LOD path only uploads positions to the LOD processor's own buffers,
-  // never `instanceBuffer`). `pointCount` alone is an insufficient
-  // content-change signal (two static clouds could share a count, and a
-  // count that returns to a prior value would alias), so a dedicated
-  // monotonic counter is used. When the identity-case prev buffer already
-  // holds this revision's bytes the per-frame CPU re-upload is skipped.
+  // Monotonic counter bumped at every site that (re)writes `instanceBuffer`
+  // CONTENT (the single rebuild site — the LOD path only uploads positions to
+  // the LOD processor's own buffers, never `instanceBuffer`). `pointCount`
+  // alone is an insufficient content-change signal (two static clouds could
+  // share a count, and a count that returns to a prior value would alias), so a
+  // dedicated monotonic counter is used. When the identity-case prev buffer
+  // already holds this revision's bytes the per-frame CPU re-upload is skipped.
   instanceDataRevision: number;
   // The `instanceDataRevision` whose bytes currently reside in
   // `prevInstanceBuffer` (default VB path). `undefined` = unknown/stale →
@@ -880,7 +875,6 @@ function createQuadVB(device: GPUDevice): GPUBuffer {
  * `webgpuPipelineCache.getPipeline()` so two PointCloud instances at the
  * same canvas format share one pipeline.
  *
- * C-R7-RENDERER-MIGRATION (Batch 74).
  * @private
  */
 function buildPipelineDescriptor(
@@ -974,7 +968,7 @@ function buildPipelineDescriptor(
 }
 
 /**
- * Batch 168 - B.10 NEW-ADVANCED-MOTION-VECTORS velocity pipeline.
+ * Velocity pipeline.
  * Same UBO BGL as the color path; vertex layout adds a second
  * 40-byte instance buffer at slot 1 carrying prev-frame positions
  * (locations 4 and 5). Outputs to rg16float matching the TAA
@@ -1025,9 +1019,9 @@ function buildVelocityPipelineDescriptor(
           ],
         },
         {
-          // Batch 168 - prev-position stream. Same 40-byte stride; only
-          // positions are read (locations 4-5). Color/size at offset 24
-          // is ignored by `vertexVelocityMain`.
+          // Prev-position stream. Same 40-byte stride; only positions are read
+          // (locations 4-5). Color/size at offset 24 is ignored by
+          // `vertexVelocityMain`.
           arrayStride: 40,
           stepMode: "instance" as GPUVertexStepMode,
           attributes: [
@@ -1093,7 +1087,7 @@ function _pcDescriptorToGPU(
  * pipeline cache. Returns the existing GPU pipeline if cached; otherwise
  * kicks off async creation and returns null.
  *
- * C-R7-RENDERER-MIGRATION (Batch 74). Mirrors `tryResolvePolylinePipeline`.
+ * Mirrors `tryResolvePolylinePipeline`.
  * @private
  */
 function tryResolvePointCloudPipeline(
@@ -1172,9 +1166,9 @@ function buildInstanceBuffer(
   rtcX: number;
   rtcY: number;
   rtcZ: number;
-  // Batch 168 - retained interleaved instance data so the velocity
-  // path can mirror it into the prev-instance GPU buffer per frame.
-  // Same lifecycle as the GPU buffer (rebuilt on revision change).
+  // Retained interleaved instance data so the velocity path can mirror it into
+  // the prev-instance GPU buffer per frame. Same lifecycle as the GPU buffer
+  // (rebuilt on revision change).
   instanceData: Float32Array;
 } {
   // Read point positions, colors from pointCloud._drawCommand or _parsedContent
@@ -1339,7 +1333,7 @@ function buildInstanceBuffer(
   // When GPU LOD might activate, OR in STORAGE usage so the same buffer
   // can back both the VB-instanced default path and the storage-backed
   // LOD path without duplicating 40 bytes/point of GPU memory.
-  // C10-09 - COPY_SRC so the velocity prev-buffer identity-seed / count-change
+  // COPY_SRC so the velocity prev-buffer identity-seed / count-change
   // seed can copyBufferToBuffer(instanceBuffer -> prevInstanceBuffer) on the
   // GPU (the identical bytes already reside here). Mirrors the splat renderer,
   // which added COPY_SRC for the same reason.
@@ -1362,8 +1356,8 @@ function buildInstanceBuffer(
     rtcX,
     rtcY,
     rtcZ,
-    // Batch 168 - hand the interleaved data back so the velocity path
-    // can keep a CPU-side prev mirror across the rebuild boundary.
+    // Hand the interleaved data back so the velocity path can keep a CPU-side
+    // prev mirror across the rebuild boundary.
     instanceData: data,
   };
 }
@@ -1394,17 +1388,14 @@ function packUniforms(
   data[22] = currentRte.encodedCameraLow.z;
   data[23] = 0;
 
-  // POINT-SPRITE-SHAPE — viewportSize must be the REAL render-target size.
-  // The old `uniformState._context?._canvas` read was always undefined
-  // (UniformState has no `_context`), so every point cloud rendered with a
-  // phantom 1920x1080 viewport — points came out both smaller than WebGL's
-  // gl_PointSize squares AND anisotropic (16:9-squished) on non-16:9
-  // canvases. The caller passes context.drawingBufferWidth/Height.
+  // viewportSize must be the REAL render-target size — `UniformState` has
+  // no `_context`, so it cannot be read off the uniform state itself; the
+  // caller passes context.drawingBufferWidth/Height.
   data[24] = drawingBufferWidth;
   data[25] = drawingBufferHeight;
   data[26] = pointSize;
-  // POINT-SPRITE-SHAPE — per-point attenuation numerator (0 = disabled);
-  // the shaders clamp min(attenuation / eyeDepth, bakedMaxSize).
+  // Per-point attenuation numerator (0 = disabled); the shaders clamp
+  // min(attenuation / eyeDepth, bakedMaxSize).
   data[27] = attenuationScale;
 
   Matrix4.pack(previousRte.mvpRelativeToEye, data, 28);
@@ -1413,7 +1404,7 @@ function packUniforms(
   // vectors/reconstruct the current camera for atmosphere effects.
   Matrix4.pack(modelMatrix as Matrix4, data, 44);
 
-  // C2-7 NEW-LOG-DEPTH-POINTCLOUD-PRODUCER — log-depth lanes at floats 60..63.
+  // Log-depth lanes at floats 60..63.
   // near/far from the current frustum; factor = oneOverLog2FarDepthFromNearPlusOne
   // (derived if UniformState doesn't expose it); w = the per-frame active flag
   // (mirrors isWebGPULogDepthActive). When w==0 the shaders fall back to the
@@ -1620,19 +1611,19 @@ function updateWebGPUPointCloud(
       lodActive: false,
       defaultEdlSource: null,
       lodEdlSource: null,
-      // Batch 168 - velocity pipeline + prev-instance buffer (lazy).
+      // Velocity pipeline + prev-instance buffer (lazy).
       prevInstanceBuffer: null,
       instanceData: null,
       prevInstanceData: null,
       velocityPipelineEntry: null,
       velocityCommand: null,
-      // Batch 169 - LOD-path velocity (parallel SSBO + LOD velocity VS).
+      // LOD-path velocity (parallel SSBO + LOD velocity VS).
       lodPrevInstanceBuffer: null,
       lodVelocityPipelineEntry: null,
       lodVelocityCommand: null,
       lodVelocityBindGroup: null,
       lodVelocityStorageBGL: null,
-      // C10-09 - prev-buffer revision-skip.
+      // Prev-buffer revision-skip.
       instanceDataRevision: 0,
       prevBufferRevision: undefined,
       lodPrevBufferRevision: undefined,
@@ -1643,7 +1634,7 @@ function updateWebGPUPointCloud(
   throwUnreportedPointCloudPipelineError(cache);
   const translucent = isPointCloudTranslucent(pointCloud);
   const cull = pointCloud._cull !== false;
-  // Batch 110 — point cloud draws into scene FB; use scenePipelineFormat.
+  // Point cloud draws into scene FB; use scenePipelineFormat.
   const canvasFormat: GPUTextureFormat =
     (
       context as unknown as {
@@ -1651,7 +1642,7 @@ function updateWebGPUPointCloud(
       }
     ).scenePipelineFormat ??
     (navigator.gpu.getPreferredCanvasFormat() as GPUTextureFormat);
-  // Batch 110 — invalidate cached pipeline on scene format change.
+  // Invalidate cached pipeline on scene format change.
   const sceneGen =
     (context as unknown as { _scenePipelineFormatGeneration?: number })
       ._scenePipelineFormatGeneration ?? 0;
@@ -1664,27 +1655,25 @@ function updateWebGPUPointCloud(
     cache.initialized = false;
     cache.pipelineEntry = null;
     cache.pipeline = null;
-    // Batch 168 - velocity pipeline references the same shader module
-    // built against the now-invalid format; force rebuild.
+    // Velocity pipeline references the same shader module built against the
+    // now-invalid format; force rebuild.
     cache.velocityPipelineEntry = null;
-    // Batch 169 - the cached draw commands hold a pointer to the
-    // OLD pipeline. After the resolver re-runs against the new
-    // format the pipeline pointer changes; the command must be
-    // re-built so its `pipeline` field points at the live object.
-    // Pre-Batch-169 the command survived a format change and would
-    // be submitted with the stale pipeline reference (WebGPU then
-    // rejects the draw because the pipeline's color target format
-    // doesn't match the active attachment). Not user-visible because
-    // HDR isn't toggled at runtime, but matches the Ground{Primitive,
-    // Polyline} fix that landed pre-Batch-166.
+    // The cached draw commands hold a pointer to the OLD pipeline. After the
+    // resolver re-runs against the new format the pipeline pointer changes; the
+    // command must be re-built so its `pipeline` field points at the live
+    // object. A command that survived a format change would be submitted with
+    // the stale pipeline reference (WebGPU then rejects the draw because the
+    // pipeline's color target format doesn't match the active attachment). Not
+    // user-visible because HDR isn't toggled at runtime, but matches the
+    // Ground{Primitive, Polyline} fix for the same class of bug.
     cache.command = null;
     cache.lodCommand = null;
     cache.lodPipeline = null;
     cache.lodPipelineEntry = null;
-    // Batch 169 - LOD velocity pipeline targets rg16float which is
-    // format-invariant, but we rebuild it alongside the LOD color
-    // pipeline so the storageBGL and bindings stay consistent across
-    // any future format-aware fields. Cheap reset.
+    // LOD velocity pipeline targets rg16float which is format-invariant, but we
+    // rebuild it alongside the LOD color pipeline so the storageBGL and
+    // bindings stay consistent across any future format-aware fields. Cheap
+    // reset.
     cache.lodVelocityPipelineEntry = null;
     cache.lodVelocityBindGroup = null;
     cache.lodVelocityStorageBGL = null;
@@ -1703,8 +1692,8 @@ function updateWebGPUPointCloud(
       });
     }
 
-    // C-R7 (Batch 74) — descriptor + central pipeline cache. Two
-    // PointCloud instances at the same canvas format share one pipeline.
+    // Descriptor + central pipeline cache. Two PointCloud instances at the same
+    // canvas format share one pipeline.
     const built = buildPipelineDescriptor(
       device,
       canvasFormat,
@@ -1818,19 +1807,18 @@ function updateWebGPUPointCloud(
     cache.lodRtcCenter.x = result.rtcX;
     cache.lodRtcCenter.y = result.rtcY;
     cache.lodRtcCenter.z = result.rtcZ;
-    // Batch 169 - track THIS frame's instance data. The velocity helper
-    // promotes this to `prevInstanceData` AFTER its dispatch so next
-    // frame's prev tracks the previous frame's data (PointPrimitive
-    // Batch 148 pattern). Do NOT clobber `prevInstanceData` here on
-    // revision change — that would force velocity=0 every revision
-    // and miss per-frame animation deltas. The size-mismatch case
-    // (point count changed across revision) is handled by the
-    // byteLength check in attachPointCloudVelocityCommand: when prev
-    // is shorter/longer than curr, the GPU self-copy fallback fires
-    // and emits velocity=0 for the discontinuity (correct — no
-    // continuous index correspondence between OLD and NEW points).
+    // Track THIS frame's instance data. The velocity helper promotes this to
+    // `prevInstanceData` AFTER its dispatch so next frame's prev tracks the
+    // previous frame's data (the PointPrimitive velocity pattern). Do NOT
+    // clobber `prevInstanceData` here on revision change — that would force
+    // velocity=0 every revision and miss per-frame animation deltas. The
+    // size-mismatch case (point count changed across revision) is handled by
+    // the byteLength check in attachPointCloudVelocityCommand: when prev is
+    // shorter/longer than curr, the GPU self-copy fallback fires and emits
+    // velocity=0 for the discontinuity (correct — no continuous index
+    // correspondence between OLD and NEW points).
     cache.instanceData = result.instanceData;
-    // C10-09 - the single content-write site for `instanceBuffer`. Bump the
+    // The single content-write site for `instanceBuffer`. Bump the
     // monotonic data revision so the velocity prev buffers re-seed exactly
     // once for this content (T-3: grep confirms `instanceBuffer` is written
     // ONLY here — the LOD path uploads positions to the LOD processor, never
@@ -1840,11 +1828,10 @@ function updateWebGPUPointCloud(
     cache.lodCommand = null;
     cache.lodStorageBindGroup = null;
     cache.lodUploadedRevision = -1;
-    // Batch 169 - velocity bind group references the (now-destroyed)
-    // instance buffer; force rebuild on the next frame's velocity
-    // attach. lodPrevInstanceBuffer also references stale data; the
-    // size-allocation check inside the LOD velocity helper resizes
-    // it (the byteLength comparison in the prev-upload step then
+    // Velocity bind group references the (now-destroyed) instance buffer; force
+    // rebuild on the next frame's velocity attach. lodPrevInstanceBuffer also
+    // references stale data; the size-allocation check inside the LOD velocity
+    // helper resizes it (the byteLength comparison in the prev-upload step then
     // emits velocity = 0 for the seed/revision-change frame).
     cache.lodVelocityBindGroup = null;
   }
@@ -1869,15 +1856,15 @@ function updateWebGPUPointCloud(
     context.uniformState.cameraPosition,
     modelMatrix,
   );
-  // POINT-SPRITE-SHAPE — WebGL attenuation parity. Mirrors PointCloud.js
-  // u_pointSizeAndTimeAndGeometricErrorAndDepthMultiplier.zw:
-  // numerator = geometricError * geometricErrorScale *
-  // (drawingBufferHeight / frustum.sseDenominator). Ortho/2D frustums have
-  // no sseDenominator — WebGL uses depthMultiplier = +Infinity there, i.e.
-  // the clamp always lands on maximumAttenuation; we pass 0 (disabled) so
-  // the shaders use the baked max size, which is the same result.
-  // A constant style pointSize overrides attenuation entirely on WebGL
-  // (hasPointSizeStyle wins in the derived VS) — keep the clamp off then.
+  // WebGL attenuation parity. Mirrors PointCloud.js
+  // u_pointSizeAndTimeAndGeometricErrorAndDepthMultiplier.zw: numerator =
+  // geometricError * geometricErrorScale * (drawingBufferHeight /
+  // frustum.sseDenominator). Ortho/2D frustums have no sseDenominator — WebGL
+  // uses depthMultiplier = +Infinity there, i.e. the clamp always lands on
+  // maximumAttenuation; we pass 0 (disabled) so the shaders use the baked max
+  // size, which is the same result. A constant style pointSize overrides
+  // attenuation entirely on WebGL (hasPointSizeStyle wins in the derived VS) —
+  // keep the clamp off then.
   let attenuationScale = 0.0;
   if (
     pointCloud.attenuation === true &&
@@ -1941,14 +1928,13 @@ function updateWebGPUPointCloud(
   }
 
   // ── Default path (current behaviour, untouched) ──
-  // C-R7 (Batch 74) — skip the draw if the pipeline is still
-  // materializing in the central cache. It'll be ready by next frame.
+  // Skip the draw if the pipeline is still materializing in the central cache.
+  // It'll be ready by next frame.
   if (!cache.pipeline) {
     return;
   }
-  // FEAT-GAP-09 (Batch 102) — per-frame effects BG refresh. Shared
-  // helper caches per-frame and returns the placeholder when none of
-  // (shadow, csm, atmosphereLut) is active.
+  // Per-frame effects BG refresh. Shared helper caches per-frame and returns
+  // the placeholder when none of (shadow, csm, atmosphereLut) is active.
   const effectsBG =
     getOrCreateSharedAdvancedEffectsBG(frameState) ??
     getPlaceholderEffects(device).bindGroup;
@@ -1976,12 +1962,11 @@ function updateWebGPUPointCloud(
     cache.command.cull = cull;
   }
 
-  // Batch 168 - B.10 NEW-ADVANCED-MOTION-VECTORS. Maintain a
-  // one-frame-lagged mirror of the instance buffer so the velocity VS
-  // can read (current, previous) position pairs. Only allocates the
-  // GPU buffer when TAA is enabled this frame (or has ever been since
-  // boot — we keep the buffer once allocated so toggling TAA off→on
-  // doesn't lose a frame of history).
+  // Maintain a one-frame-lagged mirror of the instance buffer so the velocity
+  // VS can read (current, previous) position pairs. Only allocates the GPU
+  // buffer when TAA is enabled this frame (or has ever been since boot — we
+  // keep the buffer once allocated so toggling TAA off→on doesn't lose a frame
+  // of history).
   attachPointCloudVelocityCommand(
     device,
     context,
@@ -1990,10 +1975,10 @@ function updateWebGPUPointCloud(
     canvasFormat,
   );
 
-  // PARITY-PC-EDL — tag the color command with the raw GPU resources the
-  // Eye-Dome-Lighting feature renderer needs to re-draw these points into its
-  // off-screen depth framebuffer. This is a plain reference assignment with no
-  // behavior change; the EDL renderer only reads it when the user has turned
+  // Tag the color command with the raw GPU resources the Eye-Dome-Lighting
+  // feature renderer needs to re-draw these points into its off-screen depth
+  // framebuffer. This is a plain reference assignment with no behavior change;
+  // the EDL renderer only reads it when the user has turned
   // `pointCloudShading.eyeDomeLighting` on (default off), so the default draw
   // path is byte-identical whether or not this tag is present.
   const defaultEdlSource = cache.defaultEdlSource ?? {
@@ -2024,11 +2009,11 @@ function updateWebGPUPointCloud(
 }
 
 /**
- * PARITY-PC-EDL — the raw GPU resources tagged onto a point-cloud color
- * command so `WebGPUPointCloudEyeDomeLighting` can re-issue the same instanced
- * point draw into its off-screen (color + packed-depth) framebuffer using the
- * dual-output depth shader. All fields alias the live `PointCloudCache`
- * buffers — the EDL renderer never mutates them.
+ * The raw GPU resources tagged onto a point-cloud color command so
+ * `WebGPUPointCloudEyeDomeLighting` can re-issue the same instanced point draw
+ * into its off-screen (color + packed-depth) framebuffer using the dual-output
+ * depth shader. All fields alias the live `PointCloudCache` buffers — the EDL
+ * renderer never mutates them.
  */
 export interface PointCloudEDLSource {
   device?: GPUDevice | null;
@@ -2047,11 +2032,10 @@ export interface PointCloudEDLSource {
 }
 
 /**
- * Batch 168 - upload prev positions, build (or fetch) the velocity
- * pipeline, attach `velocityCommand` to the cache's color command. The
- * TAA pass walks the command list for `cmd.velocityCommand` and
- * dispatches it into the rg16float velocity texture. Mirrors the
- * Billboard/Point pattern (Batches 143/148).
+ * Upload prev positions, build (or fetch) the velocity pipeline, attach
+ * `velocityCommand` to the cache's color command. The TAA pass walks the
+ * command list for `cmd.velocityCommand` and dispatches it into the rg16float
+ * velocity texture. Mirrors the Billboard/Point velocity pattern.
  *
  * Skips entirely when TAA is off and no prev buffer has been allocated
  * yet — keeps the off-path zero-cost.
@@ -2093,7 +2077,7 @@ function attachPointCloudVelocityCommand(
       size: requiredBytes,
       usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
     });
-    // C10-09 T-4 - the resident revision points at bytes in the destroyed
+    // The resident revision points at bytes in the destroyed
     // buffer; force a re-seed on the next frame.
     cache.prevBufferRevision = undefined;
   }
@@ -2119,7 +2103,7 @@ function attachPointCloudVelocityCommand(
   //      correspondence between OLD and NEW points at the same i).
   //      Subsequent frames at the new count restore the per-frame
   //      delta capture.
-  // C10-09-VELOCITY-PREV-BUFFER-GPU-COPY — revision-skip + GPU self-copy.
+  // Revision-skip + GPU self-copy.
   const prevSrc = cache.prevInstanceData;
   const isIdentity = prevSrc === cache.instanceData; // static: prev IS curr
   if (
@@ -2240,13 +2224,13 @@ function attachPointCloudVelocityCommand(
     (cache.command as { velocityCommand?: unknown }).velocityCommand =
       undefined;
   }
-  // Batch 169 - promote THIS frame's `instanceData` to next frame's
-  // `prevInstanceData` AFTER the velocity command has been built (and
-  // therefore captured a stable reference to the prev buffer's
-  // contents). For static content `cache.instanceData` is the same
-  // Float32Array as before — assignment is a no-op. For animated
-  // content where the application re-runs `buildInstanceBuffer` each
-  // frame, this rolls the per-frame delta forward correctly.
+  // Promote THIS frame's `instanceData` to next frame's `prevInstanceData`
+  // AFTER the velocity command has been built (and therefore captured a stable
+  // reference to the prev buffer's contents). For static content
+  // `cache.instanceData` is the same Float32Array as before — assignment is a
+  // no-op. For animated content where the application re-runs
+  // `buildInstanceBuffer` each frame, this rolls the per-frame delta forward
+  // correctly.
   if (cache.instanceData) {
     cache.prevInstanceData = cache.instanceData;
   }
@@ -2277,16 +2261,14 @@ function _runGPULODPath(
   canvasFormat: GPUTextureFormat,
   boundingVolume: CesiumBoundingSphere | undefined,
 ): boolean {
-  // Build the LOD pipeline + storage BGL lazily. Both are per-device
-  // not per-instance, but storing them on the cache is simpler than
-  // a device-keyed shared map and point cloud instances are typically
-  // few enough that the duplication doesn't matter.
-  // C-R7 (Batch 74) — descriptor + central pipeline cache. Two
-  // PointCloud instances on the same canvas format share one LOD
-  // pipeline. Returns early without rendering when the pipeline is
-  // still materializing — matches the existing `lodStorageBindGroup`
-  // not-ready behavior below (one-frame visual gap, recovers next
-  // frame).
+  // Build the LOD pipeline + storage BGL lazily. Both are per-device not
+  // per-instance, but storing them on the cache is simpler than a device-keyed
+  // shared map and point cloud instances are typically few enough that the
+  // duplication doesn't matter. Descriptor + central pipeline cache. Two
+  // PointCloud instances on the same canvas format share one LOD pipeline.
+  // Returns early without rendering when the pipeline is still materializing —
+  // matches the existing `lodStorageBindGroup` not-ready behavior below
+  // (one-frame visual gap, recovers next frame).
   if (!cache.lodPipelineEntry) {
     const built = _buildLODPipelineDescriptor(
       device,
@@ -2424,12 +2406,10 @@ function _runGPULODPath(
     device.queue.submit([encoder.finish()]);
   }
 
-  // Emit a drawIndirect command. The scene renderer's execute path
-  // recognizes `_drawIndirectBuffer` and routes through drawIndirect
-  // instead of the default instanced draw.
-  // FEAT-GAP-09 (Batch 104) — per-frame effects BG refresh for LOD
-  // color command. Same helper as the default path; cached per frame
-  // so this is cheap.
+  // Emit a drawIndirect command. The scene renderer's execute path recognizes
+  // `_drawIndirectBuffer` and routes through drawIndirect instead of the
+  // default instanced draw. Per-frame effects BG refresh for LOD color command.
+  // Same helper as the default path; cached per frame so this is cheap.
   const lodEffectsBG =
     getOrCreateSharedAdvancedEffectsBG(frameState) ??
     getPlaceholderEffects(device).bindGroup;
@@ -2453,9 +2433,8 @@ function _runGPULODPath(
       cull: pointCloud._cull !== false,
     });
   } else {
-    // FEAT-GAP-09 (Batch 104) — per-frame effects BG refresh on
-    // cached command. Slot [2] is the LOD effects slot (after uniforms
-    // at 0 and storage at 1).
+    // Per-frame effects BG refresh on cached command. Slot [2] is the LOD
+    // effects slot (after uniforms at 0 and storage at 1).
     const bindGroups = (cache.lodCommand as { bindGroups?: GPUBindGroup[] })
       .bindGroups;
     if (bindGroups) {
@@ -2467,11 +2446,11 @@ function _runGPULODPath(
     cache.lodCommand.cull = pointCloud._cull !== false;
   }
 
-  // Batch 169 - LOD-path velocity emission. Mirrors the default-path
-  // attach helper: maintain a parallel prev SSBO, build the velocity
-  // pipeline lazily, attach `velocityCommand` to the lodCommand. The
-  // TAA pass walks the command list for `cmd.velocityCommand` and
-  // dispatches it via drawIndirect (same indirect buffer as color).
+  // LOD-path velocity emission. Mirrors the default-path attach helper:
+  // maintain a parallel prev SSBO, build the velocity pipeline lazily, attach
+  // `velocityCommand` to the lodCommand. The TAA pass walks the command list
+  // for `cmd.velocityCommand` and dispatches it via drawIndirect (same indirect
+  // buffer as color).
   attachLODPointCloudVelocityCommand(
     device,
     context,
@@ -2508,12 +2487,11 @@ function _runGPULODPath(
 }
 
 /**
- * Batch 169 - upload prev positions to the LOD prev SSBO, build (or
- * fetch) the LOD velocity pipeline, attach `velocityCommand` to
- * `cache.lodCommand`. Same `cache.instanceData` / `cache.prevInstanceData`
- * lifecycle as the default-path helper — both share the CPU mirror and
- * the prev-promotion happens in the default-path helper after both
- * paths' velocity commands are wired.
+ * Upload prev positions to the LOD prev SSBO, build (or fetch) the LOD velocity
+ * pipeline, attach `velocityCommand` to `cache.lodCommand`. Same
+ * `cache.instanceData` / `cache.prevInstanceData` lifecycle as the default-path
+ * helper — both share the CPU mirror and the prev-promotion happens in the
+ * default-path helper after both paths' velocity commands are wired.
  *
  * Skips entirely when TAA is off and no prev SSBO has been allocated
  * yet — keeps the off-path zero-cost.
@@ -2558,15 +2536,15 @@ function attachLODPointCloudVelocityCommand(
     });
     // Storage BG references the prev SSBO; rebuild on size change.
     cache.lodVelocityBindGroup = null;
-    // C10-09 T-4 - resident revision points at the destroyed buffer; re-seed.
+    // Resident revision points at the destroyed buffer; re-seed.
     cache.lodPrevBufferRevision = undefined;
   }
 
-  // C10-09-VELOCITY-PREV-BUFFER-GPU-COPY — revision-skip + GPU self-copy on the
-  // LOD storage prev SSBO (own realloc lifecycle, own resident marker). Same
-  // three-branch shape as the default path; `instanceBuffer` is the shared
-  // current-frame source and already carries the identical bytes for static
-  // content, so the identity case is a one-time GPU copy then skip.
+  // Revision-skip + GPU self-copy on the LOD storage prev SSBO (own realloc
+  // lifecycle, own resident marker). Same three-branch shape as the default
+  // path; `instanceBuffer` is the shared current-frame source and already
+  // carries the identical bytes for static content, so the identity case is a
+  // one-time GPU copy then skip.
   const prevSrc = cache.prevInstanceData;
   const isIdentity = prevSrc === cache.instanceData;
   if (
@@ -2671,9 +2649,8 @@ function attachLODPointCloudVelocityCommand(
     cache.lodVelocityBindGroup &&
     cache.lodIndirectBuffer
   ) {
-    // FEAT-GAP-09 (Batch 104) — match the LOD color pipeline's 3-BGL
-    // layout. Velocity entry doesn't sample atmosphere; placeholder is
-    // safe — WGSL allows unused bindings.
+    // Match the LOD color pipeline's 3-BGL layout. Velocity entry doesn't
+    // sample atmosphere; placeholder is safe — WGSL allows unused bindings.
     const lodVelocityEffectsBG = getPlaceholderEffects(device).bindGroup;
     if (!cache.lodVelocityCommand) {
       cache.lodVelocityCommand = new WebGPUDrawCommand({
@@ -2731,7 +2708,6 @@ function attachLODPointCloudVelocityCommand(
  * pipeline (storage-backed instance lookup via `visibleIndices`).
  * Materializes through the central pipeline cache.
  *
- * C-R7-RENDERER-MIGRATION (Batch 74).
  * @private
  */
 function _buildLODPipelineDescriptor(
@@ -2799,10 +2775,9 @@ function _buildLODPipelineDescriptor(
 }
 
 /**
- * Batch 169 - B.10 LOD velocity pipeline. Three storage bindings
- * (curr instance + visibleIndices + prev instance) instead of the
- * regular LOD pipeline's two; emits to rg16float matching the
- * default-path velocity descriptor (Batch 168).
+ * LOD velocity pipeline. Three storage bindings (curr instance + visibleIndices
+ * + prev instance) instead of the regular LOD pipeline's two; emits to
+ * rg16float matching the default-path velocity descriptor.
  *
  * Storage BGL is separate from the regular LOD pipeline's storageBGL
  * because that one only declares 2 bindings — a 3-binding BGL with a

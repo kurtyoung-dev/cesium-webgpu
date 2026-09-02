@@ -117,7 +117,7 @@ const SnapshotState = {
  * @property {number} shCoefficientCount Coefficients per splat.
  * @property {number} numSplats Total splat count in this snapshot.
  * @property {Uint32Array|undefined} indexes Sorted index buffer when READY.
- * @property {number|undefined} indexesSortSequence `_sortRequestId` of the sort that produced `indexes` (`C15-G4` provenance).
+ * @property {number|undefined} indexesSortSequence `_sortRequestId` of the sort that produced `indexes`.
  * @property {number|undefined} indexesDataGeneration `_splatDataGeneration` the sort that produced `indexes` ran against.
  * @property {Texture|undefined} gaussianSplatTexture Packed splat attribute texture.
  * @property {Texture|undefined} sphericalHarmonicsTexture Packed SH texture.
@@ -282,22 +282,22 @@ function isActiveSort(primitive, activeSort) {
 }
 
 /**
- * `C15-G4` — publish a resolved permutation together with the PROVENANCE of the
- * sort that produced it.
+ * Publish a resolved permutation together with the PROVENANCE of the sort
+ * that produced it.
  *
- * `_indexes` alone carries no answer to "which camera, against which data?", so
- * a consumer in another module — the WebGPU renderer reads `_indexes` off an
- * arbitrary object, which is how the three synthetic probes reach it — cannot
- * tell a newer permutation from an older one that happens to have the same
- * length. The stamp makes the ordering explicit: `_sortRequestId` is already
- * monotonic across BOTH the pending-snapshot and steady-state sorts, so it is
- * the sequence number, and `_splatDataGeneration` names the data epoch it was
- * computed against.
+ * `_indexes` alone carries no answer to "which camera, against which data?",
+ * so a consumer in another module — the WebGPU renderer reads `_indexes` off
+ * an arbitrary object, which is how the three synthetic probes reach it —
+ * cannot tell a newer permutation from an older one that happens to have the
+ * same length. The stamp makes the ordering explicit: `_sortRequestId` is
+ * monotonic across BOTH the pending-snapshot and steady-state sorts, so it
+ * is the sequence number, and `_splatDataGeneration` names the data epoch it
+ * was computed against.
  *
- * The refusal below is a second line of defence, not the first: the steady path
- * reaches here only through {@link isActiveSort}, which requires exact equality
- * with the latest request. It exists so that a future scheduler which allows
- * two sorts in flight cannot silently regress the draw order.
+ * The refusal below is a second line of defence, not the first: the steady
+ * path reaches here only through {@link isActiveSort}, which requires exact
+ * equality with the latest request. It exists so that a scheduler that
+ * allows two sorts in flight cannot silently regress the draw order.
  *
  * @param {GaussianSplatPrimitive} primitive The splat primitive.
  * @param {Uint32Array} indexes The resolved permutation.
@@ -330,12 +330,12 @@ function publishSortedIndexes(primitive, indexes, sequence, dataGeneration) {
  * WebGL's is the {@link Texture}, and a native feature renderer's is the
  * retained packed WASM buffer, because it creates no `Texture` at all.
  *
- * Reading `gaussianSplatTexture` unconditionally is what stalled the native
- * path permanently after the `C15-G2` scene-logic extraction: the snapshot
- * reached `TEXTURE_READY` with no texture by design, so the guard fired on
- * every frame forever, the sort was never scheduled and `commitSnapshot` never
- * ran. Keep this predicate backend-aware — it is the one readiness check in the
- * shared half that cannot be written in terms of WebGL objects.
+ * Reading `gaussianSplatTexture` unconditionally stalls the native path
+ * permanently: its snapshot reaches `TEXTURE_READY` with no texture by
+ * design, so an unconditional guard fires on every frame forever, the sort
+ * is never scheduled and `commitSnapshot` never runs. Keep this predicate
+ * backend-aware — it is the one readiness check in the shared half that
+ * cannot be written in terms of WebGL objects.
  *
  * @param {GaussianSplatPrimitive} primitive The owning primitive.
  * @param {GaussianSplatPrimitive.Snapshot} snapshot The snapshot to test.
@@ -353,13 +353,13 @@ function hasSnapshotRenderPayload(primitive, snapshot) {
  * Backend-neutral answer to "has this primitive produced a drawable result
  * yet?" — the question `!defined(this._drawCommand)` used to stand in for.
  *
- * `NEW-SPLAT-PENDING-WORK-DRAWCOMMAND-PROXY`: `_drawCommand` is built only by
- * {@link GaussianSplatPrimitive.buildGSplatDrawCommand}, which `C15-G2` gated
- * off on native backends, so on WebGPU the old term was PERMANENTLY true. It
- * fails toward doing more work rather than less, so it was never a stall — but
- * it made the settled-scene early return structurally unreachable, costing a
- * `Matrix4.clone`, a `Matrix4.multiply` and `shouldStartSteadySort`'s two
- * `Cartesian3` deltas on every frame of a scene that has stopped moving.
+ * `_drawCommand` is built only by
+ * {@link GaussianSplatPrimitive.buildGSplatDrawCommand}, which is gated off on
+ * native backends, so on WebGPU `!defined(this._drawCommand)` is PERMANENTLY
+ * true. That fails toward doing more work rather than less, so it is not a
+ * stall — but it makes the settled-scene early return structurally unreachable,
+ * costing a `Matrix4.clone`, a `Matrix4.multiply` and `shouldStartSteadySort`'s
+ * two `Cartesian3` deltas on every frame of a scene that has stopped moving.
  *
  * The replacement asks the same question in each backend's own terms and does
  * NOT reach into the feature renderer's cache: on WebGL a drawable result IS
@@ -541,10 +541,10 @@ function commitSnapshot(primitive, snapshot, frameState) {
   primitive._shData = snapshot.shData;
   primitive._sphericalHarmonicsDegree = snapshot.sphericalHarmonicsDegree;
   primitive._numSplats = snapshot.numSplats;
-  // `C15-G4` — the commit is the ATOMIC data swap, so it assigns directly
-  // rather than through `publishSortedIndexes`: refusing here would leave
-  // `_indexes` describing a different generation than `_positions`. Staleness
-  // is already excluded upstream (`resolvePendingSnapshotSort` returns unless
+  // The commit is the ATOMIC data swap, so it assigns directly rather than
+  // through `publishSortedIndexes`: refusing here would leave `_indexes`
+  // describing a different generation than `_positions`. Staleness is
+  // already excluded upstream (`resolvePendingSnapshotSort` returns unless
   // the resolved sort still owns `_pendingSnapshot`). The stamp travels with
   // the permutation so cross-module consumers can order it.
   primitive._indexes = snapshot.indexes;
@@ -553,12 +553,13 @@ function commitSnapshot(primitive, snapshot, frameState) {
     snapshot.indexesDataGeneration ?? primitive._splatDataGeneration;
   primitive.gaussianSplatTexture = snapshot.gaussianSplatTexture;
   primitive.sphericalHarmonicsTexture = snapshot.sphericalHarmonicsTexture;
-  // `C15-G2`: the packed WASM output, retained only when a native feature
-  // renderer owns the draw (the WebGL path uploaded it into a Texture and does
-  // not keep a second CPU copy). This is the artifact `C15-G3` consumes; it is
-  // deliberately NOT named `_splatData`, because that field is the WebGPU
-  // renderer's 16-float `SplatRecord` read and this buffer is the WASM-native
-  // 8-uint32 layout. Assigning it there would draw garbage, not splats.
+  // The packed WASM output, retained only when a native feature renderer
+  // owns the draw (the WebGL path uploaded it into a Texture and does not
+  // keep a second CPU copy). This is the artifact the WebGPU renderer's
+  // `resolveSplatSource` consumes; it is deliberately NOT named
+  // `_splatData`, because that field is the WebGPU renderer's legacy
+  // 16-float `SplatRecord` read and this buffer is the WASM-native 8-uint32
+  // layout. Assigning it there would draw garbage, not splats.
   primitive._packedSplatTextureData = snapshot.packedSplatTextureData;
   primitive._lastTextureWidth = snapshot.lastTextureWidth;
   primitive._lastTextureHeight = snapshot.lastTextureHeight;
@@ -583,7 +584,7 @@ function commitSnapshot(primitive, snapshot, frameState) {
 }
 
 /**
- * Backend-neutral half of the splat texture pipeline (`C15-G2`). Applies the
+ * Backend-neutral half of the splat texture pipeline. Applies the
  * texture-size budget — truncating the snapshot when the splat count exceeds
  * what a single row-addressed 2D layout can hold — computes the row
  * mask/shift the shader indexes with, and trims or zero-pads the raw WASM
@@ -667,22 +668,20 @@ function computeSplatTextureLayout(
 }
 
 /**
- * Backend-neutral SH budget (`C15-G5` / `NEW-SPLAT-SH-DEGREE-BACKEND-DEPENDENT`).
+ * Backend-neutral SH budget.
  *
  * The WebGL SH texture is `maximumTextureSize` wide and cannot be widened
  * further, so above a splat count of <code>maxTex * floor(maxTex / dims)</code>
  * its required HEIGHT exceeds the same limit and the snapshot degrades to
  * degree 0 (base colour only) rather than crashing.
  *
- * A WebGPU storage buffer has no such bound, so before `C15-G5` this decision
- * lived entirely inside the WebGL-only half of
- * {@link processGeneratedSplatTextureData} and the two backends would have
- * disagreed about the SH degree — silently, and only for clouds far larger than
- * either in-tree gate asset. Both backends now take the degree from THIS one
- * function, so they degrade together by construction. (WebGPU giving up
- * capability it technically has is the correct trade: the row's whole purpose
- * is cross-backend colour parity, and the alternative is a divergence that no
- * parity gate would ever be run large enough to catch.)
+ * A WebGPU storage buffer has no such bound, but both backends take the
+ * degree from THIS one function, so they degrade together by construction
+ * rather than through two parallel implementations that could disagree —
+ * silently, and only for clouds far larger than either in-tree gate asset.
+ * (WebGPU giving up capability it technically has is the correct trade: the
+ * point is cross-backend colour parity, and the alternative is a divergence
+ * that no parity gate would ever be run large enough to catch.)
  *
  * Returns the row addressing the WebGL texture pack needs, or
  * <code>undefined</code> when this snapshot carries no SH at all.
@@ -725,7 +724,7 @@ function applySphericalHarmonicsBudget(snapshot, maximumTextureSize) {
  * updates or recreates GPU textures, and the snapshot transitions to
  * {@link SnapshotState.TEXTURE_READY} when complete.
  *
- * This is where the neutral/GL boundary sits (`C15-G2`): everything up to and
+ * This is where the neutral/GL boundary sits: everything up to and
  * including {@link computeSplatTextureLayout} is shared, and only the WebGL
  * <code>Texture</code> uploads below are backend-specific. When a native
  * feature renderer owns the draw, the packed buffer is retained on the
@@ -764,10 +763,10 @@ async function processGeneratedSplatTextureData(
       return;
     }
 
-    // Backend-neutral (`C15-G5`): the SH DEGREE — including the degrade-to-0
-    // fallback for clouds too tall for an SH texture — is decided once, above
-    // the branch, so both backends read the same `sphericalHarmonicsDegree`
-    // off the committed snapshot. The returned row addressing is only used by
+    // Backend-neutral: the SH DEGREE — including the degrade-to-0 fallback
+    // for clouds too tall for an SH texture — is decided once, above the
+    // branch, so both backends read the same `sphericalHarmonicsDegree` off
+    // the committed snapshot. The returned row addressing is only used by
     // the WebGL texture pack below.
     const shLayout = applySphericalHarmonicsBudget(
       snapshot,
@@ -775,24 +774,23 @@ async function processGeneratedSplatTextureData(
     );
 
     // ── Backend branch. Everything above ran for both backends; everything
-    // below constructs WebGL `Texture` objects. A native feature renderer owns
-    // its own GPU resources, so it gets the packed WASM buffer verbatim and no
-    // WebGL texture is created for it at all. `C15-G3` turns this retained
-    // artifact into a GPU storage buffer; until then the WebGPU splat draw is
-    // still absent by design, for that one remaining reason.
+    // below constructs WebGL `Texture` objects. A native feature renderer
+    // owns its own GPU resources, so it gets the packed WASM buffer verbatim
+    // — no WebGL texture is created for it — and turns it into a GPU storage
+    // buffer itself.
     if (defined(primitive._featureRenderer)) {
       snapshot.packedSplatTextureData = effectiveTextureData;
       snapshot.lastTextureWidth = effectiveTextureData.width;
       snapshot.lastTextureHeight = effectiveTextureData.height;
       // The SH texture pack below is a WebGL texture LAYOUT — row padding out
       // to `maximumTextureSize` texels — and a native renderer needs none of
-      // it: `C15-G5` binds `snapshot.shData` itself as a storage buffer, whose
+      // it: it binds `snapshot.shData` itself as a storage buffer, whose
       // per-splat stride is `dims * 2` u32 with coefficient `i` at word
       // `splatID * dims * 2 + i * 2`. That is the SAME addressing the GLSL
-      // texel fetch reduces to (the row copy below is a pure regrouping of
-      // this array), so both backends read bit-identical coefficients. The
-      // DEGREE — including the degrade-to-0 fallback — was already decided
-      // above the branch by `applySphericalHarmonicsBudget`.
+      // texel fetch reduces to (the row copy below is a pure regrouping of this
+      // array), so both backends read bit-identical coefficients. The DEGREE —
+      // including the degrade-to-0 fallback — was already decided above the
+      // branch by `applySphericalHarmonicsBudget`.
       snapshot.state = SnapshotState.TEXTURE_READY;
       return;
     }
@@ -905,8 +903,8 @@ async function resolvePendingSnapshotSort(
 
     const pending = pendingSort.snapshot;
     pending.indexes = sortedData;
-    // `C15-G4` — carry the provenance onto the snapshot so `commitSnapshot`
-    // publishes the permutation and its sequence in the same atomic swap.
+    // Carry the provenance onto the snapshot so `commitSnapshot` publishes
+    // the permutation and its sequence in the same atomic swap.
     pending.indexesSortSequence = pendingSort.requestId;
     pending.indexesDataGeneration = pendingSort.dataGeneration;
     pending.state = SnapshotState.READY;
@@ -964,9 +962,9 @@ async function resolveSteadySort(primitive, activeSort, sortPromise) {
       }
       return;
     }
-    // `C15-G4` — sequence-guarded publish. A superseded resolution must not
-    // regress the order the renderers are already drawing: stale-but-consistent
-    // beats torn, so a refused result leaves the previous permutation resident.
+    // Sequence-guarded publish. A superseded resolution must not regress the
+    // order the renderers are already drawing: stale-but-consistent beats
+    // torn, so a refused result leaves the previous permutation resident.
     if (
       !publishSortedIndexes(
         primitive,
@@ -1095,7 +1093,7 @@ class GaussianSplatPrimitive {
      */
     this._indexes = undefined;
     /**
-     * `C15-G4` — provenance of the permutation currently in `_indexes`: the
+     * Provenance of the permutation currently in `_indexes`: the
      * `_sortRequestId` of the sort that produced it (monotonic across both the
      * pending-snapshot and steady-state sorts) and the `_splatDataGeneration`
      * it was computed against. Consumers in other modules order permutations by
@@ -1586,10 +1584,10 @@ class GaussianSplatPrimitive {
         selectedTilesChanged ||
         defined(this._pendingSnapshot) ||
         defined(this._pendingSortPromise) ||
-        // NEW-SPLAT-PENDING-WORK-DRAWCOMMAND-PROXY — backend-neutral. The old
-        // `!defined(this._drawCommand)` was a WebGL-shaped liveness proxy that
-        // never fired on a native backend, so the settled-scene early return
-        // below could not be taken there.
+        // Backend-neutral: `!defined(this._drawCommand)` is a WebGL-shaped
+        // liveness proxy that never fires on a native backend, so this asks
+        // {@link hasDrawableResult} instead, which answers in each backend's
+        // own terms.
         !hasDrawableResult(this);
       if (
         !hasPendingWork &&

@@ -91,13 +91,11 @@ struct VolumetricFogParams {
   // z = noiseStrength (0..1, fractional density modulation)
   // w = unused
   noise: vec4<f32>,
-  // C-P7-RTE (Batch 26) — altitude reconstruction that avoids the
-  // `length(worldPos) - innerRadius` f32 catastrophic cancellation
-  // seen pre-Batch-26. Both world-space positions are ~6.4e6 m at
-  // Earth radius, so their f32 difference has ~1 m ulp — which
-  // produces visible fog banding whenever altitude fluctuations are
-  // finer than that (LEO / orbital cameras looking at atmospheric
-  // haze).
+  // Altitude reconstruction that avoids the `length(worldPos) - innerRadius`
+  // f32 catastrophic cancellation. Both world-space positions are ~6.4e6 m at
+  // Earth radius, so their f32 difference has ~1 m ulp — which produces visible
+  // fog banding whenever altitude fluctuations are finer than that (LEO /
+  // orbital cameras looking at atmospheric haze).
   //
   // The fix uses a 2nd-order Taylor expansion of `|cameraPos + rayDir*d|`
   // around the camera, which reduces to:
@@ -116,11 +114,11 @@ struct VolumetricFogParams {
   // altitude camera; ~1 m error at orbital d = 1000 km. Below f32's
   // natural granularity at those scales — good enough for fog.
   cameraAltitudeRTE: vec4<f32>,
-  // C-P7-RTE — curvature correction denominator.
+  // Curvature correction denominator.
   //   x = oneOverDenom = 1 / (2 * (innerRadius + cameraAltitude))
   //                    = 1 / (2 * cameraCenterDistance)
   // Precomputed on CPU in f64 so the quadratic term stays stable.
-  //   y = groundFogReferenceAltitude — NEW-WEBGPU-GROUND-FOG-RENDERS-NOTHING.
+  //   y = groundFogReferenceAltitude.
   //       The ground datum the GROUND-FOG band is anchored to, expressed in
   //       the SAME frame as `cameraAltitudeRTE.w` (metres above the inscribed
   //       sphere of radius `innerRadius`), so the shader can subtract the two
@@ -137,7 +135,7 @@ struct VolumetricFogParams {
   //       and an exact f32 zero at low latitudes. Anchoring the band to this
   //       reference removes the offset entirely — the subtraction cancels the
   //       sphere-vs-ellipsoid error because both terms are in the same frame.
-  //   z = baseSurfaceAltitude — NEW-WEBGPU-BASE-HEIGHT-FOG-INSCRIBED-SPHERE-DATUM.
+  //   z = baseSurfaceAltitude.
   //       The SAME correction for the BASE height fog, whose `exp(-altitude *
   //       falloff)` is fed the raw inscribed-sphere altitude. At the default
   //       1e-4 falloff the 21,385 m equatorial offset scales the configured
@@ -153,11 +151,10 @@ struct VolumetricFogParams {
   //   w = pad
   altitudeCurvature: vec4<f32>,
 
-  // Phase 6c — Cloud shadows in volumetric fog (Session 65 Batch 44).
-  // Each froxel's sun in-scatter term is attenuated by a one-sample
-  // cloud-extinction approximation: project from the froxel along the
-  // sun direction to the cloud-layer mid-altitude and sample the cloud
-  // density there. Cheap (1 fbm sample per froxel × ~1.8M froxels at
+  // Cloud shadows in volumetric fog. Each froxel's sun in-scatter term is
+  // attenuated by a one-sample cloud-extinction approximation: project from the
+  // froxel along the sun direction to the cloud-layer mid-altitude and sample
+  // the cloud density there. Cheap (1 fbm sample per froxel × ~1.8M froxels at
   // medium quality) and visually sufficient for fog-grid resolution.
   //
   // cloudShadow:
@@ -185,7 +182,7 @@ struct VolumetricFogParams {
   //   w = reserved
   cloudDensityShape: vec4<f32>,
 
-  // Phase C / Batch 420 — GROUND FOG (low-altitude "valley fog" mist).
+  // GROUND FOG (low-altitude "valley fog" mist).
   // Adds a height-dependent density BOOST concentrated in the lowest few
   // hundred metres of altitude so the froxel fog renders the classic
   // morning-mist-hugging-the-ground look. Driven by
@@ -196,7 +193,7 @@ struct VolumetricFogParams {
   //
   // groundFog:
   //   x = enabled         (0/1 — gate; 0 makes the density pass
-  //                        byte-identical to pre-Batch-420 output)
+  //                        byte-identical to the ground-fog-absent output)
   //   y = intensity       (0..1, scales the peak boost; from
   //                        `effects.groundFog.intensity`)
   //   z = bandHeight      (m, exponential falloff scale — boost ≈
@@ -211,7 +208,7 @@ struct VolumetricFogParams {
   //                        `density`)
   groundFog: vec4<f32>,
 
-  // Batch 431 (FOG-IBL-AMBIENT) — sky-LUT / IBL fog ambient.
+  // Sky-LUT / IBL fog ambient.
   // Replaces the flat-constant `ambientTerm = u.occlusion.y` (used by the
   // lightScattering pass) with an altitude- + time-of-day-correct ambient:
   // a sample of the Bruneton TRANSMITTANCE LUT at `(froxel altitude,
@@ -229,14 +226,14 @@ struct VolumetricFogParams {
   //   w = reserved.
   iblAmbient: vec4<f32>,
 
-  // Batch 435 (FOG-TEMPORAL) — blue-noise jitter for the integrate pass.
+  // Blue-noise jitter for the integrate pass.
   // When `enableJitter` is on, the integrate march offsets each ray's
   // slice-depth phase by a per-(pixel, frame) blue-noise value so successive
   // frames sample DIFFERENT depths along the ray; the temporal resolve pass
   // then accumulates those jittered marches into a stable, high-sample-count
   // result (amortizing the full march across frames → the grazing-ray cap is
   // lifted). When `enableJitter` < 0.5 the integrate pass adds NO offset and
-  // is byte-identical to pre-Batch-435.
+  // is byte-identical to the non-jittered path.
   //
   // temporal:
   //   x = enableJitter (0/1)
@@ -245,12 +242,12 @@ struct VolumetricFogParams {
   //   w = reserved
   temporal: vec4<f32>,
 
-  // Batch 437 (CLOUD-SHADOWS) — opt-in HI-FI cloud shadow. When the
-  // `cloudShadowHiFi` sub-flag is on (AND globe.cloudCastShadows is on), the
-  // scattering pass samples the procedural cloud renderer's beer SHADOW MAP
-  // (the ACTUAL rendered cloud optical depth from the sun's view) instead of the
-  // cheap 1-sample local-fbm `sampleCloudShadow`. Default OFF keeps the local-fbm
-  // path verbatim (byte-identical).
+  // Opt-in HI-FI cloud shadow. When the `cloudShadowHiFi` sub-flag is on (AND
+  // globe.cloudCastShadows is on), the scattering pass samples the procedural
+  // cloud renderer's beer SHADOW MAP (the ACTUAL rendered cloud optical depth
+  // from the sun's view) instead of the cheap 1-sample local-fbm
+  // `sampleCloudShadow`. Default OFF keeps the local-fbm path verbatim
+  // (byte-identical).
   //
   // cloudShadowHiFi:
   //   x = enable (0/1) — gate. < 0.5 → the legacy local-fbm sampleCloudShadow
@@ -260,21 +257,21 @@ struct VolumetricFogParams {
   //   z = strength (0..1 darkening scale).
   //   w = reserved.
   cloudShadowHiFi: vec4<f32>,
-  // C13-06 — sun-view clip matrix RELATIVE TO THE CAMERA (`worldToSunClip *
+  // Sun-view clip matrix RELATIVE TO THE CAMERA (`worldToSunClip *
   // translate(camera)`, column-major) for the beer-shadow-map lookup. Identity
   // when the hi-fi flag is off (never used then).
   cloudShadowSunViewVP: mat4x4<f32>,
 
-  // Batch 440 (FOG-MS) — opt-in MULTIPLE-SCATTERING octaves in the
-  // lightScattering pass. When the `multiScatter` sub-flag is on AND
-  // `msOctaves` > 1, the in-scatter source radiance's directional sun/moon
-  // term is replaced by a Frostbite multi-octave sum (`multiScatterFog`):
-  // each octave scales the contribution (a^i), the directional occlusion bleed
-  // (b^i), and the HG phase eccentricity (c^i) by geometric factors, summed and
-  // NORMALIZED by the contribution total. A dense valley mist then reads as a
-  // LIT VOLUME (light bleeds into the dense core) instead of a flat dark mass,
-  // without blowing out (the normalization caps a thin layer at the
-  // single-scatter value). Mirrors ProceduralClouds.wgsl::multiScatterLight.
+  // Opt-in MULTIPLE-SCATTERING octaves in the lightScattering pass. When the
+  // `multiScatter` sub-flag is on AND `msOctaves` > 1, the in-scatter source
+  // radiance's directional sun/moon term is replaced by a Frostbite
+  // multi-octave sum (`multiScatterFog`): each octave scales the contribution
+  // (a^i), the directional occlusion bleed (b^i), and the HG phase eccentricity
+  // (c^i) by geometric factors, summed and NORMALIZED by the contribution
+  // total. A dense valley mist then reads as a LIT VOLUME (light bleeds into
+  // the dense core) instead of a flat dark mass, without blowing out (the
+  // normalization caps a thin layer at the single-scatter value). Mirrors
+  // ProceduralClouds.wgsl::multiScatterLight.
   //
   // multiScatter:
   //   x = enable (0/1) — gate. < 0.5 → the existing single HG-phase term runs
@@ -326,7 +323,7 @@ fn sliceToLinearDepth(k: f32, slices: f32) -> f32 {
 // 3. Sample the unprojected ray direction by reconstructing two clip
 //    points (near and far) and subtracting
 // 4. Place the froxel along the ray at the slice's linear depth
-// C13-06 — the froxel's offset FROM THE CAMERA. The cloud-shadow projection
+// The froxel's offset FROM THE CAMERA. The cloud-shadow projection
 // consumes this directly so it never multiplies a full-ECEF position by a
 // planet-scale f32 matrix (the `mvp * vec4(position, 1.0)` form the fork's RTE
 // law forbids). `froxelWorldPosition` below simply adds the camera back.
@@ -357,15 +354,15 @@ fn froxelWorldPosition(gid: vec3<u32>) -> vec3<f32> {
 
 // Henyey-Greenstein phase function. cosθ is dot(viewDir, lightDir).
 //
-// Batch 421 — the forward-scatter peak of HG is a near-singularity as
-// g → 1 and cosθ → 1 (denom → (1-g)²). With the old `max(denom, 1e-4)`
-// floor and a strongly-forward g the function spiked to ~7e4, which the
-// fog's single-scatter source-radiance term carried straight into f16
-// overflow (65504) — the froxel whiteout. Clamp the anisotropy to a
-// stable range and floor the denominator at the physical (1-|g|)² so the
-// peak stays finite, then clamp the phase to a sane maximum. A fog mist
-// only needs a gentle forward bias; the raw glory-peak is not wanted here
-// and would alias into fireflies anyway at froxel resolution.
+// The forward-scatter peak of HG is a near-singularity as g → 1 and cosθ → 1
+// (denom → (1-g)²). With the old `max(denom, 1e-4)` floor and a
+// strongly-forward g the function spiked to ~7e4, which the fog's
+// single-scatter source-radiance term carried straight into f16 overflow
+// (65504) — the froxel whiteout. Clamp the anisotropy to a stable range and
+// floor the denominator at the physical (1-|g|)² so the peak stays finite, then
+// clamp the phase to a sane maximum. A fog mist only needs a gentle forward
+// bias; the raw glory-peak is not wanted here and would alias into fireflies
+// anyway at froxel resolution.
 fn henyeyGreenstein(cosTheta: f32, g: f32) -> f32 {
   let gc = clamp(g, -0.95, 0.95);
   let g2 = gc * gc;
@@ -379,16 +376,16 @@ fn henyeyGreenstein(cosTheta: f32, g: f32) -> f32 {
   return min(phase, 4.0);
 }
 
-// Batch 440 (FOG-MS) — Frostbite/Wrenninge energy-conserving MULTIPLE-SCATTERING
-// octaves. Mirrors the OCTAVE STRUCTURE of ProceduralClouds.wgsl::multiScatterLight
-// (an N-octave geometric-decay loop with per-octave contribution a^i, Beer
-// extinction b^i, and HG phase eccentricity c^i) but returns a MULTIPLIER (>= 1)
-// applied to the fog's existing single-scatter term, rather than a raw radiance.
+// Frostbite/Wrenninge energy-conserving MULTIPLE-SCATTERING octaves. Mirrors
+// the OCTAVE STRUCTURE of ProceduralClouds.wgsl::multiScatterLight (an N-octave
+// geometric-decay loop with per-octave contribution a^i, Beer extinction b^i,
+// and HG phase eccentricity c^i) but returns a MULTIPLIER (>= 1) applied to the
+// fog's existing single-scatter term, rather than a raw radiance.
 //
 // Why a multiplier: the cloud's octave-0 term IS the cloud single-scatter
 // (`beerPowder(opticalDepth)·phase`), so its octave loop directly produces the lit
-// radiance. The fog's single-scatter is DENSITY-INDEPENDENT (Batch 421 moved
-// extinction to the integrate pass), so it has NO Beer term — folding a raw Beer
+// radiance. The fog's single-scatter is DENSITY-INDEPENDENT (extinction
+// moved to the integrate pass), so it has NO Beer term — folding a raw Beer
 // octave-0 in would DARKEN it. Instead we compute the multi-octave Beer sum AND the
 // octave-0-only Beer reference, and return their RATIO: the relative multi-scatter
 // LIFT. In a DENSE core octave 0's Beer is small (dark) while deeper octaves
@@ -499,19 +496,16 @@ fn fbm3d(p: vec3<f32>) -> f32 {
   return (sum / norm) * 2.0 - 1.0;  // Remap [0, 1] → [-1, 1]
 }
 
-// CLOUD-LOW-COVERAGE-CUTOFF (fog cheap-path arm) — the distribution constants
-// that let the cheap cloud-shadow field share the visible march's coverage
-// response. See the long block at the gate in `sampleCloudShadow`.
+// Fog cheap-path arm — the distribution constants that let the cheap
+// cloud-shadow field share the visible march's coverage response. See the
+// gate in `sampleCloudShadow`.
 //
 // MEASURED, not tuned. Both numbers come from sampling the two real fields
-// with the shipped arithmetic in f32:
-//
-//   baked shape channel (CloudNoiseBake.wgsl `valueFBM`, 4 octaves, periodic)
-//     over a 60^3 grid of its full period: mean 0.43067, sigma 0.08963
-//   this module's `fbm3d(p) * 0.5 + 0.5` over 96,800 samples at the real ECEF
-//     magnitudes the shadow ray reaches (|samplePos| * 0.0003 ~ 1913, so the
-//     f32 hash quantisation the GPU sees is included): mean 0.49976,
-//     sigma 0.12063
+// with the shipped arithmetic in f32: the baked shape channel
+// (CloudNoiseBake.wgsl `valueFBM`, 4 octaves, periodic) over its full
+// period measures mean 0.43067 / sigma 0.08963; this module's
+// `fbm3d(p) * 0.5 + 0.5`, sampled at the real ECEF magnitudes the shadow
+// ray reaches, measures mean 0.49976 / sigma 0.12063.
 //
 // `FOG_CHEAP_FIELD_MEAN` is 0.5 EXACTLY rather than the measured 0.49976: a
 // value fBM of uniform hashes is symmetric about 0.5 by construction, so 0.5
@@ -535,12 +529,12 @@ fn normalizeFogCheapCloudField(value: f32) -> f32 {
     (value - FOG_CHEAP_FIELD_MEAN) / FOG_CHEAP_FIELD_SIGMA_RATIO;
 }
 
-// Batch 435 (FOG-TEMPORAL) — interleaved-gradient noise (Jimenez 2014),
-// the de-facto blue-noise dither used for TAA/temporal jitter. Returns a
-// value in [0, 1) that is spatially low-discrepancy (blue-noise-like) across
-// the (px, py) grid and decorrelated frame-to-frame by the frameIndex phase.
-// Cheaper than a precomputed blue-noise texture and good enough to break up
-// the slice-depth banding so the temporal accumulation can average it away.
+// Interleaved-gradient noise (Jimenez 2014), the de-facto blue-noise dither
+// used for TAA/temporal jitter. Returns a value in [0, 1) that is spatially
+// low-discrepancy (blue-noise-like) across the (px, py) grid and decorrelated
+// frame-to-frame by the frameIndex phase. Cheaper than a precomputed blue-noise
+// texture and good enough to break up the slice-depth banding so the temporal
+// accumulation can average it away.
 fn interleavedGradientNoise(px: f32, py: f32, frameIndex: f32) -> f32 {
   // Golden-ratio frame rotation so each frame's pattern is a fresh rotation
   // of the IGN field (the standard "animated blue noise" trick).
@@ -607,14 +601,14 @@ fn sampleSunShadow(worldPos: vec3<f32>) -> f32 {
 // per-froxel cloud shape is much coarser than the screen-pixel cloud
 // render anyway, and reusing the local hash keeps the WGSL slim.
 fn sampleCloudShadow(worldPos: vec3<f32>, offsetFromCamera: vec3<f32>) -> f32 {
-  // Batch 437 (CLOUD-SHADOWS) — HI-FI path. When the opt-in `cloudShadowHiFi`
-  // sub-flag is on, REPLACE the cheap local-fbm approximation below with a sample
-  // of the procedural cloud renderer's beer SHADOW MAP (the ACTUAL rendered cloud
-  // optical depth from the sun's view), so the fog shadow tracks the visible cloud
-  // field exactly. The legacy local-fbm path runs verbatim when the flag is off
-  // (parity default).
+  // HI-FI path. When the opt-in `cloudShadowHiFi` sub-flag is on, REPLACE the
+  // cheap local-fbm approximation below with a sample of the procedural cloud
+  // renderer's beer SHADOW MAP (the ACTUAL rendered cloud optical depth from
+  // the sun's view), so the fog shadow tracks the visible cloud field exactly.
+  // The legacy local-fbm path runs verbatim when the flag is off (parity
+  // default).
   if (u.cloudShadowHiFi.x >= 0.5) {
-    // C13-06 — `cloudShadowSunViewVP` is `worldToSunClip * translate(camera)`,
+    // `cloudShadowSunViewVP` is `worldToSunClip * translate(camera)`,
     // emitted by the shared frame owner in CPU f64, so the operand is the
     // froxel's camera-relative offset rather than its full-ECEF position.
     let clip = u.cloudShadowSunViewVP * vec4<f32>(offsetFromCamera, 1.0);
@@ -633,10 +627,9 @@ fn sampleCloudShadow(worldPos: vec3<f32>, offsetFromCamera: vec3<f32>) -> f32 {
 
   // NOTE: `enable` is a WGSL reserved keyword (used in `enable <ext>;`
   // extension directives) and is invalid as an identifier — using it
-  // produced a "expected identifier for 'let' declaration" parse error
-  // the first time this compute shader actually compiled at runtime
-  // (Batch 420: ground fog is the first activation path that compiles
-  // the froxel fog by default). Renamed to `cloudShadowEnable`.
+  // produces a "expected identifier for 'let' declaration" parse error
+  // the moment this compute shader actually compiles at runtime.
+  // Renamed to `cloudShadowEnable`.
   let cloudShadowEnable = u.cloudShadow.x;
   if (cloudShadowEnable < 0.5) {
     return 1.0;
@@ -686,39 +679,21 @@ fn sampleCloudShadow(worldPos: vec3<f32>, offsetFromCamera: vec3<f32>) -> f32 {
   // Base shape via 3-octave fbm in [-1, 1] → remap to [0, 1] for the
   // coverage threshold semantics.
   let n = fbm3d(p) * 0.5 + 0.5;
-  // CLOUD-LOW-COVERAGE-CUTOFF — FOG CHEAP-PATH ARM.
+  // FOG CHEAP-PATH ARM.
   //
-  // This gate used to threshold at `1.0 - <the raw requested coverage>`, on
-  // the claim (three comment blocks above) that it "mirrors
-  // ProceduralClouds.wgsl::cloudDensity shape ... so the shadows roughly track
-  // the visible cloud layer". Both halves of that were wrong:
-  //
-  //   1. the visible march and the IBL cube now route their gate through the
-  //      SHARED `cloudEffectiveCoverage` response, and this was the last raw
-  //      `1.0 - coverage` threshold left in the cloud-density family; and
-  //   2. a coverage threshold is only transferable between two density fields
-  //      when they have the SAME distribution, and these two do not. The
-  //      baked shape channel the march samples is a 4-octave periodic value
-  //      fBM measuring mean 0.4307 / sigma 0.0896 / max 0.7164, while the
-  //      local field here is `fbm3d`'s 3-octave value fBM, which is symmetric
-  //      about 0.5 by construction and measures sigma 0.1206 / max 0.9331 —
-  //      a field 35% wider and centred 0.07 higher.
-  //
-  // Feeding the same threshold to both therefore mistracks in BOTH directions:
-  // with the shared response applied to the march, the raw gate here shadowed
-  // 0.07% of ground at coverage 0.15 where the visible deck covers 2.21%, and
-  // 65.0% at coverage 0.55 where the visible deck covers 41.3% — worst error
-  // 23.9 percentage points. Fair-weather skies cast almost no fog shadow while
-  // mid-coverage skies cast a near-overcast one. (Every figure in this block is
-  // reproduced by the spec named at the end of it; run that, don't trust this.)
-  //
-  // The fix is a re-derivation, not a rescale: STANDARDISE this field onto the
-  // baked shape field's first two moments and then apply the shared response
-  // unmodified. That makes the gate's exceedance — the fraction of the deck
-  // that is cloud — agree with the visible march's to within 1.5 percentage
-  // points across the whole coverage range, and it keeps ONE definition of the
-  // coverage response in the engine (`CloudDensityDomain.wgsl`, prepended to
-  // this module by `WebGPUVolumetricFogResources`). Normalising the SAMPLE
+  // This field and the baked shape channel the visible march samples have
+  // DIFFERENT distributions: the baked shape channel is a 4-octave periodic
+  // value fBM measuring mean 0.4307 / sigma 0.0896 / max 0.7164, while the
+  // local field here is `fbm3d`'s 3-octave value fBM, symmetric about 0.5 by
+  // construction and measuring sigma 0.1206 / max 0.9331 — 35% wider and
+  // centred 0.07 higher. Feeding the same coverage threshold to both would
+  // therefore mistrack the visible deck in both directions, so this
+  // STANDARDISES the field onto the baked shape field's first two moments
+  // before applying the shared coverage response (`cloudEffectiveCoverage`,
+  // `CloudDensityDomain.wgsl`, prepended to this module by
+  // `WebGPUVolumetricFogResources`). That brings the gate's exceedance — the
+  // fraction of the deck that is cloud — within 1.5 percentage points of the
+  // visible march's, across the whole coverage range. Normalising the SAMPLE
   // rather than moving the threshold also matches the smoothstep RAMP, so the
   // gate's amplitude distribution tracks as well as its support.
   //
@@ -769,21 +744,20 @@ fn sampleCloudShadow(worldPos: vec3<f32>, offsetFromCamera: vec3<f32>) -> f32 {
 @group(0) @binding(6) var sunShadowMap: texture_depth_2d;
 @group(0) @binding(7) var sunShadowSampler: sampler_comparison;
 
-// Batch 431 (FOG-IBL-AMBIENT) — sky-LUT / IBL ambient bindings, used by
-// the lightScattering pass only. The renderer binds the real atmosphere
-// TRANSMITTANCE LUT (binding 8) + a linear sampler (binding 9) + the
-// atmosphere-derived SH-L2 irradiance buffer (binding 10) once they're
-// available, or white/zero placeholders otherwise. The kernel only samples
-// these when `u.iblAmbient.x >= 0.5`; with the flag off the placeholders
-// are never touched and the ambient term is byte-identical to the prior
-// flat constant.
+// Sky-LUT / IBL ambient bindings, used by the lightScattering pass only. The
+// renderer binds the real atmosphere TRANSMITTANCE LUT (binding 8) + a linear
+// sampler (binding 9) + the atmosphere-derived SH-L2 irradiance buffer (binding
+// 10) once they're available, or white/zero placeholders otherwise. The kernel
+// only samples these when `u.iblAmbient.x >= 0.5`; with the flag off the
+// placeholders are never touched and the ambient term is byte-identical to the
+// prior flat constant.
 @group(0) @binding(8) var fogTransmittanceLut: texture_2d<f32>;
 @group(0) @binding(9) var fogLutSampler: sampler;
-// Batch 437 (CLOUD-SHADOWS) — sun-view beer shadow map (binding 11) + a linear
-// sampler (binding 12), used by the lightScattering pass only. Bound
-// UNCONDITIONALLY (1×1 zero placeholder when the hi-fi flag is off → the legacy
-// local-fbm path runs) so the BGL never forks. Sampled only inside the
-// `cloudShadowHiFi.x >= 0.5` branch of `sampleCloudShadow`.
+// Sun-view beer shadow map (binding 11) + a linear sampler (binding 12), used
+// by the lightScattering pass only. Bound UNCONDITIONALLY (1×1 zero placeholder
+// when the hi-fi flag is off → the legacy local-fbm path runs) so the BGL never
+// forks. Sampled only inside the `cloudShadowHiFi.x >= 0.5` branch of
+// `sampleCloudShadow`.
 @group(0) @binding(11) var cloudShadowMapTex: texture_2d<f32>;
 @group(0) @binding(12) var cloudShadowMapSampler: sampler;
 // SHUniforms layout (matches ModelPBRComplete.wgsl::SHUniforms + the
@@ -803,14 +777,13 @@ struct FogSHUniforms {
 };
 @group(0) @binding(10) var<uniform> fogSH: FogSHUniforms;
 
-// Batch 431 (FOG-IBL-AMBIENT) — evaluate the L2 spherical-harmonic
-// irradiance probe along direction `N`. Mirrors
-// ModelPBRComplete.wgsl::evalSphericalHarmonics EXACTLY (same coefficient
-// order + basis polynomials) so the fog ambient matches the model diffuse
-// IBL — the SH set is the SAME atmosphere-derived buffer. `control.w` is
-// 0 on the placeholder / before the projection runs, which scales the
-// whole result to 0 so an unpopulated SH contributes nothing (fall back
-// to the transmittance-only tint).
+// Evaluate the L2 spherical-harmonic irradiance probe along direction `N`.
+// Mirrors ModelPBRComplete.wgsl::evalSphericalHarmonics EXACTLY (same
+// coefficient order + basis polynomials) so the fog ambient matches the model
+// diffuse IBL — the SH set is the SAME atmosphere-derived buffer. `control.w`
+// is 0 on the placeholder / before the projection runs, which scales the whole
+// result to 0 so an unpopulated SH contributes nothing (fall back to the
+// transmittance-only tint).
 fn evalFogSH(N: vec3<f32>) -> vec3<f32> {
   var c = fogSH.c0.xyz;
   c = c + fogSH.c1.xyz * N.y;
@@ -859,12 +832,11 @@ fn densityInjection(@builtin(global_invocation_id) gid: vec3<u32>) {
 
   let worldPos = froxelWorldPosition(gid);
 
-  // C-P7-RTE — altitude reconstruction via 2nd-order Taylor expansion
-  // around the camera position. See the `cameraAltitudeRTE` comment on
-  // VolumetricFogParams for derivation and accuracy bounds. This
-  // replaces the pre-Batch-26 `length(worldPos) - innerRadius`, which
-  // had ~1 m f32 cancellation ulp that produced fog-density banding at
-  // orbital altitudes. Clamped to >= 0 so below-ground froxels get
+  // Altitude reconstruction via 2nd-order Taylor expansion around the camera
+  // position. See the `cameraAltitudeRTE` comment on VolumetricFogParams for
+  // derivation and accuracy bounds. This replaces the naive `length(worldPos) -
+  // innerRadius`, which had ~1 m f32 cancellation ulp that produced fog-density
+  // banding at orbital altitudes. Clamped to >= 0 so below-ground froxels get
   // full density instead of negative-altitude exponential explosions.
   let cameraUp = u.cameraAltitudeRTE.xyz;
   let cameraAltitude = u.cameraAltitudeRTE.w;
@@ -884,12 +856,11 @@ fn densityInjection(@builtin(global_invocation_id) gid: vec3<u32>) {
 
   // Standard exponential height fog.
   //
-  // NEW-WEBGPU-BASE-HEIGHT-FOG-INSCRIBED-SPHERE-DATUM — measured from
-  // `altitudeCurvature.z` (the ellipsoid surface along the camera's radial) when
-  // `volumetricFog.surfaceRelativeAltitude` is opted into, and from the
-  // inscribed sphere otherwise. The default packs 0.0, and `altitude` is already
-  // `max(0.0, ...)`, so `max(0.0, altitude - 0.0)` is bit-exact — the OFF path's
-  // density field is byte-identical to pre-fix.
+  // Measured from `altitudeCurvature.z` (the ellipsoid surface along the
+  // camera's radial) when `volumetricFog.surfaceRelativeAltitude` is opted
+  // into, and from the inscribed sphere otherwise. The default packs 0.0, and
+  // `altitude` is already `max(0.0, ...)`, so `max(0.0, altitude - 0.0)` is
+  // bit-exact — the OFF path's density field is byte-identical to pre-fix.
   let baseAltitude = max(0.0, altitude - u.altitudeCurvature.z);
   var density = baseDensity * exp(-baseAltitude * falloff);
 
@@ -909,23 +880,20 @@ fn densityInjection(@builtin(global_invocation_id) gid: vec3<u32>) {
     density = max(density, 0.0);
   }
 
-  // Phase C / Batch 420 — GROUND FOG boost. When enabled, add a near-
-  // surface density spike that decays exponentially with height above the
-  // GROUND DATUM so the mist hugs the ground and fades into the normal fog
-  // (or clear) above the band.
-  // Gated behind `enabled` AND `intensity > 0` so the OFF default path is
-  // byte-identical to pre-Batch-420 (the `densityInjection` output is
-  // unchanged when `u.groundFog.x < 0.5`).
+  // GROUND FOG boost. When enabled, add a near-surface density spike that
+  // decays exponentially with height above the GROUND DATUM so the mist hugs
+  // the ground and fades into the normal fog (or clear) above the band. Gated
+  // behind `enabled` AND `intensity > 0` so the OFF default path is
+  // byte-identical to the ground-fog-absent output (the `densityInjection`
+  // output is unchanged when `u.groundFog.x < 0.5`).
   //
-  // NEW-WEBGPU-GROUND-FOG-RENDERS-NOTHING — the falloff argument used to be
-  // the raw `altitude`, i.e. the height above the INSCRIBED SPHERE the base
-  // height fog uses. That is 10.2 km at 46.4 deg N and 21.4 km at the equator
-  // even at sea level, so `exp(-altitude / 120)` collapsed to a denormal (or
-  // an exact f32 zero) and the accumulated optical depth left transmittance at
-  // EXACTLY 1.0 — the whole effect was an arithmetic no-op outside ~83 deg of
-  // latitude. The band is now measured from `u.altitudeCurvature.y`, the
-  // camera-local ground datum the CPU packs in this same frame, so the
-  // sphere-vs-ellipsoid offset cancels.
+  // The band is measured from `u.altitudeCurvature.y`, the camera-local
+  // ground datum the CPU packs in this same frame — NOT from the raw
+  // `altitude` above (the height above the INSCRIBED SPHERE the base
+  // height fog uses), because the sphere-vs-ellipsoid offset at that datum
+  // (10.2 km at 46.4 deg N, 21.4 km at the equator) is enormous next to
+  // this band's ~120 m falloff scale and would make `exp(-altitude /
+  // bandHeight)` collapse to zero at most latitudes.
   let groundFogEnabled = u.groundFog.x;
   let groundFogIntensity = u.groundFog.y;
   if (groundFogEnabled > 0.5 && groundFogIntensity > 0.0) {
@@ -1004,7 +972,7 @@ fn lightScattering(@builtin(global_invocation_id) gid: vec3<u32>) {
   let cloudShadowFactor = sampleCloudShadow(worldPos, froxelOffsetFromCamera(gid));
   let effectiveSunShadow = sunShadowFactor * cloudShadowFactor;
 
-  // Batch 440 (FOG-MS) — decide once whether the multi-octave path runs.
+  // Decide once whether the multi-octave path runs.
   // It requires the flag AND octaves > 1; at octaves == 1 the multi-scatter
   // sum reduces to the single-scatter term, so we take the cheaper single
   // branch (which is ALSO the byte-identical parity default when the flag is
@@ -1015,7 +983,7 @@ fn lightScattering(@builtin(global_invocation_id) gid: vec3<u32>) {
   // Local froxel OPTICAL DEPTH for the MS Beer octaves. The denser the froxel,
   // the higher the optical depth, so the per-octave `exp(-opticalDepth·b^i)`
   // makes the dense core's deeper octaves the ones that lift it (lit volume).
-  // `density` is the base fog-density multiplier (Batch 421, dimensionless) and
+  // `density` is the base fog-density multiplier (dimensionless) and
   // the ENERGY-CONSERVING fog spreads opacity across many individually-THIN
   // froxels, so a per-froxel `density` is small even where the column is opaque.
   // `opticalDepthScale` (CPU-tuned to the configured base density) maps the base
@@ -1066,7 +1034,7 @@ fn lightScattering(@builtin(global_invocation_id) gid: vec3<u32>) {
   let ambientStrength = u.occlusion.y;
   let ambientTerm = ambientStrength;
 
-  // ENERGY-CONSERVING SINGLE-SCATTER (Batch 421).
+  // ENERGY-CONSERVING SINGLE-SCATTER.
   //
   // This is the *source radiance* the slice would scatter toward the eye
   // if it were fully opaque — it is DENSITY-INDEPENDENT (no `× density`
@@ -1076,17 +1044,16 @@ fn lightScattering(@builtin(global_invocation_id) gid: vec3<u32>) {
   // accumulated in-scatter ≤ the source radiance (energy-conserving) and
   // gives a smooth Beer-Lambert rolloff instead of the unbounded
   // `density × thickness` accumulation that whited out over the long
-  // horizon path (NEW-WEBGPU-FROXEL-FOG-SCATTER-DYNAMIC-RANGE).
+  // horizon path.
   //
   // Density is still packed in `.a` because the integrate pass needs it to
   // compute the per-slice optical depth `σ·Δz`.
   //
-  // Batch 431 (FOG-IBL-AMBIENT) — when the opt-in flag is on, replace the
-  // flat-constant ambient with a sky-LUT / IBL ambient COLOR. The OFF path
-  // below is BYTE-IDENTICAL to pre-Batch-431 (same scalar `ambientTerm`,
-  // same `albedo * (sunScatter + moonScatter + ambientTerm)` expression);
-  // the flag-on path takes a separate branch so the parity-default
-  // float arithmetic is untouched.
+  // When the opt-in flag is on, replace the flat-constant ambient with a
+  // sky-LUT / IBL ambient COLOR. The OFF path below is BYTE-IDENTICAL to the
+  // flat-ambient path (same scalar `ambientTerm`, same `albedo * (sunScatter +
+  // moonScatter + ambientTerm)` expression); the flag-on path takes a separate
+  // branch so the parity-default float arithmetic is untouched.
   var sourceRadiance: vec3<f32>;
   if (u.iblAmbient.x < 0.5) {
     sourceRadiance = albedo * (sunScatter + moonScatter + ambientTerm);
@@ -1161,14 +1128,14 @@ fn integrate(@builtin(global_invocation_id) gid: vec3<u32>) {
   var accumScattered = vec3<f32>(0.0);
   var transmittance = 1.0;
 
-  // Batch 435 (FOG-TEMPORAL) — per-(pixel, frame) blue-noise slice-depth
-  // jitter. When the temporal flag is OFF, `jitterPhase` is exactly 0.0 so
-  // the depth slicing below is byte-identical to pre-Batch-435. When ON, each
-  // frame offsets every slice's sampled depth by a fractional [-0.5, 0.5)
-  // sub-slice amount, so successive jittered marches sample different points
-  // along the ray; the temporal resolve pass accumulates them into a clean,
-  // high-effective-sample-count volume (the grazing-ray cap is lifted because
-  // a single frame no longer has to resolve the whole march).
+  // Per-(pixel, frame) blue-noise slice-depth jitter. When the temporal flag is
+  // OFF, `jitterPhase` is exactly 0.0 so the depth slicing below is
+  // byte-identical to the non-jittered path. When ON, each frame offsets every
+  // slice's sampled depth by a fractional [-0.5, 0.5) sub-slice amount, so
+  // successive jittered marches sample different points along the ray; the
+  // temporal resolve pass accumulates them into a clean,
+  // high-effective-sample-count volume (the grazing-ray cap is lifted because a
+  // single frame no longer has to resolve the whole march).
   var jitterPhase = 0.0;
   if (u.temporal.x > 0.5) {
     let ign = interleavedGradientNoise(
@@ -1195,7 +1162,7 @@ fn integrate(@builtin(global_invocation_id) gid: vec3<u32>) {
     let sliceThickness = max(curDepth - prevDepth, 0.0);
     prevDepth = curDepth;
 
-    // ENERGY-CONSERVING SINGLE-SCATTER (Batch 421).
+    // ENERGY-CONSERVING SINGLE-SCATTER.
     //
     // Optical depth of this slice and its Beer-Lambert transmittance:
     //   tau               = σ_t · Δz
@@ -1231,7 +1198,7 @@ fn integrate(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Pass 4 — Temporal reprojection + accumulation (Batch 435, FOG-TEMPORAL)
+// Pass 4 — Temporal reprojection + accumulation
 // ─────────────────────────────────────────────────────────────────────
 //
 // Hillaire/Frostbite froxel temporal accumulation. The integrate pass writes

@@ -102,13 +102,15 @@ function sortableUintToFloat(u: number): number {
 
 class WebGPUPointCloudSortDispatcher {
   private _device: GPUDevice;
-  // C-R7-COMPUTE-PIPELINE-CACHE (Batch 76).
+  // Injected via `_setComputePipelineCache` after construction, rather than
+  // passed to the constructor, so a dispatcher created before the shared
+  // cache exists can still bind it once it does.
   private _computePipelineCache:
     | import("./WebGPUComputePipelineCache.js").WebGPUComputePipelineCache
     | null = null;
 
   /**
-   * Pipeline-cache injection point. C-R7-COMPUTE-PIPELINE-CACHE (Batch 76).
+   * Pipeline-cache injection point, called once after construction.
    */
   _setComputePipelineCache(
     cache:
@@ -408,8 +410,8 @@ class WebGPUPointCloudSortDispatcher {
     }
     const cached = this._pipelines.get(entryPoint);
     if (cached) return cached;
-    // C-R7-COMPUTE-PIPELINE-CACHE (Batch 76) — central cache when
-    // available, sync direct create otherwise.
+    // Route through the central pipeline cache when one has been injected;
+    // fall back to a direct synchronous create otherwise.
     const sortLayout = this._device.createPipelineLayout({
       bindGroupLayouts: [this._resources!.bindGroupLayout],
     });

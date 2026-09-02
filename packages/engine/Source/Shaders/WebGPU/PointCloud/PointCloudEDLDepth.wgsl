@@ -1,4 +1,4 @@
-// Point Cloud Eye-Dome Lighting — depth-writing draw variant (PARITY-PC-EDL).
+// Point Cloud Eye-Dome Lighting — depth-writing draw variant.
 //
 // This is the WGSL sibling of the WebGL "EC" derived shader built by
 // Scene/PointCloudEyeDomeLighting.js::getECShaderProgram. It rasterizes the
@@ -50,10 +50,9 @@ struct Uniforms {
   _pad1: f32,
   viewportSize: vec2<f32>,
   pointSizeMultiplier: f32,
-  // POINT-SPRITE-SHAPE — attenuation scale (geomError * scale *
-  // drawingBufferHeight / sseDenominator; 0 = off). Must mirror
-  // WebGPUPointCloudRenderer's Uniforms so the shared UB stays
-  // layout-identical (formerly _pad2).
+  // Attenuation scale (geomError * scale * drawingBufferHeight /
+  // sseDenominator; 0 = off). Must mirror WebGPUPointCloudRenderer's
+  // Uniforms so the shared UB stays layout-identical (formerly _pad2).
   attenuation: f32,
   previousMvpRelativeToEye: mat4x4<f32>,
   modelMatrix: mat4x4<f32>,
@@ -111,8 +110,8 @@ fn buildVertex(input: VertexInput) -> VertexOutput {
   let posRTE = (input.positionHigh - u.encodedCameraHigh)
              + (input.positionLow - u.encodedCameraLow);
   let clipPos = u.mvpRelativeToEye * vec4<f32>(posRTE, 1.0);
-  // POINT-SPRITE-SHAPE — same attenuation clamp as the color draw so the
-  // EDL depth attachment stays coverage-identical to the on-screen quads.
+  // Same attenuation clamp as the color draw so the EDL depth attachment
+  // stays coverage-identical to the on-screen quads.
   var pointSize = u.pointSizeMultiplier;
   if (u.attenuation > 0.0) {
     pointSize = min(u.attenuation / max(clipPos.w, 1.0e-6), pointSize);
@@ -181,11 +180,11 @@ struct FragOut {
 
 @fragment
 fn fragmentMain(input: VertexOutput) -> FragOut {
-  // POINT-SPRITE-SHAPE — solid square to match WebGL gl_Points (the WebGL
-  // EC shader from PointCloudEyeDomeLighting keeps the default square
-  // rasterization; ModelFS only carves a circle under HAS_POINT_DIAMETER).
-  // Must stay coverage-identical to WebGPUPointCloudRenderer's color draw
-  // so the EDL depth attachment covers the same pixels.
+  // Solid square to match WebGL gl_Points (the WebGL EC shader from
+  // PointCloudEyeDomeLighting keeps the default square rasterization;
+  // ModelFS only carves a circle under HAS_POINT_DIAMETER). Must stay
+  // coverage-identical to WebGPUPointCloudRenderer's color draw so the EDL
+  // depth attachment covers the same pixels.
   var finalColor = input.color;
   // Keep this derived replay color path in lockstep with the normal default
   // and LOD point-cloud shaders, using the same active effects bind group.
@@ -237,7 +236,7 @@ fn fragmentMain(input: VertexOutput) -> FragOut {
 //>>else
 @fragment
 fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
-  // POINT-SPRITE-SHAPE — solid square; see the ifdef branch above.
+  // Solid square; see the ifdef branch above.
   return input.color;
 }
 //>>endif

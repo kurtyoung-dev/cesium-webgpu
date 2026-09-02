@@ -22,12 +22,11 @@ function mulberry32(seed) {
 }
 
 /**
- * A GPU flow-field wind-particle layer (Campaign 6, C6-FLOWFIELD-WIND):
- * Windy / earth.nullschool-class wind visualization. N particles are advected
- * each frame by a velocity field (an RGBA8 image where R encodes the eastward
- * component and G the northward component, normalized against sidecar
- * min/max), then drawn as anti-aliased dots at their geographic positions on
- * the globe.
+ * A GPU flow-field wind-particle layer: a Windy / earth.nullschool-class wind
+ * visualization. N particles are advected each frame by a velocity field (an
+ * RGBA8 image where R encodes the eastward component and G the northward
+ * component, normalized against sidecar min/max), then drawn as anti-aliased
+ * dots at their geographic positions on the globe.
  *
  * <h4>Opt-in, default-off</h4>
  *
@@ -51,8 +50,7 @@ function mulberry32(seed) {
  * <code>.json</code>) is 10 m GFS wind (NOAA/NCEP, US-Government public
  * domain). Any image in the same mapbox/webgl-wind RGBA layout works — pass
  * your own <code>url</code> + <code>metadata</code>. Live ingest (NWS-MDL EDR
- * CoverageJSON) and ocean currents (RTOFS/OSCAR) are tracked follow-ups
- * (see migration_doc/DEFERRED_WORK.md, NEW-FLOWFIELD-*).
+ * CoverageJSON) and ocean currents (RTOFS/OSCAR) are not yet implemented.
  *
  * @alias FlowFieldWindLayer
  *

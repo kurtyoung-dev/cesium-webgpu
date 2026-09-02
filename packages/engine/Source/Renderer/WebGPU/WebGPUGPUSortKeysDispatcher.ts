@@ -40,9 +40,8 @@ import {
 const SORT_KEY_PARAMS_BYTES = 16; // 4 × u32
 
 /**
- * NEW-GPU-SORT-PIPELINE Phase 2 (Batch 228) — round `n` up to the
- * next power of 2. Bitonic sort networks require a power-of-2
- * element count; we pad with sentinel max-keys (handled in the
+ * Round `n` up to the next power of 2. Bitonic sort networks require a
+ * power-of-2 element count; we pad with sentinel max-keys (handled in the
  * shader) for the OOB threads.
  */
 function nextPowerOf2(n: number): number {
@@ -54,8 +53,7 @@ function nextPowerOf2(n: number): number {
 
 interface GPUSortKeysResources {
   capacity: number;
-  // NEW-GPU-SORT-PIPELINE Phase 3 (C4-GPU-SORT-PIPELINE-PHASE3) — the
-  // key/index buffers are sized to `nextPowerOf2(capacity)` because the
+  // The key/index buffers are sized to `nextPowerOf2(capacity)` because the
   // bitonic network dispatches over `nextPowerOf2(count)` elements. When
   // `capacity` is not itself a power of 2 (the common case for real
   // command counts), a sort over `paddedN > capacity` would read/write
@@ -76,23 +74,21 @@ interface GPUSortKeysResources {
   bindGroupLayout: GPUBindGroupLayout;
   bindGroup: GPUBindGroup;
   pipeline: GPUComputePipeline;
-  // NEW-GPU-SORT-PIPELINE Phase 2 (Batch 228) — bitonic-sort-over-u64
-  // pipeline operating on `sortKeysHighBuffer + sortKeysLowBuffer +
-  // commandIndicesBuffer` in place. Same buffers, separate
-  // bind-group-layout. Lazy-built on first `runBitonicSort` call.
+  // Bitonic-sort-over-u64 pipeline operating on `sortKeysHighBuffer +
+  // sortKeysLowBuffer + commandIndicesBuffer` in place. Same buffers,
+  // separate bind-group-layout. Lazy-built on first `runBitonicSort` call.
   sortParamsBuffer: GPUBuffer | null;
   sortBindGroupLayout: GPUBindGroupLayout | null;
   sortBindGroup: GPUBindGroup | null;
   sortLocalPipeline: GPUComputePipeline | null;
   sortMergePipeline: GPUComputePipeline | null;
-  // Two-buffer readback ring for the sorted command-indices array
-  // (C4-GPU-SORT-PIPELINE-PHASE3). A single staging buffer cannot
-  // pipeline GPU->CPU readback: `mapAsync` must run AFTER the copy is
-  // submitted, yet the next frame's copy must not target a buffer that
-  // is still mapping. With a ring, `prepareIndicesReadback` writes one
-  // slot while the OTHER (written + submitted last frame) is mapped, so
-  // neither "used in submit while pending map" nor "while mapped" can
-  // occur. Mirrors `WebGPUGPUCuller`'s deferred-readback ring exactly.
+  // Two-buffer readback ring for the sorted command-indices array. A single
+  // staging buffer cannot pipeline GPU->CPU readback: `mapAsync` must run AFTER
+  // the copy is submitted, yet the next frame's copy must not target a buffer
+  // that is still mapping. With a ring, `prepareIndicesReadback` writes one
+  // slot while the OTHER (written + submitted last frame) is mapped, so neither
+  // "used in submit while pending map" nor "while mapped" can occur. Mirrors
+  // `WebGPUGPUCuller`'s deferred-readback ring exactly.
   readbackBuffers: [GPUBuffer | null, GPUBuffer | null];
 }
 
@@ -154,17 +150,17 @@ class WebGPUGPUSortKeysDispatcher {
   }
   private _resources: GPUSortKeysResources | null = null;
   private _shaderModule: GPUShaderModule | null = null;
-  // NEW-GPU-SORT-PIPELINE Phase 2 (Batch 228) — bitonic sort module.
+  // Bitonic sort module.
   private _sortShaderModule: GPUShaderModule | null = null;
   private _sortParamsScratch = new Uint32Array(4);
-  // NEW-GPU-SORT-PIPELINE Phase 3 — scratch filled with 0xFFFFFFFF used
-  // to write the [count,paddedN) sentinel tail of the key/index buffers
-  // before each bitonic sort. Grown on demand.
+  // Scratch filled with 0xFFFFFFFF used to write the [count,paddedN)
+  // sentinel tail of the key/index buffers before each bitonic sort.
+  // Grown on demand.
   private _sortPadScratch: Uint32Array = new Uint32Array(0);
-  // Deferred-readback ring state (C4-GPU-SORT-PIPELINE-PHASE3) — see
-  // `readbackBuffers` in GPUSortKeysResources. `_latestSorted` holds the
-  // most recently decoded paired result; `latestSortedIndices()` returns
-  // it (synchronous cache, same contract as `WebGPUGPUCuller.readResults`).
+  // Deferred-readback ring state — see `readbackBuffers` in
+  // GPUSortKeysResources. `_latestSorted` holds the most recently decoded
+  // paired result; `latestSortedIndices()` returns it (synchronous cache, same
+  // contract as `WebGPUGPUCuller.readResults`).
   private _rbWriteIdx: number = 0;
   private _rbPendingIdx: number = -1;
   private _rbPendingCount: number = 0;
@@ -173,8 +169,8 @@ class WebGPUGPUSortKeysDispatcher {
   private _latestSorted: SortedIndicesReadback | null = null;
   // Lifetime sort dispatch counter for diagnostics.
   private _sortDispatches: number = 0;
-  // C-R7-COMPUTE-PIPELINE-CACHE (Batch 76) — captured on first
-  // `_ensureResources` from `frameState.context.webgpuComputePipelineCache`.
+  // Captured on first `_ensureResources` from
+  // `frameState.context.webgpuComputePipelineCache`.
   private _computePipelineCache:
     | import("./WebGPUComputePipelineCache.js").WebGPUComputePipelineCache
     | null = null;
@@ -204,8 +200,7 @@ class WebGPUGPUSortKeysDispatcher {
   }
 
   /**
-   * NEW-GPU-SORT-PIPELINE Phase 2 (Batch 228) — inject the
-   * BitonicSortU64.wgsl source. Called once at FR registration.
+   * Inject the BitonicSortU64.wgsl source. Called once at FR registration.
    * Idempotent.
    */
   setSortShaderSource(wgsl: string): void {
@@ -261,8 +256,6 @@ class WebGPUGPUSortKeysDispatcher {
    * Pipeline-cache injection point. Set before `allocate()`. The
    * dispatcher routes its compute pipeline through the cache when
    * non-null, falls back to direct sync creation otherwise.
-   *
-   * C-R7-COMPUTE-PIPELINE-CACHE (Batch 76).
    */
   _setComputePipelineCache(
     cache:
@@ -344,8 +337,8 @@ class WebGPUGPUSortKeysDispatcher {
       ],
     });
 
-    // C-R7-COMPUTE-PIPELINE-CACHE (Batch 76) — central cache when
-    // available, sync direct create otherwise.
+    // Route through the central pipeline cache when available; fall back
+    // to a direct synchronous create otherwise.
     const sortLayout = device.createPipelineLayout({
       bindGroupLayouts: [bindGroupLayout],
     });
@@ -389,10 +382,9 @@ class WebGPUGPUSortKeysDispatcher {
   }
 
   /**
-   * NEW-GPU-SORT-PIPELINE Phase 2 (Batch 228) — lazy-build the
-   * bitonic-sort pipelines + bind group, sized to the existing
-   * `sortKeysHighBuffer` / `sortKeysLowBuffer` / `commandIndicesBuffer`.
-   * Called from `runBitonicSort`.
+   * Lazy-build the bitonic-sort pipelines + bind group, sized to the existing
+   * `sortKeysHighBuffer` / `sortKeysLowBuffer` / `commandIndicesBuffer`. Called
+   * from `runBitonicSort`.
    */
   private _ensureSortPipelines(): boolean {
     const r = this._resources;
@@ -503,10 +495,9 @@ class WebGPUGPUSortKeysDispatcher {
   }
 
   /**
-   * NEW-GPU-SORT-PIPELINE Phase 2 (Batch 228) — encode a full bitonic
-   * sort over the (sortKeysHigh, sortKeysLow, commandIndices) triple.
-   * Must be called AFTER `dispatch()` in the same encoder so the keys
-   * exist before the sort runs.
+   * Encode a full bitonic sort over the (sortKeysHigh, sortKeysLow,
+   * commandIndices) triple. Must be called AFTER `dispatch()` in the same
+   * encoder so the keys exist before the sort runs.
    *
    * Sort is in-place: the buffers are reordered s.t. position 0 holds
    * the smallest key (front-to-back when keys were generated with
@@ -525,18 +516,17 @@ class WebGPUGPUSortKeysDispatcher {
     // valid (k, j) sequence.
     const paddedN = nextPowerOf2(count);
 
-    // Phase 3 (C4-GPU-SORT-PIPELINE-PHASE3) — write the [count,paddedN)
-    // tail of the key + index buffers with sentinel max (0xFFFFFFFF)
-    // BEFORE the sort runs. The GPUSortKeys compute pass only writes
-    // [0,count); without this fill the padding slots hold stale (or
-    // zero-init) data, and the bitonic network's in-shader pad branch
-    // only triggers for `globalIdx >= elementCount` (= paddedN), never
-    // for the [count,paddedN) middle. Sentinel-max keys sort those
-    // slots to the END so the real commands occupy [0,count) and the
-    // permutation the consumer reads back is correct for ANY count, not
-    // just powers of two. queue.writeBuffer is ordered before the
-    // submitted command buffer, and the range is disjoint from what the
-    // keygen pass writes, so both land before the bitonic pass reads.
+    // Write the [count,paddedN) tail of the key + index buffers with sentinel
+    // max (0xFFFFFFFF) BEFORE the sort runs. The GPUSortKeys compute pass only
+    // writes [0,count); without this fill the padding slots hold stale (or
+    // zero-init) data, and the bitonic network's in-shader pad branch only
+    // triggers for `globalIdx >= elementCount` (= paddedN), never for the
+    // [count,paddedN) middle. Sentinel-max keys sort those slots to the END so
+    // the real commands occupy [0,count) and the permutation the consumer reads
+    // back is correct for ANY count, not just powers of two. queue.writeBuffer
+    // is ordered before the submitted command buffer, and the range is disjoint
+    // from what the keygen pass writes, so both land before the bitonic pass
+    // reads.
     if (paddedN > count) {
       const padElems = paddedN - count;
       if (this._sortPadScratch.length < padElems) {
@@ -633,11 +623,10 @@ class WebGPUGPUSortKeysDispatcher {
    * compaction map) returned verbatim alongside the decoded indices, so
    * the consumer keeps the two paired across the ring's deferral.
    *
-   * Deferred-readback ring (C4-GPU-SORT-PIPELINE-PHASE3): first pumps the
-   * slot written on a PRIOR call — its copy has been submitted by now, so
-   * `mapAsync` is legal and never targets the slot we write below —
-   * then writes this frame's copy into a non-mapping slot. Mirrors
-   * `WebGPUGPUCuller.prepareReadback`.
+   * Deferred-readback ring: first pumps the slot written on a PRIOR call — its
+   * copy has been submitted by now, so `mapAsync` is legal and never targets
+   * the slot we write below — then writes this frame's copy into a non-mapping
+   * slot. Mirrors `WebGPUGPUCuller.prepareReadback`.
    */
   prepareIndicesReadback(
     encoder: GPUCommandEncoder,
@@ -816,7 +805,7 @@ class WebGPUGPUSortKeysDispatcher {
       r.sortKeysHighBuffer.destroy();
       r.sortKeysLowBuffer.destroy();
       r.commandIndicesBuffer.destroy();
-      // Batch 228 sort resources.
+      // Bitonic-sort resources.
       r.sortParamsBuffer?.destroy();
       r.readbackBuffers[0]?.destroy();
       r.readbackBuffers[1]?.destroy();
@@ -883,8 +872,8 @@ function initWebGPUGPUSortKeys(
 ): boolean {
   const inst = getOrCreateDispatcher(context);
   if (!inst) return false;
-  // C-R7-COMPUTE-PIPELINE-CACHE (Batch 76) — capture the central cache
-  // before allocate() runs so the pipeline creation routes through it.
+  // Capture the central cache before allocate() runs so the pipeline
+  // creation routes through it.
   inst._setComputePipelineCache(context.webgpuComputePipelineCache ?? null);
   return inst.allocate(maxCommands);
 }
@@ -926,9 +915,8 @@ function destroyWebGPUGPUSortKeys(context: {
 }
 
 /**
- * NEW-GPU-SORT-PIPELINE Phase 2 (Batch 228) — chain the bitonic sort
- * after `dispatchWebGPUGPUSortKeys` in the same encoder. Must be
- * called AFTER `dispatchWebGPUGPUSortKeys` and BEFORE
+ * Chain the bitonic sort after `dispatchWebGPUGPUSortKeys` in the same
+ * encoder. Must be called AFTER `dispatchWebGPUGPUSortKeys` and BEFORE
  * `device.queue.submit`.
  */
 function runBitonicSortWebGPUGPUSortKeys(

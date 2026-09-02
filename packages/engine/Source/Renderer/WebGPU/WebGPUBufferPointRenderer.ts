@@ -1,9 +1,8 @@
 /**
  * WebGPU Buffer Point Renderer
  *
- * Per-collection slice extracted from `WebGPUBufferPrimitiveRenderer`
- * (Batch 157 of the maintainability sweep — final batch in the
- * Buffer-primitive decomposition arc).
+ * Per-collection slice extracted from `WebGPUBufferPrimitiveRenderer`,
+ * the final slice in the buffer-primitive decomposition.
  *
  * Owns the BufferPointCollection rendering path: cache type, pipeline
  * builder, init / repack / upload / update / destroy functions. Points
@@ -31,9 +30,8 @@ import BufferPoint from "../../Scene/BufferPoint.js";
 import BufferPointMaterial from "../../Scene/BufferPointMaterial.js";
 import BufferPointMaterialWGSL from "../../Shaders/WebGPU/Collections/BufferPointMaterial.js";
 import WasmRTEBridge from "../../Scene/WasmRTEBridge.js";
-// Slice 5c-B Phase 1 (Batch 109) — scene-FB target helper. Used only
-// for the COLOR pipeline variant; the PICK variant stays single-target
-// because it runs in its own pick-FB render pass.
+// Scene-FB target helper. Used only for the COLOR pipeline variant; the PICK
+// variant stays single-target because it runs in its own pick-FB render pass.
 import { makeSceneFBTargets } from "./WebGPUSceneFBTargetHelpers.js";
 
 import {
@@ -72,28 +70,18 @@ import type {
 const scratchPoint = new BufferPoint();
 const scratchPointMat = new BufferPointMaterial();
 
-// NEW-BUFFERCOLL-WASM-ENCODE-WIRE (Batch 272) / NEW-BUFFERCOLL-ENCODE-BENCHMARK
-// (Batch 273) — minimum dirty primitive count before the position high/low lanes
-// are routed through the batch RTE encode (one contiguous `batchEncodeRange`
-// call: WASM SIMD kernel when the module loads, byte-identical scalar fround
-// twin otherwise) instead of the per-primitive scalar `EncodedCartesian3` loop.
+// Minimum dirty primitive count before the position high/low lanes are
+// routed through the batch RTE encode (one contiguous `batchEncodeRange`
+// call: WASM SIMD kernel when the module loads, byte-identical scalar
+// fround twin otherwise) instead of the per-primitive scalar
+// `EncodedCartesian3` loop.
 //
-// Tuned from measurement (Batch 273), NOT assumption — see
-// Tools/wasm-encode-benchmark.mjs (real-kernel CPU encode) +
+// Tuned from measurement, not assumption — see Tools/wasm-encode-benchmark.mjs
+// (real-kernel CPU encode) +
 // Tools/visual-regression/probe-buffercoll-encode-benchmark.mjs (end-to-end
-// repack+upload, both backends). Findings:
-//   - The DOMINANT win is hoisting the position encode OUT of the per-primitive
-//     loop (the per-point EncodedCartesian3 65536-grid split is the bottleneck),
-//     NOT WASM SIMD. The batch fround split over a contiguous Float64Array beats
-//     the per-primitive scalar path by ~25-40% end-to-end at >= 1500 points on
-//     BOTH backends, even with the WASM kernel dark (JS fround twin running).
-//   - The real WASM kernel (Node micro-bench) adds only ~1.2x over scalar fround
-//     at 10k-50k and ties at 100k — below browser measurement noise, so no
-//     WASM-specific gating is warranted.
-//   - Crossover: batch loses below ~750 points (fixed slice-setup overhead),
-//     is marginal at ~1000, and wins reliably from ~1500 up. Absolute repack
-//     time below 1500 is < 0.5 ms/frame — negligible vs the frame budget.
-// 2000 sits comfortably inside the winning region with margin against noise.
+// repack+upload, both backends). The batch path wins reliably from ~1500 points
+// up and loses below ~750 (fixed slice-setup overhead); 2000 sits inside the
+// winning region with margin against measurement noise.
 export const BUFFER_WASM_ENCODE_THRESHOLD = 2000;
 
 // The effective threshold honors an optional per-collection override
@@ -131,7 +119,7 @@ export interface PointCache extends SharedCache {
   pickPipeline: GPURenderPipeline;
   // OPAQUE blend variant of the color pipeline; built lazily (see polygon).
   opaquePipeline?: GPURenderPipeline;
-  // PARITY-BUFFER-2DCV — settled-2D/CV coplanar-depth variants (lazy).
+  // Settled-2D/CV coplanar-depth variants (lazy).
   noDepthTestPipeline?: GPURenderPipeline;
   noDepthTestOpaquePipeline?: GPURenderPipeline;
   commandNoDepthTest?: boolean;
@@ -144,22 +132,22 @@ export interface PointCache extends SharedCache {
   pickCommand: WebGPUDrawCommand | null;
   pickIds: CesiumPickIdRef[];
   commandBlendOption?: number;
-  // NEW-BUFFERCOLL-WASM-ENCODE-WIRE (Batch 272) — lazily-instantiated RTE
-  // bridge for the threshold-gated batch position encode. Created on the cache
-  // (one per collection); `loadWasm()` is kicked off once on first use and the
-  // module-level WASM-ready flag is shared across all bridges, so first frames
-  // before the module resolves fall back to the scalar `EncodedCartesian3` path
-  // (byte-equivalent in eye space). Destroyed in destroyWebGPUBufferPointCollection.
+  // Lazily-instantiated RTE bridge for the threshold-gated batch position
+  // encode. Created on the cache (one per collection); `loadWasm()` is kicked
+  // off once on first use and the module-level WASM-ready flag is shared across
+  // all bridges, so first frames before the module resolves fall back to the
+  // scalar `EncodedCartesian3` path (byte-equivalent in eye space). Destroyed
+  // in destroyWebGPUBufferPointCollection.
   rteBridge?: WasmRTEBridge;
   /** Instrumentation: how many repacks took the WASM/batch position path. */
   wasmEncodeRepacks: number;
   /** Instrumentation: how many repacks took the scalar position path. */
   scalarEncodeRepacks: number;
-  // NEW-BUFFERCOLL-ENCODE-BENCHMARK (Batch 273) — debug-only repack+upload
-  // timing accumulators, populated only under the debug pragma (stripped from
-  // production builds). `_repackMsLast` is the most recent repack+writeBuffer
-  // duration (ms); `_repackMsTotal`/`_repackSamples` let the benchmark probe
-  // average across frames. Read via the probe; never consulted at runtime.
+  // Debug-only repack+upload timing accumulators, populated only under the
+  // debug pragma (stripped from production builds). `_repackMsLast` is the most
+  // recent repack+writeBuffer duration (ms); `_repackMsTotal`/`_repackSamples`
+  // let the benchmark probe average across frames. Read via the probe; never
+  // consulted at runtime.
   _repackMsLast?: number;
   _repackMsTotal?: number;
   _repackSamples?: number;
@@ -177,14 +165,13 @@ function buildPointPipeline(
   // on (matches WebGL blend-off + depthTest.enabled). Default false keeps the
   // historical TRANSLUCENT color path byte-identical (depth write off).
   opaque: boolean = false,
-  // PARITY-BUFFER-2DCV — settled-2D/CV coplanar variant: depth test "always" +
-  // no depth write. Default false keeps the historical path byte-identical.
+  // Settled-2D/CV coplanar variant: depth test "always" + no depth write.
+  // Default false keeps the historical path byte-identical.
   noDepthTest: boolean = false,
-  // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — pick-fleet log gate. Only
-  // meaningful for the pick stage: when true the pick module writes log
-  // `@builtin(frag_depth)` so the pipeline must ENABLE depth write (was off);
-  // when false the pick pipeline is byte-identical to today. Ignored for the
-  // color stage. Default false preserves every existing caller.
+  // Pick-fleet log gate. Only meaningful for the pick stage: when true the pick
+  // module writes log `@builtin(frag_depth)` so the pipeline must ENABLE depth
+  // write (was off); when false the pick pipeline is byte-identical to today.
+  // Ignored for the color stage. Default false preserves every existing caller.
   pickLogActive: boolean = false,
 ): GPURenderPipeline {
   // Color path draws into the MSAA scene FB → sample count must match
@@ -242,11 +229,11 @@ function buildPointPipeline(
         },
       ],
     },
-    // Slice 5c-B Phase 1 (Batch 109) — split the targets array by pick
-    // vs color path. Pick pipelines run in a separate pick-FB render
-    // pass (`WebGPUSceneRendererPickPass.ts`) and must stay
-    // single-target; color pipelines route through `makeSceneFBTargets`
-    // so the Phase 2 atomic flip picks up the 2nd null slot.
+    // Split the targets array by pick vs color path. Pick pipelines run
+    // in a separate pick-FB render pass (`WebGPUSceneRendererPickPass.ts`)
+    // and must stay single-target; color pipelines route through
+    // `makeSceneFBTargets` so the MRT atomic flip picks up the 2nd null
+    // slot.
     fragment: (() => {
       const blend: GPUBlendState = {
         color: {
@@ -272,12 +259,12 @@ function buildPointPipeline(
       format: "depth24plus-stencil8",
       // OPAQUE color variant writes depth (correct occlusion/sort vs WebGL);
       // TRANSLUCENT default keeps depth write off (composite back-to-front).
-      // PARITY-BUFFER-2DCV: coplanar-2D/CV variant never writes depth.
-      // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — the pick stage historically
-      // never wrote depth (pick is non-opaque → `opaque` false); under the
-      // pick-fleet log gate it MUST write the log `@builtin(frag_depth)` into
-      // the shared pick FBO so a nearer buffer point occludes a farther one
-      // coherently with the rest of the (log) fleet. Off → false, byte-identical.
+      // The coplanar-2D/CV variant never writes depth. The pick stage
+      // historically never wrote depth (pick is non-opaque → `opaque` false);
+      // under the pick-fleet log gate it MUST write the log
+      // `@builtin(frag_depth)` into the shared pick FBO so a nearer buffer
+      // point occludes a farther one coherently with the rest of the (log)
+      // fleet. Off → false, byte-identical.
       depthWriteEnabled: isPickStage ? pickLogActive : !noDepthTest && opaque,
       // less-equal (not less) — lets primitives that project exactly
       // onto the far plane due to FP32 rounding still pass the depth
@@ -296,8 +283,8 @@ function initPointCache(
   context: CesiumGraphicsContext,
   format: GPUTextureFormat,
   defines: number,
-  // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — the SEPARATE pick-fleet log
-  // switch (isWebGPUPickLogDepthActive), independent of the color `defines`.
+  // The SEPARATE pick-fleet log switch (isWebGPUPickLogDepthActive),
+  // independent of the color `defines`.
   pickLogActive: boolean,
 ): PointCache {
   const device: GPUDevice = context.device;
@@ -313,10 +300,10 @@ function initPointCache(
     primitiveCountMax * 3,
   );
 
-  // NEW-BUFFER-LOG-DEPTH (Batch 263) — resolve `//>>ifdef LOG_DEPTH` against
-  // `defines` and key the module cache by it so LOG_DEPTH on/off compile to
-  // distinct modules. The pick FS suffix is appended inside preprocessShader
-  // and never sees the frag_depth write (pick stays hyperbolic).
+  // Resolve `//>>ifdef LOG_DEPTH` against `defines` and key the module cache by
+  // it so LOG_DEPTH on/off compile to distinct modules. The pick FS suffix is
+  // appended inside preprocessShader and never sees the frag_depth write (pick
+  // stays hyperbolic).
   const shaderSource = preprocessShader(
     context,
     "BufferPointMaterial",
@@ -329,14 +316,13 @@ function initPointCache(
     defines,
     "BufferPointMaterial",
   );
-  // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — the pick pipeline compiles its
-  // OWN module gated on the SEPARATE pick-fleet switch, decoupled from the
-  // color `defines`. When the gate is off it REUSES the color module
-  // (byte-identical to today); when on it builds a distinct LOG_DEPTH module
-  // (source + pick suffix both preprocessed at LOG_DEPTH, so `v_logDepth` is in
-  // scope and the pick FS writes log frag_depth). The keySalt keeps it from
-  // aliasing the color module at the SAME `(sourceId, LOG_DEPTH)` when the
-  // scene switch is also on.
+  // The pick pipeline compiles its OWN module gated on the SEPARATE pick-fleet
+  // switch, decoupled from the color `defines`. When the gate is off it REUSES
+  // the color module (byte-identical to today); when on it builds a distinct
+  // LOG_DEPTH module (source + pick suffix both preprocessed at LOG_DEPTH, so
+  // `v_logDepth` is in scope and the pick FS writes log frag_depth). The
+  // keySalt keeps it from aliasing the color module at the SAME `(sourceId,
+  // LOG_DEPTH)` when the scene switch is also on.
   const pickDefines =
     (defines & ~ShaderDefine.LOG_DEPTH) |
     (pickLogActive ? ShaderDefine.LOG_DEPTH : 0);
@@ -364,11 +350,10 @@ function initPointCache(
     "fragmentMain",
     sampleCount,
   );
-  // NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE — the pick pipeline targets the
-  // context's byte-object-ID format authority (matches the pick FBO), never
-  // the (possibly float/HDR) scene format. NEW-WEBGPU-PICK-FLEET-LOG-DEPTH —
-  // built from `pickModule` (log variant when the gate is on) and told to
-  // enable depth write when logging.
+  // The pick pipeline targets the context's byte-object-ID format authority
+  // (matches the pick FBO), never the (possibly float/HDR) scene format. It is
+  // built from `pickModule` (log variant when the pick-fleet log gate is on)
+  // and told to enable depth write when logging.
   const pickPipeline = buildPointPipeline(
     device,
     pickModule,
@@ -450,8 +435,8 @@ function repackPointDirty(
   cache: PointCache,
   context: CesiumGraphicsContext,
   frameState: CesiumFrameState,
-  // PARITY-BUFFER-2DCV — when the scene-mode projection frame changed with no
-  // per-primitive edits, the points are not individually `_dirty`; `force`
+  // When the scene-mode projection frame changed with no per-primitive
+  // edits, the points are not individually `_dirty`; `force`
   // re-processes every point in the (full) dirty range so the reprojected
   // positions refresh. Always false in the SCENE3D steady state.
   force: boolean,
@@ -461,25 +446,25 @@ function repackPointDirty(
   if (dirtyCount === 0) {
     return;
   }
-  // PARITY-BUFFER-2DCV — in 2D / Columbus View / Morph the encoded positions
-  // are the scene-mode-projected positions (not raw ECEF), so the contiguous
+  // In 2D / Columbus View / Morph the encoded positions are the
+  // scene-mode-projected positions (not raw ECEF), so the contiguous
   // batch encode over `_positionView` (which holds ECEF) does not apply; take
   // the per-point scalar path that runs each position through
   // `projectBufferPositionForMode`. SCENE3D is unaffected (byte-identical).
   const reproject = frameState.mode !== SceneMode.SCENE3D;
   const modelMatrix = collection.modelMatrix ?? Matrix4.IDENTITY;
   const allowPicking: boolean = collection._allowPicking;
-  // PARITY-BUFFER-POSITION-INT-NORMALIZED — 0 for the DOUBLE/FLOAT and
-  // non-normalized-integer cases (encode stays byte-identical); a positive
-  // divisor for normalized integer positions, applied before the RTE encode.
+  // 0 for the DOUBLE/FLOAT and non-normalized-integer cases (encode stays
+  // byte-identical); a positive divisor for normalized integer positions,
+  // applied before the RTE encode.
   const normDivisor = bufferPositionNormalizeDivisor(collection);
 
-  // NEW-BUFFERCOLL-WASM-ENCODE-WIRE (Batch 272) — for large dirty ranges, encode
-  // the POSITION high/low lanes for the whole contiguous slice in one batch call
-  // (WASM SIMD when the module is ready, byte-equivalent scalar fallback before).
-  // Points have vertexOffset == index, so _positionView[i*3..] is contiguous over
-  // [dirtyOffset, dirtyOffset+dirtyCount) and maps 1:1 onto positionHighArr[i*3..].
-  // Color / pick / outline interleave stays in the per-primitive JS loop below.
+  // For large dirty ranges, encode the POSITION high/low lanes for the whole
+  // contiguous slice in one batch call (WASM SIMD when the module is ready,
+  // byte-equivalent scalar fallback before). Points have vertexOffset == index,
+  // so _positionView[i*3..] is contiguous over [dirtyOffset,
+  // dirtyOffset+dirtyCount) and maps 1:1 onto positionHighArr[i*3..]. Color /
+  // pick / outline interleave stays in the per-primitive JS loop below.
   //
   // The batch encode (fround split) and the scalar EncodedCartesian3 (AGI
   // 65536-grid split) produce DIFFERENT high/low bytes but the SAME eye-space
@@ -535,14 +520,14 @@ function repackPointDirty(
     }
     if (!useBatchPositionEncode) {
       scratchPoint.getPosition(scratchCart);
-      // PARITY-BUFFER-POSITION-INT-NORMALIZED — dequantize the raw integer
-      // position to [-1,1]/[0,1] before reproject/encode (matches WebGL GPU
-      // normalize). No-op when normDivisor === 0.
+      // Dequantize the raw integer position to [-1,1]/[0,1] before
+      // reproject/encode (matches WebGL GPU normalize). No-op when
+      // normDivisor === 0.
       if (normDivisor !== 0) {
         normalizeBufferPositionInPlace(scratchCart, normDivisor);
       }
-      // PARITY-BUFFER-2DCV — reproject ECEF → scene-mode frame in 2D/CV/Morph.
-      // No-op clone in SCENE3D (byte-identical encode of the raw ECEF position).
+      // Reproject ECEF → scene-mode frame in 2D/CV/Morph. No-op clone in
+      // SCENE3D (byte-identical encode of the raw ECEF position).
       if (reproject) {
         projectBufferPositionForMode(
           scratchCart,
@@ -627,7 +612,7 @@ export function updateWebGPUBufferPointCollection(
   }
   const context = frameState.context;
   const device: GPUDevice = context.device;
-  // Batch 110 — buffer primitives draw into scene FB; use scenePipelineFormat.
+  // Buffer primitives draw into scene FB; use scenePipelineFormat.
   const format: GPUTextureFormat =
     (
       context as unknown as {
@@ -636,20 +621,20 @@ export function updateWebGPUBufferPointCollection(
     ).scenePipelineFormat ??
     (navigator.gpu.getPreferredCanvasFormat() as GPUTextureFormat);
 
-  // NEW-BUFFER-LOG-DEPTH (Batch 263) — pick up the renderer-wide log-depth
-  // master switch + per-frame flag. Activating OR's the LOG_DEPTH define into
-  // the shader/pipeline build; flipping it invalidates the cache so the
-  // pipeline + module rebuild (mirrors the format-generation guard below). The
-  // master switch off is byte-identical to the historical hyperbolic path.
+  // Pick up the renderer-wide log-depth master switch + per-frame flag.
+  // Activating OR's the LOG_DEPTH define into the shader/pipeline build;
+  // flipping it invalidates the cache so the pipeline + module rebuild
+  // (mirrors the format-generation guard below). The master switch off is
+  // byte-identical to the historical hyperbolic path.
   const logDepthActive = isWebGPULogDepthActive(context, frameState);
   const defines = logDepthActive ? ShaderDefine.LOG_DEPTH : 0;
-  // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — SEPARATE pick-fleet master
-  // switch (default OFF until the fleet flips). Flipping it must rebuild the
-  // pick module + pipeline, so track it alongside the format + log guards.
+  // SEPARATE pick-fleet master switch (default OFF until the fleet flips).
+  // Flipping it must rebuild the pick module + pipeline, so track it alongside
+  // the format + log guards.
   const pickLogActive = isWebGPUPickLogDepthActive(context, frameState);
 
   let cache = collection._webgpuCache as PointCache | undefined;
-  // Batch 110 — invalidate on scene format change (HDR toggle).
+  // Invalidate on scene format change (HDR toggle).
   const sceneGen =
     (context as unknown as { _scenePipelineFormatGeneration?: number })
       ._scenePipelineFormatGeneration ?? 0;
@@ -680,10 +665,10 @@ export function updateWebGPUBufferPointCollection(
     collection._dirtyCount = collection.primitiveCount;
   }
 
-  // PARITY-BUFFER-2DCV — when the scene-mode projection frame changed (mode
-  // switch or, during MORPHING, a new morphTime) the previously-encoded
-  // reprojected positions are stale. Force a full re-pack of every primitive.
-  // No-op in the SCENE3D steady state (`bufferModeNeedsRepack` returns false).
+  // When the scene-mode projection frame changed (mode switch or, during
+  // MORPHING, a new morphTime) the previously-encoded reprojected positions are
+  // stale. Force a full re-pack of every primitive. No-op in the SCENE3D steady
+  // state (`bufferModeNeedsRepack` returns false).
   const modeRepack = bufferModeNeedsRepack(cache, frameState);
   if (modeRepack) {
     collection._dirtyOffset = 0;
@@ -691,12 +676,12 @@ export function updateWebGPUBufferPointCollection(
   }
 
   if (collection._dirtyCount > 0) {
-    // NEW-BUFFERCOLL-ENCODE-BENCHMARK (Batch 273) — time the repack (position
-    // encode + color/pick/outline interleave) AND the writeBuffer upload of the
-    // dirty range together, so the benchmark probe can compare the batch-encode
-    // vs scalar-encode strategies WITH the GPU-upload cost in the picture (the
-    // upload may dominate the CPU encode at high counts). Debug-only: the timer
-    // calls + accumulator writes are pragma-stripped from production builds.
+    // Time the repack (position encode + color/pick/outline interleave) AND the
+    // writeBuffer upload of the dirty range together, so the benchmark probe
+    // can compare the batch-encode vs scalar-encode strategies WITH the
+    // GPU-upload cost in the picture (the upload may dominate the CPU encode at
+    // high counts). Debug-only: the timer calls + accumulator writes are
+    // pragma-stripped from production builds.
     //>>includeStart('debug', pragmas.debug);
     const _repackT0 = performance.now();
     //>>includeEnd('debug');
@@ -752,10 +737,10 @@ export function updateWebGPUBufferPointCollection(
   // blendOption: OPAQUE (blend off, depth write on, Pass.OPAQUE) vs default
   // TRANSLUCENT. Mirrors the WebGL RenderState/Pass branch.
   const isOpaque = collection._blendOption === BlendOption.OPAQUE;
-  // PARITY-BUFFER-2DCV — settled 2D/CV coplanar-depth flag (no-op in 3D/morph).
+  // Settled 2D/CV coplanar-depth flag (no-op in 3D/morph).
   const noDepthTest = computeNoDepthTest(frameState);
-  // NEW-BUFFERPOLYLINE-2D-EXTRUSION — culling BV in the render frame the
-  // packed positions actually live in (3D → same reference, byte-identical).
+  // Culling BV in the render frame the packed positions actually live in
+  // (3D → same reference, byte-identical).
   const modeBV = computeBufferModeBoundingVolume(collection, frameState, cache);
 
   if (frameState.passes.render) {
@@ -844,9 +829,8 @@ export function updateWebGPUBufferPointCollection(
         vertexCount: 6,
         instanceCount: primitiveCount,
         pass: Pass.TRANSLUCENT,
-        // FORK-34 (Batch 207) — mark as a dedicated pick command so the
-        // pick pass dispatches it instead of skipping it as a base
-        // (no-pick-variant) command.
+        // Mark as a dedicated pick command so the pick pass dispatches
+        // it instead of skipping it as a base (no-pick-variant) command.
         pickOnly: true,
       });
     } else {
@@ -867,9 +851,9 @@ export function destroyWebGPUBufferPointCollection(
     return;
   }
   destroyPickIds(cache);
-  // NEW-BUFFERCOLL-WASM-ENCODE-WIRE (Batch 272) — release the RTE bridge's
-  // arena/version handle. The bridge's destroy() is idempotent and the WASM
-  // module is shared, so this only frees this collection's buffer claim.
+  // Release the RTE bridge's arena/version handle. The bridge's destroy() is
+  // idempotent and the WASM module is shared, so this only frees this
+  // collection's buffer claim.
   cache.rteBridge?.destroy();
   cache.rteBridge = undefined;
   cache.cameraUBO.destroy();

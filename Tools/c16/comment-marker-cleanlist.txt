@@ -668,3 +668,16 @@ packages/engine/Source/Renderer/WebGPU/WebGPUImageBasedLighting.ts
 packages/engine/Source/Scene/GroundPrimitive.js
 packages/engine/Source/Scene/Vector3DTileClampedPolylines.js
 packages/engine/Source/Renderer/WebGPU/WebGPUPipelineRequestGuard.ts
+# Point cloud, splat CPU-side and compute family (C16-10). Current constraints
+# remain beside the code; extracted knowledge moved to
+# migration_doc/DEV_NOTES_points_compute.md. Markers inside embedded-WGSL
+# template literals in these files are outside the guard's comment grammar
+# and are tracked separately (Tools/c16/string-literal-marker-scan.mjs).
+packages/engine/Source/Shaders/WebGPU/PointCloud/PointCloudEDLDepth.wgsl
+packages/engine/Source/Scene/FlowFieldWindLayer.js
+packages/engine/Source/Renderer/WebGPU/WebGPUPointCloudSortDispatcher.ts
+packages/engine/Source/Scene/GaussianSplatPrimitive.js
+packages/engine/Source/Renderer/WebGPU/WebGPUGPUSortKeysDispatcher.ts
+packages/engine/Source/Renderer/WebGPU/WebGPUBufferPointRenderer.ts
+packages/engine/Source/Shaders/WebGPU/Compute/VolumetricFog.wgsl
+packages/engine/Source/Renderer/WebGPU/WebGPUPointCloudRenderer.ts
