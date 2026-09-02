@@ -20,6 +20,7 @@ import {
   WebGPUFeatureIdTexture,
   type FeatureIdResolveResult,
 } from "./WebGPUFeatureIdTexture.js";
+import { WebGPUPickTransientReadbackPool } from "./WebGPUPickTransientReadback.js";
 
 // No more than this many pick passes may elapse before a typed center-pixel
 // result expires. Coordinates and logical rectangles match exactly because a
@@ -735,6 +736,10 @@ export class WebGPUPickFramebuffer {
   // mapping-pending → mapped before unmap clears it). sampleHeight in
   // continuous CallbackProperty demos hits this every frame.
   private _readbackInFlight: boolean = false;
+  // Overflow staging for the request the single persistent buffer cannot take.
+  // See WebGPUPickTransientReadback for why a second concurrent readback is the
+  // ordinary case and not an edge case.
+  private readonly _transientReadbacks = new WebGPUPickTransientReadbackPool();
 
   // Logical top-down pick rectangle. Its origin may be outside the attachment
   // at canvas edges; keeping it unshifted preserves the caller's cursor at the
@@ -1781,9 +1786,11 @@ export class WebGPUPickFramebuffer {
       return this._stagingBuffer;
     }
     if (this._readbackInFlight) {
-      // Distinct from the whole-request suppression below: here the request
-      // survived the in-flight check because the extent changed, and it is the
-      // buffer swap that cannot happen while the old one is mapping-pending.
+      // A guard of last resort rather than a routine path: the only caller now
+      // reaches this method with the persistent slot free, routing overflow
+      // requests to their own buffer instead. It stays because swapping a
+      // mapping-pending buffer is unrecoverable, and a future second caller
+      // must hit the guard rather than the corruption.
       this._stats.recordArmDecline(
         "staging-buffer-in-flight",
         this._updateCount,
@@ -1820,14 +1827,6 @@ export class WebGPUPickFramebuffer {
       );
       return;
     }
-    // Skip if the previous frame's mapAsync hasn't unmapped yet — the
-    // staging buffer is still mapping-pending or mapped, and submitting
-    // a copy that targets it throws "used in submit while mapped".
-    if (this._readbackInFlight) {
-      this._stats.recordArmDecline("readback-in-flight", this._updateCount);
-      return;
-    }
-
     const requestSequence = this._nextReadbackSequence++;
     if (region.copyWidth === 0 || region.copyHeight === 0) {
       this._stats.recordReadbackArmed();
@@ -1842,9 +1841,21 @@ export class WebGPUPickFramebuffer {
     }
 
     const bytesPerRow = Math.ceil((region.copyWidth * 4) / 256) * 256;
-    const stagingBuffer = this._ensureSyncStagingBuffer(
-      bytesPerRow * region.copyHeight,
-    );
+    const bufferSize = bytesPerRow * region.copyHeight;
+    // The persistent buffer cannot take a copy while its own map is pending,
+    // and the request that arrives in that window is the warm-up pick for a
+    // position the caller is about to ask about. Declining it left that
+    // position unwarmed forever, so overflow requests get their own buffer —
+    // bounded, then declining exactly as before.
+    const transientBuffer = this._readbackInFlight
+      ? this._transientReadbacks.acquire(device, bufferSize)
+      : null;
+    if (this._readbackInFlight && !transientBuffer) {
+      this._stats.recordArmDecline("readback-in-flight", this._updateCount);
+      return;
+    }
+    const stagingBuffer =
+      transientBuffer ?? this._ensureSyncStagingBuffer(bufferSize);
     if (!stagingBuffer) {
       // _ensureSyncStagingBuffer already attributed the reason.
       return;
@@ -1860,6 +1871,9 @@ export class WebGPUPickFramebuffer {
       !encoder ||
       typeof frameContext.enqueueAfterFrameSubmit !== "function"
     ) {
+      if (transientBuffer) {
+        this._transientReadbacks.release(transientBuffer);
+      }
       this._stats.recordArmDecline("no-frame-encoder", this._updateCount);
       return;
     }
@@ -1883,10 +1897,20 @@ export class WebGPUPickFramebuffer {
     // that encoder, copying the previous pass's bytes and falsely labelling
     // them with this request's view provenance. Map only after endFrame has
     // submitted the draw+copy command buffer in-order.
+    // Frees whichever slot this request took. The persistent buffer is freed
+    // by clearing the in-flight flag; an overflow buffer is freed by returning
+    // it to the pool, which destroys it.
+    const retire = () => {
+      if (transientBuffer) {
+        this._transientReadbacks.release(transientBuffer);
+      } else {
+        this._readbackInFlight = false;
+      }
+    };
     const accepted = frameContext.enqueueAfterFrameSubmit((submitted) => {
       if (!submitted) {
         this._stats.recordArmDecline("frame-not-submitted", this._updateCount);
-        this._readbackInFlight = false;
+        retire();
         return;
       }
 
@@ -1899,8 +1923,9 @@ export class WebGPUPickFramebuffer {
           try {
             if (
               this._isDestroyed ||
-              this._stagingBuffer !== stagingBuffer ||
-              this._stagingBufferDevice !== device ||
+              (!transientBuffer &&
+                (this._stagingBuffer !== stagingBuffer ||
+                  this._stagingBufferDevice !== device)) ||
               this._device !== device ||
               this._colorTexture !== colorTexture
             ) {
@@ -1924,16 +1949,20 @@ export class WebGPUPickFramebuffer {
             } catch {
               // A destroyed buffer cannot be unmapped; teardown already owns it.
             }
-            this._readbackInFlight = false;
+            retire();
           }
         })
         .catch(() => {
           // A map or unpack failure is non-authoritative for synchronous pick.
           // The `then` finally above already unmapped when mapping succeeded.
-          this._readbackInFlight = false;
+          retire();
         });
     });
-    this._readbackInFlight = accepted;
+    if (!transientBuffer) {
+      this._readbackInFlight = accepted;
+    } else if (!accepted) {
+      this._transientReadbacks.release(transientBuffer);
+    }
     if (accepted) {
       this._stats.recordReadbackArmed();
     } else {
