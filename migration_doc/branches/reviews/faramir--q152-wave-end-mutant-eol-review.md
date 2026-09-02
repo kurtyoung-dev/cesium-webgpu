@@ -9,8 +9,8 @@
 ## Frozen subject
 
 - Clone: `F:/Dev/GH/cesium-lane-beren-q152-mutant-eol-20260830`
-- Branch: `sol/q152-wave-end-mutant-eol-806fc36ca4-2026-08-30`
-- Base/HEAD: `806fc36ca4486f41046baf1175153910707ce6b6`
+- Branch: `sol/q152-wave-end-mutant-eol-ca0de6918a-2026-08-30`
+- Base/HEAD: `ca0de6918af091f2a68078f795b6c4362f159ca0`
 - Tree: `0ee9029180924d22a87af8a37c1461d59ba3af06`
 
 | Path | Bytes | SHA-256 | Filtered object |

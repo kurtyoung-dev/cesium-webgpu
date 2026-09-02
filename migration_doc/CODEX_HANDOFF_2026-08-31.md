@@ -18,7 +18,7 @@ Read this with [AGENTS.md](../AGENTS.md), the
 
 Root reported this repository checkpoint at `2026-08-31T16:35:53-04:00`:
 
-- main HEAD: `6bda77dfef57ff0b8f08e88b077ef945e8fef500`;
+- main HEAD: `33de65b3f17e029677a5584c0b7259dae9a3e020`;
 - `main...origin/main [ahead 13]`;
 - no commit was made during the reported interval and nothing was pushed;
 - no branch or worktree was created, deleted, or switched during the reported interval; and
@@ -33,7 +33,7 @@ the thirteenth local-only commit as the exact Batch-1342 commit recorded in sect
 
 The 2026-08-30 handoff records committed history through its post-cutoff Batch 1341. The additional
 root-observed local-only commit is
-`6bda77dfef57ff0b8f08e88b077ef945e8fef500` (`Batch 1342: complete the 24-hour Codex handoff`).
+`33de65b3f17e029677a5584c0b7259dae9a3e020` (`Batch 1342: complete the 24-hour Codex handoff`).
 Its tree delta modifies exactly `migration_doc/CODEX_HANDOFF_2026-08-30.md` and
 `migration_doc/README.md`; it is current `main` HEAD and is not pushed. This exact committed
 boundary does not make any prospective tuple below committed, landed, executed, reviewed, or
@@ -170,8 +170,8 @@ locked. This handoff did not query GitHub during quiet hours, so that external s
 ledger-reported rather than independently verified here.
 
 No push is currently possible through the compliant local path. The unpushed range includes three
-noncompliant commits: `fff7e02072` lacks the required co-author trailer, while `5f30649757` and
-`b1ce382375` have `docs:` subjects and lack the batch prefix, body, and trailer. The local guard is
+noncompliant commits: `1dc3f9c360` lacks the required co-author trailer, while `b429c5b518` and
+`b429c5b518` have `docs:` subjects and lack the batch prefix, body, and trailer. The local guard is
 expected to refuse a range containing them. History rewriting is not authorized by this handoff;
 the maintainer must decide whether it occurs at all, who owns it, and how the batch sequence is
 reconciled. Do not bypass the hook and do not push before user review.
@@ -520,7 +520,7 @@ The physical root-observed identities are:
 | `package.json` | 10,694 | `2A6F6460C7E9F96A03ED1BE4B6D3920033956AC9A3F378398A1ADD7AD30D9D0D` |
 
 The current gate spec is the Batch-1336 EOL-robust mutation-harness destination, not an unattributed
-change. Commit `233fa5be340847fad1f1b4772256231724ced83d` contains
+change. Commit `1f9f245ce4334ef9cb90adf00fbf626516ca1b71` contains
 `Tools/wave-end-gate.spec.mjs` plus the durable records
 `migration_doc/branches/beren--q152-wave-end-mutant-eol.md` and
 `migration_doc/branches/reviews/faramir--q152-wave-end-mutant-eol-review.md`. Its current 38,121-byte
@@ -622,13 +622,13 @@ unreviewed until a new exact tuple receives two fresh independent terminal rehas
 ## 13. Root-owned final cutoff slot
 
 At the root-supplied `2026-08-31T19:01:18-04:00` cutoff, `main` remained at
-`6bda77dfef57ff0b8f08e88b077ef945e8fef500`, 13 commits ahead of `origin/main`. The nine local
+`33de65b3f17e029677a5584c0b7259dae9a3e020`, 13 commits ahead of `origin/main`. The nine local
 `sol/*` branches besides `main` were:
 
 - `sol/dx-handoff-doc-drift-ba64954b945-2026-08-29`
 - `sol/q-152-wave-end-gate-repair-ba64954b945-2026-08-29`
 - `sol/q12-prettier-reachability-233fa-2026-08-30`
-- `sol/q152-aggregate-receipt-233fa5be340-2026-08-30`
+- `sol/q152-aggregate-receipt-1f9f245ce43-2026-08-30`
 - `sol/q152-child-result-contract-ba64954b945-2026-08-29`
 - `sol/q152-h1-variant-consumer-b806fc36ca4-2026-08-30`
 - `sol/q152-landing-receipt-233fa-2026-08-30`
@@ -639,7 +639,7 @@ The six root-observed registered auxiliary worktrees besides the primary were:
 
 | Absolute worktree path | Role | Commit | Branch/state |
 | --- | --- | --- | --- |
-| `F:/Dev/GH/cesium-lane-elrond-session-gc-20260830` | Elrond Session-GC | `b1ce382375` | `sol/session-gc-boundary-b1ce-2026-08-30` |
+| `F:/Dev/GH/cesium-lane-elrond-session-gc-20260830` | Elrond Session-GC | `b429c5b518` | `sol/session-gc-boundary-b1ce-2026-08-30` |
 | `F:/Dev/GH/cesium-lane-gandalf-q12-prettier-20260830` | Gandalf Q-12 | `d37b1f3cb6` | `sol/q12-prettier-reachability-233fa-2026-08-30` |
 | `F:/Dev/GH/cesium-lane-thorin-q152-receipt-20260830` | Thorin Q-152 landing receipt | `f0121cfd8` | `sol/q152-landing-receipt-233fa-2026-08-30` |
 | `F:/Dev/GH/cesium-webgpu-cert-s5-3cbb82885fc7` | C12 certification | `034c7f74d0` | detached |

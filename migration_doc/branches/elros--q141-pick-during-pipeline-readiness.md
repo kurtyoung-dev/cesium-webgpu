@@ -7,7 +7,7 @@
 - Test writer: Idril
 - Engine writer: Nori
 - Independent reviewer: Glorfindel
-- Shared-main base and current HEAD at freeze: `233fa5be340847fad1f1b4772256231724ced83d`
+- Shared-main base and current HEAD at freeze: `1f9f245ce4334ef9cb90adf00fbf626516ca1b71`
 - Branch/clone: shared main workspace `F:/Dev/GH/cesium-webgpu`; no worker branch or clone was created
 - Landing and every Git write: root only
 - Push authority: none
@@ -206,7 +206,7 @@ normalized or included.
 
 ## Frozen four-path tuple
 
-The source tuple froze against base/HEAD `233fa5be340847fad1f1b4772256231724ced83d`:
+The source tuple froze against base/HEAD `1f9f245ce4334ef9cb90adf00fbf626516ca1b71`:
 
 | Path | Numstat | Bytes | LF bytes | CRLF sequences | SHA-256 |
 | --- | ---: | ---: | ---: | ---: | --- |

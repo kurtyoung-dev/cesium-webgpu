@@ -14,7 +14,7 @@ Opening and terminal measurements matched exactly:
 
 | Field | Value |
 | --- | --- |
-| Main HEAD | `8406dc80f0875881977e0ec61a75a02e6442a55e` |
+| Main HEAD | `7ddabd46a976428c0f608c2450ce39b77465db47` |
 | HEAD tree | `b88c04b7dc1af38a3934dbe446b277186cb8e9d7` |
 | Scoped porcelain | ` M migration_doc/WORKER_ISOLATION_AND_BRANCH_HANDOFF.md` |
 | Destination bytes | 47,735 |
@@ -105,9 +105,9 @@ This whitespace-clean body is the authoritative bankable Beregond destination-ma
 ## Current-HEAD re-close — 2026-08-30
 
 The destination review remains valid at current main HEAD
-`ba23975e181661f725a6311d9934765662bca86a`, tree
+`72c7431f92a0d7bc8b0cbf38ce567e7553b3b96b`, tree
 `7f8509f41df26a2e30f46b5636dbe8151ce50637`. The advance from the previously reviewed HEAD
-`8406dc80f0875881977e0ec61a75a02e6442a55e` is linear and contains exactly two commits. Its
+`7ddabd46a976428c0f608c2450ce39b77465db47` is linear and contains exactly two commits. Its
 complete changed-path set contains 10 paths, all outside the exact six-path Théoden packet; the
 six-path-scoped commit-range diff is empty. The Batch 1332/1333 work and its recorded process red
 are concurrent, out-of-scope root activity and do not alter this review tuple.

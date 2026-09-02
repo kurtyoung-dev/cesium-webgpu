@@ -10,7 +10,7 @@
 
 ## Destination boundary
 
-- Main HEAD: `8406dc80f0875881977e0ec61a75a02e6442a55e`
+- Main HEAD: `7ddabd46a976428c0f608c2450ce39b77465db47`
 - Main tree: `b88c04b7dc1af38a3934dbe446b277186cb8e9d7`
 - Scoped porcelain, opening and terminal:
 
@@ -88,7 +88,7 @@ This verdict grants no push, remote, credential, publication, branch-change, cle
 
 Terminal measurement at `2026-08-30T00:25:04.8489044-04:00` matched the opening destination boundary exactly:
 
-- HEAD: `8406dc80f0875881977e0ec61a75a02e6442a55e`
+- HEAD: `7ddabd46a976428c0f608c2450ce39b77465db47`
 - scoped porcelain: exactly one modified destination path
 - destination bytes: `47,735`
 - destination SHA-256: `4B0B0665CE5BCDE5BE58F2E9BD7C1A83F593123956427F23658D44D693BD5763`
@@ -105,8 +105,8 @@ This whitespace-clean body is the authoritative bankable Haleth destination-mate
 
 ## Current-HEAD re-close — 2026-08-30
 
-Main advanced from `8406dc80f0875881977e0ec61a75a02e6442a55e` to
-`ba23975e181661f725a6311d9934765662bca86a`, tree
+Main advanced from `7ddabd46a976428c0f608c2450ce39b77465db47` to
+`72c7431f92a0d7bc8b0cbf38ce567e7553b3b96b`, tree
 `7f8509f41df26a2e30f46b5636dbe8151ce50637`. The complete two-commit advance contains ten changed paths, all
 outside the six-path Théoden packet. A path-scoped comparison of those commits across the candidate,
 Théoden handoff, two original reports, and two destination reports was empty. The advance therefore

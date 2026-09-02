@@ -6,9 +6,9 @@
 
 **Authority — read this before citing anything below.**
 
-1. **This queue is the dispatch order, not a status authority.** It says what is dispatched, in what sequence, at what tier, behind which gate. It does not record completion.
+1. **This queue is the dispatch order, not the status authority named below.** It says what is dispatched, in what sequence, at what tier, and which gate applies; landed and closed DX rows remain as add-only historical inventory rather than executable work.
 2. **The live ledger [`FIX_QUEUE_2026-08-27_AUDIT_FINDINGS.md`](FIX_QUEUE_2026-08-27_AUDIT_FINDINGS.md) remains the sole status authority for every `Q-` id.** `Q-141`–`Q-150`, `B1 (demo)`, `C1`–`C7`, the `AEC demo flags` umbrella and the five Earth-at-Night maintainer questions are recorded there at lines **117–125** and **132–136** (re-read 2026-08-29 — `:126` is a blank line and `:127`–`:131` are the Cirdan section and table headers, so the older “116–136” range was loose). Line **`:116`** is a different row: the **INCIDENT** that produced `Q-145`. Where this document and the ledger disagree about a `Q-` row's **status**, the ledger wins. Where they disagree about **order**, this document is the proposal and the maintainer's ruling wins.
-3. **No row here is launched, ruled, scheduled or funded.** Nothing was measured for this document.
+3. **This document does not launch, rule, schedule or fund a row.** Landed and closed entries carry results from their cited commits; listing them here grants no execution authority. Nothing was measured for this document.
 4. **Campaign numbering is ratified add-only.** C17 (Celestial Light Transport) is **PROPOSED and NOT LAUNCHED** and holds the C17 identity; C18 is launched. The meshlet track is therefore filed as the **`MS-` wave of the Phase-8b GPU-resident-tiles program** — the placement ruling **M2** already ratified — *pending the maintainer's placement ruling* (gate **M-16**), which may instead give it a launched campaign identity. Three placements are live and the maintainer picks one:
    - **(a) A wave inside the Phase-8b GPU-resident-tiles program**, `MS-` prefix retained. This is what ruling **M2** already ratified verbatim — "inside the Phase-8b GPU-resident-tiles program" (`MESHLETS_RESEARCH_2026-07-24.md` §6a, re-read 2026-08-29). Phase-8b has a design document and no launched queue, so this placement gives the rows a home but no status authority.
    - **(b) Campaign 19**, the next free number after C18, leaving C17 reserved. It buys a launched identity and a status authority of its own. `D3`'s own **G-A** recommendation is **(a) — it is what M2 already ratified; (b) only if the maintainer wants a launched campaign identity**, and **this document is written against (a)**: the `MS-` rows are a Phase-8b wave needing no new campaign number, §6 is titled accordingly, and (b) is recorded as **M-16**'s alternative under D3's exact condition.
@@ -83,31 +83,33 @@ Every engineering row additionally owes a separate **OPUS-REVIEW** dispatch befo
 
 **Status vocabulary:** `QUEUED` = dispatchable under the current holds · `HELD (x)` = blocked on the named gate or dependency · `CLOSED-NEGATIVE` = closed with evidence, do not re-open. **`Q-` rows carry their ledger status by reference** — this column states dispatchability only.
 
-**Add-only carried states:** `PARKED / BANKED` = an existing live-ledger identity retained here but
-not released for dispatch · `PREREGISTRATION / PREPARATION ONLY` = a frozen future proof plan that
-does not authorize a writer, deletion, build, browser/Edge run, landing, evidence, or certification.
+**Add-only carried states:** `LANDED / CLOSED` = completed work retained as historical inventory and
+not released for another dispatch · `PARKED / BANKED` = an existing live-ledger identity retained
+here but not released for dispatch · `PREREGISTRATION / PREPARATION ONLY` = a frozen future proof
+plan that does not authorize a writer, deletion, build, browser/Edge run, landing, evidence, or
+certification.
 
 | ID | Title | Tier | Size | Status | Depends on | Wave |
 |---|---|---|---|---|---|---|
-| `Q-145` | Sandcastle2 built-app origin rewrite + refusal | SONNET-BOUNDED | S | QUEUED | — | 1 |
-| `Q-146` | Earth-at-Night demo clock coupling + timeline window | SONNET-BOUNDED | XS | QUEUED | `Q-145` | 1 |
-| `Q-147` | `sandcastle.yaml` still says emissive lights are WebGPU-only | SONNET-BOUNDED | XS | QUEUED | land with `Q-146` | 1 |
-| `EAN-03` | Night-darkness slider is inert at shipped defaults | SONNET-BOUNDED | XS | QUEUED | — | 1 |
-| `EAN-04` | Collapse the five-row toolbar out of every capture | SONNET-BOUNDED | XS | QUEUED | — | 1 |
-| `EAN-01` | Demo picks the star map + exposure (ledger `B1 (demo)`) | SONNET-BOUNDED | XS–S | QUEUED (cert = second dispatch, HELD on `Q-148`) | `Q-145`; cert `Q-148` | 1 |
+| `Q-145` | Sandcastle2 built-app origin rewrite + refusal | SONNET-BOUNDED | S | LANDED (Batch 1307) | — | 1 |
+| `Q-146` | Earth-at-Night demo clock coupling + timeline window | SONNET-BOUNDED | XS | LANDED (Batch 1303) | `Q-145` | 1 |
+| `Q-147` | `sandcastle.yaml` still says emissive lights are WebGPU-only | SONNET-BOUNDED | XS | LANDED (Batch 1303) | land with `Q-146` | 1 |
+| `EAN-03` | Night-darkness slider is inert at shipped defaults | SONNET-BOUNDED | XS | LANDED (Batch 1303) | — | 1 |
+| `EAN-04` | Collapse the five-row toolbar out of every capture | SONNET-BOUNDED | XS | LANDED (Batch 1303) | — | 1 |
+| `EAN-01` | Demo picks the star map + exposure (ledger `B1 (demo)`) | SONNET-BOUNDED | XS–S | LANDED (Batch 1318, default-off; certification on tranche A) (cert = second dispatch, HELD on `Q-148`) | `Q-145`; cert `Q-148` | 1 |
 | `Q-148` | Repair + promote the star probe; census scorer | OPUS-EDGE-EXECUTOR | M | QUEUED | `Q-145`, `EAN-04` | 1 |
-| `DM-01` | Rebuild the AEC probe so a streaming lever is measurable | SONNET-BOUNDED | S | QUEUED | `Q-145` | 1 |
+| `DM-01` | Rebuild the AEC probe so a streaming lever is measurable | SONNET-BOUNDED | S | LANDED (Batch 1307; first live run 2026-09-01 REFUSED first-traversal-not-observed - diagnosis owed) | `Q-145` | 1 |
 | `Q-143` | AEC dense-tileset corrected interleaved re-measure | OPUS-EDGE-EXECUTOR | S | QUEUED | `DM-01` | 1 |
 | `DM-02` | `requestRenderMode` leg (ship decision gated) | OPUS-EDGE-EXECUTOR | XS / S | QUEUED (ship HELD on M-01) | `Q-143`, `DM-01` | 1 |
 | `DM-03` | `maximumScreenSpaceError = 24` leg (ship decision gated) | OPUS-EDGE-EXECUTOR | XS / S | QUEUED (ship HELD on M-02) | `Q-143`, `DM-01` | 1 |
 | `DM-04` | `resolutionScale` control legs | OPUS-EDGE-EXECUTOR | XS | QUEUED (measurement ungated; a **default** proposal would inherit M-02) | `Q-143`, `DM-01` | 1 |
 | `DM-05` | `logarithmicDepthBuffer = false` leg | OPUS-EDGE-EXECUTOR | XS | QUEUED | `Q-143`, `DM-01` | 1 |
 | `DM-06` | Streaming-phase tileset flags, never evaluated | OPUS-EDGE-EXECUTOR | S | QUEUED (measurement ungated; a `foveated*` / `progressiveResolutionHeightFraction` **default** proposal is HELD on M-02) | `DM-01`, `Q-143` | 1 |
-| `DM-07` | Pick-emission and pick-pipeline counters | SONNET-BOUNDED | S | QUEUED | — | 1 |
-| `Q-141` | WebGPU pick commands unbuildable while colour pipeline pends | OPUS-JUDGMENT | M | QUEUED | `DM-07` | 1 |
-| `Q-142` | AO bridge reads `stepSize`; clamps and divisor compound it | OPUS-JUDGMENT | S–M | QUEUED (landing form on M-03) | — | 1 |
+| `DM-07` | Pick-emission and pick-pipeline counters | SONNET-BOUNDED | S | LANDED (Batch 1328) | — | 1 |
+| `Q-141` | WebGPU pick commands unbuildable while colour pipeline pends | OPUS-JUDGMENT | M | Phase A LANDED (Batch 1338) - REFUTED BY MEASUREMENT 2026-09-01 (readyGateSkips 0, pending 0, ~187 carriers per pick, still 4/40); re-tiered to the pick pass / readback | `DM-07` | 1 |
+| `Q-142` | AO bridge reads `stepSize`; clamps and divisor compound it | OPUS-JUDGMENT | S–M | LANDED (Batch 1327, WEBGPU_AO_FULL_SAMPLE_PATTERN = true) - gate M-03 open | — | 1 |
 | `Q-149` | Moon modulation: limiting-magnitude floor | OPUS-JUDGMENT | S | HELD (`Q-148`) | `Q-148` | 2 |
-| `DM-08` | WebGPU AO has no runtime config propagation | OPUS-JUDGMENT | S | HELD (`Q-142`) | `Q-142` | 2 |
+| `DM-08` | WebGPU AO has no runtime config propagation | OPUS-JUDGMENT | S | QUEUED (Q-142 landed Batch 1327; M-03 open; carries the found-but-unfiled updateConfig two-of-four-buffers leak) | `Q-142` | 2 |
 | `DM-09` | WebGPU tile-content residency starves the frame loop | OPUS-JUDGMENT | L | HELD (`Q-143`, M-04) | `Q-143` | 2 |
 | `DM-10` | ~2.4 GB unaccounted WebGPU JS heap | OPUS-JUDGMENT | M | HELD (`Q-143`) | `Q-143` | 2 |
 | `DM-11` | Pick pipelines build synchronously in a per-`Model` cache | OPUS-JUDGMENT | M | HELD (`DM-07`, `Q-143`, `Q-141`, M-05) | `DM-07`, `Q-143`, `Q-141` | 2 |
@@ -131,7 +133,7 @@ does not authorize a writer, deletion, build, browser/Edge run, landing, evidenc
 | `MS-01` | Capability seam + standards canary + placement decision | SONNET-BOUNDED | XS | QUEUED | `MS-00` | M0 |
 | `MS-02` | WGSL mesh/task stage scaffold | OPUS-JUDGMENT | S (L if it grows) | HELD (M-17 / G-B) | `MS-00`, `MS-01` | M0 |
 | `MS-03` | Licence and provenance determination pass | OPUS-JUDGMENT | S | QUEUED | — | M1 |
-| `MS-04` | `maxStorageBufferBindingSize` adaptive limit cap | SONNET-BOUNDED | XS | CLOSED-NEGATIVE (premise refuted 2026-08-29: the pool already requests min(adapter, cap)) | — | M1 |
+| `MS-04` | `maxStorageBufferBindingSize` adaptive limit cap | SONNET-BOUNDED | XS | QUEUED (RE-OPENED 2026-09-01: the 2026-08-29 refutation was itself wrong - ADAPTIVE_LIMIT_CAPS in WebGPUDevicePool.ts has no maxStorageBufferBindingSize entry, so the min(adapter, cap) line never executes for it; DEFERRED_WORK still lists the cap as a meshlet prerequisite) | — | M1 |
 | `MS-05` | meshoptimizer dependency floor + lockfile reconciliation | OPUS-JUDGMENT | XS | QUEUED | `MS-03` | M1 |
 | `MS-06` | Meshlet data layout freeze (one layout, both paths) | OPUS-JUDGMENT | S | QUEUED | `MS-00`, `MS-03` | M1 |
 | `MS-07` | Layout encoder / validator (pure, browser-free) | SOL-DIRECTED | S | QUEUED | `MS-06` | M1 |
@@ -154,30 +156,32 @@ does not authorize a writer, deletion, build, browser/Edge run, landing, evidenc
 | `MS-24` | Sandcastle demo | SONNET-BOUNDED | S | HELD (`C11-168`) | `MS-10`, `MS-13`, `MS-15` | M7 |
 | `MS-25` | Edge acceptance tranche | OPUS-EDGE-EXECUTOR | M | HELD (`C11-168`) | `MS-10`–`MS-15`, `MS-24` | M7 |
 | `MS-26` | Track close-out review | OPUS-REVIEW | S | HELD (`MS-25`) | `MS-25` | M7 |
-| `DX-01` | One probe runtime for the fleet | OPUS-JUDGMENT | M | QUEUED (Opus capacity) | `Q-145` | DX |
+| `DX-01` | One probe runtime for the fleet | OPUS-JUDGMENT | M | QUEUED (Opus capacity) | `Q-145` (landed) | DX |
 | `DX-02` | Anti-re-accretion contract (status tag + runtime lint) | SONNET-BOUNDED | S | QUEUED | `DX-01` | DX |
-| `DX-03` | Archive the HIGH-confidence probe set (~35) | SONNET-BOUNDED | S | QUEUED | — | DX |
-| `DX-04` | MED set: per-file grep census, then archive | SOL-DIRECTED + SONNET-BOUNDED | S + S | QUEUED | `DX-03`, `DX-05` | DX |
-| `DX-05` | Exemplar retention + instrument-defect promotion | SONNET-BOUNDED | XS | QUEUED | — | DX |
+| `DX-03` | HIGH-set singleton disposition after catalog repair | SONNET-BOUNDED | S | HELD (`DX-14` repair completion and explicit maintainer release) | `DX-14` repair completion and explicit maintainer release | DX |
+| `DX-04` | MED set: per-file grep census, then archive | SOL-DIRECTED + SONNET-BOUNDED | S + S | HELD (`DX-14` repair completion and explicit maintainer release, `DX-03`) | `DX-14` repair completion and explicit maintainer release, `DX-03`; `DX-05` landed | DX |
+| `DX-05` | Exemplar retention + instrument-defect promotion | SONNET-BOUNDED | XS | LANDED (Batch 1308; `505724ef69b4aef5abee178a96251a96c636f170`) | — | DX |
 | `DX-06` | Deduplicate the fleet onto the runtime, by family | SONNET-BOUNDED (batches) | S each | QUEUED | `DX-01`, `DX-02` | DX |
-| `DX-07` | Decompose WebGPUModelRenderer.ts (9,085) | OPUS-JUDGMENT | L | HELD (`DM-07`, `Q-141`; Opus capacity) | `DM-07`, `Q-141` | DX |
-| `DX-08` | Decompose WebGPUContext.ts (7,889) | OPUS-JUDGMENT | L | HELD (`DM-07`; Opus capacity) | `DM-07` | DX |
-| `DX-09` | Decompose WebGPUPrimitiveCommands.ts + WebGPUSceneRenderer.ts | OPUS-JUDGMENT | L + L | HELD (`Q120`, `Q130`) | `Q120`, `Q130` | DX |
-| `DX-10` | Decompose the pipeline cache + six remaining >1,000-line renderers | OPUS-JUDGMENT | M–L each | HELD (`DX-07..09` recipe) | `DX-07` | DX |
-| `DX-11` | Stable citations convention | seat (docs) | XS | QUEUED | — | DX |
+| `DX-07` | Decompose WebGPUModelRenderer.ts (9,085) | OPUS-JUDGMENT | L | HELD (owning-work / `Q-141` Phase-B/Edge quiescence; Opus capacity) | `DM-07` landed; `Q-141` Phase A landed | DX |
+| `DX-08` | Decompose WebGPUContext.ts (7,889) | OPUS-JUDGMENT | L | HELD (owning-lane quiescence; Opus capacity) | `DM-07` (landed) | DX |
+| `DX-09` | Decompose WebGPUPrimitiveCommands.ts + WebGPUSceneRenderer.ts | OPUS-JUDGMENT | L + L | HELD (`Q120` and `Q130` owning lanes must close and become quiescent; Opus capacity) | `Q120`, `Q130` closure + quiescence | DX |
+| `DX-10` | Decompose the pipeline cache + six remaining >1,000-line renderers | OPUS-JUDGMENT | M–L each | HELD (`DX-07..09` recipe; each owning lane must close and become quiescent; Opus capacity) | `DX-07..09`; per-file owner closure + quiescence | DX |
+| `DX-11` | Stable citations convention | seat (docs) | XS | CLOSED (Batch 1310; `c59d2bafd61efbbca765daf536c040b1f63c502c`) | — | DX |
 | `DX-12` | Spec homes measured pass (executes Q-139-D1) | SONNET-BOUNDED | S | HELD (fresh build; M-DX-1) | build | DX |
 | `DX-13` | Ledger rotation | — | — | PROPOSED (M-DX-2) | — | DX |
-| `DX-14` | Tooling-catalog archive-plan generator | OPUS-JUDGMENT | M | PARKED / BANKED (maintainer go owed) | live-ledger DX-14 section | DX |
+| `DX-14` | Tooling-catalog archive-plan generator | OPUS-JUDGMENT | M | PARKED / BANKED (repair completion and explicit maintainer release owed) | live-ledger DX-14 section | DX |
 | `DX-15` | Retire inline translucent-classification color/composite scaffold (`C11-107` alias/tail) | OPUS-JUDGMENT | M | PREREGISTRATION / PREPARATION ONLY; HELD (G6 Q2d) | `C11-107`; explicit Principle-7 sign-off | DX |
 | `DM-N1`…`DM-N11` | Eleven design-model non-levers | — | — | CLOSED-NEGATIVE | — | §7 |
 | `EAN-X1`…`EAN-X6` | Six Earth-at-Night closures and hand-offs | — | — | CLOSED-NEGATIVE | — | §7 |
 
-**Counts.** Wave 1 = **17**, Wave 2 = **7**, Wave 3 = **9**, Wave 4 = **5**, meshlet track = **27** (`MS-00`…`MS-26`), closed-negative = **17**. Wave DX = **15** (`DX-01`…`DX-15`; `DX-14` already banked, `DX-15` preparation-only). Total tracked = **97**.
+**Counts.** Wave 1 = **17**, Wave 2 = **7**, Wave 3 = **9**, Wave 4 = **5**, meshlet track = **27** (`MS-00`…`MS-26`), closed-negative = **17**. Wave DX = **15** (`DX-01`…`DX-15`; `DX-05` landed, `DX-11` closed, `DX-14` already banked, `DX-15` preparation-only). Total tracked = **97**.
 
 **Umbrella, not a row.** The ledger's `AEC demo flags` entry (`FIX_QUEUE_2026-08-27_AUDIT_FINDINGS.md:136`) stays the umbrella over `DM-02`–`DM-06`; it has no tier and no executor of its own, and it attaches to the `C11-168` dense-tileset lane so the flags are judged in the same harness that `Q-143` builds.
 
 ---
-## 2. WAVE 1 — ruling-free and measurement-first. Dispatchable today.
+## 2. WAVE 1 — ruling-free and measurement-first. 2026-08-29 PLAN SNAPSHOT — NOT CURRENT STATUS.
+
+**Snapshot scope:** The Wave 1 table above and cards/order below preserve the 2026-08-29 dispatch plan. They are not current status or execution authority. Read every `Q-` id's current status from the live ledger named in §0.
 
 **Dispatch order inside the wave:** `Q-145` → (`Q-146` + `Q-147` + `EAN-03` + `EAN-04`, one demo commit) → `EAN-01` code → `DM-01` → `DM-07` → **`Q-148`** and **`Q-143`** (two tranches, never concurrent — one Edge job at a time) → the `DM-02`…`DM-06` legs inside `Q-143`'s tranche → `EAN-01` certification → `Q-141` → `Q-142`.
 
@@ -839,18 +843,18 @@ Two honesty amendments follow, both forced by the fork's own record:
 They stay where they are, and any brief that re-files them is wrong: the `C11-168` dense-tileset measurement lane and **`Q-143`**; **FORK-41 / `C11-98`** Hi-Z and sort-key consumer wiring (shared with `C18-A5` — whoever lands it discharges both); **`Q-141`** WebGPU pick-emission during streaming; **`Q-144`** the SKIP_LOD stencil axis; **`C18-A1`** point-cloud CLOD; **`C11-100`** voxel octree traversal.
 
 ---
-## 6a. WAVE DX — developer experience: organisation, decomposition, deduplication. QUEUED NEXT (maintainer directive 2026-08-29 ~21:40).
+## 6a. WAVE DX — developer experience: organisation, decomposition, deduplication. CURRENT FRONTIER RECORDED BELOW (maintainer directive 2026-08-29 ~21:40).
 
 **Directive (maintainer, verbatim):** "yes lets do all of the organization, decomposing, deduplication, and other improvements. Lets queue these up to run next." Recorded as ruling **R-2026-08-29-3** in `MAINTAINER_RULINGS_2026-08-28.md`. The directive also RULES the five catalog questions that have waited since 2026-08-15 (`TOOLING_CATALOG.md` M1–M5), each per the catalog's own recommendation: **M1** B for the HIGH set, MED set moves only after its per-file 30-second grep; **M2** C (the catalog + the `@purpose` contract, both already live); **M3** A now, B as the M1 follow-up, C rejected; **M4** B, with the re-audit folded into the wave-end gate (R-2026-08-29-2); **M5** B (one exemplar per technique class stays live; the two instrument-defect findings are promoted into DEBUGGING_GUIDE before their files move).
 
 **Evidence (seat census, 2026-08-29 21:30):** `Tools/visual-regression` holds 937 top-level `.mjs` (644 probes, 237 specs) + 91 lib files; **682 files launch their own browser** (`chromium.launch(`), **91 define their own `sha256`**, 64 probes parse `argv` themselves, while shared libs for launch / capture / preflight exist but predate most probes. **Eleven engine files exceed 1,000 lines** against the decomposition rule: `WebGPUModelRenderer.ts` 9,085, `WebGPUContext.ts` 7,889, `WebGPUPrimitiveCommands.ts` 5,769, `WebGPUSceneRenderer.ts` 5,073, `WebGPUModelPipelineCache.ts` 4,591, `WebGPUProceduralCloudRenderer.ts` 4,488, `WebGPUVoxelRenderer.ts` 4,354, `WebGPUGaussianSplatRenderer.ts` 3,245, `WebGPUGlobeSurfaceRenderer.ts` 3,018, `WebGPUDynamicEnvironmentMapManager.ts` 2,923, `WebGPUPointCloudRenderer.ts` 2,921. Every worker pays a reading tax on these and line-number citations drift at every landing.
 
-**Placement:** runs NEXT — after the in-flight Wave 1 rows (`Q-145`, `DM-07`, `DM-01`) land and before Wave 2. Rows that need Opus capacity say so; under the 2026-08-29 budget directive they wait for capacity while the Sol-directed and Sonnet rows proceed. Every DX row is a no-behaviour-change row: its acceptance is byte-identity on both backends via the wave-end gate plus green specs, never a visual or timing claim.
+**Placement:** the 2026-08-29 plan placed Wave DX after `Q-145`, `DM-07`, and `DM-01` and before Wave 2. That is historical placement, not a current-status assertion; the live ledger and the row-specific frontier below control current status and dispatchability. Row-specific capacity holds remain in force. Every DX row is a no-behaviour-change row: its acceptance is byte-identity on both backends via the wave-end gate plus green specs, never a visual or timing claim.
 
 ### `DX-01` — one probe runtime for the fleet
 
 - **Disposition:** OPEN. `Tools/visual-regression/lib/probe-runtime.mjs` owning: argv parsing (`--port`, `--runs`, `--reverse`, `--renderer`, `--serve-built` assertion), Edge launch (channel msedge, one browser per run, the single-Edge-slot lock file), served-build preflight on both bundles, the Sandcastle2 origin rewrite + refusal (`Q-145`), `Scene.renderReady` gating, element-only capture, `sha256`, JSON receipt + markdown summary, exit codes 0/2/3. A probe becomes a ~50-line script declaring cells.
-- **Tier / Size / Backends:** OPUS-JUDGMENT · M · harness (drives both). **Depends on:** `Q-145`. **Ruling touched:** none (implements M4-B's lifecycle hooks). **Gate:** none.
+- **Tier / Size / Backends:** OPUS-JUDGMENT · M · harness (drives both). **Depends on:** `Q-145` (landed). **Ruling touched:** none (implements M4-B's lifecycle hooks). **Gate:** none.
 - **Acceptance:** `probe-aec-perf.mjs` (`DM-01`) and `probe-globe-cold-start-readiness.mjs` re-based on the runtime produce byte-identical receipts (same fields, same values on a fixture run) to their pre-runtime versions; a spec drives the pure parts (argv, refusals, receipt shape); the runtime is the first consumer of `Q-152`.
 - **Binds:** SR-5, SR-6, SR-7, SR-12, SR-17. **Source:** seat census 2026-08-29; catalog §4 coverage gaps.
 
@@ -861,23 +865,24 @@ They stay where they are, and any brief that re-files them is wrong: the `C11-16
 - **Acceptance:** the contract spec fails on a fixture probe that launches its own browser and passes on one using the runtime; the allow-list count is printed by the census and must not grow.
 - **Binds:** SR-12, SR-13. **Source:** catalog M4.
 
-### `DX-03` — archive the HIGH-confidence set (~35 files)
+### `DX-03` — HIGH-set singleton disposition after catalog repair
 
-- **Disposition:** OPEN. `git mv` the catalog §3 HIGH set into `Tools/visual-regression/archive/` (history via `--follow`), remove their fleet-contract allow-list rows in the same commit, repoint the three single-live-ref files first, regenerate the catalog, keep the debug-log pointer for `probe-polyline-geodesic`. Excludes the DELIBERATE_RED_FLAG probe and the HELD_FOR_D8 files.
-- **Tier / Size / Backends:** SONNET-BOUNDED · S · tooling. **Depends on:** none. **Ruling touched:** executes M1-B (HIGH) and M3-B. **Gate:** none — ruled by R-2026-08-29-3.
-- **Acceptance:** `git log --follow` resolves every moved file; `node Tools/spec-runner-census.mjs` and the fleet contract stay green; zero live `migration_doc` references break (grep census before and after, printed in the packet).
+- **Disposition:** **HELD behind `DX-14` repair completion and explicit maintainer release.** The prior ~35-file HIGH-set move is superseded; the latest handoff §5.5 narrows `DX-03` to a singleton disposition after `DX-14` repairs catalog truth. This row does not choose that disposition in advance.
+- **Tier / Size / Backends:** SONNET-BOUNDED · S · tooling. **Depends on:** `DX-14` repair completion and explicit maintainer release. **Ruling touched:** executes M1-B (HIGH) and M3-B. **Gate:** the existing live-ledger `DX-14` repair completion and explicit maintainer release.
+- **Acceptance (current singleton contract; only after `DX-14` repair completion and explicit maintainer release):** the repaired catalog resolves the HIGH set to the single remaining candidate, `Tools/visual-regression/probe-polyline-geodesic.mjs`; its live `WEBGPU_DEBUGGING_LOG.md` refutation pointer is repointed before any move and remains discoverable at the destination; the packet records the singleton's final disposition and shows zero broken live references. A result that revives the stale ~35-file set is not this row.
+- **Superseded bulk-move acceptance (historical, not the current dispatch contract):** `git log --follow` resolves every moved file; `node Tools/spec-runner-census.mjs` and the fleet contract stay green; zero live `migration_doc` references break (grep census before and after, printed in the packet).
 - **Binds:** SR-11 (evidence repatriation is not needed — files move, nothing is deleted), SR-12. **Source:** catalog §3 HIGH, M1, M3.
 
 ### `DX-04` — MED-confidence set: the per-file 30-second grep, then archive
 
-- **Disposition:** OPEN, two dispatches. First a census: for each of the ~55 MED files, live reference count in Tools/scripts/package.json/.husky and in live `migration_doc`, superseding sibling, conclusion-banked location, and the M5 exemplar flag; printed as a table with a disposition per file (MOVE / KEEP-EXEMPLAR / REPOINT-THEN-MOVE / KEEP). Second, the move for the MOVE set exactly as `DX-03`.
-- **Tier / Size / Backends:** SOL-DIRECTED (census, bounded, everything pasted) then SONNET-BOUNDED (move) · S + S · tooling. **Depends on:** `DX-03`, `DX-05` (exemplars and promotions happen before the move). **Ruling touched:** M1-C→B for MED. **Gate:** none.
+- **Disposition:** **HELD behind `DX-14` repair completion and explicit maintainer release, then `DX-03`**, then two dispatches. First a census: for each of the ~55 MED files, live reference count in Tools/scripts/package.json/.husky and in live `migration_doc`, superseding sibling, conclusion-banked location, and the M5 exemplar flag; printed as a table with a disposition per file (MOVE / KEEP-EXEMPLAR / REPOINT-THEN-MOVE / KEEP). Second, the move for the MOVE set.
+- **Tier / Size / Backends:** SOL-DIRECTED (census, bounded, everything pasted) then SONNET-BOUNDED (move) · S + S · tooling. **Depends on:** `DX-14` repair completion and explicit maintainer release, then `DX-03`; `DX-05` was satisfied by Batch 1308. **Ruling touched:** M1-C→B for MED. **Gate:** the existing live-ledger `DX-14` repair completion and explicit maintainer release.
 - **Acceptance:** the census table lands in the catalog; the move's packet shows zero broken live references.
 - **Binds:** SR-12. **Source:** catalog §3 MED, M1.
 
 ### `DX-05` — exemplar retention + instrument-defect promotion
 
-- **Disposition:** OPEN. Keep one cloud stash-A/B probe and one raw-readback probe live (marked in `@purpose`); promote the instrument-defect findings of `probe-farcam-isolation` and `probe-h12-longsettle` (capture artifacts masquerading as render bugs) into a short DEBUGGING_GUIDE subsection before their files move.
+- **Disposition:** **LANDED — Batch 1308, commit `505724ef69b4aef5abee178a96251a96c636f170`.** One cloud stash-A/B probe and one raw-readback probe remain live (marked in `@purpose`); the instrument-defect findings of `probe-farcam-isolation` and `probe-h12-longsettle` (capture artifacts masquerading as render bugs) were promoted into a short DEBUGGING_GUIDE subsection before their files move.
 - **Tier / Size / Backends:** SONNET-BOUNDED · XS · docs + tooling. **Depends on:** none. **Ruling touched:** executes M5-B. **Gate:** none.
 - **Acceptance:** review + the guide subsection present; no spec (R-2026-08-29-1: docs).
 - **Binds:** SR-12. **Source:** catalog M5.
@@ -892,31 +897,31 @@ They stay where they are, and any brief that re-files them is wrong: the `C11-16
 ### `DX-07` — decompose `WebGPUModelRenderer.ts` (9,085 lines)
 
 - **Disposition:** OPEN. Split along the seams the code already has and that live rows are working in: the pick path (`DM-07` counters, `Q-141`), the edge-visibility emission, the draw-command build, the material/IBL binding. Pure move of code into `*Helpers.ts` / domain companions under 1,000 lines each; no behaviour change; every moved symbol re-exported or imported at its call sites; comments move with their code (C16).
-- **Tier / Size / Backends:** OPUS-JUDGMENT · L · WebGPU (WebGL untouched). **Depends on:** `DM-07` and `Q-141` landed first (they edit this file). **Ruling touched:** none. **Gate:** none — but Opus capacity per the budget directive.
+- **Tier / Size / Backends:** OPUS-JUDGMENT · L · WebGPU (WebGL untouched). **Satisfied prerequisites:** `DM-07` LANDED in Batch 1328; `Q-141` Phase A LANDED in Batch 1338 (`73f85cde466254b09d8628b7128af664b30a9db6`). **Remaining hold:** the `Q-141` Phase-B/Edge and owning-work quiescence gate remains closed, and Opus capacity is required.
 - **Acceptance:** tsc 0 non-TS2307, eslint 0, the model/pick/pipeline-key-aliasing specs green, module-cache and pipeline-cache keys unchanged (`describeCacheKey()` census identical before/after), and the wave-end gate byte-identical on both backends.
 - **Binds:** SR-1, SR-2, SR-7, SR-12, SR-17. **Source:** seat census; CLAUDE.md file-size rule.
 
 ### `DX-08` — decompose `WebGPUContext.ts` (7,889 lines)
 
 - **Disposition:** OPEN. Same shape as `DX-07`: resource creation, device recovery (`Q-65` decline branches), statistics/debug snapshot publication, and the feature-renderer registry are the natural companions. No behaviour change.
-- **Tier / Size / Backends:** OPUS-JUDGMENT · L · WebGPU. **Depends on:** `DM-07` landed (it edits this file). **Gate:** Opus capacity.
+- **Tier / Size / Backends:** OPUS-JUDGMENT · L · WebGPU. **Satisfied prerequisite:** `DM-07` landed. **Remaining hold:** the owning lane must be quiescent, and Opus capacity is required.
 - **Acceptance:** as `DX-07`, plus the device-recovery and readiness specs green.
 
 ### `DX-09` — decompose `WebGPUPrimitiveCommands.ts` (5,769) and `WebGPUSceneRenderer.ts` (5,073)
 
-- **Disposition:** OPEN. Two rows dispatched separately after `Q120` lands (it edits the scene renderer). The scene renderer's 3D-tile passes are already a companion (`WebGPUSceneRenderer3DTilePasses.ts`); continue that pattern for the post-process handoff, frame preparation and the globe prewarm seam.
-- **Tier / Size / Backends:** OPUS-JUDGMENT · L each · WebGPU. **Depends on:** `Q120`, `Q130` landed. **Gate:** Opus capacity.
+- **Disposition:** **HELD until the `Q120` and `Q130` owning lanes both close and become quiescent.** Only then dispatch the two decompositions separately. The scene renderer's 3D-tile passes are already a companion (`WebGPUSceneRenderer3DTilePasses.ts`); continue that pattern for the post-process handoff, frame preparation and the globe prewarm seam.
+- **Tier / Size / Backends:** OPUS-JUDGMENT · L each · WebGPU. `Q120` has landed but retains an open scope decision; `Q130` retains an unlanded Phase-A follow-up, open `Q-130-c2`, and carry-forward findings. **Depends on:** both owning lanes closed and quiescent. **Gate:** Opus capacity plus both closure-and-quiescence attestations.
 - **Acceptance:** as `DX-07`.
 
 ### `DX-10` — decompose `WebGPUModelPipelineCache.ts` (4,591) and the six remaining >1,000-line renderers
 
-- **Disposition:** OPEN, one row per file, dispatched only after `DX-07..09` prove the recipe: pipeline cache (after `Q-141`/`Q-142` land), procedural clouds, voxels, Gaussian splats (after the C15 GSPLAT lane), globe surface (after `Q120`), dynamic environment map, point cloud.
-- **Tier / Size / Backends:** OPUS-JUDGMENT · M–L each · WebGPU. **Gate:** Opus capacity; each file's owning lane must be quiescent.
+- **Disposition:** **HELD**, one row per file, until `DX-07..09` prove the recipe and each file's owning lane closes and becomes quiescent: pipeline cache after the `Q-141` / `Q-142` owners; procedural clouds and voxels after their owners; Gaussian splats after the C15 GSPLAT owner; globe surface after the `Q120` owner; dynamic environment map and point cloud after their owners.
+- **Tier / Size / Backends:** OPUS-JUDGMENT · M–L each · WebGPU. **Gate:** Opus capacity plus every row's owning-lane closure-and-quiescence attestation.
 - **Acceptance:** as `DX-07`.
 
 ### `DX-11` — stable citations: function anchors, not line numbers
 
-- **Disposition:** OPEN, convention. Briefs, cards and reviews cite `file:function-or-unique-line` with the line number as a secondary hint; the decomposition rows make line numbers meaningless anyway. Add the rule to `WORKER_ISOLATION_AND_BRANCH_HANDOFF.md` §8c and the brief template.
+- **Disposition:** **CLOSED — Batch 1310, commit `c59d2bafd61efbbca765daf536c040b1f63c502c`.** Briefs, cards and reviews cite `file:function-or-unique-line` with the line number as a secondary hint; the decomposition rows make line numbers meaningless anyway. The rule is recorded in WORKER_ISOLATION_AND_BRANCH_HANDOFF.md §8f.
 - **Tier / Size / Backends:** seat (docs) · XS. **Depends on:** none. **Acceptance:** review only (R-2026-08-29-1).
 
 ### `DX-12` — spec homes: the measured pass (executes `Q-139-D1`)
@@ -936,11 +941,12 @@ They stay where they are, and any brief that re-files them is wrong: the `C11-16
   archive plan still does not reach the document (2026-08-29 17:00 machine clock)”**. It records
   the banked generator patch, 3/3 spec, regenerated-catalog comparison, unresolved managed-render
   path, and one unused variable. The next step remains an Opus session with the generator open;
-  the maintainer's go is still owed before anything lands, and `DX-03` / `DX-04` remain behind it.
+  both repair completion and explicit maintainer release are owed before anything lands, and
+  `DX-03` / `DX-04` remain behind it.
   This add-only row preserves that identity and pointer; it does not resume, approve, or relabel the
   work.
 - **Tier / Size / Backends:** OPUS-JUDGMENT · M · tooling/docs. **Gate:** the existing live-ledger
-  maintainer go; no new M-DX identifier is minted here.
+  repair completion and explicit maintainer release; no new M-DX identifier is minted here.
 
 ### `DX-15` — retire the inline translucent-classification color/composite scaffold (`C11-107` alias/tail)
 
@@ -1003,19 +1009,26 @@ They stay where they are, and any brief that re-files them is wrong: the `C11-16
   post-patch reviews, and no runtime or certification result is claimed now.
 
 
-**Wave DX dispatch order:** `DX-05` → `DX-14` (**PARKED; explicit release required before
-`DX-03` / `DX-04`**) → `DX-03` → `DX-01` → `DX-02` → `DX-04` → `DX-06` (batches) → `DX-11` →
-`DX-12` → `DX-07` → `DX-08` → `DX-09` → `DX-10`. The Sol/Sonnet rows (`DX-05`, `DX-03`,
-`DX-04`, `DX-02`, `DX-06`, `DX-12`) proceed on Codex/Sonnet capacity only when their named holds
-clear; `DX-01` and the decompositions wait for Opus capacity and for their owning lanes to land.
+**Completed Wave DX rows:** `DX-05` LANDED in Batch 1308
+(`505724ef69b4aef5abee178a96251a96c636f170`); `DX-11` CLOSED in Batch 1310
+(`c59d2bafd61efbbca765daf536c040b1f63c502c`). They remain above as add-only historical
+inventory and are not part of another executable dispatch.
+
+**Current blocking frontier:** `DX-14` is **PARKED / BANKED and not dispatchable**; its repair
+completion and explicit maintainer release are required before `DX-03` / `DX-04`. After both, the
+remaining proposed dispatch order is `DX-03` → `DX-01` → `DX-02` → `DX-04` → `DX-06` (batches) →
+`DX-12` → `DX-07` → `DX-08` → `DX-09` → `DX-10`; row cards carry the actual dependencies. The
+Sol/Sonnet rows (`DX-03`, `DX-04`, `DX-02`, `DX-06`,
+`DX-12`) proceed on Codex/Sonnet capacity only when their named holds clear; `DX-01` and the
+decompositions wait for Opus capacity and for their owning lanes to close and become quiescent.
 `DX-15` remains outside this executable arrow as the held tail of canonical `C11-107` until its
 specific sign-off and frozen review/Edge sequence are released.
 
 **Wave DX maintainer gates:** **M-DX-1** runner names for the spec homes (accept the census proposals as written, or name your own); **M-DX-2** ledger rotation (a / b / c).
 
-`DX-14`'s carried live-ledger maintainer go and `DX-15`'s `C11-107` / G6 Q2d Principle-7 sign-off
-are separate row-specific gates. They do not mint new M-DX identifiers, and neither is discharged by
-M-DX-1, M-DX-2, or broad Wave-DX authority.
+`DX-14`'s carried live-ledger repair completion and explicit maintainer release and `DX-15`'s
+`C11-107` / G6 Q2d Principle-7 sign-off are separate row-specific gates. They do not mint new M-DX
+identifiers, and neither is discharged by M-DX-1, M-DX-2, or broad Wave-DX authority.
 
 ## 7. CLOSED-NEGATIVE — recorded so they are not re-opened
 
@@ -1124,8 +1137,10 @@ WAVE 1   Q-145                                             [Tools - may land mid
          Q-141 (needs DM-07)    Q-142 (author + spec now; landing form on M-03)
          rebuild ──tranche C──►  Q-141 re-run legs  +  Q-142 AO capture pair
 
-WAVE DX  DX-05 ──► DX-14 [PARKED; maintainer go] ──► DX-03 ──► DX-01 ──► DX-02 ──► DX-04
-         ──► DX-06(batches) ──► DX-11 ──► DX-12 ──► DX-07 ──► DX-08 ──► DX-09 ──► DX-10
+WAVE DX  DONE  DX-05 [Batch 1308] · DX-11 [Batch 1310]
+         FRONTIER  DX-14 [PARKED; repair completion + explicit release; blocks DX-03 / DX-04]
+         AFTER REPAIR + RELEASE  DX-03 ──► DX-01 ──► DX-02 ──► DX-04 ──► DX-06(batches)
+         ──► DX-12 ──► DX-07 ──► DX-08 ──► DX-09 ──► DX-10
          TAIL DX-15 HELD(C11-107/G6 Q2d Principle-7 sign-off; separate root-gated Edge lane)
 
 WAVE 2   Q-149 · DM-08 · DM-09 · DM-10 · DM-11 · DM-12 · DM-15        (behind their measurements)
@@ -1146,7 +1161,7 @@ MESHLET  M0  MS-00 ──► MS-01      MS-02 HELD(M-17)
          M7  MS-24 ──► MS-25 ──► MS-26
 ```
 
-**Dispatchable today with no maintainer answer at all:** `Q-145`, `Q-146`, `Q-147`, `EAN-03`, `EAN-04`, `EAN-01` (code, default-off), `DM-01`, `DM-07`, `Q-148`, `Q-143`, `DM-02` and `DM-03` (**the measurements** — only their ship decisions carry **M-01**/**M-02**), `DM-04`, `DM-05`, `DM-06`, `Q-141`, `Q-142` (author and spec; landing form on **M-03**), `MS-00`, `MS-01`, `MS-03`, `MS-04`, `MS-05`, `MS-06`, `MS-07`, `MS-14` (non-boundary grid today). That is **25 rows** — the earlier “24” was an arithmetic error over a list of 23 ids that also omitted `DM-02`/`DM-03`'s ungated measurement legs.
+**Historical 2026-08-29 plan classification for the rows listed below (not current dispatch or status authority):** `Q-145`, `Q-146`, `Q-147`, `EAN-03`, `EAN-04`, `EAN-01` (code, default-off), `DM-01`, `DM-07`, `Q-148`, `Q-143`, `DM-02` and `DM-03` (**the measurements** — only their ship decisions carry **M-01**/**M-02**), `DM-04`, `DM-05`, `DM-06`, `Q-141`, `Q-142` (author and spec; landing form on **M-03**), `MS-00`, `MS-01`, `MS-03`, `MS-04`, `MS-05`, `MS-06`, `MS-07`, `MS-14` (non-boundary grid today). That is **25 rows** — the earlier “24” was an arithmetic error over a list of 23 ids that also omitted `DM-02`/`DM-03`'s ungated measurement legs.
 
 **Edge accounting, corrected.** Five of those rows carry an OPUS-EDGE-EXECUTOR tier: `Q-148` (**tranche A**), `Q-143` (**tranche B**) and `DM-02`–`DM-06`, which are **legs inside tranche B**, not tranches of their own. Three further Edge jobs are owed by rows tiered elsewhere — `EAN-01`'s certification (inside tranche A) and `Q-141`'s re-run legs plus `Q-142`'s capture pair (**tranche C**, after both land and the tree is rebuilt). **Eight Edge jobs, three tranches, one at a time (SR-17)** — and `C12-38`'s owed dawn sweep is ahead of all of them in the same seat (§9 item 1).
 
@@ -1154,7 +1169,7 @@ MESHLET  M0  MS-00 ──► MS-01      MS-02 HELD(M-17)
 
 ## 11. Nonclaims
 
-- **No row here is launched, ruled, scheduled or funded.** This is a dispatch proposal.
+- **This document does not launch, rule, schedule or fund a row.** Its landed and closed entries carry cited results; the remaining order is a dispatch proposal and grants no execution authority.
 - **No performance claim.** Nothing was measured for this document. Every number quoted is quoted from the cited memo, queue or ledger row, not re-measured — including `C11-168`'s 9.2025 ms / 4.65 ms, `Q-141`'s 4/40 picks, `Q-134`'s 1.6–2.6 s pipeline resolutions, and every star census figure.
 - **No claim that any launch gate is satisfied.** `C11-168` is not, and §6.0 cites the row that says so.
 - **One inherited claim is retracted verbatim, so that no brief picks it up from the source report:** *“the frame is not geometry-bound”* (Treebeard report `:190-193`, `:382-384`) is **not supported** — no WebGPU steady-state frame cost or command count exists in that run (`raw.webgpu.idle.deltas` and `.cmds` are empty arrays; `idleFrame` / `idleCommands` are `null`; the 16.6 ms figures come from the `orbit` leg after a ~34° uncompensated rotation, at a content state never captured). The honest form, which supports the same conclusion and is the one `DM-N1` rests on, is Cirdan's C-8(a): **nothing is geometry-bound yet on WebGPU because the content never becomes resident.**

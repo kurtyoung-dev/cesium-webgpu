@@ -10,8 +10,8 @@
 - Clone branch: `sol/q-152-wave-end-gate-repair-ba64954b945-2026-08-29`
 - Clone: `F:/Dev/GH/cesium-lane-tuor-q152-20260829`
 - Final destination: shared main checkout `F:/Dev/GH/cesium-webgpu`
-- Destination review snapshot: HEAD `8406dc80f0875881977e0ec61a75a02e6442a55e`, tree `b88c04b7dc1af38a3934dbe446b277186cb8e9d7`.
-- Landing commit and stamp: Batch 1332, `fff7e02072adf95f88e23a43bec113f214e3e05b`; detailed stamp below.
+- Destination review snapshot: HEAD `7ddabd46a976428c0f608c2450ce39b77465db47`, tree `b88c04b7dc1af38a3934dbe446b277186cb8e9d7`.
+- Landing commit and stamp: Batch 1332, `1dc3f9c360d3d020380cb63fbf7029dc76202b43`; detailed stamp below.
 - Landing authority: root orchestrator only, limited to the exact reviewed fail-closed safety destination.
 - Push authority: **none**.
 - Reap when: a later tracked disposition explicitly authorizes retirement and root verifies lane and review quiescence; target 2026-09-05.
@@ -173,7 +173,7 @@ All blockers below remain open. The destination safety GO neither resolves nor w
 
 ## Local fail-closed safety landing stamp
 
-- Local batch and commit: Batch 1332; `fff7e02072adf95f88e23a43bec113f214e3e05b`.
+- Local batch and commit: Batch 1332; `1dc3f9c360d3d020380cb63fbf7029dc76202b43`.
 - Main destination tuple: `Tools/wave-end-gate.mjs` — 54,670 bytes / `F900CF8BE5B0242DED847D1FA6878E55D51E0EF263B03F707CED738C7C2C294B`; `Tools/wave-end-gate.spec.mjs` — 38,149 bytes / `3EA2BF304DBCF829C570C2B61140E494F7A3B842255C3D75B12367630D897A23`.
 - Assembly: root collision-audited current main, reconciled the line-ending/materialization difference, applied the reviewed semantic patch through root-owned Git discipline, removed one exact unused spec import after ESLint, and rehashed the final destination. No raw-file-copy authority is implied.
 - Precommit validation and review: Prettier, diff check, ESLint, and syntax checks exited 0; the focused specification passed 29/29; Turgon and Nimrodel returned GO only for the exact fail-closed safety tuple; Elrond and Imrahil returned GO for the exact seven-path source/review landing packet. All committed source and review hashes survived the hook.

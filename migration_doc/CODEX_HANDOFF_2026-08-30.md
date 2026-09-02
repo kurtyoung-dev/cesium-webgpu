@@ -6,7 +6,7 @@
 authority grant, certification receipt, queue replacement, or permission to land or push.
 
 **Repository boundary at cutoff.** Main was
-`807ca41b5ef7a8f46c2b3e505ec9a2bd3fec203b`; `origin/main` was
+`bb18234aa5671779a6c1c725d25b7ff99ca8578f`; `origin/main` was
 `a64954b94507fa29762964f3d410517ddd765e9e` (Batch 1329). Main was 11 commits ahead
 and zero behind. Those 11 commits are local-only relative to `origin/main`. **No commit
 after Batch 1329 is on `origin/main`, and root made no push in this handoff.** Other
@@ -14,8 +14,8 @@ pre-existing remote state is limited here to the one identified Q-152 lane ref. 
 push is authorized by this handoff.
 
 **Publication boundary.** The observation cutoff above is immutable. This handoff was
-materialized later as local-only commit `a904c2e475` (Batch 1341), whose only changed
-path was this file. That is the only main commit between observed main `807ca41b` and
+materialized later as local-only commit `5f4e2d736f` (Batch 1341), whose only changed
+path was this file. That is the only main commit between observed main `bb18234a` and
 the handoff publication commit; main was then 12 commits ahead and zero behind
 `origin/main`. Post-cutoff activity is excluded from the cutoff claims unless it is
 explicitly listed in section 12.
@@ -41,7 +41,7 @@ remain the status authorities.
 | DX-15 removal | Preregistered preparation only; explicit C11-107 retirement sign-off absent; NO-GO to delete, implement, run Edge, land, or certify |
 | Browser/build/evidence | Edge remained root-gated; no wave-end receipt or browser certification was produced |
 | Push | No root push for the 11-commit local main range, the two committed side worktrees, or either active isolated lane; the Q-152 clone already tracks a remote lane ref |
-| Handoff publication after cutoff | `a904c2e475` changed only this handoff; local main then 12 ahead and zero behind `origin/main`; not pushed |
+| Handoff publication after cutoff | `5f4e2d736f` changed only this handoff; local main then 12 ahead and zero behind `origin/main`; not pushed |
 
 ## 2. Committed main work in the window
 
@@ -54,23 +54,23 @@ ancestor of current main, not necessarily pushed.
 | `7d1638ae` Batch 1327 | on `origin/main` | Q-142 AO parity/uniform-bridge coverage and AO renderer/two-WGSL changes; prior default-ON and browser-gate limits remain. |
 | `81e6a0fa` Batch 1328 | on `origin/main` | DM-07 pick-emission counters/spec/guide changes; enabled Q-141 but was not itself a Q-141 pixel result. |
 | `a64954b9` Batch 1329 | on `origin/main` | Updated the prior handoff and live fix queue. |
-| `24291ba0` Batch 1330 | local main only | Added the tracked workflow reset snapshot and Faramir/Maedhros/Théoden/Tuor records; see [ACTIVE_WORKFLOW_WAVE_2026-08-29.md](branches/ACTIVE_WORKFLOW_WAVE_2026-08-29.md). |
-| `8406dc80` Batch 1331 | local main only | Hardened `verify-worker-handoff`, added its spec, banked Aragorn/Imrahil reviews, updated package/handoff. |
-| `fff7e020` Batch 1332 | local main only | Landed exact Q-152 fail-closed safety: required result STRUCTURAL/3, zero child spawns, no wave/certification; see [Tuor](branches/tuor--q-152-wave-end-gate-repair.md). |
-| `ba23975e` Batch 1333 | local main only | Recorded immutable Batch-1332 `verify-landing -- --last 1` red for missing co-author trailer; no rewrite or verifier weakening. |
-| `dd32ad67` Batch 1334 | local main only | Updated handoff/isolation procedure records and banked Beregond/Haleth reviews. |
-| `806fc36c` Batch 1335 | local main only | Banked Maedhros H0 typed child-result contract and Curufin review; pure H0 GO but held from orphan landing pending first real consumer/runner assembly and fresh review; see [Maedhros](branches/maedhros--q152-child-result-contract.md). |
-| `233fa5be` Batch 1336 | local main only | Q-152 EOL-sensitive mutation-harness repair record: expected red 25/29, first repair red 28/29, formatting red, then frozen 29/29; see [Beren](branches/beren--q152-wave-end-mutant-eol.md). |
-| `1a17ff15` Batch 1338 | local main only | Q-141 Phase A pick emission during pending color-pipeline readiness; retained expected red, fixture/mutant reds, final 20/20, static gates, Glorfindel GO; no Edge/pixel claim; see [Elros](branches/elros--q141-pick-during-pipeline-readiness.md). |
-| `5f306497` unnumbered docs | local main only | Normalized research-queue encoding and added Maglor record; not Batch 1337. |
-| `b1ce3823` unnumbered docs | local main only | Registered held DX cleanup work including DX-15; not Batch 1339. |
-| `807ca41b` Batch 1340 | local main only | Added read-only WGSL/GLSL watcher race audit. Source-confirmed NO-GO for serialization claims; no watcher/generator/build/server/test ran; see [Gandalf](branches/gandalf--watch-build-scheduler-race-audit.md). |
+| `6a8a023c` Batch 1330 | local main only | Added the tracked workflow reset snapshot and Faramir/Maedhros/Théoden/Tuor records; see [ACTIVE_WORKFLOW_WAVE_2026-08-29.md](branches/ACTIVE_WORKFLOW_WAVE_2026-08-29.md). |
+| `7ddabd46` Batch 1331 | local main only | Hardened `verify-worker-handoff`, added its spec, banked Aragorn/Imrahil reviews, updated package/handoff. |
+| `1dc3f9c3` Batch 1332 | local main only | Landed exact Q-152 fail-closed safety: required result STRUCTURAL/3, zero child spawns, no wave/certification; see [Tuor](branches/tuor--q-152-wave-end-gate-repair.md). |
+| `72c7431f` Batch 1333 | local main only | Recorded immutable Batch-1332 `verify-landing -- --last 1` red for missing co-author trailer; no rewrite or verifier weakening. |
+| `97650b7d` Batch 1334 | local main only | Updated handoff/isolation procedure records and banked Beregond/Haleth reviews. |
+| `ca0de691` Batch 1335 | local main only | Banked Maedhros H0 typed child-result contract and Curufin review; pure H0 GO but held from orphan landing pending first real consumer/runner assembly and fresh review; see [Maedhros](branches/maedhros--q152-child-result-contract.md). |
+| `1f9f245c` Batch 1336 | local main only | Q-152 EOL-sensitive mutation-harness repair record: expected red 25/29, first repair red 28/29, formatting red, then frozen 29/29; see [Beren](branches/beren--q152-wave-end-mutant-eol.md). |
+| `73f85cde` Batch 1338 | local main only | Q-141 Phase A pick emission during pending color-pipeline readiness; retained expected red, fixture/mutant reds, final 20/20, static gates, Glorfindel GO; no Edge/pixel claim; see [Elros](branches/elros--q141-pick-during-pipeline-readiness.md). |
+| `b429c5b5` unnumbered docs | local main only | Normalized research-queue encoding and added Maglor record; not Batch 1337. |
+| `b429c5b5` unnumbered docs | local main only | Registered held DX cleanup work including DX-15; not Batch 1339. |
+| `bb18234a` Batch 1340 | local main only | Added read-only WGSL/GLSL watcher race audit. Source-confirmed NO-GO for serialization claims; no watcher/generator/build/server/test ran; see [Gandalf](branches/gandalf--watch-build-scheduler-race-audit.md). |
 
 The documentation publication immediately after the window was:
 
 | Commit | Disposition | Accomplishment and proof boundary |
 | --- | --- | --- |
-| `a904c2e475` Batch 1341 | local main only; after cutoff | Materialized this 400-line handoff as its sole changed path. It made main 12 commits ahead and zero behind `origin/main`; it was not pushed and did not change the cutoff snapshot. |
+| `5f4e2d736f` Batch 1341 | local main only; after cutoff | Materialized this 400-line handoff as its sole changed path. It made main 12 commits ahead and zero behind `origin/main`; it was not pushed and did not change the cutoff snapshot. |
 
 Two numbered commits exist on other local refs but are **not ancestors of main**:
 
@@ -85,7 +85,7 @@ is merged into current main or pushed by root.
 
 ## 3. Uncommitted main-tree state
 
-Tracked modifications observed after `807ca41b`:
+Tracked modifications observed after `bb18234a`:
 
 - `Tools/visual-regression/q130-wgsl-derivative-uniformity.spec.mjs`
 - `Tools/visual-regression/skybox-resolution-policy.spec.mjs`
@@ -145,7 +145,7 @@ into a candidate. Bounded facts only:
 
 `F:/Dev/GH/cesium-lane-maedhros-q152-h1-20260830` is on
 `sol/q152-h1-variant-consumer-b806fc36ca4-2026-08-30` at
-`806fc36ca4486f41046baf1175153910707ce6b6`, tracking the same-named origin branch at
+`ca0de6918af091f2a68078f795b6c4362f159ca0`, tracking the same-named origin branch at
 0/0. No worker commit was made.
 
 Dirty state includes active `Tools/variant-smoke-test.mjs`,
@@ -166,7 +166,7 @@ It is intentionally recorded as a local path rather than a main-tree link.
 
 `F:/Dev/GH/cesium-lane-elrond-session-gc-20260830` is on
 `sol/session-gc-boundary-b1ce-2026-08-30` at
-`b1ce382375121f840bab46cc2af1b9fc0b652b4c`, ten commits ahead of `origin/main`, with
+`b429c5b51871b05e2123ac193f014be775770492`, ten commits ahead of `origin/main`, with
 no upstream shown. No worker commit was made.
 
 V7 received independent unconditional NO-GO on source 13,021 bytes /
@@ -448,7 +448,7 @@ These are recorded next steps, **not current authority to run them**.
 8. **Push:** current state is NO PUSH. A future push needs explicit user authority,
    current quiet-hours/ruling reconciliation, exact range checks, clean landing
    receipts, and correct identity. The cutoff snapshot contained 11 unpushed main
-   commits; after local-only publication `a904c2e475`, main contains 12. Batches
+   commits; after local-only publication `5f4e2d736f`, main contains 12. Batches
    1337/1339 remain on other refs.
 
 ## 11. Source and evidence index
@@ -492,7 +492,7 @@ represented as a tracked main-tree link.
 ## 12. Post-cutoff addendum — later 2026-08-30 activity
 
 These facts occurred after the 18:18:07 ET observation cutoff and after, or while
-auditing, the `a904c2e475` publication. They do not revise the cutoff inventory.
+auditing, the `5f4e2d736f` publication. They do not revise the cutoff inventory.
 
 - **Q-152 H1 V6:** the preregistered one-shot focused sequence reached command 4 and
   stopped on exit 1: 38 total, 35 pass, three fail. Failure 9 is a stale six-read oracle

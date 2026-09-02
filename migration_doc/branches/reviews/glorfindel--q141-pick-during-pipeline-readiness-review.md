@@ -6,7 +6,7 @@
 - Verdict: **GO FOR PHASE A ONLY**
 - Browser/evidence disposition: **Phase B / Edge CLOSED**
 - Base and current HEAD named by the frozen handoff:
-  `233fa5be340847fad1f1b4772256231724ced83d`
+  `1f9f245ce4334ef9cb90adf00fbf626516ca1b71`
 - Owning handoff:
   [`elros--q141-pick-during-pipeline-readiness.md`](../elros--q141-pick-during-pipeline-readiness.md)
 

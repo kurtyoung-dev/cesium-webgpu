@@ -6,8 +6,8 @@
 - Sole code writer: Celebrimbor
 - Independent reproducer/tester: Idril
 - Clone: `F:/Dev/GH/cesium-lane-beren-q152-mutant-eol-20260830`
-- Branch: `sol/q152-wave-end-mutant-eol-806fc36ca4-2026-08-30`
-- Base and clone HEAD: `806fc36ca4486f41046baf1175153910707ce6b6`
+- Branch: `sol/q152-wave-end-mutant-eol-ca0de6918a-2026-08-30`
+- Base and clone HEAD: `ca0de6918af091f2a68078f795b6c4362f159ca0`
 - Code lease: `Tools/wave-end-gate.spec.mjs` only
 - Lead handoff lease: `migration_doc/branches/beren--q152-wave-end-mutant-eol.md` only, after source freeze
 - Landing and every Git write: root only
