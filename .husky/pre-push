@@ -4,7 +4,9 @@
 #
 # Enforces EXECUTOR_LANE_CHARTER_2026-08-14.md §2.1/§2.2 mechanically: batch
 # prefix + monotonicity, non-empty body, Co-Authored-By trailer, and the
-# weekday 07:00-19:00 US Eastern quiet-hours window. Rules live in
+# weekday 07:00-19:00 US Eastern quiet-hours window — and refuses deleting or
+# force-rewriting main on the remote (other refs stay free for safety-branch
+# housekeeping). Rules live in
 # Tools/landing-rules.mjs; Tools/pre-push-guard.mjs is the git-aware driver
 # and reads git's ref lines from this hook's stdin.
 #
@@ -13,20 +15,27 @@
 # HOOK_EXPLAIN=1 git push ...   prints a rule-by-rule verdict per commit.
 #
 # There is no bypass flag here on purpose. `git push --no-verify` still skips
-# the hook; `npm run verify-landing` re-checks the same rules afterwards, so
-# skipping it leaves a detectable red rather than nothing at all.
+# the hook. `npm run verify-landing` can detect skipped commit-message and
+# timestamp rules in a selected range, but it cannot reconstruct a bypassed
+# deletion or rewrite; server-side branch protection is a separate control.
 #
 # POSIX sh only (Windows git ships a minimal sh): no arrays, no [[ ]], no
 # `local`, no process substitution.
 
-guard="Tools/pre-push-guard.mjs"
-
 # Hooks resolve through core.hooksPath, so $0 points into the main checkout's
-# .husky/ even when the push comes from a linked worktree. Prefer the driver
-# that ships beside this hook; fall back to the working directory's copy.
-hook_root=$(dirname "$(dirname "$0")")
-if [ -f "$hook_root/$guard" ]; then
-  guard="$hook_root/$guard"
+# .husky/ even when the push comes from a linked worktree. Canonicalize that
+# location and require the driver beside the hook; never fall back to a
+# working-directory-relative script.
+hook_dir=$(CDPATH= cd -P "$(dirname "$0")" 2>/dev/null && pwd -P)
+if [ -z "$hook_dir" ]; then
+  echo "landing-guard: cannot resolve the hook directory; push refused" >&2
+  exit 2
+fi
+hook_root=$(dirname "$hook_dir")
+guard="$hook_root/Tools/pre-push-guard.mjs"
+if [ ! -f "$guard" ] || [ ! -r "$guard" ]; then
+  echo "landing-guard: trusted driver is missing or unreadable: $guard" >&2
+  exit 2
 fi
 
 node "$guard" "$@"

@@ -1,5 +1,5 @@
 // landing-rules.spec.mjs — contract for the landing-discipline predicates.
-// @purpose Hermetic contract for the landing predicates: control+mutant per rule, DST-straddling quiet-hours pairs, narrow merge exemptions.
+// @purpose Hermetic control-and-mutant contract for commit, push-wide Batch, and protected-ref landing predicates.
 // @status ACTIVE
 //
 // Run: node --test Tools/landing-rules.spec.mjs
@@ -35,13 +35,16 @@ import {
   checkBody,
   checkCoAuthorTrailer,
   checkCommitQuietHours,
+  checkPushedBatchUniqueness,
   checkQuietHours,
+  checkRefUpdate,
   easternWallClock,
   evaluateCommits,
   formatPushReport,
   highestBatchIn,
   isAgentAuthored,
   isExempt,
+  isProtectedRef,
   isQuietHours,
   parseCommitRecords,
   splitTrailers,
@@ -217,6 +220,55 @@ test("(a) mutant: a descending pair inside one push fails", () => {
   assert.equal(evaluation.violations, 1);
 });
 
+test("(a) push-wide control: one commit on two refs is deduplicated by SHA", () => {
+  const shared = commit({ sha: "c".repeat(40) });
+  assert.deepEqual(checkPushedBatchUniqueness([shared, shared]), [
+    {
+      rule: "batch-unique",
+      status: "pass",
+      detail: "1 distinct pushed commit(s); no governed Batch number is reused",
+    },
+  ]);
+});
+
+test("(a) push-wide mutant: distinct commits cannot reuse one Batch", () => {
+  const verdicts = checkPushedBatchUniqueness([
+    commit({ sha: "d".repeat(40), subject: "Batch 1045: first branch" }),
+    commit({ sha: "e".repeat(40), subject: "Batch 1045: second branch" }),
+  ]);
+  assert.equal(verdicts.length, 1);
+  assert.equal(verdicts[0].rule, "batch-unique");
+  assert.equal(verdicts[0].status, "fail");
+  assert.match(verdicts[0].detail, /batch 1045/);
+  assert.match(verdicts[0].detail, /dddddddddd, eeeeeeeeee/);
+});
+
+test("(a) push-wide uniqueness ignores ungoverned and merge commits", () => {
+  const verdicts = checkPushedBatchUniqueness([
+    commit({ sha: "f".repeat(40), subject: "Batch 1045: governed" }),
+    commit({
+      sha: "1".repeat(40),
+      subject: "Batch 1045: upstream",
+      authorName: "Upstream Developer",
+      authorEmail: "developer@example.com",
+    }),
+    commit({
+      sha: "2".repeat(40),
+      subject: "Batch 1045: merge",
+      parents: ["3".repeat(40), "4".repeat(40)],
+    }),
+  ]);
+  assert.equal(verdicts.length, 1);
+  assert.equal(verdicts[0].status, "pass");
+});
+
+test("(a) push-wide uniqueness refuses a record with no object identity", () => {
+  assert.throws(
+    () => checkPushedBatchUniqueness([commit({ sha: "" })]),
+    /missing its object ID/,
+  );
+});
+
 test("(a) a rejected number does not advance the baseline", () => {
   // Otherwise one bad commit would poison every later comparison in the push.
   const evaluation = evaluateCommits(
@@ -318,6 +370,17 @@ test("(c) mutant: a lookalike key fails", () => {
   assert.equal(
     checkCoAuthorTrailer(commit({ body: "Body.\n\nCoAuthoredBy: X <x@y.z>\n" }))
       .status,
+    "fail",
+  );
+});
+
+test("(c) mutant: a mid-body Co-Authored-By line is not a trailer", () => {
+  assert.equal(
+    checkCoAuthorTrailer(
+      commit({
+        body: `${TRAILER}\n\nNarrative continues after the attribution.\n`,
+      }),
+    ).status,
     "fail",
   );
 });
@@ -616,7 +679,16 @@ test("the report prints only failures by default and everything under explain", 
   );
   const result = {
     quietHours: checkQuietHours(new Date("2026-08-12T23:30:00Z")),
-    refs: [{ name: "refs/heads/main", highestPushedBatch: 1043, evaluation }],
+    pushVerdicts: checkPushedBatchUniqueness([]),
+    refs: [
+      {
+        name: "refs/heads/main",
+        sourceRef: "refs/heads/topic",
+        destinationRef: "refs/heads/main",
+        highestPushedBatch: 1043,
+        evaluation,
+      },
+    ],
   };
   const terse = formatPushReport(result);
   assert.match(terse, /batch-prefix/);
@@ -625,6 +697,111 @@ test("the report prints only failures by default and everything under explain", 
   assert.match(explained, /quiet-hours/);
   assert.match(explained, /batch-monotonic/);
   assert.match(explained, /highest landed batch = 1043/);
+  assert.match(explained, /refs\/heads\/topic -> refs\/heads\/main/);
+  assert.match(explained, /batch-unique/);
+});
+
+// ---------------------------------------------------------------------------
+// Rule (f) — protected refs: no deletion, no rewrite
+// ---------------------------------------------------------------------------
+
+test("(f) control: a fast-forward update of main passes", () => {
+  const entry = checkRefUpdate({
+    remoteRef: "refs/heads/main",
+    isDeletion: false,
+    fastForward: "fast-forward",
+  });
+  assert.equal(entry.status, "pass");
+});
+
+test("(f) mutant: deleting main fails", () => {
+  const entry = checkRefUpdate({
+    remoteRef: "refs/heads/main",
+    isDeletion: true,
+  });
+  assert.equal(entry.status, "fail");
+  assert.match(entry.detail, /delet/i);
+});
+
+test("(f) mutant: a non-fast-forward update of main fails as a rewrite", () => {
+  const entry = checkRefUpdate({
+    remoteRef: "refs/heads/main",
+    isDeletion: false,
+    fastForward: "rewrite",
+  });
+  assert.equal(entry.status, "fail");
+  assert.match(entry.detail, /history rewrite/);
+});
+
+test("(f) an unverifiable fast-forward state fails closed", () => {
+  const entry = checkRefUpdate({
+    remoteRef: "refs/heads/main",
+    isDeletion: false,
+    fastForward: "unverifiable",
+  });
+  assert.equal(entry.status, "fail");
+  assert.match(entry.detail, /fetch first/);
+});
+
+test("(f) a first push of main passes — nothing exists to rewrite", () => {
+  const entry = checkRefUpdate({
+    remoteRef: "refs/heads/main",
+    isDeletion: false,
+    fastForward: "new-ref",
+  });
+  assert.equal(entry.status, "pass");
+});
+
+test("(f) deleting a non-protected ref skips — housekeeping stays legal", () => {
+  const entry = checkRefUpdate({
+    remoteRef: "refs/heads/safety-pre-batch-1330",
+    isDeletion: true,
+  });
+  assert.equal(entry.status, "skip");
+});
+
+test("(f) bare and qualified spellings of main are both protected", () => {
+  assert.equal(isProtectedRef("main"), true);
+  assert.equal(isProtectedRef("refs/heads/main"), true);
+  assert.equal(isProtectedRef("refs/heads/mainline"), false);
+  assert.equal(isProtectedRef(undefined), false);
+});
+
+test("(f) the report surfaces a failing ref verdict without explain", () => {
+  const result = {
+    quietHours: checkQuietHours(new Date("2026-08-12T23:30:00Z")),
+    refs: [
+      {
+        name: "refs/heads/main",
+        highestPushedBatch: null,
+        refVerdict: checkRefUpdate({
+          remoteRef: "refs/heads/main",
+          isDeletion: true,
+        }),
+        evaluation: evaluateCommits([], { highestPushedBatch: null }),
+      },
+    ],
+  };
+  const terse = formatPushReport(result);
+  assert.match(terse, /FAIL\s+protected-ref/);
+  // Control: a passing verdict stays silent by default, prints under explain.
+  const passing = {
+    quietHours: checkQuietHours(new Date("2026-08-12T23:30:00Z")),
+    refs: [
+      {
+        name: "refs/heads/main",
+        highestPushedBatch: null,
+        refVerdict: checkRefUpdate({
+          remoteRef: "refs/heads/main",
+          isDeletion: false,
+          fastForward: "fast-forward",
+        }),
+        evaluation: evaluateCommits([], { highestPushedBatch: null }),
+      },
+    ],
+  };
+  assert.doesNotMatch(formatPushReport(passing), /protected-ref/);
+  assert.match(formatPushReport(passing, { explain: true }), /protected-ref/);
 });
 
 test("the rule-id set is stable", () => {

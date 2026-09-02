@@ -1,5 +1,5 @@
 // landing-rules.mjs — the landing-discipline predicates, as pure functions.
-// @purpose Pure landing-discipline predicates (quiet-hours window, Batch-N subject grammar, body, co-author trailer) shared by pre-push hook and detector.
+// @purpose Pure landing predicates for commit discipline, push-wide Batch uniqueness, and protected remote-ref updates.
 // @status ACTIVE
 //
 // Charter:  migration_doc/EXECUTOR_LANE_CHARTER_2026-08-14.md §2.1/§2.2/§2.3
@@ -8,14 +8,13 @@
 //           and S10 (24/98 commits inside quiet hours, 88 un-prefixed
 //           subjects, 98 empty bodies, 0 co-author trailers).
 //
-// WHY A LIB AND NOT A HOOK SCRIPT. Two consumers need the identical verdicts:
-// the pre-push hook (Tools/pre-push-guard.mjs), which refuses the push, and the
-// after-the-fact detector (Tools/verify-landing-compliance.mjs), which is what
-// makes a `--no-verify` bypass visible. If the two drifted, the detector would
-// certify pushes the hook would have refused, which is the failure mode this
-// whole ruling exists to close. Keeping the predicates here also means they are
-// testable without a repository: every rule below is driven from literal
-// strings and literal `Date` instants in Tools/landing-rules.spec.mjs.
+// WHY A LIB AND NOT A HOOK SCRIPT. The pre-push hook and after-the-fact detector
+// need identical commit-message and timestamp verdicts. The protected-ref rule
+// is necessarily hook-only: a later commit-range scan cannot reconstruct a
+// deletion or non-fast-forward update that bypassed the hook. Server-side branch
+// protection is a separate control. Keeping the predicates here makes every
+// rule testable without a repository: each verdict below is driven from literal
+// records and `Date` instants in Tools/landing-rules.spec.mjs.
 //
 // NOTHING IN THIS FILE TOUCHES git, the filesystem, the clock, or the process
 // exit code. `now` is always a parameter. That is what lets the DST cases be
@@ -353,8 +352,8 @@ export function checkBody(commit) {
  * @returns {{rule: string, status: string, detail: string}} Verdict.
  */
 export function checkCoAuthorTrailer(commit) {
-  const lines = (commit.body ?? "").split("\n");
-  const match = lines
+  const { trailers } = splitTrailers(commit.body ?? "");
+  const match = trailers
     .map((line) => CO_AUTHOR_PATTERN.exec(line.trimEnd()))
     .find((result) => result !== null);
   if (match === undefined || match === null) {
@@ -370,10 +369,10 @@ export function checkCoAuthorTrailer(commit) {
 /**
  * Rule (d) applied to a commit's own timestamps.
  *
- * The hook can only see push time; this is the half only the after-the-fact
- * detector can check, and it is the half finding S10 actually measured —
- * commits carry visible timestamps whenever they are pushed. Both the author
- * and committer dates are tested because either one is what a reader sees.
+ * Both the hook and the after-the-fact detector inspect these timestamps.
+ * This is distinct from the push-instant window: commits carry visible dates
+ * whenever they are pushed, and either the author or committer date is what a
+ * reader can see.
  *
  * @param {{authorDate?: string, commitDate?: string}} commit Commit record.
  * @returns {{rule: string, status: string, detail: string}} Verdict.
@@ -414,6 +413,150 @@ export function checkCommitQuietHours(commit) {
       .join(
         "; ",
       )} falls inside weekdays ${String(QUIET_HOURS_START_HOUR).padStart(2, "0")}:00-${QUIET_HOURS_END_HOUR}:00 US Eastern`,
+  );
+}
+
+/**
+ * Remote branches a lane must never delete and never force-rewrite.
+ *
+ * The trunk-only working model means main is the only long-lived ref; safety
+ * and worker branches come and go under maintainer housekeeping, so only the
+ * trunk is protected here.
+ */
+export const PROTECTED_REMOTE_BRANCHES = Object.freeze(["main"]);
+
+/**
+ * Whether a ref name (qualified or bare) is a protected branch.
+ *
+ * @param {string} refName Ref name as git reports it (`refs/heads/main`) or bare.
+ * @returns {boolean} True when the ref is protected.
+ */
+export function isProtectedRef(refName) {
+  const name = (refName ?? "").replace(/^refs\/heads\//, "");
+  return PROTECTED_REMOTE_BRANCHES.includes(name);
+}
+
+/**
+ * Rule (f) — a protected branch is never deleted and never force-rewritten.
+ *
+ * The fast-forward state is established by the git-aware driver (this module
+ * never runs git): "new-ref" when the remote has no such branch yet,
+ * "fast-forward" when the remote tip is an ancestor of what is being pushed,
+ * "rewrite" when it is not, and "unverifiable" when the remote tip is not
+ * present locally. Unverifiable fails closed: git itself refuses such a push
+ * without --force, so the only push this refusal can stop is a forced one.
+ *
+ * The documented upstream sync stays legal: after `git merge upstream/main`,
+ * main still has origin/main as an ancestor, so its `--force-with-lease` push
+ * is a fast-forward — the lease is a safety latch there, not a rewrite.
+ *
+ * @param {{remoteRef?: string, isDeletion?: boolean, fastForward?: string}} update Ref update.
+ * @returns {{rule: string, status: string, detail: string}} Verdict.
+ */
+export function checkRefUpdate(update) {
+  const refName = update.remoteRef ?? "(ref)";
+  if (!isProtectedRef(refName)) {
+    return verdict(
+      "protected-ref",
+      "skip",
+      `${refName} is not a protected branch; deletion and rewrite rules do not apply`,
+    );
+  }
+  if (update.isDeletion === true) {
+    return verdict(
+      "protected-ref",
+      "fail",
+      `deleting ${refName} from the remote is refused — protected branches are never deleted by a lane`,
+    );
+  }
+  switch (update.fastForward) {
+    case "new-ref":
+      return verdict(
+        "protected-ref",
+        "pass",
+        `${refName} does not exist on the remote yet; nothing can be rewritten`,
+      );
+    case "fast-forward":
+      return verdict(
+        "protected-ref",
+        "pass",
+        `${refName} update is fast-forward; no remote history is discarded`,
+      );
+    case "rewrite":
+      return verdict(
+        "protected-ref",
+        "fail",
+        `non-fast-forward update of ${refName}: commits already on the remote would be discarded (history rewrite)`,
+      );
+    default:
+      return verdict(
+        "protected-ref",
+        "fail",
+        `the remote tip of ${refName} is not present locally, so fast-forward cannot be verified — fetch first (fail-closed)`,
+      );
+  }
+}
+
+/**
+ * Push-wide rule — distinct commits may not reuse one Batch number.
+ *
+ * One commit can appear in several ref updates. It is identified by its object
+ * ID and counted once; two different object IDs carrying the same governed
+ * Batch number are a collision regardless of ref order. Prefix failures remain
+ * owned by the per-commit rule and therefore do not create a second red here.
+ *
+ * @param {object[]} commits Commit records collected across every pushed ref.
+ * @returns {{rule: string, status: string, detail: string}[]} One pass verdict or one failure per colliding Batch number.
+ */
+export function checkPushedBatchUniqueness(commits) {
+  const uniqueCommits = new Map();
+  for (const commit of commits) {
+    const sha = (commit.sha ?? "").trim();
+    if (sha === "") {
+      throw new Error(
+        "landing-rules: a pushed commit record is missing its object ID.",
+      );
+    }
+    if (!uniqueCommits.has(sha)) {
+      uniqueCommits.set(sha, commit);
+    }
+  }
+
+  const ownersByBatch = new Map();
+  for (const [sha, commit] of uniqueCommits) {
+    if (!isAgentAuthored(commit) || isExempt(commit)) {
+      continue;
+    }
+    const { batch } = checkBatchPrefix(commit);
+    if (batch === null) {
+      continue;
+    }
+    const owners = ownersByBatch.get(batch) ?? [];
+    owners.push(sha);
+    ownersByBatch.set(batch, owners);
+  }
+
+  const collisions = [...ownersByBatch]
+    .filter(([, owners]) => owners.length > 1)
+    .sort(([left], [right]) => left - right);
+  if (collisions.length === 0) {
+    return [
+      verdict(
+        "batch-unique",
+        "pass",
+        `${uniqueCommits.size} distinct pushed commit(s); no governed Batch number is reused`,
+      ),
+    ];
+  }
+  return collisions.map(([batch, owners]) =>
+    verdict(
+      "batch-unique",
+      "fail",
+      `batch ${batch} is used by distinct pushed commits ${owners
+        .map((sha) => sha.slice(0, 10))
+        .sort()
+        .join(", ")}; Batch numbers are global and never reused`,
+    ),
   );
 }
 
@@ -556,7 +699,7 @@ const STATUS_GLYPH = Object.freeze({
 /**
  * Render a push evaluation as text.
  *
- * @param {{quietHours: object, refs: {name: string, evaluation: object, highestPushedBatch: number|null}[]}} result Push evaluation.
+ * @param {{quietHours: object, pushVerdicts?: object[], refs: {name?: string, sourceRef?: string, destinationRef?: string, evaluation: object, highestPushedBatch: number|null, refVerdict?: object}[]}} result Push evaluation.
  * @param {{explain?: boolean}} [options] Rendering options.
  * @returns {string} Report.
  */
@@ -567,13 +710,30 @@ export function formatPushReport(result, options = {}) {
   if (explain || quiet.status === "fail") {
     lines.push(`  ${STATUS_GLYPH[quiet.status]} quiet-hours  ${quiet.detail}`);
   }
+  for (const entry of result.pushVerdicts ?? []) {
+    if (explain || entry.status === "fail") {
+      lines.push(
+        `  ${STATUS_GLYPH[entry.status]} ${entry.rule.padEnd(18)} ${entry.detail}`,
+      );
+    }
+  }
   for (const ref of result.refs) {
     const evaluation = ref.evaluation;
     const baseline =
       ref.highestPushedBatch === null ? "none" : String(ref.highestPushedBatch);
     if (explain) {
+      const mapping =
+        ref.sourceRef !== undefined && ref.destinationRef !== undefined
+          ? `${ref.sourceRef} -> ${ref.destinationRef}`
+          : (ref.name ?? "(ref)");
       lines.push(
-        `  ${ref.name}: ${evaluation.commits.length} commit(s), ${evaluation.checked} governed, highest landed batch = ${baseline}`,
+        `  ${mapping}: ${evaluation.commits.length} distinct commit(s), ${evaluation.checked} governed, highest landed batch = ${baseline}`,
+      );
+    }
+    const refVerdict = ref.refVerdict;
+    if (refVerdict !== undefined && (explain || refVerdict.status === "fail")) {
+      lines.push(
+        `  ${STATUS_GLYPH[refVerdict.status]} ${refVerdict.rule.padEnd(18)} ${refVerdict.detail}`,
       );
     }
     for (const commit of evaluation.commits) {

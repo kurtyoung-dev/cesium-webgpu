@@ -1,6 +1,7 @@
 # Auto detect text files and perform LF normalization
 * text=auto
 package.json text eol=lf
+.husky/pre-push text eol=lf
 
 # --- NASA SVS 5073 eclipse fixture (C12-29 S5) ---------------------------------
 # Every member of this directory is pinned by SHA-256 in the fixture manifest and
