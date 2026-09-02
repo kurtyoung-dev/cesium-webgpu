@@ -18,7 +18,7 @@ fn csm_sampleShadowMap(
   if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 || depth > 1.0) {
     return 1.0;
   }
-  return textureSampleCompare(shadowMap, shadowSampler, uv, depth);
+  return textureSampleCompareLevel(shadowMap, shadowSampler, uv, depth);
 }
 
 fn csm_sampleShadowMapPCF(
@@ -35,7 +35,7 @@ fn csm_sampleShadowMapPCF(
   for (var x: i32 = -1; x <= 1; x++) {
     for (var y: i32 = -1; y <= 1; y++) {
       let offset = vec2<f32>(f32(x), f32(y)) * texelSize;
-      shadow += textureSampleCompare(shadowMap, shadowSampler, uv + offset, depth);
+      shadow += textureSampleCompareLevel(shadowMap, shadowSampler, uv + offset, depth);
     }
   }
   return shadow / 9.0;

@@ -43,7 +43,7 @@ fn csm_clipByPolygons(
   let v = (geoCoord.y + PI * 0.5) / PI;          // latitude → [0,1]
   let uv = clamp(vec2<f32>(u, v), vec2<f32>(0.0), vec2<f32>(1.0));
 
-  let sdfValue = textureSample(sdfTex, sdfSamp, uv).r;
+  let sdfValue = textureSampleLevel(sdfTex, sdfSamp, uv, 0.0).r;
 
   // SDF < 0.5 means inside polygon → keep fragment (return false)
   // SDF >= 0.5 means outside polygon → discard fragment (return true)
@@ -69,7 +69,7 @@ fn csm_polygonClipDistance(
   let v = (geoCoord.y + PI * 0.5) / PI;
   let uv = clamp(vec2<f32>(u, v), vec2<f32>(0.0), vec2<f32>(1.0));
 
-  let sdfValue = textureSample(sdfTex, sdfSamp, uv).r;
+  let sdfValue = textureSampleLevel(sdfTex, sdfSamp, uv, 0.0).r;
 
   // Return distance from edge (0.5 = on edge, abs(sdfValue - 0.5) = distance)
   return abs(sdfValue - 0.5) * 2.0;

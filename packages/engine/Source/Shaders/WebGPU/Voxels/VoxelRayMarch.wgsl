@@ -19,7 +19,7 @@ struct VoxelRayMarchUniforms {
 @group(0) @binding(2) var volumeSampler: sampler;
 
 fn csm_sampleVoxelDensity(uvw: vec3<f32>) -> f32 {
-    return textureSample(volumeTexture, volumeSampler, uvw).r;
+    return textureSampleLevel(volumeTexture, volumeSampler, uvw, 0.0).r;
 }
 
 fn csm_voxelRayMarch(

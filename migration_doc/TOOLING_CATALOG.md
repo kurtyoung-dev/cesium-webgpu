@@ -206,11 +206,11 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 
 | Metric | Value |
 |---|---|
-| Files in census | 1163 |
-| ACTIVE | 945 |
+| Files in census | 1164 |
+| ACTIVE | 946 |
 | INVESTIGATION | 195 |
 | NO @purpose HEADER | 23 |
-| Classes | probe 654, spec 280, other 104, lib 82, gate-lib 20, bake-tool 13, runner 6, fixture 4 |
+| Classes | probe 654, spec 280, other 104, lib 83, gate-lib 20, bake-tool 13, runner 6, fixture 4 |
 
 ### Tools/ (47)
 
@@ -234,12 +234,12 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | inject-purpose-headers.mjs | other | ACTIVE | 2026-08-16 | 3 | Idempotent codemod injecting @purpose/@status headers into the tooling .mjs fleet from the library-audit rows. |
 | inject-purpose-headers.spec.mjs | spec | ACTIVE | 2026-08-16 | 1 | Self-test for the @purpose header codemod: mapping, placement, byte-exactness, idempotence and the dry-run report. |
 | karma-default-browsers.spec.mjs | spec | NO @purpose HEADER | 2026-08-21 | 0 | — |
-| landing-rules.mjs | other | ACTIVE | 2026-08-16 | 18 | Pure landing predicates for commit discipline, push-wide Batch uniqueness, and protected remote-ref updates. |
-| landing-rules.spec.mjs | spec | ACTIVE | 2026-08-16 | 6 | Hermetic control-and-mutant contract for commit, push-wide Batch, and protected-ref landing predicates. |
+| landing-rules.mjs | other | ACTIVE | 2026-09-01 | 18 | Pure landing predicates for commit discipline, push-wide Batch uniqueness, and protected remote-ref updates. |
+| landing-rules.spec.mjs | spec | ACTIVE | 2026-09-01 | 6 | Hermetic control-and-mutant contract for commit, push-wide Batch, and protected-ref landing predicates. |
 | lint-debug-pragmas.mjs | other | ACTIVE | 2026-08-28 | 6 | Lints Renderer/WebGPU for console.log/warn/debug/info calls not wrapped in //>>includeStart('debug') pragmas; console.error exempt by policy. |
 | lint-debug-pragmas.spec.mjs | spec | ACTIVE | 2026-08-28 | 0 | Proves debug-console calls stay removable unless a narrowly marked warning must remain visible. |
-| pre-push-guard.mjs | other | ACTIVE | 2026-08-24 | 12 | Git-aware driver behind .husky/pre-push: enforces batch-prefix/body/trailer/quiet-hours on every outgoing agent commit, and refuses deletion or non-fast-forward rewrite of main; fail-closed, no bypass flag. |
-| pre-push-guard.spec.mjs | spec | ACTIVE | 2026-08-16 | 3 | Hostile-input, multi-ref, protected-ref, and destructive-fixture contract for the real pre-push driver and hook. |
+| pre-push-guard.mjs | other | ACTIVE | 2026-09-01 | 12 | Git-aware driver behind .husky/pre-push: enforces batch-prefix/body/trailer/quiet-hours on every outgoing agent commit, and refuses deletion or non-fast-forward rewrite of main; fail-closed, no bypass flag. |
+| pre-push-guard.spec.mjs | spec | ACTIVE | 2026-09-01 | 3 | Hostile-input, multi-ref, protected-ref, and destructive-fixture contract for the real pre-push driver and hook. |
 | provision-worker-clone-junctions.spec.mjs | spec | NO @purpose HEADER | 2026-08-29 | 1 | — |
 | provision-worker-clone.mjs | other | ACTIVE | 2026-08-29 | 4 | Provision a worker clone with the governance git cannot deliver, create the local main ref the handoff diff needs, and REFUSE if any routed authority is unreachable. |
 | run-far200-shadow-self-test.mjs | runner | ACTIVE | 2026-08-16 | 2 | Thin bootstrap: esbuild-bundles Tools/far200-shadow-self-test.ts and executes it via a data: URL import. |
@@ -251,7 +251,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | verify-clone-drained.spec.mjs | spec | ACTIVE | 2026-08-28 | 0 | Prove with real throwaway Git repositories that every required clone-drain check both runs and controls the aggregate verdict. |
 | verify-landing-compliance.mjs | other | ACTIVE | 2026-08-28 | 12 | After-the-fact detector that re-runs the landing rules + C16 marker gate over a landed commit range, making any --no-verify hook bypass visible. |
 | verify-landing-compliance.spec.mjs | spec | ACTIVE | 2026-08-28 | 2 | Contract for the bypass detector against immutable history: known-bad C12-37 landing must red, known-good B1041-1043 landing must pass. |
-| verify-no-doc-shred.mjs | other | ACTIVE | 2026-08-28 | 1 | Fails when any migration_doc markdown file contains a long run of single-character lines - the signature of a splice-spread-over-string edit defect that has landed shredded ledger sections three times. |
+| verify-no-doc-shred.mjs | other | ACTIVE | 2026-08-28 | 2 | Fails when any migration_doc markdown file contains a long run of single-character lines - the signature of a splice-spread-over-string edit defect that has landed shredded ledger sections three times. |
 | verify-orientation-mirror.mjs | other | ACTIVE | 2026-08-28 | 1 | Fail closed when a status asserted by a reader-facing orientation document disagrees with, or cannot be resolved against, its campaign queue authority. |
 | verify-orientation-mirror.spec.mjs | spec | ACTIVE | 2026-08-28 | 0 | Prove the orientation-mirror verifier compares closed-vocabulary statuses, fails closed on unresolved references, honors reasoned allowlisting, and behaves identically on LF and CRLF inputs. |
 | verify-tracked-references.mjs | other | ACTIVE | 2026-08-21 | 13 | Asserts every node launch target in package.json/.mcp.json and every relative import in changed .mjs/.cjs/.js files resolves to a path the tree actually tracks. |
@@ -1221,7 +1221,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | prohibited-reader-allowlist.spec.mjs | spec | ACTIVE | 2026-08-21 | 0 | Enforce the measured prohibited-reader allowlist as a shrink-only ratchet. |
 | prohibited-reader-rule.spec.mjs | spec | NO @purpose HEADER | 2026-08-20 | 0 | — |
 | purpose-header-contract.spec.mjs | spec | ACTIVE | 2026-08-21 | 10 | Contract spec for maintainer ruling M4: every probe and gate library must carry a readable @purpose/@status header. |
-| q130-wgsl-derivative-uniformity.spec.mjs | spec | ACTIVE | 2026-08-29 | 3 | Guards the WGSL rule that made frustum-dev's phongTextured shader module invalid: no implicit-derivative sampling after a conditional return in a fragment entry point. |
+| q130-wgsl-derivative-uniformity.spec.mjs | spec | ACTIVE | 2026-08-29 | 7 | Guards the WGSL rule that made frustum-dev's phongTextured shader module invalid: no implicit-derivative sampling after a conditional return in a fragment entry point. |
 | q131-edge-pipeline-matches-pass.spec.mjs | spec | ACTIVE | 2026-08-29 | 0 | Guards the edge-emitter invariant that broke styled-gltf-lines-dev and multifrustum-snapping-dev: the pipeline a tile-edges command binds must declare the colour targets of the pass it executes in. |
 | q132-custom-primitive-and-light-layout.spec.mjs | spec | ACTIVE | 2026-08-29 | 0 | Reproduces and guards the two defects that stopped rendering in the Sandcastle2 sweep: Scene.updateHeight calling a tileset-only lifecycle method on every primitive, and the WebGL scene-light uniform being declared shorter than LightCollection.pack writes. |
 | refresh-cost-multi-metric.spec.mjs | spec | ACTIVE | 2026-08-29 | 0 | Independent behavioural + canonicity coverage of Q-80's deltaOrNull/sumLegMultiMetric/available-guard formulas, which live inside a page.evaluate callback and cannot be imported. |
@@ -1308,7 +1308,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | webgpu-pick-center-identity.spec.mjs | spec | ACTIVE | 2026-08-21 | 7 | Fake-device coverage of WebGPUPickFramebuffer/PickPass readback identity: map/unmap lifecycle, per-identity pixel decode, voxel pick pins. |
 | webgpu-pick-emission-counters.spec.mjs | spec | ACTIVE | 2026-09-01 | 5 | Pins the four pragma-stripped counters (ready-gate skips, pick |
 | webgpu-pick-miniframe-clear-guard.spec.mjs | spec | ACTIVE | 2026-08-16 | 1 | Pins that standalone WebGPU pick mini-frames reset their own clear-loop budget: beginPickFrame resets counters and creates its encoder. |
-| webgpu-shadow-receive-contract.spec.mjs | spec | ACTIVE | 2026-08-21 | 2 | Pins the sun-shadow fix: single cast-dispatch site + same-frame wipe guard, receive matrix reproduces the cast texel, naga-validated shaders. |
+| webgpu-shadow-receive-contract.spec.mjs | spec | ACTIVE | 2026-08-21 | 4 | Pins the sun-shadow fix: single cast-dispatch site + same-frame wipe guard, receive matrix reproduces the cast texel, naga-validated shaders. |
 | webgpu-snap-edge-payload.spec.mjs | spec | ACTIVE | 2026-08-16 | 5 | Contract for the edge tier of WebGPU Scene.snap: edge-flag payload encode, pick-color plumb into the edge UB, pipeline variant, strict admission. |
 | webgpu-snap-framebuffer-lifecycle.spec.mjs | spec | ACTIVE | 2026-08-16 | 0 | Behavioral lifecycle coverage of the real WebGPUSnapFramebuffer on GPU-shaped mocks; complements the source-contract snap-payload spec. |
 | webgpu-snap-payload.spec.mjs | spec | ACTIVE | 2026-08-28 | 2 | Contract for WebGPU Scene.snap payload: one encoding home (WebGPUSnapPayload.ts), rg32uint format agreement, spiral decode, naga validation. |
@@ -1350,7 +1350,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | derive-umbra-lo-shard.mjs | fixture | ACTIVE | 2026-08-16 | 2 | Deterministically crops four hash-verified umbra_lo records from NASA SVS 5073 into the pinned C12-29 S5 eclipse-footprint fixture shard. |
 | nasa-svs-5073-shapefile.mjs | fixture | ACTIVE | 2026-08-16 | 5 | Dependency-free ESRI Shapefile Polygon + dBASE reader for the SVS 5073 umbra fixture, parseable by node --test and same-origin browser probes alike. |
 
-### Tools/visual-regression/lib/ (93)
+### Tools/visual-regression/lib/ (94)
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
@@ -1445,6 +1445,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | weather-probe-pinning.mjs | lib | ACTIVE | 2026-08-21 | 24 | Shared weather-probe determinism pins, ALL READ BACK from the live scene and the packed cloud uniform buffer, plus the canonical immutable same-frame capture; a pin that did not take is STRUCTURAL, never a product verdict. |
 | weather-regional-tail-evidence.mjs | lib | ACTIVE | 2026-08-16 | 2 | Fixture and pass/fail policy for the C13-08 rendered antimeridian weather-tail probe, mutation-tested against its two target regressions. |
 | webgpu-model-preparation-evidence.mjs | lib | ACTIVE | 2026-08-16 | 2 | Accumulates and validates WebGPU model preparation/demand counters as measurement-window evidence for performance workloads. |
+| wgsl-derivative-uniformity.mjs | lib | ACTIVE | — | 7 | Reports implicit-derivative calls reached through non-uniform control flow without requiring a browser, GPU, or WGSL compiler. |
 | wgsl-mini-eval.mjs | lib | ACTIVE | 2026-08-29 | 9 | Parses and evaluates the arithmetic subset of WGSL (let bindings, one guarded return, scalar and vec3 arithmetic, a fixed builtin set) so specs can run a shader function straight from the shipped source. |
 | wgsl-variant.mjs | lib | ACTIVE | 2026-08-16 | 10 | Exposes the engine's real WGSL preprocessor and define registry so specs validate the exact variant text pipelines compile, not raw ifdef source. |
 
@@ -1466,7 +1467,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | ensureCesiumTypeDefinitions.spec.mjs | spec | ACTIVE | 2026-08-29 | 1 | Coverage for the missing-type-defs decision logic AND the gulpfile.apps.js |
 | karmaTestRun.spec.mjs | spec | ACTIVE | 2026-08-29 | 4 | Static coverage of the Gulp/Karma completion bridge via a fake Karma server: strict result config, retries, disconnect/error exit codes. |
 | prepareCesiumOutputDirectory.spec.mjs | spec | ACTIVE | 2026-08-29 | 2 | Regression that `clean:false` never removes files already on disk while `clean:true` still wipes the directory, so a failed rebuild cannot leave a served bundle directory both wiped and unreplaced. |
-| shaderSourceToJavaScript.spec.mjs | spec | ACTIVE | 2026-08-16 | 5 | Contract for the shader source-to-JS-module serializer: literal escapes, quotes, CRLF/lone-CR/U+2028 round-trips through real ESM evaluation. |
+| shaderSourceToJavaScript.spec.mjs | spec | ACTIVE | 2026-09-01 | 6 | Contract for the shader source-to-JS-module serializer: literal escapes, quotes, CRLF/lone-CR/U+2028 round-trips through real ESM evaluation. |
 | specBundleFreshness.spec.mjs | spec | ACTIVE | 2026-08-16 | 3 | Coverage of the spec-bundle freshness sentinel: added/removed/changed spec files must flip the manifest comparison stale and name the offender. |
 
 ### scripts/archive/ (1)

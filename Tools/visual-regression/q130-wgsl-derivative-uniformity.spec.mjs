@@ -50,31 +50,12 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { analyze } from "./lib/wgsl-derivative-uniformity.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "../..");
 const WGSL_ROOT = path.join(root, "packages/engine/Source/Shaders/WebGPU");
-
-// Implicit-derivative builtins. Every one of these is legal only from uniform
-// control flow; the explicit-LOD/gradient siblings (`textureSampleLevel`,
-// `textureSampleGrad`, `textureSampleCompareLevel`) deliberately are not here.
-const DERIVATIVE_BUILTINS = [
-  "textureSample",
-  "textureSampleBias",
-  "textureSampleCompare",
-  "dpdx",
-  "dpdy",
-  "dpdxFine",
-  "dpdyFine",
-  "dpdxCoarse",
-  "dpdyCoarse",
-  "fwidth",
-  "fwidthFine",
-  "fwidthCoarse",
-];
-const DERIVATIVE_CALL = new RegExp(
-  `\\b(${DERIVATIVE_BUILTINS.join("|")})\\s*\\(`,
-);
+const ANALYZER_MODULE = path.join(here, "lib/wgsl-derivative-uniformity.mjs");
 
 // Blank out comments while keeping every line's identity, so reported line
 // numbers are the numbers a reader sees in the file.
@@ -88,124 +69,7 @@ function blankComments(source) {
   });
 }
 
-function braceDelta(line) {
-  let delta = 0;
-  for (let i = 0; i < line.length; ++i) {
-    if (line[i] === "{") {
-      delta++;
-    } else if (line[i] === "}") {
-      delta--;
-    }
-  }
-  return delta;
-}
-
-// Names of user functions whose bodies reach a derivative builtin, directly or
-// through another such function. Without this the analyzer would miss the shape
-// GTAOGenerate.wgsl actually had: the entry called `getNormal`, which called
-// `pixelToEye`, which called `readDepth`, which sampled.
-function derivativeReachingFunctions(lines) {
-  const bodies = new Map();
-  for (let i = 0; i < lines.length; ++i) {
-    const declaration = /^\s*fn\s+([A-Za-z_]\w*)\s*\(/.exec(lines[i]);
-    if (!declaration) {
-      continue;
-    }
-    let depth = 0;
-    let opened = false;
-    const body = [];
-    for (let j = i; j < lines.length; ++j) {
-      body.push(lines[j]);
-      const before = depth;
-      depth += braceDelta(lines[j]);
-      if (!opened && depth > before) {
-        opened = true;
-      }
-      if (opened && depth <= 0) {
-        break;
-      }
-    }
-    bodies.set(declaration[1], body.join("\n"));
-  }
-  const reaching = new Set();
-  let grew = true;
-  while (grew) {
-    grew = false;
-    for (const [name, body] of bodies) {
-      if (reaching.has(name)) {
-        continue;
-      }
-      const direct = DERIVATIVE_CALL.test(body);
-      const indirect = [...reaching].some((callee) =>
-        new RegExp(`\\b${callee}\\s*\\(`).test(body),
-      );
-      if (direct || indirect) {
-        reaching.add(name);
-        grew = true;
-      }
-    }
-  }
-  return reaching;
-}
-
-/**
- * Report every implicit-derivative call (or call to a function that reaches
- * one) that a fragment entry point makes after it has already returned
- * conditionally.
- *
- * @param {string} source WGSL source text.
- * @returns {{line:number, symbol:string, afterReturnOnLine:number}[]} findings.
- */
-export function findNonUniformDerivativeCalls(source) {
-  const lines = blankComments(source);
-  const reaching = derivativeReachingFunctions(lines);
-  const reachingCall =
-    reaching.size > 0
-      ? new RegExp(`\\b(${[...reaching].join("|")})\\s*\\(`)
-      : null;
-  const findings = [];
-
-  for (let i = 0; i < lines.length; ++i) {
-    if (!/^\s*@fragment\b/.test(lines[i])) {
-      continue;
-    }
-    let depth = 0;
-    let opened = false;
-    let poisonedAt = 0;
-    for (let j = i; j < lines.length; ++j) {
-      const line = lines[j];
-
-      if (poisonedAt > 0) {
-        const direct = DERIVATIVE_CALL.exec(line);
-        const indirect = reachingCall ? reachingCall.exec(line) : null;
-        const hit = direct ?? indirect;
-        if (hit) {
-          findings.push({
-            line: j + 1,
-            symbol: hit[1],
-            afterReturnOnLine: poisonedAt,
-          });
-        }
-      }
-
-      const before = depth;
-      depth += braceDelta(line);
-      if (!opened && depth > before) {
-        opened = true;
-      }
-      // A `return` nested inside a conditional or loop within the entry body
-      // makes everything after it non-uniform. A `return` at the body's own
-      // level ends the entry, so nothing follows it.
-      if (/\breturn\b/.test(line) && Math.max(before, depth) > 1) {
-        poisonedAt = j + 1;
-      }
-      if (opened && depth <= 0) {
-        break;
-      }
-    }
-  }
-  return findings;
-}
+const findNonUniformDerivativeCalls = analyze;
 
 function listWgsl(directory) {
   const out = [];
@@ -218,6 +82,20 @@ function listWgsl(directory) {
     }
   }
   return out;
+}
+
+function assertFleetNotVacuous(
+  files,
+  readFile = (file) => fs.readFileSync(file, "utf8"),
+) {
+  assert.ok(files.length > 100, `only ${files.length} WGSL files found`);
+  const withFragmentEntries = files.filter((file) =>
+    /^\s*@fragment\b/m.test(readFile(file)),
+  );
+  assert.ok(
+    withFragmentEntries.length > 50,
+    `only ${withFragmentEntries.length} files carry a @fragment entry`,
+  );
 }
 
 const PHONG_TEXTURED = path.join(
@@ -303,19 +181,53 @@ test("A6: comments do not shift reported line numbers", () => {
   assert.match(lines[findings[0].line - 1], /textureSample\(/);
 });
 
-test("A7: a vertex entry point is out of scope", () => {
-  const vertexOnly = SYNTHETIC_CONDITIONAL_RETURN.replace(
-    "@fragment",
-    "@vertex",
+test("A7: only fragment-reachable helpers are in derivative-uniformity scope", () => {
+  const nonFragmentStages = `
+@group(0) @binding(0) var t: texture_2d<f32>;
+@group(0) @binding(1) var s: sampler;
+fn sampleAfterReturn(uv: vec2<f32>, stop: bool) -> vec4<f32> {
+    if (stop) {
+        return vec4<f32>(0.0);
+    }
+    return textureSample(t, s, uv);
+}
+@vertex
+fn vertexMain(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> {
+    let ignored = sampleAfterReturn(vec2<f32>(f32(index)), false);
+    return vec4<f32>(ignored.xyz, 1.0);
+}
+@compute @workgroup_size(1)
+fn computeMain() {
+    let ignored = sampleAfterReturn(vec2<f32>(0.0), false);
+}
+`;
+  assert.deepEqual(findNonUniformDerivativeCalls(nonFragmentStages), []);
+
+  const fragmentCaller = `
+@fragment
+fn fragmentMain(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
+    return sampleAfterReturn(uv, uv.x > 0.5);
+}
+`;
+  const mixedStages = `${nonFragmentStages}${fragmentCaller}`;
+  const findings = findNonUniformDerivativeCalls(mixedStages);
+  assert.ok(
+    findings.some((finding) => finding.symbol === "textureSample"),
+    "the helper becomes illegal when a fragment entry reaches it",
   );
-  assert.deepEqual(findNonUniformDerivativeCalls(vertexOnly), []);
+  assert.deepEqual(
+    findNonUniformDerivativeCalls(mixedStages.replace(fragmentCaller, "")),
+    [],
+    "removing fragment reachability must restore the clean control",
+  );
 });
 
-test("A8: explicit-LOD and gradient siblings are never findings", () => {
+test("A8: explicit-level, gradient, compare-level, and load siblings are clean", () => {
   for (const call of [
     "textureSampleLevel(t, s, uv, 0.0)",
     "textureSampleGrad(t, s, uv, dx, dy)",
     "textureSampleCompareLevel(t, sc, uv, 0.5)",
+    "textureLoad(t, vec2<i32>(0), 0)",
   ]) {
     const source = SYNTHETIC_CONDITIONAL_RETURN.replace(
       "textureSample(t, s, uv)",
@@ -346,8 +258,16 @@ test("B1: no WGSL shader samples with implicit derivatives after a conditional r
     for (const finding of findNonUniformDerivativeCalls(
       fs.readFileSync(file, "utf8"),
     )) {
+      // The line the non-uniform flow starts on depends on the shape the
+      // analyzer reported, so a break or continue finding names its own line
+      // instead of printing "return on line undefined".
+      const flowLine =
+        finding.afterReturnOnLine ??
+        finding.afterBreakOnLine ??
+        finding.afterContinueOnLine ??
+        "?";
       offenders.push(
-        `${path.relative(root, file)}:${finding.line} ${finding.symbol}() after the conditional return on line ${finding.afterReturnOnLine}`,
+        `${path.relative(root, file)}:${finding.line} ${finding.symbol}() reached through ${finding.shape} on line ${flowLine}`,
       );
     }
   }
@@ -355,14 +275,21 @@ test("B1: no WGSL shader samples with implicit derivatives after a conditional r
 });
 
 test("B2: the fleet leg is not vacuous — it reads real files with real entry points", () => {
-  const files = listWgsl(WGSL_ROOT);
-  assert.ok(files.length > 100, `only ${files.length} WGSL files found`);
-  const withFragmentEntries = files.filter((file) =>
-    /^\s*@fragment\b/m.test(fs.readFileSync(file, "utf8")),
+  assertFleetNotVacuous(listWgsl(WGSL_ROOT));
+});
+
+test("B3: an empty fleet fails the non-vacuity gate", () => {
+  assert.throws(() => assertFleetNotVacuous([]), /only 0 WGSL files found/);
+});
+
+test("B4: a traversal with zero fragment entry points fails the gate", () => {
+  const files = Array.from(
+    { length: 101 },
+    (_, index) => `empty-${index}.wgsl`,
   );
-  assert.ok(
-    withFragmentEntries.length > 50,
-    `only ${withFragmentEntries.length} files carry a @fragment entry`,
+  assert.throws(
+    () => assertFleetNotVacuous(files, () => "fn helper() {}"),
+    /only 0 files carry a @fragment entry/,
   );
 });
 
@@ -526,3 +453,313 @@ test("E3: the assembly is not a fixture — the raw shader alone does not valida
     "the raw shader alone must not validate, or E1 proves nothing",
   );
 });
+
+// Group F - hardened textual-control shapes.
+
+const SHAPE_BINDINGS = `
+@group(0) @binding(0) var t: texture_2d<f32>;
+@group(0) @binding(1) var s: sampler;
+`;
+
+const SINGLE_LINE_CONDITIONAL_RETURN = `${SHAPE_BINDINGS}
+fn a(uv: vec2<f32>, k: f32) -> vec4<f32> { if (k < 0.5) { return vec4<f32>(0.0); } return textureSample(t, s, uv); }
+`;
+
+const CONDITIONAL_BREAK = `${SHAPE_BINDINGS}
+fn c(uv: vec2<f32>, n: i32) -> vec4<f32> { var acc = vec4<f32>(0.0); for (var i = 0; i < 8; i = i + 1) { if (i > n) { break; } acc = acc + textureSample(t, s, uv); } return acc; }
+`;
+
+const CONDITIONAL_CONTINUE = `${SHAPE_BINDINGS}
+fn d(uv: vec2<f32>, n: i32) -> vec4<f32> { var acc = vec4<f32>(0.0); for (var i = 0; i < 8; i = i + 1) { if (i == n) { continue; } acc = acc + textureSample(t, s, uv); } return acc; }
+`;
+
+const SAMPLE_INSIDE_NON_UNIFORM_IF = `${SHAPE_BINDINGS}
+fn e(uv: vec2<f32>, k: f32) -> vec4<f32> { var c = vec4<f32>(0.0); if (k < 0.5) { c = textureSample(t, s, uv); } return c; }
+`;
+
+const HOISTED_SAMPLE = `${SHAPE_BINDINGS}
+fn f(uv: vec2<f32>, k: f32) -> vec4<f32> { let c = textureSample(t, s, uv); if (k < 0.5) { return vec4<f32>(0.0); } return c; }
+`;
+
+const EXPLICIT_LEVEL_SAMPLE = `${SHAPE_BINDINGS}
+fn g(uv: vec2<f32>, k: f32) -> vec4<f32> { let c = textureSampleLevel(t, s, uv, 0.0); if (k < 0.5) { return c * 0.5; } return c; }
+`;
+
+const FLAGGED_SHAPE_FIXTURES = [
+  {
+    name: "single-line conditional return",
+    shape: "conditional-return",
+    source: SINGLE_LINE_CONDITIONAL_RETURN,
+  },
+  {
+    name: "conditional break",
+    shape: "conditional-break",
+    source: CONDITIONAL_BREAK,
+  },
+  {
+    name: "conditional continue",
+    shape: "conditional-continue",
+    source: CONDITIONAL_CONTINUE,
+  },
+  {
+    name: "sample inside a non-uniform if",
+    shape: "non-uniform-if",
+    source: SAMPLE_INSIDE_NON_UNIFORM_IF,
+  },
+];
+
+for (const [index, fixture] of FLAGGED_SHAPE_FIXTURES.entries()) {
+  test(`F${index + 1}: ${fixture.name} is reported by shape`, () => {
+    const findings = analyze(fixture.source);
+    assert.equal(findings.length, 1);
+    assert.equal(findings[0].symbol, "textureSample");
+    assert.equal(findings[0].shape, fixture.shape);
+  });
+}
+
+test("F5: a sample hoisted above the conditional stays clean", () => {
+  assert.deepEqual(analyze(HOISTED_SAMPLE), []);
+});
+
+test("F6: an explicit-level sample stays clean", () => {
+  assert.deepEqual(analyze(EXPLICIT_LEVEL_SAMPLE), []);
+});
+
+test("F7: disabling the hardened detector makes all four new fixtures inert", async () => {
+  const original = fs.readFileSync(ANALYZER_MODULE, "utf8");
+  const mutant = original.replace(
+    "const HARDENED_SHAPES = true;",
+    "const HARDENED_SHAPES = false;",
+  );
+  assert.notEqual(mutant, original, "analyzer mutation did not apply");
+
+  const mutantUrl = `data:text/javascript;base64,${Buffer.from(mutant).toString(
+    "base64",
+  )}#q130-hardened-shapes-disabled`;
+  const { analyze: analyzeMutant } = await import(mutantUrl);
+
+  for (const fixture of FLAGGED_SHAPE_FIXTURES) {
+    assert.deepEqual(
+      analyzeMutant(fixture.source),
+      [],
+      `${fixture.name} must disappear when hardened detection is disabled`,
+    );
+  }
+});
+
+// Group G - scope, uniformity, and tokenizer assumptions.
+
+test("G1: a helper-only module with no entry point is treated as a fragment-library candidate", () => {
+  const findings = analyze(SINGLE_LINE_CONDITIONAL_RETURN);
+  assert.equal(findings.length, 1);
+  assert.equal(findings[0].shape, "conditional-return");
+});
+
+test("G2: a module-uniform condition is clean and a fragment-input condition is red", () => {
+  const uniformCondition = `
+struct Params { enabled: u32, };
+@group(0) @binding(0) var t: texture_2d<f32>;
+@group(0) @binding(1) var s: sampler;
+@group(0) @binding(2) var<uniform> params: Params;
+@fragment
+fn fragmentMain(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
+    var color = vec4<f32>(0.0);
+    if (params.enabled != 0u) {
+        color = textureSample(t, s, uv);
+    }
+    return color;
+}
+`;
+  assert.deepEqual(analyze(uniformCondition), []);
+
+  const varyingCondition = uniformCondition.replace(
+    "params.enabled != 0u",
+    "uv.x > 0.5",
+  );
+  const findings = analyze(varyingCondition);
+  assert.ok(
+    findings.some(
+      (finding) =>
+        finding.symbol === "textureSample" &&
+        finding.shape === "non-uniform-if",
+    ),
+  );
+});
+
+test("G3: tokenizer, CRLF, and call propagation preserve the same finding", () => {
+  const source = `
+@group(0) @binding(0) var t: texture_2d<f32>;
+@group(0) @binding(1) var s: sampler;
+fn helper(uv: vec2<f32>) -> vec4<f32> {
+    /* textureSample(t, s, uv) in a comment is inert. */
+    return textureSample(t, s, uv);
+}
+@fragment
+fn fragmentMain(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
+    let epsilon = 1.0e-3;
+    if ((uv.x + epsilon) >= 0.5 && uv.y != 0.0) {
+        return vec4<f32>(1.0);
+    }
+    return helper(uv);
+}
+`;
+  const lf = analyze(source);
+  const crlf = analyze(source.split("\n").join("\r\n"));
+  assert.deepEqual(crlf, lf);
+  assert.ok(
+    lf.some(
+      (finding) =>
+        finding.symbol === "helper" && finding.shape === "conditional-return",
+    ),
+  );
+});
+
+// Group H - preregistered physical-site repairs and one-at-a-time mutants.
+
+const PHYSICAL_SITE_GROUPS = [
+  {
+    file: path.join(WGSL_ROOT, "chunks/functions/csm_clipByPolygons.wgsl"),
+    replacements: [
+      {
+        name: "polygon clip sample 1",
+        implicit: "let sdfValue = textureSample(sdfTex, sdfSamp, uv).r;",
+        explicit:
+          "let sdfValue = textureSampleLevel(sdfTex, sdfSamp, uv, 0.0).r;",
+        occurrence: 0,
+        symbol: "textureSample",
+        shape: "conditional-return",
+      },
+      {
+        name: "polygon clip sample 2",
+        implicit: "let sdfValue = textureSample(sdfTex, sdfSamp, uv).r;",
+        explicit:
+          "let sdfValue = textureSampleLevel(sdfTex, sdfSamp, uv, 0.0).r;",
+        occurrence: 1,
+        symbol: "textureSample",
+        shape: "conditional-return",
+      },
+    ],
+  },
+  {
+    file: path.join(WGSL_ROOT, "chunks/functions/csm_effects.wgsl"),
+    replacements: [
+      {
+        name: "hard shadow compare",
+        implicit:
+          "return textureSampleCompare(shadowMap, shadowSampler, uv, depth);",
+        explicit:
+          "return textureSampleCompareLevel(shadowMap, shadowSampler, uv, depth);",
+        occurrence: 0,
+        symbol: "textureSampleCompare",
+        shape: "conditional-return",
+      },
+      {
+        name: "PCF shadow compare",
+        implicit:
+          "shadow += textureSampleCompare(shadowMap, shadowSampler, uv + offset, depth);",
+        explicit:
+          "shadow += textureSampleCompareLevel(shadowMap, shadowSampler, uv + offset, depth);",
+        occurrence: 0,
+        symbol: "textureSampleCompare",
+        shape: "conditional-return",
+      },
+    ],
+  },
+  {
+    file: path.join(WGSL_ROOT, "Voxels/VoxelRayMarch.wgsl"),
+    replacements: [
+      {
+        name: "voxel density sample",
+        implicit: "return textureSample(volumeTexture, volumeSampler, uvw).r;",
+        explicit:
+          "return textureSampleLevel(volumeTexture, volumeSampler, uvw, 0.0).r;",
+        occurrence: 0,
+        symbol: "csm_sampleVoxelDensity",
+        shape: "conditional-break",
+      },
+    ],
+  },
+];
+
+function occurrenceCount(source, needle) {
+  return source.split(needle).length - 1;
+}
+
+function replaceOccurrence(source, needle, replacement, occurrence) {
+  let cursor = -1;
+  for (let index = 0; index <= occurrence; ++index) {
+    cursor = source.indexOf(needle, cursor + 1);
+  }
+  assert.ok(cursor >= 0, `occurrence ${occurrence} of ${needle} not found`);
+  return (
+    source.slice(0, cursor) + replacement + source.slice(cursor + needle.length)
+  );
+}
+
+function repairedPhysicalSources() {
+  const repaired = new Map();
+  for (const group of PHYSICAL_SITE_GROUPS) {
+    let source = fs.readFileSync(group.file, "utf8");
+    const uniqueReplacements = new Map(
+      group.replacements.map((site) => [site.implicit, site.explicit]),
+    );
+    for (const [implicit, explicit] of uniqueReplacements) {
+      const expected = group.replacements.filter(
+        (site) => site.implicit === implicit,
+      ).length;
+      const actual =
+        occurrenceCount(source, implicit) + occurrenceCount(source, explicit);
+      assert.equal(
+        actual,
+        expected,
+        `${path.relative(root, group.file)} physical site count changed`,
+      );
+      source = source.split(implicit).join(explicit);
+    }
+    repaired.set(group.file, source);
+  }
+  return repaired;
+}
+
+test("H1: the preregistered explicit-level physical-site baseline is analyzer-clean", () => {
+  for (const [file, source] of repairedPhysicalSources()) {
+    assert.deepEqual(analyze(source), [], path.relative(root, file));
+  }
+});
+
+test("H2: shipped physical sites match the preregistered explicit-level baseline", () => {
+  const repaired = repairedPhysicalSources();
+  const mismatches = [];
+  for (const [file, expected] of repaired) {
+    if (fs.readFileSync(file, "utf8") !== expected) {
+      mismatches.push(path.relative(root, file));
+    }
+  }
+  assert.deepEqual(mismatches, []);
+});
+
+const PHYSICAL_MUTANTS = PHYSICAL_SITE_GROUPS.flatMap((group) =>
+  group.replacements.map((site) => ({ ...site, file: group.file })),
+);
+
+for (const [index, site] of PHYSICAL_MUTANTS.entries()) {
+  test(`H${index + 3}: ${site.name} implicit-sample mutant turns red`, () => {
+    const baseline = repairedPhysicalSources().get(site.file);
+    assert.equal(occurrenceCount(baseline, site.implicit), 0);
+    const mutant = replaceOccurrence(
+      baseline,
+      site.explicit,
+      site.implicit,
+      site.occurrence,
+    );
+    assert.equal(occurrenceCount(mutant, site.implicit), 1);
+    const findings = analyze(mutant);
+    assert.ok(
+      findings.some(
+        (finding) =>
+          finding.symbol === site.symbol && finding.shape === site.shape,
+      ),
+      `${site.name} did not produce ${site.symbol}/${site.shape}`,
+    );
+  });
+}
