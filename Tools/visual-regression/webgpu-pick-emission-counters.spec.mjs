@@ -90,6 +90,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 import { shaderSourceToJavaScript } from "../../scripts/build.js";
+import { mutateOrFail } from "./lib/engine-stub-bundler.mjs";
 
 const directory = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(directory, "../..");
@@ -157,27 +158,19 @@ globalThis.GPUColorWrite ??= {
 };
 globalThis.GPUMapMode ??= { READ: 0x0001, WRITE: 0x0002 };
 
-/**
- * Applies a rewrite and refuses to continue if it changed nothing — a moved
- * anchor must fail loudly rather than produce a mutation test that passes
- * vacuously.
- *
- * @param {string} original The source to rewrite.
- * @param {Function} rewrite The rewrite.
- * @param {string} name The mutation's name.
- * @returns {string} The rewritten source.
- */
-function mutateOrFail(original, rewrite, name) {
-  const rewritten = rewrite(original);
-  assert.notEqual(
-    rewritten,
-    original,
-    `the ${name} mutation changed nothing — its anchor text has moved, so ` +
-      `this mutation test would pass vacuously and the result it exists to ` +
-      `falsify would be unfalsifiable`,
+test("mutateOrFail returns changed source and rejects an identity rewrite", () => {
+  assert.equal(
+    mutateOrFail("before", () => "after", "changed"),
+    "after",
   );
-  return rewritten;
-}
+  assert.throws(() => mutateOrFail("before", (source) => source, "identity"), {
+    name: "AssertionError",
+    message:
+      "the identity mutation changed nothing — its anchor text has moved, so " +
+      "this mutation test would pass vacuously and the result it exists to " +
+      "falsify would be unfalsifiable",
+  });
+});
 
 /**
  * Resolves an engine `.js` shader-wrapper import that a missing `gulp
