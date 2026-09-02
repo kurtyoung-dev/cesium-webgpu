@@ -156,6 +156,12 @@
 //
 // Usage: node Tools/visual-regression/probe-eclipse-cloud-response.mjs
 //   (requires the dev server on localhost:8080 and a current gulp build)
+//   --exposure-sweep  additionally run the CO-22 leg (R-2026-09-02-5): at the
+//                      deepest rung only, re-run lane B's own ground-shadow
+//                      ABBA once per `REINHARD_RESIDUE_EXPOSURE_SWEEP` value,
+//                      pinning `cloud.exposure` and nothing else. See the
+//                      pre-registration block above `REINHARD_RESIDUE_EXPOSURE_SWEEP`
+//                      in `lib/eclipse-cloud-response-gate.mjs`.
 
 import { createHash, randomUUID } from "crypto";
 import fs from "fs";
@@ -195,6 +201,7 @@ import {
 import {
   BAND_MEAN_CAPTURE_DELTA,
   DECK_AERIAL_SHARE_CROSS_RUN,
+  DECK_TONEMAP_EXPOSURE,
   ECLIPSE_CLOUD_BANDS,
   ECLIPSE_CLOUD_EXIT,
   ECLIPSE_CLOUD_GATE_PREDICATES,
@@ -205,6 +212,7 @@ import {
   REFRESH_COST_PROTOCOL_VERSION,
   REFRESH_COST_WEBGL_GPU_UNAVAILABLE_REASON,
   REFRESH_COST_WEBGPU_GPU_UNAVAILABLE_REASON,
+  REINHARD_RESIDUE_EXPOSURE_SWEEP,
   SWEEP_FRAMES,
   SWEEP_PEAK_OBSCURATION,
   SWEEP_RISING_FRAMES,
@@ -218,6 +226,13 @@ import {
 } from "./lib/eclipse-cloud-response-gate.mjs";
 
 const BASE = process.env.PROBE_BASE ?? "http://localhost:8080";
+// CO-22 (R-2026-09-02-5). `null` unless requested, so `laneConfig` and every
+// downstream reader can tell "the leg did not run" from "it ran and read
+// nothing" — see the usage comment above and the pre-registration block in
+// `lib/eclipse-cloud-response-gate.mjs` above `REINHARD_RESIDUE_EXPOSURE_SWEEP`.
+const EXPOSURE_SWEEP_VALUES = process.argv.includes("--exposure-sweep")
+  ? REINHARD_RESIDUE_EXPOSURE_SWEEP
+  : null;
 const OUT_DIR = "Tools/visual-regression/output";
 const CANONICAL_ARTIFACT = path.join(
   OUT_DIR,
@@ -813,6 +828,12 @@ const RUN_CLOUD_LANES = async (cfg) => {
         // — and the harness round-trip-verifies each key, so pinning it here
         // also makes the default itself a read-back rather than an assumption.
         cloudAerialStrength: 1.0,
+        // CO-22: same leak class as CO-19 above, for `cloud.exposure`. The
+        // exposure-sweep leg pins this away from the shipped default for one
+        // rung; re-pinning it here on EVERY configure means the very next
+        // call — the next ladder rung's lane A, or the "restore" call right
+        // after the sweep — puts it back without a separate restore step.
+        cloudExposure: cfg.deckTonemapExposure,
         ...cfg.determinismDials,
         ...(extra.dials ?? {}),
       },
@@ -1267,6 +1288,99 @@ const RUN_CLOUD_LANES = async (cfg) => {
     const cloudCacheOn = cloudCacheTelemetry();
     const globeUniformOn = globeUniformTelemetry();
 
+    // ── LANE B EXPOSURE-SWEEP LEG (CO-22, deepest rung only, `--exposure-sweep`,
+    // R-2026-09-02-5). Pre-registered by the SIXTH PASS block of
+    // `eclipse-cloud-response-gate.mjs`: the fog-off leg that block originally
+    // proposed cannot run on THIS fixture, because lane B already pins fog off
+    // (M10) — toggling an already-off dial off again cannot collapse anything.
+    // `cloud.exposure` is the live, controllable half of ProceduralClouds' own
+    // Reinhard curve (`ProceduralClouds.wgsl:2643-2644`), so this leg re-runs
+    // the exact ABBA above once per swept value with nothing else changed.
+    //
+    // `pin.pinScene(C, { exposure })` (P11) both sets the dial and reads it
+    // back into `L` below; `configure`'s own `dials.cloudExposure` on every
+    // capture is what actually keeps it pinned across the four sub-captures —
+    // `configure`'s base dial list re-pins `cloudExposure` to
+    // `cfg.deckTonemapExposure` on EVERY call (the CO-19 leak fix, extended),
+    // so an explicit value in `dials` on each of these four calls is required,
+    // not optional.
+    let exposureSweep = null;
+    if (deepest && Array.isArray(cfg.exposureSweepValues)) {
+      exposureSweep = [];
+      for (const exposureValue of cfg.exposureSweepValues) {
+        const exposurePins = pin.pinScene(C, { exposure: exposureValue });
+        const exposureDials = { ...groundDials, cloudExposure: exposureValue };
+        setEclipse(false);
+        configure({
+          enableVolumetric: true,
+          dials: { ...exposureDials, cloudCastShadows: false },
+        });
+        await pin.settle(julian, cfg.settleMs);
+        const eOffNoShadow = groundBand(
+          await captureLabelled(
+            `B${index}-exposure${exposureValue}-eclipseOff-shadowOff`,
+            julian,
+            false,
+          ),
+        );
+        configure({
+          enableVolumetric: true,
+          dials: { ...exposureDials, cloudCastShadows: true },
+        });
+        await pin.settle(julian, cfg.settleMs);
+        const eOffShadow = groundBand(
+          await captureLabelled(
+            `B${index}-exposure${exposureValue}-eclipseOff-shadowOn`,
+            julian,
+            false,
+          ),
+        );
+        setEclipse(true);
+        configure({
+          enableVolumetric: true,
+          dials: { ...exposureDials, cloudCastShadows: false },
+        });
+        await pin.settle(julian, cfg.settleMs);
+        const eOnNoShadow = groundBand(
+          await captureLabelled(
+            `B${index}-exposure${exposureValue}-eclipseOn-shadowOff`,
+            julian,
+            false,
+          ),
+        );
+        configure({
+          enableVolumetric: true,
+          dials: { ...exposureDials, cloudCastShadows: true },
+        });
+        await pin.settle(julian, cfg.settleMs);
+        const eOnShadow = groundBand(
+          await captureLabelled(
+            `B${index}-exposure${exposureValue}-eclipseOn-shadowOn`,
+            julian,
+            false,
+          ),
+        );
+        exposureSweep.push({
+          exposure: exposureValue,
+          // See the pre-registration block: this fixture treats the pinned
+          // dial AS `exposedLuma` directly (the same convention
+          // `REINHARD_RESIDUE_EXPOSURE_SWEEP` already used before this leg
+          // existed), not a recovered `weightedColor * cloud.exposure`.
+          L: exposureValue,
+          cloudExposureReadBack: exposurePins.cloudExposure,
+          shadow: {
+            offNoShadow: eOffNoShadow.mean,
+            offShadow: eOffShadow.mean,
+            onNoShadow: eOnNoShadow.mean,
+            onShadow: eOnShadow.mean,
+          },
+        });
+      }
+      // `setEclipse(true)` above already matches the state the main lane B
+      // block leaves for every rung; the very next `configure` call restores
+      // `cloudExposure` (see the base dial list), so nothing else to reset.
+    }
+
     // Restore the lane-A dials so the next rung starts from one configuration.
     configure({ enableVolumetric: true });
 
@@ -1294,6 +1408,9 @@ const RUN_CLOUD_LANES = async (cfg) => {
       // CO-19: the `cloudAerialStrength = 0` leg, deepest rung only. `null`
       // everywhere else, and the gate reads it off the deepest rung.
       deckAerialZero: aerialZero,
+      // CO-22: the `--exposure-sweep` leg, deepest rung only. `null` unless
+      // requested, and the gate reads it off the deepest rung the same way.
+      exposureSweep,
       shadow: {
         offNoShadow: bOffNoShadow.mean,
         offShadow: bOffShadow.mean,
@@ -3710,6 +3827,11 @@ export async function runEclipseCloudResponseProbe() {
         settleMs: 500,
         ladder: derived.ladder,
         determinismDials: WEATHER_DETERMINISM_DIALS,
+        // CO-22 (R-2026-09-02-5): `null` unless `--exposure-sweep` was passed.
+        // Only `RUN_CLOUD_LANES` (WebGPU) reads this; the deck-free control
+        // sessions spread the same `laneConfig` but never look at the field.
+        exposureSweepValues: EXPOSURE_SWEEP_VALUES,
+        deckTonemapExposure: DECK_TONEMAP_EXPOSURE,
       };
 
       // ── WebGPU: lanes A + B, then lane C in a fresh context (the IBL lane

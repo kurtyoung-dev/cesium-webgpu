@@ -82,6 +82,7 @@ import {
   countBucketChanges,
   deckDisplayedRatio,
   encodedResidueDim,
+  exposureSweepRisesWithExposure,
   reinhardResidueDim,
   residueShareForDim,
   deriveRefreshCostSegmentBounds,
@@ -1391,7 +1392,12 @@ test("D2 PASS is the fold of the predicate LIST, with no second conjunction", ()
   // `shadowResidueEncodeHypothesisInRange`, which scores whether the
   // DERIVED in-shader encode locus is an admissible residue at all. It is a
   // hypothesis reading, so it must never gate.
-  assert.equal(ECLIPSE_CLOUD_REPORTED_ONLY_PREDICATES.length, 7);
+  // 7 -> 8 at the `--exposure-sweep` leg (CO-22, R-2026-09-02-5):
+  // `exposureSweepRisesWithExposure`, the CORRECTED deciding measurement that
+  // supersedes the fog-off leg the C13-41 mechanism pass had proposed (that
+  // leg cannot run on lane B, which pins fog off — see M10). Also a
+  // hypothesis reading, so it must never gate either.
+  assert.equal(ECLIPSE_CLOUD_REPORTED_ONLY_PREDICATES.length, 8);
   assert.equal(ECLIPSE_CLOUD_PARITY_PREDICATES.length, 2);
   // Nothing is scored without a declared blindness domain — an unmapped
   // predicate would be silently unquarantinable.
@@ -7963,10 +7969,15 @@ test("K15 the probe lifecycle binds diagnostics, provenance, watchdog cleanup, a
 // does not.
 //
 // These tests execute that derivation. They score a HYPOTHESIS, never a run:
-// nothing here gates, and the measurement that decides the hypothesis is the
-// pre-registered fog-off collapse leg, which needs a browser. What they DO
-// establish offline is that the hypothesis is arithmetically admissible exactly
-// where the previously-tested visible-deck hypothesis was not.
+// nothing here gates. The FOG instance of the residue is pinned off by lane B
+// (M10), so the fog-off collapse leg the SIXTH PASS block originally proposed
+// cannot run on this fixture; the CORRECTED deciding measurement, pre-
+// registered in the same block, is the `--exposure-sweep` leg (CO-22,
+// R-2026-09-02-5) — see M11-M13 below. What M1-M10 DO establish offline is
+// that the hypothesis is arithmetically admissible exactly where the
+// previously-tested visible-deck hypothesis was not; M11-M13 exercise the
+// leg's own arithmetic the same way, needing a browser only for the
+// measurement itself.
 //
 // The banked numbers below are the deepest rung of run
 // `8b806b09-004c-48ab-b902-f4fce64cd109` (2026-08-25, protocol v4, the artifact
@@ -8305,4 +8316,192 @@ test("M10 the FOG instance is excluded by the fixture's own pins, in source", ()
   assert.match(pinning, /scene\.globe\.imageryLayers\.removeAll\(\);/);
   // The eliminations must not be quietly reversible: if a future edit re-enables
   // either, this test fails and the residue question genuinely reopens.
+});
+
+test("M11 exposureSweepRisesWithExposure scores direction AND magnitude, and null means the leg did not run", () => {
+  // Strictly rising: the mechanism's own prediction shape.
+  assert.equal(exposureSweepRisesWithExposure([0.6, 0.66, 0.72, 0.8]), true);
+  // A flat sweep is not a fall, but it is not a rise either. The corrected
+  // deciding measurement (`migration_doc/QUEUE_2026-07-19_CAMPAIGN12.md`:
+  // "a reading that does not move with exposure refutes the cloud-composite
+  // locus") and this file's own pre-registration above `reinhardResidueDim`
+  // ("A flat or falling exposureSweepMeasured REFUTES the cloud-composite
+  // locus") both call dead-flat a refutation, not a confirmation — exact
+  // equality across the whole sweep must read false.
+  assert.equal(exposureSweepRisesWithExposure([0.6, 0.6, 0.6, 0.6]), false);
+  // A fall larger than the noise floor REFUTES the locus.
+  assert.equal(exposureSweepRisesWithExposure([0.8, 0.6, 0.66, 0.72]), false);
+  // A fall no larger than the noise floor is within capture noise, not a real
+  // reversal — set strictly inside the default tolerance, and the four-point
+  // sweep still nets a real rise well past the tolerance floor.
+  assert.equal(
+    exposureSweepRisesWithExposure([
+      0.6,
+      0.6 - BAND_MEAN_CAPTURE_DELTA / 2,
+      0.66,
+      0.72,
+    ]),
+    true,
+  );
+  // A custom tolerance is honoured — for BOTH bars it sets. A small net fall
+  // stays inside a generous per-step tolerance, but it is still not a rise,
+  // so the magnitude bar refutes it regardless: the corrected doctrine gives
+  // no more benefit of the doubt to "within noise" than the dead-flat case
+  // above does.
+  assert.equal(exposureSweepRisesWithExposure([0.6, 0.55], 0.1), false);
+  assert.equal(exposureSweepRisesWithExposure([0.6, 0.55], 0.01), false);
+  // A genuine small rise clears a loose tolerance but not a tight one — this
+  // is the magnitude bar actually gating, not just the per-step fall check.
+  assert.equal(exposureSweepRisesWithExposure([0.6, 0.61], 0.005), true);
+  assert.equal(exposureSweepRisesWithExposure([0.6, 0.61], 0.02), false);
+  // Fewer than two finite readings: "the leg did not run", never a red.
+  assert.equal(exposureSweepRisesWithExposure(null), null);
+  assert.equal(exposureSweepRisesWithExposure([]), null);
+  assert.equal(exposureSweepRisesWithExposure([0.6]), null);
+  assert.equal(exposureSweepRisesWithExposure([0.6, null, undefined]), null);
+  // A single non-finite entry among finite ones is skipped, not fatal.
+  assert.equal(exposureSweepRisesWithExposure([0.6, null, 0.66, 0.8]), true);
+});
+
+/** A synthetic `--exposure-sweep` leg with a strictly rising contrast ratio. */
+function risingExposureSweepLeg() {
+  const onShadowBySweepIndex = [0.3, 0.33, 0.36, 0.4];
+  return REINHARD_RESIDUE_EXPOSURE_SWEEP.map((exposure, i) => ({
+    exposure,
+    L: exposure,
+    cloudExposureReadBack: exposure,
+    shadow: {
+      offNoShadow: 1,
+      offShadow: 0.5,
+      onNoShadow: 1,
+      onShadow: onShadowBySweepIndex[i],
+    },
+  }));
+}
+
+test("M12 the exposure-sweep leg is wired into the verdict, reported-only, and absent means null", () => {
+  // Absent leg (every OTHER test in this file): null throughout, never a red.
+  const noSweepVerdict = judgeEclipseCloudResponse(passingRun());
+  assert.equal(noSweepVerdict.exposureSweepValues, null);
+  assert.equal(noSweepVerdict.exposureSweepMeasured, null);
+  assert.equal(noSweepVerdict.exposureSweepPredicted, null);
+  assert.equal(noSweepVerdict.exposureSweepRisesWithExposure, null);
+  assert.equal(noSweepVerdict.PASS, true);
+
+  // Present and rising: the leg's own arithmetic reaches the verdict.
+  const run = clone(passingRun());
+  const deepest = run.cloudLanes.rungs.at(-1);
+  deepest.exposureSweep = risingExposureSweepLeg();
+  const verdict = judgeEclipseCloudResponse(run);
+  assert.deepEqual(verdict.exposureSweepValues, [
+    ...REINHARD_RESIDUE_EXPOSURE_SWEEP,
+  ]);
+  assert.deepEqual(
+    verdict.exposureSweepMeasured.map((v) => Number(v.toFixed(6))),
+    [0.6, 0.66, 0.72, 0.8],
+  );
+  // Predicted a(F) is `reinhardResidueDim` at this run's own factor, strictly
+  // increasing (M9 already pins the general shape; this pins the wiring).
+  const factor = predictFactor(deepest.scheduledObscuration);
+  const expectedPredicted = REINHARD_RESIDUE_EXPOSURE_SWEEP.map((L) =>
+    reinhardResidueDim(factor, L),
+  );
+  assert.deepEqual(verdict.exposureSweepPredicted, expectedPredicted);
+  assert.equal(verdict.exposureSweepRisesWithExposure, true);
+
+  // Reported-only: present in the declared list, absent from both predicate
+  // lists that can move PASS or the parity verdict — and a red reading here
+  // must not flip PASS, the same doctrine M8 pins for the fog instance.
+  assert.ok(
+    ECLIPSE_CLOUD_REPORTED_ONLY_PREDICATES.includes(
+      "exposureSweepRisesWithExposure",
+    ),
+  );
+  assert.ok(
+    !ECLIPSE_CLOUD_GATE_PREDICATES.includes("exposureSweepRisesWithExposure"),
+  );
+  assert.ok(
+    !ECLIPSE_CLOUD_PARITY_PREDICATES.includes("exposureSweepRisesWithExposure"),
+  );
+  assert.equal(verdict.PASS, true);
+
+  // A REFUTING (falling) sweep still must not flip PASS — reported-only means
+  // reported-only, not "gates when it fails and not otherwise".
+  const refutingRun = clone(passingRun());
+  const refutingDeepest = refutingRun.cloudLanes.rungs.at(-1);
+  const falling = risingExposureSweepLeg().reverse();
+  refutingDeepest.exposureSweep = falling;
+  const refutingVerdict = judgeEclipseCloudResponse(refutingRun);
+  assert.equal(refutingVerdict.exposureSweepRisesWithExposure, false);
+  assert.equal(refutingVerdict.PASS, true);
+});
+
+test("M13 MUTANT a leg that reads the wrong shadow term goes red", async () => {
+  const gateSource = fs.readFileSync(
+    path.join(here, "lib", "eclipse-cloud-response-gate.mjs"),
+    "utf8",
+  );
+  const healthyTerm = "contrastRatioAt({ shadow: entry?.shadow })";
+  assert.equal(
+    gateSource.split(healthyTerm).length - 1,
+    1,
+    "the leg must read exactly one field, once",
+  );
+  // The mutant: read the RUNG'S OWN shadow measurement instead of each sweep
+  // entry's — the wrong term, and one real instruments have actually gotten
+  // wrong before (CO-19's aerial leak was exactly this shape: reading state
+  // that outlived the leg it belonged to). Every entry then collapses to the
+  // SAME number regardless of exposure, which is precisely what this leg
+  // exists to catch.
+  const mutantSource = gateSource.replace(
+    healthyTerm,
+    "contrastRatioAt({ shadow: deepest?.shadow })",
+  );
+  assert.notEqual(mutantSource, gateSource);
+  const mutant = await import(
+    `data:text/javascript;base64,${Buffer.from(mutantSource).toString("base64")}`
+  );
+
+  const run = clone(passingRun());
+  const deepest = run.cloudLanes.rungs.at(-1);
+  deepest.exposureSweep = risingExposureSweepLeg();
+
+  const healthy = judgeEclipseCloudResponse(run).exposureSweepMeasured;
+  const mutated = mutant.judgeEclipseCloudResponse(run).exposureSweepMeasured;
+
+  assert.deepEqual(
+    healthy.map((v) => Number(v.toFixed(6))),
+    [0.6, 0.66, 0.72, 0.8],
+    "sanity: the healthy reading must still be the rising sequence",
+  );
+  // The mutant reads the SAME (deepest rung's own) number for every entry, so
+  // it collapses to a single repeated value and can no longer rise with
+  // exposure at all — a reader comparing the two arrays catches it instantly.
+  assert.equal(
+    new Set(mutated.map((v) => Number(v.toFixed(9)))).size,
+    1,
+    `the mutant must collapse to one repeated value; got ${JSON.stringify(mutated)}`,
+  );
+  assert.notDeepEqual(mutated, healthy);
+});
+
+test("M14 the P11 exposure pin exists in weather-probe-pinning.mjs, in source", () => {
+  // Same doctrine as M10: `pinScene` needs a live `scene`, so its branches are
+  // pinned by source-text assertion rather than a node-level unit test — the
+  // same shape every other `opts.*` branch in this module already has.
+  const pinning = fs.readFileSync(
+    path.join(here, "lib", "weather-probe-pinning.mjs"),
+    "utf8",
+  );
+  assert.match(
+    pinning,
+    /if \(Number\.isFinite\(opts\.exposure\)\) \{\s*\r?\n\s*const volumetric = scene\.globe\.defaultCloudCollection\?\.volumetric;\s*\r?\n\s*if \(volumetric\) \{\s*\r?\n\s*volumetric\.cloudExposure = opts\.exposure;/,
+  );
+  // And it must be READ BACK, same as every other pin in this module — an
+  // opt-in that cannot be verified is exactly the vacuity this file exists to
+  // close (see its own module docstring, "WHAT A PIN MEANS HERE").
+  assert.match(
+    pinning,
+    /cloudExposure:\s*\r?\n\s*scene\.globe\.defaultCloudCollection\?\.volumetric\?\.cloudExposure \?\? null,/,
+  );
 });

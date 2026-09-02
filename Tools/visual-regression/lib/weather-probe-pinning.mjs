@@ -79,6 +79,13 @@
  *                      only where the probe's metric is a brightness count; a
  *                      probe that deliberately measures against a lit sky
  *                      (`probe-weather-ingest.mjs`) keeps its sky.
+ *   P11 CLOUD EXPOSURE Optional, caller-selected: `opts.exposure`, a finite
+ *                      number, sets `defaultCloudCollection.volumetric
+ *                      .cloudExposure` (`cloud.exposure` in
+ *                      `ProceduralClouds.wgsl`) and is read back in the
+ *                      returned report. It does not restore any prior value —
+ *                      a caller driving a sweep across several `pinScene`
+ *                      calls owns re-pinning its own default afterward.
  *
  * WHAT PINNING DOES TO THE NUMBERS. P1 (imagery gone), P3 (wind stopped), P4
  * (LIVE noise, full-res, no temporal) and P6 (uniform illumination) all move the
@@ -578,6 +585,18 @@ export function installWeatherPinHarness(makeFusedSnapshotCapture) {
         scene.backgroundColor = C.Color.BLACK;
       }
 
+      // ── P11, opt-in per probe. `cloud.exposure` multiplies the cloud's
+      // pre-tonemap radiance before ProceduralClouds' own private Reinhard
+      // curve runs (`ProceduralClouds.wgsl:2643-2644`), so it is the
+      // controllable half of that curve's operating point. Read back below,
+      // same as every other pin here.
+      if (Number.isFinite(opts.exposure)) {
+        const volumetric = scene.globe.defaultCloudCollection?.volumetric;
+        if (volumetric) {
+          volumetric.cloudExposure = opts.exposure;
+        }
+      }
+
       return {
         rendererType: String(scene.context?.rendererType ?? "").toLowerCase(),
         isWebGPU: scene.context?.isWebGPU === true,
@@ -592,6 +611,8 @@ export function installWeatherPinHarness(makeFusedSnapshotCapture) {
         terrainForced,
         showGroundAtmosphere: scene.globe.showGroundAtmosphere,
         enableLighting: scene.globe.enableLighting,
+        cloudExposure:
+          scene.globe.defaultCloudCollection?.volumetric?.cloudExposure ?? null,
         canvas: { width: scene.canvas.width, height: scene.canvas.height },
       };
     },

@@ -450,6 +450,40 @@ export const CLOUD_SHADOW_BEER_FLOOR = 0.35;
 // The fog function is KEPT, and not because it was written: `scene.fog` is on by
 // default in ordinary scenes, so the fog instance of this law is live everywhere
 // EXCEPT here, and any future lane that does not pin fog off inherits it.
+//
+// ── PRE-REGISTRATION, `--exposure-sweep` LEG (R-2026-09-02-5) ───────────────
+//
+// `probe-eclipse-cloud-response.mjs --exposure-sweep` re-runs lane B's own
+// ground-shadow ABBA at the deepest rung once per value of
+// `REINHARD_RESIDUE_EXPOSURE_SWEEP`, pinning `cloud.exposure` to that value via
+// `weather-probe-pinning.mjs`'s P11 (`pin.pinScene(C, { exposure })`) with
+// nothing else changed, and publishes the resulting `shadowContrastRatioAtDeepest`
+// per value as `exposureSweepMeasured` (`exposureSweepRisesWithExposure` below).
+// The published `exposure` field IS the leg's `L` — this fixture does not
+// separately recover `weightedColor` (`ProceduralClouds.wgsl:2643`'s other
+// factor), the same way `REINHARD_RESIDUE_EXPOSURE_SWEEP` was already being fed
+// to `reinhardResidueDim` as `exposedLuma` directly, below. That is a
+// SIMPLIFICATION, stated plainly: it is sufficient for the direction-and-
+// magnitude test this leg runs, not for recovering an absolute `L`.
+//
+// At the banked deepest rung's factor (`predictFactor(0.9)` = 0.4642284967528173)
+// `reinhardResidueDim` gives the PRE-REGISTERED `a(F)` this leg's four points
+// must rise through, in sweep order:
+//
+//   L = 0.5  ->  a(F) = 0.5651608574828318
+//   L = 1.0  ->  a(F) = 0.6340929681157348
+//   L = 2.0  ->  a(F) = 0.7221760687163505
+//   L = 4.0  ->  a(F) = 0.8124649514535527
+//
+// (`node -e` against this module at the tip that added this block; M9 already
+// pins that this sequence is strictly increasing for any finite factor.) The
+// PREDICTION is that `exposureSweepMeasured` rises through the sweep the same
+// way, inside the noise floor `exposureSweepRisesWithExposure` allows
+// (`BAND_MEAN_CAPTURE_DELTA`) — not that it hits these four numbers exactly,
+// because `shadowContrastRatioAtDeepest` is a full-band composite ratio and the
+// two-term model's own share `r` is not separable from `a` off one rung (see
+// "WHAT THIS DOES NOT DO" above). A flat or falling `exposureSweepMeasured`
+// REFUTES the cloud-composite locus.
 
 /** Exposed cloud radiances {@link reinhardResidueDim} is characterised over. */
 export const REINHARD_RESIDUE_EXPOSURE_SWEEP = Object.freeze([
@@ -479,6 +513,66 @@ export function reinhardResidueDim(factor, exposedLuma) {
     return null;
   }
   return reinhard(factor * exposedLuma) / clear;
+}
+
+/**
+ * Whether a measured `--exposure-sweep` leg — one `shadowContrastRatioAtDeepest`
+ * reading per value of {@link REINHARD_RESIDUE_EXPOSURE_SWEEP}, in sweep order —
+ * rises the way {@link reinhardResidueDim} prescribes. This is the CORRECTED
+ * DECIDING MEASUREMENT from the SIXTH PASS block: a flat or falling sequence
+ * REFUTES the cloud-composite locus (`migration_doc/QUEUE_2026-07-19_CAMPAIGN12.md`:
+ * "A reading that does not move with exposure refutes the cloud-composite
+ * locus; a reading that moves the other way refutes the curve"). It is a
+ * DIRECTION-AND-MAGNITUDE test, not a value match: no intermediate step may
+ * fall by more than `tolerance` (direction), AND the last finite reading must
+ * exceed the first finite reading by more than `tolerance` (magnitude) — a
+ * sweep that never falls but also never nets a real rise (dead flat, or a net
+ * movement too small to distinguish from capture noise) is a flat sequence,
+ * which REFUTES exactly as a falling one does. It never checks the exact
+ * `a(F)` magnitude, because `shadowContrastRatioAtDeepest` is a full-band
+ * composite ratio the two-term model cannot invert to an exact prediction
+ * from one rung (see "WHAT THIS DOES NOT DO" above `reinhardResidueDim`).
+ *
+ * @param {Array<number|null|undefined>} measured One ratio per sweep entry, in
+ *   the same order as {@link REINHARD_RESIDUE_EXPOSURE_SWEEP}.
+ * @param {number} [tolerance] The capture noise floor a fall may not exceed,
+ *   and the floor the net first-to-last rise must clear.
+ *   Defaults to {@link BAND_MEAN_CAPTURE_DELTA}, the same floor the repeat
+ *   bracket is set inside.
+ * @returns {boolean|null} `null` when fewer than two readings are finite —
+ *   "the leg did not run (fully)", never a red.
+ */
+export function exposureSweepRisesWithExposure(
+  measured,
+  tolerance = BAND_MEAN_CAPTURE_DELTA,
+) {
+  if (!Array.isArray(measured)) {
+    return null;
+  }
+  const finite = measured.filter((value) => Number.isFinite(value));
+  if (finite.length < 2) {
+    return null;
+  }
+  for (let i = 1; i < measured.length; i += 1) {
+    const prev = measured[i - 1];
+    const next = measured[i];
+    if (!Number.isFinite(prev) || !Number.isFinite(next)) {
+      continue;
+    }
+    if (next < prev - tolerance) {
+      return false;
+    }
+  }
+  // Direction alone is not enough: a sequence with no per-step fall is not
+  // the same claim as a sequence that actually rose. A dead-flat sweep (or
+  // one whose first-to-last movement is smaller than the noise floor) passes
+  // every per-step check above yet reports no real rise — exactly the "does
+  // not move with exposure" case the deciding measurement calls a refutation,
+  // not a confirmation. Require the net movement across the finite readings,
+  // in sweep order, to clear the same tolerance the per-step check uses.
+  const first = finite[0];
+  const last = finite[finite.length - 1];
+  return last - first > tolerance;
 }
 
 /** The fog colour magnitudes {@link encodedResidueDim} is characterised over. */
@@ -1533,10 +1627,20 @@ export const ECLIPSE_CLOUD_REPORTED_ONLY_PREDICATES = Object.freeze([
   // whether the display-encoded fog term is an admissible locus for the
   // shadow-contrast excess at all. Reported-only because it scores a
   // HYPOTHESIS about the residue, not the run: a false reading refutes the
-  // encode locus and says nothing about whether the engine behaved. The
-  // measurement that decides the hypothesis is the pre-registered fog-off
-  // collapse leg described in the SIXTH PASS block, not this reading.
+  // encode locus and says nothing about whether the engine behaved. This is
+  // the FOG instance of the law, which lane B pins off (M10); the measurement
+  // that decides the LIVE instance for this fixture is
+  // `exposureSweepRisesWithExposure`, below.
   "shadowResidueEncodeHypothesisInRange",
+  // The CORRECTED deciding measurement (SIXTH PASS block, "THE CORRECTED
+  // DECIDING MEASUREMENT" paragraph) — this supersedes the fog-off leg
+  // proposed earlier in that same block, which cannot run on lane B because
+  // fog is already pinned off there (M10). Present only when the probe ran
+  // with `--exposure-sweep`; `null` otherwise, which every reader must treat
+  // as "the leg did not run", never as a red. Reported-only for the same
+  // reason `shadowResidueEncodeHypothesisInRange` is: a false reading refutes
+  // the cloud-composite locus, not the engine.
+  "exposureSweepRisesWithExposure",
 ]);
 
 /**
@@ -4079,6 +4183,34 @@ export function judgeEclipseCloudResponse(run) {
     Number.isFinite(v.shadowResidueShareCeiling) &&
     v.shadowResidueShareAtEncodeDim.lo > 0 &&
     v.shadowResidueShareAtEncodeDim.hi <= v.shadowResidueShareCeiling;
+
+  // ── `--exposure-sweep` LEG (CO-22) — reported, not gated ───────────────────
+  // Present on `deepest` only when the probe ran with `--exposure-sweep`; see
+  // the pre-registration block above `REINHARD_RESIDUE_EXPOSURE_SWEEP` for the
+  // four predicted `a(F)` values and why the check below is direction-only.
+  const exposureSweepLeg = Array.isArray(deepest?.exposureSweep)
+    ? deepest.exposureSweep
+    : null;
+  v.exposureSweepValues = exposureSweepLeg
+    ? exposureSweepLeg.map((entry) => entry?.exposure ?? null)
+    : null;
+  v.exposureSweepMeasured = exposureSweepLeg
+    ? exposureSweepLeg.map((entry) =>
+        contrastRatioAt({ shadow: entry?.shadow }),
+      )
+    : null;
+  v.exposureSweepPredicted = exposureSweepLeg
+    ? exposureSweepLeg.map((entry) =>
+        reinhardResidueDim(deepestShadowDims?.factor ?? null, entry?.L ?? null),
+      )
+    : null;
+  // Reported-only: a false reading here refutes the cloud-composite locus,
+  // never the run. `null` (fewer than two finite readings) means the leg did
+  // not run, not a red — see `ECLIPSE_CLOUD_REPORTED_ONLY_PREDICATES`.
+  v.exposureSweepRisesWithExposure = exposureSweepLeg
+    ? exposureSweepRisesWithExposure(v.exposureSweepMeasured)
+    : null;
+
   // Agreement within the determinism bracket, which is the tightest difference
   // this instrument can resolve at all. FALSE on the fourth run's numbers by
   // design — see the reported-only list for why it does not gate.
