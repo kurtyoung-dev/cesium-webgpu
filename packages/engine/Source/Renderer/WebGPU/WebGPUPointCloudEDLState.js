@@ -228,7 +228,8 @@ function shouldReleaseWebGPUPointCloudEDLTargets(cache, frameNumber) {
  *
  * @template T
  * @param {() => T} attempt
- * @param {{report: (error: unknown) => void, restore: (error: unknown) => void}} handlers
+ * @param {Object} handlers Callbacks: `report(error)` records the failure and
+ *   `restore(error)` re-enables the original point draw.
  * @returns {T | false}
  */
 function withWebGPUPointCloudEDLFailOpen(attempt, handlers) {

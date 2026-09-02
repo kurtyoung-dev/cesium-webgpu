@@ -160,7 +160,18 @@ export async function buildSandcastle() {
   // Q-127: Sandcastle2's Monaco type hints fetch Source/Cesium.d.ts, which
   // plain `gulp build` never produces (see scripts/ensureCesiumTypeDefinitions.js
   // for the full trace). Generate it here, once, only when the tree lacks it.
-  await ensureCesiumTypeDefinitions({ generate: createTypeScriptDefinitions });
+  // The type definitions only feed Monaco's hints; a JSDoc defect in the engine
+  // must not take the whole app build down with it, so a generation failure is
+  // reported permanently and the build continues without the hints.
+  try {
+    await ensureCesiumTypeDefinitions({
+      generate: createTypeScriptDefinitions,
+    });
+  } catch (error) {
+    console.error(
+      `[buildSandcastle] Source/Cesium.d.ts could not be generated; Sandcastle2 type hints will be unavailable until the JSDoc defect is fixed: ${error?.message ?? error}`,
+    );
+  }
 
   return buildSandcastleApp({
     outputToBuildDir: isProduction,

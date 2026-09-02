@@ -224,7 +224,7 @@ function cloneSimulationEpoch(epoch) {
  * rate. Adoption clones once; every later frame is a subtraction and allocates
  * nothing.
  *
- * @param {{_simulationEpoch?: object}} primitive The surface, or anything
+ * @param {Object} primitive The surface (carrying an optional `_simulationEpoch`), or anything
  *   carrying its epoch field: the law reads and writes nothing else. The field
  *   holds a {@link JulianDate}, typed structurally so the WebGPU renderer's own
  *   view of the surface satisfies it without importing the class, and marked
