@@ -36,3 +36,25 @@ Tools/visual-regression/fixtures/nasa-svs-5073/manifest.json text eol=lf
 Tools/visual-regression/fixtures/nasa-svs-5073/NOTICE.md text eol=lf
 Tools/visual-regression/fixtures/nasa-svs-5073/*.mjs text eol=lf
 migration_doc/pending/*.diff -text
+
+# --- Shared probe runtime -------------------------------------------------------
+# Same mechanism as the fixture block above, different consequence. `* text=auto`
+# plus `core.autocrlf=true` means an ordinary text file is stored LF and checked
+# out CRLF, and two things in this set cannot survive that:
+#   * the banked pre-runtime receipt is compared byte-for-byte against the
+#     runtime's own `normalizeJson` output, which is LF by definition -- a CRLF
+#     checkout fails the provenance sentinel that keeps the fixture from being
+#     regenerated out of the file under test;
+#   * the spec's inertness mutants anchor on literal source text spanning a
+#     newline, so a CRLF checkout matches the anchor zero times and trips the
+#     occurs-exactly-once guard.
+# Verified: an out-of-tree copy of these files rewritten to CRLF goes 47/47 ->
+# 43/47 on `node --test probe-runtime.spec.mjs`. The spec was ALSO made
+# EOL-tolerant (it normalizes what it reads), so this block is the fix and that
+# is its belt -- neither alone should be relied on.
+Tools/visual-regression/fixtures/probe-runtime/*.json text eol=lf
+Tools/visual-regression/lib/probe-runtime.mjs text eol=lf
+Tools/visual-regression/lib/probe-edge-slot.mjs text eol=lf
+Tools/visual-regression/lib/probe-refusal.mjs text eol=lf
+Tools/visual-regression/probe-runtime.spec.mjs text eol=lf
+Tools/visual-regression/probe-globe-cold-start-readiness.mjs text eol=lf

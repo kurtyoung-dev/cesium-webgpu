@@ -212,11 +212,11 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 
 | Metric | Value |
 |---|---|
-| Files in census | 1178 |
-| ACTIVE | 957 |
+| Files in census | 1182 |
+| ACTIVE | 960 |
 | INVESTIGATION | 195 |
-| NO @purpose HEADER | 26 |
-| Classes | probe 659, spec 285, other 105, lib 86, gate-lib 20, bake-tool 13, runner 6, fixture 4 |
+| NO @purpose HEADER | 27 |
+| Classes | probe 659, spec 286, other 105, lib 89, gate-lib 20, bake-tool 13, runner 6, fixture 4 |
 
 ### Tools/ (47)
 
@@ -367,7 +367,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | stbn-rng.mjs | bake-tool | ACTIVE | 2026-08-16 | 3 | Deterministic license-clean random stream for the STBN bake: AES-256-CTR over zeros keyed by SHA-256(seed), byte-identical across machines. |
 | stbn-spectrum.mjs | bake-tool | ACTIVE | 2026-08-16 | 5 | Fourier certification of an STBN volume (radial spatial spectrum, per-pixel temporal spectrum, cross-correlation) with mutants proving each bar fires. |
 
-### Tools/visual-regression/ (960)
+### Tools/visual-regression/ (961)
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
@@ -587,7 +587,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | probe-2dcv-verify.mjs | probe | INVESTIGATION | 2026-08-16 | 5 | BUG-3 visual verification: instant-morphs to 2D and CV on both backends, screenshots plus pixel stats behind the WebGPU error gate. |
 | probe-adapter-limits-quick.mjs | probe | ACTIVE | 2026-08-16 | 1 | Fast dump of four key GPUAdapter limits (vertex buffers/attributes, bind groups, max buffer size) from the viewer page in one default Edge config. |
 | probe-adapter-limits.mjs | probe | ACTIVE | 2026-08-16 | 2 | Dumps WebGPU adapter limits across multiple Chromium launch configs (DXGI vs explicit Vulkan vs high-performance) to find the best-limit path. |
-| probe-aec-perf.mjs | probe | ACTIVE | 2026-09-02 | 6 | AEC design-model performance probe: one page load per streaming lever, timed to Scene.renderReady, per-pass command counts, one validated pick reused on both backends, served-build preflight and origin-guard refusals, element screenshots, multi-metric receipts. |
+| probe-aec-perf.mjs | probe | ACTIVE | 2026-09-02 | 7 | AEC design-model performance probe: one page load per streaming lever, timed to Scene.renderReady, per-pass command counts, one validated pick reused on both backends, served-build preflight and origin-guard refusals, element screenshots, multi-metric receipts. |
 | probe-aec-perf.spec.mjs | spec | NO @purpose HEADER | 2026-09-02 | 2 | — |
 | probe-aec-residency-e1.mjs | probe | ACTIVE | 2026-09-02 | 1 | E-1 corrected AEC residency measurement: profiles the WebGPU settle window of the demo's own clipped eight-tileset scene with a CPU sampling profile, a wall-clock-cadence pipelineCache created/pending poll, an allocation-site heap profile and an optional streamed heap snapshot, then reports equal-content frame cost and commandList length on one shared validated pick position under a deadline, or refuses the comparison when a backend never became ready. |
 | probe-aerial-froxel.mjs | probe | ACTIVE | 2026-08-16 | 5 | Acceptance for the froxel 3D-LUT aerial-perspective fast path: renders, far-band haze signature, distinct from OFF, analytic parity path intact. |
@@ -898,7 +898,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | probe-globe-bindgroup-cache.mjs | probe | ACTIVE | 2026-08-16 | 7 | Gates the globe per-tile bind-group cache: creations settle to ~0, spike+resettle on pan, globe visibly renders, zero validation errors |
 | probe-globe-bundle-cost.mjs | probe | INVESTIGATION | 2026-08-16 | 5 | TEMP A/B measurement of the inline globe render-bundle's per-frame CPU cost — the decision input for the cache-vs-drop call |
 | probe-globe-clippoly-geodetic.mjs | probe | ACTIVE | 2026-08-16 | 4 | Globe clipping-polygon parity: the polygon hole must exist on both backends and the clip boundary must align (geodetic SDF convention fix) |
-| probe-globe-cold-start-readiness.mjs | probe | ACTIVE | 2026-08-29 | 3 | Measures whether a settle gated on the new readiness predicate ends with a drawn frame, and what the globe's first non-empty command list costs on each backend. |
+| probe-globe-cold-start-readiness.mjs | probe | ACTIVE | 2026-08-29 | 4 | Measures whether a settle gated on the new readiness predicate ends with a drawn frame, and what the globe's first non-empty command list costs on each backend. |
 | probe-globe-default-limits.mjs | probe | ACTIVE | 2026-08-16 | 7 | Gates globe rendering on a device pinned to WebGPU default limits (16 sampled textures): reduced 4-slot imagery layout + multi-pass blend path |
 | probe-globe-effects-handle-toggle.mjs | probe | ACTIVE | 2026-08-16 | 4 | Oracle for the per-frame globe-effects bind-group memo: clipping ON-OFF-ON must carve, restore, and re-carve terrain with zero stale-handle errors |
 | probe-globe-farzoom.mjs | probe | INVESTIGATION | 2026-08-16 | 2 | Diagnostic re-bucketing of the far-zoom 'GPU brighter' interior blobs with ground atmosphere toggled, attributing drape vs imagery mip/LOD-bias |
@@ -1108,6 +1108,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | probe-request-render-asymmetry.mjs | probe | INVESTIGATION | 2026-08-25 | 4 | Hypothesis probe: does WebGPU's pendingForegroundCount fail to drain under requestRenderMode (fake FPS deficit); plus honest rrm=false lane |
 | probe-resident-instance-prev-mirror.mjs | probe | ACTIVE | 2026-08-16 | 3 | Contract gate: WebGPUResidentInstanceBuffer.sync() prev-mirror semantics (rebuild copy, slot-aligned old-value write, flush, settled zero) |
 | probe-river-water-intensity.mjs | probe | ACTIVE | 2026-08-16 | 3 | Acceptance/regression: inland river/lake water luminance on WebGPU within ~10% of WebGL via a water-selective blue-pixel metric, day view |
+| probe-runtime.spec.mjs | spec | NO @purpose HEADER | — | 1 | — |
 | probe-sampled-position-kernel.mjs | probe | ACTIVE | 2026-08-16 | 5 | Gate: SampledPositionKernel interpolates GPU-resident keyframed positions on BOTH backends, matching pure-JS and SampledPositionProperty refs |
 | probe-sampleheight-webgpu.mjs | probe | ACTIVE | 2026-08-16 | 7 | Asserts sampleHeight/clampToHeight work on WebGPU via main-scene-depth reuse (cold-cache converges) with WebGL behavior unchanged. |
 | probe-sandcastle-bulk-legacy.mjs | probe | ACTIVE | 2026-08-16 | 2 | Gates DataSourceDisplay bulk vs legacy visualizer callbacks: lane classification correct and bulk << legacy per-frame cost, on the real build. |
@@ -1367,7 +1368,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | derive-umbra-lo-shard.mjs | fixture | ACTIVE | 2026-08-16 | 2 | Deterministically crops four hash-verified umbra_lo records from NASA SVS 5073 into the pinned C12-29 S5 eclipse-footprint fixture shard. |
 | nasa-svs-5073-shapefile.mjs | fixture | ACTIVE | 2026-08-16 | 5 | Dependency-free ESRI Shapefile Polygon + dBASE reader for the SVS 5073 umbra fixture, parseable by node --test and same-origin browser probes alike. |
 
-### Tools/visual-regression/lib/ (97)
+### Tools/visual-regression/lib/ (100)
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
@@ -1437,8 +1438,11 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | performance-workload-manifest.mjs | lib | ACTIVE | 2026-08-16 | 4 | AJV draft-07 validation of the performance workload manifest against the checked-in schema, shared so contract and runner accept one shape. |
 | performance-workload-selection.mjs | lib | ACTIVE | 2026-08-16 | 4 | Selects runnable workloads per requested renderers; strict mode fails rather than silently dropping an explicitly requested renderer. |
 | pnglite.mjs | lib | NO @purpose HEADER | 2026-09-02 | 1 | — |
+| probe-edge-slot.mjs | lib | ACTIVE | — | 2 | Exclusive-create lock file that enforces "one Edge job at a time", with stale/dead-holder reclamation and a release that will not free a slot someone else already took. |
 | probe-fleet-contract-allowlist.mjs | lib | ACTIVE | 2026-08-21 | 11 | Pinned shrink-only census of pre-contract probes exempt from the fleet authoring contract; the spec fails on any NEW violation or stale row. |
 | probe-fleet-contract.mjs | lib | ACTIVE | 2026-08-16 | 12 | Source-text analyzer enforcing the probe authoring contract (watchdog + finally-close); fails closed when it cannot parse a construct. |
+| probe-refusal.mjs | lib | ACTIVE | — | 2 | Frozen OK/FAILURE/ERROR/REFUSAL exit codes plus the ProbeRefusal error and the accepted/refused decision shape every probe-runtime guard returns. |
+| probe-runtime.mjs | lib | ACTIVE | — | 3 | Owns probe argv parsing, the single-Edge-slot lock, Edge launch per run, the served-build preflight, the Sandcastle2 origin rewrite and its refusal, renderReady gating, element-only capture, sha256, receipt assembly and the exit-code table, so a probe is a short script that declares cells. |
 | prohibited-reader-allowlist.mjs | lib | ACTIVE | 2026-08-21 | 2 | Pin the measured visual-regression sources that still use the prohibited live-canvas reader. |
 | prohibited-reader-rule.mjs | lib | ACTIVE | 2026-08-20 | 4 | Detect drawImage calls that copy a live scene canvas into a scratch context. |
 | provenance-markers.mjs | lib | ACTIVE | 2026-08-16 | 10 | Enforces bundler/formatter-proof provenance-marker strings for probes; encodes six recorded marker failure modes as shared validators. |
@@ -1446,10 +1450,10 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | representative-performance-content.mjs | lib | ACTIVE | 2026-08-16 | 10 | Builds and validates the local procedural terrain+models+tiles representative scene configuration for offline performance workloads. |
 | representative-tileset-request-ledger.mjs | lib | ACTIVE | 2026-08-16 | 6 | Event-sourced ledger of tileset content requests (issue/terminal events, byte totals, hashes) with cross-run comparison for perf evidence. |
 | same-task-capture.mjs | lib | ACTIVE | 2026-08-16 | 49 | Canonical capture primitives that keep render+readback in one task (WebGL clears, WebGPU invalidates after present), plus embed-drift validators. |
-| sandcastle2-origin-rewrite.mjs | lib | ACTIVE | 2026-08-29 | 11 | Reusable Playwright helper for every opener of the built Sandcastle2 app: rewrites the build-time-baked outer/inner origin strings the app's own responses carry, and attaches a persistent per-navigation guard (main frame + bucket/run frame) that throws a named, distinguishable refusal the instant any navigation lands off the requested origin — checked synchronously at every guard call AND automatically at page close, so a caller that never awaits a navigation call is still refused. |
+| sandcastle2-origin-rewrite.mjs | lib | ACTIVE | 2026-08-29 | 12 | Reusable Playwright helper for every opener of the built Sandcastle2 app: rewrites the build-time-baked outer/inner origin strings the app's own responses carry, and attaches a persistent per-navigation guard (main frame + bucket/run frame) that throws a named, distinguishable refusal the instant any navigation lands off the requested origin — checked synchronously at every guard call AND automatically at page close, so a caller that never awaits a navigation call is still refused. |
 | sandcastle2-pinned-demos.mjs | lib | ACTIVE | 2026-08-29 | 1 | Derive, comment-aware, which gallery demos construct their Viewer/CesiumWidget with an explicit contextOptions.renderer, and classify HOW (Q-133). |
 | sandcastle2-renderer-gate.mjs | gate-lib | ACTIVE | 2026-08-29 | 10 | Pure helpers for the Sandcastle2 backend sweep: gallery id enumeration, URL construction, and the "the demo really ran the requested renderer" predicate. |
-| served-build-preflight.mjs | lib | ACTIVE | 2026-08-29 | 8 | Q-98 — fetch one or more served build artifacts and compare each to |
+| served-build-preflight.mjs | lib | ACTIVE | 2026-08-29 | 10 | Q-98 — fetch one or more served build artifacts and compare each to |
 | settle-attribution.mjs | lib | ACTIVE | 2026-08-16 | 6 | First-complete-frame metric plus the rule that stable-time credit requires a main-thread long-task reduction (GPU-bound settles book none). |
 | solar-bloom-glow.mjs | lib | ACTIVE | 2026-08-16 | 6 | Forward model of the sun bloom's additive glow-on-disc so differential disc measurements carry the non-cancelling bloom term correctly. |
 | star-contribution-census.mjs | lib | ACTIVE | 2026-08-29 | 3 | One home for the positional star-reachability control: luma planes, the absolute-frame census and the stars-on-minus-off difference census. |
@@ -1457,7 +1461,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | sun-disc-dawn-gate.mjs | gate-lib | ACTIVE | 2026-09-02 | 5 | Gate-predicate library for the sun-disc dawn sweep, scoring disc-centre vs disc-annulus luminance and chroma per backend with WebGL as the parity control. |
 | sun-radiance-delta.mjs | lib | ACTIVE | 2026-08-16 | 4 | Two-radiance sun-disc measurement model discriminating multiplicative gain vs additive pedestal via a parameter-free ratio statistic. |
 | tidal-harmonics-model.mjs | lib | ACTIVE | 2026-08-16 | 1 | Published NOAA/Schureman constituent speeds, Doodson fundamental rates and physics-free signal helpers anchoring the tidal-harmonics spec. |
-| verdict-exit-gate.mjs | gate-lib | ACTIVE | 2026-08-16 | 43 | Single frozen PASS/FAIL/ERROR/STRUCTURAL exit-code table shared by the S5 gate libraries; fixed a six-copy divergence where STRUCTURAL exited 2. |
+| verdict-exit-gate.mjs | gate-lib | ACTIVE | 2026-08-16 | 44 | Single frozen PASS/FAIL/ERROR/STRUCTURAL exit-code table shared by the S5 gate libraries; fixed a six-copy divergence where STRUCTURAL exited 2. |
 | visual-evidence-library.mjs | lib | ACTIVE | 2026-08-16 | 6 | Schema, hashing and integrity-claim machinery for the content-addressed visual-evidence publication/catalog/verification pipeline (v2). |
 | visual-gate-policy.mjs | lib | ACTIVE | 2026-08-16 | 12 | Manifest field requirements, stable stringify/sha256 and PASS/FAIL/NON_CERTIFYING policy shared by capture-and-diff and certification gates. |
 | voxel-megatexture-reupload-gate.mjs | gate-lib | ACTIVE | 2026-08-16 | 3 | Browser-free convergence predicate for the voxel megatexture probe: first-corner resident set must republish within bounded return attempts. |

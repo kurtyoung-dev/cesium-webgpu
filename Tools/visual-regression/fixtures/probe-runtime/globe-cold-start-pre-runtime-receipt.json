@@ -1,0 +1,1413 @@
+{
+  "generatedAt": "2026-09-02T00:00:00.000Z",
+  "harness": "http://localhost:8094/Tools/visual-regression/globe-cold-start-harness.html",
+  "runs": 1,
+  "cellOrder": [
+    "slab/webgl/legacy/run0",
+    "slab/webgl/readiness/run0",
+    "slab/webgpu/legacy/run0",
+    "slab/webgpu/readiness/run0",
+    "capepoint/webgl/legacy/run0",
+    "capepoint/webgl/readiness/run0",
+    "capepoint/webgpu/legacy/run0",
+    "capepoint/webgpu/readiness/run0"
+  ],
+  "verdicts": [
+    {
+      "id": "slab/webgl/run0",
+      "claim": "Q-101 — the first readiness-gated frame matches the settled scene",
+      "blackFraction": 0.62,
+      "settledBlackFraction": 0.615,
+      "blackDelta": 0.0050000000000000044,
+      "tolerance": 0.005,
+      "commandsDeferred": 0,
+      "pass": true
+    },
+    {
+      "id": "slab/webgpu/run0",
+      "claim": "Q-101 — the first readiness-gated frame matches the settled scene",
+      "blackFraction": 0.62,
+      "settledBlackFraction": 0.615,
+      "blackDelta": 0.0050000000000000044,
+      "tolerance": 0.005,
+      "commandsDeferred": 0,
+      "pass": true
+    },
+    {
+      "id": "capepoint/webgl/run0",
+      "claim": "Q-101 — the first readiness-gated frame matches the settled scene",
+      "blackFraction": 0.62,
+      "settledBlackFraction": 0.615,
+      "blackDelta": 0.0050000000000000044,
+      "tolerance": 0.005,
+      "commandsDeferred": 0,
+      "pass": true
+    },
+    {
+      "id": "capepoint/webgpu/run0",
+      "claim": "Q-101 — the first readiness-gated frame matches the settled scene",
+      "blackFraction": 0.73,
+      "settledBlackFraction": 0.615,
+      "blackDelta": 0.11499999999999999,
+      "tolerance": 0.005,
+      "commandsDeferred": 3,
+      "pass": false
+    }
+  ],
+  "firstNonEmptyByCell": {
+    "slab/webgl/legacy/run0": {
+      "settleFrames": 21,
+      "wallMs": 301,
+      "pipelinesCreated": 1,
+      "pipelineCacheMisses": 3,
+      "pipelineCacheHits": 3,
+      "renderPipelinesResolved": 1,
+      "renderPipelineMeanMs": 1.5,
+      "shaderModulesResolved": 2,
+      "textureUploadsResolved": 2,
+      "usedJSHeapBytes": 100001000
+    },
+    "slab/webgl/readiness/run0": {
+      "settleFrames": 23,
+      "wallMs": 303,
+      "pipelinesCreated": 3,
+      "pipelineCacheMisses": 5,
+      "pipelineCacheHits": 9,
+      "renderPipelinesResolved": 3,
+      "renderPipelineMeanMs": 4.5,
+      "shaderModulesResolved": 4,
+      "textureUploadsResolved": 6,
+      "usedJSHeapBytes": 100003000
+    },
+    "slab/webgpu/legacy/run0": {
+      "settleFrames": 25,
+      "wallMs": 305,
+      "pipelinesCreated": 5,
+      "pipelineCacheMisses": 7,
+      "pipelineCacheHits": 15,
+      "renderPipelinesResolved": 5,
+      "renderPipelineMeanMs": 7.5,
+      "shaderModulesResolved": 6,
+      "textureUploadsResolved": 10,
+      "usedJSHeapBytes": 100005000
+    },
+    "slab/webgpu/readiness/run0": {
+      "settleFrames": 27,
+      "wallMs": 307,
+      "pipelinesCreated": 7,
+      "pipelineCacheMisses": 9,
+      "pipelineCacheHits": 21,
+      "renderPipelinesResolved": 7,
+      "renderPipelineMeanMs": 10.5,
+      "shaderModulesResolved": 8,
+      "textureUploadsResolved": 14,
+      "usedJSHeapBytes": 100007000
+    },
+    "capepoint/webgl/legacy/run0": {
+      "settleFrames": 29,
+      "wallMs": 309,
+      "pipelinesCreated": 9,
+      "pipelineCacheMisses": 11,
+      "pipelineCacheHits": 27,
+      "renderPipelinesResolved": 9,
+      "renderPipelineMeanMs": 13.5,
+      "shaderModulesResolved": 10,
+      "textureUploadsResolved": 18,
+      "usedJSHeapBytes": 100009000
+    },
+    "capepoint/webgl/readiness/run0": {
+      "settleFrames": 31,
+      "wallMs": 311,
+      "pipelinesCreated": 11,
+      "pipelineCacheMisses": 13,
+      "pipelineCacheHits": 33,
+      "renderPipelinesResolved": 11,
+      "renderPipelineMeanMs": 16.5,
+      "shaderModulesResolved": 12,
+      "textureUploadsResolved": 22,
+      "usedJSHeapBytes": 100011000
+    },
+    "capepoint/webgpu/legacy/run0": {
+      "settleFrames": 33,
+      "wallMs": 313,
+      "pipelinesCreated": 13,
+      "pipelineCacheMisses": 15,
+      "pipelineCacheHits": 39,
+      "renderPipelinesResolved": 13,
+      "renderPipelineMeanMs": 19.5,
+      "shaderModulesResolved": 14,
+      "textureUploadsResolved": 26,
+      "usedJSHeapBytes": 100013000
+    },
+    "capepoint/webgpu/readiness/run0": {
+      "settleFrames": 35,
+      "wallMs": 315,
+      "pipelinesCreated": 15,
+      "pipelineCacheMisses": 17,
+      "pipelineCacheHits": 45,
+      "renderPipelinesResolved": 15,
+      "renderPipelineMeanMs": 22.5,
+      "shaderModulesResolved": 16,
+      "textureUploadsResolved": 30,
+      "usedJSHeapBytes": 100015000
+    }
+  },
+  "cells": [
+    {
+      "renderer": "webgl",
+      "view": "slab",
+      "gate": "legacy",
+      "run": 0,
+      "built": {
+        "ok": true,
+        "rendererType": "webgl",
+        "isWebGPU": false,
+        "hasRenderReady": true,
+        "hasPendingResourceCount": true,
+        "terrainReady": true,
+        "canvasWidth": 1024,
+        "canvasHeight": 640
+      },
+      "rounds": [
+        {
+          "round": 0,
+          "gate": "legacy",
+          "frames": 61,
+          "firstNonEmpty": 21,
+          "commands": 121,
+          "wallMs": 901,
+          "tilesLoaded": true,
+          "renderReady": false,
+          "commandsDeferred": 0,
+          "peakCommandsDeferred": 0,
+          "wallMsAtFirstNonEmpty": 301,
+          "metricsAtFirstNonEmpty": {
+            "pipelineCache": {
+              "created": 1,
+              "misses": 3,
+              "hits": 3
+            },
+            "async": {
+              "renderPipelines": {
+                "resolvedCount": 1,
+                "meanMs": 1.5
+              },
+              "shaderModules": {
+                "resolvedCount": 2,
+                "meanMs": 0.5
+              },
+              "textureUploads": {
+                "resolvedCount": 2,
+                "meanMs": 0.25
+              },
+              "imageDecodes": {
+                "resolvedCount": 1,
+                "meanMs": 1
+              }
+            },
+            "usedJSHeapBytes": 100001000
+          },
+          "metrics": {
+            "pipelineCache": {
+              "created": 6,
+              "misses": 8,
+              "hits": 18
+            },
+            "async": {
+              "renderPipelines": {
+                "resolvedCount": 6,
+                "meanMs": 9
+              },
+              "shaderModules": {
+                "resolvedCount": 7,
+                "meanMs": 3
+              },
+              "textureUploads": {
+                "resolvedCount": 12,
+                "meanMs": 1.5
+              },
+              "imageDecodes": {
+                "resolvedCount": 6,
+                "meanMs": 1
+              }
+            },
+            "usedJSHeapBytes": 100006000
+          },
+          "black": {
+            "blackFraction": 0.62,
+            "sampledPixels": 218453
+          }
+        },
+        {
+          "round": 1,
+          "gate": "legacy",
+          "frames": 62,
+          "firstNonEmpty": 22,
+          "commands": 122,
+          "wallMs": 902,
+          "tilesLoaded": true,
+          "renderReady": false,
+          "commandsDeferred": 0,
+          "peakCommandsDeferred": 0,
+          "wallMsAtFirstNonEmpty": 302,
+          "metricsAtFirstNonEmpty": {
+            "pipelineCache": {
+              "created": 2,
+              "misses": 4,
+              "hits": 6
+            },
+            "async": {
+              "renderPipelines": {
+                "resolvedCount": 2,
+                "meanMs": 3
+              },
+              "shaderModules": {
+                "resolvedCount": 3,
+                "meanMs": 1
+              },
+              "textureUploads": {
+                "resolvedCount": 4,
+                "meanMs": 0.5
+              },
+              "imageDecodes": {
+                "resolvedCount": 2,
+                "meanMs": 1
+              }
+            },
+            "usedJSHeapBytes": 100002000
+          },
+          "metrics": {
+            "pipelineCache": {
+              "created": 7,
+              "misses": 9,
+              "hits": 21
+            },
+            "async": {
+              "renderPipelines": {
+                "resolvedCount": 7,
+                "meanMs": 10.5
+              },
+              "shaderModules": {
+                "resolvedCount": 8,
+                "meanMs": 3.5
+              },
+              "textureUploads": {
+                "resolvedCount": 14,
+                "meanMs": 1.75
+              },
+              "imageDecodes": {
+                "resolvedCount": 7,
+                "meanMs": 1
+              }
+            },
+            "usedJSHeapBytes": 100007000
+          },
+          "black": {
+            "blackFraction": 0.615,
+            "sampledPixels": 218453
+          }
+        }
+      ],
+      "pageErrors": []
+    },
+    {
+      "renderer": "webgl",
+      "view": "slab",
+      "gate": "readiness",
+      "run": 0,
+      "built": {
+        "ok": true,
+        "rendererType": "webgl",
+        "isWebGPU": false,
+        "hasRenderReady": true,
+        "hasPendingResourceCount": true,
+        "terrainReady": true,
+        "canvasWidth": 1024,
+        "canvasHeight": 640
+      },
+      "rounds": [
+        {
+          "round": 0,
+          "gate": "readiness",
+          "frames": 63,
+          "firstNonEmpty": 23,
+          "commands": 123,
+          "wallMs": 903,
+          "tilesLoaded": true,
+          "renderReady": true,
+          "commandsDeferred": 0,
+          "peakCommandsDeferred": 0,
+          "wallMsAtFirstNonEmpty": 303,
+          "metricsAtFirstNonEmpty": {
+            "pipelineCache": {
+              "created": 3,
+              "misses": 5,
+              "hits": 9
+            },
+            "async": {
+              "renderPipelines": {
+                "resolvedCount": 3,
+                "meanMs": 4.5
+              },
+              "shaderModules": {
+                "resolvedCount": 4,
+                "meanMs": 1.5
+              },
+              "textureUploads": {
+                "resolvedCount": 6,
+                "meanMs": 0.75
+              },
+              "imageDecodes": {
+                "resolvedCount": 3,
+                "meanMs": 1
+              }
+            },
+            "usedJSHeapBytes": 100003000
+          },
+          "metrics": {
+            "pipelineCache": {
+              "created": 8,
+              "misses": 10,
+              "hits": 24
+            },
+            "async": {
+              "renderPipelines": {
+                "resolvedCount": 8,
+                "meanMs": 12
+              },
+              "shaderModules": {
+                "resolvedCount": 9,
+                "meanMs": 4
+              },
+              "textureUploads": {
+                "resolvedCount": 16,
+                "meanMs": 2
+              },
+              "imageDecodes": {
+                "resolvedCount": 8,
+                "meanMs": 1
+              }
+            },
+            "usedJSHeapBytes": 100008000
+          },
+          "black": {
+            "blackFraction": 0.62,
+            "sampledPixels": 218453
+          }
+        },
+        {
+          "round": 1,
+          "gate": "readiness",
+          "frames": 64,
+          "firstNonEmpty": 24,
+          "commands": 124,
+          "wallMs": 904,
+          "tilesLoaded": true,
+          "renderReady": true,
+          "commandsDeferred": 0,
+          "peakCommandsDeferred": 0,
+          "wallMsAtFirstNonEmpty": 304,
+          "metricsAtFirstNonEmpty": {
+            "pipelineCache": {
+              "created": 4,
+              "misses": 6,
+              "hits": 12
+            },
+            "async": {
+              "renderPipelines": {
+                "resolvedCount": 4,
+                "meanMs": 6
+              },
+              "shaderModules": {
+                "resolvedCount": 5,
+                "meanMs": 2
+              },
+              "textureUploads": {
+                "resolvedCount": 8,
+                "meanMs": 1
+              },
+              "imageDecodes": {
+                "resolvedCount": 4,
+                "meanMs": 1
+              }
+            },
+            "usedJSHeapBytes": 100004000
+          },
+          "metrics": {
+            "pipelineCache": {
+              "created": 9,
+              "misses": 11,
+              "hits": 27
+            },
+            "async": {
+              "renderPipelines": {
+                "resolvedCount": 9,
+                "meanMs": 13.5
+              },
+              "shaderModules": {
+                "resolvedCount": 10,
+                "meanMs": 4.5
+              },
+              "textureUploads": {
+                "resolvedCount": 18,
+                "meanMs": 2.25
+              },
+              "imageDecodes": {
+                "resolvedCount": 9,
+                "meanMs": 1
+              }
+            },
+            "usedJSHeapBytes": 100009000
+          },
+          "black": {
+            "blackFraction": 0.615,
+            "sampledPixels": 218453
+          }
+        }
+      ],
+      "pageErrors": []
+    },
+    {
+      "renderer": "webgpu",
+      "view": "slab",
+      "gate": "legacy",
+      "run": 0,
+      "built": {
+        "ok": true,
+        "rendererType": "webgpu",
+        "isWebGPU": true,
+        "hasRenderReady": true,
+        "hasPendingResourceCount": true,
+        "terrainReady": true,
+        "canvasWidth": 1024,
+        "canvasHeight": 640
+      },
+      "rounds": [
+        {
+          "round": 0,
+          "gate": "legacy",
+          "frames": 65,
+          "firstNonEmpty": 25,
+          "commands": 125,
+          "wallMs": 905,
+          "tilesLoaded": true,
+          "renderReady": false,
+          "commandsDeferred": 0,
+          "peakCommandsDeferred": 0,
+          "wallMsAtFirstNonEmpty": 305,
+          "metricsAtFirstNonEmpty": {
+            "pipelineCache": {
+              "created": 5,
+              "misses": 7,
+              "hits": 15
+            },
+            "async": {
+              "renderPipelines": {
+                "resolvedCount": 5,
+                "meanMs": 7.5
+              },
+              "shaderModules": {
+                "resolvedCount": 6,
+                "meanMs": 2.5
+              },
+              "textureUploads": {
+                "resolvedCount": 10,
+                "meanMs": 1.25
+              },
+              "imageDecodes": {
+                "resolvedCount": 5,
+                "meanMs": 1
+              }
+            },
+            "usedJSHeapBytes": 100005000
+          },
+          "metrics": {
+            "pipelineCache": {
+              "created": 10,
+              "misses": 12,
+              "hits": 30
+            },
+            "async": {
+              "renderPipelines": {
+                "resolvedCount": 10,
+                "meanMs": 15
+              },
+              "shaderModules": {
+                "resolvedCount": 11,
+                "meanMs": 5
+              },
+              "textureUploads": {
+                "resolvedCount": 20,
+                "meanMs": 2.5
+              },
+              "imageDecodes": {
+                "resolvedCount": 10,
+                "meanMs": 1
+              }
+            },
+            "usedJSHeapBytes": 100010000
+          },
+          "black": {
+            "blackFraction": 0.62,
+            "sampledPixels": 218453
+          }
+        },
+        {
+          "round": 1,
+          "gate": "legacy",
+          "frames": 66,
+          "firstNonEmpty": 26,
+          "commands": 126,
+          "wallMs": 906,
+          "tilesLoaded": true,
+          "renderReady": false,
+          "commandsDeferred": 0,
+          "peakCommandsDeferred": 0,
+          "wallMsAtFirstNonEmpty": 306,
+          "metricsAtFirstNonEmpty": {
+            "pipelineCache": {
+              "created": 6,
+              "misses": 8,
+              "hits": 18
+            },
+            "async": {
+              "renderPipelines": {
+                "resolvedCount": 6,
+                "meanMs": 9
+              },
+              "shaderModules": {
+                "resolvedCount": 7,
+                "meanMs": 3
+              },
+              "textureUploads": {
+                "resolvedCount": 12,
+                "meanMs": 1.5
+              },
+              "imageDecodes": {
+                "resolvedCount": 6,
+                "meanMs": 1
+              }
+            },
+            "usedJSHeapBytes": 100006000
+          },
+          "metrics": {
+            "pipelineCache": {
+              "created": 11,
+              "misses": 13,
+              "hits": 33
+            },
+            "async": {
+              "renderPipelines": {
+                "resolvedCount": 11,
+                "meanMs": 16.5
+              },
+              "shaderModules": {
+                "resolvedCount": 12,
+                "meanMs": 5.5
+              },
+              "textureUploads": {
+                "resolvedCount": 22,
+                "meanMs": 2.75
+              },
+              "imageDecodes": {
+                "resolvedCount": 11,
+                "meanMs": 1
+              }
+            },
+            "usedJSHeapBytes": 100011000
+          },
+          "black": {
+            "blackFraction": 0.615,
+            "sampledPixels": 218453
+          }
+        }
+      ],
+      "pageErrors": []
+    },
+    {
+      "renderer": "webgpu",
+      "view": "slab",
+      "gate": "readiness",
+      "run": 0,
+      "built": {
+        "ok": true,
+        "rendererType": "webgpu",
+        "isWebGPU": true,
+        "hasRenderReady": true,
+        "hasPendingResourceCount": true,
+        "terrainReady": true,
+        "canvasWidth": 1024,
+        "canvasHeight": 640
+      },
+      "rounds": [
+        {
+          "round": 0,
+          "gate": "readiness",
+          "frames": 67,
+          "firstNonEmpty": 27,
+          "commands": 127,
+          "wallMs": 907,
+          "tilesLoaded": true,
+          "renderReady": true,
+          "commandsDeferred": 0,
+          "peakCommandsDeferred": 0,
+          "wallMsAtFirstNonEmpty": 307,
+          "metricsAtFirstNonEmpty": {
+            "pipelineCache": {
+              "created": 7,
+              "misses": 9,
+              "hits": 21
+            },
+            "async": {
+              "renderPipelines": {
+                "resolvedCount": 7,
+                "meanMs": 10.5
+              },
+              "shaderModules": {
+                "resolvedCount": 8,
+                "meanMs": 3.5
+              },
+              "textureUploads": {
+                "resolvedCount": 14,
+                "meanMs": 1.75
+              },
+              "imageDecodes": {
+                "resolvedCount": 7,
+                "meanMs": 1
+              }
+            },
+            "usedJSHeapBytes": 100007000
+          },
+          "metrics": {
+            "pipelineCache": {
+              "created": 12,
+              "misses": 14,
+              "hits": 36
+            },
+            "async": {
+              "renderPipelines": {
+                "resolvedCount": 12,
+                "meanMs": 18
+              },
+              "shaderModules": {
+                "resolvedCount": 13,
+                "meanMs": 6
+              },
+              "textureUploads": {
+                "resolvedCount": 24,
+                "meanMs": 3
+              },
+              "imageDecodes": {
+                "resolvedCount": 12,
+                "meanMs": 1
+              }
+            },
+            "usedJSHeapBytes": 100012000
+          },
+          "black": {
+            "blackFraction": 0.62,
+            "sampledPixels": 218453
+          }
+        },
+        {
+          "round": 1,
+          "gate": "readiness",
+          "frames": 68,
+          "firstNonEmpty": 28,
+          "commands": 128,
+          "wallMs": 908,
+          "tilesLoaded": true,
+          "renderReady": true,
+          "commandsDeferred": 0,
+          "peakCommandsDeferred": 0,
+          "wallMsAtFirstNonEmpty": 308,
+          "metricsAtFirstNonEmpty": {
+            "pipelineCache": {
+              "created": 8,
+              "misses": 10,
+              "hits": 24
+            },
+            "async": {
+              "renderPipelines": {
+                "resolvedCount": 8,
+                "meanMs": 12
+              },
+              "shaderModules": {
+                "resolvedCount": 9,
+                "meanMs": 4
+              },
+              "textureUploads": {
+                "resolvedCount": 16,
+                "meanMs": 2
+              },
+              "imageDecodes": {
+                "resolvedCount": 8,
+                "meanMs": 1
+              }
+            },
+            "usedJSHeapBytes": 100008000
+          },
+          "metrics": {
+            "pipelineCache": {
+              "created": 13,
+              "misses": 15,
+              "hits": 39
+            },
+            "async": {
+              "renderPipelines": {
+                "resolvedCount": 13,
+                "meanMs": 19.5
+              },
+              "shaderModules": {
+                "resolvedCount": 14,
+                "meanMs": 6.5
+              },
+              "textureUploads": {
+                "resolvedCount": 26,
+                "meanMs": 3.25
+              },
+              "imageDecodes": {
+                "resolvedCount": 13,
+                "meanMs": 1
+              }
+            },
+            "usedJSHeapBytes": 100013000
+          },
+          "black": {
+            "blackFraction": 0.615,
+            "sampledPixels": 218453
+          }
+        }
+      ],
+      "pageErrors": []
+    },
+    {
+      "renderer": "webgl",
+      "view": "capepoint",
+      "gate": "legacy",
+      "run": 0,
+      "built": {
+        "ok": true,
+        "rendererType": "webgl",
+        "isWebGPU": false,
+        "hasRenderReady": true,
+        "hasPendingResourceCount": true,
+        "terrainReady": true,
+        "canvasWidth": 1024,
+        "canvasHeight": 640
+      },
+      "rounds": [
+        {
+          "round": 0,
+          "gate": "legacy",
+          "frames": 69,
+          "firstNonEmpty": 29,
+          "commands": 129,
+          "wallMs": 909,
+          "tilesLoaded": true,
+          "renderReady": false,
+          "commandsDeferred": 0,
+          "peakCommandsDeferred": 0,
+          "wallMsAtFirstNonEmpty": 309,
+          "metricsAtFirstNonEmpty": {
+            "pipelineCache": {
+              "created": 9,
+              "misses": 11,
+              "hits": 27
+            },
+            "async": {
+              "renderPipelines": {
+                "resolvedCount": 9,
+                "meanMs": 13.5
+              },
+              "shaderModules": {
+                "resolvedCount": 10,
+                "meanMs": 4.5
+              },
+              "textureUploads": {
+                "resolvedCount": 18,
+                "meanMs": 2.25
+              },
+              "imageDecodes": {
+                "resolvedCount": 9,
+                "meanMs": 1
+              }
+            },
+            "usedJSHeapBytes": 100009000
+          },
+          "metrics": {
+            "pipelineCache": {
+              "created": 14,
+              "misses": 16,
+              "hits": 42
+            },
+            "async": {
+              "renderPipelines": {
+                "resolvedCount": 14,
+                "meanMs": 21
+              },
+              "shaderModules": {
+                "resolvedCount": 15,
+                "meanMs": 7
+              },
+              "textureUploads": {
+                "resolvedCount": 28,
+                "meanMs": 3.5
+              },
+              "imageDecodes": {
+                "resolvedCount": 14,
+                "meanMs": 1
+              }
+            },
+            "usedJSHeapBytes": 100014000
+          },
+          "black": {
+            "blackFraction": 0.62,
+            "sampledPixels": 218453
+          }
+        },
+        {
+          "round": 1,
+          "gate": "legacy",
+          "frames": 70,
+          "firstNonEmpty": 30,
+          "commands": 130,
+          "wallMs": 910,
+          "tilesLoaded": true,
+          "renderReady": false,
+          "commandsDeferred": 0,
+          "peakCommandsDeferred": 0,
+          "wallMsAtFirstNonEmpty": 310,
+          "metricsAtFirstNonEmpty": {
+            "pipelineCache": {
+              "created": 10,
+              "misses": 12,
+              "hits": 30
+            },
+            "async": {
+              "renderPipelines": {
+                "resolvedCount": 10,
+                "meanMs": 15
+              },
+              "shaderModules": {
+                "resolvedCount": 11,
+                "meanMs": 5
+              },
+              "textureUploads": {
+                "resolvedCount": 20,
+                "meanMs": 2.5
+              },
+              "imageDecodes": {
+                "resolvedCount": 10,
+                "meanMs": 1
+              }
+            },
+            "usedJSHeapBytes": 100010000
+          },
+          "metrics": {
+            "pipelineCache": {
+              "created": 15,
+              "misses": 17,
+              "hits": 45
+            },
+            "async": {
+              "renderPipelines": {
+                "resolvedCount": 15,
+                "meanMs": 22.5
+              },
+              "shaderModules": {
+                "resolvedCount": 16,
+                "meanMs": 7.5
+              },
+              "textureUploads": {
+                "resolvedCount": 30,
+                "meanMs": 3.75
+              },
+              "imageDecodes": {
+                "resolvedCount": 15,
+                "meanMs": 1
+              }
+            },
+            "usedJSHeapBytes": 100015000
+          },
+          "black": {
+            "blackFraction": 0.615,
+            "sampledPixels": 218453
+          }
+        }
+      ],
+      "pageErrors": []
+    },
+    {
+      "renderer": "webgl",
+      "view": "capepoint",
+      "gate": "readiness",
+      "run": 0,
+      "built": {
+        "ok": true,
+        "rendererType": "webgl",
+        "isWebGPU": false,
+        "hasRenderReady": true,
+        "hasPendingResourceCount": true,
+        "terrainReady": true,
+        "canvasWidth": 1024,
+        "canvasHeight": 640
+      },
+      "rounds": [
+        {
+          "round": 0,
+          "gate": "readiness",
+          "frames": 71,
+          "firstNonEmpty": 31,
+          "commands": 131,
+          "wallMs": 911,
+          "tilesLoaded": true,
+          "renderReady": true,
+          "commandsDeferred": 0,
+          "peakCommandsDeferred": 0,
+          "wallMsAtFirstNonEmpty": 311,
+          "metricsAtFirstNonEmpty": {
+            "pipelineCache": {
+              "created": 11,
+              "misses": 13,
+              "hits": 33
+            },
+            "async": {
+              "renderPipelines": {
+                "resolvedCount": 11,
+                "meanMs": 16.5
+              },
+              "shaderModules": {
+                "resolvedCount": 12,
+                "meanMs": 5.5
+              },
+              "textureUploads": {
+                "resolvedCount": 22,
+                "meanMs": 2.75
+              },
+              "imageDecodes": {
+                "resolvedCount": 11,
+                "meanMs": 1
+              }
+            },
+            "usedJSHeapBytes": 100011000
+          },
+          "metrics": {
+            "pipelineCache": {
+              "created": 16,
+              "misses": 18,
+              "hits": 48
+            },
+            "async": {
+              "renderPipelines": {
+                "resolvedCount": 16,
+                "meanMs": 24
+              },
+              "shaderModules": {
+                "resolvedCount": 17,
+                "meanMs": 8
+              },
+              "textureUploads": {
+                "resolvedCount": 32,
+                "meanMs": 4
+              },
+              "imageDecodes": {
+                "resolvedCount": 16,
+                "meanMs": 1
+              }
+            },
+            "usedJSHeapBytes": 100016000
+          },
+          "black": {
+            "blackFraction": 0.62,
+            "sampledPixels": 218453
+          }
+        },
+        {
+          "round": 1,
+          "gate": "readiness",
+          "frames": 72,
+          "firstNonEmpty": 32,
+          "commands": 132,
+          "wallMs": 912,
+          "tilesLoaded": true,
+          "renderReady": true,
+          "commandsDeferred": 0,
+          "peakCommandsDeferred": 0,
+          "wallMsAtFirstNonEmpty": 312,
+          "metricsAtFirstNonEmpty": {
+            "pipelineCache": {
+              "created": 12,
+              "misses": 14,
+              "hits": 36
+            },
+            "async": {
+              "renderPipelines": {
+                "resolvedCount": 12,
+                "meanMs": 18
+              },
+              "shaderModules": {
+                "resolvedCount": 13,
+                "meanMs": 6
+              },
+              "textureUploads": {
+                "resolvedCount": 24,
+                "meanMs": 3
+              },
+              "imageDecodes": {
+                "resolvedCount": 12,
+                "meanMs": 1
+              }
+            },
+            "usedJSHeapBytes": 100012000
+          },
+          "metrics": {
+            "pipelineCache": {
+              "created": 17,
+              "misses": 19,
+              "hits": 51
+            },
+            "async": {
+              "renderPipelines": {
+                "resolvedCount": 17,
+                "meanMs": 25.5
+              },
+              "shaderModules": {
+                "resolvedCount": 18,
+                "meanMs": 8.5
+              },
+              "textureUploads": {
+                "resolvedCount": 34,
+                "meanMs": 4.25
+              },
+              "imageDecodes": {
+                "resolvedCount": 17,
+                "meanMs": 1
+              }
+            },
+            "usedJSHeapBytes": 100017000
+          },
+          "black": {
+            "blackFraction": 0.615,
+            "sampledPixels": 218453
+          }
+        }
+      ],
+      "pageErrors": []
+    },
+    {
+      "renderer": "webgpu",
+      "view": "capepoint",
+      "gate": "legacy",
+      "run": 0,
+      "built": {
+        "ok": true,
+        "rendererType": "webgpu",
+        "isWebGPU": true,
+        "hasRenderReady": true,
+        "hasPendingResourceCount": true,
+        "terrainReady": true,
+        "canvasWidth": 1024,
+        "canvasHeight": 640
+      },
+      "rounds": [
+        {
+          "round": 0,
+          "gate": "legacy",
+          "frames": 73,
+          "firstNonEmpty": 33,
+          "commands": 133,
+          "wallMs": 913,
+          "tilesLoaded": true,
+          "renderReady": false,
+          "commandsDeferred": 3,
+          "peakCommandsDeferred": 3,
+          "wallMsAtFirstNonEmpty": 313,
+          "metricsAtFirstNonEmpty": {
+            "pipelineCache": {
+              "created": 13,
+              "misses": 15,
+              "hits": 39
+            },
+            "async": {
+              "renderPipelines": {
+                "resolvedCount": 13,
+                "meanMs": 19.5
+              },
+              "shaderModules": {
+                "resolvedCount": 14,
+                "meanMs": 6.5
+              },
+              "textureUploads": {
+                "resolvedCount": 26,
+                "meanMs": 3.25
+              },
+              "imageDecodes": {
+                "resolvedCount": 13,
+                "meanMs": 1
+              }
+            },
+            "usedJSHeapBytes": 100013000
+          },
+          "metrics": {
+            "pipelineCache": {
+              "created": 18,
+              "misses": 20,
+              "hits": 54
+            },
+            "async": {
+              "renderPipelines": {
+                "resolvedCount": 18,
+                "meanMs": 27
+              },
+              "shaderModules": {
+                "resolvedCount": 19,
+                "meanMs": 9
+              },
+              "textureUploads": {
+                "resolvedCount": 36,
+                "meanMs": 4.5
+              },
+              "imageDecodes": {
+                "resolvedCount": 18,
+                "meanMs": 1
+              }
+            },
+            "usedJSHeapBytes": 100018000
+          },
+          "black": {
+            "blackFraction": 0.73,
+            "sampledPixels": 218453
+          }
+        },
+        {
+          "round": 1,
+          "gate": "legacy",
+          "frames": 74,
+          "firstNonEmpty": 34,
+          "commands": 134,
+          "wallMs": 914,
+          "tilesLoaded": true,
+          "renderReady": false,
+          "commandsDeferred": 0,
+          "peakCommandsDeferred": 0,
+          "wallMsAtFirstNonEmpty": 314,
+          "metricsAtFirstNonEmpty": {
+            "pipelineCache": {
+              "created": 14,
+              "misses": 16,
+              "hits": 42
+            },
+            "async": {
+              "renderPipelines": {
+                "resolvedCount": 14,
+                "meanMs": 21
+              },
+              "shaderModules": {
+                "resolvedCount": 15,
+                "meanMs": 7
+              },
+              "textureUploads": {
+                "resolvedCount": 28,
+                "meanMs": 3.5
+              },
+              "imageDecodes": {
+                "resolvedCount": 14,
+                "meanMs": 1
+              }
+            },
+            "usedJSHeapBytes": 100014000
+          },
+          "metrics": {
+            "pipelineCache": {
+              "created": 19,
+              "misses": 21,
+              "hits": 57
+            },
+            "async": {
+              "renderPipelines": {
+                "resolvedCount": 19,
+                "meanMs": 28.5
+              },
+              "shaderModules": {
+                "resolvedCount": 20,
+                "meanMs": 9.5
+              },
+              "textureUploads": {
+                "resolvedCount": 38,
+                "meanMs": 4.75
+              },
+              "imageDecodes": {
+                "resolvedCount": 19,
+                "meanMs": 1
+              }
+            },
+            "usedJSHeapBytes": 100019000
+          },
+          "black": {
+            "blackFraction": 0.615,
+            "sampledPixels": 218453
+          }
+        }
+      ],
+      "pageErrors": []
+    },
+    {
+      "renderer": "webgpu",
+      "view": "capepoint",
+      "gate": "readiness",
+      "run": 0,
+      "built": {
+        "ok": true,
+        "rendererType": "webgpu",
+        "isWebGPU": true,
+        "hasRenderReady": true,
+        "hasPendingResourceCount": true,
+        "terrainReady": true,
+        "canvasWidth": 1024,
+        "canvasHeight": 640
+      },
+      "rounds": [
+        {
+          "round": 0,
+          "gate": "readiness",
+          "frames": 75,
+          "firstNonEmpty": 35,
+          "commands": 135,
+          "wallMs": 915,
+          "tilesLoaded": true,
+          "renderReady": true,
+          "commandsDeferred": 3,
+          "peakCommandsDeferred": 3,
+          "wallMsAtFirstNonEmpty": 315,
+          "metricsAtFirstNonEmpty": {
+            "pipelineCache": {
+              "created": 15,
+              "misses": 17,
+              "hits": 45
+            },
+            "async": {
+              "renderPipelines": {
+                "resolvedCount": 15,
+                "meanMs": 22.5
+              },
+              "shaderModules": {
+                "resolvedCount": 16,
+                "meanMs": 7.5
+              },
+              "textureUploads": {
+                "resolvedCount": 30,
+                "meanMs": 3.75
+              },
+              "imageDecodes": {
+                "resolvedCount": 15,
+                "meanMs": 1
+              }
+            },
+            "usedJSHeapBytes": 100015000
+          },
+          "metrics": {
+            "pipelineCache": {
+              "created": 20,
+              "misses": 22,
+              "hits": 60
+            },
+            "async": {
+              "renderPipelines": {
+                "resolvedCount": 20,
+                "meanMs": 30
+              },
+              "shaderModules": {
+                "resolvedCount": 21,
+                "meanMs": 10
+              },
+              "textureUploads": {
+                "resolvedCount": 40,
+                "meanMs": 5
+              },
+              "imageDecodes": {
+                "resolvedCount": 20,
+                "meanMs": 1
+              }
+            },
+            "usedJSHeapBytes": 100020000
+          },
+          "black": {
+            "blackFraction": 0.73,
+            "sampledPixels": 218453
+          }
+        },
+        {
+          "round": 1,
+          "gate": "readiness",
+          "frames": 76,
+          "firstNonEmpty": 36,
+          "commands": 136,
+          "wallMs": 916,
+          "tilesLoaded": true,
+          "renderReady": true,
+          "commandsDeferred": 0,
+          "peakCommandsDeferred": 0,
+          "wallMsAtFirstNonEmpty": 316,
+          "metricsAtFirstNonEmpty": {
+            "pipelineCache": {
+              "created": 16,
+              "misses": 18,
+              "hits": 48
+            },
+            "async": {
+              "renderPipelines": {
+                "resolvedCount": 16,
+                "meanMs": 24
+              },
+              "shaderModules": {
+                "resolvedCount": 17,
+                "meanMs": 8
+              },
+              "textureUploads": {
+                "resolvedCount": 32,
+                "meanMs": 4
+              },
+              "imageDecodes": {
+                "resolvedCount": 16,
+                "meanMs": 1
+              }
+            },
+            "usedJSHeapBytes": 100016000
+          },
+          "metrics": {
+            "pipelineCache": {
+              "created": 21,
+              "misses": 23,
+              "hits": 63
+            },
+            "async": {
+              "renderPipelines": {
+                "resolvedCount": 21,
+                "meanMs": 31.5
+              },
+              "shaderModules": {
+                "resolvedCount": 22,
+                "meanMs": 10.5
+              },
+              "textureUploads": {
+                "resolvedCount": 42,
+                "meanMs": 5.25
+              },
+              "imageDecodes": {
+                "resolvedCount": 21,
+                "meanMs": 1
+              }
+            },
+            "usedJSHeapBytes": 100021000
+          },
+          "black": {
+            "blackFraction": 0.615,
+            "sampledPixels": 218453
+          }
+        }
+      ],
+      "pageErrors": []
+    }
+  ]
+}

@@ -59,13 +59,51 @@
 //   blackFraction       — the Q-101 statistic, and the only one that is a
 //                         pass/fail rather than a measurement.
 //
+// ── WHAT THE SHARED RUNTIME OWNS ────────────────────────────────────────────
+//
+// Argument parsing, the single-Edge-slot lock, the Edge launch, the
+// served-build preflight, element-only capture with its sha256, receipt
+// serialization and the exit-code table all live in `lib/probe-runtime.mjs`.
+// What is left below is what is genuinely this probe's: the two views, the two
+// gates, the settle loop, and the two verdict shapes.
+//
+// The Edge launch flags are UNCHANGED by the move: the runtime default is the
+// single flag this probe already passed, and this probe declares no
+// `launchArgs`. That is deliberate. A flag such as `--use-vulkan` moves Dawn
+// off the Windows D3D default and would shift the pipeline-compile counters
+// below without changing a line of the probe, so the receipts either side of
+// the migration would stop being comparable. The runtime now records the flags
+// it launched with in `*-runtime.json`, so this is checkable rather than
+// asserted.
+//
+// Four consequences of the move, stated rather than left to be discovered:
+//
+//   * The probe now serves from a governed port (8094 by default) and asserts
+//     that the bytes the server hands out are the bytes on disk. Port 8080 is
+//     refused — the default dev server there serves a live esbuild of the
+//     SOURCE tree, so a run against it cannot say which engine it measured.
+//   * Each `--runs` repeat gets its OWN browser, not just its own context. The
+//     default (`--runs 1`) is one browser either way, so a single-run receipt
+//     is unchanged; a repeat is now genuinely as cold as the first, which is
+//     the direction this probe wants.
+//   * A precondition that fails is now a REFUSAL (exit 3), distinct from a
+//     measured red (exit 1). It used to be an uncaught throw.
+//   * A refused run no longer publishes a receipt at all. Pre-migration the
+//     throw happened before the single `writeFileSync`, so the last good
+//     `globe-cold-start-report.json` survived; the runtime keeps that property
+//     deliberately rather than by accident, and records the refusal beside it
+//     in `globe-cold-start-refusal.json`. A run that produced no cells must not
+//     overwrite one that did with a document reporting 0/0 verdicts.
+//
 // ── PRECONDITIONS ───────────────────────────────────────────────────────────
 //
 //   * `npx gulp build` has run, so `/Build/CesiumUnminified/` is current. The
-//     probe asserts the served bundle exposes `scene.renderReady`; a build
-//     without it aborts rather than silently measuring the old engine.
-//   * `node server.js` is serving on 8080. Use `localhost`, not `127.0.0.1` —
-//     the dev server binds IPv6.
+//     runtime's served-build preflight compares the served bytes with the
+//     on-disk bytes, and this probe additionally asserts the served bundle
+//     exposes `scene.renderReady`; a build without it refuses rather than
+//     silently measuring the old engine.
+//   * `node server.js --port 8094 --serve-built` is running. Use `localhost`,
+//     not `127.0.0.1` — the dev server binds IPv6.
 //   * Edge, not Firefox: Playwright's bundled Firefox has no WebGPU.
 //   * An ion token is configured, or terrain requests fail and both backends
 //     measure the ellipsoid.
@@ -76,49 +114,14 @@
 //   node Tools/visual-regression/probe-globe-cold-start-readiness.mjs --headed
 //   node Tools/visual-regression/probe-globe-cold-start-readiness.mjs --settled-frames 60 --black-tolerance-pp 0.5
 
-import { chromium } from "playwright";
-import { mkdirSync, writeFileSync } from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
+import {
+  ProbeRefusal,
+  captureElement,
+  isEntryPoint,
+  runProbe,
+} from "./lib/probe-runtime.mjs";
 
-const here = path.dirname(fileURLToPath(import.meta.url));
-const outputDirectory = path.join(here, "output", "globe-cold-start");
-const harness =
-  "http://localhost:8080/Tools/visual-regression/globe-cold-start-harness.html";
-
-const argv = process.argv.slice(2);
-
-function readNonNegativeNumberOption(name, fallback) {
-  const index = argv.indexOf(name);
-  if (index === -1) {
-    return fallback;
-  }
-
-  const value = Number(argv[index + 1]);
-  if (!Number.isFinite(value) || value < 0) {
-    throw new TypeError(`${name} must be a non-negative number`);
-  }
-  return value;
-}
-
-const headed = argv.includes("--headed");
-const runs = readNonNegativeNumberOption("--runs", 1);
-if (!Number.isInteger(runs) || runs < 1) {
-  throw new TypeError("--runs must be a positive integer");
-}
-
-const settledReferenceFrames = readNonNegativeNumberOption(
-  "--settled-frames",
-  60,
-);
-if (!Number.isInteger(settledReferenceFrames) || settledReferenceFrames < 1) {
-  throw new TypeError("--settled-frames must be a positive integer");
-}
-
-// blackFraction is a fraction, so 0.5 percentage points is represented as
-// 0.005 in verdicts and comparisons.
-const blackTolerance =
-  readNonNegativeNumberOption("--black-tolerance-pp", 0.5) / 100;
+const HARNESS_PATH = "/Tools/visual-regression/globe-cold-start-harness.html";
 
 export function decideReadinessVerdict({
   blackFraction,
@@ -170,21 +173,35 @@ const VIEWS = [
   },
 ];
 
-const BACKENDS = ["webgl", "webgpu"];
 const GATES = ["legacy", "readiness"];
 
 /**
  * Runs every settle round for one (backend, view, gate) cell in its own
  * browser context, so the first round of the cell is genuinely cold.
  *
- * @param {object} browser The Playwright browser.
- * @param {string} renderer The backend.
- * @param {object} view One entry of VIEWS.
- * @param {string} gate "legacy" or "readiness".
- * @param {number} run The repeat index.
+ * @param {object} options One cell's inputs.
+ * @param {object} options.browser The Playwright browser.
+ * @param {string} options.harness Absolute harness url for this run's origin.
+ * @param {string} options.renderer The backend.
+ * @param {object} options.view One entry of VIEWS.
+ * @param {string} options.gate "legacy" or "readiness".
+ * @param {number} options.run The repeat index.
+ * @param {number} options.settledReferenceFrames Extra frames the reference round settles for.
+ * @param {string} options.outputDirectory Where captures are written.
+ * @param {Array<object>} options.captures Runtime capture sink.
  * @returns {Promise<object>} The cell's result.
  */
-async function runCell(browser, renderer, view, gate, run) {
+async function runCell({
+  browser,
+  harness,
+  renderer,
+  view,
+  gate,
+  run,
+  settledReferenceFrames,
+  outputDirectory,
+  captures,
+}) {
   const context = await browser.newContext({
     viewport: view.viewport,
     deviceScaleFactor: 1,
@@ -204,20 +221,28 @@ async function runCell(browser, renderer, view, gate, run) {
   });
   if (!built.ok) {
     await context.close();
-    throw new Error(`build failed for ${renderer}: ${built.error}`);
+    throw new ProbeRefusal(
+      "harness-build-failed",
+      `build failed for ${renderer}: ${built.error}`,
+      { renderer, error: built.error },
+    );
   }
   if (!built.hasRenderReady || !built.hasPendingResourceCount) {
     await context.close();
-    throw new Error(
+    throw new ProbeRefusal(
+      "readiness-signal-absent",
       "the served bundle has no readiness signal — rebuild before running " +
         "this probe, or it will measure the old engine and report the result " +
         "as an after",
+      { renderer },
     );
   }
   if (!built.terrainReady) {
     await context.close();
-    throw new Error(
+    throw new ProbeRefusal(
+      "terrain-not-resolved",
       "terrain did not resolve — both backends would measure the ellipsoid",
+      { renderer },
     );
   }
 
@@ -235,16 +260,21 @@ async function runCell(browser, renderer, view, gate, run) {
       minFrames: round === 1 ? settledReferenceFrames : 60,
     });
     const name = `${view.id}-${renderer}-${gate}-run${run}-r${round}`;
-    const buffer = await page
-      .locator("canvas")
-      .first()
-      .screenshot({
-        type: "png",
-        path: path.join(outputDirectory, `${name}.png`),
-      });
+    // `index: 0` keeps the pre-runtime `.first()` selection exactly. The
+    // runtime records how many canvases actually matched, so a harness that
+    // grows a second one shows up in the run receipt instead of silently
+    // changing which element every number came from.
+    const capture = await captureElement({
+      page,
+      selector: "canvas",
+      index: 0,
+      name,
+      outputDirectory,
+      captures,
+    });
     const black = await page.evaluate(
       (b64) => window.__blackBottomThird(b64),
-      buffer.toString("base64"),
+      capture.buffer.toString("base64"),
     );
     rounds.push({ round, ...settled, black });
     const atFirst = settled.metricsAtFirstNonEmpty;
@@ -262,43 +292,31 @@ async function runCell(browser, renderer, view, gate, run) {
   return { renderer, view: view.id, gate, run, built, rounds, pageErrors };
 }
 
-mkdirSync(outputDirectory, { recursive: true });
-const browser = await chromium.launch({
-  channel: "msedge",
-  headless: !headed,
-  args: ["--enable-unsafe-webgpu"],
-});
-
-const cells = [];
-for (let run = 0; run < runs; run++) {
-  for (const view of VIEWS) {
-    for (const renderer of BACKENDS) {
-      for (const gate of GATES) {
-        cells.push(await runCell(browser, renderer, view, gate, run));
-      }
+/**
+ * Q-101 is a pass/fail: the FIRST readiness-gated round is compared with the
+ * second round, captured from the same page and camera after at least
+ * `settledReferenceFrames` additional frames. Legacy-gated cells contribute no
+ * verdict — they are the before, not the claim.
+ *
+ * @param {Array<object>} cells Every cell of the run.
+ * @param {number} blackTolerance Tolerance as a fraction, not percentage points.
+ * @returns {Array<object>} The verdicts.
+ */
+export function buildColdStartVerdicts(cells, blackTolerance) {
+  const verdicts = [];
+  for (const cell of cells) {
+    if (cell.gate !== "readiness") {
+      continue;
     }
-  }
-}
-await browser.close();
-
-// ── verdicts ────────────────────────────────────────────────────────────────
-//
-// Q-101 is a pass/fail: the FIRST readiness-gated round is compared with the
-// second round, captured from the same page and camera after at least
-// settledReferenceFrames additional frames. Q-102 is a measurement and is
-// reported rather than gated — a threshold on a network-bound number would be
-// a coin flip.
-const verdicts = [];
-for (const cell of cells) {
-  const first = cell.rounds[0];
-  if (cell.gate === "readiness") {
+    const first = cell.rounds[0];
     const settledReference = cell.rounds[1];
     if (!settledReference) {
-      throw new Error(
+      throw new ProbeRefusal(
+        "settled-reference-missing",
         `no settled reference was captured for ${cell.view}/${cell.renderer}/run${cell.run}`,
+        { view: cell.view, renderer: cell.renderer, run: cell.run },
       );
     }
-
     verdicts.push({
       id: `${cell.view}/${cell.renderer}/run${cell.run}`,
       claim:
@@ -311,70 +329,187 @@ for (const cell of cells) {
       }),
     });
   }
+  return verdicts;
 }
 
-const firstCommand = {};
-for (const cell of cells) {
-  const first = cell.rounds[0];
-  const at = first.metricsAtFirstNonEmpty;
-  firstCommand[`${cell.view}/${cell.renderer}/${cell.gate}/run${cell.run}`] = {
-    settleFrames: first.firstNonEmpty,
-    wallMs: first.wallMsAtFirstNonEmpty,
-    // The discriminator: what the globe had already spent by the moment it
-    // could first draw. If the cold start is a first-use compile burst,
-    // these fall when the compiles move off the render path; if they stay
-    // put while settleFrames stays high, the remaining cost is scheduling.
-    pipelinesCreated: at?.pipelineCache?.created ?? null,
-    pipelineCacheMisses: at?.pipelineCache?.misses ?? null,
-    // A pre-cook shows up here rather than as one fewer miss: a warm counts a
-    // miss of its own when it starts the build, so the tile that finds the
-    // pipeline already there turns into a HIT. Zero hits at the first
-    // non-empty command list means the globe compiled its own.
-    pipelineCacheHits: at?.pipelineCache?.hits ?? null,
-    renderPipelinesResolved: at?.async?.renderPipelines?.resolvedCount ?? null,
-    renderPipelineMeanMs: at?.async?.renderPipelines?.meanMs ?? null,
-    shaderModulesResolved: at?.async?.shaderModules?.resolvedCount ?? null,
-    textureUploadsResolved: at?.async?.textureUploads?.resolvedCount ?? null,
-    usedJSHeapBytes: at?.usedJSHeapBytes ?? null,
+/**
+ * Q-102 is a measurement and is reported rather than gated — a threshold on a
+ * network-bound number would be a coin flip.
+ *
+ * @param {Array<object>} cells Every cell of the run.
+ * @returns {object} The per-cell first-command state, keyed by cell id.
+ */
+export function buildFirstNonEmptyByCell(cells) {
+  const firstCommand = {};
+  for (const cell of cells) {
+    const first = cell.rounds[0];
+    const at = first.metricsAtFirstNonEmpty;
+    firstCommand[`${cell.view}/${cell.renderer}/${cell.gate}/run${cell.run}`] =
+      {
+        settleFrames: first.firstNonEmpty,
+        wallMs: first.wallMsAtFirstNonEmpty,
+        // The discriminator: what the globe had already spent by the moment it
+        // could first draw. If the cold start is a first-use compile burst,
+        // these fall when the compiles move off the render path; if they stay
+        // put while settleFrames stays high, the remaining cost is scheduling.
+        pipelinesCreated: at?.pipelineCache?.created ?? null,
+        pipelineCacheMisses: at?.pipelineCache?.misses ?? null,
+        // A pre-cook shows up here rather than as one fewer miss: a warm counts a
+        // miss of its own when it starts the build, so the tile that finds the
+        // pipeline already there turns into a HIT. Zero hits at the first
+        // non-empty command list means the globe compiled its own.
+        pipelineCacheHits: at?.pipelineCache?.hits ?? null,
+        renderPipelinesResolved:
+          at?.async?.renderPipelines?.resolvedCount ?? null,
+        renderPipelineMeanMs: at?.async?.renderPipelines?.meanMs ?? null,
+        shaderModulesResolved: at?.async?.shaderModules?.resolvedCount ?? null,
+        textureUploadsResolved:
+          at?.async?.textureUploads?.resolvedCount ?? null,
+        usedJSHeapBytes: at?.usedJSHeapBytes ?? null,
+      };
+  }
+  return firstCommand;
+}
+
+/**
+ * The probe's own receipt. Its field set is the pre-runtime field set, in the
+ * pre-runtime order — the runtime writes what it knows to a sibling
+ * `*-runtime.json` rather than injecting fields here, so a reader of a banked
+ * `globe-cold-start-report.json` sees the same document it always saw.
+ *
+ * @param {Array<object>} cells Every cell of the run.
+ * @param {object} context Receipt inputs.
+ * @param {string} context.generatedAt ISO timestamp.
+ * @param {string} context.harness Harness url.
+ * @param {number} context.runs Repeat count.
+ * @param {Array<object>} context.verdicts The Q-101 verdicts.
+ * @returns {object} The receipt.
+ */
+export function buildColdStartReceipt(cells, context) {
+  return {
+    generatedAt: context.generatedAt,
+    harness: context.harness,
+    runs: context.runs,
+    cellOrder: cells.map(
+      (c) => `${c.view}/${c.renderer}/${c.gate}/run${c.run}`,
+    ),
+    verdicts: context.verdicts,
+    firstNonEmptyByCell: buildFirstNonEmptyByCell(cells),
+    cells,
   };
 }
 
-const report = {
-  generatedAt: new Date().toISOString(),
-  harness,
-  runs,
-  cellOrder: cells.map((c) => `${c.view}/${c.renderer}/${c.gate}/run${c.run}`),
-  verdicts,
-  firstNonEmptyByCell: firstCommand,
-  cells,
+/**
+ * The console report, unchanged in shape from the pre-runtime probe.
+ *
+ * @param {object} receipt The probe receipt.
+ * @returns {void}
+ */
+function printReport(receipt) {
+  console.log("\n── Q-101 ──");
+  for (const verdict of receipt.verdicts) {
+    console.log(
+      `${verdict.pass ? "PASS" : "FAIL"} ${verdict.id} ` +
+        `blackFraction=${verdict.blackFraction} ` +
+        `settledBlackFraction=${verdict.settledBlackFraction} ` +
+        `blackDelta=${verdict.blackDelta} tolerance=${verdict.tolerance} ` +
+        `commandsDeferred=${verdict.commandsDeferred}`,
+    );
+  }
+  console.log("\n── Q-102 (state AT the first non-empty command list) ──");
+  for (const [id, value] of Object.entries(receipt.firstNonEmptyByCell)) {
+    console.log(
+      `${id}: frames=${value.settleFrames} ms=${value.wallMs} ` +
+        `pipelinesCreated=${value.pipelinesCreated} ` +
+        `misses=${value.pipelineCacheMisses} ` +
+        `hits=${value.pipelineCacheHits} ` +
+        `renderPipelines=${value.renderPipelinesResolved}` +
+        `@${value.renderPipelineMeanMs}ms ` +
+        `modules=${value.shaderModulesResolved} ` +
+        `uploads=${value.textureUploadsResolved}`,
+    );
+  }
+}
+
+/** The descriptor the shared runtime executes. */
+export const descriptor = {
+  name: "globe-cold-start",
+  title: "Globe cold start — readiness (Q-101) and first command list (Q-102)",
+  outputSubdirectory: "globe-cold-start",
+  receiptEnvelope: "probe-owned",
+  args: {
+    extraOptions: [
+      {
+        flag: "--settled-frames",
+        key: "settledFrames",
+        kind: "positive-integer",
+        default: 60,
+      },
+      {
+        // A fraction, so 0.5 percentage points is 0.005 in every comparison.
+        flag: "--black-tolerance-pp",
+        key: "blackTolerancePp",
+        kind: "non-negative-number",
+        default: 0.5,
+      },
+    ],
+  },
+  async cells({ browser, run, options, origin, outputDirectory, captures }) {
+    const harness = `${origin}${HARNESS_PATH}`;
+    const produced = [];
+    for (const view of VIEWS) {
+      for (const renderer of options.renderers) {
+        for (const gate of GATES) {
+          produced.push(
+            await runCell({
+              browser,
+              harness,
+              renderer,
+              view,
+              gate,
+              run,
+              settledReferenceFrames: options.settledFrames,
+              outputDirectory,
+              captures,
+            }),
+          );
+        }
+      }
+    }
+    return produced;
+  },
+  verdicts(cells, { options }) {
+    return buildColdStartVerdicts(cells, options.blackTolerancePp / 100);
+  },
+  receipt(cells, context) {
+    const receipt = buildColdStartReceipt(cells, {
+      generatedAt: context.generatedAt,
+      harness: `${context.origin}${HARNESS_PATH}`,
+      runs: context.options?.runs ?? null,
+      verdicts: context.verdicts,
+    });
+    if (cells.length > 0) {
+      printReport(receipt);
+    }
+    return receipt;
+  },
+  summary(receipt) {
+    const passed = receipt.verdicts.filter((v) => v.pass === true).length;
+    return [
+      "# Globe cold start",
+      "",
+      `Generated: ${receipt.generatedAt}`,
+      "",
+      `Harness: \`${receipt.harness}\``,
+      "",
+      `Q-101: ${passed}/${receipt.verdicts.length} readiness verdicts passed.`,
+      "",
+      `Cells: ${receipt.cellOrder.length}`,
+      "",
+    ].join("\n");
+  },
 };
-const reportPath = path.join(outputDirectory, "globe-cold-start-report.json");
-writeFileSync(reportPath, JSON.stringify(report, null, 2));
 
-console.log("\n── Q-101 ──");
-for (const verdict of verdicts) {
-  console.log(
-    `${verdict.pass ? "PASS" : "FAIL"} ${verdict.id} ` +
-      `blackFraction=${verdict.blackFraction} ` +
-      `settledBlackFraction=${verdict.settledBlackFraction} ` +
-      `blackDelta=${verdict.blackDelta} tolerance=${verdict.tolerance} ` +
-      `commandsDeferred=${verdict.commandsDeferred}`,
-  );
+if (isEntryPoint(import.meta.url)) {
+  process.exitCode = await runProbe(descriptor);
 }
-console.log("\n── Q-102 (state AT the first non-empty command list) ──");
-for (const [id, value] of Object.entries(firstCommand)) {
-  console.log(
-    `${id}: frames=${value.settleFrames} ms=${value.wallMs} ` +
-      `pipelinesCreated=${value.pipelinesCreated} ` +
-      `misses=${value.pipelineCacheMisses} ` +
-      `hits=${value.pipelineCacheHits} ` +
-      `renderPipelines=${value.renderPipelinesResolved}` +
-      `@${value.renderPipelineMeanMs}ms ` +
-      `modules=${value.shaderModulesResolved} ` +
-      `uploads=${value.textureUploadsResolved}`,
-  );
-}
-console.log(`\nreport: ${reportPath}`);
-
-const failed = verdicts.filter((v) => !v.pass);
-process.exitCode = failed.length === 0 ? 0 : 1;
