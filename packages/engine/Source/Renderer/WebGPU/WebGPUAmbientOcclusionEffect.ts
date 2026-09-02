@@ -244,6 +244,8 @@ export class AmbientOcclusionEffect implements PostProcessEffect {
     if (!this._device || (width === this._width && height === this._height))
       return;
     this._destroyTextures();
+    // `initialize` reassigns every uniform buffer; release the previous set.
+    this._destroyUniforms();
     // Texture views change on resize.
     this._bgCache.invalidateAll();
     this.initialize(this._device, width, height, this._format);
@@ -877,6 +879,10 @@ export class AmbientOcclusionEffect implements PostProcessEffect {
     // directionCount, 1/w, 1/h, randomTexSize |
     // near, far, logActive, useGBufferNormal |
     // fullSamplePattern, 0, 0, 0
+    //
+    // Near, far and logActive are seeded from the live-updated fields, as the
+    // ssgi packing above does, so a rebuild after `setFrustum` does not drop
+    // the AO march back onto a placeholder bracket for a frame.
     this._generateUniforms = createUniformBuffer(
       device,
       "AO-Generate-UB",
@@ -889,9 +895,9 @@ export class AmbientOcclusionEffect implements PostProcessEffect {
         1.0 / w,
         1.0 / h,
         4.0,
-        0.1,
-        10000.0,
-        0.0,
+        this._near,
+        this._far,
+        this._logActive,
         0.0,
         WEBGPU_AO_FULL_SAMPLE_PATTERN ? 1.0 : 0.0,
         0.0,
@@ -938,14 +944,39 @@ export class AmbientOcclusionEffect implements PostProcessEffect {
     );
   }
 
-  /** Update AO parameters at runtime. */
+  /**
+   * Update AO parameters at runtime.
+   *
+   * `algorithm` is held: it selects the generation shader, the blur layout and
+   * the uniform packing when the pipelines are built, so honouring it here
+   * would repack the buffers for a chain that is not running. The caller
+   * reports the ignored change. The bind-group cache keys on resource
+   * identity, so its entries naming the replaced buffers are dropped rather
+   * than left to accumulate one dead entry per update.
+   */
   updateConfig(config: Partial<AmbientOcclusionConfig>): void {
     if (!this._device) return;
+    const algorithm = this._config.algorithm;
     Object.assign(this._config, config);
-    // Recreate uniforms with updated values
-    this._generateUniforms?.destroy();
-    this._modulateUniforms?.destroy();
+    this._config.algorithm = algorithm;
+    this._destroyUniforms();
+    this._bgCache.invalidateAll();
     this._createUniforms(this._device);
+  }
+
+  /**
+   * Releases all four uniform buffers. Every caller of `_createUniforms` after
+   * the first reassigns all four, so anything not released here is orphaned.
+   */
+  private _destroyUniforms(): void {
+    this._generateUniforms?.destroy();
+    this._blurHUniforms?.destroy();
+    this._blurVUniforms?.destroy();
+    this._modulateUniforms?.destroy();
+    this._generateUniforms = null;
+    this._blurHUniforms = null;
+    this._blurVUniforms = null;
+    this._modulateUniforms = null;
   }
 
   private _destroyTextures(): void {
@@ -966,10 +997,7 @@ export class AmbientOcclusionEffect implements PostProcessEffect {
 
   destroy(): void {
     this._destroyTextures();
-    this._generateUniforms?.destroy();
-    this._blurHUniforms?.destroy();
-    this._blurVUniforms?.destroy();
-    this._modulateUniforms?.destroy();
+    this._destroyUniforms();
     this._device = null;
   }
 }

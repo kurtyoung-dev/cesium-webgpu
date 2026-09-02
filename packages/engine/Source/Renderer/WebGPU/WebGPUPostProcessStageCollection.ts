@@ -31,7 +31,21 @@ import {
   WebGPUPostProcessPipeline,
   TonemapMode,
 } from "./WebGPUPostProcessPipeline.js";
-import { WEBGPU_AO_FULL_SAMPLE_PATTERN } from "./WebGPUAmbientOcclusionEffect.js";
+// Reads an effect's configuration out of the live stage uniforms and pushes a
+// change to the effect that already holds it, so a runtime uniform write is not
+// lost to the first-enable latch.
+import {
+  AMBIENT_OCCLUSION_BUILD_ONLY_KEYS,
+  AMBIENT_OCCLUSION_CONFIG_KEYS,
+  DEPTH_OF_FIELD_CONFIG_KEYS,
+  numU,
+  propagateConfigIfChanged,
+  readAmbientOcclusionConfigInto,
+  readDepthOfFieldConfigInto,
+  type AmbientOcclusionConfigValues,
+  type ConfigPropagationOutcome,
+  type DepthOfFieldConfigValues,
+} from "./WebGPUPostProcessConfigSync.js";
 // Well-known PostProcessStageLibrary stage
 // names intercepted and substituted with their WGSL twins.
 import {
@@ -141,8 +155,25 @@ export interface PostProcessCache {
   bloomSigma: number;
   bloomStepSize: number;
   bloomGlowOnly: boolean;
+  // The AO intensity and bias last pushed to the effect. Written by the
+  // configure pass, which owns the AO dirty check for the same reason it owns
+  // bloom's: refreshing them from the earlier-running sync pass would compare
+  // fresh reads against values that pass has already updated, and no runtime
+  // change could ever fire.
   aoIntensity: number;
   aoBias: number;
+  // The full effect configuration last applied, and the scratch record each
+  // frame's read fills. Two stable records per effect keep the per-frame
+  // comparison off the allocation path; `undefined` until the effect is added.
+  _aoConfigApplied?: AmbientOcclusionConfigValues;
+  _aoConfigScratch?: AmbientOcclusionConfigValues;
+  _dofConfigApplied?: DepthOfFieldConfigValues;
+  _dofConfigScratch?: DepthOfFieldConfigValues;
+  // The record each propagation attempt fills. Held per effect for the same
+  // reason as the two above: the configure pass runs every frame, so returning
+  // a fresh outcome object would be steady-state garbage.
+  _aoConfigOutcome?: ConfigPropagationOutcome;
+  _dofConfigOutcome?: ConfigPropagationOutcome;
   // Whether `_userStages` on the pipeline has been populated from
   // `scene.postProcessStages._stages`. Set on the first build and reset when the
   // user collection's stage list empties so the configure pass rebuilds.
@@ -163,16 +194,6 @@ export interface PostProcessCache {
   // effect. Comparing element-wise identity against the live list catches any
   // composition change at equal length.
   _userStagesRefs?: unknown[];
-}
-
-// Narrow a polymorphic PostProcessStage uniform value to a number for
-// the dominant numeric-scalar reads (intensity, sigma, threshold, etc.).
-// Returns the default when the uniform is undefined or carries a non-
-// numeric value (the AO algorithm discriminator is the lone string-typed
-// uniform — it has its own narrowing path at the read site). The pattern
-// matches `Cesium.defaultValue(value, default)` semantics.
-function numU(v: number | string | boolean | undefined, d: number): number {
-  return typeof v === "number" ? v : d;
 }
 
 function getDefaultCache(): PostProcessCache {
@@ -362,16 +383,11 @@ function updateWebGPUPostProcessStages(
   const dofStage = findDepthOfFieldStage(collection);
   cache.depthOfFieldEnabled = dofStage?.enabled ?? false;
 
-  // Cache AO uniform values for runtime update. The bloom uniforms are
-  // deliberately not cached here: `configureWebGPUPostProcessPipeline` owns
-  // the bloom dirty check, and refreshing the cache in this earlier-running
-  // sync masks every runtime uniform change, because the configure pass then
-  // compares fresh reads against values this function has already updated.
-  if (cache.ambientOcclusionEnabled) {
-    const ao = collection.ambientOcclusion;
-    cache.aoIntensity = numU(ao?.uniforms?.intensity, 3.0);
-    cache.aoBias = numU(ao?.uniforms?.bias, 0.1);
-  }
+  // Neither the AO nor the bloom uniforms are cached here.
+  // `configureWebGPUPostProcessPipeline` owns both dirty checks, and refreshing
+  // the cache in this earlier-running sync masks every runtime uniform change,
+  // because the configure pass then compares fresh reads against values this
+  // function has already updated.
 
   collection._activeStagesChanged = false;
   cache.initialized = true;
@@ -697,57 +713,55 @@ function configureWebGPUPostProcessPipeline(
     }
   }
 
-  // Lazily initialize ambient occlusion on first enable.
-  if (cache.ambientOcclusionEnabled && !cache.aoInitialized) {
-    const ao = collection.ambientOcclusion;
-    // The algorithm discriminator is the lone string-typed AO uniform; narrow
-    // it to the supported literal union without passing it through `numU`.
-    const rawAlgo = ao?.uniforms?.algorithm;
-    // `"ssgi"` is an explicit algorithm opt-in. Missing or unknown values
-    // retain the `"hbao"` default, and the ambient-occlusion stage must also be
-    // enabled.
-    const algorithm: "gtao" | "hbao" | "ssgi" =
-      rawAlgo === "gtao" || rawAlgo === "hbao" || rawAlgo === "ssgi"
-        ? rawAlgo
-        : "hbao";
-    // Keep the bridge and shader loop policy on the same landing switch. The
-    // false branch preserves the historical stepSize read and 4x4 defaults.
-    const aoStepCount = WEBGPU_AO_FULL_SAMPLE_PATTERN
-      ? numU(ao?.uniforms?.stepCount, 32)
-      : numU(ao?.uniforms?.stepSize, 4);
-    const aoDirectionCount = numU(
-      ao?.uniforms?.directionCount,
-      WEBGPU_AO_FULL_SAMPLE_PATTERN ? 8 : 4,
-    );
-    pipeline.addAmbientOcclusion(
-      device,
-      canvasFormat,
-      {
-        algorithm,
-        intensity: numU(ao?.uniforms?.intensity, 3.0),
-        bias: numU(ao?.uniforms?.bias, 0.1),
-        lengthCap: numU(ao?.uniforms?.lengthCap, 0.26),
-        stepCount: aoStepCount,
-        directionCount: aoDirectionCount,
-        ambientOcclusionOnly: Boolean(
-          ao?.uniforms?.ambientOcclusionOnly ?? false,
-        ),
-        // SSILVB parameters; ignored unless the selected algorithm is `"ssgi"`.
-        giIntensity: numU(ao?.uniforms?.giIntensity, 1.0),
-        sliceCount: numU(ao?.uniforms?.sliceCount, 2),
-        ssgiStepCount: numU(ao?.uniforms?.ssgiStepCount, 8),
-        radiusPixels: numU(ao?.uniforms?.radiusPixels, 32.0),
-        maxWorldRadius: numU(ao?.uniforms?.maxWorldRadius, 500.0),
-        thicknessMin: numU(ao?.uniforms?.thicknessMin, 1.0),
-        thicknessK: numU(ao?.uniforms?.thicknessK, 0.005),
-        luminanceClamp: numU(ao?.uniforms?.luminanceClamp, 7.0),
-        expFactor: numU(ao?.uniforms?.expFactor, 2.0),
-        aoWeight: numU(ao?.uniforms?.aoWeight, 1.0),
-        ssgiDebugMode: numU(ao?.uniforms?.ssgiDebugMode, 0),
-      },
-      useShaderF16,
-    );
-    cache.aoInitialized = true;
+  // Lazily initialize ambient occlusion on first enable, then keep the effect
+  // in step with the stage's uniforms. `aoInitialized` latches the add — it
+  // must not also latch the configuration, or every write after the first
+  // enabled frame is lost.
+  if (cache.ambientOcclusionEnabled) {
+    const aoApplied = (cache._aoConfigApplied ??=
+      {} as AmbientOcclusionConfigValues);
+    if (!cache.aoInitialized) {
+      readAmbientOcclusionConfigInto(collection.ambientOcclusion, aoApplied);
+      pipeline.addAmbientOcclusion(
+        device,
+        canvasFormat,
+        aoApplied,
+        useShaderF16,
+      );
+      cache.aoIntensity = aoApplied.intensity;
+      cache.aoBias = aoApplied.bias;
+      cache.aoInitialized = true;
+    } else {
+      const aoNext = readAmbientOcclusionConfigInto(
+        collection.ambientOcclusion,
+        (cache._aoConfigScratch ??= {} as AmbientOcclusionConfigValues),
+      );
+      const outcome = propagateConfigIfChanged(
+        pipeline.ambientOcclusionEffect,
+        aoNext,
+        aoApplied,
+        AMBIENT_OCCLUSION_CONFIG_KEYS,
+        (cache._aoConfigOutcome ??= {
+          changed: false,
+          buildOnlyChanged: null,
+        }),
+        AMBIENT_OCCLUSION_BUILD_ONLY_KEYS,
+      );
+      if (outcome.changed) {
+        cache.aoIntensity = aoApplied.intensity;
+        cache.aoBias = aoApplied.bias;
+      }
+      if (outcome.buildOnlyChanged !== null) {
+        // The algorithm selects the generation shader, the blur layout and the
+        // uniform packing when the effect is built, so a runtime change cannot
+        // be written into the existing buffers. Say so rather than let the
+        // assignment vanish.
+        oneTimeWarning(
+          "webgpu-ao-algorithm-runtime-change",
+          `WebGPU ambient occlusion: '${outcome.buildOnlyChanged}' is fixed when the effect is built and cannot change at runtime. Set it before enabling ambientOcclusion.`,
+        );
+      }
+    }
   }
   pipeline.setStageEnabled("AmbientOcclusion", cache.ambientOcclusionEnabled);
   // Refresh the enabled effect with the overall camera frustum and the current
@@ -756,22 +770,34 @@ function configureWebGPUPostProcessPipeline(
     updateAmbientOcclusionFrameData(pipeline, scene);
   }
 
-  // Depth of Field: lazily initialized on first enable. Its uniforms come
-  // from the upstream DoF composite stage located by `findDepthOfFieldStage`,
-  // since there is no `collection._depthOfField` slot to read.
-  if (cache.depthOfFieldEnabled && !cache.dofInitialized) {
+  // Depth of Field: lazily initialized on first enable, then kept in step with
+  // the stage's uniforms the same way. Its uniforms come from the upstream DoF
+  // composite stage located by `findDepthOfFieldStage`, since there is no
+  // `collection._depthOfField` slot to read.
+  if (cache.depthOfFieldEnabled) {
     const dof = findDepthOfFieldStage(collection);
-    pipeline.addDepthOfField(
-      device,
-      canvasFormat,
-      {
-        focalDistance: numU(dof?.uniforms?.focalDistance, 50.0),
-        focalRange: numU(dof?.uniforms?.delta, 20.0),
-        blurSigma: numU(dof?.uniforms?.sigma, 4.0),
-      },
-      useShaderF16,
-    );
-    cache.dofInitialized = true;
+    const dofApplied = (cache._dofConfigApplied ??=
+      {} as DepthOfFieldConfigValues);
+    if (!cache.dofInitialized) {
+      readDepthOfFieldConfigInto(dof, dofApplied);
+      pipeline.addDepthOfField(device, canvasFormat, dofApplied, useShaderF16);
+      cache.dofInitialized = true;
+    } else {
+      const dofNext = readDepthOfFieldConfigInto(
+        dof,
+        (cache._dofConfigScratch ??= {} as DepthOfFieldConfigValues),
+      );
+      propagateConfigIfChanged(
+        pipeline.depthOfFieldEffect,
+        dofNext,
+        dofApplied,
+        DEPTH_OF_FIELD_CONFIG_KEYS,
+        (cache._dofConfigOutcome ??= {
+          changed: false,
+          buildOnlyChanged: null,
+        }),
+      );
+    }
   }
   pipeline.setStageEnabled("DepthOfField", cache.depthOfFieldEnabled);
   // Refresh the enabled effect with the overall camera frustum and the current

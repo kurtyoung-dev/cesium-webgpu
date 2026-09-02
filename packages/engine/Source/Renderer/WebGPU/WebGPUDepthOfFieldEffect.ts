@@ -108,6 +108,8 @@ export class DepthOfFieldEffect implements PostProcessEffect {
     if (!this._device || (width === this._width && height === this._height))
       return;
     this._destroyTextures();
+    // `initialize` reassigns every uniform buffer; release the previous set.
+    this._destroyUniforms();
     // Texture views change on resize.
     this._bgCache.invalidateAll();
     this.initialize(this._device, width, height, this._format);
@@ -326,12 +328,33 @@ export class DepthOfFieldEffect implements PostProcessEffect {
     );
   }
 
-  /** Update DoF parameters at runtime. */
+  /**
+   * Update DoF parameters at runtime.
+   *
+   * `_createUniforms` reassigns all three buffers, so releasing only the
+   * composite one orphaned the blur pair on every call. The bind-group cache
+   * keys on resource identity, so its entries naming the replaced buffers are
+   * dropped rather than left to accumulate one dead entry per update.
+   */
   updateConfig(config: Partial<DepthOfFieldConfig>): void {
     if (!this._device) return;
     Object.assign(this._config, config);
-    this._dofUniforms?.destroy();
+    this._destroyUniforms();
+    this._bgCache.invalidateAll();
     this._createUniforms(this._device);
+  }
+
+  /**
+   * Releases all three uniform buffers. Every caller of `_createUniforms` after
+   * the first reassigns all three, so anything not released here is orphaned.
+   */
+  private _destroyUniforms(): void {
+    this._blurHUniforms?.destroy();
+    this._blurVUniforms?.destroy();
+    this._dofUniforms?.destroy();
+    this._blurHUniforms = null;
+    this._blurVUniforms = null;
+    this._dofUniforms = null;
   }
 
   private _destroyTextures(): void {
@@ -345,9 +368,7 @@ export class DepthOfFieldEffect implements PostProcessEffect {
 
   destroy(): void {
     this._destroyTextures();
-    this._blurHUniforms?.destroy();
-    this._blurVUniforms?.destroy();
-    this._dofUniforms?.destroy();
+    this._destroyUniforms();
     this._device = null;
   }
 }

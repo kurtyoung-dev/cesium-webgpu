@@ -32,6 +32,38 @@ const BRIDGE_FILE =
 const bridgeSource = fs
   .readFileSync(path.join(REPO_ROOT, BRIDGE_FILE), "utf8")
   .replace(/\r\n/g, "\n");
+// The bridge sources every AO uniform through this module, so the read under
+// test lives here; the spec compiles the real thing rather than restating it
+// as harness-supplied context.
+const CONFIG_SYNC_FILE =
+  "packages/engine/Source/Renderer/WebGPU/WebGPUPostProcessConfigSync.ts";
+const configSyncSource = fs
+  .readFileSync(path.join(REPO_ROOT, CONFIG_SYNC_FILE), "utf8")
+  .replace(/\r\n/g, "\n");
+
+function compileConfigSync(source) {
+  const code = transformSync(source, {
+    loader: "ts",
+    format: "cjs",
+    target: "es2022",
+  }).code;
+
+  const module = { exports: {} };
+  runInNewContext(
+    code,
+    {
+      module,
+      exports: module.exports,
+      // The module's only value import is the landing switch, read from the
+      // effect file so the spec observes the shipped value.
+      require: () => ({
+        WEBGPU_AO_FULL_SAMPLE_PATTERN: readLandingSwitch(),
+      }),
+    },
+    { filename: CONFIG_SYNC_FILE },
+  );
+  return module.exports;
+}
 
 function liftConfigureFunction(source) {
   const start = source.indexOf("function configureWebGPUPostProcessPipeline(");
@@ -47,7 +79,7 @@ function liftConfigureFunction(source) {
   return source.slice(start, end + 2);
 }
 
-function compileBridge(source) {
+function compileBridge(source, configSync) {
   const typescript = [
     liftConfigureFunction(source),
     "module.exports.configureWebGPUPostProcessPipeline =",
@@ -66,11 +98,18 @@ function compileBridge(source) {
     {
       module,
       exports: module.exports,
-      // Exercise the corrected side independently of the landing default.
-      WEBGPU_AO_FULL_SAMPLE_PATTERN: readLandingSwitch(),
-      numU(value, fallback) {
-        return typeof value === "number" ? value : fallback;
-      },
+      // Every AO read comes from the real config-sync module, which itself
+      // reads the real landing switch. Nothing about the value under test is
+      // supplied by this harness.
+      numU: configSync.numU,
+      readAmbientOcclusionConfigInto: configSync.readAmbientOcclusionConfigInto,
+      readDepthOfFieldConfigInto: configSync.readDepthOfFieldConfigInto,
+      propagateConfigIfChanged: configSync.propagateConfigIfChanged,
+      AMBIENT_OCCLUSION_BUILD_ONLY_KEYS:
+        configSync.AMBIENT_OCCLUSION_BUILD_ONLY_KEYS,
+      AMBIENT_OCCLUSION_CONFIG_KEYS: configSync.AMBIENT_OCCLUSION_CONFIG_KEYS,
+      DEPTH_OF_FIELD_CONFIG_KEYS: configSync.DEPTH_OF_FIELD_CONFIG_KEYS,
+      oneTimeWarning() {},
       syncInterceptedLibraryStages() {},
       updateAmbientOcclusionFrameData() {},
     },
@@ -91,8 +130,8 @@ const EFFECT_SLOTS = new Set([
   "aerialPerspectiveEffect",
 ]);
 
-function driveBridge(source, directionCount, stepCount) {
-  const configure = compileBridge(source);
+function driveBridge(source, configSync, directionCount, stepCount) {
+  const configure = compileBridge(source, compileConfigSync(configSync));
   let received;
 
   const pipeline = new Proxy(
@@ -143,8 +182,8 @@ function driveBridge(source, directionCount, stepCount) {
   return received;
 }
 
-function assertBridgeValues(source, directionCount, stepCount) {
-  const received = driveBridge(source, directionCount, stepCount);
+function assertBridgeValues(source, configSync, directionCount, stepCount) {
+  const received = driveBridge(source, configSync, directionCount, stepCount);
   assert.equal(
     received.directionCount,
     directionCount,
@@ -159,27 +198,27 @@ function assertBridgeValues(source, directionCount, stepCount) {
 
 test("WebGPU AO bridge forwards the library uniforms", async (t) => {
   await t.test("forwards explicitly set direction and step counts", () => {
-    assertBridgeValues(bridgeSource, 16, 32);
+    assertBridgeValues(bridgeSource, configSyncSource, 16, 32);
   });
 
   await t.test("uses the library's 8x32 defaults", () => {
-    assertBridgeValues(bridgeSource, 8, 32);
+    assertBridgeValues(bridgeSource, configSyncSource, 8, 32);
   });
 
   await t.test("inertness mutant short-circuits the corrected read", () => {
     const correctedRead = [
-      "    const aoStepCount = WEBGPU_AO_FULL_SAMPLE_PATTERN",
-      "      ? numU(ao?.uniforms?.stepCount, 32)",
-      "      : numU(ao?.uniforms?.stepSize, 4);",
+      "  out.stepCount = WEBGPU_AO_FULL_SAMPLE_PATTERN",
+      "    ? numU(uniforms?.stepCount, 32)",
+      "    : numU(uniforms?.stepSize, 4);",
     ].join("\n");
-    const mutant = bridgeSource.replace(
+    const mutant = configSyncSource.replace(
       correctedRead,
-      "    const aoStepCount = 4;",
+      "  out.stepCount = 4;",
     );
-    assert.notEqual(mutant, bridgeSource, "corrected read was not mutated");
+    assert.notEqual(mutant, configSyncSource, "corrected read was not mutated");
 
     assert.throws(
-      () => assertBridgeValues(mutant, 16, 32),
+      () => assertBridgeValues(bridgeSource, mutant, 16, 32),
       (error) =>
         error instanceof assert.AssertionError &&
         /stepCount reaching addAmbientOcclusion/.test(error.message),
