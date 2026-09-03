@@ -1,7 +1,33 @@
 #!/usr/bin/env node
-// @purpose AEC design-model performance probe: one page load per streaming lever, timed to Scene.renderReady, per-pass command counts, one validated pick reused on both backends, served-build preflight and origin-guard refusals, element screenshots, multi-metric receipts.
+// @purpose AEC design-model performance probe: one page load per streaming lever, timed to a streaming-tileset-residency readiness criterion (renderReady ALONE is vacuous on this scene's first forced frame; see DM-10), per-pass command counts, one validated pick reused on both backends, served-build preflight and origin-guard refusals, element screenshots, multi-metric receipts.
 // @status ACTIVE
 // DM-01 — isolated AEC streaming/performance probe.
+//
+// DM-10 (2026-09-02). `Scene#renderReady` is `commandsDeferred === 0 &&
+// pendingResourceCount === 0`, which is vacuously true on a scene that has
+// never rendered -- nothing has been deferred and nothing is inflight. On
+// this eight-tileset scene that reads true on the very first forced frame,
+// with zero tile content loaded (Eowyn's 2026-09-02 16-cell run:
+// framesToRenderReady 1, perPassCommands { COMPUTE: 1 } -- zero draw
+// commands -- and a downstream validated-pick-missed refusal on WebGPU).
+// Readiness here is therefore a STREAMING criterion, not a single flag:
+// renderReady AND every created tileset reports `tilesLoaded`, held for
+// RESIDENCY_STABLE_FRAME_COUNT consecutive frames with an unchanging
+// selected-tile total, or a named `residency-settle-timeout` refusal. See
+// the readiness loop below and `lib/aec-residency-e1.mjs`, whose
+// `decideReadinessRefusal` this file reuses for the same non-vacuous check.
+//
+// `--settle-deadline-ms` bounds that residency window on its own (default:
+// whatever `--timeout-ms` resolves to, so the default run is unchanged) --
+// it is not the same knob as the rest of the per-cell timeout, the same
+// split `lib/aec-residency-e1.mjs`'s sibling instrument already makes. The
+// split matters here specifically: on this exact scene, Q-141's WebGPU leg
+// (output/q141-pick-readback-2026-09-02/README.txt:75-78) waited 91,210 ms /
+// 64 frames at 0.70 fps and still read tilesLoaded FALSE against a 90 s
+// settle deadline, versus WebGL's 16,626 ms / 107 frames / tilesLoaded TRUE.
+// A re-run of this probe against the same scene should be read as the
+// instrument working, not as a new bug, if most or all WebGPU cells refuse
+// `residency-settle-timeout` rather than complete.
 //
 // Preconditions:
 //   node server.js --port 8094 --serve-built
@@ -10,6 +36,7 @@
 //   node Tools/visual-regression/probe-aec-perf.mjs --runs 3
 //   node Tools/visual-regression/probe-aec-perf.mjs --runs 3 --reverse
 //   node Tools/visual-regression/probe-aec-perf.mjs --headed
+//   node Tools/visual-regression/probe-aec-perf.mjs --settle-deadline-ms 180000
 //
 // Exit codes:
 //   0 measurement completed
@@ -19,6 +46,8 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+
+import { decideReadinessRefusal } from "./lib/aec-residency-e1.mjs";
 
 export const EXIT_CODES = Object.freeze({
   OK: 0,
@@ -43,6 +72,22 @@ export const EXTRA_LEVERS = Object.freeze([
   "resolutionScale",
   "logarithmicDepthBuffer",
 ]);
+
+/**
+ * How many consecutive forced frames must show every tileset resident
+ * (`tilesLoaded === true`, zero pending requests, an unchanging selected-tile
+ * total) before the streaming-residency readiness loop accepts. Exported so
+ * the spec can compute the exact frame a fixture is expected to settle on,
+ * rather than asserting only "eventually".
+ *
+ * This value is duplicated as a literal inside HARNESS_HTML's browser-side
+ * script below (`RESIDENCY_STABLE_FRAME_COUNT`, in the readiness loop) rather
+ * than interpolated in: the source-extraction spec harness reads this file's
+ * RAW TEXT and dynamically imports it as a standalone module, and a `${...}`
+ * substitution left unresolved in raw text is a syntax error outside a
+ * template literal. Keep both literals equal to 3.
+ */
+export const RESIDENCY_STABLE_FRAME_COUNT = 3;
 
 const HARNESS_PATH = "/Tools/visual-regression/aec-perf-harness.html";
 
@@ -432,26 +477,87 @@ window.__aecBuild = async function (input) {
   // Scene.postUpdate fires before this frame's primitives traversal runs
   // (Scene.render raises postUpdate, then only afterward calls the private
   // render() that walks each tileset and writes .statistics), so a listener
-  // here always reads the PREVIOUS frame's counts. renderReady can go true
-  // after the very first forced frame -- nothing is GPU-pending before any
-  // tile has been selected for upload -- so the loop can exit after exactly
-  // one iteration, giving this listener exactly one call with pre-traversal
-  // (still-zero) statistics. Listening on postRender instead reads the
-  // statistics this same frame's traversal just wrote.
+  // here always reads the PREVIOUS frame's counts. Listening on postRender
+  // instead reads the statistics this same frame's traversal just wrote.
   scene.postRender.addEventListener(captureFirstTraversal);
+
+  // DM-10. RESIDENCY_STABLE_FRAME_COUNT must equal the exported constant of
+  // the same name in probe-aec-perf.mjs -- see that export's JSDoc for why
+  // this is a literal duplicate rather than an interpolation.
+  const RESIDENCY_STABLE_FRAME_COUNT = 3;
+
+  // DM-10. scene.renderReady is satisfied vacuously by a scene that has
+  // never rendered, so it cannot be the readiness criterion on its own.
+  // tilesetResidency() reads the same public surface the E-1 residency
+  // instrument reads (lib/aec-residency-e1.mjs / probe-aec-residency-e1.mjs
+  // e1.tilesetStatus), so the two probes share one definition of "loaded".
+  function tilesetResidency() {
+    return tilesets.map(function (entry) {
+      const statistics = entry.tileset.statistics || {};
+      return {
+        title: entry.title,
+        tilesLoaded: entry.tileset.tilesLoaded === true,
+        selected: statistics.selected ?? null,
+        pendingRequests: statistics.numberOfPendingRequests ?? null,
+        geometryBytes: statistics.geometryByteLength ?? null,
+        texturesBytes: statistics.texturesByteLength ?? null,
+        batchTableBytes: statistics.batchTableByteLength ?? null,
+      };
+    });
+  }
 
   const fixedTime = Cesium.JulianDate.clone(viewer.clock.currentTime);
   const readyStartedAt = performance.now();
-  const deadline = readyStartedAt + input.timeoutMs;
+  // DM-10 (fix round). Its own knob, not the general per-cell timeoutMs: the
+  // measured evidence (Q-141's WebGPU leg, 91,210 ms / tilesLoaded FALSE at a
+  // 90 s settle deadline on this exact scene) predicts this window needs
+  // headroom independent of whatever bounds the rest of the cell.
+  const deadline = readyStartedAt + input.settleDeadlineMs;
   let framesToRenderReady = 0;
   let becameReady = false;
+  let stableFrameCount = 0;
+  let previousSelectedTotal = -1;
+  let lastResidency = [];
+  let lastCommandListLength = 0;
 
   while (performance.now() < deadline) {
     scene.requestRender();
     scene.forceRender(fixedTime);
     framesToRenderReady++;
 
-    if (scene.renderReady === true) {
+    lastResidency = tilesetResidency();
+    lastCommandListLength =
+      scene.frameState && scene.frameState.commandList
+        ? scene.frameState.commandList.length
+        : 0;
+
+    const allTilesetsLoaded = lastResidency.every(function (row) {
+      return row.tilesLoaded === true;
+    });
+    const pendingTotal = lastResidency.reduce(function (sum, row) {
+      return sum + (row.pendingRequests || 0);
+    }, 0);
+    const selectedTotal = lastResidency.reduce(function (sum, row) {
+      return sum + (row.selected || 0);
+    }, 0);
+
+    // A scene still gaining or losing selected tiles has not settled even on
+    // a frame where every tileset happens to read tilesLoaded === true, so a
+    // change in the selected total restarts the stability count.
+    if (selectedTotal !== previousSelectedTotal) {
+      previousSelectedTotal = selectedTotal;
+      stableFrameCount = 0;
+    }
+
+    const contentResident =
+      scene.renderReady === true &&
+      allTilesetsLoaded &&
+      pendingTotal === 0 &&
+      lastCommandListLength >= 1;
+
+    stableFrameCount = contentResident ? stableFrameCount + 1 : 0;
+
+    if (stableFrameCount >= RESIDENCY_STABLE_FRAME_COUNT) {
       becameReady = true;
       break;
     }
@@ -466,12 +572,20 @@ window.__aecBuild = async function (input) {
   if (!becameReady) {
     return {
       ok: false,
-      refusalReason: "render-ready-timeout",
+      refusalReason: "residency-settle-timeout",
       audit: audit,
       readiness: {
         timeToRenderReadyMs: performance.now() - startedAt,
         framesToRenderReady: framesToRenderReady,
         sceneFrameNumber: sceneFrameNumber(),
+        criterion: "streaming-tileset-residency",
+        renderReady: scene.renderReady === true,
+        framesProduced: framesToRenderReady,
+        commandListLength: lastCommandListLength,
+        reached: false,
+        stableFrameCount: stableFrameCount,
+        requiredStableFrameCount: RESIDENCY_STABLE_FRAME_COUNT,
+        tilesetResidencyAtReadiness: lastResidency,
       },
       errors: window.__aecErrors.slice(),
     };
@@ -649,6 +763,14 @@ window.__aecBuild = async function (input) {
         typeof debugSnapshot.scene.frameNumber === "number"
           ? debugSnapshot.scene.frameNumber
           : sceneFrameNumber(),
+      criterion: "streaming-tileset-residency",
+      renderReady: scene.renderReady === true,
+      framesProduced: framesToRenderReady,
+      commandListLength: lastCommandListLength,
+      reached: becameReady,
+      stableFrameCount: stableFrameCount,
+      requiredStableFrameCount: RESIDENCY_STABLE_FRAME_COUNT,
+      tilesetResidencyAtReadiness: lastResidency,
     },
     audit: audit,
     debugSnapshot: debugSnapshot,
@@ -762,6 +884,12 @@ export function parseArgs(argv) {
     sampleFrames: 120,
     pickSamples: 40,
     timeoutMs: 120000,
+    // DM-10 (fix round). `null` until set: the residency-settle window
+    // defaults to `timeoutMs` (unchanged behaviour) but can be raised on its
+    // own, independent of the rest of the per-cell timeout, the same way
+    // `lib/aec-residency-e1.mjs`'s sibling instrument exposes
+    // `--settle-deadline-ms` for its own residency wait.
+    settleDeadlineMs: null,
     repositoryRoot: null,
     outputDirectory: null,
   };
@@ -797,6 +925,12 @@ export function parseArgs(argv) {
         "--timeout-ms",
       );
       index++;
+    } else if (arg === "--settle-deadline-ms") {
+      options.settleDeadlineMs = positiveInteger(
+        optionValue(argv, index, arg),
+        "--settle-deadline-ms",
+      );
+      index++;
     } else if (arg === "--repository-root") {
       options.repositoryRoot = optionValue(argv, index, arg);
       index++;
@@ -818,6 +952,13 @@ export function parseArgs(argv) {
 
   if (options.port > 65535) {
     throw new TypeError("--port must be at most 65535");
+  }
+
+  // Resolved here (not left null) so every reader of the returned options --
+  // runCell, the receipt writer, and this function's own tests -- sees the
+  // same concrete number rather than re-deriving the fallback independently.
+  if (options.settleDeadlineMs === null) {
+    options.settleDeadlineMs = options.timeoutMs;
   }
 
   return options;
@@ -1035,6 +1176,33 @@ export function decideCellRefusal({ leg, raw }) {
   ) {
     return refusedDecision("render-ready-metrics-invalid", {
       readiness: raw.readiness ?? null,
+    });
+  }
+
+  // DM-10. Reuses the E-1 residency instrument's own non-vacuous-readiness
+  // check (`lib/aec-residency-e1.mjs#decideReadinessRefusal`) rather than a
+  // second, drifting copy of the same "renderReady alone is vacuous" guard.
+  const readinessSelfConsistency = decideReadinessRefusal(raw.readiness);
+  if (readinessSelfConsistency.refuse) {
+    return readinessSelfConsistency;
+  }
+
+  if (
+    raw.readiness.criterion !== "streaming-tileset-residency" ||
+    !Array.isArray(raw.readiness.tilesetResidencyAtReadiness) ||
+    raw.readiness.tilesetResidencyAtReadiness.length === 0
+  ) {
+    return refusedDecision("residency-receipt-missing", {
+      readiness: raw.readiness,
+    });
+  }
+
+  const notResident = raw.readiness.tilesetResidencyAtReadiness.filter(
+    (row) => row?.tilesLoaded !== true,
+  );
+  if (notResident.length > 0) {
+    return refusedDecision("residency-not-settled-at-readiness", {
+      notResident,
     });
   }
 
@@ -1432,6 +1600,13 @@ export function buildCellReport({
     timeToRenderReadyMs: rounded(raw.readiness.timeToRenderReadyMs),
     framesToRenderReady: raw.readiness.framesToRenderReady,
     sceneFrameNumber: raw.readiness.sceneFrameNumber,
+    // DM-10: the criterion actually satisfied, frames-to-ready above, and
+    // per-tileset residency (tiles selected / content loaded / bytes) at the
+    // moment readiness was declared -- so a reader never has to take
+    // "readiness" on faith the way the bare renderReady flag required.
+    readinessCriterion: raw.readiness.criterion,
+    residencyStableFrameCount: raw.readiness.stableFrameCount,
+    tilesetResidencyAtReadiness: raw.readiness.tilesetResidencyAtReadiness,
     firstTraversalSceneFrameNumber: raw.audit.firstTraversal.sceneFrameNumber,
     maximumScreenSpaceErrorAtFirstTraversal:
       raw.audit.firstTraversal.maximumScreenSpaceErrorByTileset,
@@ -1460,7 +1635,7 @@ async function runCell({
   entry,
   origin,
   outputDirectory,
-  timeoutMs,
+  settleDeadlineMs,
   sampleFrames,
   pickSamples,
   validatedPick,
@@ -1510,7 +1685,7 @@ async function runCell({
     const raw = await page.evaluate((input) => window.__aecBuild(input), {
       renderer: entry.backend,
       leg: entry.leg,
-      timeoutMs,
+      settleDeadlineMs,
       sampleFrames,
     });
 
@@ -1693,7 +1868,7 @@ export async function main(argv = process.argv.slice(2)) {
         entry,
         origin,
         outputDirectory,
-        timeoutMs: options.timeoutMs,
+        settleDeadlineMs: options.settleDeadlineMs,
         sampleFrames: options.sampleFrames,
         pickSamples: options.pickSamples,
         validatedPick,
@@ -1730,6 +1905,7 @@ export async function main(argv = process.argv.slice(2)) {
       sampleFrames: options.sampleFrames,
       pickSamples: options.pickSamples,
       timeoutMs: options.timeoutMs,
+      settleDeadlineMs: options.settleDeadlineMs,
     },
     preflight,
     legs,
