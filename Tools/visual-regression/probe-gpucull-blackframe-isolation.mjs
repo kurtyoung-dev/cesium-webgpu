@@ -40,7 +40,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
 import { STRIP_WIDGETS_SOURCE } from "./lib/strip-viewer-widgets.mjs";
-import { readPng, frameStats } from "./lib/pnglite.mjs";
+import { readPng, frameStats } from "../lib/png-decode.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const OUT = path.join(HERE, "output", "gpucull-blackframe-isolation");

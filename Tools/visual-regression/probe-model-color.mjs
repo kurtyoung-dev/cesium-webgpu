@@ -28,7 +28,7 @@
  *   PROBE_BASE (default http://localhost:8080)
  */
 import { chromium } from "playwright";
-import zlib from "zlib";
+import { encodeRgbaPng } from "../lib/png-rgba.mjs";
 import {
   errorGateInit,
   armWebGPUDevices,
@@ -224,52 +224,11 @@ function colorDiff(a, b) {
   };
 }
 
-// ── PNG encoder (zlib deflate) — zero external dep ──
-const CRC_TABLE = (() => {
-  const t = new Uint32Array(256);
-  for (let n = 0; n < 256; n++) {
-    let c = n;
-    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
-    t[n] = c >>> 0;
-  }
-  return t;
-})();
-function crc32(buf) {
-  let c = 0xffffffff;
-  for (let i = 0; i < buf.length; i++)
-    c = CRC_TABLE[(c ^ buf[i]) & 0xff] ^ (c >>> 8);
-  return (c ^ 0xffffffff) >>> 0;
-}
+// ── PNG encoder — shared Tools/lib/png-rgba.mjs ──
 function encodePNG({ w, h, data }) {
-  const bpr = w * 4;
-  const raw = Buffer.alloc((bpr + 1) * h);
-  for (let y = 0; y < h; y++) {
-    raw[y * (bpr + 1)] = 0;
-    Buffer.from(data.slice(y * bpr, (y + 1) * bpr)).copy(
-      raw,
-      y * (bpr + 1) + 1,
-    );
-  }
-  const idat = zlib.deflateSync(raw);
-  const chunk = (type, body) => {
-    const len = Buffer.alloc(4);
-    len.writeUInt32BE(body.length, 0);
-    const tb = Buffer.from(type, "ascii");
-    const crcBuf = Buffer.alloc(4);
-    crcBuf.writeUInt32BE(crc32(Buffer.concat([tb, body])), 0);
-    return Buffer.concat([len, tb, body, crcBuf]);
-  };
-  const ihdr = Buffer.alloc(13);
-  ihdr.writeUInt32BE(w, 0);
-  ihdr.writeUInt32BE(h, 4);
-  ihdr[8] = 8;
-  ihdr[9] = 6;
-  return Buffer.concat([
-    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
-    chunk("IHDR", ihdr),
-    chunk("IDAT", idat),
-    chunk("IEND", Buffer.alloc(0)),
-  ]);
+  // `data` is a plain Array (page-side `Array.from(imageData.data)`), so it
+  // needs a typed-array copy before it can go through the shared encoder.
+  return encodeRgbaPng(Uint8Array.from(data), w, h);
 }
 
 // ── Captures ──

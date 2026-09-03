@@ -1,11 +1,26 @@
-// Minimal PNG decoder + pixel-diff, dependency-free beyond Node's zlib.
-// Playwright element screenshots are 8-bit, non-interlaced, colour type 2 or 6.
-//
-// Repatriated (CLAUDE.md Evidence Repatriation) from the Edge-executor tranche
-// that produced probe-gpucull-blackframe-isolation.mjs, which imported this as
-// a sibling under a gitignored output/ directory. Moved here, unchanged in
-// behaviour, so probes that import it do not depend on evidence that a clone
-// reset can make disappear.
+/**
+ * Shared PNG-to-RGBA decoding and pixel-analysis primitives for the
+ * visual-regression probe fleet.
+ * @purpose Dependency-free PNG decoder (8-bit, non-interlaced, colour type 2 or 6) plus pixel-diff and frame-stats helpers, the decode-side counterpart of Tools/lib/png-rgba.mjs.
+ * @status ACTIVE
+ *
+ * DX-16 follow-up (ruling R-2026-09-02-17, "one PNG/CRC32 helper in
+ * Tools/lib"): this module was `Tools/visual-regression/lib/pnglite.mjs`,
+ * landed at Batch 1375 as the reproducer for
+ * `probe-gpucull-blackframe-isolation.mjs`. Re-reading it at fold time found
+ * it carries no PNG encoder at all — `crc32`/`pngChunk`/`encodeRgbaPng` live
+ * only in `png-rgba.mjs`, and this file's `decodePng`/`readPng` are a decoder,
+ * with `diffPixels`/`frameStats` downstream pixel analysis. The two modules
+ * are complementary (encode vs. decode), not duplicates, so nothing here
+ * changed byte-for-byte in the move — see `png-decode.spec.mjs` for the
+ * round-trip proof against `encodeRgbaPng`. Moved so a decoder that reads
+ * arbitrary screenshots (Playwright's own PNG encoder, which uses adaptive
+ * per-row filtering, not the fixed filter-0 rows `encodeRgbaPng` writes) has
+ * the same durable home as its encode-side sibling, rather than living under
+ * `Tools/visual-regression/lib/` where only one probe could see it.
+ *
+ * @module Tools/lib/png-decode
+ */
 
 import zlib from "node:zlib";
 import fs from "node:fs";
@@ -14,6 +29,14 @@ function crcCheckSkip() {
   /* CRCs are not validated — the producer is Playwright, not a network. */
 }
 
+/**
+ * Decode an 8-bit, non-interlaced PNG (colour type 2 RGB or 6 RGBA) to a
+ * tightly packed RGBA buffer.
+ *
+ * @param {Buffer} buffer Complete PNG file bytes.
+ * @returns {{width: number, height: number, data: Buffer}} Decoded image;
+ *   `data` is `width * height * 4` bytes, RGB inputs get alpha 255.
+ */
 export function decodePng(buffer) {
   crcCheckSkip();
   if (
@@ -94,6 +117,12 @@ export function decodePng(buffer) {
   return { width, height, data: out };
 }
 
+/**
+ * Read and decode a PNG file from disk.
+ *
+ * @param {string} filePath Path to a PNG file.
+ * @returns {{width: number, height: number, data: Buffer}} Decoded image.
+ */
 export function readPng(filePath) {
   return decodePng(fs.readFileSync(filePath));
 }
@@ -102,6 +131,11 @@ export function readPng(filePath) {
  * Per-pixel mismatch fraction. A pixel counts as different when any channel
  * moves by more than `tolerance`. Also returns mean absolute channel delta so
  * a sub-threshold but systematic shift is visible instead of rounding to zero.
+ *
+ * @param {{width: number, height: number, data: Buffer|Uint8Array}} a First image.
+ * @param {{width: number, height: number, data: Buffer|Uint8Array}} b Second image.
+ * @param {number} [tolerance] Per-channel delta above which a pixel counts as differing.
+ * @returns {{comparable: boolean, reason?: string, total?: number, differing?: number, mismatchPct?: number, meanAbsDelta?: number, maxDelta?: number}} Comparison.
  */
 export function diffPixels(a, b, tolerance = 8) {
   if (a.width !== b.width || a.height !== b.height) {
@@ -134,7 +168,13 @@ export function diffPixels(a, b, tolerance = 8) {
   };
 }
 
-/** Fraction of pixels that are not near-black, plus mean luminance. */
+/**
+ * Fraction of pixels that are not near-black, plus mean luminance.
+ *
+ * @param {{width: number, height: number, data: Buffer|Uint8Array}} img Decoded image.
+ * @param {number} [blackThreshold] Per-channel value above which a pixel counts as non-black.
+ * @returns {{width: number, height: number, nonBlackPct: number, meanLuminance: number, distinctCoarseColors: number}} Stats.
+ */
 export function frameStats(img, blackThreshold = 12) {
   const total = img.width * img.height;
   let nonBlack = 0;

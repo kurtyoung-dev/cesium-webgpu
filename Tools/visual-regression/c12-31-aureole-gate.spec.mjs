@@ -8,8 +8,8 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { deflateSync } from "node:zlib";
 
+import { encodeRgbaPng } from "../lib/png-rgba.mjs";
 import {
   C12_31_AUREOLE_ARTIFACT_PREFIX,
   C12_31_AUREOLE_CAPTURE_METHOD,
@@ -39,66 +39,9 @@ import {
 } from "./probe-sky-aureole-anchor.mjs";
 
 const FIXED_RUN_ID = "123e4567-e89b-42d3-a456-426614174000";
-const PNG_SIGNATURE = Buffer.from([
-  0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
-]);
 
 function sha256(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
-}
-
-const CRC_TABLE = (() => {
-  const table = new Uint32Array(256);
-  for (let n = 0; n < 256; n++) {
-    let value = n;
-    for (let bit = 0; bit < 8; bit++) {
-      value = (value & 1) !== 0 ? 0xedb88320 ^ (value >>> 1) : value >>> 1;
-    }
-    table[n] = value >>> 0;
-  }
-  return table;
-})();
-
-function crc32(bytes) {
-  let crc = 0xffffffff;
-  for (const byte of bytes) {
-    crc = CRC_TABLE[(crc ^ byte) & 0xff] ^ (crc >>> 8);
-  }
-  return (crc ^ 0xffffffff) >>> 0;
-}
-
-function pngChunk(type, data) {
-  const typeBytes = Buffer.from(type, "ascii");
-  const chunk = Buffer.alloc(12 + data.byteLength);
-  chunk.writeUInt32BE(data.byteLength, 0);
-  typeBytes.copy(chunk, 4);
-  data.copy(chunk, 8);
-  chunk.writeUInt32BE(
-    crc32(Buffer.concat([typeBytes, data])),
-    8 + data.byteLength,
-  );
-  return chunk;
-}
-
-function encodeRgbaPng(pixels, width, height) {
-  const ihdr = Buffer.alloc(13);
-  ihdr.writeUInt32BE(width, 0);
-  ihdr.writeUInt32BE(height, 4);
-  ihdr[8] = 8;
-  ihdr[9] = 6;
-  const stride = width * 4;
-  const scanlines = Buffer.alloc(height * (stride + 1));
-  for (let y = 0; y < height; y++) {
-    const target = y * (stride + 1);
-    scanlines[target] = 0;
-    pixels.copy(scanlines, target + 1, y * stride, (y + 1) * stride);
-  }
-  return Buffer.concat([
-    PNG_SIGNATURE,
-    pngChunk("IHDR", ihdr),
-    pngChunk("IDAT", deflateSync(scanlines, { level: 6 })),
-    pngChunk("IEND", Buffer.alloc(0)),
-  ]);
 }
 
 function syntheticPixels(kind, width, height) {
