@@ -32,6 +32,15 @@ import {
   checkEmbeddedFusedSnapshotIsCanonical,
   checkFusedCaptureUsage,
 } from "./lib/same-task-capture.mjs";
+// The frustum-margin fraction and the pixel floor live here so the
+// in-browser framing formula (below, in `acquirePageMeasurement`) and the
+// pure spec in `gsplat-tower-framing.spec.mjs` read the same registered
+// numbers. Neither can be imported INTO the browser call itself --
+// Playwright's `page.evaluate` serializes `acquirePageMeasurement`'s source
+// text and reruns it in the page with no closure over this module's
+// bindings -- so both values are threaded through the page.evaluate
+// argument object instead.
+import { TOWER_FRAMING_CONFIG } from "./lib/gsplat-tower-framing.mjs";
 import { exitCodeForS5Status } from "./lib/verdict-exit-gate.mjs";
 import {
   armWebGPUDevices,
@@ -510,7 +519,12 @@ async function runBackend(browser, renderer, base, owned) {
     }
 
     owned.phase = `${renderer}:measure`;
-    const acquirePageMeasurement = async ({ renderer, assetUrl }) => {
+    const acquirePageMeasurement = async ({
+      renderer,
+      assetUrl,
+      towerTerrainMarginFraction,
+      minimumTowerMaskPixels,
+    }) => {
       window.__c15G7Progress = { renderer, phase: "setup" };
       const C = await import("/Build/CesiumUnminified/index.js");
       const viewer = window.viewer;
@@ -591,24 +605,50 @@ async function runBackend(browser, renderer, base, owned) {
       });
       scene.groundPrimitives.add(classifier);
 
-      const combined = C.BoundingSphere.fromPoints([
+      // The tower and its terrain-reference point are separated almost
+      // entirely by ALTITUDE (this asset's tower sits ~2852 m above its own
+      // ellipsoid-surface projection -- see gsplat-tower-framing.mjs), not
+      // by the ground-classification footprint. The look-at target is
+      // therefore the true midpoint between those two points, and the
+      // range is derived directly from that altitude separation and the
+      // camera's live vertical field of view, so both anchors project
+      // inside the frustum by construction rather than as a side effect of
+      // an unrelated bounding sphere. `computeTowerTerrainRange` in
+      // gsplat-tower-framing.mjs pins this exact formula, and
+      // `evaluateGsplatClassificationDepth` recomputes it from the
+      // telemetry recorded below to confirm the page actually used it.
+      const target = C.Cartesian3.midpoint(
         towerCenter,
         terrainCenter,
-        ...polygonPositions,
-      ]);
+        new C.Cartesian3(),
+      );
+      const verticalSeparationMeters = C.Cartesian3.distance(
+        towerCenter,
+        terrainCenter,
+      );
+      const fovYRadians = scene.camera.frustum.fovy;
+      const range =
+        verticalSeparationMeters /
+        2 /
+        (towerTerrainMarginFraction * Math.tan(fovYRadians / 2));
       viewer.camera.viewBoundingSphere(
-        combined,
+        new C.BoundingSphere(target, 0),
         new C.HeadingPitchRange(
           0,
           // The shallow pitch separates the vertical splat surface from its
           // ground footprint while retaining an unmistakable globe frame.
           C.Math.toRadians(-20),
-          // Three radii leaves the combined sphere inside the 60-degree
-          // default perspective frustum without shrinking the separation.
-          combined.radius * 3,
+          range,
         ),
       );
       viewer.camera.lookAtTransform(C.Matrix4.IDENTITY);
+      const framing = {
+        verticalSeparationMeters,
+        fovYRadians,
+        marginFraction: towerTerrainMarginFraction,
+        range,
+        minimumTowerMaskPixels,
+      };
 
       const frustumList = () =>
         scene._view?.frustumCommandsList ?? scene.frustumCommandsList ?? [];
@@ -971,6 +1011,7 @@ async function runBackend(browser, renderer, base, owned) {
             projectedAnchors: anchors,
             classificationTypeBoth:
               classifier.classificationType === C.ClassificationType.BOTH,
+            framing,
           },
           harnessErrors: pageRuntimeErrors,
         };
@@ -986,6 +1027,8 @@ async function runBackend(browser, renderer, base, owned) {
     const measurement = await page.evaluate(acquirePageMeasurement, {
       renderer,
       assetUrl: GSPLAT_CLASSIFICATION_CONFIG.assetUrl,
+      towerTerrainMarginFraction: TOWER_FRAMING_CONFIG.marginFraction,
+      minimumTowerMaskPixels: TOWER_FRAMING_CONFIG.minimumTowerMaskPixels,
     });
 
     owned.phase = `${renderer}:diagnostics`;

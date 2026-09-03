@@ -8,6 +8,11 @@
 // the write-once reread PNGs; the browser owns no verdict oracle.
 
 import { exitCodeForS5Status } from "./verdict-exit-gate.mjs";
+import {
+  TOWER_FRAMING_CONFIG,
+  computeTowerTerrainRange,
+  evaluateTowerMaskFloor,
+} from "./gsplat-tower-framing.mjs";
 
 export const GSPLAT_CLASSIFICATION_SCHEMA =
   "cesium.c15-g7.gsplat-classification-depth.v1";
@@ -42,6 +47,11 @@ export const GSPLAT_CLASSIFICATION_CONFIG = Object.freeze({
   // quarter of that same runtime separation.
   anchorSideMarginFraction: 0.1,
   referenceAgreementFraction: 0.25,
+  // The pre-registered framing floor (`gsplat-tower-framing.mjs`): below
+  // this many rendered tower-silhouette pixels the probe refuses rather than
+  // scoring the splat-overlap positive legs against a mask too small to
+  // carry a meaningful verdict either way.
+  minimumTowerMaskPixels: TOWER_FRAMING_CONFIG.minimumTowerMaskPixels,
 });
 
 /**
@@ -107,6 +117,7 @@ export function summarizeClassificationPixels(input, config) {
     "minimumResolvedPixels",
     "anchorSideMarginFraction",
     "referenceAgreementFraction",
+    "minimumTowerMaskPixels",
   ];
   for (const key of numericKeys) {
     if (!finite(config?.[key]) || config[key] < 0) {
@@ -330,6 +341,11 @@ export function summarizeClassificationPixels(input, config) {
       terrain: { ...input.anchors.terrain },
     },
     towerMaskPixels: maskCount(towerMask),
+    // The pre-registered floor this run judged `towerMaskPixels` against,
+    // read straight from `config` so the receipt states the number the
+    // refusal (if any) was measured against rather than leaving a reader to
+    // rediscover it from the source.
+    framingFloor: config.minimumTowerMaskPixels,
     noisePixels: maskCount(noiseMask),
     states,
     comparisons,
@@ -379,6 +395,20 @@ function checkCommonVisual(summary, backend, structural, failures, config) {
     Number.isInteger(summary.towerMaskPixels) &&
       summary.towerMaskPixels > signalFloor,
     `${backend}:tower-mask:not-resolved`,
+  );
+  // A fixed, pre-registered floor independent of measured noise --
+  // `tower-mask:not-resolved` above only rejects a mask the noise could have
+  // produced by chance; this rejects a mask that is real but still too small
+  // for the tower to be "filling a useful fraction of the capture" (a mask
+  // just over signalFloor is not "the hundreds" the framing fix targets).
+  const towerFloorResult = evaluateTowerMaskFloor(
+    summary.towerMaskPixels,
+    config.minimumTowerMaskPixels,
+  );
+  pushUnless(
+    structural,
+    towerFloorResult.ok,
+    `${backend}:${towerFloorResult.reason}`,
   );
   const terrain = summary.states?.terrainReference;
   pushUnless(
@@ -646,6 +676,40 @@ export function evaluateGsplatClassificationDepth(input) {
         Number.isInteger(runtime?.gpuGateArmedDevices) &&
           runtime.gpuGateArmedDevices > 0,
         "webgpu:runtime:error-gate-unarmed",
+      );
+    }
+    // The page can't import `computeTowerTerrainRange` across the
+    // `page.evaluate` boundary (see gsplat-tower-framing.mjs), so it
+    // duplicates the formula inline. When a run records `runtime.framing`
+    // telemetry (every real probe run does; older/unrelated fixtures that
+    // predate this telemetry simply omit the field and are unaffected),
+    // this recomputes the range from the page's own recorded inputs and
+    // requires it to match what the page actually handed the camera -- the
+    // formula's one production consumer, exercised on every real run rather
+    // than only its own spec fixtures.
+    const framing = runtime?.framing;
+    if (framing !== undefined) {
+      const framingInputsValid =
+        Number.isFinite(framing?.verticalSeparationMeters) &&
+        framing.verticalSeparationMeters > 0 &&
+        Number.isFinite(framing?.fovYRadians) &&
+        framing.fovYRadians > 0 &&
+        Number.isFinite(framing?.marginFraction) &&
+        framing.marginFraction > 0 &&
+        Number.isFinite(framing?.range);
+      pushUnless(
+        structural,
+        framingInputsValid &&
+          Math.abs(
+            framing.range -
+              computeTowerTerrainRange(
+                framing.verticalSeparationMeters,
+                framing.fovYRadians,
+                framing.marginFraction,
+              ),
+          ) <
+            1e-6 * Math.max(1, framing.range),
+        `${backend}:framing:range-not-pinned`,
       );
     }
   }
