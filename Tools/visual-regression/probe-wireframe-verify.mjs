@@ -16,6 +16,8 @@ import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 
+import { attachPageDiagnostics } from "../lib/attach-page-diagnostics.mjs";
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BASE = process.env.PROBE_BASE || "http://localhost:8080";
 const OUT_DIR = path.join(__dirname, "output");
@@ -24,17 +26,30 @@ async function boot(browser, renderer) {
   const page = await browser.newPage({
     viewport: { width: 1000, height: 1000 },
   });
-  const errs = [];
-  page.on("console", (m) => {
-    if (m.type() === "error") errs.push(m.text());
+  // Keep only console errors (drop log/warning/info) and every page error —
+  // the same selection the hand-rolled listener pair made.
+  const diagnostics = attachPageDiagnostics(page, {
+    filter: (record) => record.type === "error" || record.type === "pageerror",
   });
-  page.on("pageerror", (e) => errs.push("PAGEERR:" + e.message));
   await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}`, {
     waitUntil: "domcontentloaded",
     timeout: 90000,
   });
   await page.waitForFunction(() => !!window.viewer, null, { timeout: 90000 });
-  return { page, errs };
+  return { page, diagnostics };
+}
+
+/**
+ * Re-derive the original `["text" | "PAGEERR:" + text, ...]` string list,
+ * merged back into arrival order by seq (not timestamp — millisecond
+ * resolution ties same-tick console/pageerror pairs; attachPageDiagnostics
+ * keeps console and page errors in two arrays, the hand-rolled version
+ * pushed both into one).
+ */
+function errorStrings(diagnostics) {
+  return [...diagnostics.console, ...diagnostics.errors]
+    .sort((a, b) => a.seq - b.seq)
+    .map((r) => (r.type === "pageerror" ? "PAGEERR:" + r.text : r.text));
 }
 
 async function setup(page, wireframe) {
@@ -187,6 +202,11 @@ async function capture(page, outPath) {
     "settle:",
     JSON.stringify(stgl),
   );
-  console.error("gpu errs:", JSON.stringify(gpu.errs.slice(0, 5)));
+  console.error(
+    "gpu errs:",
+    JSON.stringify(errorStrings(gpu.diagnostics).slice(0, 5)),
+  );
+  gpu.diagnostics.detach();
+  gl.diagnostics.detach();
   await browser.close();
 })();

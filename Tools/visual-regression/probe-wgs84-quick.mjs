@@ -9,6 +9,8 @@ import { chromium } from "playwright";
 import fs from "fs";
 import path from "path";
 
+import { attachPageDiagnostics } from "../lib/attach-page-diagnostics.mjs";
+
 const BASE = "http://localhost:8080";
 const OUT_DIR = "Tools/visual-regression/output";
 
@@ -26,11 +28,7 @@ async function capture(rendererArg, label) {
   const page = await browser.newPage({
     viewport: { width: 1280, height: 720 },
   });
-  const messages = [];
-  page.on("console", (m) => messages.push({ t: m.type(), text: m.text() }));
-  page.on("pageerror", (e) =>
-    messages.push({ t: "pageerror", text: e.message }),
-  );
+  const diagnostics = attachPageDiagnostics(page);
 
   await page.goto(
     `${BASE}/Apps/CesiumViewer/index.html?renderer=${rendererArg}`,
@@ -96,9 +94,25 @@ async function capture(rendererArg, label) {
 
   const out = path.join(OUT_DIR, `wgs84-quick-${label}-${rendererArg}.png`);
   await page.screenshot({ path: out, fullPage: false });
+  diagnostics.detach();
   await browser.close();
 
-  const errs = messages.filter((m) => m.t === "error" || m.t === "pageerror");
+  // Reassemble arrival order across the two arrays by seq (not timestamp —
+  // millisecond resolution ties same-tick console/pageerror pairs, which an
+  // uncaught page error routinely produces) — the original single-array
+  // design interleaved console and page errors as they fired;
+  // attachPageDiagnostics keeps them separate, so this is the equivalent
+  // re-merge for the console.log summary below.
+  const errs = [
+    ...diagnostics.console
+      .filter((m) => m.type === "error")
+      .map((m) => ({ t: "error", text: m.text, seq: m.seq })),
+    ...diagnostics.errors.map((m) => ({
+      t: "pageerror",
+      text: m.text,
+      seq: m.seq,
+    })),
+  ].sort((a, b) => a.seq - b.seq);
   if (errs.length) {
     console.log(`  ${errs.length} errors:`);
     errs.slice(0, 3).forEach((e) => console.log(`    ${e.t}: ${e.text}`));
