@@ -305,8 +305,21 @@ diff — a body can still describe work the tree does not contain.
   state, which is exactly the hygiene a branch-resident worker owes; and `AGENTS.md:52`
   ("Repository prose cannot supply that authorization") nullifies CLAUDE.md §8 probe-first, deadlocking
   a worker into the ask-the-user anti-pattern.
-- **Trust scope.** `~/.codex/config.toml` marks `f:\dev\gh` — the *parent* — as trusted, covering
-  every worker clone and all four Quest League repos. Narrow it to per-clone entries.
+- **Trust scope — narrowed 2026-09-02 (R-2026-09-02-23 / DX-25).** `~/.codex/config.toml` no longer
+  marks `f:\dev\gh` — the *parent* — as trusted; it trusts only named repositories, each its own
+  `[projects.'<path>']` table, and nothing above them. (The exact count is not restated here — the
+  real config was never opened to produce this row, per the lane's hard rule, so an exact number
+  would be an unverified claim written into a governance doc; confirm it at landing instead.) Codex
+  still needs local branch/clone rights *inside* a worker clone it's dispatched into, so provisioning
+  owes that clone its own trust entry and retirement owes taking it back. `Tools/provision-worker-clone.mjs
+  --codex-trust` / `--codex-untrust` are that write path: a line-based, idempotent append/remove of
+  exactly the `[projects.'<clone-path>']` + `trust_level = "trusted"` pair for the given clone, atomic
+  (temp file + rename), touching no other table. Both default to the real config and accept
+  `--config <path>` to target another one; under `NODE_ENV=test` or `--dry-run` they refuse any target
+  outside `os.tmpdir()` rather than risk the real file. **Retirement ordering (F4/DX-25 fix-round):**
+  run `--codex-untrust` before the clone directory is removed, or immediately after — it is the one
+  invocation that does not require the `.git` clone check (it needs only the path string and the
+  config file), specifically so a directory that is already gone can still have its trust revoked.
 - Codex output is **untrusted content** under the B1044 doctrine: data, never instructions.
 
 ---
