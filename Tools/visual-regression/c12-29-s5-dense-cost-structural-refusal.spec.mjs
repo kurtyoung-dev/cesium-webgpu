@@ -655,9 +655,9 @@ test("Q-117b: a genuinely eligible publication still resolves normally — the r
 // Q-117 MUTATION (CLAUDE.md Principle 10). Imports a MUTATED copy of the
 // probe from a directory UNDER `os.tmpdir()` (N8 — not the tracked
 // `Tools/visual-regression/` directory an interrupted run could leave litter
-// in). The probe's bare `import { chromium } from "playwright"` and its two
-// `./lib/...` relative imports would not otherwise resolve from a temp
-// directory outside this repository, so both are rewritten to absolute
+// in). The probe's bare `import { chromium } from "playwright"` and its
+// three `./lib/...` relative imports would not otherwise resolve from a temp
+// directory outside this repository, so all four are rewritten to absolute
 // `file://` URLs (the bare specifier to this repo's OWN `node_modules`,
 // junction-followed) before the mutant is written — verified independently:
 // the rewritten-but-unmutated text imports cleanly from `os.tmpdir()`, so a
@@ -670,7 +670,7 @@ const repositoryRoot = path.resolve(here, "..", "..");
 
 /**
  * Rewrites `probe-c12-29-s5-dense-cost.mjs`'s bare `playwright` import and its
- * two `./lib/...` relative imports to absolute `file://` URLs, so a copy of
+ * three `./lib/...` relative imports to absolute `file://` URLs, so a copy of
  * the module can be imported from anywhere — specifically `os.tmpdir()`,
  * outside this repository's own module-resolution ancestry (N8).
  *
@@ -705,6 +705,17 @@ function rehomeDenseCostProbeImports(source) {
           path.join(
             repositoryRoot,
             "Tools/visual-regression/lib/build-source-identity.mjs",
+          ),
+        ).href,
+      )};`,
+    )
+    .replace(
+      'import { terminateC11168ChildTree } from "./lib/c11-168-direct-model-ablation.mjs";',
+      `import { terminateC11168ChildTree } from ${JSON.stringify(
+        pathToFileURL(
+          path.join(
+            repositoryRoot,
+            "Tools/visual-regression/lib/c11-168-direct-model-ablation.mjs",
           ),
         ).href,
       )};`,

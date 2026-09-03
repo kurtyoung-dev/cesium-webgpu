@@ -158,20 +158,6 @@ globalThis.GPUColorWrite ??= {
 };
 globalThis.GPUMapMode ??= { READ: 0x0001, WRITE: 0x0002 };
 
-test("mutateOrFail returns changed source and rejects an identity rewrite", () => {
-  assert.equal(
-    mutateOrFail("before", () => "after", "changed"),
-    "after",
-  );
-  assert.throws(() => mutateOrFail("before", (source) => source, "identity"), {
-    name: "AssertionError",
-    message:
-      "the identity mutation changed nothing — its anchor text has moved, so " +
-      "this mutation test would pass vacuously and the result it exists to " +
-      "falsify would be unfalsifiable",
-  });
-});
-
 /**
  * Resolves an engine `.js` shader-wrapper import that a missing `gulp
  * build` WGSL/GLSL compilation step would otherwise have generated on

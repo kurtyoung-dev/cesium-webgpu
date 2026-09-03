@@ -46,6 +46,7 @@ import {
   inspectBuildSourceIdentity,
   safeGitHead,
 } from "./lib/build-source-identity.mjs";
+import { terminateC11168ChildTree } from "./lib/c11-168-direct-model-ablation.mjs";
 
 const toolDirectory = path.dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = path.resolve(toolDirectory, "../..");
@@ -2530,19 +2531,16 @@ export function childProcessResult(
     };
     const timer = setTimeout(() => {
       timedOut = true;
-      if (process.platform === "win32") {
-        const killer = spawn(
-          "taskkill",
-          ["/pid", String(child.pid), "/T", "/F"],
-          {
-            stdio: "ignore",
-            windowsHide: true,
-          },
-        );
-        killer.unref();
-      } else {
-        child.kill("SIGKILL");
-      }
+      // Fire-and-forget: the independent postKillTimer below is this
+      // watchdog's own authority on whether the child actually closed, so
+      // termination is issued but never awaited here.
+      void terminateC11168ChildTree({
+        child,
+        force: true,
+        platform: process.platform,
+        spawnTaskkill: (command, killArgs) =>
+          spawn(command, killArgs, { stdio: "ignore", windowsHide: true }),
+      });
       postKillTimer = setTimeout(() => {
         child.unref();
         settle({
