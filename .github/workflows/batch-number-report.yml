@@ -1,0 +1,53 @@
+name: batch-number-report
+# Report-only: no step here is allowed to fail a build over what it finds.
+# The pre-push guard (Tools/pre-push-guard.mjs) already refuses most reuse —
+# within one push's own commits, and against the remote's already-landed
+# high-water mark (see Tools/report-batch-number-reuse.mjs's header for the
+# detail) — but only for commits its hook actually ran against. This workflow
+# re-derives the same collision over the FULL history reachable from whatever
+# ref CI checked out, so a reuse that landed before the guard existed, via
+# --no-verify, or through any other path the guard never saw is still visible
+# on the Actions page. Ruling R-2026-09-02-12: "Serialized landings by one
+# root seat, plus a CI check that reports duplicates after push. No
+# server-side enforcement."
+on:
+  push:
+    branches:
+      - main
+concurrency:
+  group: batch-number-report-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # Full reachable history, not the shallow default — the whole
+          # point of this job is to see reuse the push-time guard could not.
+          # blob:none keeps the fetch to commit metadata only: the script
+          # reads nothing but `%H`/`%s`, so the multi-GB blob history this
+          # repo carries would otherwise be paid on every push for no reason.
+          fetch-depth: 0
+          filter: blob:none
+      - name: install node 22
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+      - name: batch number reuse report
+        id: batch-report
+        run: |
+          set -o pipefail
+          REPORT="$(node Tools/report-batch-number-reuse.mjs)"
+          echo "$REPORT"
+          {
+            echo "## Batch number reuse report"
+            echo '```'
+            echo "$REPORT"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "report<<BATCH_NUMBER_REUSE_REPORT_EOF"
+            echo "$REPORT"
+            echo "BATCH_NUMBER_REUSE_REPORT_EOF"
+          } >> "$GITHUB_OUTPUT"
