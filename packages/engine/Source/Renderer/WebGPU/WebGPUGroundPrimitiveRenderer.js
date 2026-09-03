@@ -53,6 +53,7 @@ import {
   attachPickToColorCommand,
   findFirstGeometryInstancePickId,
 } from "./WebGPUPickCommandHelpers.js";
+import { packClassificationColor } from "./WebGPUGroundPrimitiveInstanceColor.js";
 import { ShaderDefine, ShaderSourceId } from "./WebGPUShaderDefines.js";
 import { WebGPUShaderModuleCache } from "./WebGPUShaderModuleCache.js";
 import { isWebGPULogDepthActive } from "./WebGPULogDepth.js";
@@ -1106,10 +1107,13 @@ fn applyMaterial(st: vec2<f32>, stDX: vec2<f32>, stDY: vec2<f32>, fallbackColor:
     discard;
   }
   // Fast path: per-instance / appearance flat color. No UV or material
-  // dispatch needed.
+  // dispatch needed. Premultiply alpha, as WebGL's ShadowVolumeAppearanceFS
+  // does on its PER_INSTANCE_COLOR branch and as the material path below
+  // does: the color target's source factor is "one", so an unpremultiplied
+  // return composites 1/alpha too bright over the classified surface.
   let materialType = u32(u.materialMeta.x);
   if (materialType == 0u) {
-    return i.col;
+    return vec4<f32>(i.col.rgb * i.col.a, i.col.a);
   }
   // Material path: recover eye-space, compute planar UV, apply material.
   // NOTE (Batch 171): the LOG path's windowToEye reads the per-slice
@@ -1756,14 +1760,7 @@ function tryResolveGroundPrimitiveMorphPipelines(
   return true;
 }
 
-function packUniforms(
-  data,
-  frameState,
-  modelMatrix,
-  color,
-  pickColor,
-  primitive,
-) {
+function packUniforms(data, frameState, modelMatrix, pickColor, primitive) {
   const uniformState = frameState.context.uniformState;
   // Use uniformState.view/projection for 2D/Columbus View support
   Matrix4.multiply(uniformState.view, modelMatrix, scratchModelView);
@@ -1795,10 +1792,12 @@ function packUniforms(
   data[22] = scratchEncodedCamera.low.z;
   data[23] = 0.0;
 
-  data[24] = color?.red ?? 1.0;
-  data[25] = color?.green ?? 0.0;
-  data[26] = color?.blue ?? 0.0;
-  data[27] = color?.alpha ?? 0.5;
+  // Floats 24-27 carry the flat colour `colorVS` copies into `o.col` and the
+  // `dsColorFS` material-type-0 fast path shades from. The appearance
+  // material is only one of its two sources: a `PerInstanceColorAppearance`
+  // has no material and keeps its colour on the geometry instance, the way
+  // WebGL's `PER_INSTANCE_COLOR` varying does.
+  packClassificationColor(data, 24, primitive);
 
   // The pick-color slot occupies floats 28-31 and defaults to zero
   // when no pick ID has been registered yet; the pick pass skips the
@@ -2129,7 +2128,6 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
   }
 
   const modelMatrix = primitive.modelMatrix || Matrix4.IDENTITY;
-  const color = primitive.appearance?.material?.uniforms?.color;
 
   // Geometry-backed wrappers already own the canonical per-instance pick IDs
   // on their inner Primitive. Reuse the first one (this renderer is explicitly
@@ -2149,7 +2147,6 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
     cache.uniformData,
     frameState,
     modelMatrix,
-    color,
     pickColor,
     primitive,
   );

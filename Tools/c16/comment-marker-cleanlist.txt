@@ -488,6 +488,7 @@ packages/engine/Source/Renderer/WebGPU/WebGPUSceneRendererEnsureResources.ts
 # Ground-primitive and vector-classification renderer family. Engineering
 # rationale remains beside the code as timeless constraints.
 packages/engine/Source/Renderer/WebGPU/WebGPUGroundPrimitiveRenderer.js
+packages/engine/Source/Renderer/WebGPU/WebGPUGroundPrimitiveInstanceColor.ts
 packages/engine/Source/Renderer/WebGPU/WebGPUEllipsoidPrimitiveRenderer.ts
 packages/engine/Source/Renderer/WebGPU/WebGPUVector3DTilePrimitiveRenderer.js
 packages/engine/Source/Renderer/WebGPU/WebGPUGroundPolylineRenderer.js

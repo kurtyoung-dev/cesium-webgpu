@@ -32,6 +32,12 @@
 //     pick-private packed-depth checkpoints used by terrain classification.
 //   - 0 WebGPU device errors.
 //
+// REPORTED, NOT SCORED: the mean composited RGB of the classified pixels on
+// each backend. The tint is alpha 0.5, so a classifier that returns an
+// unpremultiplied colour into a source-factor-one blend keeps full coverage
+// and the right hue while compositing 1/alpha too bright — invisible to the
+// coverage bar, visible in this number and in the PNGs.
+//
 // READ the PNGs: classprim-{webgl,webgpu}.png in the output dir.
 
 import { chromium } from "playwright";
@@ -246,6 +252,9 @@ async function run(renderer) {
           cx.drawImage(img, 0, 0);
           const d = cx.getImageData(0, 0, c.width, c.height).data;
           let red = 0;
+          let sumR = 0;
+          let sumG = 0;
+          let sumB = 0;
           for (let y = roi.y0; y < roi.y1; y++) {
             for (let x = roi.x0; x < roi.x1; x++) {
               const i = (y * c.width + x) * 4;
@@ -254,10 +263,26 @@ async function run(renderer) {
               const b = d[i + 2];
               if (r > 90 && r > g + 40 && r > b + 40) {
                 red++;
+                sumR += r;
+                sumG += g;
+                sumB += b;
               }
             }
           }
-          resolve({ red });
+          // Mean composited colour of the classified pixels. Coverage alone
+          // cannot separate "the right colour" from "the right hue at the
+          // wrong brightness": the box tint is alpha 0.5, so a classifier
+          // that emits an unpremultiplied source over a source-factor-one
+          // blend still counts as red here while compositing far brighter
+          // than WebGL. Reported, not scored — the two backends' framebuffer
+          // chains differ enough that a tight numeric bar would need its own
+          // calibration run.
+          resolve({
+            red,
+            meanR: red > 0 ? sumR / red : 0,
+            meanG: red > 0 ? sumG / red : 0,
+            meanB: red > 0 ? sumB / red : 0,
+          });
         };
         img.src = durl;
       });
@@ -323,14 +348,20 @@ async function run(renderer) {
   const coverageRatio = wgl.red > 0 ? wgpu.red / wgl.red : 0;
   const coverageDelta = Math.abs(coverageRatio - 1.0);
 
+  const meanRGB = (s) =>
+    `(${s.meanR.toFixed(1)}, ${s.meanG.toFixed(1)}, ${s.meanB.toFixed(1)})`;
   console.log(
-    `  backend  ready  classified-red  pick-id             pick-error  errs`,
+    `  backend  ready  classified-red  mean-rgb                pick-id             pick-error  errs`,
   );
   console.log(
-    `  webgl    ${String(wgl.ready).padEnd(5)}  ${String(wgl.red).padStart(14)}  ${String(wgl.pickId).padEnd(18)}  ${String(wgl.pickError).padEnd(10)}  ${wgl.errs.length}`,
+    `  webgl    ${String(wgl.ready).padEnd(5)}  ${String(wgl.red).padStart(14)}  ${meanRGB(wgl).padEnd(22)}  ${String(wgl.pickId).padEnd(18)}  ${String(wgl.pickError).padEnd(10)}  ${wgl.errs.length}`,
   );
   console.log(
-    `  webgpu   ${String(wgpu.ready).padEnd(5)}  ${String(wgpu.red).padStart(14)}  ${String(wgpu.pickId).padEnd(18)}  ${String(wgpu.pickError).padEnd(10)}  ${wgpu.errs.length}`,
+    `  webgpu   ${String(wgpu.ready).padEnd(5)}  ${String(wgpu.red).padStart(14)}  ${meanRGB(wgpu).padEnd(22)}  ${String(wgpu.pickId).padEnd(18)}  ${String(wgpu.pickError).padEnd(10)}  ${wgpu.errs.length}`,
+  );
+  console.log(
+    `  mean-rgb is reported, not scored: a WebGPU mean well above WebGL's on` +
+      ` the same coverage is the alpha-premultiply signature.`,
   );
   console.log(
     `\n  coverage ratio (webgpu/webgl) = ${coverageRatio.toFixed(3)} (delta ${coverageDelta.toFixed(3)}, max ${MAX_COVERAGE_DELTA})`,
