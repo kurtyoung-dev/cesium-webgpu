@@ -127,7 +127,7 @@ export const MODEL_TOPOLOGY_TABLE: Readonly<
     conversion: "none" as ModelTopologyConversion,
     isStrip: false,
     restartCapable: false,
-    // GLTF-POINTS-MODE precedent: a non-indexed point cloud binds the pipeline
+    // A non-indexed point cloud binds the pipeline
     // cache's 1-element default buffers for its absent attributes, which a
     // non-indexed `draw()` rejects CPU-side but `drawIndexed` tolerates via
     // robust access.
@@ -275,7 +275,8 @@ function restartValueFor(data: Uint16Array | Uint32Array): number {
  * need no separate rule: the largest index it can emit is `n - 1 = 65534`,
  * one below the uint16 restart sentinel. `n === 65536` would emit `0xFFFF`,
  * which every strip pipeline reads as a restart — and that case already falls
- * to uint32. The bound is unchanged from the GLTF-POINTS-MODE original.
+ * to uint32. The bound is unchanged from the non-indexed point-cloud
+ * synthesis this generalizes.
  */
 function synthesizeSequentialIndices(n: number): Uint16Array | Uint32Array {
   const out = n < 65536 ? new Uint16Array(n) : new Uint32Array(n);

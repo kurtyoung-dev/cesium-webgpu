@@ -14,7 +14,7 @@
  * Wiring this in would replace the per-frame copy with `texture_external`
  * binding in the relevant material shaders. ~80 LOC across Material
  * upload + a new BGL slot in `WebGPUEffectsBindGroup` (or material BGL).
- * Track in DEFERRED_WORK if an actual user shows up with a perf-bound
+ * Worth doing if an actual user shows up with a perf-bound
  * video-on-terrain workload.
  *
  * CesiumJS has video imagery providers that stream video overlays onto

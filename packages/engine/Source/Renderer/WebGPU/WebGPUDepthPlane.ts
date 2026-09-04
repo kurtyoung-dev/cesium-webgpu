@@ -31,7 +31,7 @@ import {
   uniformBuffer,
   Stage,
 } from "./WebGPUBindGroupLayoutHelpers.js";
-// Batch 230 — scene-FB target helper (MRT slot-1 placeholder).
+// Scene-FB target helper (MRT slot-1 placeholder).
 import { makeSceneFBTargets } from "./WebGPUSceneFBTargetHelpers.js";
 import type {
   WebGPURenderPipelineCache,
@@ -46,8 +46,8 @@ interface EncodedCartesian3Statics {
 // Simple depth-only WGSL shader for the depth plane
 // Uses RTE (Relative-To-Eye) precision for planetary-scale rendering
 //
-// Renderer-wide log depth (NEW-COLLECTIONS-LOG-DEPTH): when `logDepth` is
-// true the plane writes logarithmic `@builtin(frag_depth)` with the SAME
+// Renderer-wide log depth: when `logDepth` is
+// true the plane writes logarithmic `@builtin(frag_depth)` with the same
 // encode as the globe / collections (csm_vertexLogDepth + csm_writeLogDepth
 // contract — see WebGPULogDepth.ts). The depth plane occludes content behind
 // the horizon; if it kept hyperbolic z (~1.0 at the limb) while everything
@@ -298,7 +298,7 @@ export class WebGPUDepthPlane {
   private _device: GPUDevice | null = null;
   private _pipeline: GPURenderPipeline | null = null;
   private _pickPipeline: GPURenderPipeline | null = null;
-  // C10-07 — the exact central-cache descriptors this instance built, stashed
+  // The exact central-cache descriptors this instance built, stashed
   // so the deterministic-boot prewarm hook (`prewarmDeterministicPipelines`)
   // can re-submit them through the central cache at the scene resources-ready
   // step. Idempotent with the self-warm in `initialize` (the central cache
@@ -337,7 +337,7 @@ export class WebGPUDepthPlane {
   _sampleCount: number = 1;
   _pickColorFormat: GPUTextureFormat | null = null;
 
-  // Renderer-wide log depth (NEW-COLLECTIONS-LOG-DEPTH) — whether the
+  // Renderer-wide log depth — whether the
   // pipeline was built with the log-depth frag_depth shader variant. Read by
   // the SceneRenderer's resource-ensure step to detect a master-switch flip
   // and rebuild (same drift pattern as `_colorFormat`).
@@ -361,8 +361,7 @@ export class WebGPUDepthPlane {
   }
 
   /**
-   * C10-07-ASYNC-MODEL-PIPELINES / NEW-WEBGPU-BOOT-DETERMINISTIC-PIPELINE-PREWARM
-   * — deterministic-boot prewarm entry. Non-awaited, background-priority warm
+   * Deterministic-boot prewarm entry. Non-awaited, background-priority warm
    * of this plane's color + pick pipeline variants through the central async
    * cache at the scene resources-ready step (where the scene-FB attachment
    * formats are already resolved). Idempotent: `initialize` already kicks the
@@ -430,7 +429,7 @@ export class WebGPUDepthPlane {
   /**
    * Initialize the depth plane pipeline (once per device).
    *
-   * C-R7-RENDERER-MIGRATION (Batch 56). When a `pipelineCache` is supplied,
+   * When a `pipelineCache` is supplied,
    * the depth-only pipeline is requested through the central
    * `WebGPURenderPipelineCache` so multiple `WebGPUDepthPlane` instances
    * (split-screen, multi-canvas) share a single `GPURenderPipeline` if
@@ -466,14 +465,14 @@ export class WebGPUDepthPlane {
       code: makeDepthPlaneWGSL(useLogDepth),
     });
 
-    // VERTEX_FRAGMENT (Batch 253 — Batch 249 left this VERTEX-only): the
+    // Declared VERTEX_FRAGMENT rather than VERTEX-only: the
     // [ld] fragment shader reads `uniforms.logDepthParams.z` for the
-    // csm_writeLogDepth contract, so [ld] pipeline creation failed with
-    // "Entry point's stage (Fragment) is not in the binding visibility".
-    // Unexercised until a gate scene actually had useDepthPlane=true
-    // (probe-globe-default-limits). Superset visibility is valid for the
-    // non-ld variant too (its FS simply doesn't read the binding). Same
-    // bug class as the Batch-250 ComputeInstanceRender widening.
+    // csm_writeLogDepth contract, so a VERTEX-only binding fails [ld] pipeline
+    // creation with "Entry point's stage (Fragment) is not in the binding
+    // visibility". Superset visibility is valid for the
+    // non-ld variant too (its FS simply doesn't read the binding). The same
+    // mistake recurs anywhere a uniform is scoped to fewer stages than every
+    // shader variant that reads it actually uses.
     this._bindGroupLayout = makeBindGroupLayout(
       device,
       "DepthPlane-BindGroupLayout",
@@ -546,7 +545,7 @@ export class WebGPUDepthPlane {
       multisample: sampleCount > 1 ? { count: sampleCount } : undefined,
     };
 
-    // C9-02A — the pick mini-frame is always single-target and single-sample.
+    // The pick mini-frame is always single-target and single-sample.
     // Pre-request this attachment-compatible pipeline with the scene variant
     // so compilation does not begin on the first-pick hot path and the variant
     // is normally ready before interaction. Geometry, shader, layout, bind
@@ -591,7 +590,7 @@ export class WebGPUDepthPlane {
         multisample: pipelineDescriptor.multisample,
       });
 
-    // C10-07 — remember both variants for the deterministic-boot prewarm hook.
+    // Remember both variants for the deterministic-boot prewarm hook.
     this._prewarmDescriptors = [descriptor, pickDescriptor];
 
     if (pipelineCache) {
@@ -816,17 +815,17 @@ export class WebGPUDepthPlane {
 
     // Renderer-wide log depth — pack (near, far, factor, 0).
     //
-    // NEW-WEBGPU-DEPTH-PLANE-LOG-DEPTH-CONTRACT — the log-depth ENCODE
-    // frustum MUST be the FULL camera frustum stashed on
+    // The log-depth encode
+    // frustum must be the full camera frustum stashed on
     // `uniformState._logDepthEncodeNearFar` (published by the globe camera-UB
-    // pack and by both frustum loops before any slice remap), NOT the live
+    // pack and by both frustum loops before any slice remap), not the live
     // per-slice `currentFrustum`. Every other scene log-depth producer
     // (globe, PointPrimitive, Billboard, Polyline, ground/vector-tile
     // families, ellipsoid) encodes against that stash; this update() runs
-    // INSIDE the frustum loop, so reading `currentFrustum` here baked the
-    // slice's narrow near/far — a different curve — and the plane's depth was
-    // not comparable with the geometry it must occlude (Sol horizon oracle:
-    // the enabled scene plane failed to hide a physically-occluded marker).
+    // inside the frustum loop, so reading `currentFrustum` here bakes the
+    // slice's narrow near/far — a different curve — leaving the plane's depth
+    // not comparable with the geometry it must occlude (a physically-occluded
+    // horizon marker would stay visible through the depth plane).
     // When the stash drives near/far the factor is recomputed from the same
     // pair so encode + factor stay self-consistent. `currentFrustum` remains
     // only as the pre-stash early-frame fallback, matching the collections.

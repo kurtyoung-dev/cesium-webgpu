@@ -3,7 +3,7 @@
  * WebGPU Snap Framebuffer — the compact RG32Uint target behind
  * {@link Scene#snap}.
  *
- * UP144-SNAP-WEBGPU (Campaign 11 row C11-212). WebGPU twin of upstream's
+ * WebGPU twin of upstream's
  * `Scene/SnapFramebuffer.js`, which the v1.144 merge left WebGL-only: on WebGPU
  * `Scene.snap()` rendered an empty framebuffer and resolved `undefined` because
  * `SceneRenderer.executeCommand`'s alternate-renderer early-return precedes the
@@ -31,8 +31,8 @@
  * DEPTH-ONLY derived command so they still occlude. WebGPU cannot express that
  * in one pass: a pipeline's color-target formats are validated against the
  * render pass's attachments at draw time, so an RGBA8 pick pipeline dispatched
- * into an RG32Uint pass invalidates the entire command buffer (the FORK-34
- * failure mode) — and building a snap-format depth-only twin of every pick
+ * into an RG32Uint pass invalidates the entire command buffer — and
+ * building a snap-format depth-only twin of every pick
  * producer in the fleet would be a fleet-wide rewrite.
  *
  * So this framebuffer publishes TWO color attachments over ONE shared depth
@@ -392,8 +392,9 @@ export class WebGPUSnapFramebuffer {
     this._copyOffsetX = this._copyOriginX - this._snapOriginX;
     this._copyOffsetY = this._copyOriginTopY - this._snapOriginTopY;
 
-    // The occluder attachment MUST match the pick pipelines' canonical target
-    // format for the same reason the pick FBO's does (FORK-34).
+    // The occluder attachment must match the pick pipelines' canonical target
+    // format, same as the pick FBO's does: a mismatched attachment format
+    // invalidates the entire command buffer at draw time.
     const occluderFormat = getWebGPUPickColorFormat(this._context);
 
     if (

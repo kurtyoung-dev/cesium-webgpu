@@ -46,8 +46,8 @@ import type { WebGPURenderPipelineDescriptor } from "./WebGPURenderPipelineCache
 import type { WebGPUComputePipelineCache } from "./WebGPUComputePipelineCache.js";
 
 /**
- * CLOUD-LOW-COVERAGE-CUTOFF (fog cheap-path arm) — the fog's cheap cloud
- * shadow gates on cloud coverage, so it must use the SAME
+ * The fog's cheap cloud
+ * shadow gates on cloud coverage, so it must use the same
  * `cloudEffectiveCoverage` response as the visible march and the IBL cube
  * rather than a second copy of it. That response lives in the shared
  * `CloudDensityDomain` chunk, which `WebGPUProceduralCloudRenderer` and

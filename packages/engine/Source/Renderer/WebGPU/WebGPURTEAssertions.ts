@@ -1,16 +1,16 @@
 /**
  * Debug-only validators for the precision-critical pieces of every camera
- * UBO packer in the WebGPU backend. These exist to catch the failure
- * modes that have already cost us multiple debugging sessions:
+ * UBO packer in the WebGPU backend. These exist to catch two failure
+ * modes whose visible symptom is easy to mistake for something else:
  *
- * 1. **Off-by-one packer bugs** (BUG-38 twin) — writing `encodedCameraHigh`
+ * 1. **Off-by-one packer bugs** — writing `encodedCameraHigh`
  *    into `encodedCameraLow`'s slot (or vice versa) silently breaks RTE
  *    precision at planetary scale. The reconstructed camera position
  *    drifts by ~6 m at Earth radius instead of sub-millimeter, but the
  *    visible symptom is just "geometry jitter at orbit" — easy to mistake
  *    for a different bug.
  *
- * 2. **MVP translation zeroed in the wrong order** (BUG-38) — zeroing
+ * 2. **MVP translation zeroed in the wrong order** — zeroing
  *    `mvp[12..14]` *after* `proj × mv` wipes the projection's P23 depth
  *    mapping term along with the translation, because the multiply
  *    redistributes col3 as
@@ -105,7 +105,7 @@ export function assertCameraRTERoundTrip(
  * Verify that a 4×4 matrix has its translation column (indices 12, 13,
  * 14 in column-major order) zeroed.
  *
- * Catches BUG-38: a renderer that zeros `mvp[12..14]` *after* the
+ * Catches a renderer that zeros `mvp[12..14]` *after* the
  * `proj × mv` multiply has already wiped projection's P23 depth term
  * because P23 lands in `(proj × mv)_col3`. The correct fix is to zero
  * `mv[12..14]` *before* the multiply; this assertion confirms the JS

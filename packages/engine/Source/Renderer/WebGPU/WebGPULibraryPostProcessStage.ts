@@ -1,11 +1,11 @@
 /// <reference types="@webgpu/types" />
 /**
- * WIRE-PP-LIBRARY-BUILTINS — named PostProcessStageLibrary interception.
+ * Named PostProcessStageLibrary interception.
  *
  * `PostProcessStageLibrary` builds its stages from GLSL fragment shaders,
  * so on the WebGPU backend a `scene.postProcessStages.add(
- * PostProcessStageLibrary.createBlackAndWhiteStage())` used to hit the
- * GLSL-drop warning and silently no-op. Pre-translated WGSL twins for the
+ * PostProcessStageLibrary.createBlackAndWhiteStage())` would otherwise hit
+ * the GLSL-drop warning and silently no-op. Pre-translated WGSL twins for the
  * library built-ins have existed under `Shaders/WebGPU/PostProcess/` since
  * the initial shader-port batches but nothing imported them.
  *

@@ -118,9 +118,9 @@ interface HiZOcclusionResources {
    * Number of mips actually stored in the pyramid texture
    * (= totalMipLevels - 1, since pyramid mip 0 is input mip 1). This — NOT
    * `totalMipLevels` — is the valid `textureLoad` mip range, so it is what the
-   * occlusion-test shader must clamp against. FORK-41 (Batch 291) bugfix: the
-   * shader was previously fed `totalMipLevels`, making its coarsest sampled
-   * mip out of range (textureLoad → 0 = near → never occluded).
+   * occlusion-test shader must clamp against: feeding it `totalMipLevels`
+   * instead makes the coarsest sampled mip out of range (textureLoad → 0 =
+   * near → never occluded).
    */
   pyramidMips: number;
   /** Max commands the SOA buffers were sized for. */
@@ -167,14 +167,13 @@ class WebGPUHiZOcclusionDispatcher {
   get device(): GPUDevice {
     return this._device;
   }
-  // C-R7-COMPUTE-PIPELINE-CACHE (Batch 76) — captured at init time.
+  // The central compute-pipeline cache, injected before `allocate()`.
   private _computePipelineCache:
     | import("./WebGPUComputePipelineCache.js").WebGPUComputePipelineCache
     | null = null;
 
   /**
    * Pipeline-cache injection point. Set before `allocate()`.
-   * C-R7-COMPUTE-PIPELINE-CACHE (Batch 76).
    */
   _setComputePipelineCache(
     cache:
@@ -205,12 +204,12 @@ class WebGPUHiZOcclusionDispatcher {
   private _pendingReadCount = 0;
   private _stagingMapping: boolean[] = [false, false];
   private _latestVisibility: Uint32Array | null = null;
-  // B210-D1 (Batch 213) — track which frame the pyramid was last
+  // Tracks which frame the pyramid was last
   // built for. Per-frustum dispatches in the same frame share the
   // same depth texture and can reuse the previously-built pyramid.
   // -1 sentinel means "not built yet this session".
   private _lastBuiltFrameId: number = -1;
-  // FORK-41 (C2-21) — see setDepthTexture. True = mip-0 input is a depth
+  // See setDepthTexture. True = mip-0 input is a depth
   // texture (texture_depth_2d); false = a color texture (texture_2d<f32>,
   // the MSAA-resolved r16float depth).
   private _mip0IsDepthFormat: boolean = true;
@@ -399,7 +398,7 @@ class WebGPUHiZOcclusionDispatcher {
       uniformBuffer(2, Stage.COMPUTE),
     ]);
 
-    // C-R7-COMPUTE-PIPELINE-CACHE (Batch 76) — central cache routing.
+    // Route pipeline creation through the central compute-pipeline cache.
     const computeCache = this._computePipelineCache;
     const hiZLayout = device.createPipelineLayout({
       bindGroupLayouts: [hiZBindGroupLayout],
@@ -646,11 +645,11 @@ class WebGPUHiZOcclusionDispatcher {
     // of the source depth texture. Store it directly — the per-mip
     // bind groups reference it.
     this._resources.depthMip0View = depthTextureView;
-    // FORK-41 (C2-21) — whether mip 0's input view is a true depth texture
+    // Whether mip 0's input view is a true depth texture
     // (`texture_depth_2d`, single-sample scene) or a color texture
     // (`texture_2d<f32>`, e.g. the MSAA-resolved r16float depth the scene
     // framebuffer exposes as `depthSampleableView`). The r16float resolve is
-    // NOT bindable as `texture_depth_2d`, so mip 0 must use the standard
+    // not bindable as `texture_depth_2d`, so mip 0 must use the standard
     // `texture_2d<f32>` pipeline in that case or the dispatch silently fails
     // (visibility stays 0 → hitRatio 0).
     this._mip0IsDepthFormat = mip0IsDepthFormat;
@@ -661,7 +660,7 @@ class WebGPUHiZOcclusionDispatcher {
    * encoder. Must be called after `setDepthTexture`. No-op when
    * the dispatcher isn't allocated or shaders aren't loaded.
    *
-   * **B210-D1 (Batch 213)** — pass `frameId` to dedupe the rebuild
+   * Pass `frameId` to dedupe the rebuild
    * across multiple per-frustum dispatch calls in the same frame.
    * The depth texture is shared across frustums so the pyramid is
    * frame-stable; rebuilding 3× per frame for a 3-frustum scene was
@@ -780,7 +779,7 @@ class WebGPUHiZOcclusionDispatcher {
       screenHeight: number;
       nearPlane: number;
       farPlane: number;
-      // FORK-41 (Batch 291) — log-depth reconciliation. When the active
+      // Log-depth reconciliation. When the active
       // frustum uses the renderer-wide log-depth buffer (the common case),
       // `logDepthEnabled` is true and `logDepthFactor` carries
       // czm_oneOverLog2FarDepthFromNearPlusOne so the WGSL can encode the
@@ -852,12 +851,12 @@ class WebGPUHiZOcclusionDispatcher {
     f[17] = params.screenHeight;
     f[18] = params.nearPlane;
     f[19] = params.farPlane;
-    // FORK-41 (Batch 291) — pass the pyramid's STORED mip count, not the
+    // Pass the pyramid's stored mip count, not the
     // input-inclusive total, so the shader's `min(mip, hiZMipLevels - 1)`
     // clamp stays inside the texture's valid `textureLoad` mip range.
     this._occlusionParamsU32[20] = r.pyramidMips;
     this._occlusionParamsU32[21] = soa.count;
-    // FORK-41 (Batch 291) — repurpose the two former padding lanes as
+    // The two former padding lanes carry
     // logDepthEnabled (u32) + logDepthFactor (f32). The struct stays 96
     // bytes; OCCLUSION_PARAMS_BYTES is unchanged. When the caller doesn't
     // supply log-depth info the WGSL takes the linear-NDC branch.
@@ -1051,7 +1050,7 @@ function initWebGPUHiZOcclusion(
 ): boolean {
   const inst = getOrCreateDispatcher(context);
   if (!inst) return false;
-  // C-R7-COMPUTE-PIPELINE-CACHE (Batch 76).
+  // Route pipeline creation through the central compute-pipeline cache.
   inst._setComputePipelineCache(context.webgpuComputePipelineCache ?? null);
   return inst.allocate(inputWidth, inputHeight, maxCommands);
 }
@@ -1067,8 +1066,8 @@ function initWebGPUHiZOcclusion(
  *   - `soa` — SOABoundingSphereLayout arrays
  *   - `params` — view-projection + screen dims + near/far
  *   - `frameId` (optional) — pass the same frame counter from every
- *     call site in a given frame so the pyramid build dedupes (B210-D1
- *     fix, Batch 213). Omit to force a rebuild every call (legacy).
+ *     call site in a given frame so the pyramid build dedupes.
+ *     Omit to force a rebuild every call (legacy).
  */
 function dispatchWebGPUHiZOcclusion(
   context: { device: GPUDevice | null | undefined },
@@ -1089,7 +1088,7 @@ function dispatchWebGPUHiZOcclusion(
     farPlane: number;
     logDepthEnabled?: boolean;
     logDepthFactor?: number;
-    // FORK-41 (C2-21) — false when `depthTextureView` is the MSAA-resolved
+    // False when `depthTextureView` is the MSAA-resolved
     // r16float color view (must use the texture_2d<f32> mip-0 pipeline).
     mip0IsDepthFormat?: boolean;
   },

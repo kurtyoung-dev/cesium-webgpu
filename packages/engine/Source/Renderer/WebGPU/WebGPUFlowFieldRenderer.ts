@@ -1,6 +1,6 @@
 /// <reference types="@webgpu/types" />
 /**
- * WebGPU Flow-Field Wind Renderer (Campaign 6, C6-FLOWFIELD-WIND).
+ * WebGPU Flow-Field Wind Renderer.
  *
  * GPU flow-field particle advection over the globe: a ping-pong compute pass
  * advects N particles across a velocity field (an RGBA8 imagery texture,
@@ -66,7 +66,7 @@ const COMPUTE_PARAMS_BYTES = 64;
 const RENDER_PARAMS_BYTES = 48;
 
 // Per-device shader module cache so split-screen contexts share the compiled
-// render module (C-R7-SHADER-MODULE-DEDUP). Holds the render module only; the
+// render module. Holds the render module only; the
 // advection compute module has no ifdef variants and is created directly.
 const _renderShaderModuleCaches = new WeakMap<
   GPUDevice,

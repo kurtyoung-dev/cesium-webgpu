@@ -569,8 +569,8 @@ export const ShaderDefine = Object.freeze({
   METADATA_PICKING_ENABLED: 1 << 21,
 
   /**
-   * Point-cloud Eye-Dome Lighting depth-writing variant
-   * (PARITY-PC-EDL). When set, the point-cloud draw shader
+   * Point-cloud Eye-Dome Lighting depth-writing variant.
+   * When set, the point-cloud draw shader
    * (`PointCloud/PointCloudEDLDepth.wgsl`) emits a SECOND color output at
    * `@location(1)` carrying the point's linear eye-space depth packed into
    * RGBA8 (`csm_packDepth`), in addition to the normal `@location(0)` color.
@@ -598,7 +598,7 @@ export const ShaderDefine = Object.freeze({
   POINT_CLOUD_EDL_DEPTH: 1 << 22,
 
   /**
-   * Model has a NATIVE-WGSL {@link CustomShader} (PARITY-CUSTOM-SHADER-WGSL).
+   * Model has a native-WGSL {@link CustomShader}.
    * When set, `ModelPBRComplete.wgsl` activates its `//>>ifdef
    * MODEL_HAS_WGSL_CUSTOM_SHADER` blocks: the fragment stage builds a
    * `czm_customModelMaterial` bridge from the computed lit color, calls the
@@ -631,8 +631,8 @@ export const ShaderDefine = Object.freeze({
   MODEL_HAS_WGSL_CUSTOM_SHADER: 1 << 23,
 
   /**
-   * Model's NATIVE-WGSL {@link CustomShader} additionally supplies
-   * `wgslVertexShaderText` (PARITY-CUSTOM-SHADER-WGSL). Independent of
+   * Model's native-WGSL {@link CustomShader} additionally supplies
+   * `wgslVertexShaderText`. Independent of
    * `MODEL_HAS_WGSL_CUSTOM_SHADER` (fragment): a WGSL customShader may supply
    * only a fragment body, only a vertex body, or both. When set,
    * `ModelPBRComplete.wgsl` activates its `//>>ifdef MODEL_HAS_WGSL_CUSTOM_VERTEX`
@@ -651,7 +651,7 @@ export const ShaderDefine = Object.freeze({
 
   /**
    * Voxel ray-march applies the voxel {@link CustomShader} colour mapping +
-   * WebGL-matching front-to-back accumulation (PARITY-VOXEL-COLOR-PARITY).
+   * WebGL-matching front-to-back accumulation.
    * When set, `WebGPUVoxelRenderer`'s inline `VOXEL_WGSL` fragment stage
    * activates its `//>>ifdef VOXEL_CUSTOM_SHADER_COLOR` block: instead of the
    * historical "output the raw sampled RGBA scaled by `s.a * stepSize`"
@@ -680,7 +680,7 @@ export const ShaderDefine = Object.freeze({
   VOXEL_CUSTOM_SHADER_COLOR: 1 << 25,
 
   /**
-   * Model split-screen rendering (WIRE-MODEL-SPLITTER) — the glTF-model
+   * Model split-screen rendering — the glTF-model
    * sibling of the collections' `SPLIT_ENABLED` bit, matching WebGL's
    * `ModelSplitterPipelineStage` / `ModelSplitterStageFS.glsl`. When set,
    * `ModelPBRComplete.wgsl` activates its `//>>ifdef MODEL_SPLIT_ENABLED`
@@ -710,7 +710,7 @@ export const ShaderDefine = Object.freeze({
   MODEL_SPLIT_ENABLED: 1 << 26,
 
   /**
-   * Model colour blend (WIRE-MODEL-COLOR) — the WebGPU sibling of WebGL's
+   * Model colour blend — the WebGPU sibling of WebGL's
    * `ModelColorPipelineStage` / `ModelColorStageFS.glsl`. When set,
    * `ModelPBRComplete.wgsl` activates its `//>>ifdef MODEL_HAS_COLOR`
    * blocks: a module-scope `applyModelColor()` helper plus call sites in
@@ -746,7 +746,7 @@ export const ShaderDefine = Object.freeze({
   MODEL_HAS_COLOR: 1 << 27,
 
   /**
-   * Model silhouette rendering (WIRE-MODEL-SILHOUETTE) — the WebGPU
+   * Model silhouette rendering — the WebGPU
    * sibling of WebGL's `ModelSilhouettePipelineStage` /
    * `ModelSilhouetteStageVS/FS.glsl` + `ModelDrawCommand`'s
    * `deriveSilhouetteModelCommand` / `deriveSilhouetteColorCommand`
@@ -790,8 +790,8 @@ export const ShaderDefine = Object.freeze({
   MODEL_SILHOUETTE: 1 << 28,
 
   /**
-   * Voxel ray-march runs a USER-supplied native-WGSL {@link CustomShader}
-   * (VOXEL-USER-CUSTOMSHADER) instead of the default gray mapping. When set,
+   * Voxel ray-march runs a user-supplied native-WGSL {@link CustomShader}
+   * instead of the default gray mapping. When set,
    * the `//>>ifdef VOXEL_USER_CUSTOM_SHADER` block NESTED inside
    * `VOXEL_CUSTOM_SHADER_COLOR`'s parity march (see `WebGPUVoxelRenderer`'s
    * inline `VOXEL_WGSL`) replaces the default-shader material derivation with

@@ -1,6 +1,4 @@
 /**
- * NEW-WEBGPU-PIPELINE-READY-SIGNAL — Phase 1 scaffolding.
- *
  * Per-`GraphicsContext` registry that tracks inflight asynchronous
  * GPU/CPU resource work (render pipelines, compute pipelines, shader
  * compiles, image decodes, texture uploads, buffer mapAsync, ...) and

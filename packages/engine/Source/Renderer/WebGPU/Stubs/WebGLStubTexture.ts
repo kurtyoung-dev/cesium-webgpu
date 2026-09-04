@@ -191,11 +191,11 @@ interface StubTexture extends StubTextureWrapper {
   // (or `texImage2D` sees a `TEXTURE_CUBE_MAP_POSITIVE_*` / NEGATIVE_*
   // face target). Drives `ensureTextureAllocated` to allocate a 6-layer
   // texture with a cube view and routes face uploads into the matching
-  // layer index. Session 65 Batch 6 (2026-05-12) — added to fix the
-  // `SpecularEnvironmentCubeMap` path (KTX2 PBR environment loading);
-  // pre-fix every cube-face upload overwrote a single 2D layer, leaving
+  // layer index. This is what the `SpecularEnvironmentCubeMap` path (KTX2
+  // PBR environment loading) needs: without it, every cube-face upload
+  // overwrites a single 2D layer, leaving
   // `model._imageBasedLighting._webgpuSpecularView` either undefined or
-  // wrong, which made every PBR demo with explicit IBL render very dim
+  // wrong, which renders every PBR demo with explicit IBL very dim
   // on WebGPU.
   _isCubeMap?: boolean;
   // Allocated GPU resources — null until first texImage2D.
@@ -1046,9 +1046,9 @@ export function createTextureStubs(
       // Cube face index for the upload's `origin.z`. Matches the
       // mapping in `texImage2D` above — POSITIVE_X (0x8515) is layer 0,
       // NEGATIVE_X is 1, POSITIVE_Y is 2, etc. For non-cube uploads
-      // this stays at 0. Session 65 Batch 6 (2026-05-12) — fixes
-      // mip-level uploads on prefiltered specular cubemaps, which
-      // arrive via `texSubImage2D(POSITIVE_X, mipLevel, …)`.
+      // this stays at 0. Resolving it here, from `_target`, is what makes
+      // mip-level uploads on prefiltered specular cubemaps land on the right
+      // layer — they arrive via `texSubImage2D(POSITIVE_X, mipLevel, …)`.
       const faceLayer = cubeFaceLayerForTarget(_target);
       const originZ = faceLayer ?? 0;
 
@@ -1057,13 +1057,12 @@ export function createTextureStubs(
       //          where pixels is ArrayBufferView | null
       //   7-arg: (target, level, xoffset, yoffset, format, type, source)
       //          where source is HTMLImageElement / Canvas / ImageBitmap / Video
-      // The previous stub only handled the 9-arg form, so glTF model
-      // texture uploads (which use the 7-arg form with ImageBitmap)
-      // silently no-op'd. Symptom: every glTF / 3D Tiles texture
-      // rendered with the white-fallback default — the entire
-      // "Mars/Moon white sphere" + "BIM building white walls" cluster
-      // (Session 65 NEW-VR2-2). Detect the form by checking whether
-      // typeArg is a number (9-arg) or undefined (7-arg).
+      // Both forms have to be handled: glTF model texture uploads use the
+      // 7-arg form with ImageBitmap, so recognizing only the 9-arg form
+      // silently no-ops them, leaving every glTF / 3D Tiles texture on the
+      // white-fallback default — the "Mars/Moon white sphere" and "BIM
+      // building white walls" symptom cluster. Detect the form by checking
+      // whether typeArg is a number (9-arg) or undefined (7-arg).
       const isNineArg = typeof typeArg === "number";
       let width: number;
       let height: number;

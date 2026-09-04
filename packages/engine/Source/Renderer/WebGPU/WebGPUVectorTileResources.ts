@@ -1,6 +1,6 @@
 /// <reference types="@webgpu/types" />
 /**
- * C11-213 (`UP144-VECTOR-LAYER-WGSL`) — WebGPU realization of a terrain tile's
+ * WebGPU realization of a terrain tile's
  * clamped vector-polyline lookup tables.
  *
  * Upstream v1.144 (PR #13577) drapes `BufferPolylineCollection` geometry onto

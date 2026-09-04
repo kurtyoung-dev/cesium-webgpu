@@ -127,7 +127,7 @@ export interface PointCloudLODProcessorOptions {
    * debugging tools can tell per-context instances apart.
    */
   label?: string;
-  /** NEW-WEBGPU-PIPELINE-READY-SIGNAL — async resource monitor. */
+  /** Async resource monitor. */
   asyncResourceMonitor?: AsyncResourceMonitor | null;
   /**
    * When true, compact visible points using a decoupled-lookback parallel

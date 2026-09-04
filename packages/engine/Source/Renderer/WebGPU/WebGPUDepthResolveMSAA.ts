@@ -1,6 +1,6 @@
 /// <reference types="@webgpu/types" />
 /**
- * WebGPUDepthResolveMSAA — Slice 5c-B Batch 128.
+ * WebGPUDepthResolveMSAA.
  *
  * Per-device cache of the MSAA-depth resolve pipeline. The pipeline runs
  * a fullscreen render pass that reads sample 0 of a
@@ -57,7 +57,7 @@ export function getDepthResolvePipeline(
     fragment: {
       module: shaderModule,
       entryPoint: "fragmentMain",
-      // Slice 5c-B Batch 128 — single r16float color attachment. The
+      // Single r16float color attachment. The
       // shader emits depth as @location(0) f32 (NOT @builtin(frag_depth))
       // so consumers keep their filterable-float depth bindings.
       // r16float covers the [0,1] post-perspective depth range with

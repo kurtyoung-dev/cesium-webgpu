@@ -23,8 +23,6 @@
  *   (`setStencilReference`, `setBlendConstant`, `setViewport`,
  *   `setScissorRect`) directly on a `GPURenderPassEncoder`.
  *
- * Fix sketch: **C-R1** of the Renderer-Deep principal-engineer review.
- *
  * @private
  */
 

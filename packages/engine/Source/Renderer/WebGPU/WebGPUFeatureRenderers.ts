@@ -44,15 +44,15 @@ import {
   updateWebGPUBufferPointCollection,
   destroyWebGPUBufferPointCollection,
 } from "./WebGPUBufferPrimitiveRenderer.js";
-// Phase 3 (Batch 231, generalized from the Batch-230 orbital catalog) —
-// GPU-resident compute-instance system (user WGSL kernel dispatch
-// → storage buffer → instanced vertex-pull draw).
+// GPU-resident compute-instance system, generalized from the orbital
+// catalog (user WGSL kernel dispatch → storage buffer → instanced
+// vertex-pull draw).
 import {
   updateWebGPUComputeInstanceCollection,
   destroyWebGPUComputeInstanceResources,
   getWebGPUInstanceWorldPosition,
 } from "./WebGPUComputeInstanceRenderer.js";
-// Phase 10 (Batch 301) — Entity-cluster screen-space grid bin/count.
+// Entity-cluster screen-space grid bin/count.
 import {
   computeWebGPUEntityClusterGrid,
   getWebGPUEntityClusterStatistics,
@@ -81,7 +81,7 @@ import {
   destroyCubeMapPanorama,
   getCubeMapPanoramaResource,
 } from "./WebGPUCubeMapPanoramaRenderer.js";
-// Track V-C (Batch 313) — Yale Bright Star Catalog HDR starfield.
+// Yale Bright Star Catalog HDR starfield.
 import {
   updateWebGPUStarField,
   prepareWebGPUStarField,
@@ -106,7 +106,7 @@ import {
 } from "./WebGPUHiZOcclusionDispatcher.js";
 
 // Phase 3 — GPU sort keys (packed 64-bit draw command sort keys).
-// Phase 2 (Batch 228) adds the bitonic sort + readback chain.
+// Phase 2 adds the bitonic sort + readback chain.
 import {
   initWebGPUGPUSortKeys,
   dispatchWebGPUGPUSortKeys,
@@ -258,7 +258,7 @@ function updateSceneQueuedWebGPUDynamicEnvironmentMap(
     return;
   }
 
-  // Off-frame and non-Scene callers preserve C11-193B's immediate updater,
+  // Off-frame and non-Scene callers preserve the immediate updater,
   // including its private-encoder fallback. A normal Scene collection consumes
   // the offer above and drains the direct updater on the active Scene encoder.
   updatePreflightedWebGPUDynamicEnvironmentMap(manager, frameState);
@@ -327,7 +327,7 @@ export function registerWebGPUFeatureRenderers(context: WebGPUContext): void {
     },
   );
 
-  // ── GPU-resident compute-instance collection (Phase 3, Batch 231) ──
+  // ── GPU-resident compute-instance collection (Phase 3) ──
   // User-supplied WGSL kernel repopulates the instance buffer each frame;
   // positions never leave the GPU.
   context.registerFeatureRenderer(
@@ -335,13 +335,13 @@ export function registerWebGPUFeatureRenderers(context: WebGPUContext): void {
     {
       update: updateWebGPUComputeInstanceCollection,
       destroy: destroyWebGPUComputeInstanceResources,
-      // pickPosition over a compute-instance (NEW-COMPUTE-INSTANCE-PICKPOSITION)
-      // — GPU position-buffer readback with a one-frame-stale sync cache.
+      // pickPosition over a compute-instance — GPU position-buffer readback
+      // with a one-frame-stale sync cache.
       getInstanceWorldPosition: getWebGPUInstanceWorldPosition,
     },
   );
 
-  // ── Entity-cluster GPU bin/count (Phase 10, Batch 301) ──
+  // ── Entity-cluster GPU bin/count (Phase 10) ──
   // `EntityCluster` offloads its screen-space binning to a single O(N)
   // compute pass; the (sequential) representative-selection + 3×3-neighbour
   // merge stays on the CPU but runs over the reduced non-empty-cell set.
@@ -417,16 +417,15 @@ export function registerWebGPUFeatureRenderers(context: WebGPUContext): void {
   context.registerFeatureRenderer(FeatureRendererKey.CUBE_MAP_PANORAMA, {
     update: updateCubeMapPanorama,
     destroy: destroyCubeMapPanorama,
-    // C12-14 — hands the loaded cube texture + view back to backend-neutral
-    // scene code so `Scene/StarCubeMapResource.js` can publish it as a
-    // SAMPLABLE star texture. Nothing samples it yet; `C11-163` (celestial
-    // water reflection) is the recorded consumer, and this is the blocker that
-    // row named. Scaffolding by design — see that module's header before
-    // treating it as dead (Principle 7).
+    // Hands the loaded cube texture + view back to backend-neutral scene code
+    // so `Scene/StarCubeMapResource.js` can publish it as a samplable star
+    // texture. Nothing samples it yet; celestial water reflection is the
+    // planned consumer, so this is scaffolding rather than dead code — see
+    // that module's header before removing it.
     getResource: getCubeMapPanoramaResource,
   });
 
-  // Track V-C (Batch 313) — bright-star catalog starfield. The renderer
+  // Track V-C — bright-star catalog starfield. The renderer
   // uploads the Yale BSC subset once and returns one cached instanced draw
   // (6 verts × N stars) for Scene's environment injection. Drawn additively
   // into the scene FB so bloom makes bright stars glow.
@@ -434,7 +433,7 @@ export function registerWebGPUFeatureRenderers(context: WebGPUContext): void {
     update: updateWebGPUStarField,
     // Warm-keep on the zero-contribution (daylight) path so the first
     // contributing dusk frame does not cold-start the instance buffer +
-    // async pipeline compile (C9-06 star pop-in). No per-frame uniform or
+    // async pipeline compile (star pop-in). No per-frame uniform or
     // draw work — byte-neutral to the rendered daylight frame.
     prepare: prepareWebGPUStarField,
     destroy: destroyWebGPUStarFieldResources,
@@ -474,7 +473,7 @@ export function registerWebGPUFeatureRenderers(context: WebGPUContext): void {
     ) {
       return dispatchWebGPUGPUSortKeys(context, encoder, soa, params);
     },
-    // Batch 228 — Phase 2 sort + readback chain.
+    // Sort + readback chain.
     runBitonicSort: function (encoder: GPUCommandEncoder, count: number) {
       return runBitonicSortWebGPUGPUSortKeys(context, encoder, count);
     },
@@ -508,7 +507,8 @@ export function registerWebGPUFeatureRenderers(context: WebGPUContext): void {
       if (!_pcSortDispatcher) {
         _pcSortDispatcher = new WebGPUPointCloudSortDispatcher(context.device!);
         _pcSortDispatcher.setShaderSource(PointCloudSortSource);
-        // C-R7-COMPUTE-PIPELINE-CACHE (Batch 76).
+        // Routes pipeline creation through the central compute-pipeline cache
+        // instead of an ad hoc `device.createComputePipeline` call.
         _pcSortDispatcher._setComputePipelineCache(
           context.webgpuComputePipelineCache ?? null,
         );
@@ -584,8 +584,8 @@ export function registerWebGPUFeatureRenderers(context: WebGPUContext): void {
     destroy: destroyWebGPUGroundPrimitiveResources,
   });
 
-  // Migration Session 4b — GroundPolylinePrimitive classifier with
-  // full WGSL VS/FS port (per-vertex volume extrusion, miter offset,
+  // GroundPolylinePrimitive classifier with full WGSL VS/FS port
+  // (per-vertex volume extrusion, miter offset,
   // 5-plane fragment culling, depth-sample reconstruction). 3D path
   // only — 2D / Columbus View / Morph still fall through to WebGL.
   // The `Scene/GroundPolylinePrimitive.js` delegation hook gates on
@@ -595,16 +595,16 @@ export function registerWebGPUFeatureRenderers(context: WebGPUContext): void {
     destroy: destroyWebGPUGroundPolylineResources,
   });
 
-  // Batches 112-114 — Vector3DTile classification family. All three FRs
-  // live on the depth-sample classifier architecture (ADR-2026-04-28):
-  //   - VECTOR_3DTILE_PRIMITIVE        (Batch 112) — polygon classifier.
-  //   - VECTOR_3DTILE_POLYLINE         (Batch 113) — non-clamped polylines.
-  //   - VECTOR_3DTILE_CLAMPED_POLYLINE (Batch 114) — terrain-clamped
+  // Vector3DTile classification family. All three FRs
+  // live on the depth-sample classifier architecture:
+  //   - VECTOR_3DTILE_PRIMITIVE        — polygon classifier.
+  //   - VECTOR_3DTILE_POLYLINE         — non-clamped polylines.
+  //   - VECTOR_3DTILE_CLAMPED_POLYLINE — terrain-clamped
   //     polylines with per-vertex shadow-volume extrusion + 5-plane FS
   //     clipping.
   // Each Scene-side `Vector3DTile*.update()` delegates here when the FR is
-  // registered; otherwise the WebGPU code path no-ops via the
-  // BUILD-VAR-HAZARD guard in the corresponding `createShaders`.
+  // registered; the WebGL `createShaders` also early-returns whenever that
+  // FR key is present, so GLSL is never compiled on this path.
   context.registerFeatureRenderer(FeatureRendererKey.VECTOR_3DTILE_PRIMITIVE, {
     createCommands: createWebGPUVector3DTilePrimitiveCommands,
     destroy: destroyWebGPUVector3DTilePrimitiveResources,
@@ -615,7 +615,7 @@ export function registerWebGPUFeatureRenderers(context: WebGPUContext): void {
     destroy: destroyWebGPUVector3DTilePolylineResources,
   });
 
-  // Batch 114 — terrain-clamped 3D Tiles polylines. Depth-sample
+  // Terrain-clamped 3D Tiles polylines. Depth-sample
   // classifier with 7-attribute shadow-volume vertex layout and
   // 5-plane FS clipping. Scene-side `Vector3DTileClampedPolylines.update()`
   // delegates here when the FR is registered.
@@ -643,7 +643,7 @@ export function registerWebGPUFeatureRenderers(context: WebGPUContext): void {
     name: "DepthPlane (marker — handled by WebGPUSceneRenderer)",
   });
 
-  // CLASSIFICATION_PRIMITIVE (Batch 130) — standalone
+  // CLASSIFICATION_PRIMITIVE — standalone
   // ClassificationPrimitive now reuses the same depth-sample
   // classification pipeline as GroundPrimitive. The renderer's
   // primitive-chain walk
@@ -663,14 +663,14 @@ export function registerWebGPUFeatureRenderers(context: WebGPUContext): void {
   context.registerFeatureRenderer(FeatureRendererKey.GLOBE_SURFACE, {
     RendererClass: WebGPUGlobeSurfaceRenderer,
     getShaderCode: () => GlobeTerrainShaderCode,
-    // C11-213 (UP144-VECTOR-LAYER-WGSL) — how `VectorPipeline` hands a baked
-    // terrain-draped vector tile to this backend. The WebGL fallback in
-    // `VectorPipeline.packPrimitiveTextures` creates five `Texture`s for
-    // `VectorCommon.glsl`; WebGPU realizes ONE read-only storage buffer
-    // instead (see `WebGPUVectorTileResources.ts` for why five sampled
-    // textures cannot fit the globe layout). Routed through the feature-
-    // renderer registry so `Core/VectorPipeline.js` neither imports
-    // `Renderer/WebGPU/` nor tests `isWebGPU` (CLAUDE.md Principle 2).
+    // How `VectorPipeline` hands a baked terrain-draped vector tile to this
+    // backend. The WebGL fallback in `VectorPipeline.packPrimitiveTextures`
+    // creates five `Texture`s for `VectorCommon.glsl`; WebGPU realizes one
+    // read-only storage buffer instead (see `WebGPUVectorTileResources.ts` for
+    // why five sampled textures cannot fit the globe layout). Routed through
+    // the feature-renderer registry so `Core/VectorPipeline.js` stays
+    // backend-agnostic, neither importing `Renderer/WebGPU/` nor testing
+    // `isWebGPU`.
     prepareVectorTileData: prepareWebGPUVectorTileData,
   });
 
@@ -725,7 +725,7 @@ export function registerWebGPUFeatureRenderers(context: WebGPUContext): void {
       const mod = await import("./WebGPUPointCloudEyeDomeLighting.js");
       return {
         update: mod.updateWebGPUPointCloudEDL,
-        // PARITY-PC-EDL — the WebGL processor's `destroy` calls
+        // The WebGL processor's `destroy` calls
         // `fr.destroy(this)`; bind the context so the renderer can release
         // its per-context off-screen framebuffer + pipelines.
         destroy: (processor) =>
@@ -744,7 +744,7 @@ export function registerWebGPUFeatureRenderers(context: WebGPUContext): void {
         update: mod.updateWebGPUVoxelPrimitive,
         isReady: mod.isWebGPUVoxelPrimitiveReady,
         destroy: mod.destroyWebGPUVoxelResources,
-        // C-R9-VOXEL-CELL-PICK-TAIL — resolves the root keyframe node for
+        // Resolves the root keyframe node for
         // Scene.pickVoxel's VoxelCell construction (WebGPU has no CPU traversal).
         getPickKeyframeNode: mod.getVoxelPickKeyframeNode,
         getPickReadbackIdentity: mod.getVoxelPickReadbackIdentity,
@@ -804,8 +804,8 @@ export function registerWebGPUFeatureRenderers(context: WebGPUContext): void {
   // (csm_computeGroundAtmosphereScattering + WebGPUAtmosphereLUT), with
   // parameters carried by the globe camera/tile uniform buffers, matching
   // WebGL's in-GlobeFS integration. The separate-pass
-  // WebGPUGroundAtmosphereRenderer was deleted in Batch 239 (its full
-  // Nishita ray-marcher reference lives in git history at 05b6da60d1).
+  // WebGPUGroundAtmosphereRenderer was deleted; its full
+  // Nishita ray-marcher reference lives in git history at 05b6da60d1.
 
   // ── Screen-space effects (LAZY) ──
   // SSR is opt-in via scene flag; only loaded when actually enabled.
@@ -820,7 +820,7 @@ export function registerWebGPUFeatureRenderers(context: WebGPUContext): void {
     },
   );
 
-  // Slice 5c-B Batch 123 — NPR outlines. Opt-in via
+  // NPR outlines. Opt-in via
   // `scene.enableNPROutlines`; reads G-buffer slot 1 + scene depth to
   // paint silhouette + crease edges. Off by default.
   context.registerFeatureRendererLoader(
@@ -834,7 +834,7 @@ export function registerWebGPUFeatureRenderers(context: WebGPUContext): void {
     },
   );
 
-  // Slice 5c-B Batch 133 — Contact shadows. Opt-in via
+  // Contact shadows. Opt-in via
   // `scene.enableContactShadows`; reads G-buffer slot 1 + scene depth
   // and marches the sun direction in eye-space, darkening fragments
   // where a screen-space occluder lies within the marched distance.
@@ -879,7 +879,7 @@ export function registerWebGPUFeatureRenderers(context: WebGPUContext): void {
     },
   );
 
-  // ── Flow-field wind particles (LAZY, C6-FLOWFIELD-WIND) ──
+  // ── Flow-field wind particles (LAZY) ──
   // Opt-in default-off: the renderer chunk (velocity-advection compute +
   // instanced point WGSL) only downloads on the first FlowFieldWindLayer
   // update. Nothing is allocated until a layer with show===true and a loaded
@@ -895,7 +895,7 @@ export function registerWebGPUFeatureRenderers(context: WebGPUContext): void {
     },
   );
 
-  // ── FFT spectral ocean (LAZY, C6-FFT-OCEAN) ──
+  // ── FFT spectral ocean (LAZY) ──
   // Opt-in default-off: the renderer chunk (FFT compute chain + displaced
   // surface WGSL) only downloads on the first enabled OceanSurfacePrimitive
   // update. Nothing is allocated until a primitive with show===true routes here.

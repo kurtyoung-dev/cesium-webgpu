@@ -23,11 +23,11 @@
  *   3. A second short compute pass uses `prefixBuffer` to compact visible
  *      indices into a dense list.
  *
- * First consumer (tracked for a follow-on session — not wired here):
+ * First consumer (not wired here):
  *   `WebGPUPointCloudLODProcessor` uses an atomic-add-based compaction that
  *   produces an order-unstable visible-index list. Swapping it to a scan
  *   gives deterministic output ordering, which matters for point-cloud
- *   picking consistency. See FEAT-SURVEY-06 in the backlog.
+ *   picking consistency.
  *
  * API shape deliberately mirrors `WebGPUGPUCuller` so future consumers can
  * pattern-match between them: `initialize(shaderCode)` → `ensureCapacity(n)`
@@ -66,7 +66,7 @@ export interface WebGPUDecoupledScanOptions {
   maxElements?: number;
   /** Debug label prefix. Default "DecoupledScan". */
   label?: string;
-  /** NEW-WEBGPU-PIPELINE-READY-SIGNAL — async resource monitor. */
+  /** Async resource monitor. */
   asyncResourceMonitor?: AsyncResourceMonitor | null;
   /**
    * Forward-progress occupancy gate (A2.3). The decoupled-lookback scan

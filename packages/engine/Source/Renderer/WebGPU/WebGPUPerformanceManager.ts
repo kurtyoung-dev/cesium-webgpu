@@ -27,11 +27,11 @@ import PointCloudLODSource from "../../Shaders/WebGPU/Compute/PointCloudLOD.js";
 import GPUSortKeysSource from "../../Shaders/WebGPU/Compute/GPUSortKeys.js";
 import HiZPyramidSource from "../../Shaders/WebGPU/Compute/HiZPyramid.js";
 import OcclusionTestSource from "../../Shaders/WebGPU/Compute/OcclusionTest.js";
-// Phase 8a Slice 2 (Batch 85) — screen-space normal reconstruction
-// from scene depth; writes into `view.gBufferFramebuffer` (Slice 1).
+// Screen-space normal reconstruction from scene depth; writes into
+// `view.gBufferFramebuffer`.
 import GBufferNormalsFromDepthSource from "../../Shaders/WebGPU/Compute/GBufferNormalsFromDepth.js";
-// Phase 8a Slice 2d (Batch 90) — multisampled-depth variant. Selected
-// at execute time when the scene framebuffer is MSAA.
+// Multisampled-depth variant, selected at execute time when the scene
+// framebuffer is MSAA.
 import GBufferNormalsFromDepthMSAASource from "../../Shaders/WebGPU/Compute/GBufferNormalsFromDepthMSAA.js";
 import {
   makeBindGroupLayout,
@@ -148,7 +148,7 @@ interface PerformanceManagerContext {
    *  the compute pipeline is active. */
   _computeCommandClass?: new (...args: unknown[]) => object;
   /**
-   * NEW-WEBGPU-PERF-MONITOR-SUBSCRIBER — async-resource telemetry
+   * Async-resource telemetry
    * surface. Optional because the proxy interface is consumed by both
    * production WebGPUContext (always present) and test harnesses (may
    * stub). Production callers should rely on it always being defined.
@@ -168,9 +168,9 @@ export const ComputeTaskType = Object.freeze({
   HI_Z_PYRAMID: 5,
   OCCLUSION_TEST: 6,
   POLYGON_SDF: 7,
-  // Phase 8a Slice 2 (Batch 85) — screen-space normal reconstruction.
+  // Phase 8a Slice 2 — screen-space normal reconstruction.
   NORMAL_FROM_DEPTH: 8,
-  // Phase 8a Slice 2d (Batch 90) — multisampled-depth variant.
+  // Phase 8a Slice 2d — multisampled-depth variant.
   NORMAL_FROM_DEPTH_MSAA: 9,
   COUNT: 10,
 } as const);
@@ -299,7 +299,7 @@ export interface FrameTimings extends DebugStatsObject {
 }
 
 export class WebGPUPerformanceManager {
-  // Public underscore: shared with the atmosphere-LUT helpers (Batch 161).
+  // Public underscore: shared with the atmosphere-LUT helpers.
   public _context: PerformanceManagerContext;
   private _config: PerformanceConfig;
   private _frameTimings: FrameTimings;
@@ -347,11 +347,11 @@ export class WebGPUPerformanceManager {
   // params uniform buffer because the directions differ; the textures
   // are allocated up front whether or not the moon path is ever used
   // (~256 KB total — negligible).
-  // Public underscore: shared with the atmosphere-LUT helpers (Batch 161).
+  // Public underscore: shared with the atmosphere-LUT helpers.
   // Type now lives in `WebGPUAtmosphereLUT.ts` as `AtmosphereLUTResources`.
   public _atmosphereLutResources: AtmosphereLUTResources | null = null;
 
-  // Phase 8a Slice 2 (Batch 85) — G-buffer producer compute cache.
+  // Phase 8a Slice 2 — G-buffer producer compute cache.
   // Mirrors `_atmosphereLutResources` — same host-cached, dispatcher-
   // managed pattern. Allocated lazily on the first dispatch when
   // `frameState.useDeferredLighting === true`; stays null otherwise.
@@ -849,10 +849,10 @@ export class WebGPUPerformanceManager {
     inscatterView: GPUTextureView;
     moonTransmittanceView: GPUTextureView;
     moonInscatterView: GPUTextureView;
-    // Batch 427 (SKY-MS) — surfaced so the sky renderer can bind the
+    // Surfaced so the sky renderer can bind the
     // multiple-scattering LUT at group(1) without a separate accessor call.
     multipleScatterView: GPUTextureView;
-    // Batch 428 (A-LUT-REPARAM) — sun-relative sky-view LUT, surfaced so the
+    // Sun-relative sky-view LUT, surfaced so the
     // sky renderer can bind it for the opt-in `useScatteringLut` fast-path.
     skyViewView: GPUTextureView;
   } | null {
@@ -860,8 +860,8 @@ export class WebGPUPerformanceManager {
   }
 
   /**
-   * Track V-A1 (NEW-ATMO-BRUNETON-FULL-LUTS) — dispatch the multiple-
-   * scattering + irradiance extension passes for the SUN LUT pair. Must run
+   * Track V-A1 — dispatch the multiple-
+   * scattering + irradiance extension passes for the sun LUT pair. Must run
    * after a `dispatchAtmosphereLUT(…, "sun")` in the same frame so the
    * transmittance + single-scattering inputs are populated. Returns false if
    * compute is unavailable or the LUT resources have not been allocated yet.
@@ -934,10 +934,10 @@ export class WebGPUPerformanceManager {
       rayleighCoefficient: [number, number, number];
       mieCoefficient: [number, number, number];
       sunDirection: [number, number, number];
-      // Batch 428 (A-LUT-REPARAM) — observer-relative sun zenith for the chained
+      // Observer-relative sun zenith for the chained
       // sky-view bake. Optional; forwarded to the helper.
       sunCosZenith?: number;
-      // Batch 438 (4.5 SKY-OZONE) — ozone Chappuis-band absorption coefficient
+      // Ozone Chappuis-band absorption coefficient
       // (per-metre RGB) baked into the LUT extinction. Optional; default [0,0,0].
       ozoneCoefficient?: [number, number, number];
     },
@@ -1064,7 +1064,7 @@ export class WebGPUPerformanceManager {
   }
 
   // ═══════════════════════════════════════════════════════════
-  // FORK-41: Hi-Z PYRAMID + OCCLUSION TEST DISPATCHERS
+  // Hi-Z pyramid + occlusion test dispatchers
   // ═══════════════════════════════════════════════════════════
   //
   // The Hi-Z pyramid is a hierarchical depth buffer (mip chain of
@@ -1552,7 +1552,7 @@ export class WebGPUPerformanceManager {
   }
 
   /**
-   * NEW-WEBGPU-PERF-MONITOR-SUBSCRIBER — snapshot the per-kind
+   * Snapshot the per-kind
    * async-resource latency / throughput / failure stats. Returns
    * `null` if the context didn't wire telemetry (test harnesses,
    * stripped builds). Production callers can rely on a snapshot.

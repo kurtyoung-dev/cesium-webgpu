@@ -1,7 +1,7 @@
 /// <reference types="@webgpu/types" />
 
 /**
- * Centralized ping-pong slot resolver — FEAT-SURVEY-07.
+ * Centralized ping-pong slot resolver.
  *
  * Every frame-history effect today tracks parity inline:
  *   - `WebGPUTAAEffect` keeps `_historyIndex` and flips it manually

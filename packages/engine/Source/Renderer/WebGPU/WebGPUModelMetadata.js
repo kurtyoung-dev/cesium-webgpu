@@ -680,7 +680,7 @@ function ensurePropertyTextureResources(
 const PROPERTY_TABLE_NUM_CHANNELS = 4;
 
 /**
- * METADATA-TABLE-SOURCES — true when `featureIds` is the model's SELECTED
+ * True when `featureIds` is the model's SELECTED
  * primitive-level feature ID set (the one `model.featureIdLabel` resolves to,
  * matching `findSelectedFeatureId` in `WebGPUModelFeatureId`). The renderer's
  * feature-ID resources (the `featureIdTexture` GPU upload at group-1 binding
@@ -703,7 +703,7 @@ function isSelectedPrimitiveFeatureIdSet(model, primitive, featureIds) {
 }
 
 /**
- * METADATA-TABLE-SOURCES — mirrors `ensureFeatureIdResources`' feature-table
+ * Mirrors `ensureFeatureIdResources`' feature-table
  * presence gate. The feature-ID GPU texture at binding 26 is only uploaded
  * when the model carries a live feature table, so a texture-sourced table
  * key requires it (otherwise binding 26 holds the fallback white placeholder
@@ -725,7 +725,7 @@ function modelHasFeatureTable(model) {
 }
 
 /**
- * PARITY-METADATA-TABLE-INSTANCE-SOURCE — resolve the property TABLE keyed by
+ * Resolves the property table keyed by
  * the model's SELECTED instance feature ID set (EXT_mesh_gpu_instancing +
  * EXT_instance_features), if the given node carries one. The renderer packs the
  * per-instance ID into the instance transform pad slot and the VS forwards it to
@@ -854,7 +854,7 @@ function findPropertyTableForPrimitive(model, primitive, runtimeNode) {
     return undefined;
   }
 
-  // PARITY-METADATA-TABLE-INSTANCE-SOURCE — instance-sourced feature IDs take
+  // Instance-sourced feature IDs take
   // priority (matching WebGL's instanceFeatureIdLabel precedence). Resolve the
   // node's SELECTED instance feature ID set before the primitive sets.
   const instanceMatch = findInstancePropertyTable(
@@ -887,7 +887,7 @@ function findPropertyTableForPrimitive(model, primitive, runtimeNode) {
     if (featureIds instanceof ModelComponents.FeatureIdAttribute) {
       featureIdSource = "attribute";
     } else if (featureIds instanceof ModelComponents.FeatureIdTexture) {
-      // METADATA-TABLE-SOURCES — texture-sourced feature IDs. The data
+      // Texture-sourced feature IDs. The data
       // reaches the shader only through the binding-26 feature-ID texture,
       // which the renderer uploads for the SELECTED set of a model with a
       // live feature table; gate on exactly those conditions.

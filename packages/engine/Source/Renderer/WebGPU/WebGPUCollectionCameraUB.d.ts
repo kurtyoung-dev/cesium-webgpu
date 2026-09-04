@@ -1,5 +1,5 @@
-// Co-located ambient types for the JS helper `WebGPUCollectionCameraUB.js`
-// (Session 29 pattern). `allowJs: true, checkJs: false` means this sibling
+// Co-located ambient types for the JS helper `WebGPUCollectionCameraUB.js`.
+// `allowJs: true, checkJs: false` means this sibling
 // `.d.ts` overrides JS inference for `.ts` importers (WebGPUCloudRenderer.ts).
 // See packages/engine/Source/Renderer/{Context,Texture}.d.ts as templates.
 

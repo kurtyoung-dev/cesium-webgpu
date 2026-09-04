@@ -177,7 +177,7 @@ export function createEllipsoidBoundingCube(
  *   binding 2: sampler      (fragment)  — shared by every texture below
  *   binding 3: texture_2d   (fragment)  — OPTIONAL tangent-space normal map
  *
- * Binding 3 is opt-in via `options.normalTexture` (C12-25). It is opt-in
+ * Binding 3 is opt-in via `options.normalTexture`. It is opt-in
  * rather than unconditional because a bind group must supply an entry for
  * every layout binding: a body with no normal map would otherwise be forced
  * to allocate a placeholder texture purely to satisfy the layout. Bodies
@@ -273,7 +273,7 @@ export function packEllipsoidBaseUniforms(
 
   // RTE camera split — offsets 16..23 — in body MODEL coordinates.
   //
-  // ENV-MOON-SLIVER (2026-07-02): this split MUST be model-space, not
+  // This split must be model-space, not
   // world-space. `mvpRelativeToEye` is built from `view × model` with the
   // translation zeroed, so its linear part is `viewRot × bodyRot`. Feeding
   // it a world-space `(center + posMC − camWC)` offset wrongly rotates the

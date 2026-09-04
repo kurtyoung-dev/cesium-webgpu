@@ -1,13 +1,13 @@
 /// <reference types="@webgpu/types" />
 /**
- * WebGPUClusterDebugRenderer — Slice 5d Batch 149.
+ * WebGPUClusterDebugRenderer.
  *
- * Standalone debug pipeline that consumes ClusterBounds (Batch 147)
- * + ClusterAssign (Batch 148) storage buffers and renders a
+ * Standalone debug pipeline that consumes ClusterBounds
+ * + ClusterAssign storage buffers and renders a
  * fullscreen visualization of per-cluster light counts. Used by
  * `probe-cluster-fs-consumer.mjs` to end-to-end validate the full
  * Forward+ chain before the consumer chunk gets wired into Model PBR
- * + Lit Mat shaders (Batch 150+).
+ * + Lit Mat shaders.
  *
  * Output color encoding (matches ClusterDebugVisualize.wgsl):
  *   - count == 0 → black

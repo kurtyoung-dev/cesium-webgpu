@@ -1,9 +1,9 @@
 /// <reference types="@webgpu/types" />
 /**
- * R-2b UNIFIED-FEATURE-ID-TEXTURE — shader-side resolve of the source-agnostic
- * per-fragment feature-ID G-buffer.
+ * Shader-side resolve of the source-agnostic per-fragment
+ * feature-ID G-buffer.
  *
- * Batch-133's `WebGPUSceneRendererPickPass` already rasterizes a 24-bit
+ * `WebGPUSceneRendererPickPass` already rasterizes a 24-bit
  * object/feature ID for EVERY source (globe, 3D-tile, model, voxel,
  * Gaussian-splat) into ONE shared rgba8 pick target (`WebGPUPickFramebuffer`).
  * That target is therefore a unified, source-agnostic, per-fragment feature-ID
@@ -123,7 +123,7 @@ export class WebGPUFeatureIdTexture {
   }
 
   /**
-   * R-2b UNIFIED-FEATURE-ID-TEXTURE (residual a — standing per-frame PP wiring).
+   * Standing per-frame PP wiring.
    * Record the feature-ID recolor pass into a caller-provided per-frame command
    * encoder, writing into the persistent {@link outputTexture}. Unlike
    * {@link resolveAsync} this issues NO separate submit and NO readback — it is the

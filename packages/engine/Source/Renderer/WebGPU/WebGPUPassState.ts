@@ -198,13 +198,11 @@ class WebGPUPassState {
     return undefined;
   }
 
-  // H-R4 (Batch 39) — Removed dead `applyToRenderPass` method. Per-
+  // No `applyToRenderPass` method here. Per-
   // encoder dynamic state (viewport, scissor, stencilReference,
-  // blendConstant) is now applied via `applyPerEncoderState` in
-  // WebGPUDrawCommand from `renderState` forwarding (C-R1 work,
-  // Batches 30/35/36/37/39), not from this pass state. No external
-  // caller remained — the only reference was a JSDoc mention in
-  // `RenderStateToPipelineVariant.ts:360`.
+  // blendConstant) is applied via `applyPerEncoderState` in
+  // WebGPUDrawCommand from `renderState` forwarding, not from this pass
+  // state.
 
   /**
    * Creates a GPURenderPassDescriptor from this pass state.

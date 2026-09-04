@@ -1,6 +1,6 @@
 /// <reference types="@webgpu/types" />
 /**
- * WebGPU Point Cloud Eye-Dome Lighting (EDL) — full data path (PARITY-PC-EDL).
+ * WebGPU Point Cloud Eye-Dome Lighting (EDL) — full data path.
  *
  * EDL is a depth-discontinuity post-process that darkens the edges of a point
  * cloud to enhance depth perception (Boucheny 2009). The WebGL implementation

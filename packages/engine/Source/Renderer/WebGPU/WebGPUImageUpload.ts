@@ -126,7 +126,7 @@ export class WebGPUImageUpload {
       return source;
     }
 
-    // NEW-WEBGPU-PIPELINE-READY-SIGNAL (Phase 5) — register the decode
+    // Register the decode
     // with the monitor so Scene's wakeup path fires when the bitmap
     // lands. Without this, an environment-map texture that finishes
     // `createImageBitmap` after the scene hibernates lands silently.

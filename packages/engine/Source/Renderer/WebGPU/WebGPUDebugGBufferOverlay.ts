@@ -1,5 +1,5 @@
 /**
- * Phase 8a Slice 2c (Batch 89) — visualizes the G-buffer
+ * Phase 8a Slice 2c — visualizes the G-buffer
  * `normalRoughnessTexture` as a fullscreen overlay. Models on
  * `WebGPUDebugDepthOverlay`: same shape, same lifecycle, swap the
  * input texture from depth to G-buffer.

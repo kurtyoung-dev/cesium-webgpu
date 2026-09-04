@@ -2,8 +2,6 @@
  * Pure interpretation of a `ClearCommand` for the WebGPU backend: which
  * channels it requests, and what the canvas clear-STATE becomes as a result.
  *
- * Background (NEW-WEBGPU-ENV-PASS-DROP / C12-G1F1 sibling).
- *
  * A `ClearCommand` in the WebGL backend does two things at once
  * (`Renderer/Context.js`): it records each requested value into GL clear-state
  * (`gl.clearColor` / `gl.clearDepth` / `gl.clearStencil`) and then issues one
@@ -12,8 +10,8 @@
  * requested value.
  *
  * The WebGPU port kept only the second half. `WebGPUContext.clear` translates a
- * `ClearCommand` into a render pass with `loadOp:"clear"`, and C9-07 /
- * FAR-405-C0 further deferred the canvas open — a canvas clear arriving before
+ * `ClearCommand` into a render pass with `loadOp:"clear"`, and the canvas
+ * open is deferred further still — a canvas clear arriving before
  * anything has touched the swap texture is dropped on the premise that the
  * pending first open (`_beginDefaultRenderPass`) "delivers the same
  * `_clearColor` / `_clearDepth` / `_clearStencil` values". Nothing ever wrote

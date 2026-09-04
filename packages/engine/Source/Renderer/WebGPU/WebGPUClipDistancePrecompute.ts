@@ -2,8 +2,7 @@
  * Precomputes the per-frame `dPrime` scalars that let the vertex shader
  * test clipping plane equations against eye-relative positions instead
  * of model-space positions. This is the CPU half of WGF-1 (hardware
- * clip distances) — see `migration_doc/PHASE_5_MODERN_WEBGPU_DESIGN.md`
- * § WGF-1.
+ * clip distances).
  *
  * ─── The math ────────────────────────────────────────────────────────
  *

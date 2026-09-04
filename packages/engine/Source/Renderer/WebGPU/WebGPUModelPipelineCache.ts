@@ -29,8 +29,8 @@
 
 import defined from "../../Core/defined.js";
 import ModelPBRCompleteWGSL from "../../Shaders/WebGPU/Model/ModelPBRComplete.js";
-// WIRE-MODEL-SILHOUETTE — the inflate/colour helper chunk, prepended to
-// the module source only when the MODEL_SILHOUETTE bit is active.
+// The silhouette inflate/colour helper chunk, prepended to the module source
+// only when the MODEL_SILHOUETTE bit is active.
 import ModelSilhouetteStageWGSL from "../../Shaders/WebGPU/Model/ModelSilhouetteStage.js";
 // Flat-magenta fallback shader for a model PBR pipeline that failed validation.
 import ErrorPipelineWGSL from "../../Shaders/WebGPU/Model/ErrorPipeline.js";
@@ -108,9 +108,9 @@ import {
   PROPERTY_TABLE_BINDING,
   PROPERTY_TABLE_SAMPLER_BINDING,
 } from "./WebGPUModelMetadata.js";
-// PARITY-CUSTOM-SHADER-WGSL — customShader UBO + custom-texture binding numbers,
-// shared with the codegen (`CustomShaderWGSLPipelineStage`) + renderer so the
-// BGL, shader, and bind-group entries all agree.
+// customShader UBO + custom-texture binding numbers, shared with the codegen
+// (`CustomShaderWGSLPipelineStage`) + renderer so the BGL, shader, and
+// bind-group entries all agree.
 import {
   CUSTOM_SHADER_UBO_BINDING,
   CUSTOM_SHADER_TEXTURE_BINDING_BASE,
@@ -303,11 +303,11 @@ const MATERIAL_DEFINE_MASK = (() => {
   // MODEL_HAS_PROPERTY_TEXTURES, and a model without property tables never sets
   // the bit.
   m |= ShaderDefine.MODEL_HAS_PROPERTY_TABLES;
-  // PARITY-CUSTOM-SHADER-WGSL — MODEL_HAS_WGSL_CUSTOM_SHADER (+ the optional
-  // vertex sibling) adds the customShader UBO (binding 50) + custom texture
-  // (texture, sampler) pairs (51+) to the material BGL + pipeline layout AND the
-  // generated chunk's uniform/texture declarations + inlined user body. A NEW
-  // materialBGL variant + a distinct module, so it participates in the key like
+  // MODEL_HAS_WGSL_CUSTOM_SHADER (+ the optional vertex sibling) adds the
+  // customShader UBO (binding 50) + custom texture (texture, sampler) pairs
+  // (51+) to the material BGL + pipeline layout AND the generated chunk's
+  // uniform/texture declarations + inlined user body. A new materialBGL
+  // variant + a distinct module, so it participates in the key like
   // MODEL_HAS_PROPERTY_TEXTURES. For non-customShader (and GLSL-only) models the
   // bits are never set → key unchanged.
   m |= ShaderDefine.MODEL_HAS_WGSL_CUSTOM_SHADER;
@@ -534,10 +534,10 @@ function buildMaterialBGL(
     entries.push(sampler(PROPERTY_TABLE_SAMPLER_BINDING, Stage.FRAGMENT));
   }
 
-  // 50+: PARITY-CUSTOM-SHADER-WGSL — customShader block. Gated on
-  // MODEL_HAS_WGSL_CUSTOM_SHADER (fragment) — the vertex sibling shares the same
-  // BGL (only the module differs). ONE uniform buffer (visible to VERTEX+FRAGMENT
-  // so a vertex customShader can read the same uniforms) at binding 50, then
+  // 50+: the customShader block. Gated on MODEL_HAS_WGSL_CUSTOM_SHADER
+  // (fragment) — the vertex sibling shares the same BGL (only the module
+  // differs). One uniform buffer (visible to VERTEX+FRAGMENT so a vertex
+  // customShader can read the same uniforms) at binding 50, then
   // `MAX_CUSTOM_TEXTURES` (texture, sampler) pairs at 51+ (fragment-stage). The
   // generated chunk declares only the textures it actually uses (≤ the cap); the
   // extra BGL entries are bound to a 1×1 placeholder by the renderer so the bind
@@ -884,8 +884,8 @@ function buildColorPipelineDescriptor(
   sampleCount: number = 1,
   // Metadata vertex slot 9. False leaves the caller's layout unchanged.
   hasMetadata: number | boolean = false,
-  // GLTF-POINTS-MODE — GPUPrimitiveTopology keyed off the glTF
-  // primitive.mode. Default preserves the historical hardcoded value.
+  // GPUPrimitiveTopology keyed off the glTF primitive.mode. Defaults to
+  // triangle-list for callers that do not realize an explicit topology.
   topology: ModelTopologyRealization = MODEL_TOPOLOGY_TRIANGLE_LIST,
 ): GPURenderPipelineDescriptor {
   const cullMode = doubleSided ? "none" : "back";
@@ -995,8 +995,8 @@ function createPipeline(
 }
 
 /**
- * WIRE-MODEL-SILHOUETTE — silhouette-MODEL pipeline (WebGL
- * `deriveSilhouetteModelCommand` parity). Identical to `createPipeline`
+ * Silhouette-model pipeline (WebGL `deriveSilhouetteModelCommand` parity).
+ * Identical to `createPipeline`
  * (same module, entry points, layout, blend, depth state) plus:
  *
  *   - Stencil write: compare ALWAYS, zPass REPLACE (fail/zFail KEEP) on
@@ -1029,7 +1029,7 @@ function createSilhouetteModelPipeline(
   sampleCount: number,
   hasMetadata: number | boolean,
   invisible: boolean,
-  // GLTF-POINTS-MODE
+  // Realized topology axis of the primitive being pipelined.
   topology: ModelTopologyRealization = MODEL_TOPOLOGY_TRIANGLE_LIST,
 ) {
   const cullMode = doubleSided ? "none" : "back";
@@ -1092,8 +1092,8 @@ function createSilhouetteModelPipeline(
 }
 
 /**
- * WIRE-MODEL-SILHOUETTE — silhouette-COLOR pipeline (WebGL
- * `deriveSilhouetteColorCommand` parity). Same module / entry points /
+ * Silhouette-colour pipeline (WebGL `deriveSilhouetteColorCommand` parity).
+ * Same module / entry points /
  * layout as the colour pipeline (the VS/FS fork on the material UB's
  * silhouette-pass flag, not on a separate entry point) plus:
  *
@@ -1120,7 +1120,7 @@ function createSilhouetteColorPipeline(
   sampleCount: number,
   hasMetadata: number | boolean,
   translucent: boolean,
-  // GLTF-POINTS-MODE
+  // Realized topology axis of the primitive being pipelined.
   topology: ModelTopologyRealization = MODEL_TOPOLOGY_TRIANGLE_LIST,
 ) {
   const stencilNotEqual: GPUStencilFaceState = {
@@ -1329,7 +1329,7 @@ function createPickPipeline(
   hasTexCoord1: boolean,
   hasFeatureId0: boolean,
   hasMetadata: number | boolean = false,
-  // GLTF-POINTS-MODE
+  // Realized topology axis of the primitive being pipelined.
   topology: ModelTopologyRealization = MODEL_TOPOLOGY_TRIANGLE_LIST,
   // When log depth is active the supplied `shaderModule` is the LOG_DEPTH
   // variant, whose `fragmentPickMain` writes a log `@builtin(frag_depth)`, and
@@ -1511,7 +1511,7 @@ function createPickMetadataPipeline(
   hasTexCoord1: boolean,
   hasFeatureId0: boolean,
   hasMetadata: number | boolean = false,
-  // GLTF-POINTS-MODE
+  // Realized topology axis of the primitive being pipelined.
   topology: ModelTopologyRealization = MODEL_TOPOLOGY_TRIANGLE_LIST,
   // See createPickPipeline.
   pickLogActive: boolean = false,
@@ -1585,7 +1585,7 @@ function createCapturePipeline(
   hasTexCoord1: boolean,
   hasFeatureId0: boolean,
   hasMetadata: number | boolean = false,
-  // GLTF-POINTS-MODE
+  // Realized topology axis of the primitive being pipelined.
   topology: ModelTopologyRealization = MODEL_TOPOLOGY_TRIANGLE_LIST,
 ) {
   return device.createRenderPipeline({
@@ -1637,7 +1637,7 @@ function createPickHoverPipeline(
   hasTexCoord1: boolean,
   hasFeatureId0: boolean,
   hasMetadata: number | boolean = false,
-  // GLTF-POINTS-MODE
+  // Realized topology axis of the primitive being pipelined.
   topology: ModelTopologyRealization = MODEL_TOPOLOGY_TRIANGLE_LIST,
   // See createPickPipeline. Depth write is already true here, because
   // dither-gated blend competes on the standard depth test.
@@ -1697,7 +1697,7 @@ function createPickPrecisePass1Pipeline(
   hasTexCoord1: boolean,
   hasFeatureId0: boolean,
   hasMetadata: number | boolean = false,
-  // GLTF-POINTS-MODE
+  // Realized topology axis of the primitive being pipelined.
   topology: ModelTopologyRealization = MODEL_TOPOLOGY_TRIANGLE_LIST,
   // Reuses `fragmentPickMain`, so it takes the same pick-gated module; the
   // label carries `[ld]` when active. Depth-write is already true, since this
@@ -1786,7 +1786,7 @@ function createPickPrecisePass2Pipeline(
   hasTexCoord1: boolean,
   hasFeatureId0: boolean,
   hasMetadata: number | boolean = false,
-  // GLTF-POINTS-MODE
+  // Realized topology axis of the primitive being pipelined.
   topology: ModelTopologyRealization = MODEL_TOPOLOGY_TRIANGLE_LIST,
   // Reuses `fragmentPickMain`, so it takes the same pick-gated module; the
   // label carries `[ld]` when active. Depth-write stays false: this pass
@@ -1882,7 +1882,7 @@ function createVelocityPipeline(
   sampleCount: number = 1,
   // Metadata vertex slot 9.
   hasMetadata: number | boolean = false,
-  // GLTF-POINTS-MODE
+  // Realized topology axis of the primitive being pipelined.
   topology: ModelTopologyRealization = MODEL_TOPOLOGY_TRIANGLE_LIST,
 ) {
   void sampleCount;
@@ -1957,7 +1957,7 @@ function createClassificationPipeline(
   sampleCount: number = 1,
   // Metadata vertex slot 9.
   hasMetadata: number | boolean = false,
-  // GLTF-POINTS-MODE
+  // Realized topology axis of the primitive being pipelined.
   topology: ModelTopologyRealization = MODEL_TOPOLOGY_TRIANGLE_LIST,
 ) {
   const cullMode = doubleSided ? "none" : "back";
@@ -2214,7 +2214,7 @@ class WebGPUModelPipelineCache {
     // construct a classification pipeline.
     this._classificationPipelines = new Map();
 
-    // WIRE-MODEL-SILHOUETTE — silhouette two-pass pipeline caches
+    // Silhouette two-pass pipeline caches
     // (WebGL `deriveSilhouetteModelCommand` / `deriveSilhouetteColorCommand`
     // parity). Keyed by `"computeKey(alphaMode, doubleSided, md):variantFlag"`
     // strings — the variant flag is `isInvisible` for the model (stencil-
@@ -2354,8 +2354,8 @@ class WebGPUModelPipelineCache {
     this._metadataPickWGSL = "";
     this._metadataPickClassHash = 0;
 
-    // PARITY-CUSTOM-SHADER-WGSL — the generated customShader chunk + its class
-    // hash for the primitive whose pipeline is currently being (re)built. Set by
+    // The generated customShader chunk + its class hash for the primitive
+    // whose pipeline is currently being (re)built. Set by
     // the renderer via `setCustomShaderWGSL` immediately before each customShader
     // `getPipeline*` call, cleared (`clearCustomShaderWGSL`) for non-customShader
     // primitives so a stale chunk can't leak. It is prepended at the same
@@ -2364,8 +2364,8 @@ class WebGPUModelPipelineCache {
     this._customShaderWGSL = "";
     this._customShaderClassHash = 0;
 
-    // GLTF-POINTS-MODE — the GPUPrimitiveTopology of the primitive whose
-    // pipeline is currently being (re)built. Set by the renderer via
+    // The GPUPrimitiveTopology of the primitive whose pipeline is currently
+    // being (re)built. Set by the renderer via
     // `setPrimitiveTopology` immediately before each `getPipeline*` call
     // (the same sticky-state pattern as the metadata and customShader chunks
     // above — `applyPrimitiveMetadataToPipelineCache` writes all three).
@@ -2385,18 +2385,18 @@ class WebGPUModelPipelineCache {
     // `maybeUpdateForPickLogDepth()` call mirrors the separate
     // `context._pickLogDepthWriteEnabled` master switch.
     this._pickLogDepthEnabled = false;
-    // WIRE-MODEL-SPLITTER — per-model split-screen discard. Off until the
-    // renderer's first `maybeUpdateForSplit()` call mirrors
+    // Per-model split-screen discard. Off until the renderer's first
+    // `maybeUpdateForSplit()` call mirrors
     // `model.splitDirection !== SplitDirection.NONE`. This cache is per-Model,
     // so a per-model flag is the right granularity.
     this._splitEnabled = false;
-    // WIRE-MODEL-COLOR — per-model `model.color` blend. Off until the
-    // renderer's first `maybeUpdateForModelColor()` call mirrors
+    // Per-model `model.color` blend. Off until the renderer's first
+    // `maybeUpdateForModelColor()` call mirrors
     // `defined(model.color)`. A per-Model flag, at the same granularity as
     // split.
     this._modelColorEnabled = false;
-    // WIRE-MODEL-SILHOUETTE — per-model silhouette state. Off until the
-    // renderer's first `maybeUpdateForSilhouette()` call mirrors the WebGL
+    // Per-model silhouette state. Off until the renderer's first
+    // `maybeUpdateForSilhouette()` call mirrors the WebGL
     // `Model.hasSilhouette()` predicate. A per-Model flag, at the same
     // granularity as split and model colour.
     this._silhouetteEnabled = false;
@@ -2602,22 +2602,20 @@ class WebGPUModelPipelineCache {
     // set it, so their module hash is unaffected.
     const metadataPickBit =
       (materialDefines & ShaderDefine.METADATA_PICKING_ENABLED) >>> 0;
-    // WIRE-MODEL-SPLITTER — MODEL_SPLIT_ENABLED is a render-mode bit like
-    // LOG_DEPTH: a per-cache flag with no bind-group or layout change.
-    // `_splitEnabled` mirrors `model.splitDirection !== NONE` via
-    // `maybeUpdateForSplit()`.
+    // MODEL_SPLIT_ENABLED is a render-mode bit like LOG_DEPTH: a per-cache
+    // flag with no bind-group or layout change. `_splitEnabled` mirrors
+    // `model.splitDirection !== NONE` via `maybeUpdateForSplit()`.
     const splitBit = this._splitEnabled ? ShaderDefine.MODEL_SPLIT_ENABLED : 0;
-    // WIRE-MODEL-COLOR — MODEL_HAS_COLOR is a render-mode bit like
-    // MODEL_SPLIT_ENABLED: a per-cache flag with no bind-group or layout
-    // change. `_modelColorEnabled` mirrors `defined(model.color)` via
-    // `maybeUpdateForModelColor()`.
+    // MODEL_HAS_COLOR is a render-mode bit like MODEL_SPLIT_ENABLED: a
+    // per-cache flag with no bind-group or layout change. `_modelColorEnabled`
+    // mirrors `defined(model.color)` via `maybeUpdateForModelColor()`.
     const modelColorBit = this._modelColorEnabled
       ? ShaderDefine.MODEL_HAS_COLOR
       : 0;
-    // WIRE-MODEL-SILHOUETTE — MODEL_SILHOUETTE is a render-mode bit like
-    // MODEL_HAS_COLOR: a per-cache flag with no bind-group or layout change.
-    // `_silhouetteEnabled` mirrors the WebGL `Model.hasSilhouette()` predicate
-    // via `maybeUpdateForSilhouette()`.
+    // MODEL_SILHOUETTE is a render-mode bit like MODEL_HAS_COLOR: a per-cache
+    // flag with no bind-group or layout change. `_silhouetteEnabled` mirrors
+    // the WebGL `Model.hasSilhouette()` predicate via
+    // `maybeUpdateForSilhouette()`.
     const silhouetteBit = this._silhouetteEnabled
       ? ShaderDefine.MODEL_SILHOUETTE
       : 0;
@@ -2680,8 +2678,8 @@ class WebGPUModelPipelineCache {
       : isMetadataPick
         ? this._metadataPickClassHash >>> 0
         : this._metadataClassHash >>> 0;
-    // PARITY-CUSTOM-SHADER-WGSL — the generated customShader chunk is
-    // model-dependent, carrying uniforms and the inlined user body, so when
+    // The generated customShader chunk is model-dependent, carrying uniforms
+    // and the inlined user body, so when
     // MODEL_HAS_WGSL_CUSTOM_SHADER for the fragment stage, or its `_VERTEX`
     // counterpart, is set, the module varies by `_customShaderClassHash` too.
     // Non-customShader modules keep `customShaderClassHash === 0`, so their key
@@ -2730,14 +2728,14 @@ class WebGPUModelPipelineCache {
       : isMetadataPick
         ? (this._metadataPickWGSL ?? this._metadataWGSL ?? "")
         : (this._metadataWGSL ?? "");
-    // PARITY-CUSTOM-SHADER-WGSL — prepend the generated customShader chunk at
-    // the same injection point, after the metadata chunk. It is empty, and the
+    // Prepend the generated customShader chunk at the same injection point,
+    // after the metadata chunk. It is empty, and the
     // gated call sites are stripped, for non-customShader models, leaving their
     // source unchanged.
     const customShaderChunk = !hasCustomShader
       ? ""
       : (this._customShaderWGSL ?? "");
-    // WIRE-MODEL-SILHOUETTE — prepend the inflate and colour helper chunk at
+    // Prepend the inflate and colour helper chunk at
     // the same injection point when the bit is active. It is empty, and the
     // gated call sites are stripped, for non-silhouette models, leaving their
     // source unchanged.
@@ -3009,8 +3007,8 @@ class WebGPUModelPipelineCache {
   }
 
   /**
-   * PARITY-CUSTOM-SHADER-WGSL — sets the generated customShader WGSL chunk and
-   * its class hash for the next `getPipeline*` call. The renderer calls this
+   * Sets the generated customShader WGSL chunk and its class hash for the
+   * next `getPipeline*` call. The renderer calls this
    * immediately before (re)building a customShader model's pipelines so
    * `_getOrCreateShaderModule` prepends the right chunk and keys the module by
    * the right customShader class.
@@ -3025,7 +3023,7 @@ class WebGPUModelPipelineCache {
   }
 
   /**
-   * PARITY-CUSTOM-SHADER-WGSL — clears the generated customShader WGSL so a
+   * Clears the generated customShader WGSL so a
    * subsequent non-customShader primitive sharing this per-Model cache can't
    * inherit a stale chunk. The MODEL_HAS_WGSL_CUSTOM_SHADER bit already gates
    * whether the chunk is prepended at all, so this is belt-and-braces.
@@ -3038,7 +3036,7 @@ class WebGPUModelPipelineCache {
   }
 
   /**
-   * GLTF-POINTS-MODE — sets the realized topology axis for the primitive whose
+   * Sets the realized topology axis for the primitive whose
    * pipeline is about to be (re)built. It follows the same sticky-state
    * contract as `setMetadataWGSL` and `setCustomShaderWGSL`: the renderer
    * writes it immediately before each primitive's `getPipeline*` calls, via
@@ -3118,7 +3116,7 @@ class WebGPUModelPipelineCache {
     this._depthWritePipelines.clear();
     this._velocityPipelines.clear();
     this._classificationPipelines.clear();
-    // WIRE-MODEL-SILHOUETTE — silhouette variants bake the same module /
+    // Silhouette variants bake the same module /
     // format / sample-count state as the colour pipeline; wipe together.
     this._silhouetteModelPipelines.clear();
     this._silhouetteColorPipelines.clear();
@@ -3177,7 +3175,7 @@ class WebGPUModelPipelineCache {
   }
 
   /**
-   * WIRE-MODEL-SPLITTER — mirror `model.splitDirection !== NONE` each
+   * Mirrors `model.splitDirection !== NONE` each
    * frame (the maybeUpdateForLogDepth pattern). When the flag flips, wipe
    * every pipeline map (cached pipelines reference modules compiled with
    * the wrong MODEL_SPLIT_ENABLED state) and refresh the eagerly-built
@@ -3205,7 +3203,7 @@ class WebGPUModelPipelineCache {
     this._depthWritePipelines.clear();
     this._velocityPipelines.clear();
     this._classificationPipelines.clear();
-    // WIRE-MODEL-SILHOUETTE — silhouette variants bake the same module /
+    // Silhouette variants bake the same module /
     // format / sample-count state as the colour pipeline; wipe together.
     this._silhouetteModelPipelines.clear();
     this._silhouetteColorPipelines.clear();
@@ -3223,7 +3221,7 @@ class WebGPUModelPipelineCache {
   }
 
   /**
-   * WIRE-MODEL-COLOR — mirror `defined(model.color)` each frame (the
+   * Mirrors `defined(model.color)` each frame (the
    * maybeUpdateForSplit pattern). When the flag flips, wipe every pipeline
    * map (cached pipelines reference modules compiled with the wrong
    * MODEL_HAS_COLOR state) and refresh the eagerly-built module fields.
@@ -3251,7 +3249,7 @@ class WebGPUModelPipelineCache {
     this._depthWritePipelines.clear();
     this._velocityPipelines.clear();
     this._classificationPipelines.clear();
-    // WIRE-MODEL-SILHOUETTE — silhouette variants bake the same module /
+    // Silhouette variants bake the same module /
     // format / sample-count state as the colour pipeline; wipe together.
     this._silhouetteModelPipelines.clear();
     this._silhouetteColorPipelines.clear();
@@ -3269,7 +3267,7 @@ class WebGPUModelPipelineCache {
   }
 
   /**
-   * WIRE-MODEL-SILHOUETTE — mirror the WebGL `Model.hasSilhouette()`
+   * Mirrors the WebGL `Model.hasSilhouette()`
    * predicate each frame (the maybeUpdateForModelColor pattern). When the
    * flag flips, wipe every pipeline map (cached pipelines reference
    * modules compiled with the wrong MODEL_SILHOUETTE state) and refresh
@@ -3363,7 +3361,7 @@ class WebGPUModelPipelineCache {
     this._depthWritePipelines.clear();
     this._velocityPipelines.clear();
     this._classificationPipelines.clear();
-    // WIRE-MODEL-SILHOUETTE — silhouette variants bake the same module /
+    // Silhouette variants bake the same module /
     // format / sample-count state as the colour pipeline; wipe together.
     this._silhouetteModelPipelines.clear();
     this._silhouetteColorPipelines.clear();
@@ -3398,7 +3396,7 @@ class WebGPUModelPipelineCache {
     materialDefines: number,
   ): GPURenderPipeline | null {
     const md = this._normalizeMaterialDefines(materialDefines);
-    // GLTF-POINTS-MODE — snapshot the sticky topology at entry so the async
+    // Snapshot the sticky topology at entry so the async
     // callback below can't read a later primitive's value.
     const topology = this._primitiveTopology;
     const key = this._metadataVariantKey(
@@ -3572,7 +3570,7 @@ class WebGPUModelPipelineCache {
    * vertex slot 0, `positionMC`. It matches the colour pipeline's MRT targets,
    * depth format and sample count so it binds in the same render pass.
    * @param {number} md Normalized material-defines key.
-   * @param {string} [topology="triangle-list"] GLTF-POINTS-MODE — topology of
+   * @param {string} [topology="triangle-list"] Topology of
    *   the failed pipeline, so a failed point-list pipeline's magenta fallback
    *   still draws points (a triangle-list fallback over point vertex data
    *   would rasterize garbage triangles).
@@ -3706,7 +3704,7 @@ class WebGPUModelPipelineCache {
   }
 
   /**
-   * WIRE-MODEL-SILHOUETTE — gets or creates the silhouette model pass, the
+   * Gets or creates the silhouette model pass, the
    * base stencil-write pipeline variant, for the given material configuration.
    * See {@link createSilhouetteModelPipeline}. It is requested only when the
    * per-model silhouette flag is active, so the module already carries the
@@ -3778,7 +3776,7 @@ class WebGPUModelPipelineCache {
   }
 
   /**
-   * WIRE-MODEL-SILHOUETTE — gets or creates the silhouette colour pass, the
+   * Gets or creates the silhouette colour pass, the
    * stencil not-equal inflate and rim pipeline variant. See
    * {@link createSilhouetteColorPipeline}.
    *

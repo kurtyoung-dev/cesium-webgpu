@@ -31,7 +31,7 @@ interface ClippingPlaneCollectionLike {
    */
   modelMatrix?: Mat4Like;
   /**
-   * PARITY-CLIP-PLANES — owner world matrix stashed by the owning renderer
+   * Owner world matrix stashed by the owning renderer
    * each frame. For the globe this is absent (planes are authored in
    * world/ECEF space, so the world→eye `inverseViewTranspose` alone is
    * correct). For a {@link Model} the owning renderer sets this to the
@@ -54,7 +54,7 @@ interface ClippingPlaneCache {
   revision: number;
 }
 
-// PARITY-CLIP-PLANES — reused scratch matrices for the owner/collection
+// Reused scratch matrices for the owner/collection
 // plane-transform fold. Module-scoped (single-threaded JS) so the per-frame
 // packer stays allocation-free.
 const _scratchPlaneM = new Matrix4();
@@ -180,12 +180,12 @@ function updateWebGPUClippingPlanes(
   let invViewT: Mat4Like | undefined =
     uniformState.inverseViewTranspose as unknown as Mat4Like | undefined;
 
-  // PARITY-CLIP-PLANES — fold the owner world transform (and the
+  // Fold the owner world transform (and the
   // collection's own `modelMatrix`) into the eye-space plane transform so
   // model-local clipping planes clip in the correct frame. WebGL does this
   // per-fragment via `inverseTranspose(view3D · referenceMatrix ·
-  // clippingPlanes.modelMatrix)` (`Model.updateClippingPlanes`); we bake
-  // the same matrix on the CPU here because we transform the plane once at
+  // clippingPlanes.modelMatrix)` (`Model.updateClippingPlanes`); this bakes
+  // the same matrix on the CPU here, transforming the plane once at
   // upload time rather than per fragment.
   //
   // Byte-identical fast path: when there is no owner matrix AND the

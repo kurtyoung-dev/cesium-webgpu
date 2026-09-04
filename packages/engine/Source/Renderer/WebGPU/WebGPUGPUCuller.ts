@@ -55,7 +55,7 @@ export interface GPUCullerOptions {
   /** Label prefix for debug */
   label?: string;
   /**
-   * NEW-WEBGPU-PIPELINE-READY-SIGNAL — optional async resource monitor
+   * Optional async resource monitor
    * so the direct `createComputePipelineAsync` call publishes wakeup
    * events. When omitted (test harnesses), the renderer still works
    * but its inflight pipeline isn't tokenized.

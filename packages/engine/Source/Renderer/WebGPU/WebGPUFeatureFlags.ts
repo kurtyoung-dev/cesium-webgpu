@@ -3,11 +3,7 @@
  *
  * Extracted from `WebGPUContext.DESIRED_FEATURES` /
  * `_buildFeatureList` / `_updateFeatureFlags` / `_enabledFeatures` /
- * `hasFeature` / `enabledFeatures` as Batch 132 of the audit-
- * recommended Context decomposition. See
- * `migration_doc/WEBGPU_CONTEXT_DECOMPOSITION_PLAN.md` for the
- * roadmap and `migration_doc/BATCH_132_PLAN_FEATURE_FLAGS.md` for
- * this specific extraction.
+ * `hasFeature` / `enabledFeatures` as part of the Context decomposition.
  *
  * Responsibilities:
  *   - Owns `DESIRED_FEATURES` — the priority-ordered list of
@@ -128,7 +124,7 @@ export class WebGPUFeatureFlags {
 
   /**
    * Convenience predicate for the `shader-f16` device feature. The
-   * post-process f16 shader variants (PARITY-F16-POSTPROCESS) gate their
+   * post-process f16 shader variants gate their
    * selection on this — when false, the f32 shaders are always chosen and
    * every `_f16.wgsl` file is inert. Equivalent to `has('shader-f16')`
    * but reads clearer at the f16-selection call sites.

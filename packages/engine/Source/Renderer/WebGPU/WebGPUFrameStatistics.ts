@@ -1,8 +1,7 @@
 /**
  * Frame-statistics helpers extracted from `WebGPUContext`.
  *
- * Batch 144 of the audit-recommended Context decomposition (the
- * audit's candidate #6 in `WEBGPU_CONTEXT_DECOMPOSITION_PLAN.md`).
+ * Part of the audit-recommended Context decomposition.
  * Trio of small, related functions:
  *
  *   - `getFrameStatistics(host)` — assembles a `WebGPUFrameStatistics`

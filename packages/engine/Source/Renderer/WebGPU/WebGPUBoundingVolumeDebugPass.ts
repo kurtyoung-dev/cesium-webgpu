@@ -3,12 +3,12 @@
  * equivalent of `Scene/SceneDebug.js#debugShowBoundingVolume` (the WebGL
  * path) and its per-command `command.debugShowBoundingVolume` flag.
  *
- * WHY THIS EXISTS (NEW-GEOJSON-WEBGPU-BV-DEBUG-DRAW-PASS). The
+ * WHY THIS EXISTS. The
  * `debugShowBoundingVolume` flag plumbs through `GeoJsonPrimitive` and all
- * three `Buffer*` `WebGPUDrawCommand`s (Batch 583), and the flag setter
- * propagates to every collection, but until now NO WebGPU pass consumed it
- * — the overlay delta was a flat 0.000% vs the WebGL red bounding-sphere
- * wireframe. This pass closes that gap.
+ * three `Buffer*` `WebGPUDrawCommand`s, and the flag setter
+ * propagates to every collection; this pass is what consumes it
+ * — without it the overlay delta is a flat 0.000% vs the WebGL red
+ * bounding-sphere wireframe.
  *
  * WHAT IT DRAWS. For each command flagged `debugShowBoundingVolume === true`
  * that carries a bounding volume, a red wireframe of that volume — a

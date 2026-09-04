@@ -1,6 +1,6 @@
 /// <reference types="@webgpu/types" />
 /**
- * WebGPU Entity-Cluster grid dispatcher (Phase 10, NEW-ENTITYCLUSTER-GPU).
+ * WebGPU Entity-Cluster grid dispatcher (Phase 10).
  *
  * Runtime wrapper around `EntityClusterGridGPU.wgsl`. Owns the input coord
  * buffer, the per-cell atomic count + representative buffers, the per-point
@@ -23,8 +23,7 @@
  *   This is the standard "GPU reduce, CPU finish the small tail" decomposition
  *   and mirrors how `WebGPUGPUSortKeysDispatcher` produces keys the CPU/GPU
  *   consumer then orders. A fully-GPU merge (parallel union-find over the grid)
- *   is tracked as a follow-up — see NEW-ENTITYCLUSTER-GPU-MERGE in
- *   DEFERRED_WORK.md.
+ *   remains a possible follow-up.
  *
  * Lifetime: one instance per GPUDevice, cached in a WeakMap keyed by context.
  * Buffers grow on demand for the point count and grid size; the readback is

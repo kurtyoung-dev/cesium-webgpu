@@ -683,3 +683,48 @@ packages/engine/Source/Renderer/WebGPU/WebGPUGPUSortKeysDispatcher.ts
 packages/engine/Source/Renderer/WebGPU/WebGPUBufferPointRenderer.ts
 packages/engine/Source/Shaders/WebGPU/Compute/VolumetricFog.wgsl
 packages/engine/Source/Renderer/WebGPU/WebGPUPointCloudRenderer.ts
+
+# Renderer/WebGPU long-tail comment remediation (lane Frea). Feature-renderer
+# registry, 3D-tile pass orchestration, Hi-Z occlusion, model pipeline cache,
+# depth plane, performance manager, snap framebuffer/payload, clipping
+# planes, entity clustering, feature-ID texture, RTE assertions, vector-tile
+# resources, and the smaller compute/telemetry/debug-overlay leaves. Current
+# constraints remain inline; no extracted knowledge was load-bearing enough
+# to need a DEV_NOTES entry.
+packages/engine/Source/Renderer/WebGPU/AsyncResourceMonitor.ts
+packages/engine/Source/Renderer/WebGPU/AsyncResourceTelemetry.ts
+packages/engine/Source/Renderer/WebGPU/RenderStateToPipelineVariant.ts
+packages/engine/Source/Renderer/WebGPU/Stubs/WebGLStubTexture.ts
+packages/engine/Source/Renderer/WebGPU/WebGPUBoundingVolumeDebugPass.ts
+packages/engine/Source/Renderer/WebGPU/WebGPUCanvasClearState.ts
+packages/engine/Source/Renderer/WebGPU/WebGPUClipDistancePrecompute.ts
+packages/engine/Source/Renderer/WebGPU/WebGPUClippingPlaneCollection.ts
+packages/engine/Source/Renderer/WebGPU/WebGPUClusterDebugRenderer.ts
+packages/engine/Source/Renderer/WebGPU/WebGPUCollectionCameraUB.d.ts
+packages/engine/Source/Renderer/WebGPU/WebGPUDebugGBufferOverlay.ts
+packages/engine/Source/Renderer/WebGPU/WebGPUDecoupledScan.ts
+packages/engine/Source/Renderer/WebGPU/WebGPUDepthPlane.ts
+packages/engine/Source/Renderer/WebGPU/WebGPUDepthResolveMSAA.ts
+packages/engine/Source/Renderer/WebGPU/WebGPUEllipsoidRenderer.ts
+packages/engine/Source/Renderer/WebGPU/WebGPUEntityClusterDispatcher.ts
+packages/engine/Source/Renderer/WebGPU/WebGPUFeatureFlags.ts
+packages/engine/Source/Renderer/WebGPU/WebGPUFeatureIdTexture.ts
+packages/engine/Source/Renderer/WebGPU/WebGPUFeatureRenderers.ts
+packages/engine/Source/Renderer/WebGPU/WebGPUFlowFieldRenderer.ts
+packages/engine/Source/Renderer/WebGPU/WebGPUFrameStatistics.ts
+packages/engine/Source/Renderer/WebGPU/WebGPUGPUCuller.ts
+packages/engine/Source/Renderer/WebGPU/WebGPUHiZOcclusionDispatcher.ts
+packages/engine/Source/Renderer/WebGPU/WebGPUImageUpload.ts
+packages/engine/Source/Renderer/WebGPU/WebGPULTCLUTData.ts
+packages/engine/Source/Renderer/WebGPU/WebGPULibraryPostProcessStage.ts
+packages/engine/Source/Renderer/WebGPU/WebGPUParityManager.ts
+packages/engine/Source/Renderer/WebGPU/WebGPUPassState.ts
+packages/engine/Source/Renderer/WebGPU/WebGPUPerformanceManager.ts
+packages/engine/Source/Renderer/WebGPU/WebGPUPointCloudEyeDomeLighting.ts
+packages/engine/Source/Renderer/WebGPU/WebGPUPointCloudLODProcessor.ts
+packages/engine/Source/Renderer/WebGPU/WebGPURTEAssertions.ts
+packages/engine/Source/Renderer/WebGPU/WebGPUSceneRenderer3DTilePasses.ts
+packages/engine/Source/Renderer/WebGPU/WebGPUSnapFramebuffer.ts
+packages/engine/Source/Renderer/WebGPU/WebGPUSnapPayload.ts
+packages/engine/Source/Renderer/WebGPU/WebGPUVectorTileResources.ts
+packages/engine/Source/Renderer/WebGPU/WebGPUVideoTextureManager.ts

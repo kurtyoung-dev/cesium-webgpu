@@ -1,14 +1,13 @@
 /**
  * 3D-tile pass orchestration extracted from `WebGPUSceneRenderer`.
  *
- * Batch 137 of the audit-recommended SceneRenderer decomposition.
  * Moves `_execute3DTilePasses` (~277 LOC) — the most intricate pass
  * orchestration in the SceneRenderer — to a focused module.
  *
  * Three optional FBO redirects layered on top of the standard
  * `firstPasses → onAfterTileMainPass → classificationPasses` chain:
  *
- *   1. **Edge FBO redirect** (C-R8-EDGE-FBO, Batch 44): redirects
+ *   1. **Edge FBO redirect**: redirects
  *      `Pass.CESIUM_3D_TILE_EDGES` into the dedicated edge MRT
  *      framebuffer when `_edgeFramebuffer` is allocated and ready.
  *      The resolved edge views (`edgeColorView` / `edgeIdView` /
@@ -17,8 +16,8 @@
  *      commands, all three context slots are nulled to prevent
  *      stale views leaking into the composite from a previous frame.
  *
- *   2. **InvertClassification FBO redirect** (C-R8-INVERT-CLASS-FBO-REDIRECT,
- *      Batch 39): when the scene has invert-classification enabled
+ *   2. **InvertClassification FBO redirect**: when the scene has
+ *      invert-classification enabled
  *      AND the invert FBO + feature-renderer cache are ready,
  *      `firstPasses` (CESIUM_3D_TILE) writes tile color into
  *      `InvertClassification.classifiedTexture` instead of the scene
@@ -192,7 +191,7 @@ export function resolveTileIndirectPolicy(
  * @param onAfterTileMainPass - Optional hook fired between the
  *   CESIUM_3D_TILE main pass and the CESIUM_3D_TILE_CLASSIFICATION
  *   passes. WebGL calls `globeDepth.executeUpdateDepth` here so
- *   classification reads tile-augmented depth (Batch 35 / C-R8).
+ *   classification reads tile-augmented depth.
  */
 export function execute3DTilePasses(
   host: _3DTilePassesHost,
@@ -216,14 +215,14 @@ export function execute3DTilePasses(
     status.fallbackReason =
       requestedMode === "never" ? "not-requested" : "no-tile-commands";
   }
-  // C-R8 (Batch 35) — passes are split so `onAfterTileMainPass` can
+  // Passes are split so `onAfterTileMainPass` can
   // run between `CESIUM_3D_TILE` and `CESIUM_3D_TILE_CLASSIFICATION`.
   // WebGL's `SceneRenderer.js:544-560` calls `globeDepth.executeUpdateDepth`
   // at that hook so tile classification reads the updated globe depth
   // (now including 3D-tile contributions), not the pre-tile terrain-only
   // depth. Without it, overlay / decal / classification primitives
   // Z-fight against 3D tile surfaces.
-  // C-R8-EDGE-FBO (Batch 44) — CESIUM_3D_TILE_EDGES is pulled out of
+  // CESIUM_3D_TILE_EDGES is pulled out of
   // `firstPasses` so it can route to the dedicated edge MRT
   // framebuffer (separate color format, separate stencil reset,
   // separate clear semantics). The main-tile pass (CESIUM_3D_TILE)
@@ -239,7 +238,7 @@ export function execute3DTilePasses(
   // main tile pass actually wrote depth.
   const hasTileMainCommands =
     (frustumCommands.indices[Pass.CESIUM_3D_TILE] ?? 0) > 0;
-  // C-R8-INVERT-CLASS-FBO-REDIRECT (Batch 39) — When the scene has
+  // When the scene has
   // invert-classification enabled, `firstPasses` must write tile
   // color into `InvertClassification.classifiedTexture` instead of
   // the scene color attachment. The final composite (dispatched
@@ -262,7 +261,7 @@ export function execute3DTilePasses(
     !!config.useInvertClassification &&
     !!invertOwner &&
     isInvertClassificationReady(invertOwner);
-  // FAR-003: default `false` maps to `never`; only explicit `auto` or
+  // Default `false` maps to `never`; only explicit `auto` or
   // `always` may allocate/access the indirect manager.
   const runPass = (passIndex: number): void => {
     const cmds = frustumCommands.commands[passIndex];
@@ -334,7 +333,7 @@ export function execute3DTilePasses(
       );
     }
   };
-  // C-R8-EDGE-FBO (Batch 44) — Edges pass. Redirects
+  // Edges pass. Redirects
   // `Pass.CESIUM_3D_TILE_EDGES` into the dedicated edge MRT
   // framebuffer when the scene has edge visibility enabled. Mirrors
   // WebGL's `SceneRenderer.js:242-278 performCesium3DTileEdgesPass`.
@@ -387,7 +386,7 @@ export function execute3DTilePasses(
     // Edges present but FBO isn't ready (scene just enabled
     // `_enableEdgeVisibility` this frame, or allocation raced with
     // resize). Run on the current scene target — visually equivalent
-    // to the pre-Batch-44 path; no edge textures are populated.
+    // to the plain, non-redirected pass; no edge textures are populated.
     bindEdgePipelinesForPass(
       // Every command in the edges pass is an edge command; the emitter's
       // variants are optional on it and the binder skips commands without them.
@@ -412,14 +411,14 @@ export function execute3DTilePasses(
     host._edgeTexturesPopulated = false;
   }
 
-  // C-R8-EDGE-DISPLAY-MODE (§5 P2) — `CESIUM_3D_TILE_EDGES_DIRECT`
-  // (Pass slot 12, EDGES_ONLY CAD wireframe) is INTENTIONALLY NOT run
+  // `CESIUM_3D_TILE_EDGES_DIRECT`
+  // (Pass slot 12, EDGES_ONLY CAD wireframe) is deliberately not run
   // in this module. The MRT block above handles `CESIUM_3D_TILE_EDGES`
   // (slot 4) only — slot 12 is a distinct, non-redirected pass that
-  // draws straight onto the scene framebuffer ON TOP of opaque
+  // draws straight onto the scene framebuffer on top of opaque
   // surfaces. WebGL dispatches it from `performCesium3DTileEdgesDirectPass`
-  // AFTER `performPass(Pass.OPAQUE)` (`SceneRenderer.js:663-666`), NOT
-  // inside the 3D-tile chain (which runs BEFORE opaque). Running it here
+  // after `performPass(Pass.OPAQUE)` (`SceneRenderer.js:663-666`), not
+  // inside the 3D-tile chain (which runs before opaque). Running it here
   // would (a) z-occlude later opaque models against edge depth and
   // (b) double-render against the post-opaque dispatch. The slot-12
   // execution therefore lives in `WebGPUSceneRendererFrustumLoop` right
@@ -430,7 +429,7 @@ export function execute3DTilePasses(
   // Track whether the stencil-gated composite can run. Set to true
   // once the CLASSIFICATION_IGNORE_SHOW pass actually ran inside the
   // invert FBO (writing stencil bits). If false, the composite falls
-  // back to the single-pass tint (Batch 39 behavior).
+  // back to the single-pass tint.
   let invertHasStencilData = false;
 
   if (redirectToInvertFBO && invertOwner) {
@@ -439,7 +438,7 @@ export function execute3DTilePasses(
 
     const colorAttachment =
       buildInvertClassificationColorAttachment(invertOwner);
-    // C-R8-INVERT-CLASS-STENCIL (Batch 40) — use the invert FBO's own
+    // Use the invert FBO's own
     // depth-stencil texture (not scene depth). Tile depth writes now
     // land in the invert FBO; the classification-ignore-show pass
     // tests against that depth and writes stencil bits. This matches
@@ -536,12 +535,11 @@ export function execute3DTilePasses(
         }
       }
 
-      // C-R8 (Batch 35) — depth update hook runs BETWEEN the tile
+      // Depth update hook runs between the tile
       // main pass and the classification passes. It reads depth from
       // the scene framebuffer currently, not the invert FBO's depth;
-      // tracked as `C-R8-INVERT-DEPTH-SOURCE` that for invert-on,
-      // globe-depth should sample the invert FBO's depth instead.
-      // Until that's wired, downstream ground/overlay primitives
+      // globe-depth should sample the invert FBO's depth instead when
+      // invert-on. Until that's wired, downstream ground/overlay primitives
       // may still Z-fight against tiles when invert is on.
       if (hasTileMainCommands && onAfterTileMainPass) {
         onAfterTileMainPass();
@@ -577,8 +575,7 @@ export function execute3DTilePasses(
           ignoreShowPass.setScissorRect(0, 0, host._width, host._height);
           runPass(Pass.CESIUM_3D_TILE_CLASSIFICATION_IGNORE_SHOW);
           context.endCurrentRenderPass?.();
-          // AUDIT_2026_05_02 A.2 (Batch 141, NEW-INVERT-CLASS-STENCIL-CLASSIFIER —
-          // resolved). All four depth-sample classifier renderers now
+          // All four depth-sample classifier renderers
           // emit dedicated IGNORE_SHOW stencil-write commands for 3D-Tile
           // classification:
           //   - `WebGPUGroundPrimitiveRenderer.js`
@@ -629,7 +626,7 @@ export function execute3DTilePasses(
     }
   } else {
     runSceneTileMain();
-    // C-R8 (Batch 35) — depth update hook. Fires after the main 3D tile
+    // Depth update hook. Fires after the main 3D tile
     // pass so classification can read tile-augmented depth.
     if (hasTileMainCommands && onAfterTileMainPass) {
       onAfterTileMainPass();

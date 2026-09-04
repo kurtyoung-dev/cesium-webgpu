@@ -1,5 +1,5 @@
 /**
- * NEW-WEBGPU-PERF-MONITOR-SUBSCRIBER — performance subscriber for
+ * Performance subscriber for
  * `AsyncResourceMonitor`. One instance per `GraphicsContext`.
  *
  * The monitor itself is a low-level event bus optimized for wakeup

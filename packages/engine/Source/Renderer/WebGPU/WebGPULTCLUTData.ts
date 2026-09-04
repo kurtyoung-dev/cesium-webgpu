@@ -1,7 +1,7 @@
 /// <reference types="@webgpu/types" />
 /**
  * WebGPULTCLUTData — embedded Linearly-Transformed-Cosines (LTC) lookup
- * tables for analytic area-light shading (C6-LTC-AREA-LIGHTS).
+ * tables for analytic area-light shading.
  *
  * Two 64x64 RGBA lookup tables fitted against the GGX BRDF, indexed by
  * (perceptualRoughness, sqrt(1 - NdotV)):

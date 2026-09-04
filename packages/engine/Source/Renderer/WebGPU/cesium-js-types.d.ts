@@ -517,7 +517,7 @@ interface CesiumFrameState {
         sunDirectionTeme: CesiumCartesian3;
       }
     | undefined;
-  // C7-SUN-STARS-EXTINCTION — per-frame RGB transmittance along the camera→sun
+  // Per-frame RGB transmittance along the camera→sun
   // ray (published by Sun.update). Undefined when the effect is disabled.
   sunAtmosphereExtinction?: CesiumCartesian3 | undefined;
   // Per-frame Sun alpha co-fade derived from the strongest surviving channel
@@ -561,7 +561,7 @@ interface CesiumCamera {
     getInfiniteProjectionMatrix?: (
       clipSpaceConvention: import("../../Core/ClipSpaceConvention.js").ClipSpaceConventionRecord,
     ) => CesiumMatrix4;
-    // VOXEL-OCTREE-LOD — screen-space-error denominator (2 * tan(fovy / 2)
+    // Screen-space-error denominator (2 * tan(fovy / 2)
     // for perspective frustums). Consumed by the WebGPU voxel SSE refine
     // test, mirroring VoxelTraversal.js's screenSpaceErrorMultiplier.
     sseDenominator?: number;
@@ -724,7 +724,7 @@ interface CesiumGraphicsContext {
   readonly depthFormat?: GPUTextureFormat;
   useHardwareClipDistances?: boolean;
   /** WebGPU-only: opt-in flag selecting the hand-tuned f16 post-process
-   *  shader variants (PARITY-F16-POSTPROCESS). Default false. Only takes
+   *  shader variants. Default false. Only takes
    *  effect when the device also granted `shader-f16`
    *  (`hasFeature('shader-f16')`). Absent on WebGL. */
   useShaderF16?: boolean;
@@ -1141,8 +1141,8 @@ interface CesiumScene {
   readonly globe: CesiumGlobe | undefined;
   /**
    * Scene#ellipsoid getter (`options.ellipsoid ?? Ellipsoid.default`).
-   * Threaded into the CSM ground-clamp (PARITY-RTE-ELLIPSOID-AWARE /
-   * FEAT-3DT2-03) so non-WGS84 globes solve against their own radii.
+   * Threaded into the CSM ground-clamp so non-WGS84 globes solve against
+   * their own radii.
    */
   readonly ellipsoid?: {
     readonly radii: CesiumCartesian3;
@@ -1531,7 +1531,8 @@ interface CesiumAnyDrawCommand {
   };
   /** World transform the command was built with. On WebGL DrawCommand it
    *  drives uniform derivation; on WebGPU commands it is binning/sort
-   *  metadata (C7-SPLAT-DEPTH-COMPOSE parity refresh writes it). */
+   *  metadata (the Gaussian-splat renderer's per-frame parity refresh
+   *  writes it). */
   modelMatrix?: CesiumMatrix4;
   pass?: number;
   castShadows?: boolean;

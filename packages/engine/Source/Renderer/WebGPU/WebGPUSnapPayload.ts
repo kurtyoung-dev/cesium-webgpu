@@ -3,16 +3,16 @@
  * WebGPU snap-payload encoding — the single source of truth shared by the
  * shader-side WRITER, the attachment, and the readback-side READER.
  *
- * UP144-SNAP-WEBGPU (Campaign 11 row C11-212). Three modules have to agree on
+ * Three modules have to agree on
  * this encoding exactly, and they live far apart:
  *
  *   - `Shaders/WebGPU/Model/ModelPBRComplete.wgsl` — `fragmentSnapMain` WRITES
  *     the payload.
  *   - `WebGPUModelPipelineCache.ts` — stamps {@link SNAP_PAYLOAD_FORMAT} as the
  *     snap pipeline's color target. WebGPU validates a pipeline's attachment
- *     state against the render pass at DRAW time, so a format drift here does
+ *     state against the render pass at draw time, so a format drift here does
  *     not fail loudly at creation; it invalidates the whole snap command buffer
- *     at the first draw (the FORK-34 failure mode).
+ *     at the first draw.
  *   - `WebGPUSnapFramebuffer.ts` — allocates the attachment and READS it back.
  *
  * Keeping the format constant and the two pure decode functions here (with no
