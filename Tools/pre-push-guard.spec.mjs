@@ -279,18 +279,23 @@ function makeSandbox(t, options = {}) {
       const {
         remoteName = "origin",
         remoteLocation = origin,
+        now,
         ...runOptions
       } = commandOptions;
-      return run(
-        process.execPath,
-        ["Tools/pre-push-guard.mjs", remoteName, remoteLocation],
-        {
-          cwd: work,
-          input: `${lines.join("\n")}\n`,
-          env: { ...process.env, HOOK_EXPLAIN: "1" },
-          ...runOptions,
-        },
-      );
+      // A real `git push` never supplies a fifth argv entry — git's pre-push
+      // hook contract is exactly two args (remote name, remote location) — so
+      // appending one here only reaches the test-only clock override in
+      // pre-push-guard.mjs and exercises no path a real push can take.
+      const args = ["Tools/pre-push-guard.mjs", remoteName, remoteLocation];
+      if (now !== undefined) {
+        args.push(now);
+      }
+      return run(process.execPath, args, {
+        cwd: work,
+        input: `${lines.join("\n")}\n`,
+        env: { ...process.env, HOOK_EXPLAIN: "1" },
+        ...runOptions,
+      });
     };
 
     return { dir, work, origin, git, commit, guard, cleanup };
@@ -405,6 +410,15 @@ function createRemoteOnlyCommit(sandbox, ref, subject, body) {
 
 const TRAILER = "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>";
 const EXPLAIN = { env: { ...process.env, HOOK_EXPLAIN: "1" } };
+
+// Fixed instants for deterministic quiet-hours pinning via the guard's
+// argv[4] test-only clock override (see the `now` handling in sandbox.guard
+// above and resolveNow() in pre-push-guard.mjs). Chosen so the verdict is
+// unambiguous regardless of the real wall clock at test time: a weekend
+// morning is never inside the weekday 07:00-19:00 US Eastern window, and a
+// weekday mid-morning always is.
+const QUIET_HOURS_OUTSIDE_INSTANT = "2026-08-15T10:00:00-04:00"; // Saturday
+const QUIET_HOURS_INSIDE_INSTANT = "2026-08-17T10:00:00-04:00"; // Monday
 
 test("the pre-push executable and its attribute pin are byte-stable LF", () => {
   const hook = fs.readFileSync(path.join(ROOT, ".husky/pre-push"));
@@ -920,10 +934,19 @@ test(
     });
 
     await t.test("one SHA sent to two refs is evaluated exactly once", () => {
-      const result = sandbox.guard([
-        `refs/heads/one ${one} refs/heads/one ${ZERO_SHA1}`,
-        `refs/heads/one ${one} refs/heads/alias ${ZERO_SHA1}`,
-      ]);
+      // Pinned outside the quiet-hours window: this subtest is about
+      // dedup/baseline behavior, not quiet hours, and the pass-path header it
+      // asserts on only appears when quiet hours also passes (main() folds
+      // `quietHours.status === "pass"` into `ok`). Without the injected
+      // instant this test depended on the ambient wall clock and failed
+      // whenever it ran on a weekday between 07:00-19:00 US Eastern.
+      const result = sandbox.guard(
+        [
+          `refs/heads/one ${one} refs/heads/one ${ZERO_SHA1}`,
+          `refs/heads/one ${one} refs/heads/alias ${ZERO_SHA1}`,
+        ],
+        { now: QUIET_HOURS_OUTSIDE_INSTANT },
+      );
       assertViolationCounts(result.output, { commit: 0, ref: 0, push: 0 });
       assert.match(result.output, /landing-guard: 1 governed commit\(s\)/);
       assert.match(result.output, /refs\/heads\/alias: 0 distinct commit\(s\)/);
@@ -975,6 +998,49 @@ test(
         ]);
         assertViolationCounts(result.output, { commit: 1, ref: 0, push: 0 });
         assert.match(result.output, /FAIL\s+batch-monotonic/);
+      },
+    );
+  },
+);
+
+test(
+  "quiet hours is read from an injected instant, not the ambient wall clock",
+  { skip: hasGit() ? false : "git unavailable" },
+  async (t) => {
+    const sandbox = makeSandbox(t);
+    const head = sandbox.commit(
+      "Batch 1: pinned-clock push",
+      `Exercised at two fixed instants regardless of real time.\n\n${TRAILER}`,
+    );
+
+    await t.test(
+      "an injected instant outside the window passes deterministically",
+      () => {
+        const result = sandbox.guard(
+          [`refs/heads/main ${head} refs/heads/main ${ZERO_SHA1}`],
+          { now: QUIET_HOURS_OUTSIDE_INSTANT },
+        );
+        assert.doesNotMatch(result.output, /FAIL\s+quiet-hours/);
+        assert.match(
+          result.output,
+          /outside the prohibited window.*Sat 2026-08-15/s,
+        );
+        assert.equal(result.status, 0, result.output);
+      },
+    );
+
+    await t.test(
+      "an injected instant inside the window fails deterministically",
+      () => {
+        const result = sandbox.guard(
+          [`refs/heads/main ${head} refs/heads/main ${ZERO_SHA1}`],
+          { now: QUIET_HOURS_INSIDE_INSTANT },
+        );
+        assert.match(
+          result.output,
+          /FAIL\s+quiet-hours\s+inside the prohibited window.*Mon 2026-08-17/s,
+        );
+        assert.equal(result.status, 1, result.output);
       },
     );
   },
@@ -1241,5 +1307,72 @@ test(
       assertViolationCounts(result.output, { commit: 0, ref: 0, push: 0 });
       assert.match(result.output, /--\s+protected-ref/);
     });
+
+    await t.test(
+      "the now-override argument is load-bearing for quiet hours",
+      (t) => {
+        // Ignoring argv[4] entirely collapses both pinned instants onto the
+        // same `new Date()` (real-clock) fallback, so an OUTSIDE-pinned and
+        // an INSIDE-pinned push become indistinguishable — deterministic
+        // regardless of the real wall clock at test time, since the claim
+        // under test is that the two calls agree, not what they agree ON.
+        // The companion test above already proves the pristine driver makes
+        // them disagree (pass vs. fail).
+        const sandbox = makeSandbox(t, {
+          driverMutations: [
+            {
+              find: "const override = argv[4];",
+              replace: "const override = undefined;",
+            },
+          ],
+        });
+        const head = sandbox.commit(
+          "Batch 1: mutant clock push",
+          `Exercises the ignored override.\n\n${TRAILER}`,
+        );
+        const outside = sandbox.guard(
+          [`refs/heads/main ${head} refs/heads/main ${ZERO_SHA1}`],
+          { now: QUIET_HOURS_OUTSIDE_INSTANT },
+        );
+        const inside = sandbox.guard(
+          [`refs/heads/main ${head} refs/heads/main ${ZERO_SHA1}`],
+          { now: QUIET_HOURS_INSIDE_INSTANT },
+        );
+        assert.equal(
+          outside.status,
+          inside.status,
+          `override should have no effect once ignored, but got outside=${outside.status} inside=${inside.status}`,
+        );
+      },
+    );
+
+    await t.test(
+      "a real push (no override argv) still resolves the real wall clock",
+      (t) => {
+        // Swaps which branch a missing override takes. A real push never
+        // supplies argv[4] (git's pre-push contract is exactly two args), so
+        // this mutant sends every real invocation (override undefined) down
+        // `new Date(override)` — an Invalid Date that resolveNow() already
+        // refuses to treat as a clock reading. The failure is deterministic
+        // at any hour: it is a crash, not a wrong verdict, and the branch an
+        // override-bearing call takes (`return new Date()`, ignoring the
+        // pinned instant) is unreachable from any push this suite issues.
+        const sandbox = makeSandbox(t, {
+          driverMutations: [
+            { find: "if (override === undefined) {", replace: "if (false) {" },
+          ],
+        });
+        const head = sandbox.commit(
+          "Batch 1: real-push shape",
+          `No now override, exactly like a real push.\n\n${TRAILER}`,
+        );
+        const result = sandbox.guard([
+          `refs/heads/main ${head} refs/heads/main ${ZERO_SHA1}`,
+        ]);
+        assert.equal(result.status, 2, result.output);
+        assert.match(result.output, /FAILED TO RUN/);
+        assert.match(result.output, /malformed now-override argument/);
+      },
+    );
   },
 );

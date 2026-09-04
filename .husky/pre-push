@@ -18,6 +18,9 @@
 # the hook. `npm run verify-landing` can detect skipped commit-message and
 # timestamp rules in a selected range, but it cannot reconstruct a bypassed
 # deletion or rewrite; server-side branch protection is a separate control.
+# (The driver also accepts a 5th argv entry that pins the quiet-hours clock —
+# it exists for direct-invocation tests; git's two-argument hook contract
+# means "$@" above never supplies it, so it is unreachable from a real push.)
 #
 # POSIX sh only (Windows git ships a minimal sh): no arrays, no [[ ]], no
 # `local`, no process substitution.

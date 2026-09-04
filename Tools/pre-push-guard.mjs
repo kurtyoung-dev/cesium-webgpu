@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // pre-push-guard.mjs — the git-aware driver behind .husky/pre-push.
-// @purpose Git-aware driver behind .husky/pre-push: enforces batch-prefix/body/trailer/quiet-hours on every outgoing agent commit, and refuses deletion or non-fast-forward rewrite of main; fail-closed, no bypass flag.
+// @purpose Git-aware driver behind .husky/pre-push: enforces batch-prefix/body/trailer/quiet-hours on every outgoing agent commit, and refuses deletion or non-fast-forward rewrite of main; fail-closed, no bypass flag reachable from a real push (a 5th argv slot lets a direct invocation pin the quiet-hours clock for tests; git's two-argument hook contract keeps it unreachable from `.husky/pre-push`).
 // @status ACTIVE
 //
 // Ruling: migration_doc/MAINTAINER_RULINGS_2026-08-14.md R-2026-08-14-4
@@ -423,6 +423,32 @@ function highestLandedBatch(tips) {
 }
 
 /**
+ * Resolve the instant quiet hours is evaluated against.
+ *
+ * git invokes a pre-push hook with exactly two arguments — remote name,
+ * remote location — a contract git itself enforces, not the hook. That fixed
+ * shape means a real push's argv never reaches index 4, so this override is
+ * unreachable from `.husky/pre-push`; only a caller driving the script
+ * directly can supply a fifth argv entry to pin both sides of the window.
+ *
+ * @param {string[]} argv Process argv (or an injected test double).
+ * @returns {Date} The instant to evaluate quiet hours against.
+ */
+function resolveNow(argv) {
+  const override = argv[4];
+  if (override === undefined) {
+    return new Date();
+  }
+  const parsed = new Date(override);
+  if (Number.isNaN(parsed.getTime())) {
+    throw new Error(
+      `landing-guard: malformed now-override argument; expected an ISO-8601 instant, got ${JSON.stringify(override)}.`,
+    );
+  }
+  return parsed;
+}
+
+/**
  * Entry point.
  *
  * @returns {number} Process exit code.
@@ -449,7 +475,7 @@ export function main(options = {}) {
   requireCurrentNegotiation(requests, advertisedRefs);
   requireInspectableObjects(requests, advertisedRefs);
   const baselineTips = remoteBaselineTips(requests, advertisedRefs);
-  const quietHours = checkQuietHours(options.now ?? new Date());
+  const quietHours = checkQuietHours(options.now ?? resolveNow(argv));
   const highestPushedBatch = highestLandedBatch(baselineTips);
   const seenCommitShas = new Set();
   const distinctCommits = [];

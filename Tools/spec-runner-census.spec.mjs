@@ -192,8 +192,8 @@ test("spec-runner census recognizes only portable direct AND-list homes", async 
   await t.test("quoted operator shielding is load-bearing", async (t) => {
     const mutantModule = await importMutatedCensus(
       t,
-      "    if (quoted) {\n      continue;\n    }",
-      "    if (false) {\n      continue;\n    }",
+      "    if (quoted) {",
+      "    if (false) {",
     );
     const mutantResult = mutantModule.runCensus({
       packageJson: portableAndListPackageJson,

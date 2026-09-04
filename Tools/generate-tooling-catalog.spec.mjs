@@ -265,6 +265,35 @@ function runCandidate(sandbox, args = ["--check"], extraEnv = {}) {
   });
 }
 
+/**
+ * Assert a `--check` result reports the census as current.
+ *
+ * Many tests below spawn this as a POSITIVE CONTROL after proving an
+ * unrelated mutation is rejected, so a harness that rejected everything
+ * regardless of input would not pass vacuously. When it fails, the almost
+ * always cause is that the TRACKED migration_doc/TOOLING_CATALOG.md itself
+ * has drifted from the tree — a precondition this test does not control and
+ * is not exercising — not a defect in whatever the surrounding test is
+ * actually about. The prefix below says so up front so a drifted-catalog
+ * failure is never mistaken for one of those defects; the check itself
+ * (status 0 and the exact "census is current" text) is unchanged.
+ *
+ * @param {{status: number|null, stdout: string, stderr: string}} result Spawned `--check` result.
+ * @param {string} [context] Extra context to lead the failure message with.
+ */
+function assertCensusCurrent(result, context = "") {
+  const prefix = context === "" ? "" : `${context}: `;
+  assert.equal(
+    result.status,
+    0,
+    `${prefix}census-currency precondition failed — if this is a DRIFTED ` +
+      `report, migration_doc/TOOLING_CATALOG.md itself is stale relative to ` +
+      `the tree and needs regenerating (\`node ${LAUNCHER_REL}\`, then ` +
+      `commit), independently of what this test exercises:\n${result.stderr}`,
+  );
+  assert.match(result.stdout, /census is current/u);
+}
+
 function updateCandidateEntry(sandbox, pathname, mode, oid) {
   const update = spawnSync(
     "git",
@@ -687,8 +716,7 @@ test("A1a3: undeclared or computed candidate imports are STRUCTURAL", () => {
   const inverse = createCandidateSandbox();
   try {
     const result = runCandidate(inverse);
-    assert.equal(result.status, 0, result.stderr);
-    assert.match(result.stdout, /census is current/u);
+    assertCensusCurrent(result);
   } finally {
     rmSync(inverse.root, { recursive: true, force: true });
   }
@@ -865,8 +893,7 @@ test(
         env: cleanEnv,
         encoding: "utf8",
       });
-      assert.equal(inverse.status, 0, inverse.stderr);
-      assert.match(inverse.stdout, /census is current/u);
+      assertCensusCurrent(inverse);
     } finally {
       rmSync(sandbox.root, { recursive: true, force: true });
     }
@@ -940,8 +967,7 @@ test(
     const inverse = createCandidateSandbox();
     try {
       const result = runCandidate(inverse);
-      assert.equal(result.status, 0, result.stderr);
-      assert.match(result.stdout, /census is current/u);
+      assertCensusCurrent(result);
     } finally {
       rmSync(inverse.root, { recursive: true, force: true });
     }
@@ -1297,15 +1323,13 @@ test("A1i: candidate catalog and trust-boundary identity control the verdict", (
     "Tools/generate-tooling-catalog.mjs",
     (source) => `${source}\n// stale candidate implementation\n`,
   );
-  assert.equal(staleGenerator.status, 0, staleGenerator.stderr);
-  assert.match(staleGenerator.stdout, /census is current/u);
+  assertCensusCurrent(staleGenerator);
 
   const staleParser = candidateIndexMutant(
     "Tools/lib/purpose-header.mjs",
     (source) => `${source}\n// stale candidate parser\n`,
   );
-  assert.equal(staleParser.status, 0, staleParser.stderr);
-  assert.match(staleParser.stdout, /census is current/u);
+  assertCensusCurrent(staleParser);
 });
 
 test("A1j: the private candidate snapshot restores environment and cleans up", () => {
@@ -1476,8 +1500,7 @@ test("A1m: split and skip-worktree candidate indexes materialize as full snapsho
         env: sandbox.env,
         encoding: "utf8",
       });
-      assert.equal(result.status, 0, `${variant}: ${result.stderr}`);
-      assert.match(result.stdout, /census is current/u);
+      assertCensusCurrent(result, variant);
       const intact = spawnSync("git", ["ls-files", "--stage", "-z"], {
         cwd: ROOT,
         env: sandbox.env,
@@ -1599,8 +1622,7 @@ test(
         env: candidateEnv,
         encoding: "utf8",
       });
-      assert.equal(result.status, 0, result.stderr);
-      assert.match(result.stdout, /census is current/u);
+      assertCensusCurrent(result);
       assert.deepEqual(readFileSync(indexPath), before);
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -1686,8 +1708,7 @@ test("A1n: replacement objects cannot launder catalog or runtime blobs", () => {
       assert.equal(replaced.stdout, forged, "launcher replacement is inactive");
 
       const result = runCandidate(sandbox);
-      assert.equal(result.status, 0, result.stderr);
-      assert.match(result.stdout, /census is current/u);
+      assertCensusCurrent(result);
     } finally {
       rmSync(sandbox.root, { recursive: true, force: true });
     }
@@ -1725,8 +1746,7 @@ test("A1o: replacement history is ignored; grafted or shallow history is STRUCTU
       assert.equal(canonicalCount.status, 0, canonicalCount.stderr);
       assert.notEqual(replacedCount.stdout, canonicalCount.stdout);
       const result = runCandidate(sandbox);
-      assert.equal(result.status, 0, result.stderr);
-      assert.match(result.stdout, /census is current/u);
+      assertCensusCurrent(result);
     } finally {
       rmSync(sandbox.root, { recursive: true, force: true });
     }
@@ -2020,8 +2040,7 @@ test("A1s: unrenderable raw Git identities are explicitly STRUCTURAL", () => {
     const oid = writeCandidateBlob(unrelated, "unrelated raw-path fixture\n");
     updateCandidateEntryRaw(unrelated, pathname, "100644", oid);
     const result = runCandidate(unrelated);
-    assert.equal(result.status, 0, result.stderr);
-    assert.match(result.stdout, /census is current/u);
+    assertCensusCurrent(result);
   } finally {
     rmSync(unrelated.root, { recursive: true, force: true });
   }
