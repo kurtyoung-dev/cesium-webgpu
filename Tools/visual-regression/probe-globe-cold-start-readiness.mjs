@@ -2,6 +2,7 @@
 //
 // @purpose Measures whether a settle gated on the new readiness predicate ends with a drawn frame, and what the globe's first non-empty command list costs on each backend.
 // @status ACTIVE
+// @runtime lib/probe-runtime.mjs
 //
 // ── WHAT IT ANSWERS ─────────────────────────────────────────────────────────
 //

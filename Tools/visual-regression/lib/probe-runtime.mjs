@@ -49,6 +49,30 @@
 // Both are re-exported here, so a probe imports one module and a reviewer reads
 // three files that each stay well inside the fork's size rule. The split is
 // also what keeps the lock module free of a cycle back through the runtime.
+//
+// THE ANTI-RE-ACCRETION CONTRACT (DX-02). Landing this runtime does not stop
+// a future probe from re-growing a private copy of one of the four concerns
+// it owns beside a `runProbe(` call that already handles them — that is how
+// the fleet reached 682 private `chromium.launch(` sites in the first place.
+// A probe that imports and calls `runProbe` from this module declares that
+// residency in its own header, next to `@purpose` and `@status`:
+//
+//   // @runtime lib/probe-runtime.mjs
+//
+// `Tools/visual-regression/lib/runtime-residency-contract.mjs` reads that tag
+// (not an import scan — see its own header for why) and, for every probe that
+// carries it, refuses a hand-rolled `createHash` import (the served-build
+// preflight and `sha256` are already covered), an exclusive-create `{ flag:
+// "wx" }` lock (the Edge slot is already covered), a locally declared
+// `Refusal`-shaped error class or a `*-refusal.json` / `*-error.json` write
+// (`ProbeRefusal` and the incident writer are already covered), or a
+// `*-report.json` / `*-summary.md` / `*-runtime.json` write (the receipt
+// writer is already covered). `Tools/visual-regression/runtime-residency-
+// contract.spec.mjs` enforces it as a shrink-only ratchet, the same shape
+// `lib/prohibited-reader-allowlist.mjs` already established. A probe that has
+// not been migrated onto this runtime carries no `@runtime` tag (or `@runtime
+// none`) and is out of scope — migrating the fleet in family batches is
+// `DX-06`'s job, not this contract's.
 
 import { createHash } from "node:crypto";
 import fs from "node:fs";

@@ -697,3 +697,15 @@ function name or a unique line of text, with the line number as a secondary hint
 (`WebGPUModelRenderer.ts` `attachPickToColorCommand(` ~:7606). Line numbers drift at every
 landing and the Wave DX decompositions will move whole regions; a citation that cannot be
 re-found by text is a Principle 10 defect in the brief.
+
+### 8g. Anti-re-accretion contract for probes (DX-02, 2026-09-02)
+
+A probe migrated onto `Tools/visual-regression/lib/probe-runtime.mjs` (it imports and calls
+`runProbe`) must declare that in its own header — `// @runtime lib/probe-runtime.mjs`, next to
+`@purpose` and `@status` — and must not hand-roll a concern the runtime already owns: its own
+`createHash` import for hashing or a served-build preflight, its own exclusive-create Edge-slot
+lock, its own refusal/incident writer, or its own receipt writer. `Tools/visual-regression/
+runtime-residency-contract.spec.mjs` enforces this as a shrink-only ratchet over every probe
+carrying the tag; a probe not yet migrated carries no tag (or `@runtime none`) and is untouched by
+it — migrating the fleet in family batches is `DX-06`'s job, not a rule every worker must apply
+retroactively.

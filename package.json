@@ -198,7 +198,7 @@
     "test-readiness": "node --test Tools/visual-regression/globe-cold-start-readiness.spec.mjs Tools/visual-regression/globe-cold-start-black-rule.spec.mjs Tools/visual-regression/probe-aec-perf.spec.mjs Tools/visual-regression/aec-residency-e1.spec.mjs Tools/visual-regression/ocean-per-frame-scratch.spec.mjs Tools/visual-regression/webgpu-pick-emission-counters.spec.mjs Tools/visual-regression/webgpu-pick-sync-readback-warmup.spec.mjs Tools/visual-regression/probe-q141-pick-readback.spec.mjs Tools/visual-regression/aec-residency-stall-locus.spec.mjs Tools/visual-regression/webgpu-pipeline-creation-not-frame-coupled.spec.mjs Tools/visual-regression/aec-residency-e2.spec.mjs",
     "test-engine-node": "node --test Tools/visual-regression/translucent-cull-render-pass-bracket.spec.mjs Tools/visual-regression/gpucull-blackframe-isolation-arm-expectations.spec.mjs",
     "test-visual-probe-contracts": "node --test Tools/visual-regression/probe-runtime.spec.mjs",
-    "test-visual-regression-node": "node --test Tools/visual-regression/gsplat-tower-framing.spec.mjs",
+    "test-visual-regression-node": "node --test Tools/visual-regression/gsplat-tower-framing.spec.mjs Tools/visual-regression/probe-fleet-contract.spec.mjs Tools/visual-regression/runtime-residency-contract.spec.mjs",
     "test-sun-disc-dawn": "node --test Tools/visual-regression/sun-disc-dawn-gate.spec.mjs",
     "spec-census": "node Tools/spec-runner-census.mjs",
     "wave-end-gate": "node Tools/wave-end-gate.mjs",
