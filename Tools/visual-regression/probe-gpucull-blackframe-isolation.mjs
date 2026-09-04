@@ -1,8 +1,8 @@
 #!/usr/bin/env node
-// probe-gpucull-blackframe-isolation.mjs — opaque GPU-cull boundary walk
+// probe-gpucull-blackframe-isolation.mjs — translucent GPU-cull boundary walk
 // under gpuCullingHint='always'.
 //
-// @purpose Original Edge-lane reproducer for Q-20/Q-48: walks the opaque command-count boundary around GPU_CULL_THRESHOLD_HI=384 under gpuCullingHint='always' and records the black-frame + locked-encoder validation error the missing translucent-pass render-pass bracket produced.
+// @purpose Edge-lane reproducer for Q-20/Q-48: walks the translucent command-count boundary around GPU_CULL_THRESHOLD_HI=384 under gpuCullingHint='always', asserts the dispatch it exists to isolate actually fires, and records the black-frame + locked-encoder validation error the (now-fixed) missing render-pass bracket produced.
 // @status ACTIVE
 //
 // Repatriated (CLAUDE.md Evidence Repatriation) from the Edge-executor
@@ -10,18 +10,48 @@
 // output/edge-executor-2026-08-28-t2/probe-gpucull-blackframe-isolation.mjs,
 // a gitignored path — the run's RUNLOG.md lives there too). Moved into the
 // tracked tree so this reproduction does not depend on evidence a clone
-// reset or an `output/` prune can make disappear. The scene, the ARMS list
-// and the camera are unchanged from the run that produced the banked
-// before-numbers this row cites:
+// reset or an `output/` prune can make disappear. The scene and the camera
+// are unchanged from the run that produced the banked before-numbers this
+// row cites:
 //   n256/n320/n384-always : clean  (nonBlack ~100%, 0 validation errors)
 //   n448/n600-always      : BLACK  (nonBlack 0.00%, 1 locked-encoder
 //                                   validation error — RUNLOG.md:264-272)
 //   n600-auto-recheck     : clean  ('auto' never reaches the translucent
-//                                   GPU-cull branch — RUNLOG.md:581 records
-//                                   the opaque culler's own dispatch count
-//                                   at 0 in the failing arms, so the
-//                                   commands that trip this are translucent,
-//                                   not opaque, despite the file's name)
+//                                   GPU-cull branch)
+// `n600-always` (as `n600-always-nohiz`, RUNLOG.md round 1) was present in
+// the original arm table this file repatriated from but had been dropped
+// from `ARMS` here — the header above named it while no arm produced it.
+// Restored below (2026-09-02, Q-153's sibling row) so the header's own
+// before-numbers name an arm that exists, and so a second above-threshold
+// `always` arm corroborates n448-always.
+//
+// THE COMMANDS THIS SCENE BUILDS ARE TRANSLUCENT, NOT OPAQUE, DESPITE THE
+// FILE'S NAME. `PerInstanceColorAppearance({flat: true})` defaults its own
+// `translucent` option to `true`, and a `Primitive`'s command lands in
+// `Pass.TRANSLUCENT` purely from `appearance.isTranslucent()` — never from
+// the actual instance-color alpha. So `opaqueCommandsSeen` legitimately
+// reads 0 in every arm below; the subject this probe isolates —
+// `_maybeGPUCullTranslucent` — is read from `gpuCullerTranslucent`, not
+// `gpuCullerOpaque`. `lib/gpucull-blackframe-isolation-gate.mjs` carries the
+// full derivation, the arm table (`ARMS`, each entry's `expectDispatch`
+// derived from `hint`/`n` vs `GPU_CULL_THRESHOLD_HI` WITH A MARGIN — `n >
+// GPU_CULL_THRESHOLD_HI`, not `>=` — because `n` is the scene's raw
+// primitive count and the engine's threshold reads the count AFTER CPU
+// frustum culling; the gate module's own header has the evidence and the
+// arithmetic), and the exit-code verdict this file reports through;
+// `gpucull-blackframe-isolation-arm-expectations.spec.mjs` drives the REAL
+// `_maybeGPUCullTranslucent` against every arm (no browser) to pin the
+// engine's raw inclusive threshold decision, and separately pins that
+// `judgeIsolationResults` does not false-refuse the margin-excluded boundary
+// arm on a healthy result set.
+//
+// 2026-09-02 (the executor leg this row answers): the prior version of this
+// file read only `gpuCullerOpaque` — legitimately 0 in every arm, since
+// there are no opaque commands here — so `cullDispatches` read 0 on every
+// arm regardless of whether the translucent cull actually fired. A probe
+// that cannot confirm it reached its own subject must refuse, not report a
+// clean 5/5: see `judgeIsolationResults` and its exit code below.
+//
 // Wrapped with the machine-safety contract (watchdog + close-in-finally,
 // Tools/visual-regression/probe-fleet-contract.spec.mjs) the original run
 // did not carry; the scene-building and measurement logic is otherwise
@@ -34,6 +64,10 @@
 //   PROBE_BASE=http://localhost:8080 node Tools/visual-regression/probe-gpucull-blackframe-isolation.mjs
 //
 // Output: Tools/visual-regression/output/gpucull-blackframe-isolation/
+// Exit: 0 PASS / 1 FAIL (a real black-frame/validation regression) /
+//   2 HARNESS FAULT (a per-arm error, or an unhandled exception) /
+//   3 STRUCTURAL (an arm expected to dispatch reported cullDispatches=0 —
+//   the probe could not confirm it reached its own subject).
 
 import fs from "node:fs";
 import path from "node:path";
@@ -41,6 +75,10 @@ import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
 import { STRIP_WIDGETS_SOURCE } from "./lib/strip-viewer-widgets.mjs";
 import { readPng, frameStats } from "../lib/png-decode.mjs";
+import {
+  ARMS,
+  judgeIsolationResults,
+} from "./lib/gpucull-blackframe-isolation-gate.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const OUT = path.join(HERE, "output", "gpucull-blackframe-isolation");
@@ -60,14 +98,9 @@ const WATCHDOG_MS = 900_000;
 // Round 1 (banked in the original evidence tree's isolation.json) established:
 // black frame + validation error requires hint 'always' AND a large command
 // count; 'never' and 'auto' are clean at the same count. Round 2 walks the
-// boundary — this is that walk.
-const ARMS = [
-  { name: "n256-always", n: 256, hint: "always", hiz: false },
-  { name: "n320-always", n: 320, hint: "always", hiz: false },
-  { name: "n384-always", n: 384, hint: "always", hiz: false },
-  { name: "n448-always", n: 448, hint: "always", hiz: false },
-  { name: "n600-auto-recheck", n: 600, hint: "auto", hiz: false },
-];
+// boundary — this is that walk. `ARMS` (with each arm's `expectDispatch`)
+// lives in `lib/gpucull-blackframe-isolation-gate.mjs` so the isolation
+// spec can pin the same table without launching a browser.
 
 async function run() {
   fs.mkdirSync(OUT, { recursive: true });
@@ -158,9 +191,19 @@ async function run() {
           const s = window.viewer.scene;
           const st = s._alternateSceneRenderer?.getHighDensityCullStats?.();
           return {
+            // Legitimately 0 in every arm below — this scene has zero
+            // opaque commands (see the file header). Kept so the report
+            // shows that explicitly instead of omitting the field.
             opaqueCommandsSeen: st?.gpuCullerOpaque.lastFrameInput ?? null,
-            cullDispatches: st?.gpuCullerOpaque.dispatches ?? null,
-            cullActive: st?.gpuCullerOpaque.active ?? null,
+            opaqueCullDispatches: st?.gpuCullerOpaque.dispatches ?? null,
+            // The subject this probe isolates: every command this scene
+            // builds is translucent by construction (see the file header),
+            // so `_maybeGPUCullTranslucent`'s counters are the ones that
+            // can actually report whether the dispatch fired.
+            translucentCommandsSeen:
+              st?.gpuCullerTranslucent.lastFrameInput ?? null,
+            cullDispatches: st?.gpuCullerTranslucent.dispatches ?? null,
+            cullActive: st?.gpuCullerTranslucent.active ?? null,
             hiZActive: st?.hiZ.active ?? null,
             hiZDispatches: st?.hiZ.dispatches ?? null,
             primitiveCount: s.primitives.length,
@@ -182,7 +225,8 @@ async function run() {
         });
         console.log(
           `[iso] ${armSpec.name}: nonBlack=${st.nonBlackPct.toFixed(2)}% ` +
-            `cullIn=${stats.opaqueCommandsSeen} cullDisp=${stats.cullDispatches} ` +
+            `translucentIn=${stats.translucentCommandsSeen} cullDisp=${stats.cullDispatches} ` +
+            `(expectDispatch=${armSpec.expectDispatch}) ` +
             `hiZActive=${stats.hiZActive} validationErrs=${validation.length}`,
         );
       } catch (e) {
@@ -211,6 +255,21 @@ const watchdog = setTimeout(() => {
 watchdog.unref?.();
 
 run()
+  .then((results) => {
+    const { exitCode, verdict, reasons } = judgeIsolationResults(results);
+    if (exitCode === 0) {
+      console.log(
+        `[probe-gpucull-blackframe-isolation] PASS: ${results.length}/${results.length} arms clean, ` +
+          "every expected-dispatch arm exercised the translucent GPU cull.",
+      );
+    } else {
+      console.error(
+        `[probe-gpucull-blackframe-isolation] ${verdict} (exit ${exitCode}): ` +
+          reasons.join(" | "),
+      );
+    }
+    process.exitCode = exitCode;
+  })
   .catch((error) => {
     console.error(error);
     process.exitCode = 2;

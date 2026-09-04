@@ -310,20 +310,95 @@ export function preserveFirstRedEvidence(
 }
 
 /**
+ * Strips a `file://` (or any other) URL scheme from one source-map `sources`
+ * entry and normalises path separators to `/`, so a Windows drive-letter URL
+ * (`file:///F:/Dev/...`) and a plain filesystem path both reduce to the same
+ * comparable form for {@link relativeSuffixMatches}.
+ *
+ * @param {string} rawEntry One `sourceMap.sources[i]` value, as written by
+ * the bundler — an absolute filesystem path, a relative path, or a `file://`
+ * URL, all observed in the wild across bundler/OS combinations.
+ * @returns {string} The normalised form, forward-slash-separated.
+ */
+function normalizeSourceMapEntryForSuffixMatch(rawEntry) {
+  let value = String(rawEntry ?? "");
+  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(value)) {
+    value = value.replace(/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//, "");
+    // `file:///F:/Dev/...` becomes `/F:/Dev/...` once the scheme+authority is
+    // stripped; peel the leading slash in front of a Windows drive letter so
+    // it lines up with a plain filesystem path (`F:/Dev/...`).
+    if (/^\/[a-zA-Z]:\//.test(value)) {
+      value = value.slice(1);
+    }
+    try {
+      value = decodeURIComponent(value);
+    } catch {
+      // Leave percent-escapes intact rather than fail an otherwise-usable path.
+    }
+  }
+  return value.replace(/\\/g, "/");
+}
+
+/**
+ * True when a source map entry names the same file as `relativeSource` —
+ * either because it IS that repository-relative path, or because it is an
+ * absolute (or foreign-rooted) path that ENDS with it at a path boundary.
+ * The trailing-`/` requirement is what keeps `SomeOtherFixture.js` from
+ * matching a search for `Fixture.js`.
+ *
+ * @param {string} rawEntry One `sourceMap.sources[i]` value.
+ * @param {string} relativeSource Forward-slash-separated path, relative to
+ * the repository root, e.g. `packages/engine/Source/Scene/Foo.js`.
+ * @returns {boolean}
+ */
+function relativeSuffixMatches(rawEntry, relativeSource) {
+  if (relativeSource.length === 0) {
+    return false;
+  }
+  const normalizedEntry = normalizeSourceMapEntryForSuffixMatch(rawEntry);
+  return (
+    normalizedEntry === relativeSource ||
+    normalizedEntry.endsWith(`/${relativeSource}`)
+  );
+}
+
+/**
  * Compare current source bytes with the exact `sourcesContent` bytes embedded
  * in one JavaScript source map. This is intentionally stricter than marker or
  * mtime checks: a build may contain every expected marker and still predate an
  * unrelated source edit that changes the evidence boundary.
+ *
+ * Two independent ways for a `sources` entry to identify a tracked file:
+ *   - an EXACT absolute-path match against the map's own directory — the
+ *     build was produced against the same tree this check runs in;
+ *   - a repository-relative SUFFIX match (`relativeSuffixMatches`) — the map
+ *     was produced against a different absolute root (a worker clone built
+ *     under its own path, then served to a check running against a
+ *     different clone or the main repo) but embeds the same repo-relative
+ *     path. Q-153 (2026-09-02): a build's source map rooted every entry at
+ *     `file:///F:/Dev/GH/cesium-webgpu/...` while the tree being checked was
+ *     an Edge clone under a different absolute path; every one of 18 tracked
+ *     files reported "absent from build source map" even though the map's
+ *     own embedded `sourcesContent` was byte-identical to the clone's files
+ *     — the build was current, and the exact-match-only check simply could
+ *     not see it. Currency is still decided ONLY by the `sourcesContent`
+ *     hash comparison below, run against whichever tree's bytes the caller
+ *     passed as `sources` — never by the suffix match itself, which only
+ *     locates the entry.
  *
  * @param {object} options
  * @param {object} options.sourceMap Parsed source-map object.
  * @param {string} options.sourceMapPath Path used to resolve source entries.
  * @param {Array<{file: string, bytes: Buffer|string}>} options.sources Current
  * source bytes.
+ * @param {string} [options.repoRoot] Repository root each `source.file` is
+ * resolved against (for both the absolute-match and the relative-suffix
+ * match). Relative `source.file` values resolve against it directly;
+ * absolute ones are used as given. Defaults to `process.cwd()`.
  * @returns {{ok: boolean, entries: Array<object>, reasons: Array<string>}}
  */
 export function compareBuildSourceIdentity(options) {
-  const { sourceMap, sourceMapPath, sources } = options;
+  const { sourceMap, sourceMapPath, sources, repoRoot } = options;
   const reasons = [];
   const entries = [];
   const mapSources = Array.isArray(sourceMap?.sources) ? sourceMap.sources : [];
@@ -331,6 +406,7 @@ export function compareBuildSourceIdentity(options) {
     ? sourceMap.sourcesContent
     : [];
   const mapDirectory = path.dirname(path.resolve(sourceMapPath));
+  const root = repoRoot !== undefined ? path.resolve(repoRoot) : process.cwd();
 
   if (mapSources.length === 0) {
     reasons.push("source map has no sources");
@@ -342,11 +418,24 @@ export function compareBuildSourceIdentity(options) {
   }
 
   for (const source of sources) {
-    const absoluteSource = path.resolve(source.file);
+    const absoluteSource =
+      repoRoot !== undefined
+        ? path.resolve(root, source.file)
+        : path.resolve(source.file);
+    const relativeSource = path
+      .relative(root, absoluteSource)
+      .replace(/\\/g, "/");
     const matches = [];
+    const matchKinds = [];
     for (let index = 0; index < mapSources.length; index++) {
-      if (path.resolve(mapDirectory, mapSources[index]) === absoluteSource) {
+      const rawEntry = mapSources[index];
+      const isAbsoluteMatch =
+        path.resolve(mapDirectory, rawEntry) === absoluteSource;
+      const isSuffixMatch =
+        !isAbsoluteMatch && relativeSuffixMatches(rawEntry, relativeSource);
+      if (isAbsoluteMatch || isSuffixMatch) {
         matches.push(index);
+        matchKinds.push(isAbsoluteMatch ? "absolute" : "suffix");
       }
     }
 
@@ -359,6 +448,7 @@ export function compareBuildSourceIdentity(options) {
       entries.push({
         file: source.file,
         sourceMapEntry: null,
+        matchedBy: null,
         currentSha256: sha256(source.bytes),
         embeddedSha256: null,
         exact: false,
@@ -368,6 +458,7 @@ export function compareBuildSourceIdentity(options) {
     }
 
     const index = matches[0];
+    const matchedBy = matchKinds[0];
     const embedded = contents[index];
     if (typeof embedded !== "string") {
       const reason = "build source-map entry has no embedded sourcesContent";
@@ -375,6 +466,7 @@ export function compareBuildSourceIdentity(options) {
       entries.push({
         file: source.file,
         sourceMapEntry: mapSources[index],
+        matchedBy,
         currentSha256: sha256(source.bytes),
         embeddedSha256: null,
         exact: false,
@@ -391,6 +483,7 @@ export function compareBuildSourceIdentity(options) {
     const entry = {
       file: source.file,
       sourceMapEntry: mapSources[index],
+      matchedBy,
       currentByteLength: currentBytes.byteLength,
       embeddedByteLength: embeddedBytes.byteLength,
       currentSha256: sha256(currentBytes),
@@ -411,23 +504,34 @@ export function compareBuildSourceIdentity(options) {
 
 /**
  * Read and compare a source map from disk, preserving the hashes needed to bind
- * a browser report to the exact build artifact it inspected.
+ * a browser report to the exact build artifact it inspected. Reads current
+ * source bytes from the tree actually being checked — `repoRoot` joined with
+ * each (typically repo-relative) entry in `sourceFiles` — independent of
+ * `process.cwd()`, so currency is proven against the served tree even when
+ * the caller runs from elsewhere.
  *
  * @param {object} options
  * @param {string} options.sourceMapPath
  * @param {Array<string>} options.sourceFiles
+ * @param {string} [options.repoRoot] Forwarded to
+ * {@link compareBuildSourceIdentity} and used to resolve `sourceFiles`
+ * entries before reading their bytes. Defaults to `process.cwd()`.
  * @returns {object}
  */
 export function inspectBuildSourceIdentity(options) {
   const sourceMapBytes = fs.readFileSync(options.sourceMapPath);
   const sourceMap = JSON.parse(sourceMapBytes.toString("utf8"));
+  const { repoRoot } = options;
+  const resolveSourceFile = (file) =>
+    repoRoot !== undefined ? path.resolve(repoRoot, file) : file;
   const compared = compareBuildSourceIdentity({
     sourceMap,
     sourceMapPath: options.sourceMapPath,
     sources: options.sourceFiles.map((file) => ({
       file,
-      bytes: fs.readFileSync(file),
+      bytes: fs.readFileSync(resolveSourceFile(file)),
     })),
+    repoRoot,
   });
   return {
     ...compared,

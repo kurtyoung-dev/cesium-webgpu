@@ -308,6 +308,13 @@ const BUILD_SOURCE_IDENTITY_FILES = [
 const BUILD_ENTRY_PATH = path.join("Build/CesiumUnminified", "index.js");
 const BUILD_SOURCE_MAP_PATH = `${BUILD_ENTRY_PATH}.map`;
 const PROBE_FILE = fileURLToPath(import.meta.url);
+// Q-153 (2026-09-02): resolved from THIS FILE's own location, not
+// `process.cwd()` — a build's source map roots its `sources` entries at the
+// absolute path the bundler ran from, which is not necessarily the tree the
+// probe process happens to have as its working directory (a worker clone
+// serving a build produced against the main repo's path, say). Two levels
+// up from `Tools/visual-regression/` is always the checkout root.
+const REPO_ROOT = path.resolve(path.dirname(PROBE_FILE), "..", "..");
 const LOCAL_EVIDENCE_FILES = Object.freeze({
   ...Object.fromEntries(
     SOURCE_FILES.map((file, index) => [
@@ -537,6 +544,7 @@ function provenance() {
     sourceIdentity = inspectBuildSourceIdentity({
       sourceMapPath: BUILD_SOURCE_MAP_PATH,
       sourceFiles: BUILD_SOURCE_IDENTITY_FILES,
+      repoRoot: REPO_ROOT,
     });
   } catch (error) {
     sourceIdentity = {
