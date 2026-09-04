@@ -1140,6 +1140,14 @@ function warmUpGlobeRenderer(context) {
   if (!device) {
     return;
   }
+  // The warm compiles the terrain WGSL whether or not the scene will ever show
+  // a globe, and this call site holds only the context, so the scene's globe
+  // cannot be consulted here. A caller that knows its scene is globe-less
+  // declines through the context option instead; anything but an explicit
+  // opt-out leaves the warm exactly as it was.
+  if (context.prewarmGlobeRendererEnabled === false) {
+    return;
+  }
   const fr = context.getFeatureRenderer(FeatureRendererKey.GLOBE_SURFACE);
   if (!fr || !fr.RendererClass || !fr.getShaderCode) {
     return;

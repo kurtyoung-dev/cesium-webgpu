@@ -39,6 +39,9 @@ import RenderState from "../RenderState.js";
 import ShaderCache from "../ShaderCache.js";
 import TextureCache from "../TextureCache.js";
 import { WebGPUShaderCache } from "./WebGPUShaderCache.js";
+// Per-device WGSL compile totals surfaced by `getRendererStatistics()`, so a
+// reader can see how much shader text a device was handed and when.
+import { getWebGPUShaderModuleCensus } from "./WebGPUShaderModuleCache.js";
 import { WebGPURenderPipelineCache } from "./WebGPURenderPipelineCache.js";
 // Debug-only WebGPU model pick-emission counters surfaced by
 // `getRendererStatistics()`, plus the per-frame reset `beginFrame()` calls
@@ -434,6 +437,21 @@ export interface WebGPUContextOptions extends GraphicsContextOptions {
    * capacity unit. Default false — opt in per context.
    */
   useDeterministicPointCloudLOD?: boolean;
+
+  /**
+   * When true (the default), the context warms the globe surface renderer
+   * during initialization, compiling the terrain shader modules in the idle
+   * init window instead of on the first tile draw.
+   *
+   * Set to false only for a scene that will never show a globe. The warm
+   * compiles the terrain WGSL unconditionally, so a globe-less scene pays for
+   * modules it will never bind; a caller that knows this can decline it. On a
+   * scene that does show a globe, declining it moves the same compile onto the
+   * first tile draw — it does not remove the work.
+   *
+   * @default true
+   */
+  prewarmGlobeRenderer?: boolean;
 }
 
 interface ShadowPassCommandList {
@@ -1703,6 +1721,17 @@ export class WebGPUContext extends GraphicsContext {
    */
   get featureLevel(): string {
     return this._options.featureLevel ?? "core";
+  }
+
+  /**
+   * Whether the globe surface renderer may be warmed at context init.
+   *
+   * Read by the globe's init-time warm, which runs from Scene code and so
+   * cannot see `_options`. Anything but an explicit `false` keeps the warm,
+   * so a caller that names no option gets the behaviour it always had.
+   */
+  get prewarmGlobeRendererEnabled(): boolean {
+    return this._options.prewarmGlobeRenderer !== false;
   }
 
   /**
@@ -6927,6 +6956,20 @@ export class WebGPUContext extends GraphicsContext {
       } catch (e) {
         stats.pipelineCache = { error: String((e as Error)?.message ?? e) };
       }
+    }
+    // WGSL compile volume for this device. Counts only what went through
+    // `WebGPUShaderModuleCache`; a renderer that calls `createShaderModule`
+    // directly is not in it, so the field is a lower bound on the device's
+    // total compile traffic and must be read as one. Absent until some cache
+    // has been constructed for the device, which is distinct from a zeroed
+    // census.
+    try {
+      const shaderModules = getWebGPUShaderModuleCensus(this._device);
+      if (shaderModules) {
+        stats.shaderModuleCache = { ...shaderModules };
+      }
+    } catch (e) {
+      stats.shaderModuleCache = { error: String((e as Error)?.message ?? e) };
     }
     // Debug-only WebGPU model pick-emission counters (pragma-stripped in
     // production, see `WebGPUModelPipelineCache.ts`): primitives skipped by

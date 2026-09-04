@@ -147,13 +147,55 @@ function harnessHtml(stylesheetUrl) {
  * The page-side half, injected as a module script so the entry path is a runtime
  * argument rather than a build-time constant.
  *
+ * `config` exists so a follow-on measurement can vary the scene WITHOUT
+ * forking this text. Every field defaults to the value this probe has always
+ * emitted, so a caller that passes no config gets a byte-identical module and
+ * the readiness predicate, the recorder and the cache poll below stay one
+ * definition shared by every run rather than two that can drift apart.
+ *
  * @param {string} entry Root-relative served module path.
  * @param {string} baseUrl Root-relative build directory the entry lives in.
  * @param {string} renderer Backend name.
  * @param {ReadonlyArray<object>} tilesets Tileset descriptors.
+ * @param {object} [config] Scene variations.
+ * @param {Record<string, unknown>} [config.contextOptions] Extra context
+ *   options emitted alongside `renderer`.
+ * @param {boolean} [config.ambientOcclusion] Whether to enable the ambient
+ *   occlusion stage. Defaults to true, as the demo does.
+ * @param {string} [config.preludeSource] Page source injected before the
+ *   viewer is created, for an observer that must be running first.
+ * @param {string} [config.postViewerSource] Page source injected immediately
+ *   after the viewer exists, for an observer that needs the scene.
  * @returns {string} Module source.
  */
-function pageModule(entry, baseUrl, renderer, tilesets) {
+function pageModule(entry, baseUrl, renderer, tilesets, config = {}) {
+  const {
+    contextOptions = {},
+    ambientOcclusion = true,
+    preludeSource = "",
+    postViewerSource = "",
+  } = config;
+  // Emitted as source text rather than `JSON.stringify` of the whole object so
+  // the default remains the exact `{ renderer: "webgpu" }` this file has always
+  // written, and a config-free run is byte-identical to the runs already banked.
+  const contextOptionsSource = Object.entries({ renderer, ...contextOptions })
+    .map(([key, value]) => `${key}: ${JSON.stringify(value)}`)
+    .join(", ");
+  const preludeBlock = preludeSource === "" ? "" : `${preludeSource}\n`;
+  const postViewerBlock =
+    postViewerSource === "" ? "" : `\n${postViewerSource}`;
+  const ambientOcclusionBlock = ambientOcclusion
+    ? `if (Cesium.PostProcessStageLibrary.isAmbientOcclusionSupported(scene)) {
+  const ao = scene.postProcessStages.ambientOcclusion;
+  ao.enabled = true;
+  ao.uniforms.intensity = 2.0;
+  ao.uniforms.bias = 0.1;
+  ao.uniforms.lengthCap = 0.5;
+  ao.uniforms.directionCount = 16;
+  ao.uniforms.stepCount = 32;
+}
+`
+    : "";
   return `
 window.CESIUM_BASE_URL = ${JSON.stringify(baseUrl)};
 const Cesium = await import(${JSON.stringify(entry)});
@@ -166,25 +208,16 @@ window.addEventListener("error", (event) => {
 window.addEventListener("unhandledrejection", (event) => {
   e1.errors.push("unhandledrejection: " + String(event.reason));
 });
-
+${preludeBlock}
 const viewer = await Cesium.Viewer.createAsync("cesiumContainer", {
   globe: false,
-  contextOptions: { renderer: ${JSON.stringify(renderer)} },
+  contextOptions: { ${contextOptionsSource} },
 });
 window.viewer = viewer;
-const scene = viewer.scene;
+const scene = viewer.scene;${postViewerBlock}
 
 scene.skyAtmosphere.show = true;
-if (Cesium.PostProcessStageLibrary.isAmbientOcclusionSupported(scene)) {
-  const ao = scene.postProcessStages.ambientOcclusion;
-  ao.enabled = true;
-  ao.uniforms.intensity = 2.0;
-  ao.uniforms.bias = 0.1;
-  ao.uniforms.lengthCap = 0.5;
-  ao.uniforms.directionCount = 16;
-  ao.uniforms.stepCount = 32;
-}
-viewer.clock.currentTime = Cesium.JulianDate.fromIso8601("2024-11-22T18:00:00Z");
+${ambientOcclusionBlock}viewer.clock.currentTime = Cesium.JulianDate.fromIso8601("2024-11-22T18:00:00Z");
 viewer.camera.setView({
   destination: Cesium.Cartesian3.fromDegrees(-79.886626, 40.021649, 235.65),
   orientation: { heading: 0, pitch: Cesium.Math.toRadians(-20), roll: 0 },
@@ -371,6 +404,11 @@ async function runSettleWindow({
     const start = performance.now();
     let stableSince = performance.now();
     let previousSelected = -1;
+    // The page timestamp readiness was FIRST observed at, in the same clock as
+    // the frame and poll samples. The returned `waitedMs` measures the whole
+    // gate — readiness plus every tileset loaded plus a stable selection — so
+    // it cannot answer "when did this scene become ready" on its own.
+    let readinessReachedAtMs = null;
     while (performance.now() - start < deadline) {
       await new Promise((resolve) => setTimeout(resolve, 250));
       e1.sampleCache();
@@ -389,16 +427,27 @@ async function runSettleWindow({
         stableSince = performance.now();
       }
       const readiness = e1.readReadiness();
+      if (readinessReachedAtMs === null && readiness.reached === true) {
+        readinessReachedAtMs = performance.now();
+      }
       if (
         readiness.reached === true &&
         allLoaded &&
         pending === 0 &&
         performance.now() - stableSince > 4000
       ) {
-        return { stalled: false, waitedMs: performance.now() - start };
+        return {
+          stalled: false,
+          waitedMs: performance.now() - start,
+          readinessReachedAtMs,
+        };
       }
     }
-    return { stalled: true, waitedMs: performance.now() - start };
+    return {
+      stalled: true,
+      waitedMs: performance.now() - start,
+      readinessReachedAtMs,
+    };
   }, deadlineMs);
 
   await page.evaluate(() => {
@@ -423,6 +472,9 @@ async function runSettleWindow({
   return {
     settleWindowMs: Math.round(Date.now() - startedAt),
     stalled: settle.stalled,
+    // Carried for a caller that needs readiness itself rather than the whole
+    // stability gate. This probe's own receipt does not read it.
+    readinessReachedAtMs: settle.readinessReachedAtMs ?? null,
     profile,
     frames,
     cacheSamples,
@@ -914,6 +966,13 @@ export async function main(argv = process.argv.slice(2)) {
     ? EXIT_CODES.OK
     : EXIT_CODES.ERROR;
 }
+
+// Shared with the follow-on residency measurement so it runs the SAME scene,
+// the same readiness predicate, the same per-frame recorder and the same
+// wall-clock cache poll. A second copy of this text would be a second
+// definition of readiness, and the two measurements would stop being
+// comparable the first time one of them was edited.
+export { harnessHtml, pageModule, runSettleWindow, TILESETS, HARNESS_PATH };
 
 function isMainModule() {
   const entry = process.argv[1];

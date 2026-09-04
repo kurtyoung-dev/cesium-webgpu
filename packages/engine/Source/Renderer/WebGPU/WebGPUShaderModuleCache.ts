@@ -72,6 +72,80 @@ import { preprocess } from "./WebGPUShaderPreprocessor.js";
 import type { ShaderDefineLoMask } from "./WebGPUShaderDefines.js";
 
 /**
+ * Per-device totals for the WGSL this cache has actually handed to
+ * `device.createShaderModule`, plus the lookups it served without compiling.
+ *
+ * `wgslBytes` is summed over the PREPROCESSED source — the string the device
+ * received, not the raw `.wgsl` module — because that is the text a compile
+ * has to read. Lengths are `String#length`; the engine's WGSL is ASCII, so a
+ * code unit is a byte, and the same convention is already used where shader
+ * sizes are reported elsewhere in the engine.
+ *
+ * The census is keyed by `GPUDevice` rather than by cache instance because a
+ * device is shared by many caches: renderers hold their own instance behind
+ * their own per-device WeakMap, so a per-instance total would answer for one
+ * renderer instead of for the device. It counts only compiles that go THROUGH
+ * this cache; a renderer that calls `device.createShaderModule` directly is
+ * outside it, which is why a reader comparing this against a device-level
+ * count learns how much traffic bypasses the cache.
+ */
+export interface WebGPUShaderModuleCensus {
+  /** Modules compiled through this cache on the device. */
+  modulesCreated: number;
+  /** Summed preprocessed WGSL length across those compiles. */
+  wgslBytes: number;
+  /** Largest single preprocessed WGSL length compiled. */
+  largestWgslBytes: number;
+  /** Lookups served from a cached module, i.e. compiles avoided. */
+  cacheHits: number;
+}
+
+const censusByDevice = new WeakMap<GPUDevice, WebGPUShaderModuleCensus>();
+
+/**
+ * The device's census record, created on first use.
+ *
+ * Resolved once per cache instance in the constructor and then held as a
+ * field, so the lookup path stays a single `Map.get` and the counters are
+ * plain field increments.
+ *
+ * @param device The device whose totals are wanted.
+ * @returns The shared, mutable record for that device.
+ * @private
+ */
+function censusForDevice(device: GPUDevice): WebGPUShaderModuleCensus {
+  let census = censusByDevice.get(device);
+  if (census === undefined) {
+    census = {
+      modulesCreated: 0,
+      wgslBytes: 0,
+      largestWgslBytes: 0,
+      cacheHits: 0,
+    };
+    censusByDevice.set(device, census);
+  }
+  return census;
+}
+
+/**
+ * Read a device's shader-module census.
+ *
+ * A snapshot, so a caller cannot mutate the running totals, and `undefined`
+ * when no cache has been constructed for the device yet — which a reader must
+ * distinguish from a zeroed census, because the first means "not measured"
+ * and the second means "measured, nothing compiled".
+ *
+ * @param device The device to read, or a nullish value for no device.
+ * @returns A copy of the totals, or `undefined` when the device has none.
+ */
+export function getWebGPUShaderModuleCensus(
+  device: GPUDevice | null | undefined,
+): WebGPUShaderModuleCensus | undefined {
+  const census = device ? censusByDevice.get(device) : undefined;
+  return census === undefined ? undefined : { ...census };
+}
+
+/**
  * Pure lo-level key packing: `((defines >>> 0) * 0x100) + sourceId`, with
  * the string form `"<numericKey>#<salt>"` when a non-zero
  * `keySalt` is supplied. Exported so `WebGPUShaderModuleCacheSpec` can
@@ -115,8 +189,13 @@ export class WebGPUShaderModuleCache {
     Map<number | string, GPUShaderModule>
   > | null = null;
 
+  // The device's shared census record, resolved once here so the lookup path
+  // never pays a WeakMap read.
+  private _census: WebGPUShaderModuleCensus;
+
   constructor(device: GPUDevice) {
     this._device = device;
+    this._census = censusForDevice(device);
   }
 
   /**
@@ -199,10 +278,21 @@ export class WebGPUShaderModuleCache {
 
     const key = computeShaderModuleCacheLoKey(sourceId, defines, keySalt);
     let module = level.get(key);
-    if (module !== undefined) return module;
+    if (module !== undefined) {
+      this._census.cacheHits++;
+      return module;
+    }
 
     const processed = preprocess(source, defines, definesHi);
     module = this._device.createShaderModule({ code: processed, label });
+    // Counted at the one site that hands WGSL to the device, so the totals
+    // cannot drift from what was actually compiled.
+    const census = this._census;
+    census.modulesCreated++;
+    census.wgslBytes += processed.length;
+    if (processed.length > census.largestWgslBytes) {
+      census.largestWgslBytes = processed.length;
+    }
     level.set(key, module);
     return module;
   }
@@ -258,6 +348,10 @@ export class WebGPUShaderModuleCache {
    * Drop all cached module references. Call on device loss; modules
    * tied to a destroyed device are unusable and keeping them rooted
    * blocks GC.
+   *
+   * The census is deliberately NOT reset: it records what was handed to the
+   * device over its lifetime, and zeroing it here would erase the compile
+   * history a reader is asking about at exactly the moment it matters.
    */
   destroy(): void {
     this._modules.clear();

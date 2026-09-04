@@ -252,7 +252,6 @@
 "packages/engine/Source/Renderer/WebGPU/WebGPUShaderCache.ts"	"@typescript-eslint/no-unused-vars"	2
 "packages/engine/Source/Renderer/WebGPU/WebGPUShaderCache.ts"	"prefer-template"	1
 "packages/engine/Source/Renderer/WebGPU/WebGPUShaderDefines.ts"	"curly"	2
-"packages/engine/Source/Renderer/WebGPU/WebGPUShaderModuleCache.ts"	"curly"	1
 "packages/engine/Source/Renderer/WebGPU/WebGPUShaderPreprocessor.ts"	"curly"	1
 "packages/engine/Source/Renderer/WebGPU/WebGPUShaderTranslator.ts"	"@typescript-eslint/no-unused-vars"	2
 "packages/engine/Source/Renderer/WebGPU/WebGPUSpecularEnvironmentCubeMap.ts"	"@typescript-eslint/no-unused-vars"	1
