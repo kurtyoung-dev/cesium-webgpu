@@ -1091,6 +1091,7 @@ Partially shipped features with known gaps. Working code exists but the feature 
   (WGF-4-EXPAND)
 - HDR-DISPLAY canvas HDR output (skip tonemap on wide-gamut displays) pending (HDR-DISPLAY)
 - AUTO-EXPOSURE-TUNE adaptation rate not exposed (AUTO-EXPOSURE-TUNE)
+- WebGPU HBAO consumes `lengthCap` as a pixel march radius (`AmbientOcclusionGenerate.wgsl:192`) and as an eye-space metres falloff (`:208`) at the same time; the sample offset is `s*stepLen + randomVal.y` px (`:199-200`), so `distFactor` survives only when that jittered offset stays under `640 x lengthCap / depth` px — a per-pixel jitter draw, not `stepLen` alone — which the 0.26 default misses for ~98% of pixels at globe-scale depth, giving exactly 1.0 (no AO at all) there; the f16 text shares the shape, GTAO already converts correctly, and WebGL scales its radius with depth. Default-path parity gap (NEW-WEBGPU-AO-LENGTHCAP-PIXELS-VS-METRES)
 - OPEN-1-DIAGNOSE sky atmosphere shader compile failure root cause TBD (OPEN-1-DIAGNOSE)
 - Volumetric fog Phase 5a-5d SHIPPED (height fog + HG scattering + sun-shadow god rays + 3D-noise varying density); `atmosphericConditions.volumetricFog.enabled` defaults FALSE per B18 lock so users still opt-in. Phase 5f temporal reprojection polish deferred (CELESTIAL §4.8)
 - Volumetric clouds Phase 6 main render path SHIPPED via `WebGPUProceduralCloudRenderer` (Schneider HG

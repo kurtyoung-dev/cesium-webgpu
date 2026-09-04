@@ -34,6 +34,95 @@ to enumerate entry IDs; then (c) grep each candidate id across `migration_doc/**
 for a closure stamp. **If you build a generated index, generate it — do not
 hand-maintain it.**
 
+## New findings — AO runtime-config probe lane, 2026-09-02
+
+### NEW-WEBGPU-AO-LENGTHCAP-PIXELS-VS-METRES
+
+**Status:** OPEN / HIGH — filed 2026-09-02, surfaced while reframing
+`Tools/visual-regression/probe-ao-runtime-config.mjs`. It is the reason that
+probe's WebGPU numeric leg reads exactly 0% and why that zero cannot be read as
+a propagation result.
+
+**The mechanism.** The fork's WebGPU HBAO generation shader consumes
+`lengthCap` as two different quantities inside one loop.
+`packages/engine/Source/Shaders/WebGPU/PostProcess/AmbientOcclusionGenerate.wgsl:192`
+makes it a **pixel** march radius — `stepLen = lengthCap / stepCount`, added at
+`:199-200` to `screenCoord`, which `:153` defines as `in.uv / texelSize`, i.e.
+pixels. `:208` then makes the same value an **eye-space metres** falloff:
+`distFactor = 1.0 - clamp(dist / lengthCap, 0.0, 1.0)`, where `dist` is the
+length of a difference of two `pixelToEye` results (`:79-85`, `:204`).
+
+**The consequence — the jitter term decides survival, at every configuration.**
+From the shader's own reconstruction (`xy = 2.0 * uv - 1.0` at `:82`) one pixel
+spans `2 / canvasWidth * depth` metres — `depth / 640` on a 1280-wide canvas.
+The sample offset at step `s` is `s * stepLen + randomVal.y` pixels
+(`:199-200`), not `s * stepLen` alone. `randomVal.y` is a per-fragment lookup
+into the 4x4 `rgba8unorm` random texture
+(`packages/engine/Source/Renderer/WebGPU/WebGPUAmbientOcclusionEffect.ts:517-538`,
+`data[i*4+1] = floor(Math.random() * 255)`), so it is itself a pixel offset
+roughly uniform on `[0, ~1)` with mean about 0.5 — about 60x the entire `0.26`
+px march the shipped default's `stepLen` produces — and it dominates the
+offset whenever `stepLen < 1` px, which is true at the shipped default
+(`0.26 / 32 ≈ 0.008` px) at every depth.
+
+`distFactor` is nonzero for a given sample only when
+`(s * stepLen + randomVal.y) * depth / 640 < lengthCap`. At the shipped
+default (`lengthCap 0.26`) and an 8 000 m globe-scale depth that needs
+`randomVal.y < 0.021` — about 2% of the noise tile — so roughly 98% of pixels
+get exactly `ao = 1.0` (no occlusion contribution at all) **at the shipped
+default too**, not only above some whole-pixel step threshold: whether
+`distFactor` ever fires for a given pixel is a function of that pixel's jitter
+draw, not of `stepLen` crossing one pixel. `ao` accumulates exactly 0 for the
+~98% of pixels whose jitter misses the window and `:220` returns exactly 1.0
+for them.
+
+The runtime-config probe's own configuration (`lengthCap 4.0 / stepCount 4`,
+`stepLen = 1.0` px) is unaffected by this correction: at 8 000 m one pixel is
+12.5 m, so even the smallest sample (`s = 1`, jitter ~0) is already ≈12.5 m
+against a 4.0 m falloff — `distFactor` is 0 for every sample at every pixel
+regardless of jitter, since the jitter term only ever adds to the offset. The
+T-1 fix's saturation premise rests on this configuration and is robust to this
+correction, if anything strengthened by it. Upstream
+documents `lengthCap` as a length in metres
+(`packages/engine/Source/Scene/PostProcessStageLibrary.js:484`, default 0.26 at
+`:503`).
+
+**WebGL does not have it.** `packages/engine/Source/Shaders/PostProcessStages/AmbientOcclusionGenerate.glsl:68`
+scales the radius with depth (`gaussianVariance = lengthCap * sqrt(-positionEC.z)`)
+and `:71-74` converts that metres step into pixels through `czm_metersPerPixel`,
+so the WebGL occlusion term stays alive at any depth. This is a live
+WebGL/WebGPU parity gap on the default path, not a probe artifact.
+
+**Scope — three texts, one of them already correct.**
+`AmbientOcclusionGenerate_f16.wgsl` carries the identical shape (`:145` step,
+`:152` offset, `:162` falloff) and must move in lockstep.
+`GTAOGenerate.wgsl` is already correct and is the in-fork reference for the
+fix: `:249` converts the metres `lengthCap` into a screen radius with
+`lengthCap / max(-centerEC.z, 0.01) / (2.0 * texelSize.x)` before marching, and
+`:141` compares `dist` against `lengthCap` in metres.
+
+**Relationship to the AO rows already queued.** `Q-142` is LANDED, not open —
+`FIX_QUEUE_2026-08-27_AUDIT_FINDINGS.md:235` (the status authority for `Q-` ids
+per CLAUDE.md; `QUEUE_2026-08-29_RESEARCH_DISPATCH.md` is a dispatch view only)
+records it `LANDED (Batch 1327) default-ON (WEBGPU_AO_FULL_SAMPLE_PATTERN =
+true)`. It already moved the bridge key, the WGSL direction/step clamps and the
+divisor across the same texts (`stepLen = lengthCap / f32(stepLenDenominator)`
+at `:190-192` today, in place of the `stepLen = lengthCap / stepCount` this
+entry originally cited) — the research queue's own detail block still reading
+`Disposition: OPEN` is known stale drift, already recorded at
+`FIX_QUEUE_2026-08-27_AUDIT_FINDINGS.md:179`. There is no open row to co-scope
+this fix with; a future lane should re-derive `stepLenDenominator` before
+changing the radius (both change `stepLen`, and changing one alone silently
+rescales the AO radius), and note that gate M-03 — a default-off flip, if the
+maintainer wants one — is still open on `Q-142`'s landing form. The
+runtime-propagation row is unaffected: propagation is live, and a saturated
+term is precisely what makes its numeric pixel evidence unreadable.
+
+**Proof bar.** Engine shader change under R-2026-08-29-1: behaviour spec +
+inertness mutant + separate review + a named Edge leg, and it will move
+`capture-and-diff` baselines. Deliberately not attempted by the probe lane that
+found it.
+
 ## New findings — independent review, 2026-08-20
 
 ### NEW-WEBGPU-PICKFRAMEBUFFER-NODEVICE-EMPTY-RESULT

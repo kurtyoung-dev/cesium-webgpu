@@ -172,6 +172,15 @@ const GENERATE_LENGTH_CAP = 2;
 const GENERATE_STEP_COUNT = 3;
 const GENERATE_DIRECTION_COUNT = 4;
 
+// Offset within `AO-Modulate-UB`, whose single vec4 packs
+// params(ambientOcclusionOnly, 0, 0, 0). This is the one AO uniform whose
+// effect on the frame is independent of the view scale and of the lighting:
+// the modulate shader returns `vec3(ao)` in place of the scene, so any frame
+// with depth in it changes wherever that write lands. The pixel probe's
+// cross-backend gate rests on exactly that, which is why the buffer write
+// behind it is pinned here as well as in the probe.
+const MODULATE_AO_ONLY = 0;
+
 /**
  * The stage a `PostProcessStageCollection` exposes as `ambientOcclusion`,
  * carrying the uniform bag the bridge reads.
@@ -379,6 +388,35 @@ function assertLaterWriteReachesTheEffect(harness) {
   );
 }
 
+/**
+ * Drives one first-enable frame, then writes `ambientOcclusionOnly` and
+ * requires the modulate uniform buffer to carry it on the following frame.
+ *
+ * Separated from the generate-buffer predicate because the two values travel
+ * to different buffers: the numeric parameters land in `AO-Generate-UB` and
+ * change how much occlusion is computed, while this one lands in
+ * `AO-Modulate-UB` and changes what the composite does with the result. A
+ * propagation that reached only the first would leave the pixel probe's
+ * cross-backend gate resting on an untested path.
+ *
+ * @param {object} harness The harness.
+ */
+function assertAmbientOcclusionOnlyReachesTheEffect(harness) {
+  harness.configure();
+  assert.equal(
+    harness.payload("AO-Modulate-UB")[MODULATE_AO_ONLY],
+    0,
+    "ambientOcclusionOnly is off at first enable",
+  );
+  harness.stage.uniforms.ambientOcclusionOnly = true;
+  harness.configure();
+  assert.equal(
+    harness.payload("AO-Modulate-UB")[MODULATE_AO_ONLY],
+    1,
+    "ambientOcclusionOnly after the write",
+  );
+}
+
 test("WebGPU AO runtime configuration reaches the effect", async (t) => {
   await t.test(
     "the first enabled frame builds with the live uniforms",
@@ -515,7 +553,7 @@ test("WebGPU AO runtime configuration reaches the effect", async (t) => {
     async () => {
       // The call site stays, and still runs — its effect argument can never be
       // the effect, so the helper's null guard makes the push unreachable.
-      const harness = await makeHarness({
+      const unreachableCall = {
         mutateBridge: (source) =>
           source.replace(
             "      const outcome = propagateConfigIfChanged(\n" +
@@ -524,13 +562,24 @@ test("WebGPU AO runtime configuration reaches the effect", async (t) => {
               "        false ? pipeline.ambientOcclusionEffect : null,",
           ),
         label: "unreachable AO propagation call",
-      });
+      };
+      const harness = await makeHarness(unreachableCall);
       assert.throws(
         () => assertLaterWriteReachesTheEffect(harness),
         assert.AssertionError,
         "with the propagation call unreachable the live group's own " +
           "assertion must fail — if it still passes, this spec is not " +
           "testing the propagation",
+      );
+      // Both values travel through this one call, so the modulate assertion
+      // must fall to the same mutant. A predicate that survived it would be
+      // reading something other than the propagation.
+      const modulateHarness = await makeHarness(unreachableCall);
+      assert.throws(
+        () => assertAmbientOcclusionOnlyReachesTheEffect(modulateHarness),
+        assert.AssertionError,
+        "with the propagation call unreachable the ambientOcclusionOnly " +
+          "assertion must fail too",
       );
     },
   );
@@ -547,6 +596,38 @@ test("WebGPU AO runtime configuration reaches the effect", async (t) => {
         () => assertLaterWriteReachesTheEffect(harness),
         assert.AssertionError,
         "with the dirty check inert the live group's own assertion must fail",
+      );
+    },
+  );
+
+  await t.test(
+    "a later ambientOcclusionOnly write reaches the modulate buffer",
+    async () => {
+      const harness = await makeHarness();
+      assertAmbientOcclusionOnlyReachesTheEffect(harness);
+    },
+  );
+
+  await t.test(
+    "inertness mutant: an unread ambientOcclusionOnly goes red",
+    async () => {
+      // The read stays in place and still executes; only its result is made
+      // unreachable, so the field falls back to the constructor's default and
+      // the write can never land. A mutation that deleted the line would prove
+      // the text is present, not that this branch is live.
+      const harness = await makeHarness({
+        mutateConfigSync: (source) =>
+          source.replace(
+            "  out.ambientOcclusionOnly = Boolean(uniforms?.ambientOcclusionOnly ?? false);",
+            "  out.ambientOcclusionOnly = Boolean(false && (uniforms?.ambientOcclusionOnly ?? false));",
+          ),
+        label: "unread ambientOcclusionOnly",
+      });
+      assert.throws(
+        () => assertAmbientOcclusionOnlyReachesTheEffect(harness),
+        assert.AssertionError,
+        "with the ambientOcclusionOnly read inert the live group's own " +
+          "assertion must fail",
       );
     },
   );
