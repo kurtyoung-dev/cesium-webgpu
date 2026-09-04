@@ -676,12 +676,159 @@ export function provisionNodeModulesJunctions({
     }
   };
 
+  const linkDir = (cloneTarget, sourceTarget) => {
+    if (platform === "win32") {
+      // One junction per top-level node_modules entry (~750 of them). Create
+      // it natively: spawning `cmd /c mklink /J` measured ~126ms apiece
+      // (~94s per clone) against ~1.4ms here. A "junction" needs absolute
+      // paths and, like `mklink /J`, no elevation.
+      fsOps.symlinkSync(
+        path.resolve(sourceTarget),
+        path.resolve(cloneTarget),
+        "junction",
+      );
+    } else {
+      fsOps.symlinkSync(sourceTarget, cloneTarget, "dir");
+    }
+  };
+
+  // The clone's OWN `packages/<dir>` -> workspace package name, read from the
+  // CLONE tree (not the source repo) so a redirected specifier lands on code
+  // the clone actually owns.
+  const readWorkspacePackageMap = () => {
+    const map = new Map();
+    const clonePackagesDir = path.join(clonePath, "packages");
+    if (!isDirectory(clonePackagesDir)) {
+      return map;
+    }
+    for (const entry of fsOps.readdirSync(clonePackagesDir, {
+      withFileTypes: true,
+    })) {
+      if (!entry.isDirectory()) {
+        continue;
+      }
+      const pkgJsonPath = path.join(
+        clonePackagesDir,
+        entry.name,
+        "package.json",
+      );
+      if (!fsOps.existsSync(pkgJsonPath)) {
+        continue;
+      }
+      try {
+        const pkgJson = JSON.parse(fsOps.readFileSync(pkgJsonPath, "utf8"));
+        if (typeof pkgJson.name === "string") {
+          map.set(pkgJson.name, entry.name);
+        }
+      } catch {
+        // Malformed package.json for a workspace member: fall through to
+        // the scope-wide link below rather than guessing at its identity.
+      }
+    }
+    return map;
+  };
+
+  // Root `node_modules`. A straight junction of the WHOLE tree is correct
+  // for every third-party dependency but wrong for the npm workspaces
+  // (`@cesium/engine`, `@cesium/widgets`, `@cesium/sandcastle`): npm
+  // installs those as symlinks INSIDE the source repo's own node_modules,
+  // pointing at the SOURCE repo's own `packages/<name>`. Junctioning the
+  // whole tree wholesale therefore made every bare `@cesium/*` import
+  // resolve back into the seat repo instead of the clone — every
+  // clone-local build/tsc/spec run compiled against unmerged seat source
+  // (surfaced by lane S's merge failure). Fix: link everything else
+  // wholesale (same filesystem, no copy) but redirect the workspace-member
+  // entries individually to the clone's own packages/.
+  const provisionRootNodeModules = () => {
+    const cloneModules = path.join(clonePath, "node_modules");
+    if (fsOps.existsSync(cloneModules)) {
+      return "node_modules already present";
+    }
+    const sourceModules = path.resolve(sourceRepo, "node_modules");
+    if (!fsOps.existsSync(sourceModules)) {
+      return "no node_modules in the source repo — this clone cannot run npm-script gates";
+    }
+    try {
+      const workspaceMap = readWorkspacePackageMap();
+      fsOps.mkdirSync(cloneModules, { recursive: true });
+      let redirected = 0;
+      for (const entry of fsOps.readdirSync(sourceModules, {
+        withFileTypes: true,
+      })) {
+        const name = entry.name;
+        if (!isDirectory(path.join(sourceModules, name))) {
+          // The only tracked non-directory entry today is
+          // `.package-lock.json` — hardlink it (same filesystem, no copy),
+          // falling back to a real copy if hardlinking isn't available.
+          // `Dirent.isDirectory()` reports false for a junction (npm's own
+          // workspace links included), so this checks the real target via
+          // `statSync` (the existing `isDirectory` helper) instead of the
+          // dirent flag — a future hoisted junction here must not fall into
+          // the hardlink/copy branch and abort the whole provision.
+          try {
+            fsOps.linkSync(
+              path.join(sourceModules, name),
+              path.join(cloneModules, name),
+            );
+          } catch {
+            fsOps.copyFileSync(
+              path.join(sourceModules, name),
+              path.join(cloneModules, name),
+            );
+          }
+          continue;
+        }
+
+        if (!name.startsWith("@")) {
+          linkDir(
+            path.join(cloneModules, name),
+            path.join(sourceModules, name),
+          );
+          continue;
+        }
+
+        // Scoped directory: only descend into it when at least one member
+        // is a workspace package needing redirection — every other scope,
+        // and every non-workspace member of this one, links wholesale
+        // unchanged.
+        const scopeSource = path.join(sourceModules, name);
+        const scopedEntries = fsOps.readdirSync(scopeSource, {
+          withFileTypes: true,
+        });
+        const hasWorkspaceMember = scopedEntries.some((scoped) =>
+          workspaceMap.has(`${name}/${scoped.name}`),
+        );
+        if (!hasWorkspaceMember) {
+          linkDir(path.join(cloneModules, name), scopeSource);
+          continue;
+        }
+
+        const scopeClone = path.join(cloneModules, name);
+        fsOps.mkdirSync(scopeClone, { recursive: true });
+        for (const scoped of scopedEntries) {
+          const workspaceDir = workspaceMap.get(`${name}/${scoped.name}`);
+          const cloneTarget = path.join(scopeClone, scoped.name);
+          if (workspaceDir) {
+            linkDir(
+              cloneTarget,
+              path.join(clonePath, "packages", workspaceDir),
+            );
+            redirected += 1;
+          } else {
+            linkDir(cloneTarget, path.join(scopeSource, scoped.name));
+          }
+        }
+      }
+      return redirected > 0
+        ? `linked node_modules from the source repo (${redirected} workspace package(s) redirected to the clone's own packages/)`
+        : "linked node_modules from the source repo";
+    } catch (error) {
+      return `could not link node_modules (${error?.message ?? error}) — this clone cannot run npm-script gates`;
+    }
+  };
+
   if (!verifyOnly) {
-    provisionTarget({
-      source: path.resolve(sourceRepo, "node_modules"),
-      clone: path.join(clonePath, "node_modules"),
-      workspace: false,
-    });
+    reports.push(provisionRootNodeModules());
   }
 
   const packagesDir = path.resolve(sourceRepo, "packages");
