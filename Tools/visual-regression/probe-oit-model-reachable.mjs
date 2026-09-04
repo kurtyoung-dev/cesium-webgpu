@@ -3,6 +3,7 @@
  * Probe: OIT-MODEL-REACHABLE (C11-157 Slice C).
  * @purpose C11-157 Slice C: MRT-OIT reachable for translucent models — BLEND primary + per-feature-styled translucent twin; FAR-003 runtime flip.
  * @status ACTIVE
+ * @runtime lib/probe-runtime.mjs
  *
  * Proves the WebGPU MRT-OIT accumulation path is now REACHABLE for translucent
  * MODELS — the last and most complex family (Slice A = primitives, B =
@@ -33,33 +34,51 @@
  * OIT variant never renders during warmup), gate-ON non-black, gate-ON differs
  * from gate-OFF.
  *
- * Usage: node Tools/visual-regression/probe-oit-model-reachable.mjs
+ * WHAT THE SHARED RUNTIME OWNS (DX-06 migration onto `lib/probe-runtime.mjs`).
+ * Edge launch, the single-Edge-slot lock, the served-build preflight and the
+ * receipt/summary writer now live in the runtime; this file keeps the scene
+ * setup, the per-scene capture math, and the machine-safety watchdog below,
+ * which is now expressed as a `ProbeRefusal` (exit 3, same code the prior
+ * ad hoc `process.exit(3)` watchdog used) rather than a raw process exit, so a
+ * budget trip now closes the browser cleanly instead of killing the process
+ * mid-flight — and, unlike the old top-level `setTimeout`, it is armed before
+ * `browser.newPage`/`page.goto`/`waitForFunction` too, not just the scene
+ * loop, so the covered budget did not shrink in the move. `--port` replaces
+ * the old `PROBE_BASE` env var (default 8094, not 8080 — the runtime refuses
+ * 8080 because the default dev server there serves a live esbuild of the
+ * source tree, not the build this probe means to measure); pass `--port <n>`
+ * to point at a different served build. The served-build assertion defaults
+ * ON (`--no-serve-built` waives it): serve the built tree first (`node
+ * server.js --port 8094 --serve-built`) or the bare command below REFUSES
+ * (exit 3) rather than measuring a live esbuild of the source tree.
+ *
+ * Usage: node server.js --port 8094 --serve-built   (separate terminal, once)
+ *        node Tools/visual-regression/probe-oit-model-reachable.mjs
  *   SCENE=twin|blend selects one (default both; run ONE per invocation).
- * Out:   Tools/visual-regression/output/oitmodel-*.png + oitmodel-report.json
+ * Out:   Tools/visual-regression/output/oitmodel-*.png + oitmodel-report.json +
+ *        oitmodel-runtime.json + oitmodel-summary.md
  */
-import { chromium } from "playwright";
-import fs from "fs";
-import path from "path";
-import zlib from "zlib";
+import fs from "node:fs";
+import path from "node:path";
+import zlib from "node:zlib";
+
 import {
-  errorGateInit,
   armWebGPUDevices,
-  collectGateErrors,
   attachConsoleErrorGate,
+  collectGateErrors,
+  errorGateInit,
 } from "../lib/webgpu-error-gate.mjs";
+import { ProbeRefusal, isEntryPoint, runProbe } from "./lib/probe-runtime.mjs";
 
-const BASE = process.env.PROBE_BASE || "http://localhost:8080";
-const OUT_DIR = "Tools/visual-regression/output";
-const CLOCK_ISO = "2026-06-21T18:00:00Z";
 const VIEWPORT = { width: 800, height: 600 };
+const CLOCK_ISO = "2026-06-21T18:00:00Z";
 
-const watchdog = setTimeout(
-  () => {
-    console.error("[probe-oitmodel] WATCHDOG 3min — forcing exit(3)");
-    process.exit(3);
-  },
-  3 * 60 * 1000,
-);
+// Machine safety: kill a hung Edge/device rather than wedge the box. Was a raw
+// `process.exit(3)` from a top-level `setTimeout` before this file's runtime
+// migration; a `ProbeRefusal` racing the scene loop reaches the exact same
+// exit code (3) through the runtime's exit-code table, but lets the runtime's
+// `finally` close the browser instead of killing the process out from under it.
+const WATCHDOG_BUDGET_MS = 3 * 60 * 1000;
 
 const TILESETS = {
   twin: "/Apps/SampleData/Cesium3DTiles/Batched/BatchedWithBatchTable/tileset.json",
@@ -328,13 +347,13 @@ function realFaults(consoleErrors) {
   return consoleErrors.filter((e) => !BENIGN_TEARDOWN_RE.test(e));
 }
 
-async function runScene(page, consoleErrors, sceneKind) {
+async function runScene(page, consoleErrors, sceneKind, outputDirectory) {
   const setup = await setupViewer(page, { sceneKind });
   await armWebGPUDevices(page);
 
   const off1 = await grabCanvas(page);
   fs.writeFileSync(
-    path.join(OUT_DIR, `oitmodel-${sceneKind}-off.png`),
+    path.join(outputDirectory, `oitmodel-${sceneKind}-off.png`),
     encodePNG(off1.decoded),
   );
   await page.evaluate(async () => {
@@ -367,7 +386,7 @@ async function runScene(page, consoleErrors, sceneKind) {
   });
   const on = await grabCanvas(page);
   fs.writeFileSync(
-    path.join(OUT_DIR, `oitmodel-${sceneKind}-on.png`),
+    path.join(outputDirectory, `oitmodel-${sceneKind}-on.png`),
     encodePNG(on.decoded),
   );
 
@@ -390,7 +409,7 @@ async function runScene(page, consoleErrors, sceneKind) {
   const onNB = nonBlackFrac(on.decoded);
   const onVsOff = diffPixels(on.decoded, off1.decoded, 16);
 
-  return {
+  const result = {
     sceneKind,
     setup,
     status,
@@ -407,61 +426,140 @@ async function runScene(page, consoleErrors, sceneKind) {
     restoreVsOff_mismatchPx: restoreDiff.mismatch,
     restoreVsOff_maxDelta: restoreDiff.maxDelta,
   };
+  // Slice C proof = REACHABILITY: the translucent model command routes into
+  // MRT accumulation (`_webgpuOITActiveThisFrame` true, was always false),
+  // with 0 device/validation errors, the gate-ON render is correct
+  // (non-black), and containment restores. `onVsOff` is RECORDED but NOT
+  // gated: model geometry is single-sided (back-face culled) and the batched
+  // buildings don't overlap, so WBOIT ≡ sorted-alpha (no depth-complexity) —
+  // a 0 diff here is the correct WBOIT behavior, not a failure. A visible
+  // WBOIT desaturation needs overlapping / double-sided translucency.
+  result.pass =
+    result.status.activeThisFrame === true &&
+    result.errors === 0 &&
+    result.onNonBlack > 0.5 &&
+    result.restoreVsOff_mismatchPx <=
+      Math.max(result.noiseFloor_mismatchPx * 3, 3);
+  return result;
 }
 
-const report = { base: BASE, scenes: {} };
-fs.mkdirSync(OUT_DIR, { recursive: true });
-let overallPass = true;
+/** The descriptor the shared runtime executes. */
+export const descriptor = {
+  name: "oitmodel",
+  title: "OIT model reachability (C11-157 Slice C)",
+  outputSubdirectory: "",
+  receiptEnvelope: "probe-owned",
+  // This MRT-OIT accumulation path is WebGPU-only (the scenes assert
+  // `_webgpuOITActiveThisFrame`, which does not exist on the WebGL renderer),
+  // so the default narrows the shared `["webgl","webgpu"]` core default to
+  // just the backend this probe can measure. An explicit `--renderer webgl`
+  // is still accepted by `parseProbeArgs` (it is a fleet-wide flag) but is
+  // refused below rather than silently ignored.
+  args: { defaults: { renderers: ["webgpu"] } },
+  async cells({ browser, origin, outputDirectory, options }) {
+    if (options.renderers.length !== 1 || options.renderers[0] !== "webgpu") {
+      throw new ProbeRefusal(
+        "renderer-not-webgpu",
+        `probe-oit-model-reachable only measures webgpu (the scene navigates ?renderer=webgpu unconditionally); got --renderer ${options.renderers.join(",")}`,
+        { renderers: options.renderers },
+      );
+    }
+    if (options.runs !== 1) {
+      // receipt() re-keys cells by sceneKind; a second run's cells would
+      // silently overwrite the first run's under the same keys.
+      throw new ProbeRefusal(
+        "multi-run-not-supported",
+        `probe-oit-model-reachable's receipt keys cells by sceneKind, so --runs ${options.runs} would silently drop every run but the last; pass --runs 1 (the default)`,
+        { runs: options.runs },
+      );
+    }
+    // The runtime resolves `outputDirectory` before calling `cells()` but
+    // does not create it until a measured run reaches the receipt writer (or
+    // an incident is banked) — both AFTER this function returns. `--output
+    // <dir>` therefore names a directory that may not exist yet the first
+    // time a scene writes a PNG into it.
+    fs.mkdirSync(outputDirectory, { recursive: true });
 
-const browser = await chromium.launch({
-  channel: "msedge",
-  headless: true,
-  args: ["--enable-unsafe-webgpu"],
-});
-try {
-  const page = await browser.newPage({ viewport: VIEWPORT });
-  const consoleErrors = attachConsoleErrorGate(page);
-  await page.addInitScript(errorGateInit);
-  await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=webgpu`, {
-    waitUntil: "networkidle",
-    timeout: 90000,
-  });
-  await page.waitForFunction(() => !!window.viewer, { timeout: 90000 });
+    const only = (process.env.SCENE || "").trim();
+    const all = ["twin", "blend"];
+    const kinds = all.includes(only) ? [only] : all;
 
-  const only = (process.env.SCENE || "").trim();
-  const all = ["twin", "blend"];
-  const kinds = all.includes(only) ? [only] : all;
-  for (const kind of kinds) {
-    const r = await runScene(page, consoleErrors, kind);
-    report.scenes[kind] = r;
-    // Slice C proof = REACHABILITY: the translucent model command routes into
-    // MRT accumulation (`_webgpuOITActiveThisFrame` true, was always false),
-    // with 0 device/validation errors, the gate-ON render is correct
-    // (non-black), and containment restores. `onVsOff` is RECORDED but NOT
-    // gated: model geometry is single-sided (back-face culled) and the batched
-    // buildings don't overlap, so WBOIT ≡ sorted-alpha (no depth-complexity) —
-    // a 0 diff here is the correct WBOIT behavior, not a failure. A visible
-    // WBOIT desaturation needs overlapping / double-sided translucency.
-    const pass =
-      r.status.activeThisFrame === true &&
-      r.errors === 0 &&
-      r.onNonBlack > 0.5 &&
-      r.restoreVsOff_mismatchPx <= Math.max(r.noiseFloor_mismatchPx * 3, 3);
-    r.pass = pass;
-    if (!pass) overallPass = false;
-  }
-} finally {
-  await browser.close();
+    // Everything that can hang — the page open, the navigation, the wait for
+    // `window.viewer`, and the scene loop — runs inside `work`, so the
+    // watchdog below covers the full machine-safety budget rather than only
+    // the scene loop.
+    const work = (async () => {
+      const page = await browser.newPage({ viewport: VIEWPORT });
+      const consoleErrors = attachConsoleErrorGate(page);
+      await page.addInitScript(errorGateInit);
+      await page.goto(
+        `${origin}/Apps/CesiumViewer/index.html?renderer=webgpu`,
+        { waitUntil: "networkidle", timeout: 90000 },
+      );
+      await page.waitForFunction(() => !!window.viewer, { timeout: 90000 });
+
+      const produced = [];
+      for (const kind of kinds) {
+        produced.push(
+          await runScene(page, consoleErrors, kind, outputDirectory),
+        );
+      }
+      return produced;
+    })();
+    // A watchdog loss leaves `work` still running against a page the runtime
+    // is about to close; that trailing rejection has no one left to read it,
+    // so it is swallowed here rather than left to surface as an unhandled
+    // rejection warning after this function has already returned.
+    work.catch(() => {});
+    let watchdogTimer;
+    const watchdog = new Promise((_resolve, reject) => {
+      watchdogTimer = setTimeout(
+        () =>
+          reject(
+            new ProbeRefusal(
+              "watchdog-timeout",
+              `probe-oit-model-reachable exceeded its ${WATCHDOG_BUDGET_MS}ms machine-safety budget`,
+              { budgetMs: WATCHDOG_BUDGET_MS, kinds },
+            ),
+          ),
+        WATCHDOG_BUDGET_MS,
+      );
+    });
+    try {
+      return await Promise.race([work, watchdog]);
+    } finally {
+      clearTimeout(watchdogTimer);
+    }
+  },
+  receipt(cells, context) {
+    const scenes = {};
+    for (const cell of cells) {
+      scenes[cell.sceneKind] = cell;
+    }
+    return { base: context.origin, scenes };
+  },
+  verdicts(cells) {
+    return cells.map((cell) => ({
+      id: cell.sceneKind,
+      claim:
+        "C11-157 Slice C — the translucent model reaches WebGPU MRT-OIT accumulation",
+      pass: cell.pass,
+    }));
+  },
+  summary(receipt) {
+    const scenes = Object.values(receipt.scenes);
+    const passed = scenes.filter((s) => s.pass).length;
+    return [
+      "# OIT model reachability (C11-157 Slice C)",
+      "",
+      `Base: \`${receipt.base}\``,
+      "",
+      `Scenes: ${passed}/${scenes.length} passed.`,
+      "",
+    ].join("\n");
+  },
+};
+
+if (isEntryPoint(import.meta.url)) {
+  process.exitCode = await runProbe(descriptor);
 }
-
-const outPath = path.join(OUT_DIR, "oitmodel-report.json");
-fs.writeFileSync(outPath, JSON.stringify(report, null, 2));
-console.log(JSON.stringify(report.scenes, null, 2));
-console.log(`\nReport: ${outPath}`);
-clearTimeout(watchdog);
-console.log(
-  overallPass
-    ? "\nGATE PASS — translucent MODELS (per-feature-styled TWIN + natively-BLEND primary) now REACH the WebGPU MRT-OIT accumulation: _webgpuOITActiveThisFrame=true, 0 errors, the model renders via the OIT composite (doesn't vanish), containment restores, async ready-gate respected (0 warmup errors). onVsOff≈0 is CORRECT: single-sided (back-face-culled) non-overlapping model geometry has no depth-complexity, so WBOIT ≡ sorted-alpha — the visible WBOIT desaturation (proven in Slices A/B on the SHARED composite) needs overlapping/double-sided translucency."
-    : "\nGATE FAIL — see scene table.",
-);
-process.exit(overallPass ? 0 : 1);
