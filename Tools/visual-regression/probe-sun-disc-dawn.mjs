@@ -38,10 +38,16 @@
  * (`SUN_DISC_DAWN_EXPOSURE`, applied by `applyUnclippedExposureLeg` below):
  * HDR on, a reduced `postProcessStages.exposure`, both public `Scene` API
  * mirrored into the WebGPU tonemapping pipeline, so no engine change and no
- * backend asymmetry. A region that STILL clips at the new exposure is refused
- * (`sampleStructuralReasons`' `-clipped` check folds the whole run
- * STRUCTURAL) rather than silently averaged in — a clipped sample is refused,
- * not scored.
+ * backend asymmetry. A region that STILL clips at the new exposure is
+ * excluded from its own sample's ratio, never silently averaged in
+ * (`centreAnnulusRatio`/`centreAnnulusChromaRatio` return `null` via
+ * `sampleIsUnclipped` — C12-38 instrument fix, 2026-09-02); a BACKEND left
+ * with fewer than `SUN_DISC_DAWN_BAR_DERIVATION_MINIMUM_SAMPLES` unclipped
+ * scored samples folds the run STRUCTURAL, naming the backend and its
+ * clipped/unclipped counts (`sun-disc-dawn-gate.mjs`'s `coverageReasons`).
+ * The 2026-08-28 and early 2026-09-02 runs both hit clipping at their
+ * respective exposures; retry lower with `--exposure` if a run refuses this
+ * way.
  *
  * THE WebGL LEG IS A PARITY CONTROL, NOT A HEALTH REFERENCE. Both backends
  * draw this billboard from one shared scene-level resolution and two twin
@@ -1190,7 +1196,7 @@ function artifactWithStatus(status, fields) {
       webglLegRole:
         "The WebGL leg is a PARITY CONTROL, not a health reference. Two agreeing legs far from limbLawReferenceRatio is a shared-engine reading, not agreement that the disc is correct.",
       narrowFieldOfView: `The probe forces camera.frustum.fov to ${SUN_DISC_DAWN_FIELD_OF_VIEW_DEGREES} degrees; at the engine default of 60 the solar disc spans about 3 px of radius and cannot carry the metric.`,
-      unclippedExposureLeg: `scene.highDynamicRange = ${SUN_DISC_DAWN_EXPOSURE.highDynamicRange}, scene.postProcessStages.exposure = ${SUN_DISC_DAWN_EXPOSURE.value} by default, applied once for the whole sweep; see the artifact's own top-level exposureConfig for the value THIS run actually used (--exposure overrides it, e.g. to retry a run that clipped). See SUN_DISC_DAWN_EXPOSURE for why: the scene's SDR default hard-clamps rather than tonemaps, which is why two 2026-08-28 acquisitions clipped 10 of 13 samples to exactly the framebuffer ceiling. A region that still clips at this exposure is refused (STRUCTURAL), not silently averaged in — retry with a lower --exposure.`,
+      unclippedExposureLeg: `scene.highDynamicRange = ${SUN_DISC_DAWN_EXPOSURE.highDynamicRange}, scene.postProcessStages.exposure = ${SUN_DISC_DAWN_EXPOSURE.value} by default, applied once for the whole sweep; see the artifact's own top-level exposureConfig for the value THIS run actually used (--exposure overrides it, e.g. to retry a run that clipped). See SUN_DISC_DAWN_EXPOSURE for why: the scene's SDR default hard-clamps rather than tonemaps, which is why two 2026-08-28 acquisitions clipped 10 of 13 samples and the 2026-09-02 acquisition clipped 7 of 13 WebGL samples (0 WebGPU) to exactly the framebuffer ceiling. A region that still clips at this exposure is excluded from its own sample's ratio, not silently averaged in (C12-38 instrument fix, 2026-09-02) — a backend left with too few unclipped scored samples folds the whole run STRUCTURAL, naming the backend and its clipped/unclipped counts; retry with a lower --exposure if that happens.`,
       sunTrackingCamera:
         "The camera re-aims at the sun's own azimuth and altitude at every sample so a narrow frame keeps the disc centred across the sweep.",
       offlineScene:

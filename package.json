@@ -199,6 +199,7 @@
     "test-engine-node": "node --test Tools/visual-regression/translucent-cull-render-pass-bracket.spec.mjs Tools/visual-regression/gpucull-blackframe-isolation-arm-expectations.spec.mjs",
     "test-visual-probe-contracts": "node --test Tools/visual-regression/probe-runtime.spec.mjs",
     "test-visual-regression-node": "node --test Tools/visual-regression/gsplat-tower-framing.spec.mjs",
+    "test-sun-disc-dawn": "node --test Tools/visual-regression/sun-disc-dawn-gate.spec.mjs",
     "spec-census": "node Tools/spec-runner-census.mjs",
     "wave-end-gate": "node Tools/wave-end-gate.mjs",
     "report-batch-number-reuse": "node Tools/report-batch-number-reuse.mjs"

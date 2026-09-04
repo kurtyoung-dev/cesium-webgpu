@@ -35,6 +35,28 @@
  * annulus, an unpopulated region, a black annulus that cannot form a ratio —
  * routes STRUCTURAL (exit 3), never FAIL. A lane that could not see its
  * subject has no standing to report on it.
+ *
+ * A CLIPPED SAMPLE IS EXCLUDED, NOT BLINDING (C12-38 instrument fix,
+ * 2026-09-02). Until this landing a single clipped region — one region, of
+ * thirteen samples, of ONE backend — voided `buildMeasurements` for BOTH
+ * legs entirely (`measurements: {}`, `families: []`), the same footing as a
+ * genuinely unreadable sample. The 2026-09-02 acquisition at
+ * `SUN_DISC_DAWN_EXPOSURE`'s pre-registered 0.125 exercised exactly this: 7
+ * of 13 WebGL samples clipped and the artifact published zero measurements
+ * for either backend, even though the OTHER 4 WebGL samples and all 13
+ * WebGPU samples were perfectly readable. A clipped region is not a
+ * DIFFERENT kind of failure from a below-horizon sample — both mean "no
+ * trustworthy reading here" — so it is now excluded the same way: `#
+ * centreAnnulusRatio` / `#centreAnnulusChromaRatio` return `null` for a
+ * sample with either region clipped ({@link sampleIsUnclipped}), the same
+ * `value !== null` filter `scoreMinimumFamily` / `scoreMaximumFamily`
+ * already apply to a below-horizon exclusion. What still blinds the WHOLE
+ * sweep is a BACKEND running short: `coverageReasons` requires at least
+ * {@link SUN_DISC_DAWN_BAR_DERIVATION_MINIMUM_SAMPLES} unclipped scored
+ * samples per backend — the same "fewer than three cannot be told apart from
+ * noise" floor the bar derivation already applies to its own WebGL leg — and
+ * names the backend and its clipped/unclipped counts in the reason string
+ * when it does not.
  */
 
 import { exitCodeForS5Status } from "./verdict-exit-gate.mjs";
@@ -193,11 +215,18 @@ export const SUN_DISC_DAWN_FIELD_OF_VIEW_DEGREES = 3;
  * instead of two lanes independently guessing at the same billboard.
  *
  * WHAT THIS DOES NOT CLAIM. `0.125` is not proven sufficient against a real
- * frame — no browser has run it. If a real acquisition still reports a
- * clipped region at this exposure, `sampleStructuralReasons`' clip check
- * (below) refuses that run to STRUCTURAL rather than silently scoring a
- * saturated mean; the next iteration should lower `value` or bracket it,
- * never widen the clip check to let a saturated pixel back into a mean.
+ * frame. The 2026-08-28 authoring lane had no browser to test it with; the
+ * 2026-09-02 acquisition did, and 7 of 13 WebGL samples still clipped at
+ * this value while WebGPU clipped none — see the module docstring's "A
+ * CLIPPED SAMPLE IS EXCLUDED, NOT BLINDING" (C12-38 instrument fix). A
+ * clipped region is excluded from that sample's own ratio
+ * (`centreAnnulusRatio` / `centreAnnulusChromaRatio` return `null`), never
+ * silently averaged into a saturated mean; a backend whose clipped count
+ * leaves it below {@link SUN_DISC_DAWN_BAR_DERIVATION_MINIMUM_SAMPLES}
+ * unclipped scored samples is refused by `coverageReasons`, naming the
+ * backend and its counts — the executor's next move is `--exposure` with a
+ * lower `value`, the retry knob `parseExposureValue` / `buildPageConfig`
+ * already expose.
  */
 export const SUN_DISC_DAWN_EXPOSURE = Object.freeze({
   highDynamicRange: true,
@@ -393,7 +422,34 @@ export function sunAboveLocalHorizon(observed) {
 }
 
 /**
+ * Whether neither of a sample's two measured regions is clipped.
+ *
+ * A region absent entirely (no regions object, e.g. a below-horizon sample)
+ * reads as unclipped here on purpose: this predicate answers "is a PRESENT
+ * region's own mean untrustworthy", not "does a subject exist to measure" —
+ * that second question is {@link sampleIsScored}'s, and the two compose
+ * (both must hold for a reading to count) rather than either standing in for
+ * the other. `#centreAnnulusRatio` / `#centreAnnulusChromaRatio` call this so
+ * a clipped region nulls the READING rather than the whole sample's
+ * eligibility (C12-38 instrument fix, 2026-09-02 — see the module docstring).
+ *
+ * @param {object} sample One acquired sample record.
+ * @returns {boolean} True when neither present region is clipped.
+ */
+export function sampleIsUnclipped(sample) {
+  const centre = sample?.regions?.centre;
+  const annulus = sample?.regions?.annulus;
+  return centre?.clipped !== true && annulus?.clipped !== true;
+}
+
+/**
  * Centre-over-annulus luminance ratio for one sample.
+ *
+ * Null when either region is clipped, not just when a mean is unreadable: a
+ * channel pinned at the framebuffer's own ceiling is finite and positive, so
+ * the finiteness checks alone would happily divide two saturated codes and
+ * publish a confident-looking ratio that measures the clamp, not the scene
+ * (C12-38 instrument fix, 2026-09-02).
  *
  * @param {object} sample One acquired sample record.
  * @returns {number|null} The ratio, or null when it cannot be formed.
@@ -402,6 +458,9 @@ export function centreAnnulusRatio(sample) {
   const centre = sample?.regions?.centre?.meanLuminance;
   const annulus = sample?.regions?.annulus?.meanLuminance;
   if (!finiteNonNegative(centre) || !finitePositive(annulus)) {
+    return null;
+  }
+  if (!sampleIsUnclipped(sample)) {
     return null;
   }
   return centre / annulus;
@@ -427,6 +486,12 @@ export function centreAnnulusChromaRatio(sample) {
     !finitePositive(annulus?.meanR) ||
     !finitePositive(annulus?.meanB)
   ) {
+    return null;
+  }
+  // Same reasoning as `centreAnnulusRatio`: a saturated channel is finite and
+  // positive, so the checks above alone would form a ratio out of a clamp
+  // reading rather than refuse it (C12-38 instrument fix, 2026-09-02).
+  if (!sampleIsUnclipped(sample)) {
     return null;
   }
   const centreBlueOverRed = centre.meanB / centre.meanR;
@@ -579,16 +644,18 @@ export function sampleStructuralReasons(
     }
     // A clipped region's mean is not a measurement of the composite; it is a
     // measurement of the framebuffer's own ceiling (see
-    // `SUN_DISC_DAWN_EXPOSURE`). Refused on the same "blindness outranks
-    // everything" footing as `annulus-black` two lines below — clipping is
-    // that check's mirror image, saturated white in place of true black —
-    // and for the same reason: a ratio built from either extreme measures the
-    // capture, not the scene. Gated on an explicit `true` so evidence that
-    // predates this check (every existing fixture, which never sets the
-    // field) reads as not-clipped rather than as unreadable.
-    if (record.clipped === true) {
-      reasons.push(`${where}:${region}-clipped`);
-    }
+    // `SUN_DISC_DAWN_EXPOSURE`). UNTIL C12-38 (2026-09-02) this pushed a
+    // structural reason here, and ONE clipped region on ONE sample of ONE
+    // backend voided `buildMeasurements` for BOTH legs' entire thirteen-sample
+    // sweep — exactly what the 2026-09-02 acquisition hit (7 of 13 WebGL
+    // samples clipped, 0 WebGPU, artifact published zero measurements for
+    // either backend). A clipped region is now excluded at the READING level
+    // instead — `centreAnnulusRatio` / `centreAnnulusChromaRatio` return
+    // `null` for it via `sampleIsUnclipped`, the same `value !== null` filter
+    // a below-horizon exclusion already goes through — and `coverageReasons`
+    // is what still blinds the sweep, when a BACKEND's unclipped count falls
+    // below the floor. See the module docstring's "A CLIPPED SAMPLE IS
+    // EXCLUDED, NOT BLINDING".
   }
   if (
     sample.regions?.annulus &&
@@ -683,6 +750,63 @@ function coverageReasons(evidence) {
     if (scored < SUN_DISC_DAWN_SWEEP.minimumScoredSamples) {
       reasons.push(`sweep:${renderer}:too-few-scored-samples`);
     }
+  }
+  // A clipped sample is excluded from its own reading rather than blinding
+  // the sweep (C12-38 instrument fix — see the module docstring's "A CLIPPED
+  // SAMPLE IS EXCLUDED, NOT BLINDING"), but a BACKEND that has excluded too
+  // MANY samples this way still cannot be trusted: the worst-of-N reduction
+  // `scoreMinimumFamily` / `scoreMaximumFamily` apply, and the bar derivation
+  // itself, both treat fewer than
+  // `SUN_DISC_DAWN_BAR_DERIVATION_MINIMUM_SAMPLES` readings as
+  // indistinguishable from noise. This is the SAME floor applied here, per
+  // backend, so a starved leg is refused with the backend named and its own
+  // counts rather than silently scored on too little — the row's own
+  // requirement is a refusal that "names the backend and the clipped count".
+  for (const renderer of SUN_DISC_DAWN_RENDERERS) {
+    const scoredSamples = evidence.samples[renderer].filter(sampleIsScored);
+    const unclippedSamples = scoredSamples.filter(sampleIsUnclipped);
+    const clippedCount = scoredSamples.length - unclippedSamples.length;
+    if (
+      unclippedSamples.length < SUN_DISC_DAWN_BAR_DERIVATION_MINIMUM_SAMPLES
+    ) {
+      reasons.push(
+        `sweep:${renderer}:too-few-unclipped-samples:unclipped=${unclippedSamples.length}:clipped=${clippedCount}:scored=${scoredSamples.length}`,
+      );
+    }
+  }
+  // The `parity` family (`scoreFamilies`) compares WebGL and WebGPU AT THE
+  // SAME index, so its own effective sample count is the PAIRED
+  // unclipped-and-scored count, not either backend's own. Two backends can
+  // each individually clear `SUN_DISC_DAWN_BAR_DERIVATION_MINIMUM_SAMPLES`
+  // above while sharing almost no readable index in common — WebGL clipping
+  // the sweep's low half and WebGPU clipping its high half both clear their
+  // own per-backend floors and still leave parity with as little as one
+  // shared reading. The per-backend loop above says nothing about that
+  // overlap, and without a floor of its own the parity family folds a PASS
+  // or FAIL from one paired sample, which cannot be told apart from noise
+  // any more than a single backend's own single reading could (C12-38 fix
+  // round, review finding FIX-4, 2026-09-02).
+  const leftSamples = evidence.samples[first];
+  const rightSamples = evidence.samples[second];
+  let pairedUnclippedCount = 0;
+  for (
+    let index = 0;
+    index < Math.min(leftSamples.length, rightSamples.length);
+    index++
+  ) {
+    if (
+      sampleIsScored(leftSamples[index]) &&
+      sampleIsUnclipped(leftSamples[index]) &&
+      sampleIsScored(rightSamples[index]) &&
+      sampleIsUnclipped(rightSamples[index])
+    ) {
+      pairedUnclippedCount++;
+    }
+  }
+  if (pairedUnclippedCount < SUN_DISC_DAWN_BAR_DERIVATION_MINIMUM_SAMPLES) {
+    reasons.push(
+      `sweep:parity:too-few-paired-unclipped-samples:paired=${pairedUnclippedCount}`,
+    );
   }
   return reasons;
 }
@@ -835,6 +959,18 @@ function buildMeasurements(evidence) {
         globeCommands: sample.observed.globeCommands ?? null,
         icrfFrameResolved: sample.observed.icrfFrameResolved ?? null,
         scored,
+        // The projected screen-space disc geometry the region sampler was
+        // actually given — `Sun.js` publishes this from `sunPositionWC`'s NDC
+        // projection (`computeSunScreenGeometry`, `SunHaloAppearance.js`),
+        // never from a brightness search over the frame. Carried into the
+        // measurement row (already present on `sample.observed`, one level
+        // up) so a reader auditing `centre`/`annulus` against a saved PNG
+        // does not have to cross-reference the raw session record to find
+        // where the sampler looked (C12-38 instrument fix, 2026-09-02).
+        centerX: sample.observed.centerX ?? null,
+        centerY: sample.observed.centerY ?? null,
+        limbPx: sample.observed.limbPx ?? null,
+        regionWindow: sample.observed.regionWindow ?? null,
         centreAnnulusRatio: scored ? centreAnnulusRatio(sample) : null,
         centreAnnulusChromaRatio: scored
           ? centreAnnulusChromaRatio(sample)
@@ -847,6 +983,11 @@ function buildMeasurements(evidence) {
         // referencing `structural` reason strings.
         centreClipped: sample.regions?.centre?.clipped === true,
         annulusClipped: sample.regions?.annulus?.clipped === true,
+        // True exactly when `centreAnnulusRatio`/`centreAnnulusChromaRatio`
+        // above were eligible to read a value rather than exclude the sample
+        // (`sampleIsUnclipped` — regardless of `scored`, so a reader can see
+        // at a glance whether a NOT-scored row would also have clipped).
+        unclipped: sampleIsUnclipped(sample),
         exposure: sample.observed?.exposure ?? null,
         extinction: sample.observed.extinction ?? null,
       };
@@ -1059,11 +1200,20 @@ function finiteValues(entries, key) {
  * (+5.11 deg, {@link SUN_DISC_DAWN_BAR_DERIVATION_DISCRIMINATOR_INDEX}): a
  * source whose discriminator ratio has itself crossed the physical floor
  * cannot be trusted to derive a bar at all, and this function returns
- * `usable: false` instead. WHEN THE DISCRIMINATOR SAMPLE ISN'T PRESENT in the
- * readable set, this refusal cannot fire and the derivation falls back to
+ * `usable: false` instead. WHEN THE DISCRIMINATOR SAMPLE'S RATIO ISN'T A
+ * READABLE NUMBER, this refusal cannot fire and the derivation falls back to
  * the whole-sweep reduction unguarded — a residual gap of the same "flagged,
  * not hidden" kind as the caveat above, not a claim that every possible
- * inverted source is caught.
+ * inverted source is caught. TWO DIFFERENT THINGS make the ratio unreadable
+ * and neither is visible from `discriminatorRatio` alone: the sample never
+ * reached `scored` at all (absent, below-horizon, never captured), or — since
+ * the C12-38 clip-exclusion fix (2026-09-02) — it WAS scored but its own
+ * region clipped, which nulls only its ratio rather than voiding the whole
+ * sweep the way a pre-fix clip did (review finding FIX-3, 2026-09-02: this
+ * landing is what makes the second case reachable — before it, a clipped
+ * discriminator meant the whole sweep was STRUCTURAL and no bar was derived
+ * at all). `terms.discriminatorAvailable` publishes `false` either way so a
+ * reader can see the guard went quiet without re-deriving why.
  *
  * REFUSES (`usable: false`) rather than deriving over too few readable
  * samples, because a bar built from one or two readings cannot be told apart
@@ -1102,6 +1252,17 @@ export function deriveSunDiscDawnBarFromWebGLSweep(
     : [];
   const ratios = finiteValues(scored, "centreAnnulusRatio");
   const chromas = finiteValues(scored, "centreAnnulusChromaRatio");
+  // Since C12-38 (2026-09-02) a clipped region nulls only that sample's own
+  // reading (`centreAnnulusRatio`/`ChromaRatio`), so `scored.length` can be
+  // well above `minimumSamples` while `ratios.length`/`chromas.length` are
+  // not — exactly what a partially-clipped WebGL leg looks like. Counted
+  // here, from the clip flags the measurement rows already carry, so the
+  // refusal names how many of the scored samples were excluded and why,
+  // rather than leaving a reader to infer it from the gap between the two
+  // counts.
+  const clippedSamples = scored.filter(
+    (entry) => entry?.centreClipped === true || entry?.annulusClipped === true,
+  ).length;
   if (
     scored.length < minimumSamples ||
     ratios.length < minimumSamples ||
@@ -1114,6 +1275,7 @@ export function deriveSunDiscDawnBarFromWebGLSweep(
         scoredSamples: scored.length,
         readableRatios: ratios.length,
         readableChromas: chromas.length,
+        clippedSamples,
         minimumSamples,
       },
       reason: "sun-disc-dawn-bar:too-few-readable-webgl-samples",
@@ -1123,9 +1285,20 @@ export function deriveSunDiscDawnBarFromWebGLSweep(
     (entry) => entry?.index === discriminatorIndex,
   );
   const discriminatorRatio = discriminator?.centreAnnulusRatio;
-  if (
+  // True exactly when the discriminator sample can feed the anti-inversion
+  // refusal below. False for TWO different reasons a reader cannot tell
+  // apart from `discriminatorRatio` alone: the sample never reached `scored`
+  // at all (absent, below-horizon, never captured), or — since the C12-38
+  // clip-exclusion fix (2026-09-02) — it WAS scored but its own region
+  // clipped, which nulls only its ratio rather than voiding the whole sweep
+  // the way a pre-fix clip did. Published in `terms` on both branches below
+  // (review finding FIX-3, 2026-09-02) so a reader does not have to infer
+  // the guard's silence from `discriminatorRatio` being `null`.
+  const discriminatorAvailable =
     typeof discriminatorRatio === "number" &&
-    Number.isFinite(discriminatorRatio) &&
+    Number.isFinite(discriminatorRatio);
+  if (
+    discriminatorAvailable &&
     discriminatorRatio < 1.0 // the physical floor the luminance argument above rests on
   ) {
     return {
@@ -1137,6 +1310,7 @@ export function deriveSunDiscDawnBarFromWebGLSweep(
         readableChromas: chromas.length,
         discriminatorIndex,
         discriminatorRatio,
+        discriminatorAvailable,
       },
       reason: "sun-disc-dawn-bar:webgl-source-below-limb-law-floor",
     };
@@ -1156,11 +1330,15 @@ export function deriveSunDiscDawnBarFromWebGLSweep(
     }),
     terms: {
       scoredSamples: scored.length,
+      readableRatios: ratios.length,
+      readableChromas: chromas.length,
+      clippedSamples,
       worstRatio,
       worstChroma,
       marginRel,
       discriminatorIndex,
       discriminatorRatio: discriminatorRatio ?? null,
+      discriminatorAvailable,
     },
     reason: null,
   };
@@ -1176,25 +1354,46 @@ export function deriveSunDiscDawnBarFromWebGLSweep(
  * but read a JSON file and hand it to this function, so the logic worth
  * pinning lives here rather than being duplicated into an untested wrapper.
  *
+ * MEASUREMENTS ARE RECOMPUTED, NEVER TRUSTED OFF THE ARTIFACT (C12-38
+ * instrument fix, 2026-09-02). Earlier this derived the bar straight from
+ * `artifact.measurements.webgl` — a field the ACQUIRING run's gate version
+ * wrote once, at capture time, and never revisits. A gate improvement (this
+ * landing's own clip-exclusion fix, which turns a partially-clipped leg's
+ * empty `measurements: {}` into real per-sample readings) would then help
+ * only a FUTURE acquisition; re-running this function against an
+ * ALREADY-BANKED artifact — the 2026-09-02 run's own JSON, written under the
+ * pre-fix gate — would keep reading that stale, empty field and refuse
+ * forever. This function now reconstructs `evidence` from
+ * `artifact.sessions[].samples` FIRST, evaluates it once under the shipped
+ * `SUN_DISC_DAWN_BAR` to obtain fresh measurements (exactly what
+ * `runSunDiscDawnProbe` itself would publish were it re-run today), and
+ * derives the bar from THAT — so a rescore always reflects the gate code
+ * actually running it, not whatever gate version acquired the file.
+ *
+ * A STRUCTURALLY BLIND PREFLIGHT SHORT-CIRCUITS BEFORE THE WEBGL-ONLY
+ * DERIVATION RUNS (review finding FIX-2, 2026-09-02). The preflight can be
+ * blind for reasons that have nothing to do with WebGL — a starved WebGPU
+ * leg among them — and `deriveSunDiscDawnBarFromWebGLSweep` only ever
+ * refuses with a WebGL-shaped reason, so handing it an empty
+ * `measurements.webgl` regardless of cause would blame WebGL for a fold it
+ * did not cause. `derivation.structural` on the refused result is
+ * `preflight.structural` verbatim, so the real, backend-named reason
+ * (`coverageReasons`'s own `sweep:<renderer>:too-few-unclipped-samples:...`
+ * among them) reaches the caller instead of a fabricated
+ * `scoredSamples: 0` / `readableRatios: 0` accusation.
+ *
  * @param {object} artifact A `probe-sun-disc-dawn.mjs` run artifact — reads
- *        `artifact.measurements.webgl` (to derive the bar),
  *        `artifact.sessions[].{renderer,samples}` (to reconstruct the
- *        evidence {@link evaluateSunDiscDawnSweep} was built to score), and
+ *        evidence, and to recompute fresh measurements from it) and
  *        `artifact.exposureConfig` (the exposure the run was actually
  *        acquired under, when the probe ran with `--exposure`).
+ *        `artifact.measurements` itself is no longer read.
  * @param {object} [options] Forwarded to
  *        {@link deriveSunDiscDawnBarFromWebGLSweep}. `options.expectedExposure`
  *        overrides `artifact.exposureConfig` for the re-score pass.
  * @returns {{rescored:boolean,derivation:object,evaluation:object|null}}
  */
 export function rescoreSunDiscDawnArtifact(artifact, options = {}) {
-  const derivation = deriveSunDiscDawnBarFromWebGLSweep(
-    artifact?.measurements?.webgl,
-    options,
-  );
-  if (!derivation.usable) {
-    return { rescored: false, derivation, evaluation: null };
-  }
   const sessions = Object.fromEntries(
     (Array.isArray(artifact?.sessions) ? artifact.sessions : []).map(
       (session) => [session?.renderer, session],
@@ -1212,6 +1411,53 @@ export function rescoreSunDiscDawnArtifact(artifact, options = {}) {
     options.expectedExposure ??
     artifact?.exposureConfig ??
     SUN_DISC_DAWN_EXPOSURE;
+  // Freshly computed from `evidence`, never read off `artifact.measurements`
+  // — see the function's own docstring for why. `SUN_DISC_DAWN_BAR` (every
+  // bound null) is used only as a harmless placeholder here: it decides
+  // `status`/`families`, neither of which this preflight reads, while
+  // `structural` and `measurements` — the two fields actually consumed below
+  // — do not depend on which bar was passed.
+  const preflight = evaluateSunDiscDawnSweep(evidence, {
+    bar: SUN_DISC_DAWN_BAR,
+    expectedExposure,
+  });
+  // `preflight.measurements` is `{}` whenever `preflight.structural` is
+  // non-empty (`evaluateSunDiscDawnSweep`'s own `scoreable` gate) — and that
+  // is reachable from far more than a starved WebGL leg: a starved WEBGPU
+  // leg, an altitude-coverage gap, an exposure mismatch, or a shape defect
+  // all land here too. Handing an empty `measurements.webgl` to
+  // `deriveSunDiscDawnBarFromWebGLSweep` regardless of WHICH of those
+  // actually happened makes that function's WebGL-specific refusal fire with
+  // fabricated `scoredSamples: 0` / `readableRatios: 0` terms no matter which
+  // backend or check caused the blindness — review finding FIX-2,
+  // 2026-09-02, reproduced against the real 2026-09-02 artifact with WebGPU
+  // starved and WebGL untouched: the prior code still named WebGL. `structural`
+  // already carries the real, backend-named reason (`coverageReasons`'s own
+  // `sweep:<renderer>:too-few-unclipped-samples:...` among them, exactly the
+  // row's required "refuse with a reason that names the backend and the
+  // clipped count"), so a structurally blind preflight short-circuits here
+  // and surfaces THAT, rather than asking the WebGL-only derivation to
+  // invent an explanation for a blindness it may not have caused.
+  if (preflight.structural.length > 0) {
+    return {
+      rescored: false,
+      derivation: {
+        usable: false,
+        bar: null,
+        terms: null,
+        structural: preflight.structural,
+        reason: "sun-disc-dawn-bar:structural-preflight",
+      },
+      evaluation: null,
+    };
+  }
+  const derivation = deriveSunDiscDawnBarFromWebGLSweep(
+    preflight.measurements.webgl,
+    options,
+  );
+  if (!derivation.usable) {
+    return { rescored: false, derivation, evaluation: null };
+  }
   const evaluation = evaluateSunDiscDawnSweep(evidence, {
     bar: derivation.bar,
     expectedExposure,

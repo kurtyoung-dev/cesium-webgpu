@@ -1715,32 +1715,50 @@ test("G9: the sweep registration the probe ships is the one the gate scores", ()
 });
 
 // ---------------------------------------------------------------------------
-// J. A clipped sample is refused, not silently included (C12-38 instrument)
+// J. A clipped sample is EXCLUDED, not blinding (C12-38 instrument fix,
+//    2026-09-02)
 // ---------------------------------------------------------------------------
+//
+// UNTIL this fix, a clipped region pushed a STRUCTURAL reason that voided
+// `buildMeasurements` for the WHOLE thirteen-sample, two-backend sweep — the
+// same footing as a genuinely unreadable sample. The 2026-09-02 acquisition
+// hit this directly: 7 of 13 WebGL samples clipped at the pre-registered
+// exposure and the artifact published ZERO measurements for either backend,
+// even though 4 WebGL samples and all 13 WebGPU samples were perfectly
+// readable. J1/J2 pin the new behaviour: a clipped region nulls only that
+// sample's own ratio (the same `value !== null` exclusion a below-horizon
+// sample already goes through). J5/J6 pin the floor that still protects
+// against too little data: a BACKEND whose clipped count leaves it short is
+// refused, naming the backend and its counts. J7 replays the real
+// acquisition's own shape as a regression.
 
-test("J1: a clipped centre region refuses the whole sweep to STRUCTURAL", () => {
+test("J1: a clipped centre region excludes only that sample's ratio, not the whole sweep", () => {
   const legs = healthyLeg({ perSample: { 7: { centreClipped: true } } });
   const evidence = evidenceOf(legs, legs);
   const result = evaluateSunDiscDawnSweep(evidence, { bar: DERIVED_BAR });
-  assert.equal(result.status, "STRUCTURAL");
-  assert.ok(
-    result.structural.includes("webgl:sample7:centre-clipped"),
-    JSON.stringify(result.structural),
-  );
+  assert.deepEqual(result.structural, []);
+  assert.equal(result.status, "PASS");
+  assert.equal(result.measurements.webgl[7].centreAnnulusRatio, null);
+  assert.equal(result.measurements.webgl[7].centreClipped, true);
+  assert.equal(result.measurements.webgl[7].unclipped, false);
+  // A different, untouched sample still carries a real reading — the
+  // exclusion is per-sample, not per-sweep.
+  assert.ok(result.measurements.webgl[9].centreAnnulusRatio > 1);
+  assert.equal(result.measurements.webgl[9].unclipped, true);
 });
 
-test("J2: a clipped annulus region is refused the same way as a clipped centre", () => {
+test("J2: a clipped annulus region is excluded the same way as a clipped centre", () => {
   const legs = healthyLeg({ perSample: { 9: { annulusClipped: true } } });
   const evidence = evidenceOf(legs, legs);
   const result = evaluateSunDiscDawnSweep(evidence, { bar: DERIVED_BAR });
-  assert.equal(result.status, "STRUCTURAL");
-  assert.ok(
-    result.structural.includes("webgl:sample9:annulus-clipped"),
-    JSON.stringify(result.structural),
-  );
+  assert.deepEqual(result.structural, []);
+  assert.equal(result.status, "PASS");
+  assert.equal(result.measurements.webgl[9].centreAnnulusRatio, null);
+  assert.equal(result.measurements.webgl[9].centreAnnulusChromaRatio, null);
+  assert.equal(result.measurements.webgl[9].annulusClipped, true);
 });
 
-test("J3: pre-existing fixtures are unaffected — clip refusal is opt-in on an explicit `clipped: true`, not re-derived from raw bytes", () => {
+test("J3: pre-existing fixtures are unaffected — clip exclusion is opt-in on an explicit `clipped: true`, not re-derived from raw bytes", () => {
   // `healthyLeg()`'s default disc is [255,255,255] over a bright dawn sky, so
   // several of its own composited bytes ARE 255 without anyone setting
   // `clipped`. If the check read `meanR/meanG/meanB` directly instead of the
@@ -1756,28 +1774,233 @@ test("J3: pre-existing fixtures are unaffected — clip refusal is opt-in on an 
   assert.equal(result.status, "PASS");
 });
 
-test("J4 MUTATION: a clipped sample must be refused, not silently included", async () => {
-  const legs = healthyLeg({ perSample: { 7: { centreClipped: true } } });
+test("J4 MUTATION: a clipped centre region must be excluded from the ratio, not silently scored from a saturated mean", async () => {
+  const legs = healthyLeg({
+    perSample: {
+      7: { centreClipped: true, centreBytes: [0, 0, 0] },
+    },
+  });
   const evidence = evidenceOf(legs, legs);
   const before = evaluateSunDiscDawnSweep(evidence, { bar: DERIVED_BAR });
-  assert.equal(before.status, "STRUCTURAL");
+  assert.deepEqual(before.structural, []);
+  assert.equal(before.status, "PASS");
+  assert.equal(before.measurements.webgl[7].centreAnnulusRatio, null);
   await withMutant(
     (source) =>
       replaceExactlyOnce(
         source,
-        "    if (record.clipped === true) {\n      reasons.push(`${where}:${region}-clipped`);\n    }",
-        "    if (false && record.clipped === true) {\n      reasons.push(`${where}:${region}-clipped`);\n    }",
+        "  if (!sampleIsUnclipped(sample)) {\n    return null;\n  }\n  return centre / annulus;",
+        "  if (false && !sampleIsUnclipped(sample)) {\n    return null;\n  }\n  return centre / annulus;",
       ),
     async (module) => {
       const result = module.evaluateSunDiscDawnSweep(evidence, {
         bar: DERIVED_BAR,
       });
-      assert.deepEqual(
-        result.structural,
-        [],
-        "the clipped sample survived silently once the check was made inert",
+      assert.notEqual(result.measurements.webgl[7].centreAnnulusRatio, null);
+      assert.equal(
+        result.status,
+        "FAIL",
+        "the saturated centre must have been let back into the ratio and dragged the family below the bar",
       );
-      assert.equal(result.status, "PASS");
+      assert.ok(result.failures.includes("ratio:webgl:below-bar"));
+    },
+  );
+});
+
+test("J5: a backend with fewer than the minimum unclipped scored samples is refused, naming the backend and its counts", () => {
+  // 11 scored samples (index 2..12); clip 9 of them, leaving 2 — below the
+  // 3-sample floor `SUN_DISC_DAWN_BAR_DERIVATION_MINIMUM_SAMPLES` sets.
+  const clippedIndices = [2, 3, 4, 5, 6, 7, 8, 9, 10];
+  const perSample = Object.fromEntries(
+    clippedIndices.map((index) => [index, { centreClipped: true }]),
+  );
+  const starvedWebgl = healthyLeg({ perSample });
+  const result = evaluateSunDiscDawnSweep(
+    evidenceOf(starvedWebgl, healthyLeg()),
+    { bar: DERIVED_BAR },
+  );
+  assert.equal(result.status, "STRUCTURAL");
+  assert.deepEqual(result.failures, []);
+  const reason = result.structural.find((entry) =>
+    entry.startsWith("sweep:webgl:too-few-unclipped-samples"),
+  );
+  assert.ok(reason, JSON.stringify(result.structural));
+  assert.ok(reason.includes("unclipped=2"), reason);
+  assert.ok(reason.includes("clipped=9"), reason);
+  assert.ok(reason.includes("scored=11"), reason);
+  assert.ok(
+    !result.structural.some((entry) =>
+      entry.startsWith("sweep:webgpu:too-few-unclipped-samples"),
+    ),
+    "the healthy WebGPU leg must not be refused alongside the starved WebGL leg",
+  );
+});
+
+test("J6 MUTATION: the too-few-unclipped-samples refusal must fire, not silently score a starved backend", async () => {
+  const clippedIndices = [2, 3, 4, 5, 6, 7, 8, 9, 10];
+  const perSample = Object.fromEntries(
+    clippedIndices.map((index) => [index, { centreClipped: true }]),
+  );
+  const starvedWebgl = healthyLeg({ perSample });
+  const evidence = evidenceOf(starvedWebgl, healthyLeg());
+  const before = evaluateSunDiscDawnSweep(evidence, { bar: DERIVED_BAR });
+  assert.equal(before.status, "STRUCTURAL");
+  assert.deepEqual(before.families, []);
+  await withMutant(
+    (source) =>
+      replaceExactlyOnce(
+        source,
+        "    if (\n      unclippedSamples.length < SUN_DISC_DAWN_BAR_DERIVATION_MINIMUM_SAMPLES\n    ) {",
+        "    if (\n      false &&\n      unclippedSamples.length < SUN_DISC_DAWN_BAR_DERIVATION_MINIMUM_SAMPLES\n    ) {",
+      ),
+    async (module) => {
+      const result = module.evaluateSunDiscDawnSweep(evidence, {
+        bar: DERIVED_BAR,
+      });
+      assert.ok(
+        !result.structural.some((entry) =>
+          entry.startsWith("sweep:webgl:too-few-unclipped-samples"),
+        ),
+        "the per-backend guard's own named reason must be gone once it is made inert",
+      );
+      // The starved WebGL leg's 2 unclipped samples are also the ceiling on
+      // how many samples `parity` can pair (J8/J9's own paired floor, added
+      // alongside this per-backend one in the same fix round) — a leg this
+      // starved can never clear that floor either, no matter which of the
+      // two independent checks is disabled. Asserted explicitly rather than
+      // expecting a full recovery to scored, so this stays a clean isolation
+      // of the per-backend check even though the two floors' domains overlap
+      // on this particular fixture.
+      assert.deepEqual(result.structural, [
+        "sweep:parity:too-few-paired-unclipped-samples:paired=2",
+      ]);
+      assert.deepEqual(result.families, []);
+    },
+  );
+});
+
+test("J7: the 2026-09-02 acquisition's own shape (7 of 13 WebGL samples clipped, 0 WebGPU) no longer blinds either backend", () => {
+  // sample2..sample8 — the real run's own clipped indices.
+  const clippedIndices = [2, 3, 4, 5, 6, 7, 8];
+  const perSample = Object.fromEntries(
+    clippedIndices.map((index) => [
+      index,
+      { centreClipped: true, annulusClipped: true },
+    ]),
+  );
+  const webgl = healthyLeg({ perSample });
+  const webgpu = healthyLeg();
+  const result = evaluateSunDiscDawnSweep(evidenceOf(webgl, webgpu), {
+    bar: DERIVED_BAR,
+  });
+  assert.deepEqual(result.structural, []);
+  assert.equal(result.status, "PASS");
+  const readable = (rows) =>
+    rows.filter((entry) => entry.centreAnnulusRatio !== null).length;
+  // 11 scored (index 2..12); 7 clipped on WebGL leaves 4, matching the real
+  // acquisition's own unclipped count exactly.
+  assert.equal(readable(result.measurements.webgl), 4);
+  assert.equal(readable(result.measurements.webgpu), 11);
+});
+
+// J8/J9: review finding FIX-4, 2026-09-02. Reviewer's own reproduction
+// against the real artifact: two backends each individually clear the
+// per-backend unclipped floor while sharing almost no readable index in
+// common, so the paired `parity` family folds a verdict from as little as
+// one shared reading — the reviewer's own "Thin case" produced a `FAIL` from
+// a single paired sample with no reason string disclosing it.
+
+test("J8: the parity family needs its own paired floor — a disjoint clip pattern clears both per-backend floors and still leaves parity thin", () => {
+  // WebGL clips 2-8 (7), leaving {9,10,11,12} unclipped (4, clears its own
+  // floor). WebGPU clips 5-11 (7), leaving {2,3,4,12} unclipped (4, clears
+  // its own floor too). The two unclipped sets share only index 12.
+  const webglClipped = [2, 3, 4, 5, 6, 7, 8];
+  const webgpuClipped = [5, 6, 7, 8, 9, 10, 11];
+  const webgl = healthyLeg({
+    perSample: Object.fromEntries(
+      webglClipped.map((index) => [
+        index,
+        { centreClipped: true, annulusClipped: true },
+      ]),
+    ),
+  });
+  const webgpu = healthyLeg({
+    perSample: Object.fromEntries(
+      webgpuClipped.map((index) => [
+        index,
+        { centreClipped: true, annulusClipped: true },
+      ]),
+    ),
+  });
+  const result = evaluateSunDiscDawnSweep(evidenceOf(webgl, webgpu), {
+    bar: DERIVED_BAR,
+  });
+  assert.ok(
+    !result.structural.some((entry) =>
+      entry.startsWith("sweep:webgl:too-few-unclipped-samples"),
+    ),
+    "webgl clears its own per-backend floor (4 unclipped)",
+  );
+  assert.ok(
+    !result.structural.some((entry) =>
+      entry.startsWith("sweep:webgpu:too-few-unclipped-samples"),
+    ),
+    "webgpu clears its own per-backend floor (4 unclipped)",
+  );
+  const reason = result.structural.find((entry) =>
+    entry.startsWith("sweep:parity:too-few-paired-unclipped-samples"),
+  );
+  assert.ok(reason, JSON.stringify(result.structural));
+  assert.ok(reason.includes("paired=1"), reason);
+  assert.equal(result.status, "STRUCTURAL");
+  assert.deepEqual(result.families, []);
+});
+
+test("J9 MUTATION: the parity paired-floor refusal must fire, not silently score a parity verdict off a single paired sample", async () => {
+  const webglClipped = [2, 3, 4, 5, 6, 7, 8];
+  const webgpuClipped = [5, 6, 7, 8, 9, 10, 11];
+  const webgl = healthyLeg({
+    perSample: Object.fromEntries(
+      webglClipped.map((index) => [
+        index,
+        { centreClipped: true, annulusClipped: true },
+      ]),
+    ),
+  });
+  const webgpu = healthyLeg({
+    perSample: Object.fromEntries(
+      webgpuClipped.map((index) => [
+        index,
+        { centreClipped: true, annulusClipped: true },
+      ]),
+    ),
+  });
+  const evidence = evidenceOf(webgl, webgpu);
+  const before = evaluateSunDiscDawnSweep(evidence, { bar: DERIVED_BAR });
+  assert.equal(before.status, "STRUCTURAL");
+  assert.deepEqual(before.families, []);
+  await withMutant(
+    (source) =>
+      replaceExactlyOnce(
+        source,
+        "  if (pairedUnclippedCount < SUN_DISC_DAWN_BAR_DERIVATION_MINIMUM_SAMPLES) {",
+        "  if (false && pairedUnclippedCount < SUN_DISC_DAWN_BAR_DERIVATION_MINIMUM_SAMPLES) {",
+      ),
+    async (module) => {
+      const result = module.evaluateSunDiscDawnSweep(evidence, {
+        bar: DERIVED_BAR,
+      });
+      assert.ok(
+        result.families.length > 0,
+        "the paired floor is what kept the thin parity family unscored",
+      );
+      const parity = result.families.find((entry) => entry.id === "parity");
+      assert.ok(parity, "parity family should now be scored");
+      assert.equal(
+        parity.samples.filter((entry) => entry.value !== null).length,
+        1,
+        "exactly one paired sample now backs the parity verdict",
+      );
     },
   );
 });
@@ -2023,14 +2246,12 @@ test("K6 MUTATION: the discriminator floor refusal must fire, not silently deriv
       replaceExactlyOnce(
         source,
         "  if (\n" +
-          '    typeof discriminatorRatio === "number" &&\n' +
-          "    Number.isFinite(discriminatorRatio) &&\n" +
+          "    discriminatorAvailable &&\n" +
           "    discriminatorRatio < 1.0 // the physical floor the luminance argument above rests on\n" +
           "  ) {",
         "  if (\n" +
           "    false &&\n" +
-          '    typeof discriminatorRatio === "number" &&\n' +
-          "    Number.isFinite(discriminatorRatio) &&\n" +
+          "    discriminatorAvailable &&\n" +
           "    discriminatorRatio < 1.0 // the physical floor the luminance argument above rests on\n" +
           "  ) {",
       ),
@@ -2047,6 +2268,63 @@ test("K6 MUTATION: the discriminator floor refusal must fire, not silently deriv
       );
     },
   );
+});
+
+// K7: review finding FIX-3, 2026-09-02. The K5/K6 refusal above cannot fire
+// when the discriminator sample's own ratio is unreadable — which the
+// C12-38 clip-exclusion fix newly makes reachable via a SCORED-BUT-CLIPPED
+// discriminator (ratio null), not only via an absent one. `terms` must
+// disclose that the guard was quiet either way, rather than leaving a reader
+// to infer it from `discriminatorRatio` being `null` for either reason.
+
+test("K7: discriminatorAvailable is true for a healthy discriminator and false when the discriminator sample is present but its own ratio is unreadable", () => {
+  const healthyMeasurements = [
+    {
+      index: 2,
+      scored: true,
+      centreAnnulusRatio: 1.3,
+      centreAnnulusChromaRatio: 1.2,
+    },
+    {
+      index: 5,
+      scored: true,
+      centreAnnulusRatio: 1.25,
+      centreAnnulusChromaRatio: 1.15,
+    },
+    {
+      index: SUN_DISC_DAWN_BAR_DERIVATION_DISCRIMINATOR_INDEX,
+      scored: true,
+      centreAnnulusRatio: 1.2,
+      centreAnnulusChromaRatio: 1.1,
+    },
+    {
+      index: 9,
+      scored: true,
+      centreAnnulusRatio: 1.1,
+      centreAnnulusChromaRatio: 1.05,
+    },
+  ];
+  const available = deriveSunDiscDawnBarFromWebGLSweep(healthyMeasurements);
+  assert.equal(available.usable, true);
+  assert.equal(available.terms.discriminatorAvailable, true);
+
+  // Same shape, but the discriminator sample is SCORED and present, its own
+  // region CLIPPED — `centreAnnulusRatio: null`, exactly what the C12-38
+  // clip-exclusion fix now publishes for a clipped reading, distinct from an
+  // absent discriminator (K5/K5b's shape).
+  const clippedDiscriminator = healthyMeasurements.map((entry) =>
+    entry.index === SUN_DISC_DAWN_BAR_DERIVATION_DISCRIMINATOR_INDEX
+      ? { ...entry, centreAnnulusRatio: null, centreAnnulusChromaRatio: null }
+      : entry,
+  );
+  const unavailable = deriveSunDiscDawnBarFromWebGLSweep(clippedDiscriminator);
+  // The anti-inversion refusal cannot fire on a null ratio — this is the
+  // residual gap the module's own docstring names, not a new refusal this
+  // fix round introduces — but the derivation must at least DISCLOSE that
+  // the guard went quiet rather than silently deriving as if it had run.
+  assert.equal(unavailable.usable, true);
+  assert.equal(unavailable.terms.discriminatorAvailable, false);
+  assert.equal(unavailable.terms.discriminatorRatio, null);
 });
 
 // ---------------------------------------------------------------------------
@@ -2080,7 +2358,15 @@ test("L1: rescoreSunDiscDawnArtifact reconstructs the paired evidence and matche
   assert.deepEqual(result.evaluation, direct);
 });
 
-test("L2: rescoreSunDiscDawnArtifact propagates a refused derivation rather than guessing a bar", () => {
+test("L2: rescoreSunDiscDawnArtifact short-circuits through the structural preflight when a leg is absent, never reaching the derivation", () => {
+  // Retitled, review finding FIX-7, 2026-09-02: `sessions: []` makes both
+  // legs absent (`sessions[renderer]?.samples ?? null`), which
+  // `sweepStructuralReasons` reports as `sweep:<renderer>:leg-absent` before
+  // `rescoreSunDiscDawnArtifact` ever calls `deriveSunDiscDawnBarFromWebGLSweep`
+  // — this fixture pins THAT short-circuit, not the derivation's own refusal
+  // (L5, below, pins that one). Asserting the exact reason and the named
+  // structural entries is what tells the two branches apart; the previous,
+  // looser assertions (`usable === false` alone) were satisfied by either.
   const artifact = {
     measurements: {
       webgl: [
@@ -2098,6 +2384,119 @@ test("L2: rescoreSunDiscDawnArtifact propagates a refused derivation rather than
   assert.equal(result.rescored, false);
   assert.equal(result.evaluation, null);
   assert.equal(result.derivation.usable, false);
+  assert.equal(
+    result.derivation.reason,
+    "sun-disc-dawn-bar:structural-preflight",
+  );
+  assert.deepEqual(result.derivation.structural, [
+    "sweep:webgl:leg-absent",
+    "sweep:webgpu:leg-absent",
+  ]);
+  assert.equal(
+    result.derivation.terms,
+    null,
+    "the structural short-circuit fabricates no derivation terms",
+  );
+});
+
+// L3/L4: review findings FIX-1 and FIX-2, 2026-09-02.
+
+test("L3: rescoreSunDiscDawnArtifact recomputes measurements fresh and never trusts a stale artifact.measurements field", () => {
+  // The real 2026-09-02 artifact was acquired under the pre-fix gate, which
+  // left `artifact.measurements: {}` for BOTH legs the moment any one sample
+  // clipped. A derivation that read that field directly would keep refusing
+  // this exact artifact forever, even after the clip-exclusion fix landed,
+  // because the acquired JSON's own stale field never changes on its own.
+  // Reproduces that shape directly: a healthy paired sweep whose own
+  // artifact.measurements is wiped to `{}` after the fact.
+  const artifact = fakeArtifact(healthyLeg(), healthyLeg());
+  artifact.measurements = {};
+  const result = rescoreSunDiscDawnArtifact(artifact);
+  assert.equal(
+    result.rescored,
+    true,
+    "measurements must be recomputed from sessions[].samples, not read off the (possibly stale) artifact.measurements field",
+  );
+  assert.equal(result.evaluation.status, "PASS");
+});
+
+test("L4: a WebGPU-starved artifact refuses through rescoreSunDiscDawnArtifact naming WebGPU, never a fabricated WebGL-shaped refusal", () => {
+  // Reviewer's own reproduction against the real artifact: WebGL untouched
+  // and fully readable; WebGPU is the starved leg (9 of 11 scored samples
+  // clipped, 2 unclipped — below the 3-sample floor). Before this fix round,
+  // `rescoreSunDiscDawnArtifact` handed the resulting empty
+  // `measurements.webgl` to the WebGL-only derivation regardless of cause,
+  // which refused with a WebGL-shaped reason and fabricated zero counts even
+  // though WebGL itself was perfectly healthy.
+  const clippedIndices = [2, 3, 4, 5, 6, 7, 8, 9, 10];
+  const perSample = Object.fromEntries(
+    clippedIndices.map((index) => [index, { centreClipped: true }]),
+  );
+  const starvedWebgpu = healthyLeg({ perSample });
+  const artifact = fakeArtifact(healthyLeg(), starvedWebgpu);
+  const result = rescoreSunDiscDawnArtifact(artifact);
+  assert.equal(result.rescored, false);
+  assert.equal(result.evaluation, null);
+  assert.equal(result.derivation.usable, false);
+  assert.equal(
+    result.derivation.terms,
+    null,
+    "no fabricated WebGL-shaped terms on a structurally-blind preflight",
+  );
+  const reason = result.derivation.structural.find((entry) =>
+    entry.startsWith("sweep:webgpu:too-few-unclipped-samples"),
+  );
+  assert.ok(reason, JSON.stringify(result.derivation.structural));
+  assert.ok(reason.includes("unclipped=2"), reason);
+  assert.ok(
+    !result.derivation.structural.some((entry) =>
+      entry.startsWith("sweep:webgl:too-few-unclipped-samples"),
+    ),
+    "the healthy WebGL leg must not be named alongside the starved WebGPU leg",
+  );
+});
+
+// L5: review finding FIX-7, 2026-09-02. FIX-2's reorder moved
+// `deriveSunDiscDawnBarFromWebGLSweep` below the structural short-circuit L2
+// and L4 pin, and L2's own `sessions: []` fixture started satisfying its
+// (then looser) assertions through THAT short-circuit instead of the
+// derivation's own anti-inversion refusal it was written to pin — the whole
+// suite stayed green with the refusal branch dead: mutating
+// `if (!derivation.usable) {` to `if (false && !derivation.usable) {` in
+// `rescoreSunDiscDawnArtifact` produced 101/101 pass. This fixture is a full,
+// healthy, unclipped 13-sample paired sweep — clean through the structural
+// preflight (`preflight.structural` is empty, so the short-circuit does NOT
+// fire) — whose WebGL discriminator sample alone carries the engine's own
+// extincted colour at that altitude (the same source `K5` already uses to
+// pin `deriveSunDiscDawnBarFromWebGLSweep` directly), driving its
+// `centreAnnulusRatio` below the 1.0 limb-law floor while every other WebGL
+// sample, and the whole WebGPU leg, stays healthy.
+test("L5: rescoreSunDiscDawnArtifact propagates the derivation's own anti-inversion refusal, not a guessed bar", () => {
+  const invertedDiscriminatorBytes = SWEEP_EXTINCTION[
+    SUN_DISC_DAWN_BAR_DERIVATION_DISCRIMINATOR_INDEX
+  ].rgb.map((channel) => channel * 255);
+  const webgl = healthyLeg({
+    perSample: {
+      [SUN_DISC_DAWN_BAR_DERIVATION_DISCRIMINATOR_INDEX]: {
+        discBytes: invertedDiscriminatorBytes,
+      },
+    },
+  });
+  const artifact = fakeArtifact(webgl, healthyLeg());
+  const result = rescoreSunDiscDawnArtifact(artifact);
+  assert.equal(result.rescored, false);
+  assert.equal(result.evaluation, null);
+  assert.equal(result.derivation.usable, false);
+  assert.equal(
+    result.derivation.reason,
+    "sun-disc-dawn-bar:webgl-source-below-limb-law-floor",
+    "must refuse through the derivation's own anti-inversion guard, not a fabricated or structural reason",
+  );
+  assert.equal(result.derivation.terms.discriminatorIndex, 7);
+  assert.ok(
+    result.derivation.terms.discriminatorRatio < 1.0,
+    `expected the discriminator ratio to have crossed the limb-law floor, got ${result.derivation.terms.discriminatorRatio}`,
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -2256,4 +2655,110 @@ test("N3: parseArguments wires --exposure through to exposureValue and defaults 
   assert.equal(parseArguments([]).exposureValue, undefined);
   assert.equal(parseArguments(["--exposure", "0.06"]).exposureValue, 0.06);
   assert.throws(() => parseArguments(["--exposure"]), /requires a value/);
+});
+
+// ---------------------------------------------------------------------------
+// O. The centre is the projected sun position, never a brightness peak
+//    (C12-38 instrument gap, 2026-09-02)
+// ---------------------------------------------------------------------------
+//
+// The WebGPU PNGs from the 2026-09-02 acquisition are the discriminating
+// case this section exists to close: the rendered disc reads DARKER than the
+// surrounding sky, with no bright core at all (see the run's own README —
+// "webgpu-sample05.png shows a mid-grey sky with a clearly bounded circular
+// disc at frame centre that is DARKER than the sky around it"). A sampler
+// that located its region centre by searching the frame for a brightness
+// PEAK would land on the sky around the disc on exactly this frame, not on
+// the disc — and the flat 0.97-1.00 centre/annulus ratio C12-38 investigates
+// would then mean "sampling sky, not disc" rather than "no limb darkening
+// rendered". These tests re-derive, from the engine's own source and the
+// probe's own source, that the centre is NOT a brightness search: it is the
+// Sun's own world position (`sunPositionWC`) projected through the camera's
+// view/projection matrices on `frameState.sunHalo`, and the probe reads that
+// publication unmodified rather than deriving its own.
+
+test("O1: SunHaloAppearance's screen geometry is a projection of sunPositionWC, with no read of pixel or framebuffer data", () => {
+  const engineSource = fs.readFileSync(
+    path.join(REPO, "packages/engine/Source/Scene/SunHaloAppearance.js"),
+    "utf8",
+  );
+  const fn =
+    /function computeSunScreenGeometry\(frameState, result\) \{[\s\S]*?\n\}/u.exec(
+      engineSource,
+    );
+  assert.ok(fn, "computeSunScreenGeometry not found where this test reads it");
+  const body = fn[0];
+  // The geometric derivation: world position -> eye space -> clip space -> NDC.
+  assert.match(body, /uniformState\.sunPositionWC/);
+  assert.match(body, /Matrix4\.multiplyByPoint\(\s*uniformState\.view/);
+  assert.match(body, /Matrix4\.multiplyByVector\(\s*uniformState\.projection/);
+  assert.match(body, /ndcX = clip\.x \/ clip\.w/);
+  assert.match(body, /result\.centerX = \(ndcX \* 0\.5 \+ 0\.5\) \* width/);
+  assert.match(body, /result\.centerY = \(ndcY \* 0\.5 \+ 0\.5\) \* height/);
+  // The negative half of the check: no brightness/pixel-search vocabulary
+  // anywhere in the function body, so a future rewrite that DID add a peak
+  // search would fail this test rather than pass it silently.
+  for (const forbidden of [
+    "getImageData",
+    "readPixels",
+    "canvas",
+    "ImageData",
+    "brightest",
+    "peak",
+  ]) {
+    assert.ok(
+      !body.includes(forbidden),
+      `computeSunScreenGeometry references ${forbidden} — it should be a pure projection`,
+    );
+  }
+});
+
+test("O2: the probe's page instrument reads centerX/centerY/limbPx off frameState.sunHalo, not off the captured frame", () => {
+  const source = probeSource();
+  assert.match(source, /const halo = scene\.frameState\.sunHalo;/);
+  assert.match(source, /const limbPx = halo\?\.limbPx \?\? Number\.NaN;/);
+  assert.match(source, /const centerX = halo\?\.centerX \?\? Number\.NaN;/);
+  assert.match(source, /const centerY = halo\?\.centerY \?\? Number\.NaN;/);
+  // The region reducer itself (executed and pinned by E1/E2) is a pure
+  // function over an ALREADY-KNOWN (centerX, centerY, limbPx) plus the
+  // decoded PNG — it never searches the frame for anything.
+  const block = extractMarkedBlock(
+    source,
+    "// ==BEGIN sun-disc-dawn-page-instrument==",
+    "// ==END sun-disc-dawn-page-instrument==",
+  );
+  for (const forbidden of ["brightest", "peak", "argmax"]) {
+    assert.ok(
+      !block.toLowerCase().includes(forbidden),
+      `the page instrument references ${forbidden} — the centre must come from projected geometry, not a pixel search`,
+    );
+  }
+});
+
+test("O3: every measurement row publishes the centre it was sampled at, auditable against the saved PNG", () => {
+  const result = evaluateSunDiscDawnSweep(
+    evidenceOf(healthyLeg(), healthyLeg()),
+    { bar: DERIVED_BAR },
+  );
+  for (const renderer of SUN_DISC_DAWN_RENDERERS) {
+    for (const row of result.measurements[renderer]) {
+      for (const field of [
+        "centerX",
+        "centerY",
+        "limbPx",
+        "regionWindow",
+        "unclipped",
+      ]) {
+        assert.ok(
+          Object.hasOwn(row, field),
+          `row ${renderer}:${row.index} does not publish ${field}`,
+        );
+      }
+    }
+  }
+  // The fixture's own centre (`makeSample`'s default, chosen to match the
+  // 1280x720 viewport's own midpoint the real 2026-09-02 acquisition
+  // reports) round-trips through the measurement row unchanged.
+  assert.equal(result.measurements.webgl[2].centerX, 640);
+  assert.equal(result.measurements.webgl[2].centerY, 360);
 });
