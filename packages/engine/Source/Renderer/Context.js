@@ -766,10 +766,10 @@ class Context extends GraphicsContext {
     // direct-command path (no FR needed), so unlike WebGPU it registers
     // only the handful of FRs that have a true WebGL-specific draw path.
     //
-    // STAR_FIELD (NEW-STARS-BRIGHT-CATALOG-WEBGL-FALLBACK, Batch 324) —
-    // the bright-star catalog starfield. Lazily imported so the renderer
-    // module (and its GLSL shader strings) only enter the bundle when a
-    // StarField actually updates, and so Context.js stays free of a static
+    // STAR_FIELD — the bright-star catalog starfield. Lazily imported so
+    // the renderer module (and its GLSL shader strings) only enter the
+    // bundle when a StarField actually updates, and so Context.js stays
+    // free of a static
     // Renderer→Scene import cycle. Until the import settles,
     // `StarField.update` no-ops (returns undefined) and the SkyBox cubemap
     // stars are the only starfield — same graceful warm-up as WebGPU's
@@ -782,8 +782,8 @@ class Context extends GraphicsContext {
           update: mod.updateWebGLStarField,
           // Warm-keep on the zero-contribution (daylight) path so the first
           // contributing dusk frame does not synchronously build the VAO /
-          // shader program / buffers (C9-06 star pop-in). No per-frame
-          // uniform or command work.
+          // shader program / buffers. No per-frame uniform or command
+          // work.
           prepare: mod.prepareWebGLStarField,
           destroy: mod.destroyWebGLStarFieldResources,
           getStatistics: mod.getWebGLStarFieldStatistics,
@@ -844,12 +844,11 @@ class Context extends GraphicsContext {
   }
 
   /**
-   * Cloud-unification epic — backend-neutral volumetric cloud publish seam.
-   * WebGL renders no volumetric cloud deck, so this is a no-op; scene code calls
-   * it unconditionally (never branching on backend). Mirrors the base
-   * {@link GraphicsContext#requestVolumetricClouds} no-op explicitly so the WebGL
-   * intent is documented at the WebGL class. See
-   * migration_doc/CLOUD_UNIFICATION_DESIGN.md §2.4.
+   * Backend-neutral volumetric cloud publish seam. WebGL renders no
+   * volumetric cloud deck, so this is a no-op; scene code calls it
+   * unconditionally (never branching on backend). Mirrors the base
+   * {@link GraphicsContext#requestVolumetricClouds} no-op explicitly so the
+   * WebGL intent is documented at the WebGL class.
    * @param {object} config The volumetric cloud config (ignored on WebGL).
    */
   requestVolumetricClouds(config) {
@@ -1567,7 +1566,7 @@ class Context extends GraphicsContext {
   }
 
   // getObjectByPickColor() and createPickId() are inherited from
-  // GraphicsContext base class — no override needed. (FORK-35 consolidation)
+  // GraphicsContext base class — no override needed.
 
   isDestroyed() {
     return false;

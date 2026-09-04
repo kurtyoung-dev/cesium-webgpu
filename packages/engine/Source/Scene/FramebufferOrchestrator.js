@@ -41,21 +41,22 @@ function updateAndClearFramebuffers(scene, passState, clearColor) {
 
   environmentState.originalFramebuffer = passState.framebuffer;
 
-  // AUDIT_2026_05_02 C.12 — `SunPostProcess` is a WebGL-only post-process
-  // pipeline. The WebGPU scene renderer never invokes it (sun bloom on
-  // WebGPU lives inside `WebGPUPostProcessPipeline` / Bloom or LensFlare).
-  // Without this guard, every WebGPU viewer with `scene.sunBloom = true`
-  // allocated a `SunPostProcess` instance that was never used, leaking
-  // the WebGL framebuffer + shader resources on each toggle.
-  // Audit 2026-05-02 follow-up: switched the gate from `isWebGPU` to the
-  // capability getter `supportsLegacySunBloom` (true on WebGL, false on
-  // WebGPU) per CLAUDE.md §2.
+  // `SunPostProcess` is a WebGL-only post-process pipeline. The WebGPU scene
+  // renderer never invokes it (sun bloom on WebGPU lives inside
+  // `WebGPUPostProcessPipeline` / Bloom or LensFlare). Without this guard,
+  // every WebGPU viewer with `scene.sunBloom = true` would allocate a
+  // `SunPostProcess` instance that is never used, leaking the WebGL
+  // framebuffer + shader resources on each toggle.
+  //
+  // Gated on the capability getter `supportsLegacySunBloom` (true on WebGL,
+  // false on WebGPU) rather than on `isWebGPU`, so external code branches on
+  // capability rather than backend identity.
   const supportsLegacySunBloom = context?.supportsLegacySunBloom !== false;
-  // C12-19 — the datatype `SunPostProcess` must be built with. Resolved the
-  // same way `SceneFramebuffer.update` resolves its own, because the scene
-  // renders INTO that pipeline's framebuffer whenever sun bloom is on: an
-  // 8-bit choice here clamps the whole HDR frame (see the constructor's
-  // vacuity note). Fixed at construction, so a `highDynamicRange` flip has to
+  // The datatype `SunPostProcess` must be built with. Resolved the same way
+  // `SceneFramebuffer.update` resolves its own, because the scene renders
+  // into that pipeline's framebuffer whenever sun bloom is on: an 8-bit
+  // choice here clamps the whole HDR frame (see the constructor's vacuity
+  // note). Fixed at construction, so a `highDynamicRange` flip has to
   // reconstruct — which is what the second block below does.
   const sunBloomPixelDatatype = scene._hdr
     ? context.halfFloatingPointTexture
@@ -74,9 +75,9 @@ function updateAndClearFramebuffers(scene, passState, clearColor) {
     scene._sunPostProcess = scene._sunPostProcess.destroy();
     scene._sunBloom = false;
   }
-  // C12-19 — rebuild on an HDR flip. `PostProcessStage._pixelDatatype` has no
-  // setter and the stage's texture cache keys on it, so the only way to move
-  // this pipeline between dynamic ranges is to construct a new one. Compared
+  // Rebuild on an HDR flip. `PostProcessStage._pixelDatatype` has no setter
+  // and the stage's texture cache keys on it, so the only way to move this
+  // pipeline between dynamic ranges is to construct a new one. Compared
   // against the instance's own recorded datatype rather than against a new
   // `scene._*` mirror field, so there is no second source of truth to drift.
   if (
@@ -163,13 +164,11 @@ function updateAndClearFramebuffers(scene, passState, clearColor) {
       usePostProcess && postProcess.hasSelected;
   }
 
-  // Phase 8a Slice 1 (Batch 80) — depth-prepass + normal G-buffer
-  // scaffolding. Gated on `frameState.useDeferredLighting`, which
-  // defaults false. With the flag off this is a no-op; with the flag
-  // on we allocate + clear the G-buffer so Slice 2's producer pass has
-  // a target. The producer + consumer wiring lands in Slices 2/3+; this
-  // batch only carves out the resource slot. See
-  // migration_doc/PHASE_8_SHADER_STRATEGY.md.
+  // Depth-prepass + normal G-buffer scaffolding. Gated on
+  // `frameState.useDeferredLighting`, which defaults false. With the flag
+  // off this is a no-op; with the flag on the G-buffer is allocated and
+  // cleared so a later producer pass has a target. The producer + consumer
+  // wiring is not yet built; this only carves out the resource slot.
   const useDeferredLighting =
     !picking &&
     frameState.useDeferredLighting === true &&
@@ -186,7 +185,7 @@ function updateAndClearFramebuffers(scene, passState, clearColor) {
   }
 
   if (environmentState.isSunVisible && scene.sunBloom && !useWebVR) {
-    // C12-18 — `frameState` threaded through so the `SolarHalo` stage can read
+    // `frameState` threaded through so the `SolarHalo` stage can read
     // the halo state `Sun.update` published this frame.
     passState.framebuffer = scene._sunPostProcess.update(passState, frameState);
     scene._sunPostProcess.clear(context, passState, clearColor);

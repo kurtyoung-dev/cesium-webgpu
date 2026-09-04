@@ -23,15 +23,14 @@ import BufferPointMaterial from "./BufferPointMaterial.js";
 import BlendOption from "./BlendOption.js";
 import WasmRTEBridge from "./WasmRTEBridge.js";
 
-// NEW-BUFFERCOLL-WASM-ENCODE-WIRE (Batch 272) / NEW-BUFFERCOLL-ENCODE-BENCHMARK
-// (Batch 273) — minimum dirty primitive count before routing the POSITION
-// high/low encode through the batch RTE path (one contiguous `batchEncodeRange`
-// call: WASM kernel when loaded, byte-identical scalar fround twin otherwise)
-// instead of the per-primitive scalar EncodedCartesian3 loop. Mirrors the WebGPU
+// Minimum dirty primitive count before routing the position high/low encode
+// through the batch RTE path (one contiguous `batchEncodeRange` call: WASM
+// kernel when loaded, byte-identical scalar fround twin otherwise) instead of
+// the per-primitive scalar EncodedCartesian3 loop. Mirrors the WebGPU
 // renderer's BUFFER_WASM_ENCODE_THRESHOLD (kept in lock-step — both tuned to
-// 2000 from the Batch-273 benchmark). The win is the encode-hoist out of the
+// 2000 from measurement). The win is the encode-hoist out of the
 // per-primitive loop, measured ~25-40% faster end-to-end at >= 1500 points on
-// BOTH backends; see Tools/visual-regression/probe-buffercoll-encode-benchmark.mjs
+// both backends; see Tools/visual-regression/probe-buffercoll-encode-benchmark.mjs
 // + Tools/wasm-encode-benchmark.mjs for the data and crossover rationale.
 const BUFFER_WASM_ENCODE_THRESHOLD = 2000;
 
@@ -88,9 +87,9 @@ const BufferPointAttributeLocations = {
  * @property {WasmRTEBridge} [rteBridge] Lazily-created bridge for the threshold-gated WASM batch position encode.
  * @property {number} [wasmEncodeRepacks] Instrumentation: repacks that took the WASM/batch position path.
  * @property {number} [scalarEncodeRepacks] Instrumentation: repacks that took the scalar position path.
- * @property {number} [_repackMsLast] Debug-only (Batch 273): last repack+upload duration in ms.
- * @property {number} [_repackMsTotal] Debug-only (Batch 273): cumulative repack+upload ms across frames.
- * @property {number} [_repackSamples] Debug-only (Batch 273): number of timed repack frames.
+ * @property {number} [_repackMsLast] Debug-only: last repack+upload duration in ms.
+ * @property {number} [_repackMsTotal] Debug-only: cumulative repack+upload ms across frames.
+ * @property {number} [_repackSamples] Debug-only: number of timed repack frames.
  * @property {Function} destroy
  * @ignore
  */
@@ -133,10 +132,10 @@ function renderBufferPointCollection(collection, frameState, renderContext) {
     };
   }
 
-  // NEW-BUFFERCOLL-ENCODE-BENCHMARK (Batch 273) — repack+upload timer. Captured
-  // at the start of the dirty repack and read after the copyAttributeFromRange
-  // upload below so the benchmark probe sees position-encode + GPU-upload cost
-  // together. Debug-only: pragma-stripped from production builds.
+  // Repack+upload timer. Captured at the start of the dirty repack and read
+  // after the copyAttributeFromRange upload below so the benchmark probe
+  // sees position-encode + GPU-upload cost together. Debug-only:
+  // pragma-stripped from production builds.
   //>>includeStart('debug', pragmas.debug);
   let _repackT0 = 0;
   if (collection._dirtyCount > 0) {
@@ -155,18 +154,19 @@ function renderBufferPointCollection(collection, frameState, renderContext) {
 
     const { _dirtyOffset, _dirtyCount } = collection;
 
-    // NEW-BUFFERCOLL-WASM-ENCODE-WIRE (Batch 272) — for large dirty ranges,
-    // encode the POSITION high/low lanes for the whole contiguous slice in one
-    // WASM batch call (SIMD when ready, byte-equivalent scalar fallback before).
-    // Points have vertexOffset == index, so collection._positionView[i*3..] is
-    // contiguous over the dirty range and maps 1:1 onto positionHighArray[i*3..].
-    // The batch (fround) and scalar EncodedCartesian3 (AGI 65536-grid) splits
-    // produce different high/low bytes but the same eye-space position after the
-    // shader's RTE reconstruction (both satisfy high+low == value in f64), so the
-    // rendered result is unchanged. Color / pick / outline interleave stays in
-    // the per-primitive JS loop below. The batch RTE encode only applies to the
-    // 64-bit position path (the only path that fills positionHigh/positionLow);
-    // the <=32-bit path sources `position` straight from collection._positionView.
+    // For large dirty ranges, encode the position high/low lanes for the
+    // whole contiguous slice in one WASM batch call (SIMD when ready,
+    // byte-equivalent scalar fallback otherwise). Points have vertexOffset
+    // == index, so collection._positionView[i*3..] is contiguous over the
+    // dirty range and maps 1:1 onto positionHighArray[i*3..]. The batch
+    // (fround) and scalar EncodedCartesian3 (AGI 65536-grid) splits produce
+    // different high/low bytes but the same eye-space position after the
+    // shader's RTE reconstruction (both satisfy high+low == value in f64),
+    // so the rendered result is unchanged. Color / pick / outline interleave
+    // stays in the per-primitive JS loop below. The batch RTE encode only
+    // applies to the 64-bit position path (the only path that fills
+    // positionHigh/positionLow); the <=32-bit path sources `position`
+    // straight from collection._positionView.
     const positionView = collection._positionView;
     // Honor an optional per-collection threshold override so the parity probe
     // can force the SAME large collection onto the scalar path
@@ -214,10 +214,10 @@ function renderBufferPointCollection(collection, frameState, renderContext) {
         continue;
       }
 
-      // NEW-BUFFERCOLL-WASM-ENCODE-WIRE (Batch 272) — when the whole dirty range
-      // was already encoded in one batch RTE call above, skip the per-primitive
-      // scalar encode. Otherwise fall back to upstream's per-point encode (still
-      // gated on the 64-bit position path).
+      // When the whole dirty range was already encoded in one batch RTE call
+      // above, skip the per-primitive scalar encode. Otherwise fall back to
+      // upstream's per-point encode (still gated on the 64-bit position
+      // path).
       if (useFloat64 && !useBatchPositionEncode) {
         point.getPosition(cartesian);
         EncodedCartesian3.fromCartesian(cartesian, encodedCartesian);
@@ -345,8 +345,8 @@ function renderBufferPointCollection(collection, frameState, renderContext) {
     }
   }
 
-  // NEW-BUFFERCOLL-ENCODE-BENCHMARK (Batch 273) — record the repack+upload
-  // duration captured above (debug-only; stripped from production builds).
+  // Record the repack+upload duration captured above (debug-only; stripped
+  // from production builds).
   //>>includeStart('debug', pragmas.debug);
   if (_repackT0 !== 0) {
     const _repackDt = performance.now() - _repackT0;
@@ -437,8 +437,8 @@ function destroyRenderContext() {
     RenderState.releaseCache(context.renderState);
   }
 
-  // NEW-BUFFERCOLL-WASM-ENCODE-WIRE (Batch 272) — release the RTE bridge handle.
-  // destroy() is idempotent and the WASM module is shared across bridges.
+  // Release the RTE bridge handle. destroy() is idempotent and the WASM
+  // module is shared across bridges.
   if (defined(context.rteBridge)) {
     context.rteBridge.destroy();
   }

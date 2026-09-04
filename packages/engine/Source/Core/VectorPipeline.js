@@ -80,9 +80,9 @@ const scratchSegmentEnd = new Cartesian2();
  * preparation, before draw-command or bind-group construction.
  *
  * The texture slots are the WebGL realization, read by
- * `VectorCommon.glsl` via `texelFetch`. C11-213: when a backend feature
- * renderer claims the bake (`prepareVectorTileData`), it populates
- * `rendererResources` INSTEAD and every texture slot stays undefined — the
+ * `VectorCommon.glsl` via `texelFetch`. When a backend feature renderer
+ * claims the bake (`prepareVectorTileData`), it populates
+ * `rendererResources` instead and every texture slot stays undefined — the
  * WebGPU globe reads one read-only storage buffer, because the sampled
  * textures do not fit the globe pipeline layout on default-limit adapters.
  * @property {VectorRendererResources} [rendererResources] Backend-owned
@@ -621,8 +621,8 @@ class VectorPipeline {
   /**
    * Creates the width and color textures indexed by the primitive index space
    * shared between polylines and polygons.
-   * C11-213 (`UP144-VECTOR-LAYER-WGSL`) — the active backend gets first
-   * refusal through the `GLOBE_SURFACE` feature renderer. WebGPU claims the
+   * The active backend gets first refusal through the `GLOBE_SURFACE`
+   * feature renderer. WebGPU claims the
    * bake and packs the tables into one read-only storage buffer
    * (`WebGPUVectorTileResources.ts`); the sampled textures do not fit the
    * globe pipeline layout on default-limit adapters. WebGL registers no
@@ -809,8 +809,8 @@ class VectorPipeline {
    * @param {VectorTileData} data
    */
   static freeResources(data) {
-    // C11-213 — backend-realized resources (the WebGPU storage buffer) are
-    // released first; the texture handles below are undefined on that path.
+    // Backend-realized resources (the WebGPU storage buffer) are released
+    // first; the texture handles below are undefined on that path.
     data.rendererResources?.destroy();
     data.rendererResources = undefined;
     data.rendererResourceMissContext = undefined;

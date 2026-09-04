@@ -34,8 +34,8 @@ const attributeLocations = {
 const scratchExtinctionOne = new Cartesian3(1.0, 1.0, 1.0);
 
 // Identity in-scattering (no wash) used when no atmospheric in-scatter is
-// set — the ADDITIVE identity, mirroring scratchExtinctionOne's
-// multiplicative one (C12-30).
+// set — the additive identity, mirroring scratchExtinctionOne's
+// multiplicative one.
 const scratchInscatterZero = new Cartesian3(0.0, 0.0, 0.0);
 
 // Placeholder shadow direction. Never reached in a live eclipse frame — the
@@ -119,8 +119,8 @@ class EllipsoidPrimitive {
     this.modelMatrix = Matrix4.clone(options.modelMatrix ?? Matrix4.IDENTITY);
     this._modelMatrix = new Matrix4();
     this._computedModelMatrix = new Matrix4();
-    // Batch 269 — dirty flag persisted on the instance (was a local) so the
-    // hoisted radii/transform block and the WebGL appearance block share it.
+    // Dirty flag persisted on the instance so the hoisted radii/transform
+    // block and the WebGL appearance block share it.
     this._boundingSphereDirty = false;
 
     /**
@@ -198,12 +198,12 @@ class EllipsoidPrimitive {
     this._atmosphereExtinctionEnabled = false;
 
     /**
-     * Optional per-channel atmospheric in-scattering (sky-wash) ADDED to
+     * Optional per-channel atmospheric in-scattering (sky-wash) added to
      * the final surface color after the extinction multiply — the additive
-     * half of the atmospheric transfer (C12-30). Used by {@link Moon} so a
-     * daytime disc reads pale and sky-washed instead of a dark cutout.
-     * `undefined` (the default) leaves the shader byte-identical for every
-     * other EllipsoidPrimitive consumer.
+     * half of the atmospheric transfer. Used by {@link Moon} so a daytime
+     * disc reads pale and sky-washed instead of a dark cutout. `undefined`
+     * (the default) leaves the shader byte-identical for every other
+     * EllipsoidPrimitive consumer.
      * @type {Cartesian3|undefined}
      * @private
      */
@@ -212,9 +212,9 @@ class EllipsoidPrimitive {
 
     /**
      * When true, replaces the Lambert/Phong disc law with the
-     * Lommel-Seeliger lunar-regolith reflectance (C12-20) so a full moon
-     * renders as the famously flat bright disc rather than a limb-darkened
-     * Lambert ball. Default false — byte-identical for every other
+     * Lommel-Seeliger lunar-regolith reflectance so a full moon renders as
+     * the famously flat bright disc rather than a limb-darkened Lambert
+     * ball. Default false — byte-identical for every other
      * EllipsoidPrimitive consumer. Set per-frame by {@link Moon} from
      * `atmosphericConditions.lighting.enableLunarBRDF`.
      * @type {boolean}
@@ -224,10 +224,10 @@ class EllipsoidPrimitive {
     this._lunarBRDF = false;
 
     /**
-     * Optional opposition-surge brightness multiplier (C12-23), computed
-     * CPU-side from the true phase angle by {@link Moon}. `undefined`
-     * (the default) compiles the term out entirely — byte-identical for
-     * every other EllipsoidPrimitive consumer.
+     * Optional opposition-surge brightness multiplier, computed CPU-side
+     * from the true phase angle by {@link Moon}. `undefined` (the default)
+     * compiles the term out entirely — byte-identical for every other
+     * EllipsoidPrimitive consumer.
      * @type {number|undefined}
      * @private
      */
@@ -235,8 +235,8 @@ class EllipsoidPrimitive {
     this._oppositionSurgeEnabled = false;
 
     /**
-     * Optional earthshine scale (C12-21) — Earth's illuminated fraction as
-     * seen FROM the Moon, the exact complement of the Moon's own phase, so
+     * Optional earthshine scale — Earth's illuminated fraction as seen
+     * from the Moon, the exact complement of the Moon's own phase, so
      * earthshine peaks at new moon and vanishes at full. `undefined` (the
      * default) compiles the whole earthshine term out — byte-identical for
      * every other EllipsoidPrimitive consumer, and the position
@@ -249,7 +249,7 @@ class EllipsoidPrimitive {
     this._earthshineEnabled = false;
 
     /**
-     * Optional soft-terminator width (C12-22) — the Sun's angular RADIUS in
+     * Optional soft-terminator width — the Sun's angular radius in
      * radians as seen from the Moon, resolved CPU-side from the true
      * Sun→Moon distance. `undefined` (the default) compiles the term out;
      * a defined 0.0 is also an exact identity inside the shader. Only
@@ -290,15 +290,15 @@ class EllipsoidPrimitive {
     this._lunarEclipseEnabled = false;
 
     /**
-     * Optional tangent-space normal map (C12-25) perturbing the LIGHTING
-     * normal in an east/north/up frame — the LOLA-derived lunar relief that
-     * makes craters read near the terminator. A raw `Texture` rather than a
+     * Optional tangent-space normal map perturbing the lighting normal in
+     * an east/north/up frame — the LOLA-derived lunar relief that makes
+     * craters read near the terminator. A raw `Texture` rather than a
      * `Material` slot: `Material.ImageType` carries exactly one image and
      * has no normal channel, and growing the shared material system for one
      * body would touch every image material in the engine. This follows the
-     * same private-uniform route the four C12 terms above already use.
-     * `undefined` (the default) compiles the sampler out entirely — the FS
-     * is byte-identical for every other EllipsoidPrimitive consumer.
+     * same private-uniform route the terms above already use. `undefined`
+     * (the default) compiles the sampler out entirely — the FS is
+     * byte-identical for every other EllipsoidPrimitive consumer.
      * @type {Texture|undefined}
      * @private
      */
@@ -316,10 +316,10 @@ class EllipsoidPrimitive {
     this.lunarNormalStrength = 1.0;
 
     /**
-     * Moon-only C12-33 sampling gates. Each channel is enabled only when the
-     * same capability predicate that generated its mip chain succeeds.
-     * Defaults remain false so generic EllipsoidPrimitive materials preserve
-     * their historical shader and translucent front/back behavior.
+     * Moon-only sampling gates. Each channel is enabled only when the same
+     * capability predicate that generated its mip chain succeeds. Defaults
+     * remain false so generic EllipsoidPrimitive materials preserve their
+     * historical shader and translucent front/back behavior.
      * @type {boolean}
      * @private
      */
@@ -333,8 +333,8 @@ class EllipsoidPrimitive {
      */
     this._depthTestEnabled = options.depthTestEnabled ?? true;
 
-    // C12-37 private Moon route. Generic ellipsoids never set these and keep
-    // their historical render state, shader variant, frustum ownership, and
+    // Private Moon route. Generic ellipsoids never set these and keep their
+    // historical render state, shader variant, frustum ownership, and
     // occlusion behavior exactly.
     this._moonPhysicalDepth = false;
     this._moonPackedGlobeDepthCompare = false;
@@ -384,8 +384,9 @@ class EllipsoidPrimitive {
       u_oppositionSurge: function () {
         return that.oppositionSurge ?? 1.0;
       },
-      // C12-21 / C12-22. Both fall back to their exact identity so a frame
-      // that raced the define transition still shades the legacy way.
+      // Earthshine scale and terminator softness both fall back to their
+      // exact identity so a frame that raced the define transition still
+      // shades the legacy way.
       u_earthshinePhaseScale: function () {
         return that.earthshinePhaseScale ?? 1.0;
       },
@@ -409,9 +410,9 @@ class EllipsoidPrimitive {
       u_lunarPenumbraRadius: function () {
         return that.lunarPenumbraRadius ?? 0.0;
       },
-      // C12-25. Only ever sampled when LUNAR_NORMAL_MAP is defined, which is
-      // itself driven by `defined(this.lunarNormalMap)` in the same update()
-      // that recompiles — so the texture is guaranteed present whenever the
+      // Only ever sampled when LUNAR_NORMAL_MAP is defined, which is itself
+      // driven by `defined(this.lunarNormalMap)` in the same update() that
+      // recompiles — so the texture is guaranteed present whenever the
       // program declares the sampler.
       u_lunarNormalMap: function () {
         return that.lunarNormalMap;
@@ -448,15 +449,15 @@ class EllipsoidPrimitive {
       return;
     }
 
-    // Scene Logic Extractor pattern (CLAUDE.md) — the world transform
+    // Scene Logic Extractor pattern: the world transform
     // (`_computedModelMatrix = modelMatrix * translate(center)`) and the
     // derived `_oneOverEllipsoidRadiiSquared` are backend-agnostic scene
-    // logic and MUST be computed BEFORE the WebGPU feature-renderer branch.
+    // logic and must be computed before the WebGPU feature-renderer branch.
     // The WebGPU renderer reads `_computedModelMatrix` for RTE positioning;
-    // pre-Batch-268 this code ran only AFTER the `fr.update()` early-return,
-    // so the WebGPU path saw the zero-initialized `new Matrix4()` (a
-    // non-invertible all-zeros matrix → "determinate is zero" throw) and the
-    // shell was never placed (BUG-ELLIPSOIDPRIM-WEBGPU-INVISIBLE).
+    // running this after the `fr.update()` early-return instead lets the
+    // WebGPU path see the zero-initialized `new Matrix4()` — a
+    // non-invertible all-zeros matrix that throws "determinate is zero" —
+    // so the shell is never placed.
     const radii = this.radii;
     if (!Cartesian3.equals(this._radii, radii)) {
       Cartesian3.clone(radii, this._radii);
@@ -545,7 +546,7 @@ class EllipsoidPrimitive {
 
     // NOTE: radii / center / modelMatrix / bounding-sphere updates were
     // hoisted above the feature-renderer branch (Scene Logic Extractor
-    // pattern, Batch 269) so both backends share one computation of
+    // pattern) so both backends share one computation of
     // `_computedModelMatrix` + `_oneOverEllipsoidRadiiSquared`.
 
     const materialChanged = this._material !== this.material;
@@ -555,18 +556,17 @@ class EllipsoidPrimitive {
     const lightingChanged = this.onlySunLighting !== this._onlySunLighting;
     this._onlySunLighting = this.onlySunLighting;
 
-    // NS-MOON-ATMOSPHERE-EXTINCTION — the extinction shader path is a define,
-    // so toggling it on/off forces a recompile. The extinction *value* is a
-    // per-frame uniform (no recompile), so only the enabled/disabled
-    // transition matters here.
+    // The extinction shader path is a define, so toggling it on/off forces
+    // a recompile. The extinction *value* is a per-frame uniform (no
+    // recompile), so only the enabled/disabled transition matters here.
     const atmosphereExtinctionEnabled = defined(this.atmosphereExtinction);
     const atmosphereExtinctionChanged =
       atmosphereExtinctionEnabled !== this._atmosphereExtinctionEnabled;
     this._atmosphereExtinctionEnabled = atmosphereExtinctionEnabled;
 
-    // C12-30/C12-20/C12-23 — same define-toggle pattern for the sky-wash,
-    // the lunar BRDF, and the opposition surge: enabled/disabled
-    // transitions recompile; the values are per-frame uniforms.
+    // Same define-toggle pattern for the sky-wash, the lunar BRDF, and the
+    // opposition surge: enabled/disabled transitions recompile; the values
+    // are per-frame uniforms.
     const atmosphereInscatterEnabled = defined(this.atmosphereInscatter);
     const atmosphereInscatterChanged =
       atmosphereInscatterEnabled !== this._atmosphereInscatterEnabled;
@@ -581,10 +581,10 @@ class EllipsoidPrimitive {
       oppositionSurgeEnabled !== this._oppositionSurgeEnabled;
     this._oppositionSurgeEnabled = oppositionSurgeEnabled;
 
-    // C12-21 / C12-22 — same define-toggle pattern again: only the
-    // presence/absence of each term recompiles, while the scale and the
-    // solar angular radius are plain per-frame uniforms, so tracking the
-    // real ephemeris never triggers a shader rebuild.
+    // Same define-toggle pattern again: only the presence/absence of each
+    // term recompiles, while the scale and the solar angular radius are
+    // plain per-frame uniforms, so tracking the real ephemeris never
+    // triggers a shader rebuild.
     const earthshineEnabled = defined(this.earthshinePhaseScale);
     const earthshineChanged = earthshineEnabled !== this._earthshineEnabled;
     this._earthshineEnabled = earthshineEnabled;
@@ -603,9 +603,9 @@ class EllipsoidPrimitive {
       lunarEclipseEnabled !== this._lunarEclipseEnabled;
     this._lunarEclipseEnabled = lunarEclipseEnabled;
 
-    // C12-25 — same define-toggle pattern. Only the presence/absence of the
-    // normal map recompiles; `lunarNormalStrength` is a plain per-frame
-    // uniform, so a user animating it never triggers a shader rebuild.
+    // Same define-toggle pattern. Only the presence/absence of the normal
+    // map recompiles; `lunarNormalStrength` is a plain per-frame uniform,
+    // so a user animating it never triggers a shader rebuild.
     const lunarNormalMapEnabled = defined(this.lunarNormalMap);
     const lunarNormalMapChanged =
       lunarNormalMapEnabled !== this._lunarNormalMapEnabled;

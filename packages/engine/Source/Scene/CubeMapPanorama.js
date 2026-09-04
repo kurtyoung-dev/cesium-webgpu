@@ -126,11 +126,11 @@ class CubeMapPanorama {
     this._hasError = false;
     this._error = undefined;
 
-    // C12-29 S6 / ruling E3 — star-brightness modulation inputs for
-    // `SkyBoxFS.glsl`, refreshed once per WebGL update and read by the uniform
-    // closures at draw time. `u_starModulation` = (inflection, steepness,
-    // enableFlag, cloudCover); the identity values below leave the cubemap
-    // untouched, so a panorama that never reaches `update` (or a frame with no
+    // Star-brightness modulation inputs for `SkyBoxFS.glsl`, refreshed once
+    // per WebGL update and read by the uniform closures at draw time.
+    // `u_starModulation` = (inflection, steepness, enableFlag, cloudCover);
+    // the identity values below leave the cube map untouched, so a panorama
+    // that never reaches `update` (or a frame with no
     // `atmosphericConditions`) renders exactly as it did before.
     this._starModulation = new Cartesian4(
       STAR_MODULATION_INFLECTION,
@@ -140,16 +140,16 @@ class CubeMapPanorama {
     );
     this._skyBrightness = 0.0;
 
-    // C12-27 — angular solar-glare washout inputs for `SkyBoxFS.glsl` and the
-    // WebGPU packer, refreshed by the same backend-neutral resolver. The
+    // Angular solar-glare washout inputs for `SkyBoxFS.glsl` and the WebGPU
+    // packer, refreshed by the same backend-neutral resolver. The
     // identity values below (strength `w = 0`) make every consumer skip its
     // whole glare block, so a panorama that never reaches `update` — or any
     // panorama that is not a star map — renders exactly as it did before.
     this._solarGlare = new Cartesian4(0.0, 0.0, 1.0, 0.0);
     this._solarGlareCurve = new Cartesian4(1.0, 0.0, 0.0, 0.0);
 
-    // C12-14 — backend-neutral handle to the loaded cube map, so code outside
-    // this class can SAMPLE it rather than only draw it. Refreshed once per
+    // Backend-neutral handle to the loaded cube map, so code outside this
+    // class can sample it rather than only draw it. Refreshed once per
     // update on both backends. Nothing samples it yet; see the header of
     // `Scene/StarCubeMapResource.js` before treating it as dead code.
     this._samplableCubeMap = createStarCubeMapResource();
@@ -193,18 +193,18 @@ class CubeMapPanorama {
   }
 
   /**
-   * C12-14 — a backend-neutral, SAMPLABLE handle to this panorama's cube map,
+   * A backend-neutral, samplable handle to this panorama's cube map,
    * refreshed once per {@link CubeMapPanorama#update} on both backends.
    *
    * `available` is false until the six faces finish loading asynchronously and
    * can return to false when `sources` are replaced, so read it every frame.
-   * The handles are BORROWED — this object owns and destroys the underlying
+   * The handles are borrowed — this object owns and destroys the underlying
    * resources. The lookup direction is TEME / inertial, not Earth-fixed.
    *
-   * Nothing samples this today: it exists to discharge the "samplable STAR
-   * cubemap" blocker `C11-163` (celestial water reflection) recorded against
-   * itself. See `Scene/StarCubeMapResource.js` before treating it as dead
-   * code (Principle 7).
+   * Nothing samples this today; it exists so a future celestial-water
+   * reflection stage can look the stars up without adding a second cube-map
+   * load path. See `Scene/StarCubeMapResource.js` before treating it as dead
+   * code.
    *
    * @type {object}
    * @readonly
@@ -252,16 +252,13 @@ class CubeMapPanorama {
     }
 
     // Backend-independent validation of the public sources contract. This
-    // must run BEFORE the feature-renderer dispatch so WebGL and WebGPU
-    // enforce identical debug-time validation (item 64 / C8-30 "panorama
-    // validation matches across backends"). C9-AUDIT-P1-SWEEP (Batch 684):
-    // validate unconditionally in debug. The former `this._sources !==
-    // this.sources` gate was vestigial — Batch 674 moved the realize
-    // assignment that reset that sentinel down into the WebGL path, and the
-    // WebGPU path never resets it, so the gate made validation once-per-change
-    // on WebGL but every-frame on WebGPU (NOT the "identical" validation the
-    // comment claims). Dropping it makes the two backends truly symmetric;
-    // the whole block is pragma-stripped, so release bytes are unchanged.
+    // must run before the feature-renderer dispatch so WebGL and WebGPU
+    // enforce identical debug-time validation. Validated unconditionally in
+    // debug rather than gated on `this._sources !== this.sources`: the
+    // sentinel that gate depends on is reset from the WebGL path only, so a
+    // gated check would validate once-per-change on WebGL but every frame on
+    // WebGPU — the two backends are symmetric only by dropping the gate. The
+    // whole block is pragma-stripped, so release bytes are unchanged.
     //>>includeStart('debug', pragmas.debug);
     const validatedSources = this.sources;
     Check.defined("this.sources", validatedSources);
@@ -296,8 +293,8 @@ class CubeMapPanorama {
     const fr = context.getFeatureRenderer(FeatureRendererKey.CUBE_MAP_PANORAMA);
     if (fr) {
       const command = fr.update(this, frameState, useHdr);
-      // C12-14 — refresh the samplable handle AFTER the renderer has had a
-      // chance to realize the texture this frame.
+      // Refresh the samplable handle after the renderer has had a chance to
+      // realize the texture this frame.
       const gpu =
         typeof fr.getResource === "function" ? fr.getResource(this) : undefined;
       setWebGPUStarCubeMap(this._samplableCubeMap, gpu?.texture, gpu?.view);
@@ -402,8 +399,8 @@ class CubeMapPanorama {
       this._addToPanoramaCommandList = true;
     }
 
-    // C12-14 — refresh the samplable handle on the WebGL path too. Placed
-    // before the early-out below so a still-loading cube map publishes
+    // Refresh the samplable handle on the WebGL path too. Placed before the
+    // early-out below so a still-loading cube map publishes
     // `available: false` rather than leaving a stale handle behind.
     setWebGLStarCubeMap(this._samplableCubeMap, this._cubeMap);
     publishStarCubeMap(this, frameState);
@@ -464,8 +461,8 @@ class CubeMapPanorama {
     command.shaderProgram =
       command.shaderProgram && command.shaderProgram.destroy();
     this._cubeMap = this._cubeMap && this._cubeMap.destroy();
-    // C12-14 — drop the borrowed handles so a consumer holding the descriptor
-    // across the teardown sees `available: false` instead of a dead texture.
+    // Drop the borrowed handles so a consumer holding the descriptor across
+    // the teardown sees `available: false` instead of a dead texture.
     clearStarCubeMapResource(this._samplableCubeMap);
 
     return destroyObject(this);
@@ -473,10 +470,10 @@ class CubeMapPanorama {
 }
 
 /**
- * C12-14 — publish the samplable star cube map on `frameState` for the star
- * maps only, so a future sampler (`C11-163`) can reach it without holding a
- * reference to {@link SkyBox}. Generic and Street View panoramas keep their
- * handle on the instance but never claim the frame-wide "star cube map" slot.
+ * Publish the samplable star cube map on `frameState` for star maps only, so
+ * a future sampler can reach it without holding a reference to
+ * {@link SkyBox}. Generic and Street View panoramas keep their handle on the
+ * instance but never claim the frame-wide "star cube map" slot.
  *
  * @param {CubeMapPanorama} panorama
  * @param {FrameState} frameState
@@ -490,10 +487,10 @@ function publishStarCubeMap(panorama, frameState) {
 }
 
 /**
- * Resolve the backend-neutral star-modulation inputs for this frame (C12-29
- * S6, ruling E3). WebGL uniform closures and the WebGPU uniform packer consume
- * these same values. Generic photographic panoramas resolve exact identity;
- * only SkyBox's explicitly marked celestial panorama is attenuated.
+ * Resolve the backend-neutral star-modulation inputs for this frame. WebGL
+ * uniform closures and the WebGPU uniform packer consume these same values.
+ * Generic photographic panoramas resolve exact identity; only SkyBox's
+ * explicitly marked celestial panorama is attenuated.
  *
  * @param {CubeMapPanorama} panorama
  * @param {FrameState} frameState
@@ -531,13 +528,12 @@ function updateStarModulation(panorama, frameState) {
   m.w = cloudCover;
   panorama._skyBrightness = frameState.skyBrightness ?? 1.0;
 
-  // C12-27 — angular solar-glare washout. `Scene.updateEnvironment` already
-  // resolved the Sun direction and the curve; this only applies the star-map
-  // gate, so generic and Street View panoramas carry strength EXACTLY 0.
-  // Deliberately NOT gated on `frameState.skyAtmosphereVisible` (unlike the
-  // star modulation above): veiling glare is scattering in the observer's eye
-  // and optics, not in an atmospheric column, so it must still act in orbit —
-  // which is the viewpoint the row was reported from.
+  // Angular solar-glare washout. `Scene.updateEnvironment` already resolved
+  // the Sun direction and the curve; this only applies the star-map gate, so
+  // generic and Street View panoramas carry strength exactly 0. Deliberately
+  // not gated on `frameState.skyAtmosphereVisible` (unlike the star
+  // modulation above): veiling glare is scattering in the observer's eye and
+  // optics, not in an atmospheric column, so it must still act in orbit.
   const glareAppearance = frameState.solarGlareAppearance;
   const g = panorama._solarGlare;
   const gc = panorama._solarGlareCurve;

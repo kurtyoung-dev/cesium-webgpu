@@ -148,17 +148,17 @@ class SkyAtmosphere {
 
     this._flags = undefined;
 
-    // C12-29 S2 — per-frame eclipse dimming of the sky shell, refreshed from
+    // Per-frame eclipse dimming of the sky shell, refreshed from
     // `frameState.eclipseSceneLightFactor` at the top of `update()` (which
-    // runs before BOTH the WebGL uniform closure below and the WebGPU feature
-    // renderer's uniform pack, so the two backends multiply one identical
-    // scalar). 1.0 — the multiplicative identity — in every non-eclipse
-    // frame, so the shell is byte-identical there.
+    // runs before both the WebGL uniform closure below and the WebGPU
+    // feature renderer's uniform pack, so the two backends multiply one
+    // identical scalar). 1.0 — the multiplicative identity — in every
+    // non-eclipse frame, so the shell is byte-identical there.
     this._eclipseLightFactor = 1.0;
 
-    // C12-29 S6 — per-frame 360-degree horizon-twilight gain, refreshed from
+    // Per-frame 360-degree horizon-twilight gain, refreshed from
     // `frameState.eclipseHorizonTwilight` alongside the dimming factor above
-    // and consumed by BOTH shaders (`u_eclipseHorizonTwilight` in
+    // and consumed by both shaders (`u_eclipseHorizonTwilight` in
     // `SkyAtmosphereFS.glsl`, `eclipseControl.x` in `SkyAtmosphere.wgsl`).
     // 0.0 — the additive identity, and the shader's early-out — in every
     // non-totality frame.
@@ -274,13 +274,13 @@ class SkyAtmosphere {
         return that._hueSaturationBrightness;
       },
       u_atmosphereLightIntensity: function () {
-        // C12-29 S2 — eclipse dimming. `_eclipseLightFactor` is 1.0 outside a
-        // solar eclipse and `x * 1.0` is bit-exact, so this is the historical
+        // Eclipse dimming. `_eclipseLightFactor` is 1.0 outside a solar
+        // eclipse and `x * 1.0` is bit-exact, so this is the historical
         // value in every other frame.
         return that.atmosphereLightIntensity * that._eclipseLightFactor;
       },
       u_eclipseHorizonTwilight: function () {
-        // C12-29 S6 — 360-degree horizon twilight gain. Exactly 0.0 outside
+        // 360-degree horizon twilight gain. Exactly 0.0 outside
         // the last ~2% of obscuration, and the shader multiplies the whole
         // term by it, so the historical sky is untouched.
         return that._eclipseHorizonTwilight;
@@ -347,11 +347,11 @@ class SkyAtmosphere {
    * @private
    */
   update(frameState, globe) {
-    // C12-29 S2 — refreshed unconditionally, and FIRST: it must be current
-    // before the WebGPU feature-renderer branch below packs its uniform
-    // buffer and before the WebGL uniform closure is invoked at draw time.
+    // Refreshed unconditionally, and first: it must be current before the
+    // WebGPU feature-renderer branch below packs its uniform buffer and
+    // before the WebGL uniform closure is invoked at draw time.
     this._eclipseLightFactor = frameState.eclipseSceneLightFactor ?? 1.0;
-    // C12-29 S6 — same contract, same position, same reason.
+    // Same contract, same position, same reason.
     this._eclipseHorizonTwilight = frameState.eclipseHorizonTwilight ?? 0.0;
 
     if (!this.show) {

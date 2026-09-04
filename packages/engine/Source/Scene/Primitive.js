@@ -295,10 +295,10 @@ class Primitive {
 
     this._colorCommands = [];
     this._pickCommands = [];
-    // Q14-HDR-TOGGLE-INVALIDATION — last `context.renderTargetGeneration` the
-    // alternate-renderer commands were built at. `-1` forces the first build;
-    // a later mismatch (HDR toggle bumps the epoch) forces a command rebuild so
-    // the WebGPU pipelines rekey to the new scene FB format. Unused on WebGL
+    // Last `context.renderTargetGeneration` the alternate-renderer commands
+    // were built at. `-1` forces the first build; a later mismatch (HDR
+    // toggle bumps the epoch) forces a command rebuild so the WebGPU
+    // pipelines rekey to the new scene FB format. Unused on WebGL
     // (renderTargetGeneration is constant 0 there).
     this._renderTargetGeneration = -1;
     // Device-resource lifetime token. A recovered WebGPU device can have the
@@ -541,14 +541,14 @@ class Primitive {
       this._material.update(context);
     }
 
-    // NEW-WEBGPU-DEPTHFAIL-MATERIAL (Batch 419) — the depthFail material also
-    // needs per-frame `update()` so its `_uniformBuffer.gpuData` is populated/
-    // refreshed for the WebGPU material twin (greater-depth pass). WebGL pulls
-    // the depthFail uniforms through `getUniforms(_depthFailAppearance, …)` each
-    // frame; the WebGPU path reads `material._uniformBuffer.gpuData` directly, so
-    // the depthFail material must be `update()`-ed here just like `_material`.
-    // No-op for the COLOR-appearance depthFail slice (no material) and benign on
-    // WebGL (Material.update is backend-neutral).
+    // The depthFail material also needs per-frame `update()` so its
+    // `_uniformBuffer.gpuData` is populated/refreshed for the WebGPU
+    // material twin (greater-depth pass). WebGL pulls the depthFail
+    // uniforms through `getUniforms(_depthFailAppearance, …)` each frame;
+    // the WebGPU path reads `material._uniformBuffer.gpuData` directly, so
+    // the depthFail material must be `update()`-ed here just like
+    // `_material`. No-op for the color-appearance depthFail slice (no
+    // material) and benign on WebGL (Material.update is backend-neutral).
     if (defined(this._depthFailMaterial)) {
       this._depthFailMaterial.update(context);
     }
@@ -570,11 +570,11 @@ class Primitive {
       spFunc(this, frameState, appearance);
     }
 
-    // Q14-HDR-TOGGLE-INVALIDATION — an alternate renderer (WebGPU) bakes the
-    // scene render-target color format into its cached pipelines. A mid-session
+    // An alternate renderer (WebGPU) bakes the scene render-target color
+    // format into its cached pipelines. A mid-session
     // `scene.highDynamicRange` toggle flips that format and bumps
-    // `context.renderTargetGeneration`; when it moves we must rebuild the
-    // commands so the feature renderer rekeys its pipelines to the new format
+    // `context.renderTargetGeneration`; when it moves, the commands must be
+    // rebuilt so the feature renderer rekeys its pipelines to the new format
     // (otherwise the stale-format pipeline fails attachment validation every
     // frame). WebGL returns a constant 0 here, so this never fires — the
     // WebGL path stays byte-identical.

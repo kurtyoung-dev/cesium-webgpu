@@ -218,7 +218,6 @@ packages/engine/Source/Renderer/WebGPU/WebGPUDeviceInvalidationBus.ts
 packages/engine/Source/Renderer/WebGPU/WebGPUDeviceLossRecovery.ts
 packages/engine/Source/Renderer/WebGPU/WebGPUDevicePool.ts
 packages/engine/Source/Renderer/WebGPU/WebGPUEffectsStateCache.js
-packages/engine/Source/Renderer/WebGPU/WebGPUGlobeBindGroupCache.ts
 packages/engine/Source/Renderer/WebGPU/WebGPUModelDeviceResources.ts
 packages/engine/Source/Renderer/WebGPU/WebGPUModelMetadataCache.js
 packages/engine/Source/Renderer/WebGPU/WebGPURenderPipelineCache.ts
@@ -728,3 +727,46 @@ packages/engine/Source/Renderer/WebGPU/WebGPUSnapFramebuffer.ts
 packages/engine/Source/Renderer/WebGPU/WebGPUSnapPayload.ts
 packages/engine/Source/Renderer/WebGPU/WebGPUVectorTileResources.ts
 packages/engine/Source/Renderer/WebGPU/WebGPUVideoTextureManager.ts
+# C16-12 long tail, lane Freawine slice: packages/engine/Source/** outside
+# Renderer/WebGPU/** (lane Frea takes that directory). Current WHY constraints
+# remain inline beside the code.
+packages/engine/Source/Core/GeoidUndulationGrid.js
+packages/engine/Source/Core/GeometryPipeline.js
+packages/engine/Source/Core/VectorPipeline.js
+packages/engine/Source/Core/VerticalDatum.js
+packages/engine/Source/DataSources/EntityClusterGPU.js
+packages/engine/Source/Renderer/Context.js
+packages/engine/Source/Renderer/UniformState.js
+packages/engine/Source/Scene/AtmosphereDerivedLighting.js
+packages/engine/Source/Scene/AtmosphericEffects.ts
+packages/engine/Source/Scene/ClassificationPrimitive.js
+packages/engine/Source/Scene/CubeMapPanorama.js
+packages/engine/Source/Scene/DerivedCommand.js
+packages/engine/Source/Scene/DynamicEnvironmentMapManager.js
+packages/engine/Source/Scene/EllipsoidPrimitive.js
+packages/engine/Source/Scene/EnvironmentFrustumDemand.ts
+packages/engine/Source/Scene/Fog.js
+packages/engine/Source/Scene/FramebufferOrchestrator.js
+packages/engine/Source/Scene/GroundPolylinePrimitive.js
+packages/engine/Source/Scene/HdrDisplayCapability.ts
+packages/engine/Source/Scene/MaterialHelpers.js
+packages/engine/Source/Scene/ModelComponents.js
+packages/engine/Source/Scene/PickDepth.js
+packages/engine/Source/Scene/Primitive.js
+packages/engine/Source/Scene/SceneRenderer.js
+packages/engine/Source/Scene/SkyAtmosphere.js
+packages/engine/Source/Scene/SkyBox.js
+packages/engine/Source/Scene/SkyBoxResolutionPolicy.ts
+packages/engine/Source/Scene/SolarGlareAppearance.js
+packages/engine/Source/Scene/Vector3DTilePolylines.js
+packages/engine/Source/Scene/Vector3DTilePrimitive.js
+packages/engine/Source/Scene/WasmCullBridge.js
+packages/engine/Source/Scene/WasmRTEBridge.js
+packages/engine/Source/Scene/renderBufferPointCollection.js
+packages/engine/Source/Shaders/EllipsoidFS.glsl
+packages/engine/Source/Shaders/PostProcessStages/SolarHalo.glsl
+packages/engine/Source/Shaders/SkyAtmosphereFS.glsl
+packages/engine/Source/Shaders/SkyBoxFS.glsl
+packages/engine/Source/Shaders/WebGPU/Compute/ClusterAssign.wgsl
+packages/engine/Source/Shaders/WebGPU/Compute/GBufferNormalsFromDepth.wgsl
+packages/engine/Source/Shaders/WebGPU/FlowFieldRender.wgsl

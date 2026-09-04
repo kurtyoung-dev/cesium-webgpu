@@ -1,7 +1,7 @@
 import WasmFeatureDetection from "../Core/WasmFeatureDetection.js";
 import { WasmArenaSlot, allocFromSlot } from "./WasmArenaSlots.js";
 import resolveWasmGlueUrl from "./resolveWasmGlueUrl.js";
-// AUDIT_2026_05_02 B.19 / FORK-45 — claim per-bridge arena slot.
+// Claim a per-bridge arena slot.
 
 /**
  * JavaScript bridge for WASM-accelerated batch RTE encoding.
@@ -22,12 +22,12 @@ import resolveWasmGlueUrl from "./resolveWasmGlueUrl.js";
  */
 
 let _wasmModule = null;
-// The wasm-bindgen glue (cesium_wasm.js) does NOT re-export `memory` as a
+// The wasm-bindgen glue (cesium_wasm.js) does not re-export `memory` as a
 // named ESM export — it lives only on the instance's exports object, which
 // `module.default()` (a.k.a. __wbg_init) returns. Capture that so the
 // WASM path can read the shared linear memory; without it
 // `_wasmModule.memory` is undefined and every encode silently falls back
-// to JS. (FORK / NEW-WASMRTE-SUBRANGE-ENCODE.)
+// to JS.
 let _wasmExports = null;
 let _wasmLoading = null;
 let _wasmReady = false;
@@ -76,10 +76,10 @@ class WasmRTEBridge {
     WasmFeatureDetection.checkSIMDSupport();
     _wasmLoading = (async () => {
       try {
-        // NEW-WASM-BRIDGE-BUNDLE-LOAD (Batch 274): resolve the glue URL via the
-        // shared buildModuleUrl-backed helper so the dynamic import lands on the
-        // real on-disk glue in EVERY output format (ESM/IIFE/CJS) instead of
-        // 404ing relative to the emitted bundle. See resolveWasmGlueUrl.js.
+        // Resolve the glue URL via the shared buildModuleUrl-backed helper
+        // so the dynamic import lands on the real on-disk glue in every
+        // output format (ESM/IIFE/CJS) instead of 404ing relative to the
+        // emitted bundle. See resolveWasmGlueUrl.js.
         const module = await import(
           /* webpackIgnore: true */
           resolveWasmGlueUrl()

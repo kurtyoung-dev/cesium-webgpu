@@ -15,8 +15,8 @@ const packedDepthScale = new Cartesian4(
 // Staging buffer size: 256 bytes (minimum alignment for WebGPU buffer mapping)
 const STAGING_BUFFER_SIZE = 256;
 
-// NEW-PICK-WEBGPU-DEPTH-RECONSTRUCTION (Batch 252) — sync-cache validity
-// window for the async (WebGPU) getDepth path. The cached value is only
+// Sync-cache validity window for the async (WebGPU) getDepth path. The
+// cached value is only
 // returned when the query is within this many pixels of the readback's
 // coordinate (depth varies slowly across adjacent globe pixels; a moving
 // cursor re-arms the readback and converges next frame)...
@@ -178,27 +178,26 @@ class PickDepth {
       }
     }
 
-    // WebGPU async path (NEW-PICK-WEBGPU-DEPTH-RECONSTRUCTION, Batch 252).
-    // The contract:
-    //  1. EVERY consumer of getDepth is SYNCHRONOUS and cannot await it:
+    // WebGPU async path. The contract:
+    //  1. Every consumer of getDepth is synchronous and cannot await it:
     //     scene.pickPosition / scene.pickPositionWorldCoordinates
-    //     (Picking.js, Scene.js) AND camera zoom/tilt-to-cursor
+    //     (Picking.js, Scene.js) and camera zoom/tilt-to-cursor
     //     (CameraHelpers.js, SSCCInputHelpers.js). So this returns a
-    //     number|undefined — NEVER a Promise (a Promise silently broke all of
-    //     them: callers treated the Promise object as a depth value).
+    //     number|undefined — never a Promise (a Promise silently breaks all
+    //     of them: callers would treat the Promise object as a depth value).
     //  2. GPU buffer mapping cannot resolve within the calling frame, so the
     //     value returned is the one-frame-stale cached result of an earlier
     //     call's readback. The first query at a new location returns
-    //     undefined (callers fall back to ray picking — the pre-fix SAFE
-    //     state) and ARMS the readback; queries converge 1-2 frames later.
+    //     undefined (callers fall back to ray picking, which stays correct)
+    //     and arms the readback; queries converge 1-2 frames later.
     //  3. The cached value is only trusted near the readback's own pixel and
     //     for a few rendered frames (see the ASYNC_DEPTH_* constants) so a
     //     long-dead readback can't anchor camera-to-cursor to garbage.
     //
-    // The value itself is full-frustum LOG depth (the shared packed
+    // The value itself is full-frustum log depth (the shared packed
     // `globeDepth.globeDepthTexture` — every WebGPU depth producer encodes
-    // against the full camera frustum since Batch 251). The matching
-    // reconstruction lives in Picking.pickPositionWorldCoordinates, gated on
+    // against the full camera frustum). The matching reconstruction lives
+    // in Picking.pickPositionWorldCoordinates, gated on
     // `context.pickDepthFullFrustumLogEncode`.
     if (!defined(this._asyncDepthTexture)) {
       return undefined;

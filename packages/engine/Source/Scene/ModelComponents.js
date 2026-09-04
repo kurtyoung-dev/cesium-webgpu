@@ -849,8 +849,8 @@ export class Node {
     this.articulationName = undefined;
 
     /**
-     * NEW-KHR-LIGHTS-PUNCTUAL (Batch 134) -- index into the asset's
-     * KHR_lights_punctual lights array. Set when the node carries
+     * Index into the asset's KHR_lights_punctual lights array. Set when
+     * the node carries
      * `extensions.KHR_lights_punctual.light`. Resolved by
      * `materializeKhrLightsPunctual` at parse end into entries on
      * `components.lights` with the node's world matrix already
@@ -1165,8 +1165,8 @@ export class Components {
     this.articulations = [];
 
     /**
-     * NEW-KHR-LIGHTS-PUNCTUAL (Batch 134) -- KHR_lights_punctual lights
-     * resolved into MODEL-space (node hierarchy applied at load time).
+     * KHR_lights_punctual lights resolved into model-space (node
+     * hierarchy applied at load time).
      * Each entry is `{ type, color: {red, green, blue}, intensity,
      * range, innerConeAngle, outerConeAngle, position?: vec3,
      * direction?: vec3 }`. The renderer transforms position/direction

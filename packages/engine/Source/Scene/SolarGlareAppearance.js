@@ -1,36 +1,33 @@
-// SolarGlareAppearance.js — C12-27 (`NEW-ANGULAR-SOLAR-GLARE-STAR-WASHOUT`).
-//
-// Scene Logic Extractor pattern (CLAUDE.md): the angular solar-glare washout is
-// resolved HERE, exactly once per render frame, before any backend consumer
-// runs, and the resolved NUMBERS are published on `frameState` — the same
-// convention C12-15/16 use for `sunDiscAppearance` and C12-21/22 use for
+// The angular solar-glare washout is resolved once per render frame, before
+// any backend consumer runs, and the resolved values are published on
+// `frameState` — the same convention used for `sunDiscAppearance` and for
 // `moonEarthshinePhaseScale` / `moonTerminatorSoftness`. Four shaders read the
 // result (star sprites and the star cube map, on both backends), so a
-// re-derivation in any one of them would be a silent parity gap of exactly the
-// kind this row exists to close.
+// re-derivation in any one of them would reintroduce a silent parity gap.
 //
-// ─── WHAT THIS REPLACES ────────────────────────────────────────────────────
+// ─── WHY ANGULAR SEPARATION, NOT ELEVATION ─────────────────────────────────
 //
-// The removed `enableStarBrightnessModulation` global dim (C11-176, Batch 722)
-// was keyed to the SUN'S ELEVATION above the camera's local horizon. That model
-// is wrong twice over: it dimmed stars 180 deg away from the Sun exactly as
-// hard as stars beside it, and it was WebGPU-only, so re-adding an elevation
-// term on one backend would recreate the parity bug that fix closed. What
-// actually washes out stars near the Sun is veiling glare — light scattered
-// inside the observer's eye and optics — which is a function of ANGULAR
-// SEPARATION from the Sun and of nothing else.
+// Washout here is a function of angular separation from the Sun only. An
+// elevation-keyed dim would be wrong for this purpose: it would dim stars
+// 180 deg away from the Sun exactly as hard as stars beside it, and washout
+// that is not localized around the Sun's sky position is not glare.
+// `enableStarBrightnessModulation` (`AtmosphericConditions.js`,
+// `StarField.js`) is a separate, live dim keyed to
+// `frameState.skyBrightness` for twilight/daylight/eclipse; see the
+// COMPOSITION section below for how the two combine rather than substitute
+// for each other.
 //
 // ─── FRAME (load-bearing) ──────────────────────────────────────────────────
 //
 // The published sun direction is in the TEME / inertial star frame, because
 // that is the frame all four consumers already hold their star direction in:
 //
-//   * `StarField.wgsl`     — `input.directionFixed` IS the TEME catalogue
+//   * `StarField.wgsl`     — `input.directionFixed` is the TEME catalogue
 //                            direction; the TEME->fixed rotation is baked into
 //                            `viewProjectionNoTranslation` on the CPU.
-//   * `StarFieldVS.glsl`   — the `directionFixed` ATTRIBUTE is the same TEME
-//                            record; the shader rotates a COPY into the fixed
-//                            frame for projection, and C12-27 deliberately dots
+//   * `StarFieldVS.glsl`   — the `directionFixed` attribute is the same TEME
+//                            record; the shader rotates a copy into the fixed
+//                            frame for projection, deliberately dotting
 //                            against the un-rotated attribute.
 //   * `CubeMapPanorama.wgsl` / `SkyBoxFS.glsl` — the cube-map lookup direction
 //                            is the raw box position; both backends apply
@@ -45,25 +42,26 @@
 // ─── COMPOSITION WITH THE EXISTING STAR MODULATION ─────────────────────────
 //
 // `frameState.skyBrightness` -> `computeStarBrightnessModulation` already dims
-// BOTH star paths for daylight, moonlight and eclipse. C12-27 composes with it
-// as an independent multiplicative factor; it does not replace, re-scale or
-// gate it. In particular this term is NOT gated by
+// both star paths for daylight, moonlight and eclipse. This term composes
+// with it as an independent multiplicative factor; it does not replace,
+// re-scale or gate it. In particular it is not gated by
 // `SkyBrightness.computeAtmosphericColumnFactor`, which takes the sky-glow
 // modulation to exactly zero above the engine's 111 km scattering shell. That
-// gate is correct for sky glow (no column, no glow) and WRONG for veiling glare
-// (the scattering medium is the observer, and it goes to orbit with them) —
-// see the note in `Scene/SolarDiscModel.js`. Orbit is precisely the case the
-// maintainer reported, so inheriting the gate would make this row inert exactly
-// where it was asked for.
+// gate is correct for sky glow (no column, no glow) and wrong for veiling
+// glare (the scattering medium is the observer, and it goes to orbit with
+// them) — see the note in `Scene/SolarDiscModel.js`. Orbit is precisely the
+// case this term exists to cover, so inheriting the gate would make it inert
+// exactly where it is needed.
 //
-// ─── SOURCE VISIBILITY (Batch 873, discharging the Batch-865 filing) ───────
+// ─── SOURCE VISIBILITY ──────────────────────────────────────────────────────
 //
-// It IS gated on the Sun actually delivering flux to the observer. The row as
-// first landed washed out stars near the Sun's sky position even with the Sun
-// below the horizon or behind the Earth — glare with no glare source. The gate
-// is one multiply by `eclipseState.sunVisibleFraction`; see
-// {@link resolveSunVisibility} for the identity rules and for why THAT scalar
-// (whose Earth-limb term S2 deliberately refuses) is the right one here.
+// The washout is gated on the Sun actually delivering flux to the observer.
+// Without that gate, stars near the Sun's sky position wash out even with the
+// Sun below the horizon or behind the Earth — glare with no glare source. The
+// gate is one multiply by `eclipseState.sunVisibleFraction`; see
+// {@link resolveSunVisibility} for the identity rules and for why that scalar
+// (whose Earth-limb term deliberately goes unused for scene-wide dimming) is
+// the right one here.
 //
 // @private
 // @module SolarGlareAppearance
@@ -79,36 +77,38 @@ import {
 
 /**
  * Washout strength when the toggle is on: 1.0, i.e. a star exactly on the Sun
- * is fully extinguished. This is the amplitude the C12-27 gate measures, and
- * the only APPEARANCE parameter in the row — the curve's shape and support are
- * derived (`Scene/SolarDiscModel.js`). It is a module constant rather than a
- * public dial for the same reason C12-15/16/20/22 ship booleans: a second
- * tunable is a second thing that can disagree between backends.
+ * is fully extinguished. This is the amplitude the visibility gate below
+ * scales, and the only appearance parameter here — the curve's shape and
+ * support are derived (`Scene/SolarDiscModel.js`). It is a module constant
+ * rather than a public dial for the same reason the related lighting toggles
+ * ship booleans: a second tunable is a second thing that can disagree between
+ * backends.
  *
  * @private
  */
 const SOLAR_GLARE_STRENGTH = 1.0;
 
 /**
- * C12-27 SOURCE-VISIBILITY GATE (the finding Batch 865 filed against itself).
+ * The source-visibility gate.
  *
- * Veiling glare is light from the GLARE SOURCE scattered inside the observer's
- * eye and optics. If the source delivers no flux to the observer there is
- * nothing to scatter, so the veil must vanish — and the shipped row did not
- * know that: a camera in Earth's shadow, or one looking at a midnight sky,
- * still washed out every star within 90 deg of the Sun's SKY POSITION even
- * though the Sun was below the horizon. That is physically wrong, and it is
- * user-visible as "stars disappear from a patch of the night sky".
+ * Veiling glare is light from the glare source scattered inside the
+ * observer's eye and optics. If the source delivers no flux to the observer
+ * there is nothing to scatter, so the veil must vanish — and an ungated term
+ * would not know that: a camera in Earth's shadow, or one looking at a
+ * midnight sky, would still wash out every star within 90 deg of the Sun's
+ * sky position even though the Sun is below the horizon. That would be
+ * physically wrong, and user-visible as "stars disappear from a patch of the
+ * night sky".
  *
  * `eclipseState.sunVisibleFraction` is exactly the published scalar for
  * "surviving solar flux at this camera": `(1 - earthOcclusionFraction) *
  * (1 - moonObscuration)` (`Scene/EclipseState.js`). Its Earth-limb term is 1
- * for every night frame and most of twilight — the property S2 deliberately
- * refuses because dimming the WORLD by it would black out every sunset, and
- * the very same property that makes it the correct gate for a term that
- * models the observer's own optics. S1 already fades the Sun BILLBOARD by it,
- * so the veil and the disc now disappear together instead of the veil
- * outliving its source.
+ * for every night frame and most of twilight — dimming the whole scene by it
+ * would black out every sunset, which is why the scene-light eclipse dimming
+ * uses a different, floored term instead — and that same property makes it
+ * the correct gate for a term that models the observer's own optics. The
+ * Sun's billboard already fades by the same fraction, so the veil and the
+ * disc disappear together instead of the veil outliving its source.
  *
  * Identity rules, so this cannot change a frame it should not:
  *   * no eclipse state, or `valid === false` (missing inputs, 2D/CV/MORPHING,
@@ -155,10 +155,10 @@ function createSolarGlareAppearance() {
     // Resolved toggle position.
     enabled: false,
     // Uniform payload — exactly what all four shader consumers read.
-    // `strength === 0` is the EXACT identity: every consumer skips its whole
+    // `strength === 0` is the exact identity: every consumer skips its whole
     // glare block, so the off position is byte-identical rather than close.
     strength: 0.0,
-    // C12-27 source-visibility gate — REPORTED, not consumed by any shader:
+    // The source-visibility gate is reported, not consumed by any shader:
     // `strength` already carries the product. Published so a probe can tell
     // "the toggle is off" (strength 0, visibility 1) apart from "the Sun is
     // behind the Earth" (strength 0, visibility 0) without re-deriving either.
@@ -172,11 +172,11 @@ function createSolarGlareAppearance() {
 }
 
 /**
- * Resolves the C12-27 angular solar-glare washout for this frame.
+ * Resolves the angular solar-glare washout for this frame.
  *
  * Requires the facade explicitly (`=== true`), matching how {@link Moon} and
- * {@link Sun} read their C12 toggles: a scene with no globe attached keeps the
- * pre-C12-27 look exactly.
+ * {@link Sun} read their own lighting toggles: a scene with no globe
+ * attached keeps the pre-existing look exactly.
  *
  * @param {object} [lighting] The `atmosphericConditions.lighting` leaf.
  * @param {Cartesian3} [sunDirectionWC] Unit sun direction, Earth-fixed (world).
@@ -188,7 +188,7 @@ function createSolarGlareAppearance() {
  *        consumers stay consistent with one another even in that degenerate
  *        frame.
  * @param {object} [eclipseState] `frameState.eclipseState`, the source of the
- *        C12-27 visibility gate. See {@link resolveSunVisibility}; absent or
+ *        visibility gate. See {@link resolveSunVisibility}; absent or
  *        invalid resolves to 1.0 and leaves the frame unchanged.
  * @param {object} result A {@link createSolarGlareAppearance} object to fill.
  * @returns {object} `result`.
@@ -205,7 +205,7 @@ function readSolarGlareAppearance(
     lighting?.enableAngularSolarGlare === true && defined(sunDirectionWC);
 
   // Resolved even when the toggle is off, so `sunVisibleFraction` is a pure
-  // multiplier on the ON strength and the OFF position stays EXACTLY 0.
+  // multiplier on the "on" strength and the "off" position stays exactly 0.
   const visibility = resolveSunVisibility(eclipseState);
 
   result.enabled = enabled;
@@ -246,10 +246,10 @@ export {
   createSolarGlareAppearance,
   readSolarGlareAppearance,
 };
-// Default export REQUIRED by the generated barrel: `packages/engine/index.js`
+// Default export required by the generated barrel: `packages/engine/index.js`
 // is produced by `scripts/build.js`, which emits `export { default as X }`
 // for every `Source/**/*.js` with no exclusion mechanism, so a named-exports-
 // only module fails `npx gulp build` with "No matching export ... for import
-// default". `npx tsc --noEmit` does NOT catch it (it never checks the
+// default". `npx tsc --noEmit` does not catch it (it never checks the
 // generated barrel) — a gulp build is the only gate for this class.
 export default readSolarGlareAppearance;

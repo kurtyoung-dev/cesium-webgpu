@@ -23,8 +23,8 @@ import TextureMinificationFilter from "../Renderer/TextureMinificationFilter.js"
 import FeatureRendererKey from "../Renderer/FeatureRendererKey.js";
 import Atmosphere from "./Atmosphere.js";
 import DynamicAtmosphereLightingType from "./DynamicAtmosphereLightingType.js";
-// C13-41 — the same eclipse response module the WebGPU environment manager
-// imports, so both backends dim the same lockstep scalar on the same grid.
+// The same eclipse response module the WebGPU environment manager imports,
+// so both backends dim the same lockstep scalar on the same grid.
 import {
   applyEclipseCloudDimming,
   quantizeEclipseEnvironmentRefreshInput,
@@ -126,10 +126,10 @@ class DynamicEnvironmentMapManager {
       DynamicEnvironmentMapManager.DEFAULT_SPHERICAL_HARMONIC_COEFFICIENTS.slice();
 
     this._lastTime = new JulianDate();
-    // C13-41 — the quantized eclipse factor the last radiance bake used. NaN
-    // forces the first regeneration test to fire, matching the WebGPU cache's
-    // `lastEclipseEnvBucket` convention. Compared as an exact integer LEVEL, so
-    // an eclipse ENDING re-bakes just as reliably as one beginning.
+    // The quantized eclipse factor the last radiance bake used. NaN forces
+    // the first regeneration test to fire, matching the WebGPU cache's
+    // `lastEclipseEnvBucket` convention. Compared as an exact integer level,
+    // so an eclipse ending re-bakes just as reliably as one beginning.
     this._lastEclipseEnvBucket = NaN;
     const width = Math.max(Math.pow(2, mipmapLevels - 1), 1);
     this._textureDimensions = new Cartesian2(width, width);
@@ -220,12 +220,12 @@ class DynamicEnvironmentMapManager {
     this.groundAlbedo = options.groundAlbedo ?? 0.31;
 
     /**
-     * C2-25 ENV-SCENE-CAPTURE (Batch 446, WebGPU only) — opt-in flag that, when
-     * paired with the context option <code>contextOptions.webgpu.sceneCaptureReflections</code>,
+     * Opt-in flag (WebGPU only) that, when paired with the context option
+     * <code>contextOptions.webgpu.sceneCaptureReflections</code>,
      * renders the opaque globe surface (later: 3D Tiles + glTF) into the dynamic
      * environment cube's 6 faces from 6 ENU cube-face cameras, so terrain
      * appears in water / PBR reflections instead of just procedural sky.
-     * Default <code>false</code> — both this flag AND the context option must be
+     * Default <code>false</code> — both this flag and the context option must be
      * true for any capture pass to run; when either is false the env cube is
      * filled only by the procedural sky (byte-identical to the shipped path).
      * Ignored on WebGL.
@@ -235,8 +235,8 @@ class DynamicEnvironmentMapManager {
     this.enableSceneCapture = options.enableSceneCapture ?? false;
 
     /**
-     * C2-25 ENV-PARALLAX (Batch 451, WebGPU only) — opt-in localized-reflection
-     * proxy for Lagarde box/sphere parallax correction. When set, models lit by
+     * Opt-in localized-reflection proxy (WebGPU only) for Lagarde box/sphere
+     * parallax correction. When set, models lit by
      * this manager's environment map intersect their specular-IBL reflection ray
      * with this bounding proxy and re-project the cube fetch as
      * <code>normalize(P - center)</code>, so nearby geometry / interiors reflect
@@ -341,16 +341,16 @@ class DynamicEnvironmentMapManager {
     DynamicEnvironmentMapManager._updateCommandQueue(frameState);
 
     const dynamicLighting = frameState.atmosphere.dynamicLighting;
-    // C13-41 — the eclipse-keyed regeneration input, the WebGL twin of the
-    // WebGPU cache's `eclipseEnvChanged`. `updateRadianceMap` now dims its bake
-    // by S2's scene-light factor, and nothing else in this gate can see that:
-    // `atmosphereNeedsUpdate` only watches radii / dynamic-lighting mode /
-    // scene environment map / background colour, and the scene-clock term needs
-    // `maximumSecondsDifference` (3600 s by default) AND the SUNLIGHT mode. A
-    // dimmed bake would therefore stay dark for up to an hour after third
-    // contact. Snap-and-compare on the shared 1/256 grid, as an exact integer
-    // LEVEL — so an eclipse ending regenerates exactly as reliably as one
-    // starting, with no second "recovery" code path.
+    // The eclipse-keyed regeneration input, the WebGL twin of the WebGPU
+    // cache's `eclipseEnvChanged`. `updateRadianceMap` dims its bake by the
+    // eclipse scene-light factor, and nothing else in this gate can see
+    // that: `atmosphereNeedsUpdate` only watches radii / dynamic-lighting
+    // mode / scene environment map / background colour, and the scene-clock
+    // term needs `maximumSecondsDifference` (3600 s by default) and the
+    // sunlight mode. A dimmed bake would therefore stay dark for up to an
+    // hour after third contact. Snap-and-compare on the shared 1/256 grid,
+    // as an exact integer level — so an eclipse ending regenerates exactly
+    // as reliably as one starting, with no second "recovery" code path.
     const eclipseEnvBucket = quantizeEclipseEnvironmentRefreshInput(
       resolveEclipseCloudFactor(frameState),
     );
@@ -827,15 +827,16 @@ function updateRadianceMap(manager, frameState) {
     adjustments.x = manager.brightness;
     adjustments.y = manager.saturation;
     adjustments.z = manager.gamma;
-    // C13-41 — the eclipse dims this bake. `.w` reaches the shader as
-    // `u_brightnessSaturationGammaIntensity.w`, the multiplier on the FINAL sky
-    // and ground radiance in `ComputeRadianceMapFS.glsl`, and is the exact
-    // lockstep twin of WebGPU's `SkyUniforms.scatteringIntensity` (slot 34) —
-    // so neither backend needs a shader edit and neither can drift. The
-    // step-3 `updateSphericalHarmonicCoefficients` multiply is deliberately NOT
-    // dimmed on either backend: it projects THIS bake and inherits the dimming
-    // exactly once. Safe only because the regeneration gate in `update()` now
-    // carries the quantized eclipse bucket; without it this would latch dark.
+    // The eclipse dims this bake. `.w` reaches the shader as
+    // `u_brightnessSaturationGammaIntensity.w`, the multiplier on the final
+    // sky and ground radiance in `ComputeRadianceMapFS.glsl`, and is the
+    // exact lockstep twin of WebGPU's `SkyUniforms.scatteringIntensity`
+    // (slot 34) — so neither backend needs a shader edit and neither can
+    // drift. The step-3 `updateSphericalHarmonicCoefficients` multiply is
+    // deliberately not dimmed on either backend: it projects this bake and
+    // inherits the dimming exactly once. Safe only because the regeneration
+    // gate in `update()` carries the quantized eclipse bucket; without it
+    // this would latch dark.
     adjustments.w = applyEclipseCloudDimming(
       manager.atmosphereScatteringIntensity,
       resolveEclipseCloudFactor(frameState),

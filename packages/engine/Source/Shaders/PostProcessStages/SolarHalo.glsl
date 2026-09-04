@@ -1,4 +1,4 @@
-// SolarHalo.glsl — C12-18 screen-space solar veiling glare (WebGL half).
+// SolarHalo.glsl — screen-space solar veiling glare (WebGL half).
 //
 // The WGSL twin is Shaders/WebGPU/PostProcess/SolarHalo.wgsl and the JS
 // reference implementation both are translated from is
@@ -12,21 +12,21 @@
 // the Stiles-Holladay relation it generalises. The Lorentzian written below
 // is that law regularised at theta = 0 so it stays finite on the disc.
 //
-// WHY THIS EXISTS. The halo used to be baked into the sun billboard's texture,
+// Why it exists. The halo used to be baked into the sun billboard's texture,
 // where a finite quad forced it to terminate at the quad's inscribed circle
 // (11 solar radii). Real veiling glare never terminates: it falls as
 // 1/theta^2 (the CIE stray-light form). In screen space there is no quad to
 // fall off, so the same Lorentzian runs without the pedestal subtraction and
 // without the support clamp.
 //
-// The halo is deliberately drawn OVER everything, including terrain in front
+// The halo is deliberately drawn over everything, including terrain in front
 // of the Sun. Veiling glare is scattering inside the observer's eye and
 // optics, which travel with the observer — it is not a scene-space volume,
-// so it is not occluded by scene geometry. What DOES extinguish it is
+// so it is not occluded by scene geometry. What does extinguish it is
 // (a) the Sun going behind the Earth, which drops this whole stage
 // (`environmentState.isSunVisible` gates SunPostProcess), (b) atmospheric
 // extinction, carried in u_haloColor, and (c) an eclipse, carried in
-// u_haloIntensity (CLT-C4).
+// u_haloIntensity.
 
 uniform sampler2D colorTexture;
 
@@ -37,10 +37,10 @@ uniform vec2 u_haloCenter;
 // Pixels per solar radius at the current camera distance and field of view.
 uniform float u_haloLimbPx;
 
-// Half-amplitude radius of the veil, in SOLAR RADII. Derived from the C12-16
-// glare core through the bake's own radius->solar-radii map, so the screen
-// halo and the (former) baked halo are the same curve: 4.27800 R_sun at the
-// default glowFactor = 1, i.e. 1.1397 degrees.
+// Half-amplitude radius of the veil, in solar radii. Derived from the
+// sun-disc glare core through the bake's own radius->solar-radii map, so
+// the screen halo and the (former) baked halo are the same curve:
+// 4.27800 R_sun at the default glowFactor = 1, i.e. 1.1397 degrees.
 uniform float u_haloCoreRadii;
 
 // Amplitude x eclipse factor. Exactly 0.0 disables the stage arithmetically
@@ -48,8 +48,8 @@ uniform float u_haloCoreRadii;
 // and total eclipse both produce.
 uniform float u_haloIntensity;
 
-// Per-channel atmospheric transmittance along the camera->sun ray
-// (C7-SUN-STARS-EXTINCTION). vec3(1.0) from orbit / atmosphere hidden.
+// Per-channel atmospheric transmittance along the camera->sun ray.
+// vec3(1.0) from orbit / atmosphere hidden.
 uniform vec3 u_haloColor;
 
 in vec2 v_textureCoordinates;

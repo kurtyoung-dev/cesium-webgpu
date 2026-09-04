@@ -3,22 +3,21 @@ import defined from "../Core/defined.js";
 import FeatureRendererKey from "../Renderer/FeatureRendererKey.js";
 
 /**
- * GPU acceleration helper for {@link EntityCluster}'s screen-space declutter
- * (Phase 10, NEW-ENTITYCLUSTER-GPU).
+ * GPU acceleration helper for {@link EntityCluster}'s screen-space declutter.
  *
  * The CPU path (in EntityCluster.js) builds a per-frame `KDBush` spatial index
  * over every visible screen-space point and runs a greedy range-query merge —
- * an O(N log N) build plus many range queries that don't scale to the 50k+
- * markers Phase 10 targets. This helper replaces the index-build + neighbour
+ * an O(N log N) build plus many range queries that don't scale to tens of
+ * thousands of markers. This helper replaces the index-build + neighbour
  * bucketing with a single GPU compute pass (`EntityClusterGridGPU.wgsl`, owned
  * by `WebGPUEntityClusterDispatcher`): every visible point is hashed into a
  * uniform screen-space grid whose cell edge equals the merge radius
  * (pixelRange) and the per-cell occupancy + a per-cell representative point
  * index are accumulated atomically. The (sequential) representative-selection +
- * 3×3-neighbourhood merge then runs HERE on the CPU, but over the reduced set
+ * 3×3-neighbourhood merge then runs here on the CPU, but over the reduced set
  * of non-empty cells rather than every point.
  *
- * Backend agnosticism: this module is consulted from EntityCluster.js ONLY
+ * Backend agnosticism: this module is consulted from EntityCluster.js only
  * through `context.getFeatureRenderer(ENTITY_CLUSTER_GPU)` — when the renderer
  * is absent (WebGL2, or WebGPU before the dispatcher loads) the caller uses the
  * unchanged CPU KDBush path. No `isWebGPU` branch.
@@ -28,11 +27,11 @@ import FeatureRendererKey from "../Renderer/FeatureRendererKey.js";
  * synchronous declutter consumes the most-recent grid. Declutter already lags
  * the camera by a frame (it runs off `camera.changed`), so a one-frame-stale
  * grid is visually identical. A grid is only consumed when its `pointCount`
- * matches the current visible-point count AND its `pixelRange` matches — any
+ * matches the current visible-point count and its `pixelRange` matches — any
  * mismatch falls back to the CPU path for that frame and re-requests.
  *
  * A fully-GPU parallel merge (union-find over the grid, no readback) is a
- * follow-up — see NEW-ENTITYCLUSTER-GPU-MERGE in DEFERRED_WORK.md.
+ * documented follow-up, not yet built.
  *
  * @private
  * @module EntityClusterGPU
@@ -190,17 +189,18 @@ function requestGrid(entityCluster, points, pixelRange) {
  *   { position: Cartesian3, ids: Entity[], numPoints: number }
  *
  * The merge is a greedy raster-order walk over non-empty cells: a seed cell
- * with members absorbs the unclaimed 3×3 neighbour cells, but the absorb is now
- * GATED on representative-to-representative pixel distance (Batch 308,
- * NEW-ENTITYCLUSTER-GPU-MERGE) — a neighbour cell only merges into the seed when
- * its representative is within the merge radius of the seed's representative, and
- * within an absorbed neighbour cell only the individual members within the merge
- * radius of the seed are pulled in. This mirrors the CPU KDBush path's per-point
- * `pixelRange`-expanded bbox range query (which absorbs a neighbour only when its
- * SCREEN position overlaps the seed's range), tightening cross-backend cluster-
- * count parity vs the previous unconditional whole-3×3-cell absorb (a 3×3 block
- * spans 3·pixelRange, so the old path over-merged points up to ~3× the radius
- * apart → systematically fewer representatives than the CPU path). A seed whose
+ * with members absorbs the unclaimed 3×3 neighbour cells, but the absorb is
+ * gated on representative-to-representative pixel distance — a neighbour
+ * cell only merges into the seed when its representative is within the
+ * merge radius of the seed's representative, and within an absorbed
+ * neighbour cell only the individual members within the merge radius of the
+ * seed are pulled in. This mirrors the CPU KDBush path's per-point
+ * `pixelRange`-expanded bbox range query (which absorbs a neighbour only
+ * when its screen position overlaps the seed's range), keeping
+ * cross-backend cluster-count parity: an unconditional whole-3×3-cell
+ * absorb spans 3·pixelRange, which over-merges points up to ~3× the radius
+ * apart and yields systematically fewer representatives than the CPU path.
+ * A seed whose
  * gated membership is at least `minimumClusterSize` becomes one cluster at the
  * world centroid of its members; sub-threshold seeds leave their members
  * un-clustered (rendered individually).

@@ -470,26 +470,24 @@ class ClassificationPrimitive {
     this._primitive.debugShowBoundingVolume = this.debugShowBoundingVolume;
     this._primitive.update(frameState);
 
-    // Audit (Batch 130) — standalone ClassificationPrimitive WebGPU
-    // dispatch. The inner Primitive ran above, populating
-    // `_webgpuGeometryData` on the chain; the WebGPU renderer's chain
-    // walk picks it up. WebGL keeps the inner Primitive's commands
-    // (pushed during `_primitive.update`); on WebGPU the inner shader-
-    // compile early-returned so those commands are no-ops, and these
-    // FR-built commands are the real classification pass.
+    // Standalone ClassificationPrimitive WebGPU dispatch. The inner
+    // Primitive ran above, populating `_webgpuGeometryData` on the chain;
+    // the WebGPU renderer's chain walk picks it up. WebGL keeps the inner
+    // Primitive's commands (pushed during `_primitive.update`); on WebGPU
+    // the inner shader-compile early-returned so those commands are no-ops,
+    // and these FR-built commands are the real classification pass.
     //
-    // STANDALONE-ONLY (C7-GROUNDPRIM-TEXTURED-CLASSIFY-ZERO, 2026-07-10):
-    // when this ClassificationPrimitive is the INNER primitive of a
-    // GroundPrimitive, the wrapper's `updateAndQueueCommands` override
-    // (GroundPrimitive.js) already dispatched the feature renderer with
-    // the CORRECT owner — the GroundPrimitive, which carries the mode-
-    // appropriate bounding volumes (Batch 174 frustum distribution) and
-    // the user's classificationType. Dispatching again here emitted a
-    // SECOND, unbounded (no-BV → binned into every frustum slice)
-    // command set with this inner primitive's default BOTH
-    // classification — the same translucent polygon blended 3x per
-    // frame (premultiplied over-composite: a Grid cellAlpha-0.5 cell
-    // read 227/255 where WebGL reads 146/255).
+    // Standalone dispatch only: when this ClassificationPrimitive is the
+    // inner primitive of a GroundPrimitive, the wrapper's
+    // `updateAndQueueCommands` override (GroundPrimitive.js) already
+    // dispatched the feature renderer with the correct owner — the
+    // GroundPrimitive, which carries the mode-appropriate bounding volumes
+    // (frustum distribution) and the user's classificationType. Dispatching
+    // again here would emit a second, unbounded (no-BV → binned into every
+    // frustum slice) command set with this inner primitive's default BOTH
+    // classification — the same translucent polygon blended 3x per frame
+    // (premultiplied over-composite: a Grid cellAlpha-0.5 cell reading
+    // 227/255 where WebGL reads 146/255).
     // `_updateAndQueueCommandsFunction` is defined exactly when a
     // wrapper owns command emission (the same split the WebGL path uses
     // above), so gate on its absence.
@@ -505,8 +503,8 @@ class ClassificationPrimitive {
       // (attachPickToColorCommand) so the pick pass picks it up; the color
       // commands are the only ones that belong in the main command list.
       //
-      // Batch 161 — do NOT push `result.pickCommand` separately. It carries
-      // the single-target `depthSamplePick` pipeline tagged with the
+      // Do not push `result.pickCommand` separately. It carries the
+      // single-target `depthSamplePick` pipeline tagged with the
       // classification pass enum, so the classification color pass
       // (`runPass(TERRAIN_CLASSIFICATION)`) would execute it in the MSAA
       // 2-target MRT scene framebuffer — an attachment-state mismatch that
@@ -862,29 +860,24 @@ function modifyForEncodedNormals(primitive, vertexShaderSource) {
 function createShaderProgram(classificationPrimitive, frameState) {
   const context = frameState.context;
 
-  // BUILD-VAR-HAZARD-CLASSIFICATION — `ShaderProgram.replaceCache` and
-  // `ShaderProgram.fromCache` calls below expect real GLSL source. The
-  // webgpu-only build variant aliases every `Source/Shaders/*.js`
-  // import to an empty string stub (see `scripts/bundleVariantPlugin.js`),
-  // and WebGL would reject the empty-source compile. There is no
-  // WebGPU ClassificationPrimitive feature renderer yet — the WebGPU
-  // path silently renders these primitives as no-ops via the alias
-  // plugin's empty stubs. Early-return on WebGPU so the webgpu-only
-  // bundle doesn't crash; on dual / webgl-only bundles this branch is
-  // never taken.
-  // Audit 2026-05-02 follow-up: now uses the FR-key check pattern.
-  // The registered CLASSIFICATION_PRIMITIVE FR is a REAL renderer
-  // (Batch 130) — its `createCommands` is
+  // `ShaderProgram.replaceCache` and `ShaderProgram.fromCache` calls below
+  // expect real GLSL source. The webgpu-only build variant aliases every
+  // `Source/Shaders/*.js` import to an empty string stub (see
+  // `scripts/bundleVariantPlugin.js`), and WebGL would reject the
+  // empty-source compile.
+  //
+  // The registered CLASSIFICATION_PRIMITIVE feature renderer's
+  // `createCommands` is
   // `WebGPUGroundPrimitiveRenderer.createWebGPUGroundPrimitiveCommands`,
-  // invoked in `update()` above (the depth-sample classification path that
-  // actually tints terrain / 3D Tiles on WebGPU; verified by
-  // probe-classification-primitive-parity). This early-return skips the
-  // WebGL-only `ShaderProgram.replaceCache` / `fromCache` setup below (the
-  // inner Primitive's WebGL shadow-volume shaders): on WebGPU those
-  // commands are inert (the FR-built commands are the real classification
-  // pass), and on the webgpu-only build variant the GLSL sources are
-  // aliased to empty stubs (BUILD-VAR-HAZARD-CLASSIFICATION above) which
-  // WebGL would reject. Presence of the FR is the "skip WebGL setup" signal.
+  // invoked in `update()` above — the depth-sample classification path that
+  // actually tints terrain / 3D Tiles on WebGPU, verified by
+  // probe-classification-primitive-parity. Its presence is the signal to
+  // early-return here and skip the WebGL-only `ShaderProgram.replaceCache` /
+  // `fromCache` setup below (the inner Primitive's WebGL shadow-volume
+  // shaders): on WebGPU those commands are inert (the feature renderer's
+  // commands are the real classification pass), and on the webgpu-only
+  // build variant the GLSL sources are aliased to empty stubs, which WebGL
+  // would reject. On dual / webgl-only bundles this branch is never taken.
   if (context.getFeatureRenderer(FeatureRendererKey.CLASSIFICATION_PRIMITIVE)) {
     return;
   }

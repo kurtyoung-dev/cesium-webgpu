@@ -115,9 +115,9 @@ DerivedCommand.createDepthOnlyDerivedCommand = function (
     result.depthOnlyCommand,
   );
 
-  // NEW-4-H (Batch 70) — sibling defect to NEW-4-C / NEW-5-A: WebGPU draw
-  // commands carry a GPUShaderModule-backed pipeline that doesn't have the
-  // WebGL-style `shaderProgram.id` / `_cachedShader` fields. Skip the
+  // WebGPU draw commands carry a GPUShaderModule-backed pipeline that
+  // doesn't have the WebGL-style `shaderProgram.id` / `_cachedShader`
+  // fields. Skip the
   // GLSL depth-only derivation when the shader program isn't a WebGL
   // ShaderProgram — the WebGPU dispatcher (`selectCommandVariant`) already
   // routes depth-only via `derivedCommands.depth.command` with a pre-built
@@ -155,8 +155,8 @@ const writeLogDepthRegex = /\s+czm_writeLogDepth\(/;
 const vertexlogDepthRegex = /\s+czm_vertexLogDepth\(/;
 
 function getLogDepthShaderProgram(context, shaderProgram) {
-  // NEW-4-C (Batch 66) — WebGPU draw commands carry GPUShaderModule
-  // pipelines that don't have a WebGL-style `fragmentShaderSource`.
+  // WebGPU draw commands carry GPUShaderModule pipelines that don't have
+  // a WebGL-style `fragmentShaderSource`.
   // The log-depth wrapper is a WebGL-only transformation (it rewrites
   // GLSL source); for WebGPU the dispatcher (`selectCommandVariant`)
   // already routes log-depth via `derivedCommands.logDepth.command`
@@ -264,9 +264,9 @@ DerivedCommand.createLogDepthCommand = function (command, context, result) {
 
   result.command = DrawCommand.shallowClone(command, result.command);
 
-  // NEW-5-A (Batch 66) — sibling defect to NEW-4-C: WebGPU draw commands
-  // carry a GPUShaderModule-backed pipeline that doesn't have the
-  // WebGL-style `shaderProgram.id` field. Skip the log-depth derivation
+  // WebGPU draw commands carry a GPUShaderModule-backed pipeline that
+  // doesn't have the WebGL-style `shaderProgram.id` field. Skip the
+  // log-depth derivation
   // when the shader program isn't a WebGL ShaderProgram — the WebGPU
   // dispatcher (`selectCommandVariant`) already routes log-depth via
   // `derivedCommands.logDepth.command` with a pre-built WGSL pipeline.
@@ -702,8 +702,8 @@ function unapplyValueTransform(input, offset, scale) {
  */
 function unnormalize(input, componentType) {
   const max = MetadataComponentType.getMaximum(componentType);
-  // Emit the maximum as a GLSL FLOAT literal (METADATA-UINT16-32): the
-  // historical `float(${max})` int-constructor form overflows the GLSL
+  // Emit the maximum as a GLSL float literal: the historical
+  // `float(${max})` int-constructor form overflows the GLSL
   // signed-int literal parse for UINT32 (4294967295) and INT64/UINT64 maxima
   // (ANGLE wraps the literal to -1), so pickMetadata of wide unsigned types
   // decoded to 0. `4294967295.0` is a valid float literal with the identical

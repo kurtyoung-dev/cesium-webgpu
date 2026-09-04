@@ -1,7 +1,6 @@
 /**
- * `C12-28` (`NEW-HDR-DEFAULT-ON-HDR-CAPABLE-DISPLAYS`) — display-capability
- * detection and the pure decision function behind `Scene#highDynamicRange`'s
- * default.
+ * Display-capability detection and the pure decision function behind
+ * `Scene#highDynamicRange`'s default.
  *
  * Before this module, `Scene` hardcoded `highDynamicRange = false` regardless
  * of what the display could actually show. The CSS Media Queries Level 4
@@ -21,7 +20,7 @@
  * exercise every one of those in Node, with no browser and no HDR monitor.
  * `Scene` keeps only the state-plumbing half.
  *
- * ## The three rules the C12 queue row set
+ * ## The three governing rules
  *
  * 1. **Explicitly overridable.** An application that assigns
  *    `scene.highDynamicRange` owns the value forever afterwards —
@@ -34,7 +33,8 @@
  * 3. **No tonemap-operator change.** This module decides a boolean. It has no
  *    opinion about which tonemapper runs — deliberately, because ACES ends in
  *    a per-channel `clamp(0,1)` that maximises hue-shift-to-white on exactly
- *    the bright celestial pixels `C12-05..07` were built to fix.
+ *    the bright celestial pixels this fork's HDR rendering was built to
+ *    preserve.
  *
  * A fourth rule is this module's own: **unknown is not SDR.** When there is no
  * `matchMedia` (Node, jsdom, a `--test` process) or the browser does not
@@ -47,7 +47,7 @@
 /**
  * How far {@link Scene} is allowed to act on the detected display capability.
  *
- * - `"off"` — no detection at all; the pre-`C12-28` hardcoded SDR default.
+ * - `"off"` — no detection at all; the historical hardcoded SDR default.
  * - `"scene"` — default `Scene#highDynamicRange` from the display. The scene
  *   framebuffer becomes `rgba16float` and the post-process chain keeps its
  *   normal SDR tonemap on the way to the canvas. This is the default.
@@ -356,8 +356,8 @@ export function observeHdrDisplay(
 }
 
 /**
- * The `C12-28` decision. Pure: same inputs always produce the same output, no
- * globals, no engine objects.
+ * The HDR-default decision. Pure: same inputs always produce the same
+ * output, no globals, no engine objects.
  *
  * Order of the guards is the specification:
  *

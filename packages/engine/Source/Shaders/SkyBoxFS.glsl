@@ -8,31 +8,31 @@
 
 uniform samplerCube u_cubeMap;
 
-// C12-29 S6 / ruling E3 — star-brightness modulation, the WebGL half.
+// Star-brightness modulation, the WebGL half.
 //   x = curve inflection      (atmosphericConditions.skyAtmosphere.starModulationCurve)
 //   y = curve steepness
-//   z = enable flag (0/1)     (enableStarBrightnessModulation AND the sky
+//   z = enable flag (0/1)     (enableStarBrightnessModulation and the sky
 //                              atmosphere actually being drawn)
 //   w = cloud cover 0..1      (weather-gated; 0 unless scene.enableWeather)
 // Mirrors `CubeMapPanorama.wgsl`'s `starModulation` vec4 exactly, including
-// the ORDER of operations: modulate, then cloud-occlude, then gamma-correct.
+// the order of operations: modulate, then cloud-occlude, then gamma-correct.
 // `czm_gammaCorrect` is a no-op without HDR, so on the default path this is a
-// plain multiply; with HDR it must stay BEFORE the sRGB->linear decode or the
-// two backends stop agreeing (WGSL applies its `hdr.x` pow last).
+// plain multiply; with HDR it must stay before the sRGB->linear decode or
+// the two backends stop agreeing (WGSL applies its `hdr.x` pow last).
 uniform vec4 u_starModulation;
 // `frameState.skyBrightness` — the CPU sky-brightness estimate, already
-// scaled by the C12-29 S2 eclipse factor, so an eclipse reveals stars through
-// this one input rather than through a parallel path.
+// scaled by the eclipse scene-light factor, so an eclipse reveals stars
+// through this one input rather than through a parallel path.
 uniform float u_skyBrightness;
 
-// C12-27 — angular solar-glare star washout, the WebGL half.
-//   u_solarGlare.xyz  = Sun direction in THIS shader's cube-map lookup frame
+// Angular solar-glare star washout, the WebGL half.
+//   u_solarGlare.xyz  = Sun direction in this shader's cube-map lookup frame
 //                       (TEME for SkyBox, whose VS applies czm_temeToPseudoFixed)
-//   u_solarGlare.w    = washout strength; EXACTLY 0 for generic panoramas and
+//   u_solarGlare.w    = washout strength; exactly 0 for generic panoramas and
 //                       for the disabled toggle, which skips the whole block
 //   u_solarGlareCurve = (angular core rad, pedestal, support rad, reserved)
 // Mirrors `CubeMapPanorama.wgsl`'s `solarGlare` / `solarGlareCurve` exactly,
-// including the ORDER: modulate, cloud-occlude, GLARE, then gamma-correct.
+// including the order: modulate, cloud-occlude, glare, then gamma-correct.
 // Resolved once per frame on the CPU by `Scene/SolarGlareAppearance.js`; the
 // curve numbers arrive as uniforms so this file carries no numeric copy.
 uniform vec4 u_solarGlare;
@@ -40,8 +40,8 @@ uniform vec4 u_solarGlareCurve;
 
 in vec3 v_texCoord;
 
-// C12-27 — veiling-glare weight as a function of angular separation from the
-// Sun. Character-identical to `solarGlareVeil` in
+// Veiling-glare weight as a function of angular separation from the Sun.
+// Character-identical to `solarGlareVeil` in
 // `Shaders/WebGPU/CubeMapPanorama.wgsl`,
 // `Shaders/WebGPU/Catalog/StarField.wgsl` and `Shaders/StarFieldVS.glsl`, and a
 // line-for-line translation of `angularGlareVeil` in
@@ -53,10 +53,10 @@ in vec3 v_texCoord;
 //   veil(theta) = (raw - pedestal) / (1 - pedestal), clamped to [0, 1]
 //
 // The `1/theta^2` tail is the Stiles-Holladay / CIE disability-glare form. The
-// pedestal subtraction makes the veil reach EXACTLY 0 at the support angle
+// pedestal subtraction makes the veil reach exactly 0 at the support angle
 // (90 deg), and the `cosSeparation <= 0.0` early-out is the same half-space,
-// so a direction at or beyond 90 deg from the Sun is multiplied by exactly 1.0
-// — byte-identical to the no-Sun frame, the C12-27 acceptance criterion.
+// so a direction at or beyond 90 deg from the Sun is multiplied by exactly
+// 1.0 — byte-identical to the no-Sun frame.
 float solarGlareVeil(float cosSeparation, float core, float pedestal, float support)
 {
     if (cosSeparation <= 0.0) { return 0.0; }

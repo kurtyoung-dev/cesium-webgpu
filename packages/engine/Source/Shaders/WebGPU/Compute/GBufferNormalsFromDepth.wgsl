@@ -1,56 +1,45 @@
-// GBufferNormalsFromDepth.wgsl — Phase 8a Slice 2 (Batch 85)
-//
 // Screen-space normal reconstruction. Reads the scene depth attachment
-// and writes eye-space normals (RGB) + a default roughness of 1.0 (A)
-// into the G-buffer color attachment owned by `GBufferFramebuffer.js`
-// (Phase 8a Slice 1, Batch 80).
+// and writes eye-space normals (RGB) + a depth-gradient roughness proxy
+// (A) into the G-buffer color attachment owned by `GBufferFramebuffer.js`.
 //
-// METHOD
+// Method
 // Reconstructs the eye-space surface position at each pixel from depth
-// + the camera's inverse-projection matrix, then takes central
-// differences of the position field to derive the surface normal:
+// + the camera's inverse-projection matrix, then derives the surface
+// normal from a magnitude-weighted blend of an axis-aligned cross-stencil
+// gradient and a diagonal-stencil gradient (see the per-block comments
+// below for both). Sky fragments (depth >= 0.99999) and any pixel whose
+// blended gradient is degenerate are written as the (0, 0, 0, 1) sentinel
+// instead of a reconstructed normal, so consumers can treat an all-zero
+// texel as "no surface here" without also needing a separate depth test.
 //
 //   posEye(x, y)   = unprojectDepth(uv, depth)
-//   dpdu           = posEye(x+1, y) - posEye(x-1, y)   (∂P/∂screenX)
-//   dpdv           = posEye(x, y+1) - posEye(x, y-1)   (∂P/∂screenY)
-//   normalEye      = normalize(cross(dpdv, dpdu))
+//   dpdu           = the smaller-magnitude of the forward and backward
+//                    screen-X differences at posEye, silhouette-selected
+//                    (∂P/∂screenX)
+//   dpdv           = the smaller-magnitude of the forward and backward
+//                    screen-Y differences at posEye, silhouette-selected
+//                    (∂P/∂screenY)
+//   normalEye      = normalize(magnitude-weighted blend of
+//                    cross(dpdv, dpdu) with the diagonal-stencil equivalent)
 //
 // The cross product is ordered `(dpdv, dpdu)` so the resulting normal
-// points TOWARD the camera (positive Z in eye-space convention used
+// points toward the camera (positive Z in eye-space convention used
 // throughout the WGSL globe pipeline — see
 // GlobeTerrain.wgsl::v_normalEC which is derived from the same view 3×3).
 //
-// LIMITATIONS — current state (Slice 3 closes #1; #2 and #3 are Slice 4+):
+// Known limitations
 //
-// 1. **(Closed in Slice 3, Batch 86.)** Normals at silhouette /
-//    depth-discontinuity edges are noisy because the central difference
-//    straddles the discontinuity. Slice 3 adds an adaptive gradient
-//    selector: for each axis, the shader compares the magnitude of the
-//    forward and backward differences and picks the smaller one (which
-//    is necessarily on the same surface as the center pixel — the
-//    larger one straddles the discontinuity). The combined fallback
-//    is approximately as cheap as the original central-difference
-//    formula (5 depth samples instead of 4) and produces clean edges
-//    on silhouette boundaries.
+// Roughness is a heuristic depth-gradient proxy, not real material
+// roughness (see the comment at the roughness computation below).
+// Threading actual per-material roughness through here would need the
+// opaque pass to MRT-write it to a separate target.
 //
-// 2. Roughness is a constant 1.0. Slice 4+ will thread per-material
-//    roughness through a separate render-pass that writes only the
-//    .w channel (or use MRT from the opaque pass when that lands).
-//
-// 3. Skies and other "no-depth-hit" fragments (depth = 1.0) still get
-//    a reconstructed normal here — it's whatever the gradient of the
-//    cleared depth produces. Consumers MUST gate on `depth < 1.0`
-//    before treating the normal as meaningful. The G-buffer color
-//    attachment is cleared to (0, 0, 0, 1) at the start of the frame
-//    (per `GBufferFramebuffer.clear()`), so consumers can also use the
-//    "all zero" sentinel as a "no normal here" gate.
-//
-// DEPENDENCIES
-// Consumed in Slice 3+ by GTAO, SSR, and clustered lighting. The producer
-// half (this shader) is gated entirely by `frameState.useDeferredLighting`;
-// when the flag is false the dispatch is skipped, the G-buffer is never
-// allocated, and this shader is never compiled at runtime by the WebGPU
-// pipeline cache.
+// Dependencies
+// Consumed by GTAO, SSR, and clustered lighting. The producer half (this
+// shader) is gated entirely by `frameState.useDeferredLighting`; when the
+// flag is false the dispatch is skipped, the G-buffer is never allocated,
+// and this shader is never compiled at runtime by the WebGPU pipeline
+// cache.
 
 struct ReconstructionUniforms {
   // Inverse-projection matrix — maps clip-space (NDC) coordinates back
@@ -74,7 +63,8 @@ struct ReconstructionUniforms {
 @group(0) @binding(1) var sceneDepth: texture_depth_2d;
 
 // Output G-buffer color attachment: rgba16float. .xyz = eye-space
-// normal (signed, range [-1, 1]); .w = roughness (Slice 2 hardcodes 1.0).
+// normal (signed, range [-1, 1]); .w = the depth-gradient roughness
+// proxy computed below.
 @group(0) @binding(2) var gBufferOut: texture_storage_2d<rgba16float, write>;
 
 /**
@@ -141,21 +131,20 @@ fn computeNormalFromDepth(@builtin(global_invocation_id) gid: vec3<u32>) {
   let pDown   = unprojectDepth(pxDown,  dDown);
   let pUp     = unprojectDepth(pxUp,    dUp);
 
-  // Silhouette-aware gradient selection (Slice 3). For each axis,
-  // compare the magnitude of the forward (center→neighbor) and
-  // backward (center→neighbor) differences and pick the smaller one.
-  // At silhouette edges, one side straddles a depth discontinuity (its
-  // unprojected position jumps far from `pCenter`); the other side is
-  // continuous on the surface. Taking the smaller-magnitude side keeps
-  // the gradient on the SAME surface as the center pixel.
+  // Silhouette-aware gradient selection. For each axis, compare the
+  // magnitude of the forward (center→neighbor) and backward
+  // (center→neighbor) differences and pick the smaller one. At silhouette
+  // edges, one side straddles a depth discontinuity (its unprojected
+  // position jumps far from `pCenter`); the other side is continuous on
+  // the surface. Taking the smaller-magnitude side keeps the gradient on
+  // the same surface as the center pixel.
   //
-  // Pre-Slice-3 the shader used `pRight - pLeft` (a central difference),
-  // which averages the two sides — at a silhouette this produces a
-  // half-bad gradient that points roughly toward the discontinuity,
-  // showing up as a noisy ring of bad normals around every object
-  // boundary. The adaptive selection eliminates that ring at the cost
-  // of one comparison + select per axis (cheaper than the depth fetch
-  // it gates).
+  // A plain central difference (`pRight - pLeft`) averages the two sides
+  // instead — at a silhouette this produces a half-bad gradient that
+  // points roughly toward the discontinuity, showing up as a noisy ring
+  // of bad normals around every object boundary. The adaptive selection
+  // eliminates that ring at the cost of one comparison + select per axis
+  // (cheaper than the depth fetch it gates).
   let fwdU = pRight - pCenter;
   let bckU = pCenter - pLeft;
   let fwdV = pDown - pCenter;
@@ -164,7 +153,7 @@ fn computeNormalFromDepth(@builtin(global_invocation_id) gid: vec3<u32>) {
   let dpdv = select(bckV, fwdV, dot(fwdV, fwdV) < dot(bckV, bckV));
 
   // Sanitize against degenerate gradients (depth discontinuities,
-  // shadowed silhouette pixels where BOTH sides are bad). The cross
+  // shadowed silhouette pixels where both sides are bad). The cross
   // product becomes near-zero; normalize would produce NaN. Threshold
   // on magnitude — if too small, emit the sentinel.
   let cross1 = cross(dpdv, dpdu);
@@ -174,19 +163,19 @@ fn computeNormalFromDepth(@builtin(global_invocation_id) gid: vec3<u32>) {
     return;
   }
 
-  // Slice 5c-A (Batch 99) — diagonal-sample augmentation. The axis-
-  // only cross-stencil above produces correct but noticeably noisy
-  // normals on planar surfaces, because its gradient estimate uses only
-  // 4 depth samples. Diagonal samples (UR, UL, DR, DL) give the same
-  // surface 4 MORE on-axis-equivalent gradients with no extra texture
-  // bandwidth per direction. Each diagonal yields a u-and-v gradient
-  // pair (the projection of the diagonal step onto each screen axis);
-  // we pick the smaller-magnitude per axis just like the cross taps,
-  // then magnitude-weight-blend the diagonal normal with the cross
-  // normal. Small-magnitude (on-surface) gradients dominate the blend;
-  // large-magnitude (silhouette) gradients get suppressed.
+  // Diagonal-sample augmentation. The axis-only cross-stencil above
+  // produces correct but noticeably noisy normals on planar surfaces,
+  // because its gradient estimate uses only 4 depth samples. Diagonal
+  // samples (UR, UL, DR, DL) give the same surface 4 more on-axis-
+  // equivalent gradients with no extra texture bandwidth per direction.
+  // Each diagonal yields a u-and-v gradient pair (the projection of the
+  // diagonal step onto each screen axis); the smaller-magnitude side is
+  // picked per axis just like the cross taps, then the diagonal normal
+  // is magnitude-weight-blended with the cross normal. Small-magnitude
+  // (on-surface) gradients dominate the blend; large-magnitude
+  // (silhouette) gradients get suppressed.
   //
-  // Net effect: ~50% noise reduction on flat surfaces with NO loss of
+  // Net effect: ~50% noise reduction on flat surfaces with no loss of
   // silhouette protection (degenerate diagonal gradients self-weight
   // out of the blend). Bandwidth cost: 4 extra depth fetches + 4 extra
   // unprojections per pixel. Worth it — AO/SSR sampling cost downstream
@@ -233,28 +222,25 @@ fn computeNormalFromDepth(@builtin(global_invocation_id) gid: vec3<u32>) {
     blendedLenSq > 1e-12,
   );
 
-  // Phase 8a Slice 5b (Batch 93) — derive a "roughness proxy" from
-  // depth-gradient magnitude. This is a heuristic, not real material
-  // roughness; threading actual material data here requires the
-  // opaque pass to MRT-write roughness to a separate target, which is
-  // a much larger change. The heuristic captures something useful:
+  // Roughness is a heuristic "proxy" derived from depth-gradient
+  // magnitude, not real material roughness — threading actual material
+  // data here would need the opaque pass to MRT-write roughness to a
+  // separate target, which is a much larger change. The heuristic
+  // captures something useful:
   //
   //   - Smooth surfaces (water, building facades, large terrain
-  //     slopes) have a SMALL depth gradient over the 3-pixel
-  //     neighborhood we sampled. We interpret these as "low
-  //     roughness" → SSR can do sharp reflections.
+  //     slopes) have a small depth gradient over the sampled
+  //     neighborhood. These read as low roughness, so SSR can do
+  //     sharp reflections.
   //   - Rough surfaces (vegetation, rocky terrain, jagged 3D Tile
-  //     features) have a LARGE depth gradient. We interpret these as
-  //     "high roughness" → SSR attenuates / skips reflections.
+  //     features) have a large depth gradient. These read as high
+  //     roughness, so SSR attenuates / skips reflections.
   //
-  // The threshold `0.5 m` is the linear-space gradient magnitude that
-  // separates "essentially planar" from "noticeably curved" surfaces
-  // at typical Cesium viewing distances. Values inside the threshold
-  // are mirror-like (roughness ≈ 0.1); outside are diffuse-like
-  // (roughness ≈ 0.95).
-  //
-  // Slice 5c (future) will replace this with material-driven roughness
-  // via opaque-pass MRT.
+  // The `smoothstep(0.05, 2.0, gradMag)` thresholds span the
+  // linear-space gradient magnitude from "essentially planar" to
+  // "noticeably curved" surfaces at typical Cesium viewing distances;
+  // below the low edge the surface reads mirror-like (roughness 0.1),
+  // above the high edge diffuse-like (roughness 0.95).
   let gradMag = sqrt(dot(dpdu, dpdu) + dot(dpdv, dpdv));
   let roughness = mix(0.1, 0.95, smoothstep(0.05, 2.0, gradMag));
   textureStore(gBufferOut, pixel, vec4<f32>(normalEye, roughness));

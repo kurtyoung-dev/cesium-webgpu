@@ -46,8 +46,8 @@ const templateProperties = [
   "uniforms",
   "components",
   "source",
-  // Session 65 Cluster 3 — parallel WGSL fabric API. The `wgsl` field
-  // carries either `{ source: <WGSL function body> }` or
+  // Parallel WGSL fabric API. The `wgsl` field carries either
+  // `{ source: <WGSL function body> }` or
   // `{ components: { diffuse: ..., alpha: ... } }` — same shape as the
   // GLSL `source` / `components` pair. Consumed by
   // `createWGSLMethodDefinition` (see below) into `material.wgslShaderSource`.
@@ -234,7 +234,7 @@ function createMethodDefinition(material) {
 // Or when `wgsl.source` is supplied, the source is appended verbatim
 // (caller is responsible for declaring `czm_getMaterial` themselves).
 //
-// Session 65 Cluster 3 — parallel WGSL fabric API.
+// Parallel WGSL fabric API.
 function createWGSLMethodDefinition(material) {
   const wgsl = material._template.wgsl;
   const wgslSource = wgsl?.source;
@@ -243,10 +243,10 @@ function createWGSLMethodDefinition(material) {
     return;
   }
 
-  // Session 65 Batch 16 — composite WGSL fabric fallback. When the
-  // fabric declares NO `wgsl: {}` block but DOES declare top-level
-  // `components` + sub-`materials`, generate the composite WGSL using
-  // the top-level `components` expressions. This works because:
+  // Composite WGSL fabric fallback. When the fabric declares no
+  // `wgsl: {}` block but does declare top-level `components` +
+  // sub-`materials`, generate the composite WGSL using the top-level
+  // `components` expressions. This works because:
   //
   //   (a) sub-material id replacement is now applied to
   //       `wgslShaderSource` as well (see `replaceToken` + the
@@ -258,12 +258,12 @@ function createWGSLMethodDefinition(material) {
   //   (b) the expression syntax used in `components` is the GLSL
   //       sub-set common with WGSL — vec arithmetic, `max`, scalar
   //       promotion, member access. Custom fabrics that need
-  //       WGSL-specific syntax (e.g., `textureSample`) MUST still
+  //       WGSL-specific syntax (e.g., `textureSample`) must still
   //       declare an explicit `wgsl: { components | source }` block.
   //   (c) if any sub-material lacks `wgsl: {}` declarations, the
   //       composite will reference an undefined function and fail to
-  //       compile — surfaces a clear error in the WGSL pipeline build
-  //       rather than the previous silent black-globe outcome.
+  //       compile — surfacing a clear error in the WGSL pipeline build
+  //       rather than a silent black globe.
   //
   // This is what makes the Bathymetry demo's `ElevationColorContour`
   // composite (sub-fuses `ElevationContour` + `ElevationRamp`) render
@@ -387,7 +387,7 @@ function createTexture2DUpdateFunction(uniformId) {
       }
       // An already-adopted Texture is terminal too. Falling through would
       // call loadTexture2DImageForUniform, whose non-Resource path allocates a
-      // resolved Promise every frame (C12-35 WebGL Moon hot-path audit).
+      // resolved Promise every frame.
       return;
     }
 
@@ -638,8 +638,8 @@ function createUniform(material, uniformId) {
       );
     }
     //>>includeEnd('debug');
-    // Batch 138 — also expose the channels value on material.uniforms so
-    // the WebGPU MaterialUniformBuffer (which packs it as a numeric index
+    // Also expose the channels value on material.uniforms so the WebGPU
+    // MaterialUniformBuffer (which packs it as a numeric index
     // / vec3 of indices for runtime swizzling) can see it. Upstream WebGL
     // bakes channels into the GLSL source via `replaceToken` and has no
     // runtime uniform, so it ignores the extra map entry. Without this,
@@ -798,11 +798,11 @@ function createSubMaterials(material, MaterialConstructor) {
       const newMethodName = `${originalMethodName}_${material._count++}`;
       replaceToken(subMaterial, originalMethodName, newMethodName);
       material.shaderSource = subMaterial.shaderSource + material.shaderSource;
-      // Session 65 Batch 16 — mirror the GLSL method-rename + prepend
-      // into the WGSL flow so composite WGSL fabrics (e.g., Bathymetry's
-      // `ElevationColorContour` fusing `ElevationContour` +
-      // `ElevationRamp`) end up with renamed `czm_getMaterial_N`
-      // functions instead of multiple definitions of the same symbol.
+      // Mirror the GLSL method-rename + prepend into the WGSL flow so
+      // composite WGSL fabrics (e.g., Bathymetry's `ElevationColorContour`
+      // fusing `ElevationContour` + `ElevationRamp`) end up with renamed
+      // `czm_getMaterial_N` functions instead of multiple definitions of
+      // the same symbol.
       if (
         subMaterial.wgslShaderSource &&
         subMaterial.wgslShaderSource.length > 0
@@ -855,11 +855,11 @@ function replaceToken(material, token, newToken, excludePeriod) {
   return count;
 }
 
-// Session 65 Batch 16 — rename a token inside `wgslShaderSource` only.
-// Composite WGSL fabric (e.g., Bathymetry's `ElevationColorContour`)
-// needs the same id-substitution that GLSL gets — but ONLY for
-// sub-material ids and `czm_getMaterial` method names. Uniform names
-// must stay un-suffixed in the WGSL body because the WGSL material UBO
+// Rename a token inside `wgslShaderSource` only. Composite WGSL fabric
+// (e.g., Bathymetry's `ElevationColorContour`) needs the same
+// id-substitution that GLSL gets — but only for sub-material ids and
+// `czm_getMaterial` method names. Uniform names must stay un-suffixed in
+// the WGSL body because the WGSL material UBO
 // layer (`buildMaterialPrelude` / `rewriteMaterialBody` in
 // `WebGPUGlobeMaterial.ts`) keys its lookups on the unsuffixed names
 // from `material.uniforms`. The same regex shape works because both
@@ -934,10 +934,10 @@ function initializeMaterial(options, result, MaterialConstructor) {
     result._template = combine(result._template, template, true);
     translucent = cachedMaterial.translucent;
 
-    // Batch 139 — reorder uniforms to match the cached template's
-    // canonical field order. `combine()` lists user-provided keys
-    // FIRST and template-only keys LAST, which puts inherited defaults
-    // at the wrong offsets in the packed UB. WGSL structs are written
+    // Reorder uniforms to match the cached template's canonical field
+    // order. `combine()` lists user-provided keys first and
+    // template-only keys last, which puts inherited defaults at the
+    // wrong offsets in the packed UB. WGSL structs are written
     // in canonical fabric order (channels, strength, repeat for
     // NormalMap), so when the JS UB's iteration order diverges from
     // that, every field reads from the wrong memory location.
@@ -949,8 +949,8 @@ function initializeMaterial(options, result, MaterialConstructor) {
     //
     // Anti-pattern this fixes: `new Material({ fabric: { type:
     // "NormalMap", uniforms: { image, strength, repeat }}})` (omitting
-    // `channels`) — pre-Batch-139 the inherited channels ended up at
-    // offset 4 floats but WGSL expected it at offset 0.
+    // `channels`) — without reordering, the inherited channels ends up at
+    // offset 4 floats but WGSL expects it at offset 0.
     if (defined(template.uniforms) && defined(result._template.uniforms)) {
       const reordered = {};
       // First: keys in canonical template order (these include both

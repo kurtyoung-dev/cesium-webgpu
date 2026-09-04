@@ -527,12 +527,11 @@ GroundPolylinePrimitive.initializeTerrainHeights = function () {
 function createShaderProgram(groundPolylinePrimitive, frameState, appearance) {
   const context = frameState.context;
 
-  // BUILD-VAR-HAZARD-GROUND-POLYLINE — `ShaderProgram.replaceCache`
-  // below expects real GLSL source. The webgpu-only build variant
-  // aliases every `Source/Shaders/*.js` import to an empty string
-  // stub. The GROUND_POLYLINE feature renderer
-  // (`WebGPUGroundPolylineRenderer`) takes over when registered.
-  // Audit 2026-05-02: FR-key check per CLAUDE.md §2 backend-agnosticism.
+  // `ShaderProgram.replaceCache` below expects real GLSL source. The
+  // webgpu-only build variant aliases every `Source/Shaders/*.js` import
+  // to an empty string stub. The GROUND_POLYLINE feature renderer
+  // (`WebGPUGroundPolylineRenderer`) takes over when registered. Uses the
+  // FR-key check so this stays backend-agnostic.
   if (context.getFeatureRenderer(FeatureRendererKey.GROUND_POLYLINE)) {
     return;
   }
@@ -831,8 +830,7 @@ function updateAndQueueCommands(
   if (fr && fr.createCommands) {
     const result = fr.createCommands(groundPolylinePrimitive, frameState);
     if (result) {
-      // AUDIT_2026_05_02 A.3 (Batch 146) — prefer the new
-      // `colorCommands[]` array shape so `classificationType: BOTH`
+      // Prefer the `colorCommands[]` array shape so `classificationType: BOTH`
       // primitives push both the TERRAIN_CLASSIFICATION and
       // CESIUM_3D_TILE_CLASSIFICATION commands. Falls back to the
       // legacy singular slot for backwards compatibility.
@@ -845,8 +843,7 @@ function updateAndQueueCommands(
       } else if (result.colorCommand) {
         frameState.commandList.push(result.colorCommand);
       }
-      // AUDIT_2026_05_02 A.2 (Batch 141, NEW-INVERT-CLASS-STENCIL-CLASSIFIER) —
-      // push IGNORE_SHOW stencil-write command when invert classification
+      // Push IGNORE_SHOW stencil-write command when invert classification
       // is on. Renderer only emits this for 3D-Tile classification (not
       // TERRAIN-only or morph mode); when invert is off the
       // CESIUM_3D_TILE_CLASSIFICATION_IGNORE_SHOW pass doesn't run, so

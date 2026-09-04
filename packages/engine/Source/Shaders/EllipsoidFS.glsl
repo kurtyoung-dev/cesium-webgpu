@@ -19,7 +19,7 @@ uniform float u_earthshinePhaseScale;
 #ifdef SOFT_TERMINATOR
 uniform float u_terminatorSoftness;
 
-// C12-22 — cosine-weighted irradiance from a solar disc of angular radius
+// Cosine-weighted irradiance from a solar disc of angular radius
 // `softness`, replacing the hard `max(nDotL, 0)` horizon clip. Character-
 // identical twin of softTerminatorMu0 in Moon.wgsl; the JS reference (and the
 // derivation) live in Scene/MoonPhaseAppearance.js.
@@ -28,7 +28,7 @@ uniform float u_terminatorSoftness;
 //     f(c) = (c + w)^2 / (4w)        -w < c < w
 //     f(c) = c                       c >= w
 //
-// C1-continuous at both seams and EXACTLY the legacy value outside the band,
+// C1-continuous at both seams and exactly the legacy value outside the band,
 // so `softness == 0.0` is a true identity rather than an approximation of one.
 float softTerminatorMu0(float nDotL, float hardMu0, float softness)
 {
@@ -112,7 +112,7 @@ vec3 lunarShadowFactor(float radius, float umbraRadius, float penumbraRadius)
 in vec3 v_positionEC;
 
 #ifdef LUNAR_EXPLICIT_GRADIENTS
-// C12-33 — Moon mip LOD must not depend on implicit derivatives after a
+// Moon mip LOD must not depend on implicit derivatives after a
 // fragment-varying discard or on the raw 0/1 longitude discontinuity. These
 // values are populated for both front and back hits in main before either
 // exact-miss discard, then consumed by the private Moon image material and
@@ -181,11 +181,11 @@ vec4 computeEllipsoidColor(czm_ray ray, float intersection, float side)
     czm_material material = czm_getMaterial(materialInput);
 
 #ifdef LUNAR_NORMAL_MAP
-    // C12-25 — LOLA-derived terminator relief (Moon path).
+    // LOLA-derived terminator relief (Moon path).
     //
-    // The stored map is tangent-space in a GEOGRAPHIC east-north-up frame:
+    // The stored map is tangent-space in a geographic east-north-up frame:
     // x = east, y = north, z = up (the geodetic surface normal). That frame
-    // is rebuilt HERE, in MODEL space, rather than read from
+    // is rebuilt here, in model space, rather than read from
     // `materialInput.tangentToEyeMatrix`, so that this block and its WGSL
     // twin in Moon.wgsl are the same expression on the same vectors — the
     // WGSL side has no `czm_normal` to lean on and does all of its lighting
@@ -198,7 +198,7 @@ vec4 computeEllipsoidColor(czm_ray ray, float intersection, float side)
     // Perturbing `material.normal` — not the UV normal — is what makes this
     // modulate the Lommel-Seeliger term below and the Phong fallback alike:
     // both light against `material.normal`, so the relief rides whichever
-    // disc law is selected. It shows up near the TERMINATOR, where N·L is
+    // disc law is selected. It shows up near the terminator, where N·L is
     // near zero and a few degrees of tilt flips a facet between lit and
     // unlit, and is nearly invisible at full phase where the cosine is flat.
     //
@@ -221,11 +221,11 @@ vec4 computeEllipsoidColor(czm_ray ray, float intersection, float side)
 #endif
 
 #ifdef LUNAR_BRDF
-    // C12-20 — Lommel-Seeliger lunar-regolith reflectance (Moon path).
+    // Lommel-Seeliger lunar-regolith reflectance (Moon path).
     // I ∝ μ0 / (μ0 + μ), normalized so the sub-solar point at full phase
     // matches Lambert's peak (2·1/(1+1) = 1). At full moon μ0 ≈ μ across
     // the whole disc so the factor is ~1 everywhere — the real Moon's
-    // famously FLAT full disc, where Lambert renders a limb-darkened ball.
+    // famously flat full disc, where Lambert renders a limb-darkened ball.
     // Diffuse-only by design: lunar regolith has no specular lobe (the
     // Moon material's specular is 0 anyway). Keep the WGSL twin in
     // Moon.wgsl character-consistent with this block.
@@ -236,18 +236,18 @@ vec4 computeEllipsoidColor(czm_ray ray, float intersection, float side)
 #endif
     float mu0 = max(dot(material.normal, lunarLightDirEC), 0.0);
 #ifdef SOFT_TERMINATOR
-    // C12-22 — the Sun is not a point. From the Moon it subtends an angular
-    // RADIUS of ~4.649e-3 rad, so within that band around the geometric
-    // terminator the solar disc is partially below the local horizon and the
+    // The Sun is not a point. From the Moon it subtends an angular radius
+    // of ~4.649e-3 rad, so within that band around the geometric terminator
+    // the solar disc is partially below the local horizon and the
     // irradiance rolls off instead of being clipped. `u_terminatorSoftness`
     // is that radius, resolved CPU-side from the true Sun->Moon distance by
     // Scene/MoonPhaseAppearance.js and shared with the WGSL twin, which
     // applies it at exactly this point in Moon.wgsl's Lommel-Seeliger branch.
     //
-    // Deliberately NOT applied to the czm_private_phong / czm_phong fallbacks
+    // Deliberately not applied to the czm_private_phong / czm_phong fallbacks
     // below: those are shared builtins used by every lit primitive in the
     // engine and must not grow a moon-specific term. Leaving the fallback
-    // hard-clipped on BOTH backends is what keeps the pair in parity.
+    // hard-clipped on both backends is what keeps the pair in parity.
     mu0 = softTerminatorMu0(dot(material.normal, lunarLightDirEC), mu0, u_terminatorSoftness);
 #endif
     float mu = max(dot(material.normal, normalize(positionToEyeEC)), 0.0);
@@ -259,31 +259,29 @@ vec4 computeEllipsoidColor(czm_ray ray, float intersection, float side)
     vec4 litColor = czm_phong(normalize(positionToEyeEC), material, czm_lightDirectionEC);
 #endif
 
-    // Single exit from here down (C12-21). The three lighting laws above used
-    // to return independently, which forced every post-lighting term to be
+    // Single exit from here down. The three lighting laws above used to
+    // return independently, which forced every post-lighting term to be
     // written out once per branch — the opposition surge already carried
     // three identical copies. One tail keeps the WGSL twin's shape (Moon.wgsl
     // also composes into a single `color`) and means a new term is added in
     // one place, not three.
 
 #ifdef OPPOSITION_SURGE
-    // C12-23 — Hapke-SHOE opposition surge, computed CPU-side from the
-    // true phase angle (constant across the distant disc). Applies to the
-    // lunar BRDF and to both phong fallbacks, exactly as before.
+    // Hapke-SHOE opposition surge, computed CPU-side from the true phase
+    // angle (constant across the distant disc). Applies to the lunar BRDF
+    // and to both phong fallbacks, exactly as before.
     litColor.rgb *= u_oppositionSurge;
 #endif
 
 #ifdef EARTHSHINE
-    // C12-21 — earthshine: sunlight reflected off EARTH onto the Moon's night
-    // side, the "ashen light". Twin of the earthshine block in Moon.wgsl,
-    // which is where this term shipped first; C12-21 is also what gives it a
-    // GLSL counterpart at all, closing a Principle-5 gap the C11-176b row had
-    // flagged ("earthshine appears in no GLSL file").
+    // Earthshine: sunlight reflected off Earth onto the Moon's night side,
+    // the "ashen light". Twin of the earthshine block in Moon.wgsl; this is
+    // the GLSL counterpart that keeps the two backends in parity.
     //
     // Keyed on raw N.L so the shadowed hemisphere still receives it during
     // crescent phases, and scaled by `u_earthshinePhaseScale` = Earth's
-    // illuminated fraction seen FROM the Moon, the exact complement of the
-    // Moon's phase seen from Earth. Earthshine therefore PEAKS at new moon
+    // illuminated fraction seen from the Moon, the exact complement of the
+    // Moon's phase seen from Earth. Earthshine therefore peaks at new moon
     // and is exactly zero at full. The scale is exactly 1.0 when the phase
     // term is disabled, reproducing the historical constant bit-for-bit.
 #ifdef ONLY_SUN_LIGHTING
@@ -438,14 +436,14 @@ void main()
     out_FragColor.a = 1.0 - (1.0 - insideFaceColor.a) * (1.0 - outsideFaceColor.a);
 
 #ifdef ATMOSPHERE_EXTINCTION
-    // NS-MOON-ATMOSPHERE-EXTINCTION — attenuate + redden by the atmospheric
-    // transmittance along the view ray (exactly vec3(1.0) from orbit → no-op).
+    // Attenuate + redden by the atmospheric transmittance along the view ray
+    // (exactly vec3(1.0) from orbit → no-op).
     out_FragColor.rgb *= u_atmosphereExtinction;
 #endif
 
 #ifdef ATMOSPHERE_INSCATTER
-    // C12-30 — add the in-scattered sky radiance (sky-wash) along the view
-    // ray: disc = disc × extinction + inscatter, the full radiative-transfer
+    // Add the in-scattered sky radiance (sky-wash) along the view ray:
+    // disc = disc × extinction + inscatter, the full radiative-transfer
     // composite. Exactly vec3(0.0) from orbit / wash disabled → no-op. The
     // wash is what makes a daytime disc pale and sky-blended instead of a
     // dark cutout against the bright sky the disc overdraws.
@@ -457,9 +455,9 @@ void main()
     vec3 positionEC = czm_pointAlongRay(ray, t);
     vec4 positionCC = czm_projection * vec4(positionEC, 1.0);
 #ifdef MOON_PHYSICAL_DEPTH
-    // C12-37 — the physical command is binned into every intersecting frustum
-    // so a camera inside the Moon can reach the slice containing the visible
-    // exit surface. Reject non-owning slices with the current projection before
+    // The physical command is binned into every intersecting frustum so a
+    // camera inside the Moon can reach the slice containing the visible exit
+    // surface. Reject non-owning slices with the current projection before
     // computing the canonical depth value; exactly one slice can shade/write.
     if (positionCC.w <= 0.0)
     {

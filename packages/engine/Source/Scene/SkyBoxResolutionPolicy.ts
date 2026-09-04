@@ -1,5 +1,5 @@
 /**
- * `C12-12` — the star-cube-map **VRAM / streaming policy**: which face
+ * The star-cube-map **VRAM / streaming policy**: which face
  * resolution {@link SkyBox.createEarthSkyBox} serves by default, which one an
  * application may opt into, and what either costs in video memory.
  *
@@ -26,9 +26,9 @@
  * | 4096   | 402,653,184  | 384 | 402.7      |
  *
  * A 4096 cube is therefore a **384 MiB** allocation for the sky alone, which
- * is why it is opt-in and 2048 is the default. This is the "4096/face RGBA8
- * uncompressed ≈ 402 MB" figure the `C12-12` queue row records, reproduced
- * here from the loader's actual format rather than from the row.
+ * is why it is opt-in and 2048 is the default — the "4096/face RGBA8
+ * uncompressed ≈ 402 MB" figure above is derived here from the loader's
+ * actual texture format rather than assumed.
  *
  * ## What is bundled at HEAD (read from the tree, not assumed)
  *
@@ -36,7 +36,7 @@
  * module landed the repository ships **one tier per variant**:
  *
  * - `TYCHO_T3` — 1024/face, JPEG 4:2:0, inherited from upstream CesiumJS
- *   (see `C12-13-T3-PROVENANCE-GAP`).
+ *   with no further bake provenance recorded in this repository.
  * - `TYCHO_T5` — 2048/face, JPEG q90 4:4:4, baked by `Tools/skybox-bake/`.
  * - `TYCHO_T5_DIFFUSE` — 2048/face, same bake, low-passed; the default variant.
  *
@@ -51,11 +51,9 @@
  * resolves *down* to what is actually on disk and reports `fallback: true` —
  * it never fabricates a URL that would 404 the sky.
  *
- * The KTX2/compressed-texture half of the `C12-12` row is **not** in scope
- * here and remains tooling-blocked: no KTX2/Basis encoder exists in this repo
- * or on the build machine (`C12-12-KTX2-SKYBOX-NOT-BUNDLED`,
- * `MOON-ALBEDO-KTX2` in `DEFERRED_WORK.md`), and neither consumer path
- * transcodes KTX2 today.
+ * The KTX2/compressed-texture half of this policy is **not** in scope here
+ * and remains tooling-blocked: no KTX2/Basis encoder exists in this repo or
+ * on the build machine, and neither consumer path transcodes KTX2 today.
  *
  * Backend-agnostic by construction: the policy chooses *URLs*, which both the
  * WebGL and WebGPU loaders consume identically. There is no shader change and
@@ -80,7 +78,7 @@ export const SkyBoxResolution = Object.freeze({
 
 /**
  * The tier {@link resolveSkyBoxResolution} serves when the caller asks for
- * nothing. 2048 is the `C12-12` ruling: it is the size the bake actually
+ * nothing. 2048 is the default because it is the size the bake actually
  * ships, and 4× that in VRAM is not something a default scene should spend.
  */
 export const DEFAULT_SKYBOX_RESOLUTION: string = SkyBoxResolution.SIZE_2048;
@@ -105,7 +103,7 @@ export interface SkyBoxTierDescriptor {
   /**
    * Inserted between the variant prefix and the face suffix. Empty for the
    * historically-named tier of each variant, which is what keeps the default
-   * URLs byte-identical to what shipped before `C12-12`.
+   * URLs byte-identical to the legacy scheme.
    */
   prefixSuffix: string;
 }
@@ -271,7 +269,7 @@ function isKnownResolution(value: string): boolean {
 }
 
 /**
- * The `C12-12` decision: which bundled face resolution to serve.
+ * Resolves which bundled face resolution to serve.
  *
  * Pure — no filesystem, no network, no engine objects — so
  * `Tools/visual-regression/skybox-resolution-policy.spec.mjs` can pin every

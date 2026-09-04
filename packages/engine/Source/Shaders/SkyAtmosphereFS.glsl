@@ -2,7 +2,7 @@
 // A change here must land with the matching change there.
 // See SHADER_PAIRS_LOCKSTEP.md.
 //
-// - C12-31 light-direction selection is MATCHED, not divergent: this file
+// - Light-direction selection is matched, not divergent: this file
 //   calls `czm_getSkyAtmosphereLightDirection`; the WGSL inlines the same
 //   four-arm selection as its `isLegacyOverhead` block.
 //
@@ -27,8 +27,8 @@
 //   WebGPU post-process pipeline, not the sky shader).
 // - GLSL has a `#ifdef GLOBE_TRANSLUCENT` brightening path in
 //   SkyAtmosphereCommon; WGSL ports it as a runtime gate
-//   (`u.atmosControl.w`, GLOBE-TRANSLUCENCY-ALPHA) inside `skyColorForRay`.
-// - C12-29 S6 360-degree horizon twilight is present in BOTH, with the same
+//   (`u.atmosControl.w`, the globe translucency alpha) inside `skyColorForRay`.
+// - 360-degree horizon twilight is present in both, with the same
 //   constants and the same position in the pipeline (linear scatter space,
 //   before the tonemap): `u_eclipseHorizonTwilight` here,
 //   `u.eclipseControl.x` in the WGSL.
@@ -37,15 +37,15 @@ in vec3 v_outerPositionWC;
 
 uniform vec3 u_hsbShift;
 
-// C12-29 S6 — 360-degree horizon twilight. Gain on a warm, horizon-hugging
-// band added during totality, as a MULTIPLE OF THE SKY'S OWN LUMINANCE along
-// the same ray (so it rides the S2 dimming, the tonemap and the user's
-// atmosphereLightIntensity with nothing to calibrate). Exactly 0.0 in every
-// frame that is not the last ~2% of a total eclipse's obscuration seen from
-// inside the atmosphere, and the term is multiplied by it, so the historical
-// sky is untouched. Derivation of the two constants below and of the tint
-// lives in `Scene/EclipseState.js`; WGSL twin: `SkyAtmosphere.wgsl`'s
-// `eclipseControl.x` block.
+// 360-degree horizon twilight. Gain on a warm, horizon-hugging band added
+// during totality, as a multiple of the sky's own luminance along the same
+// ray (so it rides the eclipse scene-light dimming, the tonemap and the
+// user's atmosphereLightIntensity with nothing to calibrate). Exactly 0.0
+// in every frame that is not the last ~2% of a total eclipse's obscuration
+// seen from inside the atmosphere, and the term is multiplied by it, so the
+// historical sky is untouched. Derivation of the two constants below and of
+// the tint lives in `Scene/EclipseState.js`; WGSL twin:
+// `SkyAtmosphere.wgsl`'s `eclipseControl.x` block.
 uniform float u_eclipseHorizonTwilight;
 
 // atan(25 km / 60 km) — the elevation the sunlit penumbral atmosphere
@@ -92,8 +92,8 @@ in float v_translucent;
 void main (void)
 {
     float lightEnum = u_radiiAndDynamicAtmosphereColor.z;
-    // C12-31 — the NATURAL-SKY selector. Its NONE arm is the astronomical sun;
-    // only the explicit LEGACY_OVERHEAD mode still substitutes local up. See
+    // The natural-sky selector. Its NONE arm is the astronomical sun; only
+    // the explicit LEGACY_OVERHEAD mode still substitutes local up. See
     // `Builtin/Functions/getSkyAtmosphereLightDirection.glsl` for the root
     // cause (view-locked Mie forward peak, 4869.9x at the default g = 0.9).
     // WGSL twin: the `isLegacyOverhead` block in SkyAtmosphere.wgsl.
@@ -122,13 +122,13 @@ void main (void)
 
     vec4 color = computeAtmosphereColor(v_outerPositionWC, lightDirection, rayleighColor, mieColor, opacity);
 
-    // C12-29 S6 — 360-degree horizon twilight, added in LINEAR scatter space
-    // (before the tonemap) so it composites exactly like the scattering it
+    // 360-degree horizon twilight, added in linear scatter space (before
+    // the tonemap) so it composites exactly like the scattering it
     // augments. Azimuth-independent by construction: nothing in the band
-    // profile references the sun direction, which is the whole point — inside
-    // the umbra the surrounding penumbra lights the horizon all the way round.
-    // `translucent == 0.0` mirrors the WGSL, whose translucent-globe branch
-    // returns before this point.
+    // profile references the sun direction, which is the whole point —
+    // inside the umbra the surrounding penumbra lights the horizon all the
+    // way round. `translucent == 0.0` mirrors the WGSL, whose
+    // translucent-globe branch returns before this point.
     if (u_eclipseHorizonTwilight > 0.0 && translucent == 0.0)
     {
         vec3 upWC = getEclipseObserverUp(czm_viewerPositionWC);

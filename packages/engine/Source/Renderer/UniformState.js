@@ -148,15 +148,15 @@ class UniformState {
     this._viewProjectionRelativeToEye = new Matrix4();
 
     // TAA: previous frame's view-projection for reprojection.
-    // AUDIT_2026_05_02 B.9 follow-up (Batch 154) — initialize as IDENTITY
-    // not zero. Many WebGPU renderers pack `previousViewProjection` into
-    // the camera UBO with the pattern `if (prevVP) { Matrix4.pack(...) }
-    // else { /* identity fallback */ }`. Since `Matrix4` is always a
-    // truthy object reference, the else branch is unreachable; the
-    // initial zero-matrix value would propagate into the UBO on frame 0
-    // and produce broken motion vectors when downstream consumers land.
-    // Initializing as identity makes the first-frame value safe and
-    // makes the now-dead `else` fallback a redundant-but-correct mirror.
+    // Initialize as identity, not zero. Many WebGPU renderers pack
+    // `previousViewProjection` into the camera UBO with the pattern
+    // `if (prevVP) { Matrix4.pack(...) } else { /* identity fallback */ }`.
+    // Since `Matrix4` is always a truthy object reference, the else branch
+    // is unreachable; the initial zero-matrix value would propagate into
+    // the UBO on frame 0 and produce broken motion vectors when downstream
+    // consumers land. Initializing as identity makes the first-frame value
+    // safe and makes the now-dead `else` fallback a redundant-but-correct
+    // mirror.
     this._previousViewProjection = Matrix4.clone(Matrix4.IDENTITY);
 
     // TAA RTE motion vectors: previous frame's camera position (world-space)
@@ -176,10 +176,9 @@ class UniformState {
     //
     // where cameraDelta = currentCameraWC - previousCameraWC.
     this._previousCameraPosition = new Cartesian3();
-    // AUDIT_2026_05_02 B.9 follow-up (Batch 154) — same first-frame
-    // safety as `_previousViewProjection` above: initialize as IDENTITY
-    // so first-frame UBO packs land at a meaningful value if any
-    // consumer races the first `UniformState.update()` call.
+    // Same first-frame safety as `_previousViewProjection` above:
+    // initialize as identity so first-frame UBO packs land at a meaningful
+    // value if any consumer races the first `UniformState.update()` call.
     this._previousViewProjectionRelativeToEye = Matrix4.clone(Matrix4.IDENTITY);
     this._temporalHistoryValid = false;
 
@@ -453,15 +452,13 @@ class UniformState {
    * via `uniformState.cameraPosition` to encode RTE high/low pairs and to
    * derive eye-space / model-space camera coords for shader uniforms.
    *
-   * NEW-4-H (Batch 70): Restored after a long-standing omission. The TS
-   * `.d.ts` companion has always declared this property, and ~13 WebGPU
-   * renderer call sites have always read it; without the getter every
-   * read returned `undefined`, which the debug-only `Check.typeOf.object`
+   * The TS `.d.ts` companion declares this property, and roughly a dozen
+   * WebGPU renderer call sites read it; without the getter every read
+   * returns `undefined`, which the debug-only `Check.typeOf.object`
    * pragma in callers like `EncodedCartesian3.fromCartesian` /
-   * `Matrix4.multiplyByPoint` would surface as a hard `DeveloperError`
-   * the first time a render path actually exercised the field. The Voxel
-   * Pick demo was the first Sandcastle case to hit it under the
-   * unminified debug build (where the pragmas are not stripped).
+   * `Matrix4.multiplyByPoint` surfaces as a hard `DeveloperError` the
+   * first time a render path exercises the field, in an unminified debug
+   * build where the pragmas are not stripped.
    *
    * @type {Cartesian3}
    * @readonly
@@ -976,31 +973,28 @@ class UniformState {
       Cartesian3.clone(lightColorHdr, this._lightColor);
     }
 
-    // C12-29 S2 — eclipse dimming of the SUN-driven scene light. One multiply
-    // here reaches, in GLSL, `czm_lightColor` / `czm_lightColorHdr` — GlobeFS'
-    // diffuse term, phong, translucentPhong and the model PBR lighting stage
-    // (`Model/LightingStageFS.glsl`) — and, on WebGPU, `csm_lightColor` /
-    // `csm_lightColorHdr` plus `WebGPUGlobeSurfaceCameraUB`'s `lightColor`
-    // slot. That is why the dimming lives at the JS uniform source rather
-    // than in eight shaders.
+    // Eclipse dimming of the sun-driven scene light. Applying it here, at
+    // the uniform source, reaches every consumer of `czm_lightColor` /
+    // `czm_lightColorHdr` on WebGL and of `csm_lightColor*` on WebGPU — the
+    // globe's diffuse term, phong, translucent phong, and the model PBR
+    // lighting stage — so the factor does not have to be threaded through
+    // eight shaders.
     //
-    // ⚠ IT IS NOT UNIVERSAL ON WEBGPU. `ModelPBRComplete.wgsl` reads NONE of
-    // the `csm_lightColor*` automatic uniforms — its direct term is
-    // `light.sunColor * light.sunIntensity * NdotL`, packed raw from
-    // `frameState.light` by `WebGPUModelRenderer.packLightUniforms`, which
-    // carries its own copy of this multiply (S2 injection site 5) under the
-    // SAME `instanceof SunLight` gate. Any future change to the gating or the
-    // quantity here must be mirrored there, or WebGPU models desynchronise
-    // from the WebGPU globe during an eclipse. `eclipse-scene-dimming.spec.mjs`
-    // pins both halves.
+    // `ModelPBRComplete.wgsl` is the exception: it reads none of the
+    // `csm_lightColor*` automatic uniforms and lights from
+    // `light.sunColor * light.sunIntensity * NdotL`, packed by
+    // `WebGPUModelRenderer.packLightUniforms`, which carries its own copy of
+    // this multiply under the same `instanceof SunLight` gate. The two must
+    // change together or WebGPU models stay lit while the WebGPU globe dims.
+    // `eclipse-scene-dimming.spec.mjs` pins both halves.
     //
-    // AFTER the LDR clamp, not before. `_lightColor` is `_lightColorHdr`
-    // renormalised so its brightest channel is <= 1; a pre-clamp multiply
-    // would be entirely swallowed by that renormalisation until the factor
-    // dropped below 1/intensity (0.5 at the default SunLight intensity of
-    // 2.0), giving a light that does not dim at all through the first half of
-    // the eclipse and then dims at double rate. Dimming both AFTER the clamp
-    // is what "the sun got fainter" means in LDR.
+    // Applied after the LDR clamp, not before. `_lightColor` is
+    // `_lightColorHdr` renormalised so its brightest channel is at most 1,
+    // so a pre-clamp multiply is swallowed by the renormalisation until the
+    // factor drops below 1 / intensity — 0.5 at the default sun intensity of
+    // 2.0 — which would hold the light steady through the first half of the
+    // eclipse and then dim it at double rate. Dimming after the clamp is
+    // what "the sun got fainter" means in LDR.
     //
     // Gated on `light instanceof SunLight` — the branch above — so a
     // user-supplied DirectionalLight is never touched. WebGPU's aerial-

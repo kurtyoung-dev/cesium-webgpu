@@ -1,14 +1,14 @@
 /**
  * Atmospheric effects — Phase A: a backend-agnostic mapper from weather
- * CONDITIONS (humidity, air quality, temperature, dew point, visibility) to the
- * Scene's existing visual KNOBS (fog density, atmosphere saturation/brightness
+ * conditions (humidity, air quality, temperature, dew point, visibility) to the
+ * Scene's existing visual knobs (fog density, atmosphere saturation/brightness
  * shift, cloud genus bias). Cheapest, highest realism-per-effort tier of the
- * atmospheric-effects roadmap (migration_doc/ATMOSPHERIC_EFFECTS_ROADMAP.md).
+ * atmospheric-effects roadmap.
  *
- * `computeAtmosphericKnobs` is a PURE function (no Scene import) so it is unit-
+ * `computeAtmosphericKnobs` is a pure function (no Scene import) so it is unit-
  * testable; `applyAtmosphericConditions` reads
  * `scene.globe.atmosphericConditions.weather` and writes the knobs. Whether a
- * given backend RENDERS each knob is separate, pre-existing functionality — this
+ * given backend renders each knob is separate, pre-existing functionality — this
  * module only maps conditions → knob values. Later phases add screen-space
  * effects (heat shimmer, ground fog, cold optics).
  *
@@ -117,10 +117,10 @@ export interface PrecipFromWmo {
 
 /**
  * Map a WMO Table 4677 present-weather `ww` code (00..99) to a
- * {@link PrecipitationType} + an intensity 0..1. PURE + deterministic
- * (unit-testable). The keystone of the data-driven precipitation path
- * (PRECIP-DATA, Batch 444): an ingest field's dominant `ww` selects the particle
- * type the WebGPU weather renderer dispatches.
+ * {@link PrecipitationType} + an intensity 0..1. Pure and deterministic
+ * (unit-testable). The keystone of the data-driven precipitation path: an
+ * ingest field's dominant `ww` selects the particle type the WebGPU weather
+ * renderer dispatches.
  *
  * Code-range → type (WMO Table 4677, abbreviated to the renderer's 4 particle
  * profiles — there is no separate sleet profile, so freezing/mixed precip maps to
@@ -483,10 +483,10 @@ interface AtmosphericSceneLike {
   coldOpticsEnabled?: boolean;
   coldOpticsIntensity?: number;
   /**
-   * COLD-OPTICS-HQ (Batch 442) opt-in. Pushed from
-   * `effects.optics.advanced`; when true the cold-optics shader draws the
-   * advanced 22+46 dispersed halos, upper tangent arc, and light pillars.
-   * Default-off keeps the legacy halo + sun-dogs byte-identical.
+   * High-quality cold-optics opt-in. Pushed from `effects.optics.advanced`;
+   * when true the cold-optics shader draws the advanced 22+46 dispersed
+   * halos, upper tangent arc, and light pillars. Default-off keeps the
+   * legacy halo + sun-dogs byte-identical.
    */
   coldOpticsAdvanced?: boolean;
   /**
@@ -501,15 +501,15 @@ interface AtmosphericSceneLike {
   weatherType?: number;
   weatherIntensity?: number;
   /**
-   * PRECIP-DATA (Batch 444) — ground snow-cover scalar (0..1) the data-driven
-   * path time-integrates and the WebGPU weather renderer consumes. Default-off
+   * Ground snow-cover scalar (0..1) the data-driven precipitation path
+   * time-integrates and the WebGPU weather renderer consumes. Default-off
    * leaves it untouched (undefined → renderer reads 0).
    */
   weatherSnowCover?: number;
   /**
-   * PRECIP-DATA (Batch 444) — particle-density multiplier (≥1) derived from the
-   * ingest field's visibility. Default-off leaves it untouched (undefined →
-   * renderer reads 1.0).
+   * Particle-density multiplier (≥1) derived from the ingest field's
+   * visibility. Default-off leaves it untouched (undefined → renderer reads
+   * 1.0).
    */
   weatherDensityScale?: number;
   /** Per-frame delta time (seconds) — drives the snow-accumulation integrator. */
@@ -554,19 +554,20 @@ interface AtmosphericSceneLike {
           type: number;
           intensity: number;
           /**
-           * PRECIP-DATA (Batch 444) opt-in. When TRUE AND a weather-ingest
-           * provider with present-weather is attached, the precip type/intensity
-           * are OVERRIDDEN from the ingest field's WMO `ww` code (and density is
-           * scaled by visibility). Default FALSE keeps the manual/auto selection.
+           * Opt-in. When true and a weather-ingest provider with
+           * present-weather is attached, the precip type/intensity are
+           * overridden from the ingest field's WMO `ww` code (and density is
+           * scaled by visibility). Default false keeps the manual/auto
+           * selection.
            */
           dataDriven?: boolean;
           /**
-           * PRECIP-DATA (Batch 444) opt-in. When TRUE, a ground snow-cover scalar
-           * ramps up under snow and melts otherwise (`snowCover`). Flag-gated +
-           * default FALSE so the integrator is inert unless requested.
+           * Opt-in. When true, a ground snow-cover scalar ramps up under
+           * snow and melts otherwise (`snowCover`). Flag-gated + default
+           * false so the integrator is inert unless requested.
            */
           snowAccumulation?: boolean;
-          /** PRECIP-DATA (Batch 444) — the integrated snow-cover scalar (0..1). */
+          /** The integrated snow-cover scalar (0..1). */
           snowCover?: number;
         };
       };
@@ -644,19 +645,19 @@ export function applyAtmosphericConditions(scene: AtmosphericSceneLike): void {
     // `optics` leaf (enabled + halo strength), mirroring the shimmer block.
     scene.coldOpticsEnabled = state.optics.enabled;
     scene.coldOpticsIntensity = state.optics.halo;
-    // COLD-OPTICS-HQ (Batch 442): the `advanced` sub-flag is a USER opt-in (not
-    // auto-derived from temperature), so it passes straight through from the
-    // hierarchy leaf to the scene flag the cold-optics post-process reads. When
-    // unset it reads false — the legacy halo + sun-dogs path (byte-identical).
+    // The `advanced` sub-flag is a user opt-in (not auto-derived from
+    // temperature), so it passes straight through from the hierarchy leaf to
+    // the scene flag the cold-optics post-process reads. When unset it reads
+    // false — the legacy halo + sun-dogs path (byte-identical).
     scene.coldOpticsAdvanced = effects.optics?.advanced === true;
-    // Phase E (Batch 423): precipitation → the WebGPU weather-particle renderer.
-    // The renderer reads the flat `scene.enableWeather` / `weatherType` /
-    // `weatherIntensity` fields (the same ones the `weather` facade writes), so
-    // we push the derived `precipitation` leaf there, converting the leaf's
-    // PrecipitationType index back to the legacy flat `weatherType` convention.
-    // When the auto-derived precip is off we leave `weatherType` /
-    // `weatherIntensity` untouched (only flip `enableWeather` off) so a value an
-    // app set manually survives a no-precip frame.
+    // Phase E: precipitation → the WebGPU weather-particle renderer. The
+    // renderer reads the flat `scene.enableWeather` / `weatherType` /
+    // `weatherIntensity` fields (the same ones the `weather` facade writes),
+    // so the derived `precipitation` leaf is pushed there, converting the
+    // leaf's PrecipitationType index back to the legacy flat `weatherType`
+    // convention. When the auto-derived precip is off, `weatherType` /
+    // `weatherIntensity` are left untouched (only `enableWeather` flips off)
+    // so a value an app set manually survives a no-precip frame.
     scene.enableWeather = state.precipitation.enabled;
     if (state.precipitation.enabled) {
       scene.weatherType = precipitationTypeToWeatherTypeIndex(
@@ -666,22 +667,22 @@ export function applyAtmosphericConditions(scene: AtmosphericSceneLike): void {
     }
   }
 
-  // ── PRECIP-DATA (Batch 444) — data-driven precipitation override ──────────
-  // Runs INDEPENDENTLY of the `auto` master, AFTER the manual/auto selection
-  // above, so it overrides only the precip type/intensity (everything else the
-  // user/auto chose stands). HARD GATE: it does nothing unless BOTH
+  // Data-driven precipitation override. Runs independently of the `auto`
+  // master, after the manual/auto selection above, so it overrides only the
+  // precip type/intensity (everything else the user/auto chose stands). Hard
+  // gate: it does nothing unless both
   //   (a) `effects.precipitation.dataDriven === true`, and
-  //   (b) an ingest provider is attached AND reports present-weather with a `ww`.
-  // When either is false the entire block is skipped → the precip path is
-  // byte-identical to the pre-444 manual/auto behavior.
+  //   (b) an ingest provider is attached and reports present-weather with a `ww`.
+  // When either is false the entire block is skipped, so the precip path
+  // stays byte-identical to the manual/auto behavior.
   applyDataDrivenPrecip(scene, effects);
 }
 
 /**
- * PRECIP-DATA (Batch 444) — override precip type/intensity from the weather-ingest
- * field's WMO `ww` when the data-driven flag is set and a provider with
- * present-weather is attached. Also couples particle density to visibility and
- * (flag-gated) integrates the ground snow-cover scalar. No-op otherwise.
+ * Override precip type/intensity from the weather-ingest field's WMO `ww`
+ * when the data-driven flag is set and a provider with present-weather is
+ * attached. Also couples particle density to visibility and (flag-gated)
+ * integrates the ground snow-cover scalar. No-op otherwise.
  */
 function applyDataDrivenPrecip(
   scene: AtmosphericSceneLike,

@@ -214,12 +214,12 @@ class WasmCullBridge {
       );
     }
 
-    // NEW-WASM-BRIDGE-BUNDLE-LOAD (Batch 274): route through the shared
-    // buildModuleUrl-backed resolver + keep the import EXTERNAL (webpackIgnore)
-    // so esbuild no longer INLINES the glue (the inlined glue's
-    // `new URL("cesium_wasm_bg.wasm", import.meta.url)` resolved to the bundle
-    // root and 404'd the binary). The glue now loads as its own module with the
-    // correct sibling-binary URL. See resolveWasmGlueUrl.js.
+    // Route through the shared buildModuleUrl-backed resolver + keep the
+    // import external (webpackIgnore) so esbuild does not inline the glue
+    // (inlined glue's `new URL("cesium_wasm_bg.wasm", import.meta.url)`
+    // resolves to the bundle root and 404s the binary). The glue loads as
+    // its own module with the correct sibling-binary URL. See
+    // resolveWasmGlueUrl.js.
     _wasmLoading = import(/* webpackIgnore: true */ resolveWasmGlueUrl())
       .then((glue) => glue.default())
       .then((wasm) => {
@@ -265,7 +265,7 @@ class WasmCullBridge {
     const totalBytes = floatBytes * 4 + planesBytes + visBytes;
 
     try {
-      // FORK-45: Allocate from this bridge's dedicated slot if the
+      // Allocate from this bridge's dedicated slot if the
       // WASM build is recent enough; otherwise fall through to the
       // legacy single arena. The shared-slot fallback is correct
       // because every bridge runs sequentially today; per-slot is
@@ -327,7 +327,7 @@ class WasmCullBridge {
     if (this._isDestroyed) {
       return;
     }
-    // FORK-45: free the dedicated slot first; the legacy free is a
+    // Free the dedicated slot first; the legacy free is a
     // no-op when the per-slot API is present, so calling both is
     // safe and keeps the bridge backwards-compatible with older WASM
     // builds where only `freeBuffer` exists.

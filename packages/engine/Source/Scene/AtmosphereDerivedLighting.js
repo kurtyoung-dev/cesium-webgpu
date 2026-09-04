@@ -3,39 +3,36 @@ import defined from "../Core/defined.js";
 import SunLight from "./SunLight.js";
 
 /**
- * AtmosphereDerivedLighting — derive the directional SUN light (colour +
- * intensity) and a SKY-IRRADIANCE ambient term from the atmosphere, so
+ * AtmosphereDerivedLighting — derive the directional sun light (colour +
+ * intensity) and a sky-irradiance ambient term from the atmosphere, so
  * discrete models / tiles are lit consistently with the unified
- * aerial-perspective post-process (Track V-A2) and the sky shell.
+ * aerial-perspective post-process and the sky shell.
  *
- * Track V-A3 (NEW-ATMO-DERIVED-LIGHTING). This is the light-source half of
- * the Takram `three-geospatial` talk's "mixed lighting": the TERRAIN gets
- * post-process Lambertian aerial-perspective haze (V-A2), while discrete
- * MODELS get light-source PBR consistently lit by the SAME sun/sky derived
+ * This is the light-source half of a "mixed lighting" split: the terrain
+ * gets post-process Lambertian aerial-perspective haze, while discrete
+ * models get light-source PBR consistently lit by the same sun/sky derived
  * here — no double-lighting, one coherent atmosphere.
  *
  * ── Why analytic, not LUT-sampled ──
- * The Batch-306 Bruneton transmittance + irradiance LUTs exist, but the
- * compute engine that bakes them at runtime is dormant
- * (NEW-WEBGPU-COMPUTE-ENGINE-WIRING) — `ctx.computeEngine` is never
- * instantiated, so the LUT textures are an un-baked placeholder. V-A2 took
- * the same decision: compute the atmosphere analytically in-shader so it is
- * BOTH physically correct AND runtime-functional today. We mirror that here
- * on the CPU — a short Beer-Lambert optical-depth integral along the sun ray
- * (the same Rayleigh + Mie model AtmosphereLUT.wgsl bakes) gives the sun's
- * transmitted colour, and an analytic indirect-sky integral gives the
- * ambient. When the compute engine lands (NEW-WEBGPU-COMPUTE-ENGINE-WIRING),
- * this module is the seam to swap the analytic terms for direct LUT reads of
- * the transmittance (sun) + irradiance (sky) tables — the public shape
- * (colour + intensity + ambient) stays identical.
+ * The Bruneton transmittance + irradiance LUTs exist, but the compute engine
+ * that bakes them at runtime is dormant — `ctx.computeEngine` is never
+ * instantiated, so the LUT textures are an un-baked placeholder. The
+ * aerial-perspective post-process took the same decision: compute the
+ * atmosphere analytically in-shader so it is both physically correct and
+ * runtime-functional today. This module mirrors that on the CPU — a short
+ * Beer-Lambert optical-depth integral along the sun ray (the same Rayleigh +
+ * Mie model AtmosphereLUT.wgsl bakes) gives the sun's transmitted colour,
+ * and an analytic indirect-sky integral gives the ambient. When the compute
+ * engine lands, this module is the seam to swap the analytic terms for
+ * direct LUT reads of the transmittance (sun) + irradiance (sky) tables —
+ * the public shape (colour + intensity + ambient) stays identical.
  *
  * References:
  *   - Eric Bruneton & Fabrice Neyret, "Precomputed Atmospheric Scattering"
  *     (EGSR 2008) — the transmittance / irradiance model. Technique
  *     reimplemented from the paper, not copied.
  *   - Takram `three-geospatial` (MIT) `SunDirectionalLight` + `SkyLightProbe`
- *     — the atmosphere-derived sun + sky-irradiance light-source structure.
- *     Credited per migration_doc/RESEARCH_TAKRAM_GEOSPATIAL_VISUALS.md
+ *     — the atmosphere-derived sun + sky-irradiance light-source structure
  *     (technique only).
  *
  * @module AtmosphereDerivedLighting

@@ -173,7 +173,7 @@ class Vector3DTilePolylines {
       return;
     }
 
-    // Batch 113 — WebGPU path delegates to the VECTOR_3DTILE_POLYLINE
+    // WebGPU path delegates to the VECTOR_3DTILE_POLYLINE
     // feature renderer. The renderer reads the CPU-side decoded
     // `_currentPositions` / `_previousPositions` / `_nextPositions` /
     // `_expandAndWidth` / `_vertexBatchIds` / `_indices` arrays directly
@@ -242,9 +242,9 @@ class Vector3DTilePolylines {
     this._va = this._va && this._va.destroy();
     this._sp = this._sp && this._sp.destroy();
 
-    // Batch 113 — release the WebGPU FR cache (vertex/index buffers,
-    // UBO, batch-color storage). The Scene-side `_lastFeatureRenderer`
-    // is captured during `update()` so we don't need a context handle
+    // Release the WebGPU FR cache (vertex/index buffers, UBO,
+    // batch-color storage). The Scene-side `_lastFeatureRenderer`
+    // is captured during `update()` so no context handle is needed
     // here.
     if (defined(this._webgpuCache) && defined(this._lastFeatureRenderer)) {
       this._lastFeatureRenderer.destroy?.(this);
@@ -417,14 +417,16 @@ function createVertexArray(polylines, context) {
 }
 
 function finishVertexArray(polylines, context) {
-  // Batch 113 — WebGPU path skips the WebGL VAO + buffer construction
-  // entirely. The decoded `_currentPositions` / `_previousPositions` /
-  // `_nextPositions` / `_expandAndWidth` / `_vertexBatchIds` / `_indices`
-  // arrays stay alive on the primitive so the WebGPU FR can upload them
-  // to GPU buffers on its first `update()` tick. The arrays are owned by
-  // the FR cache thereafter (no second copy on WebGPU).
-  // Audit 2026-05-02: switched from `rendererType === "webgpu"` to the
-  // FR-key check per CLAUDE.md §2 backend-agnosticism rule.
+  // WebGPU path skips the WebGL VAO + buffer construction entirely. The
+  // decoded `_currentPositions` / `_previousPositions` / `_nextPositions` /
+  // `_expandAndWidth` / `_vertexBatchIds` / `_indices` arrays stay alive on
+  // the primitive so the WebGPU FR can upload them to GPU buffers on its
+  // first `update()` tick. The arrays are owned by the FR cache thereafter
+  // (no second copy on WebGPU).
+  //
+  // Uses the FR-key check rather than `context.rendererType === "webgpu"`
+  // so this stays backend-agnostic like every other feature-renderer
+  // dispatch site.
   if (context.getFeatureRenderer(FeatureRendererKey.VECTOR_3DTILE_POLYLINE)) {
     const indices = polylines._indices;
     polylines._trianglesLength =
@@ -630,12 +632,11 @@ function createShaders(primitive, context) {
     return;
   }
 
-  // BUILD-VAR-HAZARD-VECTOR3DTILE — see Vector3DTilePrimitive.js for
-  // the full rationale. Short version: webgpu-only bundle aliases
-  // GLSL strings to empty stubs; the compile below would crash. The
-  // VECTOR_3DTILE_POLYLINE feature renderer (Batch 113) takes over
-  // when registered. Audit 2026-05-02: use FR-key check rather than
-  // rendererType per CLAUDE.md §2.
+  // See Vector3DTilePrimitive.js for the full rationale. Short version:
+  // webgpu-only bundle aliases GLSL strings to empty stubs; the compile
+  // below would crash. The VECTOR_3DTILE_POLYLINE feature renderer takes
+  // over when registered. Uses the FR-key check rather than rendererType so
+  // this stays backend-agnostic.
   if (context.getFeatureRenderer(FeatureRendererKey.VECTOR_3DTILE_POLYLINE)) {
     return;
   }

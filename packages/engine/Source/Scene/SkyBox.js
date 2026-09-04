@@ -45,16 +45,16 @@ class SkyBox {
   constructor(options) {
     this._sources = options.sources;
 
-    // C12-14 — which entry of {@link SkyBox.Variant} these sources came from,
-    // when the sky box was built by {@link SkyBox.createEarthSkyBox}.
-    // `undefined` for a hand-constructed sky box, because arbitrary `sources`
-    // cannot be attributed to a variant. Load-bearing for a consumer of
-    // {@link SkyBox#starCubeMap}: the default variant carries NO resolved
-    // stars (DR-01), so the answer changes what sampling the cube map means.
+    // Which entry of {@link SkyBox.Variant} these sources came from, when the
+    // sky box was built by {@link SkyBox.createEarthSkyBox}. `undefined` for
+    // a hand-constructed sky box, because arbitrary `sources` cannot be
+    // attributed to a variant. Load-bearing for a consumer of
+    // {@link SkyBox#starCubeMap}: the default variant carries no resolved
+    // stars, so the answer changes what sampling the cube map means.
     this._variant = options.variant;
 
-    // C12-12 — the resolution tier these faces were served at, when the sky box
-    // was built by {@link SkyBox.createEarthSkyBox}. `undefined` for a
+    // The resolution tier these faces were served at, when the sky box was
+    // built by {@link SkyBox.createEarthSkyBox}. `undefined` for a
     // hand-constructed sky box, whose faces can be any size.
     this._resolution = options.resolution;
     this._faceSize = options.faceSize;
@@ -67,13 +67,12 @@ class SkyBox {
       isStarMap: true,
     });
 
-    // Track V-C (NEW-STARS-BRIGHT-CATALOG) — real bright-star catalog
-    // starfield. Backend-agnostic; renders additively on BOTH backends:
-    // WebGPU through its STAR_FIELD feature renderer, WebGL through the
-    // lazy-loaded twin registered in Context.js (STAR_FIELD loader,
-    // Batch 324). Defaults ON to AUGMENT the cubemap (both render — the
-    // catalog stars sit on top of the cubemap stars; their >1.0 output
-    // feeds bloom only when HDR + bloom are enabled). Opt out via
+    // The bright-star catalog starfield is backend-agnostic and renders
+    // additively on both backends — WebGPU through its STAR_FIELD feature
+    // renderer, WebGL through the lazy-loaded twin registered in
+    // `Context.js`. It defaults to augmenting the cube map: both render, the
+    // catalog stars sit on top of the cubemap stars, and their output above
+    // 1.0 feeds bloom only when HDR and bloom are both enabled. Opt out via
     // `skyBox.starField.show = false`.
     this._starField = new StarField({
       show: options.showStarCatalog ?? true,
@@ -81,9 +80,9 @@ class SkyBox {
   }
 
   /**
-   * The real bright-star catalog starfield (Track V-C). Augments the
-   * static star cubemap with points placed at actual RA/Dec on both
-   * backends (WebGPU and WebGL). Toggle with `starField.show`.
+   * The real bright-star catalog starfield. Augments the static star cube
+   * map with points placed at actual RA/Dec on both backends (WebGPU and
+   * WebGL). Toggle with `starField.show`.
    * @type {SkyBox.StarField}
    * @readonly
    */
@@ -104,8 +103,8 @@ class SkyBox {
     // The new faces are not attributable to a `SkyBox.Variant` entry, so stop
     // claiming one rather than reporting a stale answer.
     this._variant = undefined;
-    // C12-12 — likewise for the resolution tier: arbitrary faces have no tier
-    // and an unknown face size, so the VRAM estimate must stop answering too.
+    // Likewise for the resolution tier: arbitrary faces have no tier and an
+    // unknown face size, so the VRAM estimate must stop answering too.
     this._resolution = undefined;
     this._faceSize = undefined;
   }
@@ -116,10 +115,10 @@ class SkyBox {
    * were replaced afterwards).
    *
    * Read this alongside {@link SkyBox#starCubeMap}: under the default
-   * `TYCHO_T5_DIFFUSE` the cube map carries the diffuse galactic band and NO
-   * resolved stars (Campaign-12 decision DR-01 gives those to the
-   * {@link StarField} sprite catalogue), so a reflection that samples only the
-   * cube map will show the Milky Way and no individual stars.
+   * `TYCHO_T5_DIFFUSE` the cube map carries the diffuse galactic band and no
+   * resolved stars — those belong to the {@link StarField} sprite catalogue
+   * instead — so a reflection that samples only the cube map will show the
+   * Milky Way and no individual stars.
    *
    * @type {string|undefined}
    * @readonly
@@ -129,7 +128,7 @@ class SkyBox {
   }
 
   /**
-   * C12-12 — the {@link SkyBox.Resolution} tier these faces were served at, or
+   * The {@link SkyBox.Resolution} tier these faces were served at, or
    * `undefined` for a hand-constructed sky box.
    *
    * This can differ from what was requested: the policy never invents a URL,
@@ -145,8 +144,8 @@ class SkyBox {
   }
 
   /**
-   * C12-12 — edge length in pixels of each of the six faces, or `undefined`
-   * for a hand-constructed sky box.
+   * Edge length in pixels of each of the six faces, or `undefined` for a
+   * hand-constructed sky box.
    *
    * @type {number|undefined}
    * @readonly
@@ -156,7 +155,7 @@ class SkyBox {
   }
 
   /**
-   * C12-12 — video memory the star cube map occupies once decoded:
+   * Video memory the star cube map occupies once decoded:
    * `6 × faceSize² × 4` bytes. `undefined` for a hand-constructed sky box.
    *
    * Both backends upload the faces as `rgba8unorm` with a single mip level, so
@@ -174,18 +173,18 @@ class SkyBox {
   }
 
   /**
-   * C12-14 — a backend-neutral, SAMPLABLE handle to the star cube map, so code
+   * A backend-neutral, samplable handle to the star cube map, so code
    * outside the sky box can look the stars up in a shader rather than only
    * seeing them drawn. Refreshed once per frame on both backends; also
    * published as `frameState.starCubeMap`.
    *
    * `available` is false until the six faces finish loading, and the handles
-   * are BORROWED — see `Scene/StarCubeMapResource.js` for the frame (TEME),
+   * are borrowed — see `Scene/StarCubeMapResource.js` for the frame (TEME),
    * content, availability and ownership rules a consumer must respect.
    *
-   * **Nothing samples this yet.** It exists to discharge the "samplable STAR
-   * cubemap" blocker recorded against `C11-163` (celestial water reflection);
-   * see that module's header before treating it as dead code (Principle 7).
+   * Nothing samples this yet; it exists so a future celestial-water
+   * reflection stage can look the stars up without adding a second cube-map
+   * load path.
    *
    * @type {object}
    * @readonly
@@ -277,7 +276,7 @@ class SkyBox {
    *
    * @param {string} [variant] One of {@link SkyBox.Variant}. Defaults to
    *        {@link SkyBox.defaultVariant}, which applications may set globally.
-   * @param {object} [options] C12-12 resolution policy options.
+   * @param {object} [options] Resolution policy options.
    * @param {string} [options.resolution] One of {@link SkyBox.Resolution}.
    *        Defaults to {@link SkyBox.defaultResolution} (2048/face, 96 MiB).
    *        A tier that is not bundled for the chosen variant resolves DOWN to
@@ -318,13 +317,13 @@ class SkyBox {
     }
     //>>includeEnd('debug');
     const resolved = descriptor ?? skyBoxVariants[SkyBox.Variant.TYCHO_T3];
-    // C12-14 — record which variant these faces are, so a consumer of
+    // Record which variant these faces are, so a consumer of
     // `skyBox.starCubeMap` can tell whether the map carries resolved stars.
     const resolvedVariant = defined(descriptor) ? v : SkyBox.Variant.TYCHO_T3;
 
-    // C12-12 — pick the resolution tier BEFORE building URLs. The variant is
-    // already resolved above, so the policy can never see an unknown variant
-    // from this path.
+    // Pick the resolution tier before building URLs. The variant is already
+    // resolved above, so the policy can never see an unknown variant from
+    // this path.
     const requested = options?.resolution;
     const tier = resolveSkyBoxResolution({
       variant: resolvedVariant,
@@ -380,34 +379,32 @@ class SkyBox {
  * @readonly
  */
 SkyBox.Variant = Object.freeze({
-  /** Tycho catalogue skymap, faint Milky Way render. The historical default
-   * (superseded as default by `TYCHO_T5` in C12-10); still bundled offline. */
+  /** Tycho catalogue skymap, faint Milky Way render. The historical default,
+   * superseded by `TYCHO_T5`; still bundled offline. */
   TYCHO_T3: "TYCHO_T3",
   /**
-   * Tycho catalogue skymap, bright Milky Way render. Was the default from
-   * C12-10 until C12-11 (Batch 833) made `TYCHO_T5_DIFFUSE` the default so the
-   * cubemap carries diffuse light only and the sprite catalogue owns every
-   * resolved star (ruling DR-01). Still bundled offline; select it explicitly
-   * to get baked stars back in the cubemap.
+   * Tycho catalogue skymap, bright Milky Way render. Was the default until
+   * `TYCHO_T5_DIFFUSE` took over so the cube map carries diffuse light only
+   * and the sprite catalogue owns every resolved star. Still bundled
+   * offline; select it explicitly to get baked stars back in the cube map.
    *
    * Bundled at 2048/face (`tycho2t5_80_*.jpg`) alongside the historical `t3`
    * faces; both are offline, no network fetch. Baked from the SVS 3572
-   * `TychoSkymapII.t5_16384x08192` equirectangular by the reproducible pipeline
-   * at `Tools/skybox-bake/` (SMPTE gamma-1.8 → sRGB corrected). The asset's
-   * terms are stated in `LICENSE.md` → Bundled Engine Assets (cleared for this
-   * project's scope per `migration_doc/QUEUE_2026-07-19_CAMPAIGN12.md` §6f).
+   * `TychoSkymapII.t5_16384x08192` equirectangular by the reproducible
+   * pipeline at `Tools/skybox-bake/` (SMPTE gamma-1.8 → sRGB corrected). The
+   * asset's terms are stated in `LICENSE.md` → Bundled Engine Assets.
    */
   TYCHO_T5: "TYCHO_T5",
   /**
    * Tycho catalogue skymap, **diffuse Milky Way light only** — the default
    * (see {@link SkyBox.defaultVariant}).
    *
-   * This is the Campaign-12 DR-01 seam: the cube map supplies the degrees-scale
-   * galactic band and nothing else, while every *resolved* star comes from the
-   * {@link StarField} sprite catalogue at its actual RA/Dec. One physical owner
-   * per signal — so stars stay resolution-independent, share a single PSF and
-   * B−V colour, and can respond to extinction, daytime fade and glare, none of
-   * which a texel baked into a cube face can do.
+   * The cube map supplies the degrees-scale galactic band and nothing else,
+   * while every *resolved* star comes from the {@link StarField} sprite
+   * catalogue at its actual RA/Dec. One physical owner per signal — so stars
+   * stay resolution-independent, share a single PSF and B−V colour, and can
+   * respond to extinction, daytime fade and glare, none of which a texel
+   * baked into a cube face can do.
    *
    * Baked from the same hash-pinned SVS 3572 `t5` source as
    * {@link SkyBox.Variant.TYCHO_T5} by `Tools/skybox-bake/`, low-passed with a
@@ -417,13 +414,13 @@ SkyBox.Variant = Object.freeze({
    * runs on the *equirect*, not on six faces independently, so the cube stays
    * seam-continuous.
    *
-   * `TYCHO_T5` remains bundled and selectable as the un-blurred reversal
-   * artifact, so DR-01 can be reversed without a re-bake.
+   * `TYCHO_T5` remains bundled and selectable as the un-blurred reversal of
+   * this bake, so the diffuse-only choice can be reversed without a re-bake.
    */
   TYCHO_T5_DIFFUSE: "TYCHO_T5_DIFFUSE",
 });
 
-// C12-12 — `tierSuffix` is the resolution-tier infix from
+// `tierSuffix` is the resolution-tier infix from
 // `Scene/SkyBoxResolutionPolicy.js`. It is empty for each variant's bundled
 // tier, which is what keeps every default URL byte-identical to what shipped
 // before the policy existed; a future 4096 bake would install
@@ -458,14 +455,14 @@ const skyBoxVariants = {
 /**
  * The variant {@link SkyBox.createEarthSkyBox} uses when none is passed.
  *
- * `TYCHO_T5_DIFFUSE` is the default as of `C12-11` (Campaign 12), completing
- * the DR-01 seam: the cube map contributes diffuse galactic light and the
- * {@link StarField} sprite catalogue owns every resolved star. `C12-10` had
- * shipped the un-blurred `TYCHO_T5` faces as a deliberate transitional step,
- * before the catalogue was deep enough to take over — with both sources
- * painting the same stars, the sprites were very nearly invisible.
+ * `TYCHO_T5_DIFFUSE` is the default: the cube map contributes diffuse
+ * galactic light and the {@link StarField} sprite catalogue owns every
+ * resolved star. The un-blurred `TYCHO_T5` faces shipped first as a
+ * deliberate transitional step, before the catalogue was deep enough to take
+ * over — with both sources painting the same stars, the sprites were very
+ * nearly invisible.
  *
- * All three variants stay bundled and offline: `TYCHO_T5` as DR-01's un-blurred
+ * All three variants stay bundled and offline: `TYCHO_T5` as the un-blurred
  * reversal artifact, and `TYCHO_T3` as the historical faint render.
  *
  * @type {string}
@@ -474,12 +471,12 @@ const skyBoxVariants = {
 SkyBox.defaultVariant = SkyBox.Variant.TYCHO_T5_DIFFUSE;
 
 /**
- * C12-12 — selectable star-cube-map face resolutions for
+ * Selectable star-cube-map face resolutions for
  * {@link SkyBox.createEarthSkyBox}.
  *
  * The star cube map is the largest fixed texture allocation in a default
  * scene and it is stored uncompressed (`rgba8unorm`, six faces, one mip level
- * on BOTH backends), so the tier is a VRAM decision before it is a quality
+ * on both backends), so the tier is a VRAM decision before it is a quality
  * decision:
  *
  * | tier | VRAM  | note                                              |

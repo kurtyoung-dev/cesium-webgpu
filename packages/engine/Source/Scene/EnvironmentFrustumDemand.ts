@@ -1,17 +1,16 @@
 /**
  * Backend-neutral demand check for environment content that the active scene
- * renderer must execute INSIDE the multi-frustum loop.
+ * renderer must execute inside the multi-frustum loop.
  *
- * Background (C12-G1F1). Two renderer conventions exist for the celestial /
- * environment layer:
+ * Two renderer conventions exist for the celestial / environment layer:
  *
  *   - The direct convention (WebGL): `SceneRenderer.renderEnvironment` executes
  *     `scene._environmentState`'s commands with `command.execute(context,
- *     passState)` BEFORE the frustum loop, so environment content never depends
+ *     passState)` before the frustum loop, so environment content never depends
  *     on a frustum existing.
  *   - The injection convention (any `scene._alternateSceneRenderer`, i.e.
  *     WebGPU): environment commands cannot be executed outside a render pass,
- *     so `SceneRenderer.executeCommands` injects them into the FARTHEST
+ *     so `SceneRenderer.executeCommands` injects them into the farthest
  *     frustum's `Pass.ENVIRONMENT` slot. If `frustumCommandsList.length === 0`
  *     there is nowhere to inject and the whole frame is dropped.
  *
@@ -75,7 +74,7 @@ function isInjectable(command: ExecutableCommand | undefined): boolean {
  * Returns `false` on renderers that execute the environment directly (no
  * `_alternateSceneRenderer`) and on non-render passes (pick / offscreen), where
  * `Scene.updateEnvironment` has already cleared the command slots — keeping
- * both paths byte-identical to their pre-C12-G1F1 behavior.
+ * both paths byte-identical to the direct-execution behavior.
  *
  * @param scene - The scene being drawn.
  * @returns `true` when the environment layer needs a frustum this frame.
@@ -137,10 +136,10 @@ export function hasInjectedEnvironmentContent(scene: unknown): boolean {
  * `near > far` means nothing in `frameState.commandList` moved the scene
  * near/far accumulators off their `+/-MAX_VALUE` sentinels. Left alone, the
  * clamps in `updateFrustums` collapse the range to `near === far`, which yields
- * ZERO frustums and a dropped frame. Restore the camera window whenever the
+ * zero frustums and a dropped frame. Restore the camera window whenever the
  * frame still has environment content to draw — either BV-less `Pass.ENVIRONMENT`
- * commands that were binned from the command list (C10-01, Batch 693) or
- * inject-only environment commands held on `_environmentState` (C12-G1F1).
+ * commands that were binned from the command list or inject-only environment
+ * commands held on `_environmentState`.
  *
  * @param near - Accumulated scene near distance.
  * @param far - Accumulated scene far distance.

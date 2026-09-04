@@ -5,19 +5,18 @@ import DeveloperError from "./DeveloperError.js";
 import Resource from "./Resource.js";
 
 /**
- * GeoidUndulationGrid — geoid-undulation lookup over a bundled coarse grid
- * (C6-FFT-OCEAN-TIDE-DATUM, Design A slice 1).
+ * GeoidUndulationGrid — geoid-undulation lookup over a bundled coarse grid.
  *
  * The undulation N is the height of the geoid above the WGS84 ellipsoid. Real
  * elevation data is orthometric: a terrain provider that publishes "sea level"
  * publishes the GEOID, not ellipsoidal zero, and those disagree by up to
- * ±107 m. `probe-ocean-datum.mjs` (Batch 759) measured Cesium World Terrain's
+ * ±107 m. `probe-ocean-datum.mjs` measured Cesium World Terrain's
  * ocean lid at six open-ocean sites and classified it GEOID; the shipped FFT
  * ocean anchored its patch at ellipsoidal 0 and therefore floated a measured
  * 101.64 m above the baked sea at the Sri Lanka coast. This grid is the model
  * that closes that gap.
  *
- * DATA. EGM2008 (Pavlis, Holmes, Kenyon & Factor, "The development and
+ * Data. EGM2008 (Pavlis, Holmes, Kenyon & Factor, "The development and
  * evaluation of the Earth Gravitational Model 2008 (EGM2008)", J. Geophys.
  * Res. 117, B04406, 2012), decimated from the NGA 2.5-arcminute geoid grid
  * (`us_nga_egm08_25.tif`, whose own TIFF copyright tag reads "Derived from

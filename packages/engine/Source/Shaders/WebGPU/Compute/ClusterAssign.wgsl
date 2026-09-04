@@ -1,12 +1,10 @@
 // ClusterAssign.wgsl — Forward+ light-to-cluster assignment compute
-// shader. Slice 5d Batch 148, NEW-GBUFFER-CONSUMER-CLUSTERED-LIGHTING
-// step 4.
+// shader.
 //
 // One thread per cluster in a (X, Y, Z) = (16, 9, 24) grid (3456
 // clusters total). Each thread:
 //
-//   1. Reads its cluster's eye-space AABB from `clusterAABBs` (Batch
-//      147's storage buffer output).
+//   1. Reads its cluster's eye-space AABB from `clusterAABBs`.
 //   2. Walks the active light list (up to `MAX_LIGHTS = 1024` lights
 //      packed as ClusteredLight records).
 //   3. For each light, tests:
@@ -24,7 +22,7 @@
 //      (the FS) read only the first `count` entries.
 //
 // Memory layout (storage buffers):
-//   - clusterAABBs:           3456 × 32 B  =  ~108 KiB (read-only, Batch 147)
+//   - clusterAABBs:           3456 × 32 B  =  ~108 KiB (read-only)
 //   - lights:                 1024 × 80 B  =  ~80  KiB (read-only, packed by CPU each frame)
 //   - perClusterLightCount:   3456 × 4 B   =  ~13.5 KiB
 //   - perClusterLightIndices: 3456 × 256 × 4 B = ~3.4 MiB
@@ -60,12 +58,12 @@ const LIGHT_TYPE_POINT: i32 = 1;
 const LIGHT_TYPE_SPOT: i32 = 2;
 
 // Per-light record: 80 bytes = 20 floats. Matches the per-light layout
-// of LightCollection.pack() (Batch 134) BUT with positions / directions
-// already transformed to eye-space by the CPU. The CPU also applies
-// the view matrix to spot directions so the spot-cone check on the FS
-// works against eye-space input vectors directly.
+// of LightCollection.pack() but with positions / directions already
+// transformed to eye-space by the CPU. The CPU also applies the view
+// matrix to spot directions so the spot-cone check on the FS works
+// against eye-space input vectors directly.
 struct ClusteredLight {
-  // .xyz = position (point/spot) OR direction (directional) in EYE space
+  // .xyz = position (point/spot) OR direction (directional) in eye space
   // .w   = lightType as f32 (0=DIR, 1=POINT, 2=SPOT)
   posOrDirEC: vec4<f32>,
   // .xyz = color (linear RGB), .w = intensity

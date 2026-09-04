@@ -320,7 +320,7 @@ class Vector3DTilePrimitive {
   update(frameState) {
     const context = frameState.context;
 
-    // Batch 112 — WebGPU path delegates to the VECTOR_3DTILE_PRIMITIVE
+    // WebGPU path delegates to the VECTOR_3DTILE_PRIMITIVE
     // feature renderer. The renderer reads `_positions`, `_indices`,
     // `_vertexBatchIds`, and `_batchedIndices` directly off the primitive
     // and emits one DrawCommand per `_batchedIndices` entry. The WebGL
@@ -341,8 +341,7 @@ class Vector3DTilePrimitive {
           for (let i = 0; i < colorCommands.length; i++) {
             frameState.commandList.push(colorCommands[i]);
           }
-          // AUDIT_2026_05_02 A.2 (Batch 141, NEW-INVERT-CLASS-STENCIL-CLASSIFIER) —
-          // when invert classification is on, push the IGNORE_SHOW
+          // When invert classification is on, push the IGNORE_SHOW
           // stencil-write commands so the stencil-gated composite can
           // distinguish classified vs unclassified tile pixels.
           if (
@@ -424,8 +423,8 @@ class Vector3DTilePrimitive {
     this._spPick = this._spPick && this._spPick.destroy();
     this._vaSwap = this._vaSwap && this._vaSwap.destroy();
 
-    // Batch 112 — release the WebGPU FR cache (vertex/index buffers, UBO,
-    // batch-color storage). The FR's destroy hook walks the same
+    // Release the WebGPU FR cache (vertex/index buffers, UBO, batch-color
+    // storage). The FR's destroy hook walks the same
     // `_webgpuCache` slot the createCommands path populates.
     if (defined(this._webgpuCache) && defined(this._lastFeatureRenderer)) {
       this._lastFeatureRenderer.destroy?.(this);
@@ -533,16 +532,15 @@ function createShaders(primitive, context) {
     return;
   }
 
-  // BUILD-VAR-HAZARD-VECTOR3DTILE — `ShaderProgram.fromCache` calls
-  // below expect real GLSL source. The webgpu-only build variant
-  // aliases every `Source/Shaders/*.js` import to an empty string
-  // stub (see `scripts/bundleVariantPlugin.js`), and WebGL would
-  // reject the empty-source compile. The Vector3DTile feature
-  // renderer (Batch 112, key `VECTOR_3DTILE_PRIMITIVE`) takes over
-  // when registered; `update()` above already early-returns when the
-  // FR is found, so this is a defensive belt-and-suspenders check.
-  // Use the FR-key shape rather than `context.rendererType === "webgpu"`
-  // per CLAUDE.md §2 backend-agnosticism rule (audit 2026-05-02).
+  // `ShaderProgram.fromCache` calls below expect real GLSL source. The
+  // webgpu-only build variant aliases every `Source/Shaders/*.js` import
+  // to an empty string stub (see `scripts/bundleVariantPlugin.js`), and
+  // WebGL would reject the empty-source compile. The Vector3DTile feature
+  // renderer (key `VECTOR_3DTILE_PRIMITIVE`) takes over when registered;
+  // `update()` above already early-returns when the FR is found, so this
+  // is a defensive belt-and-suspenders check. Use the FR-key shape rather
+  // than `context.rendererType === "webgpu"` so this stays backend-agnostic
+  // like every other feature-renderer dispatch site.
   if (context.getFeatureRenderer(FeatureRendererKey.VECTOR_3DTILE_PRIMITIVE)) {
     return;
   }

@@ -1,5 +1,5 @@
 // FlowFieldRender.wgsl — instanced point rendering for GPU flow-field wind
-// particles (Campaign 6, C6-FLOWFIELD-WIND). Each particle's geographic state
+// particles. Each particle's geographic state
 // (lon/lat/age/speed01) is vertex-pulled from the ping-pong state buffer the
 // advection compute pass wrote this frame; the vertex shader converts lon/lat
 // → WGS84 ellipsoid ECEF, RTE-splits it (EncodedCartesian3 2^16 convention),
@@ -22,7 +22,7 @@ struct CameraUniforms {
   logDepthFactor: f32,
   encodedCameraLow: vec3<f32>,           // bytes 96-107 (+4 pad)
   _pad1: f32,
-  previousViewProjection: mat4x4<f32>,   // bytes 112-175 (DP-H41 tail)
+  previousViewProjection: mat4x4<f32>,   // bytes 112-175
 };
 
 struct RenderParams {
