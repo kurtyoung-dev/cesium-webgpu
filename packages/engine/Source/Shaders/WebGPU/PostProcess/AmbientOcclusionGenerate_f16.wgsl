@@ -104,6 +104,27 @@ fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
 
 const PI: f32 = 3.14159265359;
 
+// Convert the sample radius the uniforms carry in eye-space metres into the
+// per-step stride the march walks in screen pixels. This reconstruction places
+// one pixel at `2 * texelWidth * depth` metres, so dividing the radius by that
+// scale makes the whole march span the same eye-space reach at every depth —
+// the falloff below then compares distances against the same metres value it
+// was written for. Without the conversion the march covers `lengthCap` PIXELS,
+// which collapses inside one texel wherever a pixel is wider than the cap. The
+// one-pixel floor keeps consecutive samples off the centre's own texel, where
+// the fetch returns no depth the march has not already read and the step
+// vector carries no occlusion.
+fn marchStepPixels(
+  lengthCapMeters: f32,
+  eyeDepth: f32,
+  texelWidth: f32,
+  stepDenominator: f32,
+) -> f32 {
+  let metersPerPixel = 2.0 * texelWidth * max(eyeDepth, 0.01);
+  let radiusPixels = lengthCapMeters / metersPerPixel;
+  return max(radiusPixels / max(stepDenominator, 1.0), 1.0);
+}
+
 @fragment
 fn fragmentMain(in: VertexOutput) -> @location(0) vec4<f32> {
   let intensity = uniforms.params0.x;
@@ -142,7 +163,21 @@ fn fragmentMain(in: VertexOutput) -> @location(0) vec4<f32> {
     executedStepCount,
     fullSamplePattern,
   );
-  let stepLen = lengthCap / f32(stepLenDenominator);
+  let stepLen = marchStepPixels(
+    lengthCap,
+    -posEC.z,
+    texelSize.x,
+    f32(stepLenDenominator),
+  );
+
+  // The stride above is a real pixel count, so a march that starts near a
+  // frame edge can walk past it. The depth texture is read through the shared
+  // post-process sampler, which declares no address mode and therefore clamps
+  // to edge: an off-screen fetch returns the border texel's depth while
+  // `pixelToEye` reconstructs the lateral position from the unclamped
+  // coordinate, fabricating an occluder that the falloff still weights. Bound
+  // the march the way the WebGL stage does.
+  let viewportSize = vec2<f32>(1.0, 1.0) / texelSize;
 
   for (var d: i32 = 0; d < executedDirectionCount; d = d + 1) {
     let angle = (f32(d) + randomVal.x) * PI / f32(directionCount);
@@ -151,6 +186,11 @@ fn fragmentMain(in: VertexOutput) -> @location(0) vec4<f32> {
     for (var s: i32 = 1; s <= executedStepCount; s = s + 1) {
       let sampleOffset = dir2D * (f32(s) * stepLen + randomVal.y);
       let sampleCoord = screenCoord + sampleOffset;
+      // Stop this direction once it steps off the screen; every later step
+      // along it only goes further out.
+      if (any(sampleCoord != clamp(sampleCoord, vec2<f32>(0.0), viewportSize))) {
+        break;
+      }
       let samplePos = pixelToEye(sampleCoord);
 
       // Geometry math in F32.
