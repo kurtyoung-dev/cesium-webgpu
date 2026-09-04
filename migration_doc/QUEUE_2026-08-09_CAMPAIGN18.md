@@ -385,7 +385,7 @@ gated); LiDAR-surfel rendering through the splat renderer (M, post-G8).
 | `C18-V3` | V | S | PENDING |
 | `C18-P1` | P | M | PENDING |
 | `C18-P2` | P | M | **IN FLIGHT — local decode/pass implementation complete; per-format browser fixtures and negative controls owed** |
-| `C18-P3` | P | M | PENDING |
+| `C18-P3` | P | M | **DIAGNOSED, NOT IMPLEMENTED (lane Leofa, 2026-09-02):** premise confirmed from the code; the fix does not fit one lane. Design, slice plan and the browser-free verdict spec landed with the Edge probe `probe-pnts-model-attenuation.mjs` (`migration_doc/C18_P3_PNTS_MODEL_ATTENUATION_DESIGN_2026-09-02.md`); engine slices dispatch per that plan |
 | `C18-P4` | P | M | PENDING · **LANDING GUARD (2026-08-21): the lane-F dedicated-path renderer package does NOT discharge this row — P4 is the MODEL-path EDL routing, and no model-path EDL producer exists in that package; its landing must not claim P4.** |
 | `C18-P5` | P | M | **IN FLIGHT — shared CPU decode ordering implemented locally; real Draco ready/render browser gate owed. GATE PRECONDITION (added 2026-08-21): `Source/ThirdParty/draco_decoder.wasm` is a gitignored generated artifact — the browser gate must verify the served build actually provisions it before scoring, or a missing decoder reads as the very hang the row fixes.** |
 | `C18-A1` | A | S | PENDING · **RECIPE REFRESH OWED (2026-08-21): the acceptance recipe cites the pre-lane-F 4-band `PointCloudLOD.wgsl` shape; lane F rewrites the LOD processor, so re-derive the former-band-radii dolly probe against the landed shader before dispatch.** |

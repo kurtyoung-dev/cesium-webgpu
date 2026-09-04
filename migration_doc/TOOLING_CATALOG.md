@@ -212,13 +212,13 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 
 | Metric | Value |
 |---|---|
-| Files in census | 1182 |
-| ACTIVE | 960 |
+| Files in census | 1210 |
+| ACTIVE | 989 |
 | INVESTIGATION | 195 |
-| NO @purpose HEADER | 27 |
-| Classes | probe 659, spec 286, other 105, lib 89, gate-lib 20, bake-tool 13, runner 6, fixture 4 |
+| NO @purpose HEADER | 26 |
+| Classes | probe 661, spec 302, other 107, lib 96, gate-lib 21, bake-tool 13, runner 6, fixture 4 |
 
-### Tools/ (47)
+### Tools/ (50)
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
@@ -228,34 +228,37 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | build-eot20-constituent-grid.mjs | other | ACTIVE | 2026-08-16 | 3 | Offline bake of the EOT20 ocean-tide constituent atlas into the TCG1 grid read by Core/TideConstituentGrid.js (CC BY 4.0, attribution mandated). |
 | build-geoid-undulation-grid.mjs | other | ACTIVE | 2026-08-16 | 4 | Bakes the bundled coarse EGM2008 geoid grid (egm2008-0p5deg.i16) consumed by Core/GeoidUndulationGrid.js for the ocean GEOID vertical datum. |
 | build-lake-water-mask.mjs | other | ACTIVE | 2026-08-16 | 4 | Converts Natural Earth 1:10m lakes polygons into the packed LWM1 binary bundled for LakeWaterClassificationProvider (globe.lakeWaterMask). |
-| ci-guards.spec.mjs | spec | ACTIVE | 2026-08-28 | 2 | Asserts the CI guards job wires every build-free guard, stays build-free, and records why the excluded guards are excluded. |
+| ci-guards.spec.mjs | spec | ACTIVE | 2026-08-28 | 7 | Asserts the CI guards job wires every build-free guard, stays build-free, and records why the excluded guards are excluded. |
 | codex-mcp-launcher.mjs | other | ACTIVE | 2026-08-20 | 9 | Resolve the Codex CLI across its hash-versioned install directories and exec `codex mcp-server` for .mcp.json; stable across desktop-app updates. |
 | codex-preflight.mjs | other | ACTIVE | 2026-08-20 | 5 | Prove a Codex worker can actually run before a batch is dispatched: resolves the CLI, checks auth, and fires a minimal canary exec to detect quota exhaustion and report the reset time. |
 | codex-session-gc.mjs | other | ACTIVE | 2026-08-28 | 3 | Project-scoped garbage collection for codex CLI session rollouts: lists, and on request deletes, only the sessions whose recorded cwd is under this project's worker roots, so other projects' history is never touched. |
-| collection-sentinels-check.mjs | other | ACTIVE | 2026-08-16 | 4 | Fast no-GPU smoke check of the three permanent fault sentinels in WebGPUCollectionRendererBase via in-memory esbuild transpile; <1s local run. |
+| collection-sentinels-check.mjs | other | ACTIVE | 2026-08-16 | 8 | Fast no-GPU smoke check of the three permanent fault sentinels in WebGPUCollectionRendererBase via in-memory esbuild transpile; <1s local run. |
 | derive-lunar-eclipse-circumstances.mjs | other | ACTIVE | 2026-08-28 | 1 | Derives lunar-eclipse contact times, umbral/penumbral magnitudes and the best-view sub-lunar point from the engine Simon1994 ephemeris; source of the eclipse-explorer lunar preset data and the VW-L golden fixtures. |
 | dev-server-artifact.spec.mjs | spec | ACTIVE | 2026-08-20 | 0 | Verify that the development server selects and validates the requested Cesium artifact without opening a socket. |
 | generate-tooling-catalog.mjs | other | ACTIVE | 2026-09-02 | 6 | Regenerates the TOOLING_CATALOG census section from @purpose/@status headers, git freshness and inbound refs; --check fails on drift. |
-| generate-tooling-catalog.spec.mjs | spec | ACTIVE | 2026-09-02 | 2 | Self-test for the catalog generator: marker containment, determinism, drift reporting and the no-header row. |
+| generate-tooling-catalog.spec.mjs | spec | ACTIVE | 2026-09-03 | 2 | Self-test for the catalog generator: marker containment, determinism, drift reporting and the no-header row. |
 | inject-purpose-headers.mjs | other | ACTIVE | 2026-08-16 | 3 | Idempotent codemod injecting @purpose/@status headers into the tooling .mjs fleet from the library-audit rows. |
 | inject-purpose-headers.spec.mjs | spec | ACTIVE | 2026-08-16 | 1 | Self-test for the @purpose header codemod: mapping, placement, byte-exactness, idempotence and the dry-run report. |
 | karma-default-browsers.spec.mjs | spec | NO @purpose HEADER | 2026-08-21 | 0 | — |
-| landing-rules.mjs | other | ACTIVE | 2026-09-01 | 19 | Pure landing predicates for commit discipline, push-wide Batch uniqueness, and protected remote-ref updates. |
+| landing-rules.mjs | other | ACTIVE | 2026-09-01 | 20 | Pure landing predicates for commit discipline, push-wide Batch uniqueness, and protected remote-ref updates. |
 | landing-rules.spec.mjs | spec | ACTIVE | 2026-09-01 | 8 | Hermetic control-and-mutant contract for commit, push-wide Batch, and protected-ref landing predicates. |
-| lint-debug-pragmas.mjs | other | ACTIVE | 2026-08-28 | 6 | Lints Renderer/WebGPU for console.log/warn/debug/info calls not wrapped in //>>includeStart('debug') pragmas; console.error exempt by policy. |
+| lint-debug-pragmas.mjs | other | ACTIVE | 2026-08-28 | 15 | Lints Renderer/WebGPU for console.log/warn/debug/info calls not wrapped in //>>includeStart('debug') pragmas; console.error exempt by policy. |
 | lint-debug-pragmas.spec.mjs | spec | ACTIVE | 2026-08-28 | 0 | Proves debug-console calls stay removable unless a narrowly marked warning must remain visible. |
-| pre-push-guard.mjs | other | ACTIVE | 2026-09-01 | 14 | Git-aware driver behind .husky/pre-push: enforces batch-prefix/body/trailer/quiet-hours on every outgoing agent commit, and refuses deletion or non-fast-forward rewrite of main; fail-closed, no bypass flag. |
-| pre-push-guard.spec.mjs | spec | ACTIVE | 2026-09-01 | 5 | Hostile-input, multi-ref, protected-ref, and destructive-fixture contract for the real pre-push driver and hook. |
+| pre-push-guard.mjs | other | ACTIVE | 2026-09-03 | 20 | Git-aware driver behind .husky/pre-push: enforces batch-prefix/body/trailer/quiet-hours on every outgoing agent commit, and refuses deletion or non-fast-forward rewrite of main; fail-closed, no bypass flag reachable from a real push (a 5th argv slot lets a direct invocation pin the quiet-hours clock for tests; git's two-argument hook contract keeps it unreachable from `.husky/pre-push`). |
+| pre-push-guard.spec.mjs | spec | ACTIVE | 2026-09-03 | 5 | Hostile-input, multi-ref, protected-ref, and destructive-fixture contract for the real pre-push driver and hook. |
+| provision-worker-clone-codex-trust.spec.mjs | spec | ACTIVE | 2026-09-02 | 1 | Behavioural spec for the --codex-trust / --codex-untrust line-based |
 | provision-worker-clone-junctions.spec.mjs | spec | NO @purpose HEADER | 2026-08-29 | 1 | — |
-| provision-worker-clone.mjs | other | ACTIVE | 2026-08-29 | 5 | Provision a worker clone with the governance git cannot deliver, create the local main ref the handoff diff needs, and REFUSE if any routed authority is unreachable. |
+| provision-worker-clone.mjs | other | ACTIVE | 2026-09-02 | 6 | Provision a worker clone with the governance git cannot deliver, create the local main ref the handoff diff needs, and REFUSE if any routed authority is unreachable. |
+| report-batch-number-reuse.mjs | other | ACTIVE | 2026-09-02 | 2 | Reports every `Batch NNNN:` commit subject that reuses a number already used by a different commit, across full reachable git history. |
+| report-batch-number-reuse.spec.mjs | spec | ACTIVE | 2026-09-02 | 1 | Behaviour spec for report-batch-number-reuse.mjs, run against a real temporary git repository. |
 | run-far200-shadow-self-test.mjs | runner | ACTIVE | 2026-08-16 | 2 | Thin bootstrap: esbuild-bundles Tools/far200-shadow-self-test.ts and executes it via a data: URL import. |
 | spec-runner-census.mjs | other | NO @purpose HEADER | 2026-08-31 | 5 | — |
-| spec-runner-census.spec.mjs | spec | NO @purpose HEADER | 2026-08-31 | 2 | — |
-| upstream-regression-check.mjs | other | ACTIVE | 2026-08-16 | 7 | Standalone Node re-verification of eight ported upstream fixes (imagery-layers guard, parseUrl, octDecode arg order, etc.); exit 0 = all hold. |
-| variant-smoke-test.mjs | other | ACTIVE | 2026-08-16 | 35 | Playwright smoke test of each build variant's IIFE bundle (dual/webgl-only/webgpu-only): Viewer constructs, frames render, zero console errors. |
+| spec-runner-census.spec.mjs | spec | NO @purpose HEADER | 2026-09-03 | 2 | — |
+| upstream-regression-check.mjs | other | ACTIVE | 2026-08-16 | 11 | Standalone Node re-verification of eight ported upstream fixes (imagery-layers guard, parseUrl, octDecode arg order, etc.); exit 0 = all hold. |
+| variant-smoke-test.mjs | other | ACTIVE | 2026-08-16 | 45 | Playwright smoke test of each build variant's IIFE bundle (dual/webgl-only/webgpu-only): Viewer constructs, frames render, zero console errors. |
 | verify-clone-drained.mjs | other | ACTIVE | 2026-08-28 | 2 | Fail closed unless a worker clone has no recoverable work outside the authority repository. |
 | verify-clone-drained.spec.mjs | spec | ACTIVE | 2026-08-28 | 0 | Prove with real throwaway Git repositories that every required clone-drain check both runs and controls the aggregate verdict. |
-| verify-landing-compliance.mjs | other | ACTIVE | 2026-08-28 | 15 | After-the-fact detector that re-runs the landing rules + C16 marker gate over a landed commit range, making any --no-verify hook bypass visible. |
+| verify-landing-compliance.mjs | other | ACTIVE | 2026-08-28 | 21 | After-the-fact detector that re-runs the landing rules + C16 marker gate over a landed commit range, making any --no-verify hook bypass visible. |
 | verify-landing-compliance.spec.mjs | spec | ACTIVE | 2026-08-28 | 3 | Contract for the bypass detector against immutable history: known-bad C12-37 landing must red, known-good B1041-1043 landing must pass. |
 | verify-no-doc-shred.mjs | other | ACTIVE | 2026-08-28 | 2 | Fails when any migration_doc markdown file contains a long run of single-character lines - the signature of a splice-spread-over-string edit defect that has landed shredded ledger sections three times. |
 | verify-orientation-mirror.mjs | other | ACTIVE | 2026-08-28 | 1 | Fail closed when a status asserted by a reader-facing orientation document disagrees with, or cannot be resolved against, its campaign queue authority. |
@@ -294,7 +297,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
 | comment-marker-guard.mjs | other | ACTIVE | 2026-08-21 | 19 | C16 lint guard scanning engine/widgets Source for banned tracker-marker vocabulary, with a clean-list ratchet; lint-staged + one-shot modes. |
-| comment-marker-guard.spec.mjs | spec | ACTIVE | 2026-08-28 | 4 | node:test contract for the C16 marker guard: rules still match (self-test vs broken rule), scope does not overreach, ratchet honest both ways. |
+| comment-marker-guard.spec.mjs | spec | ACTIVE | 2026-09-03 | 4 | node:test contract for the C16 marker guard: rules still match (self-test vs broken rule), scope does not overreach, ratchet honest both ways. |
 | comment-only-diff.mjs | other | ACTIVE | 2026-08-16 | 6 | Binding gate of every C16 rewrite batch: strips comments from both sides of a diff to a canonical form and requires the remaining code identical. |
 | comment-only-diff.spec.mjs | spec | ACTIVE | 2026-08-16 | 1 | Mutant suite for the comment-only-diff gate: every rejected mutant is paired with the nearest legitimate edit that must be accepted. |
 | spec-anchor-sweep.mjs | other | ACTIVE | 2026-08-20 | 3 | Reports grammar, comment-only, and containment-locator anchors from spec literals against explicitly supplied source files. |
@@ -308,15 +311,21 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
-| comment-scanner.mjs | lib | ACTIVE | 2026-09-01 | 12 | The one tokenizer both C16 instruments share (JS/TS/WGSL/GLSL comment vs code vs string), fail-closed, with semantic-comment retention rules. |
-| marker-grammar.mjs | lib | ACTIVE | 2026-08-28 | 10 | Machine-decidable half of the fork comment standard: the banned tracker-vocabulary regex rules (add-only ids) driven by the marker guard. |
+| comment-scanner.mjs | lib | ACTIVE | 2026-09-01 | 13 | The one tokenizer both C16 instruments share (JS/TS/WGSL/GLSL comment vs code vs string), fail-closed, with semantic-comment retention rules. |
+| marker-grammar.mjs | lib | ACTIVE | 2026-08-28 | 13 | Machine-decidable half of the fork comment standard: the banned tracker-vocabulary regex rules (add-only ids) driven by the marker guard. |
 
-### Tools/lib/ (2)
+### Tools/lib/ (8)
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
-| purpose-header.mjs | lib | ACTIVE | 2026-09-02 | 11 | The one shared @purpose/@status header grammar (parse, locate, byte-exact splice, violations) used by the codemod, the catalog generator and the fleet-contract analyzer. |
-| webgpu-error-gate.mjs | gate-lib | ACTIVE | 2026-08-16 | 161 | Shared Playwright gate catching unscoped WebGPU validation/OOM errors (onuncapturederror) and device loss, plus a console-error listener. |
+| attach-page-diagnostics.mjs | lib | ACTIVE | 2026-09-02 | 3 | General Playwright page diagnostics: separate console-message and |
+| attach-page-diagnostics.spec.mjs | spec | ACTIVE | 2026-09-02 | 1 | Behaviour spec for attachPageDiagnostics — separation, detach |
+| png-decode.mjs | lib | ACTIVE | 2026-09-02 | 3 | Dependency-free PNG decoder (8-bit, non-interlaced, colour type 2 or 6) plus pixel-diff and frame-stats helpers, the decode-side counterpart of Tools/lib/png-rgba.mjs. |
+| png-decode.spec.mjs | spec | ACTIVE | 2026-09-02 | 2 | Round-trip, filter-coverage and error-path coverage for Tools/lib/png-decode.mjs. |
+| png-rgba.mjs | lib | ACTIVE | 2026-09-02 | 7 | CRC32 + PNG chunk + zero-dependency RGBA PNG encoder shared across the probe fleet, replacing near-duplicate hand-rolled copies one consumer at a time. |
+| png-rgba.spec.mjs | spec | ACTIVE | 2026-09-02 | 1 | Golden-byte and CRC32-vector coverage for Tools/lib/png-rgba.mjs. |
+| purpose-header.mjs | lib | ACTIVE | 2026-09-02 | 12 | The one shared @purpose/@status header grammar (parse, locate, byte-exact splice, violations) used by the codemod, the catalog generator and the fleet-contract analyzer. |
+| webgpu-error-gate.mjs | gate-lib | ACTIVE | 2026-08-16 | 164 | Shared Playwright gate catching unscoped WebGPU validation/OOM errors (onuncapturederror) and device loss, plus a console-error listener. |
 
 ### Tools/moon-albedo-bake/ (4)
 
@@ -332,7 +341,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
 | capture-readme-screenshots.mjs | runner | ACTIVE | 2026-08-16 | 2 | One-command Playwright capture of every image the README feature table references (sandcastle/viewer/page scenes from scenes.json manifest). |
-| capture-readme-screenshots.spec.mjs | spec | ACTIVE | 2026-08-16 | 1 | Browser-free enforcement of the README-table <-> scenes.json contract plus the capture script's probe-fleet safety membership; mutant-tested. |
+| capture-readme-screenshots.spec.mjs | spec | ACTIVE | 2026-08-16 | 2 | Browser-free enforcement of the README-table <-> scenes.json contract plus the capture script's probe-fleet safety membership; mutant-tested. |
 
 ### Tools/readme-screenshots/lib/ (5)
 
@@ -363,21 +372,24 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 |---|---|---|---|---|---|
 | bake-stbn.mjs | bake-tool | ACTIVE | 2026-08-16 | 4 | Reproducible spatiotemporal blue-noise bake: deterministic generate, quantise, spectral certify (abort on fail), encode raw .bin + tile-atlas PNG. |
 | stbn-core.mjs | bake-tool | ACTIVE | 2026-08-16 | 4 | STBN generation from published algorithms (Ulichney void-and-cluster, Georgiev-Fajardo energy, Wolfe separable spatiotemporal criterion). |
-| stbn-png.mjs | bake-tool | ACTIVE | 2026-08-16 | 3 | Minimal spec-derived 8-bit greyscale PNG encoder/decoder so the STBN bake and its node:test spec need no native image dependency. |
+| stbn-png.mjs | bake-tool | ACTIVE | 2026-08-16 | 4 | Minimal spec-derived 8-bit greyscale PNG encoder/decoder so the STBN bake and its node:test spec need no native image dependency. |
 | stbn-rng.mjs | bake-tool | ACTIVE | 2026-08-16 | 3 | Deterministic license-clean random stream for the STBN bake: AES-256-CTR over zeros keyed by SHA-256(seed), byte-identical across machines. |
 | stbn-spectrum.mjs | bake-tool | ACTIVE | 2026-08-16 | 5 | Fourier certification of an STBN volume (radial spatial spectrum, per-pixel temporal spectrum, cross-correlation) with mutants proving each bar fires. |
 
-### Tools/visual-regression/ (961)
+### Tools/visual-regression/ (975)
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
 | aec-residency-e1.spec.mjs | spec | NO @purpose HEADER | 2026-09-02 | 1 | — |
+| aec-residency-e2.spec.mjs | spec | ACTIVE | 2026-09-03 | 1 | Executes the real E-2 trace-clock bridge, GPU-process gap attribution, shader-module census arithmetic, animation-frame gap derivation and control matrix against synthetic and adversarial inputs, with inertness mutants for each refusal. |
+| aec-residency-stall-locus.mjs | other | ACTIVE | 2026-09-02 | 2 | Reads one or more banked E-1 residency receipts and prints where each leg's settle-window stall was waiting - main thread blocked, off the main thread, or undetermined - with the evidence each verdict rests on. |
+| aec-residency-stall-locus.spec.mjs | spec | ACTIVE | 2026-09-02 | 1 | Drives the stall-locus classifier over synthetic legs that carry each reachable outcome, over the real banked E-1 receipts when they are present, and through source mutations that make its two load-bearing readings inert, so a classifier that stops reading the poll cadence or the frame gaps fails here. |
 | analyze-cross-backend-report.mjs | other | ACTIVE | 2026-08-16 | 4 | Post-processes the cross-backend sandcastle sweep's report.json into pass/fail/diff buckets and issue categories for a PR-ready summary. |
 | assess-c11-146-route.mjs | other | ACTIVE | 2026-08-16 | 5 | C11-146 route wrapper: fingerprints local+served inputs around the clean moving-altitude run, assesses the artifact, preserves first red. |
 | attachment-demand-registry.spec.mjs | spec | ACTIVE | 2026-08-16 | 5 | Pure-Node spec of computeAttachmentDemand (esbuild-transpiled TS): full 2^6 reader matrix + conservative-force + observe-only contracts. |
 | backend-isolation-lane-contract.spec.mjs | spec | ACTIVE | 2026-08-20 | 0 | Pin the backend-isolation split lane to the page's explicit launch and readiness contract. |
 | bug-11-imagery-probe.mjs | other | INVESTIGATION | 2026-08-16 | 1 | Early diagnostic dumping the per-tile imagery probe (debugShowImageryProbe) + canvas sample to discriminate three hypothesized BUG-11 root causes. |
-| build-source-identity.spec.mjs | spec | ACTIVE | 2026-08-29 | 2 | Q-99 — regression coverage for the shared build-vs-source-tree |
+| build-source-identity.spec.mjs | spec | ACTIVE | 2026-09-03 | 4 | Q-99/Q-153 — regression coverage for the shared build-vs-source-tree |
 | c11-13-public-voxel-pick-convergence.spec.mjs | spec | ACTIVE | 2026-08-16 | 1 | node:test contract for the public voxel-pick convergence state machine (two identical consecutive cells = stable; undefined never converges). |
 | c11-13-voxel-inside-camera-harness.mjs | other | ACTIVE | 2026-08-16 | 3 | Browser-side ESM harness driving a voxel octree scene through inside/outside-volume camera waypoints on either backend for the C11-13 probe. |
 | c11-13-voxel-inside-camera-probe.spec.mjs | spec | ACTIVE | 2026-08-27 | 3 | Browser-free policy + mutant suite for the physical Edge inside-camera voxel probe: waypoint sequence, pixel/command evidence, watchdog ordering. |
@@ -400,19 +412,19 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | c12-29-s5-canonical-hash-parity.spec.mjs | spec | NO @purpose HEADER | 2026-08-29 | 1 | — |
 | c12-29-s5-custom-ellipsoid-gate.spec.mjs | spec | ACTIVE | 2026-08-16 | 4 | Gate spec for the C12-29 S5 custom-ellipsoid certification: geometry oracles, eclipse bindings, cross-backend derivation, v6 gate fold, mutants. |
 | c12-29-s5-dense-cost-gate.spec.mjs | spec | ACTIVE | 2026-08-16 | 3 | Gate spec for the C12-29 S5 dense-cost certification: schedule/workload validation, long-task selection, legacy + superseded schema folds, sentinels. |
-| c12-29-s5-dense-cost-structural-refusal.spec.mjs | spec | ACTIVE | 2026-08-29 | 1 | Q-96 — regression coverage for the dense-cost probe's structural |
+| c12-29-s5-dense-cost-structural-refusal.spec.mjs | spec | ACTIVE | 2026-09-02 | 1 | Q-96 — regression coverage for the dense-cost probe's structural |
 | c12-29-s5-multiview-gate.spec.mjs | spec | ACTIVE | 2026-08-16 | 2 | Gate spec for the C12-29 S5 multiview certification: phases, renderer set, WebGPU VR error contract, evidence lifecycle and lock/watchdog wiring. |
 | c12-29-s5-multiview-source-preflight.spec.mjs | spec | ACTIVE | 2026-08-29 | 0 | Q-99 — regression coverage for the multiview probe's new |
 | c12-29-s5-replacement-device-gate.spec.mjs | spec | ACTIVE | 2026-08-29 | 3 | Certifies the S5 eclipse-shadow replacement-device evidence pipeline: schemas, phases, ledger/provenance validators, gate fold of its probe+lib pair. |
 | c12-29-s5-replacement-device-preflight-refusal.spec.mjs | spec | ACTIVE | 2026-08-29 | 0 | Q-116 — regression coverage for the replacement-device S5 probe's |
 | c12-29-s5-svs-footprint-gate.spec.mjs | spec | ACTIVE | 2026-08-16 | 4 | node:test half of the NASA/SVS umbra-footprint certification triple (probe + gate-lib + spec) for the S5 eclipse globe shadow. |
 | c12-29-s5-terrain-selection-gate.spec.mjs | spec | ACTIVE | 2026-08-16 | 2 | Certifies the S5 terrain-selection evidence gate: v4-v9 schema migrations, page-diagnostic validation, canonical capture checks, exit-code fold. |
-| c12-31-aureole-gate.spec.mjs | spec | ACTIVE | 2026-08-16 | 3 | node:test half of the C12-31 L1-L4 sky-aureole certification triple (probe-sky-aureole-anchor + gate lib + spec). |
+| c12-31-aureole-gate.spec.mjs | spec | ACTIVE | 2026-09-02 | 4 | node:test half of the C12-31 L1-L4 sky-aureole certification triple (probe-sky-aureole-anchor + gate lib + spec). |
 | canvas-black-narrow.mjs | other | INVESTIGATION | 2026-08-16 | 0 | Narrows the black-canvas bug by rendering three paths (default PP chain, depth overlay, frustum tint) and reporting which yields non-black pixels. |
 | canvas-black-readback.mjs | other | INVESTIGATION | 2026-08-16 | 2 | Reads back the sceneFramebuffer color texture via copyTextureToBuffer/mapAsync to prove whether the globe pass wrote any color, ignoring the PP chain. |
 | canvas-black-trace.mjs | other | INVESTIGATION | 2026-08-16 | 0 | Renders 60 WebGPU frames capturing all [WebGPU:] console output to pin whether globe commands submit and pass validation (black-canvas bug). |
 | canvas-format-probe.mjs | other | INVESTIGATION | 2026-08-16 | 0 | One-shot dump of presentation/preferred/scene color formats and the HDR-canvas flag from a live WebGPU viewer. |
-| capture-and-diff.mjs | runner | ACTIVE | 2026-08-16 | 48 | Primary VR runner: drives the split-screen page over scenes.json, captures WebGL+WebGPU canvases, evaluates 3 gates vs reviewed historical baselines. |
+| capture-and-diff.mjs | runner | ACTIVE | 2026-08-16 | 55 | Primary VR runner: drives the split-screen page over scenes.json, captures WebGL+WebGPU canvases, evaluates 3 gates vs reviewed historical baselines. |
 | capture-and-diff.policy.spec.mjs | spec | ACTIVE | 2026-08-16 | 2 | node:test guard for lib/visual-gate-policy.mjs: pixel-gate evaluation, scene thresholds/expectations, manifest and baseline-promotion validation. |
 | capture-source-eol-identity.spec.mjs | spec | ACTIVE | 2026-08-28 | 0 | Materializes the real capture library as both a CRLF and an LF checkout, imports each, and evaluates whether the published sampler and runtime-attestor digests and the analyzer's verdict on the real probe source are the same from either, with an absence and an inertness mutant required to break all three signals. |
 | celestial-capture-harness.spec.mjs | spec | ACTIVE | 2026-08-21 | 0 | Mutation-checked guard for lib/celestial-capture-harness.mjs, including its shared frozen-PNG acquisition path. |
@@ -455,7 +467,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | cpu-frame-accounting.spec.mjs | spec | ACTIVE | 2026-08-16 | 2 | Deterministic-clock tests of WebGPUCpuPassProfiler whole-scene phase accounting (CPU_SCENE_PHASE_NAMES coverage, no wall-clock leakage). |
 | cpu-primitive-breakdown-policy.spec.mjs | spec | ACTIVE | 2026-08-16 | 1 | Policy guard for probe-c11-169-primitive-breakdown: first-red policy, detail controls, instrumentation evaluation and capture normalization vs source. |
 | cpu-scene-phase-integration.spec.mjs | spec | ACTIVE | 2026-08-28 | 3 | Pins the CPU scene-phase list agreement across Scene.js, ViewportExecutor.js and WebGPUSceneRenderer.ts (vm-executed source integration check). |
-| cross-backend-sandcastle-runner.mjs | other | ACTIVE | 2026-08-16 | 9 | Runs every Sandcastle demo under WebGL then WebGPU via a Viewer shim injecting contextOptions.renderer, pixel-diffs the pair, writes per-demo reports. |
+| cross-backend-sandcastle-runner.mjs | other | ACTIVE | 2026-08-16 | 12 | Runs every Sandcastle demo under WebGL then WebGPU via a Viewer shim injecting contextOptions.renderer, pixel-diffs the pair, writes per-demo reports. |
 | daynight-terminator-law.spec.mjs | spec | ACTIVE | 2026-08-28 | 3 | CLT-B1 Node half: transcribed laws vs shaders, calibration inversion, ramp classifier, structural exit codes — all mutant-rejected. |
 | debug-ground-polyline-color.mjs | other | INVESTIGATION | 2026-08-16 | 0 | Instruments the GroundPolyline renderer cache to find why per-instance color didn't reach the FS (dim-rectangle diagnosis, 2026-04-30). |
 | device-identity-recovery.spec.mjs | spec | ACTIVE | 2026-08-28 | 0 | Guards the device-loss recovery seams landed with the invalidation-bus predicate: the allocation-epoch resets and the dispatcher device-identity guards that stop consumers reusing work recorded against a dead device. |
@@ -483,7 +495,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | eclipse-cloud-response-gate.spec.mjs | spec | ACTIVE | 2026-09-02 | 14 | Pure-Node half of C13-41's Edge acceptance: derives bucket fills and submitted-refresh cost, and mutant-checks every fold predicate. |
 | eclipse-deckfree-night-law.spec.mjs | spec | ACTIVE | 2026-08-29 | 0 | Re-derives the shipped globe night/day fragment law in both dialects and checks the deck-free eclipse diagnostic's closed form against banked pixels (Q-78). |
 | eclipse-globe-shadow-visual.spec.mjs | spec | ACTIVE | 2026-08-16 | 3 | Pins probe-eclipse-globe-shadow.mjs structure: canonical same-task capture embed and eclipse/control x on/off isolation on both backends. |
-| eclipse-globe-svs-oracle.spec.mjs | spec | ACTIVE | 2026-08-16 | 1 | External S5 oracle: EclipseGlobeShadow model outputs vs published NASA 2024-04-08 figures (path centres, 197.5 km umbra width, falloff, shadow speed). |
+| eclipse-globe-svs-oracle.spec.mjs | spec | ACTIVE | 2026-08-16 | 3 | External S5 oracle: EclipseGlobeShadow model outputs vs published NASA 2024-04-08 figures (path centres, 197.5 km umbra width, falloff, shadow speed). |
 | eclipse-globe-umbra-rte.spec.mjs | spec | ACTIVE | 2026-08-29 | 5 | C12-29 S5 regression contract: CPU fit/composition laws, camera-independent common-ray representation, matching WebGL/WebGPU resource architecture. |
 | eclipse-high-precision-dependency.spec.mjs | spec | ACTIVE | 2026-08-16 | 1 | Pins the astronomy-engine 2.1.19 dependency: fixture provenance byte/hash fingerprints vs the resolved installed package (supply-chain gate). |
 | eclipse-ladder-rungs.mjs | other | ACTIVE | 2026-08-16 | 6 | Obscuration ladder + rung-separation validation for the S2 dimming probe; extracted from page.evaluate to fix the 0.9+0.1 knife-edge reject. |
@@ -516,17 +528,19 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | globe-night-lights-emission.spec.mjs | spec | ACTIVE | 2026-08-29 | 0 | Pins city-light emission as ONE law on two shaders: the same gate, the same luminance, the same product and the same unset sentinel on both backends, reachable at the shipped defaults, and inert for a layer that is not a night layer. |
 | globe-night-ocean-sentinel.spec.mjs | spec | ACTIVE | 2026-08-28 | 1 | Pins the GLOBE_UB_UNSET (-1.0) sentinel that made enableNightLights=false reachable: OFF and default-ON no longer share the same 0.0 uniform encoding. |
 | globe-ocean-wave-clock.spec.mjs | spec | ACTIVE | 2026-08-29 | 0 | Executes the globe water-mask ocean's wave-clock law, the WebGPU packer's own phase expression and the GLSL twin's, pinning that scene seconds drive both dialects at the historical rate and that the frame counter cannot reach either. |
-| globe-pipeline-key-contract.spec.mjs | spec | ACTIVE | 2026-08-29 | 4 | Pins the single-home globe pipeline cache-key builder/parser after the 15-month UNO_/UNMO_ producer-consumer drift; accessors + cache stats. |
-| globe-pipeline-prewarm.spec.mjs | spec | ACTIVE | 2026-08-29 | 3 | Replays the runtime MSAA sample-count sequencing a context and its scene renderer produce, and requires the globe's first pipeline requests to be served by the warm rather than compiled on the render path. |
-| globe-pipeline-readiness.spec.mjs | spec | ACTIVE | 2026-08-29 | 2 | Scoring tests plus engine mechanism pins for probe-globe-pipeline-readiness; a pin failure means the traced path changed, not the instrument. |
+| globe-pipeline-key-contract.spec.mjs | spec | ACTIVE | 2026-08-29 | 5 | Pins the single-home globe pipeline cache-key builder/parser after the 15-month UNO_/UNMO_ producer-consumer drift; accessors + cache stats. |
+| globe-pipeline-prewarm.spec.mjs | spec | ACTIVE | 2026-08-29 | 4 | Replays the runtime MSAA sample-count sequencing a context and its scene renderer produce, and requires the globe's first pipeline requests to be served by the warm rather than compiled on the render path. |
+| globe-pipeline-readiness.spec.mjs | spec | ACTIVE | 2026-08-29 | 4 | Scoring tests plus engine mechanism pins for probe-globe-pipeline-readiness; a pin failure means the traced path changed, not the instrument. |
 | globe-use-log-depth.spec.mjs | spec | ACTIVE | 2026-08-16 | 8 | Pins that the globe resolves the shared isWebGPULogDepthActive gate so orthographic modes never mix log and hyperbolic encodings in one depth buffer. |
 | gpu-timestamp-readback-ring-depth.spec.mjs | spec | ACTIVE | 2026-08-25 | 0 | Pins the GPU timestamp profiler's readback-ring depth behaviour: a workload at the measured worst-case latency retains every sample at a sufficient depth, and a ring that saturates at any depth still reports the loss instead of averaging past it. |
 | gpu-timestamp-unique-sample-accounting.spec.mjs | spec | ACTIVE | 2026-08-16 | 4 | Pins the GPU timestamp profiler's union-fold frame coverage (overlap surfaced, never double-counted) and its no-silent-loss attempt ledger. |
+| gpucull-blackframe-isolation-arm-expectations.spec.mjs | spec | ACTIVE | 2026-09-03 | 2 | Pins the REAL `WebGPUSceneRenderer#_maybeGPUCullTranslucent`'s raw inclusive count-vs-threshold boundary decision against `lib/gpucull-blackframe-isolation-gate.mjs`'s ARMS table, pins that the margin-adjusted `expectDispatch` the gate module derives cannot regress to a false STRUCTURAL refusal on the boundary arm (C6), and that `judgeIsolationResults` reports the documented exit-code verdict. |
 | ground-fog-band.spec.mjs | spec | ACTIVE | 2026-08-16 | 6 | Pins the inscribed-sphere altitude bug that made ground fog arithmetically absent, the Koschmieder-derived fix, four mutants, and byte-neutrality. |
-| ground-polyline-smoke.mjs | other | ACTIVE | 2026-08-16 | 2 | Early smoke probe loading the WebGPU viewer and checking GroundPolylinePrimitive classifier presence plus console health. |
-| gsplat-campaign15-instruments.spec.mjs | spec | ACTIVE | 2026-08-25 | 2 | Extract and execute the real gsplat classification predicates and View frustum binning, mutant-test both, and pin the C15-G7/G6 pure instrument models. |
+| ground-polyline-smoke.mjs | other | ACTIVE | 2026-08-16 | 4 | Early smoke probe loading the WebGPU viewer and checking GroundPolylinePrimitive classifier presence plus console health. |
+| gsplat-campaign15-instruments.spec.mjs | spec | ACTIVE | 2026-08-25 | 3 | Extract and execute the real gsplat classification predicates and View frustum binning, mutant-test both, and pin the C15-G7/G6 pure instrument models. |
 | gsplat-frame-variance.spec.mjs | spec | ACTIVE | 2026-08-21 | 0 | Certifies the C15-G9 D1-D5 frame-variance model, probe contract, source predicate, and loud mutants. |
 | gsplat-harness.spec.mjs | spec | ACTIVE | 2026-08-16 | 9 | Mutation-tests the C15-G1 dual-mode gsplat gate so the absence/presence flip and blank-canvas parity can never go green vacuously. |
+| gsplat-tower-framing.spec.mjs | spec | ACTIVE | 2026-09-02 | 2 | Behaviour-pin the tower/terrain range formula, the real evaluator's live cross-check that the page actually used it, and the pre-registered mask-pixel floor decision; then mutate both of the real evaluator's guards for inertness to prove each is load-bearing rather than vacuous. |
 | hdr-display-default.spec.mjs | spec | ACTIVE | 2026-08-16 | 2 | Acceptance for HDR-defaults-on on HDR displays: pins the pure decision function because headless Edge cannot synthesize (dynamic-range: high). |
 | imagery-layer-callback-values.spec.mjs | spec | ACTIVE | 2026-08-28 | 0 | Pins that every ImageryLayer property documented as scalar-or-callback resolves identically on both backends, executing the shared leaf over the documented contract and mutating the guard. |
 | j2-cpu-kernel.mjs | other | ACTIVE | 2026-08-16 | 4 | FP64 secular-J2 orbital propagator mirroring the demo's WGSL kernel; single source of truth for two orbital probes and the WebGL2 cpuKernel leg. |
@@ -564,6 +578,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | moon-webgpu-mip-lifecycle.spec.mjs | spec | ACTIVE | 2026-08-16 | 0 | Pins the WebGPU Moon's frame-owned mip-chain realization across context, stub init, environment renderer and lifecycle sources. |
 | moon-webgpu-texture-lifecycle.spec.mjs | spec | ACTIVE | 2026-08-16 | 0 | Behavioral tests of the WebGPU moon texture lifecycle: pair keys, candidate commit, channel reconcile, retire and diagnostics accounting. |
 | moonlight-scene-light.spec.mjs | spec | ACTIVE | 2026-08-28 | 1 | Proves a MoonLight scene light produces a real ephemeris direction through the live UniformState.update, that the moon eye-space direction is unchanged by it, and that the lunar dimming arm downstream is therefore reachable. |
+| mutate-or-fail.spec.mjs | spec | ACTIVE | 2026-09-02 | 2 | Pins mutateOrFail's contract — a changed rewrite returns the |
 | nasa-svs-5073-umbra-fixture.spec.mjs | spec | ACTIVE | 2026-08-16 | 1 | Offline pin of the exact cropped NASA SVS 5073 umbra_lo shapefile shard (byte hashes, optional full-source reconstruction); no rendering. |
 | ocean-datum.spec.mjs | spec | ACTIVE | 2026-08-16 | 4 | Analytic trust anchor for the datum probe: table sanity, regression/classifier correctness, exit-code mapping, probe-model drift check. |
 | ocean-per-frame-scratch.spec.mjs | spec | NO @purpose HEADER | 2026-08-29 | 3 | — |
@@ -571,11 +586,12 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | ocean-tide-datum.spec.mjs | spec | ACTIVE | 2026-08-16 | 7 | Pins the bundled EGM2008 grid, equilibrium TideModel phase/amplitude physics, geoid-then-tide composition order and the exact-zero off-contract. |
 | ocean-wave-lod.spec.mjs | spec | ACTIVE | 2026-08-16 | 6 | Extracts ocean-wave march constants from WGSL/GLSL/TS and pins integer-repeat lockstep, fade-band parity, amplitude fade, f32 precision bounds. |
 | perf-manager-teardown.spec.mjs | spec | NO @purpose HEADER | 2026-08-28 | 2 | — |
-| performance-workloads.spec.mjs | spec | ACTIVE | 2026-08-16 | 6 | Large browser-free contract suite over the performance-campaign lib surface: schedules, pacing, evidence, ledgers, URL and manifest validation. |
+| performance-workloads.spec.mjs | spec | ACTIVE | 2026-08-16 | 10 | Large browser-free contract suite over the performance-campaign lib surface: schedules, pacing, evidence, ledgers, URL and manifest validation. |
 | pick-frustum-math.spec.mjs | spec | ACTIVE | 2026-08-16 | 0 | Unit tests for the extracted PickFrustumMath drawing-buffer-to-frustum coordinate mapping and pick-frustum half extents. |
-| pipeline-cache-invalidation-subscriptions.spec.mjs | spec | ACTIVE | 2026-08-28 | 1 | Proves the two WebGPUContext pipeline-cache lazy getters hold one device-invalidation subscription each across repeated device-loss recoveries instead of stacking a new closure per rebuild. |
+| pipeline-cache-invalidation-subscriptions.spec.mjs | spec | ACTIVE | 2026-08-28 | 2 | Proves the two WebGPUContext pipeline-cache lazy getters hold one device-invalidation subscription each across repeated device-loss recoveries instead of stacking a new closure per rebuild. |
 | pipeline-cache-lost-device-refusal.spec.mjs | spec | ACTIVE | 2026-08-28 | 0 | Guards the render, compute and globe pipeline producers against building on a GPUDevice that is already lost, and the early failure signal that pauses speculative pre-cooking before the lost promise settles. |
-| pipeline-key-aliasing.spec.mjs | spec | ACTIVE | 2026-08-29 | 18 | Guard for the pipeline-cache shader-identity fold: executes real caches over every ShaderDefine bit; mutation group re-inflicts the aliasing. |
+| pipeline-key-aliasing.spec.mjs | spec | ACTIVE | 2026-08-29 | 31 | Guard for the pipeline-cache shader-identity fold: executes real caches over every ShaderDefine bit; mutation group re-inflicts the aliasing. |
+| pnts-model-attenuation-verdicts.spec.mjs | spec | ACTIVE | 2026-09-03 | 2 | Executes the PNTS model-path attenuation probe's decision functions against synthetic footprint counters, including the pre-fix shape the probe exists to catch, without launching a browser. |
 | pointcloud-browser-gate-contract.spec.mjs | spec | ACTIVE | 2026-08-25 | 1 | Executes point-cloud browser-gate decision functions against raw synthetic counters and mutation teeth without launching a browser. |
 | pointcloud-voxel-public-correctness.spec.mjs | spec | ACTIVE | 2026-08-25 | 6 | Contracts over WebGPU point-cloud RTE history, shared layouts and the EDL state machinery (slot/stencil/pipeline-key correctness surface). |
 | primitive-material-modulo-parity.spec.mjs | spec | ACTIVE | 2026-08-28 | 0 | Evaluates the modulo expressions parsed out of the three static checker and dash WGSL shaders in f32 against a floored reference that is itself cross-checked against a shipped WGSL artifact, scores the colour decision each one drives, anchors the GLSL side to the real material sources, and proves the instrument red under an absence and an inertness mutant at every site. |
@@ -587,16 +603,17 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | probe-2dcv-verify.mjs | probe | INVESTIGATION | 2026-08-16 | 5 | BUG-3 visual verification: instant-morphs to 2D and CV on both backends, screenshots plus pixel stats behind the WebGPU error gate. |
 | probe-adapter-limits-quick.mjs | probe | ACTIVE | 2026-08-16 | 1 | Fast dump of four key GPUAdapter limits (vertex buffers/attributes, bind groups, max buffer size) from the viewer page in one default Edge config. |
 | probe-adapter-limits.mjs | probe | ACTIVE | 2026-08-16 | 2 | Dumps WebGPU adapter limits across multiple Chromium launch configs (DXGI vs explicit Vulkan vs high-performance) to find the best-limit path. |
-| probe-aec-perf.mjs | probe | ACTIVE | 2026-09-02 | 7 | AEC design-model performance probe: one page load per streaming lever, timed to Scene.renderReady, per-pass command counts, one validated pick reused on both backends, served-build preflight and origin-guard refusals, element screenshots, multi-metric receipts. |
+| probe-aec-perf.mjs | probe | ACTIVE | 2026-09-02 | 7 | AEC design-model performance probe: one page load per streaming lever, timed to a streaming-tileset-residency readiness criterion (renderReady ALONE is vacuous on this scene's first forced frame; see DM-10), per-pass command counts, one validated pick reused on both backends, served-build preflight and origin-guard refusals, element screenshots, multi-metric receipts. |
 | probe-aec-perf.spec.mjs | spec | NO @purpose HEADER | 2026-09-02 | 2 | — |
-| probe-aec-residency-e1.mjs | probe | ACTIVE | 2026-09-02 | 1 | E-1 corrected AEC residency measurement: profiles the WebGPU settle window of the demo's own clipped eight-tileset scene with a CPU sampling profile, a wall-clock-cadence pipelineCache created/pending poll, an allocation-site heap profile and an optional streamed heap snapshot, then reports equal-content frame cost and commandList length on one shared validated pick position under a deadline, or refuses the comparison when a backend never became ready. |
+| probe-aec-residency-e1.mjs | probe | ACTIVE | 2026-09-03 | 5 | E-1 corrected AEC residency measurement: profiles the WebGPU settle window of the demo's own clipped eight-tileset scene with a CPU sampling profile, a wall-clock-cadence pipelineCache created/pending poll, an allocation-site heap profile and an optional streamed heap snapshot, then reports equal-content frame cost and commandList length on one shared validated pick position under a deadline, or refuses the comparison when a backend never became ready. |
+| probe-aec-residency-e2.mjs | probe | ACTIVE | 2026-09-03 | 1 | E-2 residency locus measurement: captures a browser-process Chrome trace over the same AEC settle window E-1 measured, records animation-frame delivery independently of the engine's frame loop, censuses the WGSL handed to the device, and runs three single-dimension controls as separate page loads, then attributes each frame gap of a second or more to the GPU-process work that covered it. |
 | probe-aerial-froxel.mjs | probe | ACTIVE | 2026-08-16 | 5 | Acceptance for the froxel 3D-LUT aerial-perspective fast path: renders, far-band haze signature, distinct from OFF, analytic parity path intact. |
 | probe-aerial-lut-primitive.mjs | probe | ACTIVE | 2026-08-16 | 4 | Verifies primitives' effects bind group actually forwards the aerial-perspective LUT: polyline must fog with atmosphere ON vs OFF, not stay same. |
 | probe-aerial-perspective.mjs | probe | ACTIVE | 2026-08-16 | 9 | Acceptance for the unified aerial-perspective post-process: renders, contributes, depth-correct far-band haze, no double-darkening, no GPU errors. |
 | probe-aerial-runtime-config.mjs | probe | ACTIVE | 2026-08-16 | 3 | Proves aerialPerspectiveConfig intensity/inscatterScale are runtime-mutable per frame on the WebGPU aerial-perspective effect, with OFF-gate. |
 | probe-align-test.mjs | probe | INVESTIGATION | 2026-08-16 | 2 | Searches best (dx,dy) offset between pre-captured northpole WebGL/WebGPU PNGs to detect a positional shift between backends. |
 | probe-all-materials.mjs | probe | ACTIVE | 2026-08-16 | 9 | Audits every Material.fromType lit material renders on WebGPU without device errors; reports JS-packed UB layout/size vs WGSL structs. |
-| probe-ao-runtime-config.mjs | probe | ACTIVE | 2026-09-02 | 0 | Captures a canvas pair per backend — AO enabled at the AEC demo's settings, then the same uniforms rewritten at runtime — so the runtime-config propagation is judged on pixels rather than on state. |
+| probe-ao-runtime-config.mjs | probe | ACTIVE | 2026-09-03 | 1 | Captures four canvases per backend — AO enabled, the numeric uniforms rewritten, the camera moved, then ambientOcclusionOnly rewritten — so runtime-config propagation is judged on pixels, with a control that says the capture observes canvas changes at all. |
 | probe-async-resource-monitor.mjs | probe | ACTIVE | 2026-08-16 | 3 | Smoke test that AsyncResourceMonitor/Telemetry accumulate pipeline tokens and p50/p95 latency while the globe renders under requestRenderMode. |
 | probe-atmo-lighting.mjs | probe | ACTIVE | 2026-08-16 | 6 | Acceptance for atmosphere-derived model lighting: derived sun colour + sky irradiance shift model hue warm at low sun, consistent with terrain. |
 | probe-atmo-lut-no-device-error.mjs | probe | ACTIVE | 2026-08-16 | 7 | Gate that the extended-LUT passes run with explicit pipeline layouts and zero device errors while the sun steps, with no error filter. |
@@ -611,7 +628,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | probe-atmospheric-effects-b.mjs | probe | ACTIVE | 2026-08-16 | 1 | Logic probe for the conditions-to-effects hierarchy + effects.auto master: pure mapper cases, effects tree, auto on/off byte-neutrality. |
 | probe-atmospheric-effects.mjs | probe | ACTIVE | 2026-08-16 | 1 | Logic probe for the Phase-A conditions-to-knobs mapper and applyAtmosphericConditions writing scene knobs (warm-moist vs cold-dry). |
 | probe-attach-mismatch.mjs | probe | ACTIVE | 2026-08-16 | 3 | Scans demos for 'Attachment state of [RenderPipeline]' warnings — detects format/sample-count drift between cached pipelines and passes. |
-| probe-attachment-demand-registry.mjs | probe | ACTIVE | 2026-08-16 | 6 | Acceptance that the per-frame attachmentDemand record matches actual scene-FB behavior for default frame + each G-buffer consumer, observe-only. |
+| probe-attachment-demand-registry.mjs | probe | ACTIVE | 2026-08-16 | 8 | Acceptance that the per-frame attachmentDemand record matches actual scene-FB behavior for default frame + each G-buffer consumer, observe-only. |
 | probe-b3dm-noglobe.mjs | probe | INVESTIGATION | 2026-08-16 | 4 | Minimal check that the BatchTableHierarchy b3dm tileset renders on WebGPU with the globe removed from the picture. |
 | probe-b3dm-render-edge.mjs | probe | ACTIVE | 2026-08-16 | 5 | Re-verifies the stale NEW-BG-CONSOLIDATION claim: b3dm renders non-black on Edge WebGPU and matches WebGL, ellipsoid terrain to rule out occlusion. |
 | probe-backend-isolation.mjs | probe | INVESTIGATION | 2026-08-27 | 8 | Answered 2026-07-19 maintainer questions: is a WebGL context still created in webgpu mode, and does split-screen cost what solo costs. |
@@ -628,7 +645,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | probe-bloom-no-msaa.mjs | probe | INVESTIGATION | 2026-08-16 | 1 | Bloom.html forensics variant: msaaSamples=1 to test whether the missing-terrain issue was MSAA-related. |
 | probe-bloom-no-pp.mjs | probe | INVESTIGATION | 2026-08-16 | 1 | Bloom.html forensics variant: bloom stage disabled — models must still render, isolating the post-process stage from scene content. |
 | probe-bloom-no-sky.mjs | probe | INVESTIGATION | 2026-08-16 | 1 | Bloom.html forensics variant: skyAtmosphere disabled to isolate the sky's contribution to the bloom-frame anomaly. |
-| probe-bloom-parity.mjs | probe | ACTIVE | 2026-08-24 | 6 | Bloom uniform-parity gate: default-uniform bloomed-fraction band vs WebGL, glowOnly + brightness response, stripped scene with synthetic sun. |
+| probe-bloom-parity.mjs | probe | ACTIVE | 2026-08-24 | 8 | Bloom uniform-parity gate: default-uniform bloomed-fraction band vs WebGL, glowOnly + brightness response, stripped scene with synthetic sun. |
 | probe-bloom-side-by-side.mjs | probe | INVESTIGATION | 2026-08-16 | 1 | Samples the same pixels in WebGL and WebGPU Bloom.html renders to confirm what content each backend actually placed there. |
 | probe-bloom-tile-state.mjs | probe | INVESTIGATION | 2026-08-16 | 1 | Forensics on Bloom.html globe-pass commands — dumps tile draw state to attribute the bloom-frame terrain anomaly. |
 | probe-boot-prewarm-c10-06.mjs | probe | ACTIVE | 2026-08-16 | 4 | Deterministic oracle that the globe shader prewarm runs at context init and beats the first tile draw (console-log ordering, no wall-clock). |
@@ -648,8 +665,8 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | probe-bufferpolygon-vector-tile.mjs | probe | ACTIVE | 2026-08-16 | 9 | Verifies the us-states vector tileset renders through the BufferPolygon WGSL path on both backends: 52 features, matching geometry bytes. |
 | probe-bulk-vs-legacy-perf.mjs | probe | ACTIVE | 2026-08-16 | 3 | Benchmark settling bulk static-lane vs legacy per-frame visualizer: setup and steady per-frame cost per entity count, point path isolated. |
 | probe-bundle-content.mjs | probe | ACTIVE | 2026-08-16 | 3 | Hooks GPURenderBundleEncoder + pipeline creation to dump what draw state the globe tile render bundle records (targets, blend, depth). |
-| probe-c-r9-diagnose.mjs | probe | INVESTIGATION | 2026-08-16 | 2 | C-R9 bisect: baseline vs debugSkipDepthPlane vs windowed Turbo depth overlay to test whether the depth plane occluded the b3dm buildings. |
-| probe-c-r9-webgl-vs-webgpu.mjs | probe | INVESTIGATION | 2026-08-16 | 4 | C-R9 control: same-view WebGL-vs-WebGPU b3dm render with explicit ellipsoid terrain, ruling out legitimate terrain occlusion first. |
+| probe-c-r9-diagnose.mjs | probe | INVESTIGATION | 2026-08-16 | 5 | C-R9 bisect: baseline vs debugSkipDepthPlane vs windowed Turbo depth overlay to test whether the depth plane occluded the b3dm buildings. |
+| probe-c-r9-webgl-vs-webgpu.mjs | probe | INVESTIGATION | 2026-08-16 | 7 | C-R9 control: same-view WebGL-vs-WebGPU b3dm render with explicit ellipsoid terrain, ruling out legitimate terrain occlusion first. |
 | probe-c10-02-pixel.mjs | probe | ACTIVE | 2026-08-16 | 6 | Pixel + drillPick oracle for styled b3dm: cropped building-region capture and stats per unstyled/subset/all mode, drillPick feature check. |
 | probe-c10-02-style-economics.mjs | probe | INVESTIGATION | 2026-08-16 | 5 | Diagnostic that decided style-command economics: translucentFeaturesLength upkeep, styleCommandsNeeded polarity, per-scenario command counts. |
 | probe-c10-07-async-model-pipelines.mjs | probe | ACTIVE | 2026-08-16 | 5 | Wraps createRenderPipeline(Async) pre-device to prove Model PBR pipelines compile async (sync=0, no stall) and the model still renders. |
@@ -672,7 +689,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | probe-c11-90-primitive-restart-split.mjs | probe | ACTIVE | 2026-08-16 | 3 | Thin retained entry point running the C11-90 primitive-restart WebGL2-vs-WebGPU harness from lib/c11-90-primitive-restart-probe.mjs |
 | probe-c12-29-s4-orbital-sunrise.mjs | probe | ACTIVE | 2026-08-16 | 4 | Certifying 400 km orbital-sunrise acceptance: 181 pinned one-second samples in normal + blend-neutral lanes, fail-closed write-once evidence lifecycle |
 | probe-c12-29-s5-custom-ellipsoid.mjs | probe | ACTIVE | 2026-08-16 | 9 | Runtime certification that a custom oblate ellipsoid renders and derives identically on serial fresh WebGL and WebGPU contexts; write-once evidence |
-| probe-c12-29-s5-dense-cost.mjs | probe | ACTIVE | 2026-08-29 | 5 | Dense ACTIVE/INACTIVE eclipse-lane cost characterization: 24 child Node processes, each one fresh Edge running one 600-frame condition in frozen order |
+| probe-c12-29-s5-dense-cost.mjs | probe | ACTIVE | 2026-09-02 | 5 | Dense ACTIVE/INACTIVE eclipse-lane cost characterization: 24 child Node processes, each one fresh Edge running one 600-frame condition in frozen order |
 | probe-c12-29-s5-multiview.mjs | probe | ACTIVE | 2026-08-29 | 7 | Logical-View/stereo policy certification: offscreen ray View, WebGL two-eye VR executor, WebGPU synchronous unsupported-path rejection |
 | probe-c12-29-s5-replacement-device.mjs | probe | ACTIVE | 2026-08-29 | 11 | Genuine device-loss recovery certification via Chromium GPU-process termination (never destroy()); 'destroyed' losses archived STRUCTURAL not recovery |
 | probe-c12-29-s5-svs-footprint.mjs | probe | ACTIVE | 2026-08-16 | 6 | Absolute NASA-SVS 5073 eclipse geospatial-footprint acceptance over the vendored four-row fixture + local QuantizedMesh, serial WebGL/WebGPU |
@@ -692,12 +709,12 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | probe-cesium-viewer.mjs | probe | ACTIVE | 2026-08-16 | 4 | Boot smoke: standalone CesiumViewer on WebGPU, samples canvas pixels + post-process pipeline state, bypassing the split-screen page |
 | probe-cesiumviewer-screenshot.mjs | probe | INVESTIGATION | 2026-08-16 | 1 | Minimal WebGPU CesiumViewer boot dumping frame-state stats and one screenshot |
 | probe-channel-materials.mjs | probe | ACTIVE | 2026-08-16 | 3 | Regression: all six channel/channels-uniform materials construct and render with zero device errors (MaterialHelpers inheritance + offset-order fixes) |
-| probe-classification-primitive-parity.mjs | probe | ACTIVE | 2026-08-16 | 4 | Standalone ClassificationPrimitive parity: terrain-classifying box, coverage within 25% of WebGL, pick returns instance id, zero device errors |
+| probe-classification-primitive-parity.mjs | probe | ACTIVE | 2026-09-02 | 4 | Standalone ClassificationPrimitive parity: terrain-classifying box, coverage within 25% of WebGL, pick returns instance id, zero device errors |
 | probe-classifier-2d-renderpass.mjs | probe | INVESTIGATION | 2026-08-16 | 4 | Diagnostic pinpointing which dispatch left a render pass open for GroundPrimitive classification in SCENE2D/CV |
 | probe-classifier-extents-inspect.mjs | probe | INVESTIGATION | 2026-08-16 | 1 | No-rebuild check whether packExtents finds planar-extent batch-table attributes (root-cause of the flat textured-classifier symptom) |
 | probe-classifier-logdepth-flip.mjs | probe | ACTIVE | 2026-08-16 | 8 | Log-depth Slice 3a payoff: WebGL ref vs WebGPU flag-OFF/ON startup flip — classifier stripes become visible when eye-z reconstruction is precise |
 | probe-classifier-logdepth-settle.mjs | probe | INVESTIGATION | 2026-08-16 | 3 | Settle-until-tilesLoaded variant of the classifier log-depth comparison for reproducible coverage (no tile-streaming variance) |
-| probe-classifier-scenemode.mjs | probe | ACTIVE | 2026-08-16 | 5 | Regression guard: flat-color GroundPrimitive classification renders in SCENE3D/SCENE2D/COLUMBUS_VIEW with enforced coverage and zero device errors |
+| probe-classifier-scenemode.mjs | probe | ACTIVE | 2026-08-16 | 6 | Regression guard: flat-color GroundPrimitive classification renders in SCENE3D/SCENE2D/COLUMBUS_VIEW with enforced coverage and zero device errors |
 | probe-classifier-textured-materials.mjs | probe | INVESTIGATION | 2026-08-16 | 13 | Textured GroundPrimitive materials (Stripe/Checkerboard/Grid/Image) variance parity WebGPU vs WebGL |
 | probe-clipping-planes-parity.mjs | probe | ACTIVE | 2026-08-16 | 5 | glTF Model clipping-planes parity: clipped region matches across backends and picks return nothing on the clipped side, the model on the visible side |
 | probe-cloud-aerial.mjs | probe | ACTIVE | 2026-08-16 | 4 | W4 aerial-perspective gate: blend coefficient must grade with distance (far >> near) via the runtime strength toggle; single-run PASS bars |
@@ -767,7 +784,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | probe-clustered-lights-resize.mjs | probe | ACTIVE | 2026-08-16 | 2 | Regression for stale cluster bins on stationary-camera resize/FOV change: bounds-only change must re-run assign; caching kept. |
 | probe-clustered-litmat.mjs | probe | ACTIVE | 2026-08-16 | 3 | Clustered consumer on the primitive Mat*Lit path: lit MaterialAppearance primitive brightens under a PointLight when ON. |
 | probe-clustered-matsweep.mjs | probe | ACTIVE | 2026-08-16 | 5 | Device-error sweep across all non-textured Mat*Lit shaders with clustered lighting on; each renders and differs from OFF. |
-| probe-clustered-multifrustum.mjs | probe | ACTIVE | 2026-08-16 | 6 | Proves single-grid cluster binning is self-consistent and conservatively correct in a real multi-frustum scene (>=2 frustums). |
+| probe-clustered-multifrustum.mjs | probe | ACTIVE | 2026-08-16 | 8 | Proves single-grid cluster binning is self-consistent and conservatively correct in a real multi-frustum scene (>=2 frustums). |
 | probe-clustered-per-frame.mjs | probe | ACTIVE | 2026-08-16 | 7 | Per-frame hook check: lazy dispatcher construction, compute passes run with scene.lights, disable zeroes counts exactly once. |
 | probe-clustered-phong.mjs | probe | ACTIVE | 2026-08-16 | 6 | Checks flat:false PerInstanceColorAppearance routes to the lit phong shader and the clustered consumer contributes visibly. |
 | probe-clustered-visible.mjs | probe | ACTIVE | 2026-08-16 | 6 | Clustered consumer on the glTF Model PBR path: PointLight + clustered ON brightens the model center vs OFF by a measured margin. |
@@ -795,11 +812,11 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | probe-confirm-inspector-sky.mjs | probe | INVESTIGATION | 2026-08-16 | 5 | Confirms the Weather Inspector grey-sky caveat was a standalone-shim artifact by replaying its config in the CesiumViewer boot. |
 | probe-console-errors.mjs | probe | ACTIVE | 2026-08-16 | 2 | Minimal utility: loads the WebGPU viewer, settles 180 frames, prints only error/pipeline-failure console messages. |
 | probe-contact-shadows.mjs | probe | ACTIVE | 2026-08-16 | 7 | Contact-shadows acceptance: wall base darkens when enabled, strength=0.5 darkens less than 1.0, all cells error-free. |
-| probe-cpu-pass-profile.mjs | probe | ACTIVE | 2026-08-16 | 2 | Data collection for the render-bundle shortlist: runs CesiumDebug.cpuPassCost across named scenes, dumps per-pass CPU cost. |
-| probe-cpu-sampling-profile.mjs | probe | ACTIVE | 2026-08-27 | 7 | V8 sampling profiler over CDP for the render loop on both backends, attributing self-time the per-pass profiler cannot see. |
+| probe-cpu-pass-profile.mjs | probe | ACTIVE | 2026-08-16 | 4 | Data collection for the render-bundle shortlist: runs CesiumDebug.cpuPassCost across named scenes, dumps per-pass CPU cost. |
+| probe-cpu-sampling-profile.mjs | probe | ACTIVE | 2026-08-27 | 9 | V8 sampling profiler over CDP for the render loop on both backends, attributing self-time the per-pass profiler cannot see. |
 | probe-csm-cast-dispatch.mjs | probe | ACTIVE | 2026-08-16 | 10 | Shadow-cast reachability: CSM cascade and single-map paths dispatch and produce umbra pixels, vs a WebGL reference cell. |
 | probe-csm-globe-receive-trace.mjs | probe | INVESTIGATION | 2026-08-16 | 8 | Diagnostics-only trace of why globe-terrain CSM receive missed: projects a shadowed point via globe vs cast reconstructions. |
-| probe-csm-soft-shadow.mjs | probe | ACTIVE | 2026-08-16 | 12 | CSM PCF softness gate: soft ON widens the penumbra vs hard OFF and lands in a WebGL-relative band; umbra floor is a ratio. |
+| probe-csm-soft-shadow.mjs | probe | ACTIVE | 2026-08-16 | 14 | CSM PCF softness gate: soft ON widens the penumbra vs hard OFF and lands in a WebGL-relative band; umbra floor is a ratio. |
 | probe-culler-pool-decomp.mjs | probe | ACTIVE | 2026-08-16 | 3 | Acceptance for the culler-pool decomposition: exercises the extracted WebGPUContextCullerPool delegators; globe still renders. |
 | probe-custom-shader-material-fields.mjs | probe | ACTIVE | 2026-08-16 | 2 | WGSL CustomShader exposes metalness/occlusion/normalEC and they re-drive lighting; untouched-fields shader stays identical. |
 | probe-custom-shader-modify.mjs | probe | ACTIVE | 2026-08-16 | 3 | MODIFY_MATERIAL ordering acceptance: WGSL customShader runs pre-lighting, so constant diffuse gets shaded and converges with WebGL. |
@@ -807,7 +824,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | probe-custom-shader-wgsl.mjs | probe | ACTIVE | 2026-08-16 | 2 | Native-WGSL CustomShader acceptance: user fragment reaches the output color, setUniform re-uploads live, off-gate clean. |
 | probe-czml-bytes.mjs | probe | INVESTIGATION | 2026-08-16 | 2 | Loads a CZML Sandcastle demo forced to WebGPU and greps the console for writeBuffer byte-count and .includes error classes. |
 | probe-darkness-quant.mjs | probe | INVESTIGATION | 2026-08-16 | 4 | Quantitative backend-brightness comparison: 32x32 pixel-grid RGB means/ratios classify darkening as uniform vs non-linear. |
-| probe-daynight-terminator-law.mjs | probe | ACTIVE | 2026-08-16 | 9 | CLT-B1 premise verification: calibration-ladder measurement of the day/night terminator alpha law on both backends. |
+| probe-daynight-terminator-law.mjs | probe | ACTIVE | 2026-08-16 | 10 | CLT-B1 premise verification: calibration-ladder measurement of the day/night terminator alpha law on both backends. |
 | probe-daytime-ocean-brightness.mjs | probe | ACTIVE | 2026-08-16 | 3 | Day/night ocean-brightness acceptance over the Caribbean: mismatch under ~5% day / ~3% night, with per-term bypass attribution. |
 | probe-debug-api.mjs | probe | ACTIVE | 2026-08-16 | 2 | End-to-end smoke of CesiumDebug.globeFragmentDebug: registry populated, each mode enables, screenshots captured. |
 | probe-debug-snapshot.mjs | probe | ACTIVE | 2026-08-16 | 2 | Headless scene-state dump: tiles-to-render, pipeline-cache stats, and globe feature-renderer status from a settled viewer. |
@@ -836,7 +853,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | probe-draw-calls.mjs | probe | INVESTIGATION | 2026-08-16 | 2 | Instruments GPURenderPassEncoder to count real GPU draw calls vs silent no-ops — early 'are commands reaching the encoder?' bisection. |
 | probe-draw-pipeline-labels.mjs | probe | INVESTIGATION | 2026-08-16 | 1 | Hooks setPipeline + draw to record which labeled pipelines actually draw during the scene FB pass. |
 | probe-dusk-terminator.mjs | probe | ACTIVE | 2026-08-16 | 6 | Day/night terminator regression: pinned equinox clock, lit-vs-unlit hemisphere luminance ratio validates lightDirectionEC + nightAmbient floor. |
-| probe-eclipse-cloud-response.mjs | probe | ACTIVE | 2026-09-02 | 17 | C13-41 Edge acceptance: eclipse-driven cloud radiance ratio, shadow contrast, IBL bucket-fill count, and submitted-refresh cost. |
+| probe-eclipse-cloud-response.mjs | probe | ACTIVE | 2026-09-03 | 17 | C13-41 Edge acceptance: eclipse-driven cloud radiance ratio, shadow contrast, IBL bucket-fill count, and submitted-refresh cost. |
 | probe-eclipse-globe-shadow.mjs | probe | ACTIVE | 2026-08-16 | 6 | C12-29 S5 browser proof: lunar shadow evaluated per globe fragment — visible/local during the 2024-04-08 eclipse, inert a day later, both backends. |
 | probe-eclipse-scene-dimming.mjs | probe | ACTIVE | 2026-08-16 | 9 | C12-29 S2: scene-light + atmosphere dimming via eclipseSceneLightFactor, measured as within-step off/on/autoexposure luminance ratios. |
 | probe-eclipse-sky-totality.mjs | probe | ACTIVE | 2026-08-16 | 5 | C12-29 S6 sky half: totality sky via algebraic recoveries — shell alpha from dual-background renders, star reveal, E3 flip, horizon twilight. |
@@ -845,7 +862,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | probe-edge-degenerate.mjs | probe | ACTIVE | 2026-08-16 | 5 | Degenerate-triangle edge parity (PR#13421 repro): extractor emits no NaN/Inf and classifies the zero-area face like WebGL; Node-side numeric. |
 | probe-edge-display-mode-tri.mjs | probe | ACTIVE | 2026-08-16 | 4 | EdgeDisplayMode tri-mode signature parity: the three modes pairwise distinct on WebGPU and tracking WebGL's coverage ordering. |
 | probe-edge-emitter.mjs | probe | INVESTIGATION | 2026-08-16 | 4 | Smoke-loads edge-visibility Sandcastle demos under forced WebGPU and dumps console/page errors — a per-demo error scan. |
-| probe-edge-linestrings.mjs | probe | ACTIVE | 2026-08-16 | 1 | Regression guard: lineStrings-only primitives emit edges (pre-B316: zero); 7 Node-side asserts incl. restart delimiting, dedup, off-gate. |
+| probe-edge-linestrings.mjs | probe | ACTIVE | 2026-08-16 | 4 | Regression guard: lineStrings-only primitives emit edges (pre-B316: zero); 7 Node-side asserts incl. restart delimiting, dedup, off-gate. |
 | probe-edge-percolor.mjs | probe | ACTIVE | 2026-08-16 | 3 | Per-edge color parity: WebGPU edge WGSL gains a per-edge edgeColor vertex attribute; COLOR_0-blue GLB edges render blue on both backends. |
 | probe-ellipsoid-mrt.mjs | probe | ACTIVE | 2026-08-16 | 4 | EllipsoidPrimitive writes real eye-space normals to G-buffer slot 1: AO must diverge between G-buffer and depth-fallback reads. |
 | probe-ellipsoid-rte.mjs | probe | ACTIVE | 2026-08-16 | 6 | CSM ground-clamp uses the scene ellipsoid's radii: scaled-globe synth vs CPU rayEllipsoid reference + umbra IoU + WGS84 byte-identical off-gate. |
@@ -876,7 +893,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | probe-feature-id-texture.mjs | probe | ACTIVE | 2026-08-16 | 5 | Unified per-fragment feature-ID G-buffer resolvable in-shader: FeatureIdResolve.wgsl recolors globe + billboard IDs to distinct colors. |
 | probe-fft-ocean.mjs | probe | ACTIVE | 2026-08-16 | 5 | Opt-in FFT spectral ocean: OFF byte-identity across sessions, globe-hidden ON capture paints a non-empty patch, two ON frames differ (waves). |
 | probe-flat-polygon-grid-material.mjs | probe | ACTIVE | 2026-08-16 | 1 | Flat (height-0) polygon with a Grid MaterialAppearance shows the pattern on WebGPU (st generation), with an extruded-polygon off-gate. |
-| probe-fleet-contract.spec.mjs | spec | ACTIVE | 2026-08-25 | 22 | Authoring-time probe safety contract: every probe must carry watchdog + try/finally close; mutant-tested detectors, shrink-only allowlist. |
+| probe-fleet-contract.spec.mjs | spec | ACTIVE | 2026-08-25 | 25 | Authoring-time probe safety contract: every probe must carry watchdog + try/finally close; mutant-tested detectors, shrink-only allowlist. |
 | probe-flowfield-wind.mjs | probe | ACTIVE | 2026-08-16 | 3 | GPU wind-particle flow-field layer over the offline GFS sample: show=false byte-identical off-gate, ON renders particles, advection moves. |
 | probe-fog-auto-vpt.mjs | probe | ACTIVE | 2026-08-16 | 1 | volumetricFog quality='auto' resolves a hardware tier via VisualPerformanceTargetService only when VPT is opted in; default stays 'low'. |
 | probe-fog-ibl-ambient.mjs | probe | ACTIVE | 2026-08-16 | 1 | Opt-in sky-LUT/IBL fog ambient: warms at low sun, neutral/brighter at high sun; a human reads the PNGs and band stats. |
@@ -895,44 +912,44 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | probe-gbuffer-visualize.mjs | probe | ACTIVE | 2026-08-16 | 6 | Renders CesiumDebug.showGBufferNormals() and checks the G-buffer normal texture reads as a proper RGB-mapped sphere with magenta sentinels |
 | probe-geojson-holes.mjs | probe | ACTIVE | 2026-08-16 | 5 | Pixel-samples fill vs hole points to prove GeoJsonPrimitive interior rings are cut out, and that debugShowBoundingVolume draws on both backends |
 | probe-geojson-primitive.mjs | probe | ACTIVE | 2026-08-16 | 7 | Loads a mixed GeoJSON FeatureCollection through GeoJsonPrimitive on both backends; gates capacity math (ERR_CAPACITY) and cross-backend pixel diff |
-| probe-globe-bindgroup-cache.mjs | probe | ACTIVE | 2026-08-16 | 7 | Gates the globe per-tile bind-group cache: creations settle to ~0, spike+resettle on pan, globe visibly renders, zero validation errors |
-| probe-globe-bundle-cost.mjs | probe | INVESTIGATION | 2026-08-16 | 5 | TEMP A/B measurement of the inline globe render-bundle's per-frame CPU cost — the decision input for the cache-vs-drop call |
+| probe-globe-bindgroup-cache.mjs | probe | ACTIVE | 2026-08-16 | 9 | Gates the globe per-tile bind-group cache: creations settle to ~0, spike+resettle on pan, globe visibly renders, zero validation errors |
+| probe-globe-bundle-cost.mjs | probe | INVESTIGATION | 2026-08-16 | 7 | TEMP A/B measurement of the inline globe render-bundle's per-frame CPU cost — the decision input for the cache-vs-drop call |
 | probe-globe-clippoly-geodetic.mjs | probe | ACTIVE | 2026-08-16 | 4 | Globe clipping-polygon parity: the polygon hole must exist on both backends and the clip boundary must align (geodetic SDF convention fix) |
-| probe-globe-cold-start-readiness.mjs | probe | ACTIVE | 2026-08-29 | 4 | Measures whether a settle gated on the new readiness predicate ends with a drawn frame, and what the globe's first non-empty command list costs on each backend. |
-| probe-globe-default-limits.mjs | probe | ACTIVE | 2026-08-16 | 7 | Gates globe rendering on a device pinned to WebGPU default limits (16 sampled textures): reduced 4-slot imagery layout + multi-pass blend path |
+| probe-globe-cold-start-readiness.mjs | probe | ACTIVE | 2026-09-03 | 8 | Measures whether a settle gated on the new readiness predicate ends with a drawn frame, and what the globe's first non-empty command list costs on each backend. |
+| probe-globe-default-limits.mjs | probe | ACTIVE | 2026-08-16 | 9 | Gates globe rendering on a device pinned to WebGPU default limits (16 sampled textures): reduced 4-slot imagery layout + multi-pass blend path |
 | probe-globe-effects-handle-toggle.mjs | probe | ACTIVE | 2026-08-16 | 4 | Oracle for the per-frame globe-effects bind-group memo: clipping ON-OFF-ON must carve, restore, and re-carve terrain with zero stale-handle errors |
 | probe-globe-farzoom.mjs | probe | INVESTIGATION | 2026-08-16 | 2 | Diagnostic re-bucketing of the far-zoom 'GPU brighter' interior blobs with ground atmosphere toggled, attributing drape vs imagery mip/LOD-bias |
 | probe-globe-hdr-gamma.mjs | probe | ACTIVE | 2026-08-16 | 4 | Gates the globe sRGB-to-linear decode under the HDR canvas-output path via known-gray imagery: SDR byte-identical off-gate, HDR single-decode means |
 | probe-globe-material.mjs | probe | ACTIVE | 2026-08-16 | 2 | Runs a legacy Sandcastle gallery demo (default Globe Materials) under a forced-renderer Viewer shim; reports console errors and pixels |
 | probe-globe-pick-h44.mjs | probe | ACTIVE | 2026-08-16 | 6 | Gates opt-in WebGPU globe terrain picking (globe.pickable): default stays unpickable, foreground picks unaffected, WebGL leg unaffected by the flag |
-| probe-globe-pipeline-readiness.mjs | probe | ACTIVE | 2026-08-16 | 7 | Measures whether the WebGPU globe's async pipeline-miss tile skip produces user-visible holes vs WebGL under a healthy event loop |
+| probe-globe-pipeline-readiness.mjs | probe | ACTIVE | 2026-08-16 | 9 | Measures whether the WebGPU globe's async pipeline-miss tile skip produces user-visible holes vs WebGL under a healthy event loop |
 | probe-globe-polar-stretch.mjs | probe | ACTIVE | 2026-08-16 | 8 | Acceptance for the Mercator-reprojection double-flip fix: ice-centroid/area/shift metrics + mismatch at mid/far/extreme zooms, WebGL vs WebGPU |
 | probe-globe-rasterizes.mjs | probe | ACTIVE | 2026-08-16 | 3 | Smoke check that the WebGPU globe rasterizes at all: canvas coverage, luminance, color histogram vs WebGL, device-error gate |
 | probe-globe-translucency.mjs | probe | ACTIVE | 2026-08-16 | 8 | globe.translucency per-fragment alpha parity: off-gate at defaults, see-through planet from space, half-alpha terrain oblique — WebGL vs WebGPU |
 | probe-globe-underground.mjs | probe | ACTIVE | 2026-08-16 | 9 | globe.undergroundColor + alphaByDistance tint parity: above-ground off-gate plus red-tint and default underground camera scenarios |
-| probe-gltf-points-mode.mjs | probe | ACTIVE | 2026-08-16 | 4 | Gates glTF mode-0 POINTS rendering: point-list topology threaded through the WebGPU model pipeline; coverage/color/centroid parity vs WebGL |
+| probe-gltf-points-mode.mjs | probe | ACTIVE | 2026-08-16 | 5 | Gates glTF mode-0 POINTS rendering: point-list topology threaded through the WebGPU model pipeline; coverage/color/centroid parity vs WebGL |
 | probe-gp-pipeline.mjs | probe | INVESTIGATION | 2026-08-16 | 2 | GroundPolyline bring-up deep-dump: UBO floats, interleaved vertices, red-pixel footprint — from when the shadow volume rendered nothing |
 | probe-gp-vs-output.mjs | probe | INVESTIGATION | 2026-08-16 | 1 | GroundPolyline rasterization discriminator: forces the FS to opaque cyan to separate 'VS produces geometry' from 'volume not rasterizing' |
 | probe-gpu-culler-consumers.mjs | probe | ACTIVE | 2026-08-16 | 4 | Static source-scan gate: all four GPU dispatchers (gpuCull/HiZ/GPUSortKeys/PointCloudSort) must keep a wired consumer and an activation gate |
 | probe-gpu-sort-auto.mjs | probe | ACTIVE | 2026-08-16 | 2 | Gates the production auto-enable heuristic for the GPU opaque sort consumer: auto-applies above threshold, off-gates for 'never' and small scenes |
 | probe-gpu-sort-consume.mjs | probe | ACTIVE | 2026-08-16 | 6 | Gates the GPU sort consumer: readback is a valid permutation, monotonic in the recomputed 64-bit key, applied, and pixel-neutral ON vs OFF |
 | probe-gpu-timestamp-profiler.mjs | probe | ACTIVE | 2026-08-20 | 7 | Certification lane for GPU-timestamp unique-sample accounting: drained readbacks, closed sample ledger, coverage+unprofiled ratios reconstruct 1.0 |
-| probe-gpucull-blackframe-isolation.mjs | probe | ACTIVE | 2026-09-02 | 3 | Original Edge-lane reproducer for Q-20/Q-48: walks the opaque command-count boundary around GPU_CULL_THRESHOLD_HI=384 under gpuCullingHint='always' and records the black-frame + locked-encoder validation error the missing translucent-pass render-pass bracket produced. |
+| probe-gpucull-blackframe-isolation.mjs | probe | ACTIVE | 2026-09-03 | 6 | Edge-lane reproducer for Q-20/Q-48: walks the translucent command-count boundary around GPU_CULL_THRESHOLD_HI=384 under gpuCullingHint='always', asserts the dispatch it exists to isolate actually fires, and records the black-frame + locked-encoder validation error the (now-fixed) missing render-pass bracket produced. |
 | probe-grid-multizoom.mjs | probe | ACTIVE | 2026-08-16 | 4 | Gates the WGSL Grid material's constant-pixel-width antialiased lines across nadir zooms + an oblique view; WebGL held to the same constancy bar |
 | probe-ground-atmosphere.mjs | probe | ACTIVE | 2026-08-16 | 8 | Deletion-verify gate: separate ground-atmosphere renderer gone (FR key 29 retired) while the in-shader GlobeTerrain path renders and contributes |
 | probe-ground-fog.mjs | probe | ACTIVE | 2026-08-16 | 9 | Gates the froxel ground-fog own-activation path: config echo, ON-lane dispatch, lower-band brightening vs an OFF noise floor — hard exit codes |
 | probe-ground-polyline-logdepth.mjs | probe | ACTIVE | 2026-08-16 | 4 | Gates the GroundPolyline classifier's log-depth reversal: magenta draped line at a far camera must match WebGL within 25% with the FR cache built |
 | probe-ground-view-env.mjs | probe | ACTIVE | 2026-08-16 | 5 | Numerically gates three ground-level divergences vs WebGL: daytime sky brightness, sun disk vs atmosphere ordering, and globe baseColor consumption |
 | probe-groundprim-textured-classify.mjs | probe | ACTIVE | 2026-08-16 | 7 | Gates textured GroundPrimitive classification (Stripe/Checkerboard/Grid/Image) on WebGPU with a GLOBE-pass readiness gate that kills the B595 race |
-| probe-gsplat-classification-depth.mjs | probe | ACTIVE | 2026-08-21 | 3 | Counter-assert WebGPU classification-depth pipeline selection and dual-backend polygon placement on the tower splat surface, with a terrain-return suppression control. |
+| probe-gsplat-classification-depth.mjs | probe | ACTIVE | 2026-09-02 | 3 | Counter-assert WebGPU classification-depth pipeline selection and dual-backend polygon placement on the tower splat surface, with a terrain-return suppression control. |
 | probe-gsplat-frame-variance.mjs | probe | INVESTIGATION | 2026-08-21 | 4 | Runs pre-registered D1-D5 gsplat variance discriminators without changing the mutant-pinned 0.050% bar. |
 | probe-gsplat-multifrustum.mjs | probe | ACTIVE | 2026-08-25 | 3 | Acquire counter-grounded multi-frustum tower/globe evidence and lazily score the dual-backend splat/globe/background label partition. |
 | probe-gsplat-parity.mjs | probe | ACTIVE | 2026-08-16 | 9 | Dual-mode gsplat harness: certifies attributable WebGPU absence pre-G3, scores presence with --expect-webgpu; exit-gate instrument for GSPLAT rows |
 | probe-h12-longsettle.mjs | probe | INVESTIGATION | 2026-08-29 | 4 | Answered whether the 12 Mm 'cage' (dark radial wedge gaps) was a real render defect or a coarse-LOD probe-settle artifact via a fixed long settle — ARCHIVED-CANDIDATE: lesson promoted to DEBUGGING_GUIDE.md, “Instrument-defect lessons (from archived probes)”. |
 | probe-hdr-canvas-output-decomp.mjs | probe | ACTIVE | 2026-08-16 | 2 | Acceptance for the WebGPUContext canvas-config extraction: SDR off-gate, HDR toggle via extracted setHDRCanvasOutput, fallback-listener API behavior |
-| probe-hdr-pick-format-closure.mjs | probe | ACTIVE | 2026-08-16 | 5 | Fleet-wide object-ID pick matrix across SDR/HDR, MSAA 1/4, runtime HDR flip and resize: every family must return its exact owner with zero errors |
+| probe-hdr-pick-format-closure.mjs | probe | ACTIVE | 2026-08-16 | 7 | Fleet-wide object-ID pick matrix across SDR/HDR, MSAA 1/4, runtime HDR flip and resize: every family must return its exact owner with zero errors |
 | probe-hdr-pp-math.mjs | probe | ACTIVE | 2026-08-16 | 6 | Gates HDR-aware ColorGrading+FXAA on the tonemap-bypass path: SDR byte-identical vs baseline, stages run in HDR with tonemap absent, WGSL compiles |
-| probe-hdr-toggle-invalidation.mjs | probe | ACTIVE | 2026-08-16 | 3 | Gates mid-session scene.highDynamicRange toggles: pipelines/bundles must be rekeyed so post-toggle frames emit zero format-mismatch validation errors |
+| probe-hdr-toggle-invalidation.mjs | probe | ACTIVE | 2026-08-16 | 5 | Gates mid-session scene.highDynamicRange toggles: pipelines/bundles must be rekeyed so post-toggle frames emit zero format-mismatch validation errors |
 | probe-heat-shimmer.mjs | probe | ACTIVE | 2026-08-16 | 2 | WebGPU-only heat-shimmer proof: ON-vs-OFF warp concentrated in the ground band, animated between frames, zero OFF-vs-OFF drift |
 | probe-hello-sc-clean.mjs | probe | INVESTIGATION | 2026-08-16 | 1 | Env-layer toggle matrix (skyAtmosphere/groundAtmosphere/fog/skyBox) over Sandcastle Hello World to isolate which layer caused a sky color divergence |
 | probe-hello-sc-wgl.mjs | probe | INVESTIGATION | 2026-08-16 | 1 | WebGL reference leg of the Hello World sky investigation: raw gallery boot, env layers off, samples two fixed ocean/continent pixels |
@@ -969,7 +986,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | probe-metadata-mat.mjs | probe | ACTIVE | 2026-08-16 | 5 | Proves MAT3/MAT4 property attributes transport all 9/16 components to WGSL via the widened slot-9 layout; per-face palette readout, both backends. |
 | probe-metadata-multicomponent.mjs | probe | ACTIVE | 2026-08-16 | 5 | Proves VEC2/3/4 property attributes transport every component (vec4 slot-9), with debug paint of authored per-face RGB; debug-off gate. |
 | probe-metadata-table-instance.mjs | probe | ACTIVE | 2026-08-16 | 3 | Property tables keyed by instance feature IDs on WebGPU: 4-instance debug-paint palette, WGSL path asserts, off-gate, WebGL reference. |
-| probe-metadata-table-texture.mjs | probe | ACTIVE | 2026-08-16 | 6 | Acceptance: property tables keyed by texture/implicit feature IDs on WebGPU + cross-backend feature-pick and pickMetadata-undefined parity. |
+| probe-metadata-table-texture.mjs | probe | ACTIVE | 2026-08-16 | 9 | Acceptance: property tables keyed by texture/implicit feature IDs on WebGPU + cross-backend feature-pick and pickMetadata-undefined parity. |
 | probe-metadata-uint16.mjs | probe | ACTIVE | 2026-08-16 | 5 | Proves UINT16/UINT32 property-texture metadata round-trips the multi-byte little-endian unpack: exact pickMetadata quantization, both backends. |
 | probe-mip-debug.mjs | probe | INVESTIGATION | 2026-08-16 | 2 | One-off: compares globeFragmentDebug mip modes at orbit altitude to tell whether the imagery mip chain is read or the gap is LOD selection. |
 | probe-mipmap-check.mjs | probe | INVESTIGATION | 2026-08-16 | 2 | One-off: inspects the WebGPU globe imagery cache to confirm uploaded tile textures allocate mipLevelCount > 1. |
@@ -979,8 +996,8 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | probe-model-capture-camera-parity.mjs | probe | ACTIVE | 2026-08-16 | 1 | OFF-parity gate for env-scene-capture models: the packCameraUniforms eye-swap is a no-op on-screen across 3D/2D/CV + multi-view. |
 | probe-model-capture-face-zoom.mjs | probe | INVESTIGATION | 2026-08-16 | 1 | One-off full-res readback of one env-cube face so the captured model is visible by eye; occlusion eyeball check. |
 | probe-model-capture-reflection.mjs | probe | ACTIVE | 2026-08-16 | 1 | ON-path acceptance: the model capture pass renders an emissive glTF into env-cube faces over globe+sky with occlusion; ON/OFF faces, 0 errors. |
-| probe-model-color.mjs | probe | ACTIVE | 2026-08-16 | 8 | model.color acceptance: HIGHLIGHT/REPLACE/MIX tint parity per channel across backends, mode sanity, off-gate identity; fresh page per capture. |
-| probe-model-ibl.mjs | probe | ACTIVE | 2026-08-16 | 8 | Model IBL parity: split-sum BRDF LUT consumption + world-anchored reflection frame at two camera headings, with a specular liveness control. |
+| probe-model-color.mjs | probe | ACTIVE | 2026-09-02 | 9 | model.color acceptance: HIGHLIGHT/REPLACE/MIX tint parity per channel across backends, mode sanity, off-gate identity; fresh page per capture. |
+| probe-model-ibl.mjs | probe | ACTIVE | 2026-08-16 | 10 | Model IBL parity: split-sum BRDF LUT consumption + world-anchored reflection frame at two camera headings, with a specular liveness control. |
 | probe-model-instance-bg-cache.mjs | probe | ACTIVE | 2026-08-16 | 9 | Runtime gate: the per-primitive model group-2 bind-group cache creates no new merged instance groups after settle, retains cached identities. |
 | probe-model-ktx2-ibl.mjs | probe | ACTIVE | 2026-08-16 | 6 | Acceptance: authored KTX2 specular env maps load + prefilter on WebGPU — load proof, WebGL parity, consume-vs-procedural delta, 0 errors. |
 | probe-model-mip-inspect.mjs | probe | INVESTIGATION | 2026-08-16 | 2 | C10-05 evidence: walks model material textures to report allocation path (stub vs fallback), mipLevelCount/dims, sampler min-filter. |
@@ -1025,10 +1042,11 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | probe-ocean-tide-datum.mjs | probe | ACTIVE | 2026-08-16 | 7 | Acceptance for the FFT-ocean datum anchor + equilibrium tide: in-run before/after datum fix, M2-period phase ladder, spring/neap envelope. |
 | probe-ocean-wave-lod.mjs | probe | ACTIVE | 2026-08-16 | 5 | C11-172 acceptance: physical-wavelength wave LOD — banded HF-variance gates prove structure near, calm far, animated; renderer hard-checked. |
 | probe-ocean-waves-perf.mjs | probe | ACTIVE | 2026-08-16 | 4 | C11-158 perf audit: enhanced-ocean fragment cost ON vs OFF (CPU wall + GPU timestamp per-pass) on a static nadir ocean view; hard watchdog. |
-| probe-oit-collection-reachable.mjs | probe | ACTIVE | 2026-08-16 | 5 | C11-157 Slice B: MRT-OIT accumulation reachable for translucent billboard/point/polyline collections under the runtime-flipped FAR-003 gate. |
-| probe-oit-model-reachable.mjs | probe | ACTIVE | 2026-08-16 | 4 | C11-157 Slice C: MRT-OIT reachable for translucent models — BLEND primary + per-feature-styled translucent twin; FAR-003 runtime flip. |
-| probe-oit-primitive-reachable.mjs | probe | ACTIVE | 2026-08-16 | 3 | C11-157 Slice A: MRT-OIT reachable for translucent primitives via both injectOITOutput branches; FAR-003 runtime flip, hard gates. |
-| probe-oit-transparency.mjs | probe | ACTIVE | 2026-08-16 | 9 | OIT coverage + default-flip evidence: WebGL OIT genuinely active; WebGPU opt-in hard-gated active post-Slice-A; splat deferral lane. |
+| probe-oit-collection-reachable.mjs | probe | ACTIVE | 2026-09-03 | 6 | C11-157 Slice B: MRT-OIT accumulation reachable for translucent billboard/point/polyline collections under the runtime-flipped FAR-003 gate. |
+| probe-oit-model-reachable.mjs | probe | ACTIVE | 2026-09-03 | 5 | C11-157 Slice C: MRT-OIT reachable for translucent models — BLEND primary + per-feature-styled translucent twin; FAR-003 runtime flip. |
+| probe-oit-primitive-reachable.mjs | probe | ACTIVE | 2026-09-03 | 4 | C11-157 Slice A: MRT-OIT reachable for translucent primitives via both injectOITOutput branches; FAR-003 runtime flip, hard gates. |
+| probe-oit-reachability-runtime-migration.spec.mjs | spec | ACTIVE | 2026-09-03 | 1 | Fixture-receipt and mutation-control spec for the C11-157 OIT-reachability probe trio's DX-06 migration onto lib/probe-runtime.mjs. |
+| probe-oit-transparency.mjs | probe | ACTIVE | 2026-08-16 | 10 | OIT coverage + default-flip evidence: WebGL OIT genuinely active; WebGPU opt-in hard-gated active post-Slice-A; splat deferral lane. |
 | probe-orbital-1m.mjs | probe | ACTIVE | 2026-08-16 | 6 | Validates the GPU-resident compute-instance pipeline at a 1M-object catalog against negotiated device limits (SSBO sizes, dispatch headroom). |
 | probe-orbital-catalog.mjs | probe | ACTIVE | 2026-08-16 | 7 | Regression gate: orbital demo on generic ComputeInstanceCollection renders ~2000 moving points, pinned clock, zero GPU errors |
 | probe-orbital-j2.mjs | probe | ACTIVE | 2026-08-16 | 7 | Verifies df64 GPU secular-J2 orbital kernel matches a JS FP64 reference over 30-day propagation and beats the f32 control |
@@ -1045,16 +1063,17 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | probe-phase12-bugbash.mjs | probe | ACTIVE | 2026-08-16 | 6 | Gate for four B304 fixes: imagery-projection single-source, uploadImageSource observability, raySphere precision, billboard updateMode order |
 | probe-phong-render.mjs | probe | INVESTIGATION | 2026-08-16 | 2 | Bring-up diagnostic: does a lit Phong box render at all on WebGPU (brightness + device errors + scene-FB MRT state dump) |
 | probe-pick-basic.mjs | probe | ACTIVE | 2026-08-16 | 8 | Minimal pick discriminator: scene.pickAsync must return a Box primitive on the chosen backend; logs pick diagnostics + validation errors |
-| probe-pick-metadata.mjs | probe | ACTIVE | 2026-08-16 | 9 | Gate: pickVoxel/pickMetadata center-pixel readback reads the just-rendered pass on WebGPU (fresh 1x1 readback, in-flight guard), not stale |
+| probe-pick-metadata.mjs | probe | ACTIVE | 2026-08-16 | 13 | Gate: pickVoxel/pickMetadata center-pixel readback reads the just-rendered pass on WebGPU (fresh 1x1 readback, in-flight guard), not stale |
 | probe-pick-multifrustum.mjs | probe | ACTIVE | 2026-08-16 | 6 | Regression gate: two boxes in different frustum slices on the center ray — near object wins the pick; hiding it yields the far one (TAA on) |
 | probe-pick-ray-async.mjs | probe | ACTIVE | 2026-08-16 | 7 | Gate: sampleHeight/clampToHeight converge to WebGL-matching heights on WebGPU via scene-depth reuse; pickFromRay warns, never throws |
 | probe-pickmodel-instanced.mjs | probe | ACTIVE | 2026-08-16 | 11 | Gate for upstream #13433 port: octDecode arg order + CPU pickModel on instanced models (WebGL readback and WebGPU keepTypedArray paths) |
 | probe-pickposition-model-webgpu.mjs | probe | ACTIVE | 2026-08-16 | 9 | Gate: pickPosition over an opaque glTF model returns the model top (not the globe below) on WebGPU — depth re-packed after the OPAQUE pass |
 | probe-pickposition-webgpu.mjs | probe | ACTIVE | 2026-08-16 | 16 | Gate: pickPosition returns a real globe-surface Cartesian3 on WebGPU (converges by frame 3) matching WebGL; zoom-to-cursor smoke |
-| probe-pipeline-key-aliasing.mjs | probe | ACTIVE | 2026-08-16 | 10 | Runtime detector for pipeline-cache key aliasing: wraps getPipeline, recomputes keys, flags served entries whose shader modules differ |
+| probe-pipeline-key-aliasing.mjs | probe | ACTIVE | 2026-08-16 | 12 | Runtime detector for pipeline-cache key aliasing: wraps getPipeline, recomputes keys, flags served entries whose shader modules differ |
 | probe-plain-hdr-gamma.mjs | probe | ACTIVE | 2026-08-16 | 3 | Acceptance: plain highDynamicRange=true brightness parity WebGL vs WebGPU (sRGB decodes, no double tonemap), with SDR control legs |
 | probe-plain-hdr-tonemap.mjs | probe | ACTIVE | 2026-08-16 | 4 | Acceptance for plain-HDR tails: exposure synced to WebGPU tonemap, non-default operators match czm_* references, entity color parity |
 | probe-png-bytes.mjs | probe | ACTIVE | 2026-08-16 | 1 | CLI utility: minimal Node PNG decoder reporting mean RGB bytes of output PNGs — 'image is dark' vs 'display looks dark' |
+| probe-pnts-model-attenuation.mjs | probe | ACTIVE | 2026-09-03 | 2 | Measures whether a PNTS tileset's rendered point footprint responds to pointCloudShading.maximumAttenuation on each backend, at three camera distances, and banks the disabled-shading capture hashes so a before/after pair can be compared byte-for-byte. |
 | probe-point-label-partial-write.mjs | probe | ACTIVE | 2026-08-16 | 6 | Gate: settled point+label scene uploads nothing; one moved point = exactly one 112-byte partial write; label text change = full rebuild |
 | probe-point-pick-webgpu.mjs | probe | ACTIVE | 2026-08-16 | 7 | Gate: scene.pick/pickAsync over a PointPrimitive returns it with id on WebGPU (warmed sync + async control), at parity with a billboard |
 | probe-point-sprite-shape.mjs | probe | ACTIVE | 2026-08-24 | 7 | Parity gate: point-sprite shape (squares vs carved circles) across point-cloud and PointPrimitive scenes; gain-normalized ds4 metric |
@@ -1099,16 +1118,16 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | probe-precip-data.mjs | probe | ACTIVE | 2026-08-16 | 2 | Gate: data-driven precip — WMO ww maps to type/intensity, visibility couples density, snow-cover ramps, default-OFF leaves manual path intact |
 | probe-precip-wiring.mjs | probe | ACTIVE | 2026-08-16 | 5 | Visual gate: weather particles render via the conditions->effects hierarchy (auto and direct facade), rain vs snow differ, off = baseline |
 | probe-projection-fix.mjs | probe | ACTIVE | 2026-08-16 | 4 | Verify capture for the useWebMercatorT/textureTranslationAndScale reprojection fix: 7 orbit-altitude views, WebGL vs WebGPU |
-| probe-q141-pick-readback.mjs | probe | ACTIVE | 2026-09-02 | 2 | Q-141 discriminator: validates one shared pick position asynchronously on both renderers, then attributes every synchronous pick miss to a named pick-framebuffer decline reason rather than reporting an unexplained hit count. |
+| probe-q141-pick-readback.mjs | probe | ACTIVE | 2026-09-02 | 3 | Q-141 discriminator: validates one shared pick position asynchronously on both renderers, then attributes every synchronous pick miss to a named pick-framebuffer decline reason rather than reporting an unexplained hit count. |
 | probe-q141-pick-readback.spec.mjs | spec | ACTIVE | 2026-09-02 | 1 | Contract spec for the Q-141 readback probe's attribution: a served-but-empty pick must never be reported as a readback decline, and a decline must be named. |
 | probe-replay-cesium-cmd.mjs | probe | INVESTIGATION | 2026-08-16 | 2 | Bring-up diagnostic: replayed the SkyAtmosphere draw command in a controlled pass to split frame-loop faults from bad pipeline/buffers |
 | probe-reproj-log.mjs | probe | INVESTIGATION | 2026-08-16 | 1 | One-off diagnostic: captures all console output during a WebGPU load to check whether the reprojection mipmap path is hit |
-| probe-reproject-baseline.mjs | probe | ACTIVE | 2026-08-16 | 4 | Golden-PNG guard: pins the forked WebGL per-fragment Mercator->Geographic reprojection output to a stored baseline (--update, tolerance) |
+| probe-reproject-baseline.mjs | probe | ACTIVE | 2026-08-16 | 7 | Golden-PNG guard: pins the forked WebGL per-fragment Mercator->Geographic reprojection output to a stored baseline (--update, tolerance) |
 | probe-reprojected-texture-compare.mjs | probe | ACTIVE | 2026-08-16 | 3 | Diagnostic: dumps and pixel-compares the reprojected geographic texture for the same polar tile on both backends to localize algorithm diffs |
 | probe-request-render-asymmetry.mjs | probe | INVESTIGATION | 2026-08-25 | 4 | Hypothesis probe: does WebGPU's pendingForegroundCount fail to drain under requestRenderMode (fake FPS deficit); plus honest rrm=false lane |
 | probe-resident-instance-prev-mirror.mjs | probe | ACTIVE | 2026-08-16 | 3 | Contract gate: WebGPUResidentInstanceBuffer.sync() prev-mirror semantics (rebuild copy, slot-aligned old-value write, flush, settled zero) |
 | probe-river-water-intensity.mjs | probe | ACTIVE | 2026-08-16 | 3 | Acceptance/regression: inland river/lake water luminance on WebGPU within ~10% of WebGL via a water-selective blue-pixel metric, day view |
-| probe-runtime.spec.mjs | spec | NO @purpose HEADER | — | 1 | — |
+| probe-runtime.spec.mjs | spec | NO @purpose HEADER | 2026-09-02 | 2 | — |
 | probe-sampled-position-kernel.mjs | probe | ACTIVE | 2026-08-16 | 5 | Gate: SampledPositionKernel interpolates GPU-resident keyframed positions on BOTH backends, matching pure-JS and SampledPositionProperty refs |
 | probe-sampleheight-webgpu.mjs | probe | ACTIVE | 2026-08-16 | 7 | Asserts sampleHeight/clampToHeight work on WebGPU via main-scene-depth reuse (cold-cache converges) with WebGL behavior unchanged. |
 | probe-sandcastle-bulk-legacy.mjs | probe | ACTIVE | 2026-08-16 | 2 | Gates DataSourceDisplay bulk vs legacy visualizer callbacks: lane classification correct and bulk << legacy per-frame cost, on the real build. |
@@ -1141,7 +1160,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | probe-source-mercator-compare.mjs | probe | INVESTIGATION | 2026-08-16 | 2 | Compares SOURCE Mercator imagery-texture pixels row-by-row across backends to attribute the polar reprojection diff to upload vs algorithm. |
 | probe-southpole-diag.mjs | probe | INVESTIGATION | 2026-08-16 | 2 | Dumps per-tile selection/mesh/renderable state at lat -89 to find why WebGPU rendered a black hole around the south pole. |
 | probe-splat-globe-occlusion.mjs | probe | ACTIVE | 2026-08-16 | 10 | Gaussian splats compose over the opaque globe and stay hidden behind it; OIT-deferral never-drop seatbelt plus occlusion controls. |
-| probe-splat-sort.mjs | probe | ACTIVE | 2026-08-16 | 12 | Splat back-to-front sort consumption + log-depth producer gate; docstring voids pre-2026-08-01 gate-OFF results (pipeline-key aliasing). |
+| probe-splat-sort.mjs | probe | ACTIVE | 2026-08-16 | 14 | Splat back-to-front sort consumption + log-depth producer gate; docstring voids pre-2026-08-01 gate-OFF results (pipeline-key aliasing). |
 | probe-split-screen.mjs | probe | INVESTIGATION | 2026-08-16 | 2 | Launches the split-screen comparison page and samples the WebGPU scene-framebuffer center via GPU readback plus frame stats. |
 | probe-ssgi.mjs | probe | ACTIVE | 2026-08-16 | 6 | C6 SSGI acceptance: ssgi renders, GI-only debug output non-black, OFF byte-identical, orbit degrades to no-op, zero device errors. |
 | probe-ssr-consumer.mjs | probe | ACTIVE | 2026-08-16 | 4 | Verifies SSR reads the G-buffer regardless of deferredLighting (legacy gate B122 removed): SSR-on legs match with deferred on and off. |
@@ -1152,20 +1171,20 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | probe-stars-catalog.mjs | probe | ACTIVE | 2026-08-21 | 24 | UUID-bound write-once WebGPU star-catalog evidence acquisition (checks A-G); the gate lib owns the verdict fold. |
 | probe-stars-hdr-autoexposure-parity.mjs | probe | ACTIVE | 2026-08-16 | 6 | Guards the B364 fix: WebGPU honors the opt-in auto-exposure flag so the HDR night sky is not crushed to black versus WebGL. |
 | probe-stars-hdr-verify.mjs | probe | ACTIVE | 2026-08-16 | 4 | Verifies the WebGPU baked-SkyBox sRGB-to-linear decode under HDR (faint star dusting visible like WebGL) with an SDR no-op control. |
-| probe-sun-disc-dawn.mjs | probe | ACTIVE | 2026-09-02 | 6 | Acquire a dual-backend dawn sweep of the solar disc and publish per-sample disc-centre versus disc-annulus luminance and chroma ratios with WebGL as the parity control. |
+| probe-sun-disc-dawn.mjs | probe | ACTIVE | 2026-09-03 | 6 | Acquire a dual-backend dawn sweep of the solar disc and publish per-sample disc-centre versus disc-annulus luminance and chroma ratios with WebGL as the parity control. |
 | probe-sun-glow-profile.mjs | probe | ACTIVE | 2026-08-16 | 9 | Measures the sun billboard's radial luminance profile (solar radii) per backend; discriminates the WebGPU zero-contribution near the limb. |
 | probe-sun-glowfactor.mjs | probe | ACTIVE | 2026-08-16 | 5 | Gates scene.sun.glowFactor driving the WebGPU sun bake + quad size, with glowFactor=1.0 byte-identical to the historical hardcoded bake. |
 | probe-sun-hdr-radiance.mjs | probe | ACTIVE | 2026-08-16 | 4 | Two-radiance discriminator: is the sun-disc excess multiplicative gain or additive pedestal, from plateau ratios via enableTrueSolarRadiance. |
 | probe-sun-lens-glare.mjs | probe | ACTIVE | 2026-08-16 | 5 | Locks in the WebGPU sun lens-flare bake (disc + glow + six bursts) present and its halo extent converging with WebGL's SunTextureFS bake. |
 | probe-sun-pixel-check.mjs | probe | INVESTIGATION | 2026-08-16 | 8 | Samples canvas-center pixels with the sun centered (Earth behind) to quantify sun rendering and capture all console/validation messages. |
-| probe-sun-shadow-gate.mjs | probe | ACTIVE | 2026-08-16 | 7 | Sun-shadow receive-on-globe acceptance: WebGL reference darkening, WebGPU receive ratio band, faded-vs-unfaded darkness asymmetry. |
+| probe-sun-shadow-gate.mjs | probe | ACTIVE | 2026-08-16 | 9 | Sun-shadow receive-on-globe acceptance: WebGL reference darkening, WebGPU receive ratio band, faded-vs-unfaded darkness asymmetry. |
 | probe-sun-stars-extinction.mjs | probe | ACTIVE | 2026-08-16 | 6 | Sun and catalog stars dim/redden through the atmosphere near the horizon on both backends; byte-identical from orbit or atmosphere hidden. |
 | probe-taa-disocclusion.mjs | probe | ACTIVE | 2026-08-16 | 3 | Exercises TAA's third disocclusion check (G-buffer normal divergence) under static and orbiting cameras; new binding builds cleanly. |
 | probe-taa-jitter.mjs | probe | ACTIVE | 2026-08-16 | 8 | Asserts the TAA sub-pixel jitter survives the WebGPU per-frustum projection recompute and reaches the GPU (projection[8]/[9] non-zero). |
 | probe-taa-model-skinned-velocity.mjs | probe | ACTIVE | 2026-08-16 | 5 | Locks shipped TAA-SLICE-2B: a skinned animated model under a stationary camera emits non-zero per-pixel velocity; OFF-gate companion. |
 | probe-taa-morph-prevvp.mjs | probe | ACTIVE | 2026-08-16 | 5 | TAA history invalidation across the 2D/3D morph flip: clean render through the transition; motion-vector valid flag drops during MORPHING. |
 | probe-taa-resolve.mjs | probe | ACTIVE | 2026-08-16 | 7 | TAA resolve-consumer gate: effect lazily added on first taaEnabled frame; resolve encodes, settled-stable, no smear on rotation. |
-| probe-taa-userwarn.mjs | probe | ACTIVE | 2026-08-16 | 4 | Two-part gate: TAA stays pre-tonemap and temporally stable; GLSL-only user post-process stages emit a permanent deduped warn, not silence. |
+| probe-taa-userwarn.mjs | probe | ACTIVE | 2026-08-16 | 6 | Two-part gate: TAA stays pre-tonemap and temporally stable; GLSL-only user post-process stages emit a permanent deduped warn, not silence. |
 | probe-taa-velocity-emission.mjs | probe | ACTIVE | 2026-08-16 | 7 | Billboard/point velocity-emission OFF-ON-OFF: velocity commands attach with dual vertex streams, rg16float texture allocates, then detach. |
 | probe-terrain-selection-parity.mjs | probe | ACTIVE | 2026-08-16 | 2 | C9-02 fixed-waypoint parity: shared quadtree selection and portable CPU terrain revisions compared across backends at settled checkpoints. |
 | probe-terraindata-getters.mjs | probe | ACTIVE | 2026-08-16 | 3 | Guards the credits/waterMask getters on Cesium3DTilesTerrainData that the B243 JSDoc codemod deleted (water + attribution breakage). |
@@ -1186,7 +1205,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | probe-viewer-smoke.mjs | probe | ACTIVE | 2026-08-24 | 2 | Guards UX-01: bare viewer is upstream chrome with WebGPU default, ?devUi=true restores the toolbar, ?renderer=webgl selects WebGL, and window.viewer resolves on every variant. |
 | probe-volcloud-toggle.mjs | probe | ACTIVE | 2026-08-16 | 3 | Smoke-tests that clouds.enableVolumetric activates the volumetric raymarcher and echoes the legacy flags, via a gallery-demo viewer shim. |
 | probe-volumetric-clouds.mjs | probe | ACTIVE | 2026-08-16 | 4 | Scout probe: does the WebGPU volumetric cloud raymarcher render cloud pixels at all — bright-pixel count vs WebGL at a cloud-covered view. |
-| probe-voxel-cell-pick.mjs | probe | ACTIVE | 2026-08-16 | 14 | Byte-level cross-backend parity of pickVoxelCoordinate decode: single tile, refined L1 octree, customShader alpha gate, refined L3 (Parts A-D). |
+| probe-voxel-cell-pick.mjs | probe | ACTIVE | 2026-08-16 | 17 | Byte-level cross-backend parity of pickVoxelCoordinate decode: single tile, refined L1 octree, customShader alpha gate, refined L3 (Parts A-D). |
 | probe-voxel-cylinder.mjs | probe | ACTIVE | 2026-08-16 | 4 | Acceptance: WebGPU voxel march intersects a bounded hollow cylinder (not the box proxy) and cylindrical shapeUv cell colors match WebGL. |
 | probe-voxel-ellipsoid.mjs | probe | ACTIVE | 2026-08-16 | 6 | Acceptance: WebGPU voxel march intersects the oblate ellipsoid shell and lon/lat/height shapeUv cell colors match WebGL (IoU + color gates). |
 | probe-voxel-megatexture.mjs | probe | ACTIVE | 2026-08-16 | 7 | Acceptance: real tile data reaches the 3D megatexture; demand-driven descendant streaming; LRU eviction over a capacity-capped atlas. |
@@ -1194,7 +1213,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | probe-voxel-octree.mjs | probe | ACTIVE | 2026-08-16 | 7 | Acceptance: voxel octree LOD refinement to level 2 (73-slot atlas) with L1/L2 discriminator families and cone-sampled in-page expectations. |
 | probe-voxel-parity.mjs | probe | ACTIVE | 2026-08-21 | 7 | Acceptance: the WebGPU voxel box renders at the correct world placement/extent (footprint IoU + color structure vs WebGL), not a flat quad. |
 | probe-voxel-pick-logdepth.mjs | probe | ACTIVE | 2026-08-16 | 4 | Acceptance: voxel pick with the log-depth gate forced ON — same cell picked, [ld] pipelines bound, occlusion proves frag_depth is written. |
-| probe-voxel-pick.mjs | probe | ACTIVE | 2026-08-16 | 9 | Acceptance: public Scene.pickVoxel end-to-end on both backends — VoxelCell returned without throw, identical color/tile/sample cross-backend. |
+| probe-voxel-pick.mjs | probe | ACTIVE | 2026-08-16 | 12 | Acceptance: public Scene.pickVoxel end-to-end on both backends — VoxelCell returned without throw, identical color/tile/sample cross-backend. |
 | probe-voxel-refined-pick.mjs | probe | ACTIVE | 2026-08-16 | 4 | Acceptance: Scene.pickVoxel on a refined octree tile — retained child content yields a full VoxelCell with identity-encoded color parity. |
 | probe-voxel-user-customshader.mjs | probe | ACTIVE | 2026-08-16 | 6 | Acceptance: user voxel customShader — GLSL (WebGL) vs native-WGSL codegen (WebGPU) render the same blue-red ramp; pipeline-name gate. |
 | probe-vr2-polylines-3dtiles.mjs | probe | ACTIVE | 2026-08-16 | 5 | Repro: clampToGround classification polyline on the BIM tileset — quantifies the WebGPU saturated cyan/red shadow-volume panels vs WebGL. |
@@ -1212,7 +1231,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | probe-weather-seam-poles.mjs | probe | ACTIVE | 2026-08-21 | 6 | C13-07 pixel gate: no dateline luminance wall (frame-relative column-step test), bounded polar-cap variance, no NaN cluster; non-vacuity gate. |
 | probe-weather-time.mjs | probe | ACTIVE | 2026-08-16 | 6 | Weather time-model logic probe (no render): slice quantization, version-on-slice-change, historical/projected resolve, LRU scrub-back hit. |
 | probe-weather-wcs.mjs | probe | ACTIVE | 2026-08-21 | 6 | Gate-B leg: OGC API-Coverages ingest via the shared CoverageJSON parser against the /mock-wcs fixture — same pattern gates as the EDR mock. |
-| probe-webgpu-allocation-tax.mjs | probe | ACTIVE | 2026-08-16 | 5 | Instruments raw browser WebGPU/WebGL API boundaries to detect a hidden WebGL context in explicit-WebGPU scenes and classify compat allocations. |
+| probe-webgpu-allocation-tax.mjs | probe | ACTIVE | 2026-08-16 | 7 | Instruments raw browser WebGPU/WebGL API boundaries to detect a hidden WebGL context in explicit-WebGPU scenes and classify compat allocations. |
 | probe-webgpu-frame-breakdown.mjs | probe | ACTIVE | 2026-08-16 | 7 | C11-169 exact CPU frame-accounting gate: per-frame conservation (total = passes + phases + unattributed) over the shared track; negative lanes. |
 | probe-webgpu-grey.mjs | probe | INVESTIGATION | 2026-08-16 | 4 | Quick diagnostic that opened the split-screen page and captured console errors + debug snapshot chasing the all-grey regression. |
 | probe-webgpu-model-shadow-command-graph.mjs | probe | ACTIVE | 2026-08-16 | 1 | C11-184 runtime companion: inspects Model's WebGPU command graph at the PVS boundary — caster layouts, variant isolation, zero idle UB churn. |
@@ -1225,23 +1244,24 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | probe-wgs84-layer1-alpha.mjs | probe | INVESTIGATION | 2026-08-16 | 3 | One-off debug harness from the WGS84 reprojection alpha investigation: terrain + debug-flag toggle capture (layer-1 alpha variant). |
 | probe-wgs84-polar-stretch.mjs | probe | INVESTIGATION | 2026-08-16 | 1 | Repro of the user-reported northern-latitude polar stretching on WGS84 orbit at the default home view, WebGL vs WebGPU. |
 | probe-wgs84-postcomposite.mjs | probe | INVESTIGATION | 2026-08-16 | 3 | One-off debug harness from the WGS84 reprojection investigation: terrain + debug-flag toggle capture (post-composite stage variant). |
-| probe-wgs84-quick.mjs | probe | INVESTIGATION | 2026-08-16 | 4 | Quick orbit-only WebGL-vs-WebGPU comparison used to verify the Batch-56 alpha=1 force in WebGPUImageryReprojection. |
+| probe-wgs84-quick.mjs | probe | INVESTIGATION | 2026-09-02 | 4 | Quick orbit-only WebGL-vs-WebGPU comparison used to verify the Batch-56 alpha=1 force in WebGPUImageryReprojection. |
 | probe-wgs84-sample0.mjs | probe | INVESTIGATION | 2026-08-16 | 2 | One-off sample0 texture debug after the Batch-56 alpha=1 reprojection fix on the WGS84 ellipsoid. |
 | probe-wgs84-varyings.mjs | probe | INVESTIGATION | 2026-08-16 | 3 | One-off debug harness from the WGS84 reprojection investigation: terrain + debug-flag toggle capture (shader varyings variant). |
 | probe-wgs84.mjs | probe | ACTIVE | 2026-08-16 | 4 | Family-root repro: WGS84 EllipsoidTerrainProvider (unquantized, no webMercatorT) + imagery combos — the black-wedges symptom on WebGPU. |
 | probe-wgsl-compile-error.mjs | probe | INVESTIGATION | 2026-08-16 | 2 | Diagnostic: hooks createShaderModule and dumps WGSL compile errors with source context for Model PBR variants (built for 0x8200 regression). |
 | probe-wgsl-doctype.mjs | probe | INVESTIGATION | 2026-08-16 | 3 | Diagnostic: loads named Sandcastle demos under a renderer-override shim to reproduce the WGSL-parser DOCTYPE error (shader fetch got HTML). |
-| probe-wireframe-verify.mjs | probe | ACTIVE | 2026-08-16 | 3 | Acceptance for the WebGPU debugShowWireframe fix: wireframe draws an imagery-colored line mesh (not black), settled by frame-signature stability. |
-| prohibited-reader-allowlist.spec.mjs | spec | ACTIVE | 2026-09-02 | 0 | Enforce the measured prohibited-reader allowlist as a shrink-only ratchet. |
+| probe-wireframe-verify.mjs | probe | ACTIVE | 2026-09-02 | 3 | Acceptance for the WebGPU debugShowWireframe fix: wireframe draws an imagery-colored line mesh (not black), settled by frame-signature stability. |
+| prohibited-reader-allowlist.spec.mjs | spec | ACTIVE | 2026-09-02 | 1 | Enforce the measured prohibited-reader allowlist as a shrink-only ratchet. |
 | prohibited-reader-rule.spec.mjs | spec | NO @purpose HEADER | 2026-08-20 | 0 | — |
-| purpose-header-contract.spec.mjs | spec | ACTIVE | 2026-09-02 | 10 | Contract spec for maintainer ruling M4: every probe and gate library must carry a readable @purpose/@status header. |
+| purpose-header-contract.spec.mjs | spec | ACTIVE | 2026-09-02 | 11 | Contract spec for maintainer ruling M4: every probe and gate library must carry a readable @purpose/@status header. |
 | q130-wgsl-derivative-uniformity.spec.mjs | spec | ACTIVE | 2026-09-01 | 9 | Guards the WGSL rule that made frustum-dev's phongTextured shader module invalid: no implicit-derivative sampling after a conditional return in a fragment entry point. |
 | q131-edge-pipeline-matches-pass.spec.mjs | spec | ACTIVE | 2026-08-29 | 0 | Guards the edge-emitter invariant that broke styled-gltf-lines-dev and multifrustum-snapping-dev: the pipeline a tile-edges command binds must declare the colour targets of the pass it executes in. |
 | q132-custom-primitive-and-light-layout.spec.mjs | spec | ACTIVE | 2026-08-29 | 0 | Reproduces and guards the two defects that stopped rendering in the Sandcastle2 sweep: Scene.updateHeight calling a tileset-only lifecycle method on every primitive, and the WebGL scene-light uniform being declared shorter than LightCollection.pack writes. |
 | refresh-cost-multi-metric.spec.mjs | spec | ACTIVE | 2026-08-29 | 0 | Independent behavioural + canonicity coverage of Q-80's deltaOrNull/sumLegMultiMetric/available-guard formulas, which live inside a page.evaluate callback and cannot be imported. |
 | rescore-sun-disc-dawn.mjs | other | ACTIVE | 2026-09-02 | 1 | Re-score an already-acquired sun-disc-dawn artifact against a FAIL bar derived from that same artifact's own WebGL leg, never from WebGPU. |
-| run-performance-campaign.mjs | runner | ACTIVE | 2026-08-16 | 27 | The performance characterization runner: consumes performance-workloads.json, records Scene.render CPU samples + GPU timestamps; never FPS. |
+| run-performance-campaign.mjs | runner | ACTIVE | 2026-08-16 | 32 | The performance characterization runner: consumes performance-workloads.json, records Scene.render CPU samples + GPU timestamps; never FPS. |
 | run-regression-sweep.mjs | runner | INVESTIGATION | 2026-08-16 | 0 | Batch-146 sequential sweep of the Batches 134-145 probe arc, parsing stdout tails for PASS/FAIL markers — a did-the-arc-break-anything check. |
+| runtime-residency-contract.spec.mjs | spec | ACTIVE | 2026-09-03 | 3 | Contract spec for DX-02: a probe that declares @runtime residency on lib/probe-runtime.mjs must not re-implement the four concerns that module already owns. |
 | sandcastle-batch-66-end-of-session-runner.mjs | other | INVESTIGATION | 2026-08-16 | 2 | End-of-session rerun of the Batch-66 Sandcastle sweep (direct scene.pick, pointer-error filtering) writing per-demo screenshots + report. |
 | sandcastle-batch-66-final-runner.mjs | other | INVESTIGATION | 2026-08-16 | 10 | Post-F1/F2/F3 rerun of the Batch-66 WebGPU Sandcastle sweep: every 'WebGPU *.html' demo headless, known artifacts filtered, JSON report. |
 | sandcastle-smoke.mjs | other | ACTIVE | 2026-08-29 | 15 | Standing Sandcastle CI blind-spot smoke: three local-resource WebGPU gallery demos gated on non-black, non-uniform, real device, zero errors. |
@@ -1274,7 +1294,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | starfield-psf.spec.mjs | spec | ACTIVE | 2026-08-16 | 5 | C12-05..08 analytic acceptance: CPU reference of the Moffat core+wing PSF and linear-Pogson mapping; WGSL/GLSL constant lockstep. |
 | stbn-asset.spec.mjs | spec | ACTIVE | 2026-08-16 | 5 | Pins the bundled STBN blue-noise atlas: byte/manifest SHA-256, re-measured spectra, histogram uniformity, provenance, with mutant controls. |
 | sun-atmosphere-alpha-fragment.spec.mjs | spec | NO @purpose HEADER | 2026-08-28 | 1 | — |
-| sun-disc-dawn-gate.spec.mjs | spec | NO @purpose HEADER | 2026-09-02 | 5 | — |
+| sun-disc-dawn-gate.spec.mjs | spec | NO @purpose HEADER | 2026-09-03 | 6 | — |
 | sun-halo-composition.spec.mjs | spec | ACTIVE | 2026-08-16 | 3 | Node gate: WebGPU sun blends ALPHA_BLEND, disc edge at 1.0 Rsun, exactly one live halo source, GLSL/WGSL veil equivalence to 1e-15. |
 | sun-hdr-radiance.spec.mjs | spec | ACTIVE | 2026-08-16 | 4 | Node gate for true-HDR sun radiance: derived disc radiance, alpha-clamp safety, derived BrightPass retune, SunPostProcess 8-bit vacuity fix. |
 | sun-orbital-limb-extinction.spec.mjs | spec | ACTIVE | 2026-08-28 | 6 | Measures the shipped orbital extinction ramp and behaviorally verifies the shared Sun atmospheric-alpha publication and WebGPU pack. |
@@ -1286,7 +1306,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | tooling-coverage.spec.mjs | spec | ACTIVE | 2026-08-16 | 2 | Coverage-of-the-checkers gate: writes broken fixtures under Tools/ and asserts the real prettier/eslint configs actually reject .mjs files. |
 | track-entity-probe.mjs | other | ACTIVE | 2026-08-16 | 3 | Playwright diagnostic for viewer.trackedEntity on WebGL vs WebGPU via the Sandcastle renderer shim; reports camera/model state over time. |
 | translucent-classification-debug.mjs | other | INVESTIGATION | 2026-08-16 | 2 | Console-capture harness for the WebGPU Translucent Classification demo; groups GPU validation errors around the GlobePass error scope. |
-| translucent-cull-render-pass-bracket.spec.mjs | spec | ACTIVE | 2026-09-02 | 2 | Pins that `WebGPUSceneRenderer#_maybeGPUCullTranslucent` ends the open scene render pass before dispatching the translucent GPU-cull compute pass and resumes it afterward, exactly like the verbatim opaque-pass bracket. |
+| translucent-cull-render-pass-bracket.spec.mjs | spec | ACTIVE | 2026-09-02 | 3 | Pins that `WebGPUSceneRenderer#_maybeGPUCullTranslucent` ends the open scene render pass before dispatching the translucent GPU-cull compute pass and resumes it afterward, exactly like the verbatim opaque-pass bracket. |
 | validate-f16-wgsl.mjs | other | ACTIVE | 2026-08-16 | 1 | Naga-WASM compile gate for every PostProcess *_f16.wgsl variant; exit 1 on rejection. For machines whose GPU lacks shader-f16. |
 | validate-sgp4.mjs | other | ACTIVE | 2026-08-16 | 5 | Dev gate proving the JS FP64 SGP4 reference matches python-sgp4 2.25 vectors to <1 m before the GPU kernel is judged against it. |
 | vector-layer-draping.spec.mjs | spec | ACTIVE | 2026-08-20 | 8 | Acceptance for WebGPU vector-layer draping: GLSL-derived oracle vs real storage-buffer packer/WGSL indexing, six named mutations. |
@@ -1297,10 +1317,10 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | verify-glb-side-by-side.mjs | other | INVESTIGATION | 2026-08-16 | 5 | Side-by-side WebGL/WebGPU capture of CesiumAir.glb from the era when WebGPU drew '3 tiny dots'; establishes the reference look. |
 | verify-gp-debug-volume.mjs | other | INVESTIGATION | 2026-08-16 | 1 | Differential GP diagnostic: renders with _debugShowShadowVolume to split 'VS emits nothing' from 'classifier discards everything'. |
 | verify-gp-no-polyline.mjs | other | INVESTIGATION | 2026-08-16 | 0 | Control leg for the GP investigation: same camera with no polyline, to test whether the 'grey rectangles' were terrain artifacts. |
-| verify-ground-polyline-zoom.mjs | other | ACTIVE | 2026-08-16 | 2 | Close-zoom GroundPolylinePrimitive render check on either backend (renderer as argv); screenshots plus GP-DIAG console capture. |
+| verify-ground-polyline-zoom.mjs | other | ACTIVE | 2026-08-16 | 4 | Close-zoom GroundPolylinePrimitive render check on either backend (renderer as argv); screenshots plus GP-DIAG console capture. |
 | verify-hdr-taa.mjs | other | ACTIVE | 2026-08-16 | 2 | HDR+TAA interaction matrix: initial-mount both-on, each toggle order, round-trip off; fails on GPU validation errors or empty renders. |
-| verify-initial-hdr.mjs | other | INVESTIGATION | 2026-08-16 | 1 | Diagnostic splitting 'HDR completely broken' from 'HDR runtime toggle broken' by mounting the viewer with HDR on before frame one. |
-| verify-model-feature-pick.mjs | other | ACTIVE | 2026-08-16 | 13 | End-to-end per-feature pick on WebGPU: loads a batch-table tileset, picks at center, asserts the result carries a featureId not just the Model. |
+| verify-initial-hdr.mjs | other | INVESTIGATION | 2026-08-16 | 3 | Diagnostic splitting 'HDR completely broken' from 'HDR runtime toggle broken' by mounting the viewer with HDR on before frame one. |
+| verify-model-feature-pick.mjs | other | ACTIVE | 2026-08-16 | 16 | End-to-end per-feature pick on WebGPU: loads a batch-table tileset, picks at center, asserts the result carries a featureId not just the Model. |
 | verify-pick-webgl-control.mjs | other | ACTIVE | 2026-08-16 | 3 | WebGL control leg for the model-feature pick probe: same tileset/camera/pick on the reference backend to isolate WebGPU-specific defects. |
 | verify-vector-3dtile-frs.mjs | other | ACTIVE | 2026-08-16 | 3 | Smoke for Vector3DTilePrimitive/Polylines/ClampedPolylines feature renderers: FR registration, createCommands, error-free render loop. |
 | visual-evidence-library.mjs | other | ACTIVE | 2026-08-16 | 5 | CLI for the append-only content-addressed visual-evidence library: archive/import-legacy/verify/catalog/upgrade with provenance and run identity. |
@@ -1313,19 +1333,22 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | weather-regional-tails.spec.mjs | spec | ACTIVE | 2026-08-16 | 1 | Contract for the rendered-tail browser probe: cyclic CoverageJSON parse, fused capture, policy rejecting duplicated antimeridian band. |
 | webgl-snap-multifrustum.spec.mjs | spec | ACTIVE | 2026-08-16 | 1 | Source pins for WebGL Scene.snap occluders in DerivedCommand/Scene/SceneRenderer: depth-only reuse, zero color write, blending off, depthMask. |
 | webgl-vs-webgpu-pixel-check.mjs | other | INVESTIGATION | 2026-08-16 | 0 | Test-infra sanity check from the canvas-black-screen investigation: do non-black pixels reach toDataURL on each backend at all? |
-| webgpu-ao-runtime-config-propagation.spec.mjs | spec | ACTIVE | 2026-09-02 | 1 | Drives the real post-process bridge and the real AmbientOcclusionEffect against a recording fake device, and pins that a uniform written after the first enabled frame reaches the AO uniform buffer instead of being swallowed by the first-enable latch. |
-| webgpu-ao-sample-pattern-parity.spec.mjs | spec | NO @purpose HEADER | 2026-08-29 | 1 | — |
+| webgpu-ao-lengthcap-units.spec.mjs | spec | ACTIVE | 2026-09-03 | 1 | Executes the WebGPU HBAO march radius and distance falloff straight out of both shipped WGSL variants, pinning that lengthCap is eye-space metres in the march as well as in the falloff and that both texts still validate under Naga. |
+| webgpu-ao-runtime-config-propagation.spec.mjs | spec | ACTIVE | 2026-09-03 | 1 | Drives the real post-process bridge and the real AmbientOcclusionEffect against a recording fake device, and pins that a uniform written after the first enabled frame reaches the AO uniform buffer instead of being swallowed by the first-enable latch. |
+| webgpu-ao-sample-pattern-parity.spec.mjs | spec | NO @purpose HEADER | 2026-08-29 | 2 | — |
 | webgpu-ao-uniform-bridge.spec.mjs | spec | NO @purpose HEADER | 2026-09-02 | 1 | — |
-| webgpu-blend-table-parity.spec.mjs | spec | ACTIVE | 2026-08-29 | 2 | Runs the real lifted WebGPU blend translation from RenderStateToPipelineVariant.ts over every named Scene/BlendingState.js state and compares it against an independently written WebGL-enum-to-GPU oracle, so a blend factor or equation that translates differently on WebGPU than the WebGL state declares fails here. |
+| webgpu-blend-table-parity.spec.mjs | spec | ACTIVE | 2026-08-29 | 3 | Runs the real lifted WebGPU blend translation from RenderStateToPipelineVariant.ts over every named Scene/BlendingState.js state and compares it against an independently written WebGL-enum-to-GPU oracle, so a blend factor or equation that translates differently on WebGPU than the WebGL state declares fails here. |
+| webgpu-classification-instance-color.spec.mjs | spec | ACTIVE | 2026-09-02 | 1 | Drives the real WebGPU ground-primitive colour packer over a real BatchTable and a real ColorGeometryInstanceAttribute, and requires the four uniform floats the classification fragment shader returns to quantize to the instance colour rather than to the uniform's untouched fallback. |
 | webgpu-cloud-shadow-bind-group-cache.spec.mjs | spec | ACTIVE | 2026-08-16 | 1 | Drives the real WebGPUCloudShadowBindGroupCache on a fake device: per-slot dedupe, descriptor identity, invalidation on resource change. |
 | webgpu-clustered-zero-light-dispatch.spec.mjs | spec | ACTIVE | 2026-08-21 | 0 | Proves settled zero-light frames avoid redundant params writes and compute passes. |
 | webgpu-dynamic-environment-recovery.spec.mjs | spec | ACTIVE | 2026-08-16 | 1 | Source-anchored pins that dynamic environment-map caches are owned by one device generation and recover across manager/capture/Scene wiring. |
 | webgpu-frame-accounting-policy.spec.mjs | spec | ACTIVE | 2026-08-16 | 2 | Guard for the frame-breakdown probe's accounting: phase names match the engine profiler, coverage/overlap validity, request-render suppression. |
 | webgpu-ibl-sh-signal.spec.mjs | spec | ACTIVE | 2026-08-24 | 2 | Keep the packed model IBL flag aligned with the spherical-harmonics buffer selected for binding. |
 | webgpu-pick-center-identity.spec.mjs | spec | ACTIVE | 2026-08-21 | 7 | Fake-device coverage of WebGPUPickFramebuffer/PickPass readback identity: map/unmap lifecycle, per-identity pixel decode, voxel pick pins. |
-| webgpu-pick-emission-counters.spec.mjs | spec | ACTIVE | 2026-09-01 | 6 | Pins the four pragma-stripped counters (ready-gate skips, pick |
+| webgpu-pick-emission-counters.spec.mjs | spec | ACTIVE | 2026-09-02 | 8 | Pins the four pragma-stripped counters (ready-gate skips, pick |
 | webgpu-pick-miniframe-clear-guard.spec.mjs | spec | ACTIVE | 2026-08-16 | 1 | Pins that standalone WebGPU pick mini-frames reset their own clear-loop budget: beginPickFrame resets counters and creates its encoder. |
 | webgpu-pick-sync-readback-warmup.spec.mjs | spec | ACTIVE | 2026-09-02 | 1 | Behaviour spec for synchronous WebGPU pick warm-up: a pick at a new position must arm its own readback even while an earlier one is still mapping, and the cached-region gate's pixel tolerance is pinned. |
+| webgpu-pipeline-creation-not-frame-coupled.spec.mjs | spec | ACTIVE | 2026-09-02 | 1 | Drives the real central pipeline cache with a fake device to require that an in-flight pipeline creation advances, lands and publishes its wake-up without any frame being rendered and without any concurrency cap, so the frame-coupled explanations of the AEC residency stall stay ruled out. |
 | webgpu-shadow-receive-contract.spec.mjs | spec | ACTIVE | 2026-08-21 | 4 | Pins the sun-shadow fix: single cast-dispatch site + same-frame wipe guard, receive matrix reproduces the cast texel, naga-validated shaders. |
 | webgpu-snap-edge-payload.spec.mjs | spec | ACTIVE | 2026-08-16 | 5 | Contract for the edge tier of WebGPU Scene.snap: edge-flag payload encode, pick-color plumb into the edge UB, pipeline variant, strict admission. |
 | webgpu-snap-framebuffer-lifecycle.spec.mjs | spec | ACTIVE | 2026-08-16 | 0 | Behavioral lifecycle coverage of the real WebGPUSnapFramebuffer on GPU-shaped mocks; complements the source-contract snap-payload spec. |
@@ -1368,18 +1391,20 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | derive-umbra-lo-shard.mjs | fixture | ACTIVE | 2026-08-16 | 2 | Deterministically crops four hash-verified umbra_lo records from NASA SVS 5073 into the pinned C12-29 S5 eclipse-footprint fixture shard. |
 | nasa-svs-5073-shapefile.mjs | fixture | ACTIVE | 2026-08-16 | 5 | Dependency-free ESRI Shapefile Polygon + dBASE reader for the SVS 5073 umbra fixture, parseable by node --test and same-origin browser probes alike. |
 
-### Tools/visual-regression/lib/ (100)
+### Tools/visual-regression/lib/ (105)
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
-| aec-residency-e1.mjs | lib | ACTIVE | 2026-09-02 | 2 | Pure decision, aggregation and pre-registered-classification logic for the E-1 AEC residency measurement: refusal rules, CPU-profile self-time aggregation, per-frame pipeline-cache summarisation and the frozen hypothesis discriminator. |
+| aec-residency-e1.mjs | lib | ACTIVE | 2026-09-02 | 7 | Pure decision, aggregation and pre-registered-classification logic for the E-1 AEC residency measurement: refusal rules, CPU-profile self-time aggregation, per-frame pipeline-cache summarisation and the frozen hypothesis discriminator. |
+| aec-residency-e2.mjs | lib | ACTIVE | 2026-09-03 | 2 | Pure trace-clock bridging, GPU-process frame-gap overlap summarisation, shader-module census arithmetic, animation-frame gap derivation and control-matrix construction for the E-2 AEC residency measurement. |
+| aec-residency-stall-locus.mjs | lib | ACTIVE | 2026-09-02 | 5 | Decomposes an E-1 residency receipt leg into its dominant inter-frame gaps, reads the wall-clock poll cadence inside the largest gap to decide whether the renderer's main thread was blocked or free, and reports whether a pipeline-creation CAUSE is licensed by that evidence. |
 | backend-isolation-launch.mjs | lib | ACTIVE | 2026-08-20 | 3 | The gated launch step for lanes whose page builds nothing until a launch control is pressed. |
-| build-source-identity.mjs | lib | ACTIVE | 2026-08-16 | 33 | Shared provenance helpers: safe git HEAD, build/shader fingerprinting, and the STRUCTURAL build-absent reason evidence shards bind to. |
+| build-source-identity.mjs | lib | ACTIVE | 2026-09-03 | 33 | Shared provenance helpers: safe git HEAD, build/shader fingerprinting, and the STRUCTURAL build-absent reason evidence shards bind to. |
 | c11-13-public-voxel-pick-convergence.mjs | lib | ACTIVE | 2026-08-16 | 3 | Pure convergence predicate for Scene.pickVoxel warm-up: two consecutive identical real cells establish stability; an absent result resets the streak. |
 | c11-13-voxel-inside-camera-probe.mjs | lib | ACTIVE | 2026-08-27 | 6 | Shared implementation of the C11-13 inside-camera voxel probe: watchdogs, waypoint ladder, 18 error lanes, capture plumbing used by probe and spec. |
 | c11-13-voxel-pick-pipeline-name.mjs | lib | ACTIVE | 2026-08-16 | 3 | Derives the one exact voxel-pick pipeline name from independent log-depth state; returns null (structural) rather than inferring from the descriptor. |
 | c11-146-route-evidence.mjs | lib | ACTIVE | 2026-08-16 | 4 | Fail-closed C11-146 acceptance for the moving-altitude route: missing metrics or unbound runtime bytes cannot inherit a generic campaign PASS. |
-| c11-168-direct-model-ablation.mjs | lib | ACTIVE | 2026-08-16 | 4 | Renderer-neutral C11-168 causal discriminator: rejects incomparable run quartets and computes the predeclared difference-in-differences fail-closed. |
+| c11-168-direct-model-ablation.mjs | lib | ACTIVE | 2026-08-16 | 6 | Renderer-neutral C11-168 causal discriminator: rejects incomparable run quartets and computes the predeclared difference-in-differences fail-closed. |
 | c11-205-evidence.mjs | lib | ACTIVE | 2026-08-16 | 7 | Pure gate classification (true/false/null; exits 0/1/2/3) shared by 3D Tiles lifecycle probes and the performance campaign so verdicts agree. |
 | c11-205-owner-attribution.mjs | lib | ACTIVE | 2026-08-16 | 4 | Frozen config plus fail-closed policy for the resident-SF CPU owner-attribution diagnostic; instrumented timings never recertify the causal artifact. |
 | c11-209-effects-placeholder-provenance.mjs | lib | ACTIVE | 2026-08-16 | 2 | Provenance fingerprints binding the effects-depth-placeholder startup token across engine source, bundle, source map, probe, and policy files. |
@@ -1395,7 +1420,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | c12-29-s5-terrain-selection-gate.mjs | gate-lib | ACTIVE | 2026-08-16 | 4 | Frozen inputs, exact terrain-radius arithmetic, evidence-shape checks and verdict folding for S5's first final-certification shard (v10 schema). |
 | c12-31-aureole-gate.mjs | gate-lib | ACTIVE | 2026-08-16 | 3 | Gate-predicate library for the C12-31 sky-aureole certification lane, pairing probe-sky-aureole-anchor with its spec. |
 | c13-41-deckfree-control.mjs | lib | ACTIVE | 2026-08-29 | 4 | State-isolated ABBA session plan plus pinned lighting/fade constants for C13-41's deck-free eclipse control lane. |
-| celestial-capture-harness.mjs | lib | ACTIVE | 2026-08-21 | 7 | Shared Playwright/page half of the celestial fleet: one pinned-clock settle recipe, warm-up-then-same-task capture, lane driver, PNG writer. |
+| celestial-capture-harness.mjs | lib | ACTIVE | 2026-08-21 | 8 | Shared Playwright/page half of the celestial fleet: one pinned-clock settle recipe, warm-up-then-same-task capture, lane driver, PNG writer. |
 | celestial-g1-gate.mjs | gate-lib | ACTIVE | 2026-08-25 | 10 | Pure verdict logic for the C12 G1 gate after six recorded repairs: per-backend non-vacuity, doubly-blind certifying mode voids the lane as STRUCTURAL. |
 | celestial-g2-gate.mjs | gate-lib | ACTIVE | 2026-08-16 | 12 | Pure verdict logic plus display-transform inversion for G2 (star PSF, delivered magnitude range, C12-27 solar glare) on linearized captures. |
 | celestial-g3-gate.mjs | gate-lib | ACTIVE | 2026-08-21 | 12 | Pure metrics and verdicts for G3 (star-map cube-face asset quality), criterion 2 re-pointed after DR-01 moved resolved stars to the sprite catalogue. |
@@ -1415,53 +1440,56 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | cloud-u2-perf-evidence.mjs | lib | ACTIVE | 2026-08-21 | 3 | Manifest policy for the C13-16 U2 cross-bundle GPU-timing gate: comparison, environment-drift rejection, immutable evidence naming. |
 | daynight-terminator-law.mjs | lib | ACTIVE | 2026-08-16 | 4 | Pure model behind probe-daynight-terminator-law (CLT-B1); deliberately unchanged post-fix, so lanes A/D now REFUTE — read metrics, not verdicts. |
 | determinism-kit.mjs | lib | ACTIVE | 2026-08-16 | 11 | Probe determinism kit: pinClock, settleTiles, dampSky, nRunMedian — neutralises the four measured sources of run-to-run drift in visual probes. |
-| eclipse-cloud-response-gate.mjs | gate-lib | ACTIVE | 2026-09-02 | 15 | C13-41 Edge-acceptance predicates with derived-never-fitted bands for deck lighting, cloud-shadow invariance, IBL bucket fills, and submitted-refresh cost. |
+| eclipse-cloud-response-gate.mjs | gate-lib | ACTIVE | 2026-09-02 | 16 | C13-41 Edge-acceptance predicates with derived-never-fitted bands for deck lighting, cloud-shadow invariance, IBL bucket fills, and submitted-refresh cost. |
 | eclipse-fixture-constraints.mjs | lib | ACTIVE | 2026-08-16 | 5 | All-lane constraint set for eclipse-sky vantage selection: per-candidate predicates with named rejections after headline-only selection failed. |
-| engine-stub-bundler.mjs | lib | ACTIVE | 2026-09-02 | 9 | Bundles an engine entry module through esbuild with a named allowlist kept real and every other import stubbed, so specs can execute real engine code under fakes. |
+| engine-stub-bundler.mjs | lib | ACTIVE | 2026-09-02 | 15 | Bundles an engine entry module through esbuild with a named allowlist kept real and every other import stubbed, so specs can execute real engine code under fakes. |
 | engine-ts-resolver.mjs | lib | ACTIVE | 2026-08-16 | 31 | Node resolve hook rewriting engine-internal ./x.js specifiers to sibling .ts so specs can execute non-leaf engine TypeScript directly. |
 | fog-cheap-coverage-model.mjs | lib | ACTIVE | 2026-08-16 | 5 | Bit-faithful CPU twin of the fog cheap cloud-shadow noise gate at real ECEF magnitudes, importing the shipped normalisation and coverage response. |
 | globe-camera-track.mjs | lib | ACTIVE | 2026-08-16 | 13 | Shared orbit-to-ground camera route (plain serializable waypoints) used by both the visual parity probe and the performance campaign. |
 | globe-pipeline-readiness.mjs | lib | ACTIVE | 2026-08-29 | 5 | Pure scoring for the pipeline-readiness probe: snapshot summary, coverage-divergence scoring, non-vacuity; keys decoded via canonical parser. |
+| gpucull-blackframe-isolation-gate.mjs | gate-lib | ACTIVE | 2026-09-03 | 2 | Q-20/Q-48 arm table (with each arm's expected translucent GPU-cull dispatch) and the exit-code verdict the isolation probe reports, importable without a browser. |
 | ground-fog-band-model.mjs | lib | ACTIVE | 2026-08-16 | 4 | Scene-geometry model for the ground-fog fix: WGS84 froxel-altitude reconstruction and the band optical-depth march at the probe's exact camera. |
-| gsplat-classification-model.mjs | lib | ACTIVE | 2026-08-21 | 2 | Pure C15-G7 Gaussian-splat classification placement, route-counter, negative-control, and verdict arithmetic for the fleet probe. |
+| gsplat-classification-model.mjs | lib | ACTIVE | 2026-09-02 | 3 | Pure C15-G7 Gaussian-splat classification placement, route-counter, negative-control, and verdict arithmetic for the fleet probe. |
 | gsplat-frame-variance-model.mjs | lib | ACTIVE | 2026-08-21 | 2 | Pre-registered D1-D5 gsplat frame-variance classifications with one immutable 0.050% bar and shared verdict exits. |
 | gsplat-multifrustum-framing.mjs | lib | ACTIVE | 2026-08-21 | 3 | Pure far-nadir camera planning and real-PVS multi-frustum anti-vacuity/control logic for the Gaussian-splat parity probe's C15-G6 lane. |
 | gsplat-parity-model.mjs | lib | ACTIVE | 2026-08-16 | 4 | Pure dual-mode verdict logic for probe-gsplat-parity: attributable-absence marker, presence flip, blank-canvas parity refusal, exits 0/1/2/3. |
+| gsplat-tower-framing.mjs | lib | ACTIVE | 2026-09-02 | 3 | Derive the camera range that keeps the tower splat anchor and its terrain-reference anchor inside the same frustum from their real geodetic separation, and decide whether a captured tower silhouette clears the pre-registered pixel floor. |
 | moon-mip-motion-certification.mjs | lib | ACTIVE | 2026-08-21 | 5 | Finalizer for C12-33-SHIMMER-ENVELOPE-CERTIFICATION: paired motion-shimmer separation, seam review, parity, and explicit non-claim of observed mip/LOD selection. |
 | ocean-datum-model.mjs | lib | ACTIVE | 2026-08-16 | 7 | Pure-math verdict model classifying Cesium World Terrain's ocean-lid datum (ELLIPSOID_ZERO/GEOID/MIXED) for the tides/ocean-dynamics W0 gate. |
 | ocean-tide-datum-model.mjs | lib | ACTIVE | 2026-08-16 | 5 | Published NOAA/ephemeris constants plus verdict logic accepting the geoid-anchor defect fix and the equilibrium-tide feature together. |
 | owned-resource-transaction.mjs | lib | ACTIVE | 2026-08-16 | 2 | Dependency-free browser-safe helper that swaps an explicitly-owned resource transactionally (rollback on install failure, exactly-once destroy). |
 | page-scope-closure.mjs | lib | ACTIVE | 2026-08-25 | 3 | Source-text analyzer finding bindings referenced inside a page.evaluate-family callback but declared outside it; fails closed on anything it cannot parse. |
 | perf-metric-vector.mjs | lib | ACTIVE | 2026-08-28 | 5 | Builds and adjudicates the C11-170 multi-metric resource-write vector - churn call counts, self time, wall-clock dispersion, allocation and memory - so that no performance verdict rests on one number. |
-| performance-campaign-utils.mjs | lib | ACTIVE | 2026-08-16 | 12 | Statistics/diff toolkit for the performance campaign: percentiles, counter-label diffs, run quality/stability, pacing and evidence summaries. |
+| performance-campaign-utils.mjs | lib | ACTIVE | 2026-08-16 | 17 | Statistics/diff toolkit for the performance campaign: percentiles, counter-label diffs, run quality/stability, pacing and evidence summaries. |
 | performance-viewer-url.mjs | lib | ACTIVE | 2026-08-16 | 5 | One-function helper building the offline CesiumViewer URL with the renderer query param for performance runs. |
 | performance-workload-manifest.mjs | lib | ACTIVE | 2026-08-16 | 4 | AJV draft-07 validation of the performance workload manifest against the checked-in schema, shared so contract and runner accept one shape. |
 | performance-workload-selection.mjs | lib | ACTIVE | 2026-08-16 | 4 | Selects runnable workloads per requested renderers; strict mode fails rather than silently dropping an explicitly requested renderer. |
-| pnglite.mjs | lib | NO @purpose HEADER | 2026-09-02 | 1 | — |
-| probe-edge-slot.mjs | lib | ACTIVE | — | 2 | Exclusive-create lock file that enforces "one Edge job at a time", with stale/dead-holder reclamation and a release that will not free a slot someone else already took. |
+| probe-edge-slot.mjs | lib | ACTIVE | 2026-09-02 | 4 | Exclusive-create lock file that enforces "one Edge job at a time", with stale/dead-holder reclamation and a release that will not free a slot someone else already took. |
 | probe-fleet-contract-allowlist.mjs | lib | ACTIVE | 2026-08-21 | 11 | Pinned shrink-only census of pre-contract probes exempt from the fleet authoring contract; the spec fails on any NEW violation or stale row. |
-| probe-fleet-contract.mjs | lib | ACTIVE | 2026-08-16 | 12 | Source-text analyzer enforcing the probe authoring contract (watchdog + finally-close); fails closed when it cannot parse a construct. |
-| probe-refusal.mjs | lib | ACTIVE | — | 2 | Frozen OK/FAILURE/ERROR/REFUSAL exit codes plus the ProbeRefusal error and the accepted/refused decision shape every probe-runtime guard returns. |
-| probe-runtime.mjs | lib | ACTIVE | — | 3 | Owns probe argv parsing, the single-Edge-slot lock, Edge launch per run, the served-build preflight, the Sandcastle2 origin rewrite and its refusal, renderReady gating, element-only capture, sha256, receipt assembly and the exit-code table, so a probe is a short script that declares cells. |
-| prohibited-reader-allowlist.mjs | lib | ACTIVE | 2026-08-21 | 2 | Pin the measured visual-regression sources that still use the prohibited live-canvas reader. |
+| probe-fleet-contract.mjs | lib | ACTIVE | 2026-08-16 | 13 | Source-text analyzer enforcing the probe authoring contract (watchdog + finally-close); fails closed when it cannot parse a construct. |
+| probe-refusal.mjs | lib | ACTIVE | 2026-09-02 | 3 | Frozen OK/FAILURE/ERROR/REFUSAL exit codes plus the ProbeRefusal error and the accepted/refused decision shape every probe-runtime guard returns. |
+| probe-runtime.mjs | lib | ACTIVE | 2026-09-03 | 13 | Owns probe argv parsing, the single-Edge-slot lock, Edge launch per run, the served-build preflight, the Sandcastle2 origin rewrite and its refusal, renderReady gating, element-only capture, sha256, receipt assembly and the exit-code table, so a probe is a short script that declares cells. |
+| prohibited-reader-allowlist.mjs | lib | ACTIVE | 2026-08-21 | 4 | Pin the measured visual-regression sources that still use the prohibited live-canvas reader. |
 | prohibited-reader-rule.mjs | lib | ACTIVE | 2026-08-20 | 4 | Detect drawImage calls that copy a live scene canvas into a scratch context. |
 | provenance-markers.mjs | lib | ACTIVE | 2026-08-16 | 10 | Enforces bundler/formatter-proof provenance-marker strings for probes; encodes six recorded marker failure modes as shared validators. |
 | purpose-header-allowlist.mjs | lib | ACTIVE | 2026-08-21 | 5 | Frozen shrink-only snapshot of the probes and gate libs that predate the @purpose/@status header rule. |
-| representative-performance-content.mjs | lib | ACTIVE | 2026-08-16 | 10 | Builds and validates the local procedural terrain+models+tiles representative scene configuration for offline performance workloads. |
+| representative-performance-content.mjs | lib | ACTIVE | 2026-08-16 | 12 | Builds and validates the local procedural terrain+models+tiles representative scene configuration for offline performance workloads. |
 | representative-tileset-request-ledger.mjs | lib | ACTIVE | 2026-08-16 | 6 | Event-sourced ledger of tileset content requests (issue/terminal events, byte totals, hashes) with cross-run comparison for perf evidence. |
+| runtime-residency-allowlist.mjs | lib | ACTIVE | 2026-09-03 | 1 | Frozen, shrink-only allowlist of runtime-resident probes still carrying an anti-re-accretion violation, mirroring lib/prohibited-reader-allowlist.mjs's ratchet shape. |
+| runtime-residency-contract.mjs | lib | ACTIVE | 2026-09-03 | 3 | Detects a probe that declares @runtime residency on lib/probe-runtime.mjs yet still hand-rolls one of the four concerns that module already owns. |
 | same-task-capture.mjs | lib | ACTIVE | 2026-08-16 | 49 | Canonical capture primitives that keep render+readback in one task (WebGL clears, WebGPU invalidates after present), plus embed-drift validators. |
-| sandcastle2-origin-rewrite.mjs | lib | ACTIVE | 2026-08-29 | 12 | Reusable Playwright helper for every opener of the built Sandcastle2 app: rewrites the build-time-baked outer/inner origin strings the app's own responses carry, and attaches a persistent per-navigation guard (main frame + bucket/run frame) that throws a named, distinguishable refusal the instant any navigation lands off the requested origin — checked synchronously at every guard call AND automatically at page close, so a caller that never awaits a navigation call is still refused. |
+| sandcastle2-origin-rewrite.mjs | lib | ACTIVE | 2026-08-29 | 13 | Reusable Playwright helper for every opener of the built Sandcastle2 app: rewrites the build-time-baked outer/inner origin strings the app's own responses carry, and attaches a persistent per-navigation guard (main frame + bucket/run frame) that throws a named, distinguishable refusal the instant any navigation lands off the requested origin — checked synchronously at every guard call AND automatically at page close, so a caller that never awaits a navigation call is still refused. |
 | sandcastle2-pinned-demos.mjs | lib | ACTIVE | 2026-08-29 | 1 | Derive, comment-aware, which gallery demos construct their Viewer/CesiumWidget with an explicit contextOptions.renderer, and classify HOW (Q-133). |
 | sandcastle2-renderer-gate.mjs | gate-lib | ACTIVE | 2026-08-29 | 10 | Pure helpers for the Sandcastle2 backend sweep: gallery id enumeration, URL construction, and the "the demo really ran the requested renderer" predicate. |
-| served-build-preflight.mjs | lib | ACTIVE | 2026-08-29 | 10 | Q-98 — fetch one or more served build artifacts and compare each to |
+| served-build-preflight.mjs | lib | ACTIVE | 2026-08-29 | 11 | Q-98 — fetch one or more served build artifacts and compare each to |
 | settle-attribution.mjs | lib | ACTIVE | 2026-08-16 | 6 | First-complete-frame metric plus the rule that stable-time credit requires a main-thread long-task reduction (GPU-bound settles book none). |
 | solar-bloom-glow.mjs | lib | ACTIVE | 2026-08-16 | 6 | Forward model of the sun bloom's additive glow-on-disc so differential disc measurements carry the non-cancelling bloom term correctly. |
 | star-contribution-census.mjs | lib | ACTIVE | 2026-08-29 | 3 | One home for the positional star-reachability control: luma planes, the absolute-frame census and the stars-on-minus-off difference census. |
 | strip-viewer-widgets.mjs | lib | NO @purpose HEADER | 2026-09-02 | 1 | — |
-| sun-disc-dawn-gate.mjs | gate-lib | ACTIVE | 2026-09-02 | 5 | Gate-predicate library for the sun-disc dawn sweep, scoring disc-centre vs disc-annulus luminance and chroma per backend with WebGL as the parity control. |
+| sun-disc-dawn-gate.mjs | gate-lib | ACTIVE | 2026-09-03 | 5 | Gate-predicate library for the sun-disc dawn sweep, scoring disc-centre vs disc-annulus luminance and chroma per backend with WebGL as the parity control. |
 | sun-radiance-delta.mjs | lib | ACTIVE | 2026-08-16 | 4 | Two-radiance sun-disc measurement model discriminating multiplicative gain vs additive pedestal via a parameter-free ratio statistic. |
 | tidal-harmonics-model.mjs | lib | ACTIVE | 2026-08-16 | 1 | Published NOAA/Schureman constituent speeds, Doodson fundamental rates and physics-free signal helpers anchoring the tidal-harmonics spec. |
-| verdict-exit-gate.mjs | gate-lib | ACTIVE | 2026-08-16 | 44 | Single frozen PASS/FAIL/ERROR/STRUCTURAL exit-code table shared by the S5 gate libraries; fixed a six-copy divergence where STRUCTURAL exited 2. |
+| verdict-exit-gate.mjs | gate-lib | ACTIVE | 2026-08-16 | 46 | Single frozen PASS/FAIL/ERROR/STRUCTURAL exit-code table shared by the S5 gate libraries; fixed a six-copy divergence where STRUCTURAL exited 2. |
 | visual-evidence-library.mjs | lib | ACTIVE | 2026-08-16 | 6 | Schema, hashing and integrity-claim machinery for the content-addressed visual-evidence publication/catalog/verification pipeline (v2). |
 | visual-gate-policy.mjs | lib | ACTIVE | 2026-08-16 | 12 | Manifest field requirements, stable stringify/sha256 and PASS/FAIL/NON_CERTIFYING policy shared by capture-and-diff and certification gates. |
 | voxel-megatexture-reupload-gate.mjs | gate-lib | ACTIVE | 2026-08-16 | 3 | Browser-free convergence predicate for the voxel megatexture probe: first-corner resident set must republish within bounded return attempts. |
@@ -1470,7 +1498,7 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 | weather-regional-tail-evidence.mjs | lib | ACTIVE | 2026-08-16 | 2 | Fixture and pass/fail policy for the C13-08 rendered antimeridian weather-tail probe, mutation-tested against its two target regressions. |
 | webgpu-model-preparation-evidence.mjs | lib | ACTIVE | 2026-08-16 | 2 | Accumulates and validates WebGPU model preparation/demand counters as measurement-window evidence for performance workloads. |
 | wgsl-derivative-uniformity.mjs | lib | ACTIVE | 2026-09-01 | 7 | Reports implicit-derivative calls reached through non-uniform control flow without requiring a browser, GPU, or WGSL compiler. |
-| wgsl-mini-eval.mjs | lib | ACTIVE | 2026-08-29 | 9 | Parses and evaluates the arithmetic subset of WGSL (let bindings, one guarded return, scalar and vec3 arithmetic, a fixed builtin set) so specs can run a shader function straight from the shipped source. |
+| wgsl-mini-eval.mjs | lib | ACTIVE | 2026-08-29 | 10 | Parses and evaluates the arithmetic subset of WGSL (let bindings, one guarded return, scalar and vec3 arithmetic, a fixed builtin set) so specs can run a shader function straight from the shipped source. |
 | wgsl-variant.mjs | lib | ACTIVE | 2026-08-16 | 10 | Exposes the engine's real WGSL preprocessor and define registry so specs validate the exact variant text pipelines compile, not raw ifdef source. |
 
 ### scripts/ (3)
@@ -1485,20 +1513,20 @@ Columns: file (basename), class, status, last git touch, inbound refs, purpose. 
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
-| bundleVariantPlugin.spec.mjs | spec | ACTIVE | 2026-08-21 | 4 | Exercises the build-variant alias plugin's onResolve decision matrix, compat exemption allowlist, re-entry guard and decision cache, no esbuild. |
+| bundleVariantPlugin.spec.mjs | spec | ACTIVE | 2026-08-21 | 9 | Exercises the build-variant alias plugin's onResolve decision matrix, compat exemption allowlist, re-entry guard and decision cache, no esbuild. |
 | createIndexJs.spec.mjs | spec | ACTIVE | 2026-08-16 | 1 | Regression that the generated engine index omits private named-export temporal-history helpers yet still esbuild-bundles cleanly. |
 | engineTypeCheck.spec.mjs | spec | ACTIVE | 2026-08-28 | 1 | Proves the engine type check runs only in a built tree, propagates failure, announces every skip, and stays tied to the build artifact and the hook. |
 | ensureCesiumTypeDefinitions.spec.mjs | spec | ACTIVE | 2026-08-29 | 1 | Coverage for the missing-type-defs decision logic AND the gulpfile.apps.js |
 | karmaTestRun.spec.mjs | spec | ACTIVE | 2026-08-29 | 4 | Static coverage of the Gulp/Karma completion bridge via a fake Karma server: strict result config, retries, disconnect/error exit codes. |
 | prepareCesiumOutputDirectory.spec.mjs | spec | ACTIVE | 2026-08-29 | 2 | Regression that `clean:false` never removes files already on disk while `clean:true` still wipes the directory, so a failed rebuild cannot leave a served bundle directory both wiped and unreplaced. |
-| shaderSourceToJavaScript.spec.mjs | spec | ACTIVE | 2026-09-01 | 7 | Contract for the shader source-to-JS-module serializer: literal escapes, quotes, CRLF/lone-CR/U+2028 round-trips through real ESM evaluation. |
+| shaderSourceToJavaScript.spec.mjs | spec | ACTIVE | 2026-09-01 | 8 | Contract for the shader source-to-JS-module serializer: literal escapes, quotes, CRLF/lone-CR/U+2028 round-trips through real ESM evaluation. |
 | specBundleFreshness.spec.mjs | spec | ACTIVE | 2026-08-16 | 3 | Coverage of the spec-bundle freshness sentinel: added/removed/changed spec files must flip the manifest comparison stale and name the offender. |
 
 ### scripts/archive/ (1)
 
 | File | Class | Status | Touched | Refs | Purpose |
 |---|---|---|---|---|---|
-| codemod-split-material-ubo.mjs | other | INVESTIGATION | 2026-08-16 | 2 | One-time codemod splitting monolithic WGSL 'struct Uniforms' into CameraUniforms/MaterialUniforms with separate bind groups. |
+| codemod-split-material-ubo.mjs | other | INVESTIGATION | 2026-08-16 | 5 | One-time codemod splitting monolithic WGSL 'struct Uniforms' into CameraUniforms/MaterialUniforms with separate bind groups. |
 
 ## Archive plan
 
@@ -1570,8 +1598,8 @@ Every census file whose own header reads `INVESTIGATION` or `ARCHIVED-CANDIDATE`
 | <a id="ap-tools-visual-regression-probe-bloom-tile-state-mjs"></a>[#](#ap-tools-visual-regression-probe-bloom-tile-state-mjs) | Tools/visual-regression/probe-bloom-tile-state.mjs | INVESTIGATION | 0 | 0 | yes | ALLOWLIST-EDIT-THEN-MOVE |
 | <a id="ap-tools-visual-regression-probe-bufferpoint-positiondatatype-mjs"></a>[#](#ap-tools-visual-regression-probe-bufferpoint-positiondatatype-mjs) | Tools/visual-regression/probe-bufferpoint-positiondatatype.mjs | INVESTIGATION | 3 | 1 | yes | REPOINT-FIRST |
 | <a id="ap-tools-visual-regression-probe-bufferpolygon-2dcv-mjs"></a>[#](#ap-tools-visual-regression-probe-bufferpolygon-2dcv-mjs) | Tools/visual-regression/probe-bufferpolygon-2dcv.mjs | INVESTIGATION | 3 | 1 | yes | REPOINT-FIRST |
-| <a id="ap-tools-visual-regression-probe-c-r9-diagnose-mjs"></a>[#](#ap-tools-visual-regression-probe-c-r9-diagnose-mjs) | Tools/visual-regression/probe-c-r9-diagnose.mjs | INVESTIGATION | 1 | 0 | yes | REPOINT-FIRST |
-| <a id="ap-tools-visual-regression-probe-c-r9-webgl-vs-webgpu-mjs"></a>[#](#ap-tools-visual-regression-probe-c-r9-webgl-vs-webgpu-mjs) | Tools/visual-regression/probe-c-r9-webgl-vs-webgpu.mjs | INVESTIGATION | 3 | 0 | yes | REPOINT-FIRST |
+| <a id="ap-tools-visual-regression-probe-c-r9-diagnose-mjs"></a>[#](#ap-tools-visual-regression-probe-c-r9-diagnose-mjs) | Tools/visual-regression/probe-c-r9-diagnose.mjs | INVESTIGATION | 4 | 0 | yes | REPOINT-FIRST |
+| <a id="ap-tools-visual-regression-probe-c-r9-webgl-vs-webgpu-mjs"></a>[#](#ap-tools-visual-regression-probe-c-r9-webgl-vs-webgpu-mjs) | Tools/visual-regression/probe-c-r9-webgl-vs-webgpu.mjs | INVESTIGATION | 6 | 0 | yes | REPOINT-FIRST |
 | <a id="ap-tools-visual-regression-probe-c10-02-style-economics-mjs"></a>[#](#ap-tools-visual-regression-probe-c10-02-style-economics-mjs) | Tools/visual-regression/probe-c10-02-style-economics.mjs | INVESTIGATION | 4 | 0 | yes | REPOINT-FIRST |
 | <a id="ap-tools-visual-regression-probe-c10-11-ddtd-hitrate-mjs"></a>[#](#ap-tools-visual-regression-probe-c10-11-ddtd-hitrate-mjs) | Tools/visual-regression/probe-c10-11-ddtd-hitrate.mjs | INVESTIGATION | 5 | 0 | yes | REPOINT-FIRST |
 | <a id="ap-tools-visual-regression-probe-c9-14-ground-atmo-stage-mjs"></a>[#](#ap-tools-visual-regression-probe-c9-14-ground-atmo-stage-mjs) | Tools/visual-regression/probe-c9-14-ground-atmo-stage.mjs | INVESTIGATION | 2 | 0 | yes | REPOINT-FIRST |
@@ -1624,7 +1652,7 @@ Every census file whose own header reads `INVESTIGATION` or `ARCHIVED-CANDIDATE`
 | <a id="ap-tools-visual-regression-probe-fog-state-mjs"></a>[#](#ap-tools-visual-regression-probe-fog-state-mjs) | Tools/visual-regression/probe-fog-state.mjs | INVESTIGATION | 2 | 0 | yes | REPOINT-FIRST |
 | <a id="ap-tools-visual-regression-probe-force-red-mjs"></a>[#](#ap-tools-visual-regression-probe-force-red-mjs) | Tools/visual-regression/probe-force-red.mjs | INVESTIGATION | 0 | 0 | yes | ALLOWLIST-EDIT-THEN-MOVE |
 | <a id="ap-tools-visual-regression-probe-gamma-chain-mjs"></a>[#](#ap-tools-visual-regression-probe-gamma-chain-mjs) | Tools/visual-regression/probe-gamma-chain.mjs | INVESTIGATION | 1 | 1 | yes | REPOINT-FIRST |
-| <a id="ap-tools-visual-regression-probe-globe-bundle-cost-mjs"></a>[#](#ap-tools-visual-regression-probe-globe-bundle-cost-mjs) | Tools/visual-regression/probe-globe-bundle-cost.mjs | INVESTIGATION | 4 | 0 | yes | REPOINT-FIRST |
+| <a id="ap-tools-visual-regression-probe-globe-bundle-cost-mjs"></a>[#](#ap-tools-visual-regression-probe-globe-bundle-cost-mjs) | Tools/visual-regression/probe-globe-bundle-cost.mjs | INVESTIGATION | 6 | 0 | yes | REPOINT-FIRST |
 | <a id="ap-tools-visual-regression-probe-globe-farzoom-mjs"></a>[#](#ap-tools-visual-regression-probe-globe-farzoom-mjs) | Tools/visual-regression/probe-globe-farzoom.mjs | INVESTIGATION | 1 | 0 | yes | REPOINT-FIRST |
 | <a id="ap-tools-visual-regression-probe-gp-pipeline-mjs"></a>[#](#ap-tools-visual-regression-probe-gp-pipeline-mjs) | Tools/visual-regression/probe-gp-pipeline.mjs | INVESTIGATION | 1 | 0 | yes | REPOINT-FIRST |
 | <a id="ap-tools-visual-regression-probe-gp-vs-output-mjs"></a>[#](#ap-tools-visual-regression-probe-gp-vs-output-mjs) | Tools/visual-regression/probe-gp-vs-output.mjs | INVESTIGATION | 0 | 0 | yes | ALLOWLIST-EDIT-THEN-MOVE |
@@ -1706,8 +1734,8 @@ Every census file whose own header reads `INVESTIGATION` or `ARCHIVED-CANDIDATE`
 | <a id="ap-tools-visual-regression-verify-glb-side-by-side-mjs"></a>[#](#ap-tools-visual-regression-verify-glb-side-by-side-mjs) | Tools/visual-regression/verify-glb-side-by-side.mjs | INVESTIGATION | 0 | 5 | no | MOVE |
 | <a id="ap-tools-visual-regression-verify-gp-debug-volume-mjs"></a>[#](#ap-tools-visual-regression-verify-gp-debug-volume-mjs) | Tools/visual-regression/verify-gp-debug-volume.mjs | INVESTIGATION | 1 | 0 | no | REPOINT-FIRST |
 | <a id="ap-tools-visual-regression-verify-gp-no-polyline-mjs"></a>[#](#ap-tools-visual-regression-verify-gp-no-polyline-mjs) | Tools/visual-regression/verify-gp-no-polyline.mjs | INVESTIGATION | 0 | 0 | no | MOVE |
-| <a id="ap-tools-visual-regression-verify-initial-hdr-mjs"></a>[#](#ap-tools-visual-regression-verify-initial-hdr-mjs) | Tools/visual-regression/verify-initial-hdr.mjs | INVESTIGATION | 1 | 0 | no | REPOINT-FIRST |
+| <a id="ap-tools-visual-regression-verify-initial-hdr-mjs"></a>[#](#ap-tools-visual-regression-verify-initial-hdr-mjs) | Tools/visual-regression/verify-initial-hdr.mjs | INVESTIGATION | 2 | 1 | no | REPOINT-FIRST |
 | <a id="ap-tools-visual-regression-webgl-vs-webgpu-pixel-check-mjs"></a>[#](#ap-tools-visual-regression-webgl-vs-webgpu-pixel-check-mjs) | Tools/visual-regression/webgl-vs-webgpu-pixel-check.mjs | INVESTIGATION | 0 | 0 | no | MOVE |
-| <a id="ap-scripts-archive-codemod-split-material-ubo-mjs"></a>[#](#ap-scripts-archive-codemod-split-material-ubo-mjs) | scripts/archive/codemod-split-material-ubo.mjs | INVESTIGATION | 1 | 1 | no | ALREADY-ARCHIVED |
+| <a id="ap-scripts-archive-codemod-split-material-ubo-mjs"></a>[#](#ap-scripts-archive-codemod-split-material-ubo-mjs) | scripts/archive/codemod-split-material-ubo.mjs | INVESTIGATION | 4 | 1 | no | ALREADY-ARCHIVED |
 
 <!-- END GENERATED CENSUS -->
