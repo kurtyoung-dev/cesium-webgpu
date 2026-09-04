@@ -505,6 +505,21 @@ struct TileUniforms {
   //                          span: width×1/2π, height×1/π — packed to dodge the
   //                          f32 east−west cancellation that would seam scales).
   oceanWavePhaseB: vec4<f32>,
+  // Half-pixel band across a draped polyline's edge over which coverage fades,
+  // read by `vectorPolylineRender`. The twin of `VectorCommon.glsl`'s
+  // `vectorCoverageRadius`: 0.5 when the vector provider antialiases, 0.0 when
+  // it does not, and 0.0 is a real, honoured zero (a hard edge), not an
+  // "unset" marker.
+  //
+  // WebGL carries this as a compile-time constant behind `VECTOR_ANTIALIAS`,
+  // one of the shader-set flag bits. This backend cannot: the vector gate here
+  // is a runtime read (see the `vectorTileData` binding comment), and a define
+  // would fork every globe pipeline variant. A uniform is also the only home
+  // that stays correct when the flag is toggled on a live provider — the
+  // per-tile storage buffer is baked once and cached, so a value packed there
+  // would go stale, while this buffer is rewritten every frame from the same
+  // `vectorProvider.antialias` WebGL reads.
+  vectorCoverageRadius: f32,
 };
 
 @group(0) @binding(1) var<uniform> tile: TileUniforms;
@@ -4071,6 +4086,12 @@ fn vectorPolylineRender(
   let segmentPrimitiveBase = vectorTileData[VECTOR_TILE_SEGMENT_PRIMITIVE_BASE];
   let primitivesBase = vectorTileData[VECTOR_TILE_PRIMITIVES_BASE];
 
+  // `VectorCommon.glsl`'s `vectorCoverageRadius`, delivered as a uniform
+  // rather than a compile-time constant. Clamped against a negative, which
+  // would invert the saturation test below into an early break on the first
+  // segment.
+  let coverageRadius = max(tile.vectorCoverageRadius, 0.0);
+
   // Inverse UV-per-pixel Jacobian: measures line distance in screen pixels so
   // width stays constant under anisotropic (oblique) foreshortening.
   //
@@ -4136,7 +4157,12 @@ fn vectorPolylineRender(
   indexEnd = min(indexEnd, segmentCount);
   indexStart = min(indexStart, indexEnd);
 
-  var result = baseColor;
+  // Signed distance to the nearest edge, negative inside the line. Consecutive
+  // segments overlap at their shared vertex, so only the nearest is composited;
+  // compositing each in turn would darken the joints.
+  var nearestEdgeDistance = 1.0e30;
+  var nearestPrimitiveIndex = 0u;
+
   for (var i = indexStart; i < indexEnd; i = i + 1u) {
     let s = segmentsBase + i * 4u;
     let segment = vec4<f32>(
@@ -4151,23 +4177,52 @@ fn vectorPolylineRender(
       primitiveCount - 1u,
     );
     let p = primitivesBase + primitiveIndex * 2u;
-    // GLSL stores width in an r8unorm texel and multiplies the normalized
-    // read by 255; the packer writes the same byte value directly as f32.
+    // The width crosses as a signed VALUE, matching the R32F width texture
+    // `VectorCommon.glsl` reads: the magnitude is the FULL stroke width, so
+    // the distance test is against half of it, and a negative marks a width in
+    // ground meters. Only the pixel branch exists here — the meters branch is
+    // still a WebGPU gap — so `abs` keeps a meters width finite and positive
+    // instead of letting the sign through as an enormous stroke.
     let lineWidth = bitcast<f32>(vectorTileData[p]);
+    let halfWidth = abs(lineWidth) * 0.5;
 
     let offsetUv = vectorOffsetToLine(vectorUv, segment);
-    if (length(screenFromUv * offsetUv) < lineWidth) {
-      // Alpha-composite vector over terrain.
-      // `unpack4x8unorm` yields (r, g, b, a) from the low byte upward, which
-      // is the order the packer writes.
-      let vectorColor = unpack4x8unorm(vectorTileData[p + 1u]);
-      result = vectorColor * vec4<f32>(vectorColor.aaa, 1.0)
-        + result * (1.0 - vectorColor.a);
+    let edgeDistance = length(screenFromUv * offsetUv) - halfWidth;
+
+    if (edgeDistance < nearestEdgeDistance) {
+      nearestEdgeDistance = edgeDistance;
+      nearestPrimitiveIndex = primitiveIndex;
+    }
+
+    // Coverage is saturated; no further segment can raise it. Only the nearest
+    // segment supplies the color, so overlapping translucent lines do not blend.
+    if (nearestEdgeDistance <= -coverageRadius) {
       break;
     }
   }
 
-  return result;
+  // Also the empty-cell exit: an untouched `nearestEdgeDistance` is 1.0e30.
+  if (nearestEdgeDistance > coverageRadius) {
+    return baseColor;
+  }
+
+  // `smoothstep(low, high, x)` is undefined when its two edges coincide, which
+  // is exactly what a zero radius gives. GLSL never reaches that case because
+  // `#ifdef VECTOR_ANTIALIAS` picks the constant at compile time; a runtime
+  // radius needs the branch to reproduce both behaviours.
+  var coverage = 1.0;
+  if (coverageRadius > 0.0) {
+    coverage = 1.0 - smoothstep(-coverageRadius, coverageRadius, nearestEdgeDistance);
+  }
+
+  // Alpha-composite vector over terrain.
+  // `unpack4x8unorm` yields (r, g, b, a) from the low byte upward, which
+  // is the order the packer writes.
+  let p = primitivesBase + nearestPrimitiveIndex * 2u;
+  var vectorColor = unpack4x8unorm(vectorTileData[p + 1u]);
+  vectorColor.a = vectorColor.a * coverage;
+  return vectorColor * vec4<f32>(vectorColor.aaa, 1.0)
+    + baseColor * (1.0 - vectorColor.a);
 }
 
 // GLOBE-UNDERGROUND-COLOR — port of GlobeFS.glsl `interpolateByDistance`

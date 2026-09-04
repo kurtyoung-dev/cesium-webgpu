@@ -197,6 +197,118 @@ const SHADER_HEADER = {
 };
 
 // ═══════════════════════════════════════════════════════════════════════
+// The coverage radius — a value the two backends deliver by DIFFERENT
+// mechanisms and must nonetheless agree on.
+//
+// GLSL picks it at compile time from `#ifdef VECTOR_ANTIALIAS`. WGSL cannot:
+// its vector gate is a runtime read (a define would fork every globe pipeline
+// variant), so the radius arrives as a tile-uniform float written by
+// `WebGPUGlobeSurfaceTileUB` from the same `vectorProvider.antialias` the
+// WebGL define is derived from. Both numbers are read out of their real
+// sources here rather than restated, so the pair cannot drift with this spec
+// still green.
+// ═══════════════════════════════════════════════════════════════════════
+
+function glslCoverageRadii() {
+  const block = glslCommon.match(
+    /#ifdef VECTOR_ANTIALIAS[\s\S]*?const float vectorCoverageRadius = ([0-9.]+);[\s\S]*?#else[\s\S]*?const float vectorCoverageRadius = ([0-9.]+);[\s\S]*?#endif/,
+  );
+  assert.ok(
+    block,
+    "VectorCommon.glsl no longer declares vectorCoverageRadius under #ifdef VECTOR_ANTIALIAS",
+  );
+  return { antialiased: Number(block[1]), hard: Number(block[2]) };
+}
+
+const GLSL_COVERAGE_RADIUS = glslCoverageRadii();
+
+// `WebGPUGlobeSurfaceTypes.ts` declares a TypeScript `enum`, which Node's
+// strip-only TS loader refuses, so its constants are read out of the source
+// the way the sibling globe UB specs already read them. Reading beats
+// restating: a rename fails the assertion instead of silently freezing a
+// number this spec invented.
+const globeTypesTs = fs.readFileSync(
+  path.join(
+    root,
+    "packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceTypes.ts",
+  ),
+  "utf8",
+);
+
+function globeTypesConstant(name) {
+  const match = globeTypesTs.match(
+    new RegExp(`export const ${name} = (-?[0-9.]+);`),
+  );
+  assert.ok(match, `WebGPUGlobeSurfaceTypes.ts declares no ${name}`);
+  return Number(match[1]);
+}
+
+const VECTOR_COVERAGE_RADIUS_OFFSET = globeTypesConstant(
+  "VECTOR_COVERAGE_RADIUS_OFFSET",
+);
+const VECTOR_COVERAGE_RADIUS_ANTIALIASED = globeTypesConstant(
+  "VECTOR_COVERAGE_RADIUS_ANTIALIASED",
+);
+const VECTOR_COVERAGE_RADIUS_HARD = globeTypesConstant(
+  "VECTOR_COVERAGE_RADIUS_HARD",
+);
+const TILE_UNIFORM_FLOATS = globeTypesConstant("TILE_UNIFORM_FLOATS");
+
+// The shipping default: `VectorProvider.antialias` defaults to true, so this
+// is the radius every default-configured frame runs on, on both backends.
+const DEFAULT_COVERAGE_RADIUS = GLSL_COVERAGE_RADIUS.antialiased;
+
+// ═══════════════════════════════════════════════════════════════════════
+// The stroke geometry, CAPTURED from each shader rather than restated.
+//
+// Both evaluators below are JS models, so a model carrying its own copy of
+// the arithmetic would stay green while the shader it stands for was edited
+// underneath it — the model would be certifying itself. These two reads are
+// what tie the models to the real files: the factor each shader actually
+// multiplies the width by, and whether it actually keeps the NEAREST edge.
+// Change either in the source and the corresponding model changes with it,
+// so the width tests fail on the shader rather than on a transcription.
+// ═══════════════════════════════════════════════════════════════════════
+
+function capturedFactor(source, pattern, label) {
+  const match = source.match(pattern);
+  assert.ok(match, `${label}: the half-width factor is no longer readable`);
+  const value = Number(match[1]);
+  assert.ok(Number.isFinite(value), `${label}: unparsable half-width factor`);
+  return value;
+}
+
+const GLSL_HALF_WIDTH_FACTOR = capturedFactor(
+  glslCommon,
+  /float halfWidth = abs\(width\) \* ([0-9.]+);/,
+  "VectorCommon.glsl",
+);
+const WGSL_HALF_WIDTH_FACTOR = capturedFactor(
+  wgsl,
+  /let halfWidth = abs\(lineWidth\) \* ([0-9.]+);/,
+  "GlobeTerrain.wgsl",
+);
+
+/**
+ * Whether each shader keeps the nearest edge rather than compositing the first
+ * segment it finds in range. Read from the source for the same reason as the
+ * factors above: an inert selection must move the model, not just the file.
+ */
+const GLSL_SELECTS_NEAREST =
+  /(?<!&&\s)if \(edgeDistance < nearestEdgeDistance\)/.test(glslCommon);
+const WGSL_SELECTS_NEAREST =
+  /if \(edgeDistance < nearestEdgeDistance\) \{/.test(wgsl);
+
+/**
+ * Whether the WGSL still takes its coverage radius from the uniform. A shader
+ * that hard-codes it no longer answers to `vectorProvider.antialias`, so the
+ * model drops to a hard edge and the cross-backend comparison sees it — an
+ * inert uniform read must fail as behaviour, not only as a missing string.
+ */
+const WGSL_READS_COVERAGE_UNIFORM =
+  /max\(tile\.vectorCoverageRadius, 0\.0\)/.test(wgsl);
+
+// ═══════════════════════════════════════════════════════════════════════
 // ORACLE — VectorCommon.glsl, transcribed from the GLSL only.
 // ═══════════════════════════════════════════════════════════════════════
 
@@ -224,6 +336,28 @@ function concatBytes(arrays) {
     offset += a.length;
   }
   return out;
+}
+
+// Widths reach the GLSL through an R32F texture, so they concatenate by VALUE.
+// Mirrors what `VectorPipeline.packPrimitiveTextures` does when it fills
+// `widthTextureView`, without importing the module under test.
+function concatValues(arrays) {
+  let total = 0;
+  for (const a of arrays) total += a.length;
+  const out = new Float32Array(total);
+  let offset = 0;
+  for (const a of arrays) {
+    for (let i = 0; i < a.length; i++) out[offset + i] = a[i];
+    offset += a.length;
+  }
+  return out;
+}
+
+// GLSL/WGSL `smoothstep`. Both languages define it identically, so one
+// implementation serves both evaluators.
+function smoothstep(low, high, x) {
+  const t = Math.min(1, Math.max(0, (x - low) / (high - low)));
+  return t * t * (3 - 2 * t);
 }
 
 // GLSL `vectorIndexToUv` + `texelFetch` on a row-major arrayBufferView:
@@ -421,7 +555,13 @@ function wgslScreenFromUv(uvDx, uvDy, mutate = {}) {
  * `screenFromUv` is supplied pre-inverted; the GLSL takes it from dFdx/dFdy,
  * which a CPU evaluator cannot observe.
  */
-function glslVectorPolylineRender(data, uv, screenFromUv, baseColor) {
+function glslVectorPolylineRender(
+  data,
+  uv,
+  screenFromUv,
+  baseColor,
+  coverageRadius = DEFAULT_COVERAGE_RADIUS,
+) {
   const grid = data.polylineGridCellIndices;
   const gridWidth = grid[0];
   const gridHeight = grid[1];
@@ -440,10 +580,15 @@ function glslVectorPolylineRender(data, uv, screenFromUv, baseColor) {
 
   const segmentTextureWidth = data.polylineSegmentTextureWidth;
   const [primitiveTextureWidth] = nextPowerOfTwoSize(data.primitiveCount);
-  const widthBytes = concatBytes(data.widths);
+  const widthValues = concatValues(data.widths);
   const colorBytes = concatBytes(data.colors);
 
-  let result = baseColor;
+  // Signed distance to the NEAREST edge, negative inside the stroke. Only the
+  // nearest segment composites: consecutive segments overlap at their shared
+  // vertex, and compositing each in turn darkens the joints.
+  let nearestEdgeDistance = 1.0e30;
+  let nearestTexel = -1;
+
   for (let i = indexStart; i < indexEnd; i++) {
     const st = texelIndex(i, segmentTextureWidth);
     const ax = data.polylineSegmentTexels[st * 4];
@@ -453,25 +598,44 @@ function glslVectorPolylineRender(data, uv, screenFromUv, baseColor) {
 
     const primitiveIndex = data.polylineSegmentPrimitiveIndicesTexels[st];
     const pt = texelIndex(primitiveIndex, primitiveTextureWidth);
-    // r8unorm read × 255 == the raw byte.
-    const lineWidth = widthBytes[pt];
+    // R32F read: the stored VALUE is the full stroke width, signed since
+    // 1.145 (negative marks ground meters).
+    const width = widthValues[pt];
+    const halfWidth = Math.abs(width) * GLSL_HALF_WIDTH_FACTOR;
 
     const offset = glslOffsetToLine(uv[0], uv[1], ax, ay, bx, by);
     const screen = applyScreenFromUv(screenFromUv, offset);
-    if (Math.hypot(screen[0], screen[1]) < lineWidth) {
-      result = alphaComposite(
-        [
-          colorBytes[pt * 4] / 255,
-          colorBytes[pt * 4 + 1] / 255,
-          colorBytes[pt * 4 + 2] / 255,
-          colorBytes[pt * 4 + 3] / 255,
-        ],
-        result,
-      );
+    const edgeDistance = Math.hypot(screen[0], screen[1]) - halfWidth;
+
+    if (!GLSL_SELECTS_NEAREST || edgeDistance < nearestEdgeDistance) {
+      nearestEdgeDistance = edgeDistance;
+      nearestTexel = pt;
+    }
+
+    // Saturated — no further segment can raise coverage.
+    if (nearestEdgeDistance <= -coverageRadius) {
       break;
     }
   }
-  return result;
+
+  if (nearestEdgeDistance > coverageRadius) {
+    return baseColor;
+  }
+
+  const coverage =
+    coverageRadius > 0
+      ? 1 - smoothstep(-coverageRadius, coverageRadius, nearestEdgeDistance)
+      : 1;
+
+  return alphaComposite(
+    [
+      colorBytes[nearestTexel * 4] / 255,
+      colorBytes[nearestTexel * 4 + 1] / 255,
+      colorBytes[nearestTexel * 4 + 2] / 255,
+      (colorBytes[nearestTexel * 4 + 3] / 255) * coverage,
+    ],
+    baseColor,
+  );
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -485,6 +649,7 @@ function wgslVectorPolylineRender(
   screenFromUv,
   baseColor,
   mutate = {},
+  coverageRadius = DEFAULT_COVERAGE_RADIUS,
 ) {
   if (words === null) {
     return baseColor;
@@ -526,7 +691,19 @@ function wgslVectorPolylineRender(
   indexEnd = Math.min(indexEnd, segmentCount);
   indexStart = Math.min(indexStart, indexEnd);
 
-  let result = baseColor;
+  // `mutate.fullWidth` restores the pre-1.145 test — the stroke's FULL width
+  // used as its half-extent, which is the ~2x-too-wide draped polyline the
+  // upstream sync introduced on this backend.
+  // `mutate.firstHit` restores the pre-1.145 selection — composite the first
+  // segment in range instead of the nearest one.
+  const radius =
+    mutate.fullWidth || mutate.firstHit || !WGSL_READS_COVERAGE_UNIFORM
+      ? 0
+      : coverageRadius;
+
+  let nearestEdgeDistance = 1.0e30;
+  let nearestPrimitiveIndex = 0;
+
   for (let i = indexStart; i < indexEnd; i++) {
     const s = segmentsBase + i * 4;
     const ax = floats[s];
@@ -539,25 +716,44 @@ function wgslVectorPolylineRender(
       : Math.min(words[segmentPrimitiveBase + i], primitiveCount - 1);
     const p = primitivesBase + primitiveIndex * 2;
     const lineWidth = floats[p];
+    const halfWidth = mutate.fullWidth
+      ? Math.abs(lineWidth)
+      : Math.abs(lineWidth) * WGSL_HALF_WIDTH_FACTOR;
 
     const offset = glslOffsetToLine(uv[0], uv[1], ax, ay, bx, by);
     const screen = applyScreenFromUv(screenFromUv, offset);
-    if (Math.hypot(screen[0], screen[1]) < lineWidth) {
-      const packed = words[p + 1] >>> 0;
-      // unpack4x8unorm: low byte first.
-      result = alphaComposite(
-        [
-          (packed & 0xff) / 255,
-          ((packed >>> 8) & 0xff) / 255,
-          ((packed >>> 16) & 0xff) / 255,
-          ((packed >>> 24) & 0xff) / 255,
-        ],
-        result,
-      );
+    const edgeDistance = Math.hypot(screen[0], screen[1]) - halfWidth;
+
+    const keepsNearest = WGSL_SELECTS_NEAREST && !mutate.firstHit;
+    if (!keepsNearest || edgeDistance < nearestEdgeDistance) {
+      nearestEdgeDistance = edgeDistance;
+      nearestPrimitiveIndex = primitiveIndex;
+    }
+
+    if (!keepsNearest ? edgeDistance < 0 : nearestEdgeDistance <= -radius) {
       break;
     }
   }
-  return result;
+
+  if (nearestEdgeDistance > radius) {
+    return baseColor;
+  }
+
+  const coverage =
+    radius > 0 ? 1 - smoothstep(-radius, radius, nearestEdgeDistance) : 1;
+
+  const p = primitivesBase + nearestPrimitiveIndex * 2;
+  const packed = words[p + 1] >>> 0;
+  // unpack4x8unorm: low byte first.
+  return alphaComposite(
+    [
+      (packed & 0xff) / 255,
+      ((packed >>> 8) & 0xff) / 255,
+      ((packed >>> 16) & 0xff) / 255,
+      (((packed >>> 24) & 0xff) / 255) * coverage,
+    ],
+    baseColor,
+  );
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -586,11 +782,23 @@ function buildBakedTile() {
     polylineSegmentPrimitiveIndices,
     primitiveCount: 3,
     // Distinct widths AND asymmetric colours: a channel-order or an
-    // indirection defect has to change the answer.
-    widths: [new Uint8Array([3, 9, 21])],
+    // indirection defect has to change the answer. `Float32Array` since 1.145
+    // — widths are signed values now rather than bytes, and 4.5 is fractional,
+    // so a packer that routed them back through a byte buffer would truncate
+    // it.
+    widths: [new Float32Array([4.5, 9, 21])],
     colors: [
       new Uint8Array([255, 32, 8, 255, 16, 200, 64, 128, 4, 8, 250, 200]),
     ],
+    // `packPolylineGrid` pads each segment's cell footprint by its half-width
+    // converted to tile UV, and 1.145 made that conversion read these two
+    // fields off the tile data (`_halfWidthToTileUv`). Without them the padding
+    // is NaN, every cell range collapses to empty, and the fixture bakes to a
+    // grid holding no segments at all — which is what a bake carrying only the
+    // pre-1.145 fields silently produces. The values are `VectorProvider`'s own
+    // default and a mid-latitude level-6 tile's ground size.
+    minimumTileScreenPixels: 256.0,
+    metersPerUv: new Cartesian2(435000.0, 435000.0),
   };
   VectorPipeline.packPolylineGrid(result);
   return result;
@@ -664,9 +872,16 @@ function sampleRaster() {
 const BASE = [0.25, 0.5, 0.75, 1.0];
 
 function compareBackends(baked, words, options = {}) {
+  const radius = options.coverageRadius ?? DEFAULT_COVERAGE_RADIUS;
   const differences = [];
   for (const uv of sampleRaster()) {
-    const expected = glslVectorPolylineRender(baked, uv, SCREEN_FROM_UV, BASE);
+    const expected = glslVectorPolylineRender(
+      baked,
+      uv,
+      SCREEN_FROM_UV,
+      BASE,
+      radius,
+    );
     const actual = options.identity
       ? BASE
       : wgslVectorPolylineRender(
@@ -675,6 +890,7 @@ function compareBackends(baked, words, options = {}) {
           SCREEN_FROM_UV,
           BASE,
           options.mutate ?? {},
+          radius,
         );
     for (let c = 0; c < 4; c++) {
       if (Math.abs(expected[c] - actual[c]) > 1e-6) {
@@ -859,6 +1075,357 @@ test("B2 — the fixture actually exercises the line-hit path (the comparison is
   assert.ok(
     seenColors.size >= 2,
     "fixture must exercise more than one primitive's material",
+  );
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// W. STROKE WIDTH.
+//
+// A stroke of authored width W covers the points within W/2 of its
+// centreline. That is what "width" MEANS; the CLAIM is not a transcription
+// of either shader, and it is what CesiumJS 1.145 moved the GLSL onto
+// (nearest edge, `halfWidth = abs(width) * 0.5`) while the WGSL twin was
+// left testing against the FULL width — drawing every draped polyline on
+// WebGPU at roughly twice its authored size, with WebGL correct.
+//
+// The fixture is one straight segment and an isotropic uv→pixel matrix, so
+// a sample's distance from the centreline is an exact number of pixels
+// rather than something recovered from a bake. Both backends are then held
+// to the geometric statement, and to each other.
+//
+// WHAT THE SUBJECT IS, SO A GREEN COUNT IS NOT MISREAD. Node cannot execute
+// WGSL, so both evaluators are JS MODELS, parameterised from three strings
+// captured out of the real shaders (see `W4b`). The claim is
+// implementation-independent; the subject is not. A defect placed downstream
+// of a captured string survives every test in this section — measured:
+// `- halfWidth * 2.0` on the edge-distance line restores the entire 2x
+// regression at 37/37 green. `W4b`'s last assertion closes that one line;
+// nothing here closes the general case. **The behavioural acceptance for
+// stroke width is `probe-vector-draping.mjs` gate B**, whose changed-pixel
+// count ratio band [0.6, 1.67] a 2x-wide shader lands outside at ~2.0.
+// ═══════════════════════════════════════════════════════════════════════
+
+// Isotropic and invertible: a UV offset of `d / STROKE_PIXELS_PER_UV` is
+// exactly `d` pixels, on both axes. Well inside the condition ceiling.
+const STROKE_PIXELS_PER_UV = 1000;
+const STROKE_SCREEN_FROM_UV = [
+  [STROKE_PIXELS_PER_UV, 0],
+  [0, STROKE_PIXELS_PER_UV],
+];
+
+/**
+ * One horizontal segment at v = 0.5 carrying `widthPixels`, baked through the
+ * real `packPolylineGrid` and packed by the real `packVectorTileWords`.
+ */
+function buildStrokeTile(widthPixels) {
+  const baked = {
+    show: true,
+    polylineSegments: [[0.1, 0.5, 0.9, 0.5]],
+    polylineSegmentPrimitiveIndices: [0],
+    primitiveCount: 1,
+    widths: [new Float32Array([widthPixels])],
+    colors: [new Uint8Array([255, 0, 0, 255])],
+    minimumTileScreenPixels: 256.0,
+    metersPerUv: new Cartesian2(435000.0, 435000.0),
+  };
+  VectorPipeline.packPolylineGrid(baked);
+  return { baked, words: packVectorTileWords(baked) };
+}
+
+/** A sample point exactly `distancePixels` above the segment's centreline. */
+function strokeSample(distancePixels) {
+  return [0.5, 0.5 + distancePixels / STROKE_PIXELS_PER_UV];
+}
+
+function strokeAlpha(render, distancePixels, coverageRadius) {
+  // Base colour fully transparent, so the composited alpha IS the coverage.
+  const out = render(
+    strokeSample(distancePixels),
+    [0, 0, 0, 0],
+    coverageRadius,
+  );
+  return out[3];
+}
+
+const STROKE_WIDTHS = [1, 2, 4.5, 9, 16, 21, 40];
+
+test("W1 — a stroke of width W covers exactly the pixels within W/2 of its centreline, on BOTH backends", () => {
+  for (const width of STROKE_WIDTHS) {
+    const { baked, words } = buildStrokeTile(width);
+    const half = width / 2;
+    const backends = {
+      WebGL: (uv, base, r) =>
+        glslVectorPolylineRender(baked, uv, STROKE_SCREEN_FROM_UV, base, r),
+      WebGPU: (uv, base, r) =>
+        wgslVectorPolylineRender(words, uv, STROKE_SCREEN_FROM_UV, base, {}, r),
+    };
+
+    for (const [name, render] of Object.entries(backends)) {
+      // Hard-edged, so the boundary is a number rather than a ramp.
+      const radius = GLSL_COVERAGE_RADIUS.hard;
+      assert.ok(
+        strokeAlpha(render, half - 0.25, radius) > 0.99,
+        `${name}: width ${width} must cover a point ${half - 0.25}px from the centreline`,
+      );
+      assert.ok(
+        strokeAlpha(render, half + 0.25, radius) < 0.01,
+        `${name}: width ${width} must NOT cover a point ${half + 0.25}px from the centreline`,
+      );
+
+      // The regression band. Everything from just outside the true edge out to
+      // the FULL width is what a shader testing `distance < width` paints and a
+      // correct one leaves alone — on a 21px line that is a 10px-deep halo down
+      // each side, which reads as a line drawn at twice its authored size.
+      for (const d of [half + 0.5, half * 1.25, half * 1.5, width - 0.25]) {
+        if (d <= half) {
+          continue;
+        }
+        assert.ok(
+          strokeAlpha(render, d, radius) < 0.01,
+          `${name}: width ${width} must not reach ${d}px — that is the 2x-too-wide band`,
+        );
+      }
+    }
+  }
+});
+
+test("W2 — antialiased, both backends put HALF coverage exactly at half the authored width", () => {
+  // For a faded edge the width is where coverage crosses 0.5. Stating it that
+  // way needs no knowledge of the fade's shape, only that it is centred on the
+  // true edge — so it holds a shader to the authored width even though every
+  // sample near the edge is a fraction.
+  for (const width of STROKE_WIDTHS) {
+    const { baked, words } = buildStrokeTile(width);
+    const radius = GLSL_COVERAGE_RADIUS.antialiased;
+    const half = width / 2;
+
+    const glslAlpha = strokeAlpha(
+      (uv, base, r) =>
+        glslVectorPolylineRender(baked, uv, STROKE_SCREEN_FROM_UV, base, r),
+      half,
+      radius,
+    );
+    const wgslAlpha = strokeAlpha(
+      (uv, base, r) =>
+        wgslVectorPolylineRender(words, uv, STROKE_SCREEN_FROM_UV, base, {}, r),
+      half,
+      radius,
+    );
+
+    assert.ok(
+      Math.abs(glslAlpha - 0.5) < 1e-6,
+      `WebGL: width ${width} half-coverage landed at alpha ${glslAlpha}, not 0.5`,
+    );
+    assert.ok(
+      Math.abs(wgslAlpha - 0.5) < 1e-6,
+      `WebGPU: width ${width} half-coverage landed at alpha ${wgslAlpha}, not 0.5`,
+    );
+  }
+});
+
+test("W3 — the two backends agree on coverage across a raster of widths and edge distances", () => {
+  // The brief's observable: same widths, same edge distances, same answer.
+  // Swept at both radii, so the antialiased default and the hard-edged
+  // configuration are each covered. Bounded: 7 widths x 2 radii x 41 offsets.
+  let compared = 0;
+  let worst = 0;
+  for (const width of STROKE_WIDTHS) {
+    const { baked, words } = buildStrokeTile(width);
+    for (const radius of [
+      GLSL_COVERAGE_RADIUS.antialiased,
+      GLSL_COVERAGE_RADIUS.hard,
+    ]) {
+      for (let i = 0; i <= 40; i++) {
+        const d = (i / 40) * (width + 4);
+        const uv = strokeSample(d);
+        const expected = glslVectorPolylineRender(
+          baked,
+          uv,
+          STROKE_SCREEN_FROM_UV,
+          BASE,
+          radius,
+        );
+        const actual = wgslVectorPolylineRender(
+          words,
+          uv,
+          STROKE_SCREEN_FROM_UV,
+          BASE,
+          {},
+          radius,
+        );
+        for (let c = 0; c < 4; c++) {
+          worst = Math.max(worst, Math.abs(expected[c] - actual[c]));
+        }
+        compared++;
+      }
+    }
+  }
+  assert.ok(compared > 500, `only ${compared} comparisons — raster collapsed`);
+  assert.ok(
+    worst < 1e-6,
+    `backends disagreed by ${worst} on a stroke-coverage sample`,
+  );
+});
+
+test("W4 — testing against the FULL width instead of the half width is DETECTED", () => {
+  // The mutation is the pre-1.145 WGSL, exactly: the full stroke width used as
+  // the half-extent, first segment in range wins. It must break BOTH the
+  // geometric statement and the cross-backend agreement — a mutation only the
+  // second catches would go green the moment someone regressed the GLSL too.
+  const width = 21;
+  const { baked, words } = buildStrokeTile(width);
+  const radius = GLSL_COVERAGE_RADIUS.hard;
+  const mutate = { fullWidth: true, firstHit: true };
+
+  const justOutside = strokeSample(width * 0.75); // > W/2, < W
+  const mutantOut = wgslVectorPolylineRender(
+    words,
+    justOutside,
+    STROKE_SCREEN_FROM_UV,
+    [0, 0, 0, 0],
+    mutate,
+    radius,
+  );
+  assert.ok(
+    mutantOut[3] > 0.99,
+    "the mutation must actually paint past the true edge, or it is not the defect",
+  );
+
+  const correctOut = wgslVectorPolylineRender(
+    words,
+    justOutside,
+    STROKE_SCREEN_FROM_UV,
+    [0, 0, 0, 0],
+    {},
+    radius,
+  );
+  assert.ok(
+    correctOut[3] < 0.01,
+    "the shipped WGSL must leave that fragment alone",
+  );
+
+  const glslOut = glslVectorPolylineRender(
+    baked,
+    justOutside,
+    STROKE_SCREEN_FROM_UV,
+    [0, 0, 0, 0],
+    radius,
+  );
+  assert.ok(
+    glslOut[3] < 0.01,
+    "and WebGL must agree with the shipped WGSL, not with the mutation",
+  );
+
+  // The same defect over the full fixture, through the equivalence harness.
+  const fixture = buildBakedTile();
+  const fixtureWords = packVectorTileWords(fixture);
+  assert.ok(
+    compareBackends(fixture, fixtureWords, { mutate }).length > 0,
+    "a WebGPU globe drawing draped polylines at twice their width must NOT compare equal to WebGL",
+  );
+});
+
+test("W4b — both shaders halve the authored width, and both keep the nearest edge", () => {
+  // The two numbers the models above are driven by. Pinning them here is what
+  // ties W1-W4 to the SHADERS rather than to their models: edit either file's
+  // captured expression and the model moves with it, so a reverted or inert
+  // half-width turns those tests red instead of leaving them green.
+  //
+  // The tie reaches exactly as far as the captured strings and no further. A
+  // defect introduced DOWNSTREAM of an anchor — the factor left intact, the
+  // damage done on the next line — is invisible to every model in this file.
+  // That is measured, not supposed: `- halfWidth * 2.0` on the edge-distance
+  // line restores the whole 2x-too-wide regression with this spec 37/37 green.
+  // The last assertion below closes that specific evasion. The general case
+  // cannot be closed here, and its acceptance is `probe-vector-draping.mjs`
+  // gate B, which measures pixels.
+  assert.equal(
+    GLSL_HALF_WIDTH_FACTOR,
+    0.5,
+    "VectorCommon.glsl must test against half the authored width",
+  );
+  assert.equal(
+    WGSL_HALF_WIDTH_FACTOR,
+    GLSL_HALF_WIDTH_FACTOR,
+    "GlobeTerrain.wgsl must halve the width by the same factor as the GLSL",
+  );
+  assert.ok(
+    GLSL_SELECTS_NEAREST,
+    "VectorCommon.glsl must keep the nearest edge",
+  );
+  assert.ok(
+    WGSL_SELECTS_NEAREST,
+    "GlobeTerrain.wgsl must keep the nearest edge, not the first segment in range",
+  );
+  assert.match(
+    wgsl,
+    /if \(nearestEdgeDistance <= -coverageRadius\) \{/,
+    "the WGSL must break on saturated coverage, matching the GLSL's early exit",
+  );
+  assert.match(
+    wgsl,
+    /let edgeDistance = length\(screenFromUv \* offsetUv\) - halfWidth;/,
+    "the edge distance must be measured against the half width itself — a factor " +
+      "reintroduced here is invisible to the captured half-width above",
+  );
+});
+
+test("W5 — both backends take their coverage radius from the same provider flag", () => {
+  // The radius is the one input the two backends deliver differently: WebGL
+  // picks a compile-time constant behind `VECTOR_ANTIALIAS`, WebGPU reads a
+  // uniform, because its vector path has no compile-time arms. Different
+  // mechanism, same two numbers and the same source field — assert all three.
+  assert.equal(
+    VECTOR_COVERAGE_RADIUS_ANTIALIASED,
+    GLSL_COVERAGE_RADIUS.antialiased,
+    "the antialiased radius must match VectorCommon.glsl's constant",
+  );
+  assert.equal(
+    VECTOR_COVERAGE_RADIUS_HARD,
+    GLSL_COVERAGE_RADIUS.hard,
+    "the hard-edged radius must match VectorCommon.glsl's constant",
+  );
+
+  // The uniform slot exists, is inside the buffer, and the WGSL reads it.
+  assert.ok(
+    VECTOR_COVERAGE_RADIUS_OFFSET < TILE_UNIFORM_FLOATS,
+    "the coverage radius slot must lie inside the tile uniform buffer",
+  );
+  assert.match(
+    wgsl,
+    /vectorCoverageRadius: f32,/,
+    "TileUniforms must declare the coverage radius",
+  );
+  assert.match(
+    wgsl,
+    /let coverageRadius = max\(tile\.vectorCoverageRadius, 0\.0\);/,
+    "vectorPolylineRender must read the radius from the uniform, not a constant",
+  );
+
+  // Both packers read the SAME provider field.
+  const tileUbSource = fs.readFileSync(
+    path.join(
+      root,
+      "packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceTileUB.ts",
+    ),
+    "utf8",
+  );
+  assert.match(
+    tileUbSource,
+    /data\[VECTOR_COVERAGE_RADIUS_OFFSET\][\s\S]{0,200}vectorProvider\?\.antialias/,
+    "the WebGPU packer must write the radius from vectorProvider.antialias",
+  );
+  const tileRendering = fs.readFileSync(
+    path.join(
+      root,
+      "packages/engine/Source/Scene/GlobeSurfaceTileProviderRendering.js",
+    ),
+    "utf8",
+  );
+  assert.match(
+    tileRendering,
+    /vectorAntialias\s*=\s*\n?\s*tileProvider\.vectorProvider\.antialias;/,
+    "the WebGL define must still come from the same provider field",
   );
 });
 
@@ -1223,7 +1790,10 @@ test("E3 — neither shader inverts a singular Jacobian, and both use the same t
   const renderRest = wgsl.slice(renderStart);
   const renderBody = renderRest.slice(0, renderRest.indexOf("\nfn ", 1));
   const guard = renderBody.indexOf("abs(uvJacobianDet) < ");
-  const distanceTest = renderBody.indexOf("length(screenFromUv * offsetUv)");
+  // Anchored on the inverted matrix being APPLIED, not on what the operand is
+  // called: the two shaders name it differently (`offsetUv` / `offsetToLine`)
+  // and upstream renames are not behaviour changes.
+  const distanceTest = renderBody.indexOf("length(screenFromUv * ");
   assert.ok(guard > 0, "the WGSL render function must test the determinant");
   assert.ok(distanceTest > guard, "the guard must precede the distance test");
   assert.match(
@@ -1237,9 +1807,12 @@ test("E3 — neither shader inverts a singular Jacobian, and both use the same t
   // driver behaviour.
   const glslGuard = glslCommon.indexOf("abs(uvJacobianDet) < ");
   const glslInverse = glslCommon.indexOf("inverse(uvJacobian)");
-  const glslDistance = glslCommon.indexOf("length(screenFromUv * offsetUv)");
+  const glslDistance = glslCommon.indexOf("length(screenFromUv * ");
   assert.ok(glslGuard > 0 && glslInverse > glslGuard);
-  assert.ok(glslDistance > glslInverse);
+  assert.ok(
+    glslDistance > glslInverse,
+    "VectorCommon.glsl must apply screenFromUv only after inverting it",
+  );
   assert.match(
     glslCommon.slice(glslGuard, glslInverse),
     /return baseColor;/,

@@ -313,14 +313,24 @@ test("C1: the WGSL gate opens on lighting OR the per-tile alpha flag", () => {
   );
 });
 
-test("C2: the flag occupies the reserved slot, and the UB did not grow", () => {
+test("C2: the flag occupies the reserved slot, and nothing after it moved", () => {
   // `tileControls.w` was a declared reserved scalar. Reusing it keeps every
-  // offset after it fixed; a new member would shift the whole tail.
+  // offset after it fixed; a member inserted here would shift the whole tail.
+  //
+  // The guarantee is about the offsets that FOLLOW the reused slot, so assert
+  // those directly. The buffer total is a poor proxy for it: a later member
+  // appended past the end of the struct grows the total while shifting
+  // nothing, which is a legal change this test should not fail.
   assert.match(types, /export const TILE_CONTROLS_OFFSET = 464;/);
   assert.match(
     types,
-    /export const TILE_UNIFORM_FLOATS = 492;/,
-    "a reserved slot was reused, so the uniform buffer size must be unchanged",
+    /export const HSB_SHIFT_OFFSET = 468;/,
+    "a reserved slot was reused, so the member after it must not have moved",
+  );
+  assert.match(
+    types,
+    /export const OCEAN_WAVE_PHASE_B_OFFSET = 488;/,
+    "nor may the last member of the pre-existing tail have moved",
   );
   assert.match(
     wgslCode,

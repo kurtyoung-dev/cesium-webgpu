@@ -438,12 +438,21 @@ test("B3: neither backend mixes the fallback with the camera-distance fade", () 
   );
 });
 
-test("B4: the WGSL scalar rides the HSB pad, and the tile buffer did not grow", () => {
+test("B4: the WGSL scalar rides the HSB pad, and nothing after it moved", () => {
   assert.match(types, /export const HSB_SHIFT_OFFSET = 468;/);
+  // The claim is that no offset AFTER the reused pad moved, so assert those
+  // offsets. The buffer total does not express it: a member appended past the
+  // end of the struct grows the total while shifting nothing, which is a legal
+  // change this test should not fail.
   assert.match(
     types,
-    /export const TILE_UNIFORM_FLOATS = 492;/,
-    "an alignment pad was reused, so no offset after it may move",
+    /export const GROUND_ATMOSPHERE_CONTROL_OFFSET = 472;/,
+    "an alignment pad was reused, so the member after it may not move",
+  );
+  assert.match(
+    types,
+    /export const OCEAN_WAVE_PHASE_B_OFFSET = 488;/,
+    "nor may the last member of the pre-existing tail",
   );
   assert.doesNotMatch(
     tileUb,

@@ -1424,6 +1424,14 @@ interface CesiumGlobeTileProvider {
    * terrain tile UB writer.
    */
   baseColor?: CesiumColor;
+  /**
+   * The `VectorProvider` that bakes clamped vector geometry for this globe.
+   * Only `antialias` is read here, and only to resolve the draped-polyline
+   * coverage radius — the same field `GlobeSurfaceTileProviderRendering` reads
+   * to select WebGL's `VECTOR_ANTIALIAS` shader define. Optional because a
+   * frame can be packed before `Globe.update()` has populated the provider.
+   */
+  vectorProvider?: { antialias?: boolean };
   [key: string]: unknown;
 }
 

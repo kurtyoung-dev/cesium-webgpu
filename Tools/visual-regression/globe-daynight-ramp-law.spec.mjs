@@ -796,10 +796,14 @@ test("E2: the CPU offset table agrees with the struct, and nothing else moved", 
   assert.match(types, /export const SPLIT_POSITION_OFFSET = 462;/);
   assert.match(types, /export const LIGHTING_FADE_OFFSET = 463;/);
   assert.match(types, /export const TILE_CONTROLS_OFFSET = 464;/);
+  // "Nothing else moved" is a claim about the offsets FOLLOWING the reused
+  // pad, so assert those. The buffer total does not express it: a member
+  // appended past the end of the struct grows the total while shifting
+  // nothing, which is a legal change this test should not fail.
   assert.match(
     types,
-    /export const TILE_UNIFORM_FLOATS = 492;/,
-    "the UB grew — a scalar pad was reused, so the size must be unchanged",
+    /export const OCEAN_WAVE_PHASE_B_OFFSET = 488;/,
+    "a scalar pad was reused, so no offset after it may move",
   );
 });
 

@@ -264,10 +264,20 @@ export const CAMERA_UNIFORM_BYTES = CAMERA_UNIFORM_FLOATS * 4;
 //                computed in the FS as east−west, which would suffer f32
 //                cancellation and produce tile-boundary wave-scale seams at
 //                fine LOD.
+//   492        vectorCoverageRadius (f32) — half-pixel band across a draped
+//                polyline's edge over which coverage fades, the uniform twin
+//                of `VectorCommon.glsl`'s `vectorCoverageRadius` constant.
+//                0.5 when `vectorProvider.antialias`, 0.0 for a hard edge.
+//                WebGL selects it with the `VECTOR_ANTIALIAS` shader-set flag;
+//                this backend gates the whole vector path at runtime, so a
+//                define here would fork every globe pipeline variant.
+//   493 - 495  padding — WGSL rounds the struct up to the 16-byte alignment
+//                of its widest member, so these three floats exist whether or
+//                not anything is written to them.
 //
-// Total = 492 floats = 1968 bytes. Well under WebGPU's
+// Total = 496 floats = 1984 bytes. Well under WebGPU's
 // `maxUniformBufferBindingSize` floor (16 KiB).
-export const TILE_UNIFORM_FLOATS = 492;
+export const TILE_UNIFORM_FLOATS = 496;
 export const TILE_UNIFORM_BYTES = TILE_UNIFORM_FLOATS * 4;
 
 // Normal-map repeat counts per octave, round(equatorial circumference /
@@ -313,6 +323,15 @@ export const INITIAL_COLOR_OFFSET = 476;
 export const LOCALIZED_TRANSLUCENCY_RECT_OFFSET = 480;
 export const OCEAN_WAVE_PHASE_A_OFFSET = 484; // octave1.xy, octave2.xy
 export const OCEAN_WAVE_PHASE_B_OFFSET = 488; // octave3.xy, spanNorm.xy
+export const VECTOR_COVERAGE_RADIUS_OFFSET = 492;
+
+/**
+ * Coverage radius matching `VectorCommon.glsl`'s `#ifdef VECTOR_ANTIALIAS`
+ * constant: half a pixel of edge fade when the vector provider antialiases,
+ * a hard edge when it does not.
+ */
+export const VECTOR_COVERAGE_RADIUS_ANTIALIASED = 0.5;
+export const VECTOR_COVERAGE_RADIUS_HARD = 0.0;
 
 // Max imagery layers per tile in a single draw call (16 — WebGPU minimum
 // `maxSampledTexturesPerShaderStage`). Tiles exceeding this count multi-pass.

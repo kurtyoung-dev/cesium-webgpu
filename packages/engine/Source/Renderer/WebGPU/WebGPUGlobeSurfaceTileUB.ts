@@ -71,6 +71,9 @@ import {
   OCEAN_WAVE_PHASE_A_OFFSET,
   OCEAN_WAVE_PHASE_B_OFFSET,
   OCEAN_OCTAVE_REPEATS,
+  VECTOR_COVERAGE_RADIUS_OFFSET,
+  VECTOR_COVERAGE_RADIUS_ANTIALIASED,
+  VECTOR_COVERAGE_RADIUS_HARD,
   MAX_IMAGERY_LAYERS,
   resolveImageryLayerValue,
 } from "./WebGPUGlobeSurfaceTypes.js";
@@ -1008,6 +1011,17 @@ export function createTileUniformBuffer(
     data[OCEAN_WAVE_PHASE_B_OFFSET + 2] = spanU;
     data[OCEAN_WAVE_PHASE_B_OFFSET + 3] = spanV;
   }
+
+  // Draped-polyline edge fade. Read from the SAME provider field WebGL turns
+  // into its `VECTOR_ANTIALIAS` define, so the two backends cannot disagree
+  // about whether a given frame antialiases. Written every frame, which is
+  // what lets a live `vectorProvider.antialias` flip take effect here the way
+  // a shader recompile does on WebGL. `antialias` defaults to true on
+  // `VectorProvider`, so an absent provider takes the antialiased radius.
+  data[VECTOR_COVERAGE_RADIUS_OFFSET] =
+    tileProvider?.vectorProvider?.antialias === false
+      ? VECTOR_COVERAGE_RADIUS_HARD
+      : VECTOR_COVERAGE_RADIUS_ANTIALIASED;
 
   return writeUniformSlice(
     device,
