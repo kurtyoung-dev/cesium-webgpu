@@ -25,11 +25,18 @@ remains open and its targeted W1 performance lane has resumed (`C11-180` PARTIAL
 IMPLEMENTED / VERIFIED / LANDED — both landed as Batch 773 on 2026-08-01, neither complete);
 its broader certification remains held. Its cloud/weather IDs transferred to Campaign 13
 without being renamed or double-scheduled. **Campaign 12 LAUNCHED 2026-07-23** and is executing. The current non-cloud performance
-evidence remains in `FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md`; cloud evidence is in
-`CLOUD_ARCHITECTURE_AUDIT_2026-07-23.md`._
+evidence remains in `archive/FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md` (archived 2026-09-03;
+current premise check lives in
+[`ARCHITECTURE_REVIEW_2026-09-02.md`](ARCHITECTURE_REVIEW_2026-09-02.md) §3.15/§4 R5 and
+`audits/2026-09-02_old_review_validity/FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.verified.md`);
+cloud evidence is in `CLOUD_ARCHITECTURE_AUDIT_2026-07-23.md`._
 
 _2026-07-31 local/committed/staged audit: see
-[`LOCAL_CHANGE_AUDIT_2026-07-31.md`](LOCAL_CHANGE_AUDIT_2026-07-31.md).
+[`LOCAL_CHANGE_AUDIT_2026-07-31.md`](archive/LOCAL_CHANGE_AUDIT_2026-07-31.md)
+(archived 2026-09-03 — REMOVE-AFTER-MIGRATION per
+[`ARCHITECTURE_REVIEW_2026-09-02.md`](ARCHITECTURE_REVIEW_2026-09-02.md); its findings are migrated
+there and the file/batch/artifact list it fed is inlined at
+[`WEBGPU_DEBUGGING_LOG.md`](WEBGPU_DEBUGGING_LOG.md):16478).
 Written when local `main` equalled `origin/main` at Batch 771 with nothing staged
 and the dirty tree an intentionally uncommitted multi-lane workspace; **that
 changeset landed as Batches 772-781 on 2026-08-01** (`origin/main` =
@@ -51,7 +58,7 @@ _2026-08-01 landing + orchestrator review: the 2026-07-31 Codex changeset landed
 **Batches 772-781** (`3900608bb9`) with eight confirmed defects fixed pre-landing —
 recorded as the `C11-REVIEW-2026-08-01` entry in
 [`WEBGPU_DEBUGGING_LOG.md`](WEBGPU_DEBUGGING_LOG.md) and §11 of
-[`LOCAL_CHANGE_AUDIT_2026-07-31.md`](LOCAL_CHANGE_AUDIT_2026-07-31.md). Gates at the
+[`LOCAL_CHANGE_AUDIT_2026-07-31.md`](archive/LOCAL_CHANGE_AUDIT_2026-07-31.md) (archived). Gates at the
 tip: `tsc` clean, `gulp build` green, Node contracts 195/195. **LANDED is not
 COMPLETE** — no C11/C12 row was promoted, and the browser/Karma/timing gates stay
 open._
@@ -94,6 +101,30 @@ aggregate rows — `archive/batch-plans/` (8), `archive/principal-review-2026-04
 `archive/sandcastle-batch-66/` (5), and `campaign11_planning/guides/` (12). 17 + 1 + 27 = 45; anything
 the literal re-run reports beyond that 45-file allowlist is genuinely unindexed and should be treated
 as index decay.
+
+_2026-09-03 archival pass (lane Elendur): seven REMOVE-AFTER-MIGRATION reviews `git mv`'d into
+`archive/` — `LOCAL_CHANGE_AUDIT_2026-07-31.md`, `audits/2026-04-30_ARCHITECTURE_PERFORMANCE.md`,
+`_FORK_FEATURE_INVENTORY.md`, `_MAINTAINABILITY_SURVIVABILITY.md`, `AUDIT_2026_05_02.md`,
+`FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md`, and `PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md`
+(rejoining its two 2026-04-16 siblings) — with their findings and id tables migrated into the new
+[`ARCHITECTURE_REVIEW_2026-09-02.md`](ARCHITECTURE_REVIEW_2026-09-02.md) and the underlying
+[`audits/2026-09-02_old_review_validity/`](audits/2026-09-02_old_review_validity/SUMMARY.md) validity
+bank (both new this pass). The three KEEP-PART documents (`PRINCIPAL_ENGINEER_REVIEW_PER_FEATURE_2026_04_16.md`,
+`FORK_VS_UPSTREAM_WEBGPU_ARCHITECTURE_AUDIT_2026-07-13.md`, `audits/2026-06-11_ULTRA_REVIEW.md`) stayed
+in place, each now marked "(retained: holds live content — see the 2026-09-02 review)" in its row below.
+No file was deleted; every archived path stays readable at its new location, and the ARCHIVED table
+below carries a repoint row for each. **Re-derived census (own script, not the 2026-09-02 methodology
+— it checks directory-aggregate coverage more strictly, so its "not covered" figure is not comparable
+1:1 to the 293/0 claim above):** `migration_doc/**/*.md` now totals **310 files (309 besides this
+README)** — up from 292 on 2026-09-02, the +17 being four new documents (the review, its plan, the
+landscape audit and the phase-1 register) plus the twelve-file validity bank (+12); the seven moved files net zero; and `C18_P3_PNTS_MODEL_ATTENUATION_DESIGN_2026-09-02.md` (+1, Batch 1402, indexed below). Of those 309, 247 resolve
+through a direct markdown link and a further 235 are named in backtick-only prose (the sets overlap);
+52 files this script cannot place under either resolve only through the pre-existing directory-
+aggregate convention (`archive/batch-plans/`, `archive/principal-review-2026-04-16/` — now 3 files,
+`archive/sandcastle-batch-66/`, `campaign11_planning/guides/`, the pre-2026-09-02 `archive/` root
+tail, `archive/audits-2026-04-30/`, and 10 of the validity bank's 12 files under one directory
+mention) — the same allowlist shape the 2026-09-02 sweep documented, sized for the files this pass
+added or moved. Treat this paragraph, not the 293/0 claim above, as current._
 
 > **Convention:** docs under `archive/` are historical point-in-time snapshots — do **not** read them as live to-do lists. Their still-open items were lifted into `DEFERRED_WORK.md` ("Carried-forward on archive"). The audit that produced this layout is recorded in `_DOC_AUDIT_PLAN.md`.
 
@@ -151,6 +182,7 @@ as index decay.
 | [`QUEUE_2026-08-10_CAMPAIGN16.md`](QUEUE_2026-08-10_CAMPAIGN16.md) | **Comment remediation & attribution — live queue and sole status authority for C16.** Plan: [`CAMPAIGN16_COMMENT_REMEDIATION_PLAN_2026-08-10.md`](CAMPAIGN16_COMMENT_REMEDIATION_PLAN_2026-08-10.md). Standard the campaign is gated on: [`Documentation/Contributors/CodingGuide/ForkCommentStandard.md`](../Documentation/Contributors/CodingGuide/ForkCommentStandard.md). |
 | [`CAMPAIGN16_COMMENT_REMEDIATION_PLAN_2026-08-10.md`](CAMPAIGN16_COMMENT_REMEDIATION_PLAN_2026-08-10.md) | C16 source plan: the measured audit baseline, the standards targets, the enforcement design, and the license-review scheduling rationale. |
 | [`QUEUE_2026-08-09_CAMPAIGN18.md`](QUEUE_2026-08-09_CAMPAIGN18.md) | **Voxel, Point Cloud & Splat Modernization — LAUNCHED by maintainer directive 2026-08-09; live queue and sole status authority for C18.** Waves V (verification honesty) → P (point-cloud correctness) → A (additive adoption) → S (splat rows, **gated post-`C15-G8`**, executing in the C15 G-track lane). Source of truth: [`VOXEL_POINTCLOUD_GSPLAT_AUDIT_2026-08-09.md`](VOXEL_POINTCLOUD_GSPLAT_AUDIT_2026-08-09.md). Its §5 records the ownership boundaries — `C11-13`/`C11-86`/`C11-100`/`C11-108`, the C11 W7 voxel cluster, FORK-41 and `C15-G0..G8` all stay where they are. **Campaign 17 (celestial light transport) remains PROPOSED, not launched.** |
+| [`C18_P3_PNTS_MODEL_ATTENUATION_DESIGN_2026-09-02.md`](C18_P3_PNTS_MODEL_ATTENUATION_DESIGN_2026-09-02.md) | `C18-P3` diagnosis + design (lane Leofa, Batch 1402): the PNTS model-path attenuation / `pointSize` premise is CONFIRMED and traced to its mechanism; the fix does not fit one lane, so the design, the probe and the verdict spec land ahead of it. The C18 queue row remains the status authority. |
 | [`QUEUE_2026-08-29_RESEARCH_DISPATCH.md`](QUEUE_2026-08-29_RESEARCH_DISPATCH.md) | **Dispatch order for the two 2026-08-29 research tasks (AEC design-model performance; Earth at Night fork-vs-upstream) plus the meshlet / mesh-shading track (written against the ratified Phase-8b wave placement; Campaign 19 is the alternative under gate M-16; nothing launched).** Dispatch view only: the live ledger [`FIX_QUEUE_2026-08-27_AUDIT_FINDINGS.md`](FIX_QUEUE_2026-08-27_AUDIT_FINDINGS.md) stays the status authority for Q- ids; campaign numbering stays add-only; every maintainer gate is listed in its section 8. Authored by the Glorfindel workflow, critiqued by Thranduil, corrected by Elendil (Batch 1300). |
 | [`FIX_QUEUE_2026-08-27_AUDIT_FINDINGS.md`](FIX_QUEUE_2026-08-27_AUDIT_FINDINGS.md) | **The live ledger — status authority for every Q- id.** "Fix queue — every finding from the 2026-08-27 audit evening" (its own heading). Referenced from CLAUDE.md and from the research-dispatch row above; had no row of its own until this pass gave it one. *(Indexed 2026-09-02, DX-23 — previously only a backtick mention inside another row.)* |
 | [`Q94_SANDCASTLE2_WEBGPU_SCOPING_2026-08-29.md`](Q94_SANDCASTLE2_WEBGPU_SCOPING_2026-08-29.md) | *(Indexed 2026-09-02, DX-23.)* Q-94 scoping memo — "the Sandcastle gallery cannot run on WebGPU" (per its own heading); a Q-id scoping input to the fix queue above. |
@@ -170,7 +202,6 @@ as index decay.
 | [`T0_FROZEN_BUILD_PROGRAM_2026-08-21.md`](T0_FROZEN_BUILD_PROGRAM_2026-08-21.md) | *(Indexed 2026-09-02, DX-23.)* T0 frozen-build acceptance program — 2026-08-21 (per its own heading). |
 | [`TIERED_ORCHESTRATION_PLAYBOOK_2026-08-21.md`](TIERED_ORCHESTRATION_PLAYBOOK_2026-08-21.md) | *(Indexed 2026-09-02, DX-23.)* Tiered orchestration playbook — reference execution 2026-08-21 (per its own heading). |
 | [`SOL_CONTINUATION_BRIEF_2026-08-24.md`](SOL_CONTINUATION_BRIEF_2026-08-24.md) | *(Indexed 2026-09-02, DX-23.)* Sol continuation brief — 2026-08-24 (per its own heading). |
-| [`LOCAL_CHANGE_AUDIT_2026-07-31.md`](LOCAL_CHANGE_AUDIT_2026-07-31.md) | Current primary-worktree, staged/index, recent-commit, worktree, renderer-architecture, and moving-performance audit. |
 | [`CODEX_PROGRESS_AUDIT_2026-08-02.md`](CODEX_PROGRESS_AUDIT_2026-08-02.md) | Post-Batch-818 code review plus current unstaged verification: exact-tuple recovery, snap lifecycle/multi-frustum/cost, Moon lifecycle, cyclic weather tails, honest remaining risks, and next order. |
 | [`C12_MOON_TEXTURE_LIFECYCLE_AUDIT_2026-08-02.md`](C12_MOON_TEXTURE_LIFECYCLE_AUDIT_2026-08-02.md) | Canonical C12-35 ownership/lifecycle analysis and final L0-L5 evidence. **Complete / independent GO:** shared decoded sources, backend-local GPU ownership, WebGL parity, diagnostics, Node/Jasmine, and strict real-Edge transport/pixel/teardown certification; C12-33 is unblocked. |
 | [`C12_STARFIELD_SEAM_DISPOSITION_2026-08-02.md`](C12_STARFIELD_SEAM_DISPOSITION_2026-08-02.md) | Resolves the Batch-815 catalog/cubemap near-redundancy against existing DR-01: execute C12-11's diffuse-cubemap/resolved-sprite seam; do not remove the catalog or fabricate per-face blur. |
@@ -323,6 +354,12 @@ alongside these, stays indexed above/below, and the newest dated evidence wins o
 
 ## LIVE — audits & reviews (frozen baselines, still referenced)
 
+| [`ARCHITECTURE_REVIEW_2026-09-02.md`](ARCHITECTURE_REVIEW_2026-09-02.md) | **Current architecture-review authority.** Migrates the live findings of the ten 2026-04-16 through 2026-07-31 reviews (§3, by subsystem), the C-R\*/H-R\*/M-R\*/L-R\* and A.\*/B.\*/C.\*/D.\* id appendices (§5), five reversals of items previously believed closed (§4), and the merged inbound-reference repoint table. Supersedes the seven REMOVE-AFTER-MIGRATION documents now under `archive/` and narrows the three retained KEEP-PART documents to their still-undigested blocks. |
+| [`ARCHITECTURE_REVIEW_PLAN_2026-09-02.md`](ARCHITECTURE_REVIEW_PLAN_2026-09-02.md) | The plan the 2026-09-02 review ran under: why now (1,907 engine commits since the 2026-07-13 FAR audit), the eighteen lenses, the rules each lens is measured against (FAR §2 invariants + ADR-1..ADR-8), and the survival bar. **Sixteen of the eighteen lenses have not run** — this document is the specification for that outstanding pass. |
+| [`RENDERER_LANDSCAPE_AUDIT_2026-09-02.md`](RENDERER_LANDSCAPE_AUDIT_2026-09-02.md) | External-comparison audit — three.js `WebGPURenderer`/TSL, luma.gl 9 / deck.gl 9, the WebGPU platform, CesiumJS upstream and the geospatial field — with a per-claim census appendix. Its ranked HIGH gaps (G1-G8) are reproduced at [`ARCHITECTURE_REVIEW_2026-09-02.md`](ARCHITECTURE_REVIEW_2026-09-02.md) §6.2; its MEDIUM list, "what NOT to copy" section and claim census are here only. **No second reader re-derived its census** — ranked leads with named demonstrating targets, not adjudicated findings. |
+| [`audits/2026-09-02_ARCHITECTURE_REVIEW_PHASE1.md`](audits/2026-09-02_ARCHITECTURE_REVIEW_PHASE1.md) | **PARTIAL AND UNRELIABLE — do not cite as a premise.** Phase-1 internal synthesis from two of eighteen lenses; four of its anchors were re-derived false at HEAD (two overstate a defect, two are unverified claims of health) and it carries that list as a banner. Tracked for provenance and because its geometry-primitive teardown finding is real. Disposition at [`ARCHITECTURE_REVIEW_2026-09-02.md`](ARCHITECTURE_REVIEW_2026-09-02.md) §6.1. |
+| [`audits/2026-09-02_old_review_validity/`](audits/2026-09-02_old_review_validity/SUMMARY.md) (12 docs: `SUMMARY.md`, `INBOUND_REFERENCES.md`, `INDEX.json`, `judgements.raw.json`, and a `.judgement.json` + `.verified.md` pair per retired review) | **The validity bank feeding the review above.** Every closed item from all ten reviews keeps its id, title, claim, status and evidence line here even after the source document is archived or (for the three KEEP-PART docs) trimmed — this is the permanent record `ARCHITECTURE_REVIEW_2026-09-02.md` §7.1 points to for the 383 closed items no second reader re-derived. |
+
 | Doc | Role |
 |---|---|
 | [`SOL_WEEK_AUDIT_2026-08-14.md`](SOL_WEEK_AUDIT_2026-08-14.md) | Six-lane read-only audit of the Codex Sol 5.6 range `cff0b76a2f..034c7f74d0`: 22 ranked findings, dependency-ordered fix queue, and the decision packet that produced the 2026-08-14 rulings. Claims apply only to its stated audited/recomputed coverage. |
@@ -331,7 +368,6 @@ alongside these, stays indexed above/below, and the newest dated evidence wins o
 | [`CODEX_DISAGREEMENTS_WITH_FABLE_REVIEW_2026-08-16.md`](CODEX_DISAGREEMENTS_WITH_FABLE_REVIEW_2026-08-16.md) | *(Indexed 2026-09-02, DX-23.)* Codex disagreements and reconciliation with the Fable review — 2026-08-16 (per its own heading). |
 | [`ENGINE_PROMOTION_AUDIT_2026-08-16.md`](ENGINE_PROMOTION_AUDIT_2026-08-16.md) | *(Indexed 2026-09-02, DX-23.)* Engine-Promotion Audit — logic in Tools that belongs in the engine — 2026-08-16 (per its own heading). |
 | [`CODEX_FABLE_OPUS_CHANGE_AUDIT_2026-08-17.md`](CODEX_FABLE_OPUS_CHANGE_AUDIT_2026-08-17.md) | *(Indexed 2026-09-02, DX-23.)* Codex audit of the Fable/Opus orchestration range (per its own heading). |
-| [`FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md`](FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md) | **Historical Batch-731 fork-progress/performance audit and second-pass action record**; includes r6 evidence, confirmed-at-cutoff defects, rejected shortcuts, and feature-preserving gates. Its action queue requires a current premise check and explicit dispatch before use. |
 | [`CLAUDE_PROGRESS_AUDIT_2026-07-26.md`](CLAUDE_PROGRESS_AUDIT_2026-07-26.md) | Current continuation audit for Batches 745–768 plus the Batch-769/770/S5 reconciliation: landed-change review, parked-lane readiness, confirmed regressions, campaign truth, verification, and next priorities. |
 | [`CLOUD_ARCHITECTURE_AUDIT_2026-07-23.md`](CLOUD_ARCHITECTURE_AUDIT_2026-07-23.md) | **Current cloud evidence authority**: WGS84/RTE, temporal reconstruction, weather wrapping/bounds, regional variation, deterministic formation randomization, quality, lifecycle, and Takram comparison. |
 | [`VOXEL_POINTCLOUD_GSPLAT_AUDIT_2026-08-09.md`](VOXEL_POINTCLOUD_GSPLAT_AUDIT_2026-08-09.md) | **Current parity + adoption evidence authority for voxels, point clouds and Gaussian splats** (maintainer ask 2026-08-09; 20-agent read-only workflow, every in-repo claim file:line cited). Per-subsystem parity tables with an explicit `code` / `probe(stale)` / `fresh` verification level, 10 ranked gaps, 10 ranked adoption candidates with acceptance criteria, and a recommended sequence. **Launched [`QUEUE_2026-08-09_CAMPAIGN18.md`](QUEUE_2026-08-09_CAMPAIGN18.md)**; the five defect rows it surfaced are filed in [`DEFERRED_WORK.md`](DEFERRED_WORK.md). |
@@ -340,22 +376,19 @@ alongside these, stays indexed above/below, and the newest dated evidence wins o
 | [`GSPLAT_REFERENCE_VETTING_2026-08-09.md`](GSPLAT_REFERENCE_VETTING_2026-08-09.md) | **Current licence authority for the Gaussian-splat ecosystem** — the `C18-S0` pass that closed the reference catalog's §3 "zero vetted gsplat candidates" gap. 20 projects, licence artifacts fetched and transcribed literally (✔ verbatim-read / ◐ partial / △ declared-only), an Inria provenance-chain verdict per candidate, honest gaps, and a recommendation per Wave-S row. **Headline: `autonomousvision/mip-splatting` and `r4dl/StopThePop` both carry the Inria/MPII research-only "Gaussian-Splatting License" byte-for-byte**, so `C18-S2` is clean-room-from-paper mandatory and three of Wave S's four rows need no external reference. Feeds the pre-registration tables in [`QUEUE_2026-08-09_CAMPAIGN18.md`](QUEUE_2026-08-09_CAMPAIGN18.md) §6 and [`QUEUE_2026-08-02_CAMPAIGN15.md`](QUEUE_2026-08-02_CAMPAIGN15.md) §2b. **Pre-registrations, not determinations** — numbered `L-xx` entries stay in [`LICENSE_DETERMINATIONS_2026-08-10.md`](LICENSE_DETERMINATIONS_2026-08-10.md), claimed by the batch that derives. |
 | [`GSPLAT_MESH_RIG_RESEARCH_2026-08-09.md`](GSPLAT_MESH_RIG_RESEARCH_2026-08-09.md) | *(Indexed 2026-09-02, DX-23.)* "Gsplat Mesh / Rig / Relight — Standards Research (FINAL, 2026-08-09)" (per its own heading); same-day companion to the licence vetting row above. |
 | [`LICENSE_VETTING_AURORA_OCEAN_2026-08-21.md`](LICENSE_VETTING_AURORA_OCEAN_2026-08-21.md) | *(Indexed 2026-09-02, DX-23.)* "License Vetting — Aurora, Ocean, Wind, and Space Weather" (per its own heading); same family as the two licence-authority rows above, later date. |
-| [`audits/2026-04-30_ARCHITECTURE_PERFORMANCE.md`](audits/2026-04-30_ARCHITECTURE_PERFORMANCE.md) · [`_FORK_FEATURE_INVENTORY.md`](audits/2026-04-30_FORK_FEATURE_INVENTORY.md) · [`_MAINTAINABILITY_SURVIVABILITY.md`](audits/2026-04-30_MAINTAINABILITY_SURVIVABILITY.md) | **Live wiring/feature/maintainability audit trio** (supersedes the archived 2026-04-02 WIRING_AUDIT). |
-| [`audits/2026-06-11_ULTRA_REVIEW.md`](audits/2026-06-11_ULTRA_REVIEW.md) (+ `_findings.json`) | **Most-recent deep multi-agent review** (53 agents, 195 confirmed findings, HEAD `f6fd367827`). Per-finding sidecar JSON is the machine-readable index. Source of the A-* findings driving the current campaign phases. |
+| [`audits/2026-06-11_ULTRA_REVIEW.md`](audits/2026-06-11_ULTRA_REVIEW.md) (+ `_findings.json`) | **Most-recent deep multi-agent review** (53 agents, 195 confirmed findings, HEAD `f6fd367827`). Per-finding sidecar JSON is the machine-readable index. Source of the A-* findings driving the current campaign phases. **(Retained: holds live content — see the 2026-09-02 review.** The `A<n>.<m>`/`B<n>` id-to-title index for its ~175 already-closed findings has no other home; `ARCHITECTURE_REVIEW_2026-09-02.md` §5.2 migrates only the 60 still-open items.) |
 | [`FORK_DRIFT_ANALYSIS_2026-06-11.md`](FORK_DRIFT_ANALYSIS_2026-06-11.md) | Fork-vs-upstream drift analysis + sync decision (2026-06-11). |
 | [`RESEARCH_TAKRAM_GEOSPATIAL_VISUALS.md`](RESEARCH_TAKRAM_GEOSPATIAL_VISUALS.md) | Research input — celestial/atmosphere visual-fidelity study (Takram `three-geospatial`); to fold into the campaign roadmap. Not yet scheduled. |
-| [`AUDIT_2026_05_02.md`](AUDIT_2026_05_02.md) | Most-recent diffable audit baseline. |
-| [`PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md`](PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md) | **ID-definition source** for C-R*/H-R*/M-R* findings (54 inbound refs). Per-finding annotations are authoritative; the exec summary is the 2026-04-16 baseline. |
-| [`PRINCIPAL_ENGINEER_REVIEW_PER_FEATURE_2026_04_16.md`](PRINCIPAL_ENGINEER_REVIEW_PER_FEATURE_2026_04_16.md) | Per-feature review with FIXED/DEFERRED annotations (exec summary = 2026-04-16 baseline). |
+| [`PRINCIPAL_ENGINEER_REVIEW_PER_FEATURE_2026_04_16.md`](PRINCIPAL_ENGINEER_REVIEW_PER_FEATURE_2026_04_16.md) | Per-feature review with FIXED/DEFERRED annotations (exec summary = 2026-04-16 baseline). **(Retained: holds live content — see the 2026-09-02 review.** It is the sole id-to-title definition source for `B-<n>`/`C-P<n>`/`H-P<n>`/`M-P<n>`/`L-P<n>`; `M-P*` and `L-P*` have no taxonomy row anywhere else. Its 16 live items migrated to `ARCHITECTURE_REVIEW_2026-09-02.md` §3.) |
 | [`FUTURE_RESEARCH_2026_05_01.md`](FUTURE_RESEARCH_2026_05_01.md) | Forward-looking R-1..R-7 research triage. |
 | [`UPSTREAM_MERGE_2026-06_CHANGELOG.md`](UPSTREAM_MERGE_2026-06_CHANGELOG.md) | v1.142 upstream-merge conflict-resolution record + regression targets (2026-06-17). Frozen record. |
 | [`WEBGPU_PARITY_AUDIT_2026-06.md`](WEBGPU_PARITY_AUDIT_2026-06.md) | Post-merge v1.141–1.143 parity audit — source of the 14-batch backlog run. Historical. |
 | [`WEBGPU_PARITY_REPORT_2026-06-30.md`](WEBGPU_PARITY_REPORT_2026-06-30.md) | Parity snapshot at Batch 458. **SUPERSEDED by** [`WEBGPU_PARITY_REPORT_2026-07-01.md`](WEBGPU_PARITY_REPORT_2026-07-01.md) (its own banner says so). |
 | [`WEBGPU_PARITY_REPORT_2026-07-01.md`](WEBGPU_PARITY_REPORT_2026-07-01.md) | Parity snapshot at Batch 480 (post-parity-sprint); the §6 list drove `PARITY_TO_100.md` and the 2026-07 campaign queues. Point-in-time. |
-| [`FORK_VS_UPSTREAM_WEBGPU_ARCHITECTURE_AUDIT_2026-07-13.md`](FORK_VS_UPSTREAM_WEBGPU_ARCHITECTURE_AUDIT_2026-07-13.md) | The fork-vs-upstream architecture audit that launched the FAR remediation plan. Frozen evidence baseline. |
+| [`FORK_VS_UPSTREAM_WEBGPU_ARCHITECTURE_AUDIT_2026-07-13.md`](FORK_VS_UPSTREAM_WEBGPU_ARCHITECTURE_AUDIT_2026-07-13.md) | The fork-vs-upstream architecture audit that launched the FAR remediation plan. Frozen evidence baseline. **(Retained: holds live content — see the 2026-09-02 review.** Its lines 565-588 "Allocation ownership … Maximum safe sharing boundary" block — the scope-by-scope sharing table no judgement item covers — has no other home; reproduced in part at `ARCHITECTURE_REVIEW_2026-09-02.md` §3.11.) |
 | [`CURRENT_RENDERING_FUNCTIONALITY_BASELINE_2026-07-13.md`](CURRENT_RENDERING_FUNCTIONALITY_BASELINE_2026-07-13.md) | Phase-0 characterization anchor: what the fork could do before the remediation fixes began. |
 | [`FAR_200_SUBMISSION_AUTHORITY_ADOPTION_2026-07-13.md`](FAR_200_SUBMISSION_AUTHORITY_ADOPTION_2026-07-13.md) | FAR-200 submission-authority adoption inventory (`SubmissionSerialAuthority` shadow-infrastructure boundary). |
-| [`FORK_PERFORMANCE_AUDIT_AND_FIX_RESULTS_2026-07-14.md`](FORK_PERFORMANCE_AUDIT_AND_FIX_RESULTS_2026-07-14.md) | First measured hot-path tranche record (2026-07-14/15). Performance authority has since passed to `FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md`. |
+| [`FORK_PERFORMANCE_AUDIT_AND_FIX_RESULTS_2026-07-14.md`](FORK_PERFORMANCE_AUDIT_AND_FIX_RESULTS_2026-07-14.md) | First measured hot-path tranche record (2026-07-14/15). Performance authority passed to `archive/FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md` (archived 2026-09-03; current premise check in `ARCHITECTURE_REVIEW_2026-09-02.md` §3.15/§4 R5). |
 | [`FORK_PERFORMANCE_WEEKLY_CHANGE_DEFENSE_2026-07-15.md`](FORK_PERFORMANCE_WEEKLY_CHANGE_DEFENSE_2026-07-15.md) | Exact-current performance/correctness checkpoint for the Campaign-8 tranche. Frozen checkpoint. |
 | [`PERF_ARCH_DEEP_DIVE_2026-07-16.md`](PERF_ARCH_DEEP_DIVE_2026-07-16.md) | Independent S1–S11 performance/architecture finding register, deduped against the Campaign-9 backlog. Frozen. |
 | [`SOL_AUDIT_REPORT_2026-07-16.md`](SOL_AUDIT_REPORT_2026-07-16.md) | Audit synthesis of Sol's uncommitted 2026-07-12..16 working tree (246 modified + 77 untracked files). Frozen. |
@@ -386,10 +419,14 @@ alongside these, stays indexed above/below, and the newest dated evidence wins o
 | Path | Superseded by |
 |---|---|
 | `archive/sandcastle-batch-66/` (5 reports) | All Batch-66 Sandcastle blockers fixed; status in `DEFERRED_WORK.md` + `WEBGPU_DEBUGGING_LOG.md`. |
-| `archive/principal-review-2026-04-16/` (build/lifecycle + data-pipeline pillars) | Findings live in `DEFERRED_WORK.md`; the two annotated review pillars (RENDERER_DEEP, PER_FEATURE) stayed active. |
+| `archive/principal-review-2026-04-16/` (build/lifecycle + data-pipeline pillars, plus `PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md`, archived 2026-09-03) | Findings live in `DEFERRED_WORK.md`; the RENDERER_DEEP pillar's C-R\*/H-R\*/M-R\*/L-R\* id table is transcribed at [`ARCHITECTURE_REVIEW_2026-09-02.md`](ARCHITECTURE_REVIEW_2026-09-02.md) §5.1. The PER_FEATURE pillar stayed active (see LIVE — audits & reviews). |
+| `archive/audits-2026-04-30/` (3 docs: `2026-04-30_ARCHITECTURE_PERFORMANCE.md`, `_FORK_FEATURE_INVENTORY.md`, `_MAINTAINABILITY_SURVIVABILITY.md`; archived 2026-09-03) | Findings migrated into [`ARCHITECTURE_REVIEW_2026-09-02.md`](ARCHITECTURE_REVIEW_2026-09-02.md) §3 (per-subsystem) and §3.11 (survivability — the `ARCHITECTURE.md:969-974` repoint target). |
+| `archive/AUDIT_2026_05_02.md` (archived 2026-09-03) | **id-definition source** for `A.<n>`/`B.<n>`/`C.<n>`/`D.<n>`; the one-line-per-id table is at [`ARCHITECTURE_REVIEW_2026-09-02.md`](ARCHITECTURE_REVIEW_2026-09-02.md) §5.2. Live findings (incl. B.11, C.6) migrated into §3. |
+| `archive/FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md` (archived 2026-09-03) | Second-pass action record; the `F5-*` id register, the eleven principles, and its still-open items are at [`ARCHITECTURE_REVIEW_2026-09-02.md`](ARCHITECTURE_REVIEW_2026-09-02.md) §3.15 and §4 R5. |
+| `archive/LOCAL_CHANGE_AUDIT_2026-07-31.md` (archived 2026-09-03) | Findings migrated into [`ARCHITECTURE_REVIEW_2026-09-02.md`](ARCHITECTURE_REVIEW_2026-09-02.md) §3; its §11 addendum and file/batch/artifact list are inlined at `WEBGPU_DEBUGGING_LOG.md:16478`. |
 | `archive/batch-plans/` (8 BATCH_*_PLAN, all SHIPPED) | `WEBGPU_CONTEXT_DECOMPOSITION_PLAN.md` + inline code comments. |
-| `archive/COMPREHENSIVE_AUDIT_2026_03_31.md` | `FEATURE_INVENTORY.md`, `DEFERRED_WORK.md`, the 2026-04-30 audit trio. |
-| `archive/WIRING_AUDIT_2026_04_02.md` | `audits/2026-04-30_*` (now the live wiring reference). |
+| `archive/COMPREHENSIVE_AUDIT_2026_03_31.md` | `FEATURE_INVENTORY.md`, `DEFERRED_WORK.md`, the 2026-04-30 audit trio (now itself archived at `archive/audits-2026-04-30/`, see row above). |
+| `archive/WIRING_AUDIT_2026_04_02.md` | `audits/2026-04-30_*`, now itself archived at `archive/audits-2026-04-30/` (see row above) — current wiring reference is `ARCHITECTURE_REVIEW_2026-09-02.md`. |
 | `archive/SNAPSHOT_MODE_SPIKE_2026-04-09.md` | Shipped (`SnapshotModeService.js`); `FEATURE_INVENTORY.md`. |
 | `archive/OVERSIGHT_AUDIT_2026_04_25.md` | Rolled up in `WEBGPU_MIGRATION_STATUS.md`. |
 | `archive/REVIEW_FIX_PROGRESS.md` | Closed Batch 1–66 campaign; open items lifted to `DEFERRED_WORK.md`. |

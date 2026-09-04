@@ -1,0 +1,1518 @@
+{
+  "doc": "migration_doc/audits/2026-06-11_ULTRA_REVIEW.md (+ migration_doc/audits/2026-06-11_ULTRA_REVIEW_findings.json)",
+  "verdict_on_document": "REMOVE-AFTER-MIGRATION",
+  "reason": "The review was taken at HEAD f6fd367827 (Batch 220); HEAD is now Batch 1378 with three upstream syncs (v1.141-1.143 d06742a2ac, v1.144 06bc894d30) landed since. All 49 NEW-* ids it minted already live in DEFERRED_WORK.md (2026-06-11 section, lines 4858-5047) with batch-cited dispositions, and ISSUES_AND_FIXED_BUGS.md declares itself the superseding register. Re-derivation against the current tree: of the 235 JSON findings, ~95 are RESOLVED with a batch/commit, ~55 are SUPERSEDED by a live row (FIX_QUEUE fleet1 rows, C9 P2-1..4, Wave DX DX-07..10, NEW-WEBGPU-OIT-WEIGHT-LINEAR-DEPTH, NEW-SYNC-MOVEMAP, the 2026-06-11 declined-revert lens), ~40 are STALE (false-positives, intentional-by-design, positives, deleted code, latent-merge premises that the syncs dissolved), and the remaining STILL-VALID/PARTIAL items (every one given migrate_text with current file:line below) are all LOW/MEDIUM except one HIGH that no row owns: billboard/label eyeOffset is still dropped on WebGPU (#37). The A<n>.<m>/B<n> anchors are referenced by ISSUES_AND_FIXED_BUGS.md's taxonomy table, one handoff, one spec comment and one script-archive README; each can be repointed to the migrated text or to the DEFERRED_WORK ids. Nothing in the document remains a live authority once the items below are pasted into the new review and the six inbound references are repointed.",
+  "items": [
+    {
+      "id": "HEADER numbers (HEAD f6fd367827 / Batch 220; 235 findings -> 195 confirmed; merge-base 0becdbfc17; upstream 467919ca90 284 ahead / 435 ours; findingCounts {235,195,18,17,5})",
+      "title": "Review provenance numbers",
+      "claim": "Snapshot taken at Batch 220 against upstream v1.142 with 284/435 divergence",
+      "status": "STALE",
+      "evidence": "HEAD is Batch 1378 (aa5aabb85b); upstream synced through v1.144 (Batch 958, 06bc894d30) after the v1.141-1.143 supervised merge (d06742a2ac); migration_doc/ARCHITECTURE_REVIEW_PLAN_2026-09-02.md:1-16 records 1,907 engine commits since the 2026-07-13 audit and names this review as predating all of it",
+      "surviving_record": "migration_doc/ARCHITECTURE_REVIEW_PLAN_2026-09-02.md",
+      "migrate_text": "Provenance only; no migration."
+    },
+    {
+      "id": "#45 A6.1 NEW-PICKDEPTH-CAPABILITY-READBACK (top-1, CRITICAL)",
+      "title": "PickDepth branches on defined(context.readPixels) so pickPosition returns undefined on WebGPU",
+      "claim": "pickPosition/sampleHeight/clampToHeight depth readback never fires on WebGPU",
+      "status": "RESOLVED",
+      "evidence": "Batch 221 added GraphicsContext.supportsSynchronousReadback and switched PickDepth (PickDepth.js:107-129 now documents the rule); Batch 252 NEW-PICK-WEBGPU-DEPTH-RECONSTRUCTION made pickPosition return real positions (DEFERRED_WORK.md:4864-4865)",
+      "surviving_record": "DEFERRED_WORK.md NEW-PICKDEPTH-CAPABILITY-READBACK / NEW-PICK-WEBGPU-DEPTH-RECONSTRUCTION; ISSUES_AND_FIXED_BUGS.md §6.1",
+      "migrate_text": "Resolved Batches 221/252; no migration."
+    },
+    {
+      "id": "#46 A6.2 NEW-PICK-METADATA-READBACK",
+      "title": "readCenterPixel returns stale prior-frame pixels",
+      "claim": "pickMetadata/pickVoxelCoordinate broken on WebGPU",
+      "status": "RESOLVED",
+      "evidence": "Batch 285 (DEFERRED_WORK.md:4873); probes probe-pick-metadata.mjs, probe-voxel-pick*.mjs carry the id",
+      "surviving_record": "DEFERRED_WORK.md NEW-PICK-METADATA-READBACK; DP-H46 epic for the metadata subsystem (DEFERRED_WORK.md:9550)",
+      "migrate_text": "Resolved Batch 285; no migration."
+    },
+    {
+      "id": "#47 A6.3 NEW-PICK-RAY-ASYNC",
+      "title": "Ray picks call pickFramebuffer.end() synchronously -> stale results",
+      "claim": "pickFromRay/sampleHeight/clampToHeight return stale/undefined on WebGPU",
+      "status": "PARTIAL",
+      "evidence": "sampleHeight/clampToHeight shipped Batch 284 (DEFERRED_WORK.md:4872); pickFromRay position explicitly scoped out — PickingRayHelpers.js:197-200 warns 'returns a hit object but no position on WebGPU'; PICKING_ARCHITECTURE_STATE_2026-08-17.md:490-495 records the entry over-claims and that sampleHeightMostDetailed/clampToHeightMostDetailed are broken on WebGPU (LD-04, LD-14 at :413)",
+      "surviving_record": "PICKING_ARCHITECTURE_STATE_2026-08-17.md (LD-04/LD-14) + DEFERRED_WORK.md NEW-PICK-RAY-ASYNC",
+      "migrate_text": "Scene.pickFromRay on WebGPU still returns a hit object with no position: PickingRayHelpers.js:197-200 short-circuits on !context.supportsSynchronousReadback and warns. The *MostDetailed variants are broken on WebGPU per PICKING_ARCHITECTURE_STATE_2026-08-17.md:413/:493. The DEFERRED_WORK entry NEW-PICK-RAY-ASYNC over-claims (its probe asserts no-throw only); the picking-state document is the authority and should be the row the new review cites."
+    },
+    {
+      "id": "#48 A6.4",
+      "title": "endAsync shares _stagingBuffer while ignoring _readbackInFlight",
+      "claim": "sync pick followed by async pick can hit buffer-used-while-mapped",
+      "status": "RESOLVED",
+      "evidence": "WebGPUPickFramebuffer.ts:1788, 1850-1858: an in-flight readback now acquires a transient buffer from _transientReadbacks or declines with a recorded stat",
+      "surviving_record": "code (WebGPUPickFramebuffer.ts:1846-1860)",
+      "migrate_text": "Resolved in code; no migration."
+    },
+    {
+      "id": "#49 A6.x",
+      "title": "Orphaned _readableDepthTexture / readDepthPixelAsync",
+      "claim": "depth32float pick target allocated on every resize with zero consumers",
+      "status": "RESOLVED",
+      "evidence": "WebGPUPickFramebuffer.ts:2063-2069 now allocates on demand with a docstring stating the facility is inert until a consumer requests it; readDepthPixelAsync still has no external consumer (only self-reference)",
+      "surviving_record": "code docstring (WebGPUPickFramebuffer.ts:2064-2069)",
+      "migrate_text": "Resolved (no eager allocation, documented); no migration."
+    },
+    {
+      "id": "#50",
+      "title": "PickId.normalizedRgba has no consumers",
+      "claim": "documented 'for WebGPU' but unused",
+      "status": "STILL-VALID",
+      "evidence": "rg normalizedRgba across packages/engine/Source: only PickId.js:50 (producer), PickId.d.ts:25, GraphicsContext.ts:1633 (doc) and a comment at WebGPUContext.ts:4221 — no reader",
+      "surviving_record": "none",
+      "migrate_text": "PickId.normalizedRgba (PickId.js:50) is still produced for every pick id and read by nothing; the comment at WebGPUContext.ts:4220-4223 describes it as the WebGPU encoding. Either wire a consumer or drop the field (LOW; four floats per pick id)."
+    },
+    {
+      "id": "#51 (false-positive)",
+      "title": "Pick pass drops translucent OIT pick coverage",
+      "claim": "n/a",
+      "status": "STALE",
+      "evidence": "verdict false-positive in the sidecar",
+      "surviving_record": "none",
+      "migrate_text": "No migration."
+    },
+    {
+      "id": "#52 A6.7",
+      "title": "WebGPUSceneRendererPickPass silent return on missing pick FBO",
+      "claim": "pick failures are invisible",
+      "status": "STILL-VALID",
+      "evidence": "WebGPUSceneRendererPickPass.ts has zero console.error sites; bare returns at :398, :442, :463, :475",
+      "surviving_record": "none",
+      "migrate_text": "WebGPUSceneRendererPickPass.ts still returns silently when the pick framebuffer, device or encoder is missing (:398, :442, :463, :475; no console.error in the file). Per the CLAUDE.md null-target sentinel rule a throttled console.error with the context id belongs at those exits (LOW)."
+    },
+    {
+      "id": "#53 A6.5",
+      "title": "_pickPositionCache returns cached undefined",
+      "claim": "stationary cursor never converges while pickPosition is broken",
+      "status": "RESOLVED",
+      "evidence": "Batch 252 made WebGPU reconstruction synchronous; Picking.js:745-759 caches undefined only when no consistent reconstruction exists (documented)",
+      "surviving_record": "code (Picking.js:745-759)",
+      "migrate_text": "Resolved with Batch 252; no migration."
+    },
+    {
+      "id": "#64 A8.1 NEW-OIT-COMPOSITE-FORMAT (top-2, CRITICAL)",
+      "title": "OIT composite pipeline hardcoded rgba8unorm",
+      "claim": "MRT-OIT composite fails format validation",
+      "status": "RESOLVED",
+      "evidence": "Batch 222 (DEFERRED_WORK.md:4866); OIT later contained OFF by FAR-003 (FEATURE_INVENTORY.md:815)",
+      "surviving_record": "DEFERRED_WORK.md NEW-OIT-COMPOSITE-FORMAT; FAR-003",
+      "migrate_text": "Resolved Batch 222; no migration."
+    },
+    {
+      "id": "#65 A8.2 NEW-TONEMAPPER-STRING-MAP",
+      "title": "Tonemapper reads non-existent _tonemapping.type",
+      "claim": "user tonemapper always ignored",
+      "status": "RESOLVED",
+      "evidence": "Batch 223 (DEFERRED_WORK.md:4874)",
+      "surviving_record": "DEFERRED_WORK.md",
+      "migrate_text": "Resolved Batch 223; no migration."
+    },
+    {
+      "id": "#66 A8.4 NEW-BLOOM-UNIFORM-PARITY",
+      "title": "Bloom mis-maps brightness/contrast onto a luminance threshold",
+      "claim": "default bloom passes everything",
+      "status": "RESOLVED",
+      "evidence": "Batch 240 (DEFERRED_WORK.md:4876); probe-bloom-parity.mjs",
+      "surviving_record": "DEFERRED_WORK.md",
+      "migrate_text": "Resolved Batch 240; no migration."
+    },
+    {
+      "id": "#67 A8.3 NEW-POSTPROCESS-HDR-INTERMEDIATES",
+      "title": "Built-in effects allocate 8-bit intermediates in HDR",
+      "claim": "highlights clamp before tonemap",
+      "status": "RESOLVED",
+      "evidence": "Batch 225 (DEFERRED_WORK.md:4875)",
+      "surviving_record": "DEFERRED_WORK.md",
+      "migrate_text": "Resolved Batch 225; no migration."
+    },
+    {
+      "id": "#68",
+      "title": "Pipeline.destroy() leaks TAA history, ColorGrading UBO and user stages",
+      "claim": "HDR toggle / recreate leaks GPU allocations",
+      "status": "PARTIAL",
+      "evidence": "WebGPUPostProcessPipeline.ts destroy() at :2200 now calls this._taaEffect?.destroy() (:2223) and clearLibraryStages() (:2226); user stages are only torn down by clearUserWGSLStages() from the collection's configure path (WebGPUPostProcessStageCollection.ts:839, :953), and _colorGradingStage is not touched in destroy()",
+      "surviving_record": "none",
+      "migrate_text": "WebGPUPostProcessPipeline.destroy() (:2200-2260) releases TAA and library stages but still does not call clearUserWGSLStages() nor release the color-grading stage's uniform buffer; user WGSL stages are only cleared when the collection's configure step detects a list change (WebGPUPostProcessStageCollection.ts:839/:953). A pipeline recreate on HDR toggle can therefore leak user-stage intermediates (LOW-MEDIUM)."
+    },
+    {
+      "id": "#69 A8.6",
+      "title": "OIT weight = McGuire Eq.9 with window-space z vs WebGL Eq.10 view-space z",
+      "claim": "translucent ordering differs between backends",
+      "status": "SUPERSEDED",
+      "evidence": "WebGPUOIT.ts:443-449 unchanged (Eq.9 on clipZ) vs alphaWeight.glsl:10 (Eq.10); owned by DEFERRED_WORK.md NEW-WEBGPU-OIT-WEIGHT-LINEAR-DEPTH (:10431, DEFERRED, surfaced by C11-157) under FAR-003",
+      "surviving_record": "DEFERRED_WORK.md NEW-WEBGPU-OIT-WEIGHT-LINEAR-DEPTH",
+      "migrate_text": "Owned by NEW-WEBGPU-OIT-WEIGHT-LINEAR-DEPTH; cite that row."
+    },
+    {
+      "id": "#70 A8.5 NEW-POSTPROCESS-USER-WARN-PROD",
+      "title": "User GLSL stages dropped silently in production",
+      "claim": "warning is pragma-stripped",
+      "status": "RESOLVED",
+      "evidence": "Batch 290 (DEFERRED_WORK.md:4880); probe-taa-userwarn.mjs",
+      "surviving_record": "DEFERRED_WORK.md",
+      "migrate_text": "Resolved Batch 290; no migration."
+    },
+    {
+      "id": "#71 (already-documented)",
+      "title": "Altitude-gate fade of Bloom/AutoExposure",
+      "claim": "gratuitous divergence",
+      "status": "SUPERSEDED",
+      "evidence": "NEW-ORBIT-BLOOM-ALTITUDE-GATE resolved Session 65 (DEFERRED_WORK.md:9003)",
+      "surviving_record": "DEFERRED_WORK.md NEW-ORBIT-BLOOM-ALTITUDE-GATE",
+      "migrate_text": "No migration."
+    },
+    {
+      "id": "#72 A8.8",
+      "title": "f16 tonemap error-scope is a no-op; no f16->f32 fallback",
+      "claim": "dead pushErrorScope/popErrorScope, misleading claim",
+      "status": "PARTIAL",
+      "evidence": "pushErrorScope no longer appears in WebGPUPostProcessPipeline.ts; a fallbackWgslCode parameter exists (:2096) but the comment at :2098-2108 still describes the synchronous-recovery problem as unresolved",
+      "surviving_record": "none",
+      "migrate_text": "The dead error scope is gone, but WebGPUPostProcessPipeline.ts:2098-2108 still documents that a failed f16 compile has no synchronous recovery path (the fallbackWgslCode parameter at :2096 is compiled but the primary is used regardless). Verify on a device without shader-f16 that the f32 source is selected up front, then delete the stale comment (LOW)."
+    },
+    {
+      "id": "#73 A8.7",
+      "title": "OIT pipeline cache keyed on shaderCode.length",
+      "claim": "collision serves the wrong injected module",
+      "status": "STILL-VALID",
+      "evidence": "WebGPUOIT.ts:706 `${shaderCode.length}_${fragEntry}_${config.label}`; path contained OFF by FAR-003",
+      "surviving_record": "none (FAR-003 contains the feature)",
+      "migrate_text": "WebGPUOIT.ts:706 still keys the injected-OIT pipeline cache on shaderCode.length + entry + label; two producers with equal-length sources and the same owner label would share a pipeline. Replace with a source hash when the OIT lane reopens under FAR-003 (LOW while contained)."
+    },
+    {
+      "id": "#19 A3.1 NEW-MODEL-IBL-BRDF-LUT (top-7)",
+      "title": "Specular IBL analytic Fresnel; BRDF LUT unconsumed",
+      "claim": "model split-sum missing",
+      "status": "RESOLVED",
+      "evidence": "Batch 287 (DEFERRED_WORK.md:4881); probe-model-ibl.mjs",
+      "surviving_record": "DEFERRED_WORK.md",
+      "migrate_text": "Resolved Batch 287; no migration."
+    },
+    {
+      "id": "#21 A3.2 NEW-MODEL-IBL-REFERENCE-FRAME",
+      "title": "IBL cubemaps sampled in eye space",
+      "claim": "reflections swim with the camera",
+      "status": "RESOLVED",
+      "evidence": "Batch 287 (DEFERRED_WORK.md:4885)",
+      "surviving_record": "DEFERRED_WORK.md",
+      "migrate_text": "Resolved Batch 287; no migration."
+    },
+    {
+      "id": "#20 A3.3 NEW-MODEL-DIRECT-BRDF-PARITY",
+      "title": "Direct-light geometry term diverges (Schlick-GGX vs Smith-joint; f90)",
+      "claim": "models mis-shaded vs WebGL",
+      "status": "RESOLVED",
+      "evidence": "Batch 355 (WEBGPU_DEBUGGING_LOG.md:1640; QUEUE_2026-06-22.md:60); ModelPBRComplete.wgsl:1159-1182 smithVisibilityGGX + f90",
+      "surviving_record": "WEBGPU_DEBUGGING_LOG.md Batch 355",
+      "migrate_text": "Resolved Batch 355; no migration."
+    },
+    {
+      "id": "#23 A3.4 NEW-MODEL-VS-MOTION-GATE",
+      "title": "VS runs prev-frame morph/skin/instance deformation unconditionally",
+      "claim": "double per-vertex deformation cost when TAA off",
+      "status": "SUPERSEDED",
+      "evidence": "ModelPBRComplete.wgsl:1026-1044 still computes prevPositionMC/worldPosPrevious with no motionFlags guard (only the FS output is gated, :249); row C9 P2-4 (QUEUE_2026-07-15_CAMPAIGN9.md:385) holds it behind a measured-bottleneck gate; ISSUES_AND_FIXED_BUGS.md §3.1 status:verify",
+      "surviving_record": "QUEUE_2026-07-15_CAMPAIGN9.md P2-4",
+      "migrate_text": "Still true in ModelPBRComplete.wgsl:1026-1044; the C9 P2-4 row owns it behind a measurement gate — cite that row."
+    },
+    {
+      "id": "#22 A3.5",
+      "title": "Merged material/instance/IBL bind groups rebuilt every frame",
+      "claim": "per-frame createBindGroup per primitive",
+      "status": "RESOLVED",
+      "evidence": "WebGPUModelRenderer.ts:452-454 _mergedMaterialBindGroupCache{,Silhouette,Translucent}; :4715-4719 identity-keyed reuse documented as allocation-free on settled frames",
+      "surviving_record": "code",
+      "migrate_text": "Resolved; no migration."
+    },
+    {
+      "id": "#24 (already-documented)",
+      "title": "KHR_materials_anisotropy heuristic lobe",
+      "claim": "approximation",
+      "status": "SUPERSEDED",
+      "evidence": "DEFERRED_WORK.md:5222 table row 'Approximated'; FEATURE_INVENTORY.md:1247 FEAT-SURVEY-04 gated on Phase 8a",
+      "surviving_record": "FEATURE_INVENTORY.md FEAT-SURVEY-04",
+      "migrate_text": "No migration."
+    },
+    {
+      "id": "#25 A3.7",
+      "title": "BRDF LUT dispatch wasted",
+      "claim": "generated every device init, unused",
+      "status": "RESOLVED",
+      "evidence": "consumed since Batch 287 (bindings 37/38)",
+      "surviving_record": "DEFERRED_WORK.md NEW-MODEL-IBL-BRDF-LUT",
+      "migrate_text": "Resolved; no migration."
+    },
+    {
+      "id": "#26 A3.6",
+      "title": "Clearcoat Fresnel basis (VdotH) and direct-only dimming",
+      "claim": "coat does not attenuate ambient/IBL; basis differs from WebGL",
+      "status": "STILL-VALID",
+      "evidence": "ModelPBRComplete.wgsl:3012-3016: F_cc = fresnelSchlick(VdotH, 0.04)*ccFactor; only `direct` is dimmed",
+      "surviving_record": "none",
+      "migrate_text": "ModelPBRComplete.wgsl:3012-3016 still evaluates the clearcoat Fresnel with VdotH and applies (1-F_cc) to the direct term only, so the coat never attenuates the IBL/ambient base and there is no coat IBL lobe; WebGL's LightingStageFS applies the NdotV-based dimming to the whole base color (LOW, cosmetic on coated assets)."
+    },
+    {
+      "id": "#10 A2.1 NEW-SPLAT-SORT-CONSUME-INDEXES (top-10a)",
+      "title": "Gaussian splats drawn in buffer order",
+      "claim": "CPU back-to-front sort dropped",
+      "status": "RESOLVED",
+      "evidence": "Batch 288 (DEFERRED_WORK.md:4892); FEATURE_INVENTORY.md:624 sorted-index storage buffer; probe-splat-sort.mjs",
+      "surviving_record": "DEFERRED_WORK.md",
+      "migrate_text": "Resolved Batch 288; no migration."
+    },
+    {
+      "id": "#11 A2.2 NEW-POINTCLOUDLOD-SLOT255-OFFBYONE",
+      "title": "PointCloudLOD slot-255 broadcast clobbers a compacted index",
+      "claim": "one wrong + one dropped point per full workgroup",
+      "status": "RESOLVED",
+      "evidence": "Batch 293 (DEFERRED_WORK.md:4893); PointCloudLOD.wgsl:54-56, :281-282 document the dedicated offset",
+      "surviving_record": "DEFERRED_WORK.md",
+      "migrate_text": "Resolved Batch 293; no migration."
+    },
+    {
+      "id": "#12 A2.3 NEW-DECOUPLEDSCAN-FORWARD-PROGRESS-GUARD",
+      "title": "Decoupled-lookback scan relies on forward progress WebGPU lacks",
+      "claim": "potential livelock, no iteration cap",
+      "status": "RESOLVED",
+      "evidence": "C4 queue 2026-07-04 (DEFERRED_WORK.md:4944); WebGPUDecoupledScan.ts:305-310 occupancy gate canDispatch()",
+      "surviving_record": "DEFERRED_WORK.md",
+      "migrate_text": "Resolved; no migration."
+    },
+    {
+      "id": "#13 A2.4 (encoder half)",
+      "title": "GPU LOD path creates its own encoder + queue.submit per primitive and hardcodes Pass.OPAQUE",
+      "claim": "extra submits per point cloud per frame",
+      "status": "RESOLVED",
+      "evidence": "WebGPUPointCloudRenderer.ts:48-66 and :2382-2384 record into the frame encoder when available; pass derives from pointCloud._opaquePass ?? Pass.OPAQUE (:1950)",
+      "surviving_record": "code",
+      "migrate_text": "Resolved; no migration."
+    },
+    {
+      "id": "#14",
+      "title": "WebGPUPointCloudSortDispatcher allocates two capacity-sized Uint32Arrays per sort and a DataView per element",
+      "claim": "per-sort GC churn",
+      "status": "STILL-VALID",
+      "evidence": "WebGPUPointCloudSortDispatcher.ts:301 `new Uint32Array(r.capacity)`; :79 and :98 `new DataView(new ArrayBuffer(4))` per call",
+      "surviving_record": "none",
+      "migrate_text": "WebGPUPointCloudSortDispatcher.ts:301 still allocates capacity-sized key/index arrays on every sort() and floatToSortableUint (:79, :98) allocates a DataView per element; hoist both to grown instance scratch (LOW, only on the GPU-sort path)."
+    },
+    {
+      "id": "#15",
+      "title": "LOD bands hardcoded fractions of far; screenSpaceRadius unused",
+      "claim": "no geometric-error SSE",
+      "status": "RESOLVED",
+      "evidence": "WebGPUPointCloudRenderer.ts:2376-2395 dispatch takes geometricError, projectionScale, targetPixelSpacing and lodFarDistance",
+      "surviving_record": "code",
+      "migrate_text": "Resolved; no migration."
+    },
+    {
+      "id": "#16 A2.5",
+      "title": "WebGPUPointCloudRenderer 2168-LOC undecomposed",
+      "claim": "file-size rule",
+      "status": "SUPERSEDED",
+      "evidence": "now WebGPUPointCloudRenderer.ts 2,896 lines; DX-10 (QUEUE_2026-08-29_RESEARCH_DISPATCH.md:169) holds the point-cloud/compute renderers behind C16-10 per R-2026-09-02-4; FIX_QUEUE fleet1 row '54 of 272 files exceed 1,000 lines'",
+      "surviving_record": "QUEUE_2026-08-29_RESEARCH_DISPATCH.md DX-10",
+      "migrate_text": "Owned by DX-10; cite it."
+    },
+    {
+      "id": "#17 (already-documented)",
+      "title": "Voxel ray-marcher non-RTE camera",
+      "claim": "precision risk on planetary voxels",
+      "status": "SUPERSEDED",
+      "evidence": "Campaign 18 owns voxel modernization (QUEUE_2026-08-09_CAMPAIGN18.md); the inventory tracks it",
+      "surviving_record": "QUEUE_2026-08-09_CAMPAIGN18.md / FEATURE_INVENTORY.md §C voxels",
+      "migrate_text": "No migration."
+    },
+    {
+      "id": "#18 A2.7 (§5 rank 7)",
+      "title": "GPU LOD as WebGL2 within-tile decimation backport",
+      "claim": "backport candidate",
+      "status": "SUPERSEDED",
+      "evidence": "folded into the §5 backport table item below",
+      "surviving_record": "§5 backport table (this judgement)",
+      "migrate_text": "See §5 backport table item."
+    },
+    {
+      "id": "#27 A4.1 NEW-GROUNDATMOSPHERE-RENDERER-DEAD (top-13b)",
+      "title": "WebGPUGroundAtmosphereRenderer produces an unbound buffer",
+      "claim": "dead path mislabeled SHIPPED",
+      "status": "RESOLVED",
+      "evidence": "Batch 239 deleted renderer + GroundAtmosphere.wgsl as superseded (DEFERRED_WORK.md:4905); files absent from the tree; FEATURE_INVENTORY.md:608 now describes the in-GlobeTerrain path",
+      "surviving_record": "DEFERRED_WORK.md",
+      "migrate_text": "Resolved Batch 239; no migration."
+    },
+    {
+      "id": "#28, #34",
+      "title": "Ground-atmosphere renderer dynamicLighting flag / per-frame 16-float alloc",
+      "claim": "defects in WebGPUGroundAtmosphereRenderer",
+      "status": "STALE",
+      "evidence": "the renderer was deleted in Batch 239",
+      "surviving_record": "none",
+      "migrate_text": "Code deleted; no migration."
+    },
+    {
+      "id": "#29 (already-documented)",
+      "title": "Stale 'resolver NOT invoked' comment in ground primitive renderer",
+      "claim": "comment contradicts behaviour",
+      "status": "RESOLVED",
+      "evidence": "rg 'resolver.*NOT invoked' in WebGPUGroundPrimitiveRenderer.js: no match",
+      "surviving_record": "none",
+      "migrate_text": "Comment gone; no migration."
+    },
+    {
+      "id": "#30",
+      "title": "GroundPolyline geometricToleranceOverMeter hardcoded",
+      "claim": "extrusion diverges at extreme zoom",
+      "status": "STILL-VALID",
+      "evidence": "WebGPUGroundPolylineRenderer.js:211 const GEOMETRIC_TOLERANCE_OVER_METER = 1.0e-6 packed at misc.w (:157)",
+      "surviving_record": "none",
+      "migrate_text": "WebGPUGroundPolylineRenderer.js:211 still packs a constant 1e-6 for czm_geometricToleranceOverMeter (misc.w, :157) where WebGL's PolylineShadowVolumeVS uses the per-frame UniformState value; plumb the live value through the UBO (LOW, extreme near/far zoom only)."
+    },
+    {
+      "id": "#31 A4.6",
+      "title": "Depth-sample classifiers discard on exact surfaceDepth == 0.0",
+      "claim": "float-equality discard",
+      "status": "STILL-VALID",
+      "evidence": "WebGPUGroundPrimitiveRenderer.js:1105, :1172, :1189",
+      "surviving_record": "none",
+      "migrate_text": "The three ground-primitive depth-sample entries still discard on `surfaceDepth == 0.0` (WebGPUGroundPrimitiveRenderer.js:1105, :1172, :1189) after unpacking the RGBA globe depth; a sentinel comparison against the packed encoding's zero (or a <= epsilon) would be robust to sampler filtering (LOW)."
+    },
+    {
+      "id": "#32 A4.5",
+      "title": "Ground renderers are ~2850/~3200-LOC god-files with inline WGSL",
+      "claim": "file-size rule",
+      "status": "SUPERSEDED",
+      "evidence": "WebGPUGroundPrimitiveRenderer.js 2,856 / WebGPUGroundPolylineRenderer.js 3,242 today; FIX_QUEUE fleet1 rows (GroundPrimitiveRenderer.js:1961 867-line function; GroundPolylineRenderer.js:2367) and DX-10 'six remaining >1,000-line renderers'",
+      "surviving_record": "QUEUE_2026-08-29_RESEARCH_DISPATCH.md DX-10; FIX_QUEUE_2026-08-27_AUDIT_FINDINGS.md fleet1 rows",
+      "migrate_text": "Owned by DX-10 / FIX_QUEUE fleet1; cite them."
+    },
+    {
+      "id": "#33 A4.7",
+      "title": "Grid material thickness lacks per-pixel derivatives",
+      "claim": "viewport-ratio approximation",
+      "status": "RESOLVED",
+      "evidence": "WebGPUGroundPrimitiveRenderer.js:1153-1160 analytic +1px st derivatives (stDX/stDY) re-evaluating the window->eye->UV chain",
+      "surviving_record": "code",
+      "migrate_text": "Resolved; no migration."
+    },
+    {
+      "id": "#35",
+      "title": "TRIANGLE_FAN silently falls back to triangle-list",
+      "claim": "wrong topology",
+      "status": "STILL-VALID",
+      "evidence": "WebGPUPrimitiveCommands.ts:977-981 returns 'triangle-list' with a comment that the caller should convert",
+      "surviving_record": "none",
+      "migrate_text": "WebGPUPrimitiveCommands.ts:977-981 still maps PrimitiveType.TRIANGLE_FAN to 'triangle-list' with a comment that the caller should have converted; no caller does the conversion, so a fan geometry renders wrong topology instead of failing loudly. Convert fans to lists at geometry extraction or throw (LOW; no shipped Cesium geometry emits fans)."
+    },
+    {
+      "id": "#36 (already-documented)",
+      "title": "Primitive clipping-plane receive is a no-op placeholder",
+      "claim": "clipping silently ignored on primitives",
+      "status": "SUPERSEDED",
+      "evidence": "WebGPUPrimitiveCommands.ts:1594-1595 documents 'clipping remains an intentional no-op here' pending an ownership path; :3211/:3865 placeholder slots",
+      "surviving_record": "in-code note WebGPUPrimitiveCommands.ts:1594-1595 + FEATURE_INVENTORY.md §C",
+      "migrate_text": "Documented no-op; cite FEATURE_INVENTORY §C."
+    },
+    {
+      "id": "#37 A5.1",
+      "title": "Billboard eyeOffset silently dropped on WebGPU (also Label.eyeOffset)",
+      "claim": "per-billboard eye-space offset never applied",
+      "status": "STILL-VALID",
+      "evidence": "rg eyeOffset finds nothing in packages/engine/Source/Renderer/WebGPU nor in Shaders/WebGPU/Collections; BillboardCollection.wgsl:5-18 instance layout has no eyeOffset lane; chunks/functions/csm_eyeOffset.wgsl exists with zero consumers; WEBGPU_PARITY_REPORT_2026-07-01.md:288 row 17 marked it 'partial — Newly surfaced; add to DEFERRED_WORK' and no DEFERRED_WORK/queue row exists (only the origin half was fixed, BillboardCollection.wgsl:225-232)",
+      "surviving_record": "none (WEBGPU_PARITY_REPORT_2026-07-01.md row 17 only)",
+      "migrate_text": "Billboard.eyeOffset and Label.eyeOffset are still ignored by the WebGPU collection path: the instance layout in Shaders/WebGPU/Collections/BillboardCollection.wgsl:5-18 carries no eye-offset lane, WebGPUBillboardRenderer.js never reads bb._eyeOffset, and the csm_eyeOffset.wgsl chunk has no consumer, while WebGL applies it through the EYE_OFFSET attribute (BillboardCollection.js:74, :1423, :1749). The 2026-07-01 parity report row 17 flagged it as untracked and it was never given a row; entities that use eyeOffset for depth-sorting labels render at the wrong depth on WebGPU (HIGH, no owning row)."
+    },
+    {
+      "id": "#38 #118 A14.2 NEW-COLLECTIONS-DIRTY-GATE (top-9)",
+      "title": "Billboard/Label rebuild + full-upload every frame",
+      "claim": "largest collections regression",
+      "status": "RESOLVED",
+      "evidence": "resident-instance manager Batch 229 (billboards) / 232 (points, labels), fold into base Batch 302/332 (DEFERRED_WORK.md:4895-4899)",
+      "surviving_record": "DEFERRED_WORK.md NEW-COLLECTIONS-DIRTY-GATE / NEW-RESIDENT-INSTANCE-BUFFER-MGR",
+      "migrate_text": "Resolved; no migration."
+    },
+    {
+      "id": "#39 A5.3 NEW-COLLECTION-RENDERER-BASE",
+      "title": "Four collection renderers duplicate ~3000 LOC",
+      "claim": "no shared base",
+      "status": "RESOLVED",
+      "evidence": "Batches 302/307/332, 5/5 renderers on WebGPUCollectionRendererBase (DEFERRED_WORK.md:4996)",
+      "surviving_record": "DEFERRED_WORK.md",
+      "migrate_text": "Resolved Batch 332; no migration."
+    },
+    {
+      "id": "#40 (already-documented)",
+      "title": "Collections velocity path adds prevPosHigh+prevPosLow in f32",
+      "claim": "RTE violation in motion vectors",
+      "status": "SUPERSEDED",
+      "evidence": "BillboardCollection.wgsl:735 still `prevPosHigh + prevPosLow`; documented as accepted in the DEFERRED_WORK collections velocity entry",
+      "surviving_record": "DEFERRED_WORK.md (collections TAA velocity entry)",
+      "migrate_text": "Documented accepted approximation; cite the ledger entry."
+    },
+    {
+      "id": "#41 A5.4 NEW-COLLECTIONS-ERROR-SENTINELS",
+      "title": "No error sentinels in collection renderers",
+      "claim": "CLAUDE.md mandate unmet",
+      "status": "RESOLVED",
+      "evidence": "Batch 302 + Batch 331 all five (DEFERRED_WORK.md:4997); Tools/collection-sentinels-check.mjs",
+      "surviving_record": "DEFERRED_WORK.md",
+      "migrate_text": "Resolved Batch 331; no migration."
+    },
+    {
+      "id": "#42 A5.6",
+      "title": "updateWebGPUBillboards/Polylines declared async without await",
+      "claim": "sync throws become unhandled rejections",
+      "status": "PARTIAL",
+      "evidence": "WebGPUBillboardRenderer.js no longer exports an async updater; WebGPUPolylineRenderer.js:1567 is still `async function updateWebGPUPolylines` (one `await` in the file — verify it is inside this function)",
+      "surviving_record": "none",
+      "migrate_text": "WebGPUPolylineRenderer.js:1567 still declares updateWebGPUPolylines async while the collection ignores the returned promise; confirm whether the file's single await lives in that function and, if not, drop `async` so synchronous throws surface as in the other four renderers (LOW)."
+    },
+    {
+      "id": "#43",
+      "title": "Billboard show lane written 1.0 unconditionally after CPU pre-cull",
+      "claim": "dead shader branch",
+      "status": "STILL-VALID",
+      "evidence": "WebGPUBillboardRenderer.js:196 pre-cull predicate; :271-272 `out[offset + 20] = 1.0; // show`",
+      "surviving_record": "none",
+      "migrate_text": "WebGPUBillboardRenderer.js:196 pre-culls non-show billboards and :272 still writes miscFlags.show = 1.0 for every emitted instance, so the WGSL `show < 0.5` degenerate-quad branch is unreachable; keep the CPU pre-cull and delete the lane + branch (LOW cleanup)."
+    },
+    {
+      "id": "#44 A5.7",
+      "title": "disableDepthTestDistance forces clipPos.z = 0 with no w<=0 guard",
+      "claim": "points behind the camera can pass",
+      "status": "STILL-VALID",
+      "evidence": "BillboardCollection.wgsl:417-424 sets clipPos.z = 0.0 with no check on clipPos.w",
+      "surviving_record": "none",
+      "migrate_text": "BillboardCollection.wgsl:417-424 (and the point-primitive twin) still set clipPos.z = 0.0 for disableDepthTestDistance with no `clipPos.w <= 0` guard, so a billboard behind the camera inside the distance can be projected onto the near plane instead of clipped (LOW)."
+    },
+    {
+      "id": "#54 A7.1 NEW-CSM-SOFT-SHADOW-PCF (top-10b)",
+      "title": "CSM drops soft-shadow PCF + normal shading",
+      "claim": "softShadows silent no-op for cascades",
+      "status": "RESOLVED",
+      "evidence": "Batch 289 code, verified Batches 297/298 (DEFERRED_WORK.md:4886); CSM_DESIGN.md:181-191; probe-csm-soft-shadow.mjs",
+      "surviving_record": "DEFERRED_WORK.md",
+      "migrate_text": "Resolved Batch 289; no migration."
+    },
+    {
+      "id": "#55 A7.2 NEW-CLUSTERED-ASSIGN-BOUNDS-DIRTY",
+      "title": "Cluster assign ignores bounds changes",
+      "claim": "stale bins on resize/FOV",
+      "status": "RESOLVED",
+      "evidence": "Batch 572 / Q10 2026-07-04 (ISSUES_AND_FIXED_BUGS.md §3.1; DEFERRED_WORK.md:4952)",
+      "surviving_record": "DEFERRED_WORK.md",
+      "migrate_text": "Resolved Batch 572; no migration."
+    },
+    {
+      "id": "#56 A7.3",
+      "title": "CSM cast cull SoA centerX/Y/Z/radius dead-write",
+      "claim": "per-frame dead work",
+      "status": "STILL-VALID",
+      "evidence": "WebGPUCSMCastPass.ts:534-545 fills SoA fields that are never uploaded (comment says 'CPU-readable copy ... stay in lockstep')",
+      "surviving_record": "none",
+      "migrate_text": "WebGPUCSMCastPass.ts:534-545 still writes centerX/centerY/centerZ/radius per cast command per cascade per frame while only `interleaved` is uploaded; either use the SoA (debug surface) or drop it (LOW, deliberate per comment)."
+    },
+    {
+      "id": "#57 A7.4",
+      "title": "Clustered dispatch _scratchEyeLights.slice per frame",
+      "claim": "per-frame array alloc",
+      "status": "STILL-VALID",
+      "evidence": "WebGPUClusteredLightingDispatcher.ts:371",
+      "surviving_record": "none",
+      "migrate_text": "WebGPUClusteredLightingDispatcher.ts:371 still passes `this._scratchEyeLights.slice(0, activeCount)` per dispatch; pass a subarray/count instead (LOW, opt-in feature)."
+    },
+    {
+      "id": "#58 A7.5",
+      "title": "Per-cast-pass Cartesian3 allocations",
+      "claim": "contradicts no-alloc scratch claim",
+      "status": "STILL-VALID",
+      "evidence": "WebGPUCSMCastPass.ts:467-470 `new Cartesian3(cameraPositionWC.x, ...)` + `?? new Cartesian3()` each cast",
+      "surviving_record": "none",
+      "migrate_text": "WebGPUCSMCastPass.ts:467-470 still constructs a Cartesian3 for the camera position on every cast invocation; hold a module scratch and set x/y/z (LOW)."
+    },
+    {
+      "id": "#59",
+      "title": "WebGPU CSM hardcodes 4 cascades; WebGL supports 1",
+      "claim": "numberOfCascades=1 not honoured",
+      "status": "PARTIAL",
+      "evidence": "WebGPUCSMRenderer.ts:405 `_cascadeCount = config?.cascadeCount ?? DEFAULT_CASCADE_COUNT` is configurable, but no site in Renderer/WebGPU reads ShadowMap.numberOfCascades (ShadowMap.js:376-378, :502-504 accept 1 or 4)",
+      "surviving_record": "none",
+      "migrate_text": "WebGPUCSMRenderer.ts:405 accepts a cascadeCount config, but nothing threads ShadowMap._numberOfCascades (ShadowMap.js:502-504, 1 or 4) into it, so a WebGL-valid numberOfCascades:1 shadow map still runs four cascades on WebGPU; verify with a probe and wire the count (LOW-MEDIUM)."
+    },
+    {
+      "id": "#60 (already-documented)",
+      "title": "CSM Slice 3/4 unshipped",
+      "claim": "altitude-adaptive splits, moon cascades, VSM, WebGL parity",
+      "status": "SUPERSEDED",
+      "evidence": "CSM_DESIGN.md:16-17 still lists Slice 3/4; C12 celestial rows own moon lighting",
+      "surviving_record": "CSM_DESIGN.md slice table",
+      "migrate_text": "No migration."
+    },
+    {
+      "id": "#61 A7.6 NEW-CLUSTER-MULTIFRUSTUM-BOUNDS",
+      "title": "Cluster bounds not per multi-frustum slice",
+      "claim": "approximate binning in deep scenes",
+      "status": "SUPERSEDED",
+      "evidence": "premise reconciled 2026-07-05 as PERF-only (DEFERRED_WORK.md:4950-4964, probe-clustered-multifrustum.mjs); C9 P2-3 gated row",
+      "surviving_record": "QUEUE_2026-07-15_CAMPAIGN9.md P2-3",
+      "migrate_text": "Owned by C9 P2-3; cite it."
+    },
+    {
+      "id": "#62",
+      "title": "Cast-pass duck typing with no full-skip sentinel",
+      "claim": "empty shadow maps go undiagnosed",
+      "status": "STILL-VALID",
+      "evidence": "rg 'skipped|drawnCount' in WebGPUCSMCastPass.ts: none",
+      "surviving_record": "none",
+      "migrate_text": "WebGPUCSMCastPass.ts still `continue`s silently on every unresolved command shape and never counts drawn-vs-skipped per cascade; a cascade that draws 0 of N>0 commands should emit a throttled permanent warning (LOW, diagnostic)."
+    },
+    {
+      "id": "#63",
+      "title": "Misleading 'Z grows positive forward' comments in cluster shaders",
+      "claim": "maintenance trap",
+      "status": "STILL-VALID",
+      "evidence": "ClusterBounds.wgsl:37-39 text unchanged",
+      "surviving_record": "none (Campaign 16 comment standard would catch it on touch)",
+      "migrate_text": "ClusterBounds.wgsl:37-39 still states Cesium WebGPU eye-space Z grows positive forward; eye-space is -Z forward and the negation is what makes the slice math work. Fix the wording when C16 touches the file (LOW)."
+    },
+    {
+      "id": "#74 A9.1 NEW-CAMERA-JITTER-ACCUMULATION",
+      "title": "TAA jitter accumulates on a stable frustum",
+      "claim": "unbounded jitter",
+      "status": "RESOLVED",
+      "evidence": "Batch 322 (DEFERRED_WORK.md:4912); Batch 358 follow-up NEW-TAA-PROJECTION-JITTER-OVERWRITTEN",
+      "surviving_record": "DEFERRED_WORK.md",
+      "migrate_text": "Resolved Batch 322; no migration."
+    },
+    {
+      "id": "#75 A9.2",
+      "title": "Per-model previous-frame clip in single-precision world space",
+      "claim": "RTE violation in velocity",
+      "status": "STILL-VALID",
+      "evidence": "ModelPBRComplete.wgsl:1035-1042 `worldPosPrevious = previousModelMatrix * prevPositionMC; previousClipPos = camera.previousViewProjection * worldPosPrevious` with a comment calling the RTE form a current-frame-only optimisation; no ledger row (DEFERRED_WORK.md:5990 only notes the interstage-location budget)",
+      "surviving_record": "none",
+      "migrate_text": "ModelPBRComplete.wgsl:1035-1042 still forms the previous-frame clip position as previousViewProjection * previousModelMatrix * prevPositionMC in f32 world space while the current frame uses mvpRelativeToEye; the review accepted this as transient multi-pixel velocity noise during fast fly-to (MEDIUM, matches the voxel TAA pattern). A previousViewProjectionRelativeToEye + previousModelMatrixRelativeToEye pair would close it; no row owns it."
+    },
+    {
+      "id": "#76 A9.3",
+      "title": "Shared CameraUniforms chunk lacks the DP-H41 previousViewProjection tail",
+      "claim": "CLAUDE.md rule violated in Globe/Primitive shaders",
+      "status": "STILL-VALID",
+      "evidence": "Shaders/WebGPU/chunks/structs/CameraUniforms.wgsl:24-44 ends at modelViewProjectionRelativeToEye (368 bytes) with no previousViewProjection; sole consumer WebGPUBufferPrimitiveRenderer.ts emits no velocity",
+      "surviving_record": "none",
+      "migrate_text": "The shared chunk structs/CameraUniforms.wgsl:24-44 still omits the previousViewProjection tail that CLAUDE.md's 64-bit/RTE section mandates for every renderer's CameraUniforms; its only consumer (WebGPUBufferPrimitiveRenderer.ts) has no velocity path, so this is DRIFT between rule and chunk rather than a rendering defect. Either add the tail to the chunk or scope the rule to velocity-emitting renderers (LOW)."
+    },
+    {
+      "id": "#77 A9.4 NEW-TAA-PIPELINE-ORDER-RECONCILE",
+      "title": "TAA runs pre-tonemap contradicting TAA_DESIGN",
+      "claim": "design/code mismatch",
+      "status": "RESOLVED",
+      "evidence": "Batch 290 decided pre-tonemap; TAA_DESIGN.md:211-212 RECONCILED 2026-06-23",
+      "surviving_record": "TAA_DESIGN.md:211",
+      "migrate_text": "Resolved Batch 290; no migration."
+    },
+    {
+      "id": "#78 A9.5",
+      "title": "Edge emitter non-RTE model-space position",
+      "claim": "precision loss at planetary scale (downgraded LOW)",
+      "status": "STILL-VALID",
+      "evidence": "WebGPUEdgeVisibilityEmitter.ts vertex layout (:402-403, :1173) carries no high/low pair; only the eye-depth varying notes the RTE law (:107-112)",
+      "surviving_record": "none",
+      "migrate_text": "WebGPUEdgeVisibilityEmitter.ts still transforms edge vertices with a single-precision model-space position and non-RTE MVP (vertex stride at :402-403); the review downgraded this to LOW because WebGL's edge stage has the same precision regime, so it is a divergence from WebGPU's own RTE model path only."
+    },
+    {
+      "id": "#79",
+      "title": "extractEdgeGeometry O(triangles) with string-keyed maps",
+      "claim": "per-frame cost if not cached",
+      "status": "STILL-VALID",
+      "evidence": "single call site WebGPUModelRenderer.ts:8585; key scheme in WebGPUEdgeVisibilityEmitter.ts:562+ unverified",
+      "surviving_record": "none",
+      "migrate_text": "extractEdgeGeometry (WebGPUEdgeVisibilityEmitter.ts:562) has one call site at WebGPUModelRenderer.ts:8585; confirm it runs once per primitive at load and replace the template-string edge keys with numeric keys (LOW)."
+    },
+    {
+      "id": "#80 A9.6",
+      "title": "TAA debug snapshot (taaStats) never wired",
+      "claim": "design acceptance criterion unmet",
+      "status": "STILL-VALID",
+      "evidence": "rg taaStats|framesSinceJump across packages/engine/Source: none; git log -S taaStats: none",
+      "surviving_record": "none",
+      "migrate_text": "The TAA_DESIGN.md taaStats/framesSinceJump/lastJitter debug snapshot is still not exposed anywhere in the engine (no matches in packages/engine/Source); either wire it into CesiumDebug or strike the acceptance criterion from TAA_DESIGN.md (LOW, doc/instrument)."
+    },
+    {
+      "id": "#81",
+      "title": "TAA disocclusion floor of 1.0 m",
+      "claim": "scale-fragile near the camera",
+      "status": "STILL-VALID",
+      "evidence": "TAA.wgsl:313-314 `max(disocclusionThreshold, 1.0)`",
+      "surviving_record": "none",
+      "migrate_text": "TAA.wgsl:313-314 still rejects history with `depthDelta > max(abs(eyePosCurr.z)*0.001, 1.0)`, so at street-level (eye depth < 1 km) the 1 m constant dominates; a per-pixel-footprint floor would hold across altitudes (LOW)."
+    },
+    {
+      "id": "#82 (intentional)",
+      "title": "Edge emitter single-target fallback drops id/depth outputs",
+      "claim": "by design",
+      "status": "STALE",
+      "evidence": "intentional-webgpu-specific verdict",
+      "surviving_record": "none",
+      "migrate_text": "No migration."
+    },
+    {
+      "id": "#83 A9.7",
+      "title": "TAA params bind group recreated every frame",
+      "claim": "per-frame createBindGroup",
+      "status": "RESOLVED",
+      "evidence": "WebGPUTAAEffect.ts:668-680 two-slot cache keyed on source/history/depth/motion/gBuffer views",
+      "surviving_record": "code",
+      "migrate_text": "Resolved; no migration."
+    },
+    {
+      "id": "#84 #105 A10.1/A12.1 NEW-GLOBE-RENDERBUNDLE-CACHE (top-14)",
+      "title": "Globe pass re-records a render bundle every frame",
+      "claim": "net-negative bundle path",
+      "status": "RESOLVED",
+      "evidence": "Batch 292 dropped the inline bundle path as net-negative (DEFERRED_WORK.md:4904); probe-globe-bundle-cost.mjs",
+      "surviving_record": "DEFERRED_WORK.md",
+      "migrate_text": "Resolved Batch 292; no migration."
+    },
+    {
+      "id": "#85 (already-documented)",
+      "title": "GPU sort keys + bitonic sort never consumed",
+      "claim": "wasted per-frame work",
+      "status": "RESOLVED",
+      "evidence": "NEW-GPU-SORT-PIPELINE-PHASE-3 resolved 2026-07-04 (DEFERRED_WORK.md:5494), CPU-side reorder consumer wired; Q-24 (FIX_QUEUE:99) tracks a readback-ring invariant",
+      "surviving_record": "DEFERRED_WORK.md NEW-GPU-SORT-PIPELINE-PHASE-3; FIX_QUEUE Q-24",
+      "migrate_text": "Resolved; no migration."
+    },
+    {
+      "id": "#86 A10.2 NEW-BINDGROUPCACHE-EVICTION",
+      "title": "WebGPUBindGroupCache has no eviction",
+      "claim": "unbounded growth",
+      "status": "RESOLVED",
+      "evidence": "Batch 293 bounded LRU + age eviction (DEFERRED_WORK.md:4916)",
+      "surviving_record": "DEFERRED_WORK.md",
+      "migrate_text": "Resolved Batch 293; no migration."
+    },
+    {
+      "id": "#87",
+      "title": "WebGPUSubgroupUtils is dead code",
+      "claim": "WGSL-generation methods never called",
+      "status": "STILL-VALID",
+      "evidence": "no importer of WebGPUSubgroupUtils in packages/engine/Source (spec-only reference at WebGPUPerformanceManager.ts:1087 comment); QUEUE_2026-07-06_CAMPAIGN7.md:110 marked C6-SUBGROUP-COMPUTE-FINISH STALE because the subgroup kernel variants were wired inline, not through the utils",
+      "surviving_record": "none (QUEUE_2026-07-06_CAMPAIGN7.md:110 records the inline wiring)",
+      "migrate_text": "Renderer/WebGPU/WebGPUSubgroupUtils.ts still has no production importer (spec only); the shipped subgroup variants (FrustumCull mainSubgroups, PointCloudLOD computeMainSubgroups) were written inline. Either route those kernels through the utils or retire the module (LOW; Principle 7 check done — no doc claims it as scaffolding for pending work)."
+    },
+    {
+      "id": "#88 A10.4 NEW-RENDERBUNDLE-AGING-DECOUPLE",
+      "title": "Bundle eviction tick gated behind perfManager._config.renderBundles",
+      "claim": "aging decoupled from use",
+      "status": "SUPERSEDED",
+      "evidence": "WebGPUPerformanceManager.ts:397-403 still gates bundleMgr.beginFrame() on _config.renderBundles while WebGPUEnvironmentRenderer.js:1242 admits bundles independently; open row C9 P2-1 (QUEUE_2026-07-15_CAMPAIGN9.md:382); ISSUES §3.1 left open deliberately",
+      "surviving_record": "QUEUE_2026-07-15_CAMPAIGN9.md P2-1",
+      "migrate_text": "Still true at WebGPUPerformanceManager.ts:397-403; owned by C9 P2-1 — cite it."
+    },
+    {
+      "id": "#89 A10.5 NEW-RESOURCEMANAGER-KEY-EVICTION",
+      "title": "ResourceManager sampler/BGL caches use JSON.stringify keys and never evict",
+      "claim": "unbounded, order-sensitive",
+      "status": "SUPERSEDED",
+      "evidence": "WebGPUResourceManager.ts:82 and :104 still JSON.stringify(descriptor); no evict/cap; open row C9 P2-2 (:383) left open as low growth risk",
+      "surviving_record": "QUEUE_2026-07-15_CAMPAIGN9.md P2-2",
+      "migrate_text": "Still true at WebGPUResourceManager.ts:82/:104; owned by C9 P2-2 — cite it."
+    },
+    {
+      "id": "#90 A10.6",
+      "title": "DecoupledScan allocates a bind group and a zeros array per dispatch",
+      "claim": "per-frame churn on the opt-in scan path",
+      "status": "STILL-VALID",
+      "evidence": "WebGPUDecoupledScan.ts:328 `new Uint32Array(...)` zeros; :337 createBindGroup per dispatch",
+      "surviving_record": "none",
+      "migrate_text": "WebGPUDecoupledScan.ts:328-337 still allocates a zero-fill array and a fresh GPUBindGroup on every dispatch of the opt-in deterministic LOD scan; cache the bind group on buffer identity and clear the partitions buffer with clearBuffer (LOW, default-off path)."
+    },
+    {
+      "id": "#91",
+      "title": "Pipeline cache warm()/getPipelineSync double-count misses",
+      "claim": "hitRate skewed",
+      "status": "STILL-VALID",
+      "evidence": "WebGPURenderPipelineCache.ts:568, :663, :718 each `stats.misses++`; no `warmed` counter",
+      "surviving_record": "none",
+      "migrate_text": "WebGPURenderPipelineCache.ts increments stats.misses at :568, :663 and :718 (warm, sync probe and async acquire), so one logical acquisition can count up to three misses and CesiumDebug.cacheStats() hitRate reads low; add a separate warmed counter and guard the sync-probe path (LOW, instrument)."
+    },
+    {
+      "id": "#92",
+      "title": "TimestampProfiler drops passes beyond MAX_PASSES_PER_FRAME silently",
+      "claim": "no sentinel",
+      "status": "PARTIAL",
+      "evidence": "cap raised 32 -> 128 (WebGPUTimestampProfiler.ts:184); overflow now counted in _droppedPassCount (:438-440) but never logged",
+      "surviving_record": "none",
+      "migrate_text": "WebGPUTimestampProfiler.ts:438-440 counts dropped passes in _droppedPassCount (cap now 128 passes) but nothing reports the counter; surface it in CesiumDebug.gpuPassCost() output so a profile that silently truncates is visible (LOW, instrument)."
+    },
+    {
+      "id": "#93",
+      "title": "Bitonic sort issues one compute pass + UBO write per (k,j) step",
+      "claim": "~28 passes per sort",
+      "status": "STILL-VALID",
+      "evidence": "WebGPUGPUSortKeysDispatcher.ts:599-604 beginComputePass inside the per-stage loop",
+      "surviving_record": "none",
+      "migrate_text": "WebGPUGPUSortKeysDispatcher.ts:599-604 still opens a compute pass per bitonic stage; fold the stages into one pass with per-stage dynamic-offset params (LOW; GPU sort is threshold-gated)."
+    },
+    {
+      "id": "#94 (intentional)",
+      "title": "Decoupled scan / GPU cull not backportable",
+      "claim": "roadmap note",
+      "status": "STALE",
+      "evidence": "intentional verdict",
+      "surviving_record": "none",
+      "migrate_text": "No migration."
+    },
+    {
+      "id": "#95 A11.1 NEW-WEBGPUDERIVEDCOMMAND-ORPHAN (top-13a)",
+      "title": "WebGPUDerivedCommand orphaned scaffolding mislabeled SHIPPED",
+      "claim": "flags never read, zero callers",
+      "status": "RESOLVED",
+      "evidence": "Batch 239 resolved-as-keep, Batch 248 rewrote it as the real descriptor-variant factory NEW-DERIVEDCOMMAND-VARIANT-FACTORY (DEFERRED_WORK.md:4906); FEATURE_INVENTORY.md:515 retagged",
+      "surviving_record": "DEFERRED_WORK.md NEW-DERIVEDCOMMAND-VARIANT-FACTORY",
+      "migrate_text": "Resolved Batch 248; no migration."
+    },
+    {
+      "id": "#96 A11.2",
+      "title": "WebGPUDrawCommand.clone() drops fields",
+      "claim": "depthForTranslucentClassification etc. not propagated",
+      "status": "SUPERSEDED",
+      "evidence": "clone (WebGPUDrawCommand.ts:728-760) now copies bindGroupResolvers and dynamic offsets; FIX_QUEUE_2026-08-27_AUDIT_FINDINGS.md:1388 fleet1 row (WebGPUDrawCommand.ts:716) lists the remaining omissions, status D2 (in flight)",
+      "surviving_record": "FIX_QUEUE_2026-08-27_AUDIT_FINDINGS.md fleet1 row WebGPUDrawCommand.ts:716 (D2)",
+      "migrate_text": "Owned by the FIX_QUEUE fleet1 clone() row (D2 in flight); cite it."
+    },
+    {
+      "id": "#97 A11.3",
+      "title": "applyPerEncoderState skips setStencilReference(0)",
+      "claim": "stale non-zero reference across draws",
+      "status": "SUPERSEDED",
+      "evidence": "RenderStateToPipelineVariant.ts:403-405 still `if (stencilRef !== 0)`; FIX_QUEUE fleet1 row RenderStateToPipelineVariant.ts:383 QUEUED",
+      "surviving_record": "FIX_QUEUE_2026-08-27_AUDIT_FINDINGS.md fleet1 row RenderStateToPipelineVariant.ts:383",
+      "migrate_text": "Owned by the FIX_QUEUE fleet1 row; cite it."
+    },
+    {
+      "id": "#98 A11.4 (findings.json:2630-2636)",
+      "title": "Pipeline cache key relies on descriptor.name for shader-variant identity",
+      "claim": "latent aliasing",
+      "status": "RESOLVED",
+      "evidence": "Batch 825 folded shader-module identity into WebGPURenderPipelineCache keys (CLAUDE.md 'Pipeline-key aliasing is handled STRUCTURALLY'); DEFERRED_WORK.md:12540-12546 records that this review downgraded it to LOW on a reasoning later shown false for sibling renderers; Tools/visual-regression/pipeline-key-aliasing.spec.mjs guards it",
+      "surviving_record": "DEFERRED_WORK.md NEW-WEBGPU-PIPELINE-KEY-LOG-DEPTH / NEW-WEBGPU-PIPELINE-KEY-DEFINE-AXIS-GENERAL (:12540); CLAUDE.md section",
+      "migrate_text": "Resolved Batch 825; the lesson (LOW downgrade was wrong) is already recorded at DEFERRED_WORK.md:12543. No migration beyond repointing the two citations of findings.json:2630-2636."
+    },
+    {
+      "id": "#99 A11.5",
+      "title": "glCullFaceToGPU maps FRONT_AND_BACK to 'back' with no skip",
+      "claim": "cull-everything renders back-culled geometry",
+      "status": "STILL-VALID",
+      "evidence": "RenderStateToPipelineVariant.ts:228-232 (unreachable in current scenes)",
+      "surviving_record": "none",
+      "migrate_text": "RenderStateToPipelineVariant.ts:228-232 still returns 'back' for CullFace.FRONT_AND_BACK and no caller performs the documented skip; unreachable in shipped scenes but a silent wrong-output path if a render state ever asks for it (LOW)."
+    },
+    {
+      "id": "#100 A11.6",
+      "title": "webglToWebGPUBlendFactor falls back to 'one' for CONSTANT_ALPHA",
+      "claim": "silent wrong blend",
+      "status": "STILL-VALID",
+      "evidence": "WebGLStateConverters.ts:33-34 constants commented out as 'not mapped by WebGPU'",
+      "surviving_record": "none",
+      "migrate_text": "WebGLStateConverters.ts:33-34 still leaves CONSTANT_ALPHA / ONE_MINUS_CONSTANT_ALPHA unmapped (falls to 'one'); WebGPU has 'constant'/'one-minus-constant' with setBlendConstant, which the sibling converter already handles (LOW, unreachable today)."
+    },
+    {
+      "id": "#101 #108 #138 A16.2 god-objects",
+      "title": "WebGPUContext.ts / WebGPUSceneRenderer.ts remain growing god-objects",
+      "claim": "decomposition losing to feature growth",
+      "status": "SUPERSEDED",
+      "evidence": "sizes now WebGPUContext.ts 7,914 / WebGPUSceneRenderer.ts 5,140 / WebGPUModelRenderer.ts 9,284 / WebGPUPrimitiveCommands.ts 5,769; FIX_QUEUE fleet1 rows (WebGPUContext.ts:1 '54 of 272 files exceed 1,000 lines', :5177 '~9 responsibilities'); DX-07/08/09/10 queued under R-2026-08-29-3; ARCHITECTURE_REVIEW_PLAN_2026-09-02.md:11-13",
+      "surviving_record": "QUEUE_2026-08-29_RESEARCH_DISPATCH.md DX-07..10; FIX_QUEUE fleet1 size rows",
+      "migrate_text": "Owned by DX-07..10; cite them with the current sizes."
+    },
+    {
+      "id": "#102",
+      "title": "detectIndexFormat byte-size heuristic misclassifies padded small buffers",
+      "claim": "uint16 with tiny count read as uint32",
+      "status": "STILL-VALID",
+      "evidence": "WebGPUDrawCommand.ts:552-566 `bytesPerIndex >= 4 -> uint32`",
+      "surviving_record": "none",
+      "migrate_text": "WebGPUDrawCommand.detectIndexFormat (WebGPUDrawCommand.ts:552-566) still infers uint32 from resolveBufferSize/indexCount >= 4, which misclassifies a 4-byte-padded uint16 buffer with indexCount 1; it is a fallback (renderers pass indexFormat), so keep it as a debug assert only (LOW)."
+    },
+    {
+      "id": "#103 A11.7",
+      "title": "Shader-module cache key packs sourceId in 8 bits with no overflow assert",
+      "claim": "silent aliasing past 256 sources",
+      "status": "RESOLVED",
+      "evidence": "WebGPUShaderModuleCache.ts:20-28 documents the `((defines>>>0)*0x100)+sourceId` key; :161-167 throw RangeError on sourceId > 0xff or defines > 0xffffffff",
+      "surviving_record": "code + CLAUDE.md shader-module-cache section",
+      "migrate_text": "Resolved; no migration."
+    },
+    {
+      "id": "#104 A11.8",
+      "title": "createShadowDerivedCommand shadow-acne flags are a no-op",
+      "claim": "cullMode/depthBias never applied",
+      "status": "RESOLVED",
+      "evidence": "the flag-stamping statics were removed in Batch 248; DerivedCommandType.SHADOW throws as a tracked follow-up (WebGPUDerivedCommand.ts:51, :451)",
+      "surviving_record": "DEFERRED_WORK.md NEW-DERIVEDCOMMAND-VARIANT-FACTORY",
+      "migrate_text": "Resolved Batch 248; no migration."
+    },
+    {
+      "id": "#106 A12.2",
+      "title": "Scene ID render target allocated but never rendered into",
+      "claim": "WebGL's per-frustum ID pass has no WebGPU equivalent; dead allocation",
+      "status": "STILL-VALID",
+      "evidence": "WebGPUSceneFramebuffer.ts:24 `_idTarget`, :83 getter, :263-265 idFramebuffer, :302 destroy; no ID-pass dispatch in the frustum loop; no FIX_QUEUE/DEFERRED row mentions _idTarget",
+      "surviving_record": "none",
+      "migrate_text": "WebGPUSceneFramebuffer.ts still allocates a full-screen rgba8unorm + depth24plus-stencil8 `_idTarget` (:24, :83, :263-265) that no pass renders into and no external caller reads; picking uses the separate WebGPUPickFramebuffer instead. Either delete the target (ledger says no accumulation-style scaffolding depends on it — re-derive per Principle 7 before removal) or document it as the planned ID-pass destination (LOW-MEDIUM: one full-resolution allocation per scene framebuffer)."
+    },
+    {
+      "id": "#107 A12.3",
+      "title": "Per-slice render state smuggled onto context/uniformState via untyped casts",
+      "claim": "false premise that the two objects always differ",
+      "status": "PARTIAL",
+      "evidence": "context-side _currentFrustumInvProj/_currentFrustumNearFar/_currentFrustumIndex no longer exist; uniformState._logDepthEncodeNearFar is still written through `uniformState as unknown as {...}` (WebGPUSceneRendererFrustumLoop.ts:182) and declared in cesium-js-types.d.ts:650, read by WebGPUBillboardRenderer.js:697",
+      "surviving_record": "none",
+      "migrate_text": "The context-side smuggled fields are gone, but the frustum loop still publishes the per-slice log-depth encode through an untyped cast on uniformState (WebGPUSceneRendererFrustumLoop.ts:182; declared cesium-js-types.d.ts:650; consumed at WebGPUBillboardRenderer.js:691-697). A typed FrustumSliceState would finish the cleanup (LOW)."
+    },
+    {
+      "id": "#109",
+      "title": "Per-frustum render-pass re-open rebuilds attachment arrays via map/spread",
+      "claim": "per-frustum allocation",
+      "status": "STILL-VALID",
+      "evidence": "WebGPUSceneRenderer.ts:2052-2055 `rawColor?.map((a) => ({...a, loadOp: 'load'}))` in _resumeScenePass; :2205 second site",
+      "surviving_record": "none",
+      "migrate_text": "WebGPUSceneRenderer.ts:2052-2055 and :2205 still rebuild colour-attachment arrays with map+spread on every scene-pass resume (per frustum and per depth-copy); pre-build the clear/load descriptor pair per resize (LOW)."
+    },
+    {
+      "id": "#110 A12.5",
+      "title": "executeBatchIndirect single-command fallback swallows errors",
+      "claim": "no warn-once",
+      "status": "RESOLVED",
+      "evidence": "WebGPUSceneRenderer.ts:654-672 now routes the runLen<2 catch through _getWarnedCommands",
+      "surviving_record": "code",
+      "migrate_text": "Resolved; no migration."
+    },
+    {
+      "id": "#111",
+      "title": "Local variable named `any` in shadow-cascade stats",
+      "claim": "style",
+      "status": "STILL-VALID",
+      "evidence": "WebGPUSceneRenderer.ts:5064 `let any = false;`",
+      "surviving_record": "none",
+      "migrate_text": "WebGPUSceneRenderer.ts:5064 still declares `let any = false;` (a legal identifier that reads like the banned type); rename on next touch (trivial)."
+    },
+    {
+      "id": "#112, #113, #114, #149, #151, #152, #168, #169, #177, #179, #185, #186, #187, #193, #205, #207, #208, #209, #213, #214, #215, #217, #234 (confirming positives / intentional)",
+      "title": "Confirmed-clean and intentional-by-design entries",
+      "claim": "no defect",
+      "status": "STALE",
+      "evidence": "sidecar verdicts confirmed-real-no-defect or intentional-webgpu-specific; nothing to act on",
+      "surviving_record": "none",
+      "migrate_text": "No migration (positives can be summarised in one sentence in the new review's 'healthy parts' section if desired)."
+    },
+    {
+      "id": "#115, #3, #51, #165, #198 (false positives)",
+      "title": "Reviewer false-positives",
+      "claim": "n/a",
+      "status": "STALE",
+      "evidence": "sidecar verdict false-positive",
+      "surviving_record": "none",
+      "migrate_text": "No migration."
+    },
+    {
+      "id": "#116 A13 NEW-CAPABILITY-GETTER-CODIFY",
+      "title": "Codify capability-getter convention; migrate residual isWebGPU branches",
+      "claim": "CLAUDE.md should state the supportsX rule; ViewportQuad.js:144 remains",
+      "status": "PARTIAL",
+      "evidence": "DEFERRED_WORK.md:4867 NEARLY CLOSED Batch 303 (residual ViewportQuad.js:144 re-filed as NEW-MATERIAL-PER-BACKEND-SHADER-SOURCE, C11 CANDIDATE_REGISTER.md:329 P1); CLAUDE.md still has no `supports*`/capability-getter sentence (rg 'capabilit' in CLAUDE.md: 0 hits) although .clinerules:125 names GraphicsContext.ts as the capability source of truth",
+      "surviving_record": "DEFERRED_WORK.md NEW-CAPABILITY-GETTER-CODIFY + NEW-MATERIAL-PER-BACKEND-SHADER-SOURCE",
+      "migrate_text": "The convention (Scene code branches on context.supportsX getters, never isWebGPU/rendererType) is enforced in code since Batch 303 but is still not written into CLAUDE.md §2 (no 'capability' sentence exists); the last sanctioned branch, ViewportQuad.js:144, is owned by NEW-MATERIAL-PER-BACKEND-SHADER-SOURCE (C11 candidate register P1). Add the one-sentence rule to CLAUDE.md when the pointer edit for CAMPAIGN_STATE.md lands."
+    },
+    {
+      "id": "#117 #2 A14.1/A1.1 NEW-GLOBE-BINDGROUP-CACHE (top-8)",
+      "title": "Globe surface allocates 3-4 bind groups per tile per pass per frame",
+      "claim": "dominant per-frame allocation",
+      "status": "RESOLVED",
+      "evidence": "Batch 241 WebGPUGlobeBindGroupCache.ts (DEFERRED_WORK.md:4894); Batch 292 dynamic-offset group 0 (:4903); probe-globe-bindgroup-cache.mjs; CesiumDebug.globeBindGroups()",
+      "surviving_record": "DEFERRED_WORK.md",
+      "migrate_text": "Resolved Batches 241/292; no migration."
+    },
+    {
+      "id": "#119 A14.3",
+      "title": "createEffectsBindGroup runs per tile on the globe path",
+      "claim": "repack + WeakMap lookups per tile",
+      "status": "RESOLVED",
+      "evidence": "WebGPUGlobeSurfaceRenderer.ts:1029-1034 passes `owner: frameState` ('one bounded effects slot shared by every terrain tile in this frame')",
+      "surviving_record": "code",
+      "migrate_text": "Resolved; no migration."
+    },
+    {
+      "id": "#120 A14.4",
+      "title": "GPU culler reallocates Float32Array(count*4) per frustum per frame",
+      "claim": "GC churn on dense scenes",
+      "status": "STILL-VALID",
+      "evidence": "WebGPUSceneRenderer.ts:3887 `const sphereData = new Float32Array(count * 4)` (two sites in the file)",
+      "surviving_record": "none",
+      "migrate_text": "WebGPUSceneRenderer.ts:3887 (and the translucent twin) still allocate a Float32Array(count*4) bounding-sphere upload buffer on every GPU-cull dispatch; hold a grown scratch on the renderer (LOW; GPU cull is hysteresis-gated)."
+    },
+    {
+      "id": "#121 A14.6",
+      "title": "Effects BGL cache builds long string keys per call",
+      "claim": "hot-path string churn",
+      "status": "STILL-VALID",
+      "evidence": "WebGPUEffectsBindGroup.js:1743 resKey, :1776 `${ownerKey}#${resKey}` per call",
+      "surviving_record": "none",
+      "migrate_text": "WebGPUEffectsBindGroup.js:1743-1776 still concatenates a multi-segment string key on every createEffectsBindGroup call; with the globe now memoised per frame (owner: frameState) the cost is per-consumer-per-frame rather than per-tile, so this is LOW."
+    },
+    {
+      "id": "#122 A14.5",
+      "title": "sortGaussianSplatsBackToFront slices the command array every frame",
+      "claim": "per-frame array alloc",
+      "status": "RESOLVED",
+      "evidence": "WebGPUSceneRenderer.ts:500-514 sorts the active range in place via sortActiveCommandRange",
+      "surviving_record": "code",
+      "migrate_text": "Resolved; no migration."
+    },
+    {
+      "id": "#123 A14.7 NEW-GLOBE-DYNAMIC-OFFSET-UBO",
+      "title": "Globe bindGroup0 binds explicit offsets instead of a dynamic-offset BGL",
+      "claim": "blocks bind-group reuse",
+      "status": "RESOLVED",
+      "evidence": "Batch 292 (DEFERRED_WORK.md:4903)",
+      "surviving_record": "DEFERRED_WORK.md",
+      "migrate_text": "Resolved Batch 292; no migration."
+    },
+    {
+      "id": "#124 A14.8",
+      "title": "WebGPUBindGroupCache adoption partial; surface hitRate via CesiumDebug",
+      "claim": "0%-hit-rate flag would have caught regressions",
+      "status": "RESOLVED",
+      "evidence": "globe cache Batch 241, CesiumDebug.globeBindGroups() and cacheStats() (C11-174, DEBUGGING_GUIDE.md:228-229) expose hitRate",
+      "surviving_record": "DEBUGGING_GUIDE.md command table",
+      "migrate_text": "Resolved; no migration."
+    },
+    {
+      "id": "#125 A14.9",
+      "title": "Full-buffer writeBuffer per frame in collection renderers",
+      "claim": "dirty-region uploads needed",
+      "status": "RESOLVED",
+      "evidence": "resident-instance manager per-instance sub-range writes Batches 229/232 (DEFERRED_WORK.md:4897-4899)",
+      "surviving_record": "DEFERRED_WORK.md NEW-RESIDENT-INSTANCE-BUFFER-MGR",
+      "migrate_text": "Resolved; no migration."
+    },
+    {
+      "id": "§5 backport table + #126-#134, #136 (A15)",
+      "title": "WebGPU-only -> WebGL2 backport ranking (ray-sphere, god rays/SSR/TAA, clouds, motion-vector infra, clustered lighting, IBL/atmosphere LUT, GPU LOD, GTAO)",
+      "claim": "eight ranked backport candidates; OIT-MRT/AutoExposure/HBAO already on WebGL",
+      "status": "PARTIAL",
+      "evidence": "rank 1 shipped Batch 304 (NEW-RAYSPHERE-PRECISION-BACKPORT, raySphereIntersectionInterval.glsl carries the id); rank 4 infra confirmed shared (UniformState.previousViewProjection); ranks 2/3/5/6/7/8 have no DEFERRED_WORK or queue row (rg for WebGL-backport ids: none); CAMPAIGN_ROADMAP_2026-06.md:92 (historical) lists 'backport table follow-ups' as remaining; the C11 ratified principle keeps additive WebGPU features WebGPU-only by default",
+      "surviving_record": "none for ranks 2/3/5/6/7/8 (CAMPAIGN_ROADMAP_2026-06.md:92 historical mention only)",
+      "migrate_text": "Of the review's WebGL2 backport candidates only the precision-stable ray-sphere port shipped (Batch 304, Shaders/Builtin/Functions/raySphereIntersectionInterval.glsl). God rays / SSR / TAA (pure fragment passes; UniformState.previousViewProjection is already populated on WebGL), procedural volumetric clouds, Forward+ clustered lighting (compute->fragment rewrite), IBL prefilter + atmosphere LUT via ComputeEngine, GPU point-cloud LOD decimation and GTAO have no owning row; render bundles, decoupled scan, subgroups, GPU sort/cull/HiZ are not backportable. OIT-MRT, AutoExposure and HBAO already exist on WebGL and must not be counted as fork-exclusive. Record the six unowned candidates as a single GAP row if WebGL parity of the post-process stack is still a goal."
+    },
+    {
+      "id": "#135 A15.1",
+      "title": "Inventory implies OIT-MRT/AutoExposure/AO are fork-exclusive",
+      "claim": "tags mislead future audits",
+      "status": "PARTIAL",
+      "evidence": "FEATURE_INVENTORY.md:791 'WebGPUAutoExposure ... (SHIPPED)' carries no WebGL-parity note; :815 OIT entry is contained under FAR-003; :1323 dual-source OIT correctly stays in §D as never wired",
+      "surviving_record": "FEATURE_INVENTORY.md",
+      "migrate_text": "FEATURE_INVENTORY.md:791 (WebGPUAutoExposure) and the WebGPU AO entry still read as fork-added without noting that Scene/AutoExposure.js and the GLSL AmbientOcclusionGenerate stage exist upstream; add a 'parity port, not fork-exclusive' note so a backport audit does not double-count them (LOW, doc)."
+    },
+    {
+      "id": "#137 A16.1 NEW-WEBGL-ONLY-CLUSTER-EXPORT-GATING (top-5)",
+      "title": "Unconditional cluster re-exports break the webgl-only variant build",
+      "claim": "ESM named-export linking error",
+      "status": "RESOLVED",
+      "evidence": "Batch 224 (DEFERRED_WORK.md:4907); scripts/build.js carries the id",
+      "surviving_record": "DEFERRED_WORK.md; BUILD_AND_VARIANTS.md",
+      "migrate_text": "Resolved Batch 224; no migration."
+    },
+    {
+      "id": "#139 A16.4",
+      "title": "WEBGPU_COMPAT_EXEMPTIONS stale vs the cross-variant export surface",
+      "claim": "list is belt-and-suspenders or wrong",
+      "status": "SUPERSEDED",
+      "evidence": "list grew (scripts/bundleVariantPlugin.js:276-283, Batch 457 additions); FIX_QUEUE fleet1 rows: RenderCommand.js:24 missing from exemptions, bundleVariantPlugin.js:222 stub invariant false, :285 substring match over-exempts WebGPUModelMetadataCache.js — all QUEUED",
+      "surviving_record": "FIX_QUEUE_2026-08-27_AUDIT_FINDINGS.md fleet1 rows (bundleVariantPlugin.js:222/:285, RenderCommand.js:24)",
+      "migrate_text": "Owned by the three FIX_QUEUE fleet1 rows; cite them."
+    },
+    {
+      "id": "#140 A16.3 NEW-TS-CONVERT-JS-RENDERERS (+ §6 '25 untyped .js renderers = 35,182 LOC, 71% TS')",
+      "title": "WebGPU renderer only 71% TS by LOC; largest renderers untyped",
+      "claim": "'all-.ts modern island' framing is false",
+      "status": "PARTIAL",
+      "evidence": "today Renderer/WebGPU has 34 .js / 233 .ts files, 40,003 js vs 171,168 ts LOC (~81% TS); WebGPUModelRenderer, WebGPUPrimitiveCommands, WebGPUPointCloudRenderer are now .ts; WebGPUGroundPolylineRenderer.js (3,242), WebGPUGroundPrimitiveRenderer.js (2,856), the Billboard/Label/Point/Polyline renderers, WebGPUShadowMapRenderer.js and WebGPUEnvironmentRenderer.js remain JS; row C11-154 (QUEUE_2026-07-18_CAMPAIGN11.md:1897) owns the conversion; ES6_MODERNIZATION_STATUS.md:64 still says 'all-.ts'",
+      "surviving_record": "QUEUE_2026-07-18_CAMPAIGN11.md C11-154 / DEFERRED_WORK.md NEW-TS-CONVERT-JS-RENDERERS",
+      "migrate_text": "The WebGPU renderer directory is now 34 .js / 233 .ts files (~81% TS by LOC, 40,003 vs 171,168 lines); the ground-polyline, ground-primitive, five collection renderers, shadow-map and environment renderers are still untyped JS. C11-154 / NEW-TS-CONVERT-JS-RENDERERS owns the conversion; ES6_MODERNIZATION_STATUS.md:64's 'all-.ts modern island' sentence is DRIFT and should be corrected to the measured ratio."
+    },
+    {
+      "id": "#141",
+      "title": "ReadonlyArray<any> in WebGPUIndirectDrawManager.submitBatch",
+      "claim": "any-ban violation",
+      "status": "STILL-VALID",
+      "evidence": "WebGPUIndirectDrawManager.ts:334 `submitBatch(commands: ReadonlyArray<any>)`",
+      "surviving_record": "none",
+      "migrate_text": "WebGPUIndirectDrawManager.ts:334 still types submitBatch's parameter as ReadonlyArray<any>, violating the CLAUDE.md any-ban; type it as ReadonlyArray<CesiumAnyDrawCommand> (trivial)."
+    },
+    {
+      "id": "#142 A16.6 NEW-VARIANT-CI (top-15b)",
+      "title": "Variant builds + smoke test not in CI",
+      "claim": "build-graph breaks unautomated",
+      "status": "RESOLVED",
+      "evidence": "Batch 242 `variants` job in .github/workflows/dev.yml (DEFERRED_WORK.md:4908)",
+      "surviving_record": "DEFERRED_WORK.md; BUILD_AND_VARIANTS.md",
+      "migrate_text": "Resolved Batch 242; no migration."
+    },
+    {
+      "id": "#143 A16.7",
+      "title": "GPU-cull readback errors swallowed",
+      "claim": "`.catch(() => {})`",
+      "status": "STILL-VALID",
+      "evidence": "WebGPUSceneRenderer.ts:4115 `.catch(() => {})` on the translucent cull readback",
+      "surviving_record": "none",
+      "migrate_text": "WebGPUSceneRenderer.ts:4115 still discards GPU-cull readback rejections with an empty catch; add a pragma-guarded log plus a permanent counter/console.error past a threshold per the sentinel rule (LOW)."
+    },
+    {
+      "id": "#144",
+      "title": "Pragma-strip regex matches .d.ts files",
+      "claim": "latent foot-gun",
+      "status": "STILL-VALID",
+      "evidence": "scripts/build.js:76 `filter: /\\.[jt]sx?$/`",
+      "surviving_record": "none",
+      "migrate_text": "scripts/build.js:76 still registers the pragma-strip onLoad with /\\.[jt]sx?$/, which also matches .d.ts; harmless today because declaration files never enter the bundle graph, but an explicit `.d.ts` early-return removes the foot-gun (trivial)."
+    },
+    {
+      "id": "#145 (already-documented)",
+      "title": "WGSLShaderBuilder.js still prototype-method style",
+      "claim": "class candidate",
+      "status": "STILL-VALID",
+      "evidence": "24 `.prototype.` sites in Renderer/WebGPU/WGSLShaderBuilder.js (695 lines); ES6_MODERNIZATION_STATUS.md flags it",
+      "surviving_record": "ES6_MODERNIZATION_STATUS.md",
+      "migrate_text": "WGSLShaderBuilder.js still attaches 24 prototype methods instead of using a class; convert under the >10-line touch rule when the file is next edited (LOW, listed in ES6_MODERNIZATION_STATUS.md)."
+    },
+    {
+      "id": "#146",
+      "title": "Variant plugin decisionCache never validates against esbuild resolution",
+      "claim": "synthetic-path assumption undocumented",
+      "status": "STILL-VALID",
+      "evidence": "scripts/bundleVariantPlugin.js:366-394 documents the deliberate synthetic-path optimisation; no sampled build.resolve() assertion",
+      "surviving_record": "none",
+      "migrate_text": "scripts/bundleVariantPlugin.js:366-394 still decides variant aliasing on a synthetic resolved path with no occasional build.resolve() cross-check; add a non-production sampled assertion or document the explicit-.js-extension invariant it relies on (LOW)."
+    },
+    {
+      "id": "#0, #1, #4 (A1 already-documented)",
+      "title": "Globe FS debug branches in production WGSL; eager dual-upload reproject; WGSL ocean enhancements",
+      "claim": "design divergences already documented",
+      "status": "SUPERSEDED",
+      "evidence": "#0: 24 `tile.time >` branches remain by documented design (DEBUGGING_GUIDE.md:586); #1: IMAGERY_PROJECTION.md + NEW-USEWEBMERCATORT-SINGLE-SOURCE Batch 304; #4: enhanced ocean is opt-in (FIX_QUEUE determination C11-163: classic arm is default)",
+      "surviving_record": "DEBUGGING_GUIDE.md / IMAGERY_PROJECTION.md / FIX_QUEUE C11-163 determination",
+      "migrate_text": "No migration."
+    },
+    {
+      "id": "#5 NEW-UPLOADIMAGESOURCE-OBSERVABILITY; #7 A1.4 NEW-USEWEBMERCATORT-SINGLE-SOURCE; #6 A1.3 NEW-RAYSPHERE-PRECISION-BACKPORT",
+      "title": "uploadImageSource swallowed errors; two-source useWebMercatorT; ray-sphere backport",
+      "claim": "globe/imagery medium-low cluster",
+      "status": "RESOLVED",
+      "evidence": "all three shipped Batch 304 (DEFERRED_WORK.md:5044-5046)",
+      "surviving_record": "DEFERRED_WORK.md",
+      "migrate_text": "Resolved Batch 304; no migration."
+    },
+    {
+      "id": "#8 A1.5",
+      "title": "computeModifiedModelView allocates Float64Array(16) per tile per frame",
+      "claim": "per-tile allocation",
+      "status": "STILL-VALID",
+      "evidence": "WebGPUGlobeSurfaceCameraUB.ts:1325 `return new Float64Array(view)` and :1327 `const result = new Float64Array(16)` inside the helper called per tile (:261)",
+      "surviving_record": "none",
+      "migrate_text": "WebGPUGlobeSurfaceCameraUB.ts:1325-1327 still allocates a Float64Array(16) (or a copy of the view) on every computeModifiedModelView call, which runs per tile per frame (:261); return into a caller-provided scratch (LOW)."
+    },
+    {
+      "id": "#9 A1.6",
+      "title": "GlobeTerrain.wgsl 3,799 lines undecomposed",
+      "claim": "file-size rule",
+      "status": "SUPERSEDED",
+      "evidence": "now 5,880 lines; Wave DX (R-2026-08-29-3) and FIX_QUEUE fleet1 size rows own decomposition; DX-10 covers the >1,000-line renderers, shaders are not explicitly listed",
+      "surviving_record": "MAINTAINER_RULINGS_2026-08-28.md R-2026-08-29-3 / QUEUE_2026-08-29_RESEARCH_DISPATCH.md §6a",
+      "migrate_text": "Owned by Wave DX; note in the new review that GlobeTerrain.wgsl (5,880 lines) is not named in DX-07..10 and needs its own decomposition row."
+    },
+    {
+      "id": "#147, #150, #153, #154, #155, #156 (B1 Scene core)",
+      "title": "Scene.js class conversion / render() growth / latent conflicts / 31 net-new public accessors",
+      "claim": "merge-surface and public-surface inflation",
+      "status": "PARTIAL",
+      "evidence": "class conversions DECLINED as reverts (ISSUES_AND_FIXED_BUGS.md §7.3); latent-conflict premise dissolved by the v1.141-1.143 and v1.144 syncs; the fork-added Scene accessors and Globe cloud*/water facades (#189) are still not catalogued as public surface in FEATURE_INVENTORY.md (rg 'fork-added public|public surface': none)",
+      "surviving_record": "ISSUES_AND_FIXED_BUGS.md §7 (declined lens); none for the public-surface catalogue",
+      "migrate_text": "The fork-added public API surface (roughly 31 Scene accessors such as enableSSR, enableNPROutlines, gpuCullingHint, useHDRCanvasOutput, taaEnabled, snapshotMode, plus the Globe cloud*/atmosphericConditions/water facades) is still not tracked anywhere as a list; FEATURE_INVENTORY.md has no fork-added-public-surface section. Add one so upstream syncs and the C16 attribution pass can see what the fork exports beyond upstream (LOW, doc)."
+    },
+    {
+      "id": "#157 B2 NEW-CAMERA-UPDATEVIEWMATRIX-REVERT",
+      "title": "Camera ctor swaps updateViewMatrix for updateMembers",
+      "claim": "gratuitous divergence; verify not a seeding regression",
+      "status": "RESOLVED",
+      "evidence": "Camera.js:267 still calls updateMembers(this); CameraInternals.js:350 updateMembers calls updateViewMatrix(camera), so the view matrix is seeded (superset); upstream/main Camera.js:232 uses updateViewMatrix(this); revert DECLINED (ISSUES §7.3, FORK_DRIFT §6) — the status:verify is answered by this code read",
+      "surviving_record": "ISSUES_AND_FIXED_BUGS.md §7.3 (declined)",
+      "migrate_text": "Declined revert, verified not a regression (CameraInternals.js:350); no migration beyond closing the status:verify."
+    },
+    {
+      "id": "#158 B2 NEW-CAMERA-JSDOC-RESTORE (top-12)",
+      "title": "~80% public-API JSDoc/@example lost on Camera/SSCC",
+      "claim": "docs stripped",
+      "status": "RESOLVED",
+      "evidence": "Batch 299 (DEFERRED_WORK.md:4930); Camera.js now has 6 @example blocks, SSCC 2",
+      "surviving_record": "DEFERRED_WORK.md",
+      "migrate_text": "Resolved Batch 299; no migration."
+    },
+    {
+      "id": "#159, #160, #161 (B2 decomposition/comments/renames)",
+      "title": "Camera/SSCC decomposition friction, stripped WHY-comments, scratch renames",
+      "claim": "sync friction",
+      "status": "SUPERSEDED",
+      "evidence": "declined lens; comment quality now owned by Campaign 16; MOVE-MAP by NEW-SYNC-MOVEMAP",
+      "surviving_record": "QUEUE_2026-08-10_CAMPAIGN16.md; NEW-SYNC-MOVEMAP",
+      "migrate_text": "No migration."
+    },
+    {
+      "id": "#162 B3 NEW-VOXELELLIPSOIDSHAPE-UPSTREAM-COLLISION",
+      "title": "VoxelEllipsoidShape class rewrite frozen behind an upstream UV-uniform rewrite",
+      "claim": "guaranteed conflict",
+      "status": "RESOLVED",
+      "evidence": "the v1.141-1.143 supervised merge (d06742a2ac) took upstream's file (1,714-line hunk); `git log -- VoxelEllipsoidShape.js` now heads with upstream commits (1f2866dc86 ...)",
+      "surviving_record": "git history d06742a2ac; UPSTREAM_MERGE_2026-06_CHANGELOG.md",
+      "migrate_text": "Resolved by the v1.143 merge; DEFERRED_WORK.md:4929 should be annotated as resolved (add-only ledger)."
+    },
+    {
+      "id": "#163, #164, #166, #167, #170, #171 (B3 tiles/voxel cosmetic conversions)",
+      "title": "Cesium3DTileset/Cesium3DTile/Cesium3DTileStyle/I3SNode class conversions",
+      "claim": "gratuitous drift",
+      "status": "SUPERSEDED",
+      "evidence": "DECLINED (NEW-FORK-MODERNIZATION-REVERT, DEFERRED_WORK.md:4928; FORK_DRIFT §6); the syncs since landed without the predicted conflicts",
+      "surviving_record": "ISSUES_AND_FIXED_BUGS.md §7.3",
+      "migrate_text": "No migration."
+    },
+    {
+      "id": "#172 B4 NEW-UPSTREAM-IMAGERYLAYERS-EMPTY-GUARD (top-4)",
+      "title": "Empty imageryLayers array wrongly triggers ImageryPipelineStage",
+      "claim": "missed upstream fix affecting WebGL",
+      "status": "RESOLVED",
+      "evidence": "Batch 237; ModelRuntimePrimitive.js:237 `model.imageryLayers.length > 0`; Tools/upstream-regression-check.mjs",
+      "surviving_record": "DEFERRED_WORK.md",
+      "migrate_text": "Resolved Batch 237; no migration."
+    },
+    {
+      "id": "#173 B4 NEW-MODEL3DTILECONTENT-DOUBLE-CONVERSION",
+      "title": "Model3DTileContent double class-conversion collision",
+      "claim": "no clean ours/theirs",
+      "status": "RESOLVED",
+      "evidence": "reconciled at the v1.142 merge per the anticipated strategy (DEFERRED_WORK.md:4927; merge stat 451-line hunk)",
+      "surviving_record": "DEFERRED_WORK.md; UPSTREAM_MERGE_2026-06_CHANGELOG.md",
+      "migrate_text": "Resolved; no migration."
+    },
+    {
+      "id": "#174 B4",
+      "title": "WebGPU edge hook injected where upstream rewrote the adjacency algorithm",
+      "claim": "merge hotspot",
+      "status": "RESOLVED",
+      "evidence": "EdgeVisibilityPipelineStage.js reconciled in d06742a2ac (437-line hunk) and subsequent C11 edge rows; probes probe-edge-*.mjs",
+      "surviving_record": "git history; C11 edge rows",
+      "migrate_text": "Resolved by the merge; no migration."
+    },
+    {
+      "id": "#175, #176, #178, #180, #181 (B4 model conversions)",
+      "title": "ModelSceneGraph / animation / Model.js class conversions; small live overlaps",
+      "claim": "gratuitous drift",
+      "status": "SUPERSEDED",
+      "evidence": "declined lens; merges landed",
+      "surviving_record": "ISSUES_AND_FIXED_BUGS.md §7.3",
+      "migrate_text": "No migration."
+    },
+    {
+      "id": "#182 B5 NEW-WEBGL-REPROJECT-BASELINE",
+      "title": "WebGL reprojection forked to per-fragment Mercator with no baseline",
+      "claim": "silent WebGL pixel drift possible",
+      "status": "RESOLVED",
+      "evidence": "Batch 603 (commit 7abb6e199c) added Tools/visual-regression/probe-reproject-baseline.mjs golden guard; DEFERRED_WORK.md:4931 and ROADMAP_AND_DEFERRED_WORK.md:256 still show it open (ledger drift)",
+      "surviving_record": "Tools/visual-regression/probe-reproject-baseline.mjs (Batch 603)",
+      "migrate_text": "Resolved Batch 603; annotate DEFERRED_WORK.md:4931 as shipped."
+    },
+    {
+      "id": "#183, #188, #190 (B5 Globe/TerrainEncoding conversions, companion extractions)",
+      "title": "Globe.js rewrite; TerrainEncoding cosmetic conversion; six companion files",
+      "claim": "merge cost",
+      "status": "SUPERSEDED",
+      "evidence": "declined lens; NEW-SYNC-MOVEMAP owns the routing concern",
+      "surviving_record": "ISSUES_AND_FIXED_BUGS.md §7.3; NEW-SYNC-MOVEMAP",
+      "migrate_text": "No migration."
+    },
+    {
+      "id": "#184 B5",
+      "title": "GlobeSurfaceTileProviderRendering.js 1,818-line companion over the 1,000-line target",
+      "claim": "file-size rule",
+      "status": "STILL-VALID",
+      "evidence": "packages/engine/Source/Scene/GlobeSurfaceTileProviderRendering.js is now 2,657 lines; DX-07..10 and the FIX_QUEUE fleet1 size row cover Renderer/WebGPU only",
+      "surviving_record": "none (Wave DX scope is Renderer/WebGPU)",
+      "migrate_text": "Scene/GlobeSurfaceTileProviderRendering.js has grown to 2,657 lines and is outside the Wave DX decomposition rows (which list Renderer/WebGPU files only); add it to the decomposition list or exempt it explicitly (LOW, DEBT)."
+    },
+    {
+      "id": "#191, #195, #196, #197, #199, #203, #204, #206, #212, #220, #221, #222, #225, #226, #227, #229, #230, #232, #233 (B6/B7/B8/B9/B10 cosmetic-conversion findings) + NEW-FORK-MODERNIZATION-REVERT (top-11) + §7 recommendation 1",
+      "title": "Revert ~15 pure-cosmetic ES6 conversions; widgets 94% scope-creep; Texture/TextureAtlas/Metadata/SampledProperty/TerrainEncoding rewrites",
+      "claim": "largest lever on merge cost",
+      "status": "SUPERSEDED",
+      "evidence": "DECLINED by owner decision 2026-06-11 (DEFERRED_WORK.md:4920, :4928; FORK_DRIFT_ANALYSIS_2026-06-11.md §0/§6; ISSUES_AND_FIXED_BUGS.md §7.3); three upstream syncs since landed cleanly",
+      "surviving_record": "ISSUES_AND_FIXED_BUGS.md §7.3 / DEFERRED_WORK.md NEW-FORK-MODERNIZATION-REVERT (declined)",
+      "migrate_text": "Declined; the new review should carry one line: 'merge-cost minimisation is not a goal (owner 2026-06-11); modernization stays'."
+    },
+    {
+      "id": "#192 #200 B6 NEW-BILLBOARD-UPDATEMODE-ORDERING",
+      "title": "runSharedSceneLogic reorders updateMode ahead of the WebGL2 guard and double-calls it",
+      "claim": "control-flow bug",
+      "status": "RESOLVED",
+      "evidence": "Batch 304 (DEFERRED_WORK.md:5047); BillboardCollection.js carries the id",
+      "surviving_record": "DEFERRED_WORK.md",
+      "migrate_text": "Resolved Batch 304; no migration."
+    },
+    {
+      "id": "#194 B6",
+      "title": "computeBoundingVolumeForFeatureRenderer duplicated in Billboard and PointPrimitive collections",
+      "claim": "near-identical duplicate",
+      "status": "STILL-VALID",
+      "evidence": "BillboardCollection.js:2179 and PointPrimitiveCollection.js:1321 both define it",
+      "surviving_record": "none",
+      "migrate_text": "computeBoundingVolumeForFeatureRenderer is still duplicated at BillboardCollection.js:2179 and PointPrimitiveCollection.js:1321; hoist into a shared Scene helper when either is next touched (LOW)."
+    },
+    {
+      "id": "#201 #202 B7 NEW-CONTEXT-PICKID-MERGE-PRESTAGE (top-15a) + §7 recommendation 4",
+      "title": "Context.js content conflict + PickId.js add/add conflict",
+      "claim": "the only active merge conflicts",
+      "status": "RESOLVED",
+      "evidence": "the v1.141-1.143 supervised merge (d06742a2ac) reconciled PickId.js (13-line hunk; upstream's class kept, normalizedRgba/pickKinds re-applied per FORK_DRIFT §4) and Context.js stays the fork's ES6 class extending GraphicsContext; the v1.144 sync (06bc894d30) landed clean; DEFERRED_WORK.md:4926 has no status marker (ledger drift)",
+      "surviving_record": "git history d06742a2ac / 06bc894d30; FORK_DRIFT_ANALYSIS_2026-06-11.md §4",
+      "migrate_text": "Resolved by the merges; annotate DEFERRED_WORK.md:4926 as resolved."
+    },
+    {
+      "id": "#210 #216 B8 NEW-SYNC-MOVEMAP + §7 recommendation 3 + §8 runbook item",
+      "title": "Scene->companion MOVE-MAP in the Upstream Sync Procedure",
+      "claim": "upstream patches to gutted regions must be routed",
+      "status": "SUPERSEDED",
+      "evidence": "row exists (DEFERRED_WORK.md:4948 catalogue; ROADMAP_AND_DEFERRED_WORK.md:926) but nothing landed: rg 'MOVE-MAP' finds only the review, FORK_DRIFT and ISSUES docs; WEBGPU_MIGRATION_STATUS.md sync procedure has no companion mapping",
+      "surviving_record": "DEFERRED_WORK.md NEW-SYNC-MOVEMAP (open)",
+      "migrate_text": "Still true — no MOVE-MAP exists in any runbook (SceneRenderer.js, ShadowMapComputations.js, the six B5 companions, CameraHelpers/Internals, SSCC helpers); NEW-SYNC-MOVEMAP is the open row, three syncs have been done by hand since. Cite the row."
+    },
+    {
+      "id": "#211 B8 NEW-SHADOWMAP-COMMENT-RESTORE",
+      "title": "~40 upstream rationale comments stripped in ShadowMapComputations.js",
+      "claim": "load-bearing CSM comments lost",
+      "status": "RESOLVED",
+      "evidence": "Batch 299 restored ~25 WHY-comments from merge-base (DEFERRED_WORK.md:4948 inline)",
+      "surviving_record": "DEFERRED_WORK.md",
+      "migrate_text": "Resolved Batch 299; no migration."
+    },
+    {
+      "id": "#218 #219 B9 (Resource urijs fork + contains regressions; TimeIntervalCollection.contains)",
+      "title": "Fork-introduced regressions from the ES6 sweep",
+      "claim": "self-inflicted regressions",
+      "status": "RESOLVED",
+      "evidence": "Session 35 + Batch 237 (third parseUrl divergence fixed; Resource.contains never existed), 17441c3af9 TimeIntervalCollection; Tools/upstream-regression-check.mjs 18 checks (ISSUES §7.1)",
+      "surviving_record": "ISSUES_AND_FIXED_BUGS.md §7.1",
+      "migrate_text": "Resolved; no migration."
+    },
+    {
+      "id": "#223 B9 + §7 recommendations 2 and 6 + §8 CLAUDE.md 'modernization guardrail'",
+      "title": "ES6 modernization shipped as one 657-file mega-commit; adopt hook-or-.d.ts guardrail and `git diff -w`-empty rule for modernization-only commits",
+      "claim": "process rule needed",
+      "status": "STILL-VALID",
+      "evidence": "rg 'mega-commit|diff -w|unreviewable' in CLAUDE.md and .clinerules: none; CLAUDE.md keeps only the 'NEVER modernize a file you're not otherwise touching' rule; landing discipline since moved to WORKER_ISOLATION_AND_BRANCH_HANDOFF.md (squash-only, reviewed lanes)",
+      "surviving_record": "none (WORKER_ISOLATION_AND_BRANCH_HANDOFF.md covers landing size indirectly)",
+      "migrate_text": "No written guardrail says a modernization-only diff must be reviewable under `git diff -w` or must ride with a real hook/.d.ts need; CLAUDE.md's ES6 section only forbids touching untouched files. With C16 rewriting comments across 556 files the same codemod-scale risk recurs; add the two sentences to the ES6 rule (LOW, process)."
+    },
+    {
+      "id": "#224 B9",
+      "title": "EllipsoidGeometryUpdater ES5->ES6 inheritance fix is remediation of fork breakage",
+      "claim": "cascading modernization cost",
+      "status": "STALE",
+      "evidence": "fix landed; observation only",
+      "surviving_record": "none",
+      "migrate_text": "No migration."
+    },
+    {
+      "id": "#228 B10",
+      "title": "Animation.js childNodes text-node regression",
+      "claim": "UI bug from the codemod",
+      "status": "RESOLVED",
+      "evidence": "Animation.js:475-492 prettier-ignore patch, byte-identical to upstream; locked by Tools/upstream-regression-check.mjs (ISSUES §7.1)",
+      "surviving_record": "ISSUES_AND_FIXED_BUGS.md §7.1",
+      "migrate_text": "Resolved; no migration."
+    },
+    {
+      "id": "#231 B10",
+      "title": "Viewer.js pickEntity / Cesium3DTileVectorFeature must-port at next sync",
+      "claim": "active upstream overlap",
+      "status": "RESOLVED",
+      "evidence": "merged in d06742a2ac (Viewer.js 10-line hunk); Viewer.js:7 imports Cesium3DTileVectorFeature, :246 uses it, :280 pickEntityAsync",
+      "surviving_record": "git history",
+      "migrate_text": "Resolved by the v1.143 merge; no migration."
+    },
+    {
+      "id": "§3 parity-drift table (16 rows)",
+      "title": "Where WebGPU is not a faithful WebGL mirror",
+      "claim": "algorithmic divergences not forced by the backend",
+      "status": "PARTIAL",
+      "evidence": "rows A2.1, A3.1, A7.1, A3.2, A3.3, A8.4, A1.4, A7.2 RESOLVED (Batches 288/287/289/287/355/240/304/572); A8.6 owned by NEW-WEBGPU-OIT-WEIGHT-LINEAR-DEPTH; A11.3 owned by FIX_QUEUE fleet1; A3.6 (#26), A5.7 (#44), A4.6 (#31), A11.5 (#99), A11.6 (#100) STILL-VALID LOW; A4.7 (#33) RESOLVED; A9.2 (#75) STILL-VALID MEDIUM accepted",
+      "surviving_record": "per-row (see items)",
+      "migrate_text": "Surviving parity drift not owned by any row: clearcoat basis/dimming (ModelPBRComplete.wgsl:3012-3016), disableDepthTestDistance w<=0 (BillboardCollection.wgsl:417-424), depth-sample float-equality discard (WebGPUGroundPrimitiveRenderer.js:1105/1172/1189), FRONT_AND_BACK and CONSTANT_ALPHA converters (RenderStateToPipelineVariant.ts:228-232, WebGLStateConverters.ts:33-34), and the accepted single-precision previous-frame model clip (ModelPBRComplete.wgsl:1035-1042). All LOW except the last (MEDIUM, accepted)."
+    },
+    {
+      "id": "§4 questionable decisions (A2.3, A10.2, A10.4, A10.5, A11.4, A8.7, A8.8, A11.7, A9.4, A5.6)",
+      "title": "Durability items to revisit",
+      "claim": "ten decisions",
+      "status": "PARTIAL",
+      "evidence": "A2.3, A10.2, A11.4, A11.7, A9.4 RESOLVED; A10.4/A10.5 SUPERSEDED (C9 P2-1/P2-2); A8.7 (#73), A5.6 polyline half (#42) STILL-VALID; A8.8 (#72) PARTIAL",
+      "surviving_record": "per-row",
+      "migrate_text": "See the individual items (#73, #42, #72) for the surviving text."
+    },
+    {
+      "id": "§6 numbers (197-file tree; 5217/4115 LOC; 71% TS; 25 .js renderers = 35,182 LOC; four collection renderers ~3000 LOC dup; no sentinels; smuggled casts)",
+      "title": "Performance & architecture measurements",
+      "claim": "snapshot numbers at Batch 220",
+      "status": "STALE",
+      "evidence": "today: 271 files, WebGPUContext.ts 7,914, WebGPUSceneRenderer.ts 5,140, WebGPUModelRenderer.ts 9,284, WebGPUPrimitiveCommands.ts 5,769, GlobeTerrain.wgsl 5,880; 34 .js / 233 .ts (~81% TS by LOC); collection base + sentinels shipped (Batches 302-332); FIX_QUEUE fleet1: 54 of 272 files exceed 1,000 lines",
+      "surviving_record": "ARCHITECTURE_REVIEW_PLAN_2026-09-02.md:11-13; FIX_QUEUE fleet1 size rows",
+      "migrate_text": "Replace with the current measurements in the new review (271 files; 34 .js / 233 .ts; twelve files over 2,900 lines)."
+    },
+    {
+      "id": "§7 per-bucket verdicts B1-B10 + merge-conflict hotspots + recommendation 5 (restore JSDoc)",
+      "title": "Fork-drift posture and hotspots",
+      "claim": "trending merge-hostile; hotspots list",
+      "status": "SUPERSEDED",
+      "evidence": "FORK_DRIFT_ANALYSIS_2026-06-11.md (owner lens) and ISSUES_AND_FIXED_BUGS.md §7 hold the dispositions; every named hotspot merged in d06742a2ac / 06bc894d30; JSDoc restored Batch 299",
+      "surviving_record": "ISSUES_AND_FIXED_BUGS.md §7; FORK_DRIFT_ANALYSIS_2026-06-11.md",
+      "migrate_text": "No migration (ISSUES §7 is the record)."
+    },
+    {
+      "id": "§8 'New DEFERRED_WORK IDs to add' (25 listed) + sidecar newDeferredItems (49)",
+      "title": "Ledger ids the review asked to create",
+      "claim": "ids to add",
+      "status": "RESOLVED",
+      "evidence": "all 49 ids exist in DEFERRED_WORK.md (2026-06-11 section :4858-5047 or :4715) and are referenced from probes/tools/inventory",
+      "surviving_record": "DEFERRED_WORK.md",
+      "migrate_text": "Done; DEFERRED_WORK.md defines every id, so no id definition is lost when this document is removed."
+    },
+    {
+      "id": "§8 FEATURE_INVENTORY corrections (DerivedCommand retag; GroundAtmosphereRenderer; splat sort to §C; OIT/AutoExposure/HBAO tags; public accessors; §C additions)",
+      "title": "Inventory moves the review requested",
+      "claim": "inventory misleads",
+      "status": "PARTIAL",
+      "evidence": "DerivedCommand (:515), ground atmosphere (:608), splat sort (:624) corrected; §C additions moot (features shipped); OIT/AutoExposure/HBAO parity note (#135) and fork-added public surface (#156/#189) still missing",
+      "surviving_record": "FEATURE_INVENTORY.md",
+      "migrate_text": "Two inventory edits remain: a 'parity port, not fork-exclusive' note on WebGPUAutoExposure/AO (FEATURE_INVENTORY.md:791 area) and a fork-added-public-surface list for the Scene/Globe accessors (LOW, doc)."
+    },
+    {
+      "id": "§8 audit/doc corrections (ARCHITECTURE_PERFORMANCE.md:131; FORK_FEATURE_INVENTORY.md:110; DEFERRED_WORK.md:669-680; IMAGERY_PROJECTION.md:87; TAA_DESIGN.md; CSM_DESIGN.md:327; ES6_MODERNIZATION_STATUS.md)",
+      "title": "Drifted docs that misled reviewers",
+      "claim": "seven doc corrections",
+      "status": "PARTIAL",
+      "evidence": "ARCHITECTURE_PERFORMANCE.md no longer exists; audits/2026-04-30_FORK_FEATURE_INVENTORY.md is itself under this same sweep (its own judgement owns its f16 claim); DEFERRED_WORK split-sum claim moot after Batch 287; IMAGERY_PROJECTION claim removed with Batch 304; TAA_DESIGN.md:211-212 RECONCILED; CSM_DESIGN.md:181-191 records the PCF ship; ES6_MODERNIZATION_STATUS.md:64 still says 'all-.ts modern island'",
+      "surviving_record": "per-doc; none for the ES6 status line",
+      "migrate_text": "ES6_MODERNIZATION_STATUS.md:64 still describes the WebGPU renderer as an all-.ts island while 34 .js files (40,003 lines) remain; correct it to the measured ~81% and point at C11-154 (DRIFT, doc)."
+    },
+    {
+      "id": "§8 CLAUDE.md/runbook updates (capability-getter codify; modernization guardrail; MOVE-MAP + Context/PickId + '5 forked collection files' sync note)",
+      "title": "Rule changes requested",
+      "claim": "three CLAUDE.md edits",
+      "status": "PARTIAL",
+      "evidence": "none of the three sentences exists in CLAUDE.md (rg capabilit/diff -w/MOVE-MAP: 0 hits); enforcement happened in code/process instead (Batch 303 sweep; reviewed squash landings)",
+      "surviving_record": "items #116, #223, NEW-SYNC-MOVEMAP",
+      "migrate_text": "See items #116 (capability-getter sentence), #223 (modernization guardrail) and NEW-SYNC-MOVEMAP (sync runbook) for the surviving text."
+    },
+    {
+      "id": "§9 TOP 15 priorities",
+      "title": "Ranked next actions",
+      "claim": "1 pick, 2 OIT format, 3 tonemapper, 4 imageryLayers guard, 5 variant break, 6 HDR intermediates+bloom, 7 BRDF LUT, 8 globe bind groups, 9 billboard rebuild, 10 splat sort+CSM PCF, 11 revert conversions, 12 Camera JSDoc, 13 orphan scaffolding, 14 globe bundle, 15 Context/PickId + variant CI",
+      "status": "RESOLVED",
+      "evidence": "1-10, 12-15 shipped (Batches 221/252, 222, 223, 237, 224, 225+240, 287, 241/292, 229/232, 288+289, 299, 239/248, 292, merges + 242); 11 declined by owner",
+      "surviving_record": "DEFERRED_WORK.md; ISSUES_AND_FIXED_BUGS.md §2",
+      "migrate_text": "All executed or declined; no migration."
+    },
+    {
+      "id": "Appendix (already-documented list; intentional list; false-positive list; reviewer-calibration note)",
+      "title": "Triage appendix",
+      "claim": "where reviewers were confused",
+      "status": "SUPERSEDED",
+      "evidence": "the calibration lesson ('assuming WebGPU diverges where WebGL has the same limitation') is now Principle 10 in CLAUDE.md (brief from verified premises) and the 2026-09-02 review plan's verifier design",
+      "surviving_record": "CLAUDE.md Principle 10; ARCHITECTURE_REVIEW_PLAN_2026-09-02.md Phase 1 verifiers",
+      "migrate_text": "No migration."
+    },
+    {
+      "id": "Orchestrator verification note (A6.1 and A8.1 CONFIRMED REAL)",
+      "title": "Spot-check record",
+      "claim": "both criticals real at Batch 220",
+      "status": "STALE",
+      "evidence": "both shipped (Batches 221/252 and 222); ISSUES §2 records no open CRITICAL on a default path",
+      "surviving_record": "ISSUES_AND_FIXED_BUGS.md §2",
+      "migrate_text": "No migration."
+    }
+  ],
+  "inbound_refs": [
+    {
+      "file": "migration_doc/README.md",
+      "what": "Index rows at :5 (currency-sweep note) and :229 ('Most-recent deep multi-agent review ... Source of the A-* findings driving the current campaign phases')",
+      "needs": "Delete/repoint the :229 row to the new architecture review and ISSUES_AND_FIXED_BUGS.md; the :5 note is historical and can stay or drop the filename."
+    },
+    {
+      "file": "migration_doc/DEFERRED_WORK.md",
+      "what": "Section header :4858 and 'Source of record' link :4860 for the 2026-06-11 findings block; passing mentions at :4867, :4905, :4948 ('Catalogued in the audit doc + sidecar JSON'), :4996, :12543",
+      "needs": "Add-only ledger: annotate :4860 that the source document was retired into the new review (name it) and that the 49 ids remain defined in this section; :4948's 'catalogued in the sidecar' phrase needs the sidecar's per-finding text for the still-open ids (NEW-MODEL-VS-MOTION-GATE, NEW-RENDERBUNDLE-AGING-DECOUPLE, NEW-RESOURCEMANAGER-KEY-EVICTION, NEW-CLUSTER-MULTIFRUSTUM-BOUNDS, NEW-SYNC-MOVEMAP) — the migrate_text above supplies it; also annotate :4926 (Context/PickId) and :4931 (reproject baseline) as resolved."
+    },
+    {
+      "file": "migration_doc/ISSUES_AND_FIXED_BUGS.md",
+      "what": "Header :2 lists the review among docs it supersedes; :9 'Last full audit sweep'; :11 accuracy note; :23-24 ID-taxonomy rows naming the review as the definition source for `A<n>.<m>` and `B<n>` ids; :76-78 §3.1 'carried from the 2026-06-11 ultra-review'; :347 source table",
+      "needs": "A definition home for the A<n>.<m>/B<n> anchors it cites (the new review's appendix or a one-line note that those anchors map to DEFERRED_WORK NEW-* ids); update :9/:347 to name the 2026-09-02 review as the last sweep."
+    },
+    {
+      "file": "migration_doc/FORK_DRIFT_ANALYSIS_2026-06-11.md",
+      "what": ":4 inputs, :13 'rejects the ultra-review's headline Axis-B recommendation', :45, :112 cross-references",
+      "needs": "Nothing beyond a note; this document is itself an older review under the same sweep and its Axis-B disposition text is already duplicated in ISSUES_AND_FIXED_BUGS.md §7."
+    },
+    {
+      "file": "migration_doc/LARGE_DYNAMIC_OBJECTS_DESIGN.md",
+      "what": ":81 cites `audits/2026-06-11_ULTRA_REVIEW_findings.json:231` for the ~3000-LOC collection duplication",
+      "needs": "Repoint to DEFERRED_WORK.md NEW-COLLECTION-RENDERER-BASE (shipped Batch 332); no number needed."
+    },
+    {
+      "file": "migration_doc/HANDOFF_2026-07-25_TO_SOL.md",
+      "what": ":121 'Previously found and mis-triaged. audits/2026-06-11_ULTRA_REVIEW_findings.json:2630-2636' (A11.4 pipeline-key finding)",
+      "needs": "Historical handoff; repoint to DEFERRED_WORK.md:12540-12546 (NEW-WEBGPU-PIPELINE-KEY-LOG-DEPTH) which already records the mis-triage, or leave as a dead historical citation."
+    },
+    {
+      "file": "Tools/visual-regression/pipeline-key-aliasing.spec.mjs",
+      "what": ":44-48 comment cites `migration_doc/audits/2026-06-11_ULTRA_REVIEW_findings.json:2630-2636` as the prior filing of the aliasing finding",
+      "needs": "Comment-only repoint to DEFERRED_WORK.md:12540 (NEW-WEBGPU-PIPELINE-KEY-LOG-DEPTH) — tools change with no logic, no spec."
+    },
+    {
+      "file": "scripts/archive/README.md",
+      "what": ":11 states the only inbound reference to codemod-split-material-ubo.mjs is the dated `migration_doc/audits/2026-06-11_ULTRA_REVIEW_findings.json`",
+      "needs": "Update the row to say the archived script now has zero inbound references (nothing to define)."
+    },
+    {
+      "file": "migration_doc/WEBGPU_DEBUGGING_LOG.md",
+      "what": ":13196, :13320, :13382 batch scopes 'from the 2026-06-11 ultra-review'; :14165 README currency sweep",
+      "needs": "Nothing (chronological log; the batch entries are self-contained)."
+    },
+    {
+      "file": "migration_doc/CAMPAIGN_ROADMAP_2026-06.md",
+      "what": ":91-94 'remaining med/low ultra-review residue', 'Backport table follow-ups from the ultra-review §5'",
+      "needs": "Nothing (README marks it historical); the §5 backport residue is migrated as an item above."
+    },
+    {
+      "file": "migration_doc/ARCHITECTURE_REVIEW_PLAN_2026-09-02.md",
+      "what": ":14 'the 2026-06-11 ultra review predate all of it'",
+      "needs": "Nothing."
+    },
+    {
+      "file": "migration_doc/DEBUGGING_GUIDE.md, FEATURE_INVENTORY.md, DEV_NOTES_*.md, CSM_DESIGN.md, TAA_DESIGN.md, IMAGERY_PROJECTION.md, BUILD_AND_VARIANTS.md, QUEUE_*.md, Tools/visual-regression/probe-*.mjs, Tools/*.mjs, packages/engine/Source (raySphereIntersectionInterval.glsl, BillboardCollection.js, WebGPUGaussianSplatRenderer.ts, scripts/build.js)",
+      "what": "References to NEW-* ids minted by this review (NEW-PICK-RAY-ASYNC, NEW-GLOBE-BINDGROUP-CACHE, NEW-CSM-SOFT-SHADOW-PCF, etc.)",
+      "needs": "Nothing — every id is defined in DEFERRED_WORK.md, not in the review."
+    }
+  ]
+}

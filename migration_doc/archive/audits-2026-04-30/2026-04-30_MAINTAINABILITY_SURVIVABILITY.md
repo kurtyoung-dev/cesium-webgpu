@@ -38,16 +38,16 @@ What works (verified by reading 12+ representative files):
 
 Best examples (templates for new files):
 
-- [WebGPUDeviceLossRecovery.ts](../../packages/engine/Source/Renderer/WebGPU/WebGPUDeviceLossRecovery.ts) — 331 lines, single responsibility, every public method has a JSDoc, the state-machine type is exported, the `dispose()` race-handling is explicit.
-- [WebGPUTAAEffect.ts](../../packages/engine/Source/Renderer/WebGPU/WebGPUTAAEffect.ts) — 656 lines, the byte-offset UBO comment is the kind of artifact that saves a future debug session.
-- [FeatureRendererKey.js](../../packages/engine/Source/Renderer/FeatureRendererKey.js) — 167 lines, every enum slot has a comment explaining what it owns.
+- [WebGPUDeviceLossRecovery.ts](../../../packages/engine/Source/Renderer/WebGPU/WebGPUDeviceLossRecovery.ts) — 331 lines, single responsibility, every public method has a JSDoc, the state-machine type is exported, the `dispose()` race-handling is explicit.
+- [WebGPUTAAEffect.ts](../../../packages/engine/Source/Renderer/WebGPU/WebGPUTAAEffect.ts) — 656 lines, the byte-offset UBO comment is the kind of artifact that saves a future debug session.
+- [FeatureRendererKey.js](../../../packages/engine/Source/Renderer/FeatureRendererKey.js) — 167 lines, every enum slot has a comment explaining what it owns.
 
 Worst examples (will be hard to navigate next month):
 
-- [WebGPUContext.ts](../../packages/engine/Source/Renderer/WebGPU/WebGPUContext.ts) at 4363 lines — central nervous system; everyone reads it; the absolute size penalizes IDE navigation.
-- [WebGPUGlobeSurfaceRenderer.ts](../../packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceRenderer.ts) at 3933 lines — mixes 4 concerns (tile pipeline cache, tile uniform packing, debug-fragment-mode probe, clip-distances variant).
-- [WebGPUSceneRenderer.ts](../../packages/engine/Source/Renderer/WebGPU/WebGPUSceneRenderer.ts) at 3626 lines.
-- [WebGPUGroundPolylineRenderer.js](../../packages/engine/Source/Renderer/WebGPU/WebGPUGroundPolylineRenderer.js) at 2752 lines — JavaScript not TypeScript, sits at the awkward intersection of a still-broken VS extrusion bug and a working color/depth path.
+- [WebGPUContext.ts](../../../packages/engine/Source/Renderer/WebGPU/WebGPUContext.ts) at 4363 lines — central nervous system; everyone reads it; the absolute size penalizes IDE navigation.
+- [WebGPUGlobeSurfaceRenderer.ts](../../../packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceRenderer.ts) at 3933 lines — mixes 4 concerns (tile pipeline cache, tile uniform packing, debug-fragment-mode probe, clip-distances variant).
+- [WebGPUSceneRenderer.ts](../../../packages/engine/Source/Renderer/WebGPU/WebGPUSceneRenderer.ts) at 3626 lines.
+- [WebGPUGroundPolylineRenderer.js](../../../packages/engine/Source/Renderer/WebGPU/WebGPUGroundPolylineRenderer.js) at 2752 lines — JavaScript not TypeScript, sits at the awkward intersection of a still-broken VS extrusion bug and a working color/depth path.
 
 **Patterns that will confuse future-you:**
 

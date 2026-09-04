@@ -30,11 +30,11 @@ These ground-truth corrections came up while running counts. Each one matters be
 
 ### 1a. Layering & abstractions
 
-The boundary is enforced via three mechanisms in [`packages/engine/Source/Renderer/GraphicsContext.ts`](../../packages/engine/Source/Renderer/GraphicsContext.ts):
+The boundary is enforced via three mechanisms in [`packages/engine/Source/Renderer/GraphicsContext.ts`](../../../packages/engine/Source/Renderer/GraphicsContext.ts):
 
 1. Abstract base class with a runtime `_verifyAbstractMethods()` check at registration time (`:615–668`). Both `Context.js` and `WebGPUContext.ts` must implement `beginFrame`, `endFrame`, `clear`, `resize`, `draw`, `getRendererString`, `readPixels`, `createViewportQuadCommand`, `destroy` plus 11 named getters or registration throws.
 2. `FeatureRenderer` registry with sub-typed interfaces (`CollectionRenderer`, `PrimitiveCommandRenderer`, `SystemRenderer`) at `:316–430`.
-3. `ContextRegistry` static at [`packages/engine/Source/Renderer/ContextRegistry.ts`](../../packages/engine/Source/Renderer/ContextRegistry.ts) tracks every live context for split-screen / multi-view scenarios.
+3. `ContextRegistry` static at [`packages/engine/Source/Renderer/ContextRegistry.ts`](../../../packages/engine/Source/Renderer/ContextRegistry.ts) tracks every live context for split-screen / multi-view scenarios.
 
 The contract is enforced at compile time for `.ts` subclasses (TypeScript parity) and at runtime for `Context.js`. Belt-and-suspenders for a JS+TS hybrid codebase.
 
@@ -54,7 +54,7 @@ The `Scene/` boundary is "soft" rather than "broken" — most violations are the
 
 ### 1b. Extension points
 
-A new feature plugs in like this (worked example: any of the lazy-loaded entries in [WebGPUFeatureRenderers.ts:515–547](../../packages/engine/Source/Renderer/WebGPU/WebGPUFeatureRenderers.ts)):
+A new feature plugs in like this (worked example: any of the lazy-loaded entries in [WebGPUFeatureRenderers.ts:515–547](../../../packages/engine/Source/Renderer/WebGPU/WebGPUFeatureRenderers.ts)):
 
 1. Author the renderer file under `packages/engine/Source/Renderer/WebGPU/` exporting an `update` (or `init`+`render` for system-style) function.
 2. Add a numeric enum slot to `FeatureRendererKey` (add-only — `FeatureRendererKey.js:1–17` documents the rule) and bump `COUNT`.
@@ -124,9 +124,9 @@ Hot loop in `executeBatch` (`:306–331`) wraps per-command in try/catch with Se
 
 ### 2c. Buffer & texture management
 
-**Pooling strategy.** [`WebGPUStorageBufferPool.ts`](../../packages/engine/Source/Renderer/WebGPU/WebGPUStorageBufferPool.ts) — power-of-2 size buckets with `maxPerBucket: 8`, `maxTotal: 64` defaults. Stats tracked. Acquire/release pattern correct; cap-based eviction prevents runaway growth.
+**Pooling strategy.** [`WebGPUStorageBufferPool.ts`](../../../packages/engine/Source/Renderer/WebGPU/WebGPUStorageBufferPool.ts) — power-of-2 size buckets with `maxPerBucket: 8`, `maxTotal: 64` defaults. Stats tracked. Acquire/release pattern correct; cap-based eviction prevents runaway growth.
 
-[`WebGPURingBufferAllocator.ts`](../../packages/engine/Source/Renderer/WebGPU/WebGPURingBufferAllocator.ts) — hot-path uniform-update allocator, designed for transient per-frame UB writes.
+[`WebGPURingBufferAllocator.ts`](../../../packages/engine/Source/Renderer/WebGPU/WebGPURingBufferAllocator.ts) — hot-path uniform-update allocator, designed for transient per-frame UB writes.
 
 **Per-frame allocations.** Bind-group caching via `WebGPUBindGroupCache` (Batches 31-32 + 55); post-process effects + globe terrain hot paths deduplicated. Auto-exposure given identity-based view memoization in Batch 32.
 

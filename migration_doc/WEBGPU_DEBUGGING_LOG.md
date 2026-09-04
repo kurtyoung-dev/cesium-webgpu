@@ -16474,16 +16474,27 @@ No second production native geometry upload was found. WebGPU's confirmed
 remaining compatibility tax is CPU-side legacy graph/GLSL object construction,
 translation, and garbage collection—not duplicate native buffer allocation.
 
-**Files:** deliberately not duplicated here — the per-item file evidence for
-every slice above is enumerated in `LOCAL_CHANGE_AUDIT_2026-07-31.md` §6.1–6.8,
-with its test/verification evidence in §7 and its moving-camera artifacts in §8.
+**Files:** inlined here (2026-09-03 — the source, `archive/LOCAL_CHANGE_AUDIT_2026-07-31.md`
+§6.1–6.8/§7/§8, is archived; content unchanged at that path, only relocated).
+Renderer/resource files touched by the slices above: `PointPrimitiveCollection.js`,
+`LabelCollection.js` (§6.1 collection-scoped teardown); the model shadow uniform buffer
+and the CSM renderer's terrain-global/cascade buffers (§6.1–6.2); `SOABoundingSphereLayout`
+(§6.3 Hi-Z conservative fallback); `WebGPUEffectsBindGroup.js` (`update()`, §6.4 scratch-view
+reuse); `WebGPUShadowCastBindGroupCache.js` (§6.6, default-export build fix). Test/verification
+evidence (§7): `npx tsc --noEmit --pretty false`; package `tsc --project packages/engine/tsconfig.json`;
+canonical `npx gulp build`; focused ESLint/Prettier; performance-workload Node contracts 45/45;
+eclipse/globe/atmosphere Node contracts 138/138; `git diff --check`; all 28 modified WGSL sources
+with wrappers newer than source; all 20 untracked engine specs present in the generated
+`packages/engine/Specs/SpecList.js`. Moving-camera artifacts (§8): `campaign11-altitude-control-2026-07-31.json`,
+`campaign11-resident-workload-fingerprint-r1-2026-07-31.json`, `campaign11-streaming-c11-185-slice3b-attribution-2026-07-31.json`,
+`campaign11-streaming-current-attribution-2026-07-31.json` (all under `Tools/visual-regression/output/performance/`).
 **Open gates.** Focused Karma did not execute in the available Edge launcher, so
 animated model pixels, shadow-ON pixels, and the stable-depth attribution rerun
 remain browser-owned gates rather than assumed passes; `C11-205` still blocks
 causal resident timing. **Trace:** `C11-60`, `C11-76`, `C11-185`, `C11-192`,
 `C11-193`, `C11-194`, `C11-199`, `C11-200`, `C11-201`, `C11-202`, `C11-205`,
 `C11-208`, `C11-209`, `C11-210`, `C11-211` in `QUEUE_2026-07-18_CAMPAIGN11.md`;
-`LOCAL_CHANGE_AUDIT_2026-07-31.md`;
+`archive/LOCAL_CHANGE_AUDIT_2026-07-31.md` (archived 2026-09-03; also inlined above);
 `HANDOFF_2026-07-31_CODEX_C11_HIGH_VALUE.md`.
 
 ## C11-REVIEW-2026-08-01 — eight defects fixed while landing the Codex C11 changeset as Batches 772-781 (2026-08-01)
@@ -16543,7 +16554,7 @@ and Karma gate above stays open.
 green, Node contracts 195/195. Focused Edge/Karma still did not execute, so
 animated-model pixels, shadow-ON pixels, and counterbalanced timing remain open.
 
-**Trace:** Batches 772-781; `LOCAL_CHANGE_AUDIT_2026-07-31.md` §11;
+**Trace:** Batches 772-781; `archive/LOCAL_CHANGE_AUDIT_2026-07-31.md` §11 (archived 2026-09-03);
 `QUEUE_2026-07-18_CAMPAIGN11.md` (the `C11-180`…`C11-211` rows);
 `QUEUE_2026-07-19_CAMPAIGN12.md` (`C12-29` S5); `HANDOFF_2026-07-31_CODEX_C11_HIGH_VALUE.md`.
 

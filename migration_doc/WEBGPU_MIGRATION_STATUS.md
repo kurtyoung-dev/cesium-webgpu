@@ -768,7 +768,7 @@ The 9-coefficient SH fast-path was filed as a follow-up perf optimization in ear
 - JS `WebGPUImageBasedLighting.ts:189-208` calls `packSphericalHarmonics` whenever `ibl.sphericalHarmonicCoefficients` is set.
 - JS `WebGPUModelRenderer.js:1273-1313` (`buildModelIBLEntries`) binds `_webgpuSHBuffer` at slot 36 (or `defaultSHBuffer` with control.w = 0).
 
-`DEFERRED_WORK.md` and `AUDIT_2026_05_02.md` updated to reflect closure.
+`DEFERRED_WORK.md` and `archive/AUDIT_2026_05_02.md` (archived 2026-09-03) updated to reflect closure.
 
 ### Cumulative impact (Batches 160-162)
 
@@ -889,7 +889,7 @@ The three biggest TypeScript files in `Renderer/WebGPU/` were carved into focuse
 
 ## Recent Progress (2026-04-25 — Batches 48-57: principal review remediation continues)
 
-Ten batches in two days closed the C-R8 edge sub-tree end-to-end and shipped three additional Critical-tier items in parallel via background agents. Full per-batch detail in [REVIEW_FIX_PROGRESS.md](REVIEW_FIX_PROGRESS.md); per-issue status in [PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md](PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md).
+Ten batches in two days closed the C-R8 edge sub-tree end-to-end and shipped three additional Critical-tier items in parallel via background agents. Full per-batch detail in [REVIEW_FIX_PROGRESS.md](REVIEW_FIX_PROGRESS.md); per-issue status in [PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md](archive/principal-review-2026-04-16/PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md) (archived 2026-09-03; id table at `ARCHITECTURE_REVIEW_2026-09-02.md` §5.1).
 
 - **Batch 48 (C-R8-EDGE-INLINE + C-R8-EDGE-FEATURE-ID).** Authoritative per-fragment `applyEdgeOverlay()` in `ModelPBRComplete.wgsl` ports WebGL's `edgeDetectionStage()` 1:1 — adaptive epsilon, background gating via globe packed depth, per-feature comparison. Emitter packs glTF FEATURE_ID_0 into `id.g` at rgba8unorm scale with consumer-side denormalisation. Effects BGL grew 12 → 17 bindings; UBO 272 → 304 bytes for `edgeControl` + `edgeViewport` blocks.
 - **Batch 49 (C-R8-EDGE-ID-FORMAT).** 16-bit feature IDs split across `id.g` (low byte) + `id.b` (high byte). 65535-feature ceiling. Same texture format, no BGL/pipeline rebuild.

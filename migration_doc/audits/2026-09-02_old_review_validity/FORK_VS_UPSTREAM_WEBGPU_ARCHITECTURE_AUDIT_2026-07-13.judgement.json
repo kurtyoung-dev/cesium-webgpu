@@ -1,0 +1,508 @@
+{
+  "doc": "migration_doc/FORK_VS_UPSTREAM_WEBGPU_ARCHITECTURE_AUDIT_2026-07-13.md",
+  "items": [
+    {
+      "id": "B1",
+      "title": "Renderer selection silently contradicts the public default",
+      "claim": "Scene.createAsync only routes through ContextFactory when renderer === 'webgpu'; AUTO/omitted/preferWebGPU/webgpu-compat fall into the synchronous WebGL constructor; ContextFactory has no adapter/device failure fallback; Widget/Viewer repeat the exact-string test.",
+      "status": "RESOLVED",
+      "evidence": "FAR-102 landed: Renderer/ContextFactory.ts:233-306 builds an attempt plan with a frozen RendererFallbackDiagnostic (fallback reason, strictRenderer opt-out at :293); Renderer/RendererType.ts:131-178 getRendererAttemptPlan resolves AUTO; Scene.js:1635-1737 createAsync calls ContextFactory.createContextWithDiagnostics; Scene.js:281-286 the synchronous constructor is explicitly WebGL-only (getSynchronousRendererType rejects AUTO/WEBGPU); CesiumWidget.js:777-820 and widgets Viewer.js:2295-2302 share CesiumWidget._createAsyncContext. Ledger FAR-102: 27 ContextFactory + 79 CesiumWidget cases, 384-case affected Edge matrix.",
+      "surviving_record": "FAR-102 (FORK_ARCHITECTURE_REMEDIATION_PLAN_2026-07-13.md §6 + ledger packages.FAR-102)",
+      "migrate_text": "Closed by FAR-102: one ContextFactory attempt plan with recorded fallback reason; the sync Scene constructor is WebGL-only by contract (Scene.js:281-286)."
+    },
+    {
+      "id": "B2",
+      "title": "Process-global depth and capability state breaks heterogeneous contexts",
+      "claim": "Scene construction mutates Matrix4._depthRangeType globally; ContextLimits and KTX2 support are process-global; PerspectiveOffCenterFrustum caches projection without clip-space convention.",
+      "status": "RESOLVED",
+      "evidence": "FAR-104 landed: Core/ClipSpaceConvention.js + Core/GraphicsCapabilities.js exist; Core/Matrix4.js:812-1056 every projection builder takes an explicit clipSpaceConvention (defaults WEBGL); Core/PerspectiveOffCenterFrustum.js:447-450 caches _perspectiveMatrices[clipSpaceConvention.id]; WebGPUSceneRenderer.ts:1894-1982 passes context.clipSpaceConvention; Core/loadKTX2.js:56-71 requires an explicit supportedTargetFormats snapshot from context.graphicsCapabilities; grep finds no ContextLimits._ mutation in Renderer/Context.js or WebGPUContextLimitsInit.ts. Ledger: 61 frustum + 23 loadKTX2 + 48 ShadowMap + 27 ContextFactory cases.",
+      "surviving_record": "FAR-104 (plan §6 + ledger)",
+      "migrate_text": "Closed by FAR-104: clip-space convention and graphics capabilities are immutable context-owned inputs; no renderer-dependent Matrix4/ContextLimits globals remain."
+    },
+    {
+      "id": "B3",
+      "title": "Translucent GPU culling opens compute work inside an active render pass",
+      "claim": "WebGPUSceneRendererTranslucentPass invokes translucent culling with the scene pass open; WebGPUGPUCuller.beginComputePass runs on the same encoder; prepareReadback maps a slot whose copy an earlier frustum just recorded.",
+      "status": "RESOLVED",
+      "evidence": "Batch 1375 (42ef149b31, 'the translucent GPU cull dispatch is bracketed like its opaque sibling, and the fleet gains the probe that proves it'); WebGPUGPUCuller.ts:104-106 and :417-470 now run a deferred-readback ring that maps only the slot written by a PRIOR prepareReadback (already submitted); the automatic path is additionally contained (FAR-003: gpuCulling default never). The frame-graph target the finding demanded is FAR-400/402/503, all still planned.",
+      "surviving_record": "Batch 1375 + FAR-003 containment; frame-graph target = FAR-400/FAR-402/FAR-503 (planned)",
+      "migrate_text": "Defect closed at Batch 1375 (bracketed dispatch) with the map-before-submit hazard removed by the culler's readback ring (WebGPUGPUCuller.ts:104-106,417-470); frame-graph scheduling of dense compute remains FAR-400/402/503."
+    },
+    {
+      "id": "B4",
+      "title": "HiZ visibility is global while depth and command lists are per frustum",
+      "claim": "One global in-flight flag and one global HiZ result are accepted for another command list on equal count alone.",
+      "status": "PARTIAL",
+      "evidence": "WebGPUSceneRenderer.ts:1258 adds _hiZActiveByFrustum, but :1279-1283 keep one _lastHiZVisibility {flags,count} and one _hiZReadbackInFlight; _filterByHiZVisibility (:4168-4200) still accepts on `prev.count !== count` alone and returns unfiltered unless _hiZConsumeEnabled (:1189, default false); comment at :4196-4198 says results are not consumed 'until each result identifies its producing frustum, frame, and command generation'. Ledger B4 active (FAR-003/500/503); ROADMAP C2-21 / FORK-41 'AUTOMATIC USE CONTAINED BY FAR-003'.",
+      "surviving_record": "FAR-003 containment (C9 T7 FAR-003-SAFE-AUTO-RESTORATION) + FAR-500 (C9 item 36) + FAR-503; ROADMAP_AND_DEFERRED_WORK.md C2-21/FORK-41",
+      "migrate_text": "HiZ results are still a single context-wide {flags,count} pair (WebGPUSceneRenderer.ts:1279-1283) accepted by count alone in _filterByHiZVisibility (:4175). The consumer is fail-closed by default (_hiZConsumeEnabled=false, :1189) and only a per-frustum active map exists (:1258); results carry no frame, frustum, camera or command-list generation. Re-enabling automatic HiZ consumption (FAR-003 T7) is blocked on FAR-500's identity contract."
+    },
+    {
+      "id": "B5",
+      "title": "Tile indirect parameters are overwritten before recorded draws execute",
+      "claim": "Indirect auto-enables at 32 commands; executeBatchIndirect calls manager.beginFrame per pass/frustum, resetting offsets so later writeBuffer overwrites parameters earlier encoded draws will read; fast path bypasses WebGPUDrawCommand semantics.",
+      "status": "PARTIAL",
+      "evidence": "Containment landed (FAR-003): WebGPUSceneRenderer3DTilePasses.ts:32-34,109-113,152 — never|auto|always with default `never`, so the threshold cannot auto-activate. The overwrite mechanism is unchanged: WebGPUSceneRenderer.ts:572-581 still calls manager.beginFrame() 'once per pass invocation' and WebGPUIndirectDrawManager.ts:150-154 resets _drawCount to 0; no per-frame arena exists (FAR-501 planned).",
+      "surviving_record": "FAR-003 (contained) + FAR-501/FAR-502 (planned, no queue row beyond C9 T7)",
+      "migrate_text": "The tile-indirect path is contained to `never` by default (WebGPUSceneRenderer3DTilePasses.ts:109-113), but its shared-buffer overwrite remains: executeBatchIndirect resets the manager per pass (WebGPUSceneRenderer.ts:581, WebGPUIndirectDrawManager.ts:150-154) while every drawIndexedIndirect stays merely encoded until the frame's single submit. A monotonic per-frame indirect arena (FAR-501) does not exist; `always`/`auto` are still unsafe across passes/frustums."
+    },
+    {
+      "id": "B6",
+      "title": "GPU sort reuses and may reallocate shared buffers before submission",
+      "claim": "One WebGPUGPUSortKeysDispatcher per context is dispatched per opaque frustum into the same SOA buffers; prepareIndicesReadback can map a slot an unsubmitted copy just wrote.",
+      "status": "PARTIAL",
+      "evidence": "Map-before-submit mitigated by the readback ring (WebGPUGPUSortKeysDispatcher.ts:88-97, 621-669: pumps only the PRIOR slot, skips the frame if both slots are mapping); consumer default is `never` (WebGPUSceneRenderer.ts:1360) and the producer does not upload/dispatch when consumption is never (FAR-105 slice). Buffers are still one set per context (dispatcher :796-810 single resource set; _gpuSortActiveByFrustum at WebGPUSceneRenderer.ts:1301 tracks activity only); a forced 6,400-command probe matched the CPU comparator (ledger FAR-105).",
+      "surviving_record": "FAR-003 containment + FAR-105 slice; FAR-501/503 planned",
+      "migrate_text": "The GPU sort dispatcher is still one context-wide resource set written per opaque frustum (WebGPUGPUSortKeysDispatcher.ts:796-810); only the readback ring (:621-669) and the `never` consumer default (WebGPUSceneRenderer.ts:1360) keep it safe. Per-frustum or arena-suballocated sort resources (FAR-501) remain unbuilt, so `always`/`auto` consumption in multi-frustum scenes is still unproven."
+    },
+    {
+      "id": "B7",
+      "title": "OIT uses an invalid depth/stencil attachment contract",
+      "claim": "depthSampleableView is installed as a depth-stencil attachment with stencil ops (r16float resolve under MSAA); accum/reveal single-sample vs MSAA pipelines; mixed translucent sets lose draws; manual OIT loop omits parts of the command contract.",
+      "status": "PARTIAL",
+      "evidence": "Attachment defect corrected: WebGPUOIT.ts:150-161 uses depthReadOnly/stencilReadOnly with no load/store ops and requires a full-aspect view; WebGPUSceneRendererEnsureResources.ts:299-307 documents depthSampleableView as single-sampled in both modes. Mixed sets now fall through to sorted alpha (WebGPUSceneRendererTranslucentPass.ts:255-315 'the fallback that follows'). WebGPU OIT remains contained off by ratified default (_webgpuOITEnabled=false, WebGPUSceneRenderer.ts:952; fallbackReason 'contained-unsafe-path' :4824); OIT_DEFAULT_FLIP_EVIDENCE_2026-07-18.md NO-GO; DEFERRED_WORK.md:10389 parity 1.33% vs WebGL with two MSAA×OIT adjacencies deferred (:10290-10305). FAR-404 MSAA topology unbuilt.",
+      "surviving_record": "FAR-003/T7 + FAR-404; OIT_DEFAULT_FLIP_EVIDENCE_2026-07-18.md; DEFAULT_PARITY_MATRIX_2026-07-18.md row 1; DEFERRED_WORK.md:10290-10429",
+      "migrate_text": "WebGPU MRT-OIT stays contained off (_webgpuOITEnabled=false, WebGPUSceneRenderer.ts:952) by ratified maintainer decision; the original attachment misuse is fixed (WebGPUOIT.ts:150-161 read-only depth/stencil) and mixed sets fall back to sorted alpha (WebGPUSceneRendererTranslucentPass.ts:255-315). The physically valid multi-frustum MSAA topology (FAR-404) and the two MSAA×OIT compositing adjacencies in DEFERRED_WORK.md:10290-10305 remain open, so flipping the default stays a separate maintainer decision (OIT_DEFAULT_FLIP_EVIDENCE_2026-07-18.md)."
+    },
+    {
+      "id": "B8",
+      "title": "WebGPU ViewportQuad is broken and cannot represent Cesium materials",
+      "claim": "ViewportQuad.js builds a fixed WGSL colour uniform map then overwrites it with the WebGL material map; WebGPUViewportQuad returns a command shaped only by _isViewportQuadCommand, misinterprets its execute args, keys pipelines without blend state, compiles synchronously, rebuilds bind groups per execute, binds by object key order; no spec.",
+      "status": "STILL-VALID",
+      "evidence": "Scene/ViewportQuad.js:10 imports Shaders/WebGPU/ViewportQuad.js; :144-160 branches on context.isWebGPU and builds the fixed colour-only materialUniforms; :187 overwrites uniformMap with this._material._uniforms. Renderer/WebGPU/WebGPUViewportQuad.ts:308 synchronous createRenderPipeline; :361 Object.keys(uniformMap) binding order; :514 command marked only _isViewportQuadCommand; :540-549 bind groups rebuilt per execute. Only Specs/Scene/ViewportQuadSpec.js (WebGL) exists. Ledger B8 'planned' (FAR-301); no campaign queue row.",
+      "surviving_record": "FAR-301 (planned; no queue row) — needs a row in the new review",
+      "migrate_text": "WebGPU ViewportQuad still cannot represent Cesium materials: Scene/ViewportQuad.js:144-160 branches on context.isWebGPU to a fixed colour-only WGSL uniform map and :187 immediately overwrites it with the WebGL material uniforms. WebGPUViewportQuad.ts compiles synchronously (:308), orders bindings by JavaScript key order (:361), rebuilds bind groups every execute (:540-549) and emits a command shaped only by _isViewportQuadCommand (:514). Image/Stripe/custom Fabric materials do not render through it and no WebGPU spec exists; FAR-301 has no queue row."
+    },
+    {
+      "id": "B9",
+      "title": "Lazy FeatureRenderer readiness can fall into the wrong backend",
+      "claim": "getFeatureRenderer returns undefined for loading/unsupported/failed; GaussianSplatPrimitive and VoxelPrimitive lack PointCloud's guard; completion does not request a frame.",
+      "status": "RESOLVED",
+      "evidence": "FAR-103 landed: GraphicsContext.ts:390-439 FeatureRendererReadiness = unsupported|loading|ready|failed with generation, resolveFeatureRendererReadiness helper; consumers Scene/PointCloud.js:174, Scene/GaussianSplatPrimitive.js:1482, Scene/VoxelPrimitive.js:474; readiness listeners at GraphicsContext.ts:799-2049. Ledger: 8 readiness-consumer cases, 384-case matrix.",
+      "surviving_record": "FAR-103 (plan §6 + ledger)",
+      "migrate_text": "Closed by FAR-103: explicit readiness states replace the undefined lookup; all three lazy consumers use resolveFeatureRendererReadiness."
+    },
+    {
+      "id": "B10",
+      "title": "MaterialUniformBuffer breaks public in-place uniform mutation on both backends",
+      "claim": "material.uniforms is replaced by a facade returning detached scratch objects; material.uniforms.color.alpha = 0 does not persist.",
+      "status": "RESOLVED",
+      "evidence": "FAR-101 landed: Scene/MaterialUniformBuffer.js:418-420 'Read the stable public value associated with a packed uniform' returns this._uniforms[name]; Scene/MaterialHelpers.js:989 wraps result.uniforms without replacing it; Scene/Material.js:338 documents `material.uniforms.color.alpha = 0.25` as the supported mutation. Ledger: 69 Material + 20 MaterialUniformBuffer + 3 upload-state cases.",
+      "surviving_record": "FAR-101 (plan §6 + ledger)",
+      "migrate_text": "Closed by FAR-101: public uniform objects are stable and mutate in place; per-consumer upload/version state mirrors them into WebGPU storage."
+    },
+    {
+      "id": "B11",
+      "title": "Native WebGPU features first allocate compatibility resources, then allocate native replacements",
+      "claim": "Primitive/ground/terrain/model geometry and image-material/water-mask/ocean/feature-table textures are realised twice (compat GPUBuffer/GPUTexture + native).",
+      "status": "PARTIAL",
+      "evidence": "Buffer half removed by FAR-100: Renderer/WebGPU/Stubs/WebGLStubBuffer.ts:258-270 records only WebGL store-size metadata and creates a GPUBuffer only on an explicit native request (:63,:368-396); ledger claimBoundaries.compatibilityBuffers 'zero native compatibility GPUBuffer objects'. Legacy JS shells still run: Scene/PrimitiveGeometryHelpers.js:782-825 retains geometry then calls VertexArray.fromGeometry; Scene/GlobeSurfaceTile.js:960-969 createResources builds a VertexArray for every mesh; Scene/Model/Model.js:813,2569 still materialises legacy buildDrawCommands. Texture half unchanged: Scene/Material.js:477-506 retains _imageSources AND constructs a Texture; Stubs/WebGLStubTexture.ts:349 creates a real GPUTexture on upload; water-mask/ocean paths unchanged (GlobeSurfaceTile.js:755-781, Globe.js:1371-1375). FAR-201..205 all 'planned'; C9 items 54/55 (FAR-203/205 first verticals) not landed.",
+      "surviving_record": "FAR-100 (buffers, done); FAR-200..210 + Campaign 9 items 52-57 (textures/ownership, open)",
+      "migrate_text": "The compatibility double tax is gone for buffers (Stubs/WebGLStubBuffer.ts:258-270 allocates no native GPUBuffer unless explicitly requested) but persists for textures: Scene/Material.js:477-506 retains _imageSources and still constructs a compatibility Texture whose stub (Stubs/WebGLStubTexture.ts:349) creates a real GPUTexture, and water masks / ocean normal maps follow the same shape. Legacy VertexArray/DrawCommand shells are still built for Primitive (PrimitiveGeometryHelpers.js:782-825), terrain (GlobeSurfaceTile.js:960-969) and Model (Model.js:813,2569) before the native renderer realises its own buffers. No ownership token (ADR-2) or family vertical (FAR-201..205, C9 items 54-57) has landed."
+    },
+    {
+      "id": "B12",
+      "title": "Compatibility buffer growth loses ownership of the live GPUBuffer",
+      "claim": "WebGLStubBuffer eagerly allocates 4 KiB, replaces the buffer on growth without updating the handle, and numeric bufferData(size) does not allocate.",
+      "status": "RESOLVED",
+      "evidence": "FAR-100: file moved to Renderer/WebGPU/Stubs/WebGLStubBuffer.ts; growth replaces handle._webgpuBuffer atomically (:76-78), no eager 4 KiB allocation (metadata-only :258-270, native only when explicitly requested :63,:368). Ledger: 28 WebGLStubBuffer + 74 WebGLCompatibilityStub cases; strict physical-adapter probe zero compatibility live buffers.",
+      "surviving_record": "FAR-100 (plan §6 + ledger)",
+      "migrate_text": "Closed by FAR-100: stub buffers are metadata-only with a stable handle; the 4 KiB eager allocation is gone."
+    },
+    {
+      "id": "H1",
+      "title": "The high-density path is not yet GPU-driven",
+      "claim": "GPU cull/sort results are mapped back to JavaScript after CPU culling; no production indirect consumer; auto thresholds 384/192 and 6,000/4,000 contradict the 50,000 policy.",
+      "status": "PARTIAL",
+      "evidence": "Architecture unchanged (readback loops at WebGPUGPUCuller.ts:417-470 and WebGPUGPUSortKeysDispatcher.ts:631-669; indirect manager CPU-authored), but every automatic path is contained by FAR-003: _gpuSortConsumeMode default never (WebGPUSceneRenderer.ts:1360), _hiZConsumeEnabled false (:1189), tile-indirect never (3DTilePasses.ts:109-113); WebGPUPerformanceManager.ts:245-247,1470-1485 keep the 50,000 policy. DEFAULT_PARITY_MATRIX row 20 records the family as 'present but fail-closed'. FAR-502..505 planned.",
+      "surviving_record": "FAR-003 / C9 T7 FAR-003-SAFE-AUTO-RESTORATION; FAR-502..505; DEFAULT_PARITY_MATRIX_2026-07-18.md row 20",
+      "migrate_text": "The dense WebGPU path still pays uploads, compute, copies and mapAsync only to filter or reorder JavaScript command arrays (WebGPUGPUCuller.ts:417-470, WebGPUGPUSortKeysDispatcher.ts:631-669); no persistent GPU object table or GPU-written indirect arguments exist. Every automatic consumer is fail-closed (sort `never` WebGPUSceneRenderer.ts:1360, HiZ :1189, tile-indirect 3DTilePasses.ts:109-113) so the family is explicit-opt-in diagnostics, not a production renderer; FAR-502..505 remain planned."
+    },
+    {
+      "id": "H2",
+      "title": "Visibility inputs and readbacks lack identity and bounds safety",
+      "claim": "Stale results accepted by count; missing/non-sphere bounds become zero-radius spheres; 65,536 cap not enforced by callers.",
+      "status": "PARTIAL",
+      "evidence": "Zero-radius fallback still `bv.radius ?? bv.boundingSphere?.radius ?? 0` (WebGPUSceneRenderer.ts:3896, 4085); count-only acceptance (:4175); culler max 65,536 (WebGPUGPUCuller.ts:124); `occlude === false` commands are now preserved (:4185). Contained by FAR-003. FAR-500 planned (C9 item 36 FAR-500-C0 effect-execution audit is the only row).",
+      "surviving_record": "FAR-500 (planned) + FAR-003 containment",
+      "migrate_text": "Cull/HiZ serialisation still encodes an absent or non-sphere bounding volume as a zero-radius sphere (WebGPUSceneRenderer.ts:3896, 4085) and accepts prior results by equal count (:4175); only `occlude===false` is force-visible (:4185). Callers do not chunk above the culler's 65,536 cap (WebGPUGPUCuller.ts:124). Safe only because consumption is opt-in; FAR-500's compact-to-original map and generation tags are unbuilt."
+    },
+    {
+      "id": "H3",
+      "title": "Main Scene submission is coherent, but feature paths fragment it",
+      "claim": "Private encoders/submits in point-cloud LOD, compute-instance, flow, ocean; beginFrame opens an empty canvas pass; resumes reload attachments; MSAA sources stored.",
+      "status": "PARTIAL",
+      "evidence": "Empty default pass removed by C9-07 / FAR-405-C0 (Batch 675 457eb162f7; WebGPUContext.ts:622,2145 demand-open); eager resolve elision landed (C10-03, DEFERRED_WORK.md:10474). Still 52 direct `queue.submit(` sites across Renderer/WebGPU + Scene/PickDepth.js (recount matches ledger directQueueSubmitSitesRemaining 52); _resumeScenePass reloads with loadOp load (WebGPUSceneRenderer.ts:2037-2069, 2196-2211); FAR-200 S1-S3 'queued; not started'; FAR-402/406 planned.",
+      "surviving_record": "FAR-200 S1/S2/S3 (C9 items 12A/45/46) + FAR-402/405/406; FAR_200_SUBMISSION_AUTHORITY_ADOPTION_2026-07-13.md",
+      "migrate_text": "Fifty-two direct queue.submit sites remain outside the frame's main submit (Renderer/WebGPU/*, Scene/PickDepth.js), so no single submission authority exists; FAR-200's PhysicalQueueTimeline is still shadow-only. The empty canvas pass is gone (demand-open, WebGPUContext.ts:622,2145) but each scene-pass resume still reloads colour/depth/G-buffer (WebGPUSceneRenderer.ts:2037-2069) and no pass merging or transient aliasing exists (FAR-402/405)."
+    },
+    {
+      "id": "H4",
+      "title": "Per-command uploads leave substantial CPU and Dawn-wire overhead",
+      "claim": "Primitive commands write camera/RTE/material buffers per command; 323 writeBuffer and 185 createBindGroup source sites; standalone uniform buffers rounded to 256 bytes.",
+      "status": "PARTIAL",
+      "evidence": "FAR-303 preparation coalesced terrain camera writes through WebGPURingBufferAllocator.ts (measured writeBuffer 79→10/frame, FORK_PERFORMANCE_AUDIT_AND_FIX_RESULTS_2026-07-14.md). Current counts: 327 queue.writeBuffer, 188 createBindGroup; WebGPUPrimitiveCommands.ts still has 24 writeBuffer sites incl. per-command pick camera/material writes (:4004,:4029,:5564); 256-byte rounding remains for every uniform allocation (WebGPUBuffer.ts:309-310, WebGPUContext.ts:5658-5659, :6430). C9-12 terrain static/dynamic split BLOCKED (DEFERRED_WORK.md:9946).",
+      "surviving_record": "FAR-303 (C9-12 BLOCKED, DEFERRED_WORK.md:9946) + FAR-502; FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md for measurement",
+      "migrate_text": "Uniform data still has no frame/view/material/object hierarchy: WebGPUPrimitiveCommands.ts writes camera, material and pick buffers per command (:4004, :4029, :5564; 24 writeBuffer sites in the file) and WebGPUBuffer.ts:309-310 / WebGPUContext.ts:5658-5659 round every standalone uniform buffer to 256 bytes. Terrain camera writes are coalesced through WebGPURingBufferAllocator.ts, but the static/dynamic terrain split (C9-12) is blocked and the source tree holds 327 writeBuffer and 188 createBindGroup sites."
+    },
+    {
+      "id": "H5",
+      "title": "Pipeline cache identities are incomplete",
+      "claim": "Render/compute cache keys omit shader-module identity, entry points, layout, full primitive/depth/blend state; OIT keys by shader length; late async compiles repopulate cleared caches.",
+      "status": "PARTIAL",
+      "evidence": "Structural fix landed outside FAR-304 (NEW-WEBGPU-PIPELINE-KEY-DEFINE-AXIS-GENERAL, Batch 825/828, CLAUDE.md): WebGPURenderPipelineCache.ts:1063-1100 folds pl:/pr:/dz:/mx:/sh: identity, wrongModuleHits canary (:355,460); WebGPUComputePipelineCache.ts:29-33,303 folds compute.module. Residual: WebGPUOIT.ts:706 still keys OIT pipelines by `${shaderCode.length}_${fragEntry}_${label}`; no generation capture around async compilation visible (clear()/destroy() :1208-1236 just clear maps). Ledger H5 'planned' is stale.",
+      "surviving_record": "Batch 825/828 + Tools/visual-regression/pipeline-key-aliasing.spec.mjs; FAR-304 for residuals",
+      "migrate_text": "Render and compute pipeline caches now fold shader-module, layout, primitive, depth/stencil and multisample identity into every key (WebGPURenderPipelineCache.ts:1063-1100, WebGPUComputePipelineCache.ts:303) and `wrongModuleHits` must read 0. Two residuals stand: WebGPUOIT.ts:706 still keys its private pipeline/module cache by shader text length, entry point and label, and neither cache captures a generation across asynchronous compilation so a late compile can repopulate a cleared cache (:1208-1236)."
+    },
+    {
+      "id": "H6",
+      "title": "Synchronous first-use pipeline compilation is widespread",
+      "claim": "132 literal createRenderPipeline vs 1 async site; 54 vs 2 compute; G-buffer, ocean, dynamic env map, ViewportQuad compile synchronously.",
+      "status": "STILL-VALID",
+      "evidence": "Current tree: 135 synchronous createRenderPipeline( vs 1 createRenderPipelineAsync( executable site (WebGPURenderPipelineCache.ts); 55 createComputePipeline( vs 3 async; WebGPUOceanRenderer.ts:638 and WebGPUViewportQuad.ts:308 still synchronous. C11-180 is PARTIAL for the WebGL async shader lifecycle only (CLAUDE.md); FAR-304/FAR-600 planned.",
+      "surviving_record": "C11-180 (PARTIAL, WebGL side) + FAR-600 (planned)",
+      "migrate_text": "First-use pipeline compilation is still synchronous almost everywhere: 135 createRenderPipeline( and 55 createComputePipeline( call sites against one createRenderPipelineAsync (WebGPURenderPipelineCache.ts) and three compute-async sites; ocean (WebGPUOceanRenderer.ts:638) and ViewportQuad (WebGPUViewportQuad.ts:308) compile on the frame. C11-180 covers only the WebGL async shader lifecycle; the WebGPU prewarm/readiness policy (FAR-600) has no row."
+    },
+    {
+      "id": "H7",
+      "title": "MRT/G-buffer cost is always paid even when deferred lighting is off",
+      "claim": "MRT hardcoded on; G-buffer (~79 MiB at 1080p with MSAA) allocated and cleared regardless of consumers.",
+      "status": "PARTIAL",
+      "evidence": "C9-09 / FAR-401-C0 attachment-demand registry landed (Renderer/WebGPU/WebGPUAttachmentDemandRegistry.ts:132-237 computes gbufferDemanded/topology) but WebGPUContext.ts:727-732 `forceSceneMRT = true` with the comment 'Demand-driven topology selection is not wired yet' and WebGPUSceneFBTargetHelpers.ts:35 `_mrtMode = true`; C9-10 / FAR-403-C0 consumer-driven MRT is DEFERRED/BLOCKED (DEFERRED_WORK.md:9942).",
+      "surviving_record": "C9-10-CONSUMER-DRIVEN-MRT / FAR-403-C0 (DEFERRED_WORK.md:9942) + FAR-401/403",
+      "migrate_text": "The scene framebuffer is still forced to full MRT every frame: WebGPUContext.ts:732 `forceSceneMRT = true` overrides the demand registry (WebGPUAttachmentDemandRegistry.ts:217 `gbufferReadersDemand || forceSceneMRT`) and WebGPUSceneFBTargetHelpers.ts:35 defaults `_mrtMode = true`. The registry now reports truthful demand, but the topology flip (C9-10 / FAR-403-C0) is deferred, so the rgba16float normal/roughness target plus MSAA companion are allocated with deferred lighting off."
+    },
+    {
+      "id": "H8",
+      "title": "Device-loss and teardown generation handling is incomplete",
+      "claim": "Ten concrete lifetime gaps: dispatcher WeakMaps outlive devices, uniform allocator and perf manager unregistered, _msaaDepthResolveTexture never destroyed, point/label collection caches leak, TAA/motion placeholders, scene-renderer teardown omissions.",
+      "status": "PARTIAL",
+      "evidence": "FAR-208 'active': Renderer/WebGPU/WebGPUDeviceLossRecovery.ts, WebGPUContextDeviceLoss.ts, WebGPUResourceCacheRegistry.ts exist; WebGPUContext.ts:7808 _rollbackRecoveredDevice; Batch 1073 vector-tile recovery generation-exact. Confirmed residuals: WebGPURenderTarget.ts creates _msaaDepthResolveTexture (:257) and reads its views (:290-507) with no destroy call; WebGPUHiZOcclusionDispatcher.ts:1004 and WebGPUGPUSortKeysDispatcher.ts:834 still cache instances in context-keyed WeakMaps. FAR-601 final audit planned.",
+      "surviving_record": "FAR-208 (active) + FAR-601 (planned); ledger H8",
+      "migrate_text": "Device-loss recovery has transactional candidate promotion (WebGPUDeviceLossRecovery.ts, WebGPUContext.ts:7808) but no exhaustive registry: WebGPURenderTarget.ts allocates _msaaDepthResolveTexture at :257 and never destroys it, and the HiZ/sort dispatchers are still context-keyed WeakMap singletons (WebGPUHiZOcclusionDispatcher.ts:1004, WebGPUGPUSortKeysDispatcher.ts:834) that can outlive a device generation. The FAR-601 teardown-to-baseline audit has not run."
+    },
+    {
+      "id": "H9",
+      "title": "Shared frontend abstractions remain incomplete",
+      "claim": "Scene code imports Renderer/WebGPU (MetadataWGSLPipelineStage), branches on isWebGPU (Ocean, PointCloud), checks WebGPU command markers, ViewportQuad imports WGSL, RenderCommand unused, frameState.graphicsContext unused, createView never rendered, View.graphicsContext setter is a pointer swap.",
+      "status": "PARTIAL",
+      "evidence": "Still present: Scene/Model/MetadataWGSLPipelineStage.js:60 imports ../../Renderer/WebGPU/WebGPUModelMetadata.js (4 Scene→Renderer/WebGPU imports total); Scene/OceanSurfacePrimitive.js:384,502 isWebGPU; Scene/Scene.js:3594-3599,3697,6109 isWebGPUDrawCommand; Scene/ViewportQuad.js:10 WGSL import; Scene/View.js:172-173 setter swaps the pointer only; Scene.js:4720 createView exists. Resolved sub-item: RenderCommand now has consumers (Scene/ClassificationPrimitive.js, Scene/GroundPrimitive.js); PointCloud uses readiness instead of isWebGPU. FAR-300/308 planned.",
+      "surviving_record": "FAR-300 / FAR-308 (planned); Principle 2 in CLAUDE.md",
+      "migrate_text": "Backend policy still leaks into shared Scene code: Scene/Model/MetadataWGSLPipelineStage.js:60 imports Renderer/WebGPU/WebGPUModelMetadata.js, Scene/OceanSurfacePrimitive.js:384,502 branches on isWebGPU, Scene/Scene.js:3594-3599,3697,6109 tests isWebGPUDrawCommand, and Scene/ViewportQuad.js:10 imports a WGSL module. View.graphicsContext (Scene/View.js:172-173) is still a bare pointer swap that does not rebuild context-bound PassState/OIT/framebuffer helpers, and Scene.createView (Scene.js:4720) returns views the render loop never iterates. RenderCommand now has production consumers (ClassificationPrimitive, GroundPrimitive)."
+    },
+    {
+      "id": "H10",
+      "title": "Collection paths still contain O(N) rebuilds and lifecycle gaps",
+      "claim": "Static WebGPU polylines regroup, rebuild a full Float32Array, upload all segments and recreate material commands every frame; PolylineCollection ignores the async Promise; labels rebuild broadly.",
+      "status": "PARTIAL",
+      "evidence": "FAR-307 prep slice: grouping storage reused (WebGPUPolylineRenderer.js:286-407), 60-frame retirement grace (:356), dirty state consumed after build (:1981-1992). Full segment arrays are still allocated per build (buildSegmentDataForGroup :527, buildPickSegmentData :682, called from :1735); ledger FAR-307 'persistent geometry/material table, dirty-range updates ... remain open'; C9 item 62 FAR-307-POLYLINE-PERSISTENT-MATERIAL-TABLE not landed.",
+      "surviving_record": "FAR-307 / C9 item 62 (open)",
+      "migrate_text": "WebGPU polylines still rebuild full Float32Array segment buffers per build (WebGPUPolylineRenderer.js:527, :682 from :1735) instead of dirty-range updates; FAR-307's preparation slice only reuses grouping maps and adds a 60-frame retirement grace (:286-407). The persistent geometry/material table (C9 item 62) is unlanded."
+    },
+    {
+      "id": "H11",
+      "title": "WebGPU collections drop public ordering fields, and GPU sort reads the wrong names",
+      "claim": "Billboard/point/polyline FR early-returns skip renderPriority/renderLayer assignment; serializer reads cmd.renderLayer/materialId instead of sortLayer/materialSortId.",
+      "status": "RESOLVED",
+      "evidence": "FAR-105 landed: WebGPUDrawCommand.ts:184-188,332-336,512 typed sortLayer/sortPriority/materialSortId; collections pass collection._commandOrdering (WebGPUBillboardRenderer.js:1358-1411, WebGPUPointPrimitiveRenderer.js:1267-1359); serializer reads cmd.sortLayer (WebGPUSceneRenderer.ts:4633). Ledger: 11 command-ordering cases + 6,400-command forced sort probe.",
+      "surviving_record": "FAR-105 (plan §6 + ledger)",
+      "migrate_text": "Closed by FAR-105: one canonical ordering contract assigned before the backend branch and consumed by both sorters."
+    },
+    {
+      "id": "H12",
+      "title": "The default RenderScheduler sorts a dead duplicate command stream",
+      "claim": "RenderScheduler enabled by default; every frame bins and merge-sorts unconsumed buckets.",
+      "status": "RESOLVED",
+      "evidence": "Scene/RenderScheduler.js:15-31 `enabled` defaults false; Scene/ViewportExecutor.js:756-803 assigns materialSortId only when a consumer reads it; retirement/adaptation is FAR-504 (active prep).",
+      "surviving_record": "FAR-105 / FAR-003 (landed) + FAR-504 (retire later)",
+      "migrate_text": "Closed: the scheduler is opt-in (RenderScheduler.js:31) and only the linear material-ID service runs on demand (ViewportExecutor.js:780-803)."
+    },
+    {
+      "id": "H13",
+      "title": "Synchronous readback APIs return stale or empty WebGPU results",
+      "claim": "Scene.pick returns the previous frame's result on WebGPU; readPixels returns null; no consistent cross-backend contract.",
+      "status": "SUPERSEDED",
+      "evidence": "Premise still true (Scene.js:4776-4781 documents the one-frame-stale contract; WebGPUContext.ts:1870-1873 readPixels shim returns null) but the record is now PICKING_ARCHITECTURE_STATE_2026-08-17.md (no pick readiness/provenance), FAR-107 as read under R-2026-08-24-1 (identity-plateau), DEFAULT_PARITY_MATRIX row 6, and Q-141 re-tiered to the pick readback by R-2026-09-02 (FIX_QUEUE_2026-08-27_AUDIT_FINDINGS.md:138).",
+      "surviving_record": "PICKING_ARCHITECTURE_STATE_2026-08-17.md + FAR-107/FAR-409 + Q-141 (FIX_QUEUE_2026-08-27_AUDIT_FINDINGS.md)",
+      "migrate_text": "Superseded: the synchronous-pick staleness is owned by PICKING_ARCHITECTURE_STATE_2026-08-17.md, FAR-107 (R-2026-08-24-1) and Q-141."
+    },
+    {
+      "id": "H14",
+      "title": "Failed WebGPU initialization can leak a context registry entry",
+      "claim": "WebGPUContext registers before async init; the catch rethrows without unregister; ContextRegistry holds strong refs.",
+      "status": "RESOLVED",
+      "evidence": "WebGPUContext.ts:1267-1285: create() awaits _initialize() then calls _registerWithRegistry(); on failure it destroys the partial context ('The context was never registered') and rethrows the primary error. Ledger FAR-102/103 384-case matrix incl. rollback cases.",
+      "surviving_record": "FAR-102 / FAR-103 (plan §6 + ledger)",
+      "migrate_text": "Closed: registration happens only after successful initialization with full rollback on failure (WebGPUContext.ts:1267-1285)."
+    },
+    {
+      "id": "H16",
+      "title": "Globe atmosphere LUT fog double-adds the camera world position",
+      "claim": "GlobeTerrain.wgsl adds cameraWC to an already-absolute v_positionMC before sampling the fog LUT.",
+      "status": "RESOLVED",
+      "evidence": "FAR-106: Shaders/WebGPU/Globe/GlobeTerrain.wgsl:5430-5431 `let fragmentWorldPos = input.v_positionMC; sampleAtmosphereFogLut(fragmentWorldPos, cameraWC)`; analytic path :5469 unchanged. Ledger: 2 shader cases + poles/antimeridian/teleport oracle.",
+      "surviving_record": "FAR-106 (plan §6 + ledger)",
+      "migrate_text": "Closed by FAR-106 (GlobeTerrain.wgsl:5430-5431 passes absolute ECEF)."
+    },
+    {
+      "id": "H17",
+      "title": "Globe material data is repacked and uploaded per visible tile",
+      "claim": "WebGPUGlobeMaterial pack allocates fresh buffers per call and material-pipeline setup runs inside the visible-tile loop.",
+      "status": "PARTIAL",
+      "evidence": "WebGPUGlobeSurfaceRenderer.ts:522-588 caches one MaterialPipelineCacheEntry per material.type and :1600-1626 builds it once per frame from tileProvider.material (not per tile); the group-2 bind group is reused (:2419-2424). The UBO is still packed with fresh ArrayBuffer/Float32Array (WebGPUGlobeMaterial.ts:396-397) and written every frame (:650-655 packMaterialUBO + writeBuffer) with no material generation gate, so an unchanged material still uploads each frame (FAR-303 acceptance unmet).",
+      "surviving_record": "FAR-303 (C9-13 per-view effects handle COMPLETE covers effects, not material UBO)",
+      "migrate_text": "Globe material packing now happens once per frame per material type rather than per tile (WebGPUGlobeSurfaceRenderer.ts:522-588, 1600-1626), but packMaterialUBO still allocates a fresh ArrayBuffer and Float32Array (WebGPUGlobeMaterial.ts:396-397) and the UBO is rewritten via writeBuffer every frame (:650-655) with no material-generation gate. An unchanged globe material therefore still performs one allocation and one upload per frame."
+    },
+    {
+      "id": "H18",
+      "title": "Material matrix packing does not implement WGSL host-shareable layout",
+      "claim": "MaterialUniformBuffer aligns every ≥3-element value to 16 bytes and stores matrix elements contiguously; mat2 (8-byte) and mat3 (three 16-byte columns) layouts are wrong.",
+      "status": "STILL-VALID",
+      "evidence": "Scene/MaterialUniformBuffer.js:70-92 alignment table lists only f32/vec2/vec3/vec4/mat4x4; no mat2/mat3 branch (grep 'mat2|mat3' → none); MaterialHelpers.js still accepts 4/9/16-element arrays. FAR-302 'planned'; no queue row.",
+      "surviving_record": "FAR-302 (planned; no queue row) — needs a row in the new review",
+      "migrate_text": "MaterialUniformBuffer still packs matrices contiguously with a single 16-byte alignment rule (Scene/MaterialUniformBuffer.js:70-92 handles only f32/vec2/vec3/vec4/mat4x4), so a Fabric mat2 (WGSL align 8) or mat3 (three 16-byte-strided columns, 12 float slots) uniform is laid out incorrectly. No typed schema/reflection source generates WGSL declarations and CPU offsets together; FAR-302 has no queue row."
+    },
+    {
+      "id": "H19",
+      "title": "Previous-frame model motion vectors abandon the current RTE precision path",
+      "claim": "ModelPBRComplete.wgsl recombines split instance translation into planetary-scale f32 and multiplies full-magnitude previous matrices.",
+      "status": "STILL-VALID",
+      "evidence": "Shaders/WebGPU/Model/ModelPBRComplete.wgsl:1020-1045: prevPositionMC = prevLinear3*prevPositionMC + translationHigh + translationLow at full f32; worldPosPrevious = material.previousModelMatrix * prevPositionMC; comment explicitly accepts 'The residual metre of precision loss'. Row C11-53 (C9-25-PREVIOUS-FRAME-RTE / FAR-306) W5 dep C11-52, not landed.",
+      "surviving_record": "C11-53 (QUEUE_2026-07-18_CAMPAIGN11.md:1698) / FAR-306",
+      "migrate_text": "Model motion vectors still compute the previous clip position through an absolute-magnitude path: ModelPBRComplete.wgsl:1020-1045 recombines translationHigh+translationLow into f32 and multiplies previousModelMatrix at full scale while the current position goes through mvpRelativeToEye. The shader comment accepts a metre of loss, which is exactly where Earth-scale TAA shimmer originates; C11-53 / FAR-306 remains queued."
+    },
+    {
+      "id": "H20",
+      "title": "RTE helpers are duplicated and the current assertion cannot validate packing",
+      "claim": "~85 WGSL files define translateRelativeToEye, many with an ineffective length(highDifference)==0 branch; WebGPURTEAssertions allows 6 m and never reads packed offsets.",
+      "status": "PARTIAL",
+      "evidence": "Ineffective branch reduced to 2 occurrences (Shaders/WebGPU/chunks/functions/csm_translateRelativeToEye.wgsl:38 and its .js). Duplication grew: 166 WGSL files now define translateRelativeToEye (was ~85); Renderer/WebGPU/WebGPURTEAssertions.ts:39 keeps RTE_ROUND_TRIP_TOLERANCE_METERS = 6.0 and still takes the original high/low objects (:77-78). Rows C11-52 (C9-24 inventory) / FAR-305 exist.",
+      "surviving_record": "C11-52 (C9-24-RTE-PRODUCER-CONSUMER-INVENTORY / FAR-305)",
+      "migrate_text": "translateRelativeToEye is now defined in 166 WGSL sources (up from ~85) with no shared reviewed helper; the ineffective NaN branch survives only in chunks/functions/csm_translateRelativeToEye.wgsl:38. WebGPURTEAssertions.ts:39 still permits 6 m and receives the original high/low objects rather than reading packed offsets (:77-78), so a swapped destination offset passes. C11-52 / FAR-305 owns the inventory and GPU oracle."
+    },
+    {
+      "id": "H21",
+      "title": "Shader preprocessing and module cache identity are fragmented",
+      "claim": "Module cache packs 8 source-ID bits + 24 define bits (higher bits dropped without salt); a second cache keys by descriptor.name; buffer primitives keep a regex import cache; few lockstep markers.",
+      "status": "PARTIAL",
+      "evidence": "Module cache fixed: WebGPUShaderModuleCache.ts:20-49 key = defines*0x100+sourceId retaining the full 32-bit mask plus a definesHi tier (CLAUDE.md WGSL section). Residual: WebGPUShaderCache.ts:131-132 still requires/keys by descriptor.name; buffer-primitive bare `#import` regex preprocessing remains (:551-561 of the buffer shader module); 20 of 324 WGSL files carry lockstep markers. FAR-305 planned.",
+      "surviving_record": "CLAUDE.md WGSL pipeline section (cache fix) + FAR-305 (residuals)",
+      "migrate_text": "Shader-module identity is now complete (WebGPUShaderModuleCache.ts:20-49 keeps all 32 define bits plus definesHi), but preprocessing is still fragmented: WebGPUShaderCache.ts:131 keys a second cache by descriptor.name, buffer primitives resolve bare `#import` directives with their own regex pass, and only 20 of 324 WGSL sources carry GLSL lockstep markers. One per-device compiler service keyed by content digest (FAR-305) does not exist."
+    },
+    {
+      "id": "H22",
+      "title": "Default fragment-written log depth deserves a reversed-Z benchmark",
+      "claim": "Benchmark reversed-Z against log depth before changing.",
+      "status": "RESOLVED",
+      "evidence": "REVERSED_Z_MEASUREMENT_SPIKE_2026-07-19.md (C11-GT-01 / C10-13) verdict STAY-LOG-DEPTH; recorded in DEFERRED_WORK.md:9976,10131-10133 (NEW-WEBGPU-PICK-FLEET-LOG-DEPTH) and the FAR-707 brief; log-depth pick fleet cleared to grow.",
+      "surviving_record": "REVERSED_Z_MEASUREMENT_SPIKE_2026-07-19.md + FAR-707 (experimental) + DEFERRED_WORK.md NEW-WEBGPU-PICK-FLEET-LOG-DEPTH",
+      "migrate_text": "Closed as research: the C11-GT-01 spike ruled STAY-LOG-DEPTH; FAR-707 stays an unfunded experiment."
+    },
+    {
+      "id": "H23",
+      "title": "Model geometry normalization allocates before the cache lookup",
+      "claim": "WebGPUModelRenderer normalizes geometry before ensurePrimitiveCache; primitive key nodeIdx_primIdx gives repeated mesh nodes separate residency.",
+      "status": "PARTIAL",
+      "evidence": "C9-17 slices A-C / FAR-204 prep: Scene/Model/ModelPrimitiveGeometry.js:41-67,256-265 loader-owned revision tokens make cache hits O(1) (revisionHitCount); WebGPUModelRenderer.ts:6399 WeakMap-memoized immutable base. Key is still `${nodeIdx}_${primIdx}` (WebGPUModelRenderer.ts:6397) so repeated nodes referencing one mesh do not share geometry (FAR-204 slice 4 unlanded; ledger FAR-204 'actual Model ownership vertical deferred').",
+      "surviving_record": "C9-17 / FAR-204 (slices A-C landed, slice D + ownership vertical open); DEFERRED_WORK.md:14283 NEW-PNTS-TYPEDARRAY-RETENTION-RECORD / FAR-204",
+      "migrate_text": "Settled-frame renormalization is gone (ModelPrimitiveGeometry.js:41-67 revision tokens), but native primitive residency is still keyed `${nodeIdx}_${primIdx}` (WebGPUModelRenderer.ts:6397), so instanced or repeated mesh nodes get separate GeometryRealizations instead of one immutable base plus per-node DrawInstance state. FAR-204 slice 4 and the Model ownership vertical remain open."
+    },
+    {
+      "id": "H24",
+      "title": "Device pooling does not yet imply safe resource sharing",
+      "claim": "Per-model single-slot _webgpuCache can serve the wrong device; terrain keyed level_x_y with no provider; eviction has no production caller; imagery fallback key x/y/level collides across layers.",
+      "status": "PARTIAL",
+      "evidence": "Imagery collision fixed (NEW-WEBGPU-IMAGERY-CACHE-KEY-CROSS-LAYER-COLLISION SHIPPED Batch 686; WebGPUGlobeSurfaceTextures.ts:205-222 layer-scoped key). Terrain key still `${tile.level}_${tile.x}_${tile.y}` with no provider identity (WebGPUGlobeSurfaceTileBuffers.ts:174); evictStaleResources(activeTileKeys) (WebGPUGlobeSurfaceRenderer.ts:2813) has no live caller besides teardown (:2971 with an empty set); model._webgpuCache remains one unkeyed slot (WebGPUModelRenderer.ts:5292-5516). C9 item 47 C9-15-TERRAIN-GPU-RESIDENCY-BUDGET / FAR-203/208 planned.",
+      "surviving_record": "C9-15 / FAR-203 / FAR-207 / FAR-208 (planned); Batch 686 for the imagery half",
+      "migrate_text": "Pooled devices still do not imply safe sharing: model._webgpuCache is a single unkeyed slot (WebGPUModelRenderer.ts:5292-5516), terrain residency is keyed `${level}_${x}_${y}` without provider or content identity (WebGPUGlobeSurfaceTileBuffers.ts:174), and evictStaleResources (WebGPUGlobeSurfaceRenderer.ts:2813) is called only at teardown so visited terrain stays resident for the device lifetime. The imagery cross-layer collision was closed at Batch 686 (WebGPUGlobeSurfaceTextures.ts:205-222); C9-15's byte-budgeted terrain retirement is unlanded."
+    },
+    {
+      "id": "M1",
+      "title": "WebGPU-only feature flags conflate requested and active state",
+      "claim": "SSR, NPR, contact shadows, clustered lighting, weather and GPU culling accept and report enabled on WebGL.",
+      "status": "PARTIAL",
+      "evidence": "Dense family exposes requested/capable/active/fallbackReason (WebGPUSceneRenderer.ts:891-1011; Scene.js:2249-2254 getContainmentStats; CesiumDebug.webgpuOIT). The other WebGPU-only flags still store and echo the requested value on WebGL with 'Has no effect on the WebGL path' docs (Scene.js:3310-3413, e.g. clusteredLightingEnabled :3402-3407). C11 ratified 'never remove additive WebGPU, default-to-parity + keep toggle'.",
+      "surviving_record": "FAR-003 (dense family) + DEFAULT_PARITY_MATRIX_2026-07-18.md + C11 ratified decisions (project_c11_ratified_decisions)",
+      "migrate_text": "Requested/capable/active reporting exists only for the contained dense family (WebGPUSceneRenderer.ts:891-1011 via Scene.getContainmentStats); SSR, NPR, contact shadows, clustered lighting and weather setters on Scene.js:3310-3413 still accept and echo `true` on WebGL with documentation-only 'no effect' semantics, so a silent renderer fallback still makes requested look active."
+    },
+    {
+      "id": "HP-01",
+      "title": "Telemetry integrity and full-frame coverage are incomplete",
+      "claim": "Timestamp profiler built without its feature flag; perf manager calls incompatible APIs; passes lack timestamps; CPU profiling excludes Scene update/scheduling/submit.",
+      "status": "PARTIAL",
+      "evidence": "FAR-001 slice A: WebGPUContext.ts:7020-7044 gates on hasFeature('timestamp-query'); WebGPUTimestampProfiler.ts:92 unprofiledMs; WebGPUPerformanceManager.ts:445-465 endFrame(encoder)/getResults reconciled; CesiumDebug.cpuPassCost/gpuPassCost. Remaining per C8/C9 T5 (FAR-001/FAR-006-TIMESTAMP-COVERAGE) and Q-143/DM-09 E-1 measurement instrument; performance authority moved to FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md and the DEBUGGING_GUIDE moving-altitude campaign.",
+      "surviving_record": "FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md + DEBUGGING_GUIDE.md canonical moving-altitude campaign + Q-143/DM-09",
+      "migrate_text": "The timestamp profiler and CPU pass profiler are repaired and capability-gated (WebGPUContext.ts:7020-7044, WebGPUTimestampProfiler.ts:92 unprofiledMs), but full-frame attribution is still partial: dozens of pass-creation sites are unlabelled and the unprofiled remainder is reported rather than closed. Measurement authority is the DEBUGGING_GUIDE moving-altitude campaign and the FABLE5 audit, with Q-143/DM-09 owning the corrected E-1 instrument."
+    },
+    {
+      "id": "HP-02",
+      "title": "Effects bind-group identity mixes stable resources with volatile view state",
+      "claim": "WebGPUEffectsBindGroup keys a permanent Map by camera/edge/viewport values, allocates per miss, never evicts, and rewrites on hits per tile.",
+      "status": "RESOLVED",
+      "evidence": "FAR-108 (ledger active, 13 focused cases) + C9-13 NEW-GLOBE-EFFECTS-PER-VIEW-PREPARED-HANDLE COMPLETE (QUEUE_2026-07-15_CAMPAIGN9.md:152): WebGPUEffectsBindGroup.js:380-412 retain/release per-context placeholder cache, :1071-1109 bounded slots for volatile camera values; WebGPUGlobeSurfaceRenderer.ts:489-493 _effectsMemoContext one prepare per view.",
+      "surviving_record": "FAR-108 + C9-13 (COMPLETE)",
+      "migrate_text": "Closed by FAR-108 and C9-13: effects state is partitioned per logical context with bounded volatile slots and one per-view prepared handle."
+    },
+    {
+      "id": "HP-03",
+      "title": "Depth packing repeats full-screen work and object creation per frustum",
+      "claim": "Each post-globe/post-tiles/post-opaque pack opens a full-screen pass and creates fresh depth views/bind groups.",
+      "status": "PARTIAL",
+      "evidence": "FAR-408 prep: WebGPUGlobeDepth.ts:621-627 caches depth-copy bindings by texture identity; FAR-405 prep skips post-tile/post-opaque depth work when no writer ran; C10-03 eager-resolve elision (DEFERRED_WORK.md:10474); passes/frame 23.34→14.49 measured. Demand-derived depth versions (FAR-408 S1/S2) are Campaign-8 gated tail; CANDIDATE_REGISTER.md:129 S7-2 still 'DEEPER-ON-KNOWN (FAR-405/FAR-401 HP-03)'.",
+      "surviving_record": "FAR-408 / FAR-405 (prep landed; graph-owned versions open); campaign11_planning/CANDIDATE_REGISTER.md:129 S7-2",
+      "migrate_text": "Depth packing still runs as fixed per-frustum full-screen passes; only empty boundaries are skipped and depth views/bind groups are cached by texture identity (WebGPUGlobeDepth.ts:621-627). No declared depth versions or downstream-demand gating exist, so multi-frustum frames pack representations no consumer needs (FAR-408 S1/S2, CANDIDATE_REGISTER S7-2)."
+    },
+    {
+      "id": "HP-04",
+      "title": "Settled frontend allocation and closure churn remain unmeasured",
+      "claim": "Globe per-tile command/closure creation, model traversal commands, static polyline repacks; no settled-heap gate.",
+      "status": "PARTIAL",
+      "evidence": "C9-17 (FAR-309) slices A-C LANDED, slice D open (QUEUE_2026-07-15_CAMPAIGN9.md:148); C9-11 retained terrain descriptors PARTIAL/PAUSED (DEFERRED_WORK.md:9944); ledger FAR-309 'runtime probe still records 14 total bind-group creations per settled frame from other owners'. Polyline repacks per H10.",
+      "surviving_record": "C9-17 slice D + C9-11 / FAR-309; FABLE5 audit for measurement",
+      "migrate_text": "Settled-frame allocation is bounded but not closed: C9-17 slices A-C removed model group-1/group-2 bind-group churn and added revision tokens, yet a settled model frame still records 14 bind-group creations from other owners (ledger FAR-309), terrain descriptor retention (C9-11) is paused, and polylines still repack full arrays (H10). No settled heap/object-plateau gate exists."
+    },
+    {
+      "id": "HP-05",
+      "title": "Persistent resource realization is reachable during draw-command emission",
+      "claim": "Terrain cache misses widen indices and create/upload GPU buffers while visible-tile commands are built; fallback imagery allocation likewise.",
+      "status": "STILL-VALID",
+      "evidence": "WebGPUGlobeSurfaceRenderer.ts:1317, 2530, 2716 call getOrCreateTileBuffersHelper from command construction; WebGPUGlobeSurfaceTileBuffers.ts:177-228 widens indices to Uint32Array and creates/uploads buffers on miss. FAR-209/210 planned (C9 items 52-53 not landed).",
+      "surviving_record": "FAR-209 / FAR-210 (C9 items 52-53, planned)",
+      "migrate_text": "Persistent GPU realization still happens inside draw-command emission: WebGPUGlobeSurfaceRenderer.ts:1317, 2530 and 2716 call getOrCreateTileBuffers while building visible-tile commands, and WebGPUGlobeSurfaceTileBuffers.ts:177-228 widens indices and creates/uploads terrain buffers on a miss. No ResourcePlan/readiness node separates preparation from packet emission (FAR-209/210)."
+    },
+    {
+      "id": "HP-06",
+      "title": "Main-thread preparation budgets can consume most of a frame",
+      "claim": "JobScheduler texture/program/buffer budgets total 50 ms with guaranteed-progress overshoot.",
+      "status": "STILL-VALID",
+      "evidence": "Scene/JobScheduler.js:78-90 defaults 10/10/30 ms (=50 ms) and :60 'Guaranteed progress ... even if it means exceeding the total budget'. FAR-210 planned; no queue row beyond C9 item 53.",
+      "surviving_record": "FAR-210 (planned)",
+      "migrate_text": "JobScheduler still grants 10 ms texture + 10 ms program + 30 ms buffer budgets per frame (Scene/JobScheduler.js:78-90) and guarantees progress past the total (:60), so main-thread preparation can consume most of a 16 ms frame with no stage deadlines or backpressure (FAR-210)."
+    },
+    {
+      "id": "HP-07",
+      "title": "Imagery reprojection and mip generation fragment submissions",
+      "claim": "Reprojection and mip generation submit privately during imagery/tile update.",
+      "status": "STILL-VALID",
+      "evidence": "Renderer/WebGPU/WebGPUImageryReprojection.ts:245 and WebGPUMipmapGenerator.ts:439 call device.queue.submit directly; C9-12A dedup/mip-prep shipped but the private submits remain; FAR-200 S2 / FAR-402 not started.",
+      "surviving_record": "FAR-200 S2 (C9 item 45) + FAR-402; C9-12A for the dedup half",
+      "migrate_text": "Imagery reprojection (WebGPUImageryReprojection.ts:245) and mip generation (WebGPUMipmapGenerator.ts:439) still issue their own queue.submit during tile update, outside any submission-serial authority; C9-12A deduplicated the source realizations but left the private submits, which FAR-200 S2 / FAR-402 must absorb."
+    },
+    {
+      "id": "HP-08",
+      "title": "Ordinary frames may upload pick state and repeat redundant GPU state calls",
+      "claim": "Primitive updates write pick uniforms for every pickable command without a pick pass; no redundancy counters.",
+      "status": "PARTIAL",
+      "evidence": "Model path gated by pickDemand (Batch 1338, WebGPUModelRenderer.ts:6809, FIX_QUEUE:156). Primitive path still writes pick camera/material buffers whenever hasPickIds inside the command update (WebGPUPrimitiveCommands.ts:3990-4029, :5563-5564) with no passes.pick gate found; no state-call redundancy counters exist. Q-141 re-tiered to the pick readback (R-2026-09-02).",
+      "surviving_record": "Q-141 (FIX_QUEUE_2026-08-27_AUDIT_FINDINGS.md) + FAR-303/FAR-409",
+      "migrate_text": "Primitive command updates still allocate a Float32Array and write pick camera/material buffers for every pickable command each frame regardless of pick demand (WebGPUPrimitiveCommands.ts:3990-4029, :5563-5564); only the model path is demand-gated (Batch 1338, WebGPUModelRenderer.ts:6809). No runtime counters record redundant setPipeline/bind-group/vertex-state calls."
+    },
+    {
+      "id": "INV-NUMBERS",
+      "title": "Diff inventory and code-size figures",
+      "claim": "948 fork-only commits, 2,414 files, 52 MB patch (artifacts under ../tmp/fork-audit-2026-07-13); WebGPU dir 225 files, 41 over 1,000 lines, largest 6,157/5,101/4,768/4,251/4,067; 319 WGSL; 323 writeBuffer / 185 createBindGroup; 132/54 sync vs 1/2 async pipeline creations.",
+      "status": "SUPERSEDED",
+      "evidence": "Current tree: 276 JS/TS files under Renderer/WebGPU, 57 over 1,000 lines, largest WebGPUModelRenderer.ts 9,284 / WebGPUContext.ts 7,914 / WebGPUPrimitiveCommands.ts 5,769 / WebGPUSceneRenderer.ts 5,140 / WebGPUModelPipelineCache.ts 4,751; 324 WGSL; 327 writeBuffer / 188 createBindGroup / 52 queue.submit. ARCHITECTURE_REVIEW_PLAN_2026-09-02.md already carries the refreshed size figures; the tmp diff artifacts are not in the repo.",
+      "surviving_record": "ARCHITECTURE_REVIEW_PLAN_2026-09-02.md 'Why now' + ARCHITECTURE.md §8 + Wave DX (R-2026-08-29-3) decomposition rows",
+      "migrate_text": "Superseded by the 2026-09-02 review plan's refreshed counts (276 files, 57 over 1,000 lines, 9,284-line WebGPUModelRenderer.ts); the tmp diff artifacts no longer exist."
+    },
+    {
+      "id": "ALLOC-PROBE",
+      "title": "Node/Edge allocation probe results and feature-family allocation matrix",
+      "claim": "75 compatibility buffer creations for 24 tiles, 7×4 KiB for a Rectangle, CesiumMan ~2× geometry; matrix classifying each family as double/transitional/none.",
+      "status": "SUPERSEDED",
+      "evidence": "Buffer rows invalidated by FAR-100 (zero compatibility GPUBuffers; Tools/visual-regression/output/allocation-tax-{after,final,exact-current-2026-07-15}.json); texture rows still hold (see B11). The probe script itself (tmp/probe-webgpu-allocation-tax.mjs) was never promoted into Tools — only its output JSONs exist.",
+      "surviving_record": "FAR-100 evidence + B11 entry in the new review; FAR-005 'promote the allocation probe' remains open",
+      "migrate_text": "Superseded: buffer figures are obsolete after FAR-100; the texture-family double realization is carried under B11. Note for the new review: no tracked allocation-tax probe script exists under Tools (only output JSONs), so FAR-005's promotion item is still open."
+    },
+    {
+      "id": "ADOPT-MATRIX",
+      "title": "2026 WebGPU adoption matrix",
+      "claim": "Immediates not found; transient-attachment scaffold checks nonexistent feature names with fallback bit 0x10; standard uniform layout not found; subgroup_id helpers absent; f16 selective; dual-source detected but no OIT path; video texture manager orphaned; occlusion queries unused; bundles Moon-only; compat mode featureLevel exists.",
+      "status": "PARTIAL",
+      "evidence": "Transient: WebGPUFramebufferManager.ts:55-64 still falls back to 0x10 and tests feature names 'transient-attachments'/'transient-attachment' (spec bit is 0x20 per the audit) — unchanged. Immediates/uniform_buffer_standard_layout: no hits. Subgroups: 4 WGSL files use subgroup ops, zero subgroup_id/num_subgroups. Dual-source: feature flag (WebGPUFeatureFlags.ts:55) + WebGPUOIT.ts:12 doc only. Video: RESOLVED — WebGPUVideoTextureManager.ts:171,201 uses importExternalTexture. Occlusion: none. Bundles: WebGPURenderBundleManager.ts + WebGPUModelRenderer.ts. Compat: ContextFactory.ts:153 featureLevel 'compatibility'. Phase 1b RENDERER_LANDSCAPE_AUDIT_2026-09-02 supersedes the matrix.",
+      "surviving_record": "FAR-700..707 (experimental) + RENDERER_LANDSCAPE_AUDIT_2026-09-02.md (Phase 1b)",
+      "migrate_text": "Of the adoption rows only external video textures moved (WebGPUVideoTextureManager.ts:171,201 now uses importExternalTexture). The transient-attachment scaffold still guesses the usage bit as 0x10 and probes non-standard feature names (WebGPUFramebufferManager.ts:55-64); immediates, uniform_buffer_standard_layout, subgroup_id helpers, occlusion queries and a dual-source OIT path remain absent, and render bundles stay selective. The 2026-09-02 landscape audit should re-rank these against current Chrome/spec status."
+    },
+    {
+      "id": "UPSTREAM",
+      "title": "Upstream integration (21 commits: S2Cell epsilon, TerrainPicker, alignedAxis, Sandcastle registry)",
+      "claim": "Integrate the nine-file upstream delta soon; alignedAxis needs a manual port.",
+      "status": "RESOLVED",
+      "evidence": "65a194d24e 'Merge upstream/main (Cesium v1.144) - 191 commits' includes 4c015a241b (S2Cell epsilon) and 4c6792d392 (alignedAxis); Batch 973 records v1.144 SYNCED.",
+      "surviving_record": "v1.144 merge commit 65a194d24e + Upstream Sync Procedure in CLAUDE.md",
+      "migrate_text": "Closed by the v1.144 upstream merge (65a194d24e)."
+    },
+    {
+      "id": "GUARDS",
+      "title": "Validation results — failed or stale guards",
+      "claim": "Material mutation probe failed; lint-debug-pragmas found two unguarded warnings; git diff --check 235 diagnostics; upstream-regression-check 24/2 with a structurally stale EdgeVisibility source-text guard.",
+      "status": "PARTIAL",
+      "evidence": "Material probe → RESOLVED (B10). `node Tools/lint-debug-pragmas.mjs` now reports clean, 276 files. EdgeVisibility guard #7 is still a source-text regex (Tools/upstream-regression-check.mjs:348-375) rather than a behavioural degenerate-input test — the one surviving tools item, with no row. git diff --check against that upstream snapshot is not re-derivable.",
+      "surviving_record": "none for the EdgeVisibility guard (needs a small tools row); others closed",
+      "migrate_text": "Tools/upstream-regression-check.mjs:348-375 still certifies the EdgeVisibility degenerate-triangle fix by regex over EdgeVisibilityPipelineStage.js source text; the audit asked for a behavioural degenerate-input spec instead. The debug-pragma lint is clean and the Material mutation probe closed with B10."
+    },
+    {
+      "id": "GATES-PHASES",
+      "title": "Required acceptance gates (1-17), prioritized remediation Phases 0-4, target architecture, engine comparisons, smoke benchmark, executive verdict",
+      "claim": "Seventeen acceptance gates, a four-phase remediation order, an eight-point target architecture, Three.js/PlayCanvas/Babylon lessons, and a 60 FPS-capped smoke benchmark (WebGPU first frame +508 ms).",
+      "status": "SUPERSEDED",
+      "evidence": "FORK_ARCHITECTURE_REMEDIATION_PLAN_2026-07-13.md restates every gate as package acceptance (§6, §7, §12) and the architecture as ADR-1..8; Campaign 8→9→11 queues carry the execution order; the benchmark is superseded by FORK_PERFORMANCE_AUDIT_AND_FIX_RESULTS_2026-07-14.md, FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md and the DEBUGGING_GUIDE moving-altitude campaign; engine comparisons are being redone by Phase 1b (RENDERER_LANDSCAPE_AUDIT_2026-09-02.md). The wave-end gate (R-2026-08-29-2) is the current gate mechanism.",
+      "surviving_record": "FORK_ARCHITECTURE_REMEDIATION_PLAN_2026-07-13.md ADR-1..8 §6/§7/§12; ARCHITECTURE_REVIEW_PLAN_2026-09-02.md Phase 1b/2",
+      "migrate_text": "Superseded by the FAR plan's ADRs and package gates and by the 2026-09-02 review's Phase 1b/2; the 60 Hz smoke numbers are not a performance record."
+    },
+    {
+      "id": "LEDGER-IDS",
+      "title": "Finding-ID namespace (B1-B12, H1-H24 with H15 intentionally absent, HP-01..08, M1)",
+      "claim": "IDs are add-only; H15 must never be assigned.",
+      "status": "STILL-VALID",
+      "evidence": "FORK_ARCHITECTURE_REMEDIATION_PLAN_2026-07-13.md §10 carries the one-line title per ID and the H15 rule; the JSON ledger findings map is keyed by these IDs and also holds B13/B14, which the audit never defined. The ledger checkpoint is 2026-07-15 and stale (e.g. H5 'planned' though the fold landed; B9/H11/H12/H14/H16 still 'active' though closed); Phase 4 of the review plan schedules its refresh.",
+      "surviving_record": "FORK_ARCHITECTURE_REMEDIATION_PLAN_2026-07-13.md §10 + FORK_ARCHITECTURE_REMEDIATION_LEDGER_2026-07-13.json findings",
+      "migrate_text": "The B/H/HP/M identifiers stay add-only with H15 permanently unassigned; after this document is removed, the FAR plan §10 table and the ledger's findings map are the ID-definition source, and the new review must carry the full text for every STILL-VALID/PARTIAL ID above. B13/B14 exist only in the ledger and need a definition there or removal at the Phase-4 ledger refresh."
+    }
+  ],
+  "inbound_refs": [
+    {
+      "file": "migration_doc/README.md:240",
+      "what": "Index row describing the audit as 'the fork-vs-upstream architecture audit that launched the FAR remediation plan. Frozen evidence baseline.'",
+      "needs": "Row repointed to the new architecture review (or removed) with a note that finding text migrated there; nothing else."
+    },
+    {
+      "file": "migration_doc/ARCHITECTURE_REVIEW_PLAN_2026-09-02.md:4",
+      "what": "'Why now' paragraph cites the audit as the last fork-wide review and quotes its ledger counts (66 packages, 46 findings).",
+      "needs": "Keep as a historical citation by name only (no anchor); optionally note the file was removed after migration. Nothing load-bearing."
+    },
+    {
+      "file": "migration_doc/FORK_ARCHITECTURE_REMEDIATION_PLAN_2026-07-13.md:9 and §10 (lines ~1090-1140)",
+      "what": "'Source audit' link plus the audit-to-plan traceability table keyed by B/H/HP/M IDs; every package's 'Audit coverage' line uses the IDs.",
+      "needs": "ID definitions — §10's one-line titles already satisfy the plan itself; add a pointer that full finding text now lives in the new review. The link at :9 becomes a dead link and should be repointed."
+    },
+    {
+      "file": "migration_doc/FORK_ARCHITECTURE_REMEDIATION_LEDGER_2026-07-13.json:9 and findings{}",
+      "what": "'audit' field names the file; findings map keyed by the IDs (including undefined B13/B14).",
+      "needs": "Repoint the 'audit' field at the Phase-4 ledger refresh; ID definitions (§10 of the plan / new review). No section anchor."
+    },
+    {
+      "file": "migration_doc/FORK_PERFORMANCE_WEEKLY_CHANGE_DEFENSE_2026-07-15.md:11",
+      "what": "Listed under 'Primary authorities' of a frozen checkpoint document.",
+      "needs": "Nothing load-bearing (frozen record); a dead-link note or repoint to the new review."
+    },
+    {
+      "file": "migration_doc/DEFAULT_PARITY_MATRIX_2026-07-18.md:35",
+      "what": "Row 1 (weighted-blended OIT) cites 'audit finding B7 (FORK_VS_UPSTREAM…AUDIT_2026-07-13.md:167)' as the authoritative defect record and paraphrases its four sub-defects inline.",
+      "needs": "The B7 definition (an ID definition plus its four sub-points, already paraphrased inline) — repoint the citation to the new review's B7 entry or to OIT_DEFAULT_FLIP_EVIDENCE_2026-07-18.md; the line-167 anchor is lost."
+    },
+    {
+      "file": "migration_doc/campaign11_planning/CANDIDATE_REGISTER.md:129; migration_doc/PERF_ARCH_DEEP_DIVE_2026-07-16.md:716; migration_doc/FORK_PERFORMANCE_AUDIT_AND_FIX_RESULTS_2026-07-14.md:303",
+      "what": "Use the HP-03 / HP-01..HP-08 identifiers without linking the file.",
+      "needs": "HP ID definitions only — satisfied by FAR plan §10 titles and the new review's HP entries."
+    },
+    {
+      "file": "Tools/**, CLAUDE.md, .claude/**, Specs/**, packages/**, scripts/**",
+      "what": "No references to the filename or to FAR/finding IDs found.",
+      "needs": "Nothing."
+    }
+  ],
+  "verdict_on_document": "REMOVE-AFTER-MIGRATION",
+  "reason": "Every finding was re-derived against the current tree. Twelve are RESOLVED with landed code (B1, B2, B3, B9, B10, B12, H11, H12, H14, H16, H22, HP-02, plus UPSTREAM), eighteen are PARTIAL and five STILL-VALID (B8, H6, H18, H19, HP-05, HP-06, HP-07, and the EdgeVisibility guard) — each PARTIAL/STILL-VALID item carries present-tense migrate_text with current file:line. Nothing in the document is a live authority that no other record holds: the FAR plan (ADR-1..8, §6 packages, §10 ID table) and its JSON ledger are the ID-definition and traceability source, the campaign queues own execution status, and the 2026-09-02 review plan already carries the refreshed size figures. The six inbound references are repointable (README row, review-plan citation, FAR plan/ledger 'audit' link, a frozen checkpoint, and the DEFAULT_PARITY_MATRIX B7 citation which already paraphrases the finding inline); no Tools, CLAUDE.md or code reference exists. Caveats for the migration: the ledger is stale at 2026-07-15 and must be refreshed (Phase 4) before its states are quoted; B13/B14 exist in the ledger without an audit definition; FAR-301 (ViewportQuad), FAR-302 (uniform schema) and the EdgeVisibility behavioural guard have no queue row and need rows in the new review."
+}

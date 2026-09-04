@@ -1,5 +1,5 @@
 > **Canonical doc (consolidation first draft, 2026 consolidation).**
-> Supersedes (folds into this register): `audits/2026-06-11_ULTRA_REVIEW.md`, `AUDIT_2026_05_02.md`, `FORK_DRIFT_ANALYSIS_2026-06-11.md`, `PLAN_2DCV_MORPH_BATCHES.md` (findings half), `SLICE_5D_PLAN_CLUSTERED_LIGHTING.md` (defect half), `PRINCIPAL_ENGINEER_REVIEW_PER_FEATURE_2026_04_16.md`, `audits/2026-04-30_FORK_FEATURE_INVENTORY.md`, `audits/2026-04-30_MAINTAINABILITY_SURVIVABILITY.md`, `archive/REVIEW_FIX_PROGRESS.md`, `archive/PICKING_ANALYSIS.md`, `archive/SORTING_ARCHITECTURE_ANALYSIS.md`. **Links (does NOT supersede):** `PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md` (the standalone `C-R*/H-R*/M-R*` finding-ID definitions stay there) and `WEBGPU_DEBUGGING_LOG.md` (the full chronological bug log — this register summarizes, it does not replace it).
+> Supersedes (folds into this register): `audits/2026-06-11_ULTRA_REVIEW.md`, `archive/AUDIT_2026_05_02.md`, `FORK_DRIFT_ANALYSIS_2026-06-11.md`, `PLAN_2DCV_MORPH_BATCHES.md` (findings half), `SLICE_5D_PLAN_CLUSTERED_LIGHTING.md` (defect half), `PRINCIPAL_ENGINEER_REVIEW_PER_FEATURE_2026_04_16.md`, `archive/audits-2026-04-30/2026-04-30_FORK_FEATURE_INVENTORY.md`, `archive/audits-2026-04-30/2026-04-30_MAINTAINABILITY_SURVIVABILITY.md`, `archive/REVIEW_FIX_PROGRESS.md`, `archive/PICKING_ANALYSIS.md`, `archive/SORTING_ARCHITECTURE_ANALYSIS.md`. The four archived-2026-09-03 documents in this list are now REMOVE-AFTER-MIGRATION per [`ARCHITECTURE_REVIEW_2026-09-02.md`](ARCHITECTURE_REVIEW_2026-09-02.md), which carries their id tables and open findings. **Links (does NOT supersede):** `archive/principal-review-2026-04-16/PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md` (archived 2026-09-03; the standalone `C-R*/H-R*/M-R*` id table is transcribed at `ARCHITECTURE_REVIEW_2026-09-02.md` §5.1) and `WEBGPU_DEBUGGING_LOG.md` (the full chronological bug log — this register summarizes, it does not replace it).
 > **Review-in-progress.** First draft for the maintainer's review rounds.
 
 ---
@@ -22,9 +22,9 @@ The fork's defect IDs come from several review generations. They are **not** ren
 |---|---|---|---|
 | `A<n>.<m>` | `audits/2026-06-11_ULTRA_REVIEW.md` Axis A | WebGPU-vs-our-WebGL parity/correctness/perf finding | the ultra-review doc + `_findings.json` sidecar |
 | `B<n>` (drift) | `audits/2026-06-11_ULTRA_REVIEW.md` Axis B | our-WebGL-vs-upstream fork-drift finding | the ultra-review doc + `FORK_DRIFT_ANALYSIS_2026-06-11.md` |
-| `A.<n>` / `B.<n>` / `C.<n>` / `D.<n>` | `AUDIT_2026_05_02.md` | cross-coupling: BREAKING / PARTIAL / LATENT / STALE-STATUS | `AUDIT_2026_05_02.md` |
+| `A.<n>` / `B.<n>` / `C.<n>` / `D.<n>` | `archive/AUDIT_2026_05_02.md` (archived 2026-09-03) | cross-coupling: BREAKING / PARTIAL / LATENT / STALE-STATUS | `ARCHITECTURE_REVIEW_2026-09-02.md` §5.2 (id table); `archive/AUDIT_2026_05_02.md` for full original prose |
 | `B-<n>` / `C-P<n>` / `H-P<n>` | `PRINCIPAL_ENGINEER_REVIEW_PER_FEATURE_2026_04_16.md` | per-feature: BLOCKER / CRITICAL-at-planetary-scale / HIGH | the per-feature review doc |
-| `C-R<n>` / `H-R<n>` / `M-R<n>` | `PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md` | renderer-deep: CRITICAL / HIGH / MEDIUM | **stays standalone — LINK, don't copy** (see §9) |
+| `C-R<n>` / `H-R<n>` / `M-R<n>` | `archive/principal-review-2026-04-16/PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md` (archived 2026-09-03) | renderer-deep: CRITICAL / HIGH / MEDIUM | **id table transcribed at `ARCHITECTURE_REVIEW_2026-09-02.md` §5.1 — LINK, don't copy** (see §9) |
 | `NEW-*` | `DEFERRED_WORK.md` | the live, tracked work-item ID for a finding (the durable handle) | `DEFERRED_WORK.md` |
 | `DP-H<n>` | DEFERRED_WORK / design docs | "deferred-pick / high" picking-and-precision epic IDs | `DEFERRED_WORK.md`, `DP-H46_METADATA_DESIGN.md` |
 | `BUG-<n>` / `Session.Bug` | `WEBGPU_DEBUGGING_LOG.md` | a fixed bug from the chronological log | `WEBGPU_DEBUGGING_LOG.md` |
@@ -159,7 +159,7 @@ The 25-batch parity campaign passed its structural audit (20/24 probes green, Sh
 
 ## 4. Open MEDIUM / LATENT (cross-coupling + dead-code hazards)
 
-From `AUDIT_2026_05_02.md` §C (LATENT) — the entries that remain open after re-verification (most of §C.1–C.12 shipped Batches 132–159):
+From `archive/AUDIT_2026_05_02.md` §C (LATENT, archived 2026-09-03 — see `ARCHITECTURE_REVIEW_2026-09-02.md` §5.2) — the entries that remain open after re-verification (most of §C.1–C.12 shipped Batches 132–159):
 
 - **C.2 · `gpuCullCommands()` / HiZ / GPUSortKeys / PointCloudSort orphan dispatchers — consume-or-delete decision pending.** `WebGPUSceneRenderer.ts` defines `gpuCullCommands()` with no live caller; the cullers allocate eagerly. Tracked as `NEW-GPU-CULLER-CONSUME-OR-DELETE` + `NEW-HIZ-SORT-CONSUME-OR-DELETE`. **Architecture decision, not a bug — but see §4.1: do not delete without the dead-code audit.** Note: FORK-41 (Hi-Z occlusion) was separately *resolved* — command-drop is now DEFAULT ON (C2-21, 2026-06-24) after a depth-source bug fix; the orphan-dispatcher decision is the residual.
 - **`NEW-GPU-SORT-PIPELINE-PHASE-3`** — GPU sort-keys are produced but never consumed by `RenderScheduler` (sorted-indices readback integration). Open.
@@ -342,17 +342,17 @@ This register **chains and summarizes**. The authoritative per-ID definitions li
 
 | ID family | Authoritative definition source | Notes |
 |---|---|---|
-| `C-R1..C-R14`, `H-R1..H-R14`, `M-R*` | **`PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md`** | **Stays standalone — this register links, never copies.** Each C-R/H-R entry there carries its own FIXED/DEFERRED/PARTIAL annotation + FOLLOW-UP sub-IDs (e.g. `C-R1-CLASSIFICATION`, `C-R8-EDGE-INLINE`, `C-R9-MODEL-FEATURE-PICK`). |
+| `C-R1..C-R13`, `H-R1..H-R14`, `M-R*` | **`archive/principal-review-2026-04-16/PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md`** (archived 2026-09-03) | **Id table now at `ARCHITECTURE_REVIEW_2026-09-02.md` §5.1 — this register links, never copies.** Each C-R/H-R entry there carries its own FIXED/DEFERRED/PARTIAL annotation + FOLLOW-UP sub-IDs (e.g. `C-R1-CLASSIFICATION`, `C-R8-EDGE-INLINE`, `C-R9-MODEL-FEATURE-PICK`). **Range corrected from `C-R1..C-R14`: `C-R14` was cited but never defined by the source review (STALE, "cited, never defined" — no 14th finding exists).** |
 | `B-*`, `C-P*`, `H-P*` | `PRINCIPAL_ENGINEER_REVIEW_PER_FEATURE_2026_04_16.md` | Per-finding status banner says read the per-finding annotations, not the 2026-04-16 summary counts. |
 | `A<n>.<m>` (Axis A), Axis-B drift | `audits/2026-06-11_ULTRA_REVIEW.md` + `_findings.json` | 195/235 confirmed-real; the 2 CRITICALs orchestrator-spot-checked. |
-| `A.<n>/B.<n>/C.<n>/D.<n>` (cross-coupling) | `AUDIT_2026_05_02.md` | Keep that doc as the 2026-05-02 snapshot; future audits diff against it. |
+| `A.<n>/B.<n>/C.<n>/D.<n>` (cross-coupling) | `archive/AUDIT_2026_05_02.md` (archived 2026-09-03) | Id table at `ARCHITECTURE_REVIEW_2026-09-02.md` §5.2; future audits diff against the archived 2026-05-02 snapshot. |
 | `NEW-*`, `DP-H*`, `FORK-*` | **`DEFERRED_WORK.md`** (the live tracker) | The durable handle for every open item; the 2026-06-11 section (49 IDs) carries the per-ID ✅/⏳/DEFERRED status this register's §6 re-verified. |
 | `BUG-<n>` / `Session.Bug` | **`WEBGPU_DEBUGGING_LOG.md`** | The full chronological fixed-bug log (~13K lines, Sessions 1–67+). §6 summarizes the load-bearing ones; the log has the rest. Search it before debugging a new artifact. |
 | Picking deep-dive | `archive/PICKING_ANALYSIS.md` | WebGL pick-method inventory, WebGPU gap analysis, industry comparison, drill-pick-to-Earth-center. Largely superseded by §6.1's shipped fixes. |
 | Sorting/Z-ordering | `archive/SORTING_ARCHITECTURE_ANALYSIS.md` | 5-layer sort taxonomy + "Cadillac" proposal. The translucent-sort gap (C-R3) and splat sort (A2.1) trace here. |
 | Fix-progress ledger | `archive/REVIEW_FIX_PROGRESS.md` | The running batch-by-batch ledger behind the per-feature/renderer-deep fixes. |
-| Feature completeness | `audits/2026-04-30_FORK_FEATURE_INVENTORY.md`, `FEATURE_INVENTORY.md` §C/§D | Feature-level WIP/FUTURE view; the inventory's own "doc inaccuracies discovered during verification" section is worth reading first. |
-| Maintainability | `audits/2026-04-30_MAINTAINABILITY_SURVIVABILITY.md` | Readability / failure-modes / embeddability / CLAUDE.md-compliance survey; A16.3 TS-coverage finding (§3) originates adjacent here. |
+| Feature completeness | `archive/audits-2026-04-30/2026-04-30_FORK_FEATURE_INVENTORY.md` (archived 2026-09-03), `FEATURE_INVENTORY.md` §C/§D | Feature-level WIP/FUTURE view; migrated findings at `ARCHITECTURE_REVIEW_2026-09-02.md` §3.2 / §3.3; the inventory's own "doc inaccuracies discovered during verification" section is worth reading first. |
+| Maintainability | `archive/audits-2026-04-30/2026-04-30_MAINTAINABILITY_SURVIVABILITY.md` (archived 2026-09-03) | Readability / failure-modes / embeddability / CLAUDE.md-compliance survey; migrated to `ARCHITECTURE_REVIEW_2026-09-02.md` §3.11; A16.3 TS-coverage finding (§3) originates adjacent here. |
 
 ---
 

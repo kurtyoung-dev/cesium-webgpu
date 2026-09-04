@@ -1,0 +1,576 @@
+{
+  "doc": "migration_doc/audits/2026-04-30_FORK_FEATURE_INVENTORY.md",
+  "items": [
+    {
+      "id": "H1",
+      "title": "Codebase scale numbers (143 renderer files, 259 WGSL, 45 FR slots, top-20 file sizes)",
+      "claim": "Renderer/WebGPU has 143 .js+.ts files, 259 .wgsl files, FeatureRendererKey COUNT 45; WebGPUContext.ts 4363, GlobeSurface 3933, SceneRenderer 3626, ModelRenderer 2296 lines etc.",
+      "status": "STALE",
+      "evidence": "find: 276 .js/.ts files under packages/engine/Source/Renderer/WebGPU, 324 .wgsl; FeatureRendererKey.js:273 COUNT: 54. wc -l: WebGPUModelRenderer.ts 9284, WebGPUContext.ts 7914, WebGPUPrimitiveCommands.ts 5769, WebGPUSceneRenderer.ts 5140, WebGPUModelPipelineCache.ts 4751, WebGPUGlobeSurfaceRenderer.ts 3080, GraphicsContext.ts 2451.",
+      "surviving_record": "migration_doc/ARCHITECTURE_REVIEW_PLAN_2026-09-02.md (header census) and migration_doc/QUEUE_2026-08-29_RESEARCH_DISPATCH.md:874 (eleven >1,000-line files); migration_doc/ARCHITECTURE.md §8 (line 596) decomposition state",
+      "migrate_text": "Numbers are a Batch-116 snapshot; the 2026-09-02 review plan header and the DX census carry the current ones."
+    },
+    {
+      "id": "D1",
+      "title": "Doc inaccuracy 1: WebGPUVolumetricFogRenderer.ts docstring claims Phase 5a no-visual-change placeholder",
+      "claim": "Renderer docstring says kernels are placeholders while VolumetricFog.wgsl already ships Phase 5b height fog, HG scattering, shadow occlusion, FBM noise; docstring must be rewritten.",
+      "status": "RESOLVED",
+      "evidence": "git log -S 'Phase 5a contract' -- WebGPUVolumetricFogRenderer.ts: removed in 0bcc65689c 'Batch 117 - fork audits + GroundPolyline silent-invisible fix' (2026-04-30). Current docstring packages/engine/Source/Renderer/WebGPU/WebGPUVolumetricFogRenderer.ts:1-44 describes the real kernels (height fog, HG sun+moon, shadow occlusion, Taylor altitude). VolumetricFog.wgsl is now 1367 lines.",
+      "surviving_record": "Batch 117 (0bcc65689c); the file's own docstring",
+      "migrate_text": "Fixed in Batch 117; nothing to migrate."
+    },
+    {
+      "id": "D2",
+      "title": "Doc inaccuracy 2: the 'six orphaned Model<KHR>Stage.wgsl files' framing is wrong; KHR lives as flag bits in ModelPBRComplete.wgsl",
+      "claim": "No ModelClearcoatStage/AnisotropyStage/... files exist; KHR_materials_* are bit-flagged paths (bits 19-25) inside ModelPBRComplete.wgsl; the *Stage.wgsl pattern is a different mechanism.",
+      "status": "STALE",
+      "evidence": "ls Shaders/WebGPU/Model still shows only Atmosphere/CPUStyling/Color/PBRComplete/PointCloudStyling/Silhouette/Splitter stages (+ErrorPipeline); ModelPBRComplete.wgsl:63-71 defines FLAG_HAS_CLEARCOAT..FLAG_HAS_TRANSMISSION bits 19-25 with branches at :2649/:2679/:2925/:2979/:3028/:3084/:3091. grep migration_doc for 'ModelClearcoatStage' outside this doc: no hits - no document still makes the refuted claim, so the correction has no target.",
+      "surviving_record": "migration_doc/FORK_OVERVIEW.md §5.3 (states the bit-flag structure); DEFERRED_WORK.md:5210 C-R4-GLTF-KHR table",
+      "migrate_text": "The structural fact is already recorded in FORK_OVERVIEW §5.3; the refuted claim no longer appears anywhere."
+    },
+    {
+      "id": "D3",
+      "title": "Doc inaccuracy 3: batch lineage 71-116 matches DEFERRED_WORK",
+      "claim": "git log for Batches 71-116 matches the ledger; Batch 116 = 92e9a5d5c2 GroundPolyline depth-test + color decoding.",
+      "status": "STALE",
+      "evidence": "git show -s 92e9a5d5c2 = 'Batch 116 - GroundPolyline depth-test + color decoding fixes' (correct), but HEAD is Batch 1378 (aa5aabb85b); a lineage check for 71-116 has no bearing today.",
+      "surviving_record": "none",
+      "migrate_text": "Historical consistency check; nothing to migrate."
+    },
+    {
+      "id": "D4",
+      "title": "Doc inaccuracy 4 / Core-infra row / Multi-context row / Top-10 #10: RenderCommand adopted in only 3 Scene files vs 24 constructing DrawCommand - commit to migration or deprecate",
+      "claim": "RenderCommand is used by ClassificationPrimitive.js, GroundPrimitive.js, QuadtreePrimitive.js only; 24 Scene files still construct DrawCommand; carrying both paths is the worst outcome.",
+      "status": "STILL-VALID",
+      "evidence": "grep -rl RenderCommand packages/engine/Source/Scene: exactly the same 3 files; grep -rl 'new DrawCommand(' Scene: 25 files. FEATURE_INVENTORY.md:512 tags RenderCommand 'SCAFFOLDED / UNUSED ... do not describe as shipped until C11-24 gives it a real owner/consumer'; QUEUE_2026-07-18_CAMPAIGN11.md:2450 C11-24 is LANDED-PARTIAL (Batch 1114: fixed the stale `_currentRenderPass` slot) and does not decide migrate-vs-deprecate.",
+      "surviving_record": "migration_doc/FEATURE_INVENTORY.md:512; QUEUE_2026-07-18_CAMPAIGN11.md:1643/2450 (C11-24)",
+      "migrate_text": "`Scene/RenderCommand.js` is still consumed by only three Scene files (ClassificationPrimitive.js, GroundPrimitive.js, QuadtreePrimitive.js) while 25 Scene files construct `DrawCommand` directly (grep at HEAD). C11-24 (Batch 1114) repaired its stale pass slot but no row decides whether the backend-agnostic command is the official API or a scaffold to retire; FEATURE_INVENTORY.md:512 records it as SCAFFOLDED/UNUSED. The frame-graph lens (ADR-4/ADR-5) should rule on it rather than let both command paths persist indefinitely."
+    },
+    {
+      "id": "D5",
+      "title": "Doc inaccuracy 5 / Cross-cutting #11: 15 real `isWebGPU` branches across 11 Scene files",
+      "claim": "Backend-agnosticism is near-perfect but 15 real branches remain in Vector3DTile*, GroundPolylinePrimitive, ClassificationPrimitive, DepthPlane, FramebufferOrchestrator, GltfLoader, Model.js, EdgeVisibilityPipelineStage, ViewportQuad.",
+      "status": "PARTIAL",
+      "evidence": "grep isWebGPU in Scene (excluding comments, CesiumDebug/SceneDebug, isWebGPUDrawCommand): 4 real branches in 3 files - GlobeSurfaceShaderSet.js:1117, OceanSurfacePrimitive.js:384 and :502, ViewportQuad.js:144 - plus the Scene.js:2793 getter. Every site the doc listed was converted (FramebufferOrchestrator.js:50/135/158, GltfLoader.js:1417, Model.js:2927 comments record the audit-2026-05-02 switch to capability/FR-key checks; FeatureRendererKey.js:152-172 marker keys DEPTH_PLANE 45 / CLASSIFICATION_PRIMITIVE 46). Scene.js has 4 `isWebGPUDrawCommand` checks (command property, fine).",
+      "surviving_record": "migration_doc/AUDIT_2026_05_02.md (the conversion); no live row for the four residual sites",
+      "migrate_text": "Four `context.isWebGPU` branches remain in Scene code at HEAD: `GlobeSurfaceShaderSet.js:1117` (forces the non-parallel shader path on WebGPU), `OceanSurfacePrimitive.js:384` and `:502` (WebGPU-only primitive no-ops on WebGL), and `ViewportQuad.js:144` (shader selection). Everything else the 2026-04-30 audit listed was converted to FR-key or capability checks in the 2026-05-02 audit. No row tracks the residue; the architecture/build lens should decide whether each is a legitimate capability gate (Principle 2 allows external queries, not branches) or a marker-FR candidate."
+    },
+    {
+      "id": "D6",
+      "title": "Doc inaccuracy 6: FeatureRendererKey has 45 slots; FOG slot 8 retained; slot 33 DEFERRED_GBUFFER was renumbered (add-only violation acknowledged in trailing comment)",
+      "claim": "45 slots (0-44); FOG retained add-only; DEFERRED_GBUFFER removal with renumbering is a documented add-only violation at FeatureRendererKey.js:152-157.",
+      "status": "STALE",
+      "evidence": "FeatureRendererKey.js: slots 0-53, COUNT: 54 (:273); FOG: 8 still present (:32); the trailing comment now reads 'There is no `DEFERRED_GBUFFER` slot: nothing ever registered or consumed one, and the lookup array stays dense' (:263-265, rewritten Batch 999 / C16-06 3cfac61934) - the file no longer asserts a renumbering happened.",
+      "surviving_record": "packages/engine/Source/Renderer/FeatureRendererKey.js:263-273",
+      "migrate_text": "Slot count and the DEFERRED_GBUFFER note both changed; the enum file is its own record."
+    },
+    {
+      "id": "D7",
+      "title": "Doc inaccuracy 7: ShaderDefine uses 4 of 24 bits; ShaderSourceId has 22 entries",
+      "claim": "WebGPUShaderDefines.ts:37-100 registers 4 define bits; 22 source IDs.",
+      "status": "STALE",
+      "evidence": "WebGPUShaderDefines.ts: 31 lo-mask entries (bits 0-30, MODEL_METADATA_MAT_TRANSPORT = 1 << 30 at :863) plus the branded ShaderDefineHi registry (:876-910); ShaderSourceId (:1141-1260) has 42 entries.",
+      "surviving_record": "packages/engine/Source/Renderer/WebGPU/WebGPUShaderDefines.ts; CLAUDE.md 'WGSL Shader Pipeline' section",
+      "migrate_text": "Counts are stale; the registry file and CLAUDE.md are the record (the shader-composition lens measures the bit budget)."
+    },
+    {
+      "id": "I1",
+      "title": "WebGPUContext (4363 lines) - decompose into 3-4 companions; stub install / limits init / default textures still inline",
+      "claim": "File is 4x over the 1000-line rule; extract WebGL-compat stub install, ContextLimits init, default-texture creation.",
+      "status": "SUPERSEDED",
+      "evidence": "Companions exist: WebGPUContextWebGLStubInit.ts, WebGPUContextLimitsInit.ts, WebGPUContextCanvasConfig.ts, WebGPUContextCullerPool.ts, WebGPUContextDeviceLoss.ts; yet WebGPUContext.ts is 7,914 lines. `_scenePipelineFormatGeneration` is read by 31 files (was 23). DX-08 'Decompose WebGPUContext.ts (7,889)' QUEUED at QUEUE_2026-08-29_RESEARCH_DISPATCH.md:167 and :938.",
+      "surviving_record": "DX-08 (QUEUE_2026-08-29_RESEARCH_DISPATCH.md:167, :938)",
+      "migrate_text": "DX-08 owns the decomposition; the named extractions already happened."
+    },
+    {
+      "id": "I2",
+      "title": "WebGPURenderPipelineCache has no LRU eviction or size cap",
+      "claim": "clear()/remove() exist but pipelines accumulate monotonically; add bounded LRU.",
+      "status": "RESOLVED",
+      "evidence": "Batch 126 fb67aa119e (2026-04-30) 'Maintainability tier: LRU pipeline cache + post-process BG cache'. WebGPURenderPipelineCache.ts:373-384 `evicted`/`maxSize` stats, :421-426 DEFAULT_MAX_SIZE, :498-503 setMaxSize()+evictIfNeeded(); file now 1291 lines.",
+      "surviving_record": "Batch 126 (fb67aa119e)",
+      "migrate_text": "Bounded LRU landed Batch 126."
+    },
+    {
+      "id": "I3",
+      "title": "WebGPUComputePipelineCache: AutoExposure not routed through it (also Cross-cutting #1, Compute table)",
+      "claim": "Route AutoExposure through the central compute pipeline cache.",
+      "status": "RESOLVED",
+      "evidence": "WebGPUAutoExposure.ts:70/212-217 accepts the cache and :433-444 builds pass1/pass2 via `computeCache.getOrCreateSync`. FEATURE_INVENTORY.md:1127 already marks the old claim 'partly stale as of 2026-08-06'.",
+      "surviving_record": "packages/engine/Source/Renderer/WebGPU/WebGPUAutoExposure.ts:433-444; FEATURE_INVENTORY.md:1127",
+      "migrate_text": "AutoExposure routes through the central compute cache; FI:1127 should drop its remaining 'don't route' wording."
+    },
+    {
+      "id": "I4",
+      "title": "Shader-module cache: 6 prewarm callers; ModelRenderer does not prewarm; prewarm Cloud/Voxel/VolumetricFog/PointCloud",
+      "claim": "First-glTF stutter remains until a KHR variant strategy lands; add prewarm for Cloud/Voxel/Fog/PointCloud.",
+      "status": "PARTIAL",
+      "evidence": "grep '.prewarm(' in Renderer/WebGPU: WebGPUBillboardRenderer.js, WebGPUGlobeSurfaceShaders.ts, WebGPULabelRenderer.js, WebGPUPointPrimitiveRenderer.js, WebGPUPolylineRenderer.js, WebGPUSceneRendererEnsureResources.ts (`prewarmDeterministicPipelines` :535-566, depth plane only). No Cloud/Voxel/VolumetricFog/PointCloud/Model prewarm. Model keeps a private `_shaderModuleCache` Map (WebGPUModelPipelineCache.ts:2067, :2324, :2801-2823). C-R7-SHADER-MODULE-DEDUP closed Batch 185 (FI:1127); the variant strategy + prewarm decision is still FI:1214 (Phase-8a).",
+      "surviving_record": "FEATURE_INVENTORY.md:1214 (Phase 8a shader variant strategy + prewarm); DX-07 for the Model file",
+      "migrate_text": "Shader-module prewarm at HEAD covers the five collection renderers plus the deterministic depth-plane prewarm in `WebGPUSceneRendererEnsureResources.ts:554-566`; Cloud, Voxel, VolumetricFog, PointCloud and Model still compile on first use, and `WebGPUModelPipelineCache.ts:2067/2801-2823` keeps its own module Map outside `WebGPUShaderModuleCache`. The Phase-8a shader-variant-strategy decision (FEATURE_INVENTORY.md:1214) is the only row that owns first-render stutter; the shader-composition lens should decide whether Model joins the shared cache before DX-07 splits the file."
+    },
+    {
+      "id": "I5",
+      "title": "WebGPUDeviceLossRecovery: per-object caches not on the cache-clear walk (C-R12-PER-OBJECT-CACHES; Top-10 #9)",
+      "claim": "Per-Model/Collection/Renderer caches are not invalidated on device loss; belt-and-suspenders safe today.",
+      "status": "SUPERSEDED",
+      "evidence": "DEFERRED_WORK.md:8360-8380 C-R12-PER-OBJECT-CACHES PARTIAL (Batch 197 `clearPerObjectCaches` walk; 2026-07-31 correction lists nested/tileset/clipping/label caches still open); QUEUE_2026-07-18_CAMPAIGN11.md:1639/2452 C11-20 PARTIAL-LANDED Batch 778 is the authority; FI:1141. File now 744 lines.",
+      "surviving_record": "C11-20 / C-R12-PER-OBJECT-CACHES (QUEUE_2026-07-18_CAMPAIGN11.md:1639, DEFERRED_WORK.md:8360)",
+      "migrate_text": "C11-20 owns the residue; the ownership-lifetime lens reads that row, not this doc."
+    },
+    {
+      "id": "I6",
+      "title": "Ring buffer / storage pool / shared resource pool / resource manager - Beta, none blocking",
+      "claim": "Status-only entry.",
+      "status": "STALE",
+      "evidence": "No finding; status snapshot. FORK_OVERVIEW §5.10 carries the pool inventory.",
+      "surviving_record": "migration_doc/FORK_OVERVIEW.md §5.10",
+      "migrate_text": "Status-only row; nothing to migrate."
+    },
+    {
+      "id": "I7",
+      "title": "WebGPUEffectsBindGroup 1471 lines, UBO 336 bytes, C-R11 per-tile cache shipped Batch 55",
+      "claim": "Status-only; none pending.",
+      "status": "STALE",
+      "evidence": "File is 2145 lines; EFFECTS_UNIFORM_SIZE = 480 (WebGPUEffectsBindGroup.js:199); C-R11-EFFECTS-BGL-COLLECTION-CACHE only referenced from archive docs.",
+      "surviving_record": "none",
+      "migrate_text": "Numbers changed; no open finding."
+    },
+    {
+      "id": "I8",
+      "title": "BindGroupCache/Reflection/LayoutHelpers 86/88 sites migrated; Framebuffer/HDR family; OIT (status rows)",
+      "claim": "Status-only rows; HDR verified by verify-initial-hdr.mjs.",
+      "status": "STALE",
+      "evidence": "Tools/visual-regression/verify-initial-hdr.mjs still exists; no finding attached beyond I9. ULTRA_REVIEW findings.json:2066 later recorded OIT weight/composite divergences this doc did not.",
+      "surviving_record": "audits/2026-06-11_ULTRA_REVIEW (OIT divergence finding) / ISSUES_AND_FIXED_BUGS.md",
+      "migrate_text": "Status-only; nothing to migrate."
+    },
+    {
+      "id": "I9",
+      "title": "OIT pick path missing (C-R9-MODEL-PICK-TRANSLUCENT; Picking table; Top-10 via #4 family)",
+      "claim": "Pick doesn't write through OIT; 2 sessions.",
+      "status": "RESOLVED",
+      "evidence": "DEFERRED_WORK.md:7906 '~~C-R9-MODEL-PICK-TRANSLUCENT~~ RESOLVED (Batches 186 + 192)'; FEATURE_INVENTORY.md:923/1051 (pickHoverAsync + pickPreciseAsync dual path).",
+      "surviving_record": "Batches 186 + 192; DEFERRED_WORK.md:7906",
+      "migrate_text": "Closed by the dual-path async pick API."
+    },
+    {
+      "id": "B1",
+      "title": "Build variants: WEBGPU_COMPAT_EXEMPTIONS = 4 entries; sizes 7.1/5.6/6.4 MB; BUILD-VAR-MEASURE / SCENE-AUDIT open",
+      "claim": "Exemption list has 4 entries per CLAUDE.md; webgpu-only delta small; closing it is BUILD-VAR-MEASURE/SCENE-AUDIT.",
+      "status": "PARTIAL",
+      "evidence": "scripts/bundleVariantPlugin.js:276-286 now lists FIVE exemptions (adds WebGPUModelMetadata, Batch 457) while CLAUDE.md 'Compat-surface exemption list' still names four - a docs/code DRIFT. Sizes are measured in CLAUDE.md. BUILD-VAR-SCENE-AUDIT COMPLETE 2026-04-19 (WEBGPU_MIGRATION_BACKLOG.md:321); BUILD-VAR-MEASURE row still open at BACKLOG:319 / FI:1129 despite the measurement existing.",
+      "surviving_record": "CLAUDE.md 'Build Variants'; WEBGPU_MIGRATION_BACKLOG.md:319-321; FEATURE_INVENTORY.md:1129, :1356",
+      "migrate_text": "`WEBGPU_COMPAT_EXEMPTIONS` in `scripts/bundleVariantPlugin.js:276-286` carries five entries (WebGLCompatibilityStub, WebGPUShaderTranslator, WebGLStubPipelineExtractor, WebGPUNagaTranspiler, WebGPUModelMetadata) but CLAUDE.md still says 'Current entries' are the first four - a DRIFT the architecture/build lens should file. The BUILD-VAR-MEASURE row (BACKLOG:319, FI:1129) is itself stale: CLAUDE.md already records the measured 7.1/5.6/6.4 MB sizes, so the row should close. The webgpu-only bundle still pulls the WebGL backend through Scene static imports; no row owns that refactor."
+    },
+    {
+      "id": "B2",
+      "title": "Tools/variant-smoke-test.mjs and capture-and-diff.mjs + '30+ verify scripts' - Feature-Complete",
+      "claim": "Status rows for the smoke test and the visual-regression harness.",
+      "status": "STALE",
+      "evidence": "Both tools exist; the fleet is now 653 probe-*.mjs + 13 verify-*.mjs (937 top-level .mjs per QUEUE_2026-08-29:874) and probe-runtime dedup is a Wave DX row; the wave-end gate ruling R-2026-08-29-2 makes the smoke test + capture-and-diff mandatory per wave.",
+      "surviving_record": "QUEUE_2026-08-29_RESEARCH_DISPATCH.md:874 (Wave DX census); CLAUDE.md proof-bar / wave-end gate",
+      "migrate_text": "Tool status is recorded by the DX census and the wave-end gate ruling."
+    },
+    {
+      "id": "B3",
+      "title": "stripPragmaPlugin discipline-only; pragma lapses periodic (Build table + Cross-cutting #10)",
+      "claim": "Pragma discipline is a periodic check, not enforcement.",
+      "status": "PARTIAL",
+      "evidence": "Tools/lint-debug-pragmas.mjs (+ .spec.mjs) exists with npm script `lint-debug-pragmas` (package.json:149), exit 1 on offenders (tool header :18-19); grep finds no lint-staged / .husky wiring for it, so it is on-demand, not a gate.",
+      "surviving_record": "Tools/lint-debug-pragmas.mjs; package.json:149",
+      "migrate_text": "A pragma linter now exists (`Tools/lint-debug-pragmas.mjs`, `npm run lint-debug-pragmas`, exit 1 on offenders) but it is not wired into lint-staged or any pre-commit/CI step at HEAD, so pragma discipline is still enforced only when someone runs it. The testability-observability lens should decide whether it joins the C16 marker guard in lint-staged."
+    },
+    {
+      "id": "R1",
+      "title": "GLOBE_SURFACE 3933 lines - decompose into 3-4 files; FEAT-GAP-09 LUT consumers in primitives",
+      "claim": "Highest-ROI single refactor; aerial-perspective LUT rollout to 6 more shaders.",
+      "status": "PARTIAL",
+      "evidence": "Ten companions exist (WebGPUGlobeSurface{CameraUB,Layouts,PipelineKey,Pipelines,Shaders,Textures,TileBuffers,TileUB,Types,Wireframe}.ts) yet WebGPUGlobeSurfaceRenderer.ts is 3,080 lines; it is in the eleven-file census (QUEUE_2026-08-29:874) but DX-07/08/09 name only Model/Context/Primitive+SceneRenderer. FEAT-GAP-09: 12 of ~44 primitive shaders wired, ~32 remain 'riding the incremental rule' (FI:932, :1082); 10 WGSL files reference aerialPerspective.",
+      "surviving_record": "FEATURE_INVENTORY.md:1082 (FEAT-GAP-09); QUEUE_2026-08-29_RESEARCH_DISPATCH.md:874 census (no DX row for the globe file)",
+      "migrate_text": "`WebGPUGlobeSurfaceRenderer.ts` is 3,080 lines after ten helper extractions and sits in the DX census but has no decomposition row (DX-07/08/09 cover Model, Context, PrimitiveCommands + SceneRenderer only). FEAT-GAP-09 aerial-perspective LUT consumption stands at 12 of ~44 primitive shaders (FEATURE_INVENTORY.md:1082) with the remainder left to the incremental-upgrade rule - the globe & imagery lens should say whether that is an accepted end state."
+    },
+    {
+      "id": "R2",
+      "title": "MODEL renderer Alpha: six KHR extension shader bodies incomplete; C-R9 picks; central pipeline/module cache adoption gated on KHR variant strategy (also Cross-cutting #5, Top-10 #1)",
+      "claim": "Factor-level KHR only; full clearcoat/sheen/anisotropy/iridescence/volume bodies missing; model picks deferred; ModelRenderer not on central caches.",
+      "status": "PARTIAL",
+      "evidence": "KHR bodies: DEFERRED_WORK.md:5210-5236 C-R4-GLTF-KHR 'fully resolved' (clearcoat second GGX lobe, sheen Charlie, volume Beer-Lambert, iridescence Belcour Batch 181, transmission Batch 176, anisotropy Batch 210 per FI:1031); branches live at ModelPBRComplete.wgsl:2649-3140. BUT FORK_OVERVIEW.md §5.3 and FI:1245 (FEAT-SURVEY-02) still say 'full per-extension BRDF bodies gated on Phase 8a' - a doc conflict. Picks RESOLVED (Batch 209 DEFERRED:7796; Batches 186/192). Central cache: WebGPUModelPipelineCache.ts:2146-2156 accepts `centralPipelineCache` for the colour pipeline, keeps a private module Map (:2067). WebGPUModelRenderer.ts is 9,284 lines, DX-07 queued (QUEUE_2026-08-29:166, :931).",
+      "surviving_record": "DX-07; DEFERRED_WORK.md:5210 (C-R4-GLTF-KHR); FEATURE_INVENTORY.md C.3 (:1029-1040) and :1245",
+      "migrate_text": "The KHR extension surface is no longer factor-level: `ModelPBRComplete.wgsl:2649-3140` carries full clearcoat/specular/anisotropy/iridescence/sheen/volume/transmission branches and DEFERRED_WORK.md:5210 closes C-R4-GLTF-KHR - yet FORK_OVERVIEW.md §5.3 and FEATURE_INVENTORY.md:1245 (FEAT-SURVEY-02) still describe the bodies as gated on the Phase-8a shader strategy, a DRIFT the glTF lens should reconcile. `WebGPUModelRenderer.ts` (9,284 lines) and `WebGPUModelPipelineCache.ts` (4,751 lines) remain outside the shared shader-module cache (`_shaderModuleCache` Map at WebGPUModelPipelineCache.ts:2067) and only the colour pipeline can resolve through the central pipeline cache (:2146-2156); DX-07 owns the split."
+    },
+    {
+      "id": "R3",
+      "title": "GLOBE_TRANSLUCENCY Alpha - stencil selection local to GlobeSurface, not integrated with depth-sample classifier",
+      "claim": "Correctness path shared with GLOBE_SURFACE; selection paths not integrated.",
+      "status": "SUPERSEDED",
+      "evidence": "FORK_OVERVIEW.md §5.1 records globe-translucency alpha blending (B488) and an OPEN below-surface/limb darkening gap (§8: translucent-terrain 25.49% darker); stencil pipelines for classification retired Batch 85.",
+      "surviving_record": "migration_doc/FORK_OVERVIEW.md §5.1/§8",
+      "migrate_text": "FORK_OVERVIEW §5.1/§8 carries the live translucency status."
+    },
+    {
+      "id": "R4",
+      "title": "PRIMITIVE (2456 lines): runtime compressed-vertex flip (DP-H19); primitive-derived renderState fan-out (C-R1-PRIMITIVE-DERIVED)",
+      "claim": "Two remaining-work items.",
+      "status": "SUPERSEDED",
+      "evidence": "C-R1-PRIMITIVE-DERIVED 'EFFECTIVELY RESOLVED (audit 2026-05-02)' DEFERRED_WORK.md:5176. DP-H19-SHADER-DECODE-RUNTIME still open at FI:1012. File is now WebGPUPrimitiveCommands.ts 5,769 lines, DX-09 queued (QUEUE_2026-08-29:168, :944).",
+      "surviving_record": "FEATURE_INVENTORY.md:1012 (DP-H19-SHADER-DECODE-RUNTIME); DX-09",
+      "migrate_text": "DP-H19 runtime flip is tracked at FI:1012; the file split is DX-09."
+    },
+    {
+      "id": "R5",
+      "title": "SHADOW_MAP: VSM/ESM/PCSS deferred (Phase 8d); point-light C-R10-CAST-LINEAR-DEPTH micro-opt",
+      "claim": "Soft-shadow techniques deferred; linear-depth cast parked.",
+      "status": "SUPERSEDED",
+      "evidence": "FI:1064 (CSM Slice 3 VSM), FI:1269 (FEAT-SURVEY-09), FORK_OVERVIEW §5.8 'VSM/ESM/PCSS are WIP/future'; DEFERRED_WORK.md:8340 C-R10-CAST-LINEAR-DEPTH 'DEFERRED (correctly parked)'.",
+      "surviving_record": "FEATURE_INVENTORY.md:1064/1269; DEFERRED_WORK.md:8340",
+      "migrate_text": "Tracked rows exist for every item."
+    },
+    {
+      "id": "R6",
+      "title": "CSM Slices 3 + 4 pending; toggle defaults off (Top-10 #8)",
+      "claim": "Altitude-adaptive splits, moon dual-light, VSM, 3D Tiles per-tile cascade, snapshot freeze remain; `scene.useCascadedShadowMaps = false`.",
+      "status": "SUPERSEDED",
+      "evidence": "Scene.js:1367 `useCascadedShadowMaps = options.useCascadedShadowMaps ?? false` (still off). FI:1022, :1062-1067 list every Slice 3/4 item under CSM-DESIGN; WebGPUCSMRenderer.ts now 1646 lines; B496 ellipsoid ground-fit (FORK_OVERVIEW §5.9).",
+      "surviving_record": "FEATURE_INVENTORY.md:1062-1067 (CSM-DESIGN)",
+      "migrate_text": "FI C.6 carries the Slice 3/4 list; the default-off toggle is unchanged."
+    },
+    {
+      "id": "R7",
+      "title": "TAA Alpha: large-camera-jump history invalidation; 3D Tiles pop-in NaN motion; picking un-jitter; CSM+TAA verification (also Cross-cutting #6, Top-10 #5)",
+      "claim": "flyTo landings ghost; skinned/morphed/instanced rough; tiles pop-in NaN; pick un-jitter and CSM+TAA unverified; `scene.taaEnabled = false`.",
+      "status": "PARTIAL",
+      "evidence": "Camera-jump invalidation RESOLVED: `ViewTemporalHistory.js:106-126` (`TELEPORT_DISTANCE_SQUARED`, mode/projection change) drives `us.temporalHistoryValid` (UniformState.js:875-884) and `taa.resetHistory()` (Scene.js:6540-6548; WebGPUTAAEffect.ts:575). Morph/instance previous matrices RESOLVED Batch 134 (DEFERRED:7356/7392); jitter fixes Batches 322/358 (DEFERRED:4912-4915). `taaEnabled ?? false` Scene.js:1321 still default off. Picking un-jitter still FI:1056. No row for 3D-Tiles pop-in NaN motion or CSM+TAA verification; NEW-GBUFFER-CONSUMER-TAA-DISOCCLUSION DEFERRED:9351.",
+      "surviving_record": "FEATURE_INVENTORY.md:1056; DEFERRED_WORK.md:9351; ViewTemporalHistory.js for the closed half",
+      "migrate_text": "TAA history invalidation on teleport/mode/projection change is shipped (`Scene/ViewTemporalHistory.js:106-126` → `UniformState.temporalHistoryValid` → `WebGPUTAAEffect.resetHistory()` at Scene.js:6548) and the morph/instance previous-matrix and projection-jitter gaps closed in Batches 134/322/358. Still untracked by any row: 3D-Tiles pop-in producing NaN motion vectors and a CSM+TAA combined verification; picking depth-readback un-jitter remains at FEATURE_INVENTORY.md:1056. `scene.taaEnabled` still defaults to false (Scene.js:1321)."
+    },
+    {
+      "id": "R8",
+      "title": "POST_PROCESS_COLLECTION: f16 tonemap auto-fallback 'verified at WebGPUPostProcessPipeline.ts:1069-1094'; per-stage bind-group caching missing",
+      "claim": "f16 variant falls back to f32 automatically; per-frame createBindGroup per stage.",
+      "status": "PARTIAL",
+      "evidence": "Bind-group caching RESOLVED Batch 126 (WebGPUPostProcessPipeline.ts:273 `cachedBindGroup`, :309 `_identityCachedBindGroup`, :455 WebGPUBindGroupCache stats; only 2 createBindGroup sites). The f16 fallback claim was FALSE (ULTRA_REVIEW.md:200 A8.8, findings.json:2126: lines 1069-1094 were chain assembly) and the dead scope persists: WebGPUPostProcessPipeline.ts:2119-2136 calls `device.createShaderModule` BEFORE `pushErrorScope('validation')` and pops with no GPU work between, so the f16 variant is never actually swapped for f32 at runtime. No ISSUES_AND_FIXED_BUGS entry by id A8.8 (grep).",
+      "surviving_record": "audits/2026-06-11_ULTRA_REVIEW.md:200 (A8.8) - also under the same removal ruling; no queue row",
+      "migrate_text": "The 2026-04-30 claim that the f16 tonemap variant auto-falls back to f32 was refuted by the 2026-06-11 review (A8.8) and is still wrong at HEAD: `WebGPUPostProcessPipeline.ts:2119-2136` creates the f16 shader module before `pushErrorScope('validation')` and pops the scope with nothing enqueued, so a rejected f16 module only logs and the f32 source is never selected. No queue row owns this; the post-process lens should file it as a DEFECT (opt-in feature, low severity) or the fix should pick f32 up front when the device lacks `shader-f16`."
+    },
+    {
+      "id": "R9",
+      "title": "SUN + MOON (WebGPUEnvironmentRenderer.js 1199 lines) Beta, none blocking; SKY_ATMOSPHERE; CUBE_MAP_PANORAMA",
+      "claim": "Status rows.",
+      "status": "SUPERSEDED",
+      "evidence": "WebGPUEnvironmentRenderer.js is 2725 lines; Campaign 12 (QUEUE_2026-07-19_CAMPAIGN12.md) and FI B.11 are the celestial-appearance authorities; an open maintainer item exists (WebGPU sun disc ~3.1x darker, frozen lane per memory).",
+      "surviving_record": "QUEUE_2026-07-19_CAMPAIGN12.md; FEATURE_INVENTORY.md B.11",
+      "migrate_text": "Campaign 12 is the record."
+    },
+    {
+      "id": "R10",
+      "title": "FOG slot 8 retained, registration removed; GROUND_ATMOSPHERE slot 29 with per-shader LUT rollout (FEAT-GAP-09)",
+      "claim": "FOG superseded by globe UB; ground atmosphere FR needs LUT rollout.",
+      "status": "SUPERSEDED",
+      "evidence": "FeatureRendererKey.js:32 FOG: 8 and :78 GROUND_ATMOSPHERE: 29 both retained; the separate WebGPUGroundAtmosphereRenderer was deleted Batch 239 (WebGPUFeatureRenderers.ts:805-808, reference at 05b6da60d1) with shading in GlobeTerrain.wgsl; LUT rollout progress at FI:1082.",
+      "surviving_record": "FEATURE_INVENTORY.md:1082; WebGPUFeatureRenderers.ts:805-808",
+      "migrate_text": "Slot retention holds; FEAT-GAP-09 is at FI:1082 (see R1)."
+    },
+    {
+      "id": "R11",
+      "title": "PROCEDURAL_CLOUDS via `globe.showProceduralClouds`; WEATHER_PARTICLES; CLOUD_COLLECTION",
+      "claim": "Status rows; clouds toggled by globe.showProceduralClouds.",
+      "status": "STALE",
+      "evidence": "`showProceduralClouds` no longer exists in Scene/ (only in cesium-js-types.d.ts and two renderer files); the API is `CloudCollection.renderMode = CloudRenderMode.VOLUMETRIC` (CloudCollection.js:8, :87) per the cloud-unification epic; Campaign 13 is the cloud authority.",
+      "surviving_record": "QUEUE_2026-07-23_CAMPAIGN13.md; CLOUD_ARCHITECTURE_AUDIT_2026-07-23.md",
+      "migrate_text": "The API premise is gone; Campaign 13 owns clouds/weather."
+    },
+    {
+      "id": "R12",
+      "title": "VOLUMETRIC_FOG row correction (duplicate of D1) and 'validate against real volumetric scenes'",
+      "claim": "Docstring stale; validate real scenes.",
+      "status": "RESOLVED",
+      "evidence": "See D1 (Batch 117). Fog now a 2047-line renderer under CELESTIAL_ATMOSPHERE_DESIGN §4.8; C13 owns validation.",
+      "surviving_record": "Batch 117; QUEUE_2026-07-23_CAMPAIGN13.md",
+      "migrate_text": "Same as D1."
+    },
+    {
+      "id": "R13",
+      "title": "Collections (Billboard/Point/Polyline/Label) share C-R1-COLLECTIONS-PER-ENCODER gap - collection renderState not routed",
+      "claim": "Per-encoder state pass needed (1 session).",
+      "status": "RESOLVED",
+      "evidence": "DEFERRED_WORK.md:5118 '~~C-R1-COLLECTIONS-PER-ENCODER~~ RESOLVED (audit 2026-05-02)'; FORK_OVERVIEW §5.5 collections SHIPPED in 3D/2D/CV/Morph.",
+      "surviving_record": "DEFERRED_WORK.md:5118",
+      "migrate_text": "Closed by the 2026-05-02 audit."
+    },
+    {
+      "id": "R14",
+      "title": "GROUND_PRIMITIVE: translucent-on-translucent + PointCloud translucent classification need C-R8-CLASSIFICATION-DEPTH-SAMPLING (3-4 sessions) (Top-10 #2)",
+      "claim": "Depth-sampling migration incomplete.",
+      "status": "PARTIAL",
+      "evidence": "C-R8-CLASSIFICATION-DEPTH-SAMPLING RESOLVED Batches 80-85 (DEFERRED_WORK.md:7618); C-R1-CLASSIFICATION resolved :5106. The PointCloud translucent-classification residue survives only as text inside struck rows (DEFERRED:7581 'PointCloud translucent tiles will still mis-classify until...' and :5074) - no live row; WebGPUPointCloudRenderer.ts:884-955 has translucent render-state variants but no classification depth-write variant was found.",
+      "surviving_record": "DEFERRED_WORK.md:7618 (closed parent); no live row for the point-cloud residue; Campaign 18 (QUEUE_2026-08-09_CAMPAIGN18.md) owns point clouds",
+      "migrate_text": "The depth-sampling classifier shipped (Batches 80-85) but the residue the 2026-04-30 audit named - translucent PointCloud tiles mis-classifying because only Model primitives got the selective depth-write variant - is now only mentioned inside struck-through ledger text (DEFERRED_WORK.md:7581) and no open row or C18 row carries it. The 3D Tiles lens should either confirm it closed with a probe or file it under C18 Wave P."
+    },
+    {
+      "id": "R15",
+      "title": "GROUND_POLYLINE: polylines on terrain invisible on WebGPU; VS extrusion bisect at miter joints (Top-10 #3)",
+      "claim": "Silent missing rendering; 1-session VS bisection vs RenderDoc.",
+      "status": "RESOLVED",
+      "evidence": "DEFERRED_WORK.md:7666-7700 '~~C-R8-GROUND-POLYLINE-NATIVE~~ RESOLVED 2026-04-30': three bugs (depthCompare always, per-instance color decode, `viewportCartesian4.zw == 0` at FR-update time → Infinity metersPerPixel → NaN clip) - Batch 117 0bcc65689c. The doc's miter-joint hypothesis was not the cause. Tools/visual-regression/verify-ground-polyline-zoom.mjs + ground-polyline-smoke.mjs still exist.",
+      "surviving_record": "DEFERRED_WORK.md:7666; Batch 117",
+      "migrate_text": "Fixed Batch 117 (root cause was viewport zw=0 at FR-update, not the miter math)."
+    },
+    {
+      "id": "R16",
+      "title": "VECTOR_3DTILE_PRIMITIVE / POLYLINE: wireframe debug mode, per-fragment normal-from-depth-derivative, textured appearance remaining (cited DEFERRED_WORK:344-348)",
+      "claim": "Three residual gaps after Batches 112-115.",
+      "status": "STILL-VALID",
+      "evidence": "WebGPUVector3DTilePrimitiveRenderer.js:44-50 docstring still lists 'Per-fragment normal-from-depth-derivative + textured appearance' and '`debugWireframe` mode (needs its own LINES-topology WebGPU variant)' plus SCENE2D/CV stencil coverage as not implemented; grep of DEFERRED_WORK.md and FEATURE_INVENTORY.md for 'textured appearance' / 'normal-from-depth' finds no row (the cited :344-348 lines no longer exist).",
+      "surviving_record": "none (only the renderer's own docstring)",
+      "migrate_text": "`WebGPUVector3DTilePrimitiveRenderer.js:44-50` still declares three unshipped pieces of the WebGL Vector3DTilePrimitive flow - per-fragment normal-from-depth-derivative shading, textured appearance, and `debugWireframe` (a LINES-topology pipeline variant) - and SCENE2D/CV stencil coverage; none of them has a ledger or queue row at HEAD. The 3D Tiles lens should file them (GAP, low severity; upstream renders nothing in 2D/CV either) so the file's docstring is not the only record."
+    },
+    {
+      "id": "R17",
+      "title": "VECTOR_3DTILE_CLAMPED_POLYLINE: distinct depth source per pass (TERRAIN=globe depth, 3D_TILE=packed translucent) currently simplified",
+      "claim": "Per-pass depth-source selection not implemented.",
+      "status": "STILL-VALID",
+      "evidence": "WebGPUVector3DTileClampedPolylinesRenderer.js:40-48 docstring: WebGL stencils TERRAIN against `czm_globeDepthTexture` and 3D-tile against `czm_pickDepthTexture`; the WebGPU port picks `_packedTranslucentDepthView` if present else `_globeDepthView` for all passes; single `globeDepthTex` binding at :168/:311. No DEFERRED/FI row references the simplification.",
+      "surviving_record": "none (renderer docstring only)",
+      "migrate_text": "`WebGPUVector3DTileClampedPolylinesRenderer.js:40-48` still binds one depth source per frame (packed-translucent if present, else globe depth; single `globeDepthTex` binding at :168) where WebGL selects globe depth for TERRAIN classification and the pick/3D-tile depth for CESIUM_3D_TILE; `classificationType` BOTH therefore cannot distinguish the two surfaces on WebGPU. No row tracks it; the 3D Tiles lens should confirm with a mixed terrain+tileset probe and file it."
+    },
+    {
+      "id": "R18",
+      "title": "INVERT_CLASSIFICATION, ELLIPSOID_PRIMITIVE, BUFFER_* (1657 lines), CLIPPING_PLANES/POLYGONS, IMAGERY_REPROJECTION, POINT_CLOUD_EDL status rows",
+      "claim": "Beta, none pending / minor cleanup.",
+      "status": "STALE",
+      "evidence": "No findings; WebGPUBufferPrimitiveRenderer.ts is now 736 lines (Batch 265 rewrite); imagery projection authority is IMAGERY_PROJECTION.md (+B502 polar fix); EDL/point-cloud rows belong to Campaign 18.",
+      "surviving_record": "migration_doc/IMAGERY_PROJECTION.md; QUEUE_2026-08-09_CAMPAIGN18.md; FORK_OVERVIEW §5",
+      "migrate_text": "Status-only rows; nothing to migrate."
+    },
+    {
+      "id": "R19",
+      "title": "GAUSSIAN_SPLAT Alpha - confirm sort-output read path across `_indices` shapes",
+      "claim": "Splats read `_sortedIndices`; verify stability.",
+      "status": "SUPERSEDED",
+      "evidence": "FEATURE_INVENTORY.md:624: C15-G2/G3/G4 consume the WASM radix-sort permutation with sequence guards, pixel-confirmed Batch 881; C15 queue (QUEUE_2026-08-02_CAMPAIGN15.md §6) is the sole authority for C15-G0..G8.",
+      "surviving_record": "QUEUE_2026-08-02_CAMPAIGN15.md §6 (C15-G4/G8)",
+      "migrate_text": "C15 GSPLAT lane owns splat sort/parity."
+    },
+    {
+      "id": "R20",
+      "title": "POINT_CLOUD (1111 lines): translucent classification broken pending C-R8; POINT_CLOUD_SORT indirect-draw consumer",
+      "claim": "Two remaining-work items.",
+      "status": "SUPERSEDED",
+      "evidence": "WebGPUPointCloudRenderer.ts now 2896 lines; `bridge.useGPUSort = true` set in TimeDynamicPointCloud.js:670 (consumer exists; FI:1139 'consumer pending' looks stale); Campaign 18 + VOXEL_POINTCLOUD_GSPLAT_AUDIT_2026-08-09 are the authorities. Translucent-classification residue: see R14.",
+      "surviving_record": "QUEUE_2026-08-09_CAMPAIGN18.md; VOXEL_POINTCLOUD_GSPLAT_AUDIT_2026-08-09.md",
+      "migrate_text": "C18 owns point clouds; the classification residue is migrated under R14."
+    },
+    {
+      "id": "R21",
+      "title": "VOXEL_PRIMITIVE Alpha: C-R9-VOXEL-CELL-PICK; megatexture upload with real provider data unverified",
+      "claim": "Cell pick coords don't fit pickColor; megatexture path unverified.",
+      "status": "RESOLVED",
+      "evidence": "DEFERRED_WORK.md:7947 C-R9-VOXEL-CELL-PICK RESOLVED (re-landed 2026-07-02) and :8151 tail RESOLVED 2026-07-04; FORK_OVERVIEW §5.2: real megatexture voxel data at single-tile parity through Batch 480, depth-1 octree B501; residue (pick vs octree LOD) is in FORK_OVERVIEW §8 and C18.",
+      "surviving_record": "DEFERRED_WORK.md:7947/8151; FORK_OVERVIEW §5.2; QUEUE_2026-08-09_CAMPAIGN18.md",
+      "migrate_text": "Both items closed; C18 tracks the octree/pick residue."
+    },
+    {
+      "id": "R22",
+      "title": "BRDF_LUT / IBL / DYNAMIC_ENVIRONMENT_MAP - validate `shouldUpdate` cadence under camera motion",
+      "claim": "Cadence unvalidated.",
+      "status": "STALE",
+      "evidence": "WebGPUDynamicEnvironmentMapManager.ts:74/:836 still gates on `shouldUpdate`; file is 2923 lines (in the DX census); no ledger row mentions cadence validation and no evidence either way was recorded since. Premise (single-line 'validate') too thin to keep.",
+      "surviving_record": "none",
+      "migrate_text": "Unverified one-liner; the shadows/lighting lens can re-derive if it matters."
+    },
+    {
+      "id": "R23",
+      "title": "SCREEN_SPACE_REFLECTIONS Started: `WebGPUSceneRenderer.ts:2774` passes undefined normal view; SSR samples uninitialized placeholder → noise; gated on FEAT-GAP-01 (Top-10 #6, Cross-cutting #8)",
+      "claim": "SSR is noise until a normal G-buffer exists.",
+      "status": "SUPERSEDED",
+      "evidence": "ScreenSpaceReflections.wgsl:204-226 reconstructs normals from depth derivatives when `flags.x < 0.5` (AUDIT_2026_05_02.md:254 bridge), so the placeholder is never sampled; WebGPUSceneRenderer.ts:3343-3346 forwards the real G-buffer `normalRoughnessTexture` only when `frameState.useDeferredLighting` is true; NEW-GBUFFER-CONSUMER-SSR (DEFERRED_WORK.md:9309) is the ~2h row to read the always-allocated G-buffer. Residual drift: WebGPUSSREffect.ts:205-224 still allocates the placeholder and warns 'will sample an uninitialized placeholder and produce noise' - text that no longer describes runtime behaviour.",
+      "surviving_record": "DEFERRED_WORK.md:9309 NEW-GBUFFER-CONSUMER-SSR; FEATURE_INVENTORY.md:881, :1212 (FEAT-GAP-01)",
+      "migrate_text": "NEW-GBUFFER-CONSUMER-SSR owns it; the stale warning text in WebGPUSSREffect.ts:205-224 is a C16-class comment fix."
+    },
+    {
+      "id": "R24",
+      "title": "HI_Z_OCCLUSION Alpha: consumer path not wired (Scene depth wire-in into buildHiZPyramid); JS fallback authoritative (Cross-cutting #7, Top-10 #7)",
+      "claim": "Dispatcher exists, consumer absent.",
+      "status": "RESOLVED",
+      "evidence": "DEFERRED_WORK.md:5263 NEW-HIZ-SORT-CONSUME-OR-DELETE RESOLVED Batches 210+211 (`_filterByHiZVisibility`, 2c86a7cca6); FI:1131 HIZ-OCCLUSION-CONSUMER fully fixed Batches 212+213; FORK-41 (DEFERRED:5338) root-caused the depth-source bug and made command-drop DEFAULT ON (C2-21, 2026-06-24). WebGPUSceneRenderer.ts:4313 registers HI_Z_OCCLUSION.",
+      "surviving_record": "DEFERRED_WORK.md:5263, :5338 (FORK-41)",
+      "migrate_text": "Consumer wired and default-on since C2-21."
+    },
+    {
+      "id": "R25",
+      "title": "GPU_SORT_KEYS dormant - RenderScheduler uses JS comparator; activate for >50K draws",
+      "claim": "Not on critical path; consumer absent.",
+      "status": "RESOLVED",
+      "evidence": "DEFERRED_WORK.md:5276-5281 GPUSortKeys Batch 211 threshold 5000 commands; :5465 NEW-GPU-SORT-PIPELINE RESOLVED Batch 228 (BitonicSortU64); :5494 Phase 3 CPU-side reorder consumer RESOLVED 2026-07-04; RenderScheduler.js:167/232 comments name GPU sort keys as consumers. FI:1140 still says 'RenderScheduler integration pending' - stale vs the ledger.",
+      "surviving_record": "DEFERRED_WORK.md:5465/5494",
+      "migrate_text": "Shipped Batches 211/228 + C4 Phase 3; FEATURE_INVENTORY.md:1140 needs its stale 'pending' line dropped."
+    },
+    {
+      "id": "R26",
+      "title": "SCENE_RENDERER 3626 lines - decompose into 5+ companions (frustum loop, pick pass, refraction capture, velocity pass, edge composite)",
+      "claim": "Decomposition recommendation.",
+      "status": "SUPERSEDED",
+      "evidence": "Fourteen companions exist (WebGPUSceneRenderer{3DTilePasses,ClusteredLighting,EnsureResources,EnvironmentDemand,EnvironmentalEffects,FrameReset,FrustumLoop,FrustumState,GlobePass,PassRedirect,PickPass,PostFrustumChain,TranslucentPass}.ts) but the core is 5,140 lines; DX-09 (QUEUE_2026-08-29:168, :944) and Q-10 (FIX_QUEUE_2026-08-27_AUDIT_FINDINGS.md:87) own the remainder.",
+      "surviving_record": "DX-09; Q-10",
+      "migrate_text": "DX-09 / Q-10 own it."
+    },
+    {
+      "id": "T1",
+      "title": "3D Tiles table: Cesium3DTileBatchTable per-feature renderState (C-R1-TILE-BATCH partial); edge visibility 65535-feature ceiling",
+      "claim": "C-R1-TILE-BATCH plumbing partial; edge feature-ID ceiling.",
+      "status": "RESOLVED",
+      "evidence": "DEFERRED_WORK.md:5194 C-R1-TILE-BATCH RESOLVED (Batch 100); edge path rebuilt by NEW-EDGE-DISPLAY-MODE-WEBGPU Batch 316 + Batch 330 (DEFERRED:4934); grep '65535' in WebGPUModelFeatureId.js finds no such ceiling constant.",
+      "surviving_record": "DEFERRED_WORK.md:5194, :4934",
+      "migrate_text": "Closed; the ceiling claim has no current code anchor."
+    },
+    {
+      "id": "T2",
+      "title": "Multi-frustum translucent classification single-frustum only; Batch 47 composite scaffolding must NOT be removed (Cross-cutting #3, #8)",
+      "claim": "Retain `_classificationColorTexture` / `composite()` / `_compositePipeline` per CLAUDE.md dead-code rule.",
+      "status": "SUPERSEDED",
+      "evidence": "C-R8-TRANSLUCENT-MULTI-FRUSTUM SUPERSEDED (DEFERRED:7587); the depth-sampling classifier needs neither target nor composite - WebGPUTranslucentTileClassification.ts:20-27 says they are retained pending 'a separate scoped cleanup'; DX15_TRANSLUCENT_CLASSIFICATION_COMPOSITE_SCAFFOLD_REMOVAL_PREREGISTRATION_2026-08-30.md (row C11-107) pre-registers the removal. CLAUDE.md §7 now explicitly warns that this doc-era 'must not remove' framing inverted the ledger's remove-later disposition.",
+      "surviving_record": "DX-15 / C11-107 preregistration; DEFERRED_WORK.md:7587-7595",
+      "migrate_text": "Disposition is remove-later under DX-15/C11-107; the 'DO NOT remove' instruction must not be migrated."
+    },
+    {
+      "id": "P1",
+      "title": "Picking table: 16-member PickKind, 20 registrar sites, 5 pick paths shipped; per-feature model pick (C-R9-MODEL-FEATURE-PICK, Top-10 #4); voxel cell pick; vector-tile pick",
+      "claim": "Infrastructure Beta; model feature pick and voxel cell pick Started.",
+      "status": "RESOLVED",
+      "evidence": "PickKind now 17 members (GraphicsContext.ts:196+); C-R9-MODEL-FEATURE-PICK RESOLVED Batch 209 (DEFERRED:7796); voxel cell pick RESOLVED (DEFERRED:7947); FORK_OVERVIEW §5.7 lists remaining pick WIP (depth-blit shader, pick-layer bitmask, octree pick).",
+      "surviving_record": "DEFERRED_WORK.md:7796, :7947; FORK_OVERVIEW §5.7",
+      "migrate_text": "All three Started rows closed; FORK_OVERVIEW §5.7 lists the live pick residue."
+    },
+    {
+      "id": "M1",
+      "title": "Multi-context table: GraphicsContext base + 15 co-located .d.ts; zero Scene→Renderer/WebGPU static imports; split-screen; scene-logic extractor",
+      "claim": "Feature-Complete / Beta status rows.",
+      "status": "STALE",
+      "evidence": "29 .d.ts files now under packages/engine/Source; grep for `Renderer/WebGPU/` imports in Scene finds only comments (Moon.js:1005, SolarDiscModel.js:22, StarField.js:30) - the invariant still holds; Apps/WebGPUTest/split-screen-comparison.html exists.",
+      "surviving_record": "FEATURE_INVENTORY.md B.1 (:498-537); CLAUDE.md Principle 2",
+      "migrate_text": "Invariant holds at HEAD (zero static imports); numbers are stale."
+    },
+    {
+      "id": "C1",
+      "title": "Compute table: WebGPUComputeEngine 'used by AutoExposure, IBL, occlusion, sort'; GPUCuller consumer missing; Naga STUB-NAGA (BACKLOG:143); DecoupledScan; DevicePool/Sync/Subgroup/F16",
+      "claim": "Engine Beta; culler consumer absent; naga stub.",
+      "status": "SUPERSEDED",
+      "evidence": "The engine was actually dormant until NEW-WEBGPU-COMPUTE-ENGINE-WIRING shipped Batch 367 (DEFERRED_WORK.md:4779 - 'every dormant compute path now lights up'), so the 'used by' status was overstated; NEW-GPU-CULLER-CONSUME-OR-DELETE RESOLVED Batch 209 (DEFERRED:5240); packages/wasm-naga + WebGPUNagaTranspiler are EXPERIMENTAL at FI:862/890/967/969 and STUB-NAGA survives only in archive/REVIEW_FIX_PROGRESS.md; `useDeterministicPointCloudLOD` flag at WebGPUContext.ts:436/7358.",
+      "surviving_record": "DEFERRED_WORK.md:4779, :5240; FEATURE_INVENTORY.md:862-969; review plan shader-composition lens (naga)",
+      "migrate_text": "Ledger rows and FI carry each item; the naga question belongs to the shader-composition lens."
+    },
+    {
+      "id": "E1",
+      "title": "RTE table: RTEAssertions, previousViewProjection in 63 WGSL shaders (DP-H41), GlobeTerrain/SkyAtmosphere/CSM/TAA RTE",
+      "claim": "Feature-Complete status rows.",
+      "status": "STALE",
+      "evidence": "75 WGSL files reference previousViewProjection; DP-H41-ALL-RENDERERS RESOLVED (DEFERRED:9514 note); CLAUDE.md RTE section is the standing rule; the review's precision-parity lens re-measures.",
+      "surviving_record": "CLAUDE.md 64-bit RTE section; DEFERRED_WORK.md (DP-H41 resolved)",
+      "migrate_text": "Status-only; the precision-parity lens re-derives RTE coverage."
+    },
+    {
+      "id": "G1",
+      "title": "Debug/tooling table: CesiumDebug command list, debug overlays, timestamp profiler",
+      "claim": "Feature-Complete / Beta rows.",
+      "status": "STALE",
+      "evidence": "CesiumDebug.js exposes ~35 functions today vs the 10 listed; DEBUGGING_GUIDE.md is the mandated authority (CLAUDE.md Key Reference Files).",
+      "surviving_record": "migration_doc/DEBUGGING_GUIDE.md",
+      "migrate_text": "DEBUGGING_GUIDE.md is the command catalog."
+    },
+    {
+      "id": "X1",
+      "title": "Cross-cutting #1/#2: central pipeline cache half-adopted; shader-module dedup partial (Model)",
+      "claim": "Model keeps its own pipeline cache (1138 lines) and does not dedupe modules across identical materials.",
+      "status": "PARTIAL",
+      "evidence": "WebGPUModelPipelineCache.ts is 4,751 lines; colour pipeline can resolve via the central cache (:2146-2156) but module dedupe is the private `_shaderModuleCache` keyed by `composed.moduleKey` (:2801-2823); C-R7-SHADER-MODULE-DEDUP closed for Cesium-authored renderers Batch 185 (FI:1127); AutoExposure resolved (I3).",
+      "surviving_record": "FEATURE_INVENTORY.md:1127; DX-07",
+      "migrate_text": "Migrated under R2 and I4 (Model outside the shared module cache; DX-07 owns the file)."
+    },
+    {
+      "id": "X2",
+      "title": "Cross-cutting #4: renderState fan-out incomplete - five C-R1 sub-items",
+      "claim": "CLASSIFICATION, COLLECTIONS-PER-ENCODER, GLOBE-RENDERSTATE, PRIMITIVE-DERIVED, TILE-BATCH open.",
+      "status": "RESOLVED",
+      "evidence": "DEFERRED_WORK.md headings: C-R1-CLASSIFICATION :5106 RESOLVED (Batch 85/176); C-R1-COLLECTIONS-PER-ENCODER :5118 RESOLVED; C-R1-GLOBE-RENDERSTATE :5124 RESOLVED (Batches 99/177/182/183); C-R1-PRIMITIVE-DERIVED :5176 effectively resolved; C-R1-TILE-BATCH :5194 RESOLVED (Batch 100).",
+      "surviving_record": "DEFERRED_WORK.md:5106-5194",
+      "migrate_text": "All five closed."
+    },
+    {
+      "id": "X3",
+      "title": "Cross-cutting #9: ES6 spec debt - IonResourceSpec + 5 ImageryProvider specs fail 'cannot be invoked without new' (BACKLOG:108)",
+      "claim": "Spec-only debt from class conversion.",
+      "status": "RESOLVED",
+      "evidence": "packages/engine/Specs/Core/IonResourceSpec.js:18-28 asserts constructed state ('verify the parent-initialized state instead of spying on the legacy Resource.call'); no `spyOn(Resource, \"call\")` remains (removed in ba5a18bf47, 2026-04-25 consolidation); 0 *ImageryProviderSpec.js files spy on `.call`; Batch-66 Sandcastle reports confirm no such runtime errors. WEBGPU_MIGRATION_BACKLOG.md:104-112 still carries the row - stale.",
+      "surviving_record": "packages/engine/Specs/Core/IonResourceSpec.js:18-28",
+      "migrate_text": "Closed; BACKLOG:104-112 should be struck."
+    },
+    {
+      "id": "S1",
+      "title": "Top-10 highest-risk list (items 1-10)",
+      "claim": "Ranked risks: KHR bodies, C-R8 depth sampling, ground polyline, model feature pick, TAA jumps, SSR normals, Hi-Z consumer, CSM Slice 4, C-R12, RenderCommand.",
+      "status": "SUPERSEDED",
+      "evidence": "Per item: #1→R2 (resolved w/ doc drift), #2→R14 (parent resolved, point-cloud residue untracked), #3→R15 resolved, #4→P1 resolved, #5→R7 (teleport reset shipped), #6→R23 (bridge + NEW-GBUFFER-CONSUMER-SSR), #7→R24 resolved, #8→R6 (FI C.6), #9→I5 (C11-20), #10→D4 (still open).",
+      "surviving_record": "the rows named per item above",
+      "migrate_text": "Only #10 (RenderCommand) and the residues in R2/R7/R14 survive; see those items."
+    },
+    {
+      "id": "S2",
+      "title": "'What is actually production-ready' list and the Started/Alpha/Beta/Feature-Complete maturity grades",
+      "claim": "Per-subsystem production-readiness snapshot at Batch 116.",
+      "status": "SUPERSEDED",
+      "evidence": "FORK_OVERVIEW.md:4 folds this doc in and :142 states 'Per-renderer status, re-verified at HEAD (supersedes the maturity grades in audits/2026-04-30_FORK_FEATURE_INVENTORY.md, which were captured at Batch 116)'; FEATURE_INVENTORY.md §B/§C/§D carries SHIPPED/WIP/FUTURE tags per feature.",
+      "surviving_record": "migration_doc/FORK_OVERVIEW.md §5 (:142); FEATURE_INVENTORY.md §B-§D",
+      "migrate_text": "FORK_OVERVIEW §5 explicitly supersedes the grades."
+    }
+  ],
+  "inbound_refs": [
+    {
+      "file": "CLAUDE.md",
+      "what": "Line 603 (Key Reference Files): '`migration_doc/audits/2026-04-30_*.md` - Current feature-renderer / wiring / architecture / maintainability audit trio (supersedes the archived 2026-04-02 WIRING_AUDIT)'. Glob reference, no ids.",
+      "needs": "Repoint the line to the new review (audits/2026-09-02_ARCHITECTURE_REVIEW_PHASE1.md) or delete it once all three 2026-04-30 files are removed; no section anchor or number is consumed."
+    },
+    {
+      "file": "migration_doc/README.md",
+      "what": "Line 228: table row linking all three 2026-04-30 audits as the 'Live wiring/feature/maintainability audit trio'; line 272: archive table says WIRING_AUDIT_2026_04_02 is superseded by `audits/2026-04-30_*` ('now the live wiring reference').",
+      "needs": "Remove the `_FORK_FEATURE_INVENTORY.md` link from row 228 (or drop the row when the trio goes) and name the successor for the 2026-04-02 WIRING_AUDIT supersession at line 272 (the new review / FORK_OVERVIEW §5); nothing else."
+    },
+    {
+      "file": "migration_doc/FORK_OVERVIEW.md",
+      "what": "Line 4 'Supersedes (folds in): ... audits/2026-04-30_FORK_FEATURE_INVENTORY.md ...' and line 142 'supersedes the maturity grades in audits/2026-04-30_FORK_FEATURE_INVENTORY.md, which were captured at Batch 116'.",
+      "needs": "Nothing functionally - these are supersession statements; optionally annotate '(removed 2026-09-02)' so the dead path is not read as live."
+    },
+    {
+      "file": "migration_doc/ISSUES_AND_FIXED_BUGS.md",
+      "what": "Line 2 supersedes-list names the doc; line 354 pointer-table row 'Feature completeness' points readers to it and recommends its 'doc inaccuracies discovered during verification' section.",
+      "needs": "Repoint row 354 to FEATURE_INVENTORY.md §C/§D plus the new review; the 'doc inaccuracies' section it recommends is fully accounted for above (D1-D7: all RESOLVED/STALE except the residues migrated in D4/D5), so no content needs preserving beyond those migrate_text entries."
+    },
+    {
+      "file": "migration_doc/audits/2026-06-11_ULTRA_REVIEW.md",
+      "what": "Lines 200 (A8.8) and 336 cite 'FORK_FEATURE_INVENTORY:110' as a false f16-fallback claim and list it as a doc to 'annotate'.",
+      "needs": "Nothing - historical line-anchored citation; this file is under the same removal ruling. If it survives, the :336 'annotate' action is discharged by removal; the live f16 finding is migrated in R8."
+    },
+    {
+      "file": "migration_doc/audits/2026-06-11_ULTRA_REVIEW_findings.json",
+      "what": "Entries at lines 1115, 2066, 2126, 2577, 4661 cite FORK_FEATURE_INVENTORY.md:80/84/104/110/237 as evidence context (documentedIn / verifyReasoning strings).",
+      "needs": "Nothing - free-text evidence strings, not resolvable links; the facts they lean on (RenderCommand Alpha, OIT pick gap, f16 claim, spec debt) are recorded in D4, I9, R8, X3 above."
+    },
+    {
+      "file": "migration_doc/_DOC_AUDIT_PLAN.md",
+      "what": "Lines 55, 59, 195, 230 name `audits/2026-04-30_*` as the live successor of WIRING_AUDIT_2026_04_02 and as a CLAUDE.md repoint target.",
+      "needs": "Nothing - an executed historical plan; at most a one-line note that the trio was itself removed on 2026-09-02."
+    },
+    {
+      "file": "migration_doc/ARCHITECTURE_REVIEW_PLAN_2026-09-02.md",
+      "what": "Line 13 refers to 'The 2026-04-30 audit trio' as predating the current state (context only, no link).",
+      "needs": "Nothing."
+    },
+    {
+      "file": "(id definitions)",
+      "what": "Every id the document uses (C-R1-*, C-R4-GLTF-KHR, C-R7, C-R8-*, C-R9-*, C-R10-*, C-R11-*, C-R12-*, FEAT-GAP-01/09, DP-H19, DP-H41, STUB-NAGA, BUILD-VAR-MEASURE/SCENE-AUDIT, CSM-33-1) is defined in PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md, DEFERRED_WORK.md, WEBGPU_MIGRATION_BACKLOG.md or archive/REVIEW_FIX_PROGRESS.md; grep of migration_doc/Tools/CLAUDE.md finds no file that resolves an id through this document.",
+      "needs": "Nothing - the document defines no ids and no section anchors are linked from anywhere."
+    }
+  ],
+  "verdict_on_document": "REMOVE-AFTER-MIGRATION",
+  "reason": "The document is a Batch-116 (2026-04-30) snapshot that two live canonical docs already declare superseded: FORK_OVERVIEW.md:4/:142 folds in its per-renderer maturity grades and ISSUES_AND_FIXED_BUGS.md:2 folds in its findings. Re-deriving every row against HEAD (Batch 1378): all seven 'doc inaccuracies' are RESOLVED or STALE (VolumetricFog docstring fixed Batch 117; FeatureRendererKey now 54 slots with the renumber note rewritten; ShaderDefine 31 lo bits + Hi registry, 42 source ids; isWebGPU branches down from 15 to 4); every C-R1/C-R4/C-R8/C-R9 id it leaned on is closed in DEFERRED_WORK (ground polyline, depth-sampling classifier, model/voxel/translucent pick, KHR bodies, Hi-Z and GPU-sort consumers, LRU pipeline cache, post-process BG cache, AutoExposure on the compute cache, spec debt) and the remaining open ones (C-R12 → C11-20, FEAT-GAP-09 → FI:1082, CSM Slices 3/4 → FI C.6, SSR → NEW-GBUFFER-CONSUMER-SSR, file decomposition → DX-07/08/09) have their own rows. The only content not held elsewhere is captured in the migrate_text of D4 (RenderCommand migrate-or-deprecate decision), D5 (four residual isWebGPU Scene branches), B1 (CLAUDE.md compat-exemption list drift, stale BUILD-VAR-MEASURE row), B3 (pragma linter not hooked), I4 (prewarm/Model module-cache gap), R1 (globe renderer 3,080 lines with no DX row; FEAT-GAP-09 end state), R2 (KHR-bodies doc drift between DEFERRED_WORK and FORK_OVERVIEW/FI:1245), R7 (untracked TAA tile-pop NaN + CSM+TAA verification), R8 (dead f16 error scope still present), R14 (untracked point-cloud translucent classification residue), R16 and R17 (Vector3DTile residual gaps and clamped-polyline single depth source, tracked only in renderer docstrings). Every inbound reference is a supersession note, a historical line-anchored citation, or a CLAUDE.md/README pointer that can be repointed to FORK_OVERVIEW §5 / FEATURE_INVENTORY §C-§D / the new 2026-09-02 review; the document defines no ids and nothing links to a section anchor within it. Keeping it risks exactly the inversion CLAUDE.md §7 now warns about (its 'DO NOT remove' composite-scaffold instruction contradicts the DX-15/C11-107 remove-later disposition)."
+}

@@ -1,0 +1,625 @@
+{
+  "doc": "migration_doc/FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md",
+  "items": [
+    {
+      "id": "F5-HDR",
+      "title": "Header: status COMPLETE, source range a54cc06b..851ce643, 'current' = Batch 731",
+      "claim": "The document is COMPLETE and describes the current HEAD.",
+      "status": "STALE",
+      "evidence": "HEAD is Batch 1378 (aa5aabb85b); 1,907 engine commits have landed since (ARCHITECTURE_REVIEW_PLAN_2026-09-02.md §Why now). CODEX_DISAGREEMENTS_WITH_FABLE_REVIEW_2026-08-16.md §1 items 1-2 and README.md:221 already re-label it 'Historical Batch-731 ... with a dated F5-17 addendum'.",
+      "surviving_record": "migration_doc/README.md:221 (index row); CODEX_DISAGREEMENTS_WITH_FABLE_REVIEW_2026-08-16.md §1",
+      "migrate_text": "One line: the audit was a Batch-731 snapshot (78 commits / 455 files, a54cc06b2a..851ce64389) plus a 2026-07-28/08-01 F5-17 addendum; every 'current' in it means Batch 731."
+    },
+    {
+      "id": "F5-PRINCIPLES",
+      "title": "Feature-preservation rule, exact-bundle claim boundary, two-bottleneck framing, conservative demand gating, A/B before promotion, positive controls, concrete consumers before abstraction",
+      "claim": "Eleven method principles (listed in CODEX_DISAGREEMENTS §2 table) govern performance work.",
+      "status": "PARTIAL",
+      "evidence": "Feature preservation is already binding in CLAUDE.md ('Performance work must not remove, default-disable, bypass, or visually degrade a feature merely to improve a metric') and as SR-1 in QUEUE_2026-08-29_RESEARCH_DISPATCH.md; multi-metric and proof-bar rules are R-2026-08-29-1/2. The exact-bundle boundary, the two-bottleneck framing, 'unknown consumers force the safe path', 'concrete consumer before an abstraction', and 'a final still cannot certify temporal stability' exist only here and in the CODEX table that links into this file by line number.",
+      "surviving_record": "CLAUDE.md campaign block (feature preservation); QUEUE_2026-08-29_RESEARCH_DISPATCH.md SR-1/SR-6/SR-8; CODEX_DISAGREEMENTS_WITH_FABLE_REVIEW_2026-08-16.md §2 (needs re-anchoring)",
+      "migrate_text": "A measured parity or deficit result belongs to the exact bundle, browser and adapter that produced it (run-performance-campaign.mjs records bundle sha256 at :5566-5572 and adapter identity at :4390) and is never a claim about a later HEAD. WebGPU's steady-state CPU floor and WebGL's first-use link stalls are two optimisation problems and are never collapsed into one 'which renderer is slower' verdict. Attachment or pass gating inventories every consumer, lets an unknown consumer force the safe topology, and asserts demand separately from actual pass opens (the slot-1/scene-colour open counters at WebGPUContext.ts:746-759). Topology or ownership rewrites are promoted only after an interleaved GPU/API/visual A/B; a resource-ownership abstraction is adopted only through one concrete, measured, zero-copy consumer. Optional-path gates carry a feature-on positive control, and temporal behaviour (TAA history, RTE under motion, altitude transitions) is certified by sequences, not a final still."
+    },
+    {
+      "id": "F5-S1-METRICS",
+      "title": "§1 six-run r6 table: p50 3.45/4.20 ms (1.217), p95 8.235/9.30 ms (1.129), avg 5.204/4.818, FPS 52.77/55.46, wall p99 22.557/21.184; seven 100-205 ms WebGL long tasks per run",
+      "claim": "At Batch 731 WebGPU p50/p95 are higher on every matched repetition while WebGL carries seven deterministic long tasks.",
+      "status": "SUPERSEDED",
+      "evidence": "The artifact audit-2026-07-22-moving-clean-r6-action-review.json still exists (gitignored). The later causal r6 at Batch 1032 (QUEUE_2026-07-18_CAMPAIGN11.md:2003 and :2198 C11-205) measured WebGPU CPU-p95 9.2025 ms vs WebGL 4.65 ms, wall-p99 23.302 vs 20.3025 ms on the resident SF route; the WebGL stall count fell to four after C11-180 (Batch 773). The numbers here are history.",
+      "surviving_record": "QUEUE_2026-07-18_CAMPAIGN11.md C11-168 / C11-205 rows (Batch 1032 artifacts c11-205-causal-phase-prime-fixed-2026-08-10.json)",
+      "migrate_text": "One line: cite the Batch-1032 causal r6 (9.20 vs 4.65 ms CPU-p95) as the standing deficit number; keep the 2026-07-22 r6 artifact path as the historical steady-state anchor."
+    },
+    {
+      "id": "F5-S2-PROGRESS",
+      "title": "§2.1-2.4 verified progress since July 15 (C9 allocation work, C10 frustum/resolve, C11 ocean upload fix, C12 draft; T5 faces 'not in the repository')",
+      "claim": "Historical record of what landed in the audited range.",
+      "status": "STALE",
+      "evidence": "Pure history; the one open assertion (T5 faces missing) is closed: packages/engine/Source/Assets/Textures/SkyBox/tycho2t5_80_{px..mz}.jpg and tycho2t5_80_diffuse_*.jpg are tracked (git ls-files), SkyBoxResolutionPolicy.ts:40-41 documents TYCHO_T5 / TYCHO_T5_DIFFUSE at 2048/face; only the opt-in 4096 tier is unbundled (Batch 1323 took it back out; R-2026-09-02-7 serves it externally).",
+      "surviving_record": "git log for the range; C12 queue for the skybox tiers; DEFERRED_WORK.md:1271 G3-4096-FACE-TIER",
+      "migrate_text": "One line: the Batch-731 progress narrative lives in git history and the campaign queues; nothing to migrate."
+    },
+    {
+      "id": "F5-S3.1-API-LANE",
+      "title": "§3.1 API lane counters: 10.40 passes, 1.001 submits, 1.013 bind groups, 9.93 writes/frame; 700 terrain triplets / 187 rebuilds / 513 retained (5.84 MB); 6,286 scene-FB opens (5.265/frame) all with rgba16float slot 1, 3,819 with no draws; 36.86 MB slot-1 reservation; 1 MSAA depth resolve + 2.132 globe-depth packs per frame; GPU p95 7.194 ms",
+      "claim": "Per-frame topology and residency counts at Batch 731.",
+      "status": "SUPERSEDED",
+      "evidence": "DM-12 (QUEUE_2026-08-29_RESEARCH_DISPATCH.md:420-427) re-measured slot-1 resolve opens at 4-5/frame at frustum count 1 with gbufferReadersMask 0 and names the 29.5 MB MSAA companion; the terrain residency growth is re-owned by C11-34 and DM-10's 2.4 GB heap finding; the depth-resolve and globe-depth-pack counts are still the only numbers for those two passes (see F5-18, F5-19).",
+      "surviving_record": "QUEUE_2026-08-29_RESEARCH_DISPATCH.md DM-12 / DM-10; artifacts audit-2026-07-22-moving-api-r1.json, -gpu-timestamps-r1.json (gitignored)",
+      "migrate_text": "One line: keep the artifact paths; cite DM-12's 4-5 slot-1 resolves/frame as the current topology number."
+    },
+    {
+      "id": "F5-S3.2-VISUAL",
+      "title": "§3.2 nine-waypoint route mean 0.018% / max 0.074% cross-backend diff; validates only the offline ellipsoid + NaturalEarthII path",
+      "claim": "Bounded static visual evidence at Batch 731.",
+      "status": "SUPERSEDED",
+      "evidence": "C11-180's Batch-773 run re-captured the same track at 0.016% mean / 0.073% worst (QUEUE_2026-07-18_CAMPAIGN11.md:2529); the wave-end gate (R-2026-08-29-2) now owns visual certification via capture-and-diff; the boundedness principle is carried in F5-PRINCIPLES.",
+      "surviving_record": "QUEUE_2026-07-18_CAMPAIGN11.md C11-180; R-2026-08-29-2 wave-end gate",
+      "migrate_text": "One line: the nine-waypoint track is a bounded static regression lane, not feature parity; later captures supersede these numbers."
+    },
+    {
+      "id": "F5-S3.3-ALLOCATION-TAX",
+      "title": "§3.3 strict-native allocation-tax probe passed: one WebGPU context, zero WebGL contexts, zero compatibility GPU buffers",
+      "claim": "The WebGL-object-then-WebGPU-object physical double tax is not the current default problem.",
+      "status": "RESOLVED",
+      "evidence": "probe-webgpu-allocation-tax.mjs is indexed in DEBUGGING_GUIDE.md:977 with exactly these claim limits, and the C11-170 regression gate (DEBUGGING_GUIDE.md:980, signal D) re-asserts zero live WebGL contexts in the webgpu-solo census.",
+      "surviving_record": "DEBUGGING_GUIDE.md:977 probe row; C11-170 gate signal D",
+      "migrate_text": "One line: the allocation-tax result is a standing probe, not a finding."
+    },
+    {
+      "id": "F5-S3.4-BUILD-TEST",
+      "title": "§3.4 build/test evidence (Karma 1,578/1,579; suite stopped 4,627/17,199; 776 .claude/workflows lint errors; 34 new Spec files; Batches 714-728 with no Spec change)",
+      "claim": "Test state at Batch 731.",
+      "status": "STALE",
+      "evidence": "Counts from a tree 650 batches ago; the proof bar is now R-2026-08-29-1 (behaviour spec + inertness mutant + review + Edge leg per change class) and the fleet catalog/DX-12 spec homes govern coverage.",
+      "surviving_record": "R-2026-08-29-1 proof bar; QUEUE_2026-08-29_RESEARCH_DISPATCH.md DX-12",
+      "migrate_text": "One line: no number here is current; the 'stopped suite is neither green nor red' rule is in F5-PRINCIPLES."
+    },
+    {
+      "id": "F5-01",
+      "title": "Current HEAD is not CPU-parity certified; WebGPU p50/p95 higher, WebGL deterministic long stalls",
+      "claim": "WebGPU has a higher steady-state CPU floor and WebGL has first-use stalls; neither renderer is certified.",
+      "status": "SUPERSEDED",
+      "evidence": "Still true, but owned elsewhere: C11-168 is PARTIAL with 'root cause open' (QUEUE_2026-07-18_CAMPAIGN11.md:2003, Batch 1032 causal r6 9.20 vs 4.65 ms); the WebGL half is C11-180 PARTIAL (:2122, four stalls remain); the dense-scene WebGPU floor is Q-143 (OPEN, HIGH) and DM-09 (QUEUE_2026-08-29_RESEARCH_DISPATCH.md:283, :389); C11-137 certification is HELD by maintainer ruling.",
+      "surviving_record": "QUEUE_2026-07-18_CAMPAIGN11.md C11-168 / C11-180; QUEUE_2026-08-29_RESEARCH_DISPATCH.md Q-143 / DM-09",
+      "migrate_text": "One line: point the new review at C11-168 (steady-state) and Q-143/DM-09 (dense-scene starvation) as the two open CPU deficits; keep the two-problem framing from F5-PRINCIPLES."
+    },
+    {
+      "id": "F5-02",
+      "title": "WebGPU terrain-buffer lifetime is disconnected from Cesium's quadtree LRU/free lifecycle",
+      "claim": "Terrain GPU buffers are keyed by coordinates only, retained with their CPU arrays, never released from GlobeSurfaceTile.freeResources, and evictStaleResources destroys inline before submit.",
+      "status": "STILL-VALID",
+      "evidence": "WebGPUGlobeSurfaceTileBuffers.ts:169-176 getTileKey is `${level}_${x}_${y}`; :577-588 evictStaleResources still calls vertexBuffer.destroy()/indexBuffer.destroy() inline (its host interface at :61 exposes only scheduleTextureDestroy, no buffer retirement); GlobeSurfaceTile.js:158-170 freeResources releases the water-mask texture only, no terrain-buffer lease; TileReplacementQueue.js:49 -> QuadtreeTile.js:611-620 still run before WebGPUContext.endFrame drains _pendingTextureDestroys (:3379). C11-34 (C9-15-TERRAIN-GPU-RESIDENCY-BUDGET / FAR-203) is NOT STARTED (QUEUE_2026-07-18_CAMPAIGN11.md:1669, :2300, :2456); FAR-203 is 'planned' in the ledger (:253-256); DM-09/DM-10 call it 'adjacent'.",
+      "surviving_record": "QUEUE_2026-07-18_CAMPAIGN11.md C11-34 (owner); FAR ledger FAR-203; QUEUE_2026-08-29_RESEARCH_DISPATCH.md DM-09/DM-10 (adjacent)",
+      "migrate_text": "WebGPU terrain realizations live in WebGPUGlobeSurfaceTileBuffers.ts keyed by `${level}_${x}_${y}` (:169-176) with no payload revision, context or device generation in the key, and nothing on the quadtree free path releases them: GlobeSurfaceTile.js:158-170 freeResources drops only the water-mask texture, so TileReplacementQueue.trimTiles (:49) frees a tile's CPU side while its GPU buffers stay in _tileBufferCache. The only reclaim is evictStaleResources (:577-588), which destroys buffers inline; because Scene.render calls globe.endFrame before WebGPUContext.endFrame submits, any per-frame use of it can invalidate commands already recorded (the context's _pendingTextureDestroys batch at WebGPUContext.ts:553/:2932/:3379 is the right precedent and has no buffer counterpart). The Batch-731 API lane measured 2,102 buffers created / 561 destroyed over one flight (net +1,541) against WebGL's +5. Owner: C11-34 / FAR-203 (both unstarted); the fix shape is lease release from freeResources / mesh replacement / provider swap / device loss plus post-submit retirement, then a byte-budgeted zero-lease grace LRU - never a per-frame evictStaleResources(visibleTileKeys)."
+    },
+    {
+      "id": "F5-03",
+      "title": "One mutable globe renderer is shared per GPUDevice; tile keys omit context/provider identity",
+      "claim": "Multi-view / provider-churn correctness risk from device-keyed globe renderer state.",
+      "status": "STILL-VALID",
+      "evidence": "GlobeSurfaceTileProviderRendering.js:1109-1110 `_webgpuGlobeRenderers = new WeakMap()` keyed by device, :1311-1318 one renderer per device shared by every context on it; WebGPUGlobeSurfaceRenderer.ts:220 _pipelineCache and :461 _webgpuContext are single fields on that shared renderer (the camera-UB memo at :115-138 and :984-990 was made frameNumber+context aware, so that one aliasing case is closed); tile keys unchanged (F5-02). FAR-108 partitioned only the effects state per logical context (ledger :218-222). Q-86 'multi-context device recovery is untested' is NEW in FIX_QUEUE_2026-08-27_AUDIT_FINDINGS.md:1002 and has no dispatch row.",
+      "surviving_record": "FIX_QUEUE_2026-08-27_AUDIT_FINDINGS.md Q-86 (testing gap only); FAR ledger FAR-108 (effects only)",
+      "migrate_text": "GlobeSurfaceTileProviderRendering.js:1109-1110 keeps one mutable WebGPUGlobeSurfaceRenderer per GPUDevice in a WeakMap and every context on a shared device (WebGPUDevicePool) reuses it (:1311-1318), so the renderer's single _pipelineCache (WebGPUGlobeSurfaceRenderer.ts:220), _webgpuContext (:461) and provider terrain/ocean state (F5-02, :306 _oceanNormalMapSource) belong to whichever context touched them last. The camera-uniform memo was made context-aware (:115-138, :984-990) but the ownership split the audit prescribed - device-immutable shader/layout/sampler resources refcounted per device, HDR/MSAA/log-depth/pick/readiness/frame state per context, terrain/imagery/water leases per globe provider - has not been made; FAR-108 did it for effects only. Q-86 records that multi-context device recovery is untested. Do not resolve this by cloning the whole renderer per context."
+    },
+    {
+      "id": "F5-04",
+      "title": "Attachment demand is observe-only; default scene still allocates/opens/stores/resolves MRT slot 1",
+      "claim": "forceSceneMRT stays true and module-global MRT mode never flips.",
+      "status": "SUPERSEDED",
+      "evidence": "Still true at WebGPUContext.ts:732 (`forceSceneMRT = true`), :5073-5077 ('observe-only ... nothing in the render path gates on it'), WebGPUSceneFBTargetHelpers.ts:35 `let _mrtMode = true` with setSceneFBMrtMode (:49) having no caller. The full premise, current lines and the promotion bar are re-recorded in DM-12 (QUEUE_2026-08-29_RESEARCH_DISPATCH.md:420-427, 'owned by F5-04 and audit action 9') and in DEFERRED_WORK.md:9942 C9-10-CONSUMER-DRIVEN-MRT (FAR-403-C0, deferred); C11-43..C11-50 attachment-topology rows are NOT STARTED (C11 queue :2458).",
+      "surviving_record": "QUEUE_2026-08-29_RESEARCH_DISPATCH.md DM-12; DEFERRED_WORK.md C9-10-CONSUMER-DRIVEN-MRT; C11 queue C11-43..50",
+      "migrate_text": "One line: DM-12 owns the elision with its A/B bar; keep the F5-04 id in the register because DM-12 cites it."
+    },
+    {
+      "id": "F5-05",
+      "title": "SceneOctree plane-mask results are compared with Intersect enum values",
+      "claim": "The opt-in octree PVS compares a plane mask against Intersect.OUTSIDE/INSIDE and therefore never culls or short-circuits.",
+      "status": "STILL-VALID",
+      "evidence": "OctreeNode.js:294-300 `visibility = cullingVolume.computeVisibilityWithPlaneMask(...)` then `if (visibility === Intersect.OUTSIDE)`; :322-325 `visibility === Intersect.INSIDE`. CullingVolume.js:196/205 returns MASK_OUTSIDE = 0xffffffff / MASK_INSIDE = 0 while Intersect.js:18 OUTSIDE = -1 (INSIDE = 1), so neither branch can ever match. The code is unchanged since a556f45724; Batches 1133/1149 (C11-62) touched only the dirty-revision rebuild; DEFERRED_WORK.md:10183 NEW-SCENEOCTREE-DIRTY-REVISION-REBUILD-AND-PVS-PROMOTION does not name the enum defect; no queue row does.",
+      "surviving_record": "none (adjacent: DEFERRED_WORK.md NEW-SCENEOCTREE-DIRTY-REVISION-REBUILD-AND-PVS-PROMOTION)",
+      "migrate_text": "The opt-in SceneOctree (scene.renderScheduler.octree.enabled) cannot cull: OctreeNode.js:294-300 compares the result of CullingVolume.computeVisibilityWithPlaneMask - MASK_OUTSIDE 0xffffffff / MASK_INSIDE 0 (CullingVolume.js:196/205) - against Intersect.OUTSIDE (-1) and Intersect.INSIDE (1) at :300 and :322-325, so no subtree is ever rejected and the mask short-circuit never fires; the octree merely re-emits every command through a full traversal. Fixing the comparison alone would activate culling with the eligibility, root-bounds, translucent-3D-Tiles, ordering and off-camera shadow-caster semantics still unspecified (the audit's rejected shortcut 8), so the row is 'repair the opt-in semantics as a whole', FIX LATER. Not tracked by any queue row today."
+    },
+    {
+      "id": "F5-06",
+      "title": "Enabled RenderScheduler bins/sorts private layers that neither renderer consumes",
+      "claim": "scene.renderScheduler.enabled = true performs duplicate O(N log N) work with no consumer.",
+      "status": "STILL-VALID",
+      "evidence": "ViewportExecutor.js:778-797 still says 'The layer buckets are not consumed by either renderer, so their duplicate O(N log N) sort is opt-in' and runs binCommand + sortAllLayers when scheduler.enabled; RenderScheduler.js:31 defaults enabled=false and Scene.js:2126-2146 reports it as requested-vs-active. Batch 676 (C9-08) demand-gated the material-ID maintenance on the default path only. FAR-504 ledger (:520-524) leaves 'adapt or retire legacy RenderScheduler' planned behind the frame-graph compiler.",
+      "surviving_record": "FAR ledger FAR-504 (planned)",
+      "migrate_text": "RenderScheduler.layers is still a write-only structure: when scene.renderScheduler.enabled is true ViewportExecutor.js:785-797 bins every command and sorts all layer buckets, and its own comment (:778-779) records that neither renderer reads the buckets; the default path is safe only because enabled defaults false (RenderScheduler.js:31) and C9-08 (Batch 676) made material-ID maintenance demand-gated. Either layer enablement/order/clear-depth must actually drive both renderers' command order or the scheduler is retired under FAR-504; an enabled scheduler that is inert is an advertised feature that does nothing. FIX LATER; no dispatch row."
+    },
+    {
+      "id": "F5-07",
+      "title": "Async model color-pipeline completion can republish stale variants after non-format invalidations",
+      "claim": "A delayed createRenderPipelineAsync resolve re-inserts a pipeline invalidated by log-depth/split/colour/silhouette toggles.",
+      "status": "RESOLVED",
+      "evidence": "WebGPUModelPipelineCache.ts:2026-2044 declares _sceneFormatGeneration, _lifecycleEpoch and _errorSwapGeneration; each invalidation entry point bumps _lifecycleEpoch (:3110, :3197, :3243, :3291) and the async resolve checks the epoch plus the scene-format-generation guard 'so a stale resolve never writes back' (:3114, :3201). Landed in Batch 819 (ad43f8c527, git log -S _lifecycleEpoch).",
+      "surviving_record": "Batch 819 (ad43f8c527)",
+      "migrate_text": "One line: closed by the lifecycle-epoch guard in WebGPUModelPipelineCache.ts (Batch 819)."
+    },
+    {
+      "id": "F5-08",
+      "title": "Device-loss walker and model-feature-pick teardown miss active cache/resource families",
+      "claim": "_clearAllCaches misses label/polyline cache families; feature-pick IDs/texture lack teardown.",
+      "status": "PARTIAL",
+      "evidence": "Teardown half closed: WebGPUModelFeatureId.js:1433 destroyFeatureResourceGeneration, :1947 destroyUnboundRetiredFeaturePickGenerations, wired from WebGPUModelRenderer.ts:9073 (Batches 1072, 1195). Loss half: WebGPUContext.ts:7657 _clearAllCaches now drains a registered cache registry (_registerResourceCaches) and fires a WebGPUDeviceInvalidationBus; the model cache subscribes (WebGPUModelRenderer.ts:5314) and the culler pool/EDL do, but WebGPULabelRenderer.js and WebGPUPolylineRenderer.js contain no onDeviceInvalidated / device-generation guard (grep), so those per-collection _webgpuCache families still rely on their own scene-format invalidation only. Batch 1199 (FIX_QUEUE:1252) reset device-loss epochs for five consumers; Q-86 (multi-context recovery untested) is open.",
+      "surviving_record": "Batches 1072/1195 (pick teardown); Batch 1199 (epoch resets); FIX_QUEUE_2026-08-27_AUDIT_FINDINGS.md Q-86",
+      "migrate_text": "Device-loss recovery now runs through a registered cache registry (WebGPUContext.ts:7657 _clearAllCaches, _registerResourceCaches) and a WebGPUDeviceInvalidationBus that the model renderer (WebGPUModelRenderer.ts:5314), culler pool and EDL subscribe to, but the label and polyline collection caches (WebGPULabelRenderer.js:838-871, WebGPUPolylineRenderer.js:1596) subscribe to nothing and carry no device-generation check, so after a recovery they can present old-device pipelines and buffers until a scene-format bump happens to clear them. The model-feature-pick teardown half of the finding is closed (WebGPUModelFeatureId.js:1433/:1947, Batches 1072/1195). Remaining: an owner protocol for every per-object _webgpuCache family on device loss, plus the multi-context recovery test Q-86 asks for."
+    },
+    {
+      "id": "F5-09",
+      "title": "reuploadWatch is an unbounded global map; source replacement can orphan textures; one bound function per visible model/frame",
+      "claim": "Three small heap debts around the upload sentinel and ocean source lifecycle.",
+      "status": "PARTIAL",
+      "evidence": "WebGPUGlobeSurfaceTextures.ts:788 `const reuploadWatch = new Map` is still module-global and entries are never deleted (:808-815 only reset counts inside a 2 s window); DEFERRED_WORK.md:4628 (NEW-WEBGPU-UPLOADIMAGESOURCE-CACHE-CONTRACT-TRAP residual) records exactly this and NEW-C11-170-SENTINEL-UNOBSERVABLE-TO-GATE (:4630-4650) blocks wiring it to a gate until hardened. Ocean source swap: WebGPUGlobeSurfaceRenderer.ts:2356-2369 re-uploads once on source identity change (Batch 717) - the swap case works; leased/multi-view ocean realizations remain FAR-205 (planned). The per-visible-model bound-function claim was not re-verified (WebGPUModelRenderer.ts has two .bind( sites; no per-frame allocation evidence either way).",
+      "surviving_record": "DEFERRED_WORK.md NEW-WEBGPU-UPLOADIMAGESOURCE-CACHE-CONTRACT-TRAP (residual) + NEW-C11-170-SENTINEL-UNOBSERVABLE-TO-GATE; FAR ledger FAR-205",
+      "migrate_text": "The re-upload-storm sentinel is still a module-global Map (WebGPUGlobeSurfaceTextures.ts:788) whose keys are never evicted and which records before source validation, so a long session with many distinct cacheKeys grows it monotonically and it can report logical attempts as physical uploads; DEFERRED_WORK.md NEW-WEBGPU-UPLOADIMAGESOURCE-CACHE-CONTRACT-TRAP owns the hardening (scope to the context/device cache, TTL/LRU bound, count validated physical realizations only) and NEW-C11-170-SENTINEL-UNOBSERVABLE-TO-GATE explains why it cannot feed a gate until then. Runtime ocean-source swap re-uploads exactly once via the identity memo at WebGPUGlobeSurfaceRenderer.ts:2356-2369; multi-view / leased ocean realizations stay under FAR-205. Never present the sentinel as frame-time work."
+    },
+    {
+      "id": "F5-10",
+      "title": "OIT composite bind group is rebuilt and its derived-pipeline key is insufficiently specific",
+      "claim": "WebGPUOIT rebuilds the composite bind group every composite and keys derived pipelines by shader length.",
+      "status": "STILL-VALID",
+      "evidence": "WebGPUOIT.ts:259 executeComposite calls _updateCompositeBindGroup() unconditionally and :350-372 createBindGroup()s a fresh 'OIT-Composite-BindGroup' each call; :706 `cacheKey = `${shaderCode.length}_${fragEntry}_${config.label ?? \"\"}`` (own comment at :381: 'keyed by shader-code length'). OIT is contained default-off under FAR-003 (CesiumDebug.webgpuOIT); FAR-404/FAR-704 (ledger :429-434, :586-594) cover the MSAA topology and dual-source experiment, not this key/reuse defect; DEFERRED_WORK.md:10389-10429 records the flip-evidence gates without it.",
+      "surviving_record": "none (adjacent: FAR-003 containment, FAR-404, OIT_DEFAULT_FLIP_EVIDENCE_2026-07-18.md)",
+      "migrate_text": "Before OIT can leave FAR-003 containment its cache identity must be fixed: WebGPUOIT.ts:259 rebuilds the composite bind group on every executeComposite (:350-372 allocates a new GPUBindGroup each frame although the accumulation/revealage views only change on resize or device loss), and derived OIT pipelines are keyed at :706 by shader-code length, fragment entry and label, so two distinct shaders of equal length with the same label alias. Fix: rebuild the composite bind group only when its views change, and key derived pipelines by module identity (the WeakMap-backed webgpuObjectIdentity the central caches use) plus target format, sample count and depth state, then re-run the intersecting-translucency, resize, MSAA, format and device-loss gates. FIX LATER (feature stays reachable, default-off)."
+    },
+    {
+      "id": "F5-11",
+      "title": "Renderer/ResourceOwnership is a non-integrated scaffold and DecodedPayload copies bytes",
+      "claim": "The FAR-200 ownership scaffold has no live consumer and is not zero-copy.",
+      "status": "STILL-VALID",
+      "evidence": "packages/engine/Source/Renderer/ResourceOwnership/ (8 files, last touched Batch 662) has no importer outside its own directory (grep 'ResourceOwnership/' over Source); DecodedPayload.ts:21-46 copySourceBytes() and copyBytes() slice; FAR_200_SUBMISSION_AUTHORITY_ADOPTION_2026-07-13.md: 'shadow infrastructure ... 52 direct GPUQueue.submit sites not yet adopted'; ledger FAR-200 'no production allocation or retirement authority adopted', FAR-201/202/203 'planned'; C11-75..78 NOT STARTED (C11 queue :2466).",
+      "surviving_record": "FAR ledger FAR-200/FAR-203 and FAR_200_SUBMISSION_AUTHORITY_ADOPTION_2026-07-13.md; C11 queue C11-75..C11-78",
+      "migrate_text": "Renderer/ResourceOwnership (BackendDomain, DecodedPayload, RealizationDescriptor, RealizationLease, RealizationShadowCache, ResourceFamily, ResourceOwnershipPolicy, SubmissionSerialAuthority) is still shadow infrastructure with no importer anywhere in packages/engine/Source outside its own directory, and DecodedPayload.ts:21-46 copies bytes on construction and again on copyBytes(), so it is not the zero-copy contract the terrain/texture verticals need. FAR-200's authority observes none of the 52 direct queue.submit sites. Do not integrate it wholesale or build a parallel command/resource system; adopt it only through one concrete measured consumer - the terrain lease of F5-02 is the natural first one - after a zero-copy payload contract exists."
+    },
+    {
+      "id": "F5-12",
+      "title": "Critical integration tests are missing; one WebGPU spec contradicts its implementation contract",
+      "claim": "No tests for tile eviction, multi-context isolation, attachment topology, async invalidation, alternate-family device loss, upload replacement, OIT; the sync-pick cache spec contradicts the widened moving-cursor contract.",
+      "status": "PARTIAL",
+      "evidence": "Landed since: attachment-demand probe (DEFERRED_WORK.md:2374 probe-attachment-demand-registry.mjs), C11-205 lifecycle probes (Batch 1032), device-loss epoch specs (Batch 1199), pipeline-key-aliasing.spec.mjs, pick staging spec revised at Batches 1040/1195 (WebGPUPickFramebufferStagingSpec.js). Still absent: tile-eviction and multi-context renderer-isolation tests (Q-86 NEW; F5-02/F5-03 have no spec), OIT gates. The specific spec contradiction is superseded by PICKING_ARCHITECTURE_STATE_2026-08-17.md (P-1..P-8 readiness/freshness design).",
+      "surviving_record": "PICKING_ARCHITECTURE_STATE_2026-08-17.md (pick contract); FIX_QUEUE_2026-08-27_AUDIT_FINDINGS.md Q-86; DX-12 spec homes",
+      "migrate_text": "Integration coverage still has two holes no spec closes: WebGPU terrain-buffer retirement against the quadtree free path (F5-02 - nothing asserts that GlobeSurfaceTile.freeResources releases a GPU realization or that a freed tile's buffers survive until submit) and two-context / shared-device isolation and recovery (F5-03, Q-86). The attachment-demand, async-invalidation, device-loss-epoch and pick-staging specs the audit asked for have landed; the sync-pick contract is now defined by PICKING_ARCHITECTURE_STATE_2026-08-17.md. Any future terrain-lifetime or ownership change lands with a failing lifecycle test first (Gate 1 item 1)."
+    },
+    {
+      "id": "F5-13",
+      "title": "Live document index/queue statuses contradict landed commits and campaign closure",
+      "claim": "Process finding: C9/C10/C11 headers were stale at Batch 731.",
+      "status": "RESOLVED",
+      "evidence": "Reconciled in the audit itself (§7 items 1-4); campaign status is now held by CAMPAIGN_STATE.md (R-2026-09-02 makes it the tracked authority) and the queue-truth passes recorded in QUEUE_2026-07-18_CAMPAIGN11.md:2634 (2026-08-21).",
+      "surviving_record": "migration_doc/CAMPAIGN_STATE.md; MAINTAINER_RULINGS_2026-09-02.md",
+      "migrate_text": "One line: closed at the audit; CAMPAIGN_STATE.md is the status authority now."
+    },
+    {
+      "id": "F5-14",
+      "title": "Split-screen comparison does not initialize both viewers; T5 API names missing assets",
+      "claim": "Two optional-tool defects.",
+      "status": "RESOLVED",
+      "evidence": "Split-screen: C11-171 is RESOLVED-STALE / PREMISE REFUTED (C11 queue :2006, :2520) - the page builds both viewers on #btnLaunch (Apps/WebGPUTest/split-screen-comparison.html:483 new Cesium.Viewer, :518 Viewer.createAsync, globals :562-563); repair Batch 1079. T5: tycho2t5_80_*.jpg and tycho2t5_80_diffuse_*.jpg are tracked; SkyBoxResolutionPolicy.ts:40-51 documents the 2048 tiers as bundled and the 4096 request as opt-in; the 4096 tier is its own row G3-4096-FACE-TIER (DEFERRED_WORK.md:1271) ruled R-2026-09-02-7 (served externally).",
+      "surviving_record": "QUEUE_2026-07-18_CAMPAIGN11.md C11-171 (Batch 1079); DEFERRED_WORK.md G3-4096-FACE-TIER; R-2026-09-02-7",
+      "migrate_text": "One line: both halves closed; the only open skybox item is the opt-in 4096 tier (G3-4096-FACE-TIER, R-2026-09-02-7)."
+    },
+    {
+      "id": "F5-15",
+      "title": "The harness records six counterbalancedPairs for six repetitions although the schedule has three pairs; the field is copied, not enforced",
+      "claim": "Measurement-provenance defect in the performance campaign manifest.",
+      "status": "PARTIAL",
+      "evidence": "run-performance-campaign.mjs:5496 builds the schedule with buildCounterbalancedSchedule(renderers, repetitions) (lib/performance-campaign-utils.mjs:112-124) and :5696-5790 derives pairs from the schedule itself (certificationRun = schedule.length >= 6, minimum 5 valid pairs, >= 2 per order), so the pair count used for closure is real. But performance-workloads.json:17 still declares `\"counterbalancedPairs\": 6` for six repetitions and performance-workloads.spec.mjs:148 / :2897 assert `>= 6`, i.e. the manifest field still carries the wrong meaning and odd repetition counts are not rejected in certification mode.",
+      "surviving_record": "none (adjacent: DEFERRED_WORK.md PERF-MEASUREMENT-VALIDITY-RISKS :4654)",
+      "migrate_text": "The campaign runner now derives its pair set from the resolved schedule (run-performance-campaign.mjs:5496, :5696-5790: certification needs a schedule of at least six entries, five valid pairs and two per order), so closure no longer trusts the manifest; but performance-workloads.json:17 still records counterbalancedPairs: 6 for six repetitions (three A/B + three B/A pairs) and performance-workloads.spec.mjs:148/:2897 pin that mislabelled value, and an odd repetition count is still accepted. Rename or recompute the field from repetitions, report the resolved schedule in the artifact, and reject odd two-renderer counts in certification mode. Tools-only, S."
+    },
+    {
+      "id": "F5-16",
+      "title": "Model feature picking eagerly allocates per-feature IDs during ordinary rendering; model-level pick IDs/texture lack teardown",
+      "claim": "Dense-content allocation and lifetime issue in WebGPUModelFeatureId.js.",
+      "status": "RESOLVED",
+      "evidence": "pickPassActive now gates realization (WebGPUModelFeatureId.js:2392, :2408, :2440, :2512, :2606 'whether dense feature picking is demanded') with generation-based retirement (:1433, :1947) and destroyFeatureIdResources wired from WebGPUModelRenderer.ts:9073 - Batch 1072 ('model pick resources realize on native demand') and Batch 1195 (coherent generations). The measurement follow-ups are DM-11 / Q-141 (QUEUE_2026-08-29_RESEARCH_DISPATCH.md:343, :412, both citing F5-16).",
+      "surviving_record": "Batches 1072 (9cf9b0019d) / 1195 (0db2ff47ff); QUEUE_2026-08-29_RESEARCH_DISPATCH.md Q-141 / DM-11",
+      "migrate_text": "One line: closed by demand realization with atomic generations (Batches 1072/1195); keep the F5-16 id because Q-141 and DM-11 cite it."
+    },
+    {
+      "id": "F5-17",
+      "title": "WebGL's seven route-position stalls align with seven program/fourteen shader creations and synchronous LINK_STATUS checks (+ §4.3 addendum)",
+      "claim": "Synchronous shader link is the WebGL stall cause; the bounded KHR_parallel_shader_compile lifecycle reduced 7 stalls to 4 (Batch 773).",
+      "status": "SUPERSEDED",
+      "evidence": "Proven and partially remedied: ShaderProgram.js / ShaderCache.js / Context.js carry the KHR_parallel_shader_compile pending lifecycle; C11-180 row (QUEUE_2026-07-18_CAMPAIGN11.md:2122, :2529) is the authority - PARTIAL, LANDED Batch 773, 'four structural first-use stalls remain', with the same numbers (753.9 ms -> 403.0/435.1 ms, 8/16 programs). DEFERRED_WORK.md:11371 WEBGL-ASYNC-SHADER-COMPILE-LIFECYCLE mirrors it.",
+      "surviving_record": "QUEUE_2026-07-18_CAMPAIGN11.md C11-180; DEFERRED_WORK.md WEBGL-ASYNC-SHADER-COMPILE-LIFECYCLE",
+      "migrate_text": "One line: C11-180 (PARTIAL) owns the WebGL first-use stall work and its remaining four stalls."
+    },
+    {
+      "id": "F5-18",
+      "title": "Default WebGPU resolves MSAA depth once per frame even though the audited route has no active depth consumer",
+      "claim": "One unconditional r16float depth-resolve pass per frame with no reader on the default route.",
+      "status": "STILL-VALID",
+      "evidence": "WebGPUSceneRendererPostFrustumChain.ts:100-104 calls _ssceneFB.resolveDepthMSAA(encoder) whenever the method exists, with no demand check; WebGPURenderTarget.ts:255-274 allocates the resolve target whenever wantSampleable && isMSAA and WebGPUSceneFramebuffer.ts:328 sets depthSamplable: true unconditionally, so the pass runs every MSAA frame. DEFERRED_WORK.md:10481 lists 'S4-4 depth-resolve consumer gating' as a separate untouched row; DM-12 calls F5-18 'adjacent, not primary'; no dispatch row exists.",
+      "surviving_record": "DEFERRED_WORK.md C10-03 note (S4-4 depth-resolve consumer gating, :10481); QUEUE_2026-08-29_RESEARCH_DISPATCH.md DM-12 (adjacent)",
+      "migrate_text": "Every MSAA WebGPU frame still pays one fullscreen depth-resolve pass with no reader on the default route: WebGPUSceneRendererPostFrustumChain.ts:100-104 dispatches resolveDepthMSAA unconditionally and WebGPURenderTarget.ts:255-274 allocates the r16float resolve target whenever the scene framebuffer is MSAA and depthSamplable (which WebGPUSceneFramebuffer.ts:328 always sets). The gate is small and well bounded but needs a complete conservative reader inventory first - TAA (samples depth despite the stale comment), motion blur, aerial perspective, god rays, DoF/AO, SSR/NPR/contact shadows, clouds/fog/ground fog, picking and unknown consumers, with unknowns forcing the resolve; assert demand and actual resolve opens separately (default MSAA4/no reader = zero opens, each real reader = exactly one, TAA at MSAA1 = demand without a resolve pass). Owner: the S4-4 row noted under C10-03; distinct from DM-12's slot-1 colour resolves."
+    },
+    {
+      "id": "F5-19",
+      "title": "Eager scene-pass reopening produces many no-draw pass boundaries; globe-depth packing runs more than twice per frame",
+      "claim": "Topology cost from pass boundaries; redundancy unclassified.",
+      "status": "PARTIAL",
+      "evidence": "Instrumentation half landed: WebGPUContext.ts:746-759 per-frame slot1AttachmentOpens/slot1ResolveOpens/sceneColorResolveOpens counters (WebGPUSceneRendererPassRedirect.ts:86), C11-169's 11-phase frame ledger (Batch 1032) and C10-03's demand-driven colour resolve (Batch 697, 9 -> 1). No pass-owner/reason counter, no lazy 'open at first work' scene pass and no globe-depth-pack gate exist (grep passOwner/globeDepthPack in Renderer/WebGPU returns nothing); DEFERRED_WORK.md:10482 lists 'S4-5 globe-depth pack chain, FAR-405/706 segment-count reduction' as separate untouched rows.",
+      "surviving_record": "DEFERRED_WORK.md C10-03 note (S4-5 globe-depth pack chain; FAR-405/706 segment-count reduction); C11-169 accounting",
+      "migrate_text": "The scene pass is still opened eagerly per segment and the globe-depth pack still runs per frustum: the Batch-731 API lane counted 5.265 scene-FB opens per frame of which 3.198 recorded no draw, and 2.132 globe-depth pack passes per frame. What exists today is the attachment-open counters at WebGPUContext.ts:746-759 (fed from WebGPUSceneRendererPassRedirect.ts:86) and the C11-169 phase ledger; there is no pass-owner/reason counter, no lazy reopen at first work and no gate on a post-globe pack whose frustum emitted zero globe commands. Reduce boundaries only after naming each removed owner/reason and proving identical clear/load/store order - per-frustum depth/stencil clears are load-bearing for depth-plane, translucency, classification, picking and post-process. Owner: the S4-5 / FAR-405-706 rows noted under C10-03."
+    },
+    {
+      "id": "ACTION-0",
+      "title": "Action 0 - reconcile live queue/index truth",
+      "claim": "Done in the audit.",
+      "status": "RESOLVED",
+      "evidence": "§7 completed items; CAMPAIGN_STATE.md now holds status.",
+      "surviving_record": "CAMPAIGN_STATE.md",
+      "migrate_text": "One line: done at Batch 731."
+    },
+    {
+      "id": "ACTION-1",
+      "title": "Action 1 / Gate 0 - harden and complete the representative baseline (pair provenance, measured refresh, long-task classification, release/minified + terrain/water + dense lanes, separate lanes)",
+      "claim": "DO FIRST measurement-validity work.",
+      "status": "PARTIAL",
+      "evidence": "Done: measured display refresh C11-173 (Batch 741; run-performance-campaign.mjs:2681 measureDisplayRefresh, lib :120-124 refreshHz guard); long-task capture (:1838-1864, :2632-2655) and settle classification (classifySettleAttribution :4582); representative terrain-assets and resident SF 3D Tiles lanes (performance-workloads-representative.json:22, Batch 1032); DPR/adapter/gpuProvenance recorded (:3557, :4390); dense AEC lane via DM-01 (Batch 1307) / Q-143. Open: manifest pair field (F5-15); no max-throughput lane (grep maxThroughput = none); the runner pins Build/CesiumUnminified only (:5352-5572) - no release/minified lane (Q-143 acceptance item 6 asks for a 'minified repeat'); no fully-local terrain/water-mask fixture; CDP trace/flame profile owed to Q-143 items 4-5 (probe-cpu-sampling-profile.mjs exists).",
+      "surviving_record": "C11 queue C11-173 (done); QUEUE_2026-08-29_RESEARCH_DISPATCH.md Q-143 / DM-01 / DM-04; DEFERRED_WORK.md PERF-MEASUREMENT-VALIDITY-RISKS",
+      "migrate_text": "The performance campaign now measures the real display refresh (Batch 741), records adapter identity and bundle sha256 per run, captures long tasks in the measurement window and carries representative terrain-asset and resident SF 3D Tiles routes (Batch 1032) plus the AEC dense lane (DM-01). Three Gate-0 items are still open with no row: a max-throughput lane whose vsync state is verified rather than assumed from a checkbox (run-performance-campaign.mjs has no such mode), a release/minified lane (the runner pins Build/CesiumUnminified at :5352-5572, which is why DM-10's heap ratio is flagged non-production), and a fully local terrain + water-mask fixture so terrain/water performance can be claimed offline. The manifest's counterbalancedPairs field remains mislabelled (F5-15). Q-143 carries the flame-profile / trace requirement for the dense scene."
+    },
+    {
+      "id": "ACTION-2",
+      "title": "Action 2 - attribute both measured bottlenecks (trace WebGL compile/link; profile the WebGPU high-altitude fixed CPU floor)",
+      "claim": "DO FIRST before optimising.",
+      "status": "PARTIAL",
+      "evidence": "WebGL half proven by API chronology and remedied to 4 stalls (C11-180, Batch 773). WebGPU half: C11-169 built the conserved 11-phase CPU ledger (Batch 1032, 'diagnostic-noncausal') and C11-168 measured the causal deficit (9.20 vs 4.65 ms) but its root cause is recorded OPEN (C11 queue :2003); Q-143's first run (Batch 1370, Finwe) names the dense-scene stall 'pipeline-creation-bound' (FIX_QUEUE:1443), DM-09 is held behind it.",
+      "surviving_record": "C11 queue C11-168 / C11-169 / C11-180; QUEUE_2026-08-29_RESEARCH_DISPATCH.md Q-143 / DM-09",
+      "migrate_text": "Attribution is half done: the WebGL stalls are proven blocking LINK_STATUS waits and reduced to four (C11-180), while the WebGPU steady-state floor has a conserved phase ledger (C11-169) and a certified deficit number (C11-168, Batch 1032) but no named owner - the row still reads 'root cause open'. The dense-scene starvation lane (Q-143, first run at Batch 1370 pointing at pipeline creation) is a separate defect and must not be read as the moving-globe floor. No optimisation row for the globe floor is funded until the profile names the consumer."
+    },
+    {
+      "id": "ACTION-3",
+      "title": "Action 3 / Gate 1.2 - failing ownership/lifetime tests + generic post-submit resource-retirement queue for buffers",
+      "claim": "Generalise the context's batched texture retirement to buffers before touching terrain lifetime.",
+      "status": "STILL-VALID",
+      "evidence": "WebGPUContext.ts:553-555 _pendingTextureDestroys, :2932 scheduleTextureDestroy, drained at :3379 endFrame and :5421 destroy - textures only; no scheduleBufferDestroy / generic retirement exists (grep). No lifecycle spec covers terrain retirement (F5-12).",
+      "surviving_record": "none (prerequisite of C11-34 / FAR-203)",
+      "migrate_text": "WebGPUContext still retires only textures after submit (_pendingTextureDestroys at WebGPUContext.ts:553-555, scheduleTextureDestroy :2932, drained in endFrame :3379 and destroy :5421); buffers have no equivalent, which is why every buffer-owning cache (terrain :577-588, wireframe, imagery) either destroys inline or leaks. Before any terrain/ocean lease work, generalise that batch into a resource-retirement queue for buffers and textures keyed by the submit that last used them - one batch per frame, never one onSubmittedWorkDone promise per tile - and land it behind a failing lifecycle test that destroys a resource used by an already-recorded command."
+    },
+    {
+      "id": "ACTION-4",
+      "title": "Action 4 / Gate 1.3 - correct globe renderer ownership domains (device / context / provider)",
+      "claim": "FIX EARLY prerequisite of terrain release.",
+      "status": "STILL-VALID",
+      "evidence": "See F5-03: per-device WeakMap at GlobeSurfaceTileProviderRendering.js:1109-1110 unchanged; FAR-108 did effects only.",
+      "surviving_record": "none (F5-03; Q-86 for the test)",
+      "migrate_text": "See F5-03: split the shared per-device globe renderer into device-immutable resources (refcounted), context/view state (formats, readiness, frame numbers, pick) and globe/provider residency (terrain, wireframe, imagery, water/ocean, materials) before wiring terrain release; do not clone the renderer per context."
+    },
+    {
+      "id": "ACTION-5",
+      "title": "Action 5 / Gate 1.4-1.6 - connect WebGPU terrain realizations to quadtree lifetime (key by tile/payload + mesh revision + descriptor + context/device generation; release from freeResources; post-submit retire; grace LRU; realization off command emission)",
+      "claim": "FIX EARLY.",
+      "status": "STILL-VALID",
+      "evidence": "See F5-02; owner C11-34 NOT STARTED, FAR-203 planned; C11 queue :2806 warns 'never run two of C11-32/33/34 concurrently - same tile-buffer lifetime'.",
+      "surviving_record": "QUEUE_2026-07-18_CAMPAIGN11.md C11-34; FAR ledger FAR-203",
+      "migrate_text": "See F5-02 for the code chain; the required shape is unchanged: key realizations by tile/payload identity, mesh/content revision, exact layout/descriptor, context domain and device generation (not the coordinate string at WebGPUGlobeSurfaceTileBuffers.ts:169-176); release leases from GlobeSurfaceTile.freeResources, fill-to-real mesh replacement, exaggeration rebuild, provider replacement, context destruction and device loss; queue last-lease destruction after submit; then add a byte-budgeted zero-lease grace LRU and move realization into tile preparation. Acceptance: creates/destroys/live bytes plateau on the out-and-back route, second leg hits materially exceed cold, WebGL ownership byte-identical."
+    },
+    {
+      "id": "ACTION-6",
+      "title": "Action 6 / Gate 3.1 - fix and measure model feature-pick ownership",
+      "claim": "Teardown first, then measure eager allocation in the dense lane, then demand realization with atomic bind-group revision.",
+      "status": "RESOLVED",
+      "evidence": "Teardown and demand realization with generations landed (Batches 1072/1195, see F5-16); the dense-lane measurement is DM-11 (HELD, 'instrument before funding') and DM-07 counters landed (FIX_QUEUE:166).",
+      "surviving_record": "Batches 1072/1195; QUEUE_2026-08-29_RESEARCH_DISPATCH.md DM-11 / Q-141",
+      "migrate_text": "One line: landed; the cost measurement is DM-11 behind DM-07."
+    },
+    {
+      "id": "ACTION-7",
+      "title": "Action 7 / Gate 1.7 - repair ocean source ownership; harden the sentinel separately",
+      "claim": "FIX EARLY / QUICK LATER.",
+      "status": "PARTIAL",
+      "evidence": "See F5-09: source-swap re-upload works (WebGPUGlobeSurfaceRenderer.ts:2356-2369); sentinel unbounded (WebGPUGlobeSurfaceTextures.ts:788); leased realizations FAR-205 planned.",
+      "surviving_record": "DEFERRED_WORK.md NEW-WEBGPU-UPLOADIMAGESOURCE-CACHE-CONTRACT-TRAP (residual); FAR-205",
+      "migrate_text": "See F5-09; the sentinel bound and the multi-view/leased ocean realization remain."
+    },
+    {
+      "id": "ACTION-8",
+      "title": "Action 8 / Gate 2.1 - demand-gate the unconditional MSAA depth resolve after a complete reader inventory",
+      "claim": "FIX EARLY AFTER INVENTORY.",
+      "status": "STILL-VALID",
+      "evidence": "See F5-18 (WebGPUSceneRendererPostFrustumChain.ts:100-104 unconditional).",
+      "surviving_record": "DEFERRED_WORK.md S4-4 note under C10-03 (:10481)",
+      "migrate_text": "See F5-18; reader inventory first, unknown readers force the resolve, demand and resolve opens asserted separately."
+    },
+    {
+      "id": "ACTION-9",
+      "title": "Action 9 / Gate 2.2-2.7 - elide unused MRT/G-buffer topology only after C11-50 payoff probe, a context-owned immutable topology signature, exact one-target/MRT variants and a GPU/API/visual A/B",
+      "claim": "PROVE WITH A/B.",
+      "status": "SUPERSEDED",
+      "evidence": "DM-12 (QUEUE_2026-08-29_RESEARCH_DISPATCH.md:420-427) restates the row and adopts this bar verbatim ('exactly the A/B action 9 specifies ... a topology-signature rewrite plus pipeline-cache invalidation'); C9-10-CONSUMER-DRIVEN-MRT (DEFERRED_WORK.md:9942) carries the topology-parametric site list; C11-50 NOT STARTED.",
+      "surviving_record": "QUEUE_2026-08-29_RESEARCH_DISPATCH.md DM-12; DEFERRED_WORK.md C9-10-CONSUMER-DRIVEN-MRT; C11 queue C11-43..50",
+      "migrate_text": "One line: DM-12 owns it and cites 'audit action 9' - keep that label resolvable in the register (topology published in prepareFrame before Scene.updateEnvironment, two-phase prewarm-then-commit, both variants kept warm, unknown consumers force MRT)."
+    },
+    {
+      "id": "ACTION-10",
+      "title": "Action 10 / Gate 2.8 - instrument pass ownership, then reduce empty boundaries incrementally",
+      "claim": "PROVE AND FIX INCREMENTALLY.",
+      "status": "PARTIAL",
+      "evidence": "See F5-19: open counters and phase ledger exist; no owner/reason counters or lazy reopen.",
+      "surviving_record": "DEFERRED_WORK.md S4-5 / FAR-405-706 note under C10-03",
+      "migrate_text": "See F5-19."
+    },
+    {
+      "id": "ACTION-11",
+      "title": "Action 11 / Gate 3.2-3.4 - generic async invalidation epoch and complete loss-family teardown",
+      "claim": "FIX EARLY CORRECTNESS.",
+      "status": "PARTIAL",
+      "evidence": "Epoch landed (F5-07, WebGPUModelPipelineCache.ts:2031/:3110, Batch 819); registry + invalidation bus landed (WebGPUContext.ts:7657, WebGPUDeviceInvalidationBus.ts); label/polyline families and multi-context recovery test still open (F5-08, Q-86).",
+      "surviving_record": "Batch 819; Batch 1199; FIX_QUEUE Q-86",
+      "migrate_text": "See F5-08 for the remaining device-loss owner protocol; the invalidation epoch is done."
+    },
+    {
+      "id": "ACTION-12",
+      "title": "Action 12 / Gate 4.1-4.2 - repair SceneOctree and RenderScheduler enabled semantics",
+      "claim": "FIX LATER; enum fix alone is insufficient; scheduler layers must be consumed by both renderers.",
+      "status": "STILL-VALID",
+      "evidence": "See F5-05 (OctreeNode.js:300/:323) and F5-06 (ViewportExecutor.js:778-797); FAR-504 planned.",
+      "surviving_record": "FAR ledger FAR-504 (scheduler); none for the octree",
+      "migrate_text": "See F5-05 and F5-06; both opt-in paths are inert-or-broken and neither is queued."
+    },
+    {
+      "id": "ACTION-13",
+      "title": "Action 13 / Gate 4.3 - repair OIT cache identity/reuse before default consideration",
+      "claim": "FIX LATER.",
+      "status": "STILL-VALID",
+      "evidence": "See F5-10 (WebGPUOIT.ts:259, :350-372, :706).",
+      "surviving_record": "none (FAR-003 containment; OIT_DEFAULT_FLIP_EVIDENCE_2026-07-18.md)",
+      "migrate_text": "See F5-10."
+    },
+    {
+      "id": "ACTION-14",
+      "title": "Action 14 / Gate 4.4 / rejected shortcut 6 - do NOT integrate ResourceOwnership wholesale; pilot zero-copy leases through one concrete consumer",
+      "claim": "DO NOT PURSUE AS PROPOSED.",
+      "status": "STILL-VALID",
+      "evidence": "See F5-11 (no consumer; DecodedPayload copies; 52 unadopted submit sites).",
+      "surviving_record": "FAR ledger FAR-200/201/202/203",
+      "migrate_text": "See F5-11; the standing rule is 'one concrete, measured, zero-copy consumer first'."
+    },
+    {
+      "id": "ACTION-15",
+      "title": "Action 15 / §7 still-required - reconcile remaining tests and incomplete optional APIs (stale pick expectation, integration coverage, split-screen, T5 assets)",
+      "claim": "DO IN PARALLEL.",
+      "status": "PARTIAL",
+      "evidence": "Split-screen and T5 closed (F5-14); pick contract superseded (PICKING_ARCHITECTURE_STATE_2026-08-17.md); integration holes remain (F5-12).",
+      "surviving_record": "C11-171; G3-4096-FACE-TIER; PICKING_ARCHITECTURE_STATE_2026-08-17.md; Q-86",
+      "migrate_text": "See F5-12 for the two remaining coverage holes (terrain retirement, multi-context isolation)."
+    },
+    {
+      "id": "REJECT-1",
+      "title": "Rejected shortcut 1 - never call evictStaleResources(visibleTileKeys) per frame or wire it to freeResources()",
+      "claim": "The helper destroys inline before submit, omits the wireframe cache and keys by coordinates.",
+      "status": "STILL-VALID",
+      "evidence": "WebGPUGlobeSurfaceTileBuffers.ts:577-588 unchanged (inline destroy); WebGPUGlobeSurfaceWireframe.ts:46 documents its own cache outside that sweep; the only callers are the renderer's delegator (:2813) and destroy (:2971 with an empty set).",
+      "surviving_record": "none (guard on C11-34)",
+      "migrate_text": "Cesium's LRU deliberately retains non-visible quadtree tiles, and evictStaleResources (WebGPUGlobeSurfaceTileBuffers.ts:577-588) destroys GPU buffers inline, skips the wireframe cache (WebGPUGlobeSurfaceWireframe.ts:46) and matches on coordinate keys; calling it per frame from the quadtree free path would both thrash warm tiles and invalidate the current frame's recorded commands. Terrain release is lease release plus batched post-submit retirement plus a bounded grace set - not this sweep."
+    },
+    {
+      "id": "REJECT-2",
+      "title": "Rejected shortcut 2 - never flip the module-global MRT flag per frame; select topology in prepareFrame, not updateAndClearFramebuffers",
+      "claim": "Multiple contexts in one realm may need different topology; cached pipelines would cross-contaminate; environment pipelines are looked up before updateAndClearFramebuffers.",
+      "status": "STILL-VALID",
+      "evidence": "WebGPUSceneFBTargetHelpers.ts:35 module-global `_mrtMode`; computeAttachmentDemand runs inside updateAndClearFramebuffers (WebGPUContext.ts:5087) i.e. after Scene.updateEnvironment; DM-12 acceptance already demands 'a topology-signature rewrite plus pipeline-cache invalidation', not a flag.",
+      "surviving_record": "QUEUE_2026-08-29_RESEARCH_DISPATCH.md DM-12 (acceptance text)",
+      "migrate_text": "The attachment-demand record is computed in updateAndClearFramebuffers (WebGPUContext.ts:5087-5094), after Scene.updateEnvironment has already fetched sky/atmosphere/sun/moon pipelines, and the MRT mode is a JavaScript-module global (WebGPUSceneFBTargetHelpers.ts:35) shared by every context in the realm. A topology change must therefore be a context-owned immutable signature (target count/formats, depth format, sample count) folded into shader, pipeline, render-target and pass-descriptor identity, published during prepareFrame, prewarmed asynchronously and committed atomically at a frame boundary; DM-12 already binds itself to this."
+    },
+    {
+      "id": "REJECT-3",
+      "title": "Rejected shortcut 3 - never route globe terrain through SceneOctree",
+      "claim": "Globe terrain stays under QuadtreePrimitive.",
+      "status": "STILL-VALID",
+      "evidence": "QUEUE_2026-07-18_CAMPAIGN11.md:2215 and :2369 restate it ('Globe terrain remains in its quadtree'; 'Never replace terrain quadtree'); ViewportExecutor.js:2148 octree accepts only opaque/translucent eligible commands.",
+      "surviving_record": "QUEUE_2026-07-18_CAMPAIGN11.md:2369 (C11 rule)",
+      "migrate_text": "Globe terrain selection stays in QuadtreePrimitive/GlobeSurfaceTileProvider; SceneOctree (opt-in, OctreeNode.js) is for eligible general commands only - restated in the C11 queue at :2369."
+    },
+    {
+      "id": "REJECT-4",
+      "title": "Rejected shortcut 4 - a feature toggle is an A/B control, never a benchmark-only removal",
+      "claim": "Disabled/OFF measurements are attribution controls; the shipped fix preserves the enabled feature.",
+      "status": "SUPERSEDED",
+      "evidence": "Binding in CLAUDE.md ('Performance work must not remove, default-disable, bypass, or visually degrade a feature merely to improve a metric') and as SR-1 in QUEUE_2026-08-29_RESEARCH_DISPATCH.md.",
+      "surviving_record": "CLAUDE.md; QUEUE_2026-08-29_RESEARCH_DISPATCH.md SR-1",
+      "migrate_text": "One line: already a standing rule (CLAUDE.md / SR-1)."
+    },
+    {
+      "id": "REJECT-5",
+      "title": "Rejected shortcut 5 - an in-Viewer checkbox is not proof that compositor vsync is disabled; keep a display-paced lane and add a verified max-throughput protocol",
+      "claim": "Measurement rule.",
+      "status": "STILL-VALID",
+      "evidence": "No max-throughput lane exists in run-performance-campaign.mjs (grep maxThroughput/unlimited none); C11-168 row lists 'GPU timestamps/max-FPS ... remain open' (C11 queue :2516).",
+      "surviving_record": "C11 queue C11-168 (open sub-item)",
+      "migrate_text": "Presented-FPS claims stay display-paced (the runner measures refresh at run-performance-campaign.mjs:2681) until a max-throughput lane exists whose vsync state is verified and recorded by the driver/browser protocol, not inferred from a page checkbox; C11-168 lists max-FPS as an open sub-item."
+    },
+    {
+      "id": "REJECT-6",
+      "title": "Rejected shortcut 6 - no ownership-scaffold integration without a zero-copy payload contract and one measured consumer",
+      "claim": "See ACTION-14.",
+      "status": "STILL-VALID",
+      "evidence": "See F5-11.",
+      "surviving_record": "FAR-200 ledger",
+      "migrate_text": "See F5-11."
+    },
+    {
+      "id": "REJECT-7",
+      "title": "Rejected shortcut 7 - never remove/reorder per-frustum depth or stencil clears as a pass-count shortcut",
+      "claim": "They are coupled to multi-frustum depth-plane, translucency, classification, picking and post-process semantics.",
+      "status": "STILL-VALID",
+      "evidence": "See F5-19; FAR ledger :632 pickPassOverhead confirms per-frustum depth/stencil clears are intentional.",
+      "surviving_record": "FAR ledger pickPassOverhead note; F5-19",
+      "migrate_text": "Per-frustum depth/stencil clears are load-bearing (multi-frustum depth plane, translucency, classification, picking, post-process - FAR ledger pickPassOverhead); fold or gate a boundary only after its owner/reason is named and its successor proven equivalent in clear/load/store order."
+    },
+    {
+      "id": "REJECT-8",
+      "title": "Rejected shortcut 8 - never add only the SceneOctree mask-enum one-line fix",
+      "claim": "The enum fix alone activates broken culling.",
+      "status": "STILL-VALID",
+      "evidence": "See F5-05 (defect still present; semantics still unspecified).",
+      "surviving_record": "none",
+      "migrate_text": "See F5-05."
+    },
+    {
+      "id": "REJECT-9",
+      "title": "Rejected shortcut 9 - never demand-gate feature picking only at ID creation",
+      "claim": "Retained bind groups would keep referencing placeholders.",
+      "status": "RESOLVED",
+      "evidence": "The landed design realizes on demand with generations and atomic retirement (WebGPUModelFeatureId.js:1433/:1947/:2392-2512, Batches 1072/1195) - exactly the shape the shortcut warned against was avoided.",
+      "surviving_record": "Batches 1072/1195",
+      "migrate_text": "One line: the demand-realization contract landed with atomic generations."
+    },
+    {
+      "id": "GATE-0-ACCEPTANCE",
+      "title": "Gate 0 acceptance: six even counterbalanced fresh-process runs, exact identity, full route, no external requests, measured refresh, classified long tasks, separate lanes",
+      "claim": "Certification bar for any performance claim.",
+      "status": "SUPERSEDED",
+      "evidence": "Encoded in run-performance-campaign.mjs (certificationRun >= 6 schedule entries, 5 valid pairs, 2 per order :5782-5790; offline/external-request rejection; bundle/adapter identity) and in C11-205's comparability contract (identical ready sets, request ledgers); the multi-metric rule is R-2026-08-25 and R-2026-08-29-1.",
+      "surviving_record": "run-performance-campaign.mjs certification logic; C11-205 row; maintainer rulings R-2026-08-29-1/2",
+      "migrate_text": "One line: the bar lives in the runner and the rulings."
+    },
+    {
+      "id": "GATE-1-ACCEPTANCE",
+      "title": "Gate 1 acceptance: resource creates/destroys/live bytes plateau; no destroyed-resource reuse; warm second leg; WebGL unchanged; device loss and two-context same-device pass; fill->real, exaggeration, wireframe, shadow/pick/capture, two providers same coordinates, ocean swap, request-render wakeups",
+      "claim": "Acceptance matrix for the terrain/ocean lifetime work.",
+      "status": "STILL-VALID",
+      "evidence": "None of the owning rows (C11-34, FAR-203, FAR-205) carries this matrix; the run-performance-campaign terrain ownership diagnostics (:555-975 terrainCommandRefreshRecords) can measure the plateau.",
+      "surviving_record": "none (to attach to C11-34)",
+      "migrate_text": "Acceptance for the terrain/ocean lease work: resource creates, destroys and live bytes plateau on the out-and-back route (the runner's terrain ownership diagnostics at run-performance-campaign.mjs:555-975 already count them); no destroyed-resource reuse; the second leg has materially more hits than cold; WebGL ownership is byte-identical; device loss and two contexts on one device pass. Cases: fill->real mesh, exaggeration rebuild, wireframe, shadow/pick/capture use, two providers with identical coordinates, destroying one shared-device context while the other continues, ocean swap/removal, stable animated waves, request-render wakeups."
+    },
+    {
+      "id": "GATE-2-ACCEPTANCE",
+      "title": "Gate 2 acceptance: default no-consumer frames allocate/open/resolve no slot 1; each consumer restores MRT; stage-level GPU gain beyond noise with unchanged CPU percentiles; multi-context topology isolation; mid-session change with no missing-draw frames; depth demand vs resolve opens separately",
+      "claim": "Acceptance for the topology work.",
+      "status": "SUPERSEDED",
+      "evidence": "DM-12's acceptance adopts it (interleaved A/B at msaaSamples 4 and 1 on a GPU-bound scene, multi-metric, pixels identical); the depth-resolve half stays with F5-18.",
+      "surviving_record": "QUEUE_2026-08-29_RESEARCH_DISPATCH.md DM-12; F5-18 for the depth clause",
+      "migrate_text": "One line: DM-12 owns the colour-topology acceptance; the depth-resolve assertions (zero opens with no reader, exactly one per reader, TAA-at-MSAA1 demands without opening) migrate with F5-18."
+    },
+    {
+      "id": "GATE-3-ACCEPTANCE",
+      "title": "Gate 3 acceptance: delayed promise resolves after each toggle without stale reinsertion; alternate cache families recover after device loss; repeated create/destroy leaves pick registry and GPU resources at baseline",
+      "claim": "Lifecycle acceptance.",
+      "status": "PARTIAL",
+      "evidence": "First and third clauses are covered by the Batch 819 epoch guard and the Batch 1072/1195 generation teardown; the alternate-family device-loss clause is open (F5-08, Q-86).",
+      "surviving_record": "Batches 819/1072/1195; Q-86",
+      "migrate_text": "Remaining acceptance: after a device loss every per-object cache family (labels, polylines, billboards, clouds, voxels, translucency state) recovers on the new device without a scene-format bump, in a two-context shared-device scene (Q-86)."
+    },
+    {
+      "id": "GATE-4-ACCEPTANCE",
+      "title": "Gate 4: every optional-path gate needs a feature-on positive control; disabling OIT/clustered lighting/scheduler/octree/shadows/post-processing is not an optimisation; temporal sequences for TAA/RTE/altitude; pass-folding needs pickPosition/primitive/classification/depth-plane/multi-frustum/shadow/HDR/2D-CV/resize/recovery checks",
+      "claim": "Acceptance rules.",
+      "status": "PARTIAL",
+      "evidence": "Positive-control and no-disable rules are SR-1/SR-6/SR-8 in the research dispatch queue; the temporal-sequence and pass-folding check lists exist only here.",
+      "surviving_record": "QUEUE_2026-08-29_RESEARCH_DISPATCH.md SR rules (partial)",
+      "migrate_text": "Across all gates compare against the current Tools/visual-regression baselines and add temporal sequences for TAA history, RTE under motion and altitude transitions - a final still cannot prove history stability. Any pass-folding or clear-reordering change additionally needs numeric pickPosition, primitive/billboard pick, classification, depth-plane/horizon, multi-frustum, off-camera shadow-caster, HDR, 2D/Columbus, resize and device-recovery checks with the feature on."
+    },
+    {
+      "id": "DOC-7-COMPLETED",
+      "title": "§7 completed reconciliation (C9/C10 closures, C11-167 complete / C11-168 partial, DEFERRED_WORK P0 demoted, README index)",
+      "claim": "Doc edits done at Batch 731.",
+      "status": "RESOLVED",
+      "evidence": "Visible in the queues today (C11-167 COMPLETE :2657; C11-168 PARTIAL :2003).",
+      "surviving_record": "the queue rows themselves",
+      "migrate_text": "One line: history."
+    },
+    {
+      "id": "DOC-7-REQ-1",
+      "title": "§7 still required 1 - freeze FORK_EXTENSION_TEST_COVERAGE_MATRIX_2026-07-15.json and create a successor snapshot (231 modules / 99 spec files / 1,592 it cases at Batch 731)",
+      "claim": "A coverage successor is needed.",
+      "status": "STILL-VALID",
+      "evidence": "migration_doc contains only FORK_EXTENSION_TEST_COVERAGE_MATRIX_2026-07-15.json; the only references are the Campaign-8 queue, the 2026-07-15 defense and ROADMAP_AND_DEFERRED_WORK.md:12; DX-12 'spec homes measured pass' (QUEUE_2026-08-29_RESEARCH_DISPATCH.md:171, :961) counts runner homes, not module coverage.",
+      "surviving_record": "none (adjacent: DX-12)",
+      "migrate_text": "FORK_EXTENSION_TEST_COVERAGE_MATRIX_2026-07-15.json is a frozen Batch-8-era snapshot (227 WebGPU modules / 91 spec files / 1,530 it cases; 231/99/1,592 by Batch 731) and has no successor; the WebGPU directory is now 271 files. A successor coverage snapshot - modules vs spec files vs runner home, generated by a script rather than hand-counted - belongs beside the DX-12 spec-homes pass; counts prove presence, not semantic coverage."
+    },
+    {
+      "id": "DOC-7-REQ-2",
+      "title": "§7 still required 2 - index the new performance/isolation probes in DEBUGGING_GUIDE.md with claim limits",
+      "claim": "Guide drift.",
+      "status": "RESOLVED",
+      "evidence": "DEBUGGING_GUIDE.md:977 (probe-webgpu-allocation-tax), :978-979 (run-performance-campaign + API lane), :973 (gpu-timestamp profiler), :980 (C11-170 gate) all carry claim limits.",
+      "surviving_record": "DEBUGGING_GUIDE.md probe table",
+      "migrate_text": "One line: done."
+    },
+    {
+      "id": "DOC-7-REQ-3",
+      "title": "§7 still required 3 - reconcile the WebGPU picking staging spec with the documented region-containment behaviour",
+      "claim": "A spec contradicts its contract.",
+      "status": "SUPERSEDED",
+      "evidence": "WebGPUPickFramebufferStagingSpec.js was revised at Batches 1040 and 1195; the pick readiness/freshness contract is now PICKING_ARCHITECTURE_STATE_2026-08-17.md (P-1..P-8) and PICK_DURING_MOTION_INVESTIGATION_2026-08-14.md; Q-141 re-tiered to the readback under R-2026-09-02-2.",
+      "surviving_record": "PICKING_ARCHITECTURE_STATE_2026-08-17.md; Q-141",
+      "migrate_text": "One line: the pick contract of record moved to PICKING_ARCHITECTURE_STATE_2026-08-17.md."
+    },
+    {
+      "id": "DOC-7-REQ-4",
+      "title": "§7 still required 4 - production-integration tests for tile eviction, multi-context isolation, attachment topology, async invalidation, alternate-family device loss, upload replacement, OIT",
+      "claim": "Coverage list.",
+      "status": "PARTIAL",
+      "evidence": "See F5-12.",
+      "surviving_record": "Q-86; DX-12",
+      "migrate_text": "See F5-12."
+    },
+    {
+      "id": "DOC-7-REQ-5",
+      "title": "§7 still required 5 - repair split-screen initialization; prevent selecting T5 until its assets exist",
+      "claim": "Optional tool fixes.",
+      "status": "RESOLVED",
+      "evidence": "See F5-14.",
+      "surviving_record": "C11-171 (Batch 1079); G3-4096-FACE-TIER",
+      "migrate_text": "One line: done."
+    },
+    {
+      "id": "REC-8",
+      "title": "§8 nine-step recommended ordering (ledger truth -> tests + retirement primitive -> ownership boundaries -> terrain/ocean leases -> feature pick -> depth resolve then MRT A/B -> pass ownership -> async/device-loss -> concrete leases as first ownership consumer)",
+      "claim": "Execution order for non-cloud performance work.",
+      "status": "SUPERSEDED",
+      "evidence": "Dispatch order is now MAINTAINER_RULINGS_2026-09-02.md's end block and QUEUE_2026-08-29_RESEARCH_DISPATCH.md waves (Q-143 first, DM-09/10/11/12 behind it); the maintainer ruled this document's action queue 'requires a current premise check and explicit dispatch before use' (README.md:221).",
+      "surviving_record": "MAINTAINER_RULINGS_2026-09-02.md dispatch order; QUEUE_2026-08-29_RESEARCH_DISPATCH.md",
+      "migrate_text": "One line: the still-valid dependency (retirement primitive -> ownership split -> terrain leases; depth-resolve gate before the MRT A/B) is carried in ACTION-3/4/5/8 and must be respected when C11-34 / S4-4 are dispatched."
+    }
+  ],
+  "inbound_refs": [
+    {
+      "file": "CLAUDE.md",
+      "what": "Line 19: 'Fable 5 Progress and Recommended-Action Audit ... remains the current fork-performance authority outside the cloud campaign.'",
+      "needs": "A replacement authority pointer (the new architecture review register + QUEUE_2026-08-29_RESEARCH_DISPATCH.md / C11-168 for performance); R-2026-09-02 already makes this block a pointer into CAMPAIGN_STATE.md, so edit both together."
+    },
+    {
+      "file": "migration_doc/CAMPAIGN_STATE.md",
+      "what": "Line 38: verbatim mirror of the CLAUDE.md line.",
+      "needs": "Same replacement pointer as CLAUDE.md."
+    },
+    {
+      "file": "migration_doc/README.md",
+      "what": "Line 28 (2026-07-28 update note: 'non-cloud performance evidence remains in ...'), line 221 (index row, 'Historical Batch-731 ... action queue requires a current premise check'), line 243 (FORK_PERFORMANCE_AUDIT_AND_FIX_RESULTS row: 'Performance authority has since passed to ...').",
+      "needs": "Remove the :221 index row (or move it to the ARCHIVED table with the git path), rewrite :243 to name the successor (new review register / C11-168), and annotate :28 as history."
+    },
+    {
+      "file": "migration_doc/CODEX_DISAGREEMENTS_WITH_FABLE_REVIEW_2026-08-16.md",
+      "what": "Primary subject of the packet: ~35 line-anchor links (#L5-L11, #L13-L16, #L22-L24, #L26-L29, #L31-L32, #L42-L49, #L51-L52, #L67-L68, #L119-L124, #L126-L134, #L128-L130, #L132-L134, #L148-L161, #L163-L164, #L168-L190, #L188-L208, #L212-L231, #L248-L289, #L293-L322, #L321-L343, #L358-L378, #L380-L403, #L405-L445, #L410-L428, #L462-L477, #L473-L477, #L494-L505, #L496-L499, #L509-L530) plus the ids F5-17, F5-02..F5-19 and the §2 principles table.",
+      "needs": "Section anchors: the principles table needs the eleven principles reproduced in the new review (F5-PRINCIPLES) with stable headings it can link to, and the F5- id register must survive with its ids; every line-anchor link needs either a repoint to those headings or a one-line note that the anchors resolve against the removed file's last revision in git history (git show <last-commit>:migration_doc/FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md)."
+    },
+    {
+      "file": "migration_doc/FORK_PERFORMANCE_WEEKLY_CHANGE_DEFENSE_2026-07-15.md",
+      "what": "Line 611: bibliography entry 'for the 78-commit, 455-file Campaign 9-12 interval'.",
+      "needs": "The range summary number (78 commits / 455 files, a54cc06b2a..851ce64389) and a pointer to where the historical record now lives (new review's history line or git history)."
+    },
+    {
+      "file": "migration_doc/QUEUE_2026-07-23_CAMPAIGN13.md",
+      "what": "Line 1289: entry in a 'Durable project context' file list.",
+      "needs": "Nothing beyond deleting the list line."
+    },
+    {
+      "file": "migration_doc/QUEUE_2026-08-29_RESEARCH_DISPATCH.md",
+      "what": "Lines 348, 393, 408, 416, 424: cross-references to F5-16 (Q-141, DM-11), F5-02 (DM-09, DM-10), F5-04 and F5-18 and 'audit action 9' (DM-12).",
+      "needs": "Id definitions: the migrated register must keep the F5-02, F5-04, F5-16, F5-18 ids and an 'action 9' label (or DM-12's text is edited to restate the A/B bar inline)."
+    },
+    {
+      "file": "Tools/visual-regression/output/lane-treebeard-2026-08-29/REVIEW_DESIGN_MODEL_PERF_CIRDAN.md and RESEARCH_DESIGN_MODEL_PERF_TREEBEARD.md",
+      "what": "Gitignored lane evidence citing the filename and F5-02/F5-04/F5-18.",
+      "needs": "Nothing (frozen banked evidence; not tracked)."
+    }
+  ],
+  "verdict_on_document": "REMOVE-AFTER-MIGRATION",
+  "reason": "Nothing in the file is a live authority that no other record holds once the migrate_text above is placed in the new review: the measurements are Batch-731 history superseded by the Batch-1032 causal r6 and DM-12; the WebGL stall work is owned by C11-180; the MRT elision by DM-12 / C9-10; feature-pick, async-epoch, split-screen and T5 items are closed in code (Batches 1072/1195, 819, 1079, tracked t5 assets). The items that remain STILL-VALID or PARTIAL (terrain lifetime F5-02 with its submit-safety argument, the per-device globe renderer F5-03, the inert SceneOctree comparison F5-05 and RenderScheduler layers F5-06, the OIT key/bind-group F5-10, the unconsumed ResourceOwnership scaffold F5-11, the unconditional MSAA depth resolve F5-18, the pass-boundary work F5-19, the sentinel bound F5-09, the label/polyline device-loss gap F5-08, the mislabelled counterbalancedPairs F5-15, the missing max-throughput / minified / local-terrain lanes, the coverage-matrix successor, the buffer-retirement primitive, and the rejected-shortcut guards) each carry present-tense migrate_text with current file:line, and several have no queue row today - the new review should file them (F5-05, F5-10, F5-18, F5-15, the buffer retirement queue) rather than let them die with the file. Two conditions for safe deletion: (1) the new review keeps the F5- ids and an 'action 9' label because QUEUE_2026-08-29_RESEARCH_DISPATCH.md cites them, and reproduces the eleven method principles under stable headings; (2) CODEX_DISAGREEMENTS_WITH_FABLE_REVIEW_2026-08-16.md's ~35 line-anchor links are repointed to those headings or annotated to resolve via git history, and CLAUDE.md:19 / CAMPAIGN_STATE.md:38 / README.md:28,221,243 / FORK_PERFORMANCE_WEEKLY_CHANGE_DEFENSE:611 / QUEUE_CAMPAIGN13:1289 are repointed or dropped as listed. No code, tool or spec references the file."
+}

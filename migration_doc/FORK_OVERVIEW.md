@@ -1,7 +1,7 @@
 # Fork Overview — CesiumJS WebGPU
 
 > **Canonical doc** (consolidation first draft, 2026 consolidation).
-> **Supersedes (folds in):** `WEBGPU_MIGRATION_STATUS.md`, `FEATURE_INVENTORY.md` (the 4-bucket catalog), `audits/2026-04-30_FORK_FEATURE_INVENTORY.md`, `LARGE_DYNAMIC_OBJECTS_DESIGN.md`, `PHASE_5_MODERN_WEBGPU_DESIGN.md`, `ATMOSPHERE_CLOUD_IMPROVEMENT_PLAN.md`, `C2-25_SCENE_CAPTURE_DESIGN.md`, `ATMOSPHERIC_EFFECTS_ROADMAP.md`, `VEGETATION_SYSTEM_DESIGN.md`, `WATER_RENDERING_DESIGN.md` (overview/status surfaces only — the design docs remain authoritative for their own deep detail).
+> **Supersedes (folds in):** `WEBGPU_MIGRATION_STATUS.md`, `FEATURE_INVENTORY.md` (the 4-bucket catalog), `archive/audits-2026-04-30/2026-04-30_FORK_FEATURE_INVENTORY.md` (archived 2026-09-03, see `ARCHITECTURE_REVIEW_2026-09-02.md` §3.2), `LARGE_DYNAMIC_OBJECTS_DESIGN.md`, `PHASE_5_MODERN_WEBGPU_DESIGN.md`, `ATMOSPHERE_CLOUD_IMPROVEMENT_PLAN.md`, `C2-25_SCENE_CAPTURE_DESIGN.md`, `ATMOSPHERIC_EFFECTS_ROADMAP.md`, `VEGETATION_SYSTEM_DESIGN.md`, `WATER_RENDERING_DESIGN.md` (overview/status surfaces only — the design docs remain authoritative for their own deep detail).
 > **Review-in-progress.** This is the master capability catalog: what this fork *is*, every improvement beyond upstream, and the **live** ship-status of each.
 
 > [!IMPORTANT]
@@ -139,7 +139,7 @@ Other notable NEW features: structural-metadata GPU upload + per-model WGSL meta
 
 ## 5. Subsystem Feature Detail
 
-Per-renderer status, re-verified at HEAD (supersedes the maturity grades in `audits/2026-04-30_FORK_FEATURE_INVENTORY.md`, which were captured at Batch 116).
+Per-renderer status, re-verified at HEAD (supersedes the maturity grades in `archive/audits-2026-04-30/2026-04-30_FORK_FEATURE_INVENTORY.md`, archived 2026-09-03, which were captured at Batch 116).
 
 ### 5.1 Globe & Imagery
 `WebGPUGlobeSurfaceRenderer` (~3900 LOC, decomposed into 9 helpers) — quantized + uncompressed terrain, multi-pass for >4 imagery layers (16-layer single-pass on capable adapters, 1-layer reduced fallback for SwiftShader/low-end), water mask, day/night, fog/atmosphere/Lambert, hardware clip distances (globe path), Hi-Z occlusion. **SHIPPED.** Ground atmosphere is shaded in-`GlobeTerrain.wgsl` (the separate-pass renderer was deleted Batch 239 as a parity misread). The historical "globe never rasterizes / canvas black" framing is **resolved** (Batches 93 + 200).

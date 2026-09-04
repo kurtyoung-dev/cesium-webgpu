@@ -4,8 +4,10 @@
 > as the Batch-771 stopping-point record, but do not read its repository-state
 > paragraph as current. The working tree it describes **landed as Batches
 > 772-781** (`origin/main` = `3900608bb9`) after orchestrator review, with eight
-> confirmed defects fixed pre-landing (see `LOCAL_CHANGE_AUDIT_2026-07-31.md`
-> §11 and the `C11-REVIEW-2026-08-01` entry in `WEBGPU_DEBUGGING_LOG.md`).
+> confirmed defects fixed pre-landing (see `archive/LOCAL_CHANGE_AUDIT_2026-07-31.md`
+> §11, archived 2026-09-03 — its file/batch/artifact list is also inlined at
+> `WEBGPU_DEBUGGING_LOG.md:16478` — and the `C11-REVIEW-2026-08-01` entry in
+> `WEBGPU_DEBUGGING_LOG.md`).
 > Wherever this document says “implemented, not landed,” read “landed; still not
 > complete” — every exit gate, browser gate, and PARTIAL status below stands
 > exactly as written. In the restart order at the end, **item 1 (combined build

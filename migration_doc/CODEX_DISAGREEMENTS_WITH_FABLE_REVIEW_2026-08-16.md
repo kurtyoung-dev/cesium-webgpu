@@ -7,9 +7,12 @@ state changes remain prohibited
 ([`CAMPAIGN_STATE.md`, lines 31–50](CAMPAIGN_STATE.md#L31-L50)).
 
 **Primary Fable-specific source:**
-[`FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md`](FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md),
+[`archive/FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md`](archive/FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md)
+(archived 2026-09-03 — `git mv`'d, content and line numbers unchanged, so every `#Lx-Ly` anchor below
+still resolves correctly; the `F5-*` id register and the eleven principles are additionally mirrored
+under stable headings at [`ARCHITECTURE_REVIEW_2026-09-02.md`](ARCHITECTURE_REVIEW_2026-09-02.md) §3.15),
 which pins its source range and Batch-731 cutoff at
-[lines 5–11](FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md#L5-L11).
+[lines 5–11](archive/FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md#L5-L11).
 
 **Comparison/context only:**
 [`SOL_AUDIT_REPORT_2026-07-16.md`](SOL_AUDIT_REPORT_2026-07-16.md),
@@ -58,17 +61,17 @@ The qualifications are chiefly governance and time-domain issues:
 
 | Topic | Agreement | Source |
 | --- | --- | --- |
-| Feature preservation | Performance work must improve implementation without removing, bypassing, or visually degrading the feature merely to improve a metric. | [Fable audit, lines 13–16](FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md#L13-L16) |
-| Exact-bundle claims | A measured parity result belongs to the exact bundle/environment that produced it; it is not a permanent claim for later HEADs. | [Fable audit, lines 67–68](FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md#L67-L68) |
-| Two bottlenecks, not one verdict | WebGPU's steady-state CPU floor and WebGL's recurring long stalls are separate optimization problems and should not be collapsed into “which renderer is slower?” | [Fable audit, lines 42–49](FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md#L42-L49) |
-| Bounded visual evidence | The nine-waypoint route validates its offline ellipsoid/NaturalEarthII subject, not real terrain, water, dense 3D Tiles, optional OIT, or every post-process consumer. | [Fable audit, lines 126–134](FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md#L126-L134) |
-| Honest incomplete test state | A stopped full suite is neither a complete green nor a complete red, and unrelated global-lint debt must remain separately attributed. | [Fable audit, lines 148–161](FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md#L148-L161) |
-| Lifecycle before optimization | Terrain and ocean resources need correct device/context/provider ownership and post-submit retirement before adding retention optimizations. | [Fable audit, lines 212–231](FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md#L212-L231), [lines 380–403](FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md#L380-L403) |
-| Conservative demand gating | Inventory all consumers, let unknown consumers force the safe path, and separately assert demand from actual pass opens. | [Fable audit, lines 405–445](FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md#L405-L445) |
-| Controlled A/B before promotion | Preserve exact one-target/MRT variants, prewarm and commit topology atomically, and promote only after GPU/API/visual A/B evidence. | [Fable audit, lines 410–428](FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md#L410-L428) |
-| Positive controls and temporal evidence | Optional-path gates need feature-on controls; temporal behavior cannot be certified by a final still. | [Fable audit, lines 462–477](FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md#L462-L477) |
-| Evidence before performance claims | Pair provenance, refresh/pacing scope, local representative fixtures, tracing, and exact environment identity belong ahead of another broad performance claim. | [Fable audit, lines 358–378](FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md#L358-L378) |
-| Concrete consumers before abstraction | Do not integrate a parallel ownership framework without a zero-copy contract and a concrete measured consumer. | [Fable audit, lines 321–343](FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md#L321-L343) |
+| Feature preservation | Performance work must improve implementation without removing, bypassing, or visually degrading the feature merely to improve a metric. | [Fable audit, lines 13–16](archive/FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md#L13-L16) |
+| Exact-bundle claims | A measured parity result belongs to the exact bundle/environment that produced it; it is not a permanent claim for later HEADs. | [Fable audit, lines 67–68](archive/FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md#L67-L68) |
+| Two bottlenecks, not one verdict | WebGPU's steady-state CPU floor and WebGL's recurring long stalls are separate optimization problems and should not be collapsed into “which renderer is slower?” | [Fable audit, lines 42–49](archive/FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md#L42-L49) |
+| Bounded visual evidence | The nine-waypoint route validates its offline ellipsoid/NaturalEarthII subject, not real terrain, water, dense 3D Tiles, optional OIT, or every post-process consumer. | [Fable audit, lines 126–134](archive/FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md#L126-L134) |
+| Honest incomplete test state | A stopped full suite is neither a complete green nor a complete red, and unrelated global-lint debt must remain separately attributed. | [Fable audit, lines 148–161](archive/FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md#L148-L161) |
+| Lifecycle before optimization | Terrain and ocean resources need correct device/context/provider ownership and post-submit retirement before adding retention optimizations. | [Fable audit, lines 212–231](archive/FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md#L212-L231), [lines 380–403](archive/FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md#L380-L403) |
+| Conservative demand gating | Inventory all consumers, let unknown consumers force the safe path, and separately assert demand from actual pass opens. | [Fable audit, lines 405–445](archive/FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md#L405-L445) |
+| Controlled A/B before promotion | Preserve exact one-target/MRT variants, prewarm and commit topology atomically, and promote only after GPU/API/visual A/B evidence. | [Fable audit, lines 410–428](archive/FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md#L410-L428) |
+| Positive controls and temporal evidence | Optional-path gates need feature-on controls; temporal behavior cannot be certified by a final still. | [Fable audit, lines 462–477](archive/FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md#L462-L477) |
+| Evidence before performance claims | Pair provenance, refresh/pacing scope, local representative fixtures, tracing, and exact environment identity belong ahead of another broad performance claim. | [Fable audit, lines 358–378](archive/FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md#L358-L378) |
+| Concrete consumers before abstraction | Do not integrate a parallel ownership framework without a zero-copy contract and a concrete measured consumer. | [Fable audit, lines 321–343](archive/FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md#L321-L343) |
 
 These principles are consistent with the later Sol reviews' strongest findings: honest negative
 evidence, scope boundaries, and guard-backed fixes were strengths in July
@@ -83,11 +86,11 @@ not fabricated measurements but changing what remained in the scoring path
 ### F-1 — “Current” must remain attached to Batch 731
 
 **FACT.** The audit fixes its source at clean `main` Batch 731
-([lines 5–7](FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md#L5-L7)), but later says “Current HEAD”
+([lines 5–7](archive/FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md#L5-L7)), but later says “Current HEAD”
 is not CPU-parity certified
-([lines 31–32](FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md#L31-L32)), labels findings as current
-([lines 168–190](FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md#L168-L190)), and ends with a “Current
-recommendation” ([lines 509–530](FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md#L509-L530)).
+([lines 31–32](archive/FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md#L31-L32)), labels findings as current
+([lines 168–190](archive/FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md#L168-L190)), and ends with a “Current
+recommendation” ([lines 509–530](archive/FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md#L509-L530)).
 
 **Qualification.** Those statements can only establish the state of the pinned audit cutoff. They do
 not establish 2026-08-16 product state.
@@ -102,12 +105,12 @@ dispatched.
 ### F-2 — The F5-17 addendum creates mixed temporal provenance
 
 **FACT.** The findings register describes F5-17 as a leading hypothesis
-([lines 188 and 207–208](FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md#L188-L208)). A later section,
+([lines 188 and 207–208](archive/FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md#L188-L208)). A later section,
 explicitly dated 2026-07-28, says it is no longer only a hypothesis and records an implementation
 landed on 2026-08-01
-([lines 248–289](FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md#L248-L289)). The document header still
+([lines 248–289](archive/FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md#L248-L289)). The document header still
 advertises one COMPLETE audit and the original source range
-([lines 1–7](FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md#L1-L7)).
+([lines 1–7](archive/FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md#L1-L7)).
 
 **Disagreement.** A durable audit should not present an original register and a superseding result as
 one undifferentiated temporal snapshot.
@@ -122,8 +125,8 @@ successor report for future updates.
 ### F-3 — Attribute the range, not a single model, unless the author map proves it
 
 **FACT.** The audit covers 78 commits across four campaign phases
-([lines 22–24](FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md#L22-L24)) and then says “Fable 5 made”
-the progress ([lines 26–29](FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md#L26-L29)). Current campaign
+([lines 22–24](archive/FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md#L22-L24)) and then says “Fable 5 made”
+the progress ([lines 26–29](archive/FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md#L26-L29)). Current campaign
 records describe an orchestrator dispatching model-matched subagents and landing reviewed worker
 diffs ([`CAMPAIGN_STATE.md`, line 61](CAMPAIGN_STATE.md#L61)). The later August audit warns that all
 commits used one shared identity and therefore attributes by range
@@ -142,9 +145,9 @@ separately in future audit manifests.
 ### F-4 — COMPLETE means the audit is complete, not that remediation is complete
 
 **FACT.** The header says COMPLETE
-([line 3](FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md#L3)), while the document itself lists open
+([line 3](archive/FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md#L3)), while the document itself lists open
 follow-up and missing integration coverage
-([lines 494–505](FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md#L494-L505)).
+([lines 494–505](archive/FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md#L494-L505)).
 
 **Qualification.** The status is reasonable for the review activity, but ambiguous for downstream
 campaign readers.
@@ -155,8 +158,8 @@ campaign readers.
 ### F-5 — The action queue is historical advice, not a live dispatch authority
 
 **FACT.** The audit assigns `DO FIRST`, `FIX EARLY`, and related decisions
-([lines 293–322](FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md#L293-L322)) and recommends proceeding
-([lines 509–530](FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md#L509-L530)). Current campaign state
+([lines 293–322](archive/FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md#L293-L322)) and recommends proceeding
+([lines 509–530](archive/FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md#L509-L530)). Current campaign state
 forbids resuming queued implementation or running campaign builds/browser probes during the pause
 ([`CAMPAIGN_STATE.md`, lines 31–50](CAMPAIGN_STATE.md#L31-L50)).
 
@@ -169,8 +172,8 @@ obtain an explicit resume/dispatch decision before work.
 ### F-6 — Artifact links need immutable identity in the audit record
 
 **FACT.** The audit links dated performance artifacts
-([lines 51–52](FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md#L51-L52),
-[lines 119–124](FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md#L119-L124)), but the audit prose does
+([lines 51–52](archive/FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md#L51-L52),
+[lines 119–124](archive/FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md#L119-L124)), but the audit prose does
 not pin their byte sizes and SHA-256 values. A later Sol review documented artifacts overwritten or
 superseded by later runs
 ([`SOL_C13_REVIEW`, lines 94–99](SOL_C13_REVIEW_2026-07-23.md#L94-L99)). The current
@@ -187,9 +190,9 @@ listed only beside the immutable record it resolves to.
 ### F-7 — File/count growth is a coverage signal, not semantic coverage
 
 **FACT.** The audit infers an integration-coverage lag from source files changed without an engine
-Spec change ([lines 163–164](FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md#L163-L164)), and later
+Spec change ([lines 163–164](archive/FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md#L163-L164)), and later
 correctly says increased module/spec/test counts do not prove semantic coverage
-([lines 496–499](FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md#L496-L499)).
+([lines 496–499](archive/FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md#L496-L499)).
 
 **Qualification.** The first statement is a useful triage heuristic, not a verdict on whether a
 behavioral contract is covered by another spec, integration gate, or mutation control.
@@ -200,12 +203,12 @@ a requirement-to-test map, negative controls, and mutation evidence.
 ### F-8 — The visual aggregate cannot certify localization or temporal stability
 
 **FACT.** The audit reports mean/max cross-backend pixel differences for nine captures
-([lines 128–130](FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md#L128-L130)) and immediately states
-the route's exclusions ([lines 132–134](FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md#L132-L134)).
+([lines 128–130](archive/FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md#L128-L130)) and immediately states
+the route's exclusions ([lines 132–134](archive/FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md#L132-L134)).
 
 **Qualification.** Mean and maximum image-level aggregates can miss localized, semantic, or temporal
 defects. The audit itself later requires temporal sequences because a final still cannot prove
-history stability ([lines 473–477](FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md#L473-L477)).
+history stability ([lines 473–477](archive/FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md#L473-L477)).
 
 **Reconciled wording/action.** Describe the nine-waypoint result as a bounded static regression lane,
 not feature parity. Add semantic masks and temporal controls per claimed feature.
@@ -374,7 +377,7 @@ tool edit is authorized while the pause remains active.
 ## 6. Audit-coverage and attribution caveats
 
 1. **Different audits have different subjects.** The Fable audit is a committed Batch-731 performance
-   range ([lines 5–24](FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md#L5-L24)). The July Sol audit
+   range ([lines 5–24](archive/FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md#L5-L24)). The July Sol audit
    reviews a 323-file dirty tree and notes incomplete reviewer payloads
    ([lines 3–6](SOL_AUDIT_REPORT_2026-07-16.md#L3-L6)). The C13 review covers five batches plus a
    protected dirty tree ([lines 3–8](SOL_C13_REVIEW_2026-07-23.md#L3-L8)). The August Sol audit covers

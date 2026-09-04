@@ -3,6 +3,13 @@
 **Generated:** 2026-05-30 · **Repo HEAD:** `88b111e49c` (Batch 185 — flat textured-material GroundPrimitive classification fix, packExtents wrapper-chain walk) · **Source:** consolidation of 45 per-file audit verdicts.
 
 > Conventions: **KEEP** = leave in active `migration_doc/`; **UPDATE** = edit in place (still load-bearing); **ARCHIVE** = move to `migration_doc/archive/` (preserve history, mark superseded); **DELETE** = only where truly redundant (we prefer archive everywhere). An `archive/` dir already exists (holds prior completed plans + deprecated docs); an `audits/` dir holds the 2026-04-30 trio.
+>
+> **Superseded 2026-09-03:** this plan's KEEP verdicts for `AUDIT_2026_05_02.md`, the 2026-04-30
+> audit trio, and `PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md` are overridden by the
+> 2026-09-02 architecture review's REMOVE-AFTER-MIGRATION ruling — all four are now archived under
+> `migration_doc/archive/`, with their findings and id tables migrated into
+> [`ARCHITECTURE_REVIEW_2026-09-02.md`](ARCHITECTURE_REVIEW_2026-09-02.md). This plan otherwise stands
+> frozen as the executed 2026-05-30 record; its other verdicts are unaffected.
 
 ---
 

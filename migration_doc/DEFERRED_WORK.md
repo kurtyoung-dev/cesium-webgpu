@@ -1981,11 +1981,11 @@ than routed around (Principle 9); none blocks the batch.
   reflection, or adding a sprite-derived term. The new `skyBox.variant` getter
   is what lets that decision be made at runtime.
 
-**Last Updated:** 2026-06-12 (Batch 253 final regression sweep — NEW-CLOUD-SCALE-METERS + depth-plane [ld] visibility fixed; NEW-CLOUD-IMPOSTOR-FS-PARITY + NEW-BUILD-OUTPUT-WGSL-PRUNE opened; Batches 243–252 entries verified current). Prior: 2026-05-30 (_DOC_AUDIT_PLAN.md §3.2 Batch 179–185 drift sweep at HEAD `88b111e49c` Batch 185 — NEW-GROUNDPRIM-TEXTURED-MATERIALS marked RESOLVED, NEW-GROUNDPRIM-CLASSIFIER-RECON-PRECISION added as the canonical open residual, NEW-WEBGPU-GLOBE-CLASSIFY-DEPTH-PRECISION approach-(A) downgraded to producer-shipped; prior 2026-05-02 AUDIT_2026_05_02.md cross-coupling sweep. **Also 2026-05-30:** pre-archive safety lift (_DOC_AUDIT_PLAN.md §2 Cluster B / §3.7) of still-open build/lifecycle + data-pipeline findings from the three 2026-04-16 pillars being archived — see the "Carried-forward on archive (2026-05-30)" section at the end.)
+**Last Updated:** 2026-06-12 (Batch 253 final regression sweep — NEW-CLOUD-SCALE-METERS + depth-plane [ld] visibility fixed; NEW-CLOUD-IMPOSTOR-FS-PARITY + NEW-BUILD-OUTPUT-WGSL-PRUNE opened; Batches 243–252 entries verified current). Prior: 2026-05-30 (_DOC_AUDIT_PLAN.md §3.2 Batch 179–185 drift sweep at HEAD `88b111e49c` Batch 185 — NEW-GROUNDPRIM-TEXTURED-MATERIALS marked RESOLVED, NEW-GROUNDPRIM-CLASSIFIER-RECON-PRECISION added as the canonical open residual, NEW-WEBGPU-GLOBE-CLASSIFY-DEPTH-PRECISION approach-(A) downgraded to producer-shipped; prior 2026-05-02 archive/AUDIT_2026_05_02.md cross-coupling sweep. **Also 2026-05-30:** pre-archive safety lift (_DOC_AUDIT_PLAN.md §2 Cluster B / §3.7) of still-open build/lifecycle + data-pipeline findings from the three 2026-04-16 pillars being archived — see the "Carried-forward on archive (2026-05-30)" section at the end.)
 
 > **✅ Forward-dated entries — RE-VERIFIED 2026-06-05 (was flagged 2026-05-30).** The cluster of entries marked `RESOLVED` against batch numbers FUTURE relative to HEAD = Batch 185 (Batches 186–230: 188/190/192/193/197/199/204/208/209/210/211/219/220/221/224/225/228/230 + doc-sync siblings) was re-checked against the ACTUAL code via a 14-entry verification sweep — **all 14 confirmed genuinely RESOLVED in code** (C-R1-GLOBE-RENDERSTATE, C-R1-TILE-BATCH, NEW-GPU-CULLER-CONSUME-OR-DELETE, NEW-GPU-SORT-PIPELINE, NEW-SHADOW-CAST-GPU-CULL, NEW-MULTIFRUSTUM-CULL-RESULTS, NEW-VR-BASELINE-HIGH-DENSITY, NEW-COLLECTIONS-MOTION-VECTORS, C-R8-TRANSLUCENT-DEPTH-ONLY, NEW-GS-CLASSIFICATION-DEPTH, C-R8-VECTOR-3DTILE-CLAMPED-POLYLINES, C-R10-GLOBE-POINT-LIGHT, C-R12-PER-OBJECT-CACHES). The fixes are present and wired (not stubs); the future-looking batch numbers are an artifact of the **non-monotonic batch numbering** (see `WEBGPU_MIGRATION_STATUS.md`) — trust dates/hashes/code over batch labels. None needed re-marking open. (Minor doc drift noted in the sweep: a few cited line numbers are stale from file growth — not corrected here.)
 
-This is the canonical list of named C-R follow-ups deferred during the principal-engineer review remediation (Batches 1-64). Each entry has a stable identifier (`C-R<n>-<NAME>`) that survives renumbering when slots are filled. Grouped by parent C-R finding from `PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md`.
+This is the canonical list of named C-R follow-ups deferred during the principal-engineer review remediation (Batches 1-64). Each entry has a stable identifier (`C-R<n>-<NAME>`) that survives renumbering when slots are filled. Grouped by parent C-R finding from `archive/principal-review-2026-04-16/PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md`.
 
 Each entry: **What** / **Why deferred** / **Prerequisites** / **Estimated effort** (1 session ~ 1-3 hours) / **Impact** / **Trace**.
 
@@ -2017,7 +2017,7 @@ This inventory is add-only; ship items mark `(SHIPPED in Batch N)` next to the h
 **Companion docs (cross-reference before scoping):**
 
 - [FEATURE_INVENTORY.md](FEATURE_INVENTORY.md) — exhaustive catalog of existing/new/WIP/future features
-- [AUDIT_2026_05_02.md](AUDIT_2026_05_02.md) — most recent cross-coupling audit; 110+ findings prioritized by severity (BREAKING / PARTIAL / LATENT / STALE STATUS)
+- [archive/AUDIT_2026_05_02.md](archive/AUDIT_2026_05_02.md) — cross-coupling audit, archived 2026-09-03; 110+ findings prioritized by severity (BREAKING / PARTIAL / LATENT / STALE STATUS); id table now at [`ARCHITECTURE_REVIEW_2026-09-02.md`](ARCHITECTURE_REVIEW_2026-09-02.md) §5.2
 
 ---
 
@@ -5190,7 +5190,7 @@ Full roadmap + regime→architecture decision table + per-phase design: [LARGE_D
 
 ## C-R1 - command.renderState adoption tail
 
-**Parent finding (PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md:30):** `RenderStateToPipelineVariant.ts` foundation + 7 consumer renderers landed in Batches 30/35-37/39. Four named gaps remain.
+**Parent finding (archive/principal-review-2026-04-16/PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md:30):** `RenderStateToPipelineVariant.ts` foundation + 7 consumer renderers landed in Batches 30/35-37/39. Four named gaps remain.
 
 ### ~~C-R1-CLASSIFICATION~~ — RESOLVED via architectural retirement (Migration Session 5, Batch 85; doc sync Batch 176)
 
@@ -5202,11 +5202,11 @@ Full roadmap + regime→architecture decision table + per-phase design: [LARGE_D
 
 **Doc-sync note:** This entry stayed flagged as "open" through Batches 85-175 because the doc reconciliation lagged the architectural pivot. Batch 176 audit confirmed the retirement and updated the entry. No code change required.
 
-**Trace:** PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md:30 (original framing); Migration Session 5 / Batch 85 (architectural pivot); Batch 176 (doc reconciliation).
+**Trace:** archive/principal-review-2026-04-16/PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md:30 (original framing); Migration Session 5 / Batch 85 (architectural pivot); Batch 176 (doc reconciliation).
 
 ### ~~C-R1-COLLECTIONS-PER-ENCODER~~ — RESOLVED (audit 2026-05-02)
 
-**Audit finding (AUDIT_2026_05_02.md D.2):** All five collection renderers forward `renderState` onto their commands today: `WebGPUBillboardRenderer.js:884`, `WebGPULabelRenderer.js:724`, `WebGPUPointPrimitiveRenderer.js:852/991`, `WebGPUPolylineRenderer.js:1112/1273`, `WebGPUCloudRenderer.ts:596`. `WebGPUDrawCommand.execute()` at `WebGPUDrawCommand.ts:500-504` automatically calls `applyPerEncoderState(passEncoder, this.renderState)` when defined. Custom stencilRef / blendConstant / scissor flow correctly.
+**Audit finding (archive/AUDIT_2026_05_02.md D.2):** All five collection renderers forward `renderState` onto their commands today: `WebGPUBillboardRenderer.js:884`, `WebGPULabelRenderer.js:724`, `WebGPUPointPrimitiveRenderer.js:852/991`, `WebGPUPolylineRenderer.js:1112/1273`, `WebGPUCloudRenderer.ts:596`. `WebGPUDrawCommand.execute()` at `WebGPUDrawCommand.ts:500-504` automatically calls `applyPerEncoderState(passEncoder, this.renderState)` when defined. Custom stencilRef / blendConstant / scissor flow correctly.
 
 **Status:** No code change needed; entry preserved as a marker so future audits don't re-investigate.
 
@@ -5228,7 +5228,7 @@ Batch 219 doc-sync only — code already in place.
 
 **Genuine remaining gap (rescoped):** `GlobeTranslucencyState.js:720-727` sets `colorMask = { red: false, green: false, blue: false, alpha: false }` for the depth-only back-face-only pass (depth pre-pass for translucent globe rendering). The WebGPU globe renderer doesn't currently emit this auxiliary depth-only pass — the entire globe-translucency multi-pass technique (depth-only back-face → translucent back-face → translucent front-face) isn't yet implemented. Filed as `NEW-GLOBE-TRANSLUCENCY-MULTI-PASS` for the dedicated work.
 
-**Trace:** PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md:30; Batch 99 cullFace; Batch 175 re-audit + rescope; Batch 176 deeper inspection of existing scaffolding.
+**Trace:** archive/principal-review-2026-04-16/PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md:30; Batch 99 cullFace; Batch 175 re-audit + rescope; Batch 176 deeper inspection of existing scaffolding.
 
 ---
 
@@ -5273,7 +5273,7 @@ Batch 219 doc-sync only — code already in place.
 
 **If/when needed:** A future depth-only primitive dispatch (e.g., a real early-z prepass landing for performance) would need both the consumer-side dispatcher hook AND the producer-side `depthOnlyCommand` emission. They should land together.
 
-**Trace:** PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md:30; Batch 98 (pick variant renderState); audit 2026-05-02.
+**Trace:** archive/principal-review-2026-04-16/PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md:30; Batch 98 (pick variant renderState); audit 2026-05-02.
 
 - **NEW-PANORAMA-CULL-OVERRIDE-WEBGPU** — ✅ SHIPPED (Batch 317, `2ee9421571`). `WebGPUPrimitiveCommands.js` now derives the pipeline `cullMode` from the appearance's `renderState.cull.{enabled,face}` (→ `'none'` when `enabled===false`) before the `closed`-based fallback, cache-key in sync; an inside-viewed `EquirectangularPanorama` is now VISIBLE on WebGPU (WebGL parity). **Pre-fix gap analysis retained for context:** (M, found by WEBGPU_PARITY_AUDIT_2026-06; upstream #13369) — **NOTE: distinct from C-R1-PRIMITIVE-DERIVED above, which is scoped to depth-only/pick renderState forwarding and explicitly EXCLUDES pipeline-cull derivation.** The #13369 `flat:true` lighting fix IS honored on WebGPU (`matImageFlat` selected — tracked SHIPPED as NEW-UPSTREAM-PANORAMA-LIGHTING-13369), but the WebGPU material pipeline in `WebGPUPrimitiveCommands.js` baked `cullMode` SOLELY from `appearance.closed` and ignored the appearance's `renderState.cull.enabled:false`. So an `EquirectangularPanorama` viewed from INSIDE the sphere showed back faces, and `closed:true` forced `cullMode:'back'` → the panorama was INVISIBLE on WebGPU while WebGL (which honors `cull.enabled:false`) showed it. Fix: derive the pipeline `cullMode` from the appearance's `renderState.cull.{enabled,face}` (→ `'none'` when `enabled===false`) BEFORE falling back to the `closed`-based default, keeping the cache-key in sync. **Files:** `WebGPUPrimitiveCommands.js`. **Trace:** WEBGPU_PARITY_AUDIT_2026-06.md (P2 "EquirectangularPanorama cull-override (renderState.cull.enabled:false)"); upstream #13369; sibling NEW-UPSTREAM-PANORAMA-LIGHTING-13369 (lighting half, SHIPPED Batch 299).
 - **NEW-BUFFERPOLYGON-2DCV-REPROJECT** (L, found by WEBGPU_PARITY_AUDIT_2026-06) — ✅ **MOSTLY SHIPPED (PARITY-BUFFER-2DCV, 2026-07-01).** **NOTE: distinct from NEW-CLASSIFIER-2D-CV-MORPH (FEATURE_INVENTORY §B.3 :517–518), which covers the `.vctr` `Vector3DTile*` classifiers, NOT the `BufferPolygon` family.** The three Buffer* WebGPU renderers now reproject ECEF→scene-mode positions in 2D / Columbus View / Morph via a shared `projectBufferPositionForMode` helper (`WebGPUBufferPrimitiveRenderer.ts`) that wraps `SceneTransforms.computeActualEllipsoidPosition` (`.zxy` swizzle for CV, `(0,x,y)` for 2D, CPU morph lerp for MORPHING) — mirroring the shipped `WebGPUPolylineRenderer` / `PolylineCollection` convention. Each renderer (a) enters the reproject path ONLY when `frameState.mode !== SCENE3D` (SCENE3D byte-identical — the batch WASM encode stays active, the position is a no-op clone), (b) forces a full re-pack when the scene-mode/morph projection frame changes (`bufferModeNeedsRepack`, keyed on cache `_lastPackMode`/`_lastPackMorphTime`), and (c) builds a settled-2D/CV coplanar-depth pipeline variant (`depthCompare:"always"`, no depth write, via `computeNoDepthTest` from `WebGPUCollectionRendererBase`) so the flat-map fill draws on top without z-fighting. **Also fixed a pre-existing blocker found during this work:** the `BufferPolyline` pipeline declared **9 vertex buffers** (over WebGPU's guaranteed `maxVertexBuffers`=8) → `createRenderPipeline` returned an INVALID pipeline, so ANY frame containing a BufferPolyline was dropped with a validation error (blocked all BufferPolyline rendering on WebGPU, ALL modes incl. 3D). Fixed by interleaving loc7 (`showColorWidthAndTexCoord` vec4) + loc8 (`alpha` f32) into ONE stride-20 buffer (8 buffers total; WGSL unchanged). **Verified** (`Tools/visual-regression/probe-buffer-2dcv-parity.mjs`, PNGs READ): points+polyline+polygon all render in SCENE3D + Columbus View; points+polygon render in SCENE2D. **Residual → NEW-BUFFERPOLYLINE-2D-EXTRUSION** (below). **Files:** `WebGPUBufferPrimitiveRenderer.ts`, `WebGPUBufferPointRenderer.ts`, `WebGPUBufferPolylineRenderer.ts`, `WebGPUBufferPolygonRenderer.ts`. **Trace:** WEBGPU_PARITY_AUDIT_2026-06.md (P2 "Vector-tile buffer collections in 2D / Columbus View").
@@ -5290,7 +5290,7 @@ Batch 219 doc-sync only — code already in place.
 
 The original "z-fighting on overlapping translucent features" symptom no longer occurs on WebGPU.
 
-**Trace:** Batch 100; `WebGPUModelRenderer.js` and `ModelPBRComplete.wgsl` (search for `tileBatchFlags`). Earlier reference: PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md:30.
+**Trace:** Batch 100; `WebGPUModelRenderer.js` and `ModelPBRComplete.wgsl` (search for `tileBatchFlags`). Earlier reference: archive/principal-review-2026-04-16/PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md:30.
 
 ---
 
@@ -5320,7 +5320,7 @@ KHR_materials_iridescence (Batch 181, analytical), and KHR_materials_transmissio
 (Batch 176, thickness-coupled) are complete. C-R4-GLTF-KHR is fully
 resolved.
 
-**Trace:** PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md:101-102;
+**Trace:** archive/principal-review-2026-04-16/PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md:101-102;
 OVERSIGHT_AUDIT_2026_04_25.md s2; reconciled in Batch 128 (2026-04-30).
 
 ---
@@ -6211,7 +6211,7 @@ data-vis use cases.
 **Estimated effort:** 2-3 sessions per renderer (~80 LOC each).
 GroundPolyline's existing implementation is the reference template.
 
-**Trace:** AUDIT_2026_05_02.md A.4; Batch 150 conservative gate;
+**Trace:** archive/AUDIT_2026_05_02.md A.4; Batch 150 conservative gate;
 `WebGPUGroundPolylineRenderer.js` (locations 8-13 + morph pipeline)
 as the reference implementation.
 
@@ -6703,7 +6703,7 @@ All four advanced primitive families shipped under `NEW-ADVANCED-MOTION-VECTORS`
 - **Voxel** — Batch 173 (`15d007f21b`, CLOSES B.10 family).
 - **GroundPrimitive / Vector3DTile* classifiers** — explicitly low-priority and out of scope (don't animate per-frame; camera-only fallback is correct for the static case).
 
-**Trace:** AUDIT_2026_05_02.md B.10;
+**Trace:** archive/AUDIT_2026_05_02.md B.10;
 `WebGPUTAAEffect.ts:_motionVectorsValid` (camera-only fallback path);
 `ModelPBRComplete.wgsl:computeMotionVectorScreenSpace` (template
 implementation, Batch 96); `BillboardCollection.wgsl` velocity
@@ -7437,7 +7437,7 @@ The sky-only "what remains" below is historical — the sky was already captured
 The audit's 150-LOC budget covers items 4-6; items 1-3 are the real
 work and are touchscreen for the atmosphere/sky stack.
 
-**Trace:** AUDIT_2026_05_02.md §A.12;
+**Trace:** archive/AUDIT_2026_05_02.md §A.12;
 `WebGPUDynamicEnvironmentMapManager.ts:133-154` (the placeholder fill).
 
 ---
@@ -7572,7 +7572,7 @@ posOrDir for directional vs position for spot) so the shader can
 gate the cone against the authored direction. Filed as
 `NEW-SPOTLIGHT-DIR` inline in the shader comment.
 
-**Trace:** AUDIT_2026_05_02.md §B.3; Batch 131 commit (scene-level
+**Trace:** archive/AUDIT_2026_05_02.md §B.3; Batch 131 commit (scene-level
 wiring); `ModelPBRComplete.wgsl` punctual loop block.
 
 ---
@@ -7734,7 +7734,7 @@ The framing splits into two distinct items:
 - Mirrors the Batch 79 Model fix architecturally byte-for-byte — same flag plumbing, same per-tile gate, same dispatcher swap.
 - Coverage is now: Model (Batch 79), PointCloud (already writes depth unconditionally), Gaussian Splat (this work). Vector3DTile* are classifiers, not classified-against content.
 
-**Trace:** `WebGPUGaussianSplatRenderer.ts:43, 500, 957-982`. Original framing: PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md. Closes the C-R8-CLASSIFICATION-DEPTH-SAMPLING content-type-coverage tail.
+**Trace:** `WebGPUGaussianSplatRenderer.ts:43, 500, 957-982`. Original framing: archive/principal-review-2026-04-16/PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md. Closes the C-R8-CLASSIFICATION-DEPTH-SAMPLING content-type-coverage tail.
 
 ### ~~C-R8-CLASSIFICATION-PRIMITIVE-GEOM-PLUMBING~~ FIXED 2026-04-28 (Batch 81)
 
@@ -7829,7 +7829,7 @@ now passes.
 
 ### ~~NEW-BG-CONSOLIDATION~~ — RESOLVED Batch 122 (audit 2026-05-02)
 
-**Audit finding (AUDIT_2026_05_02.md D.1):** `WebGPUModelPipelineCache.js:545-553` (current line) declares 4 BGLs (camera, material, instance, effects). `ModelPBRComplete.wgsl` only uses `@group(0..3)`. The 8→4 consolidation shipped in Batch 122. The "ALL Model rendering broken on Edge/Vulkan" warning below was true pre-Batch 122 and has been moot for ~10 batches.
+**Audit finding (archive/AUDIT_2026_05_02.md D.1):** `WebGPUModelPipelineCache.js:545-553` (current line) declares 4 BGLs (camera, material, instance, effects). `ModelPBRComplete.wgsl` only uses `@group(0..3)`. The 8→4 consolidation shipped in Batch 122. The "ALL Model rendering broken on Edge/Vulkan" warning below was true pre-Batch 122 and has been moot for ~10 batches.
 
 **Status:** Resolved. C-R9-MODEL-FEATURE-PICK is no longer blocked by this — it's blocked by the per-vertex-attribute feature-ID path (see new entry NEW-FEATURE-ID-VERTEX-ATTR below).
 
@@ -7908,7 +7908,7 @@ The b3dm RENDERS IDENTICALLY on WebGL and WebGPU (gray boxes on the terrain, ~52
 
 **RESIDUAL RE-SCOPED (Batch 206) — it is NOT b3dm-feature-specific; WebGPU PICK is broadly broken.** Isolating the pick path with `probe-pick-basic.mjs` (a plain Box `Primitive` + `PerInstanceColorAppearance`, ellipsoid terrain, valid token, Edge):
 
-- `scene.pickAsync(center)` → **WebGL picks the Box** (`id:"the-box"`, primitive `Primitive`); **WebGPU returns undefined.** Same for the b3dm model via `pickAsync` (WebGL → `_Cesium3DTileset`; WebGPU → undefined). So **`scene.pickAsync` returns undefined for ALL objects on WebGPU** (geometry primitive AND model), not just b3dm features. This matches the documented troubled history: **FORK-34 "WebGPU pick pass not wired — all 15+ picking methods fail"** (archive/UPSTREAM_ISSUES_AND_TECH_DEBT.md) and **PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md:249 "glTF model picking broken on WebGPU — cannot be picked via scene.pick()."** The Batch 184/191 fixes addressed `pickAsync` queue ORDERING but the pick result is still empty here.
+- `scene.pickAsync(center)` → **WebGL picks the Box** (`id:"the-box"`, primitive `Primitive`); **WebGPU returns undefined.** Same for the b3dm model via `pickAsync` (WebGL → `_Cesium3DTileset`; WebGPU → undefined). So **`scene.pickAsync` returns undefined for ALL objects on WebGPU** (geometry primitive AND model), not just b3dm features. This matches the documented troubled history: **FORK-34 "WebGPU pick pass not wired — all 15+ picking methods fail"** (archive/UPSTREAM_ISSUES_AND_TECH_DEBT.md) and **archive/principal-review-2026-04-16/PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md:249 "glTF model picking broken on WebGPU — cannot be picked via scene.pick()."** The Batch 184/191 fixes addressed `pickAsync` queue ORDERING but the pick result is still empty here.
 - **Sync `scene.pick` is wrong on WebGPU** (separate bug): WebGPU readback is async, so sync `scene.pick` returns the prior frame's result — AND it leaves the WebGPU pick readback buffer in a pending-map state, so a subsequent `pickAsync` throws `OperationError: Buffer already has an outstanding map pending` (`WebGPUPickFramebuffer.endAsync` → `mapAsync`). The async `scene.pickAsync` is the only correct WebGPU pick entry; `scene.pick` should arguably warn / no-op on WebGPU.
 - **Caveat — headless:** WebGL pickAsync works headless (so headless CAN pick), but a WebGPU-headless readback-timing artifact can't be 100% ruled out without a HEADED run (no display in this env). The documented FORK-34 history strongly indicates a real WebGPU pick-pass gap, not merely headless.
 
@@ -7975,7 +7975,7 @@ The b3dm RENDERS IDENTICALLY on WebGL and WebGPU (gray boxes on the terrain, ~52
 
 So the C-R9 work is functionally **un-testable** until BOTH the upstream b3dm-Model rendering path AND the vertex-attribute feature-ID path land.
 
-**Trace:** PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md:220 (Batch 54 "Still open"); 2026-04-30 reverification confirms shader + JS code wired Batches 100/101; AUDIT_2026_05_02.md B.2 surfaces the secondary blocker.
+**Trace:** archive/principal-review-2026-04-16/PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md:220 (Batch 54 "Still open"); 2026-04-30 reverification confirms shader + JS code wired Batches 100/101; archive/AUDIT_2026_05_02.md B.2 surfaces the secondary blocker.
 
 ### ~~NEW-FEATURE-ID-VERTEX-ATTR~~ — RESOLVED (Batches 130 + 188)
 
@@ -8031,7 +8031,7 @@ These two changes ship together — the depth-write fix would still let near-tra
 - TAA jitter via blue-noise (replace Halton 2/3) — hook + comment in `WebGPUTAAEffect.ts`.
 - Voxel ray-march acceleration — hook + comment in `WebGPUVoxelRenderer.ts`.
 
-**Trace:** Batch 186 first slice; Batch 192 dual-path second slice. `Scene.pickHoverAsync` / `Scene.pickPreciseAsync` in `Scene.js`; `Picking._pickAsyncWithMode` + coalesce/defer in `Picking.js`; `fragmentPickHoverMain` + `getPickHoverPipeline` / `getPickPrecisePass{1,2}Pipeline` factories; dispatcher routing in `WebGPUSceneRenderer.selectCommandVariant`; pass-2 follow-up in `WebGPUSceneRendererPickPass`. Earlier work: PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md:220 (Batch 54 "Translucent-with-OIT pick").
+**Trace:** Batch 186 first slice; Batch 192 dual-path second slice. `Scene.pickHoverAsync` / `Scene.pickPreciseAsync` in `Scene.js`; `Picking._pickAsyncWithMode` + coalesce/defer in `Picking.js`; `fragmentPickHoverMain` + `getPickHoverPipeline` / `getPickPrecisePass{1,2}Pipeline` factories; dispatcher routing in `WebGPUSceneRenderer.selectCommandVariant`; pass-2 follow-up in `WebGPUSceneRendererPickPass`. Earlier work: archive/principal-review-2026-04-16/PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md:220 (Batch 54 "Translucent-with-OIT pick").
 
 ### ~~C-R9-VOXEL-CELL-PICK~~ — RESOLVED (re-landed 2026-07-02, VOXEL-CELL-PICK-RELAND; per-cell decode now WebGL-byte-identical)
 
@@ -8403,7 +8403,7 @@ over `u_inputDimensions`).
 
 **Impact:** `scene.pickVoxel` returns a cell coordinate on WebGPU (previously undefined — the pass didn't reach the cell path), but the returned cell is not yet WebGL-identical on the Y/Z axes. Coarse primitive-level `scene.pick` works and is unchanged.
 
-**Trace:** PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md:222 (Batch 53 "Per-cell / per-tile pick is out of scope"); NEW-PICK-METADATA-READBACK (Batch 285, readback infra); this pass (wiring + physical ray + object/cell command split + surfaced convention blocker).
+**Trace:** archive/principal-review-2026-04-16/PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md:222 (Batch 53 "Per-cell / per-tile pick is out of scope"); NEW-PICK-METADATA-READBACK (Batch 285, readback infra); this pass (wiring + physical ray + object/cell command split + surfaced convention blocker).
 
 ---
 
@@ -8422,7 +8422,7 @@ over `u_inputDimensions`).
 - Shadow gate order in `fragmentMain` is point-light first, CSM second, 2D shadow last (matches the model FS). [GlobeTerrain.wgsl:~1559-1577]
 - `WebGPUEffectsBindGroup.js` packs `pointLightControl` + `pointLightPositionWC` from `frameState.shadowMap` info; binding 17 falls back to a 1×1×6 cube cleared to 1.0 when the gate is off.
 
-The deferred entry's "1 session if requested" estimate predated the Batch 108 commit and was never reconciled. Originally tracked under "Scope cuts" in PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md:247.
+The deferred entry's "1 session if requested" estimate predated the Batch 108 commit and was never reconciled. Originally tracked under "Scope cuts" in archive/principal-review-2026-04-16/PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md:247.
 
 **Trace:** Batch 108 (terrain receive); Batch 190 (audit doc-sync). Code references above.
 
@@ -8457,7 +8457,7 @@ The deferred entry's "1 session if requested" estimate predated the Batch 108 co
 
 The owning feature renderers' destroy/recreate flows still run on the next update tick after recovery; this cleanup closes the window between device-loss event and the next render frame, ensuring orphan-but-reachable caches drop their stale GPU handles immediately rather than only when the FR sees them again.
 
-**Trace:** Batch 197; `WebGPUSceneRendererEnsureResources.ts:clearPerObjectCaches`. Earlier reference: PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md:283.
+**Trace:** Batch 197; `WebGPUSceneRendererEnsureResources.ts:clearPerObjectCaches`. Earlier reference: archive/principal-review-2026-04-16/PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md:283.
 
 **2026-07-31 correction:** Batch 197 clears owners exposing the literal
 `_webgpuCache` shape reached by that walk; it did not prove complete nested
@@ -8960,7 +8960,7 @@ Approach 1 is simpler and lower-risk.
 > precedence is: maintainer rulings, then queue rows, then
 > CLAUDE.md/`CAMPAIGN_STATE.md`, then this file.
 
-> **Update 2026-04-27 (Batch 71 reconciliation):** the prior version of this guide led with "C-R5-IMAGERY-16 is the single biggest visual-correctness gap remaining". That citation was lifted from `OVERSIGHT_AUDIT_2026_04_25.md` §2, which was written hours before Batch 58 closed C-R5-IMAGERY-16 (16-layer cap + 5 missing per-layer uniforms shipped — see [PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md § C-R5](PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md)). The audit's recommendation #2 was acted on; the doc trail just never reconciled the closure into this priority guide. C-R5 is no longer the lead item — the highest-impact open correctness work is now C-R8-TRANSLUCENT-MULTI-FRUSTUM.
+> **Update 2026-04-27 (Batch 71 reconciliation):** the prior version of this guide led with "C-R5-IMAGERY-16 is the single biggest visual-correctness gap remaining". That citation was lifted from `OVERSIGHT_AUDIT_2026_04_25.md` §2, which was written hours before Batch 58 closed C-R5-IMAGERY-16 (16-layer cap + 5 missing per-layer uniforms shipped — see [archive/principal-review-2026-04-16/PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md § C-R5](archive/principal-review-2026-04-16/PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md) (archived 2026-09-03; id table at `ARCHITECTURE_REVIEW_2026-09-02.md` §5.1)). The audit's recommendation #2 was acted on; the doc trail just never reconciled the closure into this priority guide. C-R5 is no longer the lead item — the highest-impact open correctness work is now C-R8-TRANSLUCENT-MULTI-FRUSTUM.
 
 1. **Highest-impact correctness wins first.** **C-R8-TRANSLUCENT-MULTI-FRUSTUM** produces visible artifacting in nearly every multi-frustum scene (every camera height crossing a logarithmic frustum boundary). 2 sessions, bounded.
 2. **Architectural enablers second.** C-R7-RENDERER-MIGRATION-REMAINING + C-R7-SHADER-MODULE-DEDUP together unlock perf wins across the renderer fleet — mechanical pass × 9 renderers.

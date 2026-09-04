@@ -1,7 +1,7 @@
 # WebGPUContext / WebGPUSceneRenderer Decomposition Plan
 
 **Created:** 2026-04-30 (Batch 127)
-**Origin:** 2026-04-30 audit (`migration_doc/audits/2026-04-30_MAINTAINABILITY_SURVIVABILITY.md`)
+**Origin:** 2026-04-30 audit (`migration_doc/archive/audits-2026-04-30/2026-04-30_MAINTAINABILITY_SURVIVABILITY.md`, archived 2026-09-03; its counts are superseded by DX-08 and its live findings are at `ARCHITECTURE_REVIEW_2026-09-02.md` §3.11)
 
 ## Status
 

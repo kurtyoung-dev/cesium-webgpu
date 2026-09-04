@@ -1286,7 +1286,7 @@ rerun after this packer change; landing review alone cannot promote them.
 
 ### Durable project context
 
-- `FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md`
+- `archive/FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md` (archived 2026-09-03)
 - `QUEUE_2026-07-18_CAMPAIGN11.md`
 - `campaign11_planning/guides/G12-clouds-weather.md`
 - `CLOUD_LOD_RESEARCH_2026-07-05.md`

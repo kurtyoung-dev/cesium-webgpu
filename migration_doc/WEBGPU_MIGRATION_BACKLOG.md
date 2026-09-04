@@ -14,7 +14,7 @@ The body of this backlog stops at Batch 64; these are the load-bearing deltas at
 
 ## Recent activity — Batches 28-64 (2026-04-23 → 2026-04-25)
 
-A 36-batch, 3-day burst of principal-engineer-review remediation. Full per-batch detail in [REVIEW_FIX_PROGRESS.md](REVIEW_FIX_PROGRESS.md); per-issue status in [PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md](PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md). Highlights below; the full inventory of items still deferred from this work has been consolidated into [DEFERRED_WORK.md](DEFERRED_WORK.md) so future sessions have a stable pick-list.
+A 36-batch, 3-day burst of principal-engineer-review remediation. Full per-batch detail in [REVIEW_FIX_PROGRESS.md](REVIEW_FIX_PROGRESS.md); per-issue status in [PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md](archive/principal-review-2026-04-16/PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md) (archived 2026-09-03; id table at `ARCHITECTURE_REVIEW_2026-09-02.md` §5.1). Highlights below; the full inventory of items still deferred from this work has been consolidated into [DEFERRED_WORK.md](DEFERRED_WORK.md) so future sessions have a stable pick-list.
 
 ### Critical-tier wins (C-R prefix)
 

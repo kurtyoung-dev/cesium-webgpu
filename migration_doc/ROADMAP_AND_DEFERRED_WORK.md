@@ -41,7 +41,8 @@
 > `CLOUD_TAXONOMY_ROADMAP.md`, `WEATHER_RECREATION_ROADMAP.md`, `WEATHER_DATA_INGEST_ROADMAP.md`,
 > the **unshipped tail** of `ATMOSPHERE_CLOUD_IMPROVEMENT_PLAN.md`, `RESEARCH_TAKRAM_GEOSPATIAL_VISUALS.md`,
 > `VEGETATION_SYSTEM_DESIGN.md` (roadmap portion), `WATER_RENDERING_DESIGN.md` (roadmap portion),
-> `TIER5-6_EXECUTION_PLANS.md`, and `audits/2026-04-30_ARCHITECTURE_PERFORMANCE.md` (roadmap portion).
+> `TIER5-6_EXECUTION_PLANS.md`, and `archive/audits-2026-04-30/2026-04-30_ARCHITECTURE_PERFORMANCE.md`
+> (roadmap portion; archived 2026-09-03, see `ARCHITECTURE_REVIEW_2026-09-02.md`).
 > **Review-in-progress.** This is a FIRST DRAFT for maintainer review rounds. The archival of the
 > superseded docs + the README/CLAUDE.md index updates happen *after* review.
 

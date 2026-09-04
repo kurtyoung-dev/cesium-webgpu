@@ -4,7 +4,7 @@
 **Scope:** Per-feature correctness pass through the lens of Cesium's specific requirements: (a) whole-Earth scale (sub-meter to orbital), (b) orbital viewpoints with sun/moon/stars, (c) Relative-To-Eye 64-bit-emulated precision, (d) the inherently async WebGPU API
 **Companion documents:**
 - [PRINCIPAL_ENGINEER_REVIEW_2026_04_16.md](PRINCIPAL_ENGINEER_REVIEW_2026_04_16.md) — build / lifecycle / tests / type discipline
-- [PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md](PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md) — cross-cutting renderer / scene dispatch / shader parity (general)
+- [PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md](archive/principal-review-2026-04-16/PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md) — cross-cutting renderer / scene dispatch / shader parity (general); archived 2026-09-03, id table now at [`ARCHITECTURE_REVIEW_2026-09-02.md`](ARCHITECTURE_REVIEW_2026-09-02.md) §5.1
 - **This doc** — per-feature-renderer correctness at planetary scale
 
 **Methodology:** 5 parallel deep-dive agents on disjoint feature groups (Globe+sun+moon+sky+panorama / Primitives+collections / Models+tiles+splats+voxels+pointclouds / Shadows+IBL+SSR+fog+clipping+postprocess / async-lifecycle). First-hand verification of every BLOCKER/CRITICAL claim via direct grep + code read. ~95% of agent findings survived independent verification.

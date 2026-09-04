@@ -1,0 +1,528 @@
+{
+  "doc": "migration_doc/LOCAL_CHANGE_AUDIT_2026-07-31.md",
+  "items": [
+    {
+      "id": "S1-verdict",
+      "title": "§1 verdict: active tree buildable, architecture directionally sound, no performance feature removed",
+      "claim": "The uncommitted 2026-07-31 tree is buildable, the reviewed architecture is directionally sound, and the review repaired lifetime defects and hardened the benchmark without removing any feature.",
+      "status": "STALE",
+      "evidence": "The tree it judges no longer exists as a working-tree state: it landed as Batches 772-781 (`8c1fe62ff6`..`3900608bb9`, `git log fe990ab335..3900608bb9`), then 600+ further batches changed the same files. The verdict was a landing-readiness call, not an architecture finding that outlives the landing.",
+      "surviving_record": "WEBGPU_DEBUGGING_LOG.md §C11-AUDIT-2026-07-31 (line 16393) and §C11-REVIEW-2026-08-01",
+      "migrate_text": "Historical landing-readiness verdict; nothing to carry."
+    },
+    {
+      "id": "S1-perf-attribution",
+      "title": "§1 finding: evidence does not support blaming globe quadtree traversal, RTE, or the common moving-camera path; resident pair rejected on 3D Tiles readiness (C11-205)",
+      "claim": "A globe-only altitude route is near parity; the resident comparison is rejected because San Francisco 3D Tiles reach different content-ready/selected states, a backend-coupled readiness seam under C11-205, not evidence for a traversal/SSE change; Campaign 11 stays open at the measurement gate.",
+      "status": "SUPERSEDED",
+      "evidence": "C11-205 row (QUEUE_2026-07-18_CAMPAIGN11.md:2198) is now MEASUREMENT GATES GREEN, harness landed Batch 1032 `be0683c60d`; DEFERRED_WORK.md:3250-3312 (C11-205-LEDGER-EXCLUDED-FROM-CERTIFICATION) attributes the 15-vs-12 split to wall-clock request admission during untimed priming and records 6/6 attribution pairs + 6/6 causal pairs with exact ready identity (2026-08-10 artifacts). C11-168 row (:2003) now records a VALID CAUSAL DEFICIT (WebGPU CPU-p95 median 9.2025 ms vs WebGL 4.65 ms; wall-p99 23.302 vs 20.3025 ms) with root cause open; Q-143 (FIX_QUEUE:457) and R-2026-09-02-2 own the residency-stall / pick-readback investigation.",
+      "surviving_record": "QUEUE_2026-07-18_CAMPAIGN11.md rows C11-168 and C11-205; DEFERRED_WORK.md C11-205-LEDGER-EXCLUDED-FROM-CERTIFICATION; FIX_QUEUE_2026-08-27_AUDIT_FINDINGS.md Q-143",
+      "migrate_text": "Superseded by the C11-168 / C11-205 rows and the 2026-08-10 six-pair certification; the resident seam was attributed to harness route-prime admission, not traversal."
+    },
+    {
+      "id": "S2-repo-truth",
+      "title": "§2 repository truth (HEAD fe990ab335 / Batch 771, upstream 2aa87f5c0e, merge base 7984bb31d8, 1,066 fork-only / 146 upstream-only commits, 2,724-file delta, 110→130 dirty, 31→40 untracked)",
+      "claim": "Exact branch, upstream-divergence and dirty-tree counts at the audit boundary.",
+      "status": "STALE",
+      "evidence": "All numbers are a snapshot at Batch 771. Current tip is Batch 1378 (`aa5aabb85b`), upstream was merged at v1.144 twice since (`65a194d24e` 2026-08-01; Batch 958 `06bc894d30` 2026-08-08), and the dirty tree landed as Batches 772-781.",
+      "surviving_record": "none (git history)",
+      "migrate_text": "Historical snapshot; no number survives."
+    },
+    {
+      "id": "S3-staged",
+      "title": "§3 staged-change audit: 0 staged; stage by campaign owner, never git add -A",
+      "claim": "No staged changes at intake; future commits must be staged by campaign owner rather than by directory.",
+      "status": "SUPERSEDED",
+      "evidence": "The tree landed as ten owner-split batches (772-781). The standing landing procedure is now WORKER_ISOLATION_AND_BRANCH_HANDOFF.md (squash-only landings from clones, empty-index rule in memory project_state_2026_08_31_git_guardrails.md).",
+      "surviving_record": "WORKER_ISOLATION_AND_BRANCH_HANDOFF.md",
+      "migrate_text": "Process note superseded by the branch-handoff doc."
+    },
+    {
+      "id": "S4-batches-769-771",
+      "title": "§4 review of Batches 769/770/771 (tides fix, eclipse S2 138/138, Phase-F seed) and the '403 publication blocked' text is historical",
+      "claim": "Batches 769-771 review results; documentation saying C13 publication is blocked by HTTP 403 or that Batch 770 is pending landing is historical.",
+      "status": "STALE",
+      "evidence": "Commit-review rows for three batches ~600 batches back; `git log --oneline -1 fe990ab335` confirms Batch 771 is the seed only. The 403 remark was already flagged historical in the document itself.",
+      "surviving_record": "none (git history)",
+      "migrate_text": "Historical commit review; nothing to carry."
+    },
+    {
+      "id": "S4-port-C11-90",
+      "title": "§4 upstream-port finding: model topology / primitive-mode parity under C11-90",
+      "claim": "Model primitive-mode parity is a high-value upstream-port item.",
+      "status": "RESOLVED",
+      "evidence": "`packages/engine/Source/Renderer/WebGPU/WebGPUModelTopology.ts` exists as the single topology home; DEFERRED_WORK.md:9838-9855 marks residual items 2/4/5 SHIPPED (C11-90); C11-90 row (QUEUE C11:1762, :2469) is IMPLEMENTED — BROWSER GATE OPEN with the fail-closed primitive-restart harness landed (Batches 1023, 1088). See item S6-7 for the browser gate and S4-port-FAR for the Generic Primitive residual.",
+      "surviving_record": "QUEUE_2026-07-18_CAMPAIGN11.md row C11-90; DEFERRED_WORK.md GLTF-PRIMITIVE-MODE-RESIDUALS",
+      "migrate_text": "Resolved on the Model path by C11-90 (`WebGPUModelTopology.ts`); browser gate tracked by the row."
+    },
+    {
+      "id": "S4-port-edge-index",
+      "title": "§4 upstream-port finding: typed edge-index representation as an atomic loader/decoder/emitter port under C11-137",
+      "claim": "Upstream's typed edge-index change must be ported atomically across loader/decoder/emitter.",
+      "status": "RESOLVED",
+      "evidence": "The upstream change (PR #13643 `edge_visibility_jsheap_fixes`, `25741aacb2`) is in the fork via the v1.144 merge `65a194d24e` (2026-08-01, 191 commits) and the Batch 958 sync. No queue row, DEFERRED_WORK entry or FIX_QUEUE row tracks a WebGPU-side edge-index port; grep for 'edge-index'/'typed edge' in the C11 queue returns nothing. If the new review wants to verify the WebGPU edge emitter consumes the typed representation, that is a fresh lead, not a carried finding.",
+      "surviving_record": "v1.144 merge `65a194d24e` / Batch 958 `06bc894d30`; C11-137 exit-gate row",
+      "migrate_text": "Merged with v1.144; no open row."
+    },
+    {
+      "id": "S4-port-defaultColor-alignedAxis",
+      "title": "§4 upstream-port finding: Texture.defaultColor and billboard alignedAxis changes under C11-137",
+      "claim": "Upstream Texture.defaultColor and Billboard alignedAxis changes are pending port.",
+      "status": "RESOLVED",
+      "evidence": "`Texture.defaultColor = Color.WHITE` at `packages/engine/Source/Renderer/Texture.js:1038` (restored `18bf142818`, 2026-07-06); the alignedAxis normalization PR (`17c1d53463`, `4c6792d392`) is in Billboard.js:177-178 via the v1.144 merge `65a194d24e`.",
+      "surviving_record": "v1.144 merge `65a194d24e`",
+      "migrate_text": "Both upstream changes are in the tree."
+    },
+    {
+      "id": "S4-port-FAR-generic-primitive",
+      "title": "§4 upstream-port finding: Generic Primitive's remaining legacy CPU realization under FAR-201 / FAR-209 / FAR-210",
+      "claim": "Generic Primitive still realizes geometry through the legacy CPU/WebGL-shaped path; ownership belongs to FAR-201 (Primitive geometry ownership pilot), FAR-209 (ResourcePlan) and FAR-210 (hot-path preparation budget).",
+      "status": "STILL-VALID",
+      "evidence": "FORK_ARCHITECTURE_REMEDIATION_LEDGER_2026-07-13.json still reads FAR-201, FAR-209, FAR-210 `state: planned` (checkpoint 2026-07-15). `WebGPUPrimitiveCommands.ts:958-985` `mapCesiumPrimitiveTypeToWebGPU` still returns `line-strip` for LINE_LOOP without closure, `triangle-list` for TRIANGLE_FAN, and no `stripIndexFormat`; DEFERRED_WORK.md:9842 item 6 records 'Generic Primitive duplicates the topology residual — STILL OPEN after C11-90'. C11-202 (QUEUE C11:2195, PARTIAL) covers only the Model path.",
+      "surviving_record": "FAR ledger FAR-201/209/210 (planned); DEFERRED_WORK.md GLTF-PRIMITIVE-MODE-RESIDUALS item 6; C11-202 for the Model-path counterpart",
+      "migrate_text": "Generic Primitive is the last renderer family whose WebGPU realization is derived from the legacy CPU/WebGL-shaped path. `WebGPUPrimitiveCommands.ts:958-985` (`mapCesiumPrimitiveTypeToWebGPU`) still maps LINE_LOOP to an unclosed line-strip, TRIANGLE_FAN to triangle-list, and emits no `stripIndexFormat`, so the same topology axis the Model path closed under C11-90 (`WebGPUModelTopology.ts`) is open here; DEFERRED_WORK GLTF-PRIMITIVE-MODE-RESIDUALS item 6 records it STILL OPEN. FAR-201 (Primitive geometry ownership pilot), FAR-209 (incremental ResourcePlan) and FAR-210 (hot-path preparation budget) remain `planned` in the FAR ledger at its 2026-07-15 checkpoint. The topology home was written backend-neutral so the generic path can adopt it without a rewrite; adopting it is the concrete next slice."
+    },
+    {
+      "id": "S4-packages-packages",
+      "title": "§4 removal of the tracked generated-file accident packages/packages/engine/Source/Shaders/WebGPU/chunks/CsmBuiltins.js",
+      "claim": "An 86-byte empty placeholder under a duplicated `packages/packages` root was removed.",
+      "status": "RESOLVED",
+      "evidence": "`ls packages/packages` → no such directory; `git log --all -- packages/packages/.../CsmBuiltins.js` shows its last touch at Batch 772 `8c1fe62ff6` (removal landed).",
+      "surviving_record": "Batch 772 `8c1fe62ff6`",
+      "migrate_text": "Removed at Batch 772."
+    },
+    {
+      "id": "S5-worktree-table",
+      "title": "§5 registered-worktree dispositions (agent-a06f tides, a480 S6, a578 readiness harness, a68f alias detector, a6de S5 + SVS oracle, aa59 environment clear, unregistered a4a8)",
+      "claim": "Seven Claude worktrees hold superseded or unique content that must be extracted or preserved per-lane, not landed wholesale.",
+      "status": "RESOLVED",
+      "evidence": "`git worktree list` shows only `F:/Dev/GH/cesium-webgpu afdf5f4909 [main]`; `git branch -a` has no agent-* branches. DEFERRED_WORK.md:12515 'Parked-worktree closure record — 2026-08-01 (Batch 802)' records each extraction: (1) pipeline-key alias detector → `Tools/visual-regression/pipeline-key-aliasing.spec.mjs` + `probe-pipeline-key-aliasing.mjs` (8 marker sites fixed); (2) globe-pipeline readiness harness extracted with the VARIANT_KEY_RE correction (`probe-globe-pipeline-readiness.mjs`, `globe-pipeline-readiness.spec.mjs`); (3) environment clear (NEW-WEBGPU-CANVAS-BACKGROUND-COLOR-PARITY) extracted with the null-vs-undefined absence contract hardened; (4) S5 SVS oracle → `Tools/visual-regression/eclipse-globe-svs-oracle.spec.mjs`; S5/S6 implementations superseded by Batch 770.",
+      "surviving_record": "DEFERRED_WORK.md 'Parked-worktree closure record — 2026-08-01 (Batch 802)' (line 12515)",
+      "migrate_text": "Worktree state is historical; the Batch 802 closure record owns every extraction."
+    },
+    {
+      "id": "S5-C11-19-semantic-keys",
+      "title": "§5 recommendation: reject the caller-name pipeline-key workaround and solve semantic keys centrally under C11-19",
+      "claim": "Pipeline-key aliasing must be solved centrally, not by per-caller name markers.",
+      "status": "SUPERSEDED",
+      "evidence": "Batch 825 folded shader-module identity into `WebGPURenderPipelineCache.generateCacheKey` (CLAUDE.md 'Pipeline-key aliasing is handled STRUCTURALLY'; `stats.wrongModuleHits` canary; Edge-verified Batch 828, 3,729 calls / 0 collisions). C11-19 row (QUEUE C11:2448) is LANDED-PARTIAL Batch 1114 for the globe descriptor-name axes; DEFERRED_WORK.md:14368 NEW-WEBGPU-DESCRIPTOR-NAME-AXIS-FLEET-AUDIT holds the fleet remainder as readability, not correctness.",
+      "surviving_record": "CLAUDE.md pipeline-key section (Batch 825); QUEUE_2026-07-18_CAMPAIGN11.md row C11-19; DEFERRED_WORK.md NEW-WEBGPU-DESCRIPTOR-NAME-AXIS-FLEET-AUDIT",
+      "migrate_text": "Solved structurally at Batch 825; the C11-19 row and the fleet-audit entry own the residue."
+    },
+    {
+      "id": "S5-no-main-edit-rule",
+      "title": "§5 rule: do not edit main merely to describe in-flight worktree content",
+      "claim": "Documentation edits describing in-flight worktree content conflict with several worktrees at once.",
+      "status": "STALE",
+      "evidence": "No worktrees exist; workers now use clones (WORKER_ISOLATION_AND_BRANCH_HANDOFF.md) and the seat lands docs with the lane.",
+      "surviving_record": "WORKER_ISOLATION_AND_BRANCH_HANDOFF.md",
+      "migrate_text": "Premise (registered worktrees) no longer holds."
+    },
+    {
+      "id": "S6.1-collection-teardown",
+      "title": "§6.1 PointPrimitiveCollection and LabelCollection retain and deterministically destroy their WebGPU feature-renderer resources exactly once",
+      "claim": "Collection-scoped WebGPU resources are destroyed by the owning collection.",
+      "status": "RESOLVED",
+      "evidence": "Landed Batch 778 `0685e4f94f`. `PointPrimitiveCollection.js:882-895` `destroy()` calls `this._featureRenderer.destroy(this)`; `LabelCollection.js:1052-1064` does the same after destroying its glyph/background billboard collections.",
+      "surviving_record": "Batch 778; C11-20 row (PARTIAL)",
+      "migrate_text": "Landed Batch 778 (`PointPrimitiveCollection.js:882-895`, `LabelCollection.js:1052-1064`)."
+    },
+    {
+      "id": "S6.1-model-shadow-ub-device",
+      "title": "§6.1 model shadow uniform buffer records its creating device and is recreated after destruction or device change",
+      "claim": "A stale live shadow-cast buffer is destroyed before replacement and the buffer is keyed to its device.",
+      "status": "RESOLVED",
+      "evidence": "Landed Batch 775 `faa3ee6f65`. `WebGPUModelRenderer.ts:903-917`: recreate when `!host.shadowCastUB || isDestroyed || host.shadowCastDevice !== device`, destroying the stale live buffer first and stamping `host.shadowCastDevice = device`.",
+      "surviving_record": "Batch 775; C11-184 row",
+      "migrate_text": "Landed Batch 775 (`WebGPUModelRenderer.ts:903-917`)."
+    },
+    {
+      "id": "S6.1-csm-terrain-globals",
+      "title": "§6.1/6.2 CSM renderer owns and destroys its terrain-global uniform buffer and raw cascade buffers; terrain-global upload is one renderer-owned 16-byte buffer via direct queue.writeBuffer",
+      "claim": "CSM terrain globals are renderer-owned and allocation-free per command.",
+      "status": "RESOLVED",
+      "evidence": "Landed Batch 775. `WebGPUCSMRenderer.ts:335-336` owns `_terrainGlobalsUB`/`_terrainGlobalsData`, created at :511-514 (`CSM_TerrainGlobals`), written with `queue.writeBuffer` at :780, destroyed at :1078-1080.",
+      "surviving_record": "Batch 775; C11-184 row",
+      "migrate_text": "Landed Batch 775 (`WebGPUCSMRenderer.ts:335-336, 511-514, 780, 1078-1080`)."
+    },
+    {
+      "id": "S6.1-C11-20-partial",
+      "title": "§6.1 C11-20 is PARTIAL: nested model/tileset/clipping caches and device-loss teardown still need the systematic audit",
+      "claim": "Point/Label normal teardown is covered; the nested-cache and device-loss walk remains open.",
+      "status": "STILL-VALID",
+      "evidence": "C11-20 row (QUEUE C11:1639 and :2452) reads 'W3 — PARTIAL; LANDED (Batch 778)... nested/device-loss walk open'. No later batch names C11-20 (`git log --grep C11-20` returns only Batch 778). C11-194 (row :2187, Batch 819) independently made MODEL teardown detach-then-drain nested feature/morph/metadata/edge/instancing owners, but the C11-20 row was never reconciled to that and tileset/clipping/replacement-device invalidation is still recorded open.",
+      "surviving_record": "QUEUE_2026-07-18_CAMPAIGN11.md row C11-20 (PARTIAL, W3)",
+      "migrate_text": "C11-20 (C-R12-PER-OBJECT-CACHES) remains PARTIAL: ordinary Point/Label collection teardown is fixed (`PointPrimitiveCollection.js:882-895`, `LabelCollection.js:1052-1064`, Batch 778), while the systematic walk of nested model/tileset/clipping caches and replacement-device invalidation is still open under the row. C11-194 (Batch 819) separately made Model-path teardown detach-then-drain its nested owners (`WebGPUModelPipelineCache.ts`, row text at QUEUE C11:2187), so the review should reconcile C11-20's remaining scope against C11-194 rather than re-audit the model half; tileset and clipping-plane caches and the device-loss path are the unreconciled remainder."
+    },
+    {
+      "id": "S6.2-shadow-corrections",
+      "title": "§6.2 shadow correctness corrections (frameState at init, per-frame receive refresh, terrain globals for both layouts, conservative bounds fallback, camera high/low reuse, model-node pack reuse, device-recovery guard)",
+      "claim": "Eight shadow-path corrections improve correctness and remove repeated matrix inverses without changing shadow visibility policy.",
+      "status": "RESOLVED",
+      "evidence": "Landed Batches 775/780 (`faa3ee6f65`, `5748e7ad1d`); the C11-184 status row (QUEUE C11:2533) restates each correction verbatim ('reused existing camera high/low data instead of repeating matrix inverses, made terrain CSM globals renderer-owned/allocation-free, covered both terrain layouts, conservatively retained stale/invalid command bounds').",
+      "surviving_record": "QUEUE_2026-07-18_CAMPAIGN11.md row C11-184 status cell",
+      "migrate_text": "Landed Batches 775/780; the C11-184 row is the record."
+    },
+    {
+      "id": "S6.2-C11-184-open",
+      "title": "§6.2 C11-184 remains IN PROGRESS until focused browser execution, moving shadow pixels, Earth-scale motion, toggle transitions and settled upload/allocation evidence are green",
+      "claim": "Shadow architecture is landed but not browser-certified.",
+      "status": "PARTIAL",
+      "evidence": "C11-184 row (QUEUE C11:2533) still reads IN PROGRESS. Discharged since: the globe-RECEIVE leg at pixels (Batches 845/849/850, `probe-sun-shadow-gate.mjs`, WebGPU/WebGL drop ratio exactly 1.00, 58,833 darkened px) and the WebGPU sun-shadow regression (defect 2 of §11; `Scene.js:1138` now keeps `cascadesEnabled` default true on both backends); strip-index-format topology completion shipped via C11-90 (DEFERRED_WORK.md:9840). Still open per the row: focused Edge/Karma, moving shadow pixels on models, Earth-scale motion, toggle transitions, settled allocation/upload evidence.",
+      "surviving_record": "QUEUE_2026-07-18_CAMPAIGN11.md row C11-184",
+      "migrate_text": "C11-184 (native model/globe shadow correctness) is landed (Batches 775/780) but IN PROGRESS: the globe sun-shadow receive leg is discharged at pixels (Batch 850, WebGPU/WebGL darkening ratio 1.00) and the shadow-cast topology/strip-format axis closed under C11-90 (`WebGPUModelTopology.ts`, `WebGPUCSMCastPass.ts`), but moving model-shadow pixels, Earth-scale motion, shadow toggle transitions, and settled per-frame allocation/upload evidence have never executed in a browser lane. The C11-133 launcher fix (Batch 1018) removed the Karma blocker the row was written against, so the remaining gates are runnable now."
+    },
+    {
+      "id": "S6.3-C11-187-hiz-fallback",
+      "title": "§6.3 SOABoundingSphereLayout accepts only finite, positive, exactly-binary32-representable spheres; everything else passes through conservatively in original order (C11-187)",
+      "claim": "The narrow conservative Hi-Z fallback is implemented; the row stays IN PROGRESS until a focused Karma result exists.",
+      "status": "PARTIAL",
+      "evidence": "Implementation landed Batch 778 (`SOABoundingSphereLayout.js:187-198`, `Math.fround` exactness checks with conservative pass-through commentary). C11-187 row (QUEUE C11:2129, :2536) still reads 'IN PROGRESS / FOCUSED RERUN OPEN'; `git log --grep C11-187` shows no batch after 778. The Karma-launcher blocker it cites was discharged by C11-133 COMPLETE Batch 1018 (2026-08-11), so the rerun is unblocked but unexecuted.",
+      "surviving_record": "QUEUE_2026-07-18_CAMPAIGN11.md row C11-187",
+      "migrate_text": "C11-187's conservative SOA pass-through is landed (`Scene/SOABoundingSphereLayout.js:187-198`, Batch 778) and its only recorded remainder is a focused Edge/Karma rerun that was blocked by the launcher defect C11-133 fixed at Batch 1018; no rerun has been recorded since, so the row is closable by one executor run. The row explicitly does not activate or certify Hi-Z; `C11-207` owns lazy allocation/activation and `C11-204` owns identity/RTE/placement (QUEUE C11:2220)."
+    },
+    {
+      "id": "S6.4-effects-bindgroup-scratch",
+      "title": "§6.4 WebGPUEffectsBindGroup.update reuses its scratch Uint32Array view instead of allocating per update",
+      "claim": "Per-update typed-array allocation removed from the effects bind-group hot path.",
+      "status": "RESOLVED",
+      "evidence": "`WebGPUEffectsBindGroup.js:1056-1057` module-level `_scratchEffectsData` / `_scratchEffectsBits`; reused at :1781 and :1991-1993. The §11 defect-4 fix (Batch 780) added the owned 20-word shadow-receive prefix sidecar at :1061-1094.",
+      "surviving_record": "Batch 776/780; WEBGPU_DEBUGGING_LOG.md §C11-REVIEW-2026-08-01 defect 4",
+      "migrate_text": "Landed (`WebGPUEffectsBindGroup.js:1056-1057, 1781, 1991`)."
+    },
+    {
+      "id": "S6.4-feature-preservation",
+      "title": "§6.4 no evidence supports removing passes, effects, culling, shadows, clouds or post-processing for the metric",
+      "claim": "Feature removal would violate the preservation rule and not address the measured gap.",
+      "status": "SUPERSEDED",
+      "evidence": "CLAUDE.md Active Remediation block carries the standing rule ('Performance work must not remove, default-disable, bypass, or visually degrade a feature merely to improve a metric') and CAMPAIGN_STATE.md mirrors it.",
+      "surviving_record": "CLAUDE.md / CAMPAIGN_STATE.md §1",
+      "migrate_text": "Standing rule lives in CLAUDE.md."
+    },
+    {
+      "id": "S6.5-C11-185",
+      "title": "§6.5 visibility-triggered model preparation: native Model prep ran before PVS; C11-185 slices 1-3 (five-plane admission, custom-shader skip, DataView removal, demand-realized root RTE block) with attribution 1,088 frames / 53,821 = 20,384 + 1,597 + 31,840 / 21,981 admitted = 21,981 packs",
+      "claim": "Off-camera standalone models packed state and emitted commands before culling; the landed slices avoid that work exactly, without a timing claim.",
+      "status": "PARTIAL",
+      "evidence": "Implementation landed Batches 774/780; `Renderer/WebGPU/WebGPUModelPreparationAdmission.ts:140-267` holds the `PreparedFivePlaneCullingVolume` cached once per Scene/frame. C11-185 row (QUEUE C11:2127, :2534) carries every attribution number verbatim ('53,821 candidates = 20,384 view + 1,597 conservative tile-owned + 31,840 frustum rejects; 21,981 admitted runs... exact conservation over 1,088 frames') and still reads TIMING CERTIFICATION OPEN; the causal deficit moved to C11-168.",
+      "surviving_record": "QUEUE_2026-07-18_CAMPAIGN11.md row C11-185 (numbers) and C11-168 (timing)",
+      "migrate_text": "C11-185 slices 1-3 are landed (`WebGPUModelPreparationAdmission.ts:140-267` five-plane snapshot; Batches 774/780) and the API-attribution route proves exact work conservation (53,821 candidates → 20,384 view + 1,597 conservative tile-owned + 31,840 frustum rejects over 1,088 frames), but no timing credit has been earned: the six-pair causal certification (Batch 1032) still shows WebGPU CPU-p95 9.2 ms vs WebGL 4.65 ms with root cause open under C11-168. The remaining C11-185 work is attribution of that deficit, not further admission narrowing; every 2D/stereo/shadow/capture/tile/pick case deliberately keeps the old path."
+    },
+    {
+      "id": "S6.6-build-integration",
+      "title": "§6.6 build-integration corrections: WebGPUShadowCastBindGroupCache.js default export, honest ShadowMode/globe-translucency typing, Matrix3 inverse-view-rotation type",
+      "claim": "The canonical gulp build uncovered index-generation and typing errors `tsc --noEmit` missed; both builds are now green.",
+      "status": "RESOLVED",
+      "evidence": "Landed Batch 772; `WebGPUShadowCastBindGroupCache.js:196` `export default {`. Gates at `3900608bb9` recorded green (README.md:54).",
+      "surviving_record": "Batch 772 `8c1fe62ff6`",
+      "migrate_text": "Landed Batch 772."
+    },
+    {
+      "id": "S6.6-S10-generated-barrel-trap",
+      "title": "§6.6/§10 lesson: rerun the canonical build after any public-source addition because the generated engine index exports every module's default and its failures are invisible to tsc --noEmit",
+      "claim": "A new file under packages/engine/Source without a default export breaks the generated barrel at build time only.",
+      "status": "STILL-VALID",
+      "evidence": "The trap recurred at Batches 1233 and 1274 (memory feedback_build_before_landing_new_source_files.md). No tracked document carries it: grep for 'barrel'/'generated index'/'default export' in ORCHESTRATION_HANDBOOK.md and WORKER_ISOLATION_AND_BRANCH_HANDOFF.md returns nothing; CLAUDE.md mentions `createCesiumJs(variant)` only in the variant-entry context.",
+      "surviving_record": "none in a tracked doc (seat memory feedback_build_before_landing_new_source_files.md only)",
+      "migrate_text": "The generated engine index (`createCesiumJs` in `scripts/build.js`) re-exports the default export of every module under `packages/engine/Source`, so a new source file that exports only named symbols compiles under `tsc --noEmit` and then breaks `npx gulp build`; this bit the 2026-07-31 landing (`WebGPUShadowCastBindGroupCache.js`, Batch 772) and again at Batches 1233 and 1274. This is a DRIFT between the type gate and the build gate that no tracked document records; either the index generator should tolerate named-export-only leaves or the landing checklist must require a full build for any batch adding a `packages/engine/Source` file."
+    },
+    {
+      "id": "S6.7-C11-90-topology",
+      "title": "§6.7 model primitive topology audit: LINES/LINE_LOOP/LINE_STRIP/TRIANGLE_STRIP/TRIANGLE_FAN collapse to triangle-list; fix must be atomic (cached realization, loop closure, fan expansion, uint8 restart upcast only for restart-capable modes, topology + stripIndexFormat in every pipeline key, conversion in preparation)",
+      "claim": "C11-90 is a real P1 parity tail with a specified atomic architecture.",
+      "status": "RESOLVED",
+      "evidence": "DEFERRED_WORK.md:9838-9855 'Required architecture — IMPLEMENTED for the Model path (C11-90)': exhaustive seven-mode table, `realizeModelPrimitiveTopology` once per primitive from `ensurePrimitiveCache`, `modelPrimitiveState` as the only GPUPrimitiveState builder, `indexSourceComponentBytes` for the 0x00FF→0xFFFF upcast limited to the four restart-capable modes read from `getMeshPrimitives.js`, shadow keys via `modelTopologyAxisToken`. Browser gate: CAMPAIGN_PORTFOLIO_QUEUE.md:310 ('run one corrected both-backend primitive-restart recovery on the frozen build'), harness Batches 1023/1088. Generic Primitive residual is item S4-port-FAR-generic-primitive.",
+      "surviving_record": "DEFERRED_WORK.md GLTF-PRIMITIVE-MODE-RESIDUALS; QUEUE_2026-07-18_CAMPAIGN11.md row C11-90; CAMPAIGN_PORTFOLIO_QUEUE.md frozen-build order",
+      "migrate_text": "Implemented for the Model path in `WebGPUModelTopology.ts`; the C11-90 row owns the frozen-build browser gate."
+    },
+    {
+      "id": "S6.8-C11-192",
+      "title": "§6.8 C11-192 terrain shadow-cast UBs realized/uploaded only when a shadow pass demands them",
+      "claim": "Per-tile shadow-cast uniform buffers are demand-realized; the first ON frame is complete.",
+      "status": "RESOLVED",
+      "evidence": "Landed Batch 775. `WebGPUGlobeSurfaceTileBuffers.ts:14` `ensureTerrainShadowCastUniformBuffer` lazily creates, :139-150 `retireTerrainShadowCastUniformBuffer` releases with counters. Row (QUEUE C11:2185): STATIC+OFF-RUNTIME GREEN / ON-PIXEL GATE OPEN.",
+      "surviving_record": "QUEUE_2026-07-18_CAMPAIGN11.md row C11-192",
+      "migrate_text": "Landed Batch 775 (`WebGPUGlobeSurfaceTileBuffers.ts:14, 139-150`); ON-pixel gate tracked by the row."
+    },
+    {
+      "id": "S6.8-C11-199",
+      "title": "§6.8 C11-199 one generation-owned promise per pending model pipeline descriptor",
+      "claim": "Stale async pipeline completion cannot replace newer state.",
+      "status": "RESOLVED",
+      "evidence": "Landed Batch 774. `WebGPUModelRenderer.ts:676` `_pendingColorPipelines: Map<string|number, Promise<GPURenderPipeline>>`, consulted at :8878 and :8945. Row (QUEUE C11:2192): STATIC VERIFIED / FOCUSED BROWSER OPEN.",
+      "surviving_record": "QUEUE_2026-07-18_CAMPAIGN11.md row C11-199",
+      "migrate_text": "Landed Batch 774 (`WebGPUModelRenderer.ts:676`)."
+    },
+    {
+      "id": "S6.8-C11-200",
+      "title": "§6.8 C11-200 equality-gated manual tonemap exposure writes",
+      "claim": "Fixed exposure writes are dirty-gated; auto-exposure stays dynamic.",
+      "status": "RESOLVED",
+      "evidence": "Landed Batch 776. `WebGPUPostProcessPipeline.ts:817` `if (this._tonemapUploadedExposure === normalizedExposure) return;` with an explicit bypass documented at :822 for the auto path.",
+      "surviving_record": "QUEUE_2026-07-18_CAMPAIGN11.md row C11-200",
+      "migrate_text": "Landed Batch 776 (`WebGPUPostProcessPipeline.ts:817`)."
+    },
+    {
+      "id": "S6.8-C11-201",
+      "title": "§6.8 C11-201 globe-depth target publishes a stable cached view; bind-group count unchanged at 389 so only the view-wrapper allocation is credited",
+      "claim": "View-identity churn removed; no bind-group or timing win on this workload.",
+      "status": "RESOLVED",
+      "evidence": "Landed Batches 776/777. `WebGPUGlobeDepth.ts:229-239` `globeDepthTextureView` is owned by the render target for the target's lifetime. Row (QUEUE C11:2194) records ALLOCATION-ONLY CREDIT and :1414 lists C11-201 as an administrative close candidate.",
+      "surviving_record": "QUEUE_2026-07-18_CAMPAIGN11.md row C11-201",
+      "migrate_text": "Landed (`WebGPUGlobeDepth.ts:229-239`); administrative close candidate."
+    },
+    {
+      "id": "S6.8-C11-211",
+      "title": "§6.8 C11-211 update every runtime-node transform, then the joint palette once, then primitives",
+      "claim": "Removes an inherited cost approaching runtime-nodes × skinned-nodes × joints and fixes ordering.",
+      "status": "RESOLVED",
+      "evidence": "Landed Batch 774. `ModelSceneGraph.js:545-565` documents the once-per-node multiplication and calls `updateJointMatrices()` once after the node walk. Row (QUEUE C11:2204): ANIMATED BROWSER GATE OPEN.",
+      "surviving_record": "QUEUE_2026-07-18_CAMPAIGN11.md row C11-211",
+      "migrate_text": "Landed Batch 774 (`ModelSceneGraph.js:545-565`); animated pixel gate tracked by the row."
+    },
+    {
+      "id": "S6.8-C11-193-allocation-slice",
+      "title": "§6.8 C11-193 narrow allocation slice: tile models borrow the tileset-owned environment manager at construction; standalone models keep a private one",
+      "claim": "The discarded per-tile manager allocation is removed and model destruction cannot destroy the borrowed tileset resource.",
+      "status": "RESOLVED",
+      "evidence": "Landed Batch 776. `Model.js:179` documents `options.environmentMapManager` as borrow-without-ownership, :433-439 branch on it; `Model3DTileContent.js:277-279` reconciles against `tileset.environmentMapManager`. Broader C11-193 A/B/C landed `b20234a16b` (2026-08-12) and the row (QUEUE C11:2186) remains PARTIAL for moving attribution / broader recovery (see S9-3).",
+      "surviving_record": "QUEUE_2026-07-18_CAMPAIGN11.md row C11-193",
+      "migrate_text": "Landed Batch 776 (`Model.js:433-439`, `Model3DTileContent.js:277-279`)."
+    },
+    {
+      "id": "S6.8-C11-194-lifetime-slice",
+      "title": "§6.8 C11-194 narrow lifetime slice: destroy the cache-owned default property texture with the model pipeline cache; device-generation sharing of immutable defaults remains open",
+      "claim": "The per-cache default property texture is destroyed with its cache; sharing across caches is separate work.",
+      "status": "RESOLVED",
+      "evidence": "Superseded by the stronger fix: `WebGPUModelPipelineCache.ts:2458-2460` now takes `_defaultPropertyTexture` from a pooled `modelDeviceResources` keyed by `(GPUDevice, resourceGeneration)` (C11-194 recovery slice, Batch 819; row QUEUE C11:2187). The row remains PARTIAL for higher-level texture re-upload after a dropped compatibility handle, nested clipping tuple recovery, real replacement-device evidence, multi-context arena partitioning, and pick-demand realization.",
+      "surviving_record": "QUEUE_2026-07-18_CAMPAIGN11.md row C11-194",
+      "migrate_text": "Superseded by device-generation pooling at Batch 819 (`WebGPUModelPipelineCache.ts:2458-2460`)."
+    },
+    {
+      "id": "S6.8-browser-gates",
+      "title": "§6.8 animated model pixels, shadow-ON pixels and the stable-depth attribution rerun remain browser-owned gates",
+      "claim": "Implementation presence is not a pass for these three browser gates.",
+      "status": "SUPERSEDED",
+      "evidence": "Each gate is carried on its own row: animated pixels on C11-211 (QUEUE C11:2204), shadow-ON pixels on C11-192 (:2185) and C11-184 (:2533), the stable-depth attribution on C11-201 (:2194, MOVING ATTRIBUTION GREEN).",
+      "surviving_record": "QUEUE_2026-07-18_CAMPAIGN11.md rows C11-184/192/201/211",
+      "migrate_text": "Tracked per row."
+    },
+    {
+      "id": "S7-green-evidence",
+      "title": "§7 green evidence at the boundary (tsc, package tsc, gulp build, lint/prettier, 45/45 performance contracts, 138/138 eclipse contracts, diff --check, 28 WGSL wrappers, 20 specs in SpecList)",
+      "claim": "Machine gates green for the uncommitted tree.",
+      "status": "STALE",
+      "evidence": "Snapshot of an uncommitted tree; the landing tip `3900608bb9` recorded tsc clean / build green / Node contracts 195/195 (README.md:54, WEBGPU_DEBUGGING_LOG §C11-REVIEW-2026-08-01), and hundreds of batches have run since.",
+      "surviving_record": "WEBGPU_DEBUGGING_LOG.md §C11-REVIEW-2026-08-01 gates paragraph",
+      "migrate_text": "Historical gate snapshot."
+    },
+    {
+      "id": "S7-karma-blocker",
+      "title": "§7 unavailable evidence: the focused EdgeHeadlessCI Karma command reached the launcher, executed no tests and timed out (harness/capture blocker)",
+      "claim": "Focused Karma could not execute in the available Edge launcher.",
+      "status": "RESOLVED",
+      "evidence": "C11-133 'Karma launcher completion truth / Edge profile cleanup' is COMPLETE — IMPLEMENTED / VERIFIED / LANDED Batch 1018 (2026-08-11) (QUEUE C11:1871, :2484); focused Edge/Karma suites have executed since (e.g. C11-60 cloud cache 3/3 with 17,876 skipped, Batch 1022).",
+      "surviving_record": "QUEUE_2026-07-18_CAMPAIGN11.md row C11-133",
+      "migrate_text": "Launcher fixed at Batch 1018; the rows that cite this blocker (C11-184, C11-187) can now run."
+    },
+    {
+      "id": "S8.1-globe-control",
+      "title": "§8.1 valid globe-only control: WebGL 1,096 frames CPU avg 4.816 / p95 9.300 / p99 12.600 ms, FPS 54.78, 1% low 42.33, wall p99 23.625; WebGPU 1,118 frames 5.123 / 9.315 / 10.700 ms, 55.88, 47.85, 20.900 (WebGPU avg CPU +6.4%)",
+      "claim": "One globe-only pair rules against a general globe/RTE/quadtree collapse; not a six-pair certification.",
+      "status": "SUPERSEDED",
+      "evidence": "C11-168 row (QUEUE C11:2516) records this pair as 'A 2026-07-31 globe-only control passes near parity' and then the Batch 1032 six-pair certification (row :2003: WebGPU CPU-p95 median 9.2025 ms vs WebGL 4.65 ms, wall-p99 23.302 vs 20.3025 ms, navigation-to-stable 52,099 vs 48,117 ms; GPU timestamps disabled). The artifact `Tools/visual-regression/output/performance/campaign11-altitude-control-2026-07-31.json` still exists (gitignored).",
+      "surviving_record": "QUEUE_2026-07-18_CAMPAIGN11.md row C11-168",
+      "migrate_text": "Superseded by the C11-168 six-pair certification at Batch 1032."
+    },
+    {
+      "id": "S8.2-resident-route",
+      "title": "§8.2 resident representative route: 600 frames, zero terrain work, exact terrain identity, rejected on SF 3D Tiles selection (710 observations / max 15 WebGL vs 571 / 12 WebGPU); backend-dependent seam at content readiness and request cancellation",
+      "claim": "The exact-identity resident pair fails comparability on 3D Tiles readiness; timings in a rejected pair are not a claim.",
+      "status": "SUPERSEDED",
+      "evidence": "C11-205 row (QUEUE C11:2198) and its §1.27 narrative (:1279-1297) carry the 710/15 vs 571/12 numbers; DEFERRED_WORK.md:3250-3312 records the 2026-08-10 resolution: the 15-vs-12 request split is wall-clock request admission during untimed route priming, and the corrected companion artifacts (`c11-205-attribution-phase-prime-fixed-2026-08-10.json`, `c11-205-causal-phase-prime-fixed-2026-08-10.json`) pass 6/6 pairs with exact ready identity. Harness landed Batch 1032.",
+      "surviving_record": "DEFERRED_WORK.md C11-205-LEDGER-EXCLUDED-FROM-CERTIFICATION; QUEUE_2026-07-18_CAMPAIGN11.md row C11-205",
+      "migrate_text": "Resolved as a harness priming artefact (2026-08-10); the C11-205 row and ledger entry own it."
+    },
+    {
+      "id": "S8.2-direct-model-identity-bug",
+      "title": "§8.2 the earlier direct-model mismatch was a benchmark bug: emitted commands are not model identity when C11-185 suppresses them; the harness now fingerprints configured/ready instances in stable asset order",
+      "claim": "Benchmark identity must use logical model instances, not backend-emitted commands.",
+      "status": "RESOLVED",
+      "evidence": "Landed Batch 779 `72d448c9a2` (C11-205 harness); restated in the C11 queue §1.27 (:1286-1289). Defect 8 of §11 (Batch 779) further replaced config-restated provenance with measured camera-progress sequences.",
+      "surviving_record": "Batch 779; QUEUE_2026-07-18_CAMPAIGN11.md §1.27",
+      "migrate_text": "Fixed in the harness at Batch 779."
+    },
+    {
+      "id": "S8.3-attribution-harness",
+      "title": "§8.3 streaming attribution route: 1,088 frames (current bundle 1,031), eight segments, bounded deterministic replay after endPerformanceTrace, 240-frame streaming replay cap reporting unequal work as an outcome",
+      "claim": "API-instrumented attribution is non-certifying; content validation cannot contaminate CPU samples.",
+      "status": "RESOLVED",
+      "evidence": "Landed Batch 779; `Tools/visual-regression/lib/representative-performance-content.mjs` and `run-performance-campaign.mjs` per §C11-REVIEW-2026-08-01 defects 7/8 (bounded waits, measured provenance, contracts 50/50). Shared runner superseded by the Batch 1032 campaign runner.",
+      "surviving_record": "Batch 779 / Batch 1032; WEBGPU_DEBUGGING_LOG.md §C11-REVIEW-2026-08-01 defects 7-8",
+      "migrate_text": "Harness landed Batch 779 and re-based at Batch 1032."
+    },
+    {
+      "id": "S8.3-68-default-property-textures",
+      "title": "§8.3 finding: 68 cache-owned default property textures in the current bundle",
+      "claim": "Every model pipeline cache owns its own default property texture.",
+      "status": "RESOLVED",
+      "evidence": "`WebGPUModelPipelineCache.ts:2458-2460` now sources `_defaultPropertyTexture`/`View` from pooled `modelDeviceResources` shared per `(GPUDevice, resourceGeneration)` (C11-194 recovery slice, Batch 819; row QUEUE C11:2187 'model/shared/pipeline/compatibility resources now require the exact (GPUDevice, resourceGeneration) tuple').",
+      "surviving_record": "QUEUE_2026-07-18_CAMPAIGN11.md row C11-194 (Batch 819)",
+      "migrate_text": "Pooled per device generation at Batch 819."
+    },
+    {
+      "id": "S8.3-52-env-pipeline-packs",
+      "title": "§8.3 finding: 52 duplicated dynamic-environment pipeline packs in the current bundle",
+      "claim": "Each DynamicEnvironmentMapManager realizes its own WebGPU pipeline pack; one device-generation kernel pack is the target (C11-193).",
+      "status": "PARTIAL",
+      "evidence": "`WebGPUDynamicEnvironmentMapManager.ts:356-359` defines `DynEnvMapKernelPack` keyed to the GPU device generation and C11-193A/B/C landed `b20234a16b` (2026-08-12) with the shared Scene encoder/submit (row QUEUE C11:2186: two 44-pass manager sequences share one Scene encoder, private encoders/submits 0/0). The row stays PARTIAL and names 'residual allocation cleanup' and 'HQ reuse' open (:2541); the 52-pack count has not been re-measured on a post-`b20234a16b` bundle in any recorded artifact.",
+      "surviving_record": "QUEUE_2026-07-18_CAMPAIGN11.md row C11-193",
+      "migrate_text": "The 2026-07-31 attribution bundle counted 52 duplicated dynamic-environment pipeline packs across tileset/model managers; C11-193A introduced a device-generation `DynEnvMapKernelPack` (`WebGPUDynamicEnvironmentMapManager.ts:356-359`) and C11-193B routes every manager through the Scene encoder (landed `b20234a16b`, 2026-08-12), but no artifact since re-counts the packs, and the row still lists residual allocation cleanup and HQ output reuse as open. The review should treat 'one kernel pack per device generation' as unmeasured until a post-1032 attribution run reports the count."
+    },
+    {
+      "id": "S8.3-389-bind-groups",
+      "title": "§8.3 finding: total bind-group creation unchanged at 389 pre/post the stable depth view",
+      "claim": "C11-201 earns allocation credit only, not a bind-group reduction.",
+      "status": "SUPERSEDED",
+      "evidence": "C11-201 row (QUEUE C11:2194) records 'MOVING ATTRIBUTION GREEN / ALLOCATION-ONLY CREDIT'.",
+      "surviving_record": "QUEUE_2026-07-18_CAMPAIGN11.md row C11-201",
+      "migrate_text": "Recorded on the C11-201 row."
+    },
+    {
+      "id": "S8.3-empty-scene-pass-transitions",
+      "title": "§8.3 finding: avoidable empty scene-pass transitions remain visible at four per measured frame",
+      "claim": "The WebGPU frame opens and closes about four render passes per frame that encode nothing; they are queue inputs, not a licence to drop clears/resolves.",
+      "status": "STILL-VALID",
+      "evidence": "No queue row, DEFERRED_WORK entry, FIX_QUEUE row or research-dispatch row names it: grep for 'empty scene-pass', 'pass transition', 'empty passes' across migration_doc returns only this document (and the debugging-log paraphrase of it). Code shows one partial mitigation: `WebGPUContext.ts:2265` notes that eagerly opening a pass 'produces two empty passes per frame; it opens on first use', and `WebGPUSceneRenderer.ts:3639` skips a default-off flagged pass when its list is empty. The four-per-frame count is from the 2026-07-31 API-instrumented bundle and has not been re-measured; the C11-192..211 tail (QUEUE C11:2308) minted no row for it.",
+      "surviving_record": "none",
+      "migrate_text": "The 2026-07-31 API-instrumented attribution bundle observed about four avoidable empty scene-pass transitions per measured frame in the WebGPU frame encoder, and no row was ever minted for it. `WebGPUContext.ts:2265` now defers one pass to first use and `WebGPUSceneRenderer.ts:3639` skips an empty flagged-command pass, but the per-frame pass roster in `WebGPUSceneRenderer.ts` has not been re-counted since Batch 781. This is a DEBT lead for the frame-graph lens (ADR-4): re-measure the empty begin/end pairs on the current build with the Batch 1032 campaign runner, and only then decide whether a pass-elision rule belongs in the frame graph; passes that carry a required clear or resolve are not candidates."
+    },
+    {
+      "id": "S9-1-C11-205-first",
+      "title": "§9 order item 1: execute C11-205 readiness/request-lifecycle evidence and require identical ready tile identities before any causal resident timing or traversal change",
+      "claim": "C11-205 evidence gates any resident timing claim.",
+      "status": "RESOLVED",
+      "evidence": "C11-205 MEASUREMENT GATES GREEN; shared harness landed Batch 1032 `be0683c60d`; 6/6 causal pairs with exact ready identity (DEFERRED_WORK.md:3250-3312). Remaining C11-205 work is remediation/row close, not evidence.",
+      "surviving_record": "QUEUE_2026-07-18_CAMPAIGN11.md row C11-205",
+      "migrate_text": "Executed; gates green at Batch 1032."
+    },
+    {
+      "id": "S9-2-keep-slices-open",
+      "title": "§9 order item 2: keep C11-185/192/199/200/201/211 open until focused browser/moving gates execute",
+      "claim": "Implementation presence is not a timing claim.",
+      "status": "SUPERSEDED",
+      "evidence": "Each row still carries its own open gate (QUEUE C11:2127, 2185, 2192, 2193, 2194, 2204); the C11-192..211 aggregate row (:2541) says NOT COMPLETE / NO FPS CLAIM. C11-201 is an administrative close candidate (:1414).",
+      "surviving_record": "QUEUE_2026-07-18_CAMPAIGN11.md rows C11-185/192/199/200/201/211",
+      "migrate_text": "Row-owned."
+    },
+    {
+      "id": "S9-3-C11-193-scheduler",
+      "title": "§9 order item 3: continue C11-193 with a selected-consumer demand registry and one device-generation kernel/job scheduler",
+      "claim": "The environment-map shared scheduler/demand registry is the next C11-193 slice.",
+      "status": "PARTIAL",
+      "evidence": "C11-193A/B/C landed `b20234a16b` (2026-08-12): device-generation kernel pack, Scene-encoder borrowing with unique arena leases, context coordinator with bounded deferral and lossless resume (row QUEUE C11:2186, :2264-2285; DEFERRED_WORK.md:14228). Open per row: moving/FPS attribution, broader recovery/HQ reuse, residual allocation cleanup, one-device/browser limits, GPU-completion certification. The no-starvation contract (demand must never gate a refresh) was added after §11 defect 3.",
+      "surviving_record": "QUEUE_2026-07-18_CAMPAIGN11.md row C11-193; DEFERRED_WORK.md:14228",
+      "migrate_text": "C11-193 (dynamic-environment shared scheduler) is landed through slices A/B/C at `b20234a16b`: managers keep transactional local IBL graphs under the exact context/device/generation/topology tuple, borrow the active Scene encoder (private encoders/submits 0/0 in the browser artifact), and a context coordinator drains DEMANDED/UNKNOWN work before PROVEN_NONE with one deferrable slot. Still open: moving-route causal attribution, broader recovery and HQ output reuse, and GPU-completion certification; the row holds a hard no-starvation invariant (demand must never gate a refresh — `WebGPUEnvironmentRefreshScheduler` module docs) learned from the §11 defect-3 freeze."
+    },
+    {
+      "id": "S9-4-C11-194-195",
+      "title": "§9 order item 4: execute C11-194 shared immutable model defaults and the C11-195 dynamic view/light uniform arena using the measured fan-out, preserving per-view RTE and device-generation ownership",
+      "claim": "Shared immutable defaults and a dynamic-offset arena are the next model resource slices.",
+      "status": "PARTIAL",
+      "evidence": "C11-194: pooled `(GPUDevice, resourceGeneration)` defaults landed Batch 819, IBL recovery Batch 1022 (row QUEUE C11:2187, PARTIAL for replacement-device evidence, nested clipping recovery, higher-level texture re-upload). C11-195: capture/RTE + main-camera dynamic offsets + one 864-byte light pack landed Batches 772/780/791/800, per-acquire churn trimmed Batch 822 (DEFERRED_WORK.md:4551-4555); row (:2188, :1404) PARTIAL for certification only, plus the 2026-08-02 audit finding that the mutable arena lives in the device-shared immutable pool while uniform allocators are context-owned, so alternating contexts on one pooled device clear the whole bind-group cache on every allocator swap.",
+      "surviving_record": "QUEUE_2026-07-18_CAMPAIGN11.md rows C11-194 and C11-195",
+      "migrate_text": "C11-194 immutable model defaults/layouts are device-generation pooled (`WebGPUModelPipelineCache.ts:2458-2460`, Batch 819) and C11-195's dynamic-offset camera/light arena is landed (Batches 772/780/791/800/822), but both rows are PARTIAL for certification and one architectural defect remains recorded on C11-195: the mutable arena is stored in the device-shared immutable pool while uniform allocators are context-owned, so two contexts sharing one pooled `GPUDevice` invalidate the entire model bind-group cache on every allocator-identity swap (QUEUE C11:2188, 2026-08-02 audit). The ownership-lifetime lens should confirm whether the arena is now context-owned or allocator-partitioned; if not, this is a live ADR-3 ownership violation in the multi-context path."
+    },
+    {
+      "id": "S9-5-C11-184-187-open",
+      "title": "§9 order item 5: keep C11-184 and C11-187 open until their shadow/Hi-Z browser gates execute",
+      "claim": "Both rows remain IN PROGRESS pending browser evidence.",
+      "status": "SUPERSEDED",
+      "evidence": "Covered by items S6.2-C11-184-open and S6.3-C11-187-hiz-fallback; both rows still IN PROGRESS, launcher blocker discharged at Batch 1018.",
+      "surviving_record": "QUEUE_2026-07-18_CAMPAIGN11.md rows C11-184, C11-187",
+      "migrate_text": "See the C11-184 and C11-187 items."
+    },
+    {
+      "id": "S9-6-C11-90-after-measurement",
+      "title": "§9 order item 6: queue C11-90 after the measurement lane, before Campaign 11 closure; do not conflate it with the CPU regression",
+      "claim": "Topology completion is parity debt, not the performance cause.",
+      "status": "RESOLVED",
+      "evidence": "C11-90 implemented (item S6.7); the C11-168 six-pair deficit was measured independently at Batch 1032 and topology was never implicated.",
+      "surviving_record": "QUEUE_2026-07-18_CAMPAIGN11.md rows C11-90, C11-168",
+      "migrate_text": "Executed in that order."
+    },
+    {
+      "id": "S9-7-C13-gate-B",
+      "title": "§9 order item 7: continue Campaign 13 Gate B in owner order C13-06, C13-07, then C13-08 once C13-01 supplies data/provider evidence",
+      "claim": "Gate B tail is C13-06/07/08.",
+      "status": "RESOLVED",
+      "evidence": "C13-06, C13-07, C13-08 all COMPLETE — promoted 2026-08-07 Batch 866 (QUEUE_2026-07-23_CAMPAIGN13.md:683-685); Gate B CLOSED at Batch 866 (CLAUDE.md / CAMPAIGN_STATE.md).",
+      "surviving_record": "QUEUE_2026-07-23_CAMPAIGN13.md Gate B rows; CAMPAIGN_STATE.md",
+      "migrate_text": "Gate B closed at Batch 866."
+    },
+    {
+      "id": "S9-campaign-status",
+      "title": "§9 campaign status block: C10 complete; C11 executing/paused certification; C12 launched (aureole = C12-31, sun bloom = C12-18); C13 C13-03/04/05 complete, 06/07/08 Gate B tail, C13-02 partial via C13-39; C14 blocked on C11+C12+C13",
+      "claim": "Campaign status at 2026-07-31.",
+      "status": "SUPERSEDED",
+      "evidence": "CAMPAIGN_STATE.md §1 and the CLAUDE.md block are the mirrors; C14's bar was re-ruled by R1 (2026-08-06) to C12 completion only and Gate B closed Batch 866; C12-18 LANDED Batch 906 with Edge acceptance at Batch 984 (QUEUE C12:2475); C12-31 sky-shell fix implemented 2026-08-01 with its acceptance sweep still owed (QUEUE C12:2231); C13-02 counter surface COMPLETE Batch 907 (QUEUE C13:679); C13-39 CLOSED-NEGATIVE Batch 762 (:716). The maintainer ruled 2026-09-02 (R-2026-09-02-25) that campaign status moves into `CAMPAIGN_STATE.md`.",
+      "surviving_record": "CAMPAIGN_STATE.md; the C11/C12/C13 queue documents",
+      "migrate_text": "Status is owned by CAMPAIGN_STATE.md and the queues."
+    },
+    {
+      "id": "S10-landing-discipline",
+      "title": "§10 landing discipline: owner+evidence in one changeset; no superseded worktree merges; no perf claims from idle evidence; no completion from build success; retain both backends; rerun canonical build after public-source additions",
+      "claim": "Rules for landing the audited tree.",
+      "status": "SUPERSEDED",
+      "evidence": "All but the last bullet are standing rules in CLAUDE.md (proof bar R-2026-08-29-1, idle-soak invalidity, feature preservation) and WORKER_ISOLATION_AND_BRANCH_HANDOFF.md (squash-only, evidence repatriation). The generated-barrel rebuild bullet is the only one with no tracked home — carried as item S6.6-S10-generated-barrel-trap.",
+      "surviving_record": "CLAUDE.md; WORKER_ISOLATION_AND_BRANCH_HANDOFF.md; item S6.6-S10-generated-barrel-trap for the build bullet",
+      "migrate_text": "Standing rules elsewhere; see the barrel-trap item for the one exception."
+    },
+    {
+      "id": "S11-eight-defects",
+      "title": "§11 eight confirmed defects fixed pre-landing by the 2026-08-01 23-agent review (compositor depthStencil; cascadesEnabled sun-shadow regression; env-map refresh freeze; dead shadow-receive prefix gate; zero-primitive Model.ready stall; silent async shader-link failure; unbounded waitFrames; false causal provenance)",
+      "claim": "Eight defects in the audited tree were fixed before Batches 772-781 landed.",
+      "status": "SUPERSEDED",
+      "evidence": "WEBGPU_DEBUGGING_LOG.md §C11-REVIEW-2026-08-01 (lines ~16490-16548) records each defect with root cause, fix, file and landing batch — strictly more than §11's list. Spot checks: defect 2 → `Scene.js:1138` keeps `cascadesEnabled` default true on both backends; defect 4 → `WebGPUEffectsBindGroup.js:1061-1094` owned 20-word sidecar; defect 3's no-starvation rule is on the C11-193 row.",
+      "surviving_record": "WEBGPU_DEBUGGING_LOG.md §C11-REVIEW-2026-08-01",
+      "migrate_text": "The debugging-log entry is the complete record."
+    },
+    {
+      "id": "S11-doc-truth",
+      "title": "§11 doc-truth corrections: C11-181 restated as IMPLEMENTED / VERIFIED / LANDED not COMPLETE; two WebGL shader-lifecycle inventory entries moved §B→§C; log narration normalized; timing language softened",
+      "claim": "C11-181 is not complete; C11-180 entries are WIP.",
+      "status": "SUPERSEDED",
+      "evidence": "C11-181 was later administratively closed COMPLETE (2026-08-09; close authority DEFERRED_WORK.md, Batch 1063 `21c9489185`; QUEUE C11:2123, :2530; CAMPAIGN_STATE.md §1). C11-180 remains PARTIAL (CLAUDE.md block).",
+      "surviving_record": "QUEUE_2026-07-18_CAMPAIGN11.md rows C11-180, C11-181; CAMPAIGN_STATE.md",
+      "migrate_text": "Overtaken by the 2026-08-09 administrative close of C11-181."
+    },
+    {
+      "id": "S11-landing-record",
+      "title": "§11 landing record: Batches 772-781 pushed at 3900608bb9 with tsc clean, gulp build green, Node contracts 195/195; browser-owned gates unchanged by landing",
+      "claim": "The audited tree landed 2026-08-01.",
+      "status": "RESOLVED",
+      "evidence": "`git log fe990ab335..3900608bb9` lists exactly Batches 772-781 (`8c1fe62ff6`..`3900608bb9`); README.md:54 and the debugging log carry the gate line.",
+      "surviving_record": "git history; README.md 2026-08-01 paragraph; WEBGPU_DEBUGGING_LOG.md §C11-REVIEW-2026-08-01",
+      "migrate_text": "Landed as recorded."
+    }
+  ],
+  "inbound_refs": [
+    {
+      "file": "migration_doc/README.md",
+      "what": "Line 32: the 2026-07-31 index narrative paragraph links the document and summarises its verdict (45/45 contracts, attribution lane, C11-205 seam). Line 54: the 2026-08-01 landing paragraph cites '§11 of LOCAL_CHANGE_AUDIT_2026-07-31.md' beside the C11-REVIEW-2026-08-01 log entry. Line 131: the index table row describing it as the 'Current primary-worktree ... audit'.",
+      "needs": "Delete the line-131 table row (or replace with a one-line 'removed after migration into the 2026-09-02 architecture review' tombstone). Lines 32 and 54: drop the link; point the §11 citation solely at WEBGPU_DEBUGGING_LOG.md §C11-REVIEW-2026-08-01, which already sits in the same sentence, and repoint the §6-§8 summary at the new review's migrated section. No id definition or number is needed from the removed file."
+    },
+    {
+      "file": "migration_doc/HANDOFF_2026-07-31_CODEX_C11_HIGH_VALUE.md",
+      "what": "Line 7 (supersession banner): 'eight confirmed defects fixed pre-landing (see LOCAL_CHANGE_AUDIT_2026-07-31.md §11 and the C11-REVIEW-2026-08-01 entry in WEBGPU_DEBUGGING_LOG.md)'.",
+      "needs": "Remove the LOCAL_CHANGE_AUDIT clause; the co-cited debugging-log entry is the complete record of the eight defects. Nothing else in the handoff depends on the removed file."
+    },
+    {
+      "file": "migration_doc/WEBGPU_DEBUGGING_LOG.md",
+      "what": "Line 16478, inside §C11-AUDIT-2026-07-31: '**Files:** deliberately not duplicated here — the per-item file evidence for every slice above is enumerated in LOCAL_CHANGE_AUDIT_2026-07-31.md §6.1–6.8, with its test/verification evidence in §7 and its moving-camera artifacts in §8.' Line 16486: trace list names the document. Line 16546 (§C11-REVIEW-2026-08-01 trace): 'LOCAL_CHANGE_AUDIT_2026-07-31.md §11'.",
+      "needs": "Line 16478 is LOAD-BEARING: after removal the log entry has no file list. Inline a compact Files/Batches list into that entry — PointPrimitiveCollection.js + LabelCollection.js (Batch 778); WebGPUModelRenderer.ts shadow UB + WebGPUCSMRenderer.ts terrain globals + ShadowMap/Scene (775/780); SOABoundingSphereLayout.js (778); WebGPUEffectsBindGroup.js (776/780); WebGPUModelPreparationAdmission.ts + Model.js + Model3DTileContent.js (774/776/780); WebGPUGlobeSurfaceTileBuffers.ts (775); WebGPUPostProcessPipeline.ts (776); WebGPUGlobeDepth.ts (776/777); ModelSceneGraph.js (774); WebGPUModelPipelineCache.ts (774/819); Tools/visual-regression/run-performance-campaign.mjs + lib/representative-performance-content.mjs + lib/performance-campaign-utils.mjs (779) — and the three §8 artifact paths (campaign11-altitude-control-2026-07-31.json, campaign11-resident-workload-fingerprint-r1-2026-07-31.json, campaign11-streaming-c11-185-slice3b-attribution-2026-07-31.json / campaign11-streaming-current-attribution-2026-07-31.json under Tools/visual-regression/output/performance/). Lines 16486 and 16546: drop the filename from the trace lists (the §11 content is fully duplicated in §C11-REVIEW-2026-08-01)."
+    }
+  ],
+  "verdict_on_document": "REMOVE-AFTER-MIGRATION",
+  "reason": "The document is a landing-readiness snapshot of an uncommitted tree that landed as Batches 772-781 on 2026-08-01; its worktree, staging, repository-truth and gate sections are historical (no worktrees exist, extractions are recorded in the DEFERRED_WORK Batch-802 closure entry), every §6/§8 implementation claim is landed and restated on its C11 queue row with the row carrying the remaining browser/timing gates, its performance evidence is superseded by the C11-168 six-pair certification and the C11-205 ledger resolution at Batch 1032, and §11 is duplicated in full by WEBGPU_DEBUGGING_LOG §C11-REVIEW-2026-08-01. Five items survive and each has migrate_text: the Generic Primitive topology/legacy-realization residual (FAR-201/209/210 still planned; WebGPUPrimitiveCommands.ts:958-985), the untracked four-empty-scene-passes-per-frame lead, the generated-barrel default-export build trap (no tracked home), the C11-193 kernel-pack count that was never re-measured, and the C11-195 arena-in-device-shared-pool ownership finding, plus the PARTIAL status text for C11-20/184/187/185/194. All three inbound referencing files can be repointed; the only load-bearing reference is WEBGPU_DEBUGGING_LOG.md:16478, which must receive the inlined file/batch/artifact list given in inbound_refs before the file is deleted."
+}

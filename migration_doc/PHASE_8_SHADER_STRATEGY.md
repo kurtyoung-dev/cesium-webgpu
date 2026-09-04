@@ -38,7 +38,7 @@ This resolves the design question that has gated KHR BRDFs, Phase 7 quality item
 
 The deciding piece of evidence (as of Batch 80) was on KHR support: at the time of this decision, **clearcoat, sheen, anisotropy, iridescence, transmission, volume were all unimplemented on WebGPU.** That was a real bug, not a future enhancement. Monolithic was designed for one BRDF; adding 6 to it costs 6× the same internal-cost-doubling. Fine-grained adds them for free but pays per-tile stutter (which is the exact thing we're trying to eliminate). Coarse-grained pays a fixed up-front cost we can amortize.
 
-> **Status update (Batch 174+):** the KHR BRDFs are no longer dropped. `ModelPBRComplete.wgsl` now wires `FLAG_HAS_CLEARCOAT / _SPECULAR_EXT / _ANISOTROPY / _IRIDESCENCE / _SHEEN / _TRANSMISSION` (KHR_texture_transform also landed; see `PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md` C-R4). The shipped variant strategy diverged from the ~20-family table described below — see "What actually shipped".
+> **Status update (Batch 174+):** the KHR BRDFs are no longer dropped. `ModelPBRComplete.wgsl` now wires `FLAG_HAS_CLEARCOAT / _SPECULAR_EXT / _ANISOTROPY / _IRIDESCENCE / _SHEEN / _TRANSMISSION` (KHR_texture_transform also landed; see `archive/principal-review-2026-04-16/PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md` C-R4, archived 2026-09-03 — id table at `ARCHITECTURE_REVIEW_2026-09-02.md` §5.1). The shipped variant strategy diverged from the ~20-family table described below — see "What actually shipped".
 
 ## Capacity check — does this fit the existing infrastructure?
 

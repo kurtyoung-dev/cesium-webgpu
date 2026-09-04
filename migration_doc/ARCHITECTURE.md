@@ -1,6 +1,7 @@
 > **Canonical doc (consolidation first draft, 2026 consolidation).**
 > Supersedes (folds in): `migration_doc/WEBGPU_CONTEXT_DECOMPOSITION_PLAN.md`,
-> `migration_doc/audits/2026-04-30_MAINTAINABILITY_SURVIVABILITY.md` (architecture
+> `migration_doc/archive/audits-2026-04-30/2026-04-30_MAINTAINABILITY_SURVIVABILITY.md` (archived
+> 2026-09-03; survivability content migrated to `ARCHITECTURE_REVIEW_2026-09-02.md` §3.11) (architecture
 > portions), and the "Architecture Patterns" / "64-Bit Precision & RTE" /
 > "WGSL Shader Pipeline" / "Monorepo Architecture" / "Logging & Debug Pragmas"
 > sections of `cesium-webgpu/CLAUDE.md` (CLAUDE.md remains the authoritative
@@ -410,8 +411,9 @@ item 4; §5 roadmap "Ellipsoid-aware RTE audit + fix"). It is tracked as
 **`FEAT-3DT2-03`** in `FEATURE_INVENTORY.md` / `FORK_OVERVIEW` / the parity report
 (`partial` — "WGS84 radius constants hardcoded; non-WGS84 tilesets positionally
 wrong"); a related shader-side gap is logged as `H-P7` in the
-`PRINCIPAL_ENGINEER_REVIEW_PER_FEATURE_2026_04_16` review. The audit + fix are
-unstarted. Until they land, Mars/Moon tilesets are at risk.
+`PRINCIPAL_ENGINEER_REVIEW_PER_FEATURE_2026_04_16` review (corrected count — six
+elevation shaders, not five — at `ARCHITECTURE_REVIEW_2026-09-02.md` §3.12). The
+audit + fix are unstarted. Until they land, Mars/Moon tilesets are at risk.
 
 ---
 
@@ -965,7 +967,9 @@ top voxel follow-up):**
   (line counts stale — see §8).
 - **Survivability / embeddability / portability detail (device-loss, OOM,
   multi-instance, Electron, Firefox/Safari coverage):**
-  `migration_doc/audits/2026-04-30_MAINTAINABILITY_SURVIVABILITY.md`.
+  `migration_doc/ARCHITECTURE_REVIEW_2026-09-02.md` §3.11 (current — corrected
+  re-derivation, re-verified 2026-09-03). Original source, archived 2026-09-03:
+  `migration_doc/archive/audits-2026-04-30/2026-04-30_MAINTAINABILITY_SURVIVABILITY.md`.
 - **Feature catalog & status tags:** `migration_doc/FEATURE_INVENTORY.md` and
   `FORK_OVERVIEW`.
 - **Deferred / WIP scaffolding:** `migration_doc/DEFERRED_WORK.md`.

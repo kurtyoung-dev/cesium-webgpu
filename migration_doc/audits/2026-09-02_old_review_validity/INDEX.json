@@ -1,0 +1,92 @@
+[
+  {
+    "doc": "migration_doc/AUDIT_2026_05_02.md",
+    "file": "AUDIT_2026_05_02.judgement.json",
+    "items": 60,
+    "stillValid": 4,
+    "resolvedOrStale": 56,
+    "inboundRefs": 17,
+    "verdict": "REMOVE-AFTER-MIGRATION"
+  },
+  {
+    "doc": "migration_doc/audits/2026-04-30_ARCHITECTURE_PERFORMANCE.md",
+    "file": "2026-04-30_ARCHITECTURE_PERFORMANCE.judgement.json",
+    "items": 48,
+    "stillValid": 16,
+    "resolvedOrStale": 32,
+    "inboundRefs": 9,
+    "verdict": "REMOVE-AFTER-MIGRATION"
+  },
+  {
+    "doc": "migration_doc/audits/2026-04-30_FORK_FEATURE_INVENTORY.md",
+    "file": "2026-04-30_FORK_FEATURE_INVENTORY.judgement.json",
+    "items": 58,
+    "stillValid": 13,
+    "resolvedOrStale": 45,
+    "inboundRefs": 9,
+    "verdict": "REMOVE-AFTER-MIGRATION"
+  },
+  {
+    "doc": "migration_doc/PRINCIPAL_ENGINEER_REVIEW_PER_FEATURE_2026_04_16.md",
+    "file": "PRINCIPAL_ENGINEER_REVIEW_PER_FEATURE_2026_04_16.judgement.json",
+    "items": 74,
+    "stillValid": 18,
+    "resolvedOrStale": 56,
+    "inboundRefs": 17,
+    "verdict": "REMOVE-AFTER-MIGRATION"
+  },
+  {
+    "doc": "migration_doc/audits/2026-04-30_MAINTAINABILITY_SURVIVABILITY.md",
+    "file": "2026-04-30_MAINTAINABILITY_SURVIVABILITY.judgement.json",
+    "items": 54,
+    "stillValid": 32,
+    "resolvedOrStale": 22,
+    "inboundRefs": 7,
+    "verdict": "REMOVE-AFTER-MIGRATION"
+  },
+  {
+    "doc": "migration_doc/PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.md",
+    "file": "PRINCIPAL_ENGINEER_REVIEW_RENDERER_DEEP_2026_04_16.judgement.json",
+    "items": 50,
+    "stillValid": 11,
+    "resolvedOrStale": 39,
+    "inboundRefs": 18,
+    "verdict": "REMOVE-AFTER-MIGRATION"
+  },
+  {
+    "doc": "migration_doc/FORK_VS_UPSTREAM_WEBGPU_ARCHITECTURE_AUDIT_2026-07-13.md",
+    "file": "FORK_VS_UPSTREAM_WEBGPU_ARCHITECTURE_AUDIT_2026-07-13.judgement.json",
+    "items": 51,
+    "stillValid": 34,
+    "resolvedOrStale": 17,
+    "inboundRefs": 8,
+    "verdict": "REMOVE-AFTER-MIGRATION"
+  },
+  {
+    "doc": "migration_doc/LOCAL_CHANGE_AUDIT_2026-07-31.md",
+    "file": "LOCAL_CHANGE_AUDIT_2026-07-31.judgement.json",
+    "items": 56,
+    "stillValid": 10,
+    "resolvedOrStale": 46,
+    "inboundRefs": 3,
+    "verdict": "REMOVE-AFTER-MIGRATION"
+  },
+  {
+    "doc": "migration_doc/FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md",
+    "file": "FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.judgement.json",
+    "items": 64,
+    "stillValid": 38,
+    "resolvedOrStale": 26,
+    "inboundRefs": 8,
+    "verdict": "REMOVE-AFTER-MIGRATION"
+  },
+  {
+    "doc": "migration_doc/audits/2026-06-11_ULTRA_REVIEW.md (+ migration_doc/audits/2026-06-11_ULTRA_REVIEW_findings.json)",
+    "file": "2026-06-11_ULTRA_REVIEW.judgement.json",
+    "items": 161,
+    "stillValid": 60,
+    "resolvedOrStale": 101,
+    "inboundRefs": 12,
+    "verdict": "REMOVE-AFTER-MIGRATION"
+  }
+]

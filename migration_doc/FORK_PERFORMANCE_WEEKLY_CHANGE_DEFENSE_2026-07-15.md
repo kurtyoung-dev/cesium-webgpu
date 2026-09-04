@@ -608,8 +608,8 @@ and Claude-model work and the current Campaign 11 WebGL shader slice. It does
 not rewrite the historical measurements above. The detailed change-by-change
 audits remain:
 
-- [`FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md`](FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md)
-  for the 78-commit, 455-file Campaign 9–12 interval;
+- [`FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md`](archive/FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md)
+  (archived 2026-09-03) for the 78-commit, 455-file Campaign 9–12 interval;
 - [`CLAUDE_PROGRESS_AUDIT_2026-07-26.md`](CLAUDE_PROGRESS_AUDIT_2026-07-26.md)
   for the following 24 landed commits and the eclipse/ocean/tide/cloud review;
 - the live Campaign 11–13 queues for ownership and completion status.
