@@ -1643,12 +1643,76 @@ function isTileClippedAwayByInversePolygons(tileProvider, surfaceTile) {
   );
 }
 
+/**
+ * Adds this tile's per-tile terrain and imagery credits to `creditDisplay`.
+ * Scene Logic Extractor: this is shared scene-level bookkeeping, not WebGL
+ * command building, so `addDrawCommandsForTile` calls it before the
+ * `context.getFeatureRenderer` branch below rather than after — otherwise the
+ * WebGPU path's early return skips it and per-tile Bing/ion/ArcGIS/WMS
+ * attribution never reaches the credit bar on that backend.
+ *
+ * Walks the whole `surfaceTile.imagery` collection under the same
+ * readiness/alpha/night-retirement conditions the WebGL day-texture loop
+ * uses, so a layer contributes a credit here exactly when it would have
+ * contributed one there — independent of `maxTextures`, since the WebGL path
+ * consumes every entry across however many draw-command passes it takes.
+ * @param {GlobeSurfaceTile} surfaceTile
+ * @param {CreditDisplay} creditDisplay
+ * @ignore
+ */
+function addPerTileCreditsForNextFrame(surfaceTile, creditDisplay) {
+  const terrainData = surfaceTile.terrainData;
+  if (defined(terrainData) && defined(terrainData.credits)) {
+    const tileCredits = terrainData.credits;
+    for (
+      let tileCreditIndex = 0, tileCreditLength = tileCredits.length;
+      tileCreditIndex < tileCreditLength;
+      ++tileCreditIndex
+    ) {
+      creditDisplay.addCreditToNextFrame(tileCredits[tileCreditIndex]);
+    }
+  }
+
+  const tileImageryCollection = surfaceTile.imagery;
+  for (
+    let imageryIndex = 0, imageryLen = tileImageryCollection.length;
+    imageryIndex < imageryLen;
+    ++imageryIndex
+  ) {
+    const tileImagery = tileImageryCollection[imageryIndex];
+    const imagery = tileImagery.readyImagery;
+    if (!defined(imagery) || imagery.imageryLayer.alpha === 0.0) {
+      continue;
+    }
+
+    const imageryLayer = imagery.imageryLayer;
+    if (nightImageryTileIsRetired(imageryLayer, tileImagery)) {
+      continue;
+    }
+
+    if (defined(imagery.credits)) {
+      const credits = imagery.credits;
+      for (
+        let creditIndex = 0, creditLength = credits.length;
+        creditIndex < creditLength;
+        ++creditIndex
+      ) {
+        creditDisplay.addCreditToNextFrame(credits[creditIndex]);
+      }
+    }
+  }
+}
+
 function addDrawCommandsForTile(tileProvider, tile, frameState) {
   const surfaceTile = tile.data;
 
   if (isTileClippedAwayByInversePolygons(tileProvider, surfaceTile)) {
     return;
   }
+
+  // Scene Logic Extractor: shared per-tile credit bookkeeping runs before the
+  // backend branch so it reaches `creditDisplay` on both backends (AR-002).
+  addPerTileCreditsForNextFrame(surfaceTile, frameState.creditDisplay);
 
   // Backend-specific rendering path
   const context = frameState.context;
@@ -1663,20 +1727,6 @@ function addDrawCommandsForTile(tileProvider, tile, frameState) {
       surfaceTile.fill = new TerrainFillMesh(tile);
     }
     surfaceTile.fill.update(tileProvider, frameState);
-  }
-
-  const creditDisplay = frameState.creditDisplay;
-
-  const terrainData = surfaceTile.terrainData;
-  if (defined(terrainData) && defined(terrainData.credits)) {
-    const tileCredits = terrainData.credits;
-    for (
-      let tileCreditIndex = 0, tileCreditLength = tileCredits.length;
-      tileCreditIndex < tileCreditLength;
-      ++tileCreditIndex
-    ) {
-      creditDisplay.addCreditToNextFrame(tileCredits[tileCreditIndex]);
-    }
   }
 
   let maxTextures = context.limits.maximumTextureImageUnits;
@@ -2378,16 +2428,10 @@ function addDrawCommandsForTile(tileProvider, tile, frameState) {
         colorToAlpha.w = -1.0;
       }
 
-      if (defined(imagery.credits)) {
-        const credits = imagery.credits;
-        for (
-          let creditIndex = 0, creditLength = credits.length;
-          creditIndex < creditLength;
-          ++creditIndex
-        ) {
-          creditDisplay.addCreditToNextFrame(credits[creditIndex]);
-        }
-      }
+      // Per-tile credits for this imagery layer were already handed to
+      // `creditDisplay` by `addPerTileCreditsForNextFrame`, above the
+      // backend branch — see AR-002. Adding them again here would double
+      // them on WebGL.
 
       ++numberOfDayTextures;
     }

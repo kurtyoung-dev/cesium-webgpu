@@ -18917,3 +18917,46 @@ After all three publications, the external append-only visual-evidence library
 verifies **valid=true** with no reasons, warnings, or orphans. It now holds 12
 immutable publications; the live per-worktree output directories remain
 transactional scratch rather than being junctioned or bidirectionally mirrored.
+
+## Wave P0-1, lane Baragund — Bug AR-002 (2026-09-04)
+
+**Files affected:** `packages/engine/Source/Scene/GlobeSurfaceTileProviderRendering.js`.
+
+**Root cause:** `addDrawCommandsForTile`'s terrain-credit loop (`terrainData.credits`
+-> `creditDisplay.addCreditToNextFrame`) and its imagery-credit loop
+(`imagery.credits` -> `creditDisplay.addCreditToNextFrame`, nested inside the
+WebGL day-texture-building loop) both sat AFTER the
+`context.getFeatureRenderer(FeatureRendererKey.GLOBE_SURFACE)` early return
+that hands the tile to `addWebGPUDrawCommandsForTile`. A Scene Logic Extractor
+violation (CLAUDE.md): shared scene-level bookkeeping has to run before the
+backend branch, and this credit logic ran after it, so the WebGPU path never
+executed either loop. `addWebGPUDrawCommandsForTile` (:1260-1634 at this
+clone's HEAD) was read end to end and contains zero references to
+`creditDisplay`, confirming the loops were genuinely unreachable rather than
+merely under-exercised. Per-tile Bing / ion / ArcGIS / WMS attribution
+therefore never reached the credit bar on WebGPU, while the provider-level
+credits `GlobeSurfaceTileProvider.updateCredits` adds (not behind the branch)
+continued to show on both backends — which is why the bug was partial rather
+than total.
+
+**Fix applied:** extracted both loops into a single
+`addPerTileCreditsForNextFrame(surfaceTile, creditDisplay)` and call it once
+from `addDrawCommandsForTile`, immediately after the inverse-clipping guard
+and before `context.getFeatureRenderer(...)` is read. The imagery half walks
+the whole `surfaceTile.imagery` array under the identical
+readiness/`imageryLayer.alpha`/`nightImageryTileIsRetired` gate the WebGL
+day-texture loop applies, so a layer earns a credit here in exactly the cases
+it would have earned one there; because the walk is not capped by
+`maxTextures`, it also matches the WebGL loop's real behavior of eventually
+visiting every imagery entry across however many draw-command passes a
+texture-unit-limited tile needs. The two original in-body call sites were
+deleted, not left in place behind a new guard, so the WebGL path cannot
+double-add a credit post-fix.
+
+**Files modified:** `packages/engine/Source/Scene/GlobeSurfaceTileProviderRendering.js`,
+`packages/engine/Specs/Scene/GlobeSurfaceTileProviderPerTileCreditsSpec.mjs`
+(new), `package.json` (`test-scene-node`),
+`Tools/visual-regression/probe-ar002-per-tile-credits.mjs` (new),
+`Tools/visual-regression/ar002-per-tile-credits-harness.html` (new). Ledger
+entry: `migration_doc/DEFERRED_WORK.md`, "AR-002 FIXED, pending the `AR-M14`
+measurement" (2026-09-04).

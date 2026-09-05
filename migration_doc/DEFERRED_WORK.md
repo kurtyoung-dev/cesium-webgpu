@@ -14557,3 +14557,80 @@ The Moon has never been pickable, in either backend. `Scene.updateEnvironment` g
 ## 2026-08-21 - NEW-GLSL-STRING-MINIFY-REFRESH-ASYMMETRY (filed at Batch 1124 ahead of the C11-151 landing in Batch 1125)
 
 C11-151 gives `buildCesium` a per-bundle WGSL regeneration so minified release and variant bundles ship stripped WGSL string modules; `glslToJavaScript` received no equivalent refresh, so the same minified bundles ship UNSTRIPPED GLSL. Scope discipline, not an oversight - the GLSL transform was deliberately untouched (its `@license` extraction contract is pinned by `verify-packaged-notices`). The obvious follow-up is the mirror: a directive-aware GLSL strip (the `//>>includeStart` / `//>>includeEnd` pragma family and `czm_` builtin-resolution markers must survive) behind the same `minify` seam, with the same corpus and pipeline proofs. Also noted by the review: `stripWgslComments` shares its name with three unrelated local helpers under `Tools/visual-regression/` - a future reader will assume one function; rename the helpers when any of those specs is next touched.
+
+## 2026-09-04 - AR-002 FIXED, pending the `AR-M14` measurement (finding `GLOBE-7`; queue `QUEUE_2026-09-03_ARCHITECTURE_REVIEW.md:91`; wave P0-1, lane Baragund)
+
+Per-tile Bing / ion / ArcGIS / WMS attribution never displayed on WebGPU. Root
+cause was a Scene Logic Extractor violation in
+`GlobeSurfaceTileProviderRendering.js`'s `addDrawCommandsForTile`: the
+terrain-credit loop and the imagery-credit loop both sat below the
+`context.getFeatureRenderer(FeatureRendererKey.GLOBE_SURFACE)` early return
+that hands the tile to `addWebGPUDrawCommandsForTile`, so on WebGPU the loops
+were unreachable code — confirmed at this clone's HEAD (`01bddf4eae`, the
+1.145 merge line) by reading `addWebGPUDrawCommandsForTile` (`:1260-1634`)
+end to end: it contains no call to `creditDisplay`. The architecture review's
+cited lines (`:1629-1638`/`:1636`, `:2336-2345`/`:2343`, branch
+`:1613-1617`) had MOVED by the time of this lane (`:1668-1680`, `:2381-2390`,
+branch `:1653-1659`) but the premise held exactly otherwise.
+
+**Fix**: extracted both loops into one `addPerTileCreditsForNextFrame(surfaceTile,
+creditDisplay)`, called once from `addDrawCommandsForTile` immediately after
+the inverse-clipping check and BEFORE the backend branch. The imagery half
+walks the full `surfaceTile.imagery` collection under the exact same
+readiness / `imageryLayer.alpha !== 0` / `nightImageryTileIsRetired` gate the
+WebGL day-texture loop uses, independent of `maxTextures` — the WebGL loop's
+outer `do...while` visits every entry across however many draw-command passes
+it takes, so credits are not capped by texture-unit count either. The two old
+call sites inside the WebGL body were deleted (not merely bypassed), so the
+WebGL path cannot double-add a credit after the hoist — that is a structural
+fact of the diff, not something re-verified by execution reaching that far
+downstream (see the spec's own header for why it does not attempt to run the
+whole ~950-line WebGL command build).
+
+**Acceptance** (`AR-M14`): per-tile credit count equal on both backends for
+the same saved view, WebGL count unchanged, inertness mutant returns WebGPU
+to 0. Proving artefacts:
+  - Behaviour spec `packages/engine/Specs/Scene/GlobeSurfaceTileProviderPerTileCreditsSpec.mjs`
+    (`test-scene-node`) drives the real, exported `addDrawCommandsForTile`
+    twice — feature-renderer present and absent — over a hand-built
+    `surfaceTile` carrying one terrain credit and three imagery
+    `tileImagery` entries (ready+alpha1, not-ready, ready+alpha0), and asserts
+    the two recorded credit sets are equal and match exactly the one
+    terrain + one ready-imagery credit expected. Green post-fix; the
+    `if (false && …)` inertness mutant around the hoisted call turns 4 of 5
+    assertions red — every assertion that names a credit; the fifth is a
+    pair of negative assertions that passes vacuously on an empty recording
+    (transcript in `LANDING_PACKET_BARAGUND.md`); reverting the mutant
+    restores green.
+  - A fifth test compares the WebGL branch's recording against
+    `legacyWebGLCredits`, a separately-written restatement of the pre-hoist
+    two-loop gate. It pins the GATE (readiness, alpha, night-retirement,
+    `credits` presence) and would catch a dropped condition, a dedupe or an
+    extra add. It does NOT bear on `maxTextures`: the spec's WebGL leg throws
+    at `context.limits` before the day-texture loop, so no test exercises the
+    multi-pass consumption. That clause rests on the pre-hoist source instead —
+    `imageryLen` fixed once, `++imageryIndex` before every `continue`, and no
+    `break`/`return` between the branch point and the outer `do…while`'s
+    close — re-derived and confirmed at review (Ragnor, 2026-09-04).
+  - Edge leg `AR-M14`, NOT YET RUN (Éowyn's to run): `node
+    Tools/visual-regression/probe-ar002-per-tile-credits.mjs` against
+    `Tools/visual-regression/ar002-per-tile-credits-harness.html`, a Bing/ion
+    imagery + ion-terrain saved view over Pittsburgh. Counts credits directly
+    from the live `CreditDisplay` DOM (`.cesium-credit-textContainer`
+    children + `.cesium-credit-lightbox` `<ul>` children) rather than through
+    any existing credit-adjacent probe, all of which route their capture
+    through `lib/strip-viewer-widgets.mjs`'s `STRIP_WIDGETS_SOURCE` — which
+    deletes `.cesium-widget-credits` and `.cesium-credit-lightbox-overlay`
+    before the measurement and is exactly why AR-M14 had never run.
+
+**Parity**: `Backends: both`, and the fix is in backend-agnostic scene code —
+no shader or WebGPU-specific change. WebGL's credit COUNT cannot change: the
+same credits, gated by the same conditions, are added the same number of
+times, just from a call site that now runs earlier in the same function
+rather than from inside the WebGL-only command build.
+
+Files: `packages/engine/Source/Scene/GlobeSurfaceTileProviderRendering.js`,
+`packages/engine/Specs/Scene/GlobeSurfaceTileProviderPerTileCreditsSpec.mjs`,
+`package.json` (`test-scene-node`),
+`Tools/visual-regression/probe-ar002-per-tile-credits.mjs`,
+`Tools/visual-regression/ar002-per-tile-credits-harness.html`.

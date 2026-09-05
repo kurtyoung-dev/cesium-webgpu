@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>AR-002 per-tile credits harness</title>
+    <link rel="stylesheet" href="/Build/CesiumUnminified/Widgets/widgets.css" />
+    <style>
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        background: #000;
+        overflow: hidden;
+      }
+      #cesiumContainer {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 1024px;
+        height: 640px;
+      }
+    </style>
+  </head>
+  <body data-ar002-per-tile-credits-harness="owned-no-autostart-v1">
+    <div id="cesiumContainer"></div>
+    <script type="module">
+      // Harness for probe-ar002-per-tile-credits.mjs (AR-M14). Owns no timing
+      // policy beyond what the probe asks for — the default render loop is off
+      // and every frame is an explicit forceRender, mirroring
+      // globe-cold-start-harness.html.
+      //
+      // WHY A NEW HARNESS RATHER THAN REUSING THAT ONE: this probe's whole job
+      // is reading the credit-bar DOM after settle, and every existing
+      // credit-adjacent probe reaches its capture through
+      // `lib/strip-viewer-widgets.mjs`'s STRIP_WIDGETS_SOURCE, which removes
+      // `.cesium-widget-credits` and `.cesium-credit-lightbox-overlay`
+      // entirely before the measurement — correct for a pixel-diff capture
+      // that must not composite DOM chrome, but it deletes the very nodes
+      // AR-M14 needs to count. This harness's own `__stripWidgets` therefore
+      // hides only the toolbar/animation/timeline/bottom bar (as
+      // globe-cold-start-harness.html's does) and never touches the credit
+      // widget, so `__countPerTileCredits` below reads the real thing.
+      window.CESIUM_BASE_URL = "/Build/CesiumUnminified/";
+      import * as Cesium from "/Build/CesiumUnminified/index.js";
+      window.Cesium = Cesium;
+
+      window.__errors = [];
+      window.addEventListener("error", (e) =>
+        window.__errors.push(`window.error: ${e.message || String(e)}`),
+      );
+      window.addEventListener("unhandledrejection", (e) =>
+        window.__errors.push(`unhandledrejection: ${String(e.reason)}`),
+      );
+
+      window.__build = async function (options) {
+        try {
+          const viewer = await Cesium.Viewer.createAsync(
+            document.getElementById("cesiumContainer"),
+            {
+              contextOptions: { renderer: options.renderer },
+              useBrowserRecommendedResolution: false,
+              // Per-tile credits are what this probe measures, so the base
+              // imagery layer is explicit rather than left to the
+              // BaseLayerPicker default: Cesium ion World Imagery is
+              // Bing-backed and carries real per-tile attribution.
+              baseLayerPicker: false,
+              geocoder: false,
+              homeButton: false,
+              sceneModePicker: false,
+              navigationHelpButton: false,
+              animation: false,
+              timeline: false,
+              fullscreenButton: false,
+              infoBox: false,
+              selectionIndicator: false,
+              baseLayer: Cesium.ImageryLayer.fromWorldImagery(),
+            },
+          );
+          window.viewer = viewer;
+          const scene = viewer.scene;
+          viewer.useDefaultRenderLoop = false;
+          scene.globe.enableLighting = false;
+          if (options.terrain === true) {
+            // ion terrain (asset 1) also carries per-tile credits, so a
+            // settled view exercises both loops AR-002 hoists — terrain and
+            // imagery — the same combination the behaviour spec fixes.
+            scene.terrainProvider =
+              await Cesium.CesiumTerrainProvider.fromIonAssetId(1, {
+                requestWaterMask: false,
+                requestVertexNormals: true,
+              });
+          }
+          return {
+            ok: true,
+            rendererType: scene.context.rendererType,
+            isWebGPU: scene.context.isWebGPU,
+            terrainReady: !!scene.globe.terrainProvider,
+          };
+        } catch (e) {
+          const message = String(e && e.stack ? e.stack : e);
+          window.__errors.push(`build: ${message}`);
+          return { ok: false, error: message };
+        }
+      };
+
+      // Hides only the chrome that has nothing to do with attribution. The
+      // credit widget (`.cesium-widget-credits`, `.cesium-credit-lightbox-*`)
+      // is deliberately left alone — see the file header.
+      window.__stripWidgets = function () {
+        for (const selector of [
+          ".cesium-viewer-toolbar",
+          ".cesium-viewer-animationContainer",
+          ".cesium-viewer-timelineContainer",
+          ".cesium-viewer-bottom",
+        ]) {
+          for (const node of document.querySelectorAll(selector)) {
+            node.style.display = "none";
+          }
+        }
+        return true;
+      };
+
+      window.__setView = function (view) {
+        window.viewer.camera.setView({
+          destination: Cesium.Cartesian3.fromDegrees(
+            view.longitude,
+            view.latitude,
+            view.height,
+          ),
+          orientation: {
+            heading: Cesium.Math.toRadians(view.heading ?? 0),
+            pitch: Cesium.Math.toRadians(view.pitch ?? -90),
+            roll: 0,
+          },
+        });
+        return true;
+      };
+
+      // Settles by forcing frames at a pinned clock until the globe reports
+      // its tiles loaded and holds that state for a few consecutive frames —
+      // mirrors globe-cold-start-harness.html's `ready` debounce, so a
+      // mid-stream flicker cannot end the round early.
+      window.__settle = async function (arg) {
+        const scene = window.viewer.scene;
+        const time = Cesium.JulianDate.fromIso8601(arg.iso);
+        const deadline = performance.now() + (arg.budgetMs ?? 60000);
+        const started = performance.now();
+        let frames = 0;
+        let ready = 0;
+        while (performance.now() < deadline) {
+          scene.requestRender();
+          scene.forceRender(time);
+          frames++;
+          const commands = scene.frameState.commandList.length;
+          if (scene.globe.tilesLoaded && commands > 0) {
+            ready++;
+            if (ready >= 8 && frames >= (arg.minFrames ?? 60)) {
+              break;
+            }
+          } else {
+            ready = 0;
+          }
+          await new Promise((r) => setTimeout(r, 8));
+        }
+        return {
+          frames,
+          wallMs: Math.round(performance.now() - started),
+          tilesLoaded: scene.globe.tilesLoaded,
+          commandsDeferred: scene.frameState.commandsDeferred ?? null,
+          timedOut: performance.now() >= deadline,
+        };
+      };
+
+      // The actual measurement. Reads the CreditDisplay DOM directly rather
+      // than through any capture/screenshot path — see CreditDisplay.js:
+      // on-screen credits (`showOnScreen: true`, e.g. a required Bing logo)
+      // render as children of `.cesium-credit-textContainer`, one delimiter
+      // span between each pair; everything else renders as `<li>` inside the
+      // single `<ul>` under `.cesium-credit-lightbox`, POPULATED every frame
+      // regardless of whether the lightbox is currently shown (`endFrame`
+      // calls `displayCredits` on both containers unconditionally). The
+      // separate always-on ion/Cesium logo swap target
+      // (`.cesium-credit-logoContainer`) is excluded on purpose: it is a
+      // provider-level credit `GlobeSurfaceTileProvider.updateCredits`
+      // already adds outside the backend branch (see AR-002's packet), not a
+      // per-tile one, and it is not part of either counted container.
+      window.__countPerTileCredits = function () {
+        const screenContainer = document.querySelector(
+          ".cesium-credit-textContainer",
+        );
+        const onScreen = screenContainer
+          ? Array.from(screenContainer.children).filter(
+              (el) => el.className !== "cesium-credit-delimiter",
+            ).length
+          : 0;
+        const lightboxList = document.querySelector(
+          ".cesium-credit-lightbox ul",
+        );
+        const lightbox = lightboxList ? lightboxList.children.length : 0;
+        return { onScreen, lightbox, total: onScreen + lightbox };
+      };
+    </script>
+  </body>
+</html>
