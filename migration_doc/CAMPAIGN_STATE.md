@@ -177,6 +177,23 @@ decisions, Éowyn measurement rows). **Status authority unchanged:** the campaig
 `DEFERRED_WORK.md` and `FIX_QUEUE_2026-08-27_AUDIT_FINDINGS.md` keep every id they own; the new
 queue launches, rules, schedules and funds nothing, and its `AR-` ids are add-only.
 
+### Upstream sync — CesiumJS 1.145 (not a numbered campaign)
+
+**Planned, not launched.** `main` is 358 commits behind `upstream/main` (`73c2eeec0c`, 2026-09-03)
+and 1,783 ahead; merge-base `6d5d8b1f07` (2026-08-03). Exactly one release tag sits in the gap,
+**1.145**. [`UPSTREAM_SYNC_PLAN_1.145_2026-09-04.md`](UPSTREAM_SYNC_PLAN_1.145_2026-09-04.md) is the
+plan, built from one aborted dry-run merge: 32 conflicted files, 79 conflict hunks, 164 paths
+changed. Its rows are the `UPSTREAM-SYNC-1.145-*` family in
+[`QUEUE_2026-08-29_RESEARCH_DISPATCH.md`](QUEUE_2026-08-29_RESEARCH_DISPATCH.md), which carry
+status — this file does not, and neither does the plan. **Critical path:** an open weekend window
+with the Edge executor free (the plan's §8.6 recommends 2026-09-05; the window must hold both the
+resolution and its verification). **Hold:** none — the sync is ruling-free. Two maintainer calls sit
+_inside_ it: the `UP-1` fork-code disposition if it resolves to DROP, and whether to take upstream's
+new Sandcastle analytics module. Two procedural facts the plan establishes: the sync is the **one
+sanctioned merge commit** against the otherwise squash-only landing rule, and CLAUDE.md's
+sync-procedure `--theirs` default is **wrong for 13 of the 24 conflicted `.js` files**, which the
+fork has converted to ES6 classes while upstream is still prototype-based (plan §3).
+
 ### Standing principles that block work (not row-specific)
 
 - **Performance work must not remove, default-disable, bypass, or visually degrade a feature to

@@ -198,6 +198,15 @@ certification.
 | `DX-33` | Three WebGPU cache specs under packages/engine/Specs/Renderer/WebGPU have no runner home (Helm packet §3.2); home them in `test-model-webgpu` and confirm the family count | SONNET-BOUNDED | XS | LANDED (Batch 1395; Targon, reviewer Aldor; test-model-webgpu lists them explicitly) | — | DX |
 | `DX-34` | `gsplat-campaign15-instruments.spec.mjs:216-236` certifies the tile-update tagging predicate's truth table (brief-certifying; the predicate is unreachable for splats, Indis §1a); replace with a behaviour spec when the C15-G7a chain design is funded | SONNET-BOUNDED | S | QUEUED (after `C15-G7a` design) | `C15-G7a` | DX |
 | `DX-35` | Index the 2026-09-02 documents in `migration_doc/README.md` after DX-23's currency claim landed: `CHELATE.md`, `ARCHITECTURE_REVIEW_PLAN_2026-09-02.md`, `RENDERER_LANDSCAPE_AUDIT_2026-09-02.md`, `audits/2026-09-02_ARCHITECTURE_REVIEW_PHASE1.md`, `branches/SUNDISC_RECONCILIATION_2026-09-02.md`, `C18_P3_PNTS_MODEL_ATTENUATION_DESIGN_2026-09-02.md`; re-run the census and restate the claim | SONNET-BOUNDED (docs) | XS | QUEUED (next window) | `DX-23` | DX |
+| `UPSTREAM-SYNC-1.145-00` | The merge commit and the `PORT-INTO-CLASS` resolution pass — all 32 conflicts, one atomic merge commit (§8.0 explains why they cannot be split) | OPUS-JUDGMENT | XL | QUEUED (needs a window, not a decision; §6b) | an open weekend window with the Edge executor free | 1 |
+| `UPSTREAM-SYNC-1.145-01` | Globe cluster review: the `GlobeSurfaceShaderSet` shader-key bit assignment + `GlobeSurfaceTileProvider` | OPUS-JUDGMENT | M | QUEUED | `-00` staged | 1 |
+| `UPSTREAM-SYNC-1.145-02` | Clipping polygons + vector pipeline; the `UP-1` fork-code disposition now that 1.145 deleted the three signed-distance shaders | OPUS-JUDGMENT | L | QUEUED (a DROP of shipped fork functionality is a maintainer call) | `-00` staged | 1 |
+| `UPSTREAM-SYNC-1.145-03` | Tiles + models review, including the auto-merged RTE-heavy set (`GltfLoader`, `Model3DTileContent`, `EdgeVisibilityPipelineStage`, `PickingPipelineStage`) | OPUS-JUDGMENT | M | QUEUED | `-00` staged | 1 |
+| `UPSTREAM-SYNC-1.145-04` | Renderer core: re-source 1.145's only Scene-layer `ContextLimits` read to `context.limits`; the snap `surfacePosition` contract vs the fork's readback policy | OPUS-JUDGMENT | M | QUEUED | `-00` staged | 1 |
+| `UPSTREAM-SYNC-1.145-05` | Toolchain, widgets, Sandcastle, and the `@playwright/test` 1.59.1 → 1.62.1 bump; the three fork-only devDependencies in `package.json` hunk 1 | SONNET-BOUNDED (second dispatch: OPUS-JUDGMENT for the Playwright exposure) | M | QUEUED (the Sandcastle analytics module is a maintainer call) | `-00` | 1 |
+| `UPSTREAM-SYNC-1.145-06` | Post-merge verification + the wave-end gate; baselines NOT refreshed by this row | OPUS-EDGE-EXECUTOR | L | QUEUED | `-00`…`-05` | 1 |
+| `UPSTREAM-SYNC-1.145-07` | The WGSL parity twins the sync opens (`czm_eyeCartographic` / `czm_eyeToEnu` + `eyeToCartographicDelta`, and any new pipeline stage) | OPUS-JUDGMENT (shader, parity) | M | QUEUED | `-00` landed | 2 |
+| `UPSTREAM-SYNC-1.145-08` | The ES6-shape guard: no file that was a class pre-merge may be prototype-based after | SONNET-BOUNDED | S | QUEUED (needs a runner home) | `-00` landed | 2 |
 | `DM-N1`…`DM-N11` | Eleven design-model non-levers | — | — | CLOSED-NEGATIVE | — | §7 |
 | `EAN-X1`…`EAN-X6` | Six Earth-at-Night closures and hand-offs | — | — | CLOSED-NEGATIVE | — | §7 |
 
@@ -1080,6 +1089,88 @@ specific sign-off and frozen review/Edge sequence are released.
 `DX-14`'s carried live-ledger repair completion and explicit maintainer release and `DX-15`'s
 `C11-107` / G6 Q2d Principle-7 sign-off are separate row-specific gates. They do not mint new M-DX
 identifiers, and neither is discharged by M-DX-1, M-DX-2, or broad Wave-DX authority.
+
+## 6b. UPSTREAM SYNC — CesiumJS 1.145. Plan authority: `UPSTREAM_SYNC_PLAN_1.145_2026-09-04.md`
+
+Planned by lane U on 2026-09-04 from **one dry-run merge**, executed in an isolated clone and
+aborted — no merge commit exists and nothing has been landed. The plan
+([`UPSTREAM_SYNC_PLAN_1.145_2026-09-04.md`](UPSTREAM_SYNC_PLAN_1.145_2026-09-04.md)) carries the
+census and the resolution per hunk; these rows carry status.
+
+Measured, not quoted: `main` is **358 commits behind** `upstream/main` `73c2eeec0c`, merge-base
+`6d5d8b1f07`; the merge produces **32 conflicted files / 79 conflict hunks**, changing **164 paths**
+(117 M, 44 A, 3 D; +17,311 / −1,452).
+
+Two facts that govern how these rows are read. **(1)** The sync is the **one sanctioned merge
+commit** against the otherwise squash-only landing rule — CLAUDE.md's procedure requires a verified
+two-parent commit, and squashing it would corrupt the next sync's merge-base. **(2)** All 32
+conflicts resolve into that single commit or none of them do; git refuses a commit with unresolved
+paths, so `-01`…`-04` are **review gates on `-00`'s working tree**, not separate commits.
+
+### `UPSTREAM-SYNC-1.145-00` — the merge commit and the `PORT-INTO-CLASS` resolution pass
+
+- **Disposition:** OPEN. Execute plan §8.2: safety branch, `git merge upstream/main --no-edit`, resolve all 32 conflicts cluster by cluster per plan §5, build + typecheck, commit, verify two parents. Owns the merge commit and therefore every resolution. **CLAUDE.md's sync-procedure step-5 `--theirs` default is wrong for 13 of the 24 conflicted `.js` files** — the fork converted them to ES6 classes while upstream is still prototype-based, so `--theirs` silently reverts the conversion and "then re-add WebGPU code" does not restore it (plan §3). Those files take the sixth class, `PORT-INTO-CLASS`. The `UniformState` × `AutomaticUniforms` fix is **inside this row**: `AutomaticUniforms.js` auto-merges referencing `uniformState.eyeCartographic` / `.eyeToEnu`, which the conflicted `UniformState.js` does not define — the merge is broken until it lands, so it is not deferrable.
+- **Tier / Size / Backends:** OPUS-JUDGMENT · XL · both. **Depends on:** an open weekend window with the Edge executor free (plan §8.6 recommends 2026-09-05; the window must hold both resolution and verification). **Ruling touched:** invokes the Upstream Sync Procedure and amends its step-5 default. **Gate:** none — ruling-free; it needs a window, not a decision.
+- **Acceptance:** `git cat-file -p HEAD` shows two parents, `01226c648a` and `73c2eeec0c`; `npx gulp build` and `npx tsc --noEmit` green; no file that was an ES6 class at `01226c648a` is prototype-based after; `czm_eyeCartographic` and `czm_eyeToEnu` resolve to defined values through the automatic-uniform path.
+- **Binds:** SR-1. **Source:** plan §2, §3, §8.
+
+### `UPSTREAM-SYNC-1.145-01` — globe cluster resolution review
+
+- **Disposition:** OPEN. Review gate on `-00`'s globe resolution: the `GlobeSurfaceShaderSet` shader-key bit assignment and `GlobeSurfaceTileProvider`'s seven hunks. Highest-severity single resolution in the sync, because a shader-cache key collision serves the wrong shader with nothing thrown and no spec failing.
+- **Tier / Size / Backends:** OPUS-JUDGMENT · M · both (WebGL primarily). **Depends on:** `-00` staged. **Ruling touched:** none. **Gate:** none.
+- **Acceptance:** the post-merge bit map is stated and every bit has exactly one meaning; the globe renders identically to the pre-merge baseline on both backends across the capture set; a negative control shows the guard fires when two variants are given the same key.
+- **Binds:** SR-1. **Source:** plan §5.1.
+
+### `UPSTREAM-SYNC-1.145-02` — clipping polygons + vector pipeline; the `UP-1` disposition
+
+- **Disposition:** OPEN. The sync's largest cost centre. 1.145 deletes `clipPolygons.glsl`, `unpackClippingExtents.glsl` and `PolygonSignedDistanceFS.glsl` — the upstream WebGL path the fork's WebGPU clipping-polygon backend was ported from. This row owns the drop/keep/rework decision, plus the `pack*CollectionData` contract change and the drape-binding move. **Principle 7 governs:** fork WebGPU code is not droppable merely because its upstream twin died; the disposition comes from the ledger, never from the deletion.
+- **Tier / Size / Backends:** OPUS-JUDGMENT · L · both. **Depends on:** `-00` staged. **Ruling touched:** none. **Gate:** a DROP of shipped fork functionality is a maintainer call; KEEP or REWORK is not.
+- **Acceptance:** clipping-polygon rendering unchanged on both backends across the capture set; every fork call site of the changed pack signature passes the new parameter type; the `G1` WGSL twins re-verified.
+- **Binds:** SR-1. **Source:** plan §5.2.
+
+### `UPSTREAM-SYNC-1.145-03` — tiles + models review, including the auto-merged set
+
+- **Disposition:** OPEN. Review gate on `-00`'s tiles/models resolution. Its conflicted set is almost entirely structural, so the substantive risk sits in the **auto-merged** files of the same subsystem — `GltfLoader.js`, `Model3DTileContent.js`, `EdgeVisibilityPipelineStage.js`, `PickingPipelineStage.js` — all RTE-heavy paths where a clean textual merge can still be a contract break. Auto-merged is not the same as safe.
+- **Tier / Size / Backends:** OPUS-JUDGMENT · M · both. **Depends on:** `-00` staged. **Ruling touched:** none. **Gate:** none.
+- **Acceptance:** the far-camera precision probes show no new RTE drift; tileset and model rendering unchanged across the capture set on both backends; every `AUTO-VERIFY` row in the plan's census is discharged with a named check.
+- **Binds:** SR-1. **Source:** plan §5.3, §4.
+
+### `UPSTREAM-SYNC-1.145-04` — renderer core: `ContextLimits` layering and the snap contract
+
+- **Disposition:** OPEN. Review gate on `-00`'s renderer-core resolution. Two named items. 1.145 adds the fork's **only** Scene-layer `ContextLimits` reader (`Scene/PostProcessStage.js`, clamping the selected-feature-id texture); the fork has zero such readers outside `Renderer/`, and a process-global limit is wrong under multi-context, so the clamp is absorbed but re-sourced to `context.limits.maximumTextureSize` — a migration path the fork already built. Separately, `SceneSnapResult.surfacePosition` arrives implemented as a second synchronous readback per edge snap, which the fork's WebGPU snap path cannot do; take the contract, not the implementation.
+- **Tier / Size / Backends:** OPUS-JUDGMENT · M · both. **Depends on:** `-00` staged. **Ruling touched:** none. **Gate:** none.
+- **Acceptance:** zero `ContextLimits` readers outside `packages/engine/Source/Renderer/`; the selected-feature-id texture clamps against the owning context's limit under split-screen; an edge snap costs no more readbacks on WebGPU than a non-edge snap.
+- **Binds:** SR-1. **Source:** plan §5.4.
+
+### `UPSTREAM-SYNC-1.145-05` — toolchain, widgets, Sandcastle, and the Playwright bump
+
+- **Disposition:** OPEN. The seven non-engine conflicts, the dependency moves, and `@playwright/test` 1.59.1 → 1.62.1 against the probe fleet and the Edge executor's runtime. **The at-risk lines in `package.json` conflict hunk 1 are three fork-only devDependencies — `@eslint/js`, `eslint-config-prettier`, `eslint-plugin-n` (each 1 hit on the fork, 0 upstream, 0 at merge-base); a `--theirs` on that hunk deletes all three.** The `"./Source/Cesium*.js"` entry in `sideEffects` is also must-survive — without it bundlers tree-shake `setGlobalDefaultRenderer()` out of the variant barrels — but it sits **outside every conflict region**, so it is at far lower risk than the three above. Check both; no verification stage re-checks either. Do **not** "re-add" the fork's `sg` form: `sg-scan` → `ast-grep scan` and `@ast-grep/cli ^0.45.1` auto-merge correctly. Playwright exposure surveyed as LOW (the fleet uses only foundational APIs; Edge channel resolution unaffected) but marked UNVERIFIED offline; the settling check is a before/after receipt-hash diff on a migrated probe.
+- **Tier / Size / Backends:** SONNET-BOUNDED · M · tooling. **Second dispatch:** OPUS-JUDGMENT · S · tooling — the Playwright 1.59 → 1.62 exposure analysis and the probe-fleet smoke that settles it (§0.3: `Tier` names exactly one executor, the one owning the row's first deliverable). **Depends on:** `-00`. **Ruling touched:** none. **Gate:** whether to take upstream's new Sandcastle analytics module (Amplitude telemetry, default-disabled, arriving in a private fork) is a maintainer call; so is the new CLA-rotation workflow, which reminds about a credential this fork does not use.
+- **Acceptance:** the probe fleet runs green on 1.62.1 under Edge with no deprecation warnings; `node Tools/variant-smoke-test.mjs` green on all three variants; `@eslint/js`, `eslint-config-prettier`, `eslint-plugin-n` and the `sideEffects` entry all present post-merge; the telemetry decision recorded either way.
+- **Binds:** SR-1. **Source:** plan §6.
+
+### `UPSTREAM-SYNC-1.145-06` — post-merge verification and the wave-end gate
+
+- **Disposition:** OPEN. Run plan §7 in full before the push: build, both typechecks, the Karma suites for every touched subsystem, variant smoke, capture-and-diff, the Sandcastle2 sweep on both renderers, and the subsystem and RTE probes; then the wave-end gate — **`npm run wave-end-gate -- --wave <id>`; the bare `npm run wave-end-gate` refuses, because `Tools/wave-end-gate.mjs` requires `--wave <id>`** — banked under `Tools/visual-regression/output/wave-end/`. **The `S3` exposure-sweep discriminator is NOT part of this row**: plan §7.3 adjudicates that gating claim REFUTED (`C12-29` S3 is eclipse occlusion, not a classification depth target), so do not spend an Edge leg on it. **Visual-regression baselines are not refreshed by this row** — no `--update`; a genuine baseline move is its own separately reviewed commit. Karma needs `CHROME_BIN` pointed at Edge, and an `--includeName` matching nothing exits 3, which is a failure and not a pass.
+- **Tier / Size / Backends:** OPUS-EDGE-EXECUTOR · L · both. **Depends on:** `-00`…`-05`. **Ruling touched:** executes the wave-end gate ruling. **Gate:** none.
+- **Acceptance:** every §7 stage green with its receipt banked, **excepting stage 7a (`G1`'s two WGSL twins), which is explicitly out of scope for this row — it has no runnable command because the scenes do not exist yet, and building them is `G1`'s own deliverable**. A red stage returns the work to `-00`'s working tree rather than being waived. Note the honest limit: `scenes.json` has no clipping, polygon or drape scene, so the sync's own headline features are **not** covered by the visual-regression stage — that gap belongs to `G1`, and is recorded rather than papered over.
+- **Binds:** SR-1, SR-11. **Source:** plan §7.
+
+### `UPSTREAM-SYNC-1.145-07` — the WGSL parity twins the sync opens
+
+- **Disposition:** OPEN. 1.145 adds GLSL-side features with no WebGPU equivalent — at minimum `czm_eyeCartographic` / `czm_eyeToEnu` and the `eyeToCartographicDelta` builtin that consumes them, plus any new pipeline stage the tiles/models analysis identifies. Principle 5 makes the twin an obligation; Principle 9 makes it a named next item rather than a silent gap. This row exists so the sync does not quietly ship WebGL-only features.
+- **Tier / Size / Backends:** OPUS-JUDGMENT (shader, parity) · M · WebGPU. **Depends on:** `-00` landed. **Ruling touched:** none. **Gate:** none.
+- **Acceptance:** the WGSL `CameraUniforms` carries the ENU basis and cartographic eye **with `previousViewProjection` still at the tail of the struct** (CLAUDE.md pins that field's position; the new members go ahead of it, never after); a probe shows a shader consuming them producing matching output on both backends; `FEATURE_INVENTORY.md` updated so the entry moves rather than the inventory going stale.
+- **Binds:** SR-1. **Source:** plan §5.4, §5.3.
+
+### `UPSTREAM-SYNC-1.145-08` — the ES6-shape guard
+
+- **Disposition:** OPEN. Land the assertion that no file which was an ES6 class at the pre-merge tip is prototype-based afterwards. One check, and it catches the entire silent-reversion class the plan identifies as this sync's dominant conflict mechanism (46% of hunks). Valuable beyond this sync: every future upstream merge faces the same shape mismatch, and it grows as the fork converts more files.
+- **Tier / Size / Backends:** SONNET-BOUNDED · S · tooling. **Depends on:** `-00` landed (it needs the merge to test against). **Ruling touched:** none. **Gate:** none — but it **needs a runner home**; a spec with no runner home is a review blocker.
+- **Acceptance:** the guard fails on a fixture where a class file is replaced by its prototype-based ancestor and passes on the real post-merge tree; it is wired into an existing `npm run` target rather than left orphaned.
+- **Binds:** SR-12. **Source:** plan §3.3.
+
+---
 
 ## 7. CLOSED-NEGATIVE — recorded so they are not re-opened
 
