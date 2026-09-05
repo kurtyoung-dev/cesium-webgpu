@@ -164,9 +164,7 @@ campaign rows named above stay owned by their own queues. The meshlet/mesh-shadi
 (`MS-00..26`) is **HELD** by ratified gate M6 until `C11-168`'s dense-tileset lane is satisfied —
 not yet, per `QUEUE_2026-07-18_CAMPAIGN11.md` row `C11-168` ("W1 — PARTIAL / VALID CAUSAL
 DEFICIT, ROOT CAUSE OPEN") — and its campaign placement (a Phase-8b wave vs. new Campaign 19 vs.
-a C18 wave) awaits maintainer gate **M-16**; nothing about it is launched. Wave 1 of this queue
-(17 ruling-free/measurement-first rows) is mid-execution; its closure is the manual three-step
-permitted by `R-2026-09-02-3`.
+a C18 wave) awaits maintainer gate **M-16**; nothing about it is launched. Wave 1 of this queue (17 ruling-free/measurement-first rows) is mid-execution; its closure is the manual three-step permitted by `R-2026-09-02-3`. **That three-step ran 2026-09-03/04 (Éowyn, job 2 item 10, banked at `Tools/visual-regression/output/wave-end/2026-09-02/`) and NO STEP WAS GREEN, so the wave is NOT CLOSED under `R-2026-08-29-2`:** (a) variant smoke exit 1 — all three variant bundles absent from the served clone, nothing loaded; (b) the Sandcastle2 sweep exit 1 on both renderers — **0 of 338 certified either side**, because the ungenerated editor typings (`/packages/engine/index.d.ts`, `/packages/widgets/index.d.ts`) 404 on the app origin and the console-error gate fails every demo on that one 404; (c) capture-and-diff exit 1, summary FAIL (3 PASS / 1 FAIL / 6 NON_CERTIFYING), **though its cross-backend parity leg passed 10/10 at max 1.52 %** with `promotionPerformed: false`. The gate re-runs on a tree built with `npx gulp buildAllVariants` **and** the TypeScript-definitions step; until it does, the wave stays open. Two real WebGPU faults surfaced under step (b) and are filed as their own rows (`elevation-band-material`, `frustum-dev`); the baseline incompleteness under step (c) is filed separately. **No row's status is changed by this note.**
 
 **Architecture-review dispatch view (2026-09-03).**
 [`QUEUE_2026-09-03_ARCHITECTURE_REVIEW.md`](QUEUE_2026-09-03_ARCHITECTURE_REVIEW.md) is the dispatch
