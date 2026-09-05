@@ -14957,6 +14957,8 @@ it; the vertex-format half is untouched.
 
 ## 2026-09-04 - AR-009 / NEW-WEBGPU-POSTPROCESS-EFFECTS-UNREVIVABLE-AFTER-RECREATE (lane Emeldir, wave P0-1) - **FIXED**
 
+## 2026-09-04 - AR-009 / NEW-WEBGPU-POSTPROCESS-EFFECTS-UNREVIVABLE-AFTER-RECREATE (lane Emeldir, wave P0-1) - **FIXED in engine (Batch 1420); runtime acceptance `AR-M06` NOT YET RUN — see the status note below**
+
 **Overlap, stated up front.** `Q-3` (`FIX_QUEUE_2026-08-27_AUDIT_FINDINGS.md:80`, "every canvas
 resize destroys all effects and recompiles their shaders") owns the **destroy half** of this and is
 the seat's status authority for it; nothing here edits that file. The half filed NEW is that seven
@@ -15034,6 +15036,35 @@ row. For this row's defect the coverage is sound: `addBloom` and its siblings re
 `_height` and `_intermediateFormat` that are already current when the configure pass runs.
 Two inertness mutants, one per touched file. The Edge leg is `AR-M06`:
 `node Tools/visual-regression/probe-postprocess-resize-survival.mjs`.
+
+**`AR-M06` status — attempted 2026-09-05, NOT RUN (instrument defect), re-queued as job 7.** The
+first Edge attempt (Éowyn; evidence
+`Tools/visual-regression/output/wave-p0-1-edge-2026-09-05/leg4-ar009/`) died in the probe's FIRST
+`page.evaluate` with `ReferenceError: Cesium is not defined`, wrote no receipt and produced no
+verdicts array. **This row therefore still has no runtime acceptance**: no capture was taken, no
+resize happened, no slot was read. The engine change is not implicated — none of it was exercised.
+Two probe defects were behind it, both fixed in the round-4 follow-up, neither in engine code:
+
+1. *The one the error named.* The enable step used the bare `Cesium` global at four call sites
+   against `Apps/CesiumViewer/index.html`, which loads its app with
+   `<script type="module">` and so publishes `window.viewer` and `window.CesiumDebug` but never
+   `window.Cesium`. It now resolves the namespace from the same module URL the app itself imports
+   (`/Build/CesiumUnminified/index.js`) — the same module-map entry, so the same class identities
+   the running viewer holds.
+2. *One the report did not name, and the more dangerous of the two.* The slot reader reached the
+   pipeline through `scene.context._sceneRenderer._postProcess`; `_sceneRenderer` is declared
+   NOWHERE in `packages/engine/Source`. The real chain is
+   `scene._alternateSceneRenderer._postProcess` (`Scene.js:468`,
+   `WebGPUSceneRendererEnsureResources.ts:458`). Left in place it would **not** have errored: every
+   slot would have read a false `false`, both legs would have reported `pass: false`, and this
+   row's correct engine fix would have been recorded as a product failure.
+
+Both failure paths now THROW rather than return a status a later edit could branch past, and a
+`GPUDevice` without the creation-counter wrapper is an error instead of a fabricated zero build
+count. The spec gained an `AR-M06 INSTRUMENT GUARDS` group — structural, additional to the
+behaviour contract — which re-derives from the engine source that every field the probe reaches
+through is one the engine declares; run against the pre-fix probe it goes red on I1, I2 and I3.
+The row closes when `AR-M06` returns a receipt with verdicts, not before.
 
 **Parity (Principle 5).** WebGPU-only. The WebGL post-process path has no equivalent defect: it has
 no per-effect slot to null — `PostProcessStageCollection.update()` reallocates each stage's

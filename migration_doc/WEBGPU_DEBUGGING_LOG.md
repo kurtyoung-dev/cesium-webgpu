@@ -19419,3 +19419,77 @@ status authority and reads **OPEN — PENDING EDGE (job 7)**.
 shader changed, so `npx gulp build` is **mandatory** before the re-run or the leg
 exercises the old hash. Staged keys in the receipt must read `0x301` /
 `0x1000301` / `0x3000000`.
+
+**Round-4 addendum (lane Emeldir, 2026-09-05) — the `AR-M06` Edge leg errored; two probe defects, no engine involvement.**
+
+Éowyn's first `AR-M06` run (evidence
+`Tools/visual-regression/output/wave-p0-1-edge-2026-09-05/leg4-ar009/`) exited 2 in the probe's
+FIRST `page.evaluate` with `ReferenceError: Cesium is not defined`. No receipt, no verdicts array,
+no capture — so nothing about `AR-009` was measured and the row still has no runtime acceptance.
+The engine change of Batch 1420 is untouched by this and is not implicated.
+
+**Defect 1 — the bare `Cesium` global (the one the error named).** `enableEffects` used `Cesium.…`
+at four call sites: `JulianDate.fromIso8601`, `Cartesian3.fromDegrees`, `Math.toRadians`,
+`PostProcessStageLibrary.createDepthOfFieldStage`. The probe targets
+`Apps/CesiumViewer/index.html`, whose only script tag is
+`<script src="CesiumViewer.js" type="module">` (`index.html:20`); `CesiumViewer.js` imports the
+engine as an ES module and assigns `window.viewer` (`:301, :366, :372`) and `window.CesiumDebug`,
+but no `window.Cesium` — module scope is not global scope. `CesiumDebug.js:1281-1290` hedges on
+`globalThis.Cesium` for the same reason and warns when it is absent, so the global was already
+known-unreliable on this page.
+
+*Fix:* resolve the namespace in-page from the same module URL the app itself imports —
+`CesiumViewer.js` resolves `../../Build/CesiumUnminified/index.js` against `/Apps/CesiumViewer/`
+to `/Build/CesiumUnminified/index.js`. The module map is keyed by URL, so this returns the SAME
+module instance the running viewer was built from and the classes stay identity-equal to the ones
+already in the scene; a second copy would hand the clock a second `JulianDate`. A page that does
+publish `window.Cesium` (split-screen, Sandcastle) is still honoured first. This is the pattern
+`probe-atmospheric-effects.mjs:23-24` already uses against the same page.
+
+**Defect 2 — an undeclared accessor the error report did not name, and the worse of the two.**
+`slotsNow()` read the pipeline as `scene.context?._sceneRenderer?._postProcess`. `_sceneRenderer`
+is declared **nowhere** in `packages/engine/Source` (grep: zero hits). The real chain is
+`scene._alternateSceneRenderer?._postProcess` — `Scene.js:468` assigns the renderer built from
+`FeatureRendererKey.SCENE_RENDERER`, and `WebGPUSceneRendererEnsureResources.ts:458` constructs the
+pipeline on it. It is the chain the rest of the fleet already uses (`diag-taa-black.mjs:70`,
+`diag-stars-hdr-autoexposure.mjs:74`, `canvas-black-readback.mjs:56`).
+
+This one would **not** have errored. Every one of the eleven slot reads would have returned a false
+`false`, `slotsLive` would have been false on both legs, and `AR-M06` would have reported
+`pass: false` — recording a correct engine fix as a product failure. A probe that errors is
+strictly better than one that proceeds on a reading it never took.
+
+**Making a missing global error rather than skip.** Three checks were added, all of which THROW
+rather than return a status a later edit could branch past:
+
+- the resolved namespace is checked against `REQUIRED_NAMESPACE_MEMBERS` and the throw names the
+  missing member and the resolution source, instead of surfacing as a `TypeError` from whichever
+  line used it first;
+- the pipeline chain is asserted once after the first settled frame (the pipeline is built during
+  `ensureResources`, i.e. on first render), so an unreachable pipeline is an errored run, not two
+  false failures;
+- `COUNTER_INIT` now records `instrumented`. It previously returned early when `GPUDevice` was
+  undefined and left every counter at zero, and a zero is indistinguishable from "this resize
+  compiled nothing" — which is the reading the `LIGHT-6` decision turns on. A non-instrumented run
+  now throws instead of reporting a fabricated build count.
+
+**Guards.** `webgpu-postprocess-effect-survives-recreate.spec.mjs` gained an `AR-M06 INSTRUMENT
+GUARDS` group — structural, declared as such, and additional to the behaviour contract, never a
+substitute for it. It re-derives from the engine source that every field the probe reaches through
+is one the engine declares (`I3`), that the probe's namespace URL is the app's own import URL
+(`I2`), and that no bare `Cesium` global remains (`I1`). Run against the pre-fix probe on disk it
+goes red on I1, I2 and I3, and its two mutations reintroduce the real historical defects rather
+than fabricated ones.
+
+**Files modified (round 4):**
+
+- `Tools/visual-regression/probe-postprocess-resize-survival.mjs` — namespace resolution, pipeline
+  accessor, three thrown instrument checks
+- `Tools/visual-regression/webgpu-postprocess-effect-survives-recreate.spec.mjs` — the guard group;
+  also corrects the file's own over-claim about `passList` being independent pipeline bookkeeping
+  (Dagnir §8 required that correction in the packet and the ledger; the same sentence was still
+  standing in the spec's docstring)
+- `migration_doc/DEFERRED_WORK.md`, `migration_doc/WEBGPU_DEBUGGING_LOG.md` — this record
+
+No engine file is touched in round 4, so no rebuild is required and the Batch 1420 engine bytes are
+unchanged.

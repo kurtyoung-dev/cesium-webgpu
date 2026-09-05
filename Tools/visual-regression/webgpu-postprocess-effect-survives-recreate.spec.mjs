@@ -28,16 +28,23 @@
 // after a resize". Two things are asserted, per effect:
 //
 //   1. the slot is live after the recreate — the effect exists at all; and
-//   2. the pass list the pipeline reports after the recreate equals the pass
-//      list it reported before it — the effect is still wired into the frame,
-//      not merely allocated.
+//   2. the set of effects that would contribute a pass after the recreate
+//      equals the set before it — no enabled effect was lost.
 //
-// (2) is the load-bearing one. "The slot is no longer null" would only check
-// that the instruction in the brief was followed; the pass list is what the
-// frame is actually built from, and it is produced by the real pipeline's own
-// bookkeeping rather than by this file.
+// Be precise about what (2) is and is not. `passList` is computed HERE, over
+// the same eleven getters the slot assertion reads; it is a restatement of the
+// slot reading across the whole set, not an independent observable produced by
+// the pipeline's own stage bookkeeping. It catches "one effect came back and
+// another did not" and it catches an effect revived but disabled. It does NOT
+// catch an effect revived at a stale size or a stale format — this spec
+// records neither, and the effect classes are stubbed. That gap is real and is
+// filed as `NEW-WEBGPU-POSTPROCESS-FIXED-STAGES-STALE-FORMAT-AFTER-HDR-TOGGLE`; it is
+// not something to read into a green run here.
 //
-// Nothing here asserts source text, and nothing here asserts a comment.
+// Nothing in the contract above asserts source text or a comment. The
+// INSTRUMENT GUARDS at the end of this file do read source, deliberately and
+// as a declared structural guard; they are additional to this contract and
+// never a substitute for it.
 //
 // The gate state is NOT supplied by this harness. That would certify the
 // harness rather than the code: hand-writing `cache.bloomEnabled = true` skips
@@ -74,6 +81,7 @@
 // Run: node --test Tools/visual-regression/webgpu-postprocess-effect-survives-recreate.spec.mjs
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -89,6 +97,16 @@ const BRIDGE_PATH = resolve(
   "WebGPUPostProcessStageCollection.ts",
 );
 const PIPELINE_PATH = resolve(engineWebGPU, "WebGPUPostProcessPipeline.ts");
+
+// Read only by the INSTRUMENT GUARDS at the end of this file.
+const PROBE_PATH = resolve(directory, "probe-postprocess-resize-survival.mjs");
+const SCENE_PATH = resolve(
+  directory,
+  "../../packages/engine/Source/Scene/Scene.js",
+);
+const SCENE_RENDERER_PATH = resolve(engineWebGPU, "WebGPUSceneRenderer.ts");
+const APP_PATH = resolve(directory, "../../Apps/CesiumViewer/CesiumViewer.js");
+const APP_PAGE = "/Apps/CesiumViewer/CesiumViewer.js";
 
 // The pipeline reads the WebGPU usage-flag globals at call time. The bit values
 // are fixed by the specification, and nothing here depends on them beyond their
@@ -652,6 +670,217 @@ test("an enabled WebGPU post-process effect survives a recreate", async (t) => {
       assert.ok(
         live.counters.textures > liveBefore,
         "the unmutated resize does reallocate, so the mutant is a real inertness",
+      );
+    },
+  );
+});
+
+// ---------------------------------------------------------------------------
+// AR-M06 INSTRUMENT GUARDS
+//
+// STRUCTURAL, and additional to the behaviour contract above — never a
+// substitute for it. Declared as such per `_COMMON_RULES` section 1.
+//
+// Eowyn's Edge leg of 2026-09-05 died in its FIRST `page.evaluate` with
+// `ReferenceError: Cesium is not defined`, so AR-M06 measured nothing. Two
+// instrument defects were behind that run, and only one of them announced
+// itself:
+//
+//   1. the enable step used the bare `Cesium` global against
+//      `Apps/CesiumViewer/index.html`, which loads its app as an ES module and
+//      so publishes `window.viewer` but no namespace. That ERRORED, at the
+//      first use, with no receipt written. It is the good failure: nothing was
+//      claimed.
+//   2. the slot reader reached the pipeline through
+//      `scene.context._sceneRenderer._postProcess` — a field the engine
+//      declares nowhere. That would NOT have errored. Every slot would have
+//      read a false `false`, both legs would have reported `pass: false`, and
+//      the run would have looked like a product failure of the AR-009 fix.
+//
+// (2) is the dangerous shape and it is what these guards are for. A probe
+// cannot be driven against a browser from a Node runner, but it CAN be checked
+// against the code it claims to read: every field the probe reaches through is
+// re-derived here from the engine source. A rename on either side turns this
+// red at authoring time instead of turning an Edge leg into a false verdict.
+//
+// Both mutations below reintroduce the REAL historical defect rather than a
+// fabricated one, and both run the guard's own predicate, so neither can pass
+// by asserting something weaker than the live check asserts.
+// ---------------------------------------------------------------------------
+
+/**
+ * The probe's source with whole-line comments dropped, so a guard scanning for
+ * a code shape is not tripped by prose that merely discusses it.
+ *
+ * @param {string} source The file text.
+ * @returns {string} The source minus its comment-only lines.
+ */
+function withoutCommentLines(source) {
+  return source
+    .split("\n")
+    .filter((line) => !/^\s*(\/\/|\/\*|\*)/.test(line))
+    .join("\n");
+}
+
+/**
+ * Bare-global `Cesium` member access — `Cesium.JulianDate`, but not
+ * `window.Cesium` and not any other qualified `.Cesium`.
+ */
+const BARE_CESIUM = /(?<![\w$.])Cesium\s*\./g;
+
+/**
+ * Re-derives, from the engine source, that the chain the probe reaches the
+ * post-process pipeline through is a chain the engine actually declares.
+ *
+ * @param {string} probeCode The probe's source, comment lines removed.
+ * @returns {string[]} The two field names, renderer first.
+ */
+function assertPipelineChain(probeCode) {
+  const chain = probeCode.match(/scene\.(_\w+)\?\.(_\w+)/);
+  assert.ok(
+    chain,
+    "the probe no longer reaches the pipeline off a `scene._field?._field` chain, so nothing here can confirm the fields exist",
+  );
+  const [, rendererField, pipelineField] = chain;
+  assert.ok(
+    readFileSync(SCENE_PATH, "utf8").includes(`this.${rendererField} =`),
+    `Scene.js assigns no \`${rendererField}\`, so the probe would read undefined and report every effect lost`,
+  );
+  assert.ok(
+    readFileSync(SCENE_RENDERER_PATH, "utf8").includes(
+      `public ${pipelineField}:`,
+    ),
+    `WebGPUSceneRenderer.ts declares no \`${pipelineField}\``,
+  );
+  return [rendererField, pipelineField];
+}
+
+/**
+ * Re-derives that every effect slot the probe reads is a getter the pipeline
+ * exposes.
+ *
+ * @param {string} probeCode The probe's source, comment lines removed.
+ * @param {string} pipelineSource `WebGPUPostProcessPipeline.ts`.
+ * @returns {string[]} The slot names the probe reads.
+ */
+function assertSlotsExposed(probeCode, pipelineSource) {
+  const read = [...probeCode.matchAll(/\bslot\("(\w+)"\)/g)].map(
+    (match) => match[1],
+  );
+  assert.ok(read.length > 0, "the probe reads no effect slots");
+  for (const name of read) {
+    assert.ok(
+      new RegExp(`\\bget ${name}\\(`).test(pipelineSource),
+      `WebGPUPostProcessPipeline.ts exposes no \`${name}\` getter, so the probe would read a permanent \`false\``,
+    );
+  }
+  return read;
+}
+
+test("AR-M06 instrument guards", async (t) => {
+  const probeCode = withoutCommentLines(readFileSync(PROBE_PATH, "utf8"));
+  const pipelineSource = readFileSync(PIPELINE_PATH, "utf8");
+
+  await t.test(
+    "I1: the probe never reaches for a bare `Cesium` global in page context",
+    () => {
+      assert.deepEqual(
+        probeCode.match(BARE_CESIUM) ?? [],
+        [],
+        "the target page publishes no `window.Cesium`, so a bare `Cesium` is a ReferenceError at the first evaluate",
+      );
+    },
+  );
+
+  await t.test(
+    "I1 MUTATION: the bare global that failed the 2026-09-05 leg is caught",
+    () => {
+      const anchor = "const viewer = window.viewer;";
+      assert.ok(
+        probeCode.includes(anchor),
+        "the mutation anchor has moved; this control is vacuous until it is repaired",
+      );
+      const mutated = probeCode.replace(
+        anchor,
+        `const t0 = Cesium.JulianDate.now();\n    ${anchor}`,
+      );
+      assert.notEqual(mutated, probeCode, "the mutation did not apply");
+      assert.ok(
+        (mutated.match(BARE_CESIUM) ?? []).length > 0,
+        "the scan must catch a reintroduced bare global",
+      );
+    },
+  );
+
+  await t.test(
+    "I2: the probe imports the SAME module URL the viewer app imports",
+    () => {
+      const appSpecifier = readFileSync(APP_PATH, "utf8").match(
+        /from\s+"(\.\.\/\.\.\/Build\/[^"]+)"/,
+      );
+      assert.ok(
+        appSpecifier,
+        "Apps/CesiumViewer/CesiumViewer.js no longer imports the engine from Build/, so the probe's namespace source must be re-derived",
+      );
+      const appUrl = new URL(appSpecifier[1], `http://x${APP_PAGE}`).pathname;
+      const probeSpecifier = probeCode.match(/await import\("([^"]+)"\)/);
+      assert.ok(probeSpecifier, "the probe no longer imports a namespace");
+      assert.equal(
+        probeSpecifier[1],
+        appUrl,
+        "a different URL is a different module instance, so the probe's classes would not be the ones the running viewer was built from",
+      );
+    },
+  );
+
+  await t.test(
+    "I3: every engine field the probe reads through is one the engine declares",
+    () => {
+      assertPipelineChain(probeCode);
+      const read = assertSlotsExposed(probeCode, pipelineSource);
+      // The eleven the pipeline nulls are the eleven the probe reports: a slot
+      // on the reset list but not in the probe would go unmeasured.
+      assert.equal(
+        read.length,
+        DROPPED.length + ALREADY_REVIVED.length,
+        "the probe must report every slot this contract covers",
+      );
+    },
+  );
+
+  await t.test(
+    "I3 MUTATION: the undeclared accessor that would have faked a failure is caught",
+    () => {
+      const anchor = "scene._alternateSceneRenderer?._postProcess";
+      assert.ok(
+        probeCode.includes(anchor),
+        "the mutation anchor has moved; this control is vacuous until it is repaired",
+      );
+      const mutated = probeCode.replace(
+        anchor,
+        "scene.context?._sceneRenderer?._postProcess",
+      );
+      assert.notEqual(mutated, probeCode, "the mutation did not apply");
+      assert.throws(
+        () => assertPipelineChain(mutated),
+        /no longer reaches the pipeline off|assigns no/,
+        "the guard must reject the accessor the engine does not declare",
+      );
+    },
+  );
+
+  await t.test(
+    "I3 MUTATION: a slot the pipeline does not expose is caught",
+    () => {
+      const mutated = probeCode.replace(
+        'slot("bloomEffect")',
+        'slot("bloomFx")',
+      );
+      assert.notEqual(mutated, probeCode, "the mutation did not apply");
+      assert.throws(
+        () => assertSlotsExposed(mutated, pipelineSource),
+        /exposes no `bloomFx` getter/,
+        "the guard must reject a slot name the pipeline does not expose",
       );
     },
   );

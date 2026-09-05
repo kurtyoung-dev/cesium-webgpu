@@ -87,6 +87,10 @@
  *     default server serves a live esbuild of the SOURCE tree and the run
  *     cannot say which engine it measured.
  *   * Edge, not Firefox: Playwright's bundled Firefox has no WebGPU.
+ *   * The target page, `Apps/CesiumViewer/index.html`, loads its app as an ES
+ *     module and so publishes `window.viewer` but NO `window.Cesium`. The
+ *     enable step below imports the namespace from the same module URL the app
+ *     itself imports; see the comment there for why the identity matters.
  *
  * Run:
  *   node Tools/visual-regression/probe-postprocess-resize-survival.mjs
@@ -120,8 +124,16 @@ const COUNTER_INIT = `(() => {
     renderPipelines: 0,
     shaderModules: 0,
     computePipelines: 0,
+    instrumented: false,
   };
-  if (typeof GPUDevice === "undefined" || GPUDevice.__ar009Patched) return;
+  // A page without WebGPU leaves every counter at its initial zero, and a zero
+  // is indistinguishable from "this resize compiled nothing" — which is the
+  // reading the LIGHT-6 decision turns on. Record whether the wrapper was
+  // really installed, so the caller can refuse rather than report a fabricated
+  // zero as a measurement.
+  if (typeof GPUDevice === "undefined") return;
+  window.__ar009Counts.instrumented = true;
+  if (GPUDevice.__ar009Patched) return;
   GPUDevice.__ar009Patched = true;
   const proto = GPUDevice.prototype;
   const pairs = [
@@ -218,8 +230,17 @@ async function runLegs(page, sizes) {
       viewer.resize();
     };
 
+    // `Scene` stores the backend renderer built from the SCENE_RENDERER
+    // feature renderer on `_alternateSceneRenderer` (Scene.js:468), and the
+    // WebGPU one owns the post-process pipeline
+    // (WebGPUSceneRendererEnsureResources.ts:458). That is the accessor the
+    // rest of the fleet reads it through — diag-taa-black.mjs:70,
+    // diag-stars-hdr-autoexposure.mjs:74, canvas-black-readback.mjs:56.
+    // `scene.context` holds no scene renderer of its own.
+    const pipelineNow = () =>
+      scene._alternateSceneRenderer?._postProcess ?? null;
     const slotsNow = () => {
-      const pipeline = scene.context?._sceneRenderer?._postProcess ?? null;
+      const pipeline = pipelineNow();
       const slot = (name) => Boolean(pipeline?.[name]);
       return {
         present: Boolean(pipeline),
@@ -274,8 +295,31 @@ async function runLegs(page, sizes) {
       };
     };
 
-    // ── resize leg ──────────────────────────────────────────────────────────
+    // ── instrument checks, after one settled frame ──────────────────────────
+    // The pipeline is built during `ensureResources`, i.e. on the first render,
+    // so these run after the settle rather than before it.
+    //
+    // Both THROW rather than reporting a status. A reading this probe cannot
+    // take means the run measured nothing, and an errored run is the honest
+    // outcome: a status object here would invite a later `if (ok)` that skips
+    // the check and still writes a receipt claiming the effects were lost.
     await settleThen(40, null);
+    if (!pipelineNow()) {
+      throw new Error(
+        "probe-postprocess-resize-survival: scene._alternateSceneRenderer._postProcess " +
+          "is not reachable after the first settle, so every effect-slot reading would " +
+          "be a false `false` and both legs would report a loss the engine did not cause",
+      );
+    }
+    if (window.__ar009Counts?.instrumented !== true) {
+      throw new Error(
+        "probe-postprocess-resize-survival: the GPUDevice creation counters were never " +
+          "installed, so the per-resize compile count would be a fabricated zero rather " +
+          "than the LIGHT-6 measurement",
+      );
+    }
+
+    // ── resize leg ──────────────────────────────────────────────────────────
     const resizeBefore = await captureNow();
     const resizeBeforePng = grabNow();
     const resizeSlotsBefore = slotsNow();
@@ -337,6 +381,19 @@ async function runLegs(page, sizes) {
 }
 
 /**
+ * The namespace members the enable step needs in the page. Passed into the
+ * evaluate so a namespace that resolves without one of them is refused by name,
+ * rather than surfacing as a TypeError from whichever line happened to use it
+ * first.
+ */
+const REQUIRED_NAMESPACE_MEMBERS = [
+  "Cartesian3",
+  "JulianDate",
+  "Math",
+  "PostProcessStageLibrary",
+];
+
+/**
  * Enables Bloom, ambient occlusion and depth of field the way a user does, and
  * pins the clock and camera so the only difference between the two captures of
  * a leg is the recreate under test. Depth of field has no dedicated collection
@@ -346,18 +403,47 @@ async function runLegs(page, sizes) {
  * @returns {Promise<object>} The enable readback.
  */
 async function enableEffects(page) {
-  return page.evaluate(async () => {
+  return page.evaluate(async (required) => {
+    // `Apps/CesiumViewer/index.html` loads `CesiumViewer.js` with
+    // `type="module"`, and module scope is not global scope: the page defines
+    // `window.viewer` and `window.CesiumDebug` but never `window.Cesium`, so a
+    // bare `Cesium` reference here is a ReferenceError.
+    //
+    // Import the same URL the app imports — `CesiumViewer.js` resolves
+    // `../../Build/CesiumUnminified/index.js` against `/Apps/CesiumViewer/` to
+    // exactly this absolute path. The module map is keyed by URL, so this hands
+    // back the SAME module instance the running viewer was built from, and the
+    // classes below are identity-equal to the ones already in the scene. A
+    // second copy would supply a second `JulianDate`, and the clock and camera
+    // writes would then cross an identity boundary. Harness pages that DO
+    // publish `window.Cesium` (the split-screen and Sandcastle pages) are
+    // honoured first, so this probe can be pointed at one without a change.
+    const fromGlobal = window.Cesium !== undefined;
+    const C = fromGlobal
+      ? window.Cesium
+      : await import("/Build/CesiumUnminified/index.js");
+    const missing = required.filter((name) => C?.[name] === undefined);
+    if (missing.length > 0) {
+      // Thrown, not reported. A namespace this probe cannot drive means the run
+      // enables nothing and measures nothing; an errored run is the honest
+      // outcome. Returning a status object would invite a later `if (ok)` that
+      // skips the enable and still writes a receipt.
+      throw new Error(
+        `probe-postprocess-resize-survival: the Cesium namespace resolved from ` +
+          `${fromGlobal ? "window.Cesium" : "/Build/CesiumUnminified/index.js"} is ` +
+          `missing ${missing.join(", ")}, so the enable step cannot run`,
+      );
+    }
+
     const viewer = window.viewer;
     const scene = viewer.scene;
     const stages = scene.postProcessStages;
 
     viewer.clock.shouldAnimate = false;
-    viewer.clock.currentTime = Cesium.JulianDate.fromIso8601(
-      "2026-06-21T15:00:00Z",
-    );
+    viewer.clock.currentTime = C.JulianDate.fromIso8601("2026-06-21T15:00:00Z");
     scene.camera.setView({
-      destination: Cesium.Cartesian3.fromDegrees(-119.55, 37.62, 9000),
-      orientation: { heading: 0, pitch: Cesium.Math.toRadians(-25), roll: 0 },
+      destination: C.Cartesian3.fromDegrees(-119.55, 37.62, 9000),
+      orientation: { heading: 0, pitch: C.Math.toRadians(-25), roll: 0 },
     });
 
     stages.bloom.enabled = true;
@@ -365,7 +451,7 @@ async function enableEffects(page) {
     const named = (list, name) =>
       Array.isArray(list) ? list.find((s) => s && s.name === name) : undefined;
     if (!named(stages._stages, "czm_depth_of_field")) {
-      const dof = Cesium.PostProcessStageLibrary.createDepthOfFieldStage();
+      const dof = C.PostProcessStageLibrary.createDepthOfFieldStage();
       dof.enabled = true;
       stages.add(dof);
     }
@@ -378,8 +464,11 @@ async function enableEffects(page) {
         named(stages._stages, "czm_depth_of_field")?.enabled,
       ),
       highDynamicRange: scene.highDynamicRange,
+      namespaceSource: fromGlobal
+        ? "window.Cesium"
+        : "/Build/CesiumUnminified/index.js",
     };
-  });
+  }, REQUIRED_NAMESPACE_MEMBERS);
 }
 
 /**
