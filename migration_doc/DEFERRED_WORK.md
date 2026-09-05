@@ -9397,19 +9397,72 @@ different names cannot re-break it.
   identifier the emitted module hands to a WGSL texture builtin to be a declaration the module
   actually makes, with the sampler paired to its texture's binding.
 
+**Amendment (2026-09-05, lane Beleg round 4) — a THIRD defect on the same path, upstream of the
+module.** The 2026-09-05 Edge leg
+(`Tools/visual-regression/output/wave-p0-1-edge-2026-09-05/leg1-ar831-ar833/`) returned clause 1
+GREEN on both backends — the module compiles and the pipeline is valid, so defects 1 and 2 above are
+genuinely fixed — but clause 2 at 0.002023 against the 0.02 floor and clause 3 at exactly 0, with
+`webgpu-run0-band-7000.png` and `webgpu-run0-band-5200.png` byte-identical. WebGL read 0.367337 and
+0.028168 on the same clauses. The material compiled, bound and drew, and painted nothing.
+
+3. **Upload precision.** `createElevationBandMaterial` picks
+   `PixelFormat.LUMINANCE` + `PixelDatatype.FLOAT` for its heights texture whenever
+   `context.webgl2` is false, which `WebGPUContext` always is
+   (`WebGPUContext.ts`, `webgl2 = false`; `PixelFormat.toInternalFormat` returns the base format
+   unchanged for a non-WebGL2 context). `webglToWebGPUTextureFormat` answered that triple with
+   `r8unorm` — it took the channel COUNT from the base format and the precision from nowhere, while
+   the GL_RGB/GL_RGBA branch immediately below it had always derived precision from `type`. So the
+   `Float32Array` of terrain heights was reinterpreted as unorm bytes in [0,1], and the stub's
+   `queue.writeTexture` was handed `bytesPerRow = width * 1` for a `width * 4` source. The band
+   material's own early-out (`height < minHeight || height > maxHeight` → `alpha = 0`) then
+   discarded every fragment: with the heights read as bytes, `maxHeight` was 0.73 m and every
+   terrain fragment sat above it. Moving `band1Position` changed the payload but not the early-out,
+   so the two captures came out byte-identical. The sibling shapes stayed green throughout because
+   they upload an `HTMLCanvasElement` through `copyExternalImageToTexture`, which never reaches
+   this converter.
+
+   **Fix:** `webglToWebGPUTextureFormat` derives precision from `type` for the legacy 1- and
+   2-channel base formats as well — `GL_ALPHA`/`GL_LUMINANCE` → `r32float` / `r16float` /
+   `r8unorm` and `GL_LUMINANCE_ALPHA` → `rg32float` / `rg16float` / `rg8unorm` by `type`,
+   recognising `HALF_FLOAT_OES` (0x8d61) because that is the spelling
+   `PixelDatatype.toWebGLConstant` emits for a non-WebGL2 context. Byte-identical for every other
+   in-tree LUMINANCE caller — `GlobeSurfaceTile`'s water mask and `PrimitiveOutlineGenerator` are
+   both `UNSIGNED_BYTE` and keep their `r8unorm`.
+
+   **Dependency this makes explicit:** `r32float` is filterable only with the `float32-filterable`
+   feature, and the globe's material texture slots are declared `sampleType: "float"` with a
+   `"filtering"` sampler (`WebGPUGlobeSurfaceLayouts.ts`, `WebGPUBindGroupLayoutHelpers.ts`). That
+   feature is the FIRST entry of `DESIRED_FEATURES` and already underpins the float terrain
+   heightmaps, so this adds no new requirement — but on an adapter without it clause 1 would fail at
+   `createBindGroup` rather than at `createShaderModule`. The WGSL fabric has no packed-height
+   fallback (the GLSL `#ifdef OES_texture_float` branch has no WGSL counterpart), so that adapter
+   class cannot render this material at all today. Not fixed here; named so it can be queued.
+
+   **Same-shape gap left OPEN, deliberately:** `GL_RED` (0x1903) and `GL_RG` (0x8227) reach this
+   converter with the same omission and currently answer `rgba32float` for a FLOAT source, a 4×
+   row-stride mismatch. `Core/VectorPipeline.js` creates `PixelFormat.RED` + `FLOAT` textures, but
+   whether that path is reached under WebGPU (rather than `prepareWebGPUVectorTileData`) was not
+   established, and Principle 10 forbids fixing a defect whose reachability is unproven. **Queue it
+   as its own row with a reachability check first.**
+
 **Clause 4 caveat.** The FULL-SWEEP form of clause 4 remains blocked on `AR-D20`: the built
 Sandcastle2 app serves two gitignored `.d.ts` files as 404, which puts an entry in every demo's
 `errors[]` and made the 2026-09-04 sweep certify 0 of 338. The two material SHAPES clause 4 names
 are proven inside the probe instead. Re-run the sweep once `AR-D20` closes.
 
 **Files modified:** `packages/engine/Source/Renderer/WebGPU/WebGPUGlobeMaterial.ts`,
-`packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl`.
+`packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl`,
+`packages/engine/Source/Renderer/WebGPU/WebGLStateConverters.ts` (round 4).
 
 **Parity (Principle 5):** WebGL-only change: none. WebGL's `ElevationBandMaterial.glsl` path
 already works — `MaterialHelpers` binds `material._textures[uniformId]` to the GLSL sampler by
 name, so WebGL never had the positional-slot problem this entry describes. Neither file this fix
 touches is on a WebGL code path (`GlobeTerrain.wgsl` is WGSL; `WebGPUGlobeMaterial.ts` is reached
 only from `WebGPUGlobeSurfaceRenderer`), so the WebGL capture is byte-identical by path.
+The round-4 converter fix is likewise WebGPU-only: `WebGLStateConverters.ts` is consumed solely by
+`WebGPUContext` and the WebGL-compatibility stub, neither of which exists in a WebGL context, and
+the WebGL leg of the 2026-09-05 probe already measured 0.367337 / 0.028168 — the behaviour this
+change brings WebGPU up to.
 
 ---
 

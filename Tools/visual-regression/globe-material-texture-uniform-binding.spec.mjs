@@ -61,6 +61,14 @@ const { ShaderDefine } =
   await import("../../packages/engine/Source/Renderer/WebGPU/WebGPUShaderDefines.ts");
 const { decideElevationBandVerdicts } =
   await import("./probe-globe-elevation-band-material.mjs");
+const PixelFormat = (
+  await import("../../packages/engine/Source/Core/PixelFormat.js")
+).default;
+const PixelDatatype = (
+  await import("../../packages/engine/Source/Renderer/PixelDatatype.js")
+).default;
+const { webglToWebGPUTextureFormat, bytesPerTexel } =
+  await import("../../packages/engine/Source/Renderer/WebGPU/WebGLStateConverters.ts");
 
 const GLOBE_TERRAIN_WGSL = fs.readFileSync(
   path.join(
@@ -479,4 +487,236 @@ test("the probe's gate passes only on a clean, visible, moving band", () => {
       .map((v) => v.id),
     ["webgpu/run0/clause4-elevation-color-contour"],
   );
+});
+
+// ---------------------------------------------------------------------------
+// The contribution half. Everything above proves the module RESOLVES; none of
+// it can tell a material that paints from one that compiles, binds, draws and
+// paints nothing. The 2026-09-05 Edge leg found exactly that: clause 1 green on
+// both backends, clause 2 at 0.002023 against a 0.02 floor, and clause 3 at
+// exactly 0 with the two WebGPU band captures byte-identical.
+//
+// The cause was upstream of the module. `createElevationBandMaterial` picks
+// `PixelFormat.LUMINANCE` + `PixelDatatype.FLOAT` for its heights texture
+// whenever `context.webgl2` is false, which `WebGPUContext` always is, and the
+// compatibility stub's format converter answered that triple with `r8unorm` —
+// channel count from the base format, precision from nowhere. The terrain
+// heights were reinterpreted as unorm bytes in [0,1], `queue.writeTexture` read
+// a quarter of the source buffer, and the material's own early-out
+// (`height < minHeight || height > maxHeight` → `alpha = 0`) then discarded
+// every fragment on the globe.
+//
+// So these tests assert the property that decides whether the band appears at
+// all: the height values the sampler hands the shader must still span the
+// configured band heights. An all-grey globe is what happens when they do not,
+// and each of the two shapes that produce one — the mis-typed upload and a 1×1
+// placeholder view — is asserted to be rejected.
+
+/**
+ * Decode the texels a WebGPU sampler would read back from one row of a texture
+ * the compatibility stub uploaded. Mirrors the raw-byte branch of
+ * `WebGLStubTexture`'s `texImage2D`: `bytesPerRow = width * bytesPerTexel(format)`,
+ * the source `ArrayBufferView` reinterpreted as bytes, no conversion.
+ *
+ * @param {string} format A GPUTextureFormat this upload path can produce.
+ * @param {Uint8Array} bytes The bytes that landed in row 0.
+ * @param {number} width Texel count in the row.
+ * @returns {number[]} The first channel of each texel, as the shader reads it.
+ */
+function decodeFirstChannel(format, bytes, width) {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const stride = bytesPerTexel(format);
+  const texels = [];
+  for (let i = 0; i < width; i++) {
+    const at = i * stride;
+    if (at + stride > bytes.byteLength) break;
+    switch (format) {
+      case "r32float":
+      case "rg32float":
+      case "rgba32float":
+        texels.push(view.getFloat32(at, true));
+        break;
+      case "r8unorm":
+      case "rg8unorm":
+      case "rgba8unorm":
+        texels.push(view.getUint8(at) / 255);
+        break;
+      default:
+        throw new Error(`decodeFirstChannel: unhandled format ${format}`);
+    }
+  }
+  return texels;
+}
+
+/**
+ * Run one `Texture.create({ context, pixelFormat, pixelDatatype, source })`
+ * through the real format decisions a WebGPU context makes for it, and report
+ * what the sampler would then read.
+ *
+ * The only value supplied rather than produced is `context.webgl2 === false` —
+ * `WebGPUContext` declares it as a field default, and constructing one needs a
+ * GPUDevice this spec does not have. Everything downstream of it is the real
+ * `PixelFormat.toInternalFormat`, the real `PixelDatatype.toWebGLConstant` and
+ * the real `webglToWebGPUTextureFormat` / `bytesPerTexel`.
+ *
+ * @param {number} pixelFormat A PixelFormat.
+ * @param {number} pixelDatatype A PixelDatatype.
+ * @param {ArrayBufferView} source The `arrayBufferView` the caller uploads.
+ * @param {number} width Texture width in texels (height is 1 on this path).
+ * @returns {object} `{ format, bytesPerRow, sourceBytes, texels }`.
+ */
+function uploadThroughCompatibilityStub(
+  pixelFormat,
+  pixelDatatype,
+  source,
+  width,
+) {
+  const context = { webgl2: false };
+  const internalFormat = PixelFormat.toInternalFormat(
+    pixelFormat,
+    pixelDatatype,
+    context,
+  );
+  const glType = PixelDatatype.toWebGLConstant(pixelDatatype, context);
+  const format = webglToWebGPUTextureFormat(
+    internalFormat,
+    pixelFormat,
+    glType,
+  );
+  const bytesPerRow = width * bytesPerTexel(format);
+  const bytes = new Uint8Array(
+    source.buffer,
+    source.byteOffset,
+    source.byteLength,
+  );
+  return {
+    format,
+    bytesPerRow,
+    sourceBytes: bytes.byteLength,
+    texels: decodeFirstChannel(
+      format,
+      bytes.subarray(0, Math.min(bytesPerRow, bytes.byteLength)),
+      width,
+    ),
+  };
+}
+
+/**
+ * The ElevationBand material's own early-out, transcribed: outside
+ * `[texels[0], texels[last]]` it sets `alpha = 0` and returns, so the fragment
+ * keeps the bare surface. A `true` here is the necessary condition for the
+ * material to contribute anything at that height.
+ *
+ * @param {number[]} texels Heights as the sampler reads them, ascending.
+ * @param {number} height A terrain height in metres.
+ * @returns {boolean} Whether the material can paint at that height.
+ */
+function bandCoversHeight(texels, height) {
+  if (texels.length === 0) return false;
+  return height >= texels[0] && height <= texels[texels.length - 1];
+}
+
+// The layer heights the `elevation-band-material` demo configures, and the
+// buffer `createElevationBandMaterial` builds from them on a float-capable
+// context: one f32 per entry, ascending.
+const DEMO_BAND_HEIGHTS = [4200, 5200, 5800, 6400, 7000, 7600, 8200, 8848];
+
+test("the heights the shader samples still span the configured band heights", () => {
+  const source = new Float32Array(DEMO_BAND_HEIGHTS);
+  const upload = uploadThroughCompatibilityStub(
+    // The pair `createElevationBandMaterial` picks when
+    // `_useFloatTexture(context)` is true and `context.webgl2` is false.
+    PixelFormat.LUMINANCE,
+    PixelDatatype.FLOAT,
+    source,
+    source.length,
+  );
+
+  // `queue.writeTexture` is handed the whole source buffer with this
+  // bytesPerRow. If they disagree the upload truncates or over-reads.
+  assert.equal(
+    upload.bytesPerRow,
+    upload.sourceBytes,
+    `row stride ${upload.bytesPerRow} does not match the ${upload.sourceBytes}-byte source (format ${upload.format})`,
+  );
+
+  // The heights survive the round trip.
+  assert.deepEqual(upload.texels, DEMO_BAND_HEIGHTS);
+
+  // And therefore the material contributes at every configured band height,
+  // instead of taking its early-out on every fragment and leaving the globe
+  // bare — the failure the Edge leg measured as clause 2 = 0.002023 and
+  // clause 3 = 0.
+  for (const height of DEMO_BAND_HEIGHTS) {
+    assert.equal(
+      bandCoversHeight(upload.texels, height),
+      true,
+      `a fragment at ${height} m falls outside [${upload.texels[0]}, ${upload.texels[upload.texels.length - 1]}], so czm_getMaterial returns alpha 0`,
+    );
+  }
+});
+
+test("the all-grey shapes are the ones this gate rejects", () => {
+  // Non-vacuity for the test above. `bandCoversHeight` has to say NO to both
+  // shapes that produced a bare globe, or its YES means nothing.
+  const source = new Float32Array(DEMO_BAND_HEIGHTS);
+
+  // 1. The pre-fix upload: the same source bytes read as unorm.
+  const misTyped = decodeFirstChannel(
+    "r8unorm",
+    new Uint8Array(source.buffer, source.byteOffset, DEMO_BAND_HEIGHTS.length),
+    DEMO_BAND_HEIGHTS.length,
+  );
+  assert.equal(Math.max(...misTyped) <= 1, true);
+  for (const height of DEMO_BAND_HEIGHTS) {
+    assert.equal(bandCoversHeight(misTyped, height), false);
+  }
+
+  // 2. The renderer's 1x1 placeholder view, bound when a texture uniform fails
+  //    to resolve: one texel, so minHeight and maxHeight are the same value and
+  //    no real terrain height lies on it.
+  for (const height of DEMO_BAND_HEIGHTS) {
+    assert.equal(bandCoversHeight([1.0], height), false);
+    assert.equal(bandCoversHeight([0.0], height), false);
+  }
+
+  // 3. Staleness guard on the transcription: the early-out `bandCoversHeight`
+  //    models is still the one the fabric's own WGSL performs.
+  const { material } = elevationBandMaterial();
+  assert.match(
+    material.wgslShaderSource,
+    /if \(height < minHeight \|\| height > maxHeight\)/,
+  );
+  assert.match(material.wgslShaderSource, /material\.alpha = 0\.0;/);
+});
+
+test("the format decision reads the source's precision, not just its channel count", () => {
+  // One row per shape this upload path produces in-tree. The UNSIGNED_BYTE rows
+  // are the byte-identity guarantee for the existing LUMINANCE callers —
+  // GlobeSurfaceTile's water mask and PrimitiveOutlineGenerator — which must
+  // keep their r8unorm.
+  const cases = [
+    // createElevationBandMaterial heights, on a WebGPU context.
+    [PixelFormat.LUMINANCE, PixelDatatype.FLOAT, "r32float"],
+    [PixelFormat.LUMINANCE, PixelDatatype.HALF_FLOAT, "r16float"],
+    // createElevationBandMaterial colors, and the canvas-backed ramps.
+    [PixelFormat.RGBA, PixelDatatype.UNSIGNED_BYTE, "rgba8unorm"],
+    // Unchanged callers.
+    [PixelFormat.LUMINANCE, PixelDatatype.UNSIGNED_BYTE, "r8unorm"],
+    [PixelFormat.ALPHA, PixelDatatype.UNSIGNED_BYTE, "r8unorm"],
+    [PixelFormat.LUMINANCE_ALPHA, PixelDatatype.UNSIGNED_BYTE, "rg8unorm"],
+  ];
+  const context = { webgl2: false };
+  for (const [pixelFormat, pixelDatatype, expected] of cases) {
+    const format = webglToWebGPUTextureFormat(
+      PixelFormat.toInternalFormat(pixelFormat, pixelDatatype, context),
+      pixelFormat,
+      PixelDatatype.toWebGLConstant(pixelDatatype, context),
+    );
+    assert.equal(
+      format,
+      expected,
+      `pixelFormat 0x${pixelFormat.toString(16)} + datatype 0x${pixelDatatype.toString(16)} resolved to ${format}, expected ${expected}`,
+    );
+  }
 });

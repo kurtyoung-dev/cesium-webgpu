@@ -193,6 +193,11 @@ const GL_DEPTH24_STENCIL8 = 0x88f0;
 const GL_UNSIGNED_BYTE = 0x1401;
 const GL_FLOAT = 0x1406;
 const GL_HALF_FLOAT = 0x140b;
+// WebGL1 spells half-float `HALF_FLOAT_OES`. `PixelDatatype.toWebGLConstant`
+// picks the spelling from `context.webgl2`, and `WebGPUContext.webgl2` is
+// `false`, so a half-float upload arriving through the compatibility stub
+// carries this constant and never `GL_HALF_FLOAT`.
+const GL_HALF_FLOAT_OES = 0x8d61;
 const GL_UNSIGNED_SHORT = 0x1403;
 const GL_UNSIGNED_INT = 0x1405;
 
@@ -280,12 +285,41 @@ export function webglToWebGPUTextureFormat(
       ? "depth24plus-stencil8"
       : "depth24plus";
   }
+  // The legacy grayscale base formats carry a channel COUNT but no precision,
+  // exactly like GL_RGB / GL_RGBA below — so the precision has to come from
+  // `type` here too. Ignoring `type` and always answering `r8unorm` silently
+  // reinterpreted `createElevationBandMaterial`'s `Float32Array` of terrain
+  // heights (LUMINANCE + FLOAT, the combination it picks because
+  // `WebGPUContext.webgl2` is `false`) as unorm bytes: every height collapsed
+  // into [0,1], so the band material's own `height > maxHeight` early-out
+  // discarded every fragment and the globe rendered bare on a shipped gallery
+  // demo. `queue.writeTexture` also read only `width * 1` of the `width * 4`
+  // source bytes.
+  //
+  // r32float is filterable only with the `float32-filterable` feature, which
+  // is the first entry of `DESIRED_FEATURES` and already underpins the float
+  // terrain heightmaps; the globe's material slots bind a filtering sampler.
   if (internalformat === GL_ALPHA || internalformat === GL_LUMINANCE) {
-    // No 1-channel grayscale in WebGPU base formats — promote to r8.
-    return "r8unorm";
+    switch (type) {
+      case GL_FLOAT:
+        return "r32float";
+      case GL_HALF_FLOAT:
+      case GL_HALF_FLOAT_OES:
+        return "r16float";
+      default:
+        return "r8unorm";
+    }
   }
   if (internalformat === GL_LUMINANCE_ALPHA) {
-    return "rg8unorm";
+    switch (type) {
+      case GL_FLOAT:
+        return "rg32float";
+      case GL_HALF_FLOAT:
+      case GL_HALF_FLOAT_OES:
+        return "rg16float";
+      default:
+        return "rg8unorm";
+    }
   }
   // GL_RGB / GL_RGBA: derive from type.
   switch (type) {

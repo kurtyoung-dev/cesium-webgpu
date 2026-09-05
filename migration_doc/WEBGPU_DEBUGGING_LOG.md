@@ -19214,3 +19214,114 @@ A second review finding, filed as its own row rather than fixed here:
 `_colorGradingStage` and `_fxaaStage` build against `_intermediateFormat` but are not on
 `initialize()`s reset list, so an HDR toggle leaves them on a stale format. Stale, not dropped;
 different mechanism, own row.
+
+---
+
+## Lane Beleg (wave P0-1, 2026-09-05, round 4) — Bug AR-831.2: the ElevationBand globe material compiles, binds, draws — and paints nothing
+
+**Bug id:** AR-831.2 (queue row `AR-831`; instrument row `AR-833`). Follow-up to AR-831.1 above,
+which stands: the module-compilation half of the defect is genuinely fixed.
+
+**Files affected:**
+
+- `packages/engine/Source/Renderer/WebGPU/WebGLStateConverters.ts`
+
+**Symptom.** Éowyn's 2026-09-05 Edge leg, banked at
+`Tools/visual-regression/output/wave-p0-1-edge-2026-09-05/leg1-ar831-ar833/`, ran
+`probe-globe-elevation-band-material.mjs --renderer both` on a preflight-clean served tree (served
+md5 == disk md5, 0 drifted shaders) and returned:
+
+| clause | WebGL | WebGPU | gate |
+| --- | --- | --- | --- |
+| 1 — no GPU validation error | 0 errors | 0 errors | PASS both |
+| 2 — material visible | 0.367337 | **0.002023** | ≥ 0.02 — WebGPU FAIL |
+| 3 — band moves | 0.028168 | **0** | ≥ 0.002 — WebGPU FAIL |
+
+`webgpu-run0-band-7000.png` and `webgpu-run0-band-5200.png` were byte-identical (both 493,624
+bytes, sha256 `87c5475533…`). Read against WebGL's capture: WebGL bands the terrain in blue, green
+and red; WebGPU shows bare grey relief. Both sibling shapes
+(`elevation-ramp`, `elevation-color-contour`) rendered correctly on WebGPU in the same run — which
+is the discriminator that pointed the diagnosis away from the module and the apply site.
+
+**Root cause.** Not the module, and not the material apply. `createElevationBandMaterial` builds its
+heights texture as `PixelFormat.LUMINANCE` + `PixelDatatype.FLOAT` on a WebGPU context — it asks for
+`PixelFormat.RED` only when `context.webgl2` is true, and `WebGPUContext` declares `webgl2 = false`.
+`PixelFormat.toInternalFormat` then returns the base format unchanged (its WebGL1 branch), so the
+compatibility stub's `texImage2D` receives the triple `(GL_LUMINANCE, GL_LUMINANCE, GL_FLOAT)` and
+asks `webglToWebGPUTextureFormat` for a format. That function took the channel COUNT from the base
+format and ignored `type` entirely for the legacy grayscale formats:
+
+```ts
+if (internalformat === GL_ALPHA || internalformat === GL_LUMINANCE) {
+  // No 1-channel grayscale in WebGPU base formats — promote to r8.
+  return "r8unorm";
+}
+```
+
+— even though the `GL_RGB` / `GL_RGBA` branch three lines below it had always derived precision from
+`type`. Consequences, both measured:
+
+1. The stub's raw-byte upload computes `bytesPerRow = width * bytesPerTexel("r8unorm")` = `width`,
+   for a `Float32Array` of `width * 4` bytes. `queue.writeTexture` lands the first quarter of the
+   buffer.
+2. Those bytes are read as unorm, so every height arrives in [0, 1]. Driven through the real engine
+   functions with the demo's own layer heights, `minHeight` came out 0 and `maxHeight` 0.733 — the
+   raw IEEE-754 bytes of 4200.0f and 5200.0f, not metres.
+
+The band material's own early-out then fires on every fragment:
+
+```wgsl
+if (height < minHeight || height > maxHeight) {
+  material.diffuse = vec3<f32>(0.0);
+  material.alpha = 0.0;
+  return material;
+}
+```
+
+so `czm_getMaterial` returns a fully transparent material for the whole globe. That is exactly
+clause 2 ≈ 0. And because the early-out fires regardless of the payload, moving `band1Position`
+changes the texture contents but not one output pixel — clause 3 at exactly 0 with byte-identical
+captures, which no partially-working sampling path could produce.
+
+The `colors` texture was never affected: `PixelFormat.RGBA` + `UNSIGNED_BYTE` resolves to
+`rgba8unorm` correctly. Nor were the sibling shapes, whose `image` uniform is an
+`HTMLCanvasElement` uploaded through `copyExternalImageToTexture`, which never reaches this
+converter.
+
+**Fix applied.** `webglToWebGPUTextureFormat` now derives precision from `type` for the legacy 1-
+and 2-channel base formats, the way it always has for `GL_RGB`/`GL_RGBA`:
+`GL_ALPHA`/`GL_LUMINANCE` → `r32float` (FLOAT) / `r16float` (HALF_FLOAT) / `r8unorm` (everything
+else), and `GL_LUMINANCE_ALPHA` → `rg32float` / `rg16float` / `rg8unorm`. A `GL_HALF_FLOAT_OES`
+(0x8d61) constant was added because that is the spelling `PixelDatatype.toWebGLConstant` emits for a
+non-WebGL2 context, and every upload reaching this converter comes from one. The two other in-tree
+LUMINANCE callers — `GlobeSurfaceTile`'s water mask and `PrimitiveOutlineGenerator` — are both
+`UNSIGNED_BYTE` and keep `r8unorm` byte-identically.
+
+**Dependency made explicit, not introduced.** `r32float` is filterable only with the
+`float32-filterable` feature, and the globe's material texture slots are declared
+`sampleType: "float"` with a `"filtering"` sampler. That feature is the first entry of
+`DESIRED_FEATURES` and already underpins the float terrain heightmaps, so no new requirement is
+created — but on an adapter lacking it, clause 1 would now fail at `createBindGroup` instead of at
+`createShaderModule`, and the WGSL fabric has no packed-height fallback (the GLSL
+`#ifdef OES_texture_float` branch has no WGSL counterpart). Named in `DEFERRED_WORK.md` for
+queueing, not fixed here.
+
+**Left open on purpose.** `GL_RED` (0x1903) and `GL_RG` (0x8227) carry the same omission and answer
+`rgba32float` for a FLOAT source — a 4× row-stride mismatch. `Core/VectorPipeline.js` creates
+`PixelFormat.RED` + `FLOAT` textures, but whether that constructor is reached under WebGPU (rather
+than `prepareWebGPUVectorTileData`) was not established, and fixing an unproven-reachable defect is
+what Principle 10 forbids. Queued in `DEFERRED_WORK.md` as its own row, reachability first.
+
+**Why the round-3 spec went green over this.** It asserted that the emitted module RESOLVES —
+every identifier handed to a WGSL texture builtin is a declaration the module makes. That property
+held perfectly while the material painted nothing, because the defect was in the bytes the texture
+carried, not in the module. The spec now also asserts CONTRIBUTION: driven through the real
+`PixelFormat.toInternalFormat`, `PixelDatatype.toWebGLConstant`, `webglToWebGPUTextureFormat` and
+`bytesPerTexel`, the row stride must consume the whole source buffer, the decoded texels must equal
+the configured heights, and a fragment at each configured band height must fall inside
+`[minHeight, maxHeight]` rather than trip the early-out. Its non-vacuity is asserted against both
+shapes that produce a bare globe — the mis-typed upload and a 1×1 placeholder view.
+
+**Files modified:** `packages/engine/Source/Renderer/WebGPU/WebGLStateConverters.ts`,
+`Tools/visual-regression/globe-material-texture-uniform-binding.spec.mjs`,
+`migration_doc/DEFERRED_WORK.md`, `migration_doc/WEBGPU_DEBUGGING_LOG.md`.
