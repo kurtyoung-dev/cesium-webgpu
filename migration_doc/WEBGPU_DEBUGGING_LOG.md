@@ -19068,3 +19068,77 @@ attribute presence in the non-flat case (the vertexFormat parity question, its o
 `Tools/visual-regression/primitive-bindgroup-layout-arity-guard.spec.mjs`,
 `Tools/visual-regression/primitive-texture-bindgroup-probe-gates.spec.mjs` and their
 `test-engine-node` runner registration.
+
+---
+
+## Lane Beleg (wave P0-1, 2026-09-04) — Bug AR-831.1: the ElevationBand globe material module cannot compile
+
+**Bug id:** AR-831.1 (queue row `AR-831`; instrument row `AR-833`).
+
+**Files affected:**
+
+- `packages/engine/Source/Renderer/WebGPU/WebGPUGlobeMaterial.ts`
+- `packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl`
+
+**Symptom.** In the 2026-09-04 Sandcastle2 WebGPU sweep, `elevation-band-material` reported
+`[Invalid ShaderModule "Globe material module ElevationBand"] is invalid due to a previous error`
+while validating the vertex stage, then
+`[Invalid RenderPipeline "Globe terrain (uncompressed, normals, opaque, ld=1, stride=32, webMercatorT, samples=4)"] is invalid` at `SetPipeline` inside `Scene Framebuffer Render Pass`, while
+finishing `CommandEncoder "Scene Frame Command Encoder"`. Consequence: the whole scene frame's
+command buffer was discarded, every frame in which a terrain tile drew with the material bound.
+The render loop kept advancing (`frameGate: OK frameNumber 16`), which is why the sweep's frame
+gate did not catch it.
+
+**Root cause — two independent defects on the same path.**
+
+1. *Classification.* `isTextureUniform` accepted a string, an `HTMLImageElement`/
+   `HTMLCanvasElement`, or an object with `_isPlaceholder`. A Cesium `Renderer/Texture.js`
+   instance is none of those — it keeps the backend handle one level deeper, at
+   `texture._texture`, and that handle is what carries `_isPlaceholder` and `_webgpuTexture`.
+   `createElevationBandMaterial` is the only in-tree factory that hands a live `Texture` to a
+   fabric uniform (`MaterialHelpers.js`'s `instanceof Texture` branch adopts it into
+   `material._textures` and deliberately leaves `material.uniforms` pointing at it), so `heights`
+   and `colors` fell through to `inferComponentType`, packed as `f32` struct members, and the
+   emitted body read `textureSampleLevel(materialUniforms.heights, ...)` and
+   `textureDimensions(materialUniforms.heights)` — neither builtin has a scalar overload.
+2. *Naming, position, and resolve.* `GlobeTerrain.wgsl` declared its two material slots as
+   `image`/`imageSampler` and `heights`/`heightsSampler` — names inherited from the retired
+   group-4 layout — while the bind has always been positional: `textureNames[0]` goes to binding
+   5 and `textureNames[1]` to binding 7. `ElevationBand`'s `colors` and `colorsSampler` were
+   therefore unresolved identifiers, and fixing (1) alone would have made the WGSL `heights` read
+   the *colors* texture. Independently, `resolveMaterialTextureView` looked for
+   `_webgpuTexture` / `_webgpuReprojectedTexture` / `view` **on the value**, so a `Texture`
+   returned `null` and the caller bound the 1×1 placeholder view.
+
+**Fix applied.**
+
+- The WGSL material slots are named positionally: `materialTexture0`/`materialSampler0` at
+  bindings 5/6, `materialTexture1`/`materialSampler1` at bindings 7/8. The comment above them
+  records why the names must not be fabric-derived.
+- `rewriteMaterialBody` now builds one replacement map covering both the UBO fields
+  (`materialUniforms.<name>`) and the texture slots: `textureNames[i]` → `materialTexture<i>` and
+  `<name>Sampler` → `materialSampler<i>`, longest-name-first so `heightsSampler` cannot be eaten
+  by `heights`. Slot selection is now independent of the fabric's uniform names.
+- `isTextureUniform` recognises the Cesium `Texture` wrapper through a new `unwrapTextureHandle`
+  helper, also accepts `ImageBitmap` (which the upload path already accepted), and `typeof`-guards
+  the DOM constructors so the module is loadable under `node --test`.
+- `resolveMaterialTextureView` retries its three lookups against the unwrapped handle.
+- Two stale docstrings corrected: the module header's "ElevationBand uses both slots (heights,
+  colors)" and the `textureNames` field's "binds to group(4)@binding(1)/2".
+
+**Verification.** `Tools/visual-regression/globe-material-texture-uniform-binding.spec.mjs`
+(runner `test-model-webgpu`) drives the real fabric, the real `MaterialHelpers` adoption and the
+real prelude/rewrite/assemble/preprocess chain, then requires every identifier the emitted module
+hands to a WGSL texture builtin to be a declaration the module actually makes. Against the
+pre-fix engine (HEAD `01bddf4eae` versions of both files, restored into the tree for the run) it
+reports 6 of 9 red; against the fix, 9 of 9 green. The pixel and validation-error halves belong to
+`Tools/visual-regression/probe-globe-elevation-band-material.mjs` (row AR-833), which Éowyn runs.
+
+**Files modified:** as listed above, plus `package.json` (spec appended to `test-model-webgpu`),
+`Tools/visual-regression/globe-material-texture-uniform-binding.spec.mjs` (new),
+`Tools/visual-regression/probe-globe-elevation-band-material.mjs` (new),
+`Tools/visual-regression/globe-elevation-band-material-harness.html` (new), and
+`migration_doc/DEFERRED_WORK.md`. `migration_doc/FEATURE_INVENTORY.md` is NOT edited: it carries no
+§C WIP row for the globe-material texture path (and no §B row for the WGSL-fabric globe-material
+feature at all), so there was nothing to move. That absence is itself an inventory gap worth
+queueing.

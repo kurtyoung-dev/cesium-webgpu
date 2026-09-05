@@ -28,7 +28,13 @@
  *     `_bindGroupLayout2` (binding 5 / binding 7). The in-tree globe
  *     materials (ElevationRamp, SlopeRamp, AspectRamp, DiffuseMap,
  *     ElevationBand, WaterMask) all fit within this. ElevationBand uses
- *     both slots (heights, colors); others use binding 5 only.
+ *     both slots; the others use the first slot only.
+ *   - The slots are named positionally in the WGSL
+ *     (`materialTexture0`/`materialSampler0`, `materialTexture1`/
+ *     `materialSampler1`) because the bind is positional: slot `i` receives
+ *     `textureNames[i]`. `rewriteMaterialBody` maps each fabric's own texture
+ *     uniform name — and its `<name>Sampler` companion — onto the slot it is
+ *     bound to, so a fabric's uniform names never have to match the shader's.
  *   - No support for compound/composite fabric trees; only the
  *     single-material cases resolve.
  *
@@ -68,8 +74,10 @@ export interface MaterialPipelineCacheEntry {
   // Total UBO size in bytes, rounded up to a 16-byte multiple (WebGPU
   // uniform buffer requirement).
   uboSize: number;
-  // Texture-uniform names this material binds, in declared order.
-  // First entry binds to group(4)@binding(1)/2, second to binding(3)/4.
+  // Texture-uniform names this material binds, in declared order. The bind is
+  // positional: entry `i` is bound to group(2) slot `i` — binding 5/6 for
+  // `i === 0`, binding 7/8 for `i === 1` — and the WGSL refers to those slots
+  // by their positional names, never by the fabric's own uniform names.
   textureNames: string[];
   // Reusable GPU buffer for the material UBO — recreated when the
   // material changes (different uboSize).
@@ -140,18 +148,68 @@ function componentTypeAlign(t: MaterialUniformSlot["componentType"]): number {
   }
 }
 
+/**
+ * Unwrap the backend handle a Cesium `Renderer/Texture.js` instance carries.
+ *
+ * A `Texture` is not itself the resource: it holds the WebGL-shaped handle at
+ * `texture._texture`, and under WebGPU that handle is the compatibility stub
+ * (`_isPlaceholder`, `_webgpuTexture.view`). Both the classifier and the
+ * resolver below have to look one level deeper, or a live `Texture` handed to
+ * a fabric uniform — which is exactly what `createElevationBandMaterial` does
+ * for `heights` and `colors` — is neither recognised as a texture nor
+ * resolvable to a view.
+ *
+ * Duck-typed rather than `instanceof Texture`: the WebGPU renderer must not
+ * take a static dependency on a Scene/Renderer WebGL class.
+ */
+function unwrapTextureHandle(value: unknown): object | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const handle = (value as { _texture?: unknown })._texture;
+  if (handle && typeof handle === "object") {
+    return handle as object;
+  }
+  return null;
+}
+
 // Reserved uniform names that don't get packed (textures, string tokens,
 // URLs, etc.). Anything matching these is excluded from the UBO and
-// either handled as a texture (image/heights/colors) or ignored at
-// pack time.
+// either handled as a texture or ignored at pack time.
+//
+// The DOM constructors are `typeof`-guarded because this module is exercised
+// under `node --test` by the globe-material behaviour spec, where
+// `HTMLImageElement` and friends are not defined and a bare `instanceof`
+// throws a ReferenceError.
+//
+// This predicate MUST agree with {@link resolveMaterialTextureView} /
+// `_resolveOrUploadMaterialTexture`: a value classified as a texture that the
+// resolver cannot turn into a view binds the 1x1 placeholder, and a value the
+// resolver could bind but the classifier misses is packed into the UBO as a
+// scalar and then referenced by the emitted WGSL as if it were a texture,
+// which is what made the ElevationBand globe module uncompilable.
 function isTextureUniform(name: string, value: unknown): boolean {
   if (typeof value === "string") return true;
-  if (value instanceof HTMLImageElement || value instanceof HTMLCanvasElement) {
+  if (
+    (typeof HTMLImageElement !== "undefined" &&
+      value instanceof HTMLImageElement) ||
+    (typeof HTMLCanvasElement !== "undefined" &&
+      value instanceof HTMLCanvasElement) ||
+    (typeof ImageBitmap !== "undefined" && value instanceof ImageBitmap)
+  ) {
     return true;
   }
   if (typeof value === "object" && value !== null) {
     const v = value as { _isPlaceholder?: boolean; image?: unknown };
     if (v._isPlaceholder) return true;
+    // A Cesium `Texture` wrapper: the placeholder flag and the WebGPU
+    // resource both live on `texture._texture`.
+    const handle = unwrapTextureHandle(value) as {
+      _isPlaceholder?: boolean;
+    } | null;
+    if (handle && (handle._isPlaceholder || "_webgpuTexture" in handle)) {
+      return true;
+    }
   }
   return false;
 }
@@ -215,9 +273,9 @@ export function aggregateCompositeUniforms(
  * `czm_getMaterial` so the material's component expressions reference
  * bare uniform names just like GLSL does.
  *
- * The textures are already declared in GlobeTerrain.wgsl at
- * `@group(2) @binding(5)` (image) and `@group(2) @binding(7)`
- * (heights/colors); the prelude doesn't redeclare them.
+ * The texture slots are already declared in GlobeTerrain.wgsl at
+ * `@group(2) @binding(5)` (`materialTexture0`) and `@group(2) @binding(7)`
+ * (`materialTexture1`); the prelude doesn't redeclare them.
  *
  * Returns `null` if the material has no useful uniforms, in which case
  * the caller should skip the material pipeline path.
@@ -292,10 +350,40 @@ export function buildMaterialPrelude(material: CesiumMaterial): {
 }
 
 /**
- * Rewrite the material's WGSL body to reference uniforms as
- * `materialUniforms.<name>` rather than bare `<name>`. Texture uniform
- * names (those in `textureNames`) stay bare so they pick up the WGSL
- * texture bindings declared in GlobeTerrain.wgsl.
+ * The WGSL identifier of material texture slot `index`, as declared in
+ * `GlobeTerrain.wgsl` under `//>>ifdef MATERIAL_APPLY`. Positional, because
+ * the bind is positional.
+ * @private
+ */
+export function materialTextureSlotName(index: number): string {
+  return `materialTexture${index}`;
+}
+
+/**
+ * The WGSL identifier of the sampler paired with material texture slot
+ * `index`.
+ * @private
+ */
+export function materialSamplerSlotName(index: number): string {
+  return `materialSampler${index}`;
+}
+
+/**
+ * Rewrite the material's WGSL body so every identifier it inherits from the
+ * fabric resolves against something the assembled module actually declares:
+ *
+ *  - scalar/vector uniforms become `materialUniforms.<name>`;
+ *  - the `i`-th texture uniform becomes `materialTexture<i>`, and its
+ *    `<name>Sampler` companion becomes `materialSampler<i>`.
+ *
+ * The texture mapping is by POSITION, not by name. `textureNames[i]` is what
+ * the renderer binds to slot `i`, so a fabric whose uniform is called
+ * `colors` reads the slot its own `colors` texture was bound to, and one that
+ * calls the same slot `image` reads that same slot. Leaving the fabric's
+ * names bare — the previous behaviour — only compiled while a fabric happened
+ * to name its uniforms after the shader's slots, and mis-bound the ones that
+ * did not: `ElevationBand`'s `colors` / `colorsSampler` were unresolved
+ * identifiers, which is what made its module invalid.
  *
  * Whole-word match only (word boundaries via lookahead/behind) so
  * `color.rgb` becomes `materialUniforms.color.rgb` cleanly without
@@ -306,9 +394,21 @@ export function rewriteMaterialBody(
   uboLayout: Map<string, MaterialUniformSlot>,
   textureNames: string[],
 ): string {
+  const replacements = new Map<string, string>();
+  for (const name of uboLayout.keys()) {
+    replacements.set(name, `materialUniforms.${name}`);
+  }
+  // Texture and sampler slot aliases take precedence over any same-named UBO
+  // field: a name that classified as a texture is never packed into the UBO.
+  textureNames.forEach((name, index) => {
+    replacements.set(name, materialTextureSlotName(index));
+    replacements.set(`${name}Sampler`, materialSamplerSlotName(index));
+  });
+
   // Sort names longest-first so longer names match first, which prevents
-  // `color` from rewriting `colors`.
-  const names = [...uboLayout.keys()].sort((a, b) => b.length - a.length);
+  // `color` from rewriting `colors` (and `heights` from eating
+  // `heightsSampler`).
+  const names = [...replacements.keys()].sort((a, b) => b.length - a.length);
   // Build a single regex with alternation; word boundaries surround
   // each name. WGSL identifier chars include letters/digits/underscore.
   if (names.length === 0) return body;
@@ -317,12 +417,8 @@ export function rewriteMaterialBody(
     `(^|[^A-Za-z0-9_.])(${escaped.join("|")})(?![A-Za-z0-9_])`,
     "g",
   );
-  // Skip the rewrite for texture-name aliases — they're declared as
-  // module-scope `var` bindings in the base shader, not in the UBO.
-  const textureSet = new Set(textureNames);
   return body.replace(re, (_match, pre, name) => {
-    if (textureSet.has(name)) return `${pre}${name}`;
-    return `${pre}materialUniforms.${name}`;
+    return `${pre}${replacements.get(name) ?? name}`;
   });
 }
 
@@ -333,6 +429,13 @@ export function rewriteMaterialBody(
  * stub texture stack already wraps the resource). The renderer's existing
  * imagery texture cache uploads either form to a backing `GPUTexture`, so
  * this only has to pull the WebGPU view out of whichever shape arrives.
+ *
+ * A `Renderer/Texture.js` instance is the wrapper, not the handle: it keeps
+ * the backend resource at `texture._texture`, so the wrapper is unwrapped once
+ * before the same three lookups are retried. Without that step every uniform
+ * holding a live `Texture` — `createElevationBandMaterial`'s `heights` and
+ * `colors`, the only in-tree fabric uniforms shaped that way — resolved to
+ * `null` and bound the 1x1 placeholder view instead of the real data.
  *
  * Returns `null` when the texture isn't a recognized shape — caller binds
  * the placeholder view.
@@ -354,6 +457,25 @@ export function resolveMaterialTextureView(
     return v._webgpuReprojectedTexture.createView();
   }
   if (v.view) return v.view;
+  // Cesium `Texture` wrapper — retry against the handle it owns. One level
+  // only: the handle itself never wraps another wrapper.
+  const handle = unwrapTextureHandle(value);
+  if (handle) {
+    const h = handle as {
+      _webgpuTexture?: { view?: GPUTextureView };
+      _webgpuReprojectedTexture?: { createView?: () => GPUTextureView };
+      view?: GPUTextureView;
+    };
+    if (h._webgpuTexture?.view) {
+      return h._webgpuTexture.view;
+    }
+    if (h._webgpuReprojectedTexture?.createView) {
+      return h._webgpuReprojectedTexture.createView();
+    }
+    if (h.view) {
+      return h.view;
+    }
+  }
   return null;
 }
 

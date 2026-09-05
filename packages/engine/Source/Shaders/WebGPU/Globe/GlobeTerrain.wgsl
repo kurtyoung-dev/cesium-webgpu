@@ -752,11 +752,19 @@ struct CSMParams {
 // (`buildMaterialPrelude` in `WebGPUGlobeMaterial.ts`) so the per-material
 // uniform shape can vary. The texture/sampler declarations are constant
 // across materials (the in-tree set never exceeds two textures).
+//
+// The slot names are deliberately POSITIONAL, not fabric-derived. The JS side
+// binds `textureNames[i]` to slot `i` (`_createWaterOceanMaterialBindGroupInner`
+// in `WebGPUGlobeSurfaceRenderer.ts`), so naming a slot after one fabric's
+// uniform — the retired `image` / `heights` pair — only compiled for the
+// fabrics that happened to use those names, and silently mis-bound any other.
+// `rewriteMaterialBody` maps each fabric's own texture name and its
+// `<name>Sampler` companion onto the slot it is actually bound to.
 //>>ifdef MATERIAL_APPLY
-@group(2) @binding(5) var image: texture_2d<f32>;
-@group(2) @binding(6) var imageSampler: sampler;
-@group(2) @binding(7) var heights: texture_2d<f32>;
-@group(2) @binding(8) var heightsSampler: sampler;
+@group(2) @binding(5) var materialTexture0: texture_2d<f32>;
+@group(2) @binding(6) var materialSampler0: sampler;
+@group(2) @binding(7) var materialTexture1: texture_2d<f32>;
+@group(2) @binding(8) var materialSampler1: sampler;
 //>>endif
 
 // Vertex input and output.

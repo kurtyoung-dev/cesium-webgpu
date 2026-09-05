@@ -9276,7 +9276,9 @@ regeneration of the already-shipped **primitive** material shaders (a separate
 shader family from globe materials), NOT in-progress edits to this feature.
 Confirmed by diffing root build-output vs canonical `packages/engine/Source`.
 
-**Symptom (still present, will be resolved by Steps 3b-6):** Demos that set `globe.material = new Cesium.Material({ fabric: {...} })` show the default Bing imagery on WebGPU instead of the user-defined material overlay. Affects ~5 demos: `Globe Materials.html`, `Bathymetry.html`, `Elevation Band Material.html`, `Globe Materials – Water Mask Elevation Map.html`, `Globe Materials – 3D Tiles Terrain.html`.
+**Symptom (HISTORICAL — the pre-hook failure mode, amended in place 2026-09-04):** Before Steps 3b-6 landed, demos that set `globe.material = new Cesium.Material({ fabric: {...} })` showed the default Bing imagery on WebGPU instead of the user-defined material overlay. Affected ~5 demos: `Globe Materials.html`, `Bathymetry.html`, `Elevation Band Material.html`, `Globe Materials – Water Mask Elevation Map.html`, `Globe Materials – 3D Tiles Terrain.html`.
+
+That paragraph described the world in which no material hook existed at all, and it survived the "RESOLVED" note above it. It is no longer the observed symptom: the hook is reached, a module IS built for every one of those fabrics, and the demos that still failed did so for a different reason. The `Elevation Band Material` case in particular failed as an INVALID SHADER MODULE, not as bare imagery — see `NEW-WEBGPU-GLOBE-MATERIAL-TEXTURE-UNIFORM-ELEVATIONBAND` below, which owns that defect and its acceptance. The only live remainder of THIS entry is the Step 6 note that "a dedicated cross-backend probe for the full 12-fabric matrix would still be worthwhile" — the missing guard, not a broken feature.
 
 **Root cause:** The Globe WGSL fragment shader (`GlobeTerrain.wgsl`) has no hook for executing a user-supplied material. WebGL's `GlobeFS.glsl` reads `material.shaderSource` (built by `MaterialHelpers.createMethodDefinition` from the fabric definition) and concatenates it with the base FS, gated on the `APPLY_MATERIAL` define. The WGSL pipeline has none of this — there's no parallel fabric assembler, no `getMaterial` hook, and no per-tile material bind group.
 
@@ -9323,6 +9325,91 @@ fn getMaterial(input: MaterialInput) -> Material {
 ```
 
 The output of the assembler is appended to the GlobeTerrain.wgsl source before pipeline creation.
+
+---
+
+### NEW-WEBGPU-GLOBE-MATERIAL-TEXTURE-UNIFORM-ELEVATIONBAND — FIXED (2026-09-04, lane Beleg, row AR-831)
+
+**Owner of:** the `elevation-band-material` GPU-validation fault in the 2026-09-04 Sandcastle2
+WebGPU sweep. Diagnosed verbatim in
+`cesium-webgpu-worker-archive/arch-lenses-2026-09-03/DIAGNOSIS_GPU_VALIDATION_FAULTS.md` §1.
+Distinct from `NEW-WEBGPU-GLOBE-MATERIAL-SUPPORT` above, whose remaining live item is a guard,
+not a defect.
+
+**Observable symptom.** `globe.material = createElevationBandMaterial({ scene, layers })` built an
+invalid `GPUShaderModule` ("Globe material module ElevationBand"), which made every
+`Globe terrain (...)` pipeline built from it invalid, which made `CommandEncoder.finish()` on
+`Scene Frame Command Encoder` fail. The whole scene frame's command buffer was discarded — on a
+shipped gallery demo — and the console took one `GPU VALIDATION ERROR` per frame.
+
+**Root cause — two independent defects on one path, both fixed.**
+
+1. **Classification.** `isTextureUniform` (`WebGPUGlobeMaterial.ts`) accepted a string, an
+   `HTMLImageElement`/`HTMLCanvasElement`, or an object carrying `_isPlaceholder`. A Cesium
+   `Renderer/Texture.js` instance is none of those: it holds the backend handle one level deeper,
+   at `texture._texture`. `createElevationBandMaterial` is the only in-tree factory that puts a
+   live `Texture` on a fabric uniform, so `heights` and `colors` fell through to
+   `inferComponentType`, were packed into the material UBO as `f32` scalars, and the emitted body
+   called `textureSampleLevel` / `textureDimensions` on a scalar struct member.
+2. **Naming, position and resolve.** `GlobeTerrain.wgsl` named its two material slots after one
+   fabric's uniforms (`image`/`imageSampler`, `heights`/`heightsSampler`) while the bind is
+   POSITIONAL — `textureNames[i]` goes to slot `i`. `ElevationBand`'s `colors`/`colorsSampler`
+   were therefore unresolved identifiers, and a corrected classification alone would have made the
+   WGSL `heights` read the *colors* texture. `resolveMaterialTextureView` looked for the WebGPU
+   resource on the value rather than on `value._texture`, so both uniforms would have bound the
+   1×1 placeholder view even had the module compiled.
+
+**Fix.** The WGSL slots are named positionally (`materialTexture0`/`materialSampler0`,
+`materialTexture1`/`materialSampler1`); `rewriteMaterialBody` maps each fabric's own texture
+uniform name and its `<name>Sampler` companion onto the slot index the renderer binds it to;
+`isTextureUniform` recognises the Cesium `Texture` wrapper (and `ImageBitmap`, which the resolve
+path already accepted); `resolveMaterialTextureView` retries against the unwrapped handle. Slot
+selection is now independent of the fabric's uniform names, so the next two-texture fabric with
+different names cannot re-break it.
+
+**Acceptance (observable behaviour only).**
+
+1. `Apps/Sandcastle2/index.html?id=elevation-band-material&renderer=webgpu` produces no
+   `Invalid ShaderModule "Globe material module ElevationBand"` and no
+   `Invalid RenderPipeline "Globe terrain (…)"` in its `errors[]`.
+2. At the demo's own saved camera the WebGPU canvas shows the same banded colouring as WebGL —
+   coloured bands at the configured heights over the background gradient, not bare imagery and not
+   a frame that failed to repaint.
+3. Moving `band1Position` with the demo's toolbar moves the band on WebGPU, i.e. the two `Texture`
+   uniforms are genuinely sampled rather than resolved to the 1×1 placeholder view.
+4. `globe-materials-water-mask-elevation-map` and `bathymetry` still sweep clean — the
+   single-texture and composite-fabric shapes of the same path.
+
+**Proving artefacts.**
+
+- **The probe is the acceptance** (R-2026-08-29-1):
+  `Tools/visual-regression/probe-globe-elevation-band-material.mjs` with
+  `Tools/visual-regression/globe-elevation-band-material-harness.html`. It measures clause 1 from
+  the device's own `uncapturederror` channel, clause 2 as the differing fraction against a
+  `globe.material`-cleared capture at the same camera, clause 3 as the differing fraction across a
+  `band1Position` shift, and clause 4 by binding the two sibling material shapes in the same run.
+  Run: `node Tools/visual-regression/probe-globe-elevation-band-material.mjs --renderer both`
+  (needs `node server.js --port 8094 --serve-built`).
+- **Browser-free behaviour gate:**
+  `Tools/visual-regression/globe-material-texture-uniform-binding.spec.mjs`, in the
+  `test-model-webgpu` runner. It drives the real `Material` fabric, the real `MaterialHelpers`
+  texture adoption and the real prelude/rewrite/assemble/preprocess chain, then requires every
+  identifier the emitted module hands to a WGSL texture builtin to be a declaration the module
+  actually makes, with the sampler paired to its texture's binding.
+
+**Clause 4 caveat.** The FULL-SWEEP form of clause 4 remains blocked on `AR-D20`: the built
+Sandcastle2 app serves two gitignored `.d.ts` files as 404, which puts an entry in every demo's
+`errors[]` and made the 2026-09-04 sweep certify 0 of 338. The two material SHAPES clause 4 names
+are proven inside the probe instead. Re-run the sweep once `AR-D20` closes.
+
+**Files modified:** `packages/engine/Source/Renderer/WebGPU/WebGPUGlobeMaterial.ts`,
+`packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl`.
+
+**Parity (Principle 5):** WebGL-only change: none. WebGL's `ElevationBandMaterial.glsl` path
+already works — `MaterialHelpers` binds `material._textures[uniformId]` to the GLSL sampler by
+name, so WebGL never had the positional-slot problem this entry describes. Neither file this fix
+touches is on a WebGL code path (`GlobeTerrain.wgsl` is WGSL; `WebGPUGlobeMaterial.ts` is reached
+only from `WebGPUGlobeSurfaceRenderer`), so the WebGL capture is byte-identical by path.
 
 ---
 

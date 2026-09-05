@@ -1,0 +1,442 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Globe ElevationBand material harness</title>
+    <link rel="stylesheet" href="/Build/CesiumUnminified/Widgets/widgets.css" />
+    <style>
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        background: #000;
+        overflow: hidden;
+      }
+      #cesiumContainer {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 1024px;
+        height: 640px;
+      }
+    </style>
+  </head>
+  <body data-globe-elevation-band-harness="owned-no-autostart-v1">
+    <div id="cesiumContainer"></div>
+    <canvas id="colorRamp" style="display: none"></canvas>
+    <script type="module">
+      // Harness for probe-globe-elevation-band-material.mjs (AR-833).
+      //
+      // Reproduces the `elevation-band-material` gallery demo's material
+      // construction — the same `createElevationBandMaterial({ scene, layers })`
+      // call over the same layer stack and the same saved camera — plus the two
+      // sibling globe-material shapes the acceptance's clause 4 names: the
+      // single-texture canvas fabric (`globe-materials-water-mask-elevation-map`)
+      // and the composite fabric (`bathymetry`).
+      //
+      // It owns no timing policy of its own: the default render loop is off and
+      // every frame is an explicit forceRender at a pinned clock, so a settle
+      // count is a count of frames the probe asked for.
+      //
+      // Why the sibling shapes are rebuilt here rather than loaded from
+      // Sandcastle2: AR-D20 records the built Sandcastle2 app serving two
+      // gitignored `.d.ts` files as 404 on this tree, which puts an entry in
+      // every demo's `errors[]` and makes a sweep result unusable as evidence.
+      // The material shapes are what clause 4 is actually about, so they are
+      // constructed directly against the same engine.
+      window.CESIUM_BASE_URL = "/Build/CesiumUnminified/";
+      import * as Cesium from "/Build/CesiumUnminified/index.js";
+      window.Cesium = Cesium;
+
+      window.__errors = [];
+      window.__gpuErrors = [];
+      window.addEventListener("error", (e) =>
+        window.__errors.push(`window.error: ${e.message || String(e)}`),
+      );
+      window.addEventListener("unhandledrejection", (e) =>
+        window.__errors.push(`unhandledrejection: ${String(e.reason)}`),
+      );
+
+      // The demo's own saved camera, copied from
+      // packages/sandcastle/gallery/elevation-band-material/main.js.
+      const DEMO_VIEW = {
+        destination: new Cesium.Cartesian3(
+          290637.5534733206,
+          5637471.593707632,
+          2978256.8126927214,
+        ),
+        orientation: {
+          heading: 4.747266966349747,
+          pitch: -0.2206998858596192,
+          roll: 6.280340554587955,
+        },
+      };
+
+      // Attach a GPUValidationError sink to the WebGPU device. `uncapturederror`
+      // is the only channel that reports a validation fault as a typed object
+      // rather than as console text, so a probe reading it cannot be fooled by
+      // a message the engine chose not to print.
+      function attachDeviceErrorSink(scene) {
+        const device =
+          scene.context && (scene.context.device || scene.context._device);
+        if (!device || typeof device.addEventListener !== "function") {
+          return false;
+        }
+        device.addEventListener("uncapturederror", (event) => {
+          const error = event.error;
+          window.__gpuErrors.push({
+            kind: error && error.constructor ? error.constructor.name : "?",
+            message: String((error && error.message) || error),
+          });
+        });
+        return true;
+      }
+
+      window.__build = async function (options) {
+        try {
+          const viewer = await Cesium.Viewer.createAsync(
+            document.getElementById("cesiumContainer"),
+            {
+              contextOptions: { renderer: options.renderer },
+              useBrowserRecommendedResolution: false,
+            },
+          );
+          window.viewer = viewer;
+          const scene = viewer.scene;
+          viewer.useDefaultRenderLoop = false;
+          if (options.terrain === true) {
+            // Awaited here rather than through `Viewer.createAsync`'s terrain
+            // option: that path leaves `scene.globe.terrainProvider` undefined
+            // when createAsync resolves, and the demo's bands only exist over
+            // real terrain heights.
+            scene.terrainProvider =
+              await Cesium.CesiumTerrainProvider.fromIonAssetId(1, {
+                requestWaterMask: false,
+                requestVertexNormals: true,
+              });
+          }
+          return {
+            ok: true,
+            rendererType: scene.context.rendererType,
+            isWebGPU: scene.context.isWebGPU,
+            deviceErrorSink: attachDeviceErrorSink(scene),
+            hasCreateElevationBandMaterial:
+              typeof Cesium.createElevationBandMaterial === "function",
+            terrainReady: !!scene.globe.terrainProvider,
+            canvasWidth: scene.drawingBufferWidth,
+            canvasHeight: scene.drawingBufferHeight,
+          };
+        } catch (e) {
+          const message = String(e && e.stack ? e.stack : e);
+          window.__errors.push(`build: ${message}`);
+          return { ok: false, error: message };
+        }
+      };
+
+      window.__stripWidgets = function () {
+        for (const selector of [
+          ".cesium-viewer-toolbar",
+          ".cesium-viewer-animationContainer",
+          ".cesium-viewer-timelineContainer",
+          ".cesium-viewer-bottom",
+        ]) {
+          for (const node of document.querySelectorAll(selector)) {
+            node.style.display = "none";
+          }
+        }
+        return true;
+      };
+
+      window.__setDemoView = function () {
+        window.viewer.camera.setView(DEMO_VIEW);
+        return true;
+      };
+
+      // The demo's layer stack, verbatim in structure: a wide background
+      // gradient, a 50-step grid, and the three movable bands. `band1Position`
+      // is the toolbar control the acceptance's clause 3 moves.
+      function buildLayers(arg) {
+        const band1Position = arg.band1Position;
+        const band2Position = arg.band2Position ?? 7500.0;
+        const band3Position = arg.band3Position ?? 8000.0;
+        const bandThickness = arg.bandThickness ?? 100.0;
+        const bandTransparency = arg.bandTransparency ?? 0.5;
+        const backgroundTransparency = arg.backgroundTransparency ?? 0.75;
+        const antialias = Math.min(10.0, bandThickness * 0.1);
+        const layers = [
+          {
+            entries: [
+              {
+                height: 4200.0,
+                color: new Cesium.Color(0.0, 0.0, 0.2, backgroundTransparency),
+              },
+              {
+                height: 8000.0,
+                color: new Cesium.Color(1.0, 1.0, 1.0, backgroundTransparency),
+              },
+              {
+                height: 8500.0,
+                color: new Cesium.Color(1.0, 0.0, 0.0, backgroundTransparency),
+              },
+            ],
+            extendDownwards: true,
+            extendUpwards: true,
+          },
+        ];
+        const gridCount = 50;
+        for (let i = 0; i < gridCount; i++) {
+          const lerper = i / (gridCount - 1);
+          const heightBelow = Cesium.Math.lerp(4200.0, 8848.0, lerper);
+          const alpha =
+            Cesium.Math.lerp(0.2, 0.4, lerper) * backgroundTransparency;
+          layers.push({
+            entries: [
+              {
+                height: heightBelow,
+                color: new Cesium.Color(1.0, 1.0, 1.0, alpha),
+              },
+              {
+                height: heightBelow + 10.0,
+                color: new Cesium.Color(1.0, 1.0, 1.0, alpha),
+              },
+            ],
+          });
+        }
+        const band = (position, color) => ({
+          entries: [
+            {
+              height: position - bandThickness * 0.5 - antialias,
+              color: color.withAlpha(0.0),
+            },
+            {
+              height: position - bandThickness * 0.5,
+              color: color.withAlpha(bandTransparency),
+            },
+            {
+              height: position + bandThickness * 0.5,
+              color: color.withAlpha(bandTransparency),
+            },
+            {
+              height: position + bandThickness * 0.5 + antialias,
+              color: color.withAlpha(0.0),
+            },
+          ],
+        });
+        layers.push(band(band1Position, Cesium.Color.BLUE));
+        layers.push(band(band2Position, Cesium.Color.LIME));
+        layers.push(band(band3Position, Cesium.Color.RED));
+        return layers;
+      }
+
+      // The `bathymetry` demo's colour ramp, reduced to the stops that matter
+      // for a canvas-backed single-texture uniform.
+      function buildColorRamp() {
+        const ramp = document.getElementById("colorRamp");
+        ramp.width = 100;
+        ramp.height = 15;
+        const context2d = ramp.getContext("2d");
+        const gradient = context2d.createLinearGradient(0, 0, 100, 0);
+        gradient.addColorStop(0.0, "#291C2F");
+        gradient.addColorStop(0.4, "#437D9A");
+        gradient.addColorStop(0.7, "#81D2A3");
+        gradient.addColorStop(1.0, "#B79E6C");
+        context2d.fillStyle = gradient;
+        context2d.fillRect(0, 0, ramp.width, ramp.height);
+        return ramp;
+      }
+
+      /**
+       * Applies one globe-material shape. `kind`:
+       *   "none"             — clears globe.material (the reference capture).
+       *   "elevation-band"   — the demo: two live `Texture` fabric uniforms.
+       *   "elevation-ramp"   — single canvas texture uniform.
+       *   "elevation-color-contour" — the bathymetry composite fabric.
+       */
+      window.__applyMaterial = function (arg) {
+        const scene = window.viewer.scene;
+        const globe = scene.globe;
+        try {
+          if (arg.kind === "none") {
+            globe.material = undefined;
+            return { ok: true, materialType: null };
+          }
+          if (arg.kind === "elevation-band") {
+            globe.material = Cesium.createElevationBandMaterial({
+              scene: scene,
+              layers: buildLayers(arg),
+            });
+          } else if (arg.kind === "elevation-ramp") {
+            const material = Cesium.Material.fromType("ElevationRamp");
+            material.uniforms.image = buildColorRamp();
+            material.uniforms.minimumHeight = 4200.0;
+            material.uniforms.maximumHeight = 8848.0;
+            globe.material = material;
+          } else if (arg.kind === "elevation-color-contour") {
+            const material = new Cesium.Material({
+              fabric: {
+                type: "ElevationColorContour",
+                materials: {
+                  contourMaterial: { type: "ElevationContour" },
+                  elevationRampMaterial: { type: "ElevationRamp" },
+                },
+                components: {
+                  diffuse:
+                    "(1.0 - contourMaterial.alpha) * elevationRampMaterial.diffuse + contourMaterial.alpha * contourMaterial.diffuse",
+                  alpha:
+                    "max(contourMaterial.alpha, elevationRampMaterial.alpha)",
+                },
+              },
+              translucent: false,
+            });
+            const ramp = material.materials.elevationRampMaterial.uniforms;
+            ramp.image = buildColorRamp();
+            ramp.minimumHeight = 4200.0;
+            ramp.maximumHeight = 8848.0;
+            const contour = material.materials.contourMaterial.uniforms;
+            contour.width = 1.0;
+            contour.spacing = 500.0;
+            contour.color = Cesium.Color.BLACK.withAlpha(0.5);
+            globe.material = material;
+          } else {
+            return { ok: false, error: `unknown material kind ${arg.kind}` };
+          }
+          return {
+            ok: true,
+            materialType: globe.material.type,
+            uniformNames: Object.keys(globe.material.uniforms),
+          };
+        } catch (e) {
+          const message = String(e && e.stack ? e.stack : e);
+          window.__errors.push(`applyMaterial(${arg.kind}): ${message}`);
+          return { ok: false, error: message };
+        }
+      };
+
+      window.__settle = async function (arg) {
+        const scene = window.viewer.scene;
+        const time = Cesium.JulianDate.fromIso8601(
+          arg.iso ?? "2026-09-04T18:00:00Z",
+        );
+        const deadline = performance.now() + (arg.budgetMs ?? 60000);
+        let frames = 0;
+        let ready = 0;
+        let commands = -1;
+        while (performance.now() < deadline) {
+          scene.requestRender();
+          scene.forceRender(time);
+          frames++;
+          commands = scene.frameState.commandList.length;
+          if (scene.globe.tilesLoaded && commands > 0) {
+            ready++;
+            if (ready >= 8 && frames >= (arg.minFrames ?? 40)) {
+              break;
+            }
+          } else {
+            ready = 0;
+          }
+          await new Promise((r) => setTimeout(r, 8));
+        }
+        return {
+          frames,
+          commands,
+          tilesLoaded: scene.globe.tilesLoaded,
+          wallMs: Math.round(performance.now() - (deadline - 60000)),
+        };
+      };
+
+      window.__validation = function () {
+        return {
+          gpuErrors: window.__gpuErrors.slice(),
+          pageErrors: window.__errors.slice(),
+        };
+      };
+
+      window.__resetValidation = function () {
+        window.__gpuErrors.length = 0;
+        return true;
+      };
+
+      // Decode a Playwright element capture in the page. Capturing in the page
+      // does not work for a WebGPU canvas, which is why the bytes arrive from
+      // outside.
+      async function decode(base64) {
+        const image = new Image();
+        await new Promise((resolveImage, rejectImage) => {
+          image.onload = resolveImage;
+          image.onerror = rejectImage;
+          image.src = `data:image/png;base64,${base64}`;
+        });
+        const canvas = document.createElement("canvas");
+        canvas.width = image.width;
+        canvas.height = image.height;
+        const context2d = canvas.getContext("2d", { willReadFrequently: true });
+        context2d.drawImage(image, 0, 0);
+        return context2d.getImageData(0, 0, image.width, image.height);
+      }
+
+      /**
+       * Fraction of pixels that differ between two captures by more than
+       * `threshold` on any channel. This is the probe's whole visual metric:
+       * "the material changed the picture" and "moving band1Position changed
+       * the picture" are both the same measurement over different pairs, and
+       * both read zero when the material path is inert — whether because the
+       * frame's command buffer was discarded or because the two texture
+       * uniforms resolved to the 1x1 placeholder view.
+       */
+      window.__differingFraction = async function (arg) {
+        const a = await decode(arg.a);
+        const b = await decode(arg.b);
+        if (a.width !== b.width || a.height !== b.height) {
+          return { error: "size mismatch", pixels: 0, differingFraction: 1 };
+        }
+        const threshold = arg.threshold ?? 8;
+        let differing = 0;
+        const pixels = a.width * a.height;
+        for (let i = 0; i < a.data.length; i += 4) {
+          if (
+            Math.abs(a.data[i] - b.data[i]) > threshold ||
+            Math.abs(a.data[i + 1] - b.data[i + 1]) > threshold ||
+            Math.abs(a.data[i + 2] - b.data[i + 2]) > threshold
+          ) {
+            differing++;
+          }
+        }
+        return {
+          pixels,
+          differing,
+          differingFraction: +(differing / pixels).toFixed(6),
+        };
+      };
+
+      /**
+       * Fraction of pixels close to one of the three band colours (blue, lime,
+       * red) at the configured transparency, over a mid-grey-ish terrain. Used
+       * as a corroborating measurement, not as the gate: a hue count cannot
+       * distinguish "the band is at the right height" from "the whole globe
+       * turned blue", which is why the differing-fraction pair above carries
+       * the verdicts.
+       */
+      window.__bandHueFraction = async function (base64) {
+        const image = await decode(base64);
+        let banded = 0;
+        const pixels = image.width * image.height;
+        for (let i = 0; i < image.data.length; i += 4) {
+          const r = image.data[i];
+          const g = image.data[i + 1];
+          const b = image.data[i + 2];
+          const max = Math.max(r, g, b);
+          const min = Math.min(r, g, b);
+          // Saturated enough to be a band tint rather than imagery or sky.
+          if (max - min > 40 && max > 40) {
+            banded++;
+          }
+        }
+        return {
+          pixels,
+          banded,
+          bandHueFraction: +(banded / pixels).toFixed(6),
+        };
+      };
+    </script>
+  </body>
+</html>
