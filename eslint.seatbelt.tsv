@@ -164,7 +164,7 @@
 "packages/engine/Source/Renderer/WebGPU/WebGPUGaussianSplatRenderer.ts"	"no-duplicate-imports"	1
 "packages/engine/Source/Renderer/WebGPU/WebGPUGlobeDepth.ts"	"curly"	7
 "packages/engine/Source/Renderer/WebGPU/WebGPUGlobeFragmentDebug.ts"	"curly"	2
-"packages/engine/Source/Renderer/WebGPU/WebGPUGlobeMaterial.ts"	"curly"	19
+"packages/engine/Source/Renderer/WebGPU/WebGPUGlobeMaterial.ts"	"curly"	18
 "packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceCameraUB.ts"	"curly"	14
 "packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceRenderer.ts"	"curly"	24
 "packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceRenderer.ts"	"no-duplicate-imports"	3
