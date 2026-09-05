@@ -198,6 +198,13 @@ decisions, Éowyn measurement rows). **Status authority unchanged:** the campaig
 `DEFERRED_WORK.md` and `FIX_QUEUE_2026-08-27_AUDIT_FINDINGS.md` keep every id they own; the new
 queue launches, rules, schedules and funds nothing, and its `AR-` ids are add-only.
 
+**Wave P0-1 (Batches 1415–1428): COMPLETE.** All five dispatched rows — `AR-002`, `AR-751`,
+`AR-831`/`AR-833`, `AR-832`/`AR-834`, `AR-009` — met their Edge acceptance across Éowyn jobs 6–8
+(`Tools/visual-regression/output/wave-p0-1-edge-2026-09-05/`, `-job7/`, `-job8/`); `AR-751` and
+`AR-831`/`AR-833` needed a round-2 engine fix and `AR-009` needed two probe-only fix rounds before
+their own Edge legs measured green. Row-level detail (root causes, batch numbers, measured numbers)
+lives in `QUEUE_2026-09-03_ARCHITECTURE_REVIEW.md`'s own rows, not restated here.
+
 ### Upstream sync — CesiumJS 1.145 (not a numbered campaign)
 
 **LANDED.** The fork is synced to CesiumJS 1.145 at merge commit `ffb8161c08`, **Batch 1408**

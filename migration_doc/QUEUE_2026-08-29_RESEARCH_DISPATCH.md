@@ -1594,6 +1594,102 @@ dependencies and acceptance.
 summary table above, per the `DX-36`…`DX-55` landing-night precedent (`DX-42`'s card states the rule);
 see this card for tier, size, dependencies and acceptance.
 
+### `DX-57` — follow-up patches must be diffed against a fetched seat tip, never a snapshot directory
+
+- **Disposition:** OPEN. Filed from wave P0-1 round 5 (2026-09-05, lane Emeldir2). The lane's first
+  `emeldir-followup2.patch` was cut with `diff -u` against `_lane-out/pre-r5/`, a local snapshot
+  directory copied out of the lane's own clone. The seat holds no blob for that snapshot's index
+  lines, so `git apply --3way` failed at the seat with "repository lacks the necessary blob" and a
+  direct `git apply` missed context where another lane's commit had moved the ledger tail underneath
+  it. The fix was to re-cut the patch in a fresh clone synced to the seat's actual tip
+  (`F:/Dev/GH/cesium-lane-emeldir2-20260905`, HEAD `e4d73ffa1a` = Batch 1427) via
+  `git diff HEAD --binary --no-renames -- <paths>`, which `git apply --check` and
+  `git apply --3way --check` both then accepted cleanly against the seat.
+- **Tier / Size / Backends:** SONNET-BOUNDED · XS · tooling (lane/handoff procedure, not engine code).
+  **Depends on:** none. **Ruling touched:** none. **Gate:** none (a procedure, not a spec-checkable
+  artefact).
+- **Acceptance:** the standing rule is recorded where lanes read it before cutting a follow-up patch
+  (`ORCHESTRATION_HANDBOOK.md`'s worker-rules paragraph carries the one-sentence version) and a
+  follow-up patch's landing packet states which base it diffed against (a fetched seat tip / `FETCH_HEAD`,
+  never a bare snapshot directory) as one of its stated verification facts, alongside the `git apply
+  --check` / `--3way --check` exit codes it already reports.
+- **Binds:** SR-3. **Source:** `LANDING_PACKET_EMELDIR_R5.md` §9 ("Patch re-cut (mechanics only — no
+  content change)"); `ORCHESTRATION_HANDBOOK.md`'s worker-rules paragraph (Batch 1424).
+
+### `DX-58` — the provisioner's governance-copy step leaves `MAINTAINER_RULINGS_2026-08-17.md` modified in every fresh clone
+
+- **Disposition:** OPEN. Filed from wave P0-1 (Halmir, 2026-09-04; recurred, Barahir, 2026-09-05;
+  reproduced a third time in lane Borlach's own clone at Batch 1428, 2026-09-05). Every freshly
+  provisioned worker clone shows `migration_doc/MAINTAINER_RULINGS_2026-08-17.md` as **modified** in
+  `git status` immediately after provisioning, before any lane edits it. `git diff --numstat` on the
+  file prints **no row** — the content is byte-identical — so the change is a pure line-ending
+  artefact (LF/CRLF) of whatever copy mechanism the provisioner's governance-copy step uses. An
+  unscoped `git diff HEAD --binary --no-renames -- migration_doc/` export (the shape every lane and
+  every wave-close doc-patch uses) picks the file up as a spurious hunk unless the lane remembers to
+  name explicit paths instead, which is exactly the workaround `LANDING_PACKET_EMELDIR_R5.md` §9 had
+  to apply to keep it out of a patch.
+- **Tier / Size / Backends:** SONNET-BOUNDED · XS · tooling (provisioning script). **Depends on:**
+  none. **Ruling touched:** none. **Gate:** `git status --short` immediately post-provision.
+- **Acceptance:** a freshly provisioned clone's `git status --short` reports zero entries for
+  `migration_doc/MAINTAINER_RULINGS_2026-08-17.md` before any lane edit — i.e. the provisioner's copy
+  of that file preserves the source's line endings (a binary-mode copy, or a checkout-based copy,
+  rather than whatever text-mode copy currently normalises it) — verified across at least two
+  independently provisioned clones so the fix is not a one-off.
+- **Binds:** SR-3. **Source:** `LANDING_PACKET_EMELDIR_R5.md` §9 ("`migration_doc/MAINTAINER_RULINGS_2026-08-17.md`
+  contributes nothing"); reproduced directly in `F:/Dev/GH/cesium-lane-borlach-20260905` (`git status`
+  at session start, 2026-09-05).
+
+### `DX-59` — `probe-postprocess-resize-survival.mjs` never arms the uncaptured-GPU-error channel; census the fleet for the same omission
+
+- **Disposition:** OPEN. Filed from wave P0-1 job 8 (Éowyn, 2026-09-05). The probe's `gateErrors`
+  reads `{errors: [], deviceLost: null, armedDevices: 0}` on a GREEN run. It calls
+  `attachConsoleErrorGate` and `errorGateInit` but never `armWebGPUDevices(page)` — the helper that
+  installs `device.onuncapturederror` — so `armedDevices: 0` is structural, not a measurement of a
+  clean device, and the empty `errors[]` array evidences **console** errors only. The clause this
+  probe scores is measured in pixels and slot readings, so job 8's GREEN does not rest on this gate —
+  but its coverage is narrower than the receipt's shape implies, and a probe that both attaches a
+  console gate and skips the device-error arm is easy to write again elsewhere in the fleet.
+- **Tier / Size / Backends:** SONNET-BOUNDED · S · tooling (probe fleet). **Depends on:** none.
+  **Ruling touched:** none. **Gate:** none yet — the census this row asks for is the prerequisite for
+  one.
+- **Acceptance:** (a) `probe-postprocess-resize-survival.mjs` calls `armWebGPUDevices(page)` at setup
+  and its receipt reports a non-zero `armedDevices` on a run against a real WebGPU page; (b) a fleet
+  census (grep every probe under `Tools/visual-regression/` that calls `attachConsoleErrorGate` or
+  `errorGateInit` for a sibling `armWebGPUDevices` call in the same file) names every probe with the
+  same omission, with a fix-or-file disposition recorded per name — not fixed silently, per the
+  standing rule to surface DX issues rather than route around them.
+- **Binds:** SR-6. **Source:** `Tools/visual-regression/output/wave-p0-1-edge-2026-09-05-job8/SUMMARY.md`
+  ("Instrument observation — for the seat, not a verdict change").
+
+### `DX-60` — a settle that calls `scene.render()` without `scene.requestRender()` and a null readiness predicate reproduces void captures; census the fleet with the `settleReady()` fix pattern
+
+- **Disposition:** OPEN. Filed from wave P0-1 job 7 / round 3 (Éowyn, lane Emeldir, 2026-09-05) — the
+  mechanism behind the job-7 black-frame class. `probe-postprocess-resize-survival.mjs`'s pre-fix
+  settles were `settleThen(n, null)`: a fixed frame count, a loop calling `scene.render()` with **no**
+  `scene.requestRender()` and **no** readiness predicate. `Scene.js:2698-2723`'s `renderReady`
+  docstring names the exact consequence — "a poll that only calls render() would spin against a scene
+  that has decided it has nothing to redraw" — and job 7 reproduced it precisely: three of its four
+  captures were one byte-identical file (85.5 % black) across ~95 settled frames. The runtime already
+  owns a gate for exactly this case, `decideRenderReadyRefusal` (`Tools/visual-regression/lib/probe-runtime.mjs:400-424`),
+  which the probe opted out of by passing a `null` predicate — a `runtime-residency-contract.spec.mjs`
+  (`DX-02`) concern: a resident probe re-implementing, rather than routing through, what the runtime
+  already provides. Fixed in this probe by `settleReady()`
+  (`Tools/visual-regression/probe-postprocess-resize-survival.mjs:226-297`): `globe.tilesLoaded` **and**
+  a non-empty command list **and** `scene.renderReady`, held for 8 consecutive frames, requesting a
+  render each iteration, plus two pure refusal decisions (`decideSettleRefusal`, `decideContentRefusal`)
+  that raise a `ProbeRefusal` before any clause is scored rather than letting a contentless frame pass
+  or fail either way.
+- **Tier / Size / Backends:** SONNET-BOUNDED · S · tooling (probe fleet). **Depends on:** none.
+  **Ruling touched:** none. **Gate:** none yet — the census is the prerequisite.
+- **Acceptance:** a fleet census (grep every probe under `Tools/visual-regression/` for a settle loop
+  that calls `scene.render()`/`renderNow()` without an adjacent `scene.requestRender()`, or that passes
+  a `null`/absent predicate to a fixed-frame-count settle helper) names every probe in the same defect
+  class, each with a fix-or-file disposition citing `settleReady()` as the reference implementation —
+  not a rewrite of the pattern per probe, a port of it.
+- **Binds:** SR-6, SR-8. **Source:** `LANDING_PACKET_EMELDIR_R5.md` §2(d)/(e), §3;
+  `Tools/visual-regression/output/wave-p0-1-edge-2026-09-05-job7/SUMMARY.md`;
+  `packages/engine/Source/Scene/Scene.js:2698-2723`; `Tools/visual-regression/lib/probe-runtime.mjs:400-424`.
+
 ### `Q-130-a` — `FrustumGeometry.js` misuses `defined(vertexFormat.normal)`/`.st` on always-defined booleans
 
 - **Disposition:** OPEN. Filed here as its own row for the first time — until now `Q-130-a` existed only

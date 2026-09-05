@@ -86,6 +86,13 @@ Dispatch plans (e.g. `CLOSEOUT_PLAN_2026-08-07.md`) are grouping only — same r
   than the budget) and leaves that tracked file dirty; the correct form in a worker clone is
   `SEATBELT_FROZEN=1 npx eslint <files>`, and `eslint.seatbelt.tsv` never travels in a worker's
   patch — the seat carries any legitimate ratchet as its own commit, separate from the lane's landing.
+  A follow-up patch is diffed against a **fetched seat tip** (`git fetch` + the resulting `FETCH_HEAD`,
+  or a clone freshly synced to the seat's current commit), **never** against a local snapshot
+  directory (`_lane-out/pre-rN/`) — the seat holds no blob for a snapshot's index lines, so
+  `git apply --3way` fails with "repository lacks the necessary blob" the moment any other lane has
+  touched the same file since the snapshot was taken (wave P0-1, 2026-09-05: Batch 1428's first cut
+  of `emeldir-followup2.patch` failed exactly this way and had to be re-cut from a clone synced to
+  the seat's tip).
 
 ### Subagent hazards [HARD]
 
