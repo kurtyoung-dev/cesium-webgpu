@@ -166,6 +166,29 @@ not yet, per `QUEUE_2026-07-18_CAMPAIGN11.md` row `C11-168` ("W1 — PARTIAL / V
 DEFICIT, ROOT CAUSE OPEN") — and its campaign placement (a Phase-8b wave vs. new Campaign 19 vs.
 a C18 wave) awaits maintainer gate **M-16**; nothing about it is launched. Wave 1 of this queue (17 ruling-free/measurement-first rows) is mid-execution; its closure is the manual three-step permitted by `R-2026-09-02-3`. **That three-step ran 2026-09-03/04 (Éowyn, job 2 item 10, banked at `Tools/visual-regression/output/wave-end/2026-09-02/`) and NO STEP WAS GREEN, so the wave is NOT CLOSED under `R-2026-08-29-2`:** (a) variant smoke exit 1 — all three variant bundles absent from the served clone, nothing loaded; (b) the Sandcastle2 sweep exit 1 on both renderers — **0 of 338 certified either side**, because the ungenerated editor typings (`/packages/engine/index.d.ts`, `/packages/widgets/index.d.ts`) 404 on the app origin and the console-error gate fails every demo on that one 404; (c) capture-and-diff exit 1, summary FAIL (3 PASS / 1 FAIL / 6 NON_CERTIFYING), **though its cross-backend parity leg passed 10/10 at max 1.52 %** with `promotionPerformed: false`. The gate re-runs on a tree built with `npx gulp buildAllVariants` **and** the TypeScript-definitions step; until it does, the wave stays open. Two real WebGPU faults surfaced under step (b) and are filed as their own rows (`elevation-band-material`, `frustum-dev`); the baseline incompleteness under step (c) is filed separately. **No row's status is changed by this note.**
 
+**Wave-end gate — batches 1379–1404 (2026-09-04, Éowyn job 3).** Under the same rule
+(`R-2026-08-29-2`), distinct from the DX Wave-1 gate above: the wave that closed with Batch 1404
+(1379–1404) had its wave-end gate run 2026-09-04 (Éowyn, standing Edge executor, `R-2026-09-02-1`,
+job 3), on the pre-merge tree `40341305f4` (Batch 1407), served-tree preflight PASS (disk md5
+matches :8080/:8081/:8082/:8094 before and after every leg). Evidence directory:
+`Tools/visual-regression/output/wave-end/2026-09-04/` (`SUMMARY.md` + one `README.txt` per leg).
+Per step: **(a) variant smoke — GREEN** — `node Tools/variant-smoke-test.mjs` exit 0; dual /
+webgl-only / webgpu-only all PASS, 0 console errors each, a rendered frame each. **(b) Sandcastle2
+sweep, both renderers — RED (engine)** — both exit 1; **WebGL 332/338 certified** (6 failed: 4
+`rendererGate` + 2 external-CORS-only); **WebGPU 323/338 certified** (15 failed: 3 GPU
+validation errors — `display-conditions-dev`, `elevation-band-material`, `frustum-dev` — + 11
+`rendererGate` + 1 external-CORS-only); the 12 unique `rendererGate` ids are **not yet classified**
+harness-vs-engine — `AR-888` owns that measurement, and Éowyn's own leg verdict of "RED (engine)"
+above is recorded as the executor's, not ratified here. Zero typings-404s on either renderer (the
+2026-09-03 served-tree blocker is resolved). **(c) capture-and-diff — RED (baseline provenance,
+not a rendering regression)** — exit 1, summary NON_CERTIFYING (scenes PASS 4 / FAIL 0 /
+NON_CERTIFYING 6); **cross-backend parity itself is 10/10 PASS at max 1.484 %**, WebGPU error gate
+clean, and the `globe-default` uniform darkening this same gate reported at 91.32 % / 91.22 % on
+the job-2 run above is **gone** on this tree (PASS at 0.055 % / 0.011 %, meanLum 101.801/101.736
+vs baseline 101.811/101.738); no baseline was refreshed (`promotion.performed=false`). **Per the
+ruling's own terms — the wave closes only if all three steps are GREEN — this wave does NOT
+close: (a) is green, (b) and (c) are not.** No row's status is changed by this note.
+
 **Architecture-review dispatch view (2026-09-03).**
 [`QUEUE_2026-09-03_ARCHITECTURE_REVIEW.md`](QUEUE_2026-09-03_ARCHITECTURE_REVIEW.md) is the dispatch
 view for the architecture review — the rows produced from
