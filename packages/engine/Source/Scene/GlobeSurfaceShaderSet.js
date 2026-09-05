@@ -110,6 +110,7 @@ class GlobeSurfaceShader {
  * @property {boolean} [hasExaggeration]
  * @property {boolean} [showUndergroundColor]
  * @property {boolean} [translucent]
+ * @property {boolean} [vectorAntialias]
  * @property {boolean} [enableEclipseGlobeShadow]
  * @property {boolean} [baseColorCorrect]
  * @property {boolean} [fogCompanionEnabled]
@@ -249,6 +250,12 @@ class GlobeSurfaceShaderSet {
     const enableEclipseGlobeShadow = options.enableEclipseGlobeShadow;
     const vectorData = surfaceTile.vectorData;
     const hasVectorLayer = vectorData?.show;
+    const hasVectorPolylines = hasVectorLayer && vectorData.hasPolylines;
+    const hasVectorPolygons = hasVectorLayer && vectorData.hasPolygons;
+    const vectorAntialias = hasVectorLayer && options.vectorAntialias;
+    const vectorWidthInMeters = hasVectorPolylines && vectorData.hasMeterWidths;
+    const vectorMixedWidthUnits =
+      vectorWidthInMeters && vectorData.hasPixelWidths;
 
     let quantization = 0;
     let quantizationDefine = "";
@@ -313,13 +320,25 @@ class GlobeSurfaceShaderSet {
         (+translucent << 31)) >>>
         0) +
       (applyDayNightAlpha ? 0x100000000 : 0) +
-      (enableEclipseGlobeShadow ? 0x200000000 : 0) +
-      // Upstream assigned hasVectorLayer 0x200000000; the fork's eclipse flag
-      // already owns that bit, so the vector layer takes the next one.
-      (hasVectorLayer ? 0x400000000 : 0) +
-      (applyNightDarkness ? 0x800000000 : 0) +
-      (applyNightLights ? 0x1000000000 : 0) +
-      (applyCelestialWater ? 0x2000000000 : 0);
+      // Bits 33 and above are an ADD-ONLY registry, under the same rule
+      // CLAUDE.md states for the WebGPU ShaderDefine table: never reorder,
+      // renumber or re-use a bit, even once its last consumer disappears.
+      // Upstream owns 33-38 by inheritance, so a future upstream flag lands
+      // at 39+; fork flags therefore start at the documented floor of bit 39
+      // and each new fork flag appends above the fork's own highest bit.
+      // Re-using a bit does not throw - it silently serves two distinct
+      // variants the same cached ShaderProgram. Guarded by
+      // Tools/visual-regression/globe-shaderset-flag-injectivity.spec.mjs.
+      (hasVectorLayer ? 0x200000000 : 0) + // bit 33, upstream
+      (hasVectorPolylines ? 0x400000000 : 0) + // bit 34, upstream
+      (hasVectorPolygons ? 0x800000000 : 0) + // bit 35, upstream
+      (vectorAntialias ? 0x1000000000 : 0) + // bit 36, upstream
+      (vectorWidthInMeters ? 0x2000000000 : 0) + // bit 37, upstream
+      (vectorMixedWidthUnits ? 0x4000000000 : 0) + // bit 38, upstream
+      (enableEclipseGlobeShadow ? 0x8000000000 : 0) + // bit 39, fork
+      (applyNightDarkness ? 0x10000000000 : 0) + // bit 40, fork
+      (applyNightLights ? 0x20000000000 : 0) + // bit 41, fork
+      (applyCelestialWater ? 0x40000000000 : 0); // bit 42, fork
 
     let currentClippingShaderState = 0;
     if (defined(clippingPlanes) && clippingPlanes.length > 0) {
@@ -386,12 +405,6 @@ class GlobeSurfaceShaderSet {
       // Need to go before GlobeFS
       if (currentClippingShaderState !== 0) {
         fs.sources.unshift(getClippingFunction(clippingPlanes, context));
-      }
-
-      // Need to go before GlobeFS
-      if (currentClippingPolygonsShaderState !== 0) {
-        fs.sources.unshift(getPolygonClippingFunction(context));
-        vs.sources.unshift(getUnpackClippingFunction(context));
       }
 
       vs.defines.push(quantizationDefine);
@@ -498,20 +511,10 @@ class GlobeSurfaceShaderSet {
 
       if (enableClippingPolygons) {
         fs.defines.push("ENABLE_CLIPPING_POLYGONS");
-        vs.defines.push("ENABLE_CLIPPING_POLYGONS");
 
         if (clippingPolygons.inverse) {
           fs.defines.push("CLIPPING_INVERSE");
         }
-
-        fs.defines.push(
-          // @ts-expect-error Missing types.
-          `CLIPPING_POLYGON_REGIONS_LENGTH ${clippingPolygons.extentsCount}`,
-        );
-        vs.defines.push(
-          // @ts-expect-error Missing types.
-          `CLIPPING_POLYGON_REGIONS_LENGTH ${clippingPolygons.extentsCount}`,
-        );
       }
 
       if (colorCorrect) {
@@ -535,9 +538,27 @@ class GlobeSurfaceShaderSet {
       }
 
       if (hasVectorLayer) {
-        vs.defines.push("HAS_VECTOR_LAYER");
         fs.defines.push("HAS_VECTOR_LAYER");
-        fs.sources.unshift(VectorCommon); // before GlobeFS.
+        if (hasVectorPolylines) {
+          fs.defines.push("HAS_VECTOR_POLYLINES");
+        }
+        if (hasVectorPolygons) {
+          fs.defines.push("HAS_VECTOR_POLYGONS");
+        }
+        if (vectorAntialias) {
+          fs.defines.push("VECTOR_ANTIALIAS");
+        }
+        if (vectorWidthInMeters) {
+          fs.defines.push("VECTOR_WIDTH_IN_METERS");
+        }
+        if (vectorMixedWidthUnits) {
+          fs.defines.push("VECTOR_WIDTH_MIXED_UNITS");
+        }
+      }
+
+      // Polygon clipping builds on top of the same machinery vector rendering uses
+      if (hasVectorLayer || enableClippingPolygons) {
+        fs.sources.unshift(VectorCommon);
       }
 
       let computeDayColor =
@@ -1471,39 +1492,6 @@ function getPositionMode(sceneMode) {
   }
 
   return positionMode;
-}
-
-/**
- * @param {Context} context
- * @ignore
- */
-function getPolygonClippingFunction(context) {
-  // return a noop for webgl1
-  if (!context.webgl2) {
-    return `void clipPolygons(highp sampler2D clippingDistance, int regionsLength, vec2 clippingPosition, int regionIndex) {
-    }`;
-  }
-
-  return `void clipPolygons(highp sampler2D clippingDistance, int regionsLength, vec2 clippingPosition, int regionIndex) {
-    czm_clipPolygons(clippingDistance, regionsLength, clippingPosition, regionIndex);
-  }`;
-}
-
-/**
- * @param {Context} context
- * @ignore
- */
-function getUnpackClippingFunction(context) {
-  // return a noop for webgl1
-  if (!context.webgl2) {
-    return `vec4 unpackClippingExtents(highp sampler2D extentsTexture, int index) {
-      return vec4();
-    }`;
-  }
-
-  return `vec4 unpackClippingExtents(highp sampler2D extentsTexture, int index) {
-    return czm_unpackClippingExtents(extentsTexture, index);
-  }`;
 }
 
 /**

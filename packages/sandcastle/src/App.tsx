@@ -73,6 +73,7 @@ import {
   defaultJsCode,
   useCodeState,
 } from "./util/useCodeState.ts";
+import { trackEvent } from "./analytics";
 
 type PendingChatDraft = {
   id: string;
@@ -80,9 +81,10 @@ type PendingChatDraft = {
 };
 
 const cesiumVersion = __CESIUM_VERSION__;
-const versionString = __COMMIT_SHA__
-  ? `Commit: ${__COMMIT_SHA__.replaceAll(/['"]/g, "").substring(0, 7)} - ${cesiumVersion}`
-  : cesiumVersion;
+const versionString =
+  __SHOW_COMMIT_SHA__ && __COMMIT_SHA__
+    ? `Commit: ${__COMMIT_SHA__.replaceAll(/['"]/g, "").substring(0, 7)} - ${cesiumVersion}`
+    : cesiumVersion;
 
 function AppBarButton({
   children,
@@ -193,6 +195,23 @@ function App() {
     setIsDirty(codeState.dirty);
   }, [setIsDirty, codeState.dirty]);
 
+  // "Code Edited" fires once per loaded sandcastle and only for manual edits:
+  // the editor change handlers don't run for programmatic value updates like
+  // copilot applies, and the guard re-arms when a load/reset clears dirty
+  const hasTrackedEditRef = useRef(false);
+  useEffect(() => {
+    if (!codeState.dirty) {
+      hasTrackedEditRef.current = false;
+    }
+  }, [codeState.dirty]);
+  const trackFirstManualEdit = useCallback(() => {
+    if (!hasTrackedEditRef.current) {
+      hasTrackedEditRef.current = true;
+      const demoId = new URLSearchParams(window.location.search).get("id");
+      trackEvent("Code Edited", demoId ? { demo_id: demoId } : undefined);
+    }
+  }, []);
+
   useEffect(() => {
     setPageTitle(sandcastleTitle);
   }, [setPageTitle, sandcastleTitle]);
@@ -283,6 +302,42 @@ function App() {
     [consoleExpanded],
   );
 
+  // Track the first viewer error per run so an error rate per run can be
+  // measured without sending an event for every console line. Only the
+  // error's type identifier is recorded, never the message text.
+  const lastErrorRunRef = useRef<number | null>(null);
+  const runStateRef = useRef({
+    runNumber: codeState.runNumber,
+    dirty: codeState.dirty,
+  });
+  useEffect(() => {
+    runStateRef.current = {
+      runNumber: codeState.runNumber,
+      dirty: codeState.dirty,
+    };
+  }, [codeState.runNumber, codeState.dirty]);
+
+  const appendViewerConsole = useCallback(
+    (type: ConsoleMessageType, message: string) => {
+      if (
+        type === "error" &&
+        lastErrorRunRef.current !== runStateRef.current.runNumber
+      ) {
+        lastErrorRunRef.current = runStateRef.current.runNumber;
+        const demoId = new URLSearchParams(window.location.search).get("id");
+        trackEvent("Runtime Error Occurred", {
+          error_type:
+            message.slice(0, 80).match(/([A-Za-z_$][\w$]*Error)\b/)?.[1] ??
+            "unknown",
+          edited: runStateRef.current.dirty,
+          ...(demoId ? { demo_id: demoId } : {}),
+        });
+      }
+      appendConsole(type, message);
+    },
+    [appendConsole],
+  );
+
   const resetConsole = useCallback(
     ({ showMessage = false } = {}) => {
       if (codeState.runNumber > 0) {
@@ -305,13 +360,19 @@ function App() {
     [codeState.runNumber],
   );
 
-  const handleSendConsoleLineToChat = useCallback((log: ConsoleMessage) => {
-    setPendingChatDraft({
-      id: crypto.randomUUID(),
-      text: `${{ log: "Console output", warn: "Console warning", error: "Console error", special: "Console message" }[log.type]}:\n${log.message}`,
-    });
-    setChatPanelOpen(true);
-  }, []);
+  const handleSendConsoleLineToChat = useCallback(
+    (log: ConsoleMessage) => {
+      setPendingChatDraft({
+        id: crypto.randomUUID(),
+        text: `${{ log: "Console output", warn: "Console warning", error: "Console error", special: "Console message" }[log.type]}:\n${log.message}`,
+      });
+      if (!chatPanelOpen) {
+        trackEvent("Copilot Panel Opened", { source: "console_action" });
+      }
+      setChatPanelOpen(true);
+    },
+    [chatPanelOpen],
+  );
 
   const handlePendingChatDraftConsumed = useCallback((draftId: string) => {
     setPendingChatDraft((currentDraft) =>
@@ -319,7 +380,8 @@ function App() {
     );
   }, []);
 
-  function runSandcastle() {
+  function runSandcastle(trigger: "button" | "keyboard" | "copilot") {
+    trackEvent("Sandcastle Run", { trigger });
     dispatch({ type: "runSandcastle" });
   }
 
@@ -327,6 +389,7 @@ function App() {
     if (!confirmLeave()) {
       return;
     }
+    trackEvent("New Sandcastle Created");
     dispatch({ type: "reset" });
 
     window.history.pushState({}, "", getBaseUrl());
@@ -358,6 +421,10 @@ function App() {
       url.hash = `c=${base64String}`;
     }
 
+    trackEvent(
+      "Standalone Opened",
+      currentId ? { demo_id: currentId } : undefined,
+    );
     window.open(url, "_blank");
     window.focus();
   }
@@ -446,13 +513,18 @@ function App() {
   }
 
   const onRunCode = useCallback(
-    async ({ id, title, getJsCode, getHtmlCode }: GalleryItem) => {
+    async ({ id, title, labels, getJsCode, getHtmlCode }: GalleryItem) => {
       if (!confirmLeave()) {
         return;
       }
 
       try {
         const [code, html] = await Promise.all([getJsCode(), getHtmlCode()]);
+        trackEvent("Gallery Item Opened", {
+          demo_id: id,
+          labels,
+          method: galleryItemStore.searchTerm?.trim() ? "search" : "browse",
+        });
         const searchParams = new URLSearchParams(window.location.search);
         if (
           !searchParams.has("id") ||
@@ -474,7 +546,7 @@ function App() {
         console.error(message);
       }
     },
-    [confirmLeave, appendConsole, dispatch],
+    [confirmLeave, appendConsole, dispatch, galleryItemStore.searchTerm],
   );
 
   const onOpenCode = useCallback(() => {
@@ -497,10 +569,10 @@ function App() {
       // execution so intermediate edits don't trigger broken preview states.
       if (autoRun) {
         clearTimeout(autoRunTimeoutRef.current);
-        autoRunTimeoutRef.current = setTimeout(
-          () => dispatch({ type: "runSandcastle" }),
-          500,
-        );
+        autoRunTimeoutRef.current = setTimeout(() => {
+          trackEvent("Sandcastle Run", { trigger: "copilot" });
+          dispatch({ type: "runSandcastle" });
+        }, 500);
       }
     },
     [dispatch],
@@ -512,6 +584,7 @@ function App() {
 
       const collectionPromise = awaitNextRunErrors();
       clearTimeout(autoRunTimeoutRef.current);
+      trackEvent("Sandcastle Run", { trigger: "copilot" });
       dispatch({ type: "runSandcastle" });
 
       const runErrors = await collectionPromise;
@@ -629,7 +702,13 @@ function App() {
         </AppBarButton>
         <AppBarButton
           label="Cesium Copilot"
-          onClick={() => setChatPanelOpen(!chatPanelOpen)}
+          onClick={() => {
+            trackEvent(
+              chatPanelOpen ? "Copilot Panel Closed" : "Copilot Panel Opened",
+              { source: "nav_button" },
+            );
+            setChatPanelOpen(!chatPanelOpen);
+          }}
           active={chatPanelOpen}
         >
           <Icon href={aiSparkle} size="large" />
@@ -668,13 +747,15 @@ function App() {
           {leftPanel === "editor" && (
             <SandcastleEditor
               darkTheme={settings.theme === "dark"}
-              onJsChange={(value: string = "") =>
-                dispatch({ type: "setCode", code: value })
-              }
-              onHtmlChange={(value: string = "") =>
-                dispatch({ type: "setHtml", html: value })
-              }
-              onRun={() => runSandcastle()}
+              onJsChange={(value: string = "") => {
+                trackFirstManualEdit();
+                dispatch({ type: "setCode", code: value });
+              }}
+              onHtmlChange={(value: string = "") => {
+                trackFirstManualEdit();
+                dispatch({ type: "setHtml", html: value });
+              }}
+              onRun={runSandcastle}
               js={
                 !initialized || isLoadPending ? "// Loading..." : codeState.code
               }
@@ -715,7 +796,7 @@ function App() {
                   rendererMode={rendererMode}
                   showFps={settings.showFps}
                   highlightLine={() => {}}
-                  appendConsole={appendConsole}
+                  appendConsole={appendViewerConsole}
                   resetConsole={resetConsole}
                   onRunComplete={handleRunComplete}
                 />
@@ -750,7 +831,12 @@ function App() {
           >
             <ErrorBoundary>
               <ChatPanel
-                onClose={() => setChatPanelOpen(false)}
+                onClose={() => {
+                  trackEvent("Copilot Panel Closed", {
+                    source: "close_button",
+                  });
+                  setChatPanelOpen(false);
+                }}
                 codeContext={codeContext}
                 onApplyCode={handleApplyAiCode}
                 onClearConsole={handleClearConsole}

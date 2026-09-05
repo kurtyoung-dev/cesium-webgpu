@@ -16,6 +16,7 @@ import ModelArticulation from "./ModelArticulation.js";
 import ModelColorPipelineStage from "./ModelColorPipelineStage.js";
 import ModelClippingPlanesPipelineStage from "./ModelClippingPlanesPipelineStage.js";
 import ModelClippingPolygonsPipelineStage from "./ModelClippingPolygonsPipelineStage.js";
+import ModelVectorLookupPipelineStage from "./ModelVectorLookupPipelineStage.js";
 import ModelNode from "./ModelNode.js";
 import ModelRuntimeNode from "./ModelRuntimeNode.js";
 import ModelRuntimePrimitive from "./ModelRuntimePrimitive.js";
@@ -511,8 +512,16 @@ class ModelSceneGraph {
       modelPipelineStages.push(ModelClippingPlanesPipelineStage);
     }
 
-    if (model.isClippingPolygonsEnabled()) {
+    // Even if a model has a clipping polygon collection, the polygons may not overlap the model geometry,
+    // in which case the clipping polygon pipeline stage should not be added.
+    const hasClippingPolygonGeometry =
+      (model._clippingPolygonData?.polygonRings.length ?? 0) > 0;
+    if (model.isClippingPolygonsEnabled() && hasClippingPolygonGeometry) {
       modelPipelineStages.push(ModelClippingPolygonsPipelineStage);
+    }
+
+    if (model.hasDrapedVectors()) {
+      modelPipelineStages.push(ModelVectorLookupPipelineStage);
     }
 
     if (model.hasSilhouette(frameState)) {

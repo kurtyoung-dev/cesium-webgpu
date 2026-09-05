@@ -355,6 +355,7 @@ const workspaceSourceFiles = {
     "!packages/engine/Source/*.js",
     "!packages/engine/Source/Core/globalTypes.js",
     // Internal named-export helpers; not part of the public engine barrel.
+    "!packages/engine/Source/Scene/ClippingPolygonSdfPack.js",
     "!packages/engine/Source/Scene/ViewTemporalHistory.js",
     "!packages/engine/Source/Scene/GlobeNightImagery.js",
     "!packages/engine/Source/Scene/CelestialWaterReflection.js",

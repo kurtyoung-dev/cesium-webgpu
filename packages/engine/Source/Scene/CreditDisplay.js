@@ -161,6 +161,29 @@ function styleLightboxContainer(that) {
   }
 }
 
+/**
+ * Wraps a callback so that it also runs when a keyboard user activates an element
+ * with <code>Enter</code> or <code>Space</code>. Elements exposed as <code>role="button"</code>
+ * are expected to respond to both keys, which anchors without an <code>href</code> do not do natively.
+ *
+ * @param {Function} callback The function to invoke when the element is activated.
+ * @returns {Function} A <code>keydown</code> handler.
+ *
+ * @private
+ */
+function activateOnKeydown(callback) {
+  return function (event) {
+    if (event.key !== "Enter" && event.key !== " ") {
+      return;
+    }
+    // Prevent Space from scrolling the page and stop the event from also
+    // reaching the overlay, which would immediately close the lightbox again.
+    event.preventDefault();
+    event.stopPropagation();
+    callback();
+  };
+}
+
 function appendCss(container) {
   const style = /*css*/ `
 .cesium-credit-lightbox-overlay {
@@ -234,6 +257,12 @@ function appendCss(container) {
 }
 .cesium-credit-expand-link:hover {
   color: ${highlightColor};
+}
+
+.cesium-credit-expand-link:focus-visible,
+.cesium-credit-lightbox-close:focus-visible {
+  outline: 2px solid ${highlightColor};
+  outline-offset: 2px;
 }
 
 .cesium-credit-text {
@@ -325,7 +354,9 @@ class CreditDisplay {
       this._creditList = null;
       this._lightbox = null;
       this._hideLightbox = function () {};
+      this._hideLightboxOnEscape = function () {};
       this._expandLink = null;
+      this._closeButton = null;
       this._expanded = false;
       this._staticCredits = [];
       this._cesiumCredit = Credit.clone(CreditDisplay.cesiumCredit);
@@ -354,6 +385,9 @@ class CreditDisplay {
 
     const lightboxCredits = document.createElement("div");
     lightboxCredits.className = "cesium-credit-lightbox";
+    lightboxCredits.setAttribute("role", "dialog");
+    lightboxCredits.setAttribute("aria-modal", "true");
+    lightboxCredits.setAttribute("aria-label", "Data attribution");
     lightbox.appendChild(lightboxCredits);
 
     function hideLightbox(event) {
@@ -364,6 +398,14 @@ class CreditDisplay {
     }
     lightbox.addEventListener("click", hideLightbox, false);
 
+    function hideLightboxOnEscape(event) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        that.hideLightbox();
+      }
+    }
+    lightbox.addEventListener("keydown", hideLightboxOnEscape, false);
+
     const title = document.createElement("div");
     title.className = "cesium-credit-lightbox-title";
     title.textContent = "Data provided by:";
@@ -371,8 +413,12 @@ class CreditDisplay {
 
     const closeButton = document.createElement("a");
     closeButton.onclick = this.hideLightbox.bind(this);
+    closeButton.onkeydown = activateOnKeydown(this.hideLightbox.bind(this));
     closeButton.innerHTML = "&times;";
     closeButton.className = "cesium-credit-lightbox-close";
+    closeButton.setAttribute("role", "button");
+    closeButton.setAttribute("tabindex", "0");
+    closeButton.setAttribute("aria-label", "Close data attribution");
     lightboxCredits.appendChild(closeButton);
 
     const creditList = document.createElement("ul");
@@ -391,7 +437,12 @@ class CreditDisplay {
     const expandLink = document.createElement("a");
     expandLink.className = "cesium-credit-expand-link";
     expandLink.onclick = this.showLightbox.bind(this);
+    expandLink.onkeydown = activateOnKeydown(this.showLightbox.bind(this));
     expandLink.textContent = "Data attribution";
+    expandLink.setAttribute("role", "button");
+    expandLink.setAttribute("tabindex", "0");
+    expandLink.setAttribute("aria-haspopup", "dialog");
+    expandLink.setAttribute("aria-expanded", "false");
     container.appendChild(expandLink);
 
     appendCss(container);
@@ -406,7 +457,9 @@ class CreditDisplay {
     this._creditList = creditList;
     this._lightbox = lightbox;
     this._hideLightbox = hideLightbox;
+    this._hideLightboxOnEscape = hideLightboxOnEscape;
     this._expandLink = expandLink;
+    this._closeButton = closeButton;
     this._expanded = false;
     this._staticCredits = [];
     this._cesiumCredit = cesiumCredit;
@@ -516,6 +569,9 @@ class CreditDisplay {
     }
     this._lightbox.style.display = "block";
     this._expanded = true;
+    this._expandLink.setAttribute("aria-expanded", "true");
+    // Move focus into the dialog so keyboard users can reach its contents.
+    this._closeButton.focus();
   }
 
   /**
@@ -527,6 +583,9 @@ class CreditDisplay {
     }
     this._lightbox.style.display = "none";
     this._expanded = false;
+    this._expandLink.setAttribute("aria-expanded", "false");
+    // Restore focus to the element that opened the dialog.
+    this._expandLink.focus();
   }
 
   /**
@@ -620,6 +679,11 @@ class CreditDisplay {
       return destroyObject(this);
     }
     this._lightbox.removeEventListener("click", this._hideLightbox, false);
+    this._lightbox.removeEventListener(
+      "keydown",
+      this._hideLightboxOnEscape,
+      false,
+    );
 
     this.container.removeChild(this._cesiumCreditContainer);
     this.container.removeChild(this._screenContainer);

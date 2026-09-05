@@ -8,7 +8,7 @@
  *
  * Packing convention: the CPU pack is the same
  * `packPolygonsAsFloats` the WebGL path uses (invoked through
- * `ClippingPolygonCollection.packDataForFeatureRenderer`), so polygon vertices
+ * `Scene/ClippingPolygonSdfPack.packDataForFeatureRenderer`), so polygon vertices
  * and extents are in spherical `fastApproximateAtan2` coordinates and the
  * positions texture carries the per-polygon layout the compute
  * shader expects: 1 header pixel `(positionsLength, extentsIndex)` + 2
@@ -35,24 +35,14 @@ import {
   Stage,
 } from "./WebGPUBindGroupLayoutHelpers.js";
 import PolygonSignedDistanceWGSL from "../../Shaders/WebGPU/Compute/PolygonSignedDistance.js";
-
-/** Packed texture layout returned by `packDataForFeatureRenderer`. */
-interface PackedPolygonLayout {
-  positionsWidth: number;
-  positionsHeight: number;
-  extentsWidth: number;
-  extentsHeight: number;
-  extentsCount: number;
-}
+import { packDataForFeatureRenderer } from "../../Scene/ClippingPolygonSdfPack.js";
 
 /** Minimal interface for ClippingPolygonCollection. */
 interface ClippingPolygonCollectionLike {
   length: number;
-  quality?: number;
+  /** Private field: reading the public getter emits a 1.145 deprecation warning. */
+  _quality?: number;
   get(index: number): { length: number };
-  packDataForFeatureRenderer(
-    maximumTextureSize: number,
-  ): PackedPolygonLayout | undefined;
   _float32View?: Float32Array;
   _extentsFloat32View?: Float32Array;
   _webgpuCache?: ClippingPolygonCache;
@@ -117,7 +107,7 @@ function updateWebGPUClippingPolygons(
 
   // Shared CPU pack — same spherical fastApproximateAtan2 convention +
   // merged-extent grouping the WebGL path uploads.
-  const layout = collection.packDataForFeatureRenderer(maxDim);
+  const layout = packDataForFeatureRenderer(collection, maxDim);
   const positionsView = collection._float32View;
   const extentsView = collection._extentsFloat32View;
   if (!layout || !positionsView || !extentsView) {
@@ -161,9 +151,13 @@ function updateWebGPUClippingPolygons(
 
   // Signed distance atlas (r32float, filterable via the float32-filterable
   // device feature the context requests at init — same assumption the
-  // effects placeholder SDF texture already makes). Size matches the
-  // `getClippingDistanceTextureResolution` quality convention.
-  const quality = collection.quality ?? 1.0;
+  // effects placeholder SDF texture already makes). The sizing convention was
+  // inherited from `ClippingPolygonCollection.getClippingDistanceTextureResolution`,
+  // which the 1.145 sync removed along with the rest of the WebGL signed-distance
+  // producer; this is now the only place it lives, so it is spelled out rather than
+  // cited. `_quality` is read instead of the public `quality` getter because 1.145
+  // deprecated that getter and warns on every read — see DECISIONS D2.
+  const quality = collection._quality ?? 1.0;
   const sdfSize = Math.min(Math.max(128, Math.ceil(4096 * quality)), maxDim);
   if (cache.signedDistanceTexture) {
     cache.signedDistanceTexture.destroy();

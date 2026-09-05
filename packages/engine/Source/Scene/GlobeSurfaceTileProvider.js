@@ -24,6 +24,7 @@ import {
   updateEclipseGlobeShadowForFrameState,
 } from "./EclipseGlobeShadow.js";
 import GlobeSurfaceTile from "./GlobeSurfaceTile.js";
+import HeightReference from "./HeightReference.js";
 import ImageryState from "./ImageryState.js";
 import QuadtreeTileLoadState from "./QuadtreeTileLoadState.js";
 import SceneMode from "./SceneMode.js";
@@ -434,6 +435,12 @@ class GlobeSurfaceTileProvider {
      */
     this._clippingPolygons = undefined;
 
+    this._clippingPolygonsDirty = false;
+
+    this._removeClippingPolygonAdded = undefined;
+
+    this._removeClippingPolygonRemoved = undefined;
+
     /**
      * A property specifying a {@link Rectangle} used to selectively limit terrain and imagery rendering.
      * @type {Rectangle}
@@ -585,7 +592,33 @@ class GlobeSurfaceTileProvider {
   }
 
   set clippingPolygons(value) {
+    if (value === this._clippingPolygons) {
+      return;
+    }
+
     ClippingPolygonCollection.setOwner(value, this, "_clippingPolygons");
+
+    // First, remove the previous listeners if they exist
+    this._removeClippingPolygonAdded =
+      this._removeClippingPolygonAdded && this._removeClippingPolygonAdded();
+    this._removeClippingPolygonRemoved =
+      this._removeClippingPolygonRemoved &&
+      this._removeClippingPolygonRemoved();
+
+    this._clippingPolygonsDirty = true;
+
+    if (!defined(value)) {
+      return;
+    }
+
+    const markDirty = () => {
+      this._clippingPolygonsDirty = true;
+    };
+
+    this._removeClippingPolygonAdded =
+      value.polygonAdded.addEventListener(markDirty);
+    this._removeClippingPolygonRemoved =
+      value.polygonRemoved.addEventListener(markDirty);
   }
 
   /**
@@ -612,7 +645,8 @@ class GlobeSurfaceTileProvider {
     // Record regions dirtied by changed collections, re-bake overlapping
     // tiles, and build vector data for new surface tiles.
     const vectorProvider = this._vectorProvider;
-    vectorProvider.update();
+    vectorProvider.minimumTileScreenPixels = minimumTileScreenPixels(this);
+    vectorProvider.update(frameState.frameNumber);
     this._quadtree.forEachRenderedTile(
       /** @param {QuadtreeTile} tile */
       (tile) => {
@@ -625,6 +659,7 @@ class GlobeSurfaceTileProvider {
             tile.level,
             frameState.context,
             surfaceTile.vectorData,
+            HeightReference.CLAMP_TO_TERRAIN,
           );
         } else {
           surfaceTile.vectorData = vectorProvider.requestTileData(
@@ -632,6 +667,7 @@ class GlobeSurfaceTileProvider {
             tile.y,
             tile.level,
             frameState.context,
+            HeightReference.CLAMP_TO_TERRAIN,
           );
         }
       },
@@ -670,7 +706,6 @@ class GlobeSurfaceTileProvider {
     const clippingPolygons = this._clippingPolygons;
     if (defined(clippingPolygons) && clippingPolygons.enabled) {
       clippingPolygons.update(frameState);
-      clippingPolygons.queueCommands(frameState);
     }
 
     this._usedDrawCommands = 0;
@@ -779,6 +814,11 @@ class GlobeSurfaceTileProvider {
       );
     }
 
+    if (this._clippingPolygonsDirty) {
+      releaseClippingPolygonData(this);
+    }
+
+    // Add the tile render commands to the command list, sorted by texture count.
     const tilesToRenderByTextureCount = this._tilesToRenderByTextureCount;
     for (
       let textureCountIndex = 0,
@@ -797,7 +837,9 @@ class GlobeSurfaceTileProvider {
         ++tileIndex
       ) {
         const tile = tilesToRender[tileIndex];
-        const tileBoundingRegion = tile.data.tileBoundingRegion;
+        const surfaceTile = /** @type {GlobeSurfaceTile} */ (tile.data);
+        updateTileClippingPolygonData(this, tile, surfaceTile, frameState);
+        const tileBoundingRegion = surfaceTile.tileBoundingRegion;
         addDrawCommandsForTile(this, tile, frameState);
         frameState.minimumTerrainHeight = Math.min(
           frameState.minimumTerrainHeight,
@@ -854,6 +896,13 @@ class GlobeSurfaceTileProvider {
         // View. Replay a shallow command with a copy-on-write S5 carrier so
         // this pick/offscreen View cannot rewrite an older retained command.
         // Other globe uniforms still delegate to the current pooled map.
+        //
+        // This replay is also why upstream 1.145's pick-staleness fix
+        // (clearing derivedCommands.picking on the pooled command and on its
+        // logDepth derivation) is not ported here: the carrier is built with
+        // DrawCommand.shallowClone, which allocates a fresh DrawCommand whose
+        // constructor sets derivedCommands = {} and which is returned with
+        // dirty === true. There is no cached pick command to go stale.
         pushWebGLViewBoundGlobeCommand(drawCommands[i], frameState);
       }
     }
@@ -1343,8 +1392,7 @@ class GlobeSurfaceTileProvider {
     this._tileProvider = this._tileProvider && this._tileProvider.destroy();
     this._clippingPlanes =
       this._clippingPlanes && this._clippingPlanes.destroy();
-    this._clippingPolygons =
-      this._clippingPolygons && this._clippingPolygons.destroy();
+    this._clippingPolygons = undefined;
     this._removeLayerAddedListener =
       this._removeLayerAddedListener && this._removeLayerAddedListener();
     this._removeLayerRemovedListener =
@@ -1353,6 +1401,11 @@ class GlobeSurfaceTileProvider {
       this._removeLayerMovedListener && this._removeLayerMovedListener();
     this._removeLayerShownListener =
       this._removeLayerShownListener && this._removeLayerShownListener();
+    this._removeClippingPolygonAdded =
+      this._removeClippingPolygonAdded && this._removeClippingPolygonAdded();
+    this._removeClippingPolygonRemoved =
+      this._removeClippingPolygonRemoved &&
+      this._removeClippingPolygonRemoved();
 
     return destroyObject(this);
   }
@@ -1493,6 +1546,40 @@ class GlobeSurfaceTileProvider {
   }
 }
 
+const scratchLevelZeroRectangle = new Rectangle();
+
+/**
+ * Estimates the smallest screen size, in pixels, a rendered tile can have. Screen-space error is
+ * the tile's geometric error projected to the screen, so the tile projects to that error scaled by
+ * their ratio in meters, and refinement holds the error above half the maximum.
+ *
+ * @param {GlobeSurfaceTileProvider} tileProvider
+ * @returns {number}
+ * @private
+ */
+function minimumTileScreenPixels(tileProvider) {
+  const geometricError = tileProvider.getLevelMaximumGeometricError(0);
+  if (geometricError <= 0.0) {
+    // No terrain provider yet.
+    return tileProvider._vectorProvider.minimumTileScreenPixels;
+  }
+
+  const tilingScheme = tileProvider.tilingScheme;
+  const rectangle = tilingScheme.tileXYToRectangle(
+    0,
+    0,
+    0,
+    scratchLevelZeroRectangle,
+  );
+  const tileWidth = rectangle.width * tilingScheme.ellipsoid.maximumRadius;
+
+  return (
+    ((tileWidth / geometricError) *
+      tileProvider._quadtree.maximumScreenSpaceError) /
+    2.0
+  );
+}
+
 function sortTileImageryByLayerIndex(a, b) {
   let aImagery = a.loadingImagery;
   if (!defined(aImagery)) {
@@ -1507,6 +1594,66 @@ function sortTileImageryByLayerIndex(a, b) {
   return aImagery.imageryLayer._layerIndex - bImagery.imageryLayer._layerIndex;
 }
 
+/**
+ * Releases cached clipping polygon data on all loaded tiles so it is rebuilt
+ * against the current collection, and clears the dirty flag.
+ * @param {GlobeSurfaceTileProvider} tileProvider
+ * @ignore
+ */
+function releaseClippingPolygonData(tileProvider) {
+  tileProvider._quadtree.forEachLoadedTile(
+    /** @param {QuadtreeTile} tile */
+    function (tile) {
+      const surfaceTile = /** @type {GlobeSurfaceTile} */ (tile.data);
+      if (!defined(surfaceTile?.clippingPolygonData)) {
+        return;
+      }
+
+      ClippingPolygonCollection.releaseRectangleData(
+        surfaceTile.clippingPolygonData,
+      );
+      surfaceTile.clippingPolygonData = undefined;
+    },
+  );
+  tileProvider._clippingPolygonsDirty = false;
+}
+
+/**
+ * Builds clipping polygon data for a tile about to be rendered, unless it is
+ * unclipped or its data was already built this frame.
+ * @param {GlobeSurfaceTileProvider} tileProvider
+ * @param {QuadtreeTile} tile
+ * @param {GlobeSurfaceTile} surfaceTile
+ * @param {FrameState} frameState
+ * @ignore
+ */
+function updateTileClippingPolygonData(
+  tileProvider,
+  tile,
+  surfaceTile,
+  frameState,
+) {
+  const clippingPolygons = tileProvider._clippingPolygons;
+  if (
+    !defined(clippingPolygons) ||
+    !clippingPolygons.enabled ||
+    !tile.isClipped ||
+    defined(surfaceTile.clippingPolygonData)
+  ) {
+    return;
+  }
+
+  surfaceTile.clippingPolygonData = clippingPolygons.requestRectangleData(
+    tile.rectangle,
+    frameState.context,
+  );
+}
+
+/**
+ * @param {GlobeSurfaceTileProvider} surface
+ * @param {FrameState} frameState
+ * @ignore
+ */
 function updateCredits(surface, frameState) {
   const creditDisplay = frameState.creditDisplay;
   const terrainProvider = surface._terrainProvider;

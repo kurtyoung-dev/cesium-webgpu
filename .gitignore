@@ -1,6 +1,9 @@
 /.metadata
 /Build
 
+# Used in the CLA checking GitHub workflow
+GoogleConfig.json
+
 # MCP server config and Claude Code
 .mcp.json
 CLAUDE.md
@@ -47,9 +50,6 @@ yarn.lock
 .idea/workspace.xml
 .idea/tasks.xml
 .idea/shelf
-
-# Used in the CLA checking GitHub workflow
-GoogleConfig.json
 
 # Claude Code agent scratch directory — worktrees, logs, settings.
 # Per-machine state that should never be tracked.

@@ -35,6 +35,21 @@ class Cesium3DTilesetCache {
     }
   }
 
+  /**
+   * Invokes the callback for each tile with loaded content in the cache.
+   *
+   * @param {Function} callback A function that takes a {@link Cesium3DTile}.
+   * @private
+   */
+  forEachLoadedTile(callback) {
+    for (let node = this._list.head; defined(node); node = node.next) {
+      // The sentinel node has no item.
+      if (defined(node.item)) {
+        callback(node.item);
+      }
+    }
+  }
+
   unloadTile(tileset, tile, unloadCallback) {
     const node = tile.cacheNode;
     if (!defined(node)) {

@@ -440,6 +440,16 @@ class Cesium3DTile {
     this.clippingPolygonsDirty = false;
 
     /**
+     * Tracks if the tileset's ClippingPolygonCollection's geometry changed (a polygon was added or removed),
+     * which requires the tile's content to rebake its clipping textures.
+     *
+     * @type {boolean}
+     *
+     * @private
+     */
+    this.clippingPolygonsNeedRebake = false;
+
+    /**
      * Tracks if the tile's request should be deferred until all non-deferred
      * tiles load.
      *
@@ -717,6 +727,7 @@ class Cesium3DTile {
     this._clippingPlanesState = 0;
     this.clippingPolygonsDirty = this._clippingPolygonsState === 0;
     this._clippingPolygonsState = 0;
+    this.clippingPolygonsNeedRebake = false;
 
     this._debugColorizeTiles = false;
 
@@ -1097,6 +1108,7 @@ class Cesium3DTile {
 
     this.clippingPlanesDirty = false; // reset after content update
     this.clippingPolygonsDirty = false;
+    this.clippingPolygonsNeedRebake = false;
   }
 
   /**

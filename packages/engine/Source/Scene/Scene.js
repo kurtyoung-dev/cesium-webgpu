@@ -13,7 +13,7 @@ import DeveloperError from "../Core/DeveloperError.js";
 import Ellipsoid from "../Core/Ellipsoid.js";
 import Event from "../Core/Event.js";
 import GeographicProjection from "../Core/GeographicProjection.js";
-import HeightReference from "./HeightReference.js";
+import HeightReference, { isHeightReferenceClamp } from "./HeightReference.js";
 import Intersect from "../Core/Intersect.js";
 import IntersectionTests from "../Core/IntersectionTests.js";
 import Interval from "../Core/Interval.js";
@@ -29,6 +29,7 @@ import RequestScheduler from "../Core/RequestScheduler.js";
 import Simon1994EphemerisProvider from "../Core/Simon1994EphemerisProvider.js";
 import TaskProcessor from "../Core/TaskProcessor.js";
 import Transforms from "../Core/Transforms.js";
+import VectorProvider from "../Core/VectorProvider.js";
 import ClearCommand from "../Renderer/ClearCommand.js";
 import ComputeEngine from "../Renderer/ComputeEngine.js";
 import ControllerHost from "./Controllers/ControllerHost.js";
@@ -136,6 +137,7 @@ import {
 // Scratch storage keeps atmosphere-derived lighting allocation-free while it
 // uses the camera-position direction as the local up vector.
 
+/** @ignore */
 const requestRenderAfterFrame = function (scene) {
   return function () {
     scene.frameState.afterRender.push(function () {
@@ -150,6 +152,7 @@ const requestRenderAfterFrame = function (scene) {
  * @typedef {object} SceneSnapResult
  * @property {object} object The snapped primitive or feature.
  * @property {Cartesian3} position The world-space position of the snap point, un-projected from the snap framebuffer's eye-space depth.
+ * @property {Cartesian3|undefined} surfacePosition The world-space position of the same object's surface fragment nearest the snap point. For a surface snap this equals <code>position</code>; for an edge snap it is a point on a face of the object rather than on its silhouette, or <code>undefined</code> if no surface fragment of the object is visible in the search region.
  * @property {Cartesian2} screenPosition The window coordinates of the snap point.
  * @property {boolean} isEdge <code>true</code> if the snap point lies on an edge; <code>false</code> if it lies on a surface.
  *
@@ -4261,6 +4264,8 @@ class Scene {
     if (defined(this._specularEnvironmentCubeMap)) {
       this._specularEnvironmentCubeMap.update(frameState);
     }
+
+    updateVectorProvider(this, frameState);
   }
 
   /**
@@ -6189,6 +6194,56 @@ const requestRenderModeDeferCheckPassState = new Cesium3DTilePassState({
 });
 
 const scratchCullingVolume = new CullingVolume();
+
+/**
+ * Marks every drapeable collection in the subtree so the vector provider bakes it this frame
+ *
+ * @param {PrimitiveCollection} collection
+ * @param {VectorProvider} vectorProvider
+ * @param {number} frameNumber
+ * @private
+ */
+function markVectorCollections(collection, vectorProvider, frameNumber) {
+  if (!collection.show) {
+    return;
+  }
+
+  const length = collection.length;
+  for (let i = 0; i < length; ++i) {
+    const primitive = collection.get(i);
+    if (primitive instanceof PrimitiveCollection) {
+      markVectorCollections(primitive, vectorProvider, frameNumber);
+      continue;
+    }
+
+    if (
+      primitive.show &&
+      VectorProvider.isSupported(primitive) &&
+      isHeightReferenceClamp(primitive.heightReference)
+    ) {
+      vectorProvider.markForFrame(
+        primitive,
+        frameNumber,
+        primitive.heightReference,
+      );
+    }
+  }
+}
+
+/**
+ * @param {Scene} scene
+ * @param {FrameState} frameState
+ * @private
+ */
+function updateVectorProvider(scene, frameState) {
+  const vectorProvider = scene.vectorProvider;
+  if (!defined(vectorProvider)) {
+    return;
+  }
+
+  const frameNumber = frameState.frameNumber;
+  markVectorCollections(scene._primitives, vectorProvider, frameNumber);
+}
 
 function prePassesUpdate(scene) {
   scene._jobScheduler.resetBudgets();

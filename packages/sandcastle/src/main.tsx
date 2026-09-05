@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import App from "./App.tsx";
 import { SettingsProvider } from "./SettingsProvider.tsx";
 import { CopilotSettingsProvider, ModelProvider } from "./copilot";
+import { initAnalytics } from "./analytics";
 
 // The app <-> viewer-iframe postMessage bridge bakes the outer app origin
 // (__OUTER_ORIGIN__) and the inner bucket origin (__INNER_ORIGIN__) at build
@@ -23,6 +24,11 @@ if (
     `${outerOrigin}${window.location.pathname}${window.location.search}${window.location.hash}`,
   );
 } else {
+  // Analytics initialises only on the origin that actually renders. The
+  // redirect branch above discards its page immediately, so initialising
+  // there would fire a session on a throwaway load and again on the real one.
+  initAnalytics();
+
   createRoot(document.getElementById("app-container")!).render(
     <StrictMode>
       <SettingsProvider>

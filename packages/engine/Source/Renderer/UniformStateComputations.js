@@ -70,6 +70,7 @@ function setInfiniteProjection(uniformState, matrix) {
 
 const surfacePositionScratch = new Cartesian3();
 const enuTransformScratch = new Matrix4();
+const enuRotationScratch = new Matrix3();
 
 function setCamera(uniformState, camera) {
   Cartesian3.clone(camera.positionWC, uniformState._cameraPosition);
@@ -95,6 +96,12 @@ function setCamera(uniformState, camera) {
     );
   } else {
     uniformState._eyeHeight = positionCartographic.height;
+    uniformState._eyeCartographic = Cartesian3.fromElements(
+      positionCartographic.longitude,
+      positionCartographic.latitude,
+      positionCartographic.height,
+      uniformState._eyeCartographic,
+    );
     uniformState._eyeEllipsoidNormalEC =
       ellipsoid.geodeticSurfaceNormalCartographic(
         positionCartographic,
@@ -135,6 +142,17 @@ function setCamera(uniformState, camera) {
     uniformState._enuToModel,
     uniformState._modelToEnu,
   );
+
+  const enuToWorldRotation = Matrix4.getRotation(
+    enuToWorld,
+    enuRotationScratch,
+  );
+  const enuToView = Matrix3.multiply(
+    uniformState._viewRotation,
+    enuToWorldRotation,
+    enuRotationScratch,
+  );
+  uniformState._eyeToEnu = Matrix3.transpose(enuToView, uniformState._eyeToEnu);
 
   if (
     !CesiumMath.equalsEpsilon(

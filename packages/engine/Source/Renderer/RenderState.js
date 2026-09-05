@@ -417,7 +417,16 @@ class RenderState {
   }
 
   /**
-   * @private
+   * `@internal` rather than `@private`: 1.145 calls this from the three
+   * `Scene/renderBuffer*Collection.js` modules to drop a cached state when a
+   * collection's blend option flips its pass. Upstream declares the method as
+   * `RenderState.removeFromCache = function (…)`, a plain static assignment
+   * TypeScript applies no visibility to; the fork converted `RenderState` to an
+   * ES6 class, where TypeScript reads `@private` as class-scoped and rejects
+   * every one of those call sites (TS2341). `@internal` keeps the method out of
+   * the published docs exactly as before, with no runtime change.
+   *
+   * @internal
    */
   static removeFromCache(renderState) {
     const states = new RenderState(renderState);

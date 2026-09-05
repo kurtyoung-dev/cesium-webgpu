@@ -249,6 +249,7 @@ const surfaceShaderSetOptionsScratch = {
   colorToAlpha: undefined,
   hasGeodeticSurfaceNormals: undefined,
   hasExaggeration: undefined,
+  vectorAntialias: undefined,
   enableEclipseGlobeShadow: undefined,
 };
 
@@ -691,21 +692,6 @@ function createTileUniformMap(frameState, globeSurfaceTileProvider) {
       style.alpha = this.properties.clippingPlanesEdgeWidth;
       return style;
     },
-    u_clippingDistance: function () {
-      const texture =
-        globeSurfaceTileProvider._clippingPolygons.clippingTexture;
-      if (defined(texture)) {
-        return texture;
-      }
-      return frameState.context.defaultTexture;
-    },
-    u_clippingExtents: function () {
-      const texture = globeSurfaceTileProvider._clippingPolygons.extentsTexture;
-      if (defined(texture)) {
-        return texture;
-      }
-      return frameState.context.defaultTexture;
-    },
     u_minimumBrightness: function () {
       return frameState.fog.minimumBrightness;
     },
@@ -771,6 +757,12 @@ function createTileUniformMap(frameState, globeSurfaceTileProvider) {
         this.properties.vectorColorTexture ?? frameState.context.defaultTexture
       );
     },
+    u_vectorPickColorTexture: function () {
+      return (
+        this.properties.vectorPickColorTexture ??
+        frameState.context.defaultTexture
+      );
+    },
     u_vectorSegmentPrimitiveIndicesTexture: function () {
       return (
         this.properties.vectorSegmentPrimitiveIndicesTexture ??
@@ -798,6 +790,26 @@ function createTileUniformMap(frameState, globeSurfaceTileProvider) {
     u_vectorPolygonGridCellIndicesTexture: function () {
       return (
         this.properties.vectorPolygonGridCellIndicesTexture ??
+        frameState.context.defaultTexture
+      );
+    },
+    u_vectorMetersPerUv: function () {
+      return this.properties.vectorMetersPerUv;
+    },
+    u_clippingEdgeTexture: function () {
+      return (
+        this.properties.clippingEdgeTexture ?? frameState.context.defaultTexture
+      );
+    },
+    u_clippingEdgePrimitiveIndicesTexture: function () {
+      return (
+        this.properties.clippingEdgePrimitiveIndicesTexture ??
+        frameState.context.defaultTexture
+      );
+    },
+    u_clippingGridCellIndicesTexture: function () {
+      return (
+        this.properties.clippingGridCellIndicesTexture ??
         frameState.context.defaultTexture
       );
     },
@@ -867,11 +879,17 @@ function createTileUniformMap(frameState, globeSurfaceTileProvider) {
       vectorSegmentTexture: undefined,
       vectorWidthTexture: undefined,
       vectorColorTexture: undefined,
+      vectorPickColorTexture: undefined,
       vectorSegmentPrimitiveIndicesTexture: undefined,
       vectorGridCellIndicesTexture: undefined,
       vectorPolygonEdgeTexture: undefined,
       vectorPolygonEdgePrimitiveIndicesTexture: undefined,
       vectorPolygonGridCellIndicesTexture: undefined,
+      vectorMetersPerUv: new Cartesian2(),
+
+      clippingEdgeTexture: undefined,
+      clippingEdgePrimitiveIndicesTexture: undefined,
+      clippingGridCellIndicesTexture: undefined,
     },
   };
 
@@ -1605,8 +1623,32 @@ function addWebGPUDrawCommandsForTile(tileProvider, tile, frameState, fr) {
   }
 }
 
+/**
+ * Determines whether a tile is wholly clipped away by inverse clipping. In
+ * inverse mode a clipped tile with no polygon geometry lies entirely outside
+ * every polygon, so all of it is clipped and it should not be drawn.
+ * @param {GlobeSurfaceTileProvider} tileProvider
+ * @param {GlobeSurfaceTile} surfaceTile
+ * @returns {boolean}
+ * @ignore
+ */
+function isTileClippedAwayByInversePolygons(tileProvider, surfaceTile) {
+  const clippingPolygons = tileProvider._clippingPolygons;
+  return (
+    defined(clippingPolygons) &&
+    clippingPolygons.enabled &&
+    clippingPolygons.length > 0 &&
+    clippingPolygons.inverse &&
+    (surfaceTile.clippingPolygonData?.polygonRings.length ?? 0) === 0
+  );
+}
+
 function addDrawCommandsForTile(tileProvider, tile, frameState) {
   const surfaceTile = tile.data;
+
+  if (isTileClippedAwayByInversePolygons(tileProvider, surfaceTile)) {
+    return;
+  }
 
   // Backend-specific rendering path
   const context = frameState.context;
@@ -1752,8 +1794,9 @@ function addDrawCommandsForTile(tileProvider, tile, frameState) {
     defined(tileProvider.clippingPolygons) &&
     tileProvider.clippingPolygons.enabled
   ) {
-    --maxTextures;
-    --maxTextures;
+    // Vector polygon clipping samples three textures: edges, per-edge
+    // primitive indices, and the grid cell index header.
+    maxTextures -= 3;
   }
 
   maxTextures -= globeTranslucencyState.numberOfTextureUniforms;
@@ -1869,6 +1912,8 @@ function addDrawCommandsForTile(tileProvider, tile, frameState) {
   surfaceShaderSetOptions.enableEclipseGlobeShadow =
     frameState.eclipseGlobeShadow?.active === true;
   surfaceShaderSetOptions.hasExaggeration = hasExaggeration;
+  surfaceShaderSetOptions.vectorAntialias =
+    tileProvider.vectorProvider.antialias;
 
   const tileImageryCollection = surfaceTile.imagery;
   let imageryIndex = 0;
@@ -2376,6 +2421,7 @@ function addDrawCommandsForTile(tileProvider, tile, frameState) {
         vectorData.polylineSegmentTexture;
       uniformMapProperties.vectorWidthTexture = vectorData.widthTexture;
       uniformMapProperties.vectorColorTexture = vectorData.colorTexture;
+      uniformMapProperties.vectorPickColorTexture = vectorData.pickColorTexture;
       uniformMapProperties.vectorSegmentPrimitiveIndicesTexture =
         vectorData.polylineSegmentPrimitiveIndicesTexture;
       uniformMapProperties.vectorGridCellIndicesTexture =
@@ -2386,14 +2432,32 @@ function addDrawCommandsForTile(tileProvider, tile, frameState) {
         vectorData.polygonEdgePrimitiveIndicesTexture;
       uniformMapProperties.vectorPolygonGridCellIndicesTexture =
         vectorData.polygonGridCellIndicesTexture;
+      Cartesian2.clone(
+        vectorData.metersPerUv,
+        uniformMapProperties.vectorMetersPerUv,
+      );
     }
 
+    const clippingPolygonData = surfaceTile.clippingPolygonData;
+    if (defined(clippingPolygonData)) {
+      uniformMapProperties.clippingEdgeTexture =
+        clippingPolygonData.polygonEdgeTexture;
+      uniformMapProperties.clippingEdgePrimitiveIndicesTexture =
+        clippingPolygonData.polygonEdgePrimitiveIndicesTexture;
+      uniformMapProperties.clippingGridCellIndicesTexture =
+        clippingPolygonData.polygonGridCellIndicesTexture;
+    }
+
+    // update clipping polygons
     const clippingPolygons = tileProvider._clippingPolygons;
+    const hasClippingPolygonGeometry =
+      (clippingPolygonData?.polygonRings.length ?? 0) > 0;
     const clippingPolygonsEnabled =
       defined(clippingPolygons) &&
       clippingPolygons.enabled &&
       clippingPolygons.length > 0 &&
-      tile.isClipped;
+      tile.isClipped &&
+      hasClippingPolygonGeometry;
 
     surfaceShaderSetOptions.numberOfDayTextures = numberOfDayTextures;
     surfaceShaderSetOptions.applyBrightness = applyBrightness;
@@ -2488,6 +2552,10 @@ function addDrawCommandsForTile(tileProvider, tile, frameState) {
     command.shaderProgram = tileProvider._surfaceShaderSet.getShaderProgram(
       surfaceShaderSetOptions,
     );
+    // Draped vectors are picked through the surface; zero elsewhere keeps the globe unpickable.
+    command.pickId = surfaceTile.vectorData?.show
+      ? "vectorPickColorOver(vec4(0.0))"
+      : undefined;
     command.castShadows = castShadows;
     command.receiveShadows = receiveShadows;
     command.renderState = renderState;
@@ -2612,12 +2680,15 @@ function updateWebGPUForPick(tileProvider, frameState) {
       continue;
     }
     for (let j = 0; j < tilesToRender.length; j++) {
-      addWebGPUDrawCommandsForTile(
-        tileProvider,
-        tilesToRender[j],
-        frameState,
-        fr,
-      );
+      const tile = tilesToRender[j];
+      // This loop reaches the WebGPU builder directly rather than through
+      // addDrawCommandsForTile, so it has to repeat that function inverse-clip
+      // cull itself. Without it a tile the render pass skipped would still be
+      // pick-drawn, and a pick would report a globe hit where nothing is drawn.
+      if (isTileClippedAwayByInversePolygons(tileProvider, tile.data)) {
+        continue;
+      }
+      addWebGPUDrawCommandsForTile(tileProvider, tile, frameState, fr);
     }
   }
   return true;

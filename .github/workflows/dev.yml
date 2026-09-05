@@ -14,7 +14,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: install node 22
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: '22'
       - name: npm install
@@ -29,10 +29,10 @@ jobs:
         run: npm run build
       - name: tsc
         run: npm run tsc
-      - name: sg test
-        run: npm exec --package=@ast-grep/cli --offline -- sg test
-      - name: sg scan
-        run: npm exec --package=@ast-grep/cli --offline -- sg scan --context 3
+      - name: ast-grep test
+        run: npm exec --package=@ast-grep/cli --offline -- ast-grep test
+      - name: ast-grep scan
+        run: npm exec --package=@ast-grep/cli --offline -- ast-grep scan --context 3
   # Repo-local guard scripts, run on every push and pull request.
   #
   # These checks existed and were green for months without anything in CI
@@ -70,7 +70,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: install node 22
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: '22'
       - name: npm install
@@ -103,7 +103,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: install node 22
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: '22'
       - name: npm install
@@ -120,7 +120,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: install node 22
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: '22'
       - name: npm install
@@ -139,7 +139,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: install node ${{ matrix.version }}
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: ${{ matrix.version }}
       - name: npm install
@@ -159,9 +159,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: install node 22
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: '22'
       - name: npm install

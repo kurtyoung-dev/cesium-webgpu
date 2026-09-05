@@ -70,8 +70,15 @@ export interface VectorTileCpuData {
   polylineSegmentPrimitiveIndicesTexels?: Float32Array;
   /** `[gridWidth, gridHeight, ...per-cell end offsets]`. */
   polylineGridCellIndices?: Uint32Array;
-  /** Per-collection primitive widths, in collection order. */
-  widths?: Uint8Array[];
+  /**
+   * Per-collection primitive widths, in collection order. Signed since
+   * CesiumJS 1.145: a negative magnitude marks a width in meters on the
+   * ground, a positive one a width in screen pixels. Typed loosely because
+   * `VectorPipeline` moved these from `Uint8Array` to signed `Float32Array`
+   * in that release, while older bakes and this packer's specs still supply
+   * bytes.
+   */
+  widths?: ArrayLike<number>[];
   /** Per-collection primitive RGBA bytes, in collection order. */
   colors?: Uint8Array[];
   /** Total primitive count across every contributing collection. */
@@ -123,6 +130,29 @@ function concatByteArrays(arrays: Uint8Array[]): Uint8Array {
   let offset = 0;
   for (const array of arrays) {
     result.set(array, offset);
+    offset += array.length;
+  }
+  return result;
+}
+
+/**
+ * Concatenate per-collection numeric runs in collection order, preserving
+ * each element's VALUE rather than its bytes. Widths crossed from
+ * `Uint8Array` to signed `Float32Array` in CesiumJS 1.145 and this packer
+ * mirrors the WebGL float texture exactly, so they cannot go through a byte
+ * buffer.
+ */
+function concatNumbers(arrays: ArrayLike<number>[]): Float32Array {
+  let total = 0;
+  for (const array of arrays) {
+    total += array.length;
+  }
+  const result = new Float32Array(total);
+  let offset = 0;
+  for (const array of arrays) {
+    for (let i = 0; i < array.length; i++) {
+      result[offset + i] = array[i];
+    }
     offset += array.length;
   }
   return result;
@@ -211,13 +241,15 @@ export function packVectorTileWords(
     );
   }
 
-  const widthBytes = concatByteArrays(data?.widths ?? []);
+  const widthValues = concatNumbers(data?.widths ?? []);
   const colorBytes = concatByteArrays(data?.colors ?? []);
   for (let i = 0; i < primitiveCount; i++) {
     const p = primitivesBase + i * 2;
-    // GLSL reads the width from an r8unorm texel and multiplies by 255; the
-    // raw byte is what the shader wants, so write it directly.
-    floats[p] = widthBytes[i] ?? 0;
+    // The width crosses by VALUE, whatever element type the bake used.
+    // Routing a 1.145 Float32Array through a byte buffer would truncate a
+    // fractional width, wrap one above 255, and turn a negative (meters)
+    // width into a large positive pixel one.
+    floats[p] = widthValues[i] ?? 0;
     const r = colorBytes[i * 4] ?? 0;
     const g = colorBytes[i * 4 + 1] ?? 0;
     const b = colorBytes[i * 4 + 2] ?? 0;

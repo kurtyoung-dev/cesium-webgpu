@@ -240,8 +240,10 @@ class UniformState {
     this._frustum2DWidth = 0.0;
     this._eyeHeight = 0.0;
     this._eyeHeight2D = new Cartesian2();
+    this._eyeCartographic = new Cartesian3();
     this._eyeEllipsoidNormalEC = new Cartesian3();
     this._eyeEllipsoidCurvature = new Cartesian2();
+    this._eyeToEnu = new Matrix3();
     this._modelToEnu = new Matrix4();
     this._enuToModel = new Matrix4();
     this._pixelRatio = 1.0;
@@ -587,6 +589,13 @@ class UniformState {
     return this._eyeHeight;
   }
 
+  /** Geodetic longitude (x) / latitude (y) in radians and height (z) in metres of the
+   * eye. Only valid when the SceneMode is SCENE3D.
+   * @type {Cartesian3} */
+  get eyeCartographic() {
+    return this._eyeCartographic;
+  }
+
   get eyeHeight2D() {
     return this._eyeHeight2D;
   }
@@ -597,6 +606,13 @@ class UniformState {
 
   get eyeEllipsoidCurvature() {
     return this._eyeEllipsoidCurvature;
+  }
+
+  /** Rotation from eye coordinates to an east-north-up frame centred on the ellipsoid
+   * below the camera. Only valid when the SceneMode is SCENE3D.
+   * @type {Matrix3} */
+  get eyeToEnu() {
+    return this._eyeToEnu;
   }
 
   get modelToEnu() {

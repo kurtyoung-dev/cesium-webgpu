@@ -171,6 +171,8 @@ function renderBufferPolylineCollection(collection, frameState, renderContext) {
     const { _dirtyOffset, _dirtyCount } = collection;
     const pickIds = renderContext.pickIds;
 
+    const widthInMeters = collection.widthUnits === "meters";
+
     const indexArray = renderContext.indexArray;
 
     const {
@@ -219,6 +221,8 @@ function renderBufferPolylineCollection(collection, frameState, renderContext) {
       polyline.getMaterial(material);
       const encodedColor = AttributeCompression.encodeRGB8(material.color);
       const colorAlpha = material.color.alpha;
+      // A negative width marks a width in meters, which the shader converts to pixels.
+      const signedWidth = widthInMeters ? -material.width : material.width;
       Color.fromRgba(polyline._pickId, pickColor);
       const show = polyline.show;
 
@@ -325,7 +329,7 @@ function renderBufferPolylineCollection(collection, frameState, renderContext) {
 
           showColorWidthAndTexCoordArray[vOffset * 4] = show ? 1 : 0;
           showColorWidthAndTexCoordArray[vOffset * 4 + 1] = encodedColor;
-          showColorWidthAndTexCoordArray[vOffset * 4 + 2] = material.width;
+          showColorWidthAndTexCoordArray[vOffset * 4 + 2] = signedWidth;
           showColorWidthAndTexCoordArray[vOffset * 4 + 3] = j / (jl - 1);
 
           alphaArray[vOffset] = colorAlpha * 255.0;
@@ -506,10 +510,21 @@ function renderBufferPolylineCollection(collection, frameState, renderContext) {
     }
   }
 
+  const pass =
+    collection._blendOption === BlendOption.OPAQUE
+      ? Pass.OPAQUE
+      : Pass.TRANSLUCENT;
+
+  if (defined(renderContext.command) && renderContext.command.pass !== pass) {
+    RenderState.removeFromCache(renderContext.renderState);
+    renderContext.renderState = undefined;
+    renderContext.command = undefined;
+  }
+
   if (!defined(renderContext.renderState)) {
     renderContext.renderState = RenderState.fromCache({
       blending:
-        collection._blendOption === BlendOption.OPAQUE
+        pass === Pass.OPAQUE
           ? BlendingState.DISABLED
           : BlendingState.ALPHA_BLEND,
       depthTest: { enabled: true },
@@ -538,10 +553,7 @@ function renderBufferPolylineCollection(collection, frameState, renderContext) {
       renderState: renderContext.renderState,
       shaderProgram: renderContext.shaderProgram,
       primitiveType: PrimitiveType.TRIANGLES,
-      pass:
-        collection._blendOption === BlendOption.OPAQUE
-          ? Pass.OPAQUE
-          : Pass.TRANSLUCENT,
+      pass,
       pickId: collection._allowPicking ? "v_pickColor" : undefined,
       owner: collection,
       count: drawCount,

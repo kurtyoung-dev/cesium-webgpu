@@ -54,6 +54,13 @@ const SNAP_OCCLUDER_RADIUS_PIXELS = 3.0;
 // object the cursor is on.
 const SNAP_OCCLUSION_TOLERANCE = 0.1;
 
+// Width of the region, centered on a winning edge hit, read to find the
+// adjacent surface fragment for surfacePosition. Deliberately centered on the
+// edge hit rather than the cursor: the cursor-centered snap region can clip
+// away the object's surface, potentially causing the server-side backend to
+// give a mismatched snap.
+const SNAP_SURFACE_REGION_WIDTH = 9.0;
+
 function cursorDist(hit) {
   return Math.sqrt(hit.x * hit.x + hit.y * hit.y);
 }
@@ -298,6 +305,42 @@ function getSnapPickRay(view, hit, result) {
   return result;
 }
 
+// Find the surface hit belonging to the same object that lies closest to the
+// region center, if any. Unlike an edge hit, whose position lies exactly on
+// the object's silhouette, this point is unambiguously on the object.
+//
+// `origin` and `regionWidth` let this run over the hits of the fork's single
+// cursor-centered readback instead of a second, edge-centered one: they
+// re-base the distance metric on the winning hit and clip the search to the
+// same box upstream would have read. Omitting both reproduces upstream's
+// behaviour exactly, which is the contract Snapping._nearestSurfaceHit keeps.
+function nearestSurfaceHit(hits, object, origin, regionWidth) {
+  const originX = origin?.x ?? 0.0;
+  const originY = origin?.y ?? 0.0;
+  const halfRegion = defined(regionWidth)
+    ? Math.floor(regionWidth * 0.5)
+    : Number.POSITIVE_INFINITY;
+
+  let best;
+  let bestDist = Number.POSITIVE_INFINITY;
+  for (const hit of hits) {
+    if (hit.isEdge || hit.object !== object) {
+      continue;
+    }
+    const dx = hit.x - originX;
+    const dy = hit.y - originY;
+    if (Math.abs(dx) > halfRegion || Math.abs(dy) > halfRegion) {
+      continue;
+    }
+    const dist = dx * dx + dy * dy;
+    if (dist < bestDist) {
+      best = hit;
+      bestDist = dist;
+    }
+  }
+  return best;
+}
+
 // Unproject a snap hit's eye-space depth (channel B of the snap framebuffer,
 // written by the snap shader at the edge fragment itself) into a world
 // position.
@@ -433,16 +476,50 @@ Snapping.snap = function (scene, windowPosition, options) {
     return undefined;
   }
 
+  // For an edge hit, also report the nearest same-object surface fragment: an
+  // edge fragment sits on the silhouette, where the depth is ambiguous between
+  // the object and whatever lies behind it, which makes it a poor closePoint
+  // seed for SnapService.snap.
+  //
+  // Upstream 1.145 obtains this with a second pick cycle nested inside the
+  // query -- pickBegin, a synchronous snapFramebuffer.end, pickEnd -- centered
+  // on the edge hit. The fork cannot take that implementation: the WebGPU snap
+  // path consumes a completed readback from an earlier mini-frame (see
+  // captureSnapView), so a nested read costs a second mini-frame and a second
+  // mapAsync round trip on the interactive path. It is also unnecessary. Hits
+  // already carry integer offsets from the query center spanning
+  // [-floor(width/2), +floor(width/2)], so the neighbourhood upstream re-reads
+  // is already inside the single readback whenever the winner lies within
+  // (width - SNAP_SURFACE_REGION_WIDTH)/2 of the cursor -- 8 px at the default
+  // width of 25. Searching the hits in hand, re-based on the winner and
+  // clipped to the same region upstream would have read, yields an identical
+  // answer there and upstream's documented `undefined` where the query border
+  // clips the neighbourhood -- with no second readback on EITHER backend.
+  let surfacePosition = position;
+  if (best.isEdge) {
+    const surfaceHit = nearestSurfaceHit(
+      hits,
+      best.object,
+      best,
+      SNAP_SURFACE_REGION_WIDTH,
+    );
+    surfacePosition = defined(surfaceHit)
+      ? snapHitToWorld(view, surfaceHit)
+      : undefined;
+  }
+
   return {
     object: best.object,
     isEdge: best.isEdge,
     position: position,
+    surfacePosition: surfacePosition,
     screenPosition: screenPosition,
   };
 };
 
 // Exposed for testing.
 Snapping._selectBestHit = selectBestHit;
+Snapping._nearestSurfaceHit = nearestSurfaceHit;
 Snapping._snapHitToWorld = snapHitToWorld;
 Snapping._captureSnapView = captureSnapView;
 Snapping._snapHitToScreenPosition = snapHitToScreenPosition;

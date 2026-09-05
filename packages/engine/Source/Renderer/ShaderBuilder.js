@@ -411,7 +411,7 @@ class ShaderBuilder {
   /**
    * Appends lines of GLSL code to the fragment shader
    *
-   * @param {string[]} lines The lines to add to the end of the fragment shader source
+   * @param {string|string[]} lines One or more lines to add to the end of the fragment shader source
    *
    * @example
    * shaderBuilder.addFragmentLines([
