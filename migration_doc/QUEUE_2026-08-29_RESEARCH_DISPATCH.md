@@ -78,6 +78,8 @@ Every engineering row additionally owes a separate **OPUS-REVIEW** dispatch befo
 
 **Re-waving, stated once.** A row's `Source` field keeps its **draft's** wave number so provenance stays traceable, but the row sits where **this** document's rule puts it. The moves: `EAN-05`, `EAN-06`, `EAN-07`, `EAN-11` from D2 Wave 3 → **Wave 4** (they are improvements beyond upstream, all behind `Q-148`'s repaired instrument); `EAN-02` from D2 Wave 5 → **Wave 4**; `Q-141` and `Q-142` from D1 Wave 2 → **Wave 1** — `Q-141` because it is ruling-free engine correctness whose only blocker is `DM-07`'s counters, and `Q-142` because it is fully authorable today and only its **landing form** waits on **M-03**, which is what the widened Wave-1 definition above admits.
 
+**Cross-reference (2026-09-03).** The architecture-review dispatch queue [`QUEUE_2026-09-03_ARCHITECTURE_REVIEW.md`](QUEUE_2026-09-03_ARCHITECTURE_REVIEW.md) reuses §0.1 (tiers), §0.3 (row fields) and §0.4 (waves) of this document verbatim and adds a priority rule of its own; it is a sibling dispatch view over `ARCHITECTURE_REVIEW_2026-09-02.md`, owns the `AR-` ids only, and changes no `Q-` / `DM-` / `MS-` status here.
+
 ---
 ## 1. LIVE STATUS LEDGER
 

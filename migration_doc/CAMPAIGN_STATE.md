@@ -168,6 +168,15 @@ a C18 wave) awaits maintainer gate **M-16**; nothing about it is launched. Wave 
 (17 ruling-free/measurement-first rows) is mid-execution; its closure is the manual three-step
 permitted by `R-2026-09-02-3`.
 
+**Architecture-review dispatch view (2026-09-03).**
+[`QUEUE_2026-09-03_ARCHITECTURE_REVIEW.md`](QUEUE_2026-09-03_ARCHITECTURE_REVIEW.md) is the dispatch
+view for the architecture review — the rows produced from
+[`ARCHITECTURE_REVIEW_2026-09-02.md`](ARCHITECTURE_REVIEW_2026-09-02.md) after the 2026-09-03 lens
+re-run (its §3 survey blocks, §4 reversals, unowned §3 items, landscape gaps G1–G8, maintainer
+decisions, Éowyn measurement rows). **Status authority unchanged:** the campaign queues,
+`DEFERRED_WORK.md` and `FIX_QUEUE_2026-08-27_AUDIT_FINDINGS.md` keep every id they own; the new
+queue launches, rules, schedules and funds nothing, and its `AR-` ids are add-only.
+
 ### Standing principles that block work (not row-specific)
 
 - **Performance work must not remove, default-disable, bypass, or visually degrade a feature to
