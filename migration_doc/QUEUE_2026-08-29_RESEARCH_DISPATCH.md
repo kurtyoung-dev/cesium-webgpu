@@ -192,7 +192,7 @@ certification.
 | `DX-27` | Guard repair rows: Fëanor (accept `HEAD`/OID local refs, restore the deletion's old tip, 49/49, then the shallow-history hardening) and Idril (four fail-closed assertions) | SONNET-BOUNDED | S + S | QUEUED (R-2026-09-02-10; drafts banked at `cesium-webgpu-worker-archive/guard-drafts-2026-09-01/`) | Batch 1354 | DX |
 | `DX-28` | Lunar-bake and staged-Git-read primitive families | research | — | HELD (research-only until exact contracts, leases, runner homes and acceptance matrices are preregistered) | — | DX |
 | `DX-29` | Screenshot/artifact-writer consolidation and the Batch-66 final/end-of-session runner family | research | — | HELD (provenance review; runner names encode evidence cutoffs) | — | DX |
-| `DX-30` | `.prettierignore` opens with `*`, so a Prettier check on a scratch path passes vacuously; verify the premise, then make scratch-path checks explicit in the landing runbook | SONNET-BOUNDED | XS | QUEUED (verify premise first) | — | DX |
+| `DX-30` | `.prettierignore` opens with `*`, so a Prettier check on a scratch path passes vacuously; verify the premise, then make scratch-path checks explicit in the landing runbook | SONNET-BOUNDED | XS | QUEUED (premise VERIFIED 2026-09-04, folded `DX-41`: `npx prettier --check 'migration_doc/**/*.md'` matches zero files and prints "All matched files use Prettier code style!", EXIT=0; `npx prettier --check --ignore-path /dev/null migration_doc/README.md` reports real style issues, EXIT=1 — confirming `migration_doc/` is silently ignored; the runbook clause remains QUEUED) | — | DX |
 | `DX-31` | Decompose `Tools/visual-regression/lib/probe-runtime.mjs` (994 lines after DX-01 round 3) and `probe-runtime.spec.mjs` (1,547 lines) into focused modules and spec files under the same runner home, behaviour byte-identical | SONNET-BOUNDED | S | QUEUED (flagged by lane Amras, packet §10.8; the ~1,000-line rule; lands after `DX-01`) | `DX-01` | DX |
 | `DX-32` | Three pre-existing spec defects surfaced by Turin and Eomund: `Tools/spec-runner-census.spec.mjs:192` mutation anchor drifted (mutant vacuous); `Tools/generate-tooling-catalog.spec.mjs` failed with a run-to-run-unstable failure set and a not-ok count that disagreed with its summary; `Tools/pre-push-guard.spec.mjs` read the real wall clock and failed inside quiet hours | SONNET-BOUNDED | S | LANDED (Batch 1396; Hallas, reviewer Leod: census mutant re-anchored, catalog spec deterministic, guard clock injectable through a fifth argv entry that git's two-argument hook contract never supplies) | — | DX |
 | `DX-33` | Three WebGPU cache specs under packages/engine/Specs/Renderer/WebGPU have no runner home (Helm packet §3.2); home them in `test-model-webgpu` and confirm the family count | SONNET-BOUNDED | XS | LANDED (Batch 1395; Targon, reviewer Aldor; test-model-webgpu lists them explicitly) | — | DX |
@@ -213,6 +213,8 @@ certification.
 **Counts.** Wave 1 = **17**, Wave 2 = **7**, Wave 3 = **9**, Wave 4 = **5**, meshlet track = **27** (`MS-00`…`MS-26`), closed-negative = **17**. Wave DX = **15** (`DX-01`…`DX-15`; `DX-05` landed, `DX-11` closed, `DX-14` already banked, `DX-15` preparation-only). Total tracked = **97**.
 
 **Umbrella, not a row.** The ledger's `AEC demo flags` entry (`FIX_QUEUE_2026-08-27_AUDIT_FINDINGS.md:136`) stays the umbrella over `DM-02`–`DM-06`; it has no tier and no executor of its own, and it attaches to the `C11-168` dense-tileset lane so the flags are judged in the same harness that `Q-143` builds.
+
+**`DX-36`…`DX-41` (2026-09-04 landing night, after the Edge job; fix round by Haldir applied 2026-09-04).** Four new DX rows added to §6a as full cards: `DX-36` landing staging assertion for renames (corrected mechanism — a worker patch is exported `--no-renames`, so a rename arrives as a delete-plus-add and both paths reach `git apply --numstat`; the fatal is a bare `git add` on the path `--3way` already deleted), `DX-37` C16 cleanlist union resolver reachability, `DX-38` chelate contract tests red (owned-by `DX-21`), `DX-40` `build-ts` as a gate plus a JSDoc type-expression lint. Two ids are withdrawn as duplicates and kept only as one-line entries: `DX-39` (served-tree rebuild cannot run the wave-end gate) duplicates `AR-D20` / `AR-883` in `QUEUE_2026-09-03_ARCHITECTURE_REVIEW.md`, which carry the served-tree rebuild gap and its open three-option maintainer decision; `DX-41` (the docs prettier gate checks nothing) is the verification `DX-30` demanded and is folded into `DX-30`'s existing table row in place. Not added to the table above — see the §6a cards for tier, size, dependencies and acceptance.
 
 ---
 ## 2. WAVE 1 — ruling-free and measurement-first. 2026-08-29 PLAN SNAPSHOT — NOT CURRENT STATUS.
@@ -1089,6 +1091,116 @@ specific sign-off and frozen review/Edge sequence are released.
 `DX-14`'s carried live-ledger repair completion and explicit maintainer release and `DX-15`'s
 `C11-107` / G6 Q2d Principle-7 sign-off are separate row-specific gates. They do not mint new M-DX
 identifiers, and neither is discharged by M-DX-1, M-DX-2, or broad Wave-DX authority.
+
+### `DX-36` — landing staging must cover both halves of a rename, or refuse
+
+- **Disposition:** OPEN. A worker patch is exported `git diff --cached --binary --no-renames`, so a
+  rename arrives as a **delete of the source plus an add of the destination** and
+  `git apply --numstat` lists **both** paths. `git apply --3way` then applies the deletion and
+  removes the source from the worktree and the index — so a landing script that stages with a bare
+  `git add -- $PATHS` invokes `git add` on a path that no longer exists and fatals with "pathspec
+  did not match any files", aborting the run before the commit. This is what the Batch 1403
+  archive-rename landing hit across its seven sources. The seat's untracked scratchpad
+  `land-lane.sh` now splits `$PATHS` into present/absent, `git rm --cached --ignore-unmatch`s the
+  absent half, and asserts the staged set equals the patch's full path set — but that fix lives only
+  in an untracked script. Neither `ORCHESTRATION_HANDBOOK.md` §2 nor
+  `Tools/verify-landing-compliance.mjs` carries the rule today.
+- **Tier / Size / Backends:** SONNET-BOUNDED · S · tooling (landing runbook). **Depends on:** none.
+  **Ruling touched:** none. **Gate:** none.
+- **Acceptance:** a landing dry-run over a patch containing a rename stages both the source deletion
+  and the destination, and the runbook refuses when the staged set differs from the patch's path
+  set; the rule is stated in `ORCHESTRATION_HANDBOOK.md` §2 and checked by
+  `Tools/verify-landing-compliance.mjs`.
+- **Binds:** SR-7. **Source:** seat landing run, Batch 1403/1404 archive-rename lane, 2026-09-03/04.
+
+### `DX-37` — the C16 cleanlist union resolver is unreachable unless `package.json` also conflicts
+
+- **Disposition:** OPEN. The seat's wave-2 chain wrapper resolves a merge conflict on
+  `Tools/c16/comment-marker-cleanlist.txt` by unioning both sides' additions, but that union branch
+  is written nested inside the wrapper's `package.json`-conflict check
+  (`if git status --porcelain | grep -q '^UU package.json'`), so it only runs when `package.json`
+  *also* conflicts. When only the cleanlist conflicts — which two C16 shards landing on the same
+  night will always do, since they share the one file — the wrapper reports "not a package.json
+  conflict" and stops short of resolving anything. This is what happened landing Freawine's shard
+  (Batch 1400): the seat resolved the union by hand instead of the wrapper doing it.
+- **Tier / Size / Backends:** SONNET-BOUNDED · S · tooling (landing chain wrapper). **Depends on:**
+  none. **Ruling touched:** none. **Gate:** none.
+- **Acceptance:** two C16 shards whose cleanlist additions conflict land in sequence without a hand
+  resolution; the union is deduplicated and ordered; the resolver runs whether or not
+  `package.json` conflicts.
+- **Binds:** SR-7. **Source:** seat wave-2 chain wrapper, Batch 1400 (Freawine C16 shard),
+  2026-09-03/04.
+
+### `DX-38` — chelate's backend-contract tests are red
+
+- **Disposition:** OPEN. The Rust supervisor relocated to `F:/Dev/GH/chelate` (`dfbdca2`, baseline
+  `fc5e888`) fails 4 of 5 tests in `crates/chelate-core/tests/backend_contract.rs` under
+  `cargo test --offline`: `malicious_backend_report_drift_is_rejected`,
+  `malformed_terminal_is_rejected_by_supervisor_run`, and `terminal_identity_drift_is_rejected` each
+  expect `run_with(...)` to return `Err` and it does not; `failed_terminal_does_not_infer_running_from_root`
+  expects `NotCreated` and gets `Running` (`left: Running, right: NotCreated`). `backend_contract`
+  does not currently gate the landing/certification script — it only tails the test output rather
+  than checking `cargo test`'s exit code — so these four failures never blocked anything. A
+  supervisor whose contract tests do not reject a malicious, malformed, or identity-drifted backend
+  is not something to certify.
+- **Tier / Size / Backends:** OPUS-JUDGMENT (Rust, safety contract) · M · Rust (chelate; no CesiumJS
+  renderer backend). **Depends on:** none. **Ruling touched:** none (chelate's relocation itself is
+  `R-2026-09-02-13`; this row is the contract-test gate, not the relocation). **Gate:** none.
+  **Owned-by:** `DX-21` (pointer, not a duplicate).
+- **Acceptance:** the four named tests pass on `F:/Dev/GH/chelate` and the landing/certification
+  script gates on `cargo test`'s exit code; until then chelate remains uncertified and
+  `migration_doc/CHELATE.md` says so (it already does, per `R-2026-09-02-13`'s NO-GO).
+- **Binds:** SR-7. **Source:** seat `cargo test --offline` run, `F:/Dev/GH/chelate` @ `dfbdca2`,
+  2026-09-03/04.
+
+### `DX-39` — withdrawn
+
+`DX-39` — withdrawn 2026-09-04 (Haldir): duplicate of `AR-D20` / `AR-883` in
+`QUEUE_2026-09-03_ARCHITECTURE_REVIEW.md`, which carry the served-tree rebuild gap and its
+three-option maintainer decision. Mechanism recorded here so it survives if those rows land
+unamended: a plain `npx gulp build` leaves all three generated typings the Sandcastle2 editor
+requests absent — `/Source/Cesium.d.ts`, `/packages/engine/index.d.ts`,
+`/packages/widgets/index.d.ts` (`packages/sandcastle/vite.config.dev.ts:95,99,103`) — because
+`build()` never calls `buildTs` (`gulpfile.js:1443`) and `Source/Cesium.d.ts` has a separate
+producer (`scripts/ensureCesiumTypeDefinitions.js:45`); no wave-end step checks for them, so the
+demos 404 in the browser rather than the gate refusing.
+
+### `DX-40` — `build-ts` gates the wave-end gate; JSDoc type expressions are linted in `.js`
+
+- **Disposition:** OPEN. Verbatim from lane Elentir's landing packet (the "Fix round (Erendil)"
+  version, `F:/Dev/GH/cesium-lane-elentir-20260904/_lane-out/LANDING_PACKET_ELENTIR.md`):
+
+  > **Observable behaviour to assert (1):** with a JSDoc arrow type such as `{() => T}` introduced
+  > into any `.js` file under `packages/*/Source`, the wave-end gate does not start — the run
+  > reports the failing file and tag before any Sandcastle2 or visual-regression step executes.
+  > Today the gate starts, the Sandcastle2 typings sweep 404s, and **zero** demos certify on either
+  > renderer, with no earlier signal.
+  >
+  > **Observable behaviour to assert (2):** committing a `.js` file whose JSDoc contains `=>` inside
+  > a `{...}` type expression fails `lint-staged` with the file and line, and the same content in a
+  > `.ts` file passes. (Scope is `.js`-only by construction: all four jsdoc configurations —
+  > `packages/{engine,widgets}/tsd-conf.json`, `Tools/jsdoc/conf.json`, `Tools/jsdoc/ts-conf.json` —
+  > carry `includePattern: ".+\\.js(doc)?$"`, so `.ts` is never parsed by jsdoc and the native arrow
+  > syntax is correct there.)
+  >
+  > **Evidence:** `WebGPUPointCloudEDLState.js:230` (`{() => T}` → `{function(): T}`) failed `npx
+  > gulp buildTs` repo-wide after 1.16 min via the unguarded `execSync` at `gulpfile.js:1303`,
+  > skipping the widgets workspace entirely and leaving both `index.d.ts` files without their
+  > `declare module "@cesium/..."` wrapper. One excluded-by-config sibling remains at
+  > `WebGPUContext.ts:7930`.
+- **Tier / Size / Backends:** SONNET-BOUNDED · S · tooling (build pipeline / lint-staged).
+  **Depends on:** none — the one-line JSDoc fix already landed (lane Elentir). **Ruling touched:**
+  none. **Gate:** none. **Owned-by:** NEW.
+- **Acceptance:** the two observable behaviours above hold — a reintroduced JSDoc arrow type stops
+  the wave-end gate before Sandcastle2 runs, and the same pattern fails `lint-staged` on a `.js`
+  file while an identical `.ts` file passes.
+- **Binds:** SR-7. **Source:** lanes Zamin/Elentir/Erendil, `LANDING_PACKET_ELENTIR.md`,
+  `REVIEW_ERENDIL.md` §(f), 2026-09-04.
+
+### `DX-41` — withdrawn
+
+`DX-41` — withdrawn 2026-09-04 (Haldir): the verification `DX-30` demanded; folded into `DX-30` in
+place.
 
 ## 6b. UPSTREAM SYNC — CesiumJS 1.145. Plan authority: `UPSTREAM_SYNC_PLAN_1.145_2026-09-04.md`
 
