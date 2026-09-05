@@ -652,14 +652,23 @@ function configureWebGPUPostProcessPipeline(
     (collection as unknown as { _autoExposureEnabled?: boolean })
       ._autoExposureEnabled === true;
 
-  // Bloom: lazily initialized on first enable. All six WebGL bloom uniforms —
+  // Bloom: lazily initialized on first enable, and again whenever the slot is
+  // empty. Every re-add gate for the eleven effect slots that
+  // `WebGPUPostProcessPipeline.initialize()` nulls tests the LIVE
+  // `pipeline.*Effect` slot rather than a sticky `cache.*Initialized` flag: it
+  // drops all eleven on a resize or HDR toggle, and a latch that only ever
+  // fires once would leave the effect destroyed and unrevivable for the life
+  // of the viewer (AR-009). ColorGrading (`:615`) is deliberately not one of
+  // them: its stage is not on that reset list, so its latch cannot strand it.
+  // The `addX` methods are themselves idempotent, so the live-slot test is the
+  // whole gate. All six WebGL bloom uniforms —
   // contrast, brightness, glowOnly, delta, sigma, stepSize — map one to one
   // onto the WebGPU effect. Feeding WebGL's brightness, which defaults to
   // -0.3, into a luminance threshold instead gives a negative threshold that
   // passes every pixel and blooms the whole scene at default uniforms.
   // `intensity` is a fork extra, an altitude-gate lever; 1.0 matches WebGL's
   // plain `bloom + color` composite.
-  if (cache.bloomEnabled && !cache.bloomInitialized) {
+  if (cache.bloomEnabled && !pipeline.bloomEffect) {
     const bloom = collection.bloom;
     pipeline.addBloom(
       device,
@@ -714,13 +723,16 @@ function configureWebGPUPostProcessPipeline(
   }
 
   // Lazily initialize ambient occlusion on first enable, then keep the effect
-  // in step with the stage's uniforms. `aoInitialized` latches the add — it
-  // must not also latch the configuration, or every write after the first
-  // enabled frame is lost.
+  // in step with the stage's uniforms. The add is gated on the LIVE
+  // `pipeline.ambientOcclusionEffect` slot, so it fires again after a pipeline
+  // recreate (resize, HDR toggle, device loss) nulls it; the config re-read on
+  // that branch also refreshes `aoApplied`, so the diff baseline stays honest.
+  // The gate must not latch the configuration too, or every write after the
+  // first enabled frame is lost.
   if (cache.ambientOcclusionEnabled) {
     const aoApplied = (cache._aoConfigApplied ??=
       {} as AmbientOcclusionConfigValues);
-    if (!cache.aoInitialized) {
+    if (!pipeline.ambientOcclusionEffect) {
       readAmbientOcclusionConfigInto(collection.ambientOcclusion, aoApplied);
       pipeline.addAmbientOcclusion(
         device,
@@ -770,15 +782,16 @@ function configureWebGPUPostProcessPipeline(
     updateAmbientOcclusionFrameData(pipeline, scene);
   }
 
-  // Depth of Field: lazily initialized on first enable, then kept in step with
-  // the stage's uniforms the same way. Its uniforms come from the upstream DoF
+  // Depth of Field: lazily initialized on first enable and re-added whenever
+  // the live slot is empty, then kept in step with the stage's uniforms the
+  // same way. Its uniforms come from the upstream DoF
   // composite stage located by `findDepthOfFieldStage`, since there is no
   // `collection._depthOfField` slot to read.
   if (cache.depthOfFieldEnabled) {
     const dof = findDepthOfFieldStage(collection);
     const dofApplied = (cache._dofConfigApplied ??=
       {} as DepthOfFieldConfigValues);
-    if (!cache.dofInitialized) {
+    if (!pipeline.depthOfFieldEffect) {
       readDepthOfFieldConfigInto(dof, dofApplied);
       pipeline.addDepthOfField(device, canvasFormat, dofApplied, useShaderF16);
       cache.dofInitialized = true;
@@ -999,7 +1012,7 @@ function configureWebGPUPostProcessPipeline(
   // through `scene.godRayConfig`. Skipped when the scene has no sun
   // configured, because the effect needs the sun's screen-space position to
   // orient the radial blur.
-  if (cache.godRayEnabled && !cache.godRayInitialized) {
+  if (cache.godRayEnabled && !pipeline.godRayEffect) {
     const cfg = (
       scene as unknown as {
         godRayConfig?: import("./WebGPUGodRayEffect.js").GodRayConfig;
@@ -1065,7 +1078,7 @@ function configureWebGPUPostProcessPipeline(
   // HeatShimmer lazy init, plus the per-frame clock, intensity and
   // continuous-render drive. Config can be supplied through
   // `scene.heatShimmerConfig`.
-  if (cache.heatShimmerEnabled && !cache.heatShimmerInitialized) {
+  if (cache.heatShimmerEnabled && !pipeline.heatShimmerEffect) {
     const cfg = (
       scene as unknown as {
         heatShimmerConfig?: import("./WebGPUHeatShimmerEffect.js").HeatShimmerConfig;
@@ -1083,7 +1096,7 @@ function configureWebGPUPostProcessPipeline(
 
   // ColdOptics lazy init, plus the per-frame camera, sun and inverse-matrix
   // push. Config can be supplied through `scene.coldOpticsConfig`.
-  if (cache.coldOpticsEnabled && !cache.coldOpticsInitialized) {
+  if (cache.coldOpticsEnabled && !pipeline.coldOpticsEffect) {
     const cfg = (
       scene as unknown as {
         coldOpticsConfig?: import("./WebGPUColdOpticsEffect.js").ColdOpticsConfig;
@@ -1107,7 +1120,7 @@ function configureWebGPUPostProcessPipeline(
   cache.aerialPerspectiveEnabled =
     (scene as unknown as { aerialPerspective?: boolean })?.aerialPerspective ===
     true;
-  if (cache.aerialPerspectiveEnabled && !cache.aerialPerspectiveInitialized) {
+  if (cache.aerialPerspectiveEnabled && !pipeline.aerialPerspectiveEffect) {
     const cfg = (
       scene as unknown as {
         aerialPerspectiveConfig?: import("./WebGPUAerialPerspectiveEffect.js").AerialPerspectiveConfig;

@@ -14892,3 +14892,130 @@ should get its own row.
 appearance's `vertexFormat` rather than raw attribute presence remains the parity question the
 diagnosis marks as its own row. This entry closes the `flat` half only, because clause 2 requires
 it; the vertex-format half is untouched.
+
+## 2026-09-04 - AR-009 / NEW-WEBGPU-POSTPROCESS-EFFECTS-UNREVIVABLE-AFTER-RECREATE (lane Emeldir, wave P0-1) - **FIXED**
+
+**Overlap, stated up front.** `Q-3` (`FIX_QUEUE_2026-08-27_AUDIT_FINDINGS.md:80`, "every canvas
+resize destroys all effects and recompiles their shaders") owns the **destroy half** of this and is
+the seat's status authority for it; nothing here edits that file. The half filed NEW is that seven
+of the eleven destroyed effects were **never re-added**, on the resize path *and* on the
+`highDynamicRange` path, and so could not be revived for the life of the viewer.
+
+**Observable.** With Bloom, ambient occlusion and depth of field enabled, one `viewer.resize()` (or
+one HDR toggle) removed them from the frame permanently. Nothing turned them back on; the user's
+only recovery was a new viewer.
+
+**The count, derived at HEAD `01bddf4eae` rather than taken from the row.** All eleven slots are
+destroyed and nulled by `WebGPUPostProcessPipeline.initialize()` (`:553-600`), which is correct —
+each effect's intermediates are sized AND formatted against `_intermediateFormat`. The re-add gates
+in `WebGPUPostProcessStageCollection.ts` then split two ways:
+
+- **Seven dropped**, gated on a sticky `cache.*Initialized` latch that is set on the first enabled
+  frame and never reset: Bloom (`:662`), AmbientOcclusion (`:723`), DepthOfField (`:781`), GodRay
+  (`:1002`), HeatShimmer (`:1068`), ColdOptics (`:1086`), AerialPerspective (`:1110`).
+- **Four already correct**, gated on the LIVE slot: TAA (`:507`, fixed alone under
+  `NEW-TAA-EFFECT-NEVER-ADDED`), MotionBlur (`:526`), SunHalo (`:975`), SunBloom (`:987`).
+
+Seven of eleven CONFIRMED. The row's "three false live-slot comments" is also CONFIRMED and is
+exactly HeatShimmer / ColdOptics / AerialPerspective; the fourth comment of that shape
+(`:557-560`, SunHalo and SunBloom) was **TRUE** and is REFUTED as a defect.
+
+**`LIGHT-6` decision — remove the ten dead `?.resize()` calls; fix the gates. Not in-place resize.**
+`resize()` (`:1856`) called `this.initialize(...)` first, which nulled every slot, and then called
+`?.resize()` on ten of them — each an optional-chain no-op on `null`. The decision rested on cost,
+and the cost argument for in-place resize does not survive contact with the code:
+
+- **Compile count per resize is IDENTICAL under both options.** Every effect's own `resize()` calls
+  its `initialize()`, which re-runs `_createPipelines()`, and `createFullscreenPipeline`
+  (`WebGPUPostProcessEffects.ts:36-58`) calls `device.createShaderModule` +
+  `device.createRenderPipeline` **directly, consulting neither `WebGPUShaderModuleCache` nor
+  `WebGPURenderPipelineCache`**. Making the ten calls live would not have saved one compile.
+  Per full recreate: Bloom 4, AO 4 (f16/f32 branch, not 8), DoF 3, GodRay 2, HeatShimmer 1,
+  ColdOptics 1, AerialPerspective 1 render + 1 compute. The acceptance configuration
+  (Bloom + AO + DoF) therefore costs **11 shader modules + 11 render pipelines per resize**, and an
+  interactive window drag pays that per resize event. That cost is unchanged by this fix — it is
+  pre-existing, it is what `Q-3` names, and reducing it is a separate row (below).
+- **The two paths want different answers.** An effect's `resize()` preserves `this._format`, so it
+  could never move an effect onto a new `_intermediateFormat`. In-place resize would have needed the
+  reset list to become conditional (size change keeps slots, HDR/device change drops them) — a new
+  branch, and the HDR path would still need the gate fix anyway.
+- **Blast radius.** Removal + gate fix touches seven conditions in one file and follows a pattern
+  already proven four times in-tree. In-place resize would have activated ten `resize()`
+  implementations that have never executed.
+
+**Fix.** The seven sticky gates now test the live slot (`!pipeline.bloomEffect` and siblings); the
+`addX` methods were already idempotent, so the live-slot test is the whole gate. The ten dead
+`?.resize()` calls are removed with the reasoning recorded at the site. The **six** repeated
+per-effect comments in the reset block — three of which (HeatShimmer, ColdOptics,
+AerialPerspective) asserted a live-slot gate that did not exist, three of which (SunHalo/SunBloom,
+TAA, MotionBlur) were true — are replaced by one comment stating the two-half protocol and the gate
+contract for anyone adding a twelfth effect.
+
+The seven `cache.*Initialized` writes are kept (SunHalo/SunBloom precedent) but are now write-only
+as gates. Two probes still read them for reporting —
+`Tools/visual-regression/probe-pp-effects-audit.mjs:116-122` and `probe-slice4-verify.mjs:197` — so
+a `cache_bloomInit: true` in their output no longer implies bloom is live. Read the slot, not the
+flag. The `cache.*Initialized` writes are KEPT, matching the SunHalo/SunBloom precedent
+already in the file.
+
+**Acceptance / proving artefacts.** `Tools/visual-regression/webgpu-postprocess-effect-survives-recreate.spec.mjs`
+(runner `test-visual-regression-node`) drives the real bridge against the real pipeline under a
+recording fake device, with the cache derived by the real `updateWebGPUPostProcessStages` rather
+than supplied by the harness, and asserts that every enabled effect slot is still live and enabled
+after a resize, after an HDR toggle, and across eight consecutive resizes — and that exactly the
+seven, not four or eleven, are lost when the latch is put back.
+
+**Scope limit of that spec, stated so it is not over-read:** it records neither format nor size and
+the effect classes are stubbed, so a slot revived at a STALE format would read green. That case is
+`NEW-WEBGPU-POSTPROCESS-FIXED-STAGES-STALE-FORMAT-AFTER-HDR-TOGGLE` (filed the same day), not this
+row. For this row's defect the coverage is sound: `addBloom` and its siblings read `_width`,
+`_height` and `_intermediateFormat` that are already current when the configure pass runs.
+Two inertness mutants, one per touched file. The Edge leg is `AR-M06`:
+`node Tools/visual-regression/probe-postprocess-resize-survival.mjs`.
+
+**Parity (Principle 5).** WebGPU-only. The WebGL post-process path has no equivalent defect: it has
+no per-effect slot to null — `PostProcessStageCollection.update()` reallocates each stage's
+framebuffer against the new size and the stages themselves are never destroyed by a resize. No
+WebGL file is touched by this fix and no WebGL code path is reached by it.
+
+**Filed as a consequence (Principle 9), NOT fixed here — NEW-WEBGPU-POSTPROCESS-EFFECT-PIPELINES-BYPASS-BOTH-CACHES.**
+`createFullscreenPipeline` builds a `GPUShaderModule` and a `GPURenderPipeline` per call with no
+cache consultation, so every post-process effect recompiles from scratch on every recreate — 11
+module+pipeline pairs per resize for Bloom + AO + DoF alone, and a window drag multiplies that by
+the number of resize events. Routing it through `WebGPUShaderModuleCache` and
+`WebGPURenderPipelineCache` is the real fix for the cost `Q-3` describes; on a plain resize the
+format and layout are unchanged, so those would be cache hits and only the textures would
+reallocate. Not attempted in this lane: it touches every effect class and needs its own measurement.
+`AR-M06` already reports the per-resize build count, so the row has its instrument.
+
+## 2026-09-04 - NEW-WEBGPU-POSTPROCESS-FIXED-STAGES-STALE-FORMAT-AFTER-HDR-TOGGLE (filed by lane Emeldir at the AR-009 review, Dagnir finding §7) — **OPEN, premise verified at source, deliberately NOT fixed in the filing lane.**
+
+Sibling of `AR-009` and the same family, but a different mechanism: **stale, not dropped.**
+
+`WebGPUPostProcessPipeline.initialize()` nulls eleven EFFECT slots on a device, size or HDR change.
+Three fixed STAGES are not on that reset list — `_tonemapStage`, `_colorGradingStage` and
+`_fxaaStage` — yet each builds its render pipeline against `_intermediateFormat`:
+`addTonemapping` (`:765`), `addColorGrading` (`:867`) and `addFXAA` (`:938`) each compute
+`const stageFormat = this._intermediateFormat || canvasFormat;`. `_destroyTextures()` touches only
+the ping/pong pair, so nothing drops them either.
+
+**Consequence.** A `highDynamicRange` toggle changes `_intermediateFormat` (`canvasFormat` ⇄
+`rgba16float`) but leaves all three stages holding a pipeline whose fragment target format is the
+PREVIOUS one, while the pass now attaches a view of the new one. A plain resize is unaffected (the
+format does not change); this is an HDR-toggle-only defect.
+
+**Why it is filed rather than fixed here.** It is out of `AR-009` scope (that row is about effects
+that are dropped and never re-added; these are never dropped at all) and the fix is a different
+decision — either add the three stages to the reset list and give them live-slot re-add gates, or
+rebuild their pipelines in place on a format change. ColorGrading additionally still gates on a
+sticky `!cache.colorGradingInitialized` latch (`WebGPUPostProcessStageCollection.ts:615`), which is
+harmless today ONLY because its slot is never nulled — so whichever option is taken, that latch
+must be converted in the same change or the stage becomes unrevivable exactly as the seven did.
+
+**Not covered by `AR-009`s spec, stated plainly.** `webgpu-postprocess-effect-survives-recreate.spec.mjs`
+asserts that enabled effect slots are LIVE after a recreate; it records neither format nor size, and
+the effect classes are stubbed, so **a revival at a stale format would read green there.** That gap
+is this row, not that spec. Acceptance when this is taken up: after an HDR toggle, each of the three
+stages reports a pipeline built against the CURRENT `_intermediateFormat` — observable via a
+recorded `createRenderPipeline` target format, or via a probe capture that shows no format-mismatch
+validation error on the first post-toggle frame.

@@ -122,6 +122,11 @@ const EFFECT_SLOTS = new Set([
   "taaEffect",
   "motionBlurEffect",
   "bloomEffect",
+  // AO and DoF joined the live-slot gates in AR-009. Without them here the
+  // catch-all `get` below returns a truthy function for the slot, the add
+  // branch never fires, and the config branch dereferences it.
+  "ambientOcclusionEffect",
+  "depthOfFieldEffect",
   "sunHaloEffect",
   "sunBloomEffect",
   "godRayEffect",

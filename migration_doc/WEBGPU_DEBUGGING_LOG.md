@@ -19142,3 +19142,75 @@ reports 6 of 9 red; against the fix, 9 of 9 green. The pixel and validation-erro
 §C WIP row for the globe-material texture path (and no §B row for the WGSL-fabric globe-material
 feature at all), so there was nothing to move. That absence is itself an inventory gap worth
 queueing.
+
+---
+
+## Lane Emeldir (wave P0-1, 2026-09-04) — AR-009: post-process effects unrevivable after a resize or HDR toggle
+
+**Bug id:** AR-009 (ledger `NEW-WEBGPU-POSTPROCESS-EFFECTS-UNREVIVABLE-AFTER-RECREATE`).
+Partially overlaps `Q-3` (`FIX_QUEUE_2026-08-27_AUDIT_FINDINGS.md:80`), which owns the destroy half.
+
+**Files affected**
+
+- `packages/engine/Source/Renderer/WebGPU/WebGPUPostProcessPipeline.ts`
+- `packages/engine/Source/Renderer/WebGPU/WebGPUPostProcessStageCollection.ts`
+
+**Symptom.** With any of Bloom, ambient occlusion, depth of field, god rays, heat shimmer, cold
+optics or aerial perspective enabled, a single `viewer.resize()` — or a `scene.highDynamicRange`
+toggle — removed the effect from the frame permanently. No later frame restored it.
+
+**Root cause.** The recreate protocol has two halves and only one of them was complete.
+`WebGPUPostProcessPipeline.initialize()` destroys and nulls all eleven built-in effect slots on a
+device, size or HDR change. That is deliberate and correct: every effect's intermediates are sized
+AND formatted against `_intermediateFormat`, so a stale effect would hold wrong-size or 8-bit
+targets. The other half is that `configureWebGPUPostProcessPipeline` re-adds each effect on the next
+frame. Four effects gated that re-add on the LIVE slot (`!pipeline.taaEffect`) and so recovered.
+The other seven gated it on a sticky `cache.*Initialized` flag which is set on the first enabled
+frame and never reset — so after the first recreate the gate was permanently false, `addX` was never
+called again, and the slot stayed null forever. `addX`'s own `if (this._xEffect) return` guard is
+only half the mechanism; the gate that decides whether to call it at all is the other half.
+
+Compounding it, `resize()` called `initialize()` (which nulls the slots) and only then called
+`?.resize()` on ten of them — so those ten calls had always been optional-chain no-ops on `null`,
+and four comments in the reset block asserted a live-slot re-add that, for three of them, did not
+exist. Reading those comments was how the gap stayed invisible.
+
+**Fix applied.** The seven sticky gates now test the live slot, matching the four that already
+worked. The ten dead `?.resize()` calls are removed rather than made live (`LIGHT-6`): each effect's
+`resize()` calls its own `initialize()` → `_createPipelines()`, and `createFullscreenPipeline`
+creates a shader module and a render pipeline directly without consulting either cache, so in-place
+resize costs exactly the same compiles as a re-add while additionally being unable to follow an HDR
+format change (it preserves `this._format`). The four repeated per-effect comments are replaced by
+one that states the protocol and the gate contract.
+
+**Measured/derived cost, unchanged by the fix:** 11 shader modules + 11 render pipelines per resize
+for Bloom + AO + DoF. Filed as its own follow-up
+(`NEW-WEBGPU-POSTPROCESS-EFFECT-PIPELINES-BYPASS-BOTH-CACHES`) — it is a real defect, it is what
+`Q-3` describes as "recompiles their shaders", and it needs its own row.
+
+**Files modified**
+
+- `packages/engine/Source/Renderer/WebGPU/WebGPUPostProcessStageCollection.ts` — seven gates, three comments
+- `packages/engine/Source/Renderer/WebGPU/WebGPUPostProcessPipeline.ts` — ten dead calls removed, reset-block comments unified
+- `Tools/visual-regression/webgpu-postprocess-effect-survives-recreate.spec.mjs` — NEW behaviour spec
+- `Tools/visual-regression/probe-postprocess-resize-survival.mjs` — NEW `AR-M06` Edge probe
+- `package.json` — spec added to `test-visual-regression-node`
+- `Tools/visual-regression/webgpu-ao-uniform-bridge.spec.mjs` — stub `EFFECT_SLOTS` updated (see below)
+
+**Review-round addendum (Dagnir, same day).** Moving AO and DoF onto live-slot gates broke
+`npm run test-blend-parity` (exit 1, `# pass 60 / # fail 4`,
+`TypeError: effect.updateConfig is not a function`). Cause: the pipeline stub in
+`webgpu-ao-uniform-bridge.spec.mjs` is a Proxy whose catch-all `get` returns a truthy function for
+any property not listed in `EFFECT_SLOTS`, and that set omitted `ambientOcclusionEffect` /
+`depthOfFieldEffect` — precisely because those two were the only gates that read the cache latch
+rather than the slot. The stub therefore answered "already present", the add branch never fired and
+the config branch dereferenced a function. Adding the two slots to the set restores `# pass 64 /
+# fail 0`. **Any change to a re-add gate in this bridge must be checked against
+`test-blend-parity`, not only the lane runner** — the bridge has three spec consumers across two
+runner scripts.
+
+A second review finding, filed as its own row rather than fixed here:
+`NEW-WEBGPU-POSTPROCESS-FIXED-STAGES-STALE-FORMAT-AFTER-HDR-TOGGLE` — `_tonemapStage`,
+`_colorGradingStage` and `_fxaaStage` build against `_intermediateFormat` but are not on
+`initialize()`s reset list, so an HDR toggle leaves them on a stale format. Stale, not dropped;
+different mechanism, own row.

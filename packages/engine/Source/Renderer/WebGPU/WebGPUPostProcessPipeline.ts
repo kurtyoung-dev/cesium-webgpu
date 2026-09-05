@@ -550,31 +550,27 @@ export class WebGPUPostProcessPipeline {
     // 8-bit or wrong-size intermediate textures, which clamps HDR highlights
     // before the tonemap ever sees them. Only runs on a real recreate, meaning
     // a device, size or HDR change, never per frame.
+    //
+    // Every effect below owns intermediates sized AND formatted against
+    // `_intermediateFormat`, so both a resize and an HDR toggle must drop all
+    // of them. Dropping is only half a protocol: the other half is that
+    // `configureWebGPUPostProcessPipeline` re-adds each one on the same frame.
+    // That holds only while every re-add gate there tests the LIVE slot
+    // (`!pipeline.bloomEffect`) rather than a sticky `cache.*Initialized`
+    // latch, which by construction never fires a second time and so drops the
+    // effect permanently. Seven of these eleven were latched that way until
+    // AR-009; if you add an effect to this list, add it with a live-slot gate.
     this._bloomEffect?.destroy();
     this._aoEffect?.destroy();
     this._dofEffect?.destroy();
     this._godRayEffect?.destroy();
-    // The halo's output texture is sized and formatted against
-    // `_intermediateFormat`, so a resize or HDR toggle must drop it too. The
-    // configure pass lazily re-adds it on the same frame when `scene.sunBloom`
-    // is on, because its gate checks the live slot.
     this._sunHaloEffect?.destroy();
     this._sunBloomEffect?.destroy();
-    // HeatShimmer's output texture is sized and formatted against
-    // `_intermediateFormat`, so a resize or HDR toggle must drop it too. The
-    // configure pass lazily re-adds it on the same frame when
-    // `scene.heatShimmerEnabled` is on, because its gate checks the live slot.
     this._heatShimmerEffect?.destroy();
-    // ColdOptics' output texture is sized and formatted against
-    // `_intermediateFormat`, so a resize or HDR toggle must drop it too. The
-    // configure pass lazily re-adds it on the same frame when
-    // `scene.coldOpticsEnabled` is on, because its gate checks the live slot.
     this._coldOpticsEffect?.destroy();
-    // The aerial-perspective output texture is sized and formatted against
-    // `_intermediateFormat`, so a resize or HDR toggle must drop it too. The
-    // configure pass lazily re-adds it on the same frame when
-    // `scene.aerialPerspective` is on, because its gate checks the live slot.
     this._aerialPerspectiveEffect?.destroy();
+    this._taaEffect?.destroy();
+    this._motionBlurEffect?.destroy();
     this._bloomEffect = null;
     this._aoEffect = null;
     this._dofEffect = null;
@@ -584,19 +580,7 @@ export class WebGPUPostProcessPipeline {
     this._heatShimmerEffect = null;
     this._coldOpticsEffect = null;
     this._aerialPerspectiveEffect = null;
-    // TAA belongs on the recreate reset list for the same reason: its history
-    // textures and pipeline target are sized and formatted against
-    // `_intermediateFormat`, so a resize or HDR toggle must drop them too.
-    // `WebGPUPostProcessStageCollection` lazily re-adds the effect on the same
-    // frame because its gate checks the live `pipeline.taaEffect` slot rather
-    // than a sticky cache flag.
-    this._taaEffect?.destroy();
     this._taaEffect = null;
-    // The output texture is sized + formatted against
-    // `_intermediateFormat`, so a resize / HDR toggle must drop it too. The
-    // configure pass lazily re-adds it on the same frame (gate checks the
-    // live slot).
-    this._motionBlurEffect?.destroy();
     this._motionBlurEffect = null;
 
     // When HDR is on, intermediate textures use rgba16float so the full
@@ -1859,17 +1843,20 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
 
     this.initialize(this._device, width, height, this._canvasFormat, this._hdr);
 
-    // Resize complex effects
-    this._bloomEffect?.resize(width, height);
-    this._aoEffect?.resize(width, height);
-    this._dofEffect?.resize(width, height);
-    this._godRayEffect?.resize(width, height);
-    this._sunHaloEffect?.resize(width, height);
-    this._sunBloomEffect?.resize(width, height);
-    this._heatShimmerEffect?.resize(width, height);
-    this._coldOpticsEffect?.resize(width, height);
-    this._aerialPerspectiveEffect?.resize(width, height);
-    this._motionBlurEffect?.resize(width, height);
+    // The ten `?.resize()` calls that stood here were unreachable: the
+    // `initialize()` above destroys and nulls every effect slot before they
+    // could run, so each was an optional-chain no-op on `null`. They are
+    // removed rather than made live (AR-009, finding `LIGHT-6`). In-place
+    // resize would not be cheaper: each effect owns a `resize()` that calls
+    // its own `initialize()`, which re-runs `_createPipelines()`, and
+    // `createFullscreenPipeline` builds a fresh `GPUShaderModule` and
+    // `GPURenderPipeline` without consulting `WebGPUShaderModuleCache` or
+    // `WebGPURenderPipelineCache`. Both routes pay the same compiles per
+    // resize, so the only real difference is the re-add gates, which live in
+    // `WebGPUPostProcessStageCollection`. One route also keeps the HDR toggle
+    // correct: an effect owns a `resize()` that preserves `this._format` and so
+    // could never move it onto the new `_intermediateFormat`.
+
     // Intercepted library built-ins own their
     // output (and silhouette-edge) intermediates; realloc on resize.
     for (const stage of this._libraryStages) {
