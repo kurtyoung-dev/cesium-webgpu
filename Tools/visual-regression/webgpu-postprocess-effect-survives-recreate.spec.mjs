@@ -81,10 +81,10 @@
 // Run: node --test Tools/visual-regression/webgpu-postprocess-effect-survives-recreate.spec.mjs
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { bundle, mutateOrFail } from "./lib/engine-stub-bundler.mjs";
 
 const directory = dirname(fileURLToPath(import.meta.url));
@@ -882,6 +882,171 @@ test("AR-M06 instrument guards", async (t) => {
         /exposes no `bloomFx` getter/,
         "the guard must reject a slot name the pipeline does not expose",
       );
+    },
+  );
+});
+
+// ---------------------------------------------------------------------------
+// AR-M06 REFUSAL GUARDS - the job 7 regression, pinned as behaviour
+//
+// Job 7 reported a 97.288 % FAIL on the hdr clause and a 0.000 % PASS on the
+// resize clause. Neither reading was about post-process effects. Three of the
+// four captures were the SAME byte-identical contentless frame (non-black
+// ratio 0.1449 - the globe undrawn, only the atmosphere limb present), so the
+// resize clause compared a frame with itself and the hdr clause compared it
+// against the first frame that had terrain in it. Every effect slot stayed
+// live in both legs, which is what the row actually claims.
+//
+// The two decisions below are the instrument's fix, and they are pure
+// functions precisely so they can be driven here without Edge. The group
+// asserts the live behaviour and then makes the floor INERT and requires the
+// assertion to go red - a floor that is never compared against would
+// otherwise satisfy this file by returning `null` for everything.
+// ---------------------------------------------------------------------------
+
+test("AR-M06 refuses rather than scoring a reading it cannot take", async (t) => {
+  const {
+    DEFAULT_MIN_CONTENT_RATIO,
+    decideContentRefusal,
+    decideSettleRefusal,
+  } = await import("./probe-postprocess-resize-survival.mjs");
+
+  // The four captures job 7 actually produced.
+  const JOB7_CONTENT = {
+    "resize-before": { nonBlackRatio: 0.1448478698730469, meanLum: 9.4 },
+    "resize-after": { nonBlackRatio: 0.1448478698730469, meanLum: 9.4 },
+    "hdr-before": { nonBlackRatio: 0.1448478698730469, meanLum: 9.4 },
+    "hdr-after": { nonBlackRatio: 1.0, meanLum: 96.2 },
+  };
+  const DRAWN_CONTENT = {
+    "resize-before": { nonBlackRatio: 0.999, meanLum: 95.1 },
+    "resize-after": { nonBlackRatio: 0.998, meanLum: 95.0 },
+    "hdr-before": { nonBlackRatio: 0.999, meanLum: 95.2 },
+    "hdr-after": { nonBlackRatio: 1.0, meanLum: 96.2 },
+  };
+  const settled = (label) => ({
+    label,
+    settled: true,
+    frames: 120,
+    tilesLoaded: true,
+    renderReady: true,
+    commands: 412,
+  });
+
+  await t.test("R1: job 7's own captures are refused, not scored", () => {
+    const refusal = decideContentRefusal(
+      JOB7_CONTENT,
+      DEFAULT_MIN_CONTENT_RATIO,
+    );
+    assert.ok(refusal, "the contentless run must refuse");
+    assert.equal(refusal.code, "contentless-capture");
+    assert.deepEqual(
+      refusal.detail.starved.map((entry) => entry.capture).sort(),
+      ["hdr-before", "resize-after", "resize-before"],
+      "exactly the three contentless captures are named, and the drawn one is not",
+    );
+  });
+
+  await t.test("R2: a fully drawn run is not refused", () => {
+    assert.equal(
+      decideContentRefusal(DRAWN_CONTENT, DEFAULT_MIN_CONTENT_RATIO),
+      null,
+      "a drawn run must remain measurable",
+    );
+  });
+
+  await t.test("R3: absent diagnostics refuse rather than pass", () => {
+    // The dangerous shape: a page that returned nothing must not read as
+    // "nothing was wrong".
+    assert.equal(
+      decideContentRefusal({}, DEFAULT_MIN_CONTENT_RATIO)?.code,
+      "content-diagnostics-absent",
+    );
+    assert.equal(decideSettleRefusal([])?.code, "settle-diagnostics-absent");
+    assert.equal(
+      decideSettleRefusal(undefined)?.code,
+      "settle-diagnostics-absent",
+    );
+  });
+
+  await t.test("R4: an unsettled leg refuses and names what it saw", () => {
+    const refusal = decideSettleRefusal([
+      settled("initial"),
+      {
+        label: "resized",
+        settled: false,
+        frames: 900,
+        tilesLoaded: false,
+        renderReady: true,
+        commands: 0,
+        firstNonEmpty: -1,
+      },
+    ]);
+    assert.ok(refusal, "an unsettled leg must refuse");
+    assert.equal(refusal.code, "render-ready-timeout");
+    assert.equal(refusal.detail.unsettled.length, 1);
+    assert.equal(refusal.detail.unsettled[0].label, "resized");
+    // The discriminator job 7 lacked: what the page believed at timeout.
+    assert.equal(refusal.detail.unsettled[0].tilesLoaded, false);
+    assert.equal(refusal.detail.unsettled[0].firstNonEmpty, -1);
+  });
+
+  await t.test("R5: a fully settled run is not refused", () => {
+    assert.equal(
+      decideSettleRefusal([settled("initial"), settled("resized")]),
+      null,
+    );
+  });
+
+  await t.test(
+    "R6: the floor separates the two populations job 7 produced",
+    () => {
+      // Not a restatement of the constant: it pins that the default actually
+      // sits between the observed contentless frame and the observed drawn one.
+      assert.ok(
+        DEFAULT_MIN_CONTENT_RATIO > 0.1448478698730469,
+        "the floor must reject the frame job 7 scored twice",
+      );
+      assert.ok(
+        DEFAULT_MIN_CONTENT_RATIO < 0.999,
+        "the floor must accept a drawn frame",
+      );
+    },
+  );
+
+  await t.test(
+    "R7 MUTATION: a floor that is never compared stops refusing",
+    async () => {
+      // INERTNESS, not deletion: the comparison stays in the source and is
+      // still evaluated, but can never be true, so nothing is ever starved.
+      // The mutant is written beside the probe so its relative imports still
+      // resolve, and removed in `finally`.
+      const directory = dirname(fileURLToPath(import.meta.url));
+      const probePath = resolve(
+        directory,
+        "probe-postprocess-resize-survival.mjs",
+      );
+      const original = readFileSync(probePath, "utf8");
+      const anchor = "!(Number(stats?.nonBlackRatio) >= floor)";
+      assert.ok(
+        original.includes(anchor),
+        "the content floor comparison has moved; this mutation would be vacuous",
+      );
+      const mutantPath = resolve(directory, "__ar-m06-floor-inert.mutant.mjs");
+      writeFileSync(mutantPath, original.replace(anchor, `false && ${anchor}`));
+      try {
+        const module = await import(pathToFileURL(mutantPath).href);
+        assert.equal(
+          module.decideContentRefusal(
+            JOB7_CONTENT,
+            module.DEFAULT_MIN_CONTENT_RATIO,
+          ),
+          null,
+          "with the floor inert the contentless run is no longer refused - which is exactly what R1 forbids",
+        );
+      } finally {
+        rmSync(mutantPath, { force: true });
+      }
     },
   );
 });

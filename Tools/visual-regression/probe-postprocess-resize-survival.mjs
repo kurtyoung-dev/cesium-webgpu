@@ -162,7 +162,9 @@ const COUNTER_INIT = `(() => {
  * @returns {Promise<object>} Both legs' readings.
  */
 async function runLegs(page, sizes) {
-  return page.evaluate(async ({ resized }) => {
+  return page.evaluate(async ({ resized, maxSettleFrames, stableFrames }) => {
+    const MAX_SETTLE_FRAMES = maxSettleFrames;
+    const STABLE_FRAMES = stableFrames;
     // ==BEGIN same-task-capture==
     const makeSameTaskCapture = (scene, canvas, timeFn) => {
       const renderNow = () => scene.render(timeFn());
@@ -215,11 +217,77 @@ async function runLegs(page, sizes) {
     const viewer = window.viewer;
     const scene = viewer.scene;
     const timeFn = () => viewer.clock.currentTime;
-    const { captureNow, grabNow, settleThen } = makeSameTaskCapture(
+    // `settleThen` is deliberately NOT taken from the canonical block: its loop
+    // counts frames and never calls `scene.requestRender()`, which is the defect
+    // job 7 exposed. `renderNow` is, so the render half stays the shared one.
+    const { renderNow, captureNow, grabNow } = makeSameTaskCapture(
       scene,
       scene.canvas,
       timeFn,
     );
+
+    // A settle that WAITS ON READINESS instead of counting frames.
+    //
+    // Job 7 is why this exists. Every settle here was `settleThen(n, null)` —
+    // a fixed frame count with no predicate — and the run produced three
+    // BYTE-IDENTICAL captures across ~95 rendered frames, then a fully
+    // textured frame after the HDR toggle. The 97.288 % the receipt reported
+    // as an effect loss was terrain APPEARING, and the resize leg's 0.000 %
+    // PASS was two copies of the same contentless frame.
+    //
+    // `Scene.renderReady`'s own docstring (Scene.js :2698-2723) names the
+    // mechanism: "a poll that only calls render() would spin against a scene
+    // that has decided it has nothing to redraw", which is why
+    // `scene.requestRender()` is not decoration and is called on every
+    // iteration below. The predicate is the fleet's, copied from
+    // `globe-cold-start-harness.html` :196-209 rather than invented a third
+    // time: tiles loaded, a non-empty command list, and `renderReady`, held
+    // for a run of consecutive frames.
+    //
+    // A settle that does not reach readiness returns `settled: false`; the
+    // Node side turns that into a REFUSAL, never a verdict — per
+    // `decideRenderReadyRefusal` in `lib/probe-runtime.mjs` :400-424, whose
+    // docstring states the rule this probe broke: "A capture taken before
+    // readiness is not a slow measurement, it is a different measurement, so
+    // it refuses rather than scoring."
+    const settleReady = async (label, maxFrames, minFrames) => {
+      const started = performance.now();
+      let frames = 0;
+      let ready = 0;
+      let commands = 0;
+      let firstNonEmpty = -1;
+      while (frames < maxFrames) {
+        scene.requestRender();
+        renderNow();
+        frames++;
+        commands = scene.frameState?.commandList?.length ?? 0;
+        if (commands > 0 && firstNonEmpty < 0) {
+          firstNonEmpty = frames;
+        }
+        const renderReady = scene.renderReady !== false;
+        if (scene.globe?.tilesLoaded === true && commands > 0 && renderReady) {
+          ready++;
+          if (ready >= STABLE_FRAMES && frames >= minFrames) {
+            break;
+          }
+        } else {
+          ready = 0;
+        }
+        await new Promise((r) => requestAnimationFrame(r));
+      }
+      return {
+        label,
+        settled: ready >= STABLE_FRAMES,
+        frames,
+        stableFrames: ready,
+        commands,
+        firstNonEmpty,
+        tilesLoaded: scene.globe?.tilesLoaded ?? null,
+        renderReady: scene.renderReady ?? null,
+        commandsDeferred: scene.frameState?.commandsDeferred ?? null,
+        wallMs: Math.round(performance.now() - started),
+      };
+    };
 
     const container = viewer.container;
     const startWidth = container.clientWidth;
@@ -261,6 +329,34 @@ async function runLegs(page, sizes) {
     // Two pixels count as equal below this per-channel delta: dithering and
     // tonemap rounding move the low bits without changing the image.
     const CHANNEL_TOLERANCE = 8;
+    // Content statistics for one capture. `nonBlackRatio` is the fraction of
+    // pixels with any channel at or above 8/255 — the same threshold the diff
+    // below treats as black. A fully drawn view of this camera reads ~1.0; the
+    // contentless frame job 7 scored twice read 0.1449, which is the globe
+    // silhouette unrendered with only the atmosphere limb drawn.
+    const contentOf = (image) => {
+      const d = image.data;
+      const total = image.width * image.height;
+      let nonBlack = 0;
+      let lumSum = 0;
+      for (let i = 0; i < total; i++) {
+        const o = i * 4;
+        const r = d[o];
+        const g = d[o + 1];
+        const b = d[o + 2];
+        if (r >= 8 || g >= 8 || b >= 8) {
+          nonBlack++;
+        }
+        lumSum += 0.2126 * r + 0.7152 * g + 0.0722 * b;
+      }
+      return {
+        nonBlackRatio: nonBlack / total,
+        meanLum: lumSum / total,
+        width: image.width,
+        height: image.height,
+      };
+    };
+
     const compare = (before, after) => {
       if (before.width !== after.width || before.height !== after.height) {
         return { sizeMismatch: true };
@@ -303,7 +399,8 @@ async function runLegs(page, sizes) {
     // take means the run measured nothing, and an errored run is the honest
     // outcome: a status object here would invite a later `if (ok)` that skips
     // the check and still writes a receipt claiming the effects were lost.
-    await settleThen(40, null);
+    const settles = [];
+    settles.push(await settleReady("initial", MAX_SETTLE_FRAMES, 40));
     if (!pipelineNow()) {
       throw new Error(
         "probe-postprocess-resize-survival: scene._alternateSceneRenderer._postProcess " +
@@ -326,33 +423,40 @@ async function runLegs(page, sizes) {
     const countsBefore = { ...window.__ar009Counts };
 
     setSize(resized.width, resized.height);
-    await settleThen(25, null);
+    settles.push(await settleReady("resized", MAX_SETTLE_FRAMES, 25));
     const resizeSlotsAtResized = slotsNow();
     const countsAfterResize = { ...window.__ar009Counts };
 
     setSize(startWidth, startHeight);
-    await settleThen(40, null);
+    settles.push(await settleReady("restored", MAX_SETTLE_FRAMES, 40));
     const resizeAfter = await captureNow();
     const resizeAfterPng = grabNow();
     const resizeSlotsAfter = slotsNow();
 
     // ── hdr leg ─────────────────────────────────────────────────────────────
-    await settleThen(30, null);
+    settles.push(await settleReady("hdr-on", MAX_SETTLE_FRAMES, 30));
     const hdrBefore = await captureNow();
     const hdrBeforePng = grabNow();
     const hdrSlotsBefore = slotsNow();
 
     scene.highDynamicRange = false;
-    await settleThen(25, null);
+    settles.push(await settleReady("hdr-off", MAX_SETTLE_FRAMES, 25));
     const hdrSlotsAtToggled = slotsNow();
 
     scene.highDynamicRange = true;
-    await settleThen(30, null);
+    settles.push(await settleReady("hdr-restored", MAX_SETTLE_FRAMES, 30));
     const hdrAfter = await captureNow();
     const hdrAfterPng = grabNow();
     const hdrSlotsAfter = slotsNow();
 
     return {
+      settles,
+      content: {
+        "resize-before": contentOf(resizeBefore),
+        "resize-after": contentOf(resizeAfter),
+        "hdr-before": contentOf(hdrBefore),
+        "hdr-after": contentOf(hdrAfter),
+      },
       resize: {
         leg: "resize",
         comparison: compare(resizeBefore, resizeAfter),
@@ -524,6 +628,103 @@ function decideLegVerdict(leg, tolerancePercent) {
   };
 }
 
+/**
+ * The content floor, as a non-black pixel ratio.
+ *
+ * Job 7 scored a frame whose ratio was **0.1449** — the globe silhouette
+ * undrawn, only the atmosphere limb rendered — and did it twice: once as a
+ * 0.000 % PASS (it was compared against a byte-identical copy of itself) and
+ * once as a 97.288 % FAIL (it was compared against the first fully drawn
+ * frame). A drawn frame at this camera reads ~1.0. The default sits between
+ * those two populations with roughly 6x margin below the drawn case and
+ * 1.7x above the contentless one.
+ */
+export const DEFAULT_MIN_CONTENT_RATIO = 0.25;
+
+/**
+ * Whether a settle that was supposed to reach readiness may be believed.
+ *
+ * This is the local application of `decideRenderReadyRefusal`
+ * (`lib/probe-runtime.mjs`): a capture taken before readiness is a different
+ * measurement, not a slow one, so an unsettled leg REFUSES rather than
+ * scoring. Returning a refusal descriptor rather than a verdict is the whole
+ * point — a probe that reports `pass: false` for a reading it had no standing
+ * to take is how job 7 turned terrain latency into an apparent product defect.
+ *
+ * @param {Array<object>} settles Every settle the page performed, in order.
+ * @returns {object|null} A refusal descriptor, or null when all settled.
+ */
+export function decideSettleRefusal(settles) {
+  const list = Array.isArray(settles) ? settles : [];
+  if (list.length === 0) {
+    return {
+      code: "settle-diagnostics-absent",
+      detail: {
+        reason:
+          "the page returned no settle records, so nothing establishes that any capture was taken after readiness",
+      },
+    };
+  }
+  const unsettled = list.filter((entry) => entry?.settled !== true);
+  if (unsettled.length > 0) {
+    return {
+      code: "render-ready-timeout",
+      detail: {
+        unsettled: unsettled.map((entry) => ({
+          label: entry?.label ?? null,
+          frames: entry?.frames ?? null,
+          tilesLoaded: entry?.tilesLoaded ?? null,
+          renderReady: entry?.renderReady ?? null,
+          commands: entry?.commands ?? null,
+          commandsDeferred: entry?.commandsDeferred ?? null,
+          firstNonEmpty: entry?.firstNonEmpty ?? null,
+          wallMs: entry?.wallMs ?? null,
+        })),
+      },
+    };
+  }
+  return null;
+}
+
+/**
+ * Whether every capture carried enough drawn content to be compared.
+ *
+ * A contentless frame must be able to neither pass nor fail a clause. Job 7
+ * proves both halves of that: the same 0.1449-ratio frame produced a PASS on
+ * one leg and a 97 % FAIL on the other, and neither reading was about
+ * post-process effects.
+ *
+ * @param {object} content Per-capture statistics, keyed by capture name.
+ * @param {number} floor Minimum non-black ratio.
+ * @returns {object|null} A refusal descriptor, or null when all have content.
+ */
+export function decideContentRefusal(content, floor) {
+  const entries = Object.entries(content ?? {});
+  if (entries.length === 0) {
+    return {
+      code: "content-diagnostics-absent",
+      detail: {
+        reason:
+          "the page returned no per-capture content statistics, so a contentless capture could not be detected",
+      },
+    };
+  }
+  const starved = entries
+    .filter(([, stats]) => !(Number(stats?.nonBlackRatio) >= floor))
+    .map(([name, stats]) => ({
+      capture: name,
+      nonBlackRatio: stats?.nonBlackRatio ?? null,
+      meanLum: stats?.meanLum ?? null,
+    }));
+  if (starved.length > 0) {
+    return {
+      code: "contentless-capture",
+      detail: { floor, starved },
+    };
+  }
+  return null;
+}
+
 export const descriptor = {
   name: "ppresize",
   title: "AR-M06 — post-process survival across resize and HDR toggle",
@@ -535,6 +736,24 @@ export const descriptor = {
   args: {
     defaults: { renderers: ["webgpu"] },
     extraOptions: [
+      {
+        flag: "--min-content-ratio",
+        key: "minContentRatio",
+        kind: "non-negative-number",
+        default: DEFAULT_MIN_CONTENT_RATIO,
+      },
+      {
+        flag: "--max-settle-frames",
+        key: "maxSettleFrames",
+        kind: "positive-integer",
+        default: 900,
+      },
+      {
+        flag: "--stable-frames",
+        key: "stableFrames",
+        kind: "positive-integer",
+        default: 8,
+      },
       {
         flag: "--mismatch-tolerance-pct",
         key: "mismatchTolerancePct",
@@ -581,7 +800,37 @@ export const descriptor = {
         );
       }
 
-      const legs = await runLegs(page, { resized: RESIZED });
+      const legs = await runLegs(page, {
+        resized: RESIZED,
+        maxSettleFrames: options.maxSettleFrames,
+        stableFrames: options.stableFrames,
+      });
+
+      // Refusals, before any verdict is computed. Order matters: an unsettled
+      // page explains a contentless capture, so it is reported first.
+      const settleRefusal = decideSettleRefusal(legs.settles);
+      if (settleRefusal) {
+        throw new ProbeRefusal(
+          settleRefusal.code,
+          "probe-postprocess-resize-survival: a settle never reached readiness " +
+            "(globe.tilesLoaded + a non-empty command list + scene.renderReady, held for " +
+            "consecutive frames), so a capture taken here would be a different measurement " +
+            "rather than a slow one",
+          settleRefusal.detail,
+        );
+      }
+      const contentRefusal = decideContentRefusal(
+        legs.content,
+        options.minContentRatio,
+      );
+      if (contentRefusal) {
+        throw new ProbeRefusal(
+          contentRefusal.code,
+          "probe-postprocess-resize-survival: a capture carried too little drawn content " +
+            "to be compared, so this run can neither pass nor fail a clause",
+          contentRefusal.detail,
+        );
+      }
       const gateErrors = await collectGateErrors(page, consoleErrors);
 
       const produced = [];
@@ -598,7 +847,13 @@ export const descriptor = {
         // The data URLs are megabytes each and their only job was to reach
         // disk; keeping them would put them in the JSON receipt too.
         delete leg.png;
-        produced.push({ ...leg, enabled, gateErrors });
+        produced.push({
+          ...leg,
+          enabled,
+          gateErrors,
+          settles: legs.settles,
+          content: legs.content,
+        });
       }
       return produced;
     })();
@@ -643,6 +898,8 @@ export const descriptor = {
     return {
       base: context.origin,
       generatedAt: context.generatedAt,
+      settles: cells[0]?.settles ?? null,
+      content: cells[0]?.content ?? null,
       legs,
       verdicts: context.verdicts,
     };

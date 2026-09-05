@@ -15243,3 +15243,75 @@ needs no equivalent: it has no unified feature-id recolor pass to fold a hash in
 consumes has this shape. `FeatureIdResolve.wgsl` is now the only such site in the
 WebGPU pick path, but nothing structurally prevents the next one; the group-F
 compiler is reusable if a second recolor pass ever lands.
+
+## 2026-09-05 - AR-M06 job-7 adjudication, and NEW-AR-M06-SETTLE-NOT-GATED-ON-READINESS (lane Emeldir, round 5) - **INSTRUMENT DEFECT FIXED; the AR-009 product claim is UNCHANGED and still supported.**
+
+Job 7 returned `probe-postprocess-resize-survival` RED (exit 1) with the `hdr` clause at
+**97.288 %** against a < 0.5 % gate, and `AR-009` was re-opened on that basis. **That reading was
+not about post-process effects and the re-open is not warranted.** Adjudication, from the banked
+evidence at `Tools/visual-regression/output/wave-p0-1-edge-2026-09-05-job7/leg3-ar009-postprocess-resize/`:
+
+1. **The product claim holds, and the receipt is what says so.** In BOTH legs, before and after,
+   `bloom`, `ambientOcclusion`, `depthOfField`, `sunHalo` and `sunBloom` all read `true`. No slot
+   was lost across the resize or across the HDR toggle. That is exactly what `AR-009` claims, and
+   the run confirms it. `gateErrors` is empty and `deviceLost` is null.
+2. **The 97.288 % is terrain appearing, not effects vanishing.** `hdr-before.png` and `hdr-after.png`
+   were read directly (CLAUDE.md Principle 8): the first shows the atmosphere limb over an undrawn
+   black globe, the second the same camera fully textured. The diff is the terrain.
+3. **The resize leg's 0.000 % PASS is VOID.** `resize-before.png`, `resize-after.png` and
+   `hdr-before.png` are **byte-identical** (sha256 `4d55dd6d389d5579…`, 89,361 bytes each). The
+   clause compared a frame with a copy of itself. Its `blackFraction` was 0.855 and the probe's
+   content floor was `< 0.98`, so an 85.5 %-black frame counted as content.
+
+**Root cause of the black frame - an instrument defect, identified at source.** Every settle was
+`settleThen(n, null)`: a fixed frame count with no readiness predicate, whose loop calls
+`scene.render()` and never `scene.requestRender()`. `Scene.renderReady`'s own docstring
+(`packages/engine/Source/Scene/Scene.js:2698-2723`) states the consequence: *"a poll that only
+calls render() would spin against a scene that has decided it has nothing to redraw"*. Three
+byte-identical captures across ~95 rendered frames is precisely that signature - not a scene
+rendering progressively slowly, but one not redrawing at all. The fork has been bitten by this
+class before (a prior globe-black report resolved as a probe artifact under `requestRenderMode`).
+
+The probe also opted out of a gate the shared runtime already owns:
+`decideRenderReadyRefusal` (`Tools/visual-regression/lib/probe-runtime.mjs:400-424`) exists for
+exactly this and says so - *"A capture taken before readiness is not a slow measurement, it is a
+different measurement, so it refuses rather than scoring."* Passing `null` where a predicate
+belonged is what disabled it. That is also a `runtime-residency-contract.spec.mjs` (DX-02)
+concern: a resident probe must not route around what the runtime owns.
+
+**Fix (this round).** Every settle now waits on the fleet's predicate, copied from
+`globe-cold-start-harness.html:196-209` rather than invented a third time - `globe.tilesLoaded`
+**and** a non-empty command list **and** `scene.renderReady`, held for 8 consecutive frames, with
+`scene.requestRender()` called every iteration. A settle that does not reach readiness now raises
+a **`ProbeRefusal`** (`render-ready-timeout`), never a verdict, and carries `tilesLoaded`,
+`renderReady`, `commands`, `firstNonEmpty` and `commandsDeferred` as it does. A second refusal,
+`contentless-capture`, rejects any capture below a non-black-pixel floor (default 0.25; the job-7
+frame measured 0.1449 and a drawn frame ~1.0, so the floor sits between the two observed
+populations). Both decisions are pure exported functions with negative controls and inertness
+mutants in `webgpu-postprocess-effect-survives-recreate.spec.mjs` (group `AR-M06 REFUSAL GUARDS`).
+
+**What is NOT claimed.** Whether the globe would still be black after a correctly gated settle is
+**not decided here**, and no engine row is filed on it, because filing one would be filing on
+speculation - the instrument that should have decided it was the thing that was broken. The
+identified defect is *sufficient* to explain the whole observation; job 8 establishes whether it
+is the *only* cause, and the probe now answers that automatically rather than by inference: if
+readiness is reached, both clauses re-report against real frames; if it is not, the run refuses
+with `tilesLoaded` / `firstNonEmpty` recorded, and **that** refusal is the engine finding, to be
+filed then rather than now.
+
+**Measurement correction carried forward.** Job 7 measured **16 render pipelines + 16 shader
+modules per resize**, against the 11 + 11 this lane reasoned from source. The gap is not an error
+in either: the reasoned figure covered Bloom + AO + DoF only, and the run also had `sunHalo` and
+`sunBloom` live. The `LIGHT-6` conclusion is unaffected (both options pay the same compiles), but
+16 + 16 is the measured default-viewer figure and should be the one quoted.
+
+**`AR-M06` acceptance wording - the open contradiction, resolved.**
+`QUEUE_2026-09-03_ARCHITECTURE_REVIEW.md:332` states the acceptance as `pipeline.bloomEffect ===
+null` after the resize; the `AR-009` row at `:99` states `!== null`. **`:99` is correct and `:332`
+should be corrected by the seat.** As an acceptance criterion `=== null` would require the defect
+to persist - it describes the pre-fix observation, not the post-fix contract. The two are also
+about different instants: `resize()` calls `initialize()`, which nulls all eleven slots, so
+`=== null` is momentarily true on the very next line and stays true until the configure pass runs.
+The contract that matters, and the one the probe implements, is **`!== null` after the next
+settled frame**. Recommended wording: *"`pipeline.bloomEffect !== null` once the scene has
+re-settled after the resize"*.
