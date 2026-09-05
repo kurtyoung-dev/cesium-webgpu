@@ -58,10 +58,24 @@ fn fragmentMain(@builtin(position) fragCoord: vec4<f32>) -> @location(0) vec4<f3
         return vec4<f32>(0.0, 0.0, 0.0, 1.0);
     }
 
-    // Knuth multiplicative hash — different IDs map to visibly different colours
-    // with overwhelming probability. Replicated exactly in the JS probe so the
+    // Knuth multiplicative hash, then an xorshift finalizer — different IDs map
+    // to visibly different colours with overwhelming probability. Replicated
+    // exactly by `expectedRecolor` in probe-feature-id-texture.mjs so the
     // shader's output colour can be tied back to the CPU-resolved pick ID.
-    let h = id * 2654435761u;
+    //
+    // THE FINALIZER IS LOAD-BEARING. The colour below is the LOW three bytes of
+    // the hash, and multiplication mod 2^32 propagates carries only UPWARD: the
+    // low 24 bits of `id * K` depend solely on the low 24 bits of `id`. So
+    // without a finalizer two ids differing only above bit 23 recolour
+    // IDENTICALLY, and every multiple of 2^24 recolours to (0,0,0) — the exact
+    // two symptoms AR-751 names — no matter how wide `decodeFeatureId` reads.
+    // Widening the decode above was necessary but NOT sufficient; the shift-xor
+    // folds the high half down so a high-byte difference reaches the output
+    // bytes. Proven from this source text by group F of
+    // Tools/visual-regression/webgpu-pick-id-32-bit.spec.mjs, which also carries
+    // the negative control that the un-finalized form collapses.
+    let hashed = id * 2654435761u;
+    let h = hashed ^ (hashed >> 16u);
     let hr = f32(h & 0xFFu) / 255.0;
     let hg = f32((h >> 8u) & 0xFFu) / 255.0;
     let hb = f32((h >> 16u) & 0xFFu) / 255.0;

@@ -19325,3 +19325,97 @@ shapes that produce a bare globe — the mis-typed upload and a 1×1 placeholder
 **Files modified:** `packages/engine/Source/Renderer/WebGPU/WebGLStateConverters.ts`,
 `Tools/visual-regression/globe-material-texture-uniform-binding.spec.mjs`,
 `migration_doc/DEFERRED_WORK.md`, `migration_doc/WEBGPU_DEBUGGING_LOG.md`.
+
+---
+
+## Lane Gorlim (wave P0-1, 2026-09-05) — AR-751 follow-up: the recolor hash truncated what the decode had just widened
+
+**Bug id.** `NEW-WEBGPU-FEATUREID-RECOLOR-HASH-TRUNCATION` (AR-751 second cause).
+
+**How it surfaced.** Not by review. `AR-751`'s Edge leg (Éowyn, 2026-09-05)
+returned `EXIT=3 — REFUSED (alias-pair-not-staged)` with observed keys `0x3` /
+`0x4`, because the probe's full-canvas warm pick materialised the staged points'
+ids before the first seed was written. Repairing that staging defect and then
+executing the acceptance on the CPU exposed a **second, independent cause**
+beneath it. The refusal had been masking it: the run never reached a verdict.
+
+**This is not a correction of the earlier fix.** Batch 1416's decode widening
+(`decodeFeatureId`, `PickId.normalizedRgba`, `_pickColorToKey`'s byte-object
+branch) is correct and stays. It was **necessary but not sufficient**. The
+binding constraint on the row's acceptance was never the decode width.
+
+**Files affected.**
+`packages/engine/Source/Shaders/WebGPU/PostProcess/FeatureIdResolve.wgsl`,
+`Tools/visual-regression/probe-feature-id-texture.mjs`,
+`Tools/visual-regression/webgpu-pick-id-32-bit.spec.mjs`.
+
+**Root cause — two of them, in one row.**
+
+*Staging (instrument).* On WebGPU a pick id is not materialised by the pick
+RECTANGLE. `WebGPUPointPrimitiveRenderer.js:1371` gates `_pushPickCommand` only
+on `frameState.passes.pick`, and `:1479` -> `buildPickInstanceData` (`:263-303`)
+calls `point.getPickId(context)` on **every** point in the collection, with no
+rectangle test. `Scene.pick` updates every primitive regardless of where the
+rectangle falls, and on WebGPU `PointPrimitiveCollection.update`
+(`:484-515`) returns through the feature-renderer branch before the WebGL vertex
+writers, so `:1032` is not the allocation site. The probe therefore lost its ids
+to its own warm pick — and narrowing the warm rectangle, the obvious remedy,
+would **not** have fixed it.
+
+*Recolor (engine).* `FeatureIdResolve.wgsl`'s `fragmentMain` emitted the **low
+three bytes** of `h = id * 2654435761u`. Multiplication mod 2^32 propagates
+carries **only upward**, so the low 24 bits of the product depend solely on the
+low 24 bits of `id`. For **any** decode width: two ids differing only above bit
+23 recolor identically, and every non-zero multiple of 2^24 recolors to
+`[0,0,0]`. Those are the row's two symptoms, surviving a correct 32-bit decode.
+Measured before the fix: `0x00000301` and `0x01000301` both `177,140,164`;
+`0x01000000` `0,0,0`.
+
+It stayed invisible because the probe's CPU twin `expectedRecolor` mirrored the
+same collapse — the `*MatchesFullKey` legs would have agreed while
+`aliasPairDistinct` and `multipleNonBlack` failed. The check had inherited the
+fix's premise (CLAUDE.md Principle 10), through a twin rather than a brief.
+
+**Fix applied.** Staging: seed the real allocator and allocate through the real
+`PointPrimitive.getPickId` factory back-to-back, before any pick pass, with
+nothing between a seed and its allocation; the full-canvas warm pick is kept and
+moved **after** staging, so surviving it is the demonstration. Recolor: an
+xorshift finalizer, `let hashed = id * 2654435761u; let h = hashed ^ (hashed >> 16u);`,
+with `expectedRecolor` updated identically. Post-fix `0x00000301` ->
+`21,200,164` vs `0x01000301` -> `21,121,164`; `0x01000000` -> `0,177,0`. No
+non-zero id in `[1, 3x10^6]` recolors to black; 0 of 1407 high-byte pairs
+collapse.
+
+**Verification.** `webgpu-pick-id-32-bit.spec.mjs` grows from 19 tests to 31
+(`npm run test-readiness`, 227 tests / 224 pass / 0 fail). Group **E** (5) drives
+the staging plan through the real `GraphicsContext` allocator and the real
+`PointPrimitiveCollection` / `PointPrimitive.getPickId`, and **compiles and
+executes the probe's own `stage` closure out of the probe source** rather than a
+copy; E2 fires the `alias-pair-not-staged` refusal from a faithful reproduction
+of the Edge leg. Group **F** (7) compiles `fragmentMain`'s hash bindings out of
+the real WGSL and executes them, with negative controls for the finalizer (F5)
+and for u32 arithmetic (F7). Inertness mutants: the finalizer masked inert
+(`^ ((hashed >> 16u) & 0u)`) reds F2/F3/F4/F5; the probe staging made unreachable
+(`if (false && step)`) reds E1/E3. Both reverted green.
+
+**A spec that survived its own mutant.** Recorded deliberately. The first draft
+of group E re-implemented the staging in the spec and pinned the probe with a
+source-text guard (E5). That draft **passed** under the staging inertness mutant
+— exactly the failure this proof bar exists to catch, and exactly what CLAUDE.md
+Principle 10 predicts of a spec that greps source. The spec was rebuilt to
+compile and execute the probe's own closure; only then did the mutant bite. E5
+survives as a structural guard over the one gap Node genuinely cannot execute
+(the picks and renders *around* the closure, which need `window` and a live
+`Scene`), and is labelled as text shape rather than behaviour.
+
+**Status.** The engine fix is proven by spec and mutant, but the ROW `AR-751`
+**does not close here.** Its acceptance is a runtime recolor and is therefore an
+Edge observation by construction; the row closes on Éowyn's job-7 receipt with
+its verdicts. The ledger entry
+`NEW-WEBGPU-FEATUREID-RECOLOR-HASH-TRUNCATION` in `DEFERRED_WORK.md` is the
+status authority and reads **OPEN — PENDING EDGE (job 7)**.
+
+**Edge leg.** `Tools/visual-regression/probe-feature-id-texture.mjs`. A WGSL
+shader changed, so `npx gulp build` is **mandatory** before the re-run or the leg
+exercises the old hash. Staged keys in the receipt must read `0x301` /
+`0x1000301` / `0x3000000`.

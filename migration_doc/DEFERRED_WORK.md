@@ -14777,6 +14777,15 @@ Files: `packages/engine/Source/Scene/GlobeSurfaceTileProviderRendering.js`,
 
 ## 2026-09-04 — NEW-WEBGPU-PICK-KEY-WIDTH-DISAGREEMENT (lane Gorlim, row `AR-751`, wave P0-1) — **CLOSED in the filing patch**
 
+## 2026-09-04 — NEW-WEBGPU-PICK-KEY-WIDTH-DISAGREEMENT (lane Gorlim, row `AR-751`, wave P0-1) — **DECODE FIX LANDED (Batch 1416); ROW `AR-751` OPEN — PENDING EDGE (job 7)**
+
+> **AMENDED 2026-09-05.** This entry originally read "CLOSED in the filing
+> patch". That was wrong: the decode widening below is correct and required,
+> but a SECOND, independent cause in the same shader made the row's visual
+> acceptance mechanically unreachable at any decode width. See
+> `NEW-WEBGPU-FEATUREID-RECOLOR-HASH-TRUNCATION` (2026-09-05) below, which is
+> the status authority for row `AR-751` and closes on Éowyn's job-7 receipt.
+
 **Mechanism.** `GraphicsContext#createPickId` allocates a monotonic uint32 key
 and packs it with `Color.fromRgba(key)`, which on a little-endian host puts
 `key & 0xff` in red, `(key>>>8) & 0xff` in green, `(key>>>16) & 0xff` in blue and
@@ -15072,3 +15081,134 @@ is this row, not that spec. Acceptance when this is taken up: after an HDR toggl
 stages reports a pipeline built against the CURRENT `_intermediateFormat` — observable via a
 recorded `createRenderPipeline` target format, or via a probe capture that shows no format-mismatch
 validation error on the first post-toggle frame.
+
+## 2026-09-05 — NEW-WEBGPU-FEATUREID-RECOLOR-HASH-TRUNCATION (lane Gorlim, row AR-751 follow-up, wave P0-1) — **OPEN — PENDING EDGE (job 7)**
+
+**Status (ruled by the lead, 2026-09-05): the engine fix is proven by spec and
+mutant; the ROW closes on Éowyn's job-7 receipt with its verdicts, not on this
+entry.** `AR-751`'s acceptance is a **runtime recolor** — two ids differing only
+above bit 23 recolor to different non-black triples, and `0x01000000` renders
+non-black — which is an Edge observation by construction. A CPU proof, however
+strong, cannot close it.
+
+**This lane is the reason that distinction matters.** The finding below is that
+the row's acceptance was *unreachable* through the shipped engine, and that nobody
+knew, because every check that existed agreed with every other one. Closing the
+row now on CPU evidence would repeat that shape one level up: the ledger agreeing
+with the spec while the only instrument that could contradict them has not run.
+Consistent with lane 5's disposition in this wave, which reads FIXED pending the
+`AR-M14` measurement rather than CLOSED, on the same ground.
+
+**Found by the probe's own refusal, not by review.** `AR-751`'s Edge leg
+(2026-09-05, Éowyn) came back `NOT RUN — REFUSED (alias-pair-not-staged)`, keys
+`0x3` / `0x4`. Repairing that staging defect exposed a **second, independent
+cause** underneath it. This entry files the second cause. It is **not** a
+correction of Batch 1416: that batch's decode widening is correct and remains
+required. It was **necessary but not sufficient**, and the binding constraint on
+`AR-751`'s acceptance was never the decode width at all.
+
+**Mechanism.** `FeatureIdResolve.wgsl`'s `fragmentMain` emitted the **low three
+bytes** of `h = id * 2654435761u`. Multiplication mod 2^32 propagates carries
+**only upward**, so the low 24 bits of the product depend **solely on the low 24
+bits of `id`**. Mechanically, and for **any** decode width whatsoever:
+
+- two ids differing only above bit 23 recolor to the **identical** triple, and
+- every non-zero multiple of 2^24 recolors to `[0,0,0]` — background.
+
+Those are precisely the two symptoms the row names, and they survive a perfectly
+correct 32-bit decode. Measured at Batch 1416's tip: `0x00000301` and
+`0x01000301` both `177,140,164`; `0x0000002a` and `0xff00002a` both `10,247,25`;
+`0x01000000`, `0x02000000`, `0x03000000`, `0xff000000` all `0,0,0`.
+
+**Why it stayed invisible — the sentence a future reader most needs.** The probe's
+CPU recolor twin `expectedRecolor` mirrored the shader's defect, **so the legs
+comparing them agreed while the row's acceptance failed.** `alias0MatchesFullKey`
+/ `alias1MatchesFullKey` / `multipleMatchesFullKey` would all have **passed**;
+only `aliasPairDistinct` and `multipleNonBlack` would have failed. The staging
+refusal then aborted the run before any of them were computed, so not even that
+partial signal reached anyone.
+
+This is the failure mode CLAUDE.md Principle 10 names — **the check inheriting the
+artefact's premise** — reached through a twin rather than through a brief. It had
+a sibling in the same lane: the first draft of the fix's own spec **passed under
+its own inertness mutant**, because it asserted source text rather than executing
+the probe's staging closure (see `WEBGPU_DEBUGGING_LOG.md`, lane Gorlim
+2026-09-05). Two different mechanisms, one failure mode. **The lesson for the next
+reader: when a fix and its check are derived from the same artefact, agreement
+between them is not evidence.** Group F now compiles the recolor out of the real
+WGSL, and group E compiles and executes the probe's own closure, for exactly this
+reason.
+
+**Fix.** An xorshift finalizer folds the high half down so a high-byte difference
+reaches the output bytes:
+
+```wgsl
+let hashed = id * 2654435761u;
+let h = hashed ^ (hashed >> 16u);
+```
+
+`expectedRecolor` in `probe-feature-id-texture.mjs` is updated identically.
+Validated over a wide sample: no non-zero id in `[1, 3x10^6]` recolors to black;
+0 of 1407 high-byte pairs collapse; 0 of 5 tested multiples of 2^24 are black.
+Post-fix `0x00000301` -> `21,200,164`, `0x01000301` -> `21,121,164`,
+`0x01000000` -> `0,177,0`.
+
+**The fix is GUARANTEED for this acceptance class, not probabilistic** (derived
+by Arachon, re-derived and measured here — do not weaken this to "with
+overwhelming probability", which is what the pre-AR-751 shader comment said).
+Let `id' = id + d·2^24`, `d ≢ 0 (mod 256)`. Then
+`hashed' = hashed + (d·K mod 256)·2^24`, so the two hashes differ **only** in
+their top byte. `K = 2654435761` is **odd**, so `d ↦ d·K` is a bijection mod
+256 and that top-byte delta `D` is **never zero**. After
+`h = hashed ^ (hashed >> 16u)`:
+
+| channel | bits | value | effect of `D` |
+| --- | --- | --- | --- |
+| red | `h[0..7]` | `hashed[0..7] ^ hashed[16..23]` | **none** |
+| green | `h[8..15]` | `hashed[8..15] ^ hashed[24..31]` | **always changes** — XOR by a fixed value is injective, so equality would require `D = 0` |
+| blue | `h[16..23]` | `hashed[16..23]` (the shift contributes nothing above bit 15) | **none** |
+
+So two ids differing only above bit 23 **cannot** recolor identically, and the
+multiple-of-2^24 case is guaranteed too: for `id = k·2^24`,
+`h = M·2^24 ^ M·2^8` with `M = k·K mod 256 ≠ 0`, giving exactly
+`[0, M, 0]` — non-black by construction. Measured: 0 of 3360 high-byte pairs
+share a green value, 0 of 3360 differ in red or blue, and all 255 non-zero
+multiples of 2^24 have non-zero green with red and blue exactly 0.
+
+**OPERATIONAL CONSTRAINT — the discrimination rides on the GREEN channel only,
+and the margin is one byte.** Red and blue are provably untouched by a high-byte
+delta, and for a multiple of 2^24 they are provably `0`. Therefore **no future
+edit may introduce a per-channel tolerance, compare a subset of channels, or
+treat a near-match as a match.** The probe compares exact triples today
+(`same()` in `buildKeySpanCell`) and must keep doing so; a probe that sampled
+only red or only blue would read every staged point as black and every alias
+pair as identical, and would be wrong in the passing direction.
+
+**Observable acceptance.** Two ids differing only above bit 23 recolor to
+**different** non-black triples, and `0x01000000` renders **non-black** — the
+row's own clauses, which were **unreachable** before this change. **These are
+observed at runtime or not at all**; the receipt that closes this entry is
+`output/feature-id/feature-id-report.json` with both the `cross-source` and
+`key-span` verdicts PASS and staged keys reading `0x301` / `0x1000301` /
+`0x3000000`. Until that receipt exists this entry stays **OPEN**.
+
+**Proving artefacts.** `Tools/visual-regression/webgpu-pick-id-32-bit.spec.mjs`
+group **F** (7 tests) compiles `fragmentMain`'s `hashed` / `h` bindings out of
+the real WGSL and **executes** them, so the CPU twin cannot drift from the shader
+again — the exact way this defect hid. F5 is the negative control (the
+un-finalized hash collapses, and the shader is not it); F7 pins u32 semantics
+(JS `*` is float, JS `>>` is signed — both diverge above 2^31), each control
+asserting its own discriminating precondition. Inertness mutant
+`let h = hashed ^ ((hashed >> 16u) & 0u);` reds F2/F3/F4/F5. Edge leg:
+`Tools/visual-regression/probe-feature-id-texture.mjs` `key-span` cell — **a
+rebuild is mandatory before the re-run**, since a WGSL shader changed.
+
+**Parity.** WGSL-only. `FeatureIdResolve.wgsl` is Default-OFF and reached only
+via `WebGPUPickFramebuffer.resolveFeatureIdRecolorAsync()`; there is no GLSL twin
+and no WebGL path constructs it, so WebGL captures stay byte-identical. WebGL
+needs no equivalent: it has no unified feature-id recolor pass to fold a hash in.
+
+**Residual (Principle 9).** Any hash-to-colour that emits fewer bits than it
+consumes has this shape. `FeatureIdResolve.wgsl` is now the only such site in the
+WebGPU pick path, but nothing structurally prevents the next one; the group-F
+compiler is reusable if a second recolor pass ever lands.

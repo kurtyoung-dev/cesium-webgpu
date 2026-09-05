@@ -73,6 +73,14 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 
+import { ProbeRefusal } from "./lib/probe-runtime.mjs";
+import {
+  KEY_SPAN_PLAN,
+  buildKeySpanCell,
+  differsOnlyAboveBit23,
+  expectedRecolor,
+} from "./probe-feature-id-texture.mjs";
+
 const directory = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(directory, "../..");
 const engineSource = resolve(repoRoot, "packages/engine/Source");
@@ -102,6 +110,10 @@ const BARREL_SOURCE = [
   'export { GraphicsContext } from "./GraphicsContext.js";',
   'export { default as PickId } from "./PickId.js";',
   'export { default as Color } from "../Core/Color.js";',
+  // Group E drives the probe's staging plan through the REAL primitive that
+  // allocates a pick id in the field, rather than through a model of it.
+  'export { default as PointPrimitiveCollection } from "../Scene/PointPrimitiveCollection.js";',
+  'export { default as Cartesian3 } from "../Core/Cartesian3.js";',
 ].join("\n");
 
 const bundled = await build({
@@ -118,11 +130,12 @@ const bundled = await build({
   logLevel: "silent",
   absWorkingDir: repoRoot,
 });
-const { GraphicsContext, PickId, Color } = await import(
-  `data:text/javascript;base64,${Buffer.from(
-    bundled.outputFiles[0].text,
-  ).toString("base64")}`
-);
+const { GraphicsContext, PickId, Color, PointPrimitiveCollection, Cartesian3 } =
+  await import(
+    `data:text/javascript;base64,${Buffer.from(
+      bundled.outputFiles[0].text,
+    ).toString("base64")}`
+  );
 
 /**
  * The smallest concrete `GraphicsContext` there can be. `GraphicsContext`'s own
@@ -387,9 +400,15 @@ const WGSL_IDENTIFIERS = new Set(["u32", "round", "c", "r", "g", "b", "a"]);
  * translator does not model throws instead of being approximated.
  *
  * @param {string} expression The WGSL expression text.
+ * @param {Set<string>} [extraVocabulary] Additional identifiers a caller models.
+ *   Group F passes the recolor's locals; omitting it leaves the decode groups'
+ *   vocabulary — and therefore C5's totality control — exactly as it was.
  * @returns {string} The JS expression text.
  */
-export function translateWgslIntegerExpression(expression) {
+export function translateWgslIntegerExpression(expression, extraVocabulary) {
+  const vocabulary = extraVocabulary
+    ? new Set([...WGSL_IDENTIFIERS, ...extraVocabulary])
+    : WGSL_IDENTIFIERS;
   WGSL_TOKEN.lastIndex = 0;
   let index = 0;
   while (index < expression.length) {
@@ -401,7 +420,7 @@ export function translateWgslIntegerExpression(expression) {
       );
     }
     const token = match[0];
-    if (/^[A-Za-z_]/.test(token) && !WGSL_IDENTIFIERS.has(token)) {
+    if (/^[A-Za-z_]/.test(token) && !vocabulary.has(token)) {
       throw new Error(`unknown WGSL identifier '${token}'`);
     }
     index = WGSL_TOKEN.lastIndex;
@@ -638,5 +657,585 @@ test("D5: the derivation is honest — a deliberately 24-bit site reports 24", (
   assert.equal(
     derivedKeyBits((key) => (key >>> 0) & 0xff),
     8,
+  );
+});
+
+// ── E: the probe's staging precondition, checkable without a browser ────────
+//
+// The 2026-09-05 Edge leg of this row came back REFUSED (`alias-pair-not-staged`,
+// observed keys 0x3 / 0x4), not red: `probe-feature-id-texture.mjs` staged its
+// alias pair by seeding `_nextPickColor` and then PICKING each point, but on
+// WebGPU a pick RECTANGLE does not choose which ids are materialized — any pick
+// pass runs `buildPickInstanceData` over every point in every collection
+// (WebGPUPointPrimitiveRenderer.js:263-303) and `Scene.pick` updates every
+// primitive regardless of where the rectangle falls. The probe's own full-canvas
+// warm pick therefore allocated all three staged points, in creation order,
+// before the first seed was ever written.
+//
+// The repair allocates through `PointPrimitive.getPickId` immediately after each
+// seed, with nothing in between. This group is the Node-side proof of that
+// precondition: it drives the probe's exported `KEY_SPAN_PLAN` through the REAL
+// `GraphicsContext` allocator and the REAL `PointPrimitiveCollection` /
+// `PointPrimitive.getPickId` path — a model of neither — and it fires the
+// refusal, so the guard is known to bite rather than assumed to.
+
+const PROBE_SOURCE = await readSource(
+  resolve(directory, "probe-feature-id-texture.mjs"),
+);
+
+/**
+ * The body of the probe's `stageKeySpan` page closure, by brace matching from
+ * its `page.evaluate` call. Throws if the function is renamed or restructured,
+ * so E5 cannot pass over a probe it failed to find.
+ *
+ * @param {string} source The probe source.
+ * @returns {string} The closure body.
+ */
+function extractStageKeySpanBody(source) {
+  const start = source.indexOf("async function stageKeySpan(page) {");
+  assert.notEqual(start, -1, "the probe has no stageKeySpan");
+  const open = source.indexOf("{", start);
+  let depth = 0;
+  for (let i = open; i < source.length; i++) {
+    if (source[i] === "{") {
+      depth++;
+    } else if (source[i] === "}") {
+      depth--;
+      if (depth === 0) {
+        return source.slice(open + 1, i);
+      }
+    }
+  }
+  throw new Error("stageKeySpan has an unbalanced body");
+}
+
+/**
+ * Three points in three collections, the shape the key-span cell stages.
+ *
+ * @returns {Array<object>} The three point primitives, in creation order.
+ */
+function stagedPoints() {
+  return [-0.06, 0.0, 0.06].map((dLon, i) => {
+    const collection = new PointPrimitiveCollection();
+    return collection.add({
+      position: Cartesian3.fromDegrees(-75 + dLon, 39.94, 1000.0),
+      pixelSize: 60,
+      id: `probe-feature-id-span-${i}`,
+    });
+  });
+}
+
+/**
+ * Compiles the probe's OWN `stage` closure out of `stageKeySpan` and returns it
+ * as a callable. The spec then executes the probe's staging code rather than a
+ * copy of it, which is what makes E1/E3 sensitive to an inert probe: a
+ * `stage` body wrapped in `if (false && …)` allocates nothing and E1 goes red,
+ * where a source-text guard would still have passed.
+ *
+ * Throws if the closure is renamed or restructured, so this cannot silently
+ * degrade into asserting nothing.
+ *
+ * @param {string} source The probe source.
+ * @returns {Function} `(context, primitive, step) => void`.
+ */
+export function compileProbeStage(source) {
+  const body = extractStageKeySpanBody(source);
+  const start = body.indexOf("const stage = (primitive, step) => {");
+  assert.notEqual(start, -1, "the probe's stageKeySpan has no `stage` closure");
+  const open = body.indexOf("{", body.indexOf("=>", start));
+  let depth = 0;
+  for (let i = open; i < body.length; i++) {
+    if (body[i] === "{") {
+      depth++;
+    } else if (body[i] === "}") {
+      depth--;
+      if (depth === 0) {
+        // eslint-disable-next-line no-new-func
+        return new Function(
+          "context",
+          "primitive",
+          "step",
+          body.slice(open + 1, i),
+        );
+      }
+    }
+  }
+  throw new Error("the probe's `stage` closure has an unbalanced body");
+}
+
+const probeStage = compileProbeStage(PROBE_SOURCE);
+
+/**
+ * The repaired staging, executed through the probe's own `stage` closure: seed
+ * the real allocator, then allocate through the real factory, with nothing
+ * between the seed and the allocation.
+ *
+ * @param {object} context The spec context.
+ * @param {Array<object>} points The three staged points.
+ */
+function stageInPlanOrder(context, points) {
+  const steps = [
+    KEY_SPAN_PLAN.alias0,
+    KEY_SPAN_PLAN.alias1,
+    KEY_SPAN_PLAN.multiple,
+  ];
+  points.forEach((point, i) => {
+    probeStage(context, point, steps[i]);
+  });
+}
+
+/**
+ * The key a staged point actually received, read back from the real registry —
+ * the same lookup `stageKeySpan`'s `keyOf` performs in the page.
+ *
+ * @param {object} context The spec context.
+ * @param {object} point The staged point.
+ * @returns {number|null} The key, or null when the point never registered.
+ */
+function stagedKeyOf(context, point) {
+  for (const [key, target] of context._pickObjects) {
+    if (target === point || target?.primitive === point) {
+      return key >>> 0;
+    }
+  }
+  return null;
+}
+
+/**
+ * The span object `buildKeySpanCell` consumes, built from real readbacks.
+ *
+ * @param {object} context The spec context.
+ * @param {Array<object>} points The three staged points.
+ * @returns {object} The span.
+ */
+function spanFrom(context, points) {
+  const [alias0, alias1, multiple] = points.map((point) => ({
+    key: stagedKeyOf(context, point),
+    x: 0,
+    y: 0,
+  }));
+  return {
+    alias0,
+    alias1,
+    multiple,
+    planned: {
+      alias0: KEY_SPAN_PLAN.alias0.key,
+      alias1: KEY_SPAN_PLAN.alias1.key,
+      multiple: KEY_SPAN_PLAN.multiple.key,
+    },
+  };
+}
+
+/**
+ * Recolors that satisfy every colour assertion in the cell, so a refusal in this
+ * group is always about the STAGING and never about the colours.
+ *
+ * @param {object} span The staged span.
+ * @returns {object} The recolor readback the cell consumes.
+ */
+function satisfyingColors(span) {
+  return {
+    resolved: true,
+    alias0Color: expectedRecolor(span.alias0.key),
+    alias1Color: expectedRecolor(span.alias1.key),
+    multipleColor: expectedRecolor(span.multiple.key),
+  };
+}
+
+test("E1: the probe's staging plan lands its three keys on the real allocator", () => {
+  const context = new SpecContext();
+  const points = stagedPoints();
+  stageInPlanOrder(context, points);
+  const span = spanFrom(context, points);
+
+  assert.equal(span.alias0.key, KEY_SPAN_PLAN.alias0.key);
+  assert.equal(span.alias1.key, KEY_SPAN_PLAN.alias1.key);
+  assert.equal(span.multiple.key, KEY_SPAN_PLAN.multiple.key);
+
+  // The three shapes AR-751's acceptance names.
+  assert.ok(
+    differsOnlyAboveBit23(span.alias0.key, span.alias1.key),
+    "the alias pair does not differ only above bit 23",
+  );
+  assert.equal(span.multiple.key & 0x00ffffff, 0);
+  assert.notEqual(span.multiple.key >>> 24, 0);
+
+  // And the cell accepts them — a correctly staged run does not refuse.
+  const cell = buildKeySpanCell(span, satisfyingColors(span));
+  assert.equal(cell.cell, "key-span");
+  assert.ok(cell.aliasPairDistinct && cell.multipleNonBlack);
+  assert.ok(cell.alias0MatchesFullKey && cell.alias1MatchesFullKey);
+});
+
+test("E2: the canary fires — the staging miss the Edge leg observed still REFUSES", () => {
+  // Reproduce the defect exactly. A pick pass materializes all three points in
+  // creation order BEFORE any seed is written, which is what a full-canvas warm
+  // pick does: `buildPickInstanceData` walks the collection and calls
+  // `getPickId` on every point, so this loop is that pass's allocation order.
+  const context = new SpecContext();
+  const points = stagedPoints();
+  for (const point of points) {
+    point.getPickId(context);
+  }
+  // The seeds are then written too late — `getPickId` memoizes on `_pickId`.
+  stageInPlanOrder(context, points);
+
+  const span = spanFrom(context, points);
+  assert.deepEqual(
+    [span.alias0.key, span.alias1.key, span.multiple.key],
+    [1, 2, 3],
+    "the reproduction did not allocate in creation order",
+  );
+
+  assert.throws(
+    () => buildKeySpanCell(span, satisfyingColors(span)),
+    (error) => {
+      assert.ok(
+        error instanceof ProbeRefusal,
+        "an unstaged pair must REFUSE, not throw an ordinary error",
+      );
+      assert.equal(error.reason, "alias-pair-not-staged");
+      // The refusal names the observed keys and the plan they missed.
+      assert.equal(error.details.alias0, 1);
+      assert.equal(error.details.alias1, 2);
+      assert.equal(error.details.planned.alias0, KEY_SPAN_PLAN.alias0.key);
+      return true;
+    },
+  );
+});
+
+test("E3: once staged, a later full-canvas pick cannot move the keys", () => {
+  // The repair's actual claim. After staging, model the warm pick that broke the
+  // 2026-09-05 run — the same `getPickId` sweep over every point — plus a crowd
+  // of neighbouring primitives allocating. The staged keys must not move,
+  // because `PointPrimitive.getPickId` memoizes (PointPrimitive.js:454-466).
+  const context = new SpecContext();
+  const points = stagedPoints();
+  stageInPlanOrder(context, points);
+
+  const neighbours = new PointPrimitiveCollection();
+  for (let i = 0; i < 8; i++) {
+    neighbours
+      .add({ position: Cartesian3.fromDegrees(-76 + i * 0.01, 39.9, 10.0) })
+      .getPickId(context);
+  }
+  for (const point of points) {
+    point.getPickId(context);
+  }
+
+  const span = spanFrom(context, points);
+  assert.equal(span.alias0.key, KEY_SPAN_PLAN.alias0.key);
+  assert.equal(span.alias1.key, KEY_SPAN_PLAN.alias1.key);
+  assert.equal(span.multiple.key, KEY_SPAN_PLAN.multiple.key);
+  assert.doesNotThrow(() => buildKeySpanCell(span, satisfyingColors(span)));
+});
+
+test("E4: the plan's seeds are the allocator's pre-increment, not an assumption", () => {
+  // `createPickId` does `_nextPickColor[0]++` and then reads it
+  // (GraphicsContext.ts:1641-1642). If that ever became a post-increment every
+  // staged key would be off by one and E1 would drift silently; pin the relation
+  // against the real allocator rather than restating the arithmetic.
+  for (const step of Object.values(KEY_SPAN_PLAN)) {
+    assert.equal(step.seed, step.key - 1);
+    const context = new SpecContext();
+    context._nextPickColor[0] = step.seed;
+    assert.equal(
+      context.createPickId({ marker: step.key }).key >>> 0,
+      step.key,
+    );
+  }
+});
+
+test("E5: STRUCTURAL — the probe stages by allocation, with no pick in between", () => {
+  // E1-E4 execute the probe's own `stage` closure, so an inert staging is caught
+  // there. What they CANNOT see is the surrounding page code — the picks and
+  // renders around the staging need `window` and a live `Scene`. This is the
+  // commissioned structural guard over exactly that remaining gap, and it is
+  // stated as such rather than dressed up as a behaviour assertion: it pins the
+  // ORDER of the phases around the closure E1-E4 execute.
+  //
+  // The 2026-09-05 refusal was caused by a pick standing between the seed and
+  // the allocation, and by the warm pick preceding the staging. Both come back
+  // as failures here.
+  const stageBody = extractStageKeySpanBody(PROBE_SOURCE);
+  const seedIndex = stageBody.indexOf("context._nextPickColor[0] = step.seed;");
+  const allocateIndex = stageBody.indexOf("primitive.getPickId(context);");
+  assert.notEqual(
+    seedIndex,
+    -1,
+    "the probe no longer seeds the real allocator",
+  );
+  assert.notEqual(
+    allocateIndex,
+    -1,
+    "the probe no longer allocates through the real getPickId factory",
+  );
+  assert.ok(
+    seedIndex < allocateIndex,
+    "the probe seeds AFTER allocating, so the seed cannot take effect",
+  );
+  assert.equal(
+    stageBody.slice(seedIndex, allocateIndex).includes("doPick"),
+    false,
+    "a pick stands between the seed and the allocation — the 2026-09-05 defect",
+  );
+  // And the three staged points are allocated before the warm pick runs at all.
+  assert.ok(
+    stageBody.indexOf("stage(multiple, plan.multiple);") <
+      stageBody.indexOf("await doPick(warmX, warmY"),
+    "the warm pick runs before staging completes, which is what stole the ids",
+  );
+});
+
+// ── F: the recolor itself, executed from the real shader text ──────────────
+//
+// The second cause AR-751's first Edge leg could not reach. Widening
+// `decodeFeatureId` (group C) makes the shader read the FULL key, but the colour
+// it emits is the LOW three bytes of `id * 2654435761u`, and multiplication mod
+// 2^32 propagates carries only UPWARD — the low 24 bits of the product depend
+// solely on the low 24 bits of `id`. Under a bare multiply, therefore:
+//
+//   * two ids differing only above bit 23 recolor to the SAME triple, and
+//   * every multiple of 2^24 recolors to (0,0,0), i.e. background,
+//
+// which are the row's two symptoms exactly, surviving a correct decode. The
+// probe could not see this: its CPU twin `expectedRecolor` mirrored the same
+// collapse, so `alias0MatchesFullKey` agreed while `aliasPairDistinct` did not,
+// and the staging refusal aborted the run before either was computed.
+//
+// The shader now applies an xorshift finalizer. This group executes the hash out
+// of the real shader source — not a restatement of it — and carries the negative
+// control that the un-finalized form collapses, so the assertion is known to be
+// sensitive to the finalizer rather than merely passing beside it.
+
+const RECOLOR_VOCABULARY = new Set(["id", "hashed", "h"]);
+
+/**
+ * Rewrites a translated expression so it evaluates with WGSL's u32 semantics
+ * rather than JavaScript's number semantics. Two operators diverge above 2^31
+ * and BOTH appear in the recolor:
+ *
+ *   * `*` — WGSL multiplies mod 2^32; JS multiplies as a double and loses the
+ *     low bits once the product exceeds 2^53. `Math.imul` is the mod-2^32 form.
+ *   * `>>` — WGSL shifts a u32 logically; JS `>>` coerces to int32 and sign
+ *     extends, so any hash with bit 31 set folds in the wrong bits.
+ *
+ * Getting either wrong would make this group certify a twin that disagrees with
+ * the shader precisely in the range AR-751 is about, so the rewrite is explicit
+ * and refuses anything it does not model.
+ *
+ * @param {string} js The translated JS expression.
+ * @returns {string} The expression with u32 operator semantics.
+ */
+function asU32Arithmetic(js) {
+  const logical = js.replace(/>>(?!>)/g, ">>>");
+  const factors = logical.split("*");
+  if (factors.length === 1) {
+    return logical;
+  }
+  assert.equal(
+    factors.length,
+    2,
+    `unmodelled chained multiply in recolor expression: ${js}`,
+  );
+  return `Math.imul(${factors[0]}, ${factors[1]})`;
+}
+
+/**
+ * Compiles the recolor hash out of `fragmentMain`'s real source: every `let`
+ * binding between the id and the colour bytes, translated and chained. Throws if
+ * the shader renames or restructures them, so a drifted shader is a loud failure
+ * rather than a silently stale twin.
+ *
+ * @param {string} source The shader source.
+ * @returns {Function} `(id) => h`, the finalized hash as the shader computes it.
+ */
+export function compileRecolorHash(source) {
+  const body = extractWgslFunctionBody(source, "fragmentMain");
+  const bindings = [...body.matchAll(/\blet\s+(hashed|h)\s*=\s*([^;]+);/g)].map(
+    ([, name, expression]) =>
+      `const ${name} = (${asU32Arithmetic(
+        translateWgslIntegerExpression(expression, RECOLOR_VOCABULARY),
+      )}) >>> 0;`,
+  );
+  assert.equal(
+    bindings.length,
+    2,
+    "fragmentMain no longer binds exactly `hashed` and `h` — the recolor was restructured",
+  );
+  // eslint-disable-next-line no-new-func
+  return new Function("id", `${bindings.join("\n")}\nreturn h >>> 0;`);
+}
+
+const recolorHash = compileRecolorHash(FEATURE_ID_RESOLVE_SOURCE);
+
+/**
+ * The colour the shader emits for a hash, as its three byte extractions read.
+ *
+ * @param {number} h The finalized hash.
+ * @returns {Array<number>} The [r, g, b] bytes.
+ */
+function bytesOf(h) {
+  return [h & 0xff, (h >>> 8) & 0xff, (h >>> 16) & 0xff];
+}
+
+const RECOLOR_KEYS = [
+  KEYS.named,
+  KEYS.lowOfPair,
+  KEYS.highOfPair,
+  KEYS.multipleOf2Pow24,
+  KEYS.ordinary,
+  KEYS.highAlpha,
+  KEY_SPAN_PLAN.alias0.key,
+  KEY_SPAN_PLAN.alias1.key,
+  KEY_SPAN_PLAN.multiple.key,
+];
+
+test("F1: the shader's byte extraction is the low three bytes of the hash", () => {
+  // Executed above; this pins the three extractions the executed hash feeds, so
+  // F2-F4's conclusions cover the whole recolor and not just its first half.
+  const body = extractWgslFunctionBody(
+    FEATURE_ID_RESOLVE_SOURCE,
+    "fragmentMain",
+  );
+  for (const expression of [
+    "let hr = f32(h & 0xFFu) / 255.0;",
+    "let hg = f32((h >> 8u) & 0xFFu) / 255.0;",
+    "let hb = f32((h >> 16u) & 0xFFu) / 255.0;",
+  ]) {
+    assert.ok(
+      body.includes(expression.replace("let ", "").replace(";", "")),
+      `fragmentMain no longer contains ${expression}`,
+    );
+  }
+});
+
+test("F2: two ids differing only above bit 23 recolor to DIFFERENT triples", () => {
+  // The row's first visual clause, over the shader's own arithmetic.
+  for (const [low, high] of [
+    [KEYS.lowOfPair, KEYS.highOfPair],
+    [KEY_SPAN_PLAN.alias0.key, KEY_SPAN_PLAN.alias1.key],
+    [KEYS.ordinary, (KEYS.ordinary + 0xff000000) >>> 0],
+  ]) {
+    assert.ok(
+      differsOnlyAboveBit23(low, high),
+      "the pair under test does not differ only above bit 23",
+    );
+    assert.notDeepEqual(
+      bytesOf(recolorHash(low)),
+      bytesOf(recolorHash(high)),
+      `0x${low.toString(16)} and 0x${high.toString(16)} still recolor identically`,
+    );
+  }
+});
+
+test("F3: a multiple of 2^24 recolors NON-BLACK", () => {
+  // The row's second visual clause. `0x01000000` is the key it names.
+  for (const key of [
+    KEYS.multipleOf2Pow24,
+    KEY_SPAN_PLAN.multiple.key,
+    0x02000000,
+    0xff000000,
+  ]) {
+    assert.equal(
+      key & 0x00ffffff,
+      0,
+      "the key under test is not a multiple of 2^24",
+    );
+    const rgb = bytesOf(recolorHash(key));
+    assert.ok(
+      rgb.some((channel) => channel !== 0),
+      `0x${key.toString(16)} still recolors to background: ${rgb.join(",")}`,
+    );
+  }
+});
+
+test("F4: the probe's CPU twin reproduces the shader's recolor exactly", () => {
+  // What kept the collapse invisible was a twin that mirrored it. Pin the twin to
+  // the shader text so the probe's `alias0MatchesFullKey` cannot agree with a
+  // shader that disagrees with the row.
+  for (const key of RECOLOR_KEYS) {
+    assert.deepEqual(
+      expectedRecolor(key),
+      bytesOf(recolorHash(key)),
+      `the twin disagrees with the shader at 0x${key.toString(16)}`,
+    );
+  }
+  // Nothing drawn stays black under both.
+  assert.deepEqual(expectedRecolor(0), [0, 0, 0]);
+});
+
+test("F5: the negative control — without the finalizer the collapse comes back", () => {
+  // Proves F2-F4 are sensitive to the finalizer rather than passing beside it.
+  // This is the bare multiply the shader carried before AR-751's follow-up.
+  const unfinalized = (id) => Math.imul(id >>> 0, 2654435761) >>> 0;
+  assert.deepEqual(
+    bytesOf(unfinalized(KEYS.lowOfPair)),
+    bytesOf(unfinalized(KEYS.highOfPair)),
+    "the un-finalized hash was expected to collapse the alias pair",
+  );
+  assert.deepEqual(
+    bytesOf(unfinalized(KEYS.multipleOf2Pow24)),
+    [0, 0, 0],
+    "the un-finalized hash was expected to paint a multiple of 2^24 as background",
+  );
+  // And the real shader is NOT that function.
+  assert.notDeepEqual(
+    bytesOf(recolorHash(KEYS.highOfPair)),
+    bytesOf(unfinalized(KEYS.highOfPair)),
+    "the shader still computes the un-finalized hash",
+  );
+});
+
+test("F6: the recolor compiler is total — a restructured shader throws", () => {
+  // The negative control for the extraction itself, matching C5's role.
+  assert.throws(
+    () =>
+      compileRecolorHash(
+        "fn fragmentMain() { let hashed = id * 2654435761u; }",
+      ),
+    /no longer binds exactly/,
+  );
+  assert.throws(
+    () => translateWgslIntegerExpression("dot(h, h)", RECOLOR_VOCABULARY),
+    /unknown WGSL identifier 'dot'/,
+  );
+  assert.throws(
+    () => asU32Arithmetic("id * 3 * 5"),
+    /unmodelled chained multiply/,
+  );
+});
+
+test("F7: the twin uses u32 arithmetic, which is what makes F4 meaningful", () => {
+  // The negative control for `asU32Arithmetic`. Each naive reading agrees with
+  // the shader over most of the key space and diverges only in the range this
+  // row is about, so each control also asserts the precondition that makes it
+  // discriminating — otherwise a later key-set edit could quietly defuse it.
+
+  // A float multiply loses the low bits once the product passes 2^53.
+  const bigKey = KEYS.highAlpha;
+  assert.ok(
+    bigKey * 2654435761 > Number.MAX_SAFE_INTEGER,
+    "the multiply control no longer exceeds 2^53, so it cannot discriminate",
+  );
+  const naiveMultiply =
+    ((bigKey * 2654435761) ^ ((bigKey * 2654435761) >>> 16)) >>> 0;
+  assert.notEqual(
+    recolorHash(bigKey),
+    naiveMultiply,
+    "a float multiply would have matched the shader",
+  );
+
+  // A signed shift sign-extends only when the hash has bit 31 set.
+  const signKey = KEYS.multipleOf2Pow24;
+  const hashed = Math.imul(signKey, 2654435761) >>> 0;
+  assert.ok(
+    (hashed & 0x80000000) !== 0,
+    "the shift control's hash no longer has bit 31 set, so it cannot discriminate",
+  );
+  assert.notEqual(
+    recolorHash(signKey),
+    (hashed ^ (hashed >> 16)) >>> 0,
+    "a signed shift would have matched the shader",
   );
 });

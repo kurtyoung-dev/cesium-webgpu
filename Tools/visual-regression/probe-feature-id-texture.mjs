@@ -37,12 +37,22 @@
 //
 // This cell stages three ids across that boundary by advancing the REAL
 // allocator (`context._nextPickColor`, a Uint32Array `createPickId`
-// pre-increments) so the next allocation lands where it is wanted, then reads
-// back the key each primitive ACTUALLY got from the real registry
-// (`context._pickObjects`) rather than assuming the staging landed. If the
-// staging did not land — another primitive allocated in between — the cell
-// REFUSES with the observed keys rather than reporting a red, because a staging
-// miss is not a product failure.
+// pre-increments) and then allocating through the REAL factory the renderer
+// itself calls (`PointPrimitive.getPickId`), with nothing between a seed and
+// its allocation. It then reads back the key each primitive ACTUALLY got from
+// the real registry (`context._pickObjects`) rather than assuming the staging
+// landed. If the staging did not land the cell REFUSES with the observed keys
+// rather than reporting a red, because a staging miss is not a product failure.
+//
+// The staging deliberately does NOT drive allocation by picking each point.
+// A pick RECTANGLE does not select which ids are materialized: on WebGPU any
+// pick pass runs `buildPickInstanceData` over every point in every collection
+// (WebGPUPointPrimitiveRenderer.js:263-303), so a warm pick anywhere allocates
+// all of them. The 2026-09-05 Edge leg refused `alias-pair-not-staged` with
+// 0x3 / 0x4 for exactly that reason. `KEY_SPAN_PLAN` below is the plan, and
+// `webgpu-pick-id-32-bit.spec.mjs` group E drives it through the real
+// allocator in Node so the precondition is checkable without a browser and the
+// refusal is proven fireable.
 //
 // The assertion is the strongest form available: each staged primitive's
 // recolor must equal the Knuth hash of its FULL key, computed on the CPU from
@@ -94,6 +104,15 @@ const KNUTH = 2654435761;
  * decode that drops the key's high byte cannot produce this triple for any id
  * whose high byte is set.
  *
+ * The xorshift finalizer is part of that contract, not a flourish. The colour is
+ * the LOW three bytes of the hash and multiplication mod 2^32 carries only
+ * upward, so `id * KNUTH` alone has low 24 bits that depend solely on the low
+ * 24 bits of `id` — under which the alias pair recolors identically and every
+ * multiple of 2^24 recolors to black, whatever the decode width. Group F of
+ * `webgpu-pick-id-32-bit.spec.mjs` pins this function against the real shader
+ * text, so the twin cannot drift from the shader the way it did before AR-751's
+ * first Edge leg.
+ *
  * @param {number} key The 32-bit pick key.
  * @returns {Array<number>} The expected [r, g, b] bytes.
  */
@@ -102,7 +121,8 @@ export function expectedRecolor(key) {
   if (id === 0) {
     return [0, 0, 0];
   }
-  const h = Math.imul(id, KNUTH) >>> 0;
+  const hashed = Math.imul(id, KNUTH) >>> 0;
+  const h = (hashed ^ (hashed >>> 16)) >>> 0;
   return [h & 0xff, (h >>> 8) & 0xff, (h >>> 16) & 0xff];
 }
 
@@ -117,6 +137,24 @@ export function differsOnlyAboveBit23(a, b) {
   const x = (a ^ b) >>> 0;
   return (x & 0x00ffffff) === 0 && x >>> 24 !== 0;
 }
+
+/**
+ * The three keys the key-span cell stages, and the allocator value each one is
+ * reached from. `GraphicsContext.createPickId` PRE-increments
+ * `_nextPickColor` (GraphicsContext.ts:1641-1642), so the seed for key K is
+ * K - 1. Exported because `webgpu-pick-id-32-bit.spec.mjs` drives this exact
+ * plan through the REAL allocator in Node — the staging precondition is
+ * checkable without a browser, and the spec's canary reproduces a staging miss.
+ *
+ * `alias0` and `alias1` share their low 24 bits and differ by one step above
+ * bit 23; `multiple` is a non-zero multiple of 2^24. Those are exactly the
+ * three shapes AR-751's acceptance names.
+ */
+export const KEY_SPAN_PLAN = Object.freeze({
+  alias0: Object.freeze({ key: 0x00000301, seed: 0x00000300 }),
+  alias1: Object.freeze({ key: 0x01000301, seed: 0x01000300 }),
+  multiple: Object.freeze({ key: 0x03000000, seed: 0x02ffffff }),
+});
 
 /**
  * Builds the cross-source scene and returns the two probe pixels plus the CPU
@@ -402,14 +440,16 @@ async function resolveCrossSource(page, scene) {
 }
 
 /**
- * Stages three pick ids across the 2^24 boundary and reads back the key each
+ * Stages three pick ids across the 2^24 boundary — by seeding the real
+ * allocator and immediately allocating through the real `getPickId` factory,
+ * before any pick pass can materialize them — and reads back the key each
  * primitive ACTUALLY received from the real pick registry.
  *
  * @param {object} page The Playwright page.
- * @returns {Promise<object>} The staged keys and their screen positions.
+ * @returns {Promise<object>} The staged keys, the plan, and screen positions.
  */
 async function stageKeySpan(page) {
-  return await page.evaluate(async () => {
+  return await page.evaluate(async (plan) => {
     const { C, scene } = window.__fid;
     const doPick = window.__fidPick;
     const renderN = window.__fidRenderN;
@@ -445,9 +485,45 @@ async function stageKeySpan(page) {
       return { x: Math.round(s?.x ?? 0), y: Math.round(s?.y ?? 0) };
     };
 
-    // Warm every OTHER primitive's pick id first, so the seeded allocations
-    // below are not consumed by a neighbour materializing its id.
+    // Stage all three ids BEFORE any pick pass exists to consume them.
+    //
+    // The staging must NOT be driven by picking a rectangle over each point.
+    // On WebGPU a pick id is not materialized by the pick RECTANGLE: the point
+    // feature renderer's `buildPickInstanceData` walks EVERY point in the
+    // collection and calls `point.getPickId(context)`
+    // (WebGPUPointPrimitiveRenderer.js:263-303) whenever `frameState.passes.pick`
+    // is set, and `Scene.pick` updates every primitive regardless of where the
+    // rectangle falls. So ANY pick anywhere on the canvas allocates all three
+    // staged points at once, in creation order — which is what happened on
+    // 2026-09-05, when the warm pick materialized them as 0x3 / 0x4 / 0x5 and
+    // the cell rightly REFUSED `alias-pair-not-staged`. Narrowing the warm
+    // rectangle cannot fix that, because the rectangle was never what allocated.
+    //
+    // Instead seed the real allocator and allocate through the real factory the
+    // renderer itself calls, with nothing between the seed and the allocation.
+    // `PointPrimitive.getPickId` memoizes on `_pickId` (PointPrimitive.js:454-466),
+    // so the renderer later finds the id already present and reuses it verbatim.
+    // No pick, render or await separates a seed from its allocation, so no
+    // neighbour can interleave.
+    const stage = (primitive, step) => {
+      context._nextPickColor[0] = step.seed;
+      primitive.getPickId(context);
+    };
+    stage(alias0, plan.alias0);
+    stage(alias1, plan.alias1);
+    stage(multiple, plan.multiple);
+
+    // Now settle the scene and take the screen positions.
     await renderN(30);
+    const a0 = screenOf(alias0);
+    const a1 = screenOf(alias1);
+    const m = screenOf(multiple);
+
+    // The full-canvas warm pick is KEPT, and now runs AFTER staging. It is the
+    // very pass that used to steal the ids; running it here and still reading
+    // the planned keys back is the demonstration that the staging no longer
+    // depends on pick geometry. It also warms the pick pipeline and writes the
+    // staged pick colors into the instance buffer the recolor reads.
     const warmX = Math.floor((scene.canvas.clientWidth || 1024) / 2);
     const warmY = Math.floor((scene.canvas.clientHeight || 768) / 2);
     await doPick(warmX, warmY, 900, 700);
@@ -455,37 +531,24 @@ async function stageKeySpan(page) {
     await doPick(warmX, warmY, 900, 700);
     await renderN(4);
 
-    // Phase A: the low half of the alias pair.
-    const a0 = screenOf(alias0);
-    context._nextPickColor[0] = 0x00000300;
-    await doPick(a0.x, a0.y, 25, 25);
-    await renderN(2);
+    // The keys are read back from the REAL registry, never from the plan. If a
+    // future edit unstages the pair, these are what the cell refuses over.
     const alias0Key = keyOf(alias0);
-
-    // Phase B: the SAME low 24 bits, one step above bit 23.
-    const a1 = screenOf(alias1);
-    if (alias0Key !== null) {
-      context._nextPickColor[0] = ((alias0Key + 0x01000000) >>> 0) - 1;
-    }
-    await doPick(a1.x, a1.y, 25, 25);
-    await renderN(2);
     const alias1Key = keyOf(alias1);
-
-    // Phase C: a key that is an exact multiple of 2^24 — (0,0,0,n) in the pick
-    // target, i.e. the case a 24-bit decode reads back as "nothing drawn".
-    const m = screenOf(multiple);
-    context._nextPickColor[0] = 0x02ffffff;
-    await doPick(m.x, m.y, 25, 25);
-    await renderN(2);
     const multipleKey = keyOf(multiple);
 
     return {
       alias0: { key: alias0Key, ...a0 },
       alias1: { key: alias1Key, ...a1 },
       multiple: { key: multipleKey, ...m },
+      planned: {
+        alias0: plan.alias0.key,
+        alias1: plan.alias1.key,
+        multiple: plan.multiple.key,
+      },
       nextPickColor: context._nextPickColor[0] >>> 0,
     };
-  });
+  }, KEY_SPAN_PLAN);
 }
 
 /**
@@ -549,7 +612,7 @@ export function buildKeySpanCell(span, colors) {
     throw new ProbeRefusal(
       "alias-pair-not-staged",
       `the alias pair does not differ only above bit 23: 0x${alias0.key.toString(16)} vs 0x${alias1.key.toString(16)}`,
-      { alias0: alias0.key, alias1: alias1.key },
+      { alias0: alias0.key, alias1: alias1.key, planned: span.planned ?? null },
     );
   }
   if ((multiple.key & 0x00ffffff) !== 0 || multiple.key >>> 24 === 0) {
