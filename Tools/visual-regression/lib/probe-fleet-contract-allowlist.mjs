@@ -518,8 +518,6 @@ export const PROBE_CONTRACT_ALLOWLIST = Object.freeze({
     "no watchdog; browser.close outside finally — added 2026-05-13, pre-dates the spec",
   "probe-fb-config.mjs":
     "no watchdog; browser.close outside finally — added 2026-05-13, pre-dates the spec",
-  "probe-feature-id-texture.mjs":
-    "no watchdog; browser.close outside finally — added 2026-07-05, pre-dates the spec",
   "probe-fft-ocean.mjs":
     "no watchdog; browser.close outside finally — added 2026-07-11, pre-dates the spec",
   "probe-flat-polygon-grid-material.mjs":

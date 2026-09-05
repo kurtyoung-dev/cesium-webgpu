@@ -2110,7 +2110,7 @@ export class WebGPUPickFramebuffer {
 
   /**
    * The unified, source-agnostic per-fragment feature-ID texture — the pick
-   * pass's color target, into which every source rasterizes its 24-bit
+   * pass's color target, into which every source rasterizes its 32-bit
    * object/feature ID. `null` until the first `begin()` allocates it.
    *
    * Exposes the texture so post-process consumers can sample cross-source
@@ -2131,7 +2131,7 @@ export class WebGPUPickFramebuffer {
    *
    * The most recent pick render (`scene.pick` / `scene.pickAsync`) must have
    * populated `_colorTexture`; this samples that shared, source-agnostic ID
-   * target on the GPU, decodes each 24-bit key, and hashes it to a distinct
+   * target on the GPU, decodes each 32-bit key, and hashes it to a distinct
    * color. Each distinct ID yields a distinct color, so fragments from DIFFERENT
    * sources remain distinguishable for downstream cross-source attribute joins.
    *

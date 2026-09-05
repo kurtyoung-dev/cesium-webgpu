@@ -1,370 +1,751 @@
-// R-2b UNIFIED-FEATURE-ID-TEXTURE (Queue Q28) acceptance probe.
-// @purpose Unified per-fragment feature-ID G-buffer resolvable in-shader: FeatureIdResolve.wgsl recolors globe + billboard IDs to distinct colors.
+#!/usr/bin/env node
+// R-2b UNIFIED-FEATURE-ID-TEXTURE (Queue Q28) acceptance probe, extended for
+// AR-751 (32-bit pick ids).
+//
+// @purpose Unified per-fragment feature-ID G-buffer resolvable in-shader: FeatureIdResolve.wgsl recolors two pick sources to distinct colors, and recolors ids above bit 23 to the hash of their FULL 32-bit key.
 // @status ACTIVE
+// @runtime lib/probe-runtime.mjs
 //
 // Proves that the WebGPU pick pass's unified, source-agnostic per-fragment
 // feature-ID G-buffer (WebGPUPickFramebuffer._colorTexture) is resolvable
 // INSIDE a shader / post-process pass — not just via CPU byte readback.
 //
-// Scene: globe (source A) + a billboard collection (source B), two distinct
-// pick sources. A single wide pickAsync rasterizes BOTH sources' 24-bit IDs
-// into the shared pick target; then WebGPUPickFramebuffer
-// .resolveFeatureIdRecolorAsync() runs FeatureIdResolve.wgsl over that target,
-// decoding + hashing each ID to a color on the GPU.
+// ── CELL 1: cross-source (the original R-2b acceptance, unchanged) ──────────
 //
-// Checks:
-//   (1) CPU picks confirm cross-source coverage — a Billboard at the billboard
-//       pixel, the Globe at a globe-only pixel.
-//   (2) The GPU resolve pass produces a NON-BLACK color at BOTH the billboard
-//       pixel and the globe pixel (both features resolved in-shader).
-//   (3) Those two colors DIFFER — distinct feature IDs resolved at cross-source
-//       fragments (the R-2b acceptance).
+// Scene: a billboard (source A) + a point (source B), two distinct pick source
+// pipelines. A single wide pickAsync rasterizes BOTH sources' IDs into the
+// shared pick target; then WebGPUPickFramebuffer.resolveFeatureIdRecolorAsync()
+// runs FeatureIdResolve.wgsl over that target, decoding + hashing each ID to a
+// color on the GPU.
+//
+//   (1) CPU picks confirm cross-source coverage.
+//   (2) The GPU resolve produces a NON-BLACK color at BOTH pixels.
+//   (3) Those two colors DIFFER.
 //   (4) DETERMINISM — a second resolve yields byte-identical colors.
-//   (5) 0 console / WebGPU validation errors.
+//   (5) The OFF-GATE holds and the standing record-into-encoder path matches.
+//   (6) 0 device / WebGPU validation errors.
 //
-// Writes a recolor visualization PNG to the scratchpad for eyeball review.
+// ── CELL 2: key span (AR-751) ──────────────────────────────────────────────
 //
-// Usage: node Tools/visual-regression/probe-feature-id-texture.mjs
-// Env:   PROBE_BASE (default http://localhost:8080)
+// The pick key is a monotonic uint32 that `Color.fromRgba` packs across all
+// FOUR bytes — alpha is the key's HIGH byte, not an opacity. The shader decode
+// used to read r, g, b only, so:
+//
+//   * two ids differing ONLY above bit 23 recolored identically, and
+//   * every id that is a multiple of 2^24 decoded to 0, which the shader paints
+//     as background — the feature vanished from the recolor.
+//
+// This cell stages three ids across that boundary by advancing the REAL
+// allocator (`context._nextPickColor`, a Uint32Array `createPickId`
+// pre-increments) so the next allocation lands where it is wanted, then reads
+// back the key each primitive ACTUALLY got from the real registry
+// (`context._pickObjects`) rather than assuming the staging landed. If the
+// staging did not land — another primitive allocated in between — the cell
+// REFUSES with the observed keys rather than reporting a red, because a staging
+// miss is not a product failure.
+//
+// The assertion is the strongest form available: each staged primitive's
+// recolor must equal the Knuth hash of its FULL key, computed on the CPU from
+// the key the registry reports. Under the 24-bit decode the alias pair produced
+// one color for two keys and the multiple of 2^24 produced black.
+//
+// ── WHAT THE SHARED RUNTIME OWNS (DX-02 residency) ─────────────────────────
+//
+// Argument parsing, the single-Edge-slot lock, the Edge launch, the
+// served-build preflight, element capture with its sha256, receipt
+// serialization and the exit-code table all live in `lib/probe-runtime.mjs`.
+// This file keeps the two scenes, the recolor readback math and the verdicts.
+// The migration also adds the machine-safety watchdog and the try/finally page
+// close the fleet contract requires, which is why this probe's row leaves
+// `lib/probe-fleet-contract-allowlist.mjs` in the same change.
+//
+// PRECONDITIONS
+//   * `npx gulp build` has run, so `/Build/CesiumUnminified/` is current.
+//   * `node server.js --port 8094 --serve-built` is running. Use `localhost`,
+//     not `127.0.0.1` — the dev server binds IPv6.
+//   * Edge, not Firefox: Playwright's bundled Firefox has no WebGPU.
+//
+// Run: node server.js --port 8094 --serve-built   (separate terminal, once)
+//      node Tools/visual-regression/probe-feature-id-texture.mjs
+// Out: Tools/visual-regression/output/feature-id/*.png + feature-id-report.json
+//      + feature-id-runtime.json + feature-id-summary.md
 
-import { chromium } from "playwright";
+import {
+  ProbeRefusal,
+  captureElement,
+  isEntryPoint,
+  runProbe,
+} from "./lib/probe-runtime.mjs";
 
-const BASE = process.env.PROBE_BASE || "http://localhost:8080";
-const OUT_PNG =
-  process.env.PROBE_OUT ||
-  "C:\\Users\\Kurt\\AppData\\Local\\Temp\\claude\\f--Dev-GH-cesium-webgpu\\eb6dfaec-c294-4f46-966a-d8d9138c8bf0\\scratchpad\\feature-id-recolor.png";
+const VIEWPORT = { width: 1024, height: 768 };
+// Machine safety: kill a hung Edge/device rather than wedge the box. Expressed
+// as a ProbeRefusal so the runtime's finally closes the browser instead of the
+// process being killed out from under it.
+const WATCHDOG_BUDGET_MS = 5 * 60 * 1000;
 
-const browser = await chromium.launch({
-  channel: "msedge",
-  headless: true,
-  args: ["--enable-unsafe-webgpu"],
-});
-const page = await browser.newPage({ viewport: { width: 1024, height: 768 } });
-const pageErrors = [];
-page.on("pageerror", (e) => pageErrors.push(e.message.slice(0, 200)));
-page.on("console", (m) => {
-  if (m.type() === "error") pageErrors.push(m.text().slice(0, 200));
-});
+// The Knuth multiplicative constant `FeatureIdResolve.wgsl` hashes with. The
+// shader computes `id * 2654435761u`, which wraps mod 2^32; `Math.imul` is the
+// JS operation with those exact semantics.
+const KNUTH = 2654435761;
 
-await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=webgpu`, {
-  waitUntil: "networkidle",
-  timeout: 90000,
-});
-await page.waitForFunction(() => !!window.viewer, { timeout: 90000 });
-
-const out = await page.evaluate(async () => {
-  const C = await import("/Build/CesiumUnminified/index.js");
-  const v = window.viewer;
-  const scene = v.scene;
-  const errors = [];
-  const dev = scene.context?._device;
-  if (dev) {
-    dev.onuncapturederror = (ev) =>
-      errors.push(String(ev?.error?.message).slice(0, 250));
+/**
+ * The recolor `FeatureIdResolve.wgsl` must produce for a given pick key, from
+ * the CPU side. This is the shader's contract restated over the FULL key: a
+ * decode that drops the key's high byte cannot produce this triple for any id
+ * whose high byte is set.
+ *
+ * @param {number} key The 32-bit pick key.
+ * @returns {Array<number>} The expected [r, g, b] bytes.
+ */
+export function expectedRecolor(key) {
+  const id = key >>> 0;
+  if (id === 0) {
+    return [0, 0, 0];
   }
+  const h = Math.imul(id, KNUTH) >>> 0;
+  return [h & 0xff, (h >>> 8) & 0xff, (h >>> 16) & 0xff];
+}
 
-  // Deterministic scene: keep the globe (source A), drop sky/atmosphere so a
-  // globe-only pixel is unambiguous.
-  if (scene.skyBox) scene.skyBox.show = false;
-  if (scene.skyAtmosphere) scene.skyAtmosphere.show = false;
-  if (scene.sun) scene.sun.show = false;
-  if (scene.moon) scene.moon.show = false;
-  scene.fog.enabled = false;
+/**
+ * Whether two keys differ ONLY in bits at or above bit 24.
+ *
+ * @param {number} a One key.
+ * @param {number} b The other key.
+ * @returns {boolean} True when the low 24 bits match and the high byte differs.
+ */
+export function differsOnlyAboveBit23(a, b) {
+  const x = (a ^ b) >>> 0;
+  return (x & 0x00ffffff) === 0 && x >>> 24 !== 0;
+}
 
-  // Cross-source: a Billboard (Collections/BillboardCollection renderer) and a
-  // Point (Collections/PointPrimitiveCollection renderer) — two DIFFERENT
-  // source pipelines that both rasterize their own object ID into the ONE
-  // shared pick target. (The globe uses pickPosition, not scene.pick object
-  // IDs, so it is not a reliable second ID source here.)
-  const img = document.createElement("canvas");
-  img.width = 64;
-  img.height = 64;
-  const g2d = img.getContext("2d");
-  g2d.fillStyle = "#ffffff";
-  g2d.fillRect(0, 0, 64, 64);
-  const bbs = scene.primitives.add(new C.BillboardCollection());
-  const bb = bbs.add({
-    position: C.Cartesian3.fromDegrees(-75, 40, 1000.0),
-    image: img,
-    color: C.Color.MAGENTA,
-    id: "probe-feature-id-bb",
-  });
-
-  // Source B: a large point at a second screen location.
-  const points = scene.primitives.add(new C.PointPrimitiveCollection());
-  const pt = points.add({
-    position: C.Cartesian3.fromDegrees(-74.9, 40, 1000.0),
-    pixelSize: 60,
-    color: C.Color.CYAN,
-    id: "probe-feature-id-pt",
-  });
-
-  v.camera.setView({
-    destination: C.Cartesian3.fromDegrees(-75, 40, 25000.0),
-    orientation: { heading: 0, pitch: -Math.PI / 2, roll: 0 },
-  });
-
-  const renderN = async (n) => {
-    for (let i = 0; i < n; i++) {
-      scene.render();
-      await new Promise((r) => requestAnimationFrame(r));
+/**
+ * Builds the cross-source scene and returns the two probe pixels plus the CPU
+ * pick verdicts.
+ *
+ * @param {object} page The Playwright page.
+ * @returns {Promise<object>} The scene's measurements.
+ */
+async function buildCrossSourceScene(page) {
+  return await page.evaluate(async () => {
+    const C = await import("/Build/CesiumUnminified/index.js");
+    const v = window.viewer;
+    const scene = v.scene;
+    const errors = [];
+    const dev = scene.context?._device;
+    if (dev) {
+      dev.onuncapturederror = (ev) =>
+        errors.push(String(ev?.error?.message).slice(0, 250));
     }
-  };
-  await renderN(90);
 
-  const W = scene.canvas.clientWidth || 1024;
-  const H = scene.canvas.clientHeight || 768;
-  const cx = Math.floor(W / 2);
-  const cy = Math.floor(H / 2);
-  // Resolve each primitive's actual screen location so the picks land on them
-  // regardless of exact camera framing.
-  const bbScreen = scene.cartesianToCanvasCoordinates(bb.position);
-  const ptScreen = scene.cartesianToCanvasCoordinates(pt.position);
-  const bbX = Math.round(bbScreen?.x ?? cx);
-  const bbY = Math.round(bbScreen?.y ?? cy);
-  const globeX = Math.round(ptScreen?.x ?? cx + 200);
-  const globeY = Math.round(ptScreen?.y ?? cy);
+    // Deterministic scene: keep the globe, drop sky/atmosphere so a globe-only
+    // pixel is unambiguous.
+    if (scene.skyBox) {
+      scene.skyBox.show = false;
+    }
+    if (scene.skyAtmosphere) {
+      scene.skyAtmosphere.show = false;
+    }
+    if (scene.sun) {
+      scene.sun.show = false;
+    }
+    if (scene.moon) {
+      scene.moon.show = false;
+    }
+    scene.fog.enabled = false;
 
-  const doPick = async (x, y, w = 1, h = 1) =>
-    scene.pickAsync
-      ? scene.pickAsync(new C.Cartesian2(x, y), w, h)
-      : scene.pick(new C.Cartesian2(x, y), w, h);
+    // Cross-source: a Billboard (BillboardCollection renderer) and a Point
+    // (PointPrimitiveCollection renderer) — two DIFFERENT source pipelines that
+    // both rasterize their own object ID into the ONE shared pick target.
+    const img = document.createElement("canvas");
+    img.width = 64;
+    img.height = 64;
+    const g2d = img.getContext("2d");
+    g2d.fillStyle = "#ffffff";
+    g2d.fillRect(0, 0, 64, 64);
+    const bbs = scene.primitives.add(new C.BillboardCollection());
+    const bb = bbs.add({
+      position: C.Cartesian3.fromDegrees(-75, 40, 1000.0),
+      image: img,
+      color: C.Color.MAGENTA,
+      id: "probe-feature-id-bb",
+    });
 
-  const describe = (hit) => {
-    if (!hit) return { found: false };
-    return {
-      found: true,
-      isBillboard: hit === bb || hit.primitive === bb,
-      isPoint: hit === pt || hit.primitive === pt,
-      id: typeof hit?.id === "string" ? hit.id : undefined,
-      primitiveCtor: hit?.primitive?.constructor?.name,
+    const points = scene.primitives.add(new C.PointPrimitiveCollection());
+    const pt = points.add({
+      position: C.Cartesian3.fromDegrees(-74.9, 40, 1000.0),
+      pixelSize: 60,
+      color: C.Color.CYAN,
+      id: "probe-feature-id-pt",
+    });
+
+    v.camera.setView({
+      destination: C.Cartesian3.fromDegrees(-75, 40, 25000.0),
+      orientation: { heading: 0, pitch: -Math.PI / 2, roll: 0 },
+    });
+
+    const renderN = async (n) => {
+      for (let i = 0; i < n; i++) {
+        scene.render();
+        await new Promise((r) => requestAnimationFrame(r));
+      }
     };
-  };
+    await renderN(90);
 
-  // Warm-up (pick pipelines materialize lazily on first pass).
-  await doPick(bbX, bbY, 9, 9);
-  await doPick(globeX, globeY, 9, 9);
-  await renderN(12);
+    const W = scene.canvas.clientWidth || 1024;
+    const H = scene.canvas.clientHeight || 768;
+    const cx = Math.floor(W / 2);
+    const cy = Math.floor(H / 2);
+    const bbScreen = scene.cartesianToCanvasCoordinates(bb.position);
+    const ptScreen = scene.cartesianToCanvasCoordinates(pt.position);
+    const bbX = Math.round(bbScreen?.x ?? cx);
+    const bbY = Math.round(bbScreen?.y ?? cy);
+    const ptX = Math.round(ptScreen?.x ?? cx + 200);
+    const ptY = Math.round(ptScreen?.y ?? cy);
 
-  // (1) CPU cross-source coverage.
-  const bbHit = describe(await doPick(bbX, bbY, 5, 5));
-  const globeHit = describe(await doPick(globeX, globeY, 5, 5));
+    const doPick = async (x, y, w = 1, h = 1) =>
+      scene.pickAsync
+        ? scene.pickAsync(new C.Cartesian2(x, y), w, h)
+        : scene.pick(new C.Cartesian2(x, y), w, h);
 
-  // One wide pick covering BOTH sources so the shared ID target holds both.
-  const midX = Math.round((bbX + globeX) / 2);
-  const midY = Math.round((bbY + globeY) / 2);
-  const spanW = Math.abs(bbX - globeX) + 200;
-  const spanH = Math.abs(bbY - globeY) + 200;
-  await doPick(midX, midY, spanW, spanH);
-  await renderN(2);
+    window.__fid = { C, v, scene, bb, pt, errors };
+    window.__fidRenderN = renderN;
+    window.__fidPick = doPick;
 
-  const pfb = scene.view.pickFramebuffer;
-  const hasResolve = typeof pfb?.resolveFeatureIdRecolorAsync === "function";
-  const resolveOut = { hasResolve };
-
-  // OFF-GATE: before any resolve/record call the standing resolve helper must
-  // never have been constructed — untouched scenes allocate nothing.
-  const offGate = {
-    viewNullBeforeResolve: pfb?.featureIdRecolorView === null,
-    textureNullBeforeResolve: pfb?.featureIdRecolorTexture === null,
-    hasRecord: typeof pfb?.recordFeatureIdResolve === "function",
-  };
-
-  if (hasResolve) {
-    const r1 = await pfb.resolveFeatureIdRecolorAsync();
-    const r2 = await pfb.resolveFeatureIdRecolorAsync();
-    if (r1 && r2) {
-      const { width, height, pixels } = r1;
-      // The pick FBO / resolve output is stored TOP-DOWN (row 0 = top of frame),
-      // matching the canvas client coords used above.
-      const at = (buf, x, y) => {
-        const xi = Math.max(0, Math.min(width - 1, Math.floor(x)));
-        const yi = Math.max(0, Math.min(height - 1, Math.floor(y)));
-        const i = 4 * (yi * width + xi);
-        return [buf[i], buf[i + 1], buf[i + 2], buf[i + 3]];
+    const describe = (hit) => {
+      if (!hit) {
+        return { found: false };
+      }
+      return {
+        found: true,
+        isBillboard: hit === bb || hit.primitive === bb,
+        isPoint: hit === pt || hit.primitive === pt,
+        id: typeof hit?.id === "string" ? hit.id : undefined,
+        primitiveCtor: hit?.primitive?.constructor?.name,
       };
-      const bbColor = at(pixels, bbX, bbY);
-      const globeColor = at(pixels, globeX, globeY);
-      const nonBlack = (c) => c[0] !== 0 || c[1] !== 0 || c[2] !== 0;
-      // Determinism: r2 must equal r1 at both probe pixels.
-      const c1b = at(r2.pixels, bbX, bbY);
-      const c1g = at(r2.pixels, globeX, globeY);
-      const eq = (a, b) => a[0] === b[0] && a[1] === b[1] && a[2] === b[2];
-
-      resolveOut.width = width;
-      resolveOut.height = height;
-      resolveOut.bbColor = bbColor;
-      resolveOut.globeColor = globeColor;
-      resolveOut.bbNonBlack = nonBlack(bbColor);
-      resolveOut.globeNonBlack = nonBlack(globeColor);
-      resolveOut.distinct = !eq(bbColor, globeColor);
-      resolveOut.deterministic = eq(bbColor, c1b) && eq(globeColor, c1g);
-
-      // Render the recolor to a canvas for a screenshot the reviewer can read.
-      const outCanvas = document.createElement("canvas");
-      outCanvas.id = "featureIdRecolor";
-      outCanvas.width = width;
-      outCanvas.height = height;
-      outCanvas.style.position = "fixed";
-      outCanvas.style.left = "0";
-      outCanvas.style.top = "0";
-      outCanvas.style.zIndex = "99999";
-      const octx = outCanvas.getContext("2d");
-      const imgData = octx.createImageData(width, height);
-      imgData.data.set(pixels);
-      octx.putImageData(imgData, 0, 0);
-      // Mark the two probe pixels with small crosshairs for the reviewer.
-      octx.strokeStyle = "#00ff00";
-      octx.strokeRect(bbX - 6, bbY - 6, 12, 12);
-      octx.strokeStyle = "#ff8800";
-      octx.strokeRect(globeX - 6, globeY - 6, 12, 12);
-      document.body.appendChild(outCanvas);
-    }
-  }
-
-  // STANDING PER-FRAME PP WIRING (R-2b residual a). Record the recolor pass into
-  // a SINGLE caller-created command encoder and read its persistent output back
-  // in the SAME submit — the primitive a standing PP pipeline / the R-2a join
-  // needs (no separate submit, no per-call teardown). Prove the standing path
-  // yields the SAME distinct+deterministic colors as the one-shot readback and
-  // reuses the persistent output texture across calls.
-  const standing = { available: offGate.hasRecord };
-  if (
-    offGate.hasRecord &&
-    resolveOut.width > 0 &&
-    resolveOut.height > 0 &&
-    scene.context?._device
-  ) {
-    const device = scene.context._device;
-    const w = resolveOut.width;
-    const h = resolveOut.height;
-
-    // Re-populate the shared pick target, then record + read back within one
-    // caller-owned encoder.
-    await doPick(midX, midY, spanW, spanH);
-    await renderN(1);
-
-    const readStanding = async () => {
-      const enc = device.createCommandEncoder({ label: "probe-standing-fid" });
-      const view = pfb.recordFeatureIdResolve(enc);
-      const outTex = pfb.featureIdRecolorTexture;
-      if (!view || !outTex) {
-        return null;
-      }
-      const bytesPerRow = Math.ceil((w * 4) / 256) * 256;
-      const staging = device.createBuffer({
-        size: bytesPerRow * h,
-        usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
-      });
-      enc.copyTextureToBuffer(
-        { texture: outTex },
-        { buffer: staging, bytesPerRow, rowsPerImage: h },
-        [w, h],
-      );
-      device.queue.submit([enc.finish()]);
-      await staging.mapAsync(GPUMapMode.READ);
-      const mapped = new Uint8Array(staging.getMappedRange());
-      const px = new Uint8Array(w * h * 4);
-      for (let row = 0; row < h; row++) {
-        px.set(
-          mapped.subarray(row * bytesPerRow, row * bytesPerRow + w * 4),
-          row * w * 4,
-        );
-      }
-      staging.unmap();
-      staging.destroy();
-      return { tex: outTex, px };
     };
 
-    const at = (buf, x, y) => {
-      const xi = Math.max(0, Math.min(w - 1, Math.floor(x)));
-      const yi = Math.max(0, Math.min(h - 1, Math.floor(y)));
-      const i = 4 * (yi * w + xi);
+    // Warm-up (pick pipelines materialize lazily on first pass).
+    await doPick(bbX, bbY, 9, 9);
+    await doPick(ptX, ptY, 9, 9);
+    await renderN(12);
+
+    const bbHit = describe(await doPick(bbX, bbY, 5, 5));
+    const ptHit = describe(await doPick(ptX, ptY, 5, 5));
+
+    // One wide pick covering BOTH sources so the shared ID target holds both.
+    const midX = Math.round((bbX + ptX) / 2);
+    const midY = Math.round((bbY + ptY) / 2);
+    const spanW = Math.abs(bbX - ptX) + 200;
+    const spanH = Math.abs(bbY - ptY) + 200;
+    await doPick(midX, midY, spanW, spanH);
+    await renderN(2);
+
+    const pfb = scene.view.pickFramebuffer;
+    // OFF-GATE: before any resolve/record call the standing resolve helper must
+    // never have been constructed — untouched scenes allocate nothing.
+    const offGate = {
+      hasResolve: typeof pfb?.resolveFeatureIdRecolorAsync === "function",
+      hasRecord: typeof pfb?.recordFeatureIdResolve === "function",
+      viewNullBeforeResolve: pfb?.featureIdRecolorView === null,
+      textureNullBeforeResolve: pfb?.featureIdRecolorTexture === null,
+    };
+
+    return {
+      W,
+      H,
+      bbX,
+      bbY,
+      ptX,
+      ptY,
+      midX,
+      midY,
+      spanW,
+      spanH,
+      bbHit,
+      ptHit,
+      offGate,
+    };
+  });
+}
+
+/**
+ * Runs the one-shot resolve, the standing record-into-encoder resolve, and
+ * paints the recolor into a page canvas the runtime can capture.
+ *
+ * @param {object} page The Playwright page.
+ * @param {object} scene The cross-source scene's measurements.
+ * @returns {Promise<object>} The resolve results.
+ */
+async function resolveCrossSource(page, scene) {
+  return await page.evaluate(async (s) => {
+    const { scene: sc } = window.__fid;
+    const pfb = sc.view.pickFramebuffer;
+    const out = {};
+    const at = (buf, width, height, x, y) => {
+      const xi = Math.max(0, Math.min(width - 1, Math.floor(x)));
+      const yi = Math.max(0, Math.min(height - 1, Math.floor(y)));
+      const i = 4 * (yi * width + xi);
       return [buf[i], buf[i + 1], buf[i + 2], buf[i + 3]];
     };
     const eq = (a, b) => a[0] === b[0] && a[1] === b[1] && a[2] === b[2];
     const nonBlack = (c) => c[0] !== 0 || c[1] !== 0 || c[2] !== 0;
 
-    const s1 = await readStanding();
-    const s2 = await readStanding();
-    if (s1 && s2) {
-      const bbS = at(s1.px, bbX, bbY);
-      const globeS = at(s1.px, globeX, globeY);
-      standing.bbColor = bbS;
-      standing.globeColor = globeS;
-      standing.bbNonBlack = nonBlack(bbS);
-      standing.globeNonBlack = nonBlack(globeS);
-      standing.distinct = !eq(bbS, globeS);
-      // Persistent output texture reused across records (no per-call realloc).
-      standing.persistentTexture = s1.tex === s2.tex;
-      standing.deterministic =
-        eq(bbS, at(s2.px, bbX, bbY)) && eq(globeS, at(s2.px, globeX, globeY));
-      // Standing path matches the one-shot readback path bit-for-bit.
-      standing.matchesOneShot =
-        eq(bbS, resolveOut.bbColor) && eq(globeS, resolveOut.globeColor);
-      // The recolor view/texture now exist (helper constructed by the record).
-      standing.viewLiveAfterRecord = pfb.featureIdRecolorView !== null;
+    const r1 = await pfb.resolveFeatureIdRecolorAsync();
+    const r2 = await pfb.resolveFeatureIdRecolorAsync();
+    if (!r1 || !r2) {
+      return { resolved: false };
     }
-  }
+    const { width, height, pixels } = r1;
+    // The pick FBO / resolve output is stored TOP-DOWN (row 0 = top of frame),
+    // matching the canvas client coords used above.
+    const bbColor = at(pixels, width, height, s.bbX, s.bbY);
+    const ptColor = at(pixels, width, height, s.ptX, s.ptY);
+    out.resolved = true;
+    out.width = width;
+    out.height = height;
+    out.bbColor = bbColor;
+    out.ptColor = ptColor;
+    out.bbNonBlack = nonBlack(bbColor);
+    out.ptNonBlack = nonBlack(ptColor);
+    out.distinct = !eq(bbColor, ptColor);
+    out.deterministic =
+      eq(bbColor, at(r2.pixels, width, height, s.bbX, s.bbY)) &&
+      eq(ptColor, at(r2.pixels, width, height, s.ptX, s.ptY));
 
-  return {
-    bbHit,
-    globeHit,
-    resolveOut,
-    offGate,
-    standing,
-    W,
-    H,
-    bbX,
-    bbY,
-    globeX,
-    globeY,
-    errors,
-  };
-});
+    // Paint the recolor for the runtime's element capture.
+    let outCanvas = document.getElementById("featureIdRecolor");
+    if (!outCanvas) {
+      outCanvas = document.createElement("canvas");
+      outCanvas.id = "featureIdRecolor";
+      outCanvas.style.position = "fixed";
+      outCanvas.style.left = "0";
+      outCanvas.style.top = "0";
+      outCanvas.style.zIndex = "99999";
+      document.body.appendChild(outCanvas);
+    }
+    outCanvas.width = width;
+    outCanvas.height = height;
+    const octx = outCanvas.getContext("2d");
+    const imgData = octx.createImageData(width, height);
+    imgData.data.set(pixels);
+    octx.putImageData(imgData, 0, 0);
+    // Mark the two probe pixels with small crosshairs for the reviewer.
+    octx.strokeStyle = "#00ff00";
+    octx.strokeRect(s.bbX - 6, s.bbY - 6, 12, 12);
+    octx.strokeStyle = "#ff8800";
+    octx.strokeRect(s.ptX - 6, s.ptY - 6, 12, 12);
 
-// Screenshot the recolor canvas if present.
-let pngSaved = false;
-const el = await page.$("#featureIdRecolor");
-if (el) {
-  await el.screenshot({ path: OUT_PNG });
-  pngSaved = true;
+    // STANDING PER-FRAME PP WIRING (R-2b residual a): record the recolor into a
+    // caller-created encoder and read its persistent output back in the SAME
+    // submit — no separate submit, no per-call teardown.
+    const device = sc.context?._device;
+    const standing = {
+      available: typeof pfb.recordFeatureIdResolve === "function",
+    };
+    if (standing.available && device) {
+      await window.__fidPick(s.midX, s.midY, s.spanW, s.spanH);
+      await window.__fidRenderN(1);
+      const readStanding = async () => {
+        const enc = device.createCommandEncoder({
+          label: "probe-standing-fid",
+        });
+        const view = pfb.recordFeatureIdResolve(enc);
+        const outTex = pfb.featureIdRecolorTexture;
+        if (!view || !outTex) {
+          return null;
+        }
+        const bytesPerRow = Math.ceil((width * 4) / 256) * 256;
+        const staging = device.createBuffer({
+          size: bytesPerRow * height,
+          usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+        });
+        enc.copyTextureToBuffer(
+          { texture: outTex },
+          { buffer: staging, bytesPerRow, rowsPerImage: height },
+          [width, height],
+        );
+        device.queue.submit([enc.finish()]);
+        await staging.mapAsync(GPUMapMode.READ);
+        const mapped = new Uint8Array(staging.getMappedRange());
+        const px = new Uint8Array(width * height * 4);
+        for (let row = 0; row < height; row++) {
+          px.set(
+            mapped.subarray(row * bytesPerRow, row * bytesPerRow + width * 4),
+            row * width * 4,
+          );
+        }
+        staging.unmap();
+        staging.destroy();
+        return { tex: outTex, px };
+      };
+      const s1 = await readStanding();
+      const s2 = await readStanding();
+      if (s1 && s2) {
+        const bbS = at(s1.px, width, height, s.bbX, s.bbY);
+        const ptS = at(s1.px, width, height, s.ptX, s.ptY);
+        standing.bbNonBlack = nonBlack(bbS);
+        standing.ptNonBlack = nonBlack(ptS);
+        standing.distinct = !eq(bbS, ptS);
+        // Persistent output texture reused across records (no per-call realloc).
+        standing.persistentTexture = s1.tex === s2.tex;
+        standing.deterministic =
+          eq(bbS, at(s2.px, width, height, s.bbX, s.bbY)) &&
+          eq(ptS, at(s2.px, width, height, s.ptX, s.ptY));
+        // Standing path matches the one-shot readback path bit-for-bit.
+        standing.matchesOneShot = eq(bbS, bbColor) && eq(ptS, ptColor);
+        standing.viewLiveAfterRecord = pfb.featureIdRecolorView !== null;
+      }
+    }
+    out.standing = standing;
+    return out;
+  }, scene);
 }
 
-await browser.close();
+/**
+ * Stages three pick ids across the 2^24 boundary and reads back the key each
+ * primitive ACTUALLY received from the real pick registry.
+ *
+ * @param {object} page The Playwright page.
+ * @returns {Promise<object>} The staged keys and their screen positions.
+ */
+async function stageKeySpan(page) {
+  return await page.evaluate(async () => {
+    const { C, scene } = window.__fid;
+    const doPick = window.__fidPick;
+    const renderN = window.__fidRenderN;
+    const context = scene.context;
 
-console.log(JSON.stringify(out, null, 2));
-if (pngSaved) console.log("recolor PNG:", OUT_PNG);
-if (pageErrors.length) console.log("page errors:", pageErrors);
+    // Three points, each in its own collection so each is its own pick target.
+    const make = (dLon, colour) => {
+      const collection = scene.primitives.add(new C.PointPrimitiveCollection());
+      return collection.add({
+        position: C.Cartesian3.fromDegrees(-75 + dLon, 39.94, 1000.0),
+        pixelSize: 60,
+        color: colour,
+        id: `probe-feature-id-span-${dLon}`,
+      });
+    };
+    const alias0 = make(-0.06, C.Color.YELLOW);
+    const alias1 = make(0.0, C.Color.LIME);
+    const multiple = make(0.06, C.Color.ORANGE);
 
-const r = out.resolveOut;
-const og = out.offGate || {};
-const s = out.standing || {};
-const pass =
-  out.bbHit.found &&
-  out.bbHit.isBillboard &&
-  out.globeHit.found &&
-  out.globeHit.isPoint &&
-  r.hasResolve &&
-  r.bbNonBlack &&
-  r.globeNonBlack &&
-  r.distinct &&
-  r.deterministic &&
-  // OFF-GATE: nothing allocated before an explicit resolve/record call.
-  og.viewNullBeforeResolve === true &&
-  og.textureNullBeforeResolve === true &&
-  og.hasRecord === true &&
-  // STANDING per-frame record-into-encoder path.
-  s.available === true &&
-  s.bbNonBlack === true &&
-  s.globeNonBlack === true &&
-  s.distinct === true &&
-  s.deterministic === true &&
-  s.persistentTexture === true &&
-  s.matchesOneShot === true &&
-  s.viewLiveAfterRecord === true &&
-  out.errors.length === 0 &&
-  pageErrors.length === 0;
+    // The key a primitive actually got, read from the REAL registry rather than
+    // assumed from the seed.
+    const keyOf = (primitive) => {
+      for (const [key, target] of context._pickObjects) {
+        if (target === primitive || target?.primitive === primitive) {
+          return key >>> 0;
+        }
+      }
+      return null;
+    };
 
-console.log(pass ? "PROBE PASS" : "PROBE FAIL");
-process.exit(pass ? 0 : 1);
+    const screenOf = (primitive) => {
+      const s = scene.cartesianToCanvasCoordinates(primitive.position);
+      return { x: Math.round(s?.x ?? 0), y: Math.round(s?.y ?? 0) };
+    };
+
+    // Warm every OTHER primitive's pick id first, so the seeded allocations
+    // below are not consumed by a neighbour materializing its id.
+    await renderN(30);
+    const warmX = Math.floor((scene.canvas.clientWidth || 1024) / 2);
+    const warmY = Math.floor((scene.canvas.clientHeight || 768) / 2);
+    await doPick(warmX, warmY, 900, 700);
+    await renderN(4);
+    await doPick(warmX, warmY, 900, 700);
+    await renderN(4);
+
+    // Phase A: the low half of the alias pair.
+    const a0 = screenOf(alias0);
+    context._nextPickColor[0] = 0x00000300;
+    await doPick(a0.x, a0.y, 25, 25);
+    await renderN(2);
+    const alias0Key = keyOf(alias0);
+
+    // Phase B: the SAME low 24 bits, one step above bit 23.
+    const a1 = screenOf(alias1);
+    if (alias0Key !== null) {
+      context._nextPickColor[0] = ((alias0Key + 0x01000000) >>> 0) - 1;
+    }
+    await doPick(a1.x, a1.y, 25, 25);
+    await renderN(2);
+    const alias1Key = keyOf(alias1);
+
+    // Phase C: a key that is an exact multiple of 2^24 — (0,0,0,n) in the pick
+    // target, i.e. the case a 24-bit decode reads back as "nothing drawn".
+    const m = screenOf(multiple);
+    context._nextPickColor[0] = 0x02ffffff;
+    await doPick(m.x, m.y, 25, 25);
+    await renderN(2);
+    const multipleKey = keyOf(multiple);
+
+    return {
+      alias0: { key: alias0Key, ...a0 },
+      alias1: { key: alias1Key, ...a1 },
+      multiple: { key: multipleKey, ...m },
+      nextPickColor: context._nextPickColor[0] >>> 0,
+    };
+  });
+}
+
+/**
+ * Resolves the recolor over the staged points and reports the color at each.
+ *
+ * @param {object} page The Playwright page.
+ * @param {object} span The staged keys.
+ * @returns {Promise<object>} The recolor at each staged pixel.
+ */
+async function resolveKeySpan(page, span) {
+  return await page.evaluate(async (s) => {
+    const { scene } = window.__fid;
+    const doPick = window.__fidPick;
+    const renderN = window.__fidRenderN;
+    const pfb = scene.view.pickFramebuffer;
+    const W = scene.canvas.clientWidth || 1024;
+    const H = scene.canvas.clientHeight || 768;
+    // One wide pick so all three staged points land in the shared target.
+    await doPick(Math.floor(W / 2), Math.floor(H / 2), W - 2, H - 2);
+    await renderN(2);
+    const r = await pfb.resolveFeatureIdRecolorAsync();
+    if (!r) {
+      return { resolved: false };
+    }
+    const at = (x, y) => {
+      const xi = Math.max(0, Math.min(r.width - 1, Math.floor(x)));
+      const yi = Math.max(0, Math.min(r.height - 1, Math.floor(y)));
+      const i = 4 * (yi * r.width + xi);
+      return [r.pixels[i], r.pixels[i + 1], r.pixels[i + 2]];
+    };
+    return {
+      resolved: true,
+      width: r.width,
+      height: r.height,
+      alias0Color: at(s.alias0.x, s.alias0.y),
+      alias1Color: at(s.alias1.x, s.alias1.y),
+      multipleColor: at(s.multiple.x, s.multiple.y),
+    };
+  }, span);
+}
+
+/**
+ * Turns the staged keys and their recolors into the AR-751 verdict inputs. A
+ * staging miss REFUSES; only a real disagreement between the shader and the key
+ * is a red.
+ *
+ * @param {object} span The staged keys.
+ * @param {object} colors The recolor at each staged pixel.
+ * @returns {object} The key-span cell.
+ */
+export function buildKeySpanCell(span, colors) {
+  const { alias0, alias1, multiple } = span;
+  if (alias0.key === null || alias1.key === null || multiple.key === null) {
+    throw new ProbeRefusal(
+      "staged-key-unregistered",
+      "a staged point never appeared in the pick registry, so no key could be read back",
+      { span },
+    );
+  }
+  if (!differsOnlyAboveBit23(alias0.key, alias1.key)) {
+    throw new ProbeRefusal(
+      "alias-pair-not-staged",
+      `the alias pair does not differ only above bit 23: 0x${alias0.key.toString(16)} vs 0x${alias1.key.toString(16)}`,
+      { alias0: alias0.key, alias1: alias1.key },
+    );
+  }
+  if ((multiple.key & 0x00ffffff) !== 0 || multiple.key >>> 24 === 0) {
+    throw new ProbeRefusal(
+      "multiple-not-staged",
+      `the third key is not a non-zero multiple of 2^24: 0x${multiple.key.toString(16)}`,
+      { multiple: multiple.key },
+    );
+  }
+  if (!colors.resolved) {
+    throw new ProbeRefusal(
+      "resolve-declined",
+      "resolveFeatureIdRecolorAsync returned nothing for the key-span scene",
+      {},
+    );
+  }
+  const same = (a, b) => a[0] === b[0] && a[1] === b[1] && a[2] === b[2];
+  const nonBlack = (c) => c[0] !== 0 || c[1] !== 0 || c[2] !== 0;
+  const expected0 = expectedRecolor(alias0.key);
+  const expected1 = expectedRecolor(alias1.key);
+  const expectedMultiple = expectedRecolor(multiple.key);
+  return {
+    cell: "key-span",
+    keys: { alias0: alias0.key, alias1: alias1.key, multiple: multiple.key },
+    colors,
+    expected: {
+      alias0: expected0,
+      alias1: expected1,
+      multiple: expectedMultiple,
+    },
+    // The two ids differing only above bit 23 recolor differently.
+    aliasPairDistinct: !same(colors.alias0Color, colors.alias1Color),
+    // The multiple of 2^24 is not painted as background.
+    multipleNonBlack: nonBlack(colors.multipleColor),
+    // The strongest form: each recolor is the hash of the FULL key.
+    alias0MatchesFullKey: same(colors.alias0Color, expected0),
+    alias1MatchesFullKey: same(colors.alias1Color, expected1),
+    multipleMatchesFullKey: same(colors.multipleColor, expectedMultiple),
+  };
+}
+
+/** The descriptor the shared runtime executes. */
+export const descriptor = {
+  name: "feature-id",
+  title: "Unified feature-ID texture (R-2b) + 32-bit pick keys (AR-751)",
+  outputSubdirectory: "feature-id",
+  receiptEnvelope: "probe-owned",
+  // FeatureIdResolve.wgsl and WebGPUPickFramebuffer are WebGPU-only; WebGL's
+  // PickFramebuffer has no shader-samplable feature-ID G-buffer at all.
+  args: { defaults: { renderers: ["webgpu"] } },
+  async cells({ browser, origin, outputDirectory, options, captures }) {
+    if (options.renderers.length !== 1 || options.renderers[0] !== "webgpu") {
+      throw new ProbeRefusal(
+        "renderer-not-webgpu",
+        `probe-feature-id-texture only measures webgpu (WebGL has no shader-samplable feature-ID G-buffer); got --renderer ${options.renderers.join(",")}`,
+        { renderers: options.renderers },
+      );
+    }
+    const work = (async () => {
+      const page = await browser.newPage({ viewport: VIEWPORT });
+      try {
+        await page.goto(
+          `${origin}/Apps/CesiumViewer/index.html?renderer=webgpu`,
+          { waitUntil: "networkidle", timeout: 90000 },
+        );
+        await page.waitForFunction(() => !!window.viewer, { timeout: 90000 });
+
+        const scene = await buildCrossSourceScene(page);
+        if (!scene.offGate.hasResolve) {
+          throw new ProbeRefusal(
+            "resolve-absent",
+            "the served bundle has no resolveFeatureIdRecolorAsync — rebuild before running this probe",
+            {},
+          );
+        }
+        const resolved = await resolveCrossSource(page, scene);
+        await captureElement({
+          page,
+          selector: "#featureIdRecolor",
+          name: "feature-id-recolor",
+          outputDirectory,
+          captures,
+        });
+
+        const span = await stageKeySpan(page);
+        const spanColors = await resolveKeySpan(page, span);
+        const deviceErrors = await page.evaluate(
+          () => window.__fid?.errors ?? [],
+        );
+        return [
+          { cell: "cross-source", scene, resolved, deviceErrors },
+          buildKeySpanCell(span, spanColors),
+        ];
+      } finally {
+        await page.close();
+      }
+    })();
+    // A watchdog loss leaves `work` running against a page the runtime is about
+    // to close; that trailing rejection has no reader left.
+    work.catch(() => {});
+    let watchdogTimer;
+    const watchdog = new Promise((_resolve, reject) => {
+      watchdogTimer = setTimeout(
+        () =>
+          reject(
+            new ProbeRefusal(
+              "watchdog-timeout",
+              `probe-feature-id-texture exceeded its ${WATCHDOG_BUDGET_MS}ms machine-safety budget`,
+              { budgetMs: WATCHDOG_BUDGET_MS },
+            ),
+          ),
+        WATCHDOG_BUDGET_MS,
+      );
+    });
+    try {
+      return await Promise.race([work, watchdog]);
+    } finally {
+      clearTimeout(watchdogTimer);
+    }
+  },
+  verdicts(cells) {
+    const verdicts = [];
+    const cross = cells.find((c) => c.cell === "cross-source");
+    if (cross) {
+      const { scene, resolved, deviceErrors } = cross;
+      const standing = resolved.standing ?? {};
+      verdicts.push({
+        id: "cross-source",
+        claim:
+          "R-2b — two distinct pick sources resolve to distinct non-black in-shader colors, deterministically, off-gated and reachable from a standing encoder",
+        pass:
+          scene.bbHit.found === true &&
+          scene.bbHit.isBillboard === true &&
+          scene.ptHit.found === true &&
+          scene.ptHit.isPoint === true &&
+          scene.offGate.hasRecord === true &&
+          scene.offGate.viewNullBeforeResolve === true &&
+          scene.offGate.textureNullBeforeResolve === true &&
+          resolved.resolved === true &&
+          resolved.bbNonBlack === true &&
+          resolved.ptNonBlack === true &&
+          resolved.distinct === true &&
+          resolved.deterministic === true &&
+          standing.available === true &&
+          standing.bbNonBlack === true &&
+          standing.ptNonBlack === true &&
+          standing.distinct === true &&
+          standing.deterministic === true &&
+          standing.persistentTexture === true &&
+          standing.matchesOneShot === true &&
+          standing.viewLiveAfterRecord === true &&
+          (deviceErrors?.length ?? 0) === 0,
+      });
+    }
+    const span = cells.find((c) => c.cell === "key-span");
+    if (span) {
+      verdicts.push({
+        id: "key-span",
+        claim:
+          "AR-751 — the recolor is the hash of the FULL 32-bit key: ids differing only above bit 23 stay distinct, and a multiple of 2^24 is not background",
+        pass:
+          span.aliasPairDistinct === true &&
+          span.multipleNonBlack === true &&
+          span.alias0MatchesFullKey === true &&
+          span.alias1MatchesFullKey === true &&
+          span.multipleMatchesFullKey === true,
+      });
+    }
+    return verdicts;
+  },
+  receipt(cells, context) {
+    return {
+      base: context.origin,
+      generatedAt: context.generatedAt,
+      verdicts: context.verdicts,
+      cells,
+    };
+  },
+  summary(receipt) {
+    const passed = receipt.verdicts.filter((v) => v.pass === true).length;
+    const span = receipt.cells.find((c) => c.cell === "key-span");
+    return [
+      "# Unified feature-ID texture (R-2b) + 32-bit pick keys (AR-751)",
+      "",
+      `Base: \`${receipt.base}\``,
+      "",
+      `Verdicts: ${passed}/${receipt.verdicts.length} passed.`,
+      "",
+      span
+        ? `Staged keys: alias pair 0x${span.keys.alias0.toString(16)} / 0x${span.keys.alias1.toString(16)}, multiple 0x${span.keys.multiple.toString(16)}.`
+        : "No key-span cell was produced.",
+      "",
+    ].join("\n");
+  },
+};
+
+if (isEntryPoint(import.meta.url)) {
+  process.exitCode = await runProbe(descriptor);
+}

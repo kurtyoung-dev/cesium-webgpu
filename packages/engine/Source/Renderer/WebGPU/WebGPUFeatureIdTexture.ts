@@ -3,7 +3,7 @@
  * Shader-side resolve of the source-agnostic per-fragment
  * feature-ID G-buffer.
  *
- * `WebGPUSceneRendererPickPass` already rasterizes a 24-bit
+ * `WebGPUSceneRendererPickPass` already rasterizes a 32-bit
  * object/feature ID for EVERY source (globe, 3D-tile, model, voxel,
  * Gaussian-splat) into ONE shared rgba8 pick target (`WebGPUPickFramebuffer`).
  * That target is therefore a unified, source-agnostic, per-fragment feature-ID
@@ -12,7 +12,7 @@
  *
  * This helper closes that gap: given the pick FBO's ID texture it runs a
  * fullscreen post-process pass (`FeatureIdResolve.wgsl`) that `textureLoad`s the
- * ID at every fragment, decodes the 24-bit key on the GPU, and recolors each
+ * ID at every fragment, decodes the 32-bit key on the GPU, and recolors each
  * distinct feature with a deterministic hash into an output texture. The output
  * is read back so callers can prove that cross-source feature IDs are resolvable
  * inside a PP pass (distinct sources → distinct in-shader colours), which is the

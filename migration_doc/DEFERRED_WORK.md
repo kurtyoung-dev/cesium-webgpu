@@ -14634,3 +14634,96 @@ Files: `packages/engine/Source/Scene/GlobeSurfaceTileProviderRendering.js`,
 `package.json` (`test-scene-node`),
 `Tools/visual-regression/probe-ar002-per-tile-credits.mjs`,
 `Tools/visual-regression/ar002-per-tile-credits-harness.html`.
+
+## 2026-09-04 — NEW-WEBGPU-PICK-KEY-WIDTH-DISAGREEMENT (lane Gorlim, row `AR-751`, wave P0-1) — **CLOSED in the filing patch**
+
+**Mechanism.** `GraphicsContext#createPickId` allocates a monotonic uint32 key
+and packs it with `Color.fromRgba(key)`, which on a little-endian host puts
+`key & 0xff` in red, `(key>>>8) & 0xff` in green, `(key>>>16) & 0xff` in blue and
+**`(key>>>24) & 0xff` in ALPHA**. Alpha is a key byte, not an opacity. Every
+WebGPU pick producer writes all four channels from that `Color`
+(`WebGPUComputeInstanceRenderer.ts`: "Forcing alpha to 1.0 would corrupt the
+decoded key"), and the pick pass clears to `(0,0,0,0)`. Most pick pipelines
+declare `targets: [{ format }]` — blend-stripped, full write mask — so the four
+bytes land byte-exact; `WebGPUBufferPointRenderer.ts:248-249` and
+`WebGPUBufferPolylineRenderer.ts:198-199` do not, which is filed separately
+below as NEW-WEBGPU-PICK-TARGET-BLEND. The CPU decoder
+`WebGPUPickFramebuffer.ts:143-165` therefore rebuilds the key with
+`Color.bytesToRgba(r, g, b, a)` — 32 bits, and correct.
+
+Three sites disagreed with that decoder:
+
+1. `Shaders/WebGPU/PostProcess/FeatureIdResolve.wgsl` — `decodeFeatureId` read
+   r, g, b only. **Live defect**: two ids differing only above bit 23 recolored
+   to one colour, and every id that is a multiple of 2^24 decoded to 0, which the
+   shader paints as background — the feature vanished from the recolor.
+2. `Renderer/PickId.js` — `normalizedRgba` wrote alpha as the constant `1.0`, so
+   its encoding of key K would read back as `K | 0xff000000`. **Latent**: the
+   field has NO consumer anywhere in the tree (verified by grep over
+   `packages/`, `Apps/`, `Tools/`, `Specs/`), which is precisely why picking
+   worked despite it. A future producer wiring to it would have broken all
+   picking.
+3. `Renderer/GraphicsContext.ts` `_pickColorToKey`'s byte-object branch —
+   composed `red | green<<8 | blue<<16`, truncating to 24 bits. **Latent**: all
+   four production callers (`Scene/PickFramebuffer.js`, `Scene/SnapFramebuffer.js`,
+   `Renderer/WebGPU/WebGPUPickFramebuffer.ts`,
+   `Renderer/WebGPU/WebGPUSnapPayload.ts`) pass a NUMBER and take the identity
+   branch; the only object-branch caller in the tree is a negative test in
+   `Specs/Renderer/ContextSpec.js`.
+
+**Fix.** All three widened to the full 32 bits. The object branch additionally
+takes `>>> 0`: `(alpha & 0xff) << 24` is a negative int32 for alpha >= 0x80, and
+keys come from a `Uint32Array`, so a signed result would match nothing.
+
+**Observable acceptance.** `Tools/visual-regression/webgpu-pick-id-32-bit.spec.mjs`
+(runner `npm run test-readiness`), 19 tests: a key allocated through the REAL
+`_nextPickColor` allocator, encoded by the REAL `PickId`, rasterised as an
+rgba8unorm attachment would, must round-trip through each decoder and resolve to
+its own registered object — over a key set spanning bit 24, including
+`0x01020304`, the alias pair `0x00000101`/`0x01000101`, `0x01000000` and
+`0xff020304`. The shader's own `decodeFeatureId` return expressions are lifted
+from the real `.wgsl` and executed through a total tokeniser (there is no WGSL
+evaluator in this tree). Group D derives each site's key width behaviourally and
+requires all four sites to agree, with a negative control that a deliberately
+24-bit site reports 24.
+
+**Proving artefact (Edge).** `Tools/visual-regression/probe-feature-id-texture.mjs`,
+`key-span` cell: three points staged across the 2^24 boundary through the real
+allocator, keys read back from the real `_pickObjects` registry, each point's GPU
+recolor required to equal the Knuth hash of its FULL key. A staging miss REFUSES
+(exit 3) rather than reporting a red.
+
+**Parity.** WebGL is byte-identical: the shader is WGSL and WebGPU-only;
+`normalizedRgba` has no reader at all; and the byte-object branch is unreachable
+from either WebGL reader, both of which pass a number to the untouched identity
+branch. WebGL's `PickFramebuffer` already decoded all four bytes with
+`Color.bytesToRgba` — it never had this defect.
+
+**Residual, Principle 9.** `PickId.normalizedRgba` is dead in the tree. It is
+CORRECTED here rather than removed because removing a documented field is a
+separate decision with its own blast radius; whether it should be retired or
+wired into the WebGPU producers (which currently re-derive the same four bytes
+from `PickId.color`) is an open follow-up, not settled by this row.
+
+## 2026-09-04 — NEW-WEBGPU-PICK-TARGET-BLEND (surfaced by lane Gorlim's AR-751 review, Arachon) — OPEN
+
+`WEBGPU_DEBUGGING_LOG.md:13775-13777` states the pick-FBO invariant: the derived
+PICK pipeline is a "slot-0-only blend-stripped color target … pick colors must
+land byte-exact". Two collection renderers violate it — the pick branch attaches
+the colour path's alpha blend to the pick target:
+`WebGPUBufferPointRenderer.ts:248-249` and `WebGPUBufferPolylineRenderer.ts:198-199`
+both build `[{ format, blend }]` with `color: src-alpha / one-minus-src-alpha`.
+
+`Color.fromRgba(key)` puts the key's HIGH byte in alpha, so every ordinary pick
+id (< 2^24) has `srcAlpha == 0`. Against the `(0,0,0,0)` pick clear that blend
+evaluates to `src·0 + dst·1 == 0`: the key's three low bytes are multiplied away
+and the attachment keeps the clear value. `WebGPUBufferPolygonRenderer.ts:167-169`
+and `WebGPUPointPrimitiveRenderer.js:565` are correct (`[{ format }]`), as is the
+central `WebGPUDerivedCommand` PICK derivation.
+
+Not introduced by AR-751 and not on AR-751's proving path (the Edge probe stages
+through `PointPrimitiveCollection`). Suspected consequence: `BufferPointCollection`
+and `BufferPolylineCollection` fragments never contribute a resolvable id to the
+shared pick target. **Unverified at runtime** — the next step is a probe that
+picks a `BufferPointCollection` point and asserts the readback key equals the
+key the registry reports, BEFORE any pipeline edit.

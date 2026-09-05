@@ -21,7 +21,7 @@ declare class PickId {
   readonly _pickKinds?: Map<number, PickKind>;
   key: number;
   color: Color;
-  /** Pre-computed RGBA for WebGPU (little-endian RGB + alpha=1). */
+  /** Pre-computed RGBA for WebGPU (little-endian RGBA; alpha is key bits 24-31). */
   normalizedRgba: Float32Array;
 
   /** Object bound to this pick ID (get/set backed by _pickObjects map). */

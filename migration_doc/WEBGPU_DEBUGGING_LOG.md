@@ -18960,3 +18960,44 @@ double-add a credit post-fix.
 `Tools/visual-regression/ar002-per-tile-credits-harness.html` (new). Ledger
 entry: `migration_doc/DEFERRED_WORK.md`, "AR-002 FIXED, pending the `AR-M14`
 measurement" (2026-09-04).
+
+## Lane Gorlim (wave P0-1, 2026-09-04) — AR-751: the pick key was decoded at three widths
+
+**Bug id:** AR-751 / NEW-WEBGPU-PICK-KEY-WIDTH-DISAGREEMENT.
+
+**Files affected:**
+`packages/engine/Source/Shaders/WebGPU/PostProcess/FeatureIdResolve.wgsl`,
+`packages/engine/Source/Renderer/PickId.js`,
+`packages/engine/Source/Renderer/PickId.d.ts`,
+`packages/engine/Source/Renderer/GraphicsContext.ts`,
+`packages/engine/Source/Renderer/WebGPU/WebGPUFeatureIdTexture.ts` (comment),
+`packages/engine/Source/Renderer/WebGPU/WebGPUPickFramebuffer.ts` (comment).
+
+**Root cause.** The pick key is a monotonic uint32 that `Color.fromRgba` packs
+across all four bytes, alpha being the HIGH byte rather than an opacity. The
+authoritative CPU decoder (`WebGPUPickFramebuffer.ts:143-165`) has folded all
+four bytes with `Color.bytesToRgba(r, g, b, a)` since the pick pass was repaired,
+but three other sites still assumed 24 bits: the feature-id recolor shader's
+`decodeFeatureId`, `PickId.normalizedRgba` (alpha pinned to `1.0`), and
+`GraphicsContext#_pickColorToKey`'s byte-object branch. Only the shader's
+truncation was live — two ids differing only above bit 23 recolored to one
+colour, and any id that is a multiple of 2^24 decoded to 0, which the shader
+paints as background. The other two are latent: `normalizedRgba` has no consumer
+in the tree, and every production caller of `getObjectByPickColor` passes a
+number and takes the untouched identity branch, which is why picking has always
+worked despite the apparent contradiction between a constant alpha on the encode
+side and an alpha-inclusive decode on the read side.
+
+**Fix applied.** `decodeFeatureId` now returns `r | g<<8 | b<<16 | a<<24`;
+`normalizedRgba`'s fourth component is `((key >>> 24) & 0xff) / 255`; the
+byte-object branch folds alpha in and takes `>>> 0` so a key with alpha >= 0x80
+stays an unsigned uint32 instead of a negative int32 that could match no
+`Uint32Array` key. `id == 0` still means "nothing drawn" — the pick target clears
+to `(0,0,0,0)` and ids start at 1.
+
+**Verification.** `Tools/visual-regression/webgpu-pick-id-32-bit.spec.mjs`
+(19 tests, `npm run test-readiness`), one inertness mutant per file, each
+rebuilt and reverted. The shader mutant reds no encode- or decode-group test and
+the decoder mutant reds no encode- or shader-group test, so each fix has at least
+one test only it can turn red. Edge leg:
+`Tools/visual-regression/probe-feature-id-texture.mjs` `key-span` cell.

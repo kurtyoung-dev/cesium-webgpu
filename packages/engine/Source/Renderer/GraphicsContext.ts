@@ -1655,11 +1655,20 @@ export abstract class GraphicsContext {
    */
   private _pickColorToKey(pickColor: CesiumColor | number): number {
     if (typeof pickColor === "object" && pickColor !== null) {
-      // WebGPU path: reconstruct key from RGB bytes (little-endian)
+      // Byte-object path: reconstruct the key from ALL FOUR bytes,
+      // little-endian — the same four `Color.fromRgba(key)` packs and the same
+      // four the number path's `Color.bytesToRgba(r, g, b, a)` folds back.
+      // Alpha is the key's high byte, not an opacity: dropping it truncated
+      // every key to 24 bits, so ids differing only above bit 23 aliased onto
+      // one entry and `0x01000000` resolved as key 0. `>>> 0` keeps the result
+      // an unsigned uint32 — `<< 24` alone yields a negative int32 for alpha
+      // >= 0x80, which would never match a `_nextPickColor` (Uint32Array) key.
       return (
-        (pickColor.red & 0xff) |
-        ((pickColor.green & 0xff) << 8) |
-        ((pickColor.blue & 0xff) << 16)
+        ((pickColor.red & 0xff) |
+          ((pickColor.green & 0xff) << 8) |
+          ((pickColor.blue & 0xff) << 16) |
+          ((pickColor.alpha & 0xff) << 24)) >>>
+        0
       );
     }
     // WebGL path: pickColor is already the uint32 key
@@ -1671,10 +1680,10 @@ export abstract class GraphicsContext {
    *
    * Accepts two calling conventions:
    * - **uint32** (WebGL path): A 32-bit RGBA value from `Color.byteToRgba(r,g,b,a)`
-   * - **object** (WebGPU path): An `{red, green, blue}` object with 0-255 byte values,
-   *   which is reconstructed to a key via little-endian RGB encoding.
+   * - **object**: An `{red, green, blue, alpha}` object with 0-255 byte values,
+   *   which is reconstructed to a key via little-endian RGBA encoding.
    *
-   * @param pickColor - The pick color key (uint32 or {red,green,blue} object)
+   * @param pickColor - The pick color key (uint32 or {red,green,blue,alpha} object)
    * @returns The object associated with the pick color, or undefined
    */
   getObjectByPickColor(
@@ -1704,7 +1713,7 @@ export abstract class GraphicsContext {
    * }
    * ```
    *
-   * @param pickColor - The pick color key (uint32 or {red,green,blue} object)
+   * @param pickColor - The pick color key (uint32 or {red,green,blue,alpha} object)
    * @returns The {@link PickResult} if a target is registered for this
    *   color, otherwise undefined.
    */

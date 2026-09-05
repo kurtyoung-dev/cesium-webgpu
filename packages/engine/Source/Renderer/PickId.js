@@ -9,7 +9,7 @@
  * Each pickable object gets a unique sequential integer key. The key is
  * encoded as a color in two formats to support both WebGL and WebGPU:
  * - `.color` — CesiumJS `Color` via `Color.fromRgba(key)` (big-endian RGBA, for WebGL)
- * - `.normalizedRgba` — Float32Array in little-endian RGB + alpha=1.0 (for WebGPU)
+ * - `.normalizedRgba` — Float32Array in little-endian RGBA (for WebGPU)
  *
  * During pick rendering passes, fragments output this color instead of
  * the visual appearance. Reading back the pixel gives the key to look
@@ -42,12 +42,20 @@ class PickId {
     /** @type {Color} */
     this.color = color;
 
-    // Pre-compute normalized RGBA for WebGPU (little-endian RGB encoding)
-    // key → R=low byte, G=mid byte, B=high byte, A=1.0
+    // Pre-compute normalized RGBA for WebGPU (little-endian RGBA encoding),
+    // byte-for-byte the same four bytes `Color.fromRgba(key)` produces above:
+    // key → R=byte 0, G=byte 1, B=byte 2, A=byte 3.
+    //
+    // Alpha carries bits 24-31 of the key; it is NOT a constant opacity. The
+    // WebGPU pick readback rebuilds the key from all four bytes
+    // (`Color.bytesToRgba(r, g, b, a)` in WebGPUPickFramebuffer), so pinning
+    // alpha to 1.0 here encoded a 24-bit key that the 32-bit decoder would
+    // read back as `key | 0xff000000` — unresolvable for every id.
     const r = (key & 0xff) / 255.0;
-    const g = ((key >> 8) & 0xff) / 255.0;
-    const b = ((key >> 16) & 0xff) / 255.0;
-    this.normalizedRgba = new Float32Array([r, g, b, 1.0]);
+    const g = ((key >>> 8) & 0xff) / 255.0;
+    const b = ((key >>> 16) & 0xff) / 255.0;
+    const a = ((key >>> 24) & 0xff) / 255.0;
+    this.normalizedRgba = new Float32Array([r, g, b, a]);
   }
 
   /**
