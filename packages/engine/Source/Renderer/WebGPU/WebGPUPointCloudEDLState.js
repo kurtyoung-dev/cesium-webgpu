@@ -227,7 +227,7 @@ function shouldReleaseWebGPUPointCloudEDLTargets(cache, frameNumber) {
  * Keep the original point draw available when synchronous EDL work fails.
  *
  * @template T
- * @param {() => T} attempt
+ * @param {function(): T} attempt
  * @param {Object} handlers Callbacks: `report(error)` records the failure and
  *   `restore(error)` re-enables the original point draw.
  * @returns {T | false}
