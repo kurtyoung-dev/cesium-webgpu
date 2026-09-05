@@ -204,7 +204,7 @@ certification.
 | `UPSTREAM-SYNC-1.145-03` | Tiles + models review, including the auto-merged RTE-heavy set (`GltfLoader`, `Model3DTileContent`, `EdgeVisibilityPipelineStage`, `PickingPipelineStage`) | OPUS-JUDGMENT | M | LANDED (Batch 1408; REVIEW_TAR-ANDUCAL_cluster-c.md — LAND) | `-00` landed | 1 |
 | `UPSTREAM-SYNC-1.145-04` | Renderer core: re-source 1.145's only Scene-layer `ContextLimits` read to `context.limits`; the snap `surfacePosition` contract vs the fork's readback policy | OPUS-JUDGMENT | M | LANDED (Batch 1408; REVIEW_TAR-FALASSION_cluster-d.md — LAND) | `-00` landed | 1 |
 | `UPSTREAM-SYNC-1.145-05` | Toolchain, widgets, Sandcastle, and the `@playwright/test` 1.59.1 → 1.62.1 bump; the three fork-only devDependencies in `package.json` hunk 1 | SONNET-BOUNDED (second dispatch: OPUS-JUDGMENT for the Playwright exposure) | M | LANDED (Batch 1408; package.json union confirmed zero-loss by REVIEW_TAR-FALASSION_cluster-d.md (c)5 and packet gate G6; Amplitude telemetry module arrived default-disabled and additive, its dependency unresolved until `-06` leg 1b's `npm install`) | `-00` landed | 1 |
-| `UPSTREAM-SYNC-1.145-06` | Post-merge verification + the wave-end gate; baselines NOT refreshed by this row | OPUS-EDGE-EXECUTOR | L | VERIFIED — FIT TO FAST-FORWARD (Éowyn job 4, 2026-09-04; `Tools/visual-regression/output/sync-1145-verification-2026-09-04/SUMMARY.md`); legs 1a/1c/3/4/5 GREEN or pre-existing-red-and-unchanged; leg 1b (Sandcastle2 sweep, both renderers) NOT RUN — `@amplitude/analytics-browser` unresolved, owed after `npm install` at the seat (Éowyn job-5 leg); leg 2 (draped-polyline width, gate B) NOT RUN — probe broken by the merge, see `-07` item 8 | `-00`…`-05` landed | 1 |
+| `UPSTREAM-SYNC-1.145-06` | Post-merge verification + the wave-end gate; baselines NOT refreshed by this row | OPUS-EDGE-EXECUTOR | L | VERIFIED — FIT TO FAST-FORWARD for the 1.145 merge itself (Éowyn job 4, 2026-09-04; `Tools/visual-regression/output/sync-1145-verification-2026-09-04/SUMMARY.md`); legs 1a/1c/3/4/5 GREEN or pre-existing-red-and-unchanged. **Job 5 (2026-09-05) ran the three legs job 4 could not:** leg 1b (Sandcastle2 sweep) NOT RUN for the job-3 comparison (environmental boot-gate timeout, see `DX-48`) but GREEN on substance — all five merge-added demos certify on both renderers, no new GPU validation error; the globe-black attribution (job 4's UNDETERMINED) is now PRE-EXISTING, byte-identical capture on both trees (`AR-894`); leg 2 (draped-polyline width, gate B) RAN and read RED (1.858) in job 5, attributed to a stale served bundle (not to Batch 1410's fix — see `DX-47`), then **RE-RUN CLEAN in job 6 (2026-09-05) against a preflight-certified-current bundle: countRatio 1.000, gate D 1.000/1.022, nadir bbox delta (0,0) — `-07` item 1 CLOSED, item 8's re-vehicle confirmed working.** **Does this change the merge's fast-forward verdict? No — the 1.145 merge commits (`1408`/`1409`) were never in question; Batch 1410's own acceptance is now MET rather than unproven** | `-00`…`-05` landed | 1 |
 | `UPSTREAM-SYNC-1.145-07` | The WGSL parity twins the sync opens (`czm_eyeCartographic` / `czm_eyeToEnu` + `eyeToCartographicDelta`, and any new pipeline stage) | OPUS-JUDGMENT (shader, parity) | M | QUEUED — item 1 (draped-polyline width) CLOSED (Penlod, Batch 1410, reviewer Gundor, LAND); 14 items remain open, enumerated in the card | `-00` landed (Batch 1408) | 2 |
 | `UPSTREAM-SYNC-1.145-08` | The ES6-shape guard: no file that was a class pre-merge may be prototype-based after | SONNET-BOUNDED | S | LANDED (Batch 1408; independently re-confirmed by all four cluster reviews, exit 0 over 49 in-scope files; runner home confirmed, `node --test` 11/11 per LANDING_PACKET_TAR-MINYATUR.md §8 G3/G4) | `-00` landed | 2 |
 | `DM-N1`…`DM-N11` | Eleven design-model non-levers | — | — | CLOSED-NEGATIVE | — | §7 |
@@ -1248,6 +1248,388 @@ dependencies and acceptance.
 - **Binds:** SR-11. **Source:** `REVIEW_HERION_cluster-b.md`, "Non-blocking items to carry forward"
   item 2 (`:344-347`); confirmed by `REVIEW_LORGAN.md` R3 item 3.
 
+### `DX-44` — tooling-catalog census reads the git INDEX, not the worktree, so `git add -N` blanks a new file's `@purpose`
+
+- **Disposition:** OPEN. Filed from wave P0-1 (2026-09-04): every lane's tooling-catalog gate was
+  structurally unfixable in-lane for the same reason. `readCandidateFileBuffers` /
+  `readCandidateIndexEntries` (`Tools/generate-tooling-catalog.mjs:700-753`) read file content via
+  `git cat-file --batch` against blob OIDs from the **git index**, not the filesystem. `git add -N` —
+  the only staging operation `_COMMON_RULES.md` permits a bounded worker for a brand-new file — records
+  the path in the index but points it at git's well-known **empty blob** (`e69de29b...`), confirmed
+  directly by three independent lanes (`git ls-files -s <new-file>` → `e69de29b...`; `git cat-file -s
+  e69de29b...` → `0`). So a bounded lane's new file is always censused as `NO @purpose HEADER | — | 0 |
+  —`, regardless of whether the file carries a correct `@purpose`/`@status` header — verified by all of
+  Beleg, Mablung, Baragund and Gorlim regenerating the catalog once and finding exactly this wrong row
+  for their own new file, then reverting.
+- **Tier / Size / Backends:** SONNET-BOUNDED · S · tooling. **Depends on:** none. **Ruling touched:**
+  none. **Gate:** none.
+- **Acceptance:** the census reads the **worktree** bytes for any path whose index blob is the
+  well-known empty OID (the `git add -N` signature) instead of trusting the index blob unconditionally;
+  a negative control proves the fallback is real — a genuinely empty tracked file (index blob `e69de29b`
+  because the file **is** zero bytes, not because of `-N`) must still census as `NO @purpose HEADER`,
+  so the fallback keys on the `add -N` case specifically, not on "index blob is empty". A fixture pair
+  (an intent-to-add file with a real header vs. a genuinely empty tracked file) both censusing correctly
+  is the acceptance, not a single case.
+- **Binds:** SR-6. **Source:** `LANDING_PACKET_BARAHIR.md` §5.2; `LANDING_PACKET_BELEG.md` §7(a);
+  `LANDING_PACKET_MABLUNG.md` §6 (F5); `LANDING_PACKET_BARAGUND.md` "Catalog finding" item 2.
+
+### `DX-45` — `verify-es6-shape` cannot self-locate the pre-merge base in a worker clone; exits 2 every time
+
+- **Disposition:** OPEN. Filed from wave P0-1 (2026-09-04), confirmed independently by all five lanes on
+  the same 1.145-merge-line clones. `npm run verify-es6-shape` (bare) exits **2**: *"cannot determine
+  the pre-merge base … no merge in progress and HEAD is not a merge commit."* `Tools/upstream-shape-guard.mjs`
+  auto-bases on `HEAD^1` only when `HEAD` **is** a merge commit; every wave P0-1 clone's `HEAD`
+  (`01bddf4eae`, Batch 1409) is one commit **past** the merge (`ffb8161c08`, Batch 1408), so the
+  auto-detection refuses rather than guesses — correctly cautious, but it leaves every worker clone
+  downstream of a merge with no way to run this gate without external knowledge of the merge commit's
+  hash. With `--base=ffb8161c08^1` (or `--base=ffb8161c08`, both forms were used across the five lanes)
+  the guard runs clean. This is an **environmental refusal, not a product red** — `UPSTREAM-SYNC-1.145-08`
+  already records the guard passing when handed the base at merge time; the gap is purely the base
+  auto-detection one commit later.
+- **Tier / Size / Backends:** SONNET-BOUNDED · S · tooling. **Depends on:** none. **Ruling touched:**
+  none. **Gate:** none.
+- **Acceptance:** the guard finds its base **without** an explicit `--base` when `HEAD`'s most recent
+  ancestor along first-parent is a two-parent (merge) commit — walk first-parent from `HEAD` until the
+  first merge commit is found, then base on that commit's own first parent — **or**, if that walk is
+  judged too permissive (an unrelated later merge could exist), the tool's `--usage` text and this
+  document both name the exact invocation (`--base=<merge-commit>^1`) so a lane can self-serve instead
+  of discovering the flag by trial. Either resolution is acceptable; a fixture clone one commit past a
+  merge, with no flag passed, exiting 0 (auto-detect form) or printing the exact needed flag in its
+  usage/refusal message (documented-flag form) is the acceptance.
+- **Binds:** SR-6. **Source:** `LANDING_PACKET_BELEG.md` §6; `LANDING_PACKET_MABLUNG.md` §6 (F1);
+  `LANDING_PACKET_GORLIM.md` §6; `LANDING_PACKET_EMELDIR.md` §9; `LANDING_PACKET_BARAGUND.md` gates
+  table; `LANDING_PACKET_BARAHIR.md` §5.5.
+
+### `DX-46` — the wave-end gate does not distinguish lane-gates from wave-gates, so a pre-existing red blocks every lane alike
+
+- **Disposition:** OPEN. Filed from wave P0-1 (2026-09-04). Two runners were red at HEAD **before** any
+  wave P0-1 lane touched anything, and stayed red identically in every lane's clone regardless of that
+  lane's own changes (proven by four independent lanes restoring their touched files to `HEAD` content
+  and re-running both gates unchanged): `npm run test-tooling-catalog` (104 tests, 94-95 pass, 9-10 fail,
+  all nine/ten sharing **one** root cause — the census-currency precondition, i.e. `TOOLING_CATALOG.md`
+  being stale relative to the tree) and `npm run test-visual-regression-node`'s fleet-contract specs
+  (see `AR-893`, the roster-pinning row in `QUEUE_2026-09-03_ARCHITECTURE_REVIEW.md`). Neither red is
+  caused by, or fixable from inside, a single lane's clone: the catalog gate needs a **seat-side**
+  regeneration after every contributing lane lands (`_COMMON_RULES` §2's per-lane regeneration
+  instruction was overridden by a wave-wide ruling for exactly this reason — regenerating per lane would
+  import ~40 rows of unrelated churn into each lane's patch and guarantee conflicts on a file no lane
+  owns), and the fleet-contract reds are `AR-893`'s roster to pin. Today the wave-end gate (`R-2026-08-29-2`)
+  runs both as undifferentiated pass/fail steps, so a red that is structurally a **wave-level** concern
+  reads identically to a red that is a genuine **lane-level** regression — a lane cannot tell, from the
+  gate alone, whether its own change broke something or whether it inherited a standing debt.
+- **Tier / Size / Backends:** SONNET-BOUNDED · S · tooling. **Depends on:** `AR-893` (the roster this row
+  points at, not duplicates). **Ruling touched:** none. **Gate:** none.
+- **Acceptance:** the wave-end gate's own output (or the runbook that invokes it) names, for each runner
+  it executes, whether that runner is a **lane-gate** (must be green in every lane's own clone before
+  that lane lands) or a **wave-gate** (only meaningful once, on the settled tree, after every
+  contributing lane has landed — e.g. the tooling catalog, and the fleet-contract roster until `AR-893`
+  pins it) — so a lane reading a wave-gate red at wave-end time knows not to chase it, and a lane-gate
+  red is never silently reclassified as a wave-gate to excuse it.
+- **Binds:** SR-6. **Source:** `LANDING_PACKET_BARAHIR.md` §5.1, §5.6; all five wave P0-1 landing
+  packets' gate tables.
+
+### `DX-47` — the dev server's default mode advances generated shader modules without ever writing the served bundle, and `served md5 == disk md5` cannot see it
+
+- **Disposition:** OPEN. Filed 2026-09-05 (Hunleth) from lane Penlod's round-2 diagnosis, **mechanism
+  corrected per Gundor's round-2 review** (`REVIEW_GUNDOR_ROUND2.md`, station 3, LAND). Éowyn job 5
+  leg 5-3 measured `UPSTREAM-SYNC-1.145-07` item 1's gate B at **RED** (countRatio 1.858, outside
+  `[0.6, 1.67]`) against the sync clone's served `Build/CesiumUnminified/Cesium.js`. Penlod round 2
+  proved the measurement itself was sound but its subject was not: the served bundle's md5 matched its
+  own disk md5 (the standing executor preflight) throughout, but the bundle's embedded `GlobeTerrain`
+  shader text was the **pre-fix** shader (the `< lineWidth` full-width test Batch 1410 removed), while
+  the clone's `GlobeTerrain.wgsl` source and its generated `.js` module both carried the fix. **Gundor
+  refuted the packet's own build-ordering framing (§1.2) and re-derived the real mechanism (§1.3),
+  which is what this row now states:** shader-module generation always precedes bundling in every build
+  path (`buildEngine`'s `glslToJavaScript`/`wgslToJavaScript` at `scripts/build.js:1863`/`:1870` run
+  before any `gulp.series` bundling step; `buildCesium` regenerates the WGSL modules a second time at
+  `scripts/build.js:2085`) — so no ordinary `gulp build` or `buildAllVariants` run can leave a bundle
+  older than a module it just regenerated. **The actual exposure is that the default (non-`--serve-built`)
+  dev server regenerates the shader `.js` mirrors while never writing `Build/CesiumUnminified` at all:**
+  `server.js:151` calls `buildEngine({write:false})`, where `write:false` suppresses only the esbuild
+  *bundle* output — the `wgslToJavaScript`/`glslToJavaScript` shader mirrors are real files written
+  regardless — and `server.js:365`'s watcher regenerates them again on any `.wgsl` touch, still without
+  touching `Build/`. (A second, narrower path to the same symptom: `npx gulp build --workspace
+  @cesium/engine` regenerates modules unconditionally at `gulpfile.js:106-110` and early-returns at
+  `:126-127` before `buildCesium` ever runs; a `gulp build` interrupted between those two points is the
+  same shape, and is not hypothetical — the diagnosis's own evidence records exactly this from a
+  cancelled duplicate build.) **`served md5 == disk md5` proves the server is not caching; it is
+  structurally blind to a bundle that was never rebuilt in the first place, which is what let a stale
+  artifact certify a false RED.** The built-shader-identity preflight this row's acceptance requires
+  **landed as its own Tools-only commit, Batch 1423 (`a407a95b56`)** — Éowyn job 6 runs it immediately
+  before gate B.
+- **Tier / Size / Backends:** SONNET-BOUNDED · S · tooling (build pipeline / executor preflight, and dev
+  server). **Depends on:** none — `Tools/verify-built-shader-identity.mjs` is already landed (Batch 1423);
+  what remains is wiring it into the standing preflight and the dev-server-mode exposure itself.
+  **Ruling touched:** `M-30` (added to §8) — Gundor: "worth a ruling, not a lane note", since this is
+  the **second** time a bare md5-equality preflight has been recorded as sufficient (the 2026-08-29
+  memory note makes the same claim). **Gate:** none.
+- **Acceptance:** every executor preflight (the standing `served md5 == disk md5` check) additionally
+  runs the **built-shader identity check** — `Tools/verify-built-shader-identity.mjs` /
+  `Tools/visual-regression/lib/built-shader-identity.mjs`, landed Batch 1423 (whole-text comparison of a
+  named shader's source against what the bundle actually embeds; exit 0 current · 1 drifted · 2 usage ·
+  3 bundle absent) — and treats a non-zero exit as STRUCTURAL (rebuild and re-check) rather than as a
+  product verdict; **and** the default dev-server mode is either made to refuse serving a probe request
+  once its shader mirrors have advanced past `Build/`, or its `--help`/README text states plainly that
+  `--serve-built` is required for any run whose acceptance depends on the served bundle matching current
+  source. The check is proven fireable, on the real module (Gundor mutated the live comparison to a
+  presence-only check and it was DETECTED, not just the packet's own shadow-implementation test): it
+  reports DRIFTED against the exact stale sync-clone artifact job 5 measured (first differing line 508,
+  Batch 1410's own addition) and CURRENT against a same-commit rebuild; a whole-tree sweep (two
+  independent runs, Penlod's and Gundor's) found 0 false positives after correcting an initial
+  witness-line design that missed genuinely stale bundles and a quote-style/digit-suffix design gap that
+  flagged 20 current shaders as drifted. Runner home: `npm run test-build-infra` (138/138 including the
+  12-test `built-shader-identity.spec.mjs`; note `D1` **skips** rather than fails when `Build/` is
+  absent, so the spec being green is not proof a bundle was checked — the CLI is the binding gate, see
+  `DX-54`).
+- **Binds:** SR-6, SR-8. **Source:** `F:/Dev/GH/cesium-lane-penlod-20260904/_lane-out/LANDING_PACKET_PENLOD2.md`;
+  `F:/Dev/GH/cesium-lane-penlod-20260904/_lane-out/REVIEW_GUNDOR_ROUND2.md` §1 (mechanism correction),
+  §2 (the bbox/count-ratio/antialias corroboration), §4 (the real-module mutation proof); Batch 1423
+  (`a407a95b56`, the landed preflight tool)
+  (full diagnosis, the fix, and the recommendation); `Tools/visual-regression/output/sync-1145-verification-2026-09-04/SUMMARY.md`
+  (job 5 leg 5-3, the measurement this row explains). **Not yet landed** — Penlod's `penlod2.patch` is
+  under review; this row exists so the finding is tracked independently of that patch's landing.
+
+### `DX-48` — the Sandcastle2 sweep's boot gate does not scale with measured machine speed, and a slow run reads as demo failures
+
+- **Disposition:** OPEN. Filed 2026-09-05 (Hunleth) from Éowyn job 5 leg 5-1. A WebGL full sweep of the
+  1.145-merge-line tree reported **273/343 certified, 70 failed** against job 3's pre-merge 332/338 —
+  but the comparison is **VOID for an environment reason, not the merge**, proven three ways with a
+  byte-identical runner: (i) the same 10 failing demos fail **identically** on the pre-merge tree at the
+  same settle; (ii) five demos that certified minutes earlier in the same sweep (`hello-world`,
+  `3d-models`, `imagery-layers`, `gpx`, `interpolation`) **fail 5/5 on immediate re-run**; (iii) raising
+  the documented `SANDCASTLE_SETTLE_MS` env knob from 8000 to 25000 makes two of the failing demos
+  (`picking`, `wall`) **pass**. 67 of the 70 failures carry `errors: 0` and captures that are **not**
+  blank (`headingpitchroll` meanLum 42.85, `picking` 40.91) — the demos render, but the sweep's fixed
+  8-second boot gate is too fast at the machine's current speed, and every demo whose Cesium namespace
+  publishes after that window reads as a hard failure with no signal that a longer wait would have
+  passed it. All five merge-added demos still certified on both renderers despite the environmental
+  noise, and no new GPU validation error appeared — the sweep's substance is sound, only its timing
+  discipline is not. See also `DX-47`, a different mechanism (a stale artifact) with the same lesson
+  (a fixed-timing/fixed-identity check silently certifying the wrong thing).
+- **Tier / Size / Backends:** SONNET-BOUNDED · S · tooling. **Depends on:** none. **Ruling touched:**
+  none. **Gate:** none.
+- **Acceptance:** either (a) the sweep's boot-gate wait scales with a measured per-machine settle time
+  (a short calibration demo run first, the gate set at a multiple of its observed publish time), or (b)
+  every sweep receipt records the settle time actually used, so a downstream reader can distinguish
+  "these demos are broken" from "this run's settle was too short for this machine" without re-deriving
+  it by hand as job 5 had to. **Acceptance measurement:** a re-run of the same sweep at the documented
+  (or calibrated) settle passes the same demos on both the merge-line and pre-merge trees, closing the
+  void comparison job 5 left open.
+- **Binds:** SR-8. **Source:** `Tools/visual-regression/output/sync-1145-verification-2026-09-04/SUMMARY.md`
+  (job 5 leg 5-1); `UPSTREAM-SYNC-1.145-06` leg 1b (the prerequisite `npm install` this leg needed).
+
+### `DX-49` — `globe-pipeline-prewarm.spec.mjs`'s context double leaves `_options` unreadable, failing four cases plus one pick-suppression case pre-existing on the merge line
+
+- **Disposition:** OPEN. Filed 2026-09-05 (Hunleth) from the landing-night gate sweep. `npm run
+  test-model-webgpu` fails the same **5** cases on the CesiumJS 1.145 merge line and on the post-wave-P0-1
+  tree alike — measured independently at the seat and in the sync clone, identical sets both times, and
+  independently confirmed pre-existing (not caused by any wave P0-1 lane) by Beleg's HEAD-engine restore,
+  which reproduced the same five failures with none of that lane's files present. `Tools/visual-regression/globe-pipeline-prewarm.spec.mjs`
+  **E1-E4** ("the globe's first pipeline requests are served by the warm", "a warm at context init
+  serves nothing", and two mutant-shape assertions) all throw `TypeError: Cannot read properties of
+  undefined (reading 'prewarmGlobeRenderer')` from `warmUpGlobeRenderer`, sourced at spec `:311`; the
+  read is `WebGPUContext.ts:1733`'s `prewarmGlobeRendererEnabled` getter (`this._options.prewarmGlobeRenderer
+  !== false`) finding `this._options` undefined. **Symptom only — the cause is NOT established.** The
+  spec's `boot()` helper (`:292`) constructs the context directly, `new namespace.WebGPUContext({}, {})`
+  (`:294`), inside a synthetic single-entry module graph the spec assembles itself (`:113-129`) with
+  part of the graph stubbed (`:135-`). Note that the engine constructor this is meant to run **does**
+  set `this._options = options` unconditionally at `WebGPUContext.ts:1207`, with no early return before
+  it, so bypassing `static async create()` does **not** on its own explain an undefined `_options` at
+  the getter — a plain `new` with `{}` would give `_options = {}` and the getter would return `true`.
+  The spec's own comment at `:132-134` (a stubbed base class turns `super()` into a Proxy so derived
+  field initialisers land on the Proxy rather than the instance) is the most promising lead, but it has
+  not been isolated and must not be written down as the cause. Presumed a harness defect rather than an
+  engine fault because no wave P0-1 lane's changes touch either file the spec imports and the five
+  failures are identical on the merge line and the post-wave tree — but whoever takes this row
+  establishes the mechanism first, and re-classifies if it turns out to be engine-side. **State the
+  symptom only, per this row's own scope** — the fifth
+  case, "a second pick before the map resolves is an in-flight suppression" (test 188 in the same
+  runner), fails alongside the four with no established relationship to the `_options` mechanism and is
+  filed here rather than assumed to share the cause.
+- **Tier / Size / Backends:** SONNET-BOUNDED · S · tooling (test-double repair) — escalate to
+  OPUS-JUDGMENT only if re-deriving the fix surfaces a genuine engine-side ordering issue rather than a
+  test-double gap. **Depends on:** none. **Ruling touched:** none. **Gate:** none.
+- **Acceptance:** **first, isolate why `_options` reads undefined** — the disposition above rules out
+  the bypassed-factory explanation but does not replace it, and the stubbed-base-class/Proxy lead at
+  `:132-134` is unconfirmed; a fix written before the mechanism is established risks repairing the wrong
+  thing. Once isolated: the runner is green (`npm run test-model-webgpu` 0 failures), achieved either by
+  repairing the test double to route through the real async factory (or to set `_options` explicitly
+  before `warmUpGlobeRenderer` runs) so E1-E4 exercise the real getter, or by re-homing the five cases
+  with a stated reason if they turn out to test a shape the shared runtime no longer supports. Either
+  resolution is acceptable; leaving the red unexplained is not.
+- **Binds:** SR-6. **Source:** `LANDING_PACKET_BELEG.md` §6 (the pre-existing-failure transcript, 29-32
+  and 188); brief Addition "landing night" (2026-09-05); measured independently at the seat and in the
+  sync clone.
+
+### `DX-50` — adopt the built-shader-identity check as a mandatory leg of the standing Edge executor preflight
+
+- **Disposition:** OPEN. Filed 2026-09-05 (Hunleth) from Gundor's round-2 review follow-up 2 and confirmed
+  by Éowyn job 6, which measured the difference directly: job 5's stale-bundle RED on
+  `UPSTREAM-SYNC-1.145-07` item 1's gate B and job 6's clean PASS of the same probe against the same
+  clone differed **only** in whether `Tools/verify-built-shader-identity.mjs` had been run first. The
+  standing `served md5 == disk md5` preflight passed identically in both jobs (job 6's own closing
+  section: "The standing preflight… passed throughout job 5 and passed again here; it compares the
+  artifact to itself and is structurally incapable of seeing a stale `Build/`. The built-shader identity
+  check is what separated the two runs.") — this is now measured evidence, not a hypothesis, for the
+  `M-30` ruling this row executes.
+- **Tier / Size / Backends:** SONNET-BOUNDED · S · tooling (executor runbook). **Depends on:**
+  `Tools/verify-built-shader-identity.mjs`, landed Batch 1423. **Ruling touched:** `M-30`. **Gate:** none.
+- **Acceptance:** the standing Edge executor preflight sequence (wherever it is documented — the runbook
+  or `_COMMON_RULES`-equivalent for Edge jobs) runs `node Tools/verify-built-shader-identity.mjs` (whole
+  sweep, or `--shader <name>` for the specific leg's subject) immediately after the `served md5 == disk
+  md5` check and before any product leg, treating a non-zero exit as STRUCTURAL (rebuild, re-check)
+  rather than proceeding to measure a possibly-stale bundle. Job 6's own preflight already does this by
+  hand (`PREFLIGHT.txt`, both a whole-sweep and a `--shader GlobeTerrain` invocation, both exit 0) —
+  this row's acceptance is that shape becoming the **documented, standing** form, not a one-off.
+- **Binds:** SR-6, SR-8. **Source:** `REVIEW_GUNDOR_ROUND2.md` §5 item 2 ("Rule on the executor
+  preflight"); `Tools/visual-regression/output/wave-p0-1-edge-2026-09-05/SUMMARY.md` ("What this job
+  establishes about the preflight itself"); `M-30`; `DX-47`.
+
+### `DX-51` — wire the built-shader-identity check into `probe-vector-draping.mjs` itself, once Brodda's re-vehicle lands
+
+- **Disposition:** OPEN. Filed 2026-09-05 (Hunleth) from Gundor's round-2 review follow-up 1. Standalone
+  was the right call while `probe-vector-draping.mjs`'s re-vehicle was in flight in a separate lane
+  (tree copy `076cff2634087f18f6b4c6209f07c457` vs the re-vehicled `776dc6f329132e3e46a2286270e66cc1`
+  Éowyn ran in both job 5 and job 6) — a standalone CLI check cannot collide with an in-flight lane's
+  file. Job 6 confirms the re-vehicle **works** (gate B 1.000 on a clean bundle) but it is **still not
+  landed on the tracked tree** two clean Edge runs later; wiring the preflight into the probe itself
+  (rather than requiring a human to remember to run the CLI first) is contingent on that landing.
+- **Tier / Size / Backends:** SONNET-BOUNDED · XS · tooling. **Depends on:** Brodda's `probe-vector-draping.mjs`
+  re-vehicle landing on the tracked tree; `DX-50` (the general preflight adoption, which this row
+  specialises for one probe). **Ruling touched:** none. **Gate:** none.
+- **Acceptance:** `probe-vector-draping.mjs` calls the built-shader-identity check on its own subject
+  shader (`GlobeTerrain`) before computing gate B, and refuses (a distinct exit code from a measured
+  red) rather than reporting a countRatio if the check finds the served bundle drifted — closing the
+  exact failure mode job 5 hit.
+- **Binds:** SR-6. **Source:** `REVIEW_GUNDOR_ROUND2.md` §5 item 1 ("Wire the preflight into the probe").
+
+### `DX-52` — a `Build/` freshness signal (mtime comparison) as a cheap second net beside the identity check
+
+- **Disposition:** OPEN. Filed 2026-09-05 (Hunleth) from Gundor's round-2 review follow-up 3, echoing
+  Penlod's own round-2 recommendation. The built-shader-identity check (`DX-47`, landed Batch 1423) is
+  the authoritative content check; a cheaper, purely-metadata signal that flags the same condition before
+  anyone has to run the heavier check is worth having as a fast first net — newest source mtime under
+  `packages/engine/Source/Shaders/` vs the served bundle's own mtime, warning (not failing) when the
+  bundle is older.
+- **Tier / Size / Backends:** SONNET-BOUNDED · XS · tooling. **Depends on:** `DX-47`/`DX-50` (this is a
+  faster, lower-confidence companion to the identity check, not a replacement). **Ruling touched:** none.
+  **Gate:** none.
+- **Acceptance:** a one-line addition to the same preflight reports "bundle is N seconds older than the
+  newest shader source" whenever that is true, so a human reading the preflight output sees the same
+  signal Penlod had to reconstruct by hand from four separate `stat` calls; a fixture where the bundle is
+  artificially touched older than a shader source triggers the warning, and one where it is newer does
+  not.
+- **Binds:** SR-8. **Source:** `REVIEW_GUNDOR_ROUND2.md` §5 item 3; `LANDING_PACKET_PENLOD2.md` §"DX rows
+  this round surfaces".
+
+### `DX-53` — `decodeJsStringLiteral`'s CRLF line-continuation case is unhandled (safe-direction false-drift, unreachable with esbuild's LF output)
+
+- **Disposition:** OPEN. Filed 2026-09-05 (Hunleth) from Gundor's round-2 review's one non-blocking nit
+  (§3) on the newly-landed `built-shader-identity.mjs`. `decodeJsStringLiteral` handles `\` + LF as a
+  line continuation (`SIMPLE_ESCAPES` maps it to `""`), but not `\` + CRLF — the `\r` falls through
+  `simple ?? next` and is emitted literally, so a bundle containing that exact escape sequence would
+  decode with a spurious extra newline and the verdict would read a **false DRIFTED**. Confirmed
+  unreachable in the fleet today (esbuild writes LF only) and the failure direction is safe (a spurious
+  "rebuild first," never a false CURRENT) — explicitly **not blocking** the tool's landing.
+- **Tier / Size / Backends:** SONNET-BOUNDED · XS · tooling. **Depends on:** none. **Ruling touched:**
+  none. **Gate:** none.
+- **Acceptance:** a one-line fix in the `next === "x"` style Gundor's review names verbatim (treat `\r`
+  followed by `\n` as a two-character continuation, `\r` alone as a one-character continuation), with a
+  fixture proving the CRLF case decodes without the spurious newline; low priority, safe to defer.
+- **Binds:** SR-6. **Source:** `REVIEW_GUNDOR_ROUND2.md` §3 ("Nit, not blocking").
+
+### `DX-54` — `built-shader-identity.spec.mjs`'s `D1` silently skips when `Build/` is absent, so "138/138" is not proof a bundle was checked
+
+- **Disposition:** OPEN. Filed 2026-09-05 (Hunleth) from Gundor's round-2 review follow-up 5. `D1`
+  (`built-shader-identity.spec.mjs:219-243`) skips rather than fails when `Build/CesiumUnminified` is
+  absent — correct behaviour for a spec suite on a fresh, unbuilt checkout, but it means a green
+  `npm run test-build-infra` (138/138) does not by itself certify that any real bundle was ever compared.
+  **The CLI (`Tools/verify-built-shader-identity.mjs`), not the spec, is the binding gate** for whether a
+  served artifact was actually checked — a distinction this row exists to document, not to change.
+- **Tier / Size / Backends:** SONNET-BOUNDED · XS · docs (one sentence). **Depends on:** none. **Ruling
+  touched:** none. **Gate:** none.
+- **Acceptance:** wherever `test-build-infra`'s runner home or the built-shader-identity tool is
+  documented (this queue's `DX-47` card, and/or a header comment in the spec/CLI itself) states plainly
+  that `D1`'s green does not imply a bundle was checked — the CLI's own exit code against a real served
+  artifact is what does.
+- **Binds:** — (docs only). **Source:** `REVIEW_GUNDOR_ROUND2.md` §4 ("One conditional worth stating").
+
+### `DX-55` — `probe-primitive-texture-bindgroup.mjs`'s `frustum-lit` capture is byte-identical to `frustum-flat`, so the cell cannot distinguish a lit appearance from a flat one
+
+- **Disposition:** OPEN. Filed 2026-09-05 (Hunleth) from Éowyn job 6 leg 2 (`AR-832`/`AR-834`'s Edge
+  acceptance run, otherwise GREEN 4/4). `frustum-lit-webgpu.png` and `frustum-flat-webgpu.png` are
+  byte-identical (sha256 match) in the captured evidence, so the probe's `frustum-lit` scene — meant to
+  exercise the **non-flat** (`PerInstanceColorAppearance({flat: false})` or lit-material) shader
+  selection path as `AR-832`'s sibling clause — is not currently rendering anything visibly different
+  from the flat scene it sits beside. This is an **instrument weakness in the probe, not a product
+  defect**: `AR-832`'s own gates (validation-error count, `frustum-flat`'s pixel mismatch, the
+  `distinctCoarseColors` canary) all pass independently of this cell, so the row's acceptance is not
+  compromised — but the `frustum-lit` cell is currently unable to prove the lit/flat shader selection
+  divergence it was added to check.
+- **Tier / Size / Backends:** SONNET-BOUNDED · S · tooling (probe scene construction). **Depends on:**
+  none. **Ruling touched:** none. **Gate:** none.
+- **Acceptance:** `frustum-lit`'s scene is corrected (camera, lighting, or appearance construction) so
+  its WebGPU capture differs visibly from `frustum-flat`'s on the same tree, with a negative control
+  (reverting the correction reproduces the byte-identical pair) proving the fix actually restores the
+  intended lit/flat distinction rather than merely perturbing pixels.
+- **Binds:** SR-6. **Source:** `Tools/visual-regression/output/wave-p0-1-edge-2026-09-05/SUMMARY.md`,
+  leg 2 ("Instrument note").
+
+### `DX-56` — `WebGPUContext.ts` carries three standing comment-marker-guard errors, so any lane touching it inherits a red it did not cause
+
+- **Disposition:** OPEN. Filed from wave P0-1 (2026-09-04). `npm run lint-comment-markers` reports three
+  standing errors in `packages/engine/Source/Renderer/WebGPU/WebGPUContext.ts` that pre-date the wave;
+  because the guard is a whole-file gate, any lane that edits that file inherits a red it did not
+  introduce and cannot clear in-lane without an unrelated cleanup in its own patch. The file is also
+  `DX-08`'s decomposition subject (7,889 lines), so the two rows should be sequenced rather than raced.
+- **Tier / Size / Backends:** SONNET-BOUNDED · XS · tooling (comment hygiene). **Depends on:** none;
+  sequence against `DX-08`. **Ruling touched:** none. **Gate:** `npm run lint-comment-markers`.
+- **Acceptance:** `npm run lint-comment-markers` reports zero errors for `WebGPUContext.ts` — each of the
+  three either corrected in place or added to `Tools/c16/comment-marker-cleanlist.txt` with a one-line
+  recorded reason — and the guard's total flagged count moves by exactly three, so the change is proven
+  to have cleared these and nothing else.
+- **Binds:** SR-6. **Source:** `LANDING_PACKET_BARAHIR.md` §5.13.
+
+**`DX-56` (2026-09-05, filed from Barahir §5.13, fix round Urwen).** Not added to the "Wave DX = 15"
+summary table above, per the `DX-36`…`DX-55` landing-night precedent (`DX-42`'s card states the rule);
+see this card for tier, size, dependencies and acceptance.
+
+### `Q-130-a` — `FrustumGeometry.js` misuses `defined(vertexFormat.normal)`/`.st` on always-defined booleans
+
+- **Disposition:** OPEN. Filed here as its own row for the first time — until now `Q-130-a` existed only
+  inside `Q-130`'s own lane-claims notes cell (`FIX_QUEUE_2026-08-27_AUDIT_FINDINGS.md:526`, "`Q-130-a`
+  filed: FrustumGeometry misuses `defined(vertexFormat.normal)` on always-defined booleans (not fixed
+  here)"), and a repo-wide grep for the id returns exactly that one line. `VertexFormat.js:50,62` assign
+  `st`/`normal` as plain **booleans**, so `defined(vertexFormat.st)` and `defined(vertexFormat.normal)`
+  are **always true** — `VertexFormat.POSITION_ONLY` sets them `false` (`:109-113`), not undefined —
+  and `FrustumGeometry.js:473-490` gates its st/normal attribute emission on `defined(...)` rather than
+  on the boolean's truthiness. A `POSITION_ONLY` frustum therefore still emits `st` and `normal`
+  attributes, which is the trigger that let `WebGPUPrimitiveShaders.js`'s attribute-presence shader
+  selection diverge from WebGL for a flat-appearance frustum (`AR-832`, landed Batch 1418).
+- **This is upstream code, and Principle 1 governs it: NOT to be changed here or by `AR-832`.**
+  `FrustumGeometry.js` is inherited CesiumJS geometry code, not fork-authored; repairing the trigger
+  instead of the WebGPU-side bind-group/shader-selection defect it exposed would hide the underlying
+  bug for the next non-material appearance over any other st-carrying geometry, and would touch a file
+  outside the fork's WebGPU-specific surface for no parity gain. `AR-832`'s landed fix and `AR-885`
+  (the vertexFormat parity row, P3, gated on `AR-832` landing first) both deliberately leave this file
+  untouched — this row exists so the trigger itself has a tracked identity, separate from the two rows
+  that consume it.
+- **Tier / Size / Backends:** OPUS-JUDGMENT (upstream geometry code; any change needs an upstream-sync
+  posture, not a fork-local patch) · XS · both (`FrustumGeometry` is shared, backend-agnostic geometry).
+- **Depends on:** none to file; **a fix depends on** `AR-832` (landed) and `AR-885` (P3, gated on
+  `AR-832`) both closing first, so the trigger's own disposition is decided last, with full knowledge
+  of what already reads around it. **Ruling touched:** none. **Gate:** none.
+- **Acceptance:** not a fix acceptance — this row's job is to exist as the trigger's tracked identity.
+  If a future upstream sync or a maintainer ruling decides to correct `defined(vertexFormat.normal)`/
+  `.st"` to a truthiness test in `FrustumGeometry.js`, the acceptance is `AR-885`'s (a `POSITION_ONLY`
+  frustum emits no st/normal/tangent/bitangent, and renders byte-identically on WebGL before and after);
+  until then this row stays OPEN as a pointer so nobody re-derives "no row exists" a second time.
+- **Binds:** SR-1 (Principle 1 — never repair the trigger to hide the defect). **Source:**
+  `FIX_QUEUE_2026-08-27_AUDIT_FINDINGS.md:526` (Q-130 lane-claims cell); `QUEUE_2026-09-03_ARCHITECTURE_REVIEW.md`
+  `AR-885` (the parity row this trigger blocks) and `AR-832`'s landing packet (lane Mablung, reviewer
+  Urthel, Batch 1418), which independently re-derived and ratified the same "do not cross this fence"
+  disposition.
+
 ## 6b. UPSTREAM SYNC — CesiumJS 1.145. Plan authority: `UPSTREAM_SYNC_PLAN_1.145_2026-09-04.md`
 
 **LANDED 2026-09-04.** Planned by lane U on 2026-09-04 from one dry-run merge, executed in an
@@ -1322,7 +1704,7 @@ all four returned LAND.
   - **Leg 1a (variant smoke) — GREEN**, identical verdict to the pre-merge (job 3) baseline.
   - **Leg 1b (Sandcastle2 sweep, both renderers) — NOT RUN.** `Apps/Sandcastle2/` cannot be built on the merged tree: `npx gulp -f gulpfile.apps.js buildSandcastle` fails resolving `@amplitude/analytics-browser` (merge-introduced, `packages/sandcastle/package.json:16`; installed nowhere, no `package-lock.json` refresh). **Owed after `npm install` at the seat — named as Éowyn job-5's leg.** Cost: the five new upstream demos under `--renderer=webgpu` and the `App.tsx`/`RendererToggle` auto-merge are unverified until then.
   - **Leg 1c (capture-and-diff, no `--update`) — RED on baseline provenance only, PRE-EXISTING AND UNCHANGED; rendering GREEN.** Cross-backend 10/10 PASS, max 1.479% (job 3: 1.484%), every per-scene gate within 0.041pp of job 3. The exit-1 is the same 5 missing-baseline scenes and the same `high-density-5k-spheres` black-frame fault job 3 recorded pre-merge. Not a merge regression.
-  - **Leg 2 (draped-polyline width, Penlod's Edge acceptance) — NOT RUN, instrument broken by the merge.** `probe-vector-draping.mjs` throws `scene.globe.vectorProvider.add is not a function` before any gate computes — 1.145 removed `VectorProvider.add`; `Scene.markVectorCollections` replaced it. **Gate B was never computed, so Batch 1410's width fix has no behavioural acceptance yet.** Tracked as `-07` item 8 (SONNET-BOUNDED, P1 — a probe edit on the shared runtime, forbidden to this executor).
+  - **Leg 2 (draped-polyline width, Penlod's Edge acceptance) — CLOSED GREEN (Éowyn job 6, 2026-09-05), after a job 5 RED attributed to a stale bundle.** At job 4's time `probe-vector-draping.mjs` threw `scene.globe.vectorProvider.add is not a function` before any gate computed — 1.145 removed `VectorProvider.add`; `Scene.markVectorCollections` replaced it. Lane Brodda re-vehicled the probe onto `scene.primitives`; job 5 leg 5-3 ran it and gate B computed for the first time: `countRatio` 28741/15470 = **1.858**, outside `[0.6, 1.67]`. Penlod round 2 and Gundor's review found the served `Build/CesiumUnminified/Cesium.js` still embedded the pre-fix `< lineWidth` test — not a build-ordering gap (generation always precedes bundling), but the sync clone's dev server having run in its default non-`--serve-built` mode, which regenerates shader `.js` mirrors without ever writing `Build/CesiumUnminified` (see `DX-47`; preflight tool landed Batch 1423). **Job 6 re-ran the same probe against a bundle the preflight certified current: gates A-E PASS, countRatio 1.000, gate D 1.000 near / 1.022 far, nadir bbox delta (0,0)** — Penlod's falsifiable prediction confirmed on every number named. Job 5's RED is withdrawn as a product verdict; see `-07` item 1 (CLOSED) and item 8 (re-vehicle confirmed working, landing still owed administratively).
   - **Leg 3 (RTE/far-camera probes) — `probe-ellipsoid-rte` GREEN** (0.000% relErr on two ellipsoids, umbra IoU 0.957, 0 device errors — exercises exactly what `-00`/`-04` touched in `UniformState`/`AutomaticUniforms`). `probe-collections-far-camera` FAILs its globe-presence precondition (`onGlobe=false`); attribution **UNDETERMINED**, no pre-merge run exists for this probe.
   - **Leg 4 (subsystem parity probes) — every parity assertion GREEN**; the 2 FAILs are the same globe-brightness precondition as leg 3, and it is symmetric across backends (meanLum 9.127 webgpu vs 9.147 webgl) — not a parity fault. `probe-post-process` NOT RUN, pre-existing missing fixture, unchanged.
   - **Leg 5 (Karma subset, 6 suites) — GREEN relative to baseline.** Identical suite-for-suite pass/fail to job 3; the only change is +103 declared specs, all 1.145's own new tests, distributed proportionally across every suite's skip count. **Not the same specs as `-07` item 9:** this leg re-ran job 3's six pre-existing-red suites; cluster (c)'s own end-to-end Karma specs (`Cesium3DTilesetSpec.js:4620`, the four `ModelSpec` `getRectangle` tests, the two `-02`/`-03` `setOwner`-deviation detach tests) are a different set and remain unexecuted — tracked at `-07` item 9, not here.
@@ -1333,9 +1715,9 @@ all four returned LAND.
 
 ### `UPSTREAM-SYNC-1.145-07` — the WGSL parity twins the sync opens
 
-- **Disposition:** OPEN — **item 1 CLOSED.** 1.145 adds GLSL-side features with no WebGPU equivalent. Principle 5 makes the twin an obligation; Principle 9 makes it a named next item rather than a silent gap. Tar-Minyatur's original hand-off (packet §10) numbered six WGSL-twin items; four cluster reviews of the merge itself surfaced six further, related but distinct, findings; Éowyn's `-06` verification surfaced one blocking instrument defect. All are carried here rather than duplicated in `FEATURE_INVENTORY.md` §C `UP144-VECTOR-LAYER-WGSL`, which Penlod's landing keeps current for the sub-items it owns (meters-width branch, pick twin, model-vector-lookup twin, `eyeCartographic` twin, vertical-exaggeration stage) — this card cross-references rather than restates that entry.
+- **Disposition:** OPEN — **item 1 CLOSED (Éowyn job 6, 2026-09-05).** 1.145 adds GLSL-side features with no WebGPU equivalent. Principle 5 makes the twin an obligation; Principle 9 makes it a named next item rather than a silent gap. Tar-Minyatur's original hand-off (packet §10) numbered six WGSL-twin items; four cluster reviews of the merge itself surfaced six further, related but distinct, findings; Éowyn's `-06` verification surfaced one blocking instrument defect. All are carried here rather than duplicated in `FEATURE_INVENTORY.md` §C `UP144-VECTOR-LAYER-WGSL`, which Penlod's landing keeps current for the sub-items it owns (meters-width branch, pick twin, model-vector-lookup twin, `eyeCartographic` twin, vertical-exaggeration stage) — this card cross-references rather than restates that entry.
 
-  **1. `GlobeTerrain.wgsl::vectorPolylineRender` half-width/AA/nearest-edge — CLOSED.** Penlod, Batch 1410, reviewer Gundor: **LAND** (after a required fix round that corrected the proof's own overclaim — the node spec's width guarantee is anchored on three captured source strings, not on shader behaviour; a required assertion now pins the specific evasion found). WGSL ported to the 1.145 GLSL algorithm (half-width, nearest-edge, `smoothstep` fade), a new `vectorCoverageRadius` tile-uniform float added at the `TileUniforms` tail (offset 492, `TILE_UNIFORM_FLOATS` 492→496), `vector-layer-draping.spec.mjs` given a runner home in `test-engine-node` (was orphaned — see the DX row below) and repaired (its fixture had silently baked to zero packed segments post-1.145, so `B1` was passing over an empty tile). **Behavioural (pixel) acceptance is still owed — see item 8.**
+  **1. `GlobeTerrain.wgsl::vectorPolylineRender` half-width/AA/nearest-edge — CLOSED (Éowyn job 6, 2026-09-05).** Penlod, Batch 1410, reviewer Gundor: **LAND** (after a required fix round that corrected the proof's own overclaim — the node spec's width guarantee is anchored on three captured source strings, not on shader behaviour; a required assertion now pins the specific evasion found). WGSL ported to the 1.145 GLSL algorithm (half-width, nearest-edge, `smoothstep` fade), a new `vectorCoverageRadius` tile-uniform float added at the `TileUniforms` tail (offset 492, `TILE_UNIFORM_FLOATS` 492→496), `vector-layer-draping.spec.mjs` given a runner home in `test-engine-node` (was orphaned — see the DX row below) and repaired (its fixture had silently baked to zero packed segments post-1.145, so `B1` was passing over an empty tile). **Behavioural (pixel) acceptance — MET, on the second computation.** Job 5 leg 5-3 measured gate B RED (countRatio 1.858) against a served bundle Penlod round 2 and Gundor's review proved was stale (the sync clone's dev server had run in its default non-`--serve-built` mode, which regenerates shader `.js` mirrors without ever writing `Build/CesiumUnminified` — `server.js:151`/`:365` — leaving the bundle carrying the pre-fix `< lineWidth` test; see `DX-47`). **Job 6 (Éowyn, 2026-09-05) re-ran gate B on a bundle the built-shader-identity preflight (landed Batch 1423, `a407a95b56`) first certified current (0 drifted) and the result reverses cleanly:** gate B countRatio **1.000** (15470 vs 15470, band `[0.6, 1.67]`), gate D cross-backend width 21.375/21.375 = **1.000** near and 23.375/22.875 = **1.022** far (job 5's stale-bundle run: 1.858, 1.841, 1.891), and the nadir bbox — the diagnosis's own named discriminator — is **identical on both backends**, `[453,27,576,739]`, a delta of `(0,0)` where the stale run measured `(+16h, +10w)`. Penlod's round-2 prediction was stated as falsifiable and fired in its favour on every number named. Gates A/B/C/D/E all PASS on job 6 leg 6; the run's non-zero exit is gate F alone, reported STRUCTURAL by design (the cross-build baseline instrument gap, unchanged and still owed, tracked separately below). **This item does not re-open: its behavioural acceptance is met on the first computation against a bundle that actually contains Batch 1410; job 5's RED is withdrawn as a product verdict — it was a correct measurement of the wrong bytes.**
 
   **Remaining items, one per line, owner and acceptance:**
 
@@ -1345,7 +1727,7 @@ all four returned LAND.
   5. **The border-clip shortfall.** For a winner at `|offset|` 9-12 (or a caller passing `width < 9`), `surfacePosition` returns `undefined` where upstream returns a `Cartesian3` — bounded, symmetric across backends, documented in a 19-line in-code WHY block, but untracked, which plan §5.4 D-3 explicitly requires never happen silently. **Owner:** Tar-Falassion (`REVIEW_TAR-FALASSION_cluster-d.md` F2). **Acceptance:** this line **is** D-3's required tracked row; closes on a widened read that removes the shortfall, or an explicit accepted-limitation note cited from the in-code comment.
   6. **The `maxTextures -= 3` detector.** Upstream's clipping-polygon day-texture budget move (B7 delta 7, `-2` → `-3` to match the three new samplers) has no detector anywhere in the fork. **Owner:** Eradan (`REVIEW_ERADAN_cluster-a.md` finding 1). **Acceptance:** a spec asserting the budget tracks the sampler count, so a future regression on either is caught rather than silent.
   7. **`NEW-WEBGPU-VECTOR-POLYGON-DRAPING` re-tier.** 1.145 makes the same polygon tables serve both draping and clipping, so the WGSL `vectorClip` twin (Tar-Minyatur packet §10 item 2) cannot land without it — re-tier `DEFERRED_WORK.md:14182` from "Principle-5 gap, M-sized" to "prerequisite". **Owner:** Herion (`REVIEW_HERION_cluster-b.md` §c.1); restated in `LANDING_PACKET_TAR-MINYATUR.md` §10 item 2. **Acceptance:** the `DEFERRED_WORK.md` entry's tier text is updated (a separate landing against that ledger — not made by this document).
-  8. **`probe-vector-draping.mjs` is broken by the merge (Éowyn job 4) — P1, blocking.** `scene.globe.vectorProvider.add is not a function`: 1.145 removed `VectorProvider.add`; `Scene.markVectorCollections` replaced it with a per-frame `scene.primitives` walk. **Until re-vehicled, item 1's own behavioural acceptance (gate B, `countRatio` in `[0.6, 1.67]`, `probe-vector-draping.mjs:123`/`:688`/`:701-702`) has never been computed** — Batch 1410 landed and reviewed on the node spec alone. **Owner / Tier:** SONNET-BOUNDED (a probe edit on the shared runtime). **Priority:** P1 — blocker for named landed work (Batch 1410's acceptance). **Acceptance:** re-vehicle the probe onto `scene.primitives` with a clamping `heightReference`; re-run gate B on Edge (`--serve-built`, served-md5 == disk-md5) and confirm it computes and passes near ~1.0 (run 2 of the original acceptance measured 1.014 pre-merge).
+  8. **`probe-vector-draping.mjs` was broken by the merge (Éowyn job 4) — RE-VEHICLED (lane Brodda) AND CONFIRMED WORKING (Éowyn job 6).** `scene.globe.vectorProvider.add is not a function`: 1.145 removed `VectorProvider.add`; `Scene.markVectorCollections` replaced it with a per-frame `scene.primitives` walk. Brodda re-vehicled the probe onto `scene.primitives` with a clamping `heightReference` (probe md5 `776dc6f329132e3e46a2286270e66cc1`, still not yet landed on the tracked tree — the tree's copy is `076cff2634087f18f6b4c6209f07c457`). Job 5 leg 5-3 first proved the re-vehicle reaches gate evaluation (no longer dies on the deleted `add`); its RED result (countRatio 1.858) was subsequently attributed to a stale served bundle, not to the probe (see item 1, `DX-47`). **Job 6 (2026-09-05) re-ran the same probe against a bundle the built-shader-identity preflight certified current: gates A-E all PASS, countRatio 1.000, gate D 1.000/1.022, nadir bbox delta (0,0).** The re-vehicle **works** — Brodda's own packet prose calling the result "well inside" the band is the one thing wrong with it; the measured band and countRatio are correct. **Owner / Tier:** SONNET-BOUNDED (land Brodda's probe edit — still not on the tracked tree despite two clean Edge runs against it). **Priority:** P1 — blocker for named landed work (Batch 1410's acceptance), **discharged by measurement**; what remains is administrative (landing the probe file itself). **Acceptance — MET, pending only the probe's own landing:** gate B computed and passed at 1.000 against a preflight-clean bundle (job 6 leg 6); gate F (the cross-build baseline half) remains its own open instrument gap, unaffected by this item's closure.
   9. **Cluster (c)'s end-to-end Karma specs have never been executed.** `Cesium3DTilesetSpec.js:4620` ("marks loaded tiles dirty when clipping polygons are added or removed"), the four `ModelSpec` `getRectangle` tests (`:1815-1848`), and the two detach tests pinning the `-04`/`-03` `setOwner` deviation are all Karma specs, not node — Éowyn's `-06` leg 5 ran job-3's six pre-existing-red suites (TerrainFillMesh, QuadtreePrimitive, Renderer/Pass, Scene/Pick, ResourceCacheKey, BillboardCollection), none of which is this cluster. So the `setOwner` release path and the clipping-polygon rebake broadcast still rest on reading, not execution. **Owner:** Tar-Anducal (`REVIEW_TAR-ANDUCAL_cluster-c.md` F-2). **Tier:** OPUS-EDGE-EXECUTOR (a Karma/Edge run, `CHROME_BIN` pointed at Edge). **Acceptance:** the three named specs execute and pass under `npx gulp test --webgpu --browsers=EdgeHeadlessCI` with `--includeName` matching them; bank the receipt as an Éowyn leg alongside `-06`'s existing legs (this is the natural home for the run itself; the row lives here so `-07`'s reader does not lose it).
   10. **Two spec gaps in `GlobeSurfaceTileProviderSpec.js`.** The file is 1,681 lines with zero `webgpu`/`updateForPick`/`scene.pick`/`drillPick`/`pickPosition`/`pickFramebuffer` occurrences — the plan's one `UNDETERMINED` census row closes negative on both halves (not broken by the merge, but not covered by name either). **Owner:** Eradan (`REVIEW_ERADAN_cluster-a.md` finding 5). **Tier:** SONNET-BOUNDED (spec authoring against existing fixtures). **Acceptance:** a pick-path behaviour spec for `updateForPick` (asserting the WebGL/WebGPU pick command actually gets pushed, per `-01`'s `OURS`-resolution reasoning) and a spec asserting an inverse-clipped tile emits no draw command, both with an inertness mutant (`if (false && …)` on the clip/pick guard) that requires the new assertions to fail.
   11. **Stale provenance comments naming a deleted GLSL file.** `WebGPUClippingPolygonCollection.ts:17`, `:246` and `PolygonSignedDistance.wgsl:4`, `:12` still cite `PolygonSignedDistanceFS.glsl`, which 1.145 deletes (D1). Harmless (comments only), but the review says explicitly to sweep it with `-07`. **Owner:** Herion (`REVIEW_HERION_cluster-b.md`, non-blocking finding 3). **Tier:** SONNET-BOUNDED. **Acceptance:** the four comments are updated to cite the surviving producer (`ClippingPolygonSdfPack.js` / the WebGPU SDF compute pass) instead of the deleted file; `grep -rn PolygonSignedDistanceFS packages/engine/Source/Renderer/WebGPU packages/engine/Source/Shaders/WebGPU` returns only the module's own genuinely-historical mentions, none presented as a current producer.
@@ -1357,7 +1739,7 @@ all four returned LAND.
 
   **Genuinely tracked in `FEATURE_INVENTORY.md` §C `UP144-VECTOR-LAYER-WGSL`, not restated here (confirmed by reading the entry, not assumed):** the meters-width branch (`VECTOR_WIDTH_IN_METERS`/`VECTOR_WIDTH_MIXED_UNITS` have no WGSL twin — a negative metres width is safely absorbed by `abs()` and drawn in pixels, Penlod/Gundor); the `vectorPickPrimitiveIndex` pick twin (draped polylines are not pickable on WebGPU, Penlod/Gundor); and gate F's cross-build baseline (pre-existing, unchanged, still owed — the entry's own words, "Only the non-regression gate (F) is still owed"). Items 13-15 above are **not** covered by that entry — it is specific to vector-polyline draping, not model vector lookup, camera uniforms, or vertical exaggeration — and are opened here instead, per `REVIEW_LORGAN.md`'s verification-boundary flag (its item 3: "worth one grep before landing").
 - **Tier / Size / Backends:** OPUS-JUDGMENT (shader, parity) · M · WebGPU, except item 8 (SONNET-BOUNDED / P1), item 9 (OPUS-EDGE-EXECUTOR), item 10 (SONNET-BOUNDED), item 11 (SONNET-BOUNDED), item 12(c) (OPUS-EDGE-EXECUTOR) and item 15 (scoping pass, size unpriced), each its own dispatch per the tier stated in the item. **Depends on:** `-00` landed (Batch 1408). **Ruling touched:** none. **Gate:** none.
-- **Acceptance:** item 1 MET (node spec + Edge gate B still owed, blocked on item 8); items 2-15 each carry their own acceptance above; the WGSL `CameraUniforms` eventually carries the ENU basis and cartographic eye **with `previousViewProjection` still at the tail of the struct** (CLAUDE.md pins that field's position, item 14); `FEATURE_INVENTORY.md` kept current as each sub-item closes rather than the inventory going stale, and gains the rows items 13-15 open that the plan referenced but never filed.
+- **Acceptance:** item 1 **CLOSED** (node-spec acceptance MET; Edge gate B acceptance MET on Éowyn job 6's re-run against a bundle `DX-47`'s built-shader-identity check certified current — countRatio 1.000, gate D 1.000/1.022, nadir bbox delta (0,0); job 5's 1.858 RED was a correct measurement of a stale bundle, withdrawn as a product verdict); items 2-15 each carry their own acceptance above; the WGSL `CameraUniforms` eventually carries the ENU basis and cartographic eye **with `previousViewProjection` still at the tail of the struct** (CLAUDE.md pins that field's position, item 14); `FEATURE_INVENTORY.md` kept current as each sub-item closes rather than the inventory going stale, and gains the rows items 13-15 open that the plan referenced but never filed.
 - **Binds:** SR-1, SR-7, SR-13. **Source:** plan §5.4, §5.3; `LANDING_PACKET_TAR-MINYATUR.md` §10; the four cluster reviews; `LANDING_PACKET_PENLOD.md` + `REVIEW_GUNDOR.md`; Éowyn job 4 `SUMMARY.md` leg 2; `REVIEW_LORGAN.md` R3 (items 9-12).
 
 ### `UPSTREAM-SYNC-1.145-08` — the ES6-shape guard
@@ -1411,8 +1793,9 @@ These are **not new rows**. Each already has an owner; the column on the right i
 
 ## 8. MAINTAINER DECISIONS — every gate in one place
 
-Twenty-six numbered decisions (24 from the original set plus `M-26`/`M-27`, added 2026-09-04 from the
-1.145 sync's station-3 reviews). **`M-15` is deliberately unassigned** so that `M-16`…`M-25` map
+Twenty-nine numbered decisions (24 from the original set plus `M-26`/`M-27`, added 2026-09-04 from the
+1.145 sync's station-3 reviews, plus `M-28`/`M-29`/`M-30`, added 2026-09-05 by lane Hunleth's doc pass —
+`M-28`/`M-29` are records, not asks; `M-30` is the one live ask this round adds). **`M-15` is deliberately unassigned** so that `M-16`…`M-25` map
 one-to-one onto the meshlet track's original gate ids `G-A`…`G-J`. Questions marked *verbatim* are
 reproduced word for word in the row that owns them; this table states the ask and the rows it
 unblocks.
@@ -1446,6 +1829,9 @@ unblocks.
 | **M-25** | D3 **G-J** | *verbatim in `MS-16`.* File the dormant mesh-shader row with its four named triggers, or strike it? | `MS-16` | **file it dormant** |
 | **M-26** | lane S `DECISIONS_TAR-MINYATUR.md` D5 | **CLA check migration.** Upstream's 1.145 delta migrates its CLA check from Google Sheets to Microsoft Graph (206 insertions/35 deletions; the merged action would throw `"MICROSOFT_GRAPH_INFO_JSON not found."` if taken as-is, since the fork holds no such credential). The merge landed with the **status quo kept**: `.github/actions/check-for-CLA/` restored byte-identical to the fork's Google-Sheets mechanism, `cla.yml`'s `env:` block restored to the three Google secrets (keeping upstream's `setup-node@v6`→`@v7` bump), the `GoogleConfig.json` `.gitignore` line restored, and `cla-rotation-reminder.yml` kept with its `schedule:`/cron **withheld** (GitHub quiet-hours posture — an annual cron opening issues about a credential the fork does not hold is unwanted visible activity). **Adopt upstream's Microsoft-Graph migration (configure the secret, revert the four restorations), or keep Google Sheets permanently (close this decision and drop the restorations from future-sync watch lists)?** All four restored items revert together if Graph is adopted. | none — resolved as-shipped pending this ruling | keep Google Sheets unless there is an operational reason to hold a Microsoft Graph credential |
 | **M-27** | `REVIEW_ERADAN_cluster-a.md` finding 4; restated in `LANDING_PACKET_TAR-MINYATUR.md` §10 (Governance) | **Extend CLAUDE.md's `ShaderDefine` add-only rule to the WebGL globe shader-set key.** The rule in CLAUDE.md's "WGSL Shader Pipeline" section ("Add-only. Never reorder, renumber, or remove") currently names only `WebGPUShaderDefines.ts`'s bit registry. The 1.145 sync's highest-severity single resolution was exactly this failure mode on the *other* backend: the fork's pre-merge `GlobeSurfaceShaderSet.js` had silently renumbered an upstream-inherited bit (`hasVectorLayer`, bit 33) with no governance rule catching it, and the sync's `-01` resolution had to restore it to its merge-base position and write an in-code add-only rule as a stopgap (`GlobeSurfaceShaderSet.js:322-331`). **Adopt the governance-level extension so the next sync does not re-arm the same trap on a third registry?** | none — the in-code rule is a workaround, not the governance fix | yes — extend the CLAUDE.md rule text to name `GlobeSurfaceShaderSet.js`'s shader-key bit assignment alongside `ShaderDefine`/`ShaderDefineHi`/`ShaderSourceId`/`FeatureRendererKey` (SR-4); CLAUDE.md itself is not edited by this document |
+| **M-28** | Hunleth doc pass, 2026-09-05 | **Not a decision — a collision record, resolved in the same pass.** `FIX_QUEUE_2026-08-27_AUDIT_FINDINGS.md` used the id `Q-3` for two unrelated things: `:80` (`WebGPUPostProcessPipeline.ts:1856`, the resize-destroys-effects row that `AR-009`, landed Batch 1420, partially owns) and `:1254` (a wave-3 landing-summary line naming "Q-3 solar-disc floor", an already-discharged, unrelated item). The `:1254` occurrence is renamed to `Q-154` (the next free `Q-` id in that file — the file's `Q-` ids run 1-153 with no gap) in the same patch that carries this row, with a one-line note at the site. Nothing about either discharge changes. Recorded here so a future reader does not re-collide the id. | none | recorded as resolved |
+| **M-29** | Hunleth doc pass, 2026-09-05 | **Not a decision — a scope call to confirm, not overturn.** `AR-832`'s landed fix (Batch 1418, lane Mablung, reviewer Urthel) makes `selectWebGPUShader` read `appearance.flat` so a flat `PerInstanceColorAppearance` never selects a lit shader variant — a shader-selection change bounded to one production call site and proven not to cross either fence Principle 1 protects (`FrustumGeometry.js` untouched; selection does not read `vertexFormat`). The lead (Barahir) already ratified this on Urthel's corrected evidence at landing time. **This entry exists only so the seat has a one-line record of a scope call of that reach, not to reopen it** — see `AR-832`'s row for the full evidence (the one other in-tree page it visibly changes, `Apps/WebGPUTest/primitive-box-webgpu.html`, going lit → flat, matching WebGL's own behaviour for the same flag). | none — already ratified | confirm the ratification stands, or say so if not |
+| **M-30** | Gundor, `REVIEW_GUNDOR_ROUND2.md` §5 item 2 | **The executor's standing preflight (`served md5 == disk md5`) is structurally blind to a served bundle that was never rebuilt at all — this is the second recorded instance (2026-08-29 memory note; 2026-09-05 job 5 leg 5-3/Penlod/Gundor), and Gundor is explicit that it is "worth a ruling, not a lane note."** Mechanism: the dev server's default (non-`--serve-built`) mode regenerates shader `.js` mirrors via `wgslToJavaScript`/`glslToJavaScript` (`server.js:151`, `:365`) without ever writing `Build/CesiumUnminified` — an md5 comparison of the artifact to itself proves the server is not caching, and proves nothing about whether that artifact was ever rebuilt from current source. **Adopt the built-shader-identity check (landed Batch 1423) as a MANDATORY second leg of every executor preflight, or accept the risk and require every Edge job to state which build mode served it?** | `DX-47`, and every future Edge job's preflight discipline | adopt the built-shader-identity check as mandatory; a bare md5 match should never again be reported as sufficient in an Edge job's discipline record |
 
 **One sitting is recommended for M-06 through M-10** — they are one subject (the fork's night sky) and answering them separately risks a partial law. `NIGHTFADE-D1` and `Q-123` are already pending the same eyeball and belong in that sitting; they are **not** re-filed here.
 

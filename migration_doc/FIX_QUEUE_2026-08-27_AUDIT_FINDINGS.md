@@ -1251,7 +1251,7 @@ wave; every lane verified no-session before falling back). Landed and pushed bef
 | W3-C frame seams | 1198 | Q-26 bookkeeping hoist, Q-23 viewport clamp (publish-early form REFUTED by executed counterexample), Q-2 run-of-one report |
 | W3-B device loss | 1199 (+1200 seat repair: @purpose headers + census) | device-loss epoch resets, five consumers on the shared identity predicate; sky-consumer premise corrected (sampler/layout gap, not LUT views); fog premise corrected (context-keyed shape) |
 | W3-F governance | 1201-1203 | Q-11 AGENTS.md carries the six rule families; Q-28 comparator subset-with-floor + C12-37 portfolio row aligned; IMAGERY_PROJECTION table corrected with per-row provenance |
-| W3-E four-pack | 1204-1207 | Q-1 isWebGPU seam (six goldens), Q-3 solar-disc floor, Q-4 CC/timestamp exclusion families (census byte-identical), Q-5 four fork diagnostics wrapped |
+| W3-E four-pack | 1204-1207 | Q-1 isWebGPU seam (six goldens), **Q-154** solar-disc floor (renamed 2026-09-05, lane Hunleth: this cell wore the label `Q-3`, which collided with the still-open resize row at `:80` — the two named unrelated defects under one id; `Q-154` is the next free `Q-` id in this file and the discharge itself is unchanged), Q-4 CC/timestamp exclusion families (census byte-identical), Q-5 four fork diagnostics wrapped |
 | W3-D cloud/model | 1208-1209 | cloud temporal source-view keying (morph excursion), model pipeline metadata-class fold (13 sites, one method) |
 | W3-G hook + CI | 1210-1211 | pre-commit engine type gate (sentinel-keyed, skip line) + lint-staged status fix; nine build-free guards wired into a CI job with a hollow-job spec |
 

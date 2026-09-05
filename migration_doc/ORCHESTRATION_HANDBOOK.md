@@ -65,6 +65,27 @@ Dispatch plans (e.g. `CLOSEOUT_PLAN_2026-08-07.md`) are grouping only — same r
   lane, ONE Edge instance at a time, with 5-minute watchdogs.
 - Workers report state only from their own tree; a refuter must state when its counter-evidence
   disproves a _narrower_ claim than the one filed.
+- **Evidence capture and exit codes.** Capture command output under the worker's own `_lane-out/`,
+  never `/tmp` — Git Bash maps `/tmp` to a directory shared machine-wide across every clone, and a
+  lane redirecting to a generic `/tmp/<name>` path has come back containing another clone's data
+  (wave P0-1, 2026-09-04: one capture named a sibling clone's path and carried three different drift
+  counts where a single run can only produce one). Read an exit code from `$?` immediately after the
+  command (`cmd > file 2>&1; echo $?`), never through a pipe — `cmd | grep; echo $?` reports the
+  pipe's status, not the command's, and cost that same wave five wrong readings across two packets.
+  Every packet states how each exit code was read. **`eslint` and the engine type check
+  (`node scripts/engineTypeCheck.mjs`) run ONLY inside the `.husky/pre-commit` hook, which a worker
+  is forbidden to trigger — so no lane can discover a lint or type-check regression on its own.**
+  Three of wave P0-1's five lanes failed the seat's `eslint` at commit after every other gate on
+  their list was green (Barahir's report). Rule: `npx eslint <every code file in the patch>` and
+  `node scripts/engineTypeCheck.mjs` are part of every lane's standing gate list from now on, stated
+  with their exit codes in the packet like any other gate. (Refuted hypothesis, recorded so it is not
+  re-tried: the seat suspected a divergent `eslint.seatbelt.tsv` between the clones and the seat —
+  the file was byte-identical in every clone and the seat, and the eslint errors reproduced in the
+  clones regardless; the gate had simply never been run.) A **bare** `npx eslint` **ratchets**
+  `eslint.seatbelt.tsv` (it lowers a file's allowed error budget whenever a run finds fewer errors
+  than the budget) and leaves that tracked file dirty; the correct form in a worker clone is
+  `SEATBELT_FROZEN=1 npx eslint <files>`, and `eslint.seatbelt.tsv` never travels in a worker's
+  patch — the seat carries any legitimate ratchet as its own commit, separate from the lane's landing.
 
 ### Subagent hazards [HARD]
 
