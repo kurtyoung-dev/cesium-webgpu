@@ -200,20 +200,28 @@ queue launches, rules, schedules and funds nothing, and its `AR-` ids are add-on
 
 ### Upstream sync — CesiumJS 1.145 (not a numbered campaign)
 
-**Planned, not launched.** `main` is 358 commits behind `upstream/main` (`73c2eeec0c`, 2026-09-03)
-and 1,783 ahead; merge-base `6d5d8b1f07` (2026-08-03). Exactly one release tag sits in the gap,
-**1.145**. [`UPSTREAM_SYNC_PLAN_1.145_2026-09-04.md`](UPSTREAM_SYNC_PLAN_1.145_2026-09-04.md) is the
-plan, built from one aborted dry-run merge: 32 conflicted files, 79 conflict hunks, 164 paths
-changed. Its rows are the `UPSTREAM-SYNC-1.145-*` family in
+**LANDED.** The fork is synced to CesiumJS 1.145 at merge commit `ffb8161c08`, **Batch 1408**
+(parents `40341305f4` fork / `488b114e16` `upstream/main`, merge-base `6d5d8b1f07`), landed
+2026-09-04. Verification: **Éowyn job 4, FIT TO FAST-FORWARD** (evidence:
+`Tools/visual-regression/output/sync-1145-verification-2026-09-04/`); leg 1b (Sandcastle2 sweep) and
+leg 2 (draped-polyline width gate B) remain owed, tracked as `UPSTREAM-SYNC-1.145-06`/`-07` items,
+neither a RED against the pre-merge baseline.
+[`UPSTREAM_SYNC_PLAN_1.145_2026-09-04.md`](UPSTREAM_SYNC_PLAN_1.145_2026-09-04.md) is the plan that
+was executed, built from one aborted dry-run merge (32 conflicted files, 79 conflict hunks, 164
+paths); the real merge resolved 33 conflicted files / 80 hunks (one file drifted between the dry run
+and the landing). Its rows are the `UPSTREAM-SYNC-1.145-*` family in
 [`QUEUE_2026-08-29_RESEARCH_DISPATCH.md`](QUEUE_2026-08-29_RESEARCH_DISPATCH.md), which carry
-status — this file does not, and neither does the plan. **Critical path:** an open weekend window
-with the Edge executor free (the plan's §8.6 recommends 2026-09-05; the window must hold both the
-resolution and its verification). **Hold:** none — the sync is ruling-free. Two maintainer calls sit
-_inside_ it: the `UP-1` fork-code disposition if it resolves to DROP, and whether to take upstream's
-new Sandcastle analytics module. Two procedural facts the plan establishes: the sync is the **one
-sanctioned merge commit** against the otherwise squash-only landing rule, and CLAUDE.md's
-sync-procedure `--theirs` default is **wrong for 13 of the 24 conflicted `.js` files**, which the
-fork has converted to ES6 classes while upstream is still prototype-based (plan §3).
+status — this file does not, and neither does the plan. `-00` through `-05` and `-08` are LANDED,
+`-06` is VERIFIED (partial, see above), `-07` (the WGSL parity twins the sync opens) is OPEN with one
+item closed (Penlod, Batch 1410, reviewer Gundor). Two maintainer calls the sync surfaced are
+recorded as `M-26`/`M-27` in that queue's §8: the CLA-check migration (status quo/Google Sheets kept
+in the merge) and extending CLAUDE.md's `ShaderDefine` add-only rule to the WebGL globe shader-set
+key. Two procedural facts the plan established and the merge confirmed: the sync is the **one
+sanctioned merge commit** against the otherwise squash-only landing rule (verified: exactly two
+parents), and CLAUDE.md's sync-procedure `--theirs` default was **wrong for 13 of the 24 conflicted
+`.js` files**, which the fork had converted to ES6 classes while upstream is still prototype-based
+(plan §3) — worked around in this merge by the new `PORT-INTO-CLASS` class and guarded going forward
+by the ES6-shape guard (`-08`, landed); **amending the procedure itself is still open as `AR-D23`.**
 
 ### Standing principles that block work (not row-specific)
 
