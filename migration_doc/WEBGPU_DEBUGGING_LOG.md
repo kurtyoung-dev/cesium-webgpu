@@ -19001,3 +19001,70 @@ rebuilt and reverted. The shader mutant reds no encode- or decode-group test and
 the decoder mutant reds no encode- or shader-group test, so each fix has at least
 one test only it can turn red. Edge leg:
 `Tools/visual-regression/probe-feature-id-texture.mjs` `key-span` cell.
+
+## Lane Mablung (wave P0-1, 2026-09-04) — Bug AR-832: the non-material texture bind group supplied 2 entries for a 3-entry layout
+
+**Bug id:** `AR-832` (the defect), `AR-834` (its instruments). Ledger entry
+`NEW-WEBGPU-PRIMITIVE-TEXTURE-BINDGROUP-ENTRY-COUNT` in `DEFERRED_WORK.md`.
+
+**Files affected**
+
+- `packages/engine/Source/Renderer/WebGPU/WebGPUPrimitiveCommands.ts`
+- `packages/engine/Source/Renderer/WebGPU/WebGPUPrimitiveShaders.js`
+
+**Symptom.** On `frustum-dev` with `renderer=webgpu`, every frame:
+
+```
+Number of entries (2) did not match the expected number of entries (3) for
+[BindGroupLayoutInternal "Texture BGL"]
+[Invalid BindGroup (unlabeled)] is invalid due to a previous error.
+ - While encoding [RenderPassEncoder "Scene Framebuffer Render Pass"].SetBindGroup(2, ...).
+ - While finishing [CommandEncoder "Scene Frame Command Encoder"].
+```
+
+The frame's whole command buffer was discarded, so nothing in the frame drew. The render loop kept
+counting (`frameGate: OK frameNumber 8`), which is why the sweep recorded no pixels rather than a
+black canvas.
+
+**Root cause.** Three things on one path, in the order a reader meets them.
+
+1. `"Texture BGL"` declares `sampler(0) + texture(1) + texture(2)` — one sampler and two texture
+   slots, so single- and dual-texture shaders share one layout — and is pushed third (after camera
+   and material, before effects), so it occupies group 2. The non-material builder supplied only
+   bindings 0 and 1, and supplied no `label`. WebGPU requires exactly one entry per layout entry.
+   Every sibling producer of the same layout shape ("Material Texture BGL", "Polyline Mat Texture
+   BGL", "MatDepthFail Texture BGL") already binds the third slot to a placeholder view; this site
+   was missed when Batch 25 widened the layouts.
+2. The placeholder itself was a 64x64 grey checkerboard. Nothing on this path ever replaces it —
+   the bind group is built once and never refreshed with a loaded image — and both textured
+   per-instance-color shaders compute `baseColor = texColor * input.color`, so the checkerboard was
+   multiplied onto every fragment of every primitive that reached this path.
+3. `selectWebGPUShader` keyed only on attribute presence. `FrustumGeometry.createGeometry` gates
+   st/normal generation on `defined(vertexFormat.st)` and a `VertexFormat` field is a boolean that
+   is always defined, so a `POSITION_ONLY` frustum still carries normals AND st — and the
+   `PerInstanceColorAppearance({ flat: true })` frustum was shaded by the Phong variant, lit, where
+   WebGL draws it flat.
+
+**Fix applied.**
+
+- The bind group gains `label: "Primitive Texture BG"` and a third entry binding the placeholder
+  view at binding 2, following the material path's `getPlaceholderView()` pattern rather than
+  inventing a new one.
+- The placeholder becomes a 1x1 opaque white texel (`PrimitiveFallbackWhite`), the multiplicative
+  identity for `texColor * input.color` and the same value the material path already falls back to.
+- `selectWebGPUShader(attributes, options)` takes `options.flat`; a flat appearance is not eligible
+  for `phongTextured` or `phong`. `createWebGPUCommands` passes `appearance.flat === true`. WebGL is
+  untouched: `appearance.flat` is read only inside the WebGPU renderer, and WebGL already swaps in
+  `PerInstanceFlatColorAppearanceVS/FS` for the same flag.
+
+**NOT changed, deliberately.** `Core/FrustumGeometry.js` (upstream; `Q-130-a`, which has no queue
+row — changing it would hide this bug rather than remove it) and `selectWebGPUShader`'s use of raw
+attribute presence in the non-flat case (the vertexFormat parity question, its own row).
+
+**Files modified.** `packages/engine/Source/Renderer/WebGPU/WebGPUPrimitiveCommands.ts`,
+`packages/engine/Source/Renderer/WebGPU/WebGPUPrimitiveShaders.js`, plus the instruments
+`Tools/visual-regression/probe-primitive-texture-bindgroup.mjs`,
+`Tools/visual-regression/primitive-texture-bindgroup-entries.spec.mjs`,
+`Tools/visual-regression/primitive-bindgroup-layout-arity-guard.spec.mjs`,
+`Tools/visual-regression/primitive-texture-bindgroup-probe-gates.spec.mjs` and their
+`test-engine-node` runner registration.

@@ -3090,8 +3090,14 @@ function createWebGPUCommands(
     return;
   }
 
+  // `appearance.flat` is the primitive's own declaration that it shades with
+  // the instance color alone; WebGL honours it by swapping the program.
+  // Attribute presence cannot stand in for it — `FrustumGeometry` emits
+  // normals and st for every vertex format — so pass it through rather than
+  // letting the geometry decide the lighting model.
   const shaderInfo: ShaderInfoLike = selectWebGPUShader(
     firstGeometry.attributes,
+    { flat: defined(appearance) && appearance.flat === true },
   );
   const vertexLayout = getVertexLayoutForShader(shaderInfo.type);
 
@@ -3396,32 +3402,25 @@ function createWebGPUCommands(
       entries: [{ binding: 0, resource: { buffer: cache.materialBuffer } }],
     });
 
-    // Default placeholder texture for textured shaders
+    // Placeholder texture for textured shaders. Nothing on this path ever
+    // replaces it: `cache.textureBindGroup` is built once here and never
+    // refreshed with a loaded image (only the material path has an image to
+    // adopt), so this is the texture every fragment of a per-instance-color
+    // textured shader samples. Both of them shade `texColor * input.color`
+    // (`PrimitiveBasicTexturedColor.wgsl`, `PrimitivePhongTexturedColor.wgsl`),
+    // so the only value that leaves the instance color intact is opaque white;
+    // a patterned placeholder multiplies its pattern onto the primitive. Same
+    // 1×1 white the material path falls back to (`getPlaceholderView`).
     if (needsTexture && !defined(cache.defaultTexture)) {
-      const texSize = 64;
-      const checkerboard = new Uint8Array(texSize * texSize * 4);
-      const tileSize = 8;
-      for (let y = 0; y < texSize; y++) {
-        for (let x = 0; x < texSize; x++) {
-          const idx = (y * texSize + x) * 4;
-          const isLight2 =
-            (Math.floor(x / tileSize) + Math.floor(y / tileSize)) % 2 === 0;
-          const val = isLight2 ? 230 : 80;
-          checkerboard[idx] = val;
-          checkerboard[idx + 1] = val;
-          checkerboard[idx + 2] = val;
-          checkerboard[idx + 3] = 255;
-        }
-      }
       cache.defaultTexture = WebGPUTexture.create2D(
         device,
-        texSize,
-        texSize,
+        1,
+        1,
         "rgba8unorm",
         1,
-        "DefaultCheckerboard",
+        "PrimitiveFallbackWhite",
       );
-      cache.defaultTexture.write(checkerboard);
+      cache.defaultTexture.write(new Uint8Array([255, 255, 255, 255]));
       cache.defaultSampler = device.createSampler({
         magFilter: "linear",
         minFilter: "linear",
@@ -3432,11 +3431,19 @@ function createWebGPUCommands(
         addressModeU: "clamp-to-edge",
         addressModeV: "clamp-to-edge",
       });
+      // "Texture BGL" declares three entries so single- and dual-texture
+      // shaders share one layout, and WebGPU requires a bind group to supply
+      // one entry per layout entry — a short bind group is invalid and takes
+      // the whole frame's command buffer down with it at SetBindGroup(2, …).
+      // The unused secondary slot therefore takes the same placeholder view,
+      // exactly as the material path does with `getPlaceholderView()`.
       cache.textureBindGroup = device.createBindGroup({
+        label: "Primitive Texture BG",
         layout: cache.textureBindGroupLayout,
         entries: [
           { binding: 0, resource: cache.defaultSampler },
           { binding: 1, resource: cache.defaultTexture.view },
+          { binding: 2, resource: cache.defaultTexture.view },
         ],
       });
     }

@@ -280,16 +280,28 @@ function areShadersLoaded() {
  * - phong: position + normal → Phong lighting + color
  * - basic: position → Color only
  *
+ * A `flat` appearance suppresses the lit variants. WebGL swaps the whole
+ * program for `PerInstanceFlatColorAppearanceVS/FS` when `appearance.flat` is
+ * set, so lighting a primitive here because the geometry happens to carry
+ * normals diverges from the other backend. Attribute presence is not a
+ * reliable proxy for the caller's intent: `FrustumGeometry` allocates normals
+ * and st even for `VertexFormat.POSITION_ONLY`, so a flat frustum arrives
+ * carrying both.
+ *
  * @param {object} attributes - Geometry attributes
+ * @param {object} [options] - Selection modifiers
+ * @param {boolean} [options.flat=false] - The appearance shades flat, so the
+ *        lit variants are not eligible however the geometry is attributed
  * @returns {{ type: string, code: string, hasUV: boolean }} Shader type, WGSL code, and UV flag
  * @private
  */
-function selectWebGPUShader(attributes) {
+function selectWebGPUShader(attributes, options) {
   const hasNormals =
     defined(attributes.normal) && defined(attributes.normal.values);
   const hasST = defined(attributes.st) && defined(attributes.st.values);
+  const isFlat = defined(options) && options.flat === true;
 
-  if (hasNormals && hasST) {
+  if (hasNormals && hasST && !isFlat) {
     return {
       type: "phongTextured",
       code: getShaderSource("phongTextured"),
@@ -303,7 +315,7 @@ function selectWebGPUShader(attributes) {
       hasUV: true,
     };
   }
-  if (hasNormals) {
+  if (hasNormals && !isFlat) {
     return { type: "phong", code: getShaderSource("phong"), hasUV: false };
   }
   return { type: "basic", code: getShaderSource("basic"), hasUV: false };

@@ -14727,3 +14727,81 @@ and `BufferPolylineCollection` fragments never contribute a resolvable id to the
 shared pick target. **Unverified at runtime** — the next step is a probe that
 picks a `BufferPointCollection` point and asserts the readback key equals the
 key the registry reports, BEFORE any pipeline edit.
+
+## 2026-09-04 - NEW-WEBGPU-PRIMITIVE-TEXTURE-BINDGROUP-ENTRY-COUNT (rows AR-832 / AR-834, lane Mablung) — **FIXED, awaiting the Edge acceptance leg.**
+
+The non-material (per-instance-color) textured primitive path built its group-2 bind group with
+two entries — a sampler at 0 and a texture at 1 — against a `"Texture BGL"` layout that declares
+three (`WebGPUPrimitiveCommands.ts`, pushed third so it lands at group 2). WebGPU requires exactly
+one entry per layout entry, so `createBindGroup` produced an invalid bind group, `SetBindGroup(2,
+…)` took it, and `CommandEncoder.finish()` failed on `Scene Frame Command Encoder` — the whole
+scene frame's command buffer was discarded, every frame the primitive was in the scene.
+`frustum-dev` was the only demo of 338 in the 2026-09-04 WebGPU sweep to raise it. The bind group
+also carried no `label`, which is why the receipt reads `[Invalid BindGroup (unlabeled)]`. Origin:
+Batch 25 (2026-04-18) widened every texture LAYOUT from `sampler(0) + texture(1)` to `+
+texture(2)`; every sibling bind-group builder was given the matching third entry from
+`getPlaceholderView()`, this one was not.
+
+Two further defects on the same path had to be closed before the frustum LOOKED right rather than
+merely stopped erroring. The placeholder the path sampled was a 64x64 grey checkerboard, and both
+textured per-instance-color shaders compute `texColor * input.color`, so every fragment of every
+primitive on this path was multiplied by a checkerboard; nothing on this path ever replaces the
+placeholder with a real image, so opaque white — the multiplicative identity, and the same 1x1
+`FallbackWhite` the material path already falls back to — is the only correct value. And the
+shader was chosen from raw attribute presence, which lit a primitive whose appearance had asked
+for flat shading: `FrustumGeometry` allocates normals and st for every vertex format (upstream
+behaviour, see below), so a `VertexFormat.POSITION_ONLY` frustum arrives carrying both.
+`selectWebGPUShader` now takes the appearance's own `flat` declaration and is not eligible for the
+lit variants when it is set — which is what WebGL does, by swapping in
+`PerInstanceFlatColorAppearanceVS/FS`.
+
+**Acceptance (observable behaviour only):**
+
+1. `Apps/Sandcastle2/index.html?id=frustum-dev&renderer=webgpu` produces neither `Number of entries
+   (2) did not match the expected number of entries (3) for [BindGroupLayoutInternal "Texture
+   BGL"]` nor `Invalid BindGroup (unlabeled) … SetBindGroup(2, …)`.
+2. Side by side at the demo's own camera, the WebGPU canvas shows the frustum's faces as a uniform
+   translucent red with a black wireframe outline — the same flat appearance as WebGL. No
+   checkerboard pattern and no directional shading on the frustum faces.
+3. The demos that already exercise the textured non-material path stay clean, and no other demo
+   newly reports a bind-group entry-count mismatch.
+
+**Proving artefacts.** `Tools/visual-regression/probe-primitive-texture-bindgroup.mjs` (the
+acceptance, per `R-2026-08-29-1`: both backends, zero validation errors, and a per-pixel comparison
+of the WebGPU canvas against WebGL at the demo's camera, with the sibling Phong, Image-material and
+Image-material-polyline paths carried as clause-3 cells);
+`Tools/visual-regression/primitive-texture-bindgroup-entries.spec.mjs` (the browser-free behaviour
+spec — the real engine under a recording device: bind-group-vs-layout entry agreement, the
+opaque-white placeholder upload, and the flat/lit selection);
+`Tools/visual-regression/primitive-bindgroup-layout-arity-guard.spec.mjs` (the structural guard —
+every `createBindGroup` in the module against the layout it names, with the pre-fix text as its
+negative control); and
+`Tools/visual-regression/primitive-texture-bindgroup-probe-gates.spec.mjs` (negative controls for
+the probe's own verdict, so no gate in the acceptance can pass vacuously — including the proof that
+`frameStats`'s `nonBlackPct` cannot serve as the "nothing drew" gate over this scene's background,
+and that the `distinctCoarseColors` canary that replaced it does fire). All three specs run under
+`npm run test-engine-node`.
+
+**Two deviations from the verbatim acceptance, recorded rather than glossed.** (i) Clause 3's
+full-sweep leg stays blocked on `AR-D20`: the Sandcastle2 sweep currently certifies 0 of 338 demos
+because two gitignored `.d.ts` files 404 in every demo, so a sweep result is not evidence. The probe
+covers the clause by naming and loading the sibling paths instead. (ii) Clause 2 says "over the
+globe"; the probe turns the globe off and draws over a flat background, because terrain streaming
+would swamp a per-pixel WebGL-vs-WebGPU comparison and cannot be made identical between the two
+legs. The alpha-0.5 blend still exercises translucency and the frustum's own shading — which is
+what the clause is about — but the "over the globe" half is not measured by the probe.
+
+**Adjacent, NOT fixed here — `Q-130-a` has no row of its own.** `Core/FrustumGeometry.js` gates
+normal/tangent/bitangent/st generation on `defined(vertexFormat.normal)` and friends, and a
+`VertexFormat` field is a plain boolean that is always defined, so the branch is always taken. It
+is the only file in `packages/engine/Source` that uses that form (the others use the truthy `if
+(vertexFormat.st)`), it is upstream code, and it is filed only inside Q-130's review-notes cell at
+`FIX_QUEUE_2026-08-27_AUDIT_FINDINGS.md:526` — there is no `| Q-130-a |` row anywhere. It is the
+trigger, not the defect: changing it would HIDE this bind-group bug rather than remove it, and the
+next non-material appearance over an st-carrying geometry would trip the same bind group again. It
+should get its own row.
+
+**Adjacent, deliberately out of scope.** Whether `selectWebGPUShader` should consult the
+appearance's `vertexFormat` rather than raw attribute presence remains the parity question the
+diagnosis marks as its own row. This entry closes the `flat` half only, because clause 2 requires
+it; the vertex-format half is untouched.
