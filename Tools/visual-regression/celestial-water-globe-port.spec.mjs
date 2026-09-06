@@ -1181,23 +1181,113 @@ function glslMoonTerm(law, sunAltitude, overrides = {}) {
     delete law.globals.u_oceanCelestialMoon;
   }
 }
+function hasCelestialWaterShaderKeyGate(shaderSet, rendering) {
+  const forkHighTail = [
+    ...shaderSet.matchAll(
+      /\((enableEclipseGlobeShadow|applyNightDarkness|applyNightLights|applyCelestialWater) \? (0x[0-9a-f]+) : 0\)/g,
+    ),
+  ].map((match) => ({
+    name: match[1],
+    value: BigInt(match[2]),
+  }));
+  const nightLights = forkHighTail.find(
+    (entry) => entry.name === "applyNightLights",
+  );
+  const celestialWater = forkHighTail.find(
+    (entry) => entry.name === "applyCelestialWater",
+  );
+  const nightLightsIndex = forkHighTail.indexOf(nightLights);
+  const celestialWaterIndex = forkHighTail.indexOf(celestialWater);
+  const values = forkHighTail.map((entry) => entry.value);
+
+  return (
+    forkHighTail.length === 4 &&
+    new Set(forkHighTail.map((entry) => entry.name)).size ===
+      forkHighTail.length &&
+    new Set(values).size === values.length &&
+    values.every((value) => value > 0n && (value & (value - 1n)) === 0n) &&
+    nightLights !== undefined &&
+    celestialWater !== undefined &&
+    nightLights.value === 1n << 41n &&
+    celestialWater.value === 1n << 42n &&
+    celestialWater.value === nightLights.value * 2n &&
+    celestialWaterIndex === nightLightsIndex + 1 &&
+    /if \(applyCelestialWater\) \{\s*fs\.defines\.push\("APPLY_CELESTIAL_WATER"\);/.test(
+      shaderSet,
+    ) &&
+    /surfaceShaderSetOptions\.applyCelestialWater =\s*celestialTail\.enable > 0\.0 && showReflectiveOcean;/.test(
+      rendering,
+    )
+  );
+}
+
 test("E6 the GLSL define is emitted only with the water it shades", () => {
-  assert.match(
-    shaderSetJs,
-    /if \(applyCelestialWater\) \{\s*fs\.defines\.push\("APPLY_CELESTIAL_WATER"\);/,
-    "the define must ride the surface-shader family",
+  assert.ok(
+    hasCelestialWaterShaderKeyGate(shaderSetJs, renderingJs),
+    "the define must have adjacent, unique high-tail bits and retain its water gate",
   );
-  // Its own bit, add-only, above the last one taken.
-  assert.match(
-    shaderSetJs,
-    /\(applyNightLights \? 0x1000000000 : 0\) \+\s*\(applyCelestialWater \? 0x2000000000 : 0\)/,
-    "the define must contribute a distinct bit to the shader key",
-  );
-  assert.match(
-    renderingJs,
-    /surfaceShaderSetOptions\.applyCelestialWater =\s*celestialTail\.enable > 0\.0 && showReflectiveOcean;/,
-    "the define must be conjoined with the reflective-ocean condition",
-  );
+});
+
+test("E6a the source gate rejects aliases and disconnected controls", () => {
+  const mutations = [
+    {
+      name: "aliases the celestial-water bit to night lights",
+      source: "shaderSet",
+      before: "(applyCelestialWater ? 0x40000000000 : 0)",
+      after: "(applyCelestialWater ? 0x20000000000 : 0)",
+      expected: false,
+    },
+    {
+      name: "renumbers the celestial-water bit",
+      source: "shaderSet",
+      before: "(applyCelestialWater ? 0x40000000000 : 0)",
+      after: "(applyCelestialWater ? 0x80000000000 : 0)",
+      expected: false,
+    },
+    {
+      name: "emits the define unconditionally",
+      source: "shaderSet",
+      before: "if (applyCelestialWater) {",
+      after: "if (true) {",
+      expected: false,
+    },
+    {
+      name: "drops the reflective-ocean conjunction",
+      source: "rendering",
+      before: "celestialTail.enable > 0.0 && showReflectiveOcean",
+      after: "celestialTail.enable > 0.0",
+      expected: false,
+    },
+    {
+      name: "rewords a bit-allocation comment",
+      source: "shaderSet",
+      before: "// bit 41, fork",
+      after: "// Night Lights fork allocation",
+      expected: true,
+    },
+  ];
+
+  for (const mutation of mutations) {
+    const source = mutation.source === "shaderSet" ? shaderSetJs : renderingJs;
+    assert.equal(
+      source.split(mutation.before).length - 1,
+      1,
+      `${mutation.name} fixture must have one mutation site`,
+    );
+    const mutatedShaderSet =
+      mutation.source === "shaderSet"
+        ? shaderSetJs.replace(mutation.before, mutation.after)
+        : shaderSetJs;
+    const mutatedRendering =
+      mutation.source === "rendering"
+        ? renderingJs.replace(mutation.before, mutation.after)
+        : renderingJs;
+    assert.equal(
+      hasCelestialWaterShaderKeyGate(mutatedShaderSet, mutatedRendering),
+      mutation.expected,
+      mutation.name,
+    );
+  }
 });
 
 /**

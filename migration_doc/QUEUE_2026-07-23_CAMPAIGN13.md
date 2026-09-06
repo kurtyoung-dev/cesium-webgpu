@@ -723,6 +723,14 @@ landing defect.
 | `C13-GATE-D` | NOT STARTED | Follows `C13-14..20`. |
 | `C13-EXIT` | NOT STARTED | Dead last. |
 
+**C13-43 GP E6 fixture stamp — Batch1450, source-only.** The stale E6 bit-literal
+fixture correction has56/56 focused PASS and independent source/evidence GO.
+Only the fixture and its four negative/one comment-positive controls change;
+production shader bits remain untouched. The historical54/55 FAIL is retained.
+This supersedes only the GP stale-fixture status above, not C13-43's open parser,
+build, browser or rendered acceptance. [Exact scope and evidence](branches/ASTRA_GP_E6_LANDING_2026-09-06.md).
+Unrelated cloud-default, renderer, lifecycle and package work is not part of this stamp.
+
 **C13-41 STATUS — REOPENED 2026-08-14 by maintainer ruling `R-2026-08-14-1`
 ([`MAINTAINER_RULINGS_2026-08-14.md`](MAINTAINER_RULINGS_2026-08-14.md);
 audit findings S2/S3 in [`SOL_WEEK_AUDIT_2026-08-14.md`](SOL_WEEK_AUDIT_2026-08-14.md)).
