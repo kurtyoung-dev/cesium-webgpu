@@ -20058,3 +20058,83 @@ agreement.
 **Files modified:** the four above plus `migration_doc/DEFERRED_WORK.md`,
 `migration_doc/WEBGPU_DEBUGGING_LOG.md` and `migration_doc/DEBUGGING_GUIDE.md`. No engine file is
 touched, so WebGL is byte-identical and no rebuild changes engine bytes.
+
+## Wave P0-2 lane Uldor round 2, Bugs 1-3 — a WGSL `antialias()` helper that could only ever return its first argument, and polyline draw commands that carried no bounding volume (2026-09-06)
+
+**Bugs:** `BUG-POLYLINE-ARROW-WEBGPU-DISCARDS-EVERY-FRAGMENT`,
+`BUG-POLYLINE-OUTLINE-WEBGPU-PAINTS-FLAT-OUTLINE-COLOUR`,
+`BUG-POLYLINE-GLOW-WEBGPU-DOUBLE-COMPOSITE` (`AR-754`). Found by the first Edge execution of the
+guard widened in Batch 1439 — job 9 leg 5, exit 1, 30 PASS / 12 FAIL at DPR 1 and DPR 2, with the
+WebGPU error gate CLEAN. Silent wrong pixels: nothing in the validation layer, nothing in the
+console.
+
+**Files affected:** `packages/engine/Source/Shaders/WebGPU/Collections/PolylineArrow.wgsl`,
+`packages/engine/Source/Shaders/WebGPU/Collections/PolylineOutline.wgsl`,
+`packages/engine/Source/Renderer/WebGPU/WebGPUPolylineRenderer.js`.
+
+**Root cause 1 (arrow + outline — one bug, two symptoms).** Both shaders carry their own copy of a
+helper named `antialias`, and both copies computed
+
+```wgsl
+let val2 = clamp(-dist / fuzz, 0.0, 1.0);
+let val = pow(val1 * val2, 0.5);
+return mix(color1, color2, val);
+```
+
+Every call site in both shaders builds `dist` out of `abs()` and `min()` of absolute values, so
+`dist` is never negative. `-dist / fuzz` is therefore never positive, `val2` is pinned at 0, `val` is
+pinned at 0, and the function returns `color1` for **every fragment of every polyline**, discarding
+the `currentColor` its callers spent the whole shader computing. Arrow passes the transparent
+`outsideColor` as `color1`, so every fragment failed `if (outColor.a < 0.005) { discard; }` and the
+material drew nothing at all — the probe's 0 px. Outline passes `outlineColor` as `color1`, so the
+correctly-computed interior mask was thrown away and the whole ribbon painted the outline colour —
+the probe's 0 core px against 7888 outline-colour px over the full 17-row quad. The upstream
+`czm_antialias` (`Shaders/Builtin/Functions/antialias.glsl`) uses `(dist - 0.5) / fuzzFactor` and
+mixes `midColor` toward `currentColor`; the WGSL had neither.
+
+**Root cause 2 (glow).** The glow row failed only the new FWHM axis (4 vs 3, ratio 1.333) while its
+lit-pixel ratio, 1.171, sat comfortably inside the old band — which is why five earlier runs of this
+probe never saw it. Fitting the banked PNGs showed WebGL's cross-line profile is exactly
+`glowPower/d - 2*glowPower` over a 12.50 px quad (rms 0.0011) and that WebGPU's fits **no** member of
+that family at any width, centre or glow power (best rms 0.049) but fits `1 - (1 - f)^2` — the same
+profile composited twice — at the WebGPU quad's own 13.0 px and within 0.005 px of WebGL's centre
+(rms 0.0045). Cause: every polyline command was built with `boundingVolume:
+collection._boundingVolume`, and `PolylineCollection` has no such property; a volume-less command
+takes `View.js:374-378`'s worst-case camera range and `insertIntoBin` (`View.js:618-649`) puts it in
+every frustum, where colour accumulates because only depth is cleared between frustums.
+
+**Fixes.** (1) Both WGSL `antialias()` helpers replaced with a faithful port of `czm_antialias` at
+its default `fuzzFactor` of 0.1 — the four-argument overload the WebGL polyline materials themselves
+call. (2) `buildSegmentDataForGroup` and `buildPickSegmentData` accumulate an axis-aligned extent
+over the mode-projected endpoints they already compute for the segment buffer, and
+`finalizeProjectedBoundingVolume` turns it into a per-group world-space `BoundingSphere` that the
+colour, velocity and pick commands all carry. Building it from the renderer's own projected points
+makes it correct in 3D, 2D, Columbus View and morph by construction; SCENE3D additionally applies the
+model matrix, because that mode packs raw ECEF and lets the MVP carry the transform.
+
+**Two traps worth logging.**
+
+*A parity bug can hide behind a passing ratio.* The glow defect had been live through every previous
+run of this probe. A lit-pixel ratio of 1.171 clears a [0.75, 1.25] band easily; only a measure of
+the profile's SHAPE — the cross-line FWHM — separated "the right glow" from "the right glow blended
+twice". When a bar is a ratio of counts, ask what the defect does to the shape.
+
+*A missing bounding volume is not merely a missed cull.* This is the second lane in one wave to land
+on it (`NEW-WEBGPU-CLASSIFICATION-BOUNDING-VOLUME-EVERY-MODE`, lane Rian). The visible symptom is not
+a performance loss — it is wrong colour on translucent geometry, folded as `1 - (1 - a)^N`. If a
+WebGPU renderer's translucent output is systematically too opaque against WebGL's, check
+`command.boundingVolume` before touching the shader. Grepping for `boundingVolume:` under
+`Renderer/WebGPU/` and checking that each source property actually exists on the class it is read
+from is a cheap sweep, and it has now paid twice.
+
+**Edge leg (the seat runs it):** `npx gulp build`; `node server.js --port 8094 --serve-built`;
+`node Tools/visual-regression/probe-polyline-multimaterial.mjs --port 8094`. Bar: 42/42 PASS, exit 0,
+at DPR 1 and DPR 2 — the same 21 checks per leg job 9 ran, unchanged so the AFTER leg is directly
+comparable to the banked BEFORE leg.
+
+**Files modified:** `packages/engine/Source/Shaders/WebGPU/Collections/PolylineArrow.wgsl`,
+`packages/engine/Source/Shaders/WebGPU/Collections/PolylineOutline.wgsl`,
+`packages/engine/Source/Renderer/WebGPU/WebGPUPolylineRenderer.js`,
+`Tools/visual-regression/polyline-command-bounding-volume.spec.mjs` (new), `package.json` (runner
+home), `migration_doc/DEFERRED_WORK.md`, `migration_doc/WEBGPU_DEBUGGING_LOG.md`,
+`migration_doc/FEATURE_INVENTORY.md`.

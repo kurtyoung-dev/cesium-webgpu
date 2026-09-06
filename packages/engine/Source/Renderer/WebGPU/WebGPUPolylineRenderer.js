@@ -29,6 +29,7 @@
  * @private
  * @module WebGPUPolylineRenderer
  */
+import BoundingSphere from "../../Core/BoundingSphere.js";
 import Cartesian3 from "../../Core/Cartesian3.js";
 import defined from "../../Core/defined.js";
 import EncodedCartesian3 from "../../Core/EncodedCartesian3.js";
@@ -200,6 +201,72 @@ function projectPositionForMode(position, frameState, modelMatrix, result) {
   // has no valid cartographic (e.g. exactly at the ellipsoid center).
   // Fall back to the world point so the segment still has finite data.
   return defined(actual) ? actual : Cartesian3.clone(scratchModelPoint, result);
+}
+
+// =========================================================================
+// Per-command bounding volume
+// =========================================================================
+
+// WebGL unions each bucket's per-polyline bounding spheres and assigns the
+// result to `command.boundingVolume` (`Scene/PolylineCollection.js:885`). This
+// path used to pass `collection._boundingVolume`, a property
+// `PolylineCollection` never defines, so every WebGPU polyline command was
+// submitted with NO bounding volume. `insertIntoBin` (`Scene/View.js:618`)
+// then bins a volume-less command into EVERY frustum, and colour accumulates
+// across frustums because depth clears between them - the same failure mode
+// recorded at `Scene/GlobeSurfaceTileProviderRendering.js:1428`. For a
+// translucent material that means the fragment is alpha-composited once per
+// frustum instead of once.
+//
+// The extent is accumulated over the SAME mode-projected endpoints the segment
+// packers already compute, so it is correct in 3D, 2D, Columbus View and morph
+// by construction rather than by mirroring WebGL's per-mode branch.
+const scratchExtentMin = new Cartesian3();
+const scratchExtentMax = new Cartesian3();
+
+function resetProjectedExtent() {
+  scratchExtentMin.x = Number.POSITIVE_INFINITY;
+  scratchExtentMin.y = Number.POSITIVE_INFINITY;
+  scratchExtentMin.z = Number.POSITIVE_INFINITY;
+  scratchExtentMax.x = Number.NEGATIVE_INFINITY;
+  scratchExtentMax.y = Number.NEGATIVE_INFINITY;
+  scratchExtentMax.z = Number.NEGATIVE_INFINITY;
+}
+
+function accumulateProjectedExtent(point) {
+  scratchExtentMin.x = Math.min(scratchExtentMin.x, point.x);
+  scratchExtentMin.y = Math.min(scratchExtentMin.y, point.y);
+  scratchExtentMin.z = Math.min(scratchExtentMin.z, point.z);
+  scratchExtentMax.x = Math.max(scratchExtentMax.x, point.x);
+  scratchExtentMax.y = Math.max(scratchExtentMax.y, point.y);
+  scratchExtentMax.z = Math.max(scratchExtentMax.z, point.z);
+}
+
+/**
+ * Builds the world-space bounding sphere for the extent accumulated since the
+ * last `resetProjectedExtent()`. Returns `undefined` when nothing was
+ * accumulated, which restores the previous no-volume behaviour rather than
+ * inventing a sphere around infinity.
+ *
+ * @private
+ */
+function finalizeProjectedBoundingVolume(frameState, modelMatrix, result) {
+  if (!isFinite(scratchExtentMin.x)) {
+    return undefined;
+  }
+  const sphere = BoundingSphere.fromCornerPoints(
+    scratchExtentMin,
+    scratchExtentMax,
+    result,
+  );
+  // SCENE3D packs the RAW ECEF position because `mvpRelativeToEye` already
+  // carries the model matrix; a command's bounding volume is world-space, so
+  // apply it here. Every other mode projected the modelMatrix-applied world
+  // point already, so applying it again would double-transform.
+  if (frameState.mode === SceneMode.SCENE3D) {
+    return BoundingSphere.transform(sphere, modelMatrix, sphere);
+  }
+  return sphere;
 }
 
 // =========================================================================
@@ -526,6 +593,7 @@ function buildSegmentDataForGroup(
 
   const segmentData = new Float32Array(totalSegments * FLOATS_PER_SEGMENT);
   let segmentCount = 0;
+  resetProjectedExtent();
 
   for (let i = 0; i < polylines.length; i++) {
     const polyline = polylines[i];
@@ -571,6 +639,8 @@ function buildSegmentDataForGroup(
         modelMatrix,
         scratchActualEnd,
       );
+      accumulateProjectedExtent(projStart);
+      accumulateProjectedExtent(projEnd);
       EncodedCartesian3.fromCartesian(projStart, scratchEncodedStart);
       EncodedCartesian3.fromCartesian(projEnd, scratchEncodedEnd);
 
@@ -651,7 +721,19 @@ function buildSegmentDataForGroup(
     }
   }
 
-  return { segmentData, segmentCount };
+  // The sphere object is retained on the group so a settled collection does
+  // not allocate one per frame.
+  polylineGroup.boundingVolume = finalizeProjectedBoundingVolume(
+    frameState,
+    modelMatrix,
+    polylineGroup.boundingVolume,
+  );
+
+  return {
+    segmentData,
+    segmentCount,
+    boundingVolume: polylineGroup.boundingVolume,
+  };
 }
 
 /**
@@ -681,6 +763,7 @@ function buildPickSegmentData(collection, context, frameState, modelMatrix) {
 
   const segmentData = new Float32Array(totalSegments * FLOATS_PER_SEGMENT);
   let segmentCount = 0;
+  resetProjectedExtent();
 
   for (let i = 0; i < length; i++) {
     const polyline = polylines[i];
@@ -717,6 +800,8 @@ function buildPickSegmentData(collection, context, frameState, modelMatrix) {
         modelMatrix,
         scratchActualEnd,
       );
+      accumulateProjectedExtent(projPickStart);
+      accumulateProjectedExtent(projPickEnd);
       EncodedCartesian3.fromCartesian(projPickStart, scratchEncodedStart);
       EncodedCartesian3.fromCartesian(projPickEnd, scratchEncodedEnd);
 
@@ -774,7 +859,20 @@ function buildPickSegmentData(collection, context, frameState, modelMatrix) {
     }
   }
 
-  return { segmentData, segmentCount };
+  // The pick command needs the same real bounding volume as the colour
+  // commands: a volume-less pick command is binned into every frustum too.
+  const cache = collection._webgpuCache;
+  cache.pickBoundingVolume = finalizeProjectedBoundingVolume(
+    frameState,
+    modelMatrix,
+    cache.pickBoundingVolume,
+  );
+
+  return {
+    segmentData,
+    segmentCount,
+    boundingVolume: cache.pickBoundingVolume,
+  };
 }
 
 // =========================================================================
@@ -1745,12 +1843,8 @@ async function _updateWebGPUPolylinesInner(
 
     // Build segment data with st coords for material shaders
     const needsST = materialNeedsST(materialType);
-    const { segmentData, segmentCount } = buildSegmentDataForGroup(
-      group,
-      needsST,
-      frameState,
-      modelMatrix,
-    );
+    const { segmentData, segmentCount, boundingVolume } =
+      buildSegmentDataForGroup(group, needsST, frameState, modelMatrix);
     if (segmentCount === 0) {
       continue;
     }
@@ -1878,7 +1972,7 @@ async function _updateWebGPUPolylinesInner(
         instanceCount: safeSegmentCount,
         pass: polylinePass,
         owner: collection,
-        boundingVolume: collection._boundingVolume,
+        boundingVolume: boundingVolume,
         modelMatrix: modelMatrix,
         sortLayer: collection._commandOrdering.sortLayer,
         sortPriority: collection._commandOrdering.sortPriority,
@@ -1958,7 +2052,7 @@ async function _updateWebGPUPolylinesInner(
             instanceCount: safeSegmentCount,
             pass: polylinePass,
             owner: collection,
-            boundingVolume: collection._boundingVolume,
+            boundingVolume: boundingVolume,
             modelMatrix: modelMatrix,
             sortLayer: collection._commandOrdering.sortLayer,
             sortPriority: collection._commandOrdering.sortPriority,
@@ -2172,7 +2266,7 @@ function _pushPolylinePickCommand(
     instanceCount: safePickSegmentCount,
     pass: Pass.OPAQUE,
     owner: collection,
-    boundingVolume: collection._boundingVolume,
+    boundingVolume: pickResult.boundingVolume,
     modelMatrix: modelMatrix,
     sortLayer: collection._commandOrdering.sortLayer,
     sortPriority: collection._commandOrdering.sortPriority,

@@ -247,14 +247,22 @@ fn getPointOnLine(p0: vec2<f32>, p1: vec2<f32>, x: f32) -> f32 {
   return slope * (x - p0.x) + p0.y;
 }
 
-// Soft edge anti-aliasing between two colors based on distance
+// Port of `czm_antialias` (Shaders/Builtin/Functions/antialias.glsl) at the
+// default fuzzFactor of 0.1 — the four-argument overload both WebGL polyline
+// materials call. Every caller here derives `dist` from `abs()`/`min()`, so it
+// is never negative; the previous `clamp(-dist / fuzz, ...)` term was therefore
+// pinned at zero, which pinned the blend factor at zero and made this function
+// return `color1` for every fragment.
 fn antialias(color1: vec4<f32>, color2: vec4<f32>, current: vec4<f32>,
              dist: f32) -> vec4<f32> {
-  let fuzz = max(fwidth(dist), 0.001);
-  let val1 = clamp(dist / fuzz, 0.0, 1.0);
-  let val2 = clamp(-dist / fuzz, 0.0, 1.0);
-  let val = pow(val1 * val2, 0.5);
-  return mix(color1, color2, val);
+  let fuzzFactor = 0.1;
+  var val1 = clamp(dist / fuzzFactor, 0.0, 1.0);
+  let val2 = clamp((dist - 0.5) / fuzzFactor, 0.0, 1.0);
+  val1 = val1 * (1.0 - val2);
+  val1 = val1 * val1 * (3.0 - (2.0 * val1));
+  val1 = pow(val1, 0.5);
+  let midColor = (color1 + color2) * 0.5;
+  return mix(midColor, current, val1);
 }
 
 struct FragOutput {

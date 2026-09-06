@@ -15960,3 +15960,178 @@ home), `migration_doc/DEFERRED_WORK.md`, `migration_doc/WEBGPU_DEBUGGING_LOG.md`
 acceptance-pending note is discharged only by leg 2's six `ddtd-infinity` verdicts. The catalog
 (`migration_doc/TOOLING_CATALOG.md`) is regenerated fleet-wide after landing, not per lane, per
 Batch 1443's own note.
+
+## 2026-09-06 — three WebGPU PolylineCollection material defects, found by the first Edge execution of the widened AR-754 guard (wave P0-2 lane Uldor, round 2)
+
+`probe-polyline-multimaterial.mjs` — the guard lane Uldor widened in Batch 1439 — ran for the first
+time on Edge as job 9 leg 5 (`Tools/visual-regression/output/wave-p0-2-edge-2026-09-05-job9/leg5-ar754/`,
+exit 1, 30 PASS / 12 FAIL, identical at DPR 1 and DPR 2, WebGPU error gate CLEAN at 0 uncaptured
+errors — silent wrong pixels, not validation failures). Both material groups the old guard had never
+instantiated are broken, and the new FWHM axis caught a third defect in a group that was already
+covered. Two root causes, three rows.
+
+**What the multi-group path was NOT.** Before any fix, the real `updateWebGPUPolylines` was driven
+over a recording fake device with the probe's exact five-material collection. It emits **five draw
+commands, five pipelines and five distinct material uniform buffers**, each written byte-exact —
+arrow `[1,0,1,1]` (MAGENTA), outline `[0,1,0,1, 0,0,1,1, 6]` (LIME / BLUE / outlineWidth 6) — and
+single-material collections of the same materials produce identical per-material state. The
+`materialType` group loop, the material-UBO layout (`MaterialUniformBuffer` offsets match the WGSL
+structs exactly) and pipeline-cache aliasing are therefore all REFUTED as mechanisms for any of the
+three findings. This is the control the row asked for, answered by enumerating commands, pipelines
+and uniform bytes rather than by pixels.
+
+### BUG-POLYLINE-ARROW-WEBGPU-DISCARDS-EVERY-FRAGMENT — a `PolylineArrow` polyline renders zero pixels on WebGPU (FIXED 2026-09-06, wave P0-2 lane Uldor, `AR-754`)
+
+**Measured (job 9 leg 5).** WebGL 3753 lit px, WebGPU **0**, at DPR 1 and DPR 2. Éowyn read the PNGs:
+WebGL renders five rows, WebGPU four — the magenta arrow row is absent entirely. Decoding the banked
+PNGs confirms it at the pixel level: WebGL has magenta at rows y=419-427 of
+`polyline-multimaterial-webgl-dpr1.png`; the WebGPU frame has nothing at all in that band, not a
+mis-coloured line.
+
+**Root cause.** `PolylineArrow.wgsl`'s local `antialias()` helper computed
+`let val2 = clamp(-dist / fuzz, 0.0, 1.0);`. Every caller in that shader builds `dist` from `abs()`
+and `min()` of absolute values, so `dist >= 0` always; `-dist / fuzz <= 0` always; `val2` is pinned
+at **0**; `val = pow(val1 * val2, 0.5)` is pinned at **0**; and `mix(color1, color2, 0.0)` returns
+`color1` for every fragment. The arrow shader's `color1` is `outsideColor = vec4(0,0,0,0)`, so every
+fragment reaches `if (outColor.a < 0.005) { discard; }` and the draw paints nothing. The `s`/`t`
+body-and-head masks, the material colour and the draw command were all correct the whole time — the
+final blend threw them away.
+
+**Fix.** `antialias()` in `Shaders/WebGPU/Collections/PolylineArrow.wgsl` is now a faithful port of
+`czm_antialias` (`Shaders/Builtin/Functions/antialias.glsl`) at its default `fuzzFactor` of 0.1 — the
+four-argument overload `PolylineArrowMaterial.glsl` itself calls: `val2` is
+`clamp((dist - 0.5) / fuzzFactor, 0, 1)`, `val1` becomes `val1 * (1 - val2)` smoothstepped and
+square-rooted, and the return mixes `midColor = (color1 + color2) * 0.5` toward the caller's
+`currentColor`.
+
+**Parity (Principle 5).** WebGPU-side only. The GLSL reference is correct and unchanged; this is
+WebGPU catching up to it. No WebGL byte moves.
+
+### BUG-POLYLINE-OUTLINE-WEBGPU-PAINTS-FLAT-OUTLINE-COLOUR — a `PolylineOutline` polyline renders as a solid band of its outline colour with no interior (FIXED 2026-09-06, wave P0-2 lane Uldor, `AR-754`)
+
+**Measured (job 9 leg 5).** WebGL core 4176 px over 9 rows plus 1856 edge px over 4 rows; WebGPU
+**0 core px** and **7888 edge px over 17 rows** — an outline-colour edge ratio of 4.250 against a
+[0.75, 1.25] band. Decoding the PNGs: WebGL's outline row is blue at y=457-459, green at y=462-469
+and blue again at y=471-473; WebGPU's is `(0,0,255)` on every row from 457 to 473.
+
+**Root cause. The same broken `antialias()` helper**, duplicated verbatim in
+`PolylineOutline.wgsl`. With `val` pinned at 0 the function returns `color1`, which in this shader is
+`material.outlineColor` — so the interior/outline `step()` mask `b` is computed correctly and then
+discarded, and the whole ribbon paints the outline colour. The measured 17 rows are exactly the full
+quad (`2 * halfWidth = 2 * (16 * 0.5 + 0.5)`), confirming the geometry was never the problem.
+
+**Fix.** The same faithful `czm_antialias` port, applied to `PolylineOutline.wgsl`.
+
+**Parity (Principle 5).** WebGPU-side only, same reasoning as the arrow row.
+
+**Why one root cause produced two different-looking symptoms.** `antialias(color1, color2, current,
+dist)` returning `color1` unconditionally means "whatever the shader passes first wins". Arrow passes
+the transparent `outsideColor` first and vanishes; outline passes `outlineColor` first and floods.
+Both predictions were made from the shader text before the PNGs were decoded, and both matched.
+
+### BUG-POLYLINE-GLOW-WEBGPU-DOUBLE-COMPOSITE — every WebGPU polyline command was submitted with no bounding volume, so translucent polylines alpha-composite once per frustum (FIXED 2026-09-06, wave P0-2 lane Uldor, `AR-754`)
+
+**Measured (job 9 leg 5).** WebGPU glow FWHM 4 against WebGL's 3 — ratio 1.333 against a [0.8, 1.2]
+band — with a lit-pixel ratio of only 1.171 and 8 lit rows against WebGL's 6. The FWHM axis is the one
+this probe added in Batch 1439, and it is the axis that caught this.
+
+**Both hypotheses the row named are REFUTED by fitting the banked PNGs.** Row-mean intensity was
+extracted from `polyline-multimaterial-{webgl,webgpu}-dpr1.png` over x 350..650 and fitted:
+
+| model | WebGL fit | WebGPU fit |
+| --- | --- | --- |
+| `glowPower/d - 2*glowPower` (the WebGL glow function) | **W 12.50, centre y 381.190, rms 0.0011** | best over all (W, centre, glowPower): rms **0.049** |
+| `1 - (1 - f)^2`, same f | — | **W 12.97, centre y 381.195, rms 0.0045** |
+| `1 - (1 - f)^3` | — | rms 0.051 |
+| `sqrt(f)` | — | rms 0.063 |
+
+So WebGL's profile is understood exactly, and WebGPU's is **not a member of that family at any width,
+centre or glow power** — it is neither a taper constant nor a quad-width mismatch. It is that same
+correct profile **composited twice**, over a 13.0 px quad (which is exactly the WebGPU quad,
+`2 * (12 * 0.5 + 0.5)`), centred within 0.005 px of WebGL's.
+
+**Root cause.** Every command in `WebGPUPolylineRenderer.js` — colour (`:1881`), velocity (`:1961`)
+and pick (`:2175`, all at `b119aacc15`) — was built with `boundingVolume: collection._boundingVolume`.
+**`PolylineCollection` never defines that property**: the only `_boundingVolume*` fields in
+`Scene/PolylineCollection.js` are per-polyline, and WebGL's command gets a real per-bucket union of
+them (built at `:833-860`, assigned at `:885`). A command with no volume takes
+`View.createPotentiallyVisibleSet`'s worst-case branch (`View.js:374-378`), receives the camera's
+whole `[frustum.near, frustum.far]`, is binned by `insertIntoBin` (`View.js:618-649`) into every
+frustum of that range, and — because depth clears between frustums but colour does not — blends once
+per frustum. This repo already records the same failure mode for the globe at
+`Scene/GlobeSurfaceTileProviderRendering.js:1428-1436` ("colour accumulates across frustums"), and
+wave P0-2 lane Rian measured and fixed the identical defect in the two classification renderers this
+same wave (`NEW-WEBGPU-CLASSIFICATION-BOUNDING-VOLUME-EVERY-MODE`, `AR-714`/`AR-715`/`AR-716`),
+including the same `1 - (1 - a)^N` blend fold. This row is the collection-side sibling of that one,
+found independently from pixels rather than from code.
+
+**Fix.** `buildSegmentDataForGroup` and `buildPickSegmentData` accumulate an axis-aligned extent over
+the **mode-projected endpoints they already compute** for the segment buffer, and
+`finalizeProjectedBoundingVolume` turns it into a `BoundingSphere`. Because the accumulated points
+are whatever `projectPositionForMode` produced for the current mode, the volume is expressed in the
+render frame of 3D, 2D, Columbus View and morph by construction rather than by mirroring WebGL's
+per-mode branch — which matters here, since `PolylineCollection` only populates
+`polyline._boundingVolume2D` on its WebGL bucket path. SCENE3D packs the raw ECEF position (the MVP
+carries the collection model matrix), so that one mode applies `BoundingSphere.transform` to reach
+world space; the other modes projected the modelMatrix-applied point already. Each material group
+retains its own sphere object, matching WebGL's per-bucket granularity and allocating nothing per
+frame.
+
+**The `cull` half.** These commands already carried `cull: true` and were un-culled only because
+`Scene.isVisible` (`Scene.js:3980`) short-circuits to visible while the volume is absent. Supplying a
+volume switches culling on in the same edit — the Batch-167 trap lane Rian documents. It is safe here
+for the reason her row requires: the volume is built from the points the renderer itself packed for
+the current mode, so outside SCENE3D it is never a 3D-ECEF sphere handed to a 2D frustum.
+
+**Prediction for the Edge leg.** With single compositing at the WebGPU quad's 13.0 px, the masked
+rows become y 376-379 and 384-386 with a peak of 251, giving **FWHM 3** and a ratio of 1.000. The
+remaining 13.0-vs-12.5 px quad difference does not move FWHM, and is left alone: it is entangled with
+a per-material edge-fade difference (the base and outline shaders fade over `smoothstep(0.8, 1.0)`,
+glow and arrow do not) that no current bar covers. Recorded here rather than churned.
+
+**Parity (Principle 5).** WebGPU-side only. WebGL already computes and attaches the volume
+(`PolylineCollection.js:885`); this is WebGPU catching up.
+
+**Verification (all three rows).**
+`Tools/visual-regression/polyline-command-bounding-volume.spec.mjs`, 6 tests, on
+`npm run test-engine-node` — the commands come from the real `updateWebGPUPolylines` and the near/far
+span from the real `BoundingSphere.computePlaneDistances`; only the six-line bin rule is transcribed
+from `View.js:626-640`, and the spec says so. A1 requires one frustum per command, A2 per-group
+centres (an aliased scratch sphere fails), A3 tightness within 1.35x of the minimal enclosing radius,
+A4 the pick command, A5 world-space placement under a translated model matrix. **A6 is a live
+inertness mutant**: forcing `finalizeProjectedBoundingVolume` down its `return undefined` branch —
+the accumulation still runs, its result is discarded — puts every command back in every frustum, so
+A1's assertion is falsifiable. 6/6, exit 0.
+
+**What the Node acceptance does NOT pin, disclosed rather than papered over.** The two WGSL fixes are
+shader text and cannot execute in Node. Their acceptance is the probe that measures them directly, per
+`R-2026-08-29-1` ("where a probe can measure the feature directly, the probe is the acceptance"), and
+their pre-fix leg is already banked — job 9 leg 5 IS the BEFORE leg, run by an Edge executor on the
+unfixed engine, with arrow at 0 px and outline core at 0 px. The inertness argument for those two is a
+proof rather than a mutant: `dist >= 0` at every call site is checkable from the shader text, and the
+two symptoms it predicts (transparent-first vanishes, outline-first floods) were both confirmed
+against decoded pixels.
+
+**Edge leg (the seat runs it).** `npx gulp build`; `node server.js --port 8094 --serve-built`;
+`node Tools/visual-regression/probe-polyline-multimaterial.mjs --port 8094`. Bar: **42/42 PASS,
+exit 0**, at DPR 1 and DPR 2 — the same 21 checks per leg job 9 ran, deliberately unchanged so the
+AFTER leg is directly comparable to the banked BEFORE leg. Specifically: arrow `webgpu draws` > 0 and
+lit-px ratio in [0.75, 1.25] (was 0 px, ratio 0.000); outline `webgpu draws` > 0, core ratio in
+[0.75, 1.25] and outline-edge ratio in [0.75, 1.25] (was 0 px core, edge ratio 4.250); glow FWHM
+ratio in [0.8, 1.2] (was 1.333, predicted 1.000); and the six already-green solid and dash checks
+plus the error gate unmoved.
+
+**Files modified:** `packages/engine/Source/Shaders/WebGPU/Collections/PolylineArrow.wgsl`,
+`packages/engine/Source/Shaders/WebGPU/Collections/PolylineOutline.wgsl`,
+`packages/engine/Source/Renderer/WebGPU/WebGPUPolylineRenderer.js`,
+`Tools/visual-regression/polyline-command-bounding-volume.spec.mjs` (new), `package.json` (runner
+home), `migration_doc/DEFERRED_WORK.md`, `migration_doc/WEBGPU_DEBUGGING_LOG.md`,
+`migration_doc/FEATURE_INVENTORY.md`. The queue is not edited.
+
+**For the seat.** Three queue rows are owed, one per `BUG-POLYLINE-*` name above. The probe was
+deliberately NOT given the `--single <material>` control cells the round-2 brief sketched: the
+question those controls existed to answer — whether a single-material arrow or outline collection
+renders — is answered in-lane and more strongly, by enumerating the commands, pipelines and material
+uniform bytes the real renderer produces for single-type versus five-type collections (identical),
+and adding cells would have changed the receipt shape between the BEFORE and AFTER legs and cost that
+comparability. Flagged as a deliberate deviation, not an omission.
