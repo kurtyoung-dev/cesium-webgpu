@@ -1,52 +1,44 @@
 #!/usr/bin/env node
 /**
  * Probe: CLASSIFICATION-FRUSTUM-SLICES (`AR-714` / `AR-715` / `AR-716`).
- * @purpose Measures, on both renderers and in SCENE3D, SCENE2D and mid-morph, how many frustum slices a classification command occupies, how long the frustum list is, how many times the classification draws per frame, and the translucent/opaque mean-channel ratio inside the classified footprint.
+ * @purpose Measures, on both renderers and in SCENE3D, SCENE2D and mid-morph, whether every classification command carries a bounding volume, whether it is binned into exactly the frustum bands that volume reaches, and — reported, not gated — the frustum-list length and the translucent/opaque mean-channel ratio inside the classified footprint.
  * @status ACTIVE
  * @runtime lib/probe-runtime.mjs
  *
- * WHAT THIS MEASURES AND WHY THE NUMBERS COME IN FOURS
- * ----------------------------------------------------
+ * WHAT THIS MEASURES AND WHY THE BARS CHANGED
+ * -------------------------------------------
  * A classification command with no bounding volume takes
  * `View.createPotentiallyVisibleSet`'s no-bounding-volume branch
  * (`Scene/View.js:374-388`), which does two things: it bins the command into
- * every frustum slice, and it folds the camera's whole near..far into the
- * accumulators `updateFrustums` divides — so it also CREATES slices. A fix
- * that lowers the slice count but leaves the list long has half landed, which
- * is why the list length is read in the same frame. And a translucent
- * classification drawn N times composites to `1 - (1 - a)^N` of its colour, so
- * the mean channel is what proves the slice count mattered rather than merely
- * moved.
+ * every frustum band, and it folds the camera's whole near..far into the
+ * accumulators `updateFrustums` divides — so it also CREATES bands.
  *
- * Four numbers per scene, each with its own bar:
+ * The row's first Edge leg asked for `slices == 1`, `frustums == 1` and
+ * `draws == distinctCommands` on both renderers. Eowyn's job-9 leg 2
+ * (`Tools/visual-regression/output/wave-p0-2-edge-2026-09-05-job9/leg2-ar714`)
+ * showed those are one bar in three hats, and that the hat does not fit
+ * SCENE2D on either backend. The adjudication and the replacement bars live in
+ * `lib/classification-frustum-slices-verdicts.mjs`, which is where the decision
+ * logic itself lives so a browser-free spec can execute and mutate it. In
+ * short:
  *
- *   1. `slices` — the popcount of `command.debugOverlappingFrustums`
- *      (`Scene/View.js:642-643`), maximised over the commands this primitive
- *      owns. BAR: 1 on BOTH renderers. Deterministic: a pure function of the
- *      command extent and the frustum splits, with no timing input.
- *   2. `frustums` — `scene.view.frustumCommandsList.length` in the same frame.
- *      BAR: 1 on BOTH renderers — the same bar the cell applies to `slices`,
- *      because the omitted volume grows the list as well as the bin count and a
- *      fix that lowers one but not the other has only half landed.
- *      Deterministic once the globe has settled; it moves while tiles load,
- *      which is why every scene settles on `globe.tilesLoaded` first.
- *   3. `draws` — how many bin slots hold a command this primitive owns.
- *      BAR: equal to the number of DISTINCT owned commands, i.e. every command
- *      binned exactly once. The absolute count is NOT comparable across
- *      renderers (WebGL emits stencil and colour commands where WebGPU emits
- *      one depth-sample command), which is exactly why the bar is the ratio to
- *      the distinct count rather than the count itself.
- *   4. `ratio` — the classified footprint's mean channel at alpha 0.5 divided
- *      by the same at alpha 1.0. BAR: the ledger's single-blend band
- *      0.34..0.62 (`DEFERRED_WORK.md:6439`), against the 0.748 double blend.
- *      This is the noisiest of the four: it depends on how many footprint
- *      pixels the classifier covers, so the cell also reports the pixel count
- *      and refuses to score a ratio taken over fewer than
- *      `MIN_FOOTPRINT_PIXELS` pixels rather than publishing a number computed
- *      from a handful of edge fragments. NOTE the shape: this is the
- *      translucent/opaque RATIO that `probe-ellipsoidprim-translucent.mjs`
- *      established, not an absolute channel mean — the ledger's band is a
- *      ratio band and an absolute mean is not comparable to it.
+ *   1. `bounded` — every owned command carries a bounding volume. GATED, both
+ *      backends. This is the property AR-714/715/716 changed, observed
+ *      directly, and it cannot be satisfied vacuously.
+ *   2. `slices` == the count derived by replaying `insertIntoBin`'s own band
+ *      test over the command's own `computePlaneDistances` extent against the
+ *      frame's own band list. GATED, both backends. One band gives 1; the
+ *      SCENE2D straddle gives 2; no volume gives the whole band count.
+ *   3. `draws` == the sum of those per-command expectations. GATED, both.
+ *   4. `sceneMode` == the mode the scene claims to be measuring. GATED, both.
+ *   5. `errors` — the ones NOT attributed to the tracked
+ *      `WebGPUDebugFrustumOverlay` bind-group defect. GATED, both. The
+ *      attributed ones are counted, reported in their own column and named in
+ *      the summary; they are neither swallowed nor charged to this row.
+ *   6. `frustums` — REPORTED. `frustumCommandsList.length` is a property of the
+ *      whole frame, not of this primitive: the `*-cull` cells, where the
+ *      primitive contributes nothing at all, read 1 on WebGL and 2 on WebGPU.
+ *   7. `ratio` — REPORTED, with a `ratioStatus`. See below.
  *
  * THE CULL SCENE IS THE BATCH-167 TRAP
  * ------------------------------------
@@ -57,11 +49,26 @@
  * both renderers, while the in-view scenes require them present — so the fix
  * cannot have changed behaviour twice.
  *
+ * THE FOOTPRINT IS CAPTURED WITH `debugShowFrustums` OFF
+ * -----------------------------------------------------
+ * It has to be. `scene.debugShowFrustums = true` makes
+ * `DebugInspector.js:79-85` multiply every fragment by `debugShowFrustumsColor`
+ * — `(bit0, bit1, bit2)` of `debugOverlappingFrustums` (`:129-143`). A command
+ * in band 0 alone is multiplied by `(1,0,0)`, which zeroes the green channel
+ * the footprint counts, and on WebGPU the same switch routes the frame through
+ * the broken debug overlay instead of the post-process chain, so the canvas is
+ * not written with scene content at all. Leg 2 read 0 footprint pixels on 12 of
+ * 14 cells for exactly those two reasons. So the footprint is captured first,
+ * with the flag off, and only then is the flag turned on and the distribution
+ * read from a later frame. They describe different frames on purpose: one
+ * measures pixels, the other measures binning, and the flag that enables the
+ * second destroys the first.
+ *
  * THE GROUND IS BLACK ON PURPOSE
  * ------------------------------
  * Every scene removes the imagery layers, paints `globe.baseColor` black and
  * turns the sky, sun and atmosphere off, so the classification composites over
- * black and the blend arithmetic behind bar 4 is the arithmetic the ledger
+ * black and the blend arithmetic behind the ratio is the arithmetic the ledger
  * used. With imagery underneath, a translucent/opaque ratio is not a blend
  * ratio at all.
  *
@@ -76,17 +83,40 @@ import {
   collectGateErrors,
   errorGateInit,
 } from "../lib/webgpu-error-gate.mjs";
+import {
+  MIN_FOOTPRINT_PIXELS,
+  OVERLAY_DEFECT_ROW,
+  SINGLE_BLEND_BAND,
+  evaluateCell,
+  evaluateRatio,
+  foldCommands,
+  partitionErrors,
+} from "./lib/classification-frustum-slices-verdicts.mjs";
 import { ProbeRefusal, isEntryPoint, runProbe } from "./lib/probe-runtime.mjs";
+
+// The decision logic is re-exported so a reader of the probe can find it and a
+// spec can import it from either module.
+export {
+  MIN_FOOTPRINT_PIXELS,
+  OVERLAY_DEFECT_MARKER,
+  OVERLAY_DEFECT_ROW,
+  SINGLE_BLEND_BAND,
+  evaluateCell,
+  evaluateRatio,
+  expectedSliceCount,
+  foldCommands,
+  partitionErrors,
+  sliceCount,
+} from "./lib/classification-frustum-slices-verdicts.mjs";
 
 const VIEWPORT = { width: 800, height: 600 };
 const WATCHDOG_BUDGET_MS = 8 * 60 * 1000;
 
-// A ratio taken over a sliver of edge fragments is noise wearing a number's
-// clothes. Below this the cell reports the ratio as null and fails on bar 4
-// rather than scoring it.
-const MIN_FOOTPRINT_PIXELS = 2000;
-
-const SINGLE_BLEND_BAND = Object.freeze([0.34, 0.62]);
+// `morphTo3D` divides its duration by three and spends the first third in a
+// `camera.flyTo` that is still SCENE2D (`Scene/SceneTransitioner.js:470-546`),
+// so a fixed frame budget reads the flyTo rather than the morph. Bounded wait
+// for the mode itself: four seconds at 60 Hz against a 0.67 s prologue.
+const MORPH_WAIT_FRAMES = 240;
 
 // The drape and the camera. A sub-degree footprint under a nadir camera, so
 // the classified region is a large, solid block of pixels at both alphas.
@@ -132,8 +162,8 @@ const SCENES = Object.freeze([
 
 /**
  * Builds the scene in the page and leaves the classification primitive on
- * `window.__probeTarget`, then reads the three command-distribution numbers
- * and, when asked, the footprint's mean channel.
+ * `window.__probeTarget`, then reads the footprint with `debugShowFrustums`
+ * off and the command distribution with it on.
  *
  * Everything inside runs in the browser; it takes only JSON-serialisable
  * arguments and returns only JSON-serialisable values.
@@ -202,9 +232,12 @@ async function measure(page, spec) {
     scene.moon.show = false;
     scene.fog.enabled = false;
     scene.backgroundColor = C.Color.BLACK;
-    // The slice count is only recorded while this is on
-    // (`Scene/View.js:642-643`).
-    scene.debugShowFrustums = true;
+    // OFF for the whole settle and for the footprint capture. It tints every
+    // fragment by band membership (`DebugInspector.js:79-85`) and on WebGPU it
+    // replaces the post-process chain, so a footprint read under it measures
+    // the debug overlay rather than the classification. Turned on below, after
+    // the capture, for the two frames the distribution is read from.
+    scene.debugShowFrustums = false;
 
     const offsetLon = options.outside ? options.cullOffset : 0.0;
     const west = options.lon + offsetLon - options.halfSpan;
@@ -367,21 +400,36 @@ async function measure(page, spec) {
     }
     await frame(8);
 
+    let morphReached = true;
     if (options.mode === "morph") {
-      // Half a second into a two-second 2D->3D morph: `scene.mode` is
-      // MORPHING and the transient is the point.
       scene.morphTo2D(0.0);
       await frame(6);
       scene.morphTo3D(2.0);
-      await frame(30);
+      // `morphFrom2DTo3D` divides the duration by three and flies the camera
+      // in SCENE2D for the first third, setting MORPHING only in that flyTo's
+      // completion callback (`Scene/SceneTransitioner.js:470-546`). A fixed
+      // frame budget therefore reads a 2D frame — which is what leg 2 did,
+      // reporting `sceneMode` 2 on both renderers. Wait for the mode itself,
+      // with a bound.
+      morphReached = false;
+      for (let i = 0; i < options.morphWaitFrames && !morphReached; i++) {
+        await frame(1);
+        morphReached = scene.mode === C.SceneMode.MORPHING;
+      }
+      // Past the transition edge and far short of the remaining two thirds.
+      await frame(8);
     }
 
     const readDistribution = () => {
       const view = scene.view;
       const list = view.frustumCommandsList;
-      const owned = new Set();
+      const camera = scene.camera;
+      const bands = [];
+      for (let i = 0; i < list.length; i++) {
+        bands.push({ near: list[i].near, far: list[i].far });
+      }
+      const seen = new Map();
       let draws = 0;
-      let slices = 0;
       for (let i = 0; i < list.length; i++) {
         const frustumCommands = list[i];
         for (let p = 0; p < frustumCommands.commands.length; p++) {
@@ -392,32 +440,44 @@ async function measure(page, spec) {
               continue;
             }
             draws += 1;
-            owned.add(command);
-            let bits = (command.debugOverlappingFrustums ?? 0) >>> 0;
-            let count = 0;
-            while (bits !== 0) {
-              count += bits & 1;
-              bits >>>= 1;
+            if (seen.has(command)) {
+              continue;
             }
-            if (count > slices) {
-              slices = count;
+            const volume = command.boundingVolume;
+            const hasBoundingVolume =
+              !!volume && typeof volume.computePlaneDistances === "function";
+            // The extent the PVS itself computes for this command: the
+            // volume's plane distances when it has one, and the camera's whole
+            // range when it does not (`Scene/View.js:340-344`, `:374-378`).
+            let near = camera.frustum.near;
+            let far = camera.frustum.far;
+            if (hasBoundingVolume) {
+              const interval = volume.computePlaneDistances(
+                camera.positionWC,
+                camera.directionWC,
+              );
+              near = interval.start;
+              far = interval.stop;
             }
+            seen.set(command, {
+              sliceMask: (command.debugOverlappingFrustums ?? 0) >>> 0,
+              near,
+              far,
+              hasBoundingVolume,
+              executeInClosestFrustum: command.executeInClosestFrustum === true,
+            });
           }
         }
       }
       return {
         frustums: list.length,
+        bands,
         draws,
-        distinctCommands: owned.size,
-        slices,
+        commands: Array.from(seen.values()),
         sceneMode: scene.mode,
       };
     };
 
-    // The capture renders as it reads, so the distribution is read AFTERWARDS:
-    // both numbers then describe the same frame, which is what the acceptance
-    // requires ("captured with `frustumCommandsList.length` itself in the same
-    // frame").
     const readFootprint = async () => {
       const { data, width, height } = await captureNow();
       let sum = 0;
@@ -437,10 +497,43 @@ async function measure(page, spec) {
       return { meanChannel: count > 0 ? sum / count : 0, pixels: count };
     };
 
+    // Pixels first, under no tint. Then the flag, then the binning.
     const footprint = await readFootprint();
+    scene.debugShowFrustums = true;
+    await frame(2);
     const distribution = readDistribution();
-    return { ...distribution, ...footprint };
+    scene.debugShowFrustums = false;
+
+    return {
+      ...distribution,
+      ...footprint,
+      morphReached,
+      sceneModeEnum: {
+        MORPHING: C.SceneMode.MORPHING,
+        COLUMBUS_VIEW: C.SceneMode.COLUMBUS_VIEW,
+        SCENE2D: C.SceneMode.SCENE2D,
+        SCENE3D: C.SceneMode.SCENE3D,
+      },
+    };
   }, spec);
+}
+
+/**
+ * The scene mode each `mode` string claims to measure, read from the live enum
+ * the page returned rather than from a transcribed integer.
+ *
+ * @param {string} mode The scene spec's mode.
+ * @param {object} sceneModeEnum The page's `SceneMode` values.
+ * @returns {number} The expected `scene.mode`.
+ */
+function expectedSceneModeFor(mode, sceneModeEnum) {
+  if (mode === "2d") {
+    return sceneModeEnum.SCENE2D;
+  }
+  if (mode === "morph") {
+    return sceneModeEnum.MORPHING;
+  }
+  return sceneModeEnum.SCENE3D;
 }
 
 /**
@@ -478,6 +571,7 @@ async function runCell(browser, origin, scene, renderer) {
     cullOffset: CULL_OFFSET_DEGREES,
     width: VIEWPORT.width,
     height: VIEWPORT.height,
+    morphWaitFrames: MORPH_WAIT_FRAMES,
   };
 
   const translucent = await measure(page, { ...base, alpha: 0.5 });
@@ -488,56 +582,51 @@ async function runCell(browser, origin, scene, renderer) {
   const gate = await collectGateErrors(page);
   await page.close();
 
-  const errors =
-    gate.errors.length + consoleErrors.length + (gate.deviceLost ? 1 : 0);
+  // Attribution, not suppression: the overlay's validation failures are a
+  // different subsystem's defect (`OVERLAY_DEFECT_ROW`) and are counted and
+  // published in their own column, so this row's error bar stays honest and
+  // theirs stays visible.
+  const partition = partitionErrors([...gate.errors, ...consoleErrors]);
+  const errors = partition.gating.length + (gate.deviceLost ? 1 : 0);
 
-  const ratio =
-    opaque &&
-    opaque.meanChannel > 0 &&
-    translucent.pixels >= MIN_FOOTPRINT_PIXELS
-      ? translucent.meanChannel / opaque.meanChannel
-      : null;
+  const folded = foldCommands(translucent.commands, translucent.bands);
 
   const cell = {
     scene: scene.name,
     renderer,
+    outside: scene.outside === true,
     errors,
-    gateErrorsSample: gate.errors.slice(0, 6),
-    consoleErrorsSample: consoleErrors.slice(0, 6),
+    overlayErrors: partition.overlay.length,
+    overlayDefectRow: partition.overlay.length > 0 ? OVERLAY_DEFECT_ROW : null,
+    gateErrorsSample: partition.gating.slice(0, 6),
+    overlayErrorsSample: partition.overlay.slice(0, 2),
     sceneMode: translucent.sceneMode,
+    expectedSceneMode: expectedSceneModeFor(
+      scene.mode,
+      translucent.sceneModeEnum,
+    ),
+    morphReached: translucent.morphReached,
     frustums: translucent.frustums,
-    slices: translucent.slices,
+    bands: translucent.bands,
+    slices: folded.slices,
+    expectedSlices: folded.expectedSlices,
     draws: translucent.draws,
-    distinctCommands: translucent.distinctCommands,
+    expectedDraws: folded.expectedDraws,
+    distinctCommands: folded.distinctCommands,
+    boundedCommands: folded.boundedCommands,
     footprintPixels: translucent.pixels,
     translucentMeanChannel: translucent.meanChannel,
     opaqueMeanChannel: opaque ? opaque.meanChannel : null,
-    ratio,
   };
 
-  if (scene.outside === true) {
-    // The cull half: nothing this primitive owns may be binned, and that must
-    // be true on both renderers.
-    cell.pass = cell.errors === 0 && cell.draws === 0;
-    cell.claim = "a classification primitive outside the view is not drawn";
-    return cell;
-  }
+  const ratio = evaluateRatio(cell);
+  cell.ratio = ratio.ratio;
+  cell.ratioStatus = ratio.ratioStatus;
 
-  const distributionOk =
-    cell.errors === 0 &&
-    cell.distinctCommands > 0 &&
-    cell.slices === 1 &&
-    cell.frustums === 1 &&
-    cell.draws === cell.distinctCommands;
-  const ratioOk =
-    !scene.ratio ||
-    (cell.footprintPixels >= MIN_FOOTPRINT_PIXELS &&
-      cell.ratio !== null &&
-      cell.ratio > SINGLE_BLEND_BAND[0] &&
-      cell.ratio < SINGLE_BLEND_BAND[1]);
-  cell.pass = distributionOk && ratioOk;
-  cell.claim =
-    "one frustum slice, one frustum, one draw per command, and a single blend";
+  const verdict = evaluateCell(cell);
+  cell.pass = verdict.pass;
+  cell.clauses = verdict.clauses;
+  cell.claim = verdict.claim;
   return cell;
 }
 
@@ -603,8 +692,15 @@ export const descriptor = {
   receipt(cells, context) {
     return {
       base: context.origin,
-      singleBlendBand: SINGLE_BLEND_BAND,
+      // Carried un-applied: the ratio is reported, not gated, until an Edge
+      // leg shows a non-zero footprint control on both backends.
+      singleBlendBandReportedNotGated: SINGLE_BLEND_BAND,
       minFootprintPixels: MIN_FOOTPRINT_PIXELS,
+      overlayDefectRow: OVERLAY_DEFECT_ROW,
+      overlayErrorsTotal: cells.reduce(
+        (total, cell) => total + cell.overlayErrors,
+        0,
+      ),
       cells,
     };
   },
@@ -618,10 +714,13 @@ export const descriptor = {
   summary(receipt) {
     const rows = receipt.cells.map(
       (cell) =>
-        `| ${cell.scene} | ${cell.renderer} | ${cell.slices} | ${cell.frustums} | ` +
-        `${cell.draws}/${cell.distinctCommands} | ` +
-        `${cell.ratio === null ? "—" : cell.ratio.toFixed(3)} | ` +
-        `${cell.errors} | ${cell.pass ? "PASS" : "FAIL"} |`,
+        `| ${cell.scene} | ${cell.renderer} | ${cell.sceneMode}/${cell.expectedSceneMode} | ` +
+        `${cell.boundedCommands}/${cell.distinctCommands} | ` +
+        `${cell.slices}/${cell.expectedSlices} | ` +
+        `${cell.draws}/${cell.expectedDraws} | ` +
+        `${cell.frustums} | ` +
+        `${cell.ratio === null ? cell.ratioStatus : cell.ratio.toFixed(3)} | ` +
+        `${cell.errors} | ${cell.overlayErrors} | ${cell.pass ? "PASS" : "FAIL"} |`,
     );
     const passed = receipt.cells.filter((cell) => cell.pass).length;
     return [
@@ -631,9 +730,17 @@ export const descriptor = {
       "",
       `Cells: ${passed}/${receipt.cells.length} passed.`,
       "",
-      "| scene | renderer | slices | frustums | draws/commands | ratio | errors | |",
-      "| --- | --- | --- | --- | --- | --- | --- | --- |",
+      "Gated: `bounded`, `slices`, `draws`, `mode`, `errors`. Reported only:",
+      "`frustums` (a whole-frame property, not this primitive's) and `ratio`.",
+      "",
+      "| scene | renderer | mode/exp | bounded/cmds | slices/exp | draws/exp | frustums | ratio | errors | overlay | |",
+      "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
       ...rows,
+      "",
+      `Overlay column: errors attributed to \`${receipt.overlayDefectRow}\` and`,
+      "excluded from the gated `errors` count. Total this run:",
+      `${receipt.overlayErrorsTotal}. A non-zero total is a real WebGPU defect`,
+      "in a different subsystem, not a pass for it.",
       "",
     ].join("\n");
   },

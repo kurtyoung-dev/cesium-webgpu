@@ -15655,6 +15655,20 @@ residual named this exact guard and is now resolved).
 
 **Status: CLOSED in Node; the named Edge leg is owed to the seat and is what covers the two renderer call sites (see "What the Node acceptance does NOT pin", below).**
 
+**Edge-leg status, 2026-09-05 (Eowyn job 9 leg 2, then lane Rian round 2 — the seat's budgeted calibration round).** The leg RAN and exited 1 at 2/14 cells. Reading it clause by clause:
+
+- **The engine change met every WebGPU bar it was given.** `slices == 1`, `frustums == 1` and `draws == distinctCommands` hold on all five in-view WebGPU scenes, and `draws == 0` on all four cull cells, both renderers. Nothing in the leg contradicts the fix.
+- **The leg's WebGL cells and its ratio bar were instrument, not engine, and are adjudicated below.** WebGL was not changed by this row's landing and its SCENE2D numbers (`slices 2`, `frustums 2`, `4 draws` for 2 commands) are upstream-correct. `View.js:579` clamps the 2D `far` to `camera.position.z + nearToFarDistance2D` and `View.js:596-599` gives the last band the near `far - nearToFarDistance2D`, so the last seam sits at `far - n2f`, which is **at most** `camera.position.z` and is **exactly** `camera.position.z` whenever the frame's accumulated far reaches the clamp. In that case — the one leg 2's WebGL SCENE2D cells were in — the seam bisects a nadir drape's extent and `slices == 1` is unsatisfiable for it however tight the volume. When the clamp does **not** bind the seam sits nearer than the drape and a bounded drape can occupy a single band even in a multi-band 2D frame, which is exactly why the calibrated bar is derived per frame from the frame's own band list rather than fixed at 1 or 2. Both cases are driven through the real `View.createPotentiallyVisibleSet` in `classification-bounding-volume-frustum-slices.spec.mjs` (Group F), not asserted.
+- **The `groundprim-morph` cells never measured morph, on either renderer.** Both reported `sceneMode` 2 (`SceneMode.SCENE2D`), not 0 (`MORPHING`). `morphFrom2DTo3D` (`Scene/SceneTransitioner.js:470-546`) divides the duration by three and spends the first third in a `camera.flyTo` that stays in SCENE2D, entering MORPHING only in that flyTo's completion callback; the probe read 30 frames into a 2.0 s morph, inside the 0.67 s prologue. WebGL's `frustums 9` is the 2D uniform split at the flyTo's mid-flight camera height, not a morph number. The probe now waits for `scene.mode === SceneMode.MORPHING` (bounded) and gates on the mode it measured.
+- **The retired bars were vacuous where they passed.** With one band `insertIntoBin` cannot give a popcount above 1, so `slices == 1` and `draws == distinctCommands` are entailed by `frustums == 1` and are satisfied by an unbounded command too — proved in Group F, which runs the fix and the defect through the real PVS in a one-band frame and gets identical numbers. `frustums` itself is a whole-frame property (the two backends differ on it in the `*-cull` cells, where this primitive contributes nothing), so it is now REPORTED, not gated.
+- **The calibrated bars, both backends:** every owned command carries a bounding volume; the observed slice popcount equals the count derived by replaying `insertIntoBin`'s own band test over the command's own `computePlaneDistances` extent against the frame's own band list; the bin-slot count equals the sum of those per-command expectations; the cell measured the mode it claims; and no un-attributed console or gate error. Decision logic in `Tools/visual-regression/lib/classification-frustum-slices-verdicts.mjs`, with two inertness mutants (`bounded`, `slices`). Each reads the shipped module, rewrites its marked clause to `false && …` and imports the result as a `data:` URL — nothing is written to disk — and each reds only on its own cell shape.
+- **The 167-168 WebGPU errors per cell are a different subsystem's defect** and are now attributed and reported in their own column rather than charged here — see `NEW-WEBGPU-DEBUG-FRUSTUM-OVERLAY-DEPTH-SAMPLETYPE` below.
+- **The ratio bar is REPORTED, not gated, and its measurement is fixed.** Its control read zero on 12 of 14 cells including WebGL cells that submitted draws with no errors, because the probe's own `debugShowFrustums = true` makes `DebugInspector.js:79-85` multiply every fragment by the band-membership colour — a command in band 0 alone is multiplied by `(1,0,0)`, zeroing the green channel the footprint counts. The probe now captures the footprint in a frame with the flag OFF and reads the distribution in a later frame with it ON. The band is carried in the receipt un-applied; the seat re-arms the gate once a leg shows a non-zero control on both backends.
+
+**Surfaced and not charged here (Principle 9).** WebGL and WebGPU disagree on `frustumCommandsList.length` in identical scenes where this primitive contributes nothing at all — both `*-cull` cells read 1 on WebGL and 2 on WebGPU with `draws 0` on all four — i.e. the two backends accumulate different whole-frame near/far. That divergence is what makes `frustums` unusable as a cross-backend bar, and it is not this row's and was not investigated here. **For the seat to queue.**
+
+**Still owed:** the re-run of the calibrated leg. This row remains CLOSED in Node with its Edge leg owed until that run is green.
+
 **What (pre-fix, at `dcf7c9c069`).** Three primitive shapes reach the two WebGPU classification renderers, and all three emitted commands with no bounding volume:
 
 1. `createWebGPUGroundPrimitiveCommands` read `primitive?._boundingVolumes?.[0]` / `primitive?._boundingVolumes2D?.[0]` (`WebGPUGroundPrimitiveRenderer.js:2678-2683`). A **directly constructed `ClassificationPrimitive` has neither field** — `grep -c "_boundingVolumes" Scene/ClassificationPrimitive.js` returns **0**. Its volumes are the inner `Primitive`'s four `_boundingSphere*` arrays, which WebGL selects with a four-way chain at `ClassificationPrimitive.js:1337-1348` (fed by `Primitive._updateBoundingVolumes` at `:1334`). So a standalone classification primitive was unbounded in **every** mode, SCENE3D included. (`AR-715`)
@@ -16135,3 +16149,47 @@ renders — is answered in-lane and more strongly, by enumerating the commands, 
 uniform bytes the real renderer produces for single-type versus five-type collections (identical),
 and adding cells would have changed the receipt shape between the BEFORE and AFTER legs and cost that
 comparability. Flagged as a deliberate deviation, not an omission.
+
+### NEW-WEBGPU-DEBUG-FRUSTUM-OVERLAY-DEPTH-SAMPLETYPE — `scene.debugShowFrustums` and `scene.debugShowCommands` bind an `r16float` colour texture into a `texture_depth_2d` slot under MSAA, so the overlay never draws and the canvas loses the frame (DIAGNOSED 2026-09-05, lane Rian round 2 — no fix in that lane)
+
+**Status: OPEN, diagnosis only. For the seat to queue.** Surfaced under CLAUDE.md Principle 9 by the AR-714/715/716 Edge leg, which switches `debugShowFrustums` on to read its own counters and collected **167-168 identical validation warnings per WebGPU cell**, on all seven. The row it interrupted is a different subsystem, so nothing was fixed there; the probe now attributes these errors to this row rather than charging them to AR-714/715/716 or swallowing them.
+
+**The message, verbatim from `wave-p0-2-edge-2026-09-05-job9/leg2-ar714/classifyslices-report.json`:**
+
+```
+console.warning: None of the supported sample types (Float|UnfilterableFloat) of
+[Texture "SceneFramebuffer-Color_depth_resolve_ss"] match the expected sample types (Depth).
+ - While validating entries[2] against { binding: 2, visibility: ShaderStage::Fragment,
+   texture: {sampleType: TextureSampleType::Depth, viewDimension: TextureViewDimension::e2D,
+   multisampled: 0} }.
+ - While validating [BindGroupDescriptor "DebugFrustumOverlay BG"] against
+   [BindGroupLayout "DebugFrustumOverlay BGL"]
+ - While calling [Device].CreateBindGroup([BindGroupDescriptor "DebugFrustumOverlay BG"]).
+```
+
+**The chain, at HEAD `b119aacc15`.**
+
+| step | location | what it is |
+| --- | --- | --- |
+| the layout entry | `Renderer/WebGPU/WebGPUDebugFrustumOverlay.ts:225` | `texture(2, Stage.FRAGMENT, { sampleType: "depth" })` |
+| the shader it serves | `WebGPUDebugFrustumOverlay.ts:66` | `@group(0) @binding(2) var depthTexture: texture_depth_2d;` |
+| the bind | `WebGPUDebugFrustumOverlay.ts:319` | `{ binding: 2, resource: sceneDepthView }` |
+| where that view comes from | `Renderer/WebGPU/WebGPUSceneRenderer.ts:3558-3559` | `this._sceneFramebuffer?.depthSampleableView` |
+| the getter | `Renderer/WebGPU/WebGPUSceneFramebuffer.ts:238` | delegates to `_colorTarget.getDepthSampleableView()` |
+| the branch | `Renderer/WebGPU/WebGPURenderTarget.ts:503-512` | **under MSAA returns `_msaaDepthResolveSampleableView`**, not the depth-aspect view |
+| the texture that is | `WebGPURenderTarget.ts:257-260` | `format: "r16float"`, `label: "SceneFramebuffer-Color_depth_resolve_ss"` |
+
+`r16float` supports `Float` / `UnfilterableFloat` and can never satisfy `sampleType: "depth"`, so `createBindGroup` fails validation **every frame the flag is on**.
+
+**MSAA is the reason, and both sides already say so in prose.** `WebGPUSceneRenderer.ts:3536-3538` states the requirement — _"Its shader binds `texture_depth_2d`, so it requires the direct single-sample depth view. The `r16float` conversion used for MSAA requires a different binding contract."_ — and `WebGPUSceneFramebuffer.ts:232-237` states the hazard from the other end — _"In single-sample mode this is a depth-only aspect view suitable for `texture_depth_2d`. In MSAA mode it is the `r16float` colour resolve suitable for `texture_2d<f32>`."_ **Neither is enforced.** The only guard, `WebGPUSceneRenderer.ts:3561`, tests that the view is *defined*; under MSAA it is defined and wrong, so the warn branch beneath it — which exists precisely to say "requires a single-sample (non-MSAA) scene framebuffer with depthSampleableView; overlay skipped" — can only fire when the view is absent, never when it is the wrong type. The scene framebuffer's colour target is built with `sampleCount: numSamples` (`WebGPUSceneFramebuffer.ts:321-329`), so any MSAA-enabled viewer takes this path; the error text names that exact target.
+
+**Two consequences, both observed.**
+
+1. `CesiumDebug.showFrustums()` and `CesiumDebug.showCommands()` produce **nothing** on WebGPU under MSAA. `FEATURE_INVENTORY.md:944` and `:948` carry `WebGPUDebugFrustumOverlay` as `(SHIPPED)`; that claim is false for the default configuration. (The inventory is the seat's record lane to correct — not edited here.)
+2. **The frame is lost, not merely un-tinted.** `WebGPUSceneRenderer.ts:3251-3258` routes the frame to the overlay *in place of* the production post-process chain and returns, and on WebGPU the post-process chain is the only path that blits the scene framebuffer to the canvas. With the bind group invalid the overlay's own pass cannot draw either, so the canvas is left without scene content. This is the second half of why the AR-714/715/716 leg read `footprintPixels == 0` on all seven WebGPU cells (the first half, on WebGL, is the band-membership tint — see that row).
+
+**Shape of the fix, for whoever takes it (not implemented here).** Either give the overlay a second bind-group layout + pipeline whose binding 2 is `texture_2d<f32>` and select it by the framebuffer's sample count, or have the overlay ask the render target for the depth-aspect single-sample view specifically and take the existing skip-with-warning branch when only the `r16float` resolve exists. The second is smaller and makes the guard at `:3561` mean what its warning says. Whichever is chosen, the guard must test the **kind** of view it received, not merely its presence — a defined-but-wrong resource is what got past it.
+
+**Parity note (Principle 5).** WebGL's equivalent is `DebugInspector.js`'s per-command shader clone (`:69-86`), which multiplies `out_FragColor.rgb` by a band-membership colour and works. This is WebGPU catching up, not a new capability.
+
+**Verification owed with the fix.** An Edge probe reading a non-black canvas with `debugShowFrustums` on, plus zero `DebugFrustumOverlay` messages in the gate. The AR-714/715/716 probe already reports the attributed count in its own column (`overlayErrors`), so that number reaching zero is the readiest available signal.
