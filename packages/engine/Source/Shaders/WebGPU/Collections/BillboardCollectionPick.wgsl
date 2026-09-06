@@ -226,25 +226,45 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   //>>ifdef DISABLE_DEPTH_DISTANCE
   // Check the raw sentinel before squaring so
   // `disableDepthTestDistance = Infinity` (packed as -1) retains its sign.
-  // This pick shader represents the depth override with the far-plane clip
-  // value, `clipPos.z = clipPos.w`.
-  // Unlike the color pass, which uses z = 0 to force the visible overlay on top
-  // of scene depth, the pick pass uses z = w to pass its far-cleared depth
-  // target without overriding nearer pick geometry.
-  let disableRawDPick = input.perInstanceFlags.x;
-  if (disableRawDPick < 0.0) {
-    clipPos.z = clipPos.w;
-  } else if (disableRawDPick != 0.0) {
-    let disableDepthSqDPick = disableRawDPick * disableRawDPick;
-    if (camDistSq < disableDepthSqDPick) {
-      clipPos.z = clipPos.w;
-    }
-  } else if (camera.minimumDisableDepthTestDistance != 0.0) {
-    let frameMinSqDPick =
-      camera.minimumDisableDepthTestDistance *
-      camera.minimumDisableDepthTestDistance;
-    if (camDistSq < frameMinSqDPick) {
-      clipPos.z = clipPos.w;
+  //
+  // The pick pass overrides depth to the NEAR plane, exactly as the color pass
+  // does. WebGL has no colour/pick split to reproduce here: one vertex shader
+  // (`BillboardCollectionVS.glsl`) serves both passes, and `Scene`'s pick
+  // derivation replaces only the fragment stage, so `gl_Position.z =
+  // -gl_Position.w` — the WebGL near plane — is what the WebGL pick pass gets.
+  // The WebGPU pick pass rasterizes globe terrain into the same depth target
+  // (`WebGPUGlobeSurfaceRenderer` dispatches the terrain pick pipeline), so a
+  // far-plane pick fragment loses `less-equal` against terrain and the
+  // billboard is unpickable — which is the whole behaviour the property exists
+  // to defeat.
+  // WebGL-parity clip guard (BillboardCollectionVS.glsl:340-344). The override
+  // is a WRITE, not a test: `clipPos.z = 0.0` pulls a vertex whose z was
+  // outside [0, w] — nearer than the near plane, or past the far plane, at
+  // positive w — back INSIDE the clip volume, so the API rasterizes a fragment
+  // WebGL leaves clipped. Guarding on the pre-override z is what stops that.
+  // A w <= 0 vertex is clipped on both backends whatever z the block writes;
+  // the w test is upstream's own, because z/w is not a valid comparison at
+  // non-positive w. WebGL spells the same test in its [-1, 1] convention as
+  // `zclip < -1.0 || zclip > 1.0`; WebGPU clip z is [0, w], so the low bound
+  // is 0.0. `select` yields the out-of-volume sentinel so a w <= 0 divide
+  // never reaches the comparison.
+  let zclipDPick = select(-1.0, clipPos.z / clipPos.w, clipPos.w > 0.0);
+  if (zclipDPick >= 0.0 && zclipDPick <= 1.0) {
+    let disableRawDPick = input.perInstanceFlags.x;
+    if (disableRawDPick < 0.0) {
+      clipPos.z = 0.0;
+    } else if (disableRawDPick != 0.0) {
+      let disableDepthSqDPick = disableRawDPick * disableRawDPick;
+      if (camDistSq < disableDepthSqDPick) {
+        clipPos.z = 0.0;
+      }
+    } else if (camera.minimumDisableDepthTestDistance != 0.0) {
+      let frameMinSqDPick =
+        camera.minimumDisableDepthTestDistance *
+        camera.minimumDisableDepthTestDistance;
+      if (camDistSq < frameMinSqDPick) {
+        clipPos.z = 0.0;
+      }
     }
   }
   //>>endif

@@ -888,8 +888,6 @@ export const PROBE_CONTRACT_ALLOWLIST = Object.freeze({
     "no watchdog; browser.close outside finally — added 2026-06-24, pre-dates the spec",
   "probe-polyline-material-primitive.mjs":
     "no watchdog; browser.close outside finally — added 2026-06-21, pre-dates the spec",
-  "probe-polyline-multimaterial.mjs":
-    "no watchdog; browser.close outside finally — added 2026-07-05, pre-dates the spec",
   "probe-post-process.mjs":
     "no watchdog; browser.close outside finally — added 2026-05-13, pre-dates the spec",
   "probe-postprocess-f16.mjs":

@@ -19602,3 +19602,107 @@ host other than the endpoint domain.
 entry: `migration_doc/DEFERRED_WORK.md`,
 `NEW-CORE-RESOURCE-CROSS-ORIGIN-DERIVATION` (2026-09-05).
 
+
+---
+
+## Bug 1430.1 — `disableDepthTestDistance` was honoured by the colour pass and refused by the pick pass (AR-001, `MAB-9` / `MAB-7`)
+
+**Files affected**
+
+- `packages/engine/Source/Shaders/WebGPU/Collections/BillboardCollectionPick.wgsl`
+- `packages/engine/Source/Shaders/WebGPU/Collections/PointPrimitivePick.wgsl`
+- `packages/engine/Source/Shaders/WebGPU/Collections/BillboardCollection.wgsl`
+- `packages/engine/Source/Shaders/WebGPU/Collections/BillboardCollectionSDF.wgsl`
+- `packages/engine/Source/Shaders/WebGPU/Collections/PointPrimitiveColor.wgsl`
+
+**Root cause — two independent defects in one block.**
+
+*(1) The pick pass wrote the far plane.* Batch 218/219 fixed `clipPos.z = clipPos.w` to `clipPos.z = 0.0` in
+the three COLOUR shaders and the ledger recorded Bug 3 FIXED. The two PICK shaders were never touched, and a
+comment was added asserting the divergence was deliberate: "the pick pass uses z = w to pass its far-cleared
+depth target without overriding nearer pick geometry."
+
+That rationale does not survive contact with either backend. WebGL has no colour/pick split to mirror:
+`BillboardCollection.js:1214` hands the pick command the same `_sp`/`_spTranslucent` program the colour
+command uses, and Cesium's pick derivation replaces the FRAGMENT stage only — so WebGL's pick fragments carry
+`gl_Position.z = -gl_Position.w` (`BillboardCollectionVS.glsl:348`), its NEAR plane, exactly as its colour
+fragments do. And the WebGPU pick target is not "far-cleared and otherwise empty": the globe writes terrain
+depth into it (`WebGPUGlobeSurfaceRenderer.ts:1988-1991` selects the terrain pick pipeline into
+`derivedCommands.picking.pickCommand` precisely so the pick pass rasterizes it). A pick fragment at NDC z = 1
+therefore loses `less-equal` against terrain, and the primitive is unpickable at exactly the distances
+`disableDepthTestDistance` exists to cover — the default pick path for any billboard, label or point placed on
+the surface.
+
+*(2) No shader carried WebGL's clip guard.* `BillboardCollectionVS.glsl:340-344` computes
+`zclip = gl_Position.z / gl_Position.w`, sets `clipped = (zclip < -1.0 || zclip > 1.0)`, and applies the
+override only when `!clipped`. None of the five WGSL shaders had an equivalent, and the override is a WRITE
+rather than a test: `clipPos.z = 0.0` PULLS a vertex whose z was outside `[0, w]` back INSIDE the clip volume,
+so the API then rasterizes a fragment WebGL leaves clipped. Measured over the standing spec's own grid with
+the guard made inert, the divergence is **32 samples, all at positive `w`** — 16 nearer than the near plane
+(normalised depth < 0) and 16 past the far plane (depth > 1), in the two window cases where the override
+fires. **Zero are at `w <= 0`**: such a vertex is clipped by the API on both backends whatever z the block
+writes, so the guard's `w` test is not the defect — it is the faithful port of upstream's own, which exists
+because `z / w` is not a valid comparison at non-positive `w` (`BillboardCollectionVS.glsl:341`).
+
+**Fix**
+
+All five now compute `let zclip<suffix> = select(-1.0, clipPos.z / clipPos.w, clipPos.w > 0.0);` and wrap the
+whole per-instance / frame-wide chain in `if (zclip<suffix> >= 0.0 && zclip<suffix> <= 1.0)`. `select` yields the
+out-of-volume sentinel so a `w <= 0` divide never reaches the comparison — WGSL `select` is a function, so both
+value operands are evaluated and the division's result is simply discarded. The two pick shaders' three sites each
+change from `clipPos.z = clipPos.w` to `clipPos.z = 0.0`, and the comment asserting the deliberate split is
+replaced with the WebGL evidence above.
+
+**Parity (Principle 5).** WebGL is byte-identical and must stay so: it is already correct, and it is the
+reference this fix moves WebGPU onto. Scenes that do not use the property are unaffected on WebGPU too — the
+whole block sits under `//>>ifdef DISABLE_DEPTH_DISTANCE`, which `WebGPUBillboardRenderer.js:830-836` and its
+siblings raise only when the per-instance property or `frameState.minimumDisableDepthTestDistance` is
+non-zero, so a scene not using it never compiles the guard.
+
+**Held, not fixed.** The six POLYLINE shaders keep `z = w` at 18 sites pending `AR-D09`. The whole polyline
+`DISABLE_DEPTH_DISTANCE` block is fork-added — `PolylineVS.glsl` has no such block and
+`czm_minimumDisableDepthTestDistance` has exactly two GLSL consumers, neither a polyline shader — so there is
+no WebGL law to make it match, and the decision rules on whether the property (and the block) survives.
+
+**Standing guard.** `Tools/visual-regression/collection-depth-override-law.spec.mjs`
+(`npm run test-visual-probe-contracts`) parses the real WGSL and GLSL blocks with
+`lib/shader-block-interpreter.mjs` and EXECUTES them over a 252-sample clip-space grid, requiring the same
+fragment outcome (clipped, or a depth in [0, 1]) from both backends. It carries one `if (false && ...)`
+inertness mutant per shader plus a GLSL-side mutant proving it reads both files rather than comparing WGSL
+with a copy of itself.
+
+**Files modified**
+
+- the five shaders above
+- `Tools/visual-regression/collection-depth-override-law.spec.mjs` (new)
+- `Tools/visual-regression/lib/shader-block-interpreter.mjs` (new)
+- `package.json` (`test-visual-probe-contracts` gains the spec)
+- `migration_doc/DEFERRED_WORK.md` (Bug 3 amended in place)
+
+## Bug 1430.2 — the multi-material polyline guard did not cover the bug it closed (AR-754, `L2-COL-5` Claim B)
+
+**Files affected:** `Tools/visual-regression/probe-polyline-multimaterial.mjs`,
+`Tools/visual-regression/lib/probe-fleet-contract-allowlist.mjs`.
+
+**Root cause.** `BUG-POLYLINE-COLLECTION-MULTI-MATERIAL` closed FIXED naming this probe as its standing
+guard. The probe gated the DASH half of a two-symptom bug only; asserted GLOW with a bare `colored > 200`,
+which the recorded 3.3x defect clears; never instantiated `PolylineArrow` or `PolylineOutline`; and ran at
+DPR 1. The second probe the record names, `probe-path-portions.mjs`, is not in the tree.
+
+**Fix.** The probe is migrated onto `lib/probe-runtime.mjs`, builds five hue-separated lines in ONE
+collection, measures each material by the quantity its own failure moves (dash: runs-per-row + run ratio;
+glow: lit-pixel ratio AND cross-line FWHM ratio; arrow: lit-pixel ratio; outline: lit-pixel ratio + the
+presence of its second colour), and repeats at `deviceScaleFactor` 1 and 2. Its decision functions moved to
+`lib/polyline-multimaterial-verdicts.mjs`, which has no imports so the spec can mutate it as text.
+
+**Standing guard.** `Tools/visual-regression/polyline-multimaterial-verdicts.spec.mjs` proves, per material,
+that the shipped verdicts reject that material's recorded defect and that removing that one material's
+assertion block from the module source makes them accept it.
+
+**Files modified**
+
+- `Tools/visual-regression/probe-polyline-multimaterial.mjs`
+- `Tools/visual-regression/lib/polyline-multimaterial-verdicts.mjs` (new)
+- `Tools/visual-regression/polyline-multimaterial-verdicts.spec.mjs` (new)
+- `Tools/visual-regression/lib/probe-fleet-contract-allowlist.mjs` (its row deleted; ratchet is shrink-only)
+- `package.json`, `migration_doc/DEFERRED_WORK.md`

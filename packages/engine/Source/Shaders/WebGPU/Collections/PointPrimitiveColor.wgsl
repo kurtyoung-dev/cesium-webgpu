@@ -227,21 +227,36 @@ fn vertexMain(
     // everything. WebGPU clip-z is [0,1] (near→far), not WebGL's [-1,1]; "on
     // top" is the near plane (0), not far. Mirrors the same fix in
     // BillboardCollection.wgsl.
-    let disableRawDP = perInstanceFlags.x;
-    if (disableRawDP < 0.0) {
-        clipPos.z = 0.0;
-    } else if (disableRawDP != 0.0) {
-        let disableDepthSqDP = disableRawDP * disableRawDP;
-        if (camDistSq < disableDepthSqDP) {
-            clipPos.z = 0.0;
-        }
-    } else if (camera.minimumDisableDepthTestDistance != 0.0) {
-        let frameMinSqDP =
-            camera.minimumDisableDepthTestDistance *
-            camera.minimumDisableDepthTestDistance;
-        if (camDistSq < frameMinSqDP) {
-            clipPos.z = 0.0;
-        }
+    //
+    // WebGL-parity clip guard (BillboardCollectionVS.glsl:340-344). The override
+    // is a WRITE, not a test: `clipPos.z = 0.0` pulls a vertex whose z was
+    // outside [0, w] — nearer than the near plane, or past the far plane, at
+    // positive w — back INSIDE the clip volume, so the API rasterizes a fragment
+    // WebGL leaves clipped. Guarding on the pre-override z is what stops that.
+    // A w <= 0 vertex is clipped on both backends whatever z the block writes;
+    // the w test is upstream's own, because z/w is not a valid comparison at
+    // non-positive w. WebGL spells the same test in its [-1, 1] convention as
+    // `zclip < -1.0 || zclip > 1.0`; WebGPU clip z is [0, w], so the low bound
+    // is 0.0. `select` yields the out-of-volume sentinel so a w <= 0 divide
+    // never reaches the comparison.
+    let zclipDP = select(-1.0, clipPos.z / clipPos.w, clipPos.w > 0.0);
+    if (zclipDP >= 0.0 && zclipDP <= 1.0) {
+      let disableRawDP = perInstanceFlags.x;
+      if (disableRawDP < 0.0) {
+          clipPos.z = 0.0;
+      } else if (disableRawDP != 0.0) {
+          let disableDepthSqDP = disableRawDP * disableRawDP;
+          if (camDistSq < disableDepthSqDP) {
+              clipPos.z = 0.0;
+          }
+      } else if (camera.minimumDisableDepthTestDistance != 0.0) {
+          let frameMinSqDP =
+              camera.minimumDisableDepthTestDistance *
+              camera.minimumDisableDepthTestDistance;
+          if (camDistSq < frameMinSqDP) {
+              clipPos.z = 0.0;
+          }
+      }
     }
     //>>endif
 
