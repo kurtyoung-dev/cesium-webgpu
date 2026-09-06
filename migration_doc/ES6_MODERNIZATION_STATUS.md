@@ -7,11 +7,38 @@
 
 > Note: raw grep counts differ between scan passes depending on whether shader-string files and generated chunks were filtered. Where scans disagree, the lower (canonical-JS-only) figure is the load-bearing one and the discrepancy is called out. Treat all counts as approximate.
 
+> **Refreshed 2026-09-05** (Batch 1424, `b964e0da30`, doc-fitness follow-up G-41): the three headline
+> counts at §1 and §3 below were re-measured directly, not carried forward from the prior pass —
+> `find packages/engine/Source/Renderer/WebGPU -name '*.ts' ! -name '*.d.ts' | wc -l` → 240,
+> `find packages/engine/Source/Renderer/WebGPU -name '*.js' | wc -l` → 34, and for the engine+widgets
+> total per this doc's own §Scope exclusions, `find packages/engine/Source packages/widgets/Source
+> -name '*.ts' ! -name '*.d.ts' ! -path '*/ThirdParty/*' ! -path '*/Workers/*' | wc -l` → 275 with the
+> `*.js` equivalent → 1,193. The per-subsystem breakdown table in §3 (rows other than the WebGPU-only
+> and Renderer parent rows) was not re-derived in this pass and may still carry stale per-directory
+> splits. **Fix round 1 (2026-09-05):** the Renderer parent row was found to contradict its own
+> WebGPU-only child (240 `.ts` exceeding a 177 `.ts` parent) and was re-measured —
+> `find packages/engine/Source/Renderer -name '*.ts' ! -name '*.d.ts' | wc -l` → 256,
+> `find packages/engine/Source/Renderer -name '*.js' | wc -l` → 87. **Fix round 2 (2026-09-05):**
+> the Scene row was found to contradict the same headline (a stated 1 `.ts` file, but Renderer's
+> 256 alone already falls short of the 275 total by 19) and was re-measured —
+> `find packages/engine/Source/Scene -name '*.ts' ! -name '*.d.ts' | wc -l` → 19,
+> `find packages/engine/Source/Scene -name '*.js' | wc -l` → 621. The 19 are real tracked source
+> files, not an artifact of the command: 7 in `Scene/` proper (`AtmosphericEffects.ts`,
+> `EnvironmentFrustumDemand.ts`, `HdrDisplayCapability.ts`, `LightTypes.ts`,
+> `SkyBoxResolutionPolicy.ts`, `StarFieldMath.ts`, `WaterClassificationProvider.ts`) and 12 under
+> `Scene/Weather/`. With this row corrected, §3's `.ts` column now sums to 256 + 19 + 0 + 0 + 0 + 0
+> = 275, matching the headline exactly — `Renderer` and `Scene` are the only two in-scope
+> directories holding any `.ts` at all. The `Core`, `DataSources`, and `Shaders` `.js`
+> counts remain unverified this pass and stay hedged with `~` (`Shaders` is the special case — its
+> `.js` are build-generated into this same canonical tree and gitignored, so the tracked count is
+> 0; see the row note in §3); `Services` (`6`) is exact and not
+> hedged.
+
 ---
 
 ## 1. Executive Summary
 
-The fork is **substantially modernized**. The prototype-based-class era is essentially over in canonical source: there are **zero `*.prototype = ` constructor-function class definitions** (the only `Object.create(...prototype)` chains are 4 legitimate abstract-base subclasses in `Scene/TilePathResolver.js`). ES6 `class` syntax is the norm — ~545 files use `class`, and every one of the ~171 WebGPU `.ts` files is full modern ES2022 (arrow fns, `const`/`let`, template literals, `?.`, `??`, async/await, class getters — no `var`, no `Object.defineProperties`).
+The fork is **substantially modernized**. The prototype-based-class era is essentially over in canonical source: there are **zero `*.prototype = ` constructor-function class definitions** (the only `Object.create(...prototype)` chains are 4 legitimate abstract-base subclasses in `Scene/TilePathResolver.js`). ES6 `class` syntax is the norm — ~545 files use `class`, and every one of the 240 WebGPU `.ts` files (measured 2026-09-05, see note above) is full modern ES2022 (arrow fns, `const`/`let`, template literals, `?.`, `??`, async/await, class getters — no `var`, no `Object.defineProperties`).
 
 What **remains** is concentrated in two idioms inside the legacy `.js` half of the codebase:
 
@@ -47,19 +74,29 @@ The TypeScript story is bifurcated: the **WebGPU renderer is ~87% TS**, while **
 
 ## 3. TypeScript vs JavaScript Balance
 
-**Overall (engine + widgets, excluding `.d.ts`):** ~178 `.ts` vs ~1,673 `.js` → **~9–10% TypeScript**.
+**Overall (engine + widgets, excluding `.d.ts`):** 275 `.ts` vs 1,193 `.js` → **~19% TypeScript** (measured 2026-09-05, see note in §1's preamble; per this doc's own §Scope exclusions of `ThirdParty/`, `Workers/`).
 
 **Per-subsystem (`packages/engine/Source/`):**
 
 | Subsystem | .ts | .js | % TS |
 |---|---|---|---|
-| **Renderer (incl. WebGPU)** | 177 | 74 | **~70%** |
-| ↳ Renderer/WebGPU only | ~171 | ~25 | **~87%** |
-| Scene | 1 | ~552 | ~0.2% |
+| **Renderer (incl. WebGPU)** | 256 | 87 | **~75%** (measured 2026-09-05) |
+| ↳ Renderer/WebGPU only | 240 | 34 | **~88%** (measured 2026-09-05) |
+| Scene | 19 | 621 | **~3%** (measured 2026-09-05) |
 | Core | 0 | ~290 | 0% |
 | DataSources | 0 | ~108 | 0% |
 | Shaders (JS string modules) | 0 | ~590 | 0% |
 | Services | 0 | 6 | 0% |
+
+> Row note — `Shaders`, and the build state of every `.js` count here: these counts are measured on
+> an **unbuilt** tree. `gulp build` generates one `.js` string module per shader **into this same
+> canonical directory** (`scripts/build.js:979`, `:1152`), untracked via
+> `packages/engine/.gitignore:5` (`Source/Shaders/**/*.js`) — 656 of them at this HEAD. So the
+> stable figure is **0 _tracked_ `.js`** (`git ls-files` → 0, built or not), the `~590` is a stale
+> count of those generated modules, and the root `Source/Shaders/` build output holds no `.js` at
+> all. Same caveat on §1's headline: `1,193` is the unbuilt figure; built it is 1,849, and without
+> this doc's `ThirdParty/`/`Workers/` exclusions it is **1,913** — which is where the audit's
+> `1,913` comes from. A different measurement, not a transposition.
 
 **Where the big JS remainder lives:** Core, Scene, and DataSources (~950 files combined, ~0% TS). These hold nearly all the legacy idioms in §2. The WebGPU renderer is the modern island — all-`.ts`, all-ES2022, ESLint + tsconfig enforced.
 

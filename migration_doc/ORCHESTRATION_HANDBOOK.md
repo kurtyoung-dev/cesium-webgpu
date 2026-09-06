@@ -25,12 +25,15 @@ Dispatch plans (e.g. `CLOSEOUT_PLAN_2026-08-07.md`) are grouping only — same r
 ## 0. First hour — orientation reading order [CADENCE]
 
 1. This handbook, in full.
-2. `CLAUDE.md` (repo root) — project rules, the Active Remediation Campaign block, principles 1–9.
+2. `CLAUDE.md` (repo root) — project rules, the Active Remediation Campaign block, principles 1–10.
    `CLAUDE.md` is **gitignored**, so a bare clone will not have it: its orientation layer (campaign
    block, quiet hours, branch transparency) is mirrored in
    [`CAMPAIGN_STATE.md`](CAMPAIGN_STATE.md), which is tracked. Read that instead — or as well.
 3. `migration_doc/README.md` — the doc index; trust it over any single doc's self-description.
-4. `migration_doc/MAINTAINER_RULINGS_2026-08-10.md` — the seven standing rulings (R-2026-08-10-1..7).
+4. `migration_doc/MAINTAINER_RULINGS_2026-08-10.md` — the seven standing rulings (R-2026-08-10-1..7),
+   then `migration_doc/MAINTAINER_RULINGS_2026-08-28.md` (carries R-2026-08-29-1, the proof bar by
+   change class, and R-2026-08-29-2, the wave-end gate — both restated in §7 below) and
+   `migration_doc/MAINTAINER_RULINGS_2026-09-02.md`.
    Note: the "2026-08-10" in ruling IDs is a label; the commits are dated 2026-08-08. See §6.
 5. The open campaign queues, RESUME-HERE sections first:
    `QUEUE_2026-07-19_CAMPAIGN12.md` (critical path), `QUEUE_2026-07-23_CAMPAIGN13.md`,
@@ -302,6 +305,18 @@ paragraph governs.
 
 ### Acceptance semantics
 
+- **Proof bar by change class** (R-2026-08-29-1, `MAINTAINER_RULINGS_2026-08-28.md:253`): "keep the
+  full bar for engine, parity and shader changes; drop specs for docs, comments and demo text
+  (review plus a capture is enough); write no spec without a runner home (Q-139-D1 governs the
+  homes); and prefer probes that measure the feature over specs that certify the brief." Binding
+  detail (the ENGINE/PARITY/SHADER vs TOOLS vs DOCS/COMMENTS/DEMO-TEXT split, and that a spec with
+  no runner home is a review blocker) is in the ruling itself — do not re-derive it here.
+- **Wave-end gate** (R-2026-08-29-2, `MAINTAINER_RULINGS_2026-08-28.md:261`): "We should also have a
+  general smoke test and a visual regression pass that we keep up to date. We don't need to run this
+  with every change or batch but rather when we finish major waves that include multiple batches."
+  The three-step gate (variant smoke test, Sandcastle2 sweep, visual-regression capture-and-diff,
+  banked under `Tools/visual-regression/output/wave-end/<wave>/`) and what counts as a closing wave
+  are defined in the ruling, not restated here.
 - **Pre-registration:** expected numbers are derived and recorded BEFORE the run (commit message or
   queue row). Disagreement is STRUCTURAL — investigate, never tune.
 - **Bands are DERIVED from modelled terms, never widened to accommodate a red.**
@@ -387,7 +402,7 @@ queues for `OWED`, order by batch number, and honor any recorded pre-registratio
 
 ## Appendix A — provenance
 
-This handbook consolidates: CLAUDE.md (project rules, principles 1–9, quiet hours — mirrored in
+This handbook consolidates: CLAUDE.md (project rules, principles 1–10, quiet hours — mirrored in
 [`CAMPAIGN_STATE.md`](CAMPAIGN_STATE.md)),
 CLOSEOUT_PLAN_2026-08-07.md §4 (worker/landing contract), AUTOMATION.md (identity),
 ForkCommentStandard.md (C16 standard), the C12/C13/C16/C18 queue rows that embodied instrument

@@ -1091,7 +1091,7 @@ Per the CLAUDE.md ES6+ rules + the upstream Coding Guide:
 1. **Read this handoff + the principal-engineer review.**
 2. **Pick `WGSLShaderBuilder.js` as the Phase A pilot** — biggest single fork-owned target (25 markers), establishes the pattern for the rest.
 3. **Run `npx tsc --project packages/engine/tsconfig.json --noEmit`** as the gate after every file conversion.
-4. **Update [migration_doc/ES6_MODERNIZATION_BACKLOG.md](ES6_MODERNIZATION_BACKLOG.md)** with the converted-file list as you go.
+4. **Update [migration_doc/ES6_MODERNIZATION_STATUS.md](ES6_MODERNIZATION_STATUS.md)** with the converted-file list as you go — `ES6_MODERNIZATION_BACKLOG.md` was archived to [`archive/ES6_MODERNIZATION_BACKLOG.md`](archive/ES6_MODERNIZATION_BACKLOG.md) and superseded by the STATUS doc (`README.md`'s archive table).
 5. **Hold the line:** never modernize a file you're not otherwise touching unless it's on the explicit Phase A/B list.
 
 ---
@@ -1139,7 +1139,7 @@ Further tightening requires (a) porting WebGL resource JS to TS, or (b) completi
 
 - [WEBGPU_MIGRATION_STATUS.md](WEBGPU_MIGRATION_STATUS.md) — full session-by-session history
 - [WEBGPU_MIGRATION_BACKLOG.md](WEBGPU_MIGRATION_BACKLOG.md) — remaining work
-- [ES6_MODERNIZATION_BACKLOG.md](ES6_MODERNIZATION_BACKLOG.md) — modernization tracker
+- [ES6_MODERNIZATION_STATUS.md](ES6_MODERNIZATION_STATUS.md) — modernization tracker (supersedes the archived [`archive/ES6_MODERNIZATION_BACKLOG.md`](archive/ES6_MODERNIZATION_BACKLOG.md))
 
 **Project rules:**
 

@@ -42,7 +42,10 @@ authoritative name/bit table, one bit per entry.
 ### 3. Debug pragmas — both directions
 
 The build strips `//>>includeStart('debug', pragmas.debug);` … `//>>includeEnd('debug');` from
-production builds, in `.js` **and** `.ts`.
+production builds, in `.js` **and** `.ts`. The rule applies engine-wide, but the CI guard
+(`npm run lint-debug-pragmas`, `Tools/lint-debug-pragmas.mjs`) only scans
+`packages/engine/Source/Renderer/WebGPU` (277 files) — a violation elsewhere in the engine is
+not caught mechanically.
 
 - **WRAP:** per-frame and per-tile diagnostics; init-time informational messages; informational
   `console.log` / `console.warn`; and any log whose arguments do work — interpolation,
@@ -67,8 +70,12 @@ test — someone diffing a fork file against upstream must not be able to tell w
 ours by their voice. Comments must also stay JSDoc-clean for `npm run build-docs`, and derived
 code must be attributed. Full rules:
 [`Documentation/Contributors/CodingGuide/ForkCommentStandard.md`](Documentation/Contributors/CodingGuide/ForkCommentStandard.md).
-This is enforced mechanically by `Tools/c16/comment-marker-guard.mjs` in lint-staged, so a
-violation blocks the commit rather than merely drawing a review note.
+This is enforced mechanically by `Tools/c16/comment-marker-guard.mjs` in lint-staged and in CI
+(non-strict in both places): a violation is a **blocking error** only on a path listed in
+`Tools/c16/comment-marker-cleanlist.txt` (859 of 2,204 in-scope files, ~39% — measured via
+`npm run verify-comment-cleanlist`) or when run with `--strict`; elsewhere it is a **warning**
+that does not block the commit. Adding a path to the clean list is what makes the guard
+blocking for it.
 
 Also: preserve existing JSDoc when modernizing; do not add new JSDoc that was not there; do not
 add boilerplate restating what the code obviously does. Do add comments explaining non-obvious

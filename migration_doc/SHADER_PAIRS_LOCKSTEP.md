@@ -397,8 +397,12 @@ The reproject pair already has:
 
 No fixed percentage threshold is used: driver-level precision drift is real
 and accepted. The probe's role is to detect *new*
-divergence introduced by a change. CI compares against the most-recent
-golden baseline.
+divergence introduced by a change. There is no automated CI baseline
+comparison today — `.github/workflows/visual-regression.yml` is
+`workflow_dispatch` only (manual trigger), and pair drift otherwise has no
+lint or hook. Comparing a captured run against the most-recent golden
+baseline is a manual step; enforcement of pair lockstep itself is by code
+review (see §Risk below).
 
 ---
 

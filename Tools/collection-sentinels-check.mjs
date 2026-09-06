@@ -17,15 +17,18 @@
 // Exit 0 on all-pass, 1 on any failure.
 //
 // ─── RELATIONSHIP TO THE KARMA SPEC (read before editing) ──────────────────
-// The CI SOURCE OF TRUTH for these sentinels is the Jasmine/Karma spec:
+// The Jasmine/Karma spec is a second, independent source of truth for these
+// sentinels:
 //   packages/engine/Specs/Renderer/WebGPU/WebGPUCollectionSentinelsSpec.js
-// That spec runs in the standard `gulp test` suite and is what gates CI.
+// That spec runs in the standard `gulp test` suite. Both it AND this file gate
+// CI (`.github/workflows/dev.yml`, "collection sentinel checks" step, wired at
+// Batch 1211 / e9fdca9838; pinned by Tools/ci-guards.spec.mjs).
 //
 // THIS file is a COMPLEMENTARY, fast, NO-GPU SMOKE CHECK: it esbuild-transpiles
 // the real WebGPUCollectionRendererBase.ts in-memory and exercises the same
 // sentinel helpers WITHOUT a browser or GPUDevice, so it runs in <1s from a
-// plain node shell (handy during local iteration / pre-commit). It is NOT a
-// replacement for the Karma spec and is NOT wired into CI.
+// plain node shell (handy during local iteration / pre-commit). It duplicates
+// rather than replaces the Karma spec's coverage, and IS wired into CI.
 //
 // MAINTENANCE-DRIFT WARNING: this duplicates the spec's coverage by design, so
 // when you change a sentinel helper SIGNATURE or behavior

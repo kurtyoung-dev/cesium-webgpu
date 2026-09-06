@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// @purpose Q-152 — close a multi-batch wave with served-build preflights, smoke/sweep/visual gates, and banked receipts.
+// @purpose Q-152 — close a multi-batch wave with served-build preflights, smoke/sweep/visual gates, and banked receipts. FAIL-CLOSED at HEAD: every step is bindable:false, so every invocation refuses pre-spawn with exit 3 and zero children spawned (decidePreSpawnBindability); Q-152 is open with zero receipts produced by this runner — use the manual three-step per R-2026-09-02-3 instead.
 // @status ACTIVE
 
 import { promises as fs } from "node:fs";

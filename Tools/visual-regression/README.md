@@ -7,8 +7,10 @@ for opt-in CI gating once the WebGPU backend approaches visual parity.
 > **Finding a tool.** This README covers the regression harness and the shared
 > libraries. For "which probe do I run for X", see
 > [migration_doc/DEBUGGING_GUIDE.md](../../migration_doc/DEBUGGING_GUIDE.md) —
-> the curated first-probe-to-run view. For the everything-view — all 1,012
-> `.mjs` files under `Tools/` and `scripts/`, with class and status — see
+> the curated first-probe-to-run view. For the everything-view — every
+> `.mjs` file under `Tools/` and `scripts/`, with class and status (generated
+> census, count varies as files land — see its own header for the current
+> total) — see
 > [migration_doc/TOOLING_CATALOG.md](../../migration_doc/TOOLING_CATALOG.md).
 
 ## Quick start
