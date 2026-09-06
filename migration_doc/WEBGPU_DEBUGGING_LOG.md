@@ -19806,3 +19806,95 @@ correct and had simply never run.
 **Verified.** `Tools/visual-regression/classification-bounding-volume-frustum-slices.spec.mjs`, 16 tests on `npm run test-engine-node`, driving the real `View.prototype.createPotentiallyVisibleSet`, the real `Scene.prototype.isVisible`, the real `GroundPolylinePrimitive.updateAndQueueCommands` and the real `Primitive._updateBoundingVolumes`. Two on-disk inertness mutants: the selection made unreachable takes 4 tests red; the hoisted refresh made unreachable takes 3 red.
 
 **Known limit, recorded so no one re-derives it as a pass.** The spec cannot execute either renderer (both need a `GPUDevice`), so it does not pin that the renderers call the selector. A third mutant proved this rather than assuming it: making the ground-polyline call site unreachable leaves the spec green at 16/16. The Edge leg `node Tools/visual-regression/probe-classification-frustum-slices.mjs` is what covers the call sites. **That Edge leg is OWED at landing**: this entry is CLOSED in Node only, and the row is not fully met until the leg runs green.
+
+## Lane Huor (wave P0-2, 2026-09-05) — AR-890 / AR-887: the `GlobeDepth-DepthCopy` destroyed-texture submit, and why one page load could never have stated its rate
+
+**Bug number:** AR-887 (symptom); AR-890 (its instrument). **Status: NOT REPRODUCED IN-LANE — no
+engine change.** This entry records the instrument, the three premises that did not survive
+re-derivation at HEAD `dcf7c9c069`, and what the Edge leg has to produce before a fix can be
+written.
+
+**Symptom, as received (Éowyn job 3 leg 2b, demo 134/338, `errors: 1`, frameNumber 32):**
+
+```
+[WebGPU:GlobePass] GPU VALIDATION ERROR: Destroyed texture
+[Texture "GlobeDepth-DepthCopy_color_rgba8unorm"] used in a submit.
+ - While calling [Queue].Submit([[CommandBuffer from CommandEncoder
+   "Scene Frame Command Encoder"]
+```
+
+**Root cause: NOT DETERMINED, and deliberately not guessed.** The `AR-887` row is symptom-only and
+asks for a diagnosis from the probe's receipts. This lane has no browser, so there are no receipts
+and no fix. Three things were established from source instead, all of which the next reader needs:
+
+1. **The reporter is one-shot, so the tag does not localise the fault and `frameNumber 32` is not
+   the fault's frame.** `WebGPUSceneRenderer._executeGlobePass` pushes a validation error scope
+   once per renderer instance, guarded by `_globeValidationDone`, and pops it in a microtask
+   (`packages/engine/Source/Renderer/WebGPU/WebGPUSceneRenderer.ts:2267-2285`). The scope therefore
+   covers the remainder of the **first globe-command frame**, submit included, and nothing after
+   it. `[WebGPU:GlobePass]` is where the scope was opened, not where the error arose;
+   `frameGate`'s `frameNumber 32` is the sweep harness's post-settle read.
+
+2. **The texture has exactly one owner and one destroy site.** `GlobeDepth-DepthCopy` is created in
+   `WebGPUGlobeDepth.update` (`WebGPUGlobeDepth.ts:322-328`), which first calls `_destroyTargets`
+   (`:286`) whenever the device, width, height, sample count or HDR flag changes (`:270-278`);
+   `_destroyTargets` destroys the target and drops the bind-group cache (`:678-690`). `update` is
+   reached from `ensureResources` (`WebGPUSceneRendererEnsureResources.ts:422-434`), which
+   `executeCommands` calls (`WebGPUSceneRenderer.ts:1756`) **after**
+   `WebGPUContext.beginFrame` has already opened the `Scene Frame Command Encoder`
+   (`WebGPUContext.ts:2274-2277`). So a recreate and a live encoder do coexist by construction;
+   which recorded reference survives into the submit is what the probe has to show.
+
+3. **The error class already has an owner.** `NEW-WEBGPU-SCENE-PASS-MSAA-FLIP-TRANSITION`
+   (`QUEUE_2026-07-15_CAMPAIGN9.md:124`, NOT STARTED) names "a `GlobeDepth-DepthCopy`
+   destroyed-texture follow-on under resize" as part of the `msaaSamples`-flip transition class,
+   and `probe-hdr-pick-format-closure.mjs:666` already carries the message pattern in a capped
+   pre-existing allowlist. `AR-887`'s "NEW — first sighting" ledger cell is REFUTED. See
+   `DEFERRED_WORK.md` for the full citation set.
+
+**Fix applied:** none to the engine. The instrument was built:
+
+- `Tools/visual-regression/probe-display-conditions-globedepth.mjs` — the demo's default scene
+  (`addBillboardAndPrimitive`, which is what `Sandcastle.addToolbarMenu` installs as
+  `defaultAction`) run **12 times**, one cold Edge browser per run, in three counted phases
+  (`steady` under the real render loop, `resize` across three viewport changes and back, `capture`
+  frozen and hand-rendered). Occurrences are read from two **non-de-duplicating** sources — the
+  page console and the persistent `device.onuncapturederror` gate — and reported per run and per
+  phase, with the aggregate expressed as a hit RATE over runs. `N = 12` comes from
+  `(1 − p)^N ≤ 0.05`: it detects a 22.1 % per-run rate at 95 % confidence and, run clean, bounds
+  the rate below 22.1 % rather than proving zero.
+- `Tools/visual-regression/display-conditions-globedepth-verdicts.spec.mjs` — the behaviour
+  contract, homed in `npm run test-visual-probe-contracts`: the same message three times counts
+  three (the `new Set(errors)` limitation the row says not to inherit), the aggregate is a rate over
+  runs and not a set union, the run clauses are independent, and one shipped-configuration hit
+  anywhere in the loop drives a non-zero process exit code through the runtime's own
+  `exitCodeForOutcome`. Four inertness mutants — on the counter, on the run verdict's occurrence
+  clause, on the aggregate's shipped-hit tally, and on the WebGL control clause — each turn a
+  different group red.
+
+**Scoping the verdict across two owners.** The `resize` phase deliberately reproduces the condition
+fact 3's owner already states, so counting it in the verdict would put `AR-890`'s "zero after
+`AR-887`" clause behind a NOT STARTED P0 row and make the clause unreachable. The verdict and the
+exit code read the shipped phases (`steady`, `capture`) only; resize occurrences are counted and
+surfaced as attribution — their own summary column, their own rate line, and an `ATTRIBUTION` line
+naming the owner. Spec `E4` pins it: a loop whose only hits are resize-phase exits zero.
+
+**A page-contract trap worth logging, because it has now cost two probes.**
+`Apps/CesiumViewer/index.html` loads `CesiumViewer.js` with `type="module"`, and module scope is
+not global scope: the page publishes `window.viewer`, `window.switchRenderer`, `window.toggleFps`
+and `window.CesiumDebug`, but **never `window.Cesium`** — repo-wide there is no
+`window.Cesium =` in `Apps/` or `packages/engine/Source/`. An in-page probe must acquire the
+namespace with `await import("/Build/CesiumUnminified/index.js")`, the same URL the app itself
+imports, so the module map hands back the SAME instance the running viewer was built from rather
+than a second copy with its own `JulianDate`. The first draft of this probe read `window.Cesium`
+and would have refused on run 0, leg 0, measuring nothing; `probe-postprocess-resize-survival.mjs`
+(Batches 1427-1428) documents the same trap and
+`probe-primitive-texture-bindgroup.mjs:317` shows the pattern.
+
+**Edge leg (the seat runs it):** `npx gulp build`; `node server.js --port 8094 --serve-built`;
+`node Tools/visual-regression/probe-display-conditions-globedepth.mjs --port 8094 --runs 12`.
+
+**Files modified:** `Tools/visual-regression/probe-display-conditions-globedepth.mjs` (new),
+`Tools/visual-regression/display-conditions-globedepth-verdicts.spec.mjs` (new), `package.json`,
+`migration_doc/DEFERRED_WORK.md`, `migration_doc/WEBGPU_DEBUGGING_LOG.md`. No engine file is
+touched, so WebGL is byte-identical and no rebuild changes engine bytes.

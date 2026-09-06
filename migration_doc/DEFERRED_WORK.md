@@ -15669,3 +15669,114 @@ Measured by driving the real `View.prototype.createPotentiallyVisibleSet` and th
 **Not a fork defect, checked and left alone.** `Scene/PrimitiveCommandHelpers.js:369-378` omits upstream's old `primitive._boundingSphere2D[i].center.x = 0.0`; `git show 1820e5f1f2` ("Bounding sphere fix for 2D primitives", Matt Schwartz / Bentley, 2025-07-11) shows **upstream removed** that line. No action owed; recorded so it is not filed again.
 
 **One record corrected in the same landing.** `WebGPUFeatureRenderers.ts:587-592` claimed the GROUND_POLYLINE hook "gates on `SceneMode.SCENE3D`". It does not: `GroundPolylinePrimitive.js:535` and `:829` are unconditional, and that file's only `SceneMode` tests (`:790`, `:792`, `:863`, `:865`, `:868`, `:876`) are derived-command, volume and morph selections, never a dispatch gate.
+
+## 2026-09-05 — AR-890 DELIVERED (the looped instrument); AR-887 NOT REPRODUCED IN-LANE, and its "first sighting" premise is REFUTED (lane Huor, wave P0-2)
+
+**Rows.** `AR-890` (`QUEUE_2026-09-03_ARCHITECTURE_REVIEW.md:229`) is the acceptance instrument for
+`AR-887` (`:151`). Per `R-2026-08-29-1` the probe *is* the acceptance, so the instrument lands
+first and the engine row waits on the number the instrument produces.
+
+**REFUTED — `AR-887`'s ledger column says "NEW — first sighting; no ledger entry names
+`GlobeDepth-DepthCopy` destruction". That is wrong at HEAD (`dcf7c9c069`).** This error class has
+had an owner since 2026-07-16:
+
+- `NEW-WEBGPU-SCENE-PASS-MSAA-FLIP-TRANSITION` (`QUEUE_2026-07-15_CAMPAIGN9.md:124`, **NOT
+  STARTED**) states in terms: runtime `scene.msaaSamples` flips leave scene-framebuffer COLOR
+  pipelines bound for 1–2 frames with a stale baked `multisample.count`, producing "Attachment
+  state … not compatible" plus an invalid command buffer "**and a `GlobeDepth-DepthCopy`
+  destroyed-texture follow-on under resize**". It names a root cause (per-renderer
+  `_scenePipelineFormatGeneration` guards rebuild one frame late relative to the scene-pass swap),
+  a measured magnitude (50 occurrences on the 2026-07-16 baseline) and a repro
+  (`probe-hdr-pick-format-closure.mjs` with msaa 4→1→4→1 under load).
+- The same row is carried forward in four further live records:
+  `ARCHITECTURE_REVIEW_2026-09-02.md:507` and `:580`, `campaign11_planning/CANDIDATE_REGISTER.md:75`
+  (listed **P0**), and `campaign11_planning/guides/G1-pick-and-reds.md:695-712`, which adds that
+  `_scenePipelineFormatGeneration` appears at 64 sites and that the fix must therefore be central.
+- The message pattern is already in the fleet:
+  `Tools/visual-regression/probe-hdr-pick-format-closure.mjs:666` carries
+  `/Destroyed texture \[Texture "GlobeDepth-DepthCopy/` in its `PRE_EXISTING_GATE_PATTERNS`, under
+  a capped allowlist whose baseline is 79 matches.
+
+`AR-887` is therefore a **re-sighting on a new demo**, not a first sighting, and it should be filed
+against the existing owner rather than as an independent defect. Nothing here says the demo's fault
+*is* an MSAA flip — the row is symptom-only and this lane keeps it that way. What is established is
+that the ledger already owns this error class and names the same texture.
+
+**REFUTED — "job 5's sweep passed the same demo clean, same demo, same merge-line tree family".**
+The two observations are not comparable, and the queue row's own citation says so:
+
+| | job 3 leg 2b | job 5 leg 5-1 |
+| --- | --- | --- |
+| tree | `40341305f4` (pre-merge) | `22af08f698` (merge line) |
+| scope | full 338-demo sweep | **targeted 8-demo run**, disclosed DIAGNOSTIC |
+| settle | `SANDCASTLE_SETTLE_MS` default 8000 | **`SANDCASTLE_SETTLE_MS=25000`** |
+| result | FAIL, frameNumber 32, 1 error | PASS, frameNumber 371 |
+
+Source: `Tools/visual-regression/output/sync-1145-verification-2026-09-04/job5-1-sandcastle2/README.txt`
+("WEBGPU — TARGETED, NOT THE FULL SWEEP"; "SANDCASTLE_SETTLE_MS=25000 … DIAGNOSTIC flag — deviates
+from job 3, disclosed"). Two loads under two settle regimes on two trees is one hit in two
+observations, not a demonstrated intermittency rate — which is exactly why `AR-890` loops.
+
+**CORRECTED — why the receipt states no per-frame rate.** The row attributes it to
+`sandcastle-smoke.mjs`'s de-duplicating `new Set(errors)` (`:553`, published at `:563`). True, and
+incomplete: **the engine's reporter for this message is one-shot.**
+`WebGPUSceneRenderer._executeGlobePass` pushes a single validation error scope on the first globe
+pass behind `_globeValidationDone` and pops it in a microtask
+(`packages/engine/Source/Renderer/WebGPU/WebGPUSceneRenderer.ts:2267-2285`). It can fire at most
+once per page load however the harness collects, and the frame it covers is the **first
+globe-command frame** — so `frameGate`'s `frameNumber 32` is the harness's post-settle read, not
+the fault's frame, and must not be read as one. Any future instrument that wants a per-frame rate
+must use a persistent reporter; `device.onuncapturederror` via `Tools/lib/webgpu-error-gate.mjs` is
+the one this fork already has.
+
+**Delivered (`AR-890`).** `Tools/visual-regression/probe-display-conditions-globedepth.mjs`, on the
+shared runtime (`@runtime lib/probe-runtime.mjs`), plus
+`Tools/visual-regression/display-conditions-globedepth-verdicts.spec.mjs` homed in
+`npm run test-visual-probe-contracts`. It runs the demo's scene **N = 12 times**, one cold Edge
+browser per run, and reports per-run and per-phase occurrence counts from two non-de-duplicating
+sources plus an aggregate hit rate. N is derived, not chosen: `(1 − p)^N ≤ 0.05` makes 12 runs
+detect a per-run rate of **22.1 %** or higher at 95 % confidence, and the converse is recorded in
+the receipt — **12 clean runs bound the rate below 22.1 % and do not exclude a rarer fault.**
+
+**Two owners, one instrument — how the verdict is scoped.** Each run has three phases: `steady`
+and `capture` reproduce the demo as it ships (what job 3 measured), while `resize` is the probe's
+own stressor and deliberately reproduces the condition
+`NEW-WEBGPU-SCENE-PASS-MSAA-FLIP-TRANSITION` already states — "under resize". The verdict and the
+exit code therefore read the **shipped phases only**. Counting `resize` would put `AR-890`'s
+"zero after `AR-887`" clause behind a P0 row that is NOT STARTED and make the clause structurally
+unreachable. Resize occurrences are still counted and reported — a named column in the summary
+table, their own rate line, and an `ATTRIBUTION` line naming the other owner — so a stressed hit is
+routed rather than lost. Spec `E4` pins the reachability: a loop whose only hits are resize-phase
+exits **zero**.
+
+**NOT DONE (`AR-887`).** No engine change. This lane has no browser, so the probe has not been run
+and the hit rate is **UNMEASURED (0 runs executed), not 0/12**. Diagnosing from the probe's
+receipts is what the row asks for and it cannot be done before the receipts exist. What would close
+it: the Edge leg below at `--runs 12`; if it fires, the per-phase attribution (`steady` vs `resize`)
+plus the frame distribution decides whether the existing owner
+`NEW-WEBGPU-SCENE-PASS-MSAA-FLIP-TRANSITION` covers it or a second mechanism is in play; if it does
+not fire in 12, the honest verdict is NOT REPRODUCED at p < 22.1 % and the row needs either a larger
+`--runs` or a deterministic reproduction before it can be closed.
+
+**Edge leg.** `npx gulp build`, then `node server.js --port 8094 --serve-built`, then
+`node Tools/visual-regression/probe-display-conditions-globedepth.mjs --port 8094 --runs 12`.
+Expected today: **exit 1** with a stated shipped-configuration hit rate. Required after `AR-887`:
+exit 0, shipped hit rate 0/12. **Exit 3 is a REFUSAL, not a hit** — it means the loop did not
+complete (a scene build failed, or a run tripped the six-minute watchdog), so no hit rate exists and
+the run must be repeated rather than reported.
+
+**Parity (Principle 5).** WebGPU-only. No engine file is touched, so WebGL is byte-identical by
+construction. The WebGL leg is a control that the code actually **asserts**, not merely records:
+`decideRunVerdict` fails a run whose WebGL leg produced a member of either fault family, because a
+WebGL context cannot produce one — so a hit there means the instrument is wrong, not the backend
+(spec `D7`; mutant 4 makes the clause unreachable and `D7` goes red). Its capture is separately
+clause (b)'s reference, so a WebGL visual regression on this scene surfaces as a clause-(b) failure
+rather than passing silently.
+
+**Files modified:** `Tools/visual-regression/probe-display-conditions-globedepth.mjs` (new),
+`Tools/visual-regression/display-conditions-globedepth-verdicts.spec.mjs` (new), `package.json`
+(runner home), `migration_doc/DEFERRED_WORK.md`, `migration_doc/WEBGPU_DEBUGGING_LOG.md`.
+
+**For the seat.** `QUEUE_2026-09-03_ARCHITECTURE_REVIEW.md:151`'s ledger cell ("NEW — first
+sighting") and `:126`'s framing of `AR-887` as a third first-found P0 both need correcting when the
+row is updated at landing; this lane does not edit the queue.
