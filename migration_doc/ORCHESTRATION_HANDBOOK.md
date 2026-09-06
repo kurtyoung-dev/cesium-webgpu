@@ -335,6 +335,13 @@ paragraph governs.
 
 - **Edge (Chromium), never Playwright Firefox** (bundled Nightly has no WebGPU).
 - Dev server is IPv6-only: use `localhost`, never `127.0.0.1`.
+- **Never serve an Edge leg from the seat.** The seat rebuilds its own `Build/` around landings, so
+  it is stale relative to its own tip for any window in which it built before a batch landed —
+  wave P0-1 (2026-09-05) found the seat’s `Build/` differing from the served clone’s. Serve from a
+  clone synced to the tree under test, pass `--serve-built` (the default server serves
+  `Build/CesiumDev` through live esbuild, `server.js:31`/`:102`/`:118-119`), point the probe at that
+  tree with `--repository-root` (`Tools/visual-regression/lib/probe-runtime.mjs:156`, `:835`), and
+  assert served md5 == disk md5 before the legs.
 
 ---
 

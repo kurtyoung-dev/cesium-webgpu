@@ -205,6 +205,21 @@ queue launches, rules, schedules and funds nothing, and its `AR-` ids are add-on
 their own Edge legs measured green. Row-level detail (root causes, batch numbers, measured numbers)
 lives in `QUEUE_2026-09-03_ARCHITECTURE_REVIEW.md`'s own rows, not restated here.
 
+**Wave P0-2 (Batches 1438–1442, catalog 1443): LANDED and PUSHED, 2026-09-05.** Five lanes under
+tier-2 lead Haldan, each carrying `VERDICT: LAND` from its own Opus reviewer — `AR-757` (Aerin /
+Bregolas, 1438), `AR-754` and `AR-001`'s non-polyline half (Uldor / Guilin, 1439), `AR-752` and its
+newly minted measurement `AR-M38` (Ulfang / Edrahil, 1440), `AR-714`/`AR-715`/`AR-716` (Rian /
+Belegund, 1441), `AR-890` with `AR-887` held (Huor / Hareth, 1442). **The Edge legs are OWED as
+Éowyn job 9** — five probes, one job — so no row in this wave is fully accepted yet; `AR-887`'s hold
+turns on leg 1, which has never been run at all. Two maintainer rulings, 2026-09-05: **R1** —
+`AR-001`'s non-polyline half lands now, acceptance pending `AR-M01`, and `AR-837`'s "before `AR-001`
+lands" clause is satisfied by taking the matrix's BEFORE leg on the pre-batch tree `08cb6fd4b2` and
+its AFTER leg on the tip; **R2** — `AR-D09` DECIDED: implement `Polyline.disableDepthTestDistance`
+on WebGL, minted as `AR-896`, with the 18 held WebGPU polyline sites landing after it as one batch.
+Dispatched the same day: sync-parity wave **S1** (lead Hundar) and `AR-837` (lane Amdir, reviewer
+Earwen). Row-level detail lives in `QUEUE_2026-09-03_ARCHITECTURE_REVIEW.md`'s own rows, not here;
+the wave's process findings are `DX-61`–`DX-64` plus extensions to `DX-58` and doc-audit `G-31`.
+
 ### Upstream sync — CesiumJS 1.145 (not a numbered campaign)
 
 **LANDED.** The fork is synced to CesiumJS 1.145 at merge commit `33398505e6`, **Batch 1408**

@@ -10013,8 +10013,8 @@ These are areas the webgpu-morph-review audit did NOT examine — flagged as lik
 >   - **Scope held for `AR-D09`.** The six POLYLINE shaders keep `z = w` at 18 sites, deliberately. Their whole
 >     `DISABLE_DEPTH_DISTANCE` block is fork-added: `czm_minimumDisableDepthTestDistance` has exactly two GLSL
 >     consumers (`BillboardCollectionVS.glsl`, `PointPrimitiveCollectionVS.glsl`) and `PolylineVS.glsl` is not
->     one of them, so there is no WebGL law for a polyline to be made to match, and `AR-D09` decides whether
->     `Polyline.disableDepthTestDistance` — and with it the block — survives at all. Sites, all held as one
+>     one of them, so there is no WebGL law for a polyline to be made to match, and `AR-D09` decided whether
+>     `Polyline.disableDepthTestDistance` — and with it the block — survives at all (decided 2026-09-05: implement on WebGL — `AR-896`). Sites, all held as one
 >     unit: `PolylineCollection.wgsl:197/201/208`, `PolylineCollectionPick.wgsl:184/188/195`,
 >     `PolylineArrow.wgsl:181/185/192`, `PolylineDash.wgsl:178/182/189`, `PolylineGlow.wgsl:175/179/186`,
 >     `PolylineOutline.wgsl:173/177/184`.

@@ -1637,7 +1637,7 @@ see this card for tier, size, dependencies and acceptance.
   independently provisioned clones so the fix is not a one-off.
 - **Binds:** SR-3. **Source:** `LANDING_PACKET_EMELDIR_R5.md` §9 ("`migration_doc/MAINTAINER_RULINGS_2026-08-17.md`
   contributes nothing"); reproduced directly in `F:/Dev/GH/cesium-lane-borlach-20260905` (`git status`
-  at session start, 2026-09-05).
+  at session start, 2026-09-05). **Recurred wave-wide in wave P0-2 (2026-09-05): all five lane clones showed it, and the lead had to assert per patch that the file was absent from the export — see `cesium-lane-hurin-20260905/_lane-out/LANDING_PACKET_HALDAN.md` §1, which lists it beside `_lane-out/` paths and `eslint.seatbelt.tsv` as one of the four things a patch is checked for NOT containing. The workaround has therefore hardened into a standing verification step, which is the shape of a defect that should be fixed at its source instead. Second candidate owner to rule out before touching the provisioner: the repository's own `.gitattributes:2` (`* text=auto`) combined with `core.autocrlf=true` — the same mechanism the fixture blocks at `:14` and `:41` already document as a silent-rewrite hazard — so the acceptance above must name which of the two is responsible rather than patching whichever is touched first.**
 
 ### `DX-59` — `probe-postprocess-resize-survival.mjs` never arms the uncaptured-GPU-error channel; census the fleet for the same omission
 
@@ -1689,6 +1689,96 @@ see this card for tier, size, dependencies and acceptance.
 - **Binds:** SR-6, SR-8. **Source:** `LANDING_PACKET_EMELDIR_R5.md` §2(d)/(e), §3;
   `Tools/visual-regression/output/wave-p0-1-edge-2026-09-05-job7/SUMMARY.md`;
   `packages/engine/Source/Scene/Scene.js:2698-2723`; `Tools/visual-regression/lib/probe-runtime.mjs:400-424`.
+
+### `DX-61` — the dispatch layer cannot distinguish a dead worker from a slow one, and put two live agents in one clone three times
+
+- **Disposition:** OPEN. Filed from wave P0-2 (lead Haldan, 2026-09-05). Three separate dispatch
+  rounds each produced **two live agents in one lane clone**. The cause is structural, not a
+  mistake: neither a lead nor a coordinator can tell a dead child from a slow one, and "the clone
+  looks clean" is not evidence of death — a worker that is still *reading* has written nothing yet,
+  so an inspection of the worktree is indistinguishable between the two states. The lead wrote an
+  `_lane-out/OWNER` lock file before dispatching and **it did not help, because nothing enforces
+  it**: a file that asks politely is not a lock. Cost this wave ≈ **790k tokens** of duplicated
+  worker effort, and every duplicate behaved correctly (detected the collision, wrote nothing
+  tracked, retired, and banked its findings — several of which corrected the survivor), so the
+  defect is the dispatcher's alone and no lane is at fault for it.
+- **Tier / Size / Backends:** OPUS-JUDGMENT · S · tooling (dispatch). **Depends on:** none.
+  **Ruling touched:** none. **Gate:** none yet.
+- **Acceptance:** dispatch proves **liveness**, not intent — a pid file or a heartbeat the
+  dispatcher writes and re-reads (a lease with an expiry, refreshed by the running agent), so that
+  "is this clone occupied?" is answered by a signal a dead process stops emitting rather than by a
+  file a dead process leaves behind. The negative control is the one that matters: kill an agent
+  mid-lane and show the dispatcher then reports the clone free, and leave one *reading* and show it
+  reports the clone busy. A purely advisory `OWNER` file is explicitly **not** acceptance — wave
+  P0-2 shipped one and it failed three times.
+- **Binds:** SR-3. **Source:** `cesium-lane-hurin-20260905/_lane-out/LANDING_PACKET_HALDAN.md` §6
+  (first bullet) and §7 (the per-lane duplicate-spend column).
+
+### `DX-62` — the session scratchpad is shared across concurrently dispatched lanes, and one lane overwrote another's staging files mid-round
+
+- **Disposition:** OPEN. Filed from wave P0-2 (2026-09-05). Lanes dispatched into separate clones
+  nonetheless share one session scratchpad directory, so two lanes writing a staging file under the
+  same name collide silently. It happened this wave: lane Uldor recorded that "a shared scratchpad
+  file was overwritten by another lane earlier today" and, from its fix round onward, took every
+  backup at a path **namespaced to its own clone**
+  (`…/scratchpad/uldor-fixround2-20260905/backup/`, with a `SHA1.txt` and a `RESTORE.md`) precisely
+  to route around it. Both affected lanes verified their packets uncontaminated, so nothing landed
+  wrong — but the failure is silent by construction and the next occurrence need not be caught.
+- **Tier / Size / Backends:** SONNET-BOUNDED · XS · tooling (dispatch/provisioning).
+  **Depends on:** none. **Ruling touched:** none. **Gate:** none yet.
+- **Acceptance:** each dispatched lane is handed a scratchpad path that **contains its own lane
+  name**, so two lanes cannot collide on a filename by construction rather than by convention; the
+  brief boilerplate names that path, and a two-lane test writing the same basename concurrently
+  leaves both files intact. Namespacing by hand inside each lane (Uldor's workaround) is the
+  mitigation, not the fix.
+- **Binds:** SR-3. **Source:** `cesium-lane-uldor-20260905/_lane-out/LANDING_PACKET_ULDOR.md:951`;
+  `LANDING_PACKET_HALDAN.md` §6 (third bullet).
+
+### `DX-63` — the comment-marker guard's `(.wgsl 0/5)` census reads as coverage but is *flagged/scanned*; the output never says which
+
+- **Disposition:** OPEN. Filed from wave P0-2 (2026-09-05); one worker nearly misreported its own
+  gate as a miss because of it. `renderCensus` (`Tools/c16/comment-marker-guard.mjs:505-516`) builds
+  the per-extension pairs as `${ext} ${counts.flagged}/${counts.scanned}` and prints them **inside
+  the `scanned … files (…)` line**, so `.wgsl 0/5` means *0 flagged of 5 scanned* — a perfect score
+  — while reading in the shape of a coverage fraction, where 0/5 is the worst possible result. The
+  two numbers are populated at `:444-448` and their meaning appears nowhere in the output.
+- **Tier / Size / Backends:** SONNET-BOUNDED · XS · tooling (gate output). **Depends on:** none.
+  **Ruling touched:** none. **Gate:** the guard's own output.
+- **Acceptance:** the census line names what the pair is — `.wgsl 0 flagged / 5 scanned`, or a
+  column header stating `flagged/scanned` once — so no reader can take a good result for a bad one;
+  the guard's exit codes and findings are unchanged (this is an output-legibility fix, not a
+  behaviour change), and a run over a file with a known finding still shows the flagged count move.
+- **Binds:** SR-3. **Source:** `LANDING_PACKET_HALDAN.md` §6 (last bullet); the render site read at
+  HEAD.
+
+### `DX-64` — `audit-feature-renderers.mjs` counts only the eager registration form, so it reports 41 of 54 keys wired when 52 are, and buries its one true finding among eleven false ones
+
+- **Disposition:** OPEN. Filed from doc wave D1 (Haldad, 2026-09-05) and **re-measured at Batch 1443
+  for this row**. `scanSites` matches `registerFeatureRenderer\s*\(\s*FeatureRendererKey\.([A-Z0-9_]+)`
+  (`Tools/audit-feature-renderers.mjs:91-96`) — the **eager** form only. It does not match
+  `registerFeatureRendererLoader(`, the lazy form `WebGPUFeatureRenderers.ts` uses for every renderer
+  that pulls in its own shaders or compute pipelines (e.g. `GAUSSIAN_SPLAT` at `:698-699`,
+  `POINT_CLOUD_EDL` at `:725`, `FFT_OCEAN` at `:905`). Measured over the two files at HEAD: **54 enum
+  keys, 41 eager registrations, 11 lazy ones, union 52** — and exactly **two** keys are registered by
+  neither form: `FOG`, declared intentional in the tool's own `INTENTIONAL_UNWIRED_KEYS` map
+  (`:37-43`), and **`GROUND_ATMOSPHERE`**, which the source documents as *retired* at
+  `WebGPUFeatureRenderers.ts:804-810` (ground atmosphere is shaded inside `GlobeTerrain.wgsl`; the
+  separate-pass renderer was deleted) but which that map does not list. So the tool's twelve-name
+  "Unregistered keys" list is eleven false positives hiding one real finding, and its headline count
+  is wrong by eleven.
+- **Tier / Size / Backends:** SONNET-BOUNDED · XS · tooling (audit). **Depends on:** none.
+  **Ruling touched:** none — and note `CLAUDE.md`'s Feature Renderer Pattern section cites this
+  enum's `COUNT` (54 at HEAD), which is unaffected. **Gate:** `node Tools/audit-feature-renderers.mjs`.
+- **Acceptance:** the scan recognises both registration forms and the run reports **52 of 54 keys
+  wired**; the unregistered list contains `GROUND_ATMOSPHERE` **alone**, and that key is then either
+  promoted onto `INTENTIONAL_UNWIRED_KEYS` with the retirement reason from
+  `WebGPUFeatureRenderers.ts:804-810` (leaving the list empty) or filed as real work — the tool's own
+  docstring at `:32-36` already asks a reader to make exactly that call. Negative control: a key
+  registered *only* lazily, with its loader call made inert, returns to the unregistered list.
+- **Binds:** SR-3, SR-6. **Source:** doc wave D1 seat items (Haldad, 2026-09-05); counts re-derived
+  in this lane at Batch 1443 over `Tools/audit-feature-renderers.mjs`,
+  `packages/engine/Source/Renderer/FeatureRendererKey.js` and
+  `packages/engine/Source/Renderer/WebGPU/WebGPUFeatureRenderers.ts`.
 
 ### `Q-130-a` — `FrustumGeometry.js` misuses `defined(vertexFormat.normal)`/`.st` on always-defined booleans
 

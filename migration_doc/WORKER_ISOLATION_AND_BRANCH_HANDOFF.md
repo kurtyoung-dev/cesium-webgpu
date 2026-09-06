@@ -709,3 +709,36 @@ runtime-residency-contract.spec.mjs` enforces this as a shrink-only ratchet over
 carrying the tag; a probe not yet migrated carries no tag (or `@runtime none`) and is untouched by
 it — migrating the fleet in family batches is `DX-06`'s job, not a rule every worker must apply
 retroactively.
+
+### 8h. Wave provisioning and baseline rules (wave P0-2, 2026-09-05)
+
+These three are per-wave rules. The per-wave `WAVE_RULES.md` handed to each lane is an untracked
+artefact regenerated per dispatch, so the rules live here and the generated copy is derived from
+them — a correction made only in a generated copy is lost with the wave that made it.
+
+**The marker-guard calibration path.** The rule is: compare your `node Tools/c16/comment-marker-guard.mjs`
+count against HEAD's count for a file that already carries findings; **zero lane-added** findings is
+the bar, and a pre-existing count is not yours. The file the wave-P0-2 copy named for that
+comparison, `packages/engine/Source/Shaders/WebGPU/GlobeTerrain.wgsl`, is **ENOENT** — the shader
+moved and the real path is **`packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl`**
+(verified present at Batch 1443). The same stale path is recorded as drift `S1` in
+`C14_READINESS_REVIEW_2026-08-28.md:177`, so this is its second sighting; a worker handed the old
+path gets a file-not-found from its calibration step and has no baseline to compare against.
+
+**A baseline is not taken by overwriting the tree, and an instance that intends to overwrite its own
+worktree banks a hashed manifest and a restore note first.** In wave P0-2 a worker overwrote its five
+tracked files with HEAD content to measure a pre-fix baseline, and died inside that self-inflicted
+danger window. It was recoverable **only** because it had first copied everything to
+`_lane-out/freeze-work/` with a `MANIFEST.tsv`, a sha1 list, and a restore instruction addressed to
+its successor; the lead restored all eight paths and verified every hash. The manifest rule is the
+recovery floor and is now binding: bank the manifest **before the first write**, not after. The
+corollary is the real fix — **do not take a baseline by overwriting the worktree at all**; read the
+base content out of git (`git show HEAD:<path>`) into a scratch location, or measure in memory, so
+the danger window never opens.
+
+**Every wave banks a hashed manifest of its lane clones before dispatch.** The same rule one level
+up: before the first lane is dispatched, the seat records each provisioned clone's identity and the
+hashes of the files a lane is expected to touch, so a mid-wave loss — a killed instance, a collided
+duplicate, a clone reset — is recoverable from the wave's own record rather than from whatever the
+lane happened to bank for itself. Wave P0-2's recovery worked because one worker was disciplined;
+the wave-level manifest is what makes it not depend on that.
