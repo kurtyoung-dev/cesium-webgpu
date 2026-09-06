@@ -19980,3 +19980,81 @@ run: velocity texels > 0 (pre-fix exactly 0), the `PolylineDash` control 0, smea
 `Tools/visual-regression/probe-descriptor-cells-contract.spec.mjs` (new), `package.json`,
 `migration_doc/DEFERRED_WORK.md`, `migration_doc/WEBGPU_DEBUGGING_LOG.md`. No engine file is
 touched, so WebGL and WebGPU engine bytes are unchanged.
+
+---
+
+## Instrument 1443.1 — the pick/visibility matrix (`AR-837`), and the live-canvas reader it nearly shipped with
+
+**Files affected**
+
+- `Tools/visual-regression/probe-pick-visibility-matrix.mjs` (new)
+- `Tools/visual-regression/lib/pick-visibility-matrix-page.mjs` (new)
+- `Tools/visual-regression/lib/pick-visibility-matrix-verdicts.mjs` (new)
+- `Tools/visual-regression/pick-visibility-matrix-verdicts.spec.mjs` (new)
+- `package.json` (runner home)
+
+**Why this is in the debugging log at all.** No engine file changed. What is worth recording is the
+instrument's shape — `AR-M01` has been NOT RUN since the queue was minted because nothing could
+measure it, and Batch 1439 landed `AR-001`'s non-polyline half **acceptance-pending** on exactly
+that gap — plus one instrument defect this lane found in its own first draft, which belongs to a
+class that has already cost this fork a full executor cycle twice.
+
+**What the instrument is.** A per-item `visible` + `pickAsync`-at-centre matrix over
+(billboard, label, point, polyline) × `disableDepthTestDistance` ∈ {0, Infinity} ×
+`scene.logarithmicDepthBuffer` ∈ {true, false} × {webgl, webgpu}, with the subjects 60 km below the
+ellipsoid under a 400 km nadir camera on `EllipsoidTerrainProvider`, plus the `AR-M30`
+`surfacePosition` defined-rate for edge hits more than 2 px from the cursor over a wide-aperture
+snap grid. `--expect before|after` is required and has no default; the polyline cell is measured and
+never asserted (`AR-D09`). The full description, both Edge commands and the expected outcome per
+cell are in `DEFERRED_WORK.md` under "AR-837 DELIVERED" (2026-09-05).
+
+**Instrument defect, caught in lane by `probe-fleet-contract.spec.mjs` C14.** The first draft's pixel
+reader was:
+
+```js
+const tmp = document.createElement("canvas");
+tmp.getContext("2d").drawImage(canvas, 0, 0); // <- the live scene canvas
+```
+
+taken after `await requestAnimationFrame(...)`. That is the prohibited-live-canvas-reader class
+`lib/same-task-capture.mjs` exists to prevent: on WebGL the drawing buffer is CLEARED after the
+compositor swap unless `preserveDrawingBuffer` is set, and on WebGPU the swap-chain texture is
+INVALIDATED after presentation. Both read black.
+
+**Why it mattered more here than in a generic capture probe.** This probe's entire finding is
+"the item is not there" — a hue count of zero and a pick that returns nothing. A reader that
+manufactures black frames manufactures the BEFORE leg's expected result for free, on both backends
+and on both trees, and every verdict would have gone green while measuring nothing. The failure
+would not have been visible in the receipt: `occluded` and `miss` are legitimate outcomes of six of
+the twelve gated cells.
+
+**Fix.** The probe's in-page half — now `lib/pick-visibility-matrix-page.mjs`, split out so neither file passes 1,000 lines and scanned by the same guard, since `prohibitedReaderFiles` is probes PLUS `lib/*.mjs` — embeds the canonical `SAME_TASK_CAPTURE_SOURCE` block between the
+`// ==BEGIN same-task-capture==` / `// ==END same-task-capture==` markers and takes every pixel
+measurement through `captureNow()`, which renders and freezes a PNG in ONE task and then decodes
+that immutable snapshot. `checkEmbeddedCaptureIsCanonical` returns `[]` (no drift).
+`lib/prohibited-reader-allowlist.mjs` was NOT touched — it is shrink-only, and
+`probe-polyline-multimaterial.mjs`'s grandfathered row there is exactly the debt this probe declines
+to add to.
+
+**A third thing, found by the reviewer and worth the same treatment.** The first frozen draft set `globe.depthTestAgainstTerrain = false` as scene tidying. `Scene.js:4037-4041` turns that into `clearGlobeDepth`, and `SceneRenderer.js:852-856` then clears the globe's depth after the globe pass — **in the pick pass as well as the colour pass** — leaving only the depth plane, whose quad is the HORIZON plane (`DepthPlane.js:185-230`; `DepthPlaneFS.glsl` only discards). At this camera that plane sits ~376 km below the surface and ~312 km behind the subjects, so nothing would have occluded them: every `ddtd = 0` cell would have measured a scene with no terrain in it, and the BEFORE leg's `Infinity` cells would have passed for the wrong reason. The flag is now `true`, with the derivation in the comment beside it. The tell that it was an oversight rather than a choice: the snap capture in the same file already set it `true`.
+
+**A second thing worth logging, because it shaped the scene.** `Globe.pickable` defaults false, and
+`Globe.js:1484-1500` records that even when it is true the pick id is a WebGPU-only mirror — "the
+WebGL globe path never references the ID". So there is no cross-backend "something was picked"
+fallback to distinguish a genuine pick MISS from a pick path that produced nothing at all. The probe
+therefore carries an explicit control primitive — unoccluded, no `disableDepthTestDistance`, in the
+same `PointPrimitiveCollection` as a subject so it also witnesses the `DISABLE_DEPTH_DISTANCE`
+recompile — re-measured in every page leg and asserted under both expectations. Depth is still
+written into the pick target by the globe when `pickable` is false (only the pick-colour tail is
+zeroed), which is why the `AR-001` defect bites at the default setting in the first place.
+
+**Proof.** 33 tests in `pick-visibility-matrix-verdicts.spec.mjs`, homed in
+`npm run test-visual-probe-contracts`. Each expectation is required to REJECT the other's world, in
+both directions, over the SHIPPED decision functions. Three `if (false && …)` inertness mutants
+applied in place to the shipped verdict file each turn the spec red (D4+G1, D2+G2, F2), and a fourth
+control removes the `AR-M30` marker block and shows a diverging rate publishing as vacuous
+agreement.
+
+**Files modified:** the four above plus `migration_doc/DEFERRED_WORK.md`,
+`migration_doc/WEBGPU_DEBUGGING_LOG.md` and `migration_doc/DEBUGGING_GUIDE.md`. No engine file is
+touched, so WebGL is byte-identical and no rebuild changes engine bytes.

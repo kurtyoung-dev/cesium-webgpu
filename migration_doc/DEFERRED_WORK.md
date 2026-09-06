@@ -15800,3 +15800,163 @@ rather than passing silently.
 **For the seat.** `QUEUE_2026-09-03_ARCHITECTURE_REVIEW.md:151`'s ledger cell ("NEW — first
 sighting") and `:126`'s framing of `AR-887` as a third first-found P0 both need correcting when the
 row is updated at landing; this lane does not edit the queue.
+
+---
+
+## 2026-09-05 — AR-837 DELIVERED: the pick/visibility matrix instrument, with both of its Edge legs named (lane Amdir, wave P0-2 follow-on)
+
+**Row.** `AR-837` (`QUEUE_2026-09-03_ARCHITECTURE_REVIEW.md:233`) is the tooling row that unblocks
+`AR-M01` — the named acceptance for `AR-001`, which landed **acceptance-pending** in Batch 1439 —
+and `AR-M30`, the acceptance for `AR-030`. Per `R-2026-08-29-1` the probe _is_ the acceptance, so
+the instrument lands first and the two measurement rows wait on the numbers it produces. This lane
+changes **no engine file**.
+
+**What the instrument measures.** `Tools/visual-regression/probe-pick-visibility-matrix.mjs`, on the
+shared probe runtime. A nadir camera 400 km over (-105, 40) on `EllipsoidTerrainProvider` with
+imagery removed, so the globe is a flat `baseColor` grey and no request leaves the machine. Four
+subjects sit **60 km below the ellipsoid** — behind terrain by a margin no depth-precision regime
+closes — one per quadrant, each owning a hue no other subject can produce: billboard RED, label CYAN
+(`showBackground`, black glyphs, so the SDF and non-SDF billboard paths are both exercised), point
+YELLOW, polyline MAGENTA. The label's `visible` cell counts the CYAN **background** billboard (drawn by `BillboardCollection.wgsl`); its BLACK glyph coverage (`BillboardCollectionSDF.wgsl`) is measured beside it and published as `glyphPixels` but carries no verdict, so the SDF path is observed rather than silently assumed covered — `AR-001`'s per-shader mutant clause is discharged by `collection-depth-override-law.spec.mjs`, not here. Each cell is (item × `disableDepthTestDistance` ∈ {0, Infinity} ×
+`scene.logarithmicDepthBuffer` ∈ {true, false}) measured on **both** backends, and reports:
+
+- `visible` — a hue-pixel count in a 21×21 window centred on the item's projected centre;
+- `pickAsync` at that same centre — `scene.pickAsync(centre, 3, 3)` × 5, counting returns of the
+  item's own id.
+
+**Two scene variables are pinned rather than inherited.** `BillboardCollection.coarseDepthTestDistance` defaults to `Ellipsoid.default.minimumRadius / 10` (~637 km) and switches billboards and labels BEYOND that distance to an ellipsoid-approximation depth test instead of the depth buffer. This scene sits at ~460 km, inside the default, but the margin is an unstated dependency on an ellipsoid constant — so the probe sets it to `Infinity` ("never applied") on the billboard and label collections. Every cell is therefore measured in the full-depth-buffer regime, the one `AR-001` is about, and a backend that implements the coarse path differently cannot surface here as an `AR-001` result. `threePointDepthTestDistance` needs no pin: it applies only to `HeightReference.CLAMP_TO_*`, and every subject here is `NONE`. And `globe.depthTestAgainstTerrain` is set **true**, not left at its default: at `false`, `Scene.js:4037` raises `clearGlobeDepth` and `SceneRenderer.js:852` clears the globe's depth after the globe pass in the pick pass as well as the colour pass, leaving only the depth plane — the horizon-plane quad, ~376 km below the surface at this camera and ~312 km behind the subjects — so nothing would occlude them and every `ddtd = 0` cell would measure a scene with no terrain in it.
+
+Both are **three-way**, not two-way: `visible` / `occluded` / `indeterminate` and `hit` / `miss` /
+`indeterminate`. The BEFORE leg predicts 0 of 5 picks and the AFTER leg predicts 5 of 5, so a 2-of-5
+is evidence for neither and is published as `indeterminate`, which fails every expectation. An
+instrument that rounded it would manufacture a parity verdict from a measurement that did not
+separate the two worlds.
+
+**Two first-class expectations, no default.** `--expect before|after` is REQUIRED. `AR-837`'s
+acceptance is a difference that "must show ... before `AR-001` lands and its disappearance after", so
+the probe judges against the world it was told about. A missing flag is a caller error (exit 2), not
+a silent choice. Under `before` the probe requires the difference to be PRESENT and to be the pick
+pass alone — WebGL hits, WebGPU misses, and WebGPU is still VISIBLE, because the four colour shaders
+already wrote `clipPos.z = 0.0` on the pre-batch tree (verified at `08cb6fd4b2`). Under `after` it
+requires no backend difference in either quantity. The WebGL anchor is asserted under BOTH: at
+`Infinity` WebGL must be visible and must pick, at `0` it must be occluded and must not — because
+"no backend difference" is satisfied just as well by two backends that are both wrong.
+
+**The control is load-bearing.** The BEFORE leg's whole finding is a WebGPU pick MISS, and a miss is
+indistinguishable from "this page never produced a pick at all". `Globe.pickable` defaults false and
+the WebGL globe path never references the id even when it is true (`Globe.js:1484-1500`), so there is
+no shared "something was picked" fallback. A fifth primitive — 120 km ABOVE the surface, GREEN, with
+no `disableDepthTestDistance` — is therefore re-measured in every (backend, log-depth, ddtd) page leg
+and must render and pick. If it does not, the run goes red on the control instead of filing a defect.
+It shares the point collection with a subject on purpose: when the subject raises
+`DISABLE_DEPTH_DISTANCE` the whole collection recompiles with the define, and a control that stopped
+being depth-tested would say so.
+
+**The polyline is HELD, not judged.** `Polyline.disableDepthTestDistance` is fork-added and honoured
+by WebGPU only; `AR-D09` has not ruled. The polyline cell is measured and published in full and
+carries **no verdict** under either expectation, so the ruling gets its evidence without this
+instrument pre-judging it.
+
+**`AR-M30` is a separate row with separate ids.** The `surfacePosition` defined-rate for edge hits
+more than 2 px from the cursor is `AR-030`'s acceptance, not `AR-001`'s. The probe runs a
+wide-aperture (`--snap-width`, default 45) snap grid — 81 cursors on a 9 px pitch over a local
+`CesiumMilkTruck.glb` at 300 m — on both backends, keeps the edge hits whose `screenPosition` is more
+than 2 px from the cursor, and reports the defined-rate per backend. It asserts **sufficiency first**
+(at least 8 far edge hits per backend) so an unmeasurable rate can never publish as agreement, then
+`|webgpu − webgl| ≤ 0.05` — the bar `AR-030`'s acceptance column actually names. **This lane
+predicts nothing about the number:** `AR-030`'s own text RETRACTS the "today 0%" figure, and
+`AR-M30` has never run. Its verdicts carry `ar-m30-` ids, and a spec assertion pins that an `AR-M30`
+red lands on no `AR-001` cell verdict.
+
+**Three files, none over 1,000 lines.** The probe (510) is what runs in Node — options, refusals, page lifecycle, verdicts, receipt. `lib/pick-visibility-matrix-page.mjs` (559) is everything that runs in the BROWSER, inside `page.evaluate` callbacks that close over nothing but their serialized `cfg`; keeping the browser half in one file makes that constraint reviewable in one place, and `probe-fleet-contract.spec.mjs` scans `lib/` for the prohibited live-canvas reader exactly as it scans probes (`prohibitedReaderFiles` = probes + `lib/*.mjs`), so the move does not take the capture out of that guard's reach. `lib/pick-visibility-matrix-verdicts.mjs` (475) is the import-free decision layer. A spec assertion pins all three under the fork's size rule.
+
+**Proof.** `Tools/visual-regression/pick-visibility-matrix-verdicts.spec.mjs` (33 tests, homed in
+`npm run test-visual-probe-contracts`) executes the SHIPPED decision functions — which live
+import-free in `Tools/visual-regression/lib/pick-visibility-matrix-verdicts.mjs` so a mutant can be
+executed from a `data:` URL — over a pre-fix world and a post-fix world, and requires **each
+expectation to reject the other's world, in both directions**. Three inertness mutants
+(`if (false && …)`, the form Principle 10 names, applied in place to the shipped file) each turn the
+spec RED: neutralising `beforeCellPass`'s WebGPU-miss clause reds D4 + G1, neutralising
+`afterCellPass`'s pick-difference clause reds D2 + G2, and neutralising the `AR-M30` sufficiency
+gate reds F2. A fourth control cuts the `AR-M30` block on its marker pair and shows the diverging
+rate publishing as vacuous agreement.
+
+**One instrument defect found and fixed IN LANE.** The first draft read pixels with
+`drawImage(scene canvas)` after a yield — the prohibited-live-canvas-reader class, which reads a
+cleared WebGL drawing buffer or an invalidated WebGPU swap-chain texture and manufactures exactly
+this probe's finding ("the item is not there") for free. `probe-fleet-contract.spec.mjs` C14 caught
+it. The probe now embeds the canonical `lib/same-task-capture.mjs` block and
+`checkEmbeddedCaptureIsCanonical` returns `[]`; nothing was added to
+`lib/prohibited-reader-allowlist.mjs`, which is shrink-only.
+
+**The two Edge legs, for the executor. Run them SEQUENTIALLY** — the BEFORE leg's
+`--repository-root` moves the single-Edge-slot lock into the pre-batch tree, so the two legs cannot
+see each other's lock.
+
+Leg 1 — BEFORE, on a tree built at Batch 1438 `08cb6fd4b2` (the commit before the fix). The probe
+file does not exist on that tree, so it is run FROM the tip's checkout with `--repository-root`
+pointed at the pre-batch tree, which is what the served-build preflight compares against:
+
+```
+# terminal A, in the pre-batch tree (built there once with npx gulp build)
+node server.js --port 8095 --serve-built
+
+# terminal B, from the tip's checkout
+node Tools/visual-regression/probe-pick-visibility-matrix.mjs \
+  --expect before --port 8095 \
+  --repository-root <pre-batch tree> \
+  --output Tools/visual-regression/output/pick-visibility-matrix-before
+```
+
+Leg 2 — AFTER, on the tip:
+
+```
+# terminal A
+node server.js --port 8094 --serve-built
+
+# terminal B
+node Tools/visual-regression/probe-pick-visibility-matrix.mjs \
+  --expect after --port 8094 \
+  --output Tools/visual-regression/output/pick-visibility-matrix-after
+```
+
+**Expected outcome per cell.**
+
+| Verdict group | Leg 1 (`--expect before`, `08cb6fd4b2`) | Leg 2 (`--expect after`, tip) |
+| --- | --- | --- |
+| `control-log-{on,off}-ddtd-{zero,infinity}` (4) | PASS — the control renders and picks on both backends | PASS |
+| billboard / label / point at `ddtd-infinity`, both log legs (6) | PASS, and the PASS _means_ WebGL visible + hit, WebGPU **visible + pick MISS (0/5)** | PASS, and the PASS _means_ both backends visible + hit (≥ 4/5) |
+| billboard / label / point at `ddtd-zero`, both log legs (6) | PASS — both backends occluded and unpickable | PASS — unchanged |
+| polyline, all 4 cells | measured and published, **no verdict** (`AR-D09`) | same |
+| `ar-m30-samples-{webgl,webgpu}`, `ar-m30-parity` (3) | **UNKNOWN — not predicted.** First run of `AR-M30`; `AR-030` retracts its old figure | same |
+| `gate-run0` | PASS — 0 uncaptured WebGPU errors, no device loss | PASS |
+
+**Reading an `ar-m30-samples-*` red.** The `>= 8` far-edge-hit bar is a design choice this lane could not measure: whether an 81-cursor grid at aperture 45 over a truck at 300 m yields that many hits with `isEdge === true` AND an offset above 2 px needs the run. A red on `ar-m30-samples-*` therefore means **the grid**, not `AR-030` — widen `--snap-width` or the grid and re-run before reading anything into the rate. A red on `ar-m30-parity` with both sample checks green is the `AR-030` finding.
+
+Exit 0 on both legs iff `AR-M30` also passes. **An exit 1 whose ONLY reds carry `ar-m30-` ids means
+`AR-M01` passed and `AR-030`'s gap is real** — the ids exist so the two rows stay separable in one
+receipt. Exit 3 is a REFUSAL (served-build preflight, a single-renderer run, the snap model never
+reaching `ready`, or the 12-minute watchdog) and proves nothing; repeat it rather than reporting it.
+
+**Cross-controls the seat may also run**, and the strongest form of `AR-837`'s own sentence: the same
+two servers with the expectations SWAPPED must both exit 1 with the six `ddtd-infinity` cells red —
+`--expect after` against `:8095` (the difference is still there) and `--expect before` against
+`:8094` (there is no difference left to show). The spec proves this over fixtures; these two runs
+prove it over the real trees.
+
+**Parity (Principle 5).** Tools-only; no engine file, no shader, so both backends are byte-identical
+by construction. The instrument itself is symmetric — every cell is measured on both backends through
+the same code path, and the WebGL leg is asserted, not merely recorded.
+
+**Files modified:** `Tools/visual-regression/probe-pick-visibility-matrix.mjs` (new),
+`Tools/visual-regression/lib/pick-visibility-matrix-page.mjs` (new),
+`Tools/visual-regression/lib/pick-visibility-matrix-verdicts.mjs` (new),
+`Tools/visual-regression/pick-visibility-matrix-verdicts.spec.mjs` (new), `package.json` (runner
+home), `migration_doc/DEFERRED_WORK.md`, `migration_doc/WEBGPU_DEBUGGING_LOG.md`,
+`migration_doc/DEBUGGING_GUIDE.md`.
+
+**For the seat.** This lane does not edit the queue. At landing, `AR-837` becomes DELIVERED and
+`AR-M01` / `AR-M30` move from NOT RUN to PENDING EDGE with the commands above; `AR-001`'s
+acceptance-pending note is discharged only by leg 2's six `ddtd-infinity` verdicts. The catalog
+(`migration_doc/TOOLING_CATALOG.md`) is regenerated fleet-wide after landing, not per lane, per
+Batch 1443's own note.
