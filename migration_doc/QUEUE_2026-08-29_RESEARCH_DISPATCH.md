@@ -920,6 +920,14 @@ They stay where they are, and any brief that re-files them is wrong: the `C11-16
 - **Acceptance:** `probe-aec-perf.mjs` (`DM-01`) and `probe-globe-cold-start-readiness.mjs` re-based on the runtime produce byte-identical receipts (same fields, same values on a fixture run) to their pre-runtime versions; a spec drives the pure parts (argv, refusals, receipt shape); the runtime is the first consumer of `Q-152`.
 - **Binds:** SR-5, SR-6, SR-7, SR-12, SR-17. **Source:** seat census 2026-08-29; catalog §4 coverage gaps.
 
+**2026-09-06 capture-foundation follow-up — Batch 1449:** additive bounded-command
+recorder and source-check adapter, with their two specs. Root's fresh source-only
+captures are14/14 each; independent source and evidence reviews are GO. The
+[landing record](branches/ASTRA_CAPTURE_FOUNDATION_LANDING_2026-09-06.md) binds
+the exact files, raw artifacts and limits. This standalone slice excludes the
+mixed package registrations and unfinished slot/lifecycle/consumer repairs.
+DX-01/A01 browser cutover, fleet reds and campaign gates remain open; no push.
+
 ### `DX-02` — anti-re-accretion contract
 
 - **Disposition:** OPEN. Extend `probe-fleet-contract` (the `@purpose` header check) with: a status tag (`ACTIVE | INVESTIGATION | ARCHIVED-CANDIDATE`) required in every `@purpose`; a lint that refuses a NEW `probe-*.mjs` that calls `chromium.launch(`, defines its own `sha256`, or parses `process.argv` directly instead of using the runtime (existing files are allow-listed by name with a shrinking census, never grandfathered silently); catalog regeneration reads the tag.
