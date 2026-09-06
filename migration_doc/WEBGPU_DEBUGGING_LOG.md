@@ -19776,3 +19776,33 @@ correct and had simply never run.
 - `migration_doc/FEATURE_INVENTORY.md` — §B `WebGPUPolylineRenderer`, whose 2026-07-14 residual
   named this guard
 - `migration_doc/DEFERRED_WORK.md`, `migration_doc/WEBGPU_DEBUGGING_LOG.md` — this record
+
+## Lane Rian (wave P0-2, 2026-09-05) — AR-715 / AR-714 / AR-716: three classification producers, one missing bounding volume
+
+**Bugs:** `AR-715` (P0), `AR-716` (P0), `AR-714` (P1). Filed as one lane because one function serves all three.
+
+**Files affected**
+
+- `packages/engine/Source/Renderer/WebGPU/WebGPUGroundPrimitiveRenderer.js`
+- `packages/engine/Source/Renderer/WebGPU/WebGPUGroundPolylineRenderer.js`
+- `packages/engine/Source/Renderer/WebGPU/WebGPUClassificationBoundingVolume.js` (new)
+- `packages/engine/Source/Renderer/WebGPU/WebGPUFeatureRenderers.ts` (comment correction only)
+- `packages/engine/Source/Scene/GroundPolylinePrimitive.js`
+
+**Root cause.** Three shapes reach the two WebGPU classification renderers and each lost its command's bounding volume for a different reason.
+
+`createWebGPUGroundPrimitiveCommands` read `primitive?._boundingVolumes?.[0]` / `primitive?._boundingVolumes2D?.[0]` (`:2678-2683` at `dcf7c9c069`). Those fields exist on a `GroundPrimitive` (`GroundPrimitive.js:203-204`, pushed at `:777`/`:794`) but **not** on a directly constructed `ClassificationPrimitive`, which reaches the same function through the CLASSIFICATION\_PRIMITIVE feature renderer — `grep -c "_boundingVolumes" Scene/ClassificationPrimitive.js` is **0**. The optional chaining meant the miss was silent: no throw, no warning, just `undefined` on the command in every mode including SCENE3D (`AR-715`). The same site's two-branch `if / else if` also skipped SCENE2D and MORPHING, which WebGL covers with the `else` at `GroundPrimitive.js:925-930` (`AR-714`). And the ground-polyline renderer set no `boundingVolume` on any command at all — a grep for the word across all 3,242 lines of `WebGPUGroundPolylineRenderer.js` at `dcf7c9c069` returned nothing (`AR-716`).
+
+`AR-716` has a second half the row does not state, and it is why a renderer-only fix could not have worked: `Scene/GroundPolylinePrimitive.js` called `Primitive._updateBoundingVolumes` at `:860`, **below** the feature-renderer early `return` at `:857`. On WebGPU that line was unreachable, so `_boundingSphereWC` / `_boundingSphere2D` / `_boundingSphereMorph` were still empty arrays at the moment the renderer was dispatched and reading them from the renderer would have yielded `undefined` in every mode.
+
+**Why it mattered more than a missed cull.** `View.createPotentiallyVisibleSet`'s no-bounding-volume branch (`View.js:374-378`) hands the command the camera's whole near..far and then folds that range into the near/far accumulators `updateFrustums` divides (`:386-388`) — so the omission **creates** frustum slices as well as binning the command into all of them, and a translucent classification blends once per slice. Driving the real PVS and the real `Scene.prototype.isVisible` in Node (2D camera height 2e7, orthographic 0.1..1e10, `farToNearRatio` 1000, `nearToFarDistance2D` 1.75e6, a 40 km sphere at 350 km): SCENE3D **4 → 1** slices, COLUMBUS\_VIEW **4 → 1**, MORPHING **4 → 1**, and SCENE2D **13 → 1**. SCENE2D — the mode the in-code comment called "distribution moot" — paid the largest penalty of the four.
+
+**The comment was wrong, and was replaced, not deleted.** `git log -S "distribution moot"` traces it to Batch 174 `415067cd38`, whose message claims the two volumes it did wire "are exactly the volumes WebGL `GroundPrimitive.updateAndQueueCommands` reads" — false for exactly the two modes that batch excluded — and whose own roadmap line ends "→ Image material → 2D/CV", naming 2D/CV as future work. A scope note about coverage hardened into a claim of design intent. The replacement states the measured behaviour and corrects the stale `GroundPrimitive.js:933-937` citation to `:925-930`.
+
+**Fix applied.** A new shared selector `WebGPUClassificationBoundingVolume.js` resolves both storage shapes (the `GroundPrimitive` mode-partitioned arrays, and the inner `Primitive`'s four-way spheres shared by `ClassificationPrimitive` and `GroundPolylinePrimitive`), returning `undefined` only when the primitive genuinely has no volume for the mode yet. Both renderers call it and pair it with `cull: defined(volume)` — necessary because `WebGPUDrawCommand.ts:502` defaults `cull` to `true` and `Scene.isVisible` (`Scene.js:3980`) short-circuits to visible while the volume is absent, so supplying one switches on culling that had been moot (the Batch-167 trap). `GroundPolylinePrimitive.js` hoists `Primitive._updateBoundingVolumes` above the branch point.
+
+**WebGL is unaffected.** Both renderer files are WebGPU-only; the hoist commutes because the only statement between the old and new call sites is `context.getFeatureRenderer`, which never touches a bounding volume, and the intervening block is inert when no feature renderer is registered.
+
+**Verified.** `Tools/visual-regression/classification-bounding-volume-frustum-slices.spec.mjs`, 16 tests on `npm run test-engine-node`, driving the real `View.prototype.createPotentiallyVisibleSet`, the real `Scene.prototype.isVisible`, the real `GroundPolylinePrimitive.updateAndQueueCommands` and the real `Primitive._updateBoundingVolumes`. Two on-disk inertness mutants: the selection made unreachable takes 4 tests red; the hoisted refresh made unreachable takes 3 red.
+
+**Known limit, recorded so no one re-derives it as a pass.** The spec cannot execute either renderer (both need a `GPUDevice`), so it does not pin that the renderers call the selector. A third mutant proved this rather than assuming it: making the ground-polyline call site unreachable leaves the spec green at 16/16. The Edge leg `node Tools/visual-regression/probe-classification-frustum-slices.mjs` is what covers the call sites. **That Edge leg is OWED at landing**: this entry is CLOSED in Node only, and the row is not fully met until the leg runs green.

@@ -53,6 +53,7 @@ import {
   attachPickToColorCommand,
   findFirstGeometryInstancePickId,
 } from "./WebGPUPickCommandHelpers.js";
+import { selectClassificationBoundingVolume } from "./WebGPUClassificationBoundingVolume.js";
 import { packClassificationColor } from "./WebGPUGroundPrimitiveInstanceColor.js";
 import { ShaderDefine, ShaderSourceId } from "./WebGPUShaderDefines.js";
 import { WebGPUShaderModuleCache } from "./WebGPUShaderModuleCache.js";
@@ -2654,33 +2655,38 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
   // distribution (View.js createPotentiallyVisibleSet) assigns this
   // classification command to the frustum slice containing its surface.
   // Without a bounding volume, View.js falls back to the full camera
-  // near..far (line 291-298) and `insertIntoBin` dumps the command into
+  // near..far (`View.js:374-388`) and `insertIntoBin` dumps the command into
   // every slice including the farthest/empty one — where the textured-
   // material depth-to-eye reconstruction yields a billions-of-
-  // metres eye-z and the UV clamps flat. Mirrors WebGL
-  // ClassificationPrimitive.updateAndQueueCommands (which reads
-  // primitive._boundingSphereWC / _boundingSphereCV).
+  // metres eye-z and the UV clamps flat.
   //
-  // The bounding volumes live on the GroundPrimitive itself, not the inner
-  // base Primitive, whose `_boundingSpheres` is empty for ground prims) —
-  // `_boundingVolumes` (SCENE3D, world-space OrientedBoundingBox from the
-  // tile rectangle + terrain min/max) and `_boundingVolumes2D` (non-3D,
-  // a BoundingSphere from `fromRectangleWithHeights2D` with its center
-  // swizzled to the `(height, projX, projY)` 2D frame). Both are already
-  // in the correct space for their mode's culling volume, so neither hits
-  // a coordinate-space mismatch. This is what WebGL
-  // `GroundPrimitive.updateAndQueueCommands` reads (GroundPrimitive.js:933-937).
+  // This function serves two primitive shapes that store their volumes
+  // differently, which is why the selection is a shared helper rather than a
+  // field read. A `GroundPrimitive` owns `_boundingVolumes` (SCENE3D,
+  // world-space OrientedBoundingBox from the tile rectangle + terrain
+  // min/max) and `_boundingVolumes2D` (non-3D, a BoundingSphere from
+  // `fromRectangleWithHeights2D` with its center swizzled to the
+  // `(height, projX, projY)` 2D frame) — the pair WebGL reads at
+  // `GroundPrimitive.js:925-930`. A directly constructed
+  // `ClassificationPrimitive`, which reaches this same function through the
+  // CLASSIFICATION_PRIMITIVE feature renderer, has NEITHER field: its volumes
+  // are the inner Primitive's four `_boundingSphere*` arrays, which is what
+  // WebGL reads at `ClassificationPrimitive.js:1336-1348`. Reading only the
+  // GroundPrimitive pair left every standalone ClassificationPrimitive
+  // unbounded in every mode, SCENE3D included. Each volume is already in its
+  // own mode's space, so neither shape hits a coordinate-space mismatch.
   //
-  // Mode-aware: SCENE3D + COLUMBUS_VIEW are perspective and can be
-  // multi-frustum, so they need correct distribution. SCENE2D is a single
-  // orthographic frustum (distribution moot) and MORPHING is transient —
-  // both stay undefined to preserve the flat-color path.
-  let classifyBoundingVolume;
-  if (sceneMode === SceneMode.SCENE3D) {
-    classifyBoundingVolume = primitive?._boundingVolumes?.[0];
-  } else if (sceneMode === SceneMode.COLUMBUS_VIEW) {
-    classifyBoundingVolume = primitive?._boundingVolumes2D?.[0];
-  }
+  // Every mode is selected for, SCENE2D and MORPHING included. 2D is not one
+  // frustum for distribution purposes: `View.js:575-583` divides the
+  // accumulated range by `scene.nearToFarDistance2D` (1.75e6 m), and the
+  // no-bounding-volume branch at `View.js:374-388` feeds that range the
+  // camera's entire near..far — so an omitted volume CREATES slices rather
+  // than merely failing to select one, and the classification blends once per
+  // slice.
+  const classifyBoundingVolume = selectClassificationBoundingVolume(
+    primitive,
+    sceneMode,
+  );
 
   const sharedDrawArgs = {
     bindGroups: [

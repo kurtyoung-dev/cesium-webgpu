@@ -94,6 +94,7 @@ import csm_depthClamp from "../../Shaders/WebGPU/chunks/functions/csm_depthClamp
 import csm_reverseLogDepth from "../../Shaders/WebGPU/chunks/functions/csm_reverseLogDepth.js";
 import WebGPUBuffer from "./WebGPUBuffer.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
+import { selectClassificationBoundingVolume } from "./WebGPUClassificationBoundingVolume.js";
 import { isWebGPULogDepthActive } from "./WebGPULogDepth.js";
 import { ShaderSourceId } from "./WebGPUShaderDefines.js";
 import { WebGPUShaderModuleCache } from "./WebGPUShaderModuleCache.js";
@@ -3102,6 +3103,33 @@ function createWebGPUGroundPolylineCommands(primitive, frameState) {
     ? cache.morphPickPipeline
     : cache.pickPipeline;
 
+  // Every command this renderer emits carries the mode-appropriate bounding
+  // volume, matching the four-way selection WebGL applies to the same
+  // primitive at `GroundPolylinePrimitive.js:862-874` / `:796-797`. Without
+  // one, `View.createPotentiallyVisibleSet` takes its no-bounding-volume
+  // branch (`View.js:374-388`), hands the command the camera's whole
+  // near..far and folds that range into the accumulators `updateFrustums`
+  // slices — so a clamped-to-ground polyline both lands in every slice and
+  // grows the slice count, and its translucent classification blends once
+  // per slice.
+  //
+  // The volumes are the inner Primitive's `_boundingSphere*` arrays;
+  // `GroundPolylinePrimitive.updateAndQueueCommands` refreshes them through
+  // `Primitive._updateBoundingVolumes` before dispatching this renderer, so
+  // the spheres are current for the frame being queued.
+  //
+  // `cull` follows the volume rather than the WebGPUDrawCommand default.
+  // `Scene.isVisible` short-circuits to visible when either the volume is
+  // absent or `cull` is false, so a bounded command culls exactly as its
+  // WebGL counterpart does (`GroundPolylinePrimitive` never disables `cull`),
+  // while an unbounded one keeps the historical full-range, no-cull behaviour
+  // instead of culling against nothing.
+  const sceneMode = frameState?.mode;
+  const classifyBoundingVolume = selectClassificationBoundingVolume(
+    primitive,
+    sceneMode,
+  );
+
   // Emit one color command and optional pick command per relevant pass. Draw
   // arguments are shared; only the pass enum differs. BOTH therefore emits
   // terrain and 3D Tiles color commands for each primitive.
@@ -3118,6 +3146,8 @@ function createWebGPUGroundPolylineCommands(primitive, frameState) {
     indexFormat: cache.indexFormat || "uint16",
     vertexCount: cache.vertexCount || 0,
     owner: primitive,
+    boundingVolume: classifyBoundingVolume,
+    cull: defined(classifyBoundingVolume),
   };
   // Attach velocity to the first color command when TAA is enabled and the
   // scene is not morphing. The velocity vertex stage uses the non-morph

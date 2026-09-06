@@ -811,6 +811,17 @@ function updateAndQueueCommands(
 ) {
   const primitive = groundPolylinePrimitive._primitive;
 
+  // Scene-level logic that both backends need, hoisted above the branch
+  // point (the Scene Logic Extractor pattern). The four `_boundingSphere*`
+  // arrays selected below are also what the WebGPU feature renderer reads to
+  // bound its own classification commands, and it is dispatched from inside
+  // the block below and returns without reaching the WebGL queue — so
+  // refreshing them only after that block left every WebGPU ground-polyline
+  // command unbounded, in every scene mode. WebGL is unaffected: nothing
+  // between here and the old call site reads a bounding volume, and when no
+  // feature renderer is registered the block below does nothing at all.
+  Primitive._updateBoundingVolumes(primitive, frameState, modelMatrix); // Expected to be identity - GroundPrimitives don't support other model matrices
+
   // WebGPU path: delegate to the GROUND_POLYLINE feature renderer.
   // When the alternate renderer is active, `Primitive.update` SKIPS
   // the WebGL `_createShaderProgramFunction` call (`!hasAlternateRenderer`
@@ -856,8 +867,6 @@ function updateAndQueueCommands(
     // is registered, because the WebGL commands lack shaderProgram.
     return;
   }
-
-  Primitive._updateBoundingVolumes(primitive, frameState, modelMatrix); // Expected to be identity - GroundPrimitives don't support other model matrices
 
   let boundingSpheres;
   if (frameState.mode === SceneMode.SCENE3D) {

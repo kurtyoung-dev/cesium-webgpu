@@ -586,10 +586,12 @@ export function registerWebGPUFeatureRenderers(context: WebGPUContext): void {
 
   // GroundPolylinePrimitive classifier with full WGSL VS/FS port
   // (per-vertex volume extrusion, miter offset,
-  // 5-plane fragment culling, depth-sample reconstruction). 3D path
-  // only — 2D / Columbus View / Morph still fall through to WebGL.
-  // The `Scene/GroundPolylinePrimitive.js` delegation hook gates on
-  // SceneMode.SCENE3D and skips the WebGPU path otherwise.
+  // 5-plane fragment culling, depth-sample reconstruction). All four scene
+  // modes route here: the `Scene/GroundPolylinePrimitive.js` delegation hook
+  // is unconditional once this renderer is registered and always returns
+  // without reaching the WebGL queue, and MORPHING selects a separate
+  // pipeline pair built alongside the main ones. (This comment previously
+  // claimed a SCENE3D-only gate that the hook does not contain.)
   context.registerFeatureRenderer(FeatureRendererKey.GROUND_POLYLINE, {
     createCommands: createWebGPUGroundPolylineCommands,
     destroy: destroyWebGPUGroundPolylineResources,
