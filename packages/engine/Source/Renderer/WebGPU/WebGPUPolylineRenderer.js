@@ -1498,6 +1498,10 @@ function getOrCreatePolylinePipelineEntry(
  * don't have velocity entry points yet, so velocity emission is
  * skipped for those materials, with camera-only TAA as the fallback. Material
  * velocity requires corresponding entry points before this gate can expand.
+ * The gate therefore admits exactly the material types `selectShaderKey`
+ * routes to `"polylineColor"` — `Color`, plus any type with no dedicated
+ * material shader (`Image`, `DiffuseMap`), which the color pass already draws
+ * with that same module.
  * @private
  */
 function getOrCreatePolylineVelocityPipelineEntry(
@@ -1507,8 +1511,17 @@ function getOrCreatePolylineVelocityPipelineEntry(
   materialType,
   defines,
 ) {
-  // Velocity entries currently exist only for the base color shader.
-  if (materialType !== "polylineColor") {
+  // Velocity entries exist only on the base `PolylineCollection.wgsl` module —
+  // the module `selectShaderKey` resolves the `Color` type, and every type this
+  // renderer has no dedicated material shader for, to.
+  //
+  // `materialType` is the collection's PUBLIC `Material.type` ("Color",
+  // "PolylineDash", "Image", …). `"polylineColor"` is the lowercase SHADER KEY
+  // this file's own `MATERIAL_SHADER_KEYS` maps `Color` onto, and is never a
+  // `Material.type` — so comparing the two directly made this gate true for
+  // every material, and no polyline ever emitted a motion vector. Resolve the
+  // key first, exactly as the module lookup below does.
+  if (selectShaderKey(materialType) !== "polylineColor") {
     return null;
   }
   if (!defined(cache.velocityPipelines)) {

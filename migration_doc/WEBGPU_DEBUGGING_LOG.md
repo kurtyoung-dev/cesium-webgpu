@@ -19706,3 +19706,73 @@ assertion block from the module source makes them accept it.
 - `Tools/visual-regression/polyline-multimaterial-verdicts.spec.mjs` (new)
 - `Tools/visual-regression/lib/probe-fleet-contract-allowlist.mjs` (its row deleted; ratchet is shrink-only)
 - `package.json`, `migration_doc/DEFERRED_WORK.md`
+
+---
+
+## Lane Ulfang (wave P0-2, 2026-09-05) — Bug AR-752: the polyline TAA velocity gate compared a material type against a shader key
+
+**Bug number:** AR-752 (finding `L2-COL-1`; measurement `AR-M38`).
+
+**Files affected:** `packages/engine/Source/Renderer/WebGPU/WebGPUPolylineRenderer.js` (the gate);
+`packages/engine/Source/Shaders/WebGPU/Collections/PolylineCollection.wgsl` (the entry points the
+gate was locking out — unchanged, they were already correct);
+`migration_doc/archive/AUDIT_2026_05_02.md:221` (the record that said this had shipped).
+
+**Root cause.** `getOrCreatePolylineVelocityPipelineEntry` opened with
+
+```js
+// Velocity entries currently exist only for the base color shader.
+if (materialType !== "polylineColor") {
+  return null;
+}
+```
+
+The intent is right: only `PolylineCollection.wgsl` declares `vertexVelocityMain` /
+`fragmentVelocityMain`, and binding a velocity pipeline for `PolylineArrow` / `PolylineDash` /
+`PolylineGlow` / `PolylineOutline` would name an entry point their WGSL does not have. The
+comparison is not. `materialType` is the collection's PUBLIC `Material.type`, read off
+`polyline.material.type` during grouping — `"Color"`, `"PolylineDash"`, `"Image"`, and so on.
+`"polylineColor"` is the lowercase SHADER KEY produced by this same file's `MATERIAL_SHADER_KEYS`
+table, and the very next thing the function does after the gate is call
+`selectShaderKey(materialType)` to obtain it. Two namespaces, one comparison: the gate was
+unconditionally true for every material, so the velocity pipeline was never built and
+`cmd.velocityCommand` — the file's only assignment of that slot — never executed. Since
+`WebGPUSceneRenderer._runVelocityPass` finds work by walking the frustum command lists for
+`cmd.velocityCommand`, a polyline contributed nothing to the velocity target, and TAA reprojected
+an animating line with the camera-only fallback. That is the smear.
+
+The defect was invisible to every existing gate for a specific reason: a STATIC polyline emits
+zero velocity by design, so "the velocity texture has no polyline motion in it" is the correct
+observation for almost every scene anyone captured. Only an ANIMATING polyline distinguishes the
+two, and nothing in the fleet animated one under TAA.
+
+**How it was measured before it was fixed.** The instrument — `measure-velocity-gate.mjs`, banked
+with this lane's packet evidence and deliberately NOT shipped into the tree, because the standing
+artefact is the spec named below — drives the real `updateWebGPUPolylines` through
+`Tools/visual-regression/lib/engine-stub-bundler.mjs` against a recording fake device, six
+animated frames per material type. The gate's own condition is lifted verbatim out of the source
+and re-evaluated as a recorder, so the instrument cannot state a different rule than the gate it
+watches; the source on disk is never touched (the recorder is applied to a copy through the
+bundler's `mutate` hook, and the pre-fix leg reads the module through `git show HEAD:…` so both
+legs come from one instrument). Result at HEAD: 36 gate entries, 36 null returns, 0 velocity
+pipelines, 0 velocity commands; the values seen at the gate were
+`["Color","PolylineArrow","PolylineDash","PolylineGlow","PolylineOutline","Image"]`. After the
+fix: 6/6 velocity commands and 1 velocity pipeline for `Color` and for `Image`, unchanged 0 for
+the four variants.
+
+**Fix applied.** Resolve the key first — `selectShaderKey(materialType) !== "polylineColor"` — so
+the gate admits exactly the material types whose colour pass already uses the base module. The
+JSDoc above the function gained the sentence that says so. Nothing else in the file changed; the
+prev-segment mirror, the descriptor builder, the bind group and the command site were all already
+correct and had simply never run.
+
+**Files modified:**
+
+- `packages/engine/Source/Renderer/WebGPU/WebGPUPolylineRenderer.js` — the gate and its comment
+- `Tools/visual-regression/polyline-taa-velocity-emission.spec.mjs` — NEW, the behaviour spec
+- `Tools/visual-regression/probe-polyline-taa-velocity.mjs` — NEW, the Edge acceptance probe
+- `package.json` — the spec's runner home (`test-engine-node`)
+- `migration_doc/archive/AUDIT_2026_05_02.md` — the false SHIPPED record, corrected
+- `migration_doc/FEATURE_INVENTORY.md` — §B `WebGPUPolylineRenderer`, whose 2026-07-14 residual
+  named this guard
+- `migration_doc/DEFERRED_WORK.md`, `migration_doc/WEBGPU_DEBUGGING_LOG.md` — this record

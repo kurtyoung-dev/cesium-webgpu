@@ -15523,3 +15523,110 @@ about different instants: `resize()` calls `initialize()`, which nulls all eleve
 The contract that matters, and the one the probe implements, is **`!== null` after the next
 settled frame**. Recommended wording: *"`pipeline.bloomEffect !== null` once the scene has
 re-settled after the resize"*.
+
+---
+
+## 2026-09-05 — NEW-WEBGPU-POLYLINE-TAA-VELOCITY-GATE-NEVER-TRUE (lane Ulfang, row `AR-752`, wave P0-2) — **FIXED, awaiting the Edge acceptance leg**
+
+`WebGPUPolylineRenderer.js`'s velocity gate compared the collection's PUBLIC `Material.type`
+against `"polylineColor"`:
+
+```js
+if (materialType !== "polylineColor") {
+  return null;
+}
+```
+
+`materialType` at that site is `material.type` — `"Color"`, `"PolylineArrow"`, `"PolylineDash"`,
+`"PolylineGlow"`, `"PolylineOutline"`, `"Image"` — read straight off the collection's material
+during grouping. `"polylineColor"` is the lowercase SHADER KEY this same file's
+`MATERIAL_SHADER_KEYS` maps `Color` onto, and fourteen lines below the gate the function itself calls
+`selectShaderKey(materialType)` to get it. The two namespaces never intersect, so the gate was
+unconditionally true: `buildPolylineVelocityDescriptor` never ran, no velocity pipeline was ever
+compiled, and the file's sole `cmd.velocityCommand` assignment never executed — on any frame, for
+any material, since Batch 148. An animating polyline under TAA was therefore reprojected with the
+camera-only fallback, which is what smears it.
+
+`git log -S 'if (materialType !== "polylineColor")'` returns exactly one commit: `04399d58c6`
+"Polyline + Point motion vectors (Batch 148)" — the one that shipped the gate. The SHIPPED record
+came from a **different** commit the same evening, 3 h 46 min later: `git log -S '~~Polyline~~ — SHIPPED (Batch 148)'`
+returns only `b313510f7d` "Audit doc sync: mark A.2/A.3/A.8/B.10 RESOLVED, A.4 PARTIAL (Batches
+140-150 audit)", a sweep that recorded the batch's own claim rather than re-deriving it from the
+code; `fbea2028cc` (Batch 1403) later carried the file into `archive/`. That two-step is the
+mechanism this row exists to correct — the batch was accurate about what it wrote, and the audit
+that certified it never executed the gate. The sibling `WebGPUPointPrimitiveRenderer` the same
+batch touched has no material gate at all, so the audit's line 222 is accurate and is unchanged.
+
+**The measurement (`AR-M38`, taken at HEAD `dcf7c9c069` before any edit).**
+The instrument — `measure-velocity-gate.mjs`, banked with this lane's packet evidence and
+deliberately NOT shipped into the tree, because the standing artefact is the spec named below —
+drives the real `updateWebGPUPolylines` through the shared engine stub bundler against a
+recording fake device, six animated frames per material type, with
+the gate's own condition lifted verbatim out of the source and re-evaluated as a recorder so the
+instrument cannot drift from the gate it observes:
+
+| materialType | gate entries | gate returned null | velocity pipelines | velocity commands |
+| --- | --- | --- | --- | --- |
+| `Color` | 6 | 6 | 0 | 0 |
+| `PolylineArrow` | 6 | 6 | 0 | 0 |
+| `PolylineDash` | 6 | 6 | 0 | 0 |
+| `PolylineGlow` | 6 | 6 | 0 | 0 |
+| `PolylineOutline` | 6 | 6 | 0 | 0 |
+| `Image` | 6 | 6 | 0 | 0 |
+
+36/36 null, 0 pipelines, 0 velocity commands, and the values reaching the gate were
+`["Color","PolylineArrow","PolylineDash","PolylineGlow","PolylineOutline","Image"]` — never
+`"polylineColor"`. Because a velocity command that is never constructed cannot be dispatched by
+`WebGPUSceneRenderer._runVelocityPass` (which walks the frustum command lists for
+`cmd.velocityCommand`), the row's "exactly 0 non-zero velocity texels" follows from the
+measurement rather than being assumed by it. After the fix the same instrument reads 6/6 velocity
+commands and one velocity pipeline for `Color` and for `Image`, and an unchanged 0 for the four
+material variants.
+
+**The fix.** The gate resolves the shader key before comparing, so it admits exactly the material
+types the colour pass already draws with `PolylineCollection.wgsl` — the module that carries
+`vertexVelocityMain` / `fragmentVelocityMain`. That is `Color` plus the types with no dedicated
+material shader (`Image`, `DiffuseMap`), which `selectShaderKey` already falls back to
+`"polylineColor"` for. `PolylineArrow` / `PolylineDash` / `PolylineGlow` / `PolylineOutline` still
+return null, because their WGSL has no velocity entry points — binding a pipeline against a
+missing entry point is the failure the original gate was reaching for.
+
+**Parity (Principle 5).** WebGPU-only. WebGL has no TAA accumulation path at all — the WebGL
+parity leg is tracked separately as "TAA Slice 4 WebGL parity path (MRT motion + GLSL accumulate)"
+in `FEATURE_INVENTORY.md` §C — so there is no second implementation to make; WebGL is the
+comparison, and it is what the probe's smear denominator reads. No WebGL file is touched and no
+WebGL code path changes.
+
+**Acceptance (observable behaviour only):**
+
+1. An animating `PolylineCollection` with `scene.taaEnabled = true` and a `Color` material writes
+   more than 0 non-zero texels into the `rg16float` velocity target (pre-fix: exactly 0).
+2. The same animation with a `PolylineDash` material still writes 0 — the gate narrowed, it did
+   not vanish.
+3. The animating line's painted footprint under WebGPU TAA is within [0.75, 1.25] of WebGL's for
+   the same scene: a history reprojected with correct motion vectors lands on the line, one
+   reprojected with the camera-only fallback smears along its trajectory.
+4. A scene with no polyline emits no command on either backend and is unchanged by this work.
+
+**Proving artefacts.** `Tools/visual-regression/probe-polyline-taa-velocity.mjs` — the acceptance
+per `R-2026-08-29-1`, on the shared `lib/probe-runtime.mjs`, carrying clauses 1-4 as four verdicts
+including the `PolylineDash` negative control. `Tools/visual-regression/polyline-taa-velocity-emission.spec.mjs`
+— the browser-free behaviour spec (the real renderer under a recording device: the velocity
+command's existence, its two instance streams, its pipeline's entry points and `rg16float` target;
+TAA-off and no-polyline controls; the four variants staying silent; the inertness mutant; and the
+probe's own half-float decode and verdict arithmetic, so the Edge leg cannot pass vacuously).
+It runs under `npm run test-engine-node`.
+
+**Residual, surfaced not papered over (Principle 9).** Velocity for the four material variants
+needs `vertexVelocityMain` / `fragmentVelocityMain` added to `PolylineArrow.wgsl`,
+`PolylineDash.wgsl`, `PolylineGlow.wgsl` and `PolylineOutline.wgsl` — four shader files this lane
+does not own. Until then an animating dashed or glowing polyline still ghosts, and the gate
+correctly refuses to pretend otherwise. Separately, the velocity pipeline's `depthCompare` is
+`less-equal` regardless of the settled-2D/CV `noDepthTest` flag the colour pipeline keys on, so a
+map-coplanar polyline's velocity fragments may fail the depth test in settled 2D and Columbus
+View; the pre-existing `MORPH-TAA-PREVVP` entry covers the mid-morph half of the same surface.
+Neither is a regression — both were unreachable until this row landed.
+
+**Record corrections in the same landing.** `archive/AUDIT_2026_05_02.md:221` (the false "SHIPPED
+(Batch 148)") and `FEATURE_INVENTORY.md` §B's `WebGPUPolylineRenderer` entry (whose 2026-07-14
+residual named this exact guard and is now resolved).
