@@ -339,6 +339,17 @@ class Resource {
   /**
    * Returns a resource relative to the current instance. All properties remain the same as the current instance unless overridden in options.
    *
+   * If <code>options.url</code> resolves to a different origin than this resource, the headers
+   * and query parameters inherited from this resource are not carried over - they are scoped to
+   * this resource's origin. Headers and query parameters passed to this call are the caller's
+   * own intent and are always applied. Same-origin derivation is unaffected. Origins compare
+   * as scheme, host and port, so the same host reached over a different scheme
+   * (<code>http:</code> to <code>https:</code>) or on a different port is a different origin
+   * and drops the inherited pair as well. A relative <code>options.url</code> resolves against
+   * this resource and is therefore always same-origin; when either origin cannot be resolved
+   * at all - a relative url outside a browser, or an opaque <code>data:</code> or
+   * <code>file:</code> origin - nothing is dropped.
+   *
    * @param {object} options An object with the following properties
    * @param {string} [options.url]  The url that will be resolved relative to the url of the current instance.
    * @param {object} [options.queryParameters] An object containing query parameters that will be combined with those of the current instance.
@@ -359,6 +370,30 @@ class Resource {
     if (defined(options.url)) {
       const preserveQuery = options.preserveQueryParameters ?? false;
       resource.parseUrl(options.url, true, preserveQuery, this._url);
+
+      // The derived url is frequently chosen by the document being loaded rather than by
+      // the application - CZML `uri`, KML `<href>` and 3D Tiles `content.uri` all reach
+      // here with a url straight out of the file. The parent's request headers and query
+      // parameters routinely carry credentials (an Authorization header, an access token),
+      // and those are scoped to the parent's origin; forwarding them to a url that names a
+      // different origin hands them to a host the document picked. Drop the inherited pair
+      // when - and only when - both origins are known and differ, so a relative url, a url
+      // whose origin is opaque (`data:`, `file:`) and a parent with no resolvable origin all
+      // keep the behaviour they have today.
+      // Options supplied to this call are applied below, after the drop, so an application
+      // that deliberately wants credentials to cross an origin still can by passing them.
+      const parentOrigin = getUrlOrigin(this._url);
+      const derivedOrigin = getUrlOrigin(resource._url);
+      if (
+        defined(parentOrigin) &&
+        defined(derivedOrigin) &&
+        parentOrigin !== derivedOrigin
+      ) {
+        resource.headers = {};
+        // Re-parse without merging: the derived url keeps the query string it carries
+        // itself and loses the parent's.
+        resource.parseUrl(options.url, false, preserveQuery, this._url);
+      }
     }
 
     if (defined(options.queryParameters)) {
@@ -1375,6 +1410,34 @@ function parseQueryString(queryString) {
   }
 
   return queryToObject(queryString);
+}
+
+/**
+ * Resolves the origin of a url, using the document's base uri when the url is relative.
+ * Returns undefined when no origin can be determined - a relative url outside a browser, a
+ * `data:` or `file:` uri (whose origin is opaque), or a url the URL parser rejects. A `blob:`
+ * url resolves to the origin embedded in it, so it is compared like any other. Callers treat
+ * undefined as "unknown", never as "different".
+ *
+ * @param {string} url The url whose origin is wanted.
+ * @returns {string|undefined} The origin, or undefined if it cannot be determined.
+ *
+ * @private
+ */
+function getUrlOrigin(url) {
+  if (!defined(url) || url.length === 0) {
+    return undefined;
+  }
+
+  let origin;
+  try {
+    origin = new URL(getAbsoluteUri(url)).origin;
+  } catch {
+    return undefined;
+  }
+
+  // URL.origin is the literal string "null" for opaque origins.
+  return origin === "null" ? undefined : origin;
 }
 
 /**

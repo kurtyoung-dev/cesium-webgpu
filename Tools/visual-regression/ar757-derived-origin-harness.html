@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>AR-757 derived-resource origin harness</title>
+  </head>
+  <body data-ar757-derived-origin-harness="owned-no-autostart-v1">
+    <script type="module">
+      // Harness for probe-ar757-derived-origin.mjs (AR-757 / L2-DAT-1).
+      //
+      // No viewer, no canvas: the row's defect lives in Core/Resource.js and is
+      // observable as network traffic, so the harness only needs the engine
+      // barrel and a way for the probe to ask for one derivation at a time. The
+      // probe watches what leaves the browser via Playwright's request events —
+      // the harness deliberately reports nothing about the requests itself, so
+      // the measurement cannot be faked by the page.
+      //
+      // The "far host" is the SAME dev server reached through a different
+      // origin string (127.0.0.1 rather than localhost). Two origins, one
+      // server, no external host is ever contacted.
+      import * as Cesium from "/Build/CesiumUnminified/index.js";
+      window.Cesium = Cesium;
+      window.__errors = [];
+      window.addEventListener("error", (e) =>
+        window.__errors.push(String(e.message)),
+      );
+
+      /**
+       * Builds the authenticated parent resource and issues one derived request.
+       * Every request is expected to be allowed to fail (a cross-origin GET
+       * without CORS headers fails at the response, long after the browser has
+       * already sent what the probe is counting).
+       */
+      window.__deriveAndFetch = async function (options) {
+        const parent = new Cesium.Resource({
+          url: options.parentUrl,
+          headers: { "X-Probe": "probe-value" },
+          queryParameters: { token: "probe-only-token" },
+        });
+
+        let resource;
+        if (options.chain) {
+          resource = parent
+            .getDerivedResource({ url: "a/" })
+            .getDerivedResource({ url: "b/" })
+            .getDerivedResource({ url: options.derivedUrl });
+        } else {
+          resource = parent.getDerivedResource({ url: options.derivedUrl });
+        }
+
+        const record = { url: resource.url, headers: { ...resource.headers } };
+        try {
+          await resource.fetchText();
+          record.settled = "resolved";
+        } catch (e) {
+          record.settled = "rejected";
+        }
+        return record;
+      };
+    </script>
+  </body>
+</html>

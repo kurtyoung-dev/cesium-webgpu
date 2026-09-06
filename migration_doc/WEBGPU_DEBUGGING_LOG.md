@@ -19493,3 +19493,112 @@ than fabricated ones.
 
 No engine file is touched in round 4, so no rebuild is required and the Batch 1420 engine bytes are
 unchanged.
+
+## Lane Aerin (wave P0-2, 2026-09-05) — AR-757 / `L2-DAT-1`: a derived resource carried the parent's credentials to an origin the document chose
+
+**This is a core defect, not a renderer defect.** It lives in
+`packages/engine/Source/Core/Resource.js`, above the backend split, and both
+backends exhibited it identically — nothing in the affected chain reads
+`context.isWebGPU`, a feature renderer, or any shader. It is logged here
+because this file is the fork's chronological bug record, not because the
+WebGPU renderer is implicated.
+
+**Files affected:** `packages/engine/Source/Core/Resource.js`.
+
+**Root cause:** `getDerivedResource` (`:355` at `dcf7c9c069`) clones the parent,
+and `clone` copies the parent's `queryParameters` (`:432`) and `headers`
+(`:434`). When `options.url` is supplied it calls
+`resource.parseUrl(options.url, true, preserveQuery, this._url)` (`:361`);
+inside `parseUrl`, `merge` true folds the parent's query parameters into the
+new url's own (`:220`) while a url carrying its own scheme rebuilds `_url` from
+**that url's** origin and pathname (`:226`). The derived resource is therefore
+pointed at the new origin while still holding the parent's headers and query
+parameters, and both reach the wire without any further check —
+`_makeRequest` combines the headers at `:865` and `loadWithXhr` calls
+`setRequestHeader` for each at `:2166`, while the query parameters are part of
+`resource.url` itself. `isCrossOriginUrl` is imported by this module but read
+at exactly one site, `:672`, and only to choose the `<img crossorigin>`
+attribute — it gates nothing that travels.
+
+The reachability is what makes it a P0 rather than an API sharp edge: the three
+loaders that hand `getDerivedResource` a url straight out of a document all
+call it in the same bare shape, with no options of their own —
+`DataSources/CzmlDataSource.js:192` for CZML `uri`,
+`DataSources/KmlDataSource.js:651` for KML `<href>`, and
+`Scene/Cesium3DTile.js:265` for 3D Tiles `content.uri`. An absolute url in any
+of those files names the host that receives the application's `Authorization`
+header or its access-token query parameter.
+
+Reproduced in Node from the module directly. A parent
+`http://127.0.0.1:5501/app/scene.czml` carrying an `X-Probe` header and a
+`token` query parameter, deriving the absolute
+`http://127.0.0.2:5502/document-chosen.png`, yields with the guard made
+unreachable (the pre-fix behaviour on this path)
+`http://127.0.0.2:5502/document-chosen.png?token=spec-only-token` with
+`{"X-Probe":"probe-value"}` still attached, and with the guard live the same
+url with no query parameter and `{}` for headers.
+
+**Fix applied:** the origin check goes where the chain starts, in
+`getDerivedResource` itself — not at any of the three call sites, which would
+be the inline-hack pattern Principles 7 and 9 forbid and would leave every
+other caller exposed. Immediately after `parseUrl` resolves the derived url,
+and before the blocks that apply `options.queryParameters` / `options.headers`,
+the parent's origin and the derived url's origin are compared; when both are
+known and differ, `resource.headers` is emptied and `parseUrl` is called a
+second time with `merge` false, so the derived url keeps the query string it
+carries itself and loses the parent's. Because the drop happens *before* the
+explicit-option blocks, headers and query parameters passed to the derivation
+call still land — the caller's own intent is preserved, and is the documented
+way to let credentials cross an origin deliberately.
+
+The comparison is a new module-private `getUrlOrigin`, resolving through the
+already-imported `getAbsoluteUri` and reading `URL.origin`. It returns
+`undefined` whenever the origin cannot be established (a relative url outside a
+browser, an opaque `data:`/`file:` origin, a url the parser rejects; a `blob:`
+url reports the origin embedded in it and is compared like any other),
+and `undefined` on either side means no strip — the check fires only on a
+positively-established difference, so nothing that works today changes.
+Because `URL.origin` is scheme + host + port, that difference also covers the
+same host over a different scheme or port (`http://h/a` to `https://h/b`, or a
+different port) — the safe direction, intended, and measured in both directions
+rather than inferred. And "relative" above is about `options.url`, not about the
+parent: in a browser `getAbsoluteUri` resolves a relative parent against
+`document.baseURI`, so that parent does have an origin and a foreign absolute
+derivation from it does strip; outside a browser it has none and nothing is
+dropped.
+`isCrossOriginUrl` was deliberately not reused: it compares against the *page*,
+which is the wrong comparison (it would strip credentials from an app whose API
+is on a different origin from its own page, and forward them between two
+foreign origins), and it is DOM-only, so it would answer differently outside a
+browser.
+
+Scope was held to the row's — headers and query parameters. `templateValues`
+is kept (it only materialises where the url itself contains the matching
+`{placeholder}`, so unlike a header it is never forwarded automatically, and
+stripping the inherited set would reach the whole template-provider fleet
+rather than one path) and the narrow residual is recorded in the ledger; `proxy` is kept because fetching a url the page cannot
+fetch directly is exactly what a proxy is for; `retryCallback`, `retryAttempts`,
+`credits` and `request` never reach the wire as data.
+
+Upstream behaviour was checked rather than assumed. The upstream
+`getDerivedResource` expectations are in a browser-only Jasmine suite
+(`packages/engine/Specs/Core/ResourceSpec.js`), so all seven of its
+`getDerivedResource` cases are replayed assertion-for-assertion in the lane's
+Node spec — all thirty-three expectations, the parent-construction ones as well
+as the derivation ones. They pass with the fix live, and they also pass with the fix made
+unreachable by the inertness mutant — the same-origin behaviour is byte-for-byte
+what it was. Every one of them derives same-origin or relative, and no spec in
+`packages/engine/Specs` or `packages/widgets/Specs` derives an absolute
+`http(s)` url. `IonResource` is unaffected — it passes its
+token and headers to `getDerivedResource` explicitly (`Core/IonResource.js:234-246`)
+and its `_makeRequest` (`:124-131`) already refuses to send the ion token to a
+host other than the endpoint domain.
+
+**Files modified:** `packages/engine/Source/Core/Resource.js`,
+`packages/engine/Specs/Core/ResourceCrossOriginDerivationSpec.mjs` (new),
+`package.json` (`test-engine-node`),
+`Tools/visual-regression/probe-ar757-derived-origin.mjs` (new),
+`Tools/visual-regression/ar757-derived-origin-harness.html` (new). Ledger
+entry: `migration_doc/DEFERRED_WORK.md`,
+`NEW-CORE-RESOURCE-CROSS-ORIGIN-DERIVATION` (2026-09-05).
+
