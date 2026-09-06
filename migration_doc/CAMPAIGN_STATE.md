@@ -169,7 +169,7 @@ a C18 wave) awaits maintainer gate **M-16**; nothing about it is launched. Wave 
 **Wave-end gate — batches 1379–1404 (2026-09-04, Éowyn job 3).** Under the same rule
 (`R-2026-08-29-2`), distinct from the DX Wave-1 gate above: the wave that closed with Batch 1404
 (1379–1404) had its wave-end gate run 2026-09-04 (Éowyn, standing Edge executor, `R-2026-09-02-1`,
-job 3), on the pre-merge tree `40341305f4` (Batch 1407), served-tree preflight PASS (disk md5
+job 3), on the pre-merge tree `e7360fa234` (Batch 1407), served-tree preflight PASS (disk md5
 matches :8080/:8081/:8082/:8094 before and after every leg). Evidence directory:
 `Tools/visual-regression/output/wave-end/2026-09-04/` (`SUMMARY.md` + one `README.txt` per leg).
 Per step: **(a) variant smoke — GREEN** — `node Tools/variant-smoke-test.mjs` exit 0; dual /
@@ -207,8 +207,8 @@ lives in `QUEUE_2026-09-03_ARCHITECTURE_REVIEW.md`'s own rows, not restated here
 
 ### Upstream sync — CesiumJS 1.145 (not a numbered campaign)
 
-**LANDED.** The fork is synced to CesiumJS 1.145 at merge commit `ffb8161c08`, **Batch 1408**
-(parents `40341305f4` fork / `488b114e16` `upstream/main`, merge-base `6d5d8b1f07`), landed
+**LANDED.** The fork is synced to CesiumJS 1.145 at merge commit `33398505e6`, **Batch 1408**
+(parents `e7360fa234` fork / `488b114e16` `upstream/main`, merge-base `6d5d8b1f07`), landed
 2026-09-04. Verification: **Éowyn job 4, FIT TO FAST-FORWARD** (evidence:
 `Tools/visual-regression/output/sync-1145-verification-2026-09-04/`); leg 1b (Sandcastle2 sweep) and
 leg 2 (draped-polyline width gate B) remain owed, tracked as `UPSTREAM-SYNC-1.145-06`/`-07` items,
@@ -229,6 +229,17 @@ parents), and CLAUDE.md's sync-procedure `--theirs` default was **wrong for 13 o
 `.js` files**, which the fork had converted to ES6 classes while upstream is still prototype-based
 (plan §3) — worked around in this merge by the new `PORT-INTO-CLASS` class and guarded going forward
 by the ES6-shape guard (`-08`, landed); **amending the procedure itself is still open as `AR-D23`.**
+
+**2026-09-05 — Batches 1405–1429 re-landed under new hashes (redate, not a content change).** The
+pre-push hook refuses an in-window commit date, so after the quiet-hours window the maintainer chose
+to re-create Batches 1405–1408 (which re-created every later first-parent commit through 1429 too);
+trees, messages and batch numbers are unchanged, only the 25 hashes are new — this section's merge
+commit (`33398505e6`, was `ffb8161c08`) and fork parent (`e7360fa234`, was `40341305f4`) are the
+re-landed values. The old→new map (25 rows) is banked at
+`F:/Dev/GH/cesium-webgpu-worker-archive/scratchpad-2026-09-05/redate-map.txt`. **Rule going
+forward:** a document that cites a landed commit's hash may only be written/edited after that
+commit is pushed — a hash cited before the push is exactly the kind of citation a future redate
+invalidates.
 
 ### Standing principles that block work (not row-specific)
 

@@ -19130,7 +19130,7 @@ gate did not catch it.
 (runner `test-model-webgpu`) drives the real fabric, the real `MaterialHelpers` adoption and the
 real prelude/rewrite/assemble/preprocess chain, then requires every identifier the emitted module
 hands to a WGSL texture builtin to be a declaration the module actually makes. Against the
-pre-fix engine (HEAD `01bddf4eae` versions of both files, restored into the tree for the run) it
+pre-fix engine (HEAD `c979aca757` versions of both files, restored into the tree for the run) it
 reports 6 of 9 red; against the fix, 9 of 9 green. The pixel and validation-error halves belong to
 `Tools/visual-regression/probe-globe-elevation-band-material.mjs` (row AR-833), which Éowyn runs.
 

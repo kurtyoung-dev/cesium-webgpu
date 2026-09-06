@@ -1,9 +1,9 @@
 # Upstream sync plan — CesiumJS 1.145 (2026-09-04)
 
 **Status: LANDED** (stamped 2026-09-05, doc-fitness follow-up G-25). The 1.145 merge landed at
-Batch 1408, merge commit `ffb8161c083b29df0d3a301496ad5f4bc80e6c27` — two parents: fork
-`40341305f4068a64517c7be81d5164979dc1d115`, upstream `488b114e16f5879f5d51456640aae67850a715c0`.
-Verified at HEAD: `git log -1 --format=%P ffb8161c08` → the two parent hashes above;
+Batch 1408, merge commit `33398505e6e5c3a3a635243b7941b5c3264a469b` — two parents: fork
+`e7360fa234b97ca206321ec568f105008be81625`, upstream `488b114e16f5879f5d51456640aae67850a715c0`.
+Verified at HEAD: `git log -1 --format=%P 33398505e6` → the two parent hashes above;
 `git merge-base --is-ancestor 488b114e16 HEAD` → exit 0; `package.json`'s `"version"` → `1.145.0`.
 This document was produced by lane U (tier-2 lead Nolondil, five tier-3 workers) from **one
 dry-run merge**, executed in an isolated clone and aborted before the real landing; that dry-run
@@ -11,7 +11,7 @@ clone ended clean at `01226c648a` and is retained below as the conflict census a
 resolution plan the real landing followed — it was not itself the landing.
 
 **What this document is.** The plan the 1.145 sync was landed from (Batch 1408,
-`ffb8161c083b29df0d3a301496ad5f4bc80e6c27`): the real conflict census,
+`33398505e6e5c3a3a635243b7941b5c3264a469b`): the real conflict census,
 four cluster analyses with a resolution per hunk, the toolchain survey, the post-merge verification
 plan, and the landing sequence. It is a **plan**, not a status authority — the queue rows it opens
 (`UPSTREAM-SYNC-1.145-*` in
@@ -1330,8 +1330,8 @@ sync's own acceptance). `-07` and `-08` are **Wave 2**: each needs the merge to 
 Stated so the reader does not mistake analysis for authority:
 
 - **This document did not land the merge itself** — it produced the census and per-hunk plan; the
-  sync landed separately at Batch 1408 (`ffb8161c083b29df0d3a301496ad5f4bc80e6c27`; verified
-  2026-09-05: parents `40341305f4` / `488b114e16`, `git merge-base --is-ancestor 488b114e16 HEAD`
+  sync landed separately at Batch 1408 (`33398505e6e5c3a3a635243b7941b5c3264a469b`; verified
+  2026-09-05: parents `e7360fa234` / `488b114e16`, `git merge-base --is-ancestor 488b114e16 HEAD`
   exit 0, `package.json` version `1.145.0`). The dry-run lane clone this plan is based on ended
   clean at `01226c648a` and was not itself the landing.
 - **It does not move any status authority.** Campaign status stays in `CAMPAIGN_STATE.md`; row

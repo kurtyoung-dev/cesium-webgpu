@@ -11,7 +11,7 @@
 > `status: verify`.
 > **2026-07-02 refresh (post-campaign audit, Batches 482–506, HEAD
 > `62c5bab450`):** §11 (PP library interception) + §12 (voxel data path) added.
-> **2026-09-05 refresh (documentation wave D1, HEAD `b964e0da30`, Batch 1424):**
+> **2026-09-05 refresh (documentation wave D1, HEAD `dc58236ebd`, Batch 1424):**
 > §1's Scene-boundary residue, §4a (the frame), §5's `previousViewProjection`
 > block, §5.5 (uniform buffers), §6.1–6.3 (the two-word define model), §6.5 (the
 > cache map) and §11.1 (post-process ordering) re-derived from engine source at

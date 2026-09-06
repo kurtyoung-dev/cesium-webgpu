@@ -7,7 +7,7 @@
 
 > Note: raw grep counts differ between scan passes depending on whether shader-string files and generated chunks were filtered. Where scans disagree, the lower (canonical-JS-only) figure is the load-bearing one and the discrepancy is called out. Treat all counts as approximate.
 
-> **Refreshed 2026-09-05** (Batch 1424, `b964e0da30`, doc-fitness follow-up G-41): the three headline
+> **Refreshed 2026-09-05** (Batch 1424, `dc58236ebd`, doc-fitness follow-up G-41): the three headline
 > counts at §1 and §3 below were re-measured directly, not carried forward from the prior pass —
 > `find packages/engine/Source/Renderer/WebGPU -name '*.ts' ! -name '*.d.ts' | wc -l` → 240,
 > `find packages/engine/Source/Renderer/WebGPU -name '*.js' | wc -l` → 34, and for the engine+widgets

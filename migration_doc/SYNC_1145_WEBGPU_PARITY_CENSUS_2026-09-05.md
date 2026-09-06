@@ -5,7 +5,7 @@ Banked verbatim from `_lane-out/SYNC_1145_WEBGPU_PARITY_CENSUS.md` (lane Malach)
 
 **Scope.** Upstream change = `git diff 6d5d8b1f07 488b114e16 -- packages/engine/Source` (68 files).
 Twin surface = `packages/engine/Source/Renderer/WebGPU/` + `packages/engine/Source/Shaders/WebGPU/`
-at `main` = **Batch 1429 `dcf7c9c069`**. Read-only. 11 reader groups (duplicated subjects merged:
+at `main` = **Batch 1429 `556f06484e`**. Read-only. 11 reader groups (duplicated subjects merged:
 globe+imagery read three times, "G7 remainder" three times), 209 findings, refuter adjudicated.
 Synthesised 2026-09-05 after the workflow's own synthesis step was cut mid-write.
 
@@ -14,7 +14,7 @@ Synthesised 2026-09-05 after the workflow's own synthesis step was cut mid-write
 ## 1. Answer
 
 **No — with one exception, the fork did not add 1.145's new renderer functionality to WebGPU.**
-The merge (Batch 1408, `ffb8161c08`) landed 1.145's shared JS and its GLSL faithfully, and Batch 1410
+The merge (Batch 1408, `33398505e6`) landed 1.145's shared JS and its GLSL faithfully, and Batch 1410
 ported one WGSL leg (draped-polyline half-width / AA / nearest-edge, Edge-verified gate B countRatio
 1.000 in Éowyn job 6). Everything else 1.145 added on the renderer surface is **WebGL-only at HEAD**:
 the draped-vector feature's polygon-fill, pick-colour and metres-width legs; its extension onto models

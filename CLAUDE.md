@@ -84,11 +84,12 @@ Not required for parity: WebGPU-only capabilities with no WebGL equivalent (comp
 This fork has a **large feature surface** spanning four buckets:
 
 - **EXISTING** — 308 features inherited from upstream Cesium (globe, imagery, 3D Tiles, glTF Models, geometry primitives, collections, entities, datasources, particles, post-processing, camera, picking, time, materials, shadows, widgets — see [migration_doc/FEATURE_INVENTORY.md §A](migration_doc/FEATURE_INVENTORY.md#a-existing--upstream-cesium-features-inherited-by-the-fork) for the full list).
-- **NEW** — 352 fork-added features (the entire WebGPU renderer + abstractions + tooling — see [§B](migration_doc/FEATURE_INVENTORY.md#b-new--fork-specific-additions)). Each tagged `(SHIPPED)`, `(SCAFFOLDED)`, or `(EXPERIMENTAL)`.
-- **WIP** — 116 partially-shipped features with known gaps (see [§C](migration_doc/FEATURE_INVENTORY.md#c-wip--work-in-progress)).
+- **NEW** — 353 fork-added features (the entire WebGPU renderer + abstractions + tooling — see [§B](migration_doc/FEATURE_INVENTORY.md#b-new--fork-specific-additions)). Each tagged `(SHIPPED)`, `(SCAFFOLDED)`, or `(EXPERIMENTAL)`.
+- **WIP** — 117 partially-shipped features with known gaps (see [§C](migration_doc/FEATURE_INVENTORY.md#c-wip--work-in-progress)).
 - **FUTURE / DEFERRED** — 156 explicitly punted, gated, or research-stage items (see [§D](migration_doc/FEATURE_INVENTORY.md#d-future--deferred)).
 
 <!-- corrected 2026-09-05 from the doc-fitness audit G-08/G-09 (D10 factual); counts re-measured at HEAD 556f06484e -->
+<!-- corrected 2026-09-05 (Meleth, hash-repoint lane, reviewer Imlach's ruling): §B was 352 at HEAD 556f06484e but Batch 1432 (Ragnir's inventory edit, `fb4a301914`) moved the shader-f16 axis entry from §C to §B before this governance line landed; recounted directly (`sed` over §B's line range, dash-bullet lines) at the tree's current tip, Batch 1435 (`98c9ab36ca`) = 353 -->
 
 Counts measured 2026-09-05 by counting top-level `-` bullet lines in each section's line range in `FEATURE_INVENTORY.md`. They drift as the inventory grows — re-measure rather than trust these absolutes indefinitely. The §C figure includes 15 struck-through entries already marked resolved but not yet migrated to §B, so the true open-WIP count is lower.
 

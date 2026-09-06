@@ -14706,7 +14706,7 @@ cause was a Scene Logic Extractor violation in
 terrain-credit loop and the imagery-credit loop both sat below the
 `context.getFeatureRenderer(FeatureRendererKey.GLOBE_SURFACE)` early return
 that hands the tile to `addWebGPUDrawCommandsForTile`, so on WebGPU the loops
-were unreachable code — confirmed at this clone's HEAD (`01bddf4eae`, the
+were unreachable code — confirmed at this clone's HEAD (`c979aca757`, the
 1.145 merge line) by reading `addWebGPUDrawCommandsForTile` (`:1260-1634`)
 end to end: it contains no call to `creditDisplay`. The architecture review's
 cited lines (`:1629-1638`/`:1636`, `:2336-2345`/`:2343`, branch
@@ -14969,7 +14969,7 @@ of the eleven destroyed effects were **never re-added**, on the resize path *and
 one HDR toggle) removed them from the frame permanently. Nothing turned them back on; the user's
 only recovery was a new viewer.
 
-**The count, derived at HEAD `01bddf4eae` rather than taken from the row.** All eleven slots are
+**The count, derived at HEAD `c979aca757` rather than taken from the row.** All eleven slots are
 destroyed and nulled by `WebGPUPostProcessPipeline.initialize()` (`:553-600`), which is correct —
 each effect's intermediates are sized AND formatted against `_intermediateFormat`. The re-add gates
 in `WebGPUPostProcessStageCollection.ts` then split two ways:
